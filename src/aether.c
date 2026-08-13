@@ -1142,9 +1142,13 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) { sequencer
 
     // `new T[N]` vector allocations stored into a member field need a hold so
     // auto_free doesn't reclaim the backing buffer while the object lives.
-    bool res_is_vector = !no_store && is_member_slot &&
-        ((is_shaped_slot && !a->no_build) ||
-         (res && res->autype && (res->autype->traits & AU_TRAIT_SHAPED)));
+    // the RES side must BE a managed allocation (shaped alloc or class) —
+    // a raw pointer stored into a shaped slot has no Au header to hold
+    bool res_is_vector = !no_store && is_member_slot && !a->no_build &&
+        res && res->autype &&
+        ((res->autype->traits & AU_TRAIT_SHAPED) ||
+         (is_shaped_slot && res->autype->src && res->autype->src->is_class &&
+          !res->autype->src->is_c));
     if (res_is_vector && !a->no_build) {
         efunc fn_hold = (efunc)u(efunc,
             find_member(etypeid(Au)->autype, "hold", AU_MEMBER_FUNC, 0, true));
@@ -7421,8 +7425,6 @@ static void build_entrypoint(aether a, efunc module_init_fn) {
             LLVMTypeRef  puts_ty = LLVMFunctionType(i32_ty, (LLVMTypeRef[]){ptr_ty}, 1, false);
             LLVMValueRef puts_fn = LLVMGetNamedFunction(a->module_ref, "puts");
             if (!puts_fn) puts_fn = LLVMAddFunction(a->module_ref, "puts", puts_ty);
-            LLVMBuildCall2(B, puts_ty, puts_fn,
-                (LLVMValueRef[]){LLVMBuildGlobalStringPtr(B, "DSTR live_destroy: enter", "d0")}, 1, "");
             if (fn_destroy) {
                 LLVMValueRef _inst = LLVMBuildLoad2(B, ptr_ty, inst_g, "inst");
                 LLVMValueRef _hdr  = LLVMBuildGEP2(B, LLVMInt8TypeInContext(a->module_ctx), _inst,
@@ -7438,8 +7440,6 @@ static void build_entrypoint(aether a, efunc module_init_fn) {
             }
             // drop the instance so Display/vk_context dealloc chains fire
             // (cleans up VkSwapchain/VkSurface before the module unloads)
-            LLVMBuildCall2(B, puts_ty, puts_fn,
-                (LLVMValueRef[]){LLVMBuildGlobalStringPtr(B, "DSTR live_destroy: dropping app instance", "d1")}, 1, "");
             Au_t au_drop = find_member(typeid(Au), "drop", AU_MEMBER_FUNC, 0, false);
             if (au_drop) {
                 efunc fn_drop = u(efunc, au_drop);
@@ -7450,8 +7450,6 @@ static void build_entrypoint(aether a, efunc module_init_fn) {
                         (LLVMValueRef[]){_inst_d}, 1, "");
                 }
             }
-            LLVMBuildCall2(B, puts_ty, puts_fn,
-                (LLVMValueRef[]){LLVMBuildGlobalStringPtr(B, "DSTR live_destroy: app dropped; draining + report", "d2")}, 1, "");
             LLVMBuildStore(B, LLVMConstNull(ptr_ty), inst_g);
 
             // drain the pool and report leaks NOW — after the instance drop,

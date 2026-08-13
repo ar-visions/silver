@@ -439,6 +439,22 @@ mat4f mat4f_ortho(f32 left, f32 right, f32 bottom, f32 top, f32 near, f32 far) {
     return res;
 }
 
+mat4f mat4f_frustum(f32 left, f32 right, f32 bottom, f32 top, f32 near, f32 far) {
+    f32 rl = right - left;
+    f32 tb = top   - bottom;
+    f32 fn = far   - near;
+    mat4f res = {};
+    // asymmetric (off-axis) perspective frustum, GL clip convention
+    res.m[ 0] = 2.0f * near / rl;
+    res.m[ 5] = 2.0f * near / tb;
+    res.m[ 8] = (right + left)   / rl;
+    res.m[ 9] = (top   + bottom) / tb;
+    res.m[10] = -(far + near) / fn;
+    res.m[11] = -1.0f;
+    res.m[14] = -(2.0f * far * near) / fn;
+    return res;
+}
+
 f32 mat4f_determinant(mat4f* mat) {
     f32 *m = mat->m; // access matrix elements
     f32 det = 

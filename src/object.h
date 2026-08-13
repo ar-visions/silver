@@ -165,7 +165,7 @@ typedef struct _object {
     i32             sequence;
     i64             alloc;
     i64             count;
-    u32             iflags;
+    u64             iflags;
     Au_t            meta_a;
     struct _Au*     meta_b;
     struct _object* f;

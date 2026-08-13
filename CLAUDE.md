@@ -322,9 +322,7 @@ Au `map` uses hash buckets; `pairs(map, i)` iterates via `i->key`/`i->value` lin
 ### Running the compiler under GDB
 ```bash
 # Always use -v --clean when debugging compiler issues
-VK_LAYER_PATH=/src/silver/install/share/vulkan/explicit_layer.d \
-LD_LIBRARY_PATH=/src/silver/platform/native/lib:/src/silver/install/lib:/src/silver/install/debug:$LD_LIBRARY_PATH \
-  gdb --args ./platform/native/debug/silver orbiter -v --clean --run
+gdb --args ./platform/native/debug/silver orbiter -v --clean --run
 ```
 
 ### Common crash patterns
@@ -488,12 +486,10 @@ originSessionId: bfc52629-94ea-4e48-bebf-f379ae155ab0
 
 **Standard motion (compile + run + screenshot, one Bash call):**
 ```bash
-export LD_LIBRARY_PATH=/src/silver/platform/native/lib:/src/silver/install/lib:/src/silver/install/debug:$LD_LIBRARY_PATH
 ./platform/native/debug/silver orbiter --clean >/dev/null 2>&1 \
   && /src/silver/platform/native/debug/orbiter &>/dev/null &
 bash /src/silver/screenshot.sh
 ```
-- `LD_LIBRARY_PATH` must be exported — silver itself is dynamically linked against the same libs.
 - Run from `/src/silver`. `silver orbiter --clean` (no `--run`) is the compile step. **Always use `--clean`. No exceptions.**
 - `&` backgrounds the binary so screenshot.sh's internal sleep can overlap.
 - `screenshot.sh` sleeps 10s (for load) then grabs only the `orbiter` X window by name, writing `/tmp/screenshot.png`. Don't pass any args.
@@ -708,7 +704,6 @@ Use gdb to debug the Silver compiler. Set breakpoints, inspect variables, step t
 1. `gdb ./platform/native/debug/silver`
 2. Error messages include `@N` sequence numbers — use `break aether.c:LINE if seq2 == N` to hit the exact call
 3. aether.c is in a shared lib — use `set breakpoint pending on` and full paths
-4. `run foundry/module/module.ag` (with LD_LIBRARY_PATH set via env)
 5. Inspect variables, step through, find the real problem
 6. Only then make the fix
 

@@ -362,8 +362,6 @@ static int supervise_wait(int argc, char** argv, const char* appname,
         g_shm->app[0].verdict = 0;
         g_shm->app[0].state   = 2;
     }
-    printf("silver-host: supervising %s (pid %d) — %s loads on crash or ask\n",
-        appname, pid, ISOLATE_SHELL);
     for (;;) {
         // service spawn requests by POLLING the slots, not only on EINTR: a
         // SIGUSR1 landing anywhere but inside waitpid was lost until the next
@@ -832,7 +830,6 @@ static int rebuild_blocking(const char* name, int clean) {
 }
 
 int main(int argc, char** argv) {
-    printf("silver-host main\n");
 
     // resolve the running binary to an absolute path so product/source paths
     // survive the cd_share() that changes cwd. /proc/self/exe is the ACTUAL
@@ -960,7 +957,6 @@ int main(int argc, char** argv) {
     char launch_cwd[4096];
     if (getcwd(launch_cwd, sizeof(launch_cwd))) {
         setenv("SILVER_STARTUP", launch_cwd, 1);
-        printf("silver-host: launch cwd = %s (SILVER_STARTUP set)\n", launch_cwd);
     }
 #ifdef SILVER_ROOT
     // apps resolve {SILVER}/export and foundry modules through this
