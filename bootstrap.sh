@@ -165,7 +165,6 @@ fi
 # defaults
 export SDK="native"
 export TYPE="release"
-ASAN=""
 
 # parse command-line args
 for arg in "$@"; do
@@ -175,10 +174,6 @@ for arg in "$@"; do
             ;;
         --release)
             TYPE="release"
-            ;;
-        --asan)
-            ASAN="--asan"
-            TYPE="debug"
             ;;
         *)
             SDK="$arg"
@@ -208,13 +203,27 @@ export ARCH="$ARCH"
 # be unnecessary — commented out to confirm nothing relies on it.
 # export LD_LIBRARY_PATH="$NATIVE/lib:$LD_LIBRARY_PATH"
 
+# install symlink → platform/native. this MUST precede any mkdir under
+# $IMPORT: mkdir -p "$BUILD" would create install/ as a real directory, and
+# ln -sf onto a directory lands INSIDE it as install/native — after which
+# bootstrap writes to platform/native while every consumer reads install/,
+# and imports fail on paths like $IMPORT/bin/python3
+mkdir -p "$NATIVE"
+if [ -L "$SILVER/install" ]; then
+    :
+elif [ ! -e "$SILVER/install" ]; then
+    ln -s ./platform/native "$SILVER/install"
+elif [ -d "$SILVER/install" ] && [ -z "$(ls -A "$SILVER/install" 2>/dev/null)" ]; then
+    rmdir "$SILVER/install" && ln -s ./platform/native "$SILVER/install"
+else
+    echo "bootstrap: $SILVER/install is a real directory, not the symlink to"
+    echo "  platform/native. move it aside and re-run:"
+    echo "    mv $SILVER/install $SILVER/install.bak"
+    exit 1
+fi
+
 mkdir -p "$NATIVE" "$NATIVE/include" "$NATIVE/bin" "$NATIVE/lib" "$NATIVE/syntax" \
     "$CHECKOUT" "$BUILD" "$SILVER/checkout"
-
-# install symlink → platform/native
-if ! [ -L "$SILVER/install" ]; then
-    ln -sf ./platform/native "$SILVER/install"
-fi
 
 # persist our bin paths in the user's shell rc so built apps resolve in new shells
 RC="$HOME/.bashrc"
@@ -225,7 +234,7 @@ if ! grep -q '# silver PATH' "$RC" 2>/dev/null; then
     {
         echo ''
         echo '# silver PATH'
-        echo "export PATH=\"$SILVER/install/$TYPE:$SILVER/install/bin:\$PATH\""
+        echo "export PATH=\"$SILVER/install/build:$SILVER/install/bin:\$PATH\""
     } >> "$RC"
     echo "added silver PATH to $RC (open a new shell or: source $RC)"
 fi
@@ -613,6 +622,6 @@ fi
 
 (
     cd $SILVER
-    python3 src/import.py --import $IMPORT --$TYPE $ASAN --project-path $PROJECT_PATH --build-path $BUILD --project-name $PROJECT_NAME $SDK
-    python3 src/gen.py    --import $IMPORT --$TYPE $ASAN --project-path $PROJECT_PATH --build-path $BUILD --project-name $PROJECT_NAME $SDK
+    python3 src/import.py --import $IMPORT --$TYPE --project-path $PROJECT_PATH --build-path $BUILD --project-name $PROJECT_NAME $SDK
+    python3 src/gen.py    --import $IMPORT --$TYPE --project-path $PROJECT_PATH --build-path $BUILD --project-name $PROJECT_NAME $SDK
 )
