@@ -2004,7 +2004,7 @@ class Pipeline
                     if [ strcmp[ mem.ident, 'atlas' ] == 0 ]
                         atlas_slot = set1_binds
                     
-                    printf[ "DESCW shader=%s member=%s view=%p sampler=%p\n", s.name.chars, mem.ident, res.tx.vk_image_view, res.tx.vk_sampler ]
+                    #printf[ "DESCW shader=%s member=%s view=%p sampler=%p\n", s.name.chars, mem.ident, res.tx.vk_image_view, res.tx.vk_sampler ]
                     image_infos[set1_binds] = VkDescriptorImageInfo [
                         sampler:     res.tx.vk_sampler,
                         imageView:   res.tx.vk_image_view,

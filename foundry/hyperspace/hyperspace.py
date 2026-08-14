@@ -22,12 +22,15 @@ import torch.nn.functional as F
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument('--session',  default='default')
+    p.add_argument('--session',  default='top2')
     p.add_argument('--epochs',   type=int,   default=100)
     p.add_argument('--lr',       type=float, default=0.00002)
+    p.add_argument('--find_lr',  type=float, default=0.001)
+    p.add_argument('--find_px',  type=int,   default=160)   # find frame px
+    p.add_argument('--find_clean', action='store_true')     # no noise
     p.add_argument('--batch',    type=int,   default=64)
     p.add_argument('--draw',     type=int,   default=20000)  # samples per epoch
-    p.add_argument('--size',     type=int,   default=16)     # every net input side
+    p.add_argument('--size',     type=int,   default=32)     # every net input side
     p.add_argument('--seed',     type=int,   default=1234)
     p.add_argument('--eye_div',  type=float, default=3.0)    # eye side = face side/eye_div
     p.add_argument('--face_mul', type=float, default=1.0)    # face side = scale*face_mul
@@ -51,12 +54,17 @@ def parse_args():
     # mse, comparable with eval
     p.add_argument('--pupil_w',  type=float, default=0.0)
     p.add_argument('--holdout',  type=float, default=10.0)   # eval percent, id-seeded
+    # share of shifts aimed so ONE eye lands off the sensor: the graded
+    # obscure band is only as wide as the eye separation
+    p.add_argument('--straddle', type=float, default=0.5)
     # synthetic frames pass through the same sensor as reality:
     # downsampled to camera width before any crop is cut
     p.add_argument('--sensor_w', type=int,   default=340)
     # real validation crops blend into matched training samples
     # (look and head plots agree within 0.15): apply probability
     p.add_argument('--real_blend', type=float, default=0.5)
+    # look: share of the sensor-allowed head slide along rig x, 0 = off
+    p.add_argument('--slide',    type=float, default=1.0)
     p.add_argument('--stats',    action='store_true')
     p.add_argument('--preview',  action='store_true')
     return p.parse_args()
@@ -67,6 +75,8 @@ dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 # standard crop pads — training, eval, validation all use these
 EYE_PAD  = 1.25
 FACE_PAD = 1.15
+# find canvas: sensor frame centered in a PAD-times black canvas
+PAD = 1.35
 
 
 NUM = r'-?[\d.]+(?:[eE][+-]?\d+)?'
@@ -81,6 +91,11 @@ def read_pair(text, key):
 def read3(text, key):
     m = re.search(rf'{re.escape(key)}:\s*(-?[\d.eE+-]+)\s+(-?[\d.eE+-]+)\s+(-?[\d.eE+-]+)', text)
     return [float(m.group(i)) for i in (1, 2, 3)] if m else [0.0, 0.0, 0.0]
+
+
+def read5(text, key):
+    m = re.search(rf'{re.escape(key)}:\s*' + r'\s+'.join([f'({NUM})'] * 5), text)
+    return [float(m.group(i)) for i in range(1, 6)] if m else [0.0] * 5
 
 
 def crop_gray(gray, cx, cy, side, out):
@@ -99,16 +114,93 @@ def crop_gray(gray, cx, cy, side, out):
     return arr, x0, y0, s
 
 
+def obscure_box(mx, my, sc):
+    # the share of the face box the sensor does NOT hold. it grades
+    # over a whole face width and starts the moment the box touches
+    # an edge, so the ramp is pixels wide instead of sub-pixel
+    if sc <= 0:
+        return 1.0
+    def seen(m):
+        return max(0.0, min(min(m + sc / 2, 0.5) - max(m - sc / 2, -0.5), sc))
+    u = seen(mx) * seen(my) / (sc * sc)
+    return float(min(1.0, max(0.0, 1.0 - u)))
+
+
+def obscure_of(aux):
+    # face box: outer-corner mid, side = the outer-corner span
+    return obscure_box((aux[4] + aux[6]) * 0.5,
+                       (aux[5] + aux[7]) * 0.5, aux[8])
+
+
+def hint_plot(mx, my, sc):
+    # the face-scale box slid to its closest overlap with the sensor
+    lim = max(0.0, 0.5 - sc * 0.5)
+    return [min(max(mx, -lim), lim) / PAD, min(max(my, -lim), lim) / PAD]
+
+
 def load_one(job):
     session_dir, fid = job
     text = open(os.path.join(session_dir, f'{fid}.agi')).read()
     cams = int(read_pair(text, 'cameras')[0])
-    out = []
-    for c in range(max(cams, 0)):
-        s = load_cam(session_dir, fid, text, str(c))
-        if s:
-            out.append(s)
-    return out
+    ncam = max(cams, 0)
+    per = [load_cam(session_dir, fid, text, str(c)) for c in range(ncam)]
+    # find/target stay per-view: a detector only ever sees one image.
+    # hidden views load as None and never become rows
+    out = [s for s in per if s]
+    # look is geometric and needs the views TOGETHER — one row per pose
+    # carrying both, each with its own obscure factor
+    pair = None
+    if out:
+        S = args.size
+        zc = np.zeros((1, S, S), np.float32)
+        za = np.zeros(NAUX, np.float32)
+        zp = np.zeros(3, np.float32)
+        def part(i):
+            if i < len(per) and per[i]:
+                lc, rc, fc, wf, aux, y, f2, pup, geo, cc, tm, sf = per[i]
+                return (lc, rc, fc, np.asarray(aux, np.float32), y, geo,
+                        np.asarray([pup[0], pup[1], pup[4]], np.float32),
+                        np.asarray([pup[2], pup[3], pup[4]], np.float32),
+                        obscure_of(aux))
+            # no eye labels for this view — feed the real frame anyway.
+            # a turned head still fixes yaw, and an empty frame still
+            # carries lighting and occlusion. obscure says which it is
+            wf = load_view_pixels(session_dir, fid, str(i))
+            if wf is None:
+                return (zc, zc, zc, za, None, None, zp, zp, 1.0)
+            return (wf, wf, wf, za, None, None, zp, zp, 1.0)
+        p0, p1 = part(0), part(1)
+        yy = p0[4] if p0[4] is not None else p1[4]
+        g0 = p0[5] if p0[5] is not None else p1[5]
+        g1 = p1[5] if p1[5] is not None else p0[5]
+        # geometry: head_center xyz is shared, distance is per camera
+        geo2 = [g0[0], g0[1], g0[2], g0[3], g1[3]]
+        aux2 = np.concatenate([p0[3], p1[3], [p0[8], p1[8]]]).astype(np.float32)
+        # rig: screen size then x y z tilt fov per camera. this is what
+        # turns a frame slide into meters of head travel
+        scr = read_pair(text, 'screen')
+        rig = [scr[0], scr[1]] + read5(text, 'cam0') + read5(text, 'cam1')
+        pair = (p0[0], p0[1], p0[2], p1[0], p1[1], p1[2], aux2, yy, fid,
+                np.asarray(geo2, np.float32), p0[6], p0[7], p1[6], p1[7],
+                np.asarray(rig, np.float32))
+    return out, pair
+
+
+def load_view_pixels(session_dir, fid, sfx):
+    """Crops for a view with no eye labels — the back of a head, or an
+    empty frame. There is nothing to centre on, so all three inputs are
+    the reduced whole frame: still real pixels carrying head yaw,
+    lighting and occlusion for the other view to lean on."""
+    from PIL import Image
+    ip = os.path.join(session_dir, f'{fid}-face{sfx}.png')
+    if not os.path.exists(ip):
+        return None
+    img = Image.open(ip).convert('L')
+    if args.sensor_w > 0 and img.width > args.sensor_w:
+        img = img.resize((args.sensor_w, args.sensor_w), Image.BOX)
+    wf = np.asarray(img.resize((args.size, args.size), Image.BOX),
+                    np.float32)[None] / 255.0
+    return wf
 
 
 def load_cam(session_dir, fid, text, sfx):
@@ -162,20 +254,31 @@ def load_cam(session_dir, fid, text, sfx):
     else:
         fx, fy = (lx + rx) / 2, (lyv + ryv) / 2
     fc, fx0, fy0, fs = crop_gray(gray, fx, fy, fside, args.size)
-    # whole frame reduced: the find net's input
-    wf = np.asarray(img.resize((args.size, args.size), Image.BOX),
+    # find input: the frame centered in the PAD-times black canvas
+    wf, _, _, _ = crop_gray(gray, W / 2, H / 2, W * PAD, args.size)
+    # and the bare frame, big enough that find can PLACE the face and
+    # still downsample once, the way a real capture arrives
+    sf = np.asarray(Image.fromarray((gray * 255).astype(np.uint8))
+                    .resize((args.find_px, args.find_px), Image.BOX),
                     np.float32)[None] / 255.0
-    # context crop for the target net, eye-mid centered
+    # context crop: eye-mid centered, then CLAMPED onto the sensor —
+    # an off-frame face still yields a real-pixel hint crop, and the
+    # net confirms the obscure amount from those hints
     ccx, ccy = (lx + rx) / 2, (lyv + ryv) / 2
-    cc, cx0, cy0, cs = crop_gray(gray, ccx, ccy, sc * W * args.ctx_mul,
-                                 args.ctx_size)
+    ccs = sc * W * args.ctx_mul
+    ccx = W / 2 if ccs >= W else min(max(ccx, ccs / 2), W - ccs / 2)
+    ccy = H / 2 if ccs >= H else min(max(ccy, ccs / 2), H - ccs / 2)
+    cc, cx0, cy0, cs = crop_gray(gray, ccx, ccy, ccs, args.ctx_size)
     # target labels: eyes as 0..1 context fractions, scale as a
-    # context-side fraction, then head_center xyz + camera distance
+    # context-side fraction, obscure. geometry belongs to look alone
     def ctx_frac(p):
         return (((p[0] + 0.5) * W - cx0) / cs, ((p[1] + 0.5) * H - cy0) / cs)
     clu, clv = ctx_frac(pl)
     cru, crv = ctx_frac(pr)
-    tmeta = [clu, clv, cru, crv, sc * W / cs] + geo
+    omx = (ocl[0] + ocr[0]) * 0.5
+    omy = (ocl[1] + ocr[1]) * 0.5
+    obt = obscure_box(omx, omy, sc)
+    tmeta = [clu, clv, cru, crv, sc * W / cs, obt]
     def box(x0, y0, s):
         return [(x0 + s / 2) / W - 0.5, (y0 + s / 2) / H - 0.5, s / W]
     # aux is only what reality can supply: landmark plots, scale,
@@ -194,25 +297,36 @@ def load_cam(session_dir, fid, text, sfx):
             0.0 < pru < 1.0 and 0.0 < prv < 1.0):
         sig = 0.0
     pup = [plu, plv, pru, prv, sig, clean]
-    # {i}-preview.png: the annotated frame validates every label
-    pim = img.convert('RGB')
+    # {i}-preview.png: labels drawn on the PADDED find canvas, so
+    # off-frame points land in the black pad instead of vanishing —
+    # this is how obscured samples are inspected
+    side = int(W * PAD)
+    ox, oy = (side - W) // 2, (side - H) // 2
+    pim = Image.new('RGB', (side, side), (0, 0, 0))
+    pim.paste(img.convert('RGB'), (ox, oy))
     dr = ImageDraw.Draw(pim)
     def cross(x, y2, col, r2=4):
-        px, py = (x + 0.5) * W, (y2 + 0.5) * H
+        px, py = (x + 0.5) * W + ox, (y2 + 0.5) * H + oy
         dr.line([px - r2, py, px + r2, py], fill=col, width=2)
         dr.line([px, py - r2, px, py + r2], fill=col, width=2)
     cross(pl[0], pl[1], (0, 255, 0))
     cross(pr[0], pr[1], (0, 255, 0))
+    cross(ocl[0], ocl[1], (0, 255, 255))
+    cross(ocr[0], ocr[1], (0, 255, 255))
     if nb[0] > -900:
         cross(nb[0], nb[1], (255, 255, 0))
-    dr.rectangle([lx0, ly0, lx0 + ls, ly0 + ls], outline=(255, 64, 64), width=2)
-    dr.rectangle([rx0, ry0, rx0 + rs, ry0 + rs], outline=(64, 128, 255), width=2)
-    dr.rectangle([fx0, fy0, fx0 + fs, fy0 + fs], outline=(255, 255, 255), width=2)
+    dr.rectangle([ox, oy, ox + W, oy + H], outline=(90, 90, 90), width=1)
+    dr.rectangle([lx0 + ox, ly0 + oy, lx0 + ls + ox, ly0 + ls + oy],
+                 outline=(255, 64, 64), width=2)
+    dr.rectangle([rx0 + ox, ry0 + oy, rx0 + rs + ox, ry0 + rs + oy],
+                 outline=(64, 128, 255), width=2)
+    dr.rectangle([fx0 + ox, fy0 + oy, fx0 + fs + ox, fy0 + fs + oy],
+                 outline=(255, 255, 255), width=2)
     pim = pim.resize((512, 512), Image.BOX)
     dr = ImageDraw.Draw(pim)
     dr.text((6, 6), f'head {head[0]:+.3f} {head[1]:+.3f}  '
                     f'gaze {look[0]:+.3f} {look[1]:+.3f}  scale {sc:.3f}  '
-                    f'dist {cam_dist:.3f}',
+                    f'dist {cam_dist:.3f}  obscure {obt:.2f}',
             fill=(0, 255, 0))
     pim.save(os.path.join(session_dir, f'{fid}-preview{sfx}.png'))
     # the finished inputs (left | right | face), 8x nearest
@@ -220,7 +334,7 @@ def load_cam(session_dir, fid, text, sfx):
     simg = Image.fromarray((strip * 255).astype(np.uint8))
     simg = simg.resize((simg.width * 8, simg.height * 8), Image.NEAREST)
     simg.save(os.path.join(session_dir, f'{fid}-inputs{sfx}.png'))
-    return lc, rc, fc, wf, aux, y, fid, pup, geo, cc, tmeta
+    return lc, rc, fc, wf, aux, y, fid, pup, geo, cc, tmeta, sf
 
 
 def load_session(session_dir):
@@ -231,27 +345,38 @@ def load_session(session_dir):
     newest = max(max(os.path.getmtime(os.path.join(session_dir, f'{i}.agi')) for i in ids),
                  os.path.getmtime(session_dir))
     cache = os.path.join(session_dir,
-        f'.cache-v8-b{args.blur}-e{args.eye_div}-f{args.face_mul}'
+        f'.cache-v19-b{args.blur}-e{args.eye_div}-f{args.face_mul}'
+        f'-p{args.find_px}'
         f'-w{args.sensor_w}'
         f'-s{args.size}-c{args.ctx_mul}-x{args.ctx_size}.npz')
     keys = ('tl', 'tr', 'tf', 'tw', 'laux', 'ly', 'lfid', 'lpup',
-            'lgeo', 'tcc', 'tmt')
+            'lgeo', 'tcc', 'tmt', 'tsf')
+    # paired look set: both views of one pose in a single row
+    pkeys = ('pl0', 'pr0', 'pf0', 'pl1', 'pr1', 'pf1', 'paux', 'py',
+             'pfid', 'pgeo', 'ppl0', 'ppr0', 'ppl1', 'ppr1', 'prig')
     if os.path.exists(cache) and os.path.getmtime(cache) >= newest:
         z = np.load(cache)
-        return [z[k] for k in keys]
+        return [z[k] for k in keys], [z[k] for k in pkeys]
     print(f'loading {len(ids)} samples ...')
     from concurrent.futures import ProcessPoolExecutor
     with ProcessPoolExecutor() as ex:
-        rows = [s for group in ex.map(load_one, [(session_dir, i) for i in ids],
-                                      chunksize=16) for s in group]
+        got = list(ex.map(load_one, [(session_dir, i) for i in ids], chunksize=16))
+    rows  = [s for group, _ in got for s in group]
+    pairs = [pr for _, pr in got if pr is not None]
     cols = list(zip(*rows))
     r = [np.array(c, np.float32) if k != 'lfid' else np.array(c)
          for k, c in zip(keys, cols)]
-    np.savez_compressed(cache, **dict(zip(keys, r)))
-    return r
+    pcols = list(zip(*pairs))
+    pr_ = [np.array(c, np.float32) if k != 'pfid' else np.array(c)
+           for k, c in zip(pkeys, pcols)]
+    print(f'look pairs: {len(pairs)} poses '
+          f'({int((pr_[pkeys.index("paux")][:, -2:] < 1).all(1).sum())} with both views)')
+    np.savez_compressed(cache, **dict(zip(keys, r)), **dict(zip(pkeys, pr_)))
+    return r, pr_
 
 
-NAUX = 18
+NAUX  = 18            # per view
+NAUX2 = 2 * NAUX + 2  # both views + visible0/visible1
 
 
 def conv_bn(ci, co, k=3, s=1):
@@ -310,23 +435,27 @@ class LookNet(nn.Module):
         self.face_enc = Enc(args.size)
         fe = self.eye.fe
         self.head_aux = nn.Sequential(
-            nn.Linear(NAUX, 128), nn.ReLU(),
+            nn.Linear(NAUX2, 128), nn.ReLU(),
             nn.Linear(128, 128), nn.ReLU(), nn.Linear(128, 2))
         hi_last = nn.Linear(128, 2)
         nn.init.zeros_(hi_last.weight)
         nn.init.zeros_(hi_last.bias)
-        self.head_img = nn.Sequential(nn.Linear(fe, 128), nn.ReLU(), hi_last)
+        # face features of BOTH views feed the image correction
+        self.head_img = nn.Sequential(nn.Linear(2 * fe, 128), nn.ReLU(), hi_last)
+        # 4 eye embeddings + 2 face embeddings + aux + head
         self.delta = nn.Sequential(
-            nn.Linear(3 * fe + NAUX + 2, 128), nn.ReLU(), nn.Linear(128, 2))
+            nn.Linear(6 * fe + NAUX2 + 2, 128), nn.ReLU(), nn.Linear(128, 2))
         # geometry head: head_center xyz + camera distance, aux-led
         # with a zero-init image correction like head
-        gi_last = nn.Linear(128, 4)
+        # head_center xyz shared + distance to EACH camera: the pair is
+        # what makes depth observable at all
+        gi_last = nn.Linear(128, 5)
         nn.init.zeros_(gi_last.weight)
         nn.init.zeros_(gi_last.bias)
         self.geo_aux = nn.Sequential(
-            nn.Linear(NAUX, 128), nn.ReLU(),
-            nn.Linear(128, 128), nn.ReLU(), nn.Linear(128, 4))
-        self.geo_img = nn.Sequential(nn.Linear(fe, 128), nn.ReLU(), gi_last)
+            nn.Linear(NAUX2, 128), nn.ReLU(),
+            nn.Linear(128, 128), nn.ReLU(), nn.Linear(128, 5))
+        self.geo_img = nn.Sequential(nn.Linear(2 * fe, 128), nn.ReLU(), gi_last)
 
     def pupil_map_loss(self, hm, u, v, sig):
         # heat channel 0 must BE the pupil: gaussian-bump cross
@@ -346,49 +475,64 @@ class LookNet(nn.Module):
         valid = (sig > 0.0).float()
         return (valid * (ce + outside)).sum() / (valid.sum() + 1e-6)
 
-    def forward(self, l, r, f, a, pl, pr):
-        fc = self.face_enc(f)
-        el, hml = self.eye(l, want_hm=True)
-        er, hmr = self.eye(r, want_hm=True)
-        head = self.head_aux(a) + self.head_img(fc)
+    def forward(self, l0, r0, f0, l1, r1, f1, a, pl0, pr0, pl1, pr1):
+        # one encoder walks both views; a blind view arrives as zeros and
+        # its visible flag in `a` tells the net to discount it
+        fc0, fc1 = self.face_enc(f0), self.face_enc(f1)
+        el0, hml0 = self.eye(l0, want_hm=True)
+        er0, hmr0 = self.eye(r0, want_hm=True)
+        el1, hml1 = self.eye(l1, want_hm=True)
+        er1, hmr1 = self.eye(r1, want_hm=True)
+        fcat = torch.cat([fc0, fc1], 1)
+        head = self.head_aux(a) + self.head_img(fcat)
         hsg = head.detach()
-        d = self.delta(torch.cat([el, er, fc, a, hsg], 1))
-        geo = self.geo_aux(a) + self.geo_img(fc)
+        d = self.delta(torch.cat([el0, er0, el1, er1, fc0, fc1, a, hsg], 1))
+        geo = self.geo_aux(a) + self.geo_img(fcat)
         ploss = 0.0
         if self.training and args.pupil_w > 0:
+            # pupil supervision stays per view — that is why the views cannot
+            # simply be stacked into channels
             ploss = args.pupil_w * (
-                self.pupil_map_loss(hml, pl[:, 0], pl[:, 1], pl[:, 2])
-              + self.pupil_map_loss(hmr, pr[:, 0], pr[:, 1], pr[:, 2]))
-        # [face uv, gaze uv, head_center xyz, camera distance]
+                self.pupil_map_loss(hml0, pl0[:, 0], pl0[:, 1], pl0[:, 2])
+              + self.pupil_map_loss(hmr0, pr0[:, 0], pr0[:, 1], pr0[:, 2])
+              + self.pupil_map_loss(hml1, pl1[:, 0], pl1[:, 1], pl1[:, 2])
+              + self.pupil_map_loss(hmr1, pr1[:, 0], pr1[:, 1], pr1[:, 2]))
+        # [face uv, gaze uv, head_center xyz, dist cam0, dist cam1]
         return torch.cat([head, hsg + d, geo], 1), ploss
 
 
 class PointNet(nn.Module):
-    # shared find/target shape: 2 supervised soft-argmax channels
-    # (eye centers) + pooled head. find outputs scale only; target
-    # adds head_center xyz + camera distance once locked on
-    def __init__(self, lo, hi, pooled_out):
+    # shared find/target shape: k supervised soft-argmax channels
+    # + pooled head. find: oc corners + nose, scale + obscured;
+    # target: 2 eye centers + scale — geometry belongs to look
+    def __init__(self, lo, hi, pooled_out, k=2, ch=(8, 16, 16), fc=32):
         super().__init__()
         S = args.size
+        self.k = k
+        a, b, c = ch
         self.trunk = nn.Sequential(
-            nn.Conv2d(1, 8, 5, padding=2), nn.ReLU(),
-            nn.Conv2d(8, 16, 3, padding=1), nn.ReLU(),
-            nn.Conv2d(16, 16, 3, padding=1), nn.ReLU())
-        self.heat = nn.Conv2d(16, 2, 1)
+            nn.Conv2d(1, a, 5, padding=2), nn.ReLU(),
+            nn.Conv2d(a, b, 3, padding=1), nn.ReLU(),
+            nn.Conv2d(b, c, 3, padding=1), nn.ReLU())
+        self.heat = nn.Conv2d(c, k, 1)
         self.temp = nn.Parameter(torch.tensor(8.0))
         self.register_buffer('lin', torch.linspace(lo, hi, S))
-        self.app = nn.Sequential(
-            nn.MaxPool2d(2), nn.Conv2d(16, 16, 3, padding=1), nn.ReLU(),
-            nn.MaxPool2d(2), nn.Conv2d(16, 16, 3, padding=1), nn.ReLU(),
-            nn.Flatten(), nn.Linear(16 * (S // 4) ** 2, 32), nn.ReLU(),
-            nn.Linear(32, pooled_out))
+        self.app = None if pooled_out == 0 else nn.Sequential(
+            nn.MaxPool2d(2), nn.Conv2d(c, c, 3, padding=1), nn.ReLU(),
+            nn.MaxPool2d(2), nn.Conv2d(c, c, 3, padding=1), nn.ReLU(),
+            nn.Flatten(), nn.Linear(c * (S // 4) ** 2, fc), nn.ReLU(),
+            nn.Linear(fc, pooled_out))
 
     def forward(self, x):
         t = self.trunk(norm_input(x))
         hm = self.heat(t)
         _, xs, ys = soft_argmax(hm, self.temp, self.lin)
-        sc = self.app(t)
-        return torch.cat([xs[:, :1], ys[:, :1], xs[:, 1:], ys[:, 1:], sc], 1)
+        parts = []
+        for i in range(self.k):
+            parts += [xs[:, i:i + 1], ys[:, i:i + 1]]
+        if self.app is not None:
+            parts.append(self.app(t))
+        return torch.cat(parts, 1)
 
 
 _blur_bank = None
@@ -465,9 +609,10 @@ def sensor(x, keep=None):
     return out
 
 
-def loop(model, name, cols, metric, steps_data, eval_data, val_fn=None):
+def loop(model, name, cols, metric, steps_data, eval_data, val_fn=None,
+         lr=None):
     model.to(dev)
-    opt = torch.optim.Adam(model.parameters(), lr=args.lr)
+    opt = torch.optim.Adam(model.parameters(), lr=lr or args.lr)
     n, step_fn = steps_data
     draw = max(n, args.draw)
     steps = max(1, draw // args.batch)
@@ -512,14 +657,16 @@ def loop(model, name, cols, metric, steps_data, eval_data, val_fn=None):
 
 
 class LookWrap(nn.Module):
-    # torchscript face: (l, r, f, aux) -> 8 outputs, no pupil args
+    # torchscript face: both views in one call —
+    # (l0, r0, f0, l1, r1, f1, aux) -> 9 outputs, no pupil args.
+    # a blind camera passes zero crops and obscure 1 in aux
     def __init__(self, m):
         super().__init__()
         self.m = m
 
-    def forward(self, l, r, f, a):
-        z = torch.zeros(l.shape[0], 3, device=l.device)
-        out, _ = self.m(l, r, f, a, z, z)
+    def forward(self, l0, r0, f0, l1, r1, f1, a):
+        z = torch.zeros(l0.shape[0], 3, device=l0.device)
+        out, _ = self.m(l0, r0, f0, l1, r1, f1, a, z, z, z, z)
         return out
 
 
@@ -531,7 +678,8 @@ def export_ts(model, name, out):
     with torch.no_grad():
         if isinstance(m2, LookNet):
             w = LookWrap(m2)
-            ts = torch.jit.trace(w, (one, one, one, torch.zeros(1, NAUX)))
+            ts = torch.jit.trace(w, (one, one, one, one, one, one,
+                                     torch.zeros(1, NAUX2)))
         else:
             ts = torch.jit.trace(m2, one)
     p = os.path.join(out, f'{name}.ptc')
@@ -562,38 +710,143 @@ def box_protect(cx, cy, half):
     return m.float()[:, None]
 
 
-def train_find(tw, laux, lfid, lpup, rec):
-    # find only LOCATES: eye centers + scale. distance and xyz
-    # come from target/look once locked onto the face
-    yt = np.concatenate([laux[:, 0:4], laux[:, 8:9]], 1).astype(np.float32)
-    tr, ev = split(lfid, lpup, 'find', clean_ok=False)
-    x = torch.tensor(tw)
-    y = torch.tensor(yt)
-    xev = x[ev].to(dev)
-    yev = y[ev].to(dev)
-    # scramble everything but the labeled face box: the scene must
-    # never carry the label, only the face may
-    tex = torch.tensor(build_texpool()).to(dev)
+
+
+def obscure_t(m_c, sc_c):
+    # torch twin of obscure_box: share of the face box off the sensor.
+    # inputs are canvas fractions, the sensor is 1/PAD of the canvas
+    m = m_c * PAD
+    sc = (sc_c[:, 0] * PAD).clamp(min=1e-6)
+    def seen(k):
+        return (torch.minimum(m[:, k] + sc / 2, torch.full_like(sc, 0.5))
+                - torch.maximum(m[:, k] - sc / 2, torch.full_like(sc, -0.5))
+                ).clamp(min=0).minimum(sc)
+    return (1.0 - seen(0) * seen(1) / (sc * sc)).clamp(0, 1)
+
+
+def find_place(mid, sc, edge, u, other):
+    # put the face where a chosen share u of it is off ONE edge, the
+    # other axis fully in view. edge -1 keeps the whole face in.
+    # returns the shift, in sensor fractions, that takes it there
+    lim = (0.5 - sc / 2).clamp(min=0.0)
+    off = 0.5 + sc / 2 - sc * (1.0 - u)
+    o = other * lim
+    tx = torch.where(edge == 0, off, torch.where(edge == 1, -off, o))
+    ty = torch.where(edge == 2, off, torch.where(edge == 3, -off, o))
+    tx = torch.where(edge < 0, u * lim, tx)
+    ty = torch.where(edge < 0, other * lim, ty)
+    return torch.stack([tx - mid[:, 0], ty - mid[:, 1]], 1)
+
+
+def train_find(tsf, laux, lfid, rec):
+    # find: ONE plot per padded frame — the face box slid to its
+    # closest overlap with the sensor — plus scale and obscure, the
+    # share of the box the sensor does not hold. each draw PLACES the
+    # face at a chosen obscure amount on a chosen edge, so the label
+    # covers 0..1 evenly instead of piling up at the ends. only faces
+    # wholly inside their source frame train: no shift can restore
+    # pixels the camera never captured
     S = args.size
+    ms = np.stack([(laux[:, 4] + laux[:, 6]) * 0.5,
+                   (laux[:, 5] + laux[:, 7]) * 0.5], 1)
+    ss = laux[:, 8]
+    whole = (np.abs(ms).max(1) + ss / 2) <= 0.5
+    tr, ev = split(lfid, None, 'find')
+    tr = np.array([i for i in tr if whole[i]])
+    ev = np.array([i for i in ev if whole[i]])
+    print(f'find: {len(tr)} train / {len(ev)} eval views wholly in frame '
+          f'of {len(laux)} labelled')
+    x = torch.tensor(tsf)
+    m0 = torch.tensor((ms / PAD).astype(np.float32))
+    s0 = torch.tensor((ss[:, None] / PAD).astype(np.float32))
+    tex = torch.tensor(build_texpool()).to(dev)
     vstats = level_stats(rec['wf']) if rec is not None else None
+    lin1 = torch.linspace(-1.0, 1.0, S, device=dev)
+    wmask = ((lin1.abs() <= 1.0 / PAD).float()[None, :]
+             * (lin1.abs() <= 1.0 / PAD).float()[:, None])[None, None]
+    C = int(round(args.find_px * PAD))
+
+    def compose(sfb, mb, sb, sh):
+        # place the frame in the canvas at FRAME resolution, fill the
+        # strip it vacates with a face-free donor patch, then reduce
+        # once — one clean downsample, the way a capture arrives
+        B = sfb.shape[0]
+        th = torch.zeros(B, 2, 3, device=dev)
+        th[:, 0, 0] = PAD
+        th[:, 1, 1] = PAD
+        th[:, 0, 2] = -2 * sh[:, 0] * PAD
+        th[:, 1, 2] = -2 * sh[:, 1] * PAD
+        g = F.affine_grid(th, (B, 1, C, C), align_corners=False)
+        big = F.grid_sample(sfb, g, align_corners=False)
+        cov = F.grid_sample(torch.ones_like(sfb), g, align_corners=False)
+        d0 = tex[torch.randint(0, tex.shape[0], (B,), device=dev)]
+        big = torch.where(cov > 0.5, big,
+                          F.interpolate(d0, size=(C, C), mode='nearest'))
+        xb = F.interpolate(big, size=(S, S), mode='area') * wmask
+        mb = mb + sh
+        lim = (0.5 / PAD - sb * 0.5).clamp(min=0.0)
+        pb = torch.maximum(torch.minimum(mb, lim), -lim)
+        return xb, mb, torch.cat([pb, sb, obscure_t(mb, sb)[:, None]], 1)
+
+    # eval is a fixed grid: every held-out view on all four edges at
+    # five obscure amounts, so the score covers the whole range
+    with torch.no_grad():
+        xs, ys = [], []
+        for e9 in (-1, 0, 1, 2, 3):
+            for u9 in np.linspace(0.0, 1.0, 5):
+                n = len(ev)
+                mb = m0[ev].to(dev) * PAD
+                sb = s0[ev].to(dev) * PAD
+                sh = find_place(mb, sb[:, 0],
+                                torch.full((n,), e9, device=dev),
+                                torch.full((n,), float(u9), device=dev),
+                                torch.full((n,), 0.4, device=dev)) / PAD
+                xe, _, ye = compose(x[ev].to(dev), m0[ev].to(dev),
+                                    s0[ev].to(dev), sh)
+                xs.append(xe)
+                ys.append(ye)
+        xev, yev = torch.cat(xs), torch.cat(ys)
+        ob = yev[:, 3].cpu().numpy()
+        print(f'find eval draws {len(xev)}: obscure '
+              f'{100*(ob<=.001).mean():.0f}% at 0, '
+              f'{100*((ob>.001)&(ob<.999)).mean():.0f}% graded, '
+              f'{100*(ob>=.999).mean():.0f}% at 1')
 
     def step(m):
         i = torch.randint(0, len(tr), (args.batch,))
-        xb = x[tr][i].to(dev)
-        yb = y[tr][i].to(dev)
-        xb = renorm_levels(xb, vstats)
-        if args.scramble > 0:
-            cx = ((yb[:, 0] + yb[:, 2]) / 2 + 0.5) * S
-            cy = ((yb[:, 1] + yb[:, 3]) / 2 + 0.5) * S
-            xb = scramble(xb, box_protect(cx, cy, yb[:, 4] * 0.75 * S), tex)
-        xb = sensor(xb)
+        j = torch.tensor(tr)[i]
+        xb = x[j].to(dev)
+        mb = m0[j].to(dev)
+        sb = s0[j].to(dev)
+        B = xb.shape[0]
+        # a third of the draws sit in view, the rest leave by an edge
+        edge = torch.randint(0, 4, (B,), device=dev)
+        edge = torch.where(torch.rand(B, device=dev) < 0.34,
+                           torch.full_like(edge, -1), edge)
+        u = torch.rand(B, device=dev)
+        u = torch.where(edge < 0, torch.rand(B, device=dev) * 2 - 1, u)
+        sh = find_place(mb * PAD, sb[:, 0] * PAD, edge, u,
+                        torch.rand(B, device=dev) * 2 - 1) / PAD
+        xb, mb, yb = compose(xb, mb, sb, sh)
+        # clone noise donors over random parts that are not the face
+        keep = box_protect((mb[:, 0] + 0.5) * S, (mb[:, 1] + 0.5) * S,
+                           sb[:, 0] * 0.75 * S)
+        for _ in range(0 if args.find_clean else 3):
+            d = tex[torch.randint(0, tex.shape[0], (B,), device=dev)]
+            a = ((perlin(B, S, dev, int(torch.randint(2, 6, (1,)).item()))
+                  - 0.35) * 2.5).clamp(0, 1)
+            gate = (torch.rand(B, 1, 1, 1, device=dev) < 0.7).float()
+            xb = xb + gate * a * (1 - keep) * (d - xb)
+        if not args.find_clean:
+            xb = renorm_levels(xb, vstats)
+            xb = sensor(xb)
         return F.mse_loss(m(xb), yb)
 
-    loop(PointNet(-0.5, 0.5, 1), 'find',
-         ['lx', 'ly', 'rx', 'ry', 'scale'],
-         lambda e: e[:4].mean(), (len(tr), step),
+    loop(PointNet(-0.5, 0.5, 2, k=1, ch=(16, 32, 32), fc=64), 'find',
+         ['x', 'y', 'scale', 'obscure'],
+         lambda e: e[:2].mean(), (len(tr), step),
          lambda m: (m(xev), yev),
-         find_val(rec) if rec is not None else None)
+         find_val(rec) if rec is not None else None, lr=args.find_lr)
 
 
 def sub_window(mta, train):
@@ -633,8 +886,9 @@ def target_batch(cc, mta, train):
     grid = F.affine_grid(theta, (B, 1, S, S), align_corners=False)
     img = F.grid_sample(cc, grid, align_corners=False)
     off = torch.stack([u0, v0, u0, v0], 1)
-    y = torch.cat([(mta[:, 0:4] - off) / f[:, None],
-                   mta[:, 4:5] / f[:, None], mta[:, 5:9]], 1)
+    # off-window eyes pin at the window edge; obscure carries truth
+    y = torch.cat([((mta[:, 0:4] - off) / f[:, None]).clamp(0.0, 1.0),
+                   mta[:, 4:5] / f[:, None], mta[:, 5:6]], 1)
     return img, y
 
 
@@ -658,8 +912,8 @@ def train_target(tcc, tmt, lfid, lpup, rec):
         xb = sensor(xb)
         return F.mse_loss(m(xb), yb)
 
-    loop(PointNet(0.0, 1.0, 5), 'target',
-         ['lx', 'ly', 'rx', 'ry', 'scale', 'hcx', 'hcy', 'hcz', 'dist'],
+    loop(PointNet(0.0, 1.0, 2), 'target',
+         ['lx', 'ly', 'rx', 'ry', 'scale', 'obscure'],
          lambda e: e[:4].mean(), (len(tr), step),
          lambda m: (m(xev), yev),
          target_val(rec) if rec is not None else None)
@@ -717,10 +971,8 @@ def build_texpool():
             continue
         d = os.path.dirname(agi)
         fid = os.path.basename(agi)[:-4]
-        for nm in ('top', 'bot'):
-            p = os.path.join(d, f'{fid}-{nm}.png')
-            if os.path.exists(p):
-                frames.append(p)
+        # whatever the cameras are named, take every frame of the pose
+        frames += sorted(glob.glob(os.path.join(d, f'{fid}-*.png')))
     if not frames:
         raise SystemExit('no noise captures found for the texture pool')
     rng = np.random.RandomState(args.seed)
@@ -843,10 +1095,10 @@ def training_sheet(session_dir, eye_l, eye_r, faces, laux, ly, lfid, lgeo,
             # gated real-donor blend, shown on every matched cell
             dh = np.abs(ly[idx][:, None, 0:2] - rec['plots'][None, :, 0:2]).max(2)
             dg = np.abs(ly[idx][:, None, 2:4] - rec['plots'][None, :, 2:4]).max(2)
-            rsc = rec['find_y'][:, 4]
+            rsc = rec['gate_sc']
             dsc = np.abs(laux[idx][:, 8:9] - rsc[None, :]) / rsc[None, :]
             ms = (laux[idx][:, 0:2] + laux[idx][:, 2:4]) / 2
-            mr = (rec['find_y'][:, 0:2] + rec['find_y'][:, 2:4]) / 2
+            mr = rec['gate_mid']
             dmid = np.abs(ms[:, None] - mr[None, :]).max(2)
             okb = torch.tensor((dh <= 0.15) & (dg <= 0.15) & (dsc <= 0.25)
                                & (dmid <= 0.25)).to(dev)
@@ -900,8 +1152,10 @@ def training_sheet(session_dir, eye_l, eye_r, faces, laux, ly, lfid, lgeo,
 
 
 def load_record(session_dir):
-    # the real recordings: every annotated pair validates the look
-    # model against the plots the person actually followed
+    # the real recordings, loaded as PAIRS: an annotated view feeds
+    # find/target/look; its un-annotated sibling still shows the
+    # person, and the rig disparity places the default hint plot on
+    # it — real VALIDATION rows for the hint model
     from PIL import Image, ImageDraw
     rd = os.path.join(session_dir, 'record')
     if not os.path.isdir(rd):
@@ -909,7 +1163,10 @@ def load_record(session_dir):
     print(f'loading validation images from {rd} ...')
     S = args.size
     out = {'l': [], 'r': [], 'f': [], 'aux': [], 'plots': [], 'dist': [],
-           'wf': [], 'find_y': [], 'ctx': [], 'target_y': []}
+           'wf': [], 'find_y': [], 'ctx': [], 'target_y': [],
+           'gate_mid': [], 'gate_sc': []}
+    zc = lambda p: (p[0] - 0.5, p[1] - 0.5)
+    recs = []
     for fn in sorted(os.listdir(rd)):
         if not fn.endswith('.agi'):
             continue
@@ -918,32 +1175,76 @@ def load_record(session_dir):
             continue
         fid = fn[:-4]
         cams = int(read_pair(text, 'cameras')[0])
-        for cs in ('top', 'bot')[:max(1, cams)]:
+        # role names come from the record's own images: block (tl/tr, or
+        # top/bot on sets recorded before cameras had names) — never hardcoded
+        roles = re.findall(r'^ {4}(\w+):\s*\S+\.png\s*$', text, re.M)
+        roles = roles[:max(1, cams)]
+        ann = {}
+        for cs in roles:
             ocl = read_pair(text, f'{cs}_left_oc')
             ocr = read_pair(text, f'{cs}_right_oc')
             nb  = read_pair(text, f'{cs}_nose_base')
             pl  = read_pair(text, f'{cs}_left_pupil')
             pr  = read_pair(text, f'{cs}_right_pupil')
             if min(ocl[0], ocr[0], nb[0], pl[0], pr[0]) < -900:
+                ann[cs] = None
                 continue
+            # record annotations are 0..1 frame fractions
+            ocl, ocr, nb, pl, pr = zc(ocl), zc(ocr), zc(nb), zc(pl), zc(pr)
+            sc = float(np.hypot(ocl[0] - ocr[0], ocl[1] - ocr[1]))
+            ann[cs] = None if sc <= 0.02 else (ocl, ocr, nb, pl, pr, sc)
+        recs.append((fid, text, roles, ann))
+    # rig disparity, measured from the both-annotated pairs: the same
+    # face sits a near-constant offset apart between the two views
+    # (tl/tr shifts x, top/bot shifts y), so a lone annotation places
+    # the sibling view's default hint plot
+    dsum, dn = np.zeros(2), 0
+    for fid, text, roles, ann in recs:
+        if len(roles) > 1 and ann.get(roles[0]) and ann.get(roles[1]):
+            a0, a1 = ann[roles[0]], ann[roles[1]]
+            mid = lambda a: np.array([(a[0][0] + a[1][0]) / 2,
+                                      (a[0][1] + a[1][1]) / 2])
+            dsum += mid(a0) - mid(a1)
+            dn += 1
+    D = dsum / dn if dn else None
+    if D is not None:
+        print(f'pair disparity: x {D[0]:+.3f} y {D[1]:+.3f} '
+              f'from {dn} both-view pairs')
+    for fid, text, roles, ann in recs:
+        look = read_pair(text, 'look')
+        head = read_pair(text, 'head')
+        # the station era is over: recordings carry no true_dist
+        td = read_pair(text, 'true_dist')[0]
+        if td < -900:
+            td = 0.0
+        for ri, cs in enumerate(roles):
             ip = os.path.join(rd, f'{fid}-{cs}.png')
             if not os.path.exists(ip):
                 continue
+            if ann.get(cs) is None:
+                # un-annotated sibling: annotated view + disparity =
+                # default plot on this frame's padded canvas, its
+                # obscure graded from how far off-screen that sits
+                sib = ann.get(roles[1 - ri]) if len(roles) > 1 else None
+                if sib is None or D is None:
+                    continue
+                img = Image.open(ip).convert('L')
+                gray = np.asarray(img, np.float32) / 255.0
+                H, W = gray.shape
+                smid = np.array([(sib[0][0] + sib[1][0]) / 2,
+                                 (sib[0][1] + sib[1][1]) / 2])
+                sgn = 1.0 if ri == 0 else -1.0
+                hx, hy = smid + sgn * D
+                wfp, _, _, _ = crop_gray(gray, W / 2, H / 2, W * PAD, S)
+                sob = obscure_box(hx, hy, sib[5])
+                out['wf'].append(wfp)
+                out['find_y'].append(hint_plot(hx, hy, sib[5])
+                                     + [sib[5] / PAD, sob])
+                continue
+            ocl, ocr, nb, pl, pr, sc = ann[cs]
             img = Image.open(ip).convert('L')
             gray = np.asarray(img, np.float32) / 255.0
             H, W = gray.shape
-            # record annotations are 0..1 frame fractions
-            zc = lambda p: (p[0] - 0.5, p[1] - 0.5)
-            ocl, ocr, nb, pl, pr = zc(ocl), zc(ocr), zc(nb), zc(pl), zc(pr)
-            sc = float(np.hypot(ocl[0] - ocr[0], ocl[1] - ocr[1]))
-            if sc <= 0.02:
-                continue
-            look = read_pair(text, 'look')
-            head = read_pair(text, 'head')
-            # the station era is over: recordings carry no true_dist
-            td = read_pair(text, 'true_dist')[0]
-            if td < -900:
-                td = 0.0
             # pupils stand in for the un-annotated eye centers
             px_ = lambda p: ((p[0] + 0.5) * W, (p[1] + 0.5) * H)
             lxp, lyp = px_(pl)
@@ -966,22 +1267,34 @@ def load_record(session_dir):
             out['aux'].append(aux)
             out['plots'].append([head[0], head[1], look[0], look[1]])
             out['dist'].append(td)
-            # find scores on the reduced frame: predicted eye centers
-            # vs the annotated pupils, scale vs the oc span
-            out['wf'].append(np.asarray(img.resize((S, S), Image.BOX),
-                                        np.float32)[None] / 255.0)
-            out['find_y'].append([pl[0], pl[1], pr[0], pr[1], sc])
-            # target scores on a 2x-scale window at the oc midpoint
+            # find scores on the padded canvas: the box-overlap plot,
+            # scale vs the oc span, obscure vs the off-screen amount
+            wfp, _, _, _ = crop_gray(gray, W / 2, H / 2, W * PAD, S)
+            mfx = (ocl[0] + ocr[0]) * 0.5
+            mfy = (ocl[1] + ocr[1]) * 0.5
+            ob = obscure_box(mfx, mfy, sc)
+            out['wf'].append(wfp)
+            out['find_y'].append(hint_plot(mfx, mfy, sc) + [sc / PAD, ob])
+            # donor gating stays sensor-frame: pupil midpoint + scale
+            out['gate_mid'].append([(pl[0] + pr[0]) * 0.5,
+                                    (pl[1] + pr[1]) * 0.5])
+            out['gate_sc'].append(sc)
+            # target scores on a 2x-scale window at the oc midpoint,
+            # clamped onto the sensor like the trainer's hint crop
             mx, my = (ocl[0] + ocr[0]) / 2, (ocl[1] + ocr[1]) / 2
-            tc, tx0, ty0, ts2 = crop_gray(gray, (mx + 0.5) * W, (my + 0.5) * H,
-                                          sc * 2 * W, S)
+            tcs = sc * 2 * W
+            tcx = (mx + 0.5) * W
+            tcy = (my + 0.5) * H
+            tcx = W / 2 if tcs >= W else min(max(tcx, tcs / 2), W - tcs / 2)
+            tcy = H / 2 if tcs >= H else min(max(tcy, tcs / 2), H - tcs / 2)
+            tc, tx0, ty0, ts2 = crop_gray(gray, tcx, tcy, tcs, S)
             def win_frac(p):
                 return (((p[0] + 0.5) * W - tx0) / ts2,
                         ((p[1] + 0.5) * H - ty0) / ts2)
             wlu, wlv = win_frac(pl)
             wru, wrv = win_frac(pr)
             out['ctx'].append(tc)
-            out['target_y'].append([wlu, wlv, wru, wrv, sc * W / ts2])
+            out['target_y'].append([wlu, wlv, wru, wrv, sc * W / ts2, ob])
             thumb = img.convert('RGB')
             tdr = ImageDraw.Draw(thumb)
             tdr.rectangle([lx0, ly0, lx0 + ls, ly0 + ls], outline=(255, 64, 64), width=2)
@@ -999,27 +1312,28 @@ def load_record(session_dir):
 
 
 def find_val(rec):
-    # real-frame score: eye centers vs annotated pupils (nearest
-    # annotated point per eye), scale vs the oc span
+    # real-frame score: plot vs true / disparity-default hints,
+    # scale vs the oc span, obscure vs the off-screen amount
     x = torch.tensor(rec['wf']).to(dev)
     y = torch.tensor(rec['find_y']).to(dev)
 
     def fn(m):
         e = (m(x) - y).abs().mean(0)
-        return ['v.lx', 'v.ly', 'v.rx', 'v.ry', 'v.scale'], [float(v) for v in e]
+        return (['v.x', 'v.y', 'v.scale', 'v.obscure'],
+                [float(v) for v in e])
     return fn
 
 
 def target_val(rec):
-    # distance is not validated here: it transfers in from the
-    # synthetic labels the real pixels blend into
+    # real-crop score: eyes + scale inside the 2x-scale window
     x = torch.tensor(rec['ctx']).to(dev)
     y = torch.tensor(rec['target_y']).to(dev)
 
     def fn(m):
         p = m(x)
-        e = (p[:, :5] - y).abs().mean(0)
-        return ['v.lx', 'v.ly', 'v.rx', 'v.ry', 'v.scale'], [float(v) for v in e]
+        e = (p - y).abs().mean(0)
+        return (['v.lx', 'v.ly', 'v.rx', 'v.ry', 'v.scale', 'v.obscure'],
+                [float(v) for v in e])
     return fn
 
 
@@ -1027,27 +1341,86 @@ def look_val(rec):
     # distance is not validated here: it transfers in from the
     # synthetic labels the real pixels blend into
     t = lambda k: torch.tensor(rec[k]).to(dev)
-    l, r, f2, a2 = t('l'), t('r'), t('f'), t('aux')
+    l, r, f2, a1 = t('l'), t('r'), t('f'), t('aux')
     plots = t('plots')
-    z3 = torch.zeros(len(rec['dist']), 3, device=dev)
+    n = len(rec['dist'])
+    z3 = torch.zeros(n, 3, device=dev)
+    # record rows are per view, so validation runs MONOCULAR on real
+    # pixels: view 0 carries the record, view 1 is blind and says so.
+    # it is a lower bound on the paired model, and diagnostic only
+    zc = torch.zeros_like(l)
+    obs = torch.zeros(n, 2, device=dev)
+    obs[:, 1] = 1.0
+    a2 = torch.cat([a1, torch.zeros(n, NAUX, device=dev), obs], 1)
 
     def fn(m):
-        p, _ = m(l, r, f2, a2, z3, z3)
+        p, _ = m(l, r, f2, zc, zc, zc, a2, z3, z3, z3, z3)
         e = (p[:, :4] - plots).abs().mean(0)
         return (['v.head.x', 'v.head.y', 'v.gaze.x', 'v.gaze.y'],
                 [float(v) for v in e])
     return fn
 
 
-def train_look(tl, tr_, tf_, laux, ly, lfid, lpup, lgeo, rec):
-    tr, ev = split(lfid, lpup, 'look')
-    plt_ = lpup[:, [0, 1, 4]].astype(np.float32)
-    prt_ = lpup[:, [2, 3, 4]].astype(np.float32)
+def slide_x(ab, yb, rg):
+    # slide the head along rig x. a view's frame moves by the meters
+    # divided by 2*dz*tan(fov/2) — the metres one frame width covers
+    # at that camera's depth — so hcx, both screen plots and both
+    # camera distances all follow exactly. tl/tr share dz, so one
+    # slide moves both frames by the same amount
+    B = ab.shape[0]
+    hc = yb[:, 4:7]
+    lo = torch.full((B, 1), -1e9, device=dev)
+    hi = torch.full((B, 1), 1e9, device=dev)
+    seen = []
+    k = []
+    for c in (0, 1):
+        cp = rg[:, 2 + c * 5:5 + c * 5]
+        tl = torch.deg2rad(rg[:, 5 + c * 5:6 + c * 5])
+        hf = torch.deg2rad(rg[:, 6 + c * 5:7 + c * 5]) * 0.5
+        d = hc - cp
+        dz = (-d[:, 1:2] * torch.sin(tl)
+              - d[:, 2:3] * torch.cos(tl)).clamp(min=1e-3)
+        k.append(2.0 * dz * torch.tan(hf))
+        a = ab[:, c * NAUX:(c + 1) * NAUX]
+        mid = (a[:, 4:5] + a[:, 6:7]) * 0.5
+        lim = (0.5 - a[:, 8:9] * 0.5).clamp(min=0.0)
+        sn = ab[:, NAUX2 - 2 + c:NAUX2 - 1 + c] < 1.0
+        seen.append(sn)
+        # the face stays on every sensor that can see it
+        lo = torch.where(sn, torch.maximum(lo, (-lim - mid) * k[c]), lo)
+        hi = torch.where(sn, torch.minimum(hi, (lim - mid) * k[c]), hi)
+    live = (seen[0] | seen[1]) & (hi > lo)
+    dx = torch.where(live, lo + torch.rand(B, 1, device=dev) * (hi - lo),
+                     torch.zeros(B, 1, device=dev)) * args.slide
+    ab = ab.clone()
+    for c in (0, 1):
+        s = (dx / k[c] * seen[c].float())[:, 0]
+        for j in (0, 2, 4, 6, 9, 12, 15):
+            ab[:, c * NAUX + j] = ab[:, c * NAUX + j] + s
+    yb = yb.clone()
+    # he moved sideways and kept looking at the same spot: the screen
+    # plots stay, hcx moves, the two distances follow from it
+    yb[:, 4:5] = yb[:, 4:5] + dx
+    for c in (0, 1):
+        cp = rg[:, 2 + c * 5:5 + c * 5]
+        yb[:, 7 + c:8 + c] = (yb[:, 4:7] - cp).norm(dim=1, keepdim=True)
+    return ab, yb
+
+
+def train_look(P, rec):
+    # P is the PAIRED set: one row per pose carrying both views
+    (tl, tr_, tf_, tl1, tr1, tf1, paux, ly, lfid, lgeo,
+     ppl0, ppr0, ppl1, ppr1, prig) = P
+    laux = paux[:, :NAUX]          # view 0 slice, for the donor gating below
+    tr, ev = split(lfid, None, 'look')
     y8 = np.concatenate([ly, lgeo], 1).astype(np.float32)
     t = lambda a: torch.tensor(a)
     l, r, f2 = t(tl), t(tr_), t(tf_)
-    a2, y2, pl2, pr2 = t(laux), t(y8), t(plt_), t(prt_)
-    evd = [x[ev].to(dev) for x in (l, r, f2, a2, pl2, pr2)]
+    l1, r1, f1 = t(tl1), t(tr1), t(tf1)
+    a2, y2, g2 = t(paux), t(y8), t(prig)
+    pl2, pr2 = t(ppl0.astype(np.float32)), t(ppr0.astype(np.float32))
+    pl3, pr3 = t(ppl1.astype(np.float32)), t(ppr1.astype(np.float32))
+    evd = [x[ev].to(dev) for x in (l, r, f2, l1, r1, f1, a2, pl2, pr2, pl3, pr3)]
     yev = y2[ev].to(dev)
     tex = torch.tensor(build_texpool()).to(dev)
     print(f'donor textures: {tex.shape[0]}')
@@ -1063,11 +1436,11 @@ def train_look(tl, tr_, tf_, laux, ly, lfid, lpup, lgeo, rec):
     if rec is not None and args.real_blend > 0:
         dh = np.abs(ly[:, None, 0:2] - rec['plots'][None, :, 0:2]).max(2)
         dg = np.abs(ly[:, None, 2:4] - rec['plots'][None, :, 2:4]).max(2)
-        rsc = rec['find_y'][:, 4]
+        rsc = rec['gate_sc']
         dsc = np.abs(laux[:, 8:9] - rsc[None, :]) / rsc[None, :]
         # eyes median must also sit in the same part of the frame
         ms = (laux[:, 0:2] + laux[:, 2:4]) / 2
-        mr = (rec['find_y'][:, 0:2] + rec['find_y'][:, 2:4]) / 2
+        mr = rec['gate_mid']
         dmid = np.abs(ms[:, None] - mr[None, :]).max(2)
         ok = (dh <= 0.15) & (dg <= 0.15) & (dsc <= 0.25) & (dmid <= 0.25)
         ok_t = torch.tensor(ok).to(dev)
@@ -1081,8 +1454,12 @@ def train_look(tl, tr_, tf_, laux, ly, lfid, lpup, lgeo, rec):
 
     def step(m):
         i = torch.randint(0, len(tr), (args.batch,))
-        lb, rb, fb, ab, plb, prb = [x[tr][i].to(dev)
-                                    for x in (l, r, f2, a2, pl2, pr2)]
+        lb, rb, fb, l1b, r1b, f1b, ab, plb, prb, pl1b, pr1b = [
+            x[tr][i].to(dev)
+            for x in (l, r, f2, l1, r1, f1, a2, pl2, pr2, pl3, pr3)]
+        yb = y2[tr][i].to(dev)
+        if args.slide > 0:
+            ab, yb = slide_x(ab, yb, g2[tr][i].to(dev))
         # one validation sample sets levels, one blur for all 3
         pick = None
         if vl is not None:
@@ -1090,6 +1467,9 @@ def train_look(tl, tr_, tf_, laux, ly, lfid, lpup, lgeo, rec):
         lb = renorm_levels(lb, vl, pick)
         rb = renorm_levels(rb, vr, pick)
         fb = renorm_levels(fb, vf, pick)
+        l1b = renorm_levels(l1b, vl, pick)
+        r1b = renorm_levels(r1b, vr, pick)
+        f1b = renorm_levels(f1b, vf, pick)
         if ok_t is not None:
             okb = ok_t[tr_t[i]]
             has = okb.any(1)
@@ -1111,18 +1491,27 @@ def train_look(tl, tr_, tf_, laux, ly, lfid, lpup, lgeo, rec):
         if args.scramble > 0:
             lb = scramble(lb, eyem, tex)
             rb = scramble(rb, eyem, tex)
-            fb = scramble(fb, face_protect(ab), tex)
+            fb = scramble(fb, face_protect(ab[:, :NAUX]), tex)
+            l1b = scramble(l1b, eyem, tex)
+            r1b = scramble(r1b, eyem, tex)
+            f1b = scramble(f1b, face_protect(ab[:, NAUX:2 * NAUX]), tex)
         lb = sensor(lb, pupil_keep())
         rb = sensor(rb, pupil_keep())
         fb = sensor(fb)
+        l1b = sensor(l1b, pupil_keep())
+        r1b = sensor(r1b, pupil_keep())
+        f1b = sensor(f1b)
         if args.aux_noise > 0:
-            ab = ab + torch.randn_like(ab) * args.aux_noise
-        p, ploss = m(lb, rb, fb, ab, plb, prb)
-        return F.mse_loss(p, y2[tr][i].to(dev)) + ploss
+            # the two obscure factors are facts, never noised
+            nz = torch.randn_like(ab) * args.aux_noise
+            nz[:, -2:] = 0.0
+            ab = ab + nz
+        p, ploss = m(lb, rb, fb, l1b, r1b, f1b, ab, plb, prb, pl1b, pr1b)
+        return F.mse_loss(p, yb) + ploss
 
     loop(LookNet(), 'look',
          ['head.x', 'head.y', 'gaze.x', 'gaze.y',
-          'hcx', 'hcy', 'hcz', 'dist'],
+          'hcx', 'hcy', 'hcz', 'dist0', 'dist1'],
          lambda e: e[2:4].mean(), (len(tr), step),
          lambda m: (m(*evd)[0], yev),
          look_val(rec) if rec is not None else None)
@@ -1141,7 +1530,9 @@ def main():
             load_session(d)
         print('previews rebuilt beside samples ({i}-preview.png)')
         return
-    parts = [load_session(f'/src/hyperspace-sessions/{s}') for s in names]
+    loaded = [load_session(f'/src/hyperspace-sessions/{s}') for s in names]
+    parts  = [a for a, _ in loaded]
+    ppar   = [b for _, b in loaded]
     tl, tr_, tf_, tw = [np.concatenate([p[k] for p in parts]) for k in range(4)]
     laux = np.concatenate([p[4] for p in parts])
     ly   = np.concatenate([p[5] for p in parts])
@@ -1150,6 +1541,10 @@ def main():
     lgeo = np.concatenate([p[8] for p in parts])
     tcc  = np.concatenate([p[9] for p in parts])
     tmt  = np.concatenate([p[10] for p in parts])
+    tsf  = np.concatenate([p[11] for p in parts])
+    # paired look set, concatenated the same way
+    P = [np.concatenate([q[k] for q in ppar]) for k in range(15)]
+    P[8] = np.concatenate([q[8] + 1000000 * i for i, q in enumerate(ppar)])
     nvalid = int((lpup[:, 4] > 0).sum())
     print(f'pupil labels: {nvalid}/{len(lpup)} valid')
     # both inspection sheets, every training start
@@ -1167,11 +1562,11 @@ def main():
         print(f'  dist:  mean {lgeo[:,3].mean():.3f} span {lgeo[:,3].min():.3f}..{lgeo[:,3].max():.3f}')
         return
     if args.process in ('all', 'find'):
-        train_find(tw, laux, lfid, lpup, rec)
+        train_find(tsf, laux, lfid, rec)
     if args.process in ('all', 'target'):
         train_target(tcc, tmt, lfid, lpup, rec)
     if args.process in ('all', 'look'):
-        train_look(tl, tr_, tf_, laux, ly, lfid, lpup, lgeo, rec)
+        train_look(P, rec)
 
 
 if __name__ == '__main__':

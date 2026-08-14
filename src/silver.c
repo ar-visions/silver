@@ -33,8 +33,80 @@ void aether_listen_gate_store(aether, enode);
 etype evar_type(evar a);
 enode parse_import(silver a);
 path module_exists(silver a, array idents, bool binary_finary, bool* is_bin);
-// per-session module cache: bool = building, path = finished product
-static map silver_compiled = null;
+
+// per-session module products: name -> path, published only once the link has
+// written the file. in-progress builds live in building_list with the owning
+// thread, so a concurrent instance waits instead of racing into the same
+// output or handing out a path that is mid-relink
+static map             silver_compiled = null;
+static pthread_mutex_t compiled_lock   = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  compiled_cond   = PTHREAD_COND_INITIALIZER;
+
+typedef struct building {
+    char             name[256];
+    pthread_t        owner;
+    struct building* next;
+} building;
+
+static building* building_list = null;
+
+static building* building_find(cstr name) {
+    for (building* b = building_list; b; b = b->next)
+        if (strcmp(b->name, name) == 0) return b;
+    return null;
+}
+
+static void building_add(cstr name) {
+    building* b = (building*)calloc(1, sizeof(building));
+    snprintf(b->name, sizeof(b->name), "%s", name);
+    b->owner = pthread_self();
+    b->next  = building_list;
+    building_list = b;
+}
+
+static void building_remove(cstr name) {
+    building** p = &building_list;
+    while (*p) {
+        if (strcmp((*p)->name, name) == 0) {
+            building* dead = *p;
+            *p = dead->next;
+            free(dead);
+            return;
+        }
+        p = &(*p)->next;
+    }
+}
+
+static void symlink_resources(path src, path dst);
+
+// share/<name>/<dir> symlinks for every resource folder. must run on the
+// CACHED path too: a module last built as someone else's dependency deployed
+// its dirs under THAT root's share, so its own bundle can be missing while
+// its product is current — the app then starts with no fonts/models at all
+static void deploy_module_resources(silver a) {
+    if (!len(a->resources)) return;
+    path share = f(path, "%o/share/%o", a->install, a->name);
+    make_dir(share);
+    each(a->resources, path, res) {
+        path dst = f(path, "%o/%o", share, stem(res));
+        // a stale directory symlink must go before the real dir is made
+        struct stat dsts;
+        if (lstat(dst->chars, &dsts) == 0 && S_ISLNK(dsts.st_mode))
+            unlink(dst->chars);
+        make_dir(dst);
+        symlink_resources(res, dst);
+    }
+}
+
+// the product exists on disk at this point; release anyone waiting on it
+static void publish_product(silver a) {
+    pthread_mutex_lock(&compiled_lock);
+    if (a->product && silver_compiled)
+        set(silver_compiled, (Au)a->name, (Au)a->product);
+    building_remove(a->name->chars);
+    pthread_cond_broadcast(&compiled_cond);
+    pthread_mutex_unlock(&compiled_lock);
+}
 static void bg_build_start(silver a, silver og, path module, map defs);
 enode parse_export(silver a);
 enode parse_return(silver a);
@@ -1963,22 +2035,32 @@ void silver_init(silver a) {
     // and keeps its existing section. nothing special here.
 
     a->mod = (aether)a;
-    // prevent duplicate compilation in a session
+    // one build per module per session, and concurrent instances WAIT for it.
+    // the link unlinks its .so before writing it (silver_build_product), so a
+    // second instance that proceeds on the same module either races into the
+    // same output file or hands out a path whose file is mid-relink — which
+    // reached dlopen as ENOENT ("cannot open shared object file")
     if (!silver_compiled) silver_compiled = hold(hold(map(hsize, 16)));
-    // the session cache stores the FINISHED product, set on completion below.
-    // it used to store a bool set at build START, so a second instance could
-    // not tell "in progress" from "done": it returned early with whatever the
-    // product link pointed at — an empty path mid-build (which reached
-    // dlopen("") and surfaced as a bogus "did not register"), or a stale
-    // product, which is why a changed source never rebuilt.
-    Au cached_product = get(silver_compiled, (Au)a->name);
-    if (cached_product && instanceof(cached_product, path)) {
-        a->product = hold((path)cached_product);
-        return;
+    pthread_mutex_lock(&compiled_lock);
+    for (;;) {
+        Au done = get(silver_compiled, (Au)a->name);
+        if (done && instanceof(done, path)) {
+            a->product = hold((path)done);
+            pthread_mutex_unlock(&compiled_lock);
+            return;
+        }
+        building* owner = building_find(a->name->chars);
+        if (!owner) { building_add(a->name->chars); break; }   // we own this build
+        // same thread re-entering (recursive import) must not wait on itself
+        if (pthread_equal(owner->owner, pthread_self())) break;
+        pthread_cond_wait(&compiled_cond, &compiled_lock);
     }
+    pthread_mutex_unlock(&compiled_lock);
+
     if (!update_product) {
         a->product = hold(absolute(a->product_link));
-        set(silver_compiled, (Au)a->name, (Au)a->product);
+        deploy_module_resources(a);
+        publish_product(a);
         module_erase(a->autype, null);
         // silver-host.c is the LIVE-app launcher ONLY — a plain app has its own
         // main, so never build the host for it (it would overwrite the real exe).
@@ -1992,11 +2074,6 @@ void silver_init(silver a) {
         silver_live_run(a);
         return;
     }
-
-    // in-progress marker: a bool means "building", so a concurrent instance
-    // falls through and builds rather than taking a stale/empty product. the
-    // finished path replaces it once the product exists.
-    set(silver_compiled, (Au)a->name, (Au)_bool(true));
 
     verify(dir_exists("%o", a->install), "silver-import location not found");
     verify(len(a->module), "no source given");
@@ -6400,9 +6477,6 @@ none silver_build_product(silver a) {
     if (a->product) drop(a->product);
 
     a->product = hold(product);
-    // completion: replaces the in-progress bool so later instances of this
-    // module in the same session get the product that was actually built
-    if (silver_compiled) set(silver_compiled, (Au)a->name, (Au)a->product);
     collect_mm_frameworks(a, a->implements);
 
     // platform dispatch: compile and link inside docker for non-native targets
@@ -6605,6 +6679,9 @@ none silver_build_product(silver a) {
 
     }
 
+    // the file is on disk now — waiters may take it
+    publish_product(a);
+
     // for live_app modules: compile the host launcher as the app binary (never cached)
     if (((aether)a)->is_live) {
         path host_dst = build_silver_host(a);
@@ -6645,19 +6722,7 @@ none silver_build_product(silver a) {
     // configs. copying froze a snapshot that could desync from source (a
     // .gltf and its .bin drifting apart); one source of truth removes that
     // libraries deploy too: exported scenes/plugins carry their own assets
-    if (len(a->resources)) {
-        path share = f(path, "%o/share/%o", install, a->name);
-        make_dir(share);
-        each(a->resources, path, res) {
-            path dst = f(path, "%o/%o", share, stem(res));
-            // if dst is a stale directory symlink, remove it before creating the real dir
-            struct stat dsts;
-            if (lstat(dst->chars, &dsts) == 0 && S_ISLNK(dsts.st_mode))
-                unlink(dst->chars);
-            make_dir(dst);
-            symlink_resources(res, dst);
-        }
-    }
+    deploy_module_resources(a);
 
     // record this module's OWN source files into its tree node (key = full source path,
     // value = an empty node map; imports already nested their own subtrees during parse).

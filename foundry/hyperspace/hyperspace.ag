@@ -36,11 +36,72 @@ class ts_model
         ts_forward6i[ hnd, a3.floats, b3.floats, c3.floats, d3.floats, e3.floats, f3.floats, x3.floats, s2, an2, out.floats, 8 ]
 
 
-class EyeTrack
+# one camera on the rig: where it sits and what it sees through
+class Cam
+    public name : string
+    public dev  : string
+    public x    : f32
+    public y    : f32
+    public z    : f32
+    public tilt : f32
+    public fov  : f32 [ 60.0 ]
+
+# the rig: every camera the app knows, parsed once from one string.
+# name=dev,x,y,z,tilt,fov ; next camera. any app that tracks holds one
+class CamRig
+    public  cameras : string [ 'tl=/dev/video2,-0.1416,0.237,0.00635,15,60;tr=/dev/video6,0.177,0.237,0.00635,15,60' ]
+    mutable cams    : map Cam[string]      # keyed by name, ordered as written
+
+    func sync []
+        if [ cams ] return
+        cams = map Cam[string] [ ]
+        cams.hold[]
+        ents : array string [ cameras.split[ ';' ] ]
+        for [ i9: i32 0, i9 < i32[ ents.count ], i9 += 1 ]
+            e9 : ents[ i9 ]
+            # optional name= prefix; unnamed entries fall back to their index
+            nm9 : '{i9}'
+            nv9 : array string [ e9.split[ '=' ] ]
+            if [ nv9.count > 1 ]
+                nm9 = nv9[ 0 ]
+                e9 = nv9[ 1 ]
+            f9 : array string [ e9.split[ ',' ] ]
+            nf9 : i32 [ i32[ f9.count ] ]
+            c9 : Cam [ name: nm9, dev: f9[ 0 ] ]
+            if [ nf9 > 1 ] c9.x    = f32[ atof[ f9[ 1 ].chars ] ]
+            if [ nf9 > 2 ] c9.y    = f32[ atof[ f9[ 2 ].chars ] ]
+            if [ nf9 > 3 ] c9.z    = f32[ atof[ f9[ 3 ].chars ] ]
+            if [ nf9 > 4 ] c9.tilt = f32[ atof[ f9[ 4 ].chars ] ]
+            if [ nf9 > 5 ] c9.fov  = f32[ atof[ f9[ 5 ].chars ] ]
+            cams[ nm9 ] = c9
+
+    func count [] -> i32
+        sync[]
+        return i32[ cams.count ]
+
+    func at [ i9: i32 ] -> Cam
+        sync[]
+        if [ i9 < 0 || i9 >= i32[ cams.count ] ] return null
+        return cast Cam [ cams.value_by_index[ i9 ] ]
+
+    func by_name [ nm: string ] -> Cam
+        sync[]
+        return cams[ nm ]
+
+    func index [ nm: string ] -> i32
+        sync[]
+        for [ i9: i32 0, i9 < i32[ cams.count ], i9 += 1 ]
+            c9 : at[ i9 ]
+            if [ c9 && c9.name.compare[ nm ] == 0 ] return i9
+        return -1
+
+
+class Observer
     # the full live tracker: find locates irises, target hones,
     # look measures — eye_x/y/z is the observer offset in meters
     # from screen center
     public mdir   : path
+    public rig    : CamRig
     public flip   : f32 [ -1.0 ]               # x parallax sign
     public bias_y : f32 [ -0.1016 ]            # observer y bias, m
     public eye_x  : f32
@@ -53,6 +114,17 @@ class EyeTrack
     mutable rx : f32
     mutable ry : f32
     mutable sc : f32
+    # per-view lock state; lx..sc above are scratch for the view in hand
+    mutable havev : new i32 [ 8 ]
+    mutable lxv   : new f32 [ 8 ]
+    mutable lyv   : new f32 [ 8 ]
+    mutable rxv   : new f32 [ 8 ]
+    mutable ryv   : new f32 [ 8 ]
+    mutable scv   : new f32 [ 8 ]
+    mutable obsv  : new f32 [ 8 ]          # 0 fully visible, 1 fully obscured
+    intern ct : array tensor               # 3 crops per view, view-major
+    intern zt : tensor                     # zero crop for a blind view
+    intern ax2 : tensor
     intern m_find   : ts_model
     intern m_target : ts_model
     intern m_look   : ts_model
@@ -62,38 +134,51 @@ class EyeTrack
     intern ax : tensor
 
     func init []
+        if [ !rig ] rig = CamRig [ ]
+        rig.hold[]
+        rig.sync[]
         m_find = ts_model [ uri: path '{mdir}/find.ptc' ]
         m_find.hold[]
         m_target = ts_model [ uri: path '{mdir}/target.ptc' ]
         m_target.hold[]
         m_look = ts_model [ uri: path '{mdir}/look.ptc' ]
         m_look.hold[]
-        o5 = tensor [ tensor_shape: 1x5 ]
+        o5 = tensor [ tensor_shape: 1x4 ]
         o5.hold[]
-        o9 = tensor [ tensor_shape: 1x9 ]
+        o9 = tensor [ tensor_shape: 1x6 ]
         o9.hold[]
-        o8 = tensor [ tensor_shape: 1x8 ]
+        o8 = tensor [ tensor_shape: 1x9 ]
         o8.hold[]
         ax = tensor [ tensor_shape: 1x18 ]
         ax.hold[]
+        ax2 = tensor [ tensor_shape: 1x38 ]
+        ax2.hold[]
+        zt = tensor [ tensor_shape: 32x32 ]
+        zt.hold[]
+        ct = array tensor [ ]
+        ct.hold[]
+        for [ q8: i32 0, q8 < 6, q8 += 1 ]
+            ct += zt
+        for [ q8: i32 0, q8 < 8, q8 += 1 ]
+            obsv[ q8 ] = 1.0
 
     public func retrack []
         have = false
 
-    func crop16 [ src: Image, cx: f32, cy: f32, side: f32 ] -> tensor
-        t : tensor [ tensor_shape: 16x16x1 ]
+    func crop_n [ src: Image, cx: f32, cy: f32, side: f32 ] -> tensor
+        t : tensor [ tensor_shape: 32x32x1 ]
         data : @u8 [ src.vdata[] ]
         bpp : i32 [ (src.format == Pixel.u8) ? 1 : 4 ]
         iw2 : f32 [ f32[ src.width ] ]
         spx : f32 [ side * iw2 ]
         x0 : f32 [ cx * iw2 - spx * 0.5 ]
         y0 : f32 [ cy * iw2 - spx * 0.5 ]
-        step : f32 [ spx / 16.0 ]
-        for [ oy: i32 0, oy < 16, oy += 1 ]
+        step : f32 [ spx / 32.0 ]
+        for [ oy: i32 0, oy < 32, oy += 1 ]
             ys : i32 [ i32[ y0 + f32[ oy ] * step ] ]
             ye : i32 [ i32[ y0 + (f32[ oy ] + 1.0) * step ] ]
             if [ ye <= ys ] ye = ys + 1
-            for [ ox: i32 0, ox < 16, ox += 1 ]
+            for [ ox: i32 0, ox < 32, ox += 1 ]
                 xs : i32 [ i32[ x0 + f32[ ox ] * step ] ]
                 xe : i32 [ i32[ x0 + (f32[ ox ] + 1.0) * step ] ]
                 if [ xe <= xs ] xe = xs + 1
@@ -105,43 +190,86 @@ class EyeTrack
                         if [ sy < 0 || sy >= src.height ] continue
                         if [ sx < 0 || sx >= src.width ] continue
                         acc += f32[ data[ (sy * src.width + sx) * bpp ] ]
-                t.floats[ oy * 16 + ox ] = acc / (f32[ cnt ] * 255.0)
+                t.floats[ oy * 32 + ox ] = acc / (f32[ cnt ] * 255.0)
         return t
 
-    public func track [ gray: Image ]
+    # one view's find/target pass; crops and aux are stashed per view
+    public func feed [ i9: i32, gray: Image ]
+        if [ i9 < 0 || i9 >= 8 ] return
+        have = havev[ i9 ] != 0
+        lx = lxv[ i9 ]
+        ly = lyv[ i9 ]
+        rx = rxv[ i9 ]
+        ry = ryv[ i9 ]
+        sc = scv[ i9 ]
         if [ !have ]
-            ftt : crop16[ gray, 0.5, 0.5, 1.0 ]
-            m_find.forward1[ ftt, o5, 16 ]
-            lx = o5.floats[0] + 0.5
-            ly = o5.floats[1] + 0.5
-            rx = o5.floats[2] + 0.5
-            ry = o5.floats[3] + 0.5
-            sc = o5.floats[4]
+            # find canvas: sensor centered in a 1.35x black pad
+            ftt : crop_n[ gray, 0.5, 0.5, 1.35 ]
+            m_find.forward1[ ftt, o5, 32 ]
+            # find: one plot — the face box slid to its closest
+            # sensor overlap — plus scale and obscure. always
+            # on-sensor, so it seeds the refine window directly
+            hx8 : f32 [ o5.floats[0] * 1.35 + 0.5 ]
+            hy8 : f32 [ o5.floats[1] * 1.35 + 0.5 ]
+            lx = hx8
+            ly = hy8
+            rx = hx8
+            ry = hy8
+            sc = o5.floats[2] * 1.35
+            ob5 : f32 [ o5.floats[3] ]
+            if [ ob5 < 0.0 ] ob5 = 0.0
+            if [ ob5 > 1.0 ] ob5 = 1.0
             if [ sc > 0.05 && sc < 0.6 ] have = true
+            obsv[ i9 ] = ob5
         el
             wmx : f32 [ (lx + rx) * 0.5 ]
             wmy : f32 [ (ly + ry) * 0.5 ]
             ws8 : f32 [ sc * 2.0 ]
+            # window CLAMPED onto the sensor: the crop must show the
+            # on-frame hint pixels, never black pad
+            if [ ws8 < 1.0 ]
+                if [ wmx < ws8 * 0.5 ] wmx = ws8 * 0.5
+                if [ wmx > 1.0 - ws8 * 0.5 ] wmx = 1.0 - ws8 * 0.5
+                if [ wmy < ws8 * 0.5 ] wmy = ws8 * 0.5
+                if [ wmy > 1.0 - ws8 * 0.5 ] wmy = 1.0 - ws8 * 0.5
+            el
+                wmx = 0.5
+                wmy = 0.5
             wx0 : f32 [ wmx - ws8 * 0.5 ]
             wy0 : f32 [ wmy - ws8 * 0.5 ]
-            wtt : crop16[ gray, wmx, wmy, ws8 ]
-            m_target.forward1[ wtt, o9, 16 ]
+            wtt : crop_n[ gray, wmx, wmy, ws8 ]
+            m_target.forward1[ wtt, o9, 32 ]
             lx = wx0 + o9.floats[0] * ws8
             ly = wy0 + o9.floats[1] * ws8
             rx = wx0 + o9.floats[2] * ws8
             ry = wy0 + o9.floats[3] * ws8
             sc = o9.floats[4] * ws8
+            ob9 : f32 [ o9.floats[5] ]
+            if [ ob9 < 0.0 ] ob9 = 0.0
+            if [ ob9 > 1.0 ] ob9 = 1.0
+            obsv[ i9 ] = ob9
             if [ sc < 0.04 || sc > 0.65 ] have = false
-            if [ lx < 0.02 || lx > 0.98 || ly < 0.02 || ly > 0.98 ] have = false
-        if [ !have ] return
+        havev[ i9 ] = ( have ) ? 1 : 0
+        lxv[ i9 ] = lx
+        lyv[ i9 ] = ly
+        rxv[ i9 ] = rx
+        ryv[ i9 ] = ry
+        scv[ i9 ] = sc
+        if [ !have ]
+            obsv[ i9 ] = 1.0
+            if [ i9 < 2 ]
+                ct[ i9 * 3 + 0 ] = zt
+                ct[ i9 * 3 + 1 ] = zt
+                ct[ i9 * 3 + 2 ] = zt
+            return
         es8 : f32 [ sc / 3.0 * 1.25 ]
         fs8 : f32 [ sc * 1.15 ]
         mx8 : f32 [ (lx + rx) * 0.5 ]
         my8 : f32 [ (ly + ry) * 0.5 ]
         fmy : f32 [ my8 + sc * 0.217 ]
-        lt8 : crop16[ gray, lx, ly, es8 ]
-        rt8 : crop16[ gray, rx, ry, es8 ]
-        ft8 : crop16[ gray, mx8, fmy, fs8 ]
+        lt8 : crop_n[ gray, lx, ly, es8 ]
+        rt8 : crop_n[ gray, rx, ry, es8 ]
+        ft8 : crop_n[ gray, mx8, fmy, fs8 ]
         dxu : f32 [ lx - rx ]
         dyu : f32 [ ly - ry ]
         dl8 : f32 [ sqrt[ dxu*dxu + dyu*dyu ] ]
@@ -166,11 +294,31 @@ class EyeTrack
         ax.floats[15] = mx8 - 0.5
         ax.floats[16] = fmy - 0.5
         ax.floats[17] = fs8
-        m_look.forward4[ lt8, rt8, ft8, ax, o8, 16, 18 ]
+        # obscure comes from the nets: find estimates, target confirms
+        od8 : f32 [ obsv[ i9 ] ]
+        # fully obscured: drop the lock so find re-scans next frame
+        if [ od8 >= 1.0 ] havev[ i9 ] = 0
+        if [ i9 < 2 ]
+            ct[ i9 * 3 + 0 ] = lt8
+            ct[ i9 * 3 + 1 ] = rt8
+            ct[ i9 * 3 + 2 ] = ft8
+            for [ q8: i32 0, q8 < 18, q8 += 1 ]
+                ax2.floats[ i9 * 18 + q8 ] = ax.floats[ q8 ]
+
+    # every view fed: one look call over both, weighted by obscure
+    public func track_rig []
+        if [ obsv[0] >= 1.0 && obsv[1] >= 1.0 ]
+            live = false
+            return
+        ax2.floats[36] = obsv[0]
+        ax2.floats[37] = obsv[1]
+        m_look.forward6i[ ct[0], ct[1], ct[2], ct[3], ct[4], ct[5],
+            ax2, o8, 16, 38 ]
         nex : f32 [ o8.floats[4] * flip ]
         ney : f32 [ o8.floats[5] + bias_y ]
         nez : f32 [ o8.floats[6] ]
-        if [ nez > -0.05 ] nez = -0.05
+        # the model never saw closer than dist_min; do not invent it
+        if [ nez > -0.2032 ] nez = -0.2032
         if [ !live ]
             eye_x = nex
             eye_y = ney
@@ -833,7 +981,9 @@ element ModelView
     mutable clip_rejects : i32 [ 0 ]
     mutable cap_cam  : i32 [ 0 ]              # camera being captured now
     mutable cap_pl   : @f32                # per-camera plot fields, 9 each
-    mutable cap_rec  : i32 [ -1 ]             # record whose pose this sample wears          # poses re-rolled for eye clip
+    mutable cap_seen : i32                    # cameras that placed the face this pose
+    mutable cap_vis  : new i32 [ 8 ]          # per-camera visibility for the sample
+    mutable cap_rec  : i32 [ -1 ]             # record whose pose this sample wears
     mutable anch_lci : i32 [ -1 ]             # corner CONTROL verts: live
     mutable anch_rci : i32 [ -1 ]             # positions feed the oc labels
     mutable anch_lii : i32 [ -1 ]             # inner corner control verts:
@@ -1513,16 +1663,20 @@ element ModelView
         edy : f32 [ pys[0] - pys[1] ]
         esep : f32 [ sqrt[ edx*edx + edy*edy ] ]
         emrg : f32 [ esep * 0.30 ]
+        mkdir[ '/src/hyperspace-sessions', 493 ]
+        sdir : '/src/hyperspace-sessions/{fp.session}'
+        mkdir[ sdir.chars, 493 ]
+        clipped9 : bool [ false ]
         exlo : f32 [ f32[ fx ] + emrg ]
         exhi : f32 [ f32[ fx + fw2 ] - emrg ]
         eylo : f32 [ f32[ fy ] + emrg ]
         eyhi : f32 [ f32[ fy + fh2 ] - emrg ]
         for [ k: i32 0, k < 2, k += 1 ]
-            if [ pxs[ k ] < exlo || pxs[ k ] > exhi ] return false
-            if [ pys[ k ] < eylo || pys[ k ] > eyhi ] return false
-        mkdir[ '/src/hyperspace-sessions', 493 ]
-        sdir : '/src/hyperspace-sessions/{fp.session}'
-        mkdir[ sdir.chars, 493 ]
+            if [ pxs[ k ] < exlo || pxs[ k ] > exhi ] clipped9 = true
+            if [ pys[ k ] < eylo || pys[ k ] > eyhi ] clipped9 = true
+        # a clipped eye clears the visible flag, nothing else:
+        # true labels still get written, off-frame values included
+        if [ clipped9 ] cap_vis[ cam ] = 0
         cap : Image [ vrender.color ]
         cimg : cap.crop[ fx, fy, fw2, fh2 ]
         mcap : cimg.mirror_x[]
@@ -1548,7 +1702,7 @@ element ModelView
         fscale : f32 [ sqrt[ sdx*sdx + sdy*sdy ] ]
         if [ cap_rec < 0 ] return false
         rfid : i32 [ fp.recs_fid[ cap_rec ] ]
-        rnm : string [ (cam == 0) ? 'top' : 'bot' ]
+        rnm : fp.cam_role[ cam ]
         rd2 : fp.rec_dir[]
         rim : Image [ uri: path '{rd2}/{rfid}-{rnm}.png' ]
         if [ rim.width <= 0 ] return false
@@ -1568,16 +1722,6 @@ element ModelView
         if [ s5 < 0.05 ] return false
         rcx : f32 [ rmx * f32[ riw ] ]
         rcy : f32 [ rmy * f32[ rih ] ]
-        fcx : f32 [ ((flx + frx) * 0.5 + 0.5) * f32[ fw2 ] ]
-        fcy : f32 [ ((fly + fry) * 0.5 + 0.5) * f32[ fh2 ] ]
-        fch : f32 [ fscale * f32[ fw2 ] * 1.75 * 1.15 * 0.5 ]
-        for [ q5: i32 0, q5 < 4, q5 += 1 ]
-            cx5 : f32 [ (q5 % 2 == 0) ? (fcx - fch) : (fcx + fch) ]
-            cy5 : f32 [ (q5 < 2) ? (fcy - fch) : (fcy + fch) ]
-            ru0 : f32 [ (cx5 - smx) / s5 + rcx ]
-            rv0 : f32 [ (cy5 - smy) / s5 + rcy ]
-            if [ ru0 < 0.0 || rv0 < 0.0 ] return false
-            if [ ru0 > f32[ riw - 1 ] || rv0 > f32[ rih - 1 ] ] return false
         nw6 : i32 [ 0 ]
         nh6 : i32 [ 0 ]
         nn6 : i32 [ 0 ]
@@ -1879,6 +2023,13 @@ element ModelView
             bpry : f32 [ cap_pl[ b9 + 13 ] ]
             bnbx : f32 [ cap_pl[ b9 + 14 ] ]
             bnby : f32 [ cap_pl[ b9 + 15 ] ]
+            # visible{c}: does this camera actually have the face in frame.
+            # a signal INTO the net — attend to the camera that sees you,
+            # ignore the one that does not — not a filter on the sample
+            fcx9 : f32 [ (bflx + bfrx) * 0.5 ]
+            fcy9 : f32 [ (bfly + bfry) * 0.5 ]
+            vis9 : i32 [ (cap_vis[ c2 ] != 0 && bfsc > 0.0) ? 1 : 0 ]
+            s2 = '{s2}visible{c2}: {vis9}\n'
             s2 = '{s2}image{c2}: {cap_idx}-face{c2}.png\nface_left{c2}: {bflx} {bfly}\nface_right{c2}: {bfrx} {bfry}\nface_scale{c2}: {bfsc}\nface_left_oc{c2}: {bclx} {bcly}\nface_right_oc{c2}: {bcrx} {bcry}\nnose_base{c2}: {bnbx} {bnby}\ncam_rel{c2}: {brel}\npupil_left{c2}: {bplx} {bply}\npupil_right{c2}: {bprx} {bpry}\n'
         ag : path '{sdir}/{cap_idx}.agi'
         ag.save[ s2, null ]
@@ -3601,6 +3752,15 @@ element ModelView
                     cap_scx = ccx - fpc.cam_cfg[ 0 ]
                     cap_scy = ccy - fpc.cam_cfg[ 1 ]
                     cap_scz = ccz - fpc.cam_cfg[ 2 ]
+                    # a triangulated record fixes the head in space: seat
+                    # the rig so both cameras see it where they really did
+                    if [ cap_rec >= 0 && fpc.recs_pos[ cap_rec * 3 ] > -900.0 ]
+                        cap_scx = mxc - fpc.recs_pos[ cap_rec * 3 + 0 ]
+                        cap_scy = myc - fpc.recs_pos[ cap_rec * 3 + 1 ]
+                        cap_scz = mzc - fpc.recs_pos[ cap_rec * 3 + 2 ]
+                        ccx = cap_scx + fpc.cam_cfg[ 0 ]
+                        ccy = cap_scy + fpc.cam_cfg[ 1 ]
+                        ccz = cap_scz + fpc.cam_cfg[ 2 ]
                     b1x : f32 [ ccx - mxc ]
                     b1y : f32 [ ccy - myc ]
                     b1z : f32 [ ccz - mzc ]
@@ -4125,6 +4285,19 @@ element ModelView
                             if [ plot_u < -0.48 ] plot_u = -0.48
                             if [ plot_v >  0.48 ] plot_v =  0.48
                             if [ plot_v < -0.48 ] plot_v = -0.48
+                        # look 0: aim at the head-forward screen hit,
+                        # so the eyes sit centered with zero offset
+                        if [ cap_look_i == 0 ]
+                            hfx0 : f32 [ cap_rot.m[8] ]
+                            hfy0 : f32 [ cap_rot.m[9] ]
+                            hfz0 : f32 [ cap_rot.m[10] ]
+                            if [ hfz0 < 0.1 ] hfz0 = 0.1
+                            mex0 : f32 [ (eyec_lx + eyec_rx) * 0.5 ]
+                            mey0 : f32 [ (eyec_ly + eyec_ry) * 0.5 ]
+                            mez0 : f32 [ (eyec_lz + eyec_rz) * 0.5 ]
+                            ht0 : f32 [ (cap_scz - mez0) / hfz0 ]
+                            plot_u = (cap_scx - (mex0 + hfx0 * ht0)) / fpc.screen_w
+                            plot_v = (cap_scy - (mey0 + hfy0 * ht0)) / fpc.screen_h
                         if [ fpc.plot_fx > -900.0 ]
                             plot_u = fpc.plot_fx
                             plot_v = fpc.plot_fy
@@ -4133,13 +4306,15 @@ element ModelView
                             break
                     if [ aimed && bd1 >= fpc.dist_min ]
                         apply_eyes_down[]
+                        cap_seen = 0
+                        for [ vi9: i32 0, vi9 < 8, vi9 += 1 ] cap_vis[ vi9 ] = 1
                         capture_state = 1
                     el
                         cap_look_i = 0
                 el [ capture_state == 1 ]
                     if [ !save_plot_sample[ fpc, cap_cam ] ]
                         clip_rejects += 1
-                        if [ (clip_rejects % 200) == 0 ] puts 'plot capture: {clip_rejects} poses re-rolled for eye clip'
+                        if [ (clip_rejects % 200) == 0 ] puts 'plot capture: {clip_rejects} poses re-rolled (donor record unusable)'
                         cap_cam = 0
                         cap_look_i = 0
                         capture_state = 0
@@ -4523,11 +4698,21 @@ element hyperspace : trinity
     mutable cap_view  : ModelView              # the element inside it
     mutable cage_ci   : i32 [ -1 ]             # last main-view pick: cage
     mutable cage_v    : i32 [ -1 ]             # last main-view pick: vert
-    public  session   : string [ 'default' ]
+    public  session   : string [ 'top2' ]
     public  reset     : bool
-    public  top       : CameraView             # auto-binds to e['top']
-    public  bot       : CameraView             # auto-binds to e['bot']
-    public  cameras   : string [ '/dev/video2,0,0.237,-0.0127,25,60' ]   # dev,x,y,z,tilt,fov ; next camera
+    # views keyed by camera name (tl, tr) — the element system owns the
+    # instances, so this is filled from elements rather than auto-bound
+    mutable camera_views : map CameraView[string]
+    # name=dev,x,y,z,tilt,fov ; next camera. the name is how the rest of
+    # the app refers to a camera (tl, tr) instead of a /dev path
+    # both sit on the top edge, 1.5in above it (0.199 + 0.0381 = 0.237) and
+    # 0.25in forward toward the user (+z). x is quarter and three-quarter
+    # across the 0.708 width: (0.25-0.5)*0.708 = -0.177, (0.75-0.5)*0.708 = 0.177
+    public  cameras   : string [ 'tl=/dev/video2,-0.1416,0.237,0.00635,15,60;tr=/dev/video6,0.177,0.237,0.00635,15,60' ]
+    mutable nose_k    : new f32 [ 8 ]      # per-camera neutral nose drop
+    mutable nose_k_done : bool
+    mutable cam_rig   : CamRig             # the only camera parser
+    mutable cam_name  : array string
     mutable cam_dev   : array string
     mutable cam_cfg   : @f32                # x y z tilt fov per camera
     mutable cam_n     : i32
@@ -4579,24 +4764,63 @@ element hyperspace : trinity
     mutable ann_lc    : i32 [ -1 ]             # reloading per click
     public  redo_oc   : bool                   # re-plot everything, overwrite
 
+    # CamRig owns the only parser; cam_cfg mirrors it flat so the
+    # generation math keeps indexing by camera without a lookup
     func sync_cams []
         if [ cam_n > 0 ] return
-        ents : array string [ cameras.split[ ';' ] ]
-        n9 : i32 [ i32[ ents.count ] ]
+        if [ !cam_rig ]
+            cam_rig = CamRig [ cameras: cameras ]
+            cam_rig.hold[]
+        n9 : i32 [ cam_rig.count[] ]
+        cam_name = array string [ ]
+        cam_name.hold[]
         cam_dev = array string [ ]
         cam_dev.hold[]
         sz9 : i32 [ n9 * 5 ]
         cam_cfg = new f32 [ sz9 ]
         for [ i9: i32 0, i9 < n9, i9 += 1 ]
-            f9 : array string [ ents[ i9 ].split[ ',' ] ]
-            nf9 : i32 [ i32[ f9.count ] ]
-            cam_dev += f9[ 0 ]
-            cam_cfg[ i9 * 5 + 0 ] = (nf9 > 1) ? f32[ atof[ f9[ 1 ].chars ] ] : 0.0
-            cam_cfg[ i9 * 5 + 1 ] = (nf9 > 2) ? f32[ atof[ f9[ 2 ].chars ] ] : 0.0
-            cam_cfg[ i9 * 5 + 2 ] = (nf9 > 3) ? f32[ atof[ f9[ 3 ].chars ] ] : 0.0
-            cam_cfg[ i9 * 5 + 3 ] = (nf9 > 4) ? f32[ atof[ f9[ 4 ].chars ] ] : 0.0
-            cam_cfg[ i9 * 5 + 4 ] = (nf9 > 5) ? f32[ atof[ f9[ 5 ].chars ] ] : 60.0
+            c9 : cam_rig.at[ i9 ]
+            cam_name += c9.name
+            cam_dev  += c9.dev
+            cam_cfg[ i9 * 5 + 0 ] = c9.x
+            cam_cfg[ i9 * 5 + 1 ] = c9.y
+            cam_cfg[ i9 * 5 + 2 ] = c9.z
+            cam_cfg[ i9 * 5 + 3 ] = c9.tilt
+            cam_cfg[ i9 * 5 + 4 ] = c9.fov
         cam_n = n9
+
+    # index of a named camera (tl, tr); -1 when there is no such name
+    func cam_index [ nm: string ] -> i32
+        sync_cams[]
+        for [ i9: i32 0, i9 < cam_n, i9 += 1 ]
+            if [ cam_name[ i9 ].compare[ nm ] == 0 ] return i9
+        return -1
+
+    # /dev path of a named camera; null when unknown
+    func cam_by_name [ nm: string ] -> string
+        i9 : i32 [ cam_index[ nm ] ]
+        if [ i9 < 0 ] return null
+        return cam_dev[ i9 ]
+
+    # role prefix for camera i: the configured name (tl, tr), so
+    # filenames and .agi keys carry the rig's identities
+    func cam_role [ i9: i32 ] -> string
+        sync_cams[]
+        if [ i9 >= 0 && i9 < cam_n ] return cam_name[ i9 ]
+        return '{i9}'
+
+    # live view for a camera name; resolved through elements so it is never
+    # a stale instance, and cached in camera_views for callers that iterate
+    func camera_view [ nm: string ] -> CameraView
+        if [ !elements ] return null
+        v9 : cast CameraView [ elements[ nm ] ]
+        if [ v9 ]
+            if [ !camera_views ] camera_views = map CameraView[string] [ ]
+            camera_views[ nm ] = v9
+        return v9
+
+    func cam_view [ i9: i32 ] -> CameraView
+        return camera_view[ cam_role[ i9 ] ]
 
     func rec_dir [] -> path
         mkdir[ '/src/hyperspace-sessions', 493 ]
@@ -4688,16 +4912,20 @@ element hyperspace : trinity
 
     func rec_capture []
         rd : rec_dir[]
-        tp : path '{rd}/{rec_i}-top.png'
-        bp : path '{rd}/{rec_i}-bot.png'
-        okt : bool [ (top) ? top.save_frame[ tp ] : false ]
-        okb : bool [ (bot) ? bot.save_frame[ bp ] : false ]
+        r0 : cam_role[ 0 ]
+        r1 : cam_role[ 1 ]
+        tp : path '{rd}/{rec_i}-{r0}.png'
+        bp : path '{rd}/{rec_i}-{r1}.png'
+        v0 : cam_view[ 0 ]
+        v1 : cam_view[ 1 ]
+        okt : bool [ (v0) ? v0.save_frame[ tp ] : false ]
+        okb : bool [ (v1) ? v1.save_frame[ bp ] : false ]
         lu : f32 [ au_dx - 0.5 ]
         lv : f32 [ au_dy - 0.5 ]
         hu2 : f32 [ au_hx - 0.5 ]
         hv2 : f32 [ au_hy - 0.5 ]
-        s : string 'images:\n    top: {rec_i}-top.png\n'
-        if [ cam_n > 1 ] s = string '{s}    bot: {rec_i}-bot.png\n'
+        s : string 'images:\n    {r0}: {rec_i}-{r0}.png\n'
+        if [ cam_n > 1 ] s = string '{s}    {r1}: {rec_i}-{r1}.png\n'
         s = string '{s}cameras: {cam_n}\nlook: {lu} {lv}\nhead: {hu2} {hv2}\n'
         ag : path '{rd}/{rec_i}.agi'
         ag.save[ s, null ]
@@ -4734,27 +4962,31 @@ element hyperspace : trinity
         if [ s.index_of[ 'noise: true' ] >= 0 ] return false
         # overwrite pass: every face pair re-enters the queue
         if [ redo_oc ] return true
-        if [ s.index_of[ 'top_left_oc:' ] < 0 ] return true
-        if [ s.index_of[ 'top_right_oc:' ] < 0 ] return true
-        if [ s.index_of[ 'top_nose_base:' ] < 0 ] return true
-        if [ s.index_of[ 'top_left_pupil:' ] < 0 ] return true
-        if [ s.index_of[ 'top_right_pupil:' ] < 0 ] return true
-        if [ s.index_of[ 'top_left_ic:' ] < 0 ] return true
-        if [ s.index_of[ 'top_right_ic:' ] < 0 ] return true
-        # single-camera pairs have no bot image to plot
-        if [ s.index_of[ '    bot:' ] >= 0 ]
-            if [ s.index_of[ 'bot_left_oc:' ] < 0 ] return true
-            if [ s.index_of[ 'bot_right_oc:' ] < 0 ] return true
-            if [ s.index_of[ 'bot_nose_base:' ] < 0 ] return true
-            if [ s.index_of[ 'bot_left_pupil:' ] < 0 ] return true
-            if [ s.index_of[ 'bot_right_pupil:' ] < 0 ] return true
-            if [ s.index_of[ 'bot_left_ic:' ] < 0 ] return true
-            if [ s.index_of[ 'bot_right_ic:' ] < 0 ] return true
+        # a hidden camera has nothing to plot; otherwise every point is required
+        c0 : cam_role[ 0 ]
+        if [ s.index_of[ '{c0}_hidden:' ] < 0 ]
+            if [ s.index_of[ '{c0}_left_oc:' ] < 0 ] return true
+            if [ s.index_of[ '{c0}_right_oc:' ] < 0 ] return true
+            if [ s.index_of[ '{c0}_nose_base:' ] < 0 ] return true
+            if [ s.index_of[ '{c0}_left_pupil:' ] < 0 ] return true
+            if [ s.index_of[ '{c0}_right_pupil:' ] < 0 ] return true
+            if [ s.index_of[ '{c0}_left_ic:' ] < 0 ] return true
+            if [ s.index_of[ '{c0}_right_ic:' ] < 0 ] return true
+        # single-camera pairs have no second image to plot
+        c1 : cam_role[ 1 ]
+        if [ s.index_of[ '    {c1}:' ] >= 0 && s.index_of[ '{c1}_hidden:' ] < 0 ]
+            if [ s.index_of[ '{c1}_left_oc:' ] < 0 ] return true
+            if [ s.index_of[ '{c1}_right_oc:' ] < 0 ] return true
+            if [ s.index_of[ '{c1}_nose_base:' ] < 0 ] return true
+            if [ s.index_of[ '{c1}_left_pupil:' ] < 0 ] return true
+            if [ s.index_of[ '{c1}_right_pupil:' ] < 0 ] return true
+            if [ s.index_of[ '{c1}_left_ic:' ] < 0 ] return true
+            if [ s.index_of[ '{c1}_right_ic:' ] < 0 ] return true
         return false
 
     func rec_read [ fid: string, cam: i32, sub: i32 ] -> vec2f
         r : vec2f [ x: -999.0, y: -999.0 ]
-        cs : string [ (cam == 0) ? 'top' : 'bot' ]
+        cs : cam_role[ cam ]
         k6 : string '{cs}_left_oc:'
         if [ sub == 1 ] k6 = string '{cs}_right_oc:'
         if [ sub == 2 ] k6 = string '{cs}_nose_base:'
@@ -4805,7 +5037,7 @@ element hyperspace : trinity
         cv.paint[]
 
     func ann_have [ fid: string, cam: i32, sub: i32 ] -> bool
-        cs : string [ (cam == 0) ? 'top' : 'bot' ]
+        cs : cam_role[ cam ]
         k6 : string '{cs}_left_oc:'
         if [ sub == 1 ] k6 = string '{cs}_right_oc:'
         if [ sub == 2 ] k6 = string '{cs}_nose_base:'
@@ -4817,6 +5049,8 @@ element hyperspace : trinity
         p : path '{rec_dir[]}/{fid}.agi'
         s : cast string [ p.load[ typeid[ string ], null ] ]
         if [ !s ] return false
+        # hidden: the face is not visible to this camera, nothing to plot
+        if [ s.index_of[ '{cs}_hidden:' ] >= 0 ] return true
         return s.index_of[ k6 ] >= 0
 
     func ann_seek [ advance: bool ]
@@ -4837,7 +5071,7 @@ element hyperspace : trinity
                 puts 'annotate: all pairs plotted'
                 return
             fid9 : ann_files[ ann_i ]
-            cs9 : string [ (ann_cam == 0) ? 'top' : 'bot' ]
+            cs9 : cam_role[ ann_cam ]
             ip9 : path '{rec_dir[]}/{fid9}-{cs9}.png'
             if [ !ip9.exists[] ]
                 ann_sub += 1
@@ -4850,7 +5084,7 @@ element hyperspace : trinity
     func ann_load2 []
         fid : ann_files[ ann_i ]
         if [ ann_img && ann_lc == ann_cam && ann_lf && ann_lf == fid ] return
-        cam : string [ (ann_cam == 0) ? 'top' : 'bot' ]
+        cam : cam_role[ ann_cam ]
         ip : path '{rec_dir[]}/{fid}-{cam}.png'
         im : Image [ uri: ip ]
         if [ im.width <= 0 ]
@@ -5292,16 +5526,68 @@ element hyperspace : trinity
         fit_seat = dists[ mid9 ]
         fit_gap = gaps[ mid9 ]
 
+    # a camera is usable when its three anchor points carry real values.
+    # hidden cameras read -999, which ann_have cannot distinguish from a
+    # plotted point — it only knows the key exists
+    func rec_cam_ok [ fid: string, c9: i32 ] -> bool
+        for [ s9: i32 0, s9 < 3, s9 += 1 ]
+            v9 : rec_read[ fid, c9, s9 ]
+            if [ v9.x < -100.0 ] return false
+        return true
+
+    # which camera saw the face: 0 = tl only, 1 = tr only, 2 = both,
+    # -1 = neither. carried into the sample as a signal to the network
+    func rec_vis [ fid: string ] -> i32
+        ok0 : bool [ rec_cam_ok[ fid, 0 ] ]
+        ok1 : bool [ rec_cam_ok[ fid, 1 ] ]
+        if [ ok0 && ok1 ] return 2
+        if [ ok0 ] return 0
+        if [ ok1 ] return 1
+        return -1
+
+    # neutral nose-drop ratio per camera. 0.55 was fitted to a single
+    # top-centre camera; tl and tr sit 0.15m to either side with their own
+    # tilt, so the same head reads as a different drop. measured from the
+    # records, this stops tr-mono poses solving 40 degrees nose-down
+    func calib_nose []
+        if [ nose_k_done ] return
+        nose_k_done = true
+        for [ c9: i32 0, c9 < cam_n && c9 < 8, c9 += 1 ]
+            acc9 : f32 [ 0.0 ]
+            cnt9 : i32 [ 0 ]
+            k9 : i32 [ 0 ]
+            miss9 : i32 [ 0 ]
+            while [ miss9 < 500 ]
+                fid9 : string '{k9}'
+                fp9 : path '{rec_dir[]}/{k9}.agi'
+                if [ !fp9.exists[] ]
+                    k9 += 1
+                    miss9 += 1
+                    continue
+                miss9 = 0
+                if [ rec_cam_ok[ fid9, c9 ] ]
+                    l9 : rec_read[ fid9, c9, 0 ]
+                    r9 : rec_read[ fid9, c9, 1 ]
+                    n9 : rec_read[ fid9, c9, 2 ]
+                    sxq : f32 [ l9.x - r9.x ]
+                    syq : f32 [ l9.y - r9.y ]
+                    spq : f32 [ sqrt[ sxq*sxq + syq*syq ] ]
+                    if [ spq > 0.01 ]
+                        myq : f32 [ (l9.y + r9.y) * 0.5 ]
+                        acc9 += (n9.y - myq) / spq
+                        cnt9 += 1
+                k9 += 1
+            nose_k[ c9 ] = (cnt9 > 0) ? acc9 / f32[ cnt9 ] : 0.55
+            puts 'calib: {cam_role[ c9 ]} nose drop {nose_k[ c9 ]} from {cnt9} records'
+
     func rec_solve [ fid: string, out9: @f32 ] -> bool
-        for [ s9: i32 0, s9 < 3, s9 += 1 ]
-            if [ !ann_have[ fid, 0, s9 ] ] return false
-        mono9 : bool [ false ]
-        for [ s9: i32 0, s9 < 3, s9 += 1 ]
-            if [ !ann_have[ fid, 1, s9 ] ] mono9 = true
-        if [ mono9 ]
-            l5 : rec_read[ fid, 0, 0 ]
-            r5 : rec_read[ fid, 0, 1 ]
-            n5 : rec_read[ fid, 0, 2 ]
+        vis9 : i32 [ rec_vis[ fid ] ]
+        if [ vis9 < 0 ] return false
+        if [ vis9 < 2 ]
+            # one camera has the shot — solve from that one, whichever it is
+            l5 : rec_read[ fid, vis9, 0 ]
+            r5 : rec_read[ fid, vis9, 1 ]
+            n5 : rec_read[ fid, vis9, 2 ]
             mx5 : f32 [ (l5.x + r5.x) * 0.5 ]
             my5 : f32 [ (l5.y + r5.y) * 0.5 ]
             sx5 : f32 [ l5.x - r5.x ]
@@ -5314,7 +5600,7 @@ element hyperspace : trinity
             if [ ya5 > 1.0 ] ya5 = 1.0
             if [ ya5 < -1.0 ] ya5 = -1.0
             out9[0] = asin[ ya5 ] * 0.7
-            pa5 : f32 [ ((n5.y - my5) / sp5 - 0.55) * 1.4 ]
+            pa5 : f32 [ ((n5.y - my5) / sp5 - nose_k[ vis9 ]) * 1.4 ]
             if [ pa5 > 1.0 ] pa5 = 1.0
             if [ pa5 < -1.0 ] pa5 = -1.0
             out9[1] = asin[ pa5 ]
@@ -5328,6 +5614,10 @@ element hyperspace : trinity
             out9[6] = mx5
             out9[7] = my5
             out9[8] = sp5
+            # one camera cannot fix a point in space, only a ray
+            out9[9]  = -999.0
+            out9[10] = -999.0
+            out9[11] = -999.0
             return true
         pw : local f32 [ 9 ]
         for [ s9: i32 0, s9 < 3, s9 += 1 ]
@@ -5408,16 +5698,23 @@ element hyperspace : trinity
             out9[ 3 + c9*3 + 0 ] = (l2.x + r2.x) * 0.5
             out9[ 3 + c9*3 + 1 ] = (l2.y + r2.y) * 0.5
             out9[ 3 + c9*3 + 2 ] = sqrt[ sx2*sx2 + sy2*sy2 ]
+        # eye midpoint in space, mapped to the gen frame like xax
+        out9[9]  = 0.0 - (pw[0] + pw[3]) * 0.5
+        out9[10] = (pw[1] + pw[4]) * 0.5
+        out9[11] = 0.0 - (pw[2] + pw[5]) * 0.5
         return true
 
     # load every solvable record for generation
     func load_recs []
+        calib_nose[]
         rd : rec_dir[]
         recs_dat = new f32 [ 4096 * 9 ]
+        recs_pos = new f32 [ 4096 * 3 ]
         recs_fid = new i32 [ 4096 ]
         recs_look = new f32 [ 8192 ]
         recs_head = new f32 [ 8192 ]
         tmp_dat : new f32 [ 36864 ]
+        tmp_pos : new f32 [ 12288 ]
         tmp_fid : new i32 [ 4096 ]
         tmp_look : new f32 [ 8192 ]
         tmp_head : new f32 [ 8192 ]
@@ -5449,7 +5746,7 @@ element hyperspace : trinity
                 if [ hair_n >= 256 ] break
                 hv9 : rec_read[ fid, hc9, 7 ]
                 if [ hv9.x < -100.0 ] continue
-                hnm : string [ (hc9 == 0) ? 'top' : 'bot' ]
+                hnm : cam_role[ hc9 ]
                 him : Image [ uri: path '{rd}/{k - 1}-{hnm}.png' ]
                 if [ him.width <= 0 ] continue
                 hp8 : @u8 [ him.pixels ]
@@ -5469,10 +5766,12 @@ element hyperspace : trinity
                         hd9 : i64 [ i64[ hair_n ] * 1024 + i64[ py9 ] * 32 + i64[ px9 ] ]
                         hair_pat[ hd9 ] = hp8[ ho9 ]
                 hair_n += 1
-            o9 : local f32 [ 9 ]
+            o9 : local f32 [ 12 ]
             if [ !rec_solve[ fid, o9 ] ] continue
             for [ q9: i32 0, q9 < 9, q9 += 1 ]
                 tmp_dat[ tn * 9 + q9 ] = o9[ q9 ]
+            for [ q8: i32 0, q8 < 3, q8 += 1 ]
+                tmp_pos[ tn * 3 + q8 ] = o9[ 9 + q8 ]
             lk9 : rec_read[ fid, 0, 8 ]
             tmp_look[ tn * 2 + 0 ] = lk9.x
             tmp_look[ tn * 2 + 1 ] = lk9.y
@@ -5518,6 +5817,8 @@ element hyperspace : trinity
             recs_dat[ recs_n * 9 + 1 ] = dp9 / 57.29578
             for [ q9: i32 2, q9 < 9, q9 += 1 ]
                 recs_dat[ recs_n * 9 + q9 ] = tmp_dat[ i6 * 9 + q9 ]
+            for [ q8: i32 0, q8 < 3, q8 += 1 ]
+                recs_pos[ recs_n * 3 + q8 ] = tmp_pos[ i6 * 3 + q8 ]
             recs_look[ recs_n * 2 + 0 ] = tmp_look[ i6 * 2 + 0 ]
             recs_look[ recs_n * 2 + 1 ] = tmp_look[ i6 * 2 + 1 ]
             recs_head[ recs_n * 2 + 0 ] = tmp_head[ i6 * 2 + 0 ]
@@ -5527,6 +5828,10 @@ element hyperspace : trinity
         mydeg : f32 [ my6 * 57.29578 ]
         mpdeg : f32 [ mp6 * 57.29578 ]
         puts 'records: {recs_n} of {tn} poses usable, {recs_noise_n} noise frames, {hair_n} hair patches (bias removed: yaw={mydeg} pitch={mpdeg})'
+        np9 : i32 [ 0 ]
+        for [ i9: i32 0, i9 < recs_n, i9 += 1 ]
+            if [ recs_pos[ i9 * 3 ] > -900.0 ] np9 += 1
+        puts 'records: {np9} of {recs_n} fix the head in space (both cameras annotated)'
 
     func run_fit []
         if [ span_known > 0.0 ]
@@ -5570,7 +5875,7 @@ element hyperspace : trinity
                     ann_last = now2
                     nx : f32 [ (ev.mouse.pos.x - ann_rect.x) / ann_rect.w ]
                     ny : f32 [ (ev.mouse.pos.y - ann_rect.y) / ann_rect.h ]
-                    cam : string [ (ann_cam == 0) ? 'top' : 'bot' ]
+                    cam : cam_role[ ann_cam ]
                     key : string '{cam}_left_oc'
                     if [ ann_sub == 1 ] key = string '{cam}_right_oc'
                     if [ ann_sub == 2 ] key = string '{cam}_nose_base'
@@ -5686,8 +5991,7 @@ element hyperspace : trinity
                     tb_pv += tp9
             n7 : i32 [ 0 ]
             for [ c7: i32 0, c7 < 2, c7 += 1 ]
-                v7 : top
-                if [ c7 == 1 ] v7 = bot
+                v7 : cam_view[ c7 ]
                 if [ !v7 ] continue
                 if [ !v7.camera ] continue
                 gr7 : v7.frame_image[]
@@ -5763,8 +6067,7 @@ element hyperspace : trinity
                 cv.paint[]
             for [ c8: i32 0, c8 < 2, c8 += 1 ]
                 # member ternary yields the slot, not the value: assign
-                ve : top
-                if [ c8 == 1 ] ve = bot
+                ve : cam_view[ c8 ]
                 if [ !ve ] continue
                 if [ ve.bounds.w <= 0.0 ] continue
                 vbx : f32 [ ve.bounds.x ]
@@ -5838,14 +6141,18 @@ element hyperspace : trinity
             if [ now8 >= bench_at && now8 - bench_last >= 600 ]
                 bench_last = now8
                 bd : bench_dir[]
-                tp : path '{bd}/{bench_i}-top.png'
-                bp : path '{bd}/{bench_i}-bot.png'
-                okt : bool [ (top) ? top.save_frame[ tp ] : false ]
-                okb : bool [ (bot) ? bot.save_frame[ bp ] : false ]
-                s : string 'images:\n    top: {bench_i}-top.png\n    bot: {bench_i}-bot.png\ncameras: {cam_n}\nlook: {bench_u} {bench_v}\nhead: {head_u} {head_v}\nhead_in: {head_in}\n'
+                q0 : cam_role[ 0 ]
+                q1 : cam_role[ 1 ]
+                tp : path '{bd}/{bench_i}-{q0}.png'
+                bp : path '{bd}/{bench_i}-{q1}.png'
+                b0 : cam_view[ 0 ]
+                b1 : cam_view[ 1 ]
+                okt : bool [ (b0) ? b0.save_frame[ tp ] : false ]
+                okb : bool [ (b1) ? b1.save_frame[ bp ] : false ]
+                s : string 'images:\n    {q0}: {bench_i}-{q0}.png\n    {q1}: {bench_i}-{q1}.png\ncameras: {cam_n}\nlook: {bench_u} {bench_v}\nhead: {head_u} {head_v}\nhead_in: {head_in}\n'
                 ag : path '{bd}/{bench_i}.agi'
                 ag.save[ s, null ]
-                if [ bench_i % 10 == 0 ] puts 'benchmark: {bench_i} pairs (top={okt} bot={okb})'
+                if [ bench_i % 10 == 0 ] puts 'benchmark: {bench_i} pairs ({q0}={okt} {q1}={okb})'
                 bench_i += 1
             return
 
@@ -5853,24 +6160,28 @@ element hyperspace : trinity
         sw : f32 [ f32[ ux.width ] ]
         sh : f32 [ f32[ ux.height ] ]
         if [ rec_mode == 'record' ]
-            if [ rec_i % 50 == 0 && top && top.camera && bot && bot.camera ]
-                puts 'rec cams: top dev={top.camera.device} bot dev={bot.camera.device}'
+            c0v : cam_view[ 0 ]
+            c1v : cam_view[ 1 ]
+            if [ rec_i % 50 == 0 && c0v && c0v.camera && c1v && c1v.camera ]
+                puts 'rec cams: {cam_role[ 0 ]} dev={c0v.camera.device} {cam_role[ 1 ]} dev={c1v.camera.device}'
             now3 : i64 [ epoch_millis[] ]
             if [ rec_noise && now3 - rec_last >= 600 ]
                 rec_last = now3
                 rd : rec_dir[]
-                tp : path '{rd}/{rec_i}-top.png'
-                bp : path '{rd}/{rec_i}-bot.png'
-                okt : bool [ (top) ? top.save_frame[ tp ] : false ]
-                okb : bool [ (bot) ? bot.save_frame[ bp ] : false ]
+                w0 : cam_role[ 0 ]
+                w1 : cam_role[ 1 ]
+                tp : path '{rd}/{rec_i}-{w0}.png'
+                bp : path '{rd}/{rec_i}-{w1}.png'
+                okt : bool [ (c0v) ? c0v.save_frame[ tp ] : false ]
+                okb : bool [ (c1v) ? c1v.save_frame[ bp ] : false ]
                 # list only the cameras we actually have
-                s : string 'images:\n    top: {rec_i}-top.png\n'
-                if [ cam_n > 1 ] s = string '{s}    bot: {rec_i}-bot.png\n'
+                s : string 'images:\n    {w0}: {rec_i}-{w0}.png\n'
+                if [ cam_n > 1 ] s = string '{s}    {w1}: {rec_i}-{w1}.png\n'
                 s = string '{s}cameras: {cam_n}\n'
                 if [ rec_noise ] s = string '{s}noise: true\n'
                 ag : path '{rd}/{rec_i}.agi'
                 ag.save[ s, null ]
-                if [ rec_i % 10 == 0 ] puts 'record: {rec_i} pairs (top={okt} bot={okb})'
+                if [ rec_i % 10 == 0 ] puts 'record: {rec_i} pairs ({w0}={okt} {w1}={okb})'
                 rec_i += 1
             return
         if [ rec_mode == 'annotate' ]
@@ -5883,7 +6194,7 @@ element hyperspace : trinity
             cv.draw_image[ ann_tex, ann_rect ]
             # instruction line: what to plot, which camera, which pair
             fid0 : ann_files[ ann_i ]
-            cam0 : string [ (ann_cam == 0) ? 'top' : 'bot' ]
+            cam0 : cam_role[ ann_cam ]
             lbl0 : string 'left oc'
             if [ ann_sub == 1 ] lbl0 = string 'right oc'
             if [ ann_sub == 2 ] lbl0 = string 'nose base'
@@ -5893,7 +6204,7 @@ element hyperspace : trinity
             if [ ann_sub == 6 ] lbl0 = string 'right ic'
             cv.sync_fence[]
             cv.fill_color[ '#9ab' ]
-            cv.draw_text[ 'plot {lbl0}  {cam0}  #{fid0}  ({ann_i + 1}/{ann_files.count})  space = skip  n = noise',
+            cv.draw_text[ 'plot {lbl0}  {cam0}  #{fid0}  ({ann_i + 1}/{ann_files.count})  x = hidden (any eye covered)  n = noise',
                 rect [ x: 16.0, y: 12.0, w: sw - 32.0, h: 28.0 ],
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
             cv.paint[]
@@ -5908,7 +6219,7 @@ element hyperspace : trinity
     public  screen_w  : f32 [ 0.708 ]          # LCD width, meters
     public  screen_h  : f32 [ 0.398 ]          # LCD height, meters
     public  face_dist : f32 [ 0.55 ]           # camera to face, meters
-    public  dist_min  : f32 [ 0.152 ]          # nearest seat distance (6in)
+    public  dist_min  : f32 [ 0.2032 ]         # nearest seat the face still fits (8in)
     public  dist_max  : f32 [ 0.635 ]          # farthest seat distance (25in)
     public  check_obj : bool                   # write 3D confirm .obj, first 4
     public  dump_iris : bool                   # dump 1024 iris variants as pngs
@@ -5973,6 +6284,7 @@ element hyperspace : trinity
     public  fit        : bool
     mutable recs_n     : i32
     mutable recs_dat   : @f32               # 9 per record, see rec_solve
+    mutable recs_pos   : @f32               # 3 per record: triangulated head, -999 mono
     mutable recs_fid   : @i32               # record file id per loaded record
     mutable recs_look  : @f32               # 2 per record: the followed gaze
     mutable recs_head  : @f32               # 2 per record: the head circle
@@ -6145,9 +6457,17 @@ element hyperspace : trinity
                 if [ rec_fast ] au_next_fast[]
                 el              au_next_dot[]
             return
-        if [ rec_mode == 'annotate' && ev.key.unicode == 32 ]
+        # X: this camera cannot see the eyes. mark hidden if EITHER eye is
+        # covered at all — a partly clipped face is still usable, since
+        # off-screen clipping is augmented, but an occluded eye is not.
+        # must precede the global X binding, which starts generation
+        if [ rec_mode == 'annotate' && ev.key.unicode == 88 ]
+            camx : cam_role[ ann_cam ]
+            fidx : i32 [ i32[ atof[ ann_files[ ann_i ].chars ] ] ]
+            agi_put2[ fidx, '{camx}_hidden', 'true' ]
+            puts 'annotate: #{fidx} {camx} hidden'
+            ann_refresh_marks[]
             ann_sub = 7
-            ann_cam = 1
             ann_ext = ev.key.shift
             ann_seek[ false ]
             return
@@ -6155,7 +6475,7 @@ element hyperspace : trinity
             if [ ann_rect.w > 0.0 ]
                 nx8 : f32 [ (ux.mouse.x - ann_rect.x) / ann_rect.w ]
                 ny8 : f32 [ (ux.mouse.y - ann_rect.y) / ann_rect.h ]
-                cam8 : string [ (ann_cam == 0) ? 'top' : 'bot' ]
+                cam8 : cam_role[ ann_cam ]
                 fidh : i32 [ i32[ atof[ ann_files[ ann_i ].chars ] ] ]
                 agi_put2[ fidh, '{cam8}_hair', '{nx8} {ny8}' ]
                 puts 'annotate: #{fidh} {cam8} hair at ({nx8}, {ny8})'
@@ -6182,7 +6502,7 @@ element hyperspace : trinity
         if [ ev.key.unicode == 82 ] regen_i += 1
         if [ ev.key.unicode == 71 ]
             if [ face_main ] face_main.begin_export[]
-        if [ ev.key.unicode == 88 ] start_capture[]
+        if [ ev.key.unicode == 88 && rec_mode == '' ] start_capture[]
         if [ face_main ] face_main.on_key[ ev ]
 
     public func start_capture []
@@ -6245,23 +6565,28 @@ element hyperspace : trinity
             e['rec-toolbar'] = HsToolbar [ elements: Elements [
                 'record':  HsButton [ label: 'stop' ] ] ]
             # animated: live feeds must repaint every frame, never cache
-            if [ cam_n > 1 ]
-                e['top'] = RecTop [ device: cam_dev[ 0 ], animated: true, paint_off: !rec_noise ]
-                e['bot'] = RecBot [ device: cam_dev[ 1 ], animated: true, paint_off: !rec_noise ]
-            el
-                e['top'] = RecFull [ device: cam_dev[ 0 ], animated: true, paint_off: !rec_noise ]
+            for [ i9: i32 0, i9 < cam_n, i9 += 1 ]
+                nm9 : cam_role[ i9 ]
+                if [ cam_n < 2 ]
+                    e[ nm9 ] = RecFull [ device: cam_dev[ i9 ], animated: true, paint_off: !rec_noise ]
+                el [ i9 == 0 ]
+                    e[ nm9 ] = RecTop [ device: cam_dev[ i9 ], animated: true, paint_off: !rec_noise ]
+                el
+                    e[ nm9 ] = RecBot [ device: cam_dev[ i9 ], animated: true, paint_off: !rec_noise ]
             return e
         if [ rec_mode == 'test' ]
             # small live feeds; the cascade + gaze dot draw in on_canvas
-            e['top'] = CamTop [ device: cam_dev[ 0 ], animated: true ]
-            if [ cam_n > 1 ]
-                e['bot'] = CamBot [ device: cam_dev[ 1 ], animated: true ]
+            for [ i9: i32 0, i9 < cam_n, i9 += 1 ]
+                nm9 : cam_role[ i9 ]
+                if [ i9 == 0 ] e[ nm9 ] = CamTop [ device: cam_dev[ i9 ], animated: true ]
+                el             e[ nm9 ] = CamBot [ device: cam_dev[ i9 ], animated: true ]
             return e
         if [ rec_mode == 'bench' ]
             # cameras pump invisibly; ONLY the spiral mark shows
-            e['top'] = CamTop [ device: cam_dev[ 0 ], animated: true, paint_off: true ]
-            if [ cam_n > 1 ]
-                e['bot'] = CamBot [ device: cam_dev[ 1 ], animated: true, paint_off: true ]
+            for [ i9: i32 0, i9 < cam_n, i9 += 1 ]
+                nm9 : cam_role[ i9 ]
+                if [ i9 == 0 ] e[ nm9 ] = CamTop [ device: cam_dev[ i9 ], animated: true, paint_off: true ]
+                el             e[ nm9 ] = CamBot [ device: cam_dev[ i9 ], animated: true, paint_off: true ]
             return e
         e['face_main'] = FaceMain [ model_path: model, face_idx: 0,
             yaw: yaw, pitch: pitch, dist: dist, look_x: look_x, look_y: look_y, look_z: look_z ]

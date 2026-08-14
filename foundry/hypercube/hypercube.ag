@@ -10,7 +10,7 @@ import <stdio.h>
 import <stdlib.h>
 
 # hypercube: the head-coupled 3d demo. hyperspace does the work —
-# EyeTrack runs the find/target/look models, Cube3D renders the
+# Observer runs the find/target/look models, Cube3D renders the
 # scene through the off-axis frustum at the tracked eye.
 element Cube3D
     style : CSS {
@@ -22,6 +22,9 @@ element Cube3D
     public eye_z : f32 [ -0.45 ]
     public scr_w : f32 [ 0.708 ]
     public scr_h : f32 [ 0.398 ]
+    # align: the cube turns to face the eye, so its front reads as a
+    # true square. off: it stays fixed and you look around it
+    public align : bool
     mutable vshader : ViewerLit
     mutable vmodel  : Model
     mutable vrender : Render
@@ -43,15 +46,18 @@ element Cube3D
             vmodel = Model [ vk: cv.vk, w: w, s: vshader, rigid_s: vshader, cull_none: true ]
             vmodel.hold[]
             vmodel.id = gmodel
-            # native resolution: wscale 1 tracks the display in device pixels
-            vrender = Render [ vk: cv.vk, w: w, wscale: 1.0, use_depth: true, tag: 'hypercube', clear_color: vec4f [ 0.06, 0.08, 0.12, 1.0 ], models: array Model [ vmodel ] ]
+            # 2x supersample: trinity is SAMPLE_COUNT_1 everywhere, so the
+            # edges are smoothed by rendering double and letting the linear
+            # draw_image resolve it. stepping on the cube edges reads as
+            # "screen" and breaks the portal
+            vrender = Render [ vk: cv.vk, w: w, wscale: 2.0, use_depth: true, tag: 'hypercube', clear_color: vec4f [ 0.06, 0.08, 0.12, 1.0 ], models: array Model [ vmodel ] ]
             vrender.hold[]
             w.element_targets[ 'hc_{id}' ] = vrender
         # off-axis frustum from the tracked eye: work in flipped z
         # (viewer at +z looking down -z, screen plane z 0)
         n9 : f32 [ 0.05 ]
         ezp : f32 [ 0.0 - eye_z ]
-        if [ ezp < 0.08 ] ezp = 0.08
+        if [ ezp < 0.2032 ] ezp = 0.2032
         k9 : f32 [ n9 / ezp ]
         l9 : f32 [ (0.0 - scr_w * 0.5 - eye_x) * k9 ]
         r9 : f32 [ (scr_w * 0.5 - eye_x) * k9 ]
@@ -68,8 +74,45 @@ element Cube3D
         vw.m[9] = 0.0 - vw.m[9]
         vw.m[13] = 0.0 - vw.m[13]
         md : mat4f [ mat4f.identity[] ]
-        md = md.translate[ vec3f [ 0.0, 0.0, -0.051 ] ]
-        md = md.scale[ vec3f [ 0.045, 0.045, 0.045 ] ]
+        cz9 : f32 [ -0.051 ]
+        sc9 : f32 [ 0.045 ]
+        if [ align ]
+            # basis facing the eye: forward runs cube -> eye, so the front
+            # face stays perpendicular to the line of sight (a true square)
+            dx9 : f32 [ eye_x ]
+            dy9 : f32 [ eye_y ]
+            dz9 : f32 [ ezp - cz9 ]
+            dl9 : f32 [ sqrt[ dx9 * dx9 + dy9 * dy9 + dz9 * dz9 ] ]
+            if [ dl9 < 0.0001 ] dl9 = 0.0001
+            fx9 : f32 [ dx9 / dl9 ]
+            fy9 : f32 [ dy9 / dl9 ]
+            fz9 : f32 [ dz9 / dl9 ]
+            # right = normalize(up x forward) with up = 0,-1,0 to match the
+            # view's negated y row; with +y the basis mirrors and the cube
+            # turns AWAY from the eye, deepening the squash instead of undoing it
+            rx9 : f32 [ 0.0 - fz9 ]
+            rz9 : f32 [ fx9 ]
+            rl9 : f32 [ sqrt[ rx9 * rx9 + rz9 * rz9 ] ]
+            if [ rl9 < 0.0001 ] rl9 = 0.0001
+            rx9 = rx9 / rl9
+            rz9 = rz9 / rl9
+            # up = forward x right (right has no y term)
+            ux9 : f32 [ fy9 * rz9 ]
+            uy9 : f32 [ fz9 * rx9 - fx9 * rz9 ]
+            uz9 : f32 [ 0.0 - fy9 * rx9 ]
+            md.m[0]  = rx9 * sc9
+            md.m[1]  = 0.0
+            md.m[2]  = rz9 * sc9
+            md.m[4]  = ux9 * sc9
+            md.m[5]  = uy9 * sc9
+            md.m[6]  = uz9 * sc9
+            md.m[8]  = fx9 * sc9
+            md.m[9]  = fy9 * sc9
+            md.m[10] = fz9 * sc9
+            md.m[14] = cz9
+        el
+            md = md.translate[ vec3f [ 0.0, 0.0, cz9 ] ]
+            md = md.scale[ vec3f [ sc9, sc9, sc9 ] ]
         vshader.model = md
         vshader.view  = vw
         vshader.proj  = pj
@@ -83,14 +126,15 @@ element hypercube : trinity
     public width      : i32    [ 1024 ]
     public height     : i32    [ 1024 ]
     public title      : string [ 'hypercube' ]
-    public device     : string [ '/dev/video2' ]
     public models_dir : path   [ path '/src/silver/foundry/hyperspace/models' ]
-    public top        : CameraView             # auto-binds to e['top']
-    mutable trk    : EyeTrack
+    mutable trk    : Observer
     mutable seeded : bool
+    mutable align  : bool
+    mutable dbgn   : i32
 
     public func on_key [ ev: Event ]
         if [ !ev.key.state ] return
+        if [ ev.key.unicode == 70 ] align = !align
         if [ !trk ] return
         if [ ev.key.unicode == 88 ] trk.flip = 0.0 - trk.flip
         if [ ev.key.unicode == 82 ] trk.retrack[]
@@ -99,25 +143,39 @@ element hypercube : trinity
 
     public func on_overlay [ cv: Canvas ]
         if [ !trk ] return
-        v8 : top
-        if [ v8 && v8.camera ]
+        # every camera on the rig feeds the tracker, keyed by its name
+        for [ i8: i32 0, i8 < trk.rig.count[], i8 += 1 ]
+            c8 : trk.rig.at[ i8 ]
+            if [ !c8 ] continue
+            v8 : cast CameraView [ elements[ c8.name ] ]
+            if [ !v8 || !v8.camera ] continue
             gr8 : v8.frame_image[]
-            if [ gr8 ] trk.track[ gr8 ]
+            if [ gr8 ] trk.feed[ i8, gr8 ]
+        trk.track_rig[]
 
     public func render [] -> Elements
         if [ !seeded ]
             seeded = true
             ux.set_fullscreen[ true ]
-            trk = EyeTrack [ mdir: models_dir ]
+            trk = Observer [ mdir: models_dir ]
             trk.hold[]
-            puts 'hypercube: x = flip parallax, arrows = y bias, esc = quit'
+            puts 'hypercube: f = align/look, x = flip parallax, arrows = y bias, esc = quit'
         e : Elements [ ]
-        top9 : CamTop [ device: device, animated: true, paint_off: true ]
-        e['top'] = top9
+        # one feed per configured camera, named as the rig names it
+        for [ i8: i32 0, i8 < trk.rig.count[], i8 += 1 ]
+            c8 : trk.rig.at[ i8 ]
+            if [ i8 == 0 ] e[ c8.name ] = CamTop [ device: c8.dev, animated: true, paint_off: true ]
+            el             e[ c8.name ] = CamBot [ device: c8.dev, animated: true, paint_off: true ]
+        dbgn += 1
+        if [ dbgn % 60 == 0 ]
+            printf[ "EYE live=%d x=%.4f y=%.4f z=%.4f align=%d\n",
+                (trk && trk.live) ? 1 : 0,
+                (trk) ? trk.eye_x : 0.0, (trk) ? trk.eye_y : 0.0,
+                (trk) ? trk.eye_z : 0.0, (align) ? 1 : 0 ]
         tex9 : f32 [ (trk && trk.live) ? trk.eye_x : 0.0 ]
         tey9 : f32 [ (trk && trk.live) ? trk.eye_y : 0.0 ]
         tez9 : f32 [ (trk && trk.live) ? trk.eye_z : -0.45 ]
         cube9 : Cube3D [ model_path: path 'models/cube.gltf',
-            eye_x: tex9, eye_y: tey9, eye_z: tez9, animated: true ]
+            eye_x: tex9, eye_y: tey9, eye_z: tez9, align: align, animated: true ]
         e['cube3d'] = cube9
         return e

@@ -686,7 +686,7 @@ abstract live_app media_app
                         rh = fh9
                     if [ rw > 0 && rh > 0 && (rw != wn.width || rh != wn.height) ]
                         vkQueueWaitIdle[ vk.queue ]
-                        wn.resize[ rw, rh ]
+                        wn.resize*[ rw, rh ]
                         width  = rw
                         height = rh
             return true
@@ -743,7 +743,7 @@ abstract live_app media_app
                     rw9 : i32 [ host_pa[] ]
                     rh9 : i32 [ host_pb[] ]
                     if [ rw9 > 0 && rh9 > 0 ]
-                        wn.resize[ rw9, rh9 ]
+                        wn.resize*[ rw9, rh9 ]
 
         # agent socket (debug builds): line commands become real Events
         func agent_find [ e: element, aid: string ] -> element
@@ -3894,7 +3894,7 @@ abstract media_app trinity
         root.vk = window.vk
         w.update *[]
         render   *[]
-        w.resize[w.width, w.height]
+        w.resize*[w.width, w.height]
         window.restyle = true
         Au.auto_free[ true ]
 
@@ -3930,7 +3930,7 @@ abstract media_app trinity
             root.vk = awin.vk
             w.update *[]
             render   *[]
-            w.resize[ aw, ah ]
+            w.resize*[ aw, ah ]
             awin.restyle = true
             puts 'attach: hosted {aw}x{ah} (slot {host_slot[]})'
 
