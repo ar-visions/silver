@@ -102,6 +102,7 @@ class Observer
     # from screen center
     public mdir   : path
     public rig    : CamRig
+    public trace  : bool                       # print each estimate
     public flip   : f32 [ -1.0 ]               # x parallax sign
     public bias_y : f32 [ -0.1016 ]            # observer y bias, m
     public eye_x  : f32
@@ -115,13 +116,13 @@ class Observer
     mutable ry : f32
     mutable sc : f32
     # per-view lock state; lx..sc above are scratch for the view in hand
-    mutable havev : new i32 [ 8 ]
-    mutable lxv   : new f32 [ 8 ]
-    mutable lyv   : new f32 [ 8 ]
-    mutable rxv   : new f32 [ 8 ]
-    mutable ryv   : new f32 [ 8 ]
-    mutable scv   : new f32 [ 8 ]
-    mutable obsv  : new f32 [ 8 ]          # 0 fully visible, 1 fully obscured
+    public havev : new i32 [ 8 ]
+    public lxv   : new f32 [ 8 ]
+    public lyv   : new f32 [ 8 ]
+    public rxv   : new f32 [ 8 ]
+    public ryv   : new f32 [ 8 ]
+    public scv   : new f32 [ 8 ]
+    public obsv  : new f32 [ 8 ]           # 0 fully visible, 1 fully obscured
     intern ct : array tensor               # 3 crops per view, view-major
     intern zt : tensor                     # zero crop for a blind view
     intern ax2 : tensor
@@ -307,16 +308,20 @@ class Observer
 
     # every view fed: one look call over both, weighted by obscure
     public func track_rig []
+        if [ trace ]
+            puts 'trk: have {havev[0]} {havev[1]} obs {obsv[0]} {obsv[1]} sc {scv[0]} {scv[1]}'
         if [ obsv[0] >= 1.0 && obsv[1] >= 1.0 ]
             live = false
             return
         ax2.floats[36] = obsv[0]
         ax2.floats[37] = obsv[1]
         m_look.forward6i[ ct[0], ct[1], ct[2], ct[3], ct[4], ct[5],
-            ax2, o8, 16, 38 ]
+            ax2, o8, 32, 38 ]
         nex : f32 [ o8.floats[4] * flip ]
         ney : f32 [ o8.floats[5] + bias_y ]
         nez : f32 [ o8.floats[6] ]
+        if [ trace ]
+            puts 'trk: obs {obsv[0]} {obsv[1]} sc {scv[0]} {scv[1]} eye {nex} {ney} {nez}'
         # the model never saw closer than dist_min; do not invent it
         if [ nez > -0.2032 ] nez = -0.2032
         if [ !live ]

@@ -152,20 +152,58 @@ element hypercube : trinity
             gr8 : v8.frame_image[]
             if [ gr8 ] trk.feed[ i8, gr8 ]
         trk.track_rig[]
+        # what each camera is detecting, drawn over its own feed
+        for [ i8: i32 0, i8 < trk.rig.count[], i8 += 1 ]
+            c8 : trk.rig.at[ i8 ]
+            if [ !c8 ] continue
+            v8 : cast CameraView [ elements[ c8.name ] ]
+            if [ !v8 ] continue
+            if [ v8.bounds.w <= 0.0 ] continue
+            vbx : f32 [ v8.bounds.x ]
+            vby : f32 [ v8.bounds.y ]
+            vbw : f32 [ v8.bounds.w ]
+            vbh : f32 [ v8.bounds.h ]
+            elx : f32 [ trk.lxv[ i8 ] ]
+            ely : f32 [ trk.lyv[ i8 ] ]
+            erx : f32 [ trk.rxv[ i8 ] ]
+            ery : f32 [ trk.ryv[ i8 ] ]
+            scc : f32 [ trk.scv[ i8 ] ]
+            obc : f32 [ trk.obsv[ i8 ] ]
+            lok : bool [ trk.havev[ i8 ] != 0 ]
+            if [ lok && scc > 0.0 ]
+                mxc : f32 [ (elx + erx) * 0.5 ]
+                myc : f32 [ (ely + ery) * 0.5 ]
+                cv.rect_to[ vbx + (mxc - scc * 0.5) * vbw,
+                            vby + (myc - scc * 0.5) * vbh,
+                            scc * vbw, scc * vbh ]
+                cv.fill_color[ '#0000' ]
+                cv.stroke_color[ ( obc < 0.5 ) ? '#ff0' : '#f40' ]
+                cv.stroke_width[ 2.0 ]
+                cv.paint[]
+                cv.arc[ vbx + elx * vbw, vby + ely * vbh, 4.0, 0.0, 6.2831853 ]
+                cv.fill_color[ '#0f8' ]
+                cv.stroke_width[ 0.0 ]
+                cv.paint[]
+                cv.arc[ vbx + erx * vbw, vby + ery * vbh, 4.0, 0.0, 6.2831853 ]
+                cv.paint[]
+            nm8 : string [ c8.name ]
+            st8 : string [ ( lok ) ? 'lock' : 'searching' ]
+            sp8 : i32 [ i32[ scc * 100.0 ] ]
+            op8 : i32 [ i32[ obc * 100.0 ] ]
+            cv.fill_color[ ( lok ) ? '#9ab' : '#f66' ]
+            cv.draw_text[ '{nm8}  {st8}  scale {sp8}%  obscure {op8}%',
+                rect [ x: vbx + 4.0, y: vby + vbh + 2.0, w: vbw, h: 18.0 ],
+                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+            cv.paint[]
 
     public func render [] -> Elements
         if [ !seeded ]
             seeded = true
             ux.set_fullscreen[ true ]
-            trk = Observer [ mdir: models_dir ]
+            trk = Observer [ mdir: models_dir, trace: true ]
             trk.hold[]
             puts 'hypercube: f = align/look, x = flip parallax, arrows = y bias, esc = quit'
         e : Elements [ ]
-        # one feed per configured camera, named as the rig names it
-        for [ i8: i32 0, i8 < trk.rig.count[], i8 += 1 ]
-            c8 : trk.rig.at[ i8 ]
-            if [ i8 == 0 ] e[ c8.name ] = CamTop [ device: c8.dev, animated: true, paint_off: true ]
-            el             e[ c8.name ] = CamBot [ device: c8.dev, animated: true, paint_off: true ]
         dbgn += 1
         if [ dbgn % 60 == 0 ]
             printf[ "EYE live=%d x=%.4f y=%.4f z=%.4f align=%d\n",
@@ -178,4 +216,10 @@ element hypercube : trinity
         cube9 : Cube3D [ model_path: path 'models/cube.gltf',
             eye_x: tex9, eye_y: tey9, eye_z: tez9, align: align, animated: true ]
         e['cube3d'] = cube9
+        # feeds last: insertion order is paint order, and the cube
+        # fills the whole window
+        for [ i8: i32 0, i8 < trk.rig.count[], i8 += 1 ]
+            c8 : trk.rig.at[ i8 ]
+            if [ i8 == 0 ] e[ c8.name ] = CamTop [ device: c8.dev, animated: true ]
+            el             e[ c8.name ] = CamBot [ device: c8.dev, animated: true ]
         return e

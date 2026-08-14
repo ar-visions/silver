@@ -27,7 +27,7 @@ def parse_args():
     p.add_argument('--lr',       type=float, default=0.00002)
     p.add_argument('--find_lr',  type=float, default=0.001)
     p.add_argument('--find_px',  type=int,   default=160)   # find frame px
-    p.add_argument('--find_clean', action='store_true')     # no noise
+    p.add_argument('--find_noise', action='store_true')     # donors+blur
     p.add_argument('--batch',    type=int,   default=64)
     p.add_argument('--draw',     type=int,   default=20000)  # samples per epoch
     p.add_argument('--size',     type=int,   default=32)     # every net input side
@@ -831,13 +831,13 @@ def train_find(tsf, laux, lfid, rec):
         # clone noise donors over random parts that are not the face
         keep = box_protect((mb[:, 0] + 0.5) * S, (mb[:, 1] + 0.5) * S,
                            sb[:, 0] * 0.75 * S)
-        for _ in range(0 if args.find_clean else 3):
+        for _ in range(3 if args.find_noise else 0):
             d = tex[torch.randint(0, tex.shape[0], (B,), device=dev)]
             a = ((perlin(B, S, dev, int(torch.randint(2, 6, (1,)).item()))
                   - 0.35) * 2.5).clamp(0, 1)
             gate = (torch.rand(B, 1, 1, 1, device=dev) < 0.7).float()
             xb = xb + gate * a * (1 - keep) * (d - xb)
-        if not args.find_clean:
+        if args.find_noise:
             xb = renorm_levels(xb, vstats)
             xb = sensor(xb)
         return F.mse_loss(m(xb), yb)

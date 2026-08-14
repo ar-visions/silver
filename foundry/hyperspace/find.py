@@ -33,6 +33,8 @@ def parse_args():
     p.add_argument('--holdout', type=float, default=10.0)
     p.add_argument('--seed',    type=int,   default=1234)
     p.add_argument('--sensor',  type=int,   default=160)
+    p.add_argument('--source',  default='record',
+                   choices=['record', 'render', 'both'])
     p.add_argument('--sheet',   action='store_true')
     return p.parse_args()
 
@@ -49,9 +51,45 @@ def read_pair(text, key):
     return (float(m.group(1)), float(m.group(2))) if m and m.group(2) else None
 
 
+def load_record():
+    """the hand-annotated real captures. same fields, 0..1 origin."""
+    rd = os.path.join(SDIR, 'record')
+    rows = []
+    for agi in sorted(glob.glob(os.path.join(rd, '*.agi'))):
+        text = open(agi).read()
+        if 'noise: true' in text:
+            continue
+        fid = os.path.basename(agi)[:-4]
+        for cs in re.findall(r'^ {4}(\w+):\s*\S+\.png\s*$', text, re.M):
+            png = os.path.join(rd, f'{fid}-{cs}.png')
+            if not os.path.exists(png):
+                continue
+            ocl = read_pair(text, f'{cs}_left_oc')
+            ocr = read_pair(text, f'{cs}_right_oc')
+            if not ocl or not ocr or min(ocl[0], ocr[0]) < -900:
+                continue
+            # annotations are 0..1 frame fractions, ours are centred
+            ocl = (ocl[0] - 0.5, ocl[1] - 0.5)
+            ocr = (ocr[0] - 0.5, ocr[1] - 0.5)
+            sc = float(np.hypot(ocl[0] - ocr[0], ocl[1] - ocr[1]))
+            mx = (ocl[0] + ocr[0]) * 0.5
+            my = (ocl[1] + ocr[1]) * 0.5
+            if sc <= 0.02 or max(abs(mx), abs(my)) + sc / 2 > 0.5:
+                continue
+            g = Image.open(png).convert('L')
+            if g.width > args.sensor:
+                g = g.resize((args.sensor, args.sensor), Image.BOX)
+            rows.append(dict(fid=int(fid), cam=0,
+                             g=np.asarray(g, np.float32) / 255.0,
+                             mx=mx, my=my, sc=sc))
+    return rows
+
+
 def load_samples():
     """one row per camera view that has outer-corner labels."""
-    rows = []
+    if args.source == 'record':
+        return load_record()
+    rows = load_record() if args.source == 'both' else []
     for agi in sorted(glob.glob(os.path.join(SDIR, '*.agi'))):
         fid = os.path.basename(agi)[:-4]
         if not fid.isdigit():
@@ -243,7 +281,7 @@ def main():
             opt.zero_grad()
             loss.backward()
             opt.step()
-            tot += float(loss)
+            tot += loss.detach().item()
         m.eval()
         with torch.no_grad():
             p = m(ex)
