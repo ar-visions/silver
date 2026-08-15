@@ -236,8 +236,8 @@ abstract live_app media_app
             em['bounds'] = array f32 [ e.bounds.x, e.bounds.y, e.bounds.w, e.bounds.h ]
         if [ e.label && e.label.count > 0 ]
             em['label'] = e.label
-        if [ e.hide      ] em['hide']      = string 'true'
-        if [ e.focusable ] em['focusable'] = string 'true'
+        if [ e.hide      ] em['hide']      = 'true'
+        if [ e.focusable ] em['focusable'] = 'true'
         if [ e.elements ]
             inner : map object [string] []
             for [ ch: element, k: string ] in e.elements
@@ -248,12 +248,12 @@ abstract live_app media_app
     func frame [ ] -> bool
         if [ !path_said ]
             path_said = true
-            fp8 : fopen[ '/tmp/hostapp-path.log', 'a' ]
-            if [ fp8 ]
-                fprintf[ fp8, "app=%s attach=%d isolate=%d slot=%d\n",
+            file : fopen[ '/tmp/hostapp-path.log', 'a' ]
+            if [ file ]
+                fprintf[ file, "app=%s attach=%d isolate=%d slot=%d\n",
                     getenv[ 'SILVER_APP' ], (attach) ? 1 : 0,
                     (getenv[ 'SILVER_ISOLATE_APP' ]) ? 1 : 0, host_slot[] ]
-                fclose[ fp8 ]
+                fclose[ file ]
         if [ w ]
             bwn : Window [ w ]
             if [ !attach ]
@@ -263,8 +263,7 @@ abstract live_app media_app
                     if [ ht == i32[ HM.live ] ]
                         bwn.dict_live = host_pa[] != 0
                         bwn.restyle   = true
-                    el [ ht == i32[ HM.close ] ]
-                        bwn.ide_close = true
+
         ifdef [ linux ]
             if [ attach && getenv[ 'SILVER_ISOLATE_APP' ] ]
                 render*[]
@@ -321,24 +320,24 @@ abstract live_app media_app
             vk.br_schema_us  = 0
         render*[]
         ifdef [ linux ]
-            wp9 : Window [ w ]
-            sup9 : bool [ getenv[ 'SILVER_ISOLATE_CHILD' ] != null ]
-            if [ (wp9.ide_asked || sup9) && !wp9.ide_active ] share_publish[ 0 ]
+            win : Window [ w ]
+            child : bool [ getenv[ 'SILVER_ISOLATE_CHILD' ] != null ]
+            if [ (win.ide_asked || child) && !win.ide_active ] share_publish[ 0 ]
             instr_publish[]
         if [ screenshot ]
             shot_frames += 1
             if [ shot_frames >= shot_frame ]
                 # no render yet (hidden window, early frame): wait, not crash
-                lr8 : w.last_render[]
-                if [ lr8 && lr8.color ]
-                    im : Image [ lr8.color ]
+                render : w.last_render[]
+                if [ render && render.color ]
+                    im : Image [ render.color ]
                     im.png[ screenshot ]
                     puts 'screenshot: {screenshot}'
                     exit[ 0 ]
         Au.auto_free[false]
-        afp9 : path 'afprobe'
-        afh9 : Au.header[ afp9 ]
-        if [ afh9.managed > 100000 ] puts 'AFPOOL ix={afh9.managed} — pool NOT draining'
+        probe : path 'afprobe'
+        header : Au.header[ probe ]
+        if [ header.managed > 100000 ] puts 'AFPOOL ix={header.managed} — pool NOT draining'
         return !glfwWindowShouldClose[ w.glfw ] && !Au.quit_requested[]
 
     ifdef [ linux ]
@@ -374,9 +373,9 @@ abstract live_app media_app
             mem : bool [ false ]
             if [ vl ]
                 for [ i: i32 0, i < vl.count, i += 1 ]
-                    e9 : '{vl[i]}'
-                    if [ e9.compare[ 'memory' ] == 0 ] mem = true
-                    ns.push[ e9 ]
+                    name : '{vl[i]}'
+                    if [ name.compare[ 'memory' ] == 0 ] mem = true
+                    ns.push[ name ]
             if [ !mem ] ns.push[ 'memory' ]
             while [ ns.count > 8 ] ns.remove[ ns.count - 1 ]
             instr_slots = ns
@@ -399,8 +398,8 @@ abstract live_app media_app
                 if [ !nm || nm.count == 0 ] continue
                 sd : i32 [ (instr_has[ instr_view, nm ]) ? 2 + i : -1 ]
                 lg : i32 [ (instr_has[ instr_logs, nm ]) ? 1 : 0 ]
-                e9 : '{nm}:{sd}:{lg}'
-                rs = (rs.count == 0) ? e9 : '{rs} {e9}'
+                entry : '{nm}:{sd}:{lg}'
+                rs = (rs.count == 0) ? entry : '{rs} {entry}'
             return rs
 
         # shift+click on the shell's button: keep writing this one to the
@@ -424,35 +423,35 @@ abstract live_app media_app
         func mem_lines [] -> array string
             ls : array string []
             if [ !mem_hist || mem_hist.count == 0 ] return ls
-            f9 : f32 [ mem_hist[ mem_hist.count - 1 ] ]
+            last : f32 [ mem_hist[ mem_hist.count - 1 ] ]
             pk : f32 [ 0.0 ]
-            lo : f32 [ f9 ]
+            lo : f32 [ last ]
             for [ i: i32 0, i < mem_hist.count, i += 1 ]
                 if [ mem_hist[i] > pk ] pk = mem_hist[i]
                 if [ mem_hist[i] < lo ] lo = mem_hist[i]
-            dl : f32 [ f9 - mem_hist[0] ]
-            c8 : i32 [ i32[ f9 ] / 1024 ]
-            p8 : i32 [ i32[ pk ] / 1024 ]
-            l8 : i32 [ i32[ lo ] / 1024 ]
-            ls.push[ 'rss      {c8} MB  ({i32[ f9 ]} KB)' ]
-            ls.push[ 'peak     {p8} MB' ]
-            ls.push[ 'low      {l8} MB' ]
+            dl : f32 [ last - mem_hist[0] ]
+            rss  : i32 [ i32[ last ] / 1024 ]
+            peak : i32 [ i32[ pk ] / 1024 ]
+            low  : i32 [ i32[ lo ] / 1024 ]
+            ls.push[ 'rss      {rss} MB  ({i32[ last ]} KB)' ]
+            ls.push[ 'peak     {peak} MB' ]
+            ls.push[ 'low      {low} MB' ]
             ls.push[ 'drift    {i32[ dl ]} KB over {mem_hist.count}' ]
-            vt8 : i64 [ au_mem_virt[] ]
-            ph8 : i64 [ au_mem_phys[] ]
-            vm8 : i64 [ vt8 / 1048576 ]
-            pm8 : i64 [ ph8 / 1048576 ]
-            ls.push[ 'virt     {vm8} MB' ]
-            ls.push[ 'phys     {pm8} MB' ]
+            virt  : i64 [ au_mem_virt[] ]
+            phys  : i64 [ au_mem_phys[] ]
+            vmb   : i64 [ virt / 1048576 ]
+            pmb   : i64 [ phys / 1048576 ]
+            ls.push[ 'virt     {vmb} MB' ]
+            ls.push[ 'phys     {pmb} MB' ]
             return ls
 
         # the free instrument every app gets: this process's resident set
         # as a share of physical ram, one sample per publish
         func paint_memory [ cv: Canvas, r: rect ]
             if [ !mem_hist || mem_hist.count == 0 ] return
-            f9 : f32 [ mem_hist[ mem_hist.count - 1 ] ]
+            last : f32 [ mem_hist[ mem_hist.count - 1 ] ]
             pk : f32 [ 0.0 ]
-            lo : f32 [ f9 ]
+            lo : f32 [ last ]
             for [ i: i32 0, i < mem_hist.count, i += 1 ]
                 if [ mem_hist[i] > pk ] pk = mem_hist[i]
                 if [ mem_hist[i] < lo ] lo = mem_hist[i]
@@ -501,17 +500,17 @@ abstract live_app media_app
                 py = yy
             cv.font_size[ 11 ]
             cv.fill_color[ rgba [ '#cfd6e4' ] ]
-            cur9 : i32 [ i32[ f9 ] / 1024 ]
-            pkm9 : i32 [ i32[ pk ] / 1024 ]
-            lom9 : i32 [ i32[ lo ] / 1024 ]
-            cv.draw_text[ '{cur9} MB  peak {pkm9}  low {lom9}',
+            rss  : i32 [ i32[ last ] / 1024 ]
+            peak : i32 [ i32[ pk ] / 1024 ]
+            low  : i32 [ i32[ lo ] / 1024 ]
+            cv.draw_text[ '{rss} MB  peak {peak}  low {low}',
                 rect [ x: gx, y: r.y + 3.0, w: gw, h: 13.0 ],
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
             cv.paint[]
-            vt9 : i64 [ au_mem_virt[] ]
-            vm9 : i64 [ vt9 / 1048576 ]
+            virt : i64 [ au_mem_virt[] ]
+            vmb  : i64 [ virt / 1048576 ]
             cv.fill_color[ rgba [ '#8a83a0' ] ]
-            cv.draw_text[ 'virt {vm9}  n {mem_hist.count}',
+            cv.draw_text[ 'virt {vmb}  n {mem_hist.count}',
                 rect [ x: gx, y: r.y + 16.0, w: gw, h: 13.0 ],
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
             cv.paint[]
@@ -519,26 +518,26 @@ abstract live_app media_app
         # instruments are inspectors, not the game: they sample at 8hz, on
         # their OWN surfaces, so nothing here touches the app's frame
         func instr_publish []
-            sl9 : array [ instr_list[] ]
-            if [ !sl9 || sl9.count == 0 ] return
+            list : array [ instr_list[] ]
+            if [ !list || list.count == 0 ] return
             now : i64 [ epoch_millis[] ]
             if [ instr_ms != 0 && now - instr_ms < 125 ] return
             instr_ms = now
             if [ !mem_hist ] mem_hist = array f32 []
             # KILOBYTES resident. the fraction-of-total-ram this used to
             # sample is ~0.001 here, which draws as a flat line
-            rss9 : i64 [ au_mem_rss[] ]
-            kb9  : i64 [ rss9 / 1024 ]
-            mem_hist.push[ f32[ kb9 ] ]
+            bytes : i64 [ au_mem_rss[] ]
+            kb    : i64 [ bytes / 1024 ]
+            mem_hist.push[ f32[ kb ] ]
             while [ mem_hist.count > 180 ] mem_hist.remove[ 0 ]
             wn : Window [ w ]
             ao : element [ cast element [ wn.app_object ] ]
             if [ !instr_view ] instr_view = map i32 [string] []
-            for [ i: i32 0, i < sl9.count, i += 1 ]
+            for [ i: i32 0, i < list.count, i += 1 ]
                 # HOLD it: this is a borrow, and we call into app code
                 # below. anything it allocates can reclaim the name, and
                 # the next compare then reads freed memory
-                nm : string sl9[i]
+                nm : string list[i]
                 if [ !nm || nm.count == 0 ] continue
                 nm.hold[]
                 # logging writes the entries to the app log, pane or no pane
@@ -563,11 +562,11 @@ abstract live_app media_app
                     instr_cv[ nm ] = cvi
                 el [ cvi.width != iw || cvi.height != ih ]
                     cvi.resize[ iw, ih ]
-                r9 : rect [ x: 0.0, y: 0.0, w: f32[ iw ], h: f32[ ih ] ]
+                area : rect [ x: 0.0, y: 0.0, w: f32[ iw ], h: f32[ ih ] ]
                 cvi.reset[ vec4f [ 0.04, 0.03, 0.06, 1.0 ] ]
-                drew : bool [ (ao) ? ao.paint_instrument*[ cvi, nm, r9 ] : false ]
+                drew : bool [ (ao) ? ao.paint_instrument*[ cvi, nm, area ] : false ]
                 if [ !drew && nm == 'memory' ]
-                    paint_memory[ cvi, r9 ]
+                    paint_memory[ cvi, area ]
                     drew = true
                 # no view is the normal case: the entries stand alone, and
                 # the shell must not be left pulling a surface we never fill
@@ -626,11 +625,11 @@ abstract live_app media_app
                     wn.ev.clear[]
                     wn.ev.key.unicode = host_pa[]
                     wn.ev.key.state   = host_pb[]
-                    m8 : i32 [ host_pc[] ]
-                    wn.ev.key.shift = (m8 & 1) != 0
-                    wn.ev.key.ctrl  = (m8 & 2) != 0
-                    wn.ev.key.alt   = (m8 & 4) != 0
-                    wn.ev.key.meta  = (m8 & 8) != 0
+                    mods : i32 [ host_pc[] ]
+                    wn.ev.key.shift = (mods & 1) != 0
+                    wn.ev.key.ctrl  = (mods & 2) != 0
+                    wn.ev.key.alt   = (mods & 4) != 0
+                    wn.ev.key.meta  = (mods & 8) != 0
                     wn.key_event[ wn.ev ]
                 el [ t == i32[ HM.text ] ]
                     wn.ev.clear[]
@@ -666,24 +665,24 @@ abstract live_app media_app
                     wn.ev.clear[]
                     wn.ev.mouse.pos = [ wn.mouse.x, wn.mouse.y ]
                     wn.ev.mouse.wheel_delta = [ host_pa[] / 100.0, host_pb[] / 100.0 ]
-                    m7 : i32 [ host_pc[] ]
-                    wn.ev.key.shift = (m7 & 1) != 0
-                    wn.ev.key.ctrl  = (m7 & 2) != 0
-                    wn.ev.key.alt   = (m7 & 4) != 0
-                    wn.ev.key.meta  = (m7 & 8) != 0
+                    mods : i32 [ host_pc[] ]
+                    wn.ev.key.shift = (mods & 1) != 0
+                    wn.ev.key.ctrl  = (mods & 2) != 0
+                    wn.ev.key.alt   = (mods & 4) != 0
+                    wn.ev.key.meta  = (mods & 8) != 0
                     wn.wheel_event[ wn.ev ]
                 el [ t == i32[ HM.resize ] ]
                     rw : i32 [ host_pa[] ]
                     rh : i32 [ host_pb[] ]
                     # requests are advisory: a locked app answers at its aspect
                     if [ lock_aspect && aspect_w > 0 && aspect_h > 0 && rw > 0 && rh > 0 ]
-                        fw9 : i32 [ rw ]
-                        fh9 : i32 [ fw9 * aspect_h / aspect_w ]
-                        if [ fh9 > rh ]
-                            fh9 = rh
-                            fw9 = fh9 * aspect_w / aspect_h
-                        rw = fw9
-                        rh = fh9
+                        wide : i32 [ rw ]
+                        tall : i32 [ wide * aspect_h / aspect_w ]
+                        if [ tall > rh ]
+                            tall = rh
+                            wide = tall * aspect_w / aspect_h
+                        rw = wide
+                        rh = tall
                     if [ rw > 0 && rh > 0 && (rw != wn.width || rh != wn.height) ]
                         vkQueueWaitIdle[ vk.queue ]
                         wn.resize*[ rw, rh ]
@@ -693,12 +692,12 @@ abstract live_app media_app
 
         func ide_pump []
             wn : Window [ w ]
-            ae9 : cast element [ wn.app_object ]
+            aa : cast element [ wn.app_object ]
             for [ i: i32 0, i < 64, i += 1 ]
                 t : i32 [ host_poll[ 0 ] ]
                 if [ t == 0 ] return
                 if [ t == i32[ HM.dictate ] || t == i32[ HM.shell ] ]
-                    if [ ae9 ] ae9.on_host*[ t, host_pa[], host_pb[], host_pc[] ]
+                    if [ aa ] aa.on_host*[ t, host_pa[], host_pb[], host_pc[] ]
                 el [ t == i32[ HM.press ] ]
                     wn.ev.clear[]
                     wn.ev.mouse.pos.x = f32[ host_pa[] ]
@@ -726,42 +725,42 @@ abstract live_app media_app
                     wn.ev.clear[]
                     wn.ev.key.unicode = host_pa[]
                     wn.ev.key.state   = host_pb[]
-                    m9 : i32 [ host_pc[] ]
-                    wn.ev.key.shift = (m9 & 1) != 0
-                    wn.ev.key.ctrl  = (m9 & 2) != 0
-                    wn.ev.key.alt   = (m9 & 4) != 0
-                    wn.ev.key.meta  = (m9 & 8) != 0
+                    mods : i32 [ host_pc[] ]
+                    wn.ev.key.shift = (mods & 1) != 0
+                    wn.ev.key.ctrl  = (mods & 2) != 0
+                    wn.ev.key.alt   = (mods & 4) != 0
+                    wn.ev.key.meta  = (mods & 8) != 0
                     wn.key_event[ wn.ev ]
                 el [ t == i32[ HM.text ] ]
                     wn.ev.clear[]
-                    tb9 : local i8 [ 2 ]
-                    tb9[0] = i8[ host_pa[] ]
-                    tb9[1] = 0
-                    wn.ev.key.text = string[ @tb9[0] ]
+                    tb : local i8 [ 2 ]
+                    tb[0] = i8[ host_pa[] ]
+                    tb[1] = 0
+                    wn.ev.key.text = string[ @tb[0] ]
                     wn.text_event[ wn.ev ]
                 el [ t == i32[ HM.resize ] ]
-                    rw9 : i32 [ host_pa[] ]
-                    rh9 : i32 [ host_pb[] ]
-                    if [ rw9 > 0 && rh9 > 0 ]
-                        wn.resize*[ rw9, rh9 ]
+                    wide : i32 [ host_pa[] ]
+                    tall : i32 [ host_pb[] ]
+                    if [ wide > 0 && tall > 0 ]
+                        wn.resize*[ wide, tall ]
 
         # agent socket (debug builds): line commands become real Events
         func agent_find [ e: element, aid: string ] -> element
             if [ !e ] return null
             if [ e.id && e.id == aid ] return e
             if [ e.elements ]
-                for [ ce: element, k9: string ] in e.elements
-                    r9 : element agent_find[ ce, aid ]
-                    if [ r9 ] return r9
+                for [ ce: element, ck: string ] in e.elements
+                    found : element agent_find[ ce, aid ]
+                    if [ found ] return found
             return null
 
-        func agent_press [ wn: Window, x9: f32, y9: f32, b9: i32, st: i32, md: i32 ]
+        func agent_press [ wn: Window, mx: f32, my: f32, btn: i32, st: i32, md: i32 ]
             wn.ev.clear[]
-            wn.mouse.x = f64[ x9 ]
-            wn.mouse.y = f64[ y9 ]
-            wn.ev.mouse.pos.x  = x9
-            wn.ev.mouse.pos.y  = y9
-            wn.ev.mouse.button = b9
+            wn.mouse.x = f64[ mx ]
+            wn.mouse.y = f64[ my ]
+            wn.ev.mouse.pos.x  = mx
+            wn.ev.mouse.pos.y  = my
+            wn.ev.mouse.button = btn
             wn.ev.mouse.state  = st
             # same mod bits the key command uses: a modifier-click is a
             # real interaction and the socket could not express one
@@ -774,23 +773,23 @@ abstract live_app media_app
 
         func agent_pump []
             wn : Window [ w ]
+            aa :  cast element [ wn.app_object ]
             if [ !agent_on ]
-                nm9 : string 'app'
-                ao9 : cast element [ wn.app_object ]
-                if [ ao9 ]
-                    h8 : Au.header[ ao9 ]
-                    nm9 = string [ h8.au.ident ]
-                agent_on = agent_sock_open[ nm9 ] != 0
+                name : 'app'
+                if [ aa ]
+                    header : Au.header[ aa ]
+                    name = string [ header.au.ident ]
+                agent_on = agent_sock_open[ name ] != 0
                 if [ !agent_on ] return
             while [ true ]
                 buf : local i8 [ 1024 ]
-                n9 : i32 [ agent_sock_line[ @buf[0], 1024 ] ]
-                if [ n9 <= 0 ] break
+                got : i32 [ agent_sock_line[ @buf[0], 1024 ] ]
+                if [ got <= 0 ] break
                 line : string [ @buf[0] ]
                 parts : array string [ line.split[ ' ' ] ]
                 if [ parts.count == 0 ] continue
                 cmd : string parts[0]
-                ok9 : bool [ true ]
+                ok : bool [ true ]
                 if [ cmd == 'move' && parts.count >= 3 ]
                     wn.ev.clear[]
                     wn.mouse.x = parts[1].real_value[]
@@ -824,7 +823,7 @@ abstract live_app media_app
                             wn.ev.mouse.pos.y = te.bounds.h * 0.5
                         wn.release_route[ te, wn.ev ]
                     el
-                        ok9 = false
+                        ok = false
                 el [ (cmd == 'key' || cmd == 'keytap') && parts.count >= 2 ]
                     kc : i32 [ i32[ parts[1].integer_value[] ] ]
                     st : i32 [ (cmd == 'key' && parts.count >= 3) ? i32[ parts[2].integer_value[] ] : 1 ]
@@ -843,44 +842,42 @@ abstract live_app media_app
                         wn.ev.key.state = 0
                         wn.key_event[ wn.ev ]
                 el [ (cmd == 'pad' || cmd == 'padtap') && parts.count >= 2 ]
-                    pb9 : i32 [ i32[ parts[1].integer_value[] ] ]
-                    ps9 : i32 [ (cmd == 'pad' && parts.count >= 3) ? i32[ parts[2].integer_value[] ] : 1 ]
+                    btn : i32 [ i32[ parts[1].integer_value[] ] ]
+                    st  : i32 [ (cmd == 'pad' && parts.count >= 3) ? i32[ parts[2].integer_value[] ] : 1 ]
                     wn.ev.clear[]
                     wn.ev.pad.pad    = 0
-                    wn.ev.pad.button = pb9
-                    wn.ev.pad.state  = ps9
+                    wn.ev.pad.button = btn
+                    wn.ev.pad.state  = st
                     wn.pad_event[ wn.ev ]
                     if [ cmd == 'padtap' ]
                         wn.ev.pad.state = 0
                         wn.pad_event[ wn.ev ]
                 el [ cmd == 'instruments' ]
-                    av8 : cast element [ wn.app_object ]
-                    vl8 : array [ (av8) ? av8.instruments*[] : null ]
-                    rs8 : ''
-                    mem8 : bool [ false ]
-                    if [ vl8 ]
-                        for [ i: i32 0, i < vl8.count, i += 1 ]
-                            if [ '{vl8[i]}' == 'memory' ] mem8 = true
-                            rs8 = (i == 0) ? '{vl8[i]}' : '{rs8} {vl8[i]}'
+                    list : array [ (aa) ? aa.instruments*[] : null ]
+                    reply : ''
+                    mem : bool [ false ]
+                    if [ list ]
+                        for [ i: i32 0, i < list.count, i += 1 ]
+                            if [ '{list[i]}' == 'memory' ] mem = true
+                            reply = (i == 0) ? '{list[i]}' : '{reply} {list[i]}'
                     # every app gets the memory graph; listing the name
                     # overrides ours
-                    if [ !mem8 ] rs8 = (rs8.count == 0) ? 'memory' : '{rs8} memory'
-                    agent_sock_reply[ '{rs8}\n' ]
+                    if [ !mem ] reply = (reply.count == 0) ? 'memory' : '{reply} memory'
+                    agent_sock_reply[ '{reply}\n' ]
                     continue
                 # the shell's slider. an app with its own volume gets it too
                 el [ cmd == 'volume' ]
-                    av7 : cast element [ wn.app_object ]
-                    vm7 : Au_t [ (av7) ? find_member[ typeid[ av7 ], 'volume',
+                    member : Au_t [ (aa) ? find_member[ typeid[ aa ], 'volume',
                         AU_MEMBER_VAR, 0, true ] : null ]
                     if [ parts.count >= 2 ]
                         volume = f32[ parts[1].real_value[] ]
-                        if [ vm7 ]
-                            cv7 : Au.convert[ vm7.src, parts[1] ]
-                            if [ cv7 ] av7.set_property[ 'volume', cv7 ]
+                        if [ member ]
+                            val : Au.convert[ member.src, parts[1] ]
+                            if [ val ] aa.set_property[ 'volume', val ]
                     # reply with what the APP holds when it owns one
-                    rv7 : f32 [ volume ]
-                    if [ vm7 ] rv7 = f32[ av7.member_object[ vm7 ] ]
-                    agent_sock_reply[ '{rv7}\n' ]
+                    level : f32 [ volume ]
+                    if [ member ] level = f32[ aa.member_object[ member ] ]
+                    agent_sock_reply[ '{level}\n' ]
                     continue
                 # the shell letterboxes only an app that locked its aspect
                 el [ cmd == 'aspect' ]
@@ -899,28 +896,27 @@ abstract live_app media_app
                     continue
                 # the enumeration itself — one entry per line
                 el [ cmd == 'instr-read' && parts.count >= 2 ]
-                    lr8 : array [ instr_read[ parts[1] ] ]
-                    rr8 : ''
-                    if [ lr8 ]
-                        for [ i: i32 0, i < lr8.count, i += 1 ]
-                            rr8 = '{rr8}{lr8[i]}\n'
-                    agent_sock_reply[ '{rr8}\n' ]
+                    lines : array [ instr_read[ parts[1] ] ]
+                    reply : ''
+                    if [ lines ]
+                        for [ i: i32 0, i < lines.count, i += 1 ]
+                            reply = '{reply}{lines[i]}\n'
+                    agent_sock_reply[ '{reply}\n' ]
                     continue
                 el [ cmd == 'app' && line.count > 4 ]
-                    aa8 : cast element [ wn.app_object ]
-                    if [ aa8 ] aa8.on_agent*[ line.mid[ 4, line.count - 4 ] ]
-                    el ok9 = false
+                    
+                    if [ aa ] aa.on_agent*[ line.mid[ 4, line.count - 4 ] ]
+                    el ok = false
                 el [ cmd == 'set' && parts.count >= 3 ]
-                    ao8 : cast element [ wn.app_object ]
-                    sm8 : Au_t [ (ao8) ? find_member[ typeid[ ao8 ], parts[1].chars,
+                    member : Au_t [ (aa) ? find_member[ typeid[ aa ], parts[1].chars,
                         AU_MEMBER_VAR, 0, true ] : null ]
-                    if [ sm8 ]
+                    if [ member ]
                         # the member's own type does the conversion, so a
                         # bool prop takes a bool and an i32 takes an i32
-                        cv8 : Au.convert[ sm8.src, parts[2] ]
-                        if [ cv8 ] ao8.set_property[ parts[1].chars, cv8 ]
-                        el ok9 = false
-                    el ok9 = false
+                        val : Au.convert[ member.src, parts[2] ]
+                        if [ val ] aa.set_property[ parts[1].chars, val ]
+                        el ok = false
+                    el ok = false
                 el [ cmd == 'text' && line.count > 5 ]
                     wn.ev.clear[]
                     wn.ev.key.text = line.mid[ 5, line.count - 5 ]
@@ -934,24 +930,24 @@ abstract live_app media_app
                 el [ cmd == 'focus' && parts.count >= 2 ]
                     fe : element agent_find[ wn.root, parts[1] ]
                     if [ fe ] wn.set_focus[ fe ]
-                    el ok9 = false
+                    el ok = false
                 el [ cmd == 'tree' ]
                     # agi: block keys are the element ids
                     if [ wn.root ]
-                        tm9 : map object [string] []
-                        tm9['root'] = ux_serialize[ wn.root ]
-                        agent_sock_reply[ Au.string_agi[ tm9 ] ]
-                    el ok9 = false
+                        tree : map object [string] []
+                        tree['root'] = ux_serialize[ wn.root ]
+                        agent_sock_reply[ Au.string_agi[ tree ] ]
+                    el ok = false
                 el [ cmd == 'shot' && parts.count >= 2 ]
-                    lr9 : wn.last_render[]
+                    render : wn.last_render[]
                     # first frames: the render target isn't filled yet
-                    if [ lr9 && lr9.color && lr9.color.vk_image && lr9.has_drawn ]
-                        im9 : Image [ lr9.color ]
-                        im9.png[ path [ parts[1].chars ] ]
-                    el ok9 = false
+                    if [ render && render.color && render.color.vk_image && render.has_drawn ]
+                        im : Image [ render.color ]
+                        im.png[ path [ parts[1].chars ] ]
+                    el ok = false
                 el
-                    ok9 = false
-                agent_sock_reply[ (ok9) ? 'ok\n' : 'err\n' ]
+                    ok = false
+                agent_sock_reply[ (ok) ? 'ok\n' : 'err\n' ]
                 wn.will_animate = true
                 if [ wn.root ] wn.root.pristine = false
     func destroy [ ]
@@ -966,21 +962,21 @@ abstract live_app media_app
                 rwin.root.unload_tree[]
                 rwin.root.release_tree[]
             if [ rwin.app_object ]
-                ao9 : cast element [ rwin.app_object ]
-                ao9.unload_tree[]
-                ao9.release_tree[]
-                ao9.elements = null
+                app : cast element [ rwin.app_object ]
+                app.unload_tree[]
+                app.release_tree[]
+                app.elements = null
             # lingering elements borrow these targets; free the GPU graph now
             # and CLEAR the entries — the window outlives module reloads, and a
             # stale Render dropped by the next module's map set is a double-free
             if [ rwin.element_targets ]
-                ks9 : array string [ alloc: 8 ]
+                keys : array string [ alloc: 8 ]
                 for [ tv: Au, tk: string ] in rwin.element_targets
                     rt : cast Render [ tv ]
                     if [ rt ] rt.models = null
-                    ks9.push[ tk ]
-                for [ k9: string ] in ks9
-                    rwin.element_targets[ k9 ] = null
+                    keys.push[ tk ]
+                for [ key: string ] in keys
+                    rwin.element_targets[ key ] = null
         if [ vk ]
             vk.font_cache = null
             vk.shader_cache = null
@@ -1023,15 +1019,14 @@ Display Window
     # per joystick: 32 buttons, 16 axes x 2 signs, 4 hats x 4 directions
     mutable pad_state           : new u8 [ 16 * 96 ]
     mutable pad_said            : bool
-    mutable ide_active        : bool
+    mutable ide_active          : bool
     mutable dict_on             : bool
     mutable dict_live           : bool
-    mutable ide_asked         : bool
-    mutable ide_close          : bool
-    mutable app_size_w        : i32
-    mutable app_size_h        : i32
-    mutable ide_size_w         : i32
-    mutable ide_size_h         : i32
+    mutable ide_asked           : bool
+    mutable app_size_w          : i32
+    mutable app_size_h          : i32
+    mutable ide_size_w          : i32
+    mutable ide_size_h          : i32
     mutable cursors             : array CursorPos
     mutable cursor_hresize      : handle
     mutable cursor_vresize      : handle
@@ -1507,10 +1502,10 @@ Display Window
         if [ list && list.count > 1 ]
             # a camera easing between orbits draws every frame or the
             # move lands in visible steps instead of a glide
-            hz9 : f32 [ (orbit_moving) ? 0.0 : background_hz ]
+            rate : f32 [ (orbit_moving) ? 0.0 : background_hz ]
             for [ i: i32 0, i < list.count - 1, i += 1 ]
-                bg9 : Render list[i]
-                bg9.draw_hz = hz9
+                render : Render list[i]
+                render.draw_hz = rate
 
         # deferred focus: runs here, after input and before any draw.
         # NOT `focus_id && root` -- string && element is convertible, so
@@ -1518,9 +1513,9 @@ Display Window
         # tree's parent back-references until the stack is gone
         if [ focus_id ]
             if [ root ]
-                fe9 : focus_find[ root, focus_id ]
-                if [ fe9 ]
-                    set_focus[ fe9 ]
+                found : focus_find[ root, focus_id ]
+                if [ found ]
+                    set_focus[ found ]
                     focus_id = null
 
         # background animates off the time just computed above
@@ -1767,8 +1762,8 @@ Display Window
         if [ ide_asked ] return
         capture_context[]
         ide_asked = true
-        ra9 : i32 [ host_ask_orbiter[] ]
-        puts 'ide_ensure: ask sent (rc {ra9})'
+        rc : i32 [ host_ask_orbiter[] ]
+        puts 'ide_ensure: ask sent (rc {rc})'
 
     func ide_open []
         puts 'ide_open: active={ide_active} asked={ide_asked}'
@@ -1845,11 +1840,11 @@ Display Window
     # depth-first lookup by id, for the deferred focus above
     intern func focus_find [ e: element, id: string ] -> element
         if [ !e || !e.elements || !id ] return null
-        d9 : element e.elements[ id ]
-        if [ d9 ] return d9
+        direct : element e.elements[ id ]
+        if [ direct ] return direct
         for [ ce: element, ck: string ] in e.elements
-            r9 : element focus_find[ ce, id ]
-            if [ r9 ] return r9
+            found : element focus_find[ ce, id ]
+            if [ found ] return found
         return null
 
     public func set_focus [ e: element ]
@@ -2025,9 +2020,6 @@ Display Window
                 if [ l.editable ]
                     l.on_key[ ev ]
                     break
-        if [ ev.key.unicode == 256 && ev.key.state && !ev.no_default && glfw ]
-            if [ fs_active ] set_fullscreen[ false ]
-            glfwSetWindowShouldClose[ glfw, 1 ]
 
     public func drop_event [ ev: Event ]
         ev.target = focus
@@ -2144,9 +2136,9 @@ Display Window
             last_click_us  = now
             last_click_pos = world_m
         f : find_target[ root, ev, null ]
-        fid9 : string [ (f && f.id) ? f.id : '(none)' ]
-        pid9 : string [ (f && f.parent && f.parent.id) ? f.parent.id : '(none)' ]
-        puts 'PRESS at {world_m.x},{world_m.y} -> {fid9} in {pid9}'
+        target : string [ (f && f.id) ? f.id : '(none)' ]
+        parent : string [ (f && f.parent && f.parent.id) ? f.parent.id : '(none)' ]
+        puts 'PRESS at {world_m.x},{world_m.y} -> {target} in {parent}'
         press_route[ f, ev ]
 
     # dispatch to a KNOWN target: the routing press_event does after hit-test
@@ -2265,9 +2257,9 @@ Display Window
     # a full-res pass-through. it only heads the chain that reduces
     public func frost_name [ ] -> string
         e : i32 [ frost_eff[] ]
-        if [ e == 1 ] return string 'blur'
-        if [ e == 2 ] return string 'clear'
-        return string 'frost'
+        if [ e == 1 ] return 'blur'
+        if [ e == 2 ] return 'clear'
+        return 'frost'
 
     public func frost_step [ d: i32 ]
         frost_mode = (frost_eff[] + d + 3) % 3
@@ -2341,9 +2333,9 @@ Display Window
 
             # source is compose until a frost element publishes its target
             if [ true ]
-                src9 : Texture [ (backdrop) ? backdrop.color : compose.color ]
+                source : Texture [ (backdrop) ? backdrop.color : compose.color ]
 
-                m_reduce  = Model  [ w: a, samplers: map Texture[string] [ 'color': src9 ] ]
+                m_reduce  = Model  [ w: a, samplers: map Texture[string] [ 'color': source ] ]
                 r_reduce  = Render [ vk: ctx, w: a, wscale: 1.0, models: array Model [ m_reduce ] ]
                 m_reduce.hold[]
                 r_reduce.hold[]
@@ -2410,11 +2402,11 @@ Display Window
                 m_frost.hold[]
                 r_frost.hold[]
 
-                ux9 : UXBackground [ vk: ctx, name: 'ux' ]
-                ux9.hold[]
-                m_view    = Model [ w: w, s: ux9,
+                shader : UXBackground [ vk: ctx, name: 'ux' ]
+                shader.hold[]
+                m_view    = Model [ w: w, s: shader,
                     samplers: map Texture[string] [
-                        'background':     src9,
+                        'background':     source,
                         'frost':          r_frost.color,
                         'blur':           r_blur.color,
                         'compose':        compose.color
@@ -2428,7 +2420,7 @@ Display Window
                 m_view.hold[]
                 r_view.hold[]
 
-                ux_shader : UXBackground [ ux9 ]
+                ux_shader : UXBackground [ shader ]
                 ux_shader.low_color  = vec4f [ 0.0, 0.1, 0.2, 1.0 ]
                 ux_shader.high_color = vec4f [ 1.0, 0.8, 0.8, 1.0 ]
 
@@ -2445,8 +2437,8 @@ Display Window
                 if [ resizing ]
                     r_view.color = screen.color
                     r_view.update[]
-                    src9 : Texture [ (backdrop) ? backdrop.color : compose.color ]
-                    m_reduce .samplers['color'] = src9
+                    source : Texture [ (backdrop) ? backdrop.color : compose.color ]
+                    m_reduce .samplers['color'] = source
                     m_reduce0.samplers['color'] = r_reduce.color
                     m_reduce1.samplers['color'] = r_reduce0.color
                     m_blur_v .samplers['color'] = r_reduce1.color
@@ -2457,7 +2449,7 @@ Display Window
                     m_reduce3.samplers['color'] = r_reduce2.color
                     m_frost_v.samplers['color'] = r_reduce3.color
                     m_frost  .samplers['color'] = r_frost_v.color
-                    m_view.samplers['background'] = src9
+                    m_view.samplers['background'] = source
                     m_view.samplers['frost']      = r_frost.color
                     m_view.samplers['blur']       = r_blur.color
                     m_view.samplers['compose']    = compose.color
@@ -2511,22 +2503,14 @@ Display Window
         # the fade ticks here: update[] only runs on resize, and animate[]
         # (which owns frame_factor) is skipped entirely while the ide is up
         if [ backdrop && reveal < 1.0 ]
-            ff9 : f32 [ (frame_factor > 0.0) ? frame_factor : 1.0 ]
-            reveal += 0.03 * ff9
+            reveal += 0.03 * (frame_factor > 0.0) ? frame_factor : 1.0
             if [ reveal > 1.0 ] reveal = 1.0
             will_animate = true
-        el [ !backdrop ] reveal = 1.0
+        el [ !backdrop ]
+            reveal = 1.0
         if [ m_view ]
-            uxr9 : UXBackground [ m_view.s ]
-            if [ uxr9 ] uxr9.reveal = reveal
-        if [ !compose ] return
-        if [ true ] return
-        compose.save    [ ]
-        compose.clear   [ '#00a' ]
-        draw_element    [ root, CanvasType.compose, null ]
-        compose.paint   [ ]
-        compose.sync_fence[ ]
-        compose.restore [ ]
+            b : UXBackground [ m_view.s ]
+            if [ b ] b.reveal = reveal
 
     func on_screen []
         if [ !screen ] return
@@ -2539,9 +2523,9 @@ Display Window
         layout_element[ root, null, null, null, screen ]
 
         if [ ide_active && root.elements ]
-            hs9 : cast element [ root.elements[ 'hostedshell' ] ]
-            if [ hs9 ]
-                draw_element[ hs9, CanvasType.screen, null ]
+            shell : cast element [ root.elements[ 'hostedshell' ] ]
+            if [ shell ]
+                draw_element[ shell, CanvasType.screen, null ]
             el
                 draw_element[ root, CanvasType.screen, null ]
         el
@@ -2553,30 +2537,30 @@ Display Window
             Au.stdout_tee[]
             if [ !so_lines ]
                 so_lines = array string [ ]
-            ln8 : Au.stdout_line[]
-            while [ ln8 ]
-                so_lines += ln8
+            line : Au.stdout_line[]
+            while [ line ]
+                so_lines += line
                 if [ so_lines.count > 6 ] so_lines.remove[ 0 ]
                 so_last = epoch_millis[]
-                ln8 = Au.stdout_line[]
+                line = Au.stdout_line[]
             if [ so_lines.count > 0 ]
-                age8 : i64 [ epoch_millis[] - so_last ]
-                if [ age8 < 5000 ]
-                    fading : bool [ age8 > 4000 ]
+                age : i64 [ epoch_millis[] - so_last ]
+                if [ age < 5000 ]
+                    fading : bool [ age > 4000 ]
                     tsh : string [ (fading) ? '#00000044' : '#00000088' ]
                     ttx : string [ (fading) ? '#ffffff88' : '#ffffff' ]
                     screen.font_size[ 14 ]
-                    n8 : i32 [ i32[ so_lines.count ] ]
-                    for [ i8: i32 0, i8 < n8, i8 += 1 ]
-                        yy8 : f32 [ stdout_y + 20.0 * f32[ i8 ] ]
+                    count : i32 [ i32[ so_lines.count ] ]
+                    for [ i: i32 0, i < count, i += 1 ]
+                        y : f32 [ stdout_y + 20.0 * f32[ i ] ]
                         # drop shadow first, text over it
                         screen.fill_color[ tsh ]
-                        screen.draw_text[ so_lines[ i8 ],
-                            rect [ x: 17.0, y: yy8 + 1.0, w: f32[ width ] - 32.0, h: 20.0 ],
+                        screen.draw_text[ so_lines[ i ],
+                            rect [ x: 17.0, y: y + 1.0, w: f32[ width ] - 32.0, h: 20.0 ],
                             vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
                         screen.fill_color[ ttx ]
-                        screen.draw_text[ so_lines[ i8 ],
-                            rect [ x: 16.0, y: yy8, w: f32[ width ] - 32.0, h: 20.0 ],
+                        screen.draw_text[ so_lines[ i ],
+                            rect [ x: 16.0, y: y, w: f32[ width ] - 32.0, h: 20.0 ],
                             vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
                     screen.paint[]
 
@@ -3368,21 +3352,21 @@ Display Window
         draw_stage = stage
         expect e inherits element, 'e is not an element'
         if [ e.hide ] return
-        sm8 : i32 [ 0 ]
-        if [ e.hovered   ] sm8 += i32[ State.hovered ]
-        if [ e.pressed   ] sm8 += i32[ State.pressed ]
-        if [ e.focused   ] sm8 += i32[ State.focused ]
-        if [ e.disable   ] sm8 += i32[ State.disable ]
-        if [ e.first     ] sm8 += i32[ State.first ]
-        if [ e.middle    ] sm8 += i32[ State.middle ]
-        if [ e.last      ] sm8 += i32[ State.last ]
-        if [ e.odd       ] sm8 += i32[ State.odd ]
-        if [ e.even      ] sm8 += i32[ State.even ]
-        if [ e.has_value ] sm8 += i32[ State.has_value ]
-        if [ shift       ] sm8 += i32[ State.shifted ]
-        eop8 : Option [ e inherits Option ]
-        if [ eop8->selected ] sm8 += i32[ State.selected ]
-        e.on_state*[ sm8 ]
+        bits : i32 [ 0 ]
+        if [ e.hovered   ] bits += i32[ State.hovered ]
+        if [ e.pressed   ] bits += i32[ State.pressed ]
+        if [ e.focused   ] bits += i32[ State.focused ]
+        if [ e.disable   ] bits += i32[ State.disable ]
+        if [ e.first     ] bits += i32[ State.first ]
+        if [ e.middle    ] bits += i32[ State.middle ]
+        if [ e.last      ] bits += i32[ State.last ]
+        if [ e.odd       ] bits += i32[ State.odd ]
+        if [ e.even      ] bits += i32[ State.even ]
+        if [ e.has_value ] bits += i32[ State.has_value ]
+        if [ shift       ] bits += i32[ State.shifted ]
+        opt : Option [ e inherits Option ]
+        if [ opt->selected ] bits += i32[ State.selected ]
+        e.on_state*[ bits ]
         if [ !e.parent && e != root ] return
         cv : (stage == CanvasType.screen) ? screen : compose
         if [ !e.bounds || e.bounds.w <= 0.0 || e.bounds.h <= 0.0 ] return
@@ -3555,13 +3539,12 @@ Display Window
                 # so anything reaching past the fill reads transparent.
                 # ...and ONLY for a layer that fills the whole element. an
                 # inset layer would just grow past where it was asked to be.
-                full9 : bool [ b.w >= e.bounds.w - 0.01 && b.h >= e.bounds.h - 0.01 ]
-                ovr_px9 : f32 [ 2.0 ]
-                ovr9 : f32 [ (full9 && r_tl <= 0.0 && r_tr <= 0.0 && r_br <= 0.0 && r_bl <= 0.0
+                fills : bool [ b.w >= e.bounds.w - 0.01 && b.h >= e.bounds.h - 0.01 ]
+                bleed : f32 [ (fills && r_tl <= 0.0 && r_tr <= 0.0 && r_br <= 0.0 && r_bl <= 0.0
                               && sw_max <= 0.0) ? 2.0 : 0.0 ]
                 # x only: the seam is vertical, y would bleed upward
-                draw_cv.rounded_rect     [ b.x - ovr9, b.y,
-                                           b.w + ovr9 * 2.0, b.h,
+                draw_cv.rounded_rect     [ b.x - bleed, b.y,
+                                           b.w + bleed * 2.0, b.h,
                                            r_tl, r_tr, r_br, r_bl ]
                 draw_cv.fill_color       [ (layer.fill_color && layer.fill_color.a > 0.0) ? layer.fill_color : rgba [ '#00000000' ] ]
                 draw_cv.stroke_color     [ layer.stroke_color ]
@@ -3849,8 +3832,8 @@ abstract media_app trinity
     func init []
         expect root, 'trinity requires a root element'
         # app element is process-owned; holds must not pin it
-        rh9 : Au.header[ root ]
-        rh9.managed = 0
+        header : Au.header[ root ]
+        header.managed = 0
         rtn : typeid[ root ]
         host_log_setup[ rtn.ident ]
         startup_path = path.path_startup[]
@@ -3864,8 +3847,6 @@ abstract media_app trinity
             aspect_w = width
             aspect_h = height
         adopt[ 'background' ]
-        bgv9 : root.get_property[ 'background' ]
-        puts 'background setting = {bgv9}'
         adopt[ 'text_mode' ]
         adopt[ 'hidden' ]
         adopt[ 'screenshot' ]
@@ -4058,15 +4039,15 @@ element TButtons
         if [ !svg_cache ] svg_cache = map SVGModel [string] [ ]
         if [ !svg_miss ] svg_miss = map i32 [string] [ ]
         if [ svg_miss.contains[ id ] ] return null
-        m9 : SVGModel svg_cache[ id ]
-        if [ !m9 ]
-            p9 : path 'images/{id}.svg'
-            if [ !p9.exists[] ]
+        model : SVGModel svg_cache[ id ]
+        if [ !model ]
+            file : path 'images/{id}.svg'
+            if [ !file.exists[] ]
                 svg_miss[ id ] = 1
                 return null
-            m9 = SVGModel [ p9 ]
-            svg_cache[ id ] = m9
-        return m9
+            model = SVGModel [ file ]
+            svg_cache[ id ] = model
+        return model
 
     # segment index under the cursor, or -1 outside the strip.
     func seg_at [ ev: Event ] -> i32
@@ -4122,14 +4103,14 @@ element TButtons
             cv.inner_glow_sides[ rgba [ '#0000' ], 0.0, 0.0, 0.0, 0.0 ]
             # both are STATE: leaving the radius set clips the icon after it
             cv.rounded[ 0.0, 0.0, 0.0, 0.0 ]
-            ic9 : string [ (icon_ids && i < icon_ids.count) ? icon_ids[i] : buttons[i] ]
-            sv9 : SVGModel (icons) ? seg_svg[ ic9 ] : null
-            if [ sv9 ]
+            icon : string [ (icon_ids && i < icon_ids.count) ? icon_ids[i] : buttons[i] ]
+            svg  : SVGModel (icons) ? seg_svg[ icon ] : null
+            if [ svg ]
                 isz : f32 [ bounds.h * 0.55 ]
                 ix  : f32 [ x + (seg_w - isz) * 0.5 ]
                 iy  : f32 [ (bounds.h - isz) * 0.5 ]
                 cv.fill_color[ rgba [ '#fff' ] ]
-                cv.draw_svg[ sv9, ix, iy, isz, isz ]
+                cv.draw_svg[ svg, ix, iy, isz, isz ]
             el
                 cv.font_size[ bounds.h * 0.40 ]
                 cv.fill_color[ rgba [ '#fff' ] ]
@@ -4436,11 +4417,11 @@ Control VolumeSlider
     intern vol_inset : f32 [ 7.0 ]     # track inset = widest knob radius
 
     func set_from_x [ x: f32 ]
-        tw9 : f32 [ bounds.w - vol_inset * 2.0 ]
-        if [ tw9 <= 0.0 ] return
-        v9 : f32 [ clamp[ (x - vol_inset) / tw9, 0.0, 1.0 ] ]
-        if [ v9 == value ] return
-        value    = v9
+        track : f32 [ bounds.w - vol_inset * 2.0 ]
+        if [ track <= 0.0 ] return
+        frac : f32 [ clamp[ (x - vol_inset) / track, 0.0, 1.0 ] ]
+        if [ frac == value ] return
+        value    = frac
         pristine = false
         if [ ux ] ux.will_animate = true
 
@@ -4673,20 +4654,20 @@ element IDEOverlay
     mutable req_h   : i32
 
     func service [ cv: Canvas ]
-        g9 : i32 [ host_tex_gen[ host_slot[], 1 ] ]
-        if [ g9 == gen || g9 <= 0 ] return
-        w9 : i32
-        h9 : i32
-        f9 : i32
-        fd0 : i32 [ host_tex_pull[ host_slot[], 1, 0, @w9, @h9, @f9 ] ]
-        fd1 : i32 [ host_tex_pull[ host_slot[], 1, 1, @w9, @h9, @f9 ] ]
+        latest : i32 [ host_tex_gen[ host_slot[], 1 ] ]
+        if [ latest == gen || latest <= 0 ] return
+        wide : i32
+        tall : i32
+        fmt  : i32
+        fd0 : i32 [ host_tex_pull[ host_slot[], 1, 0, @wide, @tall, @fmt ] ]
+        fd1 : i32 [ host_tex_pull[ host_slot[], 1, 1, @wide, @tall, @fmt ] ]
         if [ fd0 < 0 || fd1 < 0 ]
-            puts 'overlay: pull failed gen {g9} fds {fd0},{fd1}'
+            puts 'overlay: pull failed gen {latest} fds {fd0},{fd1}'
             return
-        tex0 = cv.vk.import_shared_tex[ fd0, w9, h9, f9, cv.w ]
-        tex1 = cv.vk.import_shared_tex[ fd1, w9, h9, f9, cv.w ]
-        gen = g9
-        puts 'overlay: imported orbiter surface {w9}x{h9} gen {g9}'
+        tex0 = cv.vk.import_shared_tex[ fd0, wide, tall, fmt, cv.w ]
+        tex1 = cv.vk.import_shared_tex[ fd1, wide, tall, fmt, cv.w ]
+        gen = latest
+        puts 'overlay: imported orbiter surface {wide}x{tall} gen {latest}'
 
     func front [] -> Texture
         fr : i32 [ host_tex_front[ host_slot[], 1 ] ]
@@ -4703,14 +4684,6 @@ element IDEOverlay
             req_w = nw
             req_h = nh
             host_post[ 0, i32[ HM.resize ], nw, nh, 0 ]
-        if [ ux.ide_close ]
-            ux.ide_close = false
-            ux.shell_tex  = null
-            ux.ide_active = false
-            host_post[ 0, i32[ HM.shell ], 0, 0, 0 ]
-            ux.ide_restore_size[]
-            ux.restyle    = true
-            return
         fitx = 0.0
         fity = 0.0
         fitw = bounds.w
@@ -4746,9 +4719,6 @@ element IDEOverlay
             host_post[ 0, i32[ HM.text ], (i32 ev.key.text.chars[ i ]) & 255, 0, 0 ]
 
     func on_key [ ev: Event ]
-        if [ ev.key.unicode == 256 && ev.key.shift && ev.key.state ]
-            ux.ide_close = true
-            return
         mods : i32 [ 0 ]
         if [ ev.key.shift ] mods = mods | 1
         if [ ev.key.ctrl ]  mods = mods | 2

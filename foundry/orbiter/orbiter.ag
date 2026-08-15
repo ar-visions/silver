@@ -301,7 +301,7 @@ element EditorView
         if [ app_running[] ]
             t['volume'] = VolumeSlider [ area: Region { r0+ t0.15 w4 h0.6 } ]
             t['mute']   = SoundButton [ icon: (o.app_muted) ? 'mute' : 'volume',
-                manual_mode: true ]
+                area: Region { r0+ t0.15 w1.4 h0.6 }, manual_mode: true ]
         return t
 
     func band_els [] -> Elements
@@ -2330,7 +2330,6 @@ element orbiter : trinity # implements compiler
         if [ editor_slots.count > 1 ] tnav.push[ 'undock' ]
         if [ editor_slots.count < 4 && !con9 ] tnav.push[ 'dock' ]
         if [ agent_pane[] < 0 && pane_ix == last_editor_pane[] ] tnav.push[ 'gear' ]
-        if [ agent_open && pane_ix == editor_slots.count ] tnav.push[ 'collapse' ]
         wn9 : f32 [ f32[ tnav.count ] * 1.15 ]
         if [ tnav.count > 0 ]
             els['tabnav'] = TButtons [ buttons: tnav, manual: true,
@@ -3902,12 +3901,6 @@ element orbiter : trinity # implements compiler
                 active_pane = editor_slots.count
                 ensure_console[ orbit_sid ]
             save_session[]
-            if [ ev.target ] ev.target.ux.restyle = true
-            ev.no_default = true
-            return
-        if [ ev.target.id == 'collapse' ]
-            ap8 : i32 [ agent_pane[] ]
-            if [ ap8 >= 0 ] close_pane[ ap8 ]
             if [ ev.target ] ev.target.ux.restyle = true
             ev.no_default = true
             return
