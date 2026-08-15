@@ -8180,8 +8180,9 @@ void silver_emit_override_init(silver a, enode instance, Au_t override_member) {
     array post_const = parse_const(a, initializer);
     subprocedure set_if = subproc(a, assign_builder, post_const);
     enode L = e_inherited_access((aether)a, instance, override_member);
-    enode always_false = e_operand((aether)a, _bool(false), etypeid(bool));
-    assign_if_cond((aether)a, L, always_false, set_if);
+    // a prop passed at the call site outranks the override's default
+    enode set = is_set(instance, (evar)prop);
+    assign_if_cond((aether)a, L, set, set_if);
 }
 
 // emit all override initializers for alloc before the parent init chain runs.
