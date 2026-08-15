@@ -1062,6 +1062,7 @@ class FmtWatch
 element orbiter : trinity # implements compiler
     public width         : i32    [ 1888 ]
     public height        : i32    [ 888 ]
+    public background    : string [ 'Background' ]
     public live_reload   : bool   [ true ]
     public startup_path  : path
     # the whole argv tail: the thing we open, then the module's own args.
@@ -3050,11 +3051,7 @@ element orbiter : trinity # implements compiler
     # the mounted scene; the label click sets it from the browsed one
     func scene_loaded [] -> string
         if [ scene_load && scene_load.count > 0 ] return scene_load
-        sl : array string [ scene_list[] ]
-        if [ sl.count == 0 ] return ''
-        for [ s: string ] in sl
-            if [ s == 'MilkyWay' ] return s
-        return sl[ 0 ]
+        return ''
 
     func scene_step [ d: i32 ]
         sl : array string [ scene_list[] ]

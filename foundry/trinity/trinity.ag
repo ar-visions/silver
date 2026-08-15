@@ -2515,6 +2515,7 @@ Display Window
             reveal += 0.03 * ff9
             if [ reveal > 1.0 ] reveal = 1.0
             will_animate = true
+        el [ !backdrop ] reveal = 1.0
         if [ m_view ]
             uxr9 : UXBackground [ m_view.s ]
             if [ uxr9 ] uxr9.reveal = reveal
@@ -3863,6 +3864,8 @@ abstract media_app trinity
             aspect_w = width
             aspect_h = height
         adopt[ 'background' ]
+        bgv9 : root.get_property[ 'background' ]
+        puts 'background setting = {bgv9}'
         adopt[ 'text_mode' ]
         adopt[ 'hidden' ]
         adopt[ 'screenshot' ]

@@ -27,9 +27,9 @@ def parse_args():
     p.add_argument('--lr',       type=float, default=0.00002)
     p.add_argument('--find_lr',  type=float, default=0.001)
     p.add_argument('--find_px',  type=int,   default=160)   # find frame px
-    p.add_argument('--find_noise', action='store_true')     # donors+blur
+    p.add_argument('--find_noise', type=int,   default=1)   # donors+blur+tone
     p.add_argument('--batch',    type=int,   default=64)
-    p.add_argument('--draw',     type=int,   default=20000)  # samples per epoch
+    p.add_argument('--draw',     type=int,   default=200000) # samples per epoch
     p.add_argument('--size',     type=int,   default=32)     # every net input side
     p.add_argument('--seed',     type=int,   default=1234)
     p.add_argument('--eye_div',  type=float, default=3.0)    # eye side = face side/eye_div
@@ -41,22 +41,28 @@ def parse_args():
                    choices=['all', 'find', 'target', 'look'])
     p.add_argument('--aux_noise', type=float, default=0.0)
     # sensor model: per-sample gain + per-pixel gaussian, train only
-    p.add_argument('--px_noise', type=float, default=0.008)
+    p.add_argument('--px_noise', type=float, default=0.004)   # halved
     # landmark scramble on the look crops: noise-capture patches
     # fuzzed in with perlin alpha, blur, smear — everywhere except
     # annotated points (eye centers, eye sides). prob per overlay
-    p.add_argument('--scramble', type=float, default=0.7)
+    p.add_argument('--scramble', type=float, default=0.14)  # his own pixels, was 0.7
     p.add_argument('--tex_n',    type=int,   default=4000)   # donor patch pool
     # optics blur radius on the frame at load, fraction of side
-    p.add_argument('--blur',     type=float, default=0.0022)
+    p.add_argument('--blur',     type=float, default=0.0011)  # halved
     # pupil heat-map loss: DEAD since crops centered on irises —
     # the target became a constant center. 0 keeps train loss pure
     # mse, comparable with eval
     p.add_argument('--pupil_w',  type=float, default=0.0)
     p.add_argument('--holdout',  type=float, default=10.0)   # eval percent, id-seeded
-    # share of shifts aimed so ONE eye lands off the sensor: the graded
-    # obscure band is only as wide as the eye separation
-    p.add_argument('--straddle', type=float, default=0.5)
+    # tone variance that survives the nets' per-sample normalisation
+    p.add_argument('--gamma',    type=float, default=0.9)    # exp(+-g): 0.41x .. 2.46x
+    p.add_argument('--local_c',  type=float, default=0.5)    # local gain field amplitude
+    p.add_argument('--tgt_rep',  type=int,   default=4)      # windows drawn per target crop
+    p.add_argument('--tgt_rot',  type=float, default=25.0)   # target window roll, +/- deg
+    p.add_argument('--find_rot', type=float, default=20.0)   # find canvas roll, +/- deg
+    # perlin refraction: the resample reads through a bent field
+    p.add_argument('--refract', type=float, default=0.035)   # displacement, normalized
+    p.add_argument('--refract_cells', type=int, default=4)   # mid frequency
     # synthetic frames pass through the same sensor as reality:
     # downsampled to camera width before any crop is cut
     p.add_argument('--sensor_w', type=int,   default=340)
@@ -510,10 +516,17 @@ class PointNet(nn.Module):
         S = args.size
         self.k = k
         a, b, c = ch
+        # the heat map is a 1x1 conv, so a point channel can only tell
+        # left eye from right if the trunk's receptive field spans both.
+        # 5+3+3 reaches 9px and the eyes sit ~13px apart at size 32 —
+        # the two channels then collapse onto the midpoint. dilation
+        # takes the field to 35px, the whole window.
         self.trunk = nn.Sequential(
             nn.Conv2d(1, a, 5, padding=2), nn.ReLU(),
             nn.Conv2d(a, b, 3, padding=1), nn.ReLU(),
-            nn.Conv2d(b, c, 3, padding=1), nn.ReLU())
+            nn.Conv2d(b, c, 3, padding=2, dilation=2), nn.ReLU(),
+            nn.Conv2d(c, c, 3, padding=4, dilation=4), nn.ReLU(),
+            nn.Conv2d(c, c, 3, padding=8, dilation=8), nn.ReLU())
         self.heat = nn.Conv2d(c, k, 1)
         self.temp = nn.Parameter(torch.tensor(8.0))
         self.register_buffer('lin', torch.linspace(lo, hi, S))
@@ -538,12 +551,12 @@ class PointNet(nn.Module):
 _blur_bank = None
 
 def blur_bank():
-    # blur levels 0.22..4.4% of the side — the FIELD interpolates
+    # blur levels 0.11..2.2% of the side — the FIELD interpolates
     # between these per pixel
     global _blur_bank
     if _blur_bank is None:
         _blur_bank = []
-        for f in np.linspace(0.0022, 0.044, 6):
+        for f in np.linspace(0.0011, 0.022, 6):
             sig = f * args.size
             _blur_bank.append(gauss_kernel(sig, max(3, int(3 * sig) * 2 + 1)))
     return _blur_bank
@@ -587,11 +600,25 @@ def pupil_keep():
     return _pupil_keep
 
 
+def photometric(x):
+    # 32x32 carries little structure, so vary tone hard. gamma and a
+    # local gain field both SURVIVE the per-sample mean/std norm the
+    # nets apply; a plain brightness or gain shift does not.
+    B, _, S, _ = x.shape
+    g = torch.exp((torch.rand(B, 1, 1, 1, device=x.device) * 2 - 1) * args.gamma)
+    x = x.clamp(0.002, 1.0) ** g
+    if args.local_c > 0:
+        f = perlin(B, S, x.device, cells=3)
+        x = x * (1.0 + (f * 2 - 1) * args.local_c)
+    return x.clamp(0.0, 1.0)
+
+
 def sensor(x, keep=None):
     # a true blur FIELD: perlin picks the local blur strength per
     # PIXEL; `keep` regions retain most of their pre-blur detail
     bank = blur_bank()
     K = len(bank)
+    x = photometric(x)
     x = x + torch.randn_like(x) * args.px_noise
     variants = []
     for kk in bank:
@@ -766,24 +793,39 @@ def train_find(tsf, laux, lfid, rec):
              * (lin1.abs() <= 1.0 / PAD).float()[:, None])[None, None]
     C = int(round(args.find_px * PAD))
 
-    def compose(sfb, mb, sb, sh):
-        # place the frame in the canvas at FRAME resolution, fill the
-        # strip it vacates with a face-free donor patch, then reduce
-        # once — one clean downsample, the way a capture arrives
+    def compose(sfb, mb, sb, sh, rot=None):
+        # place the frame in the canvas at FRAME resolution, roll it,
+        # fill whatever it vacates with a face-free donor patch, then
+        # reduce once — one clean downsample, the way a capture arrives
         B = sfb.shape[0]
+        if rot is None:
+            rot = torch.zeros(B, device=dev)
+        ca, sa = torch.cos(rot), torch.sin(rot)
         th = torch.zeros(B, 2, 3, device=dev)
-        th[:, 0, 0] = PAD
-        th[:, 1, 1] = PAD
+        th[:, 0, 0] = PAD * ca
+        th[:, 0, 1] = -PAD * sa
+        th[:, 1, 0] = PAD * sa
+        th[:, 1, 1] = PAD * ca
         th[:, 0, 2] = -2 * sh[:, 0] * PAD
         th[:, 1, 2] = -2 * sh[:, 1] * PAD
         g = F.affine_grid(th, (B, 1, C, C), align_corners=False)
+        fld = None
+        if args.refract > 0:
+            fld = refract(B, C, dev, args.refract, args.refract_cells)
+            g = g + fld.permute(0, 2, 3, 1)
         big = F.grid_sample(sfb, g, align_corners=False)
         cov = F.grid_sample(torch.ones_like(sfb), g, align_corners=False)
         d0 = tex[torch.randint(0, tex.shape[0], (B,), device=dev)]
         big = torch.where(cov > 0.5, big,
                           F.interpolate(d0, size=(C, C), mode='nearest'))
         xb = F.interpolate(big, size=(S, S), mode='area') * wmask
-        mb = mb + sh
+        # the plot turns with the content, about the canvas centre
+        u = mb[:, 0] + sh[:, 0]
+        v = mb[:, 1] + sh[:, 1]
+        mb = torch.stack([u * ca + v * sa, v * ca - u * sa], 1)
+        if fld is not None:
+            o = (mb * 2)[:, None, :]
+            mb = refract_pts(fld, o)[:, 0, :] / 2
         lim = (0.5 / PAD - sb * 0.5).clamp(min=0.0)
         pb = torch.maximum(torch.minimum(mb, lim), -lim)
         return xb, mb, torch.cat([pb, sb, obscure_t(mb, sb)[:, None]], 1)
@@ -827,7 +869,8 @@ def train_find(tsf, laux, lfid, rec):
         u = torch.where(edge < 0, torch.rand(B, device=dev) * 2 - 1, u)
         sh = find_place(mb * PAD, sb[:, 0] * PAD, edge, u,
                         torch.rand(B, device=dev) * 2 - 1) / PAD
-        xb, mb, yb = compose(xb, mb, sb, sh)
+        rot = (torch.rand(B, device=dev) * 2 - 1) * np.radians(args.find_rot)
+        xb, mb, yb = compose(xb, mb, sb, sh, rot)
         # clone noise donors over random parts that are not the face
         keep = box_protect((mb[:, 0] + 0.5) * S, (mb[:, 1] + 0.5) * S,
                            sb[:, 0] * 0.75 * S)
@@ -852,12 +895,21 @@ def train_find(tsf, laux, lfid, rec):
 def sub_window(mta, train):
     # window inside the context crop keeping both eyes visible;
     # train windows wander like a stale find, eval is centered 2x
-    lo_u = torch.minimum(mta[:, 0], mta[:, 2]) - 0.06
-    hi_u = torch.maximum(mta[:, 0], mta[:, 2]) + 0.06
-    lo_v = torch.minimum(mta[:, 1], mta[:, 3]) - 0.06
-    hi_v = torch.maximum(mta[:, 1], mta[:, 3]) + 0.06
+    # margin varies per sample: at the low end an eye sits right on the
+    # window edge, which is what a stale find plot actually hands over
+    if train:
+        # never below 0: a pinned eye label carries no position, and the
+        # net cannot learn it — that is noise, not augmentation
+        mg = (torch.rand_like(mta[:, 0]) * 0.12 + 0.005)[:, None]
+    else:
+        mg = torch.full_like(mta[:, 0:1], 0.06)
+    lo_u = torch.minimum(mta[:, 0], mta[:, 2])[:, None] - mg
+    hi_u = torch.maximum(mta[:, 0], mta[:, 2])[:, None] + mg
+    lo_v = torch.minimum(mta[:, 1], mta[:, 3])[:, None] - mg
+    hi_v = torch.maximum(mta[:, 1], mta[:, 3])[:, None] + mg
+    lo_u, hi_u, lo_v, hi_v = lo_u[:, 0], hi_u[:, 0], lo_v[:, 0], hi_v[:, 0]
     span = torch.maximum(hi_u - lo_u, hi_v - lo_v)
-    fmin = torch.clamp(torch.maximum(torch.tensor(0.55, device=mta.device),
+    fmin = torch.clamp(torch.maximum(torch.tensor(0.42, device=mta.device),
                                      span + 0.02), max=0.98)
     if not train:
         f = torch.maximum(fmin, torch.tensor(2.0 / args.ctx_mul, device=mta.device))
@@ -865,7 +917,7 @@ def sub_window(mta, train):
         v0 = torch.clamp((lo_v + hi_v) / 2 - f / 2, torch.zeros_like(f), 1 - f)
         return u0, v0, f
     r = lambda: torch.rand_like(fmin)
-    f = fmin + r() * (0.9 - fmin).clamp(min=0)
+    f = fmin + r() * (1.0 - fmin).clamp(min=0)
     ua = (hi_u - f).clamp(min=0)
     ub = torch.maximum(ua, torch.minimum(lo_u, 1 - f))
     va = (hi_v - f).clamp(min=0)
@@ -873,37 +925,163 @@ def sub_window(mta, train):
     return ua + r() * (ub - ua), va + r() * (vb - va), f
 
 
+def refract(B, S, device, amp, cells=3):
+    # a smooth displacement field in normalized units — the resample
+    # reads through it, so the image bends the way it would through
+    # moving air or a soft lens rather than being cut and pasted
+    dx = (perlin(B, S, device, cells) - 0.5) * 2 * amp
+    dy = (perlin(B, S, device, cells) - 0.5) * 2 * amp
+    return torch.cat([dx, dy], 1)
+
+
+def refract_pts(fld, o, iters=2):
+    # where a feature ENDS UP after the bend. the field is defined on
+    # output coords, so invert it by fixed point — two passes is ample
+    # for a field this smooth, and the label must follow the pixels.
+    p = o
+    for _ in range(iters):
+        v = F.grid_sample(fld, p[:, :, None, :], align_corners=False)
+        p = o - v[..., 0].permute(0, 2, 1)
+    return p
+
+
+def carry_pts(src, grid, pu, pv, S, fb_u, fb_v):
+    # a target is just a pixel finding its location: plant a bump where
+    # the label is and push it through the SAME resample as the image.
+    # no inverse anywhere, so there is no sign to get wrong. labels that
+    # land outside the window keep the analytic value and clamp.
+    Ci = src.shape[-1]
+    lin = torch.linspace(-1, 1, Ci, device=src.device)
+    xx, yy = lin[None, None, None, :], lin[None, None, :, None]
+    sig = 3.0 / Ci
+    px = (pu * 2 - 1)[..., None, None]
+    py = (pv * 2 - 1)[..., None, None]
+    m = torch.exp(-(((xx - px) ** 2 + (yy - py) ** 2) / (2 * sig * sig)))
+    w = F.grid_sample(m, grid, align_corners=False)
+    ls = torch.linspace(0, 1, S, device=src.device)
+    mass = w.sum((2, 3))
+    cx = (w.sum(2) * ls).sum(2) / mass.clamp(min=1e-9)
+    cy = (w.sum(3) * ls).sum(2) / mass.clamp(min=1e-9)
+    inside = mass > 1e-3
+    return torch.where(inside, cx, fb_u), torch.where(inside, cy, fb_v)
+
+
 def target_batch(cc, mta, train):
-    # cut the window, remap labels into it
+    # cut the window, ROLL it, remap labels into it. the context crop is
+    # interior, so a rolled window is exactly a rolled head — free
+    # variance from data we already have.
     B = cc.shape[0]
     u0, v0, f = sub_window(mta, train)
+    if train and args.tgt_rot > 0:
+        a = (torch.rand(B, device=cc.device) * 2 - 1) * np.radians(args.tgt_rot)
+    else:
+        a = torch.zeros(B, device=cc.device)
+    ca, sa = torch.cos(a), torch.sin(a)
+    # shrink so the rolled window stays inside the context: no black
+    # corners, which would be a synthetic-only tell
+    fr = f / (ca.abs() + sa.abs())
     theta = torch.zeros(B, 2, 3, device=cc.device)
-    theta[:, 0, 0] = f
-    theta[:, 1, 1] = f
+    theta[:, 0, 0] = fr * ca
+    theta[:, 0, 1] = -fr * sa
+    theta[:, 1, 0] = fr * sa
+    theta[:, 1, 1] = fr * ca
     theta[:, 0, 2] = 2 * u0 + f - 1
     theta[:, 1, 2] = 2 * v0 + f - 1
     S = args.size
     grid = F.affine_grid(theta, (B, 1, S, S), align_corners=False)
+    fld = None
+    if train and args.refract > 0:
+        fld = refract(B, S, cc.device, args.refract, args.refract_cells)
+        grid = grid + fld.permute(0, 2, 3, 1)
     img = F.grid_sample(cc, grid, align_corners=False)
-    off = torch.stack([u0, v0, u0, v0], 1)
+    # labels turn by the inverse roll about the window centre
+    cu = (u0 + f / 2)[:, None]
+    cv = (v0 + f / 2)[:, None]
+    du = mta[:, 0:4:2] - cu
+    dv = mta[:, 1:4:2] - cv
+    c1, s1, f1 = ca[:, None], sa[:, None], fr[:, None]
+    wu = 0.5 + (du * c1 + dv * s1) / f1
+    wv = 0.5 + (dv * c1 - du * s1) / f1
+    # carry the labels through the identical resample, roll and bend
+    wu, wv = carry_pts(cc, grid, mta[:, 0:4:2], mta[:, 1:4:2], S, wu, wv)
     # off-window eyes pin at the window edge; obscure carries truth
-    y = torch.cat([((mta[:, 0:4] - off) / f[:, None]).clamp(0.0, 1.0),
-                   mta[:, 4:5] / f[:, None], mta[:, 5:6]], 1)
+    eyes = torch.stack([wu[:, 0], wv[:, 0], wu[:, 1], wv[:, 1]], 1).clamp(0.0, 1.0)
+    y = torch.cat([eyes, mta[:, 4:5] / f1, mta[:, 5:6]], 1)
     return img, y
 
 
-def train_target(tcc, tmt, lfid, lpup, rec):
+def target_sheet(session_dir, cc, mt, vstats, tex, count=24, train=True):
+    # exactly what target eats, with its OWN labels drawn on top —
+    # if a cross is not on an eye, the fault is upstream of the net
+    from PIL import Image, ImageDraw
+    S = args.size
+    n = min(count, cc.shape[0])
+    sel = np.linspace(0, cc.shape[0] - 1, n).astype(int)
+    xb, yb = target_batch(torch.tensor(cc[sel]).to(dev),
+                          torch.tensor(mt[sel]).to(dev), train)
+    xb = renorm_levels(xb, vstats)
+    if train and args.scramble > 0:
+        cx = (yb[:, 0] + yb[:, 2]) / 2 * S
+        cy = (yb[:, 1] + yb[:, 3]) / 2 * S
+        xb = scramble(xb, box_protect(cx, cy, yb[:, 4] * 0.75 * S), tex)
+    if train:
+        xb = sensor(xb)
+    a = xb.clamp(0, 1).cpu().numpy()
+    y = yb.cpu().numpy()
+    Z, cells = 6, []
+    for i in range(n):
+        im = Image.fromarray((a[i, 0] * 255).astype(np.uint8))
+        im = im.resize((S * Z, S * Z), Image.NEAREST).convert('RGB')
+        d = ImageDraw.Draw(im)
+        for (u, v), col in (((y[i, 0], y[i, 1]), (0, 255, 0)),
+                            ((y[i, 2], y[i, 3]), (255, 0, 255))):
+            px, py = float(u) * S * Z, float(v) * S * Z
+            d.line([px - 7, py, px + 7, py], fill=col, width=2)
+            d.line([px, py - 7, px, py + 7], fill=col, width=2)
+        d.text((2, 2), f'ob{y[i, 5]:.2f} sc{y[i, 4]:.2f}', fill=(255, 90, 90))
+        cells.append(im)
+    across = 6
+    rows = (n + across - 1) // across
+    sh = Image.new('RGB', (across * S * Z, rows * S * Z), (24, 24, 24))
+    for i, c in enumerate(cells):
+        sh.paste(c, ((i % across) * S * Z, (i // across) * S * Z))
+    nm = 'target-inputs.png' if train else 'target-clean.png'
+    p = os.path.join(session_dir, nm)
+    sh.save(p)
+    print(f'target sheet {nm} ({n} samples, green=left magenta=right) -> {p}')
+
+
+def train_target(tcc, tmt, lfid, lpup, rec, session_dir):
     tr, ev = split(lfid, lpup, 'target')
+    # an eye far outside the context window stores a label that clamps
+    # to 0 or 1 — no position in it. keep a small overshoot so obscure
+    # still has near-edge examples, drop the rest from train AND eval.
+    u = np.asarray(tmt)[:, 0:4]
+    ok = np.where(((u > -0.2) & (u < 1.2)).all(1))[0]
+    keep = np.zeros(len(tmt), bool)
+    keep[ok] = True
+    dropped = len(tmt) - keep.sum()
+    tr = np.array([i for i in tr if keep[i]])
+    ev = np.array([i for i in ev if keep[i]])
+    print(f'target: dropped {dropped} views with off-window eye labels '
+          f'-> {len(tr)} train / {len(ev)} eval')
     cc = torch.tensor(tcc)
     mt = torch.tensor(tmt)
     xev, yev = target_batch(cc[ev].to(dev), mt[ev].to(dev), False)
     tex = torch.tensor(build_texpool()).to(dev)
     S = args.size
     vstats = level_stats(rec['ctx']) if rec is not None else None
+    target_sheet(session_dir, tcc, tmt, vstats, tex)
+    target_sheet(session_dir, tcc, tmt, vstats, tex, train=False)
 
     def step(m):
         i = torch.randint(0, len(tr), (args.batch,))
-        xb, yb = target_batch(cc[tr][i].to(dev), mt[tr][i].to(dev), True)
+        cb, mb = cc[tr][i].to(dev), mt[tr][i].to(dev)
+        # every fetched crop yields tgt_rep independent windows
+        if args.tgt_rep > 1:
+            cb = cb.repeat(args.tgt_rep, 1, 1, 1)
+            mb = mb.repeat(args.tgt_rep, 1)
+        xb, yb = target_batch(cb, mb, True)
         xb = renorm_levels(xb, vstats)
         if args.scramble > 0:
             cx = (yb[:, 0] + yb[:, 2]) / 2 * S
@@ -1564,7 +1742,7 @@ def main():
     if args.process in ('all', 'find'):
         train_find(tsf, laux, lfid, rec)
     if args.process in ('all', 'target'):
-        train_target(tcc, tmt, lfid, lpup, rec)
+        train_target(tcc, tmt, lfid, lpup, rec, sdir0)
     if args.process in ('all', 'look'):
         train_look(P, rec)
 

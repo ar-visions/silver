@@ -293,8 +293,12 @@ def main():
             best = ee
             os.makedirs(OUT, exist_ok=True)
             torch.save(m.state_dict(), os.path.join(OUT, 'find.pt'))
-            ts = torch.jit.trace(m, ex[:1])
+            # the app's shim runs on cpu: trace there or it cannot load
+            m2 = m.to('cpu').eval()
+            with torch.no_grad():
+                ts = torch.jit.trace(m2, torch.zeros(1, 1, args.size, args.size))
             ts.save(os.path.join(OUT, 'find.ptc'))
+            m.to(dev).train()
     print(f'best eval {best:.6f} -> {OUT}/find.pt and find.ptc')
 
 

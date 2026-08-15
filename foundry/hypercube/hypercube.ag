@@ -14,7 +14,7 @@ import <stdlib.h>
 # scene through the off-axis frustum at the tracked eye.
 element Cube3D
     style : CSS {
-        area: l0 t0 r0 b0
+        area: l0 t560px r0 b0
     }
     expect model_path : path
     public eye_x : f32
@@ -204,6 +204,12 @@ element hypercube : trinity
             trk.hold[]
             puts 'hypercube: f = align/look, x = flip parallax, arrows = y bias, esc = quit'
         e : Elements [ ]
+        # feeds first: on_overlay only gets frames from views made
+        # before the cube. they paint off and are drawn by hand
+        for [ i8: i32 0, i8 < trk.rig.count[], i8 += 1 ]
+            c8 : trk.rig.at[ i8 ]
+            if [ i8 == 0 ] e[ c8.name ] = CamTop [ device: c8.dev, animated: true ]
+            el             e[ c8.name ] = CamBot [ device: c8.dev, animated: true ]
         dbgn += 1
         if [ dbgn % 60 == 0 ]
             printf[ "EYE live=%d x=%.4f y=%.4f z=%.4f align=%d\n",
@@ -216,10 +222,4 @@ element hypercube : trinity
         cube9 : Cube3D [ model_path: path 'models/cube.gltf',
             eye_x: tex9, eye_y: tey9, eye_z: tez9, align: align, animated: true ]
         e['cube3d'] = cube9
-        # feeds last: insertion order is paint order, and the cube
-        # fills the whole window
-        for [ i8: i32 0, i8 < trk.rig.count[], i8 += 1 ]
-            c8 : trk.rig.at[ i8 ]
-            if [ i8 == 0 ] e[ c8.name ] = CamTop [ device: c8.dev, animated: true ]
-            el             e[ c8.name ] = CamBot [ device: c8.dev, animated: true ]
         return e
