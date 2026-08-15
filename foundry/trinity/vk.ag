@@ -214,6 +214,9 @@ class Render
         
         if [ !backbuffer ]
             color.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
+            # the reduce pass writes it too; it is attachment 0 of pass 1
+            if [ reduce ]
+                reduction.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
         el
             color.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
             if [ reduce ]
@@ -301,6 +304,8 @@ class Render
         update[]
         if [ !vk_framebuffer[0] ]
             return
+        # the pass writes this image; sampling it elsewhere left it read-only
+        if [ color ] color.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
         vk.paint_calls += 1
         # reduction renders (two-pass) + the swapchain blit (semaphores/present) can't
         # batch — they record+submit in one shot, as before.
@@ -385,8 +390,6 @@ class Render
             # reset below, so that submit must complete first
             if [ i == 1 ]
                 vkWaitForFences[ vk.device, 1, @vk_fence, VK_TRUE, UINT64_MAX ]
-                if [ reduction ]
-                    reduction.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
 
             vkResetFences[ vk.device, 1, @vk_fence ]
             frame: VkCommandBuffer [ vk_command_buffer ]
@@ -397,6 +400,9 @@ class Render
             ] ]
             if [ i == 0 && bool[ color ] && color.vk_layout != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
                 color.transition_in[ frame, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
+            # pass 1 writes reduction: order the barrier with the pass, not the queue
+            if [ i == 1 && bool[ reduction ] && reduction.vk_layout != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
+                reduction.transition_in[ frame, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
 
             # inter-draw ordering: without the old per-paint fence, consecutive draws to
             # this canvas (LOAD_OP_LOAD) race — paint N+1 loads before paint N's store is
@@ -485,6 +491,10 @@ class Render
                 pSignalSemaphores:    (vk_swap_image) ? @w.semaphore_frame.vk_render_finished_semaphore : null
             ]
             vkQueueSubmit[ vk.queue, 1, @submitInfo, vk_fence ]
+            # the pass's finalLayout moved the image; track it or the next
+            # frame's barrier is skipped and the pass finds the wrong layout
+            if [ i == 1 && bool[ reduction ] ]
+                reduction.vk_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 
         # this slot now has work in flight; advance so the next draw uses a fresh one.
         ring_primed[s] = 1

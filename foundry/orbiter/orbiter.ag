@@ -296,7 +296,7 @@ element EditorView
         if [ app_running[] ]
             t['volume'] = VolumeSlider [ area: Region { r0+ t0.15 w4 h0.6 } ]
             t['mute']   = SoundButton [ icon: (o.app_muted) ? 'mute' : 'volume',
-                area: Region { r0+ t0.15 w1.4 h0.6 }, manual_mode: true ]
+                area: Region { r0+ t0.15 w1.4 h0.9 }, manual_mode: true ]
         return t
 
     func band_els [] -> Elements
@@ -1056,6 +1056,8 @@ element orbiter : trinity # implements compiler
     public width         : i32    [ 1888 ]
     public height        : i32    [ 888 ]
     public background    : string [ 'Background' ]
+    # false keeps the scenes module out of the process entirely
+    public show_scene    : bool   [ true ]
     public live_reload   : bool   [ true ]
     public startup_path  : path
     # the whole argv tail: the thing we open, then the module's own args.
@@ -3042,6 +3044,7 @@ element orbiter : trinity # implements compiler
 
     # the mounted scene; the label click sets it from the browsed one
     func scene_loaded [] -> string
+        if [ !show_scene ] return ''
         if [ scene_load && scene_load.count > 0 ] return scene_load
         return ''
 
@@ -4452,8 +4455,7 @@ element orbiter : trinity # implements compiler
     # ui_hide sits dead center: scene-only toggle
     func status_els [] -> Elements
         return Elements [
-            'scene_next'  : SceneArrow [ icon: 'right',
-                area: Region { r8px t2px w22px h22px }, manual_mode: true ],
+            'scene_next'  : SceneArrow [ icon: 'right', manual_mode: true ],
             'scene_name'  : SceneName  [ label: scene_name[].lcase[] ],
             'scene_prev'  : SceneArrow [ icon: 'left', manual_mode: true ],
             'frost_name'  : SceneName  [ label: ux.frost_name[] ],
