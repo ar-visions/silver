@@ -125,11 +125,6 @@ element EditorView
         r : rview[]
         return (r && !r.ended) ? true : false
 
-    # the app view owns the pane alone: no band, no accordion under it
-    func app_solo [] -> bool
-        e : Editor text_of[]
-        return (app_running[] && e.app_view) ? true : false
-
     func app_pip [] -> bool
         e : Editor text_of[]
         return (app_running[] && !e.app_view) ? true : false
@@ -270,7 +265,7 @@ element EditorView
         if [ app_running[] ]
             if [ app_pip[] ] smask = smask | (1 << ibtn.count)
             ibtn.push[ 'pip' ]
-            iico.push[ 'undock' ]
+            iico.push[ 'pip' ]
         iw : f32 [ 1.2 * f32[ ibtn.count ] ]
         return TButtons [ buttons: ibtn, icon_ids: iico,
             manual: true, sel_mask: smask,
@@ -310,8 +305,6 @@ element EditorView
         t : Elements []
         t['tools'] = ToolsHeader [ spacing_x: 0.2, spacing_y: 0.2, topmost: true,
             elements: tool_els[] ]
-        # the app view keeps the play/args bar but nothing under it
-        if [ app_solo[] ] return t
         cf : Elements []
         cf['console_filter'] = element [ area: Region { r8px t4px w6 h32px },
             label: band_mod[], focusable: true, no_scroll: true ]
@@ -377,7 +370,7 @@ element EditorView
                 hint: title_hint[]
                 elements: title_els[] ],
             'split' : Splitter [ area: Region { l0 t1.3 r0 b0 }, vertical: true,
-                inner: pane_els[], deflt: (app_solo[]) ? 44.0 : 180.0,
+                inner: pane_els[], deflt: 180.0,
                 min_size: 44.0 ] ]
 
 element EditorTitle
