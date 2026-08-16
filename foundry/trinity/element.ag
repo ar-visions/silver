@@ -623,7 +623,7 @@ class Layer
         etext    : string [ (parent.edit) ? parent.edit : '' ]
         has_edit : bool   [ etext.count > 0 ]
         disp     : string [ (has_edit) ? etext : ((parent.label) ? parent.label : '') ]
-        tm    : cv.measure_text[ disp ]
+        metrics    : cv.measure_text[ disp ]
         cw_tm : cv.measure_text[ 'x' ]
         lh_cache = cv.get_line_height[]
         cw_cache = cw_tm.w
@@ -632,9 +632,9 @@ class Layer
         ay    : f32 [ label_align.y ]
         ox    : f32 [ label_offset.x ]
         oy    : f32 [ label_offset.y ]
-        fh    : f32 [ tm.ascent - tm.descent ]
-        x0    : f32 [ bounds.x + (bounds.w - tm.w) * ax + ox ]
-        y0    : f32 [ bounds.y + tm.ascent + (bounds.h - fh) * ay + oy ]
+        fh    : f32 [ metrics.ascent - metrics.descent ]
+        x0    : f32 [ bounds.x + (bounds.w - metrics.w) * ax + ox ]
+        y0    : f32 [ bounds.y + metrics.ascent + (bounds.h - fh) * ay + oy ]
         cw    : f32 [ cw_tm.w ]
 
         col : i32 [ (parent.sel_col >= 0) ? parent.sel_col : 0 ]
@@ -645,7 +645,7 @@ class Layer
         if [ has_edit && sc != ec ]
             cv.fill_color[ '#264f78' ]
             cv.stroke_width[ 0.0 ]
-            cv.rect_to[ x0 + f32[sc] * cw, y0 - tm.ascent + 2.0, f32[ec - sc] * cw, fh - 4.0 ]
+            cv.rect_to[ x0 + f32[sc] * cw, y0 - metrics.ascent + 2.0, f32[ec - sc] * cw, fh - 4.0 ]
             cv.paint[]
 
         cv.fill_color[ label_color ]
@@ -658,7 +658,7 @@ class Layer
             cx : f32 [ x0 + m.w ]
             cv.fill_color[ '#fff' ]
             cv.stroke_width[ 0.0 ]
-            cv.rect_to[ cx, y0 - tm.ascent + 2.0, 2.0, fh - 4.0 ]
+            cv.rect_to[ cx, y0 - metrics.ascent + 2.0, 2.0, fh - 4.0 ]
             cv.paint[]
 
 

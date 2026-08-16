@@ -99,8 +99,7 @@ def write_import_header(module, paths, env_vars):
             f.write(f"#ifndef __cplusplus\n")
             f.write(f"#include <{module}/methods>\n")
             f.write(f"#endif\n")
-            f.write("#undef init\n")
-            f.write("#undef dealloc\n")
+            f.write("#include <undefcpp.h>\n")
 
             # Third pass: init headers
             for mod in imports:
@@ -547,7 +546,12 @@ def main():
     
     # Handle src directive
     handle_src_directive(paths, env_vars)
-    
+
+    # stamp the cache file; ninja uses it, and no shell is needed
+    if cache_file:
+        Path(cache_file).parent.mkdir(parents=True, exist_ok=True)
+        Path(cache_file).touch()
+
     # Return include path
     print(f"-I{paths['gen_dir']}")
 

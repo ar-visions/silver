@@ -163,7 +163,7 @@ shader CanvasUI
     attrib  o_color    : FragmentOutput [ type:typeid[ vec4f ] ]
 
     # ---- HSV helpers (for colorize) ----
-    func rgb2hsv [ c: vec3f ] -> GLSL vec3f {
+    func rgb2hsv [ c: @vec3f ] -> GLSL vec3f {
         vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
         vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
         vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
@@ -172,14 +172,14 @@ shader CanvasUI
         return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
     }
 
-    func hsv2rgb [ c: vec3f ] -> GLSL vec3f {
+    func hsv2rgb [ c: @vec3f ] -> GLSL vec3f {
         vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
         vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
         return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
     }
 
     # ---- per-corner rounded rect SDF ----
-    func sdf_rounded_rect [ p: vec2f, center: vec2f, half_size: vec2f, r: vec4f ] -> GLSL float {
+    func sdf_rounded_rect [ p: @vec2f, center: @vec2f, half_size: @vec2f, r: @vec4f ] -> GLSL float {
         vec2 q = p - center;
         float cr = (q.x >= 0.0)
             ? ((q.y >= 0.0) ? r.z : r.y)
@@ -189,12 +189,12 @@ shader CanvasUI
         return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - cr;
     }
 
-    func smax [ a: f32, b: f32, k: f32 ] -> GLSL float {
+    func smax [ a: @f32, b: @f32, k: @f32 ] -> GLSL float {
         float h = clamp(0.5 + 0.5*(b-a)/k, 0.0, 1.0);
         return mix(a, b, h) + k*h*(1.0-h);
     }
 
-    func sdf_rounded_rect_glow [ p: vec2f, center: vec2f, half_size: vec2f, r: vec4f, soften: f32 ] -> GLSL float {
+    func sdf_rounded_rect_glow [ p: @vec2f, center: @vec2f, half_size: @vec2f, r: @vec4f, soften: @f32 ] -> GLSL float {
         vec2 q = p - center;
         float cr = (q.x >= 0.0)
             ? ((q.y >= 0.0) ? r.z : r.y)
@@ -217,7 +217,7 @@ shader CanvasUI
     }
 
     # ---- gradient evaluation ----
-    func eval_gradient [ p: vec2f, mode: f32 ] -> GLSL vec4f {
+    func eval_gradient [ p: @vec2f, mode: @f32 ] -> GLSL vec4f {
         vec2  g0     = ubo.grad0.xy;
         vec2  g1     = ubo.grad0.zw;
         float t;
@@ -284,14 +284,14 @@ shader CanvasUI
     }
 
     # different coverage = different plane; never one shape
-    func cv_eq [ a: vec4f, b: vec4f ] -> GLSL float {
+    func cv_eq [ a: @vec4f, b: @vec4f ] -> GLSL float {
         if (abs(a.a - b.a) > 0.5) return 0.0;
         return (distance(a, b) < 0.02) ? 1.0 : 0.0;
     }
 
     # 45-degree corner cuts solved at this destination pixel.
     # w is the pixel footprint: fwidth is fragment-only, so it comes in
-    func cv_vector [ uv: vec2f, w: f32 ] -> GLSL vec4f {
+    func cv_vector [ uv: @vec2f, w: @f32 ] -> GLSL vec4f {
         ivec2 ts = textureSize(image, 0);
         vec2  pt = uv * vec2(ts);
         ivec2 ip = ivec2(floor(pt));
@@ -336,7 +336,7 @@ shader CanvasUI
 
     # one bilinear tap reads 2x2 texels however far the image shrinks, so a
     # 30% thumbnail drops 90% of them and shimmers. average the footprint
-    func cv_minify [ uv: vec2f, fp: vec2f ] -> GLSL vec4f {
+    func cv_minify [ uv: @vec2f, fp: @vec2f ] -> GLSL vec4f {
         ivec2 ts = textureSize(image, 0);
         vec2  pt = uv * vec2(ts);
         int nx = int(clamp(ceil(fp.x), 1.0, 6.0));
@@ -1536,8 +1536,8 @@ Render Canvas
     # ---- ellipsis helper ----
 
     func text_ellipsis [ text: string, max_w: f32 ] -> string
-        tm : TextMetrics measure_text [ text ]
-        if [ tm.w <= max_w ]
+        metrics : TextMetrics measure_text [ text ]
+        if [ metrics.w <= max_w ]
             return text
         n : text.count
         dots : TextMetrics measure_text [ '...' ]
@@ -1893,7 +1893,7 @@ Render Canvas
             return
         path.add_arc [ tx, ty, tr, start_angle, end_angle ]
 
-    func draw_text_pass [ display: string, tm: TextMetrics, pen_x_in: f32, pen_y_in: f32 ]
+    func draw_text_pass [ display: string, metrics: TextMetrics, pen_x_in: f32, pen_y_in: f32 ]
         if [ !font.atlas ]
             font.atlas = GlyphAtlas [ vk: vk, w: w, size: 1024 ]
         glyph_atlas = font.atlas
@@ -1990,10 +1990,10 @@ Render Canvas
         if [ !font ] return bounds
 
         display : string [ (overflow == Overflow.ellipsis) ? text_ellipsis[ text, bounds.w ] : text ]
-        tm     : measure_text[ display ]
-        tx     : f32 [ bounds.x + (bounds.w - tm.w) * align.x + offset.x ]
-        font_h : f32 [ tm.ascent - tm.descent ]
-        ty     : f32 [ bounds.y + tm.ascent + (bounds.h - font_h) * align.y + offset.y ]
+        metrics     : measure_text[ display ]
+        tx     : f32 [ bounds.x + (bounds.w - metrics.w) * align.x + offset.x ]
+        font_h : f32 [ metrics.ascent - metrics.descent ]
+        ty     : f32 [ bounds.y + metrics.ascent + (bounds.h - font_h) * align.y + offset.y ]
 
         st : CanvasState states[state_depth - 1]
         tcs : f32 [ (w.scale > 0) ? w.scale : 1.0 ]
@@ -2011,7 +2011,7 @@ Render Canvas
             text_shader.grad_params    = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
             sx : f32 [ shadow.offset->x ]
             sy : f32 [ shadow.offset->y ]
-            draw_text_pass[ display, tm, pen_x + sx, pen_y + sy ]
+            draw_text_pass[ display, metrics, pen_x + sx, pen_y + sy ]
 
         # main pass: full text_color + optional gradient.
         text_shader.text_color     = st.fill_color
@@ -2019,8 +2019,8 @@ Render Canvas
         text_shader.text_color_pos = st.text_color_pos
         text_shader.text_grad_pos  = st.text_grad_pos
         text_shader.grad_params    = vec4f [ (st.text_grad_mirror) ? 1.0 : 0.0, 0.0, 0.0, 0.0 ]
-        draw_text_pass[ display, tm, pen_x, pen_y ]
-        return rect [ x: tx, y: ty - tm.ascent, w: tm.w, h: tm.h ]
+        draw_text_pass[ display, metrics, pen_x, pen_y ]
+        return rect [ x: tx, y: ty - metrics.ascent, w: metrics.w, h: metrics.h ]
 
     # ---- GPU draw helpers ----
 

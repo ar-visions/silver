@@ -7,6 +7,8 @@ ifdef [ apple ]
 ifdef [ linux ]
     import <pty.h>
         -lutil
+ifdef [ windows ]
+    import <ports.h>    # declares forkpty, which always fails here
 
 struct TermCell
     ch   : i32 [ 32 ]

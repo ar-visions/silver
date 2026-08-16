@@ -1,0 +1,6 @@
+import vec
+
+func main [] -> i32
+    v: vec3f [ 1.0, 2.0, 3.0 ]
+    n: i32 [ v.x ]
+    return n

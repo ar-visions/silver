@@ -1,5 +1,22 @@
 #ifndef _AETHER2_
 #define _AETHER2_
+#define aclang_cc_module_ aether
+#define aether_module_ aether
+#define catcher_module_ aether
+#define code_module_ aether
+#define codegen_module_ aether
+#define edecl_module_ aether
+#define efunc_module_ aether
+#define emeta_module_ aether
+#define emodule_module_ aether
+#define enamespace_module_ aether
+#define enode_module_ aether
+#define etype_module_ aether
+#define evar_module_ aether
+#define import_module_ aether
+#define macro_module_ aether
+#define statements_module_ aether
+#define static_array_module_ aether
 
 // one LLVM context per codegen core; every context-bound handle is a
 // slot on the single etype/enode instance, indexed by core
@@ -13,7 +30,7 @@ forward(catcher)
 forward(codegen)
 
 #define u(E, _au) ((E)(instance_of((Au)get(a->registry, (Au)(_au)), typeid(E))))
-etype rlookup(aether a, string name);
+AU_EXPORT etype rlookup(aether a, string name);
 
 #define efind(E, au, N) ({ \
     enum AU_MEMBER m = 0; \
@@ -37,7 +54,7 @@ etype rlookup(aether a, string name);
     for (int __i = 0; __i < (MDL)->args.count; __i++) \
         for (Au_t VAR = (Au_t)read_arg_type((Au_t)(MDL)->args.origin[__i]); VAR; VAR = NULL)
 
-Au_t read_arg_type(Au_t stored_arg);
+AU_EXPORT Au_t read_arg_type(Au_t stored_arg);
 
 forward(enode)
 
@@ -438,6 +455,6 @@ declare_class_3(static_array, array, collective)
     M(X, Y, i, prop,     public,  bool,    is_au_rt)
 declare_class_3(import, enamespace, etype)
 
-void alloc_origin_args(aether a, enode* out_src, Au* out_line, Au* out_seq);
+AU_EXPORT void alloc_origin_args(aether a, enode* out_src, Au* out_line, Au* out_seq);
 
 #endif

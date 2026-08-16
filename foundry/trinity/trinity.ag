@@ -15,7 +15,10 @@ import <stdlib.h>
 import <math.h>
 import <vk_mem_alloc.h>
 import <sys/stat.h>
-import <sys/ioctl.h>
+ifdef [ windows ]
+	import <ports.h>     # the posix surface, all in one header
+ifndef [ windows ]
+	import <sys/ioctl.h>
 
 
 ifdef [ linux ]
@@ -23,9 +26,10 @@ ifdef [ linux ]
 	import <fcntl.h>
 	import <linux/videodev2.h>
 
-import <unistd.h>
-    +_DEFAULT_SOURCE
-    +_XOPEN_SOURCE=500
+ifndef [ windows ]
+    import <unistd.h>
+        +_DEFAULT_SOURCE
+        +_XOPEN_SOURCE=500
 
 import KhronosGroup:Vulkan-Headers/29184b9
 
@@ -47,7 +51,6 @@ import KhronosGroup:Vulkan-Utility-Libraries/vulkan-sdk-1.4.341.0
 
 import KhronosGroup:Vulkan-ValidationLayers/vulkan-sdk-1.4.341.0
     -DVULKAN_HEADERS_INSTALL_DIR={install}
-    >> sed -i 's|"library_path": "libVkLayer_khronos_validation.so"|"library_path": "../../../lib/libVkLayer_khronos_validation.so"|' {install}/share/vulkan/explicit_layer.d/VkLayer_khronos_validation.json
 
 import KhronosGroup:glslang/715c850
     -DVULKAN_HEADERS_INSTALL_DIR={install}
@@ -3293,9 +3296,9 @@ Display Window
                     cw = maxr
                     ch = maxb
             if [ !measured && cv.font && e.label && e.label.count > 0 ]
-                tm : cv.measure_text[ e.label ]
-                cw = tm.w
-                ch = tm.ascent - tm.descent
+                metrics : cv.measure_text[ e.label ]
+                cw = metrics.w
+                ch = metrics.ascent - metrics.descent
             if [ e.area.r.content ]
                 cw += e.area.r.offset * ((e.area.r.pixel) ? 1.0 : e.fc)
                 if [ e.area.l.x_type == XAlign.right ]  bounds.x = bounds.x - cw
@@ -4654,20 +4657,21 @@ element IDEOverlay
     mutable req_h   : i32
 
     func service [ cv: Canvas ]
-        latest : i32 [ host_tex_gen[ host_slot[], 1 ] ]
-        if [ latest == gen || latest <= 0 ] return
-        wide : i32
-        tall : i32
-        fmt  : i32
-        fd0 : i32 [ host_tex_pull[ host_slot[], 1, 0, @wide, @tall, @fmt ] ]
-        fd1 : i32 [ host_tex_pull[ host_slot[], 1, 1, @wide, @tall, @fmt ] ]
-        if [ fd0 < 0 || fd1 < 0 ]
-            puts 'overlay: pull failed gen {latest} fds {fd0},{fd1}'
-            return
-        tex0 = cv.vk.import_shared_tex[ fd0, wide, tall, fmt, cv.w ]
-        tex1 = cv.vk.import_shared_tex[ fd1, wide, tall, fmt, cv.w ]
-        gen = latest
-        puts 'overlay: imported orbiter surface {wide}x{tall} gen {latest}'
+        ifdef [ linux ]
+            latest : i32 [ host_tex_gen[ host_slot[], 1 ] ]
+            if [ latest == gen || latest <= 0 ] return
+            wide : i32
+            tall : i32
+            fmt  : i32
+            fd0 : i32 [ host_tex_pull[ host_slot[], 1, 0, @wide, @tall, @fmt ] ]
+            fd1 : i32 [ host_tex_pull[ host_slot[], 1, 1, @wide, @tall, @fmt ] ]
+            if [ fd0 < 0 || fd1 < 0 ]
+                puts 'overlay: pull failed gen {latest} fds {fd0},{fd1}'
+                return
+            tex0 = cv.vk.import_shared_tex[ fd0, wide, tall, fmt, cv.w ]
+            tex1 = cv.vk.import_shared_tex[ fd1, wide, tall, fmt, cv.w ]
+            gen = latest
+            puts 'overlay: imported orbiter surface {wide}x{tall} gen {latest}'
 
     func front [] -> Texture
         fr : i32 [ host_tex_front[ host_slot[], 1 ] ]
@@ -4894,7 +4898,7 @@ ModelViewProject UXBackground
         view  = mat4f.look_at[ eye, center, up ]
         proj  = mat4f.ortho[ -1, 1, -1, 1, 0.1, 10.0 ]
 
-    func rgb2hsv [ c: vec3f ] -> GLSL vec3f {
+    func rgb2hsv [ c: @vec3f ] -> GLSL vec3f {
         vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
         vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
         vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
@@ -4903,7 +4907,7 @@ ModelViewProject UXBackground
         return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
     }
 
-    func hsv2rgb [ c: vec3f ] -> GLSL vec3f {
+    func hsv2rgb [ c: @vec3f ] -> GLSL vec3f {
         vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
         vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
         return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);

@@ -216,11 +216,11 @@ rgba rgba_with_cstr(rgba a, cstr v) {
     return a;
 }
 
-rgba rgba_with_string(rgba a, string s) {
+AU_EXPORT rgba rgba_with_string(rgba a, string s) {
     return rgba_with_cstr(a, s->chars);
 }
 
-rgba rgba_mix(rgba a, rgba b, f64 f) {
+AU_EXPORT rgba rgba_mix(rgba a, rgba b, f64 f) {
     f32 t = (f32)f;
     return rgba(
         r, a->r * (1.0f - t) + b->r * t,
@@ -233,7 +233,7 @@ define_class(rgba, Au)
 
 vec2f rect_xy(rect a) { return vec2f(a->x, a->y); }
 
-rect create_rect(vec2f v0, vec2f v1) {
+AU_EXPORT rect create_rect(vec2f v0, vec2f v1) {
     rect r = rect();
     r->x = v0.x;
     r->y = v0.y;
@@ -242,7 +242,7 @@ rect create_rect(vec2f v0, vec2f v1) {
     return r;
 }
 
-none mat4f_with_floats_t(mat4f* a, f32* f) {
+AU_EXPORT none mat4f_with_floats_t(mat4f* a, f32* f) {
     if (f)
         memcpy(a, f, sizeof(f32) * 16);
     else {
@@ -253,7 +253,7 @@ none mat4f_with_floats_t(mat4f* a, f32* f) {
     }
 }
 
-none quatf_with_floats_t(quatf* a, f32* f) {
+AU_EXPORT none quatf_with_floats_t(quatf* a, f32* f) {
     a->x = f[0];
     a->y = f[1];
     a->z = f[2];
@@ -263,21 +263,21 @@ none quatf_with_floats_t(quatf* a, f32* f) {
 f32 degrees(f32 rads) { return rads * (180.0f / M_PI); }
 f32 radians(f32 degs) { return degs * (M_PI / 180.0f); }
 
-none vec4f_with_vec3f(vec4f* a, vec3f* f) {
+AU_EXPORT none vec4f_with_vec3f(vec4f* a, vec3f* f) {
     a->x = f->x;
     a->y = f->y;
     a->z = f->z;
     a->w = 0.0f;
 }
 
-vec3f vec3f_cross(vec3f* a, vec3f* b) {
+AU_EXPORT vec3f vec3f_cross(vec3f* a, vec3f* b) {
     return vec3f(
         a->y * b->z - a->z * b->y,
         a->z * b->x - a->x * b->z,
         a->x * b->y - a->y * b->x);
 }
 
-vec3f vec3f_rand() {
+AU_EXPORT vec3f vec3f_rand() {
     f32 f[3] = {
         ((float)rand() / (float)RAND_MAX) * 2.0f - 1.0f,
         ((float)rand() / (float)RAND_MAX) * 2.0f - 1.0f,
@@ -287,7 +287,7 @@ vec3f vec3f_rand() {
 }
 
 /// vec4f treated as axis x/y/z + theta (w) args
-none quatf_with_vec4f(quatf* q, vec4f* v) {
+AU_EXPORT none quatf_with_vec4f(quatf* q, vec4f* v) {
     f32   theta        = v->w;
     f32   half_theta   = theta * 0.5f;
     f32   s_half_theta = sinf(half_theta);
@@ -298,7 +298,7 @@ none quatf_with_vec4f(quatf* q, vec4f* v) {
 }
 
 
-quatf quatf_mul(quatf* a, quatf* b) {
+AU_EXPORT quatf quatf_mul(quatf* a, quatf* b) {
     quatf r;
     r.w = a->w * b->w - a->x * b->x - a->y * b->y - a->z * b->z;
     r.x = a->w * b->x + a->x * b->w + a->y * b->z - a->z * b->y;
@@ -308,7 +308,7 @@ quatf quatf_mul(quatf* a, quatf* b) {
 }
 
 
-none mat4f_with_quatf(mat4f* mat, quatf* q) {
+AU_EXPORT none mat4f_with_quatf(mat4f* mat, quatf* q) {
     /// values are at mat->values[0...15] [ row-major ]
     f32 x = q->x, y = q->y, z = q->z, w = q->w;
     f32 xx = x * x;
@@ -343,7 +343,7 @@ none mat4f_with_quatf(mat4f* mat, quatf* q) {
     mat->m[15] = 1.0f;                    // Row 4, Col 4
 }
  
-none mat4f_set_identity(mat4f* a) {
+AU_EXPORT none mat4f_set_identity(mat4f* a) {
     memset(a, 0, sizeof(mat4f));
     for (int i = 0; i < 4; i++)
         a->m[4 * i + i] = 1.0f;
@@ -361,7 +361,7 @@ mat4f mat4f_mul(mat4f* a, mat4f* b) {
     return res;
 }
 
-vec4f mat4f_mul_v4(mat4f* a, vec4f* b) {
+AU_EXPORT vec4f mat4f_mul_v4(mat4f* a, vec4f* b) {
     vec4f res  = {};
     // column-major storage (m[col*4 + row], as mul/look_at/translate use):
     // res_row = sum over col of m[col][row] * b[col]. the previous loop
@@ -374,7 +374,7 @@ vec4f mat4f_mul_v4(mat4f* a, vec4f* b) {
     return res;
 }
 
-mat4f mat4f_scale(mat4f* a, vec3f* f) {
+AU_EXPORT mat4f mat4f_scale(mat4f* a, vec3f* f) {
     u32 size = 4;
     mat4f r = *a;
 
@@ -386,7 +386,7 @@ mat4f mat4f_scale(mat4f* a, vec3f* f) {
 }
 
 // any 'shape' in A-type model applies on top of vmember_count
-mat4f mat4f_translate(mat4f* a, vec3f* offsets) {
+AU_EXPORT mat4f mat4f_translate(mat4f* a, vec3f* offsets) {
     mat4f tr = mat4f_identity();
     tr.m[12] = offsets->x; // Column-major: m[12] = (3,0)
     tr.m[13] = offsets->y; // Column-major: m[13] = (3,1)
@@ -394,7 +394,7 @@ mat4f mat4f_translate(mat4f* a, vec3f* offsets) {
     return mat4f_mul(a, &tr);
 }
 
-mat4f mat4f_look_at(vec3f* eye, vec3f* target, vec3f* up) {
+AU_EXPORT mat4f mat4f_look_at(vec3f* eye, vec3f* target, vec3f* up) {
     // standard right-handed lookAt (OpenGL/glm convention)
     //   f = normalize(target - eye)    forward: eye → target
     //   s = normalize(cross(f, up))    side / right
@@ -423,7 +423,7 @@ mat4f mat4f_look_at(vec3f* eye, vec3f* target, vec3f* up) {
     return r;
 }
 
-mat4f mat4f_ortho(f32 left, f32 right, f32 bottom, f32 top, f32 near, f32 far) {
+AU_EXPORT mat4f mat4f_ortho(f32 left, f32 right, f32 bottom, f32 top, f32 near, f32 far) {
     f32 rl = right - left;
     f32 tb = top   - bottom;
     f32 fn = far   - near;
@@ -439,7 +439,7 @@ mat4f mat4f_ortho(f32 left, f32 right, f32 bottom, f32 top, f32 near, f32 far) {
     return res;
 }
 
-mat4f mat4f_frustum(f32 left, f32 right, f32 bottom, f32 top, f32 near, f32 far) {
+AU_EXPORT mat4f mat4f_frustum(f32 left, f32 right, f32 bottom, f32 top, f32 near, f32 far) {
     f32 rl = right - left;
     f32 tb = top   - bottom;
     f32 fn = far   - near;
@@ -455,7 +455,7 @@ mat4f mat4f_frustum(f32 left, f32 right, f32 bottom, f32 top, f32 near, f32 far)
     return res;
 }
 
-f32 mat4f_determinant(mat4f* mat) {
+AU_EXPORT f32 mat4f_determinant(mat4f* mat) {
     f32 *m = mat->m; // access matrix elements
     f32 det = 
         m[0] * (m[5] * (m[10] * m[15] - m[11] * m[14]) -
@@ -474,7 +474,7 @@ f32 mat4f_determinant(mat4f* mat) {
     return det;
 }
 
-mat4f mat4f_transpose(mat4f* mat) {
+AU_EXPORT mat4f mat4f_transpose(mat4f* mat) {
     mat4f r = {};
     for (int i = 0; i < 4; i++) {
         for (int j = 0; j < 4; j++)
@@ -483,12 +483,12 @@ mat4f mat4f_transpose(mat4f* mat) {
     return r;
 }
 
-f32 determinant_3x3(f32 a, f32 b, f32 c, f32 d, f32 e, f32 f, f32 g, f32 h, f32 i) {
+AU_EXPORT f32 determinant_3x3(f32 a, f32 b, f32 c, f32 d, f32 e, f32 f, f32 g, f32 h, f32 i) {
     return a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
 }
 
 // mutable
-mat4f mat4f_adjugate(mat4f* mat) {
+AU_EXPORT mat4f mat4f_adjugate(mat4f* mat) {
     f32 *m = mat->m;
     mat4f r = {};
 
@@ -517,7 +517,7 @@ mat4f mat4f_adjugate(mat4f* mat) {
     return r;
 }
 
-mat4f mat4f_inverse(mat4f* mat) {
+AU_EXPORT mat4f mat4f_inverse(mat4f* mat) {
     // compute the determinant
     f32 det = mat4f_determinant(mat);
     mat4f res = {};
@@ -534,7 +534,7 @@ mat4f mat4f_inverse(mat4f* mat) {
     return res;
 }
 
-mat4f mat4f_identity() {
+AU_EXPORT mat4f mat4f_identity() {
     mat4f r = {};
     r.m[ 0] = 1.0f;
     r.m[ 5] = 1.0f;
@@ -543,7 +543,7 @@ mat4f mat4f_identity() {
     return r;
 }
 
-mat4f mat4f_perspective(f32 y_fov, f32 aspect, f32 n, f32 f) {
+AU_EXPORT mat4f mat4f_perspective(f32 y_fov, f32 aspect, f32 n, f32 f) {
 	float const ifov = 1.f / tanf(y_fov / 2.f);
     f32 m[4][4];
     memset(m, 0, sizeof(m));
@@ -572,7 +572,7 @@ mat4f mat4f_perspective(f32 y_fov, f32 aspect, f32 n, f32 f) {
 }
 
 
-mat4f mat4f_rotate(mat4f* mat, quatf* q) {
+AU_EXPORT mat4f mat4f_rotate(mat4f* mat, quatf* q) {
     mat4f res = {};
 
     // quaternion rotation
@@ -604,7 +604,7 @@ mat4f mat4f_rotate(mat4f* mat, quatf* q) {
     return mat4f_mul(mat, &res);
 }
 
-string mat4f_cast_string(mat4f* a) {
+AU_EXPORT string mat4f_cast_string(mat4f* a) {
     bool  once = false;
     string res = string(alloc, 1024);
     append(res, "[");
@@ -645,7 +645,7 @@ vector_impl(rgba8, rgba8)
 vector_impl(rgba16, rgba16)
 vector_impl(rgbaf, rgbaf)
 
-none rgbaf_with_vec4f(rgbaf* a, vec4f* v4) {
+AU_EXPORT none rgbaf_with_vec4f(rgbaf* a, vec4f* v4) {
     *a = *(rgbaf*)v4;
 }
 
@@ -676,3 +676,5 @@ define_class(vector_f64,   vector, f64)
 /// vector class works with structs in meta
 define_class(vector_mat4f,      vector, mat4f)
 
+
+AU_EXPORT void vec_module_anchor(void) { }
