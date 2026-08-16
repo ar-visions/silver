@@ -2,6 +2,8 @@
 !*/
 !*.*
 import
+install
+dbg.cmd
 platform
 .DS_Store
 release

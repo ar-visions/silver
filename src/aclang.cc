@@ -1,5 +1,10 @@
 #undef IMPORT
 
+#ifdef _WIN32
+// clang's headers use off_t, which the UCRT does not define by default
+#include <ports.h>
+#endif
+
 #include <iostream>
 
 #include <llvm-c/DebugInfo.h>
@@ -279,7 +284,12 @@ static std::string cxx_mangle(const NamedDecl* D, ASTContext& ctx) {
 // ============================================================================
 
 
-static Au_t map_builtin_type(const BuiltinType* bt, aether e) {
+// long and wchar_t are the two builtins whose width follows the target rather
+// than the language: long is 32-bit on windows (LLP64) and 64-bit on unix
+// (LP64), wchar_t is 16-bit on windows and 32-bit elsewhere. hardcoding them
+// put FT_Long fields at unix offsets and moved every later field of a struct
+static Au_t map_builtin_type(const BuiltinType* bt, ASTContext& ctx, aether e) {
+    const unsigned bits = (unsigned)ctx.getTypeSize(QualType(bt, 0));
     switch (bt->getKind()) {
         case BuiltinType::Void:        return au_lookup("none");
         case BuiltinType::Bool:        return au_lookup("bool");
@@ -287,16 +297,16 @@ static Au_t map_builtin_type(const BuiltinType* bt, aether e) {
         case BuiltinType::UChar:       return au_lookup("u8");
         case BuiltinType::Char_S:      return au_lookup("i8");
         case BuiltinType::SChar:       return au_lookup("i8");
-        case BuiltinType::WChar_U:
-        case BuiltinType::WChar_S:     return au_lookup("i32"); // wchar typically 32-bit
+        case BuiltinType::WChar_U:     return au_lookup(bits == 16 ? "u16" : "u32");
+        case BuiltinType::WChar_S:     return au_lookup(bits == 16 ? "i16" : "i32");
         case BuiltinType::Char16:      return au_lookup("u16");
         case BuiltinType::Char32:      return au_lookup("u32");
         case BuiltinType::UShort:      return au_lookup("u16");
         case BuiltinType::Short:       return au_lookup("i16");
         case BuiltinType::UInt:        return au_lookup("u32");
         case BuiltinType::Int:         return au_lookup("i32");
-        case BuiltinType::ULong:       return au_lookup("u64");
-        case BuiltinType::Long:        return au_lookup("i64");
+        case BuiltinType::ULong:       return au_lookup(bits == 32 ? "u32" : "u64");
+        case BuiltinType::Long:        return au_lookup(bits == 32 ? "i32" : "i64");
         case BuiltinType::ULongLong:   return au_lookup("u64");
         case BuiltinType::LongLong:    return au_lookup("i64");
         case BuiltinType::Int128:      return au_lookup("i128");
@@ -409,7 +419,7 @@ static Au_t map_clang_type(const QualType& qt, ASTContext& ctx, aether e, symbol
 
     // Builtin types
     if (const BuiltinType* bt = dyn_cast<BuiltinType>(type)) {
-        Au_t src = map_builtin_type(bt, e);
+        Au_t src = map_builtin_type(bt, ctx, e);
         if (src && use_name) {
             Au_t alias = def_type(aether_top_scope(e), use_name, AU_TRAIT_ALIAS | AU_TRAIT_IS_C);
             //alias->module = e->current_import->autype;
@@ -1514,7 +1524,7 @@ none aether_import_includes(aether a) {
         import_unit* u = new import_unit();
         u->a  = a;
         u->im = im;
-        u->c  = f(path, "/tmp/silver_%i_import_%i.c", (int)getpid(), tu_id);
+        u->c  = f(path, "%s/silver_%i_import_%i.c", temp_dir(), (int)getpid(), tu_id);
         path_save(u->c, (Au)contents, null);
         build_unit_args(a, u);
         pool.units.push_back(u);

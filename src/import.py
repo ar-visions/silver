@@ -13,6 +13,7 @@ IMPORT = v['IMPORT']
 silver = v['SILVER']
 NATIVE = Path(v['SILVER']) / "platform" / "native"
 SDK    = v['SDK']
+DEBUG  = v['DEBUG'] or v['ASAN']
 os.environ['IMPORT'] = IMPORT
 os.environ['SDK']    = SDK
 
@@ -114,9 +115,10 @@ def eval_braces(s, context=None):
 def vreplace(s: str) -> str:
     """Expand $VARS using the current environment."""
     if os.name == "nt":
+        # forward slashes: cmake reads \s in a path as a bad escape
         return eval_braces(re.sub(
             r"\$([A-Za-z_][A-Za-z0-9_]*)",
-            lambda m: os.environ.get(m.group(1), m.group(0)),
+            lambda m: os.environ.get(m.group(1), m.group(0)).replace('\\', '/'),
             s
         ))
     return eval_braces(s)
@@ -246,10 +248,11 @@ def build_import(name, uri, commit, _config_lines, install_dir, extra):
             ]
 
 
-        # lets loop through config_lines and omit
+        # llvm's own builds pick their compiler; match on uri, not the alias
+        is_llvm = 'llvm-project' in uri
         cfg = []
         for l in config_lines:
-            if name != 'llvm-project':
+            if not is_llvm:
                 if l.startswith('-DCMAKE_C_COMPILER') or l.startswith('-DCMAKE_CXX_COMPILER'):
                     continue
             cfg.append(l)
@@ -268,9 +271,11 @@ def build_import(name, uri, commit, _config_lines, install_dir, extra):
         # for determinism import needs a switch for which compiler to use
         print('cmake args = ', cmake_args)
         if SDK == 'native' and not '-DCMAKE_C_COMPILER=' in cmake_args:
-            cc         = 'cl' if win else 'clang'
-            cpp        = 'cl' if win else 'clang++'
-            idir       = ''   if win else install_dir + s + 'bin' + s
+            # our clang, always -- clang-cl is the same compiler with the
+            # msvc-style driver, so dependencies expecting cl flags still build
+            cc         = 'clang-cl' if win else 'clang'
+            cpp        = 'clang-cl' if win else 'clang++'
+            idir       = str(NATIVE) + s + 'bin' + s if win else install_dir + s + 'bin' + s
             if not win and not (Path(idir) / cc).exists():
                 idir = ''
                 cc   = 'gcc'
@@ -285,10 +290,18 @@ def build_import(name, uri, commit, _config_lines, install_dir, extra):
         if not '-S ' in cmake_args:
             cmake_args = f'-S {checkout_dir} ' + cmake_args
 
+        # every image in the process must share one crt: an external that picks
+        # its own build type drags in a second one and its own fd table
+        if not '-DCMAKE_BUILD_TYPE' in cmake_args:
+            cmake_args += f' -DCMAKE_BUILD_TYPE={"Debug" if DEBUG else "Release"}'
+        if sys.platform.startswith("win") and not '-DCMAKE_MSVC_RUNTIME_LIBRARY' in cmake_args:
+            rt = 'MultiThreadedDebugDLL' if DEBUG else 'MultiThreadedDLL'
+            cmake_args += f' -DCMAKE_MSVC_RUNTIME_LIBRARY={rt}'
+
         is_ninja = '-G Ninja' in cmake_args or '-G "Ninja"' in cmake_args
         tc = ''
         if name != 'llvm-project':
-            tc = f"--toolchain='{IMPORT}/target.cmake'"
+            tc = f'--toolchain="{IMPORT}/target.cmake"'
         
         # replace environment vars in cmake_args that begin with $something with %something% on windows
         run(f"cmake {tc} {cmake_args}", cwd=build_dir)

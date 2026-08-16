@@ -57,7 +57,7 @@ LLVMMetadataRef debug_typedef_type    (aether a, Au_t type_au);
 LLVMMetadataRef debug_au_header_type  (aether a, Au_t schema);
 LLVMMetadataRef debug_subroutine_type (aether a, Au_t fn_au, bool);
 void            emit_debug_function   (aether a, efunc fn, bool);
-void            update_current_file   (aether a, path source_file);
+AU_EXPORT void  update_current_file   (aether a, path source_file);
 void            emit_debug_variable   (aether a, enode var, u32 arg_no, u32 line);
 void            emit_debug_params     (aether a, efunc fn);
 
@@ -1222,7 +1222,7 @@ static LLVMMetadataRef debug_combined_type(aether a, Au_t schema) {
 // signature.  for instance methods, scopes the subprogram inside the class
 // DI type if available.
 // ────────────────────────────────────────────────────────────────────────────
-void update_current_file(aether a, path source_file) {
+AU_EXPORT void update_current_file(aether a, path source_file) {
     emit_guard;
     if (!a->debug) return;
     if (source_file && source_file->chars &&

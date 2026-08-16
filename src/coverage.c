@@ -337,6 +337,6 @@ void init_coverage(aether a) {
 }
 
 // called in module_initializer
-void finalize_coverage(aether a) {
+AU_EXPORT void finalize_coverage(aether a) {
     if (!a->coverage) return;
 }

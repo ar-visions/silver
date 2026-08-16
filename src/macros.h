@@ -70,6 +70,15 @@
 //#define m(...)   map_of(__VA_ARGS__ __VA_OPT__(,) null)
 
 #define   enum_value_DEF(E, T, N, VAL) 
+// pe needs each exported symbol named; elf exports by default
+#ifndef AU_EXPORT
+#ifdef _WIN32
+#define AU_EXPORT __attribute__((dllexport))
+#else
+#define AU_EXPORT
+#endif
+#endif
+
 #define   enum_value_DECL(E, T, N, VAL)             static const E E##_##N = VAL;
 #define   enum_value_COUNT(E, T, N, VAL)            1,
 #define   enum_value_METHOD(E, T, N, VAL)
@@ -373,8 +382,8 @@
 #define   i_ctr_public_INST_U_EXTERN(X, ARG)
 #define   i_ctr_public_INST_L_EXTERN(X, ARG)
 #define   i_ctr_public_DEF(X, ARG)
-#define   i_ctr_public_DECL(X, ARG) X X##_with_##ARG(X, ARG);
-#define   i_ctr_public_DECL_EXTERN(X, ARG) X X##_with_##ARG(X, ARG);
+#define   i_ctr_public_DECL(X, ARG) AU_EXPORT X X##_with_##ARG(X, ARG);
+#define   i_ctr_public_DECL_EXTERN(X, ARG) AU_EXPORT X X##_with_##ARG(X, ARG);
 #define   i_ctr_public_GENERICS(X, ARG) ARG: Type_i(X).type.ft.with_##ARG,
 
 #define   i_ctr_public_INIT(X, ARG) { \
@@ -841,8 +850,8 @@
 #define   s_prop_public_INST_U_EXTERN(X, R, N)    
 #define   s_prop_public_INST_L_EXTERN(X, R, N)
 #define   s_prop_public_DEF(X, R, N)              R X##_##N;
-#define   s_prop_public_DECL(X, R, N)             extern R X##_##N;
-#define   s_prop_public_DECL_EXTERN(X, R, N)      extern R X##_##N;
+#define   s_prop_public_DECL(X, R, N)             AU_EXPORT extern R X##_##N;
+#define   s_prop_public_DECL_EXTERN(X, R, N)      AU_EXPORT extern R X##_##N;
 #define   s_prop_public_GENERICS(X, R, N)
 #define   s_prop_public_INIT(X, R, N) { \
     Au_t m = def(typeid(X), #N, AU_MEMBER_VAR, AU_TRAIT_STATIC); \
@@ -1300,8 +1309,8 @@
 #define   i_struct_method_INST(    X, R, N, ...)
 #define   i_struct_method_INST_EXTERN(    X, R, N, ...)
 #define   i_struct_method_DEF(X, R, N, ...)
-#define   i_struct_method_DECL(X, R, N, ...)        R X##_##N(X* __VA_OPT__(,) __VA_ARGS__);
-#define   i_struct_method_DECL_EXTERN(X, R, N, ...) R X##_##N(X* __VA_OPT__(,) __VA_ARGS__);
+#define   i_struct_method_DECL(X, R, N, ...)        AU_EXPORT R X##_##N(X* __VA_OPT__(,) __VA_ARGS__);
+#define   i_struct_method_DECL_EXTERN(X, R, N, ...) AU_EXPORT R X##_##N(X* __VA_OPT__(,) __VA_ARGS__);
 #define   i_struct_method_GENERICS(X, R, N, ...)
 #define   i_struct_method_INIT(    X, R, N, ...) { \
     Au_t m = def(typeid(X), #N, AU_MEMBER_FUNC, AU_TRAIT_IMETHOD); \
@@ -1325,8 +1334,8 @@
 #define   i_struct_method_1_INST(    X, R, N, A, ...)
 #define   i_struct_method_1_INST_EXTERN(    X, R, N, A, ...)
 #define   i_struct_method_1_DEF(X, R, N, A, ...)
-#define   i_struct_method_1_DECL(X, R, N, A, ...)        R X##_##N(X*, A* __VA_OPT__(,) __VA_ARGS__);
-#define   i_struct_method_1_DECL_EXTERN(X, R, N, A, ...) R X##_##N(X*, A* __VA_OPT__(,) __VA_ARGS__);
+#define   i_struct_method_1_DECL(X, R, N, A, ...)        AU_EXPORT R X##_##N(X*, A* __VA_OPT__(,) __VA_ARGS__);
+#define   i_struct_method_1_DECL_EXTERN(X, R, N, A, ...) AU_EXPORT R X##_##N(X*, A* __VA_OPT__(,) __VA_ARGS__);
 #define   i_struct_method_1_GENERICS(X, R, N, A, ...)
 #define   i_struct_method_1_INIT(    T, R, N, A, ...) { \
     Au_t m = def(typeid(T), #N, AU_MEMBER_FUNC, AU_TRAIT_IMETHOD); \
@@ -1352,8 +1361,8 @@
 #define   i_struct_method_2_INST(    X, R, N, A, ...)
 #define   i_struct_method_2_INST_EXTERN(    X, R, N, A, ...)
 #define   i_struct_method_2_DEF(X, R, N, A, ...)
-#define   i_struct_method_2_DECL(X, R, N, A, ...)        R X##_##N(X*, A*, A* __VA_OPT__(,) __VA_ARGS__);
-#define   i_struct_method_2_DECL_EXTERN(X, R, N, A, ...) R X##_##N(X*, A*, A* __VA_OPT__(,) __VA_ARGS__);
+#define   i_struct_method_2_DECL(X, R, N, A, ...)        AU_EXPORT R X##_##N(X*, A*, A* __VA_OPT__(,) __VA_ARGS__);
+#define   i_struct_method_2_DECL_EXTERN(X, R, N, A, ...) AU_EXPORT R X##_##N(X*, A*, A* __VA_OPT__(,) __VA_ARGS__);
 #define   i_struct_method_2_GENERICS(X, R, N, A, ...)
 #define   i_struct_method_2_INIT(    T, R, N, A, ...) { \
     Au_t m = def(typeid(T), #N, AU_MEMBER_FUNC, AU_TRAIT_IMETHOD); \
@@ -1380,8 +1389,8 @@
 #define   i_struct_method_3_INST(    X, R, N, A, ...)
 #define   i_struct_method_3_INST_EXTERN(    X, R, N, A, ...)
 #define   i_struct_method_3_DEF(X, R, N, A, ...)
-#define   i_struct_method_3_DECL(X, R, N, A, ...)        R X##_##N(X*, A*, A*, A* __VA_OPT__(,) __VA_ARGS__);
-#define   i_struct_method_3_DECL_EXTERN(X, R, N, A, ...) R X##_##N(X*, A*, A*, A* __VA_OPT__(,) __VA_ARGS__);
+#define   i_struct_method_3_DECL(X, R, N, A, ...)        AU_EXPORT R X##_##N(X*, A*, A*, A* __VA_OPT__(,) __VA_ARGS__);
+#define   i_struct_method_3_DECL_EXTERN(X, R, N, A, ...) AU_EXPORT R X##_##N(X*, A*, A*, A* __VA_OPT__(,) __VA_ARGS__);
 #define   i_struct_method_3_GENERICS(X, R, N, A, ...)
 #define   i_struct_method_3_INIT(    T, R, N, A, ...) { \
     Au_t m = def(typeid(T), #N, AU_MEMBER_FUNC, AU_TRAIT_IMETHOD); \
@@ -1411,8 +1420,8 @@
 #define   i_struct_static_INST(    X, R, N, ...)
 #define   i_struct_static_INST_EXTERN(X, R, N, ...)
 #define   i_struct_static_DEF(    X, R, N, ...)
-#define   i_struct_static_DECL(    X, R, N, ...)            R X##_##N(__VA_ARGS__);
-#define   i_struct_static_DECL_EXTERN(    X, R, N, ...)     R X##_##N(__VA_ARGS__);
+#define   i_struct_static_DECL(    X, R, N, ...)            AU_EXPORT R X##_##N(__VA_ARGS__);
+#define   i_struct_static_DECL_EXTERN(    X, R, N, ...)     AU_EXPORT R X##_##N(__VA_ARGS__);
 #define   i_struct_static_GENERICS(X, R, N, ...)
 #define   i_struct_static_INIT(    X, R, N, ...) { \
     Au_t m = def(typeid(X), #N, AU_MEMBER_FUNC, AU_TRAIT_SMETHOD); \
@@ -1435,8 +1444,8 @@
 #define   i_struct_static_3_INST(    X, R, N, A, ...)
 #define   i_struct_static_3_INST_EXTERN(X, R, N, A, ...)
 #define   i_struct_static_3_DEF(    X, R, N, A, ...)
-#define   i_struct_static_3_DECL(    X, R, N, A, ...)            R X##_##N(A*, A*, A* __VA_OPT__(,) __VA_ARGS__);
-#define   i_struct_static_3_DECL_EXTERN(    X, R, N, A, ...)     R X##_##N(A*, A*, A* __VA_OPT__(,) __VA_ARGS__);
+#define   i_struct_static_3_DECL(    X, R, N, A, ...)            AU_EXPORT R X##_##N(A*, A*, A* __VA_OPT__(,) __VA_ARGS__);
+#define   i_struct_static_3_DECL_EXTERN(    X, R, N, A, ...)     AU_EXPORT R X##_##N(A*, A*, A* __VA_OPT__(,) __VA_ARGS__);
 #define   i_struct_static_3_GENERICS(X, R, N, A, ...)
 #define   i_struct_static_3_INIT(    T, R, N, A, ...) { \
     Au_t m = def(typeid(T), #N, AU_MEMBER_FUNC, AU_TRAIT_SMETHOD); \
@@ -1560,8 +1569,8 @@
 #define   s_method_public_INST_U_EXTERN(X, R, N, ...)
 #define   s_method_public_INST_L_EXTERN(X, R, N, ...)
 #define   s_method_public_DEF(X, R, N, ...) 
-#define   s_method_public_DECL(X, R, N, ...)        R N(__VA_ARGS__);
-#define   s_method_public_DECL_EXTERN(X, R, N, ...) R N(__VA_ARGS__);
+#define   s_method_public_DECL(X, R, N, ...)        AU_EXPORT R N(__VA_ARGS__);
+#define   s_method_public_DECL_EXTERN(X, R, N, ...) AU_EXPORT R N(__VA_ARGS__);
 #define   s_method_public_GENERICS(X, R, N, ...)
 #define   s_method_public_INIT(X, R, N, ...) { \
     Au_t m = def(typeid(X), #N, AU_MEMBER_FUNC, AU_TRAIT_SMETHOD); \
@@ -1625,8 +1634,8 @@
 #define   i_method_abstract_INST_U_EXTERN(  X, R, N, ...)
 #define   i_method_abstract_INST_L_EXTERN(  X, R, N, ...)
 #define   i_method_abstract_DEF(    X, R, N, ...)
-#define   i_method_abstract_DECL(    X, R, N, ...)           R X##_##N(__VA_ARGS__);
-#define   i_method_abstract_DECL_EXTERN(    X, R, N, ...)    R X##_##N(__VA_ARGS__);
+#define   i_method_abstract_DECL(    X, R, N, ...)           AU_EXPORT R X##_##N(__VA_ARGS__);
+#define   i_method_abstract_DECL_EXTERN(    X, R, N, ...)    AU_EXPORT R X##_##N(__VA_ARGS__);
 #define   i_method_abstract_GENERICS(X, R, N, ...)
 #define   i_method_abstract_INIT(    X, R, N, ...) { \
     Au_t m = def(typeid(X), #N, AU_MEMBER_FUNC, AU_TRAIT_IMETHOD | AU_TRAIT_ABSTRACT); \
@@ -1656,8 +1665,8 @@
 #define   i_method_public_INST_U_EXTERN(  X, R, N, ...)
 #define   i_method_public_INST_L_EXTERN(  X, R, N, ...)
 #define   i_method_public_DEF(    X, R, N, ...)
-#define   i_method_public_DECL(    X, R, N, ...)           R X##_##N(__VA_ARGS__);
-#define   i_method_public_DECL_EXTERN(    X, R, N, ...)    R X##_##N(__VA_ARGS__);
+#define   i_method_public_DECL(    X, R, N, ...)           AU_EXPORT R X##_##N(__VA_ARGS__);
+#define   i_method_public_DECL_EXTERN(    X, R, N, ...)    AU_EXPORT R X##_##N(__VA_ARGS__);
 #define   i_method_public_GENERICS(X, R, N, ...)
 #define   i_method_public_INIT(    X, R, N, ...) { \
     Au_t m = def(typeid(X), #N, AU_MEMBER_FUNC, AU_TRAIT_IMETHOD); \
@@ -1741,7 +1750,7 @@
 #define   i_prim_method_public_INST_U_EXTERN(  X, R, N, ...)
 #define   i_prim_method_public_INST_L_EXTERN(  X, R, N, ...)
 #define   i_prim_method_public_DEF(    X, R, N, ...)
-#define   i_prim_method_public_DECL(    X, R, N, ...)           R X##_##N(__VA_ARGS__);
+#define   i_prim_method_public_DECL(    X, R, N, ...)           AU_EXPORT R X##_##N(__VA_ARGS__);
 #define   i_prim_method_public_DECL_EXTERN(    X, R, N, ...)    
 #define   i_prim_method_public_GENERICS(X, R, N, ...)
 #define   i_prim_method_public_INIT(    X, R, N, ...) { \
@@ -1810,7 +1819,7 @@
 #define   i_final_public_INST_U_EXTERN(ORIG,  X, R, N, ...)
 #define   i_final_public_INST_L_EXTERN(ORIG,  X, R, N, ...)
 #define   i_final_public_DEF(ORIG,    X, R, N, ...)
-#define   i_final_public_DECL(ORIG,    X, R, N, ...)           R X##_##N(__VA_ARGS__);
+#define   i_final_public_DECL(ORIG,    X, R, N, ...)           AU_EXPORT R X##_##N(__VA_ARGS__);
 #define   i_final_public_DECL_EXTERN(ORIG,    X, R, N, ...)    
 #define   i_final_public_GENERICS(ORIG,X, R, N, ...)
 #define   i_final_public_INIT(ORIG,    X, R, N, ...) { \
@@ -2094,8 +2103,8 @@
 #define i_vargs_public_INST_U_EXTERN(X, R, N, ...)
 #define i_vargs_public_INST_L_EXTERN(X, R, N, ...)
 #define i_vargs_public_DEF(X, R, N, ...)
-#define i_vargs_public_DECL(X, R, N, ...)               R X##_##N(X __VA_OPT__(,) __VA_ARGS__, ...);
-#define i_vargs_public_DECL_EXTERN(X, R, N, ...)        R X##_##N(X __VA_OPT__(,) __VA_ARGS__, ...);
+#define i_vargs_public_DECL(X, R, N, ...)               AU_EXPORT R X##_##N(X __VA_OPT__(,) __VA_ARGS__, ...);
+#define i_vargs_public_DECL_EXTERN(X, R, N, ...)        AU_EXPORT R X##_##N(X __VA_OPT__(,) __VA_ARGS__, ...);
 #define i_vargs_public_GENERICS(X, R, N, ...)
 #define i_vargs_public_INIT(X, R, N, ...)               i_method_public_INIT(X, R, N, __VA_ARGS__)  
 #define i_vargs_public_PROTO(X, R, N, ...)
@@ -2133,8 +2142,8 @@
 #define s_vargs_public_INST_L_EXTERN(X, R, N, ...)
 #define s_vargs_public_DEF(X, R, N, ...)
 #define s_vargs_public_DEF(X, R, N, ...)
-#define s_vargs_public_DECL(X, R, N, ...)               R N(__VA_ARGS__, ...);
-#define s_vargs_public_DECL_EXTERN(X, R, N, ...)        R N(__VA_ARGS__, ...);
+#define s_vargs_public_DECL(X, R, N, ...)               AU_EXPORT R N(__VA_ARGS__, ...);
+#define s_vargs_public_DECL_EXTERN(X, R, N, ...)        AU_EXPORT R N(__VA_ARGS__, ...);
 #define s_vargs_public_GENERICS(X, R, N, ...)
 #define s_vargs_public_INIT(X, R, N, ...)               s_method_public_INIT(X, R, N, ##__VA_ARGS__)
 #define s_vargs_public_PROTO(X, R, N, ...)

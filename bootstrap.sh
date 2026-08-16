@@ -242,6 +242,7 @@ fi
 # Au's ports.h must be reachable as <ports.h> by modules that build OUTSIDE the
 # src tree (e.g. foundry/dbg) — symlink it into the install include dir.
 ln -sf "$SILVER/src/ports.h" "$NATIVE/include/ports.h"
+ln -sf "$SILVER/src/undefcpp.h" "$NATIVE/include/undefcpp.h"
 
 # dbg — a thin lldb shortcut: `dbg <app> [args...]` launches the app under the
 # vendored lldb, auto-runs it, and drops to the lldb prompt on a crash (so you can

@@ -128,11 +128,11 @@ declare_class(message)
     i_override(X,Y, method, init)
 declare_class(TLS)
 
-string dns(string hostname);
-Au json_request(uri addr, map args, map headers, subprocedure success_handler, subprocedure failure_handler);
+AU_EXPORT string dns(string hostname);
+AU_EXPORT Au json_request(uri addr, map args, map headers, subprocedure success_handler, subprocedure failure_handler);
 
-Au request(uri url, map args);
+AU_EXPORT Au request(uri url, map args);
 
-i64 download(uri url, cstr dest);
+AU_EXPORT i64 download(uri url, cstr dest);
 
 #endif

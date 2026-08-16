@@ -21,12 +21,14 @@ typedef LLVMMetadataRef LLVMScope;
 // through the original's (unpositioned) builder. Thread-local so each worker
 // thread routes to its own instance. null outside build_fn -> fall back to ->mod.
 __thread aether au_codegen_active = null;
+AU_EXPORT aether au_codegen_active_get(void)     { return au_codegen_active; }
+AU_EXPORT void   au_codegen_active_set(aether a) { au_codegen_active = a; }
 
 static void restore_codegen_active(aether* prev) { au_codegen_active = *prev; }
 
 // off-thread, a worker clone must resolve back to the root — following a
 // node's mod into another core's context emits into the wrong module
-aether au_active(aether from) {
+AU_EXPORT aether au_active(aether from) {
     if (au_codegen_active) return au_codegen_active;
     return (from && from->root) ? from->root : from;
 }
@@ -100,12 +102,12 @@ static inline void emit_resume(int d) {
 }
 
 // longjmp (halt) skips cleanup handlers: reset from catch sites
-void aether_emit_recover() {
+AU_EXPORT void aether_emit_recover() {
     while (_type_depth) type_unlock();
     if (_ctx_depth) { _ctx_depth = 1; emit_unlock(); }
 }
 
-Au subprocedure_invoke(subprocedure a, Au arg);
+AU_EXPORT Au subprocedure_invoke(subprocedure a, Au arg);
 
 // deferred-parse builders run without the lock held
 static Au sp_invoke(subprocedure s, Au arg) {
@@ -124,7 +126,7 @@ static Au sp_invoke(subprocedure s, Au arg) {
 #define AU_CORES       8
 #define au_core(e) (au_active((e)->mod)->core)
 
-void        _lltype_set(etype e, LLVMTypeRef v);
+AU_EXPORT void        _lltype_set(etype e, LLVMTypeRef v);
 LLVMTypeRef _lltype_slot(etype e);
 LLVMTypeRef _lltype_core(etype e, int core);
 
@@ -138,30 +140,30 @@ typedef struct ll_field {
     bool         raw;      // use the type's own slot (no class → ptr walk)
 } ll_field;
 
-LLVMTypeRef ll_field_at(aether a, ll_field* f, int core);
+AU_EXPORT LLVMTypeRef ll_field_at(aether a, ll_field* f, int core);
 
-int               core_index(Au o);
-LLVMTargetDataRef ll_td(aether a);
-LLVMBasicBlockRef _llentry      (enode n);
-void              ll_const_int (aether a, enode n, etype t, unsigned long long v, bool sext);
-void              ll_const_real(aether a, enode n, etype t, double v);
-void              ll_const_null(aether a, enode n, etype t);
-void              ll_func      (aether a, enode n, etype ft, symbol name);
-void              ll_param     (aether a, enode n, enode fn, int index);
-void              ll_const_gep (aether a, enode n, etype st, enode base, int index);
-void              ll_entry     (aether a, enode n, symbol label);
-void              ll_linkage   (aether a, enode n, LLVMLinkage linkage);
+AU_EXPORT int               core_index(Au o);
+AU_EXPORT LLVMTargetDataRef ll_td(aether a);
+AU_EXPORT LLVMBasicBlockRef _llentry      (enode n);
+AU_EXPORT void              ll_const_int (aether a, enode n, etype t, unsigned long long v, bool sext);
+AU_EXPORT void              ll_const_real(aether a, enode n, etype t, double v);
+AU_EXPORT void              ll_const_null(aether a, enode n, etype t);
+AU_EXPORT void              ll_func      (aether a, enode n, etype ft, symbol name);
+AU_EXPORT void              ll_param     (aether a, enode n, enode fn, int index);
+AU_EXPORT void              ll_const_gep (aether a, enode n, etype st, enode base, int index);
+AU_EXPORT void              ll_entry     (aether a, enode n, symbol label);
+AU_EXPORT void              ll_linkage   (aether a, enode n, LLVMLinkage linkage);
 void              ll_global    (aether a, enode n, etype t, symbol name,
                         bool external, bool reuse, bool set_init);
-etype             etype_prep   (aether a, Au_t au);
-void              lldebug_set  (etype e, LLVMMetadataRef v);
-LLVMMetadataRef   _lldebug     (etype e);
-void              llscope_set  (etype e, LLVMMetadataRef v);
+AU_EXPORT etype             etype_prep   (aether a, Au_t au);
+AU_EXPORT void              lldebug_set  (etype e, LLVMMetadataRef v);
+AU_EXPORT LLVMMetadataRef   _lldebug     (etype e);
+AU_EXPORT void              llscope_set  (etype e, LLVMMetadataRef v);
 LLVMMetadataRef   _llscope     (etype e);
-void              lldbg_set    (enode n, LLVMMetadataRef v);
-LLVMMetadataRef   _lldbg       (enode n);
-void         _llvalue_set(enode n, LLVMValueRef v);
-LLVMValueRef _llvalue(enode n);
+AU_EXPORT void              lldbg_set    (enode n, LLVMMetadataRef v);
+AU_EXPORT LLVMMetadataRef   _lldbg       (enode n);
+AU_EXPORT void         _llvalue_set(enode n, LLVMValueRef v);
+AU_EXPORT LLVMValueRef _llvalue(enode n);
 
 static symbol llvm_id(aether a, symbol id) {
     if (a->break_id && strcmp(a->break_id->chars, id) == 0) {
@@ -198,7 +200,7 @@ static bool has_scalable_vector(LLVMTypeRef ty) {
     (etype)rlookup((aether)a, string(sym)); \
 })
 
-void etype_register(aether a, Au key, Au value, bool overwrite) {
+AU_EXPORT void etype_register(aether a, Au key, Au value, bool overwrite) {
     type_guard;
     if (!overwrite) {
         Au existing = get(a->registry, key);
@@ -253,7 +255,7 @@ etype etype_create(aether a, Au_t m) { sequencer
     return tm;
 }
 
-etype etype_prep(aether a, Au_t au) { sequencer
+AU_EXPORT etype etype_prep(aether a, Au_t au) { sequencer
     if (!au) return null;
     { // fast path: already created and implemented — no lock, no writes
         etype done = u(etype, au);
@@ -278,7 +280,7 @@ etype etype_prep(aether a, Au_t au) { sequencer
 // best source location for diagnostics: scan back from the cursor for the nearest
 // token with a real line. at the point a member-lookup fails the cursor often sits
 // on a line-0 sentinel, which suppressed the .ag location in errors.
-token aether_loc(aether a) {
+AU_EXPORT token aether_loc(aether a) {
     emit_guard;
     if (!a->tokens || !len(a->tokens)) return token("[none]");
     i64 i = (i64)a->cursor;
@@ -339,7 +341,7 @@ token aether_loc(aether a) {
 })
 
 
-LLVMTypeRef _lltype(etype);
+AU_EXPORT LLVMTypeRef _lltype(etype);
 #define lltype(a) _lltype((etype)(a))
 
 // construct, then place the value in this core's slot
@@ -377,7 +379,7 @@ LLVMTypeRef _lltype(etype);
 static void print_all(aether mod, symbol label, array list) {
 }
 
-string symbol_name(Au obj) {
+AU_EXPORT string symbol_name(Au obj) {
     string n = copy(cast(string, obj));
     for (int i = 0; i < n->count; i++)
         if (n->chars[i] == '-')
@@ -393,7 +395,7 @@ string symbol_name(Au obj) {
 } while(0)
 
 // get the current debug scope: function subprogram or compile_unit fallback
-LLVMMetadataRef debug_scope(aether a) {
+AU_EXPORT LLVMMetadataRef debug_scope(aether a) {
     for (int i = len(a->lexical) - 1; i >= 0; i--) {
         Au_t ctx = (Au_t)a->lexical->origin[i];
         etype ctx_u = u(etype, ctx);
@@ -403,34 +405,34 @@ LLVMMetadataRef debug_scope(aether a) {
     return a->compile_unit;
 }
 
-LLVMMetadataRef debug_type_for      (aether a, Au_t src);
-LLVMMetadataRef debug_struct_type   (aether a, Au_t type_au);
-LLVMMetadataRef debug_enum_type     (aether a, Au_t type_au);
-LLVMMetadataRef debug_pointer_type  (aether a, Au_t type_au);
-LLVMMetadataRef debug_funcptr_type  (aether a, Au_t type_au);
-LLVMMetadataRef debug_subroutine_type(aether a, Au_t fn_au);
-void            emit_debug_function (aether a, efunc fn, bool);
-void            update_current_file (aether a, path source_file);
-void            emit_debug_variable (aether a, enode var, u32 arg_no, u32 line);
-LLVMMetadataRef debug_create_lexical_block(aether a, u32 line, u32 column);
-LLVMMetadataRef debug_au_header_type(aether a, Au_t schema);
-void emit_debug_params              (aether a, efunc fn);
-void emit_debug_global              (aether a, Au_t var_au, LLVMValueRef global_val);
+AU_EXPORT LLVMMetadataRef debug_type_for      (aether a, Au_t src);
+AU_EXPORT LLVMMetadataRef debug_struct_type   (aether a, Au_t type_au);
+AU_EXPORT LLVMMetadataRef debug_enum_type     (aether a, Au_t type_au);
+AU_EXPORT LLVMMetadataRef debug_pointer_type  (aether a, Au_t type_au);
+AU_EXPORT LLVMMetadataRef debug_funcptr_type  (aether a, Au_t type_au);
+AU_EXPORT LLVMMetadataRef debug_subroutine_type(aether a, Au_t fn_au);
+AU_EXPORT void            emit_debug_function (aether a, efunc fn, bool);
+AU_EXPORT void            update_current_file (aether a, path source_file);
+AU_EXPORT void            emit_debug_variable (aether a, enode var, u32 arg_no, u32 line);
+AU_EXPORT LLVMMetadataRef debug_create_lexical_block(aether a, u32 line, u32 column);
+AU_EXPORT LLVMMetadataRef debug_au_header_type(aether a, Au_t schema);
+AU_EXPORT void emit_debug_params              (aether a, efunc fn);
+AU_EXPORT void emit_debug_global              (aether a, Au_t var_au, LLVMValueRef global_val);
 
-void aether_emit_block_probe(aether a, u32 probe_id);
-LLVMValueRef emit_clock_ns(aether a, cstr label);
-LLVMValueRef emit_func_timing_start(aether a, u32 func_id);
-void emit_func_timing_end(aether a, LLVMValueRef start_ns, u32 func_id);
-void report_coverage(aether a);
-void init_coverage(aether a);
-void finalize_coverage(aether a);
-void emit_coverage_register(aether);
-void coverage_set_func_name(u32 func_id, char* name);
+AU_EXPORT void aether_emit_block_probe(aether a, u32 probe_id);
+AU_EXPORT LLVMValueRef emit_clock_ns(aether a, cstr label);
+AU_EXPORT LLVMValueRef emit_func_timing_start(aether a, u32 func_id);
+AU_EXPORT void emit_func_timing_end(aether a, LLVMValueRef start_ns, u32 func_id);
+AU_EXPORT void report_coverage(aether a);
+AU_EXPORT void init_coverage(aether a);
+AU_EXPORT void finalize_coverage(aether a);
+AU_EXPORT void emit_coverage_register(aether);
+AU_EXPORT void coverage_set_func_name(u32 func_id, char* name);
 
 // set debug source location on the IR builder
-void alloc_origin_args(aether a, enode* out_src, Au* out_line, Au* out_seq);
+AU_EXPORT void alloc_origin_args(aether a, enode* out_src, Au* out_line, Au* out_seq);
 
-void emit_debug_loc(aether a, cstr src, u32 line, u32 column) {
+AU_EXPORT void emit_debug_loc(aether a, cstr src, u32 line, u32 column) {
     emit_guard;
     if (!a->debug || !a->compile_unit || a->no_build) return;
     // synthetic functions (no parse origin_token) get no DISubprogram, so they must get
@@ -446,7 +448,7 @@ void emit_debug_loc(aether a, cstr src, u32 line, u32 column) {
     LLVMSetCurrentDebugLocation2(B, loc);
 }
 
-LLVMValueRef LLVMFetchGlobal(LLVMModuleRef module_ref, LLVMTypeRef type, cstr name) {
+AU_EXPORT LLVMValueRef LLVMFetchGlobal(LLVMModuleRef module_ref, LLVMTypeRef type, cstr name) {
     emit_guard;
     LLVMValueRef existing = LLVMGetNamedGlobal(module_ref, name);
     if (existing) return existing;
@@ -455,7 +457,7 @@ LLVMValueRef LLVMFetchGlobal(LLVMModuleRef module_ref, LLVMTypeRef type, cstr na
     return g;
 }
 
-LLVMValueRef entry_alloca(aether a, LLVMTypeRef ty, cstr name) {
+AU_EXPORT LLVMValueRef entry_alloca(aether a, LLVMTypeRef ty, cstr name) {
     emit_guard;
     LLVMBasicBlockRef current    = LLVMGetInsertBlock(B);
     LLVMBasicBlockRef entry      = LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current));
@@ -473,7 +475,7 @@ LLVMValueRef entry_alloca(aether a, LLVMTypeRef ty, cstr name) {
 }
 
 
-etype etype_copy(etype mem) {
+AU_EXPORT etype etype_copy(etype mem) {
     Au_t au = isa(mem);
     etype n = (etype)alloc_new(au, 1, null, null, null, __FILE__, __LINE__, 0);
     memcpy(n, mem, au->typesize);
@@ -481,7 +483,7 @@ etype etype_copy(etype mem) {
     return n;
 }
 
-enode enode_ref(aether a, enode expr, etype ref_type) {
+AU_EXPORT enode enode_ref(aether a, enode expr, etype ref_type) {
     emit_guard;
     LLVMValueRef v = _llvalue(expr);
     if (is_func((Au)expr->autype)) {
@@ -503,7 +505,7 @@ enode enode_ref(aether a, enode expr, etype ref_type) {
     return with_value(v, enode(mod, a, loaded, true, autype, ref_type->autype));
 }
 
-enode enode_value(enode mem, bool force_load) { sequencer
+AU_EXPORT enode enode_value(enode mem, bool force_load) { sequencer
     emit_guard;
     if (mem && mem->is_super)
         return mem->target;
@@ -560,17 +562,17 @@ enode enode_value(enode mem, bool force_load) { sequencer
 }
 
 // useful otherwise internals we interfaced, then stopped using after a restructuring
-LLVMValueRef LLVMConstMul(LLVMValueRef LHSConstant, LLVMValueRef RHSConstant);
-LLVMValueRef LLVMConstSDiv(LLVMValueRef LHSConstant, LLVMValueRef RHSConstant);
-LLVMValueRef LLVMConstUDiv(LLVMValueRef LHSConstant, LLVMValueRef RHSConstant);
-LLVMValueRef LLVMConstURem(LLVMValueRef LHSConstant, LLVMValueRef RHSConstant);
-LLVMValueRef LLVMConstSRem(LLVMValueRef LHSConstant, LLVMValueRef RHSConstant);
-LLVMValueRef LLVMConstShl(LLVMValueRef LHSConstant, LLVMValueRef RHSConstant);
-LLVMValueRef LLVMConstLShr(LLVMValueRef LHSConstant, LLVMValueRef RHSConstant);
-LLVMValueRef LLVMConstAShr(LLVMValueRef LHSConstant, LLVMValueRef RHSConstant);
-LLVMValueRef LLVMConstAnd(LLVMValueRef LHSConstant, LLVMValueRef RHSConstant);
-LLVMValueRef LLVMConstOr(LLVMValueRef LHSConstant, LLVMValueRef RHSConstant);
-LLVMValueRef LLVMConstXor(LLVMValueRef LHSConstant, LLVMValueRef RHSConstant);
+AU_EXPORT LLVMValueRef LLVMConstMul(LLVMValueRef LHSConstant, LLVMValueRef RHSConstant);
+AU_EXPORT LLVMValueRef LLVMConstSDiv(LLVMValueRef LHSConstant, LLVMValueRef RHSConstant);
+AU_EXPORT LLVMValueRef LLVMConstUDiv(LLVMValueRef LHSConstant, LLVMValueRef RHSConstant);
+AU_EXPORT LLVMValueRef LLVMConstURem(LLVMValueRef LHSConstant, LLVMValueRef RHSConstant);
+AU_EXPORT LLVMValueRef LLVMConstSRem(LLVMValueRef LHSConstant, LLVMValueRef RHSConstant);
+AU_EXPORT LLVMValueRef LLVMConstShl(LLVMValueRef LHSConstant, LLVMValueRef RHSConstant);
+AU_EXPORT LLVMValueRef LLVMConstLShr(LLVMValueRef LHSConstant, LLVMValueRef RHSConstant);
+AU_EXPORT LLVMValueRef LLVMConstAShr(LLVMValueRef LHSConstant, LLVMValueRef RHSConstant);
+AU_EXPORT LLVMValueRef LLVMConstAnd(LLVMValueRef LHSConstant, LLVMValueRef RHSConstant);
+AU_EXPORT LLVMValueRef LLVMConstOr(LLVMValueRef LHSConstant, LLVMValueRef RHSConstant);
+AU_EXPORT LLVMValueRef LLVMConstXor(LLVMValueRef LHSConstant, LLVMValueRef RHSConstant);
 
 
 static token aether_peek(aether a) {
@@ -579,7 +581,7 @@ static token aether_peek(aether a) {
     return (token)a->tokens->origin[a->cursor];
 }
 
-token aether_peek_safe(aether a) {
+AU_EXPORT token aether_peek_safe(aether a) {
     if (a->cursor == len(a->tokens)) {
         if (!a->cursor)
             return token("[none]");
@@ -677,17 +679,17 @@ static LLVMValueRef build_arith_op(
     }
 }
 
-etype pointer(aether mod, Au a);
+AU_EXPORT etype pointer(aether mod, Au a);
 
 #if 0
-etype evar_type(evar aa) {
+AU_EXPORT etype evar_type(evar aa) {
     aether a = au_active(aa->mod);
     if (aa->autype->member_type == AU_MEMBER_VAR)
         return u(etype, aa->autype->src);
     return u(etype, aa->autype);
 }
 #else
-etype evar_type(evar aa) {
+AU_EXPORT etype evar_type(evar aa) {
     aether a = au_active(aa->mod);
     if (aa->autype->member_type == AU_MEMBER_VAR)
         return u(etype, aa->autype->src);
@@ -710,7 +712,7 @@ static int ref_level(Au t) {
 }
 
 
-void aether_ensure_terminator(aether a, enode f) {
+AU_EXPORT void aether_ensure_terminator(aether a, enode f) {
     emit_guard;
     if (_llvalue((enode)f)) {
         LLVMTypeRef tr = instanceof(f, efunc) ? _lltype_slot((etype)f) : (LLVMTypeRef)null;
@@ -755,7 +757,7 @@ static int ref_level2(Au_t au) {
 }
 
 
-bool is_explicit_ref(enode arg) {
+AU_EXPORT bool is_explicit_ref(enode arg) {
     return arg->is_explicit_ref;
 }
 
@@ -1159,7 +1161,7 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) { sequencer
 }
 
 
-none etype_implement(etype t, bool);
+AU_EXPORT none etype_implement(etype t, bool);
 
 etype etype_ptr(aether a, Au_t au, enode eshape) {
     type_guard;
@@ -1207,7 +1209,7 @@ etype etype_ptr(aether a, Au_t au, enode eshape) {
     return u(etype, au_ptr);
 }
 
-etype shape_pointer(aether mod, Au a, enode eshape) {
+AU_EXPORT etype shape_pointer(aether mod, Au a, enode eshape) {
     Au_t au = au_arg(a);
     if (au->member_type == AU_MEMBER_VAR)
         return etype_ptr(mod, au->src, eshape);
@@ -1215,7 +1217,7 @@ etype shape_pointer(aether mod, Au a, enode eshape) {
     return etype_ptr(mod, au, eshape);
 }
 
-etype pointer(aether mod, Au a) {
+AU_EXPORT etype pointer(aether mod, Au a) {
     type_guard;
     Au_t au = au_arg(a);
     if (au->member_type == AU_MEMBER_VAR)
@@ -1261,12 +1263,12 @@ etype _etype_traits(Au input, int traits, bool poly) {
     return (u->autype->traits & traits) == traits ? u : null;
 }
 
-etype etype_traits(Au input, int traits) {
+AU_EXPORT etype etype_traits(Au input, int traits) {
     return _etype_traits(input, traits, false);
 }
 
 /// C type rules implemented
-etype determine_rtype(aether a, OPType optype, etype L, etype R) {
+AU_EXPORT etype determine_rtype(aether a, OPType optype, etype L, etype R) {
     if (optype >= OPType__bind && optype <= OPType__assign_left)
         return canonical(L);  // Assignment operations always return the type of the left operand
 
@@ -1325,18 +1327,18 @@ etype determine_rtype(aether a, OPType optype, etype L, etype R) {
 #define ll_n(a) ((a)->ncores ? (a)->ncores : 1)
 
 
-LLVMTargetDataRef ll_td(aether a) {
+AU_EXPORT LLVMTargetDataRef ll_td(aether a) {
     ARef td = a->target_datas[core_index((Au)a)];
     return td ? (LLVMTargetDataRef)td : ll_td(a);
 }
 
-LLVMContextRef ll_ctx(aether a, int core) {
+AU_EXPORT LLVMContextRef ll_ctx(aether a, int core) {
     array c = a->ctxs;
     return (c && core < c->count && c->origin[core]) ?
         (LLVMContextRef)c->origin[core] : a->module_ctx;
 }
 
-LLVMModuleRef ll_mod(aether a, int core) {
+AU_EXPORT LLVMModuleRef ll_mod(aether a, int core) {
     array m = a->mods;
     return (m && core < m->count && m->origin[core]) ?
         (LLVMModuleRef)m->origin[core] : a->module_ref;
@@ -1344,11 +1346,11 @@ LLVMModuleRef ll_mod(aether a, int core) {
 
 // the slot belongs to the thread doing the emitting, never to whoever
 // happened to create the node
-int core_index(Au o) {
+AU_EXPORT int core_index(Au o) {
     return au_codegen_active ? au_codegen_active->core : 0;
 }
 
-void _lltype_set(etype e, LLVMTypeRef v) {
+AU_EXPORT void _lltype_set(etype e, LLVMTypeRef v) {
     emit_guard;
     e->lltypes[core_index((Au)e)] = (ARef)v;
 }
@@ -1388,7 +1390,7 @@ ll_creator(ll_bf16, LLVMBFloatTypeInContext(c))
 ll_creator(ll_fp16, LLVMHalfTypeInContext  (c))
 ll_creator(ll_sz,   LLVMIntPtrTypeInContext(c, ll_td(a)))
 
-LLVMTypeRef ll_int(aether a, etype t, int bits) {
+AU_EXPORT LLVMTypeRef ll_int(aether a, etype t, int bits) {
     type_guard;
     if (ll_share_owner(a, t)) return _lltype_slot(t);
     emit_guard;
@@ -1397,7 +1399,7 @@ LLVMTypeRef ll_int(aether a, etype t, int bits) {
     return _lltype_slot(t);
 }
 
-LLVMTypeRef ll_named(aether a, etype t, symbol name) {
+AU_EXPORT LLVMTypeRef ll_named(aether a, etype t, symbol name) {
     type_guard;
     if (ll_share_owner(a, t)) return _lltype_slot(t);
     emit_guard;
@@ -1406,7 +1408,7 @@ LLVMTypeRef ll_named(aether a, etype t, symbol name) {
     return _lltype_slot(t);
 }
 
-LLVMTypeRef ll_array(aether a, etype t, etype src, int elements) {
+AU_EXPORT LLVMTypeRef ll_array(aether a, etype t, etype src, int elements) {
     type_guard;
     if (ll_share_owner(a, t)) return _lltype_slot(t);
     emit_guard;
@@ -1416,7 +1418,7 @@ LLVMTypeRef ll_array(aether a, etype t, etype src, int elements) {
 }
 
 // alias/enum: share the source type, per context
-LLVMTypeRef ll_same(aether a, etype t, etype src) {
+AU_EXPORT LLVMTypeRef ll_same(aether a, etype t, etype src) {
     type_guard;
     if (ll_share_owner(a, t)) return _lltype_slot(t);
     emit_guard;
@@ -1425,7 +1427,7 @@ LLVMTypeRef ll_same(aether a, etype t, etype src) {
     return _lltype_slot(t);
 }
 
-LLVMTypeRef ll_fn(aether a, etype t, etype rtype, etype* args, int n_args, bool va) {
+AU_EXPORT LLVMTypeRef ll_fn(aether a, etype t, etype rtype, etype* args, int n_args, bool va) {
     type_guard;
     if (ll_share_owner(a, t)) return _lltype_slot(t);
     emit_guard;
@@ -1441,7 +1443,7 @@ LLVMTypeRef ll_fn(aether a, etype t, etype rtype, etype* args, int n_args, bool 
     return _lltype_slot(t);
 }
 
-LLVMTypeRef ll_wrap_array(aether a, etype t, int elements) {
+AU_EXPORT LLVMTypeRef ll_wrap_array(aether a, etype t, int elements) {
     type_guard;
     emit_guard;
     for (int i = 0; i < ll_n(a); i++)
@@ -1450,7 +1452,7 @@ LLVMTypeRef ll_wrap_array(aether a, etype t, int elements) {
 }
 
 // a struct field, described so it can be rebuilt in every context
-LLVMTypeRef ll_field_at(aether a, ll_field* f, int core) {
+AU_EXPORT LLVMTypeRef ll_field_at(aether a, ll_field* f, int core) {
     LLVMTypeRef v = f->percore ? f->percore[core] :
                     f->bits    ? LLVMIntTypeInContext(ll_ctx(a, core), f->bits) :
                     f->raw     ? ((LLVMTypeRef)f->e->lltypes[core]) : _lltype_core(f->e, core);
@@ -1459,7 +1461,7 @@ LLVMTypeRef ll_field_at(aether a, ll_field* f, int core) {
     return v;
 }
 
-void ll_body(aether a, etype t, ll_field* fields, int n, bool packed) {
+AU_EXPORT void ll_body(aether a, etype t, ll_field* fields, int n, bool packed) {
     type_guard;
     emit_guard;
     LLVMTypeRef* ft = calloc(n + 1, sizeof(LLVMTypeRef));
@@ -1472,7 +1474,7 @@ void ll_body(aether a, etype t, ll_field* fields, int n, bool packed) {
 }
 
 // a named struct with no etype of its own, one per context
-LLVMTypeRef* ll_named_raw(aether a, symbol name, ll_field* fields, int n, bool packed) {
+AU_EXPORT LLVMTypeRef* ll_named_raw(aether a, symbol name, ll_field* fields, int n, bool packed) {
     type_guard;
     emit_guard;
     LLVMTypeRef* out = calloc(ll_n(a), sizeof(LLVMTypeRef));
@@ -1488,13 +1490,13 @@ LLVMTypeRef* ll_named_raw(aether a, symbol name, ll_field* fields, int n, bool p
 }
 
 // value, entry block and debug metadata: one slot per core on the node
-void _llvalue_set(enode n, LLVMValueRef v) {
+AU_EXPORT void _llvalue_set(enode n, LLVMValueRef v) {
     n->values[core_index((Au)n)] = (ARef)v;
 }
 
 // a literal carries no context of its own — rebuild it for whichever
 // core asks, so shared constant nodes work on every worker
-LLVMValueRef _llvalue(enode n) {
+AU_EXPORT LLVMValueRef _llvalue(enode n) {
     int          core = core_index((Au)n);
     LLVMValueRef v    = (LLVMValueRef)n->values[core];
     if (!v && n->literal && n->values[0]) {
@@ -1508,7 +1510,7 @@ LLVMValueRef _llvalue(enode n) {
 
 // the entry block belongs to whichever core is emitting the body; create
 // it on first use so a worker never positions the builder at null
-LLVMBasicBlockRef _llentry(enode n) {
+AU_EXPORT LLVMBasicBlockRef _llentry(enode n) {
     int core = core_index((Au)n);
     LLVMBasicBlockRef bb = (LLVMBasicBlockRef)n->entries[core];
     if (!bb && n->values[core]) {
@@ -1530,21 +1532,21 @@ LLVMMetadataRef _llscope(etype e) { return (LLVMMetadataRef)e->llscopes[core_ind
 LLVMMetadataRef _lldbg  (enode n) { return ((LLVMMetadataRef)n->last_dbgs[core_index((Au)n)]); }
 
 // every creator below writes one value per module, under the emit lock
-void ll_const_int(aether a, enode n, etype t, unsigned long long v, bool sext) {
+AU_EXPORT void ll_const_int(aether a, enode n, etype t, unsigned long long v, bool sext) {
     type_guard;
     emit_guard;
     for (int i = 0; i < ll_n(a); i++)
         n->values[i] = (ARef)LLVMConstInt(_lltype_core(t, i), v, sext);
 }
 
-void ll_const_real(aether a, enode n, etype t, double v) {
+AU_EXPORT void ll_const_real(aether a, enode n, etype t, double v) {
     type_guard;
     emit_guard;
     for (int i = 0; i < ll_n(a); i++)
         n->values[i] = (ARef)LLVMConstReal(_lltype_core(t, i), v);
 }
 
-void ll_const_null(aether a, enode n, etype t) {
+AU_EXPORT void ll_const_null(aether a, enode n, etype t) {
     type_guard;
     emit_guard;
     for (int i = 0; i < ll_n(a); i++)
@@ -1552,7 +1554,7 @@ void ll_const_null(aether a, enode n, etype t) {
 }
 
 // function declaration, one per module; fn's own lltype is the signature
-void ll_func(aether a, enode n, etype ft, symbol name) {
+AU_EXPORT void ll_func(aether a, enode n, etype ft, symbol name) {
     type_guard;
     emit_guard;
     for (int i = 0; i < ll_n(a); i++) {
@@ -1564,7 +1566,7 @@ void ll_func(aether a, enode n, etype ft, symbol name) {
 }
 
 // constant field address inside a global — no builder, so every core can hold it
-void ll_const_gep(aether a, enode n, etype st, enode base, int index) {
+AU_EXPORT void ll_const_gep(aether a, enode n, etype st, enode base, int index) {
     type_guard;
     emit_guard;
     for (int i = 0; i < ll_n(a); i++) {
@@ -1577,21 +1579,21 @@ void ll_const_gep(aether a, enode n, etype st, enode base, int index) {
     }
 }
 
-void ll_param(aether a, enode n, enode fn, int index) {
+AU_EXPORT void ll_param(aether a, enode n, enode fn, int index) {
     emit_guard;
     for (int i = 0; i < ll_n(a); i++)
         n->values[i] = (ARef)LLVMGetParam((LLVMValueRef)fn->values[i], index);
 }
 
 // entry block: only the core building the body may define the function
-void ll_entry(aether a, enode n, symbol label) {
+AU_EXPORT void ll_entry(aether a, enode n, symbol label) {
     emit_guard;
     int core = core_index((Au)n);
     n->entries[core] = (ARef)LLVMAppendBasicBlockInContext(
         ll_ctx(a, core), (LLVMValueRef)n->values[core], label);
 }
 
-void ll_linkage(aether a, enode n, LLVMLinkage linkage) {
+AU_EXPORT void ll_linkage(aether a, enode n, LLVMLinkage linkage) {
     emit_guard;
     int  core  = core_index((Au)n);
     bool split = ll_n(a) > 1 && linkage == LLVMInternalLinkage;
@@ -1600,7 +1602,7 @@ void ll_linkage(aether a, enode n, LLVMLinkage linkage) {
     if (split) LLVMSetVisibility(v, LLVMHiddenVisibility);
 }
 
-LLVMValueRef LLVMFetchGlobal(LLVMModuleRef module_ref, LLVMTypeRef type, cstr name);
+AU_EXPORT LLVMValueRef LLVMFetchGlobal(LLVMModuleRef module_ref, LLVMTypeRef type, cstr name);
 
 // core 0 owns the storage; the other modules get a plain declaration.
 // split builds cannot use internal linkage — it becomes external+hidden.
@@ -1618,7 +1620,25 @@ void ll_global(aether a, enode n, etype t, symbol name,
                                       LLVMAddGlobal   (m, ty, (cstr)name);
             LLVMSetLinkage(g, (external || split) ?
                 LLVMExternalLinkage : LLVMInternalLinkage);
+#ifndef _WIN32
+            // elf-only: on pe the export table decides, and llvm rejects a
+            // dllexport that is not default/protected visibility
             if (!external && split) LLVMSetVisibility(g, LLVMHiddenVisibility);
+#endif
+#ifdef _WIN32
+            // pe reaches a global defined elsewhere through its import thunk;
+            // one we initialize here is ours, so it stays a definition -- and
+            // ours must be exported, or an importing module cannot bind it
+            // set_init is what says we define it here: export those, import
+            // the rest. both flags are set for a module's own type info
+            // set_init marks it as ours. core 0 holds the storage and exports
+            // it; the other cores of this module link into the same dll, so
+            // they declare it plainly -- importing it there is LNK4217
+            if (set_init)
+                { if (i == 0) LLVMSetDLLStorageClass(g, LLVMDLLExportStorageClass); }
+            else if (external)
+                LLVMSetDLLStorageClass(g, LLVMDLLImportStorageClass);
+#endif
             if (set_init && i == 0) LLVMSetInitializer(g, LLVMConstNull(ty));
         }
         n->values[i] = (ARef)g;
@@ -1651,33 +1671,33 @@ LLVMTypeRef _lltype_core(etype e, int core) {
     return ((LLVMTypeRef)e->lltypes[core]);
 }
 
-LLVMTypeRef _lltype(etype e) {
+AU_EXPORT LLVMTypeRef _lltype(etype e) {
     return _lltype_core(e, core_index((Au)e));
 }
 
 enode aether_e_or (aether a, Au L, Au R) { return e_op(a, OPType__or,  string("or"),  L, R); }
 enode aether_e_xor(aether a, Au L, Au R) { return e_op(a, OPType__xor, string("xor"), L, R); }
 enode aether_e_and(aether a, Au L, Au R) { return e_op(a, OPType__and, string("and"), L, R); }
-enode aether_e_add(aether a, Au L, Au R) {
+AU_EXPORT enode aether_e_add(aether a, Au L, Au R) {
     return e_op(a, OPType__add, string("add"), L, R);
 }
 enode aether_e_sub(aether a, Au L, Au R) { return e_op(a, OPType__sub, string("sub"), L, R); }
 enode aether_e_mul(aether a, Au L, Au R) { return e_op(a, OPType__mul, string("mul"), L, R); }
 
-enode aether_e_div(aether a, Au L, Au R) {
+AU_EXPORT enode aether_e_div(aether a, Au L, Au R) {
     return e_op(a, OPType__div, string("div"), L, R);
 }
 
-enode aether_value_default(aether a, Au L, Au R) {
+AU_EXPORT enode aether_value_default(aether a, Au L, Au R) {
     return e_op(a, OPType__value_default, string("value_default"), L, R);
 }
 
-enode aether_cond_value   (aether a, Au L, Au R) {
+AU_EXPORT enode aether_cond_value   (aether a, Au L, Au R) {
     return e_op(a, OPType__cond_value, string("cond_value"), L, R);
 }
 
 
-enode aether_e_inherits(aether a, enode L, Au R) {
+AU_EXPORT enode aether_e_inherits(aether a, enode L, Au R) {
     emit_guard;
     a->is_const_op = false;
     if (a->no_build) return e_noop(a, etypeid(bool));
@@ -1760,7 +1780,7 @@ static struct cmp_entry* cmp_lookup(OPType op) {
     return null;
 }
 
-enode aether_e_cmp_op(aether a, OPType optype, enode L, enode R) {
+AU_EXPORT enode aether_e_cmp_op(aether a, OPType optype, enode L, enode R) {
     emit_guard;
     a->is_const_op = false;
     etype bool_t = etypeid(bool);
@@ -2043,13 +2063,13 @@ enode aether_e_eq(aether a, enode L, enode R) {
     return with_value(nv, enode(mod, a, loaded, true, autype, bool_t->autype));
 }
 
-etype etype_test(aether a) {
+AU_EXPORT etype etype_test(aether a) {
     etype str = etypeid(string);
     return str;
 }
 
 
-enode aether_e_eq_prev(aether a, enode L, enode R) {
+AU_EXPORT enode aether_e_eq_prev(aether a, enode L, enode R) {
     emit_guard;
     a->is_const_op = false;
     if (a->no_build) return e_noop(a, etypeid(bool));
@@ -2253,7 +2273,7 @@ static LLVMValueRef const_cstr(aether a, cstr value, i32 len) { sequencer
     return cast_i8;
 }
 
-enode e_operand_primitive(aether a, Au op) {
+AU_EXPORT enode e_operand_primitive(aether a, Au op) {
     emit_guard;
     if (a->no_build) return e_noop(a, u(etype, isa(op)));
 
@@ -2645,7 +2665,7 @@ static enode lookup_by_unique_type(aether a, Au_t required_type) {
 // in short i think i am a fan of this since 
 // its the one thing i am not moving away from after years-of-fiddling..
 
-void aether_e_assign_if_null(aether a, enode prop, Au value) {
+AU_EXPORT void aether_e_assign_if_null(aether a, enode prop, Au value) {
     emit_guard;
     LLVMValueRef      fn        = LLVMGetBasicBlockParent(LLVMGetInsertBlock(B));
     LLVMBasicBlockRef assign_bb = LLVMAppendBasicBlockInContext(a->module_ctx, fn, "assign_if");
@@ -2660,7 +2680,7 @@ void aether_e_assign_if_null(aether a, enode prop, Au value) {
     LLVMPositionBuilderAtEnd(B, merge_bb);
 }
 
-bool etype_inherits(etype mdl, etype base);
+AU_EXPORT bool etype_inherits(etype mdl, etype base);
 
 static void resolve_context_members(enode target, map user_provides) {
     aether a = au_active(target->mod);
@@ -2724,7 +2744,7 @@ static void resolve_context_members(enode target, map user_provides) {
     } while (type && type != typeid(Au));
 }
 
-enode aether_e_operand(aether a, Au op, etype src_model) {
+AU_EXPORT enode aether_e_operand(aether a, Au op, etype src_model) {
     emit_guard;
     if (instanceof(op, efunc)) {
         // efuncs are already resolved — don't load
@@ -2763,7 +2783,7 @@ enode aether_e_operand(aether a, Au op, etype src_model) {
     return src_model ? e_create(a, src_model, (Au)r) : r;
 }
 
-enode aether_e_null(aether a, etype mdl) {
+AU_EXPORT enode aether_e_null(aether a, etype mdl) {
     emit_guard;
     if (!mdl) mdl = etypeid(handle);
     verify(is_ptr(mdl) || is_func_ptr(mdl), "%o not compatible with null value", mdl);
@@ -2775,7 +2795,7 @@ enode aether_e_primitive_convert(aether a, enode expr, etype rtype);
 
 /// copy constant primitive data into a vector allocated by e_vector
 /// vec is the result of e_vector (points to data area), const_data is a global constant array
-none aether_e_vector_init(aether a, etype element_type, enode vec, array nodes) {
+AU_EXPORT none aether_e_vector_init(aether a, etype element_type, enode vec, array nodes) {
     emit_guard;
     a->is_const_op = false;
     if (a->no_build) return;
@@ -2829,7 +2849,7 @@ none aether_e_vector_init(aether a, etype element_type, enode vec, array nodes) 
     }
 }
 
-none aether_e_setenv(aether a, symbol key, symbol val) {
+AU_EXPORT none aether_e_setenv(aether a, symbol key, symbol val) {
     emit_guard;
     if (a->no_build) return;
     LLVMValueRef fn = LLVMGetNamedFunction(a->module_ref, "setenv");
@@ -2874,7 +2894,7 @@ static enode e_meta_b_node(aether a, Au meta_b) {
     return e_typeid(a, u(etype, (Au_t)meta_b));
 }
 
-enode aether_e_meta_ids(aether a, Au meta_a, Au meta_b) {
+AU_EXPORT enode aether_e_meta_ids(aether a, Au meta_a, Au meta_b) {
     emit_guard;
     Au_t atype = au_lookup("Au_t");
     etype atype_vector = etype_ptr(a, atype, null);
@@ -2936,7 +2956,7 @@ enode aether_e_meta_ids(aether a, Au meta_a, Au meta_b) {
     return with_value(arr_alloc, enode(mod, a, loaded, true, autype, etype_ptr(a, atype, null)->autype));
 }
 
-none aether_e_cond_return(aether a, enode cond, Au value) {
+AU_EXPORT none aether_e_cond_return(aether a, enode cond, Au value) {
     emit_guard;
     a->is_const_op = false;
     if (a->no_build) return;
@@ -2959,7 +2979,7 @@ none aether_e_cond_return(aether a, enode cond, Au value) {
     // builder is now positioned here, execution continues
 }
 
-enode aether_e_expect_begin(aether a, enode cond) {
+AU_EXPORT enode aether_e_expect_begin(aether a, enode cond) {
     emit_guard;
     a->is_const_op = false;
     if (a->no_build) return e_noop(a, etypeid(bool));
@@ -2987,7 +3007,7 @@ enode aether_e_expect_begin(aether a, enode cond) {
     return with_value(LLVMBasicBlockAsValue(cont), enode(mod, a, autype, etypeid(bool)->autype, loaded, true));
 }
 
-enode aether_e_expect_end(aether a, enode ctx, enode msg) {
+AU_EXPORT enode aether_e_expect_end(aether a, enode ctx, enode msg) {
     emit_guard;
     a->is_const_op = false;
     if (a->no_build) return e_noop(a, etypeid(bool));
@@ -3015,6 +3035,10 @@ enode aether_e_expect_end(aether a, enode ctx, enode msg) {
         LLVMValueRef stderr_fn = LLVMGetNamedGlobal(a->module_ref, stderr_sym);
         if (!stderr_fn)
             stderr_fn = LLVMAddGlobal(a->module_ref, i8ptr, llvm_id(a, stderr_sym));
+#ifdef _WIN32
+            // the ucrt has no such symbol of its own; ports.cc exports one
+            LLVMSetDLLStorageClass(stderr_fn, LLVMDLLImportStorageClass);
+#endif
         LLVMValueRef stderr_val = LLVMBuildLoad2(B, i8ptr, stderr_fn, "stderr_val");
         LLVMValueRef args[] = { _llvalue((enode)cstr_val), stderr_val };
         LLVMBuildCall2(B, fputs_ty, fputs_fn, args, 2, "");
@@ -3027,6 +3051,10 @@ enode aether_e_expect_end(aether a, enode ctx, enode msg) {
         LLVMValueRef stdout_g = LLVMGetNamedGlobal(a->module_ref, stdout_sym);
         if (!stdout_g)
             stdout_g = LLVMAddGlobal(a->module_ref, i8ptr, llvm_id(a, stdout_sym));
+#ifdef _WIN32
+            // the ucrt has no such symbol of its own; ports.cc exports one
+            LLVMSetDLLStorageClass(stdout_g, LLVMDLLImportStorageClass);
+#endif
         LLVMValueRef stdout_val = LLVMBuildLoad2(B, i8ptr, stdout_g, "stdout_val");
         LLVMValueRef args2[] = { _llvalue((enode)cstr_val), stdout_val };
         LLVMBuildCall2(B, fputs_ty, fputs_fn, args2, 2, "");
@@ -3055,14 +3083,14 @@ enode aether_e_expect_end(aether a, enode ctx, enode msg) {
     return e_noop(a, etypeid(bool));
 }
 
-enode aether_e_expect(aether a, enode cond, enode msg) {
+AU_EXPORT enode aether_e_expect(aether a, enode cond, enode msg) {
     a->is_const_op = false;
     if (a->no_build) return e_noop(a, etypeid(bool));
     enode ctx = e_expect_begin(a, cond);
     return e_expect_end(a, ctx, msg);
 }
 
-enode aether_e_fault(aether a, enode msg) {
+AU_EXPORT enode aether_e_fault(aether a, enode msg) {
     emit_guard;
     a->is_const_op = false;
     if (a->no_build) return e_noop(a, etypeid(none));
@@ -3110,16 +3138,16 @@ enode aether_e_fault(aether a, enode msg) {
     return e_noop(a, etypeid(none));
 }
 
-catcher context_catcher(aether a);
+AU_EXPORT catcher context_catcher(aether a);
 
 
-enode enode_super(etype n, enode efn) {
+AU_EXPORT enode enode_super(etype n, enode efn) {
     aether a = au_active(n->mod);
     return enode(
         mod, (aether)a, autype, n->autype->context, avoid_ftable, true, target, efn, is_super, true, loaded, true);
 }
 
-bool aether_e_fn_return(aether a, Au o) {
+AU_EXPORT bool aether_e_fn_return(aether a, Au o) {
     emit_guard;
     efunc f = context_func(a);
     verify (f, "function not found in context");
@@ -3166,7 +3194,7 @@ bool aether_e_fn_return(aether a, Au o) {
     }
 }
 
-etype formatter_type(aether a, cstr input) {
+AU_EXPORT etype formatter_type(aether a, cstr input) {
     cstr p = input;
     // skip flags/width/precision
     while (*p && strchr("-+ #0123456789.", *p)) p++;
@@ -3218,7 +3246,7 @@ static etype ensure_pointer(etype t) {
     return etype_ptr(t->mod, t->autype, null);
 }
 
-enode aether_e_is(aether a, enode L, Au R) {
+AU_EXPORT enode aether_e_is(aether a, enode L, Au R) {
     a->is_const_op = false;
     if (a->no_build) return e_noop(a, etypeid(bool));
 
@@ -3232,7 +3260,7 @@ enode aether_e_is(aether a, enode L, Au R) {
 // short-circuit two already-evaluated bool enodes
 // combine: OPType__or  -> if L true, skip R  (returns true early)
 //          OPType__and -> if L false, skip R  (returns false early)
-enode e_short_circuit_pair(aether a, OPType combine, enode L, enode R) {
+AU_EXPORT enode e_short_circuit_pair(aether a, OPType combine, enode L, enode R) {
     emit_guard;
     etype m_bool = etypeid(bool);
     if (a->no_build) return e_noop(a, m_bool);
@@ -3267,10 +3295,10 @@ enode e_short_circuit_pair(aether a, OPType combine, enode L, enode R) {
     return with_value(phi, enode(mod, a, autype, m_bool->autype, loaded, true));
 }
 
-enode convertible(etype fr, etype to);
+AU_EXPORT enode convertible(etype fr, etype to);
 
 // no disassemble!
-enode aether_e_short_circuit(aether a, OPType optype, enode L) {
+AU_EXPORT enode aether_e_short_circuit(aether a, OPType optype, enode L) {
     emit_guard;
     if (a->no_build) {
         enode R = (enode)a->parse_expr((Au)a, null);
@@ -3382,10 +3410,10 @@ enode aether_e_short_circuit(aether a, OPType optype, enode L) {
 
 bool inherits(Au_t src, Au_t check);
 
-none enode_inspect(enode a) {
+AU_EXPORT none enode_inspect(enode a) {
 }
 
-enode aether_lambda_fcall(aether a, efunc mem, array user_args) {
+AU_EXPORT enode aether_lambda_fcall(aether a, efunc mem, array user_args) {
     // lambda type member (lambda ReturnType[Args]) — simple function pointer call
     if (!find_member(mem->autype, "fn", AU_MEMBER_VAR, 0, false)) {
         // treat as function pointer call
@@ -3752,9 +3780,9 @@ static bool is_same(etype a, etype b) {
     return resolve(a) == resolve(b) && ref_level((Au)a) == ref_level((Au)b);
 }
 
-enode constructable(etype fr, etype to);
+AU_EXPORT enode constructable(etype fr, etype to);
 
-enode castable(etype fr, etype to) {
+AU_EXPORT enode castable(etype fr, etype to) {
     aether a = au_active(fr->mod);
     bool fr_ptr = is_ptr(fr);
     if (((fr_ptr && !is_class(fr)) || is_prim(fr)) && is_bool(to))
@@ -3800,7 +3828,7 @@ enode castable(etype fr, etype to) {
 }
 
 
-enode constructable(etype fr, etype to) {
+AU_EXPORT enode constructable(etype fr, etype to) {
     if (fr == to)
         return (enode)true;
 
@@ -3889,7 +3917,7 @@ static enode scalar_compatible(LLVMTypeRef ea, LLVMTypeRef eb) {
     return (enode)false;
 }
 
-bool etype_inherits(etype mdl, etype base) {
+AU_EXPORT bool etype_inherits(etype mdl, etype base) {
     aether a = au_active(mdl->mod);
     if (mdl == base) return true;
     bool inherits = false;
@@ -3920,7 +3948,7 @@ static bool is_subclass(Au a0, Au b0) {
 }
 
 // returns null, true, or the member function used for conversion
-enode convertible(etype fr, etype to) {
+AU_EXPORT enode convertible(etype fr, etype to) {
     emit_guard;
     aether a = au_active(fr->mod);
     etype  ma = canonical(fr);
@@ -4093,7 +4121,7 @@ static bool is_addressable(enode e) {
     return false;
 }
 
-enode eshape_from_indices(aether a, array indices) {
+AU_EXPORT enode eshape_from_indices(aether a, array indices) {
     emit_guard;
     etype shape_t = etypeid(shape);
     i32 count = len(indices);
@@ -4134,7 +4162,7 @@ enode eshape_from_indices(aether a, array indices) {
     return e_fn_call(a, (efunc)u(efunc, shape_from_fn), a(count_node, data_node), false, false);
 }
 
-void aether_eputs(aether a, string output) {
+AU_EXPORT void aether_eputs(aether a, string output) {
     if (a->no_build) return;
 
     //efunc  fn_puts = (efunc)elookup("puts");
@@ -4163,7 +4191,7 @@ void aether_emit_listen_entry(aether a, const char* func_name) { }
 
 // query gate: an i1 slot the listen query stores into each statement;
 // prints branch on it so only matching scopes emit
-void aether_listen_gate_create(aether a) {
+AU_EXPORT void aether_listen_gate_create(aether a) {
     emit_guard;
     if (a->no_build || a->listen_gate) return;
     if (!LLVMGetInsertBlock(B)) return;
@@ -4173,7 +4201,7 @@ void aether_listen_gate_create(aether a) {
     a->listen_gate = g;
 }
 
-void aether_listen_gate_store(aether a, enode cond) {
+AU_EXPORT void aether_listen_gate_store(aether a, enode cond) {
     emit_guard;
     if (a->no_build || !a->listen_gate || !cond || !_llvalue((enode)cond)) return;
     LLVMValueRef v  = _llvalue((enode)cond);
@@ -4209,7 +4237,7 @@ static void listen_gate_close(aether a, LLVMBasicBlockRef mb) {
     LLVMPositionBuilderAtEnd(B, mb);
 }
 
-void aether_emit_listen_line(aether a, const char* msg) {
+AU_EXPORT void aether_emit_listen_line(aether a, const char* msg) {
     if (!a->listen_active || a->no_build || a->listen_emitting) return;
     LLVMBasicBlockRef mb = listen_gate_open(a);
     emit_puts_str(a, msg);
@@ -4278,8 +4306,8 @@ void aether_emit_listen_value(aether a, enode n) {
     listen_gate_close(a, mb);
 }
 
-bool aether_has_listen(aether a) { return a->listen_active; }
-void aether_clear_listen(aether a) {
+AU_EXPORT bool aether_has_listen(aether a) { return a->listen_active; }
+AU_EXPORT void aether_clear_listen(aether a) {
     a->listen_active = false;
     a->listen_values = false;
     a->listen_gate   = null;
@@ -4287,7 +4315,7 @@ void aether_clear_listen(aether a) {
 
 #else
 
-bool aether_has_listen(aether a) { return false; }
+AU_EXPORT bool aether_has_listen(aether a) { return false; }
 void aether_clear_listen(aether a) { }
 void aether_emit_listen_value(aether a, enode n) { }
 void aether_listen_gate_create(aether a) { }
@@ -4480,7 +4508,7 @@ enode etype_access(etype target, string name) { sequencer
 // instance as the base class (same pointer, narrower static type) so that
 // find_member/GEP resolves to the inherited slot instead of the derived
 // shadow (which has the same name but a different index).
-enode aether_e_inherited_access(aether a, enode instance, Au_t override_member) {
+AU_EXPORT enode aether_e_inherited_access(aether a, enode instance, Au_t override_member) {
     if (!override_member || !override_member->context || !override_member->context->context)
         return access(instance, string(override_member ? override_member->ident : ""));
     Au_t inherited = find_member(override_member->context->context,
@@ -4497,7 +4525,7 @@ enode aether_e_inherited_access(aether a, enode instance, Au_t override_member) 
     return with_value(gep, enode(mod, a, autype, inherited, loaded, false));
 }
 
-enode resolve_typeid(aether a, Au mdl) {
+AU_EXPORT enode resolve_typeid(aether a, Au mdl) {
     Au_t au = au_arg(mdl);
     if (au->is_pointer && au->src->is_class) {
         return u(etype, au->src) ? u(etype, au->src)->type_id : null;
@@ -4505,7 +4533,7 @@ enode resolve_typeid(aether a, Au mdl) {
     return u(etype, au) ? u(etype, au)->type_id : null;
 }
 
-etype implement_type_id(etype t);
+AU_EXPORT etype implement_type_id(etype t);
 
 enode e_runtime_type(enode instance) {
     emit_guard;
@@ -4623,7 +4651,7 @@ enode aether_e_typeid(aether a, etype mdl) { sequencer
     return n;
 }
 
-bool is_au_t(Au a) {
+AU_EXPORT bool is_au_t(Au a) {
     Au_t au = au_arg(a);
     if (au && au->is_pointer) {
         au = au->src;
@@ -4631,7 +4659,7 @@ bool is_au_t(Au a) {
     return au == typeid(Au_t);
 }
 
-bool is_map(etype t) {
+AU_EXPORT bool is_map(etype t) {
     if (!instanceof(t, etype) || !t->autype) return false;
     return inherits(t->autype, typeid(map));
 }
@@ -4644,7 +4672,7 @@ static int fbits_index(Au_t type_au, Au_t member) {
     return member->af_index - 1;   // af_index is 1-based (0=unset); the af-bit position is index-1
 }
 
-enode is_set(enode n, evar prop) {
+AU_EXPORT enode is_set(enode n, evar prop) {
     emit_guard;
     int index  = fbits_index(canonical((etype)n)->autype, prop->autype);
     int word   = index / 64;
@@ -4708,7 +4736,7 @@ void mark_set(enode n, u64* masks) {
 // args — discarding the override/default bits that mark_set flipped during
 // construction purely to suppress base-class defaults. apply_args then reconciles
 // only what the renderer actually wrote, never inherited override defaults.
-void set_fbits_exact(enode n, u64* masks) {
+AU_EXPORT void set_fbits_exact(enode n, u64* masks) {
     emit_guard;
     aether a = au_active(n->mod);
     etype i64_type = etypeid(i64);
@@ -4739,7 +4767,7 @@ void set_fbits_exact(enode n, u64* masks) {
 // overrides. the actual store is emitted inside each class's own init[]
 // preamble (see silver.c build_init_preamble) so cross-module construction
 // sites don't need to resolve the originating module's evar registry.
-void aether_apply_overrides(aether a, enode alloc) {
+AU_EXPORT void aether_apply_overrides(aether a, enode alloc) {
     Au_t alloc_type = alloc->autype;
     if (!alloc_type || !alloc_type->is_class) return;
     // IMPORTED classes: our af_index view of another module's members may not
@@ -4784,7 +4812,7 @@ void aether_apply_overrides(aether a, enode alloc) {
 }
 
 // assign default only if prop was not set by constructor
-void assign_if_cond(aether a, enode targ, enode cond, subprocedure expr_builder) {
+AU_EXPORT void assign_if_cond(aether a, enode targ, enode cond, subprocedure expr_builder) {
     emit_guard;
     LLVMBasicBlockRef cur = LLVMGetInsertBlock(B);
     LLVMValueRef fn = LLVMGetBasicBlockParent(cur);
@@ -4815,7 +4843,7 @@ void assign_if_cond(aether a, enode targ, enode cond, subprocedure expr_builder)
 //   M(X, Y, i, method, public, enode, e_init, enode, map, efunc, enode)
 // ============================================================================
 
-enode aether_e_init(aether a, enode alloc, map props, efunc ctr, enode ctr_input) {
+AU_EXPORT enode aether_e_init(aether a, enode alloc, map props, efunc ctr, enode ctr_input) {
     if (a->no_build) return alloc;
 
     efunc f_initialize = (efunc)u(efunc,
@@ -5179,7 +5207,7 @@ enode e_convert_or_cast(aether a, etype output, enode input) {
     return aether_e_primitive_convert(a, input, output);
 }
 
-etype base_model(etype m) {
+AU_EXPORT etype base_model(etype m) {
     if (!m) return null;
     aether a  = au_active(m->mod);
     Au_t   au = m->autype;
@@ -5191,7 +5219,7 @@ etype base_model(etype m) {
     return u(etype, au);
 }
 
-etype get_etype(enode n) {
+AU_EXPORT etype get_etype(enode n) {
     aether a = au_active(n->mod);
     if (n->autype->member_type == AU_MEMBER_VAR && !n->is_explicit_ref)
         return u(etype, n->autype->src);
@@ -5751,14 +5779,14 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
 }
 
 
-none copy_lambda_info(enode mem, enode lambda_fn) {
+AU_EXPORT none copy_lambda_info(enode mem, enode lambda_fn) {
     mem->context_node = hold(lambda_fn->context_node); // would be nice to do this earlier
     mem->published_type = hold(lambda_fn->published_type);
     _llvalue_set((enode)mem, _llvalue((enode)lambda_fn));
 }
 
 
-enode aether_e_vector(aether a, etype t, enode shape_data) {
+AU_EXPORT enode aether_e_vector(aether a, etype t, enode shape_data) {
     etype tc = canonical(t);
 
     efunc f_alloc    = (efunc)u(efunc,
@@ -5776,7 +5804,7 @@ enode aether_e_vector(aether a, etype t, enode shape_data) {
         (Au)n_src, n_line, n_seq ), false, false);
 }
 
-void alloc_origin_args(aether a, enode* out_src, Au* out_line, Au* out_seq) {
+AU_EXPORT void alloc_origin_args(aether a, enode* out_src, Au* out_line, Au* out_seq) {
     // prefer statement_origin — set by the parser for the current statement
     // and is the right "allocation hint" for deep aether paths.
     token tk   = a->statement_origin ? a->statement_origin : aether_peek_safe(a);
@@ -5797,7 +5825,7 @@ void alloc_origin_args(aether a, enode* out_src, Au* out_line, Au* out_seq) {
     }
 }
 
-enode aether_e_alloc(aether a, etype mdl) {
+AU_EXPORT enode aether_e_alloc(aether a, etype mdl) {
     efunc f_alloc = (efunc)u(efunc,
         find_member(etypeid(Au)->autype, "alloc_new", AU_MEMBER_FUNC, 0, false));
     enode n_src; Au n_line, n_seq;
@@ -5811,7 +5839,7 @@ enode aether_e_alloc(aether a, etype mdl) {
 }
 
 
-enode aether_e_const_array(aether a, etype mdl, array arg) {
+AU_EXPORT enode aether_e_const_array(aether a, etype mdl, array arg) {
     emit_guard;
     etype atype = etypeid(Au_t);
     etype vector_type = etype_ptr(a, mdl->autype, null);
@@ -5844,12 +5872,12 @@ enode aether_e_const_array(aether a, etype mdl, array arg) {
     return with_value(G, enode(mod, a, loaded, true, autype, vector_type->autype));
 }
 
-enode aether_e_default_value(aether a, etype mdl) {
+AU_EXPORT enode aether_e_default_value(aether a, etype mdl) {
     return aether_e_create(a, mdl, null);
 }
 
 
-enode aether_e_zero(aether a, enode n) {
+AU_EXPORT enode aether_e_zero(aether a, enode n) {
     emit_guard;
     etype      mdl = (etype)n;
     LLVMValueRef v = _llvalue((enode)n);
@@ -5862,7 +5890,7 @@ enode aether_e_zero(aether a, enode n) {
 }
 
 
-etype prefer_mdl(etype m0, etype m1) {
+AU_EXPORT etype prefer_mdl(etype m0, etype m1) {
     aether a = au_active(m0->mod);
     if (m0 == m1)
         return m0;
@@ -5902,7 +5930,7 @@ static LLVMValueRef cond_to_i1(aether a, LLVMValueRef v) {
     return v;
 }
 
-enode aether_e_ternary(aether a, enode cond_expr, enode true_expr, enode false_expr) {
+AU_EXPORT enode aether_e_ternary(aether a, enode cond_expr, enode true_expr, enode false_expr) {
     emit_guard;
     aether mod = a;
     etype rmdl  = false_expr ? (etype)prefer_mdl((etype)true_expr, (etype)false_expr) :  (etype)cond_expr;
@@ -5991,7 +6019,7 @@ enode aether_e_ternary(aether a, enode cond_expr, enode true_expr, enode false_e
     return with_value(result_val, enode(mod, mod, loaded, true, autype, rmdl->autype));
 }
 
-enode aether_e_coalesce_deferred(aether a, enode cond_expr, array true_tokens, subprocedure expr_builder) {
+AU_EXPORT enode aether_e_coalesce_deferred(aether a, enode cond_expr, array true_tokens, subprocedure expr_builder) {
     emit_guard;
     // (cond) ?? expr — short-circuit: if cond is non-null, return expr; else
     // return the zero/null of typeof(expr). The true branch is evaluated INSIDE
@@ -6034,7 +6062,7 @@ enode aether_e_coalesce_deferred(aether a, enode cond_expr, array true_tokens, s
     return with_value(phi_node, enode(mod, a, loaded, !is_struct((Au)true_node->autype), autype, true_node->autype));
 }
 
-enode aether_e_ternary_deferred(aether a, enode cond_expr, array true_tokens, array false_tokens, subprocedure expr_builder) {
+AU_EXPORT enode aether_e_ternary_deferred(aether a, enode cond_expr, array true_tokens, array false_tokens, subprocedure expr_builder) {
     emit_guard;
     // build both branches deferred so member accesses don't happen before the null check
     if (a->no_build) {
@@ -6124,7 +6152,7 @@ enode aether_e_ternary_deferred(aether a, enode cond_expr, array true_tokens, ar
     return result;
 }
 
-enode aether_e_builder(aether a, subprocedure cond_builder) {
+AU_EXPORT enode aether_e_builder(aether a, subprocedure cond_builder) {
     emit_guard;
     if (!a->no_build) {
         LLVMBasicBlockRef block = LLVMGetInsertBlock(B);
@@ -6636,7 +6664,7 @@ enode aether_e_for(aether a,
     return e_noop(a, null);
 }
 
-enode aether_e_noop(aether a, etype mdl) {
+AU_EXPORT enode aether_e_noop(aether a, etype mdl) {
     enode op = enode(mod, a, loaded, false,
         autype, mdl ? mdl->autype : etypeid(none)->autype,
         meta_a, mdl ? mdl->meta_a : null,
@@ -6818,7 +6846,7 @@ enode aether_e_addr_of(aether a, enode expr, etype mdl) {
     return e_create(a, (etype)expr, (Au)mdl);
 }
 
-enode enode_load(enode e) {
+AU_EXPORT enode enode_load(enode e) {
     emit_guard;
     aether a = au_active(e->mod);
     LLVMTypeRef i8_ty = LLVMInt8TypeInContext(a->module_ctx);
@@ -6826,7 +6854,7 @@ enode enode_load(enode e) {
     return with_value(LLVMBuildLoad2(B, ptr_ty, _llvalue((enode)e), "instance_ptr"), enode(mod, a, autype, e->autype, loaded, true));
 }
 
-enode enode_shape(enode instance) {
+AU_EXPORT enode enode_shape(enode instance) {
     emit_guard;
     aether a = au_active(instance->mod);
     LLVMTypeRef i8_ty = LLVMInt8TypeInContext(a->module_ctx);
@@ -7120,7 +7148,7 @@ enode aether_e_primitive_convert(aether a, enode expr, etype rtype) { sequencer
     return res;
 }
 
-void aether_push_tokens(aether a, tokens t, num cursor) {
+AU_EXPORT void aether_push_tokens(aether a, tokens t, num cursor) {
     //struct silver_f* table = isa(a);
     tokens_data state = tokens_data(tokens_list, (array)a->tokens, cursor, a->cursor,
         saved_origin, a->statement_origin);
@@ -7134,7 +7162,7 @@ void aether_push_tokens(aether a, tokens t, num cursor) {
     a->stack_test++;
 }
 
-void aether_pop_tokens(aether a, bool transfer) {
+AU_EXPORT void aether_pop_tokens(aether a, bool transfer) {
     int len = a->stack->count;
     assert(len, "expected stack");
     tokens_data state = (tokens_data)last_element(a->stack);
@@ -7159,7 +7187,7 @@ void aether_pop_tokens(aether a, bool transfer) {
 
 define_class(tokens_data, Au)
 
-void aether_push_current(aether a) {
+AU_EXPORT void aether_push_current(aether a) {
     push_tokens(a, a->tokens, a->cursor);
 }
 
@@ -7167,9 +7195,9 @@ static etype etype_deref(aether a, Au_t au) {
     return au->src ? u(etype, au->src) : null;
 }
 
-etype get_type_t_ptr(etype t);
+AU_EXPORT etype get_type_t_ptr(etype t);
 
-void aether_create_type_members(aether a, Au_t ctx) {
+AU_EXPORT void aether_create_type_members(aether a, Au_t ctx) {
     // we must do this after building records / enums (in silver)
     members(ctx, mem) {
         if (mem->member_type == AU_MEMBER_VAR)
@@ -7185,7 +7213,7 @@ void aether_create_type_members(aether a, Au_t ctx) {
 }
 
 /// materialize Au_t to its etype/efunc/evar, creating and registering if needed
-etype aether_e_materialize(aether a, Au_t m) {
+AU_EXPORT etype aether_e_materialize(aether a, Au_t m) {
     if (!m) return null;
     etype existing = u(etype, m);
     if (existing) return existing;
@@ -7207,12 +7235,12 @@ etype aether_e_materialize(aether a, Au_t m) {
     return t;
 }
 
-etype rlookup(aether a, string name) {
+AU_EXPORT etype rlookup(aether a, string name) {
     Au_t au = lexical(a->lexical, cstring(name));
     return etype_prep(a, au);
 }
 
-array etype_class_list(etype t) {
+AU_EXPORT array etype_class_list(etype t) {
     aether a = au_active(t->mod);
     array res = array(alloc, 32, assorted, true);
     Au_t src = t->autype;
@@ -7398,6 +7426,10 @@ static void build_entrypoint(aether a, efunc module_init_fn) {
             // unique names avoid conflict with live_app method stubs in libAu.so
             LLVMValueRef frame_fn = LLVMAddFunction(a->module_ref, "silver_live_frame", fn0i_ty);
             LLVMSetLinkage(frame_fn, LLVMExternalLinkage);
+#ifdef _WIN32
+            // the host reaches this by dlsym, so it must be exported
+            LLVMSetDLLStorageClass(frame_fn, LLVMDLLExportStorageClass);
+#endif
             LLVMBasicBlockRef frame_bb = LLVMAppendBasicBlockInContext(a->module_ctx, frame_fn, "fentry");
             LLVMPositionBuilderAtEnd(B, frame_bb);
             LLVMValueRef running = LLVMConstInt(i32_ty, 1, 0);
@@ -7420,6 +7452,10 @@ static void build_entrypoint(aether a, efunc module_init_fn) {
             // --- silver_live_destroy() ---
             LLVMValueRef dtor_fn = LLVMAddFunction(a->module_ref, "silver_live_destroy", fn0_ty);
             LLVMSetLinkage(dtor_fn, LLVMExternalLinkage);
+#ifdef _WIN32
+            // the host reaches this by dlsym, so it must be exported
+            LLVMSetDLLStorageClass(dtor_fn, LLVMDLLExportStorageClass);
+#endif
             LLVMBasicBlockRef dtor_bb = LLVMAppendBasicBlockInContext(a->module_ctx, dtor_fn, "dentry");
             LLVMPositionBuilderAtEnd(B, dtor_bb);
             LLVMTypeRef  puts_ty = LLVMFunctionType(i32_ty, (LLVMTypeRef[]){ptr_ty}, 1, false);
@@ -7508,6 +7544,10 @@ static void build_entrypoint(aether a, efunc module_init_fn) {
             LLVMTypeRef fn1_ty = LLVMFunctionType(void_ty, (LLVMTypeRef[]){ptr_ty}, 1, false);
             LLVMValueRef setwin_fn = LLVMAddFunction(a->module_ref, "silver_live_set_window", fn1_ty);
             LLVMSetLinkage(setwin_fn, LLVMExternalLinkage);
+#ifdef _WIN32
+            // the host reaches this by dlsym, so it must be exported
+            LLVMSetDLLStorageClass(setwin_fn, LLVMDLLExportStorageClass);
+#endif
             LLVMBasicBlockRef setwin_bb = LLVMAppendBasicBlockInContext(a->module_ctx, setwin_fn, "swentry");
             LLVMPositionBuilderAtEnd(B, setwin_bb);
             {
@@ -7648,7 +7688,7 @@ static void build_entrypoint(aether a, efunc module_init_fn) {
     pop_scope(a);
 }
 
-Au_t arg_type(Au_t au) {
+AU_EXPORT Au_t arg_type(Au_t au) {
     Au_t res = au;
     while (res) {
         if (res->member_type != AU_MEMBER_TYPE) {
@@ -7661,7 +7701,7 @@ Au_t arg_type(Au_t au) {
     return res;
 }
 
-etype etype_canonical(etype t) {
+AU_EXPORT etype etype_canonical(etype t) {
     aether a = au_active(t->mod);
     Au_t au = t->autype;
     if (au->member_type == AU_MEMBER_MODULE)
@@ -7689,7 +7729,7 @@ etype etype_canonical(etype t) {
 }
 
 // if given an enode, will always resolve the etype instance
-etype etype_resolve(etype t) {
+AU_EXPORT etype etype_resolve(etype t) {
     aether a = au_active(t->mod);
     Au_t au = t->autype;
 
@@ -7736,7 +7776,7 @@ etype struct_from_au(aether a, string name, Au_t au, bool is_system) {
 }
 
 // 
-none push_lambda_members(aether a, efunc f) {
+AU_EXPORT none push_lambda_members(aether a, efunc f) {
     emit_guard;
     if (a->no_build) return;
     statements lambda_code = statements(mod, (aether)a);
@@ -7772,7 +7812,7 @@ none push_lambda_members(aether a, efunc f) {
 
 
 // this is the declare (this comment stays)
-none etype_init(etype t) {
+AU_EXPORT none etype_init(etype t) {
     type_guard;
     emit_guard;
     if (t->mod == null) t->mod = (aether)instanceof(t, aether);
@@ -8117,19 +8157,19 @@ none etype_init(etype t) {
     }
 }
 
-bool is_accessible(aether a, Au_t m) {
+AU_EXPORT bool is_accessible(aether a, Au_t m) {
     if (m->access_type == interface_undefined || 
         m->access_type == interface_public    || a->autype->module == a->au_module)
         return true;
     return false;
 }
 
-Au_t read_arg_type(Au_t stored_arg) {
+AU_EXPORT Au_t read_arg_type(Au_t stored_arg) {
     if (stored_arg->member_type == AU_MEMBER_VAR) return stored_arg->src;
     return stored_arg;
 }
 
-etype get_type_t_ptr(etype t) {
+AU_EXPORT etype get_type_t_ptr(etype t) {
     aether a = au_active(t->mod);
 
     if (t->schema)
@@ -8145,7 +8185,7 @@ etype get_type_t_ptr(etype t) {
 
 // type registration is global: always run it as the root, so the result
 // does not depend on which worker first asked for it
-etype implement_type_id(etype t) {
+AU_EXPORT etype implement_type_id(etype t) {
     type_guard;
     emit_guard;
     aether a  = au_active(t->mod);
@@ -9211,7 +9251,7 @@ static void emit_export_funcs(aether a, Au_t module_base, efunc f) {
     pop_scope(a);
 }
 
-none aether_build_module_initializer(aether a, enode init) {
+AU_EXPORT none aether_build_module_initializer(aether a, enode init) {
     emit_guard;
     Au_t au = init->autype;
     if (!au->is_mod_init)
@@ -9693,7 +9733,7 @@ none aether_build_module_initializer(aether a, enode init) {
     build_entrypoint(a, f);
 }
 
-statements aether_context_code(aether a) {
+AU_EXPORT statements aether_context_code(aether a) {
     for (int i = len(a->lexical) - 1; i >= 0; i--) {
         Au_t ctx = (Au_t)a->lexical->origin[i];
         if (u(statements, ctx))
@@ -9703,7 +9743,7 @@ statements aether_context_code(aether a) {
     return null;
 }
 
-efunc aether_context_func(aether a) {
+AU_EXPORT efunc aether_context_func(aether a) {
     for (int i = len(a->lexical) - 1; i >= 0; i--) {
         Au_t ctx = (Au_t)a->lexical->origin[i];
         efunc f = (efunc)u(enode, ctx);
@@ -9712,7 +9752,7 @@ efunc aether_context_func(aether a) {
     return null;
 }
 
-etype aether_context_class(aether a) {
+AU_EXPORT etype aether_context_class(aether a) {
     for (int i = len(a->lexical) - 1; i >= 0; i--) {
         Au_t ctx = (Au_t)a->lexical->origin[i];
         etype ctx_u = u(etype, ctx);
@@ -9722,7 +9762,7 @@ etype aether_context_class(aether a) {
     return null;
 }
 
-etype aether_context_struct(aether a) {
+AU_EXPORT etype aether_context_struct(aether a) {
     for (int i = len(a->lexical) - 1; i >= 0; i--) {
         Au_t ctx = (Au_t)a->lexical->origin[i];
         etype ctx_u = u(etype, ctx);
@@ -9732,7 +9772,7 @@ etype aether_context_struct(aether a) {
     return null;
 }
 
-etype aether_context_model(aether a, Au_t type) {
+AU_EXPORT etype aether_context_model(aether a, Au_t type) {
     for (int i = len(a->lexical) - 1; i >= 0; i--) {
         Au_t ctx = (Au_t)a->lexical->origin[i];
         etype ctx_u = u(etype, ctx);
@@ -9742,7 +9782,7 @@ etype aether_context_model(aether a, Au_t type) {
     return null;
 }
 
-catcher context_catcher_depth(aether a, int depth) {
+AU_EXPORT catcher context_catcher_depth(aether a, int depth) {
     int found = 0;
     for (int i = len(a->lexical) - 1; i >= 0; i--) {
         Au_t ctx = (Au_t)a->lexical->origin[i];
@@ -9752,11 +9792,11 @@ catcher context_catcher_depth(aether a, int depth) {
     return null;
 }
 
-catcher context_catcher(aether a) {
+AU_EXPORT catcher context_catcher(aether a) {
     return context_catcher_depth(a, 0);
 }
 
-etype aether_context_record(aether a) {
+AU_EXPORT etype aether_context_record(aether a) {
     for (int i = len(a->lexical) - 1; i >= 0; i--) {
         Au_t ctx = (Au_t)a->lexical->origin[i];
         etype ctx_u = u(etype, ctx);
@@ -9766,7 +9806,7 @@ etype aether_context_record(aether a) {
     return null;
 }
 
-Au_t aether_top_scope(aether a) {
+AU_EXPORT Au_t aether_top_scope(aether a) {
     Au_t open = null;
     each(a->lexical, Au_t, au_module) {
         if (!au_module->is_closed)
@@ -9775,7 +9815,7 @@ Au_t aether_top_scope(aether a) {
     return open ? open : null;
 }
 
-none aether_push_scope(aether a, Au arg, int label) {
+AU_EXPORT none aether_push_scope(aether a, Au arg, int label) {
     emit_guard;
     Au_t au = au_arg(arg);
     Au_t auu = au;
@@ -9849,6 +9889,15 @@ none aether_push_scope(aether a, Au arg, int label) {
         // attach DWARF subprogram for debugger (breakpoints, stack frames)
         if (fn->has_code && fn->autype->module == a->autype)
             emit_debug_function(a, fn, false);
+#ifdef _WIN32
+        // pe: an importing module binds this through our export table, so a
+        // method we define has to be named in it
+        // hidden means the split build had to promote an internal function to
+        // external linkage -- still module-private, so it stays unexported
+        if (fn->has_code && fn->autype->module == a->autype && _llvalue((enode)fn) &&
+            LLVMGetVisibility(_llvalue((enode)fn)) == LLVMDefaultVisibility)
+            LLVMSetDLLStorageClass(_llvalue((enode)fn), LLVMDLLExportStorageClass);
+#endif
         LLVMPositionBuilderAtEnd(B, _llentry((enode)fn));
         LLVMSetCurrentDebugLocation2(B, _lldbg((enode)fn));
         // preamble at the func declaration line
@@ -9876,7 +9925,7 @@ none aether_push_scope(aether a, Au arg, int label) {
     }
 }
 
-etype get_type_t_ptr(etype t);
+AU_EXPORT etype get_type_t_ptr(etype t);
 
 static Au_t map_etype(aether a, symbol name, int *out_depth) {
     Au_t t = (Au_t)elookup(name); // Cast to Au_t directly if your system allows
@@ -9898,7 +9947,7 @@ static Au_t map_etype(aether a, symbol name, int *out_depth) {
     return map_etype(a, f->chars, out_depth);
 }
 
-none aether_import_models(aether a, Au_t ctx, bool au_mode) {
+AU_EXPORT none aether_import_models(aether a, Au_t ctx, bool au_mode) {
     // initialization table for has/not bits, controlling init and implement
     struct filter {
         bool init, impl;
@@ -10112,7 +10161,7 @@ void aether_import_Au(aether a, string ident, Au lib) {
 
 }
 
-void aether_llflag(aether a, symbol flag, i32 ival) {
+AU_EXPORT void aether_llflag(aether a, symbol flag, i32 ival) {
     emit_guard;
     LLVMMetadataRef v = LLVMValueAsMetadata(
         LLVMConstInt(LLVMInt32TypeInContext(a->module_ctx), ival, 0));
@@ -10150,7 +10199,7 @@ static void strip_unbuilt_functions(LLVMModuleRef m) {
 
 static bool module_has_body(LLVMModuleRef m);
 
-bool aether_emit(aether a, ARef ref_ll, ARef ref_bc) {
+AU_EXPORT bool aether_emit(aether a, ARef ref_ll, ARef ref_bc) {
     emit_guard;
     path* ll = (path*)ref_ll;
     path* bc = (path*)ref_bc;
@@ -10227,7 +10276,7 @@ static bool module_has_body(LLVMModuleRef m) {
 }
 
 // extra objects for the link line, one per worker core that built code
-string aether_core_objects(aether a, path obj_path) {
+AU_EXPORT string aether_core_objects(aether a, path obj_path) {
     string s = string(alloc, 128);
     for (int i = 1; i < ll_n(a); i++) {
         if (!module_has_body(ll_mod(a, i))) continue;
@@ -10252,7 +10301,7 @@ static void* emit_job_run(void* arg) {
 }
 
 // each core owns its module and target machine, so the objects emit at once
-bool aether_emit_object(aether a, path obj_path) {
+AU_EXPORT bool aether_emit_object(aether a, path obj_path) {
     emit_job  jobs[AU_CORES];
     pthread_t th  [AU_CORES];
     int       n = 0;
@@ -10277,7 +10326,7 @@ bool aether_emit_object(aether a, path obj_path) {
     return ok;
 }
 
-void llvm_reinit(aether a) {
+AU_EXPORT void llvm_reinit(aether a) {
     emit_guard;
     LLVMDisposeBuilder  (B);
     LLVMDisposeDIBuilder(a->dbg_builder);
@@ -10375,9 +10424,18 @@ void llvm_reinit(aether a) {
             LLVMAddModuleFlag(m, LLVMModuleFlagBehaviorWarning,
                 "Debug Info Version", 18,
                 LLVMValueAsMetadata(LLVMConstInt(LLVMInt32TypeInContext(c), 3, 0)));
+#ifdef _WIN32
+            // coff section names cap at 8 chars, so .debug_* spills into a
+            // string table and lld warns. msvc debugging is codeview anyway,
+            // which is what the /DEBUG and /pdb: flags already expect
+            LLVMAddModuleFlag(m, LLVMModuleFlagBehaviorWarning,
+                "CodeView", 8,
+                LLVMValueAsMetadata(LLVMConstInt(LLVMInt32TypeInContext(c), 1, 0)));
+#else
             LLVMAddModuleFlag(m, LLVMModuleFlagBehaviorWarning,
                 "Dwarf Version", 13,
                 LLVMValueAsMetadata(LLVMConstInt(LLVMInt32TypeInContext(c), 4, 0)));
+#endif
         }
         a->compile_unit = (LLVMMetadataRef)a->cus->origin[0];
     }
@@ -10391,7 +10449,7 @@ void llvm_reinit(aether a) {
 /// core owns a context, module, DIBuilder and compile unit, all built
 /// up front; the clone binds to its core's set and emits into its own
 /// module, which becomes its own object on the link line.
-aether aether_clone(aether a, int core) {
+AU_EXPORT aether aether_clone(aether a, int core) {
     emit_guard;
     aether c = (aether)Au_copy((Au)a);
     c->core    = core < ll_n(a) ? core : 0;
@@ -10416,14 +10474,14 @@ aether aether_clone(aether a, int core) {
 }
 
 
-void aether_unload_libs(aether a) {
+AU_EXPORT void aether_unload_libs(aether a) {
     // don't dlclose — types registered by constructors are still
     // referenced across the type system. dlopen will reuse the
     // already-loaded library and constructors re-register via emplace.
 }
 
 // todo: adding methods to header does not update the methods header (requires clean)
-void aether_reinit_startup(aether a) {
+AU_EXPORT void aether_reinit_startup(aether a) {
     au_space_begin((void*)a);
 
     a->iteration++;
@@ -10476,13 +10534,13 @@ void aether_reinit_startup(aether a) {
     push_scope(a, (Au)a->autype, 17);
 } 
 
-none aether_test_write(aether a) {
+AU_EXPORT none aether_test_write(aether a) {
     emit_guard;
     char* err = 0;
     LLVMPrintModuleToFile(a->module_ref, "crashing.ll", &err);
 }
 
-enode aether_sequence_enode(aether a) {
+AU_EXPORT enode aether_sequence_enode(aether a) {
     emit_guard;
     LLVMTypeRef  i64t = LLVMInt64TypeInContext(a->module_ctx);
     LLVMValueRef v    = (a->coverage_seq_local && !a->no_build)
@@ -10491,7 +10549,7 @@ enode aether_sequence_enode(aether a) {
     return with_value(v, enode(mod, a, autype, etypeid(i64)->autype, loaded, true));
 }
 
-none aether_init(aether a) {
+AU_EXPORT none aether_init(aether a) {
     emit_guard;
     LLVMInitializeNativeTarget();
     LLVMInitializeNativeAsmPrinter();
@@ -10560,7 +10618,7 @@ none aether_init(aether a) {
     a->coverage = false; //a->debug;
 }
 
-none aether_dealloc(aether a) {
+AU_EXPORT none aether_dealloc(aether a) {
     emit_guard;
     for(item i = a->registry->first; i; i = i->next) {
         etype e = (etype)i->value;
@@ -10584,16 +10642,16 @@ none aether_dealloc(aether a) {
     module_erase(a->autype, null);
 }
 
-string etype_cast_string(etype t) {
+AU_EXPORT string etype_cast_string(etype t) {
     return t->autype ? f(string, "%o", t->autype) : string("[no-type]");
 }
 
-Au_t etype_cast_Au_t(etype t) {
+AU_EXPORT Au_t etype_cast_Au_t(etype t) {
     return t->autype;
 }
 
 
-none enode_init(enode n) {
+AU_EXPORT none enode_init(enode n) {
     emit_guard;
     Au_t n_isa = isa(n);
     aether a = au_active(n->mod);
@@ -10633,17 +10691,17 @@ none enode_init(enode n) {
     aether_emit_listen_value(a, n);
 }
 
-none enode_dealloc(enode a) {
+AU_EXPORT none enode_dealloc(enode a) {
 }
 
-Au_t enode_cast_Au_t(enode a) {
+AU_EXPORT Au_t enode_cast_Au_t(enode a) {
     return a->autype;
 }
 
-array read_arg(array tokens, int start, int* next_read);
-array read_arg_br(array tokens, int start, int* next_read, cstr open, cstr close);
+AU_EXPORT array read_arg(array tokens, int start, int* next_read);
+AU_EXPORT array read_arg_br(array tokens, int start, int* next_read, cstr open, cstr close);
 
-enode aether_e_subroutine(aether a, etype rtype, array body, subprocedure build_body) {
+AU_EXPORT enode aether_e_subroutine(aether a, etype rtype, array body, subprocedure build_body) {
     emit_guard;
     if (a->no_build) return e_noop(a, rtype);
 
@@ -10676,7 +10734,7 @@ enode aether_e_subroutine(aether a, etype rtype, array body, subprocedure build_
         mod, a, autype, rtype->autype, loaded, true));
 }
 
-array macro_expand(macro m, array args) {
+AU_EXPORT array macro_expand(macro m, array args) {
     aether a = au_active(m->mod);
     int   ln_args   = len(args);
     array r         = array(alloc, 32);
@@ -10709,13 +10767,13 @@ array macro_expand(macro m, array args) {
 }
 
 // return tokens for function content (not its surrounding def)
-array codegen_generate_fn(codegen code, efunc f, array query) {
+AU_EXPORT array codegen_generate_fn(codegen code, efunc f, array query) {
     aether a = au_active(code->mod);
     fault("must subclass codegen for usable code generation");
     return null;
 }
 
-void aether_e_print_node(aether a, enode n) {
+AU_EXPORT void aether_e_print_node(aether a, enode n) {
     if (a->no_build) return;
 
     efunc  printf_fn = (efunc)elookup("printf");
@@ -10744,7 +10802,7 @@ void aether_e_print_node(aether a, enode n) {
 }
 
 // f = format string; this is evaluated from nodes given at runtime
-void aether_eprint(aether a, symbol f, ...) {
+AU_EXPORT void aether_eprint(aether a, symbol f, ...) {
     if (a->no_build) return;
     va_list args;
     va_start(args, f);
@@ -10819,7 +10877,7 @@ void aether_eprint(aether a, symbol f, ...) {
     a->direct = false;
 }
 
-void code_init(code c) {
+AU_EXPORT void code_init(code c) {
     emit_guard;
     efunc fn = context_func(c->mod);
     aether a = au_active(fn->mod);
@@ -10827,12 +10885,12 @@ void code_init(code c) {
     c->block = LLVMAppendBasicBlockInContext(a->module_ctx, _llvalue((enode)fn), c->label);
 }
 
-void code_seek_end(code c) {
+AU_EXPORT void code_seek_end(code c) {
     emit_guard;
     LLVMPositionBuilderAtEnd(c->mod->builder, c->block);
 }
 
-void aether_e_cmp_code(aether a, enode l, comparison comp, enode r, code lcode, code rcode) {
+AU_EXPORT void aether_e_cmp_code(aether a, enode l, comparison comp, enode r, code lcode, code rcode) {
     emit_guard;
     if (a->no_build) {
         a->is_const_op = false;
@@ -10843,7 +10901,7 @@ void aether_e_cmp_code(aether a, enode l, comparison comp, enode r, code lcode, 
     LLVMBuildCondBr(B, cond, lcode->block, rcode->block);
 }
 
-void aether_e_inc(aether a, enode v, num amount) {
+AU_EXPORT void aether_e_inc(aether a, enode v, num amount) {
     emit_guard;
     a->is_const_op = false;
     if (a->no_build) return;
@@ -10853,14 +10911,14 @@ void aether_e_inc(aether a, enode v, num amount) {
     LLVMBuildStore(a->mod->builder, nextI, _llvalue((enode)v));
 }
 
-void aether_e_branch(aether a, code c) {
+AU_EXPORT void aether_e_branch(aether a, code c) {
     emit_guard;
     a->is_const_op = false;
     if (a->no_build) return;
     LLVMBuildBr(B, c->block);
 }
 
-enode aether_e_cmp(aether a, enode L, enode R) {
+AU_EXPORT enode aether_e_cmp(aether a, enode L, enode R) {
     emit_guard;
     Au_t Lt = isa(L->literal);
     Au_t Rt = isa(R->literal);
@@ -10990,7 +11048,7 @@ enode aether_e_cmp(aether a, enode L, enode R) {
     return value(etypeid(i32), LLVMBuildSub(B, _llvalue((enode)L), _llvalue((enode)R), "cmp_i"));
 }
 
-enode aether_compatible(aether a, etype r, string n, AFlag f, array args) {
+AU_EXPORT enode aether_compatible(aether a, etype r, string n, AFlag f, array args) {
     members (r->autype, mem) {
         efunc fn = u(efunc, mem);
         // must be function with optional name check
@@ -11015,7 +11073,7 @@ enode aether_compatible(aether a, etype r, string n, AFlag f, array args) {
     return (enode)false;
 }
 
-enode aether_e_break(aether a, catcher cat) {
+AU_EXPORT enode aether_e_break(aether a, catcher cat) {
     emit_guard;
     a->is_const_op = false;
     if (!a->no_build) {
@@ -11029,7 +11087,7 @@ enode aether_e_break(aether a, catcher cat) {
     return e_noop(a, null);
 }
 
-enode aether_e_continue(aether a, catcher cat) {
+AU_EXPORT enode aether_e_continue(aether a, catcher cat) {
     emit_guard;
     a->is_const_op = false;
     if (!a->no_build) {
@@ -11039,7 +11097,7 @@ enode aether_e_continue(aether a, catcher cat) {
     return e_noop(a, null);
 }
 
-enode aether_e_bitwise_not(aether a, enode L) {
+AU_EXPORT enode aether_e_bitwise_not(aether a, enode L) {
     emit_guard;
     a->is_const_op = false;
     if (a->no_build) return e_noop(a, etypeid(bool));
@@ -11048,7 +11106,7 @@ enode aether_e_bitwise_not(aether a, enode L) {
     return value(L, LLVMBuildNot(B, _llvalue((enode)L), "bitwise-not"));
 }
 
-enode aether_e_neg(aether a, enode L) {
+AU_EXPORT enode aether_e_neg(aether a, enode L) {
     emit_guard;
     a->is_const_op = false;
     etype Lm = canonical(L);
@@ -11163,15 +11221,15 @@ static enode vector_binary_op(aether a, enode L, enode R, scalar_op_fn op, cstr 
     return with_value(out, enode(mod, a, loaded, false, autype, res_au));
 }
 
-enode aether_e_max(aether a, enode L, enode R) {
+AU_EXPORT enode aether_e_max(aether a, enode L, enode R) {
     return vector_binary_op(a, L, R, scalar_max, "vmax");
 }
 
-enode aether_e_min(aether a, enode L, enode R) {
+AU_EXPORT enode aether_e_min(aether a, enode L, enode R) {
     return vector_binary_op(a, L, R, scalar_min, "vmin");
 }
 
-enode aether_e_abs(aether a, enode L) {
+AU_EXPORT enode aether_e_abs(aether a, enode L) {
     emit_guard;
     a->is_const_op = false;
     etype Lm = canonical(L);
@@ -11192,7 +11250,7 @@ static LLVMValueRef scalar_clamp(aether a, LLVMValueRef v, LLVMValueRef lo, LLVM
     return scalar_min(a, scalar_max(a, v, lo, common), hi, common);
 }
 
-enode aether_e_clamp(aether a, enode val, enode lo, enode hi) {
+AU_EXPORT enode aether_e_clamp(aether a, enode val, enode lo, enode hi) {
     emit_guard;
     a->is_const_op = false;
     bool v_arr = val->autype->elements > 0 && val->autype->src && val->autype->src->is_primitive;
@@ -11285,7 +11343,7 @@ static unsigned math_intrinsic_id(aether a, int op, LLVMTypeRef ty) {
     return ids[op][is_f32 ? 0 : 1];
 }
 
-enode aether_e_math(aether a, i32 op, enode val) {
+AU_EXPORT enode aether_e_math(aether a, i32 op, enode val) {
     emit_guard;
     a->is_const_op = false;
     if (a->no_build) return e_noop(a, canonical(val));
@@ -11372,7 +11430,7 @@ enode aether_e_math(aether a, i32 op, enode val) {
     return with_value(out, enode(mod, a, loaded, false, autype, res_au));
 }
 
-enode aether_e_math2(aether a, i32 op, enode L, enode R) {
+AU_EXPORT enode aether_e_math2(aether a, i32 op, enode L, enode R) {
     emit_guard;
     a->is_const_op = false;
     if (a->no_build) return e_noop(a, canonical(L));
@@ -11406,7 +11464,7 @@ enode aether_e_math2(aether a, i32 op, enode L, enode R) {
     return with_value(result, enode(mod, a, autype, elem_au, loaded, true));
 }
 
-enode aether_e_stack_array(aether a, etype elem_type, i32 count) {
+AU_EXPORT enode aether_e_stack_array(aether a, etype elem_type, i32 count) {
     emit_guard;
     a->is_const_op = false;
     Au_t arr_au = def(a->autype, null, AU_MEMBER_TYPE, AU_TRAIT_SHAPED);
@@ -11427,7 +11485,7 @@ enode aether_e_stack_array(aether a, etype elem_type, i32 count) {
     return with_value(alloc, enode(mod, a, loaded, false, autype, arr_au));
 }
 
-enode aether_e_stack_array_dynamic(aether a, etype elem_type, enode count_expr) {
+AU_EXPORT enode aether_e_stack_array_dynamic(aether a, etype elem_type, enode count_expr) {
     emit_guard;
     a->is_const_op = false;
     if (a->no_build) return e_noop(a, elem_type);
@@ -11446,7 +11504,7 @@ enode aether_e_stack_array_dynamic(aether a, etype elem_type, enode count_expr) 
     return with_value(alloc, enode(mod, a, loaded, false, autype, arr_au));
 }
 
-enode aether_e_direct_cast(aether a, enode input, etype target) {
+AU_EXPORT enode aether_e_direct_cast(aether a, enode input, etype target) {
     emit_guard;
     a->is_const_op = false;
     if (a->no_build) return e_noop(a, target);
@@ -11457,7 +11515,7 @@ enode aether_e_direct_cast(aether a, enode input, etype target) {
     return with_value(val, enode(mod, a, loaded, input->loaded, autype, target->autype));
 }
 
-enode efunc_fptr(efunc f) {
+AU_EXPORT enode efunc_fptr(efunc f) {
     f->used = true;
     etype_implement((etype)f, false);
     etype func_ptr = pointer(f->mod, (Au)f);
@@ -11481,7 +11539,7 @@ enode enode_deref(enode n) {
     return with_value(LLVMBuildLoad2(B, _lltype_slot(src_etype), _llvalue((enode)n), "deref"), enode(mod, a, autype, src, loaded, true));
 }
 
-enode aether_e_not(aether a, enode L) {
+AU_EXPORT enode aether_e_not(aether a, enode L) {
     emit_guard;
     a->is_const_op = false;
     if (a->no_build) return e_noop(a, etypeid(bool));
@@ -11518,7 +11576,7 @@ enode aether_e_not(aether a, enode L) {
     return value(etypeid(bool), result);
 }
 
-enode enode_retain(enode mem) {
+AU_EXPORT enode enode_retain(enode mem) {
     aether a = au_active(mem->mod);
     etype mdl = (etype)evar_type((evar)mem);
     a->is_const_op = false;
@@ -11529,7 +11587,7 @@ enode enode_retain(enode mem) {
     return mem;
 }
 
-enode enode_emit_release(enode mem) {
+AU_EXPORT enode enode_emit_release(enode mem) {
     aether a = au_active(mem->mod);
     etype mdl = (etype)evar_type((evar)mem);
 
@@ -11541,7 +11599,7 @@ enode enode_emit_release(enode mem) {
     return mem;
 }
 
-Au_t aether_pop_scope(aether a) {
+AU_EXPORT Au_t aether_pop_scope(aether a) {
     emit_guard;
     statements st = u(statements, top_scope(a));
     efunc prev_fn = context_func(a);
@@ -11560,7 +11618,7 @@ Au_t aether_pop_scope(aether a) {
     return a->top;
 }
 
-etype aether_return_type(aether a) {
+AU_EXPORT etype aether_return_type(aether a) {
     for (int i = len(a->lexical) - 1; i >= 0; i--) {
         Au_t ctx = (Au_t)a->lexical->origin[i];
         etype ctx_u = u(etype, ctx);
@@ -11573,7 +11631,7 @@ etype aether_return_type(aether a) {
 }
 
 // ident is optional, and based on 
-efunc aether_function(aether a, etype place, string ident, etype rtype, array args, u8 member_type, u32 traits, u8 operator_type) {
+AU_EXPORT efunc aether_function(aether a, etype place, string ident, etype rtype, array args, u8 member_type, u32 traits, u8 operator_type) {
     Au_t context = place->autype;
     Au_t au = def(context, ident->chars, AU_MEMBER_FUNC, traits);
     if (traits & AU_TRAIT_OVERRIDE) {
@@ -11628,7 +11686,7 @@ etype aether_record(aether a, etype place, etype based, string ident, u32 traits
     return n;
 }
 
-Au enode_literal_value(enode a, Au_t of_type) {
+AU_EXPORT Au enode_literal_value(enode a, Au_t of_type) {
     if (!a) return null;
     if (a && a->literal && (!of_type || inherits(isa(a->literal), of_type))) {
         return a->literal;
@@ -11640,7 +11698,7 @@ Au enode_literal_value(enode a, Au_t of_type) {
     return null;
 }
 
-efunc aether_module_initializer(aether a) {
+AU_EXPORT efunc aether_module_initializer(aether a) {
     emit_guard;
     if (a->fn_init) return a->fn_init;
 
@@ -11661,12 +11719,16 @@ efunc aether_module_initializer(aether a) {
         // exported for dlsym: split builds must not leave it hidden
         LLVMSetLinkage  (_llvalue((enode)init), LLVMExternalLinkage);
         LLVMSetVisibility(_llvalue((enode)init), LLVMDefaultVisibility);
+#ifdef _WIN32
+        // pe has no default export; this is visibility's counterpart there
+        LLVMSetDLLStorageClass(_llvalue((enode)init), LLVMDLLExportStorageClass);
+#endif
     }
     a->fn_init = hold(init);
     return init;
 }
 
-none aether_e_memcpy(aether a, enode _dst, enode _src, Au_t au_size) {
+AU_EXPORT none aether_e_memcpy(aether a, enode _dst, enode _src, Au_t au_size) {
     emit_guard;
     if (a->no_build) return;
     a->is_const_op = false;
@@ -11678,7 +11740,7 @@ none aether_e_memcpy(aether a, enode _dst, enode _src, Au_t au_size) {
 }
 
 /// memcpy/memset with runtime size — called from silver parser for builtin interception
-enode aether_e_memop(aether a, enode dst, enode arg2, enode size, bool is_memcpy) {
+AU_EXPORT enode aether_e_memop(aether a, enode dst, enode arg2, enode size, bool is_memcpy) {
     emit_guard;
     if (a->no_build) return e_noop(a, null);
     a->is_const_op = false;
@@ -11730,3 +11792,5 @@ define_class(codegen,    Au)
 define_class(code,       Au)
 
 define_class(static_array, array)
+
+AU_EXPORT void aether_module_anchor(void) { }
