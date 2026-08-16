@@ -2,20 +2,24 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#include <ports.h>   // the posix surface windows lacks, in one header
+#else
 #include <dlfcn.h>
-#include <sys/stat.h>
 #include <unistd.h>
 #include <libgen.h>
 #include <signal.h>
 #include <execinfo.h>
 #include <sys/wait.h>
 #include <spawn.h>
-#include <errno.h>
-#include <fcntl.h>
 #include <sys/mman.h>
-#include <stdint.h>
 #include <sys/syscall.h>
 #include <sys/prctl.h>
+#include <fcntl.h>
+#endif
+#include <sys/stat.h>
+#include <errno.h>
+#include <stdint.h>
 
 extern char** environ;
 
@@ -135,7 +139,15 @@ static void shm_create(void) {
 static void shm_inherit(posix_spawn_file_actions_t* fa, char* fdenv, size_t cap) {
     if (g_shm_fd >= 0)
         posix_spawn_file_actions_adddup2(fa, g_shm_fd, SILVER_SHM_CHILD_FD);
+#ifdef _WIN32
+    // handle inheritance carries a HANDLE, not a numbered descriptor, so the
+    // dup2 above cannot land the channel on a fixed fd. advertising one the
+    // child does not have made it mmap a bogus descriptor
+    (void)fa;
+    snprintf(fdenv, cap, "SILVER_SHM_FD=-1");
+#else
     snprintf(fdenv, cap, "SILVER_SHM_FD=%d", g_shm_fd >= 0 ? SILVER_SHM_CHILD_FD : -1);
+#endif
 }
 
 // isolation is the DEFAULT: the window and mic survive an app fault. off when:
@@ -225,7 +237,7 @@ static void spawn_slot_app(int k, const char* bindir) {
     snprintf(bin, sizeof(bin), "%s/%s", bindir, nm);
     // fresh app log for this run; the app APPENDS (host_log_setup honors the slot),
     // so the build output below + the app's runtime both land here for the console.
-    { char lp[256]; snprintf(lp, sizeof(lp), "/tmp/%s.log", nm);
+    { char lp[256]; snprintf(lp, sizeof(lp), "%s/%s.log", temp_dir(), nm);
       int lfd = open(lp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
       if (lfd >= 0) close(lfd); }
     // always build before a run: the host has no staleness view of a slot
@@ -567,7 +579,7 @@ static void crash_handler(int sig) {
     // we re-raise. backtrace_symbols_fd is async-signal-safe (no malloc), so it
     // survives even a heap-corruption crash. append: the tee already truncated.
     char lp[256];
-    snprintf(lp, sizeof(lp), "/tmp/%s.log", g_app_name);
+    snprintf(lp, sizeof(lp), "%s/%s.log", temp_dir(), g_app_name);
     int lf = open(lp, O_WRONLY | O_CREAT | O_APPEND, 0644);
     if (lf >= 0) {
         (void)write(lf, hdr, (size_t)hl);
@@ -613,7 +625,7 @@ static void crash_handler(int sig) {
 static void symbolize_crash_log(const char* appname) {
     if (!appname || !*appname) return;
     char lp[256];
-    snprintf(lp, sizeof(lp), "/tmp/%s.log", appname);
+    snprintf(lp, sizeof(lp), "%s/%s.log", temp_dir(), appname);
     FILE* f = fopen(lp, "r");
     if (!f) return;
     char          line[1024];
@@ -767,14 +779,29 @@ static pid_t rebuild_spawn(const char* name, int clean) {
     // --build: compile ONLY. bare `silver <app>` would LAUNCH the app (silver_live_run execs
     // the live host), spawning a whole second process+window on every reload while this one
     // keeps running. we just want the fresh .so produced so the host below hot-swaps it.
+#ifdef _WIN32
+    // cmd.exe will not run a program path spelled with forward slashes, and
+    // SILVER_ROOT is spelled that way, so hand it a backslash copy
+    char root[1024];
+    snprintf(root, sizeof(root), "%s", SILVER_ROOT);
+    for (char* p = root; *p; p++) if (*p == '/') *p = '\\';
+    // gen.py puts the app in install\build; install\bin\silver is the symlink
+    // `make install` makes, and that step is unix-only
+    // silver's own flags come BEFORE the module name; anything after it is
+    // handed to the app, so a trailing --build would launch instead of compile
+    snprintf(cmd, sizeof(cmd),
+        "cd /d \"%s\" && \"%s\\install\\build\\silver.exe\" --build%s %s",
+        root, root, clean ? " --clean" : "", name);
+#else
     snprintf(cmd, sizeof(cmd),
         "cd \"" SILVER_ROOT "\" && \"" SILVER_ROOT "/install/bin/silver\" %s --build%s",
         name, clean ? " --clean" : "");
+#endif
     // send the compile output to the app's OWN log so orbiter's console (which tails
     // /tmp/<app>.log) shows the compilation. spawn_slot_app truncated it beforehand,
     // and the app appends (host_log_setup) so build + runtime share the one file.
     char lp[256];
-    snprintf(lp, sizeof(lp), "/tmp/%s.log", name);
+    snprintf(lp, sizeof(lp), "%s/%s.log", temp_dir(), name);
     { int hfd = open(lp, O_WRONLY | O_CREAT | O_APPEND, 0644);
       if (hfd >= 0) {
           char h[300];
@@ -791,9 +818,17 @@ static pid_t rebuild_spawn(const char* name, int clean) {
     // copies only the calling thread but inherits locks held by the others — the child
     // can deadlock on a malloc lock before it reaches exec, freezing the whole app.
     // posix_spawn execs without running user code in the child, so it can't deadlock.
-    char* sh_argv[] = { "/bin/sh", "-c", cmd, NULL };
+#ifdef _WIN32
+    // no /bin/sh here; COMSPEC names the shell and it spells the flag /c
+    char* shell = getenv("COMSPEC");
+    if (!shell || !*shell) shell = "C:/Windows/System32/cmd.exe";
+    char* sh_argv[] = { shell, "/c", cmd, NULL };
+#else
+    char* shell = "/bin/sh";
+    char* sh_argv[] = { shell, "-c", cmd, NULL };
+#endif
     pid_t pid = 0;
-    int sp = posix_spawn(&pid, "/bin/sh", &fa, NULL, sh_argv, environ);
+    int sp = posix_spawn(&pid, shell, &fa, NULL, sh_argv, environ);
     posix_spawn_file_actions_destroy(&fa);
     if (sp != 0) {
         fprintf(stderr, "%s: BUILD ERROR — posix_spawn failed: %s\n", name, strerror(sp));
@@ -830,6 +865,31 @@ static int rebuild_blocking(const char* name, int clean) {
 }
 
 int main(int argc, char** argv) {
+#ifdef _WIN32
+    // the module we dlopen pulls vulkan-1, opencv, OpenEXR, libpng ... and they
+    // live in install/bin. windows has no rpath, so the loader finds them only
+    // through PATH -- silver.exe does the same at startup
+    {
+        // SILVER_ROOT is spelled with forward slashes; the loader and the
+        // vulkan layer discovery both want backslashes here
+        char root[1024];
+        snprintf(root, sizeof(root), "%s", SILVER_ROOT);
+        for (char* q = root; *q; q++) if (*q == '/') *q = '\\';
+
+        const char* prev = getenv("PATH");
+        char buf[8192];
+        snprintf(buf, sizeof(buf), "%s\\install\\bin;%s\\install\\build;%s",
+            root, root, prev ? prev : "");
+        setenv("PATH", buf, 1);
+        // the vulkan loader finds layers through the registry or VK_LAYER_PATH,
+        // never by scanning; ours sit beside their dll in install/bin, and a
+        // debug build asks for VK_LAYER_KHRONOS_validation by name
+        if (!getenv("VK_LAYER_PATH")) {
+            snprintf(buf, sizeof(buf), "%s\\install\\bin", root);
+            setenv("VK_LAYER_PATH", buf, 1);
+        }
+    }
+#endif
 
     // resolve the running binary to an absolute path so product/source paths
     // survive the cd_share() that changes cwd. /proc/self/exe is the ACTUAL
@@ -847,8 +907,13 @@ int main(int argc, char** argv) {
     char self[4096], self2[4096];
     strncpy(self,  abspath, sizeof(self)  - 1); self[sizeof(self)   - 1] = '\0';
     strncpy(self2, abspath, sizeof(self2) - 1); self2[sizeof(self2) - 1] = '\0';
-    const char* name   = basename(self);
+    char* name         = basename(self);
     const char* bindir = dirname(self2);
+#ifdef _WIN32
+    // argv[0] carries .exe here; the module and its product are named without it
+    { char* dot = strrchr(name, '.');
+      if (dot && strcmp(dot, ".exe") == 0) *dot = '\0'; }
+#endif
 
     // BEFORE anything that changes cwd or rebuilds: the child re-runs main from
     // the launch directory and does the whole normal startup itself. hooking in
@@ -1195,3 +1260,13 @@ int main(int argc, char** argv) {
     if (handle)     dlclose(handle);
     return 0;
 }
+
+#ifdef _WIN32
+// linked /SUBSYSTEM:WINDOWS for GUI apps, which enter here rather than at
+// main(). a console subsystem binary opens a console beside every launch, and
+// build output already goes to the app's log file
+int __stdcall WinMain(void* instance, void* prev, char* cmdline, int show) {
+    (void)instance; (void)prev; (void)cmdline; (void)show;
+    return main(__argc, __argv);
+}
+#endif

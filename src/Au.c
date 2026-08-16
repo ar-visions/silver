@@ -1,7 +1,10 @@
 #define _GNU_SOURCE
+#include <time.h>   // struct timespec; ports.h no longer leaks it
 #include <import>
+#ifndef _WIN32
 #include <execinfo.h>
 #include <dlfcn.h>
+#endif
 
 // pack(1) declares every field 1-aligned, so clang cannot see that
 // these atomically accessed fields are naturally aligned; the asserts
@@ -61,15 +64,18 @@ static int au_skip_drop_check(const char *type, const char *member) {
 #endif
 
 //#undef realloc
-#include <ffi.h>
 #undef bool
 #include <ports.h>
 #include <math.h>
 #include <errno.h>
 #include <limits.h>
+#ifdef _WIN32
+#include <ports.h>   // ioctl/fcntl and the rest of the posix surface
+#else
 #include <sys/ioctl.h>
 #include <unistd.h>
 #include <fcntl.h>
+#endif
 #undef bool
 
 #ifdef __APPLE__
@@ -77,13 +83,13 @@ static int au_skip_drop_check(const char *type, const char *member) {
 #endif
 
 #define Au_t_module_ Au
-Au_t_info        Au_Au_t_i;
+AU_EXPORT Au_t_info        Au_Au_t_i;
 
 #ifndef line
 #define line(...)       new(line, __VA_ARGS__)
 #endif
 
-i64 epoch_millis();
+AU_EXPORT i64 epoch_millis();
 
 
 int seq;
@@ -98,11 +104,11 @@ typedef struct { Au obj; void* bt[6]; int n; int dir; } au_prov_t;
 static au_prov_t* au_prov = NULL;
 static int au_prov_count = 0, au_prov_alloc = 0;
 
-bool inherits(Au_t src, Au_t check);
+AU_EXPORT bool inherits(Au_t src, Au_t check);
 
-int  au_leaks(void);
-none leak_site_push(Au, void*, void*);
-none leak_site_pop (Au);
+AU_EXPORT int  au_leaks(void);
+AU_EXPORT none leak_site_push(Au, void*, void*);
+AU_EXPORT none leak_site_pop (Au);
 // hold()/drop() are thin wrappers, so their return address IS the real call
 // site — stash it rather than unwinding a frame that may not exist
 static __thread void* leak_caller = null;
@@ -114,7 +120,7 @@ static i32 dbg_add_since_drain;
     (h)->source && strstr((h)->source, "vk.ag")) \
     __atomic_fetch_add(&dbg181[k], 1, __ATOMIC_SEQ_CST); } while (0)
 
-Au Au_hold(Au a) {
+AU_EXPORT Au Au_hold(Au a) {
     if (a) {
         Au f = header(a);
         if (f->managed == 0) { DBG181(f, 6); return a; } // refs of 0 is unmanaged memory (user managed)
@@ -127,7 +133,7 @@ Au Au_hold(Au a) {
     return a;
 }
 
-none Au_drop(Au a);
+AU_EXPORT none Au_drop(Au a);
 
 Au   hold(Au a) {
     leak_caller = __builtin_return_address(0);
@@ -135,7 +141,7 @@ Au   hold(Au a) {
     leak_caller = null;
     return r;
 }
-none drop(Au a) {
+AU_EXPORT none drop(Au a) {
     leak_caller = __builtin_return_address(0);
     Au_drop(a);
     leak_caller = null;
@@ -147,14 +153,14 @@ none drop(Au a) {
 // one it replaces. this makes init-body stores, helper functions called from
 // init, and lazily-initialized classes (elements) all balance to exactly ONE
 // ownership per slot.
-none Au_slot_replace(Au owner, Au nv, Au pv) {
+AU_EXPORT none Au_slot_replace(Au owner, Au nv, Au pv) {
     if (!owner) return;
     Au oh = header(owner);
     if (!(oh->iflags & 0x01)) return;
     if (nv) Au_hold(nv);
     if (pv) Au_drop(pv);
 }
-none slot_replace(Au o, Au n, Au p) { Au_slot_replace(o, n, p); }
+AU_EXPORT none slot_replace(Au o, Au n, Au p) { Au_slot_replace(o, n, p); }
 
 #define hold(a) (__typeof__(a))hold((Au)(a))
 #define drop(a)                drop((Au)(a))
@@ -163,8 +169,6 @@ typedef struct _ffi_method_t {
     micro*          atypes;
     Au_t            rtype;
     void*           address;
-    void*           ffi_cif;  /// ffi-calling info
-    void*           ffi_args; /// ffi-data types for args
 } ffi_method_t;
 
 // with all this macro stuff, we can still safely see the type of our type, is here.  'that' is not to be in a macro, but it must exist.
@@ -174,7 +178,7 @@ _Pragma("pack(push, 1)")
 Au_t_f_info Au_Au_t_f_i;
 _Pragma("pack(pop)")
 
-Au_t au_arg(Au a) {
+AU_EXPORT Au_t au_arg(Au a) {
     verify(!a || isa(a), "unexpected isa result for Au object");
     if (isa(a) == typeid(Au_t_f) || a == (Au)isa(a)) return (Au_t)a;
     return ((Au_f*)a->au)->ft.cast_Au_t(a);
@@ -189,7 +193,7 @@ static void Au_module_initializer() {
     // this allows us to make all code compilable without having a seq overtly in each function.
 }
 
-cstr cstr_copy(cstr f) {
+AU_EXPORT cstr cstr_copy(cstr f) {
     if (!f) return null;
     int l = strlen(f);
     cstr res = (cstr)calloc(1, l + 1);
@@ -198,7 +202,7 @@ cstr cstr_copy(cstr f) {
     return res;
 }
 
-bool check(bool ch, string log) {
+AU_EXPORT bool check(bool ch, string log) {
     if (!ch) {
         printf("%s\n", log->chars);
         return false;
@@ -206,7 +210,7 @@ bool check(bool ch, string log) {
     return true;
 }
 
-Au_t au_arg_type(Au a) {
+AU_EXPORT Au_t au_arg_type(Au a) {
     if (!a) return null;
     Au_t au = au_arg(a);
     au = au->member_type == AU_MEMBER_VAR ? au->src : au;
@@ -215,7 +219,7 @@ Au_t au_arg_type(Au a) {
     return au;
 }
 
-Au_t typeid_string(Au_t check) {
+AU_EXPORT Au_t typeid_string(Au_t check) {
     Au_t expected = typeid(string);
     if (check != expected) {
         fprintf(stderr, "typeid_string mismatch: got %p (%s) expected %p (%s)\n",
@@ -226,7 +230,7 @@ Au_t typeid_string(Au_t check) {
     return expected;
 }
 
-none validate_meta(Au_t actual, Au_t expected) {
+AU_EXPORT none validate_meta(Au_t actual, Au_t expected) {
     if (actual != expected) {
         fprintf(stderr, "meta mismatch: got %p (%s) expected %p (%s)\n",
             (void*)actual, actual ? actual->ident : "(null)",
@@ -235,13 +239,13 @@ none validate_meta(Au_t actual, Au_t expected) {
     }
 }
 
-Au_t Au_cast_Au_t(Au a) {
+AU_EXPORT Au_t Au_cast_Au_t(Au a) {
     return isa(a);
 }
 
-bool Au_is_au_type(Au a)       { return is_au_type(a); }
-bool Au_is_imported_type(Au a) { return is_imported_type(a); }
-bool Au_is_module(Au t)        { return is_module(t); }
+AU_EXPORT bool Au_is_au_type(Au a)       { return is_au_type(a); }
+AU_EXPORT bool Au_is_imported_type(Au a) { return is_imported_type(a); }
+AU_EXPORT bool Au_is_module(Au t)        { return is_module(t); }
 
 //extern Au_info Au_Au_i;
 
@@ -275,33 +279,33 @@ bool Au_is_module(Au t)        { return is_module(t); }
 #undef is_bool
 #undef is_type
 
-bool is_generic  (Au au) { return au && typeid(Au) == au_arg_type(au); }
-bool is_integral (Au au) { return au && au_arg_type(au)->is_integral; }
-bool is_void     (Au au) { return au && typeid(none) == au_arg_type(au); }
-bool is_double   (Au au) { return au && typeid(f64) == au_arg_type(au); }
-bool is_float    (Au au) { return au && typeid(f32) == au_arg_type(au); }
-bool is_realistic(Au au) { return au && au_arg_type(au)->is_realistic; }
-bool is_class(Au au) {
+AU_EXPORT bool is_generic  (Au au) { return au && typeid(Au) == au_arg_type(au); }
+AU_EXPORT bool is_integral (Au au) { return au && au_arg_type(au)->is_integral; }
+AU_EXPORT bool is_void     (Au au) { return au && typeid(none) == au_arg_type(au); }
+AU_EXPORT bool is_double   (Au au) { return au && typeid(f64) == au_arg_type(au); }
+AU_EXPORT bool is_float    (Au au) { return au && typeid(f32) == au_arg_type(au); }
+AU_EXPORT bool is_realistic(Au au) { return au && au_arg_type(au)->is_realistic; }
+AU_EXPORT bool is_class(Au au) {
     Au_t t = au_arg_type(au);
     return t && t != typeid(Au_t) && t->is_class;
 }
-bool is_struct(Au au) {
+AU_EXPORT bool is_struct(Au au) {
     Au_t t = au_arg_type(au);
     if (!t || t->is_pointer) return false;
     return t->is_struct;
 }
-bool is_opaque(Au au) {
+AU_EXPORT bool is_opaque(Au au) {
     Au_t t = au_arg(au);
     return t && t->is_struct && t->members.count == 0;
 }
-bool is_system(Au au) {
+AU_EXPORT bool is_system(Au au) {
     Au_t t = au_arg(au);
     if (!t) return false;
     if (t->is_system) return true;
     t = au_arg_type((Au)t);
     return t && t->is_system;
 }
-bool is_func(Au au) {
+AU_EXPORT bool is_func(Au au) {
     Au_t t = au_arg_type(au);
     return t && (t->member_type == AU_MEMBER_FUNC     ||
                  t->member_type == AU_MEMBER_CAST      ||
@@ -310,33 +314,33 @@ bool is_func(Au au) {
                  t->member_type == AU_MEMBER_OPERATOR  ||
                  t->member_type == AU_MEMBER_CONSTRUCT) && (t->ident || t->alt);
 }
-bool is_var(Au au) {
+AU_EXPORT bool is_var(Au au) {
     Au_t t = au_arg(au);
     return t && (t->member_type == AU_MEMBER_VAR) && (t->ident || t->alt);
 }
-bool is_lambda(Au au) {
+AU_EXPORT bool is_lambda(Au au) {
     Au_t t = au_arg_type(au);
     return t && is_func(au) && t->is_lambda;
 }
-bool is_func_ptr(Au au) {
+AU_EXPORT bool is_func_ptr(Au au) {
     Au_t t = au_arg_type(au);
     return t && t->member_type == AU_MEMBER_TYPE && t->is_funcptr;
 }
-bool is_imethod(Au au) {
+AU_EXPORT bool is_imethod(Au au) {
     Au_t t = au_arg(au);
     return t && t->member_type == AU_MEMBER_FUNC && t->is_imethod;
 }
-Au_t is_rec(Au au) {
+AU_EXPORT Au_t is_rec(Au au) {
     if (!au) return null;
     Au_t t = au_arg_type(au);
     if (!t || t == typeid(ARef) || is_func(au)) return null;
     if (t->src && t->src->is_class) return t->src;
     return (t->is_class || t->is_struct) ? t : null;
 }
-bool is_prim   (Au au) { Au_t t = au_arg_type(au); return t && t->is_primitive; }
-bool is_sign   (Au au) { Au_t t = au_arg_type(au); return t && t->is_signed; }
-bool is_unsign (Au au) { Au_t t = au_arg_type(au); return t && t->is_unsigned; }
-bool is_ptr(Au au) {
+AU_EXPORT bool is_prim   (Au au) { Au_t t = au_arg_type(au); return t && t->is_primitive; }
+AU_EXPORT bool is_sign   (Au au) { Au_t t = au_arg_type(au); return t && t->is_signed; }
+AU_EXPORT bool is_unsign (Au au) { Au_t t = au_arg_type(au); return t && t->is_unsigned; }
+AU_EXPORT bool is_ptr(Au au) {
     Au_t a = au_arg(au);
     if (!a) return false;
     if (a->is_explicit_ref) return true;
@@ -348,50 +352,50 @@ bool is_ptr(Au au) {
     }
     return false;
 }
-bool is_enum(Au au) { Au_t t = au_arg_type(au); return t && t->is_enum; }
-bool is_bool(Au au) { return typeid(bool) == au_arg_type(au); }
-bool is_type(Au au) { Au_t t = au_arg_type(au); return t && t->member_type == AU_MEMBER_TYPE; }
-bool is_module(Au au) {
+AU_EXPORT bool is_enum(Au au) { Au_t t = au_arg_type(au); return t && t->is_enum; }
+AU_EXPORT bool is_bool(Au au) { return typeid(bool) == au_arg_type(au); }
+AU_EXPORT bool is_type(Au au) { Au_t t = au_arg_type(au); return t && t->member_type == AU_MEMBER_TYPE; }
+AU_EXPORT bool is_module(Au au) {
     Au_t a = au_arg(au);
     return a && a->member_type == AU_MEMBER_MODULE;
 }
-bool is_au_type(Au au) {
+AU_EXPORT bool is_au_type(Au au) {
     Au_t a = au_arg(au);
     if (a->ident && strlen(a->ident) && a->member_type != AU_MEMBER_TYPE)
         return false;
     return a->module && a->module->is_au;
 }
-bool is_imported_type(Au au) {
+AU_EXPORT bool is_imported_type(Au au) {
     Au_t a = au_arg(au);
     return a->module->is_imported;
 }
 
-bool Au_is_generic  (Au t) { return is_generic  (t); }
-bool Au_is_integral (Au t) { return is_integral (t); }
-bool Au_is_void     (Au t) { return is_void     (t); }
-bool Au_is_double   (Au t) { return is_double   (t); }
-bool Au_is_float    (Au t) { return is_float    (t); }
-bool Au_is_realistic(Au t) { return is_realistic(t); }
-bool Au_is_class    (Au t) { return is_class    (t); }
-bool Au_is_struct   (Au t) { return is_struct   (t); }
-bool Au_is_opaque   (Au t) { return is_opaque   (t); }
-bool Au_is_system   (Au t) { return is_system   (t); }
-bool Au_is_func     (Au t) { return is_func     (t); }
-bool Au_is_var      (Au t) { return is_var      (t); }
-bool Au_is_lambda   (Au t) { return is_lambda   (t); }
-bool Au_is_func_ptr (Au t) { return is_func_ptr (t); }
-bool Au_is_imethod  (Au t) { return is_imethod  (t); }
-Au_t Au_is_rec      (Au t) { return is_rec      (t); }
-bool Au_is_prim     (Au t) { return is_prim     (t); }
-bool Au_is_sign     (Au t) { return is_sign     (t); }
-bool Au_is_unsign   (Au t) { return is_unsign   (t); }
-bool Au_is_ptr      (Au t) { return is_ptr      (t); }
-bool Au_is_enum     (Au t) { return is_enum     (t); }
-bool Au_is_bool     (Au t) { return is_bool     (t); }
-bool Au_is_type     (Au t) { return is_type     (t); }
+AU_EXPORT bool Au_is_generic  (Au t) { return is_generic  (t); }
+AU_EXPORT bool Au_is_integral (Au t) { return is_integral (t); }
+AU_EXPORT bool Au_is_void     (Au t) { return is_void     (t); }
+AU_EXPORT bool Au_is_double   (Au t) { return is_double   (t); }
+AU_EXPORT bool Au_is_float    (Au t) { return is_float    (t); }
+AU_EXPORT bool Au_is_realistic(Au t) { return is_realistic(t); }
+AU_EXPORT bool Au_is_class    (Au t) { return is_class    (t); }
+AU_EXPORT bool Au_is_struct   (Au t) { return is_struct   (t); }
+AU_EXPORT bool Au_is_opaque   (Au t) { return is_opaque   (t); }
+AU_EXPORT bool Au_is_system   (Au t) { return is_system   (t); }
+AU_EXPORT bool Au_is_func     (Au t) { return is_func     (t); }
+AU_EXPORT bool Au_is_var      (Au t) { return is_var      (t); }
+AU_EXPORT bool Au_is_lambda   (Au t) { return is_lambda   (t); }
+AU_EXPORT bool Au_is_func_ptr (Au t) { return is_func_ptr (t); }
+AU_EXPORT bool Au_is_imethod  (Au t) { return is_imethod  (t); }
+AU_EXPORT Au_t Au_is_rec      (Au t) { return is_rec      (t); }
+AU_EXPORT bool Au_is_prim     (Au t) { return is_prim     (t); }
+AU_EXPORT bool Au_is_sign     (Au t) { return is_sign     (t); }
+AU_EXPORT bool Au_is_unsign   (Au t) { return is_unsign   (t); }
+AU_EXPORT bool Au_is_ptr      (Au t) { return is_ptr      (t); }
+AU_EXPORT bool Au_is_enum     (Au t) { return is_enum     (t); }
+AU_EXPORT bool Au_is_bool     (Au t) { return is_bool     (t); }
+AU_EXPORT bool Au_is_type     (Au t) { return is_type     (t); }
 
 
-shape shape_with_array(shape a, array dims) {
+AU_EXPORT shape shape_with_array(shape a, array dims) {
     num count = len(dims);
     a->data = (i64*)calloc(sizeof(i64), len(dims) + 1);
     each (dims, Au, e) {
@@ -401,19 +405,19 @@ shape shape_with_array(shape a, array dims) {
     return a;
 }
 
-shape shape_operator__mul(shape a, i64 n) {
+AU_EXPORT shape shape_operator__mul(shape a, i64 n) {
     shape res = shape_from(a->count, a->data);
     res->data[a->count - 1] *= n;
     return res;
 }
 
-shape shape_operator__lmul(shape a, i64 n) {
+AU_EXPORT shape shape_operator__lmul(shape a, i64 n) {
     shape res = shape_from(a->count, a->data);
     res->data[0] *= n;
     return res;
 }
 
-shape shape_operator__div(shape a, i64 n) {
+AU_EXPORT shape shape_operator__div(shape a, i64 n) {
     i64 reduce = a->data[a->count - 1];
     verify(reduce % n == 0, "shape not right-divisible by %i", n);
     shape res = shape_from(a->count, a->data);
@@ -421,7 +425,7 @@ shape shape_operator__div(shape a, i64 n) {
     return res;
 }
 
-shape shape_operator__ldiv(shape a, i64 n) {
+AU_EXPORT shape shape_operator__ldiv(shape a, i64 n) {
     i64 reduce = a->data[0];
     verify(reduce % n == 0, "shape not left-divisible by %i", n);
     shape res = shape_from(a->count, a->data);
@@ -429,7 +433,7 @@ shape shape_operator__ldiv(shape a, i64 n) {
     return res;
 }
 
-shape shape_operator__left(shape a, i64 n) {
+AU_EXPORT shape shape_operator__left(shape a, i64 n) {
     shape res = shape_from(a->count + n, null);
     memcpy(res->data, a->data, sizeof(i64) * a->count);
     for (int i = 0; i < n; i++)
@@ -437,12 +441,12 @@ shape shape_operator__left(shape a, i64 n) {
     return res;
 }
 
-shape shape_operator__right(shape a, i64 n) {
+AU_EXPORT shape shape_operator__right(shape a, i64 n) {
     verify((a->count - n) >= 1, "cannot reduce shape");
     return new(shape, count, a->count - n, data, a->data, is_global, false);
 }
 
-shape shape_operator__lright(shape a, i64 n) {
+AU_EXPORT shape shape_operator__lright(shape a, i64 n) {
     shape res = shape_from(a->count + n, null);
     for (int i = 0; i < n; i++)
         res->data[i] = 1;
@@ -450,12 +454,12 @@ shape shape_operator__lright(shape a, i64 n) {
     return res;
 }
 
-shape shape_operator__lleft(shape a, i64 n) {
+AU_EXPORT shape shape_operator__lleft(shape a, i64 n) {
     verify((a->count - n) >= 1, "cannot reduce shape from left");
     return new(shape, count, a->count - n, data, a->data + n, is_global, false);
 }
 
-string shape_cast_string(shape a) {
+AU_EXPORT string shape_cast_string(shape a) {
     string r = string(alloc, 32);
     for (int i = 0; i < a->count; i++) {
         if (r->count)
@@ -466,7 +470,7 @@ string shape_cast_string(shape a) {
 }
 
 
-i64 shape_total(shape a) {
+AU_EXPORT i64 shape_total(shape a) {
     i64* data = a->data;
     i64 total = 1;
     for (int i = 0; i < a->count; i++)
@@ -474,11 +478,11 @@ i64 shape_total(shape a) {
     return total;
 }
 
-i64 shape_getter_i64(shape a, i64 i) {
+AU_EXPORT i64 shape_getter_i64(shape a, i64 i) {
     return a->data[i];
 }
 
-i64 shape_compare(shape a, shape b) {
+AU_EXPORT i64 shape_compare(shape a, shape b) {
     if (a->count != b->count)
         return a->count - b->count;
     for (int i = 0; i < a->count; i++)
@@ -487,7 +491,7 @@ i64 shape_compare(shape a, shape b) {
     return 0;
 }
 
-shape shape_from(i64 count, ref_i64 values) {
+AU_EXPORT shape shape_from(i64 count, ref_i64 values) {
     shape res = new(shape, count, count, data, values, is_global, false);
     res->count = count;
     if (values)
@@ -495,7 +499,7 @@ shape shape_from(i64 count, ref_i64 values) {
     return res;
 }
 
-shape shape_read(ARef ff) {
+AU_EXPORT shape shape_read(ARef ff) {
     FILE* f = (FILE*)ff;
     i32 n_dims;
     i64 data[256];
@@ -506,7 +510,7 @@ shape shape_read(ARef ff) {
     return res;
 }
 
-shape new_shape(i64 size, ...) {
+AU_EXPORT shape new_shape(i64 size, ...) {
     va_list args;
     va_start(args, size);
     i64 n_dims = 0;
@@ -521,7 +525,7 @@ shape new_shape(i64 size, ...) {
     return res;
 }
 
-array array_shift(array a) {
+AU_EXPORT array array_shift(array a) {
     int ln = len(a);
     array res = array(alloc, ln);
     bool skip = true;
@@ -534,7 +538,7 @@ array array_shift(array a) {
     return res;
 }
 
-string array_join(array a, cstr str) {
+AU_EXPORT string array_join(array a, cstr str) {
     int ln = len(a);
     string res = string(alloc, ln * 32);
     each(a, Au, i) {
@@ -544,9 +548,9 @@ string array_join(array a, cstr str) {
     return res;
 }
 
-bool array_cast_bool(array a) { return a && a->count > 0; }
+AU_EXPORT bool array_cast_bool(array a) { return a && a->count > 0; }
 
-none array_alloc_sz(array a, sz alloc) {
+AU_EXPORT none array_alloc_sz(array a, sz alloc) {
     Au* elements = (Au*)calloc(alloc, sizeof(struct _Au*));
     memcpy(elements, a->origin, sizeof(struct _Au*) * a->count);
     free(a->origin);
@@ -555,12 +559,12 @@ none array_alloc_sz(array a, sz alloc) {
 }
 
 // set meta type pair on Au_t: a = primary type (element/key), b = optional (value type, shape, etc.)
-none set_meta(Au_t type, Au_t a, Au b) {
+AU_EXPORT none set_meta(Au_t type, Au_t a, Au b) {
     type->meta.a = a;
     type->meta.b = b;
 }
 
-none set_meta_array(Au_t type, int count, ...) {
+AU_EXPORT none set_meta_array(Au_t type, int count, ...) {
     va_list args;
     va_start(args, count);
     type->meta.a = (count > 0) ? va_arg(args, Au_t) : null;
@@ -569,7 +573,7 @@ none set_meta_array(Au_t type, int count, ...) {
 }
 
 // for function model, we have an arg node with a name
-none set_args_array(Au_t type, int count, ...) {
+AU_EXPORT none set_args_array(Au_t type, int count, ...) {
     type->args.alloc  = count;
     type->args.count  = count;
     type->args.origin = calloc(count, sizeof(Au));
@@ -584,24 +588,24 @@ none set_args_array(Au_t type, int count, ...) {
     }
 }
 
-none array_init(array a) {
+AU_EXPORT none array_init(array a) {
     if (a->alloc)
         array_alloc_sz(a, a->alloc);
     a->assorted = true;
 }
 
-none array_dealloc(array a) {
+AU_EXPORT none array_dealloc(array a) {
     clear(a);
     free(a->origin);
     a->origin = null;
 }
 
-none array_fill(array a, Au f) {
+AU_EXPORT none array_fill(array a, Au f) {
     for (int i = 0; i < a->alloc; i++)
         push(a, f);
 }
 
-string array_cast_string(array a) {
+AU_EXPORT string array_cast_string(array a) {
     string r = string(alloc, 64);
     for (int i = 0; i < a->count; i++) {
         Au e = (Au)a->origin[i];
@@ -613,7 +617,7 @@ string array_cast_string(array a) {
     return r;
 }
 
-array array_reverse(array a) {
+AU_EXPORT array array_reverse(array a) {
     array r = array((int)len(a));
     r->unmanaged = a->unmanaged;
     r->assorted  = a->assorted;
@@ -622,28 +626,28 @@ array array_reverse(array a) {
     return r;
 }
 
-none array_expand(array a) {
+AU_EXPORT none array_expand(array a) {
     num alloc = 512 + (a->alloc << 1);
     array_alloc_sz(a, alloc);
 }
 
-none array_push_weak(array a, Au b) {
+AU_EXPORT none array_push_weak(array a, Au b) {
     if (a->alloc == a->count) array_expand(a);
     a->origin[a->count++] = (Au)b;
 }
 
-array  array_copy(array a) {
+AU_EXPORT array  array_copy(array a) {
     array  b = new(array, alloc, len(a));
     concat(b, a);
     return b;
 }
 
-array array_with_i32(array a, i32 alloc) {
+AU_EXPORT array array_with_i32(array a, i32 alloc) {
     a->alloc = alloc;
     return a;
 }
 
-none array_push_vdata(array a, Au data, i64 count, Au_t data_type) {
+AU_EXPORT none array_push_vdata(array a, Au data, i64 count, Au_t data_type) {
     Au_t   t = data_type ? data_type : isa(a)->meta.a;
     verify(t && t != typeid(Au),
         "method requires meta object with type signature");
@@ -662,19 +666,19 @@ none array_push_vdata(array a, Au data, i64 count, Au_t data_type) {
     a->last_type = t;
 }
 
-Au_t Au_meta_index(Au a, int i) {
+AU_EXPORT Au_t Au_meta_index(Au a, int i) {
     Au_t t = isa(a) ? (Au_t)isa(a) : (Au_t)a;
     if (i == 0) return t->meta.a;
     if (i == 1) return (Au_t)t->meta.b;
     return null;
 }
 
-Au collective_push(collective a, Au b) {
+AU_EXPORT Au collective_push(collective a, Au b) {
     fault("implement push method on %o", isa(a));
     return null;
 }
 
-Au array_push(array a, Au b) {
+AU_EXPORT Au array_push(array a, Au b) {
     if (!a->origin || a->alloc == a->count) {
         array_expand(a);
     }
@@ -705,14 +709,14 @@ Au array_push(array a, Au b) {
     return b;
 }
 
-Au array_qpush(array a, Au b) {
+AU_EXPORT Au array_qpush(array a, Au b) {
     if (!a->origin || a->alloc == a->count)
         array_expand(a);
     a->origin[a->count++] = b;
     return b;
 }
 
-none array_clear(array a) {
+AU_EXPORT none array_clear(array a) {
     if (!a->unmanaged)
         for (num i = 0; i < a->count; i++) {
             Au info = head(a);
@@ -722,11 +726,11 @@ none array_clear(array a) {
     a->count = 0;
 }
 
-none array_concat(array a, array b) {
+AU_EXPORT none array_concat(array a, array b) {
     each(b, Au, e) array_push(a, e);
 }
 
-Au array_getter_num(array a, num i) {
+AU_EXPORT Au array_getter_num(array a, num i) {
     if (i < 0 || i >= a->count)
         return null;
     Au r = a->origin[i];
@@ -778,7 +782,7 @@ static Au* array_indexer(array a, Au ai) {
     return &a->origin[offset];
 }
 
-Au array_getter_Au(array a, Au ai) {
+AU_EXPORT Au array_getter_Au(array a, Au ai) {
     Au* n = array_indexer(a, ai);
     return n ? *n : null;
 }
@@ -798,14 +802,14 @@ static void Au_assign(Au* slot, Au value, i32 op, bool unmanaged) {
     }
 }
 
-none array_setter(array a, Au key, Au value, i32 op) {
+AU_EXPORT none array_setter(array a, Au key, Au value, i32 op) {
     Au* val = array_indexer(a, key);
     verify(val, "array setter: index out of bounds");
     Au_t type = head(a)->meta_a;
     Au_assign(val, value, op, a->unmanaged);
 }
 
-none array_remove(array a, num b) {
+AU_EXPORT none array_remove(array a, num b) {
     if (b < 0 || b >= a->count) return;
     Au prev = a->origin[b];
     // shift the tail down by one (use i, not b)
@@ -817,30 +821,30 @@ none array_remove(array a, num b) {
         Au_drop(prev);
 }
 
-none array_remove_weak(array a, num b) {
+AU_EXPORT none array_remove_weak(array a, num b) {
     if (b < 0 || b >= a->count) return;
     for (num i = b; i < a->count - 1; i++)
         a->origin[i] = a->origin[i + 1];
     a->origin[--a->count] = null;
 }
 
-none array_operator__assign_add(array a, Au b) {
+AU_EXPORT none array_operator__assign_add(array a, Au b) {
     array_push(a, b);
 }
 
-none array_operator__assign_sub(array a, num b) {
+AU_EXPORT none array_operator__assign_sub(array a, num b) {
     array_remove(a, b);
 }
 
-Au array_first_element(array a) {
+AU_EXPORT Au array_first_element(array a) {
     return a && a->count ? a->origin[0] : null;
 }
 
-Au array_last_element(array a) {
+AU_EXPORT Au array_last_element(array a) {
     return a && a->count ? a->origin[a->count - 1] : null;
 }
 
-none array_push_symbols(array a, cstr symbol, ...) {
+AU_EXPORT none array_push_symbols(array a, cstr symbol, ...) {
     va_list args;
     va_start(args, symbol);
     for (cstr value = symbol; value != null; value = va_arg(args, cstr)) {
@@ -850,7 +854,7 @@ none array_push_symbols(array a, cstr symbol, ...) {
     va_end(args);
 }
 
-none array_push_objects(array a, Au f, ...) {
+AU_EXPORT none array_push_objects(array a, Au f, ...) {
     va_list args;
     va_start(args, f);
     Au value;
@@ -859,7 +863,7 @@ none array_push_objects(array a, Au f, ...) {
     va_end(args);
 }
 
-array array_of(Au first, ...) {
+AU_EXPORT array array_of(Au first, ...) {
     array a = new(array, alloc, 32, assorted, true);
     va_list args;
     va_start(args, first);
@@ -875,7 +879,7 @@ array array_of(Au first, ...) {
     return a;
 }
 
-array array_of_cstr(cstr first, ...) {
+AU_EXPORT array array_of_cstr(cstr first, ...) {
     array a = Au_allocate(array, alloc, 256);
     va_list args;
     va_start(args, first);
@@ -884,13 +888,13 @@ array array_of_cstr(cstr first, ...) {
     return a;
 }
 
-Au array_pop(array a) {
+AU_EXPORT Au array_pop(array a) {
     assert(a->count > 0, "no items");
     if (!a->unmanaged) Au_drop(a->origin[a->count - 1]);
     return a->origin[--a->count];
 }
 
-num array_compare(array a, array b) {
+AU_EXPORT num array_compare(array a, array b) {
     num diff = a->count - b->count;
     if (diff != 0)
         return diff;
@@ -902,13 +906,13 @@ num array_compare(array a, array b) {
     return 0;
 }
 
-Au collective_peek(collective a, num i) {
+AU_EXPORT Au collective_peek(collective a, num i) {
     if (i < 0 || i >= a->count)
         return null;
     return a->origin[i];
 }
 
-array array_mix(array a, array b, f32 f) {
+AU_EXPORT array array_mix(array a, array b, f32 f) {
     int ln0 = len(a);
     int ln1 = len(b);
     if (ln0 != ln1) return b;
@@ -935,7 +939,7 @@ array array_mix(array a, array b, f32 f) {
     return res;
 }
 
-Au array_get(array a, num i) {
+AU_EXPORT Au array_get(array a, num i) {
     if (!a || i < 0 || i >= a->count)
         return null;
     if (i < 0 || i >= a->count)
@@ -943,23 +947,23 @@ Au array_get(array a, num i) {
     return a->origin[i];
 }
 
-num array_count(array a) {
+AU_EXPORT num array_count(array a) {
     return a->count;
 }
 
-sz string_len(string a) {
+AU_EXPORT sz string_len(string a) {
     return a->count;
 }
 
-i64 string_integer_value(string a) {
+AU_EXPORT i64 string_integer_value(string a) {
     return strtoll(a->chars, null, 10);
 }
 
-num collective_len(collective a) {
+AU_EXPORT num collective_len(collective a) {
     return a->count;
 }
 
-map array_cast_map(array a) {
+AU_EXPORT map array_cast_map(array a) {
     map m = map(hsize, 16);
     each (a, Au, i) {
         string k = cast(string, i);
@@ -968,7 +972,7 @@ map array_cast_map(array a) {
     return m;
 }
 
-num array_index_of(array a, Au b) {
+AU_EXPORT num array_index_of(array a, Au b) {
     // Au_t (type descriptors) have no Au header — isa(au_t) is null.
     // Compare by pointer for those; use content compare for real Au objects.
     bool is_au_t = b && isa(b) == typeid(Au_t_f);
@@ -998,7 +1002,7 @@ static num             call_after_alloc;
 static num             call_after_count;
 static map             log_funcs;
 
-none lazy_init(global_init_fn fn, Au_t dependency) {
+AU_EXPORT none lazy_init(global_init_fn fn, Au_t dependency) {
     if (call_after_count == call_after_alloc) {
         global_init_fn* prev = (void*)call_after;
         num alloc_prev = call_after_alloc;
@@ -1047,7 +1051,7 @@ typedef struct _AuSpace {
 __thread AuSpace au_current_space = null;
 __thread void*   au_space_owner   = null;
 
-u64 au_hash_ident(symbol s) {
+AU_EXPORT u64 au_hash_ident(symbol s) {
     // 3 more lines to not have a string length prior is best
     //return fnv1a_hash(a->chars, a->count, OFFSET_BASIS);
     if (!s) return 0;
@@ -1057,10 +1061,10 @@ u64 au_hash_ident(symbol s) {
     return h;
 }
 
-Au_t find_member(Au_t mdl, symbol f, int member_type, u64 traits, bool poly) {
+AU_EXPORT Au_t find_member(Au_t mdl, symbol f, int member_type, u64 traits, bool poly) {
     if (!mdl) return null;
     u64 fhash = f ? au_hash_ident(f) : 0;
-    bool au_is_expanding(Au_t m);
+    AU_EXPORT bool au_is_expanding(Au_t m);
     do {
         // index only: insertion is not total, so a hit is a shortcut and a
         // miss proves nothing — the scan below is the authority
@@ -1098,7 +1102,7 @@ Au_t find_member(Au_t mdl, symbol f, int member_type, u64 traits, bool poly) {
     return null;
 }
 
-Au_t find_context(array lex, int member_type, int traits) {
+AU_EXPORT Au_t find_context(array lex, int member_type, int traits) {
     for (int i = len(lex) - 1; i >= 0; i--) {
         Au_t au = (Au_t)lex->origin[i];
         if (!member_type || au->member_type == member_type) {
@@ -1109,29 +1113,29 @@ Au_t find_context(array lex, int member_type, int traits) {
     return null;
 }
 
-Au_t lexical_traits(array lex, symbol f, u64 traits, int member_type);
+AU_EXPORT Au_t lexical_traits(array lex, symbol f, u64 traits, int member_type);
 
 // macro-recursion guard is per parse thread, never on the shared Au_t
 static __thread Au_t _expanding[64];
 static __thread int  _expanding_n = 0;
 
-bool au_is_expanding(Au_t m) {
+AU_EXPORT bool au_is_expanding(Au_t m) {
     for (int i = 0; i < _expanding_n; i++)
         if (_expanding[i] == m) return true;
     return false;
 }
-none au_expanding_push(Au_t m) {
+AU_EXPORT none au_expanding_push(Au_t m) {
     if (_expanding_n < 64) _expanding[_expanding_n++] = m;
 }
-none au_expanding_pop() {
+AU_EXPORT none au_expanding_pop() {
     if (_expanding_n) _expanding_n--;
 }
 
-Au_t lexical(array lex, symbol f) {
+AU_EXPORT Au_t lexical(array lex, symbol f) {
     return lexical_traits(lex, f, 0, 0);
 }
 
-Au_t lexical_traits(array lex, symbol f, u64 traits, int member_type) {
+AU_EXPORT Au_t lexical_traits(array lex, symbol f, u64 traits, int member_type) {
 
     bool top_set = false;
     bool top_Au  = false;
@@ -1243,7 +1247,7 @@ static Au_t _push_arg(Au_t type, bool add_arg) {
     return au;
 }
 
-Au_t def_prop(Au_t context, symbol ident, Au_t type, u64 traits, u32 offset, u32 abi_size, ARef value, Au_t meta_a, Au meta_b, i32 index, i32 access, symbol source, i32 src_line) {
+AU_EXPORT Au_t def_prop(Au_t context, symbol ident, Au_t type, u64 traits, u32 offset, u32 abi_size, ARef value, Au_t meta_a, Au meta_b, i32 index, i32 access, symbol source, i32 src_line) {
     Au_t prop = def(context, ident, AU_MEMBER_VAR, traits);
     prop->access_type = (interface)access;
     if (source) prop->source = cstr_copy((cstr)source);
@@ -1262,18 +1266,18 @@ Au_t def_prop(Au_t context, symbol ident, Au_t type, u64 traits, u32 offset, u32
     return prop;
 }
 
-Au_t alloc_arg(Au_t context, symbol ident, Au_t arg) {
+AU_EXPORT Au_t alloc_arg(Au_t context, symbol ident, Au_t arg) {
     Au_t var = _push_arg(context, false);
     var->src = arg;
     var->ident = cstr_copy((cstr)ident);
     return var;
 }
 
-Au_t def_test(Au_t context, ARef arg) {
+AU_EXPORT Au_t def_test(Au_t context, ARef arg) {
     return null;
 }
 
-Au_t def_arg(Au_t context, symbol ident, Au_t arg, u64 traits) {
+AU_EXPORT Au_t def_arg(Au_t context, symbol ident, Au_t arg, u64 traits) {
     Au_t var = _push_arg(context, true);
     var->src = arg;
     var->ident = cstr_copy((cstr)ident);
@@ -1283,7 +1287,7 @@ Au_t def_arg(Au_t context, symbol ident, Au_t arg, u64 traits) {
     return var;
 }
 
-Au_t def_meta(Au_t context, symbol ident, Au_t arg) {
+AU_EXPORT Au_t def_meta(Au_t context, symbol ident, Au_t arg) {
     Au_t var = _push_arg(context, true);
     var->src = arg;
     var->ident = cstr_copy((cstr)ident);
@@ -1319,7 +1323,7 @@ static pthread_mutex_t def_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t member_map_lock = PTHREAD_MUTEX_INITIALIZER;
 static void au_member_map_unlock(int* x) { (void)x; pthread_mutex_unlock(&member_map_lock); }
 
-none au_member_map_insert(Au_t type, Au_t new_member) {
+AU_EXPORT none au_member_map_insert(Au_t type, Au_t new_member) {
     __attribute__((cleanup(au_member_map_unlock)))
         int _mm_ = (pthread_mutex_lock(&member_map_lock), 0); (void)_mm_;
     if (!type->member_map) {
@@ -1401,7 +1405,7 @@ static none dealloc_iter(Au_t type) {
 }
 
 // intelligently drops the inlay array elements and allocated member data
-none dealloc_type(Au_t type) {
+AU_EXPORT none dealloc_type(Au_t type) {
     Au info = head(type);
     if (info->managed && info->refs == 1) {
         dealloc_iter(type);
@@ -1409,15 +1413,15 @@ none dealloc_type(Au_t type) {
     Au_drop((Au)type);
 }
 
-Au lambda_call(lambda a, Au args) {
+AU_EXPORT Au lambda_call(lambda a, Au args) {
     return a->vfn(args, a->context);
 }
 
-bool lambda_cast_bool(lambda a) {
+AU_EXPORT bool lambda_cast_bool(lambda a) {
     return a != null;
 }
 
-lambda lambda_instance(Au_t au, callback fn, Au target, Au context) {
+AU_EXPORT lambda lambda_instance(Au_t au, callback fn, Au target, Au context) {
     lambda a = (lambda)alloc_new(typeid(lambda), 0, null, null, null, __FILE__, __LINE__, 0);
     a->au_t    = au;
     a->vfn     = fn;
@@ -1426,7 +1430,7 @@ lambda lambda_instance(Au_t au, callback fn, Au target, Au context) {
     return a;
 }
 
-Au_t emplace_type(Au_t type, Au_t context, Au_t src, Au_t module, symbol ident, i32 member_type, u64 traits, u64 typesize, u64 isize, i32 icount, symbol source, i32 src_line) {
+AU_EXPORT Au_t emplace_type(Au_t type, Au_t context, Au_t src, Au_t module, symbol ident, i32 member_type, u64 traits, u64 typesize, u64 isize, i32 icount, symbol source, i32 src_line) {
     type->member_type       = member_type;
     memset(&type->members, 0, sizeof(micro));
     memset(&type->args,    0, sizeof(micro));
@@ -1462,23 +1466,23 @@ Au_t emplace_type(Au_t type, Au_t context, Au_t src, Au_t module, symbol ident, 
     return type;
 }
 
-Au_t def_type(Au_t type, symbol ident, u64 traits) {
+AU_EXPORT Au_t def_type(Au_t type, symbol ident, u64 traits) {
     return def(type, ident, AU_MEMBER_TYPE, traits);
 }
 
-Au_t def_class(Au_t type, symbol ident) {
+AU_EXPORT Au_t def_class(Au_t type, symbol ident) {
     return def(type, ident, AU_MEMBER_TYPE, AU_TRAIT_CLASS);
 }
 
-Au_t def_struct(Au_t type, symbol ident) {
+AU_EXPORT Au_t def_struct(Au_t type, symbol ident) {
     return def(type, ident, AU_MEMBER_TYPE, AU_TRAIT_STRUCT);
 }
 
-Au_t def_func_ptr(Au_t type, symbol ident) {
+AU_EXPORT Au_t def_func_ptr(Au_t type, symbol ident) {
     return def(type, ident, AU_MEMBER_TYPE, AU_TRAIT_FUNCPTR);
 }
 
-Au_t def_pointer(Au_t context, Au_t ref, symbol ident) {
+AU_EXPORT Au_t def_pointer(Au_t context, Au_t ref, symbol ident) {
     if (!ref->ptr) {
         ref->ptr = def(context, ident, AU_MEMBER_TYPE, AU_TRAIT_POINTER);
         ref->ptr->src = (Au_t)ref;
@@ -1486,38 +1490,38 @@ Au_t def_pointer(Au_t context, Au_t ref, symbol ident) {
     return ref->ptr;
 }
 
-Au_t def_enum(Au_t context, symbol ident, u64 traits) {
+AU_EXPORT Au_t def_enum(Au_t context, symbol ident, u64 traits) {
     return def(context, ident, AU_MEMBER_TYPE, AU_TRAIT_ENUM);
 }
 
-Au_t def_enum_value(Au_t context, symbol ident, Au value) {
+AU_EXPORT Au_t def_enum_value(Au_t context, symbol ident, Au value) {
     Au_t res = def(context, ident, AU_MEMBER_ENUMV, 0);
     res->src   = context;
     res->value = (object)value;
     return res;
 }
 
-Au_t def_member(Au_t context, symbol ident, Au_t type_mem, u32 member_type, u64 traits) {
+AU_EXPORT Au_t def_member(Au_t context, symbol ident, Au_t type_mem, u32 member_type, u64 traits) {
     Au_t au = def(context, ident, member_type, traits);
     au->type = type_mem;
     return au;
 }
 
-cstr copy_cstr(cstr input) {
+AU_EXPORT cstr copy_cstr(cstr input) {
     sz len = strlen(input);
     cstr res = calloc(len + 1, 1);
     memcpy(res, input, len);
     return res;
 }
 
-Au header(Au a) {
+AU_EXPORT Au header(Au a) {
     return (((struct _Au*)a) - 1);
 }
 
 // attach a companion object onto a's header (meta_b), owning it. this is the
 // per-object side-channel transitions ride on: the animated element carries
 // its transition state here, freed with the element in Au_dealloc.
-none Au_attach(Au a, Au other) {
+AU_EXPORT none Au_attach(Au a, Au other) {
     if (!a) return;
     Au hd = header(a);
     if (hd->meta_b == other) return;
@@ -1526,11 +1530,11 @@ none Au_attach(Au a, Au other) {
     hd->meta_b = other;
 }
 
-Au Au_attached(Au a) {
+AU_EXPORT Au Au_attached(Au a) {
     return a ? header(a)->meta_b : null;
 }
 
-none def_init(func f) {
+AU_EXPORT none def_init(func f) {
     if (call_last_count == call_last_alloc) {
         global_init_fn* prev      = call_last;
         num            alloc_prev = call_last_alloc;
@@ -1544,7 +1548,7 @@ none def_init(func f) {
     call_last[call_last_count++] = (__typeof__(call_last[0]))f;
 }
 
-Au_t module_lookup(symbol name) {
+AU_EXPORT Au_t module_lookup(symbol name) {
     pthread_rwlock_rdlock(&modules_lock);
     for (int i = 0; i < modules.count; i++) {
         Au_t m = (Au_t)modules.origin[i];
@@ -1563,11 +1567,11 @@ static void* au_live_surface  = null;
 static void* au_live_swapchain = null;
 
 static Au au_compiler = null;
-Au method_vargs(Au a, Au_t mem, int n_args, ...);
+AU_EXPORT Au method_vargs(Au a, Au_t mem, int n_args, ...);
 
-void au_set_compiler(Au inst)       { au_compiler = inst; }
-bool au_compile_ready()             { return au_compiler != null; }
-void au_compile_invoke(const char* name) {
+AU_EXPORT void au_set_compiler(Au inst)       { au_compiler = inst; }
+AU_EXPORT bool au_compile_ready()             { return au_compiler != null; }
+AU_EXPORT void au_compile_invoke(const char* name) {
     if (!au_compiler) { printf("au_compile_invoke: no compiler set\n"); return; }
     Au_t type = isa(au_compiler);
     Au_t m = find_member(type, "compile", AU_MEMBER_FUNC, 0, true);
@@ -1585,17 +1589,17 @@ static int au_live_defer_flag   = 0;   // app -> host: stage changes, don't auto
 static int au_live_pending_flag = 0;   // host -> app: 0 none, 1 staged, 2 compiling
 static int au_live_apply_flag   = 0;   // app -> host: please recompile + hot-swap now
 static int au_live_reload_flag  = 1;   // app -> host: watch + reload at all (orbiter: off)
-void au_live_set_defer(int v)   { au_live_defer_flag = v ? 1 : 0; }   // the APP turns defer on
-int  au_live_get_defer()        { return au_live_defer_flag; }        // the host polls it
-void au_live_set_reload(int v)  { au_live_reload_flag = v ? 1 : 0; }  // the APP turns reload off
-int  au_live_get_reload()       { return au_live_reload_flag; }       // the host polls it
-void au_live_set_pending(int v) { au_live_pending_flag = v; }
-int  au_live_get_pending()      { return au_live_pending_flag; }
-void au_live_request_apply()    { au_live_apply_flag = 1; }
-int  au_live_take_apply()       { int v = au_live_apply_flag; au_live_apply_flag = 0; return v; }
+AU_EXPORT void au_live_set_defer(int v)   { au_live_defer_flag = v ? 1 : 0; }   // the APP turns defer on
+AU_EXPORT int  au_live_get_defer()        { return au_live_defer_flag; }        // the host polls it
+AU_EXPORT void au_live_set_reload(int v)  { au_live_reload_flag = v ? 1 : 0; }  // the APP turns reload off
+AU_EXPORT int  au_live_get_reload()       { return au_live_reload_flag; }       // the host polls it
+AU_EXPORT void au_live_set_pending(int v) { au_live_pending_flag = v; }
+AU_EXPORT int  au_live_get_pending()      { return au_live_pending_flag; }
+AU_EXPORT void au_live_request_apply()    { au_live_apply_flag = 1; }
+AU_EXPORT int  au_live_take_apply()       { int v = au_live_apply_flag; au_live_apply_flag = 0; return v; }
 
-handle live_window_get() { return au_live_window; }
-void   live_window_set(handle w) { au_live_window = w; }
+AU_EXPORT handle live_window_get() { return au_live_window; }
+AU_EXPORT void   live_window_set(handle w) { au_live_window = w; }
 
 // own-stdout tee: fd 1 becomes a pipe drained each frame
 static int au_tee_read = -1;
@@ -1617,7 +1621,7 @@ static void au_tee_flush() {
     }
 }
 
-i32 stdout_tee() {
+AU_EXPORT i32 stdout_tee() {
     if (au_tee_read >= 0) return au_tee_read;
     int p[2];
     if (pipe(p)) return -1;
@@ -1634,7 +1638,7 @@ i32 stdout_tee() {
 
 // drain the tee and return the next complete line (null = none);
 // every byte read is passed through to the real terminal fd
-string stdout_line() {
+AU_EXPORT string stdout_line() {
     static char acc[8192];
     static int  acc_n = 0;
     if (au_tee_read < 0) return null;
@@ -1668,19 +1672,19 @@ string stdout_line() {
     return null;
 }
 
-handle live_vk_get() { return au_live_vk; }
-void   live_vk_set(handle vk) {
+AU_EXPORT handle live_vk_get() { return au_live_vk; }
+AU_EXPORT void   live_vk_set(handle vk) {
     if (au_live_vk) drop(au_live_vk);
     au_live_vk = vk ? hold(vk) : null;
 }
 
-handle live_surface_get()  { return au_live_surface; }
-void   live_surface_set(handle s) { au_live_surface = s; }
+AU_EXPORT handle live_surface_get()  { return au_live_surface; }
+AU_EXPORT void   live_surface_set(handle s) { au_live_surface = s; }
 
-handle live_swapchain_get() { return au_live_swapchain; }
-void   live_swapchain_set(handle s) { au_live_swapchain = s; }
+AU_EXPORT handle live_swapchain_get() { return au_live_swapchain; }
+AU_EXPORT void   live_swapchain_set(handle s) { au_live_swapchain = s; }
 
-void module_erase(Au_t module, symbol name) {
+AU_EXPORT void module_erase(Au_t module, symbol name) {
     if (!module && !name) return;
     micro* mods = au_current_space ? &au_current_space->modules : &modules;
     pthread_rwlock_t* lk = au_current_space ? &au_current_space->lock : &modules_lock;
@@ -1700,7 +1704,7 @@ void module_erase(Au_t module, symbol name) {
 
 // erase all Silver-defined modules (not C-native ones) so module_init
 // in the reloaded .so starts with a clean registry
-void module_erase_silver(void) {
+AU_EXPORT void module_erase_silver(void) {
     pthread_rwlock_wrlock(&modules_lock);
     for (int i = 0; i < modules.count; i++) {
         Au_t m = (Au_t)modules.origin[i];
@@ -1713,7 +1717,7 @@ void module_erase_silver(void) {
     pthread_rwlock_unlock(&modules_lock);
 }
 
-void au_space_begin(void* owner) {
+AU_EXPORT void au_space_begin(void* owner) {
     if (au_current_space && au_space_owner == owner) {
         // same owner re-entering (watch mode): reset the existing space
         free(au_current_space->modules.origin);
@@ -1729,7 +1733,7 @@ void au_space_begin(void* owner) {
     au_space_owner   = owner;
 }
 
-void au_space_end(void* owner) {
+AU_EXPORT void au_space_end(void* owner) {
     if (au_space_owner == owner) {
         AuSpace s = au_current_space;
         au_current_space = s->parent;
@@ -1740,7 +1744,7 @@ void au_space_end(void* owner) {
     }
 }
 
-void au_space_clear(void) {
+AU_EXPORT void au_space_clear(void) {
     while (au_current_space) {
         AuSpace s = au_current_space;
         au_current_space = s->parent;
@@ -1768,7 +1772,7 @@ static void au_mem_pages(long* size_pages, long* rss_pages) {
     fclose(f);
 }
 
-i64 au_mem_rss(void) {
+AU_EXPORT i64 au_mem_rss(void) {
     long sz = 0, rss = 0;
     au_mem_pages(&sz, &rss);
     long page = sysconf(_SC_PAGESIZE);
@@ -1776,7 +1780,7 @@ i64 au_mem_rss(void) {
     return (i64)rss * (i64)page;
 }
 
-i64 au_mem_virt(void) {
+AU_EXPORT i64 au_mem_virt(void) {
     long sz = 0, rss = 0;
     au_mem_pages(&sz, &rss);
     long page = sysconf(_SC_PAGESIZE);
@@ -1784,14 +1788,14 @@ i64 au_mem_virt(void) {
     return (i64)sz * (i64)page;
 }
 
-i64 au_mem_phys(void) {
+AU_EXPORT i64 au_mem_phys(void) {
     long page = sysconf(_SC_PAGESIZE);
     long phys = sysconf(_SC_PHYS_PAGES);
     if (page <= 0 || phys <= 0) return 0;
     return (i64)phys * (i64)page;
 }
 
-float au_mem_fraction(void) {
+AU_EXPORT float au_mem_fraction(void) {
     FILE* f = fopen("/proc/self/statm", "r");
     if (!f) return 0.0f;
     long size_pages = 0, rss_pages = 0;
@@ -1819,7 +1823,7 @@ float au_mem_fraction(void) {
 // is its own descriptor, unaffected by the dup2 of 1/2).
 static int g_stdout_orig = -1;
 
-int au_capture_stdout(void) {
+AU_EXPORT int au_capture_stdout(void) {
     FILE* dbg = fopen("/tmp/orbiter_cap.log", "a");
     int fds[2];
     if (pipe(fds) != 0) {
@@ -1852,27 +1856,27 @@ int au_capture_stdout(void) {
     return fds[0];
 }
 
-int au_stdout_orig(void) { return g_stdout_orig; }
+AU_EXPORT int au_stdout_orig(void) { return g_stdout_orig; }
 
 // silver-host stashes the process argv here (dlsym'd from libAu before it calls
 // silver_live_init); au_apply_args then parses it into the freshly-created app
 // instance, so an app receives its own command-line flags through its schema.
 static cstrs g_main_argv = NULL;
 static int   g_argv_stop = 0;
-void au_main_args(int argc, cstrs argv) { (void)argc; g_main_argv = argv; }
-void au_apply_args(Au a) { if (a && g_main_argv) Au_with_cstrs((Au)a, g_main_argv); }
-int   au_argv_stop(void) { return g_argv_stop; }
-cstrs au_argv(void)      { return g_main_argv; }
+AU_EXPORT void au_main_args(int argc, cstrs argv) { (void)argc; g_main_argv = argv; }
+AU_EXPORT void au_apply_args(Au a) { if (a && g_main_argv) Au_with_cstrs((Au)a, g_main_argv); }
+AU_EXPORT int   au_argv_stop(void) { return g_argv_stop; }
+AU_EXPORT cstrs au_argv(void)      { return g_main_argv; }
 
 // live-reload rebuild flag, lives in libAu so the host and the dlopen'd app both
 // see it. silver-host sets it true around a blocking recompile (pumping one app
 // frame so the loading overlay paints, then it stays frozen during the compile);
 // trinity reads it each on_render to append the full-screen Avatar overlay.
 static bool g_rebuilding = false;
-void au_set_rebuilding(bool b) { g_rebuilding = b; }
-bool au_rebuilding(void) { return g_rebuilding; }
+AU_EXPORT void au_set_rebuilding(bool b) { g_rebuilding = b; }
+AU_EXPORT bool au_rebuilding(void) { return g_rebuilding; }
 
-Au_t global() {
+AU_EXPORT Au_t global() {
     Au_t au_module_t = isa(au_module);
     return au_module;
 }
@@ -1916,7 +1920,7 @@ Au_t def_module(symbol next_module) {
     return m;
 }
 
-none collective_init(collective a) {
+AU_EXPORT none collective_init(collective a) {
 }
 
 ffi_method_t* method_with_address(handle address, Au_t rtype, micro* atypes, Au_t method_owner);
@@ -1925,7 +1929,7 @@ ffi_method_t* method_with_address(handle address, Au_t rtype, micro* atypes, Au_
     for (int __i = 0; __i < (MDL)->members.count; __i++) \
         for (Au_t VAR = (Au_t)(MDL)->members.origin[__i]; VAR; VAR = NULL)
 
-none push_type(Au_t type, Au_t to_mod) {
+AU_EXPORT none push_type(Au_t type, Au_t to_mod) {
     // ensure ident_hash is set for all types (static types from declare_class etc.)
     if (type->ident && !type->ident_hash)
         type->ident_hash = au_hash_ident(type->ident);
@@ -1960,7 +1964,7 @@ none push_type(Au_t type, Au_t to_mod) {
         au_field->offset      = 0;
         au_field->type        = typeid(Au_t);
         au_field->member_type = AU_MEMBER_VAR;
-        au_field->member_index       = 0;
+        au_field->member_index = 0;
         au_field->is_elaborate = 1;
     }
     
@@ -2087,17 +2091,17 @@ none push_type(Au_t type, Au_t to_mod) {
     }
 }
 
-Au_t current_module() {
+AU_EXPORT Au_t current_module() {
     return module;
 }
 
-i64 current_time() {
+AU_EXPORT i64 current_time() {
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
     return (i64)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
-Au_t scope_lookup(array a, string f) {
+AU_EXPORT Au_t scope_lookup(array a, string f) {
     cstr s = f->chars;
     for (int i = len(a) - 1; i >= 0; i--) {
         Au_t t = (Au_t)a->origin[i];
@@ -2110,9 +2114,16 @@ Au_t scope_lookup(array a, string f) {
     return null;
 }
 
-ARef types(ref_i64 length) {
+AU_EXPORT ARef types(ref_i64 length) {
     *length = module->members.count;
     return module->members.origin;
+}
+
+// every module registered in this process, in registration order. this is
+// the global list -- a compile space holds only the module being built
+AU_EXPORT ARef module_list(ref_i64 length) {
+    *length = modules.count;
+    return modules.origin;
 }
 
 // all DIRECT subclasses of `base` across EVERY module (base->src match). returns a
@@ -2120,7 +2131,7 @@ ARef types(ref_i64 length) {
 // registries (e.g. orbiter's ResourceView views) without a per-module walk in silver.
 static Au_t* subclass_buf = NULL;
 static int   subclass_cap = 0;
-ARef subclasses(Au_t base, ref_i64 length) {
+AU_EXPORT ARef subclasses(Au_t base, ref_i64 length) {
     micro* mods = au_current_space ? &au_current_space->modules : &modules;
     pthread_rwlock_t* lk = au_current_space ? &au_current_space->lock : &modules_lock;
     pthread_rwlock_rdlock(lk);
@@ -2148,7 +2159,7 @@ ARef subclasses(Au_t base, ref_i64 length) {
     return (ARef)subclass_buf;
 }
 
-Au_t find_module(symbol name) {
+AU_EXPORT Au_t find_module(symbol name) {
     if (au_current_space) {
         // search space first — modules created during this compile take priority
         // but skip empty space modules (cached imports): fall through to global
@@ -2188,7 +2199,7 @@ Au_t find_module(symbol name) {
     return null;
 }
 
-Au_t find_type(symbol name, Au_t m) {
+AU_EXPORT Au_t find_type(symbol name, Au_t m) {
     if (!name)
         return null;
     if (au_current_space) {
@@ -2251,32 +2262,32 @@ AF* Au_AF_bits(Au a) {
     return af_bits_ptr(a);
 }
 
-void Au_AF_set_id(Au a, int id) {
+AU_EXPORT void Au_AF_set_id(Au a, int id) {
     AF_set(af_bits_ptr(a), id);
 }
 
 // member index is 1-based (0 == not an af-bit slot); the bit position is index-1.
-void Au_AF_set_name(Au a, cstr name) {
+AU_EXPORT void Au_AF_set_name(Au a, cstr name) {
     Au_t t = isa(a);
     Au_t m = find_member(t, name, AU_MEMBER_VAR, 0, true);
     if (m && m->af_index) AF_set(af_bits_ptr(a), m->af_index - 1);
 }
 
-i32 Au_AF_query_name(Au a, cstr name) {
+AU_EXPORT i32 Au_AF_query_name(Au a, cstr name) {
     Au_t t = isa(a);
     Au_t m = find_member(t, name, AU_MEMBER_VAR, 0, true);
     return (m && m->af_index) ? (i32)AF_get(af_bits_ptr(a), m->af_index - 1) : 0;
 }
 
-bool Au_AF_get_member(Au a, Au_t mem) {
+AU_EXPORT bool Au_AF_get_member(Au a, Au_t mem) {
     return mem->af_index ? AF_get(af_bits_ptr(a), mem->af_index - 1) : false;
 }
 
-none Au_AF_set_member(Au a, Au_t mem) {
+AU_EXPORT none Au_AF_set_member(Au a, Au_t mem) {
     if (mem->af_index) AF_set(af_bits_ptr(a), mem->af_index - 1);
 }
 
-bool Au_validator(Au a) {
+AU_EXPORT bool Au_validator(Au a) {
     Au_t type = isa(a);
 
     u64* f = af_bits_ptr(a);
@@ -2321,7 +2332,7 @@ static Au enum_member_value(Au_t type, Au_t mem) {
     return null;
 }
 
-i32 evalue(Au_t type, cstr cs) {
+AU_EXPORT i32 evalue(Au_t type, cstr cs) {
     int cur = 0;
     int default_val = INT_MIN;
     bool single = strlen(cs) == 1;
@@ -2345,7 +2356,7 @@ i32 evalue(Au_t type, cstr cs) {
     return 0;
 }
 
-string estring(Au_t type, i32 value) {
+AU_EXPORT string estring(Au_t type, i32 value) {
     for (num i = 0; i < type->members.count; i++) {
         Au_t mem = (Au_t)type->members.origin[i];
         if (mem->member_type & AU_MEMBER_ENUMV) {
@@ -2357,7 +2368,7 @@ string estring(Au_t type, i32 value) {
     return null;
 }
 
-none debug() {
+AU_EXPORT none debug() {
     return;
 }
 
@@ -2374,7 +2385,7 @@ static none init_recur(Au a, Au_t current, raw last_init) {
 }
 
 /*
-string numeric_cast_string(numeric a) {
+AU_EXPORT string numeric_cast_string(numeric a) {
     Au_t t = isa(a);
     if (t == typeid(i8))  return f(string, "%hhi", *(i8*) a);
     if (t == typeid(i16)) return f(string, "%hi",  *(i16*)a);
@@ -2394,36 +2405,36 @@ string numeric_cast_string(numeric a) {
 }
 */
 
-string f32_cast_string(f32* a) { return f(string, "%f",  *(f32*)a); }
-string f64_cast_string(f64* a) { return f(string, "%lf", *(f64*)a); }
+AU_EXPORT string f32_cast_string(f32* a) { return f(string, "%f",  *(f32*)a); }
+AU_EXPORT string f64_cast_string(f64* a) { return f(string, "%lf", *(f64*)a); }
 
 // knows pi to a thousand places; got a collection of gigantic maces; 
 // even made a function table for my dog
-f32 f32_round(f32* a, i32 places) {
+AU_EXPORT f32 f32_round(f32* a, i32 places) {
     f32 scale   = powf(10.0f, (f32)places);
     f32 scaled  = *a * scale;
     f32 rounded = nearbyintf(scaled);
     return rounded / scale;
 }
 
-bool f32_is_nan(f32* a)     { return isnan(*a); }
-bool f32_is_inf(f32* a)     { return isinf(*a); }
-bool f32_is_finite(f32* a)  { return isfinite(*a); }
-bool f32_is_zero(f32* a)    { return *a == 0.0f; }
+AU_EXPORT bool f32_is_nan(f32* a)     { return isnan(*a); }
+AU_EXPORT bool f32_is_inf(f32* a)     { return isinf(*a); }
+AU_EXPORT bool f32_is_finite(f32* a)  { return isfinite(*a); }
+AU_EXPORT bool f32_is_zero(f32* a)    { return *a == 0.0f; }
 
-f64 f64_round(f64* a, i32 places) {
+AU_EXPORT f64 f64_round(f64* a, i32 places) {
     f64 scale   = pow(10.0, (f64)places);
     f64 scaled  = *a * scale;
     f64 rounded = nearbyint(scaled);
     return rounded / scale;
 }
 
-bool f64_is_nan(f64* a)     { return isnan(*a); }
-bool f64_is_inf(f64* a)     { return isinf(*a); }
-bool f64_is_finite(f64* a)  { return isfinite(*a); }
-bool f64_is_zero(f64* a)    { return *a == 0.0; }
+AU_EXPORT bool f64_is_nan(f64* a)     { return isnan(*a); }
+AU_EXPORT bool f64_is_inf(f64* a)     { return isinf(*a); }
+AU_EXPORT bool f64_is_finite(f64* a)  { return isfinite(*a); }
+AU_EXPORT bool f64_is_zero(f64* a)    { return *a == 0.0; }
 
-Au Au_initialize(Au a) {
+AU_EXPORT Au Au_initialize(Au a) {
     Au   f = header(a);
     // user-init is now implemented at design-time
     //if (f->type->traits & AU_TRAIT_USER_INIT) return a;
@@ -2446,9 +2457,11 @@ Au Au_initialize(Au a) {
     return a;
 }
 
-__thread __error_t* Au_error_top = NULL;
+static __thread __error_t* Au_error_top = NULL;
+AU_EXPORT __error_t* au_error_top_get(void)       { return Au_error_top; }
+AU_EXPORT void       au_error_top_set(__error_t* f) { Au_error_top = f; }
 
-void halt(string msg, token tok) {
+AU_EXPORT void halt(string msg, token tok) {
     if (!Au_error_top) {
 #ifndef NDEBUG
         raise(SIGTRAP);
@@ -2466,11 +2479,11 @@ void halt(string msg, token tok) {
 
 pid_t _last_pid = 0;
 
-i64 last_pid() {
+AU_EXPORT i64 last_pid() {
     return (i64)_last_pid;
 }
 
-command command_with_cstr(command cmd, cstr buf) {
+AU_EXPORT command command_with_cstr(command cmd, cstr buf) {
     int ln = strlen(buf);
     cmd->count = ln;
     cmd->alloc = ln + 1;
@@ -2479,45 +2492,27 @@ command command_with_cstr(command cmd, cstr buf) {
     return cmd;
 }
 
-string command_run(command cmd, bool verbose) {
-    int pipe_in[2];   // for writing command input to sh -s
-    int pipe_out[2];  // for reading stdout from sh -s
+AU_EXPORT string command_run(command cmd, bool verbose) {
+    // one implementation everywhere: popen is posix and windows alike, so
+    // there is no fork/exec path to keep in step. stderr is merged into the
+    // output the same way the old dup2 pair did.
+    // no "2>&1": there is no shell to interpret it, and popen already
+    // points the child's stderr at the same pipe as its stdout
+    string  result = string(alloc, 1024);
+    FILE*   p      = popen(cstring(cmd), "r");
+    if (!p) return result;
 
-    pipe(pipe_in);
-    pipe(pipe_out);
-
-    pid_t pid = fork();
-
-    if (pid == 0) {
-        dup2(pipe_in[0], STDIN_FILENO);   // read command
-        dup2(pipe_out[1], STDOUT_FILENO); // write output
-        dup2(pipe_out[1], STDERR_FILENO); // optional: stderr too
-
-        close(pipe_in[1]);
-        close(pipe_out[0]);
-        execlp("sh", "sh", "-s", NULL);
-        _exit(127); // exec failed
-    }
-
-    close(pipe_in[0]);  // parent writes only
-    close(pipe_out[1]); // parent reads only
-
-    FILE *out = fdopen(pipe_in[1], "w");
-    fprintf(out, "%s\n", cstring(cmd));
-    fflush(out);
-    fclose(out);  // send EOF to child
-
-    char buffer[1024];
-    string result = string(alloc, 1024);
+    // fread only returns once it has filled the buffer, so a slow child's
+    // output arrives in 1k blocks; read hands back whatever is ready
+    char    buffer[1024];
     ssize_t bytes;
-    while ((bytes = read(pipe_out[0], buffer, sizeof(buffer))) > 0) {
-        append_count(result, buffer, bytes);
+    int     fd = fileno(p);
+    while ((bytes = read(fd, buffer, sizeof(buffer))) > 0) {
+        append_count(result, buffer, (int)bytes);
+        if (verbose) { fwrite(buffer, 1, (size_t)bytes, stdout); fflush(stdout); }
     }
+    pclose(p);
 
-    close(pipe_out[0]);
-
-    int status;
-    waitpid(pid, &status, 0);
     for (;result->count;) {
         char l = result->chars[result->count - 1];
         if (l == '\n' || l == '\r')
@@ -2528,7 +2523,7 @@ string command_run(command cmd, bool verbose) {
     return result;
 }
 
-int command_exec(command cmd, bool verbose) {
+AU_EXPORT int command_exec(command cmd, bool verbose) {
     if (starts_with(cmd, "export ")) {
         string a = mid(cmd, 7, len(cmd) - 7);
         int i = index_of(a, "=");
@@ -2540,56 +2535,31 @@ int command_exec(command cmd, bool verbose) {
         return 0;
     }
 
-    int pipefd[2];
-    pipe(pipefd);
-
-    pid_t pid = fork();
-
-    if (pid == 0) {
-        // child
-        setpgid(0, 0);
-        dup2(pipefd[0], STDIN_FILENO);
-        close(pipefd[1]); // close write
-        execlp("sh", "sh", "-s", null); // or "bash"
-        _exit(0);
-    } else if (pid > 0) {
-        _last_pid = pid;
-        // parent
-        close(pipefd[0]); // close read
-        FILE *out = fdopen(pipefd[1], "w");
-        cstr verb = getenv("VERBOSE");
-        if ((verb && strcmp(verb, "0") != 0) || verbose) {
-            printf("----------------------\n");
-            printf("%s\n", cstring(cmd));
-        }
-        fprintf(out, "%s\n", cstring(cmd));
-        fflush(out);
-        close(pipefd[1]);
-
-        int status;
-        int result;
-        do {
-            result = waitpid(pid, &status, 0);
-        } while (result == -1 && errno == EINTR);
-        _last_pid = 0;
-
-        if (result == -1) {
-            perror("waitpid");
-            return -123456;
-        }
-
-        if (WIFEXITED(status)) {
-            return WEXITSTATUS(status);
-        } else if (WIFSIGNALED(status)) {
-            fprintf(stderr, "child terminated by signal: %s\n", strsignal(WTERMSIG(status)));
-            return -128 - WTERMSIG(status);  // POSIX style
-        }
-        fprintf(stderr, "unknown termination\n");
-        return -9999;
-    } else {
-        perror("fork");
-        return -1234;
+    cstr verb = getenv("VERBOSE");
+    if ((verb && strcmp(verb, "0") != 0) || verbose) {
+        printf("----------------------\n");
+        printf("%s\n", cstring(cmd));
     }
+
+    // one implementation everywhere: popen runs it, pclose hands back the
+    // status. no fork/exec pair to keep working on two platforms.
+    FILE* p = popen(cstring(cmd), "r");
+    if (!p) return -1;
+
+    // same here: read returns as soon as bytes are ready, and each chunk is
+    // flushed so a long external build reports progress while it runs
+    char    buffer[1024];
+    ssize_t bytes;
+    int     fd = fileno(p);
+    while ((bytes = read(fd, buffer, sizeof(buffer))) > 0) {
+        fwrite(buffer, 1, (size_t)bytes, stdout);
+        fflush(stdout);
+    }
+
+    int status = pclose(p);
+    if (status == -1)      return -123456;
+    if (WIFEXITED(status)) return WEXITSTATUS(status);
+    return -128 - WTERMSIG(status);
 }
 
 __thread ARef af       = null;
@@ -2601,9 +2571,9 @@ __thread ARef pinned_af    = null;
 __thread int  pinned_count = 0;
 __thread int  pinned_size  = 0;
 
-none Au_free(Au);
+AU_EXPORT none Au_free(Au);
 
-none Au_drop(Au a) {
+AU_EXPORT none Au_drop(Au a) {
     if (!a) return;
     Au info = header(a);
     if (!info->managed) { DBG181(info, 7); return; }
@@ -2636,7 +2606,7 @@ none Au_drop(Au a) {
 
 static int total_objects;
 
-int alloc_count(Au_t type) {
+AU_EXPORT int alloc_count(Au_t type) {
     return type ? type->global_count : total_objects;
 }
 
@@ -2652,7 +2622,7 @@ static num           leak_cap   = 0;
 static num           leak_live  = 0;
 static volatile char leak_lock;
 
-int au_leaks(void) { return leaks_top; }
+AU_EXPORT int au_leaks(void) { return leaks_top; }
 
 static inline none leak_acquire() {
     while (__atomic_test_and_set(&leak_lock, __ATOMIC_ACQUIRE));
@@ -2743,7 +2713,7 @@ static leak_ent* leak_find(Au h) {
 }
 
 // hold/drop bookkeeping: the caller's return address identifies the site
-none leak_site_push(Au h, void* site, void* caller) {
+AU_EXPORT none leak_site_push(Au h, void* site, void* caller) {
     // diagnostics must never block or deadlock the mutator: if the table is
     // busy (insert/remove/grow/report) simply skip this sample
     if (!leak_try_acquire(64)) return;
@@ -2756,7 +2726,7 @@ none leak_site_push(Au h, void* site, void* caller) {
     leak_release();
 }
 
-none leak_site_pop(Au h) {
+AU_EXPORT none leak_site_pop(Au h) {
     if (!leak_try_acquire(64)) return;
     leak_ent* e = leak_find(h);
     if (e && e->nsite) e->nsite--;
@@ -2839,9 +2809,9 @@ static void lg_link(Au target_data, num from_i) {
     lg_link_k2(target_data, from_i, 0, null);
 }
 
-none au_free_pinned(void);
+AU_EXPORT none au_free_pinned(void);
 
-none au_leak_report(void) {
+AU_EXPORT none au_leak_report(void) {
     static bool reported;
     if (reported || !leaks_top) return;
     reported = true;
@@ -3082,9 +3052,9 @@ static void (*leak_prev_term)(int);
 
 static volatile sig_atomic_t quit_flag = 0;
 
-bool quit_requested() { return quit_flag != 0; }
+AU_EXPORT bool quit_requested() { return quit_flag != 0; }
 
-none leak_report() { au_leak_report(); }
+AU_EXPORT none leak_report() { au_leak_report(); }
 
 static void leak_signal(int sig) {
     // first ctrl-c: request an orderly quit — the app loop exits, the
@@ -3104,7 +3074,7 @@ static void leak_signal(int sig) {
     }
 }
 
-Au alloc_instance(Au_t type, int n_bytes, bool managed) {
+AU_EXPORT Au alloc_instance(Au_t type, int n_bytes, bool managed) {
     Au a = null;
     //af && n_bytes == recycle_size;
 
@@ -3130,10 +3100,10 @@ Au alloc_instance(Au_t type, int n_bytes, bool managed) {
     return a;
 }
 
-none Au_free(Au a);
+AU_EXPORT none Au_free(Au a);
 
 // exit: release everything the resets pinned (still refs=0 = pure garbage)
-none au_free_pinned(void) {
+AU_EXPORT none au_free_pinned(void) {
     for (int i = 0; i < pinned_count; i++) {
         Au a = pinned_af[i];
         if (a && a->refs <= 0)
@@ -3142,7 +3112,7 @@ none au_free_pinned(void) {
     pinned_count = 0;
 }
 
-none auto_free(bool reset_only) {
+AU_EXPORT none auto_free(bool reset_only) {
     dbg_add_since_drain = 0;
     // only managed objects go into af
     for (num i = 2; i < af_count; i++) {
@@ -3170,7 +3140,7 @@ none auto_free(bool reset_only) {
     af_count = 2;
 }
 
-Au alloc_dbg(Au_t type, num count, symbol source, i32 line, i32 sequence) {
+AU_EXPORT Au alloc_dbg(Au_t type, num count, symbol source, i32 line, i32 sequence) {
     sz map_sz = sizeof(map);
     sz _sz   = sizeof(struct _Au);
     Au a = alloc_instance(type, _sz + (type->typesize << 1) * count, true);
@@ -3195,20 +3165,20 @@ static int   tracing_count = 0;
 
 
 
-void alloc_trace() {
+AU_EXPORT void alloc_trace() {
     tracing = calloc(1024 * 100, sizeof(ARef));
     tracing_count = 0;
 }
 
 
-int get_total_objects(Au_t type) {
+AU_EXPORT int get_total_objects(Au_t type) {
     if (type) {
         return type->global_count;
     }
     return total_objects;
 }
 
-void alloc_validate() {
+AU_EXPORT void alloc_validate() {
     for (int i = 0; i < tracing_count; i++) {
         Au obj  = tracing[i];
         if (!obj) continue;
@@ -3278,7 +3248,7 @@ Au alloc_vector(Au_t type, num count, shape shape_data, Au_t meta_a, Au meta_b,
     return a;
 }
 
-Au alloc2(Au_t type, Au_t scalar, shape s, symbol source, i32 line, i32 seq) {
+AU_EXPORT Au alloc2(Au_t type, Au_t scalar, shape s, symbol source, i32 line, i32 seq) {
     i64 _sz      = sizeof(struct _Au);
     i64 count     = shape_total(s);
     Au a      = alloc_instance(type,
@@ -3295,37 +3265,27 @@ Au alloc2(Au_t type, Au_t scalar, shape s, symbol source, i32 line, i32 seq) {
     return a->data;
 }
 
-Au new_object(Au_t type, Au_t meta_a, Au meta_b, bool call_init, symbol source, i32 line, i32 seq) {
+AU_EXPORT Au new_object(Au_t type, Au_t meta_a, Au meta_b, bool call_init, symbol source, i32 line, i32 seq) {
     Au a = alloc_new(type, 1, null, meta_a, meta_b, source, line, seq);
     if (call_init)
         Au_initialize(a);
     return a;
 }
 
+// the address and its type info; method_call dispatches on them directly
 ffi_method_t* method_with_address(handle address, Au_t rtype, micro* args, Au_t method_owner) {
     const num max_args = 16;
+    (void)method_owner;
     ffi_method_t* method = calloc(1, sizeof(ffi_method_t));
-    method->ffi_cif  = calloc(1,        sizeof(ffi_cif));
-    method->ffi_args = calloc(max_args, sizeof(ffi_type*));
     method->atypes   = args;
     method->rtype    = rtype;
     method->address  = address;
     assert(args->count <= max_args, "adjust arg maxima");
-    ffi_type **ffi_args = (ffi_type**)method->ffi_args;
-    for (num i = 0; i < args->count; i++) {
-        Au_t a_type   = (Au_t)args->origin[i];
-        ffi_args[i]   = primitive_ffi_arb(a_type);
-    }
-    ffi_status status = ffi_prep_cif(
-        (ffi_cif*) method->ffi_cif, FFI_DEFAULT_ABI, args->count,
-        (ffi_type*)((rtype->traits & AU_TRAIT_ABSTRACT) ?
-        primitive_ffi_arb(method_owner) : primitive_ffi_arb(rtype)), ffi_args);
-    assert(status == FFI_OK, "status == %i", (i32)status);
     return method;
 }
 
 __attribute__((no_sanitize("address"))) 
-Au method_call(Au_t m, array args) {
+AU_EXPORT Au method_call(Au_t m, array args) {
     if (!m->ffi) m->ffi = method_with_address(m->value, m->type, (micro*)&m->args, m->context);
     ffi_method_t* a = m->ffi;
     const num max_args = 64;
@@ -3348,35 +3308,67 @@ Au method_call(Au_t m, array args) {
                 (none*)arg_data[i] : (none*)&arg_data[i];
         }
     }
-    none* result[64]; /// enough space to handle all primitive data
-    ffi_call((ffi_cif*)a->ffi_cif, a->address, result, arg_values);
-    if (a->rtype->traits & AU_TRAIT_PRIMITIVE)
+    // the address is called directly -- no libffi. x64 is caller-cleanup in
+    // both ABIs, so a longer argument list than the callee declares cannot
+    // corrupt the stack. arg_values holds &object for an object arg and the
+    // object itself for a primitive, so only the former is dereferenced
+    assert(a->atypes->count <= 8, "method_call takes up to 8 arguments");
+    none* v[8];
+    memset(v, 0, sizeof(v));
+    for (num i = 0; i < a->atypes->count; i++) {
+        Au_t at   = au_arg_type((Au)a->atypes->origin[i]);
+        bool prim = (at->traits & (AU_TRAIT_PRIMITIVE | AU_TRAIT_ENUM)) != 0;
+        v[i] = (prim || !arg_values[i]) ? null : *(none**)arg_values[i];
+    }
+
+    // primitive and enum returns come back in rax/xmm0; read the register the
+    // return type names by calling through a matching pointer type
+    if (a->rtype->traits & AU_TRAIT_PRIMITIVE) {
+        none* result[8];
+        memset(result, 0, sizeof(result));
+        if (a->rtype == typeid(f32)) {
+            typedef f32 (*fn_f32)(none*, none*, none*, none*, none*, none*, none*, none*);
+            f32 r = ((fn_f32)a->address)(v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]);
+            memcpy(result, &r, sizeof(r));
+        } else if (a->rtype == typeid(f64)) {
+            typedef f64 (*fn_f64)(none*, none*, none*, none*, none*, none*, none*, none*);
+            f64 r = ((fn_f64)a->address)(v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]);
+            memcpy(result, &r, sizeof(r));
+        } else {
+            typedef i64 (*fn_i64)(none*, none*, none*, none*, none*, none*, none*, none*);
+            i64 r = ((fn_i64)a->address)(v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]);
+            memcpy(result, &r, sizeof(r));
+        }
         return primitive(a->rtype, result);
-    else if (a->rtype->traits & AU_TRAIT_ENUM) {
-        Au res = alloc(a->rtype, 1, null, null, null, __FILE__, __LINE__, 0);
+    }
+    if (a->rtype->traits & AU_TRAIT_ENUM) {
+        typedef i32 (*fn_i32)(none*, none*, none*, none*, none*, none*, none*, none*);
         verify(a->rtype->src == typeid(i32), "i32 enums supported");
-        *((i32*)res) = *(i32*)result;
+        i32 r  = ((fn_i32)a->address)(v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]);
+        Au  res = alloc(a->rtype, 1, null, null, null, __FILE__, __LINE__, 0);
+        *((i32*)res) = r;
         return res;
-    } else
-        return (Au) result[0];
+    }
+    typedef Au (*fn_obj)(none*, none*, none*, none*, none*, none*, none*, none*);
+    return ((fn_obj)a->address)(v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]);
 }
 
 /// this calls type methods
-Au method(Au_t type, cstr method_name, array args) {
+AU_EXPORT Au method(Au_t type, cstr method_name, array args) {
     Au_t mem = find_member(type, method_name, AU_MEMBER_FUNC, 0, false);
     assert(mem->ffi, "method not set");
     Au res = method_call(mem, args);
     return res;
 }
 
-Au convert(Au_t type, Au input) {
+AU_EXPORT Au convert(Au_t type, Au input) {
     Au info = head(input);
     if (type == isa(input))
         return input;
     return construct_with(type, input, null);
 }
 
-Au method_vargs(Au a, Au_t mem, int n_args, ...) {
+AU_EXPORT Au method_vargs(Au a, Au_t mem, int n_args, ...) {
     assert(mem->ffi, "method not set");
     ffi_method_t* m = mem->ffi;
     va_list  vargs;
@@ -3397,10 +3389,10 @@ int fault_level;
 
 static __attribute__((constructor)) bool Aglobal_AF();
 
-string Au_cast_string(Au a);
-string numeric_cast_string(numeric a);
+AU_EXPORT string Au_cast_string(Au a);
+AU_EXPORT string numeric_cast_string(numeric a);
 
-none member_override(Au_t type, Au_t type_mem, AFlag f) {
+AU_EXPORT none member_override(Au_t type, Au_t type_mem, AFlag f) {
     Au_t base = type->context;
 
     while (base) {
@@ -3459,10 +3451,10 @@ none member_override(Au_t type, Au_t type_mem, AFlag f) {
     }
 }
 
-path path_share_path();
-path path_cwd();
+AU_EXPORT path path_share_path();
+AU_EXPORT path path_cwd();
 static path startup_cwd_ = null;   // the cwd we launched in, before cd to share
-none engage(cstrs argv) {
+AU_EXPORT none engage(cstrs argv) {
     Au_t f32_type = typeid(f32);
     if (started) return;
 
@@ -3535,7 +3527,7 @@ none engage(cstrs argv) {
     */
 }
 
-map args(cstrs argv, symbol default_arg, ...) {
+AU_EXPORT map args(cstrs argv, symbol default_arg, ...) {
     int argc = 0;
     while (argv[argc]) argc++;
     va_list  args;
@@ -3552,12 +3544,12 @@ map args(cstrs argv, symbol default_arg, ...) {
         (Au)(default_arg ? string(default_arg) : null));
 }
 
-none tap(symbol f, hook sub) {
+AU_EXPORT none tap(symbol f, hook sub) {
     string fname = string(f);
     set(log_funcs, (Au)fname, sub ? (Au)sub : (Au)_bool(true)); /// if subprocedure, then it may receive calls for the logging
 }
 
-none untap(symbol f) {
+AU_EXPORT none untap(symbol f) {
     string fname = string(f);
     set(log_funcs, (Au)fname, _bool(false));
 }
@@ -3573,7 +3565,7 @@ Au_t find_ctr(Au_t type, Au_t with, bool poly) {
     return 0;
 }
 
-bool is_inlay(Au_t m) {
+AU_EXPORT bool is_inlay(Au_t m) {
     return (m->type->traits & AU_TRAIT_STRUCT    |
             m->type->traits & AU_TRAIT_PRIMITIVE |
             m->type->traits & AU_TRAIT_ENUM      |
@@ -3581,7 +3573,7 @@ bool is_inlay(Au_t m) {
             m->type->traits & AU_TRAIT_POINTER) != 0;
 }
 
-none Au_hold_members(Au a) {
+AU_EXPORT none Au_hold_members(Au a) {
     Au_t type = isa(a);
     Au head = header(a);
     if (head->iflags & 0x01) return;
@@ -3613,7 +3605,7 @@ none Au_hold_members(Au a) {
     }
 }
 
-Au Au_set_property(Au a, symbol name, Au value) {
+AU_EXPORT Au Au_set_property(Au a, symbol name, Au value) {
     Au_t type = isa(a);
     Au_t m = find_member(type, (cstr)name, AU_MEMBER_VAR, 0, true);
     /// a persisted .agi outlives the schema that wrote it; skip dropped fields
@@ -3625,7 +3617,7 @@ Au Au_set_property(Au a, symbol name, Au value) {
 }
 
 
-Au Au_get_property_by_type(Au a, Au_t find_type) {
+AU_EXPORT Au Au_get_property_by_type(Au a, Au_t find_type) {
     Au_t type = isa(a);
     while (type && type != typeid(Au)) {
         for (num i = 0; i < type->members.count; i++) {
@@ -3642,7 +3634,7 @@ Au Au_get_property_by_type(Au a, Au_t find_type) {
     return null;
 }
 
-none Au_set_context_from(Au target, Au source) {
+AU_EXPORT none Au_set_context_from(Au target, Au source) {
     Au_t type     = isa(target);
     Au_t src_type = isa(source);
     while (type && type != typeid(Au)) {
@@ -3657,7 +3649,7 @@ none Au_set_context_from(Au target, Au source) {
     }
 }
 
-Au Au_get_property(Au a, symbol name) {
+AU_EXPORT Au Au_get_property(Au a, symbol name) {
     Au_t type = isa(a);
     Au_t m = find_member(type, (cstr)name, AU_MEMBER_VAR, 0, true);
     if (!m) return null;
@@ -3666,7 +3658,7 @@ Au Au_get_property(Au a, symbol name) {
     return *mdata;
 }
 
-map arguments(int argc, cstrs argv, map default_values, Au default_key) {
+AU_EXPORT map arguments(int argc, cstrs argv, map default_values, Au default_key) {
     map result = new(map, hsize, 16, assorted, true);
     for (item ii = default_values->first; ii; ii = ii->next) {
         Au k = ii->key;
@@ -3721,30 +3713,30 @@ Au primitive(Au_t type, none* data) {
     return copy;
 }
 
-Au _i8   (i8 data)   { return primitive(typeid(i8),   &data); }
-Au _u8   (u8 data)   { return primitive(typeid(u8),   &data); }
-Au _i16  (i16 data)  { return primitive(typeid(i16),  &data); }
-Au _u16  (u16 data)  { return primitive(typeid(u16),  &data); }
-Au _i32  (i32 data)  { return primitive(typeid(i32),  &data); }
-Au _u32  (u32 data)  { return primitive(typeid(u32),  &data); }
-Au _i64  (i64 data)  { return primitive(typeid(i64),  &data); }
-Au i      (i64 data)  { return primitive(typeid(i64),  &data); }
-Au _sz   (sz  data)  { return primitive(typeid(sz),   &data); }
-Au _u64  (u64 data)  { return primitive(typeid(u64),  &data); }
-Au _fp16 (fp16* data) { return primitive(typeid(fp16), data); }
-Au _bf16 (bf16* data) { return primitive(typeid(bf16), data); }
-Au _f32  (f32 data)  { return primitive(typeid(f32),  &data); }
-Au _f64  (f64 data)  { return primitive(typeid(f64),  &data); }
-Au float32(f32 data) { return primitive(typeid(f32),  &data); }
-Au real64(f64 data)  { return primitive(typeid(f64),  &data); }
-Au _cstr(cstr data) { return primitive(typeid(cstr), &data); }
-Au _none()          { return primitive(typeid(none), NULL);  }
-Au _bool(bool data) { return primitive(typeid(bool), &data); }
+AU_EXPORT Au _i8   (i8 data)   { return primitive(typeid(i8),   &data); }
+AU_EXPORT Au _u8   (u8 data)   { return primitive(typeid(u8),   &data); }
+AU_EXPORT Au _i16  (i16 data)  { return primitive(typeid(i16),  &data); }
+AU_EXPORT Au _u16  (u16 data)  { return primitive(typeid(u16),  &data); }
+AU_EXPORT Au _i32  (i32 data)  { return primitive(typeid(i32),  &data); }
+AU_EXPORT Au _u32  (u32 data)  { return primitive(typeid(u32),  &data); }
+AU_EXPORT Au _i64  (i64 data)  { return primitive(typeid(i64),  &data); }
+AU_EXPORT Au i      (i64 data)  { return primitive(typeid(i64),  &data); }
+AU_EXPORT Au _sz   (sz  data)  { return primitive(typeid(sz),   &data); }
+AU_EXPORT Au _u64  (u64 data)  { return primitive(typeid(u64),  &data); }
+AU_EXPORT Au _fp16 (fp16* data) { return primitive(typeid(fp16), data); }
+AU_EXPORT Au _bf16 (bf16* data) { return primitive(typeid(bf16), data); }
+AU_EXPORT Au _f32  (f32 data)  { return primitive(typeid(f32),  &data); }
+AU_EXPORT Au _f64  (f64 data)  { return primitive(typeid(f64),  &data); }
+AU_EXPORT Au float32(f32 data) { return primitive(typeid(f32),  &data); }
+AU_EXPORT Au real64(f64 data)  { return primitive(typeid(f64),  &data); }
+AU_EXPORT Au _cstr(cstr data) { return primitive(typeid(cstr), &data); }
+AU_EXPORT Au _none()          { return primitive(typeid(none), NULL);  }
+AU_EXPORT Au _bool(bool data) { return primitive(typeid(bool), &data); }
 
 /// Au -------------------------
-none Au_init(Au a) { }
+AU_EXPORT none Au_init(Au a) { }
 
-none Au_drop_members(Au a) {
+AU_EXPORT none Au_drop_members(Au a) {
     Au   f = header((Au)a);
     Au_t type = (Au_t)f->au;
     // symmetric with hold_members for DEFERRED-init classes only: an
@@ -3788,7 +3780,7 @@ none Au_drop_members(Au a) {
     }
 }
 
-none Au_dealloc(Au a) {
+AU_EXPORT none Au_dealloc(Au a) {
     Au   f    = header(a);
     Au_t type = (Au_t)f->au;
 
@@ -3835,7 +3827,7 @@ static i32 au_key_compare(Au a, Au b) {
     return Au_compare(a, b);
 }
 
-bool Au_cast_bool (Au a) {
+AU_EXPORT bool Au_cast_bool (Au a) {
     Au info = header(a);
     bool has_count = info->count > 0;
     if (has_count && info->au == typeid(bool))
@@ -3894,7 +3886,7 @@ static cstr ws(cstr p) {
     return scan;
 }
 
-string prep_cereal(cereal cs) {
+AU_EXPORT string prep_cereal(cereal cs) {
     cstr   scan = (cstr)cs.value;
     string res;
 
@@ -3959,7 +3951,7 @@ static Au au_arg_path(cstr value) {
     return (Au)path(buf);
 }
 
-Au Au_with_cstrs(Au a, cstrs argv) {
+AU_EXPORT Au Au_with_cstrs(Au a, cstrs argv) {
     engage(argv);
     // app object allocates before engage — register it retroactively
     if (au_leaks()) leak_insert(header(a));
@@ -4103,7 +4095,7 @@ Au Au_with_cstrs(Au a, cstrs argv) {
     return a;
 }
 
-Au Au_with_cereal(Au a, cereal _cs) {
+AU_EXPORT Au Au_with_cereal(Au a, cereal _cs) {
     cstr cs = _cs.value;
     sz len = strlen(cs);
     Au        f = header(a);
@@ -4148,7 +4140,7 @@ Au Au_with_cereal(Au a, cereal _cs) {
     return a;
 }
 
-bool constructs_with(Au_t type, Au_t with_type) {
+AU_EXPORT bool constructs_with(Au_t type, Au_t with_type) {
     for (num i = 0; i < type->members.count; i++) {
         Au_t mem = (Au_t)type->members.origin[i];
         if ((mem->member_type & AU_MEMBER_CONSTRUCT) != 0) {
@@ -4327,7 +4319,7 @@ Au construct_with(Au_t type, Au data, ctx context) { sequencer
 }
 
 // call matching constructor on an already-allocated object (context props set beforehand)
-none Au_call_construct(Au obj, Au data) {
+AU_EXPORT none Au_call_construct(Au obj, Au data) {
     Au_t type      = isa(obj);
     Au_t data_type = isa(data);
     Au_t au = type;
@@ -4355,12 +4347,12 @@ none Au_call_construct(Au obj, Au data) {
     Au_initialize(obj);
 }
 
-Au_t __typeid(Au input) {
+AU_EXPORT Au_t __typeid(Au input) {
     Au_t i = isa(input);
     return i;
 }
 
-Au __convert(Au_t type, Au value) {
+AU_EXPORT Au __convert(Au_t type, Au value) {
     Au_t vtype = isa(value);
     if (vtype == type)
         return value;
@@ -4383,7 +4375,7 @@ static bool au_num_value(Au v, f64* out) {
     return true;
 }
 
-Au Au_mix(Au a, Au target, f64 amount) {
+AU_EXPORT Au Au_mix(Au a, Au target, f64 amount) {
     // numeric scalars mix directly — primitives register no operator members
     f64 av, bv;
     if (au_num_value(a, &av) && au_num_value(target, &bv)) {
@@ -4409,12 +4401,12 @@ Au Au_mix(Au a, Au target, f64 amount) {
     return result;
 }
 
-Au Au_member_ref(Au container, Au_t m) {
+AU_EXPORT Au Au_member_ref(Au container, Au_t m) {
     if (m->member_type != AU_MEMBER_VAR) return null;
     return (Au)((char*)container + m->offset);
 }
 
-none mix_structs(Au_t type, Au dst, Au a, Au b, f64 t) {
+AU_EXPORT none mix_structs(Au_t type, Au dst, Au a, Au b, f64 t) {
     f64 inv = 1.0 - t;
     for (int i = 0; i < type->members.count; i++) {
         Au_t m = (Au_t)type->members.origin[i];
@@ -4438,7 +4430,7 @@ none mix_structs(Au_t type, Au dst, Au a, Au b, f64 t) {
     }
 }
 
-Au __op(i32 optype, Au L, Au R) {
+AU_EXPORT Au __op(i32 optype, Au L, Au R) {
     Au_t type = isa(L);
     Au_t op_mem = null;
     Au_t search = type;
@@ -4503,7 +4495,7 @@ none serialize(Au_t type, string res, Au a) {
     }
 }
 
-bool Au_member_set(Au a, Au_t m, Au value) {
+AU_EXPORT bool Au_member_set(Au a, Au_t m, Au value) {
     if (!(m->member_type == AU_MEMBER_VAR))
         return false;
 
@@ -4545,7 +4537,7 @@ bool Au_member_set(Au a, Au_t m, Au value) {
 }
 
 // try to use this where possible
-Au Au_member_object(Au a, Au_t m) {
+AU_EXPORT Au Au_member_object(Au a, Au_t m) {
     if (!(m->member_type == AU_MEMBER_VAR))
         return null; // we do this so much, that its useful as a filter in for statements
 
@@ -4566,7 +4558,7 @@ Au Au_member_object(Au a, Au_t m) {
     return result;
 }
 
-string Au_cast_string(Au a) {
+AU_EXPORT string Au_cast_string(Au a) {
     Au_t type = isa(a);
     
     // convenient feature of new object abi
@@ -4646,10 +4638,10 @@ string Au_cast_string(Au a) {
     if (type == typeid(f64)) *(f64*)a = (f64)v; \
     return a;
 
-Au numeric_with_i8 (Au a, i8   v) { set_v(); }
-Au numeric_with_i16(Au a, i16  v) { set_v(); }
-Au numeric_with_i32(Au a, i32  v) { set_v(); }
-Au numeric_with_i64(Au a, i64  v) {
+AU_EXPORT Au numeric_with_i8 (Au a, i8   v) { set_v(); }
+AU_EXPORT Au numeric_with_i16(Au a, i16  v) { set_v(); }
+AU_EXPORT Au numeric_with_i32(Au a, i32  v) { set_v(); }
+AU_EXPORT Au numeric_with_i64(Au a, i64  v) {
     Au_t type = isa(a);
     if (type == typeid(i8))  *(i8*) a = (i8) v;
     if (type == typeid(i16)) *(i16*)a = (i16)v;
@@ -4663,18 +4655,18 @@ Au numeric_with_i64(Au a, i64  v) {
     if (type == typeid(f64)) *(f64*)a = (f64)v; \
     return a;
 }
-Au numeric_with_u8 (Au a, u8   v) { set_v(); }
-Au numeric_with_u16(Au a, u16  v) { set_v(); }
-Au numeric_with_u32(Au a, u32  v) { set_v(); }
-Au numeric_with_u64(Au a, u64  v) { set_v(); }
-Au numeric_with_f32(Au a, f32  v) { set_v(); }
-Au numeric_with_f64(Au a, f64  v) { set_v(); }
-Au numeric_with_bool(Au a, bool v) { set_v(); }
-Au numeric_with_num(Au a, num  v) { set_v(); }
+AU_EXPORT Au numeric_with_u8 (Au a, u8   v) { set_v(); }
+AU_EXPORT Au numeric_with_u16(Au a, u16  v) { set_v(); }
+AU_EXPORT Au numeric_with_u32(Au a, u32  v) { set_v(); }
+AU_EXPORT Au numeric_with_u64(Au a, u64  v) { set_v(); }
+AU_EXPORT Au numeric_with_f32(Au a, f32  v) { set_v(); }
+AU_EXPORT Au numeric_with_f64(Au a, f64  v) { set_v(); }
+AU_EXPORT Au numeric_with_bool(Au a, bool v) { set_v(); }
+AU_EXPORT Au numeric_with_num(Au a, num  v) { set_v(); }
 
-Au Au_method(Au_t type, cstr method_name, array args);
+AU_EXPORT Au Au_method(Au_t type, cstr method_name, array args);
 
-sz Au_len(Au a) {
+AU_EXPORT sz Au_len(Au a) {
     if (!a) return 0;
     Au_t t = isa(a);
     if (instanceof(t, string))     return ((string)a)->count;
@@ -4692,7 +4684,7 @@ i32 Au_compare(Au a, Au b) {
     return memcmp(a, b, au->typesize);
 }
 
-num parse_formatter(cstr start, cstr res, num sz) {
+AU_EXPORT num parse_formatter(cstr start, cstr res, num sz) {
     cstr scan = start;
     num index = 0;
     if (*scan == '%') {
@@ -4922,33 +4914,33 @@ u64 fnv1a_hash(const none* data, size_t length, u64 hash) {
     return hash;
 }
 
-list   list_copy(list a) {
+AU_EXPORT list   list_copy(list a) {
     list  b = new(list);
     for (item i = a->first; i; i = i->next)
         push(b, i->value);
     return b;
 }
 
-u64 item_hash(item f) {
+AU_EXPORT u64 item_hash(item f) {
     return Au_hash(f->key ? f->key : f->value);
 }
 
-none item_init(item a) {
+AU_EXPORT none item_init(item a) {
 }
 
-num clamp(num i, num mn, num mx) {
+AU_EXPORT num clamp(num i, num mn, num mx) {
     if (i < mn) return mn;
     if (i > mx) return mx;
     return i;
 }
 
-real clampf(real i, real mn, real mx) {
+AU_EXPORT real clampf(real i, real mn, real mx) {
     if (i < mn) return mn;
     if (i > mx) return mx;
     return i;
 }
 
-none vector_init(vector a);
+AU_EXPORT none vector_init(vector a);
 
 // grow the vector's user-space `origin` buffer to hold at least `alloc` elements.
 // the buffer is sized in `vdata_stride` units (scalar size for primitive vectors,
@@ -4965,24 +4957,24 @@ static void vector_grow(vector a, sz alloc) {
     a->alloc  = alloc;
 }
 
-vector vector_with_i32(vector a, i32 count) {
+AU_EXPORT vector vector_with_i32(vector a, i32 count) {
     vector_grow(a, count);
     return a;
 }
 
-sz vector_len(vector a) {
+AU_EXPORT sz vector_len(vector a) {
     return a->count;
 }
 
 // we want hashmap to do less memory refs than map; also no ordering needed
-none store_init(store a) {
+AU_EXPORT none store_init(store a) {
     Au_t au = isa(a);
     int sz = sizeof(struct _store);
     if (a->hsize <= 0) a->hsize = 4096;
     if (a->hsize) a->hlist = (item*)calloc(a->hsize, sizeof(item));
 }
 
-none store_dealloc(store a) {
+AU_EXPORT none store_dealloc(store a) {
     for (int h = 0; h < a->hsize; h++) {
         item n = null;
         for (item i = a->hlist[h]; i; i = n) {
@@ -4994,7 +4986,7 @@ none store_dealloc(store a) {
     a->count = 0;
 }
 
-Au store_get(store a, Au key) {
+AU_EXPORT Au store_get(store a, Au key) {
     item f = a->hlist[((size_t)(uintptr_t)key >> 3) % a->hsize];
     for (item i = f; i; i = i->next) {
         if (i->key == key)
@@ -5006,7 +4998,7 @@ Au store_get(store a, Au key) {
 // writers serialize; get() stays lockless (head-publish insert)
 static pthread_mutex_t store_wlock = PTHREAD_MUTEX_INITIALIZER;
 
-none store_set(store a, Au key, Au val) {
+AU_EXPORT none store_set(store a, Au key, Au val) {
     pthread_mutex_lock(&store_wlock);
     item *loc = &a->hlist[((size_t)(uintptr_t)key >> 3) % a->hsize];
     item f = *loc;
@@ -5028,7 +5020,7 @@ none store_set(store a, Au key, Au val) {
     pthread_mutex_unlock(&store_wlock);
 }
 
-none store_rm(store a, Au key) {
+AU_EXPORT none store_rm(store a, Au key) {
     pthread_mutex_lock(&store_wlock);
     item *loc = &a->hlist[((size_t)(uintptr_t)key >> 3) % a->hsize];
     item  f   = *loc;
@@ -5054,13 +5046,13 @@ none store_rm(store a, Au key) {
 }
 
 
-none map_init(map m) {
+AU_EXPORT none map_init(map m) {
     if (m->hsize <= 0) m->hsize = 8;
     if (m->hsize) m->hlist = (item*)calloc(m->hsize, sizeof(item));
     m->assorted = true;
 }
 
-map map_copy(map m) {
+AU_EXPORT map map_copy(map m) {
     map a = map(hsize, 16, assorted, m->assorted, unmanaged, m->unmanaged);
     pairs(m, i) {
         set(a, i->key, i->value);
@@ -5068,12 +5060,12 @@ map map_copy(map m) {
     return a;
 }
 
-none map_dealloc(map m) {
+AU_EXPORT none map_dealloc(map m) {
     clear(m);
     free(m->hlist);
 }
 
-item map_lookup(map m, Au k) {
+AU_EXPORT item map_lookup(map m, Au k) {
     if (!m->hlist) {
         u64 h = Au_hash(k);
         for (item i = m->first; i; i = i->next)
@@ -5092,7 +5084,7 @@ item map_lookup(map m, Au k) {
     return null;
 }
 
-bool map_contains(map m, Au k) {
+AU_EXPORT bool map_contains(map m, Au k) {
     return map_lookup(m, k) != null;
 }
 
@@ -5101,7 +5093,7 @@ Au map_get(map m, Au k) {
     return i ? i->value : null;
 }
 
-item map_fetch(map m, Au k) {
+AU_EXPORT item map_fetch(map m, Au k) {
     item i = map_lookup(m, k);
     if (!i) {
         u64 h = Au_hash(k);
@@ -5116,7 +5108,7 @@ item map_fetch(map m, Au k) {
     return i;
 }
 
-Au map_value_by_index(map m, num idx) {
+AU_EXPORT Au map_value_by_index(map m, num idx) {
     int i = 0;
     pairs(m, ii) {
         if (i++ == idx)
@@ -5125,9 +5117,9 @@ Au map_value_by_index(map m, num idx) {
     return null;
 }
 
-Au list_push(list a, Au e);
+AU_EXPORT Au list_push(list a, Au e);
 
-none map_set(map m, Au k, Au v) {
+AU_EXPORT none map_set(map m, Au k, Au v) {
     if (!m->hlist) m->hlist = (item*)calloc(m->hsize, sizeof(item));
     item i = map_fetch(m, k);
     Au_t vtype = m->unmanaged ? null : isa(v);
@@ -5165,7 +5157,7 @@ none map_set(map m, Au k, Au v) {
     }
 }
 
-none map_rm_item(map m, item i) {
+AU_EXPORT none map_rm_item(map m, item i) {
     item ref = (item)i->ref;
     // keys are always owned; unmanaged borrows VALUES only
     if (i->key)   drop(i->key);
@@ -5181,7 +5173,7 @@ none map_rm_item(map m, item i) {
     drop(i);
 }
 
-none map_rm(map m, Au k) {
+AU_EXPORT none map_rm(map m, Au k) {
     u64  h    = Au_hash(k);
     i64  b    = h % m->hsize;
     item prev = null;
@@ -5200,7 +5192,7 @@ none map_rm(map m, Au k) {
         }
 }
 
-none map_clear(map m) {
+AU_EXPORT none map_clear(map m) {
     if (m->hlist) {
         for (int b = 0; b < m->hsize; b++) {
             item cur = ((item*)m->hlist)[b];
@@ -5213,22 +5205,22 @@ none map_clear(map m) {
     }
 }
 
-sz map_len(map a) {
+AU_EXPORT sz map_len(map a) {
     return a->count;
 }
 
 // find out how these two get mixed up on import
-Au map_getter_sz(map a, sz index) {
+AU_EXPORT Au map_getter_sz(map a, sz index) {
     assert(index >= 0 && index < a->count, "index out of range");
     item i = (item)list_value_by_index((list)a, (Au)_sz(index));
     return i ? i->value : null;
 }
 
-Au map_getter_Au(map a, Au key) {
+AU_EXPORT Au map_getter_Au(map a, Au key) {
     return map_get(a, key);
 }
 
-none map_setter(map a, Au key, Au value, i32 op) {
+AU_EXPORT none map_setter(map a, Au key, Au value, i32 op) {
     if (op == OPType__assign) {
         map_set(a, key, value);
     } else {
@@ -5238,12 +5230,12 @@ none map_setter(map a, Au key, Au value, i32 op) {
     }
 }
 
-map map_with_i32(map a, i32 size) {
+AU_EXPORT map map_with_i32(map a, i32 size) {
     a->hsize = size;
     return a;
 }
 
-string map_cast_string(map a) {
+AU_EXPORT string map_cast_string(map a) {
     string res  = string(alloc, 1024);
     bool   once = false;
     for (item i = a->first; i; i = i->next) {
@@ -5258,15 +5250,15 @@ string map_cast_string(map a) {
     return res;
 }
 
-none map_concat(map a, map b) {
+AU_EXPORT none map_concat(map a, map b) {
     pairs(b, e) set(a, e->key, e->value);
 }
 
-bool map_cast_bool(map a) {
+AU_EXPORT bool map_cast_bool(map a) {
     return a->count > 0;
 }
 
-map map_of(symbol first_key, ...) {
+AU_EXPORT map map_of(symbol first_key, ...) {
     map a = map(hsize, 16, assorted, true);
     va_list args;
     va_start(args, first_key);
@@ -5282,50 +5274,50 @@ map map_of(symbol first_key, ...) {
     return a;
 }
 
-srcfile srcfile_with_Au(srcfile a, Au obj) {
+AU_EXPORT srcfile srcfile_with_Au(srcfile a, Au obj) {
     a->obj = obj;
     return a;
 }
 
-string srcfile_cast_string(srcfile a) {
+AU_EXPORT string srcfile_cast_string(srcfile a) {
     Au i = head(a->obj);
     return f(string, "%s:%i", i->source, i->line);
 }
 
 
-bool string_is_numeric(string a) {
+AU_EXPORT bool string_is_numeric(string a) {
     return a->chars[0] == '-' ||
           (a->chars[0] >= '0' && a->chars[0] <= '9');
 }
 
-i32 string_first(string a) {
+AU_EXPORT i32 string_first(string a) {
     return a->count ? a->chars[0] : 0;
 }
 
-i32 string_last(string a) {
+AU_EXPORT i32 string_last(string a) {
     return a->count ? a->chars[a->count - 1] : 0;
 }
 
-f64 string_real_value(string a) {
+AU_EXPORT f64 string_real_value(string a) {
     double v = 0.0;
     sscanf(a->chars, "%lf", &v);
     return v;
 }
 
 
-string string_ucase(string a) {
+AU_EXPORT string string_ucase(string a) {
     string res = string(a->chars);
     for (cstr s = (cstr)res->chars; *s; ++s) *s = toupper((unsigned char)*s);
     return res;
 }
 
-string string_lcase(string a) {
+AU_EXPORT string string_lcase(string a) {
     string res = string(a->chars);
     for (cstr s = (cstr)res->chars; *s; ++s) *s = tolower((unsigned char)*s);
     return res;
 }
 
-string string_escape(string input) {
+AU_EXPORT string string_escape(string input) {
     struct {
         char   ascii;
         symbol escape;
@@ -5372,7 +5364,7 @@ string string_escape(string input) {
     return res;
 }
 
-string string_unescape(string input) {
+AU_EXPORT string string_unescape(string input) {
     int input_len = len(input);
     cstr buf = calloc(input_len + 1, 1);
     int pos = 0;
@@ -5426,18 +5418,18 @@ string string_unescape(string input) {
     return res;
 }
 
-none  string_dealloc(string a) {
+AU_EXPORT none  string_dealloc(string a) {
     free((cstr)a->chars);
 }
-num   string_compare(string a, string b) { if (a == b) return 0; if (!a || !b) return a ? 1 : -1; return strcmp(a->chars, b->chars); }
-num   string_cmp    (string a, symbol b) { return strcmp(a->chars, b); }
-bool  string_eq     (string a, symbol b) { return strcmp(a->chars, b) == 0; }
+AU_EXPORT num   string_compare(string a, string b) { if (a == b) return 0; if (!a || !b) return a ? 1 : -1; return strcmp(a->chars, b->chars); }
+AU_EXPORT num   string_cmp    (string a, symbol b) { return strcmp(a->chars, b); }
+AU_EXPORT bool  string_eq     (string a, symbol b) { return strcmp(a->chars, b) == 0; }
 
-string string_copy(string a) {
+AU_EXPORT string string_copy(string a) {
     return string((symbol)a->chars);
 }
 
-bool inherits(Au_t src, Au_t check) {
+AU_EXPORT bool inherits(Au_t src, Au_t check) {
     if (!src) return false;
     if (src->member_type == AU_MEMBER_VAR)
         src = src->src;
@@ -5459,7 +5451,7 @@ static inline char just_a_dash(char a) {
     return a == '-' ? '_' : a;
 }
 
-array string_split_parts(string a) {
+AU_EXPORT array string_split_parts(string a) {
     array  res = array(alloc, 32);
     cstr   s   = (cstr)a->chars;
     string buf = string(alloc, 256);
@@ -5517,7 +5509,7 @@ array string_split_parts(string a) {
 }
 
 
-string string_interpolate(string a, Au ff) {
+AU_EXPORT string string_interpolate(string a, Au ff) {
     cstr   s    = (cstr)a->chars;
     cstr   prev = null;
     string res  = string(alloc, 256);
@@ -5594,7 +5586,7 @@ string string_interpolate(string a, Au ff) {
     return res;
 }
 
-i8    string_getter_i64(string a, i64 index) {
+AU_EXPORT i8    string_getter_i64(string a, i64 index) {
     if (index < 0)
         index += a->count;
     if (index >= a->count)
@@ -5602,7 +5594,7 @@ i8    string_getter_i64(string a, i64 index) {
     return (i8)a->chars[index];
 }
 
-array string_split(string a, symbol sp) {
+AU_EXPORT array string_split(string a, symbol sp) {
     cstr next = (cstr)a->chars;
     sz   slen = strlen(sp);
     array result = array(32);
@@ -5618,7 +5610,7 @@ array string_split(string a, symbol sp) {
     return result;
 }
 
-none string_alloc_sz(string a, sz alloc) {
+AU_EXPORT none string_alloc_sz(string a, sz alloc) {
     char* chars = calloc(1 + alloc, sizeof(char));
     memcpy(chars, a->chars, sizeof(char) * a->count);
     chars[a->count] = 0;
@@ -5627,7 +5619,7 @@ none string_alloc_sz(string a, sz alloc) {
     a->alloc = alloc;
 }
 
-string string_mid(string a, num start, num len) {
+AU_EXPORT string string_mid(string a, num start, num len) {
     if (start < 0)
         start = a->count + start;
     if (start < 0)
@@ -5639,18 +5631,18 @@ string string_mid(string a, num start, num len) {
     return new(string, chars, &a->chars[start], ref_length, len);
 }
 
-none  string_reserve(string a, num extra) {
+AU_EXPORT none  string_reserve(string a, num extra) {
     if (a->alloc - a->count >= extra)
         return;
     string_alloc_sz(a, a->alloc + extra);
 }
 
-none  string_alloc_ahead(string a, i64 extra_space) {
+AU_EXPORT none  string_alloc_ahead(string a, i64 extra_space) {
     if (extra_space + a->count >= a->alloc)
         string_alloc_sz(a, (a->alloc << 1) + extra_space);
 }
 
-none  string_append(string a, symbol b) {
+AU_EXPORT none  string_append(string a, symbol b) {
     if (!b) return;
     sz blen = strlen(b);
     alloc_ahead(a, blen);
@@ -5660,7 +5652,7 @@ none  string_append(string a, symbol b) {
     ((cstr)a->chars)[a->count] = 0;
 }
 
-none  string_append_count(string a, symbol b, i32 blen) {
+AU_EXPORT none  string_append_count(string a, symbol b, i32 blen) {
     alloc_ahead(a, blen);
     memcpy((cstr)&a->chars[a->count], b, blen);
     a->count += blen;
@@ -5670,7 +5662,7 @@ none  string_append_count(string a, symbol b, i32 blen) {
 
 static bool trim_ws(char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; }
 
-string string_trim(string a) {
+AU_EXPORT string string_trim(string a) {
     cstr s = cstring(a);
     int count = len(a);
     while (trim_ws(*s)) {
@@ -5683,7 +5675,7 @@ string string_trim(string a) {
     return string(chars, s, ref_length, count);
 }
 
-string string_ltrim(string a) {
+AU_EXPORT string string_ltrim(string a) {
     cstr s = cstring(a);
     int count = len(a);
     while (*s == ' ') {
@@ -5693,7 +5685,7 @@ string string_ltrim(string a) {
     return string(chars, s, ref_length, count);
 }
 
-string string_rtrim(string a) {
+AU_EXPORT string string_rtrim(string a) {
     cstr s = cstring(a);
     int count = len(a);
     while (s[count - 1] == ' ')
@@ -5701,11 +5693,11 @@ string string_rtrim(string a) {
     return string(chars, s, ref_length, count);
 }
 
-none string_operator__assign_add(string a, string b) {
+AU_EXPORT none string_operator__assign_add(string a, string b) {
     concat(a, b);
 }
 
-string string_operator__add(string a, string b) {
+AU_EXPORT string string_operator__add(string a, string b) {
     if (au_leaks())
         __atomic_fetch_add(&dbg_add_since_drain, 1, __ATOMIC_SEQ_CST);
     string res = string(alloc, (a ? a->count : 0) + (b ? b->count : 0) + 1);
@@ -5714,7 +5706,7 @@ string string_operator__add(string a, string b) {
     return res;
 }
 
-none  string_push(string a, u32 b) {
+AU_EXPORT none  string_push(string a, u32 b) {
     sz blen = 1;
     alloc_ahead(a, blen);
     memcpy((cstr)&a->chars[a->count], &b, 1);
@@ -5723,17 +5715,17 @@ none  string_push(string a, u32 b) {
     ((cstr)a->chars)[a->count] = 0;
 }
 
-none  string_concat(string a, string b) {
+AU_EXPORT none  string_concat(string a, string b) {
     if (b)
         string_append(a, b->chars);
 }
 
-num   string_index_of(string a, symbol cs) {
+AU_EXPORT num   string_index_of(string a, symbol cs) {
     cstr f = strstr(a->chars, cs);
     return f ? (num)(f - a->chars) : (num)-1;
 }
 
-num   string_rindex_of(string a, symbol cs) {
+AU_EXPORT num   string_rindex_of(string a, symbol cs) {
     cstr   haystack = a->chars;
     cstr   last     = NULL;
     size_t len      = strlen(haystack);
@@ -5745,48 +5737,48 @@ num   string_rindex_of(string a, symbol cs) {
     return last ? (num)(last - haystack) : (num)-1;
 }
 
-bool string_cast_bool(string a) {
+AU_EXPORT bool string_cast_bool(string a) {
     return a && a->count > 0;
 }
 
-sz string_cast_sz(string a) {
+AU_EXPORT sz string_cast_sz(string a) {
     return a->count;
 }
 
-cstr string_cast_cstr(string a) {
+AU_EXPORT cstr string_cast_cstr(string a) {
     return (cstr)a ? a->chars : null;
 }
 
-none string_writef(string a, handle f, bool new_line) {
+AU_EXPORT none string_writef(string a, handle f, bool new_line) {
     FILE* output = f ? f : stdout;
     fwrite(a->chars, a->count, 1, output);
     if (new_line) fwrite("\n", 1, 1, output);
     fflush(output);
 }
 
-path string_cast_path(string a) {
+AU_EXPORT path string_cast_path(string a) {
     return new(path, chars, a->chars);
 }
 
 
 
-u64 string_hash(string a) {
+AU_EXPORT u64 string_hash(string a) {
     if (a->h) return a->h;
     a->h = fnv1a_hash(a->chars, a->count, OFFSET_BASIS);
     return a->h;
 }
 
-none msg_init(msg a) {
+AU_EXPORT none msg_init(msg a) {
     a->role    = cstr_copy(a->role);
     a->content = cstr_copy(a->content);
 }
 
-none msg_dealloc(msg a) {
+AU_EXPORT none msg_dealloc(msg a) {
     free(a->role);
     free(a->content);
 }
 
-none string_init(string a) {
+AU_EXPORT none string_init(string a) {
     cstr value = (cstr)a->chars;
     if (a->chars && a->alloc) return; // we're allocated already
 
@@ -5808,7 +5800,7 @@ none string_init(string a) {
 }
 
 
-string string_with_unichar(string a, unichar value) {
+AU_EXPORT string string_with_unichar(string a, unichar value) {
     char buf[4];
     int  n = 0;
     if      (value < 0x80)     { buf[n++] = value; }
@@ -5828,27 +5820,27 @@ string string_with_unichar(string a, unichar value) {
     return a;
 }
 
-string unicode_char(i32 value) {
+AU_EXPORT string unicode_char(i32 value) {
     string s = string();
     string_with_unichar(s, value);
     return s;
 }
 
-string string_with_i64(string a, i64 value) {
+AU_EXPORT string string_with_i64(string a, i64 value) {
     a->alloc = 64;
     a->chars = calloc(a->alloc, 1);
     a->count = snprintf(a->chars, 64, "%lli", value);
     return a;
 }
 
-string string_with_u64(string a, u64 value) {
+AU_EXPORT string string_with_u64(string a, u64 value) {
     a->alloc = 64;
     a->chars = calloc(a->alloc, 1);
     a->count = snprintf(a->chars, 64, "%llu", value);
     return a;
 }
 
-string string_with_f64(string a, f64 value) {
+AU_EXPORT string string_with_f64(string a, f64 value) {
     a->alloc = 64;
     a->chars = calloc(a->alloc, 1);
     a->count = snprintf(a->chars, 64, "%g", value);
@@ -5864,24 +5856,24 @@ string string_with_cstr(string a, cstr value) {
 }
 
 
-string string_with_symbol(string a, symbol value) {
+AU_EXPORT string string_with_symbol(string a, symbol value) {
     return string_with_cstr(a, (cstr)value);
 }
 
 
-bool string_starts_with(string a, symbol value) {
+AU_EXPORT bool string_starts_with(string a, symbol value) {
     sz ln = strlen(value);
     if (!ln || ln > a->count) return false;
     return strncmp(&a->chars[0], value, ln) == 0;
 }
 
-bool string_ends_with(string a, symbol value) {
+AU_EXPORT bool string_ends_with(string a, symbol value) {
     sz ln = strlen(value);
     if (!ln || ln > a->count) return false;
     return strcmp(&a->chars[a->count - ln], value) == 0;
 }
 
-none list_quicksort(list a, i32(*sfn)(Au, Au)) {
+AU_EXPORT none list_quicksort(list a, i32(*sfn)(Au, Au)) {
     item f = a->first;
     int  n = a->count;
     for (int i = 0; i < n - 1; i++) {
@@ -5897,13 +5889,13 @@ none list_quicksort(list a, i32(*sfn)(Au, Au)) {
     }
 }
 
-none list_sort(list a, ARef fn) {
+AU_EXPORT none list_sort(list a, ARef fn) {
     list_quicksort(a, (i32(*)(Au, Au))fn);
 }
 
-Au list_get(list a, Au at_index);
+AU_EXPORT Au list_get(list a, Au at_index);
 
-Au Au_copy(Au a) {
+AU_EXPORT Au Au_copy(Au a) {
     Au f = header(a);
     assert(f->count > 0, "invalid count");
     Au_t type = isa(a);
@@ -5913,7 +5905,7 @@ Au Au_copy(Au a) {
     return b;
 }
 
-none Au_free(Au a) {
+AU_EXPORT none Au_free(Au a) {
     Au       aa = header(a);
 #ifndef NDEBUG
     // freed headers carry -8888: freeing twice corrupts the heap — name it
@@ -5988,7 +5980,7 @@ none Au_free(Au a) {
 
 /// binding works with delegate callback registration efficiently to 
 /// avoid namespace collisions, and allow enumeration interfaces without override and base Au boilerplate
-callback Au_binding(Au a, Au target, bool required, Au_t rtype, Au_t arg_type, symbol id, symbol name) {
+AU_EXPORT callback Au_binding(Au a, Au target, bool required, Au_t rtype, Au_t arg_type, symbol id, symbol name) {
     Au_t self_type   = isa(a);
     Au_t target_type = isa(target);
     bool inherits     = instance_of(target, self_type) != null;
@@ -6007,22 +5999,22 @@ callback Au_binding(Au a, Au target, bool required, Au_t rtype, Au_t arg_type, s
     return f;
 }
 
-Au Au_vdata(Au a) {
+AU_EXPORT Au Au_vdata(Au a) {
     Au obj = header(a);
     return obj->data;
 }
 
-i64 Au_vdata_stride(Au a) {
+AU_EXPORT i64 Au_vdata_stride(Au a) {
     Au_t t = vdata_type(a);
     return t->typesize - (t->traits & AU_TRAIT_PRIMITIVE ? 0 : sizeof(none*));
 }
 
-Au_t Au_vdata_type(Au a) {
+AU_EXPORT Au_t Au_vdata_type(Au a) {
     Au f = header(a);
     return f->scalar ? f->scalar : (Au_t)f->au;
 }
 
-Au Au_instance_of(Au inst, Au_t type) {
+AU_EXPORT Au Au_instance_of(Au inst, Au_t type) {
     if (!inst) return null;
 
     verify(inst, "instanceof given a null value");
@@ -6040,7 +6032,7 @@ Au Au_instance_of(Au inst, Au_t type) {
 }
 
 /// list -------------------------
-none list_push_item(list a, item i) {
+AU_EXPORT none list_push_item(list a, item i) {
     if (a->last) {
         a->last->next = i;
         i->prev = a->last;
@@ -6054,7 +6046,7 @@ none list_push_item(list a, item i) {
     a->count++;
 }
 
-Au list_push(list a, Au e) {
+AU_EXPORT Au list_push(list a, Au e) {
     item n = (item)Au_hold((Au)item());
     n->value = a->unmanaged ? e : Au_hold(e);
     if (a->last) {
@@ -6069,11 +6061,11 @@ Au list_push(list a, Au e) {
 }
 
 
-none list_dealloc(list a) {
+AU_EXPORT none list_dealloc(list a) {
     while (pop(a)) { }
 }
 
-item list_insert_after(list a, Au e, i32 after) {
+AU_EXPORT item list_insert_after(list a, Au e, i32 after) {
     num index = 0;
     item found = null;
     if (after >= 0)
@@ -6115,7 +6107,7 @@ item list_insert_after(list a, Au e, i32 after) {
     return n;
 }
 
-num list_index_of(list a, Au value) {
+AU_EXPORT num list_index_of(list a, Au value) {
     num index = 0;
     for (item ai = a->first; ai; ai = ai->next) {
         if (ai->value == value)
@@ -6125,7 +6117,7 @@ num list_index_of(list a, Au value) {
     return -1;
 }
 
-item list_item_of(list a, Au value) {
+AU_EXPORT item list_item_of(list a, Au value) {
     num index = 0;
     for (item ai = a->first; ai; ai = ai->next) {
         if (ai->value == value) {
@@ -6137,7 +6129,7 @@ item list_item_of(list a, Au value) {
     return null;
 }
 
-none list_remove(list a, num index) {
+AU_EXPORT none list_remove(list a, num index) {
     num i = 0;
     item res = null;
     for (item ai = a->first; ai; ai = ai->next) {
@@ -6154,7 +6146,7 @@ none list_remove(list a, num index) {
     }
 }
 
-none list_remove_item(list a, item ai) {
+AU_EXPORT none list_remove_item(list a, item ai) {
     num i = 0;
     if (ai) {
         if (ai == a->first) a->first = ai->next;
@@ -6165,7 +6157,7 @@ none list_remove_item(list a, item ai) {
     }
 }
 
-num list_compare(list a, list b) {
+AU_EXPORT num list_compare(list a, list b) {
     num diff  = a->count - b->count;
     if (diff != 0)
         return diff;
@@ -6180,7 +6172,7 @@ num list_compare(list a, list b) {
     return 0;
 }
 
-Au list_pop(list a) {
+AU_EXPORT Au list_pop(list a) {
     item l = a->last;
     if (!l)
         return null;
@@ -6197,7 +6189,7 @@ Au list_pop(list a) {
     return (Au)l;
 }
 
-Au list_value_by_index(list a, Au at_index) {
+AU_EXPORT Au list_value_by_index(list a, Au at_index) {
     sz index = 0;
     Au_t itype = isa(at_index);
     sz at = 0;
@@ -6223,12 +6215,12 @@ Au list_value_by_index(list a, Au at_index) {
 }
 
 
-bool Au_is_meta(Au a) {
+AU_EXPORT bool Au_is_meta(Au a) {
     Au_t t = isa(a);
     return t->meta.a != null;
 }
 
-bool Au_is_meta_compatible(Au a, Au b) {
+AU_EXPORT bool Au_is_meta_compatible(Au a, Au b) {
     Au_t t = isa(a);
     if (t->meta.a) {
         Au_t bt = isa(b);
@@ -6240,7 +6232,7 @@ bool Au_is_meta_compatible(Au a, Au b) {
     return false;
 }
 
-Au Au_vrealloc(Au a, sz alloc) {
+AU_EXPORT Au Au_vrealloc(Au a, sz alloc) {
     Au   i = header(a);
     if (alloc > i->alloc) {
         Au_t type = vdata_type(a);
@@ -6256,7 +6248,7 @@ Au Au_vrealloc(Au a, sz alloc) {
 }
 
 
-none vector_init(vector a) {
+AU_EXPORT none vector_init(vector a) {
     Au f = head(a);
     a->count   = 0;
     f->scalar  = (f->au && f->au->meta.a) ? meta_index((Au)a, 0)
@@ -6269,7 +6261,7 @@ none vector_init(vector a) {
         vector_grow(a, a->alloc);
 }
 
-vector vector_with_path(vector a, path file_path) {
+AU_EXPORT vector vector_with_path(vector a, path file_path) {
     Au f = head(a);
     f->scalar = typeid(i8);
     verify(exists(file_path), "file %o does not exist", file_path);
@@ -6286,30 +6278,30 @@ vector vector_with_path(vector a, path file_path) {
     return a;
 }
 
-ARef vector_vget(vector a, num index) {
+AU_EXPORT ARef vector_vget(vector a, num index) {
     num location = index * a->au->typesize;
     i8* arb = (i8*)a->origin;
     return (ARef)&arb[location];
 }
 
-none vector_vset(vector a, num index, ARef element) {
+AU_EXPORT none vector_vset(vector a, num index, ARef element) {
     num location = index * a->au->typesize;
     i8* arb = (i8*)a->origin;
     memcpy(&arb[location], element, a->au->typesize);
 }
 
-Au vector_resize(vector a, sz size) {
+AU_EXPORT Au vector_resize(vector a, sz size) {
     vector_grow(a, size);
     a->count = size;
     return (Au)a->origin;
 }
 
-Au vector_reallocate(vector a, sz size) {
+AU_EXPORT Au vector_reallocate(vector a, sz size) {
     vector_grow(a, size);
     return (Au)a->origin;
 }
 
-none vector_vconcat(vector a, ARef any, num count) {
+AU_EXPORT none vector_vconcat(vector a, ARef any, num count) {
     if (count <= 0) return;
     Au_t type = vdata_type((Au)a);
     if (a->alloc < a->count + count)
@@ -6324,15 +6316,15 @@ none vector_vconcat(vector a, ARef any, num count) {
         f->data_shape->data[f->data_shape->count - 1] = a->count;
 }
 
-none vector_vpush(vector a, Au any) {
+AU_EXPORT none vector_vpush(vector a, Au any) {
     vector_vconcat(a, (ARef)any, 1);
 }
 
-num abso(num i) {
+AU_EXPORT num abso(num i) {
     return (i < 0) ? -i : i;
 }
 
-vector vector_vslice(vector a, num from, num to) {
+AU_EXPORT vector vector_vslice(vector a, num from, num to) {
     Au   f      = head(a);
     num  count  = (1 + abso(from - to));
     Au   res    = alloc((Au_t)f->au, 1, null, null, null, __FILE__, __LINE__, 0);
@@ -6351,30 +6343,41 @@ vector vector_vslice(vector a, num from, num to) {
     return vres;
 }
 
-sz vector_count(vector a) {
+AU_EXPORT sz vector_count(vector a) {
     return a->count;
 }
 
 define_class(vector, collective);
 
 
-Au subprocedure_invoke(subprocedure a, Au arg) {
+AU_EXPORT Au subprocedure_invoke(subprocedure a, Au arg) {
     Au(*addr)(Au, Au, Au) = a->addr;
     return addr(a->target, arg, a->ctx);
 }
 
 
-none path_init(path a) {
+// windows hands back both separators (and mixes them in one path).
+// paths keep a single form so parent_dir/change_ext and friends can
+// simply scan for '/'; windows accepts forward slashes everywhere.
+static void path_norm_sep(cstr s) {
+#ifdef _WIN32
+    if (!s) return;
+    for (; *s; s++) if (*s == '\\') *s = '/';
+#endif
+}
+
+AU_EXPORT none path_init(path a) {
     cstr arg = (cstr)a->chars;
     num  len = arg ? strlen(arg) : 0;
     a->chars = calloc(len + 1, 1);
     if (arg) {
         memcpy((cstr)a->chars, arg, len + 1);
         a->count = len;
+        path_norm_sep((cstr)a->chars);
     }
 }
 
-string path_mime(path a) {
+AU_EXPORT string path_mime(path a) {
     string e = ext(a);
     cstr res = null;
     if      (eq(e, "png"))  res = "image/png";
@@ -6389,13 +6392,13 @@ string path_mime(path a) {
     return string(res);
 }
 
-none path_cd(path a) {
+AU_EXPORT none path_cd(path a) {
     chdir(a->chars);
 }
 
 // backslash-escape shell metacharacters so the path survives as a single argument
 // (matches what a terminal inserts when you drag a file onto it)
-string path_shell_escape(path a) {
+AU_EXPORT string path_shell_escape(path a) {
     cstr s   = (cstr)a->chars;
     num  len = a->count;
     if (!s) return string("");
@@ -6417,7 +6420,7 @@ string path_shell_escape(path a) {
     return res;
 }
 
-string path_base64(path a) {
+AU_EXPORT string path_base64(path a) {
     FILE*    f = fopen(a->chars, "rb");
     if (!f) return null;
 
@@ -6469,18 +6472,18 @@ string path_base64(path a) {
     return res;
 }
 
-bool path_touch(path a) {
+AU_EXPORT bool path_touch(path a) {
     FILE* f = fopen(a->chars, "wx");
     if (f)
         fclose(f);
     return f != null;
 }
 
-bool path_remove(path a) {
+AU_EXPORT bool path_remove(path a) {
     return unlink(a->chars) == 0;
 }
 
-bool path_remove_dir(path a) {
+AU_EXPORT bool path_remove_dir(path a) {
     DIR* d = opendir(a->chars);
     if (!d) return true;
     struct dirent* entry;
@@ -6498,11 +6501,11 @@ bool path_remove_dir(path a) {
     return rmdir(a->chars) == 0;
 }
 
-path path_tempfile(symbol tmpl) {
+AU_EXPORT path path_tempfile(symbol tmpl) {
     path p = null;
     do {
         i64    h = (i64)rand() << 32 | (i64)rand();
-        string r = f(string, "/tmp/%p.%s", (none*)h, tmpl);
+        string r = f(string, "%s/%p.%s", temp_dir(), (none*)h, tmpl);
         p        = path(chars, r->chars);
     } while (exists(p));
     return p;
@@ -6514,59 +6517,61 @@ path path_with_string(path a, string s) {
     return a;
 }
 
-path path_with_tokens(path a, tokens s) {
+AU_EXPORT path path_with_tokens(path a, tokens s) {
     return path_with_string(a, (string)s);
 }
 
-bool path_create_symlink(path target, path link) {
+AU_EXPORT bool path_create_symlink(path target, path link) {
     bool is_err = symlink(target->chars, link->chars) == -1;
     return !is_err;
 }
 
-num path_len(path a) {
+AU_EXPORT num path_len(path a) {
     return strlen(cstring(a));
 }
 
-bool path_is_ext(path a, symbol e) {
+AU_EXPORT bool path_is_ext(path a, symbol e) {
     string ex = ext(a);
     if (ex && cmp(ex, e) == 0)
         return true;
     return false;
 }
 
-bool path_cast_bool(path a) {
+AU_EXPORT bool path_cast_bool(path a) {
     return a->chars && strlen(a->chars) > 0;
 }
 
-sz path_cast_sz(path a) {
+AU_EXPORT sz path_cast_sz(path a) {
     return strlen(a->chars);
 }
 
-cstr path_cast_cstr(path a) {
+AU_EXPORT cstr path_cast_cstr(path a) {
     return (cstr)a->chars;
 }
 
-string path_cast_string(path a) {
+AU_EXPORT string path_cast_string(path a) {
     return new(string, chars, a->chars);
 }
 
-path path_with_cstr(path a, cstr cs) {
+AU_EXPORT path path_with_cstr(path a, cstr cs) {
     a->chars = copy_cstr((cstr)cs);
+    path_norm_sep((cstr)a->chars);
     a->count   = strlen(a->chars);
     return a;
 }
 
-path path_with_symbol(path a, symbol cs) {
+AU_EXPORT path path_with_symbol(path a, symbol cs) {
     a->chars = copy_cstr((cstr)cs);
+    path_norm_sep((cstr)a->chars);
     a->count   = strlen(a->chars);
     return a;
 }
 
-bool path_move(path a, path b) {
+AU_EXPORT bool path_move(path a, path b) {
     return rename(a->chars, b->chars) == 0;
 }
 
-bool path_make_dir(path a) {
+AU_EXPORT bool path_make_dir(path a) {
     cstr cs  = (cstr)a->chars;
     sz   len = strlen(cs);
     for (num i = 1; i < len; i++) {
@@ -6581,7 +6586,7 @@ bool path_make_dir(path a) {
     return stat(cs, &st) == 0 && S_ISDIR(st.st_mode);
 }
 
-i64 get_stat_millis(struct stat* st) {
+AU_EXPORT i64 get_stat_millis(struct stat* st) {
 #if defined(__APPLE__)
     return (i64)(st->st_mtimespec.tv_sec) * 1000 + st->st_mtimespec.tv_nsec / 1000000;
 #elif defined(_WIN32)
@@ -6647,7 +6652,7 @@ static path _path_latest_modified(path a, ARef mvalue, map visit) {
 #include <fcntl.h>
 #include <unistd.h>
 
-i64 path_wait_for_change(path a, i64 last_mod, i64 millis) {
+AU_EXPORT i64 path_wait_for_change(path a, i64 last_mod, i64 millis) {
     struct stat st;
 
     int fd = open(a->chars, O_EVTONLY);
@@ -6696,7 +6701,7 @@ i64 path_wait_for_change(path a, i64 last_mod, i64 millis) {
 
 #else
 
-i64 path_wait_for_change(path a, i64 last_mod, i64 millis) {
+AU_EXPORT i64 path_wait_for_change(path a, i64 last_mod, i64 millis) {
     int    fd = inotify_init1(IN_NONBLOCK);
     int    wd = inotify_add_watch(fd, a->chars, IN_MODIFY | IN_CLOSE_WRITE);
     char   buf[4096];
@@ -6723,11 +6728,11 @@ i64 path_wait_for_change(path a, i64 last_mod, i64 millis) {
 }
 #endif
 
-path path_latest_modified(path a, ARef mvalue) {
+AU_EXPORT path path_latest_modified(path a, ARef mvalue) {
     return _path_latest_modified(a, mvalue, map(hsize, 64));
 }
 
-i64 path_modified_time(path a) {
+AU_EXPORT i64 path_modified_time(path a) {
     struct stat st;
     if (stat((cstr)a->chars, &st) != 0) return 0;
 
@@ -6755,7 +6760,7 @@ i64 path_modified_time(path a) {
 // layout (LE): u32 magic('SFMT') u32 ver(=2);  section: u32 0xC0DEFACE u32 path_len,
 //   path bytes, i64 mtime, u32 token_count, token_count*{u32 line,col,len,syntax};
 //   end: u32 0.
-array path_read_format(path a) {
+AU_EXPORT array path_read_format(path a) {
     array out = array(alloc, 16);
     FILE* f = fopen((cstr)a->chars, "rb");
     if (!f) return out;
@@ -6806,7 +6811,7 @@ array path_read_format(path a) {
     return out;
 }
 
-bool path_is_dir(path a) {
+AU_EXPORT bool path_is_dir(path a) {
     DIR   *dir = opendir(a->chars);
     if (dir == NULL)
         return false;
@@ -6814,7 +6819,7 @@ bool path_is_dir(path a) {
     return true;
 }
 
-bool path_is_empty(path a) {
+AU_EXPORT bool path_is_empty(path a) {
     int    n = 0;
     struct dirent *d;
     DIR   *dir = opendir(a->chars);
@@ -6830,14 +6835,14 @@ bool path_is_empty(path a) {
     return n <= 2;  // Returns true if the directory is empty (only '.' and '..' are present)
 }
 
-string path_ext(path a) {
+AU_EXPORT string path_ext(path a) {
     for (int i = strlen(a->chars) - 1; i >= 0; i--)
         if (a->chars[i] == '.')
             return string(&a->chars[i + 1]);
     return string((cstr)null);
 }
 
-string path_stem(path a) {
+AU_EXPORT string path_stem(path a) {
     cstr cs  = (cstr)a->chars; /// this can be a bunch of folders we need to make in a row
     sz   len = strlen(cs);
     string res = new(string, alloc, 256);
@@ -6857,7 +6862,7 @@ string path_stem(path a) {
     return res;
 }
 
-string path_filename(path a) {
+AU_EXPORT string path_filename(path a) {
     cstr cs  = (cstr)a->chars;
     sz   len = strlen(cs);
     string res = new(string, alloc, 256);
@@ -6873,7 +6878,7 @@ string path_filename(path a) {
     return res;
 }
 
-path path_absolute(path a) {
+AU_EXPORT path path_absolute(path a) {
     path  result   = new(path);
     cstr  rpath    = realpath(a->chars, null);
     result->chars  = rpath ? cstr_copy(rpath) : copy_cstr("");
@@ -6881,7 +6886,7 @@ path path_absolute(path a) {
     return result;
 }
 
-path path_directory(path a) {
+AU_EXPORT path path_directory(path a) {
     path  result  = new(path);
     char* cp      = cstr_copy(a->chars);
     char* temp    = dirname(cp);
@@ -6891,7 +6896,7 @@ path path_directory(path a) {
     return result;
 }
 
-path path_parent_dir(path a) {
+AU_EXPORT path path_parent_dir(path a) {
     int len = strlen(a->chars);
     for (int i = len - 2; i >= 0; i--) { // -2 because we dont mind the first
         char ch = a->chars[i];
@@ -6906,7 +6911,7 @@ path path_parent_dir(path a) {
     return null;
 }
 
-path path_change_ext(path a, cstr ext) {
+AU_EXPORT path path_change_ext(path a, cstr ext) {
     int   e_len = strlen(ext);
     int     len = strlen(a->chars);
     int ext_pos = -1;
@@ -6936,7 +6941,7 @@ path path_change_ext(path a, cstr ext) {
     return res;
 }
 
-path path_self() {
+AU_EXPORT path path_self() {
     char exe[4096];
 #if defined(__APPLE__)
     uint32_t size = sizeof(exe);
@@ -6949,9 +6954,9 @@ path path_self() {
     return path(exe);
 }
 
-Exists resource_exists(Au o);
+AU_EXPORT Exists resource_exists(Au o);
 
-path path_share_path() {
+AU_EXPORT path path_share_path() {
     path exe    = path_self();
     path parent = path_parent_dir(exe); // verify this folder is bin?
     // SILVER_APP names the module this process RUNS, not the exe it runs
@@ -6967,7 +6972,7 @@ path path_share_path() {
 
 // disposable per-app cache, scoped by name: safe to delete anytime.
 // linux ~/.cache/<app> (XDG), mac ~/Library/Caches, win LOCALAPPDATA.
-path path_cache(cstr app) {
+AU_EXPORT path path_cache(cstr app) {
     string dir = null;
 #ifdef _WIN32
     cstr la = getenv("LOCALAPPDATA");
@@ -6996,7 +7001,7 @@ path path_cache(cstr app) {
 // share is static build resources; this is the runtime home:
 // linux ~/.local/state/<app> (XDG), mac Application Support, win
 // LOCALAPPDATA. created on first use.
-path path_storage(cstr app) {
+AU_EXPORT path path_storage(cstr app) {
     string dir = null;
 #ifdef _WIN32
     cstr la = getenv("LOCALAPPDATA");
@@ -7021,12 +7026,12 @@ path path_storage(cstr app) {
     return p;
 }
 
-bool path_is_symlink(path p) {
+AU_EXPORT bool path_is_symlink(path p) {
     struct stat st;
     return lstat(p->chars, &st) == 0 && S_ISLNK(st.st_mode);
 }
 
-path path_normalize(path p) {
+AU_EXPORT path path_normalize(path p) {
     const char *s = p->chars;
     const int is_abs = s[0] == '/';
 
@@ -7071,7 +7076,7 @@ path path_normalize(path p) {
     return path(buf);
 }
 
-path path_resolve(path p) {
+AU_EXPORT path path_resolve(path p) {
     char buf[4096];
     ssize_t len = readlink(p->chars, buf, sizeof(buf) - 1);
     if (len == -1) return hold(p);
@@ -7079,7 +7084,7 @@ path path_resolve(path p) {
     return path(buf);
 }
  
-bool path_eq(path a, symbol b) {
+AU_EXPORT bool path_eq(path a, symbol b) {
     struct stat sa, sb;
     int ia = stat(a->chars, &sa);
     int ib = stat(b,        &sb);
@@ -7092,7 +7097,7 @@ bool path_eq(path a, symbol b) {
 #define MAX_PATH_LEN 4096
 
 /// public statics are not 'static'
-path path_cwd() {
+AU_EXPORT path path_cwd() {
     sz size = MAX_PATH_LEN;
     path a = new(path);
     a->chars = calloc(size, 1);
@@ -7105,7 +7110,7 @@ path path_cwd() {
 // the cwd the process launched in. silver-host records it in SILVER_STARTUP before
 // it cd's to the share dir (host is plain C, can't reach this global); a direct run
 // has it captured in engage() before its own cd. falls back to the live cwd.
-path path_startup() {
+AU_EXPORT path path_startup() {
     symbol e = getenv("SILVER_STARTUP");
     if (e && *e) return path(e);
     return startup_cwd_ ? startup_cwd_ : path_cwd();
@@ -7115,7 +7120,7 @@ path path_startup() {
 // module runs, so cwd is that share dir and install is two up. if that
 // share dir is not there, cd_share never fired and cwd is the launch dir,
 // so return null rather than a confidently wrong path
-path path_install() {
+AU_EXPORT path path_install() {
     path cwd = path_cwd();
     path up  = f(path, "%o/../..", cwd);
     path shr = f(path, "%o/share", up);
@@ -7124,7 +7129,7 @@ path path_install() {
     return null;
 }
 
-Exists resource_exists(Au o) {
+AU_EXPORT Exists resource_exists(Au o) {
     Au_t type = isa(o);
     path  f = null;
     if (type == typeid(string))
@@ -7140,12 +7145,12 @@ Exists resource_exists(Au o) {
         return r ? Exists_file : Exists_no;
 }
 
-bool path_exists(path a) {
+AU_EXPORT bool path_exists(path a) {
     struct stat st;
     return stat(a->chars, &st) == 0;
 }
 
-u64 path_hash(path a) {
+AU_EXPORT u64 path_hash(path a) {
     return fnv1a_hash(a->chars, strlen(a->chars), OFFSET_BASIS);
 }
 
@@ -7254,7 +7259,7 @@ static array read_lines(path f) {
     return lines;
 }
 
-bool path_save(path a, Au content, ctx context) {
+AU_EXPORT bool path_save(path a, Au content, ctx context) {
     if (is_dir(a)) return false;
     string s = cast(string, content);
     FILE* f = fopen(a->chars, "w");
@@ -7264,7 +7269,7 @@ bool path_save(path a, Au content, ctx context) {
     return success;
 }
 
-Au parse(Au_t schema, cstr s, ctx context);
+AU_EXPORT Au parse(Au_t schema, cstr s, ctx context);
 
 // ---- .agi : tab-indented JSON (no braces) ----------------------------------
 // dedicated parser (parse_agi, defined below after parse_object). a `key: Type`
@@ -7273,7 +7278,7 @@ Au parse(Au_t schema, cstr s, ctx context);
 // tabs only for indent; a blank line does NOT close a block.
 // `target` is optional: when non-null its fields are SET (member_set), recursing
 // into existing sub-objects; when null a fresh object is constructed from schema.
-Au parse_agi(Au_t schema, cstr s, Au target);
+AU_EXPORT Au parse_agi(Au_t schema, cstr s, Au target);
 
 static int agi_peek_indent(cstr scan) {
     while (*scan) {
@@ -7292,7 +7297,7 @@ static int agi_peek_indent(cstr scan) {
     return -1;
 }
 
-Au path_load(path a, Au_t type, ctx context) {
+AU_EXPORT Au path_load(path a, Au_t type, ctx context) {
     if (path_is_dir(a)) return null;
     if (type == typeid(array))
         return (Au)read_lines(a);
@@ -7319,26 +7324,6 @@ Au path_load(path a, Au_t type, ctx context) {
     return null;
 }
 
-none* primitive_ffi_arb(Au_t ptype) {
-    //type_ref->arb      = primitive_ffi_arb(typeid(i32));
-    if ((ptype->traits & AU_TRAIT_ENUM)) return primitive_ffi_arb(ptype->src);
-    if (ptype == typeid(u8))        return &ffi_type_uint8;
-    if (ptype == typeid(i8))        return &ffi_type_sint8;
-    if (ptype == typeid(u16))       return &ffi_type_uint16;
-    if (ptype == typeid(i16))       return &ffi_type_sint16;
-    if (ptype == typeid(u32))       return &ffi_type_uint32;
-    if (ptype == typeid(i32))       return &ffi_type_sint32;
-    if (ptype == typeid(u64))       return &ffi_type_uint64;
-    if (ptype == typeid(i64))       return &ffi_type_sint64;
-    if (ptype == typeid(f32))       return &ffi_type_float;
-    if (ptype == typeid(f64))       return &ffi_type_double;
-    if (ptype == typeid(AFlag))     return &ffi_type_sint32;
-    if (ptype == typeid(bool))      return &ffi_type_uint32;
-    if (ptype == typeid(num))       return &ffi_type_sint64;
-    if (ptype == typeid(sz))        return &ffi_type_sint64;
-    if (ptype == typeid(none))      return &ffi_type_void;
-    return &ffi_type_pointer;
-}
 
 
 static none copy_file(path from, path to) {
@@ -7358,7 +7343,7 @@ static none copy_file(path from, path to) {
     fclose(dst);
 }
 
-none path_cp(path from, path to, bool recur, bool if_newer) {
+AU_EXPORT none path_cp(path from, path to, bool recur, bool if_newer) {
     if (dir_exists("%o", from) && file_exists("%o", to))
         fault("attempting to copy from directory to a file");
     
@@ -7385,7 +7370,7 @@ none path_cp(path from, path to, bool recur, bool if_newer) {
     }
 }
 
-array path_ls(path a, string pattern, bool recur) {
+AU_EXPORT array path_ls(path a, string pattern, bool recur) {
     cstr base_dir = (cstr)a->chars;
     array list = new(array, alloc, 32); // Initialize array for storing paths
     if (!is_dir(a))
@@ -7432,35 +7417,35 @@ struct mutex_t {
     pthread_cond_t  cond;
 };
 
-none mutex_init(mutex m) {
+AU_EXPORT none mutex_init(mutex m) {
     m->mtx = calloc(sizeof(struct mutex_t), 1);
     pthread_mutex_init(&m->mtx->lock, null);
     if (m->cond) pthread_cond_init(&m->mtx->cond, null);
 }
 
-none mutex_dealloc(mutex m) {
+AU_EXPORT none mutex_dealloc(mutex m) {
     pthread_mutex_destroy(&m->mtx->lock);
     if (m->cond) pthread_cond_destroy(&m->mtx->cond);
     free(m->mtx);
 }
 
-none mutex_lock(mutex m) {
+AU_EXPORT none mutex_lock(mutex m) {
     pthread_mutex_lock(&m->mtx->lock);
 }
 
-none mutex_unlock(mutex m) {
+AU_EXPORT none mutex_unlock(mutex m) {
     pthread_mutex_unlock(&m->mtx->lock);
 }
 
-none mutex_cond_broadcast(mutex m) {
+AU_EXPORT none mutex_cond_broadcast(mutex m) {
     pthread_cond_broadcast(&m->mtx->cond);
 }
 
-none mutex_cond_signal(mutex m) {
+AU_EXPORT none mutex_cond_signal(mutex m) {
     pthread_cond_signal(&m->mtx->cond);
 }
 
-none mutex_cond_wait(mutex m) {
+AU_EXPORT none mutex_cond_wait(mutex m) {
     pthread_cond_wait(&m->mtx->cond, &m->mtx->lock);
 }
 
@@ -7468,7 +7453,7 @@ none mutex_cond_wait(mutex m) {
 // silver should: swap = and : ... so : is const, and = is mutable-assign
 // we serialize our data with : and we do not think of this as a changeable form, its our data and we want it intact, lol
 // serialize Au into json
-string json(Au a) {
+AU_EXPORT string json(Au a) {
     Au_t  type  = isa(a);
     string res   = string(alloc, 1024);
     /// start at 1024 pre-alloc
@@ -7609,7 +7594,7 @@ static string parse_json_string(cstr origin, cstr* remainder, ctx context) {
 
 static Au parse_array(cstr s, Au_t schema, Au_t meta, cstr* remainder, ctx context);
 
-Au_t member_first(Au_t type, Au_t find, bool poly) {
+AU_EXPORT Au_t member_first(Au_t type, Au_t find, bool poly) {
     if (poly && type->context != typeid(Au)) {
         Au_t m = member_first(type->context, find, poly);
         if (m) return m;
@@ -8060,7 +8045,7 @@ static Au parse_agi_block(cstr scan, int indent, Au_t schema, Au_t meta, cstr* r
 // schema: type to construct when target is null. target: optional object to SET
 // members onto (its existing type wins). returns the target (if given) or a fresh
 // object/map. used so orbiter can read settings.agi straight onto itself.
-Au parse_agi(Au_t schema, cstr s, Au target) {
+AU_EXPORT Au parse_agi(Au_t schema, cstr s, Au target) {
     cstr rem = s;
     return parse_agi_block(s, 0, schema, null, &rem, target);
 }
@@ -8259,7 +8244,7 @@ static none agi_write_block(string res, Au a, int indent, int depth) {
 }
 
 // generic object -> tab-indented .agi text via reflection (publics only)
-string string_agi(Au a) {
+AU_EXPORT string string_agi(Au a) {
     string res = string(alloc, 1024);
     if (a) agi_write_block(res, a, 0, 0);
     return res;
@@ -8406,7 +8391,7 @@ static string extract_context(cstr src, cstr *endptr) {
     return string(chars, (cstr)start, ref_length, len);
 }
 
-Au parse(Au_t schema, cstr s, ctx context) {
+AU_EXPORT Au parse(Au_t schema, cstr s, ctx context) {
     if (context) {
         if (!ctx_checksums) ctx_checksums = hold(map(hsize, 32));
         string key = f(string, "%p", context);
@@ -8461,7 +8446,7 @@ static none async_runner(thread_t* thread) {
     unlock(thread->lock);
 }
 
-none async_init(async t) {
+AU_EXPORT none async_init(async t) {
     i32    n = len(t->work);
     verify(n > 0, "no work given, no threads needed");
     // we can then have a worker modulo restriction
@@ -8485,7 +8470,7 @@ none async_init(async t) {
     }
 }
 
-none async_dealloc(async t) {
+AU_EXPORT none async_dealloc(async t) {
     sync(t, null);
     for (int i = 0, n = len(t->work); i < n; i++) {
         thread_t* thread = &t->threads[i];
@@ -8502,7 +8487,7 @@ static void* au_spawn_runner(void* data) {
     free(s);
     return null;
 }
-void au_spawn(callback fn, Au target, Au work) {
+AU_EXPORT void au_spawn(callback fn, Au target, Au work) {
     au_spawn_t* s = (au_spawn_t*)malloc(sizeof(au_spawn_t));
     s->fn     = fn;
     s->target = target;
@@ -8512,7 +8497,7 @@ void au_spawn(callback fn, Au target, Au work) {
     pthread_detach(tid);
 }
 
-Au async_sync(async t, Au w) {
+AU_EXPORT Au async_sync(async t, Au w) {
     int n = len(t->work);
     Au result = null;
 
@@ -8626,16 +8611,16 @@ static void* watch_runner(void* arg) {
 }
 #endif
 
-none watch_init(watch a) {
+AU_EXPORT none watch_init(watch a) {
     a->fd      = -1;
     a->running = false;
 }
 
-none watch_dealloc(watch a) {
+AU_EXPORT none watch_dealloc(watch a) {
     pause(a);
 }
 
-none watch_pause(watch a) {
+AU_EXPORT none watch_pause(watch a) {
 #ifndef __APPLE__
     if (!a->running) return;
     a->running = false;       // runner observes this and exits its loop
@@ -8646,7 +8631,7 @@ none watch_pause(watch a) {
 #endif
 }
 
-none watch_start(watch a) {
+AU_EXPORT none watch_start(watch a) {
 #ifndef __APPLE__
     if (a->running || !a->res) return;
     a->running = true;
@@ -8659,28 +8644,28 @@ none watch_start(watch a) {
 #endif
 }
 
-bool is_alphabetic(char ch) {
+AU_EXPORT bool is_alphabetic(char ch) {
     if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z'))
         return true;
     return false;
 }
 
 
-Au subs_invoke(subs a, Au arg) {
+AU_EXPORT Au subs_invoke(subs a, Au arg) {
     each (a->entries, subscriber, sub) {
         sub->method(sub->target, arg);
     }
     return null;
 }
 
-none subs_add(subs a, Au target, callback fn) {
+AU_EXPORT none subs_add(subs a, Au target, callback fn) {
     subscriber sub = subscriber(target, target, method, fn);
     push(a->entries, (Au)sub);
 }
 
 #undef cast
 // generic casting function
-Au typecast(Au_t type, Au a) {
+AU_EXPORT Au typecast(Au_t type, Au a) {
     if (Au_instance_of(a, type)) return (Au)a;
     Au_t au = isa(a);
     Au_t m = Au_member_type(au, AU_MEMBER_CAST, type, true);
@@ -8692,7 +8677,7 @@ Au typecast(Au_t type, Au a) {
 }
 
 // ----------------------------------------
-i64 shape_flat_index(shape data_shape, shape index_shape) {
+AU_EXPORT i64 shape_flat_index(shape data_shape, shape index_shape) {
     i64 flat = 0;
     i64 stride = 1;
     for (int d = data_shape->count - 1; d >= 0; d--) {
@@ -8702,12 +8687,12 @@ i64 shape_flat_index(shape data_shape, shape index_shape) {
     return flat;
 }
 
-none shape_dealloc(shape a) {
+AU_EXPORT none shape_dealloc(shape a) {
     if (!a->is_global)
         free(a->data);
 }
 
-none shape_push(shape a, i64 i) {
+AU_EXPORT none shape_push(shape a, i64 i) {
     i64* prev = a->data;
     a->data = calloc(sizeof(i64), (a->count + 2));
     memcpy(a->data, prev, a->count * sizeof(i64));
@@ -8718,7 +8703,7 @@ none shape_push(shape a, i64 i) {
     a->is_global = false;
 }
 
-shape shape_with_i64(shape a, i64 i) {
+AU_EXPORT shape shape_with_i64(shape a, i64 i) {
     a->data         = &head(a)->count; // head wont mind if we redefine its count field for only shape.
     a->data[0]      = i;
     a->count        = 1;
@@ -8727,7 +8712,7 @@ shape shape_with_i64(shape a, i64 i) {
 }
 
 // inverse of shape_cast_string ("32x32x1", also plain "5")
-shape shape_with_string(shape a, string s) {
+AU_EXPORT shape shape_with_string(shape a, string s) {
     a->data  = (i64*)calloc(sizeof(i64), 17);
     a->count = 0;
     cstr p = (cstr)s->chars;
@@ -8741,7 +8726,7 @@ shape shape_with_string(shape a, string s) {
     return a;
 }
 
-none shape_init(shape a) {
+AU_EXPORT none shape_init(shape a) {
     if (!a->is_global) {
         i64 sz = a->count ? a->count : 16;
         i64* cp = calloc(sizeof(i64), (sz + 1));
@@ -8756,17 +8741,17 @@ none shape_init(shape a) {
 
 
 // ----------------------------------------
-token token_with_cstr(token a, cstr s) {
+AU_EXPORT token token_with_cstr(token a, cstr s) {
     a->chars = s;
     a->count   = strlen(s);
     return a;
 }
 
-token token_copy(token a) {
+AU_EXPORT token token_copy(token a) {
     return token(chars, a->chars, line, a->line, column, a->column);
 }
 
-Au token_get_literal(token a, Au_t of_type) {
+AU_EXPORT Au token_get_literal(token a, Au_t of_type) {
     if (!a) return null;
     if (a && a->literal && (!of_type || inherits(isa(a->literal), of_type))) {
         return a->literal;
@@ -8779,7 +8764,7 @@ Au token_get_literal(token a, Au_t of_type) {
 }
 
 
-string read_string(cstr cs, bool is_const) {
+AU_EXPORT string read_string(cstr cs, bool is_const) {
     int ln = strlen(cs);
     string res = is_const ? (string)const_string(alloc, ln) : string(alloc, ln);
     char*   cur = cs;
@@ -8811,7 +8796,7 @@ string read_string(cstr cs, bool is_const) {
 }
 
 
-Au read_numeric(token a) {
+AU_EXPORT Au read_numeric(token a) {
     cstr cs = (cstr)a->chars;
     if (cs[0] == '.' && a->count == 1) return null;
 
@@ -8911,7 +8896,7 @@ Au read_numeric(token a) {
 static Au             parser_target;
 static callback_extra parser_ident;
 
-void tokens_init(tokens a) {
+AU_EXPORT void tokens_init(tokens a) {
     // lets not allow switching of parser functions for the time being
     verify (!parser_ident || a->parser == parser_ident,
         "invalid parser state");
@@ -8928,14 +8913,14 @@ void tokens_init(tokens a) {
 
 // constructors have ability to return whatever data they want, and
 // when doing so, the buffer is kept around for the next user (max of +1)
-tokens tokens_with_cstr(tokens a, cstr cs) {
+AU_EXPORT tokens tokens_with_cstr(tokens a, cstr cs) {
     a->parser = parser_ident;
     a->target = (Au)parser_target;
     a->input  = (Au)string(cs);
     return a;
 }
 
-string tokens_cast_string(tokens a) {
+AU_EXPORT string tokens_cast_string(tokens a) {
     string result = string(alloc, 1024);
     int n    = len(a);
     int line = 0;
@@ -8960,7 +8945,7 @@ string tokens_cast_string(tokens a) {
     return result;
 }
 
-void token_init(token a) {
+AU_EXPORT void token_init(token a) {
     cstr prev = a->chars;
     sz length = a->count ? a->count : strlen(prev);
     a->chars  = (cstr)calloc((a->alloc ? a->alloc : length) + 1, 1);
@@ -8976,22 +8961,22 @@ void token_init(token a) {
     }
 }
 
-string token_location(token a) {
+AU_EXPORT string token_location(token a) {
     string f = form(string, "%o:%i:%i", a->source, a->line, a->column);
     return f;
 }
 
-Au_t token_get_type(token a) {
+AU_EXPORT Au_t token_get_type(token a) {
     return a->literal ? isa(a->literal) : null;
 }
 
-Au_t token_is_bool(token a) {
+AU_EXPORT Au_t token_is_bool(token a) {
     string t = (string)a;
     return (cmp(t, "true") || cmp(t, "false")) ?
         (Au_t)typeid(bool) : null;
 }
 
-array read_arg_br(array tokens, int start, int* next_read, cstr open, cstr close) {
+AU_EXPORT array read_arg_br(array tokens, int start, int* next_read, cstr open, cstr close) {
     int   level = 0;
     int   ln    = len(tokens);
     bool  count = ln - start;
@@ -9018,12 +9003,12 @@ array read_arg_br(array tokens, int start, int* next_read, cstr open, cstr close
     return count > 0 ? null : res;
 }
 
-array read_arg(array tokens, int start, int* next_read) {
+AU_EXPORT array read_arg(array tokens, int start, int* next_read) {
     return read_arg_br(tokens, start, next_read, "(", ")");
 }
 
 
-none fdata_init(fdata f) {
+AU_EXPORT none fdata_init(fdata f) {
     verify(!(f->read && f->write), "cannot open for both read and write");
     cstr src = (cstr)(f->src ? f->src->chars : null);
     if (!f->id && (f->read || f->write)) {
@@ -9047,24 +9032,24 @@ none fdata_init(fdata f) {
     }
 }
 
-bool fdata_cast_bool(fdata f) {
+AU_EXPORT bool fdata_cast_bool(fdata f) {
     return f->id != null;
 }
 
 
-bool fdata_seek(fdata f, i64 value, bool from_end) {
+AU_EXPORT bool fdata_seek(fdata f, i64 value, bool from_end) {
     fseek(f->id, value, from_end ? SEEK_END : SEEK_SET);
     return true;
 }
 
-string fdata_gets(fdata f) {
+AU_EXPORT string fdata_gets(fdata f) {
     char buf[2048];
     if (fgets(buf, 2048, f->id) > 0)
         return string(buf);
     return null;
 }
 
-bool fdata_file_write(fdata f, Au o) {
+AU_EXPORT bool fdata_file_write(fdata f, Au o) {
     Au_t type = isa(o);
     if (type == typeid(string)) {
         u16 nbytes    = ((string)o)->count;
@@ -9080,7 +9065,7 @@ bool fdata_file_write(fdata f, Au o) {
 }
 
 // its very french -- ffin should certainly be standard C
-bool fdata_fin(fdata f) {
+AU_EXPORT bool fdata_fin(fdata f) {
     long cur = ftell(f->id);
     if (cur < 0) return true;
     long end;
@@ -9094,7 +9079,7 @@ bool fdata_fin(fdata f) {
     return cur >= end;
 }
 
-Au fdata_file_read(fdata f, Au_t type) {
+AU_EXPORT Au fdata_file_read(fdata f, Au_t type) {
     if (fin(f)) return null;
     if (type == typeid(string)) {
         char bytes[65536];
@@ -9119,18 +9104,18 @@ Au fdata_file_read(fdata f, Au_t type) {
     return success ? o : null;
 }
 
-none fdata_file_close(fdata f) {
+AU_EXPORT none fdata_file_close(fdata f) {
     if (f->id) {
         fclose(f->id);
         f->id = null;
     }
 }
 
-none fdata_dealloc(fdata f) {
+AU_EXPORT none fdata_dealloc(fdata f) {
     file_close(f);
 }
 
-i64 fdata_total_bytes(fdata a) {
+AU_EXPORT i64 fdata_total_bytes(fdata a) {
     FILE* f = fopen(a->src->chars, "rb");
     fseek(f, 0, SEEK_END);
     sz flen = ftell(f);
@@ -9139,7 +9124,7 @@ i64 fdata_total_bytes(fdata a) {
     return (i64)flen;
 }
 
-u64 fdata_hash(fdata a) {
+AU_EXPORT u64 fdata_hash(fdata a) {
     const int sz = 2048;
     char buf[2048];
     u64 h = OFFSET_BASIS;
@@ -9164,19 +9149,19 @@ u64 fdata_hash(fdata a) {
 Au_t_f
 */
 
-i32 app_run(app a) {
+AU_EXPORT i32 app_run(app a) {
     return 0;
 }
 
-void live_app_run(live_app a)     { }
-bool live_app_frame(live_app a)   { return false; }
-void live_app_destroy(live_app a) { }
+AU_EXPORT void live_app_run(live_app a)     { }
+AU_EXPORT bool live_app_frame(live_app a)   { return false; }
+AU_EXPORT void live_app_destroy(live_app a) { }
 
-Au coverage_run(coverage a) {
+AU_EXPORT Au coverage_run(coverage a) {
     return null;
 }
 
-none app_init(app a) {
+AU_EXPORT none app_init(app a) {
     puts("app init\n");
 }
 
@@ -9193,7 +9178,7 @@ typedef struct _cov_module {
 static cov_module* __cov_modules = NULL;
 
 
-void __coverage_report(void);
+AU_EXPORT void __coverage_report(void);
 static void __coverage_sigint(int sig) {
     __coverage_report();
     au_leak_report();
@@ -9222,7 +9207,7 @@ void __coverage_register(uint64_t* probes, uint32_t probe_count,
     }
 }
 
-void __coverage_report(void) {
+AU_EXPORT void __coverage_report(void) {
     if (!__cov_modules) return;
     uint32_t total_probes = 0, total_covered = 0;
     for (cov_module* m = __cov_modules; m; m = m->next) {
@@ -9277,11 +9262,11 @@ __int64_t _epoch_millis() {
     return (__int64_t)(tv.tv_sec) * 1000 + (__int64_t)(tv.tv_usec) / 1000;
 }
 
-i64 epoch_millis() {
+AU_EXPORT i64 epoch_millis() {
     return _epoch_millis();
 }
 
-i64 epoch_micros() {
+AU_EXPORT i64 epoch_micros() {
     struct timeval tv;
     gettimeofday((struct timeval*)&tv, 0L);
     return (__int64_t)(tv.tv_sec) * 1000000 + (__int64_t)(tv.tv_usec);
@@ -9422,3 +9407,5 @@ define_enum  (interface)
 define_enum  (comparison)
 
 #undef bind
+
+AU_EXPORT void Au_module_anchor(void) { }

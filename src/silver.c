@@ -1,11 +1,13 @@
 #include <import>
 #include <limits.h>
+#include <ports.h>      // on windows this is the whole posix surface
+#ifndef _WIN32
 #include <execinfo.h>
-#include <ports.h>
 #include <sys/file.h>   // flock — serialize external-checkout builds across processes
 #include <sys/wait.h>   // export funcs run forked; the build waits on them
 #include <fcntl.h>
 #include <dlfcn.h>      // coverage libraries run in-process after build
+#endif
 
 #ifdef BUILD_LIBRARY
 
@@ -116,7 +118,7 @@ enode parse_expect(silver a);
 enode parse_for(silver a);
 enode parse_loop_while(silver a);
 enode parse_if_else(silver a);
-enode parse_ifdef_else(silver a);
+enode parse_ifdef_else(silver a, bool negate);
 static enode typed_expr(silver mod, enode n, array expr);
 i32 read_enum(silver a, i32 def, Au_t etype);
 efunc parse_func(silver, Au_t, enum AU_MEMBER, u64, OPType, string);
@@ -124,7 +126,8 @@ etype etype_resolve(etype t);
 enode enode_value(enode mem, bool force);
 
 aether au_active(aether);
-extern __thread aether au_codegen_active;
+AU_EXPORT aether au_codegen_active_get(void);
+AU_EXPORT void   au_codegen_active_set(aether);
 // transient hand-off for `import M with ext…`: parse_import sets this to the ext path
 // list right before constructing the external silver(), and silver_init reads it at the
 // top into a->extensions (the prop-pair ctor is already at its 22-arg max).
@@ -224,18 +227,21 @@ static symbol arch = "arm32";
 #if defined(__linux__)
 static symbol lib_pre = "lib";
 static symbol lib_ext = ".so";
+static symbol lib_static = ".a";
 static symbol app_ext = "";
 static symbol platform = "linux";
 static symbol shared   = "-shared";
 #elif defined(_WIN32)
 static symbol lib_pre = "";
 static symbol lib_ext = ".dll";
+static symbol lib_static = ".lib";
 static symbol app_ext = ".exe";
 static symbol platform = "windows";
 static symbol shared   = "-shared";
 #elif defined(__APPLE__)
 static symbol lib_pre = "lib";
 static symbol lib_ext = ".dylib";
+static symbol lib_static = ".a";
 static symbol app_ext = "";
 static symbol platform = "darwin";
 static symbol shared   = "-dynamiclib";
@@ -427,6 +433,42 @@ none sync_tokens(import t, path build_path, string name) {
 }
 
 string serialize_environment(map environment, bool b_export);
+
+// unix resolves -lfoo through the libfoo.so symlink; windows bakes the version
+// into the filename (opencv_core4140.lib, OpenEXR-3_4.lib), so find that name
+static string resolve_versioned_lib(silver a, string nm) {
+#ifdef _WIN32
+    // the crt covers these, or ports.cc does; there is no such .lib here
+    static symbol none[] = {"m","c","dl","pthread","util","ncurses","tinfo",
+                            "stdc++","c++","c++abi","objc","System",0};
+    for (int i = 0; none[i]; i++)
+        if (cmp(nm, none[i]) == 0) return null;
+    // spelled differently here; png keeps its version, so let the scan below
+    // finish that one (libpng -> libpng16)
+    if (cmp(nm, "z")   == 0) nm = string("zlib");
+    if (cmp(nm, "png") == 0) nm = string("libpng");
+
+    if (file_exists("%o/lib/%s%o%s", a->install, lib_pre, nm, lib_ext) ||
+        file_exists("%o/lib/%s%o%s", a->install, lib_pre, nm, lib_static))
+        return nm;
+    array  all  = ls(f(path, "%o/lib", a->install), null, false);
+    string pick = null;
+    int    nlen = (int)len(nm);
+    each (all, path, p) {
+        string base = stem(p);
+        string e    = ext(p);
+        // ext() reports the extension without its dot
+        if (!base || !e || cmp(e, &lib_static[1]) != 0)     continue;
+        if (strncmp((cstr)base->chars, (cstr)nm->chars, nlen) != 0) continue;
+        cstr rest = &((cstr)base->chars)[nlen];
+        if (!*rest)                                         continue;
+        if (!isdigit((unsigned char)*rest) && *rest != '-') continue;
+        if (!pick || len(base) < len(pick)) pick = base;
+    }
+    if (pick) return pick;
+#endif
+    return nm;
+}
 
 static array headers(path dir) {
     array all = ls(dir, null, false);
@@ -809,7 +851,7 @@ typedef struct {
 static void* build_fn_worker(void* arg) {
     fn_worker_t* w = (fn_worker_t*)arg;
     silver a = w->a;
-    au_codegen_active = (aether)a;
+    au_codegen_active_set((aether)a);
     attempt() {
         int nwork = len(w->work);
         for (int i = w->first; i < nwork; i += w->step) {
@@ -827,7 +869,7 @@ static void* build_fn_worker(void* arg) {
         a->error = true;
     }
     finally()
-    au_codegen_active = null;
+    au_codegen_active_set(null);
     // no pool drain: registry/type objects live past the worker
     return null;
 }
@@ -927,6 +969,18 @@ static void progress_done(silver a) {
 
 void silver_parse(silver a) {
     efunc init = module_initializer(a);
+
+    // what the compiler itself has registered: an import resolves against
+    // this list first, so a missing name here is why a module isn't found
+    if (a->verbose) {
+        i64   n_mods = 0;
+        Au_t* mods   = (Au_t*)module_list(&n_mods);
+        print("registered modules (%i):", (int)n_mods);
+        for (int i = 0; i < n_mods; i++)
+            if (mods[i] && mods[i]->ident)
+                print("  %s (%i members)%s", mods[i]->ident,
+                    (int)mods[i]->members.count, mods[i]->is_hidden ? " hidden" : "");
+    }
 
     // determine target arch/os — use --platform if set, otherwise host
     symbol target_arch = arch;
@@ -1596,15 +1650,30 @@ void silver_write_fmt(silver a, array toks) {
 // (silver-host.c) always takes. callers own their own guard + symlink/live_binary.
 static path build_silver_host(silver a) {
     path host_src = f(path, "%s/src/silver-host.c", SILVER);
-    path host_dst = f(path, "%o/%o", a->build_dir, a->name);
+    // app_ext is "" on unix and ".exe" here; exec cannot find it without one
+    path host_dst = f(path, "%o/%o%s", a->build_dir, a->name, app_ext);
     verify(file_exists("%o", host_src), "silver-host.c not found at %o", host_src);
 #ifdef __APPLE__
     cstr host_libs = "-isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk -lglfw3 -lm -framework Cocoa -framework IOKit -framework CoreFoundation -framework CoreGraphics -framework QuartzCore";
+#elif defined(_WIN32)
+    // glfw's win32 backend; no dl/X11/m here
+    // -lAu: the posix shims (dlopen, backtrace, basename, ...) live in ports.obj
+    cstr host_libs = "-lAu -lglfw3 -lgdi32 -lopengl32 -luser32 -lkernel32 -lshell32";
 #else
     cstr host_libs = "-ldl -lglfw3 -lX11 -lm";
 #endif
+#ifdef _WIN32
+    // the define cannot use shell quoting: nothing expands it before
+    // CreateProcess, so the quotes are escaped for the command line instead.
+    // the vk target enters at WinMain, so it links /SUBSYSTEM:WINDOWS and no
+    // console opens beside the app; the console target keeps the default
+    cstr subsystem = ((aether)a)->is_live ? "-Wl,/SUBSYSTEM:WINDOWS" : "";
+    vexec(a->verbose, "silver-host", "%s/install/bin/clang %s %s -o %o %o %s %s -D_CRT_SECURE_NO_WARNINGS -D_CRT_NONSTDC_NO_WARNINGS -I%s/install/include -L%s/install/lib -DSILVER_ROOT=\\\"%s\\\"",
+        SILVER, a->debug ? "-O0 -g" : "-O2", a->asan ? "-fsanitize=address" : "", host_dst, host_src, host_libs, subsystem, SILVER, SILVER, SILVER, SILVER);
+#else
     vexec(a->verbose, "silver-host", "%s/install/bin/clang %s %s -o %o %o %s -I%s/install/include -L%s/install/lib -DSILVER_ROOT='\"%s\"'",
         SILVER, a->debug ? "-O0 -g" : "-O2", a->asan ? "-fsanitize=address" : "", host_dst, host_src, host_libs, SILVER, SILVER, SILVER);
+#endif
     return host_dst;
 }
 
@@ -2258,7 +2327,7 @@ static void silver_module() {
         "const",    "no-op",    "<>",
         "return",   "->",       "::",       "...",  
         "asm",      "if",       "switch",   "any",
-        "enum",     "ifdef",    "el",       "while",
+        "enum",     "ifdef",    "ifndef",   "el",       "while",
         "cast",     "try",      "throw",    "catch",
         "finally",  "for",      "func", 
         "operator", "construct", "alias",   "getter", "setter",
@@ -4755,7 +4824,7 @@ enode parse_statement(silver a)
     silver    module    = is_module(top) ? a : null;
     etype     rec_top   = is_rec(top) ? u(etype, top) : null;
 
-    if (!a->processed_imports && !next_is(a, "export") && !next_is(a, "import") && !next_is(a, "extend") && !next_is(a, "ifdef")) {
+    if (!a->processed_imports && !next_is(a, "export") && !next_is(a, "import") && !next_is(a, "extend") && !next_is(a, "ifdef") && !next_is(a, "ifndef")) {
         a->processed_imports = true;
         // `import M with ext…`: the ext files were handed to THIS module's build via
         // the `extensions` list. now that our own imports are resolved, fold each one in
@@ -4811,7 +4880,8 @@ enode parse_statement(silver a)
         if (next_is(a, "memcpy") || next_is(a, "memset")) return parse_memop(a);
     }
     
-    if (next_is(a, "ifdef")) return parse_ifdef_else(a);
+    if (next_is(a, "ifdef"))  return parse_ifdef_else(a, false);
+    if (next_is(a, "ifndef")) return parse_ifdef_else(a, true);
 
     if (next_is(a, "extend")) {
         consume(a, Syntax__keyword);
@@ -5743,11 +5813,8 @@ etype read_etype(silver a, array* p_expr) { sequencer
     return t;
 }
 
-// return tokens for function content (not its surrounding def)
-array codegen_generate_fn(codegen a, efunc f, array query) {
-    fault("implement generate_fn");
-    return null;
-}
+// codegen_generate_fn is aether's: it owns the codegen class and the
+// base implementation. a second definition here is a duplicate symbol.
 
 // design-time for dictation
 array read_dictation(silver a, array input) {
@@ -5998,7 +6065,12 @@ void import_defines(silver a, array input, map output) {
 
 static bool command_exists(cstr cmd) {
     char buf[256];
+#ifdef _WIN32
+    // system() is cmd.exe here: no `command -v`, and /dev/null is not a path
+    snprintf(buf, sizeof(buf), "where %s >nul 2>nul", cmd);
+#else
     snprintf(buf, sizeof(buf), "command -v %s >/dev/null 2>&1", cmd);
+#endif
     return system(buf) == 0;
 }
 
@@ -6227,12 +6299,17 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
         cstr build = "Release";
         string opt = a->isysroot ? f(string, "-DCMAKE_OSX_SYSROOT=%o", a->isysroot) : string("");
 
+        // msvc is the standard toolchain for these, and its generator finds
+        // it (and the manifest tool) on its own -- but it is multi-config, so
+        // CMAKE_BUILD_TYPE is ignored and --config below is what picks Release
         vexec(a->verbose, "configure",
               "%o%o cmake -B %o -S %o %o -DCMAKE_INSTALL_PREFIX=%o -DCMAKE_BUILD_TYPE=%s %o",
               docker, env, build_f, project_f, opt, install, build, config);
 
-        vexec(a->verbose, "build", "%o%o cmake --build %o -j16", docker, env, build_f);
-        vexec(a->verbose, "install", "%o%o cmake --install %o", docker, env, build_f);
+        vexec(a->verbose, "build", "%o%o cmake --build %o --config %s -j16",
+              docker, env, build_f, build);
+        vexec(a->verbose, "install", "%o%o cmake --install %o --config %s",
+              docker, env, build_f, build);
     } else if (is_meson) { // build for meson
         // externals always build release — debug is for OUR code
         cstr build = "release";
@@ -6320,6 +6397,40 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
 
     save(token, (Au)config, null);
     if (lock_fd >= 0) { flock(lock_fd, LOCK_UN); (close)(lock_fd); }
+}
+
+// a module's .g `cflags:` (e.g. img.g -> -DIMATH_DLL -I$IMPORT/...) applies to
+// its C/C++ implementation sources; graph.py honors this for the core build,
+// silver's foundry path did not
+static string read_g_cflags(silver a, path mg) {
+    string out = string(alloc, 128);
+    if (!mg || !file_exists("%o", mg)) return out;
+    string gtext = (string)load(mg, typeid(string), null);
+    if (!gtext) return out;
+    cstr ck = strstr(gtext->chars, "cflags:");
+    if (!ck) return out;
+    ck += 7;
+    cstr eol = strchr(ck, '\n');
+    int  n   = eol ? (int)(eol - ck) : (int)strlen(ck);
+    char buf[1024];
+    if (n > (int)sizeof(buf) - 1) n = (int)sizeof(buf) - 1;
+    memcpy(buf, ck, n); buf[n] = 0;
+    char* tok = strtok(buf, " \t\r");
+    while (tok) {
+        if (len(out)) append(out, " ");
+        // $IMPORT is the only var these lines use
+        cstr v = strstr(tok, "$IMPORT");
+        if (v) {
+            char tmp[512];
+            int  pre = (int)(v - tok);
+            snprintf(tmp, sizeof(tmp), "%.*s%s%s", pre, tok,
+                (cstr)a->install->chars, v + 7);
+            concat(out, string(tmp));
+        } else
+            concat(out, string(tok));
+        tok = strtok(null, " \t\r");
+    }
+    return out;
 }
 
 string compile_implements(silver a, array files, string cflags) {
@@ -6472,7 +6583,7 @@ none silver_build_product(silver a) {
         len(ext_tag) ? "-" : "", ext_tag,
         len(a->defs_hash) ? "-" : "",
         a->defs_hash,
-        a->is_library ? lib_ext : "");
+        a->is_library ? lib_ext : app_ext);
     
     if (a->product) drop(a->product);
 
@@ -6586,6 +6697,14 @@ none silver_build_product(silver a) {
 
     // build compile-only flags (includes + cflags)
     string ccflags = string(cflags->chars);
+    if (a->module_file) {
+        string gcf = read_g_cflags(a, f(path, "%o/%o.g",
+            parent_dir(a->module_file), stem(a->module_file)));
+        if (len(gcf)) {
+            if (len(ccflags)) append(ccflags, " ");
+            concat(ccflags, gcf);
+        }
+    }
     if (a->include_paths) {
         each(a->include_paths, string, inc) {
             if (len(ccflags)) append(ccflags, " ");
@@ -6618,12 +6737,28 @@ none silver_build_product(silver a) {
 
     array rlibs = reverse(lib_paths);
     each(rlibs, string, lib_name) {
-        if (len(libs))
-            append(libs, " ");
-        if (file_exists("%o", lib_name))
-            concat(libs, lib_name);
-        else
-            concat(libs, f(string, "-l%o", lib_name));
+        if (file_exists("%o", lib_name)) {
+            string use = lib_name;
+#ifdef _WIN32
+            // a .product points at the module's dll, and a dll cannot be
+            // linked against directly here -- its import lib is what we need
+            path   lp   = path(lib_name->chars);
+            string pext = ext(lp);
+            if (pext && (cmp(pext, "product") == 0 || cmp(pext, "dll") == 0)) {
+                path il = f(path, "%o/%o%s", parent_dir(lp), stem(lp), lib_static);
+                verify(file_exists("%o", il),
+                    "no import library for %o (expected %o)", lib_name, il);
+                use = cast(string, il);
+            }
+#endif
+            if (len(libs)) append(libs, " ");
+            concat(libs, use);
+            continue;
+        }
+        string rl = resolve_versioned_lib(a, lib_name);
+        if (!rl) continue;              // no counterpart on this platform
+        if (len(libs)) append(libs, " ");
+        concat(libs, f(string, "-l%o", rl));
     }
 
     // compile implementation in c/cc, and select for linking
@@ -6640,7 +6775,12 @@ none silver_build_product(silver a) {
     cstr cpp_pre   = has_cpp ? "-nostdlib++ -L/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/lib -lc++ -lc++abi" : "";
 #else
     cstr cpp_pre   = "";
+#ifdef _WIN32
+    // the msvc stl arrives with msvcrt; -lstdc++ just reaches lld as junk
+    cstr cpp_post  = "";
+#else
     cstr cpp_post  = has_cpp ? "-lstdc++" : "";
+#endif
 #endif
     string isysroot = a->isysroot ? f(string, "-isysroot %o ", a->isysroot) : string("");
     string fw_flags = string("");
@@ -6652,7 +6792,19 @@ none silver_build_product(silver a) {
     }
     if (a->is_library) unlink(a->product->chars);
 
-    verify(exec(a->verbose, "%o/bin/%s %s %s %s %o %s %o/%o.o%o %o -o %o -L%o -L%o/lib -Wl,-rpath,%o -Wl,-rpath,%o/lib %o %o %o %s",
+    // windows: no rpath (dlls resolve by exe dir + PATH, and a stray -rpath
+    // reaches lld-link as an object name); link.rsp is the system-lib set
+    // bootstrap wrote, and _DLL/_MT by hand means no defaultlib directive
+#ifdef _WIN32
+    string plat_link = f(string,
+        "@%o/link.rsp -fuse-ld=lld -Wl,/DEFAULTLIB:msvcrt "
+        "-Wl,/NODEFAULTLIB:msvcrtd -Wl,/NODEFAULTLIB:libcmt -Wl,/NODEFAULTLIB:libcmtd",
+        a->build_dir);
+#else
+    string plat_link = f(string, "-Wl,-rpath,%o -Wl,-rpath,%o/lib", a->build_dir, install);
+#endif
+
+    verify(exec(a->verbose, "%o/bin/%s %s %s %s %o %s %o/%o.o%o %o -o %o -L%o -L%o/lib %o %o %o %o %s",
         install, linker, a->is_library ? shared : "", a->debug ? "-g" : "",
 
 #ifdef __linux__
@@ -6663,7 +6815,7 @@ none silver_build_product(silver a) {
         isysroot, cpp_pre, a->build_dir, a->name, core_objs, objs,
         a->product,
         a->build_dir,
-        install, a->build_dir, install, libs, cflags, fw_flags,
+        install, plat_link, libs, cflags, fw_flags,
 #ifdef __APPLE__
         ""
 #else
@@ -7406,9 +7558,14 @@ static bool add_lib_if_exists(silver a, cstr nm) {
         "c++","c++abi","z","objc","System",0};
     for (int si = 0; sys[si]; si++)
         if (strcmp(nm, sys[si]) == 0) { set(a->libs, (Au)string(nm), (Au)_bool(true)); return true; }
-    if (file_exists("%o/lib/lib%s.dylib", a->install, nm) ||
-        file_exists("%o/lib/lib%s.a",     a->install, nm)) {
+    if (file_exists("%o/lib/%s%s%s", a->install, lib_pre, nm, lib_ext) ||
+        file_exists("%o/lib/%s%s%s", a->install, lib_pre, nm, lib_static)) {
         set(a->libs, (Au)string(nm), (Au)_bool(true));
+        return true;
+    }
+    string rl = resolve_versioned_lib(a, string(nm));
+    if (rl && cmp(rl, nm) != 0) {
+        set(a->libs, (Au)hold(rl), (Au)_bool(true));
         return true;
     }
     return false;
@@ -8514,6 +8671,21 @@ void silver_write_header(silver a) {
     line(module_f, "#ifndef _%o_",     NAME);
     line(module_f, "#define _%o_\n",   NAME);
 
+    // importers read this header, not intern: they need the per-type module
+    // tag too, and a default linkage for the types this module owns
+    fprintf(module_f, "#ifndef AU_LINK_%s\n", a->autype->ident);
+    fprintf(module_f, "#ifdef _WIN32\n#define AU_LINK_%s __attribute__((dllimport))\n",
+        a->autype->ident);
+    fprintf(module_f, "#else\n#define AU_LINK_%s\n#endif\n#endif\n\n",
+        a->autype->ident);
+    members(a->autype, mt) {
+        if (!(mt->traits & AU_TRAIT_ENUM) && !is_rec((Au)mt)) continue;
+        string tn = cname(string(mt->ident));
+        fprintf(module_f, "#ifndef %s_module_\n#define %s_module_ %s\n#endif\n",
+            tn->chars, tn->chars, a->autype->ident);
+    }
+    fprintf(module_f, "\n");
+
     // write enum schemas
     members(a->autype, m) {
         if (m->traits & AU_TRAIT_ENUM) {
@@ -8718,8 +8890,7 @@ void silver_write_header(silver a) {
     line(import_f, "#include <%o/intern>",  a->name);
     line(import_f, "#include <%o/%o>",      a->name, a->name);
     line(import_f, "#include <%o/methods>", a->name);
-    line(import_f, "#undef init");
-    line(import_f, "#undef dealloc");
+    line(import_f, "#include <undefcpp.h>");
     //line(import_f, "#ifndef __cplusplus");
     line(import_f, "#include <Au/init>");
     each(a->imports, import, im) {
@@ -8738,6 +8909,8 @@ void silver_write_header(silver a) {
     // "unterminated conditional" cascade (and the clang-22 large-macro bug).
     //line(import_f, "#include <%o/init>", a->name);
     line(import_f, "#ifdef __cplusplus");
+    line(import_f, "#include <undefcpp.h>");
+    // short names that only collide in a module mixing heavy c++ libraries
     line(import_f, "#undef M");
     line(import_f, "#undef str");
     line(import_f, "#undef typeid");
@@ -9443,6 +9616,25 @@ enode silver_parse_member_expr(silver a, enode mem, bool in_ref) { sequencer
     push_current(a);
 
     macro is_macro = instanceof(mem, macro);
+
+    // an object-like macro whose body is one identifier is an alias, not an
+    // invocation; windows spells setjmp that way (#define setjmp _setjmp).
+    // resolving it here leaves any following [ ] to the normal call path
+    if (is_macro && !is_macro->params && is_macro->def &&
+        len((array)is_macro->def) == 1) {
+        token id = (token)first_element((array)is_macro->def);
+        Au_t  al = id ? lexical(a->lexical, id->chars) : null;
+        if (al && is_func((Au)al)) {
+            // the aliased function may have no etype yet; prep builds one
+            etype alias = u(etype, al);
+            if (!alias) alias = etype_prep((aether)a, al);
+            if (alias) {
+                mem      = (enode)alias;
+                is_macro = null;
+            }
+        }
+    }
+
     bool is_lambda_call = inherits(mem->autype, typeid(lambda));
     int indexable = !is_func((Au)mem) && !is_func_ptr((Au)mem) && !is_macro && !is_lambda_call;
 
@@ -9961,18 +10153,19 @@ enode exprs_builder(silver a, array expr_tokens, Au unused) {
     return last;
 }
 
-enode parse_ifdef_else(silver a) {
+// negate is what separates ifndef from ifdef; the el chain is identical
+enode parse_ifdef_else(silver a, bool negate) {
     bool one_truth = false;
     enode statements = null;
 
     verify(a->expr_level == 0, "unexpected expression level at ifdef");
 
-    // first ifdef [cond]
-    validate(read_if(a, "ifdef"), "expected ifdef");
+    // first ifdef [cond] / ifndef [cond]
+    validate(read_if(a, negate ? "ifndef" : "ifdef"), "expected ifdef or ifndef");
     validate(read_if(a, "["), "expected [ after ifdef");
     string def_name = read_alpha(a);
     validate(def_name, "expected identifier after ifdef [");
-    bool cond = eval_define(a, def_name);
+    bool cond = eval_define(a, def_name) != negate;
     validate(read_if(a, "]"), "expected ] after ifdef condition");
     array block = read_body(a);
     if (cond) {
@@ -10584,6 +10777,18 @@ etype silver_read_def(silver a, interface access) {
 // orbiter could build silver in this way from .c
 // importing 
 int main(int argc, cstrs argv) {
+    setvbuf(stdout, NULL, _IONBF, 0);   // TEMP
+#ifdef _WIN32
+    // there is no rpath here: a module we dlopen finds its own dependencies
+    // (opencv, OpenEXR, ...) through PATH, so put our directories first
+    {
+        cstr prev = getenv("PATH");
+        char buf[8192];
+        snprintf(buf, sizeof(buf), "%s/install/bin;%s/install/build;%s",
+            SILVER, SILVER, prev ? prev : "");
+        setenv("PATH", buf, 1);
+    }
+#endif
     engage(argv);
     silver a = silver(argv);
     // a successful live build execvp's the host and never returns here; if we DID
@@ -10604,3 +10809,5 @@ define_class(exports, Au)
 initializer(silver_module)
 #endif
 
+
+AU_EXPORT void silver_module_anchor(void) { }

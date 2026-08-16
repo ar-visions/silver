@@ -15,6 +15,7 @@ fname           = "build"   # ONE core home; config lives in flags + stamp
 system          = platform.system()
 silver_root     = Path(args['SILVER'])
 silver          = Path(args['IMPORT'])
+os.environ.setdefault('IMPORT', str(silver))  # graph.py globs lib/ from this
 project         = args['PROJECT_NAME']
 project_path    = Path(args['PROJECT_PATH'])
 source_dir      = project_path / Path('src')
@@ -27,27 +28,53 @@ def get_platform_info():
     os_sdk=''
     if system == 'Darwin':
         os_sdk = subprocess.check_output(["xcrun", "--show-sdk-path"]).decode().strip()
+    # no MSVC include/lib discovery: the clang we built locates the windows
+    # sdk itself. only our own directories go here.
+    win_lib, win_rt, win_crt = [], [], []
+    if system == 'Windows':
+        # llvm is pinned Release in aether.g, so that is the shared crt
+        keep, drop = 'msvcrt', 'msvcrtd'
+        win_crt = ['-Wl,/DEFAULTLIB:' + keep,
+                   '-Wl,/NODEFAULTLIB:' + drop,
+                   '-Wl,/NODEFAULTLIB:libcmt', '-Wl,/NODEFAULTLIB:libcmtd']
+        rt = silver_root / 'platform/native/lib/windows'
+        if rt.is_dir(): win_lib = [str(rt)]
+        builtins = rt / 'clang_rt.builtins-x86_64.lib'
+        if builtins.is_file(): win_rt = [norm_path(builtins)]
+        # DIA is the one piece clang does not add; llvm's pdb reader needs it
+        vs  = os.environ.get('VSINSTALLDIR') or str(silver_root / 'platform/native/vs2022')
+        dia = Path(vs) / 'DIA SDK' / 'lib' / 'amd64'
+        if dia.is_dir(): win_lib = [str(dia)] + win_lib
     base = {
         'Windows': {
             'exe': '.exe', 'lib_pre': '', 'lib': '.lib', 'shared': '.dll', 'obj': '.obj',
             'ar': f'{silver}/bin/llvm-ar.exe', 'cc': f'{silver}/bin/clang.exe',
             'cxx': f'{silver}/bin/clang++.exe', 'ninja': 'build/ninja/ninja.exe',
-            'inc': [
-                r'C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.44.35207\include',
-                r'C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\um',
-                r'C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\ucrt',
-                r'C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\shared'
-            ],
-            'lib_dirs': [
-                f'{silver}\\bin',
-                r'C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.44.35207\lib\x64',
-                r'C:\Program Files (x86)\Windows Kits\10\Lib\10.0.22621.0\ucrt\x64',
-                r'C:\Program Files (x86)\Windows Kits\10\Lib\10.0.22621.0\um\x64'
-            ],
-            'lflags': ['-fuse-ld=lld', f'-Wl,/{fname}', '-Wl,/pdb:$root/bin/silver.pdb',
-                      '-Wl,/SUBSYSTEM:CONSOLE', '-Wl,/NODEFAULTLIB:libcmt', '-Wl,/DEFAULTLIB:msvcrt'],
-            'cflags': ['-D_MT'], 'cxxflags': ['-D_MT'],
-            'libs': ['-luser32', '-lkernel32', '-lshell32', '-llegacy_stdio_definitions']
+            'nm': f'{silver}/bin/llvm-nm.exe',
+            'inc': [],
+            'lib_dirs': [f'{silver}\\bin'] + win_lib,
+            # /DEBUG is what makes the pdb above meaningful
+            'lflags': ['-fuse-ld=lld'] + (['-Wl,/DEBUG'] if is_debug else []) +
+                      # no global /pdb: every target claimed the same file and
+                      # each link overwrote it, so nothing symbolized. lld
+                      # defaults to <output>.pdb, which is per-target
+                      ['-Wl,/SUBSYSTEM:CONSOLE'] + win_crt,
+            # _DLL+_MT selects the dynamic CRT, matching the vendored LLVM libs.
+            # BUILD_STATIC stops llvm/clang headers marking symbols dllimport,
+            # since we link their component .libs rather than a dll
+            'cflags':   ['-D_DLL', '-D_MT', '-DLLVM_BUILD_STATIC', '-DCLANG_BUILD_STATIC',
+                         '-D_CRT_SECURE_NO_WARNINGS', '-D_CRT_NONSTDC_NO_WARNINGS'],
+            'cxxflags': ['-D_DLL', '-D_MT', '-DLLVM_BUILD_STATIC', '-DCLANG_BUILD_STATIC',
+                         '-D_CRT_SECURE_NO_WARNINGS', '-D_CRT_NONSTDC_NO_WARNINGS'],
+            # ntdll/version/ole32/advapi32 are what llvm's windows support needs
+            'libs': win_rt + [
+                              # gdi32/opengl32: glfw's wgl backend
+                              '-lgdi32', '-lopengl32',
+                              '-luser32', '-lkernel32', '-lshell32', '-ldbghelp',
+                              '-lbcrypt', '-lws2_32', '-lntdll', '-lversion',
+                              '-lole32', '-loleaut32', '-luuid', '-ladvapi32',
+                              '-lpsapi', '-lshlwapi', '-ldiaguids',
+                              '-llegacy_stdio_definitions']
         },
         'Darwin': {
             'exe': '', 'lib_pre': 'lib', 'lib': '.a', 'shared': '.dylib', 'obj': '.o',
@@ -135,7 +162,9 @@ def resolve_deps(modules, deps, plat, root_p, builddir):
                 out.append(f"{root_p}/lib/{plat['lib_pre']}{d}{plat['lib']}")
             elif dep_mod['target'] == 'shared':
                 out_name = dep_mod.get('libname') or d
-                out.append(f"{root_p}/lib/{plat['lib_pre']}{out_name}{plat['shared']}")
+                # windows links against the import lib, not the dll itself
+                ext = plat['lib'] if system == 'Windows' else plat['shared']
+                out.append(f"{root_p}/lib/{plat['lib_pre']}{out_name}{ext}")
             elif dep_mod['target'] == 'app':
                 out.append(f"{builddir}/{d}{plat['exe']}")
             else:
@@ -153,13 +182,14 @@ def write_ninja(project, root, import_dir, build_dir, plat):
 
     os.makedirs(build_dir, exist_ok=True)
     
+    # forward slashes: clang unescapes backslashes inside quoted rsp args
     with open(build_dir / "compile.rsp", "w") as f:
         for inc in plat['inc']:
-            f.write(f'-I"{inc}"\n')
-    
+            f.write(f'-I"{norm_path(inc)}"\n')
+
     with open(build_dir / "link.rsp", "w") as f:
         for lib in plat['lib_dirs']:
-            f.write(f'-L"{lib}"\n')
+            f.write(f'-L"{norm_path(lib)}"\n')
         for lib in plat['libs']:
             f.write(f"{lib}\n")
     
@@ -169,8 +199,10 @@ def write_ninja(project, root, import_dir, build_dir, plat):
     silver_root_p = norm_path(silver_root)
     build_p = norm_path(build_dir)
     import_p = norm_path(import_dir)
-    python = norm_path(next((p for p in [import_dir / "bin" / f"python{plat['exe']}"] if p.exists()), 
-                            "python3" if plat['exe'] == '' else "python"))
+    # ninja paths need the drive colon escaped; flags must not be
+    import_esc = escape_path(import_p)
+    # the interpreter running gen.py -- it already imports our modules
+    python = norm_path(sys.executable)
     
     # find files
     if root != silver_root:
@@ -192,7 +224,7 @@ def write_ninja(project, root, import_dir, build_dir, plat):
         non_ext = [str(f) for f in (root / "src").iterdir()
                 if f.is_file() and '.' not in f.name]
 
-    global_deps = ' '.join(norm_path(d) for d in headers + non_ext)
+    global_deps = ' '.join(escape_path(d) for d in headers + non_ext)
     
     # check for a main target
     main_mod, target_type = None, None
@@ -311,13 +343,13 @@ def write_ninja(project, root, import_dir, build_dir, plat):
     
     # header gen
     n.append("rule headers")
-    n.append(f"  command = $python $silver_root/src/headers.py --cache-file {build_p}/.headers_generated --project-path $root --build-path $builddir --project-name $project --import $importdir && touch $out")
+    n.append(f"  command = \"$python\" $silver_root/src/headers.py --cache-file {build_p}/.headers_generated --project-path $root --build-path $builddir --project-name $project --import $importdir")
     n.append("  description = generating headers")
     n.append("  generator = 1")
     n.append("")
 
     stamp = "$builddir/.headers_generated"
-    hdeps = ' '.join(norm_path(f) for f in header_files)
+    hdeps = ' '.join(escape_path(f) for f in header_files)
     n.append(f"build {stamp}: headers | {hdeps}")
     n.append("")
     
@@ -338,7 +370,22 @@ def write_ninja(project, root, import_dir, build_dir, plat):
         n.append(f"build {obj}: {rule} {escape_path(norm_path(m['src']))} | {' '.join(deps)}")
         inc_name = m['name'] if os.path.isdir(f"{build_p}/src/{m['name']}") else m['name'].rsplit('-', 1)[0]
         mod_name = m['libname'] if m.get('libname') else m['name']
-        n.append(f"  {flags_var} = -I{build_p}/src/{inc_name}  ${flags_var} {' '.join(m['cflags'])} -DMODULE=\\\"{mod_name}\\\"")
+        # a type's owner exports its info global; everyone else imports it
+        owners = {(o['libname'] or o['name']): o['name'] for o in modules
+                  if o['target'] == 'shared'}
+        # a static module is absorbed into the dll that depends on it, so it
+        # shares that dll's view: those symbols are local, not imported
+        host = m['name']
+        if m['target'] != 'shared':
+            for o in modules:
+                if o['target'] == 'shared' and m['name'] in o['deps']:
+                    host = o['name']
+                    break
+        au_link = ' '.join(
+            f"-DAU_LINK_{own}=__attribute__((dll"
+            f"{'export' if src == host else 'import'}))"
+            for own, src in owners.items()) if system == 'Windows' else ''
+        n.append(f"  {flags_var} = -I{build_p}/src/{inc_name}  ${flags_var} {' '.join(m['cflags'])} {au_link} -DMODULE=\\\"{mod_name}\\\"")
     n.append("")
     
     # handle extra source files not tied to modules
@@ -349,7 +396,7 @@ def write_ninja(project, root, import_dir, build_dir, plat):
         is_cxx = suffix in ['.cc', '.cpp', '.cxx']
         rule   = 'cxx' if is_cxx else 'cc'
         flags_var = 'cxxflags' if is_cxx else 'cflags'
-        input_path  = norm_path(f)
+        input_path  = escape_path(f)
         output_path = f"$builddir/obj/{stem}{plat['obj']}"
         n.append(f"build {output_path}: {rule} {input_path}")
         global sdk
@@ -360,6 +407,50 @@ def write_ninja(project, root, import_dir, build_dir, plat):
         module_objs.setdefault("misc", []).append(output_path)
     n.append("")
     
+    # windows: a dll exports nothing unless a .def or __declspec names it,
+    # and neither belongs in this codebase -- so the modules are archived and
+    # linked into one executable. every object is still built by our clang.
+    win_static = system == 'Windows'
+    mod_map    = {x['name']: x for x in modules}
+
+    def inner_objects(name, seen=None):
+        """objects that belong inside this module's library"""
+        if seen is None: seen = set()
+        if name in seen: return []
+        seen.add(name)
+        out = [f"$builddir/{name}{plat['obj']}"]
+        mm = mod_map.get(name)
+        if mm:
+            for d in mm['deps']:
+                dm = mod_map.get(d)
+                if dm and dm['target'] not in ('shared', 'app'):
+                    out += inner_objects(d, seen)
+        return out
+
+    def reachable_objects(name, seen=None):
+        """every module object this one pulls in, deps walked"""
+        if seen is None: seen = set()
+        if name in seen: return []
+        seen.add(name)
+        out = list(module_objs.get(name, []))
+        mm = mod_map.get(name)
+        if mm:
+            for d in mm['deps']:
+                out += reachable_objects(d, seen)
+        return out
+
+    def transitive_links(name, seen=None):
+        """every external lib this module needs, directly or through deps"""
+        if seen is None: seen = set()
+        if name in seen: return []
+        seen.add(name)
+        mm = mod_map.get(name)
+        if not mm: return []
+        out = list(mm['links'])
+        for d in mm['deps']:
+            out += transitive_links(d, seen)
+        return out
+
     # final targets
     outputs = []
     for m in modules:
@@ -367,26 +458,48 @@ def write_ninja(project, root, import_dir, build_dir, plat):
         if not objs:
             continue
         
-        deps = resolve_deps(modules, m['deps'], plat, import_p, "$builddir")
+        deps = resolve_deps(modules, m['deps'], plat, import_esc, "$builddir")
         if m['target'] == 'app':
             output = f"$builddir/{m['name']}{plat['exe']}"
-            n.append(f"build {output}: link_app {objs} {' '.join(deps)}")
+            app_deps = list(deps)
+            if system == 'Windows':
+                # the anchors below need every module's import lib on the line
+                app_deps = list(dict.fromkeys(deps + [
+                    f"{import_esc}/lib/{(o['libname'] or o['name'])}{plat['lib']}"
+                    for o in modules if o['target'] == 'shared']))
+            n.append(f"build {output}: link_app {objs} {' '.join(app_deps)}")
             libs = sorted(set(m['links']))
+            if system == 'Windows':
+                # a dll no symbol references is never loaded, so force one
+                libs = libs + [f"-Wl,/INCLUDE:{(o['libname'] or o['name'])}_module_anchor"
+                               for o in modules if o['target'] == 'shared']
             if libs:
                 n.append(f"  libs = {' '.join(libs)}")
             n.append("")
 
         elif m['target'] == 'static':
-            output = f"{import_p}/lib/{plat['lib_pre']}{m['name']}{plat['lib']}"
+            output = f"{import_esc}/lib/{plat['lib_pre']}{m['name']}{plat['lib']}"
             n.append(f"build {output}: link_static {objs}")
             n.append("")
 
         elif m['target'] == 'shared':
             out_name = m['libname'] if m.get('libname') else m['name']
-            output = f"{import_p}/lib/{plat['lib_pre']}{out_name}{plat['shared']}"
+            output = f"{import_esc}/lib/{plat['lib_pre']}{out_name}{plat['shared']}"
             install_name = os.path.basename(output)
-            n.append(f"build {output}: link_shared {objs} {' '.join(deps)}")
+            outs = output
+            implib = ''
+            if system == 'Windows':
+                # no rpath here: a dll is found in the exe's dir, so it goes
+                # beside the exe and only the import lib lands in lib/
+                output = f"$builddir/{out_name}{plat['shared']}"
+                # implicit output (|): it must stay out of $out, which the
+                # link rule passes to -o
+                outs = f"{output} | {import_esc}/lib/{out_name}{plat['lib']}"
+                implib = f" -Wl,/IMPLIB:{import_p}/lib/{out_name}{plat['lib']}"
+            n.append(f"build {outs}: link_shared {objs} {' '.join(deps)}")
             libs = sorted(set(m['links']))
+            if implib:
+                libs = libs + [implib.strip()]
             if libs:
                 n.append(f"  libs = {' '.join(libs)}")
             if system == "Darwin":

@@ -117,10 +117,35 @@ def parse_g_file(path):
                     "-lstdc++":  ["-lc++", "-lc++abi"],# macOS uses libc++; exception
                                                        # destructors/typeinfo live in libc++abi
                 }
-                is_darwin = platform.system() == "Darwin"
+                # windows has no combined clang-cpp/LLVM shared lib, so the
+                # C++ API has to come from the component libs instead
+                libdir = Path(os.environ.get('IMPORT', '')) / 'lib'
+                # skip LLVM-C: it is the dll import lib and its symbols would
+                # collide with the same ones in the static components
+                comp = lambda pat: sorted('-l' + p.stem for p in libdir.glob(pat)
+                                          if p.stem != 'LLVM-C') if libdir.is_dir() else []
+                # windows: msvc names differ, and some libs have no counterpart
+                windows_link = {
+                    # gen.py adds compiler-rt by full path; see win_rt there
+                    "-latomic":     [],
+                    "-lpthread":    [],                # ports.cc supplies the pthread api
+                    "-ltinfo":      [],                # no terminfo
+                    "-lstdc++":     [],                # the msvc stl comes in via msvcprt
+                    # windows has no libLLVM/clang-cpp dylib: LLVM_BUILD_LLVM_DYLIB
+                    # is unsupported there, and LLVM-C.dll carries only the C
+                    # API. the frontend aclang.cc drives is C++, so link static.
+                    "-lclang-cpp":  comp('clang*.lib'),
+                    "-lclang":      ["-llibclang"],
+                    "-lLLVM":       comp('LLVM*.lib'),
+                    "-lz":          ["-lzlib"],
+                    "-lmbedcrypto": ["-ltfpsacrypto"], # mbedtls 3.6 moved crypto out
+                }
+                sysname = platform.system()
+                remap = windows_link if sysname == "Windows" else \
+                        darwin_link  if sysname == "Darwin"  else {}
                 for flag in val.split():
-                    if is_darwin and flag in darwin_link:
-                        links.extend(darwin_link[flag])
+                    if flag in remap:
+                        links.extend(remap[flag])
                     else:
                         links.append(flag)
         

@@ -4,6 +4,7 @@
 
 #if defined(_WIN32)
 #include <winsock2.h>
+#include <ws2tcpip.h>   // INET6_ADDRSTRLEN, getaddrinfo
 #include <windows.h>
 #endif
 
@@ -33,7 +34,7 @@
 #include <import>
 
 // Implementation example:
-Session Session_with_TLS(Session s, TLS tls) {
+AU_EXPORT Session Session_with_TLS(Session s, TLS tls) {
     mbedtls_ssl_init(&s->ssl);
     mbedtls_net_init(&s->fd);
     mbedtls_ssl_setup(&s->ssl, &tls->conf);
@@ -41,7 +42,7 @@ Session Session_with_TLS(Session s, TLS tls) {
     return s;
 }
 
-Session Session_with_uri(Session s, uri addr) {
+AU_EXPORT Session Session_with_uri(Session s, uri addr) {
     s->tls = TLS(url, addr); 
     return s;
 }
@@ -104,7 +105,7 @@ bool Session_close(Session s) {
     return true;
 }
 
-none Session_set_timeout(Session s, i64 t) {
+AU_EXPORT none Session_set_timeout(Session s, i64 t) {
     s->timeout_ms = t;
 }
 
@@ -182,7 +183,7 @@ vector Session_read_until(Session s, string match, i32 max_len) {
     return rbytes;
 }
 
-Session Session_accept(TLS tls) {
+AU_EXPORT Session Session_accept(TLS tls) {
     Session client = Session(tls);
     
     for (;;) {
@@ -214,13 +215,13 @@ Session Session_accept(TLS tls) {
 }
 
 
-void mbedtls_debug(void *ctx, int level, const char *file, int line, const char *str) {
+AU_EXPORT void mbedtls_debug(void *ctx, int level, const char *file, int line, const char *str) {
     ((void) level);
     fprintf((FILE *) ctx, "mbedtls: %s:%04d: %s", file, line, str);
     fflush((FILE *) ctx);
 }
 
-none TLS_init(TLS tls) {
+AU_EXPORT none TLS_init(TLS tls) {
     static bool init_done = false;
     if (!init_done) {
         #ifdef _WIN32
@@ -319,7 +320,7 @@ none TLS_init(TLS tls) {
 }
 
 // copy headers first?
-none message_init(message m) {
+AU_EXPORT none message_init(message m) {
     if (!m->headers) m->headers = new(map, hsize, 24);
 
     map headers = m->headers;
@@ -339,7 +340,7 @@ none message_init(message m) {
         set(headers, (Au)h, (Au)query->host);
 }
 
-message message_with_sock(message m, sock sc) {
+AU_EXPORT message message_with_sock(message m, sock sc) {
     m->query = sc->data->tls->url;
     m->headers = map();
     if (read_headers(m, sc)) {
@@ -351,18 +352,18 @@ message message_with_sock(message m, sock sc) {
 }
 
 
-message message_with_i32(message m, i32 code) {
+AU_EXPORT message message_with_i32(message m, i32 code) {
     m->code = code;
     return m;
 }
 
-message message_with_string(message m, string text) {
+AU_EXPORT message message_with_string(message m, string text) {
     m->content = (Au)hold(text);
     m->code = 200;
     return m;
 }
 
-message message_with_path(message m, path p, Au modified_since) {
+AU_EXPORT message message_with_path(message m, path p, Au modified_since) {
     verify(exists(p) == Exists_file, "path must exist");
     string content = cast(string, load(p, typeid(string), null));
     m->content = (Au)hold(content);
@@ -372,7 +373,7 @@ message message_with_path(message m, path p, Au modified_since) {
     return m;
 }
 
-message message_with_content(message m, Au content, map headers, uri query) {
+AU_EXPORT message message_with_content(message m, Au content, map headers, uri query) {
     m->query = query;
     m->headers = headers;
     m->content = content;
@@ -380,12 +381,12 @@ message message_with_content(message m, Au content, map headers, uri query) {
     return m;
 }
 
-web message_method_type(message m) {
+AU_EXPORT web message_method_type(message m) {
     return m->query->mtype;
 }
 
 
-bool message_read_headers(message m, sock sc) {
+AU_EXPORT bool message_read_headers(message m, sock sc) {
     i32 line = 0;
     for (;;) {
         vector rbytes = read_until(sc, string("\r\n"), 8192);
@@ -415,7 +416,7 @@ bool message_read_headers(message m, sock sc) {
     return true;
 }
 
-bool message_read_content(message m, sock sc) {
+AU_EXPORT bool message_read_content(message m, sock sc) {
     string te = string("Transfer-Encoding");
     string cl = string("Content-Length");
     string ce = string("Content-Encoding");
@@ -511,7 +512,7 @@ bool message_read_content(message m, sock sc) {
 
 
 /// query/request construction
-message message_query(uri server, map headers, Au content) {
+AU_EXPORT message message_query(uri server, map headers, Au content) {
     message m;
     m->query   = uri(
         mtype,web_Get, proto,server->proto, host,server->host,
@@ -524,7 +525,7 @@ message message_query(uri server, map headers, Au content) {
 }
 
 /// response construction, uri is not needed
-message message_response(uri query, i32 code, Au content, map headers) {
+AU_EXPORT message message_response(uri query, i32 code, Au content, map headers) {
     message r;
     r->query    = uri(
         mtype,web_Response, proto,query->proto, host,query->host,
@@ -537,7 +538,7 @@ message message_response(uri query, i32 code, Au content, map headers) {
     return r;
 }
 
-symbol code_symbol(i32 code) {
+AU_EXPORT symbol code_symbol(i32 code) {
     static map symbols = null;
     if (!symbols) {
         symbols = new(map);
@@ -567,19 +568,19 @@ symbol code_symbol(i32 code) {
     return result->chars;
 }
 
-bool message_cast_bool(message m) {
+AU_EXPORT bool message_cast_bool(message m) {
     return m->query &&
            ((m->code >= 200 && m->code < 300) ||
             (m->code == 0 && (m->content || len(m->headers) > 0)));
 }
 
-string A_cast_string(Au);
+AU_EXPORT string A_cast_string(Au);
 
-string message_text(message m) {
+AU_EXPORT string message_text(message m) {
     return cast(string, m->content);
 }
 
-map message_cookies(message m) {
+AU_EXPORT map message_cookies(message m) {
     string cookies = (string)get(m->headers, (Au)string("Set-Cookie"));
     if (!cookies)
         return new(map);
@@ -604,7 +605,7 @@ map message_cookies(message m) {
 }
 
 
-bool message_write_status(message m, sock sc) {
+AU_EXPORT bool message_write_status(message m, sock sc) {
     string status = string("Status");
     i32 code = 0;
     Au s = get(m->headers, (Au)status);
@@ -621,7 +622,7 @@ bool message_write_status(message m, sock sc) {
 }
 
 
-bool message_write_headers(message m, sock sc) {
+AU_EXPORT bool message_write_headers(message m, sock sc) {
     pairs(m->headers, ii) {
         string k = cast(string, ii->key);
         string v = cast(string, ii->value);
@@ -634,7 +635,7 @@ bool message_write_headers(message m, sock sc) {
 }
 
 
-string encode_fields(map fields) {
+AU_EXPORT string encode_fields(map fields) {
     if (!fields) 
         return string("");
 
@@ -658,7 +659,7 @@ string encode_fields(map fields) {
     return post;
 }
 
-bool message_write(message m, sock sc, bool last_message) {
+AU_EXPORT bool message_write(message m, sock sc, bool last_message) {
     i32 ic = m->code;
     string conn = last_message ? string("close") : string("keep-alive");
     if (ic > 0) {
@@ -708,7 +709,7 @@ bool message_write(message m, sock sc, bool last_message) {
 }
 
 
-string uri_addr(uri u) {
+AU_EXPORT string uri_addr(uri u) {
     return dns(u->host);
 }
 
@@ -748,7 +749,7 @@ string dns(string hostname) {
     return result;
 }
 
-Au request(uri url, map args) {
+AU_EXPORT Au request(uri url, map args) {
     map     st_headers   = new(map);
     Au       null_content = null;
     map     headers      = contains(args, (Au)string("headers")) ? (map)get (args, (Au)string("headers")) : st_headers;
@@ -777,7 +778,7 @@ Au request(uri url, map args) {
 
 // stream a GET to a file, following redirects (HF resolve links 302
 // to a CDN). returns bytes written, -1 on any failure.
-i64 download(uri url, cstr dest) {
+AU_EXPORT i64 download(uri url, cstr dest) {
     uri cur = url;
     for (int hop = 0; hop < 6; hop++) {
         cur->mtype = web_Get;
@@ -884,12 +885,12 @@ uri uri_with_string(uri a, string raw) {
     return a;
 }
 
-uri uri_with_cstr(uri a, cstr addr) {
+AU_EXPORT uri uri_with_cstr(uri a, cstr addr) {
     return uri_with_string(a, string(addr));
 }
 
 
-string uri_encode(string s) {
+AU_EXPORT string uri_encode(string s) {
     static string chars;
     if (!chars) chars = string(" -._~:/?#[]@!$&'()*+;%=");
     
@@ -921,7 +922,7 @@ string uri_encode(string s) {
     return v;
 }
 
-string uri_decode(string e) {
+AU_EXPORT string uri_decode(string e) {
     num sz = len(e);
     string v = string();
     num i = 0;
@@ -958,13 +959,13 @@ string uri_decode(string e) {
 }
 
 // The handler function signature would be:
-Au handle_client(Au target, Au client_sock, Au context) {
+AU_EXPORT Au handle_client(Au target, Au client_sock, Au context) {
     sock s = (sock)client_sock;
     // Handle the client socket
     return _bool(true);
 }
 
-Au sock_listen(uri url, subprocedure handler) {
+AU_EXPORT Au sock_listen(uri url, subprocedure handler) {
     TLS tls = TLS(url, url);
     
     for (;;) {
@@ -983,7 +984,7 @@ Au sock_listen(uri url, subprocedure handler) {
     return (Au)tls;
 }
 
-sock sock_with_TLS(sock s, TLS tls) {
+AU_EXPORT sock sock_with_TLS(sock s, TLS tls) {
     //s->url  = hold(tls->url);
     s->data = Session(tls);
     return s;
@@ -995,75 +996,75 @@ sock sock_with_uri(sock s, uri addr) {
     return sc;
 }
 
-sock sock_with_cstr(sock a, cstr addr) {
+AU_EXPORT sock sock_with_cstr(sock a, cstr addr) {
     uri u = uri(addr);
     return sock_with_uri(a, u);
 }
 
-bool sock_bind_addr(sock s, uri addr) {
+AU_EXPORT bool sock_bind_addr(sock s, uri addr) {
     return Session_bind_addr(s->data, addr);
 }
 
-bool sock_connect_to(sock s) {
+AU_EXPORT bool sock_connect_to(sock s) {
     return Session_connect_to(s->data);
 }
 
-bool sock_close(sock s) {
+AU_EXPORT bool sock_close(sock s) {
     return Session_close(s->data);
 }
 
-none sock_set_timeout(sock s, i64 t) {
+AU_EXPORT none sock_set_timeout(sock s, i64 t) {
     Session_set_timeout(s->data, t);
 }
 
-bool sock_read_sz(sock s, handle v, sz sz) {
+AU_EXPORT bool sock_read_sz(sock s, handle v, sz sz) {
     return Session_read_sz(s->data, v, sz);
 }
 
-sz sock_recv(sock s, handle buf, sz len) {
+AU_EXPORT sz sock_recv(sock s, handle buf, sz len) {
     return Session_recv(s->data, buf, len);
 }
 
-sz sock_send_bytes(sock s, handle buf, sz len) {
+AU_EXPORT sz sock_send_bytes(sock s, handle buf, sz len) {
     printf("%s", (cstr)buf);
     return Session_send(s->data, buf, len);
 }
 
-sz sock_send_object(sock s, Au v) {
+AU_EXPORT sz sock_send_object(sock s, Au v) {
     string str = cast(string, v);
     return Session_send_string(s->data, str);
 }
 
-vector sock_read_until(sock s, string match, i32 max_len) {
+AU_EXPORT vector sock_read_until(sock s, string match, i32 max_len) {
     return Session_read_until(s->data, match, max_len);
 }
 
-sock sock_accept(TLS tls) {
+AU_EXPORT sock sock_accept(TLS tls) {
     Session s = Session_accept(tls);
     return s ? sock(s->tls) : null;
 }
 
-bool sock_cast_bool(sock s) {
+AU_EXPORT bool sock_cast_bool(sock s) {
     return s->data->connected;
 }
 
-bool sock_read(sock s, handle buf, sz len) {
+AU_EXPORT bool sock_read(sock s, handle buf, sz len) {
     sz actual = recv(s, buf, len);
     return actual == len;
 }
 
 // For JSON requests, success/failure handlers would have signatures like:
-Au on_success(Au target, Au response_data, Au context) {
+AU_EXPORT Au on_success(Au target, Au response_data, Au context) {
     // Handle successful JSON response
     return response_data;
 }
 
-Au on_failure(Au target, Au error_data, Au context) {
+AU_EXPORT Au on_failure(Au target, Au error_data, Au context) {
     // Handle failure
     return null;
 }
 
-Au json_request(uri addr, map args, map headers, subprocedure success_handler, subprocedure failure_handler) {
+AU_EXPORT Au json_request(uri addr, map args, map headers, subprocedure success_handler, subprocedure failure_handler) {
     Au response = request(addr, headers);
     
     if (!response) {
@@ -1085,3 +1086,5 @@ define_class(message,   Au)
 
 define_enum(web)
 define_enum(protocol)
+
+AU_EXPORT void net_module_anchor(void) { }

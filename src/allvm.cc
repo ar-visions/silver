@@ -190,11 +190,7 @@ LLVMValueRef LLVMConstOr(LLVMValueRef LHSConstant, LLVMValueRef RHSConstant) {
         llvm::unwrap<llvm::Constant>(RHSConstant)));
 }
 
-LLVMValueRef LLVMConstXor(LLVMValueRef LHSConstant, LLVMValueRef RHSConstant) {
-    return llvm::wrap(llvm::ConstantExpr::get(
-        llvm::Instruction::Xor,
-        llvm::unwrap<llvm::Constant>(LHSConstant),
-        llvm::unwrap<llvm::Constant>(RHSConstant)));
-}
+// LLVMConstXor is NOT defined here: unlike the ten above, LLVM still
+// exports it, and a second definition is a duplicate symbol on COFF
 
 } // extern "C"

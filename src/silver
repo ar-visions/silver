@@ -1,5 +1,6 @@
 #ifndef _silver_
 #define _silver_
+#define exports_module_ silver
 
 #define exports_schema(X, Y, ...) \
     M(X, Y, i, prop,     public,  token,  version) \
