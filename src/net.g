@@ -10,6 +10,5 @@ import:     Mbed-TLS:mbedtls/ec40440 as mbedtls
     -DCMAKE_POSITION_INDEPENDENT_CODE=1
     -DLINK_WITH_PTHREAD=1
     CC={'clang-cl' if win else 'gcc'}
-    >> git submodule update --init --recursive
     >> python3 -m pip install jsonschema jinja2
     >> { 'scripts\\make_generated_files.bat' if win else '' }

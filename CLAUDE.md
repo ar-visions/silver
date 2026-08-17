@@ -474,6 +474,82 @@ C typedef aliases to pointer types (e.g. `typedef VkPhysicalDevice_T* VkPhysical
 - Float literals rejected for integer scalars: `14.4ms` errors when `scalar ms : i64`.
 - Check in scalar suffix construction path.
 
+---
+
+## Windows Port
+
+Rules that hold everywhere here: **never CRLF** (LF only, it is banned), **no mingw**, **no `.def` files**, **no `__declspec` framing** in our own headers. The POSIX layer is `src/ports.cc` + `src/ports.h`, compiled into `Au.dll`, so anything linking `-lAu` gets it — including `silver-host`, which needs no change of its own to pick up a ports fix.
+
+### Process launch — there is no fork
+
+`fork()` returns `ENOSYS`. Every launch path goes through `posix_spawn` in ports.cc:
+
+- **`execvp` is a stand-in, not a replacement**: it spawns, waits, then `_exit(code)` with the child's status. Windows cannot replace a running process, so silver stays alive as the parent and forwards the exit code.
+- **Kill-on-close job**: `child_job()` makes one `CreateJobObjectA` with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`; the only handle is silver's. Children die with silver however it ends — clean exit, Ctrl+C, or kill.
+- **`CREATE_SUSPENDED` → `child_adopt()` → `ResumeThread`**: the child joins the job before it runs one instruction. A child that started first could spawn grandchildren outside the job, and those would outlive silver.
+- **Ctrl+C**: `SetConsoleCtrlHandler`; the handler calls `TerminateJobObject(job, 130)`. A `/SUBSYSTEM:WINDOWS` binary does not reliably receive console control events, so killing the job is what actually works.
+- **Environment**: pass `NULL` for envp to inherit. Handing over `environ` drops Win32-only variables (the Vulkan loader reads those) — the CRT view and the Win32 view are separate, and `setenv` must write both (`_putenv` + `SetEnvironmentVariableA`).
+
+### No console windows on spawn
+
+`silver-host` links `/SUBSYSTEM:WINDOWS`, so it has no console. Any console program it launches gets a **brand new console window** — one flashing up per live-reload rebuild. `no_window_flag()` in ports.cc returns `CREATE_NO_WINDOW` only when `GetConsoleWindow()` is null, and is OR'd into the flags in both `posix_spawn` and `popen`. Std handles are passed explicitly, so output is unaffected. When silver itself (a console app) spawns, the flag is 0 and the child inherits the console as before.
+
+### App output
+
+A `/SUBSYSTEM:WINDOWS` process has no stdout: `_get_osfhandle` reports `-2` (a live fd with nothing behind it, distinct from `-1`), and writes fail `EBADF`. So:
+
+- The app tees its own output to `<install/tmp>/<app>.log` (`trinity.cc`). `install/tmp`, not the install root, or the folder floods.
+- Silver clears that log **before** launch and runs a tail thread onto its own console — the tail starts at offset 0, so an unclear'd log replays the previous run.
+- `SILVER_LOG_TAIL=1` tells the app silver owns the console, so it does not also tee.
+- `setvbuf(stdout, 0, _IONBF, 0)` — MSVC's parameter check faults on `_IOLBF` with a null buffer and size 0.
+
+### Live reload
+
+Windows cannot relink or delete a mapped DLL. `reload_dlopen` loads a **copy** at `<temp_dir()>/hotreload_<mtime>.dll`, including the initial module load, so the product is never pinned and builds can relink it. The copies accumulate; nothing cleans old ones yet.
+
+### DLL symbol visibility
+
+On ELF every symbol in a `.so` is visible; on Windows only `dllexport`ed ones leave the DLL, and a DLL must resolve everything at link time. Two consequences that bite repeatedly:
+
+- A helper used across modules needs `AU_EXPORT` (this is why `fnv1a_hash` in `Au.c` had to get one — `ai.ag` declares it `intern func`).
+- A module that calls into a library must **declare that library**, even if it works on Linux by leaving the symbol undefined until load. `ai.ag` imported `<vulkan/vulkan.h>` with no `-lvulkan` and only failed here.
+
+### Library naming
+
+Windows spells libraries differently and `-lfoo` has no `libfoo.so` symlink to follow. `resolve_versioned_lib` (silver.c) holds the table, and every lib name passes through it at final link:
+
+- `z` → `zlib`, `png` → `libpng`, `mbedcrypto` → `tfpsacrypto` (mbedtls 4 folded crypto into tf-psa-crypto)
+- `-llldb` → `-lliblldb` — our own `src/lldb.c` builds `install/lib/lldb.lib` and shadows LLDB's real import lib
+- `is_sdk_lib()` lets Windows SDK libs (`ole32`, `uuid`, `user32`, …) through. They live in the linker's own search path, never in `install/lib`, so every file-existence check drops them silently
+- versioned scan for `opencv_core4140.lib`, `OpenEXR-3_4.lib` style names
+
+### Module name collisions
+
+`src/net.c` (silver's own, linked into `silver.exe`) and `foundry/net/net.ag` both produced `install/build/net.dll`. Linux quietly overwrote one with the other; Windows refuses to write a mapped DLL and exposed it. `foundry/net` is now **`foundry/tls`** (`spectra.ag` imports `tls`). Watch for this shape generally — foundry modules and `src/` modules share one output directory.
+
+### Dependency checkouts
+
+- `checkout()` runs `git submodule update --init --recursive` on any cache-miss build of a git checkout. A plain clone stops at the top repo, and mbedtls builds from its `framework` and `tf-psa-crypto` submodules.
+- An interrupted clone can leave a temp pack (`objects/pack/tmp_pack_*`) with `HEAD -> refs/heads/.invalid` and no refs. Git then fails fast forever instead of re-cloning; delete that submodule's `.git/modules/<name>` and worktree dir to recover.
+- Checkout root is `install/../..` = `C:/src/checkout`, **outside** the repo.
+- mbedtls sets `GEN_FILES` **OFF when the host is Windows**, so its generated sources (`error.c`, `ssl_debug_helpers_generated.c`) must come from `scripts\make_generated_files.bat`. Turning `GEN_FILES=ON` instead hits an upstream bug — `--list-for-cmake` emits `os.path.join` paths and cmake rejects `\m` as an invalid escape.
+
+### Python
+
+`python` on PATH resolves to silver's own vendored `platform/native/bin/python.exe` — no pip, no ensurepip — and it **shadows the real python** for every dependency script that shells out to `python`. The usable interpreter is the Store one (`%LOCALAPPDATA%\Microsoft\WindowsApps\python.exe`, 3.12, has jinja2 + jsonschema); cmake finds it through the registry, but build scripts do not. Put it first on PATH when running a dependency's generators.
+
+### Audio
+
+`foundry/spectra/spectra.cc` is the WASAPI backend behind `spectra.ag`'s `el [ windows ]` branch: `spectra` (capture) and `AudioOut` (playback), same surface as the ALSA pair, FFT stays in silver. Shared mode with `AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | SRC_DEFAULT_QUALITY` is what lets a plain 16-bit ask through instead of being handed the device mix format. The GUIDs are `EXTERN_C const IID` declarations — their definitions are in `uuid.lib`, hence `-lole32 -luuid` in `spectra.g`.
+
+**`<module>.cc` is attached on every platform** (silver.c picks up `<module_path>/<stem>.{c,cc,rs,mm}`), so a platform-specific implementation file must wrap itself in `#ifdef _WIN32` or it breaks the other platforms.
+
+### Header shims
+
+`ports.h` carries the POSIX surface Windows has no header for — the pthread API, `openpty`/`ttyname_r`/`forkpty` (all failing the way a no-pty system does), `getpid` as `au_getpid`. A `.ag` module takes it with `ifdef [ windows ] → import <ports.h>` in place of `<unistd.h>` / `<pthread.h>`.
+
+`ports.h` includes `<process.h>` first, then aliases our own (`#define execvp au_execvp`, `getpid`, `execl`, `execlp`) so the UCRT's dllimport declarations cannot collide. `read`/`write` still have that same unguarded collision shape — any module including `<io.h>` after `ports.h` breaks. `src/headers.py` re-syncs `install/include/ports.h` every build; bootstrap.bat only copies it once, and a stale copy there is a trap that costs hours.
+
 
 ========== feedback_build_command.md ==========
 ---

@@ -92,10 +92,6 @@ BOOL EnumProcessModules(
 
 #pragma comment(lib, "psapi.lib")
 
-// defined at the bottom of this file; declared here so the spawn paths above
-// can re-point it after a putenv moves the crt block
-extern "C" char** environ;
-
 static inotify_watch global_watch = { 0 };  // only 1 for now
 
 int gettimeofday(struct _timeval_* tp, void* tzp) {
@@ -450,12 +446,26 @@ struct WatchInfo {
     HANDLE stopEvent;
     std::thread watchThread;
     int wd;
+
+    // a WatchInfo owns its thread, so it stops it. destroying a JOINABLE
+    // std::thread calls terminate() -- that was the SIGABRT at exit, raised
+    // from the static map's destructor with the threads still running.
+    // stopEvent wakes the watcher out of its INFINITE wait at once
+    ~WatchInfo() {
+        if (stopEvent) SetEvent(stopEvent);
+        if (watchThread.joinable()) watchThread.join();
+        if (dirHandle && dirHandle != INVALID_HANDLE_VALUE) CloseHandle(dirHandle);
+        if (stopEvent) CloseHandle(stopEvent);
+    }
 };
 
 struct InotifyContext {
     std::map<int, std::unique_ptr<WatchInfo>> watches;
     std::mutex mutex;
     int nextWd = 1;
+    // the watcher thread only has to report THAT something changed: the
+    // reader synthesizes one event, which is all watch_runner looks at
+    std::atomic<int> pending{0};
     std::atomic<bool> closed{false};
 };
 
@@ -488,7 +498,7 @@ void WatcherThread(InotifyContext* ctx, WatchInfo* watch) {
             watch->dirHandle,
             buffer,
             bufferSize,
-            FALSE,  // Don't watch subdirectories
+            TRUE,   // watch the whole subtree: one handle, one thread
             notifyFilter,
             NULL,
             &overlapped,
@@ -497,20 +507,8 @@ void WatcherThread(InotifyContext* ctx, WatchInfo* watch) {
             DWORD waitResult = WaitForMultipleObjects(2, events, FALSE, INFINITE);
             
             if (waitResult == WAIT_OBJECT_0) {  // Change detected
-                if (GetOverlappedResult(watch->dirHandle, &overlapped, &bytesReturned, FALSE)) {
-                    // Process the changes here
-                    // In a real implementation, you'd queue events to be read by inotify_read
-                    FILE_NOTIFY_INFORMATION* info = (FILE_NOTIFY_INFORMATION*)buffer;
-                    
-                    while (true) {
-                        // Process each change notification
-                        // Map Windows actions to inotify events
-                        
-                        if (info->NextEntryOffset == 0)
-                            break;
-                        info = (FILE_NOTIFY_INFORMATION*)((BYTE*)info + info->NextEntryOffset);
-                    }
-                }
+                if (GetOverlappedResult(watch->dirHandle, &overlapped, &bytesReturned, FALSE))
+                    ctx->pending++;
                 ResetEvent(overlapped.hEvent);
             } else if (waitResult == WAIT_OBJECT_0 + 1) {  // Stop event
                 break;
@@ -549,7 +547,24 @@ int inotify_add_watch(int fd, const char* pathname, uint32_t mask) {
     
     auto& ctx = it->second;
     std::lock_guard<std::mutex> ctxLock(ctx->mutex);
-    
+
+    // a watch now covers its whole subtree, so a directory under one we
+    // already hold needs nothing. the caller walks the tree adding every
+    // directory (inotify needs that; windows does not) and each one used to
+    // cost a handle AND a thread -- hundreds of them, joined one by one at
+    // shutdown. that was the multi-second close
+    {
+        std::string np(pathname);
+        for (char& c : np) if (c == 92) c = '/';   // 92 = backslash
+        for (const auto& w : ctx->watches) {
+            std::string wp = w.second->path;
+            for (char& c : wp) if (c == 92) c = '/';   // 92 = backslash
+            if (np.size() >= wp.size() && np.compare(0, wp.size(), wp) == 0 &&
+                (np.size() == wp.size() || np[wp.size()] == '/'))
+                return w.first;          // parent already watches this
+        }
+    }
+
     // Convert path to wide string for Windows
     int pathLen = MultiByteToWideChar(CP_UTF8, 0, pathname, -1, NULL, 0);
     std::vector<WCHAR> widePath(pathLen);
@@ -626,31 +641,29 @@ int inotify_rm_watch(int fd, int wd) {
 }
 
 int inotify_close(int fd) {
-    std::lock_guard<std::mutex> lock(g_instanceMutex);
-    
-    auto it = g_inotifyInstances.find(fd);
-    if (it == g_inotifyInstances.end()) {
-        return -1;
-    }
-    
-    auto& ctx = it->second;
-    ctx->closed = true;
-    
-    // Remove all watches
-    std::vector<int> wds;
+    // take the instance OUT under the lock, then tear it down without it.
+    // inotify_rm_watch locks g_instanceMutex itself, so calling it from here
+    // while holding that lock self-deadlocked -- std::mutex is not recursive,
+    // and the app hung on close every time
+    std::unique_ptr<InotifyContext> ctx;
     {
-        std::lock_guard<std::mutex> ctxLock(ctx->mutex);
-        for (const auto& pair : ctx->watches) {
-            wds.push_back(pair.first);
-        }
-    }  // Lock automatically released here
-    
-    for (int wd : wds) {
-        inotify_rm_watch(fd, wd);
+        std::lock_guard<std::mutex> lock(g_instanceMutex);
+        auto it = g_inotifyInstances.find(fd);
+        if (it == g_inotifyInstances.end()) return -1;
+        ctx = std::move(it->second);
+        g_inotifyInstances.erase(it);
     }
-    
-    g_inotifyInstances.erase(it);
-    
+
+    ctx->closed = true;
+    for (auto& pair : ctx->watches) {
+        WatchInfo* w = pair.second.get();
+        SetEvent(w->stopEvent);                 // wakes its INFINITE wait
+        if (w->watchThread.joinable())
+            w->watchThread.join();
+        CloseHandle(w->dirHandle);
+        CloseHandle(w->stopEvent);
+    }
+    ctx->watches.clear();
     return 0;
 }
 
@@ -674,10 +687,7 @@ int setenv(const char* name, const char* value, int overwrite) {
     // crt's copy (what getenv and environ report, and what a child inherits)
     { char kv[4096];
       snprintf(kv, sizeof(kv), "%s=%s", name, value ? value : "");
-      _putenv(kv);
-      // _putenv can REALLOCATE the crt block, so the cached environ we hand
-      // to a child would be freed memory. re-point it at every mutation
-      environ = _environ; }
+      _putenv(kv); }
 
     // Set the environment variable
     if (SetEnvironmentVariableA(name, value)) {
@@ -722,6 +732,14 @@ static HANDLE child_job() {
     return g_childJob;
 }
 
+// a console child inherits OUR console, or gets a new window if we have none.
+// a /SUBSYSTEM:WINDOWS parent (silver-host) has none, so every build it spawns
+// would flash up its own window -- CREATE_NO_WINDOW gives it a console with no
+// window instead. std handles are passed explicitly, so output is unaffected
+static DWORD no_window_flag() {
+    return GetConsoleWindow() ? 0 : CREATE_NO_WINDOW;
+}
+
 // joined while the child is still suspended, so it cannot start grandchildren
 // outside the job. an older windows can refuse the nest -- the spawn stands
 static void child_adopt(HANDLE process) {
@@ -729,12 +747,31 @@ static void child_adopt(HANDLE process) {
     if (job && process) AssignProcessToJobObject(job, process);
 }
 
-// the child shares this console, so ctrl+c is delivered to it directly. the
-// parent swallows the event to stay alive through the wait below -- otherwise
-// it vanishes and the app's real exit is never reported. a closed console is
-// NOT swallowed: we go down, and the job takes the child with us
+// the ONE place a process is created. spawn (posix_spawn) and invoke
+// (popen) both come through here, so the no-window rule and the
+// kill-on-close job are stated once instead of at every call site
+static BOOL spawn_process(const char* app, char* cmdline, STARTUPINFOA* si,
+                          DWORD flags, void* envblock, const char* cwd,
+                          PROCESS_INFORMATION* pi) {
+    if (!CreateProcessA(app, cmdline, NULL, NULL, TRUE,
+                        flags | no_window_flag(), envblock, cwd, si, pi))
+        return FALSE;
+    child_adopt(pi->hProcess);
+    return TRUE;
+}
+
+
+// ctrl+c is NOT delivered to the app: it is linked /SUBSYSTEM:WINDOWS, and a
+// gui binary does not reliably receive console control events. this process is
+// a console app and always does -- so it ends the job, which is every process
+// the app spawned as well. we return handled and stay alive, so the wait below
+// still reports how the app went out. a closed console is not swallowed: we go
+// down and the job takes the app with us
 static BOOL WINAPI exec_ctrl_handler(DWORD type) {
-    return type == CTRL_C_EVENT || type == CTRL_BREAK_EVENT;
+    if (type != CTRL_C_EVENT && type != CTRL_BREAK_EVENT) return FALSE;
+    HANDLE job = child_job();
+    if (job) TerminateJobObject(job, 130);   // 128 + SIGINT
+    return TRUE;
 }
 
 // windows cannot turn one process into another, so this stands in for the app
@@ -749,8 +786,12 @@ int execvp(const char* file, char* const argv[]) {
             app = found;
     }
 
+    // NULL env, not environ: exec hands the child everything this process has,
+    // and windows keeps two views of that -- the crt block environ reports, and
+    // the win32 block SetEnvironmentVariable writes (where the vulkan loader
+    // reads ICD and layer paths). only inheritance carries both
     pid_t pid = 0;
-    int   sp  = posix_spawn(&pid, app.c_str(), NULL, NULL, argv, environ);
+    int   sp  = posix_spawn(&pid, app.c_str(), NULL, NULL, argv, NULL);
     if (sp != 0) {
         errno = sp == ENOENT ? ENOENT : EINVAL;
         return -1;
@@ -949,15 +990,14 @@ FILE* popen(const char* cmd, const char* mode) {
 
     // its own group: sharing ours means one console control event kills the
     // whole tree mid-build, taking us with it
-    BOOL ok = CreateProcessA(NULL, start, NULL, NULL, TRUE,
-                             CREATE_NEW_PROCESS_GROUP, NULL, NULL, &si, &pi);
+    BOOL ok = spawn_process(NULL, start, &si, CREATE_NEW_PROCESS_GROUP,
+                            NULL, NULL, &pi);
     for (size_t i = 0; i < restore.size(); i++)
         SetEnvironmentVariableA(restore[i].name.c_str(),
                                 restore[i].had ? restore[i].value.c_str() : NULL);
     free(line);
     CloseHandle(wr);                    // the child owns the write end now
     if (!ok) { CloseHandle(rd); return NULL; }
-    child_adopt(pi.hProcess);           // a build tool dies with the build
     CloseHandle(pi.hThread);
 
     int fd = _open_osfhandle((intptr_t)rd, _O_RDONLY);
@@ -999,7 +1039,7 @@ int pclose(FILE* stream) {
 }
 int dup(int fd)      { return _dup(fd);    }
 int isatty(int fd)   { return _isatty(fd); }
-pid_t getpid()       { return (pid_t)GetCurrentProcessId(); }
+pid_t au_getpid()    { return (pid_t)GetCurrentProcessId(); }
 
 int strcasecmp(const char* a, const char* b) { return _stricmp(a, b); }
 int rmdir(const char* path) { return RemoveDirectoryA(path) ? 0 : -1; }
@@ -1254,43 +1294,12 @@ int execl(const char* path, const char* arg0, ...) {
     return -1;
 }
 
+// same story as execl: reachable only from a forkpty child, and
+// forkpty always fails here. spawning lives in posix_spawn alone
 int execlp(const char* file, const char* arg0, ...) {
-    // Build command line
-    std::string cmdLine = file;
-    
-    va_list args;
-    va_start(args, arg0);
-    
-    const char* arg = arg0;
-    while (arg != NULL) {
-        cmdLine += " ";
-        cmdLine += arg;
-        arg = va_arg(args, const char*);
-    }
-    va_end(args);
-    
-    // Create process
-    STARTUPINFOA si = {0};
-    PROCESS_INFORMATION pi = {0};
-    si.cb = sizeof(si);
-    
-    if (!CreateProcessA(
-        NULL,
-        (LPSTR)cmdLine.c_str(),
-        NULL,
-        NULL,
-        TRUE,  // Inherit handles
-        0,
-        NULL,
-        NULL,
-        &si,
-        &pi)) {
-        return -1;
-    }
-    
-    // execlp replaces the current process, so we exit
-    ExitProcess(0);
-    return 0;  // Never reached
+    (void)file; (void)arg0;
+    errno = ENOSYS;
+    return -1;
 }
 
 // Create pipe
@@ -1304,6 +1313,14 @@ int dup2(int oldfd, int newfd) {
 }
 
 int close(int fd) {
+    // same as read(): an inotify fd is ours, not the crt's. watch_runner
+    // closes its fd on the way out, and _close faulted on it every time
+    bool is_watch;
+    {
+        std::lock_guard<std::mutex> lock(g_instanceMutex);
+        is_watch = g_inotifyInstances.count(fd) != 0;
+    }
+    if (is_watch) return inotify_close(fd);   // takes the lock itself
     return _close(fd);
 }
 
@@ -1362,6 +1379,22 @@ int forkpty(int* amaster, char* name, void* termp, struct winsize* win) {
     return -1;
 }
 
+// same story: callers test the return and fall back to unbuffered pipes
+int openpty(int* amaster, int* aslave, char* name, void* termp, struct winsize* win) {
+    (void)name; (void)termp; (void)win;
+    if (amaster) *amaster = -1;
+    if (aslave)  *aslave  = -1;
+    errno = ENOSYS;
+    return -1;
+}
+
+// no descriptor here is a terminal device with a path
+int ttyname_r(int fd, char* buf, size_t len) {
+    (void)fd;
+    if (buf && len) buf[0] = 0;
+    return ENOTTY;
+}
+
 // ---- posix_spawn ----------------------------------------------------------
 // the actions are recorded, then applied where windows has an equivalent.
 // dup2-onto-a-fixed-child-fd does not have one: handle inheritance carries a
@@ -1415,7 +1448,6 @@ int posix_spawn(pid_t* pid, const char* path,
                 char* const argv[], char* const envp[]) {
     (void)attr;
     if (!path) { errno = EINVAL; return EINVAL; }
-    environ = _environ;   // a putenv elsewhere may have moved the block
 
     std::string cmd;
     for (int i = 0; argv && argv[i]; i++) {
@@ -1492,14 +1524,29 @@ int posix_spawn(pid_t* pid, const char* path,
     // named in STARTUPINFO, so without this its output goes nowhere
     HANDLE p_out = GetStdHandle(STD_OUTPUT_HANDLE);
     HANDLE p_err = GetStdHandle(STD_ERROR_HANDLE);
+    HANDLE p_in  = GetStdHandle(STD_INPUT_HANDLE);
     if (hout == INVALID_HANDLE_VALUE) hout = p_out;
     if (herr == INVALID_HANDLE_VALUE) herr = p_err;
-    if ((hout && hout != INVALID_HANDLE_VALUE) || (herr && herr != INVALID_HANDLE_VALUE)) {
-        si.dwFlags   |= STARTF_USESTDHANDLES;
-        si.hStdInput  = GetStdHandle(STD_INPUT_HANDLE);
-        si.hStdOutput = hout;
-        si.hStdError  = herr ? herr : hout;
-    }
+    // a child handed no std handle gets no fd for it, and every printf on that
+    // stream is silently discarded -- which is not a thing fork/exec can do to
+    // you. NUL stands in for anything we lack, so fd 0/1/2 always exist there
+    HANDLE nul = INVALID_HANDLE_VALUE;
+    #define SPAWN_STD(h) do { \
+        if (!(h) || (h) == INVALID_HANDLE_VALUE) { \
+            if (nul == INVALID_HANDLE_VALUE) \
+                nul = CreateFileA("NUL", GENERIC_READ | GENERIC_WRITE, \
+                    FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, NULL); \
+            (h) = nul; \
+        } \
+    } while (0)
+    SPAWN_STD(hout);
+    SPAWN_STD(herr);
+    SPAWN_STD(p_in);
+    #undef SPAWN_STD
+    si.dwFlags   |= STARTF_USESTDHANDLES;
+    si.hStdInput  = p_in;
+    si.hStdOutput = hout;
+    si.hStdError  = herr;
 
     // envp MUST reach the child: it carries the marker that stops it spawning
     // another host, so dropping it is an unbounded spawn loop. the block is
@@ -1515,14 +1562,14 @@ int posix_spawn(pid_t* pid, const char* path,
     // single instruction -- a child that started first could spawn its own
     // children outside the job, and those would survive silver
     std::string line = cmd;
-    if (!CreateProcessA(app.c_str(), (LPSTR)line.c_str(), NULL, NULL, TRUE,
-                        CREATE_SUSPENDED,
-                        envblock.empty() ? NULL : (LPVOID)envblock.data(),
-                        cwd.empty() ? NULL : cwd.c_str(), &si, &pi)) {
+    if (!spawn_process(app.c_str(), (LPSTR)line.c_str(), &si, CREATE_SUSPENDED,
+                       envblock.empty() ? NULL : (LPVOID)envblock.data(),
+                       cwd.empty() ? NULL : cwd.c_str(), &pi)) {
+        if (nul != INVALID_HANDLE_VALUE) CloseHandle(nul);
         errno = ENOENT;
         return ENOENT;
     }
-    child_adopt(pi.hProcess);
+    if (nul != INVALID_HANDLE_VALUE) CloseHandle(nul);   // the child kept its own
     ResumeThread(pi.hThread);
     if (pid) *pid = (pid_t)pi.dwProcessId;
     CloseHandle(pi.hThread);
@@ -1552,8 +1599,7 @@ int memfd_create(const char* name, unsigned int flags) {
     return fd;
 }
 
-// the ucrt spells the environment block with an underscore
-char** environ = _environ;
+// environ is an alias for the crt's live block; see ports.h
 
 // ---- sigaction ------------------------------------------------------------
 // mapped onto the crt's signal() for the six signals windows actually raises.
@@ -1587,6 +1633,11 @@ int sigaction(int sig, const struct sigaction* act, struct sigaction* old) {
 
 int unsetenv(const char* name) {
     if (!name || !*name || strchr(name, '=')) { errno = EINVAL; return -1; }
+    // BOTH views, exactly as setenv writes both: clearing only the win32 block
+    // left getenv still reporting the old value out of the crt's copy
+    { char kv[4096];
+      snprintf(kv, sizeof(kv), "%s=", name);
+      _putenv(kv); }
     return SetEnvironmentVariableA(name, NULL) ? 0 : -1;
 }
 
@@ -1631,6 +1682,22 @@ int sigaltstack(const stack_t* ss, stack_t* old) {
 }
 
 ssize_t read(int fd, void* buf, size_t sz) {
+    // an inotify fd is ours, not the crt's -- handing it to _read trips the
+    // invalid-parameter handler on every call. one event per change batch
+    {
+        std::lock_guard<std::mutex> lock(g_instanceMutex);
+        auto it = g_inotifyInstances.find(fd);
+        if (it != g_inotifyInstances.end()) {
+            if (it->second->pending.exchange(0) == 0) return 0;
+            if (sz < sizeof(struct inotify_event))    return 0;
+            struct inotify_event ev;
+            memset(&ev, 0, sizeof(ev));
+            ev.wd   = 1;
+            ev.mask = IN_MODIFY;
+            memcpy(buf, &ev, sizeof(ev));
+            return (ssize_t)sizeof(ev);
+        }
+    }
     return _read(fd, buf, sz);
 }
 
@@ -2052,6 +2119,26 @@ static void set_dlerror(const char* format, ...) {
     dlerror_flag = 1;
 }
 
+// where a module's dependencies live: bin first, then lib. our own dlls
+// install to bin, but a dependency can hardcode DESTINATION lib (sherpa
+// does) and windows searches neither on behalf of a loaded dll. these are
+// registered once and only consulted by loads that pass SEARCH_USER_DIRS,
+// so no other load in the process changes behaviour
+static void dll_search_dirs(void) {
+    static bool done = false;
+    if (done) return;
+    done = true;
+    static const char* sub[] = { "/install/bin", "/install/lib", 0 };
+    for (int i = 0; sub[i]; i++) {
+        char p[MAX_PATH];
+        snprintf(p, sizeof(p), "%s%s", SILVER, sub[i]);
+        for (char* c = p; *c; c++) if (*c == '/') *c = '\\';
+        wchar_t w[MAX_PATH];
+        if (MultiByteToWideChar(CP_ACP, 0, p, -1, w, MAX_PATH))
+            AddDllDirectory(w);
+    }
+}
+
 // dlopen - open a dynamic library
 void* dlopen(const char* filename, int flags) {
     HMODULE module;
@@ -2094,10 +2181,14 @@ void* dlopen(const char* filename, int flags) {
     }
     
     // a module's siblings (trinity.dll, img.dll, ...) sit next to it, but the
-    // loader searches the EXE's directory, not the dll's. this flag adds the
-    // loaded dll's own directory to the search for its dependencies -- the
-    // nearest thing windows has to the $ORIGIN rpath used elsewhere
-    load_flags |= LOAD_WITH_ALTERED_SEARCH_PATH;
+    // loader searches the EXE's directory, not the dll's. DLL_LOAD_DIR adds
+    // the loaded dll's own directory -- the nearest thing windows has to the
+    // $ORIGIN rpath used elsewhere -- and USER_DIRS brings in bin and lib.
+    // these cannot be mixed with LOAD_WITH_ALTERED_SEARCH_PATH
+    dll_search_dirs();
+    load_flags |= LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR |
+                  LOAD_LIBRARY_SEARCH_USER_DIRS |
+                  LOAD_LIBRARY_SEARCH_DEFAULT_DIRS;
 
     // Try to load the library
     module = LoadLibraryEx(filename, NULL, load_flags);
@@ -2248,5 +2339,18 @@ __int64_t _epoch_millis() {
 }
 
 // build intermediates belong with the build, not the system temp
-// folder -- that gets swept out from under a build without warning
-const char* temp_dir(void) { return SILVER "/install"; }
+// folder -- that gets swept out from under a build without warning.
+// its OWN folder, though: install/ is the tree, not a scratch bin
+const char* temp_dir(void) {
+    static const char* d    = SILVER "/install/tmp";
+    static int         made = 0;
+    if (!made) {
+        made = 1;
+#ifdef _WIN32
+        CreateDirectoryA(d, NULL);
+#else
+        mkdir(d, 0755);
+#endif
+    }
+    return d;
+}
