@@ -18,6 +18,7 @@
 #include <fcntl.h>
 #endif
 #include <sys/stat.h>
+#include <time.h>    // time() — the future-mtime clamp in sources_newer
 #include <errno.h>
 #include <stdint.h>
 
@@ -84,10 +85,16 @@ typedef int        (*au_live_get_defer_fn)(void);
 static void (*g_leak_report)(void);
 
 static void stash_args(void* handle, int argc, char** argv) {
-    au_main_args_fn set_args = (au_main_args_fn)dlsym(handle, "au_main_args");
+    (void)handle;
+    // au_main_args / au_leak_report live in Au.dll, not the app module. on
+    // windows GetProcAddress(app, ...) never crosses into a dependency dll, so
+    // the app arg-stash silently no-op'd and every app booted with no argv
+    // (rom empty -> black). RTLD_DEFAULT scans every loaded module, so it finds
+    // the one Au.dll the app actually reads its g_main_argv from.
+    au_main_args_fn set_args = (au_main_args_fn)dlsym(RTLD_DEFAULT, "au_main_args");
     if (set_args) set_args(argc, argv);
     if (!g_leak_report)
-        g_leak_report = (void(*)(void))dlsym(handle, "au_leak_report");
+        g_leak_report = (void(*)(void))dlsym(RTLD_DEFAULT, "au_leak_report");
 }
 #define FRAME_SYM   "silver_live_frame"
 #define DESTROY_SYM "silver_live_destroy"
@@ -793,8 +800,14 @@ static int load_sources(const char* artifacts_path,
 static int sources_newer(const char* product, source_watch* srcs, int nsr) {
     time_t prod = file_mtime(product);       // follows the symlink to the .so
     if (!prod) return 1;                      // no product -> must build
+    // a source dated far in the future (a wrong system clock stamped it) would
+    // be newer than every product forever -> endless rebuild. over 20 min ahead
+    // is a bad clock, not an edit; ignore it. small skew still counts.
+    time_t horizon = time(NULL) + 20 * 60;
     for (int i = 0; i < nsr; i++) {
-        if (file_mtime(srcs[i].path) > prod) return 1;
+        time_t sm = file_mtime(srcs[i].path);
+        if (sm > horizon) continue;
+        if (sm > prod) return 1;
     }
     return 0;
 }

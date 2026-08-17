@@ -2475,7 +2475,7 @@ declare_struct(micro, Au_ts)
 declare_struct(meta_t, Au_t)
 
 // will need to adjust json serialization to facilitate vector with meta types
-#define vector_mat4f_module_ Au
+#define vector_mat4f_module_ vec
 #define vector_mat4f_schema(X,Y,...)
 declare_class_3(vector_mat4f, vector, collective, mat4f)
 
@@ -2491,39 +2491,39 @@ declare_class_3(vector_vec3f, vector, collective, vec3f)
 #define vector_vec2f_schema(X,Y,...)
 declare_class_3(vector_vec2f, vector, collective, vec2f)
 
-#define vector_i8_module_ Au
+#define vector_i8_module_ vec
 #define vector_i8_schema(X,Y,...)
 declare_class_3(vector_i8, vector, collective, i8)
 
-#define vector_f32_module_ Au
+#define vector_f32_module_ vec
 #define vector_f32_schema(X,Y,...)
 declare_class_3(vector_f32, vector, collective, f32)
 
-#define vector_f64_module_ Au
+#define vector_f64_module_ vec
 #define vector_f64_schema(X,Y,...)
 declare_class_3(vector_f64, vector, collective, f64)
 
-#define vector_i64_module_ Au
+#define vector_i64_module_ vec
 #define vector_i64_schema(X,Y,...)
 declare_class_3(vector_i64, vector, collective, i64)
 
-#define vector_rgba8_module_ Au
+#define vector_rgba8_module_ vec
 #define vector_rgba8_schema(X,Y,...)
 declare_class_3(vector_rgba8, vector, collective, rgba8)
 
-#define vector_rgba16_module_ Au
+#define vector_rgba16_module_ vec
 #define vector_rgba16_schema(X,Y,...)
 declare_class_3(vector_rgba16, vector, collective, rgba16)
 
-#define vector_rgbaf_module_ Au
+#define vector_rgbaf_module_ vec
 #define vector_rgbaf_schema(X,Y,...)
 declare_class_3(vector_rgbaf, vector, collective, rgbaf)
 
-#define vector_rgb8_module_ Au
+#define vector_rgb8_module_ vec
 #define vector_rgb8_schema(X,Y,...)
 declare_class_3(vector_rgb8, vector, collective, rgb8)
 
-#define vector_rgbf_module_ Au
+#define vector_rgbf_module_ vec
 #define vector_rgbf_schema(X,Y,...)
 declare_class_3(vector_rgbf, vector, collective, rgbf)
 
@@ -2555,19 +2555,19 @@ AU_EXPORT Au_t typeid_string(Au_t check);
 AU_EXPORT void au_space_begin(void* owner);
 AU_EXPORT void au_space_end(void* owner);
 AU_EXPORT void au_space_clear(void);
-float au_mem_fraction(void); // resident set size as a fraction of total physical RAM (0..1); 0 if unknown
-i64   au_mem_rss(void);      // resident set size in BYTES; 0 if unknown
-i64   au_mem_virt(void);     // virtual size in BYTES; 0 if unknown
-i64   au_mem_phys(void);     // total physical RAM in BYTES; 0 if unknown
-int   au_capture_stdout(void); // redirect stdout/stderr to a pipe; returns non-blocking read fd
-int   au_stdout_orig(void);    // dup of the real stdout saved by au_capture_stdout (-1 if not captured)
-void  au_main_args(int argc, cstrs argv); // silver-host stashes process argv for the app
-void  au_apply_args(Au a);                // parse the stashed argv into app instance `a`
-int   au_argv_stop(void);                 // argv index after the default (positional) value
-cstrs au_argv(void);                      // the stashed process argv
-int   au_leaks(void);                     // --leaks top-N (0 = leak tracking off)
-none  au_leak_report(void);               // print the leak summary once (no-op when off)
-bool  quit_requested(void);               // first ctrl-c under --leaks: orderly-quit request
+AU_EXPORT float au_mem_fraction(void); // resident set size as a fraction of total physical RAM (0..1); 0 if unknown
+AU_EXPORT i64   au_mem_rss(void);      // resident set size in BYTES; 0 if unknown
+AU_EXPORT i64   au_mem_virt(void);     // virtual size in BYTES; 0 if unknown
+AU_EXPORT i64   au_mem_phys(void);     // total physical RAM in BYTES; 0 if unknown
+AU_EXPORT int   au_capture_stdout(void); // redirect stdout/stderr to a pipe; returns non-blocking read fd
+AU_EXPORT int   au_stdout_orig(void);    // dup of the real stdout saved by au_capture_stdout (-1 if not captured)
+AU_EXPORT void  au_main_args(int argc, cstrs argv); // silver-host stashes process argv for the app
+AU_EXPORT void  au_apply_args(Au a);                // parse the stashed argv into app instance `a`
+AU_EXPORT int   au_argv_stop(void);                 // argv index after the default (positional) value
+AU_EXPORT cstrs au_argv(void);                      // the stashed process argv
+AU_EXPORT int   au_leaks(void);                     // --leaks top-N (0 = leak tracking off)
+AU_EXPORT none  au_leak_report(void);               // print the leak summary once (no-op when off)
+AU_EXPORT bool  quit_requested(void);               // first ctrl-c under --leaks: orderly-quit request
 AU_EXPORT void module_erase_silver(void);
 AU_EXPORT none validate_meta(Au_t actual, Au_t expected);
 

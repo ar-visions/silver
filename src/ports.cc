@@ -190,6 +190,26 @@ int symlink(const char* target, const char* linkpath) {
     return 0;
 }
 
+// atomic-replace dst with src, retrying past a transient scanner lock.
+// the linker cannot delete a file Defender is mid-scan on -- so it writes
+// a fresh temp and hands it here; MoveFileEx replaces in one step, and the
+// retry rides out the (sub-second) window the scan holds the old file.
+int au_replace_file(const char* src, const char* dst) {
+    for (int i = 0; i < 40; i++) {
+        if (MoveFileExA(src, dst,
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED))
+            return 0;
+        DWORD err = GetLastError();
+        if (err != ERROR_ACCESS_DENIED && err != ERROR_SHARING_VIOLATION) {
+            errno = EINVAL;
+            return -1;
+        }
+        Sleep(50);
+    }
+    errno = EACCES;
+    return -1;
+}
+
 // the win32 path calls hand back backslashes; silver's path routines
 // scan for '/', and windows accepts either, so normalise on the way out
 static void win_norm_sep(char* s) {
