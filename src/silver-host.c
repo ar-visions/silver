@@ -21,7 +21,22 @@
 #include <errno.h>
 #include <stdint.h>
 
-extern char** environ;
+#ifndef _WIN32
+extern char** environ;   // on windows ports.h aliases it to the crt's live block
+// windows declares this in ports.h and links it from Au; this host links
+// neither, so the one rule is restated here -- logs go with the build, never
+// the system temp folder, which gets swept out from under a run
+#ifdef SILVER_ROOT
+#define HOST_TMP SILVER_ROOT "/install/tmp"
+#else
+#define HOST_TMP "/tmp"
+#endif
+static const char* temp_dir(void) {
+    static int made = 0;
+    if (!made) { made = 1; mkdir(HOST_TMP, 0755); }
+    return HOST_TMP;
+}
+#endif
 
 static void symbolize_crash_log(const char* appname);
 
@@ -163,6 +178,10 @@ static int isolate_requested(int argc, char** argv) {
     if (getenv(IDE_ENV)) return 0;
     return 1;
 }
+
+// nothing forwards output from here: this process is linked /SUBSYSTEM:WINDOWS
+// and its stdout/stderr report -2 (no association), so every write fails EBADF.
+// silver owns the console and tails the app log there instead
 
 // spawn the app child: same binary, same argv. runs from the LAUNCH cwd (a
 // relaunch happens after cd_share moved us to orbiter's share dir).
@@ -336,6 +355,10 @@ static void host_exit_signal(int sig) {
     signal(sig, SIG_DFL);
     raise(sig);
 }
+
+// no console handler here: a /SUBSYSTEM:WINDOWS binary does not reliably get
+// console control events. silver reads ctrl+c and ends the job we live in
+
 
 // phase 1: THIN supervision. the child owns a normal window; this process
 // holds nothing (no vulkan, no orbiter) and just waits — the usual lifecycle
@@ -718,7 +741,14 @@ static void* try_dlopen(const char* lib) {
 // guarantee a fresh inode on every hot-reload.
 static void* reload_dlopen(const char* lib, time_t ts) {
     char tmp[4096];
+#ifdef _WIN32
+    // /tmp is not a path here, and the loader does not care about the suffix.
+    // the copy matters more on windows than unix: the build CANNOT relink a
+    // dll this process has mapped, so we must never hold the product itself
+    snprintf(tmp, sizeof(tmp), "%s/hotreload_%ld.dll", temp_dir(), (long)ts);
+#else
     snprintf(tmp, sizeof(tmp), "/tmp/hotreload_%ld.so", (long)ts);
+#endif
     FILE *src = fopen(lib, "rb");
     FILE *dst = fopen(tmp, "wb");
     if (src && dst) {
@@ -729,7 +759,9 @@ static void* reload_dlopen(const char* lib, time_t ts) {
         fclose(src);
         fclose(dst);
         void* h = try_dlopen(tmp);
+#ifndef _WIN32
         unlink(tmp);  // unlink immediately — dlopen holds the inode open
+#endif                // windows refuses to delete a mapped dll; it is left behind
         return h;
     }
     if (src) fclose(src);
@@ -881,13 +913,10 @@ int main(int argc, char** argv) {
         snprintf(buf, sizeof(buf), "%s\\install\\bin;%s\\install\\build;%s",
             root, root, prev ? prev : "");
         setenv("PATH", buf, 1);
-        // the vulkan loader finds layers through the registry or VK_LAYER_PATH,
-        // never by scanning; ours sit beside their dll in install/bin, and a
-        // debug build asks for VK_LAYER_KHRONOS_validation by name
-        if (!getenv("VK_LAYER_PATH")) {
-            snprintf(buf, sizeof(buf), "%s\\install\\bin", root);
-            setenv("VK_LAYER_PATH", buf, 1);
-        }
+        // VK_LAYER_PATH comes from the module's own export and nowhere else.
+        // this used to fall back to a path built here, so a run whose export
+        // carried the entry and one whose export had lost it got two different
+        // answers -- and the second rendered black
     }
 #endif
 
@@ -949,8 +978,10 @@ int main(int argc, char** argv) {
     }
     g_app_name = name;
     // the log is named for the APP, not the root element — so the tee
-    // (host_log_setup) and the crash handler agree on /tmp/<app>.log
+    // (host_log_setup) and the crash handler agree on <logdir>/<app>.log
     setenv("SILVER_APP", name, 1);
+    // and the tee lives in the app, which cannot see temp_dir(): publish it
+    setenv("SILVER_LOG_DIR", temp_dir(), 1);
 
 #ifdef SILVER_ROOT
     setenv("LD_LIBRARY_PATH",
@@ -986,6 +1017,7 @@ int main(int argc, char** argv) {
         pa.sa_flags   = SA_ONSTACK | SA_RESTART;
         sigaction(SIGUSR2, &pa, NULL);
     }
+
 
     // supervised child: map the channel so the crash handler can publish the
     // frozen verdict (state 4) before stopping at the crash site
@@ -1051,7 +1083,14 @@ int main(int argc, char** argv) {
     }
     lib[n] = '\0';
 
+#ifdef _WIN32
+    // a COPY from the very first load: windows cannot relink a dll this
+    // process has mapped, so holding the product itself makes the NEXT build
+    // fail -- which is exactly what live reload depends on being able to do
+    void* handle = reload_dlopen(lib, file_mtime(product));
+#else
     void* handle = try_dlopen(lib);
+#endif
     if (!handle) { fprintf(stderr, "%s: dlopen %s: %s\n", name, lib, dlerror()); return 1; }
 
     // initial startup: call silver_live_init explicitly (not a global constructor)

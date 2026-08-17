@@ -434,10 +434,26 @@ none sync_tokens(import t, path build_path, string name) {
 
 string serialize_environment(map environment, bool b_export);
 
+// windows sdk libs sit in the linker's own search path, never in our install
+// tree, so every file-existence check for them fails and drops the flag
+static bool is_sdk_lib(cstr nm) {
+#ifdef _WIN32
+    static const char* sdk[] = {"ole32","oleaut32","uuid","user32","kernel32",
+        "gdi32","shell32","advapi32","winmm","ws2_32","avrt","dbghelp",
+        "shlwapi","comdlg32","version","setupapi","imm32",0};
+    for (int i = 0; sdk[i]; i++)
+        if (strcmp(nm, sdk[i]) == 0) return true;
+#else
+    (void)nm;
+#endif
+    return false;
+}
+
 // unix resolves -lfoo through the libfoo.so symlink; windows bakes the version
 // into the filename (opencv_core4140.lib, OpenEXR-3_4.lib), so find that name
 static string resolve_versioned_lib(silver a, string nm) {
 #ifdef _WIN32
+    if (is_sdk_lib((cstr)nm->chars)) return nm;
     // the crt covers these, or ports.cc does; there is no such .lib here
     static symbol none[] = {"m","c","dl","pthread","util","ncurses","tinfo",
                             "stdc++","c++","c++abi","objc","System",0};
@@ -447,6 +463,10 @@ static string resolve_versioned_lib(silver a, string nm) {
     // finish that one (libpng -> libpng16)
     if (cmp(nm, "z")   == 0) nm = string("zlib");
     if (cmp(nm, "png") == 0) nm = string("libpng");
+    // mbedtls 4 folded the crypto library into tf-psa-crypto
+    if (cmp(nm, "mbedcrypto") == 0) nm = string("tfpsacrypto");
+    // -l:libfoo.so.N names an exact file for gnu ld; nothing here answers to it
+    if (len(nm) && nm->chars[0] == ':') return null;
 
     if (file_exists("%o/lib/%s%o%s", a->install, lib_pre, nm, lib_ext) ||
         file_exists("%o/lib/%s%o%s", a->install, lib_pre, nm, lib_static))
@@ -609,7 +629,7 @@ static enode parse_expression(silver a, etype expect, bool hint, bool load) { se
     }
 
     enode unbias = reverse_descent(a, hint ? expect : null);
-    return expr_load(e_create(a, expect, (Au)unbias), load); // parse assignment needs to expect a deref'd type, or, we call it loaded:false,
+    return expr_load(e_create(a, expect, (Au)unbias, false), load); // parse assignment needs to expect a deref'd type, or, we call it loaded:false,
 }
 
 enode e_short_circuit_pair(silver a, OPType combine, enode L, enode R);
@@ -689,7 +709,7 @@ static enode reverse_descent(silver a, etype expect) { sequencer
                 L = e_op(a, op_stack[sp], method_stack[sp],
                          (Au)lhs_stack[sp], (Au)L);
             }
-            return e_create(a, expect, (Au)L);
+            return e_create(a, expect, (Au)L, false);
             //return L;
         }
         
@@ -712,7 +732,7 @@ static enode reverse_descent(silver a, etype expect) { sequencer
                 verify(fallback || is_void(return_type(a)),
                        "expected expression after return");
                 enode cond = e_not(a, L);
-                enode ret_node = fallback ? e_create(a, rtype, (Au)fallback) : null;
+                enode ret_node = fallback ? e_create(a, rtype, (Au)fallback, false) : null;
                 e_cond_return(a, cond, (Au)ret_node);
                 // reduce remaining stack
                 while (sp > 0) {
@@ -1680,16 +1700,56 @@ static path build_silver_host(silver a) {
 // CACHED builds — the host binary (build_dir/name) persists from a prior build, so a
 // fully-cached `silver <app>` still runs instead of silently building and exiting.
 // execvp replaces this process; returns only when there's nothing to run (library /
-// external sub-module / no host binary).
+// external sub-module / no host binary). windows cannot replace a process, so there
+// it runs the app as a child and exits with its code — and the child is held in a
+// kill-on-close job, so quitting silver quits the app with it.
 // build-session lock (install/build/.silver.lock); held from init to run
 static int build_lock_fd = -1;
+
+#ifdef _WIN32
+// the app cannot print to a console: it is linked /SUBSYSTEM:WINDOWS and its
+// descriptors come back -2 (a live fd with nothing behind it), so its writes
+// fail EBADF wherever they are made. it logs to install/tmp/<app>.log, and
+// THIS process owns the console -- so tail that file while the app runs. this
+// is what puts the app's output on screen the way an exec'd app does on unix
+static void* live_log_tail(void* arg) {
+    const char* path = (const char*)arg;
+    long        pos  = 0;
+    char        buf[4096];
+    for (;;) {
+        FILE* f = fopen(path, "rb");
+        if (f) {
+            fseek(f, 0, SEEK_END);
+            long end = ftell(f);
+            if (end < pos) pos = 0;          // truncated: the app restarted it
+            if (end > pos) {
+                fseek(f, pos, SEEK_SET);
+                size_t n;
+                while ((n = fread(buf, 1, sizeof(buf), f)) > 0)
+                    fwrite(buf, 1, n, stdout);
+                fflush(stdout);
+                pos = end;
+            }
+            fclose(f);
+        }
+        usleep(50000);
+    }
+    return null;
+}
+#endif
 
 static void silver_live_run(silver a) {
     // a failed build must NOT launch (or relaunch) the app. execvp'ing the host on an
     // error makes the host re-trigger `silver <app>`, which fails and re-execs — the
     // infinite rebuild loop. on the first build (app never ran) we simply quit; main
     // returns non-zero so the live-host's rebuild sees the failure and aborts.
-    if (a->error) return;
+    if (a->error) {
+        // silent before: a build that printed nothing still declined to launch,
+        // which reads as "silver did nothing" -- say so instead
+        if (!a->is_external && !a->build)
+            print("[%o] not launching: the build reported an error", a->name);
+        return;
+    }
     // coverage library built directly: load it and run its exported tests
     if (((aether)a)->has_coverage && !a->is_external && !a->build) {
         void* h = dlopen(a->product->chars, RTLD_NOW);
@@ -1699,7 +1759,9 @@ static void silver_live_run(silver a) {
         exit(cov());
     }
     if (!((aether)a)->is_live && !a->is_external) {
-        path host = f(path, "%o/%o", a->build_dir, a->name);
+        // the same app_ext the host was written with, or a cached run finds
+        // nothing and silver exits 0 having neither built nor launched
+        path host = f(path, "%o/%o%s", a->build_dir, a->name, app_ext);
         if (file_exists("%o", host)) {
             ((aether)a)->is_live = true;
             if (!a->live_binary) a->live_binary = hold(host);
@@ -1722,6 +1784,27 @@ static void silver_live_run(silver a) {
             argv[i++] = cast(string, arg)->chars;
         }
         argv[i] = NULL;
+        verify(run_binary && file_exists("%o", run_binary),
+            "cannot launch %o: no binary at %o", a->name, run_binary);
+#ifdef _WIN32
+        {   // put the app's output on this console while it runs
+            static char lp[512];
+            snprintf(lp, sizeof(lp), "%s/%s.log", temp_dir(), a->name->chars);
+            // clear it FIRST: the tail starts at offset 0, so whatever the
+            // last run left behind would be replayed to the console as if the
+            // app had just printed it
+            FILE* clr = fopen(lp, "wb");
+            if (clr) fclose(clr);
+            pthread_t lt;
+            if (pthread_create(&lt, 0, live_log_tail, lp) == 0) {
+                pthread_detach(lt);
+                // WE are the console writer now. an app that also wrote to its
+                // own stdout would print every line twice -- which it can do
+                // whenever it happens to inherit a usable one (a pipe, say)
+                setenv("SILVER_LOG_TAIL", "1", 1);
+            }
+        }
+#endif
         // --test: the app runs its expect tests, reports, and exits
         if (a->test) setenv("SILVER_EXPECT", "1", 1);
         // release the build lock: the app must not hold it while running
@@ -1734,6 +1817,14 @@ static void silver_live_run(silver a) {
         fprintf(stderr, "execvp failed for %s: %s\n", argv[0], strerror(errno));
         _exit(1);
     }
+    // declining to run a directly-invoked app is never the intent: name the
+    // flags that stopped it rather than exiting 0 with nothing said. NOT gated
+    // on is_library -- a live app sets that true, which is exactly this case
+    if (!a->is_external && !a->build)
+        print("[%o] not launching: is_live=%s is_library=%s run=%i live_binary=%o product=%o",
+            a->name, ((aether)a)->is_live ? "true" : "false",
+            a->is_library ? "true" : "false",
+            a->run ? (int)len(a->run) : 0, a->live_binary, a->product);
 }
 
 // export funcs are installation: run the product under SILVER_EXPORT
@@ -1753,6 +1844,31 @@ static void silver_run_exports(silver a) {
     path share = f(path, "%o/share/%o", a->install, a->name);
     make_dir(share);
     print("[%o] export: running %o", a->name, bin);
+#ifdef _WIN32
+    // no fork here, so the setup a child would do runs in THIS process and the
+    // app is spawned outright. a library has no exe to spawn at all: its module
+    // init is loaded in-process, which is the one thing isolation cannot buy us
+    setenv("SILVER_EXPORT", "1", 1);
+    int st = 0;
+    if (lib) {
+        path back = path_cwd();
+        chdir(share->chars);
+        void* h = dlopen(bin->chars, RTLD_NOW);
+        chdir(back->chars);
+        st = h ? 0 : (1 << 8);
+    } else {
+        posix_spawn_file_actions_t fa;
+        posix_spawn_file_actions_init(&fa);
+        posix_spawn_file_actions_addchdir_np(&fa, share->chars);
+        char* argv[2] = { bin->chars, NULL };
+        pid_t pid = 0;
+        int   sp  = posix_spawn(&pid, bin->chars, &fa, NULL, argv, environ);
+        posix_spawn_file_actions_destroy(&fa);
+        verify(sp == 0, "export funcs: cannot spawn %o: %s", bin, strerror(sp));
+        waitpid(pid, &st, 0);
+    }
+    unsetenv("SILVER_EXPORT");
+#else
     pid_t pid = fork();
     if (pid == 0) {
         setenv("SILVER_EXPORT", "1", 1);
@@ -1768,11 +1884,12 @@ static void silver_run_exports(silver a) {
     }
     int st = 0;
     waitpid(pid, &st, 0);
+#endif
     verify(WIFEXITED(st) && WEXITSTATUS(st) == 0,
         "export funcs failed for %o", a->name);
 }
 
-void silver_init(silver a) {
+AU_EXPORT void silver_init(silver a) {
     hold(a);
 
     // one build at a time: the root instance holds a lock for the session
@@ -2135,7 +2252,10 @@ void silver_init(silver a) {
         // main, so never build the host for it (it would overwrite the real exe).
         // recompiled (never cached) for live apps, matching the gated build below.
         if (((aether)a)->is_live) {
-            path host_dst = f(path, "%o/%o", a->build_dir, a->name);
+            // with app_ext missing this never found the host, so a cached build
+            // silently SKIPPED recompiling it -- an edit to silver-host.c only
+            // took effect on a full build, and only there did its errors appear
+            path host_dst = f(path, "%o/%o%s", a->build_dir, a->name, app_ext);
             if (file_exists("%o", host_dst))
                 build_silver_host(a);
         }
@@ -2567,7 +2687,7 @@ static enode read_keywords(silver a, etype mdl_expect) {
                 concat(joined, (string)toks->origin[i]);
             }
             return (enode)e_create((aether)a, (etype)mdl_expect,
-                (Au)e_operand((aether)a, (Au)joined, etypeid(string)));
+                (Au)e_operand((aether)a, (Au)joined, etypeid(string)), false);
         }
     }
     // build tokens object at runtime: alloc + push each string
@@ -4083,7 +4203,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
                 if (!read_if(a, ",")) break;
             }
             validate(read_if(a, "]"), "expected ] after array elements");
-            return e_create(a, mdl_expect, (Au)elems);
+            return e_create(a, mdl_expect, (Au)elems, false);
         }
         // shorthand struct init: [ field: val, ... ] when type is known
         if (mdl_expect && is_rec(mdl_expect) && peek_fields(a)) {
@@ -4170,10 +4290,10 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
                 //bool check_redundant_type = true;
                 array expr = read_initializer(a);
                 if (!len(expr) && read_if(a, "sub")) {
-                    res0 = e_create(a, mdl_expect, (Au)parse_sub(a, mdl_found)); 
+                    res0 = e_create(a, mdl_expect, (Au)parse_sub(a, mdl_found), false); 
                     //check_redundant_type = false;
                 } else if (!len(expr) && read_if(a, "asm")) {
-                    res0 = e_create(a, mdl_expect, (Au)parse_asm(a, mdl_found));
+                    res0 = e_create(a, mdl_expect, (Au)parse_asm(a, mdl_found), false);
                     //check_redundant_type = false;
                 } else if (expr) {
                     push_tokens(a, (tokens)expr, 0);
@@ -4188,7 +4308,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
                     if (!mdl_expect) {
                         mdl_expect = mdl_found; // not expecting anything, no conversion
                     } else if (mdl_expect != mdl_found) {
-                        res0 = e_create(a, mdl_found, (Au)null); // required conversion
+                        res0 = e_create(a, mdl_found, (Au)null, false); // required conversion
                     }
                 }
                     
@@ -4196,9 +4316,9 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
                     (from_ref || is_class(mdl_found) || is_ptr(mdl_found))) {
                 res0 = e_null(a, mdl_found);
             } else {
-                res0 = e_create(a, mdl_found, null);
+                res0 = e_create(a, mdl_found, null, false);
             }
-            enode conv = e_create(a, mdl_expect, (Au)res0);
+            enode conv = e_create(a, mdl_expect, (Au)res0, false);
             return conv;
         }
     }
@@ -4207,7 +4327,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
     if (sh && (sh->count == 1 || sh->explicit || mdl_expect == etypeid(shape))) {
         enode op;
         if (sh->explicit || mdl_expect == etypeid(shape))
-            op = e_create(a, etypeid(shape), (Au)sh);
+            op = e_create(a, etypeid(shape), (Au)sh, false);
         else
             op = e_operand(a, _i64(sh->data[0]), mdl_expect ? mdl_expect : etypeid(i64));
 
@@ -4241,12 +4361,12 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
                         "scalar %o requires %s value, got float literal",
                         scalar_type, storage->ident);
                     consume(a, Syntax__none); // consume the suffix token
-                    return e_create(a, scalar_type, (Au)res);
+                    return e_create(a, scalar_type, (Au)res, false);
                 }
             }
         }
 
-        return e_create(a, mdl_expect, (Au)res);
+        return e_create(a, mdl_expect, (Au)res, false);
     }
     
     // shell script at design and runtime, for a silver 1.0
@@ -4380,7 +4500,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
             pop_tokens(a, true);
             if (read_br)
                 verify(read_if(a, "]"), "expected closing-bracket after typeid");
-            return e_create(a, (etype)mdl_expect, (Au)e_typeid(a, mdl));
+            return e_create(a, (etype)mdl_expect, (Au)e_typeid(a, mdl), false);
         }
         pop_tokens(a, false);
         enode expr = parse_expression(a, null, false, true);
@@ -4411,7 +4531,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
 
             while (peek(a) && !next_is(a, "]")) {
                 enode e = read_enode(a, mdl, false, true);
-                e = e_create(a, mdl, (Au)e);
+                e = e_create(a, mdl, (Au)e, false);
                 push(nodes, (Au)e);
                 num_index++;
                 if (top_stride && (num_index % top_stride == 0)) {
@@ -4427,7 +4547,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
             if (len(nodes) > 0)
                 e_vector_init(a, mdl, vec, nodes);
         }
-        return e_create(a, ptr_type, (Au)vec);
+        return e_create(a, ptr_type, (Au)vec, false);
     }
 
     if (!cmode && read_if(a, "local")) {
@@ -4452,7 +4572,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
             while (peek(a) && !next_is(a, "]")) {
                 a->type_given = true;
                 enode e = read_enode(a, mdl, false, true);
-                e = e_create(a, mdl, (Au)e);
+                e = e_create(a, mdl, (Au)e, false);
                 push(nodes, (Au)e);
                 read_if(a, ",");
             }
@@ -4485,8 +4605,8 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
                 if (next_is(a, ")")) {
                     consume(a, Syntax__none);
                     pop_tokens(a, true);
-                    enode res = e_create(a, inner, (Au)parse_expression(a, inner, false, true));
-                    return e_create(a, mdl_expect, (Au)res);
+                    enode res = e_create(a, inner, (Au)parse_expression(a, inner, false, true), false);
+                    return e_create(a, mdl_expect, (Au)res, false);
                 } else {
                     pop_tokens(a, false);
                     a->expr_level = 0;
@@ -4518,7 +4638,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
         validate(read_if(a, ")"), "expected ) after expression, found %o", peek(a));
         a->parens_depth--;
         enode n = (enode)e_create(a, mdl_expect, (Au)
-            parse_ternary(a, (enode)expr, (etype)mdl_expect, load));
+            parse_ternary(a, (enode)expr, (etype)mdl_expect, load), false);
         // (expr).member — continue member chain on parenthesized result
         while (next_is(a, ".") || next_is(a, "->")) {
             bool null_guard = read_if(a, "->") != null;
@@ -4564,7 +4684,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
         token t = peek(a);
         enode expr = read_enode(a, null, false, true); // Parse the following expression
         return e_create(a,
-            mdl_expect, (Au)e_not(a, expr));
+            mdl_expect, (Au)e_not(a, expr), false);
     }
 
     // bitwise NOT operator
@@ -4572,7 +4692,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
         validate(!from_ref, "unexpected ~ after ref");
         enode expr = read_enode(a, null, false, true);
         return e_create(a,
-            mdl_expect, (Au)e_bitwise_not(a, expr));
+            mdl_expect, (Au)e_bitwise_not(a, expr), false);
     }
 
     // unary negation
@@ -4581,7 +4701,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
         validate(a->no_build || canonical(expr)->autype->is_integral || canonical(expr)->autype->is_realistic,
             "negation requires numeric type");
         return e_create(a,
-            mdl_expect, (Au)e_neg(a, expr));
+            mdl_expect, (Au)e_neg(a, expr), false);
     }
 
     // 'ref' operator (reference)
@@ -4612,7 +4732,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
             etype cast_type = read_etype(a, null);
             etype ref_type = pointer((aether)a, (Au)cast_type);
             enode expr = read_enode(a, null, false, true);
-            return e_create(a, ref_type, (Au)expr);
+            return e_create(a, ref_type, (Au)expr, false);
         }
 
         if (ref_cast_type) {
@@ -4634,7 +4754,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
         // e_create which would load and inttoptr the dereferenced value
         validate(!expr->loaded || is_func((Au)expr->autype), "cannot take ref of loaded value");
         enode ref_node = enode_ref((aether)a, expr, ref_type);
-        return mdl_expect ? e_create(a, mdl_expect, (Au)ref_node) : ref_node;
+        return mdl_expect ? e_create(a, mdl_expect, (Au)ref_node, false) : ref_node;
     }
 
     //printf("seq = %i\n", seq);
@@ -4667,7 +4787,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
     Au info = head(mem);
 
     if (f && mdl_expect && !(mdl_expect->autype == typeid(bool) && !is_bool(mem)))
-        return e_create(a, mdl_expect, (Au)mem);
+        return e_create(a, mdl_expect, (Au)mem, false);
 
     return (enode)mem;
 }
@@ -6259,7 +6379,24 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
     path build_f    = f(path, "%o/build/%o", install, name);
     path rust_f     = f(path, "%o/Cargo.toml", project_f);
     path meson_f    = f(path, "%o/meson.build", project_f);
-    path cmake_f    = f(path, "%o/CMakeLists.txt", project_f);
+    // an import may name its own source dir with -S: a project whose cmake
+    // port is not at the root (mpg123 keeps one in ports/cmake) says so in
+    // its config rather than silver guessing at layouts
+    path cmake_src  = project_f;
+    cstr s_flag     = strstr(config->chars, "-S ");
+    if (s_flag && (s_flag == config->chars || s_flag[-1] == ' ')) {
+        cstr v = s_flag + 3;
+        while (*v == ' ') v++;
+        cstr e = v;
+        while (*e && *e != ' ') e++;
+        if (e > v && (e - v) < 1024) {
+            char buf[1024];
+            memcpy(buf, v, (size_t)(e - v));
+            buf[e - v] = 0;
+            cmake_src = f(path, "%s", buf);
+        }
+    }
+    path cmake_f    = f(path, "%o/CMakeLists.txt", cmake_src);
     path silver_f   = f(path, "%o/%o/%o.ag", project_f, name, name);
     path gn_f       = f(path, "%o/BUILD.gn", project_f);
     bool is_rust    = file_exists("%o", rust_f);
@@ -6281,6 +6418,13 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
     // the only reliable way of rebuilding on reconfig is to have a new build-folder
     remove_dir(build_f);
     make_dir(build_f);
+
+    // a clone stops at the top repo, so a dep that builds from its submodules
+    // (mbedtls -> framework) configures against empty dirs. done here, not at
+    // clone, so a checkout left incomplete by an earlier run repairs itself
+    if (dir_exists("%o/.git", project_f) || file_exists("%o/.git", project_f))
+        vexec(a->verbose, "submodule",
+              "git -C %o submodule update --init --recursive", project_f);
 
     // this is the only place we 'cd' anywhere, where there are serial shell commands
     // however we go right back to where we were after
@@ -6304,7 +6448,7 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
         // CMAKE_BUILD_TYPE is ignored and --config below is what picks Release
         vexec(a->verbose, "configure",
               "%o%o cmake -B %o -S %o %o -DCMAKE_INSTALL_PREFIX=%o -DCMAKE_BUILD_TYPE=%s %o",
-              docker, env, build_f, project_f, opt, install, build, config);
+              docker, env, build_f, cmake_src, opt, install, build, config);
 
         vexec(a->verbose, "build", "%o%o cmake --build %o --config %s -j16",
               docker, env, build_f, build);
@@ -6459,8 +6603,16 @@ string compile_implements(silver a, array files, string cflags) {
         cstr   std_flag = is_cpp ? "-std=c++17" : "-std=c11";
         cstr   lang_flag = source_lang_flag(a, ext);
         string st       = stem(i);
-        verify(exec(a->verbose, "%o/bin/%s %s %s %s %o %s -w -c %o -o %o -I%o/include/%o -I%o/include -I%o/include/Au",
-            install, compiler, std_flag, lang_flag, sysroot_flag, cflags, a->debug ? "-g" : "", i, i_name, install, st, install, install) == 0,
+        // a module's own implementation source OWNS its symbols. without this
+        // the header's default makes them dllimport and the module imports
+        // what it defines itself -- lld warns LNK4217 on every one
+#ifdef _WIN32
+        string own_link = f(string, "-DAU_LINK_%o=__attribute__((dllexport))", st);
+#else
+        string own_link = string("");
+#endif
+        verify(exec(a->verbose, "%o/bin/%s %s %s %s %o %o %s -w -c %o -o %o -I%o/include/%o -I%o/include -I%o/include/Au",
+            install, compiler, std_flag, lang_flag, sysroot_flag, own_link, cflags, a->debug ? "-g" : "", i, i_name, install, st, install, install) == 0,
             "failed to compile %o", i);
         if (len(objs)) append(objs, " ");
         concat(objs, i_name);
@@ -6804,7 +6956,11 @@ none silver_build_product(silver a) {
     string plat_link = f(string, "-Wl,-rpath,%o -Wl,-rpath,%o/lib", a->build_dir, install);
 #endif
 
-    verify(exec(a->verbose, "%o/bin/%s %s %s %s %o %s %o/%o.o%o %o -o %o -L%o -L%o/lib %o %o %o %o %s",
+    // install/lib BEFORE build_dir: linking an exe leaves an import library
+    // beside it named for the exe, and silver.exe's shadows the silver
+    // MODULE's -lsilver. module libs of our own are passed by full path, so
+    // only the core modules resolve through -l, and those live in install/lib
+    verify(exec(a->verbose, "%o/bin/%s %s %s %s %o %s %o/%o.o%o %o -o %o -L%o/lib -L%o %o %o %o %o %s",
         install, linker, a->is_library ? shared : "", a->debug ? "-g" : "",
 
 #ifdef __linux__
@@ -6814,8 +6970,8 @@ none silver_build_product(silver a) {
 #endif
         isysroot, cpp_pre, a->build_dir, a->name, core_objs, objs,
         a->product,
-        a->build_dir,
-        install, plat_link, libs, cflags, fw_flags,
+        install,
+        a->build_dir, plat_link, libs, cflags, fw_flags,
 #ifdef __APPLE__
         ""
 #else
@@ -7079,7 +7235,7 @@ static enode parse_create_lambda(silver a, enode mem) {
     // Create lambda instance: packages function pointer + context struct
     copy_lambda_info(mem, lambda_f);
 
-    return e_create(a, (etype)mem, (Au)ctx);
+    return e_create(a, (etype)mem, (Au)ctx, false);
 }
 
 static enode parse_lambda_call(silver a, efunc mem) {
@@ -7248,7 +7404,7 @@ static enode parse_func_call(silver a, efunc f, bool poly) { sequencer
                 // convert to expected type and place at matched position
                 Au_t best_decl = (Au_t)micro_get((micro_*)m, best);
                 etype best_type = u(etype, au_arg_type((Au)best_decl));
-                expr = e_create(a, best_type, (Au)expr);
+                expr = e_create(a, best_type, (Au)expr, false);
                 // ensure values array is big enough and place at correct index
                 while (len(values) <= best)
                     push(values, (Au)null);
@@ -7367,7 +7523,7 @@ static enode typed_expr(silver a, enode f, array expr) {
 
     a->expr_level++;
     if (!has_content) {
-        r = e_create(a, (etype)f, null); // default
+        r = e_create(a, (etype)f, null, false); // default
         conv = false;
     } else if (class_inherits((etype)f, etypeid(array))) {
         array nodes         = array(64);
@@ -7383,7 +7539,7 @@ static enode typed_expr(silver a, enode f, array expr) {
         while (peek(a)) {
             token n = peek(a);
             enode e = parse_expression(a, element_type, false, true);
-            e = e_create(a, element_type, (Au)e);
+            e = e_create(a, element_type, (Au)e, false);
             push(nodes, (Au)e);
             num_index++;
             if (top_stride && (num_index % top_stride == 0)) {
@@ -7392,7 +7548,7 @@ static enode typed_expr(silver a, enode f, array expr) {
                     top_stride);
             }
         }
-        r = e_create(a, (etype)f, (Au)nodes);
+        r = e_create(a, (etype)f, (Au)nodes, false);
     } else if (peek_fields(a) || class_inherits((etype)f, etypeid(map))) {
         conv = false; // parse map will attempt to go direct
         r    = (enode)parse_object(a, (etype)evar_type((evar)f), true);
@@ -7407,7 +7563,7 @@ static enode typed_expr(silver a, enode f, array expr) {
     }
     a->expr_level--;
     if (conv)
-        r = e_create(a, (etype)f, (Au)r);
+        r = e_create(a, (etype)f, (Au)r, false);
     //if (expr && a->cursor != len(a->tokens) - 1) {
     //    validate(false, "unexpected %o after expression", peek(a));
     //}
@@ -7556,6 +7712,7 @@ enode parse_export(silver a) {
 static bool add_lib_if_exists(silver a, cstr nm) {
     static const char* sys[] = {"m","c","dl","pthread","util","ncurses",
         "c++","c++abi","z","objc","System",0};
+    if (is_sdk_lib(nm)) { set(a->libs, (Au)string(nm), (Au)_bool(true)); return true; }
     for (int si = 0; sys[si]; si++)
         if (strcmp(nm, sys[si]) == 0) { set(a->libs, (Au)string(nm), (Au)_bool(true)); return true; }
     if (file_exists("%o/lib/%s%s%s", a->install, lib_pre, nm, lib_ext) ||
@@ -7630,6 +7787,10 @@ static void read_g_link_libs(silver a, path mg) {
             if (strcmp(nm, "atomic") == 0) { tok = strtok(null, " \t\r"); continue; }
             if (strcmp(nm, "tinfo")  == 0) nm = "ncurses";
             if (strcmp(nm, "stdc++") == 0) nm = "c++";
+#elif defined(_WIN32)
+            // lldb.lib is OUR lldb module; LLDB's own import lib keeps the lib
+            // prefix, so a plain -llldb silently binds to the wrong library
+            if (strcmp(nm, "lldb")   == 0) nm = "liblldb";
 #endif
             // only add libs that exist in our install tree or are standard system
             // libs. .g files can list transitive static deps (e.g. -ldeflate for
@@ -9363,7 +9524,7 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
         bool  first = true;
         do {
             if (first && ((!peek(a) && within_expr) || read_if(a, "]"))) {
-                return e_create(a, mdl, (Au)null);
+                return e_create(a, mdl, (Au)null, false);
             }
             token pk3 = peek(a);
             enode expr     = parse_expression(a, null, false, true);
@@ -9386,7 +9547,7 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
                 enode mctr     = constructable(t0, t1);
                 if (mcast || mctr) {
                     validate(!within_expr || read_if(a, "]"), "expected ]");
-                    return e_create(a, mdl, (Au)expr);
+                    return e_create(a, mdl, (Au)expr, false);
                 }
             }
 
@@ -9394,7 +9555,7 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
 
             if (mdl->autype->src == typeid(collective) && !has_more) {
                 verify(within_expr || read_if(a, "]"), "expected ] after collection listing");
-                return e_create(a, mdl, (Au)args);
+                return e_create(a, mdl, (Au)args, false);
             }
 
             // trivially construct with fields
@@ -9417,9 +9578,9 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
                         if (scan->context == scan) break;
                         scan = scan->context;
                     }
-                    return e_create(a, mdl, (Au)props);
+                    return e_create(a, mdl, (Au)props, false);
                 }
-                return aether_e_create((aether)a, mdl, (Au)args);
+                return aether_e_create((aether)a, mdl, (Au)args, false);
             }
             first = false;
         } while (1);
@@ -9484,7 +9645,7 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
             token t = peek(a);
             name = (string)read_literal(a, typeid(string));
             validate(name, "expected literal string key");
-            k = (Au)e_create(a, key ? key : etypeid(string), (Au)name);
+            k = (Au)e_create(a, key ? key : etypeid(string), (Au)name, false);
             is_enode_key = true;
         } else {
             token t = peek(a);
@@ -9496,8 +9657,8 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
 
         // -- Handle literal short case --
         if (iter == 0 && next_is(a, "]")) {
-            // single element, return e_create(k)
-            return e_create(a, mdl, k);
+            // single element, return e_create(k, false)
+            return e_create(a, mdl, k, false);
         }
 
         // -- VALUE --
@@ -9574,7 +9735,7 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
     // Now create from intermediate container
     if (imap) {
         validate(within_expr || read_if(a, "]"), "expected ] after fields");
-        return e_create(a, mdl, (Au)imap);
+        return e_create(a, mdl, (Au)imap, false);
     }
 
     // validation check
@@ -9588,7 +9749,7 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
     validate(within_expr || read_if(a, "]"), "expected ]");
 
     // a default is made if we give a []; if iarray is provided, e_create will iterate through members
-    return e_create(a, mdl, (Au)iarray);
+    return e_create(a, mdl, (Au)iarray, false);
 }
 
 
@@ -9724,7 +9885,7 @@ enode silver_parse_member_expr(silver a, enode mem, bool in_ref) { sequencer
             enode expr = parse_expression(a, meta_key_shape, false, true);
             // coerce to string when map key type is string (e_create is identity if already string)
             if (expr && meta_key_shape == etypeid(string))
-                expr = e_create(a, meta_key_shape, (Au)expr);
+                expr = e_create(a, meta_key_shape, (Au)expr, false);
             if (!first_index && expr)
                 first_index = expr;
             push(args, (Au)expr);

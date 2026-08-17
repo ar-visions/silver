@@ -236,7 +236,7 @@ forward(evar)
     M(A,U,i, method,   public,  etype,                    record, etype, etype, string, u32) \
     M(A,U,i, method,   public,  none,                     reinit_startup) \
     M(A,U,i, method,   public,  none,                     unload_libs) \
-    M(A,U,i, method,   public,  enode,                    e_alloc, etype) \
+    M(A,U,i, method,   public,  enode,                    e_alloc, etype, bool) \
     M(A,U,i, method,   public,  bool,                     e_fn_return, Au) \
     M(A,U,i, method,   public,  none,                     e_cond_return, enode, Au) \
     M(A,U,i, method,   public,  enode,                    e_null, etype) \
@@ -300,7 +300,7 @@ forward(evar)
     M(A,U,i, method,   public,  enode,                    e_sub, Au, Au) \
     M(A,U,i, method,   public,  enode,                    e_mul, Au, Au) \
     M(A,U,i, method,   public,  enode,                    e_div, Au, Au) \
-    M(A,U,i, method,   public,  enode,                    e_create, etype, Au) \
+    M(A,U,i, method,   public,  enode,                    e_create, etype, Au, bool) \
     M(A,U,i, method,   public,  enode,                    e_vector, etype, enode) \
     M(A,U,i, method,   public,  enode,                    e_zero, enode) \
     M(A,U,i, method,   public,  enode,                    e_assign, enode, Au, OPType) \
