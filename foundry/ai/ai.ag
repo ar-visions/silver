@@ -9,6 +9,7 @@ import random
 import vec
 import trinity
 import <vulkan/vulkan.h>
+    -lvulkan
 
 intern func fnv1a_hash [ @u8, size_t, u64 ] -> u64
 

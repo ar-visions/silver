@@ -6,6 +6,7 @@ import tempfile
 from pathlib import Path
 import subprocess
 import argparse
+import shutil
 from graph import parse_g_file, get_env_vars
 
 project_path = ''
@@ -134,6 +135,28 @@ def process_utility_headers(paths):
         if os.path.lexists(header_path):
             os.remove(header_path)
         os.symlink(str(h_file), header_path)
+
+def sync_installed_header(paths, name):
+    """keep <import>/include/<name> identical to src/<name>
+
+    bootstrap.sh SYMLINKS this one, so unix is always current. bootstrap.bat
+    can only COPY it, so on windows every edit to src/ports.h went stale until
+    the next bootstrap -- and the stale copy is what the compiler reads.
+    """
+    src = os.path.join(project_path, 'src', name)
+    dst = os.path.join(paths['import_path'], 'include', name)
+    if not os.path.isfile(src) or os.path.islink(dst):
+        return
+    try:
+        with open(src, 'rb') as f: want = f.read()
+        if os.path.isfile(dst):
+            with open(dst, 'rb') as f:
+                if f.read() == want:
+                    return   # unchanged: never rewrite, it may be mapped open
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copyfile(src, dst)
+    except OSError as e:
+        print(f"warning: cannot refresh {dst}: {e}")
 
 def find_declarations(header_file, pattern):
     """Find declarations matching a pattern in the header file"""
@@ -540,6 +563,11 @@ def main():
     paths = setup_paths(env_vars)
     # Process utility headers (.h files)
     process_utility_headers(paths)
+
+    # modules that build OUTSIDE this tree include <ports.h> from the install
+    # tree, so that copy must track src/ports.h on every build, not just on
+    # bootstrap
+    sync_installed_header(paths, 'ports.h')
     
     # Process modules (files without extension)
     process_modules(paths)

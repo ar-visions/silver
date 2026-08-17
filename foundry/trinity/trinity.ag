@@ -8,6 +8,9 @@ import gltf
 import vec
 import img
 
+ifdef [ windows ]
+	import <ports.h>     # the posix surface, all in one header
+
 import <stdio.h>
 import <ctype.h>
 import <string.h>
@@ -15,8 +18,6 @@ import <stdlib.h>
 import <math.h>
 import <vk_mem_alloc.h>
 import <sys/stat.h>
-ifdef [ windows ]
-	import <ports.h>     # the posix surface, all in one header
 ifndef [ windows ]
 	import <sys/ioctl.h>
 
@@ -51,6 +52,11 @@ import KhronosGroup:Vulkan-Utility-Libraries/vulkan-sdk-1.4.341.0
 
 import KhronosGroup:Vulkan-ValidationLayers/vulkan-sdk-1.4.341.0
     -DVULKAN_HEADERS_INSTALL_DIR={install}
+    # windows installs the layer to bin, where VK_LAYER_PATH above cannot see
+    # it. BINDIR is this project's only lever on that dir, and its only user,
+    # so the dll, its pdb and the manifest land together -- which is what the
+    # manifest's own relative library_path needs. unix installs by LIBDIR
+    -DCMAKE_INSTALL_BINDIR=share/vulkan/explicit_layer.d
 
 import KhronosGroup:glslang/715c850
     -DVULKAN_HEADERS_INSTALL_DIR={install}
@@ -61,6 +67,12 @@ import KhronosGroup:Vulkan-Tools/734638e
      -DMOLTENVK_REPO_ROOT={root_path}/checkout/MoltenVK
      -DBUILD_CUBE=OFF
      -DBUILD_ICD=OFF
+
+ifdef [ windows ]
+    # before glfw pulls vulkan.h: the win32 external-memory api (shared
+    # textures) only declares itself under this platform macro
+    import <vulkan/vulkan.h>
+        +VK_USE_PLATFORM_WIN32_KHR
 
 import glfw:glfw/fdd14e6 <GLFW/glfw3.h>
     +GLFW_INCLUDE_NONE
@@ -1018,7 +1030,9 @@ class CursorPos
     public h : f32
 
 Display Window
-    mutable app_object          : element*
+    # weak: the window outlives a module reload, and live_destroy owns the app
+    # instance. owning it here released one the host still held
+    manual app_object           : element*
     # per joystick: 32 buttons, 16 axes x 2 signs, 4 hats x 4 directions
     mutable pad_state           : new u8 [ 16 * 96 ]
     mutable pad_said            : bool
@@ -1075,7 +1089,7 @@ Display Window
     mutable m_view               : Model
     mutable r_view               : Render
 
-    mutable test_element : element
+    manual test_element : element   # points at a tree element, does not own it
     mutable dbg_blit     : i32
 
     mutable is_setup             : bool
@@ -1089,11 +1103,14 @@ Display Window
     mutable frame_factor        : f32
     intern frame_seq            : i32
     public root                 : element
-    mutable capture             : element
-    mutable focus               : element
-    mutable hovered             : element
-    mutable action_pressed      : element
-    mutable context_pressed     : element
+    # weak: these point AT tree elements, they do not own them. owning meant
+    # Au_drop_members released the app instance on window teardown — a drop
+    # against a reference that was never a hold
+    manual capture              : element
+    manual focus                : element
+    manual hovered              : element
+    manual action_pressed       : element
+    manual context_pressed      : element
     mutable restyle             : bool
     mutable will_animate        : bool
     mutable draw_stage          : CanvasType
@@ -2982,7 +2999,8 @@ Display Window
         return q
 
     func console_input_open []
-        system[ "stty -icanon -echo min 0 time 0" ]
+        c0 : command "stty -icanon -echo min 0 time 0"
+        c0.exec[ false ]
         tty : handle [ fopen[ "/dev/tty", "r+" ] ]
         if [ tty ]
             tty_in = fileno[ tty ]
@@ -3000,7 +3018,8 @@ Display Window
         tty_write[ "\033[?7h" ]
         tty_write[ "\033[?25h" ]
         tty_write[ "\033[?1049l" ]
-        system[ "stty sane" ]
+        c1 : command "stty sane"
+        c1.exec[ false ]
 
     func console_input_poll []
         buf : local u8 [ 128 ]
@@ -4510,7 +4529,7 @@ Control Tabs
 
 Control Slider
     animated : true
-    mutable target : element
+    manual target : element   # points at an element, never owns it
     mutable mem    : Au_t
     mutable minv   : f32
     mutable maxv   : f32 [ 1.0 ]
@@ -4564,7 +4583,7 @@ Control Slider
 
 Control ColorPicker
     animated : true
-    mutable target : element
+    manual target : element   # points at an element, never owns it
     mutable mem    : Au_t
 
     public func draw [ w: Window ]
@@ -4786,7 +4805,7 @@ element UXGenerics
     mutable show_console : bool
     mutable recording    : bool
     mutable dict_dbg     : bool
-    mutable target : element
+    manual target : element   # points at an element, never owns it
     mutable expanded : string
 
     func on_press [ ev: Event ]

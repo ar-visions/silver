@@ -851,6 +851,10 @@ class vk_context
     intern  _vkCreateDebugUtilsMessengerEXT : PFN_vkCreateDebugUtilsMessengerEXT
     intern  _vkGetMemoryFdPropertiesKHR     : PFN_vkGetMemoryFdPropertiesKHR
     intern  _vkGetMemoryFdKHR               : PFN_vkGetMemoryFdKHR
+    ifdef [ windows ]
+        # windows names shared memory with a HANDLE, not a dma-buf fd
+        intern _vkGetMemoryWin32HandleKHR           : PFN_vkGetMemoryWin32HandleKHR
+        intern _vkGetMemoryWin32HandlePropertiesKHR : PFN_vkGetMemoryWin32HandlePropertiesKHR
 
     public  sampler_count       : i32
     # live sampler counts by Texture.tag creation site
@@ -1038,6 +1042,7 @@ class vk_context
         ext_mem_fd_supported  : bool false
         dmabuf_supported      : bool false
         drm_mod_supported     : bool false
+        ext_mem_win32_supported : bool false
         swapchain_ext         : symbol VK_KHR_SWAPCHAIN_EXTENSION_NAME
         for [ i: u32 0, i < ext_count, i += 1 ]
             ext : extensions[i].extensionName
@@ -1050,6 +1055,9 @@ class vk_context
                 ext_mem_fd_supported = true
             if [ strcmp[ ext, VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME ] == 0 ]
                 dmabuf_supported = true
+            ifdef [ windows ]
+                if [ strcmp[ ext, VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME ] == 0 ]
+                    ext_mem_win32_supported = true
             if [ strcmp[ ext, VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME ] == 0 ]
                 drm_mod_supported = true
             if [ strcmp[ ext, "VK_KHR_portability_subset" ] == 0 ]
@@ -1072,6 +1080,13 @@ class vk_context
                 if [ drm_mod_supported ]
                     enabled_dev_exts[ enabled_ext_count ] = VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME
                     enabled_ext_count += 1
+
+        ifdef [ windows ]
+            if [ ext_mem_supported && ext_mem_win32_supported ]
+                enabled_dev_exts[ enabled_ext_count ] = VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME
+                enabled_ext_count += 1
+                enabled_dev_exts[ enabled_ext_count ] = VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME
+                enabled_ext_count += 1
 
         ifdef [ apple ]
             if [ portability_supported ]
@@ -1144,6 +1159,12 @@ class vk_context
             if [ ext_mem_supported && ext_mem_fd_supported && dmabuf_supported ]
                 _vkGetMemoryFdPropertiesKHR = vkGetDeviceProcAddr[ device, "vkGetMemoryFdPropertiesKHR" ]
                 _vkGetMemoryFdKHR           = vkGetDeviceProcAddr[ device, "vkGetMemoryFdKHR" ]
+
+        ifdef [ windows ]
+            if [ ext_mem_supported && ext_mem_win32_supported ]
+                _vkGetMemoryWin32HandleKHR = vkGetDeviceProcAddr[ device, "vkGetMemoryWin32HandleKHR" ]
+                _vkGetMemoryWin32HandlePropertiesKHR =
+                    vkGetDeviceProcAddr[ device, "vkGetMemoryWin32HandlePropertiesKHR" ]
 
         # query memory properties for find_memory_type
         vkGetPhysicalDeviceMemoryProperties[ physical_device, @props ]
@@ -1391,45 +1412,203 @@ class vk_context
 
         # producer: GPU copy of a completed frame into a shared texture
         # (one-time submit + wait, so the flip that follows is truthful)
-        func copy_image [ src: Texture, dst: Texture ]
-            if [ !src || !dst || !src.vk_image || !dst.vk_image ] return
-            cmd : VkCommandBuffer
-            vkAllocateCommandBuffers[ device, VkCommandBufferAllocateInfo [
-                sType:              VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-                commandPool:        command_pool,
-                level:              VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-                commandBufferCount: 1 ], @cmd ]
-            prev : VkImageLayout [ src.vk_layout ]
-            src.transition[ VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL ]
-            dst.transition[ VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ]
-            vkBeginCommandBuffer[ cmd, VkCommandBufferBeginInfo [
-                sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-                flags: VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT ] ]
-            vkCmdCopyImage[ cmd, src.vk_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                dst.vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
-                VkImageCopy [
-                    srcSubresource: VkImageSubresourceLayers [
-                        aspectMask:     VK_IMAGE_ASPECT_COLOR_BIT,
-                        mipLevel:       0,
-                        baseArrayLayer: 0,
-                        layerCount:     1 ],
-                    srcOffset: VkOffset3D [ x: 0, y: 0, z: 0 ],
-                    dstSubresource: VkImageSubresourceLayers [
-                        aspectMask:     VK_IMAGE_ASPECT_COLOR_BIT,
-                        mipLevel:       0,
-                        baseArrayLayer: 0,
-                        layerCount:     1 ],
-                    dstOffset: VkOffset3D [ x: 0, y: 0, z: 0 ],
-                    extent: VkExtent3D [ width: u32[ src.width ], height: u32[ src.height ], depth: 1 ] ] ]
-            vkEndCommandBuffer[ cmd ]
-            vkQueueSubmit[ queue, 1, VkSubmitInfo [
-                sType:              VK_STRUCTURE_TYPE_SUBMIT_INFO,
-                commandBufferCount: 1,
-                pCommandBuffers:    @cmd ], null ]
-            vkQueueWaitIdle[ queue ]
-            vkFreeCommandBuffers[ device, command_pool, 1, @cmd ]
-            src.transition[ prev ]
-            dst.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
+    el [ windows ]
+        # windows names shared gpu memory with a HANDLE, not a dma-buf fd.
+        # a handle value is 32-bit significant -- that is what lets 32- and
+        # 64-bit processes trade them -- so it rides the same i32 transport
+        func export_image_memory [ img: VkImage, out_mem: @VkDeviceMemory ] -> i32
+            expect _vkGetMemoryWin32HandleKHR, 'share: vkGetMemoryWin32HandleKHR not loaded'
+            mreq : VkMemoryRequirements [ ]
+            vkGetImageMemoryRequirements[ device, img, @mreq ]
+            mti : u32 [ find_memory_type[ mreq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT ] ]
+            exp : VkExportMemoryAllocateInfo [ ]
+            exp.sType       = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO
+            exp.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT
+            ded : VkMemoryDedicatedAllocateInfo [ ]
+            ded.sType  = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO
+            ded.image  = img
+            ded.pNext  = @exp
+            mai : VkMemoryAllocateInfo [ ]
+            mai.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO
+            mai.pNext           = @ded
+            mai.allocationSize  = mreq.size
+            mai.memoryTypeIndex = mti
+            mem : VkDeviceMemory [ null ]
+            err : i32 [ vkAllocateMemory[ device, @mai, null, @mem ] ]
+            expect err == 0, 'share: vkAllocateMemory (export) failed'
+            err = vkBindImageMemory[ device, img, mem, 0 ]
+            expect err == 0, 'share: vkBindImageMemory (export) failed'
+            gi : VkMemoryGetWin32HandleInfoKHR [ ]
+            gi.sType      = VK_STRUCTURE_TYPE_MEMORY_GET_WIN32_HANDLE_INFO_KHR
+            gi.memory     = mem
+            gi.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT
+            hv : handle [ null ]
+            err = _vkGetMemoryWin32HandleKHR[ device, @gi, @hv ]
+            expect err == 0, 'share: vkGetMemoryWin32HandleKHR failed'
+            out_mem = mem
+            return i32[ i64[ hv ] ]
+
+        # consumer: import a published screen texture. the handle names the
+        # same GPU memory the publisher renders into, so sampling it shows
+        # the publisher's live frame. the handle is consumed by the import.
+        func import_shared_tex [ dma_fd: i32, w2: i32, h2: i32, fmt: i32, disp: Display ] -> Texture
+            expect _vkGetMemoryWin32HandlePropertiesKHR, 'share: vkGetMemoryWin32HandlePropertiesKHR not loaded'
+            hv : handle [ i64[ dma_fd ] ]
+            ext : VkExternalMemoryImageCreateInfo [ ]
+            ext.sType       = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO
+            ext.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT
+            info : VkImageCreateInfo [ ]
+            info.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO
+            info.pNext         = @ext
+            info.imageType     = VK_IMAGE_TYPE_2D
+            info.format        = fmt
+            info.extent        = VkExtent3D [ w2, h2, 1 ]
+            info.mipLevels     = 1
+            info.arrayLayers   = 1
+            info.samples       = VK_SAMPLE_COUNT_1_BIT
+            info.tiling        = VK_IMAGE_TILING_OPTIMAL
+            info.usage         = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                                 VK_IMAGE_USAGE_TRANSFER_DST_BIT     |
+                                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT     |
+                                 VK_IMAGE_USAGE_SAMPLED_BIT
+            info.sharingMode   = VK_SHARING_MODE_EXCLUSIVE
+            info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED
+            img : VkImage [ null ]
+            err : i32 [ vkCreateImage[ device, @info, null, @img ] ]
+            expect err == 0, 'share: vkCreateImage (import) failed'
+            mreq : VkMemoryRequirements [ ]
+            vkGetImageMemoryRequirements[ device, img, @mreq ]
+            hp : VkMemoryWin32HandlePropertiesKHR [ ]
+            hp.sType = VK_STRUCTURE_TYPE_MEMORY_WIN32_HANDLE_PROPERTIES_KHR
+            err = _vkGetMemoryWin32HandlePropertiesKHR[ device,
+                VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT, hv, @hp ]
+            expect err == 0, 'share: vkGetMemoryWin32HandlePropertiesKHR failed'
+            allowed : u32 [ mreq.memoryTypeBits & hp.memoryTypeBits ]
+            expect allowed != 0, 'share: no memory type for shared handle'
+            mti : u32 [ 0 ]
+            for [ k: u32 0, k < 32, k += 1 ]
+                if [ allowed & (u32[1] << k) ]
+                    mti = k
+                    break
+            ded : VkMemoryDedicatedAllocateInfo [ ]
+            ded.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO
+            ded.image = img
+            imp : VkImportMemoryWin32HandleInfoKHR [ ]
+            imp.sType      = VK_STRUCTURE_TYPE_IMPORT_MEMORY_WIN32_HANDLE_INFO_KHR
+            imp.pNext      = @ded
+            imp.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT
+            imp.handle     = hv
+            mai : VkMemoryAllocateInfo [ ]
+            mai.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO
+            mai.pNext           = @imp
+            mai.allocationSize  = mreq.size
+            mai.memoryTypeIndex = mti
+            mem : VkDeviceMemory [ null ]
+            err = vkAllocateMemory[ device, @mai, null, @mem ]
+            expect err == 0, 'share: vkAllocateMemory (import) failed'
+            err = vkBindImageMemory[ device, img, mem, 0 ]
+            expect err == 0, 'share: vkBindImageMemory (import) failed'
+            t : Texture [ vk: a, w: disp, width: w2, height: h2,
+                vk_format: fmt, vk_image: img, vk_memory: mem ]
+            t.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
+            return t
+
+        # consumer: import a shared handle as a TRANSFER_SRC buffer
+        func import_dmabuf [ dma_fd: i32, byte_size: i32, out_buf: @VkBuffer, out_mem: @VkDeviceMemory ] -> bool
+            expect _vkGetMemoryWin32HandlePropertiesKHR, 'appshare: vkGetMemoryWin32HandlePropertiesKHR not loaded'
+            hv : handle [ i64[ dma_fd ] ]
+            ext : VkExternalMemoryBufferCreateInfo [ ]
+            ext.sType       = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO
+            ext.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT
+            bci : VkBufferCreateInfo [ ]
+            bci.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO
+            bci.pNext       = @ext
+            bci.size        = byte_size
+            bci.usage       = VK_BUFFER_USAGE_TRANSFER_SRC_BIT
+            bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE
+            buf : VkBuffer [ null ]
+            err : i32 [ vkCreateBuffer[ device, @bci, null, @buf ] ]
+            expect err == 0, 'appshare: vkCreateBuffer (import) failed'
+            mreq : VkMemoryRequirements [ ]
+            vkGetBufferMemoryRequirements[ device, buf, @mreq ]
+            hp : VkMemoryWin32HandlePropertiesKHR [ ]
+            hp.sType = VK_STRUCTURE_TYPE_MEMORY_WIN32_HANDLE_PROPERTIES_KHR
+            err = _vkGetMemoryWin32HandlePropertiesKHR[ device,
+                VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT, hv, @hp ]
+            expect err == 0, 'appshare: vkGetMemoryWin32HandlePropertiesKHR failed'
+            allowed : u32 [ mreq.memoryTypeBits & hp.memoryTypeBits ]
+            expect allowed != 0, 'appshare: no memory type for shared handle'
+            mti : u32 [ 0 ]
+            for [ k: u32 0, k < 32, k += 1 ]
+                if [ allowed & (u32[1] << k) ]
+                    mti = k
+                    break
+            ded : VkMemoryDedicatedAllocateInfo [ ]
+            ded.sType  = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO
+            ded.buffer = buf
+            imp : VkImportMemoryWin32HandleInfoKHR [ ]
+            imp.sType      = VK_STRUCTURE_TYPE_IMPORT_MEMORY_WIN32_HANDLE_INFO_KHR
+            imp.pNext      = @ded
+            imp.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT
+            imp.handle     = hv
+            mai : VkMemoryAllocateInfo [ ]
+            mai.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO
+            mai.pNext           = @imp
+            mai.allocationSize  = byte_size
+            mai.memoryTypeIndex = mti
+            mem : VkDeviceMemory [ null ]
+            err = vkAllocateMemory[ device, @mai, null, @mem ]
+            expect err == 0, 'appshare: vkAllocateMemory (import) failed'
+            err = vkBindBufferMemory[ device, buf, mem, 0 ]
+            expect err == 0, 'appshare: vkBindBufferMemory (import) failed'
+            out_buf = buf
+            out_mem = mem
+            return true
+
+        func free_import [ buf: VkBuffer, mem: VkDeviceMemory ]
+            if [ buf ] vkDestroyBuffer[ device, buf, null ]
+            if [ mem ] vkFreeMemory[ device, mem, null ]
+
+
+    func copy_image [ src: Texture, dst: Texture ]
+        if [ !src || !dst || !src.vk_image || !dst.vk_image ] return
+        cmd : VkCommandBuffer
+        vkAllocateCommandBuffers[ device, VkCommandBufferAllocateInfo [
+            sType:              VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            commandPool:        command_pool,
+            level:              VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+            commandBufferCount: 1 ], @cmd ]
+        prev : VkImageLayout [ src.vk_layout ]
+        src.transition[ VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL ]
+        dst.transition[ VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ]
+        vkBeginCommandBuffer[ cmd, VkCommandBufferBeginInfo [
+            sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            flags: VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT ] ]
+        vkCmdCopyImage[ cmd, src.vk_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            dst.vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+            VkImageCopy [
+                srcSubresource: VkImageSubresourceLayers [
+                    aspectMask:     VK_IMAGE_ASPECT_COLOR_BIT,
+                    mipLevel:       0,
+                    baseArrayLayer: 0,
+                    layerCount:     1 ],
+                srcOffset: VkOffset3D [ x: 0, y: 0, z: 0 ],
+                dstSubresource: VkImageSubresourceLayers [
+                    aspectMask:     VK_IMAGE_ASPECT_COLOR_BIT,
+                    mipLevel:       0,
+                    baseArrayLayer: 0,
+                    layerCount:     1 ],
+                dstOffset: VkOffset3D [ x: 0, y: 0, z: 0 ],
+                extent: VkExtent3D [ width: u32[ src.width ], height: u32[ src.height ], depth: 1 ] ] ]
+        vkEndCommandBuffer[ cmd ]
+        vkQueueSubmit[ queue, 1, VkSubmitInfo [
+            sType:              VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            commandBufferCount: 1,
+            pCommandBuffers:    @cmd ], null ]
+        vkQueueWaitIdle[ queue ]
+        vkFreeCommandBuffers[ device, command_pool, 1, @cmd ]
+        src.transition[ prev ]
+        dst.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
 
     func attach [ vk_surface:handle ]
         if [ queue_family_index == -1 ]

@@ -582,6 +582,7 @@ NavButton LabelButton
 Option ReloadButton
     tlabel : Layer [ label_color: rgba [ '#fff' ], label_size: 14,
         label_align: vec2f [ x: 0.5, y: 0.5 ],
+        label_offset: vec2f [ x: 0.0, y: -1.0 ],
         label_overflow: Overflow.ellipsis ]
     style : CSS {
         area: l1px t0px w96px h18px
@@ -601,7 +602,8 @@ Option ReloadButton
 # center of the status bar: hides everything above it but the scene
 Option HideToggle
     tlabel : Layer [ label_color: rgba [ '#fff9' ], label_size: 13,
-        label_align: vec2f [ x: 0.5, y: 0.5 ] ]
+        label_align: vec2f [ x: 0.5, y: 0.5 ],
+        label_offset: vec2f [ x: 0.0, y: -1.0 ] ]
     style : CSS {
         area: l50%-24px t0px w48px h18px
         layers.body:
@@ -629,6 +631,7 @@ element ReloadStatus
             label_color: #ffda
             label_size: 14
             label_align: 0.5 0.5
+            label_offset: 0.0 -1.0
     }
 
 # same tab, build failed: click jumps to the error line
@@ -743,6 +746,8 @@ element SceneName
             label_color: #fffc
             label_size: 14
             label_align: 0.5 0.5
+            # status bar text sits one pixel high of the box centre
+            label_offset: 0.0 -1.0
         :hovered
             layers.body:
                 fill_color: #fff2
@@ -2940,6 +2945,9 @@ element orbiter : trinity # implements compiler
         if [ scene_names ] return
         scene_names = array string []
         scene_mods  = map string [string] []
+        # first entry is always 'none' -- with no scenes exported the
+        # selector drew an empty label, which reads as a broken widget
+        scene_names.push[ string 'none' ]
         root : path.path_startup[]
         if [ !root ] return
         d : path '{root}/install/export'
@@ -3045,7 +3053,9 @@ element orbiter : trinity # implements compiler
     # the mounted scene; the label click sets it from the browsed one
     func scene_loaded [] -> string
         if [ !show_scene ] return ''
-        if [ scene_load && scene_load.count > 0 ] return scene_load
+        # 'none' is a real selection, not a scene: nothing mounts for it
+        if [ scene_load && scene_load.count > 0 && scene_load.compare[ 'none' ] != 0 ]
+            return scene_load
         return ''
 
     func scene_step [ d: i32 ]

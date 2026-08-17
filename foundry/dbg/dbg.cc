@@ -10,11 +10,11 @@
 #include <fcntl.h>
 #ifdef __APPLE__
 #include <util.h>   // forkpty/openpty live here on macOS (pty.h is Linux-only)
-#else
+#elif !defined(_WIN32)
 #include <pty.h>
-#endif
 #include <termios.h>
-#include <ports.h>
+#endif
+#include <ports.h>  // windows has neither header; the pty shims live here
 
 #define m(...) map_of(_N_ARGS_m(m, ## __VA_ARGS__), null)
 #define a(...) array_of(_N_ARGS_a(a, ## __VA_ARGS__), null)
@@ -55,9 +55,17 @@ struct dbg_state {
 // C names (dbg_init, dbg_start, ...); without C linkage they'd be C++-mangled and the
 // loader fails with "undefined symbol: dbg_init". (struct dbg_state + macros above
 // stay C++.)
+// windows exports only what is marked; an elf .so exports every symbol,
+// so without this an importing module cannot see these at all
+#ifdef _WIN32
+#define DBG_API __attribute__((dllexport))
+#else
+#define DBG_API
+#endif
+
 extern "C" {
 
-Au dbg_poll(dbg debug) {
+DBG_API Au dbg_poll(dbg debug) {
     lldb::SBEvent event;
     while (debug->active) {
         if (!debug->running) {
@@ -150,7 +158,7 @@ Au dbg_poll(dbg debug) {
     return null;
 }
 
-none dbg_init(dbg debug) {
+DBG_API none dbg_init(dbg debug) {
     static bool dbg_init = false;
     if (!dbg_init) {
         dbg_init = true;
@@ -225,7 +233,7 @@ none dbg_init(dbg debug) {
     }
 }
 
-none dbg_dealloc(dbg debug) {
+DBG_API none dbg_dealloc(dbg debug) {
     dbg_stop(debug);
     if (debug->impl) {
         delete S(debug);
@@ -233,7 +241,7 @@ none dbg_dealloc(dbg debug) {
     }
 }
 
-none dbg_start(dbg debug) {
+DBG_API none dbg_start(dbg debug) {
     lldb::SBError      error;
     lldb::SBLaunchInfo launch_info(null);
 
@@ -266,7 +274,7 @@ none dbg_start(dbg debug) {
 // attach to an already-running pid (the in-pane app silver-host spawned). the app
 // self-stops (SILVER_DEBUG) just before init, so we attach here, the caller installs
 // breakpoints, then cont() resumes it — init breakpoints still arm.
-none dbg_attach(dbg debug, i32 pid) {
+DBG_API none dbg_attach(dbg debug, i32 pid) {
     lldb::SBError      error;
     lldb::SBAttachInfo attach_info((lldb::pid_t)pid);
     S(debug)->process = S(debug)->target.Attach(attach_info, error);
@@ -288,7 +296,7 @@ none dbg_attach(dbg debug, i32 pid) {
     }
 }
 
-none dbg_stop(dbg debug) {
+DBG_API none dbg_stop(dbg debug) {
     if (debug->active) {                   // alive = paused OR running (not just running)
         if (S(debug)->process.IsValid())
             S(debug)->process.Kill();      // terminate the inferior — Detach would leave
@@ -313,28 +321,28 @@ static bool dbg_at_stop(dbg debug) {
     return process.IsValid() && process.GetState() == lldb::eStateStopped;
 }
 
-none dbg_step_into(dbg debug) {
+DBG_API none dbg_step_into(dbg debug) {
     if (!dbg_at_stop(debug)) return;
     debug->running = true;   // re-arm dbg_poll to catch the step's stop
     lldb::SBThread thread = S(debug)->process.GetSelectedThread();
     thread.StepInto();
 }
 
-none dbg_step_over(dbg debug) {
+DBG_API none dbg_step_over(dbg debug) {
     if (!dbg_at_stop(debug)) return;
     debug->running = true;   // re-arm dbg_poll to catch the step's stop
     lldb::SBThread thread = S(debug)->process.GetSelectedThread();
     thread.StepOver();
 }
 
-none dbg_step_out(dbg debug) {
+DBG_API none dbg_step_out(dbg debug) {
     if (!dbg_at_stop(debug)) return;
     debug->running = true;   // re-arm dbg_poll to catch the step's stop
     lldb::SBThread thread = S(debug)->process.GetSelectedThread();
     thread.StepOut();
 }
 
-none dbg_pause(dbg debug) {
+DBG_API none dbg_pause(dbg debug) {
     // pause only makes sense while the inferior is actually running.
     if (!debug->active || !debug->impl) return;
     lldb::SBProcess process = S(debug)->process;
@@ -342,7 +350,7 @@ none dbg_pause(dbg debug) {
     process.Stop();
 }
 
-none dbg_cont(dbg debug) {
+DBG_API none dbg_cont(dbg debug) {
     if (!dbg_at_stop(debug)) return;
     debug->running = true;   // re-arm dbg_poll to catch the next stop/exit
     S(debug)->process.Continue();
@@ -421,7 +429,7 @@ array read_children(dbg debug, lldb::SBValue value) {
     return read_children_depth(debug, value, DBG_MAX_DEPTH);
 }
 
-array dbg_read_vars(dbg debug, array result, lldb::SBValueList vars) {
+DBG_API array dbg_read_vars(dbg debug, array result, lldb::SBValueList vars) {
     for (uint32_t i = 0; i < vars.GetSize(); ++i) {
         lldb::SBValue value = vars.GetValueAtIndex(i);
         const char* nm = value.GetName();
@@ -447,7 +455,7 @@ array dbg_read_vars(dbg debug, array result, lldb::SBValueList vars) {
     return result;
 }
 
-array dbg_read_arguments(dbg debug) {
+DBG_API array dbg_read_arguments(dbg debug) {
     array             result = new0(array, alloc, 32);
     lldb::SBFrame     frame  = S(debug)->process.GetSelectedThread().GetSelectedFrame();
     // in_scope_only = true: only variables whose lexical scope contains the current PC.
@@ -457,7 +465,7 @@ array dbg_read_arguments(dbg debug) {
     return dbg_read_vars(debug, result, args);
 }
 
-array dbg_read_locals   (dbg debug) {
+DBG_API array dbg_read_locals   (dbg debug) {
     array             result = new0(array, alloc, 32);
     lldb::SBFrame     frame  = S(debug)->process.GetSelectedThread().GetSelectedFrame();
     // in_scope_only = true: lldb drops locals not in scope at the PC — e.g. a for-loop
@@ -468,7 +476,7 @@ array dbg_read_locals   (dbg debug) {
     return dbg_read_vars(debug, result, args);
 }
 
-array dbg_read_statics  (dbg debug) {
+DBG_API array dbg_read_statics  (dbg debug) {
     array             result = new0(array, alloc, 32);
     lldb::SBFrame     frame  = S(debug)->process.GetSelectedThread().GetSelectedFrame();
     lldb::SBValueList args   = frame.GetVariables(
@@ -478,7 +486,7 @@ array dbg_read_statics  (dbg debug) {
 
 // the full call stack of the selected thread: outermost first. each frame is the
 // function name plus its .ag source location (empty file for system frames).
-array dbg_read_frames   (dbg debug) {
+DBG_API array dbg_read_frames   (dbg debug) {
     array          result = new0(array, alloc, 32);
     lldb::SBThread thread = S(debug)->process.GetSelectedThread();
     if (!thread.IsValid()) return result;
@@ -504,7 +512,7 @@ array dbg_read_frames   (dbg debug) {
     return result;
 }
 
-array dbg_read_globals  (dbg debug) {
+DBG_API array dbg_read_globals  (dbg debug) {
     array             result      = new0(array, alloc, 32);
     lldb::SBFrame     frame       = S(debug)->process.GetSelectedThread().GetSelectedFrame();
     u32               num_modules = S(debug)->target.GetNumModules();
@@ -520,7 +528,7 @@ array dbg_read_globals  (dbg debug) {
     return result;
 }
 
-array dbg_read_registers(dbg debug) {
+DBG_API array dbg_read_registers(dbg debug) {
     array             result = new0(array, alloc, 32);
     lldb::SBThread    thread = S(debug)->process.GetSelectedThread();
     lldb::SBFrame     frame  = thread.GetSelectedFrame();
@@ -543,19 +551,19 @@ breakpoint dbg_set_breakpoint(dbg debug, path source, u32 line, u32 column) {
     return br;
 }
 
-none dbg_remove_breakpoint(dbg debug, breakpoint bp) {
+DBG_API none dbg_remove_breakpoint(dbg debug, breakpoint bp) {
     if (bp->removed) return;
     S(debug)->target.BreakpointDelete(BP(bp)->GetID());
     bp->removed = true;
     printf("breakpoint removed: id=%i\n", (i32)BP(bp)->GetID());
 }
 
-none dbg_enable_breakpoint(dbg debug, breakpoint bp, bool enable) {
+DBG_API none dbg_enable_breakpoint(dbg debug, breakpoint bp, bool enable) {
     BP(bp)->SetEnabled(enable);
     printf("breakpoint %s: id=%i\n", enable ? "enabled" : "disabled", (i32)BP(bp)->GetID());
 }
 
-none breakpoint_dealloc(breakpoint bp) {
+DBG_API none breakpoint_dealloc(breakpoint bp) {
     dbg_remove_breakpoint(bp->debug, bp);
     if (bp->lldb_bp) {
         delete BP(bp);

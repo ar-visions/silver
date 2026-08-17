@@ -1,3 +1,3 @@
 type: shared
 modules: Au
-link: -lasound
+link: -lasound -lole32

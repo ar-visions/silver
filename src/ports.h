@@ -31,6 +31,11 @@ typedef __int32 ssize_t;
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/utime.h>
+// pulled in FIRST and deliberately: the crt declares execvp/execl/execlp with
+// its own return type, and ours cannot match it (a dllimport cannot be
+// defined). letting the crt declare them here, then renaming ours below, is
+// what keeps the two from colliding whichever header a module reaches first
+#include <process.h>
 
 // glibc spells this with underscores; shared code uses it
 typedef int64_t __int64_t;
@@ -98,13 +103,22 @@ AU_EXPORT char*       basename(char* path);
 AU_EXPORT ssize_t     readlink(const char *path, char *buf, size_t bufsiz);
 AU_EXPORT int         lstat   (const char* path, struct _stat* st);
 AU_EXPORT char*       getcwd  (char* buf, size_t size);
-AU_EXPORT int         execvp  (const char *file, char *const argv[]);
+// ours under our own name, then aliased: the crt's execvp is a dllimport we
+// cannot define, and its intptr_t return will not match a plain int
+AU_EXPORT int         au_execvp(const char *file, char *const argv[]);
+#define execvp au_execvp
+// the ucrt keeps no environ VARIABLE -- _environ is itself a call to the block
+// the crt holds right now. aliasing it keeps every reader current, where a
+// cached copy would dangle the moment a putenv moved the block
+#define environ _environ
 AU_EXPORT int         setpgid (pid_t pid, pid_t pgid);
 AU_EXPORT const char* strsignal(int sig);
 AU_EXPORT pid_t       fork    ();
-AU_EXPORT int         execlp  (const char* file, const char* arg0, ...);
+AU_EXPORT int         au_execlp(const char* file, const char* arg0, ...);
+#define execlp au_execlp
 // only reachable from a forkpty child, which never happens here
-AU_EXPORT int         execl   (const char* path, const char* arg0, ...);
+AU_EXPORT int         au_execl (const char* path, const char* arg0, ...);
+#define execl au_execl
 AU_EXPORT int         pipe    (int pipefd[2]);
 AU_EXPORT int         dup2    (int oldfd, int newfd);
 AU_EXPORT int         close   (int fd);
@@ -137,7 +151,10 @@ AU_EXPORT FILE*       popen   (const char* cmd, const char* mode);
 AU_EXPORT int         pclose  (FILE* stream);
 AU_EXPORT int         dup     (int fd);
 AU_EXPORT int         isatty  (int fd);
-AU_EXPORT pid_t       getpid  ();
+// the crt declares getpid only when it is feeling non-standard, and
+// -fno-ms-compatibility turns that off -- so ours, aliased like the execs
+AU_EXPORT pid_t       au_getpid(void);
+#define getpid au_getpid
 AU_EXPORT int         ftruncate(int fd, long long length);
 AU_EXPORT int         kill    (pid_t pid, int sig);
 AU_EXPORT int         unsetenv(const char* name);
@@ -547,6 +564,8 @@ AU_EXPORT int sigaltstack(const stack_t* ss, stack_t* old);
 AU_EXPORT int ioctl     (int fd, unsigned long request, ...);
 AU_EXPORT int fcntl     (int fd, int cmd, ...);
 AU_EXPORT int forkpty   (int* amaster, char* name, void* termp, struct winsize* win);
+AU_EXPORT int openpty   (int* amaster, int* aslave, char* name, void* termp, struct winsize* win);
+AU_EXPORT int ttyname_r (int fd, char* buf, size_t len);
 AU_EXPORT int memfd_create(const char* name, unsigned int flags);
 
 AU_EXPORT int posix_spawn_file_actions_init       (posix_spawn_file_actions_t*);

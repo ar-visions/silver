@@ -88,6 +88,11 @@ class shader
             return "sampler3D"
         if [ t == typeid[ samplerCube ] ]
             return "samplerCube"
+        # every shader param is declared @T. for a class that resolves to
+        # the class itself, but for a primitive it stops on the ref, so
+        # follow src to the type it actually names
+        if [ t && t.src && t.src != t ]
+            return glsl_type_name[ t.src ]
         return null
 
     func glsl_header [ stage: ShaderStage ] -> string
@@ -287,7 +292,11 @@ class shader
                 continue
             cwd : path.path_cwd[]
             p.parent_dir[].make_dir[]
-            fp: fopen[ p, "w" ]
+            # "wb": text mode expands newlines, so the file on disk is
+            # longer than strlen(src) and the content compare above can never
+            # match -- the source was rewritten every run, which made every
+            # .spv look stale and forced a full recompile each start
+            fp: fopen[ p, "wb" ]
             if [ !fp ]
                 printf[ "failed to write shader: %s\n", p.chars ]
                 continue
@@ -326,6 +335,8 @@ class shader
         return index
 
     intern func reload [ ] -> bool
+        puts 'VK_LAYER_PATH={getenv[ 'VK_LAYER_PATH' ]}'
+
         paths:  array path [ vert, frag, comp ]
         values: new VkShaderModule[3] [ vk_vert, vk_frag, vk_comp ]
         found:      false
@@ -341,24 +352,39 @@ class shader
                 shader_file = shader_file
             spv_file: path '{shader_file}.spv'
             found = true
-            source_stat: struct stat
-            spv_stat:    struct stat
-            src_exists: stat[ input, @source_stat ] == 0
-            spv_exists: stat[ spv_file, @spv_stat ] == 0
-            #make_spv: false -- this is needed now, and thats wrong
-            ifdef [ linux ]
-                make_spv : !spv_exists || source_stat.st_mtim.tv_sec > spv_stat.st_mtim.tv_sec
-            ifdef [ apple ]
-                make_spv : !spv_exists || source_stat.st_mtimespec.tv_sec > spv_stat.st_mtimespec.tv_sec
-            ifdef [ windows ]
-                make_spv : !spv_exists || source_stat.st_mtime > spv_stat.st_mtime
+            # modified_time, not struct stat: the ucrt has several stat
+            # layouts and which one stat() fills depends on macros, so
+            # st_mtime was read at the wrong offset and a stale .spv was
+            # kept forever -- the black screen only --clean could clear
+            # a timestamp cannot tell a GOOD .spv from a truncated one, and
+            # an interrupted run leaves the bad file NEWER than its source --
+            # so no mtime check ever recompiles it. read the header instead:
+            # spir-v starts with magic 0x07230203 and is a whole number of
+            # 32-bit words
+            spv_ok : bool false
+            if [ spv_file.exists[] ]
+                sfp : fopen[ spv_file.chars, "rb" ]
+                if [ sfp ]
+                    magic : u32 [ 0 ]
+                    rd    : i64 [ fread[ @magic, 1, 4, sfp ] ]
+                    fseek[ sfp, 0, SEEK_END ]
+                    slen  : i64 [ ftell[ sfp ] ]
+                    fclose[ sfp ]
+                    spv_ok = rd == 4 && magic == 0x07230203 && slen >= 20 && (slen % 4) == 0
+            make_spv : !spv_ok ||
+                input.modified_time[] > spv_file.modified_time[]
+            if [ make_spv ] puts 'shader: {spv_file.filename[]} stale (valid={spv_ok}) — compiling'
 
             if [ make_spv ]
                 glsl: path '{path.path_startup[]}/platform/native/bin/glslangValidator'
                 glsl_bin: (glsl.exists[]) ? '{glsl}' : 'glslangValidator'
                 cmd: '{glsl_bin} -V100 --target-env vulkan1.2 {shader_file} -o {spv_file}'
                 puts 'compiling shader: {cmd}'
-                result: system[ cmd ]
+                # command.exec, not system(): it runs through Au's popen on
+                # every platform, and the crt's system() opens a console
+                # window per call -- N shaders flashed N of them on windows
+                cc : command cmd.chars
+                result: i32 [ cc.exec[ false ] ]
                 if [ result != 0 ]
                     puts 'shader compilation failed for: {shader_file}'
                     exit[ 1 ]

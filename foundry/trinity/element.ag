@@ -663,7 +663,7 @@ class Layer
 
 
 class Event
-    mutable target         : element
+    manual target          : element   # points at an element, never owns it
     mutable origin         : element
     mutable mouse          : MouseState
     mutable key            : KeyboardState

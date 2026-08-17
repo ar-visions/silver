@@ -1,0 +1,4 @@
+# CRLF is banned. -text turns OFF all line-ending translation for every
+# file, on every platform, whatever core.autocrlf says locally -- this
+# travels with the repo, so a fresh clone cannot be damaged either.
+* -text

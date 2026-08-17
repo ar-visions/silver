@@ -3,8 +3,6 @@ import img
 import gltf
 import trinity
 import ai
-import ar-visions:torchshim/main <torch_shim.h>
-    -ltorch_shim
 import <stdio.h>
 import <stdlib.h>
 import <math.h>

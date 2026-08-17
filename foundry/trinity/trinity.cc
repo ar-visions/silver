@@ -1,4 +1,12 @@
 #include <cstdio>
+// windows exports only what is marked; an elf .so exports every symbol,
+// so without this an importing module cannot see these at all
+#ifdef _WIN32
+#define HOST_API extern "C" __attribute__((dllexport))
+#else
+#define HOST_API extern "C"
+#endif
+
 #define VMA_IMPLEMENTATION
 #include <vk_mem_alloc.h>
 
@@ -13,7 +21,7 @@
 #include <signal.h>
 #include <stdlib.h>
 #include <execinfo.h>
-extern "C" int host_pid_alive(int pid) {
+HOST_API int host_pid_alive(int pid) {
     if (pid <= 0) return 0;
     return kill(pid, 0) == 0 ? 1 : 0;
 }
@@ -95,13 +103,13 @@ static HostShared* host_shared(void) {
 }
 
 // this process's own slot (SILVER_APP_SLOT, 0 when unset — the primary app)
-extern "C" int host_slot(void) {
+HOST_API int host_slot(void) {
     const char* s = getenv("SILVER_APP_SLOT");
     return (s && *s) ? atoi(s) : 0;
 }
 
 // post a message to a slot's ring (0 = to_ide, 1 = to_app). SPSC.
-extern "C" void host_post2(int slot, int ring, int type, int a, int b, int c) {
+HOST_API void host_post2(int slot, int ring, int type, int a, int b, int c) {
     HostShared* h = host_shared();
     if (!h || slot < 0 || slot >= HOST_APPS) return;
     HostRing* r = ring ? &h->app[slot].to_app : &h->app[slot].to_ide;
@@ -116,7 +124,7 @@ extern "C" void host_post2(int slot, int ring, int type, int a, int b, int c) {
 
 // pop next message from a slot's ring; fills g_last, returns type (0 = empty).
 static HostMsg g_last;
-extern "C" int host_poll2(int slot, int ring) {
+HOST_API int host_poll2(int slot, int ring) {
     HostShared* h = host_shared();
     if (!h || slot < 0 || slot >= HOST_APPS) return 0;
     HostRing* r = ring ? &h->app[slot].to_app : &h->app[slot].to_ide;
@@ -126,15 +134,15 @@ extern "C" int host_poll2(int slot, int ring) {
     r->tail = r->tail + 1;
     return g_last.type;
 }
-extern "C" int host_pa(void) { return g_last.a; }
-extern "C" int host_pb(void) { return g_last.b; }
-extern "C" int host_pc(void) { return g_last.c; }
+HOST_API int host_pa(void) { return g_last.a; }
+HOST_API int host_pb(void) { return g_last.b; }
+HOST_API int host_pc(void) { return g_last.c; }
 
 // own-slot conveniences (the common case for an app or a summoned orbiter)
-extern "C" void host_post(int ring, int type, int a, int b, int c) {
+HOST_API void host_post(int ring, int type, int a, int b, int c) {
     host_post2(host_slot(), ring, type, a, b, c);
 }
-extern "C" int host_poll(int ring) { return host_poll2(host_slot(), ring); }
+HOST_API int host_poll(int ring) { return host_poll2(host_slot(), ring); }
 
 // one published surface of a slot, or null when the index is out of range
 static SharedTex* host_tex_at(int slot, int side) {
@@ -147,7 +155,7 @@ static SharedTex* host_tex_at(int slot, int side) {
 // publish this process's shared surface (side 0 = app, 1 = ide, 2.. =
 // instruments): both texture fds at once. the fds stay open here for the
 // textures' whole life; consumers pull dups.
-extern "C" void host_tex_publish(int slot, int side, int fd0, int fd1, int w, int h, int fmt) {
+HOST_API void host_tex_publish(int slot, int side, int fd0, int fd1, int w, int h, int fmt) {
     HostShared* hs = host_shared();
     SharedTex*  t  = host_tex_at(slot, side);
     if (!hs || !t) return;
@@ -166,7 +174,7 @@ extern "C" void host_tex_publish(int slot, int side, int fd0, int fd1, int w, in
 }
 
 // retire a surface: gen 0 is how a consumer reads "this one is gone"
-extern "C" void host_tex_clear(int slot, int side) {
+HOST_API void host_tex_clear(int slot, int side) {
     SharedTex* t = host_tex_at(slot, side);
     if (!t) return;
     t->front = -1;
@@ -176,14 +184,14 @@ extern "C" void host_tex_clear(int slot, int side) {
     t->gen = 0;
 }
 
-extern "C" int host_tex_gen(int slot, int side) {
+HOST_API int host_tex_gen(int slot, int side) {
     SharedTex* t = host_tex_at(slot, side);
     if (!t) return 0;
     return t->gen;
 }
 
 // producer: this texture now holds a COMPLETE frame — show it
-extern "C" void host_tex_flip(int slot, int side, int front) {
+HOST_API void host_tex_flip(int slot, int side, int front) {
     SharedTex* t = host_tex_at(slot, side);
     if (!t) return;
     __sync_synchronize();
@@ -191,7 +199,7 @@ extern "C" void host_tex_flip(int slot, int side, int front) {
 }
 
 // consumer: which of the two textures holds the newest complete frame
-extern "C" int host_tex_front(int slot, int side) {
+HOST_API int host_tex_front(int slot, int side) {
     SharedTex* t = host_tex_at(slot, side);
     if (!t) return -1;
     return t->front;
@@ -199,7 +207,7 @@ extern "C" int host_tex_front(int slot, int side) {
 
 // duplicate one published texture fd (which = 0/1) out of its owner.
 // returns a LOCAL fd (caller owns it; vulkan import consumes it) or -1.
-extern "C" int host_tex_pull(int slot, int side, int which, int* w, int* h, int* fmt) {
+HOST_API int host_tex_pull(int slot, int side, int which, int* w, int* h, int* fmt) {
     SharedTex* t = host_tex_at(slot, side);
     if (!t) return -1;
     int fd = which ? t->fd1 : t->fd0;
@@ -217,7 +225,7 @@ extern "C" int host_tex_pull(int slot, int side, int which, int* w, int* h, int*
 
 // ask silver-host to build (if needed) + spawn a module into a free slot.
 // returns the slot to watch, or -1 (no supervisor / table full).
-extern "C" int host_app_request(const char* nm) {
+HOST_API int host_app_request(const char* nm) {
     HostShared* hs = host_shared();
     if (!hs || !nm || !*nm || hs->host_pid <= 0) return -1;
     for (int i = 1; i < HOST_APPS; i++) {
@@ -239,13 +247,13 @@ extern "C" int host_app_request(const char* nm) {
     return -1;
 }
 
-extern "C" int host_app_state(int slot) {
+HOST_API int host_app_state(int slot) {
     HostShared* hs = host_shared();
     if (!hs || slot < 0 || slot >= HOST_APPS) return 0;
     return hs->app[slot].state;
 }
 
-extern "C" int host_app_pid(int slot) {
+HOST_API int host_app_pid(int slot) {
     HostShared* hs = host_shared();
     if (!hs || slot < 0 || slot >= HOST_APPS) return 0;
     return hs->app[slot].app_pid;
@@ -255,7 +263,7 @@ extern "C" int host_app_pid(int slot) {
 // NEVER slot 0: the peer OWNS the shared window — one window, many
 // processes is the whole design. stopping the peer stops its WORLD, in
 // place, while the process keeps compositing the shell.
-extern "C" void host_app_stop(int slot) {
+HOST_API void host_app_stop(int slot) {
     HostShared* hs = host_shared();
     if (!hs || slot <= 0 || slot >= HOST_APPS) return;
     int pid = hs->app[slot].app_pid;
@@ -263,7 +271,7 @@ extern "C" void host_app_stop(int slot) {
 }
 
 // how the peer ended: 0 unset, >0 exit code+1, <0 -signal, -1000 build failed
-extern "C" int host_app_verdict(int slot) {
+HOST_API int host_app_verdict(int slot) {
     HostShared* hs = host_shared();
     if (!hs || slot < 0 || slot >= HOST_APPS) return 0;
     return hs->app[slot].verdict;
@@ -271,13 +279,13 @@ extern "C" int host_app_verdict(int slot) {
 
 // freeze the peer process (debug-session stop) / thaw it again. slot 0 is
 // allowed: the summoned shell pauses the very app it rides inside
-extern "C" void host_app_pause(int slot) {
+HOST_API void host_app_pause(int slot) {
     HostShared* hs = host_shared();
     if (!hs || slot < 0 || slot >= HOST_APPS) return;
     int pid = hs->app[slot].app_pid;
     if (pid > 0) kill((pid_t)pid, SIGSTOP);
 }
-extern "C" void host_app_resume(int slot) {
+HOST_API void host_app_resume(int slot) {
     HostShared* hs = host_shared();
     if (!hs || slot < 0 || slot >= HOST_APPS) return;
     int pid = hs->app[slot].app_pid;
@@ -286,7 +294,7 @@ extern "C" void host_app_resume(int slot) {
 
 // ask the supervising silver-host to bring up orbiter (SIGUSR1). guarded on
 // the isolate-child marker so an unsupervised app never signals its ide.
-extern "C" int host_ask_orbiter(void) {
+HOST_API int host_ask_orbiter(void) {
     if (!getenv("SILVER_ISOLATE_CHILD")) return -1;
     HostShared* hs = host_shared();
     if (hs && hs->host_pid > 0) return kill((pid_t)hs->host_pid, SIGUSR1);
@@ -295,26 +303,10 @@ extern "C" int host_ask_orbiter(void) {
 
 // dictate (app->ide) and live-confirm (ide->app) are single latest-wins
 // signals over the rings
-extern "C" void host_dictate_set(int v) { host_post(0, HM_DICTATE, v, 0, 0); }
-extern "C" void host_live_set(int v)    { host_post(1, HM_LIVE, v, 0, 0); }
+HOST_API void host_dictate_set(int v) { host_post(0, HM_DICTATE, v, 0, 0); }
+HOST_API void host_live_set(int v)    { host_post(1, HM_LIVE, v, 0, 0); }
 
-// tee all stdout/stderr to /tmp/<name>.log (fresh each run) AND the terminal,
-// so a run's full output is always readable without pasting. one tee thread
-// drains a pipe the standard streams are redirected into.
-#include <pthread.h>
-static int  g_log_real = -1;
-static int  g_log_file = -1;
-static int  g_log_done = 0;
-static void* host_log_thread(void* a) {
-    int rd = (int)(long)a;
-    char buf[8192];
-    ssize_t n;
-    while ((n = read(rd, buf, sizeof(buf))) > 0) {
-        if (g_log_real >= 0) { ssize_t w = write(g_log_real, buf, n); (void)w; }
-        if (g_log_file >= 0) { ssize_t w = write(g_log_file, buf, n); (void)w; }
-    }
-    return 0;
-}
+// the log tee is NOT linux-only; it lives past the #endif below
 // ===========================================================================
 // agent socket — debug builds only (the .ag side gates on `debug`). a LOCAL
 // unix stream socket at $XDG_RUNTIME_DIR/trinity-<app>.sock speaking a line
@@ -329,7 +321,7 @@ static int  g_agent_cli = -1;
 static char g_agent_buf[8192];
 static int  g_agent_len = 0;
 
-extern "C" int agent_sock_open(const char* name) {
+HOST_API int agent_sock_open(const char* name) {
     if (g_agent_srv >= 0) return 1;
     if (!name || !*name)  return 0;
     const char* rt = getenv("XDG_RUNTIME_DIR");
@@ -352,7 +344,7 @@ extern "C" int agent_sock_open(const char* name) {
 }
 
 // client: ask a running app one line and read its reply. 0 = nobody home
-extern "C" int agent_sock_ask(const char* name, const char* line,
+HOST_API int agent_sock_ask(const char* name, const char* line,
                               char* out, int cap) {
     if (!name || !*name || !line || !out || cap < 2) return 0;
     const char* rt = getenv("XDG_RUNTIME_DIR");
@@ -389,7 +381,7 @@ extern "C" int agent_sock_ask(const char* name, const char* line,
 }
 
 // client: hand one line to an app that is already running. 0 = nobody home
-extern "C" int agent_sock_send(const char* name, const char* line) {
+HOST_API int agent_sock_send(const char* name, const char* line) {
     if (!name || !*name || !line || !*line) return 0;
     const char* rt = getenv("XDG_RUNTIME_DIR");
     char pathb[256];
@@ -412,7 +404,7 @@ extern "C" int agent_sock_send(const char* name, const char* line) {
 }
 
 // one complete line per call (newline stripped); 0 = nothing pending
-extern "C" int agent_sock_line(char* out, int cap) {
+HOST_API int agent_sock_line(char* out, int cap) {
     if (g_agent_srv < 0 || !out || cap < 2) return 0;
     if (g_agent_cli < 0) {
         g_agent_cli = accept4(g_agent_srv, 0, 0, SOCK_NONBLOCK | SOCK_CLOEXEC);
@@ -442,21 +434,102 @@ extern "C" int agent_sock_line(char* out, int cap) {
     }
 }
 
-extern "C" void agent_sock_reply(const char* s) {
+HOST_API void agent_sock_reply(const char* s) {
     if (g_agent_cli < 0 || !s || !*s) return;
     ssize_t w = send(g_agent_cli, s, strlen(s), MSG_NOSIGNAL);
     (void)w;
 }
 
-extern "C" void host_log_setup(const char* name) {
+#else
+// non-linux stubs: hosting is linux-only (dma-buf, memfd, pidfd), but the
+// symbols must exist so the module links. every call reports "nothing there".
+HOST_API int  host_ask_orbiter(void)                             { return -1; }
+HOST_API void host_dictate_set(int v)                            { }
+HOST_API void host_live_set(int v)                               { }
+HOST_API int  host_pid_alive(int pid)                            { return 0; }
+HOST_API int  host_slot(void)                                    { return 0; }
+HOST_API void host_post(int r, int t, int a, int b, int c)       { }
+HOST_API int  host_poll(int r)                                   { return 0; }
+HOST_API void host_post2(int s, int r, int t, int a, int b, int c) { }
+HOST_API int  host_poll2(int s, int r)                           { return 0; }
+HOST_API int  host_pa(void)                                      { return 0; }
+HOST_API int  host_pb(void)                                      { return 0; }
+HOST_API int  host_pc(void)                                      { return 0; }
+HOST_API void host_tex_publish(int s, int sd, int f0, int f1, int w, int h, int f) { }
+HOST_API int  host_tex_gen(int s, int sd)                        { return 0; }
+HOST_API void host_tex_clear(int s, int sd)                      { }
+HOST_API void host_tex_flip(int s, int sd, int fr)               { }
+HOST_API int  host_tex_front(int s, int sd)                      { return -1; }
+HOST_API int  host_tex_pull(int s, int sd, int wh, int* w, int* h, int* f) { return -1; }
+HOST_API int  host_app_request(const char* nm)                   { return -1; }
+HOST_API int  host_app_state(int s)                              { return 0; }
+HOST_API int  host_app_pid(int s)                                { return 0; }
+HOST_API void host_app_stop(int s)                               { }
+HOST_API int  host_app_verdict(int s)                            { return 0; }
+HOST_API void host_app_pause(int s)                              { }
+HOST_API void host_app_resume(int s)                             { }
+HOST_API int  agent_sock_open(const char* name)                  { return 0; }
+HOST_API int  agent_sock_line(char* out, int cap)                { return 0; }
+HOST_API void agent_sock_reply(const char* s)                    { }
+HOST_API int  agent_sock_send(const char* nm, const char* ln)    { return 0; }
+HOST_API int  agent_sock_ask(const char* nm, const char* ln, char* o, int c) { return 0; }
+#endif
+
+// ===========================================================================
+// tee stdout/stderr to <logdir>/<app>.log AND the terminal, so a run's full
+// output is readable without pasting. one thread drains a pipe the standard
+// streams are redirected into. hosting is linux-only, but this is not: it is
+// pipe/dup2/thread, which ports supplies on windows too — and without it a
+// windows run leaves no log at all.
+#ifdef _WIN32
+#include <ports.h>   // supplies the pthread api too, so no <pthread.h> here
+// declared here, NOT via <io.h>: that header also declares read/write with the
+// crt's own signature, which collides with the ones ports.h just gave us
+HOST_API intptr_t _get_osfhandle(int fd);
+#else
+#include <unistd.h>
+#include <fcntl.h>
+#include <pthread.h>
+#endif
+#include <stdlib.h>
+#include <string.h>
+
+static int  g_log_real = -1;
+static int  g_log_file = -1;
+static int  g_log_done = 0;
+
+static void* host_log_thread(void* a) {
+    int rd = (int)(long)a;
+    char buf[8192];
+    ssize_t n;
+    while ((n = read(rd, buf, sizeof(buf))) > 0) {
+        if (g_log_real >= 0) { ssize_t w = write(g_log_real, buf, n); (void)w; }
+        if (g_log_file >= 0) { ssize_t w = write(g_log_file, buf, n); (void)w; }
+    }
+    return 0;
+}
+
+HOST_API void host_log_setup(const char* name) {
     if (g_log_done || !name || !*name) return;
     g_log_done = 1;
     // the app name (from silver-host) wins over the root-element ident, so the
-    // tee and the crash handler both land in /tmp/<app>.log
+    // tee and the crash handler name the same file
     const char* app = getenv("SILVER_APP");
     if (app && *app) name = app;
-    char path[256];
-    snprintf(path, sizeof(path), "/tmp/%s.log", name);
+
+    // silver-host publishes the directory it writes its own logs into, so the
+    // two agree by construction rather than by two copies of the same rule
+    const char* dir = getenv("SILVER_LOG_DIR");
+    if (!dir || !*dir) dir = "/tmp";
+
+    // a name taken from the binary carries .exe here; the log is the app's
+    char base[128];
+    snprintf(base, sizeof(base), "%s", name);
+    { char* dot = strrchr(base, '.');
+      if (dot && strcmp(dot, ".exe") == 0) *dot = '\0'; }
+
+    char path[512];
+    snprintf(path, sizeof(path), "%s/%s.log", dir, base);
     // hosted apps (spawned into a slot) APPEND: the supervisor already truncated the
     // log and wrote the build output into it — the console tails this file, so
     // truncating here would erase the compilation output. the primary app truncates.
@@ -465,50 +538,61 @@ extern "C" void host_log_setup(const char* name) {
                                  : (O_WRONLY | O_CREAT | O_TRUNC);
     g_log_file = open(path, lflags, 0644);
     if (g_log_file < 0) return;
+
+    // DIAG: the whole environment this process actually runs with, written
+    // straight to the log before any redirection. run it the way that works
+    // and the way that does not, then diff these blocks
+    {
+        char line[2048];
+        int  n = snprintf(line, sizeof(line), "ENVDUMP begin\n");
+        (void)write(g_log_file, line, (size_t)n);
+        for (char** e = environ; e && *e; e++) {
+            n = snprintf(line, sizeof(line), "ENV %s\n", *e);
+            (void)write(g_log_file, line, (size_t)n);
+        }
+        char cw[1024];
+        if (getcwd(cw, sizeof(cw))) {
+            n = snprintf(line, sizeof(line), "ENV_CWD %s\n", cw);
+            (void)write(g_log_file, line, (size_t)n);
+        }
+        n = snprintf(line, sizeof(line), "ENVDUMP end\n");
+        (void)write(g_log_file, line, (size_t)n);
+    }
+
+    // a windows GUI app can start with no usable stdout at all. there is then
+    // nothing to tee TO, and a pipe would only swallow the output: point the
+    // standard streams straight at the log instead, so prints survive. dup on
+    // a dead fd also trips the crt's parameter check rather than returning -1
+    int have_out = 1;
+#ifdef _WIN32
+    // < 0 covers BOTH answers: -1 is a bad fd, -2 is a live fd with nothing
+    // behind it -- which is what a /SUBSYSTEM:WINDOWS app actually reports.
+    // testing only for -1 concluded we had a console when we had none
+    have_out = _get_osfhandle(STDOUT_FILENO) >= 0;
+    // silver tails this log to the console itself; writing to our own stdout
+    // as well prints everything twice whenever we DO inherit a usable one
+    if (getenv("SILVER_LOG_TAIL")) have_out = 0;
+#endif
+    if (!have_out) {
+        dup2(g_log_file, STDOUT_FILENO);
+        dup2(g_log_file, STDERR_FILENO);
+        setvbuf(stdout, 0, _IONBF, 0);
+        setvbuf(stderr, 0, _IONBF, 0);
+        return;
+    }
+
     int pf[2];
     if (pipe(pf) != 0) { close(g_log_file); g_log_file = -1; return; }
     g_log_real = dup(STDOUT_FILENO);
     dup2(pf[1], STDOUT_FILENO);
     dup2(pf[1], STDERR_FILENO);
     close(pf[1]);
-    setvbuf(stdout, 0, _IOLBF, 0);
-    setvbuf(stderr, 0, _IOLBF, 0);
+    // unbuffered, NOT line-buffered: the msvc crt rejects a null buffer with a
+    // zero size for _IOLBF (posix allows it) and faults the parameter check,
+    // and it treats _IOLBF as fully buffered anyway -- which a tee must not be
+    setvbuf(stdout, 0, _IONBF, 0);
+    setvbuf(stderr, 0, _IONBF, 0);
     pthread_t t;
     pthread_create(&t, 0, host_log_thread, (void*)(long)pf[0]);
     pthread_detach(t);
 }
-#else
-// non-linux stubs: hosting is linux-only (dma-buf, memfd, pidfd), but the
-// symbols must exist so the module links. every call reports "nothing there".
-extern "C" int  host_ask_orbiter(void)                             { return -1; }
-extern "C" void host_dictate_set(int v)                            { }
-extern "C" void host_live_set(int v)                               { }
-extern "C" void host_log_setup(const char* name)                   { }
-extern "C" int  host_pid_alive(int pid)                            { return 0; }
-extern "C" int  host_slot(void)                                    { return 0; }
-extern "C" void host_post(int r, int t, int a, int b, int c)       { }
-extern "C" int  host_poll(int r)                                   { return 0; }
-extern "C" void host_post2(int s, int r, int t, int a, int b, int c) { }
-extern "C" int  host_poll2(int s, int r)                           { return 0; }
-extern "C" int  host_pa(void)                                      { return 0; }
-extern "C" int  host_pb(void)                                      { return 0; }
-extern "C" int  host_pc(void)                                      { return 0; }
-extern "C" void host_tex_publish(int s, int sd, int f0, int f1, int w, int h, int f) { }
-extern "C" int  host_tex_gen(int s, int sd)                        { return 0; }
-extern "C" void host_tex_clear(int s, int sd)                      { }
-extern "C" void host_tex_flip(int s, int sd, int fr)               { }
-extern "C" int  host_tex_front(int s, int sd)                      { return -1; }
-extern "C" int  host_tex_pull(int s, int sd, int wh, int* w, int* h, int* f) { return -1; }
-extern "C" int  host_app_request(const char* nm)                   { return -1; }
-extern "C" int  host_app_state(int s)                              { return 0; }
-extern "C" int  host_app_pid(int s)                                { return 0; }
-extern "C" void host_app_stop(int s)                               { }
-extern "C" int  host_app_verdict(int s)                            { return 0; }
-extern "C" void host_app_pause(int s)                              { }
-extern "C" void host_app_resume(int s)                             { }
-extern "C" int  agent_sock_open(const char* name)                  { return 0; }
-extern "C" int  agent_sock_line(char* out, int cap)                { return 0; }
-extern "C" void agent_sock_reply(const char* s)                    { }
-extern "C" int  agent_sock_send(const char* nm, const char* ln)    { return 0; }
-extern "C" int  agent_sock_ask(const char* nm, const char* ln, char* o, int c) { return 0; }
-#endif

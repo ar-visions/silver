@@ -2,11 +2,17 @@ import <time.h>
 import <stdio.h>
 import <stdlib.h>
 import <string.h>
-import <unistd.h>
 import <sys/stat.h>
 import <math.h>
     -lm
-import <pthread.h>
+
+ifdef [ windows ]
+    # ports.h carries the posix surface windows has no header for
+    import <ports.h>
+el
+    import <unistd.h>
+    import <pthread.h>
+
 import img
 
 import knik0:faad2/2.11.2 <neaacdec.h>
@@ -27,16 +33,19 @@ import https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro
     > rm -rf {install}/models/kokoro-en
     > mv {install}/models/kokoro-en-v0_19 {install}/models/kokoro-en
 
-import <mpg123min.h>
-    -l:libmpg123.so.0
-
-import <torch_shim.h>
-    -ltorch_shim
+import libsdl-org:mpg123/v1.30.0 <mpg123.h>
+    -S {root_path}/checkout/mpg123/ports/cmake
+    -G Ninja
+    -DCMAKE_C_COMPILER=clang
+    -DBUILD_LIBOUT123=OFF
+    # off: it renames the api mpg123_open_64 etc, and off_t is 32-bit here
+    -DMPG123_LARGE_FILE_SUPPORT=OFF
+    -lmpg123
 
 export extensions ['.mp3': FileType.binary, '.wav': FileType.binary,
                    '.flac': FileType.binary, '.ogg': FileType.binary]
 
-import net
+import tls
 import ai
 import trinity
 import vec
@@ -109,6 +118,94 @@ ifdef [ apple ]
             AudioQueueStop   [ queue, 1 ]
             AudioQueueDispose[ queue, 1 ]
             active = false
+el [ windows ]
+    # spectra.cc keeps the COM on its side; these are its plain entries
+    intern func wasapi_cap_open  [ cstr, i32, i32, i32 ] -> handle
+    intern func wasapi_cap_read  [ handle, @i16, i32 ] -> i32
+    intern func wasapi_cap_reset [ handle ] -> none
+    intern func wasapi_cap_close [ handle ] -> none
+    intern func wasapi_out_open  [ cstr, i32, i32, i32 ] -> handle
+    intern func wasapi_out_write [ handle, @i16, i32 ] -> i32
+    intern func wasapi_out_close [ handle ] -> none
+
+    class spectra
+        public size:        i32
+        public sample_rate: i32
+        public channels:    i32
+        public device:      cstr
+        public pcm:         handle
+        public re:          @f32
+        public im:          @f32
+        public buf:         @i16
+        public bins:        @f32
+
+        func init []
+            channels = 1
+            re   = new f32 [ size ]
+            im   = new f32 [ size ]
+            buf  = new i16 [ size ]
+            bins = new f32 [ size / 2 ]
+
+        func open [] -> bool
+            pcm = wasapi_cap_open [ device, sample_rate, channels, size ]
+            if [ !pcm ]
+                puts 'spectra: no capture endpoint'
+                return false
+            return true
+
+        func capture [] -> bool
+            frames: i32 [ wasapi_cap_read [ pcm, buf, size ] ]
+            if [ frames < 0 ] return false
+
+            for [ i: i32 0, i < size, i += 1 ]
+                re[i] = buf[i] / 32768.0
+                im[i] = 0.0
+
+            fft [ re, im, size ]
+            half2: i32 [ size / 2 ]
+            for [ i: i32 0, i < half2, i += 1 ]
+                bins[i] = sqrt [ re[i] * re[i] + im[i] * im[i] ]
+            return true
+
+        func drain []
+            if [ !pcm ] return
+            wasapi_cap_reset [ pcm ]
+
+        func close []
+            if [ !pcm ] return
+            wasapi_cap_close [ pcm ]
+            pcm = null
+
+    class AudioOut
+        public sample_rate : i32 [ 48000 ]
+        public channels    : i32 [ 2 ]
+        public buffer_size : sz  [ 1024 ]
+        public device      : string
+        public active      : bool
+        public buffer      : @i16
+        public pcm_handle  : handle
+        intern shorts      : i64
+        intern writes      : i64
+
+        func open [] -> bool
+            buffer = calloc[ 1, buffer_size * channels * 2 ]
+            pcm_handle = wasapi_out_open[ null, sample_rate, channels, i32[ buffer_size ] ]
+            active = pcm_handle != null
+            return active
+
+        func write [ frames: i32 ] -> none
+            if [ ! pcm_handle ] return
+            wr : i32 [ wasapi_out_write[ pcm_handle, buffer, frames ] ]
+            # a short write drops the remainder; count it like the alsa path
+            if [ wr < frames ]
+                shorts += 1
+            writes += 1
+
+        func close []
+            if [ pcm_handle ] wasapi_out_close[ pcm_handle ]
+            pcm_handle = null
+            active = false
+
 el
     import <alsa/asoundlib.h>
         -lasound
@@ -1643,28 +1740,7 @@ element main : trinity
     intern w_text  : string
     intern w_gpu   : whisper_vk
     intern w_gtry  : bool
-    # the reader: read1.ptc on interval over the trailing window
-    intern rd_hnd  : ARef                  # torchscript handle
-    intern st_mag  : @f32               # gray magnitudes, 64 x 1024 ring
     intern st_abs  : i64                   # absolute column counter
-    intern rd_next : i64                   # next read at this abs column
-    intern rd_in   : @f32               # contiguous window, 64 x W
-    intern rd_out  : @f32               # per-column token/prob/sect
-    intern voc_tok : @i32               # vocab: token ids
-    intern voc_w   : array string          # vocab: words (same order)
-    intern voc_n   : i32
-    intern rd_q    : string                # the unnamed-word glyph
-    public teach   : bool
-    intern th_sent : string
-    intern th_words : array string
-    intern th_toks : @i32
-    intern th_ntk  : i32
-    intern th_state : i32                  # 0 wait, 1 speaking
-    intern th_quiet : i32
-    intern th_start : i64
-    intern th_i    : i32
-    intern th_spans : @i32
-    intern th_last : string                # last save announcement
     public annotate : bool
     intern ann_n    : i32                  # clips in outdir
     intern ann_id   : i32                  # current clip id
@@ -1926,188 +2002,10 @@ element main : trinity
                 puts 'spectra: no {wm}'
         # stream continuously: repaint every frame, never cache-skip
         animated = true
-        # the word reader (optional): models/read1.ptc + its vocab
-        mp8 : string [ '/src/silver/foundry/spectra' ]
-        rp8 : path 'models/read1.ptc'
-        if [ !rp8.exists[] ] rp8 = path '{mp8}/models/read1.ptc'
-        if [ rp8.exists[] ]
-            rs8 : string '{rp8}'
-            rd_hnd = ts_load[ rs8.chars ]
-        if [ rd_hnd ]
-            st_mag = new f32 [ 65536 ]
-            rd_in = new f32 [ 12288 ]
-            rd_out = new f32 [ 576 ]
-            rd_q = string '?'
-            rd_q.hold[]
-            voc_tok = new i32 [ 4200 ]
-            voc_w = array string [ alloc: 4200 ]
-            voc_w.hold[]
-            vp8 : path '{mp8}/models/read1-vocab.txt'
-            vs8 : cast string [ vp8.load[ typeid[ string ], null ] ]
-            if [ vs8 ]
-                vl8 : array string [ vs8.split[ '\n' ] ]
-                for [ vi8: i32 0, vi8 < vl8.count, vi8 += 1 ]
-                    lv8 : vl8[ vi8 ]
-                    if [ !lv8 || lv8.count < 3 ] continue
-                    sp8 : num [ lv8.index_of[ ' ' ] ]
-                    if [ sp8 < 1 ] continue
-                    tk8 : lv8.mid[ 0, i32[ sp8 ] ]
-                    wd8 : lv8.mid[ i32[ sp8 ] + 1, lv8.count - i32[ sp8 ] - 1 ]
-                    if [ voc_n >= 4200 ] break
-                    voc_tok[ voc_n ] = i32[ tk8.real_value[] ]
-                    voc_w += wd8
-                    voc_n += 1
-            puts 'spectra: reader loaded ({voc_n} words named)'
-        el
-            puts 'spectra: no models/read1.ptc — stream view only'
-        if [ teach ]
-            if [ !outdir ]
-                puts 'spectra: --teach needs --outdir (the training set dir)'
-                exit[ 1 ]
-            if [ !rd_hnd ]
-                puts 'spectra: --teach needs models/read1.ptc'
-                exit[ 1 ]
-            th_toks = new i32 [ 64 ]
-            th_spans = new i32 [ 128 ]
-            ann_seed = epoch_millis[]
-            for [ true ]
-                pt5 : path '{outdir}/self_{th_i}.agi'
-                if [ !pt5.exists[] ] break
-                th_i += 1
-            th_pick[]
-            puts 'teach: read each sentence aloud — silence ends the take (N skips)'
 
-    func th_hash [ wd: string ] -> i32
-        h : u32 [ 2166136261 ]
-        cs : symbol [ wd.chars ]
-        for [ i: i32 0, i < wd.count, i += 1 ]
-            c : u32 [ u32[ i32[ cs[ i ] ] ] ]
-            h = (h ^ c) * 16777619
-        t : i32 [ i32[ h % 4096 ] + 1 ]
-        for [ v: i32 0, v < voc_n, v += 1 ]
-            if [ voc_tok[ v ] == t ] return t
-        return 4097
 
-    func th_pick []
-        for [ true ]
-            ann_seed = ann_seed * 6364136223846793005 + 1442695040888963407
-            k : i32 [ i32[ (ann_seed % 2703 + 2703) % 2703 ] ]
-            ap : path '{outdir}/dev-clean_{k}.agi'
-            if [ !ap.exists[] ] continue
-            text : cast string [ ap.load[ typeid[ string ], null ] ]
-            if [ !text ] continue
-            sn : ann_field[ text, 'sentence' ]
-            ws : array string [ sn.split[ ' ' ] ]
-            nw : i32 [ 0 ]
-            for [ wi: i32 0, wi < ws.count, wi += 1 ]
-                wv : ws[ wi ]
-                if [ wv && wv.count > 0 ] nw += 1
-            if [ nw < 4 || nw > 9 ] continue
-            th_sent = sn
-            th_sent.hold[]
-            th_words = array string [ ]
-            th_words.hold[]
-            th_ntk = 0
-            for [ wi2: i32 0, wi2 < ws.count, wi2 += 1 ]
-                wv2 : ws[ wi2 ]
-                if [ !wv2 || wv2.count < 1 ] continue
-                th_words += wv2
-                th_toks[ th_ntk ] = th_hash[ wv2 ]
-                th_ntk += 1
-            th_state = 0
-            th_quiet = 0
-            return
 
-    func th_save [ a0: i64, a1: i64 ]
-        w6 : i32 [ i32[ a1 - a0 ] ]
-        if [ w6 < 16 || w6 > 1000 ] return
-        for [ y6: i32 0, y6 < 64, y6 += 1 ]
-            for [ x6: i32 0, x6 < w6, x6 += 1 ]
-                rx6 : i32 [ i32[ (a0 + i64[ x6 ]) % 1024 ] ]
-                rd_in[ y6 * w6 + x6 ] = st_mag[ y6 * 1024 + rx6 ]
-        n6 : i32 [ ts_align[ rd_hnd, rd_in, 64, w6, th_toks, th_ntk, th_spans ] ]
-        if [ n6 < 1 ]
-            th_last = string 'alignment failed — take skipped'
-            th_last.hold[]
-            return
-        img6 : Image [ width: w6, height: 64, format: Pixel.u8, channels: 1 ]
-        pd6 : @u8 [ img6.vdata[] ]
-        for [ y8: i32 0, y8 < 64, y8 += 1 ]
-            for [ x8: i32 0, x8 < w6, x8 += 1 ]
-                dg8 : i64 [ i64[ y8 ] * w6 + x8 ]
-                pd6[ dg8 ] = u8[ rd_in[ y8 * w6 + x8 ] * 255.0 ]
-        img6.png[ path '{outdir}/self_{th_i}.png' ]
-        wsp6 : string ''
-        for [ k6: i32 0, k6 < th_ntk, k6 += 1 ]
-            s6 : i32 [ th_spans[ k6 * 2 ] ]
-            e6 : i32 [ th_spans[ k6 * 2 + 1 ] ]
-            if [ s6 < 0 ] s6 = 0
-            if [ e6 <= s6 ] e6 = s6 + 1
-            wsp6 = '{wsp6}{s6} {e6} '
-        fr6 : i64 [ i64[ w6 ] * 2048 ]
-        body6 : string 'image: self_{th_i}.png\nsentence: {th_sent}\nspeaker: self\nrate: 48000\nframes: {fr6}\nduration: {f32[ w6 ] * 0.0427}\nsource: live\nwspans: {wsp6}\n'
-        ag6 : path '{outdir}/self_{th_i}.agi'
-        ag6.save[ body6, null ]
-        th_last = string 'saved self_{th_i} ({th_ntk} words aligned)'
-        th_last.hold[]
-        puts 'teach: saved self_{th_i}'
-        th_i += 1
 
-    func rd_merge [ base9: i32, n9: i32 ]
-        i9 : i32 [ 0 ]
-        for [ i9 < n9 ]
-            tk : i32 [ i32[ rd_out[ i9 * 3 ] ] ]
-            if [ tk == 0 ]
-                i9 += 1
-                continue
-            j9 : i32 [ i9 ]
-            ps : f32 [ 0.0 ]
-            ss : f32 [ 0.0 ]
-            for [ j9 < n9 && i32[ rd_out[ j9 * 3 ] ] == tk ]
-                ps += rd_out[ j9 * 3 + 1 ]
-                ss += rd_out[ j9 * 3 + 2 ]
-                j9 += 1
-            # a word spans >= 3 columns (~130ms); shorter = toggle noise
-            ln9 : i32 [ j9 - i9 ]
-            ok9 : bool [ ln9 >= 3 ]
-            if [ ok9 && ps / f32[ ln9 ] < 0.30 ] ok9 = false
-            if [ ok9 && ss / f32[ ln9 ] < 0.35 ] ok9 = false
-            if [ ok9 ]
-                a0 : i32 [ base9 + i9 ]
-                a1 : i32 [ base9 + j9 ]
-                wd : rd_q
-                for [ v9: i32 0, v9 < voc_n, v9 += 1 ]
-                    if [ voc_tok[ v9 ] == tk ]
-                        wd = voc_w[ v9 ]
-                        break
-                bi9 : i32 [ -1 ]
-                bo9 : i32 [ 0 ]
-                for [ wi9: i32 0, wi9 < st_words.count, wi9 += 1 ]
-                    ew : st_words[ wi9 ]
-                    o0 : i32 [ (ew.x0 > a0) ? ew.x0 : a0 ]
-                    o1 : i32 [ (ew.x1 < a1) ? ew.x1 : a1 ]
-                    if [ o1 - o0 > bo9 ]
-                        bo9 = o1 - o0
-                        bi9 = wi9
-                if [ bi9 >= 0 ]
-                    uw : st_words[ bi9 ]
-                    uw.x0 = a0
-                    uw.x1 = a1
-                    uw.text = wd
-                el
-                    nw : SpectWord [ x0: a0, x1: a1, text: wd ]
-                    st_words += nw
-            i9 = j9
-        # prune once the oldest word falls off the ring
-        if [ st_words.count > 0 ]
-            h0 : st_words[ 0 ]
-            if [ i64[ h0.x1 ] < st_abs - 1024 ]
-                keep : array SpectWord [ ]
-                for [ ki: i32 0, ki < st_words.count, ki += 1 ]
-                    kw : st_words[ ki ]
-                    if [ i64[ kw.x1 ] >= st_abs - 1024 ] keep += kw
-                keep.hold[]
-                st_words = keep
 
     func ann_draw [ w: Window ]
         ux.will_animate = true
@@ -2195,10 +2093,6 @@ element main : trinity
         ann_nm += 1
 
     public func on_key [ ev: Event ]
-        if [ teach ]
-            kt : i32 [ ev.key.unicode ]
-            if [ kt == 78 ] th_pick[]
-            return
         if [ !annotate ] return
         k5 : i32 [ ev.key.unicode ]
         if [ k5 == 32 && ann_img && ann_clip ]
@@ -2267,8 +2161,6 @@ element main : trinity
                 st_buf[ di + 1 ] = u8[ (rgb / 256) % 256 ]
                 st_buf[ di + 2 ] = u8[ rgb % 256 ]
                 st_buf[ di + 3 ] = 255
-                if [ st_mag ]
-                    st_mag[ b * sw9 + st_x ] = tv
             en9 = en9 / (f32[ nb ] * 24.0)
             if [ en9 > 1.0 ] en9 = 1.0
             if [ en9 > st_ema ]
@@ -2276,22 +2168,7 @@ element main : trinity
             el
                 st_ema = st_ema * 0.88 + en9 * 0.12
             st_act[ st_x ] = st_ema
-            if [ teach && th_ntk > 0 ]
-                if [ th_state == 0 ]
-                    if [ st_ema > 0.12 ]
-                        th_state = 1
-                        th_start = st_abs - 5
-                        if [ th_start < 0 ] th_start = 0
-                        th_quiet = 0
-                el
-                    if [ st_ema < 0.08 ]
-                        th_quiet += 1
-                        if [ th_quiet >= 20 ]
-                            th_save[ th_start, st_abs - 14 ]
-                            th_pick[]
-                    el
-                        th_quiet = 0
-            if [ w_net && !w_gtry && !teach ]
+            if [ w_net && !w_gtry ]
                 w_gtry = true
                 puts 'whisper: building gpu pipelines…'
                 g0 : whisper_vk [ model: w_net, vk: cv.vk, win: w ]
@@ -2313,7 +2190,7 @@ element main : trinity
                     puts 'whisper: gpu encoder ready — parity gpu {sg / f64[ng]} cpu {sc / f64[ng]}'
                 el
                     puts 'whisper: gpu unavailable — cpu encoder'
-            if [ w_net && w_raw && !teach ]
+            if [ w_net && w_raw ]
                 ns5 : i64 [ cap.size ]
                 for [ i5: i64 0, i5 < ns5, i5 += 1 ]
                     w_raw[(w_wr + i5) % 1536000] = cap.buf[i5]
@@ -2386,16 +2263,6 @@ element main : trinity
             st_x = nx9
             st_abs += 1
             st_tex.upload[ st_buf, sw9 * nb * 4 ]
-            if [ rd_hnd && !w_net && st_mag && st_abs >= rd_next ]
-                rd_next = st_abs + 12
-                w7 : i32 [ (st_abs < 192) ? i32[ st_abs ] : 192 ]
-                if [ w7 >= 24 ]
-                    for [ y7: i32 0, y7 < nb, y7 += 1 ]
-                        for [ x7: i32 0, x7 < w7, x7 += 1 ]
-                            rx7 : i32 [ i32[ (st_abs - i64[ w7 ] + i64[ x7 ]) % i64[ sw9 ] ] ]
-                            rd_in[ y7 * w7 + x7 ] = st_mag[ y7 * sw9 + rx7 ]
-                    n7r : i32 [ ts_read_cols[ rd_hnd, rd_in, nb, w7, rd_out, 576 ] ]
-                    if [ n7r > 0 ] rd_merge[ i32[ st_abs ] - w7, n7r ]
         cv.draw_image[ st_tex, rect [ x: 0.0, y: y0, w: bounds.w, h: strip ] ]
         if [ w_job ]
             cv.font_size[ 18 ]
@@ -2416,20 +2283,6 @@ element main : trinity
                 cv.fill_color[ rgba [ r: 0.3, g: 1.0, b: 0.55, a: 1.0 ] ]
                 cv.paint[]
                 run0 = -1
-        # teach prompt: the sentence to read, take state underneath
-        if [ teach && th_sent ]
-            cv.sync_fence[]
-            cv.fill_color[ '#fff' ]
-            cv.draw_text[ '{th_sent}',
-                rect [ x: 20.0, y: bounds.h * 0.3, w: bounds.w - 40.0, h: 30.0 ],
-                vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
-            cv.paint[]
-            st5 : string [ (th_state == 1) ? 'listening...' : 'read it aloud' ]
-            cv.fill_color[ '#8fc' ]
-            cv.draw_text[ '{st5}   {th_last}',
-                rect [ x: 20.0, y: bounds.h * 0.3 + 36.0, w: bounds.w - 40.0, h: 20.0 ],
-                vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
-            cv.paint[]
         for [ wi: i32 0, wi < st_words.count, wi += 1 ]
             sw2 : st_words[ wi ]
             if [ i64[ sw2.x0 ] < st_abs - i64[ sw9 ] ] continue

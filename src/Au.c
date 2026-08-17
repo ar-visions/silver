@@ -3236,6 +3236,21 @@ Au alloc_new(Au_t type, num count, shape shape_data, Au_t meta_a, Au meta_b,
     return alloc(type, count, shape_data, meta_a, meta_b, source, line, seq);
 }
 
+// managed, but NOT pooled. managed==1 is the state the header comment already
+// names: out of the af vector, still refcounted. an object born at refs==0 is
+// pool garbage, and auto_free[false] frees it with Au_free -- not a drop -- so
+// anything the pool must never reap has to allocate this way
+Au alloc_new_np(Au_t type, num count, shape shape_data, Au_t meta_a, Au meta_b,
+                symbol source, i32 line, i32 seq) {
+    Au a  = alloc(type, count, shape_data, meta_a, meta_b, source, line, seq);
+    Au hd = header(a);
+    if (hd->managed > 1 && hd->managed < af_size && af[hd->managed] == hd)
+        af[hd->managed] = null;
+    hd->managed = 1;
+    return a;
+}
+
+
 // N-slot reference holder — the held type's dealloc chain does NOT apply to
 // the holder's raw buffer; slots are user-managed refs.
 #define AU_IF_HOLDER 0x02
@@ -3796,7 +3811,7 @@ AU_EXPORT none Au_dealloc(Au a) {
     }
 }
 
-u64 fnv1a_hash(const none* data, size_t length, u64 hash);
+AU_EXPORT u64 fnv1a_hash(const none* data, size_t length, u64 hash);
 
 // auto-wash
 u64  Au_hash(Au a) {
@@ -4905,7 +4920,7 @@ Au formatter(Au_t type, bool print_info, handle ff, Au opt, int seq, symbol temp
         (Au)res;
 }
 
-u64 fnv1a_hash(const none* data, size_t length, u64 hash) {
+AU_EXPORT u64 fnv1a_hash(const none* data, size_t length, u64 hash) {
     const u8* bytes = (const u8*)data;
     for (size_t i = 0; i < length; ++i) {
         hash ^= bytes[i];  // xor bottom with current byte
@@ -6473,7 +6488,7 @@ AU_EXPORT string path_base64(path a) {
 }
 
 AU_EXPORT bool path_touch(path a) {
-    FILE* f = fopen(a->chars, "wx");
+    FILE* f = fopen(a->chars, "wbx");
     if (f)
         fclose(f);
     return f != null;
@@ -7262,7 +7277,9 @@ static array read_lines(path f) {
 AU_EXPORT bool path_save(path a, Au content, ctx context) {
     if (is_dir(a)) return false;
     string s = cast(string, content);
-    FILE* f = fopen(a->chars, "w");
+    // "wb", never "w": text mode rewrites newlines to CRLF on write,
+    // and the reader opens "rb" -- so the CR came back and broke parse_agi
+    FILE* f = fopen(a->chars, "wb");
     if  (!f) return false;
     bool success = fwrite(s->chars, s->count, 1, f) == 1;
     fclose(f);
@@ -8570,6 +8587,9 @@ static void watch_add_tree(int fd, const char* dir, int depth) {
     struct dirent* e;
     while ((e = readdir(d))) {
         if (e->d_name[0] == '.') continue;
+        // vendored dependency source; the indexer skips it for the same
+        // reason and nothing under it is ours to react to
+        if (strcmp(e->d_name, "checkout") == 0) continue;
         char p[4096];
         snprintf(p, sizeof(p), "%s/%s", dir, e->d_name);
         struct stat st;
@@ -8599,10 +8619,13 @@ static void* watch_runner(void* arg) {
         if (len > 0) {
             if (a->running && a->callback)
                 ((callback)a->callback)((Au)a->argument, null);
-            // callback boundary: this __thread pool has no other collector
-            auto_free(false);
         }
-        usleep(200000); // 200ms tick — pause() takes effect within this window
+        // sliced, not one 200ms usleep: a single sleep made every watcher
+        // take up to 200ms to notice running=false, and joining N of them
+        // serialized that into seconds of shutdown. same 200ms tick, but
+        // the thread now leaves within 10ms of being told to
+        for (int t = 0; t < 20 && a->running; t++)
+            usleep(10000);
     }
 
     close(fd);
