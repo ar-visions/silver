@@ -135,6 +135,7 @@ AU_EXPORT void*       mmap    (void* addr, size_t length, int prot, int flags, i
 AU_EXPORT int         munmap  (void* addr, size_t length);
 AU_EXPORT int         mkstemp (char* template_str);
           int         unlink  (const char* f);  // ucrt spells it const
+AU_EXPORT int         au_replace_file(const char* src, const char* dst);
 AU_EXPORT int         mkfifo  (const char* pathname, mode_t mode);
 // _access mode bits; windows has no execute permission to test
 #define F_OK 0

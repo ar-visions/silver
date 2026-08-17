@@ -5,11 +5,15 @@ import trinity
 import img
 import vec
 import spectra
-import <unistd.h>
-    +_DEFAULT_SOURCE
-    +_XOPEN_SOURCE=500
 import <time.h>
-import <pthread.h>
+ifdef [ windows ]
+    # ports.h carries the posix surface windows has no header for
+    import <ports.h>
+el
+    import <unistd.h>
+        +_DEFAULT_SOURCE
+        +_XOPEN_SOURCE=500
+    import <pthread.h>
 import <math.h>
 import <stdio.h>
 import <stdlib.h>
@@ -201,12 +205,17 @@ ModelViewProject Mode7
 		float py = (m.y + m.w * sx) / 256.0;             // plane pixelY
 		int   rep = int(ubo.params.z + 0.5);
 		bool  oob = (px < 0.0 || px >= 1024.0 || py < 0.0 || py >= 1024.0);
-		if (rep == 2 && oob) { fragColor = vec4(0.0); return; }
+		// screen-over=transparent: outside the map is the backdrop (black),
+		// OPAQUE — vec4(0.0) let the app canvas show through as gray
+		if (rep == 2 && oob) { fragColor = vec4(0.0, 0.0, 0.0, 1.0); return; }
 		vec2 raw = vec2(px, py) / 1024.0;
 		vec2 ddx = dFdx(raw);
 		vec2 ddy = dFdy(raw);
 		vec2 uv2 = fract(raw);
 		fragColor = textureGrad(src, uv2, ddx, ddy);
+		// a transparent tile texel (Mode-7 color 0) is the backdrop too — black,
+		// OPAQUE — not a hole for the app canvas to show through
+		if (fragColor.a < 0.5) { fragColor = vec4(0.0, 0.0, 0.0, 1.0); return; }
 		// per-scanline color math on the plane (reference hardware CGADSUB on BG1
 		// gated by the HDMA'd color window): row 1 = {wh0,wh1,wh2,wh3}, row 2 =
 		// {flags, coldata r,g,b}. This is how the distance fog AND the craft
@@ -1327,6 +1336,29 @@ element asnes : trinity
 		if   [ lg == 2 ] return in1 != in2
 		return in1 == in2
 
+	# offset-per-tile: read BG3's tilemap entry (an offset value, not a tile)
+	# at BG3-plane pixel (px3, py3) for scanline yr
+	func opt_entry [ px3: i32, py3: i32, yr: i32 ] -> u32
+		sc3  : u8  [ line_bgsc[ 2 * 224 + yr ] ]
+		tb3  : u32 [ (u32[sc3 >> 2] & 0x3F) * 0x400 ]
+		w3   : bool [ (sc3 & 1) != 0 ]
+		h3   : bool [ (sc3 & 2) != 0 ]
+		hm3  : u32 [ 0xFF ]
+		vm3  : u32 [ 0xFF ]
+		if [ w3 ] hm3 = 0x1FF
+		if [ h3 ] vm3 = 0x1FF
+		s3x  : u32 [ u32[px3] & hm3 ]
+		s3y  : u32 [ u32[py3] & vm3 ]
+		t3x  : u32 [ s3x >> 3 ]
+		t3y  : u32 [ s3y >> 3 ]
+		blk3 : u32 [ 0 ]
+		if [ t3x & 32 ] blk3 += 1
+		if [ t3y & 32 ]
+			if [ w3 ] blk3 += 2
+			el blk3 += 1
+		ent3 : u32 [ tb3 + blk3 * 0x400 + (t3y & 31) * 32 + (t3x & 31) ]
+		return ppu_vw[ ent3 ]
+
 	func ppu_bg_line [ bg: i32, bpp: i32, y: i32, bright: u32, want_prio: u32 ]
 		yr    : i32 [ y ]
 		if [ yr < 0 ] yr = 0
@@ -1351,8 +1383,16 @@ element asnes : trinity
 		if [ big ]
 			hmask = (hmask << 1) | 1                     # 16px tiles double the pixel span of the 32x32 entry map
 			vmask = (vmask << 1) | 1
+		# offset-per-tile active for BG1/BG2 in modes 2/4/6 (BG3 = the OPT layer)
+		mode3 : u32 [ u32[line_mode[yr]] & 7 ]
+		opt   : bool [ (mode3 == 2 || mode3 == 4 || mode3 == 6) && bg < 2 ]
+		b3h   : u32 [ u32[line_h[ 2 * 224 + yr ]] & 0x3FF ]
+		b3v   : u32 [ u32[line_v[ 2 * 224 + yr ]] & 0x3FF ]
+		optbit: u32 [ 0x2000 ]                           # BG1 enable bit in the OPT entry
+		if [ bg == 1 ] optbit = 0x4000                   # BG2 enable bit
 		tilesz: u32 [ 16 ]                               # 4bpp tile = 16 words
 		if [ bpp == 2 ] tilesz = 8                       # 2bpp tile = 8 words
+		if [ bpp == 8 ] tilesz = 32                      # 8bpp tile = 32 words
 		sy : u32 [ (u32[y + 1] + vofs) & vmask ]         # framebuf row y = hardware scanline y+1 (line 0 is never displayed; reference hardware shows V=1..224)
 		scr : i32 [ 0 ]
 		if [ rendering_sub ] scr = 1
@@ -1364,9 +1404,29 @@ element asnes : trinity
 		for [ x: i32 x0, x < x1, x += 1 ]
 			if [ x >= 0 && x < 256 && y >= 0 && y < 224 ]
 				if [ bg_win_masked[ bg, x, yr, scr ] ] continue
-			sx : u32 [ (u32[x] + hofs) & hmask ]
+			hoc : u32 [ hofs ]
+			voc : u32 [ vofs ]
+			if [ opt ]
+				optx : i32 [ x + i32[hofs & 7] ]
+				if [ optx >= 8 ]
+					ct  : i32 [ (optx - 8) >> 3 ]
+					pxp : i32 [ (ct << 3) + i32[b3h & 0xFFF8] ]
+					hval : u32 [ opt_entry[ pxp, i32[b3v], yr ] ]
+					switch [ mode3 ]
+						case 2                              # both H and V (two OPT entries)
+							vval : u32 [ opt_entry[ pxp, i32[b3v] + 8, yr ] ]
+							if [ hval & optbit ] hoc = (hval & 0x3F8) | (hofs & 7)
+							if [ vval & optbit ] voc = vval & 0x3FF
+						case 4                              # one entry: bit15 selects H or V
+							if [ hval & optbit ]
+								if [ hval & 0x8000 ] voc = hval & 0x3FF
+								el hoc = (hval & 0x3F8) | (hofs & 7)
+						case 6                              # horizontal only
+							if [ hval & optbit ] hoc = (hval & 0x3F8) | (hofs & 7)
+			sx : u32 [ (u32[x] + hoc) & hmask ]
+			syl: u32 [ (u32[y + 1] + voc) & vmask ]
 			tx : u32 [ sx >> tshift ]
-			ty : u32 [ sy >> tshift ]
+			ty : u32 [ syl >> tshift ]
 			blk: u32 [ 0 ]
 			if [ tx & 32 ] blk += 1
 			if [ ty & 32 ]
@@ -1379,7 +1439,7 @@ element asnes : trinity
 			pal : u32 [ (e >> 10) & 7 ]
 			tmax: u32 [ (u32[1] << tshift) - 1 ]
 			px  : u32 [ sx & tmax ]
-			py  : u32 [ sy & tmax ]
+			py  : u32 [ syl & tmax ]
 			if [ e & 0x4000 ] px = tmax - px
 			if [ e & 0x8000 ] py = tmax - py
 			if [ big ]                                    # 16x16: entry names the top-left 8x8; right +1, bottom row +16
@@ -1392,12 +1452,19 @@ element asnes : trinity
 			base: u32 [ cbase + tile * tilesz + py ]
 			w01 : u32 [ ppu_vw[ base ] ]
 			idx : u32 [ ((w01 >> bit) & 1) | (((w01 >> (bit + 8)) & 1) << 1) ]
-			if [ bpp == 4 ]
+			if [ bpp >= 4 ]                              # planes 2,3 (4bpp and 8bpp)
 				w23 : u32 [ ppu_vw[ base + 8 ] ]
 				idx = idx | (((w23 >> bit) & 1) << 2) | (((w23 >> (bit + 8)) & 1) << 3)
+			if [ bpp == 8 ]                             # planes 4-7 (256-color)
+				w45 : u32 [ ppu_vw[ base + 16 ] ]
+				idx = idx | (((w45 >> bit) & 1) << 4) | (((w45 >> (bit + 8)) & 1) << 5)
+				w67 : u32 [ ppu_vw[ base + 24 ] ]
+				idx = idx | (((w67 >> bit) & 1) << 6) | (((w67 >> (bit + 8)) & 1) << 7)
 			if [ idx ]
 				cgidx : u32 [ pal * 16 + idx ]
 				if [ bpp == 2 ] cgidx = pal * 4 + idx
+				if [ bpp == 2 && mode3 == 0 ] cgidx = u32[bg] * 32 + pal * 4 + idx  # mode 0: per-BG 32-color block
+				if [ bpp == 8 ] cgidx = idx            # 8bpp = full 256, palette ignored
 				bgrv : u16 [ ppu_cgram_color[ cgidx ] ]
 				di   : i32 [ y * 256 + x ]
 				if [ rendering_sub ]
@@ -2038,15 +2105,33 @@ element asnes : trinity
 			ppu.sub_bgr[ di ] = sbd
 			ppu.sub_src[ di ] = 0xFF
 		ts   : u8 [ line_ts[y] ]
+		md   : u32 [ u32[line_mode[y]] & 7 ]
 		b3hi : bool [ (line_mode[y] & 0x08) != 0 ]
+		# per-mode bit depths and whether BG3 is a displayable layer (only 0/1)
+		b1   : i32 [ 4 ]
+		if [ md == 3 || md == 4 ] b1 = 8
+		if [ md == 0 ] b1 = 2
+		b2   : i32 [ 4 ]
+		if [ md == 0 || md == 4 || md == 5 || md == 6 ] b2 = 2
+		has3 : bool [ md == 0 || md == 1 ]
 		rendering_sub = true
-		if [ ts & 0x04 ] ppu_bg_line[ 2, 2, y, bright, 0 ]   # BG3.0
-		if [ ts & 0x04 ] if [ !b3hi ] ppu_bg_line[ 2, 2, y, bright, 1 ]  # BG3.1 (low pos)
-		if [ ts & 0x02 ] ppu_bg_line[ 1, 4, y, bright, 0 ]   # BG2.0
-		if [ ts & 0x01 ] ppu_bg_line[ 0, 4, y, bright, 0 ]   # BG1.0
-		if [ ts & 0x02 ] ppu_bg_line[ 1, 4, y, bright, 1 ]   # BG2.1
-		if [ ts & 0x01 ] ppu_bg_line[ 0, 4, y, bright, 1 ]   # BG1.1
-		if [ ts & 0x04 ] if [ b3hi ] ppu_bg_line[ 2, 2, y, bright, 1 ]   # BG3.1 (front)
+		if [ md == 0 ]                                        # 4-layer sub (all 2bpp)
+			if [ ts & 0x08 ] ppu_bg_line[ 3, 2, y, bright, 0 ]   # BG4.0
+			if [ ts & 0x04 ] ppu_bg_line[ 2, 2, y, bright, 0 ]   # BG3.0
+			if [ ts & 0x08 ] ppu_bg_line[ 3, 2, y, bright, 1 ]   # BG4.1
+			if [ ts & 0x04 ] ppu_bg_line[ 2, 2, y, bright, 1 ]   # BG3.1
+			if [ ts & 0x02 ] ppu_bg_line[ 1, 2, y, bright, 0 ]   # BG2.0
+			if [ ts & 0x01 ] ppu_bg_line[ 0, 2, y, bright, 0 ]   # BG1.0
+			if [ ts & 0x02 ] ppu_bg_line[ 1, 2, y, bright, 1 ]   # BG2.1
+			if [ ts & 0x01 ] ppu_bg_line[ 0, 2, y, bright, 1 ]   # BG1.1
+		el
+			if [ has3 && (ts & 0x04) ] ppu_bg_line[ 2, 2, y, bright, 0 ]   # BG3.0
+			if [ has3 && (ts & 0x04) ] if [ !b3hi ] ppu_bg_line[ 2, 2, y, bright, 1 ]  # BG3.1 (low)
+			if [ ts & 0x02 ] ppu_bg_line[ 1, b2, y, bright, 0 ]   # BG2.0
+			if [ ts & 0x01 ] ppu_bg_line[ 0, b1, y, bright, 0 ]   # BG1.0
+			if [ ts & 0x02 ] ppu_bg_line[ 1, b2, y, bright, 1 ]   # BG2.1
+			if [ ts & 0x01 ] ppu_bg_line[ 0, b1, y, bright, 1 ]   # BG1.1
+			if [ has3 && (ts & 0x04) ] if [ b3hi ] ppu_bg_line[ 2, 2, y, bright, 1 ]   # BG3.1 (front)
 		rendering_sub = false
 
 	func ppu_latch_shot []
@@ -2089,6 +2174,92 @@ element asnes : trinity
 				if [ (line_cgwsel[y] & 0x02) || (line_ts[y] & 0x07) ] ppu_sub_line[ y, bright ]
 				ppu_mainclip_line[ y ]                               # CGWSEL force-main-black (LTTP iris wipe)
 				ppu_cmath_line[ y, bright ]                          # CGADSUB add/sub (POWER bar fill, HUD fog)
+			el [ mode == 0 ]
+				# 4-layer, all 2bpp; each BG in its own 32-color CGRAM block.
+				# priority back->front: BG4.0 BG3.0 O0 BG4.1 BG3.1 O1 BG2.0 BG1.0 O2 BG2.1 BG1.1 O3
+				if [ tm & 0x08 ] ppu_bg_line[ 3, 2, y, bright, 0 ]   # BG4.0
+				if [ tm & 0x04 ] ppu_bg_line[ 2, 2, y, bright, 0 ]   # BG3.0
+				if [ tm & 0x10 ] ppu_obj_line[ y, 0, bright ]        # OBJ.0
+				if [ tm & 0x08 ] ppu_bg_line[ 3, 2, y, bright, 1 ]   # BG4.1
+				if [ tm & 0x04 ] ppu_bg_line[ 2, 2, y, bright, 1 ]   # BG3.1
+				if [ tm & 0x10 ] ppu_obj_line[ y, 1, bright ]        # OBJ.1
+				if [ tm & 0x02 ] ppu_bg_line[ 1, 2, y, bright, 0 ]   # BG2.0
+				if [ tm & 0x01 ] ppu_bg_line[ 0, 2, y, bright, 0 ]   # BG1.0
+				if [ tm & 0x10 ] ppu_obj_line[ y, 2, bright ]        # OBJ.2
+				if [ tm & 0x02 ] ppu_bg_line[ 1, 2, y, bright, 1 ]   # BG2.1
+				if [ tm & 0x01 ] ppu_bg_line[ 0, 2, y, bright, 1 ]   # BG1.1
+				if [ tm & 0x10 ] ppu_obj_line[ y, 3, bright ]        # OBJ.3
+				if [ (line_cgwsel[y] & 0x02) || (line_ts[y] & 0x07) ] ppu_sub_line[ y, bright ]
+				ppu_mainclip_line[ y ]
+				ppu_cmath_line[ y, bright ]
+			el [ mode == 2 ]
+				# 2-layer mode (BG1/BG2 4bpp); BG3 drives offset-per-tile, not shown.
+				# priority back->front: BG2.0 BG1.0 O0 O1 BG2.1 O2 BG1.1 O3
+				if [ tm & 0x02 ] ppu_bg_line[ 1, 4, y, bright, 0 ]   # BG2.0
+				if [ tm & 0x01 ] ppu_bg_line[ 0, 4, y, bright, 0 ]   # BG1.0
+				if [ tm & 0x10 ] ppu_obj_line[ y, 0, bright ]        # OBJ.0
+				if [ tm & 0x10 ] ppu_obj_line[ y, 1, bright ]        # OBJ.1
+				if [ tm & 0x02 ] ppu_bg_line[ 1, 4, y, bright, 1 ]   # BG2.1
+				if [ tm & 0x10 ] ppu_obj_line[ y, 2, bright ]        # OBJ.2
+				if [ tm & 0x01 ] ppu_bg_line[ 0, 4, y, bright, 1 ]   # BG1.1
+				if [ tm & 0x10 ] ppu_obj_line[ y, 3, bright ]        # OBJ.3
+				if [ (line_cgwsel[y] & 0x02) || (line_ts[y] & 0x07) ] ppu_sub_line[ y, bright ]
+				ppu_mainclip_line[ y ]
+				ppu_cmath_line[ y, bright ]
+			el [ mode == 3 ]
+				# 2-layer, BG1 8bpp (256 colors) + BG2 4bpp; no offset-per-tile.
+				# priority back->front: BG2.0 BG1.0 O0 O1 BG2.1 O2 BG1.1 O3
+				if [ tm & 0x02 ] ppu_bg_line[ 1, 4, y, bright, 0 ]   # BG2.0
+				if [ tm & 0x01 ] ppu_bg_line[ 0, 8, y, bright, 0 ]   # BG1.0 (8bpp)
+				if [ tm & 0x10 ] ppu_obj_line[ y, 0, bright ]        # OBJ.0
+				if [ tm & 0x10 ] ppu_obj_line[ y, 1, bright ]        # OBJ.1
+				if [ tm & 0x02 ] ppu_bg_line[ 1, 4, y, bright, 1 ]   # BG2.1
+				if [ tm & 0x10 ] ppu_obj_line[ y, 2, bright ]        # OBJ.2
+				if [ tm & 0x01 ] ppu_bg_line[ 0, 8, y, bright, 1 ]   # BG1.1 (8bpp)
+				if [ tm & 0x10 ] ppu_obj_line[ y, 3, bright ]        # OBJ.3
+				if [ (line_cgwsel[y] & 0x02) || (line_ts[y] & 0x07) ] ppu_sub_line[ y, bright ]
+				ppu_mainclip_line[ y ]
+				ppu_cmath_line[ y, bright ]
+			el [ mode == 4 ]
+				# 2-layer, BG1 8bpp + BG2 2bpp, with offset-per-tile (H or V).
+				# priority back->front: BG2.0 BG1.0 O0 O1 BG2.1 O2 BG1.1 O3
+				if [ tm & 0x02 ] ppu_bg_line[ 1, 2, y, bright, 0 ]   # BG2.0 (2bpp)
+				if [ tm & 0x01 ] ppu_bg_line[ 0, 8, y, bright, 0 ]   # BG1.0 (8bpp)
+				if [ tm & 0x10 ] ppu_obj_line[ y, 0, bright ]        # OBJ.0
+				if [ tm & 0x10 ] ppu_obj_line[ y, 1, bright ]        # OBJ.1
+				if [ tm & 0x02 ] ppu_bg_line[ 1, 2, y, bright, 1 ]   # BG2.1
+				if [ tm & 0x10 ] ppu_obj_line[ y, 2, bright ]        # OBJ.2
+				if [ tm & 0x01 ] ppu_bg_line[ 0, 8, y, bright, 1 ]   # BG1.1
+				if [ tm & 0x10 ] ppu_obj_line[ y, 3, bright ]        # OBJ.3
+				if [ (line_cgwsel[y] & 0x02) || (line_ts[y] & 0x07) ] ppu_sub_line[ y, bright ]
+				ppu_mainclip_line[ y ]
+				ppu_cmath_line[ y, bright ]
+			el [ mode == 5 ]
+				# hi-res 2-layer, BG1 4bpp + BG2 2bpp. rendered at 256 (main
+				# screen only); true 512px hi-res is not implemented.
+				if [ tm & 0x02 ] ppu_bg_line[ 1, 2, y, bright, 0 ]   # BG2.0 (2bpp)
+				if [ tm & 0x01 ] ppu_bg_line[ 0, 4, y, bright, 0 ]   # BG1.0 (4bpp)
+				if [ tm & 0x10 ] ppu_obj_line[ y, 0, bright ]        # OBJ.0
+				if [ tm & 0x10 ] ppu_obj_line[ y, 1, bright ]        # OBJ.1
+				if [ tm & 0x02 ] ppu_bg_line[ 1, 2, y, bright, 1 ]   # BG2.1
+				if [ tm & 0x10 ] ppu_obj_line[ y, 2, bright ]        # OBJ.2
+				if [ tm & 0x01 ] ppu_bg_line[ 0, 4, y, bright, 1 ]   # BG1.1
+				if [ tm & 0x10 ] ppu_obj_line[ y, 3, bright ]        # OBJ.3
+				if [ (line_cgwsel[y] & 0x02) || (line_ts[y] & 0x07) ] ppu_sub_line[ y, bright ]
+				ppu_mainclip_line[ y ]
+				ppu_cmath_line[ y, bright ]
+			el [ mode == 6 ]
+				# hi-res single-layer BG1 4bpp, with offset-per-tile (H only).
+				# rendered at 256; true 512px hi-res is not implemented.
+				if [ tm & 0x01 ] ppu_bg_line[ 0, 4, y, bright, 0 ]   # BG1.0
+				if [ tm & 0x10 ] ppu_obj_line[ y, 0, bright ]        # OBJ.0
+				if [ tm & 0x10 ] ppu_obj_line[ y, 1, bright ]        # OBJ.1
+				if [ tm & 0x10 ] ppu_obj_line[ y, 2, bright ]        # OBJ.2
+				if [ tm & 0x01 ] ppu_bg_line[ 0, 4, y, bright, 1 ]   # BG1.1
+				if [ tm & 0x10 ] ppu_obj_line[ y, 3, bright ]        # OBJ.3
+				if [ (line_cgwsel[y] & 0x02) || (line_ts[y] & 0x07) ] ppu_sub_line[ y, bright ]
+				ppu_mainclip_line[ y ]
+				ppu_cmath_line[ y, bright ]
 			el [ mode == 7 ]
 				if [ m7_gpu ]                                        # GPU owns the plane: leave it transparent
 					for [ X: i32 0, X < 256, X += 1 ]
@@ -3296,17 +3467,17 @@ element asnes : trinity
 		if [ !spc_rom_loaded ]
 			if [ !spc_boot_rom ]
 				spc_boot_rom = calloc[ 1, 64 ]
-			if [ !spc_rom ] spc_rom = path '{path.path_startup[]}/bios.rom'
-			f    : @FILE [ fopen[ spc_rom, 'rb' ] ]
-			size : sz [ 0 ]
-			expect f, 'could not open spc-rom file: {spc_rom}'
-			fseek [ f, 0, SEEK_END ]
-			size = ftell[ f ]
-			rewind[ f ]
-			expect size == 64, 'bad spc rom size'
-			nrd : i64 [ fread[spc_boot_rom, size, 1, f] ]
-			expect nrd == 1, "spc rom read failed"
-			fclose[ f ]
+			# the 64-byte SPC-700 IPL boot rom, inlined (no external file)
+			ipl : local u8 [64] [
+				0xcd, 0xef, 0xbd, 0xe8, 0x00, 0xc6, 0x1d, 0xd0,
+				0xfc, 0x8f, 0xaa, 0xf4, 0x8f, 0xbb, 0xf5, 0x78,
+				0xcc, 0xf4, 0xd0, 0xfb, 0x2f, 0x19, 0xeb, 0xf4,
+				0xd0, 0xfc, 0x7e, 0xf4, 0xd0, 0x0b, 0xe4, 0xf5,
+				0xcb, 0xf4, 0xd7, 0x00, 0xfc, 0xd0, 0xf3, 0xab,
+				0x01, 0x10, 0xef, 0x7e, 0xf4, 0x10, 0xeb, 0xba,
+				0xf6, 0xda, 0x00, 0xba, 0xf4, 0xc4, 0xf4, 0xdd,
+				0x5d, 0xd0, 0xdb, 0x1f, 0x00, 0x00, 0xc0, 0xff ]
+			memcpy[ spc_boot_rom, ipl, 64 ]
 			spc_rom_loaded = true
 
 		spc = spc_state []

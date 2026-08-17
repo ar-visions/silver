@@ -1843,7 +1843,7 @@ AU_EXPORT int au_capture_stdout(void) {
     // round-trip self-test: write straight to the (now redirected) fd 1 and read
     // it back off the pipe. if this lands, the redirect works in-process.
     static const char msg[] = "CAPTURE_SELFTEST\n";
-    ssize_t w = write(STDOUT_FILENO, msg, sizeof(msg) - 1);
+    ssize_t w = write(STDOUT_FILENO, (void*)msg, sizeof(msg) - 1);
     usleep(2000);
     char tb[64];
     ssize_t rd = read(fds[0], tb, sizeof(tb) - 1);
@@ -2123,7 +2123,7 @@ AU_EXPORT ARef types(ref_i64 length) {
 // the global list -- a compile space holds only the module being built
 AU_EXPORT ARef module_list(ref_i64 length) {
     *length = modules.count;
-    return modules.origin;
+    return (ARef)modules.origin;
 }
 
 // all DIRECT subclasses of `base` across EVERY module (base->src match). returns a
@@ -3958,7 +3958,10 @@ static void au_arg_usage(Au a, cstrs argv) {
 // through. this is why apps declare file inputs as `path`, not `string`.
 static Au au_arg_path(cstr value) {
     if (!value) return null;
-    if (value[0] == '/') return (Au)path(value);
+    // absolute: unix "/x", or windows "C:\x" / "C:/x" / "\x"
+    bool absolute = value[0] == '/' || value[0] == '\\' ||
+                    (value[0] && value[1] == ':');
+    if (absolute) return (Au)path(value);
     const char* sp = getenv("SILVER_STARTUP");
     if (!sp || !*sp) return (Au)path(value);
     char buf[4096];
@@ -9281,7 +9284,11 @@ __int64_t _epoch_millis();
 
 __int64_t _epoch_millis() {
     struct timeval tv;
-    gettimeofday((struct timeval*)&tv, 0L);
+#ifdef _WIN32
+    gettimeofday((struct _timeval_*)&tv, 0L);
+#else
+    gettimeofday(&tv, 0L);
+#endif
     return (__int64_t)(tv.tv_sec) * 1000 + (__int64_t)(tv.tv_usec) / 1000;
 }
 
@@ -9291,7 +9298,11 @@ AU_EXPORT i64 epoch_millis() {
 
 AU_EXPORT i64 epoch_micros() {
     struct timeval tv;
-    gettimeofday((struct timeval*)&tv, 0L);
+#ifdef _WIN32
+    gettimeofday((struct _timeval_*)&tv, 0L);
+#else
+    gettimeofday(&tv, 0L);
+#endif
     return (__int64_t)(tv.tv_sec) * 1000000 + (__int64_t)(tv.tv_usec);
 }
 
