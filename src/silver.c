@@ -109,6 +109,18 @@ static void publish_product(silver a) {
     pthread_cond_broadcast(&compiled_cond);
     pthread_mutex_unlock(&compiled_lock);
 }
+// on a clean build, a source dated in the future (a wrong system clock stamped
+// it) stays newer than every product forever -> endless rebuild. correct it to
+// now, once, on clean only. a normal build reads it untouched.
+static u64 source_mtime(silver a, path p) {
+    u64 m = modified_time(p);
+    if (a->clean && m > (u64)current_time()) {
+        utime(p->chars, NULL);        // NULL sets mtime to now
+        m = modified_time(p);
+    }
+    return m;
+}
+
 static void bg_build_start(silver a, silver og, path module, map defs);
 enode parse_export(silver a);
 enode parse_return(silver a);
@@ -1688,8 +1700,13 @@ static path build_silver_host(silver a) {
     // the vk target enters at WinMain, so it links /SUBSYSTEM:WINDOWS and no
     // console opens beside the app; the console target keeps the default
     cstr subsystem = ((aether)a)->is_live ? "-Wl,/SUBSYSTEM:WINDOWS" : "";
+    // link to a temp, then replace: a running app or a mid-scan file locks
+    // the exe against in-place relink (LNK1168). the temp always writes.
+    path host_out = f(path, "%o.new%i", host_dst, (i32)getpid());
     vexec(a->verbose, "silver-host", "%s/install/bin/clang %s %s -o %o %o %s %s -D_CRT_SECURE_NO_WARNINGS -D_CRT_NONSTDC_NO_WARNINGS -I%s/install/include -L%s/install/lib -DSILVER_ROOT=\\\"%s\\\"",
-        SILVER, a->debug ? "-O0 -g" : "-O2", a->asan ? "-fsanitize=address" : "", host_dst, host_src, host_libs, subsystem, SILVER, SILVER, SILVER, SILVER);
+        SILVER, a->debug ? "-O0 -g" : "-O2", a->asan ? "-fsanitize=address" : "", host_out, host_src, host_libs, subsystem, SILVER, SILVER, SILVER, SILVER);
+    verify(au_replace_file(host_out->chars, host_dst->chars) == 0,
+        "could not replace %o: locked by another process", host_dst);
 #else
     vexec(a->verbose, "silver-host", "%s/install/bin/clang %s %s -o %o %o %s -I%s/install/include -L%s/install/lib -DSILVER_ROOT='\"%s\"'",
         SILVER, a->debug ? "-O0 -g" : "-O2", a->asan ? "-fsanitize=address" : "", host_dst, host_src, host_libs, SILVER, SILVER, SILVER);
@@ -1856,6 +1873,8 @@ static void silver_run_exports(silver a) {
         void* h = dlopen(bin->chars, RTLD_NOW);
         chdir(back->chars);
         st = h ? 0 : (1 << 8);
+        // release it: a pinned dll cannot be relinked later this run
+        if (h) dlclose(h);
     } else {
         posix_spawn_file_actions_t fa;
         posix_spawn_file_actions_init(&fa);
@@ -2114,7 +2133,7 @@ AU_EXPORT void silver_init(silver a) {
                 int  nl = strlen(n);
                 if (nl <= 3 || strcmp(n + nl - 3, ".ag") != 0) continue;
                 path ag = form(path, "%o/%s", a->module_path, n);
-                u64  m  = modified_time(ag);
+                u64  m  = source_mtime(a, ag);
                 if (m > module_file_m) module_file_m = m;
             }
             closedir(dir);
@@ -2130,7 +2149,7 @@ AU_EXPORT void silver_init(silver a) {
                 buf[strcspn(buf, "\n")] = '\0';
                 if (!*buf) continue;
                 path src = path(buf);
-                u64  m   = modified_time(src);
+                u64  m   = source_mtime(a, src);
                 if (m > module_file_m) module_file_m = m;
                 // also check sibling .ag files in the same dir (extension modules)
                 path src_dir = parent_dir(src);
@@ -2143,7 +2162,7 @@ AU_EXPORT void silver_init(silver a) {
                             int  nl = strlen(n);
                             if (nl <= 3 || strcmp(n + nl - 3, ".ag") != 0) continue;
                             path ag = form(path, "%o/%s", src_dir, n);
-                            u64  am = modified_time(ag);
+                            u64  am = source_mtime(a, ag);
                             if (am > module_file_m) module_file_m = am;
                         }
                         closedir(dir);
@@ -6956,6 +6975,15 @@ none silver_build_product(silver a) {
     string plat_link = f(string, "-Wl,-rpath,%o -Wl,-rpath,%o/lib", a->build_dir, install);
 #endif
 
+    // windows: link to a fresh temp, then atomically replace the product.
+    // the linker deletes its output before writing it, and a scanner mid-scan
+    // on the live dll makes that delete fail ("unable to remove file"). a temp
+    // has nothing to remove, and au_replace_file rides out the scan window.
+#ifdef _WIN32
+    path link_out = f(path, "%o.new%i", a->product, (i32)getpid());
+#else
+    path link_out = a->product;
+#endif
     // install/lib BEFORE build_dir: linking an exe leaves an import library
     // beside it named for the exe, and silver.exe's shadows the silver
     // MODULE's -lsilver. module libs of our own are passed by full path, so
@@ -6969,7 +6997,7 @@ none silver_build_product(silver a) {
         "",
 #endif
         isysroot, cpp_pre, a->build_dir, a->name, core_objs, objs,
-        a->product,
+        link_out,
         install,
         a->build_dir, plat_link, libs, cflags, fw_flags,
 #ifdef __APPLE__
@@ -6979,6 +7007,10 @@ none silver_build_product(silver a) {
 #endif
         ) == 0,
         "link failed");
+#ifdef _WIN32
+    verify(au_replace_file(link_out->chars, a->product->chars) == 0,
+        "could not replace %o: locked by another process", a->product);
+#endif
     
     unlink(a->product_link->chars);
 
@@ -9788,7 +9820,7 @@ enode silver_parse_member_expr(silver a, enode mem, bool in_ref) { sequencer
         if (al && is_func((Au)al)) {
             // the aliased function may have no etype yet; prep builds one
             etype alias = u(etype, al);
-            if (!alias) alias = etype_prep((aether)a, al);
+            if (!alias) alias = etype_prep(a, al);
             if (alias) {
                 mem      = (enode)alias;
                 is_macro = null;
