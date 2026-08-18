@@ -35,6 +35,8 @@ class SVGModel
     public cache_rh     : f32
     public cache_fill   : vec4f
     public cache_stroke : vec4f
+    # the cached raster was drawn with the solid override on
+    public cache_solid  : bool
     public pixel_scale  : i32 [ 4 ]
 
     construct [ src: path ]

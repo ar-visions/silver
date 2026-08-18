@@ -597,7 +597,7 @@ EarthShader CloudShader
     }
 
 
-element Earth
+element EarthPrev
     frost : true
     # eased camera distance / angle; p_set marks the first frame
     intern e_cur  : f32
@@ -1025,7 +1025,12 @@ element Moon
             '#625a':      '#333a',
             '#8af2':      '#8882',
             '#425':       '#3a3a42',
-            '#44225588':  '#8a8a8a66'
+            '#ede3':      '#bbb3',       # editor selection border
+            '#44225588':  '#8a8a8a66',
+            '#ff3a6a22':  '#8a8a8a22',   # commit tab fill
+            '#ff3a6a44':  '#8a8a8a44',   # commit tab hover fill
+            '#ff5a8a99':  '#9a9a9a99',   # commit tab border
+            '#ff7aa4cc':  '#b4b4b4cc'    # commit tab hover border
         ]
 
     func load_bg [ arg: object ]
@@ -1312,16 +1317,21 @@ element MilkyWay
     public func theme [ ] -> map string [string]
         return map string [string] [
             '#140a2acc':  '#0a0a1288',   # editor pane background
-            '#140a2a80':  '#418a',   # console pane background
-            '#ff6a2e55':  '#8a8ad455',   # search highlight fill
-            '#220022aa':  '#0e0e18aa',   # run console base fill
-            '#614':       '#424a',     # TButtons / nav rest fill
-            '#413':       '#424e',     # TButtons hover fill
-            '#826':       '#534e',     # TButtons lit / nav selected
-            '#625a':      '#4248',       # bottom status bar fill
-            '#8af2':      '#88a2',       # status bar inner glow
-            '#425':       '#4184',     # editor selection color
-            '#44225588':  '#8a8aaa11'    # editor line highlight
+            '#140a2a80':  '#418a',       # console pane background
+            '#ff6a2e55':  '#8a8aa455',   # search highlight fill
+            '#220022aa':  '#1e0e28aa',   # run console base fill
+            '#614':       '#524a',       # TButtons / nav rest fill
+            '#413':       '#524e',       # TButtons hover fill
+            '#826':       '#635e',       # TButtons lit / nav selected
+            '#625a':      '#5248',       # bottom status bar fill
+            '#8af2':      '#99a2',       # status bar inner glow 
+            '#425':       '#8164',       # editor selection color
+            '#ede3':      '#a388',       # editor selection border
+            '#44225588':  '#8a8aaa11',   # editor line highlight
+            '#ff3a6a22':  '#8a8ad422',   # commit tab fill
+            '#ff3a6a44':  '#8a8ad444',   # commit tab hover fill
+            '#ff5a8a99':  '#8a9ade99',   # commit tab border
+            '#ff7aa4cc':  '#a8b6ffcc'    # commit tab hover border
         ]
 
 
@@ -1686,7 +1696,12 @@ element Titan
             '#625a':      '#5428',       # bottom status bar fill
             '#8af2':      '#fc82',       # status bar inner glow
             '#425':       '#18a8',     # editor selection color
-            '#44225588':  '#18a4'    # editor line highlight
+            '#ede3':      '#fc93',       # editor selection border
+            '#44225588':  '#18a4',    # editor line highlight
+            '#ff3a6a22':  '#ffb04a22',   # commit tab fill
+            '#ff3a6a44':  '#ffb04a44',   # commit tab hover fill
+            '#ff5a8a99':  '#ffb85a99',   # commit tab border
+            '#ff7aa4cc':  '#ffd08acc'    # commit tab hover border
         ]
 
     func load_bg [ arg: object ]
@@ -2362,7 +2377,12 @@ element Enceladus
             '#625a':      '#268a',       # bottom status bar fill
             '#8af2':      '#8cf2',       # status bar inner glow
             '#425':       '#16a8',     # editor selection color
-            '#44225588':  '#16a4'    # editor line highlight
+            '#ede3':      '#ade3',       # editor selection border
+            '#44225588':  '#16a4',    # editor line highlight
+            '#ff3a6a22':  '#7ac8e822',   # commit tab fill
+            '#ff3a6a44':  '#7ac8e844',   # commit tab hover fill
+            '#ff5a8a99':  '#7ac8e899',   # commit tab border
+            '#ff7aa4cc':  '#a8e0f4cc'    # commit tab hover border
         ]
 
     func load_bg [ arg: object ]
@@ -3900,7 +3920,12 @@ element Europa
             '#625a':      '#268a',       # bottom status bar fill
             '#8af2':      '#8cf2',       # status bar inner glow
             '#425':       '#16a8',       # editor selection color
-            '#44225588':  '#16a4'        # editor line highlight
+            '#ede3':      '#ade3',       # editor selection border
+            '#44225588':  '#16a4',       # editor line highlight
+            '#ff3a6a22':  '#7ac8e822',   # commit tab fill
+            '#ff3a6a44':  '#7ac8e844',   # commit tab hover fill
+            '#ff5a8a99':  '#7ac8e899',   # commit tab border
+            '#ff7aa4cc':  '#a8e0f4cc'    # commit tab hover border
         ]
 
     func load_bg [ arg: object ]
@@ -7746,7 +7771,12 @@ element Mars
             '#625a':      '#408a',       # bottom status bar fill
             '#8af2':      '#fa62',       # status bar inner glow
             '#425':       '#52281e',     # editor selection color
-            '#44225588':  '#5a3a2e33'    # editor line highlight
+            '#ede3':      '#fa83',       # editor selection border
+            '#44225588':  '#5a3a2e33',   # editor line highlight
+            '#ff3a6a22':  '#ff8a4a22',   # commit tab fill
+            '#ff3a6a44':  '#ff8a4a44',   # commit tab hover fill
+            '#ff5a8a99':  '#e0784299',   # commit tab border
+            '#ff7aa4cc':  '#ffa068cc'    # commit tab hover border
         ]
 
     func load_bg [ arg: object ]
@@ -8310,7 +8340,12 @@ element Uranus
             '#625a':      '#28484a',     # bottom status bar fill
             '#8af2':      '#8ad0d2',     # status bar inner glow
             '#425':       '#5c7250',     # editor selection color
-            '#44225588':  '#8ad0cc11'    # editor line highlight
+            '#ede3':      '#aed3',       # editor selection border
+            '#44225588':  '#8ad0cc11',   # editor line highlight
+            '#ff3a6a22':  '#7fd6cc22',   # commit tab fill
+            '#ff3a6a44':  '#7fd6cc44',   # commit tab hover fill
+            '#ff5a8a99':  '#7fd6cc99',   # commit tab border
+            '#ff7aa4cc':  '#a8ece4cc'    # commit tab hover border
         ]
 
 element Neptune
@@ -8500,3 +8535,454 @@ element Neptune
         sky.proj  = _proj
         sky.gain  = 0.45
         sky.time  = ux.time * 60000.0
+
+
+# THE LIVING EARTH. the planet is one perlin field: continents rise
+# out of it, elevation picks the vegetation, worley lobes shrink-wrap
+# the canopy over the ground, and a volume march filters sunlight
+# down through the tree layers. a real aerial rainforest plate feeds
+# the spatial reflectance, so the organic detail is actual forest
+enum JungleSurface
+    forest : 0
+
+ModelViewProject JungleShader
+    mutable sun_dir : vec4f
+    mutable cam_pos : vec4f
+
+    attrib forest : LayoutBinding [ type:typeid[ JungleSurface ], id:JungleSurface.forest, count:1, format: typeid[ rgba8 ] ]
+
+    attrib a_pos    : VertexInput [ type:typeid[ vec3f ] ]
+    attrib a_normal : VertexInput [ type:typeid[ vec3f ] ]
+    attrib a_uv     : VertexInput [ type:typeid[ vec2f ] ]
+
+    attrib v_world_pos : VertexOutput  [ type:typeid[ vec4f ] ]
+    attrib fragColor   : FragmentOutput[ type:typeid[ vec4f ] ]
+
+    func init []
+        model = mat4f.identity[]
+        view  = mat4f.identity[]
+        proj  = mat4f.identity[]
+
+    # the shell rides far outside with the camera always INSIDE it,
+    # so no mesh silhouette can ever cross the view and clip
+    func vertex [] -> GLSL none {
+        vec4 wpos = ubo.model * vec4(a_pos * 4.0, 1.0);
+        v_world_pos = wpos;
+        gl_Position = ubo.proj * ubo.view * wpos;
+    }
+
+    func j_shash [ p: @vec3f ] -> GLSL float {
+        return fract(sin(dot(p, vec3(12.9898, 78.233, 37.719))) * 43758.5453);
+    }
+
+    func j_perm [ x: @vec4f ] -> GLSL vec4f {
+        return mod((x * 34.0 + 1.0) * x, vec4(289.0));
+    }
+
+    func j_tinv [ r: @vec4f ] -> GLSL vec4f {
+        return 1.79284291400159 - 0.85373472095314 * r;
+    }
+
+    func j_fade [ t: @vec3f ] -> GLSL vec3f {
+        return t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
+    }
+
+    # textbook 3D perlin, the same construction EarthShader has run
+    # for years: permutation-polynomial gradients, quintic fade
+    func j_perlin [ P: @vec3f ] -> GLSL float {
+        vec3 Pi0 = mod(floor(P), vec3(289.0));
+        vec3 Pi1 = mod(Pi0 + vec3(1.0), vec3(289.0));
+        vec3 Pf0 = fract(P);
+        vec3 Pf1 = Pf0 - vec3(1.0);
+
+        vec4 ix = vec4(Pi0.x, Pi1.x, Pi0.x, Pi1.x);
+        vec4 iy = vec4(Pi0.y, Pi0.y, Pi1.y, Pi1.y);
+        vec4 iz0 = vec4(Pi0.z);
+        vec4 iz1 = vec4(Pi1.z);
+
+        vec4 ixy = j_perm(j_perm(ix) + iy);
+        vec4 ixy0 = j_perm(ixy + iz0);
+        vec4 ixy1 = j_perm(ixy + iz1);
+
+        vec4 gx0 = fract(ixy0 / 7.0) * 2.0 - 1.0;
+        vec4 gy0 = fract(floor(ixy0 / 7.0) / 7.0) * 2.0 - 1.0;
+        vec4 gz0 = 1.0 - abs(gx0) - abs(gy0);
+
+        vec4 gx1 = fract(ixy1 / 7.0) * 2.0 - 1.0;
+        vec4 gy1 = fract(floor(ixy1 / 7.0) / 7.0) * 2.0 - 1.0;
+        vec4 gz1 = 1.0 - abs(gx1) - abs(gy1);
+
+        vec4 sz0 = step(gz0, vec4(0.0));
+        gx0 -= sz0 * (step(0.0, gx0) - 0.5);
+        gy0 -= sz0 * (step(0.0, gy0) - 0.5);
+
+        vec4 sz1 = step(gz1, vec4(0.0));
+        gx1 -= sz1 * (step(0.0, gx1) - 0.5);
+        gy1 -= sz1 * (step(0.0, gy1) - 0.5);
+
+        vec3 g000 = vec3(gx0.x, gy0.x, gz0.x);
+        vec3 g100 = vec3(gx0.y, gy0.y, gz0.y);
+        vec3 g010 = vec3(gx0.z, gy0.z, gz0.z);
+        vec3 g110 = vec3(gx0.w, gy0.w, gz0.w);
+        vec3 g001 = vec3(gx1.x, gy1.x, gz1.x);
+        vec3 g101 = vec3(gx1.y, gy1.y, gz1.y);
+        vec3 g011 = vec3(gx1.z, gy1.z, gz1.z);
+        vec3 g111 = vec3(gx1.w, gy1.w, gz1.w);
+
+        vec4 norm0 = j_tinv(vec4(dot(g000, g000), dot(g010, g010), dot(g100, g100), dot(g110, g110)));
+        g000 *= norm0.x;
+        g010 *= norm0.y;
+        g100 *= norm0.z;
+        g110 *= norm0.w;
+        vec4 norm1 = j_tinv(vec4(dot(g001, g001), dot(g011, g011), dot(g101, g101), dot(g111, g111)));
+        g001 *= norm1.x;
+        g011 *= norm1.y;
+        g101 *= norm1.z;
+        g111 *= norm1.w;
+
+        float n000 = dot(g000, Pf0);
+        float n100 = dot(g100, vec3(Pf1.x, Pf0.y, Pf0.z));
+        float n010 = dot(g010, vec3(Pf0.x, Pf1.y, Pf0.z));
+        float n110 = dot(g110, vec3(Pf1.xy, Pf0.z));
+        float n001 = dot(g001, vec3(Pf0.xy, Pf1.z));
+        float n101 = dot(g101, vec3(Pf1.x, Pf0.y, Pf1.z));
+        float n011 = dot(g011, vec3(Pf0.x, Pf1.yz));
+        float n111 = dot(g111, Pf1);
+
+        vec3 fade_xyz = j_fade(Pf0);
+        vec4 n_z = mix(vec4(n000, n100, n010, n110), vec4(n001, n101, n011, n111), fade_xyz.z);
+        vec2 n_yz = mix(n_z.xy, n_z.zw, fade_xyz.y);
+        float n_xyz = mix(n_yz.x, n_yz.y, fade_xyz.x);
+
+        return n_xyz * 0.5 + 0.5;
+    }
+
+    func j_fbm [ p: @vec3f, oct: @i32 ] -> GLSL float {
+        float v = 0.0;
+        float a = 0.5;
+        vec3 q = p;
+        for (int i = 0; i < oct; ++i) {
+            v += a * j_perlin(q);
+            q = q * 2.17 + vec3(13.7, 7.3, 5.1);
+            a *= 0.5;
+        }
+        return v;
+    }
+
+    # ONE simple perlin fbm makes the whole landscape: above sea is
+    # land lift, below is ocean depth. nothing else shapes the coast
+    func j_elev [ d: @vec3f ] -> GLSL float {
+        return (j_fbm(d * 2.6, 5) - 0.50) * 2.2;
+    }
+
+    # elevation picks the vegetation: tall jungle on the lowlands,
+    # thinning as the ground climbs, bare on the peaks
+    func j_veg [ d: @vec3f, e: @f32 ] -> GLSL float {
+        if (e <= 0.001) return 0.0;
+        float moist = j_fbm(d * 11.0 + vec3(3.0, 29.0, 13.0), 2);
+        float band = 1.0 - smoothstep(0.30, 0.75, e);
+        // vegetation WALKS in from the beach, patchy with moisture,
+        // so the greenline wanders -- nothing is immediate
+        float shore = smoothstep(0.002, 0.055, e * (0.6 + 0.8 * moist));
+        return clamp(band * shore * (0.30 + 0.85 * moist), 0.0, 1.0);
+    }
+
+    # 3D worley: distance to the nearest hashed feature point.
+    # INVERTED, every cell is one round lobe -- and a field of round
+    # lobes IS cauliflower. perlin cannot make this shape; this is
+    # the same trick the mars cloud bake stands on
+    func j_worley [ p: @vec3f ] -> GLSL float {
+        vec3 ip = floor(p);
+        vec3 fp = fract(p);
+        float best = 9.0;
+        for (int z = -1; z <= 1; ++z) {
+            for (int y = -1; y <= 1; ++y) {
+                for (int x = -1; x <= 1; ++x) {
+                    vec3 c = vec3(float(x), float(y), float(z));
+                    vec3 q = c - fp
+                           + vec3(j_shash(ip + c),
+                                  j_shash(ip + c + vec3(7.7, 3.3, 1.1)),
+                                  j_shash(ip + c + vec3(2.2, 9.9, 5.5)));
+                    best = min(best, dot(q, q));
+                }
+            }
+        }
+        return 1.0 - min(sqrt(best), 1.0);
+    }
+
+    # the cauliflower lift: worley lobes at three scales -- broad
+    # masses, crowns, fine lumps -- summed into one bumpy skin
+    func j_lobes [ d: @vec3f ] -> GLSL float {
+        float w1 = j_worley(d * 28.0);
+        float w2 = j_worley(d * 88.0 + vec3(31.0, 17.0, 7.0));
+        float w3 = j_worley(d * 260.0 + vec3(5.0, 47.0, 23.0));
+        return w1 * 0.50 + w2 * 0.35 + w3 * 0.15;
+    }
+
+    # the forest inside the forest: two higher worley octaves whose
+    # frequencies land on single-tree crowns
+    func j_detail [ d: @vec3f ] -> GLSL float {
+        float w4 = j_worley(d * 760.0 + vec3(3.0, 13.0, 37.0));
+        float w5 = j_worley(d * 2100.0 + vec3(41.0, 7.0, 19.0));
+        return w4 * 0.65 + w5 * 0.35;
+    }
+
+
+    func fragment [] -> GLSL none {
+        // MODEL space: the field is painted on the planet, so the ray
+        // must fly through the planet's frame, not the camera's
+        mat3 wm = transpose(mat3(ubo.model));
+        vec3 ro = wm * ubo.cam_pos.xyz;
+        vec3 rd = normalize(wm * (v_world_pos.xyz - ubo.cam_pos.xyz));
+        vec3 sun = normalize(wm * ubo.sun_dir.xyz);
+
+        // THE UNIT: one offset above the height map. the volume is
+        // exactly this thick over every point of the landscape, and
+        // the march steps through it uniformly, everywhere
+        float VOFF = 0.011;
+        float VSTEP = VOFF / 10.0;
+        float RTOP = 1.0 + 0.012 + VOFF;
+        float bq = dot(ro, rd);
+        float dc = bq * bq - dot(ro, ro) + RTOP * RTOP;
+
+        float Trv = 1.0;
+        vec3  acc = vec3(0.0);
+        float hit = 0.0;
+        vec3  hp  = vec3(0.0);
+        float e_h = 0.0;
+        if (dc > 0.0) {
+            float t = max(-bq - sqrt(dc), 0.0);
+            t += j_shash(vec3(gl_FragCoord.xy, 3.7)) * VSTEP;
+            float tp = t;
+            for (int i = 0; i < 240; ++i) {
+                vec3  p = ro + rd * t;
+                float r = length(p);
+                if (r > RTOP + 0.0004 && dot(p, rd) > 0.0) break;
+                vec3  dir = p / r;
+                float e   = j_elev(dir);
+                float rg  = 1.0 + max(e, 0.0) * 0.012;
+                if (r < rg) {
+                    // bisect pins the exact ground
+                    float t0 = tp;
+                    float t1 = t;
+                    for (int k = 0; k < 6; ++k) {
+                        float tm = (t0 + t1) * 0.5;
+                        vec3  pm = ro + rd * tm;
+                        vec3  dm = pm / length(pm);
+                        if (length(pm) < 1.0 + max(j_elev(dm), 0.0) * 0.012) t1 = tm; else t0 = tm;
+                    }
+                    hp  = ro + rd * t1;
+                    e_h = j_elev(normalize(hp));
+                    hit = 1.0;
+                    break;
+                }
+                tp = t;
+                if (e > 0.002 && r < rg + VOFF) {
+                    float hv = clamp((r - rg) / VOFF, 0.0, 1.0);
+                    // the REAL canopy top sits a perlin percentage
+                    // DOWN from the offset skin -- and the coasts
+                    // carry no top at all, so most of a march is
+                    // clear air until the trees actually begin
+                    float vg = j_veg(dir, e);
+                    float top = vg * (0.35 + 0.65 * j_fbm(dir * 40.0, 3));
+                    if (hv < top) {
+                        float day = smoothstep(-0.05, 0.18, dot(dir, sun));
+                        // scatter starts AT this local top and light
+                        // dies with depth below it
+                        float tsun = exp(-3.0 * (top - hv) / max(top, 0.05));
+                        float al = 1.0 - exp(-55.0 * VSTEP);
+                        vec3 cv = vec3(0.055, 0.185, 0.050) * (0.06 + 1.60 * tsun * day);
+                        acc += Trv * al * cv;
+                        Trv *= 1.0 - al;
+                        if (Trv < 0.02) {
+                            hit = 2.0;
+                            break;
+                        }
+                    }
+                    t += VSTEP;
+                } else {
+                    t += max((r - (rg + VOFF)) * 0.5, VSTEP);
+                }
+            }
+        }
+
+        vec3 col = acc;
+        float alpha = 1.0;
+        if (hit == 1.0) {
+            vec3  dir = normalize(hp);
+            float day = smoothstep(-0.05, 0.18, dot(dir, sun));
+            float dl  = clamp(dot(dir, sun), 0.0, 1.0);
+            // the height map's own normal on the tangent plane
+            vec3 ax = abs(dir.y) > 0.9 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0);
+            vec3 t1 = normalize(cross(ax, dir));
+            vec3 t2 = cross(dir, t1);
+            float ee = 0.0008;
+            vec3 d1 = normalize(dir + t1 * ee);
+            vec3 d2 = normalize(dir + t2 * ee);
+            float h0 = 1.0 + max(e_h, 0.0) * 0.012;
+            float h1 = 1.0 + max(j_elev(d1), 0.0) * 0.012;
+            float h2 = 1.0 + max(j_elev(d2), 0.0) * 0.012;
+            vec3 n = normalize(dir - (t1 * (h1 - h0) + t2 * (h2 - h0)) / ee);
+            float ndl = clamp(dot(n, sun), 0.0, 1.0);
+            float veg = j_veg(dir, e_h);
+            vec3  sc;
+            if (e_h > 0.0) {
+                // the floor under the fog: sand climbing into soil
+                float cover = clamp(veg * 1.1, 0.0, 1.0) * smoothstep(0.003, 0.045, e_h);
+                vec3 sandc = mix(vec3(0.52, 0.44, 0.30), vec3(0.75, 0.66, 0.45),
+                                 smoothstep(0.0, 0.010, e_h));
+                vec3 grnd = mix(sandc, vec3(0.10, 0.16, 0.07), smoothstep(0.05, 0.55, cover));
+                sc = grnd * (0.15 + 1.60 * ndl * day);
+            } else {
+                // depth is the SAME perlin field continued below sea
+                // level, so every coast shelves exactly as the land
+                // above it falls -- continuous by construction
+                float depth = clamp(-e_h * 1.2, 0.0, 1.0);
+                vec3 wc = mix(vec3(0.10, 0.62, 0.62), vec3(0.03, 0.28, 0.42), smoothstep(0.01, 0.14, depth));
+                wc = mix(wc, vec3(0.008, 0.055, 0.150), smoothstep(0.12, 0.55, depth));
+                // the sea floor shows through the shallows: at zero
+                // depth the water is only a wet sheen over the sand,
+                // so the waterline arrives instead of switching on
+                float clear9 = 1.0 - smoothstep(0.0, 0.055, depth);
+                wc = mix(wc, vec3(0.62, 0.58, 0.42) * vec3(0.75, 0.95, 0.90), clear9 * 0.85);
+                // surf breaks white just off the shoreline
+                float foam = smoothstep(0.006, 0.0, -e_h)
+                           * smoothstep(0.30, 0.75, j_fbm(dir * 900.0, 2));
+                wc = mix(wc, vec3(0.85, 0.90, 0.90), foam * 0.7);
+                float spec = pow(max(dot(normalize(sun - rd), dir), 0.0), 180.0);
+                sc = wc * (0.16 + 1.45 * dl) + vec3(1.2, 1.1, 0.9) * spec * dl;
+            }
+            // limb: the air blues and washes the ground at the rim
+            float mu = clamp(dot(dir, -rd), 0.0, 1.0);
+            sc = mix(sc, vec3(0.45, 0.65, 1.00) * (0.15 + 0.85 * day), pow(1.0 - mu, 3.0) * 0.7);
+            col += Trv * sc;
+        } else if (hit == 0.0) {
+            // missed everything: a thin blue limb, then space
+            float tca = max(-bq, 0.0);
+            float rc  = length(ro + rd * tca);
+            float g   = exp(-max(rc - 1.0, 0.0) / 0.004);
+            col  += Trv * vec3(0.45, 0.65, 1.00) * g;
+            alpha = 1.0 - Trv * (1.0 - g);
+        }
+        fragColor = vec4(pow(col, vec3(1.0 / 2.2)), alpha);
+    }
+
+
+element Earth
+    frost : true
+    frost_sharp : true
+    intern e_cur  : f32
+    intern p_cur  : f32
+    intern jungle : JungleShader
+    intern models : array Model
+    intern target : Render
+    intern built  : bool
+    intern ready     : bool
+    intern loading   : bool
+    intern load_task : async
+    intern geom      : GltfModel
+    intern img_forest : Image
+    public color  : rgba [ r:0.004, g:0.006, b:0.014, a:1.0 ]
+
+    func load_files[]
+        geom = GltfModel.open[ path '../scenes/models/earth.gltf' ]
+        img_forest = Image [ uri: path '../scenes/textures/mars-veg-jungle.png',
+            surface: JungleSurface.forest, linear: true, wrap_u: true, wrap_v: true ]
+
+    func build_models[]
+        built  = true
+        jungle = JungleShader [ vk: vk ]
+        j_samplers : map Image [string] [ 'forest': img_forest ]
+        j_model : Model [ vk: vk, w: ux, id: geom, s: jungle, samplers: j_samplers,
+            straight_alpha: true, cull_none: true ]
+        models = array Model [ j_model ]
+
+    func create_target[]
+        if [ target || !models || models.count == 0 ] return
+        target = Render [
+            vk:          vk,
+            w:           ux,
+            wscale:      1.0,
+            use_depth:   true,
+            clear_color: vec4f [ color.r, color.g, color.b, 1.0 ],
+            models:      models ]
+        target.hold[]
+        target.owner  = a
+        ux.element_targets[ id ] = target
+
+    public func on_unload [ ]
+        if [ ux && ux.element_targets ] ux.element_targets.rm[ id ]
+
+    # jungle world: the editor dresses in canopy greens and reef teals
+    public func theme [ ] -> map string [string]
+        return map string [string] [
+            '#140a2acc':  '#0a180ecc',   # editor pane background
+            '#140a2a80':  '#0e221280',   # console pane background
+            '#4258':      '#2a4a3258',   # unused (line_color moved)
+            '#ff6a2e55':  '#5ab24a55',   # search highlight fill
+            '#220022aa':  '#0a1c12aa',   # run console base fill
+            '#614':       '#1a3822',     # TButtons / nav rest fill
+            '#413':       '#12281a',     # TButtons hover fill
+            '#826':       '#2a5434',     # TButtons lit / nav selected
+            '#625a':      '#1c30208a',   # bottom status bar fill
+            '#8af2':      '#8fa872',     # status bar inner glow
+            '#425':       '#20422a',     # editor selection color
+            '#ede3':      '#9d83',       # editor selection border
+            '#44225588':  '#3a5a3a33',   # editor line highlight
+            '#ff3a6a22':  '#5ab24a22',   # commit tab fill
+            '#ff3a6a44':  '#5ab24a44',   # commit tab hover fill
+            '#ff5a8a99':  '#6ac25a99',   # commit tab border
+            '#ff7aa4cc':  '#8ade7acc'    # commit tab hover border
+        ]
+
+    # worker decodes files only; every vk object is built on main
+    func load_bg [ arg: object ]
+        load_files[]
+        ready = true
+
+    func draw [ w: Window ]
+        animated = true
+        if [ !loading ]
+            loading = true
+            w9 : array []
+            w9.push[ a ]
+            load_task = async [ target: a, work_fn: @load_bg, work: w9 ]
+        if [ !ready ] return
+        if [ !built ] build_models[]
+        create_target[]
+        orbit[]
+
+    func orbit[]
+        aspect : f32 [ (ux.height > 0) ? f32[ ux.width ] / f32[ ux.height ] : 1.7778 ]
+        # altitude above the canopy in planet radii
+        e_t : f32 [ (ux.orbit_mode == OrbitView.low)  ? 0.040 :
+                    (ux.orbit_mode == OrbitView.high) ? 0.095 :
+                    (ux.orbit_mode == OrbitView.far)  ? 0.260 : 0.850 ]
+        if [ e_cur == 0.0 ] e_cur = e_t
+        e_cur = filter_n[ e_cur, e_t, 0.06, ux.frame_factor ]
+        # gaze tips from straight down toward the horizon
+        p_t : f32 [ (ux.angle_mode == ViewAngle.flat)   ? 0.0 :
+                    (ux.angle_mode == ViewAngle.angled) ? 0.35 : 0.75 ]
+        p_cur = filter_n[ p_cur, p_t, 0.06, ux.frame_factor ]
+        ux.orbit_moving = abs[ e_cur - e_t ] > 0.002 || abs[ p_cur - p_t ] > 0.005
+
+        R : f32 [ 1.0 + e_cur ]
+        _eye : vec3f [ 0.0, 0.0, R ]
+        _tgt : vec3f [ 0.0, p_cur, R - 1.0 ]
+        _up  : vec3f [ 0.0, -1.0, 0.0 ]
+        _proj : mat4f.perspective[ radians[ 55.0 ], aspect, 0.002, 10.0 ]
+        _view : mat4f.look_at    [ _eye, _tgt, _up ]
+
+        # the ground drifts under the craft as the planet turns
+        spin_d : f32 [ ux.time * 400.0 ]
+        q_spin : quatf [ vec4f [ 0.0, 1.0, 0.0, radians[ spin_d ] ] ]
+        q_tilt : quatf [ vec4f [ 0.0, 0.0, 1.0, radians[ 12.0 ] ] ]
+        mm : mat4f.identity[]
+        mm = mm.rotate[ q_tilt ]
+        mm = mm.rotate[ q_spin ]
+        jungle.model   = mm
+        jungle.view    = _view
+        jungle.proj    = _proj
+        jungle.cam_pos = vec4f [ _eye.x, _eye.y, _eye.z, 1.0 ]
+        jungle.sun_dir = vec4f [ 0.45, 0.35, 0.82, 0.0 ]
+        jungle.time    = ux.time * 1000.0

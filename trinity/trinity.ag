@@ -3649,6 +3649,7 @@ Display Window
             if [ (!needs_blur || blur_redraw) && !layer.editable && (element_text || label) && layer.label_size > 0 && layer.label_color && layer.label_color.a > 0 ]
                 draw_cv.save[]
                 prev_font : CanvasFont draw_cv.font
+                prev_fs   : bool [ draw_cv.font_set ]
                 if [ layer.label_font && layer.label_font.count > 0 ]
                     if [ !layer.label_font_cache ]
                         layer.label_font_cache = CanvasFont [ ft_lib: draw_cv.ft_lib, uri: layer.label_font, size_px: i32[layer.label_size] ]
@@ -3681,7 +3682,7 @@ Display Window
                 draw_cv.draw_text    [ (label || element_text), b, align, offset, layer.label_overflow, lsh ]
                 draw_cv.clear_crop[]
                 if [ layer.label_font && layer.label_font.count > 0 ]
-                    draw_cv.set_font[ prev_font ]
+                    draw_cv.set_font[ (prev_fs) ? prev_font : null ]
                 draw_cv.restore      [ ]
 
             layer.draw*[ draw_cv ]
@@ -3714,6 +3715,11 @@ Display Window
                 if [ !e.needs_frame ]
                     e.pristine = true
 
+        # scroll_fade drives the mask from scroll state, per frame
+        if [ e.scroll_fade > 0.0 && e.content_h > 0.0 && e.bounds ]
+            mxs : f32 [ e.content_h - e.bounds.h ]
+            e.mask_glow.x = (e.scroll.y > 0.5) ? e.scroll_fade : 0.0
+            e.mask_glow.z = (mxs > 0.5 && e.scroll.y < mxs - 0.5) ? e.scroll_fade : 0.0
         mask_on : bool [ e.mask_glow.x > 0.0 || e.mask_glow.y > 0.0 || e.mask_glow.z > 0.0 || e.mask_glow.w > 0.0 ]
         if [ e.cache_canvas && !e.animated && stage == CanvasType.screen ]
             if [ mask_on ]
@@ -4044,6 +4050,8 @@ element TButtons
     public  selected  : i32 [ -1 ]
     public  sel_mask  : i32
     public  seg_radius : f32 [ 8.0 ]
+    # icon height as a fraction of the control's height
+    public  icon_scale : f32 [ 0.55 ]
     # rest-state edge, off by default; set to match neighboring buttons
     public  rest_glow  : rgba
     public  rest_px    : f32
@@ -4129,7 +4137,7 @@ element TButtons
             icon : string [ (icon_ids && i < icon_ids.count) ? icon_ids[i] : buttons[i] ]
             svg  : SVGModel (icons) ? seg_svg[ icon ] : null
             if [ svg ]
-                isz : f32 [ bounds.h * 0.55 ]
+                isz : f32 [ bounds.h * ((icon_scale > 0.0) ? icon_scale : 0.55) ]
                 ix  : f32 [ x + (seg_w - isz) * 0.5 ]
                 iy  : f32 [ (bounds.h - isz) * 0.5 ]
                 cv.fill_color[ rgba [ '#fff' ] ]
