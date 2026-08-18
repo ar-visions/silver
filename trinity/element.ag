@@ -205,6 +205,9 @@ ielement element
     intern mask_w        : i32
     intern mask_h        : i32
     public mask_glow     : vec4f
+    # px of edge fade tied to scroll: top fades when scrolled down,
+    # bottom fades while more content remains below. 0 = off
+    public scroll_fade   : f32
     intern mask_bg       : vec4f
     public mask_keep_l   : f32
     public mask_inset    : vec4f

@@ -74,11 +74,18 @@ element EditorView
     mutable newfile      : bool
     mutable newfile_text : string
     mutable newfile_src  : path
+    # the typed name creates a folder instead of a file
+    mutable newfile_dir  : bool
 
     func newfile_enter [ p: path ]
         newfile      = true
         newfile_text = ''
         newfile_src  = p
+        newfile_dir  = false
+
+    func newdir_enter [ p: path ]
+        newfile_enter[ p ]
+        newfile_dir  = true
 
     func newfile_exit []
         newfile      = false
@@ -96,6 +103,12 @@ element EditorView
         if [ !orb || !newfile_text || newfile_text.count == 0 ] return
         if [ newfile_exists[] ] return    # red name: no action
         p9 : path '{orb.nav_root}/{newfile_text}'
+        if [ newfile_dir ]
+            p9.make_dir[]
+            newfile_exit[]
+            orb.nav_root = p9
+            orb.run_search[]
+            return
         e9 : string ''
         p9.save[ e9, null ]
         newfile_exit[]
@@ -201,6 +214,8 @@ element EditorView
         if [ e && e.run_view && !e.run_view.ended ]
             t['gotosrc'] = BandSource [ label: 'active', manual_mode: true ]
         if [ newfile ]
+            # create mode has its own cancel: never two close buttons
+            t.rm[ 'histnav' ]
             t['newfile_cancel'] = LButton [ icon: 'close', manual_mode: true ]
         return t
 
@@ -221,15 +236,16 @@ element EditorView
             dbgr : dbg o.active_debugger[]
             t['text'] = Editor [
                 src: file[]
+                hide: browse_active[]
                 breakpoints: o.breakpoints, code_font_size: o.code_font_size,
                 nav: o.nav_panes[ pane_index ], pane_index: pane_index,
                 debug_running: (dbgr) ? true : false, debugger: dbgr, debug_vars: o.debug_vars,
                 expanded: findbar_on[], replacing: findbar_on[],
-                show_hits: (searchable[]) ? (o.find_showing || o.nav_showing) : false,
-                single_line: (o.nav_showing && o.browse_single),
+                show_hits: false,
+                single_line: false,
                 header_size: o.browse_header_size, dir_size: o.browse_dir_size,
-                nav_list: (searchable[]) ? o.nav_showing : false, dock_rows: o.nav_dock_rows,
-                grid_mode: (searchable[]) ? (o.nav_showing && o.grid_mode) : false,
+                nav_list: false, dock_rows: o.nav_dock_rows,
+                grid_mode: false,
                 hits: o.find_hits,
                 find_query: (searchable[] && findbar_on[]) ? o.findbar_text : '',
                 elements: edels ]
@@ -367,24 +383,57 @@ element EditorView
         # create mode self-heals when the pane's file changes under it
         p : file[]
         if [ newfile && newfile_src && p && '{newfile_src}' != '{p}' ] newfile_exit[]
+        # the nav surface must track the split's text region; when the
+        # splitter moves it out from under us, a restyle re-fits it
+        cbv : element (elements) ? elements['commit'] : null
+        spl : element (elements) ? elements['split'] : null
+        if [ cbv && spl && spl.elements && spl.bounds ]
+            tx9 : element spl.elements['text']
+            if [ tx9 && tx9.bounds && cbv.bounds ]
+                same : bool [ cbv.bounds.x == spl.bounds.x + tx9.bounds.x && cbv.bounds.y == spl.bounds.y + tx9.bounds.y && cbv.bounds.w == tx9.bounds.w && cbv.bounds.h == tx9.bounds.h ]
+                if [ !same ]
+                    if [ ux ] ux.restyle = true
+
+    # the nav/commit surface replaces the editor for browse AND find
+    func browse_active [] -> bool
+        o : orb[]
+        if [ !o || !searchable[] ] return false
+        return o.nav_showing || o.find_showing
 
     public func render [] -> Elements
-        return (!orb[]) ? null : Elements [
-            'title' : EditorTitle [
-                area: Region { l0 t0 r0 h1.3 }
-                selected: !file[]
-                focusable: true
-                spacing_x: 0.2
-                spacing_y: 0.2
-                edit: (newfile) ? newfile_text : orb[].find_text
-                label: (newfile) ? 'name new file' : title_text[]
-                conflict: newfile && newfile_exists[]
-                no_scroll: true
-                hint: title_hint[]
-                elements: title_els[] ],
-            'split' : Splitter [ area: Region { l0 t1.3 r0 b0 }, vertical: true,
-                inner: pane_els[], deflt: 180.0,
-                min_size: 44.0 ] ]
+        if [ !orb[] ] return null
+        t : Elements [ ]
+        t['title'] = EditorTitle [
+            area: Region { l0 t0 r0 h1.3 }
+            selected: !file[]
+            focusable: true
+            spacing_x: 0.2
+            spacing_y: 0.2
+            edit: (newfile) ? newfile_text : orb[].find_text
+            label: (newfile) ? ((newfile_dir) ? 'name new folder' : 'name new file') : title_text[]
+            conflict: newfile && newfile_exists[]
+            no_scroll: true
+            hint: title_hint[]
+            elements: title_els[] ]
+        t['split'] = Splitter [ area: Region { l0 t1.3 r0 b0 }, vertical: true,
+            inner: pane_els[], deflt: 180.0,
+            min_size: 44.0 ]
+        if [ browse_active[] ]
+            # the surface is a peer of the editor pane: it takes the
+            # split's live text region, never the whole view
+            spl9 : element (elements) ? elements['split'] : null
+            tx8  : element (spl9 && spl9.elements) ? spl9.elements['text'] : null
+            if [ tx8 && tx8.bounds && spl9.bounds && tx8.bounds.h > 0.0 ]
+                # bounds are parent-relative: compose split + pane
+                cx8 : f32 [ spl9.bounds.x + tx8.bounds.x ]
+                cy8 : f32 [ spl9.bounds.y + tx8.bounds.y ]
+                cw8 : f32 [ tx8.bounds.w ]
+                ch8 : f32 [ tx8.bounds.h ]
+                t['commit'] = CommitView [ focusable: true, scroll_fade: 24.0,
+                    area: Region [ 'l{cx8}px t{cy8}px w{cw8}px h{ch8}px' ] ]
+            el
+                t['commit'] = CommitView [ focusable: true, scroll_fade: 24.0, area: Region { l0 t1.3 r0 b0 } ]
+        return t
 
 element EditorTitle
     public selected : bool
@@ -405,7 +454,7 @@ element EditorTitle
             label_size: 19
             editable: true
             label_align: 0.0 0.5
-            label_offset: 78.0 0.0
+            label_offset: 98.0 0.0
         :conflict
             layers.tface:
                 label_color: #e05e5e
@@ -424,7 +473,7 @@ element EditorTitle
             isz : f32 [ 20.0 ]
             cv.fill_color[ '#ffffff' ]
             cv.stroke_color[ '#ffffff' ]
-            cv.draw_svg[ mdl, 50.0, (bounds.h - isz) * 0.5, isz, isz ]
+            cv.draw_svg[ mdl, 70.0, (bounds.h - isz) * 0.5, isz, isz ]
         # the view we are in, trailing the name. painted, so the label
         # stays the editable field and this can never be selected
         if [ hint && hint.count > 0 ]
@@ -434,7 +483,7 @@ element EditorTitle
             cv.fill_color[ '#ffffff66' ]
             cv.stroke_width[ 0.0 ]
             cv.draw_text[ hint,
-                rect [ x: 78.0 + m9.w + 16.0, y: 0.0, w: bounds.w, h: bounds.h ],
+                rect [ x: 98.0 + m9.w + 16.0, y: 0.0, w: bounds.w, h: bounds.h ],
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
             cv.paint[]
 
@@ -922,7 +971,7 @@ element FindField
             label_size: 19
             editable: true
             label_align: 0.0 0.5
-            label_offset: 0.0 0.0
+            label_offset: 20.0 0.0
         :focused
             layers.face:
                 label_color: #ffff
@@ -1183,11 +1232,8 @@ element orbiter : trinity # implements compiler
     intern git_last  : i64
     # the watcher saw a source change since the last fetch
     intern git_dirty : bool
-    # reveal-all opened: the tab bar shows every changed file
-    intern reveal_all : bool
-    # commit form revealed in the nav list; message survives rebuilds
-    intern commit_open   : bool
-    intern commit_text   : array string
+    # ONE buffer mapping for every pane and view, keyed by absolute path
+    public file_cache    : map FileBuf [string]
     public show_avatar   : bool [ true ]
     public avatar_expanded : bool
     public avatar_enabled  : bool
@@ -1288,6 +1334,7 @@ element orbiter : trinity # implements compiler
         target_roots   = array path []
         target_srcs    = array path []
         load_settings[]
+        file_cache     = map FileBuf [string] []
         open_files     = array path []
         docked         = array path []
         # a few default pins so the column has content to look at
@@ -2359,19 +2406,38 @@ element orbiter : trinity # implements compiler
         dc9  : bool [ edp9 && edp9.diff_commit && edp9.diff_commit.count > 0 ]
         if [ dc9 || hx9 ]
             els['panel_close'] = LButton [ icon: 'close', manual_mode: true ]
+        # the left slot closes the finder — Esc's clickable twin, sized
+        # exactly like the history arrows so the title never shifts
         if [ engaged && !is_resource ]
-            els['magnify'] = LButton [ icon: 'magnify', selected: fb_on, manual_mode: true ]
+            ncls : array string [ 'finder_close' ]
+            nclo : array string [ 'close' ]
+            els['histnav'] = TButtons [ buttons: ncls, icon_ids: nclo, manual: true,
+                icon_scale: 0.45, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0,
+                area: Region [ 'l0+ t0 w1.8 h0.9' ] ]
+        # editing only: cmd+left / cmd+right as clickable history arrows
+        if [ !engaged && !is_resource ]
+            nnav : array string [ 'nav_back', 'nav_fwd' ]
+            nico : array string [ 'left', 'right' ]
+            els['histnav'] = TButtons [ buttons: nnav, icon_ids: nico, manual: true,
+                icon_scale: 0.45, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0,
+                area: Region [ 'l0+ t0 w1.8 h0.9' ] ]
 
         psess9 : string (agent_open && pane_ix == editor_slots.count) ? orbit_sid :
             ((pane_ix < pane_console.count) ? pane_console[pane_ix] : '')
         con9   : bool [ psess9 && psess9.count > 0 ]
         tnav : array string [ ]
+        tmask : i32 [ 0 ]
+        # find is reachable at all times, not just inside the nav
+        if [ !is_resource ]
+            # magnify lights while the findbar is open
+            if [ fb_on ] tmask = 1
+            tnav.push[ 'magnify' ]
         if [ editor_slots.count > 1 ] tnav.push[ 'undock' ]
         if [ editor_slots.count < 4 && !con9 ] tnav.push[ 'dock' ]
         if [ agent_pane[] < 0 && pane_ix == last_editor_pane[] ] tnav.push[ 'gear' ]
         wn9 : f32 [ f32[ tnav.count ] * 1.15 ]
         if [ tnav.count > 0 ]
-            els['tabnav'] = TButtons [ buttons: tnav, manual: true,
+            els['tabnav'] = TButtons [ buttons: tnav, manual: true, sel_mask: tmask,
                 rest_glow: rgba [ '#ccf2' ], rest_px: 16.0,
                 area: Region [ 'r0+ t0 w{wn9} h0.9' ] ]
 
@@ -2420,19 +2486,35 @@ element orbiter : trinity # implements compiler
         work.push[ dirs ]
         index_task     = async [ target: a, work_fn: @index_work, work: work ]
 
+    # a git repo indexes by ls-files: everything gitignored stays out
+    func index_repo [ rp: path, cap: i32 ] -> bool
+        ls : array string git_capture[ rp, 'ls-files --cached --others --exclude-standard', false ]
+        index_lock.lock[]
+        for [ i: i32 0, i < ls.count, i += 1 ]
+            if [ index_cancel || file_index.count >= cap ] break
+            file_index.push[ path '{rp}/{ls[i]}' ]
+        over : bool [ file_index.count >= cap ]
+        index_lock.unlock[]
+        return over
+
     func index_work [ dirs: array path ] -> none
         stack : array path []
         repos : array path []
-        for [ r: path ] in dirs
-            stack.push[ r ]
         cap : i32 [ (max_search > 0) ? max_search : 400000 ]
+        for [ r: path ] in dirs
+            g0 : path '{r}/.git'
+            if [ g0.exists[] ]
+                index_repo[ r, cap ]
+            el
+                stack.push[ r ]
         while [ !index_cancel ]
             if [ stack.count == 0 ]
-                # main tree exhausted → fold in the deferred repositories
+                # main tree exhausted → deferred repositories, by ls-files
                 if [ repos.count == 0 ] break
                 for [ rp: path ] in repos
-                    stack.push[ rp ]
+                    if [ !index_cancel ] index_repo[ rp, cap ]
                 repos = array path []
+                continue
             n : i32 [ stack.count - 1 ]
             d : path hold[ stack[n] ]
             stack.remove[ n ]
@@ -2866,10 +2948,15 @@ element orbiter : trinity # implements compiler
         if [ win && win.focus && win.focus.id == 'title' ]
             for [ e: element* win.focus, e, e = e.parent ]
                 if [ e inherits EditorView ] return e.id
+        # a focused nav surface owns the search — NEVER pane0 fallback,
+        # which flashed the surface onto the other pane for a frame
+        if [ win && win.focus && win.focus inherits CommitView ]
+            for [ e: element* win.focus, e, e = e.parent ]
+                if [ e inherits EditorView ] return e.id
         # an open findbar owns the search — results land in ITS pane
         if [ findbar_open && findbar_pane && findbar_pane.count > 0 ]
             return findbar_pane
-        return 'pane0'
+        return 'pane{active_pane}'
 
     # modules register rail views in install/export/*.agi:
     # views: ['name': ascii|binary|agnostic] — FileType applicability
@@ -2940,34 +3027,31 @@ element orbiter : trinity # implements compiler
 
     func apply_pane [ ed: Editor, is_search: bool, slot: i32 ]
         if [ !ed ] return
+        # browse AND find live in CommitView: the pane is never displaced
         was_search : bool [ ed.finder_list ]
-        if [ is_search && !was_search ]
-            ed.saved_scroll  = ed.scroll.y
-            ed.scroll.y      = 0.0
-            ed.scroll_target = 0.0
-        ed.finder_list = is_search
+        ed.finder_list = false
         # code views only fit ascii files; binaries get b16 alone
         ed.nav_tools   = null
         ed.nav_default = null
         if [ is_search && ed.src ]
             ed.nav_tools   = (ed.file_is_binary[ ed.src ]) ? view_tools_bin : view_tools
             ed.nav_default = ed.default_view_for[ ed.src ]
-        if [ is_search ]
-            # the finder DISPLACES the pane's content, so nothing is mounted
-            # any more — clearing the key makes load_file rebuild on the way out
-            ed.lines   = find_results
-            ed.mounted = null
-        el [ slot >= 0 && slot < open_files.count ]
-            # any other pane with a file open: restore its content
-            ed.src = open_files[slot]
-            ed.load_file[]
-            # leaving finder → put the file back where it was scrolled.
-            if [ was_search ]
-                ed.scroll.y      = ed.saved_scroll
-                ed.scroll_target = ed.saved_scroll
+        if [ slot >= 0 && slot < open_files.count ]
+            # reload ONLY on real change: a blanket load_file remounts
+            # every pane's view and flashes the ones not involved
+            np : path open_files[slot]
+            same : bool [ ed.src && '{ed.src}' == '{np}' ]
+            if [ was_search || !same ]
+                ed.src = np
+                ed.load_file[]
+                if [ was_search ]
+                    ed.scroll.y      = ed.saved_scroll
+                    ed.scroll_target = ed.saved_scroll
+                ed.pristine = false
         el
-            ed.lines = list string []
-        ed.pristine = false
+            if [ ed.lines && ed.lines.count > 0 ]
+                ed.lines = list string []
+                ed.pristine = false
 
     func pane_view [ i: i32 ] -> element
         spl : element (elements) ? elements[ 'panes' ] : null
@@ -3244,7 +3328,19 @@ element orbiter : trinity # implements compiler
         if [ rl.count > 0 ]
             sn.repo  = rl[0]
             rp : path '{sn.repo}'
-            sn.files = repo_changed[ rp ]
+            ch : array string repo_changed[ rp ]
+            # closest to the repo root first: fewest separators
+            srt : array string []
+            for [ i: i32 0, i < ch.count, i += 1 ]
+                d9  : i32 [ path_depth[ ch[i] ] ]
+                at9 : i32 [ srt.count ]
+                for [ j: i32 0, j < srt.count, j += 1 ]
+                    dj : i32 [ path_depth[ srt[j] ] ]
+                    if [ d9 < dj || (d9 == dj && ch[i].compare[ srt[j] ] < 0) ]
+                        at9 = j
+                        break
+                srt.insert[ ch[i], at9 ]
+            sn.files = srt
             ins9 : i32 [ 0 ]
             del9 : i32 [ 0 ]
             ss9 : array string git_capture[ rp, 'diff --shortstat HEAD', false ]
@@ -3292,33 +3388,33 @@ element orbiter : trinity # implements compiler
         if [ rl.count == 0 ] return null
         return path rl[0]
 
-    func commit_toggle []
-        commit_open = !commit_open
-        if [ commit_open ] commit_text = array string [ '', '', '' ]
-        run_search[]
+    # fixed 144px tabs on a 150px stride, 12px insets
+    func commit_cap [ w: f32 ] -> i32
+        c : i32 [ i32[ (w - 24.0) / 150.0 ] ]
+        return (c < 1) ? 1 : c
 
-    # stage everything and commit with the form's message lines
-    func do_commit []
+    # reveal belongs to the asking view: never app state
+    func commit_tab_rows [ w: f32, reveal: bool ] -> i32
+        if [ !git_snap || !git_snap.files || git_snap.files.count == 0 ] return 0
+        c : i32 [ commit_cap[ w ] ]
+        r : i32 [ (git_snap.files.count + c - 1) / c ]
+        if [ !reveal && r > 3 ] r = 3
+        return r
+
+    # stage everything and commit; the message comes from the view
+    func do_commit [ cmsg: string ]
         r9 : path repo_root[]
-        if [ !r9 || !commit_text ] return
-        msg : string ''
-        for [ i: i32 0, i < commit_text.count, i += 1 ]
-            l9 : string commit_text[i]
-            if [ !l9 || l9.trim[].count == 0 ] continue
-            msg = (msg.count > 0) ? msg + '\n' + l9 : l9
-        if [ msg.count == 0 ] return
+        if [ !r9 || !cmsg || cmsg.count == 0 ] return
         # the message rides a shell line: escape for double quotes
         esc : string ''
-        for [ i: i32 0, i < msg.count, i += 1 ]
-            c9 : i32 [ msg.chars[ i ] ]
+        for [ i: i32 0, i < cmsg.count, i += 1 ]
+            c9 : i32 [ cmsg.chars[ i ] ]
             if [ c9 == 34 || c9 == 92 || c9 == 36 || c9 == 96 ] esc = esc + '\\'
-            esc = esc + msg.mid[ i, 1 ]
+            esc = esc + cmsg.mid[ i, 1 ]
         git_capture[ r9, 'add -A', false ]
         git_capture[ r9, 'commit -m "{esc}"', false ]
-        commit_open = false
-        commit_text = null
         git_summarize[]
-        run_search[]
+        if [ ux ] ux.restyle = true
 
     # changed files in the browsed repo, paths relative to its root
     func repo_changed [ repo: path ] -> array string
@@ -3337,14 +3433,18 @@ element orbiter : trinity # implements compiler
         return out
 
     func push_dir_hit [ p: path, label: string ]
-        find_hits.push[ FindHit [ is_header: true, is_dir: true, text: label, dir: '', file: p ] ]
+        m9 : path '{p}/{p.filename[]}.ag'
+        ism : bool [ m9.exists[] ]
+        find_hits.push[ FindHit [ is_header: true, is_dir: true, is_module: ism, text: label, dir: '', file: p ] ]
         if [ !browse_single ]
-            find_hits.push[ FindHit [ is_header: true, is_dir: true, text: '', file: p ] ]
+            find_hits.push[ FindHit [ is_header: true, is_dir: true, is_module: ism, text: '', file: p ] ]
 
-    # arrowing into the list moves focus off the title; the menu stays
+    # arrowing into the list moves focus off the title; the menu stays.
+    # the commit form's focus keeps it open the same way
     func list_focused [] -> bool
         win : ux
         if [ !win || !win.focus ] return false
+        if [ win.focus inherits CommitView ] return true
         if [ !(win.focus inherits Editor) ] return false
         ed9 : Editor win.focus
         return ed9.show_hits || ed9.finder_list
@@ -3366,69 +3466,13 @@ element orbiter : trinity # implements compiler
                     p : path '{matches.value_by_index[ i ]}'
                     push_file_hit[ p, true ]
                     combined.push[ '{p}' ]
+                if [ matches.count == 0 ]
+                    find_hits.push[ FindHit [ is_header: true, text: 'no results for {find_text}', dir: '', file: null ] ]
             el
-                # top section: a tab bar of the repo's changed files, then
-                # the +/- totals row whose button reveals the commit form.
-                # all data comes from the threaded snapshot — no fetch here
+                # the commit surface is its own element (CommitView); the
+                # list only keeps the snapshot fresh for it
                 nb : string [ (nav_root) ? '{nav_root}' : '{project_root[]}' ]
                 if [ !git_busy && (!git_snap || git_snap.base.compare[ nb ] != 0) ] git_summarize[]
-                if [ git_snap && git_snap.repo && (!git_snap.files || git_snap.files.count == 0) ] commit_open = false
-                if [ git_snap && git_snap.repo && git_snap.files && git_snap.files.count > 0 ]
-                    repo : path '{git_snap.repo}'
-                    ch : array string git_snap.files
-                    if [ ch.count > 0 ]
-                        # closest to the repo root first: fewest separators
-                        srt : array string []
-                        for [ i: i32 0, i < ch.count, i += 1 ]
-                            d9  : i32 [ path_depth[ ch[i] ] ]
-                            at9 : i32 [ srt.count ]
-                            for [ j: i32 0, j < srt.count, j += 1 ]
-                                dj : i32 [ path_depth[ srt[j] ] ]
-                                if [ d9 < dj || (d9 == dj && ch[i].compare[ srt[j] ] < 0) ]
-                                    at9 = j
-                                    break
-                            srt.insert[ ch[i], at9 ]
-                        # fixed-width pills: rows hold what the pane fits
-                        zw9 : f32 [ 500.0 ]
-                        zcw : f32 [ 8.0 ]
-                        for [ i: i32 0, i < editor_slots.count, i += 1 ]
-                            if [ sp == 'pane{i}' ]
-                                edz : Editor pane_at[ i ]
-                                if [ edz ]
-                                    if [ edz.zone_w > 0.0 ] zw9 = edz.zone_w
-                                    if [ edz.cw_cache > 0.0 ] zcw = edz.cw_cache
-                        pwz : f32 [ zcw * 0.85 * 10.0 + 12.0 ]
-                        cap9 : i32 [ i32[ zw9 / (pwz + 6.0) ] ]
-                        if [ cap9 < 1 ] cap9 = 1
-                        maxr : i32 [ (reveal_all) ? 100000 : 3 ]
-                        cur_n : array string []
-                        cur_p : array string []
-                        cur_t : string ''
-                        rows9 : i32 [ 0 ]
-                        for [ i: i32 0, i < srt.count, i += 1 ]
-                            rp9 : string srt[i]
-                            fx9 : i32 [ rp9.rindex_of[ '/' ] ]
-                            nm9 : string [ (fx9 >= 0) ? rp9.mid[ fx9 + 1, rp9.count - fx9 - 1 ] : rp9 ]
-                            if [ cur_n.count >= cap9 ]
-                                find_hits.push[ FindHit [ is_header: true, is_tabs: true, text: cur_t, tab_names: cur_n, tab_paths: cur_p ] ]
-                                rows9 += 1
-                                if [ rows9 >= maxr ] break
-                                cur_n = array string []
-                                cur_p = array string []
-                                cur_t = ''
-                            cur_n.push[ nm9 ]
-                            cur_p.push[ '{repo}/{rp9}' ]
-                            cur_t = (cur_t.count > 0) ? cur_t + '  ' + nm9 : nm9
-                        if [ rows9 < maxr && cur_t.count > 0 ]
-                            find_hits.push[ FindHit [ is_header: true, is_tabs: true, text: cur_t, tab_names: cur_n, tab_paths: cur_p ] ]
-                        find_hits.push[ FindHit [ is_header: true, is_commit: true, adds: git_snap.adds, dels: git_snap.dels, nfiles: ch.count, text: (commit_open) ? 'cancel' : 'make commit' ] ]
-                        if [ commit_open ]
-                            if [ !commit_text ] commit_text = array string [ '', '', '' ]
-                            for [ i: i32 0, i < commit_text.count, i += 1 ]
-                                find_hits.push[ FindHit [ is_msg: true, line: i, text: commit_text[i] ] ]
-                            find_hits.push[ FindHit [ is_header: true, is_commit_go: true, text: 'commit' ] ]
-                        if [ browse_single ]
-                            find_hits.push[ FindHit [ is_header: true, is_spacer: true, text: '' ] ]
                 # consoles are not files and do not belong in this list
                 if [ docked && show_pins ]
                     d0 : i32 [ find_hits.count ]
@@ -3466,14 +3510,22 @@ element orbiter : trinity # implements compiler
                             if [ !e.is_dir[] ]
                                 push_file_hit[ e, grid_mode ]
                                 combined.push[ '{e}' ]
-                    # bottom of the results: bordered new-file row
+                    # bottom of the results: a break, then the create buttons
+                    find_hits.push[ FindHit [ is_header: true, is_spacer: true, text: '' ] ]
                     find_hits.push[ FindHit [ is_header: true, is_newfile: true, text: 'new file' ] ]
             find_results = combined
-        nav_showing = active && find_hits && find_hits.count > 0
+        # empty results keep the view up: it says so instead of vanishing
+        nav_showing = active
         for [ i: i32 0, i < editor_slots.count, i += 1 ]
             pid : 'pane{i}'
             ed  : Editor pane_at[ i ]
             apply_pane[ ed, active && (sp == pid), editor_slots[i] ]
+            # the surface presents find_hits: new results must repaint it
+            pv9 : element pane_view[ i ]
+            cbe : element (pv9 && pv9.elements) ? pv9.elements['commit'] : null
+            if [ cbe ]
+                cbe.pristine = false
+        if [ ux ] ux.will_animate = true
 
     func rekeep_listing []
         if [ !nav_showing ] return
@@ -3769,8 +3821,6 @@ element orbiter : trinity # implements compiler
                     pending_finder = ed.pane_index
                     break
             return true
-        # commit-zone rows are handled by the editor's own zone press
-        if [ h.is_tabs || h.is_commit || h.is_commit_go || h.is_msg ] return true
         if [ h.is_dir && h.file ]
             nav_root  = h.file
             ed.sel_line      = -1
@@ -3815,6 +3865,15 @@ element orbiter : trinity # implements compiler
             if [ e inherits Editor ]
                 ed : Editor e
                 # hits are clickable only while the list is actually shown
+                if [ ev.target == e && (nav_showing || find_showing) ]
+                    # shift-click pins: merge the row into the top list
+                    if [ ev.key.shift && ed.hover_line >= 0 && ed.hover_line < find_hits.count ]
+                        hs : FindHit find_hits[ ed.hover_line ]
+                        if [ hs && hs.is_header && hs.file && !hs.is_spacer ]
+                            toggle_dock[ hs.file ]
+                            ev.no_default = true
+                            if [ ev.target ] ev.target.ux.restyle = true
+                        return
                 if [ ev.target == e && (nav_showing || find_showing) && ed.sel_line >= 0 && ed.sel_line < find_hits.count ]
                     dbl : bool [ ev.mouse.double_click && last_hit_row == ed.sel_line ]
                     last_hit_row = ed.sel_line
@@ -4065,6 +4124,20 @@ element orbiter : trinity # implements compiler
             ev.no_default = true
             if [ ev.target ] ev.target.ux.restyle = true
             force_update[]
+            return
+
+        if [ ev.target.id == 'finder_close' ]
+            exit_find_mode[]
+            ev.no_default = true
+            if [ ev.target ] ev.target.ux.restyle = true
+            force_update[]
+            return
+
+        if [ ev.target.id == 'nav_back' || ev.target.id == 'nav_fwd' ]
+            edn : Editor pane_of[ ev.target ]
+            if [ edn ] edn.nav_walk[ (ev.target.id == 'nav_back') ? -1 : 1 ]
+            ev.no_default = true
+            if [ ev.target ] ev.target.ux.restyle = true
             return
 
         if [ ev.target.id == 'magnify' ]

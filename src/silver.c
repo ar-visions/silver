@@ -877,6 +877,7 @@ typedef struct {
     array  work, wrec;
     map    inits;
     int    first, step;
+    int*   done;
     string err;
 } fn_worker_t;
 
@@ -893,6 +894,7 @@ static void* build_fn_worker(void* arg) {
             if (rec) push_scope(a, (Au)rec, 27);
             build_fn(a, f2, pre, null);
             if (rec) pop_scope(a);
+            if (w->done) __atomic_add_fetch(w->done, 1, __ATOMIC_RELAXED);
         }
     }
     on_error() {
@@ -1241,6 +1243,7 @@ void silver_parse(silver a) {
     } else {
         fn_worker_t* ws = (fn_worker_t*)calloc(nthreads, sizeof(fn_worker_t));
         pthread_t*   ts = (pthread_t*)  calloc(nthreads, sizeof(pthread_t));
+        int done_ct = 0;
         for (int t = 0; t < nthreads; t++) {
             ws[t].a     = (silver)aether_clone((aether)a, t);
             ws[t].work  = work;
@@ -1248,7 +1251,15 @@ void silver_parse(silver a) {
             ws[t].inits = inits;
             ws[t].first = t;
             ws[t].step  = nthreads;
+            ws[t].done  = &done_ct;
             pthread_create(&ts[t], null, build_fn_worker, &ws[t]);
+        }
+        // the bar tracks completed functions; joins happen once all land
+        for (;;) {
+            int d = __atomic_load_n(&done_ct, __ATOMIC_RELAXED);
+            progress_draw(a, 0.5 + 0.5 * (double)d / (double)(nwork ? nwork : 1));
+            if (d >= nwork || a->error) break;
+            usleep(20000);
         }
         string werr = null;
         for (int t = 0; t < nthreads; t++) {
