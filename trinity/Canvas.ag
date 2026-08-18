@@ -1266,6 +1266,11 @@ Render Canvas
     mutable states     : array CanvasState
     public state_depth : i32
     mutable font       : CanvasFont
+    # true while an explicitly set font overrides the sized default
+    mutable font_set   : bool
+    # svg solid override: every shape paints this one color
+    mutable svg_solid    : vec4f
+    mutable svg_solid_on : bool
     public ft_lib      : handle
     public glyph_atlas : GlyphAtlas
     intern ui_shader     : CanvasUI
@@ -1623,8 +1628,18 @@ Render Canvas
             cur_xform = xform_stack[ xform_stack.count - 1 ]
             xform_stack.pop[]
 
+    # an explicit font holds until set_font[null] releases it
     func set_font [ fnt: CanvasFont ]
         font = fnt
+        font_set = (fnt) ? true : false
+
+    # paint svgs one flat color (state tinting); off restores authored
+    func svg_override [ c: rgba ]
+        svg_solid    = sk_color[ c ]
+        svg_solid_on = true
+
+    func svg_override_off []
+        svg_solid_on = false
 
     func font_size [ px: i32 ]
         states[state_depth - 1].font_size = px
@@ -1660,6 +1675,7 @@ Render Canvas
         restore[]
 
     public func ensure_font []
+        if [ font_set && font ] return
         sz : i32 [ states[state_depth - 1].font_size ]
         if [ sz <= 0 ] sz = 22
         ds  : f32 [ (w.scale > 0) ? w.scale : 1.0 ]
@@ -2183,7 +2199,11 @@ Render Canvas
             return
         tf : vec4f [ states[state_depth - 1].fill_color ]
         ts : vec4f [ states[state_depth - 1].stroke_color ]
-        tint_same : bool [ memcmp[ @mdl.cache_fill,   @tf, sizeof[ vec4f ] ] == 0 &&
+        if [ svg_solid_on ]
+            tf = svg_solid
+            ts = svg_solid
+        tint_same : bool [ mdl.cache_solid == svg_solid_on &&
+                           memcmp[ @mdl.cache_fill,   @tf, sizeof[ vec4f ] ] == 0 &&
                            memcmp[ @mdl.cache_stroke, @ts, sizeof[ vec4f ] ] == 0 ]
         need_alloc : bool [ !mdl.cache || mdl.cache_rw != rw || mdl.cache_rh != rh ]
         if [ need_alloc || !tint_same ]
@@ -2202,6 +2222,7 @@ Render Canvas
             mdl.cache_rh     = rh
             mdl.cache_fill   = tf
             mdl.cache_stroke = ts
+            mdl.cache_solid  = svg_solid_on
             rw4   : f32 [ f32(cw4) ]
             rh4   : f32 [ f32(ch4) ]
             sx    : f32 (mdl.w > 0.0) ? rw4 / mdl.w : 1.0
@@ -2213,15 +2234,28 @@ Render Canvas
                 fc : rgba rgba[ '#00000000' ]
                 sc : rgba rgba[ '#00000000' ]
                 if [ !shape.fill_none && shape.fill ]
-                    fc.r = shape.fill.r * tf.x
-                    fc.g = shape.fill.g * tf.y
-                    fc.b = shape.fill.b * tf.z
-                    fc.a = shape.fill.a * tf.w
+                    if [ svg_solid_on ]
+                        # override: the one color, authored alpha kept
+                        fc.r = tf.x
+                        fc.g = tf.y
+                        fc.b = tf.z
+                        fc.a = shape.fill.a * tf.w
+                    el
+                        fc.r = shape.fill.r * tf.x
+                        fc.g = shape.fill.g * tf.y
+                        fc.b = shape.fill.b * tf.z
+                        fc.a = shape.fill.a * tf.w
                 if [ !shape.stroke_none && shape.stroke ]
-                    sc.r = shape.stroke.r * ts.x
-                    sc.g = shape.stroke.g * ts.y
-                    sc.b = shape.stroke.b * ts.z
-                    sc.a = shape.stroke.a * ts.w
+                    if [ svg_solid_on ]
+                        sc.r = ts.x
+                        sc.g = ts.y
+                        sc.b = ts.z
+                        sc.a = shape.stroke.a * ts.w
+                    el
+                        sc.r = shape.stroke.r * ts.x
+                        sc.g = shape.stroke.g * ts.y
+                        sc.b = shape.stroke.b * ts.z
+                        sc.a = shape.stroke.a * ts.w
                 mdl.cache.save[]
                 mdl.cache.set_opacity[ shape.opacity ]
                 mdl.cache.fill_color[ fc ]

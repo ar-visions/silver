@@ -200,3 +200,718 @@ ResourceView GitView
         return FileType.ascii
     func view_element [] -> element
         return GitList [ file: src ]
+
+# the nav surface: rail chips, changed-file tabs, totals, the
+# message form, and the browse list — ONE element, ONE scroll
+Layer CommitLayer
+    func draw [ cv: Canvas ]
+        cb : CommitView [ parent ]
+        if [ !cb ] return
+        orb : cast orbiter [ cb.ux.app_object ]
+        if [ !orb ] return
+        ev9 : EditorView cb.view[]
+        ed  : Editor [ (ev9) ? ev9.text_of[] : null ]
+        # no ground of its own: the editor is hidden while we show,
+        # so the pane's background is already ours
+        cv.stroke_width[ 0.0 ]
+        wtx : f32 [ cv.transform_tx[] ]
+        wty : f32 [ cv.transform_ty[] ]
+        # rail chips, fixed at top-left — same dress as the editor rail
+        if [ ed && ed.nav_tools && ed.nav_tools.count > 0 ]
+            if [ !ed.ficons ] ed.ficons = FileIcons []
+            bas9 : i32 [ ed.tool_base[] ]
+            for [ ti: i32 0, ti < bas9 + ed.nav_tools.count, ti += 1 ]
+                tnm : string (bas9 == 1 && ti == 0) ? ed.nav_default : ed.nav_tools[ ti - bas9 ]
+                # chips top-align with the first tab row's pill
+                tyy : f32 [ bounds.y + 7.0 + f32[ ti ] * 68.0 ]
+                act9 : bool [ ed.view_name && ed.view_name.count > 0 && ed.view_name == tnm ]
+                if [ act9 ]
+                    cv.fill_color  [ rgba['#6cb6ff33'] ]
+                    cv.stroke_color[ rgba['#8fd0ff'] ]
+                el [ ti == cb.chip_hov ]
+                    cv.fill_color  [ rgba['#6cb6ff22'] ]
+                    cv.stroke_color[ rgba['#6cb6ffcc'] ]
+                el
+                    cv.fill_color  [ rgba['#10142088'] ]
+                    cv.stroke_color[ rgba['#fff3'] ]
+                cv.stroke_width[ (act9) ? 2.0 : 1.0 ]
+                cv.rounded_rect[ bounds.x + 4.0, tyy, 60.0, 64.0, 8.0, 8.0, 8.0, 8.0 ]
+                cv.paint       [ ]
+                cv.stroke_width[ 0.0 ]
+                tico : SVGModel ed.ficons.named[ tnm, 36 ]
+                if [ tico ]
+                    # selected = orangish white; resting = off purple white
+                    cv.svg_override[ (act9) ? rgba['#ffe6d2'] : ((ti == cb.chip_hov) ? rgba['#ffffff'] : rgba['#cfc6e8']) ]
+                    cv.draw_svg[ tico, bounds.x + 16.0, tyy + 6.0, 36.0, 36.0 ]
+                    cv.svg_override_off[]
+                cv.font_size[ 11.0 ]
+                cv.fill_color[ rgba['#c9c4dd'] ]
+                tlb : string tnm
+                if [ tnm == 'git' ] tlb = 'diff'
+                cv.draw_text[ tlb, rect [ x: bounds.x + 4.0, y: tyy + 44.0, w: 60.0, h: 16.0 ],
+                    vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+        # content right of the rail; everything below rides one scroll
+        x0  : f32 [ bounds.x + 76.0 ]
+        cw9 : f32 [ bounds.w - 76.0 ]
+        cv.set_crop[ wtx + x0, wty + bounds.y, wtx + bounds.x + bounds.w, wty + bounds.y + bounds.h ]
+        files : array string [ (orb.git_snap) ? orb.git_snap.files : null ]
+        nfl : i32 [ (files) ? files.count : 0 ]
+        cap : i32 [ orb.commit_cap[ cw9 ] ]
+        trs : i32 [ (nfl > 0) ? orb.commit_tab_rows[ cw9, cb.reveal_all ] : 0 ]
+        open9 : bool [ cb.commit_open && trs > 0 ]
+        band9 : i32 [ (trs > 0) ? trs + 1 + ((open9) ? 4 : 0) : 0 ]
+        lh  : f32 [ 36.0 ]
+        fs  : i32 [ 14 ]
+        cv.font_size[ fs ]
+        mtm : cv.measure_text[ 'x' ]
+        cb.cap_st  = cap
+        cb.cw_st   = mtm.w
+        cb.band_st = band9
+        # content tops at +4 so the first tab row meets the chips
+        yb : f32 [ bounds.y + 4.0 - cb.scroll.y ]
+        # tabs: 144px pills on a 150 stride
+        rep9 : string [ (orb.git_snap) ? orb.git_snap.repo : '' ]
+        shown : i32 [ trs * cap ]
+        if [ shown > nfl ] shown = nfl
+        for [ i: i32 0, i < shown, i += 1 ]
+            rp : string files[i]
+            fx : i32 [ rp.rindex_of[ '/' ] ]
+            nm : string [ (fx >= 0) ? rp.mid[ fx + 1, rp.count - fx - 1 ] : rp ]
+            rw9 : i32 [ i / cap ]
+            cl9 : i32 [ i % cap ]
+            tx : f32 [ x0 + f32[ cl9 ] * 150.0 ]
+            ty : f32 [ yb + f32[ rw9 ] * lh ]
+            if [ ty + lh < bounds.y || ty > bounds.y + bounds.h ] continue
+            if [ tx + 144.0 > bounds.x + bounds.w - 12.0 ] continue
+            thov : bool [ cb.hov_row == rw9 && cb.hov_tab == cl9 ]
+            # bold + white border when the buffer holds unsaved edits
+            dirty : bool [ false ]
+            if [ orb.file_cache ]
+                kp9 : path '{rep9}/{rp}'
+                fb9 : FileBuf orb.file_cache[ '{kp9.absolute[]}' ]
+                if [ fb9 && fb9.hist_i != fb9.sync_i ] dirty = true
+            # the row-highlight look, pinkish red — theme-bound
+            cv.save[ ]
+            cv.rounded[ 8.0, 8.0, 8.0, 8.0 ]
+            cv.fill_color[ (thov) ? cb.tcol['#ff3a6a44'] : cb.tcol['#ff3a6a22'] ]
+            cv.stroke_width[ 1.0 ]
+            cv.stroke_color[ (dirty) ? rgba['#ffffff'] : ((thov) ? cb.tcol['#ff7aa4cc'] : cb.tcol['#ff5a8a99']) ]
+            cv.rect_to[ tx, ty + 3.0, 144.0, lh - 6.0 ]
+            cv.paint[ ]
+            cv.restore[ ]
+            if [ dirty ]
+                if [ !cb.bold_font ]
+                    bfp : path 'fonts/SpaceMono-Bold.ttf'
+                    if [ bfp.exists[] ]
+                        # match ensure_font's display scaling
+                        bsc : f32 [ (cv.w && cv.w.scale > 0.0) ? cv.w.scale : 1.0 ]
+                        cb.bold_font = CanvasFont [ ft_lib: cv.ft_lib, uri: 'fonts/SpaceMono-Bold.ttf', size_px: i32[ f32[ fs ] * bsc ] ]
+                if [ cb.bold_font ] cv.set_font[ cb.bold_font ]
+            cv.fill_color[ (thov) ? rgba['#ffffff'] : rgba['#ffd9e4'] ]
+            cv.draw_text[ nm,
+                rect [ x: tx + 4.0, y: ty, w: 136.0, h: lh ],
+                vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null ]
+            if [ dirty ] cv.set_font[ null ]
+        # control row: reveal-all pill left, totals + make commit right
+        cy : f32 [ yb + f32[ trs ] * lh ]
+        if [ trs > 0 ]
+            rvl : string '{nfl} files changed'
+            rvw : f32 [ f32[ rvl.count ] * mtm.w + 16.0 ]
+            lhov : bool [ cb.hov_ctl == 0 ]
+            cv.save[ ]
+            cv.rounded[ 8.0, 8.0, 8.0, 8.0 ]
+            cv.fill_color[ (lhov) ? rgba['#6cb6ff22'] : rgba['#0000'] ]
+            cv.stroke_width[ 0.0 ]
+            cv.rect_to[ x0, cy + 5.0, rvw, 26.0 ]
+            cv.paint[ ]
+            cv.restore[ ]
+            cv.fill_color[ (lhov) ? rgba['#ffffff'] : rgba['#9a94b0'] ]
+            cv.draw_text[ rvl,
+                rect [ x: x0, y: cy, w: rvw, h: lh ],
+                vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+            cb.lx0 = x0 - bounds.x
+            cb.lx1 = x0 + rvw - bounds.x
+            # totals after the count pill; make commit is a centered
+            # button that dodges anything sequenced before it
+            rhov : bool [ cb.hov_ctl == 1 ]
+            lbl : string [ (open9) ? 'cancel' : 'make commit' ]
+            lw9 : f32 [ f32[ lbl.count ] * mtm.w ]
+            as9 : string '+{orb.git_snap.adds}'
+            ds9 : string '-{orb.git_snap.dels}'
+            asx : f32 [ x0 + rvw + 16.0 ]
+            dsx : f32 [ asx + f32[ as9.count + 1 ] * mtm.w ]
+            bw9 : f32 [ lw9 + 22.0 ]
+            cxc : f32 [ x0 + (bounds.x + bounds.w - 24.0 - x0 - bw9) * 0.5 ]
+            mnx : f32 [ dsx + f32[ ds9.count ] * mtm.w + 16.0 ]
+            bx9 : f32 [ (cxc > mnx) ? cxc : mnx ]
+            lbx : f32 [ bx9 + 11.0 ]
+            cb.rx0 = bx9 - bounds.x
+            cb.rx1 = bx9 + bw9 - bounds.x
+            # borderless, same 26px height as the create buttons
+            cv.save[ ]
+            cv.rounded[ 8.0, 8.0, 8.0, 8.0 ]
+            cv.fill_color[ (open9) ? rgba['#7a2f2fcc'] : ((rhov) ? rgba['#6cb6ff22'] : rgba['#0000']) ]
+            cv.stroke_width[ 0.0 ]
+            cv.rect_to[ bx9, cy + 5.0, bw9, 26.0 ]
+            cv.paint[ ]
+            cv.restore[ ]
+            cv.fill_color[ rgba['#6a9955'] ]
+            cv.draw_text[ as9,
+                rect [ x: asx, y: cy, w: f32[ as9.count ] * mtm.w + 4.0, h: lh ],
+                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+            cv.fill_color[ rgba['#e06c75'] ]
+            cv.draw_text[ ds9,
+                rect [ x: dsx, y: cy, w: f32[ ds9.count ] * mtm.w + 4.0, h: lh ],
+                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+            cv.fill_color[ (open9) ? rgba['#ffd9d2'] : ((rhov) ? rgba['#ffffff'] : rgba['#9a94b0']) ]
+            cv.draw_text[ lbl,
+                rect [ x: lbx, y: cy, w: lw9 + 4.0, h: lh ],
+                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+            # divider under the whole band, 4px clear of the button
+            cv.fill_color[ rgba['#fff2'] ]
+            cv.stroke_width[ 0.0 ]
+            cv.rect_to[ x0, round[ yb + f32[ band9 ] * lh + 3.0 ], bounds.x + bounds.w - x0 - 24.0, 1.0 ]
+            cv.paint[ ]
+        if [ open9 ]
+            # the message box: three lines of the app's commit text
+            by : f32 [ yb + f32[ trs + 1 ] * lh ]
+            cv.save[ ]
+            cv.rounded[ 8.0, 8.0, 8.0, 8.0 ]
+            cv.fill_color[ rgba['#101a2ecc'] ]
+            cv.stroke_width[ 1.0 ]
+            cv.stroke_color[ rgba['#6cb6ff55'] ]
+            cv.rect_to[ x0, by + 3.0, bounds.x + bounds.w - x0 - 24.0, lh * 3.0 - 6.0 ]
+            cv.paint[ ]
+            cv.restore[ ]
+            if [ cb.commit_text ]
+                for [ i: i32 0, i < 3 && i < cb.commit_text.count, i += 1 ]
+                    ml : string cb.commit_text[i]
+                    if [ !ml ] continue
+                    cv.fill_color[ rgba['#e6e2f5'] ]
+                    cv.draw_text[ ml,
+                        rect [ x: x0 + 8.0, y: by + f32[ i ] * lh, w: bounds.w - 116.0, h: lh ],
+                        vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+            if [ parent.focused ]
+                ccx : f32 [ x0 + 8.0 + f32[ cb.cc ] * mtm.w ]
+                ccy : f32 [ by + f32[ cb.cl ] * lh ]
+                cv.fill_color[ rgba['#ffffff'] ]
+                cv.stroke_width[ 0.0 ]
+                cv.rect_to[ ccx, ccy + 4.0, 2.0, lh - 8.0 ]
+                cv.paint[ ]
+            # the commit button: centered on the same axis as cancel
+            gy : f32 [ yb + f32[ trs + 4 ] * lh ]
+            gx : f32 [ x0 + (bounds.x + bounds.w - 24.0 - x0 - 80.0) * 0.5 ]
+            ghov : bool [ cb.hov_ctl == 2 ]
+            cb.gx0 = gx - bounds.x
+            cb.gx1 = gx + 80.0 - bounds.x
+            cv.save[ ]
+            cv.rounded[ 8.0, 8.0, 8.0, 8.0 ]
+            cv.fill_color[ (ghov) ? rgba['#6cb6ff22'] : rgba['#0000'] ]
+            cv.stroke_width[ 1.0 ]
+            cv.stroke_color[ (ghov) ? rgba['#8fd0ff'] : rgba['#fff3'] ]
+            cv.rect_to[ gx, gy + 5.0, 80.0, 26.0 ]
+            cv.paint[ ]
+            cv.restore[ ]
+            cv.fill_color[ (ghov) ? rgba['#ffffff'] : rgba['#9a94b0'] ]
+            cv.draw_text[ 'commit',
+                rect [ x: gx, y: gy, w: 80.0, h: lh ],
+                vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+        # the browse list rides the same scroll, below the band; a
+        # 4px breath keeps the hover clear of the divider
+        cv.font_size[ 18 ]
+        ltm : cv.measure_text[ 'x' ]
+        ly : f32 [ yb + f32[ band9 ] * lh + ((band9 > 0) ? 8.0 : 0.0) ]
+        nls : i32 [ 0 ]
+        if [ orb.find_hits ]
+            for [ hi: i32 0, hi < orb.find_hits.count, hi += 1 ]
+                h : FindHit orb.find_hits[hi]
+                if [ !h ] continue
+                # continuation rows of double-height headers: not ours
+                if [ h.is_header && !h.is_spacer && !h.is_newfile && h.text.count == 0 ] continue
+                ry : f32 [ ly + f32[ nls ] * 30.0 ]
+                nls += 1
+                if [ ry + 30.0 < bounds.y || ry > bounds.y + bounds.h ] continue
+                if [ h.is_spacer ]
+                    # same pixel break as the band divider
+                    cv.fill_color[ rgba['#fff2'] ]
+                    cv.stroke_width[ 0.0 ]
+                    cv.rect_to[ x0, round[ ry + 15.0 ], bounds.x + bounds.w - x0 - 24.0, 1.0 ]
+                    cv.paint[ ]
+                    continue
+                if [ h.is_newfile ]
+                    # two make-commit-style buttons, side by side, centered,
+                    # at the band controls' font size
+                    cv.font_size[ fs ]
+                    nfl9 : string 'new file'
+                    ndl9 : string 'new folder'
+                    nfw : f32 [ f32[ nfl9.count ] * mtm.w + 22.0 ]
+                    ndw : f32 [ f32[ ndl9.count ] * mtm.w + 22.0 ]
+                    nbx : f32 [ x0 + (bounds.x + bounds.w - 24.0 - x0 - nfw - 12.0 - ndw) * 0.5 ]
+                    cb.nfx0 = nbx - bounds.x
+                    cb.nfx1 = nbx + nfw - bounds.x
+                    cb.ndx0 = nbx + nfw + 12.0 - bounds.x
+                    cb.ndx1 = nbx + nfw + 12.0 + ndw - bounds.x
+                    nfh : bool [ cb.hov_ctl == 3 ]
+                    ndh : bool [ cb.hov_ctl == 4 ]
+                    cv.save[ ]
+                    cv.rounded[ 8.0, 8.0, 8.0, 8.0 ]
+                    cv.fill_color[ (nfh) ? rgba['#6cb6ff22'] : rgba['#0000'] ]
+                    cv.stroke_width[ 1.0 ]
+                    cv.stroke_color[ (nfh) ? rgba['#8fd0ff'] : rgba['#fff3'] ]
+                    cv.rect_to[ nbx, ry + 2.0, nfw, 26.0 ]
+                    cv.paint[ ]
+                    cv.restore[ ]
+                    cv.fill_color[ (nfh) ? rgba['#ffffff'] : rgba['#9a94b0'] ]
+                    cv.draw_text[ nfl9,
+                        rect [ x: nbx, y: ry, w: nfw, h: 30.0 ],
+                        vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+                    cv.save[ ]
+                    cv.rounded[ 8.0, 8.0, 8.0, 8.0 ]
+                    cv.fill_color[ (ndh) ? rgba['#6cb6ff22'] : rgba['#0000'] ]
+                    cv.stroke_width[ 1.0 ]
+                    cv.stroke_color[ (ndh) ? rgba['#8fd0ff'] : rgba['#fff3'] ]
+                    cv.rect_to[ nbx + nfw + 12.0, ry + 2.0, ndw, 26.0 ]
+                    cv.paint[ ]
+                    cv.restore[ ]
+                    cv.fill_color[ (ndh) ? rgba['#ffffff'] : rgba['#9a94b0'] ]
+                    cv.draw_text[ ndl9,
+                        rect [ x: nbx + nfw + 12.0, y: ry, w: ndw, h: 30.0 ],
+                        vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+                    cv.font_size[ 18 ]
+                    continue
+                if [ nls - 1 == cb.hov_list ]
+                    cv.save[ ]
+                    cv.rounded[ 8.0, 8.0, 8.0, 8.0 ]
+                    cv.fill_color[ rgba['#ff6a2e2a'] ]
+                    cv.stroke_width[ 1.0 ]
+                    cv.stroke_color[ rgba['#ff8a3a99'] ]
+                    cv.rect_to[ x0 + 2.0, ry + 1.0, bounds.x + bounds.w - x0 - 22.0, 28.0 ]
+                    cv.paint[ ]
+                    cv.restore[ ]
+                # find-result line: the matching source text, indented
+                if [ !h.is_header && h.line > 0 ]
+                    cv.fill_color[ rgba['#7a8290'] ]
+                    cv.draw_text[ '{h.line}',
+                        rect [ x: x0 + 8.0, y: ry, w: 56.0, h: 30.0 ],
+                        vec2f [ 1.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+                    cv.fill_color[ rgba['#d4d4d4'] ]
+                    cv.draw_text[ h.text,
+                        rect [ x: x0 + 76.0, y: ry, w: bounds.x + bounds.w - x0 - 100.0, h: 30.0 ],
+                        vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+                    continue
+                nm : string [ (h.is_dir && h.text.count > 0) ? '{h.text}/' : h.text ]
+                ico : SVGModel [ null ]
+                if [ ed && h.file ]
+                    if [ !ed.file_icon ]
+                        ffp2 : path 'images/file.svg'
+                        if [ ffp2.exists[] ] ed.file_icon = SVGModel [ ffp2 ]
+                    if [ !ed.module_icon ]
+                        cfp2 : path 'images/material/3d.svg'
+                        if [ cfp2.exists[] ] ed.module_icon = SVGModel [ cfp2 ]
+                    if [ !ed.folder_icon ]
+                        dfp2 : path 'images/material/folder.svg'
+                        if [ dfp2.exists[] ] ed.folder_icon = SVGModel [ dfp2 ]
+                    if [ !ed.ficons ] ed.ficons = FileIcons []
+                    ico = (h.is_dir) ? ((h.is_module) ? ed.module_icon : ed.folder_icon) : ed.file_icon
+                    if [ !h.is_dir && nm.count > 0 ]
+                        mim : SVGModel ed.ficons.icon[ nm, 21 ]
+                        if [ mim ] ico = mim
+                tx0 : f32 [ x0 + 8.0 ]
+                if [ ico ]
+                    cv.fill_color[ rgba['#ffffff'] ]
+                    cv.stroke_color[ rgba['#ffffff'] ]
+                    cv.draw_svg[ ico, x0 + 8.0, round[ ry + 4.5 ], 21.0, 21.0 ]
+                    tx0 = x0 + 37.0
+                cv.fill_color[ (h.is_dir) ? rgba['#6cb6ff'] : rgba['#fff'] ]
+                cv.draw_text[ nm,
+                    rect [ x: tx0, y: ry, w: bounds.x + bounds.w - tx0 - 24.0, h: 30.0 ],
+                    vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+                if [ h.dir && h.dir.count > 0 ]
+                    fnw : f32 [ cv.measure_text[ nm ].w ]
+                    col : f32 [ bounds.x + bounds.w * 0.5 ]
+                    end : f32 [ tx0 + fnw + ltm.w * 2.0 ]
+                    dx  : f32 [ (end > col) ? end : col ]
+                    cv.fill_color[ rgba['#ffffff66'] ]
+                    cv.draw_text[ h.dir,
+                        rect [ x: dx, y: ry, w: bounds.x + bounds.w - 24.0 - dx, h: 30.0 ],
+                        vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+        cb.list_st = nls
+        # 16px of air after the last row (the create buttons)
+        cb.content_h = f32[ band9 ] * lh + f32[ nls ] * 30.0 + 16.0 + ((band9 > 0) ? 8.0 : 0.0)
+        cv.clear_crop[ ]
+
+element CommitView
+    mutable hov_row : i32 [ -1 ]
+    mutable hov_tab : i32 [ -1 ]
+    # 0 = reveal-all, 1 = make commit / cancel, 2 = commit
+    mutable hov_ctl : i32 [ -1 ]
+    # hovered browse-list display row
+    mutable hov_list : i32 [ -1 ]
+    mutable chip_hov : i32 [ -1 ]
+    # THIS view's commit form: no tab ever sees another's state
+    mutable commit_open : bool
+    mutable commit_text : array string
+    mutable reveal_all  : bool
+    # caret line/col inside the message box
+    mutable cl      : i32 [ 0 ]
+    mutable cc      : i32 [ 0 ]
+    # bold face for tabs whose buffer holds unsaved edits
+    mutable bold_font : CanvasFont
+    # metrics stamped by the draw so hits match pixels exactly
+    mutable band_st : i32 [ 0 ]
+    mutable list_st : i32 [ 0 ]
+    mutable cap_st  : i32 [ 1 ]
+    mutable cw_st   : f32 [ 8.0 ]
+    mutable lx0 : f32 [ 0.0 ]
+    mutable lx1 : f32 [ 0.0 ]
+    mutable rx0 : f32 [ 0.0 ]
+    mutable rx1 : f32 [ 0.0 ]
+    mutable gx0 : f32 [ 0.0 ]
+    mutable gx1 : f32 [ 0.0 ]
+    mutable nfx0 : f32 [ 0.0 ]
+    mutable nfx1 : f32 [ 0.0 ]
+    mutable ndx0 : f32 [ 0.0 ]
+    mutable ndx1 : f32 [ 0.0 ]
+
+    style : CSS {
+        area: l0 t0 r0 b0
+        layers.content: CommitLayer
+            area: l0 t0 r0 b0
+        layers.scrollbar: ScrollLayer
+            overlay: true
+            area: 8px
+            thumb_color: #fff4
+            thumb_w: 6.0
+            thumb_min_h: 32.0
+            thumb_radius: 4.0
+    }
+    mutable sb_drag : bool
+
+    func lay [] -> CommitLayer
+        return (layers) ? cast CommitLayer [ layers['content'] ] : null
+
+    # frame hook: ALL state settles here — the layer draw only projects
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen ] return
+        if [ scroll_speed <= 0.0 ] scroll_speed = 36.0
+        o : orb9[]
+        # the form cannot stay open with nothing to commit
+        if [ commit_open ]
+            n9 : i32 [ (o && o.git_snap && o.git_snap.files) ? o.git_snap.files.count : 0 ]
+            if [ n9 == 0 ] commit_open = false
+        # scroll clamps to the content the last projection measured
+        if [ content_h > 0.0 && bounds ]
+            mx9 : f32 [ content_h - bounds.h ]
+            if [ mx9 < 0.0 ] mx9 = 0.0
+            if [ scroll.y > mx9 ]
+                scroll.y    = mx9
+                scroll_goal = mx9
+
+    func orb9 [] -> orbiter
+        return cast orbiter [ ux.app_object ]
+
+    # scene themes retint drawn colors, same as styled ones
+    func tcol [ s: string ] -> rgba
+        if [ ux && ux.st ] return ux.st.theme_color[ s ]
+        return rgba [ s ]
+
+    func commit_toggle []
+        commit_open = !commit_open
+        if [ commit_open ]
+            commit_text = array string [ '', '', '' ]
+            cl = 0
+            cc = 0
+        pristine = false
+        ux.will_animate = true
+
+    func commit_send []
+        o : orb9[]
+        if [ !o || !commit_text ] return
+        msg : string ''
+        for [ i: i32 0, i < commit_text.count, i += 1 ]
+            l9 : string commit_text[i]
+            if [ !l9 || l9.trim[].count == 0 ] continue
+            msg = (msg.count > 0) ? msg + '\n' + l9 : l9
+        if [ msg.count == 0 ] return
+        o.do_commit[ msg ]
+        commit_open = false
+        commit_text = null
+        pristine = false
+
+    func view [] -> EditorView
+        for [ e9: element* a, e9, e9 = e9.parent ]
+            if [ e9 inherits EditorView ] return e9
+        return null
+
+    # the display row under y (band rows then list rows), -1 outside.
+    # event y already includes the element's own scroll offset
+    func row_at [ ry: f32, trs: i32 ] -> i32
+        band9 : i32 [ band_st ]
+        ry9 : f32 [ ry - 4.0 ]
+        if [ ry9 < 0.0 ] return -1
+        if [ ry9 < f32[ band9 ] * 36.0 ] return i32[ ry9 / 36.0 ]
+        ly9 : f32 [ ry9 - f32[ band9 ] * 36.0 - ((band9 > 0) ? 8.0 : 0.0) ]
+        if [ ly9 < 0.0 ] return -1
+        return band9 + i32[ ly9 / 30.0 ]
+
+    # lines that actually exist in the box: text, plus the line the
+    # caret has opened. an empty box is exactly one line
+    func box_lines [] -> i32
+        n9 : i32 [ 1 ]
+        if [ commit_text ]
+            for [ i: i32 0, i < commit_text.count && i < 3, i += 1 ]
+                ml : string commit_text[i]
+                if [ ml && ml.count > 0 ] n9 = i + 1
+        if [ cl + 1 > n9 ] n9 = cl + 1
+        if [ n9 > 3 ] n9 = 3
+        return n9
+
+    # the FindHit index for a list display row, -1 when none
+    func list_hit [ dr: i32 ] -> i32
+        o : orb9[]
+        if [ !o || !o.find_hits || dr < 0 ] return -1
+        n9 : i32 [ 0 ]
+        for [ hi: i32 0, hi < o.find_hits.count, hi += 1 ]
+            h : FindHit o.find_hits[hi]
+            if [ !h ] continue
+            if [ h.is_header && !h.is_spacer && !h.is_newfile && h.text.count == 0 ] continue
+            if [ n9 == dr ] return hi
+            n9 += 1
+        return -1
+
+    func on_leave [ ev: Event ]
+        if [ hov_row != -1 || hov_tab != -1 || hov_ctl != -1 || hov_list != -1 || chip_hov != -1 ]
+            hov_row  = -1
+            hov_tab  = -1
+            hov_ctl  = -1
+            hov_list = -1
+            chip_hov = -1
+            pristine = false
+
+    func on_move [ ev: Event ]
+        ly : lay[]
+        o  : orb9[]
+        if [ !ly || !o ] return
+        rx : f32 [ ev.mouse.pos.x - ly.bounds.x ]
+        ry : f32 [ ev.mouse.pos.y - ly.bounds.y ]
+        if [ sb_drag ]
+            sbl : ScrollLayer (layers) ? cast ScrollLayer [ layers['scrollbar'] ] : null
+            if [ sbl ]
+                sy : f32 [ sbl.drag_to[ ry - scroll.y ] ]
+                if [ sy >= 0.0 ]
+                    scroll.y    = sy
+                    scroll_goal = sy
+                    pristine    = false
+                    ux.will_animate = true
+            return
+        nrow : i32 [ -1 ]
+        ntab : i32 [ -1 ]
+        nctl : i32 [ -1 ]
+        nlst : i32 [ -1 ]
+        nchp : i32 [ -1 ]
+        if [ rx < 68.0 ]
+            # chips are fixed: undo the scroll the event carries
+            ryf : f32 [ ry - scroll.y ]
+            if [ ryf >= 7.0 ] nchp = i32[ (ryf - 7.0) / 68.0 ]
+        el
+            trs : i32 [ o.commit_tab_rows[ ly.bounds.w - 76.0, reveal_all ] ]
+            r : i32 [ row_at[ ry, trs ] ]
+            cx0 : f32 [ 76.0 ]
+            if [ r >= 0 && r < trs ]
+                cx : i32 [ i32[ (rx - cx0) / 150.0 ] ]
+                if [ rx >= cx0 && cx >= 0 && cx < cap_st && (rx - cx0) - f32[ cx ] * 150.0 <= 144.0 ]
+                    nrow = r
+                    ntab = cx
+            el [ trs > 0 && r == trs ]
+                if [ rx >= lx0 && rx <= lx1 ] nctl = 0
+                el [ rx >= rx0 && rx <= rx1 ] nctl = 1
+            el [ commit_open && band_st > 0 && r == trs + 4 ]
+                if [ rx >= gx0 && rx <= gx1 ] nctl = 2
+            el [ r >= band_st && r - band_st < list_st ]
+                hi9 : i32 [ list_hit[ r - band_st ] ]
+                hf9 : FindHit [ (hi9 >= 0) ? o.find_hits[hi9] : null ]
+                if [ hf9 && hf9.is_newfile ]
+                    # 3 = new file, 4 = new folder
+                    if [ rx >= nfx0 && rx <= nfx1 ] nctl = 3
+                    el [ rx >= ndx0 && rx <= ndx1 ] nctl = 4
+                el
+                    nlst = r - band_st
+        if [ nrow != hov_row || ntab != hov_tab || nctl != hov_ctl || nlst != hov_list || nchp != chip_hov ]
+            hov_row  = nrow
+            hov_tab  = ntab
+            hov_ctl  = nctl
+            hov_list = nlst
+            chip_hov = nchp
+            pristine = false
+            ux.will_animate = true
+
+    func on_release [ ev: Event ]
+        sb_drag = false
+        sbl : ScrollLayer (layers) ? cast ScrollLayer [ layers['scrollbar'] ] : null
+        if [ sbl ]
+            sbl.active = false
+            ux.will_animate = true
+
+    func on_press [ ev: Event ]
+        ly : lay[]
+        o  : orb9[]
+        if [ !ly || !o ] return
+        ev9 : EditorView view[]
+        ed  : Editor [ (ev9) ? ev9.text_of[] : null ]
+        rx : f32 [ ev.mouse.pos.x - ly.bounds.x ]
+        ry : f32 [ ev.mouse.pos.y - ly.bounds.y ]
+        ev.no_default = true
+        # the standard scrollbar: same grab/drag as every element
+        sbl : ScrollLayer (layers) ? cast ScrollLayer [ layers['scrollbar'] ] : null
+        grab : f32 [ (sbl && sbl.thumb_w > 0.0) ? sbl.thumb_w * 2.0 + 8.0 : 16.0 ]
+        if [ sbl && sbl.scroll_max > 0.0 && rx > ly.bounds.w - grab ]
+            my : f32 [ ry - scroll.y ]
+            sbl.grab_at[ my ]
+            sy : f32 [ sbl.drag_to[ my ] ]
+            if [ sy >= 0.0 ]
+                scroll.y    = sy
+                scroll_goal = sy
+                sb_drag     = true
+                sbl.active  = true
+                pristine    = false
+                ux.will_animate = true
+            return
+        # rail chips first, fixed at left: undo the carried scroll
+        if [ rx < 68.0 ]
+            ryf : f32 [ ry - scroll.y ]
+            if [ ed && ed.nav_tools && ryf >= 7.0 ]
+                ci : i32 [ i32[ (ryf - 7.0) / 68.0 ] ]
+                if [ ci >= 0 && ci < ed.tool_base[] + ed.nav_tools.count ]
+                    ed.press_tool[ ci ]
+            return
+        trs : i32 [ o.commit_tab_rows[ ly.bounds.w - 76.0, reveal_all ] ]
+        r : i32 [ row_at[ ry, trs ] ]
+        cx0 : f32 [ 76.0 ]
+        if [ r >= 0 && r < trs && o.git_snap && o.git_snap.files ]
+            cx : i32 [ i32[ (rx - cx0) / 150.0 ] ]
+            if [ rx >= cx0 && cx >= 0 && cx < cap_st && (rx - cx0) - f32[ cx ] * 150.0 <= 144.0 ]
+                idx : i32 [ r * cap_st + cx ]
+                if [ idx < o.git_snap.files.count ]
+                    fp9 : string o.git_snap.files[idx]
+                    o.open_in_pane[ path '{o.git_snap.repo}/{fp9}', (ev9) ? ev9.pane_index : o.active_pane ]
+                    o.exit_finder[]
+            return
+        if [ trs > 0 && r == trs ]
+            if [ rx >= lx0 && rx <= lx1 ]
+                reveal_all = !reveal_all
+                pristine = false
+                if [ ux ] ux.will_animate = true
+            el [ rx >= rx0 && rx <= rx1 ]
+                commit_toggle[]
+            return
+        if [ commit_open && band_st > 0 && r > trs && r <= trs + 3 ]
+            # only lines that exist take the caret; below-last snaps up
+            bl9 : i32 [ box_lines[] ]
+            nl9 : i32 [ r - trs - 1 ]
+            if [ nl9 >= bl9 ]
+                cl = bl9 - 1
+                el9 : string [ (commit_text && cl < commit_text.count) ? commit_text[cl] : null ]
+                cc = (el9) ? el9.count : 0
+            el
+                cl = nl9
+                if [ commit_text && cl < commit_text.count ]
+                    ml : string commit_text[cl]
+                    mc : i32 [ i32[ (rx - cx0 - 8.0) / cw_st ] ]
+                    cc = clamp[ mc, 0, (ml) ? ml.count : 0 ]
+            if [ ux ] ux.set_focus[ a ]
+            pristine = false
+            return
+        if [ commit_open && band_st > 0 && r == trs + 4 ]
+            if [ rx >= gx0 && rx <= gx1 ] commit_send[]
+            return
+        # the browse list below the band
+        if [ r >= band_st ]
+            hi : i32 [ list_hit[ r - band_st ] ]
+            if [ hi < 0 ] return
+            h : FindHit o.find_hits[hi]
+            pane : i32 [ (ev9) ? ev9.pane_index : o.active_pane ]
+            if [ ev.key.shift ]
+                # shift-click pins: merge the row into the top list
+                if [ h.is_header && h.file && !h.is_spacer ] o.toggle_dock[ h.file ]
+                pristine = false
+                return
+            if [ h.is_newfile ]
+                if [ ev9 && rx >= nfx0 && rx <= nfx1 ]
+                    ev9.newfile_enter[ (ed) ? ed.src : null ]
+                    o.pending_finder = pane
+                    if [ ux ] ux.restyle = true
+                el [ ev9 && rx >= ndx0 && rx <= ndx1 ]
+                    ev9.newdir_enter[ (ed) ? ed.src : null ]
+                    o.pending_finder = pane
+                    if [ ux ] ux.restyle = true
+                return
+            if [ h.is_dir && h.file ]
+                o.nav_root = h.file
+                scroll.y    = 0.0
+                scroll_goal = 0.0
+                scroll_anim = false
+                hov_list = -1
+                o.run_search[]
+                te : element o.title_at[ pane ]
+                if [ te ] te.set_focus[]
+                pristine = false
+                return
+            # find-result line: jump straight to it
+            if [ !h.is_header && h.line > 0 && h.file ]
+                o.open_at_line[ h.file, pane, h.line ]
+                o.exit_finder[]
+                return
+            if [ h.file ]
+                o.open_in_pane[ h.file, pane ]
+                o.exit_finder[]
+
+    func on_char [ ev: Event ]
+        if [ !commit_open || !commit_text ] return
+        ch : string [ ev.key.text ]
+        if [ ch.count == 0 || (ch[0] >= 0 && ch[0] < 32) ] return
+        if [ cl < 0 || cl >= commit_text.count ] return
+        ml : string commit_text[cl]
+        if [ !ml ] ml = ''
+        cc = clamp[ cc, 0, ml.count ]
+        commit_text[cl] = ml.mid[ 0, cc ] + ch + ml.mid[ cc, ml.count - cc ]
+        cc += 1
+        pristine = false
+
+    func on_key [ ev: Event ]
+        if [ !ev.key.state ] return
+        if [ !commit_open || !commit_text ] return
+        k : i32 [ i32 ev.key.unicode ]
+        ml : string [ (cl >= 0 && cl < commit_text.count) ? commit_text[cl] : null ]
+        if [ !ml ] ml = ''
+        if [ k == 259 ]    # Key.Backspace
+            if [ cc > 0 && cc <= ml.count ]
+                commit_text[cl] = ml.mid[ 0, cc - 1 ] + ml.mid[ cc, ml.count - cc ]
+                cc -= 1
+            el [ cl > 0 ]
+                cl -= 1
+                pl : string commit_text[cl]
+                cc = (pl) ? pl.count : 0
+        el [ k == 257 ]    # Key.Enter — next message line
+            if [ cl < 2 ]
+                cl += 1
+                nl : string commit_text[cl]
+                cc = clamp[ cc, 0, (nl) ? nl.count : 0 ]
+        el [ k == 256 ]    # Key.Escape — collapse the form
+            commit_toggle[]
+            return
+        el [ k == 263 ]    # Key.Left
+            if [ cc > 0 ] cc -= 1
+        el [ k == 262 ]    # Key.Right
+            if [ cc < ml.count ] cc += 1
+        el [ k == 265 ]    # Key.Up
+            if [ cl > 0 ] cl -= 1
+            ul : string commit_text[cl]
+            cc = clamp[ cc, 0, (ul) ? ul.count : 0 ]
+        el [ k == 264 ]    # Key.Down — only onto lines that exist
+            if [ cl < box_lines[] - 1 ] cl += 1
+            dl : string commit_text[cl]
+            cc = clamp[ cc, 0, (dl) ? dl.count : 0 ]
+        el
+            return
+        ev.no_default = true
+        pristine = false

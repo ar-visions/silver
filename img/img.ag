@@ -21,7 +21,6 @@ import glennrp:libpng/07b8803 <png.h>
 import <string.h>
 import vec
 
-
 enum Join
     none           : 0
     miter           : 1

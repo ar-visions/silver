@@ -24,21 +24,8 @@ class FindHit
     public line      : i32
     # bordered trailing row: enters the title bar's create mode
     public is_newfile : bool
-    # the make-commit toggle; reads 'cancel' while the form is open
-    public is_commit  : bool
-    # +/- line totals shown on the make-commit row
-    public adds       : i32
-    public dels       : i32
-    # changed-file count for the reveal-all control
-    public nfiles     : i32
-    # tab-bar row: several changed-file tabs on one line
-    public is_tabs    : bool
-    public tab_names  : array string
-    public tab_paths  : array string
-    # the revealed button that actually runs the commit
-    public is_commit_go : bool
-    # editable commit-message row; line holds its index in the box
-    public is_msg     : bool
+    # directory holds <stem>/<stem>.ag: a silver module
+    public is_module  : bool
 
 class VRow
     public src   : i32 [ -1 ]
@@ -949,6 +936,7 @@ ResourceView AppView
 
 Layer EditorLayer
     mutable sel_color      : rgba
+    mutable sel_border     : rgba
     mutable line_color     : rgba
     # the 1px rules that bound the selected band, top and bottom
     mutable line_edge      : rgba
@@ -1202,7 +1190,8 @@ Layer EditorLayer
     func draw_tools [ cv: Canvas, editor: Editor ]
         if [ !editor.nav_tools || editor.nav_tools.count == 0 ] return
         if [ !editor.ficons ] editor.ficons = FileIcons []
-        dxx  : f32 [ bounds.x + 2.0 ]
+        # left inset matches the chips' top padding
+        dxx  : f32 [ bounds.x + 4.0 ]
         bas9 : i32 [ editor.tool_base[] ]
         for [ ti: i32 0, ti < bas9 + editor.nav_tools.count, ti += 1 ]
             tnm : string (bas9 == 1 && ti == 0) ? editor.nav_default : editor.nav_tools[ ti - bas9 ]
@@ -1225,17 +1214,14 @@ Layer EditorLayer
             cv.stroke_width[ 0.0 ]
             tico : SVGModel editor.ficons.named[ tnm, 36 ]
             if [ tico ]
-                cv.fill_color[ rgba['#ffffff'] ]
-                cv.stroke_color[ rgba['#ffffff'] ]
+                # selected = orangish white; resting = off purple white
+                cv.svg_override[ (act9) ? rgba['#ffe6d2'] : ((ti == editor.tool_hover) ? rgba['#ffffff'] : rgba['#cfc6e8']) ]
                 cv.draw_svg[ tico, dxx + 12.0, tyy + 6.0, 36.0, 36.0 ]
+                cv.svg_override_off[]
             cv.font_size[ 11.0 ]
             cv.fill_color[ rgba['#c9c4dd'] ]
             tlb : string tnm
-            if [ tnm == 'git' ]
-                # only THIS file's +/- belongs on the changes view
-                orb9 : cast orbiter [ editor.ux.app_object ]
-                fc9 : FileChg (orb9) ? orb9.file_changes[ editor.src ] : null
-                tlb = (fc9 && (fc9.adds > 0 || fc9.dels > 0)) ? '+{fc9.adds} -{fc9.dels}' : 'changes'
+            if [ tnm == 'git' ] tlb = 'diff'
             cv.draw_text[ tlb, rect [ x: dxx, y: tyy + 44.0, w: 60.0, h: 16.0 ],
                 vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
 
@@ -1342,22 +1328,23 @@ Layer EditorLayer
             ndigits += 1
         if [ ndigits < 5 ] ndigits = 5
         gut_w   : f32 [ f32[ ndigits ] * cw_tm.w + 16.0 ]
-        # browse nav shows no line numbers: gutter is just the pin icon
-        if [ showing && hits && editor.nav_list ] gut_w = 24.0
+        # browse nav shows no line numbers and no pin gutter: rows
+        # start where the zone pills do (shift-click handles pinning)
+        if [ showing && hits && editor.nav_list ] gut_w = 12.0
         editor.gutter_w = gut_w
         if [ editor.scroll.x < 0.0 ] editor.scroll.x = 0.0
         # left tool rail pushes the nav content right by 64px
         lin     : f32 [ (editor.nav_tools && editor.nav_tools.count > 0) ? 64.0 : 0.0 ]
         # the list never scrolls on x: its rows line up with the zone
         x0      : f32 [ bounds.x + lin + gut_w - ((showing) ? 0.0 : editor.scroll.x) ]
-        y0      : f32 [ bounds.y ]
+        # the list drops 10px so row 0 tops the rail's first button
+        y0      : f32 [ bounds.y + ((showing) ? 10.0 : 0.0) ]
         dbg_el  : element (editor.elements) ? editor.elements['dbg'] : null
         din     : f32 [ 0.0 ]
         if [ dbg_el && dbg_el.bounds ]
             din = dbg_el.bounds.w
         pin_in  : f32 [ (editor.elements && editor.elements['pins']) ? 144.0 : 0.0 ]
         rin     : f32 [ maxf[ pin_in, din ] ]
-        editor.zone_w = bounds.w - lin - rin - 24.0
         # the element itself never masks: fills and the gutter stay crisp.
         # the fade rides on the text canvas alone (blitted below).
         parent.mask_glow   = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
@@ -1488,7 +1475,13 @@ Layer EditorLayer
                         ffp2 : path 'images/file.svg'
                         if [ ffp2.exists[] ] editor.file_icon = SVGModel [ ffp2 ]
                     if [ !editor.ficons ] editor.ficons = FileIcons []
-                    ico : SVGModel [ (h.is_dir) ? null : editor.file_icon ]
+                    if [ !editor.module_icon ]
+                        cfp3 : path 'images/material/3d.svg'
+                        if [ cfp3.exists[] ] editor.module_icon = SVGModel [ cfp3 ]
+                    if [ !editor.folder_icon ]
+                        dfp3 : path 'images/material/folder.svg'
+                        if [ dfp3.exists[] ] editor.folder_icon = SVGModel [ dfp3 ]
+                    ico : SVGModel [ (h.is_dir) ? ((h.is_module) ? editor.module_icon : editor.folder_icon) : editor.file_icon ]
                     if [ !h.is_dir ]
                         mico : SVGModel editor.ficons.icon[ h.file.filename[], i32[ gth * 0.5 ] ]
                         if [ mico ] ico = mico
@@ -1519,7 +1512,8 @@ Layer EditorLayer
                 gh = (editor.single_line) ? lh - 2.0 : lh * 2.0 - 2.0
             hy : f32 [ y0 + f32[ gl ] * lh - editor.scroll.y ]
             if [ hy + gh >= bounds.y && hy <= bounds.y + bounds.h ]
-                glow_row[ cv, bounds.x + lin + 1.0, hy + 1.0, bounds.w - lin - rin - 2.0, gh ]
+                # hover sits 4px left of the grid; right edge matches the zone
+                glow_row[ cv, bounds.x + lin + 8.0, hy + 1.0, bounds.w - lin - rin - 32.0, gh ]
 
         cv.stroke_width[ 0.0 ]
         num_fs  : i32 [ i32[ f32[ code_fs ] * 0.7 ] - 1 ]
@@ -1632,27 +1626,6 @@ Layer EditorLayer
                 cv.rect_to[ bounds.x, yt, bounds.w - rin, yb - yt ]
                 cv.paint[ ]
 
-        # the commit form's message box: one backdrop behind its rows
-        if [ showing && editor.hits ]
-            mi0 : i32 [ -1 ]
-            mi1 : i32 [ -1 ]
-            for [ li: i32 0, li < editor.hits.count, li += 1 ]
-                mh : FindHit editor.hits[li]
-                if [ mh.is_msg ]
-                    if [ mi0 < 0 ] mi0 = li
-                    mi1 = li
-            if [ mi0 >= 0 ]
-                myt : f32 [ round[ y0 + f32[ mi0 ] * lh - editor.scroll.y ] ]
-                myb : f32 [ round[ y0 + f32[ mi1 + 1 ] * lh - editor.scroll.y ] ]
-                cv.save[ ]
-                cv.rounded[ 8.0, 8.0, 8.0, 8.0 ]
-                cv.fill_color[ rgba['#101a2ecc'] ]
-                cv.stroke_width[ 1.0 ]
-                cv.stroke_color[ rgba['#6cb6ff55'] ]
-                cv.rect_to[ bounds.x + lin + 2.0, myt + 2.0, bounds.w - lin - rin - 4.0, myb - myt - 4.0 ]
-                cv.paint[ ]
-                cv.restore[ ]
-
         # code text collects into its own pane-sized canvas so the edge fade
         # applies to glyphs alone — fills, gutter and selection stay crisp
         tcv : editor.text_target[ cv, bounds ]
@@ -1751,7 +1724,7 @@ Layer EditorLayer
                     cv.save[ ]
                     cv.rounded[ 0.0, 0.0, 0.0, 0.0 ]
                     cv.fill_color[ rgba['#fff2'] ]
-                    cv.rect_to[ bounds.x + lin + 2.0, round[ y + lh * 0.5 ], bounds.w - lin - rin - 4.0, 1.0 ]
+                    cv.rect_to[ bounds.x + lin + 12.0, round[ y + lh * 0.5 ], bounds.w - lin - rin - 36.0, 1.0 ]
                     cv.paint[ ]
                     cv.restore[ ]
                     continue
@@ -1768,93 +1741,18 @@ Layer EditorLayer
                 cv.rect_to[ bounds.x + lin + 2.0, y + 2.0, bounds.w - lin - rin - 4.0, rh - 4.0 ]
                 cv.paint[ ]
                 cv.restore[ ]
-                if [ fhh && fhh.is_tabs ]
-                    # RunButton's look: #614 body, radius 6, inner glow
-                    tfs : i32 [ i32[ f32[ code_fs ] * 0.85 ] ]
-                    cv.font_size[ tfs ]
-                    tcw : f32 [ cw_tm.w * 0.85 ]
-                    pw9 : f32 [ tcw * 10.0 + 12.0 ]    # fixed: 'hyperspace' wide
-                    tx9 : f32 [ bounds.x + lin + 12.0 ]
-                    for [ ti9: i32 0, ti9 < fhh.tab_names.count, ti9 += 1 ]
-                        tnm9 : string fhh.tab_names[ti9]
-                        thov : bool [ editor.zone_hover == li && editor.zone_tab == ti9 ]
-                        # never past the pane's right edge
-                        if [ tx9 + pw9 > bounds.x + bounds.w - rin - 12.0 ] break
-                        glc : string [ (thov) ? '#fcc6' : '#ccf2' ]
-                        cv.save[ ]
-                        cv.rounded[ 6.0, 6.0, 6.0, 6.0 ]
-                        cv.fill_color[ (thov) ? rgba['#826'] : rgba['#614'] ]
-                        cv.inner_glow[ glc, (thov) ? 20.0 : 16.0 ]
-                        cv.stroke_width[ 0.0 ]
-                        cv.rect_to[ tx9, y + 2.0, pw9, rh - 4.0 ]
-                        cv.paint[ ]
-                        cv.restore[ ]
-                        cv.fill_color[ (thov) ? rgba['#ffffff'] : rgba['#e6e2f5'] ]
-                        cv.draw_text[ tnm9,
-                            rect [ x: tx9 + 2.0, y: y, w: pw9 - 4.0, h: rh ],
-                            vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null ]
-                        tx9 += pw9 + 6.0
-                    cv.font_size[ code_fs ]
-                    continue
-                if [ fhh && (fhh.is_newfile || fhh.is_commit || fhh.is_commit_go) ]
-                    # the open toggle reads cancel on its own background
-                    canceling : bool [ false ]
-                    if [ fhh.is_commit ]
-                        orb6 : cast orbiter [ editor.ux.app_object ]
-                        canceling = (orb6) ? orb6.commit_open : false
-                    zhov : bool [ fhh.is_commit_go && editor.zone_hover == li ]
-                    # extra pad so the text lines up with the tab pills
-                    ztx  : f32 [ bounds.x + lin + 24.0 ]
+                if [ fhh && fhh.is_newfile ]
                     cv.save[ ]
                     cv.rounded[ 8.0, 8.0, 8.0, 8.0 ]
-                    cv.fill_color[ (zhov) ? rgba['#6cb6ff22'] : rgba['#0000'] ]
+                    cv.fill_color[ rgba['#0000'] ]
                     cv.stroke_width[ 1.0 ]
-                    cv.stroke_color[ (zhov) ? rgba['#8fd0ff'] : rgba['#fff3'] ]
+                    cv.stroke_color[ rgba['#fff3'] ]
                     cv.rect_to[ bounds.x + lin + 2.0, y + 2.0, bounds.w - lin - rin - 4.0, rh - 4.0 ]
                     cv.paint[ ]
                     cv.restore[ ]
-                    if [ fhh.is_commit ]
-                        lhov : bool [ editor.zone_hover == li && editor.zone_tab == 0 ]
-                        rhov : bool [ editor.zone_hover == li && editor.zone_tab == 1 ]
-                        # left control: reveal all rows of changed files
-                        rvl : string '{fhh.nfiles} files changed'
-                        cv.fill_color[ (lhov) ? rgba['#ffffff'] : rgba['#9a94b0'] ]
-                        cv.draw_text[ rvl,
-                            rect [ x: ztx, y: y, w: f32[ rvl.count ] * cw_tm.w + 8.0, h: rh ],
-                            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
-                        # right control: +/- totals then make commit / cancel
-                        rx9  : f32 [ bounds.x + bounds.w - rin - 24.0 ]
-                        as9  : string '+{fhh.adds}'
-                        ds9  : string '-{fhh.dels}'
-                        lw9  : f32 [ f32[ fnm.count ] * cw_tm.w ]
-                        lbx  : f32 [ rx9 - lw9 ]
-                        if [ canceling || rhov ]
-                            cv.save[ ]
-                            cv.rounded[ 6.0, 6.0, 6.0, 6.0 ]
-                            cv.fill_color[ (canceling) ? rgba['#7a2f2fcc'] : rgba['#6cb6ff22'] ]
-                            cv.stroke_width[ 0.0 ]
-                            cv.rect_to[ lbx - 8.0, y + 2.0, lw9 + 16.0, rh - 4.0 ]
-                            cv.paint[ ]
-                            cv.restore[ ]
-                        dsx : f32 [ lbx - 16.0 - f32[ ds9.count ] * cw_tm.w ]
-                        asx : f32 [ dsx - f32[ as9.count + 1 ] * cw_tm.w ]
-                        cv.fill_color[ rgba['#6a9955'] ]
-                        cv.draw_text[ as9,
-                            rect [ x: asx, y: y, w: f32[ as9.count ] * cw_tm.w + 4.0, h: rh ],
-                            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
-                        cv.fill_color[ rgba['#e06c75'] ]
-                        cv.draw_text[ ds9,
-                            rect [ x: dsx, y: y, w: f32[ ds9.count ] * cw_tm.w + 4.0, h: rh ],
-                            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
-                        cv.fill_color[ (canceling) ? rgba['#ffd9d2'] : ((rhov) ? rgba['#ffffff'] : rgba['#9a94b0']) ]
-                        cv.draw_text[ fnm,
-                            rect [ x: lbx, y: y, w: lw9 + 4.0, h: rh ],
-                            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
-                        continue
-                    tx8 : f32 [ (fhh.is_commit_go) ? ztx : x0 + 8.0 ]
-                    cv.fill_color[ (canceling) ? rgba['#ffd9d2'] : rgba['#9a94b0'] ]
+                    cv.fill_color[ rgba['#9a94b0'] ]
                     cv.draw_text[ fnm,
-                        rect [ x: tx8, y: y, w: bounds.w - rin - 16.0, h: rh ],
+                        rect [ x: x0 + 8.0, y: y, w: bounds.w - rin - 16.0, h: rh ],
                         vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
                     continue
                 fis_dir : bool [ fhh->is_dir ]
@@ -1862,8 +1760,14 @@ Layer EditorLayer
                 if [ !editor.file_icon ]
                     ffp2 : path 'images/file.svg'
                     if [ ffp2.exists[] ] editor.file_icon = SVGModel [ ffp2 ]
+                if [ !editor.module_icon ]
+                    cfp2 : path 'images/material/3d.svg'
+                    if [ cfp2.exists[] ] editor.module_icon = SVGModel [ cfp2 ]
+                if [ !editor.folder_icon ]
+                    dfp2 : path 'images/material/folder.svg'
+                    if [ dfp2.exists[] ] editor.folder_icon = SVGModel [ dfp2 ]
                 if [ !editor.ficons ] editor.ficons = FileIcons []
-                imdl : SVGModel [ (fis_dir) ? null : editor.file_icon ]
+                imdl : SVGModel [ (fis_dir) ? ((fhh && fhh->is_module) ? editor.module_icon : editor.folder_icon) : editor.file_icon ]
                 if [ !fis_dir ]
                     msz : i32 [ i32[ round[ lh * ((single) ? 0.7 : 1.0) ] ] ]
                     mim : SVGModel editor.ficons.icon[ fnm, msz ]
@@ -1902,17 +1806,12 @@ Layer EditorLayer
                         cv.draw_text[ fdr, rect [ x: tx0, y: y + lh, w: bounds.w - rin - tx0, h: lh ],
                             vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
                 cv.font_size[ code_fs ]
-                hov : bool [ editor.hover_gutter && (editor.hover_line == li || (!editor.single_line && editor.hover_line == li + 1)) ]
+                hov : bool [ !editor.nav_list && editor.hover_gutter && (editor.hover_line == li || (!editor.single_line && editor.hover_line == li + 1)) ]
                 if [ hov ]
                     ico : SVGModel [ null ]
-                    if [ editor.nav_list ]
-                        if [ !editor.pin_icon ]
-                            editor.pin_icon = SVGModel [ path 'images/expand.svg' ]
-                        ico = editor.pin_icon
-                    el
-                        if [ !editor.close_icon ]
-                            editor.close_icon = SVGModel [ path 'images/close.svg' ]
-                        ico = editor.close_icon
+                    if [ !editor.close_icon ]
+                        editor.close_icon = SVGModel [ path 'images/close.svg' ]
+                    ico = editor.close_icon
                     if [ ico ]
                         hisz : f32 [ round[ lh * 0.5 ] ]
                         hiox : f32 [ round[ bounds.x + (gut_w - hisz) * 0.5 ] ]
@@ -1947,7 +1846,7 @@ Layer EditorLayer
             if [ sy >= bounds.y && sy <= bounds.y + bounds.h ]
                 cv.fill_color[ rgba['#ffffff30'] ]
                 cv.stroke_width[ 0.0 ]
-                cv.rect_to[ bounds.x + lin + 6.0, round[ sy ], bounds.w - lin - rin - 12.0, 1.0 ]
+                cv.rect_to[ bounds.x + lin + 12.0, round[ sy ], bounds.w - lin - rin - 36.0, 1.0 ]
                 cv.paint[ ]
 
         if [ !showing && editor.debug_vars ]
@@ -2093,6 +1992,7 @@ Layer EditorLayer
                 editor.filter_next = false
 
             sel_col_val  : rgba [ (sel_color)  ? sel_color  : rgba['#425'] ]
+            sel_brd_val  : rgba [ (sel_border) ? sel_border : rgba['#ede3'] ]
 
             if [ has_sel ]
                 cv.save[ ]
@@ -2142,7 +2042,7 @@ Layer EditorLayer
                         editor.filter_next = true
 
                     cv.fill_color  [ sel_col_val ]
-                    cv.stroke_color[ rgba['#fff2'] ]
+                    cv.stroke_color[ sel_brd_val ]
                     cv.stroke_width[ 0.5 ]
                     cv.rect_to     [ rr.x, rr.y - 0.5, rr.w, rr.h + 1 ]
                     cv.paint       [ ]
@@ -2216,6 +2116,7 @@ Control Editor
             line_gutter: #ffffff08
             item_color: #2b3a5500
             sel_color: #425
+            sel_border: #ede3
             hl_fill: #ff6a2e55
             hl_grad: #c0381844
             hl_glow: #ff8a3a99
@@ -2288,10 +2189,11 @@ Control Editor
     intern static export_ftype    : map string[string]
     intern static bin_view_cached : string
     mutable lines         : list string
-    mutable file_cache    : map FileBuf[string]
     mutable close_icon    : SVGModel
     mutable pin_icon      : SVGModel
     mutable file_icon     : SVGModel
+    mutable module_icon   : SVGModel
+    mutable folder_icon   : SVGModel
     mutable ficons        : FileIcons
     mutable was_showing   : bool
     # ctrl/cmd is held: resolvable symbols outline as clickable targets
@@ -2346,11 +2248,6 @@ Control Editor
     mutable last_scroll_y : f32
     mutable last_view_w   : f32
     mutable hover_line    : i32 [ -1 ]
-    # commit-zone hover: divided from the editor's line hover
-    mutable zone_hover    : i32 [ -1 ]
-    mutable zone_tab      : i32 [ -1 ]
-    # content width the zone may fill; the tab packer reads it
-    mutable zone_w        : f32 [ 0.0 ]
     mutable gutter_w      : f32 [ 0.0 ]
     public  breakpoints   : map string[string]
     public  code_font_size : i32
@@ -2526,7 +2423,8 @@ Control Editor
     func line_count [] -> i32
         if [ show_hits && hits ] return hits.count
         if [ flat_active && flat_rows ] return flat_rows.count
-        return lines.count
+        # a pane mid-transition can be asked before lines exist
+        return (lines) ? lines.count : 0
 
     func row_header [ i: i32 ] -> bool
         if [ show_hits && hits && i >= 0 && i < hits.count ] return hits[i].is_header
@@ -2659,46 +2557,12 @@ Control Editor
 
     # arrows drive the list highlight exactly as the mouse does
     # false when it ran off the end — the caller decides where focus goes
-    # leading nav rows owned by the commit zone: its own mouse path
-    func commit_zone [] -> i32
-        if [ !show_hits || !hits ] return 0
-        n9 : i32 [ 0 ]
-        while [ n9 < hits.count ]
-            h9 : FindHit hits[n9]
-            if [ h9.is_tabs || h9.is_commit || h9.is_commit_go || h9.is_msg ]
-                n9 += 1
-                continue
-            if [ h9.is_spacer && n9 > 0 ] n9 += 1
-            break
-        return n9
-
-    # zone content x, relative to the content layer's left edge
-    func zone_x0 [] -> f32
-        return (nav_tools && nav_tools.count > 0) ? 76.0 : 12.0
-
-    # mirrors the tab draw: fixed-width pills, 6px gap, 0.85 font
-    func zone_tab_hit [ row: i32, rx: f32 ] -> i32
-        h9 : FindHit hits[row]
-        if [ !h9.is_tabs || !h9.tab_names ] return -1
-        cw9 : f32 [ (cw_cache > 0.0) ? cw_cache : 8.0 ]
-        pw9 : f32 [ cw9 * 0.85 * 10.0 + 12.0 ]
-        x9  : f32 [ zone_x0[] ]
-        for [ i: i32 0, i < h9.tab_names.count, i += 1 ]
-            if [ rx >= x9 && rx < x9 + pw9 ] return i
-            x9 += pw9 + 6.0
-        return -1
-
     func hover_step [ d: i32 ] -> bool
         n : i32 [ line_count[] ]
         r : i32 [ hover_line ]
-        zc : i32 [ commit_zone[] ]
         while [ true ]
             r += d
-            if [ r < zc ]
-                if [ d < 0 ] return false
-                r = zc - 1
-                continue
-            if [ r >= n ] return false
+            if [ r < 0 || r >= n ] return false
             if [ row_spacer[ r ] ] continue
             if [ row_cont[ r ] ] continue
             break
@@ -2826,6 +2690,13 @@ Control Editor
             default                         # none / ident / op
                 return rgba['#d4d4d4']
 
+    # buffers live on orbiter: one mapping shared by every pane
+    func buffers [] -> map FileBuf [string]
+        orb : cast orbiter [ ux.app_object ]
+        if [ !orb ] return null
+        if [ !orb.file_cache ] orb.file_cache = map FileBuf [string] []
+        return orb.file_cache
+
     func line_reg_count [ ml: i32 ] -> i32
         if [ !cur_buf || !cur_buf.line_regs ] return 0
         if [ ml < 0 || ml >= cur_buf.line_regs.count ] return 0
@@ -2872,10 +2743,11 @@ Control Editor
             ff  : fmt_file files[fi]
             if [ !ff || !ff.source ] continue
             key : string '{ff.source}'
-            buf : FileBuf file_cache[ key ]
+            fcm : map FileBuf [string] buffers[]
+            buf : FileBuf fcm[ key ]
             if [ !buf ]
                 buf = FileBuf []
-                file_cache[ key ] = buf
+                fcm[ key ] = buf
             buf.line_regs = array []
             nl : i32 [ ff.lines.count ]
             for [ li: i32 0, li < nl, li += 1 ]
@@ -2911,11 +2783,6 @@ Control Editor
     func line_set [ i: i32, val: string ]
         if [ show_hits && hits ]
             hits[i].text = val
-            # message rows live on the app: rebuilds must not lose them
-            if [ hits[i].is_msg ]
-                orb8 : cast orbiter [ ux.app_object ]
-                if [ orb8 && orb8.commit_text && hits[i].line < orb8.commit_text.count ]
-                    orb8.commit_text[ hits[i].line ] = val
             return
         old : string line_get[ i ]
         lines.remove[ i ]
@@ -3148,7 +3015,8 @@ Control Editor
         orb2 : cast orbiter [ ux.app_object ]
         if [ orb2 ] orb2.git_summarize[]
         # stamp the cache or our own save reads as an external change
-        buf9 : FileBuf file_cache[ '{src.absolute[]}' ]
+        fcm9 : map FileBuf [string] buffers[]
+        buf9 : FileBuf fcm9[ '{src.absolute[]}' ]
         if [ buf9 ]
             buf9.mtime  = src.modified_time[]
             buf9.sync_i = hist_i
@@ -3411,7 +3279,8 @@ Control Editor
     # doesn't own), then re-diff — edits merge before your eyes
     func diff_rebuild [ project: bool ]
         key9 : '{src.absolute[]}'
-        fb9  : FileBuf file_cache[key9]
+        fcm7 : map FileBuf [string] buffers[]
+        fb9  : FileBuf fcm7[key9]
         if [ !fb9 ]
             fb9 = FileBuf []
             nl9 : list string []
@@ -3420,9 +3289,11 @@ Control Editor
                 pp9 : ft9.split["\n"]
                 for [ i: i32 0, i < pp9.count, i += 1 ]
                     nl9.push[ pp9[i] ]
+                if [ ft9.count > 0 && ft9[ ft9.count - 1 ] == 10 ]
+                    nl9.push[ '' ]
             fb9.lines = nl9
             fb9.mtime = src.modified_time[]
-            file_cache[key9] = fb9
+            fcm7[key9] = fb9
         if [ project && diff_kinds && lines ]
             pj9 : list string []
             n7  : i32 [ lines.count ]
@@ -3599,7 +3470,8 @@ Control Editor
     func reload_from_disk []
         if [ !src || diff_commit || show_hits || flat_active || !hist ] return
         key : '{src.absolute[]}'
-        buf : FileBuf file_cache[ key ]
+        fcm8 : map FileBuf [string] buffers[]
+        buf : FileBuf fcm8[ key ]
         if [ !buf ] return
         mt : i64 [ src.modified_time[] ]
         if [ mt == buf.mtime ] return
@@ -3780,7 +3652,8 @@ Control Editor
             return
         key   : '{src.absolute[]}'
         mtime : i64    [ src.modified_time[] ]
-        buf   : FileBuf file_cache[key]
+        fcm6  : map FileBuf [string] buffers[]
+        buf   : FileBuf fcm6[key]
         if [ buf && buf.mtime == mtime ]
             lines = buf.lines
             swap_history[ buf ]   # restore this file's own undo/redo (or seed it)
@@ -3791,9 +3664,12 @@ Control Editor
         new_lines : list string []
         for [ i: i32 0, i < parts.count, i += 1 ]
             new_lines.push[ parts[i] ]
+        # split drops the piece after a trailing \n: that IS a line
+        if [ ftext.count > 0 && ftext[ ftext.count - 1 ] == 10 ]
+            new_lines.push[ '' ]
         if [ !buf ]
             buf = FileBuf []
-            file_cache[key] = buf
+            fcm6[key] = buf
         buf.lines = new_lines
         buf.mtime = mtime
         lines = new_lines
@@ -3858,13 +3734,11 @@ Control Editor
         if [ !app_view ] load_file[]
 
     public func on_unload [ ]
-        file_cache = map FileBuf[string] []
         lines      = list string []
         code_lines = array EdLineCache []
         super.on_unload[ ]
 
     func init [ ]
-        file_cache = map FileBuf[string] []
         if [ breakpoints ] breakpoints.hold[]
         lines = list string []
         lines.push[ '' ]
@@ -3917,7 +3791,7 @@ Control Editor
             return false
         lh    : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
         cw    : f32 [ (cw_cache > 0.0) ? cw_cache : 8.0 ]
-        rel_y : f32 [ ev.mouse.pos.y - ele.bounds.y ]
+        rel_y : f32 [ ev.mouse.pos.y - ele.bounds.y - ((show_hits) ? 10.0 : 0.0) ]
         if [ rel_y < 0.0 ] return false
         if [ grid_mode && show_hits && hits ]
             gli : i32 [ grid_hit_index[ ev.mouse.pos.x - ele.bounds.x, rel_y, ele.bounds.w ] ]
@@ -3931,7 +3805,8 @@ Control Editor
         if [ show_hits && tool_hit[ ev.mouse.pos.x, ev.mouse.pos.y ] >= 0 ] return false
         if [ show_hits && (dragging || ev.key.shift) ]
             ln = clamp[ ln, group_start[ anchor_line ], group_end[ anchor_line ] ]
-        vx    : f32 [ round[ (rel_x - row_indent[ ln ] + ((show_hits) ? 0.0 : scroll.x)) / cw ] ]
+        # event pos is CONTENT space: scroll.x is already inside it
+        vx    : f32 [ round[ (rel_x - row_indent[ ln ]) / cw ] ]
         cl    : i32 [ model_col[ line_get[ ln ], i32[ vx ] ] ]
         if [ nav && src && !dragging ]
             jd : i32 [ sel_line - ln ]
@@ -3995,47 +3870,6 @@ Control Editor
             press_tool[ rail9 ]
             ev.no_default = true
             return
-        # the commit zone owns its presses; the line machinery never sees them
-        if [ show_hits && hits ]
-            zc8 : i32 [ commit_zone[] ]
-            ele8 : (layers) ? cast EditorLayer [ layers['content'] ] : null
-            if [ zc8 > 0 && ele8 ]
-                lh8 : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
-                ry8 : f32 [ ev.mouse.pos.y - ele8.bounds.y ]
-                rx8 : f32 [ ev.mouse.pos.x - ele8.bounds.x ]
-                zr8 : i32 [ (ry8 >= 0.0) ? i32[ ry8 / lh8 ] : -1 ]
-                if [ zr8 >= 0 && zr8 < zc8 ]
-                    h8 : FindHit hits[ zr8 ]
-                    orb8 : cast orbiter [ ux.app_object ]
-                    if [ h8.is_msg ]
-                        # the form's text rows keep the editor caret
-                        place_cursor[ ev ]
-                        anchor_line = sel_line
-                        anchor_col  = sel_col
-                        dragging = true
-                        pristine = false
-                        ev.no_default = true
-                        return
-                    sel_line = -1    # the app handler must not re-activate
-                    if [ h8.is_tabs && orb8 ]
-                        ti8 : i32 [ zone_tab_hit[ zr8, rx8 ] ]
-                        if [ ti8 >= 0 ]
-                            ps8 : string h8.tab_paths[ti8]
-                            orb8.open_in_pane[ path '{ps8}', pane_index ]
-                            orb8.exit_finder[]
-                    el [ h8.is_commit && orb8 ]
-                        # left half reveals all changed files; right commits
-                        if [ rx8 < ele8.bounds.w * 0.5 ]
-                            orb8.reveal_all = !orb8.reveal_all
-                            orb8.run_search[]
-                        el
-                            orb8.commit_toggle[]
-                    el [ h8.is_commit_go && orb8 ]
-                        orb8.do_commit[]
-                    pristine = false
-                    ev.no_default = true
-                    if [ ux ] ux.restyle = true
-                    return
         if [ run_view ]
             if [ app_view ]
                 # the pip toggle is a button on the app bar, not a chip
@@ -4170,18 +4004,12 @@ Control Editor
             return
         if [ ele && rel_x < gutter_w ]
             lh    : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
-            rel_y : f32 [ ev.mouse.pos.y - ele.bounds.y ]
+            rel_y : f32 [ ev.mouse.pos.y - ele.bounds.y - ((show_hits) ? 10.0 : 0.0) ]
             if [ rel_y < 0.0 ] return
             vrl   : i32 [ clamp [ rel_y / lh, 0, line_count[] - 1 ] ]
             if [ row_header[ vrl ] ]
-                if [ nav_list && hits && vrl < hits.count ]
-                    h : FindHit hits[ vrl ]
-                    if [ h && h.file && !h.is_dir ]
-                        orb : cast orbiter [ ux.app_object ]
-                        if [ orb ] orb.toggle_dock[ h.file ]
-                        pristine = false
-                        ev.no_default = true
-                    return
+                # nav rows pin by shift-click, never by gutter press
+                if [ nav_list ] return
                 if [ show_hits && hits ]
                     remove_group[ vrl ]
                     pristine = false
@@ -4238,7 +4066,7 @@ Control Editor
             return
         if [ !ele ] return
         lh    : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
-        rel_y : f32 [ ev.mouse.pos.y - ele.bounds.y ]
+        rel_y : f32 [ ev.mouse.pos.y - ele.bounds.y - ((show_hits) ? 10.0 : 0.0) ]
         rel_x : f32 [ ev.mouse.pos.x - ele.bounds.x ]
         hl    : i32  [ 0 ]
         if [ grid_mode && show_hits && hits ]
@@ -4251,24 +4079,6 @@ Control Editor
             pristine = false
             ux.will_animate = true
         if [ th9 >= 0 ] hl = -1
-        # zone rows hover on their own state, never the line highlight
-        zc9 : i32 [ commit_zone[] ]
-        zh9 : i32 [ -1 ]
-        zt9 : i32 [ -1 ]
-        if [ hl >= 0 && hl < zc9 ]
-            zh9 = hl
-            hc9 : FindHit hits[hl]
-            if [ hc9.is_commit ]
-                # two controls on one row: 0 = reveal-all, 1 = commit
-                zt9 = (rel_x < ele.bounds.w * 0.5) ? 0 : 1
-            el
-                zt9 = zone_tab_hit[ hl, rel_x ]
-            hl  = -1
-        if [ zh9 != zone_hover || zt9 != zone_tab ]
-            zone_hover = zh9
-            zone_tab   = zt9
-            pristine = false
-            ux.will_animate = true
         hg    : bool [ rel_x >= 0.0 && rel_x < gutter_w ]
         if [ rel_y < 0 ]
             hl  = -1
@@ -4295,13 +4105,11 @@ Control Editor
                 ux.will_animate = true
 
     func on_leave [ ev: Event ]
-        if [ hover_line != -1 || hover_gutter || hover_ann != -1 || tool_hover != -1 || zone_hover != -1 ]
+        if [ hover_line != -1 || hover_gutter || hover_ann != -1 || tool_hover != -1 ]
             hover_line   = -1
             hover_gutter = false
             hover_ann    = -1
             tool_hover   = -1
-            zone_hover   = -1
-            zone_tab     = -1
             pristine = false
 
     func on_release [ ev: Event ]
