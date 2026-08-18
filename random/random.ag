@@ -1,0 +1,90 @@
+import <stdio.h>
+import <time.h>
+import <math.h>
+
+import rand1 as r1
+
+intern class rng
+    test1:  i32 1
+    test2:  i32 2
+    test3:  i32 3
+    test4:  i32 4
+    state:  new u64[ 4 ] 
+    seeded: bool [ false ]
+
+
+
+intern rng_state: rng[]
+
+
+intern func splitmix64 [state: @u64] -> u64
+    state[0] += 0x9e3779b97f4a7c15
+    z: u64 [ state[0] ]
+    z =   (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9
+    z =   (z ^ (z >> 27)) * 0x94d049bb133111eb
+    return z ^ (z >> 31) 
+
+
+# rotate left
+intern func rotl23 [input: u64] -> u64
+    return (input << 23) | (input >> 41)
+
+intern func rotl45 [input: u64] -> u64
+    return (input << 45) | (input >> 19)
+
+
+# seed from a u64 (SplitMix64 expands to 4 state words)
+public func rng_seed [seed: u64] 
+    sm: u64 [ seed ]
+    printf "ptr = %p\n", rng_state
+    rng_state.state[0] = splitmix64[@sm]
+    rng_state.state[1] = splitmix64[@sm]
+    rng_state.state[2] = splitmix64[@sm]
+    rng_state.state[3] = splitmix64[@sm]
+    rng_state.seeded = true
+
+
+# auto-seed from clock on first use
+intern func ensure_seeded [] 
+    if [ rng_state.seeded ]
+        return
+    
+    rng_seed u64 [ time[null] ] ^ u64[ clock[] ] * 6364136223846793005
+
+
+# xoshiro256++ core — returns uniform u64
+func rng_next [] -> u64
+    ensure_seeded
+    result: u64 [ rotl23[rng_state.state[0] + rng_state.state[3]] + rng_state.state[0] ]
+    t:      u64 [ rng_state.state[1] << 17 ]
+    rng_state.state[2] ^= rng_state.state[0]
+    rng_state.state[3] ^= rng_state.state[1]
+    rng_state.state[1] ^= rng_state.state[2]
+    rng_state.state[0] ^= rng_state.state[3]
+    rng_state.state[2] ^= t
+    rng_state.state[3]  = rotl45[rng_state.state[3]]
+    return result
+
+
+func randf [] -> f32
+    return f32[rng_next[] >> 40] * 0x1.0p-24
+
+# uniform f64 [0, 1) — upper 53 bits
+func randf64 [] -> f64
+    return f64[rng_next[] >> 11] * 0x1.0p-53
+
+# uniform u64 [0, bound)
+func rng_range [bound: u64] -> u64
+    return rng_next[] % bound
+
+# standard normal (mean=0, stddev=1) via Box-Muller
+func randn [] -> f32
+    u1: randf[]
+    u2: randf[]
+    if [ u1 < 1.0e-7 ]
+        u1 = 1.0e-7
+    return sqrtf[ -2.0 * logf[u1] ] * cosf[ 6.283185307 * u2 ]
+
+# normal with specified mean and stddev
+func randn_params [mean: f32, stddev: f32] -> f32
+    return randn[] * stddev + mean

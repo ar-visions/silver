@@ -240,14 +240,14 @@ if ! grep -q '# silver PATH' "$RC" 2>/dev/null; then
 fi
 
 # Au's ports.h must be reachable as <ports.h> by modules that build OUTSIDE the
-# src tree (e.g. foundry/dbg) — symlink it into the install include dir.
+# src tree (e.g. dbg) — symlink it into the install include dir.
 ln -sf "$SILVER/src/ports.h" "$NATIVE/include/ports.h"
 ln -sf "$SILVER/src/undefcpp.h" "$NATIVE/include/undefcpp.h"
 
 # dbg — a thin lldb shortcut: `dbg <app> [args...]` launches the app under the
 # vendored lldb, auto-runs it, and drops to the lldb prompt on a crash (so you can
 # `bt`). the Makefile install step symlinks it onto PATH ($bin_dir/dbg -> $SILVER/dbg).
-cat > "$SILVER/dbg" <<'DBG'
+cat > "$SILVER/support/dbg" <<'DBG'
 #!/usr/bin/env bash
 # thin lldb shortcut — run an app (with args) under lldb; on a crash print a backtrace
 # and quit (never sits at an interactive prompt). resolve through the PATH symlink so
@@ -257,7 +257,7 @@ lldb="$here/install/bin/lldb"
 [ -x "$lldb" ] || lldb=lldb
 exec "$lldb" --batch -o run -k "thread backtrace" -k quit -- "$@"
 DBG
-chmod +x "$SILVER/dbg"
+chmod +x "$SILVER/support/dbg"
 
 # private app storage
 mkdir -p "$SILVER/private"

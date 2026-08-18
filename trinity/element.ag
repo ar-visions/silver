@@ -1,0 +1,721 @@
+extend trinity
+
+# enums export to A-type
+enum Ease
+    linear  : 0
+    quad    : 1
+    cubic   : 2
+    quart   : 3
+    quint   : 4
+    sine    : 5
+    expo    : 6
+    circ    : 7
+    back    : 8
+    elastic : 9
+    bounce  : 10
+
+enum Direction
+    inward  : 0
+    outward : 1
+    in_out  : 2
+
+enum Duration
+    ms : 2
+    ns : 1
+    s  : 3
+
+enum XAlign : f32
+    undefined : 0
+    left      : 0.0
+    middle    : 0.5
+    right     : 1.0
+    width     : 2.0
+
+enum YAlign : f32
+    undefined : 0
+    top       : 0.0
+    middle    : 0.5
+    bottom    : 1.0
+    height    : 2.0
+
+enum Overflow
+    clip     : 0
+    ellipsis : 1
+    visible  : 2
+    wrap     : 3
+
+enum UXSurface
+    background  : 0
+    frost       : 1
+    blur        : 2
+    compose     : 3
+
+enum Fill : f32
+    none      : 0.00f
+    blur      : 0.50f
+    frost     : 1.00
+
+enum CanvasType
+    screen      : 0
+    compose     : 1
+
+enum Pattern
+    none : 0
+    repeat_x : 1
+    repeat_y : 2
+    repeat_xy : 3
+
+enum Clip
+    none : 0
+    clip : 1
+    ellipsis : 2
+
+enum State
+    none      : 0
+    hovered   : 1
+    pressed   : 2
+    focused   : 4
+    selected  : 8
+    disable   : 16
+    first     : 32
+    middle    : 64
+    last      : 128
+    odd       : 256
+    even      : 512
+    has_value : 1024
+    expanded  : 2048
+    replacing : 4096
+    shifted   : 8192
+
+
+alias Elements : map    element [ string ]
+alias Layers   : map    Layer   [ string ]
+alias astrings : array  string
+alias FRender  : lambda Elements[ Display ]
+
+# this Au type indicates we do not have an 'init' called
+ielement element
+    context vk              : vk_context
+    context ux              : Window
+    manual parent           : element
+    mutable area            : Region
+    mutable bounds          : rect
+    mutable value           : object
+    mutable id              : string
+    mutable flags           : i64
+    intern  initialized     : bool
+    mutable label           : string
+    mutable edit            : string
+    public  has_value       : bool
+    public  label2          : string
+    public  screenshot      : path
+    # --shot-frame N: frame index the screenshot captures at
+    public  shot_frame      : i32 [ 60 ]
+    public  attach          : path
+    public  text_mode       : bool [ false ]
+    mutable layers          : map Layer[string]
+    mutable shaders         : map shader  [string]
+    #mutable bindings        : map ModelBind[string]
+    mutable elements        : Elements
+    mutable tags            : array string
+    mutable group           : string
+    mutable tab_index       : i32
+    mutable scroll          : vec2f
+    # wheel input accumulates here; scroll.y eases toward it per frame
+    mutable scroll_goal     : f32
+    mutable scroll_anim     : bool
+    mutable content_h       : f32
+    public  scroll_speed    : f32
+    mutable scaling         : vec2f
+    mutable rotation        : f32
+    mutable transform_origin : vec2f
+    public  ghost           : bool
+    public  hide            : bool
+    mutable captured        : bool
+    public  disable         : bool
+    public  bordering       : bool
+    public  topmost         : bool
+    public  width           : i32
+    public  height          : i32
+    mutable hovered         : bool
+    mutable pressed         : bool
+    mutable focused         : bool
+    mutable first           : bool
+    mutable last            : bool
+    mutable middle          : bool
+    mutable odd             : bool
+    mutable even            : bool
+    public  focusable       : bool
+    # editable layers stay display-only while set (label mode)
+    public  read_only       : bool
+    public  ux_generics     : bool
+    public cursor_pos       : vec2f
+    public  no_scroll       : bool
+    public  spacing_x       : f32
+    public  spacing_y       : f32
+    public  use_spacing     : bool [ true ]
+    public  user_events     : bool [ true ]
+    mutable maps_populated  : bool
+    mutable sel_col         : i32 [ -1 ]
+    mutable anchor_col      : i32 [ 0 ]
+    mutable text_dragging   : bool
+
+    public func on_click   [ ev: Event ] return
+    public func on_press   [ ev: Event ] return
+    public func on_release [ ev: Event ] return
+    public func on_hover   [ ev: Event ] return
+    public func on_leave   [ ev: Event ] return
+    public func on_move    [ ev: Event ] return
+    public func on_wheel [ ev: Event ]
+        if [ content_h <= 0.0 ] return
+        speed  : f32 [ (scroll_speed > 0.0) ? scroll_speed : 40.0 ]
+        if [ !scroll_anim ] scroll_goal = scroll.y
+        scroll_goal += f32[ ev.mouse.wheel_delta.y ] * speed * -1.0
+        max_sc : f32 [ content_h - bounds.h ]
+        if [ max_sc <= 0.0 ] max_sc = 0.0
+        if [ scroll_goal < 0.0 ] scroll_goal = 0.0
+        if [ scroll_goal > max_sc ] scroll_goal = max_sc
+        scroll_anim = true
+        pristine = false
+        ux.will_animate = true
+    public func on_key     [ ev: Event ] return
+    public func on_pad     [ ev: Event ] return
+    public func on_char    [ ev: Event ] return
+    public func on_drop    [ ev: Event ] return
+    public func on_inspect [ hits: array StyleHit ] return
+    public func on_canvas  [ cv: Canvas ] return
+    public func on_overlay [ cv: Canvas ] return
+    public func on_state   [ m: i32 ] return
+    intern style_avail  : map StyleEntries[string]
+    #intern selections   : map
+    intern transitions  : map StyleTransition[string]
+    # members the .ag code set before styling; style never writes these
+    intern code_styled  : array string
+    # per-class embedded css; subclasses override, null = unstyled
+    public style        : CSS
+
+    public  animated     : bool
+    public  selected     : bool
+    intern cache_canvas  : Canvas
+    intern cache_w       : i32
+    intern cache_h       : i32
+    intern cache_ox      : i32
+    intern cache_oy      : i32
+    intern mask_canvas   : Canvas
+    intern mask_w        : i32
+    intern mask_h        : i32
+    public mask_glow     : vec4f
+    intern mask_bg       : vec4f
+    public mask_keep_l   : f32
+    public mask_inset    : vec4f
+    mutable pristine     : bool [ false ]
+    mutable needs_frame  : bool
+    mutable fc           : f32
+    public  opacity      : f32 [ 1.0 ]
+    # own layout extent; the parent arranger reads and writes
+    public  extent       : f32
+    mutable extent_shown : f32
+    # declares this element the backdrop: its target feeds the frost chain
+    public  frost        : bool
+    # frost from the quarter-size blur, not the 1/16 reduction
+    public  frost_sharp  : bool
+    # floor under the ui dimming; 0 keeps the ui's own value
+    public  frost_lift   : f32
+
+    public func set_capture []
+        ux.set_capture[ a ]
+
+    public func release_capture []
+        ux.release_capture[ a ]
+
+    public func set_focus []
+        ux.set_focus[ a ]
+
+    public func release_focus []
+        ux.release_focus[ a ]
+
+    public func draw [ w: Window ]
+        return
+
+    # runs AFTER children compose — chrome that must sit on top of them
+    public func draw_over [ w: Window ]
+        return
+
+    public func on_unload [ ]
+        return
+
+    # style value overrides, keyed by the authored string
+    public func theme [ ] -> map string [string]
+        return null
+
+    public func on_dictate [ on: bool ]
+        return
+
+    public func open_at [ fp: path, lno: i32, col: i32 ] -> bool
+        return false
+
+    public func on_host [ mt: i32, wp: i32, lp: i32, xp: i32 ]
+        return
+
+    # APPEND ONLY below: method order is vtable slot order, and modules
+    # loaded at runtime (scenes) are not rebuilt when this file changes
+    # a raw agent line the shell forwarded; the app owns what it means
+    public func on_agent   [ s: string ] return
+    # the instruments this instance can show. the shell asks, never guesses
+    public func instruments [] -> array string
+        return null
+    # an instrument IS this enumeration: the entries it reads right now.
+    # the shell samples it while the instrument is on
+    public func read_instrument [ nm: string ] -> array string
+        return null
+    # the shell dictates the width; the height is OURS to say
+    public func instrument_height [ nm: string, iw: i32 ] -> i32
+        return 0
+    # a view is only an option on top of the enumeration. false = no view,
+    # so the instrument shows its entries alone
+    public func paint_instrument [ cv: Canvas, nm: string, r: rect ] -> bool
+        return false
+
+    func unload_tree [ ]
+        on_unload*[]
+        for [ ee: element, k: string ] in elements
+            ee.unload_tree[]
+
+    func unbind_home [ ]
+        if [ !id || id.count == 0 ] return
+        hobj  : Au [ parent ]
+        htype : Au_t [ (parent) ? typeid[ parent ] : null ]
+        if [ htype == typeid[ element ] ]
+            while [ hobj ]
+                he : cast element [ hobj ]
+                hobj = he.parent
+                if [ !hobj ] break
+                htype = typeid[ hobj ]
+                if [ htype != typeid[ element ] ] break
+        if [ !hobj && ux ]
+            hobj  = ux.app_object
+            htype = typeid[ hobj ]
+        if [ !hobj || !htype ] return
+        imember : find_member[ htype, id.chars, AU_MEMBER_VAR, 0, true ]
+        if [ !imember ] return
+        cur : hobj.member_object[ imember ]
+        if [ cur == a ]
+            hobj.member_set[ imember, null ]
+
+    func release_tree [ ]
+        unbind_home[]
+        for [ ee: element, k: string ] in elements
+            ee.release_tree[]
+
+    public func render [ ] -> Elements
+        return null
+
+    public func console_line_count [] -> i32
+        return 0
+
+    public func console_line [ vr: i32 ] -> string
+        return null
+
+    func invalidate_transitions [ ]
+        for [ ct:StyleTransition, k:string ] in transitions
+            ct.invalidate = true
+        
+        for [ e:element, k:string ] in elements
+            e.invalidate_transitions[]
+
+    func remove_invalid_transitions [ ]
+        iterate : true
+        del : false
+        while [ iterate ]
+            iterate = false
+            for [ ct:StyleTransition, k:string ] in transitions
+                if [ ct.invalidate ]
+                    if [ ct.from ] ct.from.drop[]
+                    if [ ct.to   ] ct.to.drop[]
+                    transitions.rm[ k ]
+                    iterate = true
+                    del = true
+                    break
+            
+        for [ e:element, k:string ] in elements
+            e.remove_invalid_transitions[]
+
+
+    intern func animate_within [ ]
+        if [ scroll_anim ]
+            scroll.y = filter_n[ scroll.y, scroll_goal, 0.14, ux.frame_factor ]
+            d9 : f32 [ scroll_goal - scroll.y ]
+            if [ d9 < 0.5 && d9 > -0.5 ]
+                scroll.y = scroll_goal
+                scroll_anim = false
+            pristine = false
+            ux.will_animate = true
+        if [ transitions ]
+            cur_millis : i64 [ epoch_millis[] ]
+            for [ ct: StyleTransition, k: string ] in transitions
+                dur : i64 [ ct.duration.get_millis[] ]
+                ms  : i64 [ cur_millis - ct.start ]
+                p   : f64 [ ct.pos[ f64[ ms ] / f64[ dur ] ] ]
+                if [ ct.type && ct.from && ct.to ]
+                    from_t : typeid[ ct.from ]
+                    if [ (from_t.traits & (1 << 8)) != 0 ]
+                        dst : ct.container.member_ref[ ct.member ]
+                        #Au.mix_structs[ from_t, dst, ct.from, ct.to, p ]
+                    el [ from_t == typeid[ string ] ]
+                        # strings do not interpolate: snap to target
+                        ct.container.member_set[ ct.member, ct.to ]
+                    el [ ct.from inherits collective ]
+                        fa  : array Rotation ct.from
+                        ta  : array Rotation ct.to
+                        if [ fa && ta ]
+                            n   : i32 [ (fa.count < ta.count) ? fa.count : ta.count ]
+                            res : array Rotation []
+                            for [ i: i32 0, i < n, i += 1 ]
+                                r : fa[i]
+                                res.push[ r.mix[ ta[i], p ] ]
+                            # member_set holds new and drops old itself
+                            ct.container.member_set[ ct.member, res ]
+                    el
+                        mixed : ct.from.mix*[ ct.to, p ]
+                        ct.container.member_set[ ct.member, mixed ]
+
+        for [ ee: element, id: string ] in elements
+            ee.animate_within[ ]
+
+    public func is_animating [] -> bool
+        if [ hide ] return false
+        if [ !pristine ] return true
+        if [ animated ] return true
+        if [ transitions ]
+            cur_millis : i64 [ epoch_millis[] ]
+            for [ ct: StyleTransition, k: string ] in transitions
+                if [ ct.duration ]
+                    dur : i64 [ ct.duration.get_millis[] ]
+                    ms  : i64 [ cur_millis - ct.start ]
+                    if [ ms < dur ] return true
+        for [ ee: element, id: string ] in elements
+            if [ ee.is_animating[] ] return true
+        return false
+
+    #mutable selected     : bool
+
+
+alias StyleTransitions : map StyleTransition[string]
+
+
+struct MouseState
+    wheel_delta : vec2f
+    pos         : vec2f
+    button      : i32
+    state       : i32
+    double_click : bool
+
+struct KeyboardState
+    unicode   : u32
+    scan_code : u32
+    state     : i32
+    meta      : bool
+    shift     : bool
+    alt       : bool
+    ctrl      : bool
+    text      : string
+
+# button = index, 1000+ = axis direction, 2000+ = hat direction
+struct PadState
+    pad       : i32
+    button    : i32
+    state     : i32
+
+
+enum Blend
+    normal:   0
+    multiply: 1
+    screen:   2
+    overlay:  3
+    add:      4
+
+
+class Layer
+    context parent             : element
+    public states              : State
+    public ctype               : CanvasType
+    public overlay             : bool
+    public test2               : bool
+    public area                : Region
+    mutable bounds             : rect
+    public radius              : Radius
+
+    public fill_color               : rgba
+    public fill_color_pos           : vec2f
+    public fill_gradient            : GradientType
+    public fill_gradient_color      : rgba
+    public fill_gradient_radius     : f32
+    public fill_gradient_radius_y   : f32
+    public fill_gradient_angle      : f32
+    public fill_offset         : f32
+    public fill_shadow         : Shadow
+    public fill_glow           : Glow
+    public inner_glow          : Glow
+
+    public stroke_gradient          : GradientType
+    public stroke_gradient_color    : rgba
+    public stroke_gradient_radius   : f32
+    public stroke_gradient_radius_y : f32
+    public stroke_gradient_angle    : f32
+    public stroke_color             : rgba
+    public stroke_color_pos         : vec2f
+    public stroke_width             : Sides
+    public stroke_offset            : f32
+    public stroke_shadow            : Shadow
+    public stroke_glow              : Glow
+    public stroke_cap               : Cap
+    public stroke_join              : Join
+    public stroke_miter             : f32
+    public stroke_dash              : array f32
+    public stroke_dash_offset       : f32
+
+    public label               : string
+    public label_color         : rgba
+    public label_color_pos     : vec2f
+    public label_gradient          : rgba
+    public label_gradient_radius   : f32
+    public label_gradient_degrees  : f32
+    public label_gradient_mirror   : bool
+    public label_shadow        : rgba
+    public label_shadow_offset : vec2f
+    public label_shadow_blur   : f32
+    public label_glow          : Glow
+    public label_size          : f32   [ 22.0 ]
+    public label_height        : f32 [ 1.0 ]
+    public label_align         : vec2f [ x: 0.5, y: 0.5 ]
+    public label_offset        : vec2f
+    public label_overflow      : Overflow [ Overflow.ellipsis ]
+    public label_font          : string
+    mutable label_font_cache   : CanvasFont
+
+    public font                : Font
+    public image_svg           : SVGModel
+    public image_scale         : f32 [ 1.0 ]
+    public image_fit           : f32
+    public image_color         : rgba
+    public image_source        : Image
+    public image_align         : Align
+    public image_tranform      : Transform
+    public image_repeat        : Pattern
+
+    public background_gradient : Gradient
+    public background_radius   : f32
+    public background_origin   : vec2f
+    public background_to       : vec2f
+
+    public blend               : Blend
+    public transform           : Transform
+    public overflow            : Clip
+    public clip                : bool
+    public unclip              : bool
+    public opacity             : f32
+    public hide                : bool
+
+    public blur_x           : f32
+    public blur_y           : f32
+    intern blur_canvas      : Canvas
+    intern blur_dirty       : bool
+    intern blur_bw          : i32
+    intern blur_bh          : i32
+
+    public  editable    : bool
+    mutable lh_cache    : f32  [ 0.0 ]
+    mutable cw_cache    : f32  [ 0.0 ]
+
+    func hit_col [ ev: Event ] -> i32
+        cw    : f32 [ (cw_cache > 0.0) ? cw_cache : 8.0 ]
+        text  : string [ (parent.edit) ? parent.edit : '' ]
+        rel_x : f32 [ ev.mouse.pos.x - bounds.x ]
+        return clamp[ i32[ round[ rel_x / cw ] ], 0, text.count ]
+
+    func on_press [ ev: Event ]
+        if [ parent.sel_col < 0 ] parent.sel_col = 0
+        c : i32 [ hit_col[ ev ] ]
+        if [ !ev.key.shift ]
+            parent.anchor_col = c
+            parent.sel_col    = c
+        el
+            parent.sel_col = c
+        parent.text_dragging = true
+        parent.set_capture[]
+        parent.set_focus[]
+        parent.pristine = false
+
+    func on_move [ ev: Event ]
+        if [ !parent.text_dragging ] return
+        parent.sel_col = hit_col[ ev ]
+        parent.pristine = false
+
+    func on_release [ ev: Event ]
+        parent.text_dragging = false
+        parent.release_capture[]
+
+    func delete_selection [ text: string ] -> bool
+        sc : i32 [ (parent.sel_col < parent.anchor_col) ? parent.sel_col : parent.anchor_col ]
+        ec : i32 [ (parent.sel_col < parent.anchor_col) ? parent.anchor_col : parent.sel_col ]
+        if [ sc == ec ] return false
+        parent.edit    = text.mid[ 0, sc ] + text.mid[ ec, text.count - ec ]
+        parent.sel_col    = sc
+        parent.anchor_col = sc
+        return true
+
+    func on_char [ ev: Event ]
+        if [ parent.sel_col < 0 ] parent.sel_col = 0
+        text : string [ (parent.edit) ? parent.edit : '' ]
+        delete_selection[ text ]
+        text = (parent.edit) ? parent.edit : ''
+        col  : i32 [ parent.sel_col ]
+        parent.edit = text.mid[ 0, col ] + ev.key.text + text.mid[ col, text.count - col ]
+        parent.sel_col += ev.key.text.count
+        parent.anchor_col = parent.sel_col
+        parent.pristine = false
+
+    func on_key [ ev: Event ]
+        if [ !ev.key.state ] return
+        if [ parent.sel_col < 0 ] parent.sel_col = 0
+        text : string [ (parent.edit) ? parent.edit : '' ]
+        col  : i32 [ parent.sel_col ]
+        key  : i32 [ ev.key.unicode ]
+        if [ key == 259 ]
+            if [ !delete_selection[ text ] ]
+                if [ col > 0 ]
+                    parent.edit = text.mid[ 0, col - 1 ] + text.mid[ col, text.count - col ]
+                    parent.sel_col -= 1
+            parent.anchor_col = parent.sel_col
+        el [ key == 263 ]
+            if [ parent.sel_col != parent.anchor_col && !ev.key.shift ]
+                sc : i32 [ (parent.sel_col < parent.anchor_col) ? parent.sel_col : parent.anchor_col ]
+                parent.sel_col    = sc
+                parent.anchor_col = sc
+            el [ col > 0 ]
+                parent.sel_col -= 1
+                if [ !ev.key.shift ] parent.anchor_col = parent.sel_col
+        el [ key == 262 ]
+            if [ parent.sel_col != parent.anchor_col && !ev.key.shift ]
+                ec : i32 [ (parent.sel_col > parent.anchor_col) ? parent.sel_col : parent.anchor_col ]
+                parent.sel_col    = ec
+                parent.anchor_col = ec
+            el [ col < text.count ]
+                parent.sel_col += 1
+                if [ !ev.key.shift ] parent.anchor_col = parent.sel_col
+        el [ key == 256 ]
+            parent.edit = ''
+            parent.sel_col = 0
+            parent.anchor_col = 0
+            ev.prevent_default[]
+        parent.pristine = false
+
+    func draw [ cv: Canvas ]
+        if [ !editable || !cv ] return
+        cv.font_size[ i32[label_size] ]
+        if [ label_font && label_font.count > 0 ]
+            if [ !label_font_cache ]
+                label_font_cache = CanvasFont [ ft_lib: cv.ft_lib, uri: label_font, size_px: i32[label_size] ]
+            cv.set_font[ label_font_cache ]
+        el
+            cv.ensure_font[]
+        if [ !cv.font ] return
+        etext    : string [ (parent.edit) ? parent.edit : '' ]
+        has_edit : bool   [ etext.count > 0 ]
+        disp     : string [ (has_edit) ? etext : ((parent.label) ? parent.label : '') ]
+        metrics    : cv.measure_text[ disp ]
+        cw_tm : cv.measure_text[ 'x' ]
+        lh_cache = cv.get_line_height[]
+        cw_cache = cw_tm.w
+
+        ax    : f32 [ label_align.x ]
+        ay    : f32 [ label_align.y ]
+        ox    : f32 [ label_offset.x ]
+        oy    : f32 [ label_offset.y ]
+        fh    : f32 [ metrics.ascent - metrics.descent ]
+        x0    : f32 [ bounds.x + (bounds.w - metrics.w) * ax + ox ]
+        y0    : f32 [ bounds.y + metrics.ascent + (bounds.h - fh) * ay + oy ]
+        cw    : f32 [ cw_tm.w ]
+
+        col : i32 [ (parent.sel_col >= 0) ? parent.sel_col : 0 ]
+        anc : i32 [ parent.anchor_col ]
+        sc  : i32 [ (col < anc) ? col : anc ]
+        ec  : i32 [ (col < anc) ? anc : col ]
+
+        if [ has_edit && sc != ec ]
+            cv.fill_color[ '#264f78' ]
+            cv.stroke_width[ 0.0 ]
+            cv.rect_to[ x0 + f32[sc] * cw, y0 - metrics.ascent + 2.0, f32[ec - sc] * cw, fh - 4.0 ]
+            cv.paint[]
+
+        cv.fill_color[ label_color ]
+        cv.draw_text[ disp, bounds, vec2f [ ax, ay ], vec2f [ ox, oy ], Overflow.visible, null ]
+        cv.paint[]
+
+        if [ parent.focused && parent.sel_col >= 0 ]
+            prefix : string [ (has_edit) ? etext.mid[ 0, col ] : '' ]
+            m  : cv.measure_text[ prefix ]
+            cx : f32 [ x0 + m.w ]
+            cv.fill_color[ '#fff' ]
+            cv.stroke_width[ 0.0 ]
+            cv.rect_to[ cx, y0 - metrics.ascent + 2.0, 2.0, fh - 4.0 ]
+            cv.paint[]
+
+
+class Event
+    manual target          : element   # points at an element, never owns it
+    mutable origin         : element
+    mutable mouse          : MouseState
+    mutable key            : KeyboardState
+    mutable pad            : PadState
+    mutable paths          : array path
+    mutable no_default     : bool
+    mutable no_propagation : bool
+
+    func prevent_default  [ ] 
+        no_default = true
+
+    func is_default [ ] -> bool
+        return !no_default
+
+    func should_propagate [ ] -> bool
+        return !no_propagation
+
+    func stop [ ] -> bool
+        no_propagation = true
+        return true
+
+    func clear [ ]
+        target         = null
+        origin         = null
+        key            = []
+        pad            = []
+        paths          = null
+        pad.pad        = -1
+        pad.button     = -1
+        no_default     = false
+        no_propagation = false
+        mouse.state    = -1
+        mouse.button   = -1
+        mouse.double_click = false
+
+
+alias EventCallback : lambda none [ Event ]
+
+struct EventDispatch
+    callbacks : array EventCallback
+
+    func invoke [ ev : Event ]
+        for [ event_processor : EventCallback ] in callbacks
+            event_processor[ev]
+    
+    operator += [ call : EventCallback ]
+        callbacks += call
+
+
+func filter_n[ current:f32, goal:f32, amount:f32, rate:f32 ] -> f32
+    decay : pow[ 1.0f - amount, rate ]
+    if [ goal != 0.0f ]
+        return current + ((goal - current) * (1.0f - decay))
+    el
+        return current * decay
