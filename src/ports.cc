@@ -2342,7 +2342,9 @@ void backtrace_symbols_fd(void* const* buffer, int size, int fd) {
 #else
 #include <sys/time.h>
 #include <sys/wait.h>
+#include <sys/stat.h>
 #include <unistd.h>
+#include <ports.h>
 #define _timeval_ timeval
 
 int inotify_close(int fd) {

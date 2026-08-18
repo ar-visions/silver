@@ -1,0 +1,825 @@
+import AcademySoftwareFoundation:Imath/c0396a0
+    -I{install}/include/Imath
+    -I{install}/include/OpenEXR
+    { (windows) ?? '-DIMATH_DLL' }
+
+import opencv:opencv/1c39583
+    -I{install}/include/opencv4
+    -lopencv_core -lopencv_imgproc
+
+import AcademySoftwareFoundation:openexr/0b83825
+    -DBUILD_SHARED_LIBS=ON
+    -lOpenEXR -lOpenEXRCore -lOpenEXRUtil
+
+import madler:zlib/51b7f2a <zlib.h>
+    -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+    -lz
+
+import glennrp:libpng/07b8803 <png.h>
+    -lpng
+
+import <string.h>
+import vec
+
+
+enum Join
+    none           : 0
+    miter           : 1
+    round           : 2
+    bevel           : 3
+
+enum Pixel
+    none            : 0
+    rgba8           : 1
+    rgb8            : 2
+    rgbf32          : 3
+    u8              : 4
+    rgbaf32         : 5
+    f32             : 6
+
+enum Filter
+    none            : 0
+    nearest         : 1
+    bilinear        : 3
+    trilinear       : 4
+    low             : 5
+    med             : 6
+    high            : 7
+
+enum Surface
+    none            : 0
+    color           : 1
+    normal          : 2
+    emission        : 3
+    rough           : 4
+    metal           : 5
+    height          : 6
+    ao              : 7
+    ior             : 8
+    environment     : 9
+    iris            : 10
+    iris_melanin    : 11
+    iris_disp_a     : 12
+    iris_disp_b     : 13
+    iris_disp_c     : 14
+    sclera_disp     : 15
+    spokes          : 16
+    rim             : 17
+
+enum Cap
+    none            : 0
+    round           : 1
+    square          : 2
+
+enum Variant
+    none            : 0
+    small_caps      : 1
+    mono            : 2
+
+class Font
+    uri         : path
+    bold        : bool
+    italic      : bool
+    underline   : bool
+    var         : Variant
+    size        : f32
+    kerning     : f32
+    res         : handle
+    tf          : handle
+    
+    intern static font_manager_init    : hook
+    intern static font_manager_dealloc : hook
+
+    static func set_font_manager[ init:hook, dealloc:hook ] 
+        font_manager_init    = init
+        font_manager_dealloc = dealloc
+
+    func dealloc[] 
+        font_manager_dealloc a
+
+    func copy[ ] -> Font
+        b : super.copy[]
+        font_manager_init [b] 
+        return b
+
+    func init[] 
+        font_manager_init [a]
+
+    construct [ u:path ]
+        uri = u
+
+
+class Image
+    uri:            path
+    surface:        Surface
+    format:         Pixel
+    pixel_size:     i32 0
+    width:          i32 0
+    height:         i32 0
+    channels:       i32 0
+    source:         Au
+    filter:         Filter
+    user:           Au
+    res2:           handle
+    res_dealloc:    hook
+    manual res_bits: ARef
+    manual pixels:  @u8
+    # data maps (height, normal) must upload UNORM, not sRGB
+    linear:         bool
+    # equirect maps repeat in longitude; clamping smears the seam
+    wrap_u:         bool
+    # tiled detail textures repeat on both axes
+    wrap_v:         bool
+
+    construct [ i:symbol ]
+        uri = path i
+    
+    construct [ i:cstr ]
+        uri = path i
+    
+    construct [ i:string ]
+        uri = path i
+
+    func exr [ path ] -> i32
+
+    func init    [ ] 
+
+    func dealloc [ ]  # some comment
+        info : header[ a ]
+        if [ res_dealloc ] res_dealloc [ a ]
+        if [ res_bits ] info.data = null
+
+    func copy[ ] -> Image
+        res: Image[ width:width, height:height, format:format, surface:surface, channels:channels ]
+        memcpy res.vdata[], vdata[], byte_count[]
+        return res
+
+    func crop[ cx:i32, cy:i32, cw:i32, ch:i32 ] -> Image
+        check width > 0 && height > 0, "null Image given to crop"
+        x0 : i32 [ (cx < 0) ? 0 : cx ]
+        y0 : i32 [ (cy < 0) ? 0 : cy ]
+        x1 : i32 [ cx + cw ]
+        y1 : i32 [ cy + ch ]
+        if [ x1 > width  ] x1 = width
+        if [ y1 > height ] y1 = height
+        ow : i32 [ x1 - x0 ]
+        oh : i32 [ y1 - y0 ]
+        check ow > 0 && oh > 0, "empty crop"
+        output : Image
+            width:  ow,
+            height: oh,
+            :format, :surface, :channels
+        ps  : i32 [ pixel_size ]
+        src : @u8 vdata[]
+        dst : @u8 output.vdata[]
+        for [ ry: i32 0, ry < oh, ry += 1 ]
+            so : i64 [ (i64[ y0 + ry ] * i64[ width ] + i64[ x0 ]) * i64[ ps ] ]
+            df : i64 [ i64[ ry ] * i64[ ow ] * i64[ ps ] ]
+            memcpy @dst[ df ], @src[ so ], i64[ ow * ps ]
+        return output
+
+    func mirror_x[ ] -> Image
+        check width > 0 && height > 0, "null Image given to mirror_x"
+        output : Image
+            width:  width,
+            height: height,
+            :format, :surface, :channels
+        ps  : i32 [ pixel_size ]
+        src : @u8 vdata[]
+        dst : @u8 output.vdata[]
+        for [ ry: i32 0, ry < height, ry += 1 ]
+            ro : i64 [ i64[ ry ] * i64[ width ] * i64[ ps ] ]
+            for [ rx: i32 0, rx < width, rx += 1 ]
+                so : i64 [ ro + i64[ rx ] * i64[ ps ] ]
+                df : i64 [ ro + i64[ width - 1 - rx ] * i64[ ps ] ]
+                memcpy @dst[ df ], @src[ so ], i64[ ps ]
+        return output
+
+    func gray[] -> Image
+        check width > 0 && height > 0, "null Image given to gray"
+        if [ channels == 1 ] return copy[]
+        output : Image
+            width:    width,
+            height:   height,
+            format:   Pixel.u8,
+            channels: 1,
+            :surface
+        ps  : i32 [ pixel_size ]
+        src : @u8 vdata[]
+        dst : @u8 output.vdata[]
+        n : i32 [ width * height ]
+        for [ i: i32 0, i < n, i += 1 ]
+            si : i64 [ i64[ i ] * i64[ ps ] ]
+            dst[ i ] = src[ si ]
+        return output
+
+    # 8-bit data maps band when differentiated; f32 carries the blur.
+    # dither by half a level first: a blur over identical samples keeps
+    # the plateau, and the gradient still finds a stair at its edge
+    func to_f32[ dither: bool ] -> Image
+        check width > 0 && height > 0, "null Image given to to_f32"
+        check channels == 1, "to_f32 expects a single channel"
+        output : Image
+            width:    width,
+            height:   height,
+            format:   Pixel.f32,
+            channels: 1,
+            :surface
+        src : @u8  vdata[]
+        dst : @f32 output.vdata[]
+        for [ y: i32 0, y < height, y += 1 ]
+            for [ x: i32 0, x < width, x += 1 ]
+                i : i32 [ y * width + x ]
+                v : f32 [ f32[ src[ i ] ] ]
+                if [ dither ]
+                    # spatial hash: a row-only sequence stripes the result
+                    s : i64 [ (i64[ x ] * 73856093 + i64[ y ] * 19349663) % 65521 ]
+                    v += f32[ s ] / 65521.0 - 0.5
+                dst[ i ] = v / 255.0
+        return output
+
+    func reduce_box[ f: i32 ] -> Image
+        check width > 0 && height > 0, "null Image given to reduce_box"
+        check f > 0, "invalid reduce_box factor"
+        if [ f == 1 ] return copy[]
+        ow : i32 [ width / f ]
+        oh : i32 [ height / f ]
+        check ow > 0 && oh > 0, "reduce_box factor exceeds image size"
+        output : Image
+            width:  ow,
+            height: oh,
+            :format, :surface, :channels
+        ps  : i32 [ pixel_size ]
+        src : @u8 vdata[]
+        dst : @u8 output.vdata[]
+        area : i32 [ f * f ]
+        for [ ry: i32 0, ry < oh, ry += 1 ]
+            for [ rx: i32 0, rx < ow, rx += 1 ]
+                for [ c: i32 0, c < ps, c += 1 ]
+                    acc : i32 [ 0 ]
+                    for [ by: i32 0, by < f, by += 1 ]
+                        so : i64 [ (i64[ ry * f + by ] * i64[ width ] + i64[ rx * f ]) * i64[ ps ] + i64[ c ] ]
+                        for [ bx: i32 0, bx < f, bx += 1 ]
+                            si : i64 [ so + i64[ bx * ps ] ]
+                            acc += i32[ src[ si ] ]
+                    di : i64 [ (i64[ ry ] * i64[ ow ] + i64[ rx ]) * i64[ ps ] + i64[ c ] ]
+                    av : i32 [ acc / area ]
+                    dst[ di ] = u8[ av ]
+        return output
+
+    func resize[ out_w:i32, out_h:i32 ] -> Image
+        check width > 0 && height > 0, "null Image given to resize"
+        check out_w > 0 && out_h  > 0, "invalid size"
+        
+        if [ width == out_w && height == out_h ]
+            return copy[]
+        
+        scale_x : float width / out_w
+        scale_y : float height / out_h
+
+        output  : Image
+            width    :out_w,
+            height   :out_h,
+            :format, :surface, :channels
+
+        src  : @u8 vdata[]
+        src2 : @u8 vdata[]
+        src3 : @u8 vdata[]
+        dst  : @u8 output.vdata[]
+
+        opencv_resize_area
+            src,      dst,   format == Pixel.rgbaf32,
+            width,    height,
+            channels, out_w, out_h
+        
+        return output
+
+    func gaussian[ amount:float ] -> Image
+        if [ amount < 0.1f ]
+            return copy[]
+        
+        output : Image
+            :width,  :height,
+            :format, :surface, :channels
+
+        src : @u8 vdata[]
+        dst : @u8 output.vdata[]
+
+        opencv_gaussian
+            src, dst, (format == Pixel.rgbaf32 || format == Pixel.f32),
+            width, height, channels, amount
+        
+        return output
+
+
+    func png [ image_uri:path ] -> i32
+        e       : image_uri.ext[]
+        success : 1
+
+        if [ e == "png" ]
+            # lets support libpng only, so only "png" ext from path
+            expect file : fopen [ image_uri, "wb" ],
+                'could not open file for writing: {image_uri}'
+
+            png2 : png_create_write_struct[ PNG_LIBPNG_VER_STRING, null, null, null ]
+            check png2, "could not create PNG write struct"
+
+            info : png_create_info_struct [ png2 ]
+            check info, "could not create PNG info struct"
+
+            if [ !setjmp[ png_jmpbuf[ png2 ] ] ]
+                png_init_io png2, file
+                png_set_compression_level png2, 1
+
+                ctype2 : i32 [ PNG_COLOR_TYPE_RGBA ]
+                if [ channels == 1 ] ctype2 = PNG_COLOR_TYPE_GRAY
+                if [ channels == 3 ] ctype2 = PNG_COLOR_TYPE_RGB
+                png_set_IHDR
+                    png2, info, width, height,
+                    8, ctype2, PNG_INTERLACE_NONE,
+                    PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT
+
+                png_write_info png2, info
+                rows : new png_bytep [ sizeof png_bytep * height ]
+                data2 : @u8 vdata[]
+                for [ y : 0, y < height, y += 1 ]
+                    rows[y] = @data2 [ y * width * channels ]
+
+                png_write_image png2, rows
+                png_write_end   png2, null
+            el
+                success = 0
+            
+            png_destroy_write_struct @png2, @info
+            fclose file
+
+        el
+            check false, 'unsupported format: {e}'
+            success = 0
+        
+        return success
+
+
+    func len[ ] -> sz
+        return height
+
+    func byte_count[ ] -> sz
+        return width * height * pixel_size
+
+    func get[ y:num ] -> Au
+        row : @u8 vdata[]
+        return @row [ pixel_size * width * y ]
+
+
+# all 4 opencv functions implemented in img.cc
+func opencv_resize_area[@u8, @u8, int, int, int, int, int, int] 
+
+func opencv_gaussian[@u8, @u8, int, int, int, int, float] 
+
+func opencv_gaussian_fast[@u8, @u8, int, int, int, int , float] 
+
+func opencv_blur_equirect[@u8, int, int] 
+
+
+# ---------------------------------------------------------------
+# baseline JPEG (SOF0) decoder, silver-native.
+# huffman -> dequant -> IDCT -> upsample -> YCbCr->RGBA, with the
+# color convert accelerated on x86_64 (SSE2) and arm64 (NEON)
+# ---------------------------------------------------------------
+
+class JpegDec
+    mutable bytes   : @u8
+    mutable size    : i64
+    mutable pos     : i64
+    mutable bitbuf  : i32
+    mutable bitcnt  : i32
+    mutable eof     : i32
+    mutable width   : i32
+    mutable height  : i32
+    mutable ncomp   : i32
+    mutable hmx     : i32
+    mutable vmx     : i32
+    mutable mcux    : i32
+    mutable mcuy    : i32
+    mutable restart : i32
+    mutable prog    : i32
+    mutable qt      : new u8  [ 256 ]
+    mutable hcnt    : new u8  [ 128 ]
+    mutable hsym    : new u8  [ 2048 ]
+    mutable hmin    : new i32 [ 136 ]
+    mutable hmaxc   : new i32 [ 136 ]
+    mutable hval    : new i32 [ 136 ]
+    mutable ch      : new i32 [ 4 ]
+    mutable cv      : new i32 [ 4 ]
+    mutable ctq     : new i32 [ 4 ]
+    mutable ctd     : new i32 [ 4 ]
+    mutable cta     : new i32 [ 4 ]
+    mutable cpred   : new i32 [ 4 ]
+    mutable cpw     : new i32 [ 4 ]
+    mutable cph     : new i32 [ 4 ]
+    mutable blk     : new i32 [ 64 ]
+    mutable pix     : new f32 [ 64 ]
+    mutable tmp     : new f32 [ 64 ]
+    mutable cs      : new f32 [ 64 ]
+    mutable zz      : new i32 [ 64 ]
+    mutable cs_ready : i32
+    # per-row planar staging: the convert loop then walks three
+    # sequential byte arrays, which is what makes simd possible
+    mutable yr      : @u8
+    mutable cbr     : @u8
+    mutable crr     : @u8
+    # broadcast constants for the vector paths
+    mutable cvc     : new f32 [ 8 ]
+    mutable cvi     : new i32 [ 4 ]
+    mutable pl0     : @u8
+    mutable pl1     : @u8
+    mutable pl2     : @u8
+
+    func u8_at [ i: i64 ] -> i32
+        return (i32 bytes[ i32[ i ] ]) & 255
+
+    func rd16 [] -> i32
+        hi : i32 [ u8_at[ pos ] ]
+        lo : i32 [ u8_at[ pos + 1 ] ]
+        pos += 2
+        return (hi << 8) | lo
+
+    # zigzag order, walked as diagonals instead of a 64-item literal
+    func zig_init []
+        i : i32 [ 0 ]
+        j : i32 [ 0 ]
+        for [ n: i32 0, n < 64, n += 1 ]
+            zz[ n ] = i * 8 + j
+            if [ ((i + j) % 2) == 0 ]
+                if [ j == 7 ]
+                    i += 1
+                el [ i == 0 ]
+                    j += 1
+                el
+                    i -= 1
+                    j += 1
+            el
+                if [ i == 7 ]
+                    j += 1
+                el [ j == 0 ]
+                    i += 1
+                el
+                    i += 1
+                    j -= 1
+
+    # ---- bit reader: 0xFF00 is a stuffed literal FF ----
+    func fill_bit [] -> i32
+        if [ bitcnt == 0 ]
+            if [ pos >= size ]
+                eof = 1
+                return 0
+            b : i32 [ u8_at[ pos ] ]
+            pos += 1
+            if [ b == 255 ]
+                nb : i32 [ (pos < size) ? u8_at[ pos ] : 0 ]
+                if [ nb == 0 ]
+                    pos += 1
+                el
+                    # a marker: feed zeros until the caller resyncs
+                    pos -= 1
+                    eof = 1
+                    b = 0
+            bitbuf = b
+            bitcnt = 8
+        bitcnt -= 1
+        return (bitbuf >> bitcnt) & 1
+
+    func get_bits [ n: i32 ] -> i32
+        v : i32 [ 0 ]
+        for [ i: i32 0, i < n, i += 1 ]
+            v = (v << 1) | fill_bit[]
+        return v
+
+    # a coefficient's signed value from its magnitude category
+    func jp_extend [ v: i32, n: i32 ] -> i32
+        if [ n == 0 ] return 0
+        hf9 : i32 [ 1 << (n - 1) ]
+        if [ v < hf9 ] return v - (1 << n) + 1
+        return v
+
+    # canonical huffman: walk code lengths until the code is in range
+    func build_huff [ t: i32 ]
+        code : i32 [ 0 ]
+        k    : i32 [ 0 ]
+        for [ l: i32 0, l < 16, l += 1 ]
+            n : i32 [ (i32 hcnt[ t * 16 + l ]) & 255 ]
+            hval  [ t * 17 + l ] = k
+            hmin  [ t * 17 + l ] = code
+            code += n
+            k    += n
+            hmaxc [ t * 17 + l ] = (n > 0) ? (code - 1) : -1
+            code = code << 1
+
+    func decode_huff [ t: i32 ] -> i32
+        code : i32 [ 0 ]
+        for [ l: i32 0, l < 16, l += 1 ]
+            code = (code << 1) | fill_bit[]
+            mx : i32 [ hmaxc[ t * 17 + l ] ]
+            if [ mx >= 0 && code <= mx ]
+                idx : i32 [ hval[ t * 17 + l ] + code - hmin[ t * 17 + l ] ]
+                if [ idx < 0 || idx > 255 ] return 0
+                return (i32 hsym[ t * 256 + idx ]) & 255
+        return 0
+
+    # ---- separable float IDCT, rows then columns ----
+    # the cosine basis, built once: cs[x*8+u]
+    func idct_init []
+        for [ x: i32 0, x < 8, x += 1 ]
+            for [ u: i32 0, u < 8, u += 1 ]
+                w : f32 [ (u == 0) ? 0.35355339 : 0.5 ]
+                cs[ x * 8 + u ] = w * cos[ f32[ (2 * x + 1) * u ] * 0.19634954 ]
+
+    func idct_block []
+        if [ !cs_ready ]
+            idct_init[]
+            zig_init[]
+            cs_ready = 1
+        # rows: blk -> tmp
+        for [ y: i32 0, y < 8, y += 1 ]
+            for [ x: i32 0, x < 8, x += 1 ]
+                s : f32 [ 0.0 ]
+                for [ u: i32 0, u < 8, u += 1 ]
+                    s += f32[ blk[ y * 8 + u ] ] * cs[ x * 8 + u ]
+                tmp[ y * 8 + x ] = s
+        # columns: tmp -> pix
+        for [ x: i32 0, x < 8, x += 1 ]
+            for [ y: i32 0, y < 8, y += 1 ]
+                s : f32 [ 0.0 ]
+                for [ v: i32 0, v < 8, v += 1 ]
+                    s += tmp[ v * 8 + x ] * cs[ y * 8 + v ]
+                pix[ y * 8 + x ] = s
+
+    # ---- one 8x8 block: huffman, dequant, idct, store to a plane ----
+    func decode_block [ c: i32, dst: @u8, dw: i32, dh: i32, bx: i32, by: i32 ]
+        for [ i: i32 0, i < 64, i += 1 ]
+            blk[ i ] = 0
+        q  : i32 [ ctq[ c ] * 64 ]
+        td : i32 [ ctd[ c ] ]
+        ta : i32 [ 4 + cta[ c ] ]
+        t  : i32 [ decode_huff[ td ] ]
+        diff : i32 [ (t > 0) ? jp_extend[ get_bits[ t ], t ] : 0 ]
+        cpred[ c ] = cpred[ c ] + diff
+        blk[ 0 ] = cpred[ c ] * ((i32 qt[ q ]) & 255)
+        k : i32 [ 1 ]
+        while [ k < 64 ]
+            rs : i32 [ decode_huff[ ta ] ]
+            s  : i32 [ rs & 15 ]
+            r  : i32 [ rs >> 4 ]
+            if [ s == 0 ]
+                if [ r != 15 ] break
+                k += 16
+            el
+                k += r
+                if [ k > 63 ] break
+                v : i32 [ jp_extend[ get_bits[ s ], s ] ]
+                blk[ zz[ k ] ] = v * ((i32 qt[ q + k ]) & 255)
+                k += 1
+        idct_block[]
+        for [ y: i32 0, y < 8, y += 1 ]
+            py : i32 [ by + y ]
+            if [ py >= dh ] break
+            for [ x: i32 0, x < 8, x += 1 ]
+                px : i32 [ bx + x ]
+                if [ px >= dw ] break
+                v : i32 [ i32[ pix[ y * 8 + x ] + 128.5 ] ]
+                if [ v < 0 ] v = 0
+                if [ v > 255 ] v = 255
+                dst[ py * dw + px ] = u8[ v ]
+
+    # ---- marker walk; returns 0 on success ----
+    func jp_markers [] -> i32
+        pos = 2
+        while [ pos < size - 1 ]
+            if [ u8_at[ pos ] != 255 ]
+                pos += 1
+                continue
+            m : i32 [ u8_at[ pos + 1 ] ]
+            pos += 2
+            if [ m == 216 || m == 1 || (m >= 208 && m <= 215) ] continue
+            if [ m == 217 ] break
+            ln : i32 [ rd16[] ]
+            nx : i64 [ pos + ln - 2 ]
+            if [ m == 219 ]                     # DQT
+                while [ pos < nx ]
+                    pq : i32 [ u8_at[ pos ] ]
+                    pos += 1
+                    id : i32 [ pq & 15 ]
+                    if [ (pq >> 4) != 0 ] return 2
+                    for [ i: i32 0, i < 64, i += 1 ]
+                        qt[ id * 64 + i ] = u8[ u8_at[ pos + i64[ i ] ] ]
+                    pos += 64
+            el [ m == 196 ]                     # DHT
+                while [ pos < nx ]
+                    tc : i32 [ u8_at[ pos ] ]
+                    pos += 1
+                    t : i32 [ ((tc >> 4) * 4) + (tc & 15) ]
+                    tot : i32 [ 0 ]
+                    for [ i: i32 0, i < 16, i += 1 ]
+                        n : i32 [ u8_at[ pos + i64[ i ] ] ]
+                        hcnt[ t * 16 + i ] = u8[ n ]
+                        tot += n
+                    pos += 16
+                    for [ i: i32 0, i < tot, i += 1 ]
+                        hsym[ t * 256 + i ] = u8[ u8_at[ pos + i64[ i ] ] ]
+                    pos += i64[ tot ]
+                    build_huff[ t ]
+            el [ m == 192 || m == 193 ]         # SOF0 / SOF1
+                pos += 1
+                height = rd16[]
+                width  = rd16[]
+                ncomp  = u8_at[ pos ]
+                pos += 1
+                for [ i: i32 0, i < ncomp, i += 1 ]
+                    pos += 1
+                    hv : i32 [ u8_at[ pos ] ]
+                    pos += 1
+                    ch [ i ] = hv >> 4
+                    cv [ i ] = hv & 15
+                    ctq[ i ] = u8_at[ pos ]
+                    pos += 1
+            el [ m == 194 ]                     # SOF2: progressive
+                prog = 1
+                return 3
+            el [ m == 221 ]                     # DRI
+                restart = rd16[]
+                pos = nx
+            el [ m == 218 ]                     # SOS
+                ns : i32 [ u8_at[ pos ] ]
+                pos += 1
+                for [ i: i32 0, i < ns, i += 1 ]
+                    pos += 1
+                    tt : i32 [ u8_at[ pos ] ]
+                    pos += 1
+                    ctd[ i ] = tt >> 4
+                    cta[ i ] = tt & 15
+                pos += 3
+                return jp_scan[]
+            el
+                pos = nx
+        return 1
+
+    # ---- the entropy-coded scan: MCU rows of interleaved blocks ----
+    func jp_scan [] -> i32
+        hmx = 1
+        vmx = 1
+        for [ i: i32 0, i < ncomp, i += 1 ]
+            if [ ch[i] > hmx ] hmx = ch[i]
+            if [ cv[i] > vmx ] vmx = cv[i]
+        mcux = (width  + (hmx * 8) - 1) / (hmx * 8)
+        mcuy = (height + (vmx * 8) - 1) / (vmx * 8)
+        for [ i: i32 0, i < ncomp, i += 1 ]
+            cpw[ i ] = mcux * ch[i] * 8
+            cph[ i ] = mcuy * cv[i] * 8
+            cpred[ i ] = 0
+        # products MUST be precomputed as i32: new parses its arg as a shape
+        n0 : i32 [ cpw[0] * cph[0] ]
+        pl0 = new u8 [ n0 ]
+        if [ ncomp > 1 ]
+            n1 : i32 [ cpw[1] * cph[1] ]
+            pl1 = new u8 [ n1 ]
+        if [ ncomp > 2 ]
+            n2 : i32 [ cpw[2] * cph[2] ]
+            pl2 = new u8 [ n2 ]
+        bitcnt = 0
+        eof    = 0
+        nmcu : i32 [ 0 ]
+        for [ my: i32 0, my < mcuy, my += 1 ]
+            for [ mx: i32 0, mx < mcux, mx += 1 ]
+                if [ restart > 0 && nmcu > 0 && (nmcu % restart) == 0 ]
+                    # resync: skip to just past the RSTn marker
+                    bitcnt = 0
+                    eof    = 0
+                    while [ pos < size - 1 ]
+                        if [ u8_at[ pos ] == 255 ]
+                            mm : i32 [ u8_at[ pos + 1 ] ]
+                            if [ mm >= 208 && mm <= 215 ]
+                                pos += 2
+                                break
+                        pos += 1
+                    for [ i: i32 0, i < ncomp, i += 1 ]
+                        cpred[ i ] = 0
+                nmcu += 1
+                for [ c: i32 0, c < ncomp, c += 1 ]
+                    # ternary over POINTERS breaks llvm codegen
+                    dst : @u8 [ pl0 ]
+                    if [ c == 1 ] dst = pl1
+                    if [ c == 2 ] dst = pl2
+                    for [ v: i32 0, v < cv[c], v += 1 ]
+                        for [ h: i32 0, h < ch[c], h += 1 ]
+                            bx : i32 [ (mx * ch[c] + h) * 8 ]
+                            by : i32 [ (my * cv[c] + v) * 8 ]
+                            decode_block[ c, dst, cpw[c], cph[c], bx, by ]
+        return 0
+
+    # ---- upsample + YCbCr->RGBA into a caller buffer ----
+    # chroma is upsampled into three planar rows FIRST, so the color
+    # convert reads three sequential byte arrays and writes packed
+    # rgba i32 lanes — that shape is what the simd paths need
+    func to_rgba [ dst: @u8 ]
+        w : i32 [ width ]
+        h : i32 [ height ]
+        yr  = new u8 [ w ]
+        cbr = new u8 [ w ]
+        crr = new u8 [ w ]
+        cvc[ 0 ] = 1.402
+        cvc[ 1 ] = -0.344136
+        cvc[ 2 ] = -0.714136
+        cvc[ 3 ] = 1.772
+        cvc[ 4 ] = 128.0
+        cvc[ 5 ] = 255.0
+        cvc[ 6 ] = 0.0
+        cvi[ 0 ] = -16777216            # 0xFF000000: opaque alpha lane
+        w8 : i32 [ (w / 8) * 8 ]
+        for [ y: i32 0, y < h, y += 1 ]
+            o  : i32 [ y * w * 4 ]
+            y0 : i32 [ (y * cv[0] / vmx) * cpw[0] ]
+            if [ ncomp < 3 ]
+                for [ x: i32 0, x < w, x += 1 ]
+                    v : u8 [ pl0[ y0 + (x * ch[0] / hmx) ] ]
+                    dst[ o + x * 4     ] = v
+                    dst[ o + x * 4 + 1 ] = v
+                    dst[ o + x * 4 + 2 ] = v
+                    dst[ o + x * 4 + 3 ] = u8[ 255 ]
+                continue
+            y1 : i32 [ (y * cv[1] / vmx) * cpw[1] ]
+            y2 : i32 [ (y * cv[2] / vmx) * cpw[2] ]
+            # stage the row: all the divides live here, out of the
+            # convert loop, once per pixel instead of three times
+            for [ x: i32 0, x < w, x += 1 ]
+                yr [ x ] = pl0[ y0 + (x * ch[0] / hmx) ]
+                cbr[ x ] = pl1[ y1 + (x * ch[1] / hmx) ]
+                crr[ x ] = pl2[ y2 + (x * ch[2] / hmx) ]
+            xs : i32 [ 0 ]
+            # constant memory offsets must ride VARIABLES, the way
+            # every working asm block in the tree writes them
+            k0   : i64 [ 0 ]
+            k1   : i64 [ 4 ]
+            k2   : i64 [ 8 ]
+            k3   : i64 [ 12 ]
+            k128 : i64 [ 16 ]
+            k255 : i64 [ 20 ]
+            # the avx2 pass belongs here; silver's inline asm emits IR
+            # that crashes llvm's ConstantHoisting, so it is out until
+            # that is fixed. xs stays 0 -> the scalar loop owns the row
+            # ---- scalar convert, whole row ----
+            for [ x: i32 xs, x < w, x += 1 ]
+                yy : f32 [ f32[ (i32 yr [ x ]) & 255 ] ]
+                cb : f32 [ f32[ (i32 cbr[ x ]) & 255 ] - 128.0 ]
+                cr : f32 [ f32[ (i32 crr[ x ]) & 255 ] - 128.0 ]
+                rf : f32 [ yy + 1.402 * cr ]
+                gf : f32 [ yy - 0.344136 * cb - 0.714136 * cr ]
+                bf : f32 [ yy + 1.772 * cb ]
+                ri : i32 [ i32[ rf + 0.5 ] ]
+                gi : i32 [ i32[ gf + 0.5 ] ]
+                bi : i32 [ i32[ bf + 0.5 ] ]
+                if [ ri < 0 ] ri = 0
+                if [ gi < 0 ] gi = 0
+                if [ bi < 0 ] bi = 0
+                if [ ri > 255 ] ri = 255
+                if [ gi > 255 ] gi = 255
+                if [ bi > 255 ] bi = 255
+                dst[ o + x * 4     ] = u8[ ri ]
+                dst[ o + x * 4 + 1 ] = u8[ gi ]
+                dst[ o + x * 4 + 2 ] = u8[ bi ]
+                dst[ o + x * 4 + 3 ] = u8[ 255 ]
+
+# decode a baseline jpeg into an rgba8 Image; null when unsupported
+func jpeg_decode [ uri: path ] -> Image
+    f : handle [ fopen[ '{uri}', 'rb' ] ]
+    if [ !f ] return null
+    fseek[ f, 0, SEEK_END ]
+    sz : i64 [ ftell[ f ] ]
+    fseek[ f, 0, SEEK_SET ]
+    if [ sz < 4 ]
+        fclose[ f ]
+        return null
+    nb : i32 [ i32[ sz ] ]
+    buf : @u8 [ new u8 [ nb ] ]
+    rd : i64 [ fread[ buf, 1, sz, f ] ]
+    fclose[ f ]
+    if [ rd != sz ] return null
+    d : JpegDec []
+    d.bytes = buf
+    d.size  = sz
+    if [ d.jp_markers[] != 0 ] return null
+    if [ d.width <= 0 || d.height <= 0 ] return null
+    im : Image [ width: d.width, height: d.height, format: Pixel.rgba8, channels: 4 ]
+    d.to_rgba[ im.vdata[] ]
+    return im
+
+expect func test_jpeg [] -> bool
+    root : path.path_startup[]
+    p : path '{root}/orbiter/textures/mars-color-8192x4096.jpg'
+    if [ !p.exists[] ] return false
+    im : jpeg_decode[ p ]
+    if [ !im ] return false
+    puts 'jpeg: decoded {im.width}x{im.height}'
+    if [ im.width != 8192 || im.height != 4096 ] return false
+    c : im.crop[ 3400, 1700, 640, 480 ]
+    c.png[ path '/tmp/claude-1000/-src-silver/17153a71-ae1c-4ba5-9da8-c3d5cfe4278e/scratchpad/jpegtest.png' ]
+    return true

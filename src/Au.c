@@ -821,6 +821,17 @@ AU_EXPORT none array_remove(array a, num b) {
         Au_drop(prev);
 }
 
+AU_EXPORT none array_insert(array a, Au b, num at) {
+    if (at < 0) at = 0;
+    if (at > a->count) at = a->count;
+    if (!a->origin || a->alloc == a->count)
+        array_expand(a);
+    for (num i = a->count; i > at; i--)
+        a->origin[i] = a->origin[i - 1];
+    a->origin[at] = a->unmanaged ? b : Au_hold(b);
+    a->count++;
+}
+
 AU_EXPORT none array_remove_weak(array a, num b) {
     if (b < 0 || b >= a->count) return;
     for (num i = b; i < a->count - 1; i++)
@@ -6772,12 +6783,12 @@ AU_EXPORT i64 path_modified_time(path a) {
 }
 
 // the SINGLE shared loader for a silver --format (.f) map. returns an array of fmt_file
-// (one per source file), each carrying its canonical path, source mtime, and Syntax
-// tokens. used by BOTH silver (incremental: skip files whose mtime is unchanged) and
-// orbiter (syntax coloring) — there is no second copy of this parser anywhere.
-// layout (LE): u32 magic('SFMT') u32 ver(=2);  section: u32 0xC0DEFACE u32 path_len,
-//   path bytes, i64 mtime, u32 token_count, token_count*{u32 line,col,len,syntax};
-//   end: u32 0.
+// (one per source file), each carrying its canonical path, source mtime, and per-line
+// token arrays. used by BOTH silver (incremental: skip files whose mtime is unchanged)
+// and orbiter (syntax coloring) — there is no second copy of this parser anywhere.
+// layout (LE): u32 magic('SFMT') u32 ver(=4);  section: u32 0xC0DEFACE u32 path_len,
+//   path bytes, i64 mtime, u32 decl_count, decl_count*{u32 len, bytes}, u32 line_count,
+//   line_count*{u32 ntok, ntok*{u32 col,len,syntax,decl_idx,decl_line}};  end: u32 0.
 AU_EXPORT array path_read_format(path a) {
     array out = array(alloc, 16);
     FILE* f = fopen((cstr)a->chars, "rb");
@@ -6793,11 +6804,8 @@ AU_EXPORT array path_read_format(path a) {
         char* p = malloc((size_t)plen + 1);
         if (fread(p, 1, plen, f) != plen) { free(p); break; }
         p[plen] = 0;
-        i64 mt = 0;  u32 ntok = 0;
-        if (fread(&mt, 8, 1, f) != 1 || fread(&ntok, 4, 1, f) != 1) { free(p); break; }
-        fmt_file ff = fmt_file(
-            source, string(p), mtime, mt, tokens, array(alloc, ntok ? ntok : 1));
-        free(p);
+        i64 mt = 0;
+        if (fread(&mt, 8, 1, f) != 1) { free(p); break; }
         bool   ok = true;
         u32    np = 0;
         char** dp = null;
@@ -6811,14 +6819,24 @@ AU_EXPORT array path_read_format(path a) {
             pb[pl] = 0;
             dp[i] = pb;
         }
-        for (u32 t = 0; ok && t < ntok; t++) {
-            u32 rec[6];
-            if (fread(rec, 4, 6, f) != 6) { ok = false; break; }
-            cstr ds = (dp && rec[4] > 0 && rec[4] <= np) ? dp[rec[4] - 1] : null;
-            push(ff->tokens, (Au)fmt_token(
-                line,   (num)rec[0], column, (num)rec[1],
-                length, (num)rec[2], syntax, (Syntax)rec[3],
-                decl_source, ds ? string(ds) : null, decl_line, (num)rec[5]));
+        u32 nlines = 0;
+        if (ok && fread(&nlines, 4, 1, f) != 1) ok = false;
+        fmt_file ff = fmt_file(
+            source, string(p), mtime, mt, lines, array(alloc, nlines ? nlines : 1));
+        free(p);
+        for (u32 L = 0; ok && L < nlines; L++) {
+            u32 ntok = 0;
+            if (fread(&ntok, 4, 1, f) != 1) { ok = false; break; }
+            array ltk = array(alloc, ntok ? ntok : 1);
+            for (u32 t = 0; t < ntok; t++) {
+                u32 rec[5];
+                if (fread(rec, 4, 5, f) != 5) { ok = false; break; }
+                cstr ds = (dp && rec[3] > 0 && rec[3] <= np) ? dp[rec[3] - 1] : null;
+                push(ltk, (Au)fmt_token(
+                    column, (num)rec[0], length, (num)rec[1], syntax, (Syntax)rec[2],
+                    decl_source, ds ? string(ds) : null, decl_line, (num)rec[4]));
+            }
+            push(ff->lines, (Au)ltk);
         }
         for (u32 i = 0; i < np; i++) if (dp && dp[i]) free(dp[i]);
         free(dp);

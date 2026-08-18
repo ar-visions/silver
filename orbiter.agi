@@ -6,7 +6,7 @@ code_font_size: 20
 projects:
 	orbiter: Project
 		name: 	orbiter
-		root: 	'foundry/orbiter'
+		root: 	'orbiter'
 		build:	silver orbiter
 		cwd:	'.'
 		run:	orbiter

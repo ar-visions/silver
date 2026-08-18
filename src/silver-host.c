@@ -813,7 +813,7 @@ static int sources_newer(const char* product, source_watch* srcs, int nsr) {
 }
 
 // recompile synchronously (no '&') so the fresh product is in place before load.
-// run from SILVER_ROOT so silver resolves the module via foundry/<name>/ rather
+// run from SILVER_ROOT so silver resolves the module via <name>/ rather
 // than relative to wherever the host was launched / cd_share'd to.
 // returns 0 on a clean build, non-zero if silver failed or crashed. callers must
 // NOT run the (stale) product when this fails.
@@ -1069,7 +1069,7 @@ int main(int argc, char** argv) {
         setenv("SILVER_STARTUP", launch_cwd, 1);
     }
 #ifdef SILVER_ROOT
-    // apps resolve {SILVER}/export and foundry modules through this
+    // apps resolve {SILVER}/export and root modules through this
     setenv("SILVER", SILVER_ROOT, 1);
 #endif
     cd_share(bindir, name);

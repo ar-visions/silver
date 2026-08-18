@@ -1,7 +1,0 @@
-import <stdio.h>
-import random
-
-app ttest
-    func init []
-        r : f32 [ randf[] ]
-        puts 'r={r}'
