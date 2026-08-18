@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   width="11"
+   height="11"
+   viewBox="0 0 11 11"
+   version="1.1"
+   id="svg8"
+   sodipodi:docname="close.svg"
+   inkscape:version="1.2.2 (b0a8486541, 2022-12-01)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <defs
+     id="defs12" />
+  <sodipodi:namedview
+     id="namedview10"
+     pagecolor="#505050"
+     bordercolor="#eeeeee"
+     borderopacity="1"
+     inkscape:showpageshadow="0"
+     inkscape:pageopacity="0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#505050"
+     showgrid="false"
+     inkscape:zoom="93.363636"
+     inkscape:cx="4.7930867"
+     inkscape:cy="5.5107108"
+     inkscape:window-width="2494"
+     inkscape:window-height="1371"
+     inkscape:window-x="66"
+     inkscape:window-y="32"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg8" />
+  <path
+     fill="#ffffff"
+     d="m 7.7500001,1.6028857 c 2.1520731,1.2425 2.8896139,3.9950411 1.6471143,6.1471142 C 8.1546147,9.9020734 5.4020732,10.639614 3.2500001,9.3971143 1.0979266,8.1546146 0.36038576,5.4020731 1.6028858,3.25 2.8453858,1.0979268 5.597927,0.36038562 7.7500001,1.6028857 Z m -0.5,0.8660253 C 5.575973,1.502411 3.4354112,2.0759728 2.4689112,3.75 1.5024112,5.4240271 2.075973,7.5645888 3.7500001,8.5310889 5.4240272,9.4975889 7.564589,8.9240271 8.531089,7.2499999 9.497589,5.5759729 8.9240272,3.4354111 7.2500001,2.468911 Z"
+     id="path2" />
+  <path
+     id="rect4"
+     d="M 4.9248882 -0.35355339 C 4.8345133 -0.26317848 4.778495 -0.13849986 4.778495 4.4408921e-16 C 4.778495 0.27699972 5.0014419 0.49994659 5.2784416 0.49994659 L 7.278228 0.49994659 L 7.278228 2.499733 C 7.278228 2.7767327 7.5011749 2.9996795 7.7781746 2.9996795 C 8.0551743 2.9996795 8.2781212 2.7767327 8.2781212 2.499733 L 8.2781212 0.49994659 L 10.277908 0.49994659 C 10.554907 0.49994659 10.777854 0.27699972 10.777854 8.8817842e-16 C 10.777854 -0.27699972 10.554907 -0.49994659 10.277908 -0.49994659 L 8.2781212 -0.49994659 L 8.2781212 -2.499733 C 8.2781212 -2.7767327 8.0551743 -2.9996795 7.7781746 -2.9996795 C 7.5011749 -2.9996795 7.278228 -2.7767327 7.278228 -2.499733 L 7.278228 -0.49994659 L 5.2784416 -0.49994659 C 5.1399418 -0.49994659 5.0152632 -0.4439283 4.9248882 -0.35355339 z "
+     transform="rotate(45)"
+     style="fill:#ffffff;fill-opacity:1" />
+</svg>

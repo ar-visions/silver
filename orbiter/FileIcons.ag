@@ -1,0 +1,59 @@
+extend orbiter
+
+# material icon theme: fileNames/fileExtensions → icon name = svg stem
+class FileIcons
+    intern static mi_loaded : bool
+    intern static mi_exts   : map
+    intern static mi_names  : map
+    intern static mi_models : map SVGModel [string]
+
+    func load []
+        if [ mi_loaded ] return
+        mi_loaded = true
+        jp : path 'images/material/material-icons.json'
+        if [ !jp.exists[] ] return
+        mm : map jp.load[ typeid[ map ], null ]
+        if [ !mm ] return
+        fe9 : map mm[ 'fileExtensions' ]
+        fn9 : map mm[ 'fileNames' ]
+        if [ fe9 ]
+            mi_exts = fe9
+            mi_exts.hold[]
+        if [ fn9 ]
+            mi_names = fn9
+            mi_names.hold[]
+        mi_models = map SVGModel [string] []
+
+    # one model per (icon, size): draw_svg caches a single raster per model
+    func icon [ fname: string, sz9: i32 ] -> SVGModel
+        if [ !mi_loaded ] load[]
+        if [ !mi_exts ] return null
+        nm : string
+        if [ mi_names ]
+            v0 : string mi_names[ fname ]
+            if [ v0 ] nm = v0
+        if [ !nm ]
+            n : i32 [ fname.count ]
+            for [ i: i32 0, i < n, i += 1 ]
+                if [ fname[i] == 46 && i + 1 < n ]
+                    ex9 : string fname.mid[ i + 1, n - i - 1 ]
+                    v1  : string mi_exts[ ex9 ]
+                    if [ v1 ]
+                        nm = v1
+                        break
+        if [ !nm ] nm = string [ 'file' ]
+        return named[ nm, sz9 ]
+
+    # direct icon by svg stem — tool rows name their icon
+    func named [ nm: string, sz9: i32 ] -> SVGModel
+        if [ !mi_loaded ] load[]
+        if [ !mi_models ] mi_models = map SVGModel [string] []
+        key : '{nm}|{sz9}'
+        mdl : SVGModel mi_models[ key ]
+        if [ !mdl ]
+            ip : path 'images/material/{nm}.svg'
+            if [ !ip.exists[] ] ip = path 'images/{nm}.svg'
+            if [ !ip.exists[] ] return null
+            mdl = SVGModel [ ip ]
+            mi_models[ key ] = mdl
+        return mdl

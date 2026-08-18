@@ -1,0 +1,275 @@
+import vec
+import img
+import trinity
+import spectra
+import <stdio.h>
+import <stdlib.h>
+
+element CrashConsole
+    area  : Region { l0 t0 r0 b0 }
+    body  : Layer [ fill_color: rgba [ '#e8556d' ] ]
+    face  : Layer [ label_color: rgba [ '#ffe2e6' ], label_size: 14,
+        label_align: vec2f [ x: 0.0, y: 0.0 ], label_offset: vec2f [ x: 8.0, y: 10.0 ] ]
+
+Console CrashAgent
+    area     : Region [ 'l0 t38px r0 b0' ]
+    animated : true
+    content   : TermLayer [ area: Region { 8px }, label_height: 1.0, label_size: 16 ]
+    scrollbar : ScrollLayer [ overlay: true, area: Region { 8px }, thumb_color: '#fff4',
+        thumb_w: 6.0, thumb_min_h: 32.0, thumb_radius: 4.0 ]
+
+element CrashBtn
+    public kind    : string
+    public enabled : bool [ true ]
+    body  : Layer [ stroke_width: 1.0, stroke_color: rgba [ '#ffffff' ],
+        radius: Radius [ '6' ], label_color: rgba [ '#ffffff' ], label_size: 13,
+        label_align: vec2f [ x: 0.5, y: 0.5 ] ]
+    hover : Layer [ states: State.hovered, fill_color: rgba [ '#fff2' ],
+        stroke_width: 1.0, stroke_color: rgba [ '#ffffff' ], radius: Radius [ '6' ],
+        label_color: rgba [ '#ffffff' ], label_size: 13,
+        label_align: vec2f [ x: 0.5, y: 0.5 ] ]
+
+    func on_press [ ev: Event ]
+
+        if [ !enabled ] return
+		a2 : cast i32 [ 2 ]
+        cm : cast crashman [ parent ]
+        if [ !cm ] return
+        if [ kind && kind == 'relaunch' ]
+            cm.do_relaunch[]
+        el [ kind && kind == 'shot' ]
+            cm.paste_shot[]
+        ev.stop[]
+
+CrashBtn BackBtn
+    area : Region [ 'r8px t8px w104px h22px' ]
+
+CrashBtn RelaunchBtn
+    area : Region [ 'r120px t8px w104px h22px' ]
+
+CrashBtn ShotBtn
+    area : Region [ 'r120px t8px w150px h22px' ]
+
+element crashman : trinity
+    public width       : i32    [ 960 ]
+    public height      : i32    [ 640 ]
+    public background  : string [ 'Background' ]
+    public title       : string [ 'crashman' ]
+    public ux_generics : bool  [ false ]
+    # the shell's own tint
+    public tint        : rgba [ '#1c58e0' ]
+    bg : Layer [ fill_color: rgba [ '#b8324a' ] ]
+    intern cap_on      : bool
+    # auto-binds to els['agent'] after the first tree
+    mutable agent      : CrashAgent
+    # the crash verdict has been typed into the agent session
+    intern reported    : bool
+    intern spoken      : array string
+    # agent_ready broadcast once the bus exists
+    intern announced   : bool
+
+    intern oc : string
+    intern cc : string
+    intern flushing : bool
+    intern thinking : bool
+    # frame tick for the animated thinking dots
+    intern spin : i32
+
+    func init []
+        ob : local i8 [ 3 ]
+        ob[0] = 123
+        ob[1] = 123
+        ob[2] = 0
+        oc = string [ @ob[0] ]
+        oc.hold[]
+        cb : local i8 [ 3 ]
+        cb[0] = 125
+        cb[1] = 125
+        cb[2] = 0
+        cc = string [ @cb[0] ]
+        cc.hold[]
+
+    public func do_relaunch []
+        k : string 'SILVER_ISOLATE_RESTART'
+        v : string '1'
+        setenv[ k.chars, v.chars, 1 ]
+
+    public func paste_shot []
+        if [ !agent ] return
+        ss : string ''
+        se : getenv[ 'SILVER_ISOLATE_SESSION' ]
+        if [ se ] ss = string [ se ]
+        shot : path '/tmp/silver-app-{ss}.png'
+        tree : path '/tmp/silver-app-{ss}.agi'
+        if [ shot.exists[] ] agent.paste[ '{shot}' ]
+        s : ConsoleSession agent.session[]
+        if [ s && tree.exists[] ] s.write_input[ ' element tree: {tree} ' ]
+
+    intern dstate   : i32 [ -1 ]
+    intern app_pid  : i32 [ 0 ]
+
+    public func on_host [ mt: i32, wp: i32, lp: i32, xp: i32 ]
+        if [ mt != 1 ] return
+        s : i32 [ wp ]
+        if [ s == dstate ] return
+        puts 'crashman on_host dictate: {dstate} -> {s}'
+        dstate = s
+        if [ s == 1 ]
+            rc : dictation_start[]
+            if [ rc == 0 ]
+                cap_on = true
+                host_live_set[ 1 ]
+        el [ s == 2 ]
+            dictation_cancel[]
+            cap_on   = false
+            flushing = false
+            host_live_set[ 0 ]
+        el
+            if [ cap_on ]
+                dictation_stop[]
+                cap_on   = false
+                flushing = true
+            host_live_set[ 0 ]
+
+    intern ctx      : string
+    intern ctx_sent : bool
+    intern enter_at : i32
+    intern ctx_wait : i32
+
+    func agent_send [ body: string ]
+        if [ !agent ]
+            puts 'agent_send: NO agent bound'
+            return
+        s6 : ConsoleSession agent.session[]
+        if [ !s6 ]
+            puts 'agent_send: NO session'
+            return
+        puts 'agent_send: {body}'
+        m6 : string body
+        if [ !ctx_sent && ctx && ctx.count > 0 ]
+            ctx_sent = true
+            m6 = ((body && body.count > 0) ? '{ctx} {body}' : ctx)
+        if [ !m6 || m6.count == 0 ] return
+        ss : string ''
+        se : getenv[ 'SILVER_ISOLATE_SESSION' ]
+        if [ se ] ss = string [ se ]
+        shot : path '/tmp/silver-app-{ss}.png'
+        tree : path '/tmp/silver-app-{ss}.agi'
+        if [ shot.exists[] ] m6 = 'app screenshot: {shot}  {m6}'
+        if [ tree.exists[] ] m6 = 'element tree: {tree}  {m6}'
+        s6.write_input[ '{m6}\r' ]
+        enter_at = 120
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen ] return
+        if [ cap_on ] dictation_gpu[ Canvas w.screen ]
+
+    public func render [] -> Elements
+        if [ attach ]
+            if [ app_pid == 0 ]
+                app_pid = -1
+                pe : getenv[ 'SILVER_ISOLATE_APP_PID' ]
+                if [ pe ]
+                    ps : string [ pe ]
+                    app_pid = i32[ ps.integer_value[] ]
+            if [ app_pid > 0 && host_pid_alive[ app_pid ] == 0 ] exit[ 0 ]
+        if [ cap_on ] dictation_poll[]
+        # render every frame so the WndProc pump keeps running
+        if [ ux ] ux.will_animate = true
+        # the deferred submit Enter (see agent_send)
+        if [ enter_at > 0 ]
+            enter_at -= 1
+            if [ enter_at == 0 && agent ]
+                s7 : ConsoleSession agent.session[]
+                if [ s7 ] s7.write_input[ '\r' ]
+        an  : getenv[ 'SILVER_ISOLATE_APP' ]
+        st  : getenv[ 'SILVER_ISOLATE_STATUS' ]
+        rpt : (st) ? string 'app died — {st}' : string ((an) ? 'running — {an}' : 'no isolated app')
+        if [ cap_on ] rpt = '{rpt} · listening'
+        if [ thinking ]
+            spin += 1
+            nd : i32 [ (spin / 12) % 4 ]
+            dots : string ''
+            for [ k: i32 0, k < nd, k += 1 ] dots = '{dots}.'
+            rpt = '{rpt} · thinking{dots}'
+        els : Elements [ ]
+        els[ 'console' ] = CrashConsole [ label: rpt ]
+        sv : getenv[ 'SILVER' ]
+        lc : string ''
+        if [ an ]
+            vox : string 'every single reply must end with one line of the exact form speak {oc} one short spoken sentence {cc} — that line is synthesized aloud to the user; never omit it. the user speaks by voice and their words arrive wrapped user {oc} like this {cc}.'
+            prm : string 'the app {an} runs under crashman supervision. its source is {sv}/{an}/{an}.ag. when it crashes the report is typed here — investigate and help fix it.'
+            if [ attach ]
+                prm = 'the user switched to this context from the running app {an}. its source is {sv}/{an}/{an}.ag — assist with the app live; if it faults, the crash report is typed here.'
+            if [ !ctx ]
+                ctx = '{prm} {vox}'
+                ctx.hold[]
+            lc = 'claude --model sonnet --dangerously-skip-permissions'
+        sid : (an) ? string '{an}' : string 'crash'
+        els[ 'agent' ] = CrashAgent [ session_id: sid, launch: lc ]
+        if [ attach ]
+            els[ 'back' ] = BackBtn [ kind: 'back', label: 'back to app' ]
+            els[ 'shot' ] = ShotBtn [ kind: 'shot', label: 'attach context' ]
+        el
+            # back needs a live app to return to — dead app disables it
+            els[ 'back' ]     = BackBtn [ kind: 'back', label: 'back to app', enabled: (st) ? false : true ]
+            els[ 'relaunch' ] = RelaunchBtn [ kind: 'relaunch', label: 'relaunch', enabled: (st) ? true : false ]
+        if [ agent ]
+            s2 : ConsoleSession agent.session[]
+            if [ s2 && s2.pty_fd >= 0 ]
+                if [ ux ] ux.will_animate = true
+                s2.read_output[]
+            if [ s2 ]
+                busy : bool [ false ]
+                nlz  : i32 [ s2.line_count[] ]
+                loz  : i32 [ (nlz > 20) ? nlz - 20 : 0 ]
+                for [ li: i32 loz, li < nlz, li += 1 ]
+                    lz : string s2.line_get[ li ]
+                    if [ !lz || lz.count == 0 ] continue
+                    if [ lz.index_of[ 'esc to interrupt' ] >= 0 ] busy = true
+                thinking = busy
+            if [ s2 ]
+                if [ !spoken ]
+                    spoken = array string [ ]
+                    spoken.hold[]
+                mk : string 'speak {oc}'
+                nl : i32 [ s2.line_count[] ]
+                lo : i32 [ (nl > 60) ? nl - 60 : 0 ]
+                for [ li: i32 lo, li < nl, li += 1 ]
+                    ln2 : string s2.line_get[ li ]
+                    if [ !ln2 || ln2.count == 0 ] continue
+                    a2 : i32 [ ln2.index_of[ mk ] ]
+                    if [ a2 < 0 ] continue
+                    st2  : i32 [ a2 + i32[ mk.count ] ]
+                    rest : string ln2.mid[ st2, ln2.count - st2 ]
+                    b2 : i32 [ rest.index_of[ cc ] ]
+                    if [ b2 <= 0 ] continue
+                    ut : string rest.mid[ 0, b2 ]
+                    if [ !ut || ut.count == 0 ] continue
+                    # the prompt's own example echoes on screen — never say it
+                    if [ ut == ' one short spoken sentence ' ] continue
+                    dup : bool [ false ]
+                    for [ sp2: string ] in spoken
+                        if [ sp2 == ut ]
+                            dup = true
+                            break
+                    if [ dup ] continue
+                    spoken.push[ ut ]
+                    if [ tts_init[ '' ] == 0 ]
+                        tts_say[ ut.chars, 8, 1.0 ]
+        if [ flushing ]
+            if [ dictation_flush[] ]
+                flushing = false
+                dt : dictation_take[]
+                if [ dt && dt.count > 0 ]
+                    puts 'crashman: submitting take "{dt}"'
+                    agent_send[ 'user {oc} {dt} {cc}' ]
+        if [ st && !reported && agent ]
+            reported = true
+            agent_send[ 'the app crashed: {st} — investigate.' ]
+            if [ tts_init[ '' ] == 0 ]
+                sp : string 'your app crashed with {st}. the report went to the agent.'
+                tts_say[ sp.chars, 8, 1.0 ]
+        el [ !st ]
+            reported = false
+        return els

@@ -1,0 +1,11 @@
+@import "trinity.css"
+
+Layer bg [ ]
+    fill_color: #1e1e2e
+
+element.root {
+    area: l0 t0 r0 b0
+    layers.bg [ ]
+}
+
+/* ClickButton styles itself in buttontest.ag (embedded CSS tokens) */

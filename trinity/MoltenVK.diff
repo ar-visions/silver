@@ -1,0 +1,89 @@
+diff --git a/MoltenVK/MoltenVK/GPUObjects/MVKBuffer.mm b/MoltenVK/MoltenVK/GPUObjects/MVKBuffer.mm
+index 804087f6..848773dd 100644
+--- a/MoltenVK/MoltenVK/GPUObjects/MVKBuffer.mm
++++ b/MoltenVK/MoltenVK/GPUObjects/MVKBuffer.mm
+@@ -266,8 +266,10 @@
+ 		MTLTextureUsage usage = MTLTextureUsageShaderRead;
+ 		if ( mvkIsAnyFlagEnabled(_usage, VK_BUFFER_USAGE_2_STORAGE_TEXEL_BUFFER_BIT) ) {
+ 			usage |= MTLTextureUsageShaderWrite;
++#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 140000
+ 			if (getMetalFeatures().nativeTextureAtomics && (_mtlPixelFormat == MTLPixelFormatR32Sint || _mtlPixelFormat == MTLPixelFormatR32Uint))
+ 				usage |= MTLTextureUsageShaderAtomic;
++#endif
+ 		}
+ 		id<MTLBuffer> mtlBuff = _buffer->getMTLBuffer();
+ 		VkDeviceSize mtlBuffOffset = _buffer->getMTLBufferOffset() + _offset;
+diff --git a/MoltenVK/MoltenVK/GPUObjects/MVKDevice.mm b/MoltenVK/MoltenVK/GPUObjects/MVKDevice.mm
+index e1f3c04e..dd062bd1 100644
+--- a/MoltenVK/MoltenVK/GPUObjects/MVKDevice.mm
++++ b/MoltenVK/MoltenVK/GPUObjects/MVKDevice.mm
+@@ -106,7 +106,9 @@
+ 	supportsApple6 = supportsGPUFam(Apple6, mtlDev);
+ 	supportsApple7 = supportsGPUFam(Apple7, mtlDev);
+ 	supportsApple8 = supportsGPUFam(Apple8, mtlDev);
++#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 140000
+ 	supportsApple9 = supportsGPUFam(Apple9, mtlDev);
++#endif
+ #if MVK_XCODE_26
+ 	supportsApple10 = supportsGPUFam(Apple10, mtlDev);
+ #endif
+@@ -2591,10 +2593,13 @@
+ 		setMSLVersion(3, 2);
+ 	} else
+ #endif
++#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 140000
+ 	if ( mvkOSVersionIsAtLeast(14.0, 17.0, 1.0) ) {
+ 		_metalFeatures.mslVersionEnum = MTLLanguageVersion3_1;
+ 		setMSLVersion(3, 1);
+-	} else if ( mvkOSVersionIsAtLeast(13.0, 16.0, 1.0) ) {
++	} else
++#endif
++	if ( mvkOSVersionIsAtLeast(13.0, 16.0, 1.0) ) {
+ 		_metalFeatures.mslVersionEnum = MTLLanguageVersion3_0;
+ 		setMSLVersion(3, 0);
+ 	} else if ( mvkOSVersionIsAtLeast(12.0, 15.0, 1.0) ) {
+diff --git a/MoltenVK/MoltenVK/GPUObjects/MVKPipeline.mm b/MoltenVK/MoltenVK/GPUObjects/MVKPipeline.mm
+index 7357ff1c..027a6df3 100644
+--- a/MoltenVK/MoltenVK/GPUObjects/MVKPipeline.mm
++++ b/MoltenVK/MoltenVK/GPUObjects/MVKPipeline.mm
+@@ -1723,7 +1723,11 @@ static void addCommonImplicitBuffersToShaderConfig(SPIRVToMSLConversionConfigura
+ 				vbDesc.stepFunction = (decltype(vbDesc.stepFunction))MTLStepFunctionConstant;
+ 				vbDesc.stepRate = 0;
+ 			} else {
++	#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 140000
+ 				vbDesc.stride = isVtxStrideStatic ? pVKVB->stride : MTLBufferLayoutStrideDynamic;
++#else
++				vbDesc.stride = pVKVB->stride;
++#endif
+ 				vbDesc.stepFunction = (decltype(vbDesc.stepFunction))mvkMTLStepFunctionFromVkVertexInputRate(pVKVB->inputRate, isTessellationPipeline());
+ 				vbDesc.stepRate = 1;
+ 			}
+diff --git a/MoltenVK/MoltenVK/GPUObjects/MVKPixelFormats.mm b/MoltenVK/MoltenVK/GPUObjects/MVKPixelFormats.mm
+index cdc72f31..f7a63b1c 100644
+--- a/MoltenVK/MoltenVK/GPUObjects/MVKPixelFormats.mm
++++ b/MoltenVK/MoltenVK/GPUObjects/MVKPixelFormats.mm
+@@ -39,6 +39,12 @@
+ #   define MTLPixelFormatX24_Stencil8               MTLPixelFormatInvalid
+ #endif
+ 
++// Add stub defs for unsupported MTLVertexFormats on older SDKs
++#if __MAC_OS_X_VERSION_MAX_ALLOWED < 140000
++#   define MTLVertexFormatFloatRG11B10              MTLVertexFormatInvalid
++#   define MTLVertexFormatFloatRGB9E5               MTLVertexFormatInvalid
++#endif
++
+ #if MVK_OS_SIMULATOR
+ #   define MTLPixelFormatR8Unorm_sRGB               MTLPixelFormatInvalid
+ #   define MTLPixelFormatRG8Unorm_sRGB              MTLPixelFormatInvalid
+@@ -622,9 +628,11 @@
+ 		mvkEnableFlags(mtlUsage, MTLTextureUsageShaderWrite);
+ 	}
+ 
++#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 140000
+ 	if (supportAtomics && (mtlFormat == MTLPixelFormatR32Uint || mtlFormat == MTLPixelFormatR32Sint)) {
+ 		mvkEnableFlags(mtlUsage, MTLTextureUsageShaderAtomic);
+ 	}
++#endif
+ 
+     // Clearing a linear image may use shader writes.
+     if (mvkIsAnyFlagEnabled(vkImageUsageFlags, (VK_IMAGE_USAGE_TRANSFER_DST_BIT)) &&

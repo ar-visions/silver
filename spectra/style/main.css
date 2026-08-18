@@ -1,0 +1,8 @@
+@import "trinity.css"
+
+Layer root_bg [ ]
+    fill_color: #0a0e14
+
+element.root {
+    layers.root_bg [ ]
+}

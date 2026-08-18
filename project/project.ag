@@ -1,0 +1,25 @@
+
+import <stdio.h>
+
+class Project
+    public name     : string
+
+    public root     : path
+
+    public product  : path
+
+    public build    : array token
+
+    public deps     : array token
+
+    public run      : array token
+
+    public cwd      : path
+
+    public files    : array token
+
+class ConsoleInstance
+    public name : string
+    public kind : string
+
+    public run  : array token

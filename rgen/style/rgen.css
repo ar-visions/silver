@@ -1,0 +1,10 @@
+Layer root_bg [ ]
+    fill_color: #024
+
+element.root {
+    layers.root_bg [ ]
+}
+
+rgen {
+    area: l0 t0 r0 b0
+}

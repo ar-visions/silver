@@ -1530,10 +1530,12 @@ static bool fmt_current(symbol path, i64 mtime) {
 static unsigned char* fmt_serialize(fmt_file ff, u32* out_total) {
     cstr cp = (ff->source && len(ff->source)) ? ff->source->chars : "";
     u32  cl = (u32)strlen(cp);
-    u32  n  = ff->tokens ? (u32)len(ff->tokens) : 0;
+    u32  nlines = ff->lines ? (u32)len(ff->lines) : 0;
+    u32  n = 0;
+    if (ff->lines) each(ff->lines, array, ltk) n += (u32)len(ltk);
     cstr* dp = calloc(n ? n : 1, sizeof(cstr));
     u32   np = 0;
-    if (ff->tokens) each(ff->tokens, fmt_token, tk) {
+    if (ff->lines) each(ff->lines, array, ltk) each(ltk, fmt_token, tk) {
         if (!tk->decl_source) continue;
         bool have = false;
         for (u32 i = 0; i < np; i++) if (strcmp(dp[i], tk->decl_source->chars) == 0) { have = true; break; }
@@ -1542,7 +1544,7 @@ static unsigned char* fmt_serialize(fmt_file ff, u32* out_total) {
     u32 ptotal = 4;
     for (u32 i = 0; i < np; i++) ptotal += 4 + (u32)strlen(dp[i]);
 
-    u32  total = 4 + 4 + cl + 8 + 4 + ptotal + n * 24;
+    u32  total = 4 + 4 + cl + 8 + ptotal + 4 + nlines * 4 + n * 20;
     unsigned char* b = malloc(total);
     u32 o = 0;
     #define SP(v) do { u32 _v = (u32)(v); memcpy(b + o, &_v, 4); o += 4; } while (0)
@@ -1550,20 +1552,23 @@ static unsigned char* fmt_serialize(fmt_file ff, u32* out_total) {
     SP(cl);
     memcpy(b + o, cp, cl); o += cl;
     i64 mt = ff->mtime; memcpy(b + o, &mt, 8); o += 8;
-    SP(n);
     SP(np);
     for (u32 i = 0; i < np; i++) {
         u32 pl = (u32)strlen(dp[i]);
         SP(pl);
         memcpy(b + o, dp[i], pl); o += pl;
     }
-    if (ff->tokens) each(ff->tokens, fmt_token, tk) {
-        i32 px = 0;
-        if (tk->decl_source)
-            for (u32 i = 0; i < np; i++)
-                if (strcmp(dp[i], tk->decl_source->chars) == 0) { px = (i32)i + 1; break; }
-        SP(tk->line); SP(tk->column); SP(tk->length); SP(tk->syntax);
-        SP(px); SP(tk->decl_line);
+    SP(nlines);
+    if (ff->lines) each(ff->lines, array, ltk) {
+        SP(len(ltk));
+        each(ltk, fmt_token, tk) {
+            i32 px = 0;
+            if (tk->decl_source)
+                for (u32 i = 0; i < np; i++)
+                    if (strcmp(dp[i], tk->decl_source->chars) == 0) { px = (i32)i + 1; break; }
+            SP(tk->column); SP(tk->length); SP(tk->syntax);
+            SP(px); SP(tk->decl_line);
+        }
     }
     #undef SP
     free(dp);
@@ -1580,6 +1585,9 @@ static void fmt_load(silver a) {
     array files = read_format(a->format);
     each(files, fmt_file, ff) {
         if (!ff->source || !len(ff->source)) continue;
+        // a section for a moved/deleted file never re-tokenizes: drop it
+        struct stat st;
+        if (stat(ff->source->chars, &st) != 0) continue;
         u32 total = 0;
         unsigned char* b = fmt_serialize(ff, &total);
         fmt_put(ff->source->chars, b, total, ff->mtime);
@@ -1641,7 +1649,14 @@ void silver_write_fmt(silver a, array toks) {
     u32 ptotal = 4;
     for (u32 i = 0; i < np; i++) ptotal += 4 + (u32)strlen(dp[i]);
 
-    u32  total = 4 + 4 + cl + 8 + 4 + ptotal + n * 24;
+    // line-major: bucket the tokens by their 1-based source line
+    u32 nlines = 0;
+    each(toks, token, t) if (t->line >= 1 && (u32)t->line > nlines) nlines = (u32)t->line;
+    u32* lcount = calloc(nlines ? nlines : 1, 4);
+    u32  nv = 0;
+    each(toks, token, t) if (t->line >= 1) { lcount[t->line - 1]++; nv++; }
+
+    u32  total = 4 + 4 + cl + 8 + ptotal + 4 + nlines * 4 + nv * 20;
     unsigned char* b = malloc(total);
     u32 o = 0;
     #define FMT_PUT(v) do { u32 _v = (u32)(v); memcpy(b + o, &_v, 4); o += 4; } while (0)
@@ -1649,29 +1664,37 @@ void silver_write_fmt(silver a, array toks) {
     FMT_PUT(cl);
     memcpy(b + o, cp, cl); o += cl;
     memcpy(b + o, &mt, 8); o += 8;              // i64 source mtime
-    FMT_PUT(n);
     FMT_PUT(np);
     for (u32 i = 0; i < np; i++) {
         u32 pl = (u32)strlen(dp[i]);
         FMT_PUT(pl);
         memcpy(b + o, dp[i], pl); o += pl;
     }
+    FMT_PUT(nlines);
+    // records are variable-length: place each line's count now, then
+    // drop tokens into their line's slots in one pass over toks
+    u32* tpos = malloc((nlines ? nlines : 1) * sizeof(u32));
+    for (u32 L = 0; L < nlines; L++) {
+        memcpy(b + o, &lcount[L], 4);
+        tpos[L] = o + 4;
+        o += 4 + lcount[L] * 20;
+    }
     each(toks, token, t) {
+        if (t->line < 1) continue;
         Au_t d = t->decl;
-        i32  px = 0, dln = 0;                   // 1-based; 0 = resolves nowhere
+        u32  px = 0, dln = 0;                   // 1-based; 0 = resolves nowhere
         if (d && d->source && d->src_line > 0) {
             for (u32 i = 0; i < np; i++)
-                if (strcmp(dp[i], d->source) == 0) { px = (i32)i + 1; break; }
-            dln = d->src_line;
+                if (strcmp(dp[i], d->source) == 0) { px = i + 1; break; }
+            dln = (u32)d->src_line;
         }
-        FMT_PUT(t->line);
-        FMT_PUT(t->column);
-        FMT_PUT(len(t));
-        FMT_PUT(t->syntax);
-        FMT_PUT(px);
-        FMT_PUT(dln);
+        u32 rec[5] = { (u32)t->column, (u32)len(t), (u32)t->syntax, px, dln };
+        memcpy(b + tpos[t->line - 1], rec, 20);
+        tpos[t->line - 1] += 20;
     }
     #undef FMT_PUT
+    free(tpos);
+    free(lcount);
     free(dp);
     fmt_put(cp, b, total, mt);
 }
@@ -2021,6 +2044,32 @@ AU_EXPORT void silver_init(silver a) {
     a->build_dir    = f(path, "%o/build", a->install);
     make_dir(a->build_dir);
 
+    // silver User:Project[:Module]/Commit — run that import alone, then
+    // quit (colon at index 1 is a windows drive, not a spec)
+    if (!a->is_external && a->module) {
+        cstr ms  = ((path)a->module)->chars;
+        cstr col = strchr(ms, ':');
+        cstr sl  = strchr(ms, '/');
+        if (col && col - ms > 1 && (!sl || col < sl)) {
+            cstr pe = sl ? sl : ms + strlen(ms);
+            cstr nm = pe;
+            while (nm > ms && nm[-1] != ':') nm--;
+            drop(a->name);
+            a->name = hold(string(chars, nm, ref_length, (int)(pe - nm)));
+            a->imports = array(32);
+            a->parse_f = parse_tokens;
+            if (!a->git_service)
+                a->git_service = hold(string("github.com"));
+            // llvm_reinit is gated on module_file; give it one
+            a->module_file = hold(f(path, "%o/%o.ag", a->build_dir, a->name));
+            aether_reinit_startup((aether)a);
+            a->tokens = hold(tokens(target, (Au)a, parser, parse_tokens,
+                input, (Au)f(string, "import %s", ms)));
+            parse_import(a);
+            return;
+        }
+    }
+
     // a module builds in the config THIS compiler was built in; there is one
     // silver on disk, so it is by definition the one last built
     if (!a->is_external && !(a->release && a->test)) {
@@ -2086,7 +2135,7 @@ AU_EXPORT void silver_init(silver a) {
     if (!module_file_m) {
         path silver_root = absolute(path(SILVER));
         path search_paths[] = {
-            f(path, "%o/foundry", silver_root),
+            silver_root,
             NULL
         };
         string m_stem = stem(a->module_file);
@@ -2228,6 +2277,12 @@ AU_EXPORT void silver_init(silver a) {
     }
 
     if (a->clean) update_product = true;
+    // the syntax map is a product too: cached runs must not leave a map
+    // older than the source (the editor withholds stale coloring)
+    if (!a->is_external && a->format && len(a->format)) {
+        u64 fmt_m = file_exists("%o", a->format) ? modified_time(a->format) : 0;
+        if (fmt_m < module_file_m) update_product = true;
+    }
     // --release --test builds are measurement artifacts: always rebuilt,
     // never cached — the shipping release product must stay expect-free
     if (a->release && a->test) update_product = true;
@@ -6015,7 +6070,7 @@ array chatgpt_generate_fn(chatgpt gpt, Au_t f, array query) {
     verify(len(key),
            "chatgpt requires an api key stored in environment variable CHATGPT");
 
-    // remote transport moved to the silver net module (foundry/net);
+    // remote transport moved to the silver tls module;
     // wire Http there when this feature lands
     string str_args = string();
     for (int i = 0; i < f->args.count; i++) {
@@ -6141,6 +6196,9 @@ string import_config(array input) {
             i++; // skip the framework name that follows
             continue;
         }
+        // bare -DNAME (no =) is a consumer define, never build config
+        if (starts_with(t, "-D") && !strchr(t->chars, '='))
+            continue;
         if (token_line == -1 && !starts_with(t, "-l") && !starts_with(t, "-I")) {
             if (len(config))
                 append(config, " ");
@@ -6162,12 +6220,14 @@ string import_env(array input) {
     return env;
 }
 
-string import_libs(array input, map output, map fw_output) {
+string import_libs(silver a, array input, map output, map fw_output) {
     string libs = string(alloc, 128);
     for (int i = 0; i < len(input); i++) {
         string t = (string)input->origin[i];
         if (starts_with(t, "-l")) {
             string n = mid(t, 2, len(t) - 2);
+            if (strchr(n->chars, '{'))
+                n = interpolate(n, (Au)a);
             set(output, n, _bool(true));
         } else if (starts_with(t, "-framework") && i + 1 < len(input)) {
             string fw = framework_name((string)input->origin[++i]);
@@ -6186,10 +6246,54 @@ void import_include_paths(silver a, array input, array output) {
     }
 }
 
+// { (define) ?? tokens… } keeps the tokens when define is true;
+// a single 'string' value token is unquoted to its literal
+static array import_conditionals(silver a, array b) {
+    int   ln  = len(b);
+    array res = array(alloc, ln ? ln : 1);
+    for (int i = 0; i < ln; i++) {
+        token t = (token)b->origin[i];
+        token o = (token)(i + 1 < ln ? b->origin[i + 1] : null);
+        if (!eq(t, "{") || !o || !eq(o, "(")) {
+            push(res, (Au)t);
+            continue;
+        }
+        token name = (token)(i + 2 < ln ? b->origin[i + 2] : null);
+        token cl   = (token)(i + 3 < ln ? b->origin[i + 3] : null);
+        token op   = (token)(i + 4 < ln ? b->origin[i + 4] : null);
+        verify(name && cl && eq(cl, ")") && op && eq(op, "??"),
+            "line %i: expected { (define) ?? value } in import config",
+            t ? t->line : 0);
+        int depth = 1, end = -1;
+        for (int j = i + 5; j < ln; j++) {
+            token n = (token)b->origin[j];
+            if (eq(n, "{")) depth++;
+            else if (eq(n, "}") && --depth == 0) { end = j; break; }
+        }
+        verify(end > 0, "line %i: unterminated { (define) ?? value }",
+            t->line);
+        if (eval_define(a, string(name->chars)) && end > i + 5) {
+            token val = (token)b->origin[i + 5];
+            if (end == i + 6 && instanceof(val->literal, string)) {
+                string v = (string)val->literal;
+                push(res, (Au)token(chars, v->chars, source, val->source,
+                    line, val->line, column, val->column));
+            } else
+                for (int k = i + 5; k < end; k++)
+                    push(res, (Au)b->origin[k]);
+        }
+        i = end;
+    }
+    return res;
+}
+
 void import_defines(silver a, array input, map output) {
     for (int i = 0; i < len(input); i++) {
-        string t = (string)input->origin[i];
-        if (eq(t, "+") && i + 1 < len(input)) {
+        token t = (token)input->origin[i];
+        // marker + must start the flag; name must glue to it
+        // (rules out the + tokens inside -lstdc++)
+        if (eq(t, "+") && !t->neighbor && i + 1 < len(input) &&
+            ((token)input->origin[i + 1])->neighbor) {
             string def = (string)input->origin[++i];
             // check for = in next token
             if (i + 1 < len(input) && eq((string)input->origin[i + 1], "=") && i + 2 < len(input)) {
@@ -6334,7 +6438,7 @@ static none run_import_commands(silver a, array cmds, path in_dir) {
     cd(cw);
 }
 
-static none checkout(silver a, path uri, string commit, array prebuild, array postbuild, string conf, string env) {
+static none checkout(silver a, path uri, string commit, array prebuild, array postbuild, string conf, string env, string mod_sel) {
     path    install     = a->install;
     string  s           = cast(string, uri);
     num     sl          = rindex_of(s, "/");
@@ -6386,7 +6490,7 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
                 vexec(a->verbose, "checkout", "git -C %o reset --hard FETCH_HEAD", project_f);
             }
 
-            // apply module-path diff if one exists (e.g. foundry/vulkan/MoltenVK.diff)
+            // apply module-path diff if one exists (e.g. vulkan/MoltenVK.diff)
             path diff_f = f(path, "%o/%o.diff", a->module_path, name);
             if (file_exists("%o", diff_f))
                 vexec(a->verbose, "patch", "git -C %o apply %o", project_f, diff_f);
@@ -6416,13 +6520,19 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
         }
     }
     path cmake_f    = f(path, "%o/CMakeLists.txt", cmake_src);
-    path silver_f   = f(path, "%o/%o/%o.ag", project_f, name, name);
+    string msel     = mod_sel ? mod_sel : name;
+    path silver_f   = f(path, "%o/%o/%o.ag", project_f, msel, msel);
     path gn_f       = f(path, "%o/BUILD.gn", project_f);
     bool is_rust    = file_exists("%o", rust_f);
     bool is_meson   = file_exists("%o", meson_f);
     bool is_cmake   = file_exists("%o", cmake_f);
     bool is_gn      = file_exists("%o", gn_f);
     bool is_silver  = file_exists("%o", silver_f);
+    validate(!mod_sel || is_silver,
+        "module selector %o: no silver module at %o", mod_sel, silver_f);
+    // selector is part of the cache identity, not the checkout's
+    if (mod_sel)
+        config = f(string, "%o mod:%o", config, mod_sel);
     path token      = f(path, "%o/silver-token", build_f);
 
     if (file_exists("%o", token)) {
@@ -6564,7 +6674,7 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
 
 // a module's .g `cflags:` (e.g. img.g -> -DIMATH_DLL -I$IMPORT/...) applies to
 // its C/C++ implementation sources; graph.py honors this for the core build,
-// silver's foundry path did not
+// silver's module import path did not
 static string read_g_cflags(silver a, path mg) {
     string out = string(alloc, 128);
     if (!mg || !file_exists("%o", mg)) return out;
@@ -6884,6 +6994,17 @@ none silver_build_product(silver a) {
             concat(ccflags, inc);
         }
     }
+    // consumer defines apply to native compiles, same as header parse
+    each(a->imports, import, im) {
+        for (item it = im->define_map ? im->define_map->first : null; it; it = it->next) {
+            if (len(ccflags)) append(ccflags, " ");
+            if (isa(it->value) == typeid(bool))
+                concat(ccflags, f(string, "-D%o", it->key));
+            else
+                concat(ccflags, f(string, "-D%o=%o", it->key, it->value));
+        }
+    }
+
     // add imported Silver module source directories for C header resolution
     each(a->imports, import, im) {
         if (im->is_au_rt && im->module_source) {
@@ -7739,7 +7860,7 @@ enode parse_export(silver a) {
 
 // honor a module's .g `link:` directive (e.g. dbg.g -> -llldb -lutil -lm,
 // img.g -> -lpng -lz ...). graph.py reads .g for the core build, but silver's
-// foundry import path never sees it, so without this those libs would be missing
+// module import path never sees it, so without this those libs would be missing
 // from the final app link. safe to call for cached and runtime-resolved modules.
 static bool add_lib_if_exists(silver a, cstr nm) {
     static const char* sys[] = {"m","c","dl","pthread","util","ncurses",
@@ -8069,18 +8190,22 @@ enode parse_import(silver a) {
     }
 
     map define_map = null;
-    array b = hold(read_body(a));
+    array b = hold(import_conditionals(a, read_body(a)));
     if (len(b)) {
         array bt = compact_tokens(b);
         if (!a->frameworks)
             a->frameworks = hold(map(16));
-        import_libs(bt, a->libs, a->frameworks);
+        import_libs(a, bt, a->libs, a->frameworks);
         if (!a->include_paths)
             a->include_paths = hold(array(16));
         if (!define_map)
             define_map = map(hsize, 16);
         import_include_paths(a, bt, a->include_paths);
         import_defines(a, b, define_map);
+        // bare -DNAME (no =) is a consumer define, not build config
+        each(bt, string, t)
+            if (starts_with(t, "-D") && !strchr(t->chars, '='))
+                set(define_map, (Au)mid(t, 2, len(t) - 2), (Au)_bool(true));
     }
 
     map defs = len(b) ? map() : null;
@@ -8158,8 +8283,8 @@ enode parse_import(silver a) {
             external_name = hold(string(mod->ident));
             // runtime-resolved module (e.g. dbg, or the silver compiler itself):
             // still read its .g so its deps reach the app link. core modules live
-            // in src/, foundry modules in foundry/<name>/.
-            read_g_link_libs(a, f(path, "%s/foundry/%s/%s.g",
+            // in src/, silver modules in <SILVER>/<name>/.
+            read_g_link_libs(a, f(path, "%s/%s/%s.g",
                 SILVER, mod->ident, mod->ident));
             read_g_link_libs(a, f(path, "%s/src/%s.g", SILVER, mod->ident));
         } else if (!mod && !module_source && !lib_path) {
@@ -8176,7 +8301,8 @@ enode parse_import(silver a) {
 
     if (project && !lib_path && !module_source) {
         string path_str = string();
-        if (len(mpath)) {
+        // cc is the module selector, never a blob path
+        if (len(mpath) && !cc) {
             string str_mpath = join(mpath, "/") ? cc : string("");
             path_str = len(str_mpath) ? f(string, "blob/%o/%o", commit, str_mpath) : string("");
         }
@@ -8204,12 +8330,15 @@ enode parse_import(silver a) {
         return e_noop(a, null);
     }
 
+    validate(!cc || uri,
+        "module selector %o: only valid on a git import", cc);
     if (uri) {
         checkout(a, path(uri->chars), (string)commit,
                  import_build_commands(all_config, ">"),
                  import_build_commands(all_config, ">>"),
                  import_config(all_config),
-                 import_env(all_config));
+                 import_env(all_config),
+                 cc);
         bool has_link = false;
         if (!a->frameworks)
             a->frameworks = hold(map(16));
