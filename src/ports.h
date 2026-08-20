@@ -36,6 +36,21 @@ typedef __int32 ssize_t;
 // defined). letting the crt declare them here, then renaming ours below, is
 // what keeps the two from colliding whichever header a module reaches first
 #include <process.h>
+// same reason: the ucrt declares read/write here, with its own int return.
+// letting it declare them first is what stops a collision whichever header
+// a module reaches first — ours live beside them as au_read/au_write.
+// Au spells some of its own methods the same way, so its macros step aside
+#pragma push_macro("remove")
+#pragma push_macro("read")
+#pragma push_macro("write")
+#undef remove
+#undef read
+#undef write
+#include <io.h>
+#include <direct.h>
+#pragma pop_macro("write")
+#pragma pop_macro("read")
+#pragma pop_macro("remove")
 
 // glibc spells this with underscores; shared code uses it
 typedef int64_t __int64_t;
@@ -43,14 +58,7 @@ typedef int64_t __int64_t;
 #define utimbuf _utimbuf
 #define utime   _utime
 
-// the ucrt declares off_t from <sys/types.h> only when non-standard names are
-// enabled; llvm's headers want it either way, so fill the gap when it is off
-// mirrors the ucrt's own condition in <sys/types.h>, inverted: define it only
-// in the case where they don't
-#if !((defined _CRT_DECLARE_NONSTDC_NAMES && _CRT_DECLARE_NONSTDC_NAMES) ||       (!defined _CRT_DECLARE_NONSTDC_NAMES && !__STDC__))
-typedef long long off_t;
-#endif
-typedef uint16_t mode_t;
+// mingw declares off_t, mode_t, and pid_t in <sys/types.h>
 
 struct dirent {
     char d_name[260];  // Name of the file
@@ -76,9 +84,6 @@ AU_EXPORT int gettimeofday(struct _timeval_* tp, void* tzp);
 
 #define WNOHANG 1
 
-// Process ID type
-typedef int pid_t;
-
 // Protection flags
 #define PROT_NONE       0x00
 #define PROT_READ       0x01
@@ -96,13 +101,13 @@ typedef int pid_t;
           char*       strdup  (const char* s);
 AU_EXPORT int         chdir   (const char* path);
 AU_EXPORT int         symlink (const char* target, const char* linkpath);
-AU_EXPORT int         mkdir   (const char* path, mode_t mode);
+// mingw's mkdir takes only a path; the mode has no meaning here
+#define mkdir(p, m) _mkdir(p)
 AU_EXPORT char*       realpath(const char* path, char* resolved_path);
 AU_EXPORT char*       dirname (char* path);
 AU_EXPORT char*       basename(char* path);
 AU_EXPORT ssize_t     readlink(const char *path, char *buf, size_t bufsiz);
 AU_EXPORT int         lstat   (const char* path, struct _stat* st);
-AU_EXPORT char*       getcwd  (char* buf, size_t size);
 // ours under our own name, then aliased: the crt's execvp is a dllimport we
 // cannot define, and its intptr_t return will not match a plain int
 AU_EXPORT int         au_execvp(const char *file, char *const argv[]);
@@ -122,8 +127,11 @@ AU_EXPORT int         au_execl (const char* path, const char* arg0, ...);
 AU_EXPORT int         pipe    (int pipefd[2]);
 AU_EXPORT int         dup2    (int oldfd, int newfd);
 AU_EXPORT int         close   (int fd);
-AU_EXPORT ssize_t     read    (int fd, void* buf, size_t sz);
-AU_EXPORT ssize_t     write   (int fd, void* buf, size_t sz);
+// NOT aliased like execvp: the ucrt declares read/write in <io.h>, and Au
+// has struct members by those names — a macro would rewrite those too.
+// callers get the crt's read/write; ours stay reachable under their own name
+AU_EXPORT ssize_t     au_read (int fd, void* buf, size_t sz);
+AU_EXPORT ssize_t     au_write(int fd, void* buf, size_t sz);
           FILE*       fdopen  (int fd, const char* mode);
 // the crt spells this one with an underscore
 #define               fileno(f) _fileno(f)

@@ -1,0 +1,4 @@
+import KhronosGroup:Vulkan-Headers/29184b9
+
+func wintest_answer [] -> i32
+    return 42

@@ -1,0 +1,84 @@
+import vec
+import img
+import trinity
+import <stdio.h>
+import <cpptest.hpp>
+
+element cpptest : trinity
+    public width  : i32    [ 480 ]
+    public height : i32    [ 200 ]
+    public title  : string [ 'cpptest' ]
+
+    func init []
+        mi : minmax<i32> [ lo: 3,   hi: 11  ]
+        mf : minmax<f32> [ lo: 0.5, hi: 2.5 ]
+        mo : minmax<i32> [ lo: 1,   hi: 4   ]
+        mg : minmax<f32> [ lo: 1.0, hi: 2.0 ]
+        puts 'minmax<i32> lo={mi.lo} hi={mi.hi} span={mi.span[]} x2={mi * 2}'
+        puts 'minmax<f32> lo={mf.lo} hi={mf.hi} span={mf.span[]} x2={mf * 2.0}'
+        puts 'ref R: mi + mo = {mi + mo}   value R: mi - mo = {mi - mo}'
+        puts 'ref R: mf + mg = {mf + mg}   value R: mf - mg = {mf - mg}'
+        im : Image [ width: 4, height: 4, format: Pixel.rgbaf32, channels: 4 ]
+        pf : @f32 im.vdata[]
+        for [ k: i32 0, k < 64, k += 1 ] pf[k] = f32[k] * 0.25
+        ep : path '/tmp/cpptest.exr'
+        rc : im.exr[ ep ]
+        r2 : Image [ uri: ep ]
+        q : @f32 r2.vdata[]
+        puts 'exr roundtrip: rc={rc} {r2.width}x{r2.height} q20={q[20]} expect={pf[20]}'
+        fx : fixed<i32,16> [ v: 3 ]
+        puts 'fixed<i32,16> v={fx.v} scaled={fx.scaled[]}'
+        an : make_animal[]
+        dg : make_dog[]
+        puts 'Animal* animal: virtual speak={an.speak[]} non-virtual walk={an.walk[]}'
+        puts 'Animal* dog:    virtual speak={dg.speak[]} non-virtual walk={dg.walk[]}'
+        aa : Animal [ ]
+        aa.Animal[ 2 ]
+        dd : Dog [ ]
+        dd.Dog[]
+        puts 'ctor method: Animal(2) speak={aa.speak[]} walk={aa.walk[]}  Dog() speak={dd.speak[]}'
+        bx : geo::box [ ]
+        bx.box[ 3, 5 ]
+        puts 'geo::box(3,5) area={bx.area[]}'
+        b4 : geo::box [ ]
+        b4.box[ 4 ]
+        b5 : geo::box [ ]
+        b5.box[ 2.5 ]
+        puts 'overloads: box(int 4) area={b4.area[]}  box(float 2.5) area={b5.area[]}'
+
+    public func render [] -> Elements
+        return Elements [ ]
+
+expect func test_minmax [] -> bool
+    mi : minmax<i32> [ lo: 3,   hi: 11  ]
+    mf : minmax<f32> [ lo: 0.5, hi: 2.5 ]
+    mo : minmax<i32> [ lo: 1,   hi: 4   ]
+    mg : minmax<f32> [ lo: 1.0, hi: 2.0 ]
+    puts 'minmax<i32> lo={mi.lo} hi={mi.hi}'
+    puts 'minmax<f32> lo={mf.lo} hi={mf.hi}'
+    puts 'minmax<i32> * 2 = {mi * 2}'
+    puts 'mi + mo = {mi + mo}  mi - mo = {mi - mo}'
+    puts 'mf + mg = {mf + mg}  mf - mg = {mf - mg}'
+    if [ (mi + mo) != 11 || (mi - mo) != 5 ] return false
+    if [ (mf + mg) != 3.0 || (mf - mg) != 1.0 ] return false
+    fx : fixed<i32,16> [ v: 3 ]
+    if [ fx.scaled[] != 48 ] return false
+    an : make_animal[]
+    dg : make_dog[]
+    if [ an.speak[] != 1 || dg.speak[] != 42 ] return false
+    if [ an.walk[] != 4 || dg.walk[] != 8 ] return false
+    aa : Animal [ ]
+    aa.Animal[ 2 ]
+    dd : Dog [ ]
+    dd.Dog[]
+    if [ aa.speak[] != 1 || aa.walk[] != 4 || dd.speak[] != 42 ] return false
+    bx : geo::box [ ]
+    bx.box[ 3, 5 ]
+    if [ bx.area[] != 15 ] return false
+    b4 : geo::box [ ]
+    b4.box[ 4 ]
+    if [ b4.area[] != 16 ] return false
+    b5 : geo::box [ ]
+    b5.box[ 2.5 ]
+    if [ b5.area[] != 625 ] return false
+    return mi.span[] == 8 && mf.span[] == 2.0 && (mi * 2) == 16 && (mf * 2.0) == 4.0

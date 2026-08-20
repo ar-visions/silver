@@ -293,9 +293,9 @@ Layer CommitLayer
             # the row-highlight look, pinkish red — theme-bound
             cv.save[ ]
             cv.rounded[ 8.0, 8.0, 8.0, 8.0 ]
-            cv.fill_color[ (thov) ? cb.tcol['#ff3a6a44'] : cb.tcol['#ff3a6a22'] ]
+            cv.fill_color[ cb.theme_rgba['#220022aa'] ]
             cv.stroke_width[ 1.0 ]
-            cv.stroke_color[ (dirty) ? rgba['#ffffff'] : ((thov) ? cb.tcol['#ff7aa4cc'] : cb.tcol['#ff5a8a99']) ]
+            cv.stroke_color[ (dirty) ? cb.theme_rgba['#ffffff'] : ((thov) ? cb.theme_rgba['#ff7aa4cc'] : cb.theme_rgba['#ff5a8a99']) ]
             cv.rect_to[ tx, ty + 3.0, 144.0, lh - 6.0 ]
             cv.paint[ ]
             cv.restore[ ]
@@ -377,7 +377,7 @@ Layer CommitLayer
             by : f32 [ yb + f32[ trs + 1 ] * lh ]
             cv.save[ ]
             cv.rounded[ 8.0, 8.0, 8.0, 8.0 ]
-            cv.fill_color[ rgba['#101a2ecc'] ]
+            cv.fill_color[ cb.theme_rgba['#220022aa'] ]
             cv.stroke_width[ 1.0 ]
             cv.stroke_color[ rgba['#6cb6ff55'] ]
             cv.rect_to[ x0, by + 3.0, bounds.x + bounds.w - x0 - 24.0, lh * 3.0 - 6.0 ]
@@ -611,7 +611,7 @@ element CommitView
         return cast orbiter [ ux.app_object ]
 
     # scene themes retint drawn colors, same as styled ones
-    func tcol [ s: string ] -> rgba
+    func theme_rgba [ s: string ] -> rgba
         if [ ux && ux.st ] return ux.st.theme_color[ s ]
         return rgba [ s ]
 

@@ -101,7 +101,9 @@ def eval_braces(s, context=None):
         "mac": sys.platform == "darwin",
         "SDK": SDK,
         "os": os,
-        "default_generator": 'Visual Studio 17 2022' if win else 'Ninja'
+        # ninja everywhere: the visual studio generator drives msvc, and
+        # windows is mingw here
+        "default_generator": 'Ninja'
     })
     def repl(match):
         expr = match.group(1).strip()
@@ -263,18 +265,13 @@ def build_import(name, uri, commit, _config_lines, install_dir, extra):
         win = sys.platform.startswith('win')
         ext = '.exe' if win else ''
 
-        # generally, software producers throw in MSVC-style command-line switches for cl compiler, and generally do NOT test against clang-cl
-        # to this end, we need to go with the compiler its designed for first
-        # on linux/mac though, we can attempt our own clang as its preferrable to go with our version we built
-        # --- however ---
-        # this is not ideal, to change compilation on dependencies based on presence of our clang, or not
-        # for determinism import needs a switch for which compiler to use
+        # our own clang with the gnu driver on every platform: windows is
+        # mingw here, so a dependency sees the same compiler and the same
+        # flags whether it is built natively or cross
         print('cmake args = ', cmake_args)
         if SDK == 'native' and not '-DCMAKE_C_COMPILER=' in cmake_args:
-            # our clang, always -- clang-cl is the same compiler with the
-            # msvc-style driver, so dependencies expecting cl flags still build
-            cc         = 'clang-cl' if win else 'clang'
-            cpp        = 'clang-cl' if win else 'clang++'
+            cc         = 'clang'
+            cpp        = 'clang++'
             idir       = str(NATIVE) + s + 'bin' + s if win else install_dir + s + 'bin' + s
             if not win and not (Path(idir) / cc).exists():
                 idir = ''
@@ -294,9 +291,6 @@ def build_import(name, uri, commit, _config_lines, install_dir, extra):
         # its own build type drags in a second one and its own fd table
         if not '-DCMAKE_BUILD_TYPE' in cmake_args:
             cmake_args += f' -DCMAKE_BUILD_TYPE={"Debug" if DEBUG else "Release"}'
-        if sys.platform.startswith("win") and not '-DCMAKE_MSVC_RUNTIME_LIBRARY' in cmake_args:
-            rt = 'MultiThreadedDebugDLL' if DEBUG else 'MultiThreadedDLL'
-            cmake_args += f' -DCMAKE_MSVC_RUNTIME_LIBRARY={rt}'
 
         is_ninja = '-G Ninja' in cmake_args or '-G "Ninja"' in cmake_args
         tc = ''

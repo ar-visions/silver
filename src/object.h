@@ -269,6 +269,7 @@ typedef struct _Au_t {
             u64 is_shaped    : 1;
             u64 is_au_native : 1;
             u64 is_app       : 1;
+            u64 is_cpp_virtual : 1; // dispatch via C++ vtable at member_index
         };
         u64 traits;
     };

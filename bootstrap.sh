@@ -34,7 +34,7 @@ generate_target_cmake() {
             case "$(uname -s)" in
                 Linux*)   TARGET_TRIPLE="$(uname -m)-linux-gnu" ;;
                 Darwin*)  TARGET_TRIPLE="$(uname -m)-apple-darwin" ;;
-                MINGW*|MSYS*|CYGWIN*) TARGET_TRIPLE="$(uname -m)-windows-msvc" ;;
+                MINGW*|MSYS*|CYGWIN*) TARGET_TRIPLE="$(uname -m)-w64-windows-gnu" ;;
                 *)        TARGET_TRIPLE="$(uname -m)-unknown" ;;
             esac
         fi
@@ -362,6 +362,20 @@ if [[ "$(uname)" == "Linux" ]] && ! [ -f "$NATIVE/bin/docker" ]; then
         cp build/docker "$NATIVE/bin/"
     fi
 
+    # buildx — the modern builder; without it docker build warns and BuildKit
+    # is unavailable. CLI plugins load from ~/.docker/cli-plugins
+    if ! [ -f "$HOME/.docker/cli-plugins/docker-buildx" ]; then
+        cd "$SILVER/checkout"
+        BUILDX_VER="v0.19.3"
+        if ! [ -d buildx ]; then
+            git clone --depth 1 --branch "$BUILDX_VER" https://github.com/docker/buildx.git
+        fi
+        cd buildx
+        go build -o "$NATIVE/bin/docker-buildx" ./cmd/buildx
+        mkdir -p "$HOME/.docker/cli-plugins"
+        ln -sf "$NATIVE/bin/docker-buildx" "$HOME/.docker/cli-plugins/docker-buildx"
+    fi
+
     echo "🐳 Docker built from source into $NATIVE/bin/"
 fi
 
@@ -380,6 +394,8 @@ Description=containerd
 After=network.target
 
 [Service]
+# silver's bin FIRST: a system containerd would shadow the runc-v2 shim
+Environment=PATH=$NATIVE/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=$NATIVE/bin/containerd
 Restart=always
 
@@ -393,6 +409,7 @@ After=network.target containerd.service
 Requires=containerd.service
 
 [Service]
+Environment=PATH=$NATIVE/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=$NATIVE/bin/dockerd --userland-proxy-path=$NATIVE/bin/docker-proxy
 Restart=always
 
