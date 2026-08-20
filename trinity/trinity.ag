@@ -4049,6 +4049,7 @@ element TButtons
     public  manual    : bool          # actions, not toggles — no latched selection
     public  selected  : i32 [ -1 ]
     public  sel_mask  : i32
+    public  disable_mask : i32        # per-segment disable, same bits as sel_mask
     public  seg_radius : f32 [ 8.0 ]
     # icon height as a fraction of the control's height
     public  icon_scale : f32 [ 0.55 ]
@@ -4059,7 +4060,7 @@ element TButtons
     intern  svg_miss  : map i32      [string]
     intern  hover_ix  : i32 [ -1 ]
 
-    func tcol [ s: string ] -> rgba
+    func theme_rgba [ s: string ] -> rgba
         if [ ux && ux.st ] return ux.st.theme_color[ s ]
         return rgba [ s ]
 
@@ -4103,21 +4104,22 @@ element TButtons
             bl : f32 [ (i == 0)     ? seg_radius : 0.0 ]
             tr : f32 [ (i == n - 1) ? seg_radius : 0.0 ]
             br : f32 [ (i == n - 1) ? seg_radius : 0.0 ]
-            fcol : tcol[ '#614' ]
+            fcol : theme_rgba[ '#614' ]
             # at rest there is NO glow: hover and the lit state are the
             # only things that draw an edge, so nothing lingers when the
             # cursor leaves
             gc   : rgba [ rest_glow ]
             gpx  : f32  [ rest_px ]
+            off  : bool [ disable || ((disable_mask & (1 << i)) != 0) ]
             # hover brightens first, at half strength...
-            if [ i == hover_ix ]
-                fcol = tcol[ '#413' ]
+            if [ i == hover_ix && !off ]
+                fcol = theme_rgba[ '#413' ]
                 gc   = rgba [ '#fcc3' ]
                 gpx  = 18.0
             # ...then the toggled state always brightens over it
             lit : bool [ (sel_mask != 0) ? ((sel_mask & (1 << i)) != 0) : (i == selected) ]
-            if [ lit ]
-                fcol = tcol[ '#826' ]
+            if [ lit && !off ]
+                fcol = theme_rgba[ '#826' ]
                 gc   = rgba [ '#fcc6' ]
                 gpx  = 18.0
             gl : f32 [ (i == 0)     ? gpx : 0.0 ]
@@ -4136,6 +4138,7 @@ element TButtons
             cv.rounded[ 0.0, 0.0, 0.0, 0.0 ]
             icon : string [ (icon_ids && i < icon_ids.count) ? icon_ids[i] : buttons[i] ]
             svg  : SVGModel (icons) ? seg_svg[ icon ] : null
+            if [ off ] cv.set_opacity[ 0.35 ]
             if [ svg ]
                 isz : f32 [ bounds.h * ((icon_scale > 0.0) ? icon_scale : 0.55) ]
                 ix  : f32 [ x + (seg_w - isz) * 0.5 ]
@@ -4147,6 +4150,7 @@ element TButtons
                 cv.fill_color[ rgba [ '#fff' ] ]
                 cv.draw_text[ buttons[ i ], rect [ x: x, y: 0.0, w: seg_w, h: bounds.h ],
                     vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+            if [ off ] cv.set_opacity[ 1.0 ]
         dvy : f32 [ bounds.h * 0.2 ]
         dvh : f32 [ bounds.h * 0.6 ]
         for [ i: i32 1, i < n, i += 1 ]
@@ -4161,11 +4165,14 @@ element TButtons
     func on_press [ ev: Event ]
         i : i32 [ seg_at[ ev ] ]
         if [ i < 0 ] return
+        if [ disable || (disable_mask & (1 << i)) != 0 ] return
         if [ !manual ] selected = i
         a.id = buttons[ i ]
 
     func on_move [ ev: Event ]
         hover_ix = seg_at[ ev ]
+        if [ hover_ix >= 0 && (disable || (disable_mask & (1 << hover_ix)) != 0) ]
+            hover_ix = -1
 
 element Splitter
     animated : true

@@ -6,6 +6,7 @@
 #endif
 
 #include <iostream>
+#include <set>
 
 #include <llvm-c/DebugInfo.h>
 #include <llvm-c/Core.h>
@@ -27,6 +28,7 @@
 #include <clang/AST/Type.h>
 #include <clang/AST/Decl.h>
 #include <clang/AST/DeclCXX.h>
+#include <clang/AST/VTableBuilder.h>
 #include <clang/Basic/SourceManager.h>
 #include <clang/AST/Mangle.h>
 #include <clang/AST/RecordLayout.h>
@@ -131,6 +133,12 @@ static void stamp_decl(Au_t m, const clang::Decl* d, ASTContext& ctx) {
 }
 
 static Au_t map_clang_type(const QualType& qt, ASTContext& ctx, aether e, symbol use_name);
+extern "C" Au_t alloc_arg(Au_t, symbol, Au_t);
+
+// models register at the import, never a transient record/arg scope
+static Au_t model_scope(aether e) {
+    return e->model_scope ? e->model_scope : aether_top_scope(e);
+}
 static Au_t create_record(RecordDecl* decl, ASTContext& ctx, aether e, std::string name);
 static Au_t create_class(CXXRecordDecl* cxx, ASTContext& ctx, aether e, std::string qname);
 static Au_t create_enum(EnumDecl* decl, ASTContext& ctx, aether e, std::string name);
@@ -223,8 +231,9 @@ static std::vector<clang::NamedDecl*> namespace_stack(clang::NamedDecl *decl) {
          ctx = ctx->getParent()) {
 
         if (const auto *D = llvm::dyn_cast<clang::Decl>(ctx)) {
-            if (const auto *ND = llvm::dyn_cast<clang::NamedDecl>(D))
-                parts.push_back(const_cast<clang::NamedDecl*>(ND));
+            if (const auto *ND = llvm::dyn_cast<clang::NamespaceDecl>(D))
+                parts.push_back(const_cast<clang::NamedDecl*>(
+                    (const clang::NamedDecl*)ND));
         }
     }
 
@@ -234,17 +243,34 @@ static std::vector<clang::NamedDecl*> namespace_stack(clang::NamedDecl *decl) {
 
 static Au_t _find_member(Au_t parent, symbol name) {
     if (!parent || !name) return null;
-    return find_member(parent, name, 0, 0, false);
+    Au_t m = find_member(parent, name, 0, 0, false);
+    if (m) return m;
+    // member_map miss is not authority; walk members linearly
+    for (int i = 0; i < parent->members.count; i++) {
+        Au_t mm = (Au_t)parent->members.origin[i];
+        if (mm->ident && strcmp(mm->ident, name) == 0) return mm;
+    }
+    return null;
 }
 
 
 static void push_context(NamedDecl* decl, aether e) {
     auto s = namespace_stack((NamespaceDecl*)decl);
-    Au_t cur = aether_top_scope(e);
+    Au_t cur = model_scope(e);
     for (clang::NamedDecl* n: s) {
         std::basic_string<char> s = n->getNameAsString();
         symbol name = s.c_str();
         Au_t m = _find_member(cur, name);
+        if (!m) {
+            printf("push_context miss: ns=%s decl=%s scope=%s members=%d\n",
+                name, decl->getNameAsString().c_str(),
+                cur->ident ? cur->ident : "?", cur->members.count);
+            for (int mi = 0; mi < cur->members.count && mi < 12; mi++) {
+                Au_t mm = (Au_t)cur->members.origin[mi];
+                printf("  member[%d] = %s\n", mi, mm->ident ? mm->ident : "?");
+            }
+            fflush(stdout);
+        }
         verify(m, "namespace not found: %s", name);
         aether_push_scope(e, (Au)m, 2);
         cur = m;
@@ -267,6 +293,11 @@ static std::string cxx_mangle(const NamedDecl* D, ASTContext& ctx) {
 
     if (const auto *VD = dyn_cast<VarDecl>(D)) {
         MC->mangleName(VD, os);
+    } else if (const auto *CD = dyn_cast<CXXConstructorDecl>(D)) {
+        // C2: -femit-all-decls emits base-object variants; C1==C2 sans virtual bases
+        MC->mangleName(GlobalDecl(CD, Ctor_Base), os);
+    } else if (const auto *DD = dyn_cast<CXXDestructorDecl>(D)) {
+        MC->mangleName(GlobalDecl(DD, Dtor_Base), os);
     } else if (const auto *FD = dyn_cast<FunctionDecl>(D)) {
         MC->mangleName(FD, os);
     } else if (const auto *MD = dyn_cast<CXXMethodDecl>(D)) {
@@ -322,7 +353,7 @@ static Au_t map_builtin_type(const BuiltinType* bt, ASTContext& ctx, aether e) {
 }
 
 static Au_t map_function_type(const FunctionProtoType* fpt, ASTContext& ctx, aether e) {
-    Au_t parent = aether_top_scope(e);
+    Au_t parent = model_scope(e);
     
     // Create function type
     Au_t fn = def(parent, null, AU_MEMBER_TYPE, AU_TRAIT_FUNCPTR | AU_TRAIT_IS_C);
@@ -371,7 +402,7 @@ static Au_t map_function_pointer(QualType pointee_qt, ASTContext& ctx, aether e,
     }
     
     if (const FunctionNoProtoType* fnpt = dyn_cast<FunctionNoProtoType>(pointee)) {
-        Au_t parent = aether_top_scope(e);
+        Au_t parent = model_scope(e);
         Au_t fn = def(parent, null, AU_MEMBER_FUNC, AU_TRAIT_FUNCPTR | AU_TRAIT_IS_C);
         //fn->module = e->current_import->autype;
         fn->rtype = map_clang_type(fnpt->getReturnType(), ctx, e, null);
@@ -391,6 +422,10 @@ static Au_t map_clang_type(const QualType& qt, ASTContext& ctx, aether e, symbol
     if (const ElaboratedType* et = dyn_cast<ElaboratedType>(t)) {
         return map_clang_type(et->getNamedType(), ctx, e, use_name);
     }
+
+    if (const SubstTemplateTypeParmType* st = dyn_cast<SubstTemplateTypeParmType>(t)) {
+        return map_clang_type(st->getReplacementType(), ctx, e, use_name);
+    }
     
     // Handle typedefs
     if (const TypedefType* tt = dyn_cast<TypedefType>(t)) {
@@ -406,7 +441,7 @@ static Au_t map_clang_type(const QualType& qt, ASTContext& ctx, aether e, symbol
         
         if (underlying && new_name) {
             // Create alias
-            Au_t alias = def_type(aether_top_scope(e), new_name, AU_TRAIT_ALIAS);
+            Au_t alias = def_type(model_scope(e), new_name, AU_TRAIT_ALIAS);
             //alias->module = e->current_import->autype;
             alias->src = underlying;
             return alias;
@@ -421,7 +456,7 @@ static Au_t map_clang_type(const QualType& qt, ASTContext& ctx, aether e, symbol
     if (const BuiltinType* bt = dyn_cast<BuiltinType>(type)) {
         Au_t src = map_builtin_type(bt, ctx, e);
         if (src && use_name) {
-            Au_t alias = def_type(aether_top_scope(e), use_name, AU_TRAIT_ALIAS | AU_TRAIT_IS_C);
+            Au_t alias = def_type(model_scope(e), use_name, AU_TRAIT_ALIAS | AU_TRAIT_IS_C);
             //alias->module = e->current_import->autype;
             alias->src = src;
             return alias;
@@ -429,11 +464,9 @@ static Au_t map_clang_type(const QualType& qt, ASTContext& ctx, aether e, symbol
         return src;
     }
     
-    // Complex types
-    if (const ComplexType* ct = dyn_cast<ComplexType>(type)) {
-        fault("complex types not supported");
+    // Complex types: unsupported, member gets skipped
+    if (const ComplexType* ct = dyn_cast<ComplexType>(type))
         return null;
-    }
     
     // Constant array types
     if (const ConstantArrayType* cat = dyn_cast<ConstantArrayType>(type)) {
@@ -445,7 +478,7 @@ static Au_t map_clang_type(const QualType& qt, ASTContext& ctx, aether e, symbol
         
         // Create array type - need to represent shape somehow
         // For now, create a type with size info
-        Au_t arr = def_type(aether_top_scope(e), use_name, AU_TRAIT_IS_C);
+        Au_t arr = def_type(model_scope(e), use_name, AU_TRAIT_IS_C);
         //arr->module = e->current_import->autype;
         arr->src = elem;
         arr->elements = esize; // store array size
@@ -461,7 +494,7 @@ static Au_t map_clang_type(const QualType& qt, ASTContext& ctx, aether e, symbol
         Au_t elem = map_clang_type(elem_type, ctx, e, null);
         if (!elem) return null;
         
-        Au_t arr = def_type(aether_top_scope(e), use_name, AU_TRAIT_IS_C);
+        Au_t arr = def_type(model_scope(e), use_name, AU_TRAIT_IS_C);
         //arr->module = e->current_import->autype;
         arr->src = elem;
         arr->elements = 0; // flexible array
@@ -498,8 +531,9 @@ static Au_t map_clang_type(const QualType& qt, ASTContext& ctx, aether e, symbol
     // Record types (struct/class)
     if (auto* RT = dyn_cast<RecordType>(type)) {
         RecordDecl* decl = RT->getDecl();
+        bool is_spec = isa<ClassTemplateSpecializationDecl>(decl);
         std::string name = decl->getNameAsString();
-        Au_t existing = name.length() ? au_lookup_type(name.c_str()) : null;
+        Au_t existing = (!is_spec && name.length()) ? au_lookup_type(name.c_str()) : null;
         if (existing) return existing;
 
         if (auto* CXX = dyn_cast<CXXRecordDecl>(decl)) {
@@ -557,6 +591,14 @@ static void set_fields(RecordDecl* decl, ASTContext& ctx, aether e, Au_t rec) {
         const ASTRecordLayout& layout = ctx.getASTRecordLayout(decl);
 
         int field_index = 0;
+        // Itanium: dynamic classes carry the vtable pointer as word 0
+        if (auto* CXX = dyn_cast<CXXRecordDecl>(decl))
+            if (CXX->isDynamicClass()) {
+                Au_t vp = def_member(rec, "__vptr", au_lookup("ARef"),
+                    AU_MEMBER_VAR, AU_TRAIT_IS_C | AU_TRAIT_IPROP);
+                vp->offset = 0;
+                vp->member_index = field_index++;
+            }
         for (auto field : decl->fields()) {
             std::string field_name = field->getNameAsString();
             if (field_name.empty()) {
@@ -597,7 +639,7 @@ static Au_t create_record(RecordDecl* decl, ASTContext& ctx, aether e, std::stri
     if (existing && existing->member_type == AU_MEMBER_TYPE && existing->members.count > 0) return existing;
 
     bool is_union = decl->isUnion();
-    Au_t parent = aether_top_scope(e);
+    Au_t parent = model_scope(e);
 
     // Incomplete definition → opaque
     if (!decl->isCompleteDefinition() || decl->isInvalidDecl() || decl->isDependentType()) {
@@ -612,6 +654,8 @@ static Au_t create_record(RecordDecl* decl, ASTContext& ctx, aether e, std::stri
     u32 traits = is_union ? AU_TRAIT_UNION : AU_TRAIT_STRUCT;
     Au_t rec = (existing && existing->member_type == AU_MEMBER_TYPE && existing->members.count == 0 && existing->is_c) ?
         existing : def_type(parent, n, traits | AU_TRAIT_IS_C);
+    if (rec->is_resolving) return rec;
+    rec->is_resolving = true;
     stamp_decl(rec, decl, ctx);
     rec->traits |= traits | AU_TRAIT_IS_C;
     rec->is_struct = true;
@@ -625,6 +669,7 @@ static Au_t create_record(RecordDecl* decl, ASTContext& ctx, aether e, std::stri
     aether_push_scope(e, (Au)rec, 3);
     set_fields(decl, ctx, e, rec);
     array_pop(e->lexical);
+    rec->is_resolving = false;
     return rec;
 }
 
@@ -635,93 +680,179 @@ static Au_t create_opaque_class(CXXRecordDecl* cxx, aether e) {
     Au_t existing = au_lookup_type(n);
     if (existing) return existing;
 
-    Au_t rec = def_class(aether_top_scope(e), n);
+    Au_t rec = def_class(model_scope(e), n);
     //rec->module = e->current_import->autype;
     return rec;
 }
 
-static Au_t create_class(CXXRecordDecl* cxx, ASTContext& ctx, aether e, std::string qname) {
-    symbol n = qname.c_str();
-    
-    if (!cxx->isCompleteDefinition() || cxx->isDependentType() || cxx->isInvalidDecl())
-        return create_opaque_class(cxx, e);
-    
-    Au_t existing = au_lookup_type(n);
-    if (existing) return existing;
+// binary member operators e_op can dispatch by operator_type
+static const struct { OverloadedOperatorKind k; OPType op; symbol name; } cxx_op_map[] = {
+    { OO_Plus,    OPType__add, "operator__add" },
+    { OO_Minus,   OPType__sub, "operator__sub" },
+    { OO_Star,    OPType__mul, "operator__mul" },
+    { OO_Slash,   OPType__div, "operator__div" },
+    { OO_Percent, OPType__mod, "operator__mod" },
+};
 
-    Au_t parent = aether_top_scope(e);
-    Au_t rec = def_class(parent, n);
-    stamp_decl(rec, cxx, ctx);
-    //rec->module = e->current_import->autype;
-    aether_push_scope(e, (Au)rec, 4);
-    
-    // Handle bases
-    const ASTRecordLayout& layout = ctx.getASTRecordLayout(cxx);
-    int base_index = 0;
-    
-    for (const auto& B : cxx->bases()) {
-        const CXXRecordDecl* base = B.getType()->getAsCXXRecordDecl();
-        if (!base) continue;
-        
-        Au_t base_rec = create_class(
-            const_cast<CXXRecordDecl*>(base), ctx, e, get_name((NamedDecl*)base));
-        
-        char bname[32];
-        snprintf(bname, sizeof(bname), "__base%d", base_index++);
-        
-        Au_t m = def_member(rec, bname, base_rec, AU_MEMBER_VAR, AU_TRAIT_IS_C);
-        //m->module = e->current_import->autype;
-        m->offset = layout.getBaseClassOffset(base).getQuantity();
-    }
-
-    set_fields((RecordDecl*)cxx, ctx, e, rec);
-    
-    // Methods
+// methods bind like silver struct methods: alt holds the mangled symbol
+static void set_methods(CXXRecordDecl* cxx, ASTContext& ctx, aether e, Au_t rec) {
+    // param mapping re-enters create_class for self-typed operands
+    static std::set<Au_t> done;
+    if (!done.insert(rec).second) return;
     for (auto* md : cxx->methods()) {
-        if (!md->getIdentifier()) continue;
         if (md->getAccess() != AS_public) continue;
-        
-        std::string disp = md->getQualifiedNameAsString();
-        std::string mg = cxx_mangle(md, ctx);
-        std::string method_name = disp + "#" + mg;
-        
-        Au_t fn = def(rec, method_name.c_str(), AU_MEMBER_FUNC,
-                              (md->isStatic() ? AU_TRAIT_SMETHOD : AU_TRAIT_IMETHOD) | AU_TRAIT_IS_C);
-        //fn->module = e->current_import->autype;
-        fn->rtype = map_clang_type(md->getReturnType(), ctx, e, null);
-        if (!fn->rtype) fn->rtype = au_lookup("none");
-        
-        // Self parameter for instance methods
-        if (!md->isStatic()) {
-            Au_t self_type = rec;
-            if (md->isConst()) {
-                // Could mark as const
-            }
-            Au_t self_ptr = def_pointer(null, self_type, null);
-            Au_t self_arg = def(null, "self", AU_MEMBER_VAR, AU_TRAIT_IS_C);
-            self_arg->type = self_ptr;
-            micro_push(&fn->args, (Au)self_arg);
+        if (md->isStatic()) continue;
+        std::string mname;
+        OPType      op    = OPType__undefined;
+        u32         mtype = AU_MEMBER_FUNC;
+        if (auto* cd = dyn_cast<CXXConstructorDecl>(md)) {
+            // a method, not silver construct: cd initializes the alloc'd object
+            if (cd->isImplicit() || cd->isCopyConstructor() || cd->isMoveConstructor())
+                continue;
+            mname = cxx->getNameAsString();
+        } else if (auto* dd = dyn_cast<CXXDestructorDecl>(md)) {
+            if (dd->isImplicit() || dd->isTrivial()) continue;
+            mname = "dtor";
+        } else if (auto* cv = dyn_cast<CXXConversionDecl>(md)) {
+            // conversion operator = silver cast member; castable() finds it
+            Au_t crt = map_clang_type(cv->getConversionType(), ctx, e, null);
+            if (!crt || !crt->ident) continue;
+            mname = std::string("cast_") + crt->ident;
+            mtype = AU_MEMBER_CAST;
+        } else if (md->getIdentifier())
+            mname = md->getNameAsString();
+        else {
+            OverloadedOperatorKind oo = md->getOverloadedOperator();
+            for (size_t i = 0; i < sizeof(cxx_op_map) / sizeof(cxx_op_map[0]); i++)
+                if (cxx_op_map[i].k == oo) {
+                    op    = cxx_op_map[i].op;
+                    mname = cxx_op_map[i].name;
+                    break;
+                }
+            if (mname.empty() || md->getNumParams() != 1) continue;
         }
-        
-        // Parameters
+        std::string mg_dup = cxx_mangle(md, ctx);
+        bool seen = false;
+        for (int mi2 = 0; mi2 < rec->members.count; mi2++) {
+            Au_t mm = (Au_t)rec->members.origin[mi2];
+            if (mm->alt && mg_dup == mm->alt) { seen = true; break; }
+        }
+        if (seen) continue;
+
+        // by-value 8-byte PODs pass as their packed eightbyte scalar
+        std::vector<std::pair<std::string, Au_t>> params;
+        bool ok = true;
         for (unsigned i = 0; i < md->getNumParams(); ++i) {
             ParmVarDecl* p = md->getParamDecl(i);
-            Au_t mt = map_clang_type(p->getType(), ctx, e, null);
-            if (!mt) continue;
-
+            QualType pt = p->getType();
+            Au_t mt = map_clang_type(pt, ctx, e, null);
+            if (!mt) { ok = false; break; }
+            if (mt->is_struct && !mt->is_pointer) {
+                if ((unsigned)ctx.getTypeSizeInChars(pt).getQuantity() != 8) {
+                    ok = false;
+                    break;
+                }
+                bool all_real = false;
+                if (const RecordType* rt = pt->getAs<RecordType>()) {
+                    all_real = true;
+                    for (auto f2 : rt->getDecl()->fields())
+                        if (!f2->getType()->isFloatingType()) all_real = false;
+                }
+                mt = au_lookup(all_real ? "f64" : "u64");
+            }
             std::string pname = p->getNameAsString();
             if (pname.empty())
                 pname = "arg_" + std::to_string(i);
+            params.push_back({ pname, mt });
+        }
+        if (!ok) continue;
+        std::string mg = mg_dup;
 
-            Au_t ap = def(null, pname.c_str(), AU_MEMBER_VAR, AU_TRAIT_IS_C);
-            ap->type = mt;
+        Au_t fn  = def(rec, mname.c_str(), mtype,
+                       AU_TRAIT_IMETHOD | AU_TRAIT_IS_C);
+        fn->operator_type = op;
+        fn->alt   = (cstr)cstr_copy((cstr)mg.c_str());
+        fn->rtype = map_clang_type(md->getReturnType(), ctx, e, null);
+        if (!fn->rtype) fn->rtype = au_lookup("none");
+        if (md->isVirtual()) {
+            fn->is_cpp_virtual = true;
+            GlobalDecl gd = isa<CXXDestructorDecl>(md)
+                ? GlobalDecl(cast<CXXDestructorDecl>(md), Dtor_Complete)
+                : GlobalDecl(md);
+            fn->member_index   = (i64)cast<ItaniumVTableContext>(
+                ctx.getVTableContext())->getMethodVTableIndex(gd);
+        }
+
+        Au_t self_arg = alloc_arg(fn, "a", rec);
+        self_arg->is_target = true;
+        micro_push(&fn->args, (Au)self_arg);
+
+        for (auto& pr : params) {
+            Au_t ap = alloc_arg(fn, pr.first.c_str(), pr.second);
             micro_push(&fn->args, (Au)ap);
         }
-        
-        // Store mangled name for linking
-        fn->vfn = (void*)strdup(mg.c_str()); // store extern name
     }
-    
+}
+
+static std::string spec_name(ClassTemplateSpecializationDecl* spec,
+                             ASTContext& ctx, aether e);
+
+// names only, never create_class: std's template webs are cyclic
+static std::string type_arg_name(QualType qt, ASTContext& ctx, aether e) {
+    const Type* t = qt.getTypePtr();
+    if (auto* el = dyn_cast<ElaboratedType>(t))
+        return type_arg_name(el->getNamedType(), ctx, e);
+    if (auto* st = dyn_cast<SubstTemplateTypeParmType>(t))
+        return type_arg_name(st->getReplacementType(), ctx, e);
+    if (auto* tt = dyn_cast<TypedefType>(t))
+        return type_arg_name(tt->getDecl()->getUnderlyingType(), ctx, e);
+    if (auto* bt = dyn_cast<BuiltinType>(t)) {
+        Au_t m = map_builtin_type(bt, ctx, e);
+        return (m && m->ident) ? m->ident : "?";
+    }
+    if (auto* rt = dyn_cast<RecordType>(t)) {
+        RecordDecl* rd = rt->getDecl();
+        if (auto* spec = dyn_cast<ClassTemplateSpecializationDecl>(rd))
+            return spec_name(spec, ctx, e);
+        return get_name((NamedDecl*)rd);
+    }
+    return qt.getCanonicalType().getAsString();
+}
+
+// specializations register under Au arg idents: minmax<i32>
+static std::string spec_name(ClassTemplateSpecializationDecl* spec,
+                             ASTContext& ctx, aether e) {
+    static thread_local int depth;
+    if (depth > 24) return "?";
+    depth++;
+    std::string out = get_name((NamedDecl*)spec);
+    out += "<";
+    const TemplateArgumentList& targs = spec->getTemplateArgs();
+    for (unsigned i = 0; i < targs.size(); i++) {
+        if (i) out += ",";
+        const TemplateArgument& ta = targs[i];
+        if (ta.getKind() == TemplateArgument::Type) {
+            out += type_arg_name(ta.getAsType(), ctx, e);
+        } else if (ta.getKind() == TemplateArgument::Integral) {
+            out += std::to_string(ta.getAsIntegral().getSExtValue());
+        } else
+            out += "?";
+    }
+    out += ">";
+    depth--;
+    return out;
+}
+
+static Au_t create_class(CXXRecordDecl* cxx, ASTContext& ctx, aether e, std::string qname) {
+    if (auto* spec = dyn_cast<ClassTemplateSpecializationDecl>(cxx))
+        qname = spec_name(spec, ctx, e);
+
+    if (!cxx->isCompleteDefinition() || cxx->isDependentType() || cxx->isInvalidDecl())
+        return create_opaque_class(cxx, e);
+
+    Au_t rec = create_record((RecordDecl*)cxx, ctx, e, qname);
+    aether_push_scope(e, (Au)rec, 4);
+    set_methods(cxx, ctx, e, rec);
     array_pop(e->lexical);
     return rec;
 }
@@ -733,7 +864,7 @@ static Au_t create_enum(EnumDecl* decl, ASTContext& ctx, aether e, std::string n
     Au_t prior = n ? prior_type(n) : null;
     if (prior && prior->is_enum) return prior;
 
-    Au_t parent = aether_top_scope(e);
+    Au_t parent = model_scope(e);
     Au_t en = def_enum(parent, n, 0);
     stamp_decl(en, decl, ctx);
     //en->module = e->current_import->autype;
@@ -771,9 +902,14 @@ static Au_t create_fn(FunctionDecl* decl, ASTContext& ctx, aether e, std::string
     Au_t prior = prior_func(n);
     if (prior) return prior;
 
-    Au_t parent = aether_top_scope(e);
+    Au_t parent = model_scope(e);
     Au_t fn = def(parent, n, AU_MEMBER_FUNC, AU_TRAIT_IS_C);
     stamp_decl(fn, decl, ctx);
+    // a C header's `static inline` (windows spells time() that way) is not
+    // extern "C", but it has no mangled symbol either — it has NO symbol at
+    // all. only mangle what is actually externally visible
+    if (!decl->isExternC() && decl->isExternallyVisible())
+        fn->alt = (cstr)cstr_copy((cstr)cxx_mangle(decl, ctx).c_str());
     // Return type
     fn->rtype = map_clang_type(decl->getReturnType(), ctx, e, null);
     if (!fn->rtype) fn->rtype = au_lookup("none");
@@ -835,33 +971,20 @@ static Au_t create_fn(FunctionDecl* decl, ASTContext& ctx, aether e, std::string
 }
 
 static Au_t create_namespace(NamespaceDecl* ns, ASTContext& ctx, aether e) {
-    std::string qname = ns->getQualifiedNameAsString();
-    bool is_inline = ns->isInlineNamespace();
-    symbol n = qname.c_str();
+    // stack excludes ns itself; walk inclusive, find-or-create each level
     auto s = namespace_stack(ns);
+    s.push_back(ns);
 
-    Au_t cur = aether_top_scope(e);
-    int index = 0;
-
+    Au_t cur = model_scope(e);
     for (clang::NamedDecl* ndecl: s) {
         std::string ns_name = ndecl->getNameAsString();
         symbol name = ns_name.c_str();
-        index++;
-        
         Au_t existing = _find_member(cur, name);
-
-        if (index == (int)s.size()) {
-            if (existing)
-                return existing;
-
-            return def_struct(cur, name);
-        } else {
-            verify(existing, "expected namespace: %s", name);
-            cur = existing;
-        }
+        if (!existing)
+            existing = def_struct(cur, name);
+        cur = existing;
     }
-    
-    return null;
+    return cur;
 }
 
 // ============================================================================
@@ -879,14 +1002,18 @@ public:
     bool VisitTypedefDecl(TypedefDecl* decl) {
         auto name = decl->getNameAsString();
 
-        // one C name, one model: a header reached from two imports maps once
-        if (name.length() && prior_type(name.c_str())) return true;
+        // one C name, one model — and NEVER shadow a silver-native type
+        // (std::string vs string); C models re-register per import as before
+        if (name.length()) {
+            Au_t ex = au_lookup_type(name.c_str());
+            if (ex && (import_model(ex) || !ex->is_c)) return true;
+        }
 
         // Map the underlying type (the array/struct) to our system
         Au_t underlying = map_clang_type(decl->getUnderlyingType(), ctx, e, null);
         
         if (underlying) {
-            Au_t alias = def_type(aether_top_scope(e), name.c_str(), AU_TRAIT_ALIAS | AU_TRAIT_IS_C);
+            Au_t alias = def_type(model_scope(e), name.c_str(), AU_TRAIT_ALIAS | AU_TRAIT_IS_C);
             //alias->module = e->current_import->autype;
             alias->src = underlying;
             if (underlying->typesize)
@@ -909,8 +1036,20 @@ public:
         create_namespace(ns, ctx, e);
         return true;
     }
+
+    // namespace Imf { using namespace Imf_3_4; } — publish via src link
+    bool VisitUsingDirectiveDecl(UsingDirectiveDecl* ud) {
+        auto* host = dyn_cast<NamespaceDecl>(ud->getDeclContext());
+        NamespaceDecl* target = ud->getNominatedNamespace();
+        if (!host || !target) return true;
+        Au_t h = create_namespace(host, ctx, e);
+        Au_t t = create_namespace(target, ctx, e);
+        if (h && t && !h->src) h->src = t;
+        return true;
+    }
     
     bool VisitFunctionDecl(FunctionDecl* decl) {
+        if (isa<CXXMethodDecl>(decl)) return true;
         if (!decl->getNameAsString().empty()) {
             create_fn(decl, ctx, e, get_name((NamedDecl*)decl));
         }
@@ -927,7 +1066,7 @@ public:
             QualType qt = decl->getType();
             Au_t mapped = map_clang_type(qt, ctx, e, null);
             if (!mapped) return true;
-            Au_t parent = aether_top_scope(e);
+            Au_t parent = model_scope(e);
             Au_t m = def_member(parent, n, mapped, AU_MEMBER_VAR, AU_TRAIT_IS_C);
             m->is_static = true;
         }
@@ -945,9 +1084,11 @@ public:
     bool VisitCXXRecordDecl(CXXRecordDecl* decl) {
         if (!decl->isCompleteDefinition()) return true;
         if (decl->isInjectedClassName()) return true;
+        if (decl->isDependentType()) return true;
         if (auto* spec = dyn_cast<ClassTemplateSpecializationDecl>(decl)) {
             if (spec->getSpecializationKind() != TSK_ExplicitSpecialization &&
-                spec->getSpecializationKind() != TSK_ImplicitInstantiation)
+                spec->getSpecializationKind() != TSK_ImplicitInstantiation &&
+                spec->getSpecializationKind() != TSK_ExplicitInstantiationDefinition)
                 return true;
         }
         create_class(decl, ctx, e, get_name((NamedDecl*)decl));
@@ -1147,6 +1288,31 @@ static inline llvm::Module *unwrap(LLVMModuleRef M) {
 // ============================================================================
 
 path aether_lookup_include(aether e, string include) {
+    // a device build resolves system headers in the DEVICE's sysroot, never
+    // on this machine. a header the target does not have (unistd.h on
+    // windows) then resolves to nothing and the import is skipped — the same
+    // outcome a real windows host gives, where the file simply is not there
+    if (e->target_sysroot) {
+        cstr sr = e->target_sysroot->chars;
+        bool win = e->target_triple && strstr(e->target_triple, "windows");
+        // mingw keeps one flat include tree; debian splits per-arch headers
+        std::string tri = e->target_triple ? e->target_triple : "";
+        std::string posix_tri = std::string("/usr/include/") + tri;
+        const char* subs_win[] = { "/include", null };
+        const char* subs_pos[] = { "/usr/include", posix_tri.c_str(), null };
+        const char** subs = win ? subs_win : subs_pos;
+        for (int i = 0; subs[i]; i++) {
+            path r = f(path, "%s%s/%o", sr, subs[i], include);
+            if (path_exists(r)) return r;
+        }
+        // silver's own headers still come from the install tree
+        if (e->include_paths)
+            each(e->include_paths, path, i) {
+                path r = f(path, "%o/%o", i, include);
+                if (path_exists(r)) return r;
+            }
+        return null;
+    }
     array ipaths = a(e->sys_inc_paths, e->sys_exc_paths, e->include_paths);
     if (file_exists("%o", include))
         return path(include);
@@ -1214,6 +1380,7 @@ struct import_unit {
     aether                     a;
     import                     im;
     path                       c;
+    bool                       cpp = false;
     std::string                clang_path;
     std::vector<std::string>   args;
     CompilerInstance*          ci = null;
@@ -1229,8 +1396,27 @@ static void build_unit_args(aether a, import_unit* u) {
     std::vector<std::string>& args = u->args;
     args.push_back("clang");
     args.push_back("-x");
-    args.push_back("c");
-    args.push_back("-std=c11");
+    args.push_back(u->cpp ? "c++" : "c");
+    args.push_back(u->cpp ? "-std=c++17" : "-std=c11");
+
+    // a device build must MODEL the device: parse its headers, with its
+    // triple, or ports.h hides everything behind _WIN32 and every platform
+    // ifdef in a system header takes the host's branch
+    bool cross = a->target_sysroot && a->target_triple;
+    bool win   = cross && strstr(a->target_triple, "windows") != null;
+    if (cross) {
+        args.push_back("-target");
+        args.push_back(a->target_triple);
+        cstr sr = a->target_sysroot->chars;
+        args.push_back(std::string("--sysroot=") + sr);
+        // debian keeps arch headers at /usr/include/<triple>; mingw has none
+        if (!win) {
+            args.push_back("-isystem");
+            args.push_back(std::string(sr) + "/usr/include/" + a->target_triple);
+        }
+        // mingw carries libc++, and clang will not reach for it unnamed
+        if (win && u->cpp) args.push_back("-stdlib=libc++");
+    }
     args.push_back("-D_POSIX_C_SOURCE=200809L");
 #ifdef __APPLE__
     args.push_back("-D_DARWIN_C_SOURCE");
@@ -1240,7 +1426,8 @@ static void build_unit_args(aether a, import_unit* u) {
     args.push_back("-w");
     args.push_back("-Wno-system-headers");
 
-    if (a->isystem) {
+    // cpp: driver's builtin chain orders libstdc++/libc headers (include_next)
+    if (!u->cpp && !cross && a->isystem) {
         args.push_back("-isystem");
         args.push_back(a->isystem->chars);
     }
@@ -1261,7 +1448,7 @@ static void build_unit_args(aether a, import_unit* u) {
         { "-isystem", a->sys_exc_paths }
     };
 
-    for (int i = 0, l = 2; i < l; i++) {
+    for (int i = 0, l = (u->cpp || cross) ? 0 : 2; i < l; i++) {
         symbol ident = all_paths[i].ident;
         array  paths = all_paths[i].paths;
         for (int ii = 0; ii < (paths ? paths->count : 0); ii++) {
@@ -1285,7 +1472,8 @@ static void build_unit_args(aether a, import_unit* u) {
             args.push_back(inc_path->chars);
         }
 
-    args.push_back("-nostdinc++");
+    if (!u->cpp)
+        args.push_back("-nostdinc++");
     args.push_back("-c");
     args.push_back(u->c->chars);
 }
@@ -1461,6 +1649,7 @@ static void build_macro(aether e, pending_macro& pm) {
 // an earlier import is already defined and gets reused rather than remade
 static void import_model_unit(aether e, import_unit* u) {
     aether_push_scope(e, (Au)u->im, 1);
+    e->model_scope = aether_top_scope(e);
     for (pending_item& it : u->items) {
         if (it.decl) {
             AetherDeclVisitor2 visitor(it.decl->getASTContext(), e);
@@ -1469,6 +1658,7 @@ static void import_model_unit(aether e, import_unit* u) {
             build_macro(e, u->macros[it.macro]);
         }
     }
+    e->model_scope = null;
 }
 
 // worker pool: each thread takes the next unparsed unit
@@ -1510,9 +1700,14 @@ none aether_import_includes(aether a) {
             else
                 string_concat(contents, f(string, "#define %o %o\n", i->key, i->value));
         }
+        bool is_cpp = im->is_cpp;
         each (im->include_paths, path, ipath) {
             verify(ipath && path_exists(ipath), "include path does not exist: %o", ipath);
             string_concat(contents, f(string, "#include \"%o\"\n", ipath));
+            string incl = new0(string, chars, ipath->chars);
+            if (string_ends_with(incl, ".hpp") || string_ends_with(incl, ".hh") ||
+                string_ends_with(incl, ".hxx"))
+                is_cpp = true;
         }
         // modules build concurrently; the name must be unique process-wide
         static int      tu_seq;
@@ -1522,9 +1717,10 @@ none aether_import_includes(aether a) {
         pthread_mutex_unlock(&tu_lock);
 
         import_unit* u = new import_unit();
-        u->a  = a;
-        u->im = im;
-        u->c  = f(path, "%s/silver_%i_import_%i.c", temp_dir(), (int)getpid(), tu_id);
+        u->a   = a;
+        u->im  = im;
+        u->cpp = is_cpp;
+        u->c   = f(path, "%s/silver_%i_import_%i.c", temp_dir(), (int)getpid(), tu_id);
         path_save(u->c, (Au)contents, null);
         build_unit_args(a, u);
         pool.units.push_back(u);
@@ -1541,8 +1737,26 @@ none aether_import_includes(aether a) {
     for (int i = 0; i < n_threads; i++)
         if (threads[i]) pthread_join(threads[i], null);
 
-    for (import_unit* u : pool.units)
+    for (import_unit* u : pool.units) {
         import_model_unit(a, u);
+        // C++ TUs codegen too: inline/template bodies emit weak, module links them
+        if (u->cpp) {
+            std::string cargs;
+            for (size_t ai = 1; ai < u->args.size(); ai++) {
+                cargs += " ";
+                cargs += u->args[ai];
+            }
+            path obj = f(path, "%o.o", u->c);
+            string cmd = f(string, "%o/bin/clang++ -fPIC -femit-all-decls%s -o %o",
+                a->install, cargs.c_str(), obj);
+            if (a->verbose) printf("%s\n", cmd->chars);
+            if (system(cmd->chars) == 0) {
+                if (!a->import_objects)
+                    a->import_objects = (array)hold((Au)new0(array, alloc, 8));
+                array_push(a->import_objects, (Au)obj);
+            }
+        }
+    }
 
     // import each
     each(a->imports, import, im) {

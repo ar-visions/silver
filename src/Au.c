@@ -7944,7 +7944,40 @@ static Au parse_agi_block(cstr scan, int indent, Au_t schema, Au_t meta, cstr* r
         int  nx    = agi_peek_indent(after);
 
         Au value = null;
-        if (nx > indent) {
+        // a string value may continue on deeper-indented lines. each line at
+        // the FIRST continuation indent stands on its own (kept as a newline);
+        // anything indented past that wraps the line above it, joined by a
+        // space. so a block reads as a list of commands, wrapped as you like
+        if (nx > indent && mem_type == typeid(string)) {
+            string acc = string(alloc, 256);
+            cstr   v0  = ks, v0e = re;
+            while (v0e > v0 && (v0e[-1] == ' ' || v0e[-1] == '\t')) v0e--;
+            if (v0e > v0)
+                concat(acc, string(chars, v0, ref_length, (sz)(v0e - v0)));
+            int  base = -1;
+            cstr p    = after;
+            while (*p) {
+                cstr l = p; int li = 0;
+                while (*l == '\t') { li++; l++; }
+                while (*l == ' ')  l++;
+                if (*l == '\n') { p = l + 1; continue; }
+                if (*l == 0) break;
+                if (li <= indent) break;
+                cstr e2 = l; while (*e2 && *e2 != '\n') e2++;
+                if (*l != '#') {
+                    cstr te = e2;
+                    while (te > l && (te[-1] == ' ' || te[-1] == '\t')) te--;
+                    if (te > l) {
+                        if (base < 0) base = li;
+                        if (len(acc)) append(acc, li > base ? " " : "\n");
+                        concat(acc, string(chars, l, ref_length, (sz)(te - l)));
+                    }
+                }
+                p = (*e2 == '\n') ? e2 + 1 : e2;
+            }
+            value = (Au)acc;
+            scan  = p;
+        } else if (nx > indent) {
             bool arr_member = mem &&
                 (agi_type_is_array(mem->type) || agi_type_is_array(mem->src));
             if (arr_member) {

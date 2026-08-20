@@ -381,22 +381,7 @@ char* getcwd(char* buf, size_t size) {
     return buf;
 }
 
-int mkdir(const char* path, mode_t mode) {
-    (void)mode;  // permissions are ignored on Windows
-
-    if (CreateDirectoryA(path, NULL)) {
-        return 0;
-    }
-
-    DWORD err = GetLastError();
-    switch (err) {
-        case ERROR_ALREADY_EXISTS: errno = EEXIST; break;
-        case ERROR_PATH_NOT_FOUND: errno = ENOENT; break;
-        case ERROR_ACCESS_DENIED:  errno = EACCES; break;
-        default:                   errno = EINVAL; break;
-    }
-    return -1;
-}
+// mkdir comes from the crt as _mkdir; ports.h maps the two-argument spelling
 
 static HANDLE fd_to_handle(int fd) {
     return (HANDLE)_get_osfhandle(fd);
@@ -833,9 +818,6 @@ int execvp(const char* file, char* const argv[]) {
 #include <map>
 #include <mutex>
 
-// Process ID type
-typedef int pid_t;
-
 // Signal definitions
 #define WIFEXITED(status)    (((status) & 0x7f) == 0)
 #define WEXITSTATUS(status)  (((status) >> 8) & 0xff)
@@ -1250,19 +1232,7 @@ long sysconf(int name) {
     return -1;
 }
 
-int clock_gettime(int clk, struct timespec* ts) {
-    (void)clk;
-    FILETIME ft;
-    GetSystemTimePreciseAsFileTime(&ft);
-    ULARGE_INTEGER t;
-    t.LowPart  = ft.dwLowDateTime;
-    t.HighPart = ft.dwHighDateTime;
-    // FILETIME counts 100ns ticks from 1601; rebase onto the unix epoch
-    uint64_t ns = (t.QuadPart - 116444736000000000ULL) * 100;
-    ts->tv_sec  = (time_t)(ns / 1000000000ULL);
-    ts->tv_nsec = (long)  (ns % 1000000000ULL);
-    return 0;
-}
+// clock_gettime comes from winpthreads, which mingw links by default
 
 int ftruncate(int fd, long long length) {
     return _chsize_s(fd, (__int64)length) == 0 ? 0 : -1;
@@ -1701,7 +1671,7 @@ int sigaltstack(const stack_t* ss, stack_t* old) {
     return 0;
 }
 
-ssize_t read(int fd, void* buf, size_t sz) {
+ssize_t au_read(int fd, void* buf, size_t sz) {
     // an inotify fd is ours, not the crt's -- handing it to _read trips the
     // invalid-parameter handler on every call. one event per change batch
     {
@@ -1721,7 +1691,7 @@ ssize_t read(int fd, void* buf, size_t sz) {
     return _read(fd, buf, sz);
 }
 
-ssize_t write(int fd, void* buf, size_t sz) {
+ssize_t au_write(int fd, void* buf, size_t sz) {
     return _write(fd, buf, sz);
 }
 

@@ -11,6 +11,21 @@
     M(X, Y, i, prop,     public,  map,    areas)
 declare_class(exports)
 
+// a target machine: it serves its own sysroot, so no emulation is needed.
+// capitalized because the lowercase 'device' prop below is the --device flag
+#define Device_module_ silver
+#define Device_schema(X, Y, ...) \
+    M(X, Y, i, prop,     public,  string, host) \
+    M(X, Y, i, prop,     public,  string, platform) \
+    M(X, Y, i, prop,     public,  path,   root) \
+    M(X, Y, i, prop,     public,  string, run) \
+    M(X, Y, i, prop,     public,  string, sysroot) \
+    M(X, Y, i, prop,     public,  string, exclude) \
+    M(X, Y, i, prop,     public,  string, stop) \
+    M(X, Y, i, prop,     public,  string, debugger) \
+    M(X, Y, i, prop,     public,  string, fetch)
+declare_class(Device)
+
 // Clint M. Strandhagen -- motivation for orbiter, which we design in silver
 #define silver_schema(X, Y, ...) \
     M(X, Y, i, prop,     public,  bool,   watch) \
@@ -25,6 +40,7 @@ declare_class(exports)
     M(X, Y, i, prop,     opaque,  path,   format) \
     M(X, Y, i, prop,     public,  silver, is_external) \
     M(X, Y, i, prop,     public,  silver, is_child, meta, weak) \
+    M(X, Y, i, prop,     public,  bool,   host_build) \
     M(X, Y, i, prop,     public,  map,    tree) \
     M(X, Y, i, prop,     public,  bool,   is_project) \
     M(X, Y, i, prop,     intern,  bool,   clipping) \
@@ -42,7 +58,11 @@ declare_class(exports)
     M(X, Y, i, prop,     public,  path,   import_file) \
     M(X, Y, i, prop,     public,  string, git_project) \
     M(X, Y, i, prop,     public,  string, platform) \
-    M(X, Y, i, prop,     intern,  string, docker) \
+    M(X, Y, i, prop,     public,  string, device) \
+    M(X, Y, i, prop,     public,  bool,   rsync) \
+    M(X, Y, i, prop,     public,  path,   sysroot) \
+    M(X, Y, i, prop,     public,  bool,   lldb) \
+    M(X, Y, i, prop,     intern,  Device, target) \
     M(X, Y, i, prop,     public,  string, source_raw) \
     M(X, Y, i, prop,     public,  path,   src_loc) \
     M(X, Y, i, prop,     intern,  bool,   processed_imports) \
@@ -61,7 +81,6 @@ declare_class(exports)
     M(X, Y, i, prop,     public,  string, debug_type) \
     M(X, Y, i, prop,     public,  string, debugmember) \
     M(X, Y, i, prop,     public,  string, defs_hash) \
-    M(X, Y, i, prop,     public,  path,   build_dir) \
     M(X, Y, i, prop,     public,  path,   product_link) \
     M(X, Y, i, prop,     public,  array,  artifacts) \
     M(X, Y, i, prop,     public,  path,   artifacts_path) \

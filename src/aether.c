@@ -1132,8 +1132,11 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) { sequencer
     // auto_free doesn't reclaim the backing buffer while the object lives.
     // the RES side must BE a managed allocation (shaped alloc or class) —
     // a raw pointer stored into a shaped slot has no Au header to hold
+    // a GEP is an interior address: no Au header lives there
+    bool res_is_interior = res && _llvalue((enode)res) &&
+        LLVMIsAGetElementPtrInst(_llvalue((enode)res));
     bool res_is_vector = !no_store && is_member_slot && !a->no_build &&
-        res && res->autype &&
+        res && res->autype && !res_is_interior &&
         ((res->autype->traits & AU_TRAIT_SHAPED) ||
          (is_shaped_slot && res->autype->src && res->autype->src->is_class &&
           !res->autype->src->is_c));
@@ -1450,11 +1453,21 @@ AU_EXPORT LLVMTypeRef ll_field_at(aether a, ll_field* f, int core) {
 AU_EXPORT void ll_body(aether a, etype t, ll_field* fields, int n, bool packed) {
     type_guard;
     emit_guard;
-    LLVMTypeRef* ft = calloc(n + 1, sizeof(LLVMTypeRef));
+    // C records pad to the compiler-reported ABI size (unions, skipped fields)
+    u64 want = t->autype && t->autype->is_c && t->autype->is_struct ?
+        t->autype->typesize : 0;
+    LLVMTypeRef* ft = calloc(n + 2, sizeof(LLVMTypeRef));
     for (int i = 0; i < ll_n(a); i++) {
         for (int j = 0; j < n; j++)
             ft[j] = ll_field_at(a, &fields[j], i);
-        LLVMStructSetBody((LLVMTypeRef)t->lltypes[i], ft, n, packed);
+        int nn = n;
+        if (want) {
+            LLVMTypeRef probe = LLVMStructTypeInContext(ll_ctx(a, i), ft, n, packed);
+            u64 have = LLVMABISizeOfType(ll_td(a), probe);
+            if (have < want)
+                ft[nn++] = LLVMArrayType(LLVMInt8TypeInContext(ll_ctx(a, i)), want - have);
+        }
+        LLVMStructSetBody((LLVMTypeRef)t->lltypes[i], ft, nn, packed);
     }
     free(ft);
 }
@@ -1592,6 +1605,18 @@ AU_EXPORT LLVMValueRef LLVMFetchGlobal(LLVMModuleRef module_ref, LLVMTypeRef typ
 
 // core 0 owns the storage; the other modules get a plain declaration.
 // split builds cannot use internal linkage — it becomes external+hidden.
+// PE is decided by the TARGET, not by the host we happen to run on: a
+// cross build for windows needs the import/export storage classes too
+// one process builds for one machine, and an imported model carries its own
+// aether — so the target is recorded once rather than read per instance
+static bool g_target_pe;
+
+static bool target_is_pe(aether a) {
+    if (g_target_pe) return true;
+    return a->target_triple && (strstr(a->target_triple, "windows") ||
+                                strstr(a->target_triple, "mingw"));
+}
+
 void ll_global(aether a, enode n, etype t, symbol name,
         bool external, bool reuse, bool set_init) {
     type_guard;
@@ -1606,12 +1631,11 @@ void ll_global(aether a, enode n, etype t, symbol name,
                                       LLVMAddGlobal   (m, ty, (cstr)name);
             LLVMSetLinkage(g, (external || split) ?
                 LLVMExternalLinkage : LLVMInternalLinkage);
-#ifndef _WIN32
             // elf-only: on pe the export table decides, and llvm rejects a
             // dllexport that is not default/protected visibility
-            if (!external && split) LLVMSetVisibility(g, LLVMHiddenVisibility);
-#endif
-#ifdef _WIN32
+            if (!target_is_pe(a) && !external && split)
+                LLVMSetVisibility(g, LLVMHiddenVisibility);
+            if (target_is_pe(a)) {
             // pe reaches a global defined elsewhere through its import thunk;
             // one we initialize here is ours, so it stays a definition -- and
             // ours must be exported, or an importing module cannot bind it
@@ -1624,7 +1648,7 @@ void ll_global(aether a, enode n, etype t, symbol name,
                 { if (i == 0) LLVMSetDLLStorageClass(g, LLVMDLLExportStorageClass); }
             else if (external)
                 LLVMSetDLLStorageClass(g, LLVMDLLImportStorageClass);
-#endif
+            }
             if (set_init && i == 0) LLVMSetInitializer(g, LLVMConstNull(ty));
         }
         n->values[i] = (ARef)g;
@@ -3732,6 +3756,16 @@ enode aether_e_fn_call(aether a, efunc fn, array args, bool is_super, bool is_po
 
     if (funcptr) F = LLVMFunctionType(lltype(rtype), arg_types, n_args, false);
 
+    // C++ virtual: word 0 of the object is the vtable; index the slot
+    if (fn->autype->is_cpp_virtual && index > 0 && arg_values[0]) {
+        LLVMTypeRef  pt   = LLVMPointerTypeInContext(a->module_ctx, 0);
+        LLVMValueRef vptr = LLVMBuildLoad2(B, pt, arg_values[0], "vptr");
+        LLVMValueRef vidx = LLVMConstInt(LLVMInt64TypeInContext(a->module_ctx),
+            fn->autype->member_index, false);
+        LLVMValueRef slot = LLVMBuildGEP2(B, pt, vptr, &vidx, 1, "vslot");
+        V = LLVMBuildLoad2(B, pt, slot, "vfn");
+    }
+
     LLVMValueRef R = LLVMBuildCall2(B, F, V, arg_values, index, is_void_ ? "" : call_seq);
     free(arg_values);
     free(arg_types);
@@ -3960,6 +3994,10 @@ AU_EXPORT enode convertible(etype fr, etype to) {
     if (ma->autype->is_pointer && ma->autype->src == mb->autype)
         return (enode)true;
     if (mb->autype->is_pointer && mb->autype->src == ma->autype)
+        return (enode)true;
+    // C ABI eightbyte coercion: 8-byte struct passes as one packed scalar
+    if (ma->autype->is_struct && !ma->autype->is_pointer && ma->autype->typesize == 8 &&
+        (mb->autype == typeid(u64) || mb->autype == typeid(f64)))
         return (enode)true;
     if (ma->autype->is_pointer && mb->autype->is_pointer &&
         au_ancestor(ma->autype) == au_ancestor(mb->autype))
@@ -9506,10 +9544,15 @@ AU_EXPORT none aether_build_module_initializer(aether a, enode init) {
         bool alias_to_rec = is_alias_t && tau->src &&
                             (tau->src->traits & (AU_TRAIT_CLASS | AU_TRAIT_STRUCT));
         Au_t emplace_ctx = alias_to_rec ? tau->src : tau->context;
+        // imported-but-unused C++ types never implement; register as null
+        etype ctx_t = emplace_ctx ? u(etype, emplace_ctx) : null;
+        if (ctx_t && !_lltype_slot(ctx_t)) ctx_t = null;
+        etype src_t = tau->src ? u(etype, tau->src) : null;
+        if (src_t && !_lltype_slot(src_t)) src_t = null;
         e_fn_call(a, fn_emplace, a(
             type_id,
-            emplace_ctx ? e_typeid(a, u(etype, emplace_ctx)) : e_null(a, etypeid(Au_t)),
-            tau->src     ? e_typeid(a, u(etype, tau->src))    : e_null(a, etypeid(Au_t)),
+            ctx_t ? e_typeid(a, ctx_t) : e_null(a, etypeid(Au_t)),
+            src_t ? e_typeid(a, src_t) : e_null(a, etypeid(Au_t)),
             module_type_id,
             const_string(chars, tau->ident),
             _u64(tau->member_type),
@@ -9666,10 +9709,15 @@ AU_EXPORT none aether_build_module_initializer(aether a, enode init) {
                 etype_implement(u(etype, mem->context), false);
                 enode val = (enode)u(enode, mem);
 
+                // def_enum_value keeps the box forever: hold it, or
+                // the pool reaps it and evalue reads recycled memory
+                enode boxed = e_create(a, etypeid(Au), (Au)val, false);
+                efunc fn_hold = efind(efunc, etypeid(Au), hold);
+                e_fn_call(a, fn_hold, a(boxed), false, false);
                 e_fn_call(a, fn_def_enum, a(
                     type_id,
                     const_string(chars, mem->ident),
-                    val
+                    boxed
                 ), false, false);
 
             } else if (mem->member_type == AU_MEMBER_TYPE) {
@@ -10214,8 +10262,11 @@ AU_EXPORT bool aether_emit(aether a, ARef ref_ll, ARef ref_bc) {
         for (int ci = 0; ci < ll_n(a); ci++)
             LLVMDIBuilderFinalize((LLVMDIBuilderRef)a->dbgs->origin[ci]);
 
-    *ll = form(path, "%o/build/%o.ll", a->install, a);
-    *bc = form(path, "%o/build/%o.bc", a->install, a);
+    // build_dir is per-platform: a cross build must not write its .ll
+    // beside the native one
+    path bdir = a->build_dir ? a->build_dir : form(path, "%o/build", a->install);
+    *ll = form(path, "%o/%o.ll", bdir, a);
+    *bc = form(path, "%o/%o.bc", bdir, a);
 
     bool validation_error = false;
     // dump before verbose check to catch crashes
@@ -10234,7 +10285,8 @@ AU_EXPORT bool aether_emit(aether a, ARef ref_ll, ARef ref_bc) {
         LLVMModuleRef m = ll_mod(a, ci);
         if (!module_has_body(m)) continue;
         if (LLVMVerifyModule(m, LLVMPrintMessageAction, &err)) {
-            path cl = form(path, "%o/build/%o.core%i.ll", a->install, a, ci);
+            path cdir = a->build_dir ? a->build_dir : form(path, "%o/build", a->install);
+            path cl   = form(path, "%o/%o.core%i.ll", cdir, a, ci);
             LLVMPrintModuleToFile(m, cstring(cl), &err);
             fprintf(stderr, "LLVM verify failed on core %i — dumped %s\n", ci, cstring(cl));
             fflush(stderr);
@@ -10271,6 +10323,46 @@ static bool module_has_body(LLVMModuleRef m) {
 }
 
 // extra objects for the link line, one per worker core that built code
+// point codegen at another machine: llvm is a cross compiler, so every
+// core emits objects for the device directly — no external llc step
+AU_EXPORT none aether_set_target(aether a, symbol triple) {
+    if (triple && (strstr(triple, "windows") || strstr(triple, "mingw")))
+        g_target_pe = true;
+    cstr err = NULL;
+    LLVMTargetRef tref = null;
+    char* t = strdup((cstr)triple);
+    if (LLVMGetTargetFromTriple(t, &tref, &err)) {
+        fault("no llvm target for %s: %s", triple, err ? err : "");
+        return;
+    }
+    for (int i = 0; i < AU_CORES; i++)
+        if (a->target_machines[i])
+            LLVMDisposeTargetMachine((LLVMTargetMachineRef)a->target_machines[i]);
+    a->target_triple = t;
+    a->target_ref    = tref;
+    // generic cpu and no feature string: the device names the arch, and a
+    // host-specific cpu (x86-64-v3) is meaningless anywhere else
+    // debian riscv64 is rv64gc/lp64d: without the extensions the objects
+    // come out soft-float and will not link against its crt
+    bool   rv    = strstr(t, "riscv") != NULL;
+    symbol feats = rv ? "+m,+a,+f,+d,+c" : "";
+    for (int i = 0; i < AU_CORES; i++)
+        a->target_machines[i] = (ARef)LLVMCreateTargetMachine(
+            tref, t, "generic", (cstr)feats,
+            a->debug ? LLVMCodeGenLevelNone : LLVMCodeGenLevelAggressive,
+            LLVMRelocPIC, LLVMCodeModelDefault);
+    // the object WRITER reads the module's own triple; without this it
+    // falls back to the host and emits ELF for a windows machine
+    for (int i = 0; i < AU_CORES; i++) {
+        LLVMModuleRef m = ll_mod(a, i);
+        if (!m) continue;
+        LLVMSetTarget(m, t);
+        char* dl = LLVMCopyStringRepOfTargetData(
+            LLVMCreateTargetDataLayout((LLVMTargetMachineRef)a->target_machines[i]));
+        if (dl) { LLVMSetDataLayout(m, dl); LLVMDisposeMessage(dl); }
+    }
+}
+
 AU_EXPORT string aether_core_objects(aether a, path obj_path) {
     string s = string(alloc, 128);
     for (int i = 1; i < ll_n(a); i++) {
@@ -10297,6 +10389,17 @@ static void* emit_job_run(void* arg) {
 
 // each core owns its module and target machine, so the objects emit at once
 AU_EXPORT bool aether_emit_object(aether a, path obj_path) {
+    // the object writer reads the module's triple, and a module may have been
+    // created after set_target — stamp every one right before it emits
+    for (int i = 0; i < ll_n(a); i++) {
+        LLVMModuleRef m = ll_mod(a, i);
+        if (!m || !a->target_triple) continue;
+        LLVMSetTarget(m, a->target_triple);
+        // the float ABI travels as a module flag, the way clang emits it
+        if (strstr(a->target_triple, "riscv"))
+            LLVMAddModuleFlag(m, LLVMModuleFlagBehaviorError, "target-abi", 10,
+                LLVMMDStringInContext2(ll_ctx(a, i), "lp64d", 5));
+    }
     emit_job  jobs[AU_CORES];
     pthread_t th  [AU_CORES];
     int       n = 0;
@@ -10419,18 +10522,11 @@ AU_EXPORT void llvm_reinit(aether a) {
             LLVMAddModuleFlag(m, LLVMModuleFlagBehaviorWarning,
                 "Debug Info Version", 18,
                 LLVMValueAsMetadata(LLVMConstInt(LLVMInt32TypeInContext(c), 3, 0)));
-#ifdef _WIN32
-            // coff section names cap at 8 chars, so .debug_* spills into a
-            // string table and lld warns. msvc debugging is codeview anyway,
-            // which is what the /DEBUG and /pdb: flags already expect
-            LLVMAddModuleFlag(m, LLVMModuleFlagBehaviorWarning,
-                "CodeView", 8,
-                LLVMValueAsMetadata(LLVMConstInt(LLVMInt32TypeInContext(c), 1, 0)));
-#else
+            // dwarf everywhere: mingw's debuggers read it, and codeview only
+            // ever served the msvc toolchain
             LLVMAddModuleFlag(m, LLVMModuleFlagBehaviorWarning,
                 "Dwarf Version", 13,
                 LLVMValueAsMetadata(LLVMConstInt(LLVMInt32TypeInContext(c), 4, 0)));
-#endif
         }
         a->compile_unit = (LLVMMetadataRef)a->cus->origin[0];
     }
@@ -10546,9 +10642,13 @@ AU_EXPORT enode aether_sequence_enode(aether a) {
 
 AU_EXPORT none aether_init(aether a) {
     emit_guard;
-    LLVMInitializeNativeTarget();
-    LLVMInitializeNativeAsmPrinter();
-    LLVMInitializeNativeAsmParser();
+    // every target llvm was built with, not just this machine's: a device
+    // build emits objects in-process, so its backend must be registered
+    LLVMInitializeAllTargetInfos();
+    LLVMInitializeAllTargets();
+    LLVMInitializeAllTargetMCs();
+    LLVMInitializeAllAsmPrinters();
+    LLVMInitializeAllAsmParsers();
 
     if (!a->install) {
         cstr import = getenv("IMPORT");
@@ -10577,16 +10677,12 @@ AU_EXPORT none aether_init(aether a) {
 
 
 #ifdef _WIN32
-    a->sys_inc_paths = a(
-        f(path, "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.44.35207/include"),
-        f(path, "C:/Program Files (x86)/Windows Kits/10/Include/10.0.22621.0/um"),
-        f(path, "C:/Program Files (x86)/Windows Kits/10/Include/10.0.22621.0/ucrt"),
-        f(path, "C:/Program Files (x86)/Windows Kits/10/Include/10.0.22621.0/shared"));
-    a->lib_paths = a(
-        f(path, "%o/bin"),
-        f(path, "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.44.35207/lib/x64"),
-        f(path, "C:/Program Files (x86)/Windows Kits/10/Lib/10.0.22621.0/ucrt/x64"),
-        f(path, "C:/Program Files (x86)/Windows Kits/10/Lib/10.0.22621.0/um/x64"));
+    // mingw's own tree, laid out by bootstrap beside the toolchain — kept
+    // apart from install/include, which holds silver's installed headers
+    a->sys_inc_paths = a(f(path, "%o/sysroot/include", a->install));
+    a->lib_paths     = a(f(path, "%o/bin", a->install),
+                         f(path, "%o/lib", a->install),
+                         f(path, "%o/sysroot/lib", a->install));
 #elif defined(__linux)
     a->sys_inc_paths = a(f(path, "/usr/include"), f(path, "/usr/include/x86_64-linux-gnu"));
     a->lib_paths     = array(alloc, 32);
@@ -10668,6 +10764,14 @@ AU_EXPORT none enode_init(enode n) {
         if (!fn) {
             fn = (enode)efunc(mod, a, autype, n->autype->context);
             etype_implement((etype)fn, false);
+        }
+        if (!_llvalue((enode)fn) && _lltype_slot((etype)fn)) {
+            // extern fn not yet declared (lazy declare also at e_operand)
+            cstr fname = fn->autype->alt ? fn->autype->alt : fn->autype->ident;
+            LLVMValueRef fv = LLVMGetNamedFunction(a->module_ref, fname);
+            if (!fv)
+                fv = LLVMAddFunction(a->module_ref, fname, _lltype_slot((etype)fn));
+            if (fv) _llvalue_set((enode)fn, fv);
         }
         _llvalue_set((enode)n, LLVMGetParam(_llvalue((enode)fn), n->arg_index + offset));
         // for explicit ref parameters (e.g. `src: ref u8`), the LLVM arg IS the pointer —
@@ -11336,6 +11440,24 @@ static unsigned math_intrinsic_id(aether a, int op, LLVMTypeRef ty) {
         { LLVMLookupIntrinsicID("llvm.pow.f32", 13),   LLVMLookupIntrinsicID("llvm.pow.f64", 13) },
     };
     return ids[op][is_f32 ? 0 : 1];
+}
+
+// mingw spells setjmp as a macro over the caller's frame address, and llvm
+// carries the intrinsic that supplies it
+AU_EXPORT enode aether_e_frameaddress(aether a, enode level) {
+    emit_guard;
+    if (a->no_build) return e_noop(a, etypeid(ARef));
+    LLVMTypeRef  i8ptr = LLVMPointerTypeInContext(a->module_ctx, 0);
+    unsigned     iid   = LLVMLookupIntrinsicID("llvm.frameaddress", 17);
+    LLVMTypeRef  ov[]  = { i8ptr };
+    LLVMValueRef fn    = LLVMGetIntrinsicDeclaration(a->module_ref, iid, ov, 1);
+    LLVMTypeRef  i32t  = LLVMInt32TypeInContext(a->module_ctx);
+    LLVMTypeRef  fty   = LLVMFunctionType(i8ptr, &i32t, 1, 0);
+    enode        lv    = e_create(a, etypeid(i32), (Au)level, false);
+    if (!lv->loaded && is_prim(lv->autype)) lv = e_load(a, lv, null);
+    LLVMValueRef args[] = { _llvalue(lv) };
+    LLVMValueRef res = LLVMBuildCall2(B, fty, fn, args, 1, "frameaddr");
+    return with_value(res, enode(mod, a, autype, typeid(ARef), loaded, true));
 }
 
 AU_EXPORT enode aether_e_math(aether a, i32 op, enode val) {

@@ -1,59 +1,14 @@
 #include <import>
 
-#include <OpenEXR/ImfRgbaFile.h>
-#include <OpenEXR/ImfArray.h>
-#include <OpenEXR/ImfInputFile.h>
-#include <OpenEXR/ImfHeader.h>
-
-#include <opencv2/core.hpp>
-#include <opencv2/imgproc.hpp>
-
 // silver free functions are not emitted into the generated header
 extern "C" Image jpeg_decode(path uri);
+extern "C" Image exr_decode(path uri);
 
 // read Images without conversion; for .png and .exr
 // this facilitates grayscale maps, environment color, 
 // color maps, grayscale components for various PBR material attributes
 
 extern "C" {
-
-// save gray or colored png based on channel count; if we want conversion we may just use methods to alter an object
-i32 Image_exr(Image a, path uri) {
-    string e = path_ext(uri);
-    if (string_eq(e, "exr")) {
-        using namespace OPENEXR_IMF_NAMESPACE;
-        using namespace IMATH_NAMESPACE;
-        using namespace Imf;
-
-        if (a->format != Pixel_rgbaf32)
-            assert(!"Only Pixel_rgbaf32 supported for EXR save");
-
-        int width  = a->width;
-        int height = a->height;
-        f32* data  = (f32*)Au_vdata((Au)a); // assumes planar RGBA32F
-
-        Array2D<Rgba> pixels;
-        pixels.resizeErase(height, width); // [y][x]
-
-        int index = 0;
-        for (int y = 0; y < height; ++y) {
-            for (int x = 0; x < width; ++x) {
-                Rgba px;
-                px.r = data[index++];
-                px.g = data[index++];
-                px.b = data[index++];
-                px.a = data[index++];
-                pixels[y][x] = px;
-            }
-        }
-
-        RgbaOutputFile out(uri->chars, width, height, WRITE_RGBA);
-        out.setFrameBuffer(&pixels[0][0], 1, width);
-        out.writePixels(height);
-        return 1;
-    }
-    return 0;
-}
 
 shape shape_from(i64, i64*);
 Au alloc2(Au_t type, Au_t scalar, shape s, const char* source, int line, int seq);
@@ -123,49 +78,19 @@ none Image_init(Image a) {
         info->data    = Au_hold(src_header->data);
         a->pixels     = src->pixels;
     } else if (string_eq(ext, "exr")) {
-        using namespace OPENEXR_IMF_NAMESPACE;
-        using namespace IMATH_NAMESPACE;
-        using namespace Imath;
-        using namespace Imf;
-
-        RgbaInputFile ifile(uri);
-        Imath::Box2i dw = ifile.dataWindow();
-
-        int width  = dw.max.x - dw.min.x + 1;
-        int height = dw.max.y - dw.min.y + 1;
-
-        a->width = width;
-        a->height = height;
-        a->channels = 4;
-        a->format = Pixel_rgbaf32;
+        // decode lives in silver (exr_decode in img.ag); adopt its pixels
+        Image src = exr_decode(a->uri);
+        assert (src);
+        Au src_header = header((Au)src);
+        a->width      = src->width;
+        a->height     = src->height;
+        a->channels   = 4;
+        a->format     = Pixel_rgbaf32;
         a->pixel_size = sizeof(f32) * a->channels;
-
-        int total_floats = width * height * 4;
-
-        i64 dims[] = { height, width, sizeof(f32) };
-        f32* data = (f32*)alloc2((Au_t)_typeid(rgbaf), (Au_t)_typeid(f32), shape_from(3, dims), __FILE__, __LINE__, 0);
-
-        Imf::Array2D<Rgba> pixels;
-        pixels.resizeErase(height, width); // [y][x] format
-
-        ifile.setFrameBuffer(&pixels[0][0] - dw.min.x - dw.min.y * width, 1, width);
-        ifile.readPixels(dw.min.y, dw.max.y);
-
-        int index = 0;
-        for (int y = 0; y < height; ++y) {
-            for (int x = 0; x < width; ++x) {
-                const Imf::Rgba& px = pixels[y][x];
-                data[index++] = px.r;
-                data[index++] = px.g;
-                data[index++] = px.b;
-                data[index++] = px.a;
-            }
-        }
-
-        info->count = total_floats;
-        info->scalar = (Au_t)_typeid(f32);
-        info->data = Au_hold((Au)data);
-        a->pixels = (u8*)data;
+        info->count   = src_header->count;
+        info->scalar  = src_header->scalar;
+        info->data    = Au_hold(src_header->data);
+        a->pixels     = src->pixels;
     } else if (string_eq(ext, "png")) {
         FILE* file = fopen(uri, "rb");
         if (!file) {
@@ -224,109 +149,4 @@ none Image_init(Image a) {
         a->pixels = (u8*)data;
     }
 }
-
-int type_from_format(int channels, bool f32) {
-    int   type        =
-        channels == 1 ? (f32 ? CV_32FC1 : CV_8UC1) :
-        channels == 3 ? (f32 ? CV_32FC3 : CV_8UC3) :
-                        (f32 ? CV_32FC4 : CV_8UC4);
-    return type;
-}
-
-void opencv_resize_area(uint8_t* src, uint8_t* dst, int f32, int in_w, int in_h, int channels, int out_w, int out_h) {
-    // Convert to OpenCV Mat
-    int   type = type_from_format(channels, f32);
-    cv::Mat input_mat(in_h, in_w, type, src);  // Assuming grayscale, adjust CV_8UC3 for RGB
-    cv::Mat output_mat(out_h, out_w, type, dst);
-
-    // Perform resizing using OpenCV's INTER_AREA (better for downscaling)
-    cv::resize(input_mat, output_mat, cv::Size(out_w, out_h), 0, 0, cv::INTER_AREA);
-}
-
-void opencv_gaussian(uint8_t* src, uint8_t* dst, int f32, int w, int h, int channels, float amount) {
-    float sigma       = amount;
-    int   type        = type_from_format(channels, f32);
-    cv::Mat input_mat (h, w, type, src);
-    cv::Mat output_mat(h, w, type, dst);
-    cv::GaussianBlur  (input_mat, output_mat, cv::Size(0, 0), sigma);
-
-}
-
-// we want to reduce the Image to w / (amount / 3)
-// then we blur with a 3x kernel
-// then resize?
-
-void opencv_gaussian_fast(uint8_t* src, uint8_t* dst, int f32, int w, int h, int channels, float amount) {
-    float sigma       = amount;
-    int   type        = type_from_format(channels, f32);
-    cv::Mat input_mat (h, w, type, src);
-
-    // assume input is a cv::Mat (src) of type CV_8UC3 or CV_32FC3
-    cv::Mat small_mat(h / (amount / 3), w / (amount / 3), type);
-    cv::Mat blur_mat(h / (amount / 3), w / (amount / 3), type);
-
-    // 1. downscale aggressively (e.g., 1/8th size)
-    cv::resize(input_mat, small_mat, small_mat.size(), cv::INTER_AREA);
-
-    // 2. apply light gaussian blur (optional, can be skipped for even faster path)
-    cv::GaussianBlur(small_mat, blur_mat, cv::Size(5, 5), 1.0);
-
-    cv::Mat output_mat(h, w, type, dst);
-
-    // 3. upscale back to original size
-    cv::resize(blur_mat, output_mat, output_mat.size(), 0, 0, cv::INTER_LANCZOS4);
-}
-
-void blur_equirect_wrap_rgbaf(float* input, int w, int h, float sigma_base) {
-    float* temp = (float*)malloc(w * h * 4 * sizeof(float)); // output buffer
-
-    int max_radius = (int)(sigma_base * 3);
-    float* kernel = (float*)malloc((2 * max_radius + 1) * sizeof(float));
-
-    for (int y = 0; y < h; ++y) {
-        float v = (y + 0.5f) / h;
-        float scale = powf(sinf(v * M_PI), 0.22f);
-        float sigma = fmaxf(0.01f, sigma_base * scale);
-        int radius = (int)(sigma * 3);
-        int ksize = 2 * radius + 1;
-
-        // create gaussian kernel
-        float sum = 0;
-        for (int i = -radius; i <= radius; ++i) {
-            float w = expf(-0.5f * (i * i) / (sigma * sigma));
-            kernel[i + radius] = w;
-            sum += w;
-        }
-        for (int i = 0; i < ksize; ++i) kernel[i] /= sum;
-
-        for (int x = 0; x < w; ++x) {
-            float result[4] = {0};
-
-            for (int ky = -radius; ky <= radius; ++ky) {
-                int sy = (y + ky + h) % h;
-                for (int kx = -radius; kx <= radius; ++kx) {
-                    int sx = (x + kx + w) % w;
-                    float* src = &input[4 * (sy * w + sx)];
-                    float weight = kernel[ky + radius] * kernel[kx + radius];
-                    for (int c = 0; c < 4; ++c)
-                        result[c] += src[c] * weight;
-                }
-            }
-
-            float* dst = &temp[4 * (y * w + x)];
-            for (int c = 0; c < 4; ++c)
-                dst[c] = result[c];
-        }
-    }
-
-    memcpy(input, temp, w * h * 4 * sizeof(float));
-    free(temp);
-    free(kernel);
-}
-
-
-void opencv_blur_equirect(uint8_t* input, int w, int h) {
-    blur_equirect_wrap_rgbaf((float*)input, w, h, 22.0f);
-}
-
 }
