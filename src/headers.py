@@ -140,7 +140,7 @@ def sync_installed_header(paths, name):
     """keep <import>/include/<name> identical to src/<name>
 
     bootstrap.sh SYMLINKS this one, so unix is always current. bootstrap.bat
-    can only COPY it, so on windows every edit to src/ports.h went stale until
+    can only COPY it, so on windows every edit to src/posix.h went stale until
     the next bootstrap -- and the stale copy is what the compiler reads.
     """
     src = os.path.join(project_path, 'src', name)
@@ -564,10 +564,10 @@ def main():
     # Process utility headers (.h files)
     process_utility_headers(paths)
 
-    # modules that build OUTSIDE this tree include <ports.h> from the install
-    # tree, so that copy must track src/ports.h on every build, not just on
+    # modules that build OUTSIDE this tree include <posix.h> from the install
+    # tree, so that copy must track src/posix.h on every build, not just on
     # bootstrap
-    sync_installed_header(paths, 'ports.h')
+    sync_installed_header(paths, 'posix.h')
     
     # Process modules (files without extension)
     process_modules(paths)

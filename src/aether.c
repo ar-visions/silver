@@ -7,7 +7,7 @@
 #include <llvm-c/Analysis.h>
 #include <llvm-c/TargetMachine.h>
 #include <llvm-c/BitWriter.h>
-#include <ports.h>
+#include <posix.h>
 #include <stddef.h>
 
 typedef LLVMMetadataRef LLVMScope;
@@ -3061,7 +3061,7 @@ AU_EXPORT enode aether_e_expect_end(aether a, enode ctx, enode msg) {
         if (!stderr_fn)
             stderr_fn = LLVMAddGlobal(a->module_ref, i8ptr, llvm_id(a, stderr_sym));
 #ifdef _WIN32
-            // the ucrt has no such symbol of its own; ports.cc exports one
+            // the ucrt has no such symbol of its own; posix.cc exports one
             LLVMSetDLLStorageClass(stderr_fn, LLVMDLLImportStorageClass);
 #endif
         LLVMValueRef stderr_val = LLVMBuildLoad2(B, i8ptr, stderr_fn, "stderr_val");
@@ -3077,7 +3077,7 @@ AU_EXPORT enode aether_e_expect_end(aether a, enode ctx, enode msg) {
         if (!stdout_g)
             stdout_g = LLVMAddGlobal(a->module_ref, i8ptr, llvm_id(a, stdout_sym));
 #ifdef _WIN32
-            // the ucrt has no such symbol of its own; ports.cc exports one
+            // the ucrt has no such symbol of its own; posix.cc exports one
             LLVMSetDLLStorageClass(stdout_g, LLVMDLLImportStorageClass);
 #endif
         LLVMValueRef stdout_val = LLVMBuildLoad2(B, i8ptr, stdout_g, "stdout_val");
@@ -3441,11 +3441,28 @@ AU_EXPORT none enode_inspect(enode a) {
 AU_EXPORT enode aether_lambda_fcall(aether a, efunc mem, array user_args) {
     // a variable holding a lambda carries `fn` on its TYPE, not on the var
     Au_t mem_type = au_arg_type((Au)mem->autype);
-    // lambda type member (lambda ReturnType[Args]) — simple function pointer call
+    Au_t decl_lam = null;
     if (!find_member(mem_type, "vfn", AU_MEMBER_VAR, 0, false)) {
-        // treat as function pointer call
-        mem->autype->is_funcptr = true;
-        return e_fn_call(a, mem, user_args, false, false);
+        // a slot DECLARED `lambda R [ A ]` holds an instance of the lambda
+        // class: its own type has the signature but no members, so retype
+        // the value to lambda and keep the signature for the args
+        if (mem_type && mem_type->is_lambda) {
+            decl_lam = mem_type;
+            // a class member is a SLOT holding the instance; an argument
+            // already is the instance. only the slot needs loading
+            bool slot = mem->autype->member_type == AU_MEMBER_VAR &&
+                        mem->autype->context && is_rec(mem->autype->context);
+            LLVMValueRef lv = _llvalue((enode)mem);
+            if (slot)
+                lv = LLVMBuildLoad2(B, LLVMPointerTypeInContext(a->module_ctx, 0),
+                        lv, "lambda_slot");
+            mem = (efunc)with_value(lv,
+                enode(mod, a, autype, typeid(lambda), loaded, true));
+        } else {
+            // a plain function pointer: call it directly
+            mem->autype->is_funcptr = true;
+            return e_fn_call(a, mem, user_args, false, false);
+        }
     }
 
     // declared lambda instance — access fn and ctx. lambda is a class, so a
@@ -3453,15 +3470,18 @@ AU_EXPORT enode aether_lambda_fcall(aether a, efunc mem, array user_args) {
     enode inst       = mem->loaded ? (enode)mem : enode_value((enode)mem, false);
     efunc fn_ptr     = (efunc)enode_value(access(inst, string("vfn")), false);
     enode ctx_ptr    = enode_value(access(inst, string("context")), false);
-    etype rtype      = u(etype, mem->meta_a);
+    etype rtype      = u(etype, decl_lam ? (Au)decl_lam->rtype : mem->meta_a);
     enode lambda_fn  = u(enode, mem->autype->src);
+    if (rtype) mem->meta_a = hold((Au)rtype->autype);
 
     array args = array(alloc, 32, assorted, true);
 
     push(args, (Au)ctx_ptr);
     // vfn is an untyped callback: coerce each arg to the func's own
     // parameter type, or it boxes and the callee reads a pointer
-    Au_t lfn = lambda_fn ? lambda_fn->autype : (Au_t)mem->meta_b;
+    // a declared slot carries the signature on its own type
+    Au_t lfn = decl_lam ? decl_lam :
+               lambda_fn ? lambda_fn->autype : (Au_t)mem->meta_b;
     int  ai  = 0;
     each(user_args, Au, arg) {
         enode n = (enode)arg;
@@ -3776,15 +3796,15 @@ enode aether_e_fn_call(aether a, efunc fn, array args, bool is_super, bool is_po
         while (fp && !fp->is_funcptr && fp->src) fp = fp->src;
         rtype_au = fp->rtype;
     }
-    bool is_void_ = is_void(rtype_au);
-
-
     char call_seq[256];
     sprintf(call_seq, "call_%i_%s", seq, fn->autype->ident);
     // a call through a lambda's vfn carries its return type in meta_a
     etype rtype = (is_lambda(fn) || (funcptr && fn->meta_a)) ?
-        u(etype, fn->meta_a) :
-        u(etype, rtype_au);
+        u(etype, fn->meta_a) : null;
+    if (!rtype) rtype = u(etype, rtype_au);
+    // void-ness must come from the type the call is BUILT with, or a
+    // void call gets a result name and fails the verifier
+    bool is_void_ = is_void(rtype ? rtype->autype : rtype_au);
     if (rtype && fn->autype->meta.a)
         rtype = etype(mod, a, autype, rtype->autype,
             meta_a, (Au)fn->autype->meta.a);

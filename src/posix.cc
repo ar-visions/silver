@@ -8,7 +8,7 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
-#include <ports.h>
+#include <posix.h>
 
 #include <time.h>
 #include <fcntl.h>
@@ -60,7 +60,7 @@ int inotify_close(int fd) {
 #include <stdlib.h>
 #include <string.h>
 #include <signal.h>   // the crt's, for the signals it can raise
-#include <ports.h>
+#include <posix.h>
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <dbghelp.h>
@@ -381,7 +381,7 @@ char* getcwd(char* buf, size_t size) {
     return buf;
 }
 
-// mkdir comes from the crt as _mkdir; ports.h maps the two-argument spelling
+// mkdir comes from the crt as _mkdir; posix.h maps the two-argument spelling
 
 static HANDLE fd_to_handle(int fd) {
     return (HANDLE)_get_osfhandle(fd);
@@ -825,7 +825,7 @@ int execvp(const char* file, char* const argv[]) {
 #define WTERMSIG(status)     ((status) & 0x7f)
 
 // Signal numbers (Windows doesn't have all POSIX signals)
-// signal numbers come from ports.h and the crt
+// signal numbers come from posix.h and the crt
 
 // Process group management - simplified for Windows
 int setpgid(pid_t pid, pid_t pgid) {
@@ -1589,7 +1589,7 @@ int memfd_create(const char* name, unsigned int flags) {
     return fd;
 }
 
-// environ is an alias for the crt's live block; see ports.h
+// environ is an alias for the crt's live block; see posix.h
 
 // ---- sigaction ------------------------------------------------------------
 // mapped onto the crt's signal() for the six signals windows actually raises.
@@ -2314,7 +2314,7 @@ void backtrace_symbols_fd(void* const* buffer, int size, int fd) {
 #include <sys/wait.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#include <ports.h>
+#include <posix.h>
 #define _timeval_ timeval
 
 int inotify_close(int fd) {

@@ -7,8 +7,8 @@ import <math.h>
     -lm
 
 ifdef [ windows ]
-    # ports.h carries the posix surface windows has no header for
-    import <ports.h>
+    # posix.h carries the posix surface windows has no header for
+    import <posix.h>
 el
     import <unistd.h>
     import <pthread.h>

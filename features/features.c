@@ -7,6 +7,20 @@ int c_scale(int a, int b) {
     return a * b;
 }
 
+#include <stdio.h>
+#include <unistd.h>
+
+/* resident memory in KB — a 10MB block is mmap'd, so a real free
+   returns it to the OS and this number falls */
+long c_rss_kb(void) {
+    FILE* f = fopen("/proc/self/statm", "r");
+    if (!f) return 0;
+    long total = 0, res = 0;
+    if (fscanf(f, "%ld %ld", &total, &res) != 2) res = 0;
+    fclose(f);
+    return res * (sysconf(_SC_PAGESIZE) / 1024);
+}
+
 /* takes a silver string as cstr, returns its length */
 int c_len(const char* s) {
     int n = 0;

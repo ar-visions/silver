@@ -1,6 +1,6 @@
 #include <import>
 #include <limits.h>
-#include <ports.h>      // on windows this is the whole posix surface
+#include <posix.h>      // on windows this is the whole posix surface
 #ifndef _WIN32
 #include <execinfo.h>
 #include <sys/file.h>   // flock — serialize external-checkout builds across processes
@@ -18,7 +18,7 @@ none au_expanding_push(Au_t m);
 none au_expanding_pop();
 enode e_convert_or_cast(aether a, etype output, enode input);
 
-etype etype_prep(silver, Au_t);
+etype etype_prep(aether, Au_t);
 enode aether_e_frameaddress(aether, enode);
 enode parse_statements(silver a);
 enode parse_statement(silver a);
@@ -479,7 +479,7 @@ static bool is_sdk_lib(cstr nm) {
 static string resolve_versioned_lib(silver a, string nm) {
 #ifdef _WIN32
     if (is_sdk_lib((cstr)nm->chars)) return nm;
-    // the crt covers these, or ports.cc does; there is no such .lib here
+    // the crt covers these, or posix.cc does; there is no such .lib here
     static symbol none[] = {"m","c","dl","pthread","util","ncurses","tinfo",
                             "stdc++","c++","c++abi","objc","System",0};
     for (int i = 0; none[i]; i++)
@@ -1861,7 +1861,7 @@ static path build_silver_host(silver a) {
     cstr host_libs = "-isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk -lglfw3 -lm -framework Cocoa -framework IOKit -framework CoreFoundation -framework CoreGraphics -framework QuartzCore";
 #elif defined(_WIN32)
     // glfw's win32 backend; no dl/X11/m here
-    // -lAu: the posix shims (dlopen, backtrace, basename, ...) live in ports.obj
+    // -lAu: the posix shims (dlopen, backtrace, basename, ...) live in posix.obj
     cstr host_libs = "-lAu -lglfw3 -lgdi32 -lopengl32 -luser32 -lkernel32 -lshell32";
 #else
     cstr host_libs = "-ldl -lglfw3 -lX11 -lm";
@@ -2338,7 +2338,7 @@ AU_EXPORT void silver_init(silver a) {
                  is_dir(f(path, "%o/usr/lib64", sysroot)))
                 exec(false, "ln -sfn usr/lib64 %o/lib64", sysroot);
         }
-        // the header parse must see the DEVICE's headers: ports.h hides its
+        // the header parse must see the DEVICE's headers: posix.h hides its
         // whole surface behind _WIN32, which a host parse never defines
         ((aether)a)->target_sysroot = hold(sysroot);
         // write the device's toolchain files now, so every build system has
@@ -2837,6 +2837,15 @@ AU_EXPORT void silver_init(silver a) {
             aether_emit_recover();
             mtime = current_time();
             a->error = true;
+            // an import builds on its own thread; unwinding past the locks
+            // it held leaves the importer waiting on them forever. a failed
+            // one-shot build ends the process instead of hanging it
+            if (a->is_external && is_once) {
+                fprintf(stderr, "[%s] build failed\n",
+                    a->name ? a->name->chars : "?");
+                fflush(stderr); fflush(stdout);
+                _exit(1);
+            }
         }
         finally()
         // --format: cap THIS build's map (header→sections→end) so the reader can frame each
@@ -4655,7 +4664,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
         // C fixed-size array: read N elements of the element type
         if (mdl_expect && mdl_expect->autype->elements > 0 && mdl_expect->autype->src) {
             etype elem_type = u(etype, mdl_expect->autype->src);
-            if (!elem_type) elem_type = (etype)etype_prep((silver)a, mdl_expect->autype->src);
+            if (!elem_type) elem_type = (etype)etype_prep((aether)a, mdl_expect->autype->src);
             array elems = array(alloc, mdl_expect->autype->elements);
             while (!next_is(a, "]")) {
                 enode elem = parse_expression(a, elem_type, true, true);
@@ -6300,7 +6309,7 @@ static etype read_named_model(silver a) {
             pop_tokens(a, found_au != null);
             if (!found_au) found_au = plain_au;
         }
-        mdl = found_au ? etype_prep(a, found_au) : null;
+        mdl = found_au ? etype_prep((aether)a, found_au) : null;
         if (instanceof(mdl, evar)) {
             pop_tokens(a, false);
             return null;
@@ -6376,9 +6385,17 @@ etype read_etype(silver a, array* p_expr) { sequencer
             if (alpha) {
                 Au_t au = lexical_traits(a->lexical, cstring(alpha), AU_TRAIT_STRUCT, 0);
                 if (au)
-                    mdl = (etype)etype_prep((silver)a, au);
+                    mdl = (etype)etype_prep((aether)a, au);
             }
         } else if (read_if(a, "lambda")) {
+            // `lambda fname [ ctx ]` instances one from a func — that is
+            // an expression, not a type; leave it for read_enode
+            string l_pk  = peek_alpha(a);
+            Au_t   l_pau = l_pk ? lexical(a->lexical, cstring(l_pk)) : null;
+            if (l_pau && l_pau->member_type != AU_MEMBER_TYPE) {
+                pop_tokens(a, false);
+                return null;
+            }
             // lambda ReturnType [ ArgTypes ]
             etype rtype = read_etype(a, null);
             if (!rtype) rtype = etypeid(none);
@@ -7230,7 +7247,7 @@ static symbol core_warn =
 // type-info globals never leave the dll. SILVER names the install root ON
 // THE DEVICE, not here
 static bool build_core_module(silver a, symbol mod, path lib_dir, path objs,
-                              string tgt, string ldld, path tools, string deps) {
+                              string tgt, string ldld, string tools, string deps) {
     path implib = f(path, "%o/lib%s.dll.a", lib_dir, mod);
     if (file_exists("%o", implib)) return true;
     print("[%s] building for the device", mod);
@@ -7253,7 +7270,7 @@ static bool build_core_module(silver a, symbol mod, path lib_dir, path objs,
 // the app imported needs its own build for the device. built once, beside its
 // sysroot; returns the import libs to hand the module link
 static bool ensure_core_runtime(silver a, path install, symbol triple,
-                                string tgt, string ldld, path tools, string core_lib) {
+                                string tgt, string ldld, string tools, string core_lib) {
     path lib_dir = f(path, "%s/platform/%o/lib", SILVER, target_dir(a));
     path objs    = f(path, "%s/platform/%o/build", SILVER, target_dir(a));
     make_dir(lib_dir);
@@ -7265,7 +7282,7 @@ static bool ensure_core_runtime(silver a, path install, symbol triple,
     if (!file_exists("%o", au_lib)) {
         print("[Au] building the runtime for %s", triple);
         path au_o = f(path, "%o/Au.obj",     objs);
-        path po_o = f(path, "%o/ports.obj",  objs);
+        path po_o = f(path, "%o/posix.obj",  objs);
         path at_o = f(path, "%o/atomic.obj", objs);
         string inc = f(string,
             "-I %s/install/build/src/Au -I %s/src -I %s/install/build/src -I %s/install/include",
@@ -7274,7 +7291,7 @@ static bool ensure_core_runtime(silver a, path install, symbol triple,
                                 "-DAU_LINK_Au=__attribute__\\(\\(dllexport\\)\\)");
         if (exec(a->verbose, "%o/clang %o %s -c %s/src/Au.c -o %o %o %o",
                  tools, tgt, core_warn, SILVER, au_o, inc, defs) != 0) return false;
-        if (exec(a->verbose, "%o/clang++ %o %s %s -c %s/src/ports.cc -o %o %o %o",
+        if (exec(a->verbose, "%o/clang++ %o %s %s -c %s/src/posix.cc -o %o %o %o",
                  tools, tgt, platform_abi_cxx(a), core_warn, SILVER, po_o, inc, defs) != 0) return false;
         // generic atomics: linux has libatomic, windows has nothing — compiler-rt
         // carries the implementation and we already vendor its source
@@ -7595,7 +7612,7 @@ none silver_build_product(silver a) {
             bool   is_cpp   = is_cpp_source_ext(a, ext);
             cstr   compiler = is_cpp ? "clang++" : "clang";
             cstr   std_flag = is_cpp ? "-std=c++17" : "-std=c11";
-            cstr   cxx_abi  = is_cpp ? platform_abi_cxx(a) : "";
+            symbol cxx_abi  = is_cpp ? platform_abi_cxx(a) : "";
             cstr   lang_flag = source_lang_flag(a, ext);
             string st       = stem(i);
             verify(exec(a->verbose, "%o/%s %o%s %s%s %o %s -c %o -o %o -I%o/include/%o -I%o/include -I%o/include/Au",
@@ -8095,16 +8112,22 @@ static enode parse_lambda_call(silver a, efunc mem) {
     // an inferred var holds the lambda class: the func rides in meta_b
     if (!src_fn && mem->meta_b)
         src_fn = u(efunc, (Au_t)mem->meta_b);
+    // no bracket: the lambda is handed over, not called
+    if (!next_is(a, "["))
+        return (enode)mem;
     if (!src_fn) {
-        // lambda type member (declared as lambda ReturnType[Args]) — args are on the au directly
-        int n_args = mem->autype->args.count;
+        // declared `lambda ReturnType [ Args ]` — a member or argument
+        // keeps that signature on its TYPE, not on the slot itself
+        Au_t lt = au_arg_type((Au)mem->autype);
+        if (!lt || !lt->args.count) lt = mem->autype;
+        int n_args = lt->args.count;
         bool br = false;
         validate(n_args == 0 || (br = read_if(a, "[") != null) || a->expr_level == 0,
             "expected bracket for lambda call");
         a->expr_level++;
         array call_values = array(alloc, 32);
         for (int i = 0; i < n_args; i++) {
-            Au_t arg = (Au_t)mem->autype->args.origin[i];
+            Au_t arg = (Au_t)lt->args.origin[i];
             etype arg_type = u(etype, arg);
             enode arg_expr = parse_expression(a, arg_type, false, true);
             verify(arg_expr, "invalid lambda argument");
@@ -9495,7 +9518,7 @@ enode silver_build_attrib_value(silver a, evar var) {
     array init_tokens = (array)var->initializer;
     if (!len(init_tokens)) return null;
     push_tokens((aether)a, (tokens)init_tokens, 0);
-    etype attrib_type = etype_prep(a, var->autype->src);
+    etype attrib_type = etype_prep((aether)a, var->autype->src);
     enode constructed = parse_expression(a, attrib_type, false, true);
     pop_tokens((aether)a, false);
     return constructed;
@@ -10654,7 +10677,7 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
                     if (mem && mem->src) {
                         mdl_field = u(etype, mem->src);
                         if (!mdl_field)
-                            mdl_field = (etype)etype_prep((silver)a, mem->src);
+                            mdl_field = (etype)etype_prep((aether)a, mem->src);
                         // propagate the member's meta so parse_expression sees
                         // the right element type (e.g. models: array Model → meta_a=Model).
                         // check both mem->meta_a (direct) and mem->autype->meta.a.
@@ -10764,7 +10787,7 @@ enode silver_parse_member_expr(silver a, enode mem, bool in_ref) { sequencer
         if (al && is_func((Au)al)) {
             // the aliased function may have no etype yet; prep builds one
             etype alias = u(etype, al);
-            if (!alias) alias = etype_prep(a, al);
+            if (!alias) alias = etype_prep((aether)a, al);
             if (alias) {
                 mem      = (enode)alias;
                 is_macro = null;
@@ -11081,10 +11104,10 @@ enode silver_parse_assignment(silver a, enode mem, OPType op_val, bool is_const)
         push_tokens(a, (tokens)key_tokens, 0);
         // coerce to the key type, as the read path does — else they hash apart.
         // an alias (`byname : map i64 [string]`) carries meta on its type
-        Au_t key_au = mem->meta_b ? (Au_t)mem->meta_b : mem->autype->meta.b;
+        Au_t key_au = mem->meta_b ? (Au_t)mem->meta_b : (Au_t)mem->autype->meta.b;
         if (!key_au) {
             Au_t mt = au_arg_type((Au)mem->autype);
-            if (mt) key_au = mt->meta.b;
+            if (mt) key_au = (Au_t)mt->meta.b;
         }
         enode key = parse_expression(a, u(etype, key_au), false, true);
         pop_tokens(a, false);

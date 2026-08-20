@@ -1,5 +1,9 @@
 #include <import>
 
+// this module asserts the C++ way: one expression, no message
+#undef assert
+#include <cassert>
+
 // silver free functions are not emitted into the generated header
 extern "C" Image jpeg_decode(path uri);
 extern "C" Image exr_decode(path uri);
