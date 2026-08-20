@@ -91,9 +91,9 @@ set "PATH=%BUILD%;%NATIVE%\bin;%NATIVE%\bin\perl\bin;%PATH%"
 powershell -NoProfile -Command ^
   "$p=[Environment]::GetEnvironmentVariable('PATH','User'); if ($null -eq $p) { $p='' }; $bin='%NATIVE%\bin'; if (-not $p.ToLower().Contains($bin.ToLower())) { [Environment]::SetEnvironmentVariable('PATH', '%BUILD%;'+$bin+';'+$p, 'User'); Write-Host 'added silver PATH to the user environment (open a new shell to pick it up)' }"
 
-:: Au's ports.h must be reachable as <ports.h> by modules that build OUTSIDE the
+:: Au's posix.h must be reachable as <posix.h> by modules that build OUTSIDE the
 :: src tree (e.g. foundry\dbg) -- copy it into the install include dir
-copy /Y "%SILVER%\src\ports.h" "%NATIVE%\include\ports.h" >nul
+copy /Y "%SILVER%\src\posix.h" "%NATIVE%\include\posix.h" >nul
 copy /Y "%SILVER%\src\undefcpp.h" "%NATIVE%\include\undefcpp.h" >nul
 
 :: ---------------- dbg ----------------

@@ -14,7 +14,7 @@
 #include <pty.h>
 #include <termios.h>
 #endif
-#include <ports.h>  // windows has neither header; the pty shims live here
+#include <posix.h>  // windows has neither header; the pty shims live here
 
 #define m(...) map_of(_N_ARGS_m(m, ## __VA_ARGS__), null)
 #define a(...) array_of(_N_ARGS_a(a, ## __VA_ARGS__), null)

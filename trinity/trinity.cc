@@ -482,9 +482,9 @@ HOST_API int  agent_sock_ask(const char* nm, const char* ln, char* o, int c) { r
 // pipe/dup2/thread, which ports supplies on windows too — and without it a
 // windows run leaves no log at all.
 #ifdef _WIN32
-#include <ports.h>   // supplies the pthread api too, so no <pthread.h> here
+#include <posix.h>   // supplies the pthread api too, so no <pthread.h> here
 // declared here, NOT via <io.h>: that header also declares read/write with the
-// crt's own signature, which collides with the ones ports.h just gave us
+// crt's own signature, which collides with the ones posix.h just gave us
 HOST_API intptr_t _get_osfhandle(int fd);
 #else
 #include <unistd.h>

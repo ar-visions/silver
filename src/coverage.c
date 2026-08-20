@@ -7,7 +7,7 @@
 #include <llvm-c/Analysis.h>
 #include <llvm-c/TargetMachine.h>
 #include <llvm-c/BitWriter.h>
-#include <ports.h>
+#include <posix.h>
 #include <stddef.h>
 #include <time.h>
 

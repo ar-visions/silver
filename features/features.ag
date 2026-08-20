@@ -24,7 +24,7 @@ import https://raw.githubusercontent.com/ar-visions/silver/master/LICENSE
     > cp {import_file} {install}/share/features/data/fetched.txt
 
 ifdef [ windows ]                   # platform-gated import
-    import <ports.h>
+    import <posix.h>
 ifndef [ windows ]                  # ifndef is the negated form
     import <unistd.h>
 
@@ -185,17 +185,21 @@ class Holder
     public named : map i64 [ string ]
 
 class Stepper
-    public start : i64
+    public start   : i64
+    # a lambda type is written inline: return type, then arg types
+    public on_step : lambda i64 [ i64 ]
 
     # :: opens contextual args — that is what makes it a lambda.
     # reach it with lambda s.step_twice[ base ], never by name
     func step_twice [ n: i64 :: base: i64 ] -> i64
         return n * 2 + base
 
+
 # a bodyless func is implemented in the companion named for the module
 intern func c_add   [ i32, i32 ] -> i32          # features.c
 intern func c_scale [ i32, i32 ] -> i32
 intern func c_len   [ cstr ] -> i32              # silver string in
+intern func c_rss_kb [] -> i64                   # resident memory, KB
 intern func c_fill  [ @i32, i32, i32 ] -> none   # writes through a ref
 intern func cc_mul  [ i32, i32 ] -> i32          # features.cc
 intern func cc_pow2 [ i32 ] -> i32
@@ -209,6 +213,36 @@ func takes_any [ v: any ] -> bool   # any accepts every object
 
 func sum_pair [ a: i64, b: i64 ] -> i64
     return a + b
+
+# a lambda as an ARGUMENT, typed inline
+func apply_step [ fn: lambda i64 [ i64 ], n: i64 ] -> i64
+    return fn[ n ]
+
+# 10MB rides in the lambda's context; it must go when the lambda does
+intern payload_dropped : i64
+
+class Payload
+    public data : new i8 [ 10485760 ]   # ten megabytes onboard
+
+    func touch [] -> i64
+        for [ k: i64 0, k < 10485760, k += 4096 ]
+            data[ k ] = 7               # make the pages resident
+        return 1
+
+    func dealloc []
+        payload_dropped += 1
+
+func hold_big [ i: i64 :: big: Payload ] -> i64
+    return big.touch[] + i
+
+func make_and_drop [] -> i64
+    p  : Payload [ ]                # born at refs 0, on the auto-free list
+    fn : lambda hold_big[ p ]       # the context holds it: refs 1
+    return fn[ 1 ]
+
+func plain_scope [] -> i64          # same payload, no lambda involved
+    p : Payload [ ]
+    return p.touch[] + 1
 
 # ---- build-time: export func runs during the BUILD, then exits ----
 # this is how scenes instances its resources: bake once, ship the
@@ -559,7 +593,25 @@ expect func t_lambda [] -> bool
     s: Stepper [ start: 1 ]
     f: lambda s.step_twice[ base ]  # bind the contextual args
     r: f[ 4 ]                       # call it: 4 * 2 + 100
-    return r == 108 && s.start == 1
+    p: apply_step[ f, 6 ]           # handed to a function
+    s.on_step = f                   # stored on a class member
+    m: s.on_step[ 5 ]               # and called back through it
+    # a bare mention hands the lambda over; a call always brackets
+    return r == 108 && s.start == 1 && p == 112 && m == 110
+
+expect func t_lambda_ctx_drop [] -> bool
+    before: c_rss_kb[]
+    r: make_and_drop[]              # 10MB rides in the lambda context
+    Au.auto_free[ false ]           # drain: Au frees at refs 0 on drain
+    after: c_rss_kb[]
+    grew: i64 [ after - before ]
+    # the drain reaps the lambda at refs 0; its dealloc drops the
+    # context, the context drops the payload, the 10MB unmaps
+    freed_ctx: i64 [ payload_dropped ]
+    q: plain_scope[]                # the same payload with no lambda
+    Au.auto_free[ false ]
+    reaped: i64 [ payload_dropped - freed_ctx ]
+    return r == 2 && q == 2 && freed_ctx == 1 && reaped == 1 && grew < 2048
 
 expect func t_companions [] -> bool
     r1: c_add[ 40, 2 ]              # .c companion

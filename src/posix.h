@@ -503,7 +503,7 @@ AU_EXPORT int     pipe_select(int nfds, _fd_set_* readfds, _fd_set_* writefds, _
 
 
 // ---- posix surface windows lacks ------------------------------------------
-// merged here rather than shadowing system headers: sources include <ports.h>
+// merged here rather than shadowing system headers: sources include <posix.h>
 
 #ifndef SIGHUP
 #define SIGHUP   1
