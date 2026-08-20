@@ -12,6 +12,8 @@ checkout
 sdk
 build
 .notes
+# machine-specific device list: aliases, target roots
+devices.agi
 .chatgpt
 .claude
 .gemini

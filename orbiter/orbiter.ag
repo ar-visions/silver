@@ -1,7 +1,6 @@
-# hello
-export 0.8.8
+export 1.0.0
 export views ['git': FileType.ascii, 'b16': FileType.agnostic]
-# import silver modules
+
 import vec
 import img
 import gltf
@@ -30,6 +29,9 @@ ifdef [ apple ]
 ifdef [ linux ]
     import <pty.h>
         -lutil
+ifdef [ windows ]
+    import <ports.h>    # declares forkpty, which always fails here
+
 
 # import our own sub-modules
 import FileIcons
@@ -1244,7 +1246,7 @@ element orbiter : trinity # implements compiler
     # restored caret/selection, applied once each editor loads
     intern pending_sel   : array string
     # the status bar's center toggle: scene-only viewing
-    intern hide_ui       : bool
+    public hide_ui       : bool
     public findbar_text  : string
     intern find_last_query : string
     intern find_last_scope : string
@@ -1595,8 +1597,9 @@ element orbiter : trinity # implements compiler
         # restore the selected project
         if [ st.target && st.target.count > 0 ]
             active_target = st.target
-        # restore the backdrop scene + stepper positions
-        if [ st.scene && st.scene.count > 0 ]
+        # restore the backdrop scene + stepper positions; an explicit
+        # --scene_load beats whatever the last session left behind
+        if [ st.scene && st.scene.count > 0 && (!scene_load || scene_load.count == 0) ]
             scene_load = st.scene
             scene_load.hold[]
             sl9 : array string [ scene_list[] ]
@@ -2412,13 +2415,18 @@ element orbiter : trinity # implements compiler
             ncls : array string [ 'finder_close' ]
             nclo : array string [ 'close' ]
             els['histnav'] = TButtons [ buttons: ncls, icon_ids: nclo, manual: true,
-                icon_scale: 0.45, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0,
+                disable_mask: 0,
+                icon_scale: 0.585, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0,
                 area: Region [ 'l0+ t0 w1.8 h0.9' ] ]
         # editing only: cmd+left / cmd+right as clickable history arrows
         if [ !engaged && !is_resource ]
             nnav : array string [ 'nav_back', 'nav_fwd' ]
             nico : array string [ 'left', 'right' ]
+            ndm : i32 [ 0 ]
+            if [ !edp9 || !edp9.nav || !edp9.nav.can_back[] ]    ndm |= 1
+            if [ !edp9 || !edp9.nav || !edp9.nav.can_forward[] ] ndm |= 2
             els['histnav'] = TButtons [ buttons: nnav, icon_ids: nico, manual: true,
+                disable_mask: ndm,
                 icon_scale: 0.45, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0,
                 area: Region [ 'l0+ t0 w1.8 h0.9' ] ]
 
@@ -4805,3 +4813,4 @@ element orbiter : trinity # implements compiler
                         e9.anchor_col  = ac9
                         e9.ensure_caret_visible[]
                     pending_sel[i9] = ''
+

@@ -2181,6 +2181,11 @@ class Pipeline
                     
                     expect meta_type, "meta data not set on Surface/extension"
                     all: Surface_resources[ enum_type, enum_value, meta_type, a ]
+                    if [ all.count != 1 ]
+                        puts 'BINDCHK {mem.ident} value={enum_value} count={all.count} nsamplers={samplers.count}'
+                        for [ img2: Image, nm2: string ] in samplers
+                            puts 'BINDCHK   sampler key {nm2} -> {Au.evalue[ enum_type, nm2.chars ]}'
+                        puts 'BINDCHK enum {enum_type.ident}: 0={Au.estring[ enum_type, 0 ]} 1={Au.estring[ enum_type, 1 ]}'
                     expect all.count == 1, "binding arrays (count > 1) not supported in this code path"
                     res: Gpu [ all[0] ]
                     expect res inherits Gpu, "expected Gpu resource"

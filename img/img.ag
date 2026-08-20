@@ -1,16 +1,3 @@
-import AcademySoftwareFoundation:Imath/c0396a0
-    -I{install}/include/Imath
-    -I{install}/include/OpenEXR
-    { (windows) ?? '-DIMATH_DLL' }
-
-import opencv:opencv/1c39583
-    -I{install}/include/opencv4
-    -lopencv_core -lopencv_imgproc
-
-import AcademySoftwareFoundation:openexr/0b83825
-    -DBUILD_SHARED_LIBS=ON
-    -lOpenEXR -lOpenEXRCore -lOpenEXRUtil
-
 import madler:zlib/51b7f2a <zlib.h>
     -DCMAKE_POLICY_VERSION_MINIMUM=3.5
     -lz
@@ -108,6 +95,173 @@ class Font
         uri = u
 
 
+# ---- EXR ------------------------------------------------------------------
+# the scanline half form is a header, an offset table, and deflated blocks,
+# so it is written here rather than through a library
+
+EXR_ROWS  : i32 [ 16 ]
+EXR_NONE  : i32 [ 0 ]
+EXR_ZIPS  : i32 [ 1 ]
+EXR_ZIP   : i32 [ 3 ]
+EXR_HALF  : i32 [ 1 ]
+EXR_FLOAT : i32 [ 2 ]
+
+# a parameter has no address of its own, so each copies to a local first
+func exr_u32 [ f: handle, v: u32 ] -> none
+    t : u32 [ v ]
+    fwrite[ @t, 4, 1, f ]
+
+func exr_u64 [ f: handle, v: u64 ] -> none
+    t : u64 [ v ]
+    fwrite[ @t, 8, 1, f ]
+
+func exr_i32 [ f: handle, v: i32 ] -> none
+    t : i32 [ v ]
+    fwrite[ @t, 4, 1, f ]
+
+func exr_f32 [ f: handle, v: f32 ] -> none
+    t : f32 [ v ]
+    fwrite[ @t, 4, 1, f ]
+
+func exr_name [ f: handle, s: string ] -> none
+    fputs s.chars, f
+    fputc 0, f
+
+func exr_attr [ f: handle, n: string, t: string, nb: i32 ] -> none
+    exr_name f, n
+    exr_name f, t
+    exr_i32  f, nb
+
+# name, HALF, pLinear + 3 reserved, then x/y sampling
+func exr_channel [ f: handle, n: string ] -> none
+    exr_name f, n
+    exr_i32  f, EXR_HALF
+    exr_i32  f, 0
+    exr_i32  f, 1
+    exr_i32  f, 1
+
+# denormals flush to zero; images never carry them meaningfully
+func f32_to_half [ v: f32 ] -> u16
+    fv   : f32 [ v ]
+    x    : u32 [ 0 ]
+    memcpy[ @x, @fv, 4 ]
+    sign : u32 [ (x >> 16) & 0x8000 ]
+    m    : u32 [ x & 0x7fffff ]
+    e    : i32 [ i32[ (x >> 23) & 0xff ] - 112 ]
+    if [ e <= 0 ]  return u16[ sign ]
+    if [ e >= 31 ] return u16[ sign | 0x7c00 ]
+    return u16[ sign | (u32[ e ] << 10) | (m >> 13) ]
+
+func half_to_f32 [ hv: u16 ] -> f32
+    hu   : u32 [ u32[ hv ] ]
+    sign : u32 [ (hu & 0x8000) << 16 ]
+    e    : u32 [ (hu >> 10) & 0x1f ]
+    m    : u32 [ hu & 0x3ff ]
+    bits : u32 [ sign ]
+    if [ e == 31 ]
+        bits = sign | 0x7f800000 | (m << 13)
+    el [ e != 0 ]
+        bits = sign | ((e + 112) << 23) | (m << 13)
+    out : f32 [ 0.0 ]
+    memcpy[ @out, @bits, 4 ]
+    return out
+
+# whole-image conversion, 8 samples per instruction. f16c is baseline on
+# every x86_64 that runs windows 11, and neon carries fcvtn
+func f32_to_half_n [ src: @f32, dst: @u16, n: i32 ] -> none
+    n8 : i32 [ 0 ]
+    if [ x86_64 || arm64 ] n8 = (n / 8) * 8
+    for [ i: i32 0, i < n8, i += 8 ]
+        s_off : i64 [ i * 4 ]
+        d_off : i64 [ i * 2 ]
+        asm x86_64
+            vmovups ymm0, ymmword ptr [src + s_off]
+            vcvtps2ph xmmword ptr [dst + d_off], ymm0, 0
+        asm arm64
+            add x9, src, s_off
+            add x10, dst, d_off
+            ldp q0, q1, [x9]
+            fcvtn v2.4h, v0.4s
+            fcvtn2 v2.8h, v1.4s
+            str q2, [x10]
+    for [ i: i32 n8, i < n, i += 1 ]
+        dst[ i ] = f32_to_half[ src[ i ] ]
+
+func half_to_f32_n [ src: @u16, dst: @f32, n: i32 ] -> none
+    n8 : i32 [ 0 ]
+    if [ x86_64 || arm64 ] n8 = (n / 8) * 8
+    for [ i: i32 0, i < n8, i += 8 ]
+        s_off : i64 [ i * 2 ]
+        d_off : i64 [ i * 4 ]
+        asm x86_64
+            vcvtph2ps ymm0, xmmword ptr [src + s_off]
+            vmovups ymmword ptr [dst + d_off], ymm0
+        asm arm64
+            add x9, src, s_off
+            add x10, dst, d_off
+            ldr q0, [x9]
+            fcvtl v1.4s, v0.4h
+            fcvtl2 v2.4s, v0.8h
+            stp q1, q2, [x10]
+    for [ i: i32 n8, i < n, i += 1 ]
+        dst[ i ] = half_to_f32[ src[ i ] ]
+
+# split even/odd bytes, then delta the result -- what zip blocks carry
+func exr_pack [ src: @u8, dst: @u8, n: i32 ] -> none
+    h : i32 [ (n + 1) / 2 ]
+    a : i32 [ 0 ]
+    b : i32 [ h ]
+    for [ i: i32 0, i < n, i += 2 ]
+        dst[ a ] = src[ i ]
+        a += 1
+    for [ i: i32 1, i < n, i += 2 ]
+        dst[ b ] = src[ i ]
+        b += 1
+    p : i32 [ i32[ dst[ 0 ] ] ]
+    for [ i: i32 1, i < n, i += 1 ]
+        c : i32 [ i32[ dst[ i ] ] ]
+        d : i32 [ c - p + 384 ]
+        p = c
+        dst[ i ] = u8[ d & 0xff ]
+
+# the inverse: undo the delta, then interleave the halves back
+func exr_unpack [ src: @u8, dst: @u8, n: i32 ] -> none
+    for [ i: i32 1, i < n, i += 1 ]
+        d : i32 [ i32[ src[ i - 1 ] ] + i32[ src[ i ] ] - 128 ]
+        src[ i ] = u8[ d & 0xff ]
+    h : i32 [ (n + 1) / 2 ]
+    a : i32 [ 0 ]
+    b : i32 [ h ]
+    for [ i: i32 0, i < n, i += 2 ]
+        dst[ i ] = src[ a ]
+        a += 1
+    for [ i: i32 1, i < n, i += 2 ]
+        dst[ i ] = src[ b ]
+        b += 1
+
+func exr_rname [ f: handle ] -> string
+    b : local i8 [ 256 ]
+    i : i32 [ 0 ]
+    while [ true ]
+        c : i32 [ fgetc[ f ] ]
+        if [ c <= 0 ] break
+        if [ i < 255 ]
+            b[ i ] = i8[ c ]
+            i += 1
+    b[ i ] = 0
+    return string[ @b[ 0 ] ]
+
+func exr_ri32 [ f: handle ] -> i32
+    v : i32 [ 0 ]
+    fread[ @v, 4, 1, f ]
+    return v
+
+func exr_ru64 [ f: handle ] -> u64
+    v : u64 [ 0 ]
+    fread[ @v, 8, 1, f ]
+    return v
+
+
 class Image
     uri:            path
     surface:        Surface
@@ -139,7 +293,108 @@ class Image
     construct [ i:string ]
         uri = path i
 
-    func exr [ path ] -> i32
+    func exr [ u: path ] -> i32
+        e : u.ext[]
+        if [ e != 'exr' ] return 0
+        check format == Pixel.rgbaf32, 'Only Pixel_rgbaf32 supported for EXR save'
+        src : @f32 vdata[]
+        w : i32 [ width ]
+        h : i32 [ height ]
+        expect file : fopen [ u, "wb" ],
+            'could not open file for writing: {u}'
+
+        exr_u32 file, 0x01312f76
+        exr_u32 file, 2
+
+        # channels are stored alphabetically, so A B G R
+        exr_attr file, 'channels', 'chlist', 73
+        exr_channel file, 'A'
+        exr_channel file, 'B'
+        exr_channel file, 'G'
+        exr_channel file, 'R'
+        fputc 0, file
+
+        exr_attr file, 'compression', 'compression', 1
+        fputc EXR_ZIP, file
+        exr_attr file, 'dataWindow', 'box2i', 16
+        exr_i32 file, 0
+        exr_i32 file, 0
+        exr_i32 file, w - 1
+        exr_i32 file, h - 1
+        exr_attr file, 'displayWindow', 'box2i', 16
+        exr_i32 file, 0
+        exr_i32 file, 0
+        exr_i32 file, w - 1
+        exr_i32 file, h - 1
+        exr_attr file, 'lineOrder', 'lineOrder', 1
+        fputc 0, file
+        exr_attr file, 'pixelAspectRatio', 'float', 4
+        exr_f32 file, 1.0
+        exr_attr file, 'screenWindowCenter', 'v2f', 8
+        exr_f32 file, 0.0
+        exr_f32 file, 0.0
+        exr_attr file, 'screenWindowWidth', 'float', 4
+        exr_f32 file, 1.0
+        fputc 0, file
+
+        # one chunk per 16 scanlines, each holding A B G R rows in turn
+        rowb   : i32 [ w * 2 ]
+        blockb : i32 [ rowb * 4 * EXR_ROWS ]
+        bound  : i32 [ blockb + blockb / 100 + 128 ]
+        nchunk : i32 [ (h + EXR_ROWS - 1) / EXR_ROWS ]
+        capb   : i32 [ nchunk * (bound + 8) ]
+        raw    : @u8  [ new u8  [ blockb ] ]
+        zsrc   : @u8  [ new u8  [ blockb ] ]
+        cbuf   : @u8  [ new u8  [ capb ] ]
+        csize  : @i32 [ new i32 [ nchunk ] ]
+        cused  : i32 [ 0 ]
+
+        # convert the whole image once, contiguously: the per-scanline pass
+        # then only moves halves, and the convert vectorizes end to end
+        nsamp : i32 [ w * h * 4 ]
+        hall  : @u16 [ new u16 [ nsamp ] ]
+        f32_to_half_n[ src, hall, nsamp ]
+
+        for [ c: i32 0, c < nchunk, c += 1 ]
+            y0 : i32 [ c * EXR_ROWS ]
+            ny : i32 [ h - y0 ]
+            if [ ny > EXR_ROWS ] ny = EXR_ROWS
+            nb : i32 [ rowb * 4 * ny ]
+            o  : i32 [ 0 ]
+            rd : @u16 raw
+            for [ r: i32 0, r < ny, r += 1 ]
+                base : i32 [ (y0 + r) * w * 4 ]
+                # A B G R within a scanline: rgba lanes in reverse
+                for [ ch: i32 0, ch < 4, ch += 1 ]
+                    lane : i32 [ 3 - ch ]
+                    for [ x: i32 0, x < w, x += 1 ]
+                        rd[ o ] = hall[ base + x * 4 + lane ]
+                        o += 1
+            exr_pack[ raw, zsrc, nb ]
+            dlen : uLongf [ uLongf[ bound ] ]
+            rc : i32 [ compress2[ @cbuf[ cused ], @dlen, zsrc, uLong[ nb ], 6 ] ]
+            check rc == 0, 'exr: deflate failed'
+            used : i32 [ i32[ dlen ] ]
+            # a block that did not shrink is stored as-is; readers detect it
+            if [ used >= nb ]
+                memcpy @cbuf[ cused ], raw, i64[ nb ]
+                used = nb
+            csize[ c ] = used
+            cused += used
+
+        # offsets are known only now: the table sits between header and data
+        pos : i64 [ ftell[ file ] + i64[ nchunk * 8 ] ]
+        for [ c: i32 0, c < nchunk, c += 1 ]
+            exr_u64 file, u64[ pos ]
+            pos += i64[ 8 + csize[ c ] ]
+        off : i32 [ 0 ]
+        for [ c: i32 0, c < nchunk, c += 1 ]
+            exr_i32 file, c * EXR_ROWS
+            exr_i32 file, csize[ c ]
+            fwrite @cbuf[ off ], 1, i64[ csize[ c ] ], file
+            off += csize[ c ]
+        fclose file
+        return 1
 
     func init    [ ] 
 
@@ -273,41 +528,64 @@ class Image
         if [ width == out_w && height == out_h ]
             return copy[]
         
-        scale_x : float width / out_w
-        scale_y : float height / out_h
-
         output  : Image
             width    :out_w,
             height   :out_h,
             :format, :surface, :channels
 
-        src  : @u8 vdata[]
-        src2 : @u8 vdata[]
-        src3 : @u8 vdata[]
-        dst  : @u8 output.vdata[]
+        # each destination pixel averages the source rect it covers,
+        # weighted by how much of each source pixel falls inside it
+        is_f : bool [ format == Pixel.rgbaf32 || format == Pixel.f32 ]
+        nc   : i32 [ channels ]
+        sx   : f32 [ f32[ width ]  / f32[ out_w ] ]
+        sy   : f32 [ f32[ height ] / f32[ out_h ] ]
+        srcb : @u8  vdata[]
+        dstb : @u8  output.vdata[]
+        srcf : @f32 vdata[]
+        dstf : @f32 output.vdata[]
+        acc  : @f32 [ new f32 [ nc ] ]
 
-        opencv_resize_area
-            src,      dst,   format == Pixel.rgbaf32,
-            width,    height,
-            channels, out_w, out_h
-        
-        return output
-
-    func gaussian[ amount:float ] -> Image
-        if [ amount < 0.1f ]
-            return copy[]
-        
-        output : Image
-            :width,  :height,
-            :format, :surface, :channels
-
-        src : @u8 vdata[]
-        dst : @u8 output.vdata[]
-
-        opencv_gaussian
-            src, dst, (format == Pixel.rgbaf32 || format == Pixel.f32),
-            width, height, channels, amount
-        
+        for [ dy: i32 0, dy < out_h, dy += 1 ]
+            fy0 : f32 [ f32[ dy ] * sy ]
+            fy1 : f32 [ f32[ dy + 1 ] * sy ]
+            iy0 : i32 [ i32[ floor[ fy0 ] ] ]
+            iy1 : i32 [ i32[ ceil [ fy1 ] ] ]
+            if [ iy0 < 0 ] iy0 = 0
+            if [ iy1 > height ] iy1 = height
+            for [ dx: i32 0, dx < out_w, dx += 1 ]
+                fx0 : f32 [ f32[ dx ] * sx ]
+                fx1 : f32 [ f32[ dx + 1 ] * sx ]
+                ix0 : i32 [ i32[ floor[ fx0 ] ] ]
+                ix1 : i32 [ i32[ ceil [ fx1 ] ] ]
+                if [ ix0 < 0 ] ix0 = 0
+                if [ ix1 > width ] ix1 = width
+                for [ c: i32 0, c < nc, c += 1 ]
+                    acc[ c ] = 0.0
+                wsum : f32 [ 0.0 ]
+                for [ syi: i32 iy0, syi < iy1, syi += 1 ]
+                    wy : f32 [ min[ fy1, f32[ syi + 1 ] ] - max[ fy0, f32[ syi ] ] ]
+                    if [ wy <= 0.0 ] continue
+                    for [ sxi: i32 ix0, sxi < ix1, sxi += 1 ]
+                        wx : f32 [ min[ fx1, f32[ sxi + 1 ] ] - max[ fx0, f32[ sxi ] ] ]
+                        if [ wx <= 0.0 ] continue
+                        w  : f32 [ wx * wy ]
+                        si : i32 [ (syi * width + sxi) * nc ]
+                        for [ c: i32 0, c < nc, c += 1 ]
+                            if [ is_f ]
+                                acc[ c ] += w * srcf[ si + c ]
+                            el
+                                acc[ c ] += w * f32[ srcb[ si + c ] ]
+                        wsum += w
+                if [ wsum <= 0.0 ] wsum = 1.0
+                di : i32 [ (dy * out_w + dx) * nc ]
+                for [ c: i32 0, c < nc, c += 1 ]
+                    v : f32 [ acc[ c ] / wsum ]
+                    if [ is_f ]
+                        dstf[ di + c ] = v
+                    el
+                        if [ v < 0.0 ]   v = 0.0
+                        if [ v > 255.0 ] v = 255.0
+                        dstb[ di + c ] = u8[ v + 0.5 ]
         return output
 
 
@@ -369,15 +647,6 @@ class Image
         row : @u8 vdata[]
         return @row [ pixel_size * width * y ]
 
-
-# all 4 opencv functions implemented in img.cc
-func opencv_resize_area[@u8, @u8, int, int, int, int, int, int] 
-
-func opencv_gaussian[@u8, @u8, int, int, int, int, float] 
-
-func opencv_gaussian_fast[@u8, @u8, int, int, int, int , float] 
-
-func opencv_blur_equirect[@u8, int, int] 
 
 
 # ---------------------------------------------------------------
@@ -788,6 +1057,132 @@ class JpegDec
                 dst[ o + x * 4 + 3 ] = u8[ 255 ]
 
 # decode a baseline jpeg into an rgba8 Image; null when unsupported
+func exr_decode [ u: path ] -> Image
+    f : handle [ fopen[ '{u}', 'rb' ] ]
+    if [ !f ] return null
+    if [ exr_ri32[ f ] != 0x01312f76 ]
+        fclose f
+        return null
+    exr_ri32 f
+
+    comp : i32 [ EXR_ZIP ]
+    x0   : i32 [ 0 ]
+    y0   : i32 [ 0 ]
+    x1   : i32 [ 0 ]
+    y1   : i32 [ 0 ]
+    nch  : i32 [ 0 ]
+    cty  : @i32 [ new i32 [ 8 ] ]
+    lane : @i32 [ new i32 [ 8 ] ]
+
+    while [ true ]
+        an : exr_rname[ f ]
+        if [ an == '' ] break
+        exr_rname[ f ]
+        asz : i32 [ exr_ri32[ f ] ]
+        if [ an == 'channels' ]
+            while [ true ]
+                cn : exr_rname[ f ]
+                if [ cn == '' ] break
+                ct : i32 [ exr_ri32[ f ] ]
+                exr_ri32[ f ]
+                exr_ri32[ f ]
+                exr_ri32[ f ]
+                if [ nch < 8 ]
+                    cty[ nch ] = ct
+                    l : i32 [ 0 - 1 ]
+                    if [ cn == 'R' ] l = 0
+                    if [ cn == 'G' ] l = 1
+                    if [ cn == 'B' ] l = 2
+                    if [ cn == 'A' ] l = 3
+                    lane[ nch ] = l
+                    nch += 1
+        el [ an == 'compression' ]
+            comp = i32[ fgetc[ f ] ]
+        el [ an == 'dataWindow' ]
+            x0 = exr_ri32[ f ]
+            y0 = exr_ri32[ f ]
+            x1 = exr_ri32[ f ]
+            y1 = exr_ri32[ f ]
+        el
+            fseek[ f, i64[ asz ], SEEK_CUR ]
+
+    if [ comp != EXR_NONE && comp != EXR_ZIPS && comp != EXR_ZIP ]
+        fclose f
+        return null
+
+    w : i32 [ x1 - x0 + 1 ]
+    h : i32 [ y1 - y0 + 1 ]
+    if [ w <= 0 || h <= 0 || nch == 0 ]
+        fclose f
+        return null
+
+    rows : i32 [ 1 ]
+    if [ comp == EXR_ZIP ] rows = EXR_ROWS
+
+    # a scanline holds every channel in turn, each w samples wide
+    linb : i32 [ 0 ]
+    for [ c: i32 0, c < nch, c += 1 ]
+        bpp : i32 [ 2 ]
+        if [ cty[ c ] == EXR_FLOAT ] bpp = 4
+        linb += w * bpp
+
+    nchunk : i32 [ (h + rows - 1) / rows ]
+    blockb : i32 [ linb * rows ]
+    raw    : @u8 [ new u8 [ blockb ] ]
+    packed : @u8 [ new u8 [ blockb ] ]
+    frow   : @f32 [ new f32 [ w ] ]
+
+    im   : Image [ width: w, height: h, format: Pixel.rgbaf32, channels: 4 ]
+    dst  : @f32 im.vdata[]
+    has_a : bool [ false ]
+    for [ c: i32 0, c < nch, c += 1 ]
+        if [ lane[ c ] == 3 ] has_a = true
+
+    # the offset table restates what a sequential read already knows
+    fseek f, i64[ nchunk * 8 ], SEEK_CUR
+
+    for [ c: i32 0, c < nchunk, c += 1 ]
+        cy : i32 [ exr_ri32[ f ] ]
+        sz : i32 [ exr_ri32[ f ] ]
+        ny : i32 [ h - (cy - y0) ]
+        if [ ny > rows ] ny = rows
+        nb : i32 [ linb * ny ]
+        if [ sz == nb ]
+            fread[ raw, 1, i64[ nb ], f ]
+        el
+            fread[ packed, 1, i64[ sz ], f ]
+            dlen : uLongf [ uLongf[ nb ] ]
+            rc : i32 [ uncompress[ raw, @dlen, packed, uLong[ sz ] ] ]
+            if [ rc != 0 ]
+                fclose[ f ]
+                return null
+            memcpy[ packed, raw, i64[ nb ] ]
+            exr_unpack[ packed, raw, nb ]
+        # a channel's row is contiguous, so convert it whole, then scatter
+        o : i32 [ 0 ]
+        for [ r: i32 0, r < ny, r += 1 ]
+            row : i32 [ (cy - y0 + r) * w * 4 ]
+            for [ ci: i32 0, ci < nch, ci += 1 ]
+                l   : i32 [ lane[ ci ] ]
+                bpp : i32 [ 2 ]
+                if [ cty[ ci ] == EXR_FLOAT ] bpp = 4
+                if [ l >= 0 ]
+                    if [ bpp == 2 ]
+                        hs : @u16 raw
+                        half_to_f32_n[ @hs[ o / 2 ], frow, w ]
+                    el
+                        fs : @f32 raw
+                        memcpy[ frow, @fs[ o / 4 ], i64[ w * 4 ] ]
+                    for [ x: i32 0, x < w, x += 1 ]
+                        dst[ row + x * 4 + l ] = frow[ x ]
+                o += bpp * w
+    fclose f
+    if [ !has_a ]
+        n : i32 [ w * h ]
+        for [ i: i32 0, i < n, i += 1 ]
+            dst[ i * 4 + 3 ] = 1.0
+    return im
+
 func jpeg_decode [ uri: path ] -> Image
     f : handle [ fopen[ '{uri}', 'rb' ] ]
     if [ !f ] return null

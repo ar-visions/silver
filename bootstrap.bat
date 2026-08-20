@@ -38,14 +38,14 @@ set "IMPORT=%SILVER%\install"
 set "BUILD=%IMPORT%\build"
 
 :: ---------------- arch ----------------
+:: mingw-w64, never msvc: it is the same toolchain a cross build from linux
+:: uses, and the itanium c++ abi silver's own c++ import mangles
 if /i "%PROCESSOR_ARCHITECTURE%"=="ARM64" (
     set "ARCH=aarch64"
-    set "TRIPLE=aarch64-pc-windows-msvc"
-    set "VSARCH=arm64"
+    set "TRIPLE=aarch64-w64-windows-gnu"
 ) else (
     set "ARCH=x86_64"
-    set "TRIPLE=x86_64-pc-windows-msvc"
-    set "VSARCH=amd64"
+    set "TRIPLE=x86_64-w64-windows-gnu"
 )
 
 if /i not "%SDK%"=="native" (
@@ -107,45 +107,32 @@ set "DBG=%SILVER%\dbg.cmd"
 >>"%DBG%" echo if not exist "%%LLDB%%" set "LLDB=lldb"
 >>"%DBG%" echo "%%LLDB%%" --batch -o run -k "thread backtrace" -k quit -- %%*
 
-:: ---------------- visual studio ----------------
-set "VSWHERE=%NATIVE%\bin\vswhere.exe"
-set "VSWHERE_URL=https://github.com/microsoft/vswhere/releases/download/3.1.7/vswhere.exe"
-if not exist "%VSWHERE%" (
-    echo downloading vswhere...
-    powershell -NoProfile -Command "Invoke-WebRequest -Uri '%VSWHERE_URL%' -OutFile '%VSWHERE%'" || exit /b 1
-)
+:: ---------------- mingw-w64 sysroot ----------------
+:: no visual studio, no windows SDK, no license: mingw-w64 supplies the
+:: headers, import libraries and crt objects, and llvm-mingw ships them as a
+:: plain zip. the compiler-rt builtins belong to clang, so they land in its
+:: own resource dir rather than in the sysroot
+set "MINGW_VER=20260616"
+set "MINGW_NAME=llvm-mingw-%MINGW_VER%-ucrt-%ARCH%"
+set "MINGW_URL=https://github.com/mstorsjo/llvm-mingw/releases/download/%MINGW_VER%/%MINGW_NAME%.zip"
+set "SYSROOT=%NATIVE%\sysroot"
 
-:: the vendored toolchain wins; fall back to a registered VS 2022
-set "VS_DIR=%NATIVE%\vs2022"
-set "VS_INSTALL="
-if exist "%VS_DIR%\VC\Auxiliary\Build\vcvarsall.bat" set "VS_INSTALL=%VS_DIR%"
-if not defined VS_INSTALL (
-    for /f "usebackq delims=" %%I in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2^>nul`) do set "VS_INSTALL=%%I"
+if not exist "%SYSROOT%\include\windows.h" (
+    echo downloading mingw-w64 ^(%MINGW_NAME%^)...
+    powershell -NoProfile -Command "Invoke-WebRequest -Uri '%MINGW_URL%' -OutFile '%CHECKOUT%\mingw.zip'" || exit /b 1
+    powershell -NoProfile -Command "Expand-Archive -Path '%CHECKOUT%\mingw.zip' -DestinationPath '%CHECKOUT%\mingw' -Force" || exit /b 1
+    set "MW=%CHECKOUT%\mingw\%MINGW_NAME%"
+    robocopy "!MW!\generic-w64-mingw32\include" "%SYSROOT%\include" /E /NFL /NDL /NJH /NJS /NP >nul
+    robocopy "!MW!\%ARCH%-w64-mingw32\lib"     "%SYSROOT%\lib"     /E /NFL /NDL /NJH /NJS /NP >nul
+    robocopy "!MW!\%ARCH%-w64-mingw32\bin"     "%NATIVE%\bin"      /E /NFL /NDL /NJH /NJS /NP >nul
+    robocopy "!MW!\lib\clang"                  "%NATIVE%\lib\clang" /E /NFL /NDL /NJH /NJS /NP >nul
+    if not exist "%SYSROOT%\include\windows.h" (
+        echo bootstrap: mingw-w64 did not lay out -- expected %SYSROOT%\include\windows.h
+        exit /b 1
+    )
+    rmdir /S /Q "%CHECKOUT%\mingw" 2>nul
+    del "%CHECKOUT%\mingw.zip" 2>nul
 )
-
-if not defined VS_INSTALL (
-    echo Visual Studio 2022 not found. Installing into %VS_DIR% ...
-    powershell -NoProfile -Command "Invoke-WebRequest -Uri 'https://aka.ms/vs/17/release/vs_community.exe' -OutFile '%CHECKOUT%\vs_community.exe'" || exit /b 1
-    "%CHECKOUT%\vs_community.exe" --wait --norestart --nocache ^
-      --installPath "%VS_DIR%" ^
-      --add Microsoft.VisualStudio.Workload.NativeDesktop --includeRecommended ^
-      --add Microsoft.VisualStudio.Workload.VCTools ^
-      --add Microsoft.VisualStudio.Component.VC.Llvm.Clang ^
-      --add Microsoft.VisualStudio.Component.VC.Llvm.ClangToolset ^
-      --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 ^
-      --add Microsoft.VisualStudio.Component.VC.ATL ^
-      --add Microsoft.VisualStudio.Component.Windows11SDK.22621
-    del "%CHECKOUT%\vs_community.exe"
-    if exist "%VS_DIR%\VC\Auxiliary\Build\vcvarsall.bat" set "VS_INSTALL=%VS_DIR%"
-)
-
-if not defined VS_INSTALL (
-    echo bootstrap: Visual Studio 2022 build tools not found after install.
-    exit /b 1
-)
-
-:: no vcvarsall: our clang locates the windows sdk on its own. VS is here
-:: only because clang needs the sdk headers/libs to exist somewhere.
 
 :: ---------------- cmake ----------------
 where cmake >nul 2>&1
@@ -206,9 +193,16 @@ set "TC=%IMPORT%\target.cmake"
 >>"%TC%" echo.
 >>"%TC%" echo get_filename_component(TARGET_DIR "${CMAKE_CURRENT_LIST_FILE}" PATH)
 >>"%TC%" echo.
->>"%TC%" echo set(CMAKE_C_COMPILER   "%NATIVE:\=/%/bin/clang-cl.exe" CACHE STRING "")
->>"%TC%" echo set(CMAKE_CXX_COMPILER "%NATIVE:\=/%/bin/clang-cl.exe" CACHE STRING "")
->>"%TC%" echo set(CMAKE_LINKER       "%NATIVE:\=/%/bin/lld-link.exe" CACHE STRING "")
+>>"%TC%" echo set(CMAKE_C_COMPILER   "%NATIVE:\=/%/bin/clang.exe" CACHE STRING "")
+>>"%TC%" echo set(CMAKE_CXX_COMPILER "%NATIVE:\=/%/bin/clang++.exe" CACHE STRING "")
+>>"%TC%" echo set(CMAKE_RC_COMPILER  "%NATIVE:\=/%/bin/llvm-windres.exe" CACHE STRING "")
+>>"%TC%" echo set(CMAKE_SYSROOT      "%NATIVE:\=/%/sysroot" CACHE STRING "")
+>>"%TC%" echo.
+>>"%TC%" echo set(CMAKE_C_FLAGS   "--target=%TRIPLE% -w" CACHE STRING "")
+>>"%TC%" echo set(CMAKE_CXX_FLAGS "--target=%TRIPLE% -stdlib=libc++ -w" CACHE STRING "")
+>>"%TC%" echo set(CMAKE_EXE_LINKER_FLAGS    "-fuse-ld=lld -rtlib=compiler-rt -unwindlib=libunwind" CACHE STRING "")
+>>"%TC%" echo set(CMAKE_SHARED_LINKER_FLAGS "-fuse-ld=lld -rtlib=compiler-rt -unwindlib=libunwind" CACHE STRING "")
+>>"%TC%" echo set(CMAKE_MODULE_LINKER_FLAGS "-fuse-ld=lld -rtlib=compiler-rt -unwindlib=libunwind" CACHE STRING "")
 >>"%TC%" echo.
 >>"%TC%" echo set(SILVER_TARGET_NAME "%SDK%")
 >>"%TC%" echo set(SILVER_TARGET_TRIPLE "%TRIPLE%")

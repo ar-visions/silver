@@ -28,63 +28,41 @@ def get_platform_info():
     os_sdk=''
     if system == 'Darwin':
         os_sdk = subprocess.check_output(["xcrun", "--show-sdk-path"]).decode().strip()
-    # no MSVC include/lib discovery: the clang we built locates the windows
-    # sdk itself. only our own directories go here.
-    win_lib, win_rt, win_crt = [], [], []
-    if system == 'Windows':
-        # llvm is pinned Release in aether.g, so that is the shared crt
-        keep, drop = 'msvcrt', 'msvcrtd'
-        win_crt = ['-Wl,/DEFAULTLIB:' + keep,
-                   '-Wl,/NODEFAULTLIB:' + drop,
-                   '-Wl,/NODEFAULTLIB:libcmt', '-Wl,/NODEFAULTLIB:libcmtd']
-        rt = silver_root / 'platform/native/lib/windows'
-        if rt.is_dir(): win_lib = [str(rt)]
-        builtins = rt / 'clang_rt.builtins-x86_64.lib'
-        if builtins.is_file(): win_rt = [norm_path(builtins)]
-        # DIA is the one piece clang does not add; llvm's pdb reader needs it
-        vs  = os.environ.get('VSINSTALLDIR') or str(silver_root / 'platform/native/vs2022')
-        dia = Path(vs) / 'DIA SDK' / 'lib' / 'amd64'
-        if dia.is_dir(): win_lib = [str(dia)] + win_lib
+    # mingw-w64: the same toolchain a cross build uses, so one set of flags
+    # serves both. no MSVC, no windows SDK discovery, no DIA
     base = {
         'Windows': {
-            'exe': '.exe', 'lib_pre': '', 'lib': '.lib', 'shared': '.dll', 'obj': '.obj',
+            'exe': '.exe', 'lib_pre': 'lib', 'lib': '.dll.a', 'shared': '.dll', 'obj': '.o',
             'ar': f'{silver}/bin/llvm-ar.exe', 'cc': f'{silver}/bin/clang.exe',
             'cxx': f'{silver}/bin/clang++.exe', 'ninja': 'build/ninja/ninja.exe',
             'nm': f'{silver}/bin/llvm-nm.exe',
             'inc': [],
-            'lib_dirs': [f'{silver}\\bin'] + win_lib,
-            # /DEBUG is what makes the pdb above meaningful
-            'lflags': ['-fuse-ld=lld'] + (['-Wl,/DEBUG'] if is_debug else []) +
-                      # no global /pdb: every target claimed the same file and
-                      # each link overwrote it, so nothing symbolized. lld
-                      # defaults to <output>.pdb, which is per-target
-                      ['-Wl,/SUBSYSTEM:CONSOLE'] + win_crt,
-            # _DLL+_MT selects the dynamic CRT, matching the vendored LLVM libs.
+            'lib_dirs': [f'{silver}\\bin'],
+            # clang's mingw driver reaches for gcc's runtime unless told
+            'lflags': ['-fuse-ld=lld', '-rtlib=compiler-rt', '-unwindlib=libunwind',
+                       '-Wl,--subsystem,console'] + (['-g'] if is_debug else []),
             # BUILD_STATIC stops llvm/clang headers marking symbols dllimport,
-            # since we link their component .libs rather than a dll
-            'cflags':   ['-D_DLL', '-D_MT', '-DLLVM_BUILD_STATIC', '-DCLANG_BUILD_STATIC',
-                         '-D_CRT_SECURE_NO_WARNINGS', '-D_CRT_NONSTDC_NO_WARNINGS'],
-            'cxxflags': ['-D_DLL', '-D_MT', '-DLLVM_BUILD_STATIC', '-DCLANG_BUILD_STATIC',
-                         '-D_CRT_SECURE_NO_WARNINGS', '-D_CRT_NONSTDC_NO_WARNINGS'],
+            # since we link their component archives rather than a dll
+            'cflags':   ['-DLLVM_BUILD_STATIC', '-DCLANG_BUILD_STATIC'],
+            'cxxflags': ['-DLLVM_BUILD_STATIC', '-DCLANG_BUILD_STATIC', '-stdlib=libc++'],
             # ntdll/version/ole32/advapi32 are what llvm's windows support needs
-            'libs': win_rt + [
+            'libs': [
                               # gdi32/opengl32: glfw's wgl backend
                               '-lgdi32', '-lopengl32',
                               '-luser32', '-lkernel32', '-lshell32', '-ldbghelp',
                               '-lbcrypt', '-lws2_32', '-lntdll', '-lversion',
                               '-lole32', '-loleaut32', '-luuid', '-ladvapi32',
-                              '-lpsapi', '-lshlwapi', '-ldiaguids',
-                              '-llegacy_stdio_definitions']
+                              '-lpsapi', '-lshlwapi', '-lwinpthread']
         },
         'Darwin': {
             'exe': '', 'lib_pre': 'lib', 'lib': '.a', 'shared': '.dylib', 'obj': '.o',
             'cc': f'{silver}/bin/clang', 'cxx': f'{silver}/bin/clang++',
             'ar': f'{silver}/bin/llvm-ar', 'ninja': 'ninja',
-            'inc': [], 'lib_dirs': [], 'lflags': [], 
-            'cflags': [f'-isysroot{os_sdk}'], 'cxxflags': [], 'libs': ['-lc', '-lm'],
-            'cxxflags': ['-stdlib=libc++', f'-isysroot{os_sdk}'],   # <-- add this
-            'lflags': [f'-isysroot{os_sdk}'],
-            'libs': ['-lc', '-lm', '-lc++', '-lc++abi']
+            'inc': [], 'lib_dirs': [],
+            'cflags':   [f'-isysroot{os_sdk}'],
+            'cxxflags': ['-stdlib=libc++', f'-isysroot{os_sdk}'],
+            'lflags':   [f'-isysroot{os_sdk}'],
+            'libs':     ['-lc', '-lm', '-lc++', '-lc++abi']
         },
         'Linux': {
             'exe': '', 'lib_pre': 'lib', 'lib': '.a', 'shared': '.so', 'obj': '.o',
@@ -96,8 +74,8 @@ def get_platform_info():
                 '-lpthread',     # threading (Au async)
                 '-ldl',          # dynamic loading (dlopen)
             ],
-            'cflags': ['-D_DLL', '-D_MT', '-fmacro-backtrace-limit=0'],
-            'cxxflags': ['-D_DLL', '-D_MT'],
+            'cflags': ['-fmacro-backtrace-limit=0'],
+            'cxxflags': [],
             'libs': ['-lc', '-lm']
         }
     }
@@ -254,8 +232,8 @@ def write_ninja(project, root, import_dir, build_dir, plat):
                   "-Wfatal-errors", "-fno-omit-frame-pointer",
                   f'-DSILVER=\\"{silver_root_p}\\"']
     if plat['exe'] == '.exe':
-        base_flags.extend(["--target=x86_64-pc-windows-msvc", "-fno-ms-compatibility", 
-                          "-fno-delayed-template-parsing"])
+        # pic has no meaning on PE, and visibility is decided by dllexport
+        base_flags.extend(["--target=x86_64-w64-windows-gnu"])
     else:
         base_flags.extend(["-fPIC", "-fvisibility=default"])
     
@@ -494,8 +472,8 @@ def write_ninja(project, root, import_dir, build_dir, plat):
                 output = f"$builddir/{out_name}{plat['shared']}"
                 # implicit output (|): it must stay out of $out, which the
                 # link rule passes to -o
-                outs = f"{output} | {import_esc}/lib/{out_name}{plat['lib']}"
-                implib = f" -Wl,/IMPLIB:{import_p}/lib/{out_name}{plat['lib']}"
+                outs = f"{output} | {import_esc}/lib/{plat['lib_pre']}{out_name}{plat['lib']}"
+                implib = f" -Wl,--out-implib,{import_p}/lib/{plat['lib_pre']}{out_name}{plat['lib']}"
             n.append(f"build {outs}: link_shared {objs} {' '.join(deps)}")
             libs = sorted(set(m['links']))
             if implib:
