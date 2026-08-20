@@ -1,0 +1,7 @@
+extend features
+
+func ext_triple [ n: i32 ] -> i32
+    return n * 3
+
+func ext_name [] -> string
+    return 'from-More'

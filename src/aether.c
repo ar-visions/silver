@@ -1790,6 +1790,26 @@ static struct cmp_entry* cmp_lookup(OPType op) {
     return null;
 }
 
+// a scalar is a struct wrapping one number; hand back that number
+static enode scalar_value(aether a, enode n) {
+    Au_t src = n ? n->autype : null;
+    // a variable holds the scalar in src; a literal IS the scalar
+    if (src && !src->is_scalar && src->src) src = src->src;
+    if (!src || !src->is_scalar || a->no_build || !_llvalue((enode)n))
+        return n;
+    etype        vtype = u(etype, src->src);
+    LLVMValueRef sv    = _llvalue((enode)n);
+    LLVMValueRef val;
+    // a scalar reaches us either as memory (alloca/GEP) or as the
+    // aggregate itself, from a return or an argument
+    if (LLVMGetTypeKind(LLVMTypeOf(sv)) == LLVMPointerTypeKind) {
+        LLVMValueRef gep = LLVMBuildStructGEP2(B, lltype(u(etype, src)), sv, 0, "scalar_val");
+        val = LLVMBuildLoad2(B, lltype(vtype), gep, "scalar_load");
+    } else
+        val = LLVMBuildExtractValue(B, sv, 0, "scalar_val");
+    return with_value(val, enode(mod, a, autype, vtype->autype, loaded, true));
+}
+
 AU_EXPORT enode aether_e_cmp_op(aether a, OPType optype, enode L, enode R) {
     emit_guard;
     a->is_const_op = false;
@@ -1815,6 +1835,11 @@ AU_EXPORT enode aether_e_cmp_op(aether a, OPType optype, enode L, enode R) {
         L = e_load(a, L, null);
     if (!R->loaded && is_prim(R->autype))
         R = e_load(a, R, null);
+
+    // a scalar (200px, 25.4cm) is a struct wrapping one number: compare
+    // the numbers, as arithmetic does, not the struct's address
+    L = scalar_value(a, L);
+    R = scalar_value(a, R);
 
     // normalize operands to common arithmetic type BEFORE any comparison
     // result is always bool, but operands must match each other
@@ -2414,19 +2439,9 @@ enode aether_e_op(aether a, OPType optype, string op_name, Au L, Au R) { sequenc
     }
 
     // unwrap scalar structs to their primitive value for arithmetic
-    Au_t L_src = LV && LV->autype->src ? LV->autype->src : null;
-    Au_t R_src = RV && RV->autype->src ? RV->autype->src : null;
-    if (L_src && L_src->is_scalar && !a->no_build) {
-        etype        vtype = u(etype, L_src->src);
-        LLVMValueRef gep   = LLVMBuildStructGEP2(B, lltype(u(etype, L_src)), _llvalue((enode)LV), 0, "scalar_val");
-        LLVMValueRef val   = LLVMBuildLoad2(B, lltype(vtype), gep, "scalar_load");
-        LV = with_value(val, enode(mod, a, autype, vtype->autype, loaded, true));
-    }
-    if (R_src && R_src->is_scalar && !a->no_build) {
-        etype        vtype = u(etype, R_src->src);
-        LLVMValueRef gep   = LLVMBuildStructGEP2(B, lltype(u(etype, R_src)), _llvalue((enode)RV), 0, "scalar_val");
-        LLVMValueRef val   = LLVMBuildLoad2(B, lltype(vtype), gep, "scalar_load");
-        RV = with_value(val, enode(mod, a, autype, vtype->autype, loaded, true));
+    if (!a->no_build) {
+        LV = (enode)scalar_value(a, (enode)LV);
+        RV = (enode)scalar_value(a, (enode)RV);
     }
 
     /// LV cannot change its type if it is a emember and we are assigning
@@ -3424,24 +3439,39 @@ AU_EXPORT none enode_inspect(enode a) {
 }
 
 AU_EXPORT enode aether_lambda_fcall(aether a, efunc mem, array user_args) {
+    // a variable holding a lambda carries `fn` on its TYPE, not on the var
+    Au_t mem_type = au_arg_type((Au)mem->autype);
     // lambda type member (lambda ReturnType[Args]) — simple function pointer call
-    if (!find_member(mem->autype, "fn", AU_MEMBER_VAR, 0, false)) {
+    if (!find_member(mem_type, "vfn", AU_MEMBER_VAR, 0, false)) {
         // treat as function pointer call
         mem->autype->is_funcptr = true;
         return e_fn_call(a, mem, user_args, false, false);
     }
 
-    // declared lambda instance — access fn and ctx
-    efunc fn_ptr     = (efunc)enode_value(access(mem, string("fn")), false);
-    enode ctx_ptr    = enode_value(access(mem, string("context")), false);
+    // declared lambda instance — access fn and ctx. lambda is a class, so a
+    // variable holding one is a slot: load the object before reaching in
+    enode inst       = mem->loaded ? (enode)mem : enode_value((enode)mem, false);
+    efunc fn_ptr     = (efunc)enode_value(access(inst, string("vfn")), false);
+    enode ctx_ptr    = enode_value(access(inst, string("context")), false);
     etype rtype      = u(etype, mem->meta_a);
     enode lambda_fn  = u(enode, mem->autype->src);
 
     array args = array(alloc, 32, assorted, true);
 
     push(args, (Au)ctx_ptr);
-    each(user_args, Au, arg)
-        push(args, arg);
+    // vfn is an untyped callback: coerce each arg to the func's own
+    // parameter type, or it boxes and the callee reads a pointer
+    Au_t lfn = lambda_fn ? lambda_fn->autype : (Au_t)mem->meta_b;
+    int  ai  = 0;
+    each(user_args, Au, arg) {
+        enode n = (enode)arg;
+        if (lfn && ai < lfn->args.count) {
+            etype pt = u(etype, au_arg_type(lfn->args.origin[ai]));
+            if (pt) n = e_create(a, pt, (Au)n, false);
+        }
+        push(args, (Au)n);
+        ai++;
+    }
 
     fn_ptr->meta_a = hold(mem->meta_a);
     fn_ptr->meta_b = hold(mem->meta_b);
@@ -3647,12 +3677,16 @@ enode aether_e_fn_call(aether a, efunc fn, array args, bool is_super, bool is_po
             if (fmt_idx >= 0 && i > fmt_idx)
                 break;
  
-            if (is_lambda(fn)) {
+            // a lambda's vfn is an untyped callback: its args arrive already
+            // coerced to the func's own types, so never re-coerce them here
+            if (is_lambda(fn) || (funcptr && fn->meta_a)) {
                 verify(instanceof(arg_value, enode), "expected enode for runtime function call");
                 enode n = (enode)arg_value;
                 verify(_llvalue((enode)n), "expected enode value for arg %i", index);
                 arg_values[index] = _llvalue((enode)n);
-                arg_types[index] = lltype(n);
+                // the value's own type is the truth here: a context pointer
+                // has no registered etype on a worker core
+                arg_types[index] = LLVMTypeOf(arg_values[index]);
             } else {
                 Au_t  fn_decl = funcptr ? au_arg_type((Au)fn->autype) : fn->autype;
                 // for declared args, coerce to the arg's type. for varargs past
@@ -3747,7 +3781,8 @@ enode aether_e_fn_call(aether a, efunc fn, array args, bool is_super, bool is_po
 
     char call_seq[256];
     sprintf(call_seq, "call_%i_%s", seq, fn->autype->ident);
-    etype rtype = is_lambda(fn) ?
+    // a call through a lambda's vfn carries its return type in meta_a
+    etype rtype = (is_lambda(fn) || (funcptr && fn->meta_a)) ?
         u(etype, fn->meta_a) :
         u(etype, rtype_au);
     if (rtype && fn->autype->meta.a)
@@ -3976,6 +4011,13 @@ AU_EXPORT enode convertible(etype fr, etype to) {
 
     if (ma == mb)
         return (enode)true;
+
+    // two scalars share a storage type but are DISTINCT types: mm and cm
+    // both resolve to f32, and letting that alias skips the user's cast
+    // member, handing back the number unconverted
+    if (ma->autype->is_scalar && mb->autype->is_scalar && ma->autype != mb->autype)
+        return castable(ma, mb);
+
     // NOTE: same-size struct → struct is intentionally NOT a free
     // bitcast. distinct struct types (e.g. vec4f and quatf, both four
     // f32s) often need a real conversion via a registered constructor
@@ -5330,7 +5372,7 @@ enode aether_e_create(aether a, etype mdl, Au args, bool no_pool) { sequencer
         verify(isa(args) == typeid(array), "expected args for lambda");
 
         efunc n_mdl = instanceof(mdl, efunc);
-        verify(n_mdl && n_mdl->target, "expected enode with target for lambda function");
+        verify(n_mdl, "expected enode for lambda function");
         
         efunc f_create = (efunc)u(efunc, find_member(etypeid(lambda)->autype,
             "lambda_instance", AU_MEMBER_FUNC, 0, false));
@@ -5351,12 +5393,44 @@ enode aether_e_create(aether a, etype mdl, Au args, bool no_pool) { sequencer
             ctx_index++;
         }
         
-        enode targ = n_mdl->target;
-        array args = a(n_mdl->published_type, n_mdl, n_mdl->target, ctx_alloc);
+        // module-level lambdas bind no object; a method's target param has no
+        // value at the creation site — only inside its own body
+        enode targ = (n_mdl->target && _llvalue((enode)n_mdl->target))
+            ? (enode)n_mdl->target : e_null(a, etypeid(Au));
+        array args = a(n_mdl->published_type, n_mdl, targ, ctx_alloc);
         enode res = e_fn_call(a, f_create, args, false, false);
-        res->meta_a = hold(n_mdl->meta_a);
-        res->meta_b = hold(n_mdl->meta_b);
+        // meta_a is the lambda's return type, meta_b the func it came from:
+        // a variable holding the instance needs both to call through it
+        res->meta_a = hold(n_mdl->meta_a ? (Au)n_mdl->meta_a :
+                           (Au)n_mdl->autype->rtype);
+        res->meta_b = hold(n_mdl->meta_b ? (Au)n_mdl->meta_b :
+                           (Au)n_mdl->autype);
         return res;
+    }
+
+    // number -> scalar (200px, and a cast body's `a / 10.0` result):
+    // wrap it in the one-field struct. must precede both the conversion
+    // lookup and record construction, or the value is dropped
+    if (!a->no_build) {
+        etype st = canonical(mdl);
+        enode sin = input;
+        // a scalar has no member list, so an initializer arrives as a
+        // one-element array the record path cannot place
+        if (!sin) {
+            array sa = instanceof(args, array);
+            if (sa && len(sa) == 1) sin = instanceof(sa->origin[0], enode);
+        }
+        if (st && st->autype->is_scalar && st->autype->src && sin &&
+                is_prim(canonical(sin)) && st != canonical(sin)) {
+            enode input = sin;
+            enode prim = e_create(a, u(etype, st->autype->src), (Au)input, false);
+            LLVMValueRef slot = entry_alloca(a, lltype(st), "scalar_wrap");
+            LLVMValueRef gep  = LLVMBuildStructGEP2(B, lltype(st), slot, 0, "scalar_field");
+            LLVMBuildStore(B, _llvalue((enode)prim), gep);
+            enode sres = value(st, slot);
+            sres->loaded = false; // scalars live in memory: methods take a ptr
+            return sres;
+        }
     }
 
     // construct / cast lookup
@@ -6349,8 +6423,9 @@ enode aether_e_switch(
         // enode aether_e_cmp(aether a, enode L, enode R)
         enode case_val = (enode)sp_invoke((subprocedure)expr_builder, (Au)key_expr);
         enode cmp = e_cmp(a, switch_val, case_val);
-        LLVMValueRef eq = LLVMBuildICmp(B, LLVMIntEQ, _llvalue((enode)cmp),
-            LLVMConstInt(LLVMInt32TypeInContext(a->module_ctx), 0, 0), "case.eq");
+        LLVMValueRef cv = _llvalue((enode)cmp);
+        LLVMValueRef eq = LLVMBuildICmp(B, LLVMIntEQ, cv,
+            LLVMConstNull(LLVMTypeOf(cv)), "case.eq");
 
         // next block in chain
         LLVMBasicBlockRef next =
@@ -7813,8 +7888,10 @@ AU_EXPORT none push_lambda_members(aether a, efunc f) {
     emit_guard;
     if (a->no_build) return;
     statements lambda_code = statements(mod, (aether)a);
+    // this scope IS the lambda's context space: its members carry GEP values
+    lambda_code->autype->is_lambda = true;
     push_scope(a, (Au)lambda_code, 11);
-    
+
     Au_t fn = f->autype;
     LLVMValueRef context_ptr = _llvalue((enode)f->context_node);
     LLVMTypeRef  ctx_struct  = _lltype_slot(u(etype, f->context_node->autype->src));
@@ -7826,7 +7903,7 @@ AU_EXPORT none push_lambda_members(aether a, efunc f) {
         
         Au_t ctx_au = def_member(lambda_code->autype, mem->ident, mem->src, AU_MEMBER_VAR, mem->traits);
         evar ctx_evar = evar(mod, (aether)a, autype, ctx_au);
-        etype_register(a, (Au)ctx_au, (Au)hold(ctx_evar), false);
+        etype_register(a, (Au)ctx_au, (Au)hold(ctx_evar), true);
         
         LLVMValueRef indices[2] = {
             LLVMConstInt(LLVMInt32TypeInContext(a->module_ctx), 0, 0),
@@ -8000,7 +8077,7 @@ AU_EXPORT none etype_init(etype t) {
 
         etype* arg_types = calloc(4 + n_args, sizeof(etype));
 
-        if (is_lambda(au) && is_class(au->context))
+        if (is_lambda(au))
             index = 1; // context inserted at [0]; gives us the target as well as the other args
         
         arg_list(au, arg) {
@@ -8033,13 +8110,22 @@ AU_EXPORT none etype_init(etype t) {
             string context_name = f(string, "%s_%s_context", au->context->ident, au->ident);
             etype etype_context = struct_from_au(a, context_name, au, false);
             fn->context_node = hold(with_value(null, enode(mod, a, autype, pointer(a, (Au)etype_context)->autype, loaded, true)));
-            etype_register(a, (Au)fn->context_node->autype, (Au)hold(fn->context_node), false);
+            etype_register(a, (Au)fn->context_node->autype, (Au)hold(fn->context_node), true);
 
             // create published type (we set this global on global initialize)
-            string member_symbol = f(string, "%s_type", au->alt);
-            fn->published_type = enode(mod, a, symbol_name, member_symbol, autype, typeid(Au_t));
+            // module-level lambdas have no alt (that is a record's prefix)
+            string member_symbol = f(string, "%s_type", au->alt ? au->alt : au->ident);
+            // name it AFTER ll_global: enode_init resolves symbol_name eagerly,
+            // and the global does not exist until ll_global creates it
+            fn->published_type = enode(mod, a, autype, typeid(Au_t));
             ll_global(a, fn->published_type, u(etype, typeid(Au_t)->ptr),
                 llvm_id(a, member_symbol->chars), false, false, true);
+            for (int ci = 0; ci < ll_n(a); ci++) {
+                LLVMValueRef g = (LLVMValueRef)fn->published_type->values[ci];
+                if (g) LLVMSetVisibility(g, LLVMDefaultVisibility);
+            }
+            fn->published_type->symbol_name = hold(member_symbol);
+            fn->published_type->loaded = false;
             arg_types[0] = (etype)fn->context_node;
             n_args++;
         }
@@ -9107,8 +9193,25 @@ static void emit_expect_exit(aether a) {
     LLVMBasicBlockRef bb_go   = LLVMAppendBasicBlockInContext(a->module_ctx, fnv, "expect.go");
     LLVMBuildCondBr(B, isset, bb_exit, bb_go);
     LLVMPositionBuilderAtEnd(B, bb_exit);
+    // reaching here means every test returned true: a failure halts in
+    // e_expect. count them so the run reports what it proved
+    int total = 0, skipped = 0;
+    members(a->autype, mem) {
+        if (!is_expect_test(mem)) continue;
+        total++;
+        arg_list(mem, arg) {
+            etype at = etype_prep(a, au_arg_type((Au)arg));
+            if (!at || !is_class(at)) { skipped++; break; }
+        }
+    }
+    int ran = total - skipped;
     char buf[256];
-    snprintf(buf, sizeof(buf), "[%s] expect: complete", a->autype->ident);
+    if (skipped)
+        snprintf(buf, sizeof(buf), "[%s] expect: %d/%d passed (%d%%), %d skipped",
+            a->autype->ident, ran, total, total ? (ran * 100) / total : 100, skipped);
+    else
+        snprintf(buf, sizeof(buf), "[%s] expect: %d/%d passed (100%%)",
+            a->autype->ident, ran, total);
     emit_expect_puts(a, buf);
     LLVMTypeRef  i32_ty  = LLVMInt32TypeInContext(a->module_ctx);
     LLVMTypeRef  exit_ty = LLVMFunctionType(LLVMVoidTypeInContext(a->module_ctx), &i32_ty, 1, 0);
@@ -9164,8 +9267,11 @@ static void emit_expect_tests(aether a, Au_t module_base, efunc f) {
         }
         tf->used = true;
         etype_implement((etype)tf, false);
-        snprintf(buf, sizeof(buf), "[%s] expect: %s", module_base->ident, mem->ident);
-        emit_expect_puts(a, buf);
+        // the per-test lines are verbose detail; a run reports its tally
+        if (a->verbose) {
+            snprintf(buf, sizeof(buf), "[%s] expect: %s", module_base->ident, mem->ident);
+            emit_expect_puts(a, buf);
+        }
         array vals = array(alloc, 8);
         arg_list(mem, arg) {
             etype at = etype_prep(a, au_arg_type((Au)arg));
@@ -9176,8 +9282,10 @@ static void emit_expect_tests(aether a, Au_t module_base, efunc f) {
         snprintf(buf, sizeof(buf), "[%s] expect: %s failed\n", module_base->ident, mem->ident);
         enode msg = e_create(a, etypeid(string), (Au)const_string(chars, buf), false);
         e_expect(a, r, msg);
-        snprintf(buf, sizeof(buf), "[%s] expect: %s passed", module_base->ident, mem->ident);
-        emit_expect_puts(a, buf);
+        if (a->verbose) {
+            snprintf(buf, sizeof(buf), "[%s] expect: %s passed", module_base->ident, mem->ident);
+            emit_expect_puts(a, buf);
+        }
         if (fn_drop)
             each(vals, Au, v)
                 e_fn_call(a, fn_drop, a((enode)v), false, false);
@@ -9869,6 +9977,8 @@ AU_EXPORT none aether_push_scope(aether a, Au arg, int label) {
             au->member_type != AU_MEMBER_NAMESPACE &&
             au->member_type != AU_MEMBER_FUNC      &&
             au->member_type != AU_MEMBER_CAST      &&
+            au->member_type != AU_MEMBER_GETTER    &&
+            au->member_type != AU_MEMBER_SETTER    &&
             au->member_type != AU_MEMBER_OPERATOR  &&
             au->member_type != AU_MEMBER_CONSTRUCT &&
            !au->is_primitive &&
@@ -10781,7 +10891,6 @@ AU_EXPORT none enode_init(enode n) {
     } else if (n->symbol_name && !_llvalue((enode)n)) {
         LLVMValueRef g = LLVMGetNamedGlobal  (a->module_ref, n->symbol_name->chars);
         if (!g)      g = LLVMGetNamedFunction(a->module_ref, n->symbol_name->chars);
-
         verify(g, "global symbol not found: %o", n->symbol_name);
         _llvalue_set((enode)n, g);
         n->loaded = false; // globals are already addresses
@@ -11143,8 +11252,12 @@ AU_EXPORT enode aether_e_cmp(aether a, enode L, enode R) {
         return value(etypeid(i32), result);
     }
 
-    // Integer comparison via subtraction
-    return value(etypeid(i32), LLVMBuildSub(B, _llvalue((enode)L), _llvalue((enode)R), "cmp_i"));
+    // Integer comparison via subtraction; the result IS i32, so narrow it
+    LLVMValueRef diff = LLVMBuildSub(B, _llvalue((enode)L), _llvalue((enode)R), "cmp_i");
+    LLVMTypeRef  i32t = LLVMInt32TypeInContext(a->module_ctx);
+    if (LLVMTypeOf(diff) != i32t)
+        diff = LLVMBuildIntCast2(B, diff, i32t, true, "cmp_i32");
+    return value(etypeid(i32), diff);
 }
 
 AU_EXPORT enode aether_compatible(aether a, etype r, string n, AFlag f, array args) {
@@ -11625,6 +11738,9 @@ AU_EXPORT enode aether_e_direct_cast(aether a, enode input, etype target) {
     emit_guard;
     a->is_const_op = false;
     if (a->no_build) return e_noop(a, target);
+    // numeric primitives convert; bitcast only fits same-layout types
+    if (is_prim(canonical(input)) && is_prim(target))
+        return e_convert_or_cast(a, canonical(target), input);
     LLVMValueRef val = _llvalue((enode)input);
     LLVMTypeRef target_ll = lltype(target);
     if (LLVMTypeOf(val) != target_ll)

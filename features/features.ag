@@ -1,0 +1,696 @@
+# the silver language, annotated and self-verifying
+# each entry is a feature; run: silver --test features
+export 1.0.0                        # module version
+# setenv at module init — trinity exports VK_LAYER_PATH this way. it
+# lands after the expect tests run, so no test can observe it
+export FEATURES_MODE: 'test'
+
+import <stdio.h>                    # C header, read by libclang
+import <string.h>
+import <stdlib.h>
+import <cpp.hpp>                    # C++ header: .hpp marks the unit
+import More                         # sibling .ag, headed extend
+import random as rnd                # module under a local name
+
+# config import: a module's own members are its parameters, set here
+# by the importer and read-only inside the module
+import fcfg
+    greeting: 'set-by-features'
+    scale:    7
+
+# a single file by url: fetched once to install/imports, the file
+# itself IS the cache. > lines run after, with {import_file} set
+import https://raw.githubusercontent.com/ar-visions/silver/master/LICENSE
+    > cp {import_file} {install}/share/features/data/fetched.txt
+
+ifdef [ windows ]                   # platform-gated import
+    import <ports.h>
+ifndef [ windows ]                  # ifndef is the negated form
+    import <unistd.h>
+
+enum Color : u8                     # explicit backing type
+    red:   1
+    green: 2
+    blue:  3
+
+enum Weight : f32                   # a float-backed enum
+    light: 0.5
+    heavy: 2.0
+
+enum Mode                           # backing type is optional
+    off: 0
+    on:  1
+
+scalar px : f32                     # name becomes a suffix: 200px
+scalar ms : i64                     # integer scalars reject floats
+scalar deg : f32
+
+# physical units, each its own type. a scalar takes a body where `a`
+# IS the value, but a cast RETURNING a scalar is broken today: the
+# body's result never reaches the return slot (see t_scalar_units)
+scalar mm   : f32
+scalar cm   : f32
+scalar inch : f32                   # `in` is a keyword
+scalar ft   : f32                   # 2.0ft, not 2.0f + a stray t
+
+alias ints    : array i64           # alias names a compound type
+alias byname  : map i64 [ string ]  # bracketed type is the KEY
+
+struct v2                           # struct is an inlay value type
+    x: f32
+    y: f32
+
+    operator + [ b: v2 ] -> v2 [ x: x + b.x, y: y + b.y ]
+    operator - [ b: v2 ] -> v2 [ x: x - b.x, y: y - b.y ]
+    operator * [ k: f32 ] -> v2 [ x: x * k,   y: y * k   ]
+    operator left * [ k: f32 ] -> v2 [ x: x * k, y: y * k ]
+
+    func dot [ b: v2 ] -> f32
+        return x * b.x + y * b.y
+
+    cast -> string [ 'v2-{x}-{y}' ] # conversion member
+
+struct span2                        # same size as v2: bitcasts
+    lo: f32
+    hi: f32
+
+    func width [] -> f32
+        return hi - lo
+
+class Counter                       # class is heap, ref-counted
+    public  count  : i64            # readable outside, written in
+    intern  hidden : i64            # module-private
+    mutable label  : string         # writable by outsiders
+
+    static  made   : i64            # one per type, not per object
+
+    func init []                    # runs after props are set
+        hidden = 7
+
+    func bump []
+        count += 1
+
+    func value [] -> i64
+        return count
+
+    func peek_hidden [] -> i64
+        return hidden
+
+    func tally [] -> i64            # a static is shared by every instance
+        made += 1
+        return made
+
+    cast -> string [ 'count-{count}' ]
+    cast -> bool   [ count != 0 ]
+
+    operator +  [ n: i64 ] -> i64 [ count + n ]
+    operator -  [ n: i64 ] -> i64 [ count - n ]
+    operator *  [ n: i64 ] -> i64 [ count * n ]
+    operator /  [ n: i64 ] -> i64 [ count / n ]
+    operator %  [ n: i64 ] -> i64 [ count % n ]
+    operator |  [ n: i64 ] -> i64 [ count | n ]
+    operator &  [ n: i64 ] -> i64 [ count & n ]
+    operator ^  [ n: i64 ] -> i64 [ count ^ n ]
+    operator << [ n: i64 ] -> i64 [ count << n ]
+    operator >> [ n: i64 ] -> i64 [ count >> n ]
+
+    # left = scalar on the left; only * / << >> have that slot
+    operator left /  [ n: i64 ] -> i64 [ n / count ]
+    operator left << [ n: i64 ] -> i64 [ n << count ]
+
+Counter Doubler                     # base name IS the keyword
+    func bump []
+        super.bump[]                # super reaches the base
+        count += 1
+
+    func value [] -> i64
+        return super.value[] * 10
+
+class Boxed
+    public data : new i64 [ 8 ]     # heap buffer member
+
+    getter [ i: i64 ] -> i64        # obj[ i ] read
+        return data[ i ]
+
+    setter [ i: i64, v: i64, op: i32 ]  # obj[ i ] = v
+        data[ i ] = v
+
+class Named
+    expect  name  : string          # required at construction
+    mutable score : i64
+    intern  hits  : i64
+
+    func bump_hits [] -> i64        # intern member, reached from within
+        hits += 1
+        return hits
+
+    construct [ n: i64 ]            # build from ONE other type
+        name = 'n-{n}'
+        score = n
+
+    # same name space as construct: needs a different arg type
+    post construct [ s: string ]    # runs after init completes
+        name = s
+        score = 100
+
+class Shape
+    public sides : i32
+    public tag   : string
+
+    func describe [] -> string
+        return 'shape-{sides}'
+
+    func area_ish [] -> i32
+        return sides * sides
+
+Shape Square
+    func init []
+        sides = 4
+        tag = 'square'
+
+    func describe [] -> string
+        return 'square-{sides}'
+
+Shape Tri
+    func init []
+        sides = 3
+        tag = 'tri'
+
+    func describe [] -> string
+        return 'tri-{sides}'
+
+class Holder
+    public shape : Shape*           # * = holds any subclass
+    public items : array i64
+    public named : map i64 [ string ]
+
+class Stepper
+    public start : i64
+
+    # :: opens contextual args — that is what makes it a lambda.
+    # reach it with lambda s.step_twice[ base ], never by name
+    func step_twice [ n: i64 :: base: i64 ] -> i64
+        return n * 2 + base
+
+# a bodyless func is implemented in the companion named for the module
+intern func c_add   [ i32, i32 ] -> i32          # features.c
+intern func c_scale [ i32, i32 ] -> i32
+intern func c_len   [ cstr ] -> i32              # silver string in
+intern func c_fill  [ @i32, i32, i32 ] -> none   # writes through a ref
+intern func cc_mul  [ i32, i32 ] -> i32          # features.cc
+intern func cc_pow2 [ i32 ] -> i32
+intern func cc_sum  [ @i32, i32 ] -> i32         # uses the C++ stdlib
+
+func commaless [ p: px, m: ms, d: deg ] -> f32
+    return 1.0
+
+func takes_any [ v: any ] -> bool   # any accepts every object
+    return v != null
+
+func sum_pair [ a: i64, b: i64 ] -> i64
+    return a + b
+
+# ---- build-time: export func runs during the BUILD, then exits ----
+# this is how scenes instances its resources: bake once, ship the
+# artifact, and let the app read it at run time
+
+func bake_text [] -> string
+    return 'baked-by-features'
+
+export func bake_greeting []
+    # u64 [ @fn ] is the token hash of fn's source: the stamp changes
+    # only when the code that produces the artifact changes
+    stamp : string '{u64[ @bake_text ]}'
+    sp : path '{path.path_share_path[]}/data/baked.hash'
+    op : path '{path.path_share_path[]}/data/baked.txt'
+    if [ sp.exists[] && op.exists[] ]
+        old : string [ sp.load[ typeid[string], null ] ]
+        if [ old && old == stamp ]
+            puts 'features: baked artifact current'
+            return
+    op.save[ bake_text[], null ]
+    sp.save[ stamp, null ]
+    puts 'features: baked artifact written'
+
+# ---- expect func declares a test the compiler runs ----
+
+expect func t_declare [] -> bool
+    x: i32 [ 42 ]                   # : declares, = assigns
+    x = 10
+    y: x + 1                        # type inferred from expr
+    z: y
+    w: i64 [ x ]                    # explicit type conversion
+    return y == 11 && z == 11 && w == 10
+
+expect func t_assign_ops [] -> bool
+    n: i64 [ 20 ]
+    n += 4
+    n -= 2
+    n *= 3
+    n /= 2
+    n %= 25
+    n |= 32
+    n &= 62
+    n ^= 3
+    n <<= 2
+    n >>= 1
+    return n == 86
+
+expect func t_bitwise [] -> bool
+    a: i64 [ 12 ]
+    b: i64 [ 10 ]
+    return (a | b) == 14 && (a & b) == 8 && (a ^ b) == 6 && (a << 2) == 48 && (a >> 2) == 3 && ~0 == -1
+
+expect func t_compare [] -> bool
+    a: i64 [ 5 ]
+    b: i64 [ 9 ]
+    c: (a <=> b)                    # spaceship: i32 sign result
+    return a < b && a <= b && b > a && b >= a && a != b && a == 5 && c < 0
+
+expect func t_control [] -> bool
+    total: i32 [ 0 ]
+    for [ i: i32 0, i < 10, i += 1 ]    # init, cond, step
+        if [ i == 3 ]
+            continue
+        el [ i == 7 ]               # el is else-if and else
+            break
+        el
+            total += i
+    n: i32 [ 0 ]
+    while [ n < 5 ]
+        n += 1
+    running: bool [ true ]
+    for [ running ]                 # one part = condition only
+        running = false
+    dw: i32 [ 0 ]
+    for                             # no [ ] = do-while form
+        dw += 1
+    while [ dw < 3 ]                # tested after the body runs
+    no-op                           # explicit empty statement
+    return total == 18 && n == 5 && dw == 3
+
+expect func t_switch [] -> bool
+    c: Color.green
+    r: i32 [ 0 ]
+    switch [ c ]
+        case red                    # bare member: type inferred
+            r = 1
+        case green, blue            # cases never fall through
+            r = 2
+        default
+            r = 3
+    m: Mode.on
+    q: i32 [ 0 ]
+    switch [ m ]
+        case on
+            q = 9
+        default
+            q = 1
+    return r == 2 && q == 9
+
+expect func t_enums [] -> bool
+    c: Color.blue
+    i: i32 [ c ]                    # enums convert to integers
+    w: Weight.heavy
+    f: f32 [ w ]                    # and to floats
+    return i == 3 && f == 2.0
+
+expect func t_sub [] -> bool
+    q: i32 [ 4 ]
+    z: i32 sub                      # sub stores the body
+        return q + 1
+    r1: z[]                         # re-runs against live scope
+    q = 9
+    r2: z[]
+    r3: z[ q: 20 ]                  # with a field overridden
+    return r1 == 5 && r2 == 10 && r3 == 21
+
+expect func t_expr [] -> bool
+    x: i32 [ 5 ]
+    t: (x > 0) ? x : -x             # condition must be parens
+    hat: bool [ x == (1, 3, 5, 7) ] # true when any one matches
+    nhat: bool [ x != (2, 4, 6) ]   # true when none match
+    rin: bool [ x == (2 ... 10) ]   # inclusive range
+    rex: bool [ x != (6 ..< 9) ]    # end-exclusive range
+    inv: i32 [ ~0 ]
+    nn:  bool [ not false ]
+    nb:  bool [ !false ]
+    ng:  i32 [ -x ]
+    return t == 5 && hat && nhat && rin && rex && inv == -1 && nn && nb && ng == -5
+
+expect func t_cast [] -> bool
+    f: f64 [ 3.9 ]
+    i: (f) to i32                   # cast after a parens expr
+    j: i32 [ 0 ]
+    j = cast i32 [ f ]              # the explicit form
+    c: Counter [ count: 5 ]
+    s: string [ c ]                 # dispatches cast -> string
+    b: bool [ c ]                   # dispatches cast -> bool
+    vv: v2 [ x: 1.0, y: 2.0 ]
+    vs: string [ vv ]
+    return i == 3 && j == 3 && s == 'count-5' && b && vs == 'v2-1-2'
+
+expect func t_types [] -> bool
+    s: 'hello'
+    ok1: bool [ typeid[ i32 ] == typeid[ i32 ] ]
+    ok2: bool [ sizeof[ i64 ] == 8 ]
+    ok3: bool [ s is string ]       # is compares type identity
+    d: Doubler [ ]
+    ok4: bool [ d inherits Counter ]    # walks ancestry
+    ok5: bool [ typeid[ s ] == typeid[ string ] ]
+    ok6: bool [ takes_any[ s ] ]
+    return ok1 && ok2 && ok3 && ok4 && ok5 && ok6
+
+expect func t_null [] -> bool
+    z: ref i32                      # typed null pointer
+    fallback: 'world'
+    name: string [ null ]
+    v: (name) ?? fallback           # null-coalesce
+    w: name || fallback             # keeps the truthy operand
+    y: 'yes' && 'also'
+    h: Holder [ ]
+    g: h->shape->tag                # -> yields default on null
+    return !z && v == 'world' && w == 'world' && y == 'also' && !g
+
+expect func t_strings [] -> bool
+    name: 'silver'                  # single quotes interpolate
+    x: i32 [ 7 ]
+    c: Counter [ count: 3 ]
+    msg: 'hello {name}, value is {x}'
+    call: 'v={c.value[]} n={sum_pair[ 2, 3 ]}'   # calls inline
+    big: f64 [ 1e2 ]                # scientific notation
+    tiny: f64 [ 2.5e-1 ]
+    hexv: i64 [ 0xff ]
+    lit: "cstr-literal"             # double quotes are cstr
+    n: i32 [ strlen[ lit ] ]
+    return msg == 'hello silver, value is 7' && call == 'v=3 n=5' && big == 100.0 && tiny == 0.25 && hexv == 255 && n == 12
+
+expect func t_scalars [] -> bool
+    w: 200px
+    d: 16ms
+    a: 90deg
+    r: commaless[ w, d, a ]         # commaless matches BY TYPE
+    return r == 1.0
+
+expect func t_scalar_units [] -> bool
+    # a scalar is a distinct type carrying one number; arithmetic and
+    # comparison unwrap it, and each unit stays its own type
+    d: 254mm
+    h: 25.5cm                       # exact in binary: f32 == f64 holds
+    i: 10.0inch                     # `in` is a keyword, so inches spell out
+    v: 2.0ft
+    return d == 254mm && d != 253mm && h * 2.0 == 51.0 && d / 2.0 == 127.0 && i * 2.0 == 20.0 && v + 1.0 == 3.0
+
+expect func t_collections [] -> bool
+    items: array i64 [ 3, 5, 8 ]
+    b : items[ 0 ]                  # non-holding borrow
+    items += 13                     # append
+    m: map i64 [ string ] [ ]       # trailing [ ] allocates
+    m[ 'a' ] = 10
+    m[ 'b' ] = 20
+    sum: i64 [ 0 ]
+    for [ v: i64, k: string ] in m  # map gives value then key
+        sum += v
+    fsum: i64 [ 0 ]
+    for [ v: i64 ] in items
+        fsum += v
+    rsum: i64 [ 0 ]
+    first: i64 [ 0 ]
+    for [ v: i64 ] reverse in items # back to front
+        if [ rsum == 0 ]
+            first = v
+        rsum += v
+    al: ints [ 1, 2 ]               # alias-typed array
+    bm: byname [ ]                  # alias-typed map
+    bm[ 'k' ] = 4
+    ok_al: bool [ al.count == 2 ]
+    sm: map string [ string ] [ ]
+    sm[ 'x' ] = 'yes'
+    ok_sm: bool [ sm[ 'x' ] == 'yes' ]
+    ok_bm: bool [ bm.count == 1 ]
+    return b == 3 && sum == 30 && fsum == 29 && rsum == 29 && first == 13 && ok_al && ok_sm && ok_bm
+
+expect func t_arrays [] -> bool
+    a1: new f32 [ 4 ]               # heap-allocated typed memory
+    a2: new f32 [ 4 ]
+    for [ i: i32 0, i < 4, i += 1 ]
+        a1[ i ] = f32[ i ]
+        a2[ i ] = 2.0
+    a3: a1 + a2                     # element-wise on both
+    a4: a1 * 3.0                    # scalar broadcasts
+    a5: a1 - a2
+    a6: a2 / 2.0
+    k: new i32 [ 2x2 ] [ 1 2, 3 4 ] # shape plus constant data
+    loc: local i32 [ 3 ] [ 9, 8, 7 ]    # stack array
+    dst: local i32 [ 3 ]
+    memcpy[ @dst[ 0 ], @loc[ 0 ], 12 ]
+    zed: local i32 [ 2 ]
+    memset[ @zed[ 0 ], 0, 8 ]
+    n: i32 [ 3 ]
+    dyn: local i32 [ n ]            # runtime count is allowed
+    dyn[ 2 ] = 5
+    return a3[ 2 ] == 4.0 && a4[ 3 ] == 9.0 && a5[ 1 ] == -1.0 && a6[ 0 ] == 1.0 && k[ 3 ] == 4 && dst[ 1 ] == 8 && zed[ 0 ] == 0 && dyn[ 2 ] == 5
+
+expect func t_shaped [] -> bool
+    m: new f32 [ 2x2 ] [ 1.0 2.0, 3.0 4.0 ]
+    q: new f32 [ 2x2 ] [ 5.0 6.0, 7.0 8.0 ]
+    p: m * q                        # ELEMENT-WISE, not matrix multiply
+    s: m * 2.0                      # scalar broadcasts
+    d: m + q
+    return p[ 0 ] == 5.0 && p[ 3 ] == 32.0 && s[ 1 ] == 4.0 && d[ 2 ] == 10.0
+
+expect func t_math [] -> bool
+    r1: sqrt[ 16.0 ]
+    r2: min[ 3, 9 ]
+    r3: max[ 3, 9 ]
+    r4: clamp[ 12, 0, 10 ]
+    r5: abs[ -6 ]
+    r6: pow[ 2.0, 10.0 ]
+    r7: mix[ 0.0, 10.0, 0.5 ]       # from * (1 - t) + to * t
+    r8: floor[ 3.7 ]
+    r9: ceil[ 3.2 ]
+    r10: round[ 3.5 ]
+    r11: exp[ 0.0 ]
+    r12: log[ 1.0 ]
+    r13: atan2[ 0.0, 1.0 ]
+    r14: sin[ 0.0 ]
+    r15: cos[ 0.0 ]
+    r16: tan[ 0.0 ]
+    r17: asin[ 0.0 ]
+    r18: acos[ 1.0 ]
+    r19: atan[ 0.0 ]
+    return r1 == 4.0 && r2 == 3 && r3 == 9 && r4 == 10 && r5 == 6 && r6 == 1024.0 && r7 == 5.0 && r8 == 3.0 && r9 == 4.0 && r10 == 4.0 && r11 == 1.0 && r12 == 0.0 && r13 == 0.0 && r14 == 0.0 && r15 == 1.0 && r16 == 0.0 && r17 == 0.0 && r18 == 0.0 && r19 == 0.0
+
+expect func t_ref [] -> bool
+    n: i32 [ 41 ]
+    p: @ n                          # @ is ref: address-of
+    p[ 0 ] += 1
+    bytes: ref u8 p                 # ref Type expr casts
+    loc: local i32 [ 2 ] [ 5, 6 ]
+    q: @loc[ 1 ]                    # address of an element
+    nullp: ref i64                  # ref Type alone is null
+    return n == 42 && q[ 0 ] == 6 && !nullp && bytes != null
+
+expect func t_class [] -> bool
+    c: Counter [ count: 3, label: 'main' ]  # prop pairs
+    c.bump                          # zero-arg call, no brackets
+    c.bump*[]                       # * dispatches dynamically
+    t1: c + 5
+    t2: c - 1
+    t3: c * 2
+    t4: c / 5
+    t5: c % 3
+    t6: c | 2
+    t7: c & 4
+    t8: c ^ 1
+    t9: c << 1
+    t10: c >> 1
+    t11: 20 / c                     # reverse slot: operator left
+    t12: 1 << c
+    n1: c.tally[]                   # static: shared across instances
+    o: Counter [ count: 0 ]
+    n2: o.tally[]
+    return c.value[] == 5 && c.peek_hidden[] == 7 && t1 == 10 && t2 == 4 && t3 == 10 && t4 == 1 && t5 == 2 && t6 == 7 && t7 == 4 && t8 == 4 && t9 == 10 && t10 == 2 && t11 == 4 && t12 == 32 && c.label == 'main' && n2 == n1 + 1
+
+expect func t_inherit [] -> bool
+    d: Doubler [ count: 0 ]
+    d.bump
+    sq: Square [ ]
+    tr: Tri [ ]
+    h: Holder [ shape: sq ]
+    poly: h.shape.describe[]        # direct: uses STATIC type
+    h.shape = tr
+    poly2: h.shape.describe*[]      # *[]: uses dynamic type
+    ar: h.shape.area_ish[]          # base method through the member
+    h.items = array i64 [ 2, 4 ]    # collection members on a class
+    h.named = map i64 [ string ] [ ]
+    h.named[ 'k' ] = 9
+    return d.count == 2 && d.value[] == 20 && poly == 'shape-4' && poly2 == 'tri-3' && ar == 9 && h.items[ 1 ] == 4 && h.named.count == 1
+
+expect func t_structs [] -> bool
+    a1: v2 [ x: 1.0, y: 2.0 ]
+    b1: v2 [ x: 3.0, y: 4.0 ]
+    c1: a1 + b1
+    d1: b1 - a1
+    e1: a1 * 2.0
+    f1: 2.0 * a1                    # binds operator left *
+    dp: a1.dot[ b1 ]
+    s1: (a1) to span2               # same size: a bitcast
+    return c1.x == 4.0 && c1.y == 6.0 && d1.x == 2.0 && e1.y == 4.0 && f1.x == 2.0 && dp == 11.0 && s1.lo == 1.0 && s1.width[] == 1.0
+
+expect func t_construct [] -> bool
+    nm: Named [ 7 ]                 # runs construct [ i64 ]
+    pm: Named [ 'abc' ]             # runs post construct
+    width: i64 [ 3 ]
+    sh: Named [ 5 ]
+    sh.score = width                # mutable member write
+    h1: nm.bump_hits[]              # intern member, only from within
+    h2: nm.bump_hits[]
+    return nm.name == 'n-7' && nm.score == 7 && pm.name == 'abc' && pm.score == 100 && sh.score == 3 && h1 == 1 && h2 == 2
+
+expect func t_indexers [] -> bool
+    bx: Boxed [ ]
+    bx[ 2 ] = 44                    # runs the setter
+    bx[ 3 ] = 7
+    return bx[ 2 ] == 44 && bx[ 3 ] == 7     # runs the getter
+
+expect func t_lambda [] -> bool
+    base: i64 [ 100 ]
+    s: Stepper [ start: 1 ]
+    f: lambda s.step_twice[ base ]  # bind the contextual args
+    r: f[ 4 ]                       # call it: 4 * 2 + 100
+    return r == 108 && s.start == 1
+
+expect func t_companions [] -> bool
+    r1: c_add[ 40, 2 ]              # .c companion
+    r2: cc_mul[ 6, 7 ]              # .cc companion
+    r3: c_scale[ 6, 7 ]
+    r4: cc_pow2[ 5 ]
+    n: i32 [ 41 ]
+    rs_bump[ @n ]                   # .rs companion, via cbindgen
+    m: i32 [ rs_mul3[ 4 ] ]
+    return r1 == 42 && r2 == 42 && r3 == 42 && r4 == 25 && n == 42 && m == 12
+
+expect func t_companion_data [] -> bool
+    txt: 'abcde'
+    ln: c_len[ txt ]                # string passes as cstr
+    buf: local i32 [ 4 ]
+    c_fill[ @buf[ 0 ], 4, 10 ]      # C writes into our stack array
+    cs: cc_sum[ @buf[ 0 ], 4 ]      # C++ reads it back
+    rs: rs_sum[ @buf[ 0 ], 4 ]      # rust reads the same memory
+    return ln == 5 && buf[ 3 ] == 13 && cs == 46 && rs == 46
+
+expect func t_resources [] -> bool
+    # any FOLDER in the module ships to install/share; a relative
+    # path resolves there — symlinked in debug, copied in release
+    # at RUN time the cwd is the bundle, so 'data/x' resolves; a test
+    # runs from the launch cwd, so name the share dir explicitly
+    p: path '{path.path_share_path[]}/data/greeting.txt'
+    if [ !p.exists[] ] return false
+    s: string p.load[ typeid[string], null ]
+    return s == 'hello-from-resource'
+
+expect func t_config_import [] -> bool
+    # greeting was set at the import; scale kept its own default
+    # every line in the import body is a config input
+    return cfg_greeting[] == 'set-by-features' && cfg_scale[] == 7
+
+expect func t_url_import [] -> bool
+    # the > line above copied the fetched file into our bundle
+    p: path '{path.path_share_path[]}/data/fetched.txt'
+    if [ !p.exists[] ] return false
+    s: string p.load[ typeid[string], null ]
+    return s.count > 0
+
+expect func t_build_time [] -> bool
+    # bake_greeting ran at build time and left this behind
+    p: path '{path.path_share_path[]}/data/baked.txt'
+    if [ !p.exists[] ] return false
+    s: string p.load[ typeid[string], null ]
+    return s == 'baked-by-features'
+
+expect func t_extend [] -> bool
+    # More.ag says `extend features`: one module, two files
+    return ext_triple[ 5 ] == 15 && ext_name[] == 'from-More'
+
+expect func t_import_as [] -> bool
+    rng_seed[ 12345 ]               # from the random module
+    v: u64 [ rng_next[] ]
+    return v != 0
+
+expect func t_cpp_templates [] -> bool
+    pi: pairT<i32> [ a: 3, b: 4 ]   # sampled specialization
+    pf: pairT<f32> [ a: 0.5, b: 1.5 ]
+    po: pairT<i32> [ a: 1, b: 1 ]
+    if [ pi.sum[] != 7 || pf.sum[] != 2.0 ] return false
+    if [ pi * 2 != 14 ] return false    # C++ operator overload
+    if [ (pi + po) != 9 || (pi - po) != 5 ] return false
+    if [ pi.scale[ 3 ] != 21 ] return false
+    si: scaled<i32,8> [ v: 3 ]      # integral template argument
+    sf: scaled<f32,3> [ v: 1.5 ]
+    if [ si.out[] != 24 || sf.out[] != 4.5 ] return false
+    du: duo<i32,f32> [ first: 2, second: 3.0 ]  # two type args
+    return du.wide[] == 5
+
+expect func t_cpp_objects [] -> bool
+    bs: make_beast[]
+    wf: make_wolf[]
+    if [ bs.roar[] != 1 || wf.roar[] != 42 ] return false
+    if [ bs.stride[] != 4 || wf.stride[] != 8 ] return false
+    bb: Beast [ ]
+    bb.Beast[ 6 ]                   # ctor imports as a method
+    if [ bb.stride[] != 12 ] return false
+    r2: Ratio [ ]
+    r2.Ratio[ 3, 4 ]
+    fv: f32 [ r2 ]                  # C++ operator float
+    if [ fv != 0.75 || r2.floor_div[] != 0 ] return false
+    r1: Ratio [ ]
+    r1.Ratio[ 5 ]                   # overload picked by type
+    if [ f32[ r1 ] != 5.0 ] return false
+    rf: Ratio [ ]
+    rf.Ratio[ 2.5 ]
+    if [ rf.num != 250 ] return false
+    rc: geo2::rect2 [ ]             # namespaced type
+    rc.rect2[ 3, 5 ]
+    ro: geo2::rect2 [ ]
+    ro.rect2[ 1, 1 ]
+    rs: rc + ro
+    if [ rc.area[] != 15 || rs.area[] != 24 ] return false
+    pt: geo2::inner::point2 [ ]     # nested namespace
+    pt.point2[ -3, 4 ]
+    return pt.manhattan[] == 7
+
+expect func t_asm [] -> bool
+    x: i64 [ 37 ]
+    out: local i64 [ 1 ]
+    dst: @i64 [ @out[ 0 ] ]
+    asm x86_64                      # the arch name IS the switch
+        mov rax, x                  # in-scope vars auto-gather
+        add rax, 5
+        mov qword ptr [dst], rax
+    asm arm64                       # only the match compiles
+        add x9, x, 5
+        str x9, [dst]
+    return out[ 0 ] == 42
+
+expect func t_origin [] -> bool
+    ln: i32 [ __LINE__ ]            # source position of the stmt
+    fl: __FILE__
+    sq: i64 [ __SEQUENCE__ ]        # the statement's sequence number
+    return ln > 0 && fl != null && sq >= 0
+
+expect func t_or_return [] -> bool
+    ok: bool [ true ]
+    v: ok || return false           # falsy left returns early
+    return v
+
+expect func t_expect_stmt [] -> bool
+    v: i32 [ 1 ]
+    expect v == 1, 'v should be one, got {v}'   # traps if false
+    if [ false ]
+        fault 'unreachable'         # unconditional abort
+    return true
+
+app features
+    func init []
+        puts 'features module — run with silver --test features'
