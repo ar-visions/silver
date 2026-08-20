@@ -3,7 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #ifdef _WIN32
-#include <ports.h>   // the posix surface windows lacks, in one header
+#include <posix.h>   // the posix surface windows lacks, in one header
 #else
 #include <dlfcn.h>
 #include <unistd.h>
@@ -23,8 +23,8 @@
 #include <stdint.h>
 
 #ifndef _WIN32
-extern char** environ;   // on windows ports.h aliases it to the crt's live block
-// windows declares this in ports.h and links it from Au; this host links
+extern char** environ;   // on windows posix.h aliases it to the crt's live block
+// windows declares this in posix.h and links it from Au; this host links
 // neither, so the one rule is restated here -- logs go with the build, never
 // the system temp folder, which gets swept out from under a run
 #ifdef SILVER_ROOT

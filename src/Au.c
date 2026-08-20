@@ -1,5 +1,5 @@
 #define _GNU_SOURCE
-#include <time.h>   // struct timespec; ports.h no longer leaks it
+#include <time.h>   // struct timespec; posix.h no longer leaks it
 #include <import>
 #ifndef _WIN32
 #include <execinfo.h>
@@ -65,12 +65,12 @@ static int au_skip_drop_check(const char *type, const char *member) {
 
 //#undef realloc
 #undef bool
-#include <ports.h>
+#include <posix.h>
 #include <math.h>
 #include <errno.h>
 #include <limits.h>
 #ifdef _WIN32
-#include <ports.h>   // ioctl/fcntl and the rest of the posix surface
+#include <posix.h>   // ioctl/fcntl and the rest of the posix surface
 #else
 #include <sys/ioctl.h>
 #include <unistd.h>
@@ -1430,6 +1430,15 @@ AU_EXPORT Au lambda_call(lambda a, Au args) {
 
 AU_EXPORT bool lambda_cast_bool(lambda a) {
     return a != null;
+}
+
+// context is held in lambda_instance; drop_members skips Au props.
+// the context is a struct, so Au_free skips its dealloc chain —
+// release the object refs its captured fields hold here
+AU_EXPORT none lambda_dealloc(lambda a) {
+    if (a->context) Au_drop_members(a->context);
+    drop(a->context);
+    a->context = null;
 }
 
 AU_EXPORT lambda lambda_instance(Au_t au, callback fn, Au target, Au context) {
@@ -3155,7 +3164,6 @@ AU_EXPORT Au alloc_instance(Au_t type, int n_bytes, bool managed) {
         af_size = new_size;
     }
     af[af_count++] = a;
-    
     return a;
 }
 
@@ -3825,7 +3833,8 @@ AU_EXPORT none Au_drop_members(Au a) {
     const char *type_ident = (type && type->ident) ? type->ident : "";
     if (au_skip_drop_check(type_ident, NULL)) return;
     #endif
-    while (type != typeid(Au)) {
+    // lambda context structs have a null base — stop there, not at Au
+    while (type && type != typeid(Au)) {
         for (num i = 0; i < type->members.count; i++) {
             Au_t m = (Au_t)type->members.origin[i];
             if (m->is_override || m->is_elaborate) continue;

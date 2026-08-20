@@ -239,9 +239,9 @@ if ! grep -q '# silver PATH' "$RC" 2>/dev/null; then
     echo "added silver PATH to $RC (open a new shell or: source $RC)"
 fi
 
-# Au's ports.h must be reachable as <ports.h> by modules that build OUTSIDE the
+# Au's posix.h must be reachable as <posix.h> by modules that build OUTSIDE the
 # src tree (e.g. dbg) — symlink it into the install include dir.
-ln -sf "$SILVER/src/ports.h" "$NATIVE/include/ports.h"
+ln -sf "$SILVER/src/posix.h" "$NATIVE/include/posix.h"
 ln -sf "$SILVER/src/undefcpp.h" "$NATIVE/include/undefcpp.h"
 
 # dbg — a thin lldb shortcut: `dbg <app> [args...]` launches the app under the

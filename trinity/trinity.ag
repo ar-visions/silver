@@ -9,7 +9,7 @@ import vec
 import img
 
 ifdef [ windows ]
-	import <ports.h>     # the posix surface, all in one header
+	import <posix.h>     # the posix surface, all in one header
 
 import <stdio.h>
 import <ctype.h>

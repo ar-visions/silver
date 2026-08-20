@@ -2,7 +2,7 @@
 
 #ifdef _WIN32
 // clang's headers use off_t, which the UCRT does not define by default
-#include <ports.h>
+#include <posix.h>
 #endif
 
 #include <iostream>
@@ -55,7 +55,7 @@
 
 #include <clang/Driver/Tool.h>
 
-#include <ports.h>
+#include <posix.h>
 #include <string>
 
 typedef LLVMMetadataRef LLVMScope;
@@ -1400,7 +1400,7 @@ static void build_unit_args(aether a, import_unit* u) {
     args.push_back(u->cpp ? "-std=c++17" : "-std=c11");
 
     // a device build must MODEL the device: parse its headers, with its
-    // triple, or ports.h hides everything behind _WIN32 and every platform
+    // triple, or posix.h hides everything behind _WIN32 and every platform
     // ifdef in a system header takes the host's branch
     bool cross = a->target_sysroot && a->target_triple;
     bool win   = cross && strstr(a->target_triple, "windows") != null;
