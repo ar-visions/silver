@@ -2534,6 +2534,45 @@ AU_EXPORT string command_run(command cmd, bool verbose) {
     return result;
 }
 
+// output prefix for spawned shell work: a dependency build names every
+// line it prints. per-thread, because imports build concurrently
+static __thread char exec_prefix[64]  = { 0 };
+static __thread char exec_line[4096];
+static __thread int  exec_len         = 0;
+
+AU_EXPORT void au_exec_prefix(symbol name) {
+    if (name)
+        snprintf(exec_prefix, sizeof(exec_prefix), "[%s] ", name);
+    else
+        exec_prefix[0] = 0;
+    exec_len = 0;
+}
+
+// one write per LINE: a partial write would interleave with the other
+// import threads writing to this same stdout
+static void exec_flush_line() {
+    if (!exec_len) return;
+    fwrite(exec_line, 1, (size_t)exec_len, stdout);
+    exec_len = 0;
+}
+
+static void exec_write(cstr buf, ssize_t bytes) {
+    if (!exec_prefix[0]) {
+        fwrite(buf, 1, (size_t)bytes, stdout);
+        return;
+    }
+    int plen = (int)strlen(exec_prefix);
+    for (ssize_t i = 0; i < bytes; i++) {
+        if (!exec_len) {
+            memcpy(exec_line, exec_prefix, plen);
+            exec_len = plen;
+        }
+        exec_line[exec_len++] = buf[i];
+        if (buf[i] == '\n' || exec_len >= (int)sizeof(exec_line) - 1)
+            exec_flush_line();
+    }
+}
+
 AU_EXPORT int command_exec(command cmd, bool verbose) {
     if (starts_with(cmd, "export ")) {
         string a = mid(cmd, 7, len(cmd) - 7);
@@ -2554,7 +2593,11 @@ AU_EXPORT int command_exec(command cmd, bool verbose) {
 
     // one implementation everywhere: popen runs it, pclose hands back the
     // status. no fork/exec pair to keep working on two platforms.
-    FILE* p = popen(cstring(cmd), "r");
+    // a prefixed command claims its whole output: popen captures stdout
+    // only, so a tool writing to stderr (curl's meter, compiler warnings)
+    // would print unattributed. merge it into the pipe we prefix
+    string merged = exec_prefix[0] ? form(string, "%o 2>&1", cmd) : null;
+    FILE* p = popen(merged ? cstring(merged) : cstring(cmd), "r");
     if (!p) return -1;
 
     // same here: read returns as soon as bytes are ready, and each chunk is
@@ -2563,7 +2606,12 @@ AU_EXPORT int command_exec(command cmd, bool verbose) {
     ssize_t bytes;
     int     fd = fileno(p);
     while ((bytes = read(fd, buffer, sizeof(buffer))) > 0) {
-        fwrite(buffer, 1, (size_t)bytes, stdout);
+        exec_write(buffer, bytes);
+        fflush(stdout);
+    }
+    if (exec_len) { // a last line with no newline of its own
+        exec_line[exec_len++] = '\n';
+        exec_flush_line();
         fflush(stdout);
     }
 
