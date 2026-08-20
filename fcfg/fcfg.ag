@@ -1,0 +1,12 @@
+# fcfg — a module whose members are configuration inputs.
+# module-scope members are set by the IMPORTER and read-only within
+export 1.0.0
+
+public greeting : string 'default-greeting'
+public scale    : i32 [ 2 ]
+
+func cfg_greeting [] -> string
+    return greeting
+
+func cfg_scale [] -> i32
+    return scale

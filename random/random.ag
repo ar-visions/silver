@@ -36,7 +36,6 @@ intern func rotl45 [input: u64] -> u64
 # seed from a u64 (SplitMix64 expands to 4 state words)
 public func rng_seed [seed: u64] 
     sm: u64 [ seed ]
-    printf "ptr = %p\n", rng_state
     rng_state.state[0] = splitmix64[@sm]
     rng_state.state[1] = splitmix64[@sm]
     rng_state.state[2] = splitmix64[@sm]
