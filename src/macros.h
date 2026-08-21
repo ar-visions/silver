@@ -2371,8 +2371,6 @@
 #define          run(verbose, t, ...)      command_run(((command)formatter((Au_t)typeid(command), false, null, (Au)false, seq, (symbol)t, ## __VA_ARGS__)), verbose)
 #define         vexec(verbose, n, t, ...)     verify(exec(verbose, (string)t __VA_OPT__(,) __VA_ARGS__) == 0, "shell command failed: %s", n);
 
-#define        Au_log(sL, t, ...)   formatter((Au_t)null, stdout, (Au)string(sL),  seq, t, ## __VA_ARGS__)
-
 #define          put(t,    ...)   formatter((Au_t)null, false, stdout, (Au)false, seq, (symbol)t, ## __VA_ARGS__)
 //#define        print(L, t,    ...) formatter((Au_t)null,      stdout, (Au)true,  seq, (symbol)t, ## __VA_ARGS__)
 #define        error(t, ...)      formatter((Au_t)null, false, stderr, (Au)true,  seq, (symbol)t, ## __VA_ARGS__)

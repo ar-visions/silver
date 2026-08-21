@@ -989,6 +989,8 @@ forward(any)
     M(AA,BB, i, prop, Au_public, u64,       iflags) \
     M(AA,BB, i, prop, Au_public, Au_t, meta_a) \
     M(AA,BB, i, prop, Au_public, Au,   meta_b) \
+    M(AA,BB, i, prop, Au_public, cstr, bind) \
+    M(AA,BB, i, prop, Au_public, Au_t, holder) \
     M(AA,BB, i, method, public, i32,    compare, AA) \
     M(AA,BB, i, method, public, none,   init) \
     M(AA,BB, i, method, public, none,   dealloc) \
@@ -1014,6 +1016,7 @@ forward(any)
     M(AA,BB, i, method, public, Au,     get_property_by_type,   Au_t) \
     M(AA,BB, i, method, public, Au,     vrealloc,       sz) \
     M(AA,BB, i, method, public, Au_t,   meta_index,     i32) \
+    M(AA,BB, i, method, public, none,   log,            symbol) \
     M(AA,BB, s, method, public, Au_t,   emplace_type, Au_t, Au_t, Au_t, Au_t, symbol, i32, u64, u64, u64, i32, symbol, i32) \
     M(AA,BB, s, method, public, Au_t,   def,            Au_t, symbol, u32, u64) \
     M(AA,BB, s, method, public, Au_t,   def_func,       Au_t, symbol, Au_t, u32, u32, u32, u64, ARef, symbol, i32, Au_t, Au, symbol, i32) \
@@ -1084,6 +1087,7 @@ forward(any)
     M(AA,BB, s, method, public, Au,     new_object, Au_t, Au_t, Au, bool, symbol, i32, i32) \
     M(AA,BB, s, method, public, Au,     alloc_new, Au_t, num, shape, Au_t, Au, symbol, i32, i32) \
     M(AA,BB, s, method, public, Au,     alloc_new_np, Au_t, num, shape, Au_t, Au, symbol, i32, i32) \
+    M(AA,BB, s, method, public, Au,     alloc_object, Au_t, num, shape, Au_t, Au, symbol, i32, i32, symbol, Au_t) \
     M(AA,BB, s, method, public, Au,     alloc_vector, Au_t, num, shape, Au_t, Au, symbol, i32, i32) \
     M(AA,BB, s, method, public, Au,     alloc_dbg, Au_t, num, symbol, i32, i32) \
     M(AA,BB, s, method, public, string, estring, Au_t, i32) \

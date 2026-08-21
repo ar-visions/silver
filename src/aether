@@ -228,6 +228,9 @@ forward(evar)
     M(A,U,i, prop,     public,  string,                   break_id) \
     M(A,U,i, prop,     public,  map,                      init_props) \
     M(A,U,i, prop,     public,  handle,                   init_fbits) \
+    M(A,U,i, prop,     public,  cstr,                     bind_name) \
+    M(A,U,i, prop,     public,  Au_t,                     bind_holder) \
+    M(A,U,i, prop,     public,  Au_t,                     bind_au) \
     M(A,U,i, prop,     public,  array,                    imports) \
     M(A,U,i, vargs,    public,  none,                     eprint, symbol) \
     M(A,U,i, method,   public,  none,                     e_vector_init, etype, enode, array) \
@@ -258,6 +261,7 @@ forward(evar)
     M(A,U,i, method,   public,  enode,                    e_expect_begin, enode) \
     M(A,U,i, method,   public,  enode,                    e_expect_end, enode, enode) \
     M(A,U,i, method,   public,  enode,                    e_fault, enode) \
+    M(A,U,i, method,   public,  enode,                    e_log, enode, enode) \
     M(A,U,i, method,   public,  enode,                    e_break, catcher) \
     M(A,U,i, method,   public,  enode,                    e_continue, catcher) \
     M(A,U,i, method,   public,  none,                     e_memcpy, enode, enode, Au_t) \

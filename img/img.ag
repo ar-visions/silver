@@ -1107,6 +1107,7 @@ func exr_decode [ u: path ] -> Image
             fseek[ f, i64[ asz ], SEEK_CUR ]
 
     if [ comp != EXR_NONE && comp != EXR_ZIPS && comp != EXR_ZIP ]
+        puts 'exr: unsupported compression {comp} in {u}'
         fclose f
         return null
 
@@ -1154,6 +1155,7 @@ func exr_decode [ u: path ] -> Image
             dlen : uLongf [ uLongf[ nb ] ]
             rc : i32 [ uncompress[ raw, @dlen, packed, uLong[ sz ] ] ]
             if [ rc != 0 ]
+                puts 'exr: uncompress rc {rc} sz {sz} nb {nb}'
                 fclose[ f ]
                 return null
             memcpy[ packed, raw, i64[ nb ] ]
@@ -1206,14 +1208,33 @@ func jpeg_decode [ uri: path ] -> Image
     d.to_rgba[ im.vdata[] ]
     return im
 
+expect func test_exr [] -> bool
+    im : Image [ width: 4, height: 4, format: Pixel.rgbaf32, channels: 4 ]
+    pf : @f32 im.vdata[]
+    for [ k: i32 0, k < 64, k += 1 ] pf[k] = f32[k] * 0.25
+    ep : path '/tmp/exrtest.exr'
+    rc : im.exr[ ep ]
+    r2 : Image [ uri: ep ]
+    q : @f32 r2.vdata[]
+    return rc == 1 && r2.width == 4 && r2.height == 4 && q[20] == pf[20]
+
+expect func test_exr_file [] -> bool
+    root : path.path_startup[]
+    p : path '{root}/orbiter/images/forest.exr'
+    if [ !p.exists[] ] return false
+    im : exr_decode[ p ]
+    if [ !im ] return false
+    puts 'exr: decoded {im.width}x{im.height}'
+    return im.width > 0 && im.height > 0
+
 expect func test_jpeg [] -> bool
     root : path.path_startup[]
-    p : path '{root}/orbiter/textures/mars-color-8192x4096.jpg'
+    p : path '{root}/scenes/textures/mars-color-8192x4096.jpg'
     if [ !p.exists[] ] return false
     im : jpeg_decode[ p ]
     if [ !im ] return false
     puts 'jpeg: decoded {im.width}x{im.height}'
     if [ im.width != 8192 || im.height != 4096 ] return false
     c : im.crop[ 3400, 1700, 640, 480 ]
-    c.png[ path '/tmp/claude-1000/-src-silver/17153a71-ae1c-4ba5-9da8-c3d5cfe4278e/scratchpad/jpegtest.png' ]
+    c.png[ path '/tmp/jpegtest.png' ]
     return true

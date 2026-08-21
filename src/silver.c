@@ -131,7 +131,9 @@ static u64 source_mtime(silver a, path p) {
 }
 
 static void bg_build_start(silver a, silver og, path module, map defs);
+static enode parse_inline_lambda(silver a);
 enode parse_export(silver a);
+enode parse_log(silver a);
 enode parse_return(silver a);
 enode parse_break(silver a);
 enode parse_continue(silver a);
@@ -2124,7 +2126,9 @@ static void silver_run_exports(silver a) {
     members(a->autype, mem)
         if (mem->member_type == AU_MEMBER_FUNC &&
             mem->access_type == interface_export) any = true;
-    if (!any) return;
+    // a cached build has no parsed members; --export launches regardless
+    // (every product exits 0 under SILVER_EXPORT after module init)
+    if (!any && !a->export) return;
     bool lib = a->is_library && !((aether)a)->is_live;
     path bin = a->live_binary ? a->live_binary : a->product;
     if (!bin || !file_exists("%o", bin)) return;
@@ -2137,6 +2141,7 @@ static void silver_run_exports(silver a) {
     // app is spawned outright. a library has no exe to spawn at all: its module
     // init is loaded in-process, which is the one thing isolation cannot buy us
     setenv("SILVER_EXPORT", "1", 1);
+    if (a->export) setenv("SILVER_EXPORT_FORCE", "1", 1);
     int st = 0;
     if (lib) {
         path back = path_cwd();
@@ -2158,10 +2163,12 @@ static void silver_run_exports(silver a) {
         waitpid(pid, &st, 0);
     }
     unsetenv("SILVER_EXPORT");
+    unsetenv("SILVER_EXPORT_FORCE");
 #else
     pid_t pid = fork();
     if (pid == 0) {
         setenv("SILVER_EXPORT", "1", 1);
+        if (a->export) setenv("SILVER_EXPORT_FORCE", "1", 1);
         chdir(share->chars);
         if (lib) {
             // a library has no main: module init runs exports, exits 0
@@ -2696,6 +2703,8 @@ AU_EXPORT void silver_init(silver a) {
             if (file_exists("%o", host_dst))
                 build_silver_host(a);
         }
+        // --export: run export funcs even on a cached build, no launch
+        if (a->export) { silver_run_exports(a); return; }
         // cached build still runs by default (recovers is_live from the host binary)
         silver_live_run(a);
         return;
@@ -2865,7 +2874,8 @@ AU_EXPORT void silver_init(silver a) {
 
     // a live app build+runs by default when invoked directly; --run passes extra
     // args to it. libraries and imported sub-modules never auto-run.
-    silver_live_run(a);
+    // --export is a task: bake and stop, never launch
+    if (!a->export) silver_live_run(a);
 }
 
 
@@ -4252,6 +4262,33 @@ static enode worker_view(silver a, enode mem) {
     return mem;
 }
 
+Au_t alloc_arg(Au_t context, symbol ident, Au_t arg);
+
+// inline-lambda gather: first use of an enclosing local becomes a
+// context member, captured by value at the instance site
+static none gather_capture(silver a, string alpha, enode mem) { static int seq = 0; seq++;
+    Au_t m = mem->autype;
+    if (!m || m->member_type != AU_MEMBER_VAR) return;
+    if (m->is_static || m->is_const) return;
+    // internal to the lambda: an arg, a body local, or a prior capture
+    for (int i = len(a->lexical) - 1; i >= a->gather_base; i--) {
+        Au_t s = (Au_t)a->lexical->origin[i];
+        for (int j = 0; j < s->args.count; j++)
+            if ((Au_t)s->args.origin[j] == m) return;
+        for (int j = 0; j < s->members.count; j++)
+            if ((Au_t)s->members.origin[j] == m) return;
+    }
+    if (find_member(a->autype, cstring(alpha), AU_MEMBER_VAR, 0, false) == m)
+        return; // module globals stay direct
+    validate(!mem->target,
+        "cannot capture member '%o' — copy it to a local first", alpha);
+    if (find_member(a->gather_fn, cstring(alpha), AU_MEMBER_VAR, 0, false))
+        return;
+    Au_t cap = alloc_arg(a->gather_fn, cstring(alpha), (Au_t)au_arg((Au)m));
+    cap->meta = m->meta;
+    micro_push((micro_*)&a->gather_fn->members, (Au)cap);
+}
+
 enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_mdl, bool in_ref) { static int seq = 0; seq++;
     token pk1 = peek(a);
     OPType assign_enum = OPType__undefined;
@@ -4386,6 +4423,9 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
                         mem = access((enode)scope_mdl, alpha);
                 }
                 mem = worker_view(a, mem);
+
+                if (a->gather_fn && mem && instanceof(mem, enode))
+                    gather_capture(a, alpha, (enode)mem);
 
                 // first token + : means new declaration — but only at expression level 0
                 if (first && mem && next_is(a, ":") && a->expr_level == 0) {
@@ -5241,6 +5281,11 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
     if (!cmode && next_is(a, "lambda")) {
         push_current(a);
         consume(a, Syntax__none);
+        // lambda [ args ] body — inline function; copies in what it uses
+        if (next_is(a, "[")) {
+            pop_tokens(a, true);
+            return parse_inline_lambda(a);
+        }
         string fname = peek_alpha(a);
         Au_t   fau   = fname ? lexical(a->lexical, cstring(fname)) : null;
         // a func, or the head of a member chain (obj.method) — not a type name
@@ -5479,6 +5524,13 @@ enode parse_statement(silver a)
         if (next_is(a, "switch")) return parse_switch (a);
         if (read_if(a, "asm"))    return parse_asm    (a, null);
         if (next_is(a, "memcpy") || next_is(a, "memset")) return parse_memop(a);
+        if (next_is(a, "log")) {
+            // log[ x ] stays the math builtin; log <expr> is the logger
+            token t1 = element(a, 1);
+            bool ident_use = t1 && (eq(t1, "[") || eq(t1, ".") || eq(t1, ":") ||
+                index_of(assign, (Au)t1) >= 0);
+            if (!ident_use) return parse_log(a);
+        }
     }
     
     if (next_is(a, "ifdef"))  return parse_ifdef_else(a, false);
@@ -6388,6 +6440,16 @@ etype read_etype(silver a, array* p_expr) { sequencer
                     mdl = (etype)etype_prep((aether)a, au);
             }
         } else if (read_if(a, "lambda")) {
+            // lambda [ name: type ] body — an inline literal, not a type
+            if (next_is(a, "[")) {
+                token t1 = element(a, 1);
+                token t2 = element(a, 2);
+                if ((t1 && eq(t1, "]")) ||
+                    (t1 && isalpha(t1->chars[0]) && t2 && eq(t2, ":"))) {
+                    pop_tokens(a, false);
+                    return null;
+                }
+            }
             // `lambda fname [ ctx ]` instances one from a func — that is
             // an expression, not a type; leave it for read_enode
             string l_pk  = peek_alpha(a);
@@ -8073,6 +8135,131 @@ enode eshape_from_indices(aether a, array indices);
 
 enode enode_shape(enode);
 
+// instance an inline lambda: context values re-resolve by capture name
+static enode inline_lambda_instance(silver a, efunc fmem) { static int seq = 0; seq++;
+    array captures = array(alloc, 8);
+    members(fmem->autype, m) {
+        if (m->member_type != AU_MEMBER_VAR) continue;
+        enode oe = (enode)rlookup((aether)a, string(m->ident));
+        validate(oe, "lambda capture '%s' not in scope", m->ident);
+        push(captures, (Au)oe);
+    }
+    return e_create((aether)a, (etype)fmem, (Au)captures, false);
+}
+
+// lambda [ args ] body — the body parses once (no_build) to gather its
+// captures at resolve time; the fn is memoized by its bracket token so
+// type-inference re-parses reuse it instead of defining twice
+static enode parse_inline_lambda(silver a) { static int seq = 0; seq++;
+    token key = peek(a);
+    if (a->inline_lambdas) {
+        efunc prior = (efunc)get(a->inline_lambdas, (Au)_i64((i64)(size_t)key));
+        if (prior) {
+            read_within(a);
+            if (read_if(a, "->")) read_etype(a, null);
+            read_body(a);
+            return inline_lambda_instance(a, prior);
+        }
+    }
+    efunc encl = context_func(a);
+    validate(encl, "inline lambda requires an enclosing function");
+    validate(!a->gather_fn, "inline lambda inside an inline lambda is not supported");
+
+    a->lambda_ordinal++;
+    string lname = f(string, "%s_lam%i", encl->autype->ident, a->lambda_ordinal);
+
+    // the gather runs on a scratch fn: anything resolution registers
+    // against it stays orphaned, so the real fn builds clean
+    Au_t scratch = def(null, cstring(f(string, "%o_gather", lname)),
+        AU_MEMBER_FUNC, AU_TRAIT_LAMBDA);
+    scratch->context = encl->autype;
+    scratch->module  = a->autype;
+
+    validate(read_if(a, "["), "expected [ args ] after lambda");
+    array arg_names = array(alloc, 8);
+    array arg_types = array(alloc, 8);
+    bool first_arg = true;
+    while (!read_if(a, "]")) {
+        validate(first_arg || read_if(a, ","), "expected , between lambda args");
+        string n = read_alpha(a);
+        validate(n, "expected arg name in lambda args");
+        validate(read_if(a, ":"), "expected : after lambda arg %o", n);
+        etype t = read_etype(a, null);
+        validate(t, "expected type for lambda arg %o", n);
+        def_arg(scratch, cstring(n), t->autype, 0);
+        push(arg_names, (Au)n);
+        push(arg_types, (Au)t);
+        first_arg = false;
+    }
+    if (read_if(a, "->")) {
+        etype rt = read_etype(a, null);
+        validate(rt, "expected return type after ->");
+        scratch->rtype = rt->autype;
+    }
+    array body = (array)hold(read_body(a));
+    validate(body && len(body), "expected lambda body");
+
+    push_scope(a, (Au)scratch, 40);
+    // def-target buffer: keeps parse_statements' namespace out of the
+    // fn members, which are exactly the context member list
+    Au_t ns = def(null, null, AU_MEMBER_NAMESPACE, 0);
+    ns->context = encl->autype;
+    statements sblock = statements(mod, (aether)a, autype, ns);
+    push_scope(a, (Au)sblock, 41);
+
+    bool  nb  = a->no_build;         a->no_build        = true;
+    i32   el  = a->expr_level;       a->expr_level      = 0;
+    enode lr  = a->last_return;      a->last_return     = null;
+    enode lsr = a->last_sub_return;  a->last_sub_return = null;
+    token so  = a->statement_origin;
+    bool  ehr = encl->autype->has_return;
+    a->gather_fn   = scratch;
+    a->gather_base = len(a->lexical) - 2;
+    push_tokens(a, (tokens)body, 0);
+    parse_statements(a);
+    pop_tokens(a, false);
+    a->gather_fn        = null;
+    a->no_build         = nb;
+    a->expr_level       = el;
+    a->last_return      = lr;
+    a->last_sub_return  = lsr;
+    a->statement_origin = so;
+    encl->autype->has_return = ehr;
+    pop_scope(a); // sblock
+    pop_scope(a); // scratch
+
+    // the real fn: fresh aus so no gather-time registration shadows it
+    Au_t fn_au = def(null, cstring(lname), AU_MEMBER_FUNC, AU_TRAIT_LAMBDA);
+    fn_au->context = encl->autype;  // names the context struct; no membership
+    fn_au->module  = a->autype;
+    fn_au->rtype   = scratch->rtype ? scratch->rtype : etypeid(none)->autype;
+    for (int i = 0; i < len(arg_names); i++)
+        def_arg(fn_au, cstring((string)get(arg_names, i)),
+            ((etype)get(arg_types, i))->autype, 0);
+    for (int i = 0; i < scratch->members.count; i++) {
+        Au_t sm  = (Au_t)scratch->members.origin[i];
+        Au_t cap = alloc_arg(fn_au, sm->ident, sm->src);
+        cap->meta = sm->meta;
+        micro_push((micro_*)&fn_au->members, (Au)cap);
+    }
+
+    efunc fmem = efunc(
+        mod,    (aether)a,
+        autype, fn_au,
+        body,   (tokens)body,
+        remote_code, false,
+        has_code,    true,
+        used,   true,
+        target, null);
+    implement(fmem, false);
+
+    if (!a->inline_lambdas)  a->inline_lambdas  = (map)hold((Au)map(hsize, 16));
+    if (!a->pending_lambdas) a->pending_lambdas = (array)hold((Au)array(alloc, 8));
+    set(a->inline_lambdas, (Au)_i64((i64)(size_t)key), (Au)fmem);
+    push(a->pending_lambdas, (Au)fmem);
+    return inline_lambda_instance(a, fmem);
+}
+
 static enode parse_create_lambda(silver a, enode mem) {
     validate(read_if(a, "["), "expected [ context ] after lambda");
 
@@ -9456,7 +9643,14 @@ void silver_build_user_initializer(silver a, enode prop) {
             evar instance = (evar)u(enode, (Au_t)f);
             enode L = access(instance, string(prop->autype->ident));
             enode set = is_set((enode)instance, (evar)prop);
+            // binding stamp: member defaults log as 'Class:member'
+            a->bind_name   = prop->autype->ident;
+            a->bind_holder = prop->autype->context;
+            a->bind_au     = prop->autype->src;
             assign_if_cond((aether)a, (enode)L, set, set_if);
+            a->bind_name   = null;
+            a->bind_holder = null;
+            a->bind_au     = null;
 
         } else {
 
@@ -10175,8 +10369,8 @@ void build_fn(silver a, efunc f, callback preamble, callback postamble) { sequen
 
         // we need to initialize the schemas first, then we can actually perform user-based inits
         if (f->autype->is_mod_init) {
-            build_module_initializer(a, (enode)f);
-            // emit setenv calls for exported environment variables
+            // exported env vars FIRST: the expect tests the initializer
+            // tail runs (and any init code) must see them set
             silver og = a->is_external ? a->is_external : a;
             exports exp = (exports)get(og->exports, (Au)string(a->name->chars));
             if (exp && exp->env_vars) {
@@ -10186,6 +10380,7 @@ void build_fn(silver a, efunc f, callback preamble, callback postamble) { sequen
                     e_setenv((aether)a, key->chars, val->chars);
                 }
             }
+            build_module_initializer(a, (enode)f);
         }
 
         // before the preamble we handle guard
@@ -10283,6 +10478,14 @@ void build_fn(silver a, efunc f, callback preamble, callback postamble) { sequen
     // safety: ensure every function with code has a terminator on its last block
     if (f->has_code)
         aether_ensure_terminator((aether)a, (enode)f);
+
+    // inline lambdas found in this body build once it completes
+    while (a->pending_lambdas && len(a->pending_lambdas)) {
+        efunc lf = (efunc)hold(get(a->pending_lambdas, 0));
+        remove(a->pending_lambdas, 0);
+        build_fn(a, lf, null, null);
+        drop((Au)lf);
+    }
 }
 
 /// phase 1: parse the record body so all members are registered
@@ -10375,14 +10578,30 @@ array silver_parse_const(silver a, array tt) {
     return res;
 }
 
+// log <expr>: prints under the target object's binding stamp
+enode parse_log(silver a) {
+    consume(a, Syntax__keyword);
+    a->expr_level++;
+    enode msg = parse_expression(a, etypeid(string), false, true);
+    a->expr_level--;
+    efunc f    = context_func(a);
+    enode self = (f && f->target) ? (enode)f->target : null;
+    return e_log((aether)a, self, msg);
+}
+
 enode parse_return(silver a) {
-    etype rtype = return_type(a);
-    bool  is_v  = is_void(rtype);
+    // inline-lambda gather: rtype comes from (or is set by) this return
+    etype rtype = a->gather_fn ?
+        (a->gather_fn->rtype ? u(etype, a->gather_fn->rtype) : null) :
+        return_type(a);
+    bool  is_v  = rtype ? is_void(rtype) : !a->gather_fn;
     efunc ctx   = context_func(a);
     consume(a, Syntax__keyword);
     a->expr_level++;
     enode expr  = is_v ? null : parse_expression(a, rtype, false, true);
     a->expr_level--;
+    if (a->gather_fn && !a->gather_fn->rtype && expr)
+        a->gather_fn->rtype = canonical(expr)->autype;
 
     Au_t au_top = top_scope(a);
     //catcher cat = u(catcher, au_top);
@@ -10391,7 +10610,8 @@ enode parse_return(silver a) {
     bool is_sub = e_fn_return(a, (Au)expr);
     if (!is_sub) {
         au_top->has_return = true;
-        if (ctx) ctx->autype->has_return = true;
+        if (a->gather_fn) a->gather_fn->has_return = true;
+        else if (ctx) ctx->autype->has_return = true;
         a->last_return = hold(e_noop(a, (etype)expr));
         return a->last_return;
     } else {
@@ -10693,7 +10913,19 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
                 mdl_field = val; // the map's value type from meta
             }
             a->statement_origin = hold(peek(a));
+            // a construction given for a prop pair stamps as 'Class:field'
+            cstr sv_name   = a->bind_name;
+            Au_t sv_holder = a->bind_holder;
+            Au_t sv_au     = a->bind_au;
+            if (!is_mdl_map && k && mdl_field && isa(k) == typeid(const_string)) {
+                a->bind_name   = ((const_string)k)->chars;
+                a->bind_holder = mdl->autype;
+                a->bind_au     = mdl_field->autype;
+            }
             v = (Au)parse_expression(a, mdl_field, true, true);
+            a->bind_name   = sv_name;
+            a->bind_holder = sv_holder;
+            a->bind_au     = sv_au;
             // load unloaded pointer values (e.g. opaque handle from new array offset)
             if (v && instanceof(v, enode) && !is_loaded(v) && is_ptr(v))
                 v = (Au)enode_value((enode)v, true);
@@ -11166,9 +11398,27 @@ enode silver_parse_assignment(silver a, enode mem, OPType op_val, bool is_const)
 
     bool is_explicit = is_explicit_ref(mem);
     bool is_compound = op_val > OPType__assign && op_val <= OPType__assign_left;
+
+    // binding stamp: a class construction here logs as 'Holder:ident'
+    bool stamp = false;
+    if (op_val == OPType__bind && mem->autype->ident) {
+        etype bt = bind_type ? bind_type : t;
+        if (bt && is_class(bt)) {
+            etype rec9     = context_record(a);
+            a->bind_name   = mem->autype->ident;
+            a->bind_holder = rec9 ? rec9->autype : a->autype;
+            a->bind_au     = bt->autype;
+            stamp = true;
+        }
+    }
     enode R = parse_expression(a, is_compound ? null :
         (is_explicit ? t : next_is(a, "[") ? t_expect : null),
         false, true);
+    if (stamp) {
+        a->bind_name   = null;
+        a->bind_holder = null;
+        a->bind_au     = null;
+    }
 
     // Handle Promotion and Inference for AU_MEMBER_DECL
     if (mem->autype->member_type == AU_MEMBER_DECL) {

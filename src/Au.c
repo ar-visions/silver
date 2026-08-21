@@ -3303,6 +3303,33 @@ Au alloc_new(Au_t type, num count, shape shape_data, Au_t meta_a, Au meta_b,
     return alloc(type, count, shape_data, meta_a, meta_b, source, line, seq);
 }
 
+// binding stamp: '<holder>:<bind>' names this object in au_log
+Au alloc_object(Au_t type, num count, shape shape_data, Au_t meta_a, Au meta_b,
+                symbol source, i32 line, i32 seq, symbol bind, Au_t holder) {
+    Au a  = alloc(type, count, shape_data, meta_a, meta_b, source, line, seq);
+    Au hd = header(a);
+    hd->bind   = (cstr)bind;   // emitted const: lives with the module
+    hd->holder = holder;
+    return a;
+}
+
+static char au_log_buf[1024];
+AU_EXPORT symbol au_log_last(void) { return au_log_buf; }
+
+// the binding stamp ('Holder:ident') prefixes every message
+AU_EXPORT none Au_log(Au a, symbol msg) {
+    Au hd = a ? header(a) : null;
+    if (hd && hd->bind && hd->holder && hd->holder->ident)
+        snprintf(au_log_buf, sizeof(au_log_buf), "%s:%s %s",
+            hd->holder->ident, hd->bind, msg);
+    else if (a)
+        snprintf(au_log_buf, sizeof(au_log_buf), "%s %s",
+            isa(a)->ident ? isa(a)->ident : "?", msg);
+    else
+        snprintf(au_log_buf, sizeof(au_log_buf), "%s", msg);
+    puts(au_log_buf);
+}
+
 // managed, but NOT pooled. managed==1 is the state the header comment already
 // names: out of the af vector, still refcounted. an object born at refs==0 is
 // pool garbage, and auto_free[false] frees it with Au_free -- not a drop -- so
