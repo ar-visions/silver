@@ -2310,7 +2310,12 @@ static LLVMValueRef const_cstr(aether a, cstr value, i32 len) { sequencer
 
 AU_EXPORT enode e_operand_primitive(aether a, Au op) {
     emit_guard;
-    if (a->no_build) return e_noop(a, u(etype, isa(op)));
+    if (a->no_build) {
+        // generate the type back: a node's own type, a literal's primitive
+        enode n = (enode)instanceof(op, enode);
+        if (n) return e_noop(a, (etype)n);
+        return e_noop(a, u(etype, isa(op)));
+    }
 
     Au_t t = isa(op);
          if (instanceof(op, enode) || instanceof(op, efunc)) return (enode)op;
@@ -3113,6 +3118,21 @@ AU_EXPORT enode aether_e_expect(aether a, enode cond, enode msg) {
     if (a->no_build) return e_noop(a, etypeid(bool));
     enode ctx = e_expect_begin(a, cond);
     return e_expect_end(a, ctx, msg);
+}
+
+// log: Au.log prints the message under the object's binding stamp
+AU_EXPORT enode aether_e_log(aether a, enode self, enode msg) {
+    emit_guard;
+    a->is_const_op = false;
+    if (a->no_build) return e_noop(a, etypeid(none));
+    debug_emit(a);
+    efunc f_log = (efunc)u(efunc,
+        find_member(etypeid(Au)->autype, "log", AU_MEMBER_FUNC, 0, false));
+    verify(f_log, "Au.log not found");
+    enode str_msg  = e_create(a, etypeid(string), (Au)msg, false);
+    enode cstr_msg = e_create(a, etypeid(cstr), (Au)str_msg, false);
+    enode target   = self ? self : e_null(a, etypeid(Au));
+    return e_fn_call(a, f_log, a(target, cstr_msg), false, false);
 }
 
 AU_EXPORT enode aether_e_fault(aether a, enode msg) {
@@ -5083,15 +5103,8 @@ AU_EXPORT enode aether_e_init(aether a, enode alloc, map props, efunc ctr, enode
 // ============================================================================
 enode e_create_from_map(aether a, etype t, map m) {
     bool  is_m = is_map(t);
-    efunc f_alloc    = (efunc)u(efunc, find_member(etypeid(Au)->autype, "alloc_new",  AU_MEMBER_FUNC, 0, false));
     efunc f_mset     = (efunc)u(efunc, find_member(etypeid(map)->autype, "set",       AU_MEMBER_FUNC, 0, false));
-    efunc cur = context_func(a);
-    enode n_src; Au n_line, n_seq;
-    alloc_origin_args(a, &n_src, &n_line, &n_seq);
-    enode res = e_fn_call(a, f_alloc, a(
-        e_typeid(a, t), _i32(1), e_null(a, etypeid(shape)),
-        e_meta_a_node(a, t->meta_a), e_meta_b_node(a, t->meta_b),
-        (Au)n_src, n_line, n_seq), false, false);
+    enode res = e_alloc(a, t, false);
     res->autype   = t->autype;
     res->meta_a = hold(t->meta_a);
     res->meta_b = hold(t->meta_b);
@@ -5949,15 +5962,27 @@ AU_EXPORT void alloc_origin_args(aether a, enode* out_src, Au* out_line, Au* out
 AU_EXPORT enode aether_e_alloc(aether a, etype mdl, bool no_pool) {
     // no_pool: allocate out of the auto-free vector. the pool frees anything
     // it holds at refs==0 with Au_free, behind the refcount's back
+    // binding stamp: the declaration names this construction for au_log
+    etype holder_t = a->bind_holder ? u(etype, a->bind_holder) : null;
+    bool  stamped  = !no_pool && a->bind_name && a->bind_au && holder_t &&
+        au_arg_type((Au)mdl->autype) == au_arg_type((Au)a->bind_au);
     efunc f_alloc = (efunc)u(efunc,
-        find_member(etypeid(Au)->autype, no_pool ? "alloc_new_np" : "alloc_new",
-                    AU_MEMBER_FUNC, 0, false));
+        find_member(etypeid(Au)->autype,
+            stamped ? "alloc_object" : (no_pool ? "alloc_new_np" : "alloc_new"),
+            AU_MEMBER_FUNC, 0, false));
     enode n_src; Au n_line, n_seq;
     alloc_origin_args(a, &n_src, &n_line, &n_seq);
-    enode res = e_fn_call(a, f_alloc, a(
+    array alloc_args = a(
         e_typeid(a, mdl), _i32(0), e_null(a, etypeid(shape)),
         e_meta_a_node(a, mdl->meta_a), e_meta_b_node(a, mdl->meta_b),
-        (Au)n_src, n_line, n_seq ), false, false);
+        (Au)n_src, n_line, n_seq );
+    if (stamped) {
+        push(alloc_args, (Au)e_operand(a,
+            (Au)const_string(chars, a->bind_name), null));
+        push(alloc_args, (Au)e_typeid(a, holder_t));
+        a->bind_name = null; // one construction per declaration
+    }
+    enode res = e_fn_call(a, f_alloc, alloc_args, false, false);
     res->autype = is_class(mdl) ? au_arg_type((Au)mdl->autype) : pointer(a, (Au)mdl)->autype;
     return res;
 }
@@ -10882,7 +10907,7 @@ AU_EXPORT none enode_init(enode n) {
     // provided by the constructor — result nodes built via value(m, vr) reuse
     // the operand's arg autype, and clobbering here replaced their computed
     // instruction with LLVMGetParam(fn, 0) (the self pointer)
-    if (is_func((Au)n->autype->context) && !n->symbol_name && !_llvalue((enode)n)) {
+    if (!a->no_build && is_func((Au)n->autype->context) && !n->symbol_name && !_llvalue((enode)n)) {
         int offset = 0;
 
         if (is_lambda((Au)n->autype->context))

@@ -200,6 +200,7 @@ intern func c_add   [ i32, i32 ] -> i32          # features.c
 intern func c_scale [ i32, i32 ] -> i32
 intern func c_len   [ cstr ] -> i32              # silver string in
 intern func c_rss_kb [] -> i64                   # resident memory, KB
+intern func c_log_last [] -> cstr                # last au_log line
 intern func c_fill  [ @i32, i32, i32 ] -> none   # writes through a ref
 intern func cc_mul  [ i32, i32 ] -> i32          # features.cc
 intern func cc_pow2 [ i32 ] -> i32
@@ -257,7 +258,9 @@ export func bake_greeting []
     stamp : string '{u64[ @bake_text ]}'
     sp : path '{path.path_share_path[]}/data/baked.hash'
     op : path '{path.path_share_path[]}/data/baked.txt'
-    if [ sp.exists[] && op.exists[] ]
+    # silver --export forces the bake: skip the stamp short-circuit
+    force : getenv[ 'SILVER_EXPORT_FORCE' ]
+    if [ !force && sp.exists[] && op.exists[] ]
         old : string [ sp.load[ typeid[string], null ] ]
         if [ old && old == stamp ]
             puts 'features: baked artifact current'
@@ -612,6 +615,44 @@ expect func t_lambda_ctx_drop [] -> bool
     Au.auto_free[ false ]
     reaped: i64 [ payload_dropped - freed_ctx ]
     return r == 2 && q == 2 && freed_ctx == 1 && reaped == 1 && grew < 2048
+
+# log prints under the object's binding stamp: the declaration that
+# constructed it names it 'Holder:ident'
+class Chirper
+    public tone : i32
+
+    func chirp [] -> none
+        log 'tone {tone}'
+
+class Nest
+    public egg : Chirper [ tone: 3 ]
+
+expect func t_log [] -> bool
+    b: Chirper [ tone: 7 ]
+    b.chirp[ ]                      # local decl stamps 'features:b'
+    s1: string [ c_log_last[ ] ]
+    n: Nest [ ]
+    n.egg.chirp[ ]                  # member default stamps 'Nest:egg'
+    s2: string [ c_log_last[ ] ]
+    n2: Nest [ egg: Chirper [ tone: 5 ] ]
+    n2.egg.chirp[ ]                 # caller prop pair stamps the same
+    s3: string [ c_log_last[ ] ]
+    log 'sum {7 + 3}'               # free function: message, no stamp
+    s4: string [ c_log_last[ ] ]
+    return s1 == 'features:b tone 7' && s2 == 'Nest:egg tone 3' &&
+           s3 == 'Nest:egg tone 5' && s4 == 'sum 10'
+
+# an inline lambda declares its args; everything else the body uses
+# is copied into its context at the instance site
+expect func t_lambda_inline [] -> bool
+    base: i64 [ 100 ]
+    f: lambda [ n: i64 ]
+        return n * 2 + base
+    r: f[ 4 ]                       # 4 * 2 + 100
+    base = 50                       # copied at instance — r2 unchanged
+    r2: f[ 4 ]
+    p: apply_step[ f, 6 ]           # same lambda type as a named one
+    return r == 108 && r2 == 108 && p == 112
 
 expect func t_companions [] -> bool
     r1: c_add[ 40, 2 ]              # .c companion

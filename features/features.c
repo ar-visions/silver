@@ -32,3 +32,7 @@ int c_len(const char* s) {
 void c_fill(int* out, int n, int base) {
     for (int i = 0; i < n; i++) out[i] = base + i;
 }
+
+/* last line the Au logger produced */
+const char* au_log_last(void);
+const char* c_log_last(void) { return au_log_last(); }

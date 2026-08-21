@@ -335,8 +335,6 @@ class shader
         return index
 
     intern func reload [ ] -> bool
-        puts 'VK_LAYER_PATH={getenv[ 'VK_LAYER_PATH' ]}'
-
         paths:  array path [ vert, frag, comp ]
         values: new VkShaderModule[3] [ vk_vert, vk_frag, vk_comp ]
         found:      false

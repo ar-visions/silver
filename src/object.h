@@ -168,6 +168,8 @@ typedef struct _object {
     u64             iflags;
     Au_t            meta_a;
     struct _Au*     meta_b;
+    cstr            bind;
+    Au_t            holder;
     struct _object* f;
 } *object;
 
