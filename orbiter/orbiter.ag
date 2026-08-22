@@ -1325,6 +1325,8 @@ element orbiter : trinity # implements compiler
     intern angle_ix      : i32 [ 1 ]
     # frost stage 0..2 (frost/blur/clear), pushed to ux.frost_mode
     intern frost_ix      : i32
+    intern frost_dbg9    : i32 [ -9 ]
+    intern frost_dbg8    : i32 [ -9 ]
 
     func init []
         au_live_set_defer[ 1 ]
@@ -2136,9 +2138,9 @@ element orbiter : trinity # implements compiler
         w8 : vec Au []
         w8.push[ av ]
         if [ !attach_tasks ] attach_tasks = vec async []
-        attach_tasks.push[ async [ target: a, work_fn: @attach_work, work: w8 ] ]
+        attach_tasks.push[ async [ target: a, work_fn: lambda attach_work[ a ], work: w8 ] ]
 
-    func attach_work [ arg: object ]
+    func attach_work [ arg: object :: o: orbiter ]
         av : AppView [ arg ]
         if [ !av ] return
         pid : i32 [ host_app_pid[ av.slot ] ]
@@ -2148,11 +2150,11 @@ element orbiter : trinity # implements compiler
             av.note      = ''
             return
         loc : path
-        ps  : string '{startup_path}/install/build/{mod}'
+        ps  : string '{o.startup_path}/install/build/{mod}'
         l   : path [ ps.chars ]
         if [ l.exists[] ] loc = l
         if [ !loc ]
-            ps2 : string '{startup_path}/platform/native/build/{mod}'
+            ps2 : string '{o.startup_path}/platform/native/build/{mod}'
             l2  : path [ ps2.chars ]
             if [ l2.exists[] ] loc = l2
         if [ !loc ]
@@ -2160,7 +2162,7 @@ element orbiter : trinity # implements compiler
             av.attaching = false
             av.note      = ''
             return
-        d : dbg [ location: loc, target: a, auto_start: false ]
+        d : dbg [ location: loc, target: o, auto_start: false ]
         d.attach[ pid ]
         if [ !d.active ]
             kill[ pid, SIGCONT ]
@@ -2172,14 +2174,14 @@ element orbiter : trinity # implements compiler
         if [ av.src ]
             ap9 : av.src.parent_dir[]
             if [ ap9 ] adir9 = '{ap9}'
-        sync_breakpoints[ d, adir9 ]
+        o.sync_breakpoints[ d, adir9 ]
         d.cont[]
         # clear the pre-init SIGSTOP group-stop; cont alone won't
         kill[ pid, SIGCONT ]
         puts 'attach_appview: attached {mod} pid={pid}'
-        attach_mod     = mod
-        attach_av      = av
-        attach_pending = d
+        o.attach_mod     = mod
+        o.attach_av      = av
+        o.attach_pending = d
 
     # the worker never touches debuggers/active_target — the map is read by
     # the paint thread, so the finished debugger lands here instead
@@ -2492,7 +2494,7 @@ element orbiter : trinity # implements compiler
         index_building = true
         work : vec Au []
         work.push[ dirs ]
-        index_task     = async [ target: a, work_fn: @index_work, work: work ]
+        index_task     = async [ target: a, work_fn: lambda index_work[ a ], work: work ]
 
     # a git repo indexes by ls-files: everything gitignored stays out
     func index_repo [ rp: path, cap: i32 ] -> bool
@@ -2505,22 +2507,22 @@ element orbiter : trinity # implements compiler
         index_lock.unlock[]
         return over
 
-    func index_work [ dirs: vec path ] -> none
+    func index_work [ dirs: vec path :: o: orbiter ] -> none
         stack : vec path []
         repos : vec path []
-        cap : i32 [ (max_search > 0) ? max_search : 400000 ]
+        cap : i32 [ (o.max_search > 0) ? o.max_search : 400000 ]
         for [ r: path ] in dirs
             g0 : path '{r}/.git'
             if [ g0.exists[] ]
-                index_repo[ r, cap ]
+                o.index_repo[ r, cap ]
             el
                 stack.push[ r ]
-        while [ !index_cancel ]
+        while [ !o.index_cancel ]
             if [ stack.count == 0 ]
                 # main tree exhausted → deferred repositories, by ls-files
                 if [ repos.count == 0 ] break
                 for [ rp: path ] in repos
-                    if [ !index_cancel ] index_repo[ rp, cap ]
+                    if [ !o.index_cancel ] o.index_repo[ rp, cap ]
                 repos = vec path []
                 continue
             n : i32 [ stack.count - 1 ]
@@ -2538,26 +2540,26 @@ element orbiter : trinity # implements compiler
                             continue
                         gp : path '{e}/.git'
                         if [ gp.exists[] ]
-                            if [ search_external ]
+                            if [ o.search_external ]
                                 repos.push[ e ]
                         el
                             stack.push[ e ]
                     el
                         found.push[ e ]
                 if [ found.count > 0 ]
-                    index_lock.lock[]
+                    o.index_lock.lock[]
                     for [ f: path ] in found
-                        file_index.push[ f ]
-                    over : bool [ file_index.count >= cap ]
-                    index_lock.unlock[]
+                        o.file_index.push[ f ]
+                    over : bool [ o.file_index.count >= cap ]
+                    o.index_lock.unlock[]
                     if [ over ] break
-        index_lock.lock[]
-        index_building = false
-        index_lock.unlock[]
+        o.index_lock.lock[]
+        o.index_building = false
+        o.index_lock.unlock[]
 
     func start_watching []
         for [ d: path ] in search_dirs
-            iw : watch [ res: d, callback: @on_index_change, argument: a ]
+            iw : watch [ res: d, callback: lambda on_index_change[ a ] ]
             iw.start[]
             index_watches += iw
 
@@ -2579,8 +2581,8 @@ element orbiter : trinity # implements compiler
         start_watching[]
         if [ find_text && find_text.count > 0 ] index_research = true
 
-    func on_index_change [ changed: Au ] -> none
-        index_dirty = true
+    func on_index_change [ changed: Au :: o: orbiter ] -> none
+        o.index_dirty = true
 
     public func on_unload [ ]
         save_session[]
@@ -2607,6 +2609,8 @@ element orbiter : trinity # implements compiler
         out : list string []
         if [ index_dirty && !index_building ]
             start_index[]
+        # a search during the build re-runs once the index lands
+        if [ index_building ] index_research = true
         tiers   : i32 [ 32 ]
         matches : vec string []
         dists   : vec i32 []
@@ -4737,6 +4741,10 @@ element orbiter : trinity # implements compiler
             if [ band_h_save == 0 ] save_session[]
         frame_no9 += 1
         if [ frame_no9 <= 30 ] puts 'frame {frame_no9} at {Au.epoch_millis[]}'
+        if [ frost_dbg9 != frost_ix || (ux && frost_dbg8 != ux.frost_mode) ]
+            puts 'FROST ix={frost_ix} mode={(ux) ? ux.frost_mode : -9} eff={(ux) ? ux.frost_eff[] : -9}'
+            frost_dbg9 = frost_ix
+            if [ ux ] frost_dbg8 = ux.frost_mode
         if [ ux ] ux.frost_mode = frost_ix
         speed_apply[]
         if [ ux ] ux.orbit_mode = orbit_ix % orbit_list[].count

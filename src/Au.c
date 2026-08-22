@@ -1424,8 +1424,9 @@ AU_EXPORT none dealloc_type(Au_t type) {
     Au_drop((Au)type);
 }
 
+// silver-compiled lambdas take (context, args) — context first
 AU_EXPORT Au lambda_call(lambda a, Au args) {
-    return a->vfn(args, a->context);
+    return a->vfn(a->context, args);
 }
 
 AU_EXPORT bool lambda_cast_bool(lambda a) {
@@ -3405,6 +3406,30 @@ AU_EXPORT none au_vec_remove(Au v, i64 idx) {
     memmove(d + idx * stride, d + (idx + 1) * stride,
         (hd->count - idx - 1) * stride);
     hd->count--;
+}
+
+// element-wise equality: a vec must NEVER dispatch its own methods
+// (isa reports the element), so comparisons come through here
+AU_EXPORT bool au_vec_equals(Au a, Au b) {
+    if (a == b) return true;
+    if (!a || !b) return false;
+    if (!au_is_vec(a) || !au_is_vec(b)) return false;
+    Au ha = header(a), hb = header(b);
+    if (ha->count != hb->count) return false;
+    Au_t ea = (Au_t)ha->au, eb = (Au_t)hb->au;
+    if (ea != eb) return false;
+    i64  stride  = Au_vdata_stride(a);
+    bool managed = ea && ea->is_class && !ea->is_c;
+    if (!managed)
+        return memcmp(ha->data, hb->data, (size_t)(stride * ha->count)) == 0;
+    Au* xa = (Au*)ha->data;
+    Au* xb = (Au*)hb->data;
+    for (num i = 0; i < ha->count; i++) {
+        if (xa[i] == xb[i]) continue;
+        if (!xa[i] || !xb[i]) return false;
+        if (Au_compare(xa[i], xb[i]) != 0) return false;
+    }
+    return true;
 }
 
 // isa(vec) reports the ELEMENT type — the holder bit is the identity
@@ -6518,6 +6543,9 @@ AU_EXPORT Au list_value_by_index(list a, Au at_index) {
     sz at = 0;
     if (itype == typeid(sz)) {
         at = *(sz*)at_index;
+    } else if (itype == typeid(i64)) {
+        // silver integer literals box as i64
+        at = (sz)*(i64*)at_index;
     } else {
         if (itype != typeid(i32)) {
             fprintf(stderr, "invalid indexing type: %s (list count %i)\n",
@@ -8333,7 +8361,13 @@ static Au parse_agi_block(cstr scan, int indent, Au_t schema, Au_t meta, cstr* r
                 value = null;
             } else if (c0 == '[') {
                 // agi arrays allow bare symbols: [ inL, inR ]
+                // a vec-typed member packs the parsed list into a vec of
+                // its element — storing the array itself misreads later
+                Au_t vsrc = mem ? (mem->src ? mem->src : mem->type) : null;
+                while (vsrc && vsrc->member_type == AU_MEMBER_VAR) vsrc = vsrc->src;
+                bool vec_mem = vsrc && vsrc->is_data_user && vsrc->src;
                 Au_t elem = mem ? (mem->meta.b ? (Au_t)mem->meta.b : mem->meta.a) : meta;
+                if (!elem && vec_mem) elem = vsrc->src;
                 array arr = array(32);
                 cstr  p   = v + 1;
                 while (p < ve && *p != ']') {
@@ -8359,15 +8393,18 @@ static Au parse_agi_block(cstr scan, int indent, Au_t schema, Au_t meta, cstr* r
                         push(arr, (elem && elem != typeid(none) && elem != typeid(Au) && elem != typeid(string))
                             ? (Au)construct_with(elem, item, null) : item);
                 }
-                value = (Au)arr;
+                value = vec_mem ? au_vec_from((Au)arr, vsrc->src) : (Au)arr;
             } else if (structured || keyword) {
                 cstr vrem = v;
                 value = parse_object(v, mem_type, mem_meta, &vrem, null);
-            } else if (mem && mem->src == typeid(array)) {
-                // array member with a bare value: split on WHITESPACE ONLY into an
-                // array of the element type (the member's meta-b). commas are NOT
-                // separators — a build-arg token may contain them (-Wl,-rpath,...).
-                Au_t elem = (Au_t)mem->meta.b;
+            } else if (mem && (mem->src == typeid(array) ||
+                       (mem->src && mem->src->is_data_user && mem->src->src))) {
+                // array/vec member with a bare value: split on WHITESPACE ONLY
+                // into the element type (member meta-b, or the vec's element).
+                // commas are NOT separators — a build-arg token may contain
+                // them (-Wl,-rpath,...).
+                bool vec_mem = mem->src->is_data_user;
+                Au_t elem = vec_mem ? mem->src->src : (Au_t)mem->meta.b;
                 array arr  = array();
                 cstr  p    = v;
                 while (p < ve) {
@@ -8383,7 +8420,7 @@ static Au parse_agi_block(cstr scan, int indent, Au_t schema, Au_t meta, cstr* r
                     push(arr, (elem && elem != typeid(none) && elem != typeid(Au) && elem != typeid(string))
                         ? (Au)construct_with(elem, (Au)ws, null) : (Au)ws);
                 }
-                value = (Au)arr;
+                value = vec_mem ? au_vec_from((Au)arr, elem ? elem : typeid(Au)) : (Au)arr;
             } else {
                 string sv = string(alloc, vlen + 1);
                 memcpy((cstr)sv->chars, v, vlen);
@@ -8869,10 +8906,8 @@ static none async_runner(thread_t* thread) {
     async t = thread->t;
 
     for (; thread->next; unlock(thread->lock)) {
-        if (t->target)
-            ((void(*)(Au,Au))t->work_fn)(t->target, thread->w);
-        else
-            t->work_fn(thread->w);
+        // work_fn is a lambda: self/captures ride its context
+        lambda_call(t->work_fn, thread->w);
         // task boundary: drain THIS thread's auto-free pool (it is
         // __thread — nothing else ever collects a worker's temporaries)
         auto_free(false);
@@ -8906,6 +8941,8 @@ static Au async_work_get(async t, int i) {
 AU_EXPORT none async_init(async t) {
     i32    n = async_work_count(t);
     verify(n > 0, "no work given, no threads needed");
+    // work is a literal-Au member: own it by hand for the threads' life
+    hold(t->work);
     // we can then have a worker modulo restriction
     // (1 by default to grab the next available work; 
     //  or say modulo of work length to use a pool)
@@ -8933,6 +8970,7 @@ AU_EXPORT none async_dealloc(async t) {
         thread_t* thread = &t->threads[i];
         drop(thread->lock);
     }
+    drop(t->work);
 }
 
 typedef struct { callback fn; Au target; Au work; } au_spawn_t;
@@ -9057,8 +9095,9 @@ static void* watch_runner(void* arg) {
     while (a->running) {
         int len = read(fd, buf, sizeof(buf));
         if (len > 0) {
+            // callback is a lambda: captures ride its context
             if (a->running && a->callback)
-                ((callback)a->callback)((Au)a->argument, null);
+                lambda_call(a->callback, null);
         }
         // sliced, not one 200ms usleep: a single sleep made every watcher
         // take up to 200ms to notice running=false, and joining N of them

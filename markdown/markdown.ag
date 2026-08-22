@@ -1,0 +1,325 @@
+# markdown — a canvas renderer for .md files, hosted by orbiter
+export 1.0.0
+export extensions ['.md': FileType.ascii]
+
+import vec
+import img
+import trinity
+import <stdio.h>
+import <string.h>
+import <stdlib.h>
+
+# one styled run inside a block, produced by the inline parser
+class MdSpan
+    public text : string
+    public bold : bool
+    public ital : bool
+    public code : bool
+    public link : bool
+
+# one source block; layout wraps it against the live width at draw
+class MdBlock
+    public kind  : i32           # 0 para 1..6 heading 7 code 8 bullet 9 numbered 10 quote 11 hr
+    public text  : string
+    public depth : i32           # list nesting, from leading spaces
+    public num   : i32           # ordered-list number
+
+element markdown : trinity
+    public width   : i32 [ 980 ]
+    public height  : i32 [ 1180 ]
+    public title   : string [ 'markdown' ]
+    default src    : path
+    mutable blocks    : vec MdBlock
+    mutable src_mt    : i64
+    mutable src_watch : watch
+
+    # fires on the watcher thread: dirty the ELEMENT (draw is gated on
+    # pristine) and wake the window; draw's mtime check does the rest
+    func on_src_change [ changed: Au :: t: markdown ] -> none
+        t.pristine = false
+        if [ t.ux ] t.ux.will_animate = true
+
+    func init []
+        if [ src ] title = '{src.filename[]}'
+        if [ src && src.exists[] ]
+            # watch the DIRECTORY: editors replace files by rename,
+            # which silently ends a watch held on the file's inode
+            src_watch = watch [ res: src.parent_dir[], callback: lambda on_src_change[ a ] ]
+            src_watch.start[]
+
+    # ---- block parse: one pass over the lines ----
+
+    func flush_para [ para: string ]
+        if [ para.count > 0 ]
+            blocks.push[ MdBlock [ kind: 0, text: para ] ]
+
+    func parse_doc []
+        blocks = vec MdBlock []
+        if [ !src || !src.exists[] ] return
+        text : cast string [ src.load[ typeid[ string ], null ] ]
+        if [ !text ] return
+        lines : text.split[ '\n' ]
+        para    : string ''
+        quote   : string ''
+        code    : string ''
+        in_code : bool [ false ]
+        for [ i: i32 0, i < i32[ lines.count ], i += 1 ]
+            raw : string lines[ i ]
+            t   : string raw.trim[]
+            tn  : i32 [ i32 t.count ]
+            if [ in_code ]
+                if [ t.starts_with[ '```' ] ]
+                    blocks.push[ MdBlock [ kind: 7, text: code ] ]
+                    code    = ''
+                    in_code = false
+                el
+                    code = (code.count > 0) ? '{code}\n{raw}' : raw
+                continue
+            # a quote run ends on the first non-quote line
+            if [ quote.count > 0 && !t.starts_with[ '>' ] ]
+                blocks.push[ MdBlock [ kind: 10, text: quote ] ]
+                quote = ''
+            if [ t.starts_with[ '```' ] ]
+                flush_para[ para ]
+                para    = ''
+                in_code = true
+                continue
+            if [ tn == 0 ]
+                flush_para[ para ]
+                para = ''
+                continue
+            # heading: 1..6 hashes then a space
+            if [ t.chars[0] == '#' ]
+                h : i32 [ 0 ]
+                while [ h < tn && h < 6 && t.chars[h] == '#' ]
+                    h += 1
+                if [ h < tn && t.chars[h] == ' ' ]
+                    flush_para[ para ]
+                    para = ''
+                    blocks.push[ MdBlock [ kind: h, text: t.mid[ h + 1, tn - h - 1 ] ] ]
+                    continue
+            # horizontal rule: --- or *** (3 or more)
+            if [ tn >= 3 && (t.chars[0] == '-' || t.chars[0] == '*') ]
+                same : bool [ true ]
+                for [ k: i32 1, k < tn, k += 1 ]
+                    if [ t.chars[k] != t.chars[0] ] same = false
+                if [ same ]
+                    flush_para[ para ]
+                    para = ''
+                    blocks.push[ MdBlock [ kind: 11, text: '' ] ]
+                    continue
+            # blockquote lines accumulate into one block
+            if [ t.chars[0] == '>' ]
+                flush_para[ para ]
+                para = ''
+                q : string [ (tn > 1 && t.chars[1] == ' ') ? t.mid[ 2, tn - 2 ] : t.mid[ 1, tn - 1 ] ]
+                quote = (quote.count > 0) ? '{quote} {q}' : q
+                continue
+            # list depth from the raw line's leading spaces
+            sp : i32 [ 0 ]
+            rn : i32 [ i32 raw.count ]
+            while [ sp < rn && raw.chars[sp] == ' ' ]
+                sp += 1
+            # bullet: - * + then a space
+            if [ tn > 1 && (t.chars[0] == '-' || t.chars[0] == '*' || t.chars[0] == '+') && t.chars[1] == ' ' ]
+                flush_para[ para ]
+                para = ''
+                blocks.push[ MdBlock [ kind: 8, text: t.mid[ 2, tn - 2 ], depth: sp / 2 ] ]
+                continue
+            # numbered: digits then '. '
+            dg : i32 [ 0 ]
+            while [ dg < tn && t.chars[dg] >= '0' && t.chars[dg] <= '9' ]
+                dg += 1
+            if [ dg > 0 && dg + 1 < tn && t.chars[dg] == '.' && t.chars[dg + 1] == ' ' ]
+                flush_para[ para ]
+                para = ''
+                nv : i32 [ i32[ t.mid[ 0, dg ].integer_value[] ] ]
+                blocks.push[ MdBlock [ kind: 9, text: t.mid[ dg + 2, tn - dg - 2 ], depth: sp / 2, num: nv ] ]
+                continue
+            # plain text joins the open paragraph
+            para = (para.count > 0) ? '{para} {t}' : t
+        flush_para[ para ]
+        if [ quote.count > 0 ]  blocks.push[ MdBlock [ kind: 10, text: quote ] ]
+        if [ in_code && code.count > 0 ] blocks.push[ MdBlock [ kind: 7, text: code ] ]
+
+    # ---- inline parse: ** * ` [label](url) into styled spans ----
+
+    func spans_of [ s: string ] -> vec MdSpan
+        out : vec MdSpan []
+        n   : i32 [ i32 s.count ]
+        i   : i32 [ 0 ]
+        seg : i32 [ 0 ]
+        bold : bool [ false ]
+        ital : bool [ false ]
+        codef : bool [ false ]
+        while [ i < n ]
+            c : i32 [ s.chars[i] ]
+            if [ c == '`' ]
+                if [ i > seg ] out.push[ MdSpan [ text: s.mid[ seg, i - seg ], bold: bold, ital: ital, code: codef ] ]
+                codef = !codef
+                i   += 1
+                seg  = i
+                continue
+            if [ !codef && c == '*' ]
+                two : bool [ i + 1 < n && s.chars[i + 1] == '*' ]
+                if [ i > seg ] out.push[ MdSpan [ text: s.mid[ seg, i - seg ], bold: bold, ital: ital ] ]
+                if [ two ]
+                    bold = !bold
+                    i += 2
+                el
+                    ital = !ital
+                    i += 1
+                seg = i
+                continue
+            if [ !codef && c == '[' ]
+                cl : i32 [ i + 1 ]
+                while [ cl < n && s.chars[cl] != ']' ]
+                    cl += 1
+                if [ cl < n && cl + 1 < n && s.chars[cl + 1] == '(' ]
+                    fin : i32 [ cl + 2 ]
+                    while [ fin < n && s.chars[fin] != ')' ]
+                        fin += 1
+                    if [ fin < n ]
+                        if [ i > seg ] out.push[ MdSpan [ text: s.mid[ seg, i - seg ], bold: bold, ital: ital ] ]
+                        out.push[ MdSpan [ text: s.mid[ i + 1, cl - i - 1 ], link: true ] ]
+                        i   = fin + 1
+                        seg = i
+                        continue
+            i += 1
+        if [ i > seg ] out.push[ MdSpan [ text: s.mid[ seg, i - seg ], bold: bold, ital: ital, code: codef ] ]
+        return out
+
+    # ---- layout + paint: word wrap against the live width ----
+
+    func span_color [ s: MdSpan, body: string ] -> string
+        if [ s.link ] return '#7ab8ff'
+        if [ s.code ] return '#a8d8b0'
+        if [ s.bold ] return '#eef1f6'
+        if [ s.ital ] return '#d8d0c0'
+        return body
+
+    # draws one block's spans wrapped; returns the y after the last line
+    func draw_spans [ cv: Canvas, sp: vec MdSpan, x0: f32, y0: f32, xmax: f32, body: string, weight: bool, vh: f32 ] -> f32
+        lh : f32 [ round[ cv.get_line_height[] * 1.25 ] ]
+        x  : f32 [ x0 ]
+        y  : f32 [ y0 ]
+        sw : cv.measure_text[ ' ' ]
+        for [ s: MdSpan ] in sp
+            words : s.text.split[ ' ' ]
+            for [ k: i32 0, k < i32[ words.count ], k += 1 ]
+                wtx : string words[ k ]
+                if [ wtx.count == 0 ] continue
+                m : cv.measure_text[ wtx ]
+                if [ x + m.w > xmax && x > x0 ]
+                    x = x0
+                    y += lh
+                on : bool [ y > -lh && y < vh ]
+                if [ on && s.code ]
+                    cv.fill_color[ '#20242e' ]
+                    cv.rounded_rect[ x - 2.0, y + 1.0, m.w + 4.0, lh - 2.0, 4.0, 4.0, 4.0, 4.0 ]
+                    cv.paint[]
+                if [ on ]
+                    cv.fill_color[ span_color[ s, body ] ]
+                    r : rect [ x: x, y: y, w: m.w + 8.0, h: lh ]
+                    cv.draw_text[ wtx, r, vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+                    if [ s.bold || weight ]
+                        r2 : rect [ x: x + 0.6, y: y, w: m.w + 8.0, h: lh ]
+                        cv.draw_text[ wtx, r2, vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+                    if [ s.link ]
+                        cv.rect_to[ x, y + lh - 3.0, m.w, 1.0 ]
+                        cv.paint[]
+                x += m.w + sw.w
+        return y + lh
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen ] return
+        cv : Canvas w.screen
+        if [ !bounds ] return
+        # reparse when the file changes on disk — live preview
+        mt : i64 [ (src && src.exists[]) ? src.modified_time[] : 0 ]
+        if [ !blocks || mt != src_mt ]
+            src_mt = mt
+            parse_doc[]
+        cv.stroke_width[ 0.0 ]
+        cv.fill_color[ '#12141a' ]
+        cv.rect_to[ bounds.x, bounds.y, bounds.w, bounds.h ]
+        cv.paint[]
+        pad : f32 [ 28.0 ]
+        cw  : f32 [ bounds.w - pad * 2.0 ]
+        if [ cw > 860.0 ] cw = 860.0
+        x0  : f32 [ bounds.x + (bounds.w - cw) * 0.5 ]
+        y   : f32 [ bounds.y + pad - scroll.y ]
+        vh  : f32 [ bounds.y + bounds.h ]
+        if [ !blocks || blocks.count == 0 ]
+            cv.font_size[ 16 ]
+            cv.fill_color[ '#8892a4' ]
+            r0 : rect [ x: x0, y: y, w: cw, h: 24.0 ]
+            cv.draw_text[ (src) ? 'empty file: {src}' : 'no file — silver markdown <file.md>', r0, vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+            return
+        for [ b: MdBlock ] in blocks
+            if [ b.kind >= 1 && b.kind <= 6 ]
+                fs : i32 [ 16 ]
+                if [ b.kind == 1 ] fs = 29
+                el [ b.kind == 2 ] fs = 24
+                el [ b.kind == 3 ] fs = 20
+                el [ b.kind == 4 ] fs = 18
+                el                 fs = 16
+                cv.font_size[ fs ]
+                y += 10.0
+                y = draw_spans[ cv, spans_of[ b.text ], x0, y, x0 + cw, '#eef1f6', b.kind < 3, vh ]
+                if [ b.kind <= 2 && y > 0.0 && y < vh ]
+                    cv.fill_color[ '#262b36' ]
+                    cv.rect_to[ x0, y + 2.0, cw, 1.0 ]
+                    cv.paint[]
+                y += 8.0
+            el [ b.kind == 7 ]
+                cv.font_size[ 14 ]
+                clines : b.text.split[ '\n' ]
+                lh : f32 [ round[ cv.get_line_height[] * 1.3 ] ]
+                bh : f32 [ f32[ clines.count ] * lh + 16.0 ]
+                if [ y + bh > 0.0 && y < vh ]
+                    cv.fill_color[ '#1a1e28' ]
+                    cv.rounded_rect[ x0, y, cw, bh, 8.0, 8.0, 8.0, 8.0 ]
+                    cv.paint[]
+                cy : f32 [ y + 8.0 ]
+                cv.fill_color[ '#a8d8b0' ]
+                for [ k: i32 0, k < i32[ clines.count ], k += 1 ]
+                    if [ cy > -lh && cy < vh ]
+                        rc : rect [ x: x0 + 12.0, y: cy, w: cw - 24.0, h: lh ]
+                        cv.draw_text[ clines[ k ], rc, vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+                    cy += lh
+                y += bh + 12.0
+            el [ b.kind == 8 || b.kind == 9 ]
+                cv.font_size[ 16 ]
+                ix : f32 [ x0 + 22.0 + f32[ b.depth ] * 22.0 ]
+                if [ y > 0.0 && y < vh ]
+                    cv.fill_color[ '#8892a4' ]
+                    if [ b.kind == 8 ]
+                        cv.rounded_rect[ ix - 14.0, y + 9.0, 5.0, 5.0, 2.5, 2.5, 2.5, 2.5 ]
+                        cv.paint[]
+                    el
+                        rn : rect [ x: ix - 22.0, y: y, w: 20.0, h: 22.0 ]
+                        cv.draw_text[ '{b.num}.', rn, vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+                y = draw_spans[ cv, spans_of[ b.text ], ix, y, x0 + cw, '#c6ccd8', false, vh ]
+                y += 3.0
+            el [ b.kind == 10 ]
+                cv.font_size[ 16 ]
+                qy : f32 [ y ]
+                y = draw_spans[ cv, spans_of[ b.text ], x0 + 18.0, y, x0 + cw, '#9aa8bc', false, vh ]
+                if [ qy > 0.0 && qy < vh ]
+                    cv.fill_color[ '#3a4356' ]
+                    cv.rect_to[ x0 + 2.0, qy + 2.0, 3.0, y - qy - 4.0 ]
+                    cv.paint[]
+                y += 8.0
+            el [ b.kind == 11 ]
+                if [ y > 0.0 && y < vh ]
+                    cv.fill_color[ '#2a2f3a' ]
+                    cv.rect_to[ x0, y + 8.0, cw, 1.0 ]
+                    cv.paint[]
+                y += 22.0
+            el
+                cv.font_size[ 16 ]
+                y = draw_spans[ cv, spans_of[ b.text ], x0, y, x0 + cw, '#c6ccd8', false, vh ]
+                y += 9.0
+        # the base element scrolls anything with a content height
+        content_h = y + scroll.y - bounds.y + pad

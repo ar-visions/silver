@@ -65,6 +65,8 @@ struct dbg_state {
 
 extern "C" {
 
+static Au dbg_poll_thunk(Au ctx, Au w);
+
 DBG_API Au dbg_poll(dbg debug) {
     lldb::SBEvent event;
     while (debug->active) {
@@ -158,6 +160,9 @@ DBG_API Au dbg_poll(dbg debug) {
     return null;
 }
 
+// lambda vfn convention: (context, args) — the work item rides args
+static Au dbg_poll_thunk(Au ctx, Au w) { (void)ctx; return dbg_poll((dbg)w); }
+
 DBG_API none dbg_init(dbg debug) {
     static bool dbg_init = false;
     if (!dbg_init) {
@@ -223,7 +228,8 @@ DBG_API none dbg_init(dbg debug) {
 
     if (S(debug)->target.IsValid()) {
         debug->active        = true;
-        debug->poll          = construct(async, work, (Au)a((Au)debug), work_fn, (hook)dbg_poll);
+        debug->poll          = construct(async, work, (Au)a((Au)debug),
+            work_fn, (lambda)hold(lambda_instance(null, (callback)dbg_poll_thunk, null, null)));
         // NOTE: the inferior's stdout/stderr are NOT read here on an io thread —
         // they're the PTY masters (fifo_fd_out/err) and the host (orbiter) drains
         // them on its main/render thread straight into the project's console. that

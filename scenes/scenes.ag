@@ -1,6 +1,6 @@
 # backdrop scenes: exported for any app to read in at runtime
 export 0.1.0
-export scenes ['Earth', 'Moon', 'Mars', 'Terra', 'MilkyWay', 'Titan', 'Europa', 'Enceladus', 'Uranus', 'Neptune', 'Pluto']
+export scenes ['Earth', 'Moon', 'Mars', 'Terra', 'MilkyWay', 'Titan', 'Europa', 'Enceladus', 'Uranus', 'Neptune', 'Pluto', 'Synthwave']
 
 import vec
 import img
@@ -659,13 +659,13 @@ element EarthPrev
     public func on_unload [ ]
         if [ ux && ux.element_targets ] ux.element_targets.rm[ id ]
 
-    func load_bg [ arg: object ]
+    func load_bg [ arg: object :: t: EarthPrev ]
         t0 : i64 [ Au.epoch_millis[] ]
         puts 'scene load_bg start at {t0}'
-        build_models[]
+        t.build_models[]
         t1 : i64 [ Au.epoch_millis[] ]
         puts 'scene load_bg done in {t1 - t0}ms at {t1}'
-        ready = true
+        t.ready = true
 
     func draw [ w: Window ]
         animated = true
@@ -673,7 +673,7 @@ element EarthPrev
             loading = true
             w9 : vec Au []
             w9.push[ a ]
-            load_task = async [ target: a, work_fn: @load_bg, work: w9 ]
+            load_task = async [ target: a, work_fn: lambda load_bg[ a ], work: w9 ]
         if [ !ready ] return
         create_target[]
         orbit[]
@@ -1033,13 +1033,13 @@ element Moon
             '#ff7aa4cc':  '#b4b4b4cc'    # commit tab hover border
         ]
 
-    func load_bg [ arg: object ]
+    func load_bg [ arg: object :: t: Moon ]
         t0 : i64 [ Au.epoch_millis[] ]
         puts 'scene load_bg start at {t0}'
-        build_models[]
+        t.build_models[]
         t1 : i64 [ Au.epoch_millis[] ]
         puts 'scene load_bg done in {t1 - t0}ms at {t1}'
-        ready = true
+        t.ready = true
 
     func draw [ w: Window ]
         animated = true
@@ -1047,7 +1047,7 @@ element Moon
             loading = true
             w9 : vec Au []
             w9.push[ a ]
-            load_task = async [ target: a, work_fn: @load_bg, work: w9 ]
+            load_task = async [ target: a, work_fn: lambda load_bg[ a ], work: w9 ]
         if [ !ready ] return
         create_target[]
         orbit[]
@@ -1335,13 +1335,13 @@ element MilkyWay
         ]
 
 
-    func load_bg [ arg: object ]
+    func load_bg [ arg: object :: t: MilkyWay ]
         t0 : i64 [ Au.epoch_millis[] ]
         puts 'scene load_bg start at {t0}'
-        load_files[]
+        t.load_files[]
         t1 : i64 [ Au.epoch_millis[] ]
         puts 'scene load_bg done in {t1 - t0}ms at {t1}'
-        ready = true
+        t.ready = true
 
     func draw [ w: Window ]
         animated = true
@@ -1350,7 +1350,7 @@ element MilkyWay
             loading = true
             w9 : vec Au []
             w9.push[ a ]
-            load_task = async [ target: a, work_fn: @load_bg, work: w9 ]
+            load_task = async [ target: a, work_fn: lambda load_bg[ a ], work: w9 ]
         if [ !ready ] return
         if [ !built ] build_models[]
         create_target[]
@@ -1704,13 +1704,13 @@ element Titan
             '#ff7aa4cc':  '#ffd08acc'    # commit tab hover border
         ]
 
-    func load_bg [ arg: object ]
+    func load_bg [ arg: object :: t: Titan ]
         t0 : i64 [ Au.epoch_millis[] ]
         puts 'scene load_bg start at {t0}'
-        build_models[]
+        t.build_models[]
         t1 : i64 [ Au.epoch_millis[] ]
         puts 'scene load_bg done in {t1 - t0}ms at {t1}'
-        ready = true
+        t.ready = true
 
     func draw [ w: Window ]
         animated = true
@@ -1718,7 +1718,7 @@ element Titan
             loading = true
             w9 : vec Au []
             w9.push[ a ]
-            load_task = async [ target: a, work_fn: @load_bg, work: w9 ]
+            load_task = async [ target: a, work_fn: lambda load_bg[ a ], work: w9 ]
         if [ !ready ] return
         create_target[]
         orbit[]
@@ -2385,13 +2385,13 @@ element Enceladus
             '#ff7aa4cc':  '#a8e0f4cc'    # commit tab hover border
         ]
 
-    func load_bg [ arg: object ]
+    func load_bg [ arg: object :: t: Enceladus ]
         t0 : i64 [ Au.epoch_millis[] ]
         puts 'scene load_bg start at {t0}'
-        build_models[]
+        t.build_models[]
         t1 : i64 [ Au.epoch_millis[] ]
         puts 'scene load_bg done in {t1 - t0}ms at {t1}'
-        ready = true
+        t.ready = true
 
     func draw [ w: Window ]
         animated = true
@@ -2399,7 +2399,7 @@ element Enceladus
             loading = true
             w9 : vec Au []
             w9.push[ a ]
-            load_task = async [ target: a, work_fn: @load_bg, work: w9 ]
+            load_task = async [ target: a, work_fn: lambda load_bg[ a ], work: w9 ]
         if [ !ready ] return
         create_target[]
         orbit[]
@@ -3928,13 +3928,13 @@ element Europa
             '#ff7aa4cc':  '#a8e0f4cc'    # commit tab hover border
         ]
 
-    func load_bg [ arg: object ]
+    func load_bg [ arg: object :: t: Europa ]
         t0 : i64 [ Au.epoch_millis[] ]
         puts 'scene load_bg start at {t0}'
-        build_models[]
+        t.build_models[]
         t1 : i64 [ Au.epoch_millis[] ]
         puts 'scene load_bg done in {t1 - t0}ms at {t1}'
-        ready = true
+        t.ready = true
 
     func draw [ w: Window ]
         animated = true
@@ -3942,7 +3942,7 @@ element Europa
             loading = true
             w9 : vec Au []
             w9.push[ a ]
-            load_task = async [ target: a, work_fn: @load_bg, work: w9 ]
+            load_task = async [ target: a, work_fn: lambda load_bg[ a ], work: w9 ]
         if [ !ready ] return
         create_target[]
         orbit[]
@@ -7082,9 +7082,9 @@ element Terra
     public func on_unload [ ]
         if [ ux && ux.element_targets ] ux.element_targets.rm[ id ]
 
-    func load_bg [ arg: object ]
-        build_models[]
-        ready = true
+    func load_bg [ arg: object :: t: Terra ]
+        t.build_models[]
+        t.ready = true
 
     func draw [ w: Window ]
         animated = true
@@ -7092,7 +7092,7 @@ element Terra
             loading = true
             w9 : vec Au []
             w9.push[ a ]
-            load_task = async [ target: a, work_fn: @load_bg, work: w9 ]
+            load_task = async [ target: a, work_fn: lambda load_bg[ a ], work: w9 ]
         if [ !ready ] return
         create_target[]
         orbit[]
@@ -7779,9 +7779,9 @@ element Mars
             '#ff7aa4cc':  '#ffa068cc'    # commit tab hover border
         ]
 
-    func load_bg [ arg: object ]
-        build_models[]
-        ready = true
+    func load_bg [ arg: object :: t: Mars ]
+        t.build_models[]
+        t.ready = true
 
     func draw [ w: Window ]
         animated = true
@@ -7789,7 +7789,7 @@ element Mars
             loading = true
             w9 : vec Au []
             w9.push[ a ]
-            load_task = async [ target: a, work_fn: @load_bg, work: w9 ]
+            load_task = async [ target: a, work_fn: lambda load_bg[ a ], work: w9 ]
         if [ !ready ] return
         create_target[]
         orbit[]
@@ -8171,9 +8171,9 @@ element Uranus
     public func on_unload [ ]
         if [ ux && ux.element_targets ] ux.element_targets.rm[ id ]
 
-    func load_bg [ arg: object ]
-        build_models[]
-        ready = true
+    func load_bg [ arg: object :: t: Uranus ]
+        t.build_models[]
+        t.ready = true
 
     func draw [ w: Window ]
         animated = true
@@ -8181,7 +8181,7 @@ element Uranus
             loading = true
             w9 : vec Au []
             w9.push[ a ]
-            load_task = async [ target: a, work_fn: @load_bg, work: w9 ]
+            load_task = async [ target: a, work_fn: lambda load_bg[ a ], work: w9 ]
         if [ !ready ] return
         create_target[]
         orbit[]
@@ -8414,9 +8414,9 @@ element Neptune
     public func on_unload [ ]
         if [ ux && ux.element_targets ] ux.element_targets.rm[ id ]
 
-    func load_bg [ arg: object ]
-        build_models[]
-        ready = true
+    func load_bg [ arg: object :: t: Neptune ]
+        t.build_models[]
+        t.ready = true
 
     func draw [ w: Window ]
         animated = true
@@ -8424,7 +8424,7 @@ element Neptune
             loading = true
             w9 : vec Au []
             w9.push[ a ]
-            load_task = async [ target: a, work_fn: @load_bg, work: w9 ]
+            load_task = async [ target: a, work_fn: lambda load_bg[ a ], work: w9 ]
         if [ !ready ] return
         create_target[]
         orbit[]
@@ -8936,9 +8936,9 @@ element Earth
         ]
 
     # worker decodes files only; every vk object is built on main
-    func load_bg [ arg: object ]
-        load_files[]
-        ready = true
+    func load_bg [ arg: object :: t: Earth ]
+        t.load_files[]
+        t.ready = true
 
     func draw [ w: Window ]
         animated = true
@@ -8946,7 +8946,7 @@ element Earth
             loading = true
             w9 : vec Au []
             w9.push[ a ]
-            load_task = async [ target: a, work_fn: @load_bg, work: w9 ]
+            load_task = async [ target: a, work_fn: lambda load_bg[ a ], work: w9 ]
         if [ !ready ] return
         if [ !built ] build_models[]
         create_target[]
@@ -8986,3 +8986,215 @@ element Earth
         jungle.cam_pos = vec4f [ _eye.x, _eye.y, _eye.z, 1.0 ]
         jungle.sun_dir = vec4f [ 0.45, 0.35, 0.82, 0.0 ]
         jungle.time    = ux.time * 1000.0
+
+# ---- Synthwave: purple sky, comic two-tone mountains, a neon grid
+# with real world-width lines, bloomed and comb-filtered in post ----
+
+enum SynthSurface
+    color : 0
+
+ModelViewProject SynthGrid
+    mutable params : vec4f
+
+    attrib pos       : VertexInput    [ type:typeid[ vec3f ] ]
+    attrib uv        : VertexInput    [ type:typeid[ vec2f ] ]
+    attrib v_uv      : VertexOutput   [ type:typeid[ vec2f ] ]
+    attrib fragColor : FragmentOutput [ type:typeid[ vec4f ] ]
+
+    func init [ ]
+        model = mat4f.identity[]
+        eye:    vec3f [ 0.0, 0.0, 2.0 ]
+        center: vec3f [ 0.0, 0.0, 0.0 ]
+        up:     vec3f [ 0.0, 1.0, 0.0 ]
+        view  = mat4f.look_at[ eye, center, up ]
+        proj  = mat4f.ortho[ -1, 1, -1, 1, 0.1, 10.0 ]
+
+    func vertex [] -> GLSL none {
+        v_uv        = uv;
+        gl_Position = vec4(pos.x, pos.y, 0.0, 1.0);
+    }
+
+    func hash21 [ p: vec2f ] -> GLSL f32 {
+        return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+    }
+
+    # triangle waves, not sines: hard angular peaks, comic-book style
+    func ridge [ x: float, f1: float, f2: float, o: float ] -> GLSL f32 {
+        float t1 = abs(fract(x * f1 + o)       - 0.5) * 2.0;
+        float t2 = abs(fract(x * f2 + o * 2.7) - 0.5) * 2.0;
+        return t1 * 0.68 + t2 * 0.32;
+    }
+
+    func fragment [] -> GLSL none {
+        vec2  uv = v_uv;
+        float t  = ubo.time;
+        float H  = 0.60;                                  // horizon line
+        vec3  col;
+        if (uv.y < H) {
+            // sky: deep purple falling into a magenta horizon
+            float g   = uv.y / H;
+            vec3  top = vec3(0.055, 0.020, 0.100);
+            vec3  hor = vec3(0.420, 0.070, 0.480);
+            col = mix(top, hor, pow(g, 2.2));
+            // twinkling stars in the upper sky
+            vec2  cell = floor(uv * vec2(160.0, 90.0));
+            float h    = hash21(cell);
+            if (h > 0.978 && g < 0.75) {
+                float tw = 0.55 + 0.45 * sin(t * 3.0 + h * 40.0);
+                col += vec3(1.0, 0.9, 1.0) * (h - 0.978) * 34.0 * tw * (1.0 - g);
+            }
+            // mountains: TWO flat tones per layer — the slope facing the
+            // light takes the lit tone, the far slope stays in shadow
+            float e   = 0.004;
+            float r1a = ridge(uv.x,     1.7, 4.3, 11.0);
+            float r1b = ridge(uv.x + e, 1.7, 4.3, 11.0);
+            float m1  = H - 0.030 - r1a * 0.16;
+            if (uv.y > m1)
+                col = (r1b < r1a) ? vec3(0.30, 0.10, 0.40) : vec3(0.13, 0.045, 0.19);
+            float r2a = ridge(uv.x,     1.1, 3.1, 3.0);
+            float r2b = ridge(uv.x + e, 1.1, 3.1, 3.0);
+            float m2  = H - 0.004 - r2a * 0.10;
+            if (uv.y > m2)
+                col = (r2b < r2a) ? vec3(0.17, 0.05, 0.26) : vec3(0.06, 0.02, 0.10);
+            // the horizon burns through everything at the line itself
+            col += vec3(0.55, 0.12, 0.62) * exp((uv.y - H) * 26.0) * 0.55;
+        } else {
+            // the grid floor. line width is WORLD width: lines carry real
+            // volume — wide in front, vanishing thin at distance. world x
+            // scales by the window aspect so cells stay SQUARE on the floor
+            float py = uv.y - H;
+            float z  = 1.0 / (py + 0.02);
+            float ar = (ubo.params.x > 0.0) ? ubo.params.x : 1.778;
+            vec2  gp = vec2((uv.x - 0.5) * z * 1.6 * ar, z * 0.9 + t * 1.4);
+            vec2  d  = abs(fract(gp) - 0.5);
+            vec2  aa = fwidth(gp);
+            float lx = 1.0 - smoothstep(0.030 - aa.x, 0.030 + aa.x, d.x);
+            float ly = 1.0 - smoothstep(0.030 - aa.y, 0.030 + aa.y, d.y);
+            float ln = max(lx, ly);
+            col = vec3(0.085, 0.015, 0.120) + vec3(1.0, 0.55, 1.0) * ln * 1.2;
+            // distance folds the far grid into the horizon glow
+            float mist = exp(-py * 9.0);
+            col = mix(col, vec3(0.62, 0.16, 0.70), mist * 0.85);
+        }
+        fragColor = vec4(col, 1.0);
+    }
+
+ModelViewProject SynthPost
+    mutable params : vec4f          # x blur px  y height px  z chroma px  w glow
+
+    attrib color : LayoutBinding [ type:typeid[ SynthSurface ], id:SynthSurface.color, count:1, format: typeid[ rgba8 ] ]
+
+    attrib pos       : VertexInput    [ type:typeid[ vec3f ] ]
+    attrib uv        : VertexInput    [ type:typeid[ vec2f ] ]
+    attrib v_uv      : VertexOutput   [ type:typeid[ vec2f ] ]
+    attrib fragColor : FragmentOutput [ type:typeid[ vec4f ] ]
+
+    func init [ ]
+        model = mat4f.identity[]
+        eye:    vec3f [ 0.0, 0.0, 2.0 ]
+        center: vec3f [ 0.0, 0.0, 0.0 ]
+        up:     vec3f [ 0.0, 1.0, 0.0 ]
+        view  = mat4f.look_at[ eye, center, up ]
+        proj  = mat4f.ortho[ -1, 1, -1, 1, 0.1, 10.0 ]
+
+    func vertex [] -> GLSL none {
+        v_uv        = uv;
+        gl_Position = vec4(pos.x, pos.y, 0.0, 1.0);
+    }
+
+    func fragment [] -> GLSL none {
+        vec2 uv  = v_uv;
+        vec2 px  = vec2(1.0) / vec2(textureSize(color, 0));
+        vec3 base = texture(color, uv).rgb;
+        // a real gaussian blur at ubo.params.x pixels of radius
+        vec3  bl = vec3(0.0);
+        float ws = 0.0;
+        for (int i = -3; i <= 3; i++)
+        for (int j = -3; j <= 3; j++) {
+            float w = exp(-float(i * i + j * j) / 6.0);
+            bl += texture(color, uv + vec2(float(i), float(j)) * px * ubo.params.x).rgb * w;
+            ws += w;
+        }
+        bl /= ws;
+        // bloom rides the blur: squaring favors the bright neon
+        vec3 col = base + bl * bl * ubo.params.w;
+        // the comb: chroma taps split a few pixels left and right
+        float ch = ubo.params.z;
+        col.r = mix(col.r, texture(color, uv + vec2(ch * px.x, 0.0)).r, 0.5) + bl.r * bl.r * ubo.params.w * 0.5;
+        col.b = mix(col.b, texture(color, uv - vec2(ch * px.x, 0.0)).b, 0.5) + bl.b * bl.b * ubo.params.w * 0.5;
+        // paired scanlines finish the 80s screen
+        float ph = uv.y * ubo.params.y * 3.14159;
+        col *= 0.87 + 0.13 * sin(ph);
+        float vg = 1.0 - 0.35 * pow(length(uv - vec2(0.5)) * 1.3, 2.0);
+        fragColor = vec4(col * vg, 1.0);
+    }
+
+element Synthwave
+    frost : true
+    frost_sharp : true
+    mutable grid_shader : SynthGrid
+    mutable grid_model  : Model
+    mutable grid_render : Render
+    mutable post_shader : SynthPost
+    mutable post_model  : Model
+    mutable target      : Render
+    mutable last_rw     : i32
+    mutable last_rh     : i32
+
+    func create_target[]
+        if [ target ] return
+        grid_shader = SynthGrid [ vk: vk, name: 'synthgrid' ]
+        grid_model  = Model  [ w: ux, s: grid_shader ]
+        grid_render = Render [ vk: vk, w: ux, wscale: 1.0, models: [ grid_model ] ]
+        post_shader = SynthPost [ vk: vk, name: 'synthpost' ]
+        post_model  = Model  [ w: ux, s: post_shader,
+            samplers: map Texture[string] [ 'color': grid_render.color ] ]
+        target = Render [ vk: vk, w: ux, wscale: 1.0,
+            clear_color: vec4f [ 0.02, 0.0, 0.04, 1.0 ], models: [ post_model ] ]
+        target.hold[]
+        target.owner = a
+        ux.element_targets[ id ] = target
+
+    public func on_unload [ ]
+        if [ ux && ux.element_targets ] ux.element_targets.rm[ id ]
+
+    func draw [ w: Window ]
+        animated = true
+        create_target[]
+        # a resize recreates grid_render's color attachment: the post
+        # model's descriptor still holds the DESTROYED view — rebind it
+        rw9 : i32 [ i32[ ux.width ] ]
+        rh9 : i32 [ i32[ ux.height ] ]
+        if [ rw9 != last_rw || rh9 != last_rh ]
+            last_rw = rw9
+            last_rh = rh9
+            if [ post_model && grid_render ]
+                post_model.samplers[ 'color' ] = grid_render.color
+                post_model.rebind_model[]
+        t9 : f32 [ ux.time * 1000.0 ]
+        grid_shader.time   = t9
+        grid_shader.params = vec4f [ (ux && ux.height > 0) ? f32[ ux.width ] / f32[ ux.height ] : 1.778, 0.0, 0.0, 0.0 ]
+        post_shader.params = vec4f [ 2.2, (ux) ? f32[ ux.height ] : 1080.0, 1.6, 1.1 ]
+        grid_render.update[]
+        grid_render.draw[]
+        grid_render.sync_fence[]
+
+    public func theme [ ] -> map string [string]
+        return map string [string] [
+            '#140a2acc':  '#12061ecc',   # editor pane background
+            '#140a2a80':  '#160a2280',   # console pane background
+            '#ff6a2e55':  '#e04ae855',   # search highlight fill
+            '#220022aa':  '#180826aa',   # run console base fill
+            '#614':       '#3a2050',     # TButtons / nav rest fill
+            '#413':       '#2a1638',     # TButtons hover fill
+            '#826':       '#5c3078',     # TButtons lit / nav selected
+            '#625a':      '#4a2a8a',     # bottom status bar fill
+            '#8af2':      '#c8aff2',     # status bar inner glow
+            '#425':       '#2a1444',     # editor selection color
+            '#ede3':      '#e8cff3',     # editor selection border
+            '#44225588':  '#301a4888',   # editor line highlight
+            '#ff3a6a22':  '#e04ae822',   # commit tab fill
+            '#ff3a6a44':  '#e04ae844',   # commit tab hover fill
+            '#ff5a8a99':  '#e06af299',   # commit tab border
+            '#ff7aa4cc':  '#f09affcc'    # commit tab hover border
+        ]
