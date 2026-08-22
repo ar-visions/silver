@@ -913,13 +913,21 @@ class AuBag
     public bag : Au
 
 # an Au-typed slot holding a vec binds to its vec type (fmt_file.lines);
-# a static Au is a header pointer (Au.header[x]), so count reads via the vec
+# vec T is Au's vector class — Au.header[x] sees that class
 expect func t_vec_in_au [] -> bool
     b : AuBag []
     b.bag = vec string [] [ 'q', 'rs' ]
     v : vec string b.bag
     h : Au.header[ v ]
-    return v.count == 2 && v[ 1 ] == 'rs' && h.count == 2 && h.au == typeid[ string ]
+    return v.count == 2 && v[ 1 ] == 'rs' && h.au == typeid[ vector ]
+
+# a vector handed to a C void* parameter passes its element memory
+expect func t_vec_void_ptr [] -> bool
+    v : vec u8 [ 8 ]
+    for [ i: i32 0, i < 8, i += 1 ]
+        v[ i ] = u8[ i ]
+    p : @u8 [ memchr[ v, 5, 8 ] ]
+    return p == @v[ 5 ] && p[ 0 ] == 5
 
 # a vec member through a ternary is the member's object, not its slot
 expect func t_vec_ternary [] -> bool
@@ -1011,7 +1019,7 @@ expect func t_vec_shift [] -> bool
     v.unshift[ 1 ]                 # 1 5 8
     s : vec string [] [ 'bb' ]
     s.unshift[ 'aa' ]
-    t : string [ s.shift[] ]
+    t : s.shift[]
     return f == 3 && v.count == 3 && v.first[] == 1 && v.last[] == 8 &&
            t == 'aa' && s.count == 1 && s[ 0 ] == 'bb'
 

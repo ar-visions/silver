@@ -693,15 +693,15 @@ class JpegDec
     mutable cs_ready : i32
     # per-row planar staging: the convert loop then walks three
     # sequential byte arrays, which is what makes simd possible
-    mutable yr      : @u8
-    mutable cbr     : @u8
-    mutable crr     : @u8
+    mutable yr      : vec u8
+    mutable cbr     : vec u8
+    mutable crr     : vec u8
     # broadcast constants for the vector paths
     mutable cvc     : new f32 [ 8 ]
     mutable cvi     : new i32 [ 4 ]
-    mutable pl0     : @u8
-    mutable pl1     : @u8
-    mutable pl2     : @u8
+    mutable pl0     : vec u8
+    mutable pl1     : vec u8
+    mutable pl2     : vec u8
 
     func u8_at [ i: i64 ] -> i32
         return (i32 bytes[ i32[ i ] ]) & 255

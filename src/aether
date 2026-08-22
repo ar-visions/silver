@@ -227,7 +227,6 @@ forward(evar)
     M(A,U,i, prop,     public,  string,                   dbg_implement) \
     M(A,U,i, prop,     public,  string,                   break_id) \
     M(A,U,i, prop,     public,  map,                      init_props) \
-    M(A,U,i, prop,     public,  map,                      vec_types) \
     M(A,U,i, prop,     public,  handle,                   init_fbits) \
     M(A,U,i, prop,     public,  cstr,                     bind_name) \
     M(A,U,i, prop,     public,  Au_t,                     bind_holder) \
@@ -311,9 +310,6 @@ forward(evar)
     M(A,U,i, method,   public,  enode,                    e_div, Au, Au) \
     M(A,U,i, method,   public,  enode,                    e_create, etype, Au, bool) \
     M(A,U,i, method,   public,  enode,                    e_vector, etype, enode) \
-    M(A,U,i, method,   public,  enode,                    e_vec_new, etype) \
-    M(A,U,i, method,   public,  etype,                    etype_vec, Au_t) \
-    M(A,U,i, method,   public,  enode,                    e_vec_method, enode, symbol, array) \
     M(A,U,i, method,   public,  enode,                    e_zero, enode) \
     M(A,U,i, method,   public,  enode,                    e_assign, enode, Au, OPType) \
     M(A,U,i, method,   public,  none,                     e_assign_if_null, enode, Au) \
@@ -390,7 +386,6 @@ forward(evar)
     M(X, Y, i, prop,     public,  bool,            used) \
     M(X, Y, i, prop,     public,  tokens,          initializer) \
     M(X, Y, i, prop,     public,  bool,            loaded) \
-    M(X, Y, i, prop,     public,  bool,            is_elem_slot) \
     M(X, Y, i, prop,     public,  bool,            from_call) \
     M(X, Y, i, prop,     public,  string,          debug_id) \
     M(X, Y, i, array,    intern,  ARef,              AU_CORES, last_dbgs) \

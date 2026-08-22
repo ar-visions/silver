@@ -299,7 +299,7 @@ class AssetDesc
 class GltfBuffer
     public byteLength:      u64
     public uri:             path
-    public data:            @u8
+    public data:            vec u8
     intern static base :    path
 
     static func set_base [ p: path ]
@@ -335,7 +335,7 @@ class GltfBuffer
 
 class ResKey
     intern h    : u64
-    intern seq  : @u8
+    intern seq  : vec u8
     intern bidx : i32
     intern pass : i32
 
@@ -401,10 +401,10 @@ class Res
     intern iobsc   : bool
     intern iblob   : u64
     intern icount  : i32
-    intern inhash  : @u64
-    intern ichash  : @u64
-    intern ioffs   : @u64
-    intern isizes  : @u64
+    intern inhash  : vec u64
+    intern ichash  : vec u64
+    intern ioffs   : vec u64
+    intern isizes  : vec u64
 
     # 16-hex-char cache filename from a 64-bit content hash
     static func hex16 [ v: u64 ] -> string

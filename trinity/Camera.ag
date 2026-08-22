@@ -12,13 +12,13 @@ class Camera
 
     intern  backend       : handle
     intern  fd            : i32    -1
-    intern  cam_bufs      : @VkBuffer        # ring of dmabuf-imported buffers (cpu_upload=false)
-    intern  cam_mem       : @VkDeviceMemory  # imported memory per buffer    (cpu_upload=false)
+    intern  cam_bufs      : vec VkBuffer     # ring of dmabuf-imported buffers (cpu_upload=false)
+    intern  cam_mem       : vec VkDeviceMemory  # imported memory per buffer (cpu_upload=false)
     intern  staging_buf   : VkBuffer            # single persistent staging buffer (cpu_upload=true)
     intern  staging_mem   : VkDeviceMemory
     intern  staging_ptr   : @u8              # mapped pointer into staging
-    intern  mm_ptrs       : @handle          # mmap'd CPU pointer per buffer (brightness sampling)
-    intern  mm_sizes      : @u32
+    intern  mm_ptrs       : vec handle       # mmap'd CPU pointer per buffer (brightness sampling)
+    intern  mm_sizes      : vec u32
     intern  cam_image     : VkImage             # GPU-aligned image target (NVIDIA demands row pad)
     intern  cam_image_mem : VkDeviceMemory
     intern  current_idx   : i32    0

@@ -329,7 +329,9 @@ void print_all(array tokens) {
 }
 
 etype read_etype(silver a, array*);
-static Au_t vec_of_au(Au_t au);
+static Au_t  vec_elem_of(etype t);
+static enode vector_literal(silver a, Au_t elem);
+AU_EXPORT bool au_is_vector(Au_t t);
 
 num index_of_cstr(Au a, cstr f) {
     Au_t t = isa(a);
@@ -629,21 +631,11 @@ static inline enode expr_load(enode result, bool load) {
 }
 
 static enode parse_expression(silver a, etype expect, bool hint, bool load) { sequencer
-    // a [ v1, v2 ] literal against a vec-typed slot seeds a made vector
-    Au_t vex = expect ? vec_of_au(expect->autype) : null;
+    // a [ v1, v2 ] literal against a vec-typed slot seeds a vector
+    Au_t vex = vec_elem_of(expect);
     if (vex && next_is(a, "[")) {
         consume(a, Syntax__none);
-        etype el = u(etype, vex->src);
-        if (!el) el = etype_prep((aether)a, vex->src);
-        enode vecn = e_vec_new((aether)a, el);
-        vecn->autype = vex;
-        while (peek(a) && !next_is(a, "]")) {
-            enode e = parse_expression(a, el, false, true);
-            e_assign((aether)a, vecn, (Au)e, OPType__assign_add);
-            read_if(a, ",");
-        }
-        validate(read_if(a, "]"), "expected ] after vec literal");
-        return vecn;
+        return vector_literal(a, vex);
     }
     if (is_rec(expect) && next_is(a, "[")) {
         // collections and structs go straight to parse_object
@@ -1698,16 +1690,17 @@ static bool fmt_current(symbol path, i64 mtime) {
 static unsigned char* fmt_serialize(fmt_file ff, u32* out_total) {
     cstr cp = (ff->source && len(ff->source)) ? ff->source->chars : "";
     u32  cl = (u32)strlen(cp);
-    // lines is a vec of vec fmt_token: count and items ride the header
-    u32  nlines = ff->lines ? (u32)header(ff->lines)->count : 0;
-    Au*  lns    = ff->lines ? (Au*)header(ff->lines)->data  : null;
+    // lines is a vector of vector fmt_token
+    vector  lv     = (vector)ff->lines;
+    u32     nlines = lv ? (u32)lv->count : 0;
+    vector* lns    = lv ? (vector*)lv->origin : null;
     u32  n = 0;
-    for (u32 L = 0; L < nlines; L++) n += (u32)header(lns[L])->count;
+    for (u32 L = 0; L < nlines; L++) n += (u32)lns[L]->count;
     cstr* dp = calloc(n ? n : 1, sizeof(cstr));
     u32   np = 0;
     for (u32 L = 0; L < nlines; L++) {
-        u32        nt  = (u32)header(lns[L])->count;
-        fmt_token* tks = (fmt_token*)header(lns[L])->data;
+        u32        nt  = (u32)lns[L]->count;
+        fmt_token* tks = (fmt_token*)lns[L]->origin;
         for (u32 t = 0; t < nt; t++) {
             fmt_token tk = tks[t];
             if (!tk->decl_source) continue;
@@ -1735,8 +1728,8 @@ static unsigned char* fmt_serialize(fmt_file ff, u32* out_total) {
     }
     SP(nlines);
     for (u32 L = 0; L < nlines; L++) {
-        u32        nt  = (u32)header(lns[L])->count;
-        fmt_token* tks = (fmt_token*)header(lns[L])->data;
+        u32        nt  = (u32)lns[L]->count;
+        fmt_token* tks = (fmt_token*)lns[L]->origin;
         SP(nt);
         for (u32 t = 0; t < nt; t++) {
             fmt_token tk = tks[t];
@@ -1760,9 +1753,9 @@ static void fmt_load(silver a) {
     for (int i = 0; i < fmt_nsec; i++) { free(fmt_secs[i].path); free(fmt_secs[i].buf); }
     fmt_nsec = 0;
     if (!a->format || !len(a->format)) return;
-    Au  files  = read_format(a->format);
-    u32 nf     = files ? (u32)header(files)->count : 0;
-    Au* fitems = files ? (Au*)header(files)->data  : null;
+    vector files  = (vector)read_format(a->format);
+    u32    nf     = files ? (u32)files->count : 0;
+    Au*    fitems = files ? (Au*)files->origin : null;
     for (u32 fx = 0; fx < nf; fx++) {
         fmt_file ff = (fmt_file)fitems[fx];
         if (!ff->source || !len(ff->source)) continue;
@@ -4319,20 +4312,40 @@ static none gather_capture(silver a, string alpha, enode mem) { static int seq =
     micro_push((micro_*)&a->gather_fn->members, (Au)cap);
 }
 
-// vec targets resolve their op set before elem-member lookup
-static Au_t vec_of_au(Au_t au) {
+// the element type of a vector-typed slot (vec T), or null
+static Au_t vec_elem_of(etype t) {
+    if (!t) return null;
+    Au_t au = t->autype;
     while (au && au->member_type == AU_MEMBER_VAR) au = au->src;
-    while (au && !au->is_data_user && au->is_alias && au->src) au = au->src;
-    return (au && au->is_data_user) ? au : null;
+    while (au && au->is_alias && au->src && !au_is_vector(au)) au = au->src;
+    if (!au || !au_is_vector(au)) return null;
+    Au_t m = t->meta_a ? (Au_t)t->meta_a : t->autype->meta.a;
+    if (!m && t->autype->member_type == AU_MEMBER_VAR && t->autype->src)
+        m = t->autype->src->meta.a;
+    return m ? m : typeid(Au);
 }
 
-static bool vec_op_name(string alpha) {
-    static symbol ops[] = { "push", "clear", "reverse", "pop", "first", "last",
-                            "remove", "concat", "index_of", "contains",
-                            "origin", "shift", "unshift", "insert", null };
-    for (int i = 0; ops[i]; i++)
-        if (eq(alpha, ops[i])) return true;
-    return false;
+// the vector type carrying T as its meta
+static etype vector_etype(silver a, Au_t elem) {
+    etype vt = etype_prep((aether)a, typeid(vector));
+    return etype(mod, (aether)a, autype, vt->autype, meta_a, (Au)elem);
+}
+
+// [ v1, v2, ... ] against a vector-typed slot: construct, then push
+// each element through the vector's own += (the cursor sits after [)
+static enode vector_literal(silver a, Au_t elem) {
+    etype vm   = vector_etype(a, elem);
+    enode vecn = e_create((aether)a, vm, null, false);
+    vecn->meta_a = (Au)elem;
+    etype el = u(etype, elem);
+    if (!el) el = etype_prep((aether)a, elem);
+    while (peek(a) && !next_is(a, "]")) {
+        enode e = parse_expression(a, el, false, true);
+        e_assign((aether)a, vecn, (Au)e, OPType__assign_add);
+        read_if(a, ",");
+    }
+    validate(read_if(a, "]"), "expected ] after vec literal");
+    return vecn;
 }
 
 enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_mdl, bool in_ref) { static int seq = 0; seq++;
@@ -4517,51 +4530,6 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
                     break;
                 }
                     
-            } else if (instanceof(mem, enode) && vec_of_au(mem->autype) &&
-                       vec_op_name(alpha)) {
-                array vargs = array(4);
-                // push/index_of/contains take an ELEMENT: parse untyped —
-                // an expected type converts a slot GEP too early; codegen
-                // (e_vec_method) loads and e_creates to the element type
-                bool  elem_arg = eq(alpha, "push") || eq(alpha, "index_of") ||
-                                 eq(alpha, "contains") || eq(alpha, "unshift") ||
-                                 eq(alpha, "insert");
-                bool  need_arg = elem_arg || eq(alpha, "remove") ||
-                                 eq(alpha, "concat");
-                bool  has_br   = read_if(a, "[") != null;
-                if (has_br || need_arg) {
-                    etype vel = null;
-                    // chain scopes shadow the function's locals — args parse
-                    // without them (mirrors parse_member_expr)
-                    array prev9 = array(alloc, 32);
-                    for (int i = 0; i < depth; i++) {
-                        etype mm = u(etype, top_scope(a));
-                        push(prev9, (Au)mm);
-                        pop_scope(a);
-                    }
-                    prev9 = reverse(prev9);
-                    a->expr_level++;
-                    if (has_br) {
-                        while (peek(a) && !next_is(a, "]")) {
-                            push(vargs, (Au)parse_expression(a, vel, true, true));
-                            read_if(a, ",");
-                        }
-                    } else
-                        // statement-level commaless arg: v.push value
-                        push(vargs, (Au)parse_expression(a, vel, true, true));
-                    a->expr_level--;
-                    if (has_br)
-                        validate(read_if(a, "]"), "expected ] after vec %o", alpha);
-                    for (int i = 0; i < depth; i++) {
-                        etype mm = (etype)get(prev9, i);
-                        push_scope(a, (Au)mm, 19);
-                    }
-                }
-                token vt9 = element(a, -1);
-                if (vt9 && vt9->chars && alpha &&
-                    strcmp(vt9->chars, alpha->chars) == 0)
-                    vt9->syntax = Syntax__function;
-                mem = e_vec_method((aether)a, mem, cstring(alpha), vargs);
             } else if (instanceof(mem, enode) && !is_loaded((Au)mem)) {
                 // Subsequent iterations - access from previous member
                 verify(mem && mem->autype, "cannot resolve from null member");
@@ -4623,7 +4591,10 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
                 Au_t au_rec = is_rec((Au)mem);
                 etype r = au_rec ? u(etype, au_rec) : null;
                 Au_t setter = r ? find_member(r->autype, "setter", AU_MEMBER_SETTER, 0, true) : null;
-                if (setter) {
+                // a vector of packed elements writes its origin in place;
+                // class elements are held refs and go through the setter
+                Au_t vel9 = (au_rec && au_is_vector(au_rec)) ? vec_elem_of((etype)mem) : null;
+                if (setter && !(vel9 && !vel9->is_class)) {
                     push_current(a);
                     array index_keys = read_within(a);
                     token k = element(a, 0);
@@ -4812,20 +4783,9 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
             return res;
         }
         // [ v1, v2 ] literal against a vec-typed slot (alias) seeds
-        Au_t vex9 = mdl_expect ? vec_of_au(mdl_expect->autype) : null;
-        if (vex9) {
-            etype el9 = u(etype, vex9->src);
-            if (!el9) el9 = etype_prep((aether)a, vex9->src);
-            enode vecn = e_vec_new((aether)a, el9);
-            vecn->autype = vex9;
-            while (peek(a) && !next_is(a, "]")) {
-                enode e = parse_expression(a, el9, false, true);
-                e_assign((aether)a, vecn, (Au)e, OPType__assign_add);
-                read_if(a, ",");
-            }
-            validate(read_if(a, "]"), "expected ] after vec literal");
-            return vecn;
-        }
+        Au_t vex9 = vec_elem_of(mdl_expect);
+        if (vex9)
+            return vector_literal(a, vex9);
         enode n = parse_expression(a, mdl_expect, false, true);
         validate(n, "could not read expression");
         validate(read_if(a, "]"),
@@ -5184,9 +5144,8 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
             }
         }
         if (!shaped) {
-            Au_t elem = (mdl_c ? mdl_c : mdl)->autype;
-            etype pt  = etype_vec((aether)a, elem);
-            Au_t vp   = pt->autype;
+            Au_t  elem = (mdl_c ? mdl_c : mdl)->autype;
+            etype pt   = vector_etype(a, elem);
             if (!made) {
                 // vec T <expr> on the same line: the expr is the value
                 token  tt = element(a, -1);
@@ -5195,23 +5154,42 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
                         !eq(nx, ",") && !eq(nx, ")")) {
                     enode r = parse_expression(a, pt, false, load);
                     r = e_create(a, pt, (Au)r, false);
+                    r->meta_a = (Au)elem;
                     return r;
                 }
                 enode nul = e_null((aether)a, pt);
-                nul->autype = vp;
+                nul->meta_a = (Au)elem;
                 return nul;
             }
-            enode vec = e_vec_new((aether)a, mdl);
-            vec->autype = vp;
+            enode vec = e_create(a, pt, null, false);
+            vec->meta_a = (Au)elem;
             if (seeds)
                 each(seeds, enode, s)
                     e_assign((aether)a, vec, (Au)s, OPType__assign_add);
             return vec;
         }
-        etype  ptr_type = (etype)shape_pointer(a, (Au)(mdl_c ? mdl_c : mdl)->autype, esize);
-        enode  vec      = e_vector(a, mdl, esize);
- 
-        /// parse optional constant data: new i32[4x4] [ 1 2 3 4, 1 1 1 1, ... ]
+        // a shaped vec is the vector class sized to the shape: count is
+        // its element count and origin is the raw memory C code takes
+        Au_t  selem = (mdl_c ? mdl_c : mdl)->autype;
+        etype spt   = vector_etype(a, selem);
+        enode vec   = e_create(a, spt, null, false);
+        vec->meta_a = (Au)selem;
+        {
+            enode total;
+            if (sh)
+                total = e_operand(a, _i64(shape_total(sh)), etypeid(i64));
+            else if (canonical(esize) && canonical(esize)->autype == typeid(shape)) {
+                efunc f_tot = (efunc)u(efunc, find_member(typeid(shape), "total",
+                    AU_MEMBER_FUNC, 0, false));
+                total = e_fn_call(a, f_tot, a(esize), false, false);
+            } else
+                total = e_create(a, etypeid(i64), (Au)esize, false);
+            efunc f_rs  = (efunc)u(efunc, find_member(typeid(vector), "resize",
+                AU_MEMBER_FUNC, 0, true));
+            e_fn_call(a, f_rs, a(vec, total), false, false);
+        }
+
+        /// parse optional constant data: vec i32[4x4] [ 1 2 3 4, 1 1 1 1, ... ]
         if (read_if(a, "[")) {
             int   top_stride = (sh && sh->count > 1) ? sh->data[sh->count - 1] : 0;
             int   num_index  = 0;
@@ -5231,11 +5209,13 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
             }
             validate(read_if(a, "]"), "expected ] after constant data");
 
-            /// copy constant data into allocated vector
-            if (len(nodes) > 0)
-                e_vector_init(a, mdl, vec, nodes);
+            /// copy constant data into the vector's origin
+            if (len(nodes) > 0) {
+                enode origin9 = e_convert_or_cast(a, (etype)pointer(a, (Au)selem), vec);
+                e_vector_init(a, mdl, origin9, nodes);
+            }
         }
-        return e_create(a, ptr_type, (Au)vec, false);
+        return vec;
     }
 
     if (!cmode && read_if(a, "local")) {
@@ -6017,7 +5997,8 @@ enode parse_statement(silver a)
             if (rtype->autype->elements > 0 && !mem->autype->elements)
                 mem->autype->elements = rtype->autype->elements;
 
-            if (decl_new)
+            // a vector member is a class slot; only a raw buffer is shaped
+            if (decl_new && !rtype->autype->is_class)
                 mem->autype->is_shaped = true;
 
             if (mem->autype->src->is_pointer && rtype->is_explicit_ref) { // this is easier to register and maintain (membership will dictate the start of this ref model)
@@ -6404,15 +6385,7 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
         Au_t o_resolved = override->rtype;
         while (o_resolved && o_resolved->is_alias && o_resolved->src)
             o_resolved = o_resolved->src;
-        // vec types are per-module anonymous vps, and module registration
-        // resolves a vp to its element — compare structurally, either shape
-        Au_t rv9 = vec_of_au(r_resolved), ov9 = vec_of_au(o_resolved);
-        Au_t re9 = rv9 ? rv9->src : r_resolved;
-        Au_t oe9 = ov9 ? ov9->src : o_resolved;
-        validate(r_resolved == o_resolved || inherits(r_resolved, o_resolved) ||
-            ((rv9 || ov9) && (re9 == oe9 ||
-             (re9 && oe9 && re9->ident && oe9->ident &&
-              strcmp(re9->ident, oe9->ident) == 0))),
+        validate(r_resolved == o_resolved || inherits(r_resolved, o_resolved),
             "override '%s' return type '%s' does not match base return type '%s'",
             au->ident, rtype->autype->ident, override->rtype->ident);
     }
@@ -6429,15 +6402,7 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
             Au_t b_src = arg_base->src;
             while (a_src && a_src->is_alias && a_src->src) a_src = a_src->src;
             while (b_src && b_src->is_alias && b_src->src) b_src = b_src->src;
-            // vec types are per-module anonymous vps, and module registration
-            // resolves a vp to its element — compare structurally, either shape
-            Au_t av9 = vec_of_au(a_src), bv9 = vec_of_au(b_src);
-            Au_t ae9 = av9 ? av9->src : a_src;
-            Au_t be9 = bv9 ? bv9->src : b_src;
-            validate(a_src == b_src || inherits(a_src, b_src) ||
-                ((av9 || bv9) && (ae9 == be9 ||
-                 (ae9 && be9 && ae9->ident && be9->ident &&
-                  strcmp(ae9->ident, be9->ident) == 0))),
+            validate(a_src == b_src || inherits(a_src, b_src),
                 "override '%s' arg %i type '%s' does not match base type '%s'",
                 au->ident, oi, arg_au->src->ident, arg_base->src->ident);
         }
@@ -6603,7 +6568,7 @@ etype read_etype(silver a, array* p_expr) { sequencer
     push_current(a);
     bool is_ref    = read_if(a, "ref") != null || read_if(a, "@") != null;
     bool is_struct = read_if(a, "struct") != null;
-    // type position: `vec T` names the growable vector type (null slot).
+    // type position: `vec T` is Au's vector class with T as its meta.
     // a bracket after T is the VALUE form (vec T [] / vec T [ n ]) — bail
     // so the expression parser owns the whole thing
     if (!is_ref && !is_struct && read_if(a, "vec")) {
@@ -6614,7 +6579,9 @@ etype read_etype(silver a, array* p_expr) { sequencer
         }
         etype ec = canonical(elem);
         pop_tokens(a, true);
-        return etype_vec((aether)a, (ec ? ec : elem)->autype);
+        etype vt = etype_prep((aether)a, typeid(vector));
+        return etype(mod, (aether)a, autype, vt->autype,
+            meta_a, (Au)(ec ? ec : elem)->autype);
     }
     bool  explicit_sign = !mdl && read_if(a, "signed") != null;
     bool  explicit_un   = !mdl && !explicit_sign && read_if(a, "unsigned") != null;
@@ -8876,23 +8843,21 @@ static enode typed_expr(silver a, enode f, array expr) {
     bool    conv        = false;
 
     a->expr_level++;
-    Au_t vau9 = vec_of_au(f->autype);
+    Au_t vau9 = vec_elem_of((etype)f);
     if (!has_content) {
         if (vau9) {
-            // empty [ ] initializer on a vec slot: a made vector, count 0
-            etype el9 = u(etype, vau9->src);
-            if (!el9) el9 = etype_prep((aether)a, vau9->src);
-            r = e_vec_new((aether)a, el9);
-            r->autype = vau9;
+            // empty [ ] initializer on a vec slot: an empty vector
+            r = e_create(a, vector_etype(a, vau9), null, false);
+            r->meta_a = (Au)vau9;
         } else
             r = e_create(a, (etype)f, null, false); // default
         conv = false;
     } else if (vau9) {
-        // [ v1, v2, ... ] literal seeds a made vector
-        etype element_type = u(etype, vau9->src);
-        if (!element_type) element_type = etype_prep((aether)a, vau9->src);
-        enode vecn = e_vec_new((aether)a, element_type);
-        vecn->autype = vau9;
+        // [ v1, v2, ... ] literal seeds a vector
+        etype element_type = u(etype, vau9);
+        if (!element_type) element_type = etype_prep((aether)a, vau9);
+        enode vecn = e_create(a, vector_etype(a, vau9), null, false);
+        vecn->meta_a = (Au)vau9;
         while (peek(a)) {
             enode e = parse_expression(a, element_type, false, true);
             e_assign((aether)a, vecn, (Au)e, OPType__assign_add);
@@ -11135,6 +11100,9 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
                         mdl_field = u(etype, mem->src);
                         if (!mdl_field)
                             mdl_field = (etype)etype_prep((aether)a, mem->src);
+                        // a @T member holds a pointer: that is the target type
+                        if (mem->is_explicit_ref && mdl_field && !mem->src->is_class)
+                            mdl_field = (etype)pointer((aether)a, (Au)mem->src);
                         // propagate the member's meta so parse_expression sees
                         // the right element type (e.g. models: array Model → meta_a=Model).
                         // check both mem->meta_a (direct) and mem->autype->meta.a.
@@ -11388,7 +11356,11 @@ enode silver_parse_member_expr(silver a, enode mem, bool in_ref) { sequencer
         bool is_shaped = (mem_type && mem_type->is_shaped) || mem->autype->is_shaped;
         Au_t has_getter = (!is_shaped && au_rec) ?
             find_member(au_rec, null, AU_MEMBER_GETTER, 0, true) : null;
-        if (is_indexable_ptr && !inherits(au_rec, typeid(collective)) && !has_getter) {
+        // a vector of packed elements (non-class) indexes its origin
+        // inline; class elements go through the getter/setter (held refs)
+        Au_t velem = (au_rec && au_is_vector(au_rec)) ? vec_elem_of((etype)mem) : null;
+        bool vec_packed = velem && !velem->is_class;
+        if (vec_packed || (is_indexable_ptr && !inherits(au_rec, typeid(collective)) && !has_getter)) {
             r = null;
         } else if (r) {
             // select best indexer overload by matching argument type
@@ -11441,8 +11413,12 @@ enode silver_parse_member_expr(silver a, enode mem, bool in_ref) { sequencer
                 Au_t meta_a = mem->autype->meta.a ? mem->autype->meta.a :
                     (mem->meta_a ? ((Au_t)mem->meta_a) :
                     (mem_type ? mem_type->meta.a : null));
-                if (rtype && rtype == etypeid(Au) && meta_a) {
+                // a vector getter is already element-typed by e_fn_call
+                if (rtype && rtype == etypeid(Au) && meta_a && index_expr->autype != meta_a) {
                     index_expr->autype = meta_a;
+                    // the element's own meta (a vec T element keeps T)
+                    index_expr->meta_a = (Au)meta_a->meta.a;
+                    index_expr->meta_b = meta_a->meta.b;
                     // getter returns ptr-to-element for primitive types; load through
                     // the returned data pointer immediately so downstream sees a value.
                     // e_fn_call sets loaded=true for all non-struct returns, but the
