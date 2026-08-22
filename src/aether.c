@@ -505,6 +505,16 @@ AU_EXPORT enode enode_ref(aether a, enode expr, etype ref_type) {
     return with_value(v, enode(mod, a, loaded, true, autype, ref_type->autype));
 }
 
+// a vec element: a GEP whose element type is a pointer — the enode's
+// value is an address-of-address, safe and correct to load. allocas
+// stay put: temps and C-call refs hand their address on by design
+static bool slot_holds_ptr(enode m) {
+    LLVMValueRef v = _llvalue(m);
+    if (!v || !LLVMIsAGetElementPtrInst(v)) return false;
+    LLVMTypeRef st = LLVMGetGEPSourceElementType(v);
+    return st && LLVMGetTypeKind(st) == LLVMPointerTypeKind;
+}
+
 AU_EXPORT enode enode_value(enode mem, bool force_load) { sequencer
     emit_guard;
     if (mem && mem->is_super)
@@ -513,8 +523,9 @@ AU_EXPORT enode enode_value(enode mem, bool force_load) { sequencer
     //aether a = mem->mod;
     //etype mdl = etype_prep(a, au_arg_type((Au)mem->autype));
 
-    if (!mem->loaded && (force_load || !is_struct(canonical(mem)) || mem->autype->is_explicit_ref) && 
-        !mem->autype->is_imethod && !mem->autype->is_smethod && (force_load || mem->autype->member_type != AU_MEMBER_TYPE) &&
+    if (!mem->loaded && (force_load || !is_struct(canonical(mem)) || mem->autype->is_explicit_ref) &&
+        !mem->autype->is_imethod && !mem->autype->is_smethod &&
+        (force_load || mem->autype->member_type != AU_MEMBER_TYPE || slot_holds_ptr(mem)) &&
        (!is_func((Au)mem) || is_func_ptr((Au)mem))) {
         aether a = au_active(mem->mod);
         a->is_const_op = false;
@@ -552,6 +563,9 @@ AU_EXPORT enode enode_value(enode mem, bool force_load) { sequencer
                 is_explicit_ref, true));
         }
         etype type2 = u(etype, au);
+        // registry miss is not absence: a worker core may not have the
+        // element's etype yet — prepare it rather than null-deref
+        if (!type2 || !_lltype_slot(type2)) type2 = etype_prep(a, au);
         LLVMValueRef loaded = LLVMBuildLoad2(
             B, lltype(type2), mem_v, id->chars);
         enode  res = with_value(loaded, enode(mod, a, loaded, true, autype, au)); // resolve(mem)->autype);
@@ -794,8 +808,9 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) { sequencer
         }
         LLVMBuildStore(B, _llvalue((enode)conv), _llvalue((enode)slot));
         // class slots are held refs; the vector holds on append
+        // Au elements too: Au_free drops every class slot it owns
         Au_t esrc = vdv->src;
-        if (esrc && esrc->is_class && !esrc->is_c && esrc != typeid(Au)) {
+        if (esrc && esrc->is_class && !esrc->is_c) {
             efunc f_hold = (efunc)u(efunc, find_member(etypeid(Au)->autype,
                 "hold", AU_MEMBER_FUNC, 0, true));
             e_fn_call(a, f_hold, a(conv), false, false);
@@ -820,6 +835,9 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) { sequencer
         !(L->autype->traits & AU_TRAIT_UNMANAGED) &&
         !L->autype->is_context &&
         L->autype->src != typeid(Au);
+    // a vec element slot carries the element class itself as its type
+    if (L->is_elem_slot && L->autype && L->autype->is_class && !L->autype->is_c)
+        is_class_set = true;
 
     // `member : new T [...]` slot — a managed buffer: assignment drops the
     // previous buffer and holds the new one, same lifecycle as class sets
@@ -4471,24 +4489,12 @@ enode etype_access(etype target, string name) { sequencer
     emit_guard;
     aether a = au_active(target->mod);
     Au_t target_src = target->autype->member_type == AU_MEMBER_VAR ? target->autype->src : target->autype;
-    // growable vector: count reads straight from the object header
-    if (a->no_build && target_src && target_src->is_data_user &&
-        eq(name, "count"))
-        return e_noop(a, etypeid(i64));
-    if (!a->no_build && target_src && target_src->is_data_user &&
-        eq(name, "count")) {
-        LLVMTypeRef  ptr_ty = LLVMPointerTypeInContext(a->module_ctx, 0);
-        LLVMTypeRef  i64t   = LLVMInt64TypeInContext(a->module_ctx);
-        LLVMValueRef obj    = _llvalue((enode)target);
-        if (instanceof(target, enode) && !((enode)target)->loaded)
-            obj = LLVMBuildLoad2(B, ptr_ty, obj, "vec_obj");
-        LLVMValueRef c = vec_header_field(a, obj,
-            (i64)offsetof(struct _Au, count), i64t, "vec_count");
-        return with_value(c, enode(mod, a, autype, typeid(i64), loaded, true));
-    }
     bool is_typeid = (target_src && (target_src->is_schema || target_src == typeid(Au_t) ||
         (target_src->ident && strcmp(target_src->ident, "Au_t") == 0)));
+    // a growable vector's members are the Au header's (count, data)
+    Au_t vdv9 = target_src ? vec_deep(target_src) : null;
     Au_t rel = is_typeid ? typeid(Au_t) :
+        (vdv9 && vdv9->is_data_user) ? typeid(Au) :
         au_ancestor(target->autype->member_type == AU_MEMBER_VAR ? target->autype->src : target->autype);
     if (!is_typeid && rel && rel->is_c)
         etype_prep(a, rel);
@@ -4574,11 +4580,16 @@ enode etype_access(etype target, string name) { sequencer
         bool direct_au = (target_src == typeid(Au));
         LLVMValueRef    base;
         if (direct_au) {
-            // target is already an Au header pointer — no step-back needed
+            // a static Au is a header pointer (Au.header[x]), as in C
             base = tnode_v;
         } else {
-            // target is a class instance data pointer — step back to Au header
-            LLVMValueRef i8ptr  = LLVMBuildBitCast(B, tnode_v, LLVMPointerType(LLVMInt8Type(), 0), "i8ptr");
+            // an object (class or vec) steps back to its Au header
+            LLVMValueRef tv = tnode_v;
+            if (is_enode && !tnode->loaded && LLVMIsAInstruction(tv) &&
+                (LLVMGetInstructionOpcode(tv) == LLVMAlloca ||
+                 LLVMGetInstructionOpcode(tv) == LLVMGetElementPtr))
+                tv = LLVMBuildLoad2(B, LLVMPointerTypeInContext(a->module_ctx, 0), tv, "au.obj");
+            LLVMValueRef i8ptr  = LLVMBuildBitCast(B, tv, LLVMPointerType(LLVMInt8Type(), 0), "i8ptr");
             LLVMValueRef offset = LLVMConstInt(LLVMInt64Type(), -(int64_t)sizeof(struct _Au), true);
             base = LLVMBuildGEP2(B, LLVMInt8Type(), i8ptr, &offset, 1, "au.base");
         }
@@ -5362,6 +5373,19 @@ enode e_convert_or_cast(aether a, etype output, enode input) {
             return value(output, loaded_val);
         }
         bool loaded = !(!(is_ptr(output) || is_func_ptr(output)) && (is_struct(output) || is_prim(output)));
+        // an unloaded class slot (vec element, alloca) holding a POINTER
+        // is the object's address-of-address: load the object first, or
+        // the slot address gets stamped loaded and derefs as garbage.
+        // in-place storage (a struct-bodied alloca) keeps address casts.
+        if (loaded && !input->loaded && output->autype->is_class && !is_struct(output)) {
+            LLVMValueRef iv = _llvalue((enode)input);
+            LLVMTypeRef  st = LLVMIsAAllocaInst(iv) ? LLVMGetAllocatedType(iv) :
+                              LLVMIsAGetElementPtrInst(iv) ? LLVMGetGEPSourceElementType(iv) : null;
+            if (st && LLVMGetTypeKind(st) == LLVMPointerTypeKind)
+                input = with_value(LLVMBuildLoad2(B,
+                    LLVMPointerTypeInContext(a->module_ctx, 0), iv, "slot_obj_load"),
+                    enode(mod, a, autype, input->autype, loaded, true));
+        }
         enode res = value(output,
             LLVMBuildBitCast(B, _llvalue((enode)input), loaded ? lltype(output) : lltype(pointer(a, (Au)output)), "class_ref_cast"));
         res->loaded = loaded;
@@ -7444,7 +7468,13 @@ AU_EXPORT enode enode_shape(enode instance) {
 enode aether_e_offset(aether a, enode n, Au offset, bool in_ref) { sequencer
     emit_guard;
     Au_t au = n->autype;
-    if (a->no_build) return e_noop(a, (etype)evar_type((evar)n));
+    if (a->no_build) {
+        // a vector subscript is its element, not the vector
+        Au_t dv0 = vec_deep(au);
+        if (dv0 && dv0->is_data_user && dv0->src)
+            return e_noop(a, etype_prep(a, dv0->src));
+        return e_noop(a, (etype)evar_type((evar)n));
+    }
 
     enode  i = e_operand(a, offset, null);
     {
@@ -7467,7 +7497,8 @@ enode aether_e_offset(aether a, enode n, Au offset, bool in_ref) { sequencer
             base = LLVMBuildLoad2(B, ptr_ty, base, "base_ptr");
     }
     // growable vector: elements ride behind the header's data field
-    if (vec_deep(au) && vec_deep(au)->is_data_user)
+    Au_t dv9 = vec_deep(au);
+    if (dv9 && dv9->is_data_user)
         base = vec_header_field(a, base,
             (i64)offsetof(struct _Au, data), ptr_ty, "vec_data");
 
@@ -7518,8 +7549,11 @@ enode aether_e_offset(aether a, enode n, Au offset, bool in_ref) { sequencer
         arg_type = arg_type->src;
 
     Au_t result_au = n->autype->is_explicit_ref ? elem_au : arg_type;
+    // a vec element slot: e_assign holds/drops it like a member
+    bool elem_slot = vec_deep(au) && vec_deep(au)->is_data_user;
     return with_value(ptr_offset, enode(mod, a, autype, result_au,
-        loaded, false, is_explicit_ref, n->autype->is_explicit_ref || in_ref));
+        loaded, false, is_elem_slot, elem_slot,
+        is_explicit_ref, n->autype->is_explicit_ref || in_ref));
 }
 
 enode aether_e_load(aether a, enode mem, enode target) { sequencer
@@ -10892,9 +10926,10 @@ AU_EXPORT bool aether_emit(aether a, ARef ref_ll, ARef ref_bc) {
     for (int ci = 1; ci < ll_n(a); ci++) {
         LLVMModuleRef m = ll_mod(a, ci);
         if (!module_has_body(m)) continue;
+        path cdir = a->build_dir ? a->build_dir : form(path, "%o/build", a->install);
+        path cl   = form(path, "%o/%o.core%i.ll", cdir, a, ci);
+        if (a->verbose) LLVMPrintModuleToFile(m, cstring(cl), &err);
         if (LLVMVerifyModule(m, LLVMPrintMessageAction, &err)) {
-            path cdir = a->build_dir ? a->build_dir : form(path, "%o/build", a->install);
-            path cl   = form(path, "%o/%o.core%i.ll", cdir, a, ci);
             LLVMPrintModuleToFile(m, cstring(cl), &err);
             fprintf(stderr, "LLVM verify failed on core %i — dumped %s\n", ci, cstring(cl));
             fflush(stderr);

@@ -5188,6 +5188,15 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
             etype pt  = etype_vec((aether)a, elem);
             Au_t vp   = pt->autype;
             if (!made) {
+                // vec T <expr> on the same line: the expr is the value
+                token  tt = element(a, -1);
+                token  nx = peek(a);
+                if (nx && tt && nx->line == tt->line && !eq(nx, "]") &&
+                        !eq(nx, ",") && !eq(nx, ")")) {
+                    enode r = parse_expression(a, pt, false, load);
+                    r = e_create(a, pt, (Au)r, false);
+                    return r;
+                }
                 enode nul = e_null((aether)a, pt);
                 nul->autype = vp;
                 return nul;

@@ -1059,6 +1059,8 @@ Display Window
     # a backdrop element publishes its render target here; the blur/frost
     # chain builds off it the first frame it appears
     public backdrop              : Render
+    # resize replaced attachments: the frost chain rebinds as if fresh
+    mutable rebind_frost         : bool
     mutable m_reduce             : Model
     mutable r_reduce             : Render
     mutable m_reduce0            : Model
@@ -1188,7 +1190,13 @@ Display Window
                 if [ !e.AF_get_member[ member ] ] continue
                 cur : inst.member_object[ member ]
                 nv  : e.member_object[ member ]
-                if [ (!cur) != (!nv) || ((cur && nv) && cur.compare*[ nv ] != 0) ]
+                # a vec dispatches as its ELEMENT: never compare* one
+                differs : bool [ false ]
+                if [ Au.au_is_vec[ cur ] || Au.au_is_vec[ nv ] ]
+                    differs = !Au.au_vec_equals[ cur, nv ]
+                el
+                    differs = (!cur) != (!nv) || ((cur && nv) && cur.compare*[ nv ] != 0)
+                if [ differs ]
                     inst.member_set[ member, nv ]
                     changed = true
                     if [ strcmp[ member.ident, "icon" ] == 0 ]
@@ -2300,6 +2308,44 @@ Display Window
         if [ e >= 2 ] return r_reduce
         return r_blur
 
+    # resize REPLACES render color attachments: every stage's sampler map
+    # still points at the dead texture, and rebind_model faithfully
+    # rebinds to it. re-wire the chain from CURRENT colors, in order
+    func rewire_frost [ ]
+        if [ !m_reduce || !m_view ] return
+        src9 : Texture [ (backdrop) ? backdrop.color : compose.color ]
+        m_reduce.samplers  = map Texture[string] [ 'color': src9 ]
+        m_reduce.rebind_model[]
+        m_reduce0.samplers = map Texture[string] [ 'color': r_reduce.color ]
+        m_reduce0.rebind_model[]
+        m_reduce1.samplers = map Texture[string] [ 'color': r_reduce0.color ]
+        m_reduce1.rebind_model[]
+        m_blur_v.samplers  = map Texture[string] [ 'color': r_reduce1.color ]
+        m_blur_v.rebind_model[]
+        m_blur.samplers    = map Texture[string] [ 'color': r_blur_v.color ]
+        m_blur.rebind_model[]
+        m_soft_v.samplers  = map Texture[string] [ 'color': r_reduce0.color ]
+        m_soft_v.rebind_model[]
+        m_soft.samplers    = map Texture[string] [ 'color': r_soft_v.color ]
+        m_soft.rebind_model[]
+        m_reduce2.samplers = map Texture[string] [ 'color': r_reduce1.color ]
+        m_reduce2.rebind_model[]
+        m_reduce3.samplers = map Texture[string] [ 'color': r_reduce2.color ]
+        m_reduce3.rebind_model[]
+        m_frost_v.samplers = map Texture[string] [ 'color': r_reduce3.color ]
+        m_frost_v.rebind_model[]
+        m_frost.samplers   = map Texture[string] [ 'color': r_frost_v.color ]
+        m_frost.rebind_model[]
+        fr : frost_src[]
+        bl : blur_src[]
+        m_view.samplers = map Texture[string] [
+            'background': src9,
+            'frost':      (fr) ? fr.color : r_frost.color,
+            'blur':       (bl) ? bl.color : r_blur.color,
+            'compose':    compose.color ]
+        m_view.rebind_model[]
+        frost_bound = frost_eff[]
+
     # whichever element declared frost owns the backdrop; no app rigging
     func bind_backdrop [ ]
         if [ !element_targets ] return
@@ -2309,11 +2355,18 @@ Display Window
                 found = r
                 break
         if [ !found ] return
+        # a resize replaced every attachment: rewire the WHOLE chain from
+        # current colors. no reveal reset — that reads as a flash
+        rb9 : bool [ rebind_frost ]
+        rebind_frost = false
         # scene swaps replace the target: rebind, don't bind once
         fresh : bool [ found != backdrop ]
         if [ fresh ]
             backdrop = found
             reveal   = 0.0
+        if [ rb9 ]
+            rewire_frost[]
+            if [ !fresh ] return
         if [ !fresh && frost_eff[] == frost_bound ] return
         if [ m_reduce && fresh ]
             m_reduce.samplers[ 'color' ] = backdrop.color
@@ -2458,29 +2511,10 @@ Display Window
             if [ list ]
                 for [ r: Render ] in list
                     r.update[]
-                if [ resizing ]
-                    r_view.color = screen.color
-                    r_view.update[]
-                    source : Texture [ (backdrop) ? backdrop.color : compose.color ]
-                    m_reduce .samplers['color'] = source
-                    m_reduce0.samplers['color'] = r_reduce.color
-                    m_reduce1.samplers['color'] = r_reduce0.color
-                    m_blur_v .samplers['color'] = r_reduce1.color
-                    m_blur   .samplers['color'] = r_blur_v.color
-                    m_soft_v .samplers['color'] = r_reduce0.color
-                    m_soft   .samplers['color'] = r_soft_v.color
-                    m_reduce2.samplers['color'] = r_reduce1.color
-                    m_reduce3.samplers['color'] = r_reduce2.color
-                    m_frost_v.samplers['color'] = r_reduce3.color
-                    m_frost  .samplers['color'] = r_frost_v.color
-                    m_view.samplers['background'] = source
-                    m_view.samplers['frost']      = r_frost.color
-                    m_view.samplers['blur']       = r_blur.color
-                    m_view.samplers['compose']    = compose.color
-                for [ r: Render ] in list
-                    if [ r.models ]
-                        for [ m: Model ] in r.models
-                            m.rebind_model[]
+                r_view.color = screen.color
+                r_view.update[]
+                # mode-aware: frost/blur follow frost_src, not r_frost
+                rewire_frost[]
 
     func set_fullscreen [ on: bool ]
         if [ on == fs_active ]

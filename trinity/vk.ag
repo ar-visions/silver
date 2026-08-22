@@ -3715,6 +3715,8 @@ Texture Display
     # ITS imported texture; null returns presentation to last_render
     mutable shell_tex           : Texture
     intern  shell_bound         : Au
+    # resize replaced attachments: the swap blit must rebind its sampler
+    intern  rebind_swap         : bool
     public element_targets      : map   Render [string]
     # headless element hosts (trinity offscreen objects) pumped by the app
     # loop alongside this window; vec Au — the class lives in trinity.ag
@@ -3861,6 +3863,13 @@ Texture Display
                 for [ m: Model ] in r.models
                     m.rebind_model[ ]
 
+        # a resize replaces color attachments: the two sampler maps gated
+        # on OBJECT identity (swap blit, frost chain head) never notice.
+        # raise their rebind flags so the next frame rebinds live textures
+        rebind_swap = true
+        rwin9 : cast Window [ a ]
+        if [ rwin9 ] rwin9.rebind_frost = true
+
         resized = true
         if [ !backbuffer ]
             old_swapchain : VkSwapchainKHR [ Au.live_swapchain_get[] ]
@@ -3979,7 +3988,8 @@ Texture Display
                 # shell presentation switch: sample orbiter's imported frame
                 # instead of the app's final render while the shell is up
                 shell9 : Au [ (shell_tex && shell_tex.vk_image) ? Au[ shell_tex ] : Au[ last_render[] ] ]
-                if [ shell9 != shell_bound ]
+                if [ shell9 != shell_bound || rebind_swap ]
+                    rebind_swap = false
                     swap_model.samplers = map Au[string] [ "color": shell9 ]
                     swap_model.rebind_model[]
                     shell_bound = shell9

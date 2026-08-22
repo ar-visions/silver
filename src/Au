@@ -1096,6 +1096,7 @@ forward(any)
     M(AA,BB, s, method, public, none,   au_vec_remove, Au, i64) \
     M(AA,BB, s, method, public, Au,     au_vec_reverse, Au) \
     M(AA,BB, s, method, public, bool,   au_is_vec, Au) \
+    M(AA,BB, s, method, public, bool,   au_vec_equals, Au, Au) \
     M(AA,BB, s, method, public, none,   au_vec_shift, Au) \
     M(AA,BB, s, method, public, ARef,   au_vec_unshift, Au) \
     M(AA,BB, s, method, public, ARef,   au_vec_insert, Au, i64) \
@@ -2063,9 +2064,8 @@ declare_class_2(command, string)
 
 #define watch_module_ Au
 #define watch_schema(AA,BB,...) \
-    M(AA,BB, i, prop,    public, path,  res) \
-    M(AA,BB, i, prop,    public, ARef,  callback) \
-    M(AA,BB, i, prop,    public, ARef,  argument) \
+    M(AA,BB, i, prop,    public, path,   res) \
+    M(AA,BB, i, prop,    public, lambda, callback) \
     M(AA,BB, i, prop,    intern, bool,  running) \
     M(AA,BB, i, prop,    intern, i32,   fd) \
     M(AA,BB, i, prop,    intern, i64,   tid) \
@@ -2089,7 +2089,7 @@ declare_class(mutex)
 
 #define async_module_ Au
 #define async_schema(AA,BB,...) \
-    M(AA,BB, i, prop,    public, hook,  work_fn) \
+    M(AA,BB, i, prop,    public, lambda, work_fn) \
     M(AA,BB, i, prop,    public, Au,    work) \
     M(AA,BB, i, prop,    public, Au,    target) \
     M(AA,BB, i, prop,    intern, mutex, global) \

@@ -2749,9 +2749,10 @@ Control Editor
                 buf = FileBuf []
                 fcm[ key ] = buf
             buf.line_regs = vec Au []
-            nl : i32 [ ff.lines.count ]
+            lns : vec Au ff.lines
+            nl  : i32 [ lns.count ]
             for [ li: i32 0, li < nl, li += 1 ]
-                ltk  : vec fmt_token ff.lines[ li ]
+                ltk  : vec fmt_token lns[ li ]
                 regs : vec ColorRegion []
                 nt   : i32 [ ltk.count ]
                 for [ ti: i32 0, ti < nt, ti += 1 ]
