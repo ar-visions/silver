@@ -367,7 +367,7 @@ ielement element
                     el [ from_t == typeid[ string ] ]
                         # strings do not interpolate: snap to target
                         ct.container.member_set[ ct.member, ct.to ]
-                    el [ Au.au_is_vec[ ct.from ] || (ct.from inherits collective) ]
+                    el [ ct.from inherits collective ]
                         fa  : vec Rotation ct.from
                         ta  : vec Rotation ct.to
                         if [ fa && ta ]

@@ -1190,10 +1190,12 @@ Display Window
                 if [ !e.AF_get_member[ member ] ] continue
                 cur : inst.member_object[ member ]
                 nv  : e.member_object[ member ]
-                # a vec dispatches as its ELEMENT: never compare* one
+                # a vector compares by element
                 differs : bool [ false ]
-                if [ Au.au_is_vec[ cur ] || Au.au_is_vec[ nv ] ]
-                    differs = !Au.au_vec_equals[ cur, nv ]
+                if [ (cur && cur inherits vector) || (nv && nv inherits vector) ]
+                    vc : vector cur
+                    vn : vector nv
+                    differs = (vc != vn) && !(vc && vc.equals[ vn ])
                 el
                     differs = (!cur) != (!nv) || ((cur && nv) && cur.compare*[ nv ] != 0)
                 if [ differs ]
@@ -1405,7 +1407,7 @@ Display Window
                         expect layer_member, 'member not found on {inst_type.ident}: {best.member}'
 
                         if [ !best.instance ]
-                            if [ (layer_member.src.traits & (1 << 11)) && !Au.au_is_vec[ best.value ] ]
+                            if [ (layer_member.src.traits & (1 << 11)) && !(best.value inherits vector) ]
                                 # alloc is pool-managed: the entry must own it
                                 best.instance = Au.new_object[ layer_member.src, null, null, false, __FILE__, __LINE__, __SEQUENCE__ ]
                                 best.instance.hold[]
@@ -1455,10 +1457,11 @@ Display Window
                         info      : header [ best.value ]
                         val_type  : Au_t [ info.au ]
                         meta_type : Au_t [ member.meta.a ]
-                        vec_val : bool [ Au.au_is_vec[ best.value ] ]
-                        vec_mem : bool [ (member.src.traits & (1 << 62)) != 0 ]
+                        vec_val : bool [ false ]
+                        if [ best.value ] vec_val = best.value inherits collective
+                        vec_mem : bool [ Au.inherits[ member.src, typeid[ vector ] ] ]
                         if [ vec_val && vec_mem ]
-                            elem9    : Au_t [ member.src.src ]
+                            elem9    : Au_t [ member.meta.a ]
                             src_arr  : cast astrings [ best.value ]
                             dst9     : vec Au []
                             for [ s: string ] in src_arr

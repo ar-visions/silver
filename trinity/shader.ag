@@ -150,7 +150,7 @@ class shader
                 if [ val inherits LayoutBinding ]
                     lb: LayoutBinding[val]
                     is_cube: lb.id == 9
-                    stype: (is_cube) ? "samplerCube" : "sampler2D"
+                    stype: (lb.volume) ? "sampler3D" : (is_cube) ? "samplerCube" : "sampler2D"
                     if [ lb.count > 1 ]
                         result = '{result}layout(set = 1, binding = {binding}) uniform {stype} {mem.ident}[{lb.count}];\n'
                     el
@@ -2056,5 +2056,5 @@ func model_init_pipeline [ m: Model, n: Node, prim: Primitive, msh: Mesh, s: sha
         r: m.r, s: s, vbo: vbo, default_model: mdl_mat, src_node: n, render_id: render_id,
         material: material, samplers: use_samplers,
         straight_alpha: sa, depth_no_write: transparent, cull_none: m.cull_none,
-        depth_no_test: m.depth_no_test ]
+        cull_front: m.cull_front, depth_no_test: m.depth_no_test ]
     m.pipelines.push[ pipe ]

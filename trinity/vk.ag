@@ -11,6 +11,7 @@ class LayoutBinding
     id      : int
     count   : u32
     format  : Au_t
+    volume  : bool           # sampler3D: a Texture with depth > 1
 
 # storage image binding for compute shaders. emits
 #   layout(<glsl_format>, set=1, binding=N) writeonly uniform image2D <name>;
@@ -63,6 +64,13 @@ class Render
     context w                              : Display
     # non-holding backref: pipeline skips when the owner isn't visible
     mutable owner                          : element
+    # the display loop leaves this target alone while set
+    public  skip                           : bool
+    # opt-in GPU timestamps: pass 0 of the last completed slot, in us
+    public  timing                         : bool
+    public  gpu_us                         : f32
+    intern  query_pool                     : VkQueryPool
+    intern  ts_period                      : f32
     public  id                             : i32
     mutable wscale                         : f32
     mutable width                          : i32
@@ -251,6 +259,33 @@ class Render
             expect result == VK_SUCCESS, "Failed to create framebuffer"
         fb_color_view = color.vk_image_view
 
+    # opt-in GPU timestamps: two queries per ring slot, read back once
+    # that slot's fence has cleared (the previous use of the slot)
+    func ts_read [ s: i32 ]
+        if [ !timing ] return
+        if [ !query_pool ]
+            vkCreateQueryPool[ vk.device, VkQueryPoolCreateInfo [
+                sType:      VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+                queryType:  VK_QUERY_TYPE_TIMESTAMP,
+                queryCount: 16 ], null, @query_pool ]
+            props : VkPhysicalDeviceProperties
+            vkGetPhysicalDeviceProperties[ vk.physical_device, @props ]
+            ts_period = props.limits.timestampPeriod
+            return
+        if [ ring_primed[s] == 0 ] return
+        ts : vec u64 [ 2 ]
+        qr : vkGetQueryPoolResults[ vk.device, query_pool, u32[ s * 2 ], 2, 16, @ts[0], 8, VK_QUERY_RESULT_64_BIT ]
+        if [ qr == VK_SUCCESS ] gpu_us = f32[ ts[1] - ts[0] ] * ts_period / 1000.0
+
+    func ts_begin [ cmd: VkCommandBuffer, s: i32 ]
+        if [ !timing || !query_pool ] return
+        vkCmdResetQueryPool[ cmd, query_pool, u32[ s * 2 ], 2 ]
+        vkCmdWriteTimestamp[ cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, query_pool, u32[ s * 2 ] ]
+
+    func ts_end [ cmd: VkCommandBuffer, s: i32 ]
+        if [ !timing || !query_pool ] return
+        vkCmdWriteTimestamp[ cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, query_pool, u32[ s * 2 + 1 ] ]
+
     # open a command buffer for this canvas's batch (once; idempotent while recording).
     func begin_record [ ]
         if [ recording ]
@@ -258,6 +293,7 @@ class Render
         s : i32 [ ring_i ]
         if [ ring_primed[s] != 0 ]
             vkWaitForFences[ vk.device, 1, @vk_fences[s], VK_TRUE, UINT64_MAX ]
+        ts_read[ s ]
         vk_command_buffer = vk_command_buffers[s]
         vk_fence          = vk_fences[s]
         vkResetFences[ vk.device, 1, @vk_fence ]
@@ -266,6 +302,7 @@ class Render
             sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
             flags: VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
         ] ]
+        ts_begin[ vk_command_buffer, s ]
         if [ bool[ color ] && color.vk_layout != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
             color.transition_in[ vk_command_buffer, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
         recording = true
@@ -280,6 +317,7 @@ class Render
         if [ pass_open ]
             vkCmdEndRenderPass[ vk_command_buffer ]
             pass_open = false
+        ts_end[ vk_command_buffer, s ]
         vkEndCommandBuffer[ vk_command_buffer ]
         submitInfo: VkSubmitInfo [
             sType:              VK_STRUCTURE_TYPE_SUBMIT_INFO,
@@ -380,6 +418,7 @@ class Render
         s : i32 [ ring_i ]
         if [ ring_primed[s] != 0 ]
             vkWaitForFences[ vk.device, 1, @vk_fences[s], VK_TRUE, UINT64_MAX ]
+        ts_read[ s ]
         vk_command_buffer = vk_command_buffers[s]
         vk_fence          = vk_fences[s]
         vk.cur_ring       = s
@@ -398,6 +437,7 @@ class Render
                 sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                 flags: VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
             ] ]
+            if [ i == 0 ] ts_begin[ frame, s ]
             if [ i == 0 && bool[ color ] && color.vk_layout != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
                 color.transition_in[ frame, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
             # pass 1 writes reduction: order the barrier with the pass, not the queue
@@ -478,6 +518,7 @@ class Render
                     p.draw[ frame ]
 
             vkCmdEndRenderPass[ frame ]
+            if [ i == 0 ] ts_end[ frame, s ]
             vkEndCommandBuffer[ frame ]
             s_flags: VkPipelineStageFlags [ VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT ]
             submitInfo: VkSubmitInfo [
@@ -1717,7 +1758,7 @@ class Gpu
     public tx            : Texture
     public vertex_data   : vec i8 [ 1 ]
     public index_data    : vec i8 [ 1 ]
-    public members       : @vertex_member_t
+    public members       : vec vertex_member_t
     public member_count  : i32
     public index_size    : i32
     public index_count   : i32
@@ -1804,7 +1845,7 @@ class Gpu
 class uniforms
     context vk       : vk_context
     expect s         : shader
-    public u_memory  : @u8
+    public u_memory  : vec u8
     public u_buffers : vec Buffer []
     # this pipeline's gltf NODE transform (Pipeline.default_model). composed
     # under the shader's model each update so file placement survives — it was
@@ -1841,9 +1882,6 @@ class uniforms
                     fp[16], fp[17], fp[18], fp[19], fp[40], fp[41], fp[42], fp[43],
                     fp[44], fp[45], fp[100], fp[101], fp[92], fp[93], fp[94], fp[95] ]
         b.update[ null ]
-
-    func dealloc [ ]
-        drop[ u_memory ]
 
     func init [ ]
         type_list:  vec Au_t []
@@ -1930,6 +1968,7 @@ class Pipeline
     # correctly: rgb*a + dst*(1 - a). default false (premul).
     public straight_alpha   : bool
     public cull_none        : bool
+    public cull_front       : bool   # keep back faces only (far-side passes)
     public depth_no_write   : bool
     # volumetrics that occlude in-shader: no depth test, no write
     public depth_no_test    : bool
@@ -2197,7 +2236,7 @@ class Pipeline
                             puts 'BINDCHK   sampler key {nm2} -> {Au.evalue[ enum_type, nm2.chars ]}'
                         puts 'BINDCHK enum {enum_type.ident}: 0={Au.estring[ enum_type, 0 ]} 1={Au.estring[ enum_type, 1 ]}'
                     expect all.count == 1, "binding arrays (count > 1) not supported in this code path"
-                    res: Gpu [ all[0] ]
+                    res: all[0]
                     expect res inherits Gpu, "expected Gpu resource"
                     res.sync [ w ]
                     resources.push [ res ]
@@ -2484,7 +2523,7 @@ class Pipeline
                 rasterizerDiscardEnable: VK_FALSE,
                 polygonMode:             VK_POLYGON_MODE_FILL,
                 lineWidth:               1.0,
-                cullMode:                (cull_none) ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT,
+                cullMode:                (cull_none) ? VK_CULL_MODE_NONE : (cull_front) ? VK_CULL_MODE_FRONT_BIT : VK_CULL_MODE_BACK_BIT,
                 frontFace:               VK_FRONT_FACE_CLOCKWISE,
                 depthBiasEnable:         VK_FALSE
             ]
@@ -2623,18 +2662,18 @@ class SubdivTopo
     public ne     : i32                        # unique edges
     public n_bound  : i32                      # edges with 1 face (boundary)
     public n_nonman : i32                      # edges with 3+ faces (bad weld)
-    public qcorn  : @i32                    # nf*4 corner vert ids
-    public edata  : @i32                    # ne*4: v0,v1,f0,f1 (-1 boundary)
-    public vfo    : @i32                    # nv+1 vert->face offsets
-    public vf     : @i32                    # nf*4 vert->face ids
-    public veo    : @i32                    # nv+1 vert->edge offsets
-    public ve     : @i32                    # ne*2 vert->edge ids
-    public face_e : @i32                    # nf*4 edge id per quad side
+    public qcorn  : vec i32                 # nf*4 corner vert ids
+    public edata  : vec i32                 # ne*4: v0,v1,f0,f1 (-1 boundary)
+    public vfo    : vec i32                 # nv+1 vert->face offsets
+    public vf     : vec i32                 # nf*4 vert->face ids
+    public veo    : vec i32                 # nv+1 vert->edge offsets
+    public ve     : vec i32                 # ne*2 vert->edge ids
+    public face_e : vec i32                 # nf*4 edge id per quad side
     public cage_buf : Buffer                   # level-0 only: control positions
-    public base   : @f32                    # 3*nv build-time positions
-    public rep    : @i32                    # nv: source unwelded vert
-    public mirror : @i32                    # nv: vert at (-x,y,z), -1 none
-    public pin    : @f32                    # nv: 0..1, 1 = vert never moves
+    public base   : vec f32                 # 3*nv build-time positions
+    public rep    : vec i32                 # nv: source unwelded vert
+    public mirror : vec i32                 # nv: vert at (-x,y,z), -1 none
+    public pin    : vec f32                 # nv: 0..1, 1 = vert never moves
     public wmap   : @f32                    # nv: painted region weights
 
 class Model
@@ -2656,6 +2695,7 @@ class Model
     # emit unpremultiplied alpha (e.g. cloud, text overlay).
     public straight_alpha   : bool
     public cull_none        : bool
+    public cull_front       : bool
     public depth_no_test    : bool
     public transparent_s    : shader
     # non-skinned primitives (no JOINTS_0) use this shader instead of s;
@@ -3224,6 +3264,8 @@ class Texture
     public shareable        : bool
     # NOTE: appended LAST — inserting mid-schema shifts af-bit indices of the
     # members after it (misread set-detection broke m7_src's mip/aniso config)
+    # > 1 = 3D image; a sampler Image is a strip of depth slices
+    public depth            : i32
 
     intern vk_layout        : VkImageLayout
     intern vk_format        : VkFormat
@@ -3470,7 +3512,7 @@ class Texture
                 ansio        = (anisotropy > 0) ? anisotropy : ((img) ? 4 : 0)
                 if [ img ]
                     width  = img.width
-                    height = img.height
+                    height = (depth > 1) ? img.height / depth : img.height
             el [ sampler ]
                 width  = 4
                 height = 4
@@ -3484,6 +3526,8 @@ class Texture
                 usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT
             el [ swap ]
                 usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT
+            el [ depth > 1 ]
+                usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT
             el
                 usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
                         VK_IMAGE_USAGE_TRANSFER_DST_BIT     |
@@ -3503,10 +3547,10 @@ class Texture
                 expect height > 0 && height <= 16384, 'Texture.init: corrupt height {height}'
             info : VkImageCreateInfo [
                 sType:         VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-                imageType:     VK_IMAGE_TYPE_2D,
+                imageType:     (depth > 1) ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D,
                 format:        vk_format,
                 flags:         (layer_count >= 6) ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0,
-                extent:        VkExtent3D [ width, height, 1 ],
+                extent:        VkExtent3D [ width, height, (depth > 1) ? depth : 1 ],
                 mipLevels:     mip_levels,
                 arrayLayers:   layer_count,
                 samples:       VK_SAMPLE_COUNT_1_BIT,
@@ -3555,15 +3599,16 @@ class Texture
                             layerCount:     layer_count
                         ],
                         imageOffset: VkOffset3D [ 0, 0, 0 ],
-                        imageExtent: VkExtent3D [ width, height, 1 ]
+                        imageExtent: VkExtent3D [ width, height, (depth > 1) ? depth : 1 ]
                     ]]
                 cmd.submit[ ]
                 vkDeviceWaitIdle[ vk.device ]
                 vk.create_mipmaps[ vk_image, width, height, mip_levels, layer_count ]
                 vk_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-            
+
             if [ !vk_image_view ]
-                view_type: (layer_count >  6) ? VK_IMAGE_VIEW_TYPE_CUBE_ARRAY :
+                view_type: (depth > 1)       ? VK_IMAGE_VIEW_TYPE_3D :
+                           (layer_count >  6) ? VK_IMAGE_VIEW_TYPE_CUBE_ARRAY :
                            (layer_count == 6) ? VK_IMAGE_VIEW_TYPE_CUBE : VK_IMAGE_VIEW_TYPE_2D
                 viewInfo: VkImageViewCreateInfo [
                     sType:    VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
@@ -3593,13 +3638,16 @@ class Texture
                     VK_SAMPLER_ADDRESS_MODE_REPEAT : address_mode ]
                 mode_v: VkSamplerAddressMode [ (wrap_v) ?
                     VK_SAMPLER_ADDRESS_MODE_REPEAT : address_mode ]
+                # a tiling volume repeats on all three axes
+                mode_w: VkSamplerAddressMode [ (wrap_u && wrap_v) ?
+                    VK_SAMPLER_ADDRESS_MODE_REPEAT : address_mode ]
                 samplerInfo: VkSamplerCreateInfo [
                     sType:                   VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
                     magFilter:               (nearest) ? VK_FILTER_NEAREST : VK_FILTER_LINEAR,
                     minFilter:               (nearest) ? VK_FILTER_NEAREST : VK_FILTER_LINEAR,
                     addressModeU:            mode_u,
                     addressModeV:            mode_v,
-                    addressModeW:            address_mode,
+                    addressModeW:            mode_w,
                     anisotropyEnable:        (ansio > 0) ? VK_TRUE : VK_FALSE,
                     maxAnisotropy:           ansio,
                     minLod:                  0.0,
@@ -3723,11 +3771,11 @@ Texture Display
     mutable offscreens           : vec Au []
     mutable list                 : vec Render
     intern swap_renders         : vec Render
-    intern vk_swap_images       : @VkImage
+    intern vk_swap_images       : vec VkImage
     intern vk_surface           : VkSurfaceKHR
     intern vk_swapchain         : VkSwapchainKHR
     
-    intern surface_caps         : @VkSurfaceCapabilitiesKHR
+    intern surface_caps         : vec VkSurfaceCapabilitiesKHR
     intern swap_render_current  : Render
     intern surface_format       : VkSurfaceFormatKHR
     intern present_mode         : VkPresentModeKHR
@@ -3954,7 +4002,7 @@ Texture Display
             resize*[ width, height ]
 
         for [ r: Render, id: string ] in element_targets
-            if [ !r ] continue
+            if [ !r || r.skip ] continue
             if [ r.owner && (r.owner.hide || r.owner.opacity <= 0.0) ] continue
             r.draw*[]
             r.sync_fence*[]
@@ -4694,6 +4742,10 @@ func uniform_size [ type: Au_t ] -> num
 
 func placeholder_image [ sampler: object, size: i32, fill: @u8, sampler_size: @i32, format: @Pixel ]
     cl : typeid[sampler]
+    # a vec sampler is a vector: its element type names the pixel format
+    if [ sampler inherits vector ]
+        vs : vector sampler
+        cl = vs.elem_type[]
     s: i32 [ size * size ]
 
     if [ cl == typeid[f32] ]

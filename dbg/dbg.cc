@@ -391,7 +391,7 @@ static string render_value(lldb::SBValue v) {
 // inner fields) can be expanded inline. __-prefixed header fields (the af-bit struct
 // __fbits, the vtable pointer, etc.) are skipped — not user data.
 Au read_children_depth(dbg debug, lldb::SBValue value, int depth) {
-    Au result = au_vec_new(typeid(Au), (symbol)"dbg", __LINE__, 0);
+    Au result = (Au)vector_of(typeid(Au));
 
     for (int i = 0, n = (int)value.GetNumChildren(); i < n; ++i) {
         lldb::SBValue child = value.GetChildAtIndex(i);
@@ -417,15 +417,15 @@ Au read_children_depth(dbg debug, lldb::SBValue value, int depth) {
                            child.GetValueAsUnsigned(0) == 0;
         Au ar = (depth > 0 && !leaf && !nul && child.GetNumChildren() > 0)
             ? hold(read_children_depth(debug, child, depth - 1))
-            : hold(au_vec_new(typeid(Au), (symbol)"dbg", __LINE__, 0));
+            : hold((Au)vector_of(typeid(Au)));
         variable v = new0(variable,
             debug,      debug,
             name,       name,
             type,       type,
             value,      val,
-            children,   (ARef)ar);
+            children,   (vector)ar);
 
-        *(Au*)au_vec_slot(result) = (Au)hold(v);
+        vector_push((vector)result, (Au)v);
     }
 
     return result;
@@ -447,55 +447,55 @@ DBG_API Au dbg_read_vars(dbg debug, Au result, lldb::SBValueList vars) {
         bool   nul  = value.TypeIsPointerType() &&
                       value.GetValueAsUnsigned(0) == 0;
         Au     kids = null;
-        if (nul) kids = au_vec_new(typeid(Au), (symbol)"dbg", __LINE__, 0);
+        if (nul) kids = (Au)vector_of(typeid(Au));
         else     kids = read_children(debug, value);
         variable v  = new0(variable,
             debug,      debug,
             name,       name,
             type,       type,
             value,      val,
-            children,   (ARef)hold(kids)
+            children,   (vector)hold(kids)
         );
-        *(Au*)au_vec_slot(result) = (Au)hold(v);
+        vector_push((vector)result, (Au)v);
     }
     return result;
 }
 
-DBG_API ARef dbg_read_arguments(dbg debug) {
-    Au                result = au_vec_new(typeid(Au), (symbol)"dbg", __LINE__, 0);
+DBG_API vector dbg_read_arguments(dbg debug) {
+    Au                result = (Au)vector_of(typeid(Au));
     lldb::SBFrame     frame  = S(debug)->process.GetSelectedThread().GetSelectedFrame();
     // in_scope_only = true: only variables whose lexical scope contains the current PC.
     // (args span the whole function, so this is a no-op for them, but kept symmetric.)
     lldb::SBValueList args   = frame.GetVariables(
         true, false, false, true);
-    return (ARef)dbg_read_vars(debug, result, args);
+    return (vector)dbg_read_vars(debug, result, args);
 }
 
-DBG_API ARef dbg_read_locals   (dbg debug) {
-    Au                result = au_vec_new(typeid(Au), (symbol)"dbg", __LINE__, 0);
+DBG_API vector dbg_read_locals   (dbg debug) {
+    Au                result = (Au)vector_of(typeid(Au));
     lldb::SBFrame     frame  = S(debug)->process.GetSelectedThread().GetSelectedFrame();
     // in_scope_only = true: lldb drops locals not in scope at the PC — e.g. a for-loop
     // iterator once execution is past the loop's lexical block. that's the "# i = " with
     // a blank value the user was seeing; it now simply isn't reported.
     lldb::SBValueList args   = frame.GetVariables(
         false, true, false, true);
-    return (ARef)dbg_read_vars(debug, result, args);
+    return (vector)dbg_read_vars(debug, result, args);
 }
 
-DBG_API ARef dbg_read_statics  (dbg debug) {
-    Au                result = au_vec_new(typeid(Au), (symbol)"dbg", __LINE__, 0);
+DBG_API vector dbg_read_statics  (dbg debug) {
+    Au                result = (Au)vector_of(typeid(Au));
     lldb::SBFrame     frame  = S(debug)->process.GetSelectedThread().GetSelectedFrame();
     lldb::SBValueList args   = frame.GetVariables(
         false, false, true, false);
-    return (ARef)dbg_read_vars(debug, result, args);
+    return (vector)dbg_read_vars(debug, result, args);
 }
 
 // the full call stack of the selected thread: outermost first. each frame is the
 // function name plus its .ag source location (empty file for system frames).
-DBG_API ARef dbg_read_frames   (dbg debug) {
-    Au             result = au_vec_new(typeid(Au), (symbol)"dbg", __LINE__, 0);
+DBG_API vector dbg_read_frames   (dbg debug) {
+    Au             result = (Au)vector_of(typeid(Au));
     lldb::SBThread thread = S(debug)->process.GetSelectedThread();
-    if (!thread.IsValid()) return (ARef)result;
+    if (!thread.IsValid()) return (vector)result;
     uint32_t nf = thread.GetNumFrames();
     for (uint32_t i = 0; i < nf; ++i) {
         lldb::SBFrame frm = thread.GetFrameAtIndex(i);
@@ -513,13 +513,13 @@ DBG_API ARef dbg_read_frames   (dbg debug) {
             source,    src,
             line,      ln
         );
-        *(Au*)au_vec_slot(result) = (Au)hold(fr);
+        vector_push((vector)result, (Au)fr);
     }
-    return (ARef)result;
+    return (vector)result;
 }
 
-DBG_API ARef dbg_read_globals  (dbg debug) {
-    Au                result      = au_vec_new(typeid(Au), (symbol)"dbg", __LINE__, 0);
+DBG_API vector dbg_read_globals  (dbg debug) {
+    Au                result      = (Au)vector_of(typeid(Au));
     lldb::SBFrame     frame       = S(debug)->process.GetSelectedThread().GetSelectedFrame();
     u32               num_modules = S(debug)->target.GetNumModules();
 
@@ -531,16 +531,16 @@ DBG_API ARef dbg_read_globals  (dbg debug) {
         );
         dbg_read_vars(debug, result, globals);
     }
-    return (ARef)result;
+    return (vector)result;
 }
 
-DBG_API ARef dbg_read_registers(dbg debug) {
-    Au                result = au_vec_new(typeid(Au), (symbol)"dbg", __LINE__, 0);
+DBG_API vector dbg_read_registers(dbg debug) {
+    Au                result = (Au)vector_of(typeid(Au));
     lldb::SBThread    thread = S(debug)->process.GetSelectedThread();
     lldb::SBFrame     frame  = thread.GetSelectedFrame();
     lldb::SBValueList regs   = frame.GetRegisters();
     dbg_read_vars(debug, result, regs);
-    return (ARef)result;
+    return (vector)result;
 }
 
 breakpoint dbg_set_breakpoint(dbg debug, path source, u32 line, u32 column) {
