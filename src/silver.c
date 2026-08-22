@@ -329,6 +329,7 @@ void print_all(array tokens) {
 }
 
 etype read_etype(silver a, array*);
+static Au_t vec_of_au(Au_t au);
 
 num index_of_cstr(Au a, cstr f) {
     Au_t t = isa(a);
@@ -628,6 +629,22 @@ static inline enode expr_load(enode result, bool load) {
 }
 
 static enode parse_expression(silver a, etype expect, bool hint, bool load) { sequencer
+    // a [ v1, v2 ] literal against a vec-typed slot seeds a made vector
+    Au_t vex = expect ? vec_of_au(expect->autype) : null;
+    if (vex && next_is(a, "[")) {
+        consume(a, Syntax__none);
+        etype el = u(etype, vex->src);
+        if (!el) el = etype_prep((aether)a, vex->src);
+        enode vecn = e_vec_new((aether)a, el);
+        vecn->autype = vex;
+        while (peek(a) && !next_is(a, "]")) {
+            enode e = parse_expression(a, el, false, true);
+            e_assign((aether)a, vecn, (Au)e, OPType__assign_add);
+            read_if(a, ",");
+        }
+        validate(read_if(a, "]"), "expected ] after vec literal");
+        return vecn;
+    }
     if (is_rec(expect) && next_is(a, "[")) {
         // collections and structs go straight to parse_object
         if (inherits(expect->autype, typeid(collective)) || expect->autype->is_struct) {
@@ -1681,16 +1698,23 @@ static bool fmt_current(symbol path, i64 mtime) {
 static unsigned char* fmt_serialize(fmt_file ff, u32* out_total) {
     cstr cp = (ff->source && len(ff->source)) ? ff->source->chars : "";
     u32  cl = (u32)strlen(cp);
-    u32  nlines = ff->lines ? (u32)len(ff->lines) : 0;
+    // lines is a vec of vec fmt_token: count and items ride the header
+    u32  nlines = ff->lines ? (u32)header(ff->lines)->count : 0;
+    Au*  lns    = ff->lines ? (Au*)header(ff->lines)->data  : null;
     u32  n = 0;
-    if (ff->lines) each(ff->lines, array, ltk) n += (u32)len(ltk);
+    for (u32 L = 0; L < nlines; L++) n += (u32)header(lns[L])->count;
     cstr* dp = calloc(n ? n : 1, sizeof(cstr));
     u32   np = 0;
-    if (ff->lines) each(ff->lines, array, ltk) each(ltk, fmt_token, tk) {
-        if (!tk->decl_source) continue;
-        bool have = false;
-        for (u32 i = 0; i < np; i++) if (strcmp(dp[i], tk->decl_source->chars) == 0) { have = true; break; }
-        if (!have) dp[np++] = tk->decl_source->chars;
+    for (u32 L = 0; L < nlines; L++) {
+        u32        nt  = (u32)header(lns[L])->count;
+        fmt_token* tks = (fmt_token*)header(lns[L])->data;
+        for (u32 t = 0; t < nt; t++) {
+            fmt_token tk = tks[t];
+            if (!tk->decl_source) continue;
+            bool have = false;
+            for (u32 i = 0; i < np; i++) if (strcmp(dp[i], tk->decl_source->chars) == 0) { have = true; break; }
+            if (!have) dp[np++] = tk->decl_source->chars;
+        }
     }
     u32 ptotal = 4;
     for (u32 i = 0; i < np; i++) ptotal += 4 + (u32)strlen(dp[i]);
@@ -1710,9 +1734,12 @@ static unsigned char* fmt_serialize(fmt_file ff, u32* out_total) {
         memcpy(b + o, dp[i], pl); o += pl;
     }
     SP(nlines);
-    if (ff->lines) each(ff->lines, array, ltk) {
-        SP(len(ltk));
-        each(ltk, fmt_token, tk) {
+    for (u32 L = 0; L < nlines; L++) {
+        u32        nt  = (u32)header(lns[L])->count;
+        fmt_token* tks = (fmt_token*)header(lns[L])->data;
+        SP(nt);
+        for (u32 t = 0; t < nt; t++) {
+            fmt_token tk = tks[t];
             i32 px = 0;
             if (tk->decl_source)
                 for (u32 i = 0; i < np; i++)
@@ -1733,8 +1760,11 @@ static void fmt_load(silver a) {
     for (int i = 0; i < fmt_nsec; i++) { free(fmt_secs[i].path); free(fmt_secs[i].buf); }
     fmt_nsec = 0;
     if (!a->format || !len(a->format)) return;
-    array files = read_format(a->format);
-    each(files, fmt_file, ff) {
+    Au  files  = read_format(a->format);
+    u32 nf     = files ? (u32)header(files)->count : 0;
+    Au* fitems = files ? (Au*)header(files)->data  : null;
+    for (u32 fx = 0; fx < nf; fx++) {
+        fmt_file ff = (fmt_file)fitems[fx];
         if (!ff->source || !len(ff->source)) continue;
         // a section for a moved/deleted file never re-tokenizes: drop it
         struct stat st;
@@ -2907,7 +2937,7 @@ static void silver_module() {
         "cast",     "try",      "throw",    "catch",
         "finally",  "for",      "func", 
         "operator", "construct", "alias",   "getter", "setter",
-        "new",      "local",    "elaborate",
+        "vec",      "new",      "local",    "elaborate",
         null));
 
     assign = hold(array_of_cstr(
@@ -4289,6 +4319,22 @@ static none gather_capture(silver a, string alpha, enode mem) { static int seq =
     micro_push((micro_*)&a->gather_fn->members, (Au)cap);
 }
 
+// vec targets resolve their op set before elem-member lookup
+static Au_t vec_of_au(Au_t au) {
+    while (au && au->member_type == AU_MEMBER_VAR) au = au->src;
+    while (au && !au->is_data_user && au->is_alias && au->src) au = au->src;
+    return (au && au->is_data_user) ? au : null;
+}
+
+static bool vec_op_name(string alpha) {
+    static symbol ops[] = { "push", "clear", "reverse", "pop", "first", "last",
+                            "remove", "concat", "index_of", "contains",
+                            "origin", "shift", "unshift", "insert", null };
+    for (int i = 0; ops[i]; i++)
+        if (eq(alpha, ops[i])) return true;
+    return false;
+}
+
 enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_mdl, bool in_ref) { static int seq = 0; seq++;
     token pk1 = peek(a);
     OPType assign_enum = OPType__undefined;
@@ -4471,6 +4517,51 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
                     break;
                 }
                     
+            } else if (instanceof(mem, enode) && vec_of_au(mem->autype) &&
+                       vec_op_name(alpha)) {
+                array vargs = array(4);
+                // push/index_of/contains take an ELEMENT: parse untyped —
+                // an expected type converts a slot GEP too early; codegen
+                // (e_vec_method) loads and e_creates to the element type
+                bool  elem_arg = eq(alpha, "push") || eq(alpha, "index_of") ||
+                                 eq(alpha, "contains") || eq(alpha, "unshift") ||
+                                 eq(alpha, "insert");
+                bool  need_arg = elem_arg || eq(alpha, "remove") ||
+                                 eq(alpha, "concat");
+                bool  has_br   = read_if(a, "[") != null;
+                if (has_br || need_arg) {
+                    etype vel = null;
+                    // chain scopes shadow the function's locals — args parse
+                    // without them (mirrors parse_member_expr)
+                    array prev9 = array(alloc, 32);
+                    for (int i = 0; i < depth; i++) {
+                        etype mm = u(etype, top_scope(a));
+                        push(prev9, (Au)mm);
+                        pop_scope(a);
+                    }
+                    prev9 = reverse(prev9);
+                    a->expr_level++;
+                    if (has_br) {
+                        while (peek(a) && !next_is(a, "]")) {
+                            push(vargs, (Au)parse_expression(a, vel, true, true));
+                            read_if(a, ",");
+                        }
+                    } else
+                        // statement-level commaless arg: v.push value
+                        push(vargs, (Au)parse_expression(a, vel, true, true));
+                    a->expr_level--;
+                    if (has_br)
+                        validate(read_if(a, "]"), "expected ] after vec %o", alpha);
+                    for (int i = 0; i < depth; i++) {
+                        etype mm = (etype)get(prev9, i);
+                        push_scope(a, (Au)mm, 19);
+                    }
+                }
+                token vt9 = element(a, -1);
+                if (vt9 && vt9->chars && alpha &&
+                    strcmp(vt9->chars, alpha->chars) == 0)
+                    vt9->syntax = Syntax__function;
+                mem = e_vec_method((aether)a, mem, cstring(alpha), vargs);
             } else if (instanceof(mem, enode) && !is_loaded((Au)mem)) {
                 // Subsequent iterations - access from previous member
                 verify(mem && mem->autype, "cannot resolve from null member");
@@ -4719,6 +4810,21 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
             enode res = parse_object(a, mdl_expect, true);
             validate(read_if(a, "]"), "expected ] after struct init");
             return res;
+        }
+        // [ v1, v2 ] literal against a vec-typed slot (alias) seeds
+        Au_t vex9 = mdl_expect ? vec_of_au(mdl_expect->autype) : null;
+        if (vex9) {
+            etype el9 = u(etype, vex9->src);
+            if (!el9) el9 = etype_prep((aether)a, vex9->src);
+            enode vecn = e_vec_new((aether)a, el9);
+            vecn->autype = vex9;
+            while (peek(a) && !next_is(a, "]")) {
+                enode e = parse_expression(a, el9, false, true);
+                e_assign((aether)a, vecn, (Au)e, OPType__assign_add);
+                read_if(a, ",");
+            }
+            validate(read_if(a, "]"), "expected ] after vec literal");
+            return vecn;
         }
         enode n = parse_expression(a, mdl_expect, false, true);
         validate(n, "could not read expression");
@@ -5000,6 +5106,36 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
         return e_fn_call(a, u(efunc, f_mix), a(from, to, t), false, true);
     }
 
+    // moduleid[ name ] — the module's runtime Au_t. a bare known module
+    // name resolves at design time; a string expression looks up at runtime
+    if (!cmode && read_if(a, "moduleid")) {
+        validate(read_if(a, "["), "expected [ after moduleid");
+        Au_t f_mod = find_member(typeid(Au), "module_lookup", AU_MEMBER_FUNC, 0, false);
+        verify(f_mod, "Au.module_lookup not found");
+        enode marg = null;
+        string mname = peek_alpha(a);
+        token  mt1   = mname ? element(a, 1) : null;
+        bool   known = false;
+        if (mname && mt1 && eq(mt1, "]")) {
+            if (a->name && eq(mname, a->name->chars))
+                known = true;
+            else
+                members (a->autype, im) {
+                    if (im->is_namespace && im->ident && eq(mname, im->ident)) {
+                        known = true;
+                        break;
+                    }
+                }
+        }
+        if (known) {
+            consume(a, Syntax__none);
+            marg = e_operand(a, (Au)mname, etypeid(symbol));
+        } else
+            marg = parse_expression(a, null, false, true);
+        validate(read_if(a, "]"), "expected ] after moduleid");
+        return e_fn_call(a, (efunc)u(efunc, f_mod), a(marg), false, false);
+    }
+
     if (!cmode && read_if(a, "typeid")) {
         bool read_br = read_if(a, "[") != null;
         push_current(a);
@@ -5018,15 +5154,50 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
         return e_fn_call(a, u(efunc, f_typeid), a(expr), false, false);
     }
 
-    if (!cmode && read_if(a, "new")) {
+    // `vec` is the keyword; `new` parses as an alias until the sweep ends
+    if (!cmode && (read_if(a, "vec") || read_if(a, "new"))) {
         etype mdl = read_etype(a, null);
+        validate(mdl, "expected element type after %o", element(a, -1));
         etype mdl_c = canonical(mdl);
         enode esize = null;
         shape sh  = null;
+        array seeds = null;
+        // vec T = null slot; vec T [] = made growable; a shape allocates fixed
+        bool  made   = false;
+        bool  shaped = false;
         if (read_if(a, "[")) {
-            esize = parse_expression(a, null, false, true);
-            sh = instanceof(esize->literal, shape);
-            validate(read_if(a, "]"), "expected closing-bracket after new Type [");
+            made = read_if(a, "]") != null;
+            if (!made) {
+                esize = parse_expression(a, null, false, true);
+                sh = instanceof(esize->literal, shape);
+                validate(read_if(a, "]"), "expected closing-bracket after vec Type [");
+                shaped = true;
+            }
+            // vec T [] [ v1, v2 ] — seed values into the made growable
+            if (made && read_if(a, "[")) {
+                seeds = array(32);
+                while (peek(a) && !next_is(a, "]")) {
+                    push(seeds, (Au)parse_expression(a, null, false, true));
+                    read_if(a, ",");
+                }
+                validate(read_if(a, "]"), "expected ] after vec seed data");
+            }
+        }
+        if (!shaped) {
+            Au_t elem = (mdl_c ? mdl_c : mdl)->autype;
+            etype pt  = etype_vec((aether)a, elem);
+            Au_t vp   = pt->autype;
+            if (!made) {
+                enode nul = e_null((aether)a, pt);
+                nul->autype = vp;
+                return nul;
+            }
+            enode vec = e_vec_new((aether)a, mdl);
+            vec->autype = vp;
+            if (seeds)
+                each(seeds, enode, s)
+                    e_assign((aether)a, vec, (Au)s, OPType__assign_add);
+            return vec;
         }
         etype  ptr_type = (etype)shape_pointer(a, (Au)(mdl_c ? mdl_c : mdl)->autype, esize);
         enode  vec      = e_vector(a, mdl, esize);
@@ -5810,9 +5981,9 @@ enode parse_statement(silver a)
             etype rtype = (mem && mem->autype->member_type == AU_MEMBER_DECL) && !is_f ?
                             read_etype(a, null) : null;
             bool  is_const = false;
-            // `member : new T [...]` — a managed buffer slot: assignment
+            // `member : vec T [...]` — a managed buffer slot: assignment
             // auto-drops the old value and holds the new one (e_assign)
-            bool  decl_new = !rtype && next_is(a, "new");
+            bool  decl_new = !rtype && (next_is(a, "vec") || next_is(a, "new"));
             a->expr_level++;
             array expr = rtype ? read_initializer(a) : read_expression(a, (etype*)&rtype, &is_const);
             a->expr_level--;
@@ -6224,7 +6395,15 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
         Au_t o_resolved = override->rtype;
         while (o_resolved && o_resolved->is_alias && o_resolved->src)
             o_resolved = o_resolved->src;
-        validate(r_resolved == o_resolved || inherits(r_resolved, o_resolved),
+        // vec types are per-module anonymous vps, and module registration
+        // resolves a vp to its element — compare structurally, either shape
+        Au_t rv9 = vec_of_au(r_resolved), ov9 = vec_of_au(o_resolved);
+        Au_t re9 = rv9 ? rv9->src : r_resolved;
+        Au_t oe9 = ov9 ? ov9->src : o_resolved;
+        validate(r_resolved == o_resolved || inherits(r_resolved, o_resolved) ||
+            ((rv9 || ov9) && (re9 == oe9 ||
+             (re9 && oe9 && re9->ident && oe9->ident &&
+              strcmp(re9->ident, oe9->ident) == 0))),
             "override '%s' return type '%s' does not match base return type '%s'",
             au->ident, rtype->autype->ident, override->rtype->ident);
     }
@@ -6241,7 +6420,15 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
             Au_t b_src = arg_base->src;
             while (a_src && a_src->is_alias && a_src->src) a_src = a_src->src;
             while (b_src && b_src->is_alias && b_src->src) b_src = b_src->src;
-            validate(a_src == b_src || inherits(a_src, b_src),
+            // vec types are per-module anonymous vps, and module registration
+            // resolves a vp to its element — compare structurally, either shape
+            Au_t av9 = vec_of_au(a_src), bv9 = vec_of_au(b_src);
+            Au_t ae9 = av9 ? av9->src : a_src;
+            Au_t be9 = bv9 ? bv9->src : b_src;
+            validate(a_src == b_src || inherits(a_src, b_src) ||
+                ((av9 || bv9) && (ae9 == be9 ||
+                 (ae9 && be9 && ae9->ident && be9->ident &&
+                  strcmp(ae9->ident, be9->ident) == 0))),
                 "override '%s' arg %i type '%s' does not match base type '%s'",
                 au->ident, oi, arg_au->src->ident, arg_base->src->ident);
         }
@@ -6407,6 +6594,19 @@ etype read_etype(silver a, array* p_expr) { sequencer
     push_current(a);
     bool is_ref    = read_if(a, "ref") != null || read_if(a, "@") != null;
     bool is_struct = read_if(a, "struct") != null;
+    // type position: `vec T` names the growable vector type (null slot).
+    // a bracket after T is the VALUE form (vec T [] / vec T [ n ]) — bail
+    // so the expression parser owns the whole thing
+    if (!is_ref && !is_struct && read_if(a, "vec")) {
+        etype elem = read_etype(a, null);
+        if (!elem || next_is(a, "[")) {
+            pop_tokens(a, false);
+            return null;
+        }
+        etype ec = canonical(elem);
+        pop_tokens(a, true);
+        return etype_vec((aether)a, (ec ? ec : elem)->autype);
+    }
     bool  explicit_sign = !mdl && read_if(a, "signed") != null;
     bool  explicit_un   = !mdl && !explicit_sign && read_if(a, "unsigned") != null;
     etype prim_mdl      = null;
@@ -8308,8 +8508,9 @@ static enode parse_lambda_call(silver a, efunc mem) {
         Au_t lt = au_arg_type((Au)mem->autype);
         if (!lt || !lt->args.count) lt = mem->autype;
         int n_args = lt->args.count;
-        bool br = false;
-        validate(n_args == 0 || (br = read_if(a, "[") != null) || a->expr_level == 0,
+        // a zero-arg call still spells its [ ] — consume it
+        bool br = read_if(a, "[") != null;
+        validate(n_args == 0 || br || a->expr_level == 0,
             "expected bracket for lambda call");
         a->expr_level++;
         array call_values = array(alloc, 32);
@@ -8327,9 +8528,9 @@ static enode parse_lambda_call(silver a, efunc mem) {
     }
     int    n_args = user_arg_count(src_fn);
 
-    // Parse the bracket if needed
-    bool br = false;
-    validate(n_args == 0 || (br = read_if(a, "[") != null) || a->expr_level == 0,
+    // Parse the bracket if needed; a zero-arg call still spells [ ]
+    bool br = read_if(a, "[") != null;
+    validate(n_args == 0 || br || a->expr_level == 0,
         "expected bracket for lambda call");
 
     a->expr_level++;
@@ -8666,8 +8867,29 @@ static enode typed_expr(silver a, enode f, array expr) {
     bool    conv        = false;
 
     a->expr_level++;
+    Au_t vau9 = vec_of_au(f->autype);
     if (!has_content) {
-        r = e_create(a, (etype)f, null, false); // default
+        if (vau9) {
+            // empty [ ] initializer on a vec slot: a made vector, count 0
+            etype el9 = u(etype, vau9->src);
+            if (!el9) el9 = etype_prep((aether)a, vau9->src);
+            r = e_vec_new((aether)a, el9);
+            r->autype = vau9;
+        } else
+            r = e_create(a, (etype)f, null, false); // default
+        conv = false;
+    } else if (vau9) {
+        // [ v1, v2, ... ] literal seeds a made vector
+        etype element_type = u(etype, vau9->src);
+        if (!element_type) element_type = etype_prep((aether)a, vau9->src);
+        enode vecn = e_vec_new((aether)a, element_type);
+        vecn->autype = vau9;
+        while (peek(a)) {
+            enode e = parse_expression(a, element_type, false, true);
+            e_assign((aether)a, vecn, (Au)e, OPType__assign_add);
+            read_if(a, ",");
+        }
+        r = vecn;
         conv = false;
     } else if (class_inherits((etype)f, etypeid(array))) {
         array nodes         = array(64);
@@ -9779,6 +10001,14 @@ static string type_name(Au a) {
     return au ? string(au->alt ? au->alt : au->ident) : null;
 }
 
+// anonymous pointer types (vec T, opaque handles) have no C typedef
+// name; they are single pointer slots in a C signature: emit ARef
+static string carg_name(etype t) {
+    Au_t au = t ? au_arg_type((Au)t->autype) : null;
+    if (au && au->is_pointer && !au->ident) return string("ARef");
+    return cname(cast(string, t));
+}
+
 // whether an import contributes its own generated header to our import header.
 // binary/C-wrapped modules (!is_au_rt) always do. silver .ag modules only do
 // when they are standalone (their own header exists) — modules that `extend`
@@ -9832,11 +10062,10 @@ static void write_struct_schemas(silver a, FILE* module_f) {
                         etype aa = u(etype, arg);
                         if (len(args))
                             append(args, ",");
-                        string ss = cast(string, aa);
-                        concat(args, cname(ss));
+                        concat(args, carg_name(aa));
                         arg_count++;
                     }
-                    string rtype = cname(cast(string, u(etype, f->autype->rtype)));
+                    string rtype = carg_name(u(etype, f->autype->rtype));
                     // count consecutive leading struct args for suffix
                     int struct_count = 0;
                     bool first2 = true;
@@ -10130,11 +10359,10 @@ void silver_write_header(silver a) {
                         etype aa = u(etype, arg);
                         if (len(args))
                             append(args, ",");
-                        string ss = cast(string, aa);
-                        concat(args, cname(ss));
+                        concat(args, carg_name(aa));
                     }
 
-                    string rtype = cname(cast(string, u(etype, f->autype->rtype)));
+                    string rtype = carg_name(u(etype, f->autype->rtype));
                     bool show_comma = f->target && mi->args.count > 1 ||
                                      !f->target && mi->args.count > 0;
                     if (mi->is_override)
@@ -11030,8 +11258,10 @@ enode silver_parse_member_expr(silver a, enode mem, bool in_ref) { sequencer
     bool is_lambda_call = inherits(mem->autype, typeid(lambda));
     int indexable = !is_func((Au)mem) && !is_func_ptr((Au)mem) && !is_macro && !is_lambda_call;
 
-    // callable sub: x[] or x[ field: value, ... ] re-invokes the sub body
-    if (indexable && next_is(a, "[") && mem->body) {
+    // callable sub: x[] or x[ field: value, ... ] re-invokes the sub body.
+    // subs are VARs — a TYPE's body is its stashed class tokens, never a sub
+    if (indexable && next_is(a, "[") && mem->body &&
+        mem->autype && mem->autype->member_type != AU_MEMBER_TYPE) {
         push_current(a);
         consume(a, Syntax__none); // consume [
         if (read_if(a, "]")) {

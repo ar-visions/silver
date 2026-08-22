@@ -285,8 +285,8 @@ element EditorView
     func instr_buttons [] -> TButtons
         o : orb[]
         r : rview[]
-        ibtn : array string [ 'callstack' ]
-        iico : array string [ 'callstack' ]
+        ibtn : vec string [] [ 'callstack' ]
+        iico : vec string [] [ 'callstack' ]
         smask : i32 [ 0 ]
         if [ o.show_instruments ] smask = smask | 1
         if [ r && r.instr_names && r.instr_names.count > 0 ]
@@ -606,7 +606,7 @@ Avatar OrbiterAvatar
                 spin_dbg = orb->busy
                 puts 'SPIN busy={orb->busy} rate={spin_rate} goal={gs} ff={ux->frame_factor}'
         if [ !rotate ]
-            rotate = array Rotation []
+            rotate = vec Rotation []
             rotate.push[ Rotation [ '0 1 0 30deg' ] ]
             rotate.push[ Rotation [ '1 0 0 0deg' ] ]
         rotate[0] = Rotation [ '0 1 0 {clock_deg}deg' ]
@@ -1088,17 +1088,17 @@ class states_file
 
 class orbiter_state
     public files       : map file_state [string]
-    public tabs        : array path
-    public panes       : array path
+    public tabs        : vec path
+    public panes       : vec path
     # per pane: 'sel_line,sel_col,anchor_line,anchor_col'
-    public pane_sel    : array string
+    public pane_sel    : vec string
     # committed backdrop scene + status bar stepper indices
     public scene       : string
     public speed_ix    : i32
     public orbit_ix    : i32
     public angle_ix    : i32
     public frost_ix    : i32
-    public docked      : array path
+    public docked      : vec path
     public breakpoints : map string [string]
     # the selected project/target name, restored on next launch.
     public target      : string
@@ -1115,7 +1115,7 @@ class FileChg
 class GitSnap
     public base  : string
     public repo  : string
-    public files : array string
+    public files : vec string
     public adds  : i32
     public dels  : i32
     public chg   : map FileChg [string]
@@ -1151,9 +1151,9 @@ element orbiter : trinity # implements compiler
     intern cap_fd        : i32 [ -1 ]
     intern log_fd        : i32 [ -1 ]
     intern avg_fps       : f32
-    intern target_names  : array string
-    intern target_roots  : array path
-    intern target_srcs   : array path
+    intern target_names  : vec string
+    intern target_roots  : vec path
+    intern target_srcs   : vec path
     public projects      : map Project [string]
     public consoles      : map ConsoleInstance [string]
     intern ed_sessions   : map ConsoleSession [string]
@@ -1175,7 +1175,7 @@ element orbiter : trinity # implements compiler
     # the crash verdict has been typed into the agent session
     intern orbit_reported : bool
     intern orbit_enter_at : i32
-    intern orbit_spoken   : array string
+    intern orbit_spoken   : vec string
     # mic capture running / final transcription winding down
     intern orbit_cap_on   : bool
     intern orbit_flushing : bool
@@ -1187,15 +1187,15 @@ element orbiter : trinity # implements compiler
     intern orbit_cc       : string
     public states        : map orbiter_state [string]
     intern debuggers     : map dbg [string]
-    intern debug_vars         : array
+    intern debug_vars         : vec Au
     intern last_bp_count      : i32 [ -1 ]
     intern settings_mtime    : i64
     intern settings_check_ms : i64
-    public open_files       : array path
-    public docked           : array path
+    public open_files       : vec path
+    public docked           : vec path
     intern nav_dock_rows    : i32
-    public editor_slots     : array i32
-    intern pane_console     : array string
+    public editor_slots     : vec i32
+    intern pane_console     : vec string
     # the ai/agent console is separate state; always projected last
     public agent_open       : bool
     intern console_seq      : i32
@@ -1208,7 +1208,7 @@ element orbiter : trinity # implements compiler
     intern cycle_frame      : i32
     intern cycle_count      : i32
     intern cycle_adding     : bool [ true ]
-    intern nav_panes        : array Navigate
+    intern nav_panes        : vec Navigate
     intern console_w        : i32
     intern console_w_save   : i32
     intern band_h           : i32
@@ -1244,7 +1244,7 @@ element orbiter : trinity # implements compiler
     public findbar_open  : bool
     public findbar_pane  : string
     # restored caret/selection, applied once each editor loads
-    intern pending_sel   : array string
+    intern pending_sel   : vec string
     # the status bar's center toggle: scene-only viewing
     public hide_ui       : bool
     public findbar_text  : string
@@ -1263,8 +1263,8 @@ element orbiter : trinity # implements compiler
     # mute holds the slider where it is and sends the app a zero
     public app_muted     : bool
     intern app_vol_sent  : f32 [ -1.0 ]
-    public find_hits     : array FindHit
-    public search_dirs   : array path
+    public find_hits     : vec FindHit
+    public search_dirs   : vec path
     public file_index    : list string
     public max_search    : i32 [ 400000 ]
     public search_external : bool [ true ]
@@ -1280,15 +1280,15 @@ element orbiter : trinity # implements compiler
     # main thread raises this to stop a running worker early
     intern index_cancel  : bool
     intern index_building : bool
-    intern index_watches : array watch
+    intern index_watches : vec watch
     public compile_log   : list string
     intern err_file      : path
     intern err_line      : i32
     intern err_msg       : string
     public nav_root      : path
     # tool views mounted on the nav's left rail, from module exports
-    mutable view_tools     : array string
-    mutable view_tools_bin : array string
+    mutable view_tools     : vec string
+    mutable view_tools_bin : vec string
     mutable view_mods      : map string [string]
     public browse_single : bool
     public show_pins     : bool [ true ]
@@ -1303,13 +1303,13 @@ element orbiter : trinity # implements compiler
     intern err_mod       : string
     # index into scene_list[]; the bottom bar steps it
     intern scene_ix      : i32
-    intern scene_names   : array string
+    intern scene_names   : vec string
     # which exported module carries each scene class
     intern scene_mods      : map string [string]
     # lldb attach runs on a worker; it hands the finished dbg back here
     # and the main thread publishes it into debuggers on the next frame
     # kept in a list: reassigning one async drops it, and drop joins the thread
-    intern attach_tasks    : array async
+    intern attach_tasks    : vec async
     intern attach_pending  : dbg
     intern attach_mod      : string
     intern attach_av       : AppView
@@ -1332,20 +1332,20 @@ element orbiter : trinity # implements compiler
         au_live_set_reload[ 0 ]
         breakpoints    = map string[string] []
 
-        target_names   = array string []
-        target_roots   = array path []
-        target_srcs    = array path []
+        target_names   = vec string []
+        target_roots   = vec path []
+        target_srcs    = vec path []
         load_settings[]
         file_cache     = map FileBuf [string] []
-        open_files     = array path []
-        docked         = array path []
+        open_files     = vec path []
+        docked         = vec path []
         # a few default pins so the column has content to look at
         active_idx     = -1
         # one editor pane to start, empty (the 'Open' finder)
-        editor_slots   = array i32 [-1]
-        pane_console   = array string ['']
+        editor_slots   = vec i32 [] [-1]
+        pane_console   = vec string [] ['']
         active_pane    = 0
-        nav_panes      = array Navigate []
+        nav_panes      = vec Navigate []
         for [ i: i32 0, i < 8, i += 1 ]
             nav_panes += Navigate []
         active_panel   = 'files'
@@ -1431,13 +1431,13 @@ element orbiter : trinity # implements compiler
         replace_text   = ''
         pattern_text   = ''
         find_showing   = false
-        find_hits      = array FindHit []
-        search_dirs    = array path []
+        find_hits      = vec FindHit []
+        search_dirs    = vec path []
         search_dirs   += project_root[]
         file_index     = list string []
         find_results   = list string []
         index_dirty    = false
-        index_watches  = array watch []
+        index_watches  = vec watch []
         index_lock     = mutex [ ]
         start_watching[]
         # kick off the index build on its worker thread
@@ -1531,12 +1531,12 @@ element orbiter : trinity # implements compiler
         if [ !st ]
             st = orbiter_state []
             states[ws] = st
-        tabs : array path []
+        tabs : vec path []
         for [ i: i32 0, i < open_files.count, i += 1 ]
             if [ open_files[i] ] tabs.push[ open_files[i] ]
         st.tabs        = tabs
-        panes : array path []
-        sels9 : array string []
+        panes : vec path []
+        sels9 : vec string []
         for [ i: i32 0, i < editor_slots.count, i += 1 ]
             slot : i32 [ editor_slots[i] ]
             if [ slot >= 0 && slot < open_files.count && open_files[slot] ]
@@ -1574,12 +1574,12 @@ element orbiter : trinity # implements compiler
                 if [ p ] file_slot[ p ]
         # restore the pinned dock
         if [ st.docked && st.docked.count > 0 ]
-            docked = array path []
+            docked = vec path []
             for [ i: i32 0, i < st.docked.count, i += 1 ]
                 p : path st.docked[i]
                 if [ p ] docked += p
         if [ st.panes && st.panes.count > 0 ]
-            editor_slots = array i32 []
+            editor_slots = vec i32 []
             for [ i: i32 0, i < st.panes.count, i += 1 ]
                 p : path st.panes[i]
                 if [ p ] editor_slots += file_slot[ p ]
@@ -1602,7 +1602,7 @@ element orbiter : trinity # implements compiler
         if [ st.scene && st.scene.count > 0 && (!scene_load || scene_load.count == 0) ]
             scene_load = st.scene
             scene_load.hold[]
-            sl9 : array string [ scene_list[] ]
+            sl9 : scene_list[]
             for [ i: i32 0, i < sl9.count, i += 1 ]
                 if [ sl9[i] == st.scene ] scene_ix = i
         speed_ix = st.speed_ix
@@ -1638,9 +1638,9 @@ element orbiter : trinity # implements compiler
             puts 'loaded 0 projects (projects is null)'
 
     func sync_targets []
-        target_names = array string []
-        target_roots = array path []
-        target_srcs  = array path []
+        target_names = vec string []
+        target_roots = vec path []
+        target_srcs  = vec path []
         if [ !projects ]
             return
         for [ p: Project, name: string ] in projects
@@ -1729,7 +1729,7 @@ element orbiter : trinity # implements compiler
     func fmt_sync []
         if [ !fmt_watch ] fmt_watch = map FmtWatch [string] []
         if [ !open_files ] return
-        live : array string []
+        live : vec string []
         for [ i: i32 0, i < editor_slots.count, i += 1 ]
             slot : i32 [ editor_slots[i] ]
             if [ slot < 0 || slot >= open_files.count ] continue
@@ -1742,7 +1742,7 @@ element orbiter : trinity # implements compiler
             k : string '{main}'
             if [ live.index_of[ k ] < 0 ] live += k
             if [ !fmt_watch[ k ] ] fmt_start[ main ]
-        stale : array string []
+        stale : vec string []
         if [ fmt_watch.count > 0 ]
             for [ fw: FmtWatch, k2: string ] in fmt_watch
                 if [ live.index_of[ k2 ] < 0 ] stale += k2
@@ -1820,11 +1820,11 @@ element orbiter : trinity # implements compiler
                 fmt_spawn[ fw ]
                 fw.kicked = true
 
-    func debug_frames [] -> array Frame
-        fr : array Frame [ ]
+    func debug_frames [] -> vec Au
+        fr : vec Au []
         dv : dbg active_debugger[]
         if [ !dv ] return fr
-        dfr : array dv.read_frames[]
+        dfr : dv.read_frames[]
         if [ !dfr ] return fr
         for [ df: frame ] in dfr
             fr.push[ Frame [ func_name: df.func_name, file: df.source, line: i32[ df.line ] ] ]
@@ -2004,7 +2004,7 @@ element orbiter : trinity # implements compiler
         s2 : ConsoleSession orbit_session[]
         if [ s2 ]
             if [ !orbit_spoken ]
-                orbit_spoken = array string [ ]
+                orbit_spoken = vec string []
                 orbit_spoken.hold[]
             mk : string 'speak {orbit_oc}'
             nl : i32 [ s2.line_count[] ]
@@ -2133,9 +2133,9 @@ element orbiter : trinity # implements compiler
         av.attached  = true
         av.attaching = true
         av.note      = 'attaching debugger'
-        w8 : array []
+        w8 : vec Au []
         w8.push[ av ]
-        if [ !attach_tasks ] attach_tasks = array async [ ]
+        if [ !attach_tasks ] attach_tasks = vec async []
         attach_tasks.push[ async [ target: a, work_fn: @attach_work, work: w8 ] ]
 
     func attach_work [ arg: object ]
@@ -2243,7 +2243,7 @@ element orbiter : trinity # implements compiler
                 bd9    : bpath9.parent_dir[]
                 if [ !bd9 ] continue
                 if [ '{bd9}' != mdir ] continue
-            if [ !d.bps ] d.bps = array []
+            if [ !d.bps ] d.bps = vec breakpoint []
             bp9 : d.set_breakpoint[ path [ bsrc ], u32[ blin ], 0 ]
             if [ bp9 ] d.bps.push[ bp9 ]
 
@@ -2298,9 +2298,9 @@ element orbiter : trinity # implements compiler
         # locals go FIRST: base_var_at takes the first name that matches, and
         # 'a' (self) is an argument that would otherwise shadow every line
         if [ dv ]
-            lc9 : array dv.read_locals[]
-            ag9 : array dv.read_arguments[]
-            all9 : array []
+            lc9 : dv.read_locals[]
+            ag9 : dv.read_arguments[]
+            all9 : vec Au []
             if [ lc9 ]
                 for [ v9: variable ] in lc9
                     all9.push[ v9 ]
@@ -2353,7 +2353,7 @@ element orbiter : trinity # implements compiler
 
     func toggle_dock [ p: path ]
         if [ !p ] return
-        if [ !docked ] docked = array path []
+        if [ !docked ] docked = vec path []
         found : bool false
         for [ i: i32 0, i < docked.count, i += 1 ]
             if [ docked[i] == p ]
@@ -2395,7 +2395,7 @@ element orbiter : trinity # implements compiler
         d : dbg debuggers[ active_target ]
         return (d && d.active) ? d : null
 
-    func title_nav [ p: path, grp: array path, has_diff: bool, win: Window, dbg_locked: bool, dbg_open: bool, menu_open: bool, is_resource: bool, rv: ResourceView, fb_on: bool, tfoc: bool, pane_ix: i32 ] -> Elements
+    func title_nav [ p: path, grp: vec path, has_diff: bool, win: Window, dbg_locked: bool, dbg_open: bool, menu_open: bool, is_resource: bool, rv: ResourceView, fb_on: bool, tfoc: bool, pane_ix: i32 ] -> Elements
         hasfile  : bool [ p && p.exists[] ]
         els : Elements []
         browse_open : bool [ menu_open && nav_showing ]
@@ -2412,16 +2412,16 @@ element orbiter : trinity # implements compiler
         # the left slot closes the finder — Esc's clickable twin, sized
         # exactly like the history arrows so the title never shifts
         if [ engaged && !is_resource ]
-            ncls : array string [ 'finder_close' ]
-            nclo : array string [ 'close' ]
+            ncls : vec string [] [ 'finder_close' ]
+            nclo : vec string [] [ 'close' ]
             els['histnav'] = TButtons [ buttons: ncls, icon_ids: nclo, manual: true,
                 disable_mask: 0,
                 icon_scale: 0.585, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0,
                 area: Region [ 'l0+ t0 w1.8 h0.9' ] ]
         # editing only: cmd+left / cmd+right as clickable history arrows
         if [ !engaged && !is_resource ]
-            nnav : array string [ 'nav_back', 'nav_fwd' ]
-            nico : array string [ 'left', 'right' ]
+            nnav : vec string [] [ 'nav_back', 'nav_fwd' ]
+            nico : vec string [] [ 'left', 'right' ]
             ndm : i32 [ 0 ]
             if [ !edp9 || !edp9.nav || !edp9.nav.can_back[] ]    ndm |= 1
             if [ !edp9 || !edp9.nav || !edp9.nav.can_forward[] ] ndm |= 2
@@ -2433,7 +2433,7 @@ element orbiter : trinity # implements compiler
         psess9 : string (agent_open && pane_ix == editor_slots.count) ? orbit_sid :
             ((pane_ix < pane_console.count) ? pane_console[pane_ix] : '')
         con9   : bool [ psess9 && psess9.count > 0 ]
-        tnav : array string [ ]
+        tnav : vec string []
         tmask : i32 [ 0 ]
         # find is reachable at all times, not just inside the nav
         if [ !is_resource ]
@@ -2469,7 +2469,7 @@ element orbiter : trinity # implements compiler
         return els
 
 
-    func dock_tabs [ grp: array path, prefix: string, active: path, win: Window ] -> Elements
+    func dock_tabs [ grp: vec path, prefix: string, active: path, win: Window ] -> Elements
         els : Elements []
         for [ i: i32 0, i < grp.count, i += 1 ]
             p   : path   grp[i]
@@ -2484,19 +2484,19 @@ element orbiter : trinity # implements compiler
             return
         file_index   = list string []
         index_dirty  = false
-        dirs : array path []
+        dirs : vec path []
         for [ d: path ] in search_dirs
             if [ d ] dirs.push[ d ]
         if [ dirs.count == 0 ] return
         index_cancel   = false
         index_building = true
-        work : array [ ]
+        work : vec Au []
         work.push[ dirs ]
         index_task     = async [ target: a, work_fn: @index_work, work: work ]
 
     # a git repo indexes by ls-files: everything gitignored stays out
     func index_repo [ rp: path, cap: i32 ] -> bool
-        ls : array string git_capture[ rp, 'ls-files --cached --others --exclude-standard', false ]
+        ls : git_capture[ rp, 'ls-files --cached --others --exclude-standard', false ]
         index_lock.lock[]
         for [ i: i32 0, i < ls.count, i += 1 ]
             if [ index_cancel || file_index.count >= cap ] break
@@ -2505,9 +2505,9 @@ element orbiter : trinity # implements compiler
         index_lock.unlock[]
         return over
 
-    func index_work [ dirs: array path ] -> none
-        stack : array path []
-        repos : array path []
+    func index_work [ dirs: vec path ] -> none
+        stack : vec path []
+        repos : vec path []
         cap : i32 [ (max_search > 0) ? max_search : 400000 ]
         for [ r: path ] in dirs
             g0 : path '{r}/.git'
@@ -2521,15 +2521,15 @@ element orbiter : trinity # implements compiler
                 if [ repos.count == 0 ] break
                 for [ rp: path ] in repos
                     if [ !index_cancel ] index_repo[ rp, cap ]
-                repos = array path []
+                repos = vec path []
                 continue
             n : i32 [ stack.count - 1 ]
             d : path hold[ stack[n] ]
             stack.remove[ n ]
-            entries : array [ d.ls[ null, false ] ]
+            entries : d.ls[ null, false ]
             drop[ d ]
             if [ entries ]
-                found : array path []
+                found : vec path []
                 for [ i: i32 0, i < entries.count, i += 1 ]
                     e : path entries[i]
                     if [ e.is_dir[] ]
@@ -2572,8 +2572,8 @@ element orbiter : trinity # implements compiler
         if [ index_watches ]
             for [ iw: watch ] in index_watches
                 iw.pause[]
-        index_watches = array watch []
-        search_dirs   = array path []
+        index_watches = vec watch []
+        search_dirs   = vec path []
         search_dirs  += r
         start_index[]
         start_watching[]
@@ -2608,8 +2608,8 @@ element orbiter : trinity # implements compiler
         if [ index_dirty && !index_building ]
             start_index[]
         tiers   : i32 [ 32 ]
-        matches : array string []
-        dists   : array i32 []
+        matches : vec string []
+        dists   : vec i32 []
         if [ query && query.count > 0 ]
             ql : i32 [ query.count ]
             index_lock.lock[]
@@ -2633,7 +2633,7 @@ element orbiter : trinity # implements compiler
         return !pattern_text || pattern_text.count == 0
 
     func run_find_in_files []
-        find_hits = array FindHit []
+        find_hits = vec FindHit []
         q : string findbar_text
         find_last_query = q
         find_last_scope = (pattern_text) ? pattern_text : ''
@@ -2712,7 +2712,7 @@ element orbiter : trinity # implements compiler
     # walks the surviving hits only: struck-out rows never come back
     func replace_in_hits [ q: string, r: string ]
         if [ !find_hits || find_hits.count == 0 ] return
-        seen  : array string []
+        seen  : vec string []
         files : i32 [ 0 ]
         cnt   : i32 [ 0 ]
         skip  : i32 [ 0 ]
@@ -2727,7 +2727,7 @@ element orbiter : trinity # implements compiler
             seen.push[ key ]
             ftext : string [ h.file.load[ typeid[string], null ] ]
             if [ !ftext ] continue
-            parts : array string [ ftext.split["\n"] ]
+            parts : ftext.split["\n"]
             hitn  : i32 [ 0 ]
             for [ j: i32 i, j < find_hits.count, j += 1 ]
                 g : FindHit find_hits[j]
@@ -2897,7 +2897,7 @@ element orbiter : trinity # implements compiler
         return glob_match[ pattern_text, es ]
 
     func walk_find [ dir: path, q: string ]
-        entries : array [ dir.ls[ null, false ] ]
+        entries : dir.ls[ null, false ]
         if [ !entries ] return
         for [ i: i32 0, i < entries.count, i += 1 ]
             e : path entries[i]
@@ -2914,7 +2914,7 @@ element orbiter : trinity # implements compiler
     # newest mtime in scope: newer than the scan = results stale
     func tree_mtime [ dir: path ] -> i64
         r : i64 [ 0 ]
-        entries : array [ dir.ls[ null, false ] ]
+        entries : dir.ls[ null, false ]
         if [ !entries ] return r
         for [ i: i32 0, i < entries.count, i += 1 ]
             e : path entries[i]
@@ -2932,7 +2932,7 @@ element orbiter : trinity # implements compiler
         if [ !p || !p.exists[] ] return
         content : string [ p.load[ typeid[string], null ] ]
         if [ !content ] return
-        parts : array string [ content.split["\n"] ]
+        parts : content.split["\n"]
         header_added : bool [ false ]
         for [ i: i32 0, i < parts.count, i += 1 ]
             ln : string parts[i]
@@ -2970,16 +2970,16 @@ element orbiter : trinity # implements compiler
     # views: ['name': ascii|binary|agnostic] — FileType applicability
     func ensure_views []
         if [ view_tools ] return
-        view_tools     = array string []
-        view_tools_bin = array string []
+        view_tools     = vec string []
+        view_tools_bin = vec string []
         view_mods      = map string [string] []
-        asc9a : array string []
-        bin9a : array string []
-        any9a : array string []
+        asc9a : vec string []
+        bin9a : vec string []
+        any9a : vec string []
         root : path.path_startup[]
         if [ root ]
             d : path '{root}/install/export'
-            entries : array [ d.ls[ null, false ] ]
+            entries : d.ls[ null, false ]
             if [ entries ]
                 for [ e: path ] in entries
                     ax : e.ext[]
@@ -3074,7 +3074,7 @@ element orbiter : trinity # implements compiler
     # scene classes modules register in install/export/*.agi
     func ensure_scenes []
         if [ scene_names ] return
-        scene_names = array string []
+        scene_names = vec string []
         scene_mods  = map string [string] []
         # first entry is always 'none' -- with no scenes exported the
         # selector drew an empty label, which reads as a broken widget
@@ -3082,7 +3082,7 @@ element orbiter : trinity # implements compiler
         root : path.path_startup[]
         if [ !root ] return
         d : path '{root}/install/export'
-        entries : array [ d.ls[ null, false ] ]
+        entries : d.ls[ null, false ]
         if [ !entries ] return
         for [ e: path ] in entries
             ax : e.ext[]
@@ -3113,12 +3113,12 @@ element orbiter : trinity # implements compiler
                         scene_mods[ nm9 ] = e.stem[]
 
     # backdrop scenes the bottom bar steps through
-    func scene_list [] -> array string
+    func scene_list [] -> vec string
         ensure_scenes[]
         return scene_names
 
     func scene_name [] -> string
-        sl : array string [ scene_list[] ]
+        sl : scene_list[]
         if [ sl.count == 0 ] return ''
         ix : i32 [ scene_ix % sl.count ]
         if [ ix < 0 ] ix = 0
@@ -3174,31 +3174,31 @@ element orbiter : trinity # implements compiler
         return ''
 
     func scene_step [ d: i32 ]
-        sl : array string [ scene_list[] ]
+        sl : scene_list[]
         if [ sl.count == 0 ] return
         scene_ix = (scene_ix + d + sl.count) % sl.count
 
     # vantage; each scene maps it to its own distance
-    func orbit_list [] -> array string
-        return array string [ 'low-orbit', 'high-orbit', 'far-orbit', 'wide-orbit' ]
+    func orbit_list [] -> vec string
+        return vec string [] [ 'low-orbit', 'high-orbit', 'far-orbit', 'wide-orbit' ]
 
     func orbit_name [] -> string
-        ol : array string [ orbit_list[] ]
+        ol : orbit_list[]
         return ol[ orbit_ix % ol.count ]
 
     func orbit_step [ d: i32 ]
-        ol : array string [ orbit_list[] ]
+        ol : orbit_list[]
         orbit_ix = (orbit_ix + d + ol.count) % ol.count
         # the list's own length, never a literal: a fourth vantage that
         # wraps back to the first is a silently missing camera
         if [ ux ] ux.orbit_mode = orbit_ix % ol.count
 
     # camera angle; each scene maps it to pitch or to aim tilt
-    func angle_list [] -> array string
-        return array string [ 'angled', 'flat-on', 'steep' ]
+    func angle_list [] -> vec string
+        return vec string [] [ 'angled', 'flat-on', 'steep' ]
 
     func angle_name [] -> string
-        al : array string [ angle_list[] ]
+        al : angle_list[]
         return al[ angle_ix % al.count ]
 
     # the list is ordered for the UI; this maps it to ViewAngle
@@ -3207,21 +3207,21 @@ element orbiter : trinity # implements compiler
         return (ix == 0) ? 1 : (ix == 1) ? 0 : 2
 
     func angle_step [ d: i32 ]
-        al : array string [ angle_list[] ]
+        al : angle_list[]
         angle_ix = (angle_ix + d + al.count) % al.count
         if [ ux ] ux.angle_mode = angle_value[]
 
     # backdrop speed: frame skipping and the time step together.
     # subtle is FIRST so the zero default lands on it
-    func speed_list [] -> array string
-        return array string [ 'subtle', 'slow', 'medium', 'fast', 'ludacrous' ]
+    func speed_list [] -> vec string
+        return vec string [] [ 'subtle', 'slow', 'medium', 'fast', 'ludacrous' ]
 
     func speed_name [] -> string
-        sl : array string [ speed_list[] ]
+        sl : speed_list[]
         return sl[ speed_ix % sl.count ]
 
     func speed_step [ d: i32 ]
-        sl : array string [ speed_list[] ]
+        sl : speed_list[]
         speed_ix = (speed_ix + d + sl.count) % sl.count
         speed_apply[]
 
@@ -3332,13 +3332,13 @@ element orbiter : trinity # implements compiler
         sn : GitSnap []
         sn.hold[]
         sn.base = '{base}'
-        rl : array string git_capture[ base, 'rev-parse --show-toplevel', false ]
+        rl : git_capture[ base, 'rev-parse --show-toplevel', false ]
         if [ rl.count > 0 ]
             sn.repo  = rl[0]
             rp : path '{sn.repo}'
-            ch : array string repo_changed[ rp ]
+            ch : repo_changed[ rp ]
             # closest to the repo root first: fewest separators
-            srt : array string []
+            srt : vec string []
             for [ i: i32 0, i < ch.count, i += 1 ]
                 d9  : i32 [ path_depth[ ch[i] ] ]
                 at9 : i32 [ srt.count ]
@@ -3351,9 +3351,9 @@ element orbiter : trinity # implements compiler
             sn.files = srt
             ins9 : i32 [ 0 ]
             del9 : i32 [ 0 ]
-            ss9 : array string git_capture[ rp, 'diff --shortstat HEAD', false ]
+            ss9 : git_capture[ rp, 'diff --shortstat HEAD', false ]
             if [ ss9.count > 0 ]
-                pr9 : array string [ ss9[0].split[ ',' ] ]
+                pr9 : ss9[0].split[ ',' ]
                 for [ i: i32 0, i < pr9.count, i += 1 ]
                     p9 : string pr9[i].trim[]
                     if [ p9.index_of[ 'insertion' ] >= 0 ] ins9 = i32[ p9.real_value[] ]
@@ -3366,9 +3366,9 @@ element orbiter : trinity # implements compiler
                     p : path open_files[i]
                     if [ !p ] continue
                     k : string '{p.absolute[]}'
-                    ns : array string git_capture[ rp, 'diff --numstat HEAD -- {k}', false ]
+                    ns : git_capture[ rp, 'diff --numstat HEAD -- {k}', false ]
                     if [ ns.count == 0 ] continue
-                    f9 : array string [ ns[0].split[ '\t' ] ]
+                    f9 : ns[0].split[ '\t' ]
                     if [ f9.count < 2 ] continue
                     sn.chg[ k ] = FileChg [ adds: i32[ f9[0].real_value[] ], dels: i32[ f9[1].real_value[] ] ]
         git_stage = sn
@@ -3392,7 +3392,7 @@ element orbiter : trinity # implements compiler
     # the browsed folder's home repo — arbitrary per location
     func repo_root [] -> path
         base : path [ (nav_root) ? nav_root : project_root[] ]
-        rl : array string git_capture[ base, 'rev-parse --show-toplevel', false ]
+        rl : git_capture[ base, 'rev-parse --show-toplevel', false ]
         if [ rl.count == 0 ] return null
         return path rl[0]
 
@@ -3425,9 +3425,9 @@ element orbiter : trinity # implements compiler
         if [ ux ] ux.restyle = true
 
     # changed files in the browsed repo, paths relative to its root
-    func repo_changed [ repo: path ] -> array string
-        out : array string []
-        st : array string git_capture[ repo, 'status --porcelain', false ]
+    func repo_changed [ repo: path ] -> vec string
+        out : vec string []
+        st : git_capture[ repo, 'status --porcelain', false ]
         for [ i: i32 0, i < st.count, i += 1 ]
             ln9 : string st[i]
             sx  : i32 [ ln9.index_of[ ' ' ] ]
@@ -3466,7 +3466,7 @@ element orbiter : trinity # implements compiler
         active : bool [ !finder_off && (title_focus || (find_text && find_text.count > 0) || list_focused[]) ]
         if [ active ]
             combined : list string []
-            find_hits = array FindHit []
+            find_hits = vec FindHit []
             nav_dock_rows = 0
             if [ find_text && find_text.count > 0 ]
                 matches : list string [ index_search[ find_text ] ]
@@ -3504,7 +3504,7 @@ element orbiter : trinity # implements compiler
                         if [ up ]
                             push_dir_hit[ up, '..' ]
                             combined.push[ '{up}' ]
-                    entries : array [ nav_root.ls[ null, false ] ]
+                    entries : nav_root.ls[ null, false ]
                     if [ entries ]
                         for [ i: i32 0, i < entries.count, i += 1 ]
                             e : path entries[i]
@@ -3794,7 +3794,7 @@ element orbiter : trinity # implements compiler
         sprintf[str, "%04i", n]
         return str
 
-    public func on_inspect [ hits: array StyleHit ]
+    public func on_inspect [ hits: vec StyleHit ]
         if [ !hits || hits.count == 0 ] return
         h : StyleHit hits[ 0 ]
         if [ h.file ] open_at_line[ h.file, active_pane, h.line ]
@@ -4801,7 +4801,7 @@ element orbiter : trinity # implements compiler
             if [ pending_sel && i9 < pending_sel.count ]
                 ps9 : string pending_sel[i9]
                 if [ ps9 && ps9.count > 0 && e9.lines && e9.lines.count > 1 ]
-                    pr9 : array string ps9.split[',']
+                    pr9 : ps9.split[',']
                     if [ pr9.count >= 4 ]
                         l9  : i32 [ pr9[0].real_value[] ]
                         c9  : i32 [ pr9[1].real_value[] ]

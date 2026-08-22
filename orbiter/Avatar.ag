@@ -672,9 +672,9 @@ element Avatar
     public render_scale      : f32   [ 4.0 ]
     public vol_scale         : f32
     public clear_color       : vec4f
-    public rotate            : array Rotation
-    public translate         : array Translation
-    public scale             : array Scaling
+    public rotate            : vec Rotation
+    public translate         : vec Translation
+    public scale             : vec Scaling
     public update            : EventDispatch
     public eye_pos           : vec3f [ 0.0, 3.9, -1.5 ]
     public target_pos        : vec3f [ 0.0, -0.15, 0.0 ]
@@ -787,9 +787,9 @@ element Avatar
         if [ !area ] area = Region { r8 b11 w8 h14 }
         tyn9 : string [ Au.header[ a ].au.ident ]
         models = map Model[string][]
-        body.groups    = array string [ 'outside', 'flower', 'separator' ]
-        core.groups    = array string [ 'core' ]
-        plasma.groups  = array string [ 'top_ring', 'flower' ]
+        body.groups    = vec string [] [ 'outside', 'flower', 'separator' ]
+        core.groups    = vec string [] [ 'core' ]
+        plasma.groups  = vec string [] [ 'top_ring', 'flower' ]
 
     func create_target[]
         w_ref : Window [ ux ]
@@ -798,8 +798,8 @@ element Avatar
         if [ bounds.w <= 0.0 || bounds.h <= 0.0 ]
             return
 
-        geo_models : array Model [ alloc: 4 ]
-        vol_models : array Model [ alloc: 4 ]
+        geo_models : vec Model []
+        vol_models : vec Model []
         if [ !envcache ] envcache = map Texture[string][]
         if [ !mcache ]   mcache   = map GltfModel[string][]
 
@@ -866,7 +866,7 @@ element Avatar
             plasma = Plasma [ vk: vk ]
             model.transparent_s = plasma -- we now store .transparent on shader, so the Model generic may use this when referencing transparent_s
 
-        all_models : array Model [ alloc: 4 ]
+        all_models : vec Model []
         if [ model ] all_models.push[ model ]
         all_models.push[ aura_model ]
         ##

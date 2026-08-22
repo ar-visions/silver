@@ -90,7 +90,7 @@ enum State
 
 alias Elements : map    element [ string ]
 alias Layers   : map    Layer   [ string ]
-alias astrings : array  string
+alias astrings : vec string
 alias FRender  : lambda Elements[ Display ]
 
 # this Au type indicates we do not have an 'init' called
@@ -117,7 +117,7 @@ ielement element
     mutable shaders         : map shader  [string]
     #mutable bindings        : map ModelBind[string]
     mutable elements        : Elements
-    mutable tags            : array string
+    mutable tags            : vec string
     mutable group           : string
     mutable tab_index       : i32
     mutable scroll          : vec2f
@@ -182,7 +182,7 @@ ielement element
     public func on_pad     [ ev: Event ] return
     public func on_char    [ ev: Event ] return
     public func on_drop    [ ev: Event ] return
-    public func on_inspect [ hits: array StyleHit ] return
+    public func on_inspect [ hits: vec StyleHit ] return
     public func on_canvas  [ cv: Canvas ] return
     public func on_overlay [ cv: Canvas ] return
     public func on_state   [ m: i32 ] return
@@ -190,7 +190,7 @@ ielement element
     #intern selections   : map
     intern transitions  : map StyleTransition[string]
     # members the .ag code set before styling; style never writes these
-    intern code_styled  : array string
+    intern code_styled  : vec string
     # per-class embedded css; subclasses override, null = unstyled
     public style        : CSS
 
@@ -265,11 +265,11 @@ ielement element
     # a raw agent line the shell forwarded; the app owns what it means
     public func on_agent   [ s: string ] return
     # the instruments this instance can show. the shell asks, never guesses
-    public func instruments [] -> array string
+    public func instruments [] -> vec string
         return null
     # an instrument IS this enumeration: the entries it reads right now.
     # the shell samples it while the instrument is on
-    public func read_instrument [ nm: string ] -> array string
+    public func read_instrument [ nm: string ] -> vec string
         return null
     # the shell dictates the width; the height is OURS to say
     public func instrument_height [ nm: string, iw: i32 ] -> i32
@@ -367,12 +367,12 @@ ielement element
                     el [ from_t == typeid[ string ] ]
                         # strings do not interpolate: snap to target
                         ct.container.member_set[ ct.member, ct.to ]
-                    el [ ct.from inherits collective ]
-                        fa  : array Rotation ct.from
-                        ta  : array Rotation ct.to
+                    el [ Au.au_is_vec[ ct.from ] || (ct.from inherits collective) ]
+                        fa  : vec Rotation ct.from
+                        ta  : vec Rotation ct.to
                         if [ fa && ta ]
                             n   : i32 [ (fa.count < ta.count) ? fa.count : ta.count ]
-                            res : array Rotation []
+                            res : vec Rotation []
                             for [ i: i32 0, i < n, i += 1 ]
                                 r : fa[i]
                                 res.push[ r.mix[ ta[i], p ] ]
@@ -474,7 +474,7 @@ class Layer
     public stroke_cap               : Cap
     public stroke_join              : Join
     public stroke_miter             : f32
-    public stroke_dash              : array f32
+    public stroke_dash              : vec f32
     public stroke_dash_offset       : f32
 
     public label               : string
@@ -671,7 +671,7 @@ class Event
     mutable mouse          : MouseState
     mutable key            : KeyboardState
     mutable pad            : PadState
-    mutable paths          : array path
+    mutable paths          : vec path
     mutable no_default     : bool
     mutable no_propagation : bool
 
@@ -706,7 +706,7 @@ class Event
 alias EventCallback : lambda none [ Event ]
 
 struct EventDispatch
-    callbacks : array EventCallback
+    callbacks : vec EventCallback
 
     func invoke [ ev : Event ]
         for [ event_processor : EventCallback ] in callbacks

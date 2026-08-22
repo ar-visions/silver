@@ -8,8 +8,8 @@ class CSSLine
 
 class LayerDef
     public cls    : string
-    public params : array string
-    public body   : array CSSLine
+    public params : vec string
+    public body   : vec CSSLine
 
 class StyleHit
     public file : path
@@ -18,7 +18,7 @@ class StyleHit
 class LineInfo
     intern data            :  string
     intern len             :  num
-    intern adv             :  array f64[]
+    intern adv             :  vec f64 []
     intern bounds          :  rect
     intern placement       :  rect
 
@@ -27,7 +27,7 @@ class TextSel
     public row    : num
 
 class Text
-    public lines   : array LineInfo
+    public lines   : vec LineInfo
 
 class StyleEntry
     mutable member    : string
@@ -51,7 +51,8 @@ class StyleEntry
         if [ instance ]
             instance.drop[]
 
-alias StyleEntries   : array StyleEntry
+alias StyleEntries   : vec StyleEntry
+alias StyleBlocks    : vec StyleBlock
 alias StyleEntryMap  : map   StyleEntry [ string ]
 
 # per-class embedded css: style : CSS { ... }
@@ -70,11 +71,11 @@ class CSS : RType
 
 class StyleBlock
     mutable parent  : StyleBlock
-    mutable quals   : array StyleQualifier
+    mutable quals   : vec StyleQualifier
     mutable invalid : bool
     public entries  : StyleEntryMap
-    public blocks   : array StyleBlock
-    public types    : array Au_t
+    public blocks   : vec StyleBlock
+    public types    : vec Au_t
     mutable key       : string
     mutable property  : string
     mutable type_name : string
@@ -135,10 +136,10 @@ class StyleBlock
                     el
                         param = null
                     sp : items.split[ ',' ]
-                    value = array Au [ sp.count ]
-                    v : array Au[ value ]
+                    v9 : vec Au []
                     for [ raw: string ] in sp
-                        v.push[ raw.trim[] ]
+                        v9.push[ raw.trim[] ]
+                    value = v9
                 el
                     param = (ci >= 0) ? cb_value.mid[ ci + 1, cb_value.count - (ci + 1) ].trim[] : null
                     value = (ci >= 0) ? cb_value.mid[ 0, ci ].trim[] : cb_value
@@ -220,23 +221,23 @@ class StyleBlock
 
     func init []
         if [ !entries ] entries = StyleEntryMap    [ ]
-        if [ !blocks  ] blocks  = array StyleBlock [ ]
-        if [ !types   ] types   = array Au_t       [ ]
+        if [ !blocks  ] blocks  = vec StyleBlock []
+        if [ !types   ] types   = vec Au_t []
 
 
 class Style
     public  css_path  : path
     mutable inspect_el  : element
     mutable inspect_idx : i32
-    public  members   : map StyleEntries[string]
+    public  members   : map StyleBlocks[string]
     public  reloader  : watch
-    public  base      : array StyleBlock
+    public  base      : vec StyleBlock
     intern  mtx       : mutex
     intern  mod_time  : i64
     intern  reloaded  : bool
     intern  loaded    : bool
-    intern  visited   : array string
-    intern  errors    : array string
+    intern  visited   : vec string
+    intern  errors    : vec string
     intern  layer_defs : map LayerDef [ string ]
     # every style value string resolves through this before it parses
     mutable theme     : map string [string]
@@ -272,7 +273,7 @@ class Style
         for [ e: StyleEntry, k: string ] in bl.entries
             cache : members [ e.member ]
             if [ !cache ]
-                cache = array StyleBlock[]
+                cache = vec StyleBlock []
                 members.set[ e.member, cache ]
             found : false
             for [ cb: StyleBlock ] in cache
@@ -285,7 +286,7 @@ class Style
             if [s.property]
                 cache : members [ s.property ]
                 if [ !cache ]
-                    cache = array StyleBlock[]
+                    cache = vec StyleBlock []
                     members[s.property] = cache
                 cache.push[ s ] # we merely associate the 'layers' property for example
             el
@@ -323,8 +324,8 @@ class Style
 
         return ret
 
-    func element_style_blocks [ n: element ] -> array StyleHit
-        matched : array StyleBlock [ ]
+    func element_style_blocks [ n: element ] -> vec StyleHit
+        matched : vec StyleBlock []
         for [ block: StyleBlock ] in base
             if [ block.score[ n, false ] > 0 ]
                 matched.push[ block ]
@@ -341,7 +342,7 @@ class Style
                 matched[i]     = matched[bestj]
                 matched[bestj] = tmp
             i += 1
-        hits : array StyleHit [ ]
+        hits : vec StyleHit []
         for [ b: StyleBlock ] in matched
             hits.push[ StyleHit [ file: b.src_file, line: b.src_line ] ]
         return hits
@@ -361,8 +362,8 @@ class Style
                 i += 1
         return out
 
-    func call_parse [ s: string ] -> array string
-        out : array string [ ]
+    func call_parse [ s: string ] -> vec string
+        out : vec string []
         pa  : num [ s.index_of[ '[' ] ]
         if [ pa < 0 ]
             out.push[ s.trim[] ]
@@ -376,7 +377,7 @@ class Style
                 out.push[ r.trim[] ]
         return out
 
-    func layer_use [ defs: map LayerDef[string], lc: string ] -> array string
+    func layer_use [ defs: map LayerDef[string], lc: string ] -> vec string
         if [ lc.count == 0 ] return null
         c0 : i8 [ lc.chars[0] ]
         alpha : bool [ (c0 >= 'a' && c0 <= 'z') || (c0 >= 'A' && c0 <= 'Z') || c0 == '_' ]
@@ -384,18 +385,18 @@ class Style
         ci : num [ lc.index_of[ ':' ] ]
         bi : num [ lc.index_of[ '[' ] ]
         if [ ci >= 0 && (bi < 0 || ci < bi) ] return null
-        call : array string [ call_parse[ lc ] ]
+        call : call_parse[ lc ]
         if [ !defs[ call[0] ] ] return null
         return call
 
-    func layer_subst [ d: LayerDef, call: array string, txt: string ] -> string
+    func layer_subst [ d: LayerDef, call: vec string, txt: string ] -> string
         res : txt
         for [ pi: i32 0, pi < d.params.count, pi += 1 ]
             v : string [ (pi + 1 < call.count) ? call[pi + 1] : '' ]
             res = css_replace[ res, '$' + d.params[pi], v ]
         return res
 
-    func layer_splice [ hdr: string, d: LayerDef, call: array string, at: i32, out: array CSSLine, states: array CSSLine ]
+    func layer_splice [ hdr: string, d: LayerDef, call: vec string, at: i32, out: vec CSSLine, states: vec CSSLine ]
         in_st : bool [ false ]
         for [ bl: CSSLine ] in d.body
             txt : layer_subst[ d, call, bl.content ]
@@ -412,14 +413,14 @@ class Style
                 continue
             out.push[ CSSLine [ indent: at + bl.indent, content: txt, line: bl.line ] ]
 
-    func expand_layers [ lines: array CSSLine, src: path ] -> array CSSLine
+    func expand_layers [ lines: vec CSSLine, src: path ] -> vec CSSLine
         if [ !layer_defs ] layer_defs = map LayerDef [ string ] [ ]
-        stripped : array CSSLine [ ]
+        stripped : vec CSSLine []
         i : i32 [ 0 ]
         while [ i < lines.count ]
             lc : string [ lines[i].content ]
             cls : string
-            hdr : array string
+            hdr : vec string
             if [ lines[i].indent == 0 && lc.index_of[ '[' ] > 0 && lc.count > 0 && lc.last[] != '{' ]
                 sp0 : num [ lc.index_of[ ' ' ] ]
                 if [ sp0 > 0 ]
@@ -437,7 +438,7 @@ class Style
                             hdr = call_parse[ rest0 ]
             if [ cls ]
                 nm   : hdr[0]
-                d    : LayerDef [ cls: cls, params: array string [ ], body: array CSSLine [ ] ]
+                d    : LayerDef [ cls: cls, params: [], body: [] ]
                 for [ k: i32 1, k < hdr.count, k += 1 ]
                     d.params.push[ hdr[k] ]
                 di   : i32 [ lines[i].indent ]
@@ -468,8 +469,8 @@ class Style
                 continue
             stripped.push[ lines[i] ]
             i += 1
-        out      : array CSSLine [ ]
-        pending  : array CSSLine [ ]
+        out      : vec CSSLine []
+        pending  : vec CSSLine []
         in_state : bool [ false ]
         k2 : i32 [ 0 ]
         while [ k2 < stripped.count ]
@@ -480,7 +481,7 @@ class Style
                 if [ !is_st && pending.count > 0 ]
                     for [ pl: CSSLine ] in pending
                         out.push[ pl ]
-                    pending = array CSSLine [ ]
+                    pending = vec CSSLine []
                 in_state = is_st
                 out.push[ cl ]
                 k2 += 1
@@ -496,7 +497,7 @@ class Style
                     continue
                 if [ bi2 > 0 && (ci2 < 0 || bi2 < ci2) ]
                     # layers.<id> [ args ] — def named by the id
-                    call2 : array string [ call_parse[ rest ] ]
+                    call2 : call_parse[ rest ]
                     d2 : layer_defs[ call2[0] ]
                     if [ !d2 ]
                         errors.push[ '{src}:{cl.line}: unknown Layer `{call2[0]}`' ]
@@ -519,13 +520,13 @@ class Style
                     alphaA : bool [ (cA >= 'a' && cA <= 'z') || (cA >= 'A' && cA <= 'Z') || cA == '_' ]
                     if [ alphaA && rc.index_of[ '[' ] > 0 ]
                         # layers.<id>: <def> [ args ] — bind any def to the id
-                        callc : array string [ call_parse[ rc ] ]
+                        callc : call_parse[ rc ]
                         d3 : layer_defs[ callc[0] ]
                         if [ !d3 ]
                             errors.push[ '{src}:{cl.line}: unknown Layer `{callc[0]}`' ]
                             k2 += 1
                             continue
-                        call3 : array string [ ]
+                        call3 : vec string []
                         call3.push[ nm2 ]
                         for [ ka: i32 1, ka < callc.count, ka += 1 ]
                             call3.push[ callc[ka] ]
@@ -546,10 +547,10 @@ class Style
         return out
 
     func process [ code: string, src: path ]
-        if [ !base    ] base    = array StyleBlock [ ]
-        if [ !visited ] visited = array string     [ ]
-        if [ !errors  ] errors  = array string     [ ]
-        lines : array CSSLine [ expand_layers[ split_css[ code ], src ] ]
+        if [ !base    ] base    = vec StyleBlock []
+        if [ !visited ] visited = vec string []
+        if [ !errors  ] errors  = vec string []
+        lines : expand_layers[ split_css[ code ], src ]
         i : i32 [ 0 ]
         while [ i < lines.count ]
             content : string [ lines[i].content ]
@@ -619,7 +620,7 @@ class Style
             cache_block[ b, 0 ]
 
     # the best match is the first match
-    func best_match [ n: element, prop_name: string, entries: array StyleEntry ] -> StyleEntry
+    func best_match [ n: element, prop_name: string, entries: vec StyleEntry ] -> StyleEntry
         match      : StyleEntry [ null ]
         for [ e: StyleEntry ] in entries
             bl : StyleBlock [ e.bl ]
@@ -639,13 +640,13 @@ class Style
         v : Au n.member_object[ sm ]
         css : (v inherits CSS)
         if [ !css ] return false
-        if [ !visited ] visited = array string []
-        if [ !errors  ] errors  = array string []
+        if [ !visited ] visited = vec string []
+        if [ !errors  ] errors  = vec string []
         ty  : typeid[ n ]
         key : 'type:{ty.ident}'
         if [ visited.index_of[ key ] >= 0 ] return false
         visited.push[ key ]
-        lines : array CSSLine [ split_css[ css.body ] ]
+        lines : split_css[ css.body ]
         min_i : i32 [ 100000 ]
         for [ cl: CSSLine ] in lines
             if [ cl.indent < min_i ] min_i = cl.indent
@@ -673,7 +674,7 @@ class Style
         expect n inherits element, 'must inherit element'
         integrate_instance[ n ]
         while [ ty != typeid[ Au ] ]
-            all : array StyleEntry [ ]
+            all : vec StyleEntry []
             for [ m: i32 0, m < ty.members.count, m += 1 ]
                 mem : ty.members.origin[m]
                 if [ mem.member_type != AU_MEMBER_VAR || mem.access_type == 1 ] # 1 == intern!
@@ -681,7 +682,7 @@ class Style
                 name : string [ mem.ident ]
                 if [ applicable[ n, name, all ] ]
                     avail[ name ] = all
-                    all = array  StyleEntry[ ]
+                    all = vec StyleEntry []
             ty = ty.context
         return avail
 
@@ -694,9 +695,9 @@ class Style
         m : css_path.modified_time[ ]
         if [ mod_time != m ]
             mod_time = m
-            base    = array StyleBlock [ ]
-            visited = array string     [ ]
-            errors  = array string     [ ]
+            base    = vec StyleBlock []
+            visited = vec string []
+            errors  = vec string []
             layer_defs = map LayerDef [ string ] [ ]
             members = map StyleEntries[string] []
             process[ css_path.load[ typeid[ string ], null ], css_path ]
@@ -709,7 +710,7 @@ class Style
     construct [ p: path ]
         expect p.exists, 'css path does not exist'
         style_str : p.load[ typeid[ string ], null ]
-        base      = array StyleBlock [ ]
+        base      = vec StyleBlock []
         css_path  = p
         mod_time  = p.modified_time[ ]
         members   = map StyleEntries[string] []
@@ -721,7 +722,7 @@ class Style
 
     # app style: embedded per-class css only; a .css file is opt-in via path
     construct [ app_instance: element ]
-        base     = array StyleBlock [ ]
+        base     = vec StyleBlock []
         members  = map StyleEntries[string] []
         loaded   = true
         reloaded = true
@@ -982,7 +983,7 @@ class Scaling
         value = f
 
     construct [ s: string ]
-        sp : array string [ s.split[ ' ' ] ]
+        sp : s.split[ ' ' ]
         expect sp.count == 3, 'expected x y z'
         value.x = sp[0].real_value[]
         value.y = sp[1].real_value[]
@@ -1004,7 +1005,7 @@ class Rotation
         degs   = f.w
 
     construct [ s: string ]
-        sp : array string [ s.split[ ' ' ] ]
+        sp : s.split[ ' ' ]
         expect sp.count == 4, 'expected x y z Ndeg'
         f  : sp[3]
         expect f.ends_with[ 'deg' ], 'expected Ndeg'
@@ -1031,7 +1032,7 @@ class Translation
         value = f
 
     construct [ s: string ]
-        sp : array string [ s.split[ ' ' ] ]
+        sp : s.split[ ' ' ]
         expect sp.count == 3, 'expected x y z'
         value.x = sp[0].real_value[]
         value.y = sp[1].real_value[]
@@ -1199,7 +1200,7 @@ class StyleQualifier
     mutable type     : string
     mutable id       : string
     mutable state    : string             # first state (kept for op path: state OP value)
-    mutable states   : array string       # all states when no op, e.g. :hovered:pressed
+    mutable states   : vec string         # all states when no op, e.g. :hovered:pressed
     mutable oper     : string
     mutable value    : string
     mutable parent   : StyleQualifier
@@ -1274,7 +1275,7 @@ func parse_css_px [ s: string ] -> f32
 # is_numeric is what keeps this off region strings -- 'w96px h18px'
 # ends in px too, but what precedes it is not a number
 func css_unit_of [ s: string ] -> string
-    units : array string [ 'px', 'fc' ]
+    units : vec string [] [ 'px', 'fc' ]
     for [ u: string ] in units
         if [ s.count > u.count && s.ends_with[ u ] ]
             if [ s.mid[ 0, s.count - u.count ].is_numeric[] ] return u
@@ -1365,7 +1366,7 @@ func parse_quoted [ cursor: @cstr, max_len: sz ] -> string
     return string [ chars: start, ref_length: slen ] 
 
 
-func parse_qualifiers [ bl:StyleBlock, p: @cstr ] -> array StyleQualifier
+func parse_qualifiers [ bl:StyleBlock, p: @cstr ] -> vec StyleQualifier
     expect bl, 'style-block context.. its not set!  dak not steady either'
     start : cstr   [ p[0] ]
     end   : cstr   [ null ]
@@ -1380,8 +1381,8 @@ func parse_qualifiers [ bl:StyleBlock, p: @cstr ] -> array StyleQualifier
         p[0] = end
         return null
     quals  : qstr.split[ ',' ]
-    result : array StyleQualifier [ ]
-    ops    : array string [ '!=', '>=', '<=', '>', '<', '=' ]
+    result : vec StyleQualifier []
+    ops    : vec string [] [ '!=', '>=', '<=', '>', '<', '=' ]
 
     for [ qs: string ] in quals
         qq : qs.trim[]
@@ -1404,7 +1405,7 @@ func parse_qualifiers [ bl:StyleBlock, p: @cstr ] -> array StyleQualifier
             icol : q.index_of[ ':' ]
             tail : string [ null ]
             if [ idot >= 0 ]
-                sp      : array string q.split[ '.' ]
+                sp      : q.split[ '.' ]
                 no_type : q.chars[0] == '.'
                 v.type  = (no_type) ? 'element' : sp[0].trim[]
                 sp2     : sp[ (no_type) ? 0 : 1 ].split[ ':' ]
@@ -1429,7 +1430,7 @@ func parse_qualifiers [ bl:StyleBlock, p: @cstr ] -> array StyleQualifier
                 for [ op_name: string ] in ops
                     if [ tail.index_of[ op_name ] >= 0 ]
                         is_op = true
-                        sp    : array string [ tail.split[ op_name ] ]
+                        sp    : tail.split[ op_name ]
                         f     : sp[0]
                         v.state = f.trim[]
                         v.oper  = op_name
@@ -1437,11 +1438,12 @@ func parse_qualifiers [ bl:StyleBlock, p: @cstr ] -> array StyleQualifier
                         v.value = tail.mid[ istart, tail.count - istart ].trim[]
                         break
                 if [ !is_op ]
-                    v.states = tail.split[ '&' ]
-                    for [ k: i64 0, k < v.states.count, k += 1 ]
-                        s : v.states[k]
-                        v.states[k] = s.trim[]
-                    v.state = v.states[0]
+                    sps9 : tail.split[ '&' ]
+                    sv9  : vec string []
+                    for [ s9: string ] in sps9
+                        sv9.push[ s9.trim[] ]
+                    v.states = sv9
+                    v.state  = v.states[0]
             processed = v
             v.hold_members[]
         if [ anchored ]
@@ -1450,8 +1452,8 @@ func parse_qualifiers [ bl:StyleBlock, p: @cstr ] -> array StyleQualifier
     return result
 
 
-func split_css [ code: string ] -> array CSSLine
-    result : array CSSLine [ ]
+func split_css [ code: string ] -> vec CSSLine
+    result : vec CSSLine []
     n      : num [ code.count ]
     i      : num [ 0 ]
     ln     : i32 [ 1 ]
@@ -1497,7 +1499,7 @@ func split_css [ code: string ] -> array CSSLine
     return result
 
 
-func validate_entries [ entries: StyleEntryMap, ty: Au_t, errors: array string ]
+func validate_entries [ entries: StyleEntryMap, ty: Au_t, errors: vec string ]
     for [ se: StyleEntry, prop: string ] in entries
         dot  : prop.index_of[ '.' ]
         name : (dot > 0) ? prop.mid[ 0, dot ].trim[] : prop
@@ -1511,12 +1513,12 @@ func validate_entries [ entries: StyleEntryMap, ty: Au_t, errors: array string ]
                 validate_entries[ sub_bl.entries, mem.meta.a, errors ]
 
 
-func validate_block [ bl: StyleBlock, errors: array string ]
+func validate_block [ bl: StyleBlock, errors: vec string ]
     for [ ty: Au_t ] in bl.types
         validate_entries[ bl.entries, ty, errors ]
 
 
-func parse_block_body [ bl: StyleBlock, lines: array CSSLine, first: i32, last: i32, base_indent: i32 ]
+func parse_block_body [ bl: StyleBlock, lines: vec CSSLine, first: i32, last: i32, base_indent: i32 ]
     j : i32 [ first ]
     while [ j <= last ]
         ind : i32    [ lines[j].indent  ]
@@ -1568,8 +1570,7 @@ func parse_block_body [ bl: StyleBlock, lines: array CSSLine, first: i32, last: 
             el
                 param = null
             sp : items.split[ ',' ]
-            value = array string [ sp.count ]
-            v : array string [ value ]
+            v9 : vec string []
             for [ raw: string ] in sp
                 s  : raw.trim[]
                 if [ s.count >= 2 ]
@@ -1577,7 +1578,8 @@ func parse_block_body [ bl: StyleBlock, lines: array CSSLine, first: i32, last: 
                     q1 : s.mid[ -1, 1 ]
                     if [ (q0 == '"' || q0 == '\'') && q0 == q1 ]
                         s = s.mid[ 1, s.count - 2 ]
-                v.push[ s ]
+                v9.push[ s ]
+            value = v9
         el
             param   = (cm >= 0) ? val_str.mid[ cm + 1, val_str.count - (cm + 1) ].trim[] : null
             value_s = (cm >= 0) ? val_str.mid[ 0, cm ].trim[] : val_str

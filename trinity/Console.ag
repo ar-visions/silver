@@ -33,11 +33,11 @@ class ConsoleSession
     mutable cy         : i32 [ 0  ]
     mutable cols       : i32 [ 80 ]
     mutable rows       : i32 [ 24 ]
-    mutable screen      : new TermCell [ 2048 * 2048 ]
+    mutable screen      : vec TermCell [ 2048 * 2048 ]
     mutable scrollback : list string
-    mutable sb_cells   : array TermCell
-    mutable sb_off     : array i32
-    mutable sb_scratch : new TermCell [ 2048 ]
+    mutable sb_cells   : vec TermCell
+    mutable sb_off     : vec i32
+    mutable sb_scratch : vec TermCell [ 2048 ]
     mutable scroll     : f32 [ 0.0 ]
     mutable wheel_accum : f32 [ 0.0 ]
     mutable first_line  : i32 [ -2147483647 ]
@@ -54,8 +54,8 @@ class ConsoleSession
     mutable hover_link_line : i32 [ -1 ]
     mutable link_c0     : i32 [ 0 ]
     mutable link_c1     : i32 [ 0 ]
-    mutable sb_lines    : array TermLineCache
-    mutable live_lines  : array TermLineCache
+    mutable sb_lines    : vec TermLineCache
+    mutable live_lines  : vec TermLineCache
     mutable cache_cw    : f32 [ -1.0 ]
     mutable cache_lh    : f32 [ -1.0 ]
     mutable frame_id    : i32 [ 0 ]
@@ -65,7 +65,7 @@ class ConsoleSession
     mutable max_scroll  : f32
     mutable last_resize_us : i64 [ 0 ]
 
-    mutable alt_bak     : new TermCell [ 2048 * 2048 ]
+    mutable alt_bak     : vec TermCell [ 2048 * 2048 ]
     mutable in_alt      : bool
     mutable scroll_top  : i32 [ 0  ]
     mutable scroll_bot  : i32 [ 23 ]
@@ -80,17 +80,17 @@ class ConsoleSession
     mutable utf_need    : i32 [ 0 ]
     mutable utf_cp      : i32 [ 0 ]
     mutable esc_priv    : i32 [ 0 ]
-    mutable esc_pv      : array i32
+    mutable esc_pv      : vec i32
     mutable esc_pc      : i32 [ 0 ]
     mutable esc_pi      : i32 [ 0 ]
 
     func init []
         scrollback  = list string []
-        sb_cells    = array TermCell []
-        sb_off      = array i32 []
+        sb_cells    = vec TermCell []
+        sb_off      = vec i32 []
         init_cells[ screen, rows * cols ]
         scroll_bot = rows - 1
-        esc_pv     = array i32 []
+        esc_pv     = vec i32 []
         for [ i: i32 0, i < 16, i += 1 ]
             esc_pv.push[ 0 ]
 
@@ -128,8 +128,8 @@ class ConsoleSession
         esc_state  = 0
         clear_screen[]
         scrollback = list string []
-        sb_cells   = array TermCell []
-        sb_off     = array i32 []
+        sb_cells   = vec TermCell []
+        sb_off     = vec i32 []
         run_armed  = false
         start[]
 
@@ -172,7 +172,7 @@ class ConsoleSession
     # resolve an xterm-256 palette index to packed 0xRRGGBB.
     func pal256 [ n: i32 ] -> i32
         if [ n < 16 ]
-            base : array i32 [ 0x000000, 0xcd0000, 0x00cd00, 0xcdcd00,
+            base : vec i32 [] [ 0x000000, 0xcd0000, 0x00cd00, 0xcdcd00,
                                0x0000ee, 0xcd00cd, 0x00cdcd, 0xe5e5e5,
                                0x7f7f7f, 0xff0000, 0x00ff00, 0xffff00,
                                0x5c5cff, 0xff00ff, 0x00ffff, 0xffffff ]
@@ -395,8 +395,8 @@ class ConsoleSession
                 bl_cell[ cy * cols + i ]
         el [ m == 3 ]
             scrollback = list string []
-            sb_cells   = array TermCell []
-            sb_off     = array i32 []
+            sb_cells   = vec TermCell []
+            sb_off     = vec i32 []
         el
             for [ i: i32 0, i < rows * cols, i += 1 ]
                 bl_cell[ i ]
@@ -516,8 +516,8 @@ class ConsoleSession
         scroll_bot = rows - 1
         app_cursor = false
         scrollback = list string []
-        sb_cells   = array TermCell []
-        sb_off     = array i32 []
+        sb_cells   = vec TermCell []
+        sb_off     = vec i32 []
         clear_screen[]
 
     # dispatch a completed CSI sequence by its final byte.
@@ -721,7 +721,7 @@ class ConsoleSession
             cc : i32 [ (ocols < nc) ? ocols : nc ]
             cr : i32 [ (orows < nr) ? orows : nr ]
             n9  : i32 [ cr * cc ]
-            tmp : new TermCell [ n9 ]
+            tmp : vec TermCell [ n9 ]
             rb : i64 [ cc * sizeof[ TermCell ] ]
             for [ r: i32 0, r < cr, r += 1 ]
                 memcpy[ @tmp[ r * cc ], @screen[ r * ocols ], rb ]
@@ -904,8 +904,8 @@ func paint_term [ cv: Canvas, s: ConsoleSession, bounds: rect, flt: string, feed
 
         fs : i32 [ (label_size > 0.0) ? i32[label_size] : 0 ]
         s.frame_id   += 1
-        if [ !s.sb_lines ]   s.sb_lines   = array TermLineCache [ alloc: 64 ]
-        if [ !s.live_lines ] s.live_lines = array TermLineCache [ alloc: 64 ]
+        if [ !s.sb_lines ]   s.sb_lines   = vec TermLineCache []
+        if [ !s.live_lines ] s.live_lines = vec TermLineCache []
         if [ cw != s.cache_cw || lh != s.cache_lh ]
             for [ slc: TermLineCache ] in s.sb_lines
                 slc.li = -1
@@ -1313,7 +1313,7 @@ element Console
             b += 1
         if [ b <= a ] return false
         word  : string txt.mid[ a, b - a ]
-        parts : array string word.split[ ':' ]
+        parts : word.split[ ':' ]
         if [ parts.count < 2 ] return false
         fp : string parts[ 0 ]
         if [ fp.count == 0 || !parts[ 1 ].is_numeric[] ] return false
@@ -1328,7 +1328,7 @@ element Console
         if [ !detect_link[ ln, col ] ] return false
         txt   : string s.line_get[ ln ]
         word  : string txt.mid[ s.link_c0, s.link_c1 - s.link_c0 ]
-        parts : array string word.split[ ':' ]
+        parts : word.split[ ':' ]
         fp : string parts[ 0 ]
         lno : i32 [ i32[ parts[ 1 ].integer_value[] ] ]
         sc  : i32 [ (parts.count > 2 && parts[ 2 ].is_numeric[]) ? i32[ parts[ 2 ].integer_value[] ] : 0 ]

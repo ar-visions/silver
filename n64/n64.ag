@@ -5279,10 +5279,10 @@ element n64 : trinity
 		r_render = Render [ vk: cv.vk, w: cv.w, width: gw, height: gh, use_depth: true, reduce: true, clear_color: vec4f [ 0.0, 0.0, 0.0, 1.0 ] ]
 		r_pipeline = Pipeline [ vk: cv.vk, w: cv.w, name: string 'n64gx', r: r_render, s: r_shader, vbo: r_vbo, samplers: map Au[string] [ 'atlas': r_atlas, 'state': r_state ], straight_alpha: true, cull_none: true ]
 		r_model = Model [ vk: cv.vk, w: cv.w, s: r_shader, samplers: map Au[string] [ 'atlas': r_atlas, 'state': r_state ] ]
-		r_model.pipelines = array Pipeline [ alloc: 1 ]
+		r_model.pipelines = vec Pipeline []
 		r_model.pipelines.push[ r_pipeline ]
 		r_model.r = r_render
-		r_render.models = array Model [ r_model ]
+		r_render.models = vec Model [] [ r_model ]
 		r_vbo.vertex_count = 0
 		puts 'n64 gpu: render target {gw}x{gh} (4x reduce)'
 

@@ -53,7 +53,7 @@ scalar cm   : f32
 scalar inch : f32                   # `in` is a keyword
 scalar ft   : f32                   # 2.0ft, not 2.0f + a stray t
 
-alias ints    : array i64           # alias names a compound type
+alias ints    : vec i64             # alias names a compound type
 alias byname  : map i64 [ string ]  # bracketed type is the KEY
 
 struct v2                           # struct is an inlay value type
@@ -127,7 +127,7 @@ Counter Doubler                     # base name IS the keyword
         return super.value[] * 10
 
 class Boxed
-    public data : new i64 [ 8 ]     # heap buffer member
+    public data : vec i64 [ 8 ]     # heap buffer member
 
     getter [ i: i64 ] -> i64        # obj[ i ] read
         return data[ i ]
@@ -181,7 +181,7 @@ Shape Tri
 
 class Holder
     public shape : Shape*           # * = holds any subclass
-    public items : array i64
+    public items : vec i64
     public named : map i64 [ string ]
 
 class Stepper
@@ -223,7 +223,7 @@ func apply_step [ fn: lambda i64 [ i64 ], n: i64 ] -> i64
 intern payload_dropped : i64
 
 class Payload
-    public data : new i8 [ 10485760 ]   # ten megabytes onboard
+    public data : vec i8 [ 10485760 ]   # ten megabytes onboard
 
     func touch [] -> i64
         for [ k: i64 0, k < 10485760, k += 4096 ]
@@ -439,7 +439,7 @@ expect func t_scalar_units [] -> bool
     return d == 254mm && d != 253mm && h * 2.0 == 51.0 && d / 2.0 == 127.0 && i * 2.0 == 20.0 && v + 1.0 == 3.0
 
 expect func t_collections [] -> bool
-    items: array i64 [ 3, 5, 8 ]
+    items: vec i64 [] [ 3, 5, 8 ]
     b : items[ 0 ]                  # non-holding borrow
     items += 13                     # append
     m: map i64 [ string ] [ ]       # trailing [ ] allocates
@@ -457,7 +457,7 @@ expect func t_collections [] -> bool
         if [ rsum == 0 ]
             first = v
         rsum += v
-    al: ints [ 1, 2 ]               # alias-typed array
+    al: ints [ 1, 2 ]               # alias-typed vec
     bm: byname [ ]                  # alias-typed map
     bm[ 'k' ] = 4
     ok_al: bool [ al.count == 2 ]
@@ -468,8 +468,8 @@ expect func t_collections [] -> bool
     return b == 3 && sum == 30 && fsum == 29 && rsum == 29 && first == 13 && ok_al && ok_sm && ok_bm
 
 expect func t_arrays [] -> bool
-    a1: new f32 [ 4 ]               # heap-allocated typed memory
-    a2: new f32 [ 4 ]
+    a1: vec f32 [ 4 ]               # heap-allocated typed memory
+    a2: vec f32 [ 4 ]
     for [ i: i32 0, i < 4, i += 1 ]
         a1[ i ] = f32[ i ]
         a2[ i ] = 2.0
@@ -477,7 +477,7 @@ expect func t_arrays [] -> bool
     a4: a1 * 3.0                    # scalar broadcasts
     a5: a1 - a2
     a6: a2 / 2.0
-    k: new i32 [ 2x2 ] [ 1 2, 3 4 ] # shape plus constant data
+    k: vec i32 [ 2x2 ] [ 1 2, 3 4 ] # shape plus constant data
     loc: local i32 [ 3 ] [ 9, 8, 7 ]    # stack array
     dst: local i32 [ 3 ]
     memcpy[ @dst[ 0 ], @loc[ 0 ], 12 ]
@@ -489,8 +489,8 @@ expect func t_arrays [] -> bool
     return a3[ 2 ] == 4.0 && a4[ 3 ] == 9.0 && a5[ 1 ] == -1.0 && a6[ 0 ] == 1.0 && k[ 3 ] == 4 && dst[ 1 ] == 8 && zed[ 0 ] == 0 && dyn[ 2 ] == 5
 
 expect func t_shaped [] -> bool
-    m: new f32 [ 2x2 ] [ 1.0 2.0, 3.0 4.0 ]
-    q: new f32 [ 2x2 ] [ 5.0 6.0, 7.0 8.0 ]
+    m: vec f32 [ 2x2 ] [ 1.0 2.0, 3.0 4.0 ]
+    q: vec f32 [ 2x2 ] [ 5.0 6.0, 7.0 8.0 ]
     p: m * q                        # ELEMENT-WISE, not matrix multiply
     s: m * 2.0                      # scalar broadcasts
     d: m + q
@@ -559,7 +559,7 @@ expect func t_inherit [] -> bool
     h.shape = tr
     poly2: h.shape.describe*[]      # *[]: uses dynamic type
     ar: h.shape.area_ish[]          # base method through the member
-    h.items = array i64 [ 2, 4 ]    # collection members on a class
+    h.items = vec i64 [] [ 2, 4 ]   # collection members on a class
     h.named = map i64 [ string ] [ ]
     h.named[ 'k' ] = 9
     return d.count == 2 && d.value[] == 20 && poly == 'shape-4' && poly2 == 'tri-3' && ar == 9 && h.items[ 1 ] == 4 && h.named.count == 1
@@ -779,10 +779,304 @@ expect func t_or_return [] -> bool
 
 expect func t_expect_stmt [] -> bool
     v: i32 [ 1 ]
-    expect v == 1, 'v should be one, got {v}'   # traps if false
+    expect v == 1, 'v should be one, got {v}'   # exits 1 if false
+    expect b : i32 [ v + 1 ], 'b did not bind'  # binds b, then checks
     if [ false ]
         fault 'unreachable'         # unconditional abort
-    return true
+    return b == 2
+
+expect func t_string_methods [] -> bool
+    s: 'hello-world'
+    m: s.mid[ 0, 5 ]
+    ix: s.index_of[ 'world' ]
+    up: s.ucase[]
+    t: '  pad  '
+    tr: t.trim[]
+    parts: s.split[ '-' ]
+    return m == 'hello' && ix == 6 && up == 'HELLO-WORLD' &&
+           tr == 'pad' && s.starts_with[ 'hell' ] && s.ends_with[ 'rld' ] &&
+           parts.count == 2
+
+# pins the interp-of-an-index fix: {buf[i]} loads before formatting
+expect func t_interp_index [] -> bool
+    buf: local i32 [ 3 ] [ 4, 5, 6 ]
+    i: i32 [ 1 ]
+    s1: 'v={buf[i]}'
+    items: vec i64 [] [ 7, 8 ]
+    s2: 'a={items[0]} b={items[1]}'
+    return s1 == 'v=5' && s2 == 'a=7 b=8'
+
+expect func t_break_depth [] -> bool
+    hits: i32 [ 0 ]
+    for [ i: i32 0, i < 3, i += 1 ]
+        for [ j: i32 0, j < 3, j += 1 ]
+            hits += 1
+            if [ j == 1 ]
+                break [ 1 ]         # 0 is the inner loop; 1 leaves both
+    return hits == 2
+
+expect func t_ifdef_stmt [] -> bool
+    hit: i32 [ 0 ]
+    ifdef [ windows ]               # gates statements, not just imports
+        hit = 1
+    ifndef [ windows ]
+        hit = 2
+    # the platform names are also plain bool values
+    anyp: bool [ linux || apple || windows ]
+    return hit == 2 && anyp
+
+expect func t_lambda_inline2 [] -> bool
+    base: i64 [ 30 ]
+    g: lambda [ ]                   # zero args, capture only
+        return base + 1
+    h: lambda [ v: i64 ] -> i64     # explicit return type
+        return v * base
+    return g[] == 31 && h[ 2 ] == 60
+
+# growable vector: vec T [] — identity object stays put, elements
+# ride header->data; += appends, count is the header's
+expect func t_vec [] -> bool
+    v: vec i64 []
+    v += 3
+    v += 5
+    v += 8
+    s: i64 [ 0 ]
+    for [ x: i64 ] in v
+        s += x
+    return v.count == 3 && s == 16 && v[ 1 ] == 5
+
+# quoted literals to an Au param arrive as real strings, so keys match
+expect func t_map_contains [] -> bool
+    m: map i64 [ string ] [ ]
+    m[ 'a' ] = 5
+    return m.contains[ 'a' ] && !m.contains[ 'zz' ]
+
+# class elements ride as held pointer slots; += appends and holds
+expect func t_vec_class [] -> bool
+    v: vec string []
+    v += 'aa'
+    v += 'bb'
+    joined: ''
+    for [ s: string ] in v
+        joined = '{joined}{s}'
+    return v.count == 2 && joined == 'aabb' && v[ 1 ] == 'bb'
+
+# second bracket seeds the made growable with values
+expect func t_vec_seed [] -> bool
+    v: vec i64 [] [ 3, 5, 8 ]
+    s: i64 [ 0 ]
+    for [ x: i64 ] in v
+        s += x
+    return v.count == 3 && s == 16
+
+# float seeds through the same double-bracket form
+expect func t_vec_seed_f [] -> bool
+    v: vec f64 [] [ 1.5, 2.5, 4.0 ]
+    s: f64 [ 0.0 ]
+    for [ x: f64 ] in v
+        s += x
+    return v.count == 3 && s == 8.0
+
+# class seeds take the same growable path
+expect func t_vec_seed_class [] -> bool
+    v: vec string [] [ 'x', 'yz' ]
+    return v.count == 2 && v[ 0 ] == 'x' && v[ 1 ] == 'yz'
+
+class VecHolder
+    public tags : vec string []
+    intern notes : vec string []
+
+    func add_note [ s: string ] -> i64
+        notes += s
+        return notes.count
+
+VecHolder VecSub
+    intern extra : vec string []
+    intern greeting : string
+
+    func init []
+        greeting = 'hi'
+
+    func add_extra [ s: string ] -> i64
+        extra += s
+        return extra.count
+
+# a member spelled `: vec T []` is a managed growable slot
+expect func t_vec_member [] -> bool
+    h: VecHolder [ ]
+    h.tags += 'q'
+    h.tags += 'rs'
+    n1 : i64 [ h.add_note[ 'x' ] ]
+    return h.tags.count == 2 && h.tags[ 1 ] == 'rs' && n1 == 1
+
+# intern vec defaults must run through the inheritance chain
+expect func t_vec_sub [] -> bool
+    h: VecSub [ ]
+    n1 : i64 [ h.add_extra[ 'a' ] ]
+    n2 : i64 [ h.add_note[ 'b' ] ]
+    return n1 == 1 && n2 == 1
+
+# vec T in type position: args and returns carry vectors
+func vec_double [ v: vec i64 ] -> vec i64
+    r : vec i64 []
+    for [ x: i64 ] in v
+        r += x * 2
+    return r
+
+expect func t_vec_type_pos [] -> bool
+    src : vec i64 [] [ 1, 2, 3 ]
+    d : vec_double[ src ]
+    return d.count == 3 && d[ 2 ] == 6
+
+# the vec op surface: find, remove, reverse, ends, pop, concat, clear
+expect func t_vec_ops [] -> bool
+    v : vec i64 [] [ 3, 5, 8 ]
+    ok1 : bool [ v.index_of[ 5 ] == 1 && v.contains[ 8 ] && !v.contains[ 99 ] ]
+    v.remove[ 0 ]                  # 5 8
+    v = v.reverse[]                # 8 5 — reverse returns a NEW vector
+    ok2 : bool [ v.first[] == 8 && v.last[] == 5 ]
+    p : i64 [ v.pop[] ]            # takes 5; count 1
+    w : vec i64 [] [ 9 ]
+    v.concat[ w ]                  # 8 9
+    ok3 : bool [ v.count == 2 && v.last[] == 9 ]
+    v.clear[]
+    return ok1 && ok2 && ok3 && p == 5 && v.count == 0
+
+# class elements find via compare; remove drops the held ref
+expect func t_vec_ops_class [] -> bool
+    v : vec string [] [ 'aa', 'bb', 'cc' ]
+    i1 : i64 [ v.index_of[ 'bb' ] ]
+    v.remove[ 1 ]
+    return i1 == 1 && v.count == 2 && v.last[] == 'cc'
+
+class VecProps
+    public names : vec string
+
+# prop-pair list literal seeds a vec member; [] makes it empty
+expect func t_vec_prop_init [] -> bool
+    h : VecProps [ names: [ 'x', 'yz' ] ]
+    e : VecProps [ names: [] ]
+    return h.names.count == 2 && h.names[ 1 ] == 'yz' && e.names && e.names.count == 0
+
+# struct elements pack by value into the vector
+expect func t_vec_struct [] -> bool
+    v : vec v2 []
+    p : v2 [ x: 3.0, y: 4.0 ]
+    v.push[ p ]
+    v += v2 [ x: 5.0, y: 6.0 ]
+    return v.count == 2 && v[0].x == 3.0 && v[1].y == 6.0
+
+# moduleid: the module's runtime Au_t — bare name resolves at design
+# time, a string expression looks up at runtime
+expect func t_moduleid [] -> bool
+    m1 : moduleid[ features ]
+    nm : 'features'
+    m2 : moduleid[ nm ]
+    return m1 && m2 && m1 == m2
+
+# class seeds from variables load the object, not the alloca
+expect func t_vec_seed_var [] -> bool
+    s1 : string 'aa'
+    s2 : string 'bb'
+    v  : vec string [] [ s1, s2 ]
+    v2 : vec string []
+    v2.push[ s1 ]
+    return v.count == 2 && v[ 0 ] == 'aa' && v2.first[] == 'aa'
+
+# shift takes the front (ownership transfers); unshift inserts before it
+expect func t_vec_shift [] -> bool
+    v : vec i64 [] [ 3, 5, 8 ]
+    f : i64 [ v.shift[] ]          # 3; v = 5 8
+    v.unshift[ 1 ]                 # 1 5 8
+    s : vec string [] [ 'bb' ]
+    s.unshift[ 'aa' ]
+    t : string [ s.shift[] ]
+    return f == 3 && v.count == 3 && v.first[] == 1 && v.last[] == 8 &&
+           t == 'aa' && s.count == 1 && s[ 0 ] == 'bb'
+
+class BufLike
+    public data : handle
+
+# a raw @T view over a handle indexes WITHOUT any vec header hop
+expect func t_ref_from_handle [] -> bool
+    raw : vec f32 [ 4 ]
+    b : BufLike [ ]
+    b.data = raw
+    p : @f32 [ b.data ]
+    p[0] = 1.5
+    p[1] = 2.5
+    return raw[0] == 1.5 && raw[1] == 2.5
+
+class LineLike
+    public content : string
+    public line    : i32
+
+# a class-element borrow binds the OBJECT pointer, not the slot base
+expect func t_vec_borrow [] -> bool
+    v : vec LineLike []
+    v.push[ LineLike [ content: 'aa', line: 1 ] ]
+    v.push[ LineLike [ content: 'bb', line: 2 ] ]
+    k : i32 [ 0 ]
+    total : i32 [ 0 ]
+    while [ k < v.count ]
+        cl : v[k]
+        c9 : cl.content
+        total += cl.line
+        if [ c9 == 'bb' ] total += 10
+        k += 1
+    w : vec LineLike []
+    w.push[ v[0] ]
+    w.push[ v[1] ]
+    m9 : w[0]
+    return total == 13 && m9.line == 1 && w[1].content == 'bb'
+
+# a null vec iterates zero times
+expect func t_vec_for_null [] -> bool
+    v : vec i64
+    n : i64 [ 0 ]
+    for [ x: i64 ] in v
+        n += 1
+    return n == 0 && !v
+
+# bare vec T is a null slot; [] makes it — the numpy split
+expect func t_vec_null [] -> bool
+    v: vec string
+    was_null : bool [ !v ]
+    v = vec string []
+    v += 'a'
+    return was_null && v.count == 1
+
+# insert opens a slot at the index; later elements shift up
+expect func t_vec_insert [] -> bool
+    v : vec i64 [] [ 1, 3 ]
+    v.insert[ 2, 1 ]
+    v.insert[ 0, 0 ]
+    return v.count == 4 && v[0] == 0 && v[1] == 1 && v[2] == 2 && v[3] == 3
+
+class AsyncJob
+    public x   : i64
+    public out : i64
+
+class AsyncHost
+    public tag : i64
+
+func run_job [ h: AsyncHost, arg: object ]
+    j : AsyncJob [ arg ]
+    j.out = j.x * 2 + h.tag
+
+# async fans work items out to threads; sync[ null ] joins them
+expect func t_async [] -> bool
+    h : AsyncHost [ tag: 0 ]
+    j1 : AsyncJob [ x: 3 ]
+    j2 : AsyncJob [ x: 5 ]
+    j3 : AsyncJob [ x: 8 ]
+    jobs : vec Au []
+    jobs.push[ j1 ]
+    jobs.push[ j2 ]
+    jobs.push[ j3 ]
+    t : async [ target: h, work_fn: @run_job, work: jobs ]
+    t.sync[ null ]
+    return j1.out == 6 && j2.out == 10 && j3.out == 16
 
 app features
     func init []
