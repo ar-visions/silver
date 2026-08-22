@@ -10,8 +10,8 @@ class FileBuf
     public hist_i     : i32 [ 0 ]
     # history index of the last buffer<->disk agreement (save/reload)
     public sync_i     : i32 [ 0 ]
-    # one array ColorRegion per source line, parallel to lines
-    public line_regs  : array
+    # one vec ColorRegion per source line, parallel to lines
+    public line_regs  : vec Au
 
 class FindHit
     public is_header : bool
@@ -39,7 +39,7 @@ class LineOp
     public after  : string
 
 class EditAction
-    public ops : array LineOp
+    public ops : vec LineOp
     # set = whole-buffer swap (disk reload); ops are unused then
     public full_before : list string
     public full_after  : list string
@@ -68,8 +68,8 @@ class EdLineCache
 class ResourceView
     mutable src    : path
     mutable loaded : bool
-    func extensions [] -> array string
-        return array string [ ]
+    func extensions [] -> vec string
+        return vec string []
     # rail name; '' = not user-selectable, keyed by class ident
     func view_id [] -> string
         return ''
@@ -107,7 +107,7 @@ class ResourceView
     func title_press [ tid: string, ev: Event ] -> bool
         return false
     mutable view_sel : i32
-    func views [] -> array string
+    func views [] -> vec string
         return null
     func view_unload [ which: i32 ]
         return
@@ -354,8 +354,8 @@ ResourceView ImageView
     mutable tex : Texture
     mutable iw  : f32
     mutable ih  : f32
-    func extensions [] -> array string
-        return array string [ '.png', '.exr' ]
+    func extensions [] -> vec string
+        return vec string [] [ '.png', '.exr' ]
     func thumbnail [ cv: Canvas ] -> Texture
         if [ !src ] return null
         im : Image [ '{src}' ]
@@ -429,10 +429,10 @@ ResourceView AppView
     # the gain the app started at; -1 until it answers, then adopted once
     mutable app_vol    : f32 [ -1.0 ]
     # what the running instance says it can show, asked once
-    mutable instr_names : array string
+    mutable instr_names : vec string
     mutable instr_ask   : bool
     # the instruments actually up, and the surface each one publishes
-    mutable instr_live  : array string
+    mutable instr_live  : vec string
     mutable instr_side  : map i32     [string]
     mutable instr_logs  : map i32     [string]
     mutable instr_gen   : map i32     [string]
@@ -450,8 +450,8 @@ ResourceView AppView
     mutable pipw       : f32
     mutable piph       : f32
 
-    func extensions [] -> array string
-        return array string [ ]
+    func extensions [] -> vec string
+        return vec string []
 
     func is_app_host [] -> bool
         return true
@@ -577,15 +577,15 @@ ResourceView AppView
     # 'name:side:log' from the app, straight into our live state. side is
     # -1 for the usual case: an instrument that is entries and no view
     func instr_apply [ s: string ]
-        instr_live = array string []
+        instr_live = vec string []
         if [ !instr_side ] instr_side = map i32 [string] []
         if [ !instr_logs ] instr_logs = map i32 [string] []
         if [ !s ] return
         t9 : string s.trim[]
         if [ t9.count == 0 ] return
-        ps : array string [ t9.split[ ' ' ] ]
+        ps : t9.split[ ' ' ]
         for [ i: i32 0, i < ps.count, i += 1 ]
-            f9 : array string [ ps[i].split[ ':' ] ]
+            f9 : ps[i].split[ ':' ]
             if [ f9.count < 3 ] continue
             nm : string f9[0]
             instr_live.push[ nm ]
@@ -667,7 +667,7 @@ ResourceView AppView
         agent_sock_send[ app_mod.chars, 'instr-width {nm} {iw}\n' ]
 
     # the entries themselves, asked of the running instance
-    func instr_entries [ nm: string ] -> array string
+    func instr_entries [ nm: string ] -> vec string
         if [ !app_mod || !nm || nm.count == 0 ] return null
         rb : local i8 [ 8192 ]
         if [ agent_sock_ask[ app_mod.chars, 'instr-read {nm}\n', @rb[0], 8192 ] <= 0 ] return null
@@ -772,7 +772,7 @@ ResourceView AppView
                 if [ n9 > 0 ]
                     b9[n9] = 0
                     txt9   : string [ @b9[0] ]
-                    lines9 : array string txt9.split[ '\n' ]
+                    lines9 : txt9.split[ '\n' ]
                     lh9  : f32 [ 16.0 ]
                     maxn : i32 [ i32[ (bounds.h - 56.0) / lh9 ] ]
                     st0  : i32 [ (lines9.count > maxn) ? lines9.count - maxn : 0 ]
@@ -992,7 +992,7 @@ Layer EditorLayer
     func code_slot [ cv: Canvas, editor: Editor, msl: i32, ln: string, cmt_c: rgba, lh: f32, cw: f32, code_fs: i32 ] -> EdLineCache
         ll : i32 [ ln.count ]
         if [ ll == 0 ] return null
-        if [ !editor.code_lines ] editor.code_lines = array EdLineCache [ alloc: 64 ]
+        if [ !editor.code_lines ] editor.code_lines = vec EdLineCache []
         h : i64 [ code_hash[ editor, msl, ln ] ]
         for [ slot: EdLineCache ] in editor.code_lines
             if [ slot.canvas && slot.hash == h ]
@@ -1086,7 +1086,7 @@ Layer EditorLayer
         return h
 
     func code_band [ cv: Canvas, editor: Editor, bs: i32, bands: i32, cmt_c: rgba, lh: f32, cw: f32, code_fs: i32 ] -> EdLineCache
-        if [ !editor.code_lines ] editor.code_lines = array EdLineCache [ alloc: 16 ]
+        if [ !editor.code_lines ] editor.code_lines = vec EdLineCache []
         h    : i64 [ band_hash[ editor, bs, bands, code_fs ] ]
         maxw     : i32 [ 1 ]
         has_code : bool [ false ]
@@ -1316,7 +1316,7 @@ Layer EditorLayer
         if [ showing && !editor.was_showing ]
             editor.sel_line = -1
         editor.was_showing = showing
-        hits    : array FindHit [ editor.hits ]
+        hits    : editor.hits
         code_fs : i32 [ (editor.code_font_size > 0) ? editor.code_font_size : 15 ]
         cv.font_size[ code_fs ]
         cw_tm   : cv.measure_text[ 'x' ]
@@ -2132,7 +2132,7 @@ Control Editor
     public  selected      : bool
     public  expanded      : bool
     public  show_hits     : bool
-    public  hits          : array FindHit
+    public  hits          : vec FindHit
     public  finder_list   : bool
     public  single_line   : bool
     public  nav_list      : bool
@@ -2152,9 +2152,9 @@ Control Editor
     public  diff_commit   : string
     mutable loaded_diff   : string
     # per-row diff kind: 0 context, 1 removed, 2 added
-    mutable diff_kinds    : array i32
+    mutable diff_kinds    : vec i32
     # display row -> real file line; -1 on removed rows (base only)
-    mutable diff_src      : array i32
+    mutable diff_src      : vec i32
     # glyphs render here, then blit through fade_mask; fills bypass both
     mutable text_canvas   : Canvas
     mutable fade_mask     : Canvas
@@ -2164,7 +2164,7 @@ Control Editor
     mutable fade_b        : f32 [ -1.0 ]
     mutable fade_l        : f32 [ -1.0 ]
     # commit's file lines, cached for live re-diff while editing
-    mutable diff_base     : array string
+    mutable diff_base     : vec string
     mutable diff_dirty    : bool
     mutable diff_edit_ms  : i64
     mutable loaded_src    : path
@@ -2175,7 +2175,7 @@ Control Editor
     mutable view_name     : string
     # '<view>|<file>' currently mounted; the only staleness check
     mutable mounted       : string
-    mutable nav_tools     : array string
+    mutable nav_tools     : vec string
     mutable nav_default   : string
     mutable tool_hover    : i32 [ -1 ]
     mutable run_view      : AppView
@@ -2205,7 +2205,7 @@ Control Editor
     mutable sel_col       : i32 [ 0 ]
     mutable tab_w         : i32 [ 4 ]
     # currently expanded variables, outermost first
-    mutable open_chain    : array
+    mutable open_chain    : vec Au
     mutable fmt_mtime     : i64 [ 0 ]
     mutable disk_ms       : i64 [ 0 ]
     mutable scroll_target : f32 [ 0.0 ]
@@ -2213,7 +2213,7 @@ Control Editor
     mutable hx_last_y     : f32 [ 0.0 ]
     mutable text_lines_frame : i32 [ 0 ]
     mutable text_lines_total : i64 [ 0 ]
-    mutable code_lines    : array EdLineCache
+    mutable code_lines    : vec EdLineCache
     mutable cl_frame      : i32 [ 0 ]
     mutable cl_cw         : f32 [ 0.0 ]
     mutable cl_lh         : f32 [ 0.0 ]
@@ -2231,8 +2231,8 @@ Control Editor
     mutable stop_col      : i32 [ -1 ]
     public  debug_running : bool
     public  debugger      : dbg
-    public  debug_vars    : array
-    mutable flat_rows     : array VRow
+    public  debug_vars    : vec Au
+    mutable flat_rows     : vec VRow
     mutable flat_active   : bool
     mutable hover_ann     : i32 [ -1 ]
     mutable lh_cache      : f32 [ 0.0 ]
@@ -2303,7 +2303,7 @@ Control Editor
     # the chain is outermost-first; esc collapses the innermost
     func expand_only [ v9: variable ]
         if [ !v9 ] return
-        if [ !open_chain ] open_chain = array []
+        if [ !open_chain ] open_chain = vec Au []
         nested : bool [ false ]
         if [ open_chain.count > 0 ]
             lastv : variable open_chain[ open_chain.count - 1 ]
@@ -2314,7 +2314,7 @@ Control Editor
             for [ i9: i32 0, i9 < open_chain.count, i9 += 1 ]
                 ov : variable open_chain[i9]
                 if [ ov ] ov.expanded = false
-            open_chain = array []
+            open_chain = vec Au []
         v9.expanded = true
         open_chain.push[ v9 ]
 
@@ -2377,7 +2377,7 @@ Control Editor
             splice_var[ c, depth + 1 ]
 
     func rebuild_flat []
-        flat_rows = array VRow []
+        flat_rows = vec VRow []
         flat_active = false
         if [ !debug_vars ] return
         base : i32 [ lines.count ]
@@ -2700,11 +2700,11 @@ Control Editor
     func line_reg_count [ ml: i32 ] -> i32
         if [ !cur_buf || !cur_buf.line_regs ] return 0
         if [ ml < 0 || ml >= cur_buf.line_regs.count ] return 0
-        regs : array cur_buf.line_regs[ ml ]
+        regs : vec ColorRegion cur_buf.line_regs[ ml ]
         return (regs) ? regs.count : 0
 
     func line_reg [ ml: i32, k: i32 ] -> ColorRegion
-        regs : array cur_buf.line_regs[ ml ]
+        regs : vec ColorRegion cur_buf.line_regs[ ml ]
         cr   : ColorRegion regs[ k ]
         return cr
 
@@ -2717,7 +2717,7 @@ Control Editor
     func edit_line_regs [ i: i32, before: string, after: string ]
         if [ !cur_buf || !cur_buf.line_regs ] return
         if [ i < 0 || i >= cur_buf.line_regs.count ] return
-        regs : array cur_buf.line_regs[ i ]
+        regs : vec ColorRegion cur_buf.line_regs[ i ]
         if [ !regs || regs.count == 0 ] return
         p : i32 [ 0 ]
         while [ p < before.count && p < after.count && before[p] == after[p] ] p += 1
@@ -2725,7 +2725,7 @@ Control Editor
         while [ s < before.count - p && s < after.count - p && before[before.count - 1 - s] == after[after.count - 1 - s] ] s += 1
         d : i32 [ after.count - before.count ]
         e : i32 [ before.count - s ]
-        kept : array ColorRegion []
+        kept : vec ColorRegion []
         for [ ri: i32 0, ri < regs.count, ri += 1 ]
             cr : ColorRegion regs[ ri ]
             if [ cr.col + cr.len <= p ]
@@ -2737,7 +2737,7 @@ Control Editor
 
     public func load_format [ mapfile: string ]
         mp    : path  '{mapfile}'
-        files : array [ mp.read_format[] ]
+        files : vec Au mp.read_format[]
         if [ !files ] return
         for [ fi: i32 0, fi < files.count, fi += 1 ]
             ff  : fmt_file files[fi]
@@ -2748,11 +2748,11 @@ Control Editor
             if [ !buf ]
                 buf = FileBuf []
                 fcm[ key ] = buf
-            buf.line_regs = array []
+            buf.line_regs = vec Au []
             nl : i32 [ ff.lines.count ]
             for [ li: i32 0, li < nl, li += 1 ]
-                ltk  : array ff.lines[ li ]
-                regs : array ColorRegion []
+                ltk  : vec fmt_token ff.lines[ li ]
+                regs : vec ColorRegion []
                 nt   : i32 [ ltk.count ]
                 for [ ti: i32 0, ti < nt, ti += 1 ]
                     tk : fmt_token ltk[ ti ]
@@ -2795,7 +2795,7 @@ Control Editor
     func raw_insert [ i: i32, val: string ]
         lines.insert_after[ val, i - 1 ]
         if [ cur_buf && cur_buf.line_regs && i <= cur_buf.line_regs.count ]
-            cur_buf.line_regs.insert[ array ColorRegion [], i ]
+            cur_buf.line_regs.insert[ vec ColorRegion [], i ]
     func raw_remove [ i: i32 ]
         if [ cur_buf && cur_buf.line_regs ]
             cur_buf.line_regs.remove[ i ]
@@ -2807,7 +2807,7 @@ Control Editor
             while [ hist && hist.count > hist_i ]
                 hist.pop[]
             cur_group = EditAction []
-            cur_group.ops = array LineOp []
+            cur_group.ops = vec LineOp []
             cur_group.sl0 = pend_sl0
             cur_group.sc0 = pend_sc0
             hist.push[ cur_group ]
@@ -2984,7 +2984,7 @@ Control Editor
             tkey    : '{target}'
             ftext : string [ target.load[ typeid[string], null ] ]
             if [ !ftext ] return
-            parts : array string [ ftext.split["\n"] ]
+            parts : ftext.split["\n"]
             for [ i: i32 0, i < hits.count, i += 1 ]
                 h : FindHit hits[i]
                 if [ h.is_header ]
@@ -3063,7 +3063,7 @@ Control Editor
         root : path.path_startup[]
         if [ !root ] return
         d : path '{root}/install/export'
-        entries : array [ d.ls[ null, false ] ]
+        entries : d.ls[ null, false ]
         if [ !entries ] return
         for [ e: path ] in entries
             ax : e.ext[]
@@ -3216,7 +3216,7 @@ Control Editor
 
     # our own line diff: LCS over the middle after prefix/suffix trim.
     # kinds: 0 context, 1 removed (commit only), 2 added (our buffer)
-    func diff_against [ base: array string, cur: array string, out_k: array i32 ] -> list string
+    func diff_against [ base: vec string, cur: vec string, out_k: vec i32 ] -> list string
         out : list string []
         nb9 : i32 [ base.count ]
         nc9 : i32 [ cur.count ]
@@ -3304,12 +3304,12 @@ Control Editor
                     pj9.push[ (s7) ? s7 : '' ]
             fb9.lines = pj9
             fb9.hist  = null
-        cur9 : array string [ alloc: 1024 ]
+        cur9 : vec string []
         nb7  : i32 [ fb9.lines.count ]
         for [ i: i32 0, i < nb7, i += 1 ]
             cs8 : string fb9.lines.value_by_index[ i ]
             cur9.push[ (cs8) ? cs8 : '' ]
-        dk9 : array i32 [ alloc: 1024 ]
+        dk9 : vec i32 []
         ml9 : list string diff_against[ diff_base, cur9, dk9 ]
         if [ ml9.count == 0 ]
             ml9.push[ '' ]
@@ -3374,7 +3374,7 @@ Control Editor
             diff_src = null
             return
         n  : i32 [ diff_kinds.count ]
-        ds : array i32 [ alloc: (n > 0) ? n : 1 ]
+        ds : vec i32 []
         s  : i32 [ 0 ]
         for [ i: i32 0, i < n, i += 1 ]
             if [ diff_kinds[i] == 1 ]
@@ -3494,7 +3494,7 @@ Control Editor
         g.sc1 = sel_col
         # unsaved groups since the last sync replay on top afterwards
         sy9  : i32 [ (buf.sync_i >= 0) ? buf.sync_i : 0 ]
-        rep9 : array EditAction []
+        rep9 : vec EditAction []
         if [ hist_i - sy9 <= 64 ]
             for [ k9: i32 sy9, k9 < hist_i, k9 += 1 ]
                 gg9 : EditAction hist.value_by_index[ k9 ]
@@ -3512,7 +3512,7 @@ Control Editor
         if [ sel_line >= lines.count ]    sel_line    = lines.count - 1
         if [ anchor_line >= lines.count ] anchor_line = lines.count - 1
         # walk oldest-first; the first group that fails to anchor stops it
-        t9 : array i32 []
+        t9 : vec i32 []
         for [ gg9: EditAction ] in rep9
             for [ op: LineOp ] in gg9.ops
                 t9.push[ op.at ]
@@ -3538,14 +3538,14 @@ Control Editor
         disk_ms = now
         reload_from_disk[]
 
-    func op_touched [ t9: array i32, ln9: i32 ] -> bool
+    func op_touched [ t9: vec i32, ln9: i32 ] -> bool
         for [ v9: i32 ] in t9
             if [ v9 == ln9 ] return true
         return false
 
     # every set/remove 'before' must match the buffer verbatim at d;
     # untouched neighbor lines must match too (wider fingerprint)
-    func op_anchors [ g: EditAction, d: i32, old9: list string, t9: array i32 ] -> bool
+    func op_anchors [ g: EditAction, d: i32, old9: list string, t9: vec i32 ] -> bool
         n9    : i32 [ lines.count ]
         no9   : i32 [ old9.count ]
         seen9 : bool [ false ]
@@ -3584,7 +3584,7 @@ Control Editor
 
     # the offset must be UNIQUE in the window; two candidates means
     # the file is locally self-similar — the reload stands, undo has it
-    func replay_offset [ g: EditAction, old9: list string, t9: array i32 ] -> i32
+    func replay_offset [ g: EditAction, old9: list string, t9: vec i32 ] -> i32
         found9 : i32 [ -100000 ]
         nf9    : i32 [ 0 ]
         for [ d9: i32 0 - 64, d9 <= 64, d9 += 1 ]
@@ -3735,7 +3735,7 @@ Control Editor
 
     public func on_unload [ ]
         lines      = list string []
-        code_lines = array EdLineCache []
+        code_lines = vec EdLineCache []
         super.on_unload[ ]
 
     func init [ ]
@@ -4185,7 +4185,7 @@ Control Editor
         line   : string line_get[ row ]
         prefix : string line.mid[ 0, col ]
         suffix : string line.mid[ col, line.count - col ]
-        parts  : array string s.split[ '\n' ]
+        parts  : s.split[ '\n' ]
         if [ parts.count <= 1 ]
             ed_set[ row, prefix + s + suffix ]
             sel_col = col + s.count

@@ -68,7 +68,7 @@ class Render
     mutable width                          : i32
     mutable height                         : i32
     public  reduce                         : bool
-    public  models                         : array Model
+    public  models                         : vec Model
     public  clear_color                    : vec4f
     public  reduction                      : Texture
     # UI canvases composite 1:1 — LINEAR resamples every edge across two
@@ -114,13 +114,13 @@ class Render
     #     small. it is PER render target, so a deep ring here multiplied 64x across every
     #     canvas and exhausted host memory (vkCreateFence -> OUT_OF_HOST_MEMORY).
     intern  vk_command_buffer              : VkCommandBuffer       # current slot (= [ring_i])
-    intern  vk_command_buffers             : new VkCommandBuffer [8]
-    intern  vk_fences                      : new VkFence          [8]
+    intern  vk_command_buffers             : vec VkCommandBuffer [8]
+    intern  vk_fences                      : vec VkFence          [8]
     intern  ring_i                         : i32
     intern  ring_n                         : i32 [ 3 ]    # frames-in-flight (command-buffer/fence ring)
     intern  paint_n                        : i32 [ 64 ]   # batch ceiling: paints per command buffer before drain
     intern  ring_last                      : i32           # most recently submitted slot (sync_fence target)
-    intern  ring_primed                    : new i32 [8]   # slot has a pending submit to wait on (0/1)
+    intern  ring_primed                    : vec i32 [8]   # slot has a pending submit to wait on (0/1)
     # batched recording: a canvas opens ONE command buffer (begin_record) and records
     # every paint into it, advancing draw_slot (the per-paint descriptor/UBO ring index)
     # per paint; the single submit happens at sync_fence (flush_submit). collapses N
@@ -137,8 +137,8 @@ class Render
     intern  vk_semaphore                   : VkSemaphore
     intern  vk_image_available_semaphore   : VkSemaphore
     intern  vk_render_finished_semaphore   : VkSemaphore
-    intern  vk_framebuffer                 : new VkFramebuffer [2]
-    intern  vk_render_pass                 : new VkRenderPass  [2]
+    intern  vk_framebuffer                 : vec VkFramebuffer [2]
+    intern  vk_render_pass                 : vec VkRenderPass  [2]
     intern  last_width                     : i32
     intern  last_height                    : i32
     intern  fb_color_view                  : VkImageView
@@ -555,7 +555,7 @@ class Render
         # a dead render must never stay registered: the display
         # drives element_targets every frame
         if [ w && w.element_targets ]
-            dead9 : array string [ ]
+            dead9 : vec string []
             for [ r9: Render, k9: string ] in w.element_targets
                 if [ r9 == a ] dead9 += k9
             for [ k9: string ] in dead9
@@ -582,6 +582,8 @@ class Render
         expect result == VK_SUCCESS, "failed to allocate command buffers"
         vk_command_buffer = vk_command_buffers[0]
 
+        if [ getenv[ 'TRIN_UBOLOG' ] ]
+            printf[ "PASSLOG tag=%s load_existing=%d\n", (tag) ? tag.chars : "?", i32[ load_existing ] ]
         color_load_op  : VkAttachmentLoadOp [ (load_existing) ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR ]
         color_init_lay : VkImageLayout      [ (load_existing) ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED ]
         has_depth_init : bool [ use_depth ]
@@ -718,7 +720,7 @@ struct mat3f
 
 
 class Layout
-    static defaults    : new Layout [7]
+    static defaults    : vec Layout [7]
     static initialized : bool
     public layout : VkImageLayout
     public access : VkAccessFlags
@@ -843,8 +845,8 @@ class vk_context
     public  cur_ring            : i32
     public  queue_family_index  : i32 -1
     public  rt_support          : bool
-    public  instance_exts       : array cstr [ alloc:128, unmanaged:true ]
-    public  device_exts         : array cstr [ alloc:128, unmanaged:true ] # theres... too many of them.
+    public  instance_exts       : vec cstr []
+    public  device_exts         : vec cstr [] # theres... too many of them.
     intern  debug               : VkDebugUtilsMessengerEXT
     intern  props               : VkPhysicalDeviceMemoryProperties
     public  allocator           : VmaAllocator
@@ -889,9 +891,9 @@ class vk_context
     # deferred GPU-buffer destruction: a buffer queued here is destroyed only
     # after DEFER_FRAMES more frames have rendered — no submit that could
     # still reference it remains in flight (premature-recycle device loss)
-    intern  defer_list          : array Buffer
-    intern  defer_texs          : array TexDefer
-    intern  defer_drops         : array DropDefer
+    intern  defer_list          : vec Buffer
+    intern  defer_texs          : vec TexDefer
+    intern  defer_drops         : vec DropDefer
     intern  frame_no            : i64
     public  bindres_calls       : i32
     public  bindres_us          : i64
@@ -899,7 +901,7 @@ class vk_context
 
     # queue a buffer for destruction once provably out of flight
     func defer_buffer [ b: Buffer ] -> none
-        if [ ! defer_list ] defer_list = array Buffer []
+        if [ ! defer_list ] defer_list = vec Buffer []
         b.defer_frame = frame_no
         b.hold[]
         defer_list.push[ b ]
@@ -907,14 +909,14 @@ class vk_context
     # queue texture handles: destroying under an in-flight submit that
     # still samples them is a device fault (the fast-close SIGTRAP)
     func defer_texture [ td: TexDefer ] -> none
-        if [ ! defer_texs ] defer_texs = array TexDefer []
+        if [ ! defer_texs ] defer_texs = vec TexDefer []
         td.defer_frame = frame_no
         defer_texs.push[ td ]
 
     # hold obj 8 frames, then release — its dealloc (and every
     # immediate vkDestroy inside it) runs provably out of flight
     func defer_drop [ o: Au ] -> none
-        if [ ! defer_drops ] defer_drops = array DropDefer []
+        if [ ! defer_drops ] defer_drops = vec DropDefer []
         Au.hold[ o ]
         dd : DropDefer [ obj: o, defer_frame: frame_no ]
         defer_drops.push[ dd ]
@@ -923,7 +925,7 @@ class vk_context
     func defer_tick [] -> none
         frame_no += 1
         if [ defer_list && defer_list.count > 0 ]
-            keep : array Buffer [ ]
+            keep : vec Buffer []
             for [ b: Buffer ] in defer_list
                 if [ frame_no - b.defer_frame >= 8 ]
                     b.destroy_now[]
@@ -932,7 +934,7 @@ class vk_context
                     keep.push[ b ]
             defer_list = keep
         if [ defer_texs && defer_texs.count > 0 ]
-            tkeep : array TexDefer [ ]
+            tkeep : vec TexDefer []
             for [ td: TexDefer ] in defer_texs
                 if [ frame_no - td.defer_frame >= 8 ]
                     if [ td.vk_sampler    ] vkDestroySampler[ device, td.vk_sampler, null ]
@@ -952,7 +954,7 @@ class vk_context
             # re-enter defer_drop — never mutate the list being walked
             dwork : defer_drops
             dwork.hold[]
-            defer_drops = array DropDefer [ ]
+            defer_drops = vec DropDefer []
             for [ dd: DropDefer ] in dwork
                 if [ frame_no - dd.defer_frame < 8 ]
                     defer_drops.push[ dd ]
@@ -970,7 +972,7 @@ class vk_context
     # one cached instance per type sidesteps the race entirely.
     intern quad_s:      Au
     intern reduce_s:    Au
-    intern shaders:     array shader
+    intern shaders:     vec shader
     intern shader_cache: store
     # font cache keyed by "name@size". each entry is born at its size and is
     # NEVER mutated (no set_size on a shared instance) and NEVER unloaded —
@@ -1064,7 +1066,7 @@ class vk_context
                 portability_supported = true
         expect swapchain_supported, "VK_KHR_swapchain not supported by physical device"
 
-        enabled_dev_exts  : new symbol [ 8 ]
+        enabled_dev_exts  : vec symbol [ 8 ]
         enabled_ext_count : u32 0
         enabled_dev_exts[ enabled_ext_count ] = VK_KHR_SWAPCHAIN_EXTENSION_NAME
         enabled_ext_count += 1
@@ -1109,7 +1111,7 @@ class vk_context
         # keeps quality of service while long dispatch chains grind
         qf_count: u32 0
         vkGetPhysicalDeviceQueueFamilyProperties[ physical_device, @qf_count, null ]
-        qf_props: new VkQueueFamilyProperties [ qf_count ]
+        qf_props: vec VkQueueFamilyProperties [ qf_count ]
         vkGetPhysicalDeviceQueueFamilyProperties[ physical_device, @qf_count, qf_props ]
         compute_family = -1
         compute_index  = 0
@@ -1228,7 +1230,7 @@ class vk_context
         vkGetPhysicalDeviceQueueFamilyProperties[
             physical_device, @queue_family_count, null ]
         #expect queue_family_count > 0, "failed to find queue families"
-        queue_families: new VkQueueFamilyProperties [ queue_family_count ] # auto freeing data from /src/silver/trinity/trinity.ag:784
+        queue_families: vec VkQueueFamilyProperties [ queue_family_count ] # auto freeing data from /src/silver/trinity/trinity.ag:784
         vkGetPhysicalDeviceQueueFamilyProperties[ physical_device, @queue_family_count, queue_families ]
         
         found: false
@@ -1713,8 +1715,8 @@ class Gpu
     expect name          : cstr
     public sampler       : Au
     public tx            : Texture
-    public vertex_data   : new i8 [ 1 ]
-    public index_data    : new i8 [ 1 ]
+    public vertex_data   : vec i8 [ 1 ]
+    public index_data    : vec i8 [ 1 ]
     public members       : @vertex_member_t
     public member_count  : i32
     public index_size    : i32
@@ -1794,16 +1796,16 @@ class Gpu
 
     func init [ ]
         if [ vertex_size ]
-            vertex_data = new i8 [ vertex_size * vertex_count ]
+            vertex_data = vec i8 [ vertex_size * vertex_count ]
         if [ index_size ]
-            index_data  = new i8 [ index_size * index_count ]
+            index_data  = vec i8 [ index_size * index_count ]
 
 
 class uniforms
     context vk       : vk_context
     expect s         : shader
     public u_memory  : @u8
-    public u_buffers : array Buffer [ ]
+    public u_buffers : vec Buffer []
     # this pipeline's gltf NODE transform (Pipeline.default_model). composed
     # under the shader's model each update so file placement survives — it was
     # previously stored and never consumed (every node rendered untransformed).
@@ -1833,13 +1835,18 @@ class uniforms
             fp : @f32 [ b.data ]
             printf[ "UBOLOG %s ring=%d m0=%.3f m12=%.3f v14=%.3f p0=%.3f p5=%.3f\n",
                 s.name.chars, vk.cur_ring, fp[0], fp[12], fp[30], fp[32], fp[37] ]
+            if [ strcmp[ s.name.chars, "CanvasUI" ] == 0 ]
+                printf[ "UBOLOG.ui rect=(%.1f %.1f %.1f %.1f) fill=(%.2f %.2f %.2f %.2f) params=(%.2f %.2f %.2f %.2f) x0=(%.2f %.2f %.2f %.2f) x1=(%.2f %.2f) vp=(%.1f %.1f) crop=(%.1f %.1f %.1f %.1f)\n",
+                    fp[0], fp[1], fp[2], fp[3], fp[8], fp[9], fp[10], fp[11],
+                    fp[16], fp[17], fp[18], fp[19], fp[40], fp[41], fp[42], fp[43],
+                    fp[44], fp[45], fp[100], fp[101], fp[92], fp[93], fp[94], fp[95] ]
         b.update[ null ]
 
     func dealloc [ ]
         drop[ u_memory ]
 
     func init [ ]
-        type_list:  array Au_t [ unmanaged: true ]
+        type_list:  vec Au_t []
         # use the runtime type via the Au header — `typeid[ s ]` returns the
         # static declared type of the field (`shader`), not the actual subclass
         # (e.g. CanvasUI). without this we'd never iterate any subclass members.
@@ -1854,7 +1861,7 @@ class uniforms
         hdr2:   Au.header[ s ]
         leaf:   hdr2.au
         total_uniform: i32 [ uniform_size[ leaf ] ]
-        u_memory = new u8 [ total_uniform ]
+        u_memory = vec u8 [ total_uniform ]
         # one uniform buffer per draw-ring slot (all share the CPU-side u_memory; each
         # update[] snapshots it into the current slot's GPU buffer). MUST match pipe_ring
         # / ring_n — the descriptor write count (and thus resize re-bind cost) scales with
@@ -1926,19 +1933,19 @@ class Pipeline
     public depth_no_write   : bool
     # volumetrics that occlude in-shader: no depth test, no write
     public depth_no_test    : bool
-    intern resources        : array Gpu
-    intern storage_textures : array Texture
+    intern resources        : vec Gpu
+    intern storage_textures : vec Texture
     manual shader_uniforms  : uniforms
     # public so a caller can ring it (point the draw at a different vertex buffer of the
     # SAME layout per draw) — used by Canvas text to avoid a GPU fence per draw_text.
     public vbo              : Gpu
     intern memory           : Gpu
     intern dumped           : bool
-    intern descriptor_layouts : new VkDescriptorSetLayout [ 2 ] # fixed-size descriptor arrays
+    intern descriptor_layouts : vec VkDescriptorSetLayout [ 2 ] # fixed-size descriptor arrays
     # descriptor sets are RINGED: 2 sets (set0=uniform, set1=sampler) per draw-ring
     # slot, laid out interleaved [s0_0,s1_0, s0_1,s1_1, ...]. draw binds the pair at
     # 2*vk.cur_ring so each draw has private descriptors (no in-flight clobber).
-    intern descriptor_sets    : new VkDescriptorSet       [ 128 ] # 2 * pipe_ring(64); pipe_ring must be >= Render.paint_n
+    intern descriptor_sets    : vec VkDescriptorSet       [ 128 ] # 2 * pipe_ring(64); pipe_ring must be >= Render.paint_n
     intern pipe_ring          : i32 [ 64 ]
     intern descriptor_pool    : VkDescriptorPool
     intern image_slot         : i32 [ -1 ]
@@ -2086,6 +2093,9 @@ class Pipeline
             layout, 0, 2, @descriptor_sets[ 2 * r.draw_slot ], 0, null ]
 
         vkCmdBindVertexBuffers[ frame, 0, 1, @vbo.vertex.vk_buffer, offsets ]
+        if [ getenv[ 'TRIN_UBOLOG' ] ]
+            printf[ "DRAWLOG %s slot=%d vtx=%d idx=%d\n", name.chars,
+                r.draw_slot, vbo.vertex_count, vbo.index_count ]
         if [ vbo.index ]
             vkCmdBindIndexBuffer[ frame, vbo.index.vk_buffer, 0,
                 vbo.index_type[ ] ]
@@ -2112,8 +2122,8 @@ class Pipeline
         # wcount = 64*10 = 640 — the old [512] overran here once the ring grew to 64.
         buffer_infos:      local VkDescriptorBufferInfo       [512]
         descriptor_writes: local VkWriteDescriptorSet         [1024]
-        resources        = array Gpu     [ alloc: 32 ]
-        storage_textures = array Texture [ alloc: 8  ]
+        resources        = vec Gpu []
+        storage_textures = vec Texture []
 
         if [ vbo ]
             vbo.sync[ w ]
@@ -2157,7 +2167,7 @@ class Pipeline
         # counted from the base class down. walking derived-first here
         # gives an attrib declared on a subclass binding 0 and shifts
         # every inherited sampler, silently swapping the textures
-        sc_chain: array Au_t []
+        sc_chain: vec Au_t []
         sc_walk:  Au_t [ sh_hdr.au ]
         while [ sc_walk && sc_walk != typeid[ shader ] ]
             sc_chain.push[ sc_walk ]
@@ -2399,7 +2409,7 @@ class Pipeline
                 inputRate: VK_VERTEX_INPUT_RATE_VERTEX
             ]
             attr_count: 0
-            attributes: new VkVertexInputAttributeDescription [ vbo.member_count ]
+            attributes: vec VkVertexInputAttributeDescription [ vbo.member_count ]
 
             # count VertexInput attribs the shader actually consumes
             shader_input_count: 0
@@ -2599,7 +2609,7 @@ class gltf_part
 
 class gltf_node
     public id    : Node
-    public parts : array gltf_part [] # container-size on members
+    public parts : vec gltf_part [] # container-size on members
 
 # quad topology for one subdivision level: welded corner ids, unique edges,
 # vert->face and vert->edge CSR adjacency. purely combinatorial — positions
@@ -2634,13 +2644,13 @@ class Model
     mutable transforms      : @mat4f null
     mutable transform_count : i32
     public id               : GltfModel
-    public nodes            : array gltf_node
+    public nodes            : vec gltf_node
     public s                : shader
     mutable samplers        : map Au[string] [ ]
     # gltf material textures loaded once per model (keyed by file path) —
     # primitives sharing a material reuse the same Texture
     mutable tex_cache       : map Au[string] [ ]
-    public pipelines        : array Pipeline
+    public pipelines        : vec Pipeline
     # straight-alpha output (rgb, a) when true; default false = premul (rgb*a, a).
     # forwarded to every Pipeline this Model builds; toggle for shaders that
     # emit unpremultiplied alpha (e.g. cloud, text overlay).
@@ -2656,7 +2666,7 @@ class Model
     public subdiv           : i32
     # level-0 topo per subdivided primitive; cage_buf holds the live control
     # positions the compute chain re-reads every frame
-    mutable cages           : array SubdivTopo [ ]
+    mutable cages           : vec SubdivTopo []
     # rigid models: refine ONCE at load instead of every frame
     public subdiv_once      : bool
     # weld subdiv topology by POSITION alone: flat-shaded parts
@@ -2699,7 +2709,7 @@ class Model
         if [ !t.cage_buf ] return
         if [ !t.pin ]
             pv : i32 [ t.nv ]
-            t.pin = new f32 [ pv ]
+            t.pin = vec f32 [ pv ]
             for [ i: i32 0, i < t.nv, i += 1 ] t.pin[ i ] = 0.0
         pos : @f32 [ t.cage_buf.data ]
         rs : f32 [ (r_soft > r_hard) ? r_soft : r_hard ]
@@ -2908,7 +2918,7 @@ class Model
 
     public func finish [ r_target: Render, render_id: i32 ]
         r = r_target
-        pipelines = array Pipeline [ alloc: 16 ]
+        pipelines = vec Pipeline []
         is_clear: (!r.models || r.models.count == 0) && !a.s
 
         if [ !s && !is_clear ]
@@ -2963,7 +2973,7 @@ class Model
                 model_init_pipeline[ a, null, null, null, s, render_id, false ]
         # transparent draws LAST so alpha blends against a finished
         # opaque scene; stable partition keeps relative order
-        resort : array Pipeline [ alloc: 16 ]
+        resort : vec Pipeline []
         for [ p2: Pipeline ] in pipelines
             if [ !p2.depth_no_write ] resort.push[ p2 ]
         for [ p2: Pipeline ] in pipelines
@@ -3707,10 +3717,10 @@ Texture Display
     intern  shell_bound         : Au
     public element_targets      : map   Render [string]
     # headless element hosts (trinity offscreen objects) pumped by the app
-    # loop alongside this window; array Au — the class lives in trinity.ag
-    mutable offscreens           : array Au [ ]
-    mutable list                 : array Render
-    intern swap_renders         : array Render
+    # loop alongside this window; vec Au — the class lives in trinity.ag
+    mutable offscreens           : vec Au []
+    mutable list                 : vec Render
+    intern swap_renders         : vec Render
     intern vk_swap_images       : @VkImage
     intern vk_surface           : VkSurfaceKHR
     intern vk_swapchain         : VkSwapchainKHR
@@ -3770,7 +3780,7 @@ Texture Display
 
 
     func last_render [] -> Render
-        return list.last_element[]
+        return list.last[]
 
     # copy text to the system clipboard. keeps glfw contained in trinity — apps
     # call this on their Window rather than touching glfw themselves.
@@ -3889,10 +3899,10 @@ Texture Display
             
             if [ !vk_swap_images ]
                 count : swap_image_count
-                vk_swap_images = new VkImage [ count ]
+                vk_swap_images = vec VkImage [ count ]
 
             if [ !swap_renders ]
-                swap_renders = array Render [ alloc: swap_image_count ]
+                swap_renders = vec Render []
             el
                 swap_renders.clear[]
             
@@ -3904,16 +3914,16 @@ Texture Display
                     width:         extent.width,
                     height:        extent.height,
                     vk_swap_image: vk_swap_images[i],
-                    models:        array Model [ swap_model ]
+                    models:        [ swap_model ]
                 ]
                 swap_renders += r
-            semaphore_frame = swap_renders.first_element[]
+            semaphore_frame = swap_renders.first[]
             swap_render_current = swap_renders[0]
         return a
 
         
     func final_target [ ] -> Render
-        return list.last_element[]
+        return list.last[]
 
     func draw [ ]
         win : cast Window [ a ]
@@ -3990,7 +4000,7 @@ Texture Display
                 swap_render_current.color.transition[ VK_IMAGE_LAYOUT_PRESENT_SRC_KHR ]
                 result = vkQueuePresentKHR[ vk.queue, presentInfo ]
                 swap_render_current.color.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
-                semaphore_frame = swap_renders[semaphore_frame == swap_renders.first_element[]]
+                semaphore_frame = swap_renders[semaphore_frame == swap_renders.first[]]
                 if [ result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ]
                     swap_needs_recreate = true
                 el
@@ -4023,7 +4033,7 @@ Texture Display
         if [ !format ]
             format = Pixel.rgba8
         if [ !list ]
-            list = array Render [ alloc: 32 ]
+            list = vec Render []
         if [ !element_targets ]
             element_targets = map Au[string][]
         ev = Event[]
@@ -4083,7 +4093,7 @@ Texture Display
 
         # surface capabilities + formats
         if [ !backbuffer ]
-            surface_caps = new VkSurfaceCapabilitiesKHR [ 1 ]
+            surface_caps = vec VkSurfaceCapabilitiesKHR [ 1 ]
             result: vkGetPhysicalDeviceSurfaceCapabilitiesKHR[ vk.physical_device, vk_surface, surface_caps ]
             expect result == VK_SUCCESS, "Failed to query surface capabilities"
 
@@ -4091,7 +4101,7 @@ Texture Display
             format_count: u32 [ 0 ]
             vkGetPhysicalDeviceSurfaceFormatsKHR[ vk.physical_device, vk_surface, @format_count, null ]
             expect format_count > 0, "No surface formats found"
-            formats: new VkSurfaceFormatKHR [ format_count ]
+            formats: vec VkSurfaceFormatKHR [ format_count ]
             vkGetPhysicalDeviceSurfaceFormatsKHR[ vk.physical_device, vk_surface, @format_count, formats ]
 
             # use linear UNORM swap format — shader writes raw values and
@@ -4121,7 +4131,7 @@ Texture Display
             vkGetPhysicalDeviceSurfacePresentModesKHR[
                 vk.physical_device, vk_surface, @present_mode_count, null ]
             expect present_mode_count > 0, "No present modes found"
-            present_modes: new VkPresentModeKHR [ present_mode_count ]
+            present_modes: vec VkPresentModeKHR [ present_mode_count ]
             vkGetPhysicalDeviceSurfacePresentModesKHR[
                 vk.physical_device, vk_surface, @present_mode_count, present_modes ]
             present_mode = VK_PRESENT_MODE_FIFO_KHR
@@ -4208,9 +4218,9 @@ intern func pixel_from_format [ f: VkFormat, channels: @i32 ] -> Pixel
 # ALL Vulkan handles live here (trinity), so a host like orbiter passes only
 # ints and draws through draw[] — no VkBuffer crosses the module edge (opaque
 # handles have no stable cross-module type identity).
-func Surface_resources [ surface_enum_type: Au_t, surface_value: Surface, meta_type: Au_t, p: Pipeline ] -> array Gpu
+func Surface_resources [ surface_enum_type: Au_t, surface_value: Surface, meta_type: Au_t, p: Pipeline ] -> vec Gpu
     res: Gpu
-    result: array Gpu [ alloc: 32 ]
+    result: vec Gpu []
 
     # only resolve named samplers if the LayoutBinding is on the standard
     # Surface enum — other enums (e.g. CanvasUISurface) just need a dummy
@@ -4439,7 +4449,7 @@ intern func handle_glfw_drop [ win: @GLFWwindow, count: i32, paths: @symbol ]
     if [ count <= 0 ] return
     w.ev.clear[]
     s : string ['']
-    a : array path []
+    a : vec path []
     for [ i: i32 0, i < count, i += 1 ]
         if [ i > 0 ] s = s + ' '
         p : path [ paths[i] ]
@@ -4571,7 +4581,7 @@ func environment [ vk: vk_context, img: Image, r_axis: vec3f, rotation: f32 ] ->
         res: vmaCreateImage[ vk.allocator, image_info, alloc_info, @vk_image[i], @vma_alloc[i], null ]
         expect res == VK_SUCCESS, "could not create image with vmaCreateImage"
     cmd: Command [ vk: vk ]
-    w.list = array Render [ r_env ]
+    w.list = vec Render [] [ r_env ]
     # last_render is now computed from list
 
     for [ f: 0, f < 6, f += 1 ]
@@ -4651,7 +4661,7 @@ func is_uniform_field [ mem: Au_t ] -> bool
     return mem.member_type == 4 && mem.access_type == (0,2,3,4) && bool[mem.src] && !(mem.traits & (1 << 56))
 
 func uniform_size [ type: Au_t ] -> num
-    chain: array Au_t [ unmanaged: true ]
+    chain: vec Au_t []
     ty: Au_t [ type ]
     while [ ty ]
         chain += ty

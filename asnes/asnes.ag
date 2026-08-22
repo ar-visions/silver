@@ -280,12 +280,12 @@ element asnes : trinity
 	mutable chr_h          	: i32                     # rows currently in chr_tex
 	mutable chr_have       	: bool                    # chr_tex holds a decode
 	# built text, not rebuilt per frame. R refreshes, as does any change
-	mutable vrows          	: array string
+	mutable vrows          	: vec string
 	mutable vhead          	: string
 	mutable vhave          	: bool
 	mutable vbuilt         	: string           # which view vrows belongs to
 	# built rows per view name: several can be up, none rebuild per frame
-	mutable vcache         	: map array [string]
+	mutable vcache         	: map Au [string]
 	mutable vheads         	: map string [string]
 	mutable chr_pal        	: i32              # palette row the tile grid decodes with
 	mutable chr_bpp        	: i32 [ 4 ]
@@ -294,8 +294,8 @@ element asnes : trinity
 	mutable obj_off        	: i32              # first OAM entry shown
 	mutable binds          	: snes_binds
 	mutable bind_ix        	: i32              # button the wizard is asking for
-	mutable bnames         	: array string     # wizard order
-	mutable bbits          	: array i32        # pad1 bit per name in bnames
+	mutable bnames         	: vec string       # wizard order
+	mutable bbits          	: vec i32          # pad1 bit per name in bnames
 	mutable screen_tex     	: Texture
 	mutable m7_src         	: Texture          # 1024x1024 RGBA: unpacked Mode-7 plane (palette applied)
 	mutable m7_mat         	: Texture          # 256x1 rgba32f: per-scanline { originX, originY, a, c }
@@ -314,8 +314,8 @@ element asnes : trinity
 	mutable se_shader      	: SuperEagle
 	mutable se_model       	: Model
 	mutable se_render      	: Render
-	public  vec            	: bool [ true ]    # VectorScale: continuous edges, any zoom
-	public  se_2d          	: bool             # Super Eagle 2x basis + sharp lift (pass --vec false)
+	public  vscale         	: bool [ true ]    # VectorScale: continuous edges, any zoom
+	public  se_2d          	: bool             # Super Eagle 2x basis + sharp lift (pass --vscale false)
 	public  blocky         	: bool             # sharp-bilinear hard squares
 	public  vec_m7         	: bool             # VectorScale the Mode-7 plane too (on top of its aniso sampling)
 	mutable save_req       	: bool             # 'P' key -> save savestate next frame
@@ -3519,8 +3519,7 @@ element asnes : trinity
 		env_fstart  = (getenv['ASNES_FSTART']) ? true : false
 		env_joylog  = (getenv['ASNES_JOYLOG']) ? true : false
 		env_wdump   = (getenv['ASNES_WDUMP']) ? atoi[ getenv['ASNES_WDUMP'] ] : -1
-		f : @FILE [ fopen[ rom, 'rb' ] ]
-		expect f, 'could not open ROM file'
+		expect f : @FILE [ fopen[ rom, 'rb' ] ], 'could not open ROM file: {rom}'
 		fseek[ f, 0, SEEK_END ]
 		size : sz [ ftell[ f ] ]
 		rewind[ f ]
@@ -3713,8 +3712,8 @@ element asnes : trinity
 		if [ rom && rom.ext[] == 'spc' ] spcfile = rom
 		if [ volume == 0.0 ] volume = 0.22         # default playback volume (keep prop-pair override)
 		smooth = true                              # [ true ] initializer doesn't apply on element publics
-		bnames = array string [ 'Up', 'Down', 'Left', 'Right', 'A', 'B', 'X', 'Y', 'L', 'R', 'Select', 'Start' ]
-		bbits  = array i32    [ 11, 10, 9, 8, 7, 15, 6, 14, 5, 4, 13, 12 ]
+		bnames = vec string [] [ 'Up', 'Down', 'Left', 'Right', 'A', 'B', 'X', 'Y', 'L', 'R', 'Select', 'Start' ]
+		bbits  = vec i32    [] [ 11, 10, 9, 8, 7, 15, 6, 14, 5, 4, 13, 12 ]
 		load_binds[]
 		if [ bind ]
 			binds   = snes_binds [ ]
@@ -3775,15 +3774,15 @@ element asnes : trinity
 		return -1
 
 	# what this instance can show. the shell asks; it never hardcodes
-	public func instruments [] -> array string
-		return array string [ 'chr', 'pal', 'obj', 'ram', 'spc', 'regs', 'hdr' ]
+	public func instruments [] -> vec string
+		return vec string [] [ 'chr', 'pal', 'obj', 'ram', 'spc', 'regs', 'hdr' ]
 
 	# the rows behind a rom view — the instrument IS this enumeration
-	public func read_instrument [ nm: string ] -> array string
+	public func read_instrument [ nm: string ] -> vec string
 		if [ !nm || nm.count == 0 ] return null
 		if [ !(nm == 'obj' || nm == 'ram' || nm == 'spc'
 			|| nm == 'hdr' || nm == 'regs') ] return null
-		if [ !vcache ] vcache = map array [string] []
+		if [ !vcache ] vcache = map Au [string] []
 		if [ !vheads ] vheads = map string [string] []
 		rows : vcache[ nm ]
 		if [ !rows ]
@@ -4100,7 +4099,7 @@ element asnes : trinity
 	# the name is a PARAMETER: painting an instrument must never write
 	# the view member, whose old string the caller is still holding
 	func view_build [ vn: string ]
-		vrows = array string []
+		vrows = vec string []
 		vhead = ''
 		if      [ vn == 'obj'  ] build_obj []
 		el [ vn == 'ram'  ] build_ram []
@@ -4122,9 +4121,9 @@ element asnes : trinity
 			return true
 		if [ !(vn == 'obj' || vn == 'ram' || vn == 'spc'
 			|| vn == 'hdr' || vn == 'regs') ] return false
-		if [ !vcache ] vcache = map array [string] []
+		if [ !vcache ] vcache = map Au [string] []
 		if [ !vheads ] vheads = map string [string] []
-		rows9 : array vcache[ vn ]
+		rows9 : vec string vcache[ vn ]
 		if [ !rows9 ]
 			view_build[ vn ]
 			vcache[ vn ] = vrows
@@ -4168,48 +4167,48 @@ element asnes : trinity
 		m7_mat = Texture [ vk: cv.vk, w: cv.w, width: 256, height: 3, linear: false, pixel_format: Pixel.rgbaf32 ]
 		m7_shader = Mode7 [ vk: cv.vk, name: 'mode7' ]
 		m7_model  = Model [ w: cv.w, s: m7_shader, samplers: map Texture[string] [ 'src': m7_src, 'mat': m7_mat ] ]
-		m7_render = Render [ vk: cv.vk, w: cv.w, wscale: 0.5, models: array Model [ m7_model ] ]
+		m7_render = Render [ vk: cv.vk, w: cv.w, wscale: 0.5, models: [m7_model ] ]
 
 	func scaler_setup [ cv: Canvas ]
 		lw2 : i32 [ (i32[ bounds.w ] * 288) / 256 ]
 		lh2 : i32 [ (i32[ bounds.h ] * 256) / 224 ]
-		if [ se_2d && ! vec ]
+		if [ se_2d && ! vscale ]
 			se_shader  = SuperEagle [ vk: cv.vk, name: 'supereagle' ]
 			se_model   = Model [ w: cv.w, s: se_shader, samplers: map Texture[string] [ 'color': screen_tex ] ]
-			se_render  = Render [ vk: cv.vk, w: cv.w, wscale: 0.5, models: array Model [ se_model ] ]
+			se_render  = Render [ vk: cv.vk, w: cv.w, wscale: 0.5, models: [se_model ] ]
 			se1_shader = SuperEagle [ vk: cv.vk, name: 'supereagle' ]
 			se1_model  = Model [ w: cv.w, s: se1_shader, samplers: map Texture[string] [ 'color': lay1_tex ] ]
-			se1_render = Render [ vk: cv.vk, w: cv.w, width: 576, height: 512, models: array Model [ se1_model ] ]
+			se1_render = Render [ vk: cv.vk, w: cv.w, width: 576, height: 512, models: [se1_model ] ]
 			se2_shader = SuperEagle [ vk: cv.vk, name: 'supereagle' ]
 			se2_model  = Model [ w: cv.w, s: se2_shader, samplers: map Texture[string] [ 'color': lay2_tex ] ]
-			se2_render = Render [ vk: cv.vk, w: cv.w, width: 576, height: 512, models: array Model [ se2_model ] ]
+			se2_render = Render [ vk: cv.vk, w: cv.w, width: 576, height: 512, models: [se2_model ] ]
 			se3_shader = SuperEagle [ vk: cv.vk, name: 'supereagle' ]
 			se3_model  = Model [ w: cv.w, s: se3_shader, samplers: map Texture[string] [ 'color': lay3_tex ] ]
-			se3_render = Render [ vk: cv.vk, w: cv.w, width: 576, height: 512, models: array Model [ se3_model ] ]
+			se3_render = Render [ vk: cv.vk, w: cv.w, width: 576, height: 512, models: [se3_model ] ]
 			sew_shader = SuperEagle [ vk: cv.vk, name: 'supereagle' ]
 			sew_model  = Model [ w: cv.w, s: sew_shader, samplers: map Texture[string] [ 'color': layw_tex ] ]
-			sew_render = Render [ vk: cv.vk, w: cv.w, wscale: 0.5, models: array Model [ sew_model ] ]
+			sew_render = Render [ vk: cv.vk, w: cv.w, wscale: 0.5, models: [sew_model ] ]
 			ses_shader = SuperEagle [ vk: cv.vk, name: 'supereagle' ]
 			ses_model  = Model [ w: cv.w, s: ses_shader, samplers: map Texture[string] [ 'color': lays_tex ] ]
-			ses_render = Render [ vk: cv.vk, w: cv.w, wscale: 0.5, models: array Model [ ses_model ] ]
+			ses_render = Render [ vk: cv.vk, w: cv.w, wscale: 0.5, models: [ses_model ] ]
 		psc_shader = PixelSharp [ vk: cv.vk, name: 'pixelsharp' ]
 		occ_model  = Model [ w: cv.w, s: psc_shader, samplers: map Texture[string] [ 'color': (se_2d) ? se_render.color : screen_tex ] ]
-		occ_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: array Model [ occ_model ] ]
+		occ_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: [occ_model ] ]
 		ps1_shader = PixelSharp [ vk: cv.vk, name: 'pixelsharp' ]
 		oc1_model  = Model [ w: cv.w, s: ps1_shader, samplers: map Texture[string] [ 'color': (se_2d) ? se1_render.color : lay1_tex ] ]
-		oc1_render = Render [ vk: cv.vk, w: cv.w, width: lw2, height: lh2, models: array Model [ oc1_model ] ]
+		oc1_render = Render [ vk: cv.vk, w: cv.w, width: lw2, height: lh2, models: [oc1_model ] ]
 		ps2_shader = PixelSharp [ vk: cv.vk, name: 'pixelsharp' ]
 		oc2_model  = Model [ w: cv.w, s: ps2_shader, samplers: map Texture[string] [ 'color': (se_2d) ? se2_render.color : lay2_tex ] ]
-		oc2_render = Render [ vk: cv.vk, w: cv.w, width: lw2, height: lh2, models: array Model [ oc2_model ] ]
+		oc2_render = Render [ vk: cv.vk, w: cv.w, width: lw2, height: lh2, models: [oc2_model ] ]
 		ps3_shader = PixelSharp [ vk: cv.vk, name: 'pixelsharp' ]
 		oc3_model  = Model [ w: cv.w, s: ps3_shader, samplers: map Texture[string] [ 'color': (se_2d) ? se3_render.color : lay3_tex ] ]
-		oc3_render = Render [ vk: cv.vk, w: cv.w, width: lw2, height: lh2, models: array Model [ oc3_model ] ]
+		oc3_render = Render [ vk: cv.vk, w: cv.w, width: lw2, height: lh2, models: [oc3_model ] ]
 		psw_shader = PixelSharp [ vk: cv.vk, name: 'pixelsharp' ]
 		ocw_model  = Model [ w: cv.w, s: psw_shader, samplers: map Texture[string] [ 'color': (se_2d) ? sew_render.color : layw_tex ] ]
-		ocw_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: array Model [ ocw_model ] ]
+		ocw_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: [ocw_model ] ]
 		pss_shader = PixelSharp [ vk: cv.vk, name: 'pixelsharp' ]
 		ocs_model  = Model [ w: cv.w, s: pss_shader, samplers: map Texture[string] [ 'color': (se_2d) ? ses_render.color : lays_tex ] ]
-		ocs_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: array Model [ ocs_model ] ]
+		ocs_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: [ocs_model ] ]
 
 	func lay_off [ v: f32, t: i64, p: i64, now: i64, sc: f32 ] -> f32
 		if [ v == 0.0 || p <= 0 ] return 0.0
@@ -4284,7 +4283,7 @@ element asnes : trinity
 		screen_tex.upload[ pub_framebuf, 256 * 224 * 4 ]
 		lay_on : bool [ smooth && pub_layered ]
 		b3 : bool [ pub_b3hi ]
-		scaled : bool [ vec || se_2d || blocky ]
+		scaled : bool [ vscale || se_2d || blocky ]
 		if [ lay_on || scaled ]
 			if [ !lay1_tex ]
 				layb_tex = Texture [ vk: cv.vk, w: cv.w, width: 288, height: 256, linear: true ]
@@ -4351,9 +4350,9 @@ element asnes : trinity
 			m7_render.draw[]
 			m7_render.flush_submit[]
 		pub_lock.unlock[]
-		if [ scaled && !vec ]                          # vec filters at paint time
+		if [ scaled && !vscale ]                       # vscale filters at paint time
 			if [ !occ_render ] scaler_setup[ cv ]
-			if [ se_2d && ! vec ]
+			if [ se_2d && ! vscale ]
 				if [ lay_on && !m7_active ]
 					se1_render.update[]
 					se1_render.draw[]
@@ -4424,9 +4423,9 @@ element asnes : trinity
 			rw : rect [ x: vp.x + owx, y: vp.y + owy, w: vp.w, h: vp.h ]
 			# this plane carries real tile art, not a flat color: filter it
 			rb : rect [ x: vp.x - 16.0 * g_scx, y: vp.y - 16.0 * g_scy, w: 288.0 * g_scx, h: 256.0 * g_scy ]
-			if [ vec ] cv.draw_image_vec[ layb_tex, rb ]
+			if [ vscale ] cv.draw_image_vec[ layb_tex, rb ]
 			el        cv.draw_image[ layb_tex, rb ]
-			if [ vec ]
+			if [ vscale ]
 				# each plane reconstructed as it paints: its texture, its shape
 				if [ !b3 ] cv.draw_image_vec[ lay3_tex, r3 ]
 				cv.draw_image_vec[ lay2_tex, r2 ]
@@ -4456,7 +4455,7 @@ element asnes : trinity
 				cv.draw_image[ layw_tex, rw ]
 				if [ b3 ] cv.draw_image[ lay3_tex, r3 ]
 				cv.draw_image[ lays_tex, out ]
-		el [ vec ]
+		el [ vscale ]
 			cv.draw_image_vec[ screen_tex, out ]
 		el [ scaled ]
 			occ_render.sync_fence[]

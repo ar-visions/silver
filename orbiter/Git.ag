@@ -2,8 +2,8 @@ extend orbiter
 import <stdio.h>
 
 # keep_ws keeps leading whitespace and blank lines (diff bodies)
-func git_capture [ root: path, args: string, keep_ws: bool ] -> array string
-    out : array string [ alloc: 128 ]
+func git_capture [ root: path, args: string, keep_ws: bool ] -> vec string
+    out : vec string []
     cmd : string 'git -C {root} {args} 2>/dev/null'
     fh  : handle popen[ cmd.chars, "r" ]
     if [ !fh ] return out
@@ -125,7 +125,7 @@ NodeList GitList
     public  root  : path
     # commits are scoped to this file's changes
     public  file  : path
-    mutable rows  : array GitRow
+    mutable rows  : vec GitRow
     mutable hover : i32 [ -1 ]
 
     func on_move [ ev: Event ]
@@ -149,16 +149,16 @@ NodeList GitList
         return '{r.hash} {r.text}'
 
     func refresh []
-        rows = array GitRow [ alloc: 256 ]
-        bl : array string git_capture[ root, 'branch', false ]
+        rows = vec GitRow []
+        bl : git_capture[ root, 'branch', false ]
         for [ b: string ] in bl
             cur : bool [ b.chars[0] == '*' ]
             nm  : string [ (cur) ? b.mid[ 2, b.count - 2 ].trim[] : b ]
             rows.push[ GitRow [ is_branch: true, current: cur, text: nm ] ]
         fs9 : string [ (file) ? '-- {file.absolute[]}' : '' ]
-        cl : array string git_capture[ root, 'log --format=%h%x09%s%x09%cr {fs9}', false ]
+        cl : git_capture[ root, 'log --format=%h%x09%s%x09%cr {fs9}', false ]
         for [ c: string ] in cl
-            f : array string [ c.split[ '\t' ] ]
+            f : c.split[ '\t' ]
             if [ f.count < 2 ] continue
             rows.push[ GitRow [
                 hash: f[0], text: f[1], when: (f.count > 2) ? f[2] : '' ] ]
@@ -254,7 +254,7 @@ Layer CommitLayer
         x0  : f32 [ bounds.x + 76.0 ]
         cw9 : f32 [ bounds.w - 76.0 ]
         cv.set_crop[ wtx + x0, wty + bounds.y, wtx + bounds.x + bounds.w, wty + bounds.y + bounds.h ]
-        files : array string [ (orb.git_snap) ? orb.git_snap.files : null ]
+        files : vec string (orb.git_snap) ? orb.git_snap.files : null
         nfl : i32 [ (files) ? files.count : 0 ]
         cap : i32 [ orb.commit_cap[ cw9 ] ]
         trs : i32 [ (nfl > 0) ? orb.commit_tab_rows[ cw9, cb.reveal_all ] : 0 ]
@@ -550,7 +550,7 @@ element CommitView
     mutable chip_hov : i32 [ -1 ]
     # THIS view's commit form: no tab ever sees another's state
     mutable commit_open : bool
-    mutable commit_text : array string
+    mutable commit_text : vec string
     mutable reveal_all  : bool
     # caret line/col inside the message box
     mutable cl      : i32 [ 0 ]
@@ -618,7 +618,7 @@ element CommitView
     func commit_toggle []
         commit_open = !commit_open
         if [ commit_open ]
-            commit_text = array string [ '', '', '' ]
+            commit_text = vec string [] [ '', '', '' ]
             cl = 0
             cc = 0
         pristine = false

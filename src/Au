@@ -1088,6 +1088,20 @@ forward(any)
     M(AA,BB, s, method, public, Au,     alloc_new, Au_t, num, shape, Au_t, Au, symbol, i32, i32) \
     M(AA,BB, s, method, public, Au,     alloc_new_np, Au_t, num, shape, Au_t, Au, symbol, i32, i32) \
     M(AA,BB, s, method, public, Au,     alloc_object, Au_t, num, shape, Au_t, Au, symbol, i32, i32, symbol, Au_t) \
+    M(AA,BB, s, method, public, Au,     au_vec_new,  Au_t, symbol, i32, i32) \
+    M(AA,BB, s, method, public, Au,     au_vec_from, Au, Au_t) \
+    M(AA,BB, s, method, public, ARef,   au_vec_slot, Au) \
+    M(AA,BB, s, method, public, Au_t,   au_vec_type, Au_t) \
+    M(AA,BB, s, method, public, none,   au_vec_clear, Au) \
+    M(AA,BB, s, method, public, none,   au_vec_remove, Au, i64) \
+    M(AA,BB, s, method, public, Au,     au_vec_reverse, Au) \
+    M(AA,BB, s, method, public, bool,   au_is_vec, Au) \
+    M(AA,BB, s, method, public, none,   au_vec_shift, Au) \
+    M(AA,BB, s, method, public, ARef,   au_vec_unshift, Au) \
+    M(AA,BB, s, method, public, ARef,   au_vec_insert, Au, i64) \
+    M(AA,BB, s, method, public, none,   au_vec_concat, Au, Au) \
+    M(AA,BB, s, method, public, i64,    au_vec_index_of, Au, ARef) \
+    M(AA,BB, s, method, public, bool,   au_vec_contains, Au, ARef) \
     M(AA,BB, s, method, public, Au,     alloc_vector, Au_t, num, shape, Au_t, Au, symbol, i32, i32) \
     M(AA,BB, s, method, public, Au,     alloc_dbg, Au_t, num, symbol, i32, i32) \
     M(AA,BB, s, method, public, string, estring, Au_t, i32) \
@@ -2076,7 +2090,7 @@ declare_class(mutex)
 #define async_module_ Au
 #define async_schema(AA,BB,...) \
     M(AA,BB, i, prop,    public, hook,  work_fn) \
-    M(AA,BB, i, prop,    public, array, work) \
+    M(AA,BB, i, prop,    public, Au,    work) \
     M(AA,BB, i, prop,    public, Au,    target) \
     M(AA,BB, i, prop,    intern, mutex, global) \
     M(AA,BB, i, prop,    intern, struct thread_t*, threads, as, ARef) \
@@ -2173,7 +2187,7 @@ declare_class(fmt_token)
 #define fmt_file_schema(AA,BB,...) \
     M(AA,BB, i, prop, public, string, source) \
     M(AA,BB, i, prop, public, i64,    mtime) \
-    M(AA,BB, i, prop, public, array,  lines)
+    M(AA,BB, i, prop, public, Au,     lines)
 declare_class(fmt_file)
 
 #define path_module_ Au
@@ -2208,7 +2222,7 @@ declare_class(fmt_file)
     M(AA,BB, i, method,  public, bool,   move, path) \
     M(AA,BB, i, method,  public, path,   latest_modified, ARef) \
     M(AA,BB, i, method,  public, i64,    modified_time) \
-    M(AA,BB, i, method,  public, array,  read_format) \
+    M(AA,BB, i, method,  public, Au,     read_format) \
     M(AA,BB, i, method,  public, i64,    wait_for_change, i64, i64) \
     M(AA,BB, s, method,  public, path,   path_self) \
     M(AA,BB, s, method,  public, path,   path_share_path) \

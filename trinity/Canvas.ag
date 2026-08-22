@@ -912,14 +912,14 @@ shader CanvasText
 
 
 class PathPoints
-    public pts    : new PathPt [ 256 ]
+    public pts    : vec PathPt [ 256 ]
     public count  : i32
     public palloc : i32 [ 256 ]
 
     func append [ pt: PathPt ]
         if [ count >= palloc ]
             na    : i32 [ palloc << 1 ]
-            grown : new PathPt [ na ]
+            grown : vec PathPt [ na ]
             memcpy[ grown, pts, sizeof[ PathPt ] * count ]
             pts = grown
             palloc = na
@@ -928,7 +928,7 @@ class PathPoints
 
 
 class CanvasPath
-    public points    : new PathPt [ 2048 ]
+    public points    : vec PathPt [ 2048 ]
     public pcount    : i32
     public palloc    : i32 [ 2048 ]
     public start_x   : f32
@@ -937,9 +937,10 @@ class CanvasPath
     public cursor_y  : f32
     public is_closed  : bool
     public corner_radii : vec4f
-    intern cached_points     : new PathPt
+    intern cached_points     : vec PathPt
     intern cached_pcount     : i32
-    intern cached_edges      : new SDFEdge
+    # raw buffer from sdf_extract_edges — NOT a vec: C malloc handoff
+    intern cached_edges      : @SDFEdge
     intern cached_edge_count : i32
     intern cached_bx0        : f32
     intern cached_by0        : f32
@@ -953,7 +954,7 @@ class CanvasPath
     func realloc_check [ ]
         if [ pcount < palloc ] return
         na    : i32 [ palloc << 1 ]
-        grown : new PathPt [ na ]
+        grown : vec PathPt [ na ]
         memcpy[ grown, points, sizeof[ PathPt ] * pcount ]
         points = grown
         palloc = na
@@ -1097,7 +1098,7 @@ struct GradientStop
 # gradient definition
 class Gradient
     public kind     : GradientType
-    public stops    : array GradientStop
+    public stops    : vec GradientStop
     # linear: start/end points
     public x0       : f32
     public y0       : f32
@@ -1106,7 +1107,7 @@ class Gradient
     public mirror   : bool
 
     func init []
-        stops = array GradientStop []
+        stops = vec GradientStop []
         kind  = GradientType.none
 
     func add_stop [ pos: f32, color: u32 ]
@@ -1263,7 +1264,7 @@ func sk_color [ clr: rgba ] -> vec4f
 # ---- Canvas class (GPU draw-list builder) ----
 Render Canvas
     public path        : CanvasPath
-    mutable states     : array CanvasState
+    mutable states     : vec CanvasState
     public state_depth : i32
     mutable font       : CanvasFont
     # true while an explicitly set font overrides the sized default
@@ -1279,7 +1280,7 @@ Render Canvas
     intern mask_override  : Texture
     intern vec_override   : bool
     intern min_override   : bool
-    intern image_dirty   : new bool [ 64 ]
+    intern image_dirty   : vec bool [ 64 ]
     public  content_w     : i32
     public  content_h     : i32
     mutable image_uv      : vec4f
@@ -1287,7 +1288,7 @@ Render Canvas
     public  quantize      : bool
     public format	   : Pixel[Pixel.rgba8]
     mutable cur_xform  : affine
-    mutable xform_stack : array affine
+    mutable xform_stack : vec affine
     public  gpu_sdf          : bool
     public  load_existing    : bool [ true ]
     intern  sdf_compute      : CanvasSDFCompute
@@ -1299,13 +1300,13 @@ Render Canvas
     intern  text_model       : Model        # holds text_pipeline; lives in text_render.models
     intern  text_render      : Render       # own Render targeting canvas color
     intern  text_max_verts   : i32 [ 4096 ]
-    intern  text_vbo_ring    : array Gpu
+    intern  text_vbo_ring    : vec Gpu
     intern  text_vbo_idx     : i32 [ 0 ]
     intern  text_ring_n      : i32 [ 8 ]
     intern  blur_count       : i32 [ 8 ]
-    intern  blur_stages      : array Render
-    intern  blur_v_arr       : array Render
-    intern  blur_h_arr       : array Render
+    intern  blur_stages      : vec Render
+    intern  blur_v_arr       : vec Render
+    intern  blur_h_arr       : vec Render
 
     func release_render_gpu [ r: Render ]
         if [ !r ] return
@@ -1330,7 +1331,7 @@ Render Canvas
     func init [ ]
         clear_color = vec4f [ 0.0, 0.0, 0.0, 1.0 ]
         cur_xform   = affine [ ma: 1.0, mb: 0.0, mc: 0.0, md: 1.0, tx: 0.0, ty: 0.0 ]
-        xform_stack = array affine [ ]
+        xform_stack = vec affine []
         content_w   = width
         content_h   = height
         cs : f32 [ (w.scale > 0) ? w.scale : 1.0 ]
@@ -1367,7 +1368,7 @@ Render Canvas
             m.finish[ a, 0 ]
 
         text_shader = CanvasText [ vk: vk ]
-        text_members : new vertex_member_t [ 2 ]
+        text_members : vec vertex_member_t [ 2 ]
         text_members[0].src    = typeid[ vec2f ]
         text_members[0].size   = 8
         text_members[0].offset = 0
@@ -1377,7 +1378,7 @@ Render Canvas
         text_vsize  : i32 [ 16 ]
         text_vcount : i32 [ text_max_verts ]
         text_mcount : i32 [ 2 ]
-        text_vbo_ring = array Gpu [ alloc: text_ring_n ]
+        text_vbo_ring = vec Gpu []
 
         for [ ri: i32 0, ri < text_ring_n, ri += 1 ]
             g : Gpu [ vk: vk, name: 'text',
@@ -1398,14 +1399,14 @@ Render Canvas
         text_model = Model [ vk: vk, w: w, s: text_shader,
             samplers: map Au[string] [ 'atlas': sdf_tex ] ]
 
-        text_model.pipelines = array Pipeline [ alloc: 1 ]
+        text_model.pipelines = vec Pipeline []
         text_model.pipelines.push[ text_pipeline ]
         text_model.r = text_render
-        text_render.models = array Model [ text_model ]
+        text_render.models = vec Model [] [ text_model ]
         text_vbo.vertex_count = 0
 
         path   = CanvasPath []
-        states = array CanvasState []
+        states = vec CanvasState []
         state_depth  = 0
         save[]
         defaults : states[state_depth - 1]
@@ -2382,9 +2383,9 @@ Render Canvas
 
     func init_blur []
         if [ blur_stages ] return
-        blur_stages = array Render [ alloc: blur_count ]
-        blur_v_arr  = array Render [ alloc: blur_count ]
-        blur_h_arr  = array Render [ alloc: blur_count ]
+        blur_stages = vec Render []
+        blur_v_arr  = vec Render []
+        blur_h_arr  = vec Render []
         prev_tx    : Texture [ a.color ]
         bscale     : f32 [ 1.0 ]
         for [ i: i32 0, i < blur_count, i += 1 ]
@@ -2394,12 +2395,12 @@ Render Canvas
             if [ sw < 1 ] sw = 1
             if [ sh < 1 ] sh = 1
             m_r  : Model  [ w: w, samplers: map Texture[string] [ 'color': prev_tx ] ]
-            r_r  : Render [ vk: vk, w: w, width: sw, height: sh, models: array Model [ m_r ] ]
+            r_r  : Render [ vk: vk, w: w, width: sw, height: sh, models: [m_r ] ]
             blur_stages.push[ r_r ]
 
             bv_s : CanvasBlurV [ vk: vk, name: 'canvas-blur-v' ]
             m_v  : Model  [ w: w, s: bv_s, samplers: map Texture[string] [ 'color': r_r.color ] ]
-            r_v  : Render [ vk: vk, w: w, width: sw, height: sh, models: array Model [ m_v ] ]
+            r_v  : Render [ vk: vk, w: w, width: sw, height: sh, models: [m_v ] ]
             blur_v_arr.push[ r_v ]
 
             prev_tx = r_r.color
@@ -2410,7 +2411,7 @@ Render Canvas
             rv_hi  : blur_v_arr[hi_idx]
             bh_s   : CanvasBlurH [ vk: vk, name: 'canvas-blur-h' ]
             m_h    : Model       [ w: w, s: bh_s, samplers: map Texture[string] [ 'low': rv_lo.color, 'high': rv_hi.color ] ]
-            r_h    : Render      [ vk: vk, w: w, color: a.color, width: width, height: height, models: array Model [ m_h ] ]
+            r_h    : Render      [ vk: vk, w: w, color: a.color, width: width, height: height, models: [m_h ] ]
             blur_h_arr.push[ r_h ]
 
     func blur [ radius: f32 ]
@@ -2510,7 +2511,7 @@ Render Canvas
             bw = bx1 - bx0
             bh = by1 - by0
             edges = sdf_extract_edges [ flat, @n ]
-            path.cached_points = new PathPt [ pcount ]
+            path.cached_points = vec PathPt [ pcount ]
             memcpy[ path.cached_points, path.points, sizeof[ PathPt ] * pcount ]
             path.cached_pcount = pcount
             path.cached_edges      = edges
@@ -2708,7 +2709,7 @@ class CanvasFont
     public descent    : f32
     public line_height : f32
     public cap_height : f32
-    public cache      : array GlyphEntry
+    public cache      : vec GlyphEntry
     public cache_size : i32
     public atlas      : GlyphAtlas
 
@@ -2734,7 +2735,7 @@ class CanvasFont
 
         # init glyph cache (128 ascii slots to start)
         cache_size = 128
-        cache = array GlyphEntry []
+        cache = vec GlyphEntry []
 
     func dealloc []
         # free cached bitmaps
@@ -2825,7 +2826,7 @@ class GlyphAtlas
     context w           : Display
     public  size        : i32       # square atlas dimension
     intern  texture     : Texture
-    intern  slots       : array GlyphAtlasSlot
+    intern  slots       : vec GlyphAtlasSlot
     intern  shelf_x     : i32
     intern  shelf_y     : i32
     intern  shelf_h     : i32
@@ -2839,7 +2840,7 @@ class GlyphAtlas
             size = 1024
         texture = Texture [ vk: vk, w: w, width: size, height: size,
             pixel_format: Pixel.u8, surface: Surface.color, tag: 'atlas' ]
-        slots   = array GlyphAtlasSlot []
+        slots   = vec GlyphAtlasSlot []
         shelf_x = 0
         shelf_y = 0
         shelf_h = 0
@@ -3169,7 +3170,7 @@ func sdf_seg_dist [ ex0: f32, ey0: f32, ex1: f32, ey1: f32, px: f32, py: f32 ] -
     return sqrt[ ddx * ddx + ddy * ddy ]
 
 
-func sdf_winding [ edges: array SDFEdge, px: f32, py: f32 ] -> i32
+func sdf_winding [ edges: vec SDFEdge, px: f32, py: f32 ] -> i32
     n  : edges.count
     wn : i32 [ 0 ]
     for [ i: i32 0, i < n, i += 1 ]

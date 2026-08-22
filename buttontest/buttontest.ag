@@ -53,19 +53,19 @@ element buttontest : trinity
     public volume     : f32 [ 0.7 ]
 
     # 'clicks' is entries only; 'bars' also carries a view
-    public func instruments [] -> array string
-        return array string [ 'clicks', 'bars' ]
+    public func instruments [] -> vec string
+        return vec string [] [ 'clicks', 'bars' ]
 
-    public func read_instrument [ nm: string ] -> array string
+    public func read_instrument [ nm: string ] -> vec string
         if [ !nm ] return null
         if [ nm.compare[ 'clicks' ] == 0 ]
-            ls : array string []
+            ls : vec string []
             ls.push[ 'clicks     {clicks}' ]
             ls.push[ 'volume     {volume}' ]
             ls.push[ 'paused     {(paused) ? 1 : 0}' ]
             return ls
         if [ nm.compare[ 'bars' ] == 0 ]
-            bs : array string []
+            bs : vec string []
             bs.push[ 'bars       {clicks % 8}' ]
             return bs
         return null

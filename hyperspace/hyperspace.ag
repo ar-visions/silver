@@ -54,16 +54,16 @@ class CamRig
         if [ cams ] return
         cams = map Cam[string] [ ]
         cams.hold[]
-        ents : array string [ cameras.split[ ';' ] ]
+        ents : cameras.split[ ';' ]
         for [ i9: i32 0, i9 < i32[ ents.count ], i9 += 1 ]
             e9 : ents[ i9 ]
             # optional name= prefix; unnamed entries fall back to their index
             nm9 : '{i9}'
-            nv9 : array string [ e9.split[ '=' ] ]
+            nv9 : e9.split[ '=' ]
             if [ nv9.count > 1 ]
                 nm9 = nv9[ 0 ]
                 e9 = nv9[ 1 ]
-            f9 : array string [ e9.split[ ',' ] ]
+            f9 : e9.split[ ',' ]
             nf9 : i32 [ i32[ f9.count ] ]
             c9 : Cam [ name: nm9, dev: f9[ 0 ] ]
             if [ nf9 > 1 ] c9.x    = f32[ atof[ f9[ 1 ].chars ] ]
@@ -121,7 +121,7 @@ class Observer
     public ryv   : new f32 [ 8 ]
     public scv   : new f32 [ 8 ]
     public obsv  : new f32 [ 8 ]           # 0 fully visible, 1 fully obscured
-    intern ct : array tensor               # 3 crops per view, view-major
+    intern ct : vec tensor                 # 3 crops per view, view-major
     intern zt : tensor                     # zero crop for a blind view
     intern ax2 : tensor
     intern m_find   : ts_model
@@ -154,7 +154,7 @@ class Observer
         ax2.hold[]
         zt = tensor [ tensor_shape: 32x32 ]
         zt.hold[]
-        ct = array tensor [ ]
+        ct = vec tensor []
         ct.hold[]
         for [ q8: i32 0, q8 < 6, q8 += 1 ]
             ct += zt
@@ -863,7 +863,7 @@ element ModelView
     mutable vrender    : Render
     mutable gmodel     : GltfModel
     mutable joint_buf  : Buffer
-    mutable ibm        : array mat4f          # inverse bind matrices, one per joint
+    mutable ibm        : vec mat4f            # inverse bind matrices, one per joint
     mutable skin_idx   : i32 [ -1 ]
     mutable hinge_node : i32 [ -1 ]           # the node we rotate (the joint)
     mutable hinge_ang  : f32                  # joint angle, radians
@@ -950,7 +950,7 @@ element ModelView
     mutable baked_nos  : f32 [ -1.0 ]
     mutable baked_mid  : f32 [ -1.0 ]
     mutable baked_ny   : f32 [ -1.0 ]
-    mutable eye_tex : array Texture           # held eye maps, dropped on reload
+    mutable eye_tex : vec Texture             # held eye maps, dropped on reload
     mutable morph_w    : map f32 [ string ]   # morph target name -> blend weight
     mutable subdiv_levels : i32 [ 2 ]         # trinity GPU Catmull-Clark levels (0 = off)
     mutable paint_radius : f32 [ 0.0 ]        # brush radius, model units
@@ -2794,7 +2794,7 @@ element ModelView
         ibb : gmodel.buffers[ i32[ ibv.buffer ] ]
         base : @i8 [ ibb.data ]
         src  : cast @f32 [ @base[ ibv.byteOffset + iba.byteOffset ] ]
-        ibm = array mat4f [ ]
+        ibm = vec mat4f []
         for [ j: i32 0, j < nj, j += 1 ]
             mm : mat4f [ mat4f.identity[] ]
             for [ k: i32 0, k < 16, k += 1 ]
@@ -3459,8 +3459,8 @@ element ModelView
 
     func set_albedo [ matname: string, uri: string ]
         if [ !gmodel || !gmodel.materials ] return
-        if [ !gmodel.images ]   gmodel.images   = array GltfImage [ ]
-        if [ !gmodel.textures ] gmodel.textures = array GltfTexture [ ]
+        if [ !gmodel.images ]   gmodel.images   = vec GltfImage []
+        if [ !gmodel.textures ] gmodel.textures = vec GltfTexture []
         img : GltfImage [ uri: path uri ]
         gmodel.images += img
         iidx : i64 [ gmodel.images.count - 1 ]
@@ -4422,7 +4422,7 @@ element ModelView
             vshader   = SkinnedLit [ vk: cv.vk, name: 'skinned' ]
             rshader   = RigidLit   [ vk: cv.vk, name: 'rigid' ]
             cshader   = CorneaIR   [ vk: cv.vk, name: 'cornea' ]
-            vshader.groups = array string [ 'Body', 'Eye L', 'Eye R' ]
+            vshader.groups = vec string [] [ 'Body', 'Eye L', 'Eye R' ]
             root    : path model_path.parent_dir[].parent_dir[]
             resf    : model_path.change_ext[ "res" ]
             reldir  : model_path.parent_dir[].filename[]
@@ -4454,9 +4454,9 @@ element ModelView
             update_palette[]
             sm : map Au[string] [ ]
             if [ joint_buf ] sm[ 'joints_pal' ] = joint_buf
-            eye_files : array string [ 'iris_fibres.png', 'iris_melanin.png', 'iris_displacement_a.png', 'iris_displacement_b.png', 'iris_displacement_c.png', 'sclera_displacement.png' ]
-            eye_keys  : array string [ 'iris', 'iris_melanin', 'iris_disp_a', 'iris_disp_b', 'iris_disp_c', 'sclera_disp' ]
-            eye_tex = array Texture [ ]
+            eye_files : vec string [] [ 'iris_fibres.png', 'iris_melanin.png', 'iris_displacement_a.png', 'iris_displacement_b.png', 'iris_displacement_c.png', 'sclera_displacement.png' ]
+            eye_keys  : vec string [] [ 'iris', 'iris_melanin', 'iris_disp_a', 'iris_disp_b', 'iris_disp_c', 'sclera_disp' ]
+            eye_tex = vec Texture []
             for [ ei: i32 0, ei < eye_files.count, ei += 1 ]
                 kf : eye_files[ ei ]
                 kk : eye_keys[ ei ]
@@ -4562,7 +4562,7 @@ element ModelView
             gh : i32 [ i32[ bounds.h ] ]
             cca : f32 [ 1.0 ]
             if [ rig ] cca = 0.0
-            vrender   = Render [ vk: cv.vk, w: w, width: gw, height: gh, use_depth: true, clear_color: vec4f [ 0.015, 0.015, 0.015, cca ], models: array Model [ vmodel ] ]
+            vrender   = Render [ vk: cv.vk, w: w, width: gw, height: gh, use_depth: true, clear_color: vec4f [ 0.015, 0.015, 0.015, cca ], models: [ vmodel ] ]
             w.element_targets[ 'hs2_{id}' ] = vrender
             vrender.wscale = 0.0
             # anchors + pins first, so nothing can ever move the corners
@@ -4737,8 +4737,8 @@ element hyperspace : trinity
     mutable nose_k    : new f32 [ 8 ]      # per-camera neutral nose drop
     mutable nose_k_done : bool
     mutable cam_rig   : CamRig             # the only camera parser
-    mutable cam_name  : array string
-    mutable cam_dev   : array string
+    mutable cam_name  : vec string
+    mutable cam_dev   : vec string
     mutable cam_cfg   : @f32                # x y z tilt fov per camera
     mutable cam_n     : i32
     mutable rec_mode  : string [ '' ]
@@ -4766,7 +4766,7 @@ element hyperspace : trinity
     mutable au_u      : f32                    # spiral pitch per leg
     mutable au_zero   : i32                    # frame id of the group's zero pair
     mutable au_b0     : i64                    # burst start: 4s per SPACE
-    mutable ann_files : array string
+    mutable ann_files : vec string
     mutable ann_i     : i32
     mutable ann_cam   : i32
     mutable ann_sub   : i32
@@ -4797,9 +4797,9 @@ element hyperspace : trinity
             cam_rig = CamRig [ cameras: cameras ]
             cam_rig.hold[]
         n9 : i32 [ cam_rig.count[] ]
-        cam_name = array string [ ]
+        cam_name = vec string []
         cam_name.hold[]
-        cam_dev = array string [ ]
+        cam_dev = vec string []
         cam_dev.hold[]
         sz9 : i32 [ n9 * 5 ]
         cam_cfg = new f32 [ sz9 ]
@@ -5126,7 +5126,7 @@ element hyperspace : trinity
 
     func start_annotate []
         rd : rec_dir[]
-        ann_files = array string [ ]
+        ann_files = vec string []
         k : i32 [ 0 ]
         miss7 : i32 [ 0 ]
         while [ miss7 < 500 ]
@@ -5155,7 +5155,7 @@ element hyperspace : trinity
                 fs5[ sj ] = fs5[ sj - 1 ]
                 sj -= 1
             fs5[ sj ] = cur
-        af5 : array string [ ]
+        af5 : vec string []
         for [ i: i32 0, i < n5, i += 1 ]
             fi5 : i64 [ fs5[ i ] ]
             fn5 : string '{fi5}'
@@ -5908,7 +5908,7 @@ element hyperspace : trinity
             test_settle += 1
             if [ test_settle < 5 ] return
             if [ !tb_pv ]
-                tb_pv = array Texture [ ]
+                tb_pv = vec Texture []
                 tb_pv.hold[]
                 for [ p9: i32 0, p9 < 6, p9 += 1 ]
                     tp9 : Texture [ vk: cv.vk, w: ux, width: 32, height: 32, linear: true ]
@@ -6182,7 +6182,7 @@ element hyperspace : trinity
     mutable test_wait  : i32                   # draws until autostart
     mutable test_settle : i32                  # frames since test began
     mutable tb_fb      : @f32               # 2 cams x (face cx, cy, side)
-    mutable tb_pv      : array Texture         # net-input panels: l/r/face per cam
+    mutable tb_pv      : vec Texture           # net-input panels: l/r/face per cam
     mutable ts_off     : ts_model
     mutable tb_f0      : tensor                # top cam face crop
     mutable tb_f1      : tensor                # bottom cam face crop
@@ -6224,10 +6224,10 @@ element hyperspace : trinity
     mutable c_nos : f32 [ 38.5 ]
     mutable c_mid : f32 [ 33.9 ]
     mutable c_ny  : f32 [ 42.3 ]
-    mutable veye : array f32
-    mutable vnos : array f32
-    mutable vmid : array f32
-    mutable vny  : array f32
+    mutable veye : vec f32
+    mutable vnos : vec f32
+    mutable vmid : vec f32
+    mutable vny  : vec f32
     mutable yaw    : f32
     mutable pitch  : f32 [ 0.05 ]
     mutable dist   : f32 [ 3.5 ]
@@ -6322,10 +6322,10 @@ element hyperspace : trinity
         return rnd[] + rnd[] + rnd[] - 1.5
 
     func resample []
-        veye = array f32 [ ]
-        vnos = array f32 [ ]
-        vmid = array f32 [ ]
-        vny  = array f32 [ ]
+        veye = vec f32 []
+        vnos = vec f32 []
+        vmid = vec f32 []
+        vny  = vec f32 []
         for [ i: i32 0, i < 4, i += 1 ]
             s : f32 [ (i == 0) ? 0.0 : ab_sigma ]
             veye += c_eye + gauss[] * 6.0 * s

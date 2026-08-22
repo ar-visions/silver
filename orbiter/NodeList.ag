@@ -143,7 +143,7 @@ NodeList Callstack
             row_spacing: 1.2
             text_color: #cfe
     }
-    public frames : array Frame
+    public frames : vec Au
 
     func row_count [] -> i32
         if [ !frames ] return 0
@@ -172,7 +172,7 @@ NodeList Fields
             label_size: 15
             row_spacing: 1.2
     }
-    public vars : array
+    public vars : vec Au
 
     func row_count [] -> i32
         if [ !vars ] return 0
@@ -202,7 +202,7 @@ Option InstrumentColumn
             fill_color: #14121c
             area: l0 t0 r0 b0
     }
-    mutable rows     : map array [string]
+    mutable rows     : map Au [string]
     mutable ask_ms   : i64
     # while the split is being dragged the width changes every frame, and
     # each change makes the app rebuild every instrument canvas. sit out
@@ -238,7 +238,7 @@ Option InstrumentColumn
         return y9
 
     func body_h [ av: AppView, nm: string ] -> f32
-        rw : array [ (rows) ? rows[ nm ] : null ]
+        rw : vec string (rows) ? rows[ nm ] : null
         if [ !rw || rw.count == 0 ] return 0.0
         return f32[ rw.count ] * 16.0 + 4.0
 
@@ -271,7 +271,7 @@ Option InstrumentColumn
         # the entries of every instrument, re-asked twice a second
         if [ !sizing && (ask_ms == 0 || now - ask_ms > 500) ]
             ask_ms = now
-            if [ !rows ] rows = map array [string] []
+            if [ !rows ] rows = map Au [string] []
             for [ i: i32 0, i < n, i += 1 ]
                 nk : string av.instr_names[i]
                 rows[ nk ] = av.instr_entries[ nk ]
@@ -305,7 +305,7 @@ Option InstrumentColumn
                     cv.draw_image[ ft, rect [ x: 0.0, y: y9, w: f32[ ft.width ], h: th ] ]
                     y9 += th
                 continue
-            rw : array [ (rows) ? rows[ nm ] : null ]
+            rw : vec string (rows) ? rows[ nm ] : null
             if [ !rw ] continue
             cv.font_size[ 12 ]
             cv.fill_color[ rgba [ '#cfd6e4' ] ]
@@ -330,7 +330,7 @@ NodeList Toolbox
             sel_radius: 6.0
             text_color: #cfe
     }
-    public items : array string
+    public items : vec string
 
     func row_count [] -> i32
         if [ !items ] return 0
@@ -362,16 +362,16 @@ NodeList Props
     }
     public  target : element
     intern  cur    : element
-    intern  keys   : array string
-    intern  vals   : array string
+    intern  keys   : vec string
+    intern  vals   : vec string
 
     # members of the inspected element, base class first
     func rebuild []
         cur  = target
-        keys = array string []
-        vals = array string []
+        keys = vec string []
+        vals = vec string []
         if [ !target ] return
-        tys : array Au_t []
+        tys : vec Au_t []
         for [ ty : typeid[ target ], ty != typeid[ Au ], ty = ty.context ]
             tys.push[ ty ]
         for [ ti: i32 tys.count - 1, ti >= 0, ti -= 1 ]

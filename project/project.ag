@@ -8,18 +8,18 @@ class Project
 
     public product  : path
 
-    public build    : array token
+    public build    : vec token
 
-    public deps     : array token
+    public deps     : vec token
 
-    public run      : array token
+    public run      : vec token
 
     public cwd      : path
 
-    public files    : array token
+    public files    : vec token
 
 class ConsoleInstance
     public name : string
     public kind : string
 
-    public run  : array token
+    public run  : vec token

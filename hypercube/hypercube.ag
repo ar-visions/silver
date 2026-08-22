@@ -50,7 +50,7 @@ element Cube3D
             # edges are smoothed by rendering double and letting the linear
             # draw_image resolve it. stepping on the cube edges reads as
             # "screen" and breaks the portal
-            vrender = Render [ vk: cv.vk, w: w, wscale: 2.0, use_depth: true, tag: 'hypercube', clear_color: vec4f [ 0.06, 0.08, 0.12, 1.0 ], models: array Model [ vmodel ] ]
+            vrender = Render [ vk: cv.vk, w: w, wscale: 2.0, use_depth: true, tag: 'hypercube', clear_color: vec4f [ 0.06, 0.08, 0.12, 1.0 ], models: [ vmodel ] ]
             vrender.hold[]
             w.element_targets[ 'hc_{id}' ] = vrender
         # off-axis frustum from the tracked eye: work in flipped z

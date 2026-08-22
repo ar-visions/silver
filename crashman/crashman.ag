@@ -64,7 +64,7 @@ element crashman : trinity
     mutable agent      : CrashAgent
     # the crash verdict has been typed into the agent session
     intern reported    : bool
-    intern spoken      : array string
+    intern spoken      : vec string []
     # agent_ready broadcast once the bus exists
     intern announced   : bool
 
@@ -229,9 +229,6 @@ element crashman : trinity
                     if [ lz.index_of[ 'esc to interrupt' ] >= 0 ] busy = true
                 thinking = busy
             if [ s2 ]
-                if [ !spoken ]
-                    spoken = array string [ ]
-                    spoken.hold[]
                 mk : string 'speak {oc}'
                 nl : i32 [ s2.line_count[] ]
                 lo : i32 [ (nl > 60) ? nl - 60 : 0 ]
@@ -254,7 +251,7 @@ element crashman : trinity
                             dup = true
                             break
                     if [ dup ] continue
-                    spoken.push[ ut ]
+                    spoken += ut
                     if [ tts_init[ '' ] == 0 ]
                         tts_say[ ut.chars, 8, 1.0 ]
         if [ flushing ]
@@ -273,3 +270,17 @@ element crashman : trinity
         el [ !st ]
             reported = false
         return els
+
+# the spoken dedup: same append/scan shape the render loop runs
+expect func t_spoken [] -> bool
+    v     : vec string []
+    lines : vec string [] [ 'first', 'second', 'first' ]
+    for [ ln: string ] in lines
+        dup : bool [ false ]
+        for [ sp: string ] in v
+            if [ sp == ln ]
+                dup = true
+                break
+        if [ dup ] continue
+        v += ln
+    return v.count == 2 && v[ 0 ] == 'first' && v[ 1 ] == 'second'
