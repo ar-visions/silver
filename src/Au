@@ -1088,21 +1088,6 @@ forward(any)
     M(AA,BB, s, method, public, Au,     alloc_new, Au_t, num, shape, Au_t, Au, symbol, i32, i32) \
     M(AA,BB, s, method, public, Au,     alloc_new_np, Au_t, num, shape, Au_t, Au, symbol, i32, i32) \
     M(AA,BB, s, method, public, Au,     alloc_object, Au_t, num, shape, Au_t, Au, symbol, i32, i32, symbol, Au_t) \
-    M(AA,BB, s, method, public, Au,     au_vec_new,  Au_t, symbol, i32, i32) \
-    M(AA,BB, s, method, public, Au,     au_vec_from, Au, Au_t) \
-    M(AA,BB, s, method, public, ARef,   au_vec_slot, Au) \
-    M(AA,BB, s, method, public, Au_t,   au_vec_type, Au_t) \
-    M(AA,BB, s, method, public, none,   au_vec_clear, Au) \
-    M(AA,BB, s, method, public, none,   au_vec_remove, Au, i64) \
-    M(AA,BB, s, method, public, Au,     au_vec_reverse, Au) \
-    M(AA,BB, s, method, public, bool,   au_is_vec, Au) \
-    M(AA,BB, s, method, public, bool,   au_vec_equals, Au, Au) \
-    M(AA,BB, s, method, public, none,   au_vec_shift, Au) \
-    M(AA,BB, s, method, public, ARef,   au_vec_unshift, Au) \
-    M(AA,BB, s, method, public, ARef,   au_vec_insert, Au, i64) \
-    M(AA,BB, s, method, public, none,   au_vec_concat, Au, Au) \
-    M(AA,BB, s, method, public, i64,    au_vec_index_of, Au, ARef) \
-    M(AA,BB, s, method, public, bool,   au_vec_contains, Au, ARef) \
     M(AA,BB, s, method, public, Au,     alloc_vector, Au_t, num, shape, Au_t, Au, symbol, i32, i32) \
     M(AA,BB, s, method, public, Au,     alloc_dbg, Au_t, num, symbol, i32, i32) \
     M(AA,BB, s, method, public, string, estring, Au_t, i32) \
@@ -1874,6 +1859,8 @@ declare_enum(FileType)
 forward(array)
 
 #define vector_module_ Au
+// elements pack by stride in origin (class elements are held refs);
+// Au in/out means the element: silver types it by the vector's meta
 #define vector_schema(AA,BB,...) \
     M(AA,BB, i, prop,   public, Au,     placeholder2) \
     M(AA,BB, i, method, public, none,   vconcat, ARef, num) \
@@ -1881,14 +1868,39 @@ forward(array)
     M(AA,BB, i, method, public, none,   vset, num, ARef) \
     M(AA,BB, i, method, public, none,   vpush, Au) \
     M(AA,BB, i, method, public, vector, vslice, num, num) \
-    M(AA,BB, i, method, public, Au,     resize, sz) \
-    M(AA,BB, i, method, public, Au,     reallocate, sz) \
+    M(AA,BB, i, method, public, ARef,   resize, sz) \
+    M(AA,BB, i, method, public, ARef,   reallocate, sz) \
+    M(AA,BB, i, override, method, push) \
+    M(AA,BB, i, method, public, none,   unshift, Au) \
+    M(AA,BB, i, method, public, none,   insert, Au, num) \
+    M(AA,BB, i, method, public, none,   remove, num) \
+    M(AA,BB, i, method, public, none,   clear) \
+    M(AA,BB, i, method, public, Au,     pop) \
+    M(AA,BB, i, method, public, Au,     shift) \
+    M(AA,BB, i, method, public, Au,     first) \
+    M(AA,BB, i, method, public, Au,     last) \
+    M(AA,BB, i, method, public, vector, reverse) \
+    M(AA,BB, i, method, public, none,   concat, vector) \
+    M(AA,BB, i, method, public, num,    index_of, Au) \
+    M(AA,BB, i, method, public, bool,   contains, Au) \
+    M(AA,BB, i, method, public, bool,   equals, vector) \
+    M(AA,BB, i, method, public, Au_t,   elem_type) \
+    M(AA,BB, s, method, public, vector, vector_of, Au_t) \
+    M(AA,BB, s, method, public, vector, vector_from, array, Au_t) \
+    M(AA,BB, s, method, public, none,   vector_index_fault, vector, i64) \
+    M(AA,BB, i, operator, public, none, _assign_add, Au) \
+    M(AA,BB, i, getter,   public, Au,   num) \
+    M(AA,BB, i, setter,   public, none) \
     M(AA,BB, i, override, method, init) \
+    M(AA,BB, i, override, method, dealloc) \
     M(AA,BB, i, ctr,    public, i32) \
+    M(AA,BB, i, ctr,    public, Au_t) \
+    M(AA,BB, i, ctr,    public, array) \
     M(AA,BB, i, ctr,    public, path)
 declare_class_2(vector, collective)
 
 AU_EXPORT none vector_init(vector);
+AU_EXPORT Au   vector_push(vector, Au);
 
 // let us declare our vector with string
 // Au, user space is simply the cstring

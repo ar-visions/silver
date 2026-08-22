@@ -3304,224 +3304,6 @@ Au alloc_new(Au_t type, num count, shape shape_data, Au_t meta_a, Au meta_b,
     return alloc(type, count, shape_data, meta_a, meta_b, source, line, seq);
 }
 
-// growable vector: identity alloc is kept; elements ride header->data
-AU_EXPORT Au au_vec_new(Au_t elem, symbol source, i32 line, i32 seq) {
-    Au v  = alloc_vector(elem, 1, null, null, null, source, line, seq);
-    Au hd = header(v);
-    hd->count = 0;
-    return v;
-}
-
-// build a vec from an array's elements (transitional: array dies)
-AU_EXPORT Au au_vec_from(Au src, Au_t elem) {
-    Au v = au_vec_new(elem, (symbol)"vec_from", 0, 0);
-    if (!src) return v;
-    array ar = (array)src;
-    bool managed = elem && elem->is_class && !elem->is_c;
-    for (num i = 0; i < ar->count; i++) {
-        Au   e    = ar->origin[i];
-        ARef slot = au_vec_slot(v);
-        if      (managed) *(Au*)slot = e ? Au_hold(e) : null;
-        else if (e)       memcpy(slot, e, elem->typesize);
-        else              memset(slot, 0, elem->typesize);
-    }
-    return v;
-}
-
-// ensure room for one element, bump count, hand back its slot
-AU_EXPORT ARef au_vec_slot(Au v) {
-    Au hd = header(v);
-    if (hd->count >= hd->alloc)
-        Au_vrealloc(v, (hd->alloc << 1) + 8);
-    u8* d = (u8*)hd->data;
-    return (ARef)(d + (hd->count++) * Au_vdata_stride(v));
-}
-
-// open a slot at idx, bump count, hand it back
-AU_EXPORT ARef au_vec_insert(Au v, i64 idx) {
-    Au hd = header(v);
-    if (idx < 0) idx = 0;
-    if (idx > hd->count) idx = hd->count;
-    if (hd->count >= hd->alloc)
-        Au_vrealloc(v, (hd->alloc << 1) + 8);
-    i64 stride = Au_vdata_stride(v);
-    u8* d = (u8*)header(v)->data;
-    memmove(d + (idx + 1) * stride, d + idx * stride,
-        (hd->count - idx) * stride);
-    hd->count++;
-    return (ARef)(d + idx * stride);
-}
-
-// one runtime vec type per element — module registration and import
-// share these so a vec member/signature keeps its vector-ness
-static Au_t* vec_type_elems;
-static Au_t* vec_type_vps;
-static int   vec_type_count;
-static int   vec_type_cap;
-
-AU_EXPORT Au_t au_vec_type(Au_t elem) {
-    for (int i = 0; i < vec_type_count; i++)
-        if (vec_type_elems[i] == elem) return vec_type_vps[i];
-    Au_t vp = def(null, null, AU_MEMBER_TYPE,
-        AU_TRAIT_SHAPED | AU_TRAIT_DATA_USER);
-    vp->is_pointer = true;
-    vp->src        = elem;
-    vp->typesize   = sizeof(none*);
-    if (vec_type_count >= vec_type_cap) {
-        vec_type_cap = vec_type_cap ? vec_type_cap * 2 : 32;
-        vec_type_elems = realloc(vec_type_elems, vec_type_cap * sizeof(Au_t));
-        vec_type_vps   = realloc(vec_type_vps,   vec_type_cap * sizeof(Au_t));
-    }
-    vec_type_elems[vec_type_count] = elem;
-    vec_type_vps[vec_type_count]   = vp;
-    vec_type_count++;
-    return vp;
-}
-
-// class slots are held refs; every other element packs raw
-static bool au_vec_managed(Au v) {
-    Au_t et = (Au_t)header(v)->au;
-    return et && et->is_class && !et->is_c;
-}
-
-AU_EXPORT none au_vec_clear(Au v) {
-    Au hd = header(v);
-    if (au_vec_managed(v)) {
-        Au* slots = (Au*)hd->data;
-        for (num i = 0; i < hd->count; i++)
-            if (slots[i]) Au_drop(slots[i]);
-    }
-    hd->count = 0;
-}
-
-AU_EXPORT none au_vec_remove(Au v, i64 idx) {
-    Au  hd     = header(v);
-    i64 stride = Au_vdata_stride(v);
-    u8* d      = (u8*)hd->data;
-    if (idx < 0 || idx >= hd->count) return;
-    if (au_vec_managed(v)) {
-        Au e = *(Au*)(d + idx * stride);
-        if (e) Au_drop(e);
-    }
-    memmove(d + idx * stride, d + (idx + 1) * stride,
-        (hd->count - idx - 1) * stride);
-    hd->count--;
-}
-
-// element-wise equality: a vec must NEVER dispatch its own methods
-// (isa reports the element), so comparisons come through here
-AU_EXPORT bool au_vec_equals(Au a, Au b) {
-    if (a == b) return true;
-    if (!a || !b) return false;
-    if (!au_is_vec(a) || !au_is_vec(b)) return false;
-    Au ha = header(a), hb = header(b);
-    if (ha->count != hb->count) return false;
-    Au_t ea = (Au_t)ha->au, eb = (Au_t)hb->au;
-    if (ea != eb) return false;
-    i64  stride  = Au_vdata_stride(a);
-    bool managed = ea && ea->is_class && !ea->is_c;
-    if (!managed)
-        return memcmp(ha->data, hb->data, (size_t)(stride * ha->count)) == 0;
-    Au* xa = (Au*)ha->data;
-    Au* xb = (Au*)hb->data;
-    for (num i = 0; i < ha->count; i++) {
-        if (xa[i] == xb[i]) continue;
-        if (!xa[i] || !xb[i]) return false;
-        if (Au_compare(xa[i], xb[i]) != 0) return false;
-    }
-    return true;
-}
-
-// isa(vec) reports the ELEMENT type — the holder bit is the identity
-AU_EXPORT bool au_is_vec(Au a) {
-    if (!a) return false;
-    return (header(a)->iflags & 0x02) != 0;   // AU_IF_HOLDER
-}
-
-// drop nothing: ownership of [0] transfers to the caller, who loads
-// the element BEFORE this compacts the remainder down
-AU_EXPORT none au_vec_shift(Au v) {
-    Au hd = header(v);
-    if (hd->count <= 0) return;
-    i64 stride = Au_vdata_stride(v);
-    u8* d = (u8*)hd->data;
-    memmove(d, d + stride, (hd->count - 1) * stride);
-    hd->count--;
-}
-
-// open a slot at the FRONT, bump count, hand it back
-AU_EXPORT ARef au_vec_unshift(Au v) {
-    Au hd = header(v);
-    if (hd->count >= hd->alloc)
-        Au_vrealloc(v, (hd->alloc << 1) + 8);
-    i64 stride = Au_vdata_stride(v);
-    u8* d = (u8*)header(v)->data;
-    memmove(d + stride, d, hd->count * stride);
-    hd->count++;
-    return (ARef)d;
-}
-
-// reverse returns a NEW vector; the source is untouched
-AU_EXPORT Au au_vec_reverse(Au v) {
-    Au   hd      = header(v);
-    Au_t et      = (Au_t)hd->au;
-    i64  stride  = Au_vdata_stride(v);
-    u8*  d       = (u8*)hd->data;
-    bool managed = au_vec_managed(v);
-    Au   r = au_vec_new(et, hd->source ? (symbol)hd->source : (symbol)"vec",
-        hd->line, 0);
-    for (num i = hd->count - 1; i >= 0; i--) {
-        ARef slot = au_vec_slot(r);
-        memcpy(slot, d + i * stride, stride);
-        if (managed && *(Au*)slot) Au_hold(*(Au*)slot);
-    }
-    return r;
-}
-
-// element types must match; class elements are held on entry
-AU_EXPORT none au_vec_concat(Au v, Au other) {
-    if (!other) return;
-    Au   oh      = header(other);
-    i64  stride  = Au_vdata_stride(v);
-    bool managed = au_vec_managed(v);
-    for (num i = 0; i < oh->count; i++) {
-        // other's data pointer re-reads per element: v == other must
-        // survive the grow that au_vec_slot may perform
-        u8*  od   = (u8*)header(other)->data;
-        ARef slot = au_vec_slot(v);
-        memcpy(slot, od + i * stride, stride);
-        if (managed && *(Au*)slot) Au_hold(*(Au*)slot);
-    }
-}
-
-// classes dispatch compare when overridden, else pointer identity
-AU_EXPORT i64 au_vec_index_of(Au v, ARef val) {
-    Au   hd      = header(v);
-    Au_t et      = (Au_t)hd->au;
-    i64  stride  = Au_vdata_stride(v);
-    u8*  d       = (u8*)hd->data;
-    bool managed = au_vec_managed(v);
-    bool has_cmp = managed && ((Au_f*)et)->ft.compare &&
-        ((Au_f*)et)->ft.compare != ((Au_f*)typeid(Au))->ft.compare;
-    // local fn ptr: `compare` is a dispatch macro, never call ft.compare direct
-    num (*cmpf)(Au, Au) = has_cmp ? (num(*)(Au, Au))((Au_f*)et)->ft.compare : null;
-    for (num i = 0; i < hd->count; i++) {
-        u8* s = d + i * stride;
-        if (managed) {
-            Au ev = *(Au*)s, tv = *(Au*)val;
-            if (ev == tv) return i;
-            if (ev && tv && cmpf && cmpf(ev, tv) == 0)
-                return i;
-        } else if (memcmp(s, val, stride) == 0)
-            return i;
-    }
-    return -1;
-}
-
-AU_EXPORT bool au_vec_contains(Au v, ARef val) {
-    return au_vec_index_of(v, val) >= 0;
-}
-
 // binding stamp: '<holder>:<bind>' names this object in au_log
 Au alloc_object(Au_t type, num count, shape shape_data, Au_t meta_a, Au meta_b,
                 symbol source, i32 line, i32 seq, symbol bind, Au_t holder) {
@@ -5273,13 +5055,15 @@ AU_EXPORT real clampf(real i, real mn, real mx) {
 }
 
 AU_EXPORT none vector_init(vector a);
+AU_EXPORT Au   vector_push(vector a, Au value);
+static i64 vector_stride(vector a);
 
 // grow the vector's user-space `origin` buffer to hold at least `alloc` elements.
 // the buffer is sized in `vdata_stride` units (scalar size for primitive vectors,
 // pointer size for object vectors). updates a->alloc; leaves a->count alone.
 static void vector_grow(vector a, sz alloc) {
     if (alloc <= a->alloc) return;
-    sz   stride = vdata_stride((Au)a);
+    sz   stride = vector_stride(a);
     u8*  prev   = (u8*)a->origin;
     u8*  data   = calloc(alloc, stride);
     if (prev && a->count > 0)
@@ -6284,18 +6068,9 @@ AU_EXPORT none Au_free(Au a) {
         cur = (Au_f*)cur->context;
     }
 
-    if (is_holder) {
-        Au_t et = (Au_t)aa->au;
-        // class slots are held refs; drop each on vector free
-        if (et && et->is_class && !et->is_c) {
-            Au* slots = (Au*)aa->data;
-            for (num i = 0; i < aa->count; i++)
-                if (slots[i]) Au_drop(slots[i]);
-        }
-        // Au_vrealloc moved the buffer off the identity alloc
-        if (aa->data && aa->data != (Au)&aa[1])
-            free(aa->data);
-    }
+    // Au_vrealloc moved a raw holder's buffer off the identity alloc
+    if (is_holder && aa->data && aa->data != (Au)&aa[1])
+        free(aa->data);
 
     if (leaks_top) leak_remove(aa);
 
@@ -6600,17 +6375,295 @@ AU_EXPORT Au Au_vrealloc(Au a, sz alloc) {
 }
 
 
+// the element type: instance meta first, then the class's meta
+AU_EXPORT Au_t vector_elem_type(vector a) {
+    Au f = head(a);
+    if (f->scalar) return f->scalar;
+    if (f->meta_a) return f->meta_a;
+    if (f->au && f->au->meta.a) return meta_index((Au)a, 0);
+    return a->au ? (Au_t)a->au : typeid(i8);
+}
+
+// class elements are held refs; every other element packs raw
+static bool vector_managed(vector a) {
+    Au_t et = vector_elem_type(a);
+    return et && et->is_class && !et->is_c;
+}
+
+static i64 vector_stride(vector a) {
+    if (vector_managed(a)) return (i64)sizeof(none*);
+    Au_t et = vector_elem_type(a);
+    i64  sz = et ? (i64)et->typesize : 0;
+    verify(sz > 0, "vector: element type %s has no size", et && et->ident ? et->ident : "?");
+    return sz;
+}
+
 AU_EXPORT none vector_init(vector a) {
     Au f = head(a);
-    a->count   = 0;
-    f->scalar  = (f->au && f->au->meta.a) ? meta_index((Au)a, 0)
-                : a->au ? (Au_t)a->au : typeid(i8);
+    // a ctr (with_array) may have filled origin before init runs
+    if (!a->origin) a->count = 0;
+    f->scalar  = vector_elem_type(a);
     f->data_shape = hold(a->data_shape);
     verify(f->scalar, "scalar not set");
     if (f->data_shape)
         a->alloc = shape_total(f->data_shape);
     if (a->alloc > 0)
         vector_grow(a, a->alloc);
+}
+
+AU_EXPORT none vector_dealloc(vector a) {
+    vector_clear(a);
+    free(a->origin);
+    a->origin = null;
+}
+
+AU_EXPORT vector vector_with_Au_t(vector a, Au_t elem) {
+    head(a)->meta_a = elem;
+    head(a)->scalar = elem;
+    return a;
+}
+
+// an array's elements fill the vector; the element type is the
+// vector's meta, else the array's, else the first element's class
+AU_EXPORT vector vector_with_array(vector a, array src) {
+    Au f = head(a);
+    if (!f->meta_a) {
+        Au_t et = src ? head(src)->meta_a : null;
+        if (!et && src && src->count > 0 && src->origin[0]) et = isa(src->origin[0]);
+        f->meta_a = et ? et : typeid(Au);
+    }
+    f->scalar = f->meta_a;
+    if (src)
+        for (num i = 0; i < src->count; i++)
+            vector_push(a, src->origin[i]);
+    return a;
+}
+
+// debug builds check every inline index against count
+AU_EXPORT none vector_index_fault(vector a, i64 idx) {
+    Au_t et = a ? vector_elem_type(a) : null;
+    fault("vector index %lli out of range (count %i, vec %s)", (long long)idx,
+        a ? a->count : 0, et && et->ident ? et->ident : "?");
+}
+
+AU_EXPORT vector vector_of(Au_t elem) {
+    Au v = alloc(typeid(vector), 1, null, elem, null, (symbol)"vector", __LINE__, 0);
+    Au_initialize(v);
+    return (vector)v;
+}
+
+// an array's elements become the vector's; class elements are held
+AU_EXPORT vector vector_from(array src, Au_t elem) {
+    vector v = vector_of(elem);
+    if (!src) return v;
+    for (num i = 0; i < src->count; i++)
+        vector_push(v, src->origin[i]);
+    return v;
+}
+
+// the slot at idx; a class element is the object pointer in it
+static u8* vector_slot(vector a, num idx) {
+    return (u8*)a->origin + idx * vector_stride(a);
+}
+
+// ensure room for one more element, bump count, hand back its slot
+static u8* vector_append_slot(vector a) {
+    if (a->count >= a->alloc)
+        vector_grow(a, (a->alloc << 1) + 8);
+    return vector_slot(a, a->count++);
+}
+
+// store an element value into a slot: the Au is the object for a class
+// element, else a pointer at the value (a boxed primitive or a struct)
+static none vector_store(vector a, u8* slot, Au value, bool drop_prev) {
+    i64  stride = vector_stride(a);
+    Au_t et     = vector_elem_type(a);
+    if (vector_managed(a)) {
+        Au prev = *(Au*)slot;
+        if (prev == value && drop_prev) return;
+        *(Au*)slot = value ? Au_hold(value) : null;
+        if (drop_prev && prev) Au_drop(prev);
+    } else if (et && et->is_pointer)
+        *(ARef*)slot = (ARef)value;   // a pointer element arrives as itself
+    else if (value)
+        memcpy(slot, value, stride);
+    else
+        memset(slot, 0, stride);
+}
+
+AU_EXPORT Au vector_push(vector a, Au value) {
+    u8* slot = vector_append_slot(a);
+    vector_store(a, slot, value, false);
+    return value;
+}
+
+AU_EXPORT none vector_operator__assign_add(vector a, Au value) {
+    vector_push(a, value);
+}
+
+AU_EXPORT none vector_unshift(vector a, Au value) {
+    vector_insert(a, value, 0);
+}
+
+AU_EXPORT none vector_insert(vector a, Au value, num idx) {
+    if (idx < 0) idx = 0;
+    if (idx > a->count) idx = a->count;
+    if (a->count >= a->alloc)
+        vector_grow(a, (a->alloc << 1) + 8);
+    i64 stride = vector_stride(a);
+    u8* d = (u8*)a->origin;
+    memmove(d + (idx + 1) * stride, d + idx * stride, (a->count - idx) * stride);
+    a->count++;
+    vector_store(a, d + idx * stride, value, false);
+}
+
+AU_EXPORT none vector_remove(vector a, num idx) {
+    if (idx < 0 || idx >= a->count) return;
+    i64 stride = vector_stride(a);
+    u8* d = (u8*)a->origin;
+    if (vector_managed(a)) {
+        Au e = *(Au*)(d + idx * stride);
+        if (e) Au_drop(e);
+    }
+    memmove(d + idx * stride, d + (idx + 1) * stride, (a->count - idx - 1) * stride);
+    a->count--;
+}
+
+AU_EXPORT none vector_clear(vector a) {
+    if (vector_managed(a)) {
+        Au* slots = (Au*)a->origin;
+        for (num i = 0; i < a->count; i++)
+            if (slots[i]) Au_drop(slots[i]);
+    }
+    a->count = 0;
+}
+
+// the element at idx: the object for a class element, else a pointer
+// at the packed value (silver loads it through the vector's meta)
+AU_EXPORT Au vector_getter_num(vector a, num idx) {
+    if (idx < 0 || idx >= a->count) return null;
+    u8* slot = vector_slot(a, idx);
+    return vector_managed(a) ? *(Au*)slot : (Au)slot;
+}
+
+AU_EXPORT none vector_setter(vector a, Au key, Au value, i32 op) {
+    verify(op == OPType__assign, "vector setter: only = is supported");
+    num idx = -1;
+    num* n = (num*)instance_of(key, typeid(num));
+    if (!n) n = (i64*)instance_of(key, typeid(i64));
+    if (n) idx = *n;
+    else {
+        i32* n32 = (i32*)instance_of(key, typeid(i32));
+        verify(n32, "vector setter: integer index required");
+        idx = *n32;
+    }
+    verify(idx >= 0 && idx < a->count, "vector setter: index out of bounds");
+    vector_store(a, vector_slot(a, idx), value, true);
+}
+
+// ownership of the last element transfers to the caller: no drop.
+// the value stays in place until the next append
+AU_EXPORT Au vector_pop(vector a) {
+    if (a->count <= 0) return null;
+    a->count--;
+    u8* slot = vector_slot(a, a->count);
+    return vector_managed(a) ? *(Au*)slot : (Au)slot;
+}
+
+// the front element moves to the slot past the end, then transfers
+AU_EXPORT Au vector_shift(vector a) {
+    if (a->count <= 0) return null;
+    i64 stride = vector_stride(a);
+    u8* d = (u8*)a->origin;
+    if (a->count >= a->alloc)
+        vector_grow(a, a->alloc + 1);
+    d = (u8*)a->origin;
+    u8* spare = d + a->count * stride;
+    memcpy(spare, d, stride);
+    memmove(d, d + stride, (a->count - 1) * stride);
+    a->count--;
+    u8* slot = d + a->count * stride;
+    memcpy(slot, spare, stride);
+    return vector_managed(a) ? *(Au*)slot : (Au)slot;
+}
+
+AU_EXPORT Au vector_first(vector a) {
+    return vector_getter_num(a, 0);
+}
+
+AU_EXPORT Au vector_last(vector a) {
+    return vector_getter_num(a, a->count - 1);
+}
+
+// reverse returns a NEW vector; the source is untouched
+AU_EXPORT vector vector_reverse(vector a) {
+    vector r = vector_of(vector_elem_type(a));
+    i64 stride = vector_stride(a);
+    for (num i = a->count - 1; i >= 0; i--) {
+        u8* slot = vector_append_slot(r);
+        memcpy(slot, vector_slot(a, i), stride);
+        if (vector_managed(a) && *(Au*)slot) Au_hold(*(Au*)slot);
+    }
+    return r;
+}
+
+// element types must match; class elements are held on entry
+AU_EXPORT none vector_concat(vector a, vector other) {
+    if (!other) return;
+    i64 stride = vector_stride(a);
+    num n = other->count;
+    for (num i = 0; i < n; i++) {
+        // other's origin re-reads per element: a == other must
+        // survive the grow that the append may perform
+        u8* slot = vector_append_slot(a);
+        memcpy(slot, vector_slot(other, i), stride);
+        if (vector_managed(a) && *(Au*)slot) Au_hold(*(Au*)slot);
+    }
+}
+
+// classes dispatch compare when overridden, else pointer identity;
+// packed elements compare by bytes
+AU_EXPORT num vector_index_of(vector a, Au value) {
+    Au_t et      = vector_elem_type(a);
+    i64  stride  = vector_stride(a);
+    bool managed = vector_managed(a);
+    bool has_cmp = managed && ((Au_f*)et)->ft.compare &&
+        ((Au_f*)et)->ft.compare != ((Au_f*)typeid(Au))->ft.compare;
+    num (*cmpf)(Au, Au) = has_cmp ? (num(*)(Au, Au))((Au_f*)et)->ft.compare : null;
+    for (num i = 0; i < a->count; i++) {
+        u8* s = vector_slot(a, i);
+        if (managed) {
+            Au ev = *(Au*)s;
+            if (ev == value) return i;
+            if (ev && value && cmpf && cmpf(ev, value) == 0) return i;
+        } else if (et && et->is_pointer) {
+            if (*(ARef*)s == (ARef)value) return i;
+        } else if (value && memcmp(s, value, stride) == 0)
+            return i;
+    }
+    return -1;
+}
+
+AU_EXPORT bool vector_contains(vector a, Au value) {
+    return vector_index_of(a, value) >= 0;
+}
+
+AU_EXPORT bool vector_equals(vector a, vector b) {
+    if (a == b) return true;
+    if (!a || !b) return false;
+    if (a->count != b->count) return false;
+    if (vector_elem_type(a) != vector_elem_type(b)) return false;
+    i64 stride = vector_stride(a);
+    if (!vector_managed(a))
+        return memcmp(a->origin, b->origin, (size_t)(stride * a->count)) == 0;
+    Au* xa = (Au*)a->origin;
+    Au* xb = (Au*)b->origin;
+    for (num i = 0; i < a->count; i++) {
+        if (xa[i] == xb[i]) continue;
+        if (!xa[i] || !xb[i]) return false;
+        if (Au_compare(xa[i], xb[i]) != 0) return false;
+    }
+    return true;
 }
 
 AU_EXPORT vector vector_with_path(vector a, path file_path) {
@@ -6631,36 +6684,31 @@ AU_EXPORT vector vector_with_path(vector a, path file_path) {
 }
 
 AU_EXPORT ARef vector_vget(vector a, num index) {
-    num location = index * a->au->typesize;
-    i8* arb = (i8*)a->origin;
-    return (ARef)&arb[location];
+    return (ARef)vector_slot(a, index);
 }
 
 AU_EXPORT none vector_vset(vector a, num index, ARef element) {
-    num location = index * a->au->typesize;
-    i8* arb = (i8*)a->origin;
-    memcpy(&arb[location], element, a->au->typesize);
+    memcpy(vector_slot(a, index), element, vector_stride(a));
 }
 
-AU_EXPORT Au vector_resize(vector a, sz size) {
+AU_EXPORT ARef vector_resize(vector a, sz size) {
     vector_grow(a, size);
     a->count = size;
-    return (Au)a->origin;
+    return (ARef)a->origin;
 }
 
-AU_EXPORT Au vector_reallocate(vector a, sz size) {
+AU_EXPORT ARef vector_reallocate(vector a, sz size) {
     vector_grow(a, size);
-    return (Au)a->origin;
+    return (ARef)a->origin;
 }
 
 AU_EXPORT none vector_vconcat(vector a, ARef any, num count) {
     if (count <= 0) return;
-    Au_t type = vdata_type((Au)a);
     if (a->alloc < a->count + count)
         vector_grow(a, (a->alloc << 1) + 32 + count);
 
     u8* ptr  = (u8*)a->origin;
-    i64 size = vdata_stride((Au)a);
+    i64 size = vector_stride(a);
     memcpy(&ptr[a->count * size], any, size * count);
     a->count += count;
     Au f = head(a);
@@ -6679,13 +6727,13 @@ AU_EXPORT num abso(num i) {
 AU_EXPORT vector vector_vslice(vector a, num from, num to) {
     Au   f      = head(a);
     num  count  = (1 + abso(from - to));
-    Au   res    = alloc((Au_t)f->au, 1, null, null, null, __FILE__, __LINE__, 0);
+    Au   res    = alloc((Au_t)f->au, 1, null, f->meta_a, null, __FILE__, __LINE__, 0);
     vector vres = (vector)res;
     Au_initialize(res);
     vector_grow(vres, count);
     u8* src    = (u8*)a->origin;
     u8* dst    = (u8*)vres->origin;
-    i64 stride = vdata_stride((Au)a);
+    i64 stride = vector_stride(a);
     if (from < to)
         memcpy(dst, &src[from * stride], count * stride);
     else
@@ -7113,7 +7161,7 @@ AU_EXPORT i64 path_modified_time(path a) {
 //   path bytes, i64 mtime, u32 decl_count, decl_count*{u32 len, bytes}, u32 line_count,
 //   line_count*{u32 ntok, ntok*{u32 col,len,syntax,decl_idx,decl_line}};  end: u32 0.
 AU_EXPORT Au path_read_format(path a) {
-    Au out = au_vec_new(typeid(Au), (symbol)"fmt", __LINE__, 0);
+    Au out = (Au)vector_of(typeid(Au));
     FILE* f = fopen((cstr)a->chars, "rb");
     if (!f) return out;
     u32 magic = 0, ver = 0;
@@ -7146,25 +7194,25 @@ AU_EXPORT Au path_read_format(path a) {
         if (ok && fread(&nlines, 4, 1, f) != 1) ok = false;
         fmt_file ff = fmt_file(
             source, string(p), mtime, mt,
-            lines, hold(au_vec_new(typeid(Au), (symbol)"fmt", __LINE__, 0)));
+            lines, hold((Au)vector_of(typeid(Au))));
         free(p);
         for (u32 L = 0; ok && L < nlines; L++) {
             u32 ntok = 0;
             if (fread(&ntok, 4, 1, f) != 1) { ok = false; break; }
-            Au ltk = au_vec_new(typeid(fmt_token), (symbol)"fmt", __LINE__, 0);
+            vector ltk = vector_of(typeid(fmt_token));
             for (u32 t = 0; t < ntok; t++) {
                 u32 rec[5];
                 if (fread(rec, 4, 5, f) != 5) { ok = false; break; }
                 cstr ds = (dp && rec[3] > 0 && rec[3] <= np) ? dp[rec[3] - 1] : null;
-                *(Au*)au_vec_slot(ltk) = (Au)hold(fmt_token(
+                vector_push(ltk, (Au)fmt_token(
                     column, (num)rec[0], length, (num)rec[1], syntax, (Syntax)rec[2],
                     decl_source, ds ? string(ds) : null, decl_line, (num)rec[4]));
             }
-            *(Au*)au_vec_slot(ff->lines) = (Au)hold(ltk);
+            vector_push((vector)ff->lines, (Au)ltk);
         }
         for (u32 i = 0; i < np; i++) if (dp && dp[i]) free(dp[i]);
         free(dp);
-        *(Au*)au_vec_slot(out) = (Au)hold(ff);
+        vector_push((vector)out, (Au)ff);
         if (!ok) break;
     }
     fclose(f);
@@ -8365,9 +8413,8 @@ static Au parse_agi_block(cstr scan, int indent, Au_t schema, Au_t meta, cstr* r
                 // its element — storing the array itself misreads later
                 Au_t vsrc = mem ? (mem->src ? mem->src : mem->type) : null;
                 while (vsrc && vsrc->member_type == AU_MEMBER_VAR) vsrc = vsrc->src;
-                bool vec_mem = vsrc && vsrc->is_data_user && vsrc->src;
+                bool vec_mem = vsrc && inherits(vsrc, typeid(vector));
                 Au_t elem = mem ? (mem->meta.b ? (Au_t)mem->meta.b : mem->meta.a) : meta;
-                if (!elem && vec_mem) elem = vsrc->src;
                 array arr = array(32);
                 cstr  p   = v + 1;
                 while (p < ve && *p != ']') {
@@ -8393,18 +8440,18 @@ static Au parse_agi_block(cstr scan, int indent, Au_t schema, Au_t meta, cstr* r
                         push(arr, (elem && elem != typeid(none) && elem != typeid(Au) && elem != typeid(string))
                             ? (Au)construct_with(elem, item, null) : item);
                 }
-                value = vec_mem ? au_vec_from((Au)arr, vsrc->src) : (Au)arr;
+                value = vec_mem ? (Au)vector_from(arr, elem ? elem : typeid(Au)) : (Au)arr;
             } else if (structured || keyword) {
                 cstr vrem = v;
                 value = parse_object(v, mem_type, mem_meta, &vrem, null);
             } else if (mem && (mem->src == typeid(array) ||
-                       (mem->src && mem->src->is_data_user && mem->src->src))) {
+                       (mem->src && inherits(mem->src, typeid(vector))))) {
                 // array/vec member with a bare value: split on WHITESPACE ONLY
                 // into the element type (member meta-b, or the vec's element).
                 // commas are NOT separators — a build-arg token may contain
                 // them (-Wl,-rpath,...).
-                bool vec_mem = mem->src->is_data_user;
-                Au_t elem = vec_mem ? mem->src->src : (Au_t)mem->meta.b;
+                bool vec_mem = inherits(mem->src, typeid(vector));
+                Au_t elem = vec_mem ? mem->meta.a : (Au_t)mem->meta.b;
                 array arr  = array();
                 cstr  p    = v;
                 while (p < ve) {
@@ -8420,7 +8467,7 @@ static Au parse_agi_block(cstr scan, int indent, Au_t schema, Au_t meta, cstr* r
                     push(arr, (elem && elem != typeid(none) && elem != typeid(Au) && elem != typeid(string))
                         ? (Au)construct_with(elem, (Au)ws, null) : (Au)ws);
                 }
-                value = vec_mem ? au_vec_from((Au)arr, elem ? elem : typeid(Au)) : (Au)arr;
+                value = vec_mem ? (Au)vector_from(arr, elem ? elem : typeid(Au)) : (Au)arr;
             } else {
                 string sv = string(alloc, vlen + 1);
                 memcpy((cstr)sv->chars, v, vlen);
@@ -8533,13 +8580,13 @@ static bool agi_leaf(string res, Au v, int depth) {
         append(res, " ]");
         return true;
     }
-    if (au_is_vec(v)) {
-        Au   hd      = header(v);
-        Au_t et      = (Au_t)hd->au;
+    if (instanceof(v, vector)) {
+        vector vv     = (vector)v;
+        Au_t et      = vector_elem_type(vv);
         bool managed = et && et->is_class && !et->is_c;
-        num  n       = hd->count;
-        u8*  d       = (u8*)hd->data;
-        i64  stride  = Au_vdata_stride(v);
+        num  n       = vv->count;
+        u8*  d       = (u8*)vv->origin;
+        i64  stride  = vector_stride(vv);
         if (managed) {
             // vecs of class objects need keyed blocks — not a leaf
             for (num i = 0; i < n; i++) {
@@ -8601,21 +8648,21 @@ static none agi_write_entry(string res, Au v, int indent, int depth) {
         return;
     }
     // vecs of class objects: keyed blocks, same form as arrays below
-    if (au_is_vec(v)) {
-        Au   hd      = header(v);
-        Au_t et      = (Au_t)hd->au;
+    if (instanceof(v, vector)) {
+        vector vv     = (vector)v;
+        Au_t et      = vector_elem_type(vv);
         bool managed = et && et->is_class && !et->is_c;
         if (managed) {
-            Au*  items = (Au*)hd->data;
+            Au*  items = (Au*)vv->origin;
             bool objs  = false;
-            for (num i = 0; i < hd->count; i++)
+            for (num i = 0; i < vv->count; i++)
                 if (items[i] && isa(items[i])->is_class &&
                     !instanceof(items[i], string) && !instanceof(items[i], path))
                     objs = true;
             if (objs) {
                 append(res, ":\n");
                 int idx = 0;
-                for (num i = 0; i < hd->count; i++) {
+                for (num i = 0; i < vv->count; i++) {
                     Au e = items[i];
                     if (!e) { idx++; continue; }
                     agi_indent(res, indent + 1);
@@ -8686,9 +8733,8 @@ static none agi_write_members(string res, Au a, Au_t type, int indent, int depth
         if (m->is_static)                             continue;
         if (m->access_type == interface_intern)       continue;
         if (!m->type)                                 continue;
-        // raw pointers (ref f32 buffers etc) have no text form; vec
-        // members ARE pointers but carry data_user and serialize
-        if ((m->type->is_pointer && !m->type->is_data_user) ||
+        // raw pointers (ref f32 buffers etc) have no text form
+        if (m->type->is_pointer ||
             (m->traits & AU_TRAIT_EXPLICIT_REF)) continue;
         Au v = Au_get_property(a, m->ident);
         if (!v) continue;
@@ -8749,7 +8795,12 @@ static Au parse_array(cstr s, Au_t schema, Au_t meta_type, cstr* remainder, ctx 
     verify(*scan == '[', "expected array '['");
     scan = ws(&scan[1]);
     Au res = null;
-    if (!schema || (schema == typeid(array) || schema->src == typeid(array))) {
+    if (schema == typeid(vector)) {
+        // vec T member: parse elements as T (the member's meta), pack a vector
+        Au_t elem = meta_type ? meta_type : typeid(Au);
+        array arb = parse_array_objects(&scan, elem, context);
+        res = (Au)vector_from(arb, elem);
+    } else if (!schema || (schema == typeid(array) || schema->src == typeid(array))) {
         // schema-less arrays (unknown/discarded fields, generic JSON) must not
         // force map elements — a ["string", ...] array would fault in
         // construct_with("expected map"). null lets parse_object infer.
@@ -8780,20 +8831,6 @@ static Au parse_array(cstr s, Au_t schema, Au_t meta_type, cstr* remainder, ctx 
         // i forget where we use this!
         array arb = parse_array_objects(&scan, typeid(i64), context);
         res = construct_with(schema, (Au)arb, null);
-    } else if (schema->member_type == AU_MEMBER_TYPE && schema->is_pointer &&
-               schema->is_data_user && schema->src) {
-        // vec T member: parse elements as T, pack a vec
-        Au_t elem = schema->src;
-        array arb = parse_array_objects(&scan, elem, context);
-        Au v = au_vec_new(elem, (symbol)"agi", __LINE__, 0);
-        bool managed = elem && elem->is_class && !elem->is_c;
-        each(arb, Au, o) {
-            ARef slot = au_vec_slot(v);
-            if      (managed) *(Au*)slot = o ? Au_hold(o) : null;
-            else if (o)       memcpy(slot, o, elem->typesize);
-            else              memset(slot, 0, elem->typesize);
-        }
-        res = v;
     } else if (schema->src == typeid(vector)) {
         Au_t scalar_type = schema->meta.a;
         verify(scalar_type, "scalar type required when using vector (define a meta-type of vector with type)");
@@ -8930,11 +8967,11 @@ static none async_runner(thread_t* thread) {
 // work is a vec (or a legacy array while any remains)
 static i32 async_work_count(async t) {
     if (!t->work) return 0;
-    if (au_is_vec(t->work)) return (i32)header(t->work)->count;
+    if (instanceof(t->work, vector)) return (i32)((vector)t->work)->count;
     return (i32)len(t->work);
 }
 static Au async_work_get(async t, int i) {
-    if (au_is_vec(t->work)) return ((Au*)header(t->work)->data)[i];
+    if (instanceof(t->work, vector)) return ((Au*)((vector)t->work)->origin)[i];
     return ((array)t->work)->origin[i];
 }
 
