@@ -909,6 +909,27 @@ expect func t_vec_member [] -> bool
     n1 : i64 [ h.add_note[ 'x' ] ]
     return h.tags.count == 2 && h.tags[ 1 ] == 'rs' && n1 == 1
 
+class AuBag
+    public bag : Au
+
+# an Au-typed slot holding a vec binds to its vec type (fmt_file.lines);
+# a static Au is a header pointer (Au.header[x]), so count reads via the vec
+expect func t_vec_in_au [] -> bool
+    b : AuBag []
+    b.bag = vec string [] [ 'q', 'rs' ]
+    v : vec string b.bag
+    h : Au.header[ v ]
+    return v.count == 2 && v[ 1 ] == 'rs' && h.count == 2 && h.au == typeid[ string ]
+
+# a vec member through a ternary is the member's object, not its slot
+expect func t_vec_ternary [] -> bool
+    h: VecHolder [ ]
+    h.tags += 'q'
+    h.tags += 'rs'
+    t : vec string (h) ? h.tags : null
+    n : vec string (!h) ? h.tags : null
+    return t && t.count == 2 && t[ 1 ] == 'rs' && !n
+
 # intern vec defaults must run through the inheritance chain
 expect func t_vec_sub [] -> bool
     h: VecSub [ ]
@@ -1053,6 +1074,28 @@ expect func t_vec_insert [] -> bool
     v.insert[ 0, 0 ]
     return v.count == 4 && v[0] == 0 && v[1] == 1 && v[2] == 2 && v[3] == 3
 
+# element assignment writes the SLOT, never through the old object
+expect func t_vec_set_elem [] -> bool
+    v : vec string [] [ 'aa', 'bb' ]
+    old : v[1]
+    old.hold[]                      # a bare borrow dies with the slot
+    v[1] = 'cc'
+    w : vec i64 [] [ 1, 2 ]
+    w[0] = 9
+    ok : bool [ v[1] == 'cc' && v[0] == 'aa' && old == 'bb' && w[0] == 9 && w[1] == 2 ]
+    old.drop[]
+    return ok
+
+# class elements insert held; a borrowed element works as the arg
+expect func t_vec_insert_class [] -> bool
+    src : vec string [] [ 'bb', 'cc' ]
+    v   : vec string []
+    v.insert[ src[0], 0 ]
+    v.insert[ 'aa', 0 ]
+    v.insert[ src[1], 2 ]
+    return v.count == 3 && v[0] == 'aa' && v[1] == 'bb' && v[2] == 'cc' &&
+           v[2].compare[ v[0] ] > 0
+
 class AsyncJob
     public x   : i64
     public out : i64
@@ -1060,13 +1103,15 @@ class AsyncJob
 class AsyncHost
     public tag : i64
 
-func run_job [ h: AsyncHost, arg: object ]
+# :: opens contextual args — bound at the lambda instance site
+func run_job [ arg: object :: h: AsyncHost ]
     j : AsyncJob [ arg ]
     j.out = j.x * 2 + h.tag
 
-# async fans work items out to threads; sync[ null ] joins them
+# async fans work items out to threads; work_fn is a lambda and
+# sync[ null ] joins them
 expect func t_async [] -> bool
-    h : AsyncHost [ tag: 0 ]
+    h : AsyncHost [ tag: 100 ]
     j1 : AsyncJob [ x: 3 ]
     j2 : AsyncJob [ x: 5 ]
     j3 : AsyncJob [ x: 8 ]
@@ -1074,9 +1119,26 @@ expect func t_async [] -> bool
     jobs.push[ j1 ]
     jobs.push[ j2 ]
     jobs.push[ j3 ]
-    t : async [ target: h, work_fn: @run_job, work: jobs ]
+    t : async [ work_fn: lambda run_job[ h ], work: jobs ]
     t.sync[ null ]
-    return j1.out == 6 && j2.out == 10 && j3.out == 16
+    return j1.out == 106 && j2.out == 110 && j3.out == 116
+
+# an inline lambda works too — captures ride its context, and a
+# captured OBJECT's members read through it on the worker thread
+expect func t_async_inline [] -> bool
+    base : i64 [ 7 ]
+    h : AsyncHost [ tag: 1000 ]
+    j1 : AsyncJob [ x: 3 ]
+    j2 : AsyncJob [ x: 5 ]
+    w : vec Au []
+    w.push[ j1 ]
+    w.push[ j2 ]
+    f : lambda [ arg: object ]
+        j : AsyncJob [ arg ]
+        j.out = j.x * 10 + base + h.tag
+    t : async [ work_fn: f, work: w ]
+    t.sync[ null ]
+    return j1.out == 1037 && j2.out == 1057
 
 app features
     func init []
