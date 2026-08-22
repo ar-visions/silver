@@ -203,11 +203,11 @@ class op
     expect input:      tensor
     expect name:       string
     public lr_scale:   f32 1.0f
-    public inputs:     array string
+    public inputs:     vec string
     public activation: Activation
     public threshold:  i8
     public quantized:  bool
-    intern op_inputs:  array op
+    intern op_inputs:  vec op
     mutable result:    tensor
     public weights:    tensor
     public bias:       tensor
@@ -1697,14 +1697,14 @@ op attention
         proj[ ctx, tq, wo, bo, result.floats ]
 
 class sample
-    public inputs : array tensor
+    public inputs : vec tensor
     public target : tensor
 
 class keras
     expect ident:    string
     public quality:  num
-    intern order:    array op
-    public ops:      array op
+    intern order:    vec op
+    public ops:      vec op
     public k_output: tensor
     public k_input:  tensor
     public beta1:    f32 0.9f
@@ -1714,12 +1714,12 @@ class keras
     intern step:     i32
     mutable trace:   bool
     mutable verbose: bool
-    mutable out_labels: array string
+    mutable out_labels: vec string
     mutable checkpoint: path
     mutable weights_bin: path
     mutable best_err:    f64
     mutable best_epoch:  i32
-    mutable eval_errors: array f64
+    mutable eval_errors: vec f64
 
     func init [] 
         op_map = map op[string]
@@ -1728,12 +1728,12 @@ class keras
             op_map[o.name] = o
         
         for [ o: op ] in ops
-            o.op_inputs = array op []
+            o.op_inputs = vec op []
             for [ n: string ] in o.inputs
                 res: op_map[n]
                 o.op_inputs.push res
         
-        order = array op []
+        order = vec op []
         visited:     map op[string] []
         in_progress: map op[string] []
         for [ o: op ] in ops
@@ -1846,7 +1846,7 @@ class keras
 
     # set per-input sources from a sample, then forward
     func predict_s [smp: sample] -> tensor
-        input_ops : array op [ ]
+        input_ops : vec op [ ]
         for [ o: op ] in ops
             if [ o is input_op ] input_ops.push[ o ]
         for [ ii: i32 0, ii < input_ops.count, ii += 1 ]
@@ -1874,7 +1874,7 @@ class keras
             errs.floats[i] /= f32[ n ]
         return total / n
 
-    func eval_metrics_s [samples: array sample, errs: tensor] -> f64
+    func eval_metrics_s [samples: vec sample, errs: tensor] -> f64
         k : i32 [ errs.count ]
         for [ i: i32 0, i < k, i += 1 ]
             errs.floats[i] = 0.0
@@ -1958,7 +1958,7 @@ class keras
             if [ m >= best_err ] return
         best_err   = m
         best_epoch = epoch
-        eval_errors = array f64 [ ]
+        eval_errors = vec f64 [ ]
         for [ i: i32 0, i < k, i += 1 ]
             eval_errors.push[ f64[ errs.floats[i] ] ]
         weights_bin = weights_path[]
@@ -2106,10 +2106,10 @@ class keras
                 puts 'saved final weights -> {checkpoint} (no eval set)'
         puts 'training complete'
 
-    func train_s [epochs: i32, samples: array sample, eval_samples: array sample, learning_rate: f32, optimizer: Optimizer]
+    func train_s [epochs: i32, samples: vec sample, eval_samples: vec sample, learning_rate: f32, optimizer: Optimizer]
         for [ layer: op ] in ops
             layer.set_optimizer optimizer
-        inputs2 : array op [ ]
+        inputs2 : vec op [ ]
         for [ o: op ] in ops
             if [ o is input_op ] inputs2.push[ o ]
         best_epoch = 0
@@ -2362,54 +2362,54 @@ class whisper
     intern pos      : tensor
     intern lnf_w    : tensor
     intern lnf_b    : tensor
-    intern ln1_w    : array tensor
-    intern ln1_b    : array tensor
-    intern wq       : array tensor
-    intern bq       : array tensor
-    intern wk       : array tensor
-    intern wv       : array tensor
-    intern bv       : array tensor
-    intern wo       : array tensor
-    intern bo       : array tensor
-    intern ln2_w    : array tensor
-    intern ln2_b    : array tensor
-    intern fc1_w    : array tensor
-    intern fc1_b    : array tensor
-    intern fc2_w    : array tensor
-    intern fc2_b    : array tensor
+    intern ln1_w    : vec tensor
+    intern ln1_b    : vec tensor
+    intern wq       : vec tensor
+    intern bq       : vec tensor
+    intern wk       : vec tensor
+    intern wv       : vec tensor
+    intern bv       : vec tensor
+    intern wo       : vec tensor
+    intern bo       : vec tensor
+    intern ln2_w    : vec tensor
+    intern ln2_b    : vec tensor
+    intern fc1_w    : vec tensor
+    intern fc1_b    : vec tensor
+    intern fc2_w    : vec tensor
+    intern fc2_b    : vec tensor
     intern dec_emb  : tensor
     intern dec_pos  : tensor
     intern dlnf_w   : tensor
     intern dlnf_b   : tensor
-    intern dln1_w   : array tensor
-    intern dln1_b   : array tensor
-    intern dwq      : array tensor
-    intern dbq      : array tensor
-    intern dwk      : array tensor
-    intern dwv      : array tensor
-    intern dbv      : array tensor
-    intern dwo      : array tensor
-    intern dbo      : array tensor
-    intern xln_w    : array tensor
-    intern xln_b    : array tensor
-    intern xwq      : array tensor
-    intern xbq      : array tensor
-    intern xwk      : array tensor
-    intern xwv      : array tensor
-    intern xbv      : array tensor
-    intern xwo      : array tensor
-    intern xbo      : array tensor
-    intern dln2_w   : array tensor
-    intern dln2_b   : array tensor
-    intern dfc1_w   : array tensor
-    intern dfc1_b   : array tensor
-    intern dfc2_w   : array tensor
-    intern dfc2_b   : array tensor
+    intern dln1_w   : vec tensor
+    intern dln1_b   : vec tensor
+    intern dwq      : vec tensor
+    intern dbq      : vec tensor
+    intern dwk      : vec tensor
+    intern dwv      : vec tensor
+    intern dbv      : vec tensor
+    intern dwo      : vec tensor
+    intern dbo      : vec tensor
+    intern xln_w    : vec tensor
+    intern xln_b    : vec tensor
+    intern xwq      : vec tensor
+    intern xbq      : vec tensor
+    intern xwk      : vec tensor
+    intern xwv      : vec tensor
+    intern xbv      : vec tensor
+    intern xwo      : vec tensor
+    intern xbo      : vec tensor
+    intern dln2_w   : vec tensor
+    intern dln2_b   : vec tensor
+    intern dfc1_w   : vec tensor
+    intern dfc1_b   : vec tensor
+    intern dfc2_w   : vec tensor
+    intern dfc2_b   : vec tensor
     intern zb768    : tensor
-    intern kx_c     : array tensor
-    intern vx_c     : array tensor
-    intern ks_c     : array tensor
-    intern vs_c     : array tensor
+    intern kx_c     : vec tensor
+    intern vx_c     : vec tensor
+    intern ks_c     : vec tensor
+    intern vs_c     : vec tensor
     intern kv_enc   : tensor
     intern n_kv     : i32
 
@@ -2459,21 +2459,21 @@ class whisper
         pos     = st.tensor_named[ 'model.encoder.embed_positions.weight' ]
         lnf_w   = st.tensor_named[ 'model.encoder.layer_norm.weight' ]
         lnf_b   = st.tensor_named[ 'model.encoder.layer_norm.bias' ]
-        ln1_w = array tensor [ ]
-        ln1_b = array tensor [ ]
-        wq    = array tensor [ ]
-        bq    = array tensor [ ]
-        wk    = array tensor [ ]
-        wv    = array tensor [ ]
-        bv    = array tensor [ ]
-        wo    = array tensor [ ]
-        bo    = array tensor [ ]
-        ln2_w = array tensor [ ]
-        ln2_b = array tensor [ ]
-        fc1_w = array tensor [ ]
-        fc1_b = array tensor [ ]
-        fc2_w = array tensor [ ]
-        fc2_b = array tensor [ ]
+        ln1_w = vec tensor [ ]
+        ln1_b = vec tensor [ ]
+        wq    = vec tensor [ ]
+        bq    = vec tensor [ ]
+        wk    = vec tensor [ ]
+        wv    = vec tensor [ ]
+        bv    = vec tensor [ ]
+        wo    = vec tensor [ ]
+        bo    = vec tensor [ ]
+        ln2_w = vec tensor [ ]
+        ln2_b = vec tensor [ ]
+        fc1_w = vec tensor [ ]
+        fc1_b = vec tensor [ ]
+        fc2_w = vec tensor [ ]
+        fc2_b = vec tensor [ ]
         for [ i: i32 0, i < layers, i += 1 ]
             base : string 'model.encoder.layers.{i}'
             ln1_w.push[ st.tensor_named[ '{base}.self_attn_layer_norm.weight' ] ]
@@ -2495,30 +2495,30 @@ class whisper
         dec_pos = st.tensor_named[ 'model.decoder.embed_positions.weight' ]
         dlnf_w  = st.tensor_named[ 'model.decoder.layer_norm.weight' ]
         dlnf_b  = st.tensor_named[ 'model.decoder.layer_norm.bias' ]
-        dln1_w = array tensor [ ]
-        dln1_b = array tensor [ ]
-        dwq    = array tensor [ ]
-        dbq    = array tensor [ ]
-        dwk    = array tensor [ ]
-        dwv    = array tensor [ ]
-        dbv    = array tensor [ ]
-        dwo    = array tensor [ ]
-        dbo    = array tensor [ ]
-        xln_w  = array tensor [ ]
-        xln_b  = array tensor [ ]
-        xwq    = array tensor [ ]
-        xbq    = array tensor [ ]
-        xwk    = array tensor [ ]
-        xwv    = array tensor [ ]
-        xbv    = array tensor [ ]
-        xwo    = array tensor [ ]
-        xbo    = array tensor [ ]
-        dln2_w = array tensor [ ]
-        dln2_b = array tensor [ ]
-        dfc1_w = array tensor [ ]
-        dfc1_b = array tensor [ ]
-        dfc2_w = array tensor [ ]
-        dfc2_b = array tensor [ ]
+        dln1_w = vec tensor [ ]
+        dln1_b = vec tensor [ ]
+        dwq    = vec tensor [ ]
+        dbq    = vec tensor [ ]
+        dwk    = vec tensor [ ]
+        dwv    = vec tensor [ ]
+        dbv    = vec tensor [ ]
+        dwo    = vec tensor [ ]
+        dbo    = vec tensor [ ]
+        xln_w  = vec tensor [ ]
+        xln_b  = vec tensor [ ]
+        xwq    = vec tensor [ ]
+        xbq    = vec tensor [ ]
+        xwk    = vec tensor [ ]
+        xwv    = vec tensor [ ]
+        xbv    = vec tensor [ ]
+        xwo    = vec tensor [ ]
+        xbo    = vec tensor [ ]
+        dln2_w = vec tensor [ ]
+        dln2_b = vec tensor [ ]
+        dfc1_w = vec tensor [ ]
+        dfc1_b = vec tensor [ ]
+        dfc2_w = vec tensor [ ]
+        dfc2_b = vec tensor [ ]
         for [ i: i32 0, i < layers, i += 1 ]
             base : string 'model.decoder.layers.{i}'
             dln1_w.push[ st.tensor_named[ '{base}.self_attn_layer_norm.weight' ] ]
@@ -2646,13 +2646,13 @@ class whisper
                 best   = i32[ v ]
         return best
 
-    func transcribe [ enc: tensor, max_toks: i32 ] -> array i32
+    func transcribe [ enc: tensor, max_toks: i32 ] -> vec i32
         prepare[ enc ]
         last : i32 [ step[ 50258 ] ]
         last = step[ 50259 ]
         last = step[ 50359 ]
         last = step[ 50363 ]
-        res : array i32 [ ]
+        res : vec i32 [ ]
         lim : i32 [ (max_toks < 440) ? max_toks : 440 ]
         for [ s2: i32 0, s2 < lim, s2 += 1 ]
             if [ last == 50257 ] break
@@ -2666,7 +2666,7 @@ class whisper
                     if [ res[rc - g] != res[rc - g - p9] ] eq9 = false
                 if [ eq9 ] p_hit = p9
             if [ p_hit > 0 ]
-                trimmed : array i32 [ ]
+                trimmed : vec i32 [ ]
                 for [ ti: i32 0, ti < rc - p_hit, ti += 1 ]
                     trimmed.push[ res[ti] ]
                 return trimmed
@@ -2678,10 +2678,10 @@ class whisper
         kv_enc = enc
         n_kv = 0
         if [ !zb768 ] zb768 = rows2[ 1, dim ]
-        kx_c = array tensor [ ]
-        vx_c = array tensor [ ]
-        ks_c = array tensor [ ]
-        vs_c = array tensor [ ]
+        kx_c = vec tensor [ ]
+        vx_c = vec tensor [ ]
+        ks_c = vec tensor [ ]
+        vs_c = vec tensor [ ]
         for [ li: i32 0, li < layers, li += 1 ]
             kxt : rows2[ th, dim ]
             dk : dense [ name: 'kx', input: enc, result: kxt, weights: xwk[li], bias: zb768, in_dim: dim, out_dim: dim ]
@@ -2832,7 +2832,7 @@ class whisper
         return best
 
     # token ids -> text via the loaded vocab (null when absent)
-    func text_for [ ids: array i32 ] -> string
+    func text_for [ ids: vec i32 ] -> string
         if [ !vocab || !vocab.valid ] return null
         n : i32 [ ids.count ]
         if [ n < 1 ] return ''
@@ -3048,28 +3048,28 @@ class whisper_vk
     intern p_conv2 : Pipeline
     intern p_pos   : Pipeline
     intern p_lnf   : Pipeline
-    intern s_ln1 : array WgLNorm
-    intern s_gq  : array WgGemm
-    intern s_gk  : array WgGemm
-    intern s_gv  : array WgGemm
-    intern s_at  : array WgAttn
-    intern s_go  : array WgGemm
-    intern s_a1  : array WgAdd
-    intern s_ln2 : array WgLNorm
-    intern s_g1  : array WgGemm
-    intern s_g2  : array WgGemm
-    intern s_a2  : array WgAdd
-    intern p_ln1 : array Pipeline
-    intern p_gq  : array Pipeline
-    intern p_gk  : array Pipeline
-    intern p_gv  : array Pipeline
-    intern p_at  : array Pipeline
-    intern p_go  : array Pipeline
-    intern p_a1  : array Pipeline
-    intern p_ln2 : array Pipeline
-    intern p_g1  : array Pipeline
-    intern p_g2  : array Pipeline
-    intern p_a2  : array Pipeline
+    intern s_ln1 : vec WgLNorm
+    intern s_gq  : vec WgGemm
+    intern s_gk  : vec WgGemm
+    intern s_gv  : vec WgGemm
+    intern s_at  : vec WgAttn
+    intern s_go  : vec WgGemm
+    intern s_a1  : vec WgAdd
+    intern s_ln2 : vec WgLNorm
+    intern s_g1  : vec WgGemm
+    intern s_g2  : vec WgGemm
+    intern s_a2  : vec WgAdd
+    intern p_ln1 : vec Pipeline
+    intern p_gq  : vec Pipeline
+    intern p_gk  : vec Pipeline
+    intern p_gv  : vec Pipeline
+    intern p_at  : vec Pipeline
+    intern p_go  : vec Pipeline
+    intern p_a1  : vec Pipeline
+    intern p_ln2 : vec Pipeline
+    intern p_g1  : vec Pipeline
+    intern p_g2  : vec Pipeline
+    intern p_a2  : vec Pipeline
 
     intern func upbuf [ t: tensor ] -> Buffer
         nb : i64 [ t.tensor_shape.total[] * 4 ]
@@ -3136,28 +3136,28 @@ class whisper_vk
         p_pos.dispatch_x = 1024
         p_pos.dispatch_y = (hmax * dim + 16383) / 16384 / 16 + 1
         p_pos.hold[]
-        s_ln1 = array WgLNorm [ ]
-        s_gq  = array WgGemm [ ]
-        s_gk  = array WgGemm [ ]
-        s_gv  = array WgGemm [ ]
-        s_at  = array WgAttn [ ]
-        s_go  = array WgGemm [ ]
-        s_a1  = array WgAdd [ ]
-        s_ln2 = array WgLNorm [ ]
-        s_g1  = array WgGemm [ ]
-        s_g2  = array WgGemm [ ]
-        s_a2  = array WgAdd [ ]
-        p_ln1 = array Pipeline [ ]
-        p_gq  = array Pipeline [ ]
-        p_gk  = array Pipeline [ ]
-        p_gv  = array Pipeline [ ]
-        p_at  = array Pipeline [ ]
-        p_go  = array Pipeline [ ]
-        p_a1  = array Pipeline [ ]
-        p_ln2 = array Pipeline [ ]
-        p_g1  = array Pipeline [ ]
-        p_g2  = array Pipeline [ ]
-        p_a2  = array Pipeline [ ]
+        s_ln1 = vec WgLNorm [ ]
+        s_gq  = vec WgGemm [ ]
+        s_gk  = vec WgGemm [ ]
+        s_gv  = vec WgGemm [ ]
+        s_at  = vec WgAttn [ ]
+        s_go  = vec WgGemm [ ]
+        s_a1  = vec WgAdd [ ]
+        s_ln2 = vec WgLNorm [ ]
+        s_g1  = vec WgGemm [ ]
+        s_g2  = vec WgGemm [ ]
+        s_a2  = vec WgAdd [ ]
+        p_ln1 = vec Pipeline [ ]
+        p_gq  = vec Pipeline [ ]
+        p_gk  = vec Pipeline [ ]
+        p_gv  = vec Pipeline [ ]
+        p_at  = vec Pipeline [ ]
+        p_go  = vec Pipeline [ ]
+        p_a1  = vec Pipeline [ ]
+        p_ln2 = vec Pipeline [ ]
+        p_g1  = vec Pipeline [ ]
+        p_g2  = vec Pipeline [ ]
+        p_a2  = vec Pipeline [ ]
         for [ li: i32 0, li < model.layers, li += 1 ]
             l1g : upbuf[ model.ln1_w[li] ]
             l1b : upbuf[ model.ln1_b[li] ]

@@ -90,6 +90,7 @@ typedef enum AU_MEMBER AFlag;
 #define AU_TRAIT_UNMANAGED   ((int64_t) 1 << 57)
 #define AU_TRAIT_SHAPED      ((int64_t) 1 << 58)
 #define AU_TRAIT_IS_AU_NATIVE ((int64_t) 1 << 59)
+#define AU_TRAIT_DATA_USER   ((int64_t) 1 << 62)
 
 typedef bool(*global_init_fn)();
 
@@ -272,6 +273,7 @@ typedef struct _Au_t {
             u64 is_au_native : 1;
             u64 is_app       : 1;
             u64 is_cpp_virtual : 1; // dispatch via C++ vtable at member_index
+            u64 is_data_user : 1;   // AU_TRAIT_DATA_USER: `new T [ ? ]` reads header data
         };
         u64 traits;
     };

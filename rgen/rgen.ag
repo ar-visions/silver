@@ -144,7 +144,7 @@ element rgen : trinity
 	mutable context_seq  : i32               # bumped per publish (host drains one-shot)
 	mutable pub_lock     : mutex
 	mutable pub_framebuf : new u32 [ 320 * 224 ]   # plane B + backdrop (opaque base)
-	public  vec          : bool [ true ]     # VectorScale layered pipeline
+	public  vscale       : bool [ true ]     # VectorScale layered pipeline
 	public  smooth       : bool [ true ]
 	mutable fb_a         : new u32 [ 320 * 224 ]   # plane A (alpha)
 	mutable fb_sw        : new u32 [ 320 * 224 ]   # world-locked sprites (ride A)
@@ -685,21 +685,21 @@ element rgen : trinity
 		out_b : rect [ x: vp.x - bl + oxb, y: vp.y - bl + oyb, w: ow, h: oh ]
 		out_a : rect [ x: vp.x - bl + oxa, y: vp.y - bl + oya, w: ow, h: oh ]
 		out_s : rect [ x: vp.x - bl, y: vp.y - bl, w: ow, h: oh ]
-		if [ vec ]
+		if [ vscale ]
 			if [ ! vb_render ]
 				vb_shader = VectorScale [ vk: cv.vk, name: 'vectorscale' ]
 				vb_model  = Model [ w: cv.w, s: vb_shader, samplers: map Texture[string] [ 'color': screen_tex ] ]
-				vb_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: array Model [ vb_model ] ]
+				vb_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: [ vb_model ] ]
 				if [ cart ]
 					va_shader = VectorScale [ vk: cv.vk, name: 'vectorscale' ]
 					va_model  = Model [ w: cv.w, s: va_shader, samplers: map Texture[string] [ 'color': a_tex ] ]
-					va_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: array Model [ va_model ] ]
+					va_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: [ va_model ] ]
 					vw_shader = VectorScale [ vk: cv.vk, name: 'vectorscale' ]
 					vw_model  = Model [ w: cv.w, s: vw_shader, samplers: map Texture[string] [ 'color': sw_tex ] ]
-					vw_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: array Model [ vw_model ] ]
+					vw_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: [ vw_model ] ]
 					vs_shader = VectorScale [ vk: cv.vk, name: 'vectorscale' ]
 					vs_model  = Model [ w: cv.w, s: vs_shader, samplers: map Texture[string] [ 'color': ss_tex ] ]
-					vs_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: array Model [ vs_model ] ]
+					vs_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: [ vs_model ] ]
 			vb_render.update[]
 			vb_render.draw[]
 			vb_render.flush_submit[]

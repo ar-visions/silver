@@ -3303,6 +3303,200 @@ Au alloc_new(Au_t type, num count, shape shape_data, Au_t meta_a, Au meta_b,
     return alloc(type, count, shape_data, meta_a, meta_b, source, line, seq);
 }
 
+// growable vector: identity alloc is kept; elements ride header->data
+AU_EXPORT Au au_vec_new(Au_t elem, symbol source, i32 line, i32 seq) {
+    Au v  = alloc_vector(elem, 1, null, null, null, source, line, seq);
+    Au hd = header(v);
+    hd->count = 0;
+    return v;
+}
+
+// build a vec from an array's elements (transitional: array dies)
+AU_EXPORT Au au_vec_from(Au src, Au_t elem) {
+    Au v = au_vec_new(elem, (symbol)"vec_from", 0, 0);
+    if (!src) return v;
+    array ar = (array)src;
+    bool managed = elem && elem->is_class && !elem->is_c;
+    for (num i = 0; i < ar->count; i++) {
+        Au   e    = ar->origin[i];
+        ARef slot = au_vec_slot(v);
+        if      (managed) *(Au*)slot = e ? Au_hold(e) : null;
+        else if (e)       memcpy(slot, e, elem->typesize);
+        else              memset(slot, 0, elem->typesize);
+    }
+    return v;
+}
+
+// ensure room for one element, bump count, hand back its slot
+AU_EXPORT ARef au_vec_slot(Au v) {
+    Au hd = header(v);
+    if (hd->count >= hd->alloc)
+        Au_vrealloc(v, (hd->alloc << 1) + 8);
+    u8* d = (u8*)hd->data;
+    return (ARef)(d + (hd->count++) * Au_vdata_stride(v));
+}
+
+// open a slot at idx, bump count, hand it back
+AU_EXPORT ARef au_vec_insert(Au v, i64 idx) {
+    Au hd = header(v);
+    if (idx < 0) idx = 0;
+    if (idx > hd->count) idx = hd->count;
+    if (hd->count >= hd->alloc)
+        Au_vrealloc(v, (hd->alloc << 1) + 8);
+    i64 stride = Au_vdata_stride(v);
+    u8* d = (u8*)header(v)->data;
+    memmove(d + (idx + 1) * stride, d + idx * stride,
+        (hd->count - idx) * stride);
+    hd->count++;
+    return (ARef)(d + idx * stride);
+}
+
+// one runtime vec type per element — module registration and import
+// share these so a vec member/signature keeps its vector-ness
+static Au_t* vec_type_elems;
+static Au_t* vec_type_vps;
+static int   vec_type_count;
+static int   vec_type_cap;
+
+AU_EXPORT Au_t au_vec_type(Au_t elem) {
+    for (int i = 0; i < vec_type_count; i++)
+        if (vec_type_elems[i] == elem) return vec_type_vps[i];
+    Au_t vp = def(null, null, AU_MEMBER_TYPE,
+        AU_TRAIT_SHAPED | AU_TRAIT_DATA_USER);
+    vp->is_pointer = true;
+    vp->src        = elem;
+    vp->typesize   = sizeof(none*);
+    if (vec_type_count >= vec_type_cap) {
+        vec_type_cap = vec_type_cap ? vec_type_cap * 2 : 32;
+        vec_type_elems = realloc(vec_type_elems, vec_type_cap * sizeof(Au_t));
+        vec_type_vps   = realloc(vec_type_vps,   vec_type_cap * sizeof(Au_t));
+    }
+    vec_type_elems[vec_type_count] = elem;
+    vec_type_vps[vec_type_count]   = vp;
+    vec_type_count++;
+    return vp;
+}
+
+// class slots are held refs; every other element packs raw
+static bool au_vec_managed(Au v) {
+    Au_t et = (Au_t)header(v)->au;
+    return et && et->is_class && !et->is_c;
+}
+
+AU_EXPORT none au_vec_clear(Au v) {
+    Au hd = header(v);
+    if (au_vec_managed(v)) {
+        Au* slots = (Au*)hd->data;
+        for (num i = 0; i < hd->count; i++)
+            if (slots[i]) Au_drop(slots[i]);
+    }
+    hd->count = 0;
+}
+
+AU_EXPORT none au_vec_remove(Au v, i64 idx) {
+    Au  hd     = header(v);
+    i64 stride = Au_vdata_stride(v);
+    u8* d      = (u8*)hd->data;
+    if (idx < 0 || idx >= hd->count) return;
+    if (au_vec_managed(v)) {
+        Au e = *(Au*)(d + idx * stride);
+        if (e) Au_drop(e);
+    }
+    memmove(d + idx * stride, d + (idx + 1) * stride,
+        (hd->count - idx - 1) * stride);
+    hd->count--;
+}
+
+// isa(vec) reports the ELEMENT type — the holder bit is the identity
+AU_EXPORT bool au_is_vec(Au a) {
+    if (!a) return false;
+    return (header(a)->iflags & 0x02) != 0;   // AU_IF_HOLDER
+}
+
+// drop nothing: ownership of [0] transfers to the caller, who loads
+// the element BEFORE this compacts the remainder down
+AU_EXPORT none au_vec_shift(Au v) {
+    Au hd = header(v);
+    if (hd->count <= 0) return;
+    i64 stride = Au_vdata_stride(v);
+    u8* d = (u8*)hd->data;
+    memmove(d, d + stride, (hd->count - 1) * stride);
+    hd->count--;
+}
+
+// open a slot at the FRONT, bump count, hand it back
+AU_EXPORT ARef au_vec_unshift(Au v) {
+    Au hd = header(v);
+    if (hd->count >= hd->alloc)
+        Au_vrealloc(v, (hd->alloc << 1) + 8);
+    i64 stride = Au_vdata_stride(v);
+    u8* d = (u8*)header(v)->data;
+    memmove(d + stride, d, hd->count * stride);
+    hd->count++;
+    return (ARef)d;
+}
+
+// reverse returns a NEW vector; the source is untouched
+AU_EXPORT Au au_vec_reverse(Au v) {
+    Au   hd      = header(v);
+    Au_t et      = (Au_t)hd->au;
+    i64  stride  = Au_vdata_stride(v);
+    u8*  d       = (u8*)hd->data;
+    bool managed = au_vec_managed(v);
+    Au   r = au_vec_new(et, hd->source ? (symbol)hd->source : (symbol)"vec",
+        hd->line, 0);
+    for (num i = hd->count - 1; i >= 0; i--) {
+        ARef slot = au_vec_slot(r);
+        memcpy(slot, d + i * stride, stride);
+        if (managed && *(Au*)slot) Au_hold(*(Au*)slot);
+    }
+    return r;
+}
+
+// element types must match; class elements are held on entry
+AU_EXPORT none au_vec_concat(Au v, Au other) {
+    if (!other) return;
+    Au   oh      = header(other);
+    i64  stride  = Au_vdata_stride(v);
+    bool managed = au_vec_managed(v);
+    for (num i = 0; i < oh->count; i++) {
+        // other's data pointer re-reads per element: v == other must
+        // survive the grow that au_vec_slot may perform
+        u8*  od   = (u8*)header(other)->data;
+        ARef slot = au_vec_slot(v);
+        memcpy(slot, od + i * stride, stride);
+        if (managed && *(Au*)slot) Au_hold(*(Au*)slot);
+    }
+}
+
+// classes dispatch compare when overridden, else pointer identity
+AU_EXPORT i64 au_vec_index_of(Au v, ARef val) {
+    Au   hd      = header(v);
+    Au_t et      = (Au_t)hd->au;
+    i64  stride  = Au_vdata_stride(v);
+    u8*  d       = (u8*)hd->data;
+    bool managed = au_vec_managed(v);
+    bool has_cmp = managed && ((Au_f*)et)->ft.compare &&
+        ((Au_f*)et)->ft.compare != ((Au_f*)typeid(Au))->ft.compare;
+    // local fn ptr: `compare` is a dispatch macro, never call ft.compare direct
+    num (*cmpf)(Au, Au) = has_cmp ? (num(*)(Au, Au))((Au_f*)et)->ft.compare : null;
+    for (num i = 0; i < hd->count; i++) {
+        u8* s = d + i * stride;
+        if (managed) {
+            Au ev = *(Au*)s, tv = *(Au*)val;
+            if (ev == tv) return i;
+            if (ev && tv && cmpf && cmpf(ev, tv) == 0)
+                return i;
+        } else if (memcmp(s, val, stride) == 0)
+            return i;
+    }
+    return -1;
+}
+
+AU_EXPORT bool au_vec_contains(Au v, ARef val) {
+    return au_vec_index_of(v, val) >= 0;
+}
+
 // binding stamp: '<holder>:<bind>' names this object in au_log
 Au alloc_object(Au_t type, num count, shape shape_data, Au_t meta_a, Au meta_b,
                 symbol source, i32 line, i32 seq, symbol bind, Au_t holder) {
@@ -6065,6 +6259,19 @@ AU_EXPORT none Au_free(Au a) {
         cur = (Au_f*)cur->context;
     }
 
+    if (is_holder) {
+        Au_t et = (Au_t)aa->au;
+        // class slots are held refs; drop each on vector free
+        if (et && et->is_class && !et->is_c) {
+            Au* slots = (Au*)aa->data;
+            for (num i = 0; i < aa->count; i++)
+                if (slots[i]) Au_drop(slots[i]);
+        }
+        // Au_vrealloc moved the buffer off the identity alloc
+        if (aa->data && aa->data != (Au)&aa[1])
+            free(aa->data);
+    }
+
     if (leaks_top) leak_remove(aa);
 
 #ifndef NDEBUG
@@ -6118,8 +6325,11 @@ AU_EXPORT Au Au_vdata(Au a) {
 }
 
 AU_EXPORT i64 Au_vdata_stride(Au a) {
-    Au_t t = vdata_type(a);
-    return t->typesize - (t->traits & AU_TRAIT_PRIMITIVE ? 0 : sizeof(none*));
+    // direct call: the vdata_type MACRO dispatches through the element
+    // type's ftable, and silver struct types have no such slot (null jump)
+    Au_t t = Au_vdata_type(a);
+    // classes ride as held pointer slots; all else packs by typesize
+    return t->is_class ? (i64)sizeof(none*) : (i64)t->typesize;
 }
 
 AU_EXPORT Au_t Au_vdata_type(Au a) {
@@ -6348,8 +6558,9 @@ AU_EXPORT bool Au_is_meta_compatible(Au a, Au b) {
 AU_EXPORT Au Au_vrealloc(Au a, sz alloc) {
     Au   i = header(a);
     if (alloc > i->alloc) {
-        Au_t type = vdata_type(a);
-        sz  size  = vdata_stride(a);
+        // direct calls: struct element types have no ftable slots to dispatch
+        Au_t type = Au_vdata_type(a);
+        sz  size  = Au_vdata_stride(a);
         u8* data  = calloc(alloc, size);
         u8* prev  = (u8*)i->data;
         memcpy(data, prev, i->count * size);
@@ -6873,8 +7084,8 @@ AU_EXPORT i64 path_modified_time(path a) {
 // layout (LE): u32 magic('SFMT') u32 ver(=4);  section: u32 0xC0DEFACE u32 path_len,
 //   path bytes, i64 mtime, u32 decl_count, decl_count*{u32 len, bytes}, u32 line_count,
 //   line_count*{u32 ntok, ntok*{u32 col,len,syntax,decl_idx,decl_line}};  end: u32 0.
-AU_EXPORT array path_read_format(path a) {
-    array out = array(alloc, 16);
+AU_EXPORT Au path_read_format(path a) {
+    Au out = au_vec_new(typeid(Au), (symbol)"fmt", __LINE__, 0);
     FILE* f = fopen((cstr)a->chars, "rb");
     if (!f) return out;
     u32 magic = 0, ver = 0;
@@ -6906,25 +7117,26 @@ AU_EXPORT array path_read_format(path a) {
         u32 nlines = 0;
         if (ok && fread(&nlines, 4, 1, f) != 1) ok = false;
         fmt_file ff = fmt_file(
-            source, string(p), mtime, mt, lines, array(alloc, nlines ? nlines : 1));
+            source, string(p), mtime, mt,
+            lines, hold(au_vec_new(typeid(Au), (symbol)"fmt", __LINE__, 0)));
         free(p);
         for (u32 L = 0; ok && L < nlines; L++) {
             u32 ntok = 0;
             if (fread(&ntok, 4, 1, f) != 1) { ok = false; break; }
-            array ltk = array(alloc, ntok ? ntok : 1);
+            Au ltk = au_vec_new(typeid(fmt_token), (symbol)"fmt", __LINE__, 0);
             for (u32 t = 0; t < ntok; t++) {
                 u32 rec[5];
                 if (fread(rec, 4, 5, f) != 5) { ok = false; break; }
                 cstr ds = (dp && rec[3] > 0 && rec[3] <= np) ? dp[rec[3] - 1] : null;
-                push(ltk, (Au)fmt_token(
+                *(Au*)au_vec_slot(ltk) = (Au)hold(fmt_token(
                     column, (num)rec[0], length, (num)rec[1], syntax, (Syntax)rec[2],
                     decl_source, ds ? string(ds) : null, decl_line, (num)rec[4]));
             }
-            push(ff->lines, (Au)ltk);
+            *(Au*)au_vec_slot(ff->lines) = (Au)hold(ltk);
         }
         for (u32 i = 0; i < np; i++) if (dp && dp[i]) free(dp[i]);
         free(dp);
-        push(out, (Au)ff);
+        *(Au*)au_vec_slot(out) = (Au)hold(ff);
         if (!ok) break;
     }
     fclose(f);
@@ -8284,6 +8496,37 @@ static bool agi_leaf(string res, Au v, int depth) {
         append(res, " ]");
         return true;
     }
+    if (au_is_vec(v)) {
+        Au   hd      = header(v);
+        Au_t et      = (Au_t)hd->au;
+        bool managed = et && et->is_class && !et->is_c;
+        num  n       = hd->count;
+        u8*  d       = (u8*)hd->data;
+        i64  stride  = Au_vdata_stride(v);
+        if (managed) {
+            // vecs of class objects need keyed blocks — not a leaf
+            for (num i = 0; i < n; i++) {
+                Au e = ((Au*)d)[i];
+                if (e && isa(e)->is_class && !instanceof(e, string) && !instanceof(e, path))
+                    return false;
+            }
+        }
+        push(res, '[');
+        bool first = true;
+        for (num i = 0; i < n; i++) {
+            append(res, first ? " " : ", ");
+            if (managed) {
+                Au e = ((Au*)d)[i];
+                if (!e)                             append(res, "null");
+                else if (!agi_leaf(res, e, depth + 1)) concat(res, json(e));
+            } else if (et == typeid(f32)) concat(res, f(string, "%g", (f64)*(f32*)(d + i * stride)));
+            else   if (et == typeid(f64)) concat(res, f(string, "%g", *(f64*)(d + i * stride)));
+            else   serialize(et, res, (ARef)(d + i * stride));
+            first = false;
+        }
+        append(res, " ]");
+        return true;
+    }
     if (instanceof(v, map))
         return false;
     // string-castable leaves (path, shape); structs inline as json
@@ -8319,6 +8562,38 @@ static none agi_write_entry(string res, Au v, int indent, int depth) {
         concat(res, json(v));
         push(res, '\n');
         return;
+    }
+    // vecs of class objects: keyed blocks, same form as arrays below
+    if (au_is_vec(v)) {
+        Au   hd      = header(v);
+        Au_t et      = (Au_t)hd->au;
+        bool managed = et && et->is_class && !et->is_c;
+        if (managed) {
+            Au*  items = (Au*)hd->data;
+            bool objs  = false;
+            for (num i = 0; i < hd->count; i++)
+                if (items[i] && isa(items[i])->is_class &&
+                    !instanceof(items[i], string) && !instanceof(items[i], path))
+                    objs = true;
+            if (objs) {
+                append(res, ":\n");
+                int idx = 0;
+                for (num i = 0; i < hd->count; i++) {
+                    Au e = items[i];
+                    if (!e) { idx++; continue; }
+                    agi_indent(res, indent + 1);
+                    string nm = (string)instanceof(Au_get_property(e, "name"),  string);
+                    if (!nm)  nm = (string)instanceof(Au_get_property(e, "ident"), string);
+                    agi_write_key(res, nm ? nm : f(string, "e%i", idx));
+                    append(res, ": ");
+                    append(res, (cstr)isa(e)->ident);
+                    push(res, '\n');
+                    agi_write_block(res, e, indent + 2, depth + 1);
+                    idx++;
+                }
+                return;
+            }
+        }
     }
     // arrays of class objects: keyed blocks (element's name/ident, else index)
     if (instanceof(v, array)) {
@@ -8374,8 +8649,10 @@ static none agi_write_members(string res, Au a, Au_t type, int indent, int depth
         if (m->is_static)                             continue;
         if (m->access_type == interface_intern)       continue;
         if (!m->type)                                 continue;
-        // raw pointers (ref f32 buffers etc) have no text form
-        if (m->type->is_pointer || (m->traits & AU_TRAIT_EXPLICIT_REF)) continue;
+        // raw pointers (ref f32 buffers etc) have no text form; vec
+        // members ARE pointers but carry data_user and serialize
+        if ((m->type->is_pointer && !m->type->is_data_user) ||
+            (m->traits & AU_TRAIT_EXPLICIT_REF)) continue;
         Au v = Au_get_property(a, m->ident);
         if (!v) continue;
         agi_indent(res, indent);
@@ -8466,6 +8743,20 @@ static Au parse_array(cstr s, Au_t schema, Au_t meta_type, cstr* remainder, ctx 
         // i forget where we use this!
         array arb = parse_array_objects(&scan, typeid(i64), context);
         res = construct_with(schema, (Au)arb, null);
+    } else if (schema->member_type == AU_MEMBER_TYPE && schema->is_pointer &&
+               schema->is_data_user && schema->src) {
+        // vec T member: parse elements as T, pack a vec
+        Au_t elem = schema->src;
+        array arb = parse_array_objects(&scan, elem, context);
+        Au v = au_vec_new(elem, (symbol)"agi", __LINE__, 0);
+        bool managed = elem && elem->is_class && !elem->is_c;
+        each(arb, Au, o) {
+            ARef slot = au_vec_slot(v);
+            if      (managed) *(Au*)slot = o ? Au_hold(o) : null;
+            else if (o)       memcpy(slot, o, elem->typesize);
+            else              memset(slot, 0, elem->typesize);
+        }
+        res = v;
     } else if (schema->src == typeid(vector)) {
         Au_t scalar_type = schema->meta.a;
         verify(scalar_type, "scalar type required when using vector (define a meta-type of vector with type)");
@@ -8601,8 +8892,19 @@ static none async_runner(thread_t* thread) {
     unlock(thread->lock);
 }
 
+// work is a vec (or a legacy array while any remains)
+static i32 async_work_count(async t) {
+    if (!t->work) return 0;
+    if (au_is_vec(t->work)) return (i32)header(t->work)->count;
+    return (i32)len(t->work);
+}
+static Au async_work_get(async t, int i) {
+    if (au_is_vec(t->work)) return ((Au*)header(t->work)->data)[i];
+    return ((array)t->work)->origin[i];
+}
+
 AU_EXPORT none async_init(async t) {
-    i32    n = len(t->work);
+    i32    n = async_work_count(t);
     verify(n > 0, "no work given, no threads needed");
     // we can then have a worker modulo restriction
     // (1 by default to grab the next available work; 
@@ -8612,7 +8914,7 @@ AU_EXPORT none async_init(async t) {
     for (int i = 0; i < n; i++) {
         thread_t* thread = &t->threads[i];
         thread->index = i;
-        thread->w     = get(t->work, i);
+        thread->w     = async_work_get(t, i);
         thread->next  = thread->w;
         thread->t     = t;
         thread->lock  = hold(mutex(cond, true));
@@ -8627,7 +8929,7 @@ AU_EXPORT none async_init(async t) {
 
 AU_EXPORT none async_dealloc(async t) {
     sync(t, null);
-    for (int i = 0, n = len(t->work); i < n; i++) {
+    for (int i = 0, n = async_work_count(t); i < n; i++) {
         thread_t* thread = &t->threads[i];
         drop(thread->lock);
     }
@@ -8653,7 +8955,7 @@ AU_EXPORT void au_spawn(callback fn, Au target, Au work) {
 }
 
 AU_EXPORT Au async_sync(async t, Au w) {
-    int n = len(t->work);
+    int n = async_work_count(t);
     Au result = null;
 
     if (w) {

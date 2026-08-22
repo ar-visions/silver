@@ -9,13 +9,13 @@ class NavPoint
     public scroll_y : f32 [ 0.0 ]
 
 class Navigate
-    intern stack : array NavPoint
+    intern stack : vec NavPoint
     intern idx   : i32 [ -1 ]    # current position in stack; -1 = empty
     public coalesce_lines : i32 [ 1 ]
     public significance_lines : i32 [ 10 ]
 
     func init []
-        stack = array NavPoint [ alloc: 64 ]
+        stack = vec NavPoint []
 
     func count [] -> i32
         return stack->count
@@ -31,7 +31,7 @@ class Navigate
         return stack[ idx ]
 
     public func record [ editor: i32, p: string, ln: i32, col: i32, scroll_y: f32 ]
-        if [ !stack ] stack = array NavPoint [ alloc: 64 ]
+        if [ !stack ] stack = vec NavPoint []
         cur : current[]
         if [ cur && cur.editor == editor && cur.path == p ]
             d : i32 [ cur.line - ln ]

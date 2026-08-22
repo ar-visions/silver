@@ -214,7 +214,7 @@ abstract live_app media_app
     intern  share_back  : i32
     # one shared surface per instrument, on side 2 + its slot. a toggled
     # off slot keeps its place, so a live instrument's side never moves
-    intern  instr_slots : array string
+    intern  instr_slots : vec string
     intern  instr_cv    : map Canvas  [string]
     intern  instr_t0    : map Texture [string]
     intern  instr_t1    : map Texture [string]
@@ -229,7 +229,7 @@ abstract live_app media_app
     intern  instr_ms    : i64
     # test-pattern accounting: publish count and the last interval
     # the built-in memory instrument's samples, oldest first
-    intern  mem_hist    : array f32
+    intern  mem_hist    : vec f32
     intern  app_pid : i32
     # aspect captured at init — resize requests are clamped to it
     intern  aspect_w    : i32
@@ -251,7 +251,7 @@ abstract live_app media_app
         hdr : Au.header[ e ]
         em['type'] = string [ hdr.au.ident ]
         if [ e.bounds ]
-            em['bounds'] = array f32 [ e.bounds.x, e.bounds.y, e.bounds.w, e.bounds.h ]
+            em['bounds'] = vec f32 [] [ e.bounds.x, e.bounds.y, e.bounds.w, e.bounds.h ]
         if [ e.label && e.label.count > 0 ]
             em['label'] = e.label
         if [ e.hide      ] em['hide']      = 'true'
@@ -382,12 +382,12 @@ abstract live_app media_app
         # every instrument this app offers, in a fixed order — its index
         # IS its surface side. nothing is toggled off, so a name never
         # moves and the shell can address a side without asking
-        func instr_list [] -> array string
+        func instr_list [] -> vec string
             if [ instr_slots && instr_slots.count > 0 ] return instr_slots
             wn : Window [ w ]
             ao : element [ cast element [ wn.app_object ] ]
-            ns : array string []
-            vl : array [ (ao) ? ao.instruments*[] : null ]
+            ns : vec string []
+            vl : (ao) ? ao.instruments*[] : null
             mem : bool [ false ]
             if [ vl ]
                 for [ i: i32 0, i < vl.count, i += 1 ]
@@ -409,7 +409,7 @@ abstract live_app media_app
         # view, which is the normal case — a view is only an option
         func instr_state [] -> string
             rs : string [ '' ]
-            sl : array [ instr_list[] ]
+            sl : instr_list[]
             if [ !sl ] return rs
             for [ i: i32 0, i < sl.count, i += 1 ]
                 nm : string sl[i]
@@ -429,17 +429,17 @@ abstract live_app media_app
 
         # the entries an instrument reads right now. the app answers for
         # its own; we answer for the memory one every app gets free
-        func instr_read [ nm: string ] -> array string
+        func instr_read [ nm: string ] -> vec string
             wn : Window [ w ]
             ao : element [ cast element [ wn.app_object ] ]
-            ls : array [ (ao) ? ao.read_instrument*[ nm ] : null ]
+            ls : (ao) ? ao.read_instrument*[ nm ] : null
             if [ ls ] return ls
             # nm is a PARAMETER: == against a literal is false here
             if [ nm.compare[ 'memory' ] == 0 ] return mem_lines[]
             return null
 
-        func mem_lines [] -> array string
-            ls : array string []
+        func mem_lines [] -> vec string
+            ls : vec string []
             if [ !mem_hist || mem_hist.count == 0 ] return ls
             last : f32 [ mem_hist[ mem_hist.count - 1 ] ]
             pk : f32 [ 0.0 ]
@@ -536,12 +536,12 @@ abstract live_app media_app
         # instruments are inspectors, not the game: they sample at 8hz, on
         # their OWN surfaces, so nothing here touches the app's frame
         func instr_publish []
-            list : array [ instr_list[] ]
+            list : instr_list[]
             if [ !list || list.count == 0 ] return
             now : i64 [ epoch_millis[] ]
             if [ instr_ms != 0 && now - instr_ms < 125 ] return
             instr_ms = now
-            if [ !mem_hist ] mem_hist = array f32 []
+            if [ !mem_hist ] mem_hist = vec f32 []
             # KILOBYTES resident. the fraction-of-total-ram this used to
             # sample is ~0.001 here, which draws as a flat line
             bytes : i64 [ au_mem_rss[] ]
@@ -560,7 +560,7 @@ abstract live_app media_app
                 nm.hold[]
                 # logging writes the entries to the app log, pane or no pane
                 if [ instr_has[ instr_logs, nm ] ]
-                    ls : array [ instr_read[ nm ] ]
+                    ls : instr_read[ nm ]
                     if [ ls ]
                         for [ k: i32 0, k < ls.count, k += 1 ]
                             puts '[{nm}] {ls[k]}'
@@ -804,7 +804,7 @@ abstract live_app media_app
                 got : i32 [ agent_sock_line[ @buf[0], 1024 ] ]
                 if [ got <= 0 ] break
                 line : string [ @buf[0] ]
-                parts : array string [ line.split[ ' ' ] ]
+                parts : line.split[ ' ' ]
                 if [ parts.count == 0 ] continue
                 cmd : string parts[0]
                 ok : bool [ true ]
@@ -871,7 +871,7 @@ abstract live_app media_app
                         wn.ev.pad.state = 0
                         wn.pad_event[ wn.ev ]
                 el [ cmd == 'instruments' ]
-                    list : array [ (aa) ? aa.instruments*[] : null ]
+                    list : (aa) ? aa.instruments*[] : null
                     reply : ''
                     mem : bool [ false ]
                     if [ list ]
@@ -914,7 +914,7 @@ abstract live_app media_app
                     continue
                 # the enumeration itself — one entry per line
                 el [ cmd == 'instr-read' && parts.count >= 2 ]
-                    lines : array [ instr_read[ parts[1] ] ]
+                    lines : instr_read[ parts[1] ]
                     reply : ''
                     if [ lines ]
                         for [ i: i32 0, i < lines.count, i += 1 ]
@@ -988,7 +988,7 @@ abstract live_app media_app
             # and CLEAR the entries — the window outlives module reloads, and a
             # stale Render dropped by the next module's map set is a double-free
             if [ rwin.element_targets ]
-                keys : array string [ alloc: 8 ]
+                keys : vec string []
                 for [ tv: Au, tk: string ] in rwin.element_targets
                     rt : cast Render [ tv ]
                     if [ rt ] rt.models = null
@@ -1047,7 +1047,7 @@ Display Window
     mutable app_size_h          : i32
     mutable ide_size_w          : i32
     mutable ide_size_h          : i32
-    mutable cursors             : array CursorPos
+    mutable cursors             : vec CursorPos
     mutable cursor_hresize      : handle
     mutable cursor_vresize      : handle
     mutable cursor_kind         : i32
@@ -1122,7 +1122,7 @@ Display Window
     mutable last_click_pos      : vec2f
     public  stdout_overlay      : bool [ false ]
     public  stdout_y            : f32 [ 10.0 ]  # overlay top offset, app-tunable
-    mutable so_lines            : array string
+    mutable so_lines            : vec string
     mutable so_last             : i64
     mutable t_apply_args        : i64
     mutable t_apply_style       : i64
@@ -1346,7 +1346,7 @@ Display Window
 
         # first styling: class members already set by .ag code stay code-owned
         if [ !inst.code_styled ]
-            inst.code_styled = array string [ ]
+            inst.code_styled = vec string []
             for [ bty : typeid[ inst ], bty != typeid[ Au ], bty = bty.context ]
                 for [ bm: i32 0, bm < bty.members.count, bm += 1 ]
                     bmem : Au_t bty.members.origin[bm]
@@ -1397,7 +1397,7 @@ Display Window
                         expect layer_member, 'member not found on {inst_type.ident}: {best.member}'
 
                         if [ !best.instance ]
-                            if [ (layer_member.src.traits & (1 << 11)) && typeid[best.value] != typeid[array] ]
+                            if [ (layer_member.src.traits & (1 << 11)) && !Au.au_is_vec[ best.value ] ]
                                 # alloc is pool-managed: the entry must own it
                                 best.instance = Au.new_object[ layer_member.src, null, null, false, __FILE__, __LINE__, __SEQUENCE__ ]
                                 best.instance.hold[]
@@ -1447,15 +1447,18 @@ Display Window
                         info      : header [ best.value ]
                         val_type  : Au_t [ info.au ]
                         meta_type : Au_t [ member.meta.a ]
-                        if [ val_type == typeid[ array ] && member.src == typeid[ array ] && meta_type ]
+                        vec_val : bool [ Au.au_is_vec[ best.value ] ]
+                        vec_mem : bool [ (member.src.traits & (1 << 62)) != 0 ]
+                        if [ vec_val && vec_mem ]
+                            elem9    : Au_t [ member.src.src ]
                             src_arr  : cast astrings [ best.value ]
-                            dst_arr  : array Au [ ]
+                            dst9     : vec Au []
                             for [ s: string ] in src_arr
-                                obj : Au.new_object[ meta_type, null, null, false, __FILE__, __LINE__, __SEQUENCE__ ]
+                                obj : Au.new_object[ elem9, null, null, false, __FILE__, __LINE__, __SEQUENCE__ ]
                                 obj.set_context_from[ home_object ]
                                 obj.call_construct[ st.themed[ s ] ]
-                                dst_arr.push[ obj ]
-                            best.instance = dst_arr
+                                dst9.push[ obj ]
+                            best.instance = dst9
                             best.instance.hold[]
                         el [ member.src == typeid[ Au_t ] ]
                             str : cast string [ best.value ]
@@ -1662,7 +1665,7 @@ Display Window
                     if [ !text_mode ]
                         expect instance.vk, "no vk context set for new instance"
                     instance.initialize[]
-                    ltys : array Au_t []
+                    ltys : vec Au_t []
                     for [ lty : typeid[ instance ], lty != typeid[ Au ], lty = lty.context ]
                         ltys.push[ lty ]
                     for [ lti: i32 ltys.count - 1, lti >= 0, lti -= 1 ]
@@ -1744,7 +1747,7 @@ Display Window
 
         # paint + hit order is insertion order: mirror what render[] declared,
         # so a remount or a type swap cannot silently move an element
-        rkeys : array string [ ]
+        rkeys : vec string []
         for [ e: element, id: string ] in rendered
             if [ e ] rkeys.push[ id ]
         same : bool [ true ]
@@ -2182,7 +2185,7 @@ Display Window
         # editor's goto-definition) sets no_default and keeps it
         if [ f && (ev.key.meta || ev.key.ctrl) && !ev.no_default ]
             if [ f.source && app_object ]
-                cur : array StyleHit [ ]
+                cur : vec StyleHit []
                 cur.push[ StyleHit [ file: path '{f.source}', line: f.line ] ]
                 app_object.on_inspect*[ cur ]
             ev.no_propagation = true
@@ -2357,69 +2360,69 @@ Display Window
                 source : Texture [ (backdrop) ? backdrop.color : compose.color ]
 
                 m_reduce  = Model  [ w: a, samplers: map Texture[string] [ 'color': source ] ]
-                r_reduce  = Render [ vk: ctx, w: a, wscale: 1.0, models: array Model [ m_reduce ] ]
+                r_reduce  = Render [ vk: ctx, w: a, wscale: 1.0, models: [m_reduce ] ]
                 m_reduce.hold[]
                 r_reduce.hold[]
 
                 m_reduce0 = Model  [ w: a, samplers: map Texture[string] [ 'color': r_reduce.color ] ]
-                r_reduce0 = Render [ vk: ctx, w: a, wscale: 0.5, models: array Model [ m_reduce0 ] ]
+                r_reduce0 = Render [ vk: ctx, w: a, wscale: 0.5, models: [m_reduce0 ] ]
                 m_reduce0.hold[]
                 r_reduce0.hold[]
 
                 m_reduce1 = Model  [ w: a, samplers: map Texture[string] [ 'color': r_reduce0.color ] ]
-                r_reduce1 = Render [ vk: ctx, w: a, wscale: 0.25, models: array Model [ m_reduce1 ] ]
+                r_reduce1 = Render [ vk: ctx, w: a, wscale: 0.25, models: [m_reduce1 ] ]
                 m_reduce1.hold[]
                 r_reduce1.hold[]
 
                 fbv : BlurV [ vk: ctx, name: 'blur-v', reduction_scale: 4.0 ]
                 fbv.hold[]
                 m_blur_v  = Model  [ w: a, s: fbv, samplers: map Texture[string] [ 'color': r_reduce1.color ] ]
-                r_blur_v  = Render [ vk: ctx, w: a, wscale: 1.0, models: array Model [ m_blur_v ] ]
+                r_blur_v  = Render [ vk: ctx, w: a, wscale: 1.0, models: [m_blur_v ] ]
                 m_blur_v.hold[]
                 r_blur_v.hold[]
 
                 fbl : Blur [ vk: ctx, name: 'blur', reduction_scale: 4.0 ]
                 fbl.hold[]
                 m_blur    = Model  [ w: a, s: fbl, samplers: map Texture[string] [ 'color': r_blur_v.color ] ]
-                r_blur    = Render [ vk: ctx, w: a, wscale: 1.0, models: array Model [ m_blur ] ]
+                r_blur    = Render [ vk: ctx, w: a, wscale: 1.0, models: [m_blur ] ]
                 m_blur.hold[]
                 r_blur.hold[]
 
                 sbv : BlurV [ vk: ctx, name: 'blur-v', reduction_scale: 2.0 ]
                 sbv.hold[]
                 m_soft_v  = Model  [ w: a, s: sbv, samplers: map Texture[string] [ 'color': r_reduce0.color ] ]
-                r_soft_v  = Render [ vk: ctx, w: a, wscale: 1.0, models: array Model [ m_soft_v ] ]
+                r_soft_v  = Render [ vk: ctx, w: a, wscale: 1.0, models: [m_soft_v ] ]
                 m_soft_v.hold[]
                 r_soft_v.hold[]
 
                 sbl : Blur [ vk: ctx, name: 'blur', reduction_scale: 2.0 ]
                 sbl.hold[]
                 m_soft    = Model  [ w: a, s: sbl, samplers: map Texture[string] [ 'color': r_soft_v.color ] ]
-                r_soft    = Render [ vk: ctx, w: a, wscale: 1.0, models: array Model [ m_soft ] ]
+                r_soft    = Render [ vk: ctx, w: a, wscale: 1.0, models: [m_soft ] ]
                 m_soft.hold[]
                 r_soft.hold[]
 
                 m_reduce2 = Model  [ w: a, samplers: map Texture[string] [ 'color': r_reduce1.color ] ]
-                r_reduce2 = Render [ vk: ctx, w: a, wscale: 0.125, models: array Model [ m_reduce2 ] ]
+                r_reduce2 = Render [ vk: ctx, w: a, wscale: 0.125, models: [m_reduce2 ] ]
                 m_reduce2.hold[]
                 r_reduce2.hold[]
 
                 m_reduce3 = Model  [ w: a, samplers: map Texture[string] [ 'color': r_reduce2.color ] ]
-                r_reduce3 = Render [ vk: ctx, w: a, wscale: 0.0625, models: array Model [ m_reduce3 ] ]
+                r_reduce3 = Render [ vk: ctx, w: a, wscale: 0.0625, models: [m_reduce3 ] ]
                 m_reduce3.hold[]
                 r_reduce3.hold[]
 
                 bv : BlurV [ vk: ctx, name: 'blur-v', reduction_scale: 16.0 ]
                 bv.hold[]
                 m_frost_v = Model  [ w: a,   s: bv, samplers: map Texture[string] [ 'color': r_reduce3.color ] ]
-                r_frost_v = Render [ vk: ctx, w: a, wscale: 1.0, models: array Model [ m_frost_v ] ]
+                r_frost_v = Render [ vk: ctx, w: a, wscale: 1.0, models: [m_frost_v ] ]
                 m_frost_v.hold[]
                 r_frost_v.hold[]
 
                 bl : Blur [ vk: ctx, name: 'blur', reduction_scale: 16.0 ]
                 bl.hold[]
                 m_frost   = Model  [ w: a,   s: bl, samplers: map Texture[string] [ 'color': r_frost_v.color ] ]
-                r_frost   = Render [ vk: ctx, w: a, wscale: 1.0, models: array Model [ m_frost ] ]
+                r_frost   = Render [ vk: ctx, w: a, wscale: 1.0, models: [m_frost ] ]
                 m_frost.hold[]
                 r_frost.hold[]
 
@@ -2437,7 +2440,7 @@ Display Window
                 r_view    = Render [ vk: ctx, w: a,
                     color: screen.color,
                     wscale: 1.0, clear_color: vec4f [ 1.0, 1.0, 1.0, 1.0 ],
-                    models: array Model [ m_view ] ]
+                    models: [m_view ] ]
                 m_view.hold[]
                 r_view.hold[]
 
@@ -2446,7 +2449,7 @@ Display Window
                 ux_shader.high_color = vec4f [ 1.0, 0.8, 0.8, 1.0 ]
 
                 # the backdrop draws itself as an element target, not here
-                list = array Render [
+                list = vec Render [] [
                     r_reduce, r_reduce0, r_reduce1, r_blur_v, r_blur,
                     r_soft_v, r_soft,
                     r_reduce2, r_reduce3, r_frost_v, r_frost,
@@ -2557,7 +2560,7 @@ Display Window
         if [ stdout_overlay && !text_mode && !hidden ]
             Au.stdout_tee[]
             if [ !so_lines ]
-                so_lines = array string [ ]
+                so_lines = vec string []
             line : Au.stdout_line[]
             while [ line ]
                 so_lines += line
@@ -4042,10 +4045,10 @@ element Group2
 
 element TButtons
     animated : true
-    public  buttons   : array string  # segment ids, e.g. [ 'minus', 'plus' ]
+    public  buttons   : vec string    # segment ids, e.g. [ 'minus', 'plus' ]
     public  icons     : bool [ true ] # ids resolve to images/<id>.svg
     # per-segment icon name when the id is not the file name
-    public  icon_ids  : array string
+    public  icon_ids  : vec string
     public  manual    : bool          # actions, not toggles — no latched selection
     public  selected  : i32 [ -1 ]
     public  sel_mask  : i32
@@ -4188,12 +4191,12 @@ element Splitter
     public snap_close : bool
     intern drag_ix    : i32
     intern last_n     : i32
-    intern dseam      : array f32            # divider px positions, hit-test + draw
+    intern dseam      : vec f32              # divider px positions, hit-test + draw
     intern cursor_on  : bool                 # WE set the resize cursor; restore it
     intern dbgf       : i32                  # count-change debug frames left
 
-    func order [] -> array string
-        ids : array string [ ]
+    func order [] -> vec string
+        ids : vec string []
         if [ inner ]
             for [ ce: element, id: string ] in inner
                 ids.push[ id ]
@@ -4225,7 +4228,7 @@ element Splitter
 
     func render [] -> Elements
         if [ !inner ] return null
-        ids : array string [ order[] ]
+        ids : order[]
         n   : i32 [ ids.count ]
         if [ n == 0 ] return null
         if [ n != last_n ]
@@ -4243,7 +4246,7 @@ element Splitter
         if [ flex < 60.0 ] flex = 60.0
         ti   : string [ (inset > 0.0) ? '{inset}' : '0' ]
         out  : Elements [ ]
-        dseam = array f32 [ ]
+        dseam = vec f32 []
         pos : f32 [ 0.0 ]
         for [ i: i32 0, i < n, i += 1 ]
             ch : element inner[ ids[ i ] ]
@@ -4283,7 +4286,7 @@ element Splitter
 
     public func draw [ w: Window ]
         if [ w.draw_stage != CanvasType.screen || !bounds ] return
-        ids : array string [ order[] ]
+        ids : order[]
         n   : i32 [ ids.count ]
         if [ n == 0 ] return
         span   : f32 [ (vertical) ? bounds.h : bounds.w ]
@@ -4334,7 +4337,7 @@ element Splitter
 
     func on_press [ ev: Event ]
         if [ !bounds || !dseam ] return
-        ids : array string [ order[] ]
+        ids : order[]
         at  : f32 [ (vertical) ? ev.mouse.pos.y : ev.mouse.pos.x ]
         for [ di: i32 0, di < dseam.count, di += 1 ]
             d : f32 [ dseam[ di ] ]
@@ -4360,7 +4363,7 @@ element Splitter
             ux.seam_cursor[ 0 ]
             cursor_on = false
         if [ drag_ix <= 0 ] return
-        ids  : array string [ order[] ]
+        ids  : order[]
         n    : i32 [ ids.count ]
         if [ drag_ix >= n ] drag_ix = n - 1
         if [ drag_ix <= 0 ] return

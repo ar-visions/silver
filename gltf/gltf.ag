@@ -83,7 +83,7 @@ class Channel
 
 class Animation
     public name:           string
-    public samplers:       array Sampler
+    public samplers:       vec Sampler
 
 class SparseInfo
     public bufferView:     u64
@@ -106,8 +106,8 @@ class Accessor
     public sparse:          Sparse
     public stride:          u64
     public total_bytes:     u64
-    public vcount:          array u64
-    public component_size:  array u64
+    public vcount:          vec u64
+    public component_size:  vec u64
 
     func member_type [] -> Au_t
         res : Au_t[null]
@@ -205,7 +205,7 @@ class BufferView
 
 class Skin
     public name:            string
-    public joints:          array i64
+    public joints:          vec i64
     public inverseBindMatrices: i32
     public extras:          Au
     public extensions:      Au
@@ -216,7 +216,7 @@ class GltfTransform
     mutable local_default:   mat4f
     mutable istate:          i32
     mutable iparent:         i32
-    mutable ichildren:       array i64
+    mutable ichildren:       vec i64
 
     func propagate [] 
         m: (iparent != -1) ? jdata.states[iparent] : mat4f.identity[]
@@ -238,8 +238,8 @@ class GltfTransform
         propagate
 
 class JData
-    mutable states:          array mat4f
-    mutable transforms:      array GltfTransform
+    mutable states:          vec mat4f
+    mutable transforms:      vec GltfTransform
     mutable local_mat :      mat4f
 
 class Node
@@ -252,8 +252,8 @@ class Node
     public scale:           vec3f
     public matrix:          mat4f
     mutable world:          mat4f
-    public weights:         array f32
-    public children:        array i64
+    public weights:         vec f32
+    public children:        vec i64
     mutable joint_index:     i32
     mutable processed:       bool
     mutable mx_joints:       Au
@@ -270,16 +270,16 @@ class Primitive
     public indices:         u64
     public material:        i32
     public mode:            Mode
-    public targets:         array map
+    public targets:         vec map
 
 class MeshExtras
-    public targetNames:     array string
-    public crease:          array f32
+    public targetNames:     vec string
+    public crease:          vec f32
 
 class Mesh
     public name:            string
-    public primitives:      array Primitive
-    public weights:         array f32
+    public primitives:      vec Primitive
+    public weights:         vec f32
     public extras:          MeshExtras
     func get_primitive [n: cstr] -> Primitive
         for [p: Primitive] in primitives
@@ -289,7 +289,7 @@ class Mesh
 
 class Scene
     public name:            string
-    public nodes:           array i64
+    public nodes:           vec i64
 
 class AssetDesc
     public generator:       string
@@ -413,7 +413,7 @@ class Res
         return string[ buf ]
 
     # pack files (relative names under base) into dest .res
-    static func pack [ base: path, names: array string, dest: path, pw: string, obscure: bool ] -> bool
+    static func pack [ base: path, names: vec string, dest: path, pw: string, obscure: bool ] -> bool
         n     : i32 [ names.count ]
         sizes : new u64 [ n ]
         nhash : new u64 [ n ]
@@ -581,12 +581,12 @@ class Res
             if [ inhash[ i ] == nh ] return ensure[ i, ext ]
         return null
 
-    intern static mounts : array Res
+    intern static mounts : vec Res
 
     static func mount [ res_path: path, base_dir: path, cache_dir: path, password: string ] -> Res
         arc : Res [ ]
         if [ !arc.load[ res_path, base_dir, cache_dir, password ] ] return null
-        if [ !mounts ] mounts = array Res [ ]
+        if [ !mounts ] mounts = vec Res []
         mounts += arc
         return arc
 
@@ -679,18 +679,18 @@ class Material
     public doubleSided:      bool
 
 class GltfModel
-    public nodes:            array Node
-    public skins:            array Skin
-    public accessors:        array Accessor
-    public bufferViews:      array BufferView
-    public meshes:           array Mesh
-    public buffers:          array GltfBuffer
-    public animations:       array Animation
-    public scenes:           array Scene
-    public materials:        array Material
-    public images:           array GltfImage
-    public textures:         array GltfTexture
-    public samplers:         array GltfSampler
+    public nodes:            vec Node
+    public skins:            vec Skin
+    public accessors:        vec Accessor
+    public bufferViews:      vec BufferView
+    public meshes:           vec Mesh
+    public buffers:          vec GltfBuffer
+    public animations:       vec Animation
+    public scenes:           vec Scene
+    public materials:        vec Material
+    public images:           vec GltfImage
+    public textures:         vec GltfTexture
+    public samplers:         vec GltfSampler
     public scene:            u64
     public asset:            AssetDesc
 
@@ -803,8 +803,8 @@ class GltfModel
                 n.joint_index = j_index
                 j_index += 1
             n: i32 [skin.joints.count]
-            j.transforms = array GltfTransform []
-            j.states     = array mat4f []
+            j.transforms = vec GltfTransform []
+            j.states     = vec mat4f []
             
             for [ i: i32 0, i < n, i += 1 ]
                 j.states.push ident

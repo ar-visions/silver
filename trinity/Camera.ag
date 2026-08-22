@@ -251,10 +251,10 @@ class Camera
             expect err == 0, 'camera: VIDIOC_REQBUFS failed'
             buffer_count = req.count
 
-            cam_bufs = new VkBuffer       [ buffer_count ]
-            cam_mem  = new VkDeviceMemory [ buffer_count ]
-            mm_ptrs  = new handle         [ buffer_count ]
-            mm_sizes = new u32            [ buffer_count ]
+            cam_bufs = vec VkBuffer       [ buffer_count ]
+            cam_mem  = vec VkDeviceMemory [ buffer_count ]
+            mm_ptrs  = vec handle         [ buffer_count ]
+            mm_sizes = vec u32            [ buffer_count ]
 
             for [ i: i32 0, i < buffer_count, i += 1 ]
                 qb : v4l2_buffer [ ]
@@ -442,11 +442,11 @@ ifdef [ apple ]
     func trinity_camera_copy   [ backend: handle, dst: @u8, dst_bytes: u32 ] -> i32
     func trinity_camera_close  [ backend: handle ]
 
-    func camera_devices [] -> array string
+    func camera_devices [] -> vec string
         n      : i32 trinity_camera_count[]
-        result : array string [ ]
+        result : vec string []
         for [ i: i32 0, i < n, i += 1 ]
-            result.push[ string[ trinity_camera_name[ i ] ] ]
+            result += string[ trinity_camera_name[ i ] ]
         return result
 
 

@@ -606,7 +606,7 @@ element EarthPrev
     intern earth  : EarthShader
     intern ocean  : OceanShader
     intern cloud  : CloudShader
-    intern models : array Model
+    intern models : vec Model
     intern target : Render
     intern built  : bool
     # async load: worker decodes, draw waits on ready for vk work
@@ -639,7 +639,7 @@ element EarthPrev
         earth_model : Model [ vk: vk, w: ux, id: gltf, s: earth, samplers: earth_samplers, straight_alpha: true ]
         ocean_model : Model [ vk: vk, w: ux, id: gltf, s: ocean, samplers: earth_samplers, straight_alpha: true ]
         cloud_model : Model [ vk: vk, w: ux, id: gltf, s: cloud, samplers: earth_samplers, straight_alpha: true ]
-        models      = array Model [ earth_model, ocean_model, cloud_model ]
+        models      = vec Model [] [ earth_model, ocean_model, cloud_model ]
 
     # own render pass; the window composites its color as the backdrop
     func create_target[]
@@ -671,7 +671,7 @@ element EarthPrev
         animated = true
         if [ !built && !loading ]
             loading = true
-            w9 : array []
+            w9 : vec Au []
             w9.push[ a ]
             load_task = async [ target: a, work_fn: @load_bg, work: w9 ]
         if [ !ready ] return
@@ -955,7 +955,7 @@ element Moon
     intern earth  : EarthShader
     intern ocean  : OceanShader
     intern cloud  : CloudShader
-    intern models : array Model
+    intern models : vec Model
     intern target : Render
     intern built  : bool
     # async load: worker decodes, draw waits on ready for vk work
@@ -992,7 +992,7 @@ element Moon
         earth_model : Model [ vk: vk, w: ux, id: gltf, s: earth, samplers: earth_samplers, straight_alpha: true ]
         ocean_model : Model [ vk: vk, w: ux, id: gltf, s: ocean, samplers: earth_samplers, straight_alpha: true ]
         cloud_model : Model [ vk: vk, w: ux, id: gltf, s: cloud, samplers: earth_samplers, straight_alpha: true ]
-        models      = array Model [ moon_model, earth_model, ocean_model, cloud_model ]
+        models      = vec Model [] [ moon_model, earth_model, ocean_model, cloud_model ]
 
     func create_target[]
         if [ target || !models || models.count == 0 ] return
@@ -1045,7 +1045,7 @@ element Moon
         animated = true
         if [ !built && !loading ]
             loading = true
-            w9 : array []
+            w9 : vec Au []
             w9.push[ a ]
             load_task = async [ target: a, work_fn: @load_bg, work: w9 ]
         if [ !ready ] return
@@ -1249,7 +1249,7 @@ element MilkyWay
     intern e_cur  : f32
     intern p_cur  : f32
     intern gaia   : GaiaShader
-    intern models : array Model
+    intern models : vec Model
     intern target : Render
     intern built  : bool
     # async load: worker decodes, draw waits on ready for vk work
@@ -1278,7 +1278,7 @@ element MilkyWay
         gaia_samplers : map Image [string] [ 'color': img_color ]
         gaia_model : Model [ vk: vk, w: ux, id: geom, s: gaia, samplers: gaia_samplers,
             straight_alpha: true, cull_none: true ]
-        models     = array Model [ gaia_model ]
+        models     = vec Model [] [ gaia_model ]
 
     # a modelless pass that just clears to the scene color, so the ux has a
     # backdrop to composite while the real one is still decoding
@@ -1290,7 +1290,7 @@ element MilkyWay
             wscale:      1.0,
             use_depth:   false,
             clear_color: vec4f [ color.r, color.g, color.b, 1.0 ],
-            models:      array Model [] ]
+            models:      [] ]
         plain.owner = a
         ux.element_targets[ id ] = plain
 
@@ -1348,7 +1348,7 @@ element MilkyWay
         create_plain[]
         if [ !loading ]
             loading = true
-            w9 : array []
+            w9 : vec Au []
             w9.push[ a ]
             load_task = async [ target: a, work_fn: @load_bg, work: w9 ]
         if [ !ready ] return
@@ -1633,7 +1633,7 @@ element Titan
     intern titan  : TitanShader
     intern saturn : SaturnShader
     intern rings  : RingShader
-    intern models : array Model
+    intern models : vec Model
     intern target : Render
     intern built  : bool
     # async load: worker decodes, draw waits on ready for vk work
@@ -1664,7 +1664,7 @@ element Titan
         ]
         ring_model : Model [ vk: vk, w: ux, id: gltf, s: rings, samplers: r_samplers,
             straight_alpha: true ]
-        models = array Model [ saturn_model, ring_model, titan_model ]
+        models = vec Model [] [saturn_model, ring_model, titan_model ]
 
     func create_target[]
         if [ target || !models || models.count == 0 ] return
@@ -1716,7 +1716,7 @@ element Titan
         animated = true
         if [ !built && !loading ]
             loading = true
-            w9 : array []
+            w9 : vec Au []
             w9.push[ a ]
             load_task = async [ target: a, work_fn: @load_bg, work: w9 ]
         if [ !ready ] return
@@ -2294,7 +2294,7 @@ element Enceladus
     intern plume  : PlumeShader
     intern saturn : SaturnShader
     intern rings  : RingShader
-    intern models : array Model
+    intern models : vec Model
     intern target : Render
     intern built  : bool
     # async load: worker decodes, draw waits on ready for vk work
@@ -2345,7 +2345,7 @@ element Enceladus
         ]
         sky_model : Model [ vk: vk, w: ux, id: gltf, s: sky, samplers: sky_samplers,
             straight_alpha: true, cull_none: true ]
-        models = array Model [ sky_model, saturn_model, ring_model, enc_model, plume_model ]
+        models = vec Model [] [sky_model, saturn_model, ring_model, enc_model, plume_model ]
 
     func create_target[]
         if [ target || !models || models.count == 0 ] return
@@ -2397,7 +2397,7 @@ element Enceladus
         animated = true
         if [ !built && !loading ]
             loading = true
-            w9 : array []
+            w9 : vec Au []
             w9.push[ a ]
             load_task = async [ target: a, work_fn: @load_bg, work: w9 ]
         if [ !ready ] return
@@ -3465,14 +3465,14 @@ ModelViewProject EuropaGlowShader
 # patch the active source set over the 4k equirect: a large
 # perlin owns regions per source, a small one works the blend
 func europa_build_maps [ H: @f32, AO: @f32, CV: @f32, EM: @f32, MM: @f32, w: i32, h: i32 ]
-    names : array string [ 'europa-greybase', 'europa-fracture', 'europa-crevasses',
+    names : vec string [] [ 'europa-greybase', 'europa-fracture', 'europa-crevasses',
         'europa-metal2', 'europa-fracture-blur', 'europa-fracture-detail2',
         'europa-scratch', 'europa-metal4' ]
     ns : i32 [ names.count ]
     sw : new i32 [ ns ]
     sh : new i32 [ ns ]
     so : new i32 [ ns ]
-    imgs : array Image []
+    imgs : vec Image []
     total : i32 [ 0 ]
     for [ i: i32 0, i < ns, i += 1 ]
         p9 : path '../scenes/textures/{names[i]}.png'
@@ -3657,7 +3657,7 @@ element Europa
     intern glow   : EuropaGlowShader
     intern sky    : GaiaShader
     intern jup    : JupiterShader
-    intern models : array Model
+    intern models : vec Model
     intern target : Render
     intern built  : bool
     # async load: worker decodes, draw waits on ready for vk work
@@ -3717,14 +3717,14 @@ element Europa
                 iu[ k + 4 ] = u32[ i0 + n1 ]
                 iu[ k + 5 ] = u32[ i0 + n1 + 1 ]
                 k += 6
-        bufs : array GltfBuffer [ ]
+        bufs : vec GltfBuffer []
         bufs += GltfBuffer [ byteLength: u64[ tsz ], data: data ]
-        views : array BufferView [ ]
+        views : vec BufferView []
         views += BufferView [ buffer: 0, byteOffset: 0,            byteLength: vb ]
         views += BufferView [ buffer: 0, byteOffset: vb,           byteLength: vb ]
         views += BufferView [ buffer: 0, byteOffset: vb + vb,      byteLength: tb ]
         views += BufferView [ buffer: 0, byteOffset: vb + vb + tb, byteLength: ib ]
-        accs : array Accessor [ ]
+        accs : vec Accessor []
         accs += Accessor [ bufferView: 0, componentType: ComponentType.FLOAT, type: CompoundType.VEC3, count: nv ]
         accs += Accessor [ bufferView: 1, componentType: ComponentType.FLOAT, type: CompoundType.VEC3, count: nv ]
         accs += Accessor [ bufferView: 2, componentType: ComponentType.FLOAT, type: CompoundType.VEC2, count: nv ]
@@ -3733,15 +3733,15 @@ element Europa
         am[ 'POSITION' ]   = i64[ 0 ]
         am[ 'NORMAL' ]     = i64[ 1 ]
         am[ 'TEXCOORD_0' ] = i64[ 2 ]
-        prs : array Primitive [ ]
+        prs : vec Primitive []
         prs += Primitive [ name: 'europa', attributes: am, indices: u64[ 3 ], material: 0, mode: Mode.TRIANGLES ]
-        mshs : array Mesh [ ]
+        mshs : vec Mesh []
         mshs += Mesh [ name: 'europa', primitives: prs ]
-        nds : array Node [ ]
+        nds : vec Node []
         nds += Node [ name: 'europa', mesh: 0 ]
-        sn : array i64 [ ]
+        sn : vec i64 []
         sn += 0
-        scns : array Scene [ ]
+        scns : vec Scene []
         scns += Scene [ name: 'scene', nodes: sn ]
         gm : GltfModel [ nodes: nds, meshes: mshs, scenes: scns, scene: 0,
             buffers: bufs, bufferViews: views, accessors: accs ]
@@ -3888,7 +3888,7 @@ element Europa
         ]
         sky_model : Model [ vk: vk, w: ux, id: gltf, s: sky, samplers: sky_samplers,
             straight_alpha: true, cull_none: true ]
-        models = array Model [ sky_model, jup_model, eur_model, glow_model ]
+        models = vec Model [] [sky_model, jup_model, eur_model, glow_model ]
 
     func create_target[]
         if [ target || !models || models.count == 0 ] return
@@ -3940,7 +3940,7 @@ element Europa
         animated = true
         if [ !built && !loading ]
             loading = true
-            w9 : array []
+            w9 : vec Au []
             w9.push[ a ]
             load_task = async [ target: a, work_fn: @load_bg, work: w9 ]
         if [ !ready ] return
@@ -4166,8 +4166,8 @@ func mola_load [ M: @i16 ] -> bool
         puts 'mola: no SILVER root — cannot locate the tiles'
         return false
     puts 'mola: reading tiles from {root}/checkout/mola'
-    bands : array string [ '88n', '44n', '00n', '44s' ]
-    lons  : array string [ '000', '090', '180', '270' ]
+    bands : vec string [] [ '88n', '44n', '00n', '44s' ]
+    lons  : vec string [] [ '000', '090', '180', '270' ]
     tw : i32 [ 11520 ]
     th : i32 [ 5632 ]
     gw : i32 [ 46080 ]
@@ -4221,12 +4221,12 @@ func mars_build_height [ H: @f32, w: i32, h: i32 ]
     B : new f32 [ bw * bh ]
     eu_lum[ bim, B ]
 
-    names : array string [ 'europa-caldera', 'europa-stardunes', 'europa-grain-granite' ]
+    names : vec string [] [ 'europa-caldera', 'europa-stardunes', 'europa-grain-granite' ]
     ns : i32 [ names.count ]
     sw : new i32 [ ns ]
     sh : new i32 [ ns ]
     so : new i32 [ ns ]
-    imgs : array Image []
+    imgs : vec Image []
     total : i32 [ 0 ]
     for [ i: i32 0, i < ns, i += 1 ]
         p9 : path '../scenes/textures/{names[i]}.png'
@@ -4581,13 +4581,13 @@ func mars_bake_detail [] -> bool
     # own the provinces below. every plate is normalised to a common
     # mean and spread first, or the height steps where one hands over
     # 3 is the SELECTOR, never blended in
-    names : array string [ 'europa-scratch.png', 'europa-metal4.png', 'europa-fracture.png',
+    names : vec string [] [ 'europa-scratch.png', 'europa-metal4.png', 'europa-fracture.png',
         'europa-caldera.png', 'mars-veg-sand.png', 'mars-stone.png', 'mars-stone2.png' ]
     ns : i32 [ names.count ]
     sw : new i32 [ ns ]
     sh : new i32 [ ns ]
     so : new i32 [ ns ]
-    imgs : array Image []
+    imgs : vec Image []
     total : i32 [ 0 ]
     for [ i: i32 0, i < ns, i += 1 ]
         p9 : path '../scenes/textures/{names[i]}'
@@ -6940,14 +6940,14 @@ func build_carpet [] -> GltfModel
             iu[ k + 4 ] = u32[ i0 + n1 ]
             iu[ k + 5 ] = u32[ i0 + n1 + 1 ]
             k += 6
-    bufs : array GltfBuffer [ ]
+    bufs : vec GltfBuffer []
     bufs += GltfBuffer [ byteLength: u64[ tsz ], data: data ]
-    views : array BufferView [ ]
+    views : vec BufferView []
     views += BufferView [ buffer: 0, byteOffset: 0,            byteLength: vb ]
     views += BufferView [ buffer: 0, byteOffset: vb,           byteLength: vb ]
     views += BufferView [ buffer: 0, byteOffset: vb + vb,      byteLength: tb ]
     views += BufferView [ buffer: 0, byteOffset: vb + vb + tb, byteLength: ib ]
-    accs : array Accessor [ ]
+    accs : vec Accessor []
     accs += Accessor [ bufferView: 0, componentType: ComponentType.FLOAT, type: CompoundType.VEC3, count: nv ]
     accs += Accessor [ bufferView: 1, componentType: ComponentType.FLOAT, type: CompoundType.VEC3, count: nv ]
     accs += Accessor [ bufferView: 2, componentType: ComponentType.FLOAT, type: CompoundType.VEC2, count: nv ]
@@ -6956,15 +6956,15 @@ func build_carpet [] -> GltfModel
     am[ 'POSITION' ]   = i64[ 0 ]
     am[ 'NORMAL' ]     = i64[ 1 ]
     am[ 'TEXCOORD_0' ] = i64[ 2 ]
-    prs : array Primitive [ ]
+    prs : vec Primitive []
     prs += Primitive [ name: 'olympus', attributes: am, indices: u64[ 3 ], material: 0, mode: Mode.TRIANGLES ]
-    mshs : array Mesh [ ]
+    mshs : vec Mesh []
     mshs += Mesh [ name: 'olympus', primitives: prs ]
-    nds : array Node [ ]
+    nds : vec Node []
     nds += Node [ name: 'olympus', mesh: 0 ]
-    sn : array i64 [ ]
+    sn : vec i64 []
     sn += 0
-    scns : array Scene [ ]
+    scns : vec Scene []
     scns += Scene [ name: 'scene', nodes: sn ]
     gm : GltfModel [ nodes: nds, meshes: mshs, scenes: scns, scene: 0,
         buffers: bufs, bufferViews: views, accessors: accs ]
@@ -6977,7 +6977,7 @@ element Terra
     intern owater : TerraWaterShader
     intern osky   : TerraSkyShader
     intern gsky   : GaiaShader
-    intern models : array Model
+    intern models : vec Model
     intern target : Render
     intern built  : bool
     intern ready     : bool
@@ -7063,7 +7063,7 @@ element Terra
         g_model : Model [ vk: vk, w: ux, id: g_gltf, s: gsky, samplers: g_samplers,
             straight_alpha: true, cull_none: true ]
         # backdrop FIRST, then ground, sea, and the air over both
-        models  = array Model [ g_model, o_model, w_model, s_model ]
+        models  = vec Model [] [ g_model, o_model, w_model, s_model ]
         puts 'TERRA build_models: done, {models.count} model(s)'
 
     func create_target[]
@@ -7090,7 +7090,7 @@ element Terra
         animated = true
         if [ !built && !loading ]
             loading = true
-            w9 : array []
+            w9 : vec Au []
             w9.push[ a ]
             load_task = async [ target: a, work_fn: @load_bg, work: w9 ]
         if [ !ready ] return
@@ -7683,7 +7683,7 @@ element Mars
     intern surf   : MarsShader
     intern msky   : MarsSkyShader
     intern gsky   : GaiaShader
-    intern models : array Model
+    intern models : vec Model
     intern target : Render
     intern built  : bool
     intern ready     : bool
@@ -7738,7 +7738,7 @@ element Mars
         g_model : Model [ vk: vk, w: ux, id: g_gltf, s: gsky, samplers: g_samplers,
             straight_alpha: true, cull_none: true ]
         # backdrop FIRST, then ground, and the air over it
-        models  = array Model [ g_model, o_model, s_model ]
+        models  = vec Model [] [ g_model, o_model, s_model ]
 
     func create_target[]
         if [ target || !models || models.count == 0 ] return
@@ -7787,7 +7787,7 @@ element Mars
         animated = true
         if [ !built && !loading ]
             loading = true
-            w9 : array []
+            w9 : vec Au []
             w9.push[ a ]
             load_task = async [ target: a, work_fn: @load_bg, work: w9 ]
         if [ !ready ] return
@@ -8109,7 +8109,7 @@ element Uranus
     intern aur    : AuroraShader
     intern rings  : RingShader
     intern sky    : GaiaShader
-    intern models : array Model
+    intern models : vec Model
     intern target : Render
     intern built  : bool
     intern ready     : bool
@@ -8153,7 +8153,7 @@ element Uranus
         ]
         sky_model : Model [ vk: vk, w: ux, id: gltf, s: sky, samplers: sky_samplers,
             straight_alpha: true, cull_none: true ]
-        models = array Model [ sky_model, uran_model, ring_model, aur_model ]
+        models = vec Model [] [sky_model, uran_model, ring_model, aur_model ]
 
     func create_target[]
         if [ target || !models || models.count == 0 ] return
@@ -8179,7 +8179,7 @@ element Uranus
         animated = true
         if [ !built && !loading ]
             loading = true
-            w9 : array []
+            w9 : vec Au []
             w9.push[ a ]
             load_task = async [ target: a, work_fn: @load_bg, work: w9 ]
         if [ !ready ] return
@@ -8357,7 +8357,7 @@ element Neptune
     intern nept   : JupiterShader
     intern rings  : RingShader
     intern sky    : GaiaShader
-    intern models : array Model
+    intern models : vec Model
     intern target : Render
     intern built  : bool
     intern ready     : bool
@@ -8396,7 +8396,7 @@ element Neptune
         ]
         sky_model : Model [ vk: vk, w: ux, id: gltf, s: sky, samplers: sky_samplers,
             straight_alpha: true, cull_none: true ]
-        models = array Model [ sky_model, nept_model, ring_model ]
+        models = vec Model [] [sky_model, nept_model, ring_model ]
 
     func create_target[]
         if [ target || !models || models.count == 0 ] return
@@ -8422,7 +8422,7 @@ element Neptune
         animated = true
         if [ !built && !loading ]
             loading = true
-            w9 : array []
+            w9 : vec Au []
             w9.push[ a ]
             load_task = async [ target: a, work_fn: @load_bg, work: w9 ]
         if [ !ready ] return
@@ -8874,7 +8874,7 @@ element Earth
     intern e_cur  : f32
     intern p_cur  : f32
     intern jungle : JungleShader
-    intern models : array Model
+    intern models : vec Model
     intern target : Render
     intern built  : bool
     intern ready     : bool
@@ -8895,7 +8895,7 @@ element Earth
         j_samplers : map Image [string] [ 'forest': img_forest ]
         j_model : Model [ vk: vk, w: ux, id: geom, s: jungle, samplers: j_samplers,
             straight_alpha: true, cull_none: true ]
-        models = array Model [ j_model ]
+        models = vec Model [] [j_model ]
 
     func create_target[]
         if [ target || !models || models.count == 0 ] return
@@ -8944,7 +8944,7 @@ element Earth
         animated = true
         if [ !loading ]
             loading = true
-            w9 : array []
+            w9 : vec Au []
             w9.push[ a ]
             load_task = async [ target: a, work_fn: @load_bg, work: w9 ]
         if [ !ready ] return

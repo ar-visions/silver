@@ -10,7 +10,7 @@ class variable
     public  name     : string
     public  type     : string
     public  value    : string
-    public  children : array
+    public  children : vec Au
     public  expanded : bool
 
 class frame
@@ -56,7 +56,7 @@ class dbg
     public   active      : bool
     # set_breakpoint results live here: unheld, the pool drain deallocs
     # them and breakpoint_dealloc deletes them out of lldb
-    public   bps         : array
+    public   bps         : vec breakpoint
 
     intern   impl        : handle
 
@@ -68,12 +68,12 @@ class dbg
     func start              [ ]
     func attach             [ pid: i32 ]
     func stop               [ ]
-    func read_arguments     [ ] -> array
-    func read_locals        [ ] -> array
-    func read_frames        [ ] -> array
-    func read_statics       [ ] -> array
-    func read_globals       [ ] -> array
-    func read_registers     [ ] -> array
+    func read_arguments     [ ] -> vec Au
+    func read_locals        [ ] -> vec Au
+    func read_frames        [ ] -> vec Au
+    func read_statics       [ ] -> vec Au
+    func read_globals       [ ] -> vec Au
+    func read_registers     [ ] -> vec Au
     func set_breakpoint     [ source: path, ln: u32, column: u32 ] -> breakpoint
     func remove_breakpoint  [ bp: breakpoint ]
     func enable_breakpoint  [ bp: breakpoint, enable: bool ]
