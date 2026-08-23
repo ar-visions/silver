@@ -8340,7 +8340,7 @@ element Uranus
             '#625a':      '#28484a',     # bottom status bar fill
             '#8af2':      '#8ad0d2',     # status bar inner glow
             '#425':       '#5c7250',     # editor selection color
-            '#ede3':      '#aed3',       # editor selection border
+            '#ede3':      '#000f',       # editor selection border
             '#44225588':  '#8ad0cc11',   # editor line highlight
             '#ff3a6a22':  '#7fd6cc22',   # commit tab fill
             '#ff3a6a44':  '#7fd6cc44',   # commit tab hover fill
@@ -9777,6 +9777,8 @@ enum CloudSurface
     curl    : 2
     weather : 3
     island  : 4
+    waves   : 5
+    stars   : 6
     tvar    : 5
 
 class CloudBake
@@ -10050,7 +10052,7 @@ class CloudBake
         img.png[ out ]
 
     # weather 512^2: R perlin coverage field, G perlin-worley islands,
-    # B cloud type field, A storm cells
+    # B cloud type field, A unused
     func bake_weather [ out: path ]
         N : i32 [ 512 ]
         img : Image [ width: N, height: N, format: Pixel.rgba8, linear: true, wrap_u: true, wrap_v: true ]
@@ -10073,7 +10075,6 @@ class CloudBake
                 d[ i ]     = to_byte[ cov ]
                 d[ i + 1 ] = to_byte[ isl ]
                 d[ i + 2 ] = to_byte[ typ ]
-                # storm cells: a rounded peak, never a clipped plateau
                 d[ i + 3 ] = to_byte[ sat[ remap[ stm, 0.40, 0.88, 0.0, 1.0 ] ] ]
         img.png[ out ]
 
@@ -10088,13 +10089,17 @@ ModelViewProject NubisSky
     mutable sun_dir   : vec4f     # w: sun intensity
     mutable wind      : vec4f     # xyz m/s, w: seconds
     mutable layer     : vec4f     # x cloud bottom, y cloud top, z planet radius, w atmosphere radius
-    mutable weather_a : vec4f     # x coverage, y type, z storm, w island mix
+    mutable weather_a : vec4f     # x coverage, y type, z unused, w island mix
     mutable weather_b : vec4f     # x anvil, y skew m, z density, w detail strength
     mutable light_a   : vec4f     # x g forward, y silver intensity, z silver spread, w ambient
     mutable light_b   : vec4f     # x ms scatter, y ms extinction, z ms phase, w extinction / m
     mutable scales    : vec4f     # x shape tile m, y detail tile m, z curl tile m, w weather tile m
     mutable march     : vec4f     # x quality, y curl strength, z max distance, w fog
-    mutable tops      : vec4f     # type tops above the base, m: stratus, stratocumulus, cumulus, cumulonimbus
+    mutable tops      : vec4f     # type tops above the base, m: stratus, stratocumulus, cumulus
+    mutable world     : vec4f     # xy: how far we have flown, in metres
+    mutable key_tint  : vec4f     # rgb: the key light's colour, w: night
+    mutable sea       : vec4f     # x wave count, y choppiness, z foam start, w detail fade m
+    mutable sea_b     : vec4f     # x wind m/s, y reflect quality, z swell, w unused
     mutable jitter    : vec4f     # xy: sub-pixel uv offset of this frame's samples
     mutable view_mode : i32
     mutable frame     : i32
@@ -10105,6 +10110,9 @@ ModelViewProject NubisSky
     attrib weather : LayoutBinding [ type:typeid[ CloudSurface ], id: CloudSurface.weather, count:1, format: typeid[ rgba8 ] ]
     # distance (in cells of the weather tile / 256) to the nearest cloud island
     attrib island  : LayoutBinding [ type:typeid[ CloudSurface ], id: CloudSurface.island,  count:1, format: typeid[ rgba8 ] ]
+    # one Gerstner component per record: xy wave vector, z amplitude, w phase
+    attrib stars   : LayoutBinding [ type:typeid[ CloudSurface ], id: CloudSurface.stars,   count:1, format: typeid[ rgba8 ] ]
+    attrib waves   : StorageBuffer [ type:typeid[ CloudSurface ], id: CloudSurface.waves,   count:1, format: typeid[ vec4f ] ]
     # R: cloud top height scale, G: base height offset
     attrib tvar    : LayoutBinding [ type:typeid[ CloudSurface ], id: CloudSurface.tvar,    count:1, format: typeid[ rgba8 ] ]
 
@@ -10154,21 +10162,29 @@ ModelViewProject NubisSky
         float t0 = max(ta.x, 0.0);
         float t1 = min(ta.y, tmax);
         if (t1 <= t0) return vec4(0.0, 0.0, 0.0, 1.0);
-        vec3  betaR = vec3(5.8e-6, 13.5e-6, 33.1e-6);
-        float betaM = 21.0e-6;
+        vec3  betaR = vec3(9.5e-6, 21.5e-6, 54.0e-6);
+        float betaM = 7.0e-6;
         float Hr = 8000.0;
         float Hm = 1200.0;
         vec3  sun = ubo.sun_dir.xyz;
         float mu  = dot(d, sun);
         float phR = 3.0 / (16.0 * 3.14159265) * (1.0 + mu * mu);
-        float phM = hg(mu, 0.76);
-        float ds  = (t1 - t0) / 12.0;
+        float phM = hg(mu, 0.70);
+        // samples cluster toward the camera: along a horizon ray nearly
+        // all the air is in the first tens of km, and even spacing there
+        // reads as a dark saturated band
+        float span = t1 - t0;
         vec3  sumR = vec3(0.0);
         vec3  sumM = vec3(0.0);
         float odR = 0.0;
         float odM = 0.0;
         for (int i = 0; i < 12; i++) {{
-            vec3  p  = oc + d * (t0 + ds * (float(i) + 0.5));
+            float a0 = float(i) / 12.0;
+            float a1 = float(i + 1) / 12.0;
+            float s0 = a0 * a0;
+            float s1 = a1 * a1;
+            float ds = span * (s1 - s0);
+            vec3  p  = oc + d * (t0 + span * (s0 + s1) * 0.5);
             float h  = max(length(p) - R, 0.0);
             float hr = exp(-h / Hr) * ds;
             float hm = exp(-h / Hm) * ds;
@@ -10193,7 +10209,17 @@ ModelViewProject NubisSky
         vec3 T = exp(-(betaR * odR + betaM * 1.1 * odM));
         float Ta = (T.r + T.g + T.b) / 3.0;
         // multiple scattering stand-in: thick air glows sky-blue, not orange
-        L += vec3(0.30, 0.42, 0.62) * ubo.sun_dir.w * 0.004 * (1.0 - Ta) * clamp(sun.y * 3.0 + 0.3, 0.0, 1.0);
+        float ms_air = clamp(odR * 5.0e-5, 0.0, 1.0);
+        L += vec3(0.30, 0.42, 0.92) * ubo.sun_dir.w * 0.034 * ms_air * clamp(sun.y * 3.0 + 0.62, 0.0, 1.0);
+        // by night the long horizon path still reddens, but under a moon
+        // there is no warm band to see: the sky goes cool and desaturated,
+        // over a floor of starlight
+        float ng = ubo.key_tint.w;
+        if (ng > 0.0) {{
+            float lum = dot(L, vec3(0.2126, 0.7152, 0.0722));
+            L = mix(L, vec3(lum) * vec3(0.66, 0.82, 1.16), ng);
+            L += vec3(0.0016, 0.0022, 0.0044) * ng;
+        }}
         return vec4(L, Ta);
     }
 
@@ -10213,8 +10239,8 @@ ModelViewProject NubisSky
             oR += exp(-hq / 8000.0) * dsl;
             oM += exp(-hq / 1200.0) * dsl;
         }}
-        vec3 tau = vec3(5.8e-6, 13.5e-6, 33.1e-6) * oR + 21.0e-6 * 1.1 * oM;
-        return exp(-tau) * ubo.sun_dir.w;
+        vec3 tau = vec3(9.5e-6, 21.5e-6, 54.0e-6) * oR + 7.0e-6 * 1.1 * oM;
+        return exp(-tau) * ubo.sun_dir.w * ubo.key_tint.rgb;
     }
 
     func height_frac [ p: @vec3f ] -> GLSL f32 {
@@ -10222,9 +10248,9 @@ ModelViewProject NubisSky
         return clamp((r - ubo.layer.x) / (ubo.layer.y - ubo.layer.x), 0.0, 1.0);
     }
 
-    # weather at p: x coverage, y type, z storm (footprint x life), w rise
-    func weather_at [ p: @vec3f ] -> GLSL vec4f {
-        vec2 uv = p.xz / ubo.scales.w + 0.5;
+    # weather at p: x coverage, y type, z height scale
+    func weather_at [ p: @vec3f ] -> GLSL vec3f {
+        vec2 uv = (p.xz + ubo.world.xy) / ubo.scales.w + 0.5;
         vec4 w  = texture(weather, uv);
         // fields stretched to 0..1 from the bake's 10th..90th percentiles
         float fr = clamp(remap(w.r, 0.30, 0.72, 0.0, 1.0), 0.0, 1.0);
@@ -10233,105 +10259,72 @@ ModelViewProject NubisSky
         float c   = ubo.weather_a.x;
         float cov = clamp(remap(field, 1.0 - c, 1.0 - c + 0.35, 0.0, 1.0), 0.0, 1.0) * 0.95;
         float typ = clamp(remap(w.b, 0.35, 0.72, 0.0, 1.0) * 0.5 + ubo.weather_a.y - 0.25, 0.0, 1.0);
-        // storm cells live a cycle: rise, hold, collapse. the island map
-        // carries one phase and one size per cell, so a cell is one body
-        vec4  isl  = texture(island, uv);
-        float hsc  = texture(tvar, p.xz / ubo.scales.w * 3.0 + 0.5).r;
-        // only the cell's core rises: a rounded bump around the field's
-        // peak, so the column is narrow and dome-shaped, not the island
-        float size = clamp(remap(isl.b, 0.08, 0.36, 0.0, 1.0), 0.0, 1.0);
-        float foot = smoothstep(0.62, 1.0, w.a / max(isl.b, 0.05));
-        float cyc  = fract(ubo.wind.w / 1440.0 + isl.g);
-        float life = smoothstep(0.0, 0.28, cyc) * (1.0 - smoothstep(0.55, 0.85, cyc));
-        // the cloud that is already there grows; nothing is added
-        float storm = foot * life * size * ubo.weather_a.z * smoothstep(0.12, 0.45, cov);
-        // the storm's extra coverage blends in smoothly; a hard max()
-        // creased the edge and that crease aliased along the column
-        cov = cov + (1.0 - cov) * smoothstep(0.05, 0.5, storm) * 0.75;
-        typ = mix(typ, 1.0, storm);
-        return vec4(cov, typ, storm, hsc);
+        // a separate perlin field scales each cloud's own height
+        float hsc = texture(tvar, p.xz / ubo.scales.w * 3.0 + 0.5).r;
+        return vec3(cov, typ, hsc);
     }
 
     # top of the cloud type at this weather, metres above the base:
-    # stratus, stratocumulus, cumulus; thunderheads rise from the
-    # densest cores of a storm cell toward the anvil height
-    func type_top [ p: @vec3f, w: @vec4f ] -> GLSL f32 {
+    # stratus, stratocumulus, cumulus
+    func type_top [ p: @vec3f, w: @vec3f ] -> GLSL f32 {
         float t  = w.y;
         float a  = mix(ubo.tops.x, ubo.tops.y, clamp(t * 2.0, 0.0, 1.0));
         float cu = mix(a, ubo.tops.z, clamp(t * 2.0 - 1.0, 0.0, 1.0));
         // a separate perlin field: this cloud is half to 1.5x as tall
-        cu *= mix(0.5, 1.5, w.w);
-        // the top lifts with the core: a dome, flattened at the ceiling
-        return mix(cu, ubo.tops.w, smoothstep(0.0, 1.0, w.z));
+        return cu * mix(0.5, 1.5, w.z);
     }
 
     # height fraction within this type's own top
-    func type_frac [ p: @vec3f, w: @vec4f ] -> GLSL f32 {
+    func type_frac [ p: @vec3f, w: @vec3f ] -> GLSL f32 {
         float r = length(p - vec3(0.0, -ubo.layer.z, 0.0)) - ubo.layer.z;
         return clamp((r - ubo.layer.x) / type_top(p, w), 0.0, 1.0);
     }
 
     # density over height: a sharp condensation level at the base,
-    # stratus -> stratocumulus -> cumulus tops, cumulonimbus for storms
-    func height_gradient [ h: @f32, w: @vec4f ] -> GLSL f32 {
+    # stratus -> stratocumulus -> cumulus tops
+    func height_gradient [ h: @f32, w: @vec3f ] -> GLSL f32 {
         float t  = w.y;
-        // cumulus bases are flat at the condensation level, stratus fades
-        // in; a building thunderhead flattens its base hard as it pushes up
-        float bw = mix(0.18, 0.05, clamp(t * 1.5, 0.0, 1.0)) * (1.0 - 0.75 * smoothstep(0.1, 0.8, w.z));
-        float base = clamp(remap(h, 0.0, bw, 0.0, 1.0), 0.0, 1.0);
+        // cumulus bases are flat at the condensation level, stratus fades in
+        float base = clamp(remap(h, 0.0, mix(0.18, 0.05, clamp(t * 1.5, 0.0, 1.0)), 0.0, 1.0), 0.0, 1.0);
         float st = clamp(remap(h, 0.35, 0.75, 1.0, 0.0), 0.0, 1.0);
         float sc = clamp(remap(h, 0.55, 0.9, 1.0, 0.0), 0.0, 1.0);
         float cu = clamp(remap(h, 0.7, 1.0, 1.0, 0.0), 0.0, 1.0);
         float a  = mix(st, sc, clamp(t * 2.0, 0.0, 1.0));
-        float g  = mix(a, cu, clamp(t * 2.0 - 1.0, 0.0, 1.0));
-        // a thunderhead flattens out only near its top and thickens there
-        float cb = clamp(remap(h, 0.86, 1.0, 1.0, 0.0), 0.0, 1.0) * (1.0 + 0.5 * smoothstep(0.45, 0.85, h));
-        g = mix(g, cb, smoothstep(0.3, 0.9, w.z));
-        return base * g;
+        return base * mix(a, cu, clamp(t * 2.0 - 1.0, 0.0, 1.0));
     }
 
     # the Nubis density sampler. lod 0 = full detail, 1 = shape only
-    func cloud_density [ p: @vec3f, hl: @f32, w: @vec4f, lod: @f32 ] -> GLSL f32 {
+    func cloud_density [ p: @vec3f, hl: @f32, w: @vec3f, lod: @f32 ] -> GLSL f32 {
         float h = type_frac(p, w);
         // deformation runs on METRES above the base, never on the type
         // fraction: a tall tower would stretch the same shear over its
         // whole column and smear it into wavy fibres
         float hm = length(p - vec3(0.0, -ubo.layer.z, 0.0)) - ubo.layer.z - ubo.layer.x;
         float hd = clamp(hm / 2500.0, 0.0, 1.0);
-        vec3 q = p + ubo.wind.xyz * ubo.wind.w;
+        vec3 q = p + vec3(ubo.world.x, 0.0, ubo.world.y) + ubo.wind.xyz * ubo.wind.w;
         q += ubo.wind.xyz * (hd * ubo.weather_b.y / max(length(ubo.wind.xyz), 0.01));
         vec4 low = texture(shape, q / ubo.scales.x);
         float lfbm = low.g * 0.625 + low.b * 0.25 + low.a * 0.125;
         // the composite spans 0.71..0.93 in the bake: stretch to 0..1
         float comp = remap(low.r, -(1.0 - lfbm), 1.0, 0.0, 1.0);
         comp = clamp(remap(comp, 0.70, 0.94, 0.0, 1.0), 0.0, 1.0);
-        if (w.z > 0.01) {{
-            // thunderheads: tower-sized billows from a 2.5x larger read
-            vec4 big = texture(shape, q / (ubo.scales.x * 2.5) + vec3(0.31, 0.17, 0.52));
-            float bfbm = big.g * 0.625 + big.b * 0.25 + big.a * 0.125;
-            float bcomp = clamp(remap(remap(big.r, -(1.0 - bfbm), 1.0, 0.0, 1.0), 0.70, 0.94, 0.0, 1.0), 0.0, 1.0);
-            comp = mix(comp, bcomp * 0.5 + comp * 0.5, w.z);
-        }}
         float cov = w.x;
-        // mushroom: only the top band widens, from the coverage already there
-        cov += (1.0 - cov) * 0.35 * smoothstep(0.8, 0.95, h) * smoothstep(0.5, 0.95, w.z) * smoothstep(0.02, 0.3, cov);
         float profile = height_gradient(h, w) * cov;
         float base = clamp(comp - (1.0 - profile), 0.0, 1.0) * clamp(cov * 1.5, 0.0, 1.0);
         if (base <= 0.0) return 0.0;
         if (lod < 0.5) {{
             vec3 cn = texture(curl, q.xz / ubo.scales.z).rgb * 2.0 - 1.0;
-            // curl is a low-level turbulence: it fades out with real
-            // height and is calm inside a rising tower
-            q += cn * ubo.march.y * (1.0 - hd) * (1.0 - w.z * 0.7) * ubo.scales.y * 0.15;
+            // curl is a low-level turbulence: it fades out with height
+            q += cn * ubo.march.y * (1.0 - hd) * ubo.scales.y * 0.15;
             vec3  hi   = texture(detail, q / ubo.scales.y).rgb;
             float hfbm = hi.r * 0.625 + hi.g * 0.25 + hi.b * 0.125;
             // wispy bottoms, billowy tops; the flat base keeps its edge
             float m = mix(hfbm, 1.0 - hfbm, clamp(hm / 250.0, 0.0, 1.0));
             m *= mix(0.35, 1.0, clamp(h * 6.0, 0.0, 1.0));
-            base = remap(base, m * ubo.weather_b.w * (1.0 - w.z * 0.5), 1.0, 0.0, 1.0);
+            base = remap(base, m * ubo.weather_b.w, 1.0, 0.0, 1.0);
         }}
         // a thin cloud is translucent; a deep one is dense
-        return clamp(base, 0.0, 1.0) * ubo.weather_b.z * (1.0 + w.z * 0.5) * mix(0.45, 1.2, w.w);
+        return clamp(base, 0.0, 1.0) * ubo.weather_b.z * mix(0.45, 1.2, w.z);
     }
 
     # optical depth toward the sun: five cone samples and one far
@@ -10350,7 +10343,7 @@ ModelViewProject NubisSky
             vec3  q = p + sun * s + k * s * 0.45;
             float h = height_frac(q);
             if (h <= 0.0 || h >= 1.0) continue;
-            vec4  w = weather_at(q);
+            vec3  w = weather_at(q);
             od += cloud_density(q, h, w, (i > 2) ? 1.0 : 0.0) * ls;
         }}
         vec3  qf = p + sun * ls * 9.0;
@@ -10375,8 +10368,113 @@ ModelViewProject NubisSky
         return exp(-od * ubo.light_b.w * 0.6);
     }
 
+    # the galaxy, and only where the sky has gone dark enough to show
+    # it. the band is tilted off the horizon and turns with the hours
+    func night_stars [ d: @vec3f ] -> GLSL vec3f {
+        float ng = ubo.key_tint.w;
+        if (ng <= 0.001) return vec3(0.0);
+        float ca = 0.6216;
+        float sa = 0.7833;
+        vec3  r  = vec3(d.x, d.y * ca - d.z * sa, d.y * sa + d.z * ca);
+        float u  = atan(r.z, r.x) * 0.15915494 + 0.5 + ubo.sea_b.w;
+        float v  = acos(clamp(r.y, -1.0, 1.0)) * 0.31830989;
+        vec3  c  = texture(stars, vec2(u, v)).rgb;
+        // squaring holds the band and drops the wash between the stars.
+        // low in the sky there is too much air to see any of it
+        float up = smoothstep(0.03, 0.70, d.y);
+        return c * c * ng * 0.05 * up;
+    }
+
     func aces [ x: @vec3f ] -> GLSL vec3f {
         return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
+    }
+
+    # a cheap pass over the cloud layer for what the water reflects:
+    # coarse noise, long steps, and it stops at the first solid cloud
+    func cloud_reflect [ o: @vec3f, d: @vec3f ] -> GLSL vec4f {
+        vec3  C  = vec3(0.0, -ubo.layer.z, 0.0);
+        float R  = ubo.layer.z;
+        vec2  ti = ray_sphere(o - C, d, R + ubo.layer.x);
+        vec2  to = ray_sphere(o - C, d, R + ubo.layer.y);
+        float t0 = (ti.y > 0.0) ? ti.y : -1.0;
+        float t1 = (to.y > 0.0) ? to.y : -1.0;
+        if (t0 < 0.0 || t1 <= t0) return vec4(0.0, 0.0, 0.0, 1.0);
+        t1 = min(t1, t0 + 60000.0);
+        float steps = 24.0 * ubo.sea_b.y;
+        float dt = (t1 - t0) / steps;
+        vec3  col = vec3(0.0);
+        float T   = 1.0;
+        vec3  sun_c = sun_light(o + d * t0);
+        vec3  amb   = atmosphere(o + d * t0, vec3(0.0, 1.0, 0.0), 1e12).rgb;
+        float mu    = dot(d, ubo.sun_dir.xyz);
+        float ph    = max(mix(hg(mu, ubo.light_a.x), hg(mu, -0.25), 0.3),
+                          ubo.light_a.y * hg(mu, 0.99 - ubo.light_a.z));
+        for (int i = 0; i < 48; i++) {{
+            if (float(i) >= steps || T < 0.02) break;
+            vec3  p = o + d * (t0 + dt * (float(i) + 0.5));
+            vec3  w = weather_at(p);
+            float dens = cloud_density(p, 0.0, w, 1.0);
+            if (dens <= 0.0) continue;
+            float ext = ubo.light_b.w;
+            float od  = light_march(p) * ext;
+            vec3  S   = (exp(-od) * ph * sun_c + amb * 0.5) * dens * ext;
+            float e   = max(dens * ext, 1e-6);
+            float Ts  = exp(-e * dt);
+            col += T * (S - S * Ts) / e;
+            T   *= Ts;
+        }}
+        return vec4(col, T);
+    }
+
+    # the sea surface: a sum of spectral components (JONSWAP frequency
+    # spectrum, Donelan-Banner spreading) as Gerstner waves. returns the
+    # displacement: xz sideways, y up
+    func ocean_disp [ q: @vec2f, n: @f32, kmax: @f32 ] -> GLSL vec3f {
+        vec3  D = vec3(0.0);
+        float t = ubo.wind.w;
+        float Q = ubo.sea.y;
+        for (int i = 0; i < 128; i++) {{
+            if (float(i) >= n) break;
+            vec4  wv = waves[i];
+            float k  = length(wv.xy);
+            if (k > kmax) break;
+            float om = sqrt(9.81 * k);
+            float a  = dot(wv.xy, q + ubo.world.xy) - om * t + wv.w;
+            D.y  += wv.z * cos(a);
+            D.xz -= (wv.xy / k) * (wv.z * Q * sin(a));
+        }}
+        return D;
+    }
+
+    # normal and folding of the same surface. w carries the Jacobian:
+    # below 1 the surface is compressing, and that is where foam is
+    func ocean_ndj [ q: @vec2f, n: @f32, kmax: @f32 ] -> GLSL vec4f {
+        float t = ubo.wind.w;
+        float Q = ubo.sea.y;
+        float hx = 0.0;
+        float hz = 0.0;
+        float jxx = 0.0;
+        float jzz = 0.0;
+        float jxz = 0.0;
+        for (int i = 0; i < 128; i++) {{
+            if (float(i) >= n) break;
+            vec4  wv = waves[i];
+            float k  = length(wv.xy);
+            if (k > kmax) break;
+            float om = sqrt(9.81 * k);
+            float a  = dot(wv.xy, q + ubo.world.xy) - om * t + wv.w;
+            float sa = sin(a);
+            float ca = cos(a);
+            hx  -= wv.z * wv.x * sa;
+            hz  -= wv.z * wv.y * sa;
+            float qa = Q * wv.z * ca / k;
+            jxx -= qa * wv.x * wv.x;
+            jzz -= qa * wv.y * wv.y;
+            jxz -= qa * wv.x * wv.y;
+        }}
+        vec3 nrm = normalize(vec3(-hx, 1.0, -hz));
+        float J  = (1.0 + jxx) * (1.0 + jzz) - jxz * jxz;
+        return vec4(nrm, J);
     }
 
     func fragment [] -> GLSL none {
@@ -10402,17 +10500,88 @@ ModelViewProject NubisSky
         if (!ground) {{
             float sd = smoothstep(0.99985, 0.99995, mu);
             bg += vec3(1.0, 0.96, 0.9) * sd * sky.a * ubo.sun_dir.w * 0.5;
+            // stars sit behind the air, so the haze thins them out
+            bg += night_stars(d) * sky.a;
         }} else {{
             vec3  gp  = o + d * tg.x;
-            vec3  gn  = normalize(gp - C);
-            float ndl = max(dot(gn, sun), 0.0);
+            vec3  up  = normalize(gp - C);
+            vec3  up0 = normalize(o - C);
+            float ch0 = length(o - C) - R;
             vec3  sc  = sun_light(gp);
             float sh  = ground_shadow(gp);
-            // under cloud the base glows: diffused sunlight, not black
-            vec3  amb = atmosphere(gp, gn, 1e12).rgb * 0.6 + sc * (1.0 - sh) * 0.06 * max(sun.y, 0.0);
-            vec3  alb = vec3(0.045, 0.06, 0.025);
-            vec3  gc  = alb * (sc * sh * ndl / 3.14159265 + amb);
-            bg = gc * sky.a + sky.rgb;
+            // a wave shorter than a few pixels can only alias: cut the
+            // spectrum at the pixel footprint and carry what is left as
+            // surface roughness instead
+            float fp   = max(tg.x * ubo.sea_b.z, 0.02);
+            float kmax = 6.2831853 / (fp * 8.0);
+            float fade = clamp(1.0 - tg.x / ubo.sea.w, 0.0, 1.0);
+            vec3  disp = ocean_disp(gp.xz, ubo.sea.x, kmax);
+            vec4  ndj  = ocean_ndj(gp.xz, ubo.sea.x, kmax);
+            vec3  n    = normalize(mix(up, ndj.xyz, 0.35 + 0.65 * fade));
+            vec3  V    = -d;
+            // foam where the surface folds over itself, plus the wind
+            // whipping the crests white
+            // whitecaps break where the surface folds over itself, and
+            // only once the wind is strong enough to tear the crests
+            float wind_f = smoothstep(6.0, 16.0, ubo.sea_b.x);
+            float foam = clamp((ubo.sea.z - ndj.w) * 1.6, 0.0, 1.0);
+            float crest = smoothstep(0.95, 1.5, disp.y / max(ubo.sea_b.x * 0.16, 0.25));
+            foam = clamp(foam + crest * 0.5, 0.0, 1.0) * wind_f;
+            // break the sheet up so it never reads as paint
+            vec3  fuv = vec3((gp.xz + ubo.world.xy) * 0.0037, ubo.wind.w * 0.006);
+            float fn  = texture(detail, fuv).r * 0.5 + texture(detail, fuv * 5.3 + 0.37).g * 0.5;
+            foam = clamp(foam * (0.15 + 1.5 * fn) - 0.12, 0.0, 1.0) * (0.3 + 0.7 * fade);
+            float ndl = max(dot(n, sun), 0.0);
+            float ndv = max(dot(n, V), 0.0);
+            // Fresnel: at grazing angles the sea is a mirror
+            float F = 0.02 + 0.98 * pow(1.0 - ndv, 5.0);
+            // the true mirror direction: bending it toward the sky puts
+            // the reflection out of line with the clouds it comes from
+            vec3  Rd = reflect(d, n);
+            if (dot(Rd, up) < 0.0004) Rd = normalize(Rd + up * (0.0004 - dot(Rd, up)));
+            vec4  rc = cloud_reflect(gp, Rd);
+            vec3  rf = rc.rgb + rc.a * (atmosphere(gp, Rd, 1e12).rgb + night_stars(Rd));
+            // the sun's own reflection: a rough mirror lobe on the slopes
+            vec3  H  = normalize(Rd + sun);
+            // the waves we dropped still scatter: they widen the lobe
+            float rough = mix(0.06, 0.22, clamp(ubo.sea_b.x / 20.0, 0.0, 1.0)) + clamp(fp * 0.01, 0.0, 0.22);
+            float a2 = rough * rough * rough * rough;
+            float dh = max(dot(n, normalize(V + sun)), 0.0);
+            float dd = dh * dh * (a2 - 1.0) + 1.0;
+            float spec = a2 / (3.14159265 * dd * dd);
+            rf += sc * sh * spec * 0.6;
+            // what comes back up out of the water: sky light scattered in
+            // the top metres, greener where a crest is thin and lit
+            vec3  deep = vec3(0.004, 0.016, 0.031);
+            vec3  sss  = vec3(0.02, 0.10, 0.09) * (0.4 + 0.6 * clamp(disp.y * 0.35 + 0.5, 0.0, 1.0));
+            vec3  skyl = atmosphere(gp, up, 1e12).rgb + vec3(0.016, 0.020, 0.034) * ubo.key_tint.w;
+            vec3  wat  = deep * skyl * 6.0 + sss * (sc * sh * max(sun.y, 0.0) * 0.35 + skyl * 0.6);
+            vec3  gc   = mix(wat, rf, F);
+            // the sea has to sink into the sky just above the horizon,
+            // or it ends at a hard line there. how far out the horizon
+            // sits depends on how high we are, so the fade follows that
+            // marine haze sits in a layer near the surface, so how much
+            // of it a ray crosses depends on how steeply it looks down,
+            // not just how far it goes: from up high the near sea stays
+            // clear while the horizon still dissolves
+            float up0d = max(-dot(d, up0), 1e-4);
+            float hz_H = 1000.0;
+            float tau  = (hz_H / up0d) * (1.0 - exp(-ch0 / hz_H)) * 1.0e-4;
+            float wf   = 1.0 - exp(-tau);
+            // the sky the sea has to match is the sky AT the horizon,
+            // which sits BELOW horizontal by the dip angle — mirroring
+            // the ray about the horizontal aimed too high and left a
+            // one-pixel crease along the horizon line
+            float dip  = sqrt(max(2.0 * ch0 / R, 1e-12));
+            float ev   = dot(d, up0);
+            vec3  hzd  = normalize(d + up0 * (max(ev, 0.0002 - dip) - ev));
+            vec3  fogc = atmosphere(o, hzd, 1e12).rgb;
+            // foam sits on top: lit by sun and sky, not a mirror
+            vec3  fc   = (sc * sh * ndl * 0.30 + skyl * 0.85) * 0.55;
+            gc = mix(gc, fc, foam);
+            // the haze goes on AFTER the aerial perspective, or the far
+            // sea ends up brighter than the sky it is dissolving into
+            bg = mix(gc * sky.a + sky.rgb, fogc, wf);
         }}
 
         // the cloud layer shells
@@ -10455,11 +10624,11 @@ ModelViewProject NubisSky
                 coarse = fine * 3.0;
                 vec3  p = o + d * t;
                 float h = height_frac(p);
-                vec4  w = weather_at(p);
+                vec3  w = weather_at(p);
                 steps_taken += 1.0;
                 if (!in_cloud) {{
                     // outside an island: leap by the island distance field
-                    float isd = texture(island, p.xz / ubo.scales.w + 0.5).r * 255.0 - 1.5;
+                    float isd = texture(island, (p.xz + ubo.world.xy) / ubo.scales.w + 0.5).r * 255.0 - 1.5;
                     if (isd > 0.0) {{
                         float leap = isd * (ubo.scales.w / 256.0) / max(length(d.xz), 0.02);
                         t += max(leap, coarse);
@@ -10488,18 +10657,23 @@ ModelViewProject NubisSky
                     // lit once per pixel at the first cloud sample
                     sun_c   = sun_light(p);
                     vec3 upv = normalize(p - C);
-                    amb_top = atmosphere(p, upv, 1e12).rgb;
+                    amb_top = atmosphere(p, upv, 1e12).rgb + vec3(0.016, 0.020, 0.034) * ubo.key_tint.w;
                     amb_bot = sun_c * max(sun.y, 0.0) * 0.05 * vec3(0.30, 0.31, 0.33) + amb_top * 0.35;
                 }}
-                // rain clouds absorb more
-                float ext = sigma * (1.0 + w.z * 2.5);
+                float ext = sigma;
                 float od  = light_march(p) * ext;
                 // Nubis in-scatter probability: dark edges, dark bottoms
                 float ht = type_frac(p, w);
                 float lod_d = cloud_density(p, h, w, 1.0);
                 float depth_p = 0.05 + pow(clamp(lod_d, 0.0, 1.0), clamp(remap(ht, 0.3, 0.85, 0.5, 2.0), 0.5, 2.0));
                 float vert_p  = pow(clamp(remap(ht, 0.07, 0.14, 0.1, 1.0), 0.1, 1.0), 0.8);
-                float inscat  = depth_p * vert_p;
+                // how much light reaches this point at all: it occludes
+                // the sky ambient wherever we are deep in the cloud
+                float occ     = depth_p * vert_p;
+                // the dark-edge (powder) look only shows with the sun
+                // behind us. backlit, a thin edge passes the sun straight
+                // through while the thick middle stays dark: silver lining
+                float inscat  = mix(1.0, occ, clamp(0.5 - mu * 0.5, 0.0, 1.0));
                 // three octaves of multiple scattering (Wrenninge / Frostbite)
                 vec3  direct = vec3(0.0);
                 float oa = 1.0;
@@ -10513,13 +10687,14 @@ ModelViewProject NubisSky
                     ob *= ubo.light_b.y;
                     oc *= ubo.light_b.z;
                 }}
-                direct *= sun_c * inscat * (1.0 - w.z * 0.6);
-                // ambient: the sky from above, the ground from below
-                float prof = w.x * height_gradient(ht, w);
-                vec3  amb  = mix(amb_bot, amb_top, ht) * pow(1.0 - clamp(prof, 0.0, 1.0), 0.5) * ubo.light_a.w * mix(1.0, inscat, 0.5);
-                // thunderheads go blue-gray: a cool, darker cast by storm
-                vec3  tint = mix(vec3(1.0), vec3(0.60, 0.70, 0.90), smoothstep(0.02, 0.35, w.z));
-                vec3  S    = (direct + amb) * tint * dens * ext;
+                direct *= sun_c * inscat;
+                // ambient: the sky from above, the ground from below,
+                // attenuated by the cloud still overhead — that is what
+                // keeps a thick middle dark while its edges pass light
+                float above = (1.0 - ht) * type_top(p, w) * lod_d;
+                float amb_t = exp(-above * ext * 0.15);
+                vec3  amb   = mix(amb_bot, amb_top, ht) * amb_t * ubo.light_a.w;
+                vec3  S    = (direct + amb) * dens * ext;
                 float e    = max(dens * ext, 1e-6);
                 float Ts   = exp(-e * fine);
                 col += T * (S - S * Ts) / e;
@@ -10624,15 +10799,12 @@ class WeatherState
     public name      : string
     public coverage  : f32
     public ctype     : f32
-    public storm     : f32
     public island    : f32
     public anvil     : f32
     public skew      : f32
     public density   : f32
     public detail    : f32
     public wind      : f32
-    public sun_el    : f32
-    public sun_az    : f32
 
 
 # the cloudscape as an orbiter backdrop: the Nubis sky above a plain,
@@ -10682,6 +10854,10 @@ element Clouds
     mutable tx_weather : Texture
     mutable tx_tvar    : Texture
     mutable tx_island  : Texture
+    mutable tx_stars   : Texture
+    mutable wave_buf   : Buffer
+    mutable wave_n     : i32
+    mutable wave_wind  : f32 [ -1.0 ]
     mutable old_islands : vec Texture
     mutable wimg       : Image
     mutable states     : vec WeatherState
@@ -10691,13 +10867,16 @@ element Clouds
     mutable blend_t    : f32 [ 1.0 ]
     mutable next_change : f32 [ 45.0 ]
     mutable wseed      : u32 [ 7919 ]
-    mutable preset     : i32 [ 1 ]
+    mutable preset     : i32 [ 2 ]
     mutable frame      : i32
     mutable last_us    : i64
     mutable seconds    : f32
-    mutable yaw        : f32 [ 0.4 ]
+    mutable yaw        : f32 [ -1.36 ]
     mutable cam_x      : f32
     mutable cam_z      : f32
+    # ONE continuous clock: the sun and moon come from it and nothing
+    # else ever moves them
+    mutable tod        : f32 [ 18.15 ]
     mutable wtime      : f32
     mutable last_rw    : i32
     mutable last_rh    : i32
@@ -10708,7 +10887,6 @@ element Clouds
     mutable hist_valid : bool
     mutable isl_cov    : f32 [ -1.0 ]
     mutable isl_mix    : f32
-    mutable isl_storm  : f32
     mutable isl_secs   : f32 [ -10.0 ]
     mutable edt_v      : vec i32
     mutable edt_z      : vec f32
@@ -10734,16 +10912,16 @@ element Clouds
 
     func make_states []
         states = vec WeatherState []
-        states += WeatherState [ name: 'clear, a few cumulus', coverage: 0.4, ctype: 0.85, storm: 0.0, island: 0.8, anvil: 0.0, skew: 300.0, density: 1.0, detail: 0.3, wind: 6.0, sun_el: 0.9, sun_az: 1.2 ]
-        states += WeatherState [ name: 'fair weather cumulus',  coverage: 0.62, ctype: 0.8,  storm: 0.0, island: 0.5, anvil: 0.1, skew: 500.0, density: 1.0, detail: 0.32, wind: 8.0, sun_el: 0.75, sun_az: 5.9 ]
-        states += WeatherState [ name: 'stratocumulus sheet',   coverage: 0.85, ctype: 0.45, storm: 0.0, island: 0.2, anvil: 0.0, skew: 400.0, density: 1.1, detail: 0.28, wind: 10.0, sun_el: 0.6, sun_az: 0.0 ]
-        states += WeatherState [ name: 'overcast stratus',      coverage: 0.97, ctype: 0.08, storm: 0.0, island: 0.0, anvil: 0.0, skew: 200.0, density: 1.4, detail: 0.22, wind: 5.0, sun_el: 0.7, sun_az: 2.0 ]
-        states += WeatherState [ name: 'storm front',           coverage: 0.62, ctype: 0.9,  storm: 1.0, island: 0.4, anvil: 1.0, skew: 900.0, density: 1.3, detail: 0.3, wind: 18.0, sun_el: 0.45, sun_az: 5.6 ]
-        states += WeatherState [ name: 'sunset towers',         coverage: 0.45, ctype: 0.95, storm: 0.0, island: 0.7, anvil: 0.4, skew: 600.0, density: 1.0, detail: 0.3, wind: 7.0, sun_el: 0.07, sun_az: 6.0 ]
+        states += WeatherState [ name: 'clear, a few cumulus', coverage: 0.4, ctype: 0.85, island: 0.8, anvil: 0.0, skew: 300.0, density: 1.0, detail: 0.3, wind: 6.0 ]
+        states += WeatherState [ name: 'fair weather cumulus',  coverage: 0.62, ctype: 0.8, island: 0.5, anvil: 0.1, skew: 500.0, density: 1.0, detail: 0.32, wind: 8.0 ]
+        states += WeatherState [ name: 'stratocumulus sheet',   coverage: 0.85, ctype: 0.45, island: 0.2, anvil: 0.0, skew: 400.0, density: 1.1, detail: 0.28, wind: 10.0 ]
+        states += WeatherState [ name: 'overcast stratus',      coverage: 0.97, ctype: 0.08, island: 0.0, anvil: 0.0, skew: 200.0, density: 1.4, detail: 0.22, wind: 5.0 ]
+        states += WeatherState [ name: 'heavy cumulus',         coverage: 0.62, ctype: 0.9, island: 0.4, anvil: 1.0, skew: 900.0, density: 1.3, detail: 0.3, wind: 18.0 ]
+        states += WeatherState [ name: 'sunset towers',         coverage: 0.45, ctype: 0.95, island: 0.7, anvil: 0.4, skew: 600.0, density: 1.0, detail: 0.3, wind: 7.0 ]
 
     func copy_state [ s: WeatherState ] -> WeatherState
-        return WeatherState [ name: s.name, coverage: s.coverage, ctype: s.ctype, storm: s.storm, island: s.island,
-            anvil: s.anvil, skew: s.skew, density: s.density, detail: s.detail, wind: s.wind, sun_el: s.sun_el, sun_az: s.sun_az ]
+        return WeatherState [ name: s.name, coverage: s.coverage, ctype: s.ctype, island: s.island,
+            anvil: s.anvil, skew: s.skew, density: s.density, detail: s.detail, wind: s.wind ]
 
     # the weather scheduler: a new state by chance, blended over seconds
     func schedule []
@@ -10757,6 +10935,87 @@ element Clouds
         goal.hold[]
         blend_t = 0.0
         next_change = seconds + 40.0 + rnd[] * 40.0
+
+    # JONSWAP: the deep-water frequency spectrum for a wind of U over a
+    # fetch of F metres (Hasselmann 1973, as used by Arc Blanc 2025)
+    func omega_p [ wind: f32 ] -> f32
+        U : f32 [ (wind < 0.5) ? 0.5 : wind ]
+        return 22.0 * pow[ 9.81 * 9.81 / (U * 100000.0), 0.33333 ]
+
+    func jonswap [ om: f32, wind: f32 ] -> f32
+        U : f32 [ (wind < 0.5) ? 0.5 : wind ]
+        al : f32 [ 0.076 * pow[ U * U / (100000.0 * 9.81), 0.22 ] ]
+        omp : f32 [ omega_p[ wind ] ]
+        sg : f32 [ (om <= omp) ? 0.07 : 0.09 ]
+        dd : f32 [ om - omp ]
+        r : f32 [ exp[ 0.0 - dd * dd / (2.0 * sg * sg * omp * omp) ] ]
+        return al * 9.81 * 9.81 / pow[ om, 5.0 ] * exp[ 0.0 - 1.25 * pow[ omp / om, 4.0 ] ] * pow[ 3.3, r ]
+
+    # Donelan-Banner directional spreading: how tightly the waves of a
+    # given frequency hold the wind's direction
+    func db_beta [ rw: f32 ] -> f32
+        if [ rw < 0.95 ] return 2.61 * pow[ rw, 1.3 ]
+        if [ rw < 1.6 ]  return 2.28 * pow[ rw, 0.0 - 1.3 ]
+        eps : f32 [ 0.8393 * exp[ 0.0 - 0.567 * log[ rw * rw ] ] - 0.4 ]
+        return pow[ 10.0, eps ]
+
+    func sech2 [ x: f32 ] -> f32
+        ax : f32 [ (x < 0.0) ? 0.0 - x : x ]
+        if [ ax > 12.0 ] return 0.0
+        e : f32 [ exp[ ax ] ]
+        c : f32 [ (e + 1.0 / e) * 0.5 ]
+        return 1.0 / (c * c)
+
+    func tanh_f [ x: f32 ] -> f32
+        if [ x > 12.0 ] return 1.0
+        e : f32 [ exp[ 2.0 * x ] ]
+        return (e - 1.0) / (e + 1.0)
+
+    # sample the spectrum into Gerstner components, longest wave first
+    # so a distant pixel can use a prefix of the list
+    func build_waves [ wind: f32 ]
+        NK : i32 [ 40 ]
+        ND : i32 [ 3 ]
+        n : i32 [ NK * ND ]
+        if [ !wave_buf ]
+            wave_buf = Buffer [ vk: vk, size: i64[ n ] * 16,
+                u_storage: true, m_host_visible: true, m_host_coherent: true ]
+            wave_buf.hold[]
+        wd : @f32 [ wave_buf.data ]
+        th0 : f32 [ atan2[ 0.6, 0.8 ] ]
+        lmin : f32 [ 1.6 ]
+        lmax : f32 [ 780.0 ]
+        omp : f32 [ omega_p[ wind ] ]
+        idx : i32 [ 0 ]
+        for [ i: i32 0, i < NK, i += 1 ]
+            f0 : f32 [ f32[ i ] / f32[ NK ] ]
+            f1 : f32 [ f32[ i + 1 ] / f32[ NK ] ]
+            l0 : f32 [ lmax * pow[ lmin / lmax, f0 ] ]
+            l1 : f32 [ lmax * pow[ lmin / lmax, f1 ] ]
+            lm : f32 [ sqrt[ l0 * l1 ] ]
+            k : f32 [ 6.2831853 / lm ]
+            om : f32 [ sqrt[ 9.81 * k ] ]
+            om0 : f32 [ sqrt[ 9.81 * 6.2831853 / l0 ] ]
+            om1 : f32 [ sqrt[ 9.81 * 6.2831853 / l1 ] ]
+            dom : f32 [ om1 - om0 ]
+            S : f32 [ jonswap[ om, wind ] ]
+            bs : f32 [ db_beta[ om / omp ] ]
+            qn : f32 [ 1.0 / tanh_f[ bs * 3.14159265 ] ]
+            sp : f32 [ 3.2 / bs ]
+            if [ sp > 3.14159265 ] sp = 3.14159265
+            dth : f32 [ sp / f32[ ND ] ]
+            for [ j: i32 0, j < ND, j += 1 ]
+                u : f32 [ (f32[ j ] + rnd[]) / f32[ ND ] ]
+                th : f32 [ (u - 0.5) * sp ]
+                D : f32 [ 0.5 * bs * sech2[ bs * th ] * qn ]
+                A : f32 [ sqrt[ 2.0 * S * D * dom * dth ] ]
+                wd[ idx * 4 ]     = k * cos[ th0 + th ]
+                wd[ idx * 4 + 1 ] = k * sin[ th0 + th ]
+                wd[ idx * 4 + 2 ] = A
+                wd[ idx * 4 + 3 ] = rnd[] * 6.2831853
+                idx += 1
+        wave_n = idx
+        wave_wind = wind
 
     func load_texture [ p: path, depth: i32 ] -> Texture
         expect p.exists[], 'baked noise missing: {p}'
@@ -10808,11 +11067,9 @@ element Clouds
         ww : i32 [ wimg.width ]
         c  : f32 [ cur.coverage ]
         mask : vec f32 [ N * N ]
-        smask : vec i32 [ N * N ]
         for [ y: i32 0, y < N, y += 1 ]
             for [ x: i32 0, x < N, x += 1 ]
                 inside : bool [ false ]
-                scell : bool [ false ]
                 # max over the 2x2 source pixels: conservative
                 for [ sy: i32 0, sy < 2, sy += 1 ]
                     for [ sx: i32 0, sx < 2, sx += 1 ]
@@ -10821,56 +11078,12 @@ element Clouds
                         i : i32 [ (py * ww + px) * 4 ]
                         r : f32 [ f32[ wd[ i ] ] / 255.0 ]
                         g : f32 [ f32[ wd[ i + 1 ] ] / 255.0 ]
-                        a : f32 [ f32[ wd[ i + 3 ] ] / 255.0 ]
                         fr : f32 [ sat[ remap[ r, 0.30, 0.72, 0.0, 1.0 ] ] ]
                         fg : f32 [ sat[ remap[ g, 0.0, 0.5, 0.0, 1.0 ] ] ]
                         field : f32 [ fr + (fg - fr) * cur.island ]
                         cov : f32 [ sat[ remap[ field, 1.0 - c, 1.0 - c + 0.35, 0.0, 1.0 ] ] ]
-                        if [ a > 0.02 ] scell = true
-                        if [ cov > 0.002 || a > 0.02 ] inside = true
+                        if [ cov > 0.002 ] inside = true
                 mask[ y * N + x ] = (inside) ? 0.0 : 1e10
-                smask[ y * N + x ] = (scell) ? 1 : 0
-        # storm cells: one random life phase and one size per connected
-        # cell, so a tower rises as one body (a field gave slanted bands)
-        amap : vec f32 [ N * N ]
-        for [ y: i32 0, y < N, y += 1 ]
-            for [ x: i32 0, x < N, x += 1 ]
-                amax : f32 [ 0.0 ]
-                for [ sy: i32 0, sy < 2, sy += 1 ]
-                    for [ sx: i32 0, sx < 2, sx += 1 ]
-                        px : i32 [ (x * 2 + sx) % ww ]
-                        py : i32 [ (y * 2 + sy) % ww ]
-                        av : f32 [ f32[ wd[ (py * ww + px) * 4 + 3 ] ] / 255.0 ]
-                        if [ av > amax ] amax = av
-                amap[ y * N + x ] = amax
-        lab : vec i32 [ N * N ]
-        stk : vec i32 [ N * N ]
-        for [ i: i32 0, i < N * N, i += 1 ] lab[ i ] = 0
-        ncells : i32 [ 0 ]
-        for [ i0: i32 0, i0 < N * N, i0 += 1 ]
-            if [ lab[ i0 ] != 0 || smask[ i0 ] == 0 ] continue
-            ncells += 1
-            sp : i32 [ 1 ]
-            stk[ 0 ] = i0
-            lab[ i0 ] = ncells
-            while [ sp > 0 ]
-                sp = sp - 1
-                ci : i32 [ stk[ sp ] ]
-                cx : i32 [ ci % N ]
-                cy : i32 [ ci / N ]
-                for [ k: i32 0, k < 4, k += 1 ]
-                    nx : i32 [ (k == 0) ? (cx + 1) % N : (k == 1) ? (cx + N - 1) % N : cx ]
-                    ny : i32 [ (k == 2) ? (cy + 1) % N : (k == 3) ? (cy + N - 1) % N : cy ]
-                    ni : i32 [ ny * N + nx ]
-                    if [ smask[ ni ] != 0 && lab[ ni ] == 0 ]
-                        lab[ ni ] = ncells
-                        stk[ sp ] = ni
-                        sp += 1
-        # each cell's size = its peak field value
-        cmax : vec f32 [ ncells + 1 ]
-        for [ c: i32 0, c <= ncells, c += 1 ] cmax[ c ] = 0.0
-        for [ i: i32 0, i < N * N, i += 1 ]
-            if [ lab[ i ] != 0 && amap[ i ] > cmax[ lab[ i ] ] ] cmax[ lab[ i ] ] = amap[ i ]
         # rows, tripled for the wrap
         for [ y: i32 0, y < N, y += 1 ]
             for [ x: i32 0, x < N * 3, x += 1 ] edt_f[ x ] = mask[ y * N + (x % N) ]
@@ -10887,11 +11100,9 @@ element Clouds
         for [ i: i32 0, i < N * N, i += 1 ]
             dist : f32 [ sqrt[ mask[ i ] ] ]
             if [ dist > 255.0 ] dist = 255.0
-            phf : f32 [ f32[ lab[ i ] ] * 0.618034 ]
-            phf = phf - floor[ phf ]
             d[ i * 4 ]     = u8[ i32[ dist ] ]
-            d[ i * 4 + 1 ] = u8[ i32[ phf * 255.0 ] ]
-            d[ i * 4 + 2 ] = u8[ i32[ cmax[ lab[ i ] ] * 255.0 ] ]
+            d[ i * 4 + 1 ] = u8[ i32[ dist ] ]
+            d[ i * 4 + 2 ] = u8[ i32[ dist ] ]
             d[ i * 4 + 3 ] = u8[ 255 ]
         if [ tx_island ]
             if [ !old_islands ] old_islands = vec Texture []
@@ -10900,7 +11111,6 @@ element Clouds
         tx_island.hold[]
         isl_cov   = c
         isl_mix   = cur.island
-        isl_storm = cur.storm
         isl_secs  = seconds
 
     func create_target []
@@ -10920,12 +11130,14 @@ element Clouds
         tx_curl    = load_texture[ path '../scenes/baked/nubis-curl.png', 1 ]
         tx_weather = load_texture[ path '../scenes/baked/nubis-weather.png', 1 ]
         tx_tvar    = load_texture[ path '../scenes/baked/nubis-tops.png', 1 ]
+        tx_stars   = load_texture[ path '../scenes/textures/gaia.png', 1 ]
         wimg = Image [ uri: path '../scenes/baked/nubis-weather.png', linear: true ]
         wimg.hold[]
         build_island[]
+        build_waves[ cur.wind ]
         sky = NubisSky [ vk: vk, name: 'nubis-sky' ]
         sky.hold[]
-        smp : map Au[string] [ 'shape': tx_shape, 'detail': tx_detail, 'curl': tx_curl, 'weather': tx_weather, 'island': tx_island, 'tvar': tx_tvar ]
+        smp : map Au[string] [ 'shape': tx_shape, 'detail': tx_detail, 'curl': tx_curl, 'weather': tx_weather, 'island': tx_island, 'tvar': tx_tvar, 'waves': wave_buf, 'stars': tx_stars ]
         vmodel = Model [ vk: vk, w: ux, s: sky, samplers: smp ]
         vmodel.hold[]
         lowres = Render [ vk: vk, w: ux, wscale: 0.5, tag: 'nubis-low',
@@ -10966,9 +11178,13 @@ element Clouds
         # factor runs the wind. time_scale is 1/64 subtle .. 4 ludicrous
         ts4 : f32 [ ux.time_scale * 4.0 ]
         wtime += dt * ts4
-        spd : f32 [ 70.0 * ts4 ]
+        spd : f32 [ 140.0 * ts4 ]
         cam_x += sin[ yaw ] * spd * dt
         cam_z += cos[ yaw ] * spd * dt
+        # the day runs once, slowly, in wall-clock time: the speed steps
+        # move us through the world, never through the day
+        tod += dt * (24.0 / 2400.0)
+        if [ tod >= 24.0 ] tod -= 24.0
         if [ seconds > next_change ] schedule[]
         if [ blend_t < 1.0 ]
             blend_t += dt / 12.0
@@ -10976,23 +11192,18 @@ element Clouds
             t : f32 [ blend_t * blend_t * (3.0 - 2.0 * blend_t) ]
             cur.coverage = lerp_f[ prev.coverage, goal.coverage, t ]
             cur.ctype    = lerp_f[ prev.ctype,    goal.ctype,    t ]
-            cur.storm    = lerp_f[ prev.storm,    goal.storm,    t ]
             cur.island   = lerp_f[ prev.island,   goal.island,   t ]
             cur.anvil    = lerp_f[ prev.anvil,    goal.anvil,    t ]
             cur.skew     = lerp_f[ prev.skew,     goal.skew,     t ]
             cur.density  = lerp_f[ prev.density,  goal.density,  t ]
             cur.detail   = lerp_f[ prev.detail,   goal.detail,   t ]
             cur.wind     = lerp_f[ prev.wind,     goal.wind,     t ]
-            cur.sun_el   = lerp_f[ prev.sun_el,   goal.sun_el,   t ]
-            cur.sun_az   = lerp_f[ prev.sun_az,   goal.sun_az,   t ]
         # the island map follows the weather blend, a few times a second
         dc : f32 [ cur.coverage - isl_cov ]
         dm : f32 [ cur.island - isl_mix ]
-        ds : f32 [ cur.storm - isl_storm ]
         if [ dc < 0.0 ] dc = 0.0 - dc
         if [ dm < 0.0 ] dm = 0.0 - dm
-        if [ ds < 0.0 ] ds = 0.0 - ds
-        if [ (dc > 0.01 || dm > 0.02 || ds > 0.02) && seconds - isl_secs > 0.25 ]
+        if [ (dc > 0.01 || dm > 0.02) && seconds - isl_secs > 0.25 ]
             build_island[]
             vmodel.samplers[ 'island' ] = tx_island
             vmodel.rebind_model[]
@@ -11013,11 +11224,11 @@ element Clouds
         # orbit steps: on the ground, under the cloud base, above the tops,
         # wide on the ground. angle steps swing the gaze up (or down from above)
         above : bool [ ux.orbit_mode == OrbitView.far ]
-        h_t : f32 [ (ux.orbit_mode == OrbitView.low)  ? 2.0 :
+        h_t : f32 [ (ux.orbit_mode == OrbitView.low)  ? 400.0 :
                     (ux.orbit_mode == OrbitView.high) ? 1150.0 :
-                    (above) ? 5200.0 : 2.0 ]
+                    (above) ? 5200.0 : 400.0 ]
         p_t : f32 [ (above) ? ((ux.angle_mode == ViewAngle.flat) ? -4.0 : (ux.angle_mode == ViewAngle.angled) ? -22.0 : -55.0)
-                            : ((ux.angle_mode == ViewAngle.flat) ? 10.0 : (ux.angle_mode == ViewAngle.angled) ? 32.0 : 65.0) ]
+                            : ((ux.angle_mode == ViewAngle.flat) ? 8.0 : (ux.angle_mode == ViewAngle.angled) ? 32.0 : 65.0) ]
         f_t : f32 [ (ux.orbit_mode == OrbitView.wide) ? 95.0 : 60.0 ]
         if [ c_f == 0.0 ]
             c_p = p_t
@@ -11043,21 +11254,53 @@ element Clouds
         uz2 : f32 [ rx * fy ]
         th : f32 [ tan[ radians[ c_f * 0.5 ] ] ]
         aspect : f32 [ (rh9 > 0) ? f32[ rw9 ] / f32[ rh9 ] : 1.778 ]
-        sky.cam_pos   = vec4f [ cam_x, c_h, cam_z, 0.0 ]
+        sky.cam_pos   = vec4f [ 0.0, c_h, 0.0, 0.0 ]
         sky.cam_right = vec4f [ rx, 0.0, rz, th * aspect ]
         sky.cam_up    = vec4f [ ux2, uy2, uz2, th ]
         sky.cam_fwd   = vec4f [ fx, fy, fz, 0.9 ]
-        se : f32 [ cos[ cur.sun_el ] ]
-        sky.sun_dir   = vec4f [ se * sin[ cur.sun_az ], sin[ cur.sun_el ], se * cos[ cur.sun_az ], 22.0 ]
+        # sun and moon from the one clock: hour angle, a fixed latitude
+        # and declination. the moon rides half a day behind the sun
+        H : f32 [ (tod - 12.0) * 0.2617994 ]
+        lat : f32 [ 0.35 ]
+        dec : f32 [ 0.20 ]
+        sel : f32 [ asin[ sin[ lat ] * sin[ dec ] + cos[ lat ] * cos[ dec ] * cos[ H ] ] ]
+        saz : f32 [ atan2[ 0.0 - sin[ H ] * cos[ dec ], cos[ lat ] * sin[ dec ] - sin[ lat ] * cos[ dec ] * cos[ H ] ] ]
+        Hm : f32 [ H + 3.14159265 ]
+        mdec : f32 [ 0.0 - dec ]
+        mel : f32 [ asin[ sin[ lat ] * sin[ mdec ] + cos[ lat ] * cos[ mdec ] * cos[ Hm ] ] ]
+        maz : f32 [ atan2[ 0.0 - sin[ Hm ] * cos[ mdec ], cos[ lat ] * sin[ mdec ] - sin[ lat ] * cos[ mdec ] * cos[ Hm ] ] ]
+        # ONE key light, handed over cleanly: the sun fades to nothing as
+        # it sets, and only then does the moon fade in. swapping the
+        # direction while the light still had strength lit the whole
+        # scene from the moon's angle at half sun power
+        sfade : f32 [ sat[ (0.0 - sel - 0.005) / 0.09 ] ]
+        mfade : f32 [ sat[ (0.0 - sel - 0.10) / 0.09 ] ]
+        kel : f32 [ sel ]
+        kaz : f32 [ saz ]
+        pw : f32 [ 22.0 * (1.0 - sfade) ]
+        if [ mfade > 0.0 ]
+            kel = mel
+            kaz = maz
+            pw  = 1.30 * mfade
+        se : f32 [ cos[ kel ] ]
+        sky.sun_dir   = vec4f [ se * sin[ kaz ], sin[ kel ], se * cos[ kaz ], pw ]
+        # moonlight is silver: cool, and it keeps the clouds readable
+        sky.key_tint  = vec4f [ 1.0 - 0.30 * mfade, 1.0 - 0.16 * mfade, 1.0, sfade ]
+        sky.world     = vec4f [ cam_x, cam_z, 0.0, 0.0 ]
         sky.wind      = vec4f [ cur.wind * 0.8, 0.0, cur.wind * 0.6, wtime ]
-        sky.layer     = vec4f [ 1500.0, 9000.0, 6371000.0, 6471000.0 ]
-        sky.tops      = vec4f [ 1100.0, 1800.0, 3000.0, 6500.0 ]
+        sky.layer     = vec4f [ 1500.0, 6000.0, 6371000.0, 6471000.0 ]
+        sky.tops      = vec4f [ 1100.0, 1800.0, 3000.0, 0.0 ]
         sky.weather_a = vec4f [ cur.coverage, cur.ctype, 1.0, cur.island ]
         sky.weather_b = vec4f [ 0.6, cur.skew, cur.density, cur.detail ]
-        sky.light_a   = vec4f [ 0.6, 0.9, 0.25, 1.0 ]
-        sky.light_b   = vec4f [ 0.5, 0.5, 0.5, 0.016 ]
+        sky.light_a   = vec4f [ 0.6, 1.4, 0.18, 1.0 ]
+        sky.light_b   = vec4f [ 0.4, 0.75, 0.5, 0.016 ]
         sky.scales    = vec4f [ 6000.0, 650.0, 3000.0, 60000.0 ]
         sky.march     = vec4f [ 2.0, 1.0, 60000.0, 1.0 / 45000.0 ]
+        # the sea state follows the wind: rebuild when it has moved
+        dw : f32 [ cur.wind - wave_wind ]
+        if [ dw < 0.0 ] dw = 0.0 - dw
+        if [ dw > 0.5 ] build_waves[ cur.wind ]
+        sky.sea       = vec4f [ f32[ wave_n ], 1.15, 0.55, 12000.0 ]
         sky.view_mode = 0
         sky.frame     = frame
         sky.time      = wtime
@@ -11069,6 +11312,8 @@ element Clouds
         jx : f32 [ ox / lw ]
         jy : f32 [ oy / lh ]
         sky.jitter = vec4f [ jx, jy, 0.0, 0.0 ]
+        # sea_b.z = the angle one pixel covers: the wave LOD works off it
+        sky.sea_b  = vec4f [ cur.wind, 1.0, 2.0 * th / lh, tod / 24.0 ]
         # last frame's target becomes the history, then the fresh pass
         if [ hist_valid ]
             hist.draw[]
@@ -11094,7 +11339,7 @@ element Clouds
 
     public func theme [ ] -> map string [string]
         return map string [string] [
-            '#140a2acc':  '#0c1a2acc',   # editor pane background
+            '#140a2acc':  '#080a1acc',   # editor pane background
             '#140a2a80':  '#0e1c2e80',   # console pane background
             '#ff6a2e55':  '#4aa0e855',   # search highlight fill
             '#220022aa':  '#0a1826aa',   # run console base fill
