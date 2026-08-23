@@ -1,0 +1,12 @@
+export 0.1.0
+
+class Thing
+    public x : i32
+
+    func probe [] -> i32
+        a : Thing [ ]
+        b : Thing [ ]
+        a = b
+        s : string [ 'hello' ]
+        s = 'world'
+        return a.x + s.count

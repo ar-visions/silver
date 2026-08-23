@@ -3155,16 +3155,19 @@ AU_EXPORT Au alloc_instance(Au_t type, int n_bytes, bool managed) {
     a = calloc(1, n_bytes);
     if (leaks_top) leak_insert(a);
     a->refs = 0;
-    a->managed = managed ? af_count : 0;
-    if (managed && af_count >= af_size) {
-        ARef af_prev = af;
-        int new_size = (af_size + 16) << 2;
-        af = (ARef)calloc(sizeof(ARef), new_size);
-        if (af_prev)
-            memcpy(af, af_prev, af_size * sizeof(ARef));
-        af_size = new_size;
+    a->managed = 0;
+    if (managed) {
+        if (af_count >= af_size) {
+            ARef af_prev = af;
+            int new_size = (af_size + 16) << 2;
+            af = (ARef)calloc(sizeof(ARef), new_size);
+            if (af_prev)
+                memcpy(af, af_prev, af_size * sizeof(ARef));
+            af_size = new_size;
+        }
+        a->managed = af_count;
+        af[af_count++] = a;
     }
-    af[af_count++] = a;
     return a;
 }
 
@@ -5534,7 +5537,37 @@ AU_EXPORT string string_unescape(string input) {
     return res;
 }
 
+// the last strings handed to free, so a crash inside one can say where
+// that string was made. au_crash_notes prints them from a signal handler
+typedef struct { void* chars; cstr src; int line; int seq;
+                 long long alloc; long long count; char text[28]; } au_free_note;
+static au_free_note au_free_ring[24];
+static int          au_free_ix = 0;
+
+AU_EXPORT none au_crash_notes() {
+    fprintf(stderr, "\nlast strings freed (newest first):\n");
+    for (int i = 0; i < 24; i++) {
+        int k = (au_free_ix - 1 - i + 48) % 24;
+        au_free_note* n = &au_free_ring[k];
+        if (!n->chars) continue;
+        fprintf(stderr, "  chars=%p alloc=%lld count=%lld at %s:%d#%d '%s'\n",
+            n->chars, n->alloc, n->count, n->src ? n->src : "?", n->line, n->seq, n->text);
+    }
+    fflush(stderr);
+}
+
 AU_EXPORT none  string_dealloc(string a) {
+    object h = (object)head(a);
+    au_free_note* n = &au_free_ring[au_free_ix];
+    au_free_ix = (au_free_ix + 1) % 24;
+    n->chars = (void*)a->chars;
+    n->src   = h->source;
+    n->line  = h->line;
+    n->seq   = h->sequence;
+    n->alloc = (long long)a->alloc;
+    n->count = (long long)a->count;
+    n->text[0] = 0;
+    if (a->chars) { strncpy(n->text, (cstr)a->chars, 27); n->text[27] = 0; }
     free((cstr)a->chars);
 }
 AU_EXPORT num   string_compare(string a, string b) { if (a == b) return 0; if (!a || !b) return a ? 1 : -1; return strcmp(a->chars, b->chars); }

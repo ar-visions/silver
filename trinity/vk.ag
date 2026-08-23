@@ -66,6 +66,11 @@ class Render
     mutable owner                          : element
     # the display loop leaves this target alone while set
     public  skip                           : bool
+    # a render target used as a reflection source has to be filterable:
+    # mips > 1 builds the chain (regenerate with gen_mips after drawing)
+    # and aniso turns on anisotropic sampling of it
+    public  mips                           : i32
+    public  aniso                          : i32
     # opt-in GPU timestamps: pass 0 of the last completed slot, in us
     public  timing                         : bool
     public  gpu_us                         : f32
@@ -212,7 +217,8 @@ class Render
             color = Texture [ vk: vk, w: w, width: width, height: height,
                 vk_format: w.surface_format.format, swap: !backbuffer,
                 surface: Surface.color, vk_image: vk_swap_image, tag: ctag,
-                nearest: nearest ]
+                nearest: nearest, mip_levels: (mips > 1) ? mips : 1,
+                anisotropy: aniso ]
             if [ use_depth ]
                 depth = Texture [ vk: vk, w: w, width: width, height: height,
                     vk_format: VK_FORMAT_D32_SFLOAT, swap: !backbuffer, tag: 'rdepth' ]
@@ -541,6 +547,13 @@ class Render
         ring_primed[s] = 1
         ring_last      = s
         ring_i         = (s + 1) % ring_n
+
+    # rebuild the colour mip chain from what was just drawn
+    public func gen_mips [ ]
+        if [ mips < 2 || !color ] return
+        color.transition[ VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ]
+        vk.create_mipmaps*[ color.vk_image, width, height, mips, 1 ]
+        color.vk_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 
     public func sync_fence [ ]
         # submit the open batch (if any), then wait it. callers invoke this before
