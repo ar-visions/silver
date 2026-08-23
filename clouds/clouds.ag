@@ -381,6 +381,14 @@ ModelViewProject NubisSky
     mutable tops      : vec4f     # type tops above the base, m: stratus, stratocumulus, cumulus
     mutable world     : vec4f     # xy: how far we have flown, in metres
     mutable key_tint  : vec4f     # rgb: the key light's colour, w: night
+    # a strike is a short chain of points inside the cloud: xyz and the
+    # power of each. bolt_col carries its colour and how bright it is
+    # right now, which is zero for all but a fraction of a second
+    mutable bolt_a    : vec4f
+    mutable bolt_b    : vec4f
+    mutable bolt_c    : vec4f
+    mutable bolt_d    : vec4f
+    mutable bolt_col  : vec4f
     mutable sea       : vec4f     # x wave count, y choppiness, z foam start, w detail fade m
     mutable sea_b     : vec4f     # x wind m/s, y reflect quality, z swell, w unused
     mutable jitter    : vec4f     # xy: sub-pixel uv offset of this frame's samples
@@ -668,6 +676,29 @@ ModelViewProject NubisSky
         return c * c * ng * 0.05 * up;
     }
 
+    # light arriving at a point from the strike: the chain lights the
+    # cloud around it, falling off with distance from each point
+    func bolt_at [ p: @vec3f ] -> GLSL vec3f {
+        if (ubo.bolt_col.w <= 0.0) return vec3(0.0);
+        vec3  da = ubo.bolt_a.xyz - p;
+        vec3  db = ubo.bolt_b.xyz - p;
+        vec3  dc = ubo.bolt_c.xyz - p;
+        vec3  dd = ubo.bolt_d.xyz - p;
+        // the cloud swallows the flash within a few hundred metres, so
+        // what lights up is the cell around the channel, not the deck
+        float ra = length(da);
+        float rb = length(db);
+        float rc = length(dc);
+        float rd = length(dd);
+        float e  = ubo.bolt_a.w * exp(-ra / 500.0) / (ra * ra + 900.0)
+                 + ubo.bolt_b.w * exp(-rb / 500.0) / (rb * rb + 900.0)
+                 + ubo.bolt_c.w * exp(-rc / 500.0) / (rc * rc + 900.0)
+                 + ubo.bolt_d.w * exp(-rd / 500.0) / (rd * rd + 900.0);
+        // inside a cloud the flash does not stay a point: it scatters.
+        // it still has to sit under the sky it lights, not blow it out
+        return ubo.bolt_col.rgb * (e * ubo.bolt_col.w);
+    }
+
     func aces [ x: @vec3f ] -> GLSL vec3f {
         return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
     }
@@ -797,10 +828,16 @@ ModelViewProject NubisSky
             // surface roughness instead
             float fp   = max(tg.x * ubo.sea_b.z, 0.02);
             float kmax = 6.2831853 / (fp * 8.0);
-            float fade = clamp(1.0 - tg.x / ubo.sea.w, 0.0, 1.0);
+            // the waves give way to the flat surface as soon as they
+            // stop covering pixels: by a few km there is nothing left to
+            // resolve, and holding onto them there is what aliases
+            float fade = clamp(1.0 - fp / 2.0, 0.0, 1.0);
             vec3  disp = ocean_disp(gp.xz, ubo.sea.x, kmax);
             vec4  ndj  = ocean_ndj(gp.xz, ubo.sea.x, kmax);
-            vec3  n    = normalize(mix(up, ndj.xyz, 0.35 + 0.65 * fade));
+            // close in the waves carry the reflection; far out they are
+            // under a pixel, so the flat surface normal takes over and
+            // what is left of them widens the specular lobe instead
+            vec3  n    = normalize(mix(up, ndj.xyz, fade));
             vec3  V    = -d;
             // foam where the surface folds over itself, plus the wind
             // whipping the crests white
@@ -813,7 +850,9 @@ ModelViewProject NubisSky
             // break the sheet up so it never reads as paint
             vec3  fuv = vec3((gp.xz + ubo.world.xy) * 0.0037, ubo.wind.w * 0.006);
             float fn  = texture(detail, fuv).r * 0.5 + texture(detail, fuv * 5.3 + 0.37).g * 0.5;
-            foam = clamp(foam * (0.15 + 1.5 * fn) - 0.12, 0.0, 1.0) * (0.3 + 0.7 * fade);
+            // foam belongs to waves we can still resolve: kept at any
+            // distance it reads as white speckle on the flat sea
+            foam = clamp(foam * (0.15 + 1.5 * fn) - 0.12, 0.0, 1.0) * fade;
             float ndl = max(dot(n, sun), 0.0);
             float ndv = max(dot(n, V), 0.0);
             // Fresnel: at grazing angles the sea is a mirror
@@ -822,8 +861,14 @@ ModelViewProject NubisSky
             // the reflection out of line with the clouds it comes from
             vec3  Rd = reflect(d, n);
             if (dot(Rd, up) < 0.0004) Rd = normalize(Rd + up * (0.0004 - dot(Rd, up)));
-            vec4  rc = cloud_reflect(gp, Rd);
-            vec3  rf = rc.rgb + rc.a * (atmosphere(gp, Rd, 1e12).rgb + night_stars(Rd));
+            // a grazing reflection crosses the cloud layer for tens of
+            // km, and 24 steps of that differ wildly from pixel to pixel
+            // — that speckle is what shows out there. past a few km the
+            // reflection becomes plain sky instead
+            float rw = clamp(1.0 - tg.x / 7000.0, 0.0, 1.0);
+            vec3  sky_r = atmosphere(gp, Rd, 1e12).rgb + night_stars(Rd);
+            vec4  rc = (rw > 0.02) ? cloud_reflect(gp, Rd) : vec4(0.0, 0.0, 0.0, 1.0);
+            vec3  rf = mix(sky_r, rc.rgb + rc.a * sky_r, rw);
             // the sun's own reflection: a rough mirror lobe on the slopes
             vec3  H  = normalize(Rd + sun);
             // the waves we dropped still scatter: they widen the lobe
@@ -837,7 +882,8 @@ ModelViewProject NubisSky
             // the top metres, greener where a crest is thin and lit
             vec3  deep = vec3(0.004, 0.016, 0.031);
             vec3  sss  = vec3(0.02, 0.10, 0.09) * (0.4 + 0.6 * clamp(disp.y * 0.35 + 0.5, 0.0, 1.0));
-            vec3  skyl = atmosphere(gp, up, 1e12).rgb + vec3(0.016, 0.020, 0.034) * ubo.key_tint.w;
+            vec3  skyl = atmosphere(gp, up, 1e12).rgb + vec3(0.016, 0.020, 0.034) * ubo.key_tint.w
+                       + bolt_at(gp) * 0.5;
             vec3  wat  = deep * skyl * 6.0 + sss * (sc * sh * max(sun.y, 0.0) * 0.35 + skyl * 0.6);
             vec3  gc   = mix(wat, rf, F);
             // the sea has to sink into the sky just above the horizon,
@@ -971,6 +1017,8 @@ ModelViewProject NubisSky
                     oc *= ubo.light_b.z;
                 }}
                 direct *= sun_c * inscat;
+                // the strike lights the cloud from the inside
+                direct += bolt_at(p);
                 // ambient: the sky from above, the ground from below,
                 // attenuated by the cloud still overhead — that is what
                 // keeps a thick middle dark while its edges pass light
@@ -1052,14 +1100,22 @@ ModelViewProject TemporalCompose
         vec2  ts  = ubo.jitter.zw;
         vec4  f4  = texture(fresh, fuv);
         vec3  f   = f4.rgb;
-        vec3  mn  = f;
-        vec3  mx  = f;
+        // the neighbourhood's own spread decides how far the history may
+        // stray: tight where the sky is flat, wide across a cloud edge,
+        // so old samples still accumulate into the edges instead of
+        // aliasing, while a stale one in open sky is cut
+        vec3  m1  = vec3(0.0);
+        vec3  m2  = vec3(0.0);
         for (int j = -1; j <= 1; j++)
             for (int i = -1; i <= 1; i++) {{
                 vec3 n = texture(fresh, fuv + vec2(float(i), float(j)) * ts).rgb;
-                mn = min(mn, n);
-                mx = max(mx, n);
+                m1 += n;
+                m2 += n * n;
             }}
+        vec3  mu  = m1 / 9.0;
+        vec3  sg  = sqrt(max(m2 / 9.0 - mu * mu, vec3(0.0)));
+        vec3  mn  = mu - 1.4 * sg;
+        vec3  mx  = mu + 1.4 * sg;
         // where did this cloud point fall last frame (depth from the fresh alpha)
         vec3  wp = ubo.cam_pos.xyz + d * (f4.a * 60000.0);
         vec3  pd = normalize(wp - ubo.prev_pos.xyz);
@@ -1070,8 +1126,9 @@ ModelViewProject TemporalCompose
             vec2 puv = vec2(pn.x * 0.5 + 0.5, 0.5 - pn.y * 0.5);
             if (puv.x > 0.0 && puv.x < 1.0 && puv.y > 0.0 && puv.y < 1.0) {{
                 vec3 h = texture(history, puv).rgb;
-                vec3 e = (mx - mn) * 0.25 + 0.01;
-                h = clamp(h, mn - e, mx + e);
+                // a loose clamp lets a stale sample survive where the
+                // cloud has moved on: that is what leaves streaks
+                h = clamp(h, mn, mx);
                 out_c = mix(h, f, ubo.blend.x);
             }}
         }}
@@ -1109,6 +1166,9 @@ element SkyView
     public view_mode : i32
     public wscale    : f32 [ 0.5 ]
     public night     : f32
+    public speed     : f32
+    public bolts     : f32 [ 1.0 ]
+    mutable last_dt  : f32 [ 0.016 ]
     public seconds   : f32
     public temporal  : bool [ true ]
     public cur       : WeatherState
@@ -1136,10 +1196,17 @@ element SkyView
     mutable wave_buf   : Buffer
     mutable wave_n     : i32
     mutable wave_wind  : f32 [ -1.0 ]
+    mutable bolt       : vec f32
+    mutable bolt_t     : f32
+    mutable bolt_dur   : f32 [ 0.55 ]
+    mutable bolt_wait  : f32 [ 0.5 ]
+    mutable bolt_dark  : f32
     mutable wseed      : u32 [ 987654321 ]
     mutable old_islands : vec Texture
     mutable wimg     : Image
+    mutable timg     : Image
     mutable frame    : i32
+    mutable last_secs : f32
     mutable gpu_ms   : f32
     mutable isl_cov  : f32 [ -1.0 ]
     mutable isl_mix  : f32
@@ -1328,6 +1395,120 @@ element SkyView
         wave_n = idx
         wave_wind = wind
 
+    # a strike lives for a moment and flickers as real ones do: a first
+    # stroke, then one or two return strokes down the same channel
+    func bolt_env [ u: f32 ] -> f32
+        e : f32 [ exp[ 0.0 - 9.0 * u ] ]
+        if [ u > 0.22 ] e += 0.60 * exp[ 0.0 - 11.0 * (u - 0.22) ]
+        if [ u > 0.52 ] e += 0.32 * exp[ 0.0 - 12.0 * (u - 0.52) ]
+        return e
+
+    # the weather field at a spot, read exactly as the shader reads it
+    func cov_at [ x: f32, z: f32 ] -> f32
+        wd : @u8 [ wimg.vdata[] ]
+        ww : i32 [ wimg.width ]
+        u : f32 [ (x + cam_x) / 60000.0 + 0.5 ]
+        v : f32 [ (z + cam_z) / 60000.0 + 0.5 ]
+        px : i32 [ i32[ (u - floor[ u ]) * f32[ ww ] ] ]
+        py : i32 [ i32[ (v - floor[ v ]) * f32[ ww ] ] ]
+        i : i32 [ (py * ww + px) * 4 ]
+        r : f32 [ f32[ wd[ i ] ] / 255.0 ]
+        g : f32 [ f32[ wd[ i + 1 ] ] / 255.0 ]
+        fr : f32 [ sat[ remap[ r, 0.30, 0.72, 0.0, 1.0 ] ] ]
+        fg : f32 [ sat[ remap[ g, 0.0, 0.5, 0.0, 1.0 ] ] ]
+        field : f32 [ fr + (fg - fr) * cur.island ]
+        return sat[ remap[ field, 1.0 - cur.coverage, 1.0 - cur.coverage + 0.35, 0.0, 1.0 ] ]
+
+    # how tall this particular cloud stands, the same figure the shader
+    # builds from the type field and the per-cloud height map
+    func top_at [ x: f32, z: f32 ] -> f32
+        wd : @u8 [ wimg.vdata[] ]
+        ww : i32 [ wimg.width ]
+        u : f32 [ (x + cam_x) / 60000.0 + 0.5 ]
+        v : f32 [ (z + cam_z) / 60000.0 + 0.5 ]
+        px : i32 [ i32[ (u - floor[ u ]) * f32[ ww ] ] ]
+        py : i32 [ i32[ (v - floor[ v ]) * f32[ ww ] ] ]
+        bch : f32 [ f32[ wd[ (py * ww + px) * 4 + 2 ] ] / 255.0 ]
+        t : f32 [ sat[ remap[ bch, 0.35, 0.72, 0.0, 1.0 ] * 0.5 + cur.ctype - 0.25 ] ]
+        a : f32 [ 1100.0 + (1800.0 - 1100.0) * sat[ t * 2.0 ] ]
+        cu : f32 [ a + (3000.0 - a) * sat[ t * 2.0 - 1.0 ] ]
+        hs : f32 [ 0.5 ]
+        if [ timg ]
+            td : @u8 [ timg.vdata[] ]
+            tw : i32 [ timg.width ]
+            tu : f32 [ (x + cam_x) / 60000.0 * 3.0 + 0.5 ]
+            tv : f32 [ (z + cam_z) / 60000.0 * 3.0 + 0.5 ]
+            tx2 : i32 [ i32[ (tu - floor[ tu ]) * f32[ tw ] ] ]
+            ty2 : i32 [ i32[ (tv - floor[ tv ]) * f32[ tw ] ] ]
+            hs = f32[ td[ (ty2 * tw + tx2) * 4 ] ] / 255.0
+        return cu * (0.5 + hs)
+
+    # a strike belongs in the BODY of a heavy cloud: pick the spot whose
+    # neighbours are cloudy too, so it never starts on a face or outside
+    func bolt_strike []
+        best : f32 [ 0.0 ]
+        bx : f32 [ 0.0 ]
+        bz : f32 [ 0.0 ]
+        for [ tries: i32 0, tries < 24, tries += 1 ]
+            ang : f32 [ wrnd[] * 6.2831853 ]
+            rad : f32 [ 2200.0 + wrnd[] * 11000.0 ]
+            tx : f32 [ cos[ ang ] * rad ]
+            tz : f32 [ sin[ ang ] * rad ]
+            c0 : f32 [ cov_at[ tx, tz ] ]
+            if [ c0 < 0.7 ] continue
+            c1 : f32 [ cov_at[ tx + 500.0, tz ] ]
+            c2 : f32 [ cov_at[ tx - 500.0, tz ] ]
+            c3 : f32 [ cov_at[ tx, tz + 500.0 ] ]
+            c4 : f32 [ cov_at[ tx, tz - 500.0 ] ]
+            score : f32 [ c0 ]
+            if [ c1 < score ] score = c1
+            if [ c2 < score ] score = c2
+            if [ c3 < score ] score = c3
+            if [ c4 < score ] score = c4
+            if [ score > best ]
+                best = score
+                bx = tx
+                bz = tz
+        if [ best < 0.55 ] return
+        # halfway up that cloud's own column, never at its base or top
+        top : f32 [ top_at[ bx, bz ] ]
+        y0 : f32 [ 1500.0 + top * (0.38 + wrnd[] * 0.22) ]
+        pw : f32 [ 7.5e5 * (0.6 + wrnd[] * 0.8) ]
+        bolt[ 0 ] = bx
+        bolt[ 1 ] = y0
+        bolt[ 2 ] = bz
+        bolt[ 3 ] = pw
+        # the channel stays inside the cloud: short steps, small kicks
+        for [ k: i32 1, k < 4, k += 1 ]
+            bolt[ k * 4 ]     = bolt[ (k - 1) * 4 ] + (wrnd[] - 0.5) * 170.0
+            bolt[ k * 4 + 1 ] = bolt[ (k - 1) * 4 + 1 ] - (60.0 + wrnd[] * 120.0)
+            bolt[ k * 4 + 2 ] = bolt[ (k - 1) * 4 + 2 ] + (wrnd[] - 0.5) * 170.0
+            bolt[ k * 4 + 3 ] = pw * (0.75 - 0.15 * f32[ k ])
+        bolt_t = 0.55
+        bolt_dur = 0.55
+
+    # how often a sky like this flashes at all
+    func bolt_tick [ dt: f32 ]
+        if [ !bolt ]
+            bolt = vec f32 [ 16 ]
+        if [ bolt_t > 0.0 ]
+            bolt_t -= dt
+            if [ bolt_t < 0.0 ] bolt_t = 0.0
+            return
+        bolt_wait -= dt
+        if [ bolt_wait > 0.0 ] return
+        # storms only show their lightning once the light has gone: by
+        # day the flash is lost in the sun anyway
+        lam : f32 [ (cur.coverage - 0.6) * cur.density * 0.35 * bolt_dark ]
+        if [ lam < 0.0 ] lam = 0.0
+        lam = lam * bolts
+        if [ lam < 0.001 ]
+            bolt_wait = 2.0
+            return
+        u : f32 [ 0.02 + wrnd[] * 0.98 ]
+        bolt_wait = 0.0 - log[ u ] / lam
+        bolt_strike[]
+
     func load_texture [ vk: vk_context, w: Window, p: path, depth: i32 ] -> Texture
         expect p.exists[], 'baked noise missing: {p}'
         im : Image [ uri: p, linear: true, wrap_u: true, wrap_v: true ]
@@ -1353,6 +1534,8 @@ element SkyView
             tx_stars   = load_texture[ cv.vk, w, path '../scenes/textures/gaia.png', 1 ]
             wimg = Image [ uri: path '../clouds/baked/weather.png', linear: true ]
             wimg.hold[]
+            timg = Image [ uri: path '../clouds/baked/tops.png', linear: true ]
+            timg.hold[]
             build_island[ cv.vk, w ]
             build_waves[ cv.vk, cur.wind ]
             sky = NubisSky [ vk: cv.vk, name: 'nubis-sky' ]
@@ -1389,6 +1572,11 @@ element SkyView
             w.element_targets[ 'skya_{id}' ] = hist_a
             w.element_targets[ 'skyb_{id}' ] = hist_b
         frame += 1
+        sdt : f32 [ seconds - last_secs ]
+        if [ sdt <= 0.0 ] sdt = 0.016
+        if [ sdt > 0.5 ] sdt = 0.016
+        last_dt = sdt
+        last_secs = seconds
         # the island map follows the weather blend, a few times a second
         dc : f32 [ cur.coverage - isl_cov ]
         dm : f32 [ cur.island - isl_mix ]
@@ -1433,6 +1621,23 @@ element SkyView
         dw : f32 [ cur.wind - wave_wind ]
         if [ dw < 0.0 ] dw = 0.0 - dw
         if [ dw > 0.5 ] build_waves[ cv.vk, cur.wind ]
+        bolt_dark = sat[ (0.16 - cur.sun_el) / 0.16 ]
+        if [ night > 0.5 ] bolt_dark = 1.0
+        bolt_tick[ last_dt ]
+        be : f32 [ (bolt_t > 0.0) ? bolt_env[ 1.0 - bolt_t / bolt_dur ] : 0.0 ]
+        # each element is read into its own value first: a vec4f built
+        # straight out of vector reads arrives at the shader as zeros
+        for [ bi: i32 0, bi < 4, bi += 1 ]
+            q0 : f32 [ bolt[ bi * 4 ] ]
+            q1 : f32 [ bolt[ bi * 4 + 1 ] ]
+            q2 : f32 [ bolt[ bi * 4 + 2 ] ]
+            q3 : f32 [ bolt[ bi * 4 + 3 ] ]
+            bv : vec4f [ q0, q1, q2, q3 ]
+            if [ bi == 0 ] sky.bolt_a = bv
+            if [ bi == 1 ] sky.bolt_b = bv
+            if [ bi == 2 ] sky.bolt_c = bv
+            if [ bi == 3 ] sky.bolt_d = bv
+        sky.bolt_col = vec4f [ 0.82, 0.88, 1.0, be ]
         sky.world     = vec4f [ cam_x, cam_z, 0.0, 0.0 ]
         sky.key_tint  = vec4f [ 1.0 - 0.30 * night, 1.0 - 0.16 * night, 1.0, night ]
         sky.sea       = vec4f [ f32[ wave_n ], 1.15, 0.55, 12000.0 ]
@@ -1485,7 +1690,10 @@ element SkyView
         cm.jitter     = vec4f [ jx, jy, 1.0 / lw, 1.0 / lh ]
         cm.cam_pos    = sky.cam_pos
         cm.prev_pos   = prev_pos
-        cm.blend      = vec4f [ 0.2, (hist_valid) ? 1.0 : 0.0, 0.0, 0.0 ]
+        # the faster we move, the less the history can be trusted
+        bw : f32 [ 0.22 + speed / 700.0 ]
+        if [ bw > 0.75 ] bw = 0.75
+        cm.blend      = vec4f [ bw, (hist_valid) ? 1.0 : 0.0, 0.0, 0.0 ]
         gpu_ms = (vrender.gpu_us + ((use_a) ? hist_b.gpu_us : hist_a.gpu_us)) / 1000.0
         prev_right = sky.cam_right
         prev_up    = sky.cam_up
@@ -1503,6 +1711,7 @@ element clouds : trinity
     public sun_el     : f32    [ 0.06 ]
     public sun_az     : f32    [ 0.0 ]
     public night      : f32    [ 0.0 ]
+    public bolts      : f32    [ 1.0 ]
     public yaw        : f32    [ 0.0 ]
     public pitch      : f32    [ 0.14 ]
     public cam_h      : f32    [ 400.0 ]
@@ -1654,5 +1863,5 @@ element clouds : trinity
             cur.name     = goal.name
         e : Elements [ ]
         e['sky'] = SkyView [ yaw: yaw, pitch: pitch, cam_h: cam_h, cam_x: cam_x, cam_z: cam_z, exposure: exposure, quality: quality,
-            view_mode: view_mode, wscale: wscale, seconds: seconds, cur: cur, temporal: temporal, night: night, animated: true ]
+            view_mode: view_mode, wscale: wscale, seconds: seconds, cur: cur, temporal: temporal, night: night, bolts: bolts, speed: fly_speed, animated: true ]
         return e
