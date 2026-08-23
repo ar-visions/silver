@@ -3709,7 +3709,7 @@ element orbiter : trinity # implements compiler
         if [ !nm || nm.count == 0 ] return null
         ensure_views[]
         m9 : string (view_mods) ? view_mods[ nm ] : null
-        if [ !m9 ] m9 = nm
+        if [ !m9 ] return null
         if [ m9 == 'orbiter' ] return null
         return m9
 

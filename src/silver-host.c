@@ -593,6 +593,10 @@ static void isolate_reap(void) {
 static void crash_handler(int sig) {
     void* frames[64];
     int   nframes = backtrace(frames, 64);
+    // Au keeps the last strings it freed; ask it to name them, if it is
+    // in this process (the host does not link it)
+    void (*notes)(void) = (void (*)(void))dlsym(RTLD_DEFAULT, "au_crash_notes");
+    if (notes) notes();
     const char* sname =
         sig == SIGSEGV ? "SIGSEGV" :
         sig == SIGABRT ? "SIGABRT" :

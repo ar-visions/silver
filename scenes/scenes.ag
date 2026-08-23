@@ -9779,6 +9779,7 @@ enum CloudSurface
     island  : 4
     waves   : 5
     stars   : 6
+    envmap  : 7
     tvar    : 5
 
 class CloudBake
@@ -10109,6 +10110,8 @@ ModelViewProject NubisSky
     mutable sea       : vec4f     # x wave count, y choppiness, z foam start, w detail fade m
     mutable sea_b     : vec4f     # x wind m/s, y reflect quality, z swell, w unused
     mutable jitter    : vec4f     # xy: sub-pixel uv offset of this frame's samples
+    # x: render an equirect environment instead of the camera view
+    mutable env       : vec4f
     mutable view_mode : i32
     mutable frame     : i32
 
@@ -10119,6 +10122,7 @@ ModelViewProject NubisSky
     # distance (in cells of the weather tile / 256) to the nearest cloud island
     attrib island  : LayoutBinding [ type:typeid[ CloudSurface ], id: CloudSurface.island,  count:1, format: typeid[ rgba8 ] ]
     # one Gerstner component per record: xy wave vector, z amplitude, w phase
+    attrib envmap  : LayoutBinding [ type:typeid[ CloudSurface ], id: CloudSurface.envmap,  count:1, format: typeid[ rgba8 ] ]
     attrib stars   : LayoutBinding [ type:typeid[ CloudSurface ], id: CloudSurface.stars,   count:1, format: typeid[ rgba8 ] ]
     attrib waves   : StorageBuffer [ type:typeid[ CloudSurface ], id: CloudSurface.waves,   count:1, format: typeid[ vec4f ] ]
     # R: cloud top height scale, G: base height offset
@@ -10373,7 +10377,7 @@ ModelViewProject NubisSky
             vec3 q = p + sun * (t0.y + ds * (float(i) + 0.5));
             od += cloud_density(q, height_frac(q), weather_at(q), 1.0) * ds;
         }}
-        return exp(-od * ubo.light_b.w * 0.6);
+        return exp(-od * ubo.light_b.w * 0.3);
     }
 
     # the galaxy, and only where the sky has gone dark enough to show
@@ -10420,43 +10424,6 @@ ModelViewProject NubisSky
         return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
     }
 
-    # a cheap pass over the cloud layer for what the water reflects:
-    # coarse noise, long steps, and it stops at the first solid cloud
-    func cloud_reflect [ o: @vec3f, d: @vec3f ] -> GLSL vec4f {
-        vec3  C  = vec3(0.0, -ubo.layer.z, 0.0);
-        float R  = ubo.layer.z;
-        vec2  ti = ray_sphere(o - C, d, R + ubo.layer.x);
-        vec2  to = ray_sphere(o - C, d, R + ubo.layer.y);
-        float t0 = (ti.y > 0.0) ? ti.y : -1.0;
-        float t1 = (to.y > 0.0) ? to.y : -1.0;
-        if (t0 < 0.0 || t1 <= t0) return vec4(0.0, 0.0, 0.0, 1.0);
-        t1 = min(t1, t0 + 60000.0);
-        float steps = 24.0 * ubo.sea_b.y;
-        float dt = (t1 - t0) / steps;
-        vec3  col = vec3(0.0);
-        float T   = 1.0;
-        vec3  sun_c = sun_light(o + d * t0);
-        vec3  amb   = atmosphere(o + d * t0, vec3(0.0, 1.0, 0.0), 1e12).rgb;
-        float mu    = dot(d, ubo.sun_dir.xyz);
-        float ph    = max(mix(hg(mu, ubo.light_a.x), hg(mu, -0.25), 0.3),
-                          ubo.light_a.y * hg(mu, 0.99 - ubo.light_a.z));
-        for (int i = 0; i < 48; i++) {{
-            if (float(i) >= steps || T < 0.02) break;
-            vec3  p = o + d * (t0 + dt * (float(i) + 0.5));
-            vec3  w = weather_at(p);
-            float dens = cloud_density(p, 0.0, w, 1.0);
-            if (dens <= 0.0) continue;
-            float ext = ubo.light_b.w;
-            float od  = light_march(p) * ext;
-            vec3  S   = (exp(-od) * ph * sun_c + amb * 0.5) * dens * ext;
-            float e   = max(dens * ext, 1e-6);
-            float Ts  = exp(-e * dt);
-            col += T * (S - S * Ts) / e;
-            T   *= Ts;
-        }}
-        return vec4(col, T);
-    }
-
     # the sea surface: a sum of spectral components (JONSWAP frequency
     # spectrum, Donelan-Banner spreading) as Gerstner waves. returns the
     # displacement: xz sideways, y up
@@ -10468,11 +10435,17 @@ ModelViewProject NubisSky
             if (float(i) >= n) break;
             vec4  wv = waves[i];
             float k  = length(wv.xy);
-            if (k > kmax) break;
+            // a wave does not vanish the moment it passes under a pixel:
+            // it fades out across its own range of distances, or the
+            // levels step as the footprint grows. sorted long to short,
+            // so once one is gone the rest are too
+            float wl = smoothstep(kmax * 2.0, kmax * 0.5, k);
+            if (wl <= 0.002) break;
             float om = sqrt(9.81 * k);
             float a  = dot(wv.xy, q + ubo.world.xy) - om * t + wv.w;
-            D.y  += wv.z * cos(a);
-            D.xz -= (wv.xy / k) * (wv.z * Q * sin(a));
+            float amp = wv.z * wl;
+            D.y  += amp * cos(a);
+            D.xz -= (wv.xy / k) * (amp * Q * sin(a));
         }}
         return D;
     }
@@ -10491,14 +10464,18 @@ ModelViewProject NubisSky
             if (float(i) >= n) break;
             vec4  wv = waves[i];
             float k  = length(wv.xy);
-            if (k > kmax) break;
+            // the same fade the displacement uses, so slope and shape
+            // stay in step as the levels blend
+            float wl = smoothstep(kmax * 2.0, kmax * 0.5, k);
+            if (wl <= 0.002) break;
             float om = sqrt(9.81 * k);
             float a  = dot(wv.xy, q + ubo.world.xy) - om * t + wv.w;
             float sa = sin(a);
             float ca = cos(a);
-            hx  -= wv.z * wv.x * sa;
-            hz  -= wv.z * wv.y * sa;
-            float qa = Q * wv.z * ca / k;
+            float amp = wv.z * wl;
+            hx  -= amp * wv.x * sa;
+            hz  -= amp * wv.y * sa;
+            float qa = Q * amp * ca / k;
             jxx -= qa * wv.x * wv.x;
             jzz -= qa * wv.y * wv.y;
             jxz -= qa * wv.x * wv.y;
@@ -10513,6 +10490,14 @@ ModelViewProject NubisSky
         vec2  ndc = vec2(uvj.x * 2.0 - 1.0, 1.0 - uvj.y * 2.0);
         vec3  o   = ubo.cam_pos.xyz;
         vec3  d   = normalize(ubo.cam_fwd.xyz + ubo.cam_right.xyz * (ndc.x * ubo.cam_right.w) + ubo.cam_up.xyz * (ndc.y * ubo.cam_up.w));
+        // the environment pass walks the whole sky instead of the frame:
+        // longitude across, latitude down, so the sea can sample it
+        if (ubo.env.x > 0.5) {{
+            float lon = (v_uv.x * 2.0 - 1.0) * 3.14159265;
+            float lat = (0.5 - v_uv.y) * 3.14159265;
+            float cl  = cos(lat);
+            d = vec3(cl * sin(lon), sin(lat), cl * cos(lon));
+        }}
         vec3  C   = vec3(0.0, -ubo.layer.z, 0.0);
         float R   = ubo.layer.z;
         vec3  sun = ubo.sun_dir.xyz;
@@ -10522,7 +10507,7 @@ ModelViewProject NubisSky
 
         // ground
         vec2  tg = ray_sphere(o - C, d, R);
-        bool  ground = tg.y > 0.0 && tg.x > 0.0;
+        bool  ground = tg.y > 0.0 && tg.x > 0.0 && ubo.env.x < 0.5;
         float t_ground = ground ? tg.x : 1e12;
 
         // sky behind everything
@@ -10548,7 +10533,7 @@ ModelViewProject NubisSky
             // the waves give way to the flat surface as soon as they
             // stop covering pixels: by a few km there is nothing left to
             // resolve, and holding onto them there is what aliases
-            float fade = clamp(1.0 - fp / 2.0, 0.0, 1.0);
+            float fade = clamp(1.0 - fp / 32.0, 0.0, 1.0);
             vec3  disp = ocean_disp(gp.xz, ubo.sea.x, kmax);
             vec4  ndj  = ocean_ndj(gp.xz, ubo.sea.x, kmax);
             // close in the waves carry the reflection; far out they are
@@ -10556,13 +10541,11 @@ ModelViewProject NubisSky
             // what is left of them widens the specular lobe instead
             vec3  n    = normalize(mix(up, ndj.xyz, fade));
             vec3  V    = -d;
-            // foam where the surface folds over itself, plus the wind
-            // whipping the crests white
             // whitecaps break where the surface folds over itself, and
             // only once the wind is strong enough to tear the crests
             float wind_f = smoothstep(6.0, 16.0, ubo.sea_b.x);
             float foam = clamp((ubo.sea.z - ndj.w) * 1.6, 0.0, 1.0);
-            float crest = smoothstep(0.95, 1.5, disp.y / max(ubo.sea_b.x * 0.16, 0.25));
+            float crest = smoothstep(0.95, 1.5, disp.y * fade / max(ubo.sea_b.x * 0.16, 0.25));
             foam = clamp(foam + crest * 0.5, 0.0, 1.0) * wind_f;
             // break the sheet up so it never reads as paint
             vec3  fuv = vec3((gp.xz + ubo.world.xy) * 0.0037, ubo.wind.w * 0.006);
@@ -10570,35 +10553,57 @@ ModelViewProject NubisSky
             // foam belongs to waves we can still resolve: kept at any
             // distance it reads as white speckle on the flat sea
             foam = clamp(foam * (0.15 + 1.5 * fn) - 0.12, 0.0, 1.0) * fade;
+            // the mirror normal settles to the water's up direction
+            // sooner than the shading one: a reflected ray swings twice
+            // as fast as the surface tilts. EVERYTHING mirror-like reads
+            // off this — the direction AND the Fresnel, which at grazing
+            // angles flips between sky and water with the least tilt and
+            // is what aliases along the ripples
+            // with a filtered environment map behind it the reflection can
+            // follow the waves again: what used to alias is now handled by
+            // the mip the roughness picks
+            vec3  nr = normalize(mix(up, ndj.xyz, fade));
+            // the waves we dropped still scatter: they widen the lobe
+            float e_rough = mix(0.06, 0.22, clamp(ubo.sea_b.x / 20.0, 0.0, 1.0)) + clamp(fp * 0.01, 0.0, 0.22);
             float ndl = max(dot(n, sun), 0.0);
-            float ndv = max(dot(n, V), 0.0);
-            // Fresnel: at grazing angles the sea is a mirror
+            float ndv = max(dot(nr, V), 0.0);
             float F = 0.02 + 0.98 * pow(1.0 - ndv, 5.0);
-            // the true mirror direction: bending it toward the sky puts
-            // the reflection out of line with the clouds it comes from
-            vec3  Rd = reflect(d, n);
+            vec3  Rd = reflect(d, nr);
             if (dot(Rd, up) < 0.0004) Rd = normalize(Rd + up * (0.0004 - dot(Rd, up)));
-            // a grazing reflection crosses the cloud layer for tens of
-            // km, and 24 steps of that differ wildly from pixel to pixel
-            // — that speckle is what shows out there. past a few km the
-            // reflection becomes plain sky instead
-            float rw = clamp(1.0 - tg.x / 7000.0, 0.0, 1.0);
-            vec3  sky_r = atmosphere(gp, Rd, 1e12).rgb + night_stars(Rd);
-            vec4  rc = (rw > 0.02) ? cloud_reflect(gp, Rd) : vec4(0.0, 0.0, 0.0, 1.0);
-            vec3  rf = mix(sky_r, rc.rgb + rc.a * sky_r, rw);
+            // the sky was already drawn once into an environment map with
+            // a mip chain: sampling that lets the hardware filter the
+            // reflection (anisotropically, along the ray's own footprint)
+            // instead of marching it per pixel and aliasing
+            vec2  euv = vec2(atan(Rd.x, Rd.z) * 0.15915494 + 0.5,
+                             0.5 - asin(clamp(Rd.y, -1.0, 1.0)) * 0.31830989);
+            // an explicit level turns anisotropic filtering OFF and the
+            // levels show as bands. hand the sampler the footprint of
+            // this pixel's reflection instead — widened by how rough the
+            // water is — and it blends across levels along that axis
+            vec2  ex = dFdx(euv);
+            vec2  ey = dFdy(euv);
+            // the map wraps in longitude: a step across the seam is not
+            // a step across the map
+            if (abs(ex.x) > 0.5) ex.x -= sign(ex.x);
+            if (abs(ey.x) > 0.5) ey.x -= sign(ey.x);
+            float cone = e_rough * 0.12;
+            ex = clamp(ex, vec2(-0.25), vec2(0.25)) + vec2(cone, cone * 0.5);
+            ey = clamp(ey, vec2(-0.25), vec2(0.25)) + vec2(cone * 0.5, cone);
+            vec3  rf = pow(textureGrad(envmap, euv, ex, ey).rgb, vec3(2.2)) * 1.15;
             // the sun's own reflection: a rough mirror lobe on the slopes
             vec3  H  = normalize(Rd + sun);
-            // the waves we dropped still scatter: they widen the lobe
-            float rough = mix(0.06, 0.22, clamp(ubo.sea_b.x / 20.0, 0.0, 1.0)) + clamp(fp * 0.01, 0.0, 0.22);
+            float rough = e_rough;
             float a2 = rough * rough * rough * rough;
-            float dh = max(dot(n, normalize(V + sun)), 0.0);
+            float dh = max(dot(nr, normalize(V + sun)), 0.0);
             float dd = dh * dh * (a2 - 1.0) + 1.0;
             float spec = a2 / (3.14159265 * dd * dd);
             rf += sc * sh * spec * 0.6;
             // what comes back up out of the water: sky light scattered in
             // the top metres, greener where a crest is thin and lit
             vec3  deep = vec3(0.004, 0.016, 0.031);
-            vec3  sss  = vec3(0.02, 0.10, 0.09) * (0.4 + 0.6 * clamp(disp.y * 0.35 + 0.5, 0.0, 1.0));
+            // the crest colour has to fade with the waves themselves,
+            // or the flat distance still ripples through its shading
+            vec3  sss  = vec3(0.02, 0.10, 0.09) * (0.4 + 0.6 * clamp(disp.y * fade * 0.35 + 0.5, 0.0, 1.0));
             vec3  skyl = atmosphere(gp, up, 1e12).rgb + vec3(0.016, 0.020, 0.034) * ubo.key_tint.w
                        + bolt_at(gp) * 0.5;
             vec3  wat  = deep * skyl * 6.0 + sss * (sc * sh * max(sun.y, 0.0) * 0.35 + skyl * 0.6);
@@ -10628,6 +10633,7 @@ ModelViewProject NubisSky
             // the haze goes on AFTER the aerial perspective, or the far
             // sea ends up brighter than the sky it is dissolving into
             bg = mix(gc * sky.a + sky.rgb, fogc, wf);
+            if (ubo.view_mode == 4) bg = vec3(fade, wf, 0.0);
         }}
 
         // the cloud layer shells
@@ -10912,6 +10918,8 @@ element Clouds
     mutable tx_tvar    : Texture
     mutable tx_island  : Texture
     mutable tx_stars   : Texture
+    mutable env_model  : Model
+    mutable env_render : Render
     mutable wave_buf   : Buffer
     mutable wave_n     : i32
     mutable wave_wind  : f32 [ -1.0 ]
@@ -11317,6 +11325,15 @@ element Clouds
         sky = NubisSky [ vk: vk, name: 'nubis-sky' ]
         sky.hold[]
         smp : map Au[string] [ 'shape': tx_shape, 'detail': tx_detail, 'curl': tx_curl, 'weather': tx_weather, 'island': tx_island, 'tvar': tx_tvar, 'waves': wave_buf, 'stars': tx_stars ]
+        # the environment pass: the SAME shader instance, told to draw
+        # the whole sky into a small mipped map the sea reflects
+        env_model = Model [ vk: vk, w: ux, s: sky, samplers: smp ]
+        env_model.hold[]
+        env_render = Render [ vk: vk, w: ux, width: 512, height: 256, wscale: 0.0,
+            tag: 'nubis-env', mips: 6, aniso: 8,
+            clear_color: vec4f [ 0.0, 0.0, 0.0, 1.0 ], models: [ env_model ] ]
+        env_render.hold[]
+        smp[ 'envmap' ] = env_render.color
         vmodel = Model [ vk: vk, w: ux, s: sky, samplers: smp ]
         vmodel.hold[]
         lowres = Render [ vk: vk, w: ux, wscale: 0.5, tag: 'nubis-low',
@@ -11509,6 +11526,16 @@ element Clouds
         sky.jitter = vec4f [ jx, jy, 0.0, 0.0 ]
         # sea_b.z = the angle one pixel covers: the wave LOD works off it
         sky.sea_b  = vec4f [ cur.wind, 1.0, 2.0 * th / lh, tod / 24.0 ]
+        # the sky into the environment map first, then its mip chain, so
+        # the sea's reflection has something filtered to read
+        sky.env    = vec4f [ 1.0, 0.0, 0.0, 0.0 ]
+        sky.jitter = vec4f [ 0.0, 0.0, 1.0, 0.0 ]
+        env_render.update[]
+        env_render.draw[]
+        env_render.sync_fence[]
+        env_render.gen_mips[]
+        sky.env    = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+        sky.jitter = vec4f [ jx, jy, 0.0, 0.0 ]
         # last frame's target becomes the history, then the fresh pass
         if [ hist_valid ]
             hist.draw[]

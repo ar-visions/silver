@@ -1220,8 +1220,10 @@ Layer EditorLayer
                 cv.svg_override_off[]
             cv.font_size[ 11.0 ]
             cv.fill_color[ rgba['#c9c4dd'] ]
-            tlb : string tnm
-            if [ tnm == 'git' ] tlb = 'diff'
+            # an owned label: binding the vec's string and then assigning
+            # over it drops a reference this local never held, and the
+            # vec's entry frees under it
+            tlb : string [ (tnm == 'git') ? 'diff' : '{tnm}' ]
             cv.draw_text[ tlb, rect [ x: dxx, y: tyy + 44.0, w: 60.0, h: 16.0 ],
                 vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
 
