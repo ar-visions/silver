@@ -22,6 +22,8 @@
 #include <errno.h>
 #include <stdint.h>
 
+extern void path_set_share_name(const char* name);
+
 #ifndef _WIN32
 extern char** environ;   // on windows posix.h aliases it to the crt's live block
 // windows declares this in posix.h and links it from Au; this host links
@@ -726,6 +728,9 @@ static time_t file_mtime(const char* path) {
 
 static void cd_share(const char* bindir, const char* name) {
     char share[4096];
+#ifdef SILVER_SHARE_NAME
+    name = SILVER_SHARE_NAME;
+#endif
     snprintf(share, sizeof(share), "%s/../share/%s", bindir, name);
     struct stat st;
     if (stat(share, &st) == 0 && S_ISDIR(st.st_mode))
@@ -996,7 +1001,11 @@ int main(int argc, char** argv) {
     g_app_name = name;
     // the log is named for the APP, not the root element — so the tee
     // (host_log_setup) and the crash handler agree on <logdir>/<app>.log
-    setenv("SILVER_APP", name, 1);
+#ifdef SILVER_SHARE_NAME
+    path_set_share_name(SILVER_SHARE_NAME);
+#else
+    path_set_share_name(name);
+#endif
     // and the tee lives in the app, which cannot see temp_dir(): publish it
     setenv("SILVER_LOG_DIR", temp_dir(), 1);
 
@@ -1060,11 +1069,17 @@ int main(int argc, char** argv) {
     // sources and never recompiles; the app runs the build it started with
     int no_reload = (getenv("SILVER_NO_RELOAD") != NULL);
 
+    const char* build_name = name;
+#ifdef SILVER_SHARE_NAME
+    build_name = SILVER_SHARE_NAME;
+#endif
     char product[4096];
-    snprintf(product, sizeof(product), "%s/%s.product", bindir, name);
+    snprintf(product, sizeof(product), "%s/%s.product", bindir,
+        build_name);
 
     char artifacts[4096];
-    snprintf(artifacts, sizeof(artifacts), "%s/%s.source", bindir, name);
+    snprintf(artifacts, sizeof(artifacts), "%s/%s.source", bindir,
+        build_name);
 
     // record the launch cwd before we cd to the share, so the app can resolve its
     // config (e.g. orbiter.agi) against where it was started, not the share dir.

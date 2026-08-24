@@ -7397,14 +7397,22 @@ AU_EXPORT path path_self() {
 
 AU_EXPORT Exists resource_exists(Au o);
 
+static char app_share_name[4096];
+
+AU_EXPORT none path_set_share_name(cstr name) {
+    snprintf(app_share_name, sizeof(app_share_name), "%s",
+        name ? name : "");
+}
+
+AU_EXPORT cstr path_share_name() {
+    return app_share_name[0] ? app_share_name : null;
+}
+
 AU_EXPORT path path_share_path() {
     path exe    = path_self();
     path parent = path_parent_dir(exe); // verify this folder is bin?
-    // SILVER_APP names the module this process RUNS, not the exe it runs
-    // in — a crash faults the supervisor into orbiter inside the app's
-    // binary, and its share is share/orbiter, never share/<exe-stem>
-    symbol app = getenv("SILVER_APP");
-    string n = (app && *app) ? string(app) : stem(exe);
+    string n = app_share_name[0]
+        ? string(app_share_name) : stem(exe);
     path res    = form(path, "%o/../share/%o/", parent, n);
     if (dir_exists("%o", res))
         return res;

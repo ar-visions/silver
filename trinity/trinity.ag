@@ -269,7 +269,7 @@ abstract live_app media_app
             file : fopen[ '/tmp/hostapp-path.log', 'a' ]
             if [ file ]
                 fprintf[ file, "app=%s attach=%d isolate=%d slot=%d\n",
-                    getenv[ 'SILVER_APP' ], (attach) ? 1 : 0,
+                    path.path_share_name[], (attach) ? 1 : 0,
                     (getenv[ 'SILVER_ISOLATE_APP' ]) ? 1 : 0, host_slot[] ]
                 fclose[ file ]
         if [ w ]
