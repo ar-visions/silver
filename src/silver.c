@@ -44,6 +44,7 @@ static symbol platform_abi_link(silver a);
 static string device_cmake_toolchain(silver a);
 static string device_meson_cross(silver a);
 path module_exists(silver a, array idents, bool binary_finary, bool* is_bin);
+string symbol_name(Au obj);
 
 // per-session module products: name -> path, published only once the link has
 // written the file. in-progress builds live in building_list with the owning
@@ -101,6 +102,14 @@ static string silver_install_name(silver a) {
     string prefix = is_silver_repo(a)
         ? string("silver") : a->git_owner;
     return f(string, "%o-%o", prefix, a->name);
+}
+
+static string silver_symbol_prefix(silver a) {
+    bool system = !a->autype || a->is_Au_import ||
+        a->autype->is_system || a->autype->is_au_native;
+    string identity = !system && a->share_name && len(a->share_name)
+        ? a->share_name : a->name;
+    return symbol_name((Au)identity);
 }
 
 static void collect_resource_dirs(silver a, path source) {
@@ -304,7 +313,6 @@ static symbol shared   = "-dynamiclib";
 
 #define next_is(a, ...) silver_next_is_eq(a, __VA_ARGS__, null)
 
-string symbol_name(Au obj);
 static bool target_is_apple(silver a);
 static bool is_cpp_source_ext(silver a, string ext);
 static bool is_native_source_ext(silver a, string ext);
@@ -1446,35 +1454,21 @@ static path is_git_project(silver a) {
 static void exporter(silver a) {
     if (a->is_external || !len(a->exports))
         return;
-    
-    // after successful build on main module, apply all export tags at once
-    pairs(a->exports, i) {
-        string  module      = (string)i->key;
-        exports exp         = (exports)i->value;
 
-        if (!exp->module_file || !exp->project_path || !exp->version)
-            continue;
-        string mod_file = cast(string, exp->module_file);
-        string rel_mod = mid(mod_file, exp->project_path->count + 1, len(exp->project_path) - exp->project_path->count);
-        string  tag         = f(string, "%o-%o", i->key, exp->version);
-        string  cmd         = f(string, "git rev-parse %o:%o", tag, rel_mod);
-        string  rev_parse   = command_run((command)cmd, false);
-        string  hash_cmd    = f(string, "git hash-object %o", exp->module_file);
-        string  hash        = command_run((command)hash_cmd, false);
-
-        if (compare(hash, rev_parse) != 0)
-            vexec(false, "git-tag", "git -C %o tag -f %o", a->project_path, tag);
-    }
-
-    // registry: {SILVER}/export/<module_name>.agi — one file per module,
-    // iterable by any app; keys are the module's exported areas
+    // Write registries before optional Git tags.
     pairs(a->exports, i) {
         exports exp = (exports)i->value;
         if (!exp->version && !exp->areas)
             continue;
         path edir = f(path, "%o/export", a->install);
         make_dir(edir);
-        path   efile = f(path, "%o/%o.agi", edir, i->key);
+        string install_name = exp->install_name
+            ? exp->install_name : (string)i->key;
+        path efile = f(path, "%o/%o.agi", edir, install_name);
+        if (compare(install_name, (string)i->key) != 0) {
+            path legacy = f(path, "%o/%o.agi", edir, i->key);
+            unlink(legacy->chars);
+        }
         string body  = string(alloc, 256);
         if (exp->version)
             concat(body, f(string, "version: %o\n", exp->version));
@@ -1498,6 +1492,24 @@ static void exporter(silver a) {
                 append(body, line);
             }
         save(efile, (Au)body, null);
+    }
+
+    // Tag exports after registries are installed.
+    pairs(a->exports, i) {
+        exports exp         = (exports)i->value;
+
+        if (!exp->module_file || !exp->project_path || !exp->version)
+            continue;
+        string mod_file = cast(string, exp->module_file);
+        string rel_mod = mid(mod_file, exp->project_path->count + 1, len(exp->project_path) - exp->project_path->count);
+        string  tag         = f(string, "%o-%o", i->key, exp->version);
+        string  cmd         = f(string, "git rev-parse %o:%o", tag, rel_mod);
+        string  rev_parse   = command_run((command)cmd, false);
+        string  hash_cmd    = f(string, "git hash-object %o", exp->module_file);
+        string  hash        = command_run((command)hash_cmd, false);
+
+        if (compare(hash, rev_parse) != 0)
+            vexec(false, "git-tag", "git -C %o tag -f %o", a->project_path, tag);
     }
 }
 
@@ -7180,16 +7192,14 @@ static string framework_import_name(array mpath, string single) {
     return len(fw) ? fw : null;
 }
 
-static bool is_branchy(string n) {
+static bool is_commit_hash(string n) {
+    if (!n) return false;
     i32 ln = len(n);
-    if (ln == 7) {
-        for (int i = 0; i < ln; i++) {
-            char l = tolower(n->chars[i]);
-            if ((l >= 'a' && l <= 'f') || (l >= '0' && l <= '9'))
-                continue;
-
-            return true;
-        }
+    if (ln != 7 && ln != 40) return false;
+    for (int i = 0; i < ln; i++) {
+        char l = tolower(n->chars[i]);
+        if ((l >= 'a' && l <= 'f') || (l >= '0' && l <= '9'))
+            continue;
         return false;
     }
     return true;
@@ -7266,25 +7276,15 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
             vexec(a->verbose, "symlink", "ln -s %o %o", src_path, project_f);
             project_f = src_path;
         } else {
-            // we need to check if its full hash
-            bool is_short = len(commit) == 7 && !is_branchy(commit);
-
-            if (is_short) {
-                vexec(a->verbose, "remote", "git clone %o %o", uri, project_f); // FULL CHECKOUTS with short
+            if (!commit) {
+                vexec(a->verbose, "clone", "git clone %o %o", uri, project_f);
+            } else if (is_commit_hash(commit)) {
+                vexec(a->verbose, "clone", "git clone %o %o", uri, project_f);
                 vexec(a->verbose, "checkout", "git -C %o checkout %o", project_f, commit);
             } else {
-                vexec(a->verbose, "init", "git init %o", project_f);
-                vexec(a->verbose, "remote", "git -C %o remote add origin %o", project_f, uri);
-                if (!commit) {
-                    string res = run(a->verbose, "git -C %o remote show origin", project_f);
-                    num    hb  = index_of(res, "HEAD branch: ");
-                    verify(hb >= 0, "unexpected result for git remote show origin");
-                    string br  = mid(res, hb + 13, len(res) - hb - 13);
-                    num    nl  = index_of(br, "\n");
-                    commit = nl >= 0 ? mid(br, 0, nl) : br;
-                }
-                vexec(a->verbose, "fetch", "git -C %o fetch origin %o", project_f, commit);
-                vexec(a->verbose, "checkout", "git -C %o reset --hard FETCH_HEAD", project_f);
+                vexec(a->verbose, "clone",
+                    "git clone --branch %o --single-branch %o %o",
+                    commit, uri, project_f);
             }
 
             // apply module-path diff if one exists (e.g. vulkan/MoltenVK.diff)
@@ -9089,7 +9089,8 @@ enode parse_export(silver a) {
         exports exp = (exports)get(og->exports, (Au)string(a->name->chars));
         if (!exp) {
             exp = exports(module_path, a->module_path, module_file, a->module_file,
-                          project_path, a->project_path);
+                          project_path, a->project_path,
+                          install_name, silver_install_name(a));
             set(og->exports, (Au)string(a->name->chars), (Au)exp);
         }
         if (!exp->env_vars)
@@ -9107,7 +9108,8 @@ enode parse_export(silver a) {
         exports exp = (exports)get(og->exports, (Au)string(a->name->chars));
         if (!exp) {
             exp = exports(module_path, a->module_path, module_file, a->module_file,
-                          project_path, a->project_path);
+                          project_path, a->project_path,
+                          install_name, silver_install_name(a));
             set(og->exports, (Au)string(a->name->chars), (Au)exp);
         }
         if (!exp->areas)
@@ -9151,7 +9153,8 @@ enode parse_export(silver a) {
     exports exp = (exports)get(og->exports, (Au)string(a->name->chars));
     if (!exp) {
         exp = exports(module_path, a->module_path, module_file, a->module_file,
-                      project_path, a->project_path);
+                      project_path, a->project_path,
+                      install_name, silver_install_name(a));
         set(og->exports, (Au)string(a->name->chars), (Au)exp);
     }
     exp->version = hold(a->exported_version);
@@ -9619,6 +9622,7 @@ enode parse_import(silver a) {
                 path module_install = parent_dir(parent_dir(m));
                 collect_resource_dirs(og,
                     f(path, "%o/share/%o", module_install, share_name));
+                external_name = hold(share_name);
             }
         }
         
@@ -9786,7 +9790,7 @@ enode parse_import(silver a) {
                 g_import_with = null;
                 Au_t f2 = find_module("vulkan2");
                 // these should be the only two objects remaining.
-                external_name    = hold(external->name);
+                external_name    = silver_install_name(external);
                 external_product = hold(external->product);
 
                 if (external_product) {
@@ -10259,6 +10263,7 @@ static void write_struct_schemas(silver a, FILE* module_f) {
 
 void silver_write_header(silver a) {
     string m           = string(a->autype->ident);
+    string module_sym  = silver_symbol_prefix(a);
     path   inc_path    = f(path, "%o/include",    a->install);
     path   module_dir  = f(path, "%o/%o",         inc_path, m);
     path   module_path = f(path, "%o/%o/%o",      inc_path, m, m);
@@ -10299,10 +10304,9 @@ void silver_write_header(silver a) {
                 "#undef %o_intern", n);
             line(intern_f,
                 "#define %o_intern(A,B,...) A##_schema(A,B, __VA_ARGS__)", n);
-            // Type_i(T) -> XCAT4(T_module_, _, T, _i); emit the per-type module so
-            // declare_class below and any .cc typeid resolve to <module>_<type>_i
-            // (e.g. dbg_dbg_i) — the same symbol aether defines.
-            fprintf(intern_f, "#define %s_module_ %s\n", n->chars, a->autype->ident);
+            // Native companions use this module's type globals.
+            fprintf(intern_f, "#define %s_module_ %s\n",
+                n->chars, module_sym->chars);
         }
     }
     line(intern_f, "#include <%o/%o>", m, m);
@@ -10390,16 +10394,16 @@ void silver_write_header(silver a) {
 
     // importers read this header, not intern: they need the per-type module
     // tag too, and a default linkage for the types this module owns
-    fprintf(module_f, "#ifndef AU_LINK_%s\n", a->autype->ident);
+    fprintf(module_f, "#ifndef AU_LINK_%s\n", module_sym->chars);
     fprintf(module_f, "#ifdef _WIN32\n#define AU_LINK_%s __attribute__((dllimport))\n",
-        a->autype->ident);
+        module_sym->chars);
     fprintf(module_f, "#else\n#define AU_LINK_%s\n#endif\n#endif\n\n",
-        a->autype->ident);
+        module_sym->chars);
     members(a->autype, mt) {
         if (!(mt->traits & AU_TRAIT_ENUM) && !is_rec((Au)mt)) continue;
         string tn = cname(string(mt->ident));
         fprintf(module_f, "#ifndef %s_module_\n#define %s_module_ %s\n#endif\n",
-            tn->chars, tn->chars, a->autype->ident);
+            tn->chars, tn->chars, module_sym->chars);
     }
     fprintf(module_f, "\n");
 

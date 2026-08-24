@@ -671,7 +671,7 @@ class Style
     func compute [ n: element ] -> map StyleEntries[string]
         avail : map StyleEntries[string][]
         ty    : typeid[ n ]
-        expect n inherits element, 'must inherit element'
+        expect n inherits element, 'must inherit element: {ty.ident}'
         integrate_instance[ n ]
         while [ ty != typeid[ Au ] ]
             all : vec StyleEntry []

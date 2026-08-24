@@ -1,2 +1,2 @@
-func func2 [] -> i32
-	return 11
+func silver_func2 [] -> i32
+	return rust_func2[]
