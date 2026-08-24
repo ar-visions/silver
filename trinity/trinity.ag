@@ -254,6 +254,9 @@ abstract live_app media_app
             em['bounds'] = vec f32 [] [ e.bounds.x, e.bounds.y, e.bounds.w, e.bounds.h ]
         if [ e.label && e.label.count > 0 ]
             em['label'] = e.label
+        if [ e.edit && e.edit.count > 0 ]
+            em['edit'] = e.edit
+        if [ e.focused   ] em['focused']   = 'true'
         if [ e.hide      ] em['hide']      = 'true'
         if [ e.focusable ] em['focusable'] = 'true'
         if [ e.elements ]
@@ -4728,6 +4731,32 @@ UXMenuButton UXMenuLeft
 
 UXMenuButton UXMenuRight
     area : Region { r0.22+ t0.22 w1.0 h1.0 }
+
+
+element TextInput
+    focusable : true
+    style : CSS {
+        layers.body:
+            fill_color: #101820
+            stroke_width: 1.0
+            stroke_color: #ffffff40
+            radius: 8
+        layers.face:
+            label_color: #ffffff80
+            label_size: 18
+            editable: true
+            label_align: 0.0 0.5
+            label_offset: 14.0 0.0
+        :focused
+            layers.body:
+                fill_color: #162531
+                stroke_color: #72d6c9
+            layers.face:
+                label_color: #ffffff
+        :has_value
+            layers.face:
+                label_color: #ffffff
+    }
 
 
 element IDEOverlay

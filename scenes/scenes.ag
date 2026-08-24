@@ -10333,6 +10333,8 @@ ModelViewProject NubisSky
             // wispy bottoms, billowy tops; the flat base keeps its edge
             float m = mix(hfbm, 1.0 - hfbm, clamp(hm / 250.0, 0.0, 1.0));
             m *= mix(0.35, 1.0, clamp(h * 6.0, 0.0, 1.0));
+            // Let the profile own the thin cloud top.
+            m *= 1.0 - smoothstep(0.70, 0.92, h);
             base = remap(base, m * ubo.weather_b.w, 1.0, 0.0, 1.0);
         }}
         // a thin cloud is translucent; a deep one is dense
