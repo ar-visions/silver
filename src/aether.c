@@ -3656,14 +3656,19 @@ enode aether_e_fn_call(aether a, efunc fn, array args, bool is_super, bool is_po
             verify(arg_is_ptr || value_is_ptr,
                 "cannot pass primitive value as Au on %o %i", fn, seq);
         } else {
-            // a primitive method takes its value, not the slot
-            if (arg_is_ptr && !target_is_ptr && !first_arg->loaded &&
-                is_prim(au_arg_type((Au)target_type->autype))) {
-                first_arg = e_load(a, first_arg, null);
+            // prim methods take self by pointer (f64*); a self that arrived
+            // as a loaded value spills to a slot and passes its address
+            if (!arg_is_ptr && target_is_ptr && first_arg->loaded &&
+                is_prim(au_arg_type((Au)first_arg->autype))) {
+                LLVMValueRef slot = entry_alloca(a,
+                    LLVMTypeOf(_llvalue((enode)first_arg)), "self_addr");
+                LLVMBuildStore(B, _llvalue((enode)first_arg), slot);
+                first_arg = with_value(slot, enode(mod, a,
+                    autype, first_arg->autype, loaded, false));
                 Au old0 = args->origin[0];
                 args->origin[0] = hold((Au)first_arg);
                 drop(old0);
-                arg_is_ptr = is_ptr((Au)first_arg);
+                arg_is_ptr = true;
             }
             verify(arg_is_ptr == target_is_ptr, "target pointer mismatch on %o %i", fn, seq);
         }
@@ -3863,7 +3868,7 @@ enode aether_e_fn_call(aether a, efunc fn, array args, bool is_super, bool is_po
                     if (arg_mem->is_inlay)
                         conv = enode_value(conv, true);
                     if (!conv->loaded && !arg_mem->is_explicit_ref && !arg_mem->is_pointer &&
-                        is_prim(au_arg_type((Au)arg_mem)))
+                        !arg_mem->is_target && is_prim(au_arg_type((Au)arg_mem)))
                         conv = enode_value(conv, true);
                 } else {
                     // vararg: pass through; load unloaded primitives so varargs
@@ -11958,9 +11963,11 @@ AU_EXPORT enode aether_e_math(aether a, i32 op, enode val) {
     if (a->no_build) return e_noop(a, canonical(val));
 
     Au_t val_au = au_arg_type((Au)val->autype);
-    bool is_arr = val_au->elements > 0 && val_au->src && val_au->src->is_realistic;
+    Au_t vec_elem = null;
+    bool is_vec = vec_prim_elem(val, &vec_elem) && vec_elem->is_realistic;
+    bool is_arr = is_vec || (val_au->elements > 0 && val_au->src && val_au->src->is_realistic);
 
-    Au_t elem_au = is_arr ? val_au->src : val_au;
+    Au_t elem_au = is_vec ? vec_elem : (is_arr ? val_au->src : val_au);
     etype elem_ty = u(etype, elem_au);
     LLVMTypeRef lt = lltype(elem_ty);
 
@@ -11998,23 +12005,42 @@ AU_EXPORT enode aether_e_math(aether a, i32 op, enode val) {
         return with_value(result, enode(mod, a, autype, elem_au, loaded, true));
     }
 
-    // array: emit loop
-    i32 count = val_au->elements;
-    LLVMTypeRef arr_type = LLVMArrayType(lt, count);
-    LLVMValueRef out = entry_alloca(a, arr_type, "math_arr");
+    // array or vec: emit loop
     LLVMTypeRef i32_ty = LLVMInt32TypeInContext(a->module_ctx);
+    LLVMValueRef in_base, out, res_obj = null, cnt;
+    etype vec_rt = null;
+    if (is_vec) {
+        in_base = vec_origin(a, val);
+        cnt     = vec_count(a, val);
+        etype vt = etype_prep(a, typeid(vector));
+        vec_rt   = etype(mod, a, autype, vt->autype, meta_a, (Au)elem_au);
+        enode vn = e_create(a, vec_rt, null, false);
+        vn->meta_a = (Au)elem_au;
+        efunc f_rs = (efunc)u(efunc, find_member(typeid(vector), "resize",
+            AU_MEMBER_FUNC, 0, true));
+        enode cn = with_value(LLVMBuildSExt(B, cnt, LLVMInt64TypeInContext(a->module_ctx), "cnt64"),
+            enode(mod, a, autype, typeid(i64), loaded, true));
+        e_fn_call(a, f_rs, a(vn, cn), false, false);
+        res_obj = _llvalue((enode)vn);
+        out     = vec_origin(a, vn);
+    } else {
+        i32 count = val_au->elements;
+        in_base = _llvalue((enode)val);
+        cnt     = LLVMConstInt(i32_ty, count, 0);
+        out     = entry_alloca(a, LLVMArrayType(lt, count), "math_arr");
+    }
 
     LLVMBasicBlockRef entry_bb = LLVMGetInsertBlock(B);
     LLVMValueRef fn_val = LLVMGetBasicBlockParent(entry_bb);
     LLVMBasicBlockRef loop_bb = LLVMAppendBasicBlock(fn_val, "math_loop");
     LLVMBasicBlockRef done_bb = LLVMAppendBasicBlock(fn_val, "math_done");
     LLVMValueRef zero = LLVMConstInt(i32_ty, 0, 0);
-    LLVMValueRef cnt  = LLVMConstInt(i32_ty, count, 0);
-    LLVMBuildBr(B, loop_bb);
+    LLVMValueRef nz   = LLVMBuildICmp(B, LLVMIntUGT, cnt, zero, "math_nz");
+    LLVMBuildCondBr(B, nz, loop_bb, done_bb);
 
     LLVMPositionBuilderAtEnd(B, loop_bb);
     LLVMValueRef idx = LLVMBuildPhi(B, i32_ty, "idx");
-    LLVMValueRef gep_in = LLVMBuildGEP2(B, lt, _llvalue((enode)val), &idx, 1, "in_ptr");
+    LLVMValueRef gep_in = LLVMBuildGEP2(B, lt, in_base, &idx, 1, "in_ptr");
     LLVMValueRef elem_val = LLVMBuildLoad2(B, lt, gep_in, "in_v");
     LLVMValueRef args[] = { elem_val };
     LLVMTypeRef fn_ty = LLVMFunctionType(lt, &lt, 1, 0);
@@ -12024,17 +12050,21 @@ AU_EXPORT enode aether_e_math(aether a, i32 op, enode val) {
 
     LLVMValueRef one = LLVMConstInt(i32_ty, 1, 0);
     LLVMValueRef next = LLVMBuildAdd(B, idx, one, "next");
+    LLVMBasicBlockRef cur_bb = LLVMGetInsertBlock(B);
     LLVMValueRef cond = LLVMBuildICmp(B, LLVMIntULT, next, cnt, "cond");
     LLVMBuildCondBr(B, cond, loop_bb, done_bb);
 
     LLVMAddIncoming(idx, &zero, &entry_bb, 1);
-    LLVMAddIncoming(idx, &next, &loop_bb, 1);
+    LLVMAddIncoming(idx, &next, &cur_bb, 1);
 
     LLVMPositionBuilderAtEnd(B, done_bb);
 
+    if (is_vec)
+        return with_value(res_obj, enode(mod, a, loaded, true,
+            autype, vec_rt->autype, meta_a, (Au)elem_au));
     Au_t res_au = def(a->autype, null, AU_MEMBER_TYPE, 0);
     res_au->src = elem_au;
-    res_au->elements = count;
+    res_au->elements = val_au->elements;
     res_au->is_pointer = true;
     return with_value(out, enode(mod, a, loaded, false, autype, res_au));
 }
@@ -12122,9 +12152,18 @@ AU_EXPORT enode aether_e_direct_cast(aether a, enode input, etype target) {
         return e_convert_or_cast(a, canonical(target), input);
     LLVMValueRef val = _llvalue((enode)input);
     LLVMTypeRef target_ll = lltype(target);
-    if (LLVMTypeOf(val) != target_ll)
-        val = LLVMBuildBitCast(B, val, target_ll, "direct_cast");
-    return with_value(val, enode(mod, a, loaded, input->loaded, autype, target->autype));
+    bool loaded9 = input->loaded;
+    if (LLVMTypeOf(val) != target_ll) {
+        // a struct reinterpret reads the bits through the slot pointer;
+        // bitcast cannot produce an aggregate value
+        if (LLVMGetTypeKind(target_ll) == LLVMStructTypeKind &&
+            LLVMGetTypeKind(LLVMTypeOf(val)) == LLVMPointerTypeKind) {
+            val = LLVMBuildLoad2(B, target_ll, val, "direct_cast");
+            loaded9 = true;
+        } else
+            val = LLVMBuildBitCast(B, val, target_ll, "direct_cast");
+    }
+    return with_value(val, enode(mod, a, loaded, loaded9, autype, target->autype));
 }
 
 AU_EXPORT enode efunc_fptr(efunc f) {
