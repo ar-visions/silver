@@ -25,7 +25,7 @@ A comment states the one constraint the code can't show. Never more than one lin
 
 ---
 
-Silver is a systems programming language with an LLVM backend. It compiles `.ag` source files into native binaries via LLVM IR. The compiler itself is written in C, built on the **Au** object system.
+silver is a native build language with an LLVM backend. It compiles `.ag` source files into native binaries via LLVM IR. The compiler itself is written in C, built on the **Au** object system.
 
 ## Build & Run
 

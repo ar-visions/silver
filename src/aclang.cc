@@ -1390,7 +1390,8 @@ struct import_unit {
 
 // clang argv for one unit; built serially because it allocates Au strings
 static void build_unit_args(aether a, import_unit* u) {
-    path clang_path = f(path, "%o/bin/clang", a->install);
+    path tool_root  = a->base_install ? a->base_install : a->install;
+    path clang_path = f(path, "%o/bin/clang", tool_root);
     u->clang_path = clang_path->chars;
 
     std::vector<std::string>& args = u->args;
@@ -1748,7 +1749,7 @@ none aether_import_includes(aether a) {
             }
             path obj = f(path, "%o.o", u->c);
             string cmd = f(string, "%o/bin/clang++ -fPIC -femit-all-decls%s -o %o",
-                a->install, cargs.c_str(), obj);
+                a->base_install ? a->base_install : a->install, cargs.c_str(), obj);
             if (a->verbose) printf("%s\n", cmd->chars);
             if (system(cmd->chars) == 0) {
                 if (!a->import_objects)
@@ -1784,7 +1785,8 @@ path aether_include(aether e, Au inc, string ns) {
 
     auto Invocation = std::make_shared<CompilerInvocation>();
 
-    path res = f(path, "%o/lib/clang/22", e->install);
+    path tool_root = e->base_install ? e->base_install : e->install;
+    path res = f(path, "%o/lib/clang/22", tool_root);
     path c = f(path, "/tmp/%o.c", path_stem(ipath));
     string contents = f(string, "#include \"%o\"\n", ipath);
     path_save(c, (Au)contents, null);
@@ -1793,7 +1795,7 @@ path aether_include(aether e, Au inc, string ns) {
 
     DiagnosticsEngine diags(DiagID, *DiagOpts, DiagPrinter);
 
-    path clang_path = f(path, "%o/bin/clang", e->install);
+    path clang_path = f(path, "%o/bin/clang", tool_root);
     driver::Driver drv(clang_path->chars, llvm::sys::getDefaultTargetTriple(), diags);
 
     std::vector<symbol> args = {

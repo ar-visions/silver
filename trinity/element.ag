@@ -126,6 +126,10 @@ ielement element
     mutable scroll_anim     : bool
     mutable content_h       : f32
     public  scroll_speed    : f32
+    # any element with a content height scrolls, and shows this bar
+    scrollbar : ScrollLayer [ overlay: true, area: Region { l8px t8px r8px b8px },
+        thumb_color: '#fff4', thumb_w: 6.0, thumb_min_h: 32.0, thumb_radius: 4.0 ]
+    mutable sb_drag         : bool
     mutable scaling         : vec2f
     mutable rotation        : f32
     mutable transform_origin : vec2f
@@ -161,14 +165,48 @@ ielement element
     mutable text_dragging   : bool
 
     public func on_click   [ ev: Event ] return
-    public func on_press   [ ev: Event ] return
-    public func on_release [ ev: Event ] return
     public func on_hover   [ ev: Event ] return
     public func on_leave   [ ev: Event ] return
-    public func on_move    [ ev: Event ] return
+
+    # the scrollbar is generic: any element with content_h drags it
+    func scroll_grab [ ev: Event ] -> bool
+        sbl : ScrollLayer (layers) ? cast ScrollLayer [ layers['scrollbar'] ] : null
+        if [ !sbl || sbl.scroll_max <= 0.0 ] return false
+        grab : f32 [ (sbl.thumb_w > 0.0) ? sbl.thumb_w * 2.0 + 8.0 : 16.0 ]
+        if [ ev.mouse.pos.x < bounds.w - grab ] return false
+        my : f32 [ ev.mouse.pos.y - scroll.y ]
+        sbl.grab_at[ my ]
+        sb_drag    = true
+        sbl.active = true
+        scroll_to[ sbl.drag_to[ my ] ]
+        return true
+
+    func scroll_to [ sy: f32 ]
+        if [ sy < 0.0 ] return
+        scroll.y    = sy
+        scroll_goal = sy
+        scroll_anim = false
+        pristine    = false
+        if [ ux ] ux.will_animate = true
+
+    public func on_press   [ ev: Event ]
+        scroll_grab[ ev ]
+
+    public func on_release [ ev: Event ]
+        if [ !sb_drag ] return
+        sb_drag = false
+        sbl : ScrollLayer (layers) ? cast ScrollLayer [ layers['scrollbar'] ] : null
+        if [ sbl ]
+            sbl.active = false
+            if [ ux ] ux.will_animate = true
+
+    public func on_move    [ ev: Event ]
+        if [ !sb_drag ] return
+        sbl : ScrollLayer (layers) ? cast ScrollLayer [ layers['scrollbar'] ] : null
+        if [ sbl ] scroll_to[ sbl.drag_to[ ev.mouse.pos.y - scroll.y ] ]
     public func on_wheel [ ev: Event ]
         if [ content_h <= 0.0 ] return
-        speed  : f32 [ (scroll_speed > 0.0) ? scroll_speed : 40.0 ]
+        speed  : f32 [ (scroll_speed > 0.0) ? scroll_speed : 26.0 ]
         if [ !scroll_anim ] scroll_goal = scroll.y
         scroll_goal += f32[ ev.mouse.wheel_delta.y ] * speed * -1.0
         max_sc : f32 [ content_h - bounds.h ]
