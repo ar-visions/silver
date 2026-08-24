@@ -1116,7 +1116,7 @@ void silver_parse(silver a) {
     path rs_file = f(path, "%o/%o.rs", a->module_path, rs_stem);
     if (exists(rs_file)) {
         path gen = f(path, "%o/%o_rs.h", a->build_dir, rs_stem);
-        string cbg = f(string, "%o/bin/cbindgen", a->install);
+        string cbg = f(string, "%o/bin/cbindgen", a->base_install ? a->base_install : a->install);
         if (!file_exists("%o", cbg)) cbg = string("cbindgen");
         validate(exec(a->verbose, "%o --lang c -o %o %o", cbg, gen, rs_file) == 0,
             "cbindgen failed for %o", rs_file);
@@ -2450,6 +2450,8 @@ AU_EXPORT void silver_init(silver a) {
             drop(a->name);
             a->name = hold(string(chars, nm, ref_length, (int)(pe - nm)));
             a->imports = array(32);
+            a->artifacts = array(32);
+            a->resources = array(32);
             a->parse_f = parse_tokens;
             if (!a->git_service)
                 a->git_service = hold(string("github.com"));
@@ -2459,6 +2461,21 @@ AU_EXPORT void silver_init(silver a) {
             a->tokens = hold(tokens(target, (Au)a, parser, parse_tokens,
                 input, (Au)f(string, "import %s", ms)));
             parse_import(a);
+            if (!a->url_product) {
+                // local-namespace and cached runs land here
+                path p1 = f(path, "%o/build/%o", a->install, a->name);
+                if (file_exists("%o", p1)) a->url_product = hold(p1);
+            }
+            if (a->url_product && file_exists("%o", a->url_product)) {
+                print("[silver] running %o", a->url_product);
+                fflush(stdout);
+                // apps run from their share bundle, urls included
+                path shr = f(path, "%o/../share/%o",
+                    parent_dir(a->url_product), stem(a->url_product));
+                if (dir_exists("%o", shr)) chdir(shr->chars);
+                char* argv2[2] = { (cstr)a->url_product->chars, NULL };
+                execvp(argv2[0], argv2);
+            }
             return;
         }
     }
@@ -2548,9 +2565,13 @@ AU_EXPORT void silver_init(silver a) {
 
     aether_reinit_startup((aether)a);
     
-    // discover resource folders within module directory and register on root instance
+    // discover resource folders within module directory and register on the
+    // nearest install owner: an overlay build keeps its own share bundle
     {
-        silver og = a->is_external ? a->is_external : a;
+        silver og = a;
+        while (og->is_external &&
+               compare(((silver)og->is_external)->install, og->install) == 0)
+            og = (silver)og->is_external;
         DIR *dir = opendir(a->module_path->chars);
         if (dir) {
             struct dirent *entry;
@@ -2563,6 +2584,8 @@ AU_EXPORT void silver_init(silver a) {
             }
             closedir(dir);
         }
+        // bundle exists before imports parse: their > commands write into it
+        deploy_module_resources(og);
     }
 
     // check extension modules (.ag files in same dir) — if any are newer, bust the cache
@@ -3385,7 +3408,7 @@ enode parse_asm(silver a, etype rtype) {
 static array read_initializer(silver a) { sequencer
     array body = array(32);
     token n    = element(a,  0);
-    if  (!n || eq(n, "sub") || eq(n, "asm")) return null;
+    if  (!n || eq(n, "asm")) return null;
     token prev = element(a, -1);
     token p    = a->statement_origin ? a->statement_origin : prev;
 
@@ -3533,11 +3556,14 @@ static shape parse_shape(string str, string* str_res, i64* index) {
     bool single = false;
     int index_stop = *index;
     bool explicit = false;
-    // 0x... is a hex literal (parse_numeric), never a shape
+    // 0x 0b 0o prefixes are numeric literals, never a shape
     int h = *index + (idx(str, *index) == '-' ? 1 : 0);
-    if (idx(str, h) == '0' && h + 2 < ln && idx(str, h + 1) == 'x' &&
-        isxdigit(idx(str, h + 2)))
-        return null;
+    if (idx(str, h) == '0' && h + 2 < ln) {
+        i32 p = idx(str, h + 1), d = idx(str, h + 2);
+        if ((p == 'x' && isxdigit(d)) || (p == 'b' && (d == '0' || d == '1')) ||
+            (p == 'o' && d >= '0' && d <= '7'))
+            return null;
+    }
     for (int i = *index; i < ln; i++) {
         i32 chr = idx(str, i);
         bool start = (i == *index);
@@ -4684,41 +4710,6 @@ etype pointer(aether, Au);
 
 enode block_builder(silver, array, Au);
 
-enode parse_sub(silver a, etype rtype) {
-    array body = read_body(a);
-    validate(len(body), "expected body for sub-routine");
-    hold(body); // pop_tokens drops its ref; keep the body alive
-
-    // e_sub in aether creates merge block, catcher,
-    // parses body via builder callback,
-    // builds phi from all return points
-    enode r_last = a->last_sub_return;
-    enode b_last = a->last_break;
-    subprocedure build_body = subproc(a, block_builder, null);
-    enode res = e_subroutine(a, rtype, body, build_body);
-    validate(r_last != a->last_sub_return || b_last != a->last_break,
-        "all paths require return/break in sub-routine");
-
-    // store body tokens on the result for callable re-invocation
-    res->body = (tokens)body; // ref from the hold above
-    return res;
-}
-
-// re-invoke a callable sub — pushes stored body tokens back and re-evaluates
-enode invoke_sub(silver a, enode sub) {
-    verify(sub->body, "sub has no stored body for re-invocation");
-    array body = (array)sub->body;
-    etype rtype = canonical(sub);
-
-    enode r_last = a->last_sub_return;
-    enode b_last = a->last_break;
-    subprocedure build_body = subproc(a, block_builder, null);
-    enode res = e_subroutine(a, rtype, body, build_body);
-    validate(r_last != a->last_sub_return || b_last != a->last_break,
-        "all paths require return/break in sub-routine");
-    return res;
-}
-
 etype shape_pointer(silver, Au, enode);
 
 // scalar suffix: 200px, 1.5em, 90deg — number immediately followed by type name
@@ -4800,8 +4791,12 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
             enode accessed = (enode)access(n, field);
             validate(accessed, "failed to find member %o on %o", field, t);
             n = accessed;
-            n = parse_member_expr(a, n, from_ref);
+            if (next_is(a, "[") || instanceof(n, macro) || is_func((Au)n) ||
+                inherits(n->autype->src, typeid(lambda)))
+                n = parse_member_expr(a, n, from_ref);
         }
+        if (load && !is_loaded((Au)n) && (!is_struct(n) || is_ptr(n)))
+            n = enode_value(n, false);
         return n;
     }
 
@@ -4861,17 +4856,12 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
             array b = peek_initializer(a);
             enode res0 = null;
             if (from_ref) mdl_found = pointer((aether)a, (Au)mdl_found);
-            // read_initializer yields null for sub; still its branch
-            if (b || next_is(a, "sub")) {
-                //bool check_redundant_type = true;
+            // T asm [ inputs ]: the asm body is the value
+            if (read_if(a, "asm")) {
+                res0 = e_create(a, mdl_expect, (Au)parse_asm(a, mdl_found), false);
+            } else if (b) {
                 array expr = read_initializer(a);
-                if (!len(expr) && read_if(a, "sub")) {
-                    res0 = e_create(a, mdl_expect, (Au)parse_sub(a, mdl_found), false); 
-                    //check_redundant_type = false;
-                } else if (!len(expr) && read_if(a, "asm")) {
-                    res0 = e_create(a, mdl_expect, (Au)parse_asm(a, mdl_found), false);
-                    //check_redundant_type = false;
-                } else if (expr) {
+                if (expr) {
                     push_tokens(a, (tokens)expr, 0);
                     if (next_is(a, "[") && is_rec(mdl_found))
                         res0 = parse_object(a, mdl_found, false);
@@ -5055,10 +5045,10 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
         // define operator-, which is uncommon on color/vector aggregates.
         if (is_rec(from) || is_prim(from)) {
             enode one      = e_operand(a, (Au)_f64(1.0), etypeid(f64));
-            enode one_mt   = e_op(a, OPType__sub, null, (Au)one, (Au)t);
-            enode la       = e_op(a, OPType__mul, null, (Au)from, (Au)one_mt);
-            enode lb       = e_op(a, OPType__mul, null, (Au)to,   (Au)t);
-            return e_op(a, OPType__add, null, (Au)la, (Au)lb);
+            enode one_mt   = e_op(a, OPType__sub, string("-"), (Au)one, (Au)t);
+            enode la       = e_op(a, OPType__mul, string("*"), (Au)from, (Au)one_mt);
+            enode lb       = e_op(a, OPType__mul, string("*"), (Au)to,   (Au)t);
+            return e_op(a, OPType__add, string("+"), (Au)la, (Au)lb);
         }
         // for generic Au, dispatch through Au.mix (polymorphic runtime)
         Au_t f_mix = find_member(typeid(Au), "mix", AU_MEMBER_FUNC, 0, false);
@@ -5316,8 +5306,12 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
             enode accessed = (enode)access(n, field);
             validate(accessed, "failed to find member %o on %o", field, n);
             n = accessed;
-            n = parse_member_expr(a, n, from_ref);
+            if (next_is(a, "[") || instanceof(n, macro) || is_func((Au)n) ||
+                inherits(n->autype->src, typeid(lambda)))
+                n = parse_member_expr(a, n, from_ref);
         }
+        if (load && !is_loaded((Au)n) && (!is_struct(n) || is_ptr(n)))
+            n = enode_value(n, false);
         return n;
     }
 
@@ -7181,10 +7175,18 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
     num     sl          = rindex_of(s, "/");
     validate(sl >= 0, "invalid uri");
     string  name        = mid(s, sl + 1, len(s) - sl - 1);
+    // the owner IS the namespace: two owners may name a project the same,
+    // so a checkout lives under its owner's directory
+    string  head9       = mid(s, 0, sl);
+    num     sl2         = rindex_of(head9, "/");
+    string  owner       = sl2 >= 0 ? mid(head9, sl2 + 1, len(head9) - sl2 - 1) : null;
     // name every line this dependency's tools print; imports run
     // concurrently and their output would otherwise be unattributable
     au_exec_prefix(cstring(name));
-    path    project_f   = f(path, "%o/checkout/%o", a->root_path, name);
+    path    project_f   = (owner && len(owner)) ?
+          f(path, "%o/checkout/%o/%o", a->root_path, owner, name)
+        : f(path, "%o/checkout/%o",    a->root_path, name);
+    make_dir(parent_dir(project_f));
     bool    debug       = false;
     string  config      = interpolate(conf, (Au)a);
     // a dependency may invoke windres or clang itself, with flags of its own
@@ -7205,7 +7207,9 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
     // then read the fresh token and return cached. lock lives beside (not inside) the
     // build dir so remove_dir(build_f) can't delete it.
     make_dir(install);
-    path lock_path = f(path, "%o/%o.checkout-lock", install, name);
+    path lock_path = (owner && len(owner)) ?
+          f(path, "%o/%o-%o.checkout-lock", install, owner, name)
+        : f(path, "%o/%o.checkout-lock",    install, name);
     int  lock_fd   = open(lock_path->chars, O_CREAT | O_RDWR, 0644);
     if (lock_fd >= 0) flock(lock_fd, LOCK_EX);
 
@@ -7226,10 +7230,12 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
                 vexec(a->verbose, "init", "git init %o", project_f);
                 vexec(a->verbose, "remote", "git -C %o remote add origin %o", project_f, uri);
                 if (!commit) {
-                    command c = f(command, "git remote show origin");
-                    string res = run(a->verbose, c);
-                    verify(starts_with(res, "HEAD branch: "), "unexpected result for git remote show origin");
-                    commit = mid(res, 13, len(res) - 13);
+                    string res = run(a->verbose, "git -C %o remote show origin", project_f);
+                    num    hb  = index_of(res, "HEAD branch: ");
+                    verify(hb >= 0, "unexpected result for git remote show origin");
+                    string br  = mid(res, hb + 13, len(res) - hb - 13);
+                    num    nl  = index_of(br, "\n");
+                    commit = nl >= 0 ? mid(br, 0, nl) : br;
                 }
                 vexec(a->verbose, "fetch", "git -C %o fetch origin %o", project_f, commit);
                 vexec(a->verbose, "checkout", "git -C %o reset --hard FETCH_HEAD", project_f);
@@ -7278,6 +7284,11 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
     // selector is part of the cache identity, not the checkout's
     if (mod_sel)
         config = f(string, "%o mod:%o", config, mod_sel);
+    // a silver checkout keeps its token in its own install overlay — its
+    // build_f would otherwise collide with same-named module products
+    // (project 'silver' vs the compiler binary at install/build/silver)
+    if (is_silver)
+        build_f = f(path, "%o/install", project_f);
     path token      = f(path, "%o/silver-token", build_f);
 
     if (file_exists("%o", token)) {
@@ -7290,9 +7301,12 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
         }
     }
 
-    // the only reliable way of rebuilding on reconfig is to have a new build-folder
-    remove_dir(build_f);
-    make_dir(build_f);
+    // the only reliable way of rebuilding on reconfig is to have a new
+    // build-folder; a silver child manages its own overlay cache
+    if (!is_silver) {
+        remove_dir(build_f);
+        make_dir(build_f);
+    }
 
     // a clone stops at the top repo, so a dep that builds from its submodules
     // (mbedtls -> framework) configures against empty dirs. done here, not at
@@ -7313,6 +7327,7 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
         cd(cw);
     }
 
+    bool child_ok = true;
     if (is_cmake) { // build for cmake
         // externals always build Release — debug is for OUR code, not deps
         cstr build = "Release";
@@ -7362,6 +7377,12 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
         } else
             print("cbindgen not found — rust import %o builds without a header", name);
     } else if (is_silver) { // build for Au-type projects
+        // the checkout builds into its own install overlay; the host
+        // install is read-through for core headers and libs
+        extern void aether_overlay(path install, path base);
+        path overlay = build_f;
+        make_dir(overlay);
+        aether_overlay(overlay, a->base_install ? a->base_install : a->install);
         silver sf = silver(debug_type, a->debug_type, debugmember, a->debugmember, module, silver_f, breakpoint, a->breakpoint, release, a->release,
             clean, a->clean, verbose, a->verbose, format, a->format, jobs, a->jobs, is_external, a->is_external ? a->is_external : a, is_child, a);
         validate(sf, "silver module compilation failed: %o", silver_f);
@@ -7369,6 +7390,14 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
         // child's source-file path → its node map; a->tree holds the reference so the
         // subtree survives the child's drop and the tree stays intact.
         if (sf->module_file && sf->tree) set(a->tree, (Au)sf->module_file, (Au)sf->tree);
+        child_ok = !sf->error;
+        // a CLI url run launches the selected module once the build lands
+        if (mod_sel && child_ok) {
+            silver root = a;
+            while (root->is_external) root = (silver)root->is_external;
+            drop(root->url_product);
+            root->url_product = hold(f(path, "%o/build/%o", overlay, mod_sel));
+        }
         drop(sf);
     } else {
         /// build for automake
@@ -7427,7 +7456,9 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
 
     run_import_commands(a, postbuild, build_f);
 
-    save(token, (Au)config, null);
+    // a failed silver child must not cache as built
+    if (!is_silver || child_ok)
+        save(token, (Au)config, null);
     if (lock_fd >= 0) { flock(lock_fd, LOCK_UN); (close)(lock_fd); }
     au_exec_prefix(null);
 }
@@ -7654,8 +7685,11 @@ string compile_implements(silver a, array files, string cflags) {
         string own_link = string("");
 #endif
         au_exec_prefix(cstring(a->name)); // this compile belongs to US
-        verify(exec(a->verbose, "%o/bin/%s %s %s %s %o %o %s -w -c %o -o %o -I%o/include/%o -I%o/include -I%o/include/Au",
-            install, compiler, std_flag, lang_flag, sysroot_flag, own_link, cflags, a->debug ? "-g" : "", i, i_name, install, st, install, install) == 0,
+        path tool_root = a->base_install ? a->base_install : install;
+        string base_inc = a->base_install ?
+            f(string, " -I%o/include -I%o/include/Au", a->base_install, a->base_install) : string("");
+        verify(exec(a->verbose, "%o/bin/%s %s %s %s %o %o %s -w -c %o -o %o -I%o/include/%o -I%o/include -I%o/include/Au%o",
+            tool_root, compiler, std_flag, lang_flag, sysroot_flag, own_link, cflags, a->debug ? "-g" : "", i, i_name, install, st, install, install, base_inc) == 0,
             "failed to compile %o", i);
         au_exec_prefix(null);
         if (len(objs)) append(objs, " ");
@@ -7890,6 +7924,9 @@ none silver_build_product(silver a) {
         // binds its own symbols first without being told to
         string rpaths = win ? string("") :
             f(string, "-Wl,-rpath,%o -Wl,-rpath,%o/lib ", a->build_dir, install);
+        if (!win && a->base_install)
+            concat(rpaths, f(string, "-L%o/lib -Wl,-rpath,%o/lib ",
+                a->base_install, a->base_install));
         cstr   bsym   = (a->is_library && !win) ? "-Wl,-Bsymbolic" : "";
         verify(exec(a->verbose, "%o/%s %o%o%s %s %s %o %o/%o.o%o %o %o-o %o -L%o -L%o/lib %o%o %o %o %s",
             tools, linker_d, tgt, ldld,
@@ -8041,6 +8078,9 @@ none silver_build_product(silver a) {
         a->build_dir);
 #else
     string plat_link = f(string, "-Wl,-rpath,%o -Wl,-rpath,%o/lib", a->build_dir, install);
+    if (a->base_install)
+        plat_link = f(string, "%o -L%o/lib -Wl,-rpath,%o/lib",
+            plat_link, a->base_install, a->base_install);
 #endif
 
     // windows: link to a fresh temp, then atomically replace the product.
@@ -8057,7 +8097,7 @@ none silver_build_product(silver a) {
     // MODULE's -lsilver. module libs of our own are passed by full path, so
     // only the core modules resolve through -l, and those live in install/lib
     verify(exec(a->verbose, "%o/bin/%s %s %s %s %o %s %o/%o.o%o %o -o %o -L%o/lib -L%o %o %o %o %o %s",
-        install, linker, a->is_library ? shared : "", a->debug ? "-g" : "",
+        a->base_install ? a->base_install : install, linker, a->is_library ? shared : "", a->debug ? "-g" : "",
 
 #ifdef __linux__
         a->is_library ? "-Wl,-Bsymbolic" : "",
@@ -8222,12 +8262,6 @@ path module_exists(silver a, array idents, bool binary_finary, bool* is_bin) {
 }
 
 enode silver_parse_ternary(silver a, enode expr, etype mdl_expect, bool load) {
-    // cast: (expr) to Type — shares the (expr) prefix with ? and ??
-    if (read_if(a, "to")) {
-        etype target = read_etype(a, null);
-        validate(target, "expected type after 'to'");
-        return e_convert_or_cast((aether)a, canonical(target), expr);
-    }
     if (!read_if(a, "?")) {
         if (!read_if(a, "??"))
             return expr;
@@ -8386,7 +8420,6 @@ static enode parse_inline_lambda(silver a) { static int seq = 0; seq++;
     bool  nb  = a->no_build;         a->no_build        = true;
     i32   el  = a->expr_level;       a->expr_level      = 0;
     enode lr  = a->last_return;      a->last_return     = null;
-    enode lsr = a->last_sub_return;  a->last_sub_return = null;
     token so  = a->statement_origin;
     bool  ehr = encl->autype->has_return;
     a->gather_fn   = scratch;
@@ -8398,7 +8431,6 @@ static enode parse_inline_lambda(silver a) { static int seq = 0; seq++;
     a->no_build         = nb;
     a->expr_level       = el;
     a->last_return      = lr;
-    a->last_sub_return  = lsr;
     a->statement_origin = so;
     encl->autype->has_return = ehr;
     pop_scope(a); // sblock
@@ -8713,7 +8745,10 @@ static enode parse_func_call(silver a, efunc f, bool poly) { sequencer
 
         if (comma_mode) {
             verify(len(values) >= ln, "expected %i args for function %o (%i)", ln, f, seq);
+            break;
         }
+        // commaless: nothing separates the args, so read to the bracket
+        if (read_br && !next_is(a, "]")) continue;
         break;
     }
 
@@ -9161,8 +9196,13 @@ typedef struct bg_build {
 static bg_build*       bg_list = null;
 static pthread_mutex_t bg_lock = PTHREAD_MUTEX_INITIALIZER;
 
+extern void aether_overlay(path install, path base);
+
 static void* bg_build_run(void* arg) {
     bg_build* b = (bg_build*)arg;
+    // an overlay build's children stay inside the overlay
+    if (b->a->base_install)
+        aether_overlay(b->a->install, b->a->base_install);
     b->result = silver(module, b->module, breakpoint, b->a->breakpoint,
         verbose, b->a->verbose, is_external, b->og, is_child, b->a,
         release, b->a->release, clean, b->a->clean, format, b->og->format,
@@ -9495,6 +9535,19 @@ enode parse_import(silver a) {
         project     = bb;
     }
 
+    // your own namespace IS this repository: owner:project naming the repo
+    // we stand in resolves locally — no clone, no overlay, no extra syntax
+    if (user && project && cc && !module_source && !lib_path &&
+        a->git_owner && a->git_project &&
+        cmp(user, a->git_owner->chars) == 0 &&
+        cmp(project, a->git_project->chars) == 0) {
+        path lm = f(path, "%s/%o/%o.ag", SILVER, cc, cc);
+        if (file_exists("%o", lm)) {
+            print("[silver] %o:%o is this repository — using local %o", user, project, cc);
+            module_source = hold(lm);
+        }
+    }
+
     if (project && !lib_path && !module_source) {
         string path_str = string();
         // cc is the module selector, never a blob path
@@ -9586,8 +9639,12 @@ enode parse_import(silver a) {
                 // `extend <name>` header, replays its statements into this module).
                 parse_extension(a, module_source, true);
             } else {
+                // artifacts/resources scope to the nearest install owner,
+                // so an overlay build stays inside its own install
                 silver og = a;
-                while (og->is_external) og = og->is_external;
+                while (og->is_external &&
+                       compare(((silver)og->is_external)->install, og->install) == 0)
+                    og = (silver)og->is_external;
 
             {
                 Au_t f = find_module("vulkan2");
@@ -9599,6 +9656,7 @@ enode parse_import(silver a) {
                 // its product for the loader. the device copy links
                 if (a->device && len(a->device)) {
                     g_host_build = true;
+                    if (a->base_install) aether_overlay(a->install, a->base_install);
                     silver host  = silver(module, module, breakpoint, a->breakpoint,
                         verbose, a->verbose, is_external, og, is_child, a, release, a->release, clean, a->clean,
                         format, og->format,
@@ -9609,11 +9667,13 @@ enode parse_import(silver a) {
                 g_import_with = with_exts;
                 // a prescanned import is already building: collect it
                 silver external = with_exts ? null : bg_build_take(module);
-                if (!external)
+                if (!external) {
+                    if (a->base_install) aether_overlay(a->install, a->base_install);
                     external = silver(module, module, breakpoint, a->breakpoint,
                         verbose, a->verbose, is_external, og, is_child, a, release, a->release, clean, a->clean,
                         format, og->format,
                         defs, defs, debug_type, a->debug_type, debugmember, a->debugmember);
+                }
                 g_import_with = null;
                 Au_t f2 = find_module("vulkan2");
                 // these should be the only two objects remaining.
@@ -9699,7 +9759,7 @@ enode parse_import(silver a) {
         else if (eq(ext, "rs")) {
             // no hand-written header: cbindgen emits the extern "C" surface
             path gen = f(path, "%o/%o.h", a->build_dir, name);
-            string cbg = f(string, "%o/bin/cbindgen", a->install);
+            string cbg = f(string, "%o/bin/cbindgen", a->base_install ? a->base_install : a->install);
             if (!file_exists("%o", cbg)) cbg = string("cbindgen");
             validate(exec(a->verbose, "%o --lang c -o %o %o", cbg, gen, module_source) == 0,
                 "cbindgen failed for %o", module_source);
@@ -10809,17 +10869,12 @@ enode parse_return(silver a) {
     //catcher cat = u(catcher, au_top);
     verify (!au_top->has_return, "return already built at statement level");
 
-    bool is_sub = e_fn_return(a, (Au)expr);
-    if (!is_sub) {
-        au_top->has_return = true;
-        if (a->gather_fn) a->gather_fn->has_return = true;
-        else if (ctx) ctx->autype->has_return = true;
-        a->last_return = hold(e_noop(a, (etype)expr));
-        return a->last_return;
-    } else {
-        a->last_sub_return = hold(e_noop(a, (etype)expr));
-        return a->last_sub_return;
-    }
+    e_fn_return(a, (Au)expr);
+    au_top->has_return = true;
+    if (a->gather_fn) a->gather_fn->has_return = true;
+    else if (ctx) ctx->autype->has_return = true;
+    a->last_return = hold(e_noop(a, (etype)expr));
+    return a->last_return;
 }
 
 catcher context_catcher(silver);
@@ -11065,6 +11120,12 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
             // map with string keys: read literal and convert to runtime string
             token t = peek(a);
             name = (string)read_literal(a, typeid(string));
+            if (!name) {
+                // a one-character literal tokenizes as unichar; a key spelled
+                // 'a' is still a string key
+                unichar* uc = (unichar*)read_literal(a, typeid(unichar));
+                if (uc) name = unicode_char(*uc);
+            }
             validate(name, "expected literal string key");
             k = (Au)e_create(a, key ? key : etypeid(string), (Au)name, false);
             is_enode_key = true;
@@ -11235,63 +11296,6 @@ enode silver_parse_member_expr(silver a, enode mem, bool in_ref) { sequencer
     bool is_lambda_call = inherits(mem->autype, typeid(lambda));
     int indexable = !is_func((Au)mem) && !is_func_ptr((Au)mem) && !is_macro && !is_lambda_call;
 
-    // callable sub: x[] or x[ field: value, ... ] re-invokes the sub body.
-    // subs are VARs — a TYPE's body is its stashed class tokens, never a sub
-    if (indexable && next_is(a, "[") && mem->body &&
-        mem->autype && mem->autype->member_type != AU_MEMBER_TYPE) {
-        push_current(a);
-        consume(a, Syntax__none); // consume [
-        if (read_if(a, "]")) {
-            // x[] — invoke stored sub, no overrides
-            pop_tokens(a, true); // keep [ ] consumed
-            return invoke_sub(a, mem);
-        }
-        // check for field overrides: x[ name: value, ... ]
-        // peek to see if this is field: value pattern
-        string pk = peek_alpha(a);
-        token  pk2 = pk ? element(a, 1) : null;
-        if (pk && pk2 && eq(pk2, ":")) {
-            pop_tokens(a, true); // keep [ consumed; cursor at first field
-            // find sub's position in statement scope
-            Au_t scope = mem->autype->context;
-            int sub_pos = -1;
-            for (int k = 0; k < scope->members.count; k++) {
-                if ((Au_t)scope->members.origin[k] == mem->autype) {
-                    sub_pos = k;
-                    break;
-                }
-            }
-            // read and apply field overrides
-            for (;;) {
-                string name = read_alpha(a);
-                validate(name, "expected field name in sub override");
-                validate(read_if(a, ":"), "expected ':' after field name %o", name);
-                // find the member in scope — must be before the sub
-                Au_t field = find_member(scope, cstring(name), AU_MEMBER_VAR, 0, false);
-                validate(field, "unknown variable '%o' in sub scope", name);
-                if (sub_pos >= 0) {
-                    int field_pos = -1;
-                    for (int k = 0; k < scope->members.count; k++) {
-                        if ((Au_t)scope->members.origin[k] == field) {
-                            field_pos = k;
-                            break;
-                        }
-                    }
-                    validate(field_pos < sub_pos,
-                        "cannot override '%o' — declared after sub", name);
-                }
-                // assign the value
-                enode target = (enode)u(enode, field);
-                enode value  = parse_expression(a, canonical(target), true, true);
-                e_assign(a, target, (Au)value, OPType__assign);
-                if (!read_if(a, ",")) break;
-            }
-            validate(read_if(a, "]"), "expected ']' after sub overrides");
-            return invoke_sub(a, mem);
-        }
-        pop_tokens(a, true); // not field overrides, restore and fall through
-    }
-
     /// handle compatible indexing methods / lambda / and general pointer dereference @ index
     if (indexable && next_is(a, "[")) {
         // C arrays with elements > 0 are indexable like pointers
@@ -11299,7 +11303,7 @@ enode silver_parse_member_expr(silver a, enode mem, bool in_ref) { sequencer
         // a borrow of a ref member (`dst: obj.floats`) chains VAR->VAR; resolve deep
         if (!is_indexable_ptr) {
             Au_t deep = mem->autype;
-            while (deep && deep->member_type == AU_MEMBER_VAR)
+            while (deep && (deep->member_type == AU_MEMBER_VAR || deep->is_alias))
                 deep = deep->src;
             if (deep && (deep->is_pointer || deep->is_explicit_ref || deep->elements > 0))
                 is_indexable_ptr = true;
@@ -11601,6 +11605,10 @@ enode silver_parse_assignment(silver a, enode mem, OPType op_val, bool is_const)
         push_current(a);
         bind_type = read_etype(a, null);
         pop_tokens(a, false); // always revert — don't consume type tokens
+        // an alias naming a pointer type binds as a ref, like a literal @T
+        if (bind_type && (bind_type->is_explicit_ref ||
+                (bind_type->autype && bind_type->autype->is_pointer)))
+            is_bind_ref = true;
     }
 
     etype t_expect = t;
@@ -12183,6 +12191,9 @@ etype silver_read_def(silver a, interface access) {
         a->deferred_hit = false;
         if (fully_parsed) {
             pop_tokens(a, true);
+            // alias @T: the alias IS the pointer type, not bare T
+            if (alias_au->is_pointer)
+                target = pointer((aether)a, (Au)target);
             alias_au->src = target->autype;
             etype_register((aether)a, (Au)alias_au, (Au)hold(target), false);
             return target;

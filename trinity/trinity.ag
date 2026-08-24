@@ -1032,6 +1032,38 @@ class CursorPos
     public y : f32
     public h : f32
 
+# declared Layer/shader members become the instance's layers/shaders
+func bind_members [ instance: element ]
+    ltys : vec Au_t []
+    for [ lty : typeid[ instance ], lty != typeid[ Au ], lty = lty.context ]
+        ltys.push[ lty ]
+    for [ lti: i32 ltys.count - 1, lti >= 0, lti -= 1 ]
+        lty2 : Au_t ltys[lti]
+        for [ lmi: i32 0, lmi < lty2.members.count, lmi += 1 ]
+            lmem : Au_t lty2.members.origin[lmi]
+            if [ lmem.member_type != AU_MEMBER_VAR ] continue
+            if [ !lmem.src ] continue
+            lv : Au instance.member_object[ lmem ]
+            if [ !lv ] continue
+            if [ Au.inherits[ lmem.src, typeid[ Layer ] ] ]
+                lvl : cast Layer [ lv ]
+                lvl.set_context_from[ instance ]
+                lvl.initialize[]
+                if [ !instance.layers ] instance.layers = map Layer[string] []
+                instance.layers[ string[ lmem.ident ] ] = lvl
+            el [ Au.inherits[ lmem.src, typeid[ shader ] ] ]
+                shv : cast shader [ lv ]
+                shv.set_context_from[ instance ]
+                shv.initialize[]
+                if [ !instance.shaders ] instance.shaders = map shader[string] []
+                instance.shaders[ string[ lmem.ident ] ] = shv
+    # the icon layer paints last: re-insert to move it to the end
+    if [ instance.layers ]
+        bic : Layer instance.layers[ 'iconl' ]
+        if [ bic ]
+            instance.layers.rm[ 'iconl' ]
+            instance.layers[ string[ 'iconl' ] ] = bic
+
 Display Window
     # weak: the window outlives a module reload, and live_destroy owns the app
     # instance. owning it here released one the host still held
@@ -1676,34 +1708,7 @@ Display Window
                     if [ !text_mode ]
                         expect instance.vk, "no vk context set for new instance"
                     instance.initialize[]
-                    ltys : vec Au_t []
-                    for [ lty : typeid[ instance ], lty != typeid[ Au ], lty = lty.context ]
-                        ltys.push[ lty ]
-                    for [ lti: i32 ltys.count - 1, lti >= 0, lti -= 1 ]
-                        lty2 : Au_t ltys[lti]
-                        for [ lmi: i32 0, lmi < lty2.members.count, lmi += 1 ]
-                            lmem : Au_t lty2.members.origin[lmi]
-                            if [ lmem.member_type != AU_MEMBER_VAR ] continue
-                            if [ !lmem.src ] continue
-                            lv : Au instance.member_object[ lmem ]
-                            if [ !lv ] continue
-                            if [ Au.inherits[ lmem.src, typeid[ Layer ] ] ]
-                                lvl : cast Layer [ lv ]
-                                lvl.set_context_from[ instance ]
-                                lvl.initialize[]
-                                if [ !instance.layers ] instance.layers = map Layer[string] []
-                                instance.layers[ string[ lmem.ident ] ] = lvl
-                            el [ Au.inherits[ lmem.src, typeid[ shader ] ] ]
-                                shv : cast shader [ lv ]
-                                shv.set_context_from[ instance ]
-                                shv.initialize[]
-                                if [ !instance.shaders ] instance.shaders = map shader[string] []
-                                instance.shaders[ string[ lmem.ident ] ] = shv
-                    if [ instance.layers ]
-                        bic : Layer instance.layers[ 'iconl' ]
-                        if [ bic ]
-                            instance.layers.rm[ 'iconl' ]
-                            instance.layers[ string[ 'iconl' ] ] = bic
+                    bind_members[ instance ]
                     instance.initialized = true
                     instance.hold_members[]
                     instance.pristine = false
@@ -2130,7 +2135,7 @@ Display Window
             move_consumed : bool [ false ]
             for [ e: element* m, e && !move_consumed, e = e.parent ]
                 ev.target = e
-                e.on_move*[ ev ]
+                if [ e != app_object ] e.on_move*[ ev ]
                 ev.mouse.pos.x += e.bounds.x - e.scroll.x
                 ev.mouse.pos.y += e.bounds.y - e.scroll.y
             if [ !ev.no_propagation && app_object ]
@@ -2154,7 +2159,10 @@ Display Window
         target_el : element [ (capture) ? capture : find_target[ root, ev, null ] ]
         ev.origin = target_el
         consumed_w : bool [ false ]
+        # the app element is served by the fallback below, with the hit
+        # element as target; calling it here too would double every event
         for [ e: element* target_el, e && !consumed_w, e = e.parent ]
+            if [ e == app_object ] continue
             ev.target = e
             e.on_wheel*[ ev ]
         if [ !ev.no_propagation && app_object ]
@@ -2185,6 +2193,7 @@ Display Window
         for [ e: element* f, e, e = e.parent ]
             cl : typeid[e]
             ev.target = e
+            if [ e == app_object ] continue
             e.on_press*[ ev ]
             ev.mouse.pos.x += e.bounds.x - e.scroll.x
             ev.mouse.pos.y += e.bounds.y - e.scroll.y
@@ -2243,6 +2252,7 @@ Display Window
         same_i : bool [ action_pressed == f ]
         consumed_r : bool [ false ]
         for [ e: element* f, e && !consumed_r, e = e.parent ]
+            if [ e == app_object ] continue
             ev.target = e
             if [ e.on_release*[ ev ] ] consumed_r = true
         if [ !consumed_r && app_object ]
@@ -3543,7 +3553,8 @@ Display Window
                 continue
             if [ layer.ctype != stage || layer.hide ]
                 continue
-            if [ defer_scroll && lkey == 'scrollbar' ]
+            # the scrollbar has its own overlay pass, never the layer loop
+            if [ lkey == 'scrollbar' ]
                 continue
 
             layer.bounds = (layer.area) ? layer.area.rectangle[ e.bounds, null, null, e.fc, false, 0.0, 0.0 ] : e.bounds.copy[]
@@ -3907,6 +3918,8 @@ abstract media_app trinity
         host_log_setup[ rtn.ident ]
         startup_path = path.path_startup[]
         root.initialize[]
+        # the app element never goes through update_element's first pass
+        bind_members[ root ]
         root.initialized = true
         adopt[ 'title' ]
         adopt[ 'width' ]
@@ -4442,9 +4455,11 @@ Control Button
     iconl : Layer [ image_align: Align [ x: XAlign.middle, y: YAlign.middle ], image_scale: 1.7 ]
     intern icon_cur : string
     public  icon_fit : f32
+    public  icon_scale : f32 [ 1.7 ]
 
     func sync_icon []
         if [ icon_fit > 0.0 ] iconl.image_fit = icon_fit
+        iconl.image_scale = icon_scale
         if [ !icon || icon.count == 0 ] return
         if [ icon_cur && icon_cur.compare[ icon ] == 0 ] return
         icon_cur = icon
