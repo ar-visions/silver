@@ -4,10 +4,12 @@ export 1.0.0                        # module version
 # setenv at module init — trinity exports VK_LAYER_PATH this way. it
 # lands after the expect tests run, so no test can observe it
 export FEATURES_MODE: 'test'
+export extensions [ '.feat' ]       # registry: install/export/features.agi
 
 import <stdio.h>                    # C header, read by libclang
 import <string.h>
 import <stdlib.h>
+import <ctype.h, limits.h>     # several headers in one line
 import <cpp.hpp>                    # C++ header: .hpp marks the unit
 import More                         # sibling .ag, headed extend
 import random as rnd                # module under a local name
@@ -1401,7 +1403,9 @@ expect func t_compare_more [] -> bool
 
 class Acc
     public total : i64
-    operator += [ n: i64 ] -> i64 [ total + n ]
+    operator += [ n: i64 ] -> i64   # a compound overload mutates; no store-back
+        total += n
+        return total
 
 expect func t_op_assign_overload [] -> bool
     a: Acc [ total: 5 ]
@@ -1425,7 +1429,7 @@ expect func t_vec_math [] -> bool
 expect func t_ptr_arith [] -> bool
     loc: local i32 [ 4 ] [ 10, 20, 30, 40 ]
     p: @loc[ 0 ]
-    q: p + 2                        # pointer plus count steps elements
+    q: p + 8                        # pointer math moves BYTES, not elements
     d: q - p                        # pointer minus pointer: byte distance
     return q[ 0 ] == 30 && d == 8
 
@@ -1436,10 +1440,16 @@ expect func t_construct_more [] -> bool
     b: takes_any[ 7 ]               # a number boxes into any
     n7: i32 [ 7 ]
     pi: @ n7
-    back: i32 [ pi ]                # a pointer converts to its pointee
+    back: i32 [ pi[ 0 ] ]           # reading through a pointer is indexing
     c: Counter [ count: 1 ]
     raw: ref u8 [ c ]               # an object to its byte pointer
-    return p.y == 2.0 && m[ 'b' ] == 2 && s == '42' && b && back == 7 && raw != null
+    expect p.y == 2.0, 'positional p = {p.x} {p.y}'
+    expect m[ 'b' ] == 2, 'map literal b = {m['b']}'
+    expect s == '42', 's = {s}'
+    expect b, 'takes_any boxed'
+    expect back == 7, 'back = {back}'
+    expect raw != null, 'raw null'
+    return true
 
 expect func t_string_more [] -> bool
     s: 'Hello-World-x'
@@ -1489,6 +1499,9 @@ expect func t_shape_value [] -> bool
     s: 4x4                          # a shape is a value
     return s.total[] == 16 && s.count == 2
 
+# the argv parser is C surface: declare it, libAu resolves it at link
+intern func Au_with_cstrs [ object, @cstr ] -> object
+
 class ArgApp
     public  depth : i32
     public  fast  : bool
@@ -1497,7 +1510,7 @@ class ArgApp
 expect func t_argv [] -> bool
     argv: local cstr [ 6 ] [ "app", "--depth", "4", "--fast", "game.rom", null ]
     w: ArgApp [ ]
-    w.with_cstrs[ @argv[ 0 ] ]      # --name value maps to public members
+    Au_with_cstrs[ w, @argv[ 0 ] ]  # --name value maps to public members
     return w.depth == 4 && w.fast && string [ w.rom ] == 'game.rom'
 
 expect func t_export_registry [] -> bool
@@ -1541,8 +1554,8 @@ expect func t_alias_ptr [] -> bool
 
 class Grid
     public cells : vec i64 [ 6 ]
-    getter [ i: i64, j: i64 ] -> i64     # two-index getter
-        return cells[ i * 3 + j ]
+    getter [ s: shape ] -> i64      # shape getter: g[ i, j ] arrives as one
+        return cells[ s[ 0 ] * 3 + s[ 1 ] ]
 
 expect func t_getter_2d [] -> bool
     g: Grid [ ]

@@ -190,7 +190,6 @@ func name [ arg1: i32, arg2: string ] -> return_type
 - No `[ ]` needed for zero-arg calls at expression level 0
 - `[ ]` required for expressions and when args are present
 - **Commaless args**: without commas, args are matched to parameters by type (CSS selector style). With commas, args are positional. This enables declarative UI composition where order is flexible.
-- **Callable subs**: `x: i32 sub` stores the body. `x[]` re-invokes it with current scope, returns the value without reassigning `x`.
 - **Keyword tokens**: `{ l0 t0 r0 b0 }` parses as a `tokens` literal when expected type is `tokens`. Used for layout coordinates and style properties.
 
 ### Control Flow
@@ -457,8 +456,8 @@ C typedef aliases to pointer types (e.g. `typedef VkPhysicalDevice_T* VkPhysical
 - Module search: if module not found locally, searches `SILVER/foundry/name/name.ag`.
 
 ### Cast Syntax
-- `(expr) to Type` — parsed in `parse_ternary` after `(expr)` closes.
-- Shares the `(expr)` prefix with ternary `?` and null-coalesce `??`.
+- `cast Type [ expr ]` is the ONE explicit cast (`to` was removed).
+- `Type [ expr ]` converts through constructors/cast members/convertible.
 
 ### `local` Keyword
 - Stack-allocated arrays: `local VkClearValue [2]`.
