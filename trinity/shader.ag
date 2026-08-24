@@ -433,7 +433,7 @@ class shader
             expect ty != typeid[ shader ], "shader requires a subclass"
             name = ty.ident
         app : string 'silver'
-        se  : getenv[ 'SILVER_APP' ]
+        se  : path.path_share_name[]
         if [ se ] app = string [ se ]
         sdir : '{path.path_cache[ app.chars ]}/shaders'
         vert = '{sdir}/{name}.vert'

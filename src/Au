@@ -2237,6 +2237,8 @@ declare_class(fmt_file)
     M(AA,BB, i, method,  public, Au,     read_format) \
     M(AA,BB, i, method,  public, i64,    wait_for_change, i64, i64) \
     M(AA,BB, s, method,  public, path,   path_self) \
+    M(AA,BB, s, method,  public, none,   path_set_share_name, cstr) \
+    M(AA,BB, s, method,  public, cstr,   path_share_name) \
     M(AA,BB, s, method,  public, path,   path_share_path) \
     M(AA,BB, s, method,  public, path,   path_cwd) \
     M(AA,BB, s, method,  public, path,   path_startup) \

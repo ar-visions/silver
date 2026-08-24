@@ -8112,6 +8112,19 @@ static void build_entrypoint(aether a, efunc module_init_fn) {
     etype_implement((etype)main_fn, false);
 
     push_scope(a, (Au)main_fn, 10);
+    if (a->share_name && len(a->share_name)) {
+        LLVMTypeRef ptr = LLVMPointerTypeInContext(a->module_ctx, 0);
+        LLVMTypeRef fn_ty = LLVMFunctionType(
+            LLVMVoidTypeInContext(a->module_ctx), &ptr, 1, 0);
+        LLVMValueRef fn = LLVMGetNamedFunction(a->module_ref,
+            "path_set_share_name");
+        if (!fn)
+            fn = LLVMAddFunction(a->module_ref,
+                "path_set_share_name", fn_ty);
+        LLVMValueRef value = LLVMBuildGlobalStringPtr(B,
+            a->share_name->chars, "share_name");
+        LLVMBuildCall2(B, fn_ty, fn, &value, 1, "");
+    }
     e_fn_call(a, module_init_fn, null, false, false);
     emit_expect_exit(a);
     emit_export_exit(a);

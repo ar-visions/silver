@@ -112,6 +112,7 @@ forward(evar)
 #define aether_schema(A, U, ...) \
     M(A,U,i, prop,     public,  bool,                     component) \
     M(A,U,i, prop,     public,  string,                   name) \
+    M(A,U,i, prop,     public,  string,                   share_name) \
     M(A,U,i, prop,     def,     path,                     module) \
     M(A,U,i, prop,     public,  path,                     module_file) \
     M(A,U,i, prop,     public,  path,                     root_path) \
