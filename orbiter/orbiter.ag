@@ -326,8 +326,8 @@ element EditorView
         # and would stamp over the drag. mute follows it in the flow
         if [ app_running[] ]
             t['volume'] = VolumeSlider [ area: Region { r0+ t0.15 w4 h0.6 } ]
-            t['mute']   = SoundButton [ icon: (o.app_muted) ? 'mute' : 'volume',
-                area: Region { r0+ t0.15 w1.4 h0.9 }, manual_mode: true ]
+            t['mute']   = SoundButton [ icon: (o.app_muted) ? 'mute' : 'volume', icon_scale: 2.4,
+                area: Region { r0+ t0 w1.4 h0.9 }, manual_mode: true ]
         return t
 
     func band_els [] -> Elements

@@ -55,6 +55,7 @@ declare_class(Device)
     M(X, Y, i, prop,     public,  i32,    etype_level) \
     M(X, Y, i, prop,     public,  i32,    parens_depth) \
     M(X, Y, i, prop,     public,  string, git_service) \
+    M(X, Y, i, prop,     public,  path,   url_product) \
     M(X, Y, i, prop,     public,  string, git_owner) \
     M(X, Y, i, prop,     public,  path,   import_file) \
     M(X, Y, i, prop,     public,  string, git_project) \
@@ -70,7 +71,6 @@ declare_class(Device)
     M(X, Y, i, prop,     intern,  bool,   has_module_func) \
     M(X, Y, i, prop,     intern,  bool,   has_module_type) \
     M(X, Y, i, prop,     iobject, array,  implements) \
-    M(X, Y, i, prop,     public,  enode,  last_sub_return) \
     M(X, Y, i, prop,     public,  enode,  last_break) \
     M(X, Y, i, prop,     public,  enode,  last_continue) \
     M(X, Y, i, prop,     public,  token,  exported_version) \

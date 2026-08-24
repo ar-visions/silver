@@ -38,18 +38,32 @@ class MdItem
     public bold  : bool
     public clip  : bool
 
+# one laid-out block: its items are local, its tile is painted once
+class MdRow
+    public y     : f32
+    public h     : f32
+    public hash  : i64
+    public items : vec MdItem
+
+# a painted block, reused across frames by content hash
+class MdTile
+    mutable canvas : Canvas
+    mutable hash   : i64 [ -1 ]
+    mutable frame  : i32 [ -1 ]
+
 element markdown : trinity
     public width   : i32 [ 980 ]
     public height  : i32 [ 1180 ]
     public title   : string [ 'markdown' ]
     default src    : path
     mutable blocks    : vec MdBlock
-    mutable items     : vec MdItem
-    mutable laid_w    : f32
-    mutable laid_h    : f32
+    mutable rows       : vec MdRow
+    mutable tiles      : vec MdTile
+    mutable tile_frame : i32
+    mutable laid_w     : f32
+    mutable laid_h     : f32
     mutable src_mt    : i64
     mutable src_watch : watch
-
     # fires on the watcher thread: dirty the ELEMENT (draw is gated on
     # pristine) and wake the window; draw's mtime check does the rest
     func on_src_change [ changed: Au :: t: markdown ] -> none
@@ -215,11 +229,12 @@ element markdown : trinity
         if [ s.ital ] return '#d8d0c0'
         return body
 
-    # measures one block's spans wrapped; returns the y after the last line
-    func layout_spans [ cv: Canvas, sp: vec MdSpan, fs: i32, x0: f32, y0: f32, xmax: f32, body: string, weight: bool ] -> f32
+    # measures one block's spans wrapped; returns the height it needs
+    func layout_spans [ cv: Canvas, out: vec MdItem, sp: vec MdSpan, fs: i32,
+            x0: f32, xmax: f32, body: string, weight: bool ] -> f32
         lh : f32 [ round[ cv.get_line_height[] * 1.25 ] ]
         x  : f32 [ x0 ]
-        y  : f32 [ y0 ]
+        y  : f32 [ 0.0 ]
         sw : cv.measure_text[ ' ' ]
         for [ s: MdSpan ] in sp
             words : s.text.split[ ' ' ]
@@ -232,23 +247,36 @@ element markdown : trinity
                     y += lh
                 col : string span_color[ s, body ]
                 if [ s.code ]
-                    items.push[ MdItem [ kind: 2, x: x - 2.0, y: y + 1.0, w: m.w + 4.0,
+                    out.push[ MdItem [ kind: 2, x: x - 2.0, y: y + 1.0, w: m.w + 4.0,
                         h: lh - 2.0, r: 4.0, color: '#20242e' ] ]
-                items.push[ MdItem [ kind: 0, x: x, y: y, w: m.w + 8.0, h: lh, fs: fs,
+                out.push[ MdItem [ kind: 0, x: x, y: y, w: m.w + 8.0, h: lh, fs: fs,
                     text: wtx, color: col, bold: s.bold || weight ] ]
                 if [ s.link ]
-                    items.push[ MdItem [ kind: 1, x: x, y: y + lh - 3.0, w: m.w, h: 1.0, color: col ] ]
+                    out.push[ MdItem [ kind: 1, x: x, y: y + lh - 3.0, w: m.w, h: 1.0, color: col ] ]
                 x += m.w + sw.w
         return y + lh
 
-    # one measuring pass into items; only the width can invalidate it
+    # content identity of a block at a given width
+    func row_hash [ b: MdBlock, cw: f32 ] -> i64
+        h : i64 [ 1469598103934665603 ]
+        for [ i: i32 0, i < b.text.count, i += 1 ]
+            h = (h ^ i64[ b.text[i] ]) * 1099511628211
+        h = (h ^ i64[ b.kind ])  * 1099511628211
+        h = (h ^ i64[ b.depth ]) * 1099511628211
+        h = (h ^ i64[ b.num ])   * 1099511628211
+        h = (h ^ i64[ i32[ cw ] ]) * 1099511628211
+        return h
+
+    # one measuring pass into rows; only the width can invalidate it
     func layout_doc [ cv: Canvas, cw: f32 ]
-        items  = vec MdItem []
+        rows   = vec MdRow []
         laid_w = cw
         laid_h = 0.0
         if [ !blocks || blocks.count == 0 ] return
         y : f32 [ 0.0 ]
         for [ b: MdBlock ] in blocks
+            it : vec MdItem []
+            rh : f32 [ 0.0 ]
             if [ b.kind >= 1 && b.kind <= 6 ]
                 fs : i32 [ 16 ]
                 if [ b.kind == 1 ] fs = 29
@@ -258,47 +286,110 @@ element markdown : trinity
                 el                 fs = 16
                 cv.font_size[ fs ]
                 y += 10.0
-                y = layout_spans[ cv, spans_of[ b.text ], fs, 0.0, y, cw, '#eef1f6', b.kind < 3 ]
+                rh = layout_spans[ cv, it, spans_of[ b.text ], fs, 0.0, cw, '#eef1f6', b.kind < 3 ]
                 if [ b.kind <= 2 ]
-                    items.push[ MdItem [ kind: 1, x: 0.0, y: y + 2.0, w: cw, h: 1.0, color: '#262b36' ] ]
-                y += 8.0
+                    it.push[ MdItem [ kind: 1, x: 0.0, y: rh + 2.0, w: cw, h: 1.0, color: '#262b36' ] ]
+                    rh += 3.0
+                y += rh + 8.0
             el [ b.kind == 7 ]
                 cv.font_size[ 14 ]
                 clines : b.text.split[ '\n' ]
                 lh : f32 [ round[ cv.get_line_height[] * 1.3 ] ]
-                bh : f32 [ f32[ clines.count ] * lh + 16.0 ]
-                items.push[ MdItem [ kind: 2, x: 0.0, y: y, w: cw, h: bh, r: 8.0, color: '#1a1e28' ] ]
-                cy : f32 [ y + 8.0 ]
+                rh = f32[ clines.count ] * lh + 16.0
+                it.push[ MdItem [ kind: 2, x: 0.0, y: 0.0, w: cw, h: rh, r: 8.0, color: '#1a1e28' ] ]
+                cy : f32 [ 8.0 ]
                 for [ k: i32 0, k < i32[ clines.count ], k += 1 ]
-                    items.push[ MdItem [ kind: 0, x: 12.0, y: cy, w: cw - 24.0, h: lh, fs: 14,
+                    it.push[ MdItem [ kind: 0, x: 12.0, y: cy, w: cw - 24.0, h: lh, fs: 14,
                         text: clines[ k ], color: '#a8d8b0', clip: true ] ]
                     cy += lh
-                y += bh + 12.0
+                y += rh + 12.0
             el [ b.kind == 8 || b.kind == 9 ]
                 cv.font_size[ 16 ]
                 ix : f32 [ 22.0 + f32[ b.depth ] * 22.0 ]
                 if [ b.kind == 8 ]
-                    items.push[ MdItem [ kind: 2, x: ix - 14.0, y: y + 9.0, w: 5.0, h: 5.0,
+                    it.push[ MdItem [ kind: 2, x: ix - 14.0, y: 9.0, w: 5.0, h: 5.0,
                         r: 2.5, color: '#8892a4' ] ]
                 el
-                    items.push[ MdItem [ kind: 0, x: ix - 22.0, y: y, w: 20.0, h: 22.0, fs: 16,
+                    it.push[ MdItem [ kind: 0, x: ix - 22.0, y: 0.0, w: 20.0, h: 22.0, fs: 16,
                         text: '{b.num}.', color: '#8892a4' ] ]
-                y = layout_spans[ cv, spans_of[ b.text ], 16, ix, y, cw, '#c6ccd8', false ]
-                y += 3.0
+                rh = layout_spans[ cv, it, spans_of[ b.text ], 16, ix, cw, '#c6ccd8', false ]
+                y += rh + 3.0
             el [ b.kind == 10 ]
                 cv.font_size[ 16 ]
-                qy : f32 [ y ]
-                y = layout_spans[ cv, spans_of[ b.text ], 16, 18.0, y, cw, '#9aa8bc', false ]
-                items.push[ MdItem [ kind: 1, x: 2.0, y: qy + 2.0, w: 3.0, h: y - qy - 4.0, color: '#3a4356' ] ]
-                y += 8.0
+                rh = layout_spans[ cv, it, spans_of[ b.text ], 16, 18.0, cw, '#9aa8bc', false ]
+                it.push[ MdItem [ kind: 1, x: 2.0, y: 2.0, w: 3.0, h: rh - 4.0, color: '#3a4356' ] ]
+                y += rh + 8.0
             el [ b.kind == 11 ]
-                items.push[ MdItem [ kind: 1, x: 0.0, y: y + 8.0, w: cw, h: 1.0, color: '#2a2f3a' ] ]
+                rh = 9.0
+                it.push[ MdItem [ kind: 1, x: 0.0, y: 8.0, w: cw, h: 1.0, color: '#2a2f3a' ] ]
                 y += 22.0
             el
                 cv.font_size[ 16 ]
-                y = layout_spans[ cv, spans_of[ b.text ], 16, 0.0, y, cw, '#c6ccd8', false ]
-                y += 9.0
+                rh = layout_spans[ cv, it, spans_of[ b.text ], 16, 0.0, cw, '#c6ccd8', false ]
+                y += rh + 9.0
+            rows.push[ MdRow [ y: y - rh - gap_after[ b ], h: rh,
+                hash: row_hash[ b, cw ], items: it ] ]
         laid_h = y
+
+    # trailing gap each kind leaves after its own height
+    func gap_after [ b: MdBlock ] -> f32
+        if [ b.kind >= 1 && b.kind <= 6 ] return 8.0
+        if [ b.kind == 7 ]  return 12.0
+        if [ b.kind == 8 || b.kind == 9 ] return 3.0
+        if [ b.kind == 10 ] return 8.0
+        if [ b.kind == 11 ] return 13.0
+        return 9.0
+
+    # a painted tile for this row, reused whenever the hash still matches
+    func tile_for [ cv: Canvas, row: MdRow, cw: f32 ] -> MdTile
+        if [ !tiles ] tiles = vec MdTile []
+        for [ t: MdTile ] in tiles
+            if [ t.canvas && t.hash == row.hash ]
+                t.frame = tile_frame
+                return t
+        use : MdTile [ null ]
+        for [ t: MdTile ] in tiles
+            if [ t.frame != tile_frame ]
+                use = t
+                break
+        if [ !use ]
+            use = MdTile [ ]
+            tiles.push[ use ]
+        wi : i32 [ i32[ ceil[ cw ] ] ]
+        hi : i32 [ i32[ ceil[ row.h ] ] + 1 ]
+        if [ wi < 1 ] wi = 1
+        if [ hi < 1 ] hi = 1
+        if [ !use.canvas ]
+            use.canvas = Canvas [ vk: cv.vk, w: cv.w, format: Pixel.rgba8, width: wi,
+                height: hi, load_existing: true, quantize: true, tag: 'md' ]
+            use.canvas.update[]
+        el [ use.canvas.content_w != wi || use.canvas.content_h != hi ]
+            use.canvas.resize[ wi, hi ]
+        tc : use.canvas
+        tc.reset[ vec4f [ 0.0, 0.0, 0.0, 0.0 ] ]
+        tc.stroke_width[ 0.0 ]
+        fs9 : i32 [ 0 ]
+        for [ i: MdItem ] in row.items
+            tc.fill_color[ i.color ]
+            if [ i.kind == 0 ]
+                if [ i.fs != fs9 ]
+                    fs9 = i.fs
+                    tc.font_size[ fs9 ]
+                ov : Overflow [ (i.clip) ? Overflow.clip : Overflow.visible ]
+                r  : rect [ x: i.x, y: i.y, w: i.w, h: i.h ]
+                tc.draw_text[ i.text, r, vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], ov, null ]
+                if [ i.bold ]
+                    r2 : rect [ x: i.x + 0.6, y: i.y, w: i.w, h: i.h ]
+                    tc.draw_text[ i.text, r2, vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], ov, null ]
+            el [ i.kind == 1 ]
+                tc.rect_to[ i.x, i.y, i.w, i.h ]
+                tc.paint[]
+            el
+                tc.rounded_rect[ i.x, i.y, i.w, i.h, i.r, i.r, i.r, i.r ]
+                tc.paint[]
+        use.hash  = row.hash
+        use.frame = tile_frame
+        return use
 
     public func draw [ w: Window ]
         if [ w.draw_stage != CanvasType.screen ] return
@@ -317,8 +408,9 @@ element markdown : trinity
         pad : f32 [ 28.0 ]
         cw  : f32 [ bounds.w - pad * 2.0 ]
         if [ cw > 860.0 ] cw = 860.0
-        x0  : f32 [ bounds.x + (bounds.w - cw) * 0.5 ]
-        oy  : f32 [ bounds.y + pad - scroll.y ]
+        # text snaps to whole pixels; tiles must land on the same grid
+        x0  : f32 [ round[ bounds.x + (bounds.w - cw) * 0.5 ] ]
+        oy  : f32 [ round[ bounds.y + pad - scroll.y ] ]
         vh  : f32 [ bounds.y + bounds.h ]
         if [ !blocks || blocks.count == 0 ]
             cv.font_size[ 16 ]
@@ -326,28 +418,16 @@ element markdown : trinity
             r0 : rect [ x: x0, y: oy, w: cw, h: 24.0 ]
             cv.draw_text[ (src) ? 'empty file: {src}' : 'no file — silver markdown <file.md>', r0, vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
             return
-        # measured once per width: scrolling only moves the same items
-        if [ !items || cw != laid_w ] layout_doc[ cv, cw ]
-        fs9 : i32 [ 0 ]
-        for [ it: MdItem ] in items
-            iy : f32 [ oy + it.y ]
-            if [ iy + it.h < bounds.y || iy > vh ] continue
-            cv.fill_color[ it.color ]
-            if [ it.kind == 0 ]
-                if [ it.fs != fs9 ]
-                    fs9 = it.fs
-                    cv.font_size[ fs9 ]
-                ov : Overflow [ (it.clip) ? Overflow.clip : Overflow.visible ]
-                r  : rect [ x: x0 + it.x, y: iy, w: it.w, h: it.h ]
-                cv.draw_text[ it.text, r, vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], ov, null ]
-                if [ it.bold ]
-                    r2 : rect [ x: x0 + it.x + 0.6, y: iy, w: it.w, h: it.h ]
-                    cv.draw_text[ it.text, r2, vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], ov, null ]
-            el [ it.kind == 1 ]
-                cv.rect_to[ x0 + it.x, iy, it.w, it.h ]
-                cv.paint[]
-            el
-                cv.rounded_rect[ x0 + it.x, iy, it.w, it.h, it.r, it.r, it.r, it.r ]
-                cv.paint[]
+        # measured once per width: scrolling only moves the same tiles
+        if [ !rows || cw != laid_w ] layout_doc[ cv, cw ]
+        tile_frame += 1
+        for [ row: MdRow ] in rows
+            ry : f32 [ oy + row.y ]
+            if [ ry + row.h < bounds.y || ry > vh ] continue
+            t : MdTile tile_for[ cv, row, cw ]
+            if [ t && t.canvas ]
+                cv.draw_canvas[ t.canvas, x0, ry,
+                    f32[ t.canvas.content_w ], f32[ t.canvas.content_h ] ]
+        cv.paint[]
         # the base element scrolls anything with a content height
         content_h = laid_h + pad * 2.0

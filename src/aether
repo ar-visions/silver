@@ -152,6 +152,7 @@ forward(evar)
     M(A,U,i, prop,     public,  path,                     isystem) \
     M(A,U,i, prop,     public,  bool,                     verbose) \
     M(A,U,i, prop,     public,  path,                     install) \
+    M(A,U,i, prop,     public,  path,                     base_install) \
     M(A,U,i, prop,     public,  path,                     build_dir) \
     M(A,U,i, prop,     public,  path,                     target_sysroot) \
     M(A,U,i, prop,     public,  bool,                     is_library) \
@@ -252,7 +253,6 @@ forward(evar)
     M(A,U,i, method,   public,  none,                     build_user_initializer, etype) \
     M(A,U,i, method,   public,  none,                     emit_override_init, enode, Au_t) \
     M(A,U,i, method,   public,  enode,                    build_attrib_value, evar) \
-    M(A,U,i, method,   public,  enode,                    e_subroutine, etype, array, subprocedure) \
     M(A,U,i, method,   public,  none,                     e_cmp_code, enode, comparison, enode, code, code) \
     M(A,U,i, method,   public,  enode,                    e_cmp, enode, enode) \
     M(A,U,i, method,   public,  enode,                    e_cmp_op, OPType, enode, enode) \

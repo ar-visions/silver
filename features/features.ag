@@ -352,16 +352,6 @@ expect func t_enums [] -> bool
     f: f32 [ w ]                    # and to floats
     return i == 3 && f == 2.0
 
-expect func t_sub [] -> bool
-    q: i32 [ 4 ]
-    z: i32 sub                      # sub stores the body
-        return q + 1
-    r1: z[]                         # re-runs against live scope
-    q = 9
-    r2: z[]
-    r3: z[ q: 20 ]                  # with a field overridden
-    return r1 == 5 && r2 == 10 && r3 == 21
-
 expect func t_expr [] -> bool
     x: i32 [ 5 ]
     t: (x > 0) ? x : -x             # condition must be parens
@@ -377,7 +367,7 @@ expect func t_expr [] -> bool
 
 expect func t_cast [] -> bool
     f: f64 [ 3.9 ]
-    i: (f) to i32                   # cast after a parens expr
+    i: i32 [ f ]                    # conversion by construction
     j: i32 [ 0 ]
     j = cast i32 [ f ]              # the explicit form
     c: Counter [ count: 5 ]
@@ -426,8 +416,9 @@ expect func t_scalars [] -> bool
     w: 200px
     d: 16ms
     a: 90deg
-    r: commaless[ w, d, a ]         # commaless matches BY TYPE
-    return r == 1.0
+    r: commaless[ w, d, a ]         # commas: positional
+    r2: commaless[ 90deg 200px 16ms ] # no commas: matched BY TYPE
+    return r == 1.0 && r2 == 1.0
 
 expect func t_scalar_units [] -> bool
     # a scalar is a distinct type carrying one number; arithmetic and
@@ -572,7 +563,7 @@ expect func t_structs [] -> bool
     e1: a1 * 2.0
     f1: 2.0 * a1                    # binds operator left *
     dp: a1.dot[ b1 ]
-    s1: (a1) to span2               # same size: a bitcast
+    s1: cast span2 [ a1 ]           # same size: a bitcast
     return c1.x == 4.0 && c1.y == 6.0 && d1.x == 2.0 && e1.y == 4.0 && f1.x == 2.0 && dp == 11.0 && s1.lo == 1.0 && s1.width[] == 1.0
 
 expect func t_construct [] -> bool
@@ -1146,7 +1137,422 @@ expect func t_async_inline [] -> bool
         j.out = j.x * 10 + base + h.tag
     t : async [ work_fn: f, work: w ]
     t.sync[ null ]
-    return j1.out == 1037 && j2.out == 1057
+    expect j1.out == 1037, 'j1.out = {j1.out}'
+    expect j2.out == 1057, 'j2.out = {j2.out}'
+    return true
+
+
+
+expect func t_literals [] -> bool
+    b:  i64 [ 0b1010 ]              # binary
+    o:  i64 [ 0o17 ]                # octal
+    hf: f64 [ 0x1.8p1 ]             # hex float: 1.5 * 2 = 3.0
+    fs: f32 [ 3.5f ]                # C float suffix
+    c:  unichar [ 'a' ]             # one char in quotes is a unichar
+    nl: unichar [ '\n' ]
+    hx: unichar [ '\x41' ]          # 'A'
+    return b == 10 && o == 15 && hf == 3.0 && fs == 3.5 && c == 97 && nl == 10 && hx == 65
+
+expect func t_string_escapes [] -> bool
+    br: 'a {{b}} c'                 # doubled braces are literal braces
+    m: map string [ string ] [ ]
+    m[ 'k' ] = 'v'
+    q: 'x={m['k']}'                 # quotes inside an interpolation
+    esc: 'one\ntwo'                 # backslash escapes
+    return br == 'a {{b}} c' && br.count == 7 && q == 'x=v' && esc.count == 7
+
+expect func t_precedence [] -> bool
+    a: i64 [ 12 ]
+    b: i64 [ 10 ]
+    r1: i64 [ 2 + 3 * 4 ]           # * before +
+    r2: i64 [ 1 << 2 + 1 ]          # + before <<
+    r3: i64 [ a | b == 14 ]         # == before | : 12 | 0
+    r4: bool [ a > 5 && b > 5 ]     # compare before &&
+    return r1 == 14 && r2 == 8 && r3 == 12 && r4
+
+expect func t_ranges [] -> bool
+    x: i32 [ 5 ]
+    rex: bool [ x == (2 ..< 6) ]    # end-exclusive, positive form
+    rni: bool [ x != (7 ... 9) ]    # negated inclusive
+    pr:  bool [ x == (4 + 1) ]      # plain parenthesized right side
+    c: Color.green
+    e:  bool [ c == green ]         # bare enum name on the right
+    return rex && rni && pr && e
+
+expect func t_is_value [] -> bool
+    s: 'hi'
+    a: object [ s ]                 # object is the Au base
+    v: string (a is string)         # is as a value: the object, or null
+    n: string (a is Counter)
+    t: bool [ a is typeid[ s ] ]    # right side may be a runtime type
+    return v == 'hi' && !n && t
+
+expect func t_expr_chain [] -> bool
+    a1: v2 [ x: 1.0, y: 2.0 ]
+    b1: v2 [ x: 3.0, y: 4.0 ]
+    sx: (a1 + b1).x                 # (expr).member
+    v: vec i64 [] [ 1, 2, 3 ]
+    n: [ v ].count                  # [expr].member
+    expect sx == 4.0, 'sx = {sx}'
+    expect n == 3, 'n = {n}'
+    return true
+
+expect func t_asm_expr [] -> bool
+    x: i64 [ 40 ]
+    r: i64 [ 0 ]
+    ifdef [ x86_64 ]
+        r = i64 asm [ x ]           # explicit inputs; return names the register
+            mov rax, x
+            add rax, 2
+            return rax
+    ifdef [ arm64 ]
+        r = i64 asm [ x ]
+            add x9, x, 2
+            return x9
+    return r == 42
+
+expect func t_keyword_tokens [] -> bool
+    t: tokens { l0 t0 r0 b0 }       # bare words become a tokens object
+    s: string { color red }         # or a string, joined by spaces
+    return t.count == 4 && s == 'color red'
+
+expect func t_memop_bare [] -> bool
+    src: local i32 [ 2 ] [ 1, 2 ]
+    dst: local i32 [ 2 ]
+    memcpy @dst[ 0 ], @src[ 0 ], 8  # bracketless statement form
+    return dst[ 1 ] == 2
+
+expect func t_arch_bools [] -> bool
+    return x86_64 || arm64          # arch names are bool values too
+
+expect func t_misc_expr [] -> bool
+    f: __builtin_frame_address[ 0 ]
+    n: i64 [ 5 ]
+    sz: i64 [ sizeof[ n ] ]         # sizeof on an expression
+    h: half [ 1.5 ]                 # half is bf16
+    hf: f32 [ h ]
+    ul: unsigned long [ 7 ]         # C spellings read as types
+    s65: string [ 65 ]              # a number to a string is its digits
+    ch:  string [ 'A' ]             # a unichar to a string is the char
+    a1: v2 [ x: 0.0, y: 0.0 ]
+    b1: v2 [ x: 2.0, y: 4.0 ]
+    mx: mix[ a1, b1, 0.5 ]          # mix on a struct
+    expect f != null, 'frame address null'
+    expect sz == 8, 'sizeof expr = {sz}'
+    expect hf == 1.5, 'half = {hf}'
+    expect ul == 7, 'unsigned long = {ul}'
+    expect s65 == '65' && ch == 'A', 's65 = {s65} ch = {ch}'
+    expect mx.x == 1.0 && mx.y == 2.0, 'mix = {mx.x} {mx.y}'
+    return true
+
+expect func t_prop_shorthand [] -> bool
+    x: f32 [ 1.0 ]
+    y: f32 [ 2.0 ]
+    p: v2 [ :x, :y ]                # :name binds the local of that name
+    return p.x == 1.0 && p.y == 2.0
+
+
+class Owner
+    public name : string
+
+class Widget
+    context owner : Owner           # injected by type; read-only; not held
+    manual  peer  : Widget          # a plain slot: never held or dropped
+    public  held  : Widget          # a public slot holds
+    unmanaged raw : Widget          # unmanaged: same as manual
+    default rom   : path            # the bare command-line arg lands here
+    public  depth : i32
+    public  refp  : ref i32         # a pointer member
+
+    static func make [ d: i32 ] -> Widget
+        return Widget [ depth: d ]
+
+    construct [ s: string ]
+        depth = s.count
+
+    construct [ n: i64 ]
+        construct [ 'n-{n}' ]       # chain to the string constructor
+
+expect func t_member_attribs [] -> bool
+    o: Owner [ name: 'own' ]
+    w: Widget [ ]
+    w.set_context_from[ o ]         # context members bind by type
+    p: Widget [ ]
+    r0: i32 [ Au.header[ p ].refs ]
+    w.peer = p                      # manual: refs unchanged
+    r1: i32 [ Au.header[ p ].refs ]
+    w.held = p                      # public: refs go up by one
+    r2: i32 [ Au.header[ p ].refs ]
+    w.raw = p
+    r3: i32 [ Au.header[ p ].refs ]
+    n: i32 [ 5 ]
+    w.refp = @ n
+    m: Widget.make[ 3 ]             # static func through the type name
+    c: Widget [ 7 ]                 # chained construct: 'n-7' has 3 chars
+    return w.owner == o && r1 == r0 && r2 == r0 + 1 && r3 == r2 && w.refp[ 0 ] == 5 && m.depth == 3 && c.depth == 3
+
+class AttribHost
+    attrib egg : Chirper [ tone: 3 ]    # a static object built at load
+
+# attrib is declaration-time metadata: trinity reads shader bindings this way
+expect func t_attrib [] -> bool
+    found: i32 [ 0 ]
+    tone:  i32 [ 0 ]
+    t: Au_t [ typeid[ AttribHost ] ]
+    for [ mem: Au_t ] in t.members
+        if [ mem.traits & (1 << 56) ]   # AU_TRAIT_IS_ATTRIB
+            found += 1
+            val: Au [ mem.value ]
+            c: Chirper [ val ]
+            tone = c.tone
+    return found == 1 && tone == 3
+
+abstract Shape Blob                 # abstract: a base that never runs as an app
+
+Blob Blobby
+    func init []
+        sides = 9
+
+expect func t_abstract [] -> bool
+    b: Blobby [ ]
+    return b.sides == 9 && b.describe[] == 'shape-9'
+
+Shape Sq4
+    public sides : i32 [ 4 ]        # a subclass may re-declare a default
+
+expect func t_member_override [] -> bool
+    s: Sq4 [ ]
+    return s.sides == 4
+
+func inlay_len [ inlay v: v2 ] -> f32   # inlay: the struct passes by value
+    return v.x + v.y
+
+expect func t_inlay_arg [] -> bool
+    v: v2 [ x: 1.0, y: 2.0 ]
+    return inlay_len[ v ] == 3.0
+
+expect func t_expect_expr [] -> bool
+    ok: bool [ expect 1 == 1 ]      # expect in expression position
+    return ok
+
+
+
+expect func t_multiline [] -> bool
+    c: Counter                      # an indented block is the initializer
+        count: 3
+        label: 'multi'
+    r: sum_pair[ 2,
+        3 ]                         # an open [ continues onto the next line
+    return c.count == 3 && c.label == 'multi' && r == 5
+
+intern early_hits : i64
+
+func early [ ok: bool ] -> i64
+    v: ok || return 0               # a falsy left returns early
+    early_hits += 1
+    return 1
+
+expect func t_or_return_void [] -> bool
+    early[ false ]
+    early[ true ]
+    return early_hits == 1
+
+expect func t_loops_more [] -> bool
+    m: map i64 [ string ] [ ]
+    m[ 'a' ] = 1
+    m[ 'b' ] = 2
+    last: string [ null ]
+    for [ v: i64, k: string ] reverse in m
+        last = k
+    hits: i32 [ 0 ]
+    for [ i: i32 0, i < 3, i += 1 ]
+        for [ j: i32 0, j < 3, j += 1 ]
+            if [ j == 1 ]
+                continue [ 1 ]      # continue the OUTER loop
+            hits += 1
+    return last == 'a' && hits == 3
+
+expect func t_switch_int [] -> bool
+    n: i32 [ 2 ]
+    r: i32 [ 0 ]
+    switch [ n ]                    # integers switch too
+        case 1, 2
+            r = 12
+        case 3
+            r = 3
+    return r == 12
+
+enum Auto                           # values count up from 0
+    zero
+    one
+    two
+
+expect func t_enum_more [] -> bool
+    c: Color [ 2 ]                  # a number converts to its member
+    r: Color [ 'red' ]              # so does the member's name at runtime
+    return c == green && r == red && Auto.two == 2
+
+expect func t_compare_more [] -> bool
+    a1: v2 [ x: 1.0, y: 2.0 ]
+    b1: v2 [ x: 1.0, y: 2.0 ]
+    s1: 'apple'
+    s2: 'banana'
+    return a1 == b1 && s1 < s2 && s2 > s1
+
+class Acc
+    public total : i64
+    operator += [ n: i64 ] -> i64 [ total + n ]
+
+expect func t_op_assign_overload [] -> bool
+    a: Acc [ total: 5 ]
+    a += 3                          # compound assignment overload
+    return a.total == 8
+
+expect func t_vec_math [] -> bool
+    a: vec i32 [ 3 ]
+    b: vec i32 [ 3 ]
+    f: vec f32 [ 3 ]
+    for [ i: i32 0, i < 3, i += 1 ]
+        a[ i ] = 7 + i
+        b[ i ] = 3
+        f[ i ] = 4.0
+    r: a % b                        # element-wise remainder
+    s: sqrt[ f ]                    # math builtins map over a vec
+    one: f32 [ 1.0 ]
+    mn: min[ f, one ]               # so do min, max, clamp
+    return r[ 0 ] == 1 && r[ 2 ] == 0 && s[ 1 ] == 2.0 && mn[ 2 ] == 1.0
+
+expect func t_ptr_arith [] -> bool
+    loc: local i32 [ 4 ] [ 10, 20, 30, 40 ]
+    p: @loc[ 0 ]
+    q: p + 2                        # pointer plus count steps elements
+    d: q - p                        # pointer minus pointer: byte distance
+    return q[ 0 ] == 30 && d == 8
+
+expect func t_construct_more [] -> bool
+    p: v2 [ 1.0, 2.0 ]              # positional struct construction
+    m: map i64 [ string ] [ 'a': 1, 'b': 2 ]    # map literal
+    s: string [ 42 ]                # a number to string
+    b: takes_any[ 7 ]               # a number boxes into any
+    n7: i32 [ 7 ]
+    pi: @ n7
+    back: i32 [ pi ]                # a pointer converts to its pointee
+    c: Counter [ count: 1 ]
+    raw: ref u8 [ c ]               # an object to its byte pointer
+    return p.y == 2.0 && m[ 'b' ] == 2 && s == '42' && b && back == 7 && raw != null
+
+expect func t_string_more [] -> bool
+    s: 'Hello-World-x'
+    lo: s.lcase[]
+    ri: s.rindex_of[ '-' ]
+    t:  '  pad  '
+    lt: t.ltrim[]
+    rt: t.rtrim[]
+    j: 'ab'
+    j.append[ 'cd' ]
+    k: 'ab' + 'cd'                  # + joins strings
+    n: '42'
+    return lo == 'hello-world-x' && ri == 11 && lt == 'pad  ' && rt == '  pad' && j == 'abcd' && k == 'abcd' && n.is_numeric[] && n.integer_value[] == 42 && s.first[] == 72 && s[ 1 ] == 101
+
+expect func t_collections_more [] -> bool
+    v: vec i64 [] [ 1, 2 ]
+    w: vec i64 [] [ 1, 2 ]
+    m: map i64 [ string ] [ ]
+    m[ 'a' ] = 1
+    m[ 'b' ] = 2
+    m.rm[ 'a' ]
+    n1: i64 [ m.count ]
+    m.clear[]
+    return v.equals[ w ] && n1 == 1 && m.count == 0
+
+expect func t_path_ops [] -> bool
+    p: path 'dir/sub/file.txt'
+    st: p.stem[]
+    ex: p.ext[]
+    fn: p.filename[]
+    pd: p.parent_dir[]
+    tmp: path.path_tempfile[ 'txt' ]   # unique file in the temp dir
+    tmp.save[ 'temp-data', null ]
+    ok: tmp.exists[]
+    tmp.remove[]
+    gone: !tmp.exists[]
+    return st == 'file' && ex == 'txt' && fn == 'file.txt' && string [ pd ] == 'dir/sub' && ok && gone
+
+expect func t_float_methods [] -> bool
+    x: f64 [ 3.14159 ]
+    r: x.round[ 2 ]
+    z: f64 [ 0.0 ]
+    n: z / z
+    return r == 3.14 && n.is_nan[] && x.is_finite[]
+
+expect func t_shape_value [] -> bool
+    s: 4x4                          # a shape is a value
+    return s.total[] == 16 && s.count == 2
+
+class ArgApp
+    public  depth : i32
+    public  fast  : bool
+    default rom   : path            # the bare argument
+
+expect func t_argv [] -> bool
+    argv: local cstr [ 6 ] [ "app", "--depth", "4", "--fast", "game.rom", null ]
+    w: ArgApp [ ]
+    w.with_cstrs[ @argv[ 0 ] ]      # --name value maps to public members
+    return w.depth == 4 && w.fast && string [ w.rom ] == 'game.rom'
+
+expect func t_export_registry [] -> bool
+    # export extensions [...] wrote install/export/features.agi at build
+    p: path '{path.path_install[]}/export/features.agi'
+    if [ !p.exists[] ] return false
+    s: string p.load[ typeid[string], null ]
+    return s.index_of[ '.feat' ] >= 0
+
+expect func t_c_more [] -> bool
+    buf: local i8 [ 32 ]
+    n: snprintf[ @buf[ 0 ], 32, "%d-%s", 7, "x" ]   # C varargs
+    s: string [ @buf[ 0 ] ]
+    up: toupper[ 97 ]               # from <ctype.h>
+    big: i32 [ INT_MAX ]            # an object-like macro
+    return n == 3 && s == '7-x' && up == 65 && big == 2147483647
+
+expect func t_ifdef_chain [] -> bool
+    r: i32 [ 0 ]
+    ifdef [ windows ]
+        r = 1
+    el [ apple ]                    # el chains platform blocks
+        r = 2
+    el
+        r = 3
+    return r == 3
+
+intern class Hidden                 # intern: the class stays module-private
+    public v : i32
+
+expect func t_intern_class [] -> bool
+    h: Hidden [ v: 4 ]
+    return h.v == 4
+
+alias iptr : @i32                   # alias to a pointer type
+
+expect func t_alias_ptr [] -> bool
+    n: i32 [ 9 ]
+    p: iptr [ @ n ]
+    return p[ 0 ] == 9
+
+class Grid
+    public cells : vec i64 [ 6 ]
+    getter [ i: i64, j: i64 ] -> i64     # two-index getter
+        return cells[ i * 3 + j ]
+
+expect func t_getter_2d [] -> bool
+    g: Grid [ ]
+    g.cells[ 4 ] = 44
+    return g[ 1, 1 ] == 44
+
+func words [] -> string { alpha beta }  # a { } body is raw tokens joined
+
+expect func t_raw_body [] -> bool
+    return words[] == 'alpha beta'
 
 app features
     func init []
