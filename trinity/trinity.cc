@@ -1,4 +1,5 @@
 #include <cstdio>
+extern "C" const char* path_share_name();
 // windows exports only what is marked; an elf .so exports every symbol,
 // so without this an importing module cannot see these at all
 #ifdef _WIN32
@@ -512,9 +513,7 @@ static void* host_log_thread(void* a) {
 HOST_API void host_log_setup(const char* name) {
     if (g_log_done || !name || !*name) return;
     g_log_done = 1;
-    // the app name (from silver-host) wins over the root-element ident, so the
-    // tee and the crash handler name the same file
-    const char* app = getenv("SILVER_APP");
+    const char* app = path_share_name();
     if (app && *app) name = app;
 
     // silver-host publishes the directory it writes its own logs into, so the

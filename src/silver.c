@@ -90,14 +90,42 @@ static void building_remove(cstr name) {
 
 static void symlink_resources(path src, path dst);
 
+static bool is_silver_repo(silver a) {
+    return a->git_owner && a->git_project &&
+        cmp(a->git_owner, "ar-visions") == 0 &&
+        cmp(a->git_project, "silver") == 0;
+}
+
+static string silver_install_name(silver a) {
+    if (!a->git_owner) return a->name;
+    string prefix = is_silver_repo(a)
+        ? string("silver") : a->git_owner;
+    return f(string, "%o-%o", prefix, a->name);
+}
+
+static void collect_resource_dirs(silver a, path source) {
+    DIR *dir = opendir(source->chars);
+    if (!dir) return;
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (entry->d_name[0] == '.') continue;
+        if (entry->d_type != DT_DIR) continue;
+        path res = form(path, "%o/%s", source, entry->d_name);
+        if (index_of(a->resources, (Au)res) < 0)
+            push(a->resources, (Au)hold(res));
+    }
+    closedir(dir);
+}
+
 // share/<name>/<dir> symlinks for every resource folder. must run on the
 // CACHED path too: a module last built as someone else's dependency deployed
 // its dirs under THAT root's share, so its own bundle can be missing while
 // its product is current — the app then starts with no fonts/models at all
 static void deploy_module_resources(silver a) {
-    if (!len(a->resources)) return;
-    path share = f(path, "%o/share/%o", a->install, a->name);
+    path share = f(path, "%o/share/%o", a->install,
+        silver_install_name(a));
     make_dir(share);
+    if (!len(a->resources)) return;
     each(a->resources, path, res) {
         path dst = f(path, "%o/%o", share, stem(res));
         // a stale directory symlink must go before the real dir is made
@@ -1879,17 +1907,18 @@ void silver_write_fmt(silver a, array toks) {
 // (silver-host.c) always takes. callers own their own guard + symlink/live_binary.
 static path build_silver_host(silver a) {
     path host_src = f(path, "%s/src/silver-host.c", SILVER);
+    string share_name = silver_install_name(a);
     // app_ext is "" on unix and ".exe" here; exec cannot find it without one
     path host_dst = f(path, "%o/%o%s", a->build_dir, a->name, app_ext);
     verify(file_exists("%o", host_src), "silver-host.c not found at %o", host_src);
 #ifdef __APPLE__
-    cstr host_libs = "-isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk -lglfw3 -lm -framework Cocoa -framework IOKit -framework CoreFoundation -framework CoreGraphics -framework QuartzCore";
+    cstr host_libs = "-isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk -lAu -lglfw3 -lm -framework Cocoa -framework IOKit -framework CoreFoundation -framework CoreGraphics -framework QuartzCore";
 #elif defined(_WIN32)
     // glfw's win32 backend; no dl/X11/m here
     // -lAu: the posix shims (dlopen, backtrace, basename, ...) live in posix.obj
     cstr host_libs = "-lAu -lglfw3 -lgdi32 -lopengl32 -luser32 -lkernel32 -lshell32";
 #else
-    cstr host_libs = "-ldl -lglfw3 -lX11 -lm";
+    cstr host_libs = "-lAu -ldl -lglfw3 -lX11 -lm";
 #endif
 #ifdef _WIN32
     // the define cannot use shell quoting: nothing expands it before
@@ -1900,13 +1929,13 @@ static path build_silver_host(silver a) {
     // link to a temp, then replace: a running app or a mid-scan file locks
     // the exe against in-place relink (LNK1168). the temp always writes.
     path host_out = f(path, "%o.new%i", host_dst, (i32)getpid());
-    vexec(a->verbose, "silver-host", "%s/install/bin/clang %s %s -o %o %o %s %s -D_CRT_SECURE_NO_WARNINGS -D_CRT_NONSTDC_NO_WARNINGS -I%s/install/include -L%s/install/lib -DSILVER_ROOT=\\\"%s\\\"",
-        SILVER, a->debug ? "-O0 -g" : "-O2", a->asan ? "-fsanitize=address" : "", host_out, host_src, host_libs, subsystem, SILVER, SILVER, SILVER, SILVER);
+    vexec(a->verbose, "silver-host", "%s/install/bin/clang %s %s -o %o %o %s %s -D_CRT_SECURE_NO_WARNINGS -D_CRT_NONSTDC_NO_WARNINGS -I%s/install/include -L%s/install/lib -DSILVER_ROOT=\\\"%s\\\" -DSILVER_SHARE_NAME=\\\"%o\\\"",
+        SILVER, a->debug ? "-O0 -g" : "-O2", a->asan ? "-fsanitize=address" : "", host_out, host_src, host_libs, subsystem, SILVER, SILVER, SILVER, SILVER, share_name);
     verify(au_replace_file(host_out->chars, host_dst->chars) == 0,
         "could not replace %o: locked by another process", host_dst);
 #else
-    vexec(a->verbose, "silver-host", "%s/install/bin/clang %s %s -o %o %o %s -I%s/install/include -L%s/install/lib -DSILVER_ROOT='\"%s\"'",
-        SILVER, a->debug ? "-O0 -g" : "-O2", a->asan ? "-fsanitize=address" : "", host_dst, host_src, host_libs, SILVER, SILVER, SILVER);
+    vexec(a->verbose, "silver-host", "%s/install/bin/clang %s %s -o %o %o %s -I%s/install/include -L%s/install/lib -DSILVER_ROOT='\"%s\"' -DSILVER_SHARE_NAME='\"%o\"'",
+        SILVER, a->debug ? "-O0 -g" : "-O2", a->asan ? "-fsanitize=address" : "", host_dst, host_src, host_libs, SILVER, SILVER, SILVER, share_name);
 #endif
     return host_dst;
 }
@@ -2156,7 +2185,8 @@ static void silver_run_exports(silver a) {
     path bin = a->live_binary ? a->live_binary : a->product;
     if (!bin || !file_exists("%o", bin)) return;
     // exports write into the module's own share bundle
-    path share = f(path, "%o/share/%o", a->install, a->name);
+    path share = f(path, "%o/share/%o", a->install,
+        silver_install_name(a));
     make_dir(share);
     print("[%o] export: running %o", a->name, bin);
 #ifdef _WIN32
@@ -2455,12 +2485,31 @@ AU_EXPORT void silver_init(silver a) {
             a->parse_f = parse_tokens;
             if (!a->git_service)
                 a->git_service = hold(string("github.com"));
+            cstr col2 = memchr(col + 1, ':', (size_t)(pe - col - 1));
+            drop(a->git_owner);
+            a->git_owner = hold(string(chars, ms, ref_length,
+                (int)(col - ms)));
+            drop(a->git_project);
+            a->git_project = hold(string(chars, col + 1, ref_length,
+                (int)((col2 ? col2 : pe) - col - 1)));
             // llvm_reinit is gated on module_file; give it one
             a->module_file = hold(f(path, "%o/%o.ag", a->build_dir, a->name));
             aether_reinit_startup((aether)a);
+            string raw = string(ms);
+            string import_text = f(string, "import %o", raw);
+            if (!memchr(col + 1, ':', (size_t)(pe - col - 1))) {
+                string head = mid(raw, 0, (int)(pe - ms));
+                string selector = mid(raw, (int)(col - ms + 1),
+                    (int)(pe - col - 1));
+                string tail = sl ? mid(raw, (int)(sl - ms),
+                    len(raw) - (int)(sl - ms)) : string("");
+                import_text = f(string, "import %o:%o%o",
+                    head, selector, tail);
+            }
             a->tokens = hold(tokens(target, (Au)a, parser, parse_tokens,
-                input, (Au)f(string, "import %s", ms)));
+                input, (Au)import_text));
             parse_import(a);
+            deploy_module_resources(a);
             if (!a->url_product) {
                 // local-namespace and cached runs land here
                 path p1 = f(path, "%o/build/%o", a->install, a->name);
@@ -2469,10 +2518,6 @@ AU_EXPORT void silver_init(silver a) {
             if (a->url_product && file_exists("%o", a->url_product)) {
                 print("[silver] running %o", a->url_product);
                 fflush(stdout);
-                // apps run from their share bundle, urls included
-                path shr = f(path, "%o/../share/%o",
-                    parent_dir(a->url_product), stem(a->url_product));
-                if (dir_exists("%o", shr)) chdir(shr->chars);
                 char* argv2[2] = { (cstr)a->url_product->chars, NULL };
                 execvp(argv2[0], argv2);
             }
@@ -2490,21 +2535,11 @@ AU_EXPORT void silver_init(silver a) {
 #endif
         a->debug   = !a->release;
     }
-    string n = string("test44");
-    a->product_link = f(path, "%o/%o.product", a->build_dir, a->name);
-    // the syntax map (language service) is ALWAYS written, coupled to the build — it's just a
-    // token cache. standard location: <install>/syntax/<name>.f (build-type independent; the
-    // bootstrap creates install/syntax). every build crawls all files and emits it; a partial
-    // map is itself the signal that compilation didn't finish. an explicit --format overrides.
-    if (!a->format || !len(a->format))
-        a->format = f(path, "%o/syntax/%o.f", a->install, a->name);
     a->defs_expect  = map(hsize, 4);
     a->defs_used    = map(hsize, 4);
     a->defs_hash    = defs_hash;
     //a->import_cache = map();
     a->artifacts    = array(32);
-    a->artifacts_path = f(path, "%o/%o.artifacts", a->build_dir, a->name);
-    a->source_path    = f(path, "%o/%o.source",    a->build_dir, a->name);
     a->resources    = array(32);
 
     // each module owns its OWN tree node (this map): it holds this module's source files
@@ -2563,6 +2598,22 @@ AU_EXPORT void silver_init(silver a) {
         }
     }
 
+    a->project_path = is_git_project(a);
+    path af = a->module ? directory(a->module) : path_cwd();
+    git_remote_info(af, &a->git_service, &a->git_owner,
+        &a->git_project);
+    string install_name = silver_install_name(a);
+    drop(((aether)a)->share_name);
+    ((aether)a)->share_name = hold(install_name);
+    a->product_link = f(path, "%o/%o.product", a->build_dir,
+        install_name);
+    a->artifacts_path = f(path, "%o/%o.artifacts", a->build_dir,
+        install_name);
+    a->source_path = f(path, "%o/%o.source", a->build_dir,
+        install_name);
+    if (!a->format || !len(a->format))
+        a->format = f(path, "%o/syntax/%o.f", a->install, a->name);
+
     aether_reinit_startup((aether)a);
     
     // discover resource folders within module directory and register on the
@@ -2577,8 +2628,9 @@ AU_EXPORT void silver_init(silver a) {
             struct dirent *entry;
             while ((entry = readdir(dir)) != NULL) {
                 if (entry->d_name[0] == '.') continue;
-                if (entry->d_type != DT_DIR)  continue;
-                path res = form(path, "%o/%s", a->module_path, entry->d_name);
+                if (entry->d_type != DT_DIR) continue;
+                path res = form(path, "%o/%s", a->module_path,
+                    entry->d_name);
                 if (index_of(og->resources, (Au)res) < 0)
                     push(og->resources, (Au)hold(res));
             }
@@ -2643,9 +2695,6 @@ AU_EXPORT void silver_init(silver a) {
 
     verify(module_file_m, "module file not found: %o", a->module_file);
     push(a->include_paths, (Au)a->module); // add include folder just for our module (this was in aether's init, interfering with our filter logic)
-
-    // check if we are the main project of this repository
-    a->project_path = is_git_project(a);
 
     bool product_exists = file_exists("%o", a->product_link);
     u64  product_m      = product_exists ? modified_time(a->product_link) : 0;
@@ -2780,12 +2829,9 @@ AU_EXPORT void silver_init(silver a) {
     a->src_loc      = absolute(path(_SRC ? _SRC : "."));
     verify(dir_exists("%o", a->src_loc), "SRC path does not exist");
 
-    // should only get its parent if its a file
-    path af         = a->module ? directory(a->module) : path_cwd();
     path install    = (a->platform && len(a->platform) && cmp(a->platform, "native") != 0)
                     ? f(path, "%s/platform/%o", _SILVER, target_dir(a))
                     : f(path, "%s/install",     _SILVER);
-    git_remote_info(af, &a->git_service, &a->git_owner, &a->git_project);
 
     bool retry = false;
     i64 mtime = current_time();// modified_time(a->module);
@@ -7284,17 +7330,39 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
     // selector is part of the cache identity, not the checkout's
     if (mod_sel)
         config = f(string, "%o mod:%o", config, mod_sel);
-    // a silver checkout keeps its token in its own install overlay — its
-    // build_f would otherwise collide with same-named module products
-    // (project 'silver' vs the compiler binary at install/build/silver)
-    if (is_silver)
-        build_f = f(path, "%o/install", project_f);
-    path token      = f(path, "%o/silver-token", build_f);
+    path token = is_silver
+        ? f(path, "%o/build/.%o-%o.silver-token", install,
+            owner ? owner : string("git"), name)
+        : f(path, "%o/silver-token", build_f);
+    string product_key = is_silver && mod_sel
+        ? ((owner && eq(owner, "ar-visions") && eq(name, "silver"))
+            ? f(string, "silver-%o", mod_sel)
+            : f(string, "%o-%o", owner, mod_sel))
+        : null;
+    path product_token = product_key
+        ? f(path, "%o/build/%o.product", install, product_key)
+        : null;
+    path compiler_token = f(path, "%o/build/silver", install);
+    bool product_current = !product_token ||
+        (file_exists("%o", product_token) &&
+         modified_time(product_token) > modified_time(compiler_token));
 
-    if (file_exists("%o", token)) {
+    if (!a->clean && file_exists("%o", token) &&
+        product_current) {
         string s = (string)load(token, typeid(string), null);
         if (s && eq(s, config->chars)) {
-            run_import_commands(a, postbuild, build_f);
+            run_import_commands(a, postbuild,
+                is_silver ? install : build_f);
+            if (is_silver && mod_sel) {
+                silver root = a;
+                while (root->is_external)
+                    root = (silver)root->is_external;
+                path host = f(path, "%o/build/%o", install, mod_sel);
+                if (file_exists("%o", host)) {
+                    drop(root->url_product);
+                    root->url_product = hold(host);
+                }
+            }
             if (lock_fd >= 0) { flock(lock_fd, LOCK_UN); (close)(lock_fd); }
             au_exec_prefix(null); // or it sticks onto unrelated builds
             return; // cached / built / error, etc
@@ -7302,7 +7370,7 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
     }
 
     // the only reliable way of rebuilding on reconfig is to have a new
-    // build-folder; a silver child manages its own overlay cache
+    // build-folder; a silver child manages its own build cache
     if (!is_silver) {
         remove_dir(build_f);
         make_dir(build_f);
@@ -7377,12 +7445,6 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
         } else
             print("cbindgen not found — rust import %o builds without a header", name);
     } else if (is_silver) { // build for Au-type projects
-        // the checkout builds into its own install overlay; the host
-        // install is read-through for core headers and libs
-        extern void aether_overlay(path install, path base);
-        path overlay = build_f;
-        make_dir(overlay);
-        aether_overlay(overlay, a->base_install ? a->base_install : a->install);
         silver sf = silver(debug_type, a->debug_type, debugmember, a->debugmember, module, silver_f, breakpoint, a->breakpoint, release, a->release,
             clean, a->clean, verbose, a->verbose, format, a->format, jobs, a->jobs, is_external, a->is_external ? a->is_external : a, is_child, a);
         validate(sf, "silver module compilation failed: %o", silver_f);
@@ -7396,7 +7458,7 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
             silver root = a;
             while (root->is_external) root = (silver)root->is_external;
             drop(root->url_product);
-            root->url_product = hold(f(path, "%o/build/%o", overlay, mod_sel));
+            root->url_product = hold(f(path, "%o/build/%o", install, mod_sel));
         }
         drop(sf);
     } else {
@@ -7454,7 +7516,7 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
             verify(exec(a->verbose, "%o (cd %o && make PREFIX=%o -f %o install)", cenv, project_f, install, Makefile) == 0, "make");
     }
 
-    run_import_commands(a, postbuild, build_f);
+    run_import_commands(a, postbuild, is_silver ? install : build_f);
 
     // a failed silver child must not cache as built
     if (!is_silver || child_ok)
@@ -7817,8 +7879,10 @@ none silver_build_product(silver a) {
         else if (cmp(a->platform, "native") != 0)
                                       { t_pre = "lib"; t_lib = ".so";    t_app = ""; }
     }
+    string product_name = a->is_library
+        ? silver_install_name(a) : a->name;
     path product    = f(path, "%o/%s%o%s%o%s%o%s",
-        a->build_dir, a->is_library ? t_pre : "", a->name,
+        a->build_dir, a->is_library ? t_pre : "", product_name,
         len(ext_tag) ? "-" : "", ext_tag,
         len(a->defs_hash) ? "-" : "",
         a->defs_hash,
@@ -8249,11 +8313,31 @@ path module_exists(silver a, array idents, bool binary_finary, bool* is_bin) {
     }
 
     if (binary_finary && len(idents) == 1) {
-        path sf = f(path, "%o/lib/lib%o.so", a->install, idents->origin[0]);
-        //path sf2 = f(path, "%o/%o.ag", a->project_path, to_path);
-        if (file_exists("%o", sf)) {
-            *is_bin = true;
-            return sf;
+        path installs[2] = {a->install, a->base_install};
+        string local_prefix = is_silver_repo(a)
+            ? string("silver") : a->git_owner;
+        string names[3] = {
+            local_prefix ? f(string, "%o-%o", local_prefix,
+                idents->origin[0]) : null,
+            f(string, "silver-%o", idents->origin[0]),
+            (string)idents->origin[0]
+        };
+        for (int i = 0; i < 2 && installs[i]; i++) {
+            for (int n = 0; n < 3; n++) {
+                if (!names[n]) continue;
+                path lib = f(path, "%o/lib/%s%o%s", installs[i],
+                    lib_pre, names[n], lib_ext);
+                path build = f(path, "%o/build/%s%o%s", installs[i],
+                    lib_pre, names[n], lib_ext);
+                if (file_exists("%o", lib)) {
+                    *is_bin = true;
+                    return lib;
+                }
+                if (file_exists("%o", build)) {
+                    *is_bin = true;
+                    return build;
+                }
+            }
         }
     }
 
@@ -9511,6 +9595,31 @@ enode parse_import(silver a) {
             module_source = hold(m);
         } else if (is_binary && m) {
             lib_path = hold(m);
+            string built_name = stem(m);
+            if (strlen(lib_pre) && starts_with(built_name, lib_pre))
+                built_name = mid(built_name, strlen(lib_pre),
+                    len(built_name) - strlen(lib_pre));
+            string local_prefix = is_silver_repo(a)
+                ? string("silver") : a->git_owner;
+            string names[3] = {
+                local_prefix ? f(string, "%o-%o", local_prefix, aa) : null,
+                f(string, "silver-%o", aa), aa
+            };
+            string share_name = null;
+            for (int n = 0; n < 3 && !share_name; n++) {
+                if (!names[n]) continue;
+                int nl = len(names[n]);
+                if (starts_with(built_name, cstring(names[n])) &&
+                    (len(built_name) == nl || built_name->chars[nl] == '-'))
+                    share_name = names[n];
+            }
+            if (share_name) {
+                silver og = a;
+                while (og->is_external) og = (silver)og->is_external;
+                path module_install = parent_dir(parent_dir(m));
+                collect_resource_dirs(og,
+                    f(path, "%o/share/%o", module_install, share_name));
+            }
         }
         
         // if the module is built into our run-time already, we support this
