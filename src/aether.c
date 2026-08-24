@@ -164,12 +164,27 @@ AU_EXPORT void              lldbg_set    (enode n, LLVMMetadataRef v);
 AU_EXPORT LLVMMetadataRef   _lldbg       (enode n);
 AU_EXPORT void         _llvalue_set(enode n, LLVMValueRef v);
 AU_EXPORT LLVMValueRef _llvalue(enode n);
+AU_EXPORT string symbol_name(Au obj);
 
 static symbol llvm_id(aether a, symbol id) {
     if (a->break_id && strcmp(a->break_id->chars, id) == 0) {
         raise(SIGTRAP);
     }
     return id;
+}
+
+static string module_identity(aether a) {
+    bool system = !a->autype || a->is_Au_import ||
+        a->autype->is_system || a->autype->is_au_native;
+    if (!system && a->share_name && len(a->share_name))
+        return a->share_name;
+    if (a->name && len(a->name))
+        return a->name;
+    return string(a->autype->ident);
+}
+
+static string module_initializer_symbol(string identity) {
+    return f(string, "%o_initializer", symbol_name((Au)identity));
 }
 
 static bool has_scalable_vector(LLVMTypeRef ty) {
@@ -8731,10 +8746,13 @@ AU_EXPORT etype implement_type_id(etype t) {
 
     if (!au->ident) return null;
 
+    string owner = au->module == a->autype
+        ? module_identity(a)
+        : string(au->module ? au->module->ident : a->name->chars);
     string name = is_module(au) ?
-        f(string, "%s_m", au->ident) :
-        f(string, "%o_%s_i", symbol_name(
-            (Au)string(au->module ? au->module->ident : a->name->chars)), au->ident);
+        f(string, "%o_m", symbol_name((Au)(
+            au == a->autype ? module_identity(a) : string(au->ident)))) :
+        f(string, "%o_%s_i", symbol_name((Au)owner), au->ident);
     evar schema_i = evar(mod, a, autype, def_member(
                 null, name->chars, type_info, AU_MEMBER_VAR,
                 AU_TRAIT_SYSTEM | (a->is_Au_import ? AU_TRAIT_IS_IMPORTED : 0)));
@@ -9832,7 +9850,8 @@ AU_EXPORT none aether_build_module_initializer(aether a, enode init) {
         LLVMTypeRef vfn = LLVMFunctionType(LLVMVoidTypeInContext(a->module_ctx), NULL, 0, false);
         each(a->import_inits, string, nm) {
             char sym[256];
-            snprintf(sym, sizeof(sym), "%s_initializer", nm->chars);
+            string init_name = module_initializer_symbol(nm);
+            snprintf(sym, sizeof(sym), "%s", init_name->chars);
             LLVMValueRef fdep = LLVMGetNamedFunction(a->module_ref, sym);
             if (!fdep) fdep = LLVMAddFunction(a->module_ref, sym, vfn);
             LLVMBuildCall2(B, vfn, fdep, NULL, 0, "");
@@ -9859,7 +9878,7 @@ AU_EXPORT none aether_build_module_initializer(aether a, enode init) {
         e_null(a, etypeid(Au_t)), // no context
         e_null(a, etypeid(Au_t)), // no src on modules
         module_type_id, // bind to emodule container
-        const_string(chars, module_base->ident),
+        const_string(chars, module_identity(a)->chars),
         _i32(module_base->member_type),
         _u64(module_base->traits),
         _u64(module_base->typesize),
@@ -10588,7 +10607,8 @@ void aether_import_Au(aether a, string ident, Au lib) {
                 // drives their init) — drive it here so an app module can be
                 // imported for its classes (orbiter imports the emulators)
                 char init_sym[256];
-                snprintf(init_sym, sizeof(init_sym), "%s_initializer", ident->chars);
+                string init_name = module_initializer_symbol(ident);
+                snprintf(init_sym, sizeof(init_sym), "%s", init_name->chars);
                 void (*mod_init)(void) = (void(*)(void))dlsym(lib_instance, init_sym);
                 verify(mod_init, "module %o did not register and exports no %s",
                     ident, init_sym);
@@ -12369,7 +12389,7 @@ AU_EXPORT efunc aether_module_initializer(aether a) {
     verify(a, "model given must be module (aether-based)");
 
     efunc init = function(a, (etype)a,
-        f(string, "%s_initializer", a->autype->ident), etypeid(none), array(),
+        module_initializer_symbol(module_identity(a)), etypeid(none), array(),
         AU_MEMBER_FUNC, AU_TRAIT_MODINIT, OPType__undefined);
     init->autype->access_type = interface_intern;
     init->has_code = true;

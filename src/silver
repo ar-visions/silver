@@ -7,6 +7,7 @@
     M(X, Y, i, prop,     public,  path,   module_file) \
     M(X, Y, i, prop,     public,  path,   project_path) \
     M(X, Y, i, prop,     public,  path,   module_path) \
+    M(X, Y, i, prop,     public,  string, install_name) \
     M(X, Y, i, prop,     public,  map,    env_vars) \
     M(X, Y, i, prop,     public,  map,    areas)
 declare_class(exports)
