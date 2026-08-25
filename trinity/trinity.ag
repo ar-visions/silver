@@ -1188,6 +1188,104 @@ Display Window
     intern  time_base           : f64
     intern  time_anchor_ms      : i64
     intern  time_scale_last     : f32
+    mutable screenshot_active   : bool
+    mutable screenshot_dragging : bool
+    mutable screenshot_x0       : f32
+    mutable screenshot_y0       : f32
+    mutable screenshot_x1       : f32
+    mutable screenshot_y1       : f32
+    mutable screenshot_scale    : f32
+    mutable screenshot_image    : Image
+    mutable screenshot_texture  : Texture
+    public  screenshot_path     : path
+
+    func screenshot_point [ p: vec2f ] -> vec2f
+        x : f32 [ p.x ]
+        y : f32 [ p.y ]
+        if [ x < 0.0 ] x = 0.0
+        if [ y < 0.0 ] y = 0.0
+        if [ x > f32[ width ] ]  x = f32[ width ]
+        if [ y > f32[ height ] ] y = f32[ height ]
+        return vec2f [ x, y ]
+
+    func screenshot_begin []
+        lr : Render last_render[]
+        if [ !lr || !lr.color ] return
+        screenshot_image = Image [ lr.color ]
+        screenshot_texture = Texture [ vk: vk, w: a,
+            sampler: screenshot_image ]
+        screenshot_scale    = time_scale
+        screenshot_x0       = 0.0
+        screenshot_y0       = 0.0
+        screenshot_x1       = f32[ width ]
+        screenshot_y1       = f32[ height ]
+        screenshot_dragging = false
+        screenshot_active   = true
+        time_scale          = 0.0
+        will_animate        = true
+
+    func screenshot_end []
+        time_scale          = screenshot_scale
+        screenshot_active   = false
+        screenshot_dragging = false
+        screenshot_texture  = null
+        screenshot_image    = null
+        will_animate        = true
+
+    func screenshot_save []
+        if [ !screenshot_image ] return
+        lx : f32 [ min[ screenshot_x0, screenshot_x1 ] ]
+        ly : f32 [ min[ screenshot_y0, screenshot_y1 ] ]
+        hx : f32 [ max[ screenshot_x0, screenshot_x1 ] ]
+        hy : f32 [ max[ screenshot_y0, screenshot_y1 ] ]
+        sx : f32 [ f32[ screenshot_image.width ] / f32[ width ] ]
+        sy : f32 [ f32[ screenshot_image.height ] / f32[ height ] ]
+        x0 : i32 [ i32[ lx * sx ] ]
+        y0 : i32 [ i32[ ly * sy ] ]
+        x1 : i32 [ i32[ hx * sx + 0.999 ] ]
+        y1 : i32 [ i32[ hy * sy + 0.999 ] ]
+        if [ x1 <= x0 || y1 <= y0 ] return
+        cropped : Image screenshot_image.crop[ x0, y0, x1 - x0, y1 - y0 ]
+        stamp : i64 epoch_millis[]
+        screenshot_path = path '/tmp/silver-crop-{stamp}.png'
+        cropped.png[ screenshot_path ]
+        puts 'screenshot: {screenshot_path}'
+
+    func screenshot_rect [ x: f32, y: f32, rw: f32, rh: f32 ]
+        if [ rw < 0.5 || rh < 0.5 ] return
+        screen.rect_to[ x, y, rw, rh ]
+        screen.paint[]
+
+    func screenshot_draw []
+        if [ !screenshot_texture ] return
+        ww : f32 [ f32[ width ] ]
+        wh : f32 [ f32[ height ] ]
+        screen.draw_image[ screenshot_texture,
+            rect [ x: 0.0, y: 0.0, w: ww, h: wh ] ]
+        lx : f32 [ min[ screenshot_x0, screenshot_x1 ] ]
+        ly : f32 [ min[ screenshot_y0, screenshot_y1 ] ]
+        hx : f32 [ max[ screenshot_x0, screenshot_x1 ] ]
+        hy : f32 [ max[ screenshot_y0, screenshot_y1 ] ]
+        screen.fill_color[ '#00000099' ]
+        screenshot_rect[ 0.0, 0.0, ww, ly ]
+        screenshot_rect[ 0.0, hy, ww, wh - hy ]
+        screenshot_rect[ 0.0, ly, lx, hy - ly ]
+        screenshot_rect[ hx, ly, ww - hx, hy - ly ]
+        screen.fill_color[ '#ffffff' ]
+        screenshot_rect[ lx, ly, hx - lx, 2.0 ]
+        screenshot_rect[ lx, hy - 2.0, hx - lx, 2.0 ]
+        screenshot_rect[ lx, ly, 2.0, hy - ly ]
+        screenshot_rect[ hx - 2.0, ly, 2.0, hy - ly ]
+        screen.fill_color[ '#000000cc' ]
+        screen.rounded_rect[ 16.0, 16.0, 390.0, 38.0,
+            8.0, 8.0, 8.0, 8.0 ]
+        screen.paint[]
+        screen.font_size[ 14 ]
+        screen.fill_color[ '#ffffff' ]
+        screen.draw_text[ 'Drag to crop  Enter captures  Esc cancels',
+            rect [ x: 28.0, y: 25.0, w: 366.0, h: 20.0 ],
+            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
+            Overflow.visible, null ]
 
 
     func attempt_instance_write [ src: element, dst: element ]
@@ -2036,6 +2134,17 @@ Display Window
         if [ app_object ] app_object.on_pad*[ ev ]
 
     public func key_event [ ev: Event ]
+        if [ screenshot_active ]
+            if [ ev.key.state && ev.key.unicode == 256 ]
+                screenshot_end[]
+            el [ ev.key.state && ev.key.unicode == 257 ]
+                screenshot_save[]
+                screenshot_end[]
+            return
+        if [ ev.key.state && ev.key.shift &&
+             (ev.key.ctrl || ev.key.meta) && ev.key.unicode == 83 ]
+            screenshot_begin[]
+            return
         s2 : bool [ ev.key.shift ]
         if [ ev.key.unicode == 340 || ev.key.unicode == 344 ] s2 = (ev.key.state) ? true : false
         if [ shift != s2 ]
@@ -2095,6 +2204,13 @@ Display Window
             app_object.on_leave*[ ev ]
 
     public func move_event [ ev: Event ]
+        if [ screenshot_active ]
+            if [ screenshot_dragging ]
+                p : vec2f screenshot_point[ ev.mouse.pos ]
+                screenshot_x1 = p.x
+                screenshot_y1 = p.y
+                will_animate = true
+            return
         orig_pos : vec2f [ ev.mouse.pos ]
         f : find_target[ root, ev, null ]
         ev.origin = f
@@ -2159,6 +2275,7 @@ Display Window
                     break
 
     public func wheel_event [ ev: Event ]
+        if [ screenshot_active ] return
         target_el : element [ (capture) ? capture : find_target[ root, ev, null ] ]
         ev.origin = target_el
         consumed_w : bool [ false ]
@@ -2173,6 +2290,16 @@ Display Window
             app_object.on_wheel*[ ev ]
 
     public func press_event [ ev: Event ]
+        if [ screenshot_active ]
+            if [ ev.mouse.button == 0 ]
+                p : vec2f screenshot_point[ ev.mouse.pos ]
+                screenshot_x0       = p.x
+                screenshot_y0       = p.y
+                screenshot_x1       = p.x
+                screenshot_y1       = p.y
+                screenshot_dragging = true
+                will_animate        = true
+            return
         world_m : vec2f [ ev.mouse.pos ]   # world coords before find_target mangles it
         if [ ev.mouse.button == 0 ]
             now : i64 [ epoch_micros[] ]
@@ -2247,6 +2374,14 @@ Display Window
             context_pressed = f
 
     public func release_event [ ev: Event ]
+        if [ screenshot_active ]
+            if [ ev.mouse.button == 0 && screenshot_dragging ]
+                p : vec2f screenshot_point[ ev.mouse.pos ]
+                screenshot_x1       = p.x
+                screenshot_y1       = p.y
+                screenshot_dragging = false
+                will_animate        = true
+            return
         f : find_target[ root, ev, capture ]
         release_route[ f, ev ]
 
@@ -2557,6 +2692,7 @@ Display Window
         fs_active = on
 
     public func resize [ w: i32, h: i32 ] -> Window
+        if [ screenshot_active ] screenshot_end[]
         resizing = true
         if [ vk && vk.device ]
             vkDeviceWaitIdle[ vk.device ]
@@ -2570,6 +2706,7 @@ Display Window
 
     func on_compose []
         if [ resizing ] return
+        if [ screenshot_active ] return
         update_all      [ app_render[] ]
         # a frost element publishes its target mid-frame, not on resize
         bind_backdrop   [ ]
@@ -2591,6 +2728,14 @@ Display Window
         vk.defer_tick[]
         if [ resizing ] return
         screen.save[]
+
+        if [ screenshot_active ]
+            screenshot_draw[]
+            screen.paint[]
+            screen.flush_text[]
+            screen.sync_fence[]
+            screen.restore[]
+            return
 
         app_object.on_canvas*[ screen ]
 
