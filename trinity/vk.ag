@@ -552,7 +552,7 @@ class Render
     public func gen_mips [ ]
         if [ mips < 2 || !color ] return
         color.transition[ VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ]
-        vk.create_mipmaps*[ color.vk_image, width, height, mips, 1 ]
+        vk.create_mipmaps*[ color.vk_image, width, height, 1, mips, 1 ]
         color.vk_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 
     public func sync_fence [ ]
@@ -1706,10 +1706,11 @@ class vk_context
                 cres : vkCreateCommandPool[ device, cpool_info, null, @compute_pool ]
                 expect cres == VK_SUCCESS, "failed to create compute pool"
 
-    intern func create_mipmaps [ vk_image: VkImage, w: i32, h: i32, mips: i32, layers: i32 ] 
+    intern func create_mipmaps [ vk_image: VkImage, w: i32, h: i32, d: i32, mips: i32, layers: i32 ]
         if [ mips > 1 ]
             mipWidth:  w
             mipHeight: h
+            mipDepth:  d
             for [ f: 0, f < layers, f += 1 ]
                 transition_image_layout[ vk_image,
                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -1730,11 +1731,11 @@ class vk_context
                             srcSubresource: VkImageSubresourceLayers [
                                 aspectMask: VK_IMAGE_ASPECT_COLOR_BIT, mipLevel: i - 1, baseArrayLayer: f, layerCount: 1 ],
                             srcOffsets: [
-                                VkOffset3D [ 0, 0, 0 ], VkOffset3D [ mipWidth, mipHeight, 1 ] ],
+                                VkOffset3D [ 0, 0, 0 ], VkOffset3D [ mipWidth, mipHeight, mipDepth ] ],
                             dstSubresource: VkImageSubresourceLayers [
                                 aspectMask: VK_IMAGE_ASPECT_COLOR_BIT, mipLevel: i, baseArrayLayer: f, layerCount: 1 ],
-                            dstOffsets: [
-                                VkOffset3D [ 0, 0, 0 ], VkOffset3D [ max[ 1, mipWidth / 2 ], max[ 1, mipHeight / 2 ], 1 ] ] ],
+                            dstOffsets: [ VkOffset3D [ 0, 0, 0 ], VkOffset3D [
+                                max[ 1, mipWidth / 2 ], max[ 1, mipHeight / 2 ], max[ 1, mipDepth / 2 ] ] ] ],
                         VK_FILTER_LINEAR ]
                     cmd.submit
                     transition_image_layout[ vk_image,
@@ -1742,6 +1743,7 @@ class vk_context
                         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, i, 1, f, 1, false ]
                 mipWidth  = max[ 1, mipWidth / 2 ]
                 mipHeight = max[ 1, mipHeight / 2 ]
+                mipDepth  = max[ 1, mipDepth / 2 ]
             for [ f: 0, f < layers, f += 1 ]
                 transition_image_layout[ vk_image,
                     VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -3458,7 +3460,7 @@ class Texture
         vkDeviceWaitIdle[ vk.device ]
         staging.destroy_now[ ]
         if [ mip_levels > 1 ]
-            vk.create_mipmaps[ vk_image, width, height, mip_levels, layer_count ]
+            vk.create_mipmaps[ vk_image, width, height, (depth > 1) ? depth : 1, mip_levels, layer_count ]
             vk_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
         el
             transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
@@ -3540,7 +3542,7 @@ class Texture
             el [ swap ]
                 usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT
             el [ depth > 1 ]
-                usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT
+                usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT
             el
                 usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
                         VK_IMAGE_USAGE_TRANSFER_DST_BIT     |
@@ -3616,7 +3618,7 @@ class Texture
                     ]]
                 cmd.submit[ ]
                 vkDeviceWaitIdle[ vk.device ]
-                vk.create_mipmaps[ vk_image, width, height, mip_levels, layer_count ]
+                vk.create_mipmaps[ vk_image, width, height, (depth > 1) ? depth : 1, mip_levels, layer_count ]
                 vk_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 
             if [ !vk_image_view ]
@@ -4674,7 +4676,7 @@ func environment [ vk: vk_context, img: Image, r_axis: vec3f, rotation: f32 ] ->
         cmd.submit[ ]
         final.color.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
 
-    vk.create_mipmaps vk_image[0], size, size, mip_levels, 6
+    vk.create_mipmaps vk_image[0], size, size, 1, mip_levels, 6
     cube: Texture [ vk: vk, vk_image: vk_image[0], surface: Surface.environment,
         vk_format: w.surface_format.format, mip_levels: mip_levels, layer_count: 6 ]
     conv_shader: Convolve [ vk: vk, name: 'conv', proj: e.proj ]

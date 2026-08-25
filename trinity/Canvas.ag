@@ -2493,6 +2493,7 @@ Render Canvas
             n    = flat.count
             if [ n == 0 ]
                 vk.geom_us += epoch_micros[] - g0
+                path.clear[]
                 return
             bx0 = 999999.0
             by0 = 999999.0
@@ -2525,6 +2526,7 @@ Render Canvas
             vk.geom_us += epoch_micros[] - g0
 
         if [ bw < 0.5 || bh < 0.5 ]
+            path.clear[]
             return
 
         if [ pcount == 5 && n == 4 ]

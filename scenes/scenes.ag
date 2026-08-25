@@ -8317,9 +8317,11 @@ element Uranus
         # centre: the band crosses the shot, diagonally, behind uranus
         skq : quatf [ vec4f [ 1.0, 0.0, 0.0, radians[ 20.0 ] ] ]
         skr : quatf [ vec4f [ 0.0, 0.0, 1.0, radians[ 15.0 ] ] ]
+        sks : quatf [ vec4f [ 0.0, 1.0, 0.0, radians[ ux.time * 900.0 ] ] ]
         skm : mat4f.identity[]
         skm = skm.rotate[ skq ]
         skm = skm.rotate[ skr ]
+        skm = skm.rotate[ sks ]
         skm = skm.scale [ vec3f [ 30.0, 30.0, 30.0 ] ]
         sky.model = skm
         sky.view  = _view
@@ -10315,7 +10317,9 @@ ModelViewProject NubisSky
         float hd = clamp(hm / 2500.0, 0.0, 1.0);
         vec3 q = p + vec3(ubo.world.x, 0.0, ubo.world.y) + ubo.wind.xyz * ubo.wind.w;
         q += ubo.wind.xyz * (hd * ubo.weather_b.y / max(length(ubo.wind.xyz), 0.01));
-        vec4 low = texture(shape, q / ubo.scales.x);
+        float vd = length(p - ubo.cam_pos.xyz);
+        float sl = clamp(log2(1.0 + vd / 12000.0), 0.0, 7.0);
+        vec4 low = textureLod(shape, q / ubo.scales.x, sl);
         float lfbm = low.g * 0.625 + low.b * 0.25 + low.a * 0.125;
         // the composite spans 0.71..0.93 in the bake: stretch to 0..1
         float comp = remap(low.r, -(1.0 - lfbm), 1.0, 0.0, 1.0);
@@ -10328,7 +10332,8 @@ ModelViewProject NubisSky
             vec3 cn = texture(curl, q.xz / ubo.scales.z).rgb * 2.0 - 1.0;
             // curl is a low-level turbulence: it fades out with height
             q += cn * ubo.march.y * (1.0 - hd) * ubo.scales.y * 0.15;
-            vec3  hi   = texture(detail, q / ubo.scales.y).rgb;
+            float dlod = clamp(log2(1.0 + vd / 1500.0), 0.0, 5.0);
+            vec3  hi   = textureLod(detail, q / ubo.scales.y, dlod).rgb;
             float hfbm = hi.r * 0.625 + hi.g * 0.25 + hi.b * 0.125;
             // wispy bottoms, billowy tops; the flat base keeps its edge
             float m = mix(hfbm, 1.0 - hfbm, clamp(hm / 250.0, 0.0, 1.0));
@@ -10768,7 +10773,12 @@ ModelViewProject NubisSky
             float far = clamp((depth - 25000.0) / 40000.0, 0.0, 1.0);
             col = mix(col, bg * (1.0 - T), far);
         }}
-        vec3 final = col + T * bg;
+        float cloud_a = 1.0 - T;
+        float soft_a = cloud_a * cloud_a * cloud_a;
+        vec3 cloud_rgb = col / max(cloud_a, 1e-5);
+        float edge = 1.0 - smoothstep(0.25, 0.75, cloud_a);
+        cloud_rgb = mix(cloud_rgb, max(cloud_rgb, bg), edge);
+        vec3 final = mix(bg, cloud_rgb, soft_a);
 
         if (ubo.view_mode == 1) final = vec3(1.0 - T);
         if (ubo.view_mode == 2) final = mix(vec3(0.0, 0.05, 0.3), vec3(1.0, 0.3, 0.0), steps_taken / 200.0);
@@ -11204,11 +11214,11 @@ element Clouds
         bolt_wait = 0.0 - log[ u ] / lam
         bolt_strike[]
 
-    func load_texture [ p: path, depth: i32 ] -> Texture
+    func load_texture [ p: path, depth: i32, mips: i32 ] -> Texture
         expect p.exists[], 'baked noise missing: {p}'
         im : Image [ uri: p, linear: true, wrap_u: true, wrap_v: true ]
         im.hold[]
-        tx : Texture [ vk: vk, w: ux, sampler: im, depth: depth, mip_levels: 1, linear: true, wrap_u: true, wrap_v: true ]
+        tx : Texture [ vk: vk, w: ux, sampler: im, depth: depth, mip_levels: mips, linear: true, wrap_u: true, wrap_v: true ]
         tx.hold[]
         return tx
 
@@ -11312,12 +11322,12 @@ element Clouds
         if [ !p1.exists[] ]
             puts 'clouds: no baked noise — baking live (SILVER_EXPORT=1 bakes at build)'
             nubis_bake[]
-        tx_shape   = load_texture[ path '../scenes/baked/nubis-shape.png', 128 ]
-        tx_detail  = load_texture[ path '../scenes/baked/nubis-detail.png', 32 ]
-        tx_curl    = load_texture[ path '../scenes/baked/nubis-curl.png', 1 ]
-        tx_weather = load_texture[ path '../scenes/baked/nubis-weather.png', 1 ]
-        tx_tvar    = load_texture[ path '../scenes/baked/nubis-tops.png', 1 ]
-        tx_stars   = load_texture[ path '../scenes/textures/gaia.png', 1 ]
+        tx_shape   = load_texture[ path '../scenes/baked/nubis-shape.png', 128, 8 ]
+        tx_detail  = load_texture[ path '../scenes/baked/nubis-detail.png', 32, 6 ]
+        tx_curl    = load_texture[ path '../scenes/baked/nubis-curl.png', 1, 1 ]
+        tx_weather = load_texture[ path '../scenes/baked/nubis-weather.png', 1, 1 ]
+        tx_tvar    = load_texture[ path '../scenes/baked/nubis-tops.png', 1, 1 ]
+        tx_stars   = load_texture[ path '../scenes/textures/gaia.png', 1, 1 ]
         wimg = Image [ uri: path '../scenes/baked/nubis-weather.png', linear: true ]
         wimg.hold[]
         timg = Image [ uri: path '../scenes/baked/nubis-tops.png', linear: true ]
