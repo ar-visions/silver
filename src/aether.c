@@ -9623,6 +9623,8 @@ enode aether_e_asm(aether a, array body, array input_nodes, etype out_type, stri
     // ---- build asm text with $N replacement ----
     string buf = string(alloc, 1024);
     int    prev_line = -1;
+    bool   dot_suffix = false;
+    cstr   prev_chars = NULL;
 
     array input_names = array(alloc, len(input_nodes));
     each(input_nodes, enode, n)
@@ -9633,11 +9635,20 @@ enode aether_e_asm(aether a, array body, array input_nodes, etype out_type, stri
     for (int i = 0; i < len(body); i++) {
         token t = (token)get(body, i);
 
-        // newline between lines, space between tokens on same line
+        bool new_line = prev_line >= 0 && t->line > prev_line;
+        bool tight_dot = !new_line &&
+            (strcmp(t->chars, ".") == 0 ||
+             (prev_chars && strcmp(prev_chars, ".") == 0) ||
+             (dot_suffix && isalnum((unsigned char)t->chars[0])));
+        // newline between lines, space between tokens on same line unless the
+        // target assembler needs a compact dotted suffix, e.g. ARM v0.4s.
         if (prev_line >= 0)
-            append(buf, t->line > prev_line ? "\n" : " ");
+            append(buf, new_line ? "\n" : (tight_dot ? "" : " "));
 
+        if (new_line)
+            dot_suffix = false;
         prev_line = t->line;
+        dot_suffix = tight_dot && (strcmp(t->chars, ".") != 0);
 
         // check if this token matches an input name
         int match = -1;
@@ -9656,6 +9667,7 @@ enode aether_e_asm(aether a, array body, array input_nodes, etype out_type, stri
             
         } else
             concat(buf, (string)t);
+        prev_chars = t->chars;
     }
 
     // ---- build constraint string ----
@@ -9696,6 +9708,13 @@ enode aether_e_asm(aether a, array body, array input_nodes, etype out_type, stri
     
     LLVMTypeRef fn_type = LLVMFunctionType(ret, params, n_in, false);
 
+    LLVMInlineAsmDialect dialect =
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+        LLVMInlineAsmDialectIntel;
+#else
+        LLVMInlineAsmDialectATT;
+#endif
+
     // ---- create inline asm ----
     LLVMValueRef asm_val = LLVMGetInlineAsm(
         fn_type,
@@ -9703,7 +9722,7 @@ enode aether_e_asm(aether a, array body, array input_nodes, etype out_type, stri
         constraint->chars, len(constraint),
         true,              // side effects
         true,              // align stack
-        LLVMInlineAsmDialectIntel, // minimal effort needed to support AT&T (but will they support us?)
+        dialect,
         false);            // can't throw
 
     // ---- call it ----

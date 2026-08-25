@@ -7615,45 +7615,8 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
     au_exec_prefix(null);
 }
 
-// a module's .g `cflags:` (e.g. img.g -> -DIMATH_DLL -I$IMPORT/...) applies to
-// its C/C++ implementation sources; graph.py honors this for the core build,
-// silver's module import path did not
-static string read_g_cflags(silver a, path mg) {
-    string out = string(alloc, 128);
-    if (!mg || !file_exists("%o", mg)) return out;
-    string gtext = (string)load(mg, typeid(string), null);
-    if (!gtext) return out;
-    cstr ck = strstr(gtext->chars, "cflags:");
-    if (!ck) return out;
-    ck += 7;
-    cstr eol = strchr(ck, '\n');
-    int  n   = eol ? (int)(eol - ck) : (int)strlen(ck);
-    char buf[1024];
-    if (n > (int)sizeof(buf) - 1) n = (int)sizeof(buf) - 1;
-    memcpy(buf, ck, n); buf[n] = 0;
-    char* tok = strtok(buf, " \t\r");
-    while (tok) {
-        if (len(out)) append(out, " ");
-        // $IMPORT is the only var these lines use
-        cstr v = strstr(tok, "$IMPORT");
-        if (v) {
-            char tmp[512];
-            int  pre = (int)(v - tok);
-            snprintf(tmp, sizeof(tmp), "%.*s%s%s", pre, tok,
-                (cstr)a->install->chars, v + 7);
-            concat(out, string(tmp));
-        } else
-            concat(out, string(tok));
-        tok = strtok(null, " \t\r");
-    }
-    return out;
-}
-
-// an Au submodule is one whose import resolved to <SILVER>/src/<name>.g —
-// silver reads that file already, so nothing here is a list of names
 static bool is_core_module(symbol name) {
-    return file_exists("%s/src/%s.g", SILVER, name) &&
-           file_exists("%s/src/%s.c", SILVER, name);
+    return file_exists("%s/src/%s.c", SILVER, name);
 }
 
 // the project's own suppressions, the same set the native compile line uses
@@ -7911,8 +7874,6 @@ static void deploy_resources(path src, path dst) {
 }
 
 // build with optional bc path; if no bc path we use the project file system
-static void read_g_link_libs(silver a, path mg);
-
 // walk a module's dependency tree (key = source path, value = that source's node map)
 // and collect every transitive source path into `out`, de-duped via `seen`. the tree is
 // the authoritative structure; flattening it here yields a COMPLETE source list (unlike
@@ -7931,13 +7892,6 @@ static void silver_collect_tree(map tree, array out, map seen) {
 }
 
 none silver_build_product(silver a) {
-    // a module with its own .g (e.g. dbg.g -> -llldb -lutil) must honor those
-    // link flags when building/linking itself; graph.py does this for the core
-    // build but silver's module build path otherwise ignores .g.
-    if (a->module_file)
-        read_g_link_libs(a, f(path, "%o/%o.g",
-            parent_dir(a->module_file), stem(a->module_file)));
-
     path ll = null, bc = null;
     bool emit_ok = emit(a, (ARef)&ll, (ARef)&bc);
     verify(emit_ok, "compilation failed");
@@ -8109,16 +8063,8 @@ none silver_build_product(silver a) {
 
     string cflags = a->asan ? string("-fsanitize=address") : string("");
 
-    // build compile-only flags (includes + cflags)
+    // build compile-only flags
     string ccflags = string(cflags->chars);
-    if (a->module_file) {
-        string gcf = read_g_cflags(a, f(path, "%o/%o.g",
-            parent_dir(a->module_file), stem(a->module_file)));
-        if (len(gcf)) {
-            if (len(ccflags)) append(ccflags, " ");
-            concat(ccflags, gcf);
-        }
-    }
     if (a->include_paths) {
         each(a->include_paths, string, inc) {
             if (len(ccflags)) append(ccflags, " ");
@@ -9263,104 +9209,6 @@ enode parse_export(silver a) {
     return e_noop(a, null);
 }
 
-// honor a module's .g `link:` directive (e.g. dbg.g -> -llldb -lutil -lm,
-// img.g -> -lpng -lz ...). graph.py reads .g for the core build, but silver's
-// module import path never sees it, so without this those libs would be missing
-// from the final app link. safe to call for cached and runtime-resolved modules.
-static bool add_lib_if_exists(silver a, cstr nm) {
-    static const char* sys[] = {"m","c","dl","pthread","util","ncurses",
-        "c++","c++abi","z","objc","System",0};
-    if (is_sdk_lib(nm)) { set(a->libs, (Au)string(nm), (Au)_bool(true)); return true; }
-    for (int si = 0; sys[si]; si++)
-        if (strcmp(nm, sys[si]) == 0) { set(a->libs, (Au)string(nm), (Au)_bool(true)); return true; }
-    if (file_exists("%o/lib/%s%s%s", a->install, lib_pre, nm, lib_ext) ||
-        file_exists("%o/lib/%s%s%s", a->install, lib_pre, nm, lib_static)) {
-        set(a->libs, (Au)string(nm), (Au)_bool(true));
-        return true;
-    }
-    string rl = resolve_versioned_lib(a, string(nm));
-    if (rl && cmp(rl, nm) != 0) {
-        set(a->libs, (Au)hold(rl), (Au)_bool(true));
-        return true;
-    }
-    return false;
-}
-
-static void read_g_link_libs(silver a, path mg) {
-    if (!mg || !file_exists("%o", mg))
-        return;
-    string gtext = (string)load(mg, typeid(string), null);
-    if (!gtext)
-        return;
-
-    // `modules:` deps (e.g. silver.g -> Au net aether) become lib<name>. a module
-    // built as a shared lib has its symbols in lib<name>; an importing app whose
-    // own code calls into it (e.g. orbiter -> aether_init) must link it directly.
-    cstr md = strstr(gtext->chars, "modules:");
-    if (md) {
-        md += 8;
-        cstr meol = strchr(md, '\n');
-        int mn = meol ? (int)(meol - md) : (int)strlen(md);
-        char mbuf[512];
-        if (mn > (int)sizeof(mbuf) - 1) mn = (int)sizeof(mbuf) - 1;
-        memcpy(mbuf, md, mn); mbuf[mn] = 0;
-        char* mt = strtok(mbuf, " \t\r");
-        while (mt) {
-            // a module named foo-lib is built as libfoo (e.g. silver-lib -> libsilver)
-            char base[128];
-            size_t L = strlen(mt);
-            cstr name = mt;
-            if (L > 4 && strcmp(mt + L - 4, "-lib") == 0) {
-                int bl = (int)(L - 4);
-                if (bl > (int)sizeof(base) - 1) bl = (int)sizeof(base) - 1;
-                memcpy(base, mt, bl); base[bl] = 0;
-                name = base;
-            }
-            add_lib_if_exists(a, name);
-            mt = strtok(null, " \t\r");
-        }
-    }
-
-    cstr lk = strstr(gtext->chars, "link:");
-    if (!lk)
-        return;
-    lk += 5;
-    cstr eol = strchr(lk, '\n');
-    int gn = eol ? (int)(eol - lk) : (int)strlen(lk);
-    char gbuf[512];
-    if (gn > (int)sizeof(gbuf) - 1) gn = (int)sizeof(gbuf) - 1;
-    memcpy(gbuf, lk, gn); gbuf[gn] = 0;
-    char* tok = strtok(gbuf, " \t\r");
-    while (tok) {
-        if (strcmp(tok, "-framework") == 0) {
-            tok = strtok(null, " \t\r");
-            if (tok) {
-                if (!a->frameworks) a->frameworks = hold(map(16));
-                set(a->frameworks, (Au)string(tok), (Au)_bool(true));
-            }
-        } else if (strncmp(tok, "-l", 2) == 0 && tok[2]) {
-            cstr nm = tok + 2;
-#ifdef __APPLE__
-            // libatomic/libtinfo don't exist on macOS (mirrors graph.py mapping)
-            if (strcmp(nm, "atomic") == 0) { tok = strtok(null, " \t\r"); continue; }
-            if (strcmp(nm, "tinfo")  == 0) nm = "ncurses";
-            if (strcmp(nm, "stdc++") == 0) nm = "c++";
-#elif defined(_WIN32)
-            // lldb.lib is OUR lldb module; LLDB's own import lib keeps the lib
-            // prefix, so a plain -llldb silently binds to the wrong library
-            if (strcmp(nm, "lldb")   == 0) nm = "liblldb";
-#endif
-            // only add libs that exist in our install tree or are standard system
-            // libs. .g files can list transitive static deps (e.g. -ldeflate for
-            // OpenEXR) that aren't separately built here — the app links the
-            // dylibs, which already resolve those internally.
-            add_lib_if_exists(a, nm);
-        }
-        tok = strtok(null, " \t\r");
-    }
-}
-
-
 // ── background module builds ────────────────────────────────────────────────
 // the leading run of `import <name>` statements is known before parsing; the
 // silver modules among them build on their own threads so the work overlaps
@@ -9726,12 +9574,6 @@ enode parse_import(silver a) {
         if (mod && !module_source) {
             set(a->libs, string(mod->ident), (Au)_bool(true));
             external_name = hold(string(mod->ident));
-            // runtime-resolved module (e.g. dbg, or the silver compiler itself):
-            // still read its .g so its deps reach the app link. core modules live
-            // in src/, silver modules in <SILVER>/<name>/.
-            read_g_link_libs(a, f(path, "%s/%s/%s.g",
-                SILVER, mod->ident, mod->ident));
-            read_g_link_libs(a, f(path, "%s/src/%s.g", SILVER, mod->ident));
         } else if (!mod && !module_source && !lib_path) {
             prev(a);
             error("could not find module %o", mpath);
@@ -9826,7 +9668,6 @@ enode parse_import(silver a) {
         }
     } else if (module_source) {
         path module = parent_dir(module_source);
-        read_g_link_libs(a, f(path, "%o/%o.g", module, stem(module_source)));
 
         bool ag = eq(ext(module_source), "ag");
         bool c  = is_native_source_ext(a, ext(module_source));
