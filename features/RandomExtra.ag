@@ -1,0 +1,4 @@
+extend random
+
+func rng_extension_value [] -> i32
+    return 42

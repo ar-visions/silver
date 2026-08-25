@@ -11264,6 +11264,8 @@ element Clouds
         ww : i32 [ wimg.width ]
         c  : f32 [ cur.coverage ]
         mask : vec f32 [ N * N ]
+        inside_mask : vec f32 [ N * N ]
+        outside_dist : vec f32 [ N * N ]
         for [ y: i32 0, y < N, y += 1 ]
             for [ x: i32 0, x < N, x += 1 ]
                 inside : bool [ false ]

@@ -3224,39 +3224,19 @@ AU_EXPORT enode aether_e_fault(aether a, enode msg) {
     a->is_const_op = false;
     if (a->no_build) return e_noop(a, etypeid(none));
 
-    // emit the message as a print to stderr
     enode str_msg = e_create(a, etypeid(string), (Au)msg, false);
-    LLVMValueRef msg_val = _llvalue((enode)str_msg);
-
-    // call puts to print the message (convert string to cstr)
-    enode cstr_msg = e_create(a, etypeid(cstr), (Au)str_msg, false);
-
-    // declare fprintf and stderr
-    LLVMTypeRef i8ptr   = LLVMPointerTypeInContext(a->module_ctx, 0);
-    LLVMTypeRef i32_ty  = LLVMInt32TypeInContext(a->module_ctx);
-
-    // use puts for simplicity, then trap
-    LLVMTypeRef  puts_args[] = { i8ptr };
-    LLVMTypeRef  puts_ty = LLVMFunctionType(i32_ty, puts_args, 1, 0);
-    LLVMValueRef puts_fn = LLVMGetNamedFunction(a->module_ref, "puts");
-    if (!puts_fn)
-        puts_fn = LLVMAddFunction(a->module_ref, "puts", puts_ty);
-    LLVMValueRef args[] = { _llvalue((enode)cstr_msg) };
-    LLVMBuildCall2(B, puts_ty, puts_fn, args, 1, "");
-    // flush — abort discards buffered stdout on the tee pipe
-    LLVMTypeRef  fflush_ty = LLVMFunctionType(i32_ty, &i8ptr, 1, 0);
-    LLVMValueRef fflush_fn = LLVMGetNamedFunction(a->module_ref, "fflush");
-    if (!fflush_fn)
-        fflush_fn = LLVMAddFunction(a->module_ref, "fflush", fflush_ty);
-    LLVMValueRef nullp = LLVMConstNull(i8ptr);
-    LLVMBuildCall2(B, fflush_ty, fflush_fn, &nullp, 1, "");
-
-    // abort
-    LLVMTypeRef  abort_ty = LLVMFunctionType(LLVMVoidTypeInContext(a->module_ctx), null, 0, 0);
-    LLVMValueRef abort_fn = LLVMGetNamedFunction(a->module_ref, "abort");
-    if (!abort_fn)
-        abort_fn = LLVMAddFunction(a->module_ref, "abort", abort_ty);
-    LLVMBuildCall2(B, abort_ty, abort_fn, null, 0, "");
+    LLVMTypeRef ptr = LLVMPointerTypeInContext(a->module_ctx, 0);
+    LLVMTypeRef args_t[] = {ptr, ptr};
+    LLVMTypeRef fn_t = LLVMFunctionType(
+        LLVMVoidTypeInContext(a->module_ctx), args_t, 2, 0);
+    LLVMValueRef fn = LLVMGetNamedFunction(a->module_ref,
+        "au_error_raise");
+    if (!fn) fn = LLVMAddFunction(a->module_ref,
+        "au_error_raise", fn_t);
+    LLVMValueRef args[] = {
+        _llvalue((enode)str_msg), LLVMConstNull(ptr)
+    };
+    LLVMBuildCall2(B, fn_t, fn, args, 2, "");
     LLVMBuildUnreachable(B);
 
     // create dead block so subsequent code doesn't append to terminated block
@@ -3264,6 +3244,192 @@ AU_EXPORT enode aether_e_fault(aether a, enode msg) {
         LLVMGetBasicBlockParent(LLVMGetInsertBlock(B)), "post_fault");
     LLVMPositionBuilderAtEnd(B, dead);
 
+    return e_noop(a, etypeid(none));
+}
+
+static LLVMValueRef error_runtime_fn(aether a, cstr name,
+        LLVMTypeRef result, LLVMTypeRef* args, unsigned count) {
+    LLVMTypeRef type = LLVMFunctionType(result, args, count, 0);
+    LLVMValueRef fn = LLVMGetNamedFunction(a->module_ref, name);
+    return fn ? fn : LLVMAddFunction(a->module_ref, name, type);
+}
+
+static LLVMValueRef error_call(aether a, cstr name,
+        LLVMTypeRef result, LLVMTypeRef* arg_types,
+        LLVMValueRef* args, unsigned count) {
+    LLVMValueRef fn = error_runtime_fn(a, name, result,
+        arg_types, count);
+    LLVMTypeRef type = LLVMFunctionType(result, arg_types, count, 0);
+    return LLVMBuildCall2(B, type, fn, args, count,
+        result == LLVMVoidTypeInContext(a->module_ctx) ? "" : name);
+}
+
+static LLVMValueRef error_setjmp(aether a, LLVMValueRef frame) {
+    LLVMTypeRef ptr = LLVMPointerTypeInContext(a->module_ctx, 0);
+    LLVMTypeRef i32t = LLVMInt32TypeInContext(a->module_ctx);
+    LLVMValueRef env = error_call(a, "au_error_frame_env", ptr,
+        &ptr, &frame, 1);
+    LLVMTypeRef args_t[2] = {ptr, ptr};
+    unsigned count = target_is_pe(a) ? 2 : 1;
+    cstr name = target_is_pe(a) ? "_setjmp" : "setjmp";
+    LLVMValueRef fn = error_runtime_fn(a, name, i32t,
+        args_t, count);
+    unsigned kind = LLVMGetEnumAttributeKindForName(
+        "returns_twice", 13);
+    if (kind) {
+        LLVMAttributeRef attr = LLVMCreateEnumAttribute(
+            a->module_ctx, kind, 0);
+        LLVMAddAttributeAtIndex(fn, LLVMAttributeFunctionIndex,
+            attr);
+    }
+    LLVMValueRef args[2] = {env, null};
+    if (count == 2) {
+        LLVMTypeRef ov[] = {ptr};
+        unsigned iid = LLVMLookupIntrinsicID("llvm.frameaddress", 17);
+        LLVMValueRef intr = LLVMGetIntrinsicDeclaration(
+            a->module_ref, iid, ov, 1);
+        LLVMTypeRef fa_t = LLVMFunctionType(ptr, &i32t, 1, 0);
+        LLVMValueRef zero = LLVMConstInt(i32t, 0, false);
+        args[1] = LLVMBuildCall2(B, fa_t, intr, &zero, 1,
+            "frameaddr");
+    }
+    LLVMTypeRef type = LLVMFunctionType(i32t, args_t, count, 0);
+    return LLVMBuildCall2(B, type, fn, args, count, "try_status");
+}
+
+static LLVMValueRef error_frame_new(aether a) {
+    LLVMTypeRef ptr = LLVMPointerTypeInContext(a->module_ctx, 0);
+    return error_call(a, "au_error_frame_new", ptr,
+        null, null, 0);
+}
+
+static void error_frame_action(aether a, cstr name,
+        LLVMValueRef frame) {
+    LLVMTypeRef ptr = LLVMPointerTypeInContext(a->module_ctx, 0);
+    LLVMTypeRef none = LLVMVoidTypeInContext(a->module_ctx);
+    error_call(a, name, none, &ptr, &frame, 1);
+}
+
+static void error_build_finally(subprocedure builder,
+        array tokens) {
+    if (builder && tokens) sp_invoke(builder, (Au)tokens);
+}
+
+AU_EXPORT enode aether_e_try(aether a, array try_tokens,
+        array catch_tokens, array finally_tokens, evar catch_var,
+        subprocedure try_builder, subprocedure catch_builder,
+        subprocedure finally_builder) {
+    emit_guard;
+    a->is_const_op = false;
+    if (a->no_build) {
+        sp_invoke(try_builder, (Au)try_tokens);
+        if (catch_tokens)
+            sp_invoke(catch_builder, (Au)catch_tokens);
+        error_build_finally(finally_builder, finally_tokens);
+        return e_noop(a, etypeid(none));
+    }
+
+    LLVMTypeRef ptr = LLVMPointerTypeInContext(a->module_ctx, 0);
+    LLVMTypeRef i32t = LLVMInt32TypeInContext(a->module_ctx);
+    LLVMValueRef parent = LLVMGetBasicBlockParent(LLVMGetInsertBlock(B));
+    LLVMBasicBlockRef body = LLVMAppendBasicBlockInContext(
+        a->module_ctx, parent, "try_body");
+    LLVMBasicBlockRef caught = LLVMAppendBasicBlockInContext(
+        a->module_ctx, parent, "try_caught");
+    LLVMBasicBlockRef final = LLVMAppendBasicBlockInContext(
+        a->module_ctx, parent, "try_finally");
+    LLVMBasicBlockRef merge = LLVMAppendBasicBlockInContext(
+        a->module_ctx, parent, "try_merge");
+    LLVMValueRef reasons[4];
+    LLVMValueRef frames[4];
+    LLVMBasicBlockRef incoming[4];
+    unsigned incoming_count = 0;
+
+    LLVMValueRef frame = error_frame_new(a);
+    error_frame_action(a, "au_error_frame_push", frame);
+    LLVMValueRef status = error_setjmp(a, frame);
+    LLVMValueRef normal = LLVMBuildICmp(B, LLVMIntEQ, status,
+        LLVMConstNull(i32t), "try_normal");
+    LLVMBuildCondBr(B, normal, body, caught);
+
+    LLVMPositionBuilderAtEnd(B, body);
+    sp_invoke(try_builder, (Au)try_tokens);
+    if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(B))) {
+        error_frame_action(a, "au_error_frame_pop", frame);
+        error_frame_action(a, "au_error_frame_drop", frame);
+        reasons[incoming_count] = LLVMConstInt(
+            LLVMInt1TypeInContext(a->module_ctx), 0, false);
+        frames[incoming_count] = LLVMConstNull(ptr);
+        incoming[incoming_count++] = LLVMGetInsertBlock(B);
+        LLVMBuildBr(B, final);
+    }
+
+    LLVMPositionBuilderAtEnd(B, caught);
+    error_frame_action(a, "au_error_frame_pop", frame);
+    if (!catch_tokens) {
+        reasons[incoming_count] = LLVMConstInt(
+            LLVMInt1TypeInContext(a->module_ctx), 1, false);
+        frames[incoming_count] = frame;
+        incoming[incoming_count++] = LLVMGetInsertBlock(B);
+        LLVMBuildBr(B, final);
+    } else {
+        if (catch_var) {
+            LLVMValueRef msg = error_call(a,
+                "au_error_frame_message", ptr, &ptr, &frame, 1);
+            LLVMBuildStore(B, msg, _llvalue((enode)catch_var));
+        }
+        LLVMValueRef catch_frame = error_frame_new(a);
+        error_frame_action(a, "au_error_frame_push", catch_frame);
+        LLVMValueRef catch_status = error_setjmp(a, catch_frame);
+        LLVMValueRef catch_normal = LLVMBuildICmp(B, LLVMIntEQ,
+            catch_status, LLVMConstNull(i32t), "catch_normal");
+        LLVMBasicBlockRef catch_body = LLVMAppendBasicBlockInContext(
+            a->module_ctx, parent, "catch_body");
+        LLVMBasicBlockRef catch_failed = LLVMAppendBasicBlockInContext(
+            a->module_ctx, parent, "catch_failed");
+        LLVMBuildCondBr(B, catch_normal, catch_body, catch_failed);
+
+        LLVMPositionBuilderAtEnd(B, catch_body);
+        sp_invoke(catch_builder, (Au)catch_tokens);
+        if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(B))) {
+            error_frame_action(a, "au_error_frame_pop", catch_frame);
+            error_frame_action(a, "au_error_frame_drop", catch_frame);
+            error_frame_action(a, "au_error_frame_drop", frame);
+            reasons[incoming_count] = LLVMConstInt(
+                LLVMInt1TypeInContext(a->module_ctx), 0, false);
+            frames[incoming_count] = LLVMConstNull(ptr);
+            incoming[incoming_count++] = LLVMGetInsertBlock(B);
+            LLVMBuildBr(B, final);
+        }
+
+        LLVMPositionBuilderAtEnd(B, catch_failed);
+        error_frame_action(a, "au_error_frame_pop", catch_frame);
+        error_frame_action(a, "au_error_frame_drop", frame);
+        reasons[incoming_count] = LLVMConstInt(
+            LLVMInt1TypeInContext(a->module_ctx), 1, false);
+        frames[incoming_count] = catch_frame;
+        incoming[incoming_count++] = LLVMGetInsertBlock(B);
+        LLVMBuildBr(B, final);
+    }
+
+    LLVMPositionBuilderAtEnd(B, final);
+    LLVMValueRef rethrow = LLVMBuildPhi(B,
+        LLVMInt1TypeInContext(a->module_ctx), "try_rethrow");
+    LLVMValueRef failed_frame = LLVMBuildPhi(B, ptr,
+        "try_failed_frame");
+    LLVMAddIncoming(rethrow, reasons, incoming, incoming_count);
+    LLVMAddIncoming(failed_frame, frames, incoming, incoming_count);
+    error_build_finally(finally_builder, finally_tokens);
+    LLVMBasicBlockRef rethrow_block = LLVMAppendBasicBlockInContext(
+        a->module_ctx, parent, "try_rethrow");
+    if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(B)))
+        LLVMBuildCondBr(B, rethrow, rethrow_block, merge);
+
+    LLVMPositionBuilderAtEnd(B, rethrow_block);
+    error_frame_action(a, "au_error_frame_rethrow", failed_frame);
+    LLVMBuildUnreachable(B);
+
+    LLVMPositionBuilderAtEnd(B, merge);
     return e_noop(a, etypeid(none));
 }
 
@@ -4021,13 +4187,15 @@ AU_EXPORT enode constructable(etype fr, etype to);
 AU_EXPORT enode castable(etype fr, etype to) {
     aether a = au_active(fr->mod);
     bool fr_ptr = is_ptr(fr);
+    bool distinct_scalars = fr->autype->is_scalar &&
+        to->autype->is_scalar && fr->autype != to->autype;
     if (((fr_ptr && !is_class(fr)) || is_prim(fr)) && is_bool(to))
         return (enode)true;
 
     /// compatible by match, or with basic integral/real types
-    if ((fr == to) ||
+    if ((fr == to) || (!distinct_scalars &&
         ((is_realistic(fr) && is_realistic(to)) ||
-         (is_integral (fr) && is_integral (to))))
+         (is_integral (fr) && is_integral (to)))))
         return (enode)true;
     
     if (is_generic(fr) && is_class(to))
@@ -4051,7 +4219,11 @@ AU_EXPORT enode castable(etype fr, etype to) {
         for (int i = 0; i < ctx->members.count; i++) {
             Au_t mem = (Au_t)ctx->members.origin[i];
             if (mem->member_type != AU_MEMBER_CAST) continue;
-            if (is_same(u(etype, mem->rtype), to))
+            bool scalar_match = distinct_scalars &&
+                mem->rtype == to->autype;
+            if (scalar_match ||
+                    (!distinct_scalars &&
+                     is_same(u(etype, mem->rtype), to)))
                 return (enode)u(enode, mem);
             if (!loose && mem->rtype->is_pointer && to->autype->is_pointer &&
                 mem->rtype->src == to->autype->src)
@@ -4204,8 +4376,11 @@ AU_EXPORT enode convertible(etype fr, etype to) {
     // two scalars share a storage type but are DISTINCT types: mm and cm
     // both resolve to f32, and letting that alias skips the user's cast
     // member, handing back the number unconverted
-    if (ma->autype->is_scalar && mb->autype->is_scalar && ma->autype != mb->autype)
-        return castable(ma, mb);
+    if (ma->autype->is_scalar && mb->autype->is_scalar &&
+            ma->autype != mb->autype) {
+        enode ctr = constructable(ma, mb);
+        return ctr ? ctr : castable(ma, mb);
+    }
 
     // NOTE: same-size struct → struct is intentionally NOT a free
     // bitcast. distinct struct types (e.g. vec4f and quatf, both four
@@ -5579,9 +5754,19 @@ enode aether_e_create(aether a, etype mdl, Au args, bool no_pool) { sequencer
         return input;
     }
 
-    // same-type class identity: no conversion needed
-    if (input && canonical(input) == canonical(mdl))
-        return input;
+    // Raw scalar arithmetic still needs wrapping.
+    if (input && canonical(input) == canonical(mdl)) {
+        bool raw_scalar = !a->no_build && mdl->autype->is_scalar &&
+            _llvalue((enode)input) &&
+            LLVMGetTypeKind(LLVMTypeOf(_llvalue((enode)input))) !=
+                LLVMPointerTypeKind &&
+            LLVMTypeOf(_llvalue((enode)input)) != lltype(mdl);
+        if (!raw_scalar)
+            return input;
+        input = with_value(_llvalue((enode)input),
+            enode(mod, a, autype, mdl->autype->src, loaded, true));
+        args = (Au)input;
+    }
 
     // a quoted literal handed to a generic Au parameter becomes a real
     // string object — a raw symbol hashes by pointer and breaks map keys
@@ -5659,8 +5844,10 @@ enode aether_e_create(aether a, etype mdl, Au args, bool no_pool) { sequencer
             array sa = instanceof(args, array);
             if (sa && len(sa) == 1) sin = instanceof(sa->origin[0], enode);
         }
+        etype sin_type = sin ? canonical(sin) : null;
         if (st && st->autype->is_scalar && st->autype->src && sin &&
-                is_prim(canonical(sin)) && st != canonical(sin)) {
+                is_prim(sin_type) && !sin_type->autype->is_scalar &&
+                st != sin_type) {
             enode input = sin;
             enode prim = e_create(a, u(etype, st->autype->src), (Au)input, false);
             LLVMValueRef slot = entry_alloca(a, lltype(st), "scalar_wrap");
@@ -9145,7 +9332,13 @@ none etype_implement(etype t, bool w) { sequencer
             type_t_ptr = get_type_t_ptr(t);
 
         } else if (count == 0) {
-            struct_members[count++].e = etypeid(u8);
+            if (au->is_scalar && au->src) {
+                etype scalar_src = etype_prep(a, au->src);
+                etype_implement(scalar_src, false);
+                struct_members[count++].e = scalar_src;
+            } else {
+                struct_members[count++].e = etypeid(u8);
+            }
         }
 
         if (au->is_union) {
@@ -12180,6 +12373,20 @@ AU_EXPORT enode aether_e_direct_cast(aether a, enode input, etype target) {
     emit_guard;
     a->is_const_op = false;
     if (a->no_build) return e_noop(a, target);
+    Au_t input_au = input->autype;
+    if (input_au->member_type == AU_MEMBER_VAR)
+        input_au = input_au->src;
+    Au_t target_au = target->autype;
+    if (target_au->member_type == AU_MEMBER_VAR)
+        target_au = target_au->src;
+    if (input_au->is_scalar && target_au->is_scalar) {
+        etype input_type = u(etype, input_au);
+        etype target_type = u(etype, target_au);
+        enode custom = castable(input_type, target_type);
+        efunc fn = instanceof(custom, efunc);
+        if (fn && fn->autype->member_type == AU_MEMBER_CAST)
+            return e_fn_call(a, fn, a(input), false, true);
+    }
     // numeric primitives convert; bitcast only fits same-layout types
     if (is_prim(canonical(input)) && is_prim(target))
         return e_convert_or_cast(a, canonical(target), input);
