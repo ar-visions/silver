@@ -4,6 +4,7 @@
 #ifndef _WIN32
 #include <execinfo.h>
 #include <sys/file.h>   // flock — serialize external-checkout builds across processes
+#include <sys/ioctl.h>
 #include <sys/wait.h>   // export funcs run forked; the build waits on them
 #include <fcntl.h>
 #include <dlfcn.h>      // coverage libraries run in-process after build
@@ -1025,15 +1026,76 @@ Au build_init_preamble(enode f, Au arg) {
 
 void implement_type_id(etype);
 void etype_register(aether, Au, Au, bool);
+int  command_exec_hook(command, bool, bool,
+                       bool (*)(void*, cstr, ssize_t), void*);
 
 void finalize_coverage(silver);
 
-// compile progress: one line on stderr, redrawn in place. other output
-// simply prints over it; the next update repaints the bar.
+// redraw one progress line on stderr
 static bool progress_active = false;
+static char progress_top[640];
+static char progress_sub[640];
+static bool progress_sub_active = false;
+static int  progress_lines = 0;
+
+static void progress_render() {
+    if (!isatty(2) || !progress_top[0]) return;
+    int width = 0;
+#ifndef _WIN32
+    struct winsize ws;
+    if (ioctl(2, TIOCGWINSZ, &ws) == 0)
+        width = ws.ws_col;
+#endif
+    if (progress_lines == 2)
+        fprintf(stderr, "\r\x1b[K\x1b[1A\r\x1b[K");
+    else if (progress_lines == 1)
+        fprintf(stderr, "\r\x1b[K");
+
+    char top[640];
+    snprintf(top, sizeof(top), "%s", progress_top);
+    if (width > 0 && width < (int)sizeof(top) &&
+        (int)strlen(top) > width) {
+        if (width > 3) {
+            top[width - 3] = '.';
+            top[width - 2] = '.';
+            top[width - 1] = '.';
+        }
+        top[width] = 0;
+    }
+    fprintf(stderr, "%s", top);
+    progress_lines = 1;
+    if (progress_sub_active && progress_sub[0]) {
+        char sub[640];
+        snprintf(sub, sizeof(sub), "%s", progress_sub);
+        if (width > 0 && width < (int)sizeof(sub) &&
+            (int)strlen(sub) > width) {
+            if (width > 3) {
+                sub[width - 3] = '.';
+                sub[width - 2] = '.';
+                sub[width - 1] = '.';
+            }
+            sub[width] = 0;
+        }
+        fprintf(stderr, "\n\r\x1b[K%s", sub);
+        progress_lines = 2;
+    }
+    fflush(stderr);
+    progress_active = true;
+}
+
+static void progress_clear_line() {
+    if (!progress_active || !isatty(2)) return;
+    if (progress_lines == 2)
+        fprintf(stderr, "\r\x1b[K\x1b[1A\r\x1b[K");
+    else
+        fprintf(stderr, "\r\x1b[K");
+    fflush(stderr);
+    progress_active = false;
+    progress_lines = 0;
+}
 
 static void progress_draw(silver a, double frac) {
-    if (!isatty(2) || a->verbose) return;
+    if (!isatty(2)) return;
     if (frac < 0) frac = 0;
     if (frac > 1) frac = 1;
     static silver last_mod   = null;
@@ -1054,17 +1116,37 @@ static void progress_draw(silver a, double frac) {
     int used = full + (part ? 1 : 0);
     for (int i = used; i < width; i++) bar[o++] = ' ';
     bar[o] = 0;
-    fprintf(stderr, "\r\x1b[K%-12s %s %3d%%",
+    snprintf(progress_top, sizeof(progress_top), "%-12s %s %3d%%",
         a->name ? a->name->chars : "", bar, (int)(frac * 100.0));
-    fflush(stderr);
-    progress_active = true;
+    progress_render();
+}
+
+static void progress_command(symbol module, symbol phase, int percent,
+                             symbol detail, bool done) {
+    if (!isatty(2)) return;
+    if (done) {
+        progress_sub_active = false;
+        progress_sub[0] = 0;
+        progress_render();
+        return;
+    }
+    if (!module || !phase) return;
+    if (percent >= 0)
+        snprintf(progress_sub, sizeof(progress_sub), "  %-36s %3d%%",
+            module, percent);
+    else
+        snprintf(progress_sub, sizeof(progress_sub), "  %s",
+            module);
+    progress_sub_active = true;
+    progress_render();
 }
 
 static void progress_done(silver a) {
     if (!progress_active) return;
-    fprintf(stderr, "\r\x1b[K");
-    fflush(stderr);
-    progress_active = false;
+    progress_clear_line();
+    progress_top[0] = 0;
+    progress_sub[0] = 0;
+    progress_sub_active = false;
 }
 
 void silver_parse(silver a) {
@@ -2957,6 +3039,7 @@ AU_EXPORT void silver_init(silver a) {
             // it held leaves the importer waiting on them forever. a failed
             // one-shot build ends the process instead of hanging it
             if (a->is_external && is_once) {
+                progress_clear_line();
                 fprintf(stderr, "[%s] build failed\n",
                     a->name ? a->name->chars : "?");
                 fflush(stderr); fflush(stdout);
@@ -4357,6 +4440,14 @@ string read_alpha_macrofilter(silver a, bool is_decl) {
         }
     }
     mem_set:
+    if (!mem)
+        mem = lexical(a->lexical, cstring(n));
+    if (mem && mem->member_type == AU_MEMBER_MACRO) {
+        macro mac = u(macro, mem);
+        verify(mac, "unresolved macro: %o", mem);
+        if (mac->params && !next_is_paren)
+            mem = null;
+    }
     use_name = (is_decl || mem != null || next_is(a, ":"));
     pop_tokens(a, use_name);
     return use_name ? n : null;
@@ -7297,6 +7388,81 @@ static bool is_commit_hash(string n) {
 
 string command_run(command cmd, bool verbose);
 
+typedef struct checkout_progress_t {
+    string label;
+    bool   verbose;
+    char   line[4096];
+    int    len;
+    int    percent;
+} checkout_progress_t;
+
+static int checkout_line_percent(cstr s) {
+    cstr pct = strrchr(s, '%');
+    if (!pct) return -1;
+    cstr p = pct;
+    while (p > s && isspace((unsigned char)p[-1])) p--;
+    cstr end = p;
+    while (p > s && isdigit((unsigned char)p[-1])) p--;
+    if (p == end) return -1;
+    int res = atoi(p);
+    if (res < 0) res = 0;
+    if (res > 100) res = 100;
+    return res;
+}
+
+static void checkout_progress_line(checkout_progress_t* p) {
+    if (!p->len) return;
+    p->line[p->len] = 0;
+    int percent = checkout_line_percent(p->line);
+    if (percent >= 0 && percent != p->percent) {
+        p->percent = percent;
+        progress_command((symbol)p->label->chars, "checkout",
+            percent, null, false);
+    }
+}
+
+static bool checkout_output(void* ctx, cstr buf, ssize_t bytes) {
+    checkout_progress_t* p = (checkout_progress_t*)ctx;
+    if (p->verbose) {
+        progress_clear_line();
+        fwrite(buf, 1, (size_t)bytes, stdout);
+        fflush(stdout);
+        progress_render();
+        return true;
+    }
+    for (ssize_t i = 0; i < bytes; i++) {
+        char c = buf[i];
+        if (c == '\r' || c == '\n') {
+            checkout_progress_line(p);
+            p->len = 0;
+        } else if (p->len < (int)sizeof(p->line) - 1) {
+            p->line[p->len++] = c;
+        }
+    }
+    return true;
+}
+
+static int checkout_exec(silver a, string label,
+                         symbol phase, command cmd) {
+    checkout_progress_t p = {
+        .label = label,
+        .verbose = a->verbose,
+        .len = 0,
+        .percent = -1
+    };
+    progress_command((symbol)label->chars, phase, -1, null, false);
+    int rc = command_exec_hook(cmd, a->verbose, true, checkout_output, &p);
+    checkout_progress_line(&p);
+    progress_command((symbol)label->chars, phase, 0, null, true);
+    return rc;
+}
+
+static none checkout_verify(silver a, string label,
+                            symbol phase, symbol name, command cmd) {
+    int rc = checkout_exec(a, label, phase, cmd);
+    verify(rc == 0, "shell command failed: %s", name);
+}
+
 // >> commands patch the INSTALLED tree, so they belong to every path that
 // leaves the import satisfied — including the cached one, which returns
 // before the build ever runs
@@ -7311,7 +7477,7 @@ static none run_import_commands(silver a, array cmds, path in_dir) {
     cd(cw);
 }
 
-static none checkout(silver a, path uri, string commit, array prebuild, array postbuild, string conf, string env, string mod_sel) {
+static none checkout(silver a, path uri, string commit, array prebuild, array postbuild, string conf, string env, string mod_sel, string import_name) {
     // a dependency built for a device belongs to THAT platform: sharing the
     // native prefix would install a windows glfw over the linux one. the
     // SOURCE checkout stays shared — only build and install are per-platform
@@ -7326,9 +7492,10 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
     string  head9       = mid(s, 0, sl);
     num     sl2         = rindex_of(head9, "/");
     string  owner       = sl2 >= 0 ? mid(head9, sl2 + 1, len(head9) - sl2 - 1) : null;
+    string  label       = import_name ? import_name : name;
     // name every line this dependency's tools print; imports run
     // concurrently and their output would otherwise be unattributable
-    au_exec_prefix(cstring(name));
+    au_exec_prefix(cstring(label));
     path    project_f   = (owner && len(owner)) ?
           f(path, "%o/checkout/%o/%o", a->root_path, owner, name)
         : f(path, "%o/checkout/%o",    a->root_path, name);
@@ -7367,14 +7534,19 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
             project_f = src_path;
         } else {
             if (!commit) {
-                vexec(a->verbose, "clone", "git clone %o %o", uri, project_f);
+                checkout_verify(a, label, "clone", "clone",
+                    f(command, "git clone --progress %o %o",
+                        uri, project_f));
             } else if (is_commit_hash(commit)) {
-                vexec(a->verbose, "clone", "git clone %o %o", uri, project_f);
+                checkout_verify(a, label, "clone", "clone",
+                    f(command, "git clone --progress %o %o",
+                        uri, project_f));
                 vexec(a->verbose, "checkout", "git -C %o checkout %o", project_f, commit);
             } else {
-                vexec(a->verbose, "clone",
-                    "git clone --branch %o --single-branch %o %o",
-                    commit, uri, project_f);
+                checkout_verify(a, label, "clone", "clone",
+                    f(command,
+                        "git clone --progress --branch %o --single-branch %o %o",
+                        commit, uri, project_f));
             }
 
             // apply module-path diff if one exists (e.g. vulkan/MoltenVK.diff)
@@ -7470,8 +7642,10 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
     // (mbedtls -> framework) configures against empty dirs. done here, not at
     // clone, so a checkout left incomplete by an earlier run repairs itself
     if (dir_exists("%o/.git", project_f) || file_exists("%o/.git", project_f))
-        vexec(a->verbose, "submodule",
-              "git -C %o submodule update --init --recursive", project_f);
+        checkout_verify(a, label, "submodule", "submodule",
+            f(command,
+              "git -C %o submodule update --init --recursive --progress",
+              project_f));
 
     // this is the only place we 'cd' anywhere, where there are serial shell commands
     // however we go right back to where we were after
@@ -9515,6 +9689,7 @@ enode parse_import(silver a) {
     }
     
     string external_name = null;
+    string import_address = null;
     path   external_product = null;
     // a cross build's loadable copy: built for THIS machine, never linked
     path   host_product = null;
@@ -9600,6 +9775,19 @@ enode parse_import(silver a) {
     }
 
     if (project && !lib_path && !module_source) {
+        if (aa && bb && cc)
+            import_address = commit
+                ? f(string, "%o:%o:%o/%s", aa, bb, cc, commit->chars)
+                : f(string, "%o:%o:%o", aa, bb, cc);
+        else if (aa && bb)
+            import_address = commit
+                ? f(string, "%o:%o/%s", aa, bb, commit->chars)
+                : f(string, "%o:%o", aa, bb);
+        else if (aa)
+            import_address = commit
+                ? f(string, "%o/%s", aa, commit->chars)
+                : aa;
+
         string path_str = string();
         // cc is the module selector, never a blob path
         if (len(mpath) && !cc) {
@@ -9632,13 +9820,25 @@ enode parse_import(silver a) {
 
     validate(!cc || uri,
         "module selector %o: only valid on a git import", cc);
+    if (!external_name && !is_framework_import) {
+        if (project)
+            external_name = project;
+        else if (aa)
+            external_name = aa;
+        else if (first_include)
+            external_name = first_include;
+        else {
+            fault("no identity found for import");
+        }
+    }
     if (uri) {
         checkout(a, path(uri->chars), (string)commit,
                  import_build_commands(all_config, ">"),
                  import_build_commands(all_config, ">>"),
                  import_config(all_config),
                  import_env(all_config),
-                 cc);
+                 cc,
+                 import_address ? import_address : external_name);
         bool has_link = false;
         if (!a->frameworks)
             a->frameworks = hold(map(16));
@@ -9829,18 +10029,6 @@ enode parse_import(silver a) {
     }
 
     bool import_Au = !!external_name;
-
-    if (!external_name && !is_framework_import) {
-        if (project)
-            external_name = project;
-        else if (aa)
-            external_name = aa;
-        else if (first_include)
-            external_name = first_include;
-        else {
-            fault("no identity found for import");
-        }
-    }
 
     bool is_au_rt = !module_source || eq(ext(module_source), "ag");
     import mdl = import(
