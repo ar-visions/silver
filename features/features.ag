@@ -4,7 +4,7 @@ export 1.0.0                        # module version
 # setenv at module init — trinity exports VK_LAYER_PATH this way. it
 # lands after the expect tests run, so no test can observe it
 export FEATURES_MODE: 'test'
-export extensions [ '.feat' ]       # registry: install/export/features.agi
+export extensions [ '.feat' ]       # registry: export/silver-features.agi
 
 import <stdio.h>                    # C header, read by libclang
 import <string.h>
@@ -12,7 +12,7 @@ import <stdlib.h>
 import <ctype.h, limits.h>     # several headers in one line
 import <cpp.hpp>                    # C++ header: .hpp marks the unit
 import More                         # sibling .ag, headed extend
-import random as rnd                # module under a local name
+import random with RandomExtra as rnd   # add an extension, then alias
 
 # config import: a module's own members are its parameters, set here
 # by the importer and read-only inside the module
@@ -23,7 +23,7 @@ import fcfg
 # a single file by url: fetched once to install/imports, the file
 # itself IS the cache. > lines run after, with {import_file} set
 import https://raw.githubusercontent.com/ar-visions/silver/master/LICENSE
-    > cp {import_file} {install}/share/features/data/fetched.txt
+    > cp {import_file} {install}/share/silver-features/data/fetched.txt
 
 ifdef [ windows ]                   # platform-gated import
     import <posix.h>
@@ -47,16 +47,42 @@ scalar px : f32                     # name becomes a suffix: 200px
 scalar ms : i64                     # integer scalars reject floats
 scalar deg : f32
 
-# physical units, each its own type. a scalar takes a body where `a`
-# IS the value, but a cast RETURNING a scalar is broken today: the
-# body's result never reaches the return slot (see t_scalar_units)
 scalar mm   : f32
+    cast -> cm   [ a / 10.0 ]
+    cast -> inch [ a / 25.4 ]
+    cast -> ft   [ a / 304.8 ]
+    construct [ v: cm ]   [ v * 10.0 ]
+    construct [ v: inch ] [ v * 25.4 ]
+    construct [ v: ft ]   [ v * 304.8 ]
+
 scalar cm   : f32
+    cast -> mm   [ a * 10.0 ]
+    cast -> inch [ a / 2.54 ]
+    cast -> ft   [ a / 30.48 ]
+    construct [ v: mm ]   [ v / 10.0 ]
+    construct [ v: inch ] [ v * 2.54 ]
+    construct [ v: ft ]   [ v * 30.48 ]
+
 scalar inch : f32                   # `in` is a keyword
+    cast -> mm [ a * 25.4 ]
+    cast -> cm [ a * 2.54 ]
+    cast -> ft [ a / 12.0 ]
+    construct [ v: mm ] [ v / 25.4 ]
+    construct [ v: cm ] [ v / 2.54 ]
+    construct [ v: ft ] [ v * 12.0 ]
+
 scalar ft   : f32                   # 2.0ft, not 2.0f + a stray t
+    cast -> mm   [ a * 304.8 ]
+    cast -> cm   [ a * 30.48 ]
+    cast -> inch [ a * 12.0 ]
+    construct [ v: mm ]   [ v / 304.8 ]
+    construct [ v: cm ]   [ v / 30.48 ]
+    construct [ v: inch ] [ v / 12.0 ]
 
 alias ints    : vec i64             # alias names a compound type
 alias byname  : map i64 [ string ]  # bracketed type is the KEY
+alias FutureA : FutureB             # forward aliases resolve in passes
+alias FutureB : FuturePair
 
 struct v2                           # struct is an inlay value type
     x: f32
@@ -79,6 +105,15 @@ struct span2                        # same size as v2: bitcasts
     func width [] -> f32
         return hi - lo
 
+struct FuturePair                   # target of aliases above
+    x: i32
+
+class Before                        # record bodies resolve later types
+    public after : After
+
+class After
+    public value : i32
+
 class Counter                       # class is heap, ref-counted
     public  count  : i64            # readable outside, written in
     intern  hidden : i64            # module-private
@@ -89,13 +124,13 @@ class Counter                       # class is heap, ref-counted
     func init []                    # runs after props are set
         hidden = 7
 
-    func bump []
+    func inc []
         count += 1
 
-    func value [] -> i64
+    public func value [] -> i64
         return count
 
-    func peek_hidden [] -> i64
+    intern func peek_hidden [] -> i64
         return hidden
 
     func tally [] -> i64            # a static is shared by every instance
@@ -119,10 +154,11 @@ class Counter                       # class is heap, ref-counted
     # left = scalar on the left; only * / << >> have that slot
     operator left /  [ n: i64 ] -> i64 [ n / count ]
     operator left << [ n: i64 ] -> i64 [ n << count ]
+    operator left >> [ n: i64 ] -> i64 [ n >> count ]
 
 Counter Doubler                     # base name IS the keyword
-    func bump []
-        super.bump[]                # super reaches the base
+    func inc []
+        super.inc[]                # super reaches the base
         count += 1
 
     func value [] -> i64
@@ -130,11 +166,13 @@ Counter Doubler                     # base name IS the keyword
 
 class Boxed
     public data : vec i64 [ 8 ]     # heap buffer member
+    public last_op : i32
 
     getter [ i: i64 ] -> i64        # obj[ i ] read
         return data[ i ]
 
     setter [ i: i64, v: i64, op: i32 ]  # obj[ i ] = v
+        last_op = op
         data[ i ] = v
 
 class Named
@@ -207,6 +245,13 @@ intern func c_fill  [ @i32, i32, i32 ] -> none   # writes through a ref
 intern func cc_mul  [ i32, i32 ] -> i32          # features.cc
 intern func cc_pow2 [ i32 ] -> i32
 intern func cc_sum  [ @i32, i32 ] -> i32         # uses the C++ stdlib
+
+# Type-first arguments support unnamed C-style declarations.
+func type_only_arg [ i32 ] -> i32
+    return 7
+
+func type_void [] -> void
+    no-op
 
 func commaless [ p: px, m: ms, d: deg ] -> f32
     return 1.0
@@ -390,6 +435,34 @@ expect func t_types [] -> bool
     ok6: bool [ takes_any[ s ] ]
     return ok1 && ok2 && ok3 && ok4 && ok5 && ok6
 
+expect func t_forward_types [] -> bool
+    p: FutureA [ x: 9 ]
+    b: Before [ after: After [ value: 7 ] ]
+    return p.x == 9 && b.after.value == 7
+
+expect func t_c_type_spellings [] -> bool
+    a: signed [ -1 ]
+    b: unsigned [ 1 ]
+    c: signed char [ -2 ]
+    d: unsigned char [ 3 ]
+    e: signed short [ -4 ]
+    f: unsigned short [ 5 ]
+    g: signed int [ -6 ]
+    h: unsigned int [ 7 ]
+    i: signed long [ -8 ]
+    j: unsigned long [ 9 ]
+    k: signed long long [ -10 ]
+    l: unsigned long long [ 11 ]
+    m: float [ 1.5 ]
+    n: double [ 2.5 ]
+    o: struct v2 [ x: 3.0, y: 4.0 ]
+    type_void[]
+    return a == -1 && b == 1 && c == -2 && d == 3 &&
+           e == -4 && f == 5 && g == -6 && h == 7 &&
+           i == -8 && j == 9 && k == -10 && l == 11 &&
+           m == 1.5 && n == 2.5 && o.y == 4.0 &&
+           type_only_arg[ 1 ] == 7
+
 expect func t_null [] -> bool
     z: ref i32                      # typed null pointer
     fallback: 'world'
@@ -423,13 +496,24 @@ expect func t_scalars [] -> bool
     return r == 1.0 && r2 == 1.0
 
 expect func t_scalar_units [] -> bool
-    # a scalar is a distinct type carrying one number; arithmetic and
-    # comparison unwrap it, and each unit stays its own type
     d: 254mm
     h: 25.5cm                       # exact in binary: f32 == f64 holds
     i: 10.0inch                     # `in` is a keyword, so inches spell out
     v: 2.0ft
-    return d == 254mm && d != 253mm && h * 2.0 == 51.0 && d / 2.0 == 127.0 && i * 2.0 == 20.0 && v + 1.0 == 3.0
+    dc: cast cm [ d ]
+    im: cast mm [ i ]
+    vi: cast inch [ v ]
+    hf: cast ft [ h ]
+    dc_ctr: cm [ d ]
+    im_ctr: mm [ i ]
+    vi_ctr: inch [ v ]
+    hf_ctr: ft [ h ]
+    return d == 254mm && d != 253mm && h * 2.0 == 51.0 &&
+           d / 2.0 == 127.0 && i * 2.0 == 20.0 &&
+           v + 1.0 == 3.0 && dc == 25.4cm && im == 254mm &&
+           vi == 24inch && hf == 0.8366142ft &&
+           dc_ctr == dc && im_ctr == im && vi_ctr == vi &&
+           hf_ctr == hf
 
 expect func t_collections [] -> bool
     items: vec i64 [] [ 3, 5, 8 ]
@@ -523,8 +607,8 @@ expect func t_ref [] -> bool
 
 expect func t_class [] -> bool
     c: Counter [ count: 3, label: 'main' ]  # prop pairs
-    c.bump                          # zero-arg call, no brackets
-    c.bump*[]                       # * dispatches dynamically
+    c.inc                          # zero-arg call, no brackets
+    c.inc*[]                       # * dispatches dynamically
     t1: c + 5
     t2: c - 1
     t3: c * 2
@@ -537,14 +621,15 @@ expect func t_class [] -> bool
     t10: c >> 1
     t11: 20 / c                     # reverse slot: operator left
     t12: 1 << c
+    t13: 160 >> c
     n1: c.tally[]                   # static: shared across instances
     o: Counter [ count: 0 ]
     n2: o.tally[]
-    return c.value[] == 5 && c.peek_hidden[] == 7 && t1 == 10 && t2 == 4 && t3 == 10 && t4 == 1 && t5 == 2 && t6 == 7 && t7 == 4 && t8 == 4 && t9 == 10 && t10 == 2 && t11 == 4 && t12 == 32 && c.label == 'main' && n2 == n1 + 1
+    return c.value[] == 5 && c.peek_hidden[] == 7 && t1 == 10 && t2 == 4 && t3 == 10 && t4 == 1 && t5 == 2 && t6 == 7 && t7 == 4 && t8 == 4 && t9 == 10 && t10 == 2 && t11 == 4 && t12 == 32 && t13 == 5 && c.label == 'main' && n2 == n1 + 1
 
 expect func t_inherit [] -> bool
     d: Doubler [ count: 0 ]
-    d.bump
+    d.inc
     sq: Square [ ]
     tr: Tri [ ]
     h: Holder [ shape: sq ]
@@ -581,8 +666,11 @@ expect func t_construct [] -> bool
 expect func t_indexers [] -> bool
     bx: Boxed [ ]
     bx[ 2 ] = 44                    # runs the setter
+    assign_op: i32 [ bx.last_op ]
+    bx[ 2 ] += 3                    # setter receives the operator
+    add_op: i32 [ bx.last_op ]
     bx[ 3 ] = 7
-    return bx[ 2 ] == 44 && bx[ 3 ] == 7     # runs the getter
+    return bx[ 2 ] == 3 && bx[ 3 ] == 7 && add_op != assign_op
 
 expect func t_lambda [] -> bool
     base: i64 [ 100 ]
@@ -610,7 +698,7 @@ expect func t_lambda_ctx_drop [] -> bool
     return r == 2 && q == 2 && freed_ctx == 1 && reaped == 1 && grew < 2048
 
 # log prints under the object's binding stamp: the declaration that
-# constructed it names it 'Holder:ident'
+# constructed it names it 'owner-module:ident'
 class Chirper
     public tone : i32
 
@@ -632,7 +720,7 @@ expect func t_log [] -> bool
     s3: string [ c_log_last[ ] ]
     log 'sum {7 + 3}'               # free function: message, no stamp
     s4: string [ c_log_last[ ] ]
-    return s1 == 'features:b tone 7' && s2 == 'Nest:egg tone 3' &&
+    return s1 == 'silver-features:b tone 7' && s2 == 'Nest:egg tone 3' &&
            s3 == 'Nest:egg tone 5' && s4 == 'sum 10'
 
 # an inline lambda declares its args; everything else the body uses
@@ -702,7 +790,7 @@ expect func t_extend [] -> bool
 expect func t_import_as [] -> bool
     rng_seed[ 12345 ]               # from the random module
     v: u64 [ rng_next[] ]
-    return v != 0
+    return v != 0 && rng_extension_value[] == 42
 
 expect func t_cpp_templates [] -> bool
     pi: pairT<i32> [ a: 3, b: 4 ]   # sampled specialization
@@ -1309,6 +1397,17 @@ expect func t_attrib [] -> bool
             tone = c.tone
     return found == 1 && tone == 3
 
+# silver.c publishes the Au member-kind enum as constants.
+expect func t_member_kind_constants [] -> bool
+    return AU_MEMBER_NONE == 0 && AU_MEMBER_MODULE == 1 &&
+           AU_MEMBER_TYPE == 2 && AU_MEMBER_CONSTRUCT == 3 &&
+           AU_MEMBER_VAR == 4 && AU_MEMBER_FUNC == 5 &&
+           AU_MEMBER_OPERATOR == 6 && AU_MEMBER_CAST == 7 &&
+           AU_MEMBER_GETTER == 8 && AU_MEMBER_SETTER == 9 &&
+           AU_MEMBER_ENUMV == 10 && AU_MEMBER_OVERRIDE == 11 &&
+           AU_MEMBER_NAMESPACE == 12 && AU_MEMBER_DECL == 13 &&
+           AU_MEMBER_MACRO == 14
+
 abstract Shape Blob                 # abstract: a base that never runs as an app
 
 Blob Blobby
@@ -1336,6 +1435,64 @@ expect func t_inlay_arg [] -> bool
 expect func t_expect_expr [] -> bool
     ok: bool [ expect 1 == 1 ]      # expect in expression position
     return ok
+
+intern exception_finally_hits : i32
+
+func raise_feature [ message: string ] -> none
+    throw message
+
+expect func t_try_catch_finally [] -> bool
+    caught: string [ null ]
+    exception_finally_hits = 0
+    try
+        raise_feature[ 'boom' ]
+    catch [ message: string ]
+        caught = message
+    finally
+        exception_finally_hits += 1
+    return caught == 'boom' && exception_finally_hits == 1
+
+expect func t_try_normal_finally [] -> bool
+    value: i32 [ 0 ]
+    try
+        value = 2
+    finally
+        value += 3
+    return value == 5
+
+expect func t_try_finally_rethrow [] -> bool
+    caught: string [ null ]
+    finalized: bool [ false ]
+    try
+        try
+            raise_feature[ 'nested' ]
+        finally
+            finalized = true
+    catch [ message: string ]
+        caught = message
+    return caught == 'nested' && finalized
+
+expect func t_catch_throw_runs_finally [] -> bool
+    caught: string [ null ]
+    finalized: bool [ false ]
+    try
+        try
+            raise_feature[ 'first' ]
+        catch
+            raise_feature[ 'second' ]
+        finally
+            finalized = true
+    catch [ message: string ]
+        caught = message
+    return caught == 'second' && finalized
+
+expect func t_catch_without_finally [] -> bool
+    caught: bool [ false ]
+    try
+        raise_feature[ 'plain' ]
+    catch
+        caught = true
+    return caught
 
 
 
@@ -1373,6 +1530,14 @@ expect func t_loops_more [] -> bool
                 continue [ 1 ]      # continue the OUTER loop
             hits += 1
     return last == 'a' && hits == 3
+
+expect func t_two_part_for [] -> bool
+    i: i32 [ 0 ]
+    sum: i32 [ 0 ]
+    for [ i = 0, i < 4 ]            # init and condition only
+        sum += i
+        i += 1                      # the body advances the loop
+    return sum == 6
 
 expect func t_switch_int [] -> bool
     n: i32 [ 2 ]
@@ -1514,8 +1679,8 @@ expect func t_argv [] -> bool
     return w.depth == 4 && w.fast && string [ w.rom ] == 'game.rom'
 
 expect func t_export_registry [] -> bool
-    # export extensions [...] wrote install/export/features.agi at build
-    p: path '{path.path_install[]}/export/features.agi'
+    # The owner-qualified registry was written during build.
+    p: path '{path.path_install[]}/export/silver-features.agi'
     if [ !p.exists[] ] return false
     s: string p.load[ typeid[string], null ]
     return s.index_of[ '.feat' ] >= 0

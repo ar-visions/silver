@@ -20,8 +20,11 @@ enode e_convert_or_cast(aether a, etype output, enode input);
 
 etype etype_prep(aether, Au_t);
 enode aether_e_frameaddress(aether, enode);
+enode aether_e_try(aether, array, array, array, evar,
+    subprocedure, subprocedure, subprocedure);
 enode parse_statements(silver a);
 enode parse_statement(silver a);
+enode parse_try(silver a);
 void build_fn(silver a, efunc fmem, callback preamble, callback postamble);
 bool is_explicit_ref(enode);
 enode enode_ref(aether, enode, etype);
@@ -4767,6 +4770,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
 etype pointer(aether, Au);
 
 enode block_builder(silver, array, Au);
+enode catch_block_builder(silver, array, Au);
 
 etype shape_pointer(silver, Au, enode);
 
@@ -5622,6 +5626,86 @@ static void silver_listen_requery(silver a) {
     aether_listen_gate_store(ae, cond);
 }
 
+static void validate_try_block(silver a, array body) {
+    for (int i = 0; body && i < len(body); i++) {
+        token t = (token)body->origin[i];
+        if (eq(t, "return") || eq(t, "break") ||
+                eq(t, "continue"))
+            validate(false,
+                "%s is not supported inside try/catch/finally yet",
+                t->chars);
+    }
+}
+
+enode parse_try(silver a) { sequencer
+    validate(read_if(a, "try"), "expected try");
+    array try_tokens = read_body(a);
+    validate(try_tokens && len(try_tokens), "expected try body");
+    validate_try_block(a, try_tokens);
+
+    array catch_tokens = null;
+    array finally_tokens = null;
+    string catch_name = null;
+    if (read_if(a, "catch")) {
+        if (next_is(a, "[")) {
+            array spec = read_within(a);
+            push_tokens(a, (tokens)spec, 0);
+            catch_name = read_alpha(a);
+            validate(catch_name, "expected catch binding name");
+            validate(read_if(a, ":"),
+                "expected : after catch binding");
+            etype catch_type = read_etype(a, null);
+            validate(catch_type &&
+                canonical(catch_type)->autype == typeid(string),
+                "catch binding must be string");
+            validate(!peek(a), "unexpected catch binding token: %o",
+                peek(a));
+            pop_tokens(a, false);
+        }
+        catch_tokens = read_body(a);
+        validate(catch_tokens && len(catch_tokens),
+            "expected catch body");
+        validate_try_block(a, catch_tokens);
+    }
+    if (read_if(a, "finally")) {
+        finally_tokens = read_body(a);
+        validate(finally_tokens && len(finally_tokens),
+            "expected finally body");
+        validate_try_block(a, finally_tokens);
+    }
+    validate(catch_tokens || finally_tokens,
+        "try requires catch or finally");
+
+    evar catch_var = null;
+    statements catch_scope = null;
+    if (catch_name) {
+        catch_scope = new(statements, mod, (aether)a,
+            autype, def(top_scope(a), null,
+                AU_MEMBER_NAMESPACE, 0));
+        Au_t member = def_member(catch_scope->autype,
+            cstring(catch_name), typeid(string), AU_MEMBER_VAR, 0);
+        catch_var = evar(mod, (aether)a, autype, member,
+            loaded, false, is_local, true);
+        etype_register((aether)a, (Au)member,
+            (Au)catch_var, true);
+        etype_implement((etype)catch_var, false);
+    }
+
+    array catch_context = null;
+    if (catch_scope) {
+        catch_context = array(1);
+        push(catch_context, (Au)catch_scope);
+    }
+    subprocedure build_try = subproc(a, block_builder, null);
+    subprocedure build_catch = catch_scope ?
+        subproc(a, catch_block_builder, catch_context) :
+        subproc(a, block_builder, null);
+    subprocedure build_finally = subproc(a, block_builder, null);
+    return aether_e_try((aether)a, try_tokens, catch_tokens,
+        finally_tokens, catch_var, build_try, build_catch,
+        build_finally);
+}
+
 enode parse_statement(silver a)
 {
     sequencer
@@ -5704,6 +5788,12 @@ enode parse_statement(silver a)
     // standard statements first, only in context of functions
     if (f) {
         if (read_if(a, "no-op"))  return e_noop(a, null);
+        if (next_is(a, "try"))   return parse_try(a);
+        if (read_if(a, "throw")) {
+            enode msg = parse_expression(a, etypeid(string),
+                false, true);
+            return e_fault(a, msg);
+        }
         if (next_is(a, "return")) return parse_return (a);
         if (next_is(a, "break"))    return parse_break   (a);
         if (next_is(a, "continue")) return parse_continue(a);
@@ -9011,6 +9101,12 @@ static enode typed_expr(silver a, enode f, array expr) {
     } else if (peek_fields(a) || class_inherits((etype)f, etypeid(map))) {
         conv = false; // parse map will attempt to go direct
         r    = (enode)parse_object(a, (etype)evar_type((evar)f), true);
+    } else if (canonical((etype)f)->autype->is_scalar) {
+        etype scalar_type = canonical((etype)f);
+        etype value_type = u(etype, scalar_type->autype->src);
+        r = parse_expression(a, value_type, false, true);
+        r = e_create(a, scalar_type, (Au)r, false);
+        conv = false;
     } else if (is_struct(f)) {
         // positional struct construction: Type [ val, val, val ]
         conv = false;
@@ -10820,8 +10916,31 @@ void build_fn(silver a, efunc f, callback preamble, callback postamble) { sequen
             if (f->inline_return)
                 a->statement_origin = hold((token)f->inline_return->origin[0]);
             push_tokens(a, (tokens)f->inline_return, 0);
-            e_fn_return(a, len(f->inline_return) ? 
-                (Au)parse_expression(a, u(etype, f->autype->rtype), false, true) : null);
+            etype inline_type = u(etype, f->autype->rtype);
+            etype target_type = f->target ?
+                canonical((etype)f->target) : null;
+            bool scalar_ctr = f->autype->member_type ==
+                AU_MEMBER_CONSTRUCT && target_type &&
+                target_type->autype->is_scalar;
+            if (scalar_ctr) {
+                etype value_type = u(etype,
+                    target_type->autype->src);
+                enode value = parse_expression(a, value_type,
+                    false, true);
+                enode wrapped = e_create(a, target_type,
+                    (Au)value, false);
+                e_assign(a, (enode)f->target, (Au)wrapped,
+                    OPType__assign);
+                e_fn_return(a, null);
+            } else {
+                etype inline_parse_type = inline_type &&
+                    canonical(inline_type)->autype->is_scalar ?
+                    u(etype, canonical(inline_type)->autype->src) :
+                    inline_type;
+                e_fn_return(a, len(f->inline_return) ?
+                    (Au)parse_expression(a, inline_parse_type,
+                        false, true) : null);
+            }
             pop_tokens(a, false);
         }
         
@@ -10970,10 +11089,13 @@ enode parse_return(silver a) {
         (a->gather_fn->rtype ? u(etype, a->gather_fn->rtype) : null) :
         return_type(a);
     bool  is_v  = rtype ? is_void(rtype) : !a->gather_fn;
+    etype parse_type = rtype && canonical(rtype)->autype->is_scalar ?
+        u(etype, canonical(rtype)->autype->src) : rtype;
     efunc ctx   = context_func(a);
     consume(a, Syntax__keyword);
     a->expr_level++;
-    enode expr  = is_v ? null : parse_expression(a, rtype, false, true);
+    enode expr  = is_v ? null : parse_expression(a,
+        parse_type, false, true);
     a->expr_level--;
     if (a->gather_fn && !a->gather_fn->rtype && expr)
         a->gather_fn->rtype = canonical(expr)->autype;
@@ -11873,6 +11995,16 @@ enode block_builder(silver a, array block_tokens, Au unused) {
     last = parse_statements(a);
     pop_tokens(a, false);
     a->expr_level = level;
+    return last;
+}
+
+enode catch_block_builder(silver a, array block_tokens, Au context) {
+    array scopes = (array)context;
+    statements scope = scopes && len(scopes) ?
+        (statements)scopes->origin[0] : null;
+    if (scope) push_scope(a, (Au)scope, 42);
+    enode last = block_builder(a, block_tokens, null);
+    if (scope) pop_scope(a);
     return last;
 }
 

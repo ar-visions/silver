@@ -2482,6 +2482,58 @@ static __thread __error_t* Au_error_top = NULL;
 AU_EXPORT __error_t* au_error_top_get(void)       { return Au_error_top; }
 AU_EXPORT void       au_error_top_set(__error_t* f) { Au_error_top = f; }
 
+AU_EXPORT __error_t* au_error_frame_new(void) {
+    return calloc(1, sizeof(__error_t));
+}
+
+AU_EXPORT void* au_error_frame_env(__error_t* f) {
+    return f ? (void*)&f->env : null;
+}
+
+AU_EXPORT void au_error_frame_push(__error_t* f) {
+    if (!f) return;
+    f->prev = Au_error_top;
+    f->message = null;
+    f->tok = null;
+    Au_error_top = f;
+}
+
+AU_EXPORT void au_error_frame_pop(__error_t* f) {
+    if (f && Au_error_top == f)
+        Au_error_top = f->prev;
+}
+
+AU_EXPORT void au_error_frame_drop(__error_t* f) {
+    if (!f) return;
+    au_error_frame_pop(f);
+    free(f);
+}
+
+AU_EXPORT string au_error_frame_message(__error_t* f) {
+    return f ? f->message : null;
+}
+
+AU_EXPORT void au_error_raise(string msg, token tok) {
+    if (Au_error_top) {
+        Au_error_top->message = msg;
+        Au_error_top->tok = tok;
+        longjmp(Au_error_top->env, 1);
+    }
+    if (msg) puts(cstring(msg));
+    fflush(null);
+    abort();
+}
+
+AU_EXPORT void au_error_frame_rethrow(__error_t* f) {
+    if (!f) abort();
+    string msg = f->message;
+    token tok = f->tok;
+    __error_t* prev = f->prev;
+    if (Au_error_top == f) Au_error_top = prev;
+    free(f);
+    au_error_raise(msg, tok);
+}
+
 AU_EXPORT void halt(string msg, token tok) {
     if (!Au_error_top) {
 #ifndef NDEBUG

@@ -128,6 +128,14 @@ typedef struct __error_t {
 
 AU_EXPORT __error_t* au_error_top_get(void);
 AU_EXPORT void        au_error_top_set(__error_t*);
+AU_EXPORT __error_t* au_error_frame_new(void);
+AU_EXPORT void* au_error_frame_env(__error_t*);
+AU_EXPORT void au_error_frame_push(__error_t*);
+AU_EXPORT void au_error_frame_pop(__error_t*);
+AU_EXPORT void au_error_frame_drop(__error_t*);
+AU_EXPORT string au_error_frame_message(__error_t*);
+AU_EXPORT void au_error_frame_rethrow(__error_t*);
+AU_EXPORT void au_error_raise(string, token);
 
 #define attempt() \
     { \
