@@ -2635,7 +2635,10 @@ static void exec_write(cstr buf, ssize_t bytes) {
     }
 }
 
-AU_EXPORT int command_exec(command cmd, bool verbose) {
+typedef bool (*command_output_hook)(void*, cstr, ssize_t);
+
+AU_EXPORT int command_exec_hook(command cmd, bool verbose, bool merge_err,
+                                command_output_hook hook, void* ctx) {
     if (starts_with(cmd, "export ")) {
         string a = mid(cmd, 7, len(cmd) - 7);
         int i = index_of(a, "=");
@@ -2658,7 +2661,8 @@ AU_EXPORT int command_exec(command cmd, bool verbose) {
     // a prefixed command claims its whole output: popen captures stdout
     // only, so a tool writing to stderr (curl's meter, compiler warnings)
     // would print unattributed. merge it into the pipe we prefix
-    string merged = exec_prefix[0] ? form(string, "%o 2>&1", cmd) : null;
+    string merged = (exec_prefix[0] || merge_err) ?
+        form(string, "%o 2>&1", cmd) : null;
     FILE* p = popen(merged ? cstring(merged) : cstring(cmd), "r");
     if (!p) return -1;
 
@@ -2668,7 +2672,9 @@ AU_EXPORT int command_exec(command cmd, bool verbose) {
     ssize_t bytes;
     int     fd = fileno(p);
     while ((bytes = read(fd, buffer, sizeof(buffer))) > 0) {
-        exec_write(buffer, bytes);
+        bool handled = hook && hook(ctx, buffer, bytes);
+        if (!handled)
+            exec_write(buffer, bytes);
         fflush(stdout);
     }
     if (exec_len) { // a last line with no newline of its own
@@ -2681,6 +2687,10 @@ AU_EXPORT int command_exec(command cmd, bool verbose) {
     if (status == -1)      return -123456;
     if (WIFEXITED(status)) return WEXITSTATUS(status);
     return -128 - WTERMSIG(status);
+}
+
+AU_EXPORT int command_exec(command cmd, bool verbose) {
+    return command_exec_hook(cmd, verbose, false, null, null);
 }
 
 __thread ARef af       = null;
