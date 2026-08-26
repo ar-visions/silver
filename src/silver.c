@@ -2908,7 +2908,8 @@ AU_EXPORT void silver_init(silver a) {
             update_product = false;
     }
 
-    if (a->clean) update_product = true;
+    // an uninstall walks the imports for their ledgers: that is a parse
+    if (a->clean || a->uninstall) update_product = true;
     // the syntax map is a product too: cached runs must not leave a map
     // older than the source (the editor withholds stale coloring)
     if (!a->is_external && a->format && len(a->format)) {
@@ -9956,6 +9957,8 @@ enode parse_import(silver a) {
                  import_env(all_config),
                  cc,
                  import_address ? import_address : external_name);
+        // an uninstall walks the imports for their ledgers only
+        if (a->uninstall) return e_noop(a, null);
         bool has_link = false;
         if (!a->frameworks)
             a->frameworks = hold(map(16));
@@ -10037,6 +10040,8 @@ enode parse_import(silver a) {
                 }
                 g_import_with = with_exts;
                 // a prescanned import is already building: collect it
+                // a silver module import is shared: an uninstall leaves it be
+                if (a->uninstall) return e_noop(a, null);
                 silver external = with_exts ? null : bg_build_take(module);
                 if (!external) {
                     if (a->base_install) aether_overlay(a->install, a->base_install);
