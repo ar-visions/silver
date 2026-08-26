@@ -136,6 +136,7 @@ forward(evar)
     M(A,U,i, prop,     public,  Au_t,                     import_module) \
     M(A,U,i, prop,     intern,  array,                    import_inits) \
     M(A,U,i, prop,     public,  array,                    import_objects) \
+    M(A,U,i, prop,     public,  array,                    template_requests) \
     M(A,U,i, prop,     public,  Au_t,                     model_scope) \
     M(A,U,i, prop,     public,  Au_t,                     au_module) \
     M(A,U,i, prop,     public,  map,                      libs) \

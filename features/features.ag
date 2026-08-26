@@ -792,6 +792,23 @@ expect func t_import_as [] -> bool
     v: u64 [ rng_next[] ]
     return v != 0 && rng_extension_value[] == 42
 
+# lexical shadowing: the nearest declaration wins — locals may take the
+# names of module funcs, C imports, types, and import aliases; the one
+# forbidden clash is a member of your own enclosing class
+class ShadowHost
+    public abs : i32 [ 3 ]          # member named after a C function
+
+    func read [] -> i32
+        return abs                  # the field, not stdlib abs
+
+expect func t_shadowing [] -> bool
+    sum_pair: i64 [ 3 ]             # shadows the module func
+    puts:     i64 [ 2 ]             # shadows C stdio's puts
+    Color:    i64 [ 7 ]             # shadows the enum type
+    rnd:      i64 [ 9 ]             # shadows the import alias
+    h: ShadowHost [ ]
+    return sum_pair + puts + Color + rnd == 21 && h.read[] == 3
+
 expect func t_cpp_templates [] -> bool
     pi: pairT<i32> [ a: 3, b: 4 ]   # sampled specialization
     pf: pairT<f32> [ a: 0.5, b: 1.5 ]
@@ -805,6 +822,13 @@ expect func t_cpp_templates [] -> bool
     if [ si.out[] != 24 || sf.out[] != 4.5 ] return false
     du: duo<i32,f32> [ first: 2, second: 3.0 ]  # two type args
     return du.wide[] == 5
+
+# on-demand instantiation: cpp.hpp never instantiates pairT<i64> — the
+# token pre-scan requests it, and the import TU carries the instantiation
+expect func t_template_ondemand [] -> bool
+    p: pairT<i64> [ a: 40, b: 2 ]
+    s: scaled<i64,6> [ v: 7 ]
+    return p.sum[] == 42 && s.out[] == 42
 
 expect func t_cpp_objects [] -> bool
     bs: make_beast[]
