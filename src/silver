@@ -34,6 +34,7 @@ declare_class(Device)
     M(X, Y, i, prop,     intern,  string, listen_key) \
     M(X, Y, i, prop,     intern,  array,  listen_query) \
     M(X, Y, i, prop,     public,  bool,   clean) \
+    M(X, Y, i, prop,     public,  bool,   uninstall) \
     M(X, Y, i, prop,     public,  bool,   export) \
     M(X, Y, i, prop,     public,  bool,   link) \
     M(X, Y, i, prop,     public,  bool,   build) \

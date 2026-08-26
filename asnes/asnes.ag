@@ -292,7 +292,7 @@ element asnes : trinity
 	mutable chr_base       	: i32              # first tile of the grid
 	mutable ram_off        	: i32              # first byte of the ram dump
 	mutable obj_off        	: i32              # first OAM entry shown
-	mutable binds          	: snes_binds
+	mutable [ StatePersist ] binds : snes_binds
 	mutable bind_ix        	: i32              # button the wizard is asking for
 	mutable bnames         	: vec string       # wizard order
 	mutable bbits          	: vec i32          # pad1 bit per name in bnames
@@ -3714,35 +3714,17 @@ element asnes : trinity
 		smooth = true                              # [ true ] initializer doesn't apply on element publics
 		bnames = vec string [] [ 'Up', 'Down', 'Left', 'Right', 'A', 'B', 'X', 'Y', 'L', 'R', 'Select', 'Start' ]
 		bbits  = vec i32    [] [ 11, 10, 9, 8, 7, 15, 6, 14, 5, 4, 13, 12 ]
-		load_binds[]
+		load-persistent[ a ]
 		if [ bind ]
 			binds   = snes_binds [ ]
 			binds.buttons = map snes_bind [string] []
 			bind_ix = 0
-
-	func binds_path [] -> path
-		d : path.path_storage[ 'asnes' ]
-		if [ !d ] return null
-		return path '{d}/binds.agi'
 
 	func state_path [] -> path
 		d : path.path_storage[ 'asnes' ]
 		if [ !d ] return path '/tmp/asnes.state'
 		nm : string [ (rom) ? rom.filename[] : 'asnes' ]
 		return path '{d}/{nm}.state'
-
-	func load_binds []
-		p : binds_path[]
-		if [ !p || !p.exists[] ] return
-		txt : string [ p.load[ typeid[string], null ] ]
-		if [ !txt || txt.count == 0 ] return
-		binds = cast snes_binds [ Au.parse_agi[ typeid[ snes_binds ], txt.chars, null ] ]
-
-	func save_binds []
-		p : binds_path[]
-		if [ !p || !binds ] return
-		p.save[ Au.string_agi[ binds ], null ]
-		puts 'asnes: bindings written to {p}'
 
 	# store what the user just pressed and move to the next button
 	func bind_capture [ key: i32, pad: i32 ]
@@ -3753,7 +3735,7 @@ element asnes : trinity
 		binds.buttons[ bnames[ bind_ix ] ] = sb
 		bind_ix += 1
 		if [ bind_ix >= bnames.count ]
-			save_binds[]
+			save-persistent[]
 			bind = false
 
 	func bit_for_name [ nm: string ] -> i32

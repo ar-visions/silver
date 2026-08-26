@@ -1398,6 +1398,32 @@ expect func t_member_attribs [] -> bool
 class AttribHost
     attrib egg : Chirper [ tone: 3 ]    # a static object built at load
 
+class MemberMeta
+
+class MemberMetaHost
+    public [ MemberMeta ] value : i32
+
+    public [ MemberMeta ] func marked [] -> none
+        no-op
+
+struct MemberMetaStruct
+    [ MemberMeta ] value : i32
+
+    [ MemberMeta ] func marked [] -> none
+        no-op
+
+expect func t_member_meta [] -> bool
+    ct: Au_t [ typeid[ MemberMetaHost ] ]
+    st: Au_t [ typeid[ MemberMetaStruct ] ]
+    cf: Au.find_member[ ct, 'value', AU_MEMBER_VAR, 0, false ]
+    cm: Au.find_member[ ct, 'marked', AU_MEMBER_FUNC, 0, false ]
+    sf: Au.find_member[ st, 'value', AU_MEMBER_VAR, 0, false ]
+    sm: Au.find_member[ st, 'marked', AU_MEMBER_FUNC, 0, false ]
+    return cf.meta.m == typeid[ MemberMeta ] &&
+           cm.meta.m == typeid[ MemberMeta ] &&
+           sf.meta.m == typeid[ MemberMeta ] &&
+           sm.meta.m == typeid[ MemberMeta ]
+
 # attrib is declaration-time metadata: trinity reads shader bindings this way
 expect func t_attrib [] -> bool
     found: i32 [ 0 ]

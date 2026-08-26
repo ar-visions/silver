@@ -1,7 +1,7 @@
 # backdrop scenes: exported for any app to read in at runtime
 export 0.1.0
 export scenes ['Earth', 'Moon', 'Mars', 'Terra', 'MilkyWay', 'Titan', 'Europa', 'Enceladus', 'Uranus', 'Neptune', 'Pluto', 'Synthwave', 'Clouds']
-
+export dependencies ['orbiter']
 import vec
 import img
 import gltf

@@ -940,6 +940,12 @@ abstract live_app media_app
                         if [ val ] aa.set_property[ parts[1].chars, val ]
                         el ok = false
                     el ok = false
+                el [ cmd == 'state-store' ]
+                    if [ aa ] state_persist_store[ aa ]
+                    el ok = false
+                el [ cmd == 'state-load' ]
+                    if [ aa ] state_persist_load[ aa ]
+                    el ok = false
                 el [ cmd == 'text' && line.count > 5 ]
                     wn.ev.clear[]
                     wn.ev.key.text = line.mid[ 5, line.count - 5 ]
@@ -4034,6 +4040,61 @@ class offscreen
     public func frame []
         if [ w ] w.draw[]
 
+class StatePersist
+
+func state_persist_path [ target: Au ] -> path
+    if [ !target ] return null
+    ty : Au_t typeid[ target ]
+    dir : path path.path_storage[ ty.ident ]
+    if [ !dir ] return null
+    return path '{dir}/persist.agi'
+
+func state_persist_store [ target: Au ]
+    sp : state_persist_path[ target ]
+    if [ !sp ] return
+    values : map Au [string] []
+    for [ ty : typeid[ target ], ty != typeid[ Au ],
+        ty = ty.context ]
+        for [ i: i32 0, i < ty.members.count, i += 1 ]
+            mem : Au_t ty.members.origin[i]
+            if [ mem.member_type != AU_MEMBER_VAR ] continue
+            if [ mem.meta.m != typeid[ StatePersist ] ] continue
+            v8 : target.member_object[ mem ]
+            if [ v8 ] values[string[ mem.ident ]] = v8
+    sp.save[ Au.string_agi[ values ], null ]
+
+# a member is in the file when a top-level line names it: AF bits
+# only cover the public schema, and interns persist too
+func agi_has_key [ txt: string, ident: cstr ] -> bool
+    key : string '{ident}:'
+    at  : i32 [ 0 ]
+    while [ at < txt.count ]
+        end : i32 [ at ]
+        while [ end < txt.count && txt[ end ] != 10 ] end += 1
+        if [ end - at >= key.count && txt[ at ] != 9 ]
+            if [ txt.mid[ at, key.count ] == key ] return true
+        at = end + 1
+    return false
+
+func state_persist_load [ target: Au ]
+    sp : state_persist_path[ target ]
+    if [ !sp || !sp.exists[] ] return
+    txt : string [ sp.load[ typeid[string], null ] ]
+    if [ !txt || txt.count == 0 ] return
+    ty : Au_t typeid[ target ]
+    source : Au.new_object[ ty, null, null, false,
+        __FILE__, __LINE__, __SEQUENCE__ ]
+    Au.parse_agi[ null, txt.chars, source ]
+    for [ mt : ty, mt != typeid[ Au ], mt = mt.context ]
+        for [ i: i32 0, i < mt.members.count, i += 1 ]
+            mem : Au_t mt.members.origin[i]
+            if [ mem.member_type != AU_MEMBER_VAR ] continue
+            if [ mem.meta.m != typeid[ StatePersist ] ] continue
+            if [ !agi_has_key[ txt, mem.ident ] ] continue
+            v9 : source.member_object[ mem ]
+            # an empty block reads as null: never erase a live default
+            if [ v9 ] target.member_set[ mem, v9 ]
+
 abstract media_app trinity
     public root         : element
     public title        : string
@@ -4153,6 +4214,16 @@ abstract media_app trinity
 
 
 
+
+func save-persistent []
+    glfw : handle [ Au.live_window_get[] ]
+    if [ !glfw ] return
+    win : cast Window [ glfwGetWindowUserPointer[ glfw ] ]
+    if [ win && win.app_object ]
+        state_persist_store[ win.app_object ]
+
+func load-persistent [ target: Au ]
+    state_persist_load[ target ]
 
 # scrolling requires defined children Region
 Layer Children
