@@ -4639,6 +4639,13 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
             members (a->autype, im) {
                 if (!im->is_namespace || im->is_nameless) continue;
                 if (im->ident && eq(alpha, im->ident)) {
+                    // a nearer lexical member (local, arg, field) overrides the
+                    // import alias, and `name :` declares one — the namespace
+                    // path applies only when the alias is the nearest resolution
+                    Au_t nearest = lexical(a->lexical, cstring(alpha));
+                    if ((nearest && nearest != im) ||
+                        (next_is(a, ":") && a->expr_level == 0))
+                        break;
                     string module_name = alpha;
                     validate(read_if(a, "."), "expected . after module-name: %o", alpha);
                     alpha = read_alpha(a);
@@ -5846,6 +5853,64 @@ enode parse_try(silver a) { sequencer
         build_finally);
 }
 
+// C++ specializations exist only if the sampled TU instantiates them. scan
+// the raw token stream for Name<args> requests before include finalization
+// so the import TU can carry explicit instantiations for them — aclang
+// filters: the name must be a class template in that unit, and the
+// specialization must not already exist
+static void scan_template_requests(silver a) {
+    array  ts = (array)a->tokens;
+    aether e  = (aether)a;
+    for (int i = 1; ts && i + 2 < ts->count; i++) {
+        token id = (token)ts->origin[i];
+        token lt = (token)ts->origin[i + 1];
+        if (!isalpha(id->chars[0]) || !eq(lt, "<") || !lt->neighbor ||
+            id->literal || is_keyword((Au)id))
+            continue;
+        // qualified base: A::B<...> — fold in neighboring :: segments
+        string base = string(id->chars);
+        for (int b = i; b >= 2; b -= 2) {
+            token qs = (token)ts->origin[b - 1];
+            token qn = (token)ts->origin[b - 2];
+            if (!eq(qs, "::") || !qs->neighbor || !((token)ts->origin[b])->neighbor ||
+                !isalpha(qn->chars[0]))
+                break;
+            base = f(string, "%s::%o", qn->chars, base);
+        }
+        // args: idents or integer literals, comma separated — the key
+        // format matches spec_name (Name<a,b>) so registration lines up
+        string key = f(string, "%o<", base);
+        bool   ok  = false;
+        bool   arg = true;
+        for (int j = i + 2; j < ts->count; j++) {
+            token t = (token)ts->origin[j];
+            if (arg) {
+                if (isdigit(t->chars[0]))
+                    // decimal-normalize so the key matches spec_name output
+                    concat(key, f(string, "%i", (i32)strtoll(t->chars, null, 0)));
+                else if (isalpha(t->chars[0]))
+                    concat(key, (string)t);
+                else break;
+                arg = false;
+            } else if (eq(t, ",")) {
+                concat(key, string(","));
+                arg = true;
+            } else {
+                ok = eq(t, ">");
+                break;
+            }
+        }
+        if (!ok) continue;
+        concat(key, string(">"));
+        if (!e->template_requests)
+            e->template_requests = (array)hold((Au)array(alloc, 8));
+        bool dup = false;
+        each (e->template_requests, string, s)
+            if (eq(s, key->chars)) { dup = true; break; }
+        if (!dup) push(e->template_requests, (Au)key);
+    }
+}
+
 enode parse_statement(silver a)
 {
     sequencer
@@ -5919,6 +5984,7 @@ enode parse_statement(silver a)
             each (a->extensions, path, ep)
                 parse_extension(a, ep, false);
         }
+        scan_template_requests(a);
         aether_import_includes((aether)a);
         // NOTE: no format-cache body-skip here. sub-modules / sibling extension
         // files are parsed inline as part of THIS compilation (not dlopen'd), so
