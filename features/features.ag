@@ -830,6 +830,13 @@ expect func t_template_ondemand [] -> bool
     s: scaled<i64,6> [ v: 7 ]
     return p.sum[] == 42 && s.out[] == 42
 
+# a namespaced function template resolves flat the same way; the C++
+# `const T&` takes the address of a silver value. silver's own clamp[]
+# builtin is untouched — only the call form is the builtin
+expect func t_std_clamp [] -> bool
+    lo : i32 [ 1 ]
+    return std::clamp<i32>[ 7, lo, 3 ] == 3 && clamp[ 7, 1, 3 ] == 3
+
 expect func t_cpp_objects [] -> bool
     bs: make_beast[]
     wf: make_wolf[]

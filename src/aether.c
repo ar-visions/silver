@@ -4053,6 +4053,16 @@ enode aether_e_fn_call(aether a, efunc fn, array args, bool is_super, bool is_po
                             au_is_vector(au_arg_type((Au)conv->autype)) &&
                             !au_arg_type((Au)arg_mem)->is_class)
                         conv = e_convert_or_cast(a, arg_t, conv);
+                    // a value into a @T primitive param (C++ const T&): give it an address
+                    if (arg_mem->is_explicit_ref && conv && conv->loaded && _llvalue((enode)conv) &&
+                            is_prim(au_arg_type((Au)arg_mem)) && !au_arg_type((Au)arg_mem)->is_class &&
+                            LLVMGetTypeKind(LLVMTypeOf(_llvalue((enode)conv))) != LLVMPointerTypeKind) {
+                        etype et = u(etype, au_arg_type((Au)arg_mem));
+                        enode v  = enode_value(e_create(a, et, (Au)conv, false), true);
+                        LLVMValueRef slot = LLVMBuildAlloca(B, _lltype_slot(et), "ref_spill");
+                        LLVMBuildStore(B, _llvalue(v), slot);
+                        conv = with_value(slot, enode(mod, a, autype, arg_t->autype, loaded, true));
+                    }
                     if (arg_mem->is_inlay)
                         conv = enode_value(conv, true);
                     if (!conv->loaded && !arg_mem->is_explicit_ref && !arg_mem->is_pointer &&
@@ -4147,6 +4157,12 @@ enode aether_e_fn_call(aether a, efunc fn, array args, bool is_super, bool is_po
     LLVMValueRef R = LLVMBuildCall2(B, F, V, arg_values, index, is_void_ ? "" : call_seq);
     free(arg_values);
     free(arg_types);
+    // a C++ function returning `const T&` to a primitive: load the value
+    if (!is_void_ && fn->autype->is_explicit_ref && rtype_au && rtype_au->is_pointer &&
+            rtype_au->src && is_prim(rtype_au->src) && !rtype_au->src->is_class) {
+        rtype = u(etype, rtype_au->src);
+        R = LLVMBuildLoad2(B, _lltype_slot(rtype), R, "ref_ret");
+    }
 
     // the method's target type IS the return's meta_a (e.g. string.split
     // on a string returns array<string>; qq.split → result_meta_a = string).
