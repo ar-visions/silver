@@ -185,6 +185,7 @@ typedef void* LLVMValueRef;
 typedef struct meta_t_ {
     struct _Au_t*   a; // element/key type
     struct _Au*     b; // flexible: value type, shape, etc.
+    struct _Au_t*   m; // member annotation: `name [ Cls ] : T`
 } meta_t_;
 
 // this is the standard _Au_t declaration

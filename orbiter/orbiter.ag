@@ -1082,30 +1082,13 @@ func au_stdout_orig[] -> i32
 class file_state
     public args        : string
 
-# the states file is one 'states:' block — this is what string_agi writes
-class states_file
-    public states      : map orbiter_state [string]
+struct vec2i
+    x : i32
+    y : i32
 
-class orbiter_state
-    public files       : map file_state [string]
-    public tabs        : vec path
-    public panes       : vec path
-    # per pane: 'sel_line,sel_col,anchor_line,anchor_col'
-    public pane_sel    : vec string
-    # committed backdrop scene + status bar stepper indices
-    public scene       : string
-    public speed_ix    : i32
-    public orbit_ix    : i32
-    public angle_ix    : i32
-    public frost_ix    : i32
-    public docked      : vec path
-    public breakpoints : map string [string]
-    # the selected project/target name, restored on next launch.
-    public target      : string
-    # user width of the agent console pane, in pixels
-    public console_w   : i32
-    # user height of the run band under the editor, in pixels
-    public band_h      : i32
+class pane_state
+    public file      : path
+    public selection : vec2i
 
 class FileChg
     public adds : i32
@@ -1136,6 +1119,9 @@ element orbiter : trinity # implements compiler
     public width         : i32    [ 1888 ]
     public height        : i32    [ 888 ]
     public background    : string [ 'Background' ]
+    # the committed backdrop scene and each pane's file + caret
+    intern [ StatePersist ] scene       : string
+    intern [ StatePersist ] pane_states : vec pane_state
     # false keeps the scenes module out of the process entirely
     public show_scene    : bool   [ true ]
     public live_reload   : bool   [ true ]
@@ -1145,7 +1131,7 @@ element orbiter : trinity # implements compiler
     default module_args  : string
     intern resource      : string
     # per-source-file state, keyed by path; persisted with the session
-    public file_states   : map file_state [string]
+    public [ StatePersist ] file_states   : map file_state [string]
     public log           : string
     intern tee_started   : bool
     intern cap_fd        : i32 [ -1 ]
@@ -1185,14 +1171,13 @@ element orbiter : trinity # implements compiler
     intern orbit_app_pid  : i32 [ 0 ]
     intern orbit_oc       : string
     intern orbit_cc       : string
-    public states        : map orbiter_state [string]
     intern debuggers     : map dbg [string]
     intern debug_vars         : vec Au
     intern last_bp_count      : i32 [ -1 ]
     intern settings_mtime    : i64
     intern settings_check_ms : i64
-    public open_files       : vec path
-    public docked           : vec path
+    public [ StatePersist ] open_files       : vec path
+    public [ StatePersist ] docked           : vec path
     intern nav_dock_rows    : i32
     public editor_slots     : vec i32
     intern pane_console     : vec string
@@ -1209,9 +1194,9 @@ element orbiter : trinity # implements compiler
     intern cycle_count      : i32
     intern cycle_adding     : bool [ true ]
     intern nav_panes        : vec Navigate
-    intern console_w        : i32
+    intern [ StatePersist ] console_w        : i32
     intern console_w_save   : i32
-    intern band_h           : i32
+    intern [ StatePersist ] band_h           : i32
     intern band_h_save      : i32
     public show_instruments : bool
     # the variables panel — the other tab of the stack menu
@@ -1223,7 +1208,7 @@ element orbiter : trinity # implements compiler
     public config_side      : i32
     public active_panel  : string
     # commit hash the stacked diff view presents
-    public active_target : string
+    public [ StatePersist ] active_target : string
     intern fmt_watch  : map FmtWatch [string]
     # git snapshot: fetched by a thread, swapped in on the main thread.
     # refreshed on file save and otherwise every 60 seconds
@@ -1243,8 +1228,8 @@ element orbiter : trinity # implements compiler
     public find_text     : string
     public findbar_open  : bool
     public findbar_pane  : string
-    # restored caret/selection, applied once each editor loads
-    intern pending_sel   : vec string
+    # restored carets, applied after each editor loads
+    intern pending_sel   : vec vec2i
     # the status bar's center toggle: scene-only viewing
     public hide_ui       : bool
     public findbar_text  : string
@@ -1295,7 +1280,7 @@ element orbiter : trinity # implements compiler
     public grid_mode     : bool
     public browse_header_size : i32 [ 18 ]
     public browse_dir_size : i32 [ 16 ]
-    public breakpoints   : map string[string]
+    public [ StatePersist ] breakpoints   : map string[string]
     public code_font_size : i32 [ 19 ]
     # append LAST: member order sets AF bit indices
     public show_instr_col : bool
@@ -1318,13 +1303,13 @@ element orbiter : trinity # implements compiler
     intern scene_el      : element
     intern scene_el_nm   : string
     # index into speed_list[]; 0 is subtle, the default
-    intern speed_ix      : i32
+    intern [ StatePersist ] speed_ix      : i32
     # index into orbit_list[]; high-orbit is the default
-    intern orbit_ix      : i32 [ 1 ]
+    intern [ StatePersist ] orbit_ix      : i32 [ 1 ]
     # index into angle_list[]; flat-on is the default
-    intern angle_ix      : i32 [ 1 ]
+    intern [ StatePersist ] angle_ix      : i32 [ 1 ]
     # frost stage 0..2 (frost/blur/clear), pushed to ux.frost_mode
-    intern frost_ix      : i32
+    intern [ StatePersist ] frost_ix      : i32
     intern frost_dbg9    : i32 [ -9 ]
     intern frost_dbg8    : i32 [ -9 ]
 
@@ -1482,32 +1467,6 @@ element orbiter : trinity # implements compiler
     func cache_dir [] -> path
         return path.path_storage[ 'orbiter' ]
 
-    func states_path [] -> path
-        d : cache_dir[]
-        if [ !d ] return null
-        d.make_dir[]
-        return path '{d}/states.agi'
-
-    func workspace_key [] -> string
-        if [ !startup_path ] startup_path = path.path_startup[]
-        return string '{startup_path}'
-
-    func load_states []
-        sp : states_path[]
-        if [ !sp || !sp.exists[] ] return
-        txt : string [ sp.load[ typeid[string], null ] ]
-        if [ !txt || txt.count == 0 ] return
-        Au.parse_agi[ null, txt.chars, a ]
-
-    # reflection writes the whole tree; adding a state field is a declaration
-    # and nothing else. Au.parse_agi on load is the exact inverse
-    func save_states []
-        sp : states_path[]
-        if [ !sp || !states ] return
-        sf : states_file []
-        sf.states = states
-        sp.save[ Au.string_agi[ sf ], null ]
-
     # per-file state, created on first touch
     func fstate [ p: path ] -> file_state
         if [ !p ] return null
@@ -1525,94 +1484,44 @@ element orbiter : trinity # implements compiler
         return (fs && fs.args) ? fs.args : ''
 
     func save_session []
-        ws : workspace_key[]
-        if [ !ws || ws.count == 0 ] return
-        if [ !states ]
-			states = map orbiter_state [string] []
-        st : orbiter_state states[ws]
-        if [ !st ]
-            st = orbiter_state []
-            states[ws] = st
-        tabs : vec path []
-        for [ i: i32 0, i < open_files.count, i += 1 ]
-            if [ open_files[i] ] tabs.push[ open_files[i] ]
-        st.tabs        = tabs
-        panes : vec path []
-        sels9 : vec string []
+        panes : vec pane_state []
         for [ i: i32 0, i < editor_slots.count, i += 1 ]
             slot : i32 [ editor_slots[i] ]
             if [ slot >= 0 && slot < open_files.count && open_files[slot] ]
-                panes.push[ open_files[slot] ]
                 e9 : Editor pane_at[ i ]
-                sels9.push[ (e9) ? '{e9.sel_line},{e9.sel_col},{e9.anchor_line},{e9.anchor_col}' : '0,0,0,0' ]
-        st.panes       = panes
-        st.pane_sel    = sels9
-        st.scene       = scene_loaded[]
-        st.speed_ix    = speed_ix
-        st.orbit_ix    = orbit_ix
-        st.angle_ix    = angle_ix
-        st.frost_ix    = frost_ix
-        st.docked      = docked
-        st.breakpoints = breakpoints
-        st.target      = active_target
-        st.console_w   = console_w
-        st.band_h      = band_h
-        st.files       = file_states
-        save_states[]
+                sel9 : vec2i [ x: (e9) ? e9.sel_line : 0,
+                    y: (e9) ? e9.sel_col : 0 ]
+                panes.push[ pane_state [
+                    file: open_files[slot], selection: sel9 ] ]
+        pane_states = panes
+        scene       = scene_loaded[]
+        save-persistent[]
 
     func restore_session []
-        load_states[]
-        ws : workspace_key[]
-        if [ !states || !ws ] return
-        st : orbiter_state states[ws]
-        if [ !st ] return
-        console_w = st.console_w
-        band_h    = st.band_h
-        if [ st.files ] file_states = st.files
-        # reopen tabs (populates the open_files pool)
-        if [ st.tabs ]
-            for [ i: i32 0, i < st.tabs.count, i += 1 ]
-                p : path st.tabs[i]
-                if [ p ] file_slot[ p ]
-        # restore the pinned dock
-        if [ st.docked && st.docked.count > 0 ]
-            docked = vec path []
-            for [ i: i32 0, i < st.docked.count, i += 1 ]
-                p : path st.docked[i]
-                if [ p ] docked += p
-        if [ st.panes && st.panes.count > 0 ]
+        load-persistent[ a ]
+        if [ pane_states && pane_states.count > 0 ]
             editor_slots = vec i32 []
-            for [ i: i32 0, i < st.panes.count, i += 1 ]
-                p : path st.panes[i]
-                if [ p ] editor_slots += file_slot[ p ]
+            pending_sel = vec vec2i []
+            for [ i: i32 0, i < pane_states.count, i += 1 ]
+                ps9 : pane_state pane_states[i]
+                if [ ps9 && ps9.file ]
+                    editor_slots += file_slot[ ps9.file ]
+                    pending_sel += ps9.selection
             if [ editor_slots.count == 0 ] editor_slots += -1
             active_pane = 0
-            if [ st.pane_sel ] pending_sel = st.pane_sel
-
-        el [ st.tabs && open_files.count > 0 && editor_slots.count > 0 ]
+        el [ open_files.count > 0 && editor_slots.count > 0 ]
             editor_slots[0] = 0
-
-        if [ st.breakpoints && breakpoints ]
-            for [ cond: string, key: string ] in st.breakpoints
-                breakpoints[key] = cond
-            last_bp_count = breakpoints.count
-        # restore the selected project
-        if [ st.target && st.target.count > 0 ]
-            active_target = st.target
-        # restore the backdrop scene + stepper positions; an explicit
-        # --scene_load beats whatever the last session left behind
-        if [ st.scene && st.scene.count > 0 && (!scene_load || scene_load.count == 0) ]
-            scene_load = st.scene
+        if [ breakpoints ] last_bp_count = breakpoints.count
+        # an explicit --scene_load beats whatever the last session left behind
+        if [ scene && scene.count > 0 && (!scene_load || scene_load.count == 0) ]
+            scene_load = scene
             scene_load.hold[]
             sl9 : scene_list[]
             for [ i: i32 0, i < sl9.count, i += 1 ]
-                if [ sl9[i] == st.scene ] scene_ix = i
-        speed_ix = st.speed_ix
-        orbit_ix = st.orbit_ix
-        angle_ix = st.angle_ix
+                if [ sl9[i] == scene ] scene_ix = i
         # sessions saved when there were four stages can hold a 3, which
         # now wraps past clear and reads as frost
-        frost_ix = st.frost_ix % 3
+        frost_ix = frost_ix % 3
 
     func load_settings []
         sp  : agi_path[]
@@ -4807,18 +4716,12 @@ element orbiter : trinity # implements compiler
             if [ !e9 ] continue
             e9.check_disk[]
             if [ pending_sel && i9 < pending_sel.count ]
-                ps9 : string pending_sel[i9]
-                if [ ps9 && ps9.count > 0 && e9.lines && e9.lines.count > 1 ]
-                    pr9 : ps9.split[',']
-                    if [ pr9.count >= 4 ]
-                        l9  : i32 [ pr9[0].real_value[] ]
-                        c9  : i32 [ pr9[1].real_value[] ]
-                        al9 : i32 [ pr9[2].real_value[] ]
-                        ac9 : i32 [ pr9[3].real_value[] ]
-                        e9.sel_line    = clamp[ l9,  0, e9.lines.count - 1 ]
-                        e9.sel_col     = c9
-                        e9.anchor_line = clamp[ al9, 0, e9.lines.count - 1 ]
-                        e9.anchor_col  = ac9
-                        e9.ensure_caret_visible[]
-                    pending_sel[i9] = ''
-
+                ps9 : vec2i pending_sel[i9]
+                if [ ps9.x >= 0 && e9.lines && e9.lines.count > 1 ]
+                    l9 : i32 [ clamp[ ps9.x, 0, e9.lines.count - 1 ] ]
+                    e9.sel_line    = l9
+                    e9.sel_col     = ps9.y
+                    e9.anchor_line = l9
+                    e9.anchor_col  = ps9.y
+                    e9.ensure_caret_visible[]
+                    pending_sel[i9] = vec2i [ x: -1, y: -1 ]

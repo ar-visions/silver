@@ -3623,6 +3623,10 @@ Control Editor
         if [ ns9.compare[ ls9 ] != 0 ]
             view_name = ''
             close_app[]
+            sel_line    = -1
+            anchor_line = -1
+            anchor_col  = 0
+            dragging    = false
         loaded_src = src
         if [ !src ]
             mounted = null
