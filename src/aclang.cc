@@ -796,6 +796,7 @@ static void set_methods(CXXRecordDecl* cxx, ASTContext& ctx, aether e, Au_t rec)
 
 static std::string spec_name(ClassTemplateSpecializationDecl* spec,
                              ASTContext& ctx, aether e);
+static std::string fn_spec_name(FunctionDecl* fd, ASTContext& ctx, aether e);
 
 // names only, never create_class: std's template webs are cyclic
 static std::string type_arg_name(QualType qt, ASTContext& ctx, aether e) {
@@ -913,6 +914,15 @@ static Au_t create_fn(FunctionDecl* decl, ASTContext& ctx, aether e, std::string
     // Return type
     fn->rtype = map_clang_type(decl->getReturnType(), ctx, e, null);
     if (!fn->rtype) fn->rtype = au_lookup("none");
+    // `const T&` returned: the symbol hands back an address; the call
+    // loads through it so silver sees the value (std::clamp, std::min)
+    if (auto* rr = decl->getReturnType()->getAs<LValueReferenceType>()) {
+        QualType pe = rr->getPointeeType();
+        if (pe->isBuiltinType() || pe->isEnumeralType()) {
+            fn->traits |= AU_TRAIT_EXPLICIT_REF;
+            fn->is_explicit_ref = true;
+        }
+    }
     
     // Parameters
     for (unsigned i = 0; i < decl->getNumParams(); i++) {
@@ -924,10 +934,20 @@ static Au_t create_fn(FunctionDecl* decl, ASTContext& ctx, aether e, std::string
             param_name = "arg_" + std::to_string(i);
         }
         
+        // `const T&` to a primitive: silver passes the address of a value,
+        // the way its own `@T` args work
+        u64 arg_traits = AU_TRAIT_IS_C;
+        if (auto* lr = param_type->getAs<LValueReferenceType>()) {
+            QualType pe = lr->getPointeeType();
+            if (pe->isBuiltinType() || pe->isEnumeralType()) {
+                param_type = pe.getUnqualifiedType();
+                arg_traits |= AU_TRAIT_EXPLICIT_REF;
+            }
+        }
         Au_t mt = map_clang_type(param_type, ctx, e, null);
         if (!mt) continue;
         
-        Au_t arg = def(fn, param_name.c_str(), AU_MEMBER_VAR, AU_TRAIT_IS_C);
+        Au_t arg = def(fn, param_name.c_str(), AU_MEMBER_VAR, arg_traits);
         //arg->module = e->current_import->autype;
         arg->src = mt;
         micro_push((micro_*)&fn->args, (Au)arg);
@@ -1050,8 +1070,13 @@ public:
     
     bool VisitFunctionDecl(FunctionDecl* decl) {
         if (isa<CXXMethodDecl>(decl)) return true;
+        // the template pattern has no symbol; its specializations register
+        // flat under their args (std::clamp<i32>) like class specializations
+        if (decl->getDescribedFunctionTemplate()) return true;
         if (!decl->getNameAsString().empty()) {
-            create_fn(decl, ctx, e, get_name((NamedDecl*)decl));
+            std::string nm = decl->getTemplateSpecializationArgs()
+                ? fn_spec_name(decl, ctx, e) : get_name((NamedDecl*)decl);
+            create_fn(decl, ctx, e, nm);
         }
         return true;
     }
@@ -1693,6 +1718,59 @@ static void collect_class_templates(Decl* d,
             collect_class_templates(c, out);
 }
 
+static void collect_function_templates(Decl* d,
+        std::vector<FunctionTemplateDecl*>& out) {
+    if (auto* ftd = dyn_cast<FunctionTemplateDecl>(d))
+        out.push_back(ftd);
+    if (auto* ns = dyn_cast<NamespaceDecl>(d))
+        for (Decl* c : ns->decls())
+            collect_function_templates(c, out);
+    if (auto* ls = dyn_cast<LinkageSpecDecl>(d))
+        for (Decl* c : ls->decls())
+            collect_function_templates(c, out);
+}
+
+// a function specialization registers flat like a class one: std::clamp<i32>
+static std::string targs_string(const TemplateArgumentList& targs,
+                                ASTContext& ctx, aether e) {
+    std::string out = "<";
+    for (unsigned i = 0; i < targs.size(); i++) {
+        if (i) out += ",";
+        const TemplateArgument& ta = targs[i];
+        if (ta.getKind() == TemplateArgument::Type)
+            out += type_arg_name(ta.getAsType(), ctx, e);
+        else if (ta.getKind() == TemplateArgument::Integral)
+            out += std::to_string(ta.getAsIntegral().getSExtValue());
+        else
+            out += "?";
+    }
+    return out + ">";
+}
+
+static std::string fn_spec_name(FunctionDecl* fd, ASTContext& ctx, aether e) {
+    const TemplateArgumentList* targs = fd->getTemplateSpecializationArgs();
+    std::string out = get_name((NamedDecl*)fd);
+    return targs ? out + targs_string(*targs, ctx, e) : out;
+}
+
+// whole-word replace of a template parameter name by its argument spelling
+static std::string subst_param(const std::string& text, const std::string& name,
+                               const std::string& with) {
+    std::string out;
+    size_t i = 0;
+    while (i < text.size()) {
+        if (isalpha((unsigned char)text[i]) || text[i] == '_') {
+            size_t j = i;
+            while (j < text.size() && (isalnum((unsigned char)text[j]) || text[j] == '_')) j++;
+            std::string w = text.substr(i, j - i);
+            out += (w == name) ? with : w;
+            i = j;
+        } else
+            out += text[i++];
+    }
+    return out;
+}
+
 // silver arg idents → C++ spellings that map_builtin_type round-trips,
 // so the registered key equals the one read_named_model looks up
 static symbol cpp_spelling(const std::string& s) {
@@ -1718,10 +1796,14 @@ static void instantiate_requested(aether a, import_unit* u) {
     array reqs = a->template_requests;
     if (!reqs || !reqs->count || !u->ci) return;
     ASTContext& ctx = u->ci->getASTContext();
-    std::vector<ClassTemplateDecl*> tpls;
+    std::vector<ClassTemplateDecl*>    tpls;
+    std::vector<FunctionTemplateDecl*> ftpls;
     for (pending_item& it : u->items)
-        if (it.decl) collect_class_templates(it.decl, tpls);
-    if (tpls.empty()) return;
+        if (it.decl) {
+            collect_class_templates(it.decl, tpls);
+            collect_function_templates(it.decl, ftpls);
+        }
+    if (tpls.empty() && ftpls.empty()) return;
     std::string lines;
     for (int r = 0; r < reqs->count; r++) {
         std::string key = ((string)reqs->origin[r])->chars;
@@ -1731,12 +1813,19 @@ static void instantiate_requested(aether a, import_unit* u) {
         ClassTemplateDecl* ctd = null;
         for (auto* t : tpls)
             if (get_name(t) == base) { ctd = t; break; }
-        if (!ctd) continue;
-        bool have = false;
-        for (auto* spec : ctd->specializations())
-            if (spec_name(spec, ctx, a) == key) { have = true; break; }
-        if (have) continue;
+        std::vector<FunctionTemplateDecl*> fmatch;
+        if (!ctd)
+            for (auto* t : ftpls)
+                if (get_name(t) == base) fmatch.push_back(t);
+        if (!ctd && fmatch.empty()) continue;
+        if (ctd) {
+            bool have = false;
+            for (auto* spec : ctd->specializations())
+                if (spec_name(spec, ctx, a) == key) { have = true; break; }
+            if (have) continue;
+        }
         std::string cargs;
+        std::vector<std::string> argv;
         bool     ok    = true;
         unsigned nargs = 0;
         for (size_t p = lt + 1; p < key.size() - 1 && ok;) {
@@ -1746,18 +1835,57 @@ static void instantiate_requested(aether a, import_unit* u) {
             std::string arg = key.substr(p, end - p);
             symbol sp = cpp_spelling(arg);
             if (nargs) cargs += ",";
-            if (sp)                                       cargs += sp;
-            else if (arg.size() && isdigit((unsigned char)arg[0])) cargs += arg;
+            if (sp)                                       { cargs += sp; argv.push_back(sp); }
+            else if (arg.size() && isdigit((unsigned char)arg[0])) { cargs += arg; argv.push_back(arg); }
             else ok = false;
             nargs++;
             p = end + 1;
         }
-        TemplateParameterList* tp = ctd->getTemplateParameters();
-        if (!ok || nargs < tp->getMinRequiredArguments() || nargs > tp->size())
+        if (!ok) continue;
+        if (ctd) {
+            TemplateParameterList* tp = ctd->getTemplateParameters();
+            if (nargs < tp->getMinRequiredArguments() || nargs > tp->size())
+                continue;
+            lines += "template ";
+            lines += ctd->getTemplatedDecl()->getKindName().str();
+            lines += " " + base + "<" + cargs + ">;\n";
             continue;
-        lines += "template ";
-        lines += ctd->getTemplatedDecl()->getKindName().str();
-        lines += " " + base + "<" + cargs + ">;\n";
+        }
+        // function template: an explicit instantiation needs the signature —
+        // the pattern's text with each template parameter spelled as its arg.
+        // every overload the arity fits instantiates (std::clamp's comparator
+        // form needs a second arg, so a one-arg request leaves it alone)
+        std::vector<std::string> emitted;
+        for (auto* ftd : fmatch) {
+            TemplateParameterList* tp = ftd->getTemplateParameters();
+            if (nargs < tp->getMinRequiredArguments() || nargs > tp->size())
+                continue;
+            bool have = false;
+            for (auto* spec : ftd->specializations())
+                if (fn_spec_name(spec, ctx, a) == key) { have = true; break; }
+            if (have) continue;
+            FunctionDecl* fd = ftd->getTemplatedDecl();
+            auto spell = [&](QualType qt) {
+                std::string t = qt.getAsString();
+                for (unsigned i = 0; i < argv.size() && i < tp->size(); i++)
+                    t = subst_param(t, tp->getParam(i)->getNameAsString(), argv[i]);
+                return t;
+            };
+            std::string params;
+            for (unsigned i = 0; i < fd->getNumParams(); i++) {
+                if (i) params += ", ";
+                params += spell(fd->getParamDecl(i)->getType());
+            }
+            // a header redeclares a template (declaration + definition):
+            // one explicit instantiation per signature
+            std::string line = "template " + spell(fd->getReturnType()) + " " + base +
+                               "<" + cargs + ">(" + params + ");\n";
+            bool dup = false;
+            for (auto& e9 : emitted) if (e9 == line) { dup = true; break; }
+            if (dup) continue;
+            emitted.push_back(line);
+            lines += line;
+        }
     }
     if (lines.empty()) return;
     FILE* fp = fopen(u->c->chars, "a");

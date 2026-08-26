@@ -4604,6 +4604,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
     }
 
     bool is_super = false;
+    bool qualified = false;
     bool null_guard = false;
     string first_alpha = null;
     for (;!skip_member_check;) {
@@ -4624,6 +4625,47 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
         }
 
         if (!first_alpha) first_alpha = alpha;
+
+        // a::b<T> — sampled C++ registers flat (std::clamp<i32>): join the
+        // path and args into that key and resolve it as one name
+        if (first && alpha && next_is(a, "::")) {
+            push_current(a);
+            string key = f(string, "%o", alpha);
+            bool   ok  = true;
+            while (read_if(a, "::")) {
+                string seg = read_alpha(a);
+                if (!seg) { ok = false; break; }
+                concat(key, string("::"));
+                concat(key, seg);
+            }
+            if (ok && read_if(a, "<")) {
+                concat(key, string("<"));
+                for (;;) {
+                    string targ = read_alpha(a);
+                    if (targ) {
+                        Au_t targ_au = lexical(a->lexical, cstring(targ));
+                        if (!targ_au || targ_au->member_type != AU_MEMBER_TYPE) { ok = false; break; }
+                        concat(key, string(targ_au->ident));
+                    } else {
+                        i64* n = (i64*)read_literal(a, typeid(i64));
+                        if (!n) { ok = false; break; }
+                        concat(key, f(string, "%i", (i32)*n));
+                    }
+                    if (!read_if(a, ",")) break;
+                    concat(key, string(","));
+                }
+                if (ok) ok = read_if(a, ">") != null;
+                if (ok) concat(key, string(">"));
+            }
+            Au_t fa = ok ? lexical(a->lexical, cstring(key)) : null;
+            if (fa && is_func((Au)fa)) {
+                pop_tokens(a, true);
+                mem       = (enode)u(etype, fa);
+                alpha     = key;
+                qualified = true;
+            } else
+                pop_tokens(a, false);
+        }
 
         validate(!first || alpha || new_name,
             "[%i] expected member, found %o ", seq, peek(a) ? peek(a) : (token)string("[empty]"));
@@ -4666,7 +4708,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
         /// Lookup or resolve member
         if (!ns_found) {
             // we may only define our own members within our own space
-            if (first) {
+            if (first && !qualified) {
 
                 if (eq(alpha, "super")) { // take care now
                     validate(rec_top, "super only valid in class context");
@@ -4791,7 +4833,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
                     enode def = is_prim((Au)ct) ? e_default_value(a, ct)
                                                 : e_null(a, ct);
                     mem = e_ternary(a, cond, def, accessed);
-                } else {
+                } else if (!qualified) {
                     mem = access(mem, alpha);
                 }
             }
@@ -4936,6 +4978,17 @@ static enode scalar_suffix(silver a, enode res) {
     consume(a, Syntax__none); // consume the suffix token
     return e_create(a, scalar_type, (Au)res, false);
 }
+// a builtin is only its call form: a bare name is an identifier (a member
+// or local may be named abs, min, max, clamp)
+static bool read_builtin(silver a, cstr name) {
+    token nm = element(a, 0);
+    token br = element(a, 1);
+    if (!nm || !br || strcmp(nm->chars, name) != 0 || strcmp(br->chars, "[") != 0)
+        return false;
+    read_if(a, name);
+    return true;
+}
+
 
 enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { sequencer
 
@@ -5159,7 +5212,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
 
     // functional macros are only useful for these few built-in's outside of vtable stuff
     // theres no reason to implement actual macro keyword in silver until its simply a 'better solution in general'
-    if (read_if(a, "min")) {
+    if (read_builtin(a, "min")) {
         verify(read_if(a, "["), "expected [ after min");
         enode val_a = parse_expression(a, null, false, false);
         read_if(a, ",");
@@ -5168,7 +5221,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
         return e_min(a, val_a, val_b);
     }
 
-    if (read_if(a, "max")) {
+    if (read_builtin(a, "max")) {
         verify(read_if(a, "["), "expected [ after max");
         enode val_a = parse_expression(a, null, false, false);
         read_if(a, ",");
@@ -5219,7 +5272,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
         return aether_e_frameaddress((aether)a, lvl);
     }
 
-    if (read_if(a, "abs")) {
+    if (read_builtin(a, "abs")) {
         verify(read_if(a, "["), "expected [ after abs");
         enode val = parse_expression(a, null, false, true);
         verify(read_if(a, "]"), "expected ] after abs");
@@ -5228,7 +5281,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
         return e_ternary(a, cmp, neg, val);
     }
 
-    if (read_if(a, "clamp")) {
+    if (read_builtin(a, "clamp")) {
         verify(read_if(a, "["), "expected [ after clamp");
         enode val = parse_expression(a, null, false, false);
         read_if(a, ",");
@@ -5859,8 +5912,12 @@ enode parse_try(silver a) { sequencer
 // filters: the name must be a class template in that unit, and the
 // specialization must not already exist
 static void scan_template_requests(silver a) {
-    array  ts = (array)a->tokens;
+    // the module's own stream: inside an extension or import parse the
+    // live tokens are the pushed file, the root sits at the stack bottom
     aether e  = (aether)a;
+    array  ts = (e->stack && e->stack->count)
+              ? (array)((tokens_data)e->stack->origin[0])->tokens_list
+              : (array)a->tokens;
     for (int i = 1; ts && i + 2 < ts->count; i++) {
         token id = (token)ts->origin[i];
         token lt = (token)ts->origin[i + 1];
