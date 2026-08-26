@@ -1110,6 +1110,7 @@ AU_EXPORT Au_t find_member(Au_t mdl, symbol f, int member_type, u64 traits, bool
         if (!poly || mdl->context == mdl) break;
         mdl = mdl->context;
     } while (mdl);
+
     return null;
 }
 
@@ -1258,7 +1259,7 @@ static Au_t _push_arg(Au_t type, bool add_arg) {
     return au;
 }
 
-AU_EXPORT Au_t def_prop(Au_t context, symbol ident, Au_t type, u64 traits, u32 offset, u32 abi_size, ARef value, Au_t meta_a, Au meta_b, i32 index, i32 access, symbol source, i32 src_line) {
+AU_EXPORT Au_t def_prop(Au_t context, symbol ident, Au_t type, u64 traits, u32 offset, u32 abi_size, ARef value, Au_t meta_a, Au meta_b, i32 index, i32 access, symbol source, i32 src_line, Au_t meta_m) {
     Au_t prop = def(context, ident, AU_MEMBER_VAR, traits);
     prop->access_type = (interface)access;
     if (source) prop->source = cstr_copy((cstr)source);
@@ -1270,6 +1271,7 @@ AU_EXPORT Au_t def_prop(Au_t context, symbol ident, Au_t type, u64 traits, u32 o
     prop->value     = (object)value;
     prop->meta.a    = meta_a;
     prop->meta.b    = meta_b && !instanceof(meta_b, Au_t) ? hold(meta_b) : meta_b;
+    prop->meta.m    = meta_m;
     prop->af_index     = index; // AF-bit slot position (computed by the codegen)
     if (context && context->ident && ident &&
         strcmp(context->ident, "Option") == 0 && strcmp(ident, "selected") == 0)
@@ -1308,7 +1310,7 @@ AU_EXPORT Au_t def_meta(Au_t context, symbol ident, Au_t arg) {
 
 Au_t def_func(Au_t type, symbol ident, Au_t rtype, u32 member_type,
         u32 access_type, u32 operator_type, u64 traits, ARef value, symbol alt, i32 index,
-        Au_t meta_a, Au meta_b, symbol source, i32 src_line) {
+        Au_t meta_a, Au meta_b, symbol source, i32 src_line, Au_t meta_m) {
     Au_t func = def(type, ident, AU_MEMBER_TYPE, traits);
     if (source) func->source = cstr_copy((cstr)source);
     func->src_line      = src_line;
@@ -1320,6 +1322,7 @@ Au_t def_func(Au_t type, symbol ident, Au_t rtype, u32 member_type,
     func->alt           = alt ? cstr_copy((cstr)alt) : null;
     func->member_index         = index;
     func->meta.a        = meta_a;
+    func->meta.m = meta_m;
     func->meta.b        = meta_b;
     return func;
 }
@@ -2063,6 +2066,7 @@ AU_EXPORT none push_type(Au_t type, Au_t to_mod) {
         mt->typesize   = sizeof(meta_t);
         def_member(mt, "a", typeid(Au_t), AU_MEMBER_VAR, 0)->offset = offsetof(meta_t, a);
         def_member(mt, "b", typeid(Au),   AU_MEMBER_VAR, 0)->offset = offsetof(meta_t, b);
+        def_member(mt, "m", typeid(Au_t), AU_MEMBER_VAR, 0)->offset = offsetof(meta_t, m);
  
         Au_t required_bits = def_member(au_t, "required_bits",  typeid(u64), AU_MEMBER_VAR, 0);
         required_bits->elements = 4;
@@ -3322,12 +3326,18 @@ AU_EXPORT void alloc_validate() {
     }
 }
 
+static i64 vector_elem_stride(Au_t et);
+static u8* vector_inline(vector a);
 Au alloc(Au_t type, num count, shape shape_data, Au_t meta_a, Au meta_b, symbol source, i32 line, i32 seq) {
     sz map_sz = sizeof(map);
     sz _sz   = sizeof(struct _Au);
 
     sz alloc_count = shape_data ? shape_total(shape_data) : (count ? count : 1);
-    sz n_bytes = _sz + type->typesize * alloc_count;
+    // a vector's elements live inline after its struct: one allocation
+    Au_t velem = (meta_a && inherits(type, typeid(vector))) ? meta_a : null;
+    sz n_bytes = velem
+        ? _sz + ((type->typesize + 15) & ~15) + vector_elem_stride(velem) * alloc_count
+        : _sz + type->typesize * alloc_count;
     if (n_bytes == _sz)
         printf("alloc: WARNING typesize=0 type=%s _sz=%lld\n", type->ident, (long long)_sz);
     Au a = alloc_instance(type, n_bytes, true);
@@ -3787,7 +3797,9 @@ AU_EXPORT Au Au_set_property(Au a, symbol name, Au value) {
     if (!m) {
         return value;
     }
-    member_set(a, m, value);
+    // a struct has no ftable to dispatch through
+    if (type->is_struct) Au_member_set(a, m, value);
+    else                 member_set(a, m, value);
     return value;
 }
 
@@ -5133,7 +5145,7 @@ static void vector_grow(vector a, sz alloc) {
     u8*  data   = calloc(alloc, stride);
     if (prev && a->count > 0)
         memcpy(data, prev, a->count * stride);
-    if (prev) free(prev);
+    if (prev && prev != vector_inline(a)) free(prev);
     a->origin = (Au*)data;
     a->alloc  = alloc;
 }
@@ -6485,30 +6497,41 @@ static bool vector_managed(vector a) {
     return et && et->is_class && !et->is_c;
 }
 
-static i64 vector_stride(vector a) {
-    if (vector_managed(a)) return (i64)sizeof(none*);
-    Au_t et = vector_elem_type(a);
-    i64  sz = et ? (i64)et->typesize : 0;
+static i64 vector_elem_stride(Au_t et) {
+    if (et && et->is_class && !et->is_c) return (i64)sizeof(none*);
+    i64 sz = et ? (i64)et->typesize : 0;
     verify(sz > 0, "vector: element type %s has no size", et && et->ident ? et->ident : "?");
     return sz;
+}
+
+static i64 vector_stride(vector a) {
+    return vector_elem_stride(vector_elem_type(a));
+}
+
+// the element area alloc() placed right after the struct
+static u8* vector_inline(vector a) {
+    return (u8*)a + ((isa(a)->typesize + 15) & ~15);
 }
 
 AU_EXPORT none vector_init(vector a) {
     Au f = head(a);
     // a ctr (with_array) may have filled origin before init runs
-    if (!a->origin) a->count = 0;
     f->scalar  = vector_elem_type(a);
     f->data_shape = hold(a->data_shape);
     verify(f->scalar, "scalar not set");
+    if (!a->origin) {
+        // alloc() sized f->count elements inline: adopt them, no second alloc
+        a->count  = 0;
+        a->origin = (Au*)vector_inline(a);
+        a->alloc  = f->count > 0 ? f->count : 1;
+    }
     if (f->data_shape)
-        a->alloc = shape_total(f->data_shape);
-    if (a->alloc > 0)
-        vector_grow(a, a->alloc);
+        vector_grow(a, shape_total(f->data_shape));
 }
 
 AU_EXPORT none vector_dealloc(vector a) {
     vector_clear(a);
-    free(a->origin);
+    if (a->origin && (u8*)a->origin != vector_inline(a)) free(a->origin);
     a->origin = null;
 }
 
@@ -8455,7 +8478,9 @@ static Au parse_agi_block(cstr scan, int indent, Au_t schema, Au_t meta, cstr* r
         } else if (nx > indent) {
             bool arr_member = mem &&
                 (agi_type_is_array(mem->type) || agi_type_is_array(mem->src));
-            if (arr_member) {
+            bool vec_member = mem && !arr_member &&
+                (inherits(mem->type, typeid(vector)) || (mem->src && inherits(mem->src, typeid(vector))));
+            if (arr_member || vec_member) {
                 // keyed blocks -> array elements (string_agi emits items keyed
                 // by their name/ident); insertion order is the array order
                 Au_t elem = mem->meta.b ? (Au_t)mem->meta.b : mem->meta.a;
@@ -8473,7 +8498,13 @@ static Au parse_agi_block(cstr scan, int indent, Au_t schema, Au_t meta, cstr* r
                     }
                     push(arr, e);
                 }
-                value = (Au)arr;
+                if (vec_member) {
+                    // the same keyed blocks land in a vector for a `vec T` member
+                    vector vv = vector_of(elem);
+                    each(arr, Au, e) vector_push(vv, e);
+                    value = (Au)vv;
+                } else
+                    value = (Au)arr;
                 scan  = brem;
             } else {
                 // nested block — the rest of the line (if any) names the Type. always
@@ -8744,6 +8775,11 @@ static none agi_write_key(string res, string k) {
 
 // key already written (no colon); writes ": value\n" or a typed nested block
 static none agi_write_entry(string res, Au v, int indent, int depth) {
+    // an unset member is an empty block; the reader lands it as null
+    if (!v) {
+        append(res, ":\n");
+        return;
+    }
     if (depth > 12) {
         append(res, ": ");
         concat(res, json(v));

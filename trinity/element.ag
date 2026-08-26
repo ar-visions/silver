@@ -113,6 +113,8 @@ ielement element
     public  shot_frame      : i32 [ 60 ]
     public  attach          : path
     public  text_mode       : bool [ false ]
+    # --hidden: the window is never shown; the socket still serves
+    public  hidden          : bool
     mutable layers          : map Layer[string]
     mutable shaders         : map shader  [string]
     #mutable bindings        : map ModelBind[string]

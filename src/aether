@@ -126,6 +126,7 @@ forward(evar)
     M(A,U,i, prop,     public,  bool,                     strip_expect) \
     M(A,U,i, prop,     public,  bool,                     debug) \
     M(A,U,i, prop,     public,  bool,                     asan) \
+    M(A,U,i, prop,     public,  enode,                    alloc_count) \
     M(A,U,i, prop,     public,  bool,                     coverage) \
     M(A,U,i, prop,     public,  bool,                     timing) \
     M(A,U,i, prop,     public,  i32,                      next_func_id) \

@@ -6384,8 +6384,11 @@ AU_EXPORT enode aether_e_alloc(aether a, etype mdl, bool no_pool) {
             AU_MEMBER_FUNC, 0, false));
     enode n_src; Au n_line, n_seq;
     alloc_origin_args(a, &n_src, &n_line, &n_seq);
+    // a sized vec hands its count in so the elements land inline
+    Au cnt = a->alloc_count ? (Au)a->alloc_count : (Au)_i32(0);
+    a->alloc_count = null;
     array alloc_args = a(
-        e_typeid(a, mdl), _i32(0), e_null(a, etypeid(shape)),
+        e_typeid(a, mdl), cnt, e_null(a, etypeid(shape)),
         e_meta_a_node(a, mdl->meta_a), e_meta_b_node(a, mdl->meta_b),
         (Au)n_src, n_line, n_seq );
     if (stamped) {
@@ -10139,7 +10142,8 @@ AU_EXPORT none aether_build_module_initializer(aether a, enode init) {
                 mem->meta.a ? e_typeid(a, u(etype, mem->meta.a)) : e_null(a, etypeid(Au_t)),
                 mem->meta.b ? e_typeid(a, u(etype, (Au_t)mem->meta.b)) : e_null(a, etypeid(Au)),
                 mem->source ? (Au)const_string(chars, mem->source) : (Au)e_null(a, etypeid(symbol)),
-                _i32(mem->src_line)
+                _i32(mem->src_line),
+                mem->meta.m ? e_typeid(a, u(etype, mem->meta.m)) : e_null(a, etypeid(Au_t))
             ), false, false);
 
             arg_list(mem, arg) {
@@ -10191,7 +10195,8 @@ AU_EXPORT none aether_build_module_initializer(aether a, enode init) {
                 _i32(fbits_index(mem->context, mem) + 1), // AF-bit slot (1-based; 0=unset)
                 _i32(mem->access_type),
                 mem->source ? (Au)const_string(chars, mem->source) : (Au)e_null(a, etypeid(symbol)),
-                _i32(mem->src_line)
+                _i32(mem->src_line),
+                mem->meta.m ? e_typeid(a, u(etype, mem->meta.m)) : e_null(a, etypeid(Au_t))
             ), false, false);
         }
     }
@@ -10299,8 +10304,9 @@ AU_EXPORT none aether_build_module_initializer(aether a, enode init) {
         if (!tau->is_c)
         members(tau, mem) {
             // interns register; skip system types, remote C types, and
-            // those without an id (nothing refcounted to drop in them)
-            if (mem->access_type == interface_intern &&
+            // those without an id (nothing refcounted to drop in them).
+            // an annotated member always registers: the meta IS its use
+            if (mem->access_type == interface_intern && !mem->meta.m &&
                 (mem->member_type != AU_MEMBER_VAR ||
                  !mem->src || !mem->src->ident || mem->src->is_system ||
                  mem->src->is_c || !mem->src->is_class))
@@ -10327,7 +10333,8 @@ AU_EXPORT none aether_build_module_initializer(aether a, enode init) {
                     mem->meta.a ? e_typeid(a, u(etype, mem->meta.a)) : e_null(a, etypeid(Au_t)),
                     mem->meta.b ? e_typeid(a, u(etype, (Au_t)mem->meta.b)) : e_null(a, etypeid(Au)),
                     mem->source ? (Au)const_string(chars, mem->source) : (Au)e_null(a, etypeid(symbol)),
-                    _i32(mem->src_line)
+                    _i32(mem->src_line),
+                    mem->meta.m ? e_typeid(a, u(etype, mem->meta.m)) : e_null(a, etypeid(Au_t))
                 ), false, false);
 
                 // structs have no vtable — skip function pointer slot assignment
@@ -10423,7 +10430,8 @@ AU_EXPORT none aether_build_module_initializer(aether a, enode init) {
                     _i32(fbits_index(mem->context, mem) + 1), // AF-bit slot (1-based; 0=unset)
                     _i32(mem->access_type),
                     mem->source ? (Au)const_string(chars, mem->source) : (Au)e_null(a, etypeid(symbol)),
-                    _i32(mem->src_line)
+                    _i32(mem->src_line),
+                    mem->meta.m ? e_typeid(a, u(etype, mem->meta.m)) : e_null(a, etypeid(Au_t))
                 ), false, false);
             } else if (mem->member_type == AU_MEMBER_ENUMV) {
                 static int seq = 0;

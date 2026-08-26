@@ -39,6 +39,7 @@ void aether_listen_gate_create(aether);
 void aether_listen_gate_store(aether, enode);
 etype evar_type(evar a);
 enode parse_import(silver a);
+static void uninstall_products(silver a);
 static symbol platform_triple(silver a);
 static bool   platform_is_windows(silver a);
 static string target_dir(silver a);
@@ -2177,6 +2178,63 @@ static void device_debug(silver a) {
     _exit(1);
 }
 
+// a module that exports `dependencies [ 'app' ]` plugs into that app at
+// runtime (the export registry names it, nothing imports it), so the app's
+// build carries it: built here as an external of this instance, the way an
+// import is, and silver's cache returns at once when it is current
+static void build_dependents(silver a) {
+    if (a->is_external || a->target) return;
+    path edir = f(path, "%o/export", a->install);
+    DIR* d = opendir(edir->chars);
+    if (!d) return;
+    string tag = f(string, "'%o'", a->name);
+    struct dirent* e;
+    while ((e = readdir(d))) {
+        char* ext = strrchr(e->d_name, '.');
+        if (!ext || strcmp(ext, ".agi") != 0) continue;
+        path   ef  = f(path, "%o/%s", edir, e->d_name);
+        string txt = (string)load(ef, typeid(string), null);
+        if (!txt) continue;
+        char* ln = strstr(txt->chars, "dependencies:");
+        if (!ln || (ln != txt->chars && ln[-1] != '\n')) continue;
+        char* eol = strchr(ln, '\n');
+        if (eol) *eol = 0;
+        if (!strstr(ln, tag->chars)) continue;
+        // registry stem is owner-qualified (silver-scenes); the module dir is the tail
+        char stem[256];
+        snprintf(stem, sizeof(stem), "%.*s", (int)(ext - e->d_name), e->d_name);
+        char* dash = strchr(stem, '-');
+        cstr nm = dash ? dash + 1 : stem;
+        path mdir = f(path, "%o/%s", a->src_loc, nm);
+        if (!dir_exists("%o", mdir)) continue;
+        silver dep = silver(module, mdir, breakpoint, a->breakpoint,
+            verbose, a->verbose, is_external, a, is_child, a, release, a->release,
+            clean, a->clean, format, a->format,
+            debug_type, a->debug_type, debugmember, a->debugmember);
+        if (dep && dep->error) a->error = true;
+    }
+    closedir(d);
+}
+
+// --uninstall: everything the build wrote for this module goes — products,
+// registry, share, syntax map. the imports were walked first, each dep
+// removing itself by its manifest, so this is the last step before exit
+static void uninstall_products(silver a) {
+    string install_name = silver_install_name(a);
+    exec(a->verbose,
+        "rm -rf %o/lib%o.so %o/%o.artifacts %o/%o.product %o/%o.source "
+        "%o/%o.o %o/%o.o.core*.o %o/%o.bc %o/%o.ll %o/%o "
+        "%o/export/%o.agi %o/share/%o %o/share/%o %o/syntax/%o.f",
+        a->build_dir, install_name, a->build_dir, install_name,
+        a->build_dir, install_name, a->build_dir, install_name,
+        a->build_dir, a->name, a->build_dir, a->name,
+        a->build_dir, a->name, a->build_dir, a->name, a->build_dir, a->name,
+        a->install, install_name, a->install, install_name,
+        a->install, a->name, a->install, a->name);
+    print("[%o] uninstalled", a->name);
+    exit(0);
+}
+
 static void silver_live_run(silver a) {
     // a failed build must NOT launch (or relaunch) the app. execvp'ing the host on an
     // error makes the host re-trigger `silver <app>`, which fails and re-execs — the
@@ -2189,6 +2247,7 @@ static void silver_live_run(silver a) {
             print("[%o] not launching: the build reported an error", a->name);
         return;
     }
+    build_dependents(a);
     // --lldb goes straight into a session, here or on the device. it execs
     // into lldb, so returning at all means it could not start one
     if (a->lldb && !a->is_external && !a->build) {
@@ -3566,10 +3625,25 @@ static array read_initializer(silver a) { sequencer
     if  (!n || eq(n, "asm")) return null;
     token prev = element(a, -1);
     token p    = a->statement_origin ? a->statement_origin : prev;
+    bool member_meta = false;
+    if (eq(n, "[") && n->line > p->line &&
+        n->indent == p->indent && is_rec(top_scope(a))) {
+        int depth = 0;
+        for (int i = 0; ; i++) {
+            token t = element(a, i);
+            if (!t) break;
+            if (eq(t, "[")) depth++;
+            if (eq(t, "]") && --depth == 0) {
+                token tail = element(a, i + 1);
+                member_meta = tail && tail->line == n->line;
+                break;
+            }
+        }
+    }
 
     // when [ follows a token on the same line, it's always a bracket expr
     // (use prev, not statement_origin, to detect inline [ after type/func names)
-    if (eq(n, "[") && ((prev && n->line == prev->line) || n->line == p->line || (n->line > p->line && n->indent == p->indent))) {
+    if (!member_meta && eq(n, "[") && ((prev && n->line == prev->line) || n->line == p->line || (n->line > p->line && n->indent == p->indent))) {
         consume(a, Syntax__none);
         int depth = 1; // inner expr signals depth 1, and a bracket does too.  we need both together sometimes, as in inner expression that has parens
         push(body, (Au)token("["));
@@ -5288,22 +5362,22 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
         // its element count and origin is the raw memory C code takes
         Au_t  selem = (mdl_c ? mdl_c : mdl)->autype;
         etype spt   = vector_etype(a, selem);
+        enode total;
+        if (sh)
+            total = e_operand(a, _i64(shape_total(sh)), etypeid(i64));
+        else if (canonical(esize) && canonical(esize)->autype == typeid(shape)) {
+            efunc f_tot = (efunc)u(efunc, find_member(typeid(shape), "total",
+                AU_MEMBER_FUNC, 0, false));
+            total = e_fn_call(a, f_tot, a(esize), false, false);
+        } else
+            total = e_create(a, etypeid(i64), (Au)esize, false);
+        // the count rides into alloc_new: elements sit inline, one allocation
+        if (!a->no_build) ((aether)a)->alloc_count = total;
         enode vec   = e_create(a, spt, null, false);
         vec->meta_a = (Au)selem;
-        {
-            enode total;
-            if (sh)
-                total = e_operand(a, _i64(shape_total(sh)), etypeid(i64));
-            else if (canonical(esize) && canonical(esize)->autype == typeid(shape)) {
-                efunc f_tot = (efunc)u(efunc, find_member(typeid(shape), "total",
-                    AU_MEMBER_FUNC, 0, false));
-                total = e_fn_call(a, f_tot, a(esize), false, false);
-            } else
-                total = e_create(a, etypeid(i64), (Au)esize, false);
-            efunc f_rs  = (efunc)u(efunc, find_member(typeid(vector), "resize",
-                AU_MEMBER_FUNC, 0, true));
-            e_fn_call(a, f_rs, a(vec, total), false, false);
-        }
+        efunc f_rs  = (efunc)u(efunc, find_member(typeid(vector), "resize",
+            AU_MEMBER_FUNC, 0, true));
+        e_fn_call(a, f_rs, a(vec, total), false, false);
 
         /// parse optional constant data: vec i32[4x4] [ 1 2 3 4, 1 1 1 1, ... ]
         if (read_if(a, "[")) {
@@ -5833,6 +5907,7 @@ enode parse_statement(silver a)
 
     if (!a->processed_imports && !next_is(a, "export") && !next_is(a, "import") && !next_is(a, "extend") && !next_is(a, "ifdef") && !next_is(a, "ifndef")) {
         a->processed_imports = true;
+        if (a->uninstall && !a->is_external) uninstall_products(a);
         // `import M with ext…`: the ext files were handed to THIS module's build via
         // the `extensions` list. now that our own imports are resolved, fold each one in
         // (its own imports + `extend M` + members) BEFORE include finalization so their
@@ -5959,6 +6034,15 @@ enode parse_statement(silver a)
     }
     validate(!(has_access && rec_top && is_struct(rec_top)),
         "access levels are not applicable to struct members");
+
+    etype member_meta = null;
+    if (rec_top && read_if(a, "[")) {
+        member_meta = read_etype(a, null);
+        validate(member_meta && is_class(member_meta),
+            "expected class type for member meta A");
+        validate(read_if(a, "]"),
+            "expected ] after member meta A");
+    }
 
     //print_tokens(a, seq);
 
@@ -6309,6 +6393,13 @@ enode parse_statement(silver a)
         
     } else {
         validate(!is_cast, "expected type after cast keyword");
+    }
+
+    if (member_meta) {
+        validate(mem && (def_func ||
+            mem->autype->member_type == AU_MEMBER_VAR),
+            "member meta A applies only to fields and functions");
+        mem->autype->meta.m = member_meta->autype;
     }
 
     pop_tokens(a, e != null); // if its a type, we consume the tokens, otherwise we let read_enode handle it
@@ -7557,6 +7648,30 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
                     : f(path, "%o/build/%o", install, name);
     path rust_f     = f(path, "%o/Cargo.toml", project_f);
     path meson_f    = f(path, "%o/meson.build", project_f);
+    // --uninstall: cmake's install_manifest.txt is the ledger of what this
+    // dep put into install; walk it, then drop the build and the checkout
+    if (a->uninstall) {
+        path manifest = f(path, "%o/install_manifest.txt", build_f);
+        int  removed  = 0;
+        if (file_exists("%o", manifest)) {
+            string txt = (string)load(manifest, typeid(string), null);
+            char* ln = txt ? txt->chars : null;
+            while (ln && *ln) {
+                char* eol = strchr(ln, '\n');
+                if (eol) *eol = 0;
+                if (*ln && unlink(ln) == 0) removed++;
+                ln = eol ? eol + 1 : null;
+            }
+        }
+        struct stat lst;
+        bool linked = lstat(project_f->chars, &lst) == 0 && S_ISLNK(lst.st_mode);
+        exec(a->verbose, "rm -rf %o; rm -f %o", build_f, lock_path);
+        if (linked) unlink(project_f->chars);
+        else        exec(a->verbose, "rm -rf %o", project_f);
+        print("[%o] uninstalled %o (%i installed files)", a->name, label, removed);
+        if (lock_fd >= 0) close(lock_fd);
+        return;
+    }
     // an import may name its own source dir with -S: a project whose cmake
     // port is not at the root (mpg123 keeps one in ports/cmake) says so in
     // its config rather than silver guessing at layouts
