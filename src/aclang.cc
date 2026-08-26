@@ -1681,6 +1681,97 @@ static void* unit_worker(void* arg) {
     return nullptr;
 }
 
+static void collect_class_templates(Decl* d,
+        std::vector<ClassTemplateDecl*>& out) {
+    if (auto* ctd = dyn_cast<ClassTemplateDecl>(d))
+        out.push_back(ctd);
+    if (auto* ns = dyn_cast<NamespaceDecl>(d))
+        for (Decl* c : ns->decls())
+            collect_class_templates(c, out);
+    if (auto* ls = dyn_cast<LinkageSpecDecl>(d))
+        for (Decl* c : ls->decls())
+            collect_class_templates(c, out);
+}
+
+// silver arg idents → C++ spellings that map_builtin_type round-trips,
+// so the registered key equals the one read_named_model looks up
+static symbol cpp_spelling(const std::string& s) {
+    static const struct { symbol au; symbol cpp; } tbl[] = {
+        {"i8","signed char"},   {"u8","unsigned char"},
+        {"i16","short"},        {"u16","unsigned short"},
+        {"i32","int"},          {"u32","unsigned int"},
+        {"i64","long long"},    {"u64","unsigned long long"},
+        {"i128","__int128"},    {"u128","unsigned __int128"},
+        {"f16","_Float16"},     {"f32","float"},
+        {"f64","double"},       {"bool","bool"},
+    };
+    for (auto& p : tbl) if (s == p.au) return p.cpp;
+    return null;
+}
+
+// requested specializations (silver's token pre-scan): the module wrote
+// Name<args> this TU may not instantiate. for each request whose base is a
+// class template here, whose arity fits, and whose specialization is
+// absent, append an explicit instantiation and reparse — the model walk
+// and the -femit-all-decls codegen then carry it like a header-declared one
+static void instantiate_requested(aether a, import_unit* u) {
+    array reqs = a->template_requests;
+    if (!reqs || !reqs->count || !u->ci) return;
+    ASTContext& ctx = u->ci->getASTContext();
+    std::vector<ClassTemplateDecl*> tpls;
+    for (pending_item& it : u->items)
+        if (it.decl) collect_class_templates(it.decl, tpls);
+    if (tpls.empty()) return;
+    std::string lines;
+    for (int r = 0; r < reqs->count; r++) {
+        std::string key = ((string)reqs->origin[r])->chars;
+        size_t lt = key.find('<');
+        if (lt == std::string::npos || key.back() != '>') continue;
+        std::string base = key.substr(0, lt);
+        ClassTemplateDecl* ctd = null;
+        for (auto* t : tpls)
+            if (get_name(t) == base) { ctd = t; break; }
+        if (!ctd) continue;
+        bool have = false;
+        for (auto* spec : ctd->specializations())
+            if (spec_name(spec, ctx, a) == key) { have = true; break; }
+        if (have) continue;
+        std::string cargs;
+        bool     ok    = true;
+        unsigned nargs = 0;
+        for (size_t p = lt + 1; p < key.size() - 1 && ok;) {
+            size_t c   = key.find(',', p);
+            size_t end = (c == std::string::npos || c >= key.size() - 1)
+                       ? key.size() - 1 : c;
+            std::string arg = key.substr(p, end - p);
+            symbol sp = cpp_spelling(arg);
+            if (nargs) cargs += ",";
+            if (sp)                                       cargs += sp;
+            else if (arg.size() && isdigit((unsigned char)arg[0])) cargs += arg;
+            else ok = false;
+            nargs++;
+            p = end + 1;
+        }
+        TemplateParameterList* tp = ctd->getTemplateParameters();
+        if (!ok || nargs < tp->getMinRequiredArguments() || nargs > tp->size())
+            continue;
+        lines += "template ";
+        lines += ctd->getTemplatedDecl()->getKindName().str();
+        lines += " " + base + "<" + cargs + ">;\n";
+    }
+    if (lines.empty()) return;
+    FILE* fp = fopen(u->c->chars, "a");
+    if (!fp) return;
+    fwrite(lines.c_str(), 1, lines.size(), fp);
+    fclose(fp);
+    // reparse: the second AST replaces the first for modeling; the prior
+    // CompilerInstance stays held like every other unit's
+    u->items.clear();
+    u->macros.clear();
+    u->ci = null;
+    import_parse_unit(u);
+}
+
 none aether_import_includes(aether a) {
     // one translation unit per import, so its headers register under its own
     // namespace only; nested includes land in the import that pulled them
@@ -1739,6 +1830,7 @@ none aether_import_includes(aether a) {
         if (threads[i]) pthread_join(threads[i], null);
 
     for (import_unit* u : pool.units) {
+        if (u->cpp) instantiate_requested(a, u);
         import_model_unit(a, u);
         // C++ TUs codegen too: inline/template bodies emit weak, module links them
         if (u->cpp) {
