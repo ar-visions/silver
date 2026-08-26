@@ -45,7 +45,7 @@ ifdef [ apple ]
 import KhronosGroup:SPIRV-Headers/vulkan-sdk-1.4.341.0
 
 import KhronosGroup:SPIRV-Tools/vulkan-sdk-1.4.341.0
-    -DSPIRV-Headers_SOURCE_DIR={root_path}/checkout/SPIRV-Headers
+    -DSPIRV-Headers_SOURCE_DIR={root_path}/checkout/KhronosGroup/SPIRV-Headers
 
 import KhronosGroup:Vulkan-Utility-Libraries/vulkan-sdk-1.4.341.0
     -DVULKAN_HEADERS_INSTALL_DIR={install}
@@ -363,6 +363,7 @@ abstract live_app media_app
 
     ifdef [ linux ]
         func share_publish [ side: i32 ]
+            if [ getenv[ 'SILVER_HEADLESS' ] ] return
             wn : Window [ w ]
             scv : Canvas [ wn.screen ]
             if [ !scv ] return
@@ -539,6 +540,7 @@ abstract live_app media_app
         # instruments are inspectors, not the game: they sample at 8hz, on
         # their OWN surfaces, so nothing here touches the app's frame
         func instr_publish []
+            if [ getenv[ 'SILVER_HEADLESS' ] ] return
             list : instr_list[]
             if [ !list || list.count == 0 ] return
             now : i64 [ epoch_millis[] ]

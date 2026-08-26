@@ -146,7 +146,6 @@ def parse_from_config(all):
                 res.append(c.strip())
     return res, pre, post, env
 
-last_name   = None
 last_uri    = None
 last_commit = None
 
@@ -162,14 +161,19 @@ def build_import(name, uri, commit, _config_lines, install_dir, extra):
     
     global last_uri
     global last_commit
-    global last_name
     global IMPORT
     global root
     global SDK
 
+    uri_parts = uri.rstrip('/').split('/')
+    if len(uri_parts) < 2:
+        raise ValueError(f"invalid import URI: {uri}")
+    owner = uri_parts[-2]
+    project = uri_parts[-1]
+
     overlay_dir  = Path(root)   / Path('overlay') / name
-    checkout_dir = Path(root)   / Path('checkout') / name
-    build_dir    = Path(IMPORT) / Path('build')  / name
+    checkout_dir = Path(root)   / Path('checkout') / owner / project
+    build_dir    = Path(IMPORT) / Path('build') / owner / name
     CMakeLists   = checkout_dir / 'CMakeLists.txt'
 
     config_lines, pre, post, env = parse_from_config(_config_lines) # pre has > and post as >> infront ... everything else is a config_line
@@ -179,24 +183,14 @@ def build_import(name, uri, commit, _config_lines, install_dir, extra):
     if token_file.exists():
         last_uri = uri
         last_commit = commit
-        last_name = name
         return
     
-    # checkout_dir.mkdir(parents=True, exist_ok=True)
+    checkout_dir.parent.mkdir(parents=True, exist_ok=True)
     build_dir.mkdir(parents=True, exist_ok=True)
 
     # fetch or clone
     if last_uri == uri and last_commit == commit:
-        # make symlink for name -> last_name in the checkout dir (so we dont do double checkouts on these combined projects)
-        if last_name and last_name != name:
-            target_path = Path(root) / 'checkout' / last_name
-            if not checkout_dir.exists() and not checkout_dir.is_symlink():
-                checkout_dir.symlink_to(target_path, target_is_directory=True)
-            elif checkout_dir.is_symlink():
-                pass  # already linked
-            elif checkout_dir.is_dir():
-                shutil.rmtree(checkout_dir)
-                checkout_dir.symlink_to(target_path, target_is_directory=True)
+        pass
     elif checkout_dir.exists():
         if commit:
             run(f"git -C {checkout_dir} fetch origin")
@@ -207,12 +201,14 @@ def build_import(name, uri, commit, _config_lines, install_dir, extra):
         if commit:
             run(f"git -C {checkout_dir} checkout {commit}")
 
+    if (checkout_dir / '.git').exists():
+        run(f"git -C {checkout_dir} submodule update --init --recursive")
+
     if overlay_dir.exists():
         shutil.copytree(overlay_dir, checkout_dir, dirs_exist_ok=True)
 
     last_uri = uri
     last_commit = commit
-    last_name = name
 
     for key in env:
         os.environ[key] = env[key]
