@@ -7,6 +7,8 @@
 #include <llvm-c/Analysis.h>
 #include <llvm-c/TargetMachine.h>
 #include <llvm-c/BitWriter.h>
+#include <llvm-c/Transforms/PassBuilder.h>
+#include <llvm-c/Error.h>
 #include <posix.h>
 #include <stddef.h>
 
@@ -815,6 +817,7 @@ static void mark_set(enode n, u64* masks);
 
 void aether_emit_listen_value(aether a, enode n); // defined below (debug listen trace)
 
+enode e_convert_or_cast(aether a, etype output, enode input);
 enode aether_e_assign(aether a, enode L, Au R, OPType op_val) { sequencer
     emit_guard;
     a->is_const_op = false;
@@ -958,6 +961,10 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) { sequencer
         // "ref none -> u8". the enode's is_explicit_ref flag isn't always
         // propagated from the member, so check the type directly — matching
         // the compound-assign branch above (L->autype->is_explicit_ref).
+        // a vector assigned into a raw @T slot hands over its origin
+        Au_t rv9 = res->autype ? au_arg_type((Au)res->autype) : null;
+        if ((is_explicit_ref(L) || L->autype->is_explicit_ref) && rv9 && au_is_vector(rv9))
+            res = e_convert_or_cast(a, pointer(a, (Au)mem_type), res);
         if (!is_explicit_ref(L) && !L->autype->is_explicit_ref) {
             if ((ref_level((Au)res) != ref_level((Au)mem_type)) ||
                 resolve(res) != resolve(mem_type))
@@ -4957,7 +4964,7 @@ AU_EXPORT enode aether_e_inherited_access(aether a, enode instance, Au_t overrid
 
 AU_EXPORT enode resolve_typeid(aether a, Au mdl) {
     Au_t au = au_arg(mdl);
-    if (au->is_pointer && au->src->is_class) {
+    if (au->is_pointer && !au->ident && au->src && au->src->is_class) {
         return u(etype, au->src) ? u(etype, au->src)->type_id : null;
     }
     return u(etype, au) ? u(etype, au)->type_id : null;
@@ -11093,11 +11100,32 @@ AU_EXPORT string aether_core_objects(aether a, path obj_path) {
 }
 
 // each core's module emits its own object; core 0 keeps obj_path
-typedef struct { LLVMTargetMachineRef tm; LLVMModuleRef m; char* path; bool ok; } emit_job;
+typedef struct { LLVMTargetMachineRef tm; LLVMModuleRef m; char* path; bool ok; bool asan; } emit_job;
+
+// --asan: every defined function opts in, then the asan pass instruments
+// the module in place (the old external clang step used to do this)
+static bool asan_instrument(LLVMModuleRef m, LLVMTargetMachineRef tm) {
+    unsigned kind = LLVMGetEnumAttributeKindForName("sanitize_address", 16);
+    LLVMAttributeRef at = LLVMCreateEnumAttribute(LLVMGetModuleContext(m), kind, 0);
+    for (LLVMValueRef fn = LLVMGetFirstFunction(m); fn; fn = LLVMGetNextFunction(fn))
+        if (LLVMCountBasicBlocks(fn))
+            LLVMAddAttributeAtIndex(fn, LLVMAttributeFunctionIndex, at);
+    LLVMPassBuilderOptionsRef o = LLVMCreatePassBuilderOptions();
+    LLVMErrorRef e = LLVMRunPasses(m, "asan", tm, o);
+    LLVMDisposePassBuilderOptions(o);
+    if (e) {
+        char* msg = LLVMGetErrorMessage(e);
+        fprintf(stderr, "asan pass failed: %s\n", msg);
+        LLVMDisposeErrorMessage(msg);
+        return false;
+    }
+    return true;
+}
 
 static void* emit_job_run(void* arg) {
     emit_job* j = (emit_job*)arg;
     char* err = NULL;
+    if (j->asan && !asan_instrument(j->m, j->tm)) { j->ok = false; return null; }
     j->ok = !LLVMTargetMachineEmitToFile(j->tm, j->m, j->path, LLVMObjectFile, &err);
     if (!j->ok && err) {
         fprintf(stderr, "emit .o failed: %s\n", err);
@@ -11130,6 +11158,7 @@ AU_EXPORT bool aether_emit_object(aether a, path obj_path) {
         jobs[n].m    = m;
         jobs[n].path = (char*)cstring(hold(p));
         jobs[n].ok   = false;
+        jobs[n].asan = a->asan;
         n++;
     }
     for (int i = 1; i < n; i++)

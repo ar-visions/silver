@@ -1117,6 +1117,20 @@ expect func t_ref_from_handle [] -> bool
     p[1] = 2.5
     return raw[0] == 1.5 && raw[1] == 2.5
 
+class RawSlot
+    public out : @u32
+
+# a vec assigned into a raw @T slot (member or local) hands over its origin
+expect func t_ref_slot_from_vec [] -> bool
+    v : vec u32 [ 8 ]
+    r : RawSlot [ ]
+    r.out = v
+    r.out[3] = 7
+    p : @u32
+    p = v
+    p[5] = 9
+    return v[3] == 7 && v[5] == 9
+
 class LineLike
     public content : string
     public line    : i32
