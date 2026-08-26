@@ -594,7 +594,7 @@ static bool is_checkout(path a) {
     if (eq(st, "checkout")) {
         return true;
     }
-    return false;
+    return eq(stem(parent_dir(par)), "checkout");
 }
 
 array compact_tokens(array tokens) {
@@ -1038,6 +1038,21 @@ static char progress_sub[640];
 static bool progress_sub_active = false;
 static int  progress_lines = 0;
 
+static void progress_bar(char* bar, int width, double frac) {
+    static const char* parts[] =
+        { "", "▏", "▎", "▍", "▌", "▋", "▊", "▉" };
+    double cells = frac * width;
+    int full = (int)cells;
+    int part = (int)((cells - full) * 8);
+    int o = 0;
+    for (int i = 0; i < full; i++) o += sprintf(bar + o, "█");
+    if (full < width && part)
+        o += sprintf(bar + o, "%s", parts[part]);
+    int used = full + (part ? 1 : 0);
+    for (int i = used; i < width; i++) bar[o++] = ' ';
+    bar[o] = 0;
+}
+
 static void progress_render() {
     if (!isatty(2) || !progress_top[0]) return;
     int width = 0;
@@ -1095,7 +1110,7 @@ static void progress_clear_line() {
 }
 
 static void progress_draw(silver a, double frac) {
-    if (!isatty(2)) return;
+    if (a->verbose || !isatty(2)) return;
     if (frac < 0) frac = 0;
     if (frac > 1) frac = 1;
     static silver last_mod   = null;
@@ -1104,20 +1119,11 @@ static void progress_draw(silver a, double frac) {
     if (a == last_mod && mille == last_mille) return;
     last_mod   = a;
     last_mille = mille;
-    static const char* part_cells[] =
-        { "", "▏", "▎", "▍", "▌", "▋", "▊", "▉" };
-    const int width = 28;
-    double fcells = frac * width;
-    int    full   = (int)fcells;
-    int    part   = (int)((fcells - full) * 8);
-    char bar[512]; int o = 0;
-    for (int i = 0; i < full; i++) o += sprintf(bar + o, "█");
-    if (full < width && part) o += sprintf(bar + o, "%s", part_cells[part]);
-    int used = full + (part ? 1 : 0);
-    for (int i = used; i < width; i++) bar[o++] = ' ';
-    bar[o] = 0;
-    snprintf(progress_top, sizeof(progress_top), "%-12s %s %3d%%",
-        a->name ? a->name->chars : "", bar, (int)(frac * 100.0));
+    const int width = 14;
+    char bar[512];
+    progress_bar(bar, width, frac);
+    snprintf(progress_top, sizeof(progress_top), "%s %3d%% %s",
+        bar, (int)(frac * 100.0), a->name ? a->name->chars : "");
     progress_render();
 }
 
@@ -1131,12 +1137,17 @@ static void progress_command(symbol module, symbol phase, int percent,
         return;
     }
     if (!module || !phase) return;
-    if (percent >= 0)
-        snprintf(progress_sub, sizeof(progress_sub), "  %-36s %3d%%",
-            module, percent);
-    else
-        snprintf(progress_sub, sizeof(progress_sub), "  %s",
-            module);
+    const int width = 14;
+    char bar[128];
+    if (percent >= 0) {
+        progress_bar(bar, width, (double)percent / 100.0);
+        snprintf(progress_sub, sizeof(progress_sub),
+            "%s %3d%% %s %s", bar, percent, module, phase);
+    } else {
+        progress_bar(bar, width, 0.0);
+        snprintf(progress_sub, sizeof(progress_sub),
+            "%s      %s %s", bar, module, phase);
+    }
     progress_sub_active = true;
     progress_render();
 }
@@ -2027,12 +2038,12 @@ static path build_silver_host(silver a) {
     // the exe against in-place relink (LNK1168). the temp always writes.
     path host_out = f(path, "%o.new%i", host_dst, (i32)getpid());
     vexec(a->verbose, "silver-host", "%s/install/bin/clang %s %s -o %o %o %s %s -D_CRT_SECURE_NO_WARNINGS -D_CRT_NONSTDC_NO_WARNINGS -I%s/install/include -L%s/install/lib -DSILVER_ROOT=\\\"%s\\\" -DSILVER_SHARE_NAME=\\\"%o\\\"",
-        SILVER, a->debug ? "-O0 -g" : "-O2", a->asan ? "-fsanitize=address" : "", host_out, host_src, host_libs, subsystem, SILVER, SILVER, SILVER, SILVER, share_name);
+        SILVER, a->debug ? "-O0 -g" : "-O2", a->asan ? "-fsanitize=address -shared-libasan" : "", host_out, host_src, host_libs, subsystem, SILVER, SILVER, SILVER, SILVER, share_name);
     verify(au_replace_file(host_out->chars, host_dst->chars) == 0,
         "could not replace %o: locked by another process", host_dst);
 #else
     vexec(a->verbose, "silver-host", "%s/install/bin/clang %s %s -o %o %o %s -I%s/install/include -L%s/install/lib -DSILVER_ROOT='\"%s\"' -DSILVER_SHARE_NAME='\"%o\"'",
-        SILVER, a->debug ? "-O0 -g" : "-O2", a->asan ? "-fsanitize=address" : "", host_dst, host_src, host_libs, SILVER, SILVER, SILVER, share_name);
+        SILVER, a->debug ? "-O0 -g" : "-O2", a->asan ? "-fsanitize=address -shared-libasan" : "", host_dst, host_src, host_libs, SILVER, SILVER, SILVER, share_name);
 #endif
     return host_dst;
 }
@@ -4394,8 +4405,6 @@ bool in_context(Au_t au, Au_t ctx) {
 }
 
 string read_alpha_macrofilter(silver a, bool is_decl) {
-    enode res = null;
-
     push_current(a);
     string n = read_alpha(a);
     if (!n) {
@@ -4403,52 +4412,16 @@ string read_alpha_macrofilter(silver a, bool is_decl) {
         return null;
     }
 
-    bool next_is_paren = next_is(a, "(");
-    Au_t mem = null;
-    bool use_name;
-    for (int i = len(a->lexical) - 1; i >= 0; i--) {
-        Au_t au = (Au_t)a->lexical->origin[i];
-        while (au) {
-            if (au->member_type == AU_MEMBER_TYPE || is_func(au))
-                for (int ii = 0; ii < au->args.count; ii++) {
-                    Au_t m = (Au_t)au->args.origin[ii];
-                    if (m->ident && strcmp(m->ident, n->chars) == 0) {
-                        mem = m;
-                        goto mem_set;
-                    }
-                }
-            for (int ii = 0; ii < au->members.count; ii++) {
-                Au_t m = (Au_t)au->members.origin[ii];
-                if (m->ident && strcmp(m->ident, n->chars) == 0) {
-                    if (au_is_expanding(m)) continue;
-                    bool allow = true;
-                    if (au->member_type == AU_MEMBER_MACRO) {
-                        macro mac = u(macro, m);
-                        verify(mac, "unresolved macro: %o", m);
-                        allow = !mac->params || next_is_paren;
-                    }
-                    if (allow) {
-                        mem = m;
-                        goto mem_set;
-                    }
-                }
-            }
-            Au_t au_isa = isa(au);
-            if (!is_class((Au)au)) break;
-            if (au->context == au) break;
-            au = au->context;
-        }
-    }
-    mem_set:
-    if (!mem)
-        mem = lexical(a->lexical, cstring(n));
+    Au_t mem = lexical(a->lexical, cstring(n));
     if (mem && mem->member_type == AU_MEMBER_MACRO) {
         macro mac = u(macro, mem);
         verify(mac, "unresolved macro: %o", mem);
-        if (mac->params && !next_is_paren)
+        cstr open = is_cmode(a) ? "(" : "[";
+        if (mac->params && !next_is(a, open))
             mem = null;
     }
-    use_name = (is_decl || mem != null || next_is(a, ":"));
+
+    bool use_name = is_decl || mem || next_is(a, ":");
     pop_tokens(a, use_name);
     return use_name ? n : null;
 }
@@ -5354,7 +5327,8 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
 
             /// copy constant data into the vector's origin
             if (len(nodes) > 0) {
-                enode origin9 = e_convert_or_cast(a, (etype)pointer(a, (Au)selem), vec);
+                enode origin9 = e_convert_or_cast(
+                    (aether)a, pointer((aether)a, (Au)selem), vec);
                 e_vector_init(a, mdl, origin9, nodes);
             }
         }
@@ -7390,6 +7364,8 @@ string command_run(command cmd, bool verbose);
 
 typedef struct checkout_progress_t {
     string label;
+    symbol phase;
+    string output;
     bool   verbose;
     char   line[4096];
     int    len;
@@ -7416,7 +7392,7 @@ static void checkout_progress_line(checkout_progress_t* p) {
     int percent = checkout_line_percent(p->line);
     if (percent >= 0 && percent != p->percent) {
         p->percent = percent;
-        progress_command((symbol)p->label->chars, "checkout",
+        progress_command((symbol)p->label->chars, p->phase,
             percent, null, false);
     }
 }
@@ -7424,12 +7400,11 @@ static void checkout_progress_line(checkout_progress_t* p) {
 static bool checkout_output(void* ctx, cstr buf, ssize_t bytes) {
     checkout_progress_t* p = (checkout_progress_t*)ctx;
     if (p->verbose) {
-        progress_clear_line();
         fwrite(buf, 1, (size_t)bytes, stdout);
         fflush(stdout);
-        progress_render();
         return true;
     }
+    append_count(p->output, buf, (int)bytes);
     for (ssize_t i = 0; i < bytes; i++) {
         char c = buf[i];
         if (c == '\r' || c == '\n') {
@@ -7446,14 +7421,28 @@ static int checkout_exec(silver a, string label,
                          symbol phase, command cmd) {
     checkout_progress_t p = {
         .label = label,
+        .phase = phase,
+        .output = string(alloc, 4096),
         .verbose = a->verbose,
         .len = 0,
         .percent = -1
     };
-    progress_command((symbol)label->chars, phase, -1, null, false);
+    if (!a->verbose)
+        progress_command((symbol)label->chars, phase, -1, null, false);
     int rc = command_exec_hook(cmd, a->verbose, true, checkout_output, &p);
     checkout_progress_line(&p);
-    progress_command((symbol)label->chars, phase, 0, null, true);
+    if (!a->verbose)
+        progress_command((symbol)label->chars, phase, 0, null, true);
+    if (rc) {
+        progress_clear_line();
+        fputc('\n', stderr);
+    }
+    if (rc && !a->verbose && len(p.output)) {
+        fwrite(p.output->chars, 1, (size_t)len(p.output), stderr);
+        if (p.output->chars[len(p.output) - 1] != '\n') fputc('\n', stderr);
+        fflush(stderr);
+    }
+    drop(p.output);
     return rc;
 }
 
@@ -7466,13 +7455,15 @@ static none checkout_verify(silver a, string label,
 // >> commands patch the INSTALLED tree, so they belong to every path that
 // leaves the import satisfied — including the cached one, which returns
 // before the build ever runs
-static none run_import_commands(silver a, array cmds, path in_dir) {
+static none run_import_commands(silver a, string label,
+                                array cmds, path in_dir) {
     if (!cmds || !len(cmds)) return;
     path cw = path_cwd();
     cd(in_dir);
     each(cmds, string, cmd) {
         string icmd = interpolate(cmd, (Au)a);
-        command_exec((command)icmd, a->verbose);
+        checkout_verify(a, label, "command", "command",
+            (command)icmd);
     }
     cd(cw);
 }
@@ -7493,9 +7484,9 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
     num     sl2         = rindex_of(head9, "/");
     string  owner       = sl2 >= 0 ? mid(head9, sl2 + 1, len(head9) - sl2 - 1) : null;
     string  label       = import_name ? import_name : name;
-    // name every line this dependency's tools print; imports run
-    // concurrently and their output would otherwise be unattributable
-    au_exec_prefix(cstring(label));
+    num     version_at  = index_of(label, "/");
+    if (version_at >= 0)
+        label = mid(label, 0, version_at);
     path    project_f   = (owner && len(owner)) ?
           f(path, "%o/checkout/%o/%o", a->root_path, owner, name)
         : f(path, "%o/checkout/%o",    a->root_path, name);
@@ -7530,7 +7521,8 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
     if (!dir_exists("%o", project_f)) {
         path src_path = f(path, "%o/%o", a->src_loc, name);
         if (dir_exists("%o", src_path)) {
-            vexec(a->verbose, "symlink", "ln -s %o %o", src_path, project_f);
+            checkout_verify(a, label, "symlink", "symlink",
+                f(command, "ln -s %o %o", src_path, project_f));
             project_f = src_path;
         } else {
             if (!commit) {
@@ -7541,7 +7533,8 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
                 checkout_verify(a, label, "clone", "clone",
                     f(command, "git clone --progress %o %o",
                         uri, project_f));
-                vexec(a->verbose, "checkout", "git -C %o checkout %o", project_f, commit);
+                checkout_verify(a, label, "checkout", "checkout",
+                    f(command, "git -C %o checkout %o", project_f, commit));
             } else {
                 checkout_verify(a, label, "clone", "clone",
                     f(command,
@@ -7552,13 +7545,16 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
             // apply module-path diff if one exists (e.g. vulkan/MoltenVK.diff)
             path diff_f = f(path, "%o/%o.diff", a->module_path, name);
             if (file_exists("%o", diff_f))
-                vexec(a->verbose, "patch", "git -C %o apply %o", project_f, diff_f);
+                checkout_verify(a, label, "patch", "patch",
+                    f(command, "git -C %o apply %o", project_f, diff_f));
         }
     }
 
     // we build to another folder, not inside the source, or checkout.
     // imports build ONCE to install/build — never per-config, never debug
-    path build_f    = f(path, "%o/build/%o", install, name);
+    path build_f    = (owner && len(owner))
+                    ? f(path, "%o/build/%o/%o", install, owner, name)
+                    : f(path, "%o/build/%o", install, name);
     path rust_f     = f(path, "%o/Cargo.toml", project_f);
     path meson_f    = f(path, "%o/meson.build", project_f);
     // an import may name its own source dir with -S: a project whose cmake
@@ -7613,7 +7609,7 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
         product_current) {
         string s = (string)load(token, typeid(string), null);
         if (s && eq(s, config->chars)) {
-            run_import_commands(a, postbuild,
+            run_import_commands(a, label, postbuild,
                 is_silver ? install : build_f);
             if (is_silver && mod_sel) {
                 silver root = a;
@@ -7626,7 +7622,6 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
                 }
             }
             if (lock_fd >= 0) { flock(lock_fd, LOCK_UN); (close)(lock_fd); }
-            au_exec_prefix(null); // or it sticks onto unrelated builds
             return; // cached / built / error, etc
         }
     }
@@ -7654,7 +7649,8 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
         cd(project_f);
         each(prebuild, string, cmd) {
             string icmd = interpolate(cmd, (Au)a);
-            command_exec((command)icmd, a->verbose);
+            checkout_verify(a, label, "prebuild", "prebuild",
+                (command)icmd);
         }
         cd(cw);
     }
@@ -7668,43 +7664,59 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
         // --config below is what picks Release under a multi-config generator
         // a device build hands cmake the target's toolchain; native is ""
         string x_cmake = device_cmake_toolchain(a);
-        vexec(a->verbose, "configure",
+        checkout_verify(a, label, "configure", "configure",
+            f(command,
               "%o cmake -B %o -S %o %o%o -DCMAKE_INSTALL_PREFIX=%o -DCMAKE_BUILD_TYPE=%s %o",
-              cenv, build_f, cmake_src, x_cmake, opt, install, build, config);
+              cenv, build_f, cmake_src, x_cmake, opt, install, build, config));
 
-        vexec(a->verbose, "build", "%o cmake --build %o --config %s -j16",
-              cenv, build_f, build);
-        vexec(a->verbose, "install", "%o cmake --install %o --config %s",
-              cenv, build_f, build);
+        checkout_verify(a, label, "build", "build",
+            f(command, "%o cmake --build %o --config %s -j16",
+              cenv, build_f, build));
+        checkout_verify(a, label, "install", "install",
+            f(command, "%o cmake --install %o --config %s",
+              cenv, build_f, build));
     } else if (is_meson) { // build for meson
         // externals always build release — debug is for OUR code
         cstr build = "release";
 
         string x_meson = device_meson_cross(a);
-        vexec(a->verbose, "setup",
-              "%o meson setup %o --prefix=%o --buildtype=%s %o%o",
-              cenv, build_f, install, build, x_meson, config);
+        checkout_verify(a, label, "setup", "setup",
+            f(command, "%o meson setup %o --prefix=%o --buildtype=%s %o%o",
+              cenv, build_f, install, build, x_meson, config));
 
-        vexec(a->verbose, "compile", "%o meson compile -C %o", cenv, build_f);
-        vexec(a->verbose, "install", "%o meson install -C %o", cenv, build_f);
+        checkout_verify(a, label, "build", "compile",
+            f(command, "%o meson compile -C %o", cenv, build_f));
+        checkout_verify(a, label, "install", "install",
+            f(command, "%o meson install -C %o", cenv, build_f));
     } else if (is_gn) {
         cstr is_debug = "false";
-        vexec(a->verbose, "gen", "gn gen %o --args='is_debug=%s is_official_build=true %o'", build_f, is_debug, config);
-        vexec(a->verbose, "ninja", "ninja -C %o -j8", build_f);
+        checkout_verify(a, label, "configure", "gen",
+            f(command, "gn gen %o --args='is_debug=%s is_official_build=true %o'",
+              build_f, is_debug, config));
+        checkout_verify(a, label, "build", "ninja",
+            f(command, "ninja -C %o -j8", build_f));
     } else if (is_rust) {
         string x_rust = (a->platform && len(a->platform) && cmp(a->platform, "native") != 0) ?
             f(string, "--target %s ", platform_triple(a)) : string("");
-        vexec(a->verbose, "rust", "cargo build --release %o--manifest-path %o/Cargo.toml --target-dir %o",
-              x_rust, project_f, build_f);
+        checkout_verify(a, label, "build", "rust",
+            f(command,
+              "cargo build --release %o--manifest-path %o/Cargo.toml --target-dir %o",
+              x_rust, project_f, build_f));
         // cargo has no install step — stage artifacts into the prefix
-        exec(a->verbose, "cp -f %o/release/*.so %o/lib/ 2>/dev/null || true", build_f, install);
-        exec(a->verbose, "cp -f %o/release/*.a %o/lib/ 2>/dev/null || true", build_f, install);
+        checkout_exec(a, label, "install",
+            f(command, "cp -f %o/release/*.so %o/lib/ 2>/dev/null || true",
+              build_f, install));
+        checkout_exec(a, label, "install",
+            f(command, "cp -f %o/release/*.a %o/lib/ 2>/dev/null || true",
+              build_f, install));
         // emit the C header for the crate's extern "C" surface
         string cbg = f(string, "%o/bin/cbindgen", install);
         if (!file_exists("%o", cbg))
             cbg = command_exists("cbindgen") ? string("cbindgen") : null;
         if (cbg) {
-            if (exec(a->verbose, "%o %o --output %o/include/%o.h", cbg, project_f, install, name) != 0)
+            if (checkout_exec(a, label, "header",
+                    f(command, "%o %o --output %o/include/%o.h",
+                      cbg, project_f, install, name)) != 0)
                 print("cbindgen failed for %o — rust import has no header", name);
         } else
             print("cbindgen not found — rust import %o builds without a header", name);
@@ -7734,20 +7746,22 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
 
             // fix common race condition with autotools
             if (!file_exists("%o/ltmain.sh", project_f))
-                verify(exec(a->verbose, "libtoolize --install --copy --force") == 0, "libtoolize");
+                checkout_verify(a, label, "configure", "libtoolize",
+                    f(command, "libtoolize --install --copy --force"));
 
             // common preference on these repos
             if (file_exists("%o/autogen.sh", project_f))
-                verify(exec(a->verbose, "(cd %o && bash autogen.sh)", project_f) == 0, "autogen");
+                checkout_verify(a, label, "configure", "autogen",
+                    f(command, "(cd %o && bash autogen.sh)", project_f));
 
             // generate configuration scripts if available
             else if (!file_exists("%o/configure", project_f) && file_exists("%o/configure.ac", project_f)) {
-                verify(exec(a->verbose, "autoupdate --verbose --force --output=%o/configure.ac %o/configure.ac",
-                            project_f, project_f) == 0,
-                       "autoupdate");
-                verify(exec(a->verbose, "autoreconf -i %o",
-                            project_f) == 0,
-                       "autoreconf");
+                checkout_verify(a, label, "configure", "autoupdate",
+                    f(command,
+                      "autoupdate --verbose --force --output=%o/configure.ac %o/configure.ac",
+                      project_f, project_f));
+                checkout_verify(a, label, "configure", "autoreconf",
+                    f(command, "autoreconf -i %o", project_f));
             }
 
             // prefer pre/generated script configure, fallback to config
@@ -7764,29 +7778,28 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
                                    "RANLIB=%o/llvm-ranlib ", tri, tb, tri, tb, tri, tb, tb);
             }
             if (file_exists("%o/%o", project_f, configure)) {
-                verify(exec(a->verbose, "%o (cd %o && %o%s --prefix=%o %o%o)",
-                            cenv,
-                            project_f,
-                            configure,
-                            debug ? " --enable-debug" : "",
-                            install, x_host,
-                            config) == 0,
-                       "config script %o", configure);
+                checkout_verify(a, label, "configure", "configure",
+                    f(command, "%o (cd %o && %o%s --prefix=%o %o%o)",
+                      cenv, project_f, configure,
+                      debug ? " --enable-debug" : "",
+                      install, x_host, config));
             }
         }
 
         path Makefile = f(path, "%o/Makefile", project_f);
         if (file_exists("%o", Makefile))
-            verify(exec(a->verbose, "%o (cd %o && make PREFIX=%o -f %o install)", cenv, project_f, install, Makefile) == 0, "make");
+            checkout_verify(a, label, "build", "make",
+                f(command, "%o (cd %o && make PREFIX=%o -f %o install)",
+                  cenv, project_f, install, Makefile));
     }
 
-    run_import_commands(a, postbuild, is_silver ? install : build_f);
+    run_import_commands(a, label, postbuild,
+        is_silver ? install : build_f);
 
     // a failed silver child must not cache as built
     if (!is_silver || child_ok)
         save(token, (Au)config, null);
     if (lock_fd >= 0) { flock(lock_fd, LOCK_UN); (close)(lock_fd); }
-    au_exec_prefix(null);
 }
 
 static bool is_core_module(symbol name) {
@@ -7853,8 +7866,8 @@ static bool ensure_core_runtime(silver a, path install, symbol triple,
                  tools, tgt, platform_abi_cxx(a), core_warn, SILVER, po_o, inc, defs) != 0) return false;
         // generic atomics: linux has libatomic, windows has nothing — compiler-rt
         // carries the implementation and we already vendor its source
-        if (exec(a->verbose, "%o/clang %o -c %s/checkout/llvm-project/compiler-rt/lib/builtins/atomic.c "
-                 "-o %o -I %s/checkout/llvm-project/compiler-rt/lib/builtins",
+        if (exec(a->verbose, "%o/clang %o -c %s/checkout/LLVM/llvm-project/compiler-rt/lib/builtins/atomic.c "
+                 "-o %o -I %s/checkout/LLVM/llvm-project/compiler-rt/lib/builtins",
                  tools, tgt, SILVER, at_o, SILVER) != 0) return false;
         // psapi carries EnumProcessModules for dlsym; winpthread the posix clock
         if (exec(a->verbose, "%o/clang++ %o %s %o -shared %o %o %o -o %o/Au.dll "
@@ -8144,7 +8157,7 @@ none silver_build_product(silver a) {
         verify(emit_object(a, x_obj), ".o emission failed (platform: %o)", a->platform);
         string x_core = core_objects(a, x_obj);
 
-        string cflags = a->asan ? string("-fsanitize=address") : string("");
+        string cflags = a->asan ? string("-fsanitize=address -shared-libasan") : string("");
 
         if (len(a->implements))
             write_header(a);
@@ -8235,7 +8248,7 @@ none silver_build_product(silver a) {
     verify(emit_object(a, obj_path), ".o emission failed");
     string core_objs = core_objects(a, obj_path);
 
-    string cflags = a->asan ? string("-fsanitize=address") : string("");
+    string cflags = a->asan ? string("-fsanitize=address -shared-libasan") : string("");
 
     // build compile-only flags
     string ccflags = string(cflags->chars);
@@ -9820,17 +9833,6 @@ enode parse_import(silver a) {
 
     validate(!cc || uri,
         "module selector %o: only valid on a git import", cc);
-    if (!external_name && !is_framework_import) {
-        if (project)
-            external_name = project;
-        else if (aa)
-            external_name = aa;
-        else if (first_include)
-            external_name = first_include;
-        else {
-            fault("no identity found for import");
-        }
-    }
     if (uri) {
         checkout(a, path(uri->chars), (string)commit,
                  import_build_commands(all_config, ">"),
@@ -9860,11 +9862,15 @@ enode parse_import(silver a) {
         }
         // rust checkout: cbindgen wrote include/<project>.h — import it
         // automatically when the user listed no headers
-        if (project && !len(includes) &&
-                file_exists("%o/checkout/%o/Cargo.toml", a->root_path, project)) {
-            path rust_h = f(path, "%o/include/%o.h", a->install, project);
-            if (file_exists("%o", rust_h))
-                push(includes, (Au)rust_h);
+        if (project && !len(includes)) {
+            path rust_checkout = user
+                ? f(path, "%o/checkout/%o/%o", a->root_path, user, project)
+                : f(path, "%o/checkout/%o", a->root_path, project);
+            if (file_exists("%o/Cargo.toml", rust_checkout)) {
+                path rust_h = f(path, "%o/include/%o.h", a->install, project);
+                if (file_exists("%o", rust_h))
+                    push(includes, (Au)rust_h);
+            }
         }
     } else if (module_source) {
         path module = parent_dir(module_source);
@@ -10029,6 +10035,17 @@ enode parse_import(silver a) {
     }
 
     bool import_Au = !!external_name;
+    if (!external_name && !is_framework_import) {
+        if (project)
+            external_name = project;
+        else if (aa)
+            external_name = aa;
+        else if (first_include)
+            external_name = first_include;
+        else {
+            fault("no identity found for import");
+        }
+    }
 
     bool is_au_rt = !module_source || eq(ext(module_source), "ag");
     import mdl = import(
