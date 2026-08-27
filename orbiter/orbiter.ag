@@ -3152,13 +3152,13 @@ element orbiter : trinity # implements compiler
                 ux.time_scale    = 1.0 / 16.0
             case 2
                 ux.background_hz = 30.0
-                ux.time_scale    = 1.0 / 4.0
+                ux.time_scale    = 1.0 / 2.0
             case 3
                 ux.background_hz = 60.0
-                ux.time_scale    = 1.0
+                ux.time_scale    = 4.0
             case 4
                 ux.background_hz = 60.0
-                ux.time_scale    = 4.0
+                ux.time_scale    = 16.0
             default
                 ux.background_hz = 4.0
                 ux.time_scale    = 1.0 / 64.0

@@ -3209,7 +3209,7 @@ static void leak_signal(int sig) {
     }
 }
 
-AU_EXPORT Au alloc_instance(Au_t type, int n_bytes, bool managed) {
+AU_EXPORT Au alloc_instance(Au_t type, sz n_bytes, bool managed) {
     Au a = null;
     //af && n_bytes == recycle_size;
 
@@ -8874,6 +8874,35 @@ static none agi_write_block(string res, Au a, int indent, int depth) {
 }
 
 // generic object -> tab-indented .agi text via reflection (publics only)
+// C-style format postfix (x.4f, n.05d, s.4s): the dot is the C precision
+// dot, so spec is what follows it; integers widen to long long
+AU_EXPORT string format_f64(f64 v, symbol spec) {
+    char fmt[64], out[512];
+    snprintf(fmt, sizeof(fmt), "%%.%s", spec);
+    snprintf(out, sizeof(out), fmt, v);
+    return string(out);
+}
+
+AU_EXPORT string format_i64(i64 v, symbol spec) {
+    char fmt[64], out[512];
+    size_t n = strlen(spec);
+    char conv = n ? spec[n - 1] : 'd';
+    if (conv == 'c')
+        snprintf(fmt, sizeof(fmt), "%%.%.*sc", (int)(n - 1), spec);
+    else
+        snprintf(fmt, sizeof(fmt), "%%.%.*sll%c", (int)(n - 1), spec, conv);
+    if (conv == 'c') snprintf(out, sizeof(out), fmt, (int)v);
+    else             snprintf(out, sizeof(out), fmt, (long long)v);
+    return string(out);
+}
+
+AU_EXPORT string format_cstr(cstr v, symbol spec) {
+    char fmt[64], out[1024];
+    snprintf(fmt, sizeof(fmt), "%%.%s", spec);
+    snprintf(out, sizeof(out), fmt, v ? v : "");
+    return string(out);
+}
+
 AU_EXPORT string string_agi(Au a) {
     string res = string(alloc, 1024);
     if (a) agi_write_block(res, a, 0, 0);

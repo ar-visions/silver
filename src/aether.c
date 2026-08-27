@@ -1985,8 +1985,11 @@ AU_EXPORT enode aether_e_cmp_op(aether a, OPType optype, enode L, enode R) {
         // "truly owned" from "merely inherited".
         bool L_null = LLVMIsNull(_llvalue((enode)L));
         bool R_null = LLVMIsNull(_llvalue((enode)R));
+        // the operand may be a var or an ARG slot: its record is the type
+        // that declares compare, not the slot
+        Au_t L_rec = au_arg_type((Au)L->autype);
         if (L_null || R_null || optype == OPType__equal || optype == OPType__not_equal) {
-            Au_t own_cmp = find_member(L->autype, "compare", 0, 0, true);
+            Au_t own_cmp = find_member(L_rec, "compare", 0, 0, true);
             bool has_own = own_cmp && own_cmp->context != typeid(Au);
             if (L_null || R_null || !has_own || own_cmp->context == typeid(Au)) {
                 return value(bool_t,
@@ -1999,8 +2002,8 @@ AU_EXPORT enode aether_e_cmp_op(aether a, OPType optype, enode L, enode R) {
                 LLVMBuildICmp(B, cmp->ui_pred, _llvalue((enode)L), _llvalue((enode)R), N));
         }
 
-        Au_t fn = find_member(L->autype, "compare", 0, 0, true);
-        verify(fn, "class %s has no compare() method", L->autype->ident);
+        Au_t fn = find_member(L_rec, "compare", 0, 0, true);
+        verify(fn, "class %s has no compare() method", L_rec->ident);
 
         // runtime null guard: if L is null at runtime, use pointer compare
         LLVMValueRef null_ptr  = LLVMConstPointerNull(LLVMPointerTypeInContext(a->module_ctx, 0));
@@ -5650,6 +5653,23 @@ enode e_convert_or_cast(aether a, etype output, enode input) {
     }
 
     // if input is an unloaded primitive, load it first so we can do proper conversion
+    // a scalar converting to a primitive is its base value: a slot loads
+    // as the base type (self is a pointer inside the scalar's own methods),
+    // a loaded { base } struct value extracts it
+    bool in_scalar = input->autype && (input->autype->is_scalar ||
+        (canonical(input) && canonical(input)->autype->is_scalar));
+    if (in_scalar && is_prim(output) && !a->no_build) {
+        Au_t sc = input->autype->is_scalar ? input->autype : canonical(input)->autype;
+        if (sc && sc->src) {
+            etype base = u(etype, sc->src);
+            LLVMValueRef V = _llvalue((enode)input);
+            if (!input->loaded)
+                V = LLVMBuildLoad2(B, _lltype_slot(base), V, "scalar_load");
+            else if (LLVMGetTypeKind(LLVMTypeOf(V)) == LLVMStructTypeKind)
+                V = LLVMBuildExtractValue(B, V, 0, "scalar_val");
+            input = with_value(V, enode(mod, a, autype, sc->src, loaded, true));
+        }
+    }
     if (!input->loaded && is_prim(canonical(input)) && is_prim(output)) {
         input = enode_value(input, true);  // load it
     }

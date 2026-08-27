@@ -5168,6 +5168,54 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
             break;
         }
 
+        // C-style format postfix: x.4f, n.08x, s.20s — the value formats to
+        // a string enode and the chain goes on from that string. the lexer
+        // may hand the digits and the conversion letter as two tokens
+        {
+            token spec = peek(a);
+            token spec2 = element(a, 1);
+            cstr  sc   = spec ? spec->chars : null;
+            size_t sl  = sc ? strlen(sc) : 0;
+            char  fmt[64] = { 0 };
+            int   take = 0;
+            if (spec && spec->neighbor && !null_guard && sl && isdigit(sc[0]) &&
+                    instanceof(mem, enode)) {
+                bool digits = true;
+                for (size_t k = 0; k < sl; k++) if (!isdigit(sc[k])) digits = false;
+                if (!digits && strchr("dixXofeEgGsc", sc[sl - 1])) {
+                    snprintf(fmt, sizeof(fmt), "%s", sc);
+                    take = 1;
+                } else if (digits && spec2 && spec2->neighbor && spec2->chars &&
+                           strchr("dixXofeEgGsc", spec2->chars[strlen(spec2->chars) - 1])) {
+                    snprintf(fmt, sizeof(fmt), "%s%s", sc, spec2->chars);
+                    take = 2;
+                }
+            }
+            if (take) {
+                for (int k = 0; k < take; k++) consume(a, Syntax__number);
+                enode v = (enode)mem;
+                if (!is_loaded((Au)v)) v = enode_value(v, false);
+                etype ct = canonical(v);
+                // a scalar formats its value and keeps its unit: 4.9213ft
+                Au_t scalar = (ct && ct->autype->is_scalar) ? ct->autype : null;
+                if (scalar) {
+                    ct = u(etype, scalar->src);
+                    v  = e_create(a, ct, (Au)v, false);
+                }
+                cstr helper = is_realistic((Au)ct) ? "format_f64" :
+                              is_integral ((Au)ct) ? "format_i64" : "format_cstr";
+                Au_t fm = find_member(typeid(Au), helper, AU_MEMBER_FUNC, 0, false);
+                validate(fm, "format helper %s not found", helper);
+                mem = e_fn_call(a, u(efunc, fm),
+                    a(v, const_string(chars, fmt)), false, false);
+                if (scalar)
+                    mem = e_add(a, (Au)mem, (Au)e_create(a, etypeid(string),
+                        (Au)const_string(chars, scalar->ident), false));
+                null_guard = read_if(a, "->") != null;
+                if (!null_guard && !read_if(a, ".")) break;
+            }
+        }
+
         // More chaining - push context for next iteration
         validate(!is_func((Au)mem), "cannot resolve into function");
         if (mem->autype && !module) {
@@ -13078,6 +13126,35 @@ etype silver_read_def(silver a, interface access) {
 
         // read body (cast, funcs, etc.)
         mdl->body = (tokens)read_body(a);
+
+        // every scalar prints as its value with the unit as suffix (4.9ft)
+        // unless it defines its own string cast
+        bool own_string = false;
+        if (mdl->body) {
+            array bt = (array)mdl->body;
+            for (int i = 0; i + 2 < bt->count; i++)
+                if (eq((token)bt->origin[i], "cast") && eq((token)bt->origin[i + 1], "->") &&
+                    eq((token)bt->origin[i + 2], "string")) { own_string = true; break; }
+        }
+        if (!own_string) {
+            string src = f(string,
+                "\n    cast -> string\n        v : %s [ a ]\n        return '{v}%o'\n",
+                value_type->autype->ident, n);
+            string keep = a->source_raw;
+            array  gen  = array(alloc, 32);
+            parse_tokens(a, (Au)src, gen);
+            a->source_raw = keep;
+            if (!mdl->body) mdl->body = (tokens)array(alloc, 32);
+            // generated tokens report at the scalar's own line
+            token ref = element(a, -1);
+            each(gen, token, t) {
+                if (ref) {
+                    t->source = (string)hold(ref->source);
+                    t->line  += ref->line;   // keep the block's own line breaks
+                }
+                push((array)mdl->body, (Au)t);
+            }
+        }
 
     } else if (is_enum) {
         etype store = null;
