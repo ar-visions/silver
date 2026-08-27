@@ -491,6 +491,7 @@ HOST_API intptr_t _get_osfhandle(int fd);
 #include <unistd.h>
 #include <fcntl.h>
 #include <pthread.h>
+extern char** environ;   // macOS declares it nowhere public
 #endif
 #include <stdlib.h>
 #include <string.h>

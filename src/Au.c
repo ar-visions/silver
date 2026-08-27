@@ -4895,12 +4895,6 @@ AU_EXPORT num parse_formatter(cstr start, cstr res, num sz) {
     return (num)(scan - start);
 }
 
-static int term_width() {
-    struct winsize w;
-    ioctl(STDOUT_FILENO, TIOCGWINSZ, &w);
-    return w.ws_col ? w.ws_col : 80;
-}
-
 Au formatter(Au_t type, bool print_info, handle ff, Au opt, int seq, symbol template, ...) {
     va_list args;
     FILE* f = (FILE*)ff;
@@ -5052,27 +5046,9 @@ Au formatter(Au_t type, bool print_info, handle ff, Au opt, int seq, symbol temp
         res = prepend;
         */
 
-        int n = len(res);
-        int tw = max(32, term_width() - 22);
-        float lc = (float)n / tw;
-        if (lc <= 1 || !field) {
-            string_writef(res, f, false);
-            if (symbolic_logging || write_ln) {
-                fwrite("\n", 1, 1, f);
-                fflush(f);
-            }
-        } else {
-            for (int i = 0, to = floorf(lc); i <= to; i++) {
-                string l  = mid(res, i * tw, tw);
-                string ff = f(string, "\x1b[22G%o", l);
-                string_writef(ff, f, false);
-                if (symbolic_logging || write_ln) {
-                    if (i == to)
-                        fwrite("\n", 1, 1, f);
-                    else
-                        fwrite("\n\x1b[22G", 1, 7, f);
-                }
-            }
+        string_writef(res, f, false);
+        if (symbolic_logging || write_ln) {
+            fwrite("\n", 1, 1, f);
             fflush(f);
         }
 

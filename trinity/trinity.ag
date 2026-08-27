@@ -18,13 +18,13 @@ import <stdlib.h>
 import <math.h>
 import <vk_mem_alloc.h>
 import <sys/stat.h>
+import <fcntl.h>
 ifndef [ windows ]
 	import <sys/ioctl.h>
 
 
 ifdef [ linux ]
 	import <sys/mman.h>
-	import <fcntl.h>
 	import <linux/videodev2.h>
 
 ifndef [ windows ]
@@ -39,7 +39,7 @@ import KhronosGroup:Vulkan-Loader/e042a3a
 ifdef [ apple ] 
     import KhronosGroup:MoltenVK/db445ff
         >> mkdir -p {root_path}/checkout/MoltenVK/Package/Release/MoltenVK/dynamic/dylib/macOS/
-        >> ln -s {root_path}/platform/native/lib/libMoltenVK.dylib {root_path}/checkout/MoltenVK/Package/Release/MoltenVK/dynamic/dylib/macOS/libMoltenVK.dylib
+        >> ln -sf {root_path}/platform/native/lib/libMoltenVK.dylib {root_path}/checkout/MoltenVK/Package/Release/MoltenVK/dynamic/dylib/macOS/libMoltenVK.dylib
 
 
 import KhronosGroup:SPIRV-Headers/vulkan-sdk-1.4.341.0
@@ -95,7 +95,7 @@ import freetype:freetype/VER-2-13-3 <ft2build.h, freetype/freetype.h>
 
 import PixarAnimationStudios:OpenSubdiv/v3_7_0
     -I{install}/include
-    -losdCPU -lstdc++
+    -losdCPU
     -DNO_EXAMPLES=1
     -DNO_TUTORIALS=1
     -DNO_REGRESSION=1

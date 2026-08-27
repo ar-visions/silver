@@ -2390,6 +2390,215 @@ static int silver_spawn_product(silver a, path bin, bool lib, path cwd,
     return st;
 }
 
+
+#ifdef __APPLE__
+// copy the dylib closure of a Mach-O into lib/, every dependency under
+// our install or build tree rewritten to @rpath/<leaf>. system libs stay
+static void bundle_dylibs(silver a, path bin, path lib_dir, array done) {
+    string out = command_run((command)f(string, "otool -L %o", bin), false);
+    array  lines = split(out, "\n");
+    for (int i = 1; i < len(lines); i++) {
+        string ln = trim((string)lines->origin[i]);
+        int sp = index_of(ln, " (");
+        if (sp <= 0) continue;
+        string dep = mid(ln, 0, sp);
+        path   src = null;
+        string leaf = null;
+        if (starts_with(dep, "@rpath/")) {
+            leaf = mid(dep, 7, len(dep) - 7);
+            path c1 = f(path, "%o/lib/%o", a->install, leaf);
+            path c2 = f(path, "%o/%o", a->build_dir, leaf);
+            src = file_exists("%o", c1) ? c1 : file_exists("%o", c2) ? c2 : null;
+        } else if (dep->chars[0] == '/' &&
+                   (starts_with(dep, a->install->chars) ||
+                    starts_with(dep, a->build_dir->chars))) {
+            src  = path(dep->chars);
+            leaf = stem(src);
+            leaf = f(string, "%o.%o", leaf, ext(src));
+            vexec(a->verbose, "package", "install_name_tool -change %o @rpath/%o %o",
+                dep, leaf, bin);
+        }
+        if (!src || !leaf) continue;
+        if (index_of(done, (Au)leaf) >= 0) continue;
+        push(done, (Au)leaf);
+        path dst = f(path, "%o/%o", lib_dir, leaf);
+        // -L: the install tree links versioned names; ship real files
+        vexec(a->verbose, "package", "cp -L %o %o", src, dst);
+        vexec(a->verbose, "package", "chmod u+w %o", dst);
+        vexec(a->verbose, "package", "install_name_tool -id @rpath/%o %o", leaf, dst);
+        bundle_dylibs(a, dst, lib_dir, done);
+    }
+}
+
+// --release on an app: stage <Name>.app (MacOS/, lib/, share/<name>/ —
+// the same shape path_share_path and the @executable_path/../lib rpath
+// already resolve), sign it, and wrap it in a .dmg under install/packages
+static void silver_package(silver a) {
+    if (a->error || a->is_external || !a->release || a->test) return;
+    if (!a->product || !file_exists("%o", a->product)) return;
+    string name  = a->name;
+    string share = silver_install_name(a);
+    // a cached build has no parsed export: the registry keeps its version
+    string ver = a->exported_version ? string(a->exported_version->chars) : null;
+    if (!ver) {
+        path reg = f(path, "%o/export/%o.agi", a->install, share);
+        if (file_exists("%o", reg)) {
+            string v = trim(command_run((command)f(string,
+                "sed -n 's/^version: *//p' %o", reg), false));
+            if (len(v)) ver = v;
+        }
+    }
+    verify(ver, "--release: %o exports no version (export 1.0.0)", name);
+#if defined(__aarch64__)
+    cstr arch = "arm64";
+#else
+    cstr arch = "x86_64";
+#endif
+    path pkgs  = f(path, "%o/packages", a->install);
+    path stage = f(path, "%o/%o-stage", pkgs, name);
+    path app   = f(path, "%o/%o.app", stage, name);
+    path cts   = f(path, "%o/Contents", app);
+    path macos = f(path, "%o/MacOS", cts);
+    path lib   = f(path, "%o/lib", cts);
+    path res   = f(path, "%o/Resources", cts);
+    path shd   = f(path, "%o/share", cts);
+    make_dir(pkgs);
+    vexec(a->verbose, "package", "rm -rf %o", stage);
+    make_dir(macos); make_dir(lib); make_dir(res); make_dir(shd);
+    print("[%o] package: staging %o", name, app);
+
+    path exe = f(path, "%o/%o", macos, name);
+    vexec(a->verbose, "package", "cp %o %o", a->product, exe);
+    vexec(a->verbose, "package", "chmod u+w %o", exe);
+    array done = array(alloc, 64);
+    bundle_dylibs(a, exe, lib, done);
+    // only the bundle-relative rpath survives: the build tree's absolute
+    // ones would resolve first on this machine and hide a packaging gap
+    string rp = command_run((command)f(string,
+        "otool -l %o | grep -A2 LC_RPATH | grep path | awk '{print $2}'", exe), false);
+    array rps = split(rp, "\n");
+    each(rps, string, r) {
+        string t = trim(r);
+        if (len(t) && t->chars[0] == '/')
+            exec(false, "install_name_tool -delete_rpath %o %o", t, exe);
+    }
+    exec(false, "install_name_tool -add_rpath @executable_path/../lib %o 2>/dev/null", exe);
+
+    path share_src = f(path, "%o/share/%o", a->install, share);
+    if (dir_exists("%o", share_src))
+        vexec(a->verbose, "package", "cp -RL %o %o/%o", share_src, shd, share);
+
+    // icon: <module>/images/icon.png or <module>/icon.png; a release needs one
+    path icon = f(path, "%o/images/icon.png", a->module_path);
+    if (!file_exists("%o", icon)) icon = f(path, "%o/icon.png", a->module_path);
+    verify(file_exists("%o", icon), "--release: %o has no icon (images/icon.png)", name);
+    bool has_icon = true;
+    {
+        path iset = f(path, "%o/icon.iconset", stage);
+        make_dir(iset);
+        // icon.png is the master; a hand-drawn images/icon-<16..256>.png
+        // replaces the scaled copy at that size
+        int sizes[] = { 16, 32, 64, 128, 256, 512, 1024 };
+        path by_size[7] = { 0 };
+        for (int i = 0; i < 5; i++) {
+            path alt = f(path, "%o/images/icon-%i.png", a->module_path, sizes[i]);
+            by_size[i] = file_exists("%o", alt) ? alt : null;
+        }
+        for (int i = 0; i < 6; i++) {
+            path s1 = by_size[i]     ? by_size[i]     : icon;
+            path s2 = by_size[i + 1] ? by_size[i + 1] : icon;
+            exec(false, "sips -z %i %i %o --out %o/icon_%ix%i.png >/dev/null",
+                sizes[i], sizes[i], s1, iset, sizes[i], sizes[i]);
+            exec(false, "sips -z %i %i %o --out %o/icon_%ix%i@2x.png >/dev/null",
+                sizes[i] * 2, sizes[i] * 2, s2, iset, sizes[i], sizes[i]);
+        }
+        has_icon = exec(a->verbose, "iconutil -c icns %o -o %o/%o.icns", iset, res, name) == 0;
+    }
+
+    string icon_line = has_icon ?
+        f(string, "  <key>CFBundleIconFile</key><string>%o.icns</string>\n", name) : string("");
+    string plist = f(string,
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+        "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" "
+        "\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
+        "<plist version=\"1.0\"><dict>\n"
+        "  <key>CFBundleName</key><string>%o</string>\n"
+        "  <key>CFBundleDisplayName</key><string>%o</string>\n"
+        "  <key>CFBundleIdentifier</key><string>com.silver.%o</string>\n"
+        "  <key>CFBundleExecutable</key><string>%o</string>\n"
+        "  <key>CFBundlePackageType</key><string>APPL</string>\n"
+        "  <key>CFBundleVersion</key><string>%o</string>\n"
+        "  <key>CFBundleShortVersionString</key><string>%o</string>\n"
+        "%s"
+        "  <key>LSMinimumSystemVersion</key><string>12.0</string>\n"
+        "  <key>NSHighResolutionCapable</key><true/>\n"
+        "</dict></plist>\n",
+        name, name, name, name, ver, ver, icon_line->chars);
+    path_save(f(path, "%o/Info.plist", cts), (Au)plist, null);
+
+    // ad-hoc signing runs locally; a Developer ID (--sign) ships. the
+    // hardened runtime is what notarization checks for, and its library
+    // validation rejects ad-hoc dylibs, so it comes only with an identity
+    // a Developer ID in the keychain signs by itself; --sign overrides
+    string ident = a->sign && len(a->sign) ? a->sign : trim(command_run((command)string(
+        "security find-identity -v -p codesigning 2>/dev/null | "
+        "grep 'Developer ID Application' | head -1 | sed 's/.*\"\\(.*\\)\"/\\1/'"), false));
+    bool signed_ = ident && len(ident);
+    verify(signed_, "--release: no Developer ID Application certificate in the keychain "
+        "(developer.apple.com > Certificates)");
+    cstr id      = signed_ ? ident->chars : "-";
+    if (signed_) print("[%o] package: signing as %s", name, id);
+    // --deep skips Contents/lib (not a standard nested-code dir), and the
+    // hardened runtime's library validation rejects an unsigned dylib
+    // one codesign process for all of it: the keychain asks once per process
+    cstr   opts  = signed_ ? "--options runtime --timestamp" : "";
+    string paths = string(alloc, 1024);
+    each(done, string, leaf)
+        concat(paths, f(string, "%o/%o ", lib, leaf));
+    cstr quiet = a->verbose ? "" : " 2>/dev/null";
+    verify(exec(a->verbose, "codesign --force %s --sign \"%s\" %o%o%s",
+        opts, id, paths, app, quiet) == 0, "package: codesign failed for %o", app);
+
+    path dmgdir = f(path, "%o/dmg", stage);
+    make_dir(dmgdir);
+    vexec(a->verbose, "package", "cp -R %o %o/", app, dmgdir);
+    vexec(a->verbose, "package", "ln -s /Applications %o/Applications", dmgdir);
+    path dmg = f(path, "%o/%o-%o-macos-%s.dmg", pkgs, name, ver, arch);
+    verify(exec(a->verbose, "hdiutil create -quiet -volname %o -srcfolder %o -ov -format UDZO %o",
+        name, dmgdir, dmg) == 0, "package: hdiutil failed for %o", dmg);
+    if (signed_)
+        verify(exec(a->verbose, "codesign --force --timestamp --sign \"%s\" %o%s", id, dmg, quiet) == 0,
+            "package: codesign failed for %o", dmg);
+    // notarytool store-credentials leaves a keychain item whose account is
+    // the profile name: a stored profile notarizes by itself; --notarize picks one
+    string profile = a->notarize && len(a->notarize) ? a->notarize : !signed_ ? null :
+        trim(command_run((command)string(
+            "security find-generic-password -s com.apple.gke.notary.tool 2>/dev/null | "
+            "sed -n 's/.*\"acct\"<blob>=\"\\(.*\\)\"/\\1/p' | head -1"), false));
+    // a Developer ID release ships notarized; --skip_notary is the opt-out
+    if (signed_ && !a->skip_notary && !(profile && len(profile))) {
+        // the team id is the parenthesized tail of the identity name
+        cstr lp = strrchr(id, '('), rp = strrchr(id, ')');
+        string team = lp && rp && rp > lp ? string(chars, lp + 1, ref_length, (int)(rp - lp - 1)) : string("<team-id>");
+        fault("--release: notarization needs your Apple ID stored once (asks for an "
+              "app-specific password from appleid.apple.com):\n"
+              "  xcrun notarytool store-credentials silver --apple-id <apple-id> --team-id %o\n"
+              "or pass --skip_notary to ship unnotarized", team);
+    }
+    if (profile && len(profile) && !a->skip_notary) {
+        print("[%o] package: notarizing with profile %o", name, profile);
+        verify(exec(a->verbose, "xcrun notarytool submit %o --keychain-profile \"%o\" --wait",
+            dmg, profile) == 0, "package: notarization failed for %o", dmg);
+        verify(exec(a->verbose, "xcrun stapler staple %o", dmg) == 0,
+            "package: staple failed for %o", dmg);
+    }
+    print("[%o] package: %o", name, dmg);
+    a->build = true; // a packaged release does not launch
+}
+#else
+static void silver_package(silver a) { }
+#endif
+
 // export funcs are installation: run the product under SILVER_EXPORT
 // (module init runs them, then exits 0) and wait — the build is not
 // complete until the module's assets are baked. same launch as --test.
@@ -2998,6 +3207,7 @@ AU_EXPORT void silver_init(silver a) {
         // --export: run export funcs even on a cached build, no launch
         if (a->export) { silver_run_exports(a); return; }
         silver_run_tests(a);
+        silver_package(a);
         // cached build still runs by default (recovers is_live from the host binary)
         silver_live_run(a);
         return;
@@ -3130,6 +3340,8 @@ AU_EXPORT void silver_init(silver a) {
             silver_run_exports(a);
 
             silver_run_tests(a);
+
+            silver_package(a);
 
             exporter(a);
 
@@ -7876,7 +8088,7 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
         (file_exists("%o", product_token) &&
          modified_time(product_token) > modified_time(compiler_token));
 
-    if (!a->clean && file_exists("%o", token) &&
+    if (file_exists("%o", token) &&
         product_current) {
         string s = (string)load(token, typeid(string), null);
         if (s && eq(s, config->chars)) {
@@ -8227,7 +8439,8 @@ string compile_implements(silver a, array files, string cflags) {
     path   install = a->install;
     string objs    = string();
 #ifdef __APPLE__
-    cstr   sysroot_flag = "-isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk";
+    // _DARWIN_C_SOURCE: an import's _XOPEN_SOURCE would hide u_char
+    cstr   sysroot_flag = "-isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk -D_DARWIN_C_SOURCE";
 #else
     cstr   sysroot_flag = "";
 #endif
@@ -8261,9 +8474,10 @@ string compile_implements(silver a, array files, string cflags) {
         path tool_root = a->base_install ? a->base_install : install;
         string base_inc = a->base_install ?
             f(string, " -I%o/include -I%o/include/Au", a->base_install, a->base_install) : string("");
-        verify(exec(a->verbose, "%o/bin/%s %s %s %s %o %o %s -w -c %o -o %o -I%o/include/%o -I%o/include -I%o/include/Au%o",
-            tool_root, compiler, std_flag, lang_flag, sysroot_flag, own_link, cflags, a->debug ? "-g" : "", i, i_name, install, st, install, install, base_inc) == 0,
-            "failed to compile %o", i);
+        string cmd = f(string, "%o/bin/%s %s %s %s %o %o %s -w -c %o -o %o -I%o/include/%o -I%o/include -I%o/include/Au%o",
+            tool_root, compiler, std_flag, lang_flag, sysroot_flag, own_link, cflags, a->debug ? "-g" : "", i, i_name, install, st, install, install, base_inc);
+        if (a->verbose) print("[%o] %o", a->name, cmd);
+        verify(exec(a->verbose, "%o", cmd) == 0, "failed to compile %o", i);
         au_exec_prefix(null);
         if (len(objs)) append(objs, " ");
         concat(objs, i_name);
@@ -8393,6 +8607,7 @@ none silver_build_product(silver a) {
     if (a->product) drop(a->product);
 
     a->product = hold(product);
+    verify(!(a->release && a->is_library && !a->is_external), "--release is for apps: %o is a library", a->name);
     collect_mm_frameworks(a, a->implements);
 
     // platform dispatch: a device serves its own sysroot, and llvm is already
