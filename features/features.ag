@@ -823,6 +823,63 @@ expect func t_cpp_templates [] -> bool
     du: duo<i32,f32> [ first: 2, second: 3.0 ]  # two type args
     return du.wide[] == 5
 
+# a string PARAMETER compares by content like any string: `==` against a
+# literal inside an expression must not fall back to identity
+func str_param_is [ s: string ] -> bool
+    return s == 'cells'
+
+func str_param_pick [ s: string ] -> i32
+    return (s == 'cells') ? 1 : (s == 'tholin') ? 2 : 0
+
+expect func t_string_param_eq [] -> bool
+    m : map string [string] []
+    m[ 'brush' ] = 'cells'
+    k : m[ 'brush' ]
+    return str_param_is[ k ] && str_param_pick[ k ] == 1 && str_param_pick[ 'tholin' ] == 2
+
+# a vec handed to an IMPORTED func's raw-pointer arg crosses as its origin
+expect func t_import_aref_vec [] -> bool
+    v : vec u8 [ 8 ]
+    rng_fill[ v, 8 ]
+    return v[0] == 0 && v[3] == 21 && v[7] == 49
+
+# a sized vec is one allocation with its elements inline; growing past
+# that capacity moves them to the heap and keeps every value
+expect func t_vec_inline_growth [] -> bool
+    v : vec i32 [ 4 ]
+    v[3] = 9
+    v.push[ 5 ]
+    v.push[ 6 ]
+    return v.count == 6 && v[3] == 9 && v[4] == 5 && v[5] == 6
+
+struct AgiPt
+    x : i32
+    y : i32
+
+class AgiItem
+    public name : string
+    public n    : i32
+
+class AgiDoc
+    public pt    : AgiPt
+    public items : vec AgiItem
+    public note  : string
+    public flag  : i32
+
+# agi round-trip through reflection: a struct member, a vec of objects
+# (keyed blocks), an unset member (empty block reads back as null)
+expect func t_agi_roundtrip [] -> bool
+    d : AgiDoc [ flag: 5 ]
+    d.pt = AgiPt [ x: 3, y: 4 ]
+    d.items = vec AgiItem []
+    d.items.push[ AgiItem [ name: 'a', n: 7 ] ]
+    d.items.push[ AgiItem [ name: 'b', n: 8 ] ]
+    txt  : Au.string_agi[ d ]
+    back : cast AgiDoc [ Au.parse_agi[ typeid[ AgiDoc ], txt.chars, null ] ]
+    return back.pt.x == 3 && back.pt.y == 4 && back.items.count == 2 &&
+           back.items[1].n == 8 && back.items[1].name == 'b' &&
+           back.note == null && back.flag == 5
+
 # on-demand instantiation: cpp.hpp never instantiates pairT<i64> — the
 # token pre-scan requests it, and the import TU carries the instantiation
 expect func t_template_ondemand [] -> bool
@@ -1433,6 +1490,8 @@ class MemberMeta
 
 class MemberMetaHost
     public [ MemberMeta ] value : i32
+    # an annotated intern registers too: the meta is its whole reason
+    intern [ MemberMeta ] hidden_v : i32
 
     public [ MemberMeta ] func marked [] -> none
         no-op
@@ -1447,13 +1506,15 @@ expect func t_member_meta [] -> bool
     ct: Au_t [ typeid[ MemberMetaHost ] ]
     st: Au_t [ typeid[ MemberMetaStruct ] ]
     cf: Au.find_member[ ct, 'value', AU_MEMBER_VAR, 0, false ]
+    hf: Au.find_member[ ct, 'hidden_v', AU_MEMBER_VAR, 0, false ]
     cm: Au.find_member[ ct, 'marked', AU_MEMBER_FUNC, 0, false ]
     sf: Au.find_member[ st, 'value', AU_MEMBER_VAR, 0, false ]
     sm: Au.find_member[ st, 'marked', AU_MEMBER_FUNC, 0, false ]
     return cf.meta.m == typeid[ MemberMeta ] &&
            cm.meta.m == typeid[ MemberMeta ] &&
            sf.meta.m == typeid[ MemberMeta ] &&
-           sm.meta.m == typeid[ MemberMeta ]
+           sm.meta.m == typeid[ MemberMeta ] &&
+           hf != null && hf.meta.m == typeid[ MemberMeta ]
 
 # attrib is declaration-time metadata: trinity reads shader bindings this way
 expect func t_attrib [] -> bool
@@ -1723,6 +1784,25 @@ expect func t_path_ops [] -> bool
     tmp.remove[]
     gone: !tmp.exists[]
     return st == 'file' && ex == 'txt' && fn == 'file.txt' && string [ pd ] == 'dir/sub' && ok && gone
+
+# a scalar prints as its value with the unit as suffix — generated for
+# every scalar unless it declares its own string cast
+expect func t_scalar_print [] -> bool
+    how_many_ft : ft [ 150cm ]
+    d : 16ms
+    simple : how_many_ft.1f
+    puts simple
+    return '{how_many_ft}' == '4.92126ft' && '{d}' == '16ms' &&
+           how_many_ft.4f == '4.9213ft' && '{d.3d}' == '016ms' && simple == '4.9ft'
+
+# C-style format postfix: `.4f` is the C precision spec, formatting the
+# value to a string inside {} or anywhere; the chain continues from it
+expect func t_format_postfix [] -> bool
+    x : f64 [ 3.14159 ]
+    n : i32 [ 255 ]
+    s : 'abcdef'
+    return '{x.2f}' == '3.14' && x.4f == '3.1416' && x.2f.count == 4 &&
+           n.02x == 'ff' && n.05d == '00255' && s.4s == 'abcd'
 
 expect func t_float_methods [] -> bool
     x: f64 [ 3.14159 ]

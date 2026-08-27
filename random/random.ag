@@ -65,6 +65,13 @@ func rng_next [] -> u64
     return result
 
 
+# fill n bytes with a fixed pattern: a raw-pointer arg an importer may
+# hand a vec (its origin crosses, not the object)
+func rng_fill [ dst: ARef, n: i32 ]
+    p : @u8 [ dst ]
+    for [ i: i32 0, i < n, i += 1 ]
+        p[i] = u8[ (i * 7) & 255 ]
+
 func randf [] -> f32
     return f32[rng_next[] >> 40] * 0x1.0p-24
 

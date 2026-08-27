@@ -11595,3 +11595,1259 @@ element Clouds
             '#ff5a8a99':  '#6ab4f299',   # commit tab border
             '#ff7aa4cc':  '#9ad0ffcc'    # commit tab hover border
         ]
+
+
+# PLUTO. the ground is PAINTED, not sourced: a 16x8 table over the map
+# (22.5 degrees a cell, longitude east across, latitude +90 down to -90)
+# gives every cell a weighted mix of BRUSHES. a bake lays patches of
+# painted tiles -- texture and relief plates, scenes/textures/pluto-tiles
+# -- along a random walk, each patch drawing its brush from the cell it
+# lands in, or with some chance from a neighbour, so the mixes blend
+# instead of meeting at a grid line. the shader lights the sphere from
+# the relief, and a thin blue haze shell wraps it
+# brushes: c cells (Sputnik's nitrogen polygons)  t tholin (Cthulhu)
+#          k cratered terra  p polar methane frost  b blades (Tartarus)
+#          m mountains (al-Idrisi, and the far side)  f fractured (Viking)
+# refs: Moore et al. 2016 Science 351; McKinnon et al. 2016 Nature 534;
+# Grundy et al. 2016 Science 351; Gladstone et al. 2016; Cheng et al. 2017
+
+func pluto_table [] -> vec string
+    return vec string [] [
+        'p6k2c2 p6k2c2 p5k2m3 p6k2c2 p5m3c2 p6k2c2 p5k2c3 p5m3c2 p5k2c3 p5k2c3 p5m3c2 p6m2c2 p6m2c2 p6m2c2 p6m2c2 p6m2c2',
+        'p4k3t3 p4m3t3 t5p2c3 t6p2c2 t6p2c2 t5p2c3 k4m3t3 k5p2c3 m5k2t3 k5p2c3 p4m3t3 m6p2c2 m7p2c1 m7p2c1 m7p2c1 m6t2c2',
+        'k4t3c3 t7k1c2 t9c1   t9c1   t9c1   t9c1   t7k1c2 m4k2c4 c9k1   b5c4k1 b5m2t3 m5k2t3 m7k1c2 m7k1c2 m7t2c1 m6k2c2',
+        'k4t3c3 t8k1c1 t9c1   t9c1   t9c1   t9c1   t7c3   c9k1   c9k1   c8k1b1 b4c4t2 m4k3t3 m7k1c2 m7t2c1 m7k1c2 m6k2c2',
+        'm4t3c3 t8k1c1 t9c1   t9c1   t9c1   t8k1c1 t5c3k2 c8k1t1 c8k1t1 t4c4k2 t6k1c3 m4k3t3 m7k1c2 m7k1c2 m7t2c1 m6k2c2',
+        'k5t2c3 t6k1c3 t6m2c2 t6k2c2 m5t3c2 t5k2c3 m4t3c3 k5t2c3 m5t2c3 k4t3c3 k5t2c3 m6k1c3 m7k1c2 m7t2c1 m6k1c3 m5t2c3',
+        'k6c3m1 m5c3t2 k6c3m1 m5k3t2 k6c3m1 k5m3t2 k6c3m1 m5c3t2 k6c3m1 m5k3t2 k5m3t2 m5k2c3 m6k1c3 m6t1c3 m5k2c3 m4t3c3',
+        'k5p2c3 k5p2c3 k5p2m3 k5p2c3 k5m3p2 k5p2c3 k5p2c3 k5m3p2 k5p2c3 k5p2c3 k5m3p2 k4m3p3 k4m3p3 k4m3p3 k4m3p3 k5m2p3' ]
+
+# plate repeats around the equator: the bake paints and the shader
+# lays the plates on this same grid, so the marks match the cracks
+func pluto_dtile [] -> f32
+    return 48.0
+
+# one lcg per bake: state rides in a one-element vec
+func pl_rand [ st: vec u32 ] -> f32
+    st[0] = st[0] * 1664525 + 1013904223
+    return f32[ st[0] >> 8 ] / 16777216.0
+
+# a painted tile: its texture and elevation plates. they share a uv,
+# not a size, so elevation is sampled by fraction of the texture
+class PlTile
+    public im : Image
+    public rl : Image
+    public sp : Image
+
+func pl_tile [ nm: string ] -> PlTile
+    t : PlTile [ ]
+    t.im = Image [ uri: path '../silver-scenes/textures/pluto-tiles/{nm}_texture.png' ]
+    t.rl = Image [ uri: path '../silver-scenes/textures/pluto-tiles/{nm}_elevation.png' ]
+    t.sp = Image [ uri: path '../silver-scenes/textures/pluto-tiles/{nm}_specular.png' ]
+    if [ t.im.width == 0 || t.rl.width == 0 || t.sp.width == 0 ]
+        puts 'pluto: tile {nm} missing'
+        return null
+    return t
+
+# brush letter -> its tile, base height and relief amplitude
+func pl_brush_tile [ b: i32 ] -> string
+    return (b == 99)  ? '02_fractured_ice' :
+           (b == 116) ? '05_large_rust_blue' :
+           (b == 98)  ? '03_eroded_ridges' :
+           (b == 109) ? '06_ancient_nitrogen_mountains' :
+           (b == 102) ? '04_mineral_mottling' :
+           (b == 112) ? '04_mineral_mottling' : '01_crater_field'
+
+# the plate's slice in the close-up strips the shader blends
+func pl_plate [ tn: string ] -> i32
+    return (tn == '01_crater_field') ? 0 : (tn == '02_fractured_ice') ? 1 :
+           (tn == '03_eroded_ridges') ? 2 : (tn == '04_mineral_mottling') ? 3 :
+           (tn == '05_large_rust_blue') ? 4 : 5
+
+func pl_brush_base [ b: i32 ] -> f32
+    return (b == 99) ? 0.0 - 0.10 : (b == 98) ? 0.04 : (b == 109) ? 0.07 : 0.0
+
+func pl_brush_amp [ b: i32 ] -> f32
+    return (b == 99) ? 0.10 : (b == 98) ? 0.26 : (b == 109) ? 0.24 :
+           (b == 102) ? 0.16 : (b == 112) ? 0.07 : (b == 116) ? 0.12 : 0.16
+
+# polar frost is the mottling plate lifted to pale yellow; tholin is
+# the rust plate as it comes; the rest keep their own colour
+func pl_brush_tint [ b: i32, c: i32 ] -> f32
+    if [ b == 112 ] return (c == 0) ? 1.14 : (c == 1) ? 1.10 : 0.96
+    return 1.0
+
+# draw a brush from a cell's mix: 'k7t3' is 70% k, 30% t; a bare letter
+# is that brush alone
+func pl_cell_brush [ cell: string, r: f32 ] -> i32
+    n : i32 [ cell.count ]
+    if [ n == 1 ] return i32[ cell[0] ]
+    total : f32 [ 0.0 ]
+    for [ i: i32 0, i + 1 < n, i += 2 ] total = total + f32[ i32[ cell[i + 1] ] - 48 ]
+    acc : f32 [ 0.0 ]
+    for [ i: i32 0, i + 1 < n, i += 2 ]
+        acc = acc + f32[ i32[ cell[i + 1] ] - 48 ] / total
+        if [ r < acc ] return i32[ cell[i] ]
+    return i32[ cell[0] ]
+
+# a plate at a wrapped uv: colour and elevation bilinear, specular
+# nearest, into out[0..4] = r g b elevation specular
+func pl_sample [ t: PlTile, qx: f32, qy: f32, out: vec f32 ]
+    u : f32 [ qx - floor[ qx ] ]
+    v : f32 [ qy - floor[ qy ] ]
+    tw : i32 [ t.im.width ]
+    th : i32 [ t.im.height ]
+    tp : i32 [ t.im.pixel_size ]
+    td : @u8 [ t.im.vdata[] ]
+    fsx : f32 [ u * f32[ tw - 1 ] ]
+    fsy : f32 [ v * f32[ th - 1 ] ]
+    sx : i32 [ i32[ fsx ] ]
+    sy : i32 [ i32[ fsy ] ]
+    if [ sx > tw - 2 ] sx = tw - 2
+    if [ sy > th - 2 ] sy = th - 2
+    wx : f32 [ fsx - f32[ sx ] ]
+    wy : f32 [ fsy - f32[ sy ] ]
+    t00 : i32 [ (sy * tw + sx) * tp ]
+    t10 : i32 [ t00 + tp ]
+    t01 : i32 [ t00 + tw * tp ]
+    t11 : i32 [ t01 + tp ]
+    w00 : f32 [ (1.0 - wx) * (1.0 - wy) ]
+    w10 : f32 [ wx * (1.0 - wy) ]
+    w01 : f32 [ (1.0 - wx) * wy ]
+    w11 : f32 [ wx * wy ]
+    for [ c: i32 0, c < 3, c += 1 ]
+        out[ c ] = (f32[ td[ t00 + c ] ] * w00 + f32[ td[ t10 + c ] ] * w10 + f32[ td[ t01 + c ] ] * w01 + f32[ td[ t11 + c ] ] * w11) / 255.0
+    rw : i32 [ t.rl.width ]
+    rh : i32 [ t.rl.height ]
+    rp : i32 [ t.rl.pixel_size ]
+    rd : @u8 [ t.rl.vdata[] ]
+    fex : f32 [ u * f32[ rw - 1 ] ]
+    fey : f32 [ v * f32[ rh - 1 ] ]
+    ex : i32 [ i32[ fex ] ]
+    ey : i32 [ i32[ fey ] ]
+    if [ ex > rw - 2 ] ex = rw - 2
+    if [ ey > rh - 2 ] ey = rh - 2
+    ux : f32 [ fex - f32[ ex ] ]
+    uy : f32 [ fey - f32[ ey ] ]
+    r00 : i32 [ (ey * rw + ex) * rp ]
+    r10 : i32 [ r00 + rp ]
+    r01 : i32 [ r00 + rw * rp ]
+    r11 : i32 [ r01 + rp ]
+    out[ 3 ] = (f32[ rd[ r00 ] ] * (1.0 - ux) * (1.0 - uy) + f32[ rd[ r10 ] ] * ux * (1.0 - uy)
+              + f32[ rd[ r01 ] ] * (1.0 - ux) * uy + f32[ rd[ r11 ] ] * ux * uy) / 255.0
+    sw : i32 [ t.sp.width ]
+    sh : i32 [ t.sp.height ]
+    sp9 : i32 [ t.sp.pixel_size ]
+    sd : @u8 [ t.sp.vdata[] ]
+    gx9 : i32 [ i32[ u * f32[ sw - 1 ] ] ]
+    gy9 : i32 [ i32[ v * f32[ sh - 1 ] ] ]
+    out[ 4 ] = f32[ sd[ (gy9 * sw + gx9) * sp9 ] ] / 255.0
+
+func pluto_bake [] -> bool
+    rows : pluto_table[]
+    grid : vec string []
+    for [ r: string ] in rows
+        parts : r.split[ ' ' ]
+        for [ q: string ] in parts
+            if [ q.count > 0 ] grid.push[ q ]
+    if [ grid.count != 128 ]
+        puts 'pluto: table is {grid.count} cells, not 128'
+        return false
+    # 16 x 8 cells of 512: a plate at 1:1 spans two cells (45 degrees)
+    # colour and height at 16K x 8K; specular, plate weights and the
+    # crack mask ride at half that
+    w9 : i32 [ 16384 ]
+    h9 : i32 [ 8192 ]
+    n9 : i32 [ w9 * h9 ]
+    w8 : i32 [ w9 / 2 ]
+    h8 : i32 [ h9 / 2 ]
+    n8 : i32 [ w8 * h8 ]
+    col : vec f32 [ n9 * 3 ]
+    hgt : vec f32 [ n9 ]
+    cov : vec f32 [ n9 ]
+    spc : vec f32 [ n8 ]
+    cv8 : vec f32 [ n8 ]
+    crk : vec f32 [ n8 ]
+    wgt : vec f32 [ n8 * 6 ]
+    st  : vec u32 [ 1 ]
+    st[0] = 2015071
+    tiles : map PlTile [string] []
+    smp : vec f32 [ 5 ]
+    # patches: soft discs of a plate, weighted into a sum that is divided
+    # by its coverage at the end -- overlaps blend, nothing wins
+    prad : f32 [ 170.0 ]
+    np9  : i32 [ i32[ f32[ n9 ] * 12.0 / (prad * prad * 3.14159) ] ]
+    puts 'pluto: painting {np9} patches from a 16x8 table'
+    for [ s: i32 0, s < np9, s += 1 ]
+        px : f32 [ pl_rand[ st ] * f32[ w9 ] ]
+        py : f32 [ pl_rand[ st ] * f32[ h9 ] ]
+        lat : f32 [ (0.5 - py / f32[ h9 ]) * 3.14159265 ]
+        cl  : f32 [ cos[ lat ] ]
+        if [ cl < 0.15 ] cl = 0.15
+        # equirect rows widen toward the poles: thin the patches to match
+        if [ pl_rand[ st ] > cl ] continue
+        gx : i32 [ i32[ px / f32[ w9 ] * 16.0 ] ]
+        gy : i32 [ i32[ py / f32[ h9 ] * 8.0 ] ]
+        # random neighbour: a third of the patches take the mix next door,
+        # more so the closer they sit to the cell's edge
+        fx : f32 [ px / f32[ w9 ] * 16.0 - f32[ gx ] - 0.5 ]
+        fy : f32 [ py / f32[ h9 ] * 8.0 - f32[ gy ] - 0.5 ]
+        if [ pl_rand[ st ] < abs[ fx ] * 0.9 ] gx = gx + ((fx > 0.0) ? 1 : 0 - 1)
+        if [ pl_rand[ st ] < abs[ fy ] * 0.9 ] gy = gy + ((fy > 0.0) ? 1 : 0 - 1)
+        if [ gx < 0 ] gx = 15
+        if [ gx > 15 ] gx = 0
+        if [ gy < 0 ] gy = 0
+        if [ gy > 7 ] gy = 7
+        b  : i32 [ pl_cell_brush[ grid[ gy * 16 + gx ], pl_rand[ st ] ] ]
+        # tholin rust settles everywhere: a share of every cell's patches
+        if [ pl_rand[ st ] < 0.18 ] b = 116
+        tn : pl_brush_tile[ b ]
+        pi : i32 [ pl_plate[ tn ] ]
+        t  : PlTile tiles[ tn ]
+        if [ !t ]
+            t = pl_tile[ tn ]
+            if [ !t ] return false
+            tiles[ tn ] = t
+        hb   : f32 [ pl_brush_base[ b ] ]
+        hamp : f32 [ pl_brush_amp[ b ] ]
+        kr : f32 [ pl_brush_tint[ b, 0 ] ]
+        kg : f32 [ pl_brush_tint[ b, 1 ] ]
+        kb : f32 [ pl_brush_tint[ b, 2 ] ]
+        # a brush carries a window of the plate at the size the close-up
+        # lays it; the window sits anywhere the whole disc fits inside
+        tw : i32 [ t.im.width ]
+        th : i32 [ t.im.height ]
+        scl : f32 [ f32[ tw ] * pluto_dtile[] / f32[ w9 ] ]
+        mg  : f32 [ prad * scl + 2.0 ]
+        tx  : f32 [ mg + pl_rand[ st ] * (f32[ tw ] - 2.0 * mg) ]
+        ty  : f32 [ mg + pl_rand[ st ] * (f32[ th ] - 2.0 * mg) ]
+        rx : f32 [ prad / cl ]
+        x0 : i32 [ i32[ floor[ px - rx ] ] ]
+        x1 : i32 [ i32[ ceil [ px + rx ] ] ]
+        y0 : i32 [ i32[ floor[ py - prad ] ] ]
+        y1 : i32 [ i32[ ceil [ py + prad ] ] ]
+        if [ y0 < 0 ] y0 = 0
+        if [ y1 > h9 - 1 ] y1 = h9 - 1
+        for [ y: i32 y0, y <= y1, y += 1 ]
+            dy : f32 [ f32[ y ] - py ]
+            for [ x: i32 x0, x <= x1, x += 1 ]
+                xw : i32 [ x ]
+                while [ xw < 0 ] xw += w9
+                while [ xw >= w9 ] xw -= w9
+                dx : f32 [ (f32[ x ] - px) * cl ]
+                d  : f32 [ sqrt[ dx * dx + dy * dy ] / prad ]
+                if [ d >= 1.0 ] continue
+                i  : i32 [ y * w9 + xw ]
+                i8 : i32 [ (y >> 1) * w8 + (xw >> 1) ]
+                f  : f32 [ eu_sstep[ 1.0, 0.30, d ] ]
+                # the plate uv the close-up lays at this pixel: the paint
+                # and the shader's relief and glow share one grid
+                pl_sample[ t, (f32[ xw ] + 0.5) / f32[ w9 ] * pluto_dtile[], (f32[ y ] + 0.5) / f32[ h9 ] * pluto_dtile[] * 0.5, smp ]
+                cr : f32 [ smp[0] * kr ]
+                cg : f32 [ smp[1] * kg ]
+                cb : f32 [ smp[2] * kb ]
+                ev : f32 [ smp[3] ]
+                hv : f32 [ hb + ev * hamp ]
+                # ice: the troughs sit in shadow, so its low ground darkens
+                ao : f32 [ (b == 99) ? 0.70 + 0.30 * eu_sstep[ 0.15, 0.75, ev ] : 1.0 ]
+                cr = cr * ao
+                cg = cg * ao
+                cb = cb * ao
+                sv : f32 [ smp[4] ]
+                b3 : i32 [ i * 3 ]
+                # ground already painted takes little more: the first
+                # plate down owns it, later ones only fill the gaps
+                fe : f32 [ f / (1.0 + 4.0 * cov[ i ]) ]
+                col[ b3 ]     = col[ b3 ]     + cr * fe
+                col[ b3 + 1 ] = col[ b3 + 1 ] + cg * fe
+                col[ b3 + 2 ] = col[ b3 + 2 ] + cb * fe
+                hgt[ i ]      = hgt[ i ] + hv * fe
+                cov[ i ]      = cov[ i ] + fe
+                spc[ i8 ]     = spc[ i8 ] + sv * fe
+                cv8[ i8 ]     = cv8[ i8 ] + fe
+                # the ice's crack as painted here: what the glow follows
+                if [ b == 99 ] crk[ i8 ] = crk[ i8 ] + eu_sstep[ 0.42, 0.15, ev ] * fe
+                wgt[ i8 * 6 + pi ] = wgt[ i8 * 6 + pi ] + fe
+    # resolve the sums
+    for [ i: i32 0, i < n9, i += 1 ]
+        b3 : i32 [ i * 3 ]
+        c9 : f32 [ cov[i] ]
+        if [ c9 > 0.001 ]
+            col[ b3 ]     = col[ b3 ]     / c9
+            col[ b3 + 1 ] = col[ b3 + 1 ] / c9
+            col[ b3 + 2 ] = col[ b3 + 2 ] / c9
+            hgt[ i ]      = hgt[ i ] / c9
+        el [ i > 0 ]
+            # a pixel no patch reached takes its neighbour: a flat fill
+            # cuts a sawtooth cliff into the relief
+            col[ b3 ]     = col[ b3 - 3 ]
+            col[ b3 + 1 ] = col[ b3 - 2 ]
+            col[ b3 + 2 ] = col[ b3 - 1 ]
+            hgt[ i ]      = hgt[ i - 1 ]
+    for [ i: i32 0, i < n8, i += 1 ]
+        c9 : f32 [ cv8[i] ]
+        if [ c9 > 0.001 ]
+            spc[ i ]      = spc[ i ] / c9
+            crk[ i ]      = crk[ i ] / c9
+            for [ q: i32 0, q < 6, q += 1 ] wgt[ i * 6 + q ] = wgt[ i * 6 + q ] / c9
+        el [ i > 0 ]
+            spc[ i ]      = spc[ i - 1 ]
+            crk[ i ]      = crk[ i - 1 ]
+            for [ q: i32 0, q < 6, q += 1 ] wgt[ i * 6 + q ] = wgt[ i * 6 - 6 + q ]
+    # normalize height, then write both maps
+    hmin : f32 [ 1e9 ]
+    hmax : f32 [ 0.0 - 1e9 ]
+    for [ i: i32 0, i < n9, i += 1 ]
+        if [ hgt[i] < hmin ] hmin = hgt[i]
+        if [ hgt[i] > hmax ] hmax = hgt[i]
+    hr : f32 [ (hmax > hmin) ? hmax - hmin : 1.0 ]
+    im : Image [ width: w9, height: h9, format: Pixel.rgba8, linear: true, wrap_u: true ]
+    od : @u8 [ im.vdata[] ]
+    hm : Image [ width: w9, height: h9, format: Pixel.rgba8, linear: true, wrap_u: true ]
+    hd : @u8 [ hm.vdata[] ]
+    for [ i: i32 0, i < n9, i += 1 ]
+        b4 : i32 [ i * 4 ]
+        b3 : i32 [ i * 3 ]
+        od[ b4 ]     = u8[ clamp[ col[ b3 ],     0.0, 1.0 ] * 255.0 ]
+        od[ b4 + 1 ] = u8[ clamp[ col[ b3 + 1 ], 0.0, 1.0 ] * 255.0 ]
+        od[ b4 + 2 ] = u8[ clamp[ col[ b3 + 2 ], 0.0, 1.0 ] * 255.0 ]
+        od[ b4 + 3 ] = 255
+        # 16 bits of height: R the high byte, G the low -- eight crushed
+        # the fine relief the shader takes its normals from
+        h16 : i32 [ i32[ (hgt[i] - hmin) / hr * 65535.0 ] ]
+        if [ h16 < 0 ] h16 = 0
+        if [ h16 > 65535 ] h16 = 65535
+        hd[ b4 ]     = u8[ h16 >> 8 ]
+        hd[ b4 + 1 ] = u8[ h16 & 255 ]
+        hd[ b4 + 2 ] = u8[ h16 >> 8 ]
+        hd[ b4 + 3 ] = 255
+    im.png[ path '../silver-scenes/baked/pluto-color.png' ]
+    hm.png[ path '../silver-scenes/baked/pluto-height.png' ]
+    sm : Image [ width: w8, height: h8, format: Pixel.rgba8, linear: true, wrap_u: true ]
+    smd : @u8 [ sm.vdata[] ]
+    # which plates painted each pixel: four weights in one map, two in the next
+    wa : Image [ width: w8, height: h8, format: Pixel.rgba8, linear: true, wrap_u: true ]
+    wad : @u8 [ wa.vdata[] ]
+    wb : Image [ width: w8, height: h8, format: Pixel.rgba8, linear: true, wrap_u: true ]
+    wbd : @u8 [ wb.vdata[] ]
+    for [ i: i32 0, i < n8, i += 1 ]
+        b4 : i32 [ i * 4 ]
+        sv8 : u8 [ u8[ clamp[ spc[i], 0.0, 1.0 ] * 255.0 ] ]
+        smd[ b4 ]     = sv8
+        smd[ b4 + 1 ] = sv8
+        smd[ b4 + 2 ] = sv8
+        smd[ b4 + 3 ] = 255
+        w6 : i32 [ i * 6 ]
+        wad[ b4 ]     = u8[ clamp[ wgt[ w6 ],     0.0, 1.0 ] * 255.0 ]
+        wad[ b4 + 1 ] = u8[ clamp[ wgt[ w6 + 1 ], 0.0, 1.0 ] * 255.0 ]
+        wad[ b4 + 2 ] = u8[ clamp[ wgt[ w6 + 2 ], 0.0, 1.0 ] * 255.0 ]
+        wad[ b4 + 3 ] = u8[ clamp[ wgt[ w6 + 3 ], 0.0, 1.0 ] * 255.0 ]
+        wbd[ b4 ]     = u8[ clamp[ wgt[ w6 + 4 ], 0.0, 1.0 ] * 255.0 ]
+        wbd[ b4 + 1 ] = u8[ clamp[ wgt[ w6 + 5 ], 0.0, 1.0 ] * 255.0 ]
+        wbd[ b4 + 2 ] = u8[ clamp[ crk[ i ], 0.0, 1.0 ] * 255.0 ]
+        wbd[ b4 + 3 ] = 255
+    # the six plates stacked, texture and elevation, for the close-up
+    # blend: slice z is pl_plate's index
+    # a seventh slice is the emission basis: zero for every plate, the
+    # ice's own elevation for the fractured ice -- its cracks glow
+    # an eighth is that mask blurred: the beams rise from a gaussian of
+    # the cracks, wide and soft, while the floor keeps the sharp one
+    ns : i32 [ 1024 ]
+    st_t : Image [ width: ns, height: ns * 8, format: Pixel.rgba8, linear: true, wrap_u: true, wrap_v: true ]
+    st_e : Image [ width: ns, height: ns * 8, format: Pixel.rgba8, linear: true, wrap_u: true, wrap_v: true ]
+    std9 : @u8 [ st_t.vdata[] ]
+    sed9 : @u8 [ st_e.vdata[] ]
+    names : vec string [] [ '01_crater_field', '02_fractured_ice', '03_eroded_ridges',
+                            '04_mineral_mottling', '05_large_rust_blue', '06_ancient_nitrogen_mountains' ]
+    for [ z: i32 0, z < 7, z += 1 ]
+        nz : string names[ (z == 6) ? 1 : z ]
+        t9 : PlTile tiles[ nz ]
+        if [ !t9 ]
+            t9 = pl_tile[ nz ]
+            if [ !t9 ] return false
+            tiles[ nz ] = t9
+        tp9 : i32 [ t9.im.pixel_size ]
+        rp9 : i32 [ t9.rl.pixel_size ]
+        td9 : @u8 [ t9.im.vdata[] ]
+        rd9 : @u8 [ t9.rl.vdata[] ]
+        for [ y: i32 0, y < ns, y += 1 ]
+            for [ x: i32 0, x < ns, x += 1 ]
+                sx9 : i32 [ x * t9.im.width / ns ]
+                sy9 : i32 [ y * t9.im.height / ns ]
+                ex9 : i32 [ x * t9.rl.width / ns ]
+                ey9 : i32 [ y * t9.rl.height / ns ]
+                ti : i32 [ (sy9 * t9.im.width + sx9) * tp9 ]
+                ri : i32 [ (ey9 * t9.rl.width + ex9) * rp9 ]
+                o9 : i32 [ ((z * ns + y) * ns + x) * 4 ]
+                # ice: its troughs sit in shadow, baked into the albedo
+                ao9 : f32 [ (z == 1) ? 0.70 + 0.30 * eu_sstep[ 0.15, 0.75, f32[ rd9[ ri ] ] / 255.0 ] : 1.0 ]
+                if [ z == 6 ] ao9 = 0.0
+                std9[ o9 ]     = u8[ f32[ td9[ ti ] ] * ao9 ]
+                std9[ o9 + 1 ] = u8[ f32[ td9[ ti + 1 ] ] * ao9 ]
+                std9[ o9 + 2 ] = u8[ f32[ td9[ ti + 2 ] ] * ao9 ]
+                std9[ o9 + 3 ] = 255
+                sed9[ o9 ]     = rd9[ ri ]
+                sed9[ o9 + 1 ] = rd9[ ri ]
+                sed9[ o9 + 2 ] = rd9[ ri ]
+                sed9[ o9 + 3 ] = 255
+    # slice 7: the crack mask (dark ice) blurred, three box passes
+    bl : vec f32 [ ns * ns ]
+    bt : vec f32 [ ns * ns ]
+    for [ y: i32 0, y < ns, y += 1 ]
+        for [ x: i32 0, x < ns, x += 1 ]
+            e6 : f32 [ f32[ sed9[ ((6 * ns + y) * ns + x) * 4 ] ] / 255.0 ]
+            bl[ y * ns + x ] = eu_sstep[ 0.42, 0.15, e6 ]
+    br : i32 [ 4 ]
+    for [ pass: i32 0, pass < 3, pass += 1 ]
+        for [ y: i32 0, y < ns, y += 1 ]
+            for [ x: i32 0, x < ns, x += 1 ]
+                a9 : f32 [ 0.0 ]
+                for [ k: i32 0 - br, k <= br, k += 1 ]
+                    xx : i32 [ (x + k + ns) % ns ]
+                    a9 = a9 + bl[ y * ns + xx ]
+                bt[ y * ns + x ] = a9 / f32[ br * 2 + 1 ]
+        for [ y: i32 0, y < ns, y += 1 ]
+            for [ x: i32 0, x < ns, x += 1 ]
+                a9 : f32 [ 0.0 ]
+                for [ k: i32 0 - br, k <= br, k += 1 ]
+                    yy : i32 [ (y + k + ns) % ns ]
+                    a9 = a9 + bt[ yy * ns + x ]
+                bl[ y * ns + x ] = a9 / f32[ br * 2 + 1 ]
+    for [ y: i32 0, y < ns, y += 1 ]
+        for [ x: i32 0, x < ns, x += 1 ]
+            o9 : i32 [ ((7 * ns + y) * ns + x) * 4 ]
+            v8 : u8 [ u8[ clamp[ bl[ y * ns + x ] * 1.3, 0.0, 1.0 ] * 255.0 ] ]
+            sed9[ o9 ]     = v8
+            sed9[ o9 + 1 ] = v8
+            sed9[ o9 + 2 ] = v8
+            sed9[ o9 + 3 ] = 255
+            std9[ o9 ]     = 0
+            std9[ o9 + 1 ] = 0
+            std9[ o9 + 2 ] = 0
+            std9[ o9 + 3 ] = 255
+    # the elevation strip again at a quarter size, box-filtered: the
+    # carpet's vertices displace from THIS. full-res plate pixels are
+    # finer than the outer rings' spacing, and the spikes alias between
+    # them as the carpet steps
+    nl : i32 [ 256 ]
+    st_l : Image [ width: nl, height: nl * 8, format: Pixel.rgba8, linear: true, wrap_u: true, wrap_v: true ]
+    sld9 : @u8 [ st_l.vdata[] ]
+    for [ z: i32 0, z < 8, z += 1 ]
+        for [ y: i32 0, y < nl, y += 1 ]
+            for [ x: i32 0, x < nl, x += 1 ]
+                a9 : i32 [ 0 ]
+                for [ j: i32 0, j < 4, j += 1 ]
+                    for [ i: i32 0, i < 4, i += 1 ]
+                        a9 = a9 + i32[ sed9[ ((z * ns + y * 4 + j) * ns + x * 4 + i) * 4 ] ]
+                v8 : u8 [ u8[ a9 / 16 ] ]
+                o9 : i32 [ ((z * nl + y) * nl + x) * 4 ]
+                sld9[ o9 ]     = v8
+                sld9[ o9 + 1 ] = v8
+                sld9[ o9 + 2 ] = v8
+                sld9[ o9 + 3 ] = 255
+    bd : path '../silver-scenes/baked'
+    bd.make_dir[]
+    st_l.png[ path '../silver-scenes/baked/pluto-strip-elev-lo.png' ]
+    wa.png[ path '../silver-scenes/baked/pluto-brush-a.png' ]
+    wb.png[ path '../silver-scenes/baked/pluto-brush-b.png' ]
+    st_t.png[ path '../silver-scenes/baked/pluto-strip-tex.png' ]
+    st_e.png[ path '../silver-scenes/baked/pluto-strip-elev.png' ]
+    sm.png[ path '../silver-scenes/baked/pluto-spec.png' ]
+    puts 'pluto: maps written'
+    return true
+
+func pluto_maps []
+    # every function the maps depend on, or a moved constant ships stale maps
+    h1 : u64 [ @pluto_bake ]
+    h2 : u64 [ @pluto_table ]
+    h3 : u64 [ @pl_tile ]
+    h4 : u64 [ @pl_brush_base ]
+    h5 : u64 [ @pl_brush_amp ]
+    h6 : u64 [ @pl_brush_tint ]
+    h7 : u64 [ @pl_cell_brush ]
+    h8 : u64 [ @pl_plate ]
+    stamp : string '{h1}-{h2}-{h3}-{h4}-{h5}-{h6}-{h7}-{h8}'
+    sp : path '../silver-scenes/baked/pluto.hash'
+    cp : path '../silver-scenes/baked/pluto-color.png'
+    hp : path '../silver-scenes/baked/pluto-height.png'
+    gp : path '../silver-scenes/baked/pluto-spec.png'
+    if [ sp.exists[] && cp.exists[] && hp.exists[] && gp.exists[] ]
+        old : string [ sp.load[ typeid[string], null ] ]
+        if [ old && old == stamp ]
+            puts 'pluto: maps current ({stamp})'
+            return
+    if [ pluto_bake[] ] sp.save[ stamp, null ]
+
+export func pluto_export []
+    pluto_maps[]
+
+enum PlutoSurface
+    color  : 0
+    height : 1
+    spec   : 2
+    detail : 3
+    dtex   : 4
+    wa     : 5
+    wb     : 6
+    dlo    : 7
+
+# THE GROUND, mars's way: the carpet mesh laid around the craft is
+# wrapped onto the sphere and lifted by the baked height, so the
+# terrain stands up under a low camera. normals come from the same
+# height in the fragment; the ice glints off the specular plate
+ModelViewProject PlutoGround
+    mutable hmax     : f32
+    mutable sun_dir  : vec4f
+    mutable cam_pos  : vec4f
+    mutable eye_m    : vec4f
+    mutable hdist    : f32
+    mutable gain     : f32
+    mutable damp     : f32
+    # the fractured-ice plate close up: repeats around the equator,
+    # and how far its slope tilts the normal
+    mutable dtile    : f32
+    mutable dbend    : f32
+    # how far the plates lift the carpet, in radii, at full amplitude
+    mutable dh       : f32
+    mutable ntime    : f32
+    # the craft's altitude: detail fades out between two and seven of it
+    mutable dfar     : f32
+
+    attrib color  : LayoutBinding [ type:typeid[ PlutoSurface ], id:PlutoSurface.color,  count:1, format: typeid[ rgba8 ] ]
+    attrib height : LayoutBinding [ type:typeid[ PlutoSurface ], id:PlutoSurface.height, count:1, format: typeid[ rgba8 ] ]
+    attrib spec   : LayoutBinding [ type:typeid[ PlutoSurface ], id:PlutoSurface.spec,   count:1, format: typeid[ rgba8 ] ]
+    attrib detail : LayoutBinding [ type:typeid[ PlutoSurface ], id:PlutoSurface.detail, count:1, format: typeid[ rgba8 ] ]
+    attrib dtex   : LayoutBinding [ type:typeid[ PlutoSurface ], id:PlutoSurface.dtex,   count:1, format: typeid[ rgba8 ] ]
+    attrib wa     : LayoutBinding [ type:typeid[ PlutoSurface ], id:PlutoSurface.wa,     count:1, format: typeid[ rgba8 ] ]
+    attrib wb     : LayoutBinding [ type:typeid[ PlutoSurface ], id:PlutoSurface.wb,     count:1, format: typeid[ rgba8 ] ]
+    attrib dlo    : LayoutBinding [ type:typeid[ PlutoSurface ], id:PlutoSurface.dlo,    count:1, format: typeid[ rgba8 ], volume: true ]
+
+    attrib a_pos        : VertexInput   [ type:typeid[ vec3f ] ]
+    attrib a_normal     : VertexInput   [ type:typeid[ vec3f ] ]
+    attrib a_uv         : VertexInput   [ type:typeid[ vec2f ] ]
+
+    attrib v_uv         : VertexOutput  [ type:typeid[ vec2f ] ]
+    attrib v_sp         : VertexOutput  [ type:typeid[ vec3f ] ]
+    attrib v_world_pos  : VertexOutput  [ type:typeid[ vec4f ] ]
+
+    attrib fragColor    : FragmentOutput[ type:typeid[ vec4f ] ]
+
+    func init [ ]
+        model = mat4f.identity[]
+        view  = mat4f.identity[]
+        proj  = mat4f.identity[]
+
+    # the plates the bake painted here, blended by its weights, each
+    # laid twice -- the second turned 37 degrees and offset, so each
+    # repeat's edge falls where the other is whole. returns the height
+    # and the texture brightness
+    # one slice of a strip atlas at a plate uv: wrapped in the slice, the
+    # lod from the unwrapped uv's gradients so a repeat seam does not blur
+    func p_det [ duv: vec2f, z: float, gx: vec2f, gy: vec2f ] -> GLSL vec4f {
+        vec2 a = vec2(fract(duv.x), (z + fract(duv.y)) * 0.125);
+        return textureGrad(detail, a, gx * vec2(1.0, 0.125), gy * vec2(1.0, 0.125));
+    }
+
+    func p_tex [ duv: vec2f, z: float, gx: vec2f, gy: vec2f ] -> GLSL vec4f {
+        vec2 a = vec2(fract(duv.x), (z + fract(duv.y)) * 0.125);
+        return textureGrad(dtex, a, gx * vec2(1.0, 0.125), gy * vec2(1.0, 0.125));
+    }
+
+    func p_detail [ uv: vec2f, clat: float, ux: vec2f, uy: vec2f ] -> GLSL vec3f {
+        vec2  duv = vec2(uv.x * 2.0, uv.y) * ubo.dtile * 0.5;
+        mat2  rm  = mat2(0.7986, 0.6018, -0.6018, 0.7986);
+        vec2  r1  = rm * duv + vec2(0.41, 0.23);
+        vec2  gx  = ux * vec2(ubo.dtile, ubo.dtile * 0.5);
+        vec2  gy  = uy * vec2(ubo.dtile, ubo.dtile * 0.5);
+        vec2  rgx = rm * gx;
+        vec2  rgy = rm * gy;
+        vec4  w4  = texture(wa, uv);
+        vec4  w2  = texture(wb, uv);
+        float w[6];
+        w[0] = w4.r; w[1] = w4.g; w[2] = w4.b; w[3] = w4.a; w[4] = w2.r; w[5] = w2.g * 2.0;
+        // each plate's relief: craters, ice, ridges, mottling, rust, mountains
+        float amp[6];
+        amp[0] = 0.45; amp[1] = 0.03; amp[2] = 0.60; amp[3] = 0.25; amp[4] = 0.30; amp[5] = 1.0;
+        // one copy shows; the turned copy only covers its repeat seams
+        vec2  fa = fract(duv);
+        float sa = smoothstep(0.0, 0.10, min(min(fa.x, 1.0 - fa.x), min(fa.y, 1.0 - fa.y)));
+        float ws = 1e-4;
+        float hh = 0.0;
+        float tt = 0.0;
+        float ck = 0.0;
+        for (int i = 0; i < 6; i++) {{
+            if (w[i] < 0.02) continue;
+            float z  = float(i);
+            float ha = p_det(duv, z, gx, gy).r;
+            float ta = dot(p_tex(duv, z, gx, gy).rgb, vec3(0.3, 0.5, 0.2));
+            if (sa < 1.0) {{
+                ha = mix(p_det(r1, z, rgx, rgy).r, ha, sa);
+                ta = mix(dot(p_tex(r1, z, rgx, rgy).rgb, vec3(0.3, 0.5, 0.2)), ta, sa);
+            }}
+            hh += w[i] * amp[i] * ha;
+            tt += w[i] * ta;
+            ws += w[i];
+            // the ice's crack at the scale its texture shows
+            if (i == 1) ck = w[i] * smoothstep(0.42, 0.15, ha);
+        }}
+        return vec3(hh / ws, tt / ws, ck / ws);
+    }
+
+    # gradient noise over the planet's uv, drifting slowly: a cross
+    # section that keeps about a fifth of the cracks lit at a time
+    func p_gate [ uv: vec2f ] -> GLSL float {
+        // two fixed fields cross-faded by time: the glow swells up from
+        // the base and sinks back in place, nothing slides
+        vec2 q  = vec2(uv.x * 2.0, uv.y) * 9.0;
+        float n = 0.0;
+        for (int k = 0; k < 3; k++) {{
+            // the third field is finer and travels: the wave over the swell
+            vec2 qk = (k == 2) ? q * 2.6 + vec2(ubo.ntime * 0.8, ubo.ntime * 0.5) + vec2(7.1, 3.3)
+                               : q + vec2(31.7, 17.3) * float(k);
+            vec2 i0 = floor(qk);
+            vec2 f0 = fract(qk);
+            vec2 u9 = f0 * f0 * (3.0 - 2.0 * f0);
+            float nk = 0.0;
+            for (int j = 0; j < 2; j++) {{
+                for (int i = 0; i < 2; i++) {{
+                    vec2  c  = i0 + vec2(float(i), float(j));
+                    vec2  h  = fract(sin(vec2(dot(c, vec2(127.1, 311.7)), dot(c, vec2(269.5, 183.3)))) * 43758.5453) * 2.0 - 1.0;
+                    float w  = (i == 0 ? 1.0 - u9.x : u9.x) * (j == 0 ? 1.0 - u9.y : u9.y);
+                    nk += w * dot(h, f0 - vec2(float(i), float(j)));
+                }}
+            }}
+            n += nk * ((k == 0) ? cos(ubo.ntime) : (k == 1) ? sin(ubo.ntime) : 0.7);
+        }}
+        // a tenth always lit; the blasts rise where the field peaks
+        return 0.25 + 0.75 * smoothstep(0.47, 0.90, n * 0.7 + 0.5);
+    }
+
+    # the plates' height from the quarter-size strip: what the carpet
+    # vertices lift by
+    func p_lift [ uv: vec2f, clat: float ] -> GLSL float {
+        vec2  duv = vec2(uv.x * 2.0, uv.y) * ubo.dtile * 0.5;
+        vec2  r1  = mat2(0.7986, 0.6018, -0.6018, 0.7986) * duv + vec2(0.41, 0.23);
+        vec4  w4  = texture(wa, uv);
+        vec4  w2  = texture(wb, uv);
+        float w[6];
+        w[0] = w4.r; w[1] = w4.g; w[2] = w4.b; w[3] = w4.a; w[4] = w2.r; w[5] = w2.g * 2.0;
+        float amp[6];
+        amp[0] = 0.45; amp[1] = 0.03; amp[2] = 0.60; amp[3] = 0.25; amp[4] = 0.30; amp[5] = 1.0;
+        vec2  fa = fract(duv);
+        float sa = smoothstep(0.0, 0.10, min(min(fa.x, 1.0 - fa.x), min(fa.y, 1.0 - fa.y)));
+        float ws = 1e-4;
+        float hh = 0.0;
+        for (int i = 0; i < 6; i++) {{
+            if (w[i] < 0.02) continue;
+            float z  = (float(i) + 0.5) / 8.0;
+            float ha = textureLod(dlo, vec3(duv, z), 0.0).r;
+            if (sa < 1.0) ha = mix(textureLod(dlo, vec3(r1, z), 0.0).r, ha, sa);
+            hh += w[i] * amp[i] * ha;
+            ws += w[i];
+        }}
+        return hh / ws;
+    }
+
+
+
+    # 16 bits across R and G. the hardware would interpolate the two
+    # bytes independently and ripple the ground wherever the low byte
+    # wraps: decode four texels first, then interpolate
+    # at a mip level: the fragment reads the level its footprint covers,
+    # so the relief does not alias to grain in the distance
+    func p_ground_l [ uv: vec2f, lod: float ] -> GLSL float {
+        vec2  ts = vec2(textureSize(height, int(lod)));
+        vec2  pp = uv * ts - 0.5;
+        vec2  fr = fract(pp);
+        vec2  b0 = (floor(pp) + 0.5) / ts;
+        vec2  e1 = 1.0 / ts;
+        vec4  q00 = textureLod(height, b0, lod);
+        vec4  q10 = textureLod(height, b0 + vec2(e1.x, 0.0), lod);
+        vec4  q01 = textureLod(height, b0 + vec2(0.0, e1.y), lod);
+        vec4  q11 = textureLod(height, b0 + e1, lod);
+        // the mips average the low byte across its wraps: past level 0 it is noise
+        float lb  = lod > 0.5 ? 0.0 : 255.0;
+        float h00 = q00.r * 65280.0 + q00.g * lb;
+        float h10 = q10.r * 65280.0 + q10.g * lb;
+        float h01 = q01.r * 65280.0 + q01.g * lb;
+        float h11 = q11.r * 65280.0 + q11.g * lb;
+        float hh  = mix(mix(h00, h10, fr.x), mix(h01, h11, fr.x), fr.y);
+        return hh / 65535.0 * ubo.hmax;
+    }
+
+    func p_ground [ uv: vec2f ] -> GLSL float {
+        return p_ground_l(uv, 0.0);
+    }
+
+    func vertex [] -> GLSL none {
+        float rn = length(a_pos.xz);
+        vec2  pd = rn > 0.0 ? a_pos.xz / rn : vec2(1.0, 0.0);
+        // the carpet's centre snaps to the height map's texel grid: laid
+        // from the craft itself its vertices slide over the ground and
+        // the height between them crawls. the vertices read mip 1: the
+        // ring step is capped to that spacing, not the full map's
+        vec3  em   = normalize(ubo.eye_m.xyz);
+        vec2  ts   = vec2(textureSize(height, 1));
+        float qx   = 6.28318531 / ts.x;
+        float qy   = 3.14159265 / ts.y;
+        float lon0 = floor(atan(em.z, em.x) / qx + 0.5) * qx;
+        float lat0 = floor(asin(clamp(em.y, -1.0, 1.0)) / qy + 0.5) * qy;
+        vec3  up_m = vec3(cos(lat0) * cos(lon0), sin(lat0), cos(lat0) * sin(lon0));
+        vec3  ax9  = abs(up_m.y) > 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);
+        vec3  t_e  = normalize(cross(ax9, up_m));
+        vec3  t_n  = cross(up_m, t_e);
+        float s9   = rn * ubo.hdist;
+        vec3  dir  = normalize(up_m * cos(s9) + (t_e * pd.x + t_n * pd.y) * sin(s9));
+        float dl   = atan(dir.z, dir.x) - lon0;
+        if (dl >  3.14159265) dl -= 6.28318531;
+        if (dl < -3.14159265) dl += 6.28318531;
+        vec2 uv = vec2(0.5 + (lon0 + dl) / 6.28318531,
+                       0.5 - asin(clamp(dir.y, -1.0, 1.0)) / 3.14159265);
+        v_uv = uv;
+        v_sp = dir;
+        float g = p_ground_l(uv, 1.0);
+        float clat = sqrt(max(1.0 - dir.y * dir.y, 0.0025));
+        float d9 = p_lift(uv, clat);
+        // the plate volume has no mips: once a ring step spans plate
+        // pixels the lift is noise, so it settles to its mean
+        float vs  = max(min(rn * 0.0296, 0.00215), rn * 0.00614) * ubo.hdist;
+        float ppx = 6.28318531 / (ubo.dtile * 1024.0);
+        float fdv = 1.0 - smoothstep(1.0, 4.0, vs / ppx);
+        d9 = mix(0.5, d9, fdv);
+        vec4 wpos = ubo.model * vec4(dir * (1.0 + g + d9 * ubo.dh), 1.0);
+        v_world_pos = wpos;
+        gl_Position = ubo.proj * ubo.view * wpos;
+    }
+
+    func fragment [] -> GLSL none {
+        vec3 sp = normalize(v_sp);
+        vec3 ax = abs(sp.y) > 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);
+        vec3 ea = normalize(cross(ax, sp));
+        vec3 no = normalize(cross(sp, ea));
+        // the slope of the baked height, one texel each way; damp
+        // sets how hard the relief tilts the light
+        // the level from the footprint's long axis: the query reports the
+        // short one once anisotropy is on, and at a graze that is grain
+        vec2  ts0 = vec2(textureSize(height, 0));
+        // never below level 1: the bake is noisy texel to texel and the
+        // vertices already stand on level 1
+        float lod = floor(clamp(log2(max(length(dFdx(v_uv) * ts0), length(dFdy(v_uv) * ts0))), 1.0, 7.0));
+        vec2  ts = vec2(textureSize(height, int(lod)));
+        float clat = sqrt(max(1.0 - sp.y * sp.y, 0.0025));
+        float du = 6.28318531 / ts.x * clat;
+        float dv = 3.14159265 / ts.y;
+        float hl = p_ground_l(v_uv - vec2(1.0 / ts.x, 0.0), lod);
+        float hr = p_ground_l(v_uv + vec2(1.0 / ts.x, 0.0), lod);
+        float hu = p_ground_l(v_uv - vec2(0.0, 1.0 / ts.y), lod);
+        float hd = p_ground_l(v_uv + vec2(0.0, 1.0 / ts.y), lod);
+        vec3 n = normalize(sp + (no * ((hd - hu) / (2.0 * dv)) - ea * ((hr - hl) / (2.0 * du))) * ubo.damp);
+        // the plate's own slope, one plate pixel each way
+        float e9 = 1.0 / (ubo.dtile * 1024.0);
+        vec2  ux = dFdx(v_uv);
+        vec2  uy = dFdy(v_uv);
+        vec3  d9 = p_detail(v_uv, clat, ux, uy);
+        // centred on the pixel: a forward step shifts the relief half a
+        // plate pixel off the texture and the glow
+        float dr = p_detail(v_uv + vec2(e9 * 0.5 / clat, 0.0), clat, ux, uy).x;
+        float dl = p_detail(v_uv - vec2(e9 * 0.5 / clat, 0.0), clat, ux, uy).x;
+        float ds = p_detail(v_uv + vec2(0.0, e9 * 0.5), clat, ux, uy).x;
+        float dn = p_detail(v_uv - vec2(0.0, e9 * 0.5), clat, ux, uy).x;
+        // the plates have no mips: past a distance they alias, so the
+        // detail settles toward its mean
+        float dist = length(v_world_pos.xyz - ubo.cam_pos.xyz);
+        // by footprint: once a plate pixel is under a screen pixel the
+        // plate can only alias
+        float ppx = 6.28318531 / (ubo.dtile * 1024.0);
+        float fp  = length(fwidth(v_world_pos.xyz)) / ppx;
+        float fd  = 1.0 - smoothstep(1.0, 4.0, fp);
+        d9 = mix(vec3(d9.x, 0.58, 0.0), d9, fd);
+        n = normalize(n + (ea * (dl - dr) + no * (ds - dn)) * ubo.dbend * 2.0 * fd);
+        mat3 nmm = transpose(inverse(mat3(ubo.model)));
+        vec3 nsp = normalize(nmm * sp);
+        vec3 nw  = normalize(nmm * n);
+        vec3 sun = normalize(ubo.sun_dir.xyz);
+        float ndl = max(dot(nw, sun), 0.0);
+        float ks  = exp2(max(0.15 * fd - textureQueryLod(color, v_uv).x, 0.0));
+        vec3  alb = textureGrad(color, v_uv, ux * ks, uy * ks).rgb;
+        alb *= d9.y * 2.0;
+        vec3  lit = alb * (0.30 + ndl * 1.05) * ubo.gain;
+        // the glint on the ice the plate marks, and a grazing sheen
+        vec3  vd  = normalize(ubo.cam_pos.xyz - v_world_pos.xyz);
+        float spv = smoothstep(0.20, 0.80, texture(spec, v_uv).r);
+        vec3  hv9 = normalize(sun + vd);
+        float gl  = pow(clamp(dot(nw, hv9), 0.0, 1.0), 24.0);
+        float fr  = pow(1.0 - clamp(dot(nw, vd), 0.0, 1.0), 4.0);
+        lit += vec3(0.80, 0.90, 1.0) * (gl * 1.6 + fr * 0.5) * spv * ndl * ubo.gain;
+        // the crack floor lights itself
+        // thick ice lets only a pink through; the open cracks run blue
+        // the ice glows pink all over; the open cracks run blue
+        float gt = p_gate(v_uv);
+        lit += (vec3(1.0, 0.45, 0.75) * texture(wa, v_uv).g * gt * 0.35 + vec3(0.15, 0.45, 1.0) * d9.z * gt * 2.2) * fd;
+        // the thin blue haze along the path: barely there overhead,
+        // a cold wash toward the horizon and into the sun
+        vec3  vdd  = normalize(v_world_pos.xyz - ubo.cam_pos.xyz);
+        float fw   = max(dot(vdd, sun), 0.0);
+        float hz   = 1.0 - exp(-dist * 0.12 * (1.0 + 2.0 * pow(fw, 6.0)));
+        vec3  hazec = vec3(0.42, 0.56, 0.95) * (0.55 + 0.9 * pow(fw, 4.0));
+        vec3  outc = mix(lit, hazec * ubo.gain, clamp(hz, 0.0, 0.20));
+        fragColor = vec4(outc, 1.0);
+    }
+
+# the haze shell over the carpet: the enceladus ray method on the same
+# mesh lifted above the ground, so the blue carries past the limb
+ModelViewProject PlutoSky
+    mutable sun_dir  : vec4f
+    mutable cam_pos  : vec4f
+    mutable eye_m    : vec4f
+    mutable hdist    : f32
+    mutable atm_h    : f32
+    mutable atm_fall : f32
+    mutable atm_gain : f32
+    # the beams: the ground's plate repeat, how high they reach in
+    # radii, and their strength
+    mutable dtile    : f32
+    mutable beam_h   : f32
+    mutable beam_k   : f32
+    mutable ntime    : f32
+    mutable dfar     : f32
+    mutable hmax     : f32
+
+    attrib height : LayoutBinding [ type:typeid[ PlutoSurface ], id:PlutoSurface.height, count:1, format: typeid[ rgba8 ] ]
+    attrib detail : LayoutBinding [ type:typeid[ PlutoSurface ], id:PlutoSurface.detail, count:1, format: typeid[ rgba8 ] ]
+    attrib wa     : LayoutBinding [ type:typeid[ PlutoSurface ], id:PlutoSurface.wa,     count:1, format: typeid[ rgba8 ] ]
+    attrib wb     : LayoutBinding [ type:typeid[ PlutoSurface ], id:PlutoSurface.wb,     count:1, format: typeid[ rgba8 ] ]
+
+    attrib a_pos        : VertexInput   [ type:typeid[ vec3f ] ]
+    attrib a_normal     : VertexInput   [ type:typeid[ vec3f ] ]
+    attrib a_uv         : VertexInput   [ type:typeid[ vec2f ] ]
+
+    attrib v_world_pos  : VertexOutput  [ type:typeid[ vec4f ] ]
+
+    attrib fragColor    : FragmentOutput[ type:typeid[ vec4f ] ]
+
+    func init [ ]
+        model = mat4f.identity[]
+        view  = mat4f.identity[]
+        proj  = mat4f.identity[]
+
+    func vertex [] -> GLSL none {
+        float rn = length(a_pos.xz);
+        vec2  pd = rn > 0.0 ? a_pos.xz / rn : vec2(1.0, 0.0);
+        vec3  up_m = normalize(ubo.eye_m.xyz);
+        vec3  ax9  = abs(up_m.y) > 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);
+        vec3  t_e  = normalize(cross(ax9, up_m));
+        vec3  t_n  = cross(up_m, t_e);
+        // the whole sphere: the carpet radius maps across a half turn
+        float s9   = (rn / 1.35) * 3.14159265;
+        vec3  dir  = normalize(up_m * cos(s9) + (t_e * pd.x + t_n * pd.y) * sin(s9));
+        vec4 wpos = ubo.model * vec4(dir * (1.0 + ubo.atm_h), 1.0);
+        v_world_pos = wpos;
+        gl_Position = ubo.proj * ubo.view * wpos;
+    }
+
+    # gradient noise over the planet's uv, drifting slowly: a cross
+    # section that keeps about a fifth of the cracks lit at a time
+    func s_gate [ uv: vec2f ] -> GLSL float {
+        // two fixed fields cross-faded by time: the glow swells up from
+        // the base and sinks back in place, nothing slides
+        vec2 q  = vec2(uv.x * 2.0, uv.y) * 9.0;
+        float n = 0.0;
+        for (int k = 0; k < 3; k++) {{
+            // the third field is finer and travels: the wave over the swell
+            vec2 qk = (k == 2) ? q * 2.6 + vec2(ubo.ntime * 0.8, ubo.ntime * 0.5) + vec2(7.1, 3.3)
+                               : q + vec2(31.7, 17.3) * float(k);
+            vec2 i0 = floor(qk);
+            vec2 f0 = fract(qk);
+            vec2 u9 = f0 * f0 * (3.0 - 2.0 * f0);
+            float nk = 0.0;
+            for (int j = 0; j < 2; j++) {{
+                for (int i = 0; i < 2; i++) {{
+                    vec2  c  = i0 + vec2(float(i), float(j));
+                    vec2  h  = fract(sin(vec2(dot(c, vec2(127.1, 311.7)), dot(c, vec2(269.5, 183.3)))) * 43758.5453) * 2.0 - 1.0;
+                    float w  = (i == 0 ? 1.0 - u9.x : u9.x) * (j == 0 ? 1.0 - u9.y : u9.y);
+                    nk += w * dot(h, f0 - vec2(float(i), float(j)));
+                }}
+            }}
+            n += nk * ((k == 0) ? cos(ubo.ntime) : (k == 1) ? sin(ubo.ntime) : 0.7);
+        }}
+        // a tenth always lit; the blasts rise where the field peaks
+        return 0.25 + 0.75 * smoothstep(0.47, 0.90, n * 0.7 + 0.5);
+    }
+
+
+    # one slice of a strip atlas at a plate uv: wrapped in the slice, the
+    # lod from the unwrapped uv's gradients so a repeat seam does not blur
+    func p_det [ duv: vec2f, z: float, gx: vec2f, gy: vec2f ] -> GLSL vec4f {
+        vec2 a = vec2(fract(duv.x), (z + fract(duv.y)) * 0.125);
+        return textureGrad(detail, a, gx * vec2(1.0, 0.125), gy * vec2(1.0, 0.125));
+    }
+
+    # the crack mask under a world point, the same lay as the ground's
+    func s_crack [ pw: vec3f, gate: float, gw: float ] -> GLSL float {
+        vec3  pm = transpose(mat3(ubo.model)) * pw;
+        vec3  d  = normalize(pm);
+        vec2  uv = vec2(0.5 + atan(d.z, d.x) / 6.28318531, 0.5 - asin(clamp(d.y, -1.0, 1.0)) / 3.14159265);
+        float clat = sqrt(max(1.0 - d.y * d.y, 0.0025));
+        // the plates grow toward the poles, where the equirect lay pinches
+        vec2  duv = vec2(uv.x * 2.0, uv.y) * ubo.dtile * 0.5;
+        vec2  fa  = fract(duv);
+        float sa  = smoothstep(0.0, 0.10, min(min(fa.x, 1.0 - fa.x), min(fa.y, 1.0 - fa.y)));
+        // the footprint in plate units, isotropic: enough for a blurred mask
+        vec2  gx  = vec2(gw * ubo.dtile, 0.0);
+        vec2  gy  = vec2(0.0, gw * ubo.dtile);
+        float m   = p_det(duv, 7.0, gx, gy).r;
+        if (sa < 1.0) {{
+            vec2 r1 = mat2(0.7986, 0.6018, -0.6018, 0.7986) * duv + vec2(0.41, 0.23);
+            m = mix(p_det(r1, 7.0, gx, gy).r, m, sa);
+        }}
+        return m * gate;
+    }
+
+    # march the thin shell over the ice: each step reads the crack under
+    # it and adds blue that fades with height -- light cast straight up
+    func s_beams [ ro: vec3f, rd: vec3f, fp: float, gw: float ] -> GLSL vec3f {
+        float r1 = 1.0 + ubo.beam_h;
+        float b  = dot(ro, rd);
+        float c1 = dot(ro, ro) - r1 * r1;
+        float h1 = b * b - c1;
+        if (h1 <= 0.0) return vec3(0.0);
+        float sq = sqrt(h1);
+        float t0 = max(0.0 - b - sq, 0.0);
+        float t1 = 0.0 - b + sq;
+        float c0 = dot(ro, ro) - 1.0;
+        float h0 = b * b - c0;
+        if (h0 > 0.0) t1 = min(t1, 0.0 - b - sqrt(h0));
+        if (t1 <= t0) return vec3(0.0);
+        // steps of a fixed length: a tangent ray through the shell is
+        // many times longer than a vertical one, and twelve steps over
+        // it read a different crack each and string the limb
+        int   ns = int(clamp((t1 - t0) / (ubo.beam_h * 0.33), 6.0, 24.0));
+        float dt = (t1 - t0) / float(ns);
+        // the gate varies over hundreds of km: once per ray, at the ground
+        vec3  pg = ro + rd * t1;
+        vec3  dg = normalize(transpose(mat3(ubo.model)) * pg);
+        vec2  ug   = vec2(0.5 + atan(dg.z, dg.x) / 6.28318531, 0.5 - asin(clamp(dg.y, -1.0, 1.0)) / 3.14159265);
+        float clg  = sqrt(max(1.0 - dg.y * dg.y, 0.0025));
+        // once per ray: only ice that owns the ground emits, only where
+        // the blended ground shows a trough, and only while the gate is up
+        float gate = s_gate(ug) * texture(wa, ug).g;
+        if (gate < 0.002) return vec3(0.0);
+        float fd2 = 1.0 - smoothstep(1.0, 4.0, fp);
+        float acc = 0.0;
+        vec3  acol = vec3(0.0);
+        for (int i = 0; i < ns; i++) {{
+            float ti = t0 + (float(i) + 0.5) * dt;
+            vec3  p  = ro + rd * ti;
+            vec3  up = normalize(p);
+            float a  = (length(p) - 1.0) / ubo.beam_h;
+            // straight up from the crack, nothing to the side; the far
+            // columns fade before the plate aliases, and grazing rays
+            // fade before they sum the whole limb
+            float fd = fd2;
+            float gz = smoothstep(0.03, 0.15, abs(dot(rd, up)));
+            float ck = s_crack(p, gate, gw);
+            float wk = ck * exp(-a * 3.0) * dt * fd * gz;
+            acc  += wk;
+            acol += mix(vec3(1.0, 0.45, 0.75), vec3(0.15, 0.45, 1.0), smoothstep(0.0, 0.45, ck)) * wk;
+        }}
+        if (acc <= 0.0) return vec3(0.0);
+        return acol / acc * (1.0 - exp(-acc * ubo.beam_k / ubo.beam_h)) * 1.6;
+    }
+
+    # the terrain radius under a world point
+    func s_terrain [ pw: vec3f ] -> GLSL float {
+        vec3  dm  = normalize(transpose(mat3(ubo.model)) * pw);
+        vec2  huv = vec2(0.5 + atan(dm.z, dm.x) / 6.28318531, 0.5 - asin(clamp(dm.y, -1.0, 1.0)) / 3.14159265);
+        vec4  hq  = texture(height, huv);
+        return 1.0 + (hq.r * 65280.0 + hq.g * 255.0) / 65535.0 * ubo.hmax;
+    }
+
+    func fragment [] -> GLSL none {
+        vec3  ro = ubo.cam_pos.xyz;
+        vec3  rd = normalize(v_world_pos.xyz - ro);
+        float tca = 0.0 - dot(ro, rd);
+        float glow = 0.0;
+        float rch = 0.0;
+        vec3  sunw = normalize(ubo.sun_dir.xyz);
+        // how much shell the ray crosses AHEAD of the camera: from
+        // inside, a ray straight up sees almost none and the limb sees
+        // the whole chord -- without it every sky ray tints the same
+        float ra = 1.0 + ubo.atm_h;
+        float b9 = dot(ro, rd);
+        float c1 = dot(ro, ro) - ra * ra;
+        float h1 = b9 * b9 - c1;
+        float pl = 0.0;
+        if (h1 > 0.0) {{
+            float sq = sqrt(h1);
+            float t0 = max(0.0 - b9 - sq, 0.0);
+            float t1 = 0.0 - b9 + sq;
+            float c0 = dot(ro, ro) - 1.0;
+            float h0 = b9 * b9 - c0;
+            if (h0 > 0.0 && (0.0 - b9 - sqrt(h0)) > 0.0) t1 = min(t1, 0.0 - b9 - sqrt(h0));
+            pl = clamp(max(t1 - t0, 0.0) / (2.0 * sqrt(ra * ra - 1.0)), 0.0, 1.0);
+        }}
+        vec3  pca = (tca > 0.0) ? ro + rd * tca : ro;
+        float rc  = length(pca);
+        // the haze stands on the terrain under the ray, not on a sphere:
+        // the limb follows the mountains
+        float rt  = s_terrain(pca);
+        rch = clamp((rc - rt) / (ubo.atm_fall * 2.4), 0.0, 1.0);
+        // one smooth law: density falls off the terrain, the chord is the
+        // path through it; rays into the ground keep their part of the chord
+        // a thin dense line on the terrain, and a faint tall fog above it
+        float dh = max(rc - rt, 0.0);
+        float od = (exp(-dh / ubo.atm_fall) + 0.12 * exp(-dh / (ubo.atm_fall * 8.0)))
+                 * (1.0 - smoothstep(rt + ubo.atm_h * 0.4, rt + ubo.atm_h, rc));
+        float hw = clamp(dot(pca / max(rc, 1e-4), sunw) * 0.5 + 0.5, 0.0, 1.0);
+        glow = od * (0.10 + 0.55 * hw) * pl;
+        float fw = max(dot(rd, sunw), 0.0);
+        vec3 col = mix(vec3(0.58, 0.72, 1.00), vec3(0.30, 0.44, 0.96), smoothstep(0.0, 0.45, rch));
+        col = mix(col, vec3(0.12, 0.18, 0.55), smoothstep(0.5, 1.0, rch));
+        col *= 1.0 + 3.5 * pow(fw, 8.0);
+        float atma = clamp(glow * ubo.atm_gain, 0.0, 0.45);
+        float ppx = 6.28318531 / (ubo.dtile * 1024.0);
+        float fp  = length(fwidth(v_world_pos.xyz)) / ppx;
+        float gw  = length(fwidth(v_world_pos.xyz)) / 6.28318531;
+        fragColor = vec4(col * atma + s_beams(ro, rd, fp, gw), atma);
+    }
+
+element Pluto
+    frost : true
+    frost_sharp : true
+    intern surf   : PlutoGround
+    intern psky   : PlutoSky
+    intern gsky   : GaiaShader
+    intern models : vec Model
+    intern target : Render
+    intern sky_render : Render
+    # loaded on the worker; the ground model waits for the main thread,
+    # because its volume textures upload the moment they are made
+    intern o_gltf : GltfModel
+    intern se     : Image
+    intern st     : Image
+    intern sl     : Image
+    intern cimg   : Image
+    intern himg   : Image
+    intern p_samplers : map Au [string]
+    intern built  : bool
+    intern ready     : bool
+    intern loading   : bool
+    intern load_task : async
+    intern e_cur  : f32
+    public color  : rgba [ r:0.003, g:0.004, b:0.008, a:1.0 ]
+
+    func build_models[]
+        built = true
+        o_gltf = build_carpet[]
+        o_gltf.hold[]
+        o_gltf.compute_worlds[]
+        cp : path '../silver-scenes/baked/pluto-color.png'
+        hp : path '../silver-scenes/baked/pluto-height.png'
+        gp : path '../silver-scenes/baked/pluto-spec.png'
+        if [ !cp.exists[] || !hp.exists[] || !gp.exists[] ]
+            puts 'pluto: no baked maps — painting live'
+            pluto_bake[]
+        surf = PlutoGround [ vk: vk ]
+        se = Image [ uri: path '../silver-scenes/baked/pluto-strip-elev.png', linear: true, wrap_u: true, wrap_v: true ]
+        se.hold[]
+        st = Image [ uri: path '../silver-scenes/baked/pluto-strip-tex.png', linear: true, wrap_u: true, wrap_v: true ]
+        st.hold[]
+        sl = Image [ uri: path '../silver-scenes/baked/pluto-strip-elev-lo.png', linear: true, wrap_u: true, wrap_v: true ]
+        sl.hold[]
+        cimg = Image [ uri: cp, linear: true, wrap_u: true ]
+        cimg.hold[]
+        himg = Image [ uri: hp, linear: true, wrap_u: true ]
+        himg.hold[]
+        p_samplers = map Au [string] [
+            'spec':   Image [ uri: gp, surface: PlutoSurface.spec,   linear: true, wrap_u: true ],
+            'wa':     Image [ uri: path '../silver-scenes/baked/pluto-brush-a.png', surface: PlutoSurface.wa, linear: true, wrap_u: true ],
+            'wb':     Image [ uri: path '../silver-scenes/baked/pluto-brush-b.png', surface: PlutoSurface.wb, linear: true, wrap_u: true ]
+        ]
+        p_samplers.hold[]
+        psky = PlutoSky [ vk: vk ]
+        gsky = GaiaShader [ vk: vk ]
+        g_gltf : GltfModel.open[ path '../silver-scenes/models/earth.gltf' ]
+        g_samplers : map Image [string] [
+            'color': Image [ uri: path '../silver-scenes/textures/gaia.png', surface: GaiaSurface.color ]
+        ]
+        g_model : Model [ vk: vk, w: ux, id: g_gltf, s: gsky, samplers: g_samplers,
+            straight_alpha: true, cull_none: true ]
+        models = vec Model [] [ g_model ]
+
+    func create_target[]
+        if [ target || !models || models.count == 0 ] return
+        # the plate strips as 2D atlases, eight slices down: mipped and
+        # anisotropic, read a slice at a time with the footprint's gradients
+        tx_e : Texture [ vk: vk, w: ux, sampler: se, mip_levels: 4, anisotropy: 16, linear: true, wrap_u: true ]
+        tx_e.hold[]
+        tx_t : Texture [ vk: vk, w: ux, sampler: st, mip_levels: 4, anisotropy: 16, linear: true, wrap_u: true ]
+        tx_t.hold[]
+        tx_l : Texture [ vk: vk, w: ux, sampler: sl, depth: 8, mip_levels: 1, linear: true, wrap_u: true, wrap_v: true ]
+        tx_l.hold[]
+        # the colour map with mips: close up the ground reads it soft, so
+        # the plates alone draw the cracks, at the one scale the glow uses
+        tx_c : Texture [ vk: vk, w: ux, sampler: cimg, mip_levels: 8, anisotropy: 16, linear: true, wrap_u: true ]
+        tx_c.hold[]
+        p_samplers[ 'color' ]  = tx_c
+        tx_h : Texture [ vk: vk, w: ux, sampler: himg, mip_levels: 8, anisotropy: 16, linear: true, wrap_u: true ]
+        tx_h.hold[]
+        p_samplers[ 'height' ] = tx_h
+        p_samplers[ 'detail' ] = tx_e
+        p_samplers[ 'dtex' ]   = tx_t
+        p_samplers[ 'dlo' ]    = tx_l
+        # the projection y-flip reverses winding: no culling on the carpet
+        o_model : Model [ vk: vk, w: ux, id: o_gltf, s: surf, samplers: p_samplers,
+            straight_alpha: true, cull_none: true ]
+        models.push[ o_model ]
+        # the haze and beams march at half the ground's pixels, then blit over it
+        s_model : Model [ vk: vk, w: ux, id: o_gltf, s: psky, samplers: p_samplers,
+            straight_alpha: false, cull_none: true, depth_no_test: true ]
+        sky_render = Render [ vk: vk, w: ux, wscale: (ux.frost_eff[] == 2) ? 1.0 : 0.5,
+            clear_color: vec4f [ 0.0, 0.0, 0.0, 0.0 ], models: [ s_model ] ]
+        sky_render.hold[]
+        models.push[ Model [ w: ux, samplers: map Au[string] [ 'color': sky_render.color ] ] ]
+        target = Render [
+            vk:          vk,
+            w:           ux,
+            wscale:      (ux.frost_eff[] == 2) ? 2.0 : 1.0,
+            use_depth:   true,
+            clear_color: vec4f [ color.r, color.g, color.b, 1.0 ],
+            models:      models ]
+        target.hold[]
+        target.owner  = a
+        ux.element_targets[ id ] = target
+
+    public func on_unload [ ]
+        if [ ux && ux.element_targets ] ux.element_targets.rm[ id ]
+
+    # nitrogen ice: the editor's purples go to a cold blue-grey
+    public func theme [ ] -> map string [string]
+        return map string [string] [
+            '#140a2acc':  '#0e1420cc',
+            '#140a2a80':  '#0e142080',
+            '#220022aa':  '#101a26aa',
+            '#614':       '#2c3a4c',
+            '#413':       '#22303e',
+            '#826':       '#4a6280',
+            '#625a':      '#2c3a4ca0',
+            '#8af2':      '#9ac0ff22',
+            '#425':       '#2e3e52',
+            '#ede3':      '#bcd4ff33',
+            '#44225588':  '#3a4c6433',
+            '#ff3a6a22':  '#7ab0ff22',
+            '#ff3a6a44':  '#7ab0ff44',
+            '#ff5a8a99':  '#8ab8ff99',
+            '#ff7aa4cc':  '#a8ccffcc'
+        ]
+
+    func load_bg [ arg: object :: t: Pluto ]
+        t.build_models[]
+        t.ready = true
+
+    func draw [ w: Window ]
+        animated = true
+        if [ !built && !loading ]
+            loading = true
+            w9 : vec Au []
+            w9.push[ a ]
+            load_task = async [ target: a, work_fn: lambda load_bg[ a ], work: w9 ]
+        if [ !ready ] return
+        create_target[]
+        orbit[]
+
+    # a craft over the equator, the way the mars craft rides its canyon
+    func orbit[]
+        aspect : f32 [ (ux.height > 0) ? f32[ ux.width ] / f32[ ux.height ] : 1.7778 ]
+        # altitude above the datum in radii: 0.02 is 24 km over pluto
+        e_t : f32 [ (ux.orbit_mode == OrbitView.low)  ? 0.030 :
+                    (ux.orbit_mode == OrbitView.high) ? 0.070 :
+                    (ux.orbit_mode == OrbitView.far)  ? 0.180 : 0.450 ]
+        if [ e_cur == 0.0 ] e_cur = e_t
+        e_cur = filter_n[ e_cur, e_t, 0.06, ux.frame_factor ]
+        # the craft starts over the equator's ice, cells 7-8 of the table
+        spin_d : f32 [ 0.0 - 78.75 + ux.time * 420.0 ]
+        # the craft sits on the equator; the planet turns under it
+        cx : f32 [ 0.0 ]
+        cy : f32 [ 0.0 ]
+        cz : f32 [ 1.0 ]
+        e_r : f32 [ 1.0 + e_cur ]
+        _eye : vec3f [ 0.0, 0.0, e_r ]
+        # the spin axis is world y; ground flows along -x under a craft
+        # at +z, and the craft travels the other way
+        gx : f32 [ 1.0 ]
+        gy : f32 [ 0.0 ]
+        gz : f32 [ 0.0 ]
+        dip : f32 [ acos[ 1.0 / e_r ] ]
+        pit : f32 [ dip + radians[ 6.0 ] ]
+        pc : f32 [ cos[ pit ] ]
+        ps : f32 [ sin[ pit ] ]
+        dx : f32 [ gx * pc - cx * ps ]
+        dy : f32 [ gy * pc - cy * ps ]
+        dz : f32 [ gz * pc - cz * ps ]
+        _tgt : vec3f [ _eye.x + dx, _eye.y + dy, _eye.z + dz ]
+        _up : vec3f [ cx, cy, cz ]
+        _proj : mat4f.perspective[ radians[ 55.0 ], aspect, 0.00005, 24.0 ]
+        _proj.m[5] = 0.0 - _proj.m[5]
+        _view : mat4f.look_at[ _eye, _tgt, _up ]
+
+        q_spin : quatf [ vec4f [ 0.0, 1.0, 0.0, radians[ spin_d ] ] ]
+        mm : mat4f.identity[]
+        mm = mm.rotate[ q_spin ]
+
+        surf.model = mm
+        surf.view  = _view
+        surf.proj  = _proj
+        # 16-bit height over ~30 km of relief, drawn three times taller
+        surf.hmax  = 0.008
+        # the sun out here is a quarter of what it was
+        surf.gain  = 0.85
+        surf.damp  = 1.5
+        # a plate every 19 degrees of equator: 400 km across
+        surf.dtile = pluto_dtile[]
+        surf.dbend = 6.0
+        surf.dh    = 0.010
+        # ux.time: the speed setting scales the emissions with everything else
+        surf.ntime = ux.time * 1000.0 * 0.15
+        surf.dfar  = e_cur
+        mi : mat4f [ mm.inverse[] ]
+        emx : f32 [ mi.m[0] * _eye.x + mi.m[4] * _eye.y + mi.m[8]  * _eye.z + mi.m[12] ]
+        emy : f32 [ mi.m[1] * _eye.x + mi.m[5] * _eye.y + mi.m[9]  * _eye.z + mi.m[13] ]
+        emz : f32 [ mi.m[2] * _eye.x + mi.m[6] * _eye.y + mi.m[10] * _eye.z + mi.m[14] ]
+        surf.eye_m   = vec4f [ emx, emy, emz, 1.0 ]
+        surf.hdist   = acos[ 1.0 / e_r ]
+        surf.cam_pos = vec4f [ _eye.x, _eye.y, _eye.z, 1.0 ]
+        # the sun low, ahead and off the left wing: it rakes the relief
+        # and throws its glint back along the flight line
+        sel : f32 [ radians[ 14.0 ] ]
+        sc : f32 [ cos[ sel ] ]
+        ss : f32 [ sin[ sel ] ]
+        surf.sun_dir = vec4f [ 0.75 * sc + cx * ss, 0.66 * sc + cy * ss, cz * ss, 0.0 ]
+
+        psky.model    = mm
+        psky.view     = _view
+        psky.proj     = _proj
+        psky.cam_pos  = surf.cam_pos
+        psky.sun_dir  = surf.sun_dir
+        psky.eye_m    = surf.eye_m
+        psky.hdist    = surf.hdist
+        psky.atm_h    = 0.03
+        psky.atm_fall = 0.005
+        psky.atm_gain = 0.6
+        psky.dtile    = surf.dtile
+        psky.beam_h   = 0.024
+        psky.beam_k   = 3.0
+        psky.ntime    = surf.ntime
+        psky.dfar     = e_cur
+        psky.hmax     = surf.hmax
+
+        gskq : quatf [ vec4f [ 1.0, 0.0, 0.0, radians[ 45.0 ] ] ]
+        gskm : mat4f.identity[]
+        gskm = gskm.rotate[ gskq ]
+        gskm = gskm.scale[ vec3f [ 12.0, 12.0, 12.0 ] ]
+        gsky.model = gskm
+        gsky.view  = _view
+        gsky.proj  = _proj
+        gsky.gain  = 0.45
+        gsky.time  = ux.time * 60000.0
+        sky_render.draw[]
+        sky_render.sync_fence[]
