@@ -7477,6 +7477,10 @@ AU_EXPORT path path_share_path() {
     path res    = form(path, "%o/../share/%o/", parent, n);
     if (dir_exists("%o", res))
         return res;
+    // a system install names the share after the app, as the bin is
+    res = form(path, "%o/../share/%o/", parent, stem(exe));
+    if (dir_exists("%o", res))
+        return res;
     return null;
 }
 
