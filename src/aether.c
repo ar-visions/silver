@@ -4154,7 +4154,25 @@ enode aether_e_fn_call(aether a, efunc fn, array args, bool is_super, bool is_po
         V = LLVMBuildLoad2(B, pt, slot, "vfn");
     }
 
-    LLVMValueRef R = LLVMBuildCall2(B, F, V, arg_values, index, is_void_ ? "" : call_seq);
+    // sret thunk: the struct comes back through an out pointer at arg 0
+    LLVMValueRef sret = null;
+    LLVMValueRef R;
+    if (fn->autype->is_sret_thunk) {
+        LLVMBasicBlockRef cur = LLVMGetInsertBlock(B);
+        LLVMValueRef      fi  = LLVMGetFirstInstruction(
+            LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(cur)));
+        if (fi) LLVMPositionBuilderBefore(B, fi);
+        else    LLVMPositionBuilderAtEnd(B, LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(cur)));
+        sret = entry_alloca(a, lltype(rtype), "sret");
+        LLVMPositionBuilderAtEnd(B, cur);
+        LLVMValueRef* sv = calloc(index + 1, sizeof(LLVMValueRef));
+        sv[0] = sret;
+        memcpy(&sv[1], arg_values, index * sizeof(LLVMValueRef));
+        LLVMBuildCall2(B, F, V, sv, index + 1, "");
+        free(sv);
+        R = null;
+    } else
+        R = LLVMBuildCall2(B, F, V, arg_values, index, is_void_ ? "" : call_seq);
     free(arg_values);
     free(arg_types);
     // a C++ function returning `const T&` to a primitive: load the value
@@ -4179,9 +4197,9 @@ enode aether_e_fn_call(aether a, efunc fn, array args, bool is_super, bool is_po
             LLVMPositionBuilderBefore(B, first_inst);
         else
             LLVMPositionBuilderAtEnd(B, entry);
-        LLVMValueRef tmp = entry_alloca(a, lltype(rtype), "struct-ret");
+        LLVMValueRef tmp = sret ? sret : entry_alloca(a, lltype(rtype), "struct-ret");
         LLVMPositionBuilderAtEnd(B, current);
-        LLVMBuildStore(B, R, tmp);
+        if (!sret) LLVMBuildStore(B, R, tmp);
         result = with_value(tmp, enode(mod, a, autype, rtype->autype, meta_a, (rtype->meta_a ? rtype->meta_a : result_meta_a), loaded, false));
     } else {
         result = with_value(R, enode(mod, a, autype, rtype->autype, meta_a, (rtype->meta_a ? rtype->meta_a : result_meta_a), loaded, true));
@@ -8730,7 +8748,14 @@ AU_EXPORT none etype_init(etype t) {
             n_args++;
         }
 
-        ll_fn(a, (etype)fn, au->rtype ? u(etype, au->rtype) : null,
+        if (au->is_sret_thunk) {
+            // thunk signature: void f(Ret* out, args...)
+            memmove(&arg_types[1], &arg_types[0], n_args * sizeof(etype));
+            arg_types[0] = pointer(a, (Au)au->rtype);
+            n_args++;
+        }
+        ll_fn(a, (etype)fn,
+            (au->rtype && !au->is_sret_thunk) ? u(etype, au->rtype) : null,
             arg_types, n_args, au->is_vargs);
 
         etype_ptr(a, au, null);
@@ -9621,6 +9646,30 @@ void aether_build_user_initializer(aether a, etype m) { }
 void aether_emit_override_init(aether a, enode alloc, Au_t override_member) { }
 enode aether_build_attrib_value(aether a, evar var) { return null; }
 
+// a literal register in asm text, as LLVM names it for a clobber:
+// arm64 x/w -> x, vector v/q/d/s/h -> v; x86 gp and xmm/ymm/zmm
+static string asm_register_name(cstr t) {
+    static symbol x86[] = { "rax","rbx","rcx","rdx","rsi","rdi","rbp","rsp",
+        "eax","ebx","ecx","edx","esi","edi", null };
+    for (int i = 0; x86[i]; i++)
+        if (strcmp(t, x86[i]) == 0) return string(t);
+    int  n   = 0;
+    char cls = t[0];
+    if (cls == 'r' && isdigit((unsigned char)t[1])) {
+        if (sscanf(t + 1, "%d", &n) == 1 && n >= 8 && n <= 15) return string(t);
+        return null;
+    }
+    if ((cls == 'x' || cls == 'y' || cls == 'z') && strncmp(t + 1, "mm", 2) == 0 &&
+        sscanf(t + 3, "%d", &n) == 1)
+        return f(string, "xmm%d", n);
+    if (strchr("xwvqdsh", cls) && isdigit((unsigned char)t[1]) &&
+        sscanf(t + 1, "%d", &n) == 1 && n >= 0 && n <= 31) {
+        if (cls == 'x' || cls == 'w') return n <= 30 ? f(string, "x%d", n) : null;
+        return f(string, "v%d", n);
+    }
+    return null;
+}
+
 enode aether_e_asm(aether a, array body, array input_nodes, etype out_type, string return_name)
 {
     emit_guard;
@@ -9655,6 +9704,7 @@ enode aether_e_asm(aether a, array body, array input_nodes, etype out_type, stri
     array input_names = array(alloc, len(input_nodes));
     each(input_nodes, enode, n)
         push(input_names, (Au)string(n->autype->ident));
+    array clobbers = array(alloc, 16);
 
     // names : list for input_nodes [ i: object ] if instanceof[ i, enode ] select i
 
@@ -9691,8 +9741,14 @@ enode aether_e_asm(aether a, array body, array input_nodes, etype out_type, stri
             int idx = has_out ? match + 1 : match;
             concat(buf, f(string, "$%d", idx));
             
-        } else
+        } else {
             concat(buf, (string)t);
+            // a register the text names is scratch: clobber it, or the
+            // allocator may place an "r" input in that same register
+            string reg = asm_register_name(t->chars);
+            if (reg && index_of(clobbers, (Au)reg) < 0)
+                push(clobbers, (Au)reg);
+        }
         prev_chars = t->chars;
     }
 
@@ -9717,6 +9773,8 @@ enode aether_e_asm(aether a, array body, array input_nodes, etype out_type, stri
     // the asm (stale reads) and keeps live values in ymm regs we smash.
     if (len(constraint)) append(constraint, ",");
     append(constraint, "~{memory},~{cc}");
+    each(clobbers, string, reg)
+        concat(constraint, f(string, ",~{%o}", reg));
     for (int xi = 0; xi < 16; xi++)
         concat(constraint, f(string, ",~{ymm%d}", xi));
 
@@ -11246,12 +11304,17 @@ AU_EXPORT void llvm_reinit(aether a) {
     cstr err = NULL;
     if (LLVMGetTargetFromTriple(a->target_triple, &a->target_ref, &err))
         fault("error: %s", err);
+    // release tunes for the host's own arch; x86 names are not features
+    // on arm64 and strip its fp (NEON asm then fails to assemble)
+    bool   x86   = strstr(a->target_triple, "x86_64") != NULL;
+    bool   apple = strstr(a->target_triple, "apple")  != NULL;
+    symbol cpu   = a->debug ? "generic" : x86 ? "x86-64-v3" :
+                   apple ? "apple-m1" : "generic";
+    symbol feats = a->debug ? "" : x86 ? "+avx2,+fma" : "";
     // a target machine carries per-compilation state: one per core
     for (int i = 0; i < AU_CORES; i++) {
         a->target_machines[i] = (ARef)LLVMCreateTargetMachine(
-            a->target_ref, a->target_triple,
-            a->debug ? "generic" : "x86-64-v3",
-            a->debug ? "" : "+avx2,+fma",
+            a->target_ref, a->target_triple, cpu, feats,
             a->debug ? LLVMCodeGenLevelNone : LLVMCodeGenLevelAggressive,
             LLVMRelocPIC, LLVMCodeModelDefault);
         // FastISel (the -O0 fast path) segfaults in X86FastISel on

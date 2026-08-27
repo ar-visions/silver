@@ -171,7 +171,7 @@ def build_import(name, uri, commit, _config_lines, install_dir, extra):
     owner = uri_parts[-2]
     project = uri_parts[-1]
 
-    overlay_dir  = Path(root)   / Path('overlay') / name
+    overlay_diff = Path(root)   / Path('diffs')   / f'{name}.diff'
     checkout_dir = Path(root)   / Path('checkout') / owner / project
     build_dir    = Path(IMPORT) / Path('build') / owner / name
     CMakeLists   = checkout_dir / 'CMakeLists.txt'
@@ -204,8 +204,12 @@ def build_import(name, uri, commit, _config_lines, install_dir, extra):
     if (checkout_dir / '.git').exists():
         run(f"git -C {checkout_dir} submodule update --init --recursive")
 
-    if overlay_dir.exists():
-        shutil.copytree(overlay_dir, checkout_dir, dirs_exist_ok=True)
+    if overlay_diff.exists():
+        # skip when the diff is already applied (reverse applies cleanly)
+        applied = subprocess.run(f"git -C {checkout_dir} apply --reverse --check {overlay_diff}",
+                                 shell=True, capture_output=True).returncode == 0
+        if not applied:
+            run(f"git -C {checkout_dir} apply {overlay_diff}")
 
     last_uri = uri
     last_commit = commit

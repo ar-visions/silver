@@ -1,0 +1,65 @@
+diff --git a/include/fficonfig.h.in b/include/fficonfig.h.in
+index cd6f34f..c27633d 100644
+--- a/include/fficonfig.h.in
++++ b/include/fficonfig.h.in
+@@ -18,7 +18,7 @@
+ #cmakedefine FFI_DEBUG
+ 
+ /* Cannot use PROT_EXEC on this target, so, we revert to alternative means */
+-#cmakedefine FFI_EXEC_TRAMPOLINE_TABLE
++#cmakedefine FFI_EXEC_TRAMPOLINE_TABLE @FFI_EXEC_TRAMPOLINE_TABLE@
+ 
+ /* Define this if you want to enable pax emulated trampolines */
+ #cmakedefine FFI_MMAP_EXEC_EMUTRAMP_PAX
+diff --git a/src/aarch64/sysv.S b/src/aarch64/sysv.S
+index 6761ee1..6269286 100644
+--- a/src/aarch64/sysv.S
++++ b/src/aarch64/sysv.S
+@@ -76,8 +76,8 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.  */
+    x5 closure
+ */
+ 
+-	cfi_startproc
+ CNAME(ffi_call_SYSV):
++	cfi_startproc
+ 	/* Use a stack frame allocated by our caller.  */
+ 	cfi_def_cfa(x1, 32);
+ 	stp	x29, x30, [x1]
+@@ -245,8 +245,8 @@ CNAME(ffi_closure_SYSV_V):
+ #endif
+ 
+ 	.align	4
+-	cfi_startproc
+ CNAME(ffi_closure_SYSV):
++	cfi_startproc
+ 	stp     x29, x30, [sp, #-ffi_closure_SYSV_FS]!
+ 	cfi_adjust_cfa_offset (ffi_closure_SYSV_FS)
+ 	cfi_rel_offset (x29, 0)
+@@ -263,7 +263,7 @@ CNAME(ffi_closure_SYSV):
+ 	/* Load ffi_closure_inner arguments.  */
+ 	ldp	PTR_REG(0), PTR_REG(1), [x17, #FFI_TRAMPOLINE_CLOSURE_OFFSET]	/* load cif, fn */
+ 	ldr	PTR_REG(2), [x17, #FFI_TRAMPOLINE_CLOSURE_OFFSET+PTR_SIZE*2]	/* load user_data */
+-.Ldo_closure:
++Ldo_closure:
+ 	add	x3, sp, #16				/* load context */
+ 	add	x4, sp, #ffi_closure_SYSV_FS		/* load stack */
+ 	add	x5, sp, #16+CALL_CONTEXT_SIZE		/* load rvalue */
+@@ -404,8 +404,8 @@ CNAME(ffi_go_closure_SYSV_V):
+ #endif
+ 
+ 	.align	4
+-	cfi_startproc
+ CNAME(ffi_go_closure_SYSV):
++	cfi_startproc
+ 	stp     x29, x30, [sp, #-ffi_closure_SYSV_FS]!
+ 	cfi_adjust_cfa_offset (ffi_closure_SYSV_FS)
+ 	cfi_rel_offset (x29, 0)
+@@ -422,7 +422,7 @@ CNAME(ffi_go_closure_SYSV):
+ 	/* Load ffi_closure_inner arguments.  */
+ 	ldp	PTR_REG(0), PTR_REG(1), [x18, #PTR_SIZE]/* load cif, fn */
+ 	mov	x2, x18					/* load user_data */
+-	b	.Ldo_closure
++	b	Ldo_closure
+ 	cfi_endproc
+ 
+ 	.globl	CNAME(ffi_go_closure_SYSV)

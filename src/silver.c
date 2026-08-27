@@ -2336,6 +2336,60 @@ static void silver_live_run(silver a) {
             a->run ? (int)len(a->run) : 0, a->live_binary, a->product);
 }
 
+// run the product with an env flag set (SILVER_EXPORT / SILVER_EXPECT):
+// module init does the work and exits 0. a library has no exe to spawn,
+// so it is dlopen'd and its global ctor runs the init. returns wait status
+static int silver_spawn_product(silver a, path bin, bool lib, path cwd,
+                                cstr env, cstr env_force) {
+#ifdef _WIN32
+    // no fork here, so the setup a child would do runs in THIS process and the
+    // app is spawned outright. a library's module init is loaded in-process,
+    // which is the one thing isolation cannot buy us
+    setenv(env, "1", 1);
+    if (env_force) setenv(env_force, "1", 1);
+    int st = 0;
+    if (lib) {
+        path back = path_cwd();
+        chdir(cwd->chars);
+        void* h = dlopen(bin->chars, RTLD_NOW);
+        chdir(back->chars);
+        st = h ? 0 : (1 << 8);
+        // release it: a pinned dll cannot be relinked later this run
+        if (h) dlclose(h);
+    } else {
+        posix_spawn_file_actions_t fa;
+        posix_spawn_file_actions_init(&fa);
+        posix_spawn_file_actions_addchdir_np(&fa, cwd->chars);
+        char* argv[2] = { bin->chars, NULL };
+        pid_t pid = 0;
+        int   sp  = posix_spawn(&pid, bin->chars, &fa, NULL, argv, environ);
+        posix_spawn_file_actions_destroy(&fa);
+        verify(sp == 0, "%s: cannot spawn %o: %s", env, bin, strerror(sp));
+        waitpid(pid, &st, 0);
+    }
+    unsetenv(env);
+    if (env_force) unsetenv(env_force);
+#else
+    pid_t pid = fork();
+    if (pid == 0) {
+        setenv(env, "1", 1);
+        if (env_force) setenv(env_force, "1", 1);
+        chdir(cwd->chars);
+        if (lib) {
+            // a library has no main: module init does the work, exits 0
+            void* h = dlopen(bin->chars, RTLD_NOW);
+            _exit(h ? 0 : 1);
+        }
+        char* argv[2] = { bin->chars, NULL };
+        execvp(argv[0], argv);
+        _exit(1);
+    }
+    int st = 0;
+    waitpid(pid, &st, 0);
+#endif
+    return st;
+}
+
 // export funcs are installation: run the product under SILVER_EXPORT
 // (module init runs them, then exits 0) and wait — the build is not
 // complete until the module's assets are baked. same launch as --test.
@@ -2356,54 +2410,29 @@ static void silver_run_exports(silver a) {
         silver_install_name(a));
     make_dir(share);
     print("[%o] export: running %o", a->name, bin);
-#ifdef _WIN32
-    // no fork here, so the setup a child would do runs in THIS process and the
-    // app is spawned outright. a library has no exe to spawn at all: its module
-    // init is loaded in-process, which is the one thing isolation cannot buy us
-    setenv("SILVER_EXPORT", "1", 1);
-    if (a->export) setenv("SILVER_EXPORT_FORCE", "1", 1);
-    int st = 0;
-    if (lib) {
-        path back = path_cwd();
-        chdir(share->chars);
-        void* h = dlopen(bin->chars, RTLD_NOW);
-        chdir(back->chars);
-        st = h ? 0 : (1 << 8);
-        // release it: a pinned dll cannot be relinked later this run
-        if (h) dlclose(h);
-    } else {
-        posix_spawn_file_actions_t fa;
-        posix_spawn_file_actions_init(&fa);
-        posix_spawn_file_actions_addchdir_np(&fa, share->chars);
-        char* argv[2] = { bin->chars, NULL };
-        pid_t pid = 0;
-        int   sp  = posix_spawn(&pid, bin->chars, &fa, NULL, argv, environ);
-        posix_spawn_file_actions_destroy(&fa);
-        verify(sp == 0, "export funcs: cannot spawn %o: %s", bin, strerror(sp));
-        waitpid(pid, &st, 0);
-    }
-    unsetenv("SILVER_EXPORT");
-    unsetenv("SILVER_EXPORT_FORCE");
-#else
-    pid_t pid = fork();
-    if (pid == 0) {
-        setenv("SILVER_EXPORT", "1", 1);
-        if (a->export) setenv("SILVER_EXPORT_FORCE", "1", 1);
-        chdir(share->chars);
-        if (lib) {
-            // a library has no main: module init runs exports, exits 0
-            void* h = dlopen(bin->chars, RTLD_NOW);
-            _exit(h ? 0 : 1);
-        }
-        char* argv[2] = { bin->chars, NULL };
-        execvp(argv[0], argv);
-        _exit(1);
-    }
-    int st = 0;
-    waitpid(pid, &st, 0);
-#endif
+    int st = silver_spawn_product(a, bin, lib, share, "SILVER_EXPORT",
+        a->export ? "SILVER_EXPORT_FORCE" : null);
     verify(WIFEXITED(st) && WEXITSTATUS(st) == 0,
         "export funcs failed for %o", a->name);
+}
+
+// --release gate: every expect test in the product and its silver imports
+// must pass before it ships. imports run theirs from their global ctors,
+// so one launch under SILVER_EXPECT covers the whole tree
+static void silver_run_tests(silver a) {
+    if (a->error || a->is_external || !a->release || a->test) return;
+    path bin = a->live_binary ? a->live_binary : a->product;
+    if (!bin || !file_exists("%o", bin)) return;
+    // a cached build never learns is_library: the product's ext says it
+    string ex  = ext(bin);
+    bool   lib = eq(ex, "dylib") || eq(ex, "so") || eq(ex, "dll");
+    path share = f(path, "%o/share/%o", a->install,
+        silver_install_name(a));
+    make_dir(share);
+    print("[%o] release: running expect tests in %o", a->name, bin);
+    int st = silver_spawn_product(a, bin, lib, share, "SILVER_EXPECT", null);
+    verify(WIFEXITED(st) && WEXITSTATUS(st) == 0,
+        "release: expect tests failed for %o", a->name);
 }
 
 AU_EXPORT void silver_init(silver a) {
@@ -2580,10 +2609,9 @@ AU_EXPORT void silver_init(silver a) {
         set_target((aether)a, platform_triple(a));
     }
 
-    // expects live in every build EXCEPT a shipping release; --release --test
-    // keeps them, at full optimization, so performance is measurable. a plain
-    // --release just builds — testing is opt-in, never forced before a run
-    a->strip_expect = a->release && !a->test;
+    // expects live in every build, release included: --release runs them
+    // as its gate (silver_run_tests) and they stay in the shipped product
+    a->strip_expect = false;
 
     // `import M with ext…`: the importer stashed the ext path list here right before
     // constructing this instance — claim it (and clear) before the build runs below.
@@ -2693,8 +2721,9 @@ AU_EXPORT void silver_init(silver a) {
     }
 
     // a module builds in the config THIS compiler was built in; there is one
-    // silver on disk, so it is by definition the one last built
-    if (!a->is_external && !(a->release && a->test)) {
+    // silver on disk, so it is by definition the one last built. --release
+    // is the one override: it tests, then ships, whatever silver is
+    if (!a->is_external && !a->release) {
 #ifdef CONFIG_RELEASE
         a->release = true;
 #else
@@ -2968,6 +2997,7 @@ AU_EXPORT void silver_init(silver a) {
         }
         // --export: run export funcs even on a cached build, no launch
         if (a->export) { silver_run_exports(a); return; }
+        silver_run_tests(a);
         // cached build still runs by default (recovers is_live from the host binary)
         silver_live_run(a);
         return;
@@ -3098,6 +3128,8 @@ AU_EXPORT void silver_init(silver a) {
             build_product(a);
 
             silver_run_exports(a);
+
+            silver_run_tests(a);
 
             exporter(a);
 
@@ -10057,8 +10089,9 @@ enode parse_import(silver a) {
     // all_config exactly as a repo import reads them. a failing command
     // is an import error -- no hand-woven && chains in the .ag
     if (utok) {
-        // cached file (hash hit) = commands already ran; skip them
-        if (url_fetched) {
+        // the cache proves the fetch, not its artifacts: a --clean or a
+        // wiped share bundle drops them, so the > lines always run
+        {
             array cmds = import_build_commands(all_config, ">");
             each(cmds, string, cmd) {
                 string icmd = interpolate(cmd, (Au)a);
