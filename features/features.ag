@@ -1772,7 +1772,12 @@ expect func t_ifdef_chain [] -> bool
         r = 2
     el
         r = 3
-    return r == 3
+    e: i32 [ 3 ]
+    ifdef [ windows ]
+        e = 1
+    ifdef [ apple ]
+        e = 2
+    return r == e
 
 intern class Hidden                 # intern: the class stays module-private
     public v : i32

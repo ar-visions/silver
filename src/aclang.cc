@@ -24,6 +24,7 @@
 #include <clang/Basic/TargetInfo.h>
 #include <clang/AST/ASTConsumer.h>
 #include <clang/AST/ASTContext.h>
+#include "clang/AST/QualTypeNames.h"
 #include <clang/AST/RecursiveASTVisitor.h>
 #include <clang/AST/Type.h>
 #include <clang/AST/Decl.h>
@@ -695,6 +696,62 @@ static const struct { OverloadedOperatorKind k; OPType op; symbol name; } cxx_op
 };
 
 // methods bind like silver struct methods: alt holds the mangled symbol
+// an imported function returning a record by value: the platform ABI
+// packs or hides it (x0 pair, sret), which the model never spells. a
+// C thunk hands it back through a pointer and clang lowers the real call
+static bool wants_sret_thunk(FunctionDecl* fd, ASTContext& ctx) {
+    if (!fd || !ctx.getLangOpts().CPlusPlus) return false;
+    if (fd->isTemplated() || fd->isDeleted()) return false;
+    if (ctx.getSourceManager().isInSystemHeader(fd->getLocation())) return false;
+    if (!fd->getReturnType()->isRecordType()) return false;
+    if (auto* md = dyn_cast<CXXMethodDecl>(fd)) {
+        if (md->isStatic() || md->getAccess() != AS_public) return false;
+        if (isa<CXXConstructorDecl>(md) || isa<CXXDestructorDecl>(md) ||
+            isa<CXXConversionDecl>(md)) return false;
+    }
+    return true;
+}
+
+static std::string qual_spell(QualType t, ASTContext& ctx) {
+    PrintingPolicy pol(ctx.getLangOpts());
+    pol.SuppressUnwrittenScope = true;
+    pol.SuppressInlineNamespace = true;
+    return clang::TypeName::getFullyQualifiedName(t, ctx, pol);
+}
+
+static std::string sret_thunk_source(FunctionDecl* fd, ASTContext& ctx) {
+    std::string ret = qual_spell(fd->getReturnType(), ctx);
+    std::string out = "extern \"C\" __attribute__((weak)) void silver_sret_" +
+        cxx_mangle(fd, ctx) + "(" + ret + "* out";
+    std::string call;
+    if (auto* md = dyn_cast<CXXMethodDecl>(fd)) {
+        out += ", " + qual_spell(ctx.getRecordType(md->getParent()), ctx) + "* self";
+        call = "self->" + md->getNameAsString() + "(";
+    } else
+        call = get_name(fd) + "(";
+    for (unsigned i = 0; i < fd->getNumParams(); i++) {
+        std::string n = "a" + std::to_string(i);
+        out  += ", " + qual_spell(fd->getParamDecl(i)->getType(), ctx) + " " + n;
+        call += (i ? ", " : "") + n;
+    }
+    return out + ") { *out = " + call + "); }\n";
+}
+
+static void collect_sret_fns(Decl* d, ASTContext& ctx, std::vector<FunctionDecl*>& out) {
+    if (auto* fd = dyn_cast<FunctionDecl>(d)) {
+        if (wants_sret_thunk(fd, ctx)) out.push_back(fd);
+        return;
+    }
+    if (auto* ctd = dyn_cast<ClassTemplateDecl>(d)) {
+        for (auto* spec : ctd->specializations())
+            collect_sret_fns(spec, ctx, out);
+        return;
+    }
+    if (auto* dc = dyn_cast<DeclContext>(d))
+        for (Decl* c : dc->decls())
+            collect_sret_fns(c, ctx, out);
+}
+
 static void set_methods(CXXRecordDecl* cxx, ASTContext& ctx, aether e, Au_t rec) {
     // param mapping re-enters create_class for self-typed operands
     static std::set<Au_t> done;
@@ -781,6 +838,12 @@ static void set_methods(CXXRecordDecl* cxx, ASTContext& ctx, aether e, Au_t rec)
                 : GlobalDecl(md);
             fn->member_index   = (i64)cast<ItaniumVTableContext>(
                 ctx.getVTableContext())->getMethodVTableIndex(gd);
+        }
+        // the thunk dispatches virtuals itself
+        if (wants_sret_thunk(md, ctx) && fn->rtype->is_struct && !fn->rtype->is_pointer) {
+            fn->alt = (cstr)cstr_copy((cstr)("silver_sret_" + mg).c_str());
+            fn->is_sret_thunk  = true;
+            fn->is_cpp_virtual = false;
         }
 
         Au_t self_arg = alloc_arg(fn, "a", rec);
@@ -898,6 +961,8 @@ static Au_t create_enum(EnumDecl* decl, ASTContext& ctx, aether e, std::string n
 
 static Au_t create_fn(FunctionDecl* decl, ASTContext& ctx, aether e, std::string name) {
     symbol n = name.c_str();
+    // thunks serve the functions they wrap; they are not members
+    if (name.rfind("silver_sret_", 0) == 0) return null;
 
     // one C name, one model: a header reached from two imports maps once
     Au_t prior = prior_func(n);
@@ -914,6 +979,10 @@ static Au_t create_fn(FunctionDecl* decl, ASTContext& ctx, aether e, std::string
     // Return type
     fn->rtype = map_clang_type(decl->getReturnType(), ctx, e, null);
     if (!fn->rtype) fn->rtype = au_lookup("none");
+    if (wants_sret_thunk(decl, ctx) && fn->rtype->is_struct && !fn->rtype->is_pointer) {
+        fn->alt = (cstr)cstr_copy((cstr)("silver_sret_" + cxx_mangle(decl, ctx)).c_str());
+        fn->is_sret_thunk = true;
+    }
     // `const T&` returned: the symbol hands back an address; the call
     // loads through it so silver sees the value (std::clamp, std::min)
     if (auto* rr = decl->getReturnType()->getAs<LValueReferenceType>()) {
@@ -1464,6 +1533,15 @@ static void build_unit_args(aether a, import_unit* u) {
     if (a->isysroot) {
         args.push_back("-isysroot");
         args.push_back(a->isysroot->chars);
+#ifdef __APPLE__
+        // one libc++ per process: the runtime links the SDK's, so C++
+        // imports read its headers, not the newer ones clang ships
+        if (u->cpp) {
+            args.push_back("-nostdinc++");
+            args.push_back("-isystem");
+            args.push_back(std::string(a->isysroot->chars) + "/usr/include/c++/v1");
+        }
+#endif
     }
 
     struct {
@@ -1792,6 +1870,32 @@ static symbol cpp_spelling(const std::string& s) {
 // class template here, whose arity fits, and whose specialization is
 // absent, append an explicit instantiation and reparse — the model walk
 // and the -femit-all-decls codegen then carry it like a header-declared one
+// struct-returning functions of the unit get their thunks appended, then
+// the unit reparses so the model sees them (the C++ codegen carries them)
+static void thunk_struct_returns(aether a, import_unit* u) {
+    if (!u->ci) return;
+    ASTContext& ctx = u->ci->getASTContext();
+    std::vector<FunctionDecl*> fns;
+    for (pending_item& it : u->items)
+        if (it.decl) collect_sret_fns(it.decl, ctx, fns);
+    std::set<std::string> seen;
+    std::string lines;
+    for (auto* fd : fns) {
+        std::string mg = cxx_mangle(fd, ctx);
+        if (!seen.insert(mg).second) continue;
+        lines += sret_thunk_source(fd, ctx);
+    }
+    if (lines.empty()) return;
+    FILE* fp = fopen(u->c->chars, "a");
+    if (!fp) return;
+    fwrite(lines.c_str(), 1, lines.size(), fp);
+    fclose(fp);
+    u->items.clear();
+    u->macros.clear();
+    u->ci = null;
+    import_parse_unit(u);
+}
+
 static void instantiate_requested(aether a, import_unit* u) {
     array reqs = a->template_requests;
     if (!reqs || !reqs->count || !u->ci) return;
@@ -1959,6 +2063,7 @@ none aether_import_includes(aether a) {
 
     for (import_unit* u : pool.units) {
         if (u->cpp) instantiate_requested(a, u);
+        if (u->cpp) thunk_struct_returns(a, u);
         import_model_unit(a, u);
         // C++ TUs codegen too: inline/template bodies emit weak, module links them
         if (u->cpp) {

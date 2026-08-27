@@ -275,6 +275,7 @@ typedef struct _Au_t {
             u64 is_app       : 1;
             u64 is_cpp_virtual : 1; // dispatch via C++ vtable at member_index
             u64 is_data_user : 1;   // AU_TRAIT_DATA_USER: `new T [ ? ]` reads header data
+            u64 is_sret_thunk : 1;  // C++ import: alt is a thunk taking Ret* first
         };
         u64 traits;
     };
