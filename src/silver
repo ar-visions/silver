@@ -40,6 +40,9 @@ declare_class(Device)
     M(X, Y, i, prop,     public,  bool,   build) \
     M(X, Y, i, prop,     public,  i32,    jobs) \
     M(X, Y, i, prop,     public,  bool,   test) \
+    M(X, Y, i, prop,     public,  string, sign) \
+    M(X, Y, i, prop,     public,  string, notarize) \
+    M(X, Y, i, prop,     public,  bool,   skip_notary) \
     M(X, Y, i, prop,     opaque,  path,   format) \
     M(X, Y, i, prop,     public,  silver, is_external) \
     M(X, Y, i, prop,     public,  silver, is_child, meta, weak) \
