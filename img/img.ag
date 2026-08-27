@@ -6,6 +6,7 @@ import glennrp:libpng/07b8803 <png.h>
     -lpng
 
 import <string.h>
+import <stdlib.h>
 import vec
 
 enum Join
@@ -1238,3 +1239,26 @@ expect func test_jpeg [] -> bool
     c : im.crop[ 3400, 1700, 640, 480 ]
     c.png[ path '/tmp/jpegtest.png' ]
     return true
+
+# the app icon set for a linux release: SILVER_ICONS = 'src;dir;name'
+# (the packager sets it), written as dir/<N>x<N>/apps/<name>.png. a
+# hand-drawn icon-<N>.png beside the master replaces the scaled one
+export func icons []
+    env : getenv[ 'SILVER_ICONS' ]
+    if [ !env ] return
+    spec  : string [ env ]
+    parts : spec.split[ ';' ]
+    if [ parts.len[] < 3 ] return
+    src  : path parts[ 0 ]
+    dir  : path parts[ 1 ]
+    name : string parts[ 2 ]
+    master : Image [ uri: src ]
+    if [ master.width == 0 ] return
+    sizes : vec i32 [] [ 16, 24, 32, 48, 64, 128, 256, 512 ]
+    for [ i: i32 0, i < sizes.len[], i += 1 ]
+        n : i32 sizes[ i ]
+        alt : path '{src.parent_dir[]}/icon-{n}.png'
+        im : Image [ (alt.exists[]) ? Image [ uri: alt ] : master.resize[ n, n ] ]
+        d : path '{dir}/{n}x{n}/apps'
+        d.make_dir[]
+        im.png[ path '{d}/{name}.png' ]

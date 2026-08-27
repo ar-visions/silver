@@ -39,7 +39,6 @@ hires
 *.bps
 *.smc
 *.bsz
-*.md
 *.nes
 *.state
 *.z64
@@ -68,3 +67,4 @@ hyperspace/share/textures/head/*.png
 .gitignore
 ref
 pluto-tiles
+packages
