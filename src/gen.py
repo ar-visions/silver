@@ -314,7 +314,9 @@ def write_ninja(project, root, import_dir, build_dir, plat):
     elif system == "Linux":
         # same $ORIGIN rpath as apps so a lib finds its sibling/core deps transitively
         # (libtrinity -> libaether -> libLLVM) without LD_LIBRARY_PATH.
-        cmd += " -Wl,-soname,$out -Wl,-rpath,'$$ORIGIN' -Wl,-rpath,'$$ORIGIN/../lib'"
+        # the soname is the leaf: a consumer records it and resolves by rpath,
+        # never the absolute build path
+        cmd += " -Wl,-soname,$install_name -Wl,-rpath,'$$ORIGIN' -Wl,-rpath,'$$ORIGIN/../lib'"
     n.append(f"  command = {cmd}")
     n.append("  description = linking shared library $out")
     n.append("")
@@ -482,6 +484,8 @@ def write_ninja(project, root, import_dir, build_dir, plat):
                 n.append(f"  libs = {' '.join(libs)}")
             if system == "Darwin":
                 n.append(f"  install_name = @rpath/{install_name}")
+            elif system == "Linux":
+                n.append(f"  install_name = {install_name}")
             n.append("")
         
         else:

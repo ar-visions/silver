@@ -8,6 +8,8 @@
 #include <sys/wait.h>   // export funcs run forked; the build waits on them
 #include <fcntl.h>
 #include <dlfcn.h>      // coverage libraries run in-process after build
+#include <ctype.h>      // package names are lower-case on every distro
+#include <time.h>       // rpm build time
 #endif
 
 #ifdef BUILD_LIBRARY
@@ -135,6 +137,26 @@ static void collect_resource_dirs(silver a, path source) {
 // CACHED path too: a module last built as someone else's dependency deployed
 // its dirs under THAT root's share, so its own bundle can be missing while
 // its product is current — the app then starts with no fonts/models at all
+// a resource deleted or renamed in the module leaves its link behind in
+// the share: drop every link whose source is gone. links only: the share
+// also holds real files the exports bake, and those stay
+static void prune_dangling(path dir) {
+    DIR *d = opendir(dir->chars);
+    if (!d) return;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (e->d_name[0] == '.') continue;
+        path p = form(path, "%o/%s", dir, e->d_name);
+        struct stat ls, ts;
+        if (lstat(p->chars, &ls) != 0) continue;
+        if (S_ISLNK(ls.st_mode)) {
+            if (stat(p->chars, &ts) != 0) unlink(p->chars);
+        } else if (S_ISDIR(ls.st_mode))
+            prune_dangling(p);
+    }
+    closedir(d);
+}
+
 static void deploy_module_resources(silver a) {
     path share = f(path, "%o/share/%o", a->install,
         silver_install_name(a));
@@ -149,6 +171,7 @@ static void deploy_module_resources(silver a) {
         make_dir(dst);
         symlink_resources(res, dst);
     }
+    prune_dangling(share);
 }
 
 // the product exists on disk at this point; release anyone waiting on it
@@ -2043,8 +2066,9 @@ static path build_silver_host(silver a) {
     verify(au_replace_file(host_out->chars, host_dst->chars) == 0,
         "could not replace %o: locked by another process", host_dst);
 #else
-    vexec(a->verbose, "silver-host", "%s/install/bin/clang %s %s -o %o %o %s -I%s/install/include -L%s/install/lib -DSILVER_ROOT='\"%s\"' -DSILVER_SHARE_NAME='\"%o\"'",
-        SILVER, a->debug ? "-O0 -g" : "-O2", a->asan ? "-fsanitize=address -shared-libasan" : "", host_dst, host_src, host_libs, SILVER, SILVER, SILVER, share_name);
+    // libAu resolves by soname: the tree's lib/ here, /usr/lib/<app>/ packaged
+    vexec(a->verbose, "silver-host", "%s/install/bin/clang %s %s -o %o %o %s -I%s/install/include -L%s/install/lib -Wl,-rpath,%s/install/lib -Wl,-rpath,'$ORIGIN/../lib/%o' -DSILVER_ROOT='\"%s\"' -DSILVER_SHARE_NAME='\"%o\"'",
+        SILVER, a->debug ? "-O0 -g" : "-O2", a->asan ? "-fsanitize=address -shared-libasan" : "", host_dst, host_src, host_libs, SILVER, SILVER, SILVER, a->name, SILVER, share_name);
 #endif
     return host_dst;
 }
@@ -2235,6 +2259,38 @@ static void uninstall_products(silver a) {
     exit(0);
 }
 
+// a cached build never parsed the app element: the host binary beside the
+// product says it is live, and that host is what tests, ships and runs
+static void silver_recover_live(silver a) {
+    if (((aether)a)->is_live || a->is_external) return;
+    // the same app_ext the host was written with, or a cached run finds
+    // nothing and silver exits 0 having neither built nor launched
+    path host = f(path, "%o/%o%s", a->build_dir, a->name, app_ext);
+    if (file_exists("%o", host)) {
+        ((aether)a)->is_live = true;
+        if (!a->live_binary) a->live_binary = hold(host);
+    }
+}
+
+// the version a release ships: parsed export, else the registry, else the
+// module source itself (a cached run parsed nothing and may have no registry)
+static string silver_release_version(silver a) {
+    string share = silver_install_name(a);
+    if (a->exported_version) return string(a->exported_version->chars);
+    path reg = f(path, "%o/export/%o.agi", a->install, share);
+    if (file_exists("%o", reg)) {
+        string v = trim(command_run((command)f(string,
+            "sed -n 's/^version: *//p' %o", reg), false));
+        if (len(v)) return v;
+    }
+    if (a->module_file && file_exists("%o", a->module_file)) {
+        string v = trim(command_run((command)f(string,
+            "sed -n 's/^export  *\\([0-9][0-9.]*\\).*/\\1/p' %o", a->module_file), false));
+        if (len(v)) return v;
+    }
+    return null;
+}
+
 static void silver_live_run(silver a) {
     // a failed build must NOT launch (or relaunch) the app. execvp'ing the host on an
     // error makes the host re-trigger `silver <app>`, which fails and re-execs — the
@@ -2267,15 +2323,7 @@ static void silver_live_run(silver a) {
         verify(cov, "coverage: silver_coverage_run not found in %o", a->product);
         exit(cov());
     }
-    if (!((aether)a)->is_live && !a->is_external) {
-        // the same app_ext the host was written with, or a cached run finds
-        // nothing and silver exits 0 having neither built nor launched
-        path host = f(path, "%o/%o%s", a->build_dir, a->name, app_ext);
-        if (file_exists("%o", host)) {
-            ((aether)a)->is_live = true;
-            if (!a->live_binary) a->live_binary = hold(host);
-        }
-    }
+    silver_recover_live(a);
     // --build compiles only: skip launching the app (a bare `silver <app>` runs it).
     if (!a->build && (a->run || (((aether)a)->is_live && !a->is_external))) {
         int n = a->run ? len(a->run) : 0;
@@ -2374,10 +2422,27 @@ static int silver_spawn_product(silver a, path bin, bool lib, path cwd,
     if (pid == 0) {
         setenv(env, "1", 1);
         if (env_force) setenv(env_force, "1", 1);
-        chdir(cwd->chars);
+        // as the host does: tests and exports resolve assets against the
+        // launch dir through path_startup, not the share dir
+        if (!getenv("SILVER_STARTUP")) setenv("SILVER_STARTUP", path_startup()->chars, 1);
+        if (a->verbose) fprintf(stderr, "%s: startup %s\n", env, getenv("SILVER_STARTUP"));
         if (lib) {
-            // a library has no main: module init does the work, exits 0
-            void* h = dlopen(bin->chars, RTLD_NOW);
+            // a library has no main: module init does the work, exits 0.
+            // an exe is the host: it records its launch cwd as the startup
+            // and cd's to the share itself, so only a library is cd'd here
+            chdir(cwd->chars);
+            // an import the compiler already mapped comes back as the same
+            // handle and its init never runs again: load a fresh copy
+            path load = bin;
+            void* pre = dlopen(bin->chars, RTLD_NOW | RTLD_NOLOAD);
+            if (pre) {
+                load = f(path, "%o/tmp/%s-%i.so", a->install, env, (i32)getpid());
+                make_dir(f(path, "%o/tmp", a->install));
+                exec(false, "cp %o %o", bin, load);
+            }
+            void* h = dlopen(load->chars, RTLD_NOW);
+            if (!h) fprintf(stderr, "%s: dlopen %s: %s\n", env, load->chars, dlerror());
+            if (pre) unlink(load->chars);
             _exit(h ? 0 : 1);
         }
         char* argv[2] = { bin->chars, NULL };
@@ -2438,24 +2503,17 @@ static void silver_package(silver a) {
     if (!a->product || !file_exists("%o", a->product)) return;
     string name  = a->name;
     string share = silver_install_name(a);
-    // a cached build has no parsed export: the registry keeps its version
-    string ver = a->exported_version ? string(a->exported_version->chars) : null;
-    if (!ver) {
-        path reg = f(path, "%o/export/%o.agi", a->install, share);
-        if (file_exists("%o", reg)) {
-            string v = trim(command_run((command)f(string,
-                "sed -n 's/^version: *//p' %o", reg), false));
-            if (len(v)) ver = v;
-        }
-    }
+    string ver = silver_release_version(a);
     verify(ver, "--release: %o exports no version (export 1.0.0)", name);
 #if defined(__aarch64__)
     cstr arch = "arm64";
 #else
     cstr arch = "x86_64";
 #endif
-    path pkgs  = f(path, "%o/packages", a->install);
-    path stage = f(path, "%o/%o-stage", pkgs, name);
+    // packages outlive the install tree: they land in the module's own
+    // repository, every platform's side by side
+    path pkgs  = f(path, "%o/packages", a->project_path);
+    path stage = f(path, "%o/tmp/%o-stage", a->install, name);
     path app   = f(path, "%o/%o.app", stage, name);
     path cts   = f(path, "%o/Contents", app);
     path macos = f(path, "%o/MacOS", cts);
@@ -2593,6 +2651,519 @@ static void silver_package(silver a) {
             "package: staple failed for %o", dmg);
     }
     print("[%o] package: %o", name, dmg);
+    vexec(a->verbose, "package", "rm -rf %o", stage);
+    a->build = true; // a packaged release does not launch
+}
+#elif defined(__linux__)
+// the ELF closure: every dependency ldd resolves under our install or build
+// tree ships in lib/ (real files, not the versioned links); system libs stay
+static void bundle_sos(silver a, path bin, path lib_dir, array done) {
+    string inst  = trim(command_run((command)f(string, "readlink -f %o", a->install), false));
+    string bld   = trim(command_run((command)f(string, "readlink -f %o", a->build_dir), false));
+    string out   = command_run((command)f(string, "ldd %o", bin), false);
+    array  lines = split(out, "\n");
+    each(lines, string, ln0) {
+        string ln  = trim(ln0);
+        int    ar  = index_of(ln, "=> ");
+        string dep = ar >= 0 ? mid(ln, ar + 3, len(ln) - ar - 3) : ln;
+        int    sp  = index_of(dep, " (");
+        if (sp > 0) dep = mid(dep, 0, sp);
+        dep = trim(dep);
+        if (!len(dep) || dep->chars[0] != '/') continue;
+        string real = trim(command_run((command)f(string, "readlink -f %o", dep), false));
+        if (!(starts_with(real, inst->chars) || starts_with(real, bld->chars))) continue;
+        cstr   slash = strrchr(dep->chars, '/');
+        string leaf  = string(slash + 1);
+        if (index_of(done, (Au)leaf) >= 0) continue;
+        push(done, (Au)leaf);
+        vexec(a->verbose, "package", "cp -L %o %o/%o", dep, lib_dir, leaf);
+        vexec(a->verbose, "package", "chmod u+w %o/%o", lib_dir, leaf);
+    }
+}
+
+// ---- package writers: no distro tooling. tar, gzip and the coreutils sums
+// are on every linux; the formats themselves are written here
+
+static string sum_of(cstr tool, path p) {
+    return trim(command_run((command)f(string, "%s %o | cut -d' ' -f1", tool, p), false));
+}
+
+static long size_of(path p) {
+    struct stat st;
+    return stat(p->chars, &st) == 0 ? (long)st.st_size : 0;
+}
+
+static void copy_into(FILE* out, path src) {
+    FILE* in = fopen(src->chars, "rb");
+    if (!in) return;
+    char buf[65536];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), in)) > 0) fwrite(buf, 1, n, out);
+    fclose(in);
+}
+
+// .deb = an ar archive of debian-binary, control.tar.gz, data.tar.gz, in
+// that order; the 60-byte ar header is the whole format
+static void ar_member(FILE* out, cstr name, path src) {
+    long sz = size_of(src);
+    fprintf(out, "%-16s%-12ld%-6d%-6d%-8s%-10ld`\n", name, 0L, 0, 0, "100644", sz);
+    copy_into(out, src);
+    if (sz & 1) fputc('\n', out);
+}
+
+static void write_deb(silver a, path stage, path root, string control, path deb) {
+    path w = f(path, "%o/deb", stage);
+    path c = f(path, "%o/control", w);
+    make_dir(c);
+    path_save(f(path, "%o/debian-binary", w), (Au)string("2.0\n"), null);
+    path_save(f(path, "%o/control", c), (Au)control, null);
+    vexec(a->verbose, "package", "tar --owner=0 --group=0 -C %o -czf %o/control.tar.gz ./control", c, w);
+    vexec(a->verbose, "package", "tar --owner=0 --group=0 -C %o -czf %o/data.tar.gz ./usr", root, w);
+    FILE* out = fopen(deb->chars, "wb");
+    verify(out, "package: cannot write %o", deb);
+    fputs("!<arch>\n", out);
+    ar_member(out, "debian-binary",  f(path, "%o/debian-binary",  w));
+    ar_member(out, "control.tar.gz", f(path, "%o/control.tar.gz", w));
+    ar_member(out, "data.tar.gz",    f(path, "%o/data.tar.gz",    w));
+    fclose(out);
+}
+
+// rpm: a lead, a signature header, the main header and a gzip'd newc cpio.
+// a header is an index of 16-byte entries over a data store, all big-endian;
+// entries ascend by tag and an immutable region entry at index 0 points at
+// a trailer that closes the region (what the header digests cover)
+typedef struct { i32 tag, type, offset, count; } rpm_ent;
+typedef struct { rpm_ent ents[80]; int n; u8* data; int len, cap; } rpm_hdr;
+
+enum { RT_CHAR = 1, RT_INT8, RT_INT16, RT_INT32, RT_INT64, RT_STRING, RT_BIN, RT_STRINGS, RT_I18N };
+
+static void be32(u8* p, u32 v) { p[0] = v >> 24; p[1] = v >> 16; p[2] = v >> 8; p[3] = v; }
+static void be16(u8* p, u16 v) { p[0] = v >> 8; p[1] = v; }
+
+static void rh_put(rpm_hdr* h, const void* p, int n) {
+    if (h->len + n > h->cap) {
+        h->cap = (h->len + n) * 2 + 256;
+        h->data = realloc(h->data, h->cap);
+    }
+    memcpy(h->data + h->len, p, n);
+    h->len += n;
+}
+
+static void rh_align(rpm_hdr* h, int al) {
+    u8 z = 0;
+    while (h->len % al) rh_put(h, &z, 1);
+}
+
+static rpm_ent* rh_ent(rpm_hdr* h, int tag, int type, int count) {
+    verify(h->n < 80, "rpm: header entries exceeded");
+    rpm_ent* e = &h->ents[h->n++];
+    e->tag = tag; e->type = type; e->offset = h->len; e->count = count;
+    return e;
+}
+
+static void rh_str(rpm_hdr* h, int tag, int type, cstr s) {
+    rh_ent(h, tag, type, 1);
+    rh_put(h, s, (int)strlen(s) + 1);
+}
+
+static void rh_strs(rpm_hdr* h, int tag, cstr* v, int n) {
+    rh_ent(h, tag, RT_STRINGS, n);
+    for (int i = 0; i < n; i++) rh_put(h, v[i], (int)strlen(v[i]) + 1);
+}
+
+static void rh_i32s(rpm_hdr* h, int tag, i32* v, int n) {
+    rh_align(h, 4);
+    rh_ent(h, tag, RT_INT32, n);
+    for (int i = 0; i < n; i++) { u8 b[4]; be32(b, (u32)v[i]); rh_put(h, b, 4); }
+}
+
+static void rh_i16s(rpm_hdr* h, int tag, i32* v, int n) {
+    rh_align(h, 2);
+    rh_ent(h, tag, RT_INT16, n);
+    for (int i = 0; i < n; i++) { u8 b[2]; be16(b, (u16)v[i]); rh_put(h, b, 2); }
+}
+
+static void rh_bin(rpm_hdr* h, int tag, u8* v, int n) {
+    rh_ent(h, tag, RT_BIN, n);
+    rh_put(h, v, n);
+}
+
+// index 0 is reserved for the region; close it with the trailer and write
+static void rh_write(rpm_hdr* h, int region_tag, FILE* out) {
+    u8 tr[16];
+    be32(tr, region_tag); be32(tr + 4, RT_BIN); be32(tr + 8, (u32)(-(h->n * 16))); be32(tr + 12, 16);
+    h->ents[0].tag = region_tag; h->ents[0].type = RT_BIN; h->ents[0].offset = h->len; h->ents[0].count = 16;
+    rh_put(h, tr, 16);
+    u8 magic[8] = { 0x8e, 0xad, 0xe8, 0x01, 0, 0, 0, 0 }, b[16];
+    fwrite(magic, 1, 8, out);
+    be32(b, h->n); be32(b + 4, h->len); fwrite(b, 1, 8, out);
+    for (int i = 0; i < h->n; i++) {
+        be32(b, h->ents[i].tag); be32(b + 4, h->ents[i].type);
+        be32(b + 8, h->ents[i].offset); be32(b + 12, h->ents[i].count);
+        fwrite(b, 1, 16, out);
+    }
+    fwrite(h->data, 1, h->len, out);
+}
+
+// the staged tree as rpm sees it: every file and link, and the dirs the
+// package owns (its own under lib/ and share/; the system's are not ours)
+typedef struct { char rel[1024]; struct stat st; char link[1024]; } rpm_file;
+typedef struct { rpm_file* v; int n, cap; } rpm_files;
+
+static int cstr_compare(const void* a, const void* b) {
+    return strcmp(*(char* const*)a, *(char* const*)b);
+}
+
+static void rpm_walk(rpm_files* fs, path root, cstr rel, cstr own_lib, cstr own_share) {
+    path dir = strlen(rel) ? f(path, "%o/%s", root, rel) : root;
+    DIR* d = opendir(dir->chars);
+    if (!d) return;
+    // sorted, so the header and the payload agree with rpm's own order
+    struct dirent* e;
+    char** names = null;
+    int    nn = 0, ncap = 0;
+    while ((e = readdir(d)) != NULL) {
+        if (e->d_name[0] == '.') continue;
+        if (nn == ncap) { ncap = ncap * 2 + 32; names = realloc(names, ncap * sizeof(char*)); }
+        names[nn++] = strdup(e->d_name);
+    }
+    closedir(d);
+    qsort(names, nn, sizeof(char*), cstr_compare);
+    for (int ni = 0; ni < nn; ni++) {
+        char sub[1024];
+        snprintf(sub, sizeof(sub), "%s%s%s", rel, strlen(rel) ? "/" : "", names[ni]);
+        path p = f(path, "%o/%s", root, sub);
+        struct stat st;
+        if (lstat(p->chars, &st) != 0) continue;
+        bool is_dir = S_ISDIR(st.st_mode);
+        bool owned  = strncmp(sub, own_lib, strlen(own_lib)) == 0 ||
+                      strncmp(sub, own_share, strlen(own_share)) == 0;
+        if (!is_dir || owned) {
+            if (fs->n == fs->cap) { fs->cap = fs->cap * 2 + 64; fs->v = realloc(fs->v, fs->cap * sizeof(rpm_file)); }
+            rpm_file* rf = &fs->v[fs->n++];
+            snprintf(rf->rel, sizeof(rf->rel), "%s", sub);
+            rf->st = st;
+            rf->link[0] = 0;
+            if (S_ISLNK(st.st_mode)) {
+                ssize_t ln = readlink(p->chars, rf->link, sizeof(rf->link) - 1);
+                rf->link[ln > 0 ? ln : 0] = 0;
+            }
+        }
+        if (is_dir) rpm_walk(fs, root, sub, own_lib, own_share);
+    }
+    for (int ni = 0; ni < nn; ni++) free(names[ni]);
+    free(names);
+}
+
+static void cpio_entry(FILE* out, cstr name, u32 ino, u32 mode, u32 mtime, u32 nlink, u32 fsize) {
+    u32 nsz = (u32)strlen(name) + 1;
+    fprintf(out, "070701%08x%08x%08x%08x%08x%08x%08x%08x%08x%08x%08x%08x%08x",
+        ino, mode, 0u, 0u, nlink, mtime, fsize, 0u, 0u, 0u, 0u, nsz, 0u);
+    fwrite(name, 1, nsz, out);
+    for (u32 pad = (110 + nsz) % 4; pad && pad < 4; pad++) fputc(0, out);
+}
+
+static void cpio_pad(FILE* out, u32 n) {
+    for (u32 pad = n % 4; pad && pad < 4; pad++) fputc(0, out);
+}
+
+static void write_rpm(silver a, path stage, path root, cstr lower, string ver, cstr arch,
+                      string name, string who, path rpm) {
+    path w = f(path, "%o/rpm", stage);
+    make_dir(w);
+    char own_lib[256], own_share[256];
+    snprintf(own_lib,   sizeof(own_lib),   "usr/lib/%s",   name->chars);
+    snprintf(own_share, sizeof(own_share), "usr/share/%s", name->chars);
+    rpm_files fs = { 0 };
+    rpm_walk(&fs, root, "", own_lib, own_share);
+    int n = fs.n;
+    verify(n > 0, "package: nothing staged for %o", name);
+
+    // the payload: newc cpio, names ./-prefixed, then gzip
+    path cpio = f(path, "%o/payload.cpio", w);
+    FILE* pf = fopen(cpio->chars, "wb");
+    verify(pf, "package: cannot write %o", cpio);
+    long total = 0;
+    for (int i = 0; i < n; i++) {
+        rpm_file* rf = &fs.v[i];
+        char nm[1100];
+        snprintf(nm, sizeof(nm), "./%s", rf->rel);
+        bool lnk = S_ISLNK(rf->st.st_mode), dir = S_ISDIR(rf->st.st_mode);
+        u32 fsz = lnk ? (u32)strlen(rf->link) : dir ? 0 : (u32)rf->st.st_size;
+        cpio_entry(pf, nm, (u32)(i + 1), (u32)rf->st.st_mode, (u32)rf->st.st_mtime, dir ? 2 : 1, fsz);
+        if (lnk)      fwrite(rf->link, 1, fsz, pf);
+        else if (!dir) copy_into(pf, f(path, "%o/%s", root, rf->rel));
+        cpio_pad(pf, fsz);
+        total += fsz;
+    }
+    cpio_entry(pf, "TRAILER!!!", 0, 0, 0, 1, 0);
+    fclose(pf);
+    long payload_size = size_of(cpio);
+    vexec(a->verbose, "package", "gzip -9 -n -f %o", cpio);
+    path gz = f(path, "%o/payload.cpio.gz", w);
+
+    // the main header
+    rpm_hdr h = { 0 };
+    rh_ent(&h, 0, 0, 0); // region, filled on write
+    cstr  i18n[1] = { "C" };
+    rh_strs(&h, 100, i18n, 1);
+    string nvr = f(string, "%s-%o-1", lower, ver);
+    rh_str(&h, 1000, RT_STRING, lower);
+    rh_str(&h, 1001, RT_STRING, ver->chars);
+    rh_str(&h, 1002, RT_STRING, "1");
+    rh_str(&h, 1004, RT_I18N, name->chars);
+    string desc = f(string, "%o %o", name, ver);
+    rh_str(&h, 1005, RT_I18N, desc->chars);
+    i32 now = (i32)time(NULL);
+    rh_i32s(&h, 1006, &now, 1);
+    i32 tsz = (i32)total;
+    rh_i32s(&h, 1009, &tsz, 1);
+    rh_str(&h, 1014, RT_STRING, "Proprietary");
+    rh_str(&h, 1016, RT_I18N, "Applications");
+    rh_str(&h, 1021, RT_STRING, "linux");
+    rh_str(&h, 1022, RT_STRING, arch);
+    i32*  sizes  = calloc(n, sizeof(i32)); i32* modes = calloc(n, sizeof(i32));
+    i32*  zeros  = calloc(n, sizeof(i32)); i32* mtimes = calloc(n, sizeof(i32));
+    i32*  vflags = calloc(n, sizeof(i32)); i32* ones  = calloc(n, sizeof(i32));
+    i32*  inodes = calloc(n, sizeof(i32)); i32* diridx = calloc(n, sizeof(i32));
+    cstr* digests = calloc(n, sizeof(cstr)); cstr* links = calloc(n, sizeof(cstr));
+    cstr* users   = calloc(n, sizeof(cstr)); cstr* langs = calloc(n, sizeof(cstr));
+    cstr* bases   = calloc(n, sizeof(cstr)); cstr* dirs  = calloc(n, sizeof(cstr));
+    int   ndirs   = 0;
+    for (int i = 0; i < n; i++) {
+        rpm_file* rf = &fs.v[i];
+        bool lnk = S_ISLNK(rf->st.st_mode), dir = S_ISDIR(rf->st.st_mode);
+        sizes[i]  = lnk ? (i32)strlen(rf->link) : dir ? 0 : (i32)rf->st.st_size;
+        modes[i]  = (i32)rf->st.st_mode;
+        mtimes[i] = (i32)rf->st.st_mtime;
+        vflags[i] = -1;
+        ones[i]   = 1;
+        inodes[i] = i + 1;
+        digests[i] = (lnk || dir) ? "" : strdup(sum_of("sha256sum", f(path, "%o/%s", root, rf->rel))->chars);
+        links[i]  = lnk ? rf->link : "";
+        users[i]  = "root";
+        langs[i]  = "";
+        // /dir/ + base
+        char full[1100];
+        snprintf(full, sizeof(full), "/%s", rf->rel);
+        cstr slash = strrchr(full, '/');
+        bases[i] = strdup(slash + 1);
+        char dn[1100];
+        snprintf(dn, sizeof(dn), "%.*s/", (int)(slash - full), full);
+        int di = -1;
+        for (int k = 0; k < ndirs; k++) if (strcmp(dirs[k], dn) == 0) { di = k; break; }
+        if (di < 0) { di = ndirs; dirs[ndirs++] = strdup(dn); }
+        diridx[i] = di;
+    }
+    rh_i32s(&h, 1028, sizes, n);
+    rh_i16s(&h, 1030, modes, n);
+    rh_i16s(&h, 1033, zeros, n);
+    rh_i32s(&h, 1034, mtimes, n);
+    rh_strs(&h, 1035, digests, n);
+    rh_strs(&h, 1036, links, n);
+    rh_i32s(&h, 1037, zeros, n);
+    rh_strs(&h, 1039, users, n);
+    rh_strs(&h, 1040, users, n);
+    string srpm = f(string, "%o.src.rpm", nvr);
+    rh_str (&h, 1044, RT_STRING, srpm->chars);
+    rh_i32s(&h, 1045, vflags, n);
+    cstr prov[1] = { lower };
+    rh_strs(&h, 1047, prov, 1);
+    // what the payload relies on: ./-prefixed names, compressed file names,
+    // sha256 file digests. rpm itself provides these
+    i32  rflags[3] = { 0x100000A, 0x100000A, 0x100000A };
+    cstr rnames[3] = { "rpmlib(CompressedFileNames)", "rpmlib(FileDigests)", "rpmlib(PayloadFilesHavePrefix)" };
+    cstr rvers[3]  = { "3.0.4-1", "4.6.0-1", "4.0-1" };
+    rh_i32s(&h, 1048, rflags, 3);
+    rh_strs(&h, 1049, rnames, 3);
+    rh_strs(&h, 1050, rvers, 3);
+    rh_i32s(&h, 1095, ones, n);
+    rh_i32s(&h, 1096, inodes, n);
+    rh_strs(&h, 1097, langs, n);
+    i32 pflags[1] = { 8 };
+    rh_i32s(&h, 1112, pflags, 1);
+    string pv = f(string, "%o-1", ver);
+    cstr pver[1] = { pv->chars };
+    rh_strs(&h, 1113, pver, 1);
+    rh_i32s(&h, 1116, diridx, n);
+    rh_strs(&h, 1117, bases, n);
+    rh_strs(&h, 1118, dirs, ndirs);
+    rh_str (&h, 1124, RT_STRING, "cpio");
+    rh_str (&h, 1125, RT_STRING, "gzip");
+    rh_str (&h, 1126, RT_STRING, "9");
+    i32 algo[1] = { 8 };
+    rh_i32s(&h, 5011, algo, 1);
+    path hdr = f(path, "%o/header.bin", w);
+    FILE* hf = fopen(hdr->chars, "wb");
+    verify(hf, "package: cannot write %o", hdr);
+    rh_write(&h, 63, hf);
+    fclose(hf);
+
+    // the signature header: digests of the main header, and of header+payload
+    path both = f(path, "%o/header+payload.bin", w);
+    vexec(a->verbose, "package", "cat %o %o > %o", hdr, gz, both);
+    string sha1   = sum_of("sha1sum",   hdr);
+    string sha256 = sum_of("sha256sum", hdr);
+    string md5hex = sum_of("md5sum",    both);
+    u8 md5[16];
+    for (int i = 0; i < 16; i++) {
+        unsigned v = 0;
+        sscanf(md5hex->chars + i * 2, "%2x", &v);
+        md5[i] = (u8)v;
+    }
+    rpm_hdr s = { 0 };
+    rh_ent(&s, 0, 0, 0);
+    rh_str(&s, 269, RT_STRING, sha1->chars);
+    rh_str(&s, 273, RT_STRING, sha256->chars);
+    i32 ssz = (i32)size_of(both);
+    rh_i32s(&s, 1000, &ssz, 1);
+    rh_bin(&s, 1004, md5, 16);
+    i32 psz = (i32)payload_size;
+    rh_i32s(&s, 1007, &psz, 1);
+    path sig = f(path, "%o/sig.bin", w);
+    FILE* sf = fopen(sig->chars, "wb");
+    verify(sf, "package: cannot write %o", sig);
+    rh_write(&s, 62, sf);
+    // the main header starts 8-aligned
+    for (long at = ftell(sf); at % 8; at++) fputc(0, sf);
+    fclose(sf);
+
+    // the lead, then the parts
+    FILE* out = fopen(rpm->chars, "wb");
+    verify(out, "package: cannot write %o", rpm);
+    u8 lead[96] = { 0xed, 0xab, 0xee, 0xdb, 3, 0 };
+    be16(lead + 6, 0);
+    be16(lead + 8, (u16)(strcmp(arch, "aarch64") == 0 ? 19 : 1));
+    snprintf((char*)lead + 10, 66, "%s", nvr->chars);
+    be16(lead + 76, 1);
+    be16(lead + 78, 5);
+    fwrite(lead, 1, 96, out);
+    copy_into(out, sig);
+    copy_into(out, hdr);
+    copy_into(out, gz);
+    fclose(out);
+    free(fs.v); free(h.data); free(s.data);
+    free(sizes); free(modes); free(zeros); free(mtimes); free(vflags); free(ones);
+    free(inodes); free(diridx); free(digests); free(links); free(users); free(langs); free(bases); free(dirs);
+}
+
+// --release on an app: stage the distros' own layout (/usr/bin/<name>,
+// /usr/lib/<name>/, /usr/share/<name>/), a .desktop and the hicolor icon set
+// (img's icons export scales it), then write .deb (debian/ubuntu), .rpm
+// (fedora/suse) and .pkg.tar.zst (arch) into the module's packages/
+static void silver_package(silver a) {
+    if (a->error || a->is_external || !a->release || a->test) return;
+    if (!a->product || !file_exists("%o", a->product)) return;
+    string name  = a->name;
+    string share = silver_install_name(a);
+    string ver = silver_release_version(a);
+    verify(ver, "--release: %o exports no version (export 1.0.0)", name);
+#if defined(__aarch64__)
+    cstr arch = "aarch64", deb_arch = "arm64";
+#else
+    cstr arch = "x86_64",  deb_arch = "amd64";
+#endif
+    // package names are lower-case on every distro
+    char lower[128];
+    int  li = 0;
+    for (cstr c = name->chars; *c && li < 127; c++) lower[li++] = (char)tolower((unsigned char)*c);
+    lower[li] = 0;
+    cstr quiet = a->verbose ? "" : " >/dev/null 2>&1";
+
+    // the distros' own layout: /usr/bin/<app>, its private closure in
+    // /usr/lib/<app>/ (never bare /usr/lib), data in /usr/share/<share>/
+    // packages outlive the install tree: they land in the module's own
+    // repository, every platform's side by side
+    path pkgs  = f(path, "%o/packages", a->project_path);
+    path stage = f(path, "%o/tmp/%o-stage", a->install, name);
+    path root  = f(path, "%o/root", stage);
+    path bin   = f(path, "%o/usr/bin", root);
+    path lib   = f(path, "%o/usr/lib/%o", root, name);
+    path shd   = f(path, "%o/usr/share", root);
+    path apps  = f(path, "%o/usr/share/applications", root);
+    path icons = f(path, "%o/usr/share/icons/hicolor", root);
+    make_dir(pkgs);
+    vexec(a->verbose, "package", "rm -rf %o", stage);
+    make_dir(bin); make_dir(lib); make_dir(shd); make_dir(apps); make_dir(icons);
+    print("[%o] package: staging %o", name, root);
+
+    // a live app: the host is the exe, the module .so rides in lib/<app>/
+    // with <share>.product pointing the host at it (it readlinks that); an
+    // empty <share>.source says no source is newer, so it never rebuilds
+    bool live    = ((aether)a)->is_live && a->live_binary;
+    path src_exe = live ? a->live_binary : a->product;
+    path exe = f(path, "%o/%o", bin, name);
+    vexec(a->verbose, "package", "cp -L %o %o", src_exe, exe);
+    vexec(a->verbose, "package", "chmod u+w %o", exe);
+    array done = array(alloc, 64);
+    bundle_sos(a, exe, lib, done);
+    if (live) {
+        string leaf = path_filename(a->product);
+        vexec(a->verbose, "package", "cp -L %o %o/%o", a->product, lib, leaf);
+        vexec(a->verbose, "package", "chmod u+w %o/%o", lib, leaf);
+        push(done, (Au)leaf);
+        bundle_sos(a, f(path, "%o/%o", lib, leaf), lib, done);
+        vexec(a->verbose, "package", "ln -sfn %o %o/%o.product", leaf, lib, share);
+        path_save(f(path, "%o/%o.source", lib, share), (Au)string(""), null);
+    }
+
+    // the share is named after the app, as the bin is: no owner prefix
+    path share_src = f(path, "%o/share/%o", a->install, share);
+    if (dir_exists("%o", share_src))
+        vexec(a->verbose, "package", "cp -RL %o %o/%o", share_src, shd, name);
+
+    // icon: <module>/images/icon.png, icons/icon.png or icon.png; a release needs one
+    path icon = f(path, "%o/images/icon.png", a->module_path);
+    if (!file_exists("%o", icon)) icon = f(path, "%o/icons/icon.png", a->module_path);
+    if (!file_exists("%o", icon)) icon = f(path, "%o/icon.png", a->module_path);
+    verify(file_exists("%o", icon), "--release: %o has no icon (images/icon.png)", name);
+    // img's icons export writes the hicolor set; SILVER_ICONS tells it what
+    path img_so = f(path, "%o/libsilver-img.so", a->build_dir);
+    verify(file_exists("%o", img_so), "--release: icons need img built (silver --build img)");
+    path img_share = f(path, "%o/share/silver-img", a->install);
+    make_dir(img_share);
+    string icon_spec = f(string, "%o;%o;%o", icon, icons, name);
+    setenv("SILVER_ICONS", icon_spec->chars, 1);
+    int ist = silver_spawn_product(a, img_so, true, img_share, "SILVER_EXPORT", "SILVER_EXPORT_FORCE");
+    unsetenv("SILVER_ICONS");
+    verify(WIFEXITED(ist) && WEXITSTATUS(ist) == 0, "package: icons failed for %o", name);
+
+    string desktop = f(string,
+        "[Desktop Entry]\nType=Application\nName=%o\nExec=/usr/bin/%o\n"
+        "Icon=%o\nCategories=Utility;\nTerminal=false\n", name, name, name);
+    path_save(f(path, "%o/%o.desktop", apps, name), (Au)desktop, null);
+
+    string who_n = trim(command_run((command)string("git config user.name"),  false));
+    string who_e = trim(command_run((command)string("git config user.email"), false));
+    string who   = f(string, "%o <%o>", len(who_n) ? who_n : string("silver"),
+                                        len(who_e) ? who_e : string("silver@localhost"));
+
+    // debian / ubuntu
+    string control = f(string,
+        "Package: %s\nVersion: %o\nSection: misc\nPriority: optional\nArchitecture: %s\n"
+        "Maintainer: %o\nDescription: %o %o\n", lower, ver, deb_arch, who, name, ver);
+    path deb = f(path, "%o/%s_%o_%s.deb", pkgs, lower, ver, deb_arch);
+    write_deb(a, stage, root, control, deb);
+    print("[%o] package: %o", name, deb);
+
+    // fedora / suse: one rpm serves both
+    path rpm = f(path, "%o/%s-%o-1.%s.rpm", pkgs, lower, ver, arch);
+    write_rpm(a, stage, root, lower, ver, arch, name, who, rpm);
+    print("[%o] package: %o", name, rpm);
+
+    // arch: pacman reads .PKGINFO first in a zstd tar; no tool needed
+    string size  = trim(command_run((command)f(string, "du -sb %o | cut -f1", root), false));
+    string bdate = trim(command_run((command)string("date +%s"), false));
+    string pkginfo = f(string,
+        "pkgname = %s\npkgbase = %s\npkgver = %o-1\npkgdesc = %o %o\nurl = \n"
+        "builddate = %o\npackager = %o\nsize = %o\narch = %s\n",
+        lower, lower, ver, name, ver, bdate, who, size, arch);
+    path_save(f(path, "%o/.PKGINFO", root), (Au)pkginfo, null);
+    path arc = f(path, "%o/%s-%o-1-%s.pkg.tar.zst", pkgs, lower, ver, arch);
+    verify(exec(a->verbose, "tar --zstd --owner=0 --group=0 -C %o -cf %o .PKGINFO usr", root, arc) == 0,
+        "package: tar failed for %o", arc);
+    print("[%o] package: %o", name, arc);
+    vexec(a->verbose, "package", "rm -rf %o", stage);
     a->build = true; // a packaged release does not launch
 }
 #else
@@ -2611,9 +3182,11 @@ static void silver_run_exports(silver a) {
     // a cached build has no parsed members; --export launches regardless
     // (every product exits 0 under SILVER_EXPORT after module init)
     if (!any && !a->export) return;
-    bool lib = a->is_library && !((aether)a)->is_live;
     path bin = a->live_binary ? a->live_binary : a->product;
     if (!bin || !file_exists("%o", bin)) return;
+    // a cached build never learns is_library: the product's ext says it
+    string ex  = ext(bin);
+    bool   lib = eq(ex, "dylib") || eq(ex, "so") || eq(ex, "dll");
     // exports write into the module's own share bundle
     path share = f(path, "%o/share/%o", a->install,
         silver_install_name(a));
@@ -3204,6 +3777,8 @@ AU_EXPORT void silver_init(silver a) {
             if (file_exists("%o", host_dst))
                 build_silver_host(a);
         }
+        // the host is what tests and ships: know it before either
+        silver_recover_live(a);
         // --export: run export funcs even on a cached build, no launch
         if (a->export) { silver_run_exports(a); return; }
         silver_run_tests(a);
@@ -8655,7 +9230,9 @@ none silver_build_product(silver a) {
     if (a->product) drop(a->product);
 
     a->product = hold(product);
-    verify(!(a->release && a->is_library && !a->is_external), "--release is for apps: %o is a library", a->name);
+    // a live app is a library with a host: it ships
+    verify(!(a->release && a->is_library && !((aether)a)->is_live && !a->is_external),
+        "--release is for apps: %o is a library", a->name);
     collect_mm_frameworks(a, a->implements);
 
     // platform dispatch: a device serves its own sysroot, and llvm is already
@@ -8751,15 +9328,20 @@ none silver_build_product(silver a) {
         }
         // both are ELF-only: a PE resolves dlls by exe dir and PATH, and it
         // binds its own symbols first without being told to
+        // $ORIGIN/../lib: a packaged /opt/<app>/bin finds its bundled lib/
         string rpaths = win ? string("") :
-            f(string, "-Wl,-rpath,%o -Wl,-rpath,%o/lib ", a->build_dir, install);
+            f(string, "-Wl,-rpath,%o -Wl,-rpath,%o/lib -Wl,-rpath,'$ORIGIN' -Wl,-rpath,'$ORIGIN/../lib' ", a->build_dir, install);
+        // a library carries its leaf as soname: consumers record that, not
+        // the absolute build path, and resolve by rpath
+        string shared_d = a->is_library ? (target_is_apple(a) || win ? string(shared) :
+            f(string, "%s -Wl,-soname,%o", shared, path_filename(a->product))) : string("");
         if (!win && a->base_install)
             concat(rpaths, f(string, "-L%o/lib -Wl,-rpath,%o/lib ",
                 a->base_install, a->base_install));
         cstr   bsym   = (a->is_library && !win) ? "-Wl,-Bsymbolic" : "";
         verify(exec(a->verbose, "%o/%s %o%o%s %s %s %o %o/%o.o%o %o %o-o %o -L%o -L%o/lib %o%o %o %o %s",
             tools, linker_d, tgt, ldld,
-            a->is_library ? shared : "", a->debug ? "-g" : "",
+            shared_d->chars, a->debug ? "-g" : "",
             bsym,
             isysroot, a->build_dir, a->name, x_core, objs, core_lib,
             a->product,
@@ -8898,7 +9480,7 @@ none silver_build_product(silver a) {
         "@%o/link.rsp -fuse-ld=lld -rtlib=compiler-rt -unwindlib=libunwind",
         a->build_dir);
 #else
-    string plat_link = f(string, "-Wl,-rpath,%o -Wl,-rpath,%o/lib", a->build_dir, install);
+    string plat_link = f(string, "-Wl,-rpath,%o -Wl,-rpath,%o/lib -Wl,-rpath,'$ORIGIN' -Wl,-rpath,'$ORIGIN/../lib'", a->build_dir, install);
     if (a->base_install)
         plat_link = f(string, "%o -L%o/lib -Wl,-rpath,%o/lib",
             plat_link, a->base_install, a->base_install);
@@ -8917,8 +9499,16 @@ none silver_build_product(silver a) {
     // beside it named for the exe, and silver.exe's shadows the silver
     // MODULE's -lsilver. module libs of our own are passed by full path, so
     // only the core modules resolve through -l, and those live in install/lib
+    // a library carries its leaf as soname: consumers record that, not the
+    // absolute build path, and resolve by rpath
+#ifdef __linux__
+    string shared_n = a->is_library ?
+        f(string, "%s -Wl,-soname,%o", shared, path_filename(a->product)) : string("");
+#else
+    string shared_n = string(a->is_library ? shared : "");
+#endif
     verify(exec(a->verbose, "%o/bin/%s %s %s %s %o %s %o/%o.o%o %o -o %o -L%o/lib -L%o %o %o %o %o %s",
-        a->base_install ? a->base_install : install, linker, a->is_library ? shared : "", a->debug ? "-g" : "",
+        a->base_install ? a->base_install : install, linker, shared_n->chars, a->debug ? "-g" : "",
 
 #ifdef __linux__
         a->is_library ? "-Wl,-Bsymbolic" : "",

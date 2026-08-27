@@ -726,13 +726,20 @@ static time_t file_mtime(const char* path) {
     return (stat(path, &s) == 0) ? s.st_mtime : 0;
 }
 
-static void cd_share(const char* bindir, const char* name) {
+static void cd_share(const char* bindir, const char* app) {
     char share[4096];
+    const char* name = app;
 #ifdef SILVER_SHARE_NAME
     name = SILVER_SHARE_NAME;
 #endif
     snprintf(share, sizeof(share), "%s/../share/%s", bindir, name);
     struct stat st;
+    if (stat(share, &st) == 0 && S_ISDIR(st.st_mode)) {
+        chdir(share);
+        return;
+    }
+    // a system install names the share after the app, as the bin is
+    snprintf(share, sizeof(share), "%s/../share/%s", bindir, app);
     if (stat(share, &st) == 0 && S_ISDIR(st.st_mode))
         chdir(share);
 }
@@ -1071,10 +1078,18 @@ int main(int argc, char** argv) {
     char product[4096];
     snprintf(product, sizeof(product), "%s/%s.product", bindir,
         build_name);
+    // a system install keeps nothing beside /usr/bin/<name>: the product
+    // and its libs live in ../lib/<name>/
+    char libdir[4096];
+    snprintf(libdir, sizeof(libdir), "%s/../lib/%s", bindir, name);
+    if (access(product, F_OK) != 0)
+        snprintf(product, sizeof(product), "%s/%s.product", libdir, build_name);
 
     char artifacts[4096];
     snprintf(artifacts, sizeof(artifacts), "%s/%s.source", bindir,
         build_name);
+    if (access(artifacts, F_OK) != 0)
+        snprintf(artifacts, sizeof(artifacts), "%s/%s.source", libdir, build_name);
 
     // record the launch cwd before we cd to the share, so the app can resolve its
     // config (e.g. orbiter.agi) against where it was started, not the share dir.
@@ -1109,6 +1124,13 @@ int main(int argc, char** argv) {
         return 1;
     }
     lib[n] = '\0';
+    // a relative link resolves beside the product file, not the cwd (share)
+    if (lib[0] != '/') {
+        char pdir[4096], rel[4096];
+        strncpy(pdir, product, sizeof(pdir) - 1); pdir[sizeof(pdir) - 1] = '\0';
+        snprintf(rel, sizeof(rel), "%s/%s", dirname(pdir), lib);
+        strncpy(lib, rel, sizeof(lib) - 1); lib[sizeof(lib) - 1] = '\0';
+    }
 
 #ifdef _WIN32
     // a COPY from the very first load: windows cannot relink a dll this
