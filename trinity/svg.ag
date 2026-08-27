@@ -19,6 +19,10 @@ struct SVGCmd
 
 class SVGShape
     public cmds        : vec SVGCmd
+    # the element's id and every attribute it carried: a consumer that
+    # samples regions (a scene bake) reads its tags off the shape
+    public id          : string
+    public attrs       : map string[string]
     public fill        : rgba
     public stroke      : rgba
     public sw          : f32
@@ -956,6 +960,13 @@ func svg_parse_pts [ xf: affine, pts: string ] -> vec SVGCmd
     return pb.cmds
 
 
+# the shape just pushed takes its element's id and attributes
+func svg_tag [ shapes: vec SVGShape, node: SVGNode ]
+    if [ !shapes || shapes.count == 0 ] return
+    sh : SVGShape shapes[ shapes.count - 1 ]
+    sh.id    = node.attr[ 'id' ]
+    sh.attrs = node.attrs
+
 func svg_walk [ shapes: vec SVGShape, nodes: vec SVGNode, xf: affine, state: SVGState ]
     for [ node: SVGNode ] in nodes
         disp : string node.attr[ 'display' ]
@@ -973,6 +984,7 @@ func svg_walk [ shapes: vec SVGShape, nodes: vec SVGNode, xf: affine, state: SVG
             if [ d && d.count > 0 ]
                 pb   : SVGPathBuilder []
                 shapes.push[ svg_make_shape[ pb.build[ d, lxf ], st ] ]
+                svg_tag[ shapes, node ]
         el [ tag == 'rect' ]
             rx_: f32 node.attr_f[ 'rx', 0.0 ]
             ry_: f32 node.attr_f[ 'ry', 0.0 ]
@@ -983,15 +995,18 @@ func svg_walk [ shapes: vec SVGShape, nodes: vec SVGNode, xf: affine, state: SVG
                 node.attr_f[ 'width', 0.0 ], node.attr_f[ 'height', 0.0 ],
                 rx_, ry_ ]
             shapes.push[ svg_make_shape[ cmds, st ] ]
+            svg_tag[ shapes, node ]
         el [ tag == 'circle' ]
             r : f32 node.attr_f[ 'r', 0.0 ]
             cmds : svg_kappa_ellipse[ lxf, node.attr_f[ 'cx', 0.0 ], node.attr_f[ 'cy', 0.0 ], r, r ]
             shapes.push[ svg_make_shape[ cmds, st ] ]
+            svg_tag[ shapes, node ]
         el [ tag == 'ellipse' ]
             cmds : svg_kappa_ellipse[ lxf,
                 node.attr_f[ 'cx', 0.0 ], node.attr_f[ 'cy', 0.0 ],
                 node.attr_f[ 'rx', 0.0 ], node.attr_f[ 'ry', 0.0 ] ]
             shapes.push[ svg_make_shape[ cmds, st ] ]
+            svg_tag[ shapes, node ]
         el [ tag == 'line' ]
             pb : SVGPathBuilder []
             pb.cmds = vec SVGCmd []
@@ -1004,6 +1019,7 @@ func svg_walk [ shapes: vec SVGShape, nodes: vec SVGNode, xf: affine, state: SVG
             pb.cmd_move[ lxf, node.attr_f[ 'x1', 0.0 ], node.attr_f[ 'y1', 0.0 ] ]
             pb.cmd_line[ lxf, node.attr_f[ 'x2', 0.0 ], node.attr_f[ 'y2', 0.0 ] ]
             shapes.push[ svg_make_shape[ pb.cmds, st ] ]
+            svg_tag[ shapes, node ]
         el [ tag == 'polyline' || tag == 'polygon' ]
             pts : string node.attr[ 'points' ]
             if [ pts && pts.count > 0 ]
@@ -1011,3 +1027,4 @@ func svg_walk [ shapes: vec SVGShape, nodes: vec SVGNode, xf: affine, state: SVG
                 if [ tag == 'polygon' ]
                     cmds.push[ SVGCmd [ op: SVGOp.close, x: 0.0, y: 0.0, x1: 0.0, y1: 0.0, x2: 0.0, y2: 0.0 ] ]
                 shapes.push[ svg_make_shape[ cmds, st ] ]
+                svg_tag[ shapes, node ]
