@@ -177,6 +177,8 @@ static int mods_of(NSEventModifierFlags f) {
     return m;
 }
 
+static float mac_scale(platform_window* w);
+
 @interface PlatformView : NSView <NSDraggingDestination> {
 @public
     platform_window* w;
@@ -200,7 +202,8 @@ static int mods_of(NSEventModifierFlags f) {
 }
 - (void)updateDrawable {
     CAMetalLayer* l = (CAMetalLayer*)self.layer;
-    CGFloat s = l.contentsScale;
+    CGFloat s = mac_scale(w);
+    l.contentsScale = s;
     l.drawableSize = CGSizeMake(self.bounds.size.width * s, self.bounds.size.height * s);
 }
 - (void)updateTrackingAreas {
@@ -383,12 +386,17 @@ void platform_window_get_size(platform_window* w, int* width, int* height) {
 }
 
 void platform_window_get_framebuffer(platform_window* w, int* width, int* height) {
-    NSRect r = [w->view convertRectToBacking:w->view.bounds];
-    if (width)  *width  = (int)r.size.width;
-    if (height) *height = (int)r.size.height;
+    CGSize d = ((CAMetalLayer*)w->view.layer).drawableSize;
+    if (width)  *width  = (int)d.width;
+    if (height) *height = (int)d.height;
 }
 
-float platform_window_scale(platform_window* w) { return (float)w->window.backingScaleFactor; }
+// DEVICES_SCALE=1 renders at logical resolution: a diagnostic and a knob
+static float mac_scale(platform_window* w) {
+    const char* e = getenv("DEVICES_SCALE");
+    return e && atof(e) > 0 ? (float)atof(e) : (float)w->window.backingScaleFactor;
+}
+float platform_window_scale(platform_window* w) { return mac_scale(w); }
 
 void platform_window_get_pos(platform_window* w, int* x, int* y) {
     NSRect f = [w->window contentRectForFrameRect:w->window.frame];

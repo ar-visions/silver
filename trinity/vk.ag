@@ -1039,9 +1039,9 @@ class vk_context
         get_required_extensions[ a ]
         # validation layer adds 10-100x overhead PER vulkan call (every draw, descriptor
         # bind, image transition). on in debug builds, off in release.
-        enable_validation: bool [ false ]
-        ifdef [ debug ]
-            enable_validation = true
+        # opt-in: VK_VALIDATION=1. the layer makes every submit a
+        # full stop, an order of magnitude on a frame
+        enable_validation: bool [ getenv[ "VK_VALIDATION" ] != null ]
         # no loader on ios: MoltenVK alone serves no layers
         ifdef [ ios ]
             enable_validation = false
@@ -3050,8 +3050,16 @@ class Model
 class Command
     context vk : vk_context
     intern cmd : VkCommandBuffer
+    # the fence takes the place of a queue-wide idle after every submit:
+    # only a reuse of THIS buffer waits, and only for its own work
+    intern fence   : VkFence
+    intern pending : bool
 
     func begin [ ] 
+        if [ pending ]
+            vkWaitForFences[ vk.device, 1, @fence, VK_TRUE, UINT64_MAX ]
+            vkResetFences[ vk.device, 1, @fence ]
+            pending = false
         vkResetCommandBuffer[ cmd, 0 ]
         vkBeginCommandBuffer[ cmd, VkCommandBufferBeginInfo [
             sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -3065,8 +3073,11 @@ class Command
             commandBufferCount: 1,
             pCommandBuffers:    @cmd
         ]
-        vkQueueSubmit[ vk.queue, 1, si, null ]
-        vkQueueWaitIdle[ vk.queue ]
+        if [ !fence ]
+            fi : VkFenceCreateInfo [ sType: VK_STRUCTURE_TYPE_FENCE_CREATE_INFO ]
+            vkCreateFence[ vk.device, @fi, null, @fence ]
+        vkQueueSubmit[ vk.queue, 1, si, fence ]
+        pending = true
 
     func init [ ]
         alloc_info: VkCommandBufferAllocateInfo [
@@ -3078,6 +3089,10 @@ class Command
         vkAllocateCommandBuffers[ vk.device, alloc_info, @cmd ]
 
     func dealloc [ ]
+        if [ pending ]
+            vkWaitForFences[ vk.device, 1, @fence, VK_TRUE, UINT64_MAX ]
+        if [ fence ]
+            vkDestroyFence[ vk.device, fence, null ]
         if [ cmd ]
             vkFreeCommandBuffers[ vk.device, vk.command_pool, 1, @cmd ]
 
@@ -3437,16 +3452,26 @@ class Texture
     # already created at width x height with the right format. used by
     # Canvas's per-draw SDF generation to push fresh distance-field data
     # into the canvas's stable sdf_tex without recreating the texture.
+    # one command per upload, barriers in band, no host wait: the staging
+    # buffer and command persist, so a texture uploaded every frame costs
+    # a memcpy and a submit. begin[] waits only if the last upload of THIS
+    # texture is still in flight
+    intern up_cmd : Command
+    intern up_buf : Buffer
+
     func upload [ data: ARef, byte_count: i32 ]
         expect vk, "vk_context not specified"
         expect vk_image, "vk_image not yet created"
-        transition[ VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ]
-        cmd: Command [ vk: vk ]
-        cmd.begin[]
-        staging: Buffer [ vk: vk, size: byte_count, u_src: true,
-            m_host_visible: true, m_host_coherent: true,
-            data: data ]
-        vkCmdCopyBufferToImage[ cmd.cmd, staging.vk_buffer, vk_image,
+        if [ !up_cmd ] up_cmd = Command [ vk: vk ]
+        if [ !up_buf || up_buf.size < byte_count ]
+            up_buf = Buffer [ vk: vk, size: byte_count, u_src: true,
+                m_host_visible: true, m_host_coherent: true ]
+        up_cmd.begin[]
+        p : ARef [ up_buf.mmap[] ]
+        memcpy[ p, data, byte_count ]
+        up_buf.unmap[]
+        transition_in[ up_cmd.cmd, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ]
+        vkCmdCopyBufferToImage[ up_cmd.cmd, up_buf.vk_buffer, vk_image,
             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, VkBufferImageCopy [
                 bufferOffset:      0,
                 bufferRowLength:   0,
@@ -3460,14 +3485,15 @@ class Texture
                 imageOffset: VkOffset3D [ 0, 0, 0 ],
                 imageExtent: VkExtent3D [ width, height, 1 ]
             ]]
-        cmd.submit[ ]
-        vkDeviceWaitIdle[ vk.device ]
-        staging.destroy_now[ ]
         if [ mip_levels > 1 ]
+            # mip generation is its own out-of-band pass: it needs the copy done
+            up_cmd.submit[ ]
+            vkDeviceWaitIdle[ vk.device ]
             vk.create_mipmaps[ vk_image, width, height, (depth > 1) ? depth : 1, mip_levels, layer_count ]
             vk_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
         el
-            transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
+            transition_in[ up_cmd.cmd, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
+            up_cmd.submit[ ]
 
     # upload a sub-rectangle of bytes into the existing vk_image. used by
     # the glyph atlas to drop a freshly-rasterized glyph bitmap into its

@@ -244,6 +244,10 @@ if ! grep -q '# silver PATH' "$RC" 2>/dev/null; then
     echo "added silver PATH to $RC (open a new shell or: source $RC)"
 fi
 
+# a shared libunwind of ours shadows libSystem's reexport by leaf name on
+# every -L link; only the static one stays (silver links it statically)
+rm -f "$NATIVE/lib/libunwind.dylib"
+
 # Au's posix.h must be reachable as <posix.h> by modules that build OUTSIDE the
 # src tree (e.g. dbg) — symlink it into the install include dir.
 ln -sf "$SILVER/src/posix.h" "$NATIVE/include/posix.h"

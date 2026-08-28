@@ -853,3 +853,40 @@ Nearly all of it can be one silver command; only Apple's account gates stay:
 
 Order when picked up: sysroot + MoltenVK + UIKit host (a trinity app drawing
 on the phone via devicectl), then bundle/sign/`.ipa`, then upload.
+
+# State as of 2026-08-28 (knes regression, iOS, devices)
+
+knes emulation is ~2x slower than it should be and it also crashes; `--record`
+/`--playback` (one pad byte per emulated frame, knes.ag run_frame) drift out of
+sync, most likely because dropped frames desynchronize the input stream. Not
+fixed. vscale/filtering was ruled out (slow at low res too). Facts measured:
+- validation layer was on in every debug build (vk.ag) and made every submit a
+  full stop; now opt-in with VK_VALIDATION=1. That alone took knes 30 -> 60 fps
+  on the title screen, but it still sags to ~45 and bursts later in play.
+- `Command.submit` no longer vkQueueWaitIdle; each Command owns a fence waited in
+  begin/dealloc. `Texture.upload` keeps a persistent staging buffer + command,
+  barriers in band, no host wait (vk.ag). Mip textures still wait.
+- Sampled (no instrumentation): main thread ~68% in Render_sync_fence
+  (vkWaitForFences on the frame ring), emu thread ~40% busy. GPU/present side,
+  not the 6502/PPU, is where the time goes. Not resolved.
+- `silver --timing app rom` works again (ids shared across cores, names filled
+  before emit); its per-call clock_gettime inflates hot tiny functions.
+- Process isolation (silver-host) is now spawned correctly on macOS
+  (/proc/self/exe was linux-only). SILVER_ISOLATE=0 runs in process.
+- CLI: `silver [flags] module [app-args]`; app args after the module. Au's
+  Au_with_cstrs stops parsing at the app's own positional (rom), so
+  `rom --vscale false` never reached knes; a fix is edited in src/Au.c
+  (positional_done) but NOT yet rebuilt/verified. string_cast_bool now reads
+  false/no/off/0 as false (Au.c).
+- silver bug: a `@FILE` class member cannot be null-tested (locals can).
+  knes uses `handle` members as a workaround.
+- devices (GLFW replacement) has a DEVICES_SCALE env override on mac;
+  trinity takes scale from platform_window_scale.
+- spectra was split: audio core stays, whisper/tts/datasets/codecs moved to
+  `speech` (orbiter, crashman import it). mpg123 removed entirely.
+- iOS: `silver -d iphonesim app` builds, bundles, installs and launches in the
+  booted simulator with logs streamed back; `-d iphone` builds and signs (never
+  install/launch on the phone unless Kalen asks). Shaders compile in-process
+  via glslang (no glslangValidator binary). devices.agi holds both devices.
+- Homebrew is gone; ninja/autotools/swig are built into install/ by bootstrap.
+- Linker warnings fixed generally: objects pin macosx13.0; no shared libunwind.

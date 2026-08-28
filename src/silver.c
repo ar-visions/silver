@@ -3487,6 +3487,9 @@ AU_EXPORT void silver_init(silver a) {
         silver up = (silver)a->is_child;
         if (up->device && len(up->device)) a->device = hold(up->device);
     }
+    // a timing run instruments every module in the tree, not just the root
+    if (a->is_child && ((aether)(silver)a->is_child)->timing)
+        ((aether)a)->timing = true;
 
     // --rsync pulls a device's sysroot again; with no device there is
     // nothing to pull, and silently doing nothing reads as success
@@ -3952,6 +3955,8 @@ AU_EXPORT void silver_init(silver a) {
 
     // an uninstall walks the imports for their ledgers: that is a parse
     if (a->clean || a->uninstall) update_product = true;
+    // instrumented code is not the cached product: a timing run rebuilds
+    if (((aether)a)->timing) update_product = true;
     // the syntax map is a product too: cached runs must not leave a map
     // older than the source (the editor withholds stale coloring)
     if (!a->is_external && a->format && len(a->format)) {
