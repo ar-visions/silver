@@ -4167,6 +4167,7 @@ AU_EXPORT Au Au_with_cstrs(Au a, cstrs argv) {
     if (!g_main_argv) g_main_argv = argv;
     int argc = argv[0] ? 1 : 0; // skip executable
     Au_t rtype = isa(a);
+    bool positional_done = false;  // the default arg was taken; our flags may still follow
     while (argv[argc]) { // C standard puts a null char* on end, by law (see: Brannigans law)
         cstr arg = argv[argc];
         // --leaks [N] is a runtime flag owned by engage, not the app
@@ -4183,7 +4184,9 @@ AU_EXPORT Au Au_with_cstrs(Au a, cstrs argv) {
             while (type != typeid(Au)) {
                 for (num i = 0; i < type->members.count; i++) {
                     Au_t m = (Au_t)type->members.origin[i];
-                    if (m->access_type == interface_intern) continue;
+                    // state is not a flag: intern and mutable never match
+                    if (m->access_type == interface_intern ||
+                        m->access_type == interface_mutable) continue;
                     // && binds tighter than || — parenthesized so BOTH forms
                     // require a VAR member (a method must never match a flag)
                     if ((m->member_type == AU_MEMBER_VAR) &&
@@ -4195,6 +4198,12 @@ AU_EXPORT Au Au_with_cstrs(Au a, cstrs argv) {
                 }
                 if (mem) break; // most-derived match wins; don't let a base class clobber it
                 type = type->context;
+            }
+            if (!mem && positional_done) {
+                // a flag we do not own, after the default arg: it belongs to
+                // the program this one launches (silver: the app's own flags)
+                g_argv_stop = argc;
+                break;
             }
             if (!mem) {
                 if (getenv("AU_ARG_DEBUG")) {
@@ -4260,6 +4269,11 @@ AU_EXPORT Au Au_with_cstrs(Au a, cstrs argv) {
                     mem->ident, value ? value : "(true)", (long long)mem->af_index);
             Au_set_property(a, mem->ident, conv);
         } else {
+            if (positional_done) {
+                // a second bare word: the launched program's, not ours
+                g_argv_stop = argc;
+                break;
+            }
             Au_t def  = find_member(rtype, null, AU_MEMBER_VAR, AU_TRAIT_IS_DEFAULT, true);
             Au   conv = null;
             if (def && def->src == typeid(path))
@@ -4276,10 +4290,12 @@ AU_EXPORT Au Au_with_cstrs(Au a, cstrs argv) {
             } else if (def)
                 conv = convert(def->type, (Au)string(arg));
             if  (conv) Au_set_property(a, def->ident, (Au)conv);
-            // the default value is the separator: everything after it
-            // belongs to the launched program (see au_argv_stop)
+            // a string default took the whole remainder. any other keeps
+            // parsing OUR flags past it, stopping at the first that is not
+            // ours (see au_argv_stop): `app rom --flag` reaches app
             g_argv_stop = argc + 1;
-            break;
+            if (def && def->src == typeid(string)) break;
+            positional_done = true;
         }
         argc++;
     }
@@ -5954,8 +5970,12 @@ AU_EXPORT num   string_rindex_of(string a, symbol cs) {
     return last ? (num)(last - haystack) : (num)-1;
 }
 
+// the words for false read as false; anything else non-empty is true
 AU_EXPORT bool string_cast_bool(string a) {
-    return a && a->count > 0;
+    if (!a || a->count == 0) return false;
+    cstr s = (cstr)a->chars;
+    return !(strcasecmp(s, "false") == 0 || strcasecmp(s, "no") == 0 ||
+             strcasecmp(s, "off")   == 0 || strcmp(s, "0") == 0);
 }
 
 AU_EXPORT sz string_cast_sz(string a) {

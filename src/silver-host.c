@@ -20,6 +20,9 @@
 #include <fcntl.h>
 #endif
 #include <sys/stat.h>
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
 #include <time.h>    // time() — the future-mtime clamp in sources_newer
 #include <errno.h>
 #include <stdint.h>
@@ -136,6 +139,7 @@ static const char* g_app_name = "app";
 
 static pid_t g_isolate_child = 0;
 static char  g_isolate_cwd[4096];
+static char  g_exe_path[4096];       // this binary, resolved in main
 static int   g_argc;
 static char** g_argv;
 
@@ -197,7 +201,13 @@ static int isolate_requested(int argc, char** argv) {
     const char* v = getenv(ISOLATE_ENV);
     if (v && *v) return strcmp(v, "0") != 0;
     if (getenv(IDE_ENV)) return 0;
+#ifdef __linux__
     return 1;
+#else
+    // the child hands frames over a dma-buf: linux only. elsewhere the app
+    // stays in process until an IOSurface path exists (SILVER_ISOLATE=1 to force)
+    return 0;
+#endif
 }
 
 // nothing forwards output from here: this process is linked /SUBSYSTEM:WINDOWS
@@ -227,12 +237,14 @@ static pid_t isolate_spawn(void) {
     cenv[n + 1] = fdenv;
     cenv[n + 2] = NULL;
     pid_t pid = 0;
-    int sp = posix_spawn(&pid, "/proc/self/exe", &fa, NULL, cargv, cenv);
+    // /proc is linux only: the same binary is what main resolved
+    int sp = posix_spawn(&pid, g_exe_path[0] ? g_exe_path : "/proc/self/exe", &fa, NULL, cargv, cenv);
     posix_spawn_file_actions_destroy(&fa);
     free(cargv);
     free(cenv);
     if (sp != 0) {
-        fprintf(stderr, "silver-host: isolate spawn failed: %s\n", strerror(sp));
+        fprintf(stderr, "silver-host: isolate spawn failed: %s (exe %s, cwd %s)\n", strerror(sp),
+            g_exe_path[0] ? g_exe_path : "/proc/self/exe", g_isolate_cwd[0] ? g_isolate_cwd : "-");
         return -1;
     }
     return pid;
@@ -971,6 +983,14 @@ int main(int argc, char** argv) {
         strncpy(abspath, argv[0], sizeof(abspath) - 1);
         abspath[sizeof(abspath) - 1] = '\0';
     }
+#ifdef __APPLE__
+    {   // the kernel's answer beats argv[0], as /proc/self/exe does on linux
+        char mac[4096]; uint32_t mn = sizeof(mac);
+        if (_NSGetExecutablePath(mac, &mn) == 0 && realpath(mac, abspath) == NULL)
+            strncpy(abspath, mac, sizeof(abspath) - 1);
+    }
+#endif
+    strncpy(g_exe_path, abspath, sizeof(g_exe_path) - 1);
     char self[4096], self2[4096];
     strncpy(self,  abspath, sizeof(self)  - 1); self[sizeof(self)   - 1] = '\0';
     strncpy(self2, abspath, sizeof(self2) - 1); self2[sizeof(self2) - 1] = '\0';

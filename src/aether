@@ -187,6 +187,7 @@ forward(evar)
     M(A,U,i, prop,     intern,  LLVMValueRef,             func_names_global,       as, ARef) \
     M(A,U,i, prop,     intern,  LLVMTypeRef,              clock_gettime_type,      as, ARef) \
     M(A,U,i, prop,     intern,  LLVMValueRef,             clock_gettime_fn,        as, ARef) \
+    M(A,U,i, prop,     intern,  cstrs,                    func_name_table) \
     M(A,U,i, prop,     intern,  LLVMTypeRef,              coverage_probe_lltype,   as, ARef) \
     M(A,U,i, prop,     intern,  LLVMValueRef,             coverage_probes_global,  as, ARef) \
     M(A,U,i, prop,     intern,  LLVMValueRef,             coverage_seq_global,     as, ARef) \

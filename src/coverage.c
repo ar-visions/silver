@@ -25,6 +25,7 @@ static void _emit_guard_end(char* g) { (void)g; aether_emit_unlock(); }
 // --- LLDB/DWARF debug info helpers ---
 
 #define B a->builder
+#define MAX_FUNCS 512
 #define MAX_PROBES  4096
 #define TRACE_SIZE  1024
 
@@ -59,11 +60,30 @@ typedef struct _coverage_module {
     struct _coverage_module* next;
 } coverage_module;
 
-static char* __func_name_table[512];
 
-void coverage_set_func_name(u32 func_id, char* name) {
-    if (func_id < 512)
-        __func_name_table[func_id] = name;
+// names live on the root: cores share the id space, modules do not
+void coverage_set_func_name(aether a, u32 func_id, char* name) {
+    aether r = a->root ? a->root : a;
+    if (!r->func_name_table) r->func_name_table = calloc(MAX_FUNCS, sizeof(char*));
+    if (func_id < MAX_FUNCS)
+        r->func_name_table[func_id] = name;
+}
+
+// the names array is registered empty at init and filled here, once every
+// core has emitted its functions and taken its ids
+AU_EXPORT void finalize_timing_names(aether a) {
+    aether r = a->root ? a->root : a;
+    if (!r->timing || !r->func_names_global) return;
+    emit_guard;
+    LLVMTypeRef  ptr_type = LLVMPointerTypeInContext(r->module_ctx, 0);
+    LLVMValueRef* vals = calloc(MAX_FUNCS, sizeof(LLVMValueRef));
+    for (u32 i = 0; i < MAX_FUNCS; i++) {
+        char* nm = r->func_name_table ? r->func_name_table[i] : null;
+        vals[i] = nm ? LLVMConstPointerCast(LLVMBuildGlobalStringPtr(r->builder, nm, ""), ptr_type)
+                     : LLVMConstNull(ptr_type);
+    }
+    LLVMSetInitializer(r->func_names_global, LLVMConstArray(ptr_type, vals, MAX_FUNCS));
+    free(vals);
 }
 
 void emit_coverage_register(aether a) {
@@ -84,27 +104,16 @@ void emit_coverage_register(aether a) {
         ? a->func_timings_global
         : LLVMConstNull(ptr_type);
 
-    // build func names global array
+    // the names array is fixed-size and filled at finalize: functions
+    // are still being emitted (by every core) when this initializer runs
     LLVMValueRef names = LLVMConstNull(ptr_type);
-    if (a->timing && a->next_func_id > 0) {
-        u32 n = a->next_func_id;
-        LLVMValueRef* name_values = calloc(n, sizeof(LLVMValueRef));
-        for (u32 i = 0; i < n; i++) {
-            char* nm = __func_name_table[i];
-            if (nm) {
-                name_values[i] = LLVMBuildGlobalStringPtr(B, nm, "");
-            } else {
-                name_values[i] = LLVMConstNull(ptr_type);
-            }
-        }
-        LLVMTypeRef names_array = LLVMArrayType(ptr_type, n);
+    if (a->timing) {
+        LLVMTypeRef names_array = LLVMArrayType(ptr_type, MAX_FUNCS);
         a->func_names_global = LLVMAddGlobal(a->module_ref, names_array,
             fmt("__func_names_%s", a->name->chars)->chars);
-        LLVMSetInitializer(a->func_names_global,
-            LLVMConstArray(ptr_type, name_values, n));
+        LLVMSetInitializer(a->func_names_global, LLVMConstNull(names_array));
         LLVMSetLinkage(a->func_names_global, LLVMInternalLinkage);
         names = a->func_names_global;
-        free(name_values);
     }
 
     LLVMValueRef probes = a->coverage_probes_global
@@ -116,11 +125,9 @@ void emit_coverage_register(aether a) {
             probes,
             LLVMConstInt(i32_type, a->next_probe_id, 0),
             timings,
-            LLVMConstInt(i32_type, a->next_func_id, 0),
+            LLVMConstInt(i32_type, a->timing ? MAX_FUNCS : 0, 0),
             names
         }, 5, "");
-
-    memset(__func_name_table, 0, sizeof(__func_name_table));
 }
 
 // emit probe when entering a statements block
@@ -185,12 +192,26 @@ void aether_emit_block_probe(aether a, u32 probe_id) {
     LLVMBuildStore(B, hit_inc, a->coverage_seq_local);
 }
 
-// read clock_gettime(CLOCK_MONOTONIC) and return nanosecond timestamp
+// the module holding the function under construction: every core emits
+// its own, so a declaration made in the main module is not visible here
+static LLVMModuleRef cur_module(aether a) {
+    return LLVMGetGlobalParent(LLVMGetBasicBlockParent(LLVMGetInsertBlock(a->builder)));
+}
+
+// read clock_gettime(CLOCK_MONOTONIC) and return nanosecond timestamp.
+// every type and constant comes from the CURRENT module's context: a
+// core module has its own, and the main context's types do not verify
 LLVMValueRef emit_clock_ns(aether a, cstr label) {
     emit_guard;
-    LLVMTypeRef i64t = LLVMInt64TypeInContext(a->module_ctx);
-    LLVMTypeRef timespec_type = LLVMStructTypeInContext(
-        a->module_ctx, (LLVMTypeRef[]){ i64t, i64t }, 2, false);
+    LLVMModuleRef  m    = cur_module(a);
+    LLVMContextRef c    = LLVMGetModuleContext(m);
+    LLVMTypeRef    i64t = LLVMInt64TypeInContext(c);
+    LLVMTypeRef    i32t = LLVMInt32TypeInContext(c);
+    LLVMTypeRef    ptrt = LLVMPointerTypeInContext(c, 0);
+    LLVMTypeRef    timespec_type = LLVMStructTypeInContext(c, (LLVMTypeRef[]){ i64t, i64t }, 2, false);
+    LLVMTypeRef    cg_type = LLVMFunctionType(i32t, (LLVMTypeRef[]){ i32t, ptrt }, 2, false);
+    LLVMValueRef   cg = LLVMGetNamedFunction(m, "clock_gettime");
+    if (!cg) cg = LLVMAddFunction(m, "clock_gettime", cg_type);
     // hoist alloca to entry block so it doesn't corrupt the stack in return blocks
     LLVMBasicBlockRef current = LLVMGetInsertBlock(B);
     LLVMBasicBlockRef entry   = LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current));
@@ -201,13 +222,10 @@ LLVMValueRef emit_clock_ns(aether a, cstr label) {
         LLVMPositionBuilderAtEnd(B, entry);
     LLVMValueRef ts = LLVMBuildAlloca(B, timespec_type, label);
     LLVMPositionBuilderAtEnd(B, current);
-    // CLOCK_MONOTONIC differs per OS (1 on Linux, 6 on macOS); clk_id=1 on macOS is
-    // invalid → clock_gettime fails and leaves the timespec uninitialized (garbage
-    // ~2^64 elapsed). emit the host's real value (host==target here).
-    LLVMBuildCall2(B, a->clock_gettime_type, a->clock_gettime_fn,
-        (LLVMValueRef[]){
-            LLVMConstInt(LLVMInt32TypeInContext(a->module_ctx), CLOCK_MONOTONIC, 0), ts
-        }, 2, "");
+    // CLOCK_MONOTONIC differs per OS (1 on Linux, 6 on macOS): the host's
+    // value is the target's here
+    LLVMBuildCall2(B, cg_type, cg,
+        (LLVMValueRef[]){ LLVMConstInt(i32t, CLOCK_MONOTONIC, 0), ts }, 2, "");
     LLVMValueRef sec  = LLVMBuildLoad2(B, i64t,
         LLVMBuildStructGEP2(B, timespec_type, ts, 0, ""), "sec");
     LLVMValueRef nsec = LLVMBuildLoad2(B, i64t,
@@ -216,7 +234,7 @@ LLVMValueRef emit_clock_ns(aether a, cstr label) {
     return LLVMBuildAdd(B, LLVMBuildMul(B, sec, billion, ""), nsec, label);
 }
 
-// emit timing start (returns nanosecond timestamp) - FUNCTION LEVEL ONLY
+// emit timing start — captures the start timestamp
 LLVMValueRef emit_func_timing_start(aether a, u32 func_id) {
     if (!a->timing || a->no_build) return null;
     return emit_clock_ns(a, "start_ns");
@@ -230,16 +248,19 @@ void emit_func_timing_end(aether a, LLVMValueRef start_ns, u32 func_id) {
     LLVMValueRef end_ns  = emit_clock_ns(a, "end_ns");
     LLVMValueRef elapsed = LLVMBuildSub(B, end_ns, start_ns, "elapsed_ns");
 
-    // Call runtime: __coverage_record_time(func_id, elapsed_ns)
-    // replace emit_func_timing_end's call with inline store:
-    LLVMValueRef gep = LLVMBuildGEP2(B,
-        LLVMGlobalGetValueType(a->func_timings_global),
-        a->func_timings_global,
-        (LLVMValueRef[]){
-            LLVMConstInt(LLVMInt32TypeInContext(a->module_ctx), 0, 0),
-            LLVMConstInt(LLVMInt32TypeInContext(a->module_ctx), func_id, 0)
-        }, 2, "timing_ptr");
-    LLVMValueRef cur = LLVMBuildLoad2(B, LLVMInt64TypeInContext(a->module_ctx), gep, "timing_val");
+    // the array is defined in the main module; a core declares it extern,
+    // with the array type rebuilt in its own context
+    LLVMModuleRef  m    = cur_module(a);
+    LLVMContextRef c    = LLVMGetModuleContext(m);
+    LLVMTypeRef    i64t = LLVMInt64TypeInContext(c);
+    LLVMTypeRef    i32t = LLVMInt32TypeInContext(c);
+    LLVMTypeRef    tarr = LLVMArrayType(i64t, MAX_FUNCS);
+    cstr           name = LLVMGetValueName(a->func_timings_global);
+    LLVMValueRef   tg   = LLVMGetNamedGlobal(m, name);
+    if (!tg) tg = LLVMAddGlobal(m, tarr, name);
+    LLVMValueRef gep = LLVMBuildGEP2(B, tarr, tg,
+        (LLVMValueRef[]){ LLVMConstInt(i32t, 0, 0), LLVMConstInt(i32t, func_id, 0) }, 2, "timing_ptr");
+    LLVMValueRef cur = LLVMBuildLoad2(B, i64t, gep, "timing_val");
     LLVMValueRef sum = LLVMBuildAdd(B, cur, elapsed, "timing_sum");
     LLVMBuildStore(B, sum, gep);
 }
@@ -299,12 +320,11 @@ void init_coverage(aether a) {
     // Function timing setup
     if (a->timing) {
 
-        #define MAX_FUNCS 512
         LLVMTypeRef timing_array = LLVMArrayType(LLVMInt64TypeInContext(a->module_ctx), MAX_FUNCS);
         a->func_timings_global = LLVMAddGlobal(a->module_ref, timing_array,
             fmt("__func_timings_%s", a->name->chars)->chars);
         LLVMSetInitializer(a->func_timings_global, LLVMConstNull(timing_array));
-        LLVMSetLinkage(a->func_timings_global, LLVMInternalLinkage);
+        LLVMSetLinkage(a->func_timings_global, LLVMExternalLinkage);
 
         a->next_func_id = 0;
         

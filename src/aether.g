@@ -44,6 +44,9 @@ import: LLVM:llvm-project/bd7db754895ed3b51388ec549cd656c770c17587 as runtimes
     { '-DLIBCXX_CXX_ABI=vcruntime' if win else '' }
     { '-DCOMPILER_RT_EXCLUDE_ATOMIC_BUILTIN=OFF' if win else '' }
     { '' if win else '-DLIBCXX_HAS_NO_STDLIB=ON' }
+    # no shared libunwind: ld resolves libSystem's reexport by leaf name
+    # through -L, and a libunwind.dylib of ours would shadow the system one
+    { '' if win else '-DLIBUNWIND_ENABLE_SHARED=OFF' }
     { '' if win else '-DCLANG_DEFAULT_CXX_STDLIB=libstdc++' }
     { '' if win else '-DCMAKE_CXX_STANDARD_LIBRARY=libstdc++' }
     { '' if win else '-DLIBUNWIND_ENABLE_SHARED=OFF' }

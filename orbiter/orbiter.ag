@@ -9,6 +9,7 @@ import silver
 import project
 import dbg
 import spectra
+import speech
 
 # import c headers
 import <stdio.h>
