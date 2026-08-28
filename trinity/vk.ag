@@ -3840,7 +3840,7 @@ Texture Display
     # create the glfw window invisible (batch generation: full pipeline,
     # nothing on screen)
     public hidden               : bool
-    # the window is mapped by the first present, not by glfwCreateWindow
+    # the window is mapped by the first present, not by creation
     intern shown                : bool
 
 
@@ -3850,12 +3850,12 @@ Texture Display
     # copy text to the system clipboard. keeps glfw contained in trinity — apps
     # call this on their Window rather than touching glfw themselves.
     public func set_clipboard [ text: string ]
-        if [ glfw && text ] glfwSetClipboardString[ glfw, text.chars ]
+        if [ glfw && text ] platform_set_clipboard[ glfw, text.chars ]
 
     # read the system clipboard (the paste source). returns '' when empty/unset.
     public func get_clipboard [] -> string
         if [ !glfw ] return ''
-        cs : symbol [ glfwGetClipboardString[ glfw ] ]
+        cs : symbol [ platform_get_clipboard[ glfw ] ]
         if [ !cs ] return ''
         return string[ cs ]
 
@@ -3870,14 +3870,7 @@ Texture Display
 
     func set_fullscreen [ on: bool ]
         if [ text_mode || backbuffer || !glfw ] return
-        if [ on ]
-            mon : glfwGetPrimaryMonitor[]
-            if [ !mon ] return
-            vm : glfwGetVideoMode[ mon ]
-            if [ !vm ] return
-            glfwSetWindowMonitor[ glfw, mon, 0, 0, vm.width, vm.height, vm.refreshRate ]
-        el
-            glfwSetWindowMonitor[ glfw, null, 120, 120, 1280, 800, 0 ]
+        platform_window_set_fullscreen[ glfw, on ]
 
     # true while a framebuffer-size change is queued (debounced in draw[]). lets the
     # idle render loop keep drawing until the resize is applied — otherwise the final
@@ -3898,7 +3891,7 @@ Texture Display
             vkGetPhysicalDeviceSurfaceCapabilitiesKHR[ vk.physical_device, vk_surface, @caps ]
             ww_i: i32
             wh_i: i32
-            glfwGetWindowSize[ glfw, @ww_i, @wh_i ]
+            platform_window_get_size[ glfw, @ww_i, @wh_i ]
             width  = ww_i
             height = wh_i
             if [ caps.currentExtent.width != UINT32_MAX ]
@@ -4000,7 +3993,7 @@ Texture Display
     func draw [ ]
         win : cast Window [ a ]
         if [ pending_w > 0 && pending_h > 0 ]
-            now: f64 [ glfwGetTime[] ]
+            now: f64 [ platform_time[] ]
             if [ now - last_resize_t >= resize_debounce_s ]
                 if [ pending_w != width || pending_h != height ]
                     resize*[ pending_w, pending_h ]
@@ -4082,7 +4075,7 @@ Texture Display
                     # real pixels are on the surface now — safe to map
                     if [ !shown && !hidden && glfw ]
                         shown = true
-                        glfwShowWindow[ glfw ]
+                        platform_window_show[ glfw ]
 
 
     cast -> Image
@@ -4125,38 +4118,54 @@ Texture Display
         if [ !backbuffer ]
             glfw = handle Au.live_window_get[]
             if [ !glfw ]
-                glfwWindowHint[ GLFW_CLIENT_API, GLFW_NO_API ]
                 # born invisible: mapping it before the ux shaders are built
                 # and a frame is presented shows a hole cut in the desktop.
-                # the first present calls glfwShowWindow
-                glfwWindowHint[ GLFW_VISIBLE, GLFW_FALSE ]
-                glfw = glfwCreateWindow[ width, height, title.chars, null, null ]
-                expect glfw, "Failed to create GLFW window"
+                # the first present shows it
+                glfw = platform_window_create[ width, height, title.chars, false ]
+                expect glfw, "Failed to create window"
                 Au.live_window_set[ glfw ]
 
-            # always refresh title (window is reused on reload, glfwCreateWindow not called again)
-            glfwSetWindowTitle[ glfw, title.chars ]
+            # always refresh title (window is reused on reload, not created again)
+            platform_window_set_title[ glfw, title.chars ]
 
             # re-register callbacks each time (new Display instance on reload)
-            glfwSetWindowUserPointer    [ glfw, handle[ a ] ]
-            glfwSetKeyCallback          [ glfw, @handle_glfw_key ]
-            glfwSetMouseButtonCallback  [ glfw, @handle_glfw_mouse ]
-            glfwSetCursorPosCallback    [ glfw, @handle_glfw_cursor ]
-            glfwSetCursorEnterCallback  [ glfw, @handle_glfw_enter ]
-            glfwSetCharCallback         [ glfw, @handle_glfw_char ]
-            glfwSetScrollCallback       [ glfw, @handle_glfw_scroll ]
-            glfwSetDropCallback         [ glfw, @handle_glfw_drop ]
-
-            glfwSetFramebufferSizeCallback [ glfw, @handle_glfw_framebuffer_size ]
+            platform_window_set_user    [ glfw, handle[ a ] ]
+            platform_set_key_callback   [ glfw, @handle_key ]
+            platform_set_mouse_callback [ glfw, @handle_mouse ]
+            platform_set_cursor_callback[ glfw, @handle_cursor ]
+            platform_set_enter_callback [ glfw, @handle_enter ]
+            platform_set_char_callback  [ glfw, @handle_char ]
+            platform_set_scroll_callback[ glfw, @handle_scroll ]
+            platform_set_drop_callback  [ glfw, @handle_drop ]
+            platform_set_size_callback  [ glfw, @handle_framebuffer_size ]
 
             # fixed-aspect apps (emulators): the WM may scale but never distort
-            if [ lock_aspect ] glfwSetWindowAspectRatio[ glfw, width, height ]
+            if [ lock_aspect ] platform_window_set_aspect[ glfw, width, height ]
 
             # reuse persistent surface across hot-reloads — drivers disallow
             # creating a new surface for the same xcb window after destroying the old one
             surf = handle Au.live_surface_get[]
             if [ !surf ]
-                result: glfwCreateWindowSurface[ vk.instance, glfw, null, @surf ]
+                native : platform_native
+                platform_window_native[ glfw, @native ]
+                result : VkResult [ VK_ERROR_INITIALIZATION_FAILED ]
+                ifdef [ apple ]
+                    mci : VkMetalSurfaceCreateInfoEXT
+                    mci.sType  = VK_STRUCTURE_TYPE_METAL_SURFACE_CREATE_INFO_EXT
+                    mci.pLayer = native.a
+                    result = vkCreateMetalSurfaceEXT[ vk.instance, @mci, null, @surf ]
+                ifdef [ windows ]
+                    wci : VkWin32SurfaceCreateInfoKHR
+                    wci.sType     = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR
+                    wci.hinstance = native.a
+                    wci.hwnd      = native.b
+                    result = vkCreateWin32SurfaceKHR[ vk.instance, @wci, null, @surf ]
+                ifdef [ linux ]
+                    xci : VkXcbSurfaceCreateInfoKHR
+                    xci.sType      = VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR
+                    xci.connection = native.a
+                    xci.window     = native.window
+                    result = vkCreateXcbSurfaceKHR[ vk.instance, @xci, null, @surf ]
                 expect result == VK_SUCCESS, "Failed to create Vulkan surface"
                 Au.live_surface_set[ surf ]
 
@@ -4223,8 +4232,8 @@ Texture Display
             wh_i: i32
             pw_i: i32
             ph_i: i32
-            glfwGetWindowSize[ glfw, @ww_i, @wh_i ]
-            glfwGetFramebufferSize[ glfw, @pw_i, @ph_i ]
+            platform_window_get_size[ glfw, @ww_i, @wh_i ]
+            platform_window_get_framebuffer[ glfw, @pw_i, @ph_i ]
             scale         = (ww_i > 0) ? f32[ pw_i ] / f32[ ww_i ] : 1.0
             width         = ww_i
             height        = wh_i
@@ -4237,7 +4246,7 @@ Texture Display
             extent.height = height
 
     public func set_title [ t: string ]
-        glfwSetWindowTitle[ glfw, t.chars ]
+        platform_window_set_title[ glfw, t.chars ]
 
 
     func dealloc [ ]
@@ -4416,41 +4425,41 @@ func degrees[f32] -> f32
 func radians[f32] -> f32
 
 
-# --- GLFW callbacks ---
-intern func handle_glfw_framebuffer_size [ glfw_window: @GLFWwindow, width: i32, height: i32 ]
+# --- window callbacks ---
+intern func handle_framebuffer_size [ glfw_window: @platform_window, width: i32, height: i32 ]
     if [ width == 0 && height == 0 ]
         return
-    win : glfwGetWindowUserPointer[ glfw_window ]
+    win : platform_window_get_user[ glfw_window ]
     w: cast Display [ win ]
     if [ !w ]
         return
     w.pending_w     = width
     w.pending_h     = height
-    w.last_resize_t = glfwGetTime[]
+    w.last_resize_t = platform_time[]
     if [ !w.in_callback_draw ]
         w.in_callback_draw = true
         w.draw[]
         w.in_callback_draw = false
 
 
-intern func handle_glfw_key [ win: @GLFWwindow, key: i32, scan_code: i32, action: i32, mods: i32 ] 
-    w: cast Window [ glfwGetWindowUserPointer[ win ] ]
-    if [ action == GLFW_PRESS && (key == GLFW_KEY_UP || key == GLFW_KEY_DOWN) ]
-        w.debug_value += (key == GLFW_KEY_UP) ? 1.0 : -1.0
+intern func handle_key [ win: @platform_window, key: i32, scan_code: i32, action: i32, mods: i32 ] 
+    w: cast Window [ platform_window_get_user[ win ] ]
+    if [ action == PLATFORM_PRESS && (key == PLATFORM_KEY_UP || key == PLATFORM_KEY_DOWN) ]
+        w.debug_value += (key == PLATFORM_KEY_UP) ? 1.0 : -1.0
     w.ev.clear[]
     w.ev.key.unicode   = key
     w.ev.key.scan_code = scan_code
     # 1 = press, 2 = repeat, 0 = release — repeats stay truthy
-    w.ev.key.state     = (action == GLFW_PRESS) ? 1 : (action == GLFW_REPEAT) ? 2 : 0
-    w.ev.key.meta      = (mods & GLFW_MOD_SUPER)   != 0
-    w.ev.key.shift     = (mods & GLFW_MOD_SHIFT)   != 0
-    w.ev.key.alt       = (mods & GLFW_MOD_ALT)     != 0
-    w.ev.key.ctrl      = (mods & GLFW_MOD_CONTROL) != 0
+    w.ev.key.state     = (action == PLATFORM_PRESS) ? 1 : (action == PLATFORM_REPEAT) ? 2 : 0
+    w.ev.key.meta      = (mods & PLATFORM_MOD_SUPER)   != 0
+    w.ev.key.shift     = (mods & PLATFORM_MOD_SHIFT)   != 0
+    w.ev.key.alt       = (mods & PLATFORM_MOD_ALT)     != 0
+    w.ev.key.ctrl      = (mods & PLATFORM_MOD_CONTROL) != 0
     w.key_event[ w.ev ]
 
 
-intern func handle_glfw_scroll [ win: @GLFWwindow, x: f64, y: f64 ]
-    w: cast Window [ glfwGetWindowUserPointer[ win ] ]
+intern func handle_scroll [ win: @platform_window, x: f64, y: f64 ]
+    w: cast Window [ platform_window_get_user[ win ] ]
     w.ev.clear[]
     w.ev.mouse.pos.x         = w.mouse.x
     w.ev.mouse.pos.y         = w.mouse.y
@@ -4463,33 +4472,33 @@ intern func handle_glfw_scroll [ win: @GLFWwindow, x: f64, y: f64 ]
     w.ev.mouse.wheel_delta.x = x * wheel_mul
     w.ev.mouse.wheel_delta.y = y * wheel_mul
     # carry shift so handlers can map shift+wheel to horizontal scroll
-    lshift                   : i32 [ glfwGetKey[ win, 340 ] ]
-    rshift                   : i32 [ glfwGetKey[ win, 344 ] ]
-    w.ev.key.shift           = lshift == GLFW_PRESS || rshift == GLFW_PRESS
+    lshift                   : i32 [ platform_get_key[ win, 340 ] ]
+    rshift                   : i32 [ platform_get_key[ win, 344 ] ]
+    w.ev.key.shift           = lshift == PLATFORM_PRESS || rshift == PLATFORM_PRESS
     w.wheel_event[ w.ev ]
 
 
-intern func handle_glfw_mouse [ win: @GLFWwindow, id: i32, action: i32, mods: i32 ]
-    w: cast Window [ glfwGetWindowUserPointer[ win ] ]
+intern func handle_mouse [ win: @platform_window, id: i32, action: i32, mods: i32 ]
+    w: cast Window [ platform_window_get_user[ win ] ]
     w.ev.clear[]
     w.ev.mouse.pos.x  = w.mouse.x
     w.ev.mouse.pos.y  = w.mouse.y
-    w.ev.mouse.button = id - GLFW_MOUSE_BUTTON_LEFT
-    w.ev.mouse.state  = action == GLFW_PRESS
-    lshift            : i32 [ glfwGetKey[ win, 340 ] ]
-    rshift            : i32 [ glfwGetKey[ win, 344 ] ]
-    w.ev.key.shift    = lshift == GLFW_PRESS || rshift == GLFW_PRESS
-    w.ev.key.meta     = (mods & GLFW_MOD_SUPER)   != 0
-    w.ev.key.ctrl     = (mods & GLFW_MOD_CONTROL) != 0
-    w.ev.key.alt      = (mods & GLFW_MOD_ALT)     != 0
+    w.ev.mouse.button = id - PLATFORM_MOUSE_LEFT
+    w.ev.mouse.state  = action == PLATFORM_PRESS
+    lshift            : i32 [ platform_get_key[ win, 340 ] ]
+    rshift            : i32 [ platform_get_key[ win, 344 ] ]
+    w.ev.key.shift    = lshift == PLATFORM_PRESS || rshift == PLATFORM_PRESS
+    w.ev.key.meta     = (mods & PLATFORM_MOD_SUPER)   != 0
+    w.ev.key.ctrl     = (mods & PLATFORM_MOD_CONTROL) != 0
+    w.ev.key.alt      = (mods & PLATFORM_MOD_ALT)     != 0
     if [ w.ev.mouse.state ]
         w.press_event[ w.ev ]
     el
         w.release_event[ w.ev ]
 
 
-intern func handle_glfw_char [ win: @GLFWwindow, code_point: u32 ]
-    w: cast Window [ glfwGetWindowUserPointer[ win ] ]
+intern func handle_char [ win: @platform_window, code_point: u32 ]
+    w: cast Window [ platform_window_get_user[ win ] ]
     w.ev.clear[]
     cp  : u32 [ code_point ]
     buf : local i8 [ 5 ]
@@ -4517,8 +4526,8 @@ intern func handle_glfw_char [ win: @GLFWwindow, code_point: u32 ]
     w.text_event[ w.ev ]
 
 
-intern func handle_glfw_drop [ win: @GLFWwindow, count: i32, paths: @symbol ]
-    w: cast Window [ glfwGetWindowUserPointer[ win ] ]
+intern func handle_drop [ win: @platform_window, count: i32, paths: @symbol ]
+    w: cast Window [ platform_window_get_user[ win ] ]
     if [ count <= 0 ] return
     w.ev.clear[]
     s : string ['']
@@ -4533,15 +4542,15 @@ intern func handle_glfw_drop [ win: @GLFWwindow, count: i32, paths: @symbol ]
     w.drop_event[ w.ev ]
 
 
-intern func handle_glfw_enter [ win: @GLFWwindow, entered: i32 ]
-    w: cast Window [ glfwGetWindowUserPointer[ win ] ]
+intern func handle_enter [ win: @platform_window, entered: i32 ]
+    w: cast Window [ platform_window_get_user[ win ] ]
     if [ entered != 0 ] return
     w.ev.clear[]
     w.clear_hover[ w.ev ]
 
 
-intern func handle_glfw_cursor [ win: @GLFWwindow, x: f64, y: f64 ]
-    w: cast Window [ glfwGetWindowUserPointer[ win ] ]
+intern func handle_cursor [ win: @platform_window, x: f64, y: f64 ]
+    w: cast Window [ platform_window_get_user[ win ] ]
     w.ev.clear[]
     w.mouse.x = x
     w.mouse.y = y
@@ -4549,22 +4558,22 @@ intern func handle_glfw_cursor [ win: @GLFWwindow, x: f64, y: f64 ]
     w.ev.mouse.pos.y = w.mouse.y
     # carry modifiers on MOVE events too (same poll the wheel/button
     # callbacks do) — modifier-drag interactions never saw them otherwise
-    lshift : i32 [ glfwGetKey[ win, 340 ] ]
-    rshift : i32 [ glfwGetKey[ win, 344 ] ]
-    w.ev.key.shift = lshift == GLFW_PRESS || rshift == GLFW_PRESS
-    lctrl : i32 [ glfwGetKey[ win, 341 ] ]
-    rctrl : i32 [ glfwGetKey[ win, 345 ] ]
-    w.ev.key.ctrl = lctrl == GLFW_PRESS || rctrl == GLFW_PRESS
-    lsup : i32 [ glfwGetKey[ win, 343 ] ]
-    rsup : i32 [ glfwGetKey[ win, 347 ] ]
-    w.ev.key.meta = lsup == GLFW_PRESS || rsup == GLFW_PRESS
+    lshift : i32 [ platform_get_key[ win, 340 ] ]
+    rshift : i32 [ platform_get_key[ win, 344 ] ]
+    w.ev.key.shift = lshift == PLATFORM_PRESS || rshift == PLATFORM_PRESS
+    lctrl : i32 [ platform_get_key[ win, 341 ] ]
+    rctrl : i32 [ platform_get_key[ win, 345 ] ]
+    w.ev.key.ctrl = lctrl == PLATFORM_PRESS || rctrl == PLATFORM_PRESS
+    lsup : i32 [ platform_get_key[ win, 343 ] ]
+    rsup : i32 [ platform_get_key[ win, 347 ] ]
+    w.ev.key.meta = lsup == PLATFORM_PRESS || rsup == PLATFORM_PRESS
     w.move_event[ w.ev ]
 
 func get_required_extensions [ vk: vk_context ]
-    count : u32 0
-    glfw_extensions: @symbol [ glfwGetRequiredInstanceExtensions[ @count ] ]
+    count : u32 2
     result: new symbol [ count + 4 ]
-    memcpy[ result, glfw_extensions, count * sizeof[ symbol ] ]
+    result[0] = "VK_KHR_surface"
+    result[1] = platform_surface_extension[]
     ifdef [ apple ]
         result[count] = "VK_KHR_portability_enumeration"
         count += 1

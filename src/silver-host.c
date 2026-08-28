@@ -14,7 +14,9 @@
 #include <spawn.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
+#ifdef __linux__
 #include <sys/prctl.h>
+#endif
 #include <fcntl.h>
 #endif
 #include <sys/stat.h>
@@ -648,7 +650,9 @@ static void crash_handler(int sig) {
             g_shm->app[0].verdict = -sig;
             g_shm->app[0].state   = 4;
         }
+#ifdef __linux__
         prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY, 0, 0, 0);
+#endif
         raise(SIGSTOP);
     }
     signal(sig, SIG_DFL);
@@ -1151,7 +1155,9 @@ int main(int argc, char** argv) {
     // arm breakpoints (including in init) before continuing us (SIGCONT).
     if (getenv("SILVER_DEBUG")) {
         // orbiter is a sibling, not our ancestor — yama scope 1 blocks it
+#ifdef __linux__
         prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY, 0, 0, 0);
+#endif
         fprintf(stderr, "silver-host: SILVER_DEBUG — pid %d stopped before init for attach\n", (int)getpid());
         raise(SIGSTOP);
     }
