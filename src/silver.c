@@ -45,6 +45,7 @@ static void uninstall_products(silver a);
 static symbol platform_triple(silver a);
 static bool   platform_is_windows(silver a);
 static string target_dir(silver a);
+static string silver_release_version(silver a);
 static symbol platform_abi_clang(silver a);
 static symbol platform_abi_cxx(silver a);
 static symbol platform_abi_link(silver a);
@@ -174,12 +175,19 @@ static void deploy_module_resources(silver a) {
     prune_dangling(share);
 }
 
+// a module has one product per platform: the host copy a cross build
+// loads and the device copy it links are both cached, apart
+static string compiled_key(silver a) {
+    return f(string, "%o@%o", a->name,
+        a->platform && len(a->platform) ? a->platform : string("native"));
+}
+
 // the product exists on disk at this point; release anyone waiting on it
 static void publish_product(silver a) {
     pthread_mutex_lock(&compiled_lock);
     if (a->product && silver_compiled)
-        set(silver_compiled, (Au)a->name, (Au)a->product);
-    building_remove(a->name->chars);
+        set(silver_compiled, (Au)compiled_key(a), (Au)a->product);
+    building_remove(compiled_key(a)->chars);
     pthread_cond_broadcast(&compiled_cond);
     pthread_mutex_unlock(&compiled_lock);
 }
@@ -1234,6 +1242,8 @@ void silver_parse(silver a) {
     Au_t m_win   = def_member(a->autype, "windows", typeid(bool), AU_MEMBER_VAR, AU_TRAIT_CONST);
     Au_t m_x86   = def_member(a->autype, "x86_64",  typeid(bool), AU_MEMBER_VAR, AU_TRAIT_CONST);
     Au_t m_arm64 = def_member(a->autype, "arm64",   typeid(bool), AU_MEMBER_VAR, AU_TRAIT_CONST);
+    Au_t m_ios   = def_member(a->autype, "ios",     typeid(bool), AU_MEMBER_VAR, AU_TRAIT_CONST);
+    bool target_ios = a->platform && len(a->platform) && strstr(a->platform->chars, "ios") != NULL;
 
     etype_register((aether)a, (Au)m_debug, (Au)hold(e_operand(a, _bool(!a->release), etypeid(bool))), false);
     etype_register((aether)a, (Au)m_mac,   (Au)hold(e_operand(a, _bool(target_mac), etypeid(bool))), false);
@@ -1241,6 +1251,7 @@ void silver_parse(silver a) {
     etype_register((aether)a, (Au)m_win,   (Au)hold(e_operand(a, _bool(target_win), etypeid(bool))), false);
     etype_register((aether)a, (Au)m_x86,   (Au)hold(e_operand(a, _bool(strcmp(target_arch, "x86_64") == 0), etypeid(bool))), false);
     etype_register((aether)a, (Au)m_arm64, (Au)hold(e_operand(a, _bool(strcmp(target_arch, "arm64")  == 0), etypeid(bool))), false);
+    etype_register((aether)a, (Au)m_ios,   (Au)hold(e_operand(a, _bool(target_ios), etypeid(bool))), false);
 
     // AU_MEMBER_* constants — available as const i32 in all .ag code
     struct { const char* name; int value; } au_consts[] = {
@@ -1684,8 +1695,10 @@ static string device_cmake_toolchain(silver a) {
     symbol triple = platform_triple(a);
     bool   win    = platform_is_windows(a);
     cstr   pl     = a->platform->chars;
-    symbol system = win ? "Windows" : strstr(pl, "macos") ? "Darwin" : "Linux";
-    symbol proc   = strstr(triple, "aarch64") ? "aarch64" :
+    bool   ios    = strstr(pl, "ios") != NULL;
+    symbol system = win ? "Windows" : ios ? "iOS" : strstr(pl, "macos") ? "Darwin" : "Linux";
+    symbol proc   = strstr(triple, "arm64")   ? "arm64"   :
+                    strstr(triple, "aarch64") ? "aarch64" :
                     strstr(triple, "riscv")   ? "riscv64" :
                     strstr(triple, "mips")    ? "mips64"  :
                     strstr(triple, "arm")     ? "arm"     :
@@ -1711,9 +1724,17 @@ static string device_cmake_toolchain(silver a) {
     concat(content, f(string,
         "set(CMAKE_C_FLAGS   \"--target=%s %s%s-w\" CACHE STRING \"\")\n",
         triple, platform_abi_clang(a), pic));
+    // the device sdk's libc++ headers must match the libc++ it ships
+    string cxx_sdk = ios ? f(string, "-nostdinc++ -isystem %o/usr/include/c++/v1 ", a->sysroot) : string("");
     concat(content, f(string,
-        "set(CMAKE_CXX_FLAGS \"--target=%s %s%s%s-w\" CACHE STRING \"\")\n",
-        triple, platform_abi_clang(a), platform_abi_cxx(a), pic));
+        "set(CMAKE_CXX_FLAGS \"--target=%s %s%s%s%o-w\" CACHE STRING \"\")\n",
+        triple, platform_abi_clang(a), platform_abi_cxx(a), pic, cxx_sdk));
+    // objective-c++ (.mm) takes its own flag set
+    if (ios)
+        concat(content, f(string,
+            "set(CMAKE_OBJC_FLAGS   \"--target=%s %s-w\" CACHE STRING \"\")\n"
+            "set(CMAKE_OBJCXX_FLAGS \"--target=%s %s%o-w\" CACHE STRING \"\")\n",
+            triple, pic, triple, pic, cxx_sdk));
     // a MODULE is its own flag set: miss it and cmake falls back to the
     // host's ld, which knows neither this target nor its libraries
     concat(content, f(string,
@@ -1723,6 +1744,14 @@ static string device_cmake_toolchain(silver a) {
     concat(content, f(string,
         "set(CMAKE_MODULE_LINKER_FLAGS \"-fuse-ld=lld %s\" CACHE STRING \"\")\n",
         platform_abi_link(a)));
+    // an apple target names its sdk and floor through cmake's own knobs
+    // cmake wants the sdk's own name (iPhoneOS*.sdk), not our link to it
+    if (ios)
+        concat(content, f(string,
+            "set(CMAKE_OSX_SYSROOT \"%o\" CACHE STRING \"\")\n"
+            "set(CMAKE_OSX_ARCHITECTURES arm64 CACHE STRING \"\")\n"
+            "set(CMAKE_OSX_DEPLOYMENT_TARGET 16.0 CACHE STRING \"\")\n",
+            absolute(a->sysroot)));
     // .rc is windows-only. windres, not llvm-rc: llvm-rc emits an msvc .res,
     // and a mingw link takes objects. it also names no target of its own,
     // and mingw's headers refuse to preprocess without one
@@ -1753,8 +1782,9 @@ static string device_meson_cross(silver a) {
     symbol triple = platform_triple(a);
     bool   win    = platform_is_windows(a);
     cstr   pl     = a->platform->chars;
-    symbol system = win ? "windows" : strstr(pl, "macos") ? "darwin" : "linux";
-    symbol cpu_f  = strstr(triple, "aarch64") ? "aarch64" :
+    symbol system = win ? "windows" : strstr(pl, "macos") || strstr(pl, "ios") ? "darwin" : "linux";
+    symbol cpu_f  = strstr(triple, "arm64")   ? "aarch64" :
+                    strstr(triple, "aarch64") ? "aarch64" :
                     strstr(triple, "riscv")   ? "riscv64" :
                     strstr(triple, "mips")    ? "mips64"  :
                     strstr(triple, "arm")     ? "arm"     :
@@ -2114,6 +2144,173 @@ static void* live_log_tail(void* arg) {
 }
 #endif
 
+
+// the dylib closure of an ios binary into Frameworks/: every dependency
+// from the device tree or the build dir rewritten to @rpath/<leaf>
+static void ios_bundle_dylibs(silver a, path bin, path fw, array done) {
+    path   root  = f(path, "%s/platform/%o", SILVER, target_dir(a));
+    string out   = command_run((command)f(string, "otool -L %o", bin), false);
+    array  lines = split(out, "\n");
+    for (int i = 1; i < len(lines); i++) {
+        string ln = trim((string)lines->origin[i]);
+        int sp = index_of(ln, " (");
+        if (sp <= 0) continue;
+        string dep  = mid(ln, 0, sp);
+        path   src  = null;
+        string leaf = null;
+        if (starts_with(dep, "@rpath/")) {
+            leaf = mid(dep, 7, len(dep) - 7);
+            path c1 = f(path, "%o/%o", a->build_dir, leaf);
+            path c2 = f(path, "%o/lib/%o", root, leaf);
+            src = file_exists("%o", c1) ? c1 : file_exists("%o", c2) ? c2 : null;
+        } else if (dep->chars[0] == '/' && starts_with(dep, SILVER)) {
+            src  = path(dep->chars);
+            leaf = f(string, "%o.%o", stem(src), ext(src));
+            exec(false, "install_name_tool -change %o @rpath/%o %o", dep, leaf, bin);
+        }
+        if (!src || !leaf) continue;
+        if (index_of(done, (Au)leaf) >= 0) continue;
+        push(done, (Au)leaf);
+        path dst = f(path, "%o/%o", fw, leaf);
+        exec(false, "cp -L %o %o && chmod u+w %o", src, dst, dst);
+        exec(false, "install_name_tool -id @rpath/%o %o", leaf, dst);
+        ios_bundle_dylibs(a, dst, fw, done);
+    }
+}
+
+// the profile that names this phone: xcode 16 keeps them under UserData,
+// older ones under MobileDevice. its entitlements sign the app
+static path ios_profile(silver a, string udid, string* team) {
+    cstr dirs[] = {
+        "Library/Developer/Xcode/UserData/Provisioning Profiles",
+        "Library/MobileDevice/Provisioning Profiles", null };
+    for (int d = 0; dirs[d]; d++) {
+        string found = trim(command_run((command)f(string,
+            "for p in \"$HOME/%s\"/*.mobileprovision; do "
+            "security cms -D -i \"$p\" 2>/dev/null | grep -q %o && echo \"$p\"; done 2>/dev/null | "
+            "xargs -I{} stat -f '%%m {}' {} 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-",
+            dirs[d], udid), false));
+        if (!found || !len(found)) continue;
+        *team = trim(command_run((command)f(string,
+            "security cms -D -i \"%o\" | plutil -extract TeamIdentifier.0 raw -o - -", found), false));
+        return path(found->chars);
+    }
+    return null;
+}
+
+// <build>/<Name>.app: the ios host, Frameworks/ with the product and its
+// closure, share/<name>, the profile, then one signature per binary
+static void silver_ios_bundle(silver a) {
+    Device dev   = a->target;
+    string name  = a->name;
+    string share = silver_install_name(a);
+    path   root  = f(path, "%s/platform/%o", SILVER, target_dir(a));
+    path   tools = f(path, "%s/platform/native/bin", SILVER);
+    path   app   = f(path, "%o/%o.app", a->build_dir, name);
+    path   fw    = f(path, "%o/Frameworks", app);
+    symbol triple = platform_triple(a);
+    bool   sim   = strstr(a->platform->chars, "simulator") != NULL;
+    string ver   = silver_release_version(a);
+    if (!ver) ver = string("1.0");
+    exec(false, "rm -rf %o", app);
+    make_dir(fw);
+    print("[%o] ios: staging %o", name, app);
+
+    // the host: uikit's loop ticks the product's frame
+    path   exe    = f(path, "%o/%o", app, name);
+    string leaf   = f(string, "%o.%o", stem(a->product), ext(a->product));
+    path   devlib = f(path, "%o/libsilver-devices.dylib", a->build_dir);
+    verify(file_exists("%o", devlib), "ios: devices not built for %o (%o)", a->platform, devlib);
+    verify(exec(a->verbose, "%o/clang -target %s -isysroot %o -fuse-ld=lld -B%o %s "
+        "-I%s/devices -DSILVER_PRODUCT='\"%o\"' -DSILVER_SHARE_NAME='\"%o\"' "
+        "%s/src/silver-host-ios.c %o -L%o/lib -lAu -framework UIKit -framework Foundation "
+        "-Wl,-rpath,@executable_path/Frameworks -o %o",
+        tools, triple, a->sysroot, tools, a->debug ? "-g" : "-O2",
+        SILVER, leaf, share, SILVER, devlib, root, exe) == 0,
+        "ios: host link failed");
+
+    array done = array(alloc, 64);
+    exec(false, "cp -L %o %o/%o && chmod u+w %o/%o", a->product, fw, leaf, fw, leaf);
+    exec(false, "install_name_tool -id @rpath/%o %o/%o", leaf, fw, leaf);
+    push(done, (Au)leaf);
+    ios_bundle_dylibs(a, f(path, "%o/%o", fw, leaf), fw, done);
+    ios_bundle_dylibs(a, exe, fw, done);
+
+    path share_src = f(path, "%o/share/%o", a->install, share);
+    if (dir_exists("%o", share_src)) {
+        make_dir(f(path, "%o/share", app));
+        exec(false, "cp -RL %o %o/share/%o", share_src, app, share);
+    }
+
+    string plist = f(string,
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+        "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" "
+        "\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
+        "<plist version=\"1.0\"><dict>\n"
+        "  <key>CFBundleName</key><string>%o</string>\n"
+        "  <key>CFBundleDisplayName</key><string>%o</string>\n"
+        "  <key>CFBundleIdentifier</key><string>com.silver.%o</string>\n"
+        "  <key>CFBundleExecutable</key><string>%o</string>\n"
+        "  <key>CFBundlePackageType</key><string>APPL</string>\n"
+        "  <key>CFBundleVersion</key><string>%o</string>\n"
+        "  <key>CFBundleShortVersionString</key><string>%o</string>\n"
+        "  <key>CFBundleDevelopmentRegion</key><string>en</string>\n"
+        "  <key>CFBundleSupportedPlatforms</key><array><string>%s</string></array>\n"
+        "  <key>DTPlatformName</key><string>%s</string>\n"
+        "  <key>LSRequiresIPhoneOS</key><true/>\n"
+        "  <key>MinimumOSVersion</key><string>16.0</string>\n"
+        "  <key>UIDeviceFamily</key><array><integer>1</integer><integer>2</integer></array>\n"
+        "  <key>UIRequiresFullScreen</key><true/>\n"
+        "  <key>UILaunchScreen</key><dict/>\n"
+        "  <key>UISupportedInterfaceOrientations</key><array>\n"
+        "    <string>UIInterfaceOrientationPortrait</string>\n"
+        "    <string>UIInterfaceOrientationLandscapeLeft</string>\n"
+        "    <string>UIInterfaceOrientationLandscapeRight</string>\n"
+        "  </array>\n"
+        "</dict></plist>\n",
+        name, name, name, name, ver, ver,
+        sim ? "iPhoneSimulator" : "iPhoneOS", sim ? "iphonesimulator" : "iphoneos");
+    path_save(f(path, "%o/Info.plist", app), (Au)plist, null);
+
+    // the simulator takes an ad-hoc signature and no profile
+    if (sim) {
+        each(done, string, l)
+            exec(false, "codesign --force --sign - %o/%o 2>/dev/null", fw, l);
+        exec(false, "codesign --force --sign - %o 2>/dev/null", app);
+        a->live_binary = hold(app);
+        return;
+    }
+
+    // sign with the profile that lists this phone; without one the bundle
+    // still stages, it just cannot install
+    string udid = dev && dev->host ? dev->host : null;
+    string team = null;
+    path   prof = udid ? ios_profile(a, udid, &team) : null;
+    if (!prof) {
+        print("[%o] ios: no provisioning profile lists device %o — bundle unsigned", name, udid);
+        return;
+    }
+    exec(false, "cp \"%o\" %o/embedded.mobileprovision", prof, app);
+    path ents = f(path, "%o/%o.entitlements", a->build_dir, name);
+    exec(false, "security cms -D -i \"%o\" | plutil -extract Entitlements xml1 -o %o -", prof, ents);
+    string ident = a->sign && len(a->sign) ? a->sign : trim(command_run((command)f(string,
+        "security find-identity -v -p codesigning 2>/dev/null | grep 'Apple Development' | "
+        "grep '%o' | head -1 | sed 's/.*\"\\(.*\\)\"/\\1/'", team ? team : string("")), false));
+    if (!ident || !len(ident))
+        ident = trim(command_run((command)string(
+            "security find-identity -v -p codesigning 2>/dev/null | grep 'Apple Development' | "
+            "head -1 | sed 's/.*\"\\(.*\\)\"/\\1/'"), false));
+    verify(ident && len(ident), "ios: no 'Apple Development' identity in the keychain");
+    print("[%o] ios: signing as %o (team %o)", name, ident, team);
+    cstr quiet = a->verbose ? "" : " 2>/dev/null";
+    each(done, string, l)
+        verify(exec(a->verbose, "codesign --force --sign \"%o\" %o/%o%s", ident, fw, l, quiet) == 0,
+            "ios: codesign failed for %o", l);
+    verify(exec(a->verbose, "codesign --force --sign \"%o\" --entitlements %o %o%s",
+        ident, ents, app, quiet) == 0, "ios: codesign failed for %o", app);
+    a->live_binary = hold(app);
+}
+
 // push to the device and start it there. ssh owns the credentials — the
 // device names a host ALIAS (~/.ssh/config), never a user or a password.
 // a device with no host is a build target only
@@ -2121,6 +2318,37 @@ static void device_run(silver a) {
     Device dev = a->target;
     if (!dev) return;
     if (!dev->host || !len(dev->host)) return;
+    // the app runs for as long as it likes: the build lock goes first
+    if (build_lock_fd >= 0) { flock(build_lock_fd, LOCK_UN); close(build_lock_fd); build_lock_fd = -1; }
+    // an iphone installs and launches through devicectl; host is its udid
+    if (a->platform && strstr(a->platform->chars, "ios")) {
+        path app = f(path, "%o/%o.app", a->build_dir, a->name);
+        if (!dir_exists("%o", app)) { print("[%o] ios: no bundle at %o", a->name, app); a->error = true; return; }
+        // the simulator: host names a device or 'booted'
+        if (strstr(a->platform->chars, "simulator")) {
+            if (cmp(dev->host, "booted") != 0) exec(false, "xcrun simctl boot %o 2>/dev/null", dev->host);
+            exec(false, "open -a Simulator");
+            print("[%o] installing on simulator %o", a->name, dev->host);
+            if (exec(a->verbose, "xcrun simctl install %o %o", dev->host, app) != 0) {
+                print("[%o] ios: simulator install failed — is one booted?", a->name);
+                a->error = true;
+                return;
+            }
+            print("[%o] starting on simulator %o", a->name, dev->host);
+            exec(a->verbose, "xcrun simctl launch --console %o com.silver.%o", dev->host, a->name);
+            return;
+        }
+        print("[%o] installing on %o", a->name, dev->host);
+        if (exec(a->verbose, "xcrun devicectl device install app --device %o %o", dev->host, app) != 0) {
+            print("[%o] ios: install failed — is the phone unlocked and trusted?", a->name);
+            a->error = true;
+            return;
+        }
+        print("[%o] starting on %o", a->name, dev->host);
+        exec(a->verbose, "xcrun devicectl device process launch --console --device %o com.silver.%o",
+            dev->host, a->name);
+        return;
+    }
     path root = dev->root ? dev->root : (path)f(path, "~/silver");
     print("[%o] sending to %o", a->name, dev->host);
     if (exec(a->verbose, "ssh %o 'mkdir -p %o'", dev->host, root) != 0 ||
@@ -3299,8 +3527,11 @@ AU_EXPORT void silver_init(silver a) {
         verify(dev->platform && len(dev->platform),
             "device '%o' has no platform", a->device);
         a->target = hold(dev);
-        if (!a->platform || !len(a->platform))
+        // the device names the platform; a child's default "native" yields too
+        if (!a->platform || !len(a->platform) || cmp(a->platform, "native") == 0) {
+            drop(a->platform);
             a->platform = hold(dev->platform);
+        }
 
         // the device IS the sysroot: the exact libc, headers and library
         // versions the binary will run against. pulled once, then cached —
@@ -3747,14 +3978,14 @@ AU_EXPORT void silver_init(silver a) {
     if (!silver_compiled) silver_compiled = hold(hold(map(hsize, 16)));
     pthread_mutex_lock(&compiled_lock);
     for (;;) {
-        Au done = get(silver_compiled, (Au)a->name);
+        Au done = get(silver_compiled, (Au)compiled_key(a));
         if (done && instanceof(done, path)) {
             a->product = hold((path)done);
             pthread_mutex_unlock(&compiled_lock);
             return;
         }
-        building* owner = building_find(a->name->chars);
-        if (!owner) { building_add(a->name->chars); break; }   // we own this build
+        building* owner = building_find(compiled_key(a)->chars);
+        if (!owner) { building_add(compiled_key(a)->chars); break; }   // we own this build
         // same thread re-entering (recursive import) must not wait on itself
         if (pthread_equal(owner->owner, pthread_self())) break;
         pthread_cond_wait(&compiled_cond, &compiled_lock);
@@ -3766,6 +3997,10 @@ AU_EXPORT void silver_init(silver a) {
         deploy_module_resources(a);
         publish_product(a);
         module_erase(a->autype, null);
+        // the bundle is re-staged and re-signed even when the product is
+        // current: profiles and devices change without a source edit
+        if (a->platform && strstr(a->platform->chars, "ios") && !a->is_external && ((aether)a)->is_live)
+            silver_ios_bundle(a);
         // silver-host.c is the LIVE-app launcher ONLY — a plain app has its own
         // main, so never build the host for it (it would overwrite the real exe).
         // recompiled (never cached) for live apps, matching the gated build below.
@@ -3774,7 +4009,7 @@ AU_EXPORT void silver_init(silver a) {
             // silently SKIPPED recompiling it -- an edit to silver-host.c only
             // took effect on a full build, and only there did its errors appear
             path host_dst = f(path, "%o/%o%s", a->build_dir, a->name, app_ext);
-            if (file_exists("%o", host_dst))
+            if (file_exists("%o", host_dst) && !(a->platform && strstr(a->platform->chars, "ios")))
                 build_silver_host(a);
         }
         // the host is what tests and ships: know it before either
@@ -8765,7 +9000,10 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
     if (is_cmake) { // build for cmake
         // externals always build Release — debug is for OUR code, not deps
         cstr build = "Release";
-        string opt = a->isysroot ? f(string, "-DCMAKE_OSX_SYSROOT=%o", a->isysroot) : string("");
+        // a device build names its own sdk; the host's would override the toolchain file
+        bool   x_apple = a->sysroot && target_is_apple(a) && a->platform && cmp(a->platform, "native") != 0;
+        string opt = x_apple ? f(string, "-DCMAKE_OSX_SYSROOT=%o", absolute(a->sysroot)) :
+                     a->isysroot ? f(string, "-DCMAKE_OSX_SYSROOT=%o", a->isysroot) : string("");
 
         // --config below is what picks Release under a multi-config generator
         // a device build hands cmake the target's toolchain; native is ""
@@ -8943,6 +9181,66 @@ static bool build_core_module(silver a, symbol mod, path lib_dir, path objs,
     return file_exists("%o", implib);
 }
 
+// an apple device has no silver on it: Au, its ffi and every core module
+// the app reached for are cross-built once into platform/<device>/lib.
+// core_lib receives the -L that puts that dir ahead of the native one
+static bool ensure_apple_runtime(silver a, symbol triple, string tgt,
+                                 string tools, string core_lib) {
+    path root    = f(path, "%s/platform/%o", SILVER, target_dir(a));
+    path lib_dir = f(path, "%o/lib",   root);
+    path objs    = f(path, "%o/build", root);
+    make_dir(lib_dir);
+    make_dir(objs);
+    // the device libs, then the sdk's own, ahead of the host's install/lib
+    concat(core_lib, f(string, "-L%o -L%o/usr/lib ", lib_dir, a->sysroot));
+
+    // libffi is autotools: an out-of-tree configure against our clang
+    if (!file_exists("%o/libffi.a", lib_dir)) {
+        print("[ffi] building for %s", triple);
+        path ffi_b = f(path, "%o/libffi", objs);
+        make_dir(ffi_b);
+        if (exec(a->verbose, "cd %o && %s/checkout/libffi/configure --host=aarch64-apple-darwin "
+                 "--prefix=%o --disable-shared --disable-docs --disable-multi-os-directory "
+                 "CC='%o/clang %o' CXX='%o/clang++ %o' && make -j8 install",
+                 ffi_b, SILVER, root, tools, tgt, tools, tgt) != 0) return false;
+    }
+
+    string inc = f(string,
+        "-I %s/install/build/src/silver -I %s/src -I %s/install/build/src "
+        "-I %s/platform/native/include -I %o/include",
+        SILVER, SILVER, SILVER, SILVER, root);
+    string base = f(string, "%s -Wno-nullability-completeness -Wno-expansion-to-defined "
+        "-fPIC -fvisibility=default -DSILVER='\"%s\"' %s", core_warn, SILVER, a->debug ? "-g" : "-O2");
+
+    if (!file_exists("%o/libAu.dylib", lib_dir)) {
+        print("[Au] building the runtime for %s", triple);
+        path au_o = f(path, "%o/Au.o",    objs);
+        path po_o = f(path, "%o/posix.o", objs);
+        if (exec(a->verbose, "%o/clang %o %o -DMODULE='\"Au\"' -I %s/install/build/src/Au %o -c %s/src/Au.c -o %o",
+                 tools, tgt, base, SILVER, inc, SILVER, au_o) != 0) return false;
+        if (exec(a->verbose, "%o/clang++ %o %o -std=c++17 -stdlib=libc++ -DMODULE='\"posix\"' -I %s/install/build/src/posix %o -c %s/src/posix.cc -o %o",
+                 tools, tgt, base, SILVER, inc, SILVER, po_o) != 0) return false;
+        if (exec(a->verbose, "%o/clang++ %o -fuse-ld=lld -B%o -dynamiclib %o %o -o %o/libAu.dylib "
+                 "-L%o -lffi -lc++ -install_name @rpath/libAu.dylib",
+                 tools, tgt, tools, au_o, po_o, lib_dir, lib_dir) != 0) return false;
+    }
+
+    pairs(a->libs, li) {
+        string nm = (string)instanceof(li->key, string);
+        if (!nm || cmp(nm, "Au") == 0)  continue;
+        if (!is_core_module(nm->chars)) continue;
+        if (file_exists("%o/lib%o.dylib", lib_dir, nm)) continue;
+        print("[%o] building for the device", nm);
+        path obj = f(path, "%o/%o.o", objs, nm);
+        if (exec(a->verbose, "%o/clang %o %o -DMODULE='\"%o\"' -I %s/install/build/src/%o %o -c %s/src/%o.c -o %o",
+                 tools, tgt, base, nm, SILVER, nm, inc, SILVER, nm, obj) != 0) return false;
+        if (exec(a->verbose, "%o/clang++ %o -fuse-ld=lld -B%o -dynamiclib %o -o %o/lib%o.dylib "
+                 "-L%o -lAu -lc++ -install_name @rpath/lib%o.dylib",
+                 tools, tgt, tools, obj, lib_dir, nm, lib_dir, nm) != 0) return false;
+    }
+    return true;
+}
+
 // a windows DLL must resolve every symbol at link time, so every Au submodule
 // the app imported needs its own build for the device. built once, beside its
 // sysroot; returns the import libs to hand the module link
@@ -9012,6 +9310,8 @@ static bool platform_is_windows(silver a) {
 
 static symbol platform_triple(silver a) {
     cstr p = a->platform ? a->platform->chars : "";
+    if (strstr(p, "ios"))                             return strstr(p, "simulator") ?
+                                                             "arm64-apple-ios16.0-simulator" : "arm64-apple-ios16.0";
     if (strstr(p, "windows")) {
         if (strstr(p, "arm64"))  return "aarch64-w64-windows-gnu";
         if (strstr(p, "x86_64")) return "x86_64-w64-windows-gnu";
@@ -9214,7 +9514,8 @@ none silver_build_product(silver a) {
     if (a->platform && len(a->platform)) {
         cstr pl = a->platform->chars;
         if (strstr(pl, "windows"))    { t_pre = "";    t_lib = ".dll";   t_app = ".exe"; }
-        else if (strstr(pl, "macos")) { t_pre = "lib"; t_lib = ".dylib"; t_app = ""; }
+        else if (strstr(pl, "macos") || strstr(pl, "ios"))
+                                      { t_pre = "lib"; t_lib = ".dylib"; t_app = ""; }
         else if (cmp(a->platform, "native") != 0)
                                       { t_pre = "lib"; t_lib = ".so";    t_app = ""; }
     }
@@ -9235,138 +9536,7 @@ none silver_build_product(silver a) {
         "--release is for apps: %o is a library", a->name);
     collect_mm_frameworks(a, a->implements);
 
-    // platform dispatch: a device serves its own sysroot, and llvm is already
-    // a cross compiler, so the whole lowering runs HERE
-    if (a->platform && len(a->platform) && cmp(a->platform, "native") != 0) {
-        verify(a->sysroot && is_dir(a->sysroot),
-            "platform '%o' has no sysroot at %o — name a device with -d, or give "
-            "it a fetch: line", a->platform, a->sysroot);
-        symbol triple = platform_triple(a);
-        string tools = f(string, "%s/platform/native/bin", SILVER);
-        // -target/--sysroot for clang, -mtriple for llc
-        // debian keeps arch headers at /usr/include/<triple>; clang does not
-        // add that itself for a cross sysroot, and <linux/types.h> needs it.
-        // mingw carries one flat include tree, so it names no such path
-        bool   win      = platform_is_windows(a);
-        string arch_inc = win ? string("") :
-            f(string, "-isystem %o/usr/include/%s ", a->sysroot, triple);
-        string tgt   =
-            f(string, "-target %s --sysroot=%o %o%s",
-              triple, a->sysroot, arch_inc, platform_abi_clang(a));
-        string mtri  = f(string, "-mtriple=%s %s", triple, platform_abi_llc(a));
-        // our lld cross-links; the system ld only knows the host arch
-        string ldld  =
-            f(string, "-fuse-ld=lld -B%o %s", tools, platform_abi_link(a));
-        print("[%o] cross-compiling %s against %o", a->name, triple, a->sysroot);
-
-        // llc: .ll -> .o
-        // aim codegen at the device HERE: this is the instance that emits,
-        // and its modules and machines outlive whatever init did
-        set_target((aether)a, triple);
-        // every core emits its own object; an external llc sees only core 0
-        path   x_obj = f(path, "%o/%o.o", a->build_dir, a->name);
-        verify(emit_object(a, x_obj), ".o emission failed (platform: %o)", a->platform);
-        string x_core = core_objects(a, x_obj);
-
-        string cflags = a->asan ? string("-fsanitize=address -shared-libasan") : string("");
-
-        if (len(a->implements))
-            write_header(a);
-
-        // compile the module's own .c/.cc/.mm implementations
-        string objs = string();
-        each(a->implements, path, i) {
-            string ext      = ext(i);
-            if (eq(ext, "rs")) {
-                string a_name = f(string, "%o/lib%o_rs.a", a->build_dir, stem(i));
-                verify(exec(a->verbose, "rustc --crate-type=staticlib %s -O %o -o %o",
-                    a->debug ? "-g" : "", i, a_name) == 0,
-                    "failed to compile %o (rustc required; platform: %o)", i, a->platform);
-                if (len(objs)) append(objs, " ");
-                concat(objs, a_name);
-                continue;
-            }
-            string i_name   = f(string, "%o/%o.o", a->build_dir, filename(i));
-            bool   is_cpp   = is_cpp_source_ext(a, ext);
-            cstr   compiler = is_cpp ? "clang++" : "clang";
-            cstr   std_flag = is_cpp ? "-std=c++17" : "-std=c11";
-            symbol cxx_abi  = is_cpp ? platform_abi_cxx(a) : "";
-            cstr   lang_flag = source_lang_flag(a, ext);
-            string st       = stem(i);
-            verify(exec(a->verbose, "%o/%s %o%s %s%s %o %s -c %o -o %o -I%o/include/%o -I%o/include -I%o/include/Au",
-                tools, compiler, tgt, std_flag, cxx_abi, lang_flag, cflags, a->debug ? "-g" : "", i, i_name, install, st, install, install) == 0,
-                "failed to compile %o (platform: %o)", i, a->platform);
-            if (len(objs)) append(objs, " ");
-            concat(objs, i_name);
-        }
-
-        // windows resolves every symbol at link time, so the runtime must
-        // exist for this device before the module can link against it
-        // import libraries are named outright; no -L search has to find them
-        string core_lib = string(alloc, 512);
-        if (win && !ensure_core_runtime(a, install, triple, tgt, ldld, tools, core_lib)) {
-            print("[%o] could not build the Au runtime for %s", a->name, triple);
-            a->error = true;
-            return;
-        }
-
-        // use clang++ when C++ objects are present
-        bool has_cpp_d = false;
-        each(a->implements, path, impl) {
-            string ext_d = ext(impl);
-            if (is_cpp_source_ext(a, ext_d)) { has_cpp_d = true; break; }
-        }
-        cstr linker_d  = has_cpp_d ? "clang++" : "clang";
-        cstr cpp_libs_d = has_cpp_d ? "-stdlib=libc++" : "";
-        string isysroot = a->isysroot ? f(string, "-isysroot %o ", a->isysroot) : string("");
-        string fw_flags_d = string("");
-        if (target_is_apple(a) && a->frameworks) {
-            pairs(a->frameworks, fw_i) {
-                if (len(fw_flags_d)) append(fw_flags_d, " ");
-                concat(fw_flags_d, f(string, "-framework %o", (string)fw_i->key));
-            }
-        }
-        // both are ELF-only: a PE resolves dlls by exe dir and PATH, and it
-        // binds its own symbols first without being told to
-        // $ORIGIN/../lib: a packaged /opt/<app>/bin finds its bundled lib/
-        string rpaths = win ? string("") :
-            f(string, "-Wl,-rpath,%o -Wl,-rpath,%o/lib -Wl,-rpath,'$ORIGIN' -Wl,-rpath,'$ORIGIN/../lib' ", a->build_dir, install);
-        // a library carries its leaf as soname: consumers record that, not
-        // the absolute build path, and resolve by rpath
-        string shared_d = a->is_library ? (target_is_apple(a) || win ? string(shared) :
-            f(string, "%s -Wl,-soname,%o", shared, path_filename(a->product))) : string("");
-        if (!win && a->base_install)
-            concat(rpaths, f(string, "-L%o/lib -Wl,-rpath,%o/lib ",
-                a->base_install, a->base_install));
-        cstr   bsym   = (a->is_library && !win) ? "-Wl,-Bsymbolic" : "";
-        verify(exec(a->verbose, "%o/%s %o%o%s %s %s %o %o/%o.o%o %o %o-o %o -L%o -L%o/lib %o%o %o %o %s",
-            tools, linker_d, tgt, ldld,
-            shared_d->chars, a->debug ? "-g" : "",
-            bsym,
-            isysroot, a->build_dir, a->name, x_core, objs, core_lib,
-            a->product,
-            a->build_dir,
-            install, rpaths, libs, cflags, fw_flags_d, cpp_libs_d) == 0,
-            "link failed (platform: %o)", a->platform);
-
-        // --release --test artifacts are never recorded as the product:
-        // the next plain --release must not inherit a test-carrying binary
-        if (!(a->release && a->test)) {
-            unlink(a->product_link->chars);
-            verify(create_symlink(a->product, a->product_link),
-                "could not create product symlink from %o -> %o", a->product_link, a->product);
-        }
-
-    } else {
-
-    // worker cores emit their own objects alongside core 0's
-    path   obj_path  = f(path, "%o/%o.o", a->build_dir, a->name);
-    verify(emit_object(a, obj_path), ".o emission failed");
-    string core_objs = core_objects(a, obj_path);
-
-    string cflags = a->asan ? string("-fsanitize=address -shared-libasan") : string("");
-
-    // build compile-only flags
+    string cflags  = a->asan ? string("-fsanitize=address -shared-libasan") : string("");
     string ccflags = string(cflags->chars);
     if (a->include_paths) {
         each(a->include_paths, string, inc) {
@@ -9403,6 +9573,7 @@ none silver_build_product(silver a) {
     if (len(a->implements))
         write_header(a);
 
+    // compile implementation in c/cc, and select for linking
     // create libs, and describe in reverse order from import
     pairs(a->libs, i) {
         string name = (string)i->key;
@@ -9434,8 +9605,160 @@ none silver_build_product(silver a) {
         if (len(libs)) append(libs, " ");
         concat(libs, f(string, "-l%o", rl));
     }
+    // the link is far below; nothing in between may free this
+    hold(libs);
 
-    // compile implementation in c/cc, and select for linking
+    // platform dispatch: a device serves its own sysroot, and llvm is already
+    // a cross compiler, so the whole lowering runs HERE
+    if (a->platform && len(a->platform) && cmp(a->platform, "native") != 0) {
+        verify(a->sysroot && is_dir(a->sysroot),
+            "platform '%o' has no sysroot at %o — name a device with -d, or give "
+            "it a fetch: line", a->platform, a->sysroot);
+        symbol triple = platform_triple(a);
+        string tools = f(string, "%s/platform/native/bin", SILVER);
+        // -target/--sysroot for clang, -mtriple for llc
+        // debian keeps arch headers at /usr/include/<triple>; clang does not
+        // add that itself for a cross sysroot, and <linux/types.h> needs it.
+        // mingw carries one flat include tree, so it names no such path
+        bool   win      = platform_is_windows(a);
+        bool   apple    = target_is_apple(a);
+        string arch_inc = win || apple ? string("") :
+            f(string, "-isystem %o/usr/include/%s ", a->sysroot, triple);
+        // an apple sysroot is an sdk, which clang takes as -isysroot
+        string tgt   =
+            f(string, "-target %s %s%o %o%s",
+              triple, apple ? "-isysroot " : "--sysroot=", a->sysroot, arch_inc, platform_abi_clang(a));
+        string mtri  = f(string, "-mtriple=%s %s", triple, platform_abi_llc(a));
+        // our lld cross-links; the system ld only knows the host arch
+        string ldld  =
+            f(string, "-fuse-ld=lld -B%o %s", tools, platform_abi_link(a));
+        print("[%o] cross-compiling %s against %o", a->name, triple, a->sysroot);
+
+        // llc: .ll -> .o
+        // aim codegen at the device HERE: this is the instance that emits,
+        // and its modules and machines outlive whatever init did
+        set_target((aether)a, triple);
+        // every core emits its own object; an external llc sees only core 0
+        path   x_obj = f(path, "%o/%o.o", a->build_dir, a->name);
+        verify(emit_object(a, x_obj), ".o emission failed (platform: %o)", a->platform);
+        string x_core = core_objects(a, x_obj);
+
+
+        if (len(a->implements))
+            write_header(a);
+
+        // compile the module's own .c/.cc/.mm implementations
+        string objs = string();
+        each(a->implements, path, i) {
+            string ext      = ext(i);
+            if (eq(ext, "rs")) {
+                string a_name = f(string, "%o/lib%o_rs.a", a->build_dir, stem(i));
+                verify(exec(a->verbose, "rustc --crate-type=staticlib %s -O %o -o %o",
+                    a->debug ? "-g" : "", i, a_name) == 0,
+                    "failed to compile %o (rustc required; platform: %o)", i, a->platform);
+                if (len(objs)) append(objs, " ");
+                concat(objs, a_name);
+                continue;
+            }
+            string i_name   = f(string, "%o/%o.o", a->build_dir, filename(i));
+            bool   is_cpp   = is_cpp_source_ext(a, ext);
+            cstr   compiler = is_cpp ? "clang++" : "clang";
+            cstr   std_flag = is_cpp ? "-std=c++17" : "-std=c11";
+            // the device sdk's libc++ headers match the libc++ it ships;
+            // clang's newer ones name symbols the device lacks
+            string cxx_abi  = !is_cpp ? string("") : apple ?
+                f(string, "-nostdinc++ -isystem %o/usr/include/c++/v1 ", a->sysroot) :
+                string(platform_abi_cxx(a));
+            cstr   lang_flag = source_lang_flag(a, ext);
+            string st       = stem(i);
+            verify(exec(a->verbose, "%o/%s %o%s %o%s %o %s -c %o -o %o -I%o/include/%o -I%o/include -I%o/include/Au -I%s/platform/%o/include",
+                tools, compiler, tgt, std_flag, cxx_abi, lang_flag, ccflags, a->debug ? "-g" : "", i, i_name, install, st, install, install, SILVER, target_dir(a)) == 0,
+                "failed to compile %o (platform: %o)", i, a->platform);
+            if (len(objs)) append(objs, " ");
+            concat(objs, i_name);
+        }
+
+        // windows resolves every symbol at link time, so the runtime must
+        // exist for this device before the module can link against it
+        // import libraries are named outright; no -L search has to find them
+        string core_lib = string(alloc, 512);
+        if (win && !ensure_core_runtime(a, install, triple, tgt, ldld, tools, core_lib)) {
+            print("[%o] could not build the Au runtime for %s", a->name, triple);
+            a->error = true;
+            return;
+        }
+        // no device carries silver's runtime: build it beside the sysroot
+        if (apple && !ensure_apple_runtime(a, triple, tgt, tools, core_lib)) {
+            print("[%o] could not build the Au runtime for %s", a->name, triple);
+            a->error = true;
+            return;
+        }
+
+        // use clang++ when C++ objects are present
+        bool has_cpp_d = false;
+        each(a->implements, path, impl) {
+            string ext_d = ext(impl);
+            if (is_cpp_source_ext(a, ext_d)) { has_cpp_d = true; break; }
+        }
+        cstr linker_d  = has_cpp_d ? "clang++" : "clang";
+        string cpp_libs_d = string(has_cpp_d ? "-stdlib=libc++" : "");
+        // the device sdk is already named in tgt; the host's must not follow it
+        string isysroot = (a->isysroot && !apple) ? f(string, "-isysroot %o ", a->isysroot) : string("");
+        string fw_flags_d = string("");
+        if (target_is_apple(a) && a->frameworks) {
+            pairs(a->frameworks, fw_i) {
+                if (len(fw_flags_d)) append(fw_flags_d, " ");
+                concat(fw_flags_d, f(string, "-framework %o", (string)fw_i->key));
+            }
+        }
+        // both are ELF-only: a PE resolves dlls by exe dir and PATH, and it
+        // binds its own symbols first without being told to
+        // $ORIGIN/../lib: a packaged /opt/<app>/bin finds its bundled lib/
+        string rpaths = win ? string("") : apple ?
+            f(string, "-Wl,-rpath,@loader_path -Wl,-rpath,@executable_path/Frameworks -Wl,-rpath,%s/platform/%o/lib ", SILVER, target_dir(a)) :
+            f(string, "-Wl,-rpath,%o -Wl,-rpath,%o/lib -Wl,-rpath,'$ORIGIN' -Wl,-rpath,'$ORIGIN/../lib' ", a->build_dir, install);
+        // a library carries its leaf as soname: consumers record that, not
+        // the absolute build path, and resolve by rpath
+        string shared_d = a->is_library ? (target_is_apple(a) || win ? string(shared) :
+            f(string, "%s -Wl,-soname,%o", shared, path_filename(a->product))) : string("");
+        if (!win && a->base_install)
+            concat(rpaths, f(string, "-L%o/lib -Wl,-rpath,%o/lib ",
+                a->base_install, a->base_install));
+        cstr   bsym   = (a->is_library && !win && !apple) ? "-Wl,-Bsymbolic" : "";
+        // the host's install/lib is the wrong platform for an apple device
+        path   link_inst = apple ? (path)f(path, "%o/usr", a->sysroot) : install;
+        string x_link = f(string, "%o/%s %o%o%s %s %s %o %o/%o.o%o %o %o-o %o -L%o -L%o/lib %o%o %o %o %o",
+            tools, linker_d, tgt, ldld,
+            shared_d->chars, a->debug ? "-g" : "",
+            bsym,
+            isysroot, a->build_dir, a->name, x_core, objs, core_lib,
+            a->product,
+            a->build_dir,
+            link_inst, rpaths, libs, cflags, fw_flags_d, cpp_libs_d);
+        if (a->verbose) print("[%o] %o", a->name, x_link);
+        verify(exec(a->verbose, "%o", x_link) == 0,
+            "link failed (platform: %o)", a->platform);
+
+        // --release --test artifacts are never recorded as the product:
+        // the next plain --release must not inherit a test-carrying binary
+        if (!(a->release && a->test)) {
+            unlink(a->product_link->chars);
+            verify(create_symlink(a->product, a->product_link),
+                "could not create product symlink from %o -> %o", a->product_link, a->product);
+        }
+        // the root ios app ships as a bundle; libraries stay bare dylibs
+        if (apple && strstr(a->platform->chars, "ios") && !a->is_external && ((aether)a)->is_live)
+            silver_ios_bundle(a);
+
+    } else {
+
+    // worker cores emit their own objects alongside core 0's
+    path   obj_path  = f(path, "%o/%o.o", a->build_dir, a->name);
+    verify(emit_object(a, obj_path), ".o emission failed");
+    string core_objs = core_objects(a, obj_path);
+
+
+    // build compile-only flags
     string objs = compile_implements(a, a->implements, ccflags);
 
     // link - include the implementation objects; use clang++ when C++ objects are present
@@ -9542,7 +9865,8 @@ none silver_build_product(silver a) {
     publish_product(a);
 
     // for live_app modules: compile the host launcher as the app binary (never cached)
-    if (((aether)a)->is_live) {
+    // an ios app got its host inside its bundle
+    if (((aether)a)->is_live && !(a->platform && strstr(a->platform->chars, "ios"))) {
         path host_dst = build_silver_host(a);
         a->live_binary = hold(host_dst);
         // symlink install/bin/<name> -> the built host binary, so the app runs
@@ -9609,6 +9933,8 @@ none silver_build_product(silver a) {
         map   seen = map(hsize, 64);
         silver_collect_tree(a->tree, all, seen);
         each(all, path, p) fprintf(sr, "%s\n", p->chars);
+        // the module's own .c/.cc/.mm are sources too: an edit there rebuilds
+        each(a->implements, path, i) fprintf(sr, "%s\n", i->chars);
         fclose(sr);
     }
 }
@@ -11220,6 +11546,12 @@ enode parse_import(silver a) {
             mdl->host_product     ? (Au)mdl->host_product :
             mdl->external_product ? (Au)mdl->external_product : mod ? (Au)mod : (Au)lib_path);
         mdl->autype->is_closed = true;
+        // the loader took the host copy; the link must take the device's
+        if (mdl->host_product && mdl->external_product &&
+            compare(mdl->host_product, mdl->external_product) != 0) {
+            map_rm(a->libs, (Au)string(mdl->host_product->chars));
+            set(a->libs, (Au)string(mdl->external_product->chars), (Au)_bool(true));
+        }
     }
 
     //mdl->autype->is_closed = true;

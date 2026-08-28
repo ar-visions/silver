@@ -3864,7 +3864,21 @@ AU_EXPORT map arguments(int argc, cstrs argv, map default_values, Au default_key
             // -s or --silver
             bool doub  = arg[1] == '-';
             string s_key = new(string, chars, (cstr)&arg[doub + 1]);
-            string s_val = new(string, chars, (cstr)argv[i + 1]);
+            cstr   nxt   = argv[i + 1];
+            // a flag takes the next token only when it is a value: a bool
+            // flag followed by another flag (or nothing) is simply true
+            bool   bool_flag = false;
+            for (item f = default_values->first; f; f = f->next) {
+                Au def_value = f->value;
+                if (def_value && isa(def_value) == typeid(bool) &&
+                    ((!doub && strncmp(((string)f->key)->chars, s_key->chars, 1) == 0) ||
+                     ( doub && compare(f->key, (Au)s_key) == 0)))
+                    bool_flag = true;
+            }
+            bool literal = nxt && (!strcmp(nxt, "true") || !strcmp(nxt, "false") ||
+                                   !strcmp(nxt, "1")    || !strcmp(nxt, "0"));
+            bool takes_value = !bool_flag || literal;
+            string s_val = new(string, chars, (cstr)(takes_value ? nxt : "true"));
 
             for (item f = default_values->first; f; f = f->next) {
                 /// import Au types from runtime
@@ -3880,6 +3894,7 @@ AU_EXPORT map arguments(int argc, cstrs argv, map default_values, Au default_key
                     set(result, (Au)f->key, value);
                 }
             }
+            if (!takes_value) { i += 1; continue; }
         } else if (!found_single && default_key) {
             Au default_key_obj = header(default_key);
             string s_val     = new(string, chars, (cstr)arg);
@@ -4972,20 +4987,23 @@ Au formatter(Au_t type, bool print_info, handle ff, Au opt, int seq, symbol temp
                     continue;
                 char formatter[128];
                 int symbol_len = parse_formatter(scan, formatter, 128);
+                // the argument is taken ONCE: a retry after growing the
+                // buffer must not pull the next one and shift the rest
+                char   conv = formatter[symbol_len - 1];
+                double dv = 0; int iv = 0; none* pv = null;
+                int    kind = strchr("fFgG", conv) ? 0 : strchr("diouxXc", conv) ? 1 : 2;
+                if      (kind == 0) dv = va_arg(args, double);
+                else if (kind == 1) iv = va_arg(args, int);
+                else                pv = va_arg(args, none*);
                 for (;;) {
                     num f_len = 0;
                     num avail = res->alloc - res->count;
                     cstr  end = (cstr)&res->chars[res->count];
-                    if (strchr("fFgG", formatter[symbol_len - 1]))
-                        f_len = snprintf(end, avail, formatter, va_arg(args, double));
-                    else if (strchr("diouxX", formatter[symbol_len - 1]))
-                        f_len = snprintf(end, avail, formatter, va_arg(args, int));
-                    else if (strchr("c", formatter[symbol_len - 1]))
-                        f_len = snprintf(end, avail, formatter, va_arg(args, int));
-                    else
-                        f_len = snprintf(
-                            end, avail, formatter, va_arg(args, none*));
-                    if (f_len > avail) {
+                    if      (kind == 0) f_len = snprintf(end, avail, formatter, dv);
+                    else if (kind == 1) f_len = snprintf(end, avail, formatter, iv);
+                    else                f_len = snprintf(end, avail, formatter, pv);
+                    // snprintf counts the text; the terminator needs one more
+                    if (f_len >= avail) {
                         reserve(res, res->alloc << 1);
                         continue;
                     }

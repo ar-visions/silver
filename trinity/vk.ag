@@ -1042,6 +1042,9 @@ class vk_context
         enable_validation: bool [ false ]
         ifdef [ debug ]
             enable_validation = true
+        # no loader on ios: MoltenVK alone serves no layers
+        ifdef [ ios ]
+            enable_validation = false
         validation_layer: symbol [ (enable_validation) ? "VK_LAYER_KHRONOS_validation" : null ]
         app_info: VkApplicationInfo [
             sType:              VK_STRUCTURE_TYPE_APPLICATION_INFO,
@@ -1057,7 +1060,8 @@ class vk_context
         # get_required_extensions) AND sets this flag.
         inst_flags: u32 0
         ifdef [ apple ]
-            inst_flags = VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR
+            ifndef [ ios ]
+                inst_flags = VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR
 
         result: vkCreateInstance[ VkInstanceCreateInfo [
             sType:                   VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
@@ -3900,7 +3904,7 @@ Texture Display
             el
                 extent.width  = u32[ ww_i ]
                 extent.height = u32[ wh_i ]
-            scale = (ww_i > 0) ? f32[ extent.width ] / f32[ ww_i ] : 1.0
+            scale = platform_window_scale[ glfw ]
         el
             width  = w_new
             height = h_new
@@ -4234,11 +4238,13 @@ Texture Display
             ph_i: i32
             platform_window_get_size[ glfw, @ww_i, @wh_i ]
             platform_window_get_framebuffer[ glfw, @pw_i, @ph_i ]
-            scale         = (ww_i > 0) ? f32[ pw_i ] / f32[ ww_i ] : 1.0
+            # the platform knows its scale; pixels/points only agrees after layout
+            scale         = platform_window_scale[ glfw ]
             width         = ww_i
             height        = wh_i
             extent.width  = u32[ pw_i ]
             extent.height = u32[ ph_i ]
+            puts 'display: {width}x{height} points, {extent.width}x{extent.height} px, scale {scale}'
         el
             surface_format.format     = (format == Pixel.rgbaf32) ? VK_FORMAT_R32G32B32A32_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM
             surface_format.colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR
@@ -4575,8 +4581,10 @@ func get_required_extensions [ vk: vk_context ]
     result[0] = "VK_KHR_surface"
     result[1] = platform_surface_extension[]
     ifdef [ apple ]
-        result[count] = "VK_KHR_portability_enumeration"
-        count += 1
+        # portability enumeration is the loader's; ios talks to MoltenVK direct
+        ifndef [ ios ]
+            result[count] = "VK_KHR_portability_enumeration"
+            count += 1
         result[count] = "VK_KHR_get_physical_device_properties2"
         count += 1
     ifdef [ debug ]

@@ -11561,16 +11561,18 @@ AU_EXPORT none aether_init(aether a) {
 #elif defined(__APPLE__)
     string sdk          = run(false, "xcrun --show-sdk-path");
     string toolchain    = f(string, "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain"); // run("xcrun --show-toolchain-path");
+    // the builtin headers sit under a version dir that moves with xcode
+    string clang_ver    = run(false, "ls %o/usr/lib/clang | sort -V | tail -1", toolchain);
     a->isystem          =   f(path, "%o/usr/include", toolchain);
     a->sys_inc_paths    = a(f(path, "%o/usr/include", toolchain),
                             f(path, "%o/usr/local/include", sdk),
-                            f(path, "%o/usr/lib/clang/14.0.3/include", toolchain));
+                            f(path, "%o/usr/lib/clang/%o/include", toolchain, clang_ver));
     a->sys_exc_paths    = a(f(path, "%o/usr/include", sdk),
                             f(path, "%o/usr/include", toolchain));
     a->lib_paths        = a(f(path, "%o/usr/lib", sdk));
     a->framework_paths  = a(f(path, "%o/System/Library/Frameworks", sdk));
     a->isysroot         =   f(path, "%o/", sdk);
-    a->resource_dir     =   f(path, "%o/usr/lib/clang/14.0.3", toolchain);
+    a->resource_dir     =   f(path, "%o/usr/lib/clang/%o", toolchain, clang_ver);
 #endif
 
     //push(a->include_paths, f(path, "%o/lib/clang/22/include", a->install));

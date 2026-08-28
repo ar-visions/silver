@@ -4,8 +4,12 @@ export 0.1.0
 # the c implementation is devices.mm (apple) and devices.c (win32, xcb)
 
 ifdef [ apple ]
-    import <host.h>
-        -framework Cocoa -framework QuartzCore -framework GameController
+    ifdef [ ios ]
+        import <host.h>
+            -framework UIKit -framework QuartzCore -framework GameController -framework Foundation
+    ifndef [ ios ]
+        import <host.h>
+            -framework Cocoa -framework QuartzCore -framework GameController
 
 ifdef [ linux ]
     import <host.h>

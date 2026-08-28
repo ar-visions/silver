@@ -165,6 +165,7 @@ fi
 # defaults
 export SDK="native"
 export TYPE="release"
+ASAN=""
 
 # parse command-line args
 for arg in "$@"; do
@@ -174,6 +175,10 @@ for arg in "$@"; do
             ;;
         --release)
             TYPE="release"
+            ;;
+        --asan)
+            TYPE="debug"
+            ASAN="--asan"
             ;;
         *)
             SDK="$arg"
@@ -275,10 +280,10 @@ if [[ "$SDK" != "native" && "$SDK" != "ios" ]]; then
 fi
 
 # ensure ninja is available
+# always our own build: a symlink to a package manager's ninja leaves
+# the toolchain hostage to that manager
 if ! [ -f "$NATIVE/bin/ninja" ]; then
-    if command -v ninja >/dev/null 2>&1; then
-        ln -sf "$(command -v ninja)" "$NATIVE/bin/ninja"
-    else
+    {
         ninja_f="v1.13.1"
         NINJA_URL="https://github.com/ninja-build/ninja/archive/refs/tags/${ninja_f}.zip"
         cd $SILVER/checkout
@@ -288,7 +293,37 @@ if ! [ -f "$NATIVE/bin/ninja" ]; then
         cmake -Bbuild-cmake -DBUILD_TESTING=OFF
         cmake --build build-cmake
         cp -a build-cmake/ninja $NATIVE/bin/ninja
-    fi
+    }
+fi
+
+# gnu build tools, built here so no package manager is ever consulted.
+# release tarballs ship a generated configure: perl + make is all they need
+gnu_tool() {
+    local name="$1" ver="$2" bin="$3"
+    [ -f "$NATIVE/bin/$bin" ] && return 0
+    cd "$SILVER/checkout"
+    [ -d "$name-$ver" ] || { curl -LO "https://mirrors.kernel.org/gnu/$name/$name-$ver.tar.gz"; tar -xf "$name-$ver.tar.gz"; }
+    cd "$name-$ver"
+    ./configure --prefix="$NATIVE" --program-prefix= >/dev/null
+    make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" >/dev/null
+    make install >/dev/null
+    cd "$SILVER"
+}
+gnu_tool m4       1.4.19 m4
+gnu_tool autoconf 2.72   autoconf
+gnu_tool automake 1.17   automake
+gnu_tool libtool  2.4.7  libtoolize
+
+# swig binds lldb to python; built against our python once it exists
+if ! [ -f "$NATIVE/bin/swig" ] && [ -f "$NATIVE/bin/python3" ]; then
+    cd "$SILVER/checkout"
+    [ -d swig-4.1.1 ] || { curl -LO https://github.com/swig/swig/archive/refs/tags/v4.1.1.tar.gz; tar -xf v4.1.1.tar.gz; }
+    cd swig-4.1.1
+    ./autogen.sh
+    ./configure --prefix="$NATIVE" --with-python="$NATIVE/bin/python3" --without-pcre >/dev/null
+    make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" >/dev/null
+    make install >/dev/null
+    cd "$SILVER"
 fi
 
 # ensure cbindgen is available (emits C headers for rust imports)
@@ -324,20 +359,6 @@ if ! [ -f "$NATIVE/bin/python3" ]; then
     #export LD_LIBRARY_PATH="$NATIVE/lib:$LD_LIBRARY_PATH"
     $NATIVE/bin/python3 -m ensurepip --upgrade || \
     curl -sS https://bootstrap.pypa.io/get-pip.py | $NATIVE/bin/python3 -
-
-    cd "$SILVER/checkout"
-    curl -LO https://github.com/swig/swig/archive/refs/tags/v4.1.1.tar.gz
-    tar -xf v4.1.1.tar.gz
-    cd swig-4.1.1
-
-    ./autogen.sh || true
-    ./configure \
-    --prefix=$NATIVE \
-    --with-python=$NATIVE/bin/python3 \
-    --without-pcre  # optional; system PCRE is usually fine
-
-    make -j$(nproc)
-    make install
     fi
 fi
 
@@ -473,5 +494,5 @@ fi
 (
     cd $SILVER
     python3 src/import.py --import $IMPORT --$TYPE --project-path $PROJECT_PATH --build-path $BUILD --project-name $PROJECT_NAME $SDK
-    python3 src/gen.py    --import $IMPORT --$TYPE --project-path $PROJECT_PATH --build-path $BUILD --project-name $PROJECT_NAME $SDK
+    python3 src/gen.py    --import $IMPORT --$TYPE $ASAN --project-path $PROJECT_PATH --build-path $BUILD --project-name $PROJECT_NAME $SDK
 )
