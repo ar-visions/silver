@@ -9,6 +9,9 @@ struct vertex_member_t
 
 alias ShaderModuleRef : @VkShaderModule
 
+# glsl -> spir-v, compiled inside trinity.cc
+func trinity_glsl_to_spv [ src: cstr, dst: cstr ] -> i32
+
 class shader
     context vk          : vk_context
     public name         : string
@@ -374,15 +377,9 @@ class shader
             if [ make_spv ] puts 'shader: {spv_file.filename[]} stale (valid={spv_ok}) — compiling'
 
             if [ make_spv ]
-                glsl: path '{path.path_startup[]}/platform/native/bin/glslangValidator'
-                glsl_bin: (glsl.exists[]) ? '{glsl}' : 'glslangValidator'
-                cmd: '{glsl_bin} -V100 --target-env vulkan1.2 {shader_file} -o {spv_file}'
-                puts 'compiling shader: {cmd}'
-                # command.exec, not system(): it runs through Au's popen on
-                # every platform, and the crt's system() opens a console
-                # window per call -- N shaders flashed N of them on windows
-                cc : command cmd.chars
-                result: i32 [ cc.exec[ false ] ]
+                puts 'compiling shader: {shader_file}'
+                # in process through glslang: no tool on disk, no shell
+                result: i32 [ trinity_glsl_to_spv[ shader_file.chars, spv_file.chars ] ]
                 if [ result != 0 ]
                     puts 'shader compilation failed for: {shader_file}'
                     exit[ 1 ]

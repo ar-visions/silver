@@ -596,3 +596,74 @@ HOST_API void host_log_setup(const char* name) {
     pthread_create(&t, 0, host_log_thread, (void*)(long)pf[0]);
     pthread_detach(t);
 }
+
+// glsl -> spir-v in process: ios cannot exec glslangValidator, and no
+// platform should need it on disk. stage comes from the file's extension
+#include <glslang/Include/glslang_c_interface.h>
+#include <glslang/Public/resource_limits_c.h>
+#include <cstring>
+#include <cstdlib>
+#include <string>
+
+static glslang_stage_t glsl_stage(const char* path) {
+    const char* dot = strrchr(path, '.');
+    std::string e = dot ? dot + 1 : "";
+    if (e == "vert") return GLSLANG_STAGE_VERTEX;
+    if (e == "frag") return GLSLANG_STAGE_FRAGMENT;
+    if (e == "comp") return GLSLANG_STAGE_COMPUTE;
+    if (e == "geom") return GLSLANG_STAGE_GEOMETRY;
+    if (e == "tesc") return GLSLANG_STAGE_TESSCONTROL;
+    if (e == "tese") return GLSLANG_STAGE_TESSEVALUATION;
+    return GLSLANG_STAGE_VERTEX;
+}
+
+HOST_API int trinity_glsl_to_spv(const char* src_path, const char* spv_path) {
+    FILE* f = fopen(src_path, "rb");
+    if (!f) { fprintf(stderr, "glsl: cannot read %s\n", src_path); return 1; }
+    fseek(f, 0, SEEK_END); long n = ftell(f); rewind(f);
+    std::string src((size_t)n, '\0');
+    fread(&src[0], 1, (size_t)n, f);
+    fclose(f);
+
+    static bool inited = false;
+    if (!inited) { glslang_initialize_process(); inited = true; }
+
+    glslang_input_t in = {};
+    in.language                          = GLSLANG_SOURCE_GLSL;
+    in.stage                             = glsl_stage(src_path);
+    in.client                            = GLSLANG_CLIENT_VULKAN;
+    in.client_version                    = GLSLANG_TARGET_VULKAN_1_2;
+    in.target_language                   = GLSLANG_TARGET_SPV;
+    in.target_language_version           = GLSLANG_TARGET_SPV_1_5;
+    in.code                              = src.c_str();
+    in.default_version                   = 100;
+    in.default_profile                   = GLSLANG_NO_PROFILE;
+    in.force_default_version_and_profile = 0;
+    in.forward_compatible                = 0;
+    in.messages                          = GLSLANG_MSG_DEFAULT_BIT;
+    in.resource                          = glslang_default_resource();
+
+    glslang_shader_t* sh = glslang_shader_create(&in);
+    if (!glslang_shader_preprocess(sh, &in) || !glslang_shader_parse(sh, &in)) {
+        fprintf(stderr, "glsl: %s\n%s\n%s\n", src_path, glslang_shader_get_info_log(sh),
+            glslang_shader_get_info_debug_log(sh));
+        glslang_shader_delete(sh);
+        return 1;
+    }
+    glslang_program_t* pr = glslang_program_create();
+    glslang_program_add_shader(pr, sh);
+    if (!glslang_program_link(pr, GLSLANG_MSG_SPV_RULES_BIT | GLSLANG_MSG_VULKAN_RULES_BIT)) {
+        fprintf(stderr, "glsl link: %s\n%s\n", src_path, glslang_program_get_info_log(pr));
+        glslang_program_delete(pr); glslang_shader_delete(sh);
+        return 1;
+    }
+    glslang_program_SPIRV_generate(pr, in.stage);
+    size_t words = glslang_program_SPIRV_get_size(pr);
+    FILE* o = fopen(spv_path, "wb");
+    if (!o) { glslang_program_delete(pr); glslang_shader_delete(sh); return 1; }
+    fwrite(glslang_program_SPIRV_get_ptr(pr), 4, words, o);
+    fclose(o);
+    glslang_program_delete(pr);
+    glslang_shader_delete(sh);
+    return 0;
+}

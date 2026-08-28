@@ -12,6 +12,9 @@ import:     LLVM:llvm-project/bd7db754895ed3b51388ec549cd656c770c17587 native
     -DLLVM_ENABLE_ASSERTIONS=OFF
     -DLLVM_ENABLE_RUNTIMES={'"compiler-rt"' if win else '"compiler-rt;libcxx;libcxxabi;libunwind"'}
     -DLLVM_ENABLE_PROJECTS='clang;lld;lldb'
+    -DLLVM_ENABLE_ZSTD=OFF
+    -DLLDB_ENABLE_LZMA=OFF
+    -DSWIG_EXECUTABLE=$NATIVE/bin/swig
     { '-DCLANG_CONFIG_FILE_SYSTEM_DIR=/etc/clang'   if lin else '' }
     { '-DCLANG_DEFAULT_CXX_STDLIB=libstdc++'        if lin else '' }
     { '-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON'         if not win else '' }

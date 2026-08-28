@@ -146,6 +146,16 @@ static int         g_shm_fd = -1;
 static HostShared* g_shm    = NULL;
 #define SILVER_SHM_CHILD_FD 21   // fixed number the channel lands on in children
 
+#ifndef __linux__
+// no memfd here: an unlinked temp file is the same anonymous, inheritable fd
+static int memfd_create(const char* name, unsigned flags) {
+    char p[] = "/tmp/silver-shm-XXXXXX";
+    int fd = mkstemp(p);
+    if (fd >= 0) unlink(p);
+    return fd;
+}
+#endif
+
 static void shm_create(void) {
     if (g_shm_fd >= 0) return;
     g_shm_fd = memfd_create("silver-ide", 0);
