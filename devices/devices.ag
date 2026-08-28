@@ -9,7 +9,7 @@ ifdef [ apple ]
 
 ifdef [ linux ]
     import <host.h>
-        -lxcb -lxcb-keysyms
+        -lxcb
 
 ifdef [ windows ]
     import <host.h>

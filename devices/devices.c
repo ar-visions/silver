@@ -1,4 +1,5 @@
 // desktop hosts: Win32 on windows, xcb on linux. apple lives in platform.mm
+#define _GNU_SOURCE   // clock_gettime, strdup, usleep under -std=c99
 #include "host.h"
 #include <stdlib.h>
 #include <string.h>
@@ -432,7 +433,6 @@ const uint8_t* platform_joystick_hats   (int j, int* n) { if (!pad_read(j)) { *n
 #else
 // ================================================================ linux / xcb
 #include <xcb/xcb.h>
-#include <xcb/xcb_keysyms.h>
 #include <X11/keysym.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -465,14 +465,51 @@ struct platform_window {
     int                x, y;
     xcb_cursor_t       cursor;
     xcb_atom_t         wm_delete;
+    // xdnd: the source offering a drop, and whether it offers file uris
+    xcb_window_t       xdnd_src;
+    bool               xdnd_uris;
     platform_window*   next;
 };
 
 static xcb_connection_t* g_conn;
 static xcb_screen_t*     g_screen;
-static xcb_key_symbols_t* g_syms;
+// the server's keycode -> keysym table, fetched once: no xcb-keysyms needed
+static xcb_keysym_t*     g_syms;
+static int               g_syms_min, g_syms_per, g_syms_count;
 static platform_window*  g_windows;
+
+static xcb_keysym_t keysym_of(xcb_keycode_t code, int col) {
+    int i = (int)code - g_syms_min;
+    if (!g_syms || i < 0 || i >= g_syms_count || col >= g_syms_per) return 0;
+    return g_syms[i * g_syms_per + col];
+}
+
+// at connect and again on MappingNotify (a layout switch)
+static void fetch_keymap(void) {
+    const xcb_setup_t* su = xcb_get_setup(g_conn);
+    g_syms_min   = su->min_keycode;
+    g_syms_count = su->max_keycode - su->min_keycode + 1;
+    xcb_get_keyboard_mapping_reply_t* km = xcb_get_keyboard_mapping_reply(g_conn,
+        xcb_get_keyboard_mapping(g_conn, su->min_keycode, (uint8_t)g_syms_count), NULL);
+    if (!km) return;
+    free(g_syms);
+    g_syms_per = km->keysyms_per_keycode;
+    int n = xcb_get_keyboard_mapping_keysyms_length(km);
+    g_syms = malloc(n * sizeof(xcb_keysym_t));
+    memcpy(g_syms, xcb_get_keyboard_mapping_keysyms(km), n * sizeof(xcb_keysym_t));
+    free(km);
+}
 static double            g_t0;
+static xcb_atom_t        A_XDND_AWARE, A_XDND_ENTER, A_XDND_POSITION, A_XDND_STATUS, A_XDND_DROP,
+                         A_XDND_FINISHED, A_XDND_SELECTION, A_XDND_ACTION_COPY, A_URI_LIST;
+// an event read ahead of its turn (autorepeat detection) is handled next
+static xcb_generic_event_t* g_pending;
+
+static xcb_generic_event_t* next_event(void) {
+    xcb_generic_event_t* e = g_pending;
+    g_pending = NULL;
+    return e ? e : xcb_poll_for_event(g_conn);
+}
 static xcb_atom_t A_WM_PROTOCOLS, A_WM_DELETE, A_NET_WM_STATE, A_NET_WM_STATE_FULLSCREEN,
                   A_CLIPBOARD, A_UTF8_STRING, A_TARGETS, A_PLATFORM_SEL;
 
@@ -610,12 +647,107 @@ static void handle_selection_request(xcb_selection_request_event_t* e) {
     xcb_flush(g_conn);
 }
 
+// a drop: fetch the source's uri list through our selection property, turn
+// file:// uris into paths, hand them to the app, and tell the source we are done
+static void xdnd_receive(platform_window* w, xcb_timestamp_t t) {
+    xcb_convert_selection(g_conn, w->win, A_XDND_SELECTION, A_URI_LIST, A_PLATFORM_SEL, t);
+    xcb_flush(g_conn);
+    char* data = NULL;
+    double t0 = now();
+    while (now() - t0 < 0.5 && !data) {
+        xcb_generic_event_t* ev = next_event();
+        if (!ev) { usleep(1000); continue; }
+        if ((ev->response_type & ~0x80) == XCB_SELECTION_NOTIFY) {
+            xcb_selection_notify_event_t* n = (void*)ev;
+            if (n->property != XCB_NONE) {
+                xcb_get_property_reply_t* r = xcb_get_property_reply(g_conn,
+                    xcb_get_property(g_conn, 1, w->win, A_PLATFORM_SEL, XCB_ATOM_ANY, 0, 1 << 20), NULL);
+                if (r) {
+                    int len = xcb_get_property_value_length(r);
+                    data = malloc(len + 1);
+                    memcpy(data, xcb_get_property_value(r), len);
+                    data[len] = 0;
+                    free(r);
+                }
+            }
+            free(ev);
+            break;
+        }
+        handle(ev);
+        free(ev);
+    }
+    int count = 0;
+    const char* paths[256];
+    for (char* line = data; line && *line && count < 256; ) {
+        char* end = strpbrk(line, "\r\n");
+        if (end) *end = 0;
+        if (line[0] != '#' && strncmp(line, "file://", 7) == 0) {
+            char* p = line + 7;
+            if (strncmp(p, "localhost", 9) == 0) p += 9;
+            // %XX escapes decode in place
+            char* o = p;
+            for (char* s = p; *s; s++, o++) {
+                unsigned v;
+                if (*s == '%' && sscanf(s + 1, "%2x", &v) == 1) { *o = (char)v; s += 2; }
+                else *o = *s;
+            }
+            *o = 0;
+            paths[count++] = p;
+        }
+        line = end ? end + 1 : NULL;
+    }
+    if (count && w->on_drop) w->on_drop(w, count, paths);
+    free(data);
+    xcb_client_message_event_t fin = { 0 };
+    fin.response_type = XCB_CLIENT_MESSAGE;
+    fin.format = 32;
+    fin.window = w->xdnd_src;
+    fin.type = A_XDND_FINISHED;
+    fin.data.data32[0] = w->win;
+    fin.data.data32[1] = count ? 1 : 0;
+    fin.data.data32[2] = count ? A_XDND_ACTION_COPY : XCB_NONE;
+    xcb_send_event(g_conn, 0, w->xdnd_src, XCB_EVENT_MASK_NO_EVENT, (const char*)&fin);
+    xcb_flush(g_conn);
+    w->xdnd_src = XCB_NONE;
+}
+
 static void handle(xcb_generic_event_t* ev) {
     switch (ev->response_type & ~0x80) {
         case XCB_CLIENT_MESSAGE: {
             xcb_client_message_event_t* e = (void*)ev;
             platform_window* w = find(e->window);
-            if (w && e->data.data32[0] == A_WM_DELETE) w->should_close = true;
+            if (!w) break;
+            if (e->type == A_WM_PROTOCOLS && e->data.data32[0] == A_WM_DELETE) w->should_close = true;
+            // xdnd: enter lists the offered types (three inline, more in a
+            // property); position asks whether we take it; drop hands it over
+            else if (e->type == A_XDND_ENTER) {
+                w->xdnd_src  = e->data.data32[0];
+                w->xdnd_uris = false;
+                if (e->data.data32[1] & 1) {
+                    xcb_get_property_reply_t* r = xcb_get_property_reply(g_conn,
+                        xcb_get_property(g_conn, 0, w->xdnd_src, atom("XdndTypeList"), XCB_ATOM_ATOM, 0, 1024), NULL);
+                    if (r) {
+                        xcb_atom_t* ts = xcb_get_property_value(r);
+                        int n = xcb_get_property_value_length(r) / 4;
+                        for (int i = 0; i < n; i++) if (ts[i] == A_URI_LIST) w->xdnd_uris = true;
+                        free(r);
+                    }
+                } else
+                    for (int i = 2; i < 5; i++) if (e->data.data32[i] == A_URI_LIST) w->xdnd_uris = true;
+            } else if (e->type == A_XDND_POSITION && w->xdnd_src) {
+                xcb_client_message_event_t st = { 0 };
+                st.response_type = XCB_CLIENT_MESSAGE;
+                st.format = 32;
+                st.window = w->xdnd_src;
+                st.type = A_XDND_STATUS;
+                st.data.data32[0] = w->win;
+                st.data.data32[1] = w->xdnd_uris ? 1 : 0;
+                st.data.data32[4] = w->xdnd_uris ? A_XDND_ACTION_COPY : XCB_NONE;
+                xcb_send_event(g_conn, 0, w->xdnd_src, XCB_EVENT_MASK_NO_EVENT, (const char*)&st);
+                xcb_flush(g_conn);
+            } else if (e->type == A_XDND_DROP && w->xdnd_src) {
+                xdnd_receive(w, e->data.data32[2]);
+            }
             break;
         }
         case XCB_CONFIGURE_NOTIFY: {
@@ -682,14 +814,29 @@ static void handle(xcb_generic_event_t* ev) {
             platform_window* w = find(e->event);
             if (!w) break;
             bool press = (ev->response_type & ~0x80) == XCB_KEY_PRESS;
-            xcb_keysym_t base = xcb_key_symbols_get_keysym(g_syms, e->detail, 0);
+            xcb_keysym_t base = keysym_of(e->detail, 0);
             int key = keysym_to_key(base);
             int mods = mods_of(e->state);
-            int action = press ? (w->keys[key] ? PLATFORM_REPEAT : PLATFORM_PRESS) : PLATFORM_RELEASE;
+            // x autorepeat is a release + press pair at one timestamp: the
+            // release is synthetic, so the pair collapses to one repeat
+            bool repeat = false;
+            if (!press) {
+                xcb_generic_event_t* nx = xcb_poll_for_queued_event(g_conn);
+                if (nx) {
+                    xcb_key_press_event_t* ne = (void*)nx;
+                    if ((nx->response_type & ~0x80) == XCB_KEY_PRESS &&
+                        ne->detail == e->detail && ne->time == e->time) {
+                        free(nx);
+                        press = true; repeat = true;
+                    } else
+                        g_pending = nx;
+                }
+            }
+            int action = !press ? PLATFORM_RELEASE : (repeat || w->keys[key]) ? PLATFORM_REPEAT : PLATFORM_PRESS;
             key_event(w, key, e->detail, action, mods);
             if (press && !(mods & (PLATFORM_MOD_CONTROL | PLATFORM_MOD_SUPER))) {
                 int col = (e->state & XCB_MOD_MASK_SHIFT) ? 1 : 0;
-                uint32_t cp = keysym_to_unicode(xcb_key_symbols_get_keysym(g_syms, e->detail, col));
+                uint32_t cp = keysym_to_unicode(keysym_of(e->detail, col));
                 if (cp && w->on_char) w->on_char(w, cp);
             }
             break;
@@ -701,7 +848,7 @@ static void handle(xcb_generic_event_t* ev) {
             break;
         }
         case XCB_MAPPING_NOTIFY:
-            xcb_refresh_keyboard_mapping(g_syms, (void*)ev);
+            fetch_keymap();
             break;
     }
 }
@@ -714,7 +861,7 @@ bool platform_init(void) {
     xcb_screen_iterator_t it = xcb_setup_roots_iterator(xcb_get_setup(g_conn));
     for (int i = 0; i < screen_n; i++) xcb_screen_next(&it);
     g_screen = it.data;
-    g_syms = xcb_key_symbols_alloc(g_conn);
+    fetch_keymap();
     A_WM_PROTOCOLS = atom("WM_PROTOCOLS");
     A_WM_DELETE = atom("WM_DELETE_WINDOW");
     A_NET_WM_STATE = atom("_NET_WM_STATE");
@@ -723,11 +870,20 @@ bool platform_init(void) {
     A_UTF8_STRING = atom("UTF8_STRING");
     A_TARGETS = atom("TARGETS");
     A_PLATFORM_SEL = atom("PLATFORM_SELECTION");
+    A_XDND_AWARE = atom("XdndAware");
+    A_XDND_ENTER = atom("XdndEnter");
+    A_XDND_POSITION = atom("XdndPosition");
+    A_XDND_STATUS = atom("XdndStatus");
+    A_XDND_DROP = atom("XdndDrop");
+    A_XDND_FINISHED = atom("XdndFinished");
+    A_XDND_SELECTION = atom("XdndSelection");
+    A_XDND_ACTION_COPY = atom("XdndActionCopy");
+    A_URI_LIST = atom("text/uri-list");
     return true;
 }
 
 void platform_terminate(void) {
-    if (g_syms) xcb_key_symbols_free(g_syms);
+    free(g_syms);
     if (g_conn) xcb_disconnect(g_conn);
     g_syms = NULL; g_conn = NULL;
 }
@@ -739,7 +895,7 @@ int platform_run(platform_loop_fn loop, void* ctx) {
 
 void platform_poll(void) {
     xcb_generic_event_t* ev;
-    while ((ev = xcb_poll_for_event(g_conn))) { handle(ev); free(ev); }
+    while ((ev = next_event())) { handle(ev); free(ev); }
     xcb_flush(g_conn);
 }
 
@@ -755,6 +911,9 @@ platform_window* platform_window_create(int width, int height, const char* title
     xcb_create_window(g_conn, XCB_COPY_FROM_PARENT, w->win, g_screen->root, 0, 0, width, height, 0,
         XCB_WINDOW_CLASS_INPUT_OUTPUT, g_screen->root_visual, mask, values);
     xcb_change_property(g_conn, XCB_PROP_MODE_REPLACE, w->win, A_WM_PROTOCOLS, XCB_ATOM_ATOM, 32, 1, &A_WM_DELETE);
+    // accept file drops (xdnd protocol 5)
+    uint32_t xdnd_ver = 5;
+    xcb_change_property(g_conn, XCB_PROP_MODE_REPLACE, w->win, A_XDND_AWARE, XCB_ATOM_ATOM, 32, 1, &xdnd_ver);
     platform_window_set_title(w, title);
     w->next = g_windows; g_windows = w;
     if (visible) platform_window_show(w);
@@ -875,7 +1034,7 @@ const char* platform_get_clipboard(platform_window* w) {
     xcb_flush(g_conn);
     double t0 = now();
     while (now() - t0 < 0.5) {
-        xcb_generic_event_t* ev = xcb_poll_for_event(g_conn);
+        xcb_generic_event_t* ev = next_event();
         if (!ev) { usleep(1000); continue; }
         if ((ev->response_type & ~0x80) == XCB_SELECTION_NOTIFY) {
             xcb_selection_notify_event_t* n = (void*)ev;

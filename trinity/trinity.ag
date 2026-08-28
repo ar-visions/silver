@@ -87,6 +87,9 @@ ifdef [ linux ]
         -lvulkan
 
 import devices
+# its window api: declarations only, the symbols come with the module
+import <host.h>
+    -I{project_path}/devices
 
 
 import freetype:freetype/VER-2-13-3 <ft2build.h, freetype/freetype.h>
