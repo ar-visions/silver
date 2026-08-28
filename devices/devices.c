@@ -430,6 +430,355 @@ const uint8_t* platform_joystick_buttons(int j, int* n) { if (!pad_read(j)) { *n
 const float*   platform_joystick_axes   (int j, int* n) { if (!pad_read(j)) { *n = 0; return NULL; } *n = 6;  return g_pad_axes[j]; }
 const uint8_t* platform_joystick_hats   (int j, int* n) { if (!pad_read(j)) { *n = 0; return NULL; } *n = 1;  return g_pad_hats[j]; }
 
+#elif defined(__ANDROID__)
+// ================================================================ android
+// NativeActivity calls in on the java thread; the app runs on its own,
+// with a looper that carries those calls and the input queue to it
+#include <android/native_activity.h>
+#include <android/native_window.h>
+#include <android/window.h>
+#include <android/looper.h>
+#include <android/input.h>
+#include <android/configuration.h>
+#include <android/log.h>
+#include <pthread.h>
+#include <unistd.h>
+#include <time.h>
+
+struct platform_window {
+    platform_key_fn    on_key;
+    platform_char_fn   on_char;
+    platform_mouse_fn  on_mouse;
+    platform_cursor_fn on_cursor;
+    platform_enter_fn  on_enter;
+    platform_scroll_fn on_scroll;
+    platform_drop_fn   on_drop;
+    platform_size_fn   on_size;
+    platform_touch_fn  on_touch;
+    platform_focus_fn  on_focus;
+    void*              user;
+    char               keys[PLATFORM_KEY_LAST + 1];
+    int                mods;
+    bool               should_close;
+    bool               fullscreen;
+    int                aspect_num, aspect_den;
+    char*              clip;
+    float              scale;
+};
+
+enum { CMD_WINDOW = 1, CMD_QUEUE, CMD_FOCUS, CMD_BLUR, CMD_RESIZE, CMD_DESTROY };
+enum { ID_CMD = 1, ID_INPUT };
+
+static ANativeActivity* g_activity;
+static ANativeWindow*   g_anw;
+static ANativeWindow*   g_anw_pending;
+static AInputQueue*     g_queue;
+static AInputQueue*     g_queue_pending;
+static ALooper*         g_looper;
+static platform_window* g_win;
+static pthread_t        g_thread;
+static pthread_mutex_t  g_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t   g_cond = PTHREAD_COND_INITIALIZER;
+static int              g_cmd[2];
+static int            (*g_main)(int, char**);
+static bool             g_destroyed;
+static double           g_t0;
+
+static double now(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec + ts.tv_nsec / 1e9;
+}
+double platform_time(void) { return now() - g_t0; }
+
+const char* platform_surface_extension(void) { return "VK_KHR_android_surface"; }
+
+static void send_cmd(int c) { u_char b = c; write(g_cmd[1], &b, 1); }
+
+// the java side blocks until the app thread has taken the change: the
+// window and the queue must not be used past their destroy callbacks
+static void on_window(ANativeActivity* a, ANativeWindow* w) {
+    pthread_mutex_lock(&g_lock);
+    g_anw_pending = w;
+    send_cmd(CMD_WINDOW);
+    while (g_anw != w && !g_destroyed) pthread_cond_wait(&g_cond, &g_lock);
+    pthread_mutex_unlock(&g_lock);
+}
+static void on_queue(ANativeActivity* a, AInputQueue* q) {
+    pthread_mutex_lock(&g_lock);
+    g_queue_pending = q;
+    send_cmd(CMD_QUEUE);
+    while (g_queue != q && !g_destroyed) pthread_cond_wait(&g_cond, &g_lock);
+    pthread_mutex_unlock(&g_lock);
+}
+static void cb_window_created  (ANativeActivity* a, ANativeWindow* w) { on_window(a, w); }
+static void cb_window_destroyed(ANativeActivity* a, ANativeWindow* w) { on_window(a, NULL); }
+static void cb_window_resized  (ANativeActivity* a, ANativeWindow* w) { send_cmd(CMD_RESIZE); }
+static void cb_queue_created   (ANativeActivity* a, AInputQueue* q)   { on_queue(a, q); }
+static void cb_queue_destroyed (ANativeActivity* a, AInputQueue* q)   { on_queue(a, NULL); }
+static void cb_focus           (ANativeActivity* a, int has)          { send_cmd(has ? CMD_FOCUS : CMD_BLUR); }
+static void cb_destroy(ANativeActivity* a) {
+    send_cmd(CMD_DESTROY);
+    pthread_join(g_thread, NULL);
+}
+
+static void key_event(platform_window* w, int key, int scan, int action, int mods) {
+    if (key >= 0 && key <= PLATFORM_KEY_LAST) w->keys[key] = action != PLATFORM_RELEASE;
+    if (w->on_key) w->on_key(w, key, scan, action, mods);
+}
+
+// the few keys a phone sends: its own back key, a hardware keyboard's
+// letters, digits and navigation. text arrives as those same keys
+static int keycode_to_key(int32_t k, int meta, uint32_t* cp) {
+    *cp = 0;
+    bool shift = (meta & AMETA_SHIFT_ON) != 0;
+    if (k >= AKEYCODE_A && k <= AKEYCODE_Z) { *cp = (shift ? 'A' : 'a') + (k - AKEYCODE_A); return PLATFORM_KEY_A + (k - AKEYCODE_A); }
+    if (k >= AKEYCODE_0 && k <= AKEYCODE_9) { *cp = '0' + (k - AKEYCODE_0); return PLATFORM_KEY_0 + (k - AKEYCODE_0); }
+    switch (k) {
+        case AKEYCODE_SPACE:      *cp = ' '; return PLATFORM_KEY_SPACE;
+        case AKEYCODE_PERIOD:     *cp = '.'; return PLATFORM_KEY_PERIOD;
+        case AKEYCODE_COMMA:      *cp = ','; return PLATFORM_KEY_COMMA;
+        case AKEYCODE_MINUS:      *cp = '-'; return PLATFORM_KEY_MINUS;
+        case AKEYCODE_SLASH:      *cp = '/'; return PLATFORM_KEY_SLASH;
+        case AKEYCODE_ENTER:      return PLATFORM_KEY_ENTER;
+        case AKEYCODE_DEL:        return PLATFORM_KEY_BACKSPACE;
+        case AKEYCODE_FORWARD_DEL:return PLATFORM_KEY_DELETE;
+        case AKEYCODE_TAB:        return PLATFORM_KEY_TAB;
+        case AKEYCODE_ESCAPE:
+        case AKEYCODE_BACK:       return PLATFORM_KEY_ESCAPE;
+        case AKEYCODE_DPAD_UP:    return PLATFORM_KEY_UP;
+        case AKEYCODE_DPAD_DOWN:  return PLATFORM_KEY_DOWN;
+        case AKEYCODE_DPAD_LEFT:  return PLATFORM_KEY_LEFT;
+        case AKEYCODE_DPAD_RIGHT: return PLATFORM_KEY_RIGHT;
+        case AKEYCODE_MOVE_HOME:  return PLATFORM_KEY_HOME;
+        case AKEYCODE_MOVE_END:   return PLATFORM_KEY_END;
+        case AKEYCODE_PAGE_UP:    return PLATFORM_KEY_PAGE_UP;
+        case AKEYCODE_PAGE_DOWN:  return PLATFORM_KEY_PAGE_DOWN;
+        case AKEYCODE_SHIFT_LEFT: return PLATFORM_KEY_LEFT_SHIFT;
+        case AKEYCODE_SHIFT_RIGHT:return PLATFORM_KEY_RIGHT_SHIFT;
+        case AKEYCODE_CTRL_LEFT:  return PLATFORM_KEY_LEFT_CONTROL;
+        case AKEYCODE_CTRL_RIGHT: return PLATFORM_KEY_RIGHT_CONTROL;
+        case AKEYCODE_ALT_LEFT:   return PLATFORM_KEY_LEFT_ALT;
+        case AKEYCODE_ALT_RIGHT:  return PLATFORM_KEY_RIGHT_ALT;
+    }
+    return -1;
+}
+
+static int mods_of(int meta) {
+    return ((meta & AMETA_SHIFT_ON) ? PLATFORM_MOD_SHIFT   : 0) |
+           ((meta & AMETA_CTRL_ON)  ? PLATFORM_MOD_CONTROL : 0) |
+           ((meta & AMETA_ALT_ON)   ? PLATFORM_MOD_ALT     : 0) |
+           ((meta & AMETA_META_ON)  ? PLATFORM_MOD_SUPER   : 0);
+}
+
+static void touch(platform_window* w, int id, int phase, float px, float py) {
+    double x = px / w->scale, y = py / w->scale;
+    if (w->on_touch) w->on_touch(w, id, phase, x, y);
+    // the first finger doubles as the mouse so pointer code runs unchanged
+    if (id != 0) return;
+    if (w->on_cursor) w->on_cursor(w, x, y);
+    if (phase == PLATFORM_TOUCH_BEGIN && w->on_mouse)
+        w->on_mouse(w, PLATFORM_MOUSE_LEFT, PLATFORM_PRESS, 0);
+    if ((phase == PLATFORM_TOUCH_END || phase == PLATFORM_TOUCH_CANCEL) && w->on_mouse)
+        w->on_mouse(w, PLATFORM_MOUSE_LEFT, PLATFORM_RELEASE, 0);
+    if ((phase == PLATFORM_TOUCH_END || phase == PLATFORM_TOUCH_CANCEL) && w->on_enter)
+        w->on_enter(w, 0);
+}
+
+// true when consumed. the back key is left to the system, which finishes
+// the activity, after the app has seen it as escape
+static bool handle_input(AInputEvent* ev) {
+    platform_window* w = g_win;
+    if (!w) return false;
+    if (AInputEvent_getType(ev) == AINPUT_EVENT_TYPE_KEY) {
+        int32_t  k      = AKeyEvent_getKeyCode(ev);
+        int      meta   = AKeyEvent_getMetaState(ev);
+        int      action = AKeyEvent_getAction(ev) == AKEY_EVENT_ACTION_UP ? PLATFORM_RELEASE :
+                          AKeyEvent_getRepeatCount(ev) ? PLATFORM_REPEAT : PLATFORM_PRESS;
+        uint32_t cp;
+        int      key = keycode_to_key(k, meta, &cp);
+        if (key < 0) return false;
+        w->mods = mods_of(meta);
+        key_event(w, key, k, action, w->mods);
+        if (cp && action != PLATFORM_RELEASE && w->on_char) w->on_char(w, cp);
+        return k != AKEYCODE_BACK;
+    }
+    if (AInputEvent_getType(ev) != AINPUT_EVENT_TYPE_MOTION) return false;
+    int32_t action = AMotionEvent_getAction(ev);
+    int     masked = action & AMOTION_EVENT_ACTION_MASK;
+    size_t  index  = (action & AMOTION_EVENT_ACTION_POINTER_INDEX_MASK) >> AMOTION_EVENT_ACTION_POINTER_INDEX_SHIFT;
+    size_t  count  = AMotionEvent_getPointerCount(ev);
+    switch (masked) {
+        case AMOTION_EVENT_ACTION_DOWN:
+        case AMOTION_EVENT_ACTION_POINTER_DOWN:
+            touch(w, AMotionEvent_getPointerId(ev, index), PLATFORM_TOUCH_BEGIN,
+                  AMotionEvent_getX(ev, index), AMotionEvent_getY(ev, index));
+            break;
+        case AMOTION_EVENT_ACTION_UP:
+        case AMOTION_EVENT_ACTION_POINTER_UP:
+            touch(w, AMotionEvent_getPointerId(ev, index), PLATFORM_TOUCH_END,
+                  AMotionEvent_getX(ev, index), AMotionEvent_getY(ev, index));
+            break;
+        case AMOTION_EVENT_ACTION_MOVE:
+            for (size_t i = 0; i < count; i++)
+                touch(w, AMotionEvent_getPointerId(ev, i), PLATFORM_TOUCH_MOVE,
+                      AMotionEvent_getX(ev, i), AMotionEvent_getY(ev, i));
+            break;
+        case AMOTION_EVENT_ACTION_CANCEL:
+            for (size_t i = 0; i < count; i++)
+                touch(w, AMotionEvent_getPointerId(ev, i), PLATFORM_TOUCH_CANCEL,
+                      AMotionEvent_getX(ev, i), AMotionEvent_getY(ev, i));
+            break;
+        default: return false;
+    }
+    return true;
+}
+
+static void window_size(platform_window* w) {
+    if (!g_anw || !w || !w->on_size) return;
+    w->on_size(w, ANativeWindow_getWidth(g_anw), ANativeWindow_getHeight(g_anw));
+}
+
+// one pass over the looper: activity commands, then input. blocks for
+// timeout_ms (-1 forever), which is how a windowless app idles
+static void pump(int timeout_ms) {
+    int   ident, events;
+    void* data;
+    while ((ident = ALooper_pollOnce(timeout_ms, NULL, &events, &data)) >= 0) {
+        timeout_ms = 0;
+        if (ident == ID_CMD) {
+            u_char c;
+            if (read(g_cmd[0], &c, 1) != 1) continue;
+            pthread_mutex_lock(&g_lock);
+            switch (c) {
+                case CMD_WINDOW:
+                    g_anw = g_anw_pending;
+                    pthread_cond_broadcast(&g_cond);
+                    break;
+                case CMD_QUEUE:
+                    if (g_queue) AInputQueue_detachLooper(g_queue);
+                    g_queue = g_queue_pending;
+                    if (g_queue) AInputQueue_attachLooper(g_queue, g_looper, ID_INPUT, NULL, NULL);
+                    pthread_cond_broadcast(&g_cond);
+                    break;
+                case CMD_DESTROY:
+                    g_destroyed = true;
+                    if (g_win) g_win->should_close = true;
+                    pthread_cond_broadcast(&g_cond);
+                    break;
+            }
+            pthread_mutex_unlock(&g_lock);
+            if (c == CMD_WINDOW || c == CMD_RESIZE) window_size(g_win);
+            if ((c == CMD_FOCUS || c == CMD_BLUR) && g_win && g_win->on_focus) g_win->on_focus(g_win, c == CMD_FOCUS);
+        } else if (ident == ID_INPUT && g_queue) {
+            AInputEvent* ev;
+            while (AInputQueue_getEvent(g_queue, &ev) >= 0) {
+                if (AInputQueue_preDispatchEvent(g_queue, ev)) continue;
+                AInputQueue_finishEvent(g_queue, ev, handle_input(ev));
+            }
+        }
+    }
+}
+
+static void* app_thread(void* arg) {
+    g_looper = ALooper_prepare(ALOOPER_PREPARE_ALLOW_NON_CALLBACKS);
+    ALooper_addFd(g_looper, g_cmd[0], ID_CMD, ALOOPER_EVENT_INPUT, NULL, NULL);
+    g_main(0, NULL);
+    // the app is done: the activity goes with it, unless it went first
+    if (!g_destroyed) ANativeActivity_finish(g_activity);
+    pthread_mutex_lock(&g_lock);
+    g_destroyed = true;
+    pthread_cond_broadcast(&g_cond);
+    pthread_mutex_unlock(&g_lock);
+    return NULL;
+}
+
+void platform_android_start(void* activity, int (*main)(int, char**)) {
+    ANativeActivity* a = (ANativeActivity*)activity;
+    g_activity = a;
+    g_main     = main;
+    g_t0       = now();
+    a->callbacks->onNativeWindowCreated   = cb_window_created;
+    a->callbacks->onNativeWindowDestroyed = cb_window_destroyed;
+    a->callbacks->onNativeWindowResized   = cb_window_resized;
+    a->callbacks->onInputQueueCreated     = cb_queue_created;
+    a->callbacks->onInputQueueDestroyed   = cb_queue_destroyed;
+    a->callbacks->onWindowFocusChanged    = cb_focus;
+    a->callbacks->onDestroy               = cb_destroy;
+    ANativeActivity_setWindowFlags(a, AWINDOW_FLAG_FULLSCREEN | AWINDOW_FLAG_KEEP_SCREEN_ON, 0);
+    pipe(g_cmd);
+    pthread_create(&g_thread, NULL, app_thread, NULL);
+}
+
+bool platform_init(void) { return true; }
+void platform_terminate(void) {}
+
+int platform_run(platform_loop_fn loop, void* ctx) {
+    for (;;) {
+        // no window: the app is in the background, and only the looper runs
+        pump(g_anw ? 0 : -1);
+        if (g_destroyed || (g_win && g_win->should_close)) return 0;
+        if (!g_anw) continue;
+        if (!loop(ctx)) return 0;
+    }
+}
+
+void platform_poll(void) { pump(0); }
+
+// the window is the activity's: this waits for it, then describes it
+platform_window* platform_window_create(int width, int height, const char* title, bool visible) {
+    platform_window* w = (platform_window*)calloc(1, sizeof(platform_window));
+    AConfiguration* cfg = AConfiguration_new();
+    AConfiguration_fromAssetManager(cfg, g_activity->assetManager);
+    int density = AConfiguration_getDensity(cfg);
+    AConfiguration_delete(cfg);
+    w->scale      = density > 0 ? density / 160.0f : 1.0f;
+    w->fullscreen = true;
+    g_win = w;
+    while (!g_anw && !g_destroyed) pump(-1);
+    fprintf(stderr, "devices: window %dx%d px, scale %.2f\n",
+        g_anw ? ANativeWindow_getWidth(g_anw) : 0, g_anw ? ANativeWindow_getHeight(g_anw) : 0, w->scale);
+    return w;
+}
+
+void platform_window_destroy(platform_window* w) { if (w) { if (g_win == w) g_win = NULL; free(w->clip); free(w); } }
+void platform_window_show(platform_window* w) {}
+void platform_window_set_title(platform_window* w, const char* t) {}
+void platform_window_set_size(platform_window* w, int width, int height) {}
+void platform_window_get_size(platform_window* w, int* width, int* height) {
+    if (width)  *width  = g_anw ? (int)(ANativeWindow_getWidth(g_anw)  / w->scale) : 0;
+    if (height) *height = g_anw ? (int)(ANativeWindow_getHeight(g_anw) / w->scale) : 0;
+}
+void platform_window_get_framebuffer(platform_window* w, int* width, int* height) {
+    if (width)  *width  = g_anw ? ANativeWindow_getWidth(g_anw)  : 0;
+    if (height) *height = g_anw ? ANativeWindow_getHeight(g_anw) : 0;
+}
+float platform_window_scale(platform_window* w) { return w->scale; }
+void platform_window_get_pos(platform_window* w, int* x, int* y) { if (x) *x = 0; if (y) *y = 0; }
+void platform_window_set_pos(platform_window* w, int x, int y) {}
+void platform_window_set_aspect(platform_window* w, int num, int den) {}
+void platform_window_set_fullscreen(platform_window* w, bool on) {}
+void platform_window_safe_area(platform_window* w, int* t, int* l, int* b, int* r) {
+    if (t) *t = 0; if (l) *l = 0; if (b) *b = 0; if (r) *r = 0;
+}
+void platform_window_native(platform_window* w, platform_native* out) {
+    out->kind = PLATFORM_NATIVE_ANDROID;
+    out->a = g_anw;
+    out->b = NULL;
+    out->window = 0;
+}
+void platform_set_cursor(platform_window* w, int kind) {}
+void platform_set_clipboard(platform_window* w, const char* text) {}
+const char* platform_get_clipboard(platform_window* w) { return NULL; }
+void platform_show_keyboard(platform_window* w, bool show) {
+    if (show) ANativeActivity_showSoftInput(g_activity, ANATIVEACTIVITY_SHOW_SOFT_INPUT_FORCED);
+    else      ANativeActivity_hideSoftInput(g_activity, 0);
+}
+bool platform_joystick_present(int j) { return false; }
+const uint8_t* platform_joystick_buttons(int j, int* n) { *n = 0; return NULL; }
+const float*   platform_joystick_axes   (int j, int* n) { *n = 0; return NULL; }
+const uint8_t* platform_joystick_hats   (int j, int* n) { *n = 0; return NULL; }
+
 #else
 // ================================================================ linux / xcb
 #include <xcb/xcb.h>

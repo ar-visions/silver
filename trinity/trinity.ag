@@ -35,7 +35,8 @@ ifndef [ windows ]
 import KhronosGroup:Vulkan-Headers/29184b9
 
 ifndef [ ios ]
-    import KhronosGroup:Vulkan-Loader/e042a3a
+    ifndef [ android ]
+        import KhronosGroup:Vulkan-Loader/e042a3a
 
 ifdef [ apple ] 
     import KhronosGroup:MoltenVK/db445ff
@@ -52,6 +53,7 @@ import KhronosGroup:Vulkan-Utility-Libraries/vulkan-sdk-1.4.341.0
     -DVULKAN_HEADERS_INSTALL_DIR={install}
 
 ifndef [ ios ]
+  ifndef [ android ]
     import KhronosGroup:Vulkan-ValidationLayers/vulkan-sdk-1.4.341.0
       -DVULKAN_HEADERS_INSTALL_DIR={install}
       # windows installs the layer to bin, where VK_LAYER_PATH above cannot see
@@ -70,6 +72,7 @@ import KhronosGroup:glslang/715c850
     -lglslang-default-resource-limits
 
 ifndef [ ios ]
+  ifndef [ android ]
     import KhronosGroup:Vulkan-Tools/734638e
          -DVULKAN_HEADERS_INSTALL_DIR={install}
          -DMOLTENVK_REPO_ROOT={root_path}/checkout/MoltenVK
@@ -95,6 +98,11 @@ ifdef [ apple ]
 ifdef [ linux ]
     import <vulkan/vulkan.h>
         +VK_USE_PLATFORM_XCB_KHR
+        -lvulkan
+ifdef [ android ]
+    # the system's own loader; no layers ride along
+    import <vulkan/vulkan.h>
+        +VK_USE_PLATFORM_ANDROID_KHR
         -lvulkan
 
 import devices

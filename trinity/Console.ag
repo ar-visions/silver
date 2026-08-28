@@ -7,6 +7,8 @@ ifdef [ apple ]
 ifdef [ linux ]
     import <pty.h>
         -lutil
+ifdef [ android ]
+    import <pty.h>      # bionic carries forkpty in libc, no -lutil
 ifdef [ windows ]
     import <posix.h>    # declares forkpty, which always fails here
 

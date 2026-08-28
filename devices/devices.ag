@@ -15,6 +15,10 @@ ifdef [ linux ]
     import <host.h>
         -lxcb
 
+ifdef [ android ]
+    import <host.h>
+        -landroid -llog
+
 ifdef [ windows ]
     import <host.h>
         -luser32 -lgdi32 -lshell32 -lxinput
