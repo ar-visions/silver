@@ -4487,8 +4487,11 @@ AU_EXPORT enode convertible(etype fr, etype to) {
     if ((is_class(ma->autype) || ma->autype->is_pointer) && mb->autype == typeid(bool))
         return (enode)true;
 
-    // pointer to i8/u8 is cstr-compatible (converts to string, cstr, symbol)
-    if ((ma->autype->is_pointer || ma->autype->elements > 0) && ma->autype->src == typeid(i8) &&
+    // pointer to i8/u8 is cstr-compatible (converts to string, cstr, symbol).
+    // an aarch64 target imports `char` as u8 (its char is unsigned), so a
+    // char[] field like VkExtensionProperties.extensionName arrives as u8[]
+    if ((ma->autype->is_pointer || ma->autype->elements > 0) &&
+        (ma->autype->src == typeid(i8) || ma->autype->src == typeid(u8)) &&
         (mb->autype == typeid(cstr) || mb->autype == typeid(symbol)))
         return (enode)true;
 
@@ -9813,12 +9816,19 @@ enode aether_e_asm(aether a, array body, array input_nodes, etype out_type, stri
     
     LLVMTypeRef fn_type = LLVMFunctionType(ret, params, n_in, false);
 
-    LLVMInlineAsmDialect dialect =
+    // the dialect follows the TARGET, not this compiler's host: intel is an
+    // x86 notion, and stamping it on a cross build to arm emits a
+    // .intel_syntax directive the arm assembler rejects
+    bool x86_target = a->target_triple ?
+        (strstr(a->target_triple, "x86_64") || strstr(a->target_triple, "i686") ||
+         strstr(a->target_triple, "i386")) != NULL :
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
-        LLVMInlineAsmDialectIntel;
+        true;
 #else
-        LLVMInlineAsmDialectATT;
+        false;
 #endif
+    LLVMInlineAsmDialect dialect = x86_target ?
+        LLVMInlineAsmDialectIntel : LLVMInlineAsmDialectATT;
 
     // ---- create inline asm ----
     LLVMValueRef asm_val = LLVMGetInlineAsm(

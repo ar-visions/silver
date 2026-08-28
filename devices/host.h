@@ -43,6 +43,7 @@ typedef struct platform_window platform_window;
 #define PLATFORM_NATIVE_METAL     1   /* a: CAMetalLayer*             */
 #define PLATFORM_NATIVE_WIN32     2   /* a: HINSTANCE, b: HWND        */
 #define PLATFORM_NATIVE_XCB       3   /* a: xcb_connection_t*, b: u32 */
+#define PLATFORM_NATIVE_ANDROID   4   /* a: ANativeWindow*            */
 
 typedef struct platform_native {
     int   kind;
@@ -177,6 +178,10 @@ void  platform_set_focus_callback  (platform_window* w, platform_focus_fn fn);
 
 /* the vulkan surface extension this platform needs, after VK_KHR_surface */
 const char* platform_surface_extension (void);
+
+/* android: NativeActivity's onCreate hands the activity here with the
+   app's main, which runs on its own thread and ends with the activity */
+void  platform_android_start (void* activity, int (*main)(int, char**));
 
 #ifdef __cplusplus
 }

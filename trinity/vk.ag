@@ -1045,6 +1045,8 @@ class vk_context
         # no loader on ios: MoltenVK alone serves no layers
         ifdef [ ios ]
             enable_validation = false
+        ifdef [ android ]
+            enable_validation = false
         validation_layer: symbol [ (enable_validation) ? "VK_LAYER_KHRONOS_validation" : null ]
         app_info: VkApplicationInfo [
             sType:              VK_STRUCTURE_TYPE_APPLICATION_INFO,
@@ -4196,6 +4198,11 @@ Texture Display
                     xci.connection = native.a
                     xci.window     = native.window
                     result = vkCreateXcbSurfaceKHR[ vk.instance, @xci, null, @surf ]
+                ifdef [ android ]
+                    aci : VkAndroidSurfaceCreateInfoKHR
+                    aci.sType  = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR
+                    aci.window = native.a
+                    result = vkCreateAndroidSurfaceKHR[ vk.instance, @aci, null, @surf ]
                 expect result == VK_SUCCESS, "Failed to create Vulkan surface"
                 Au.live_surface_set[ surf ]
 

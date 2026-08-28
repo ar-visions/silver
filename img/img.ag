@@ -4,6 +4,7 @@ import madler:zlib/51b7f2a <zlib.h>
 
 import glennrp:libpng/07b8803 <png.h>
     -lpng
+    { (android) ?? -DPNG_ARM_NEON=off }
 
 import <string.h>
 import <stdlib.h>
