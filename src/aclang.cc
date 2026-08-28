@@ -325,7 +325,12 @@ static Au_t map_builtin_type(const BuiltinType* bt, ASTContext& ctx, aether e) {
     switch (bt->getKind()) {
         case BuiltinType::Void:        return au_lookup("none");
         case BuiltinType::Bool:        return au_lookup("bool");
-        case BuiltinType::Char_U:      return au_lookup("u8");
+        // plain `char` is a distinct type from signed/unsigned char; on an
+        // aarch64 target it is unsigned (Char_U), but silver's cstr/symbol
+        // are ptr-to-i8, so a bare `char*`/`char[]` must import as i8 there
+        // too or every string interop conversion misses. explicit
+        // `unsigned char` still maps to u8
+        case BuiltinType::Char_U:      return au_lookup("i8");
         case BuiltinType::UChar:       return au_lookup("u8");
         case BuiltinType::Char_S:      return au_lookup("i8");
         case BuiltinType::SChar:       return au_lookup("i8");

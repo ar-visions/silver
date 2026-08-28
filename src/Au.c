@@ -82,6 +82,12 @@ static int au_skip_drop_check(const char *type, const char *member) {
 #include <mach-o/dyld.h>
 #endif
 
+// bionic keeps htole16/le16toh in <sys/endian.h> and does not pull it in
+// transitively the way glibc's headers do
+#ifdef __ANDROID__
+#include <sys/endian.h>
+#endif
+
 #define Au_t_module_ Au
 AU_EXPORT Au_t_info        Au_Au_t_i;
 

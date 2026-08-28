@@ -44,6 +44,8 @@ enode parse_import(silver a);
 static void uninstall_products(silver a);
 static symbol platform_triple(silver a);
 static bool   platform_is_windows(silver a);
+static bool   target_is_android(silver a);
+static bool   target_is_mobile(silver a);
 static string target_dir(silver a);
 static string silver_release_version(silver a);
 static symbol platform_abi_clang(silver a);
@@ -1222,8 +1224,7 @@ void silver_parse(silver a) {
         string p = a->platform;
         // derive OS from platform name
         target_mac = strstr(p->chars, "apple")   != NULL || strstr(p->chars, "ios")     != NULL;
-        target_lin = strstr(p->chars, "linux")   != NULL || strstr(p->chars, "jetson")  != NULL ||
-                     strstr(p->chars, "android") != NULL;
+        target_lin = strstr(p->chars, "linux")   != NULL || strstr(p->chars, "jetson")  != NULL;
         target_win = strstr(p->chars, "windows") != NULL;
         // derive arch from platform name
         if      (strstr(p->chars, "x86_64") || strstr(p->chars, "x86-64"))  target_arch = "x86_64";
@@ -1243,7 +1244,9 @@ void silver_parse(silver a) {
     Au_t m_x86   = def_member(a->autype, "x86_64",  typeid(bool), AU_MEMBER_VAR, AU_TRAIT_CONST);
     Au_t m_arm64 = def_member(a->autype, "arm64",   typeid(bool), AU_MEMBER_VAR, AU_TRAIT_CONST);
     Au_t m_ios   = def_member(a->autype, "ios",     typeid(bool), AU_MEMBER_VAR, AU_TRAIT_CONST);
+    Au_t m_and   = def_member(a->autype, "android", typeid(bool), AU_MEMBER_VAR, AU_TRAIT_CONST);
     bool target_ios = a->platform && len(a->platform) && strstr(a->platform->chars, "ios") != NULL;
+    bool target_and = target_is_android(a);
 
     etype_register((aether)a, (Au)m_debug, (Au)hold(e_operand(a, _bool(!a->release), etypeid(bool))), false);
     etype_register((aether)a, (Au)m_mac,   (Au)hold(e_operand(a, _bool(target_mac), etypeid(bool))), false);
@@ -1252,6 +1255,7 @@ void silver_parse(silver a) {
     etype_register((aether)a, (Au)m_x86,   (Au)hold(e_operand(a, _bool(strcmp(target_arch, "x86_64") == 0), etypeid(bool))), false);
     etype_register((aether)a, (Au)m_arm64, (Au)hold(e_operand(a, _bool(strcmp(target_arch, "arm64")  == 0), etypeid(bool))), false);
     etype_register((aether)a, (Au)m_ios,   (Au)hold(e_operand(a, _bool(target_ios), etypeid(bool))), false);
+    etype_register((aether)a, (Au)m_and,   (Au)hold(e_operand(a, _bool(target_and), etypeid(bool))), false);
 
     // AU_MEMBER_* constants — available as const i32 in all .ag code
     struct { const char* name; int value; } au_consts[] = {
@@ -1696,6 +1700,8 @@ static string device_cmake_toolchain(silver a) {
     bool   win    = platform_is_windows(a);
     cstr   pl     = a->platform->chars;
     bool   ios    = strstr(pl, "ios") != NULL;
+    // android is Linux to cmake here: its own Android mode wants an ndk
+    // toolchain, and the flags below already say everything it would
     symbol system = win ? "Windows" : ios ? "iOS" : strstr(pl, "macos") ? "Darwin" : "Linux";
     symbol proc   = strstr(triple, "arm64")   ? "arm64"   :
                     strstr(triple, "aarch64") ? "aarch64" :
@@ -1724,8 +1730,10 @@ static string device_cmake_toolchain(silver a) {
     concat(content, f(string,
         "set(CMAKE_C_FLAGS   \"--target=%s %s%s-w\" CACHE STRING \"\")\n",
         triple, platform_abi_clang(a), pic));
-    // the device sdk's libc++ headers must match the libc++ it ships
-    string cxx_sdk = ios ? f(string, "-nostdinc++ -isystem %o/usr/include/c++/v1 ", a->sysroot) : string("");
+    // the device sdk's libc++ headers must match the libc++ it ships; a
+    // bare sysroot does not put the ndk's on the default search path
+    string cxx_sdk = (ios || target_is_android(a)) ?
+        f(string, "-nostdinc++ -isystem %o/usr/include/c++/v1 ", a->sysroot) : string("");
     concat(content, f(string,
         "set(CMAKE_CXX_FLAGS \"--target=%s %s%s%s%o-w\" CACHE STRING \"\")\n",
         triple, platform_abi_clang(a), platform_abi_cxx(a), pic, cxx_sdk));
@@ -1744,6 +1752,17 @@ static string device_cmake_toolchain(silver a) {
     concat(content, f(string,
         "set(CMAKE_MODULE_LINKER_FLAGS \"-fuse-ld=lld %s\" CACHE STRING \"\")\n",
         platform_abi_link(a)));
+    // bionic keeps libm apart, in the api-level dir cmake never searches:
+    // name it on every link, since find_library comes back empty. our clang
+    // is not the ndk's, so it does not add the shared libc++ itself either —
+    // name it, and the dir it lives in, on every c++ link
+    if (target_is_android(a)) {
+        cstr abi = strstr(triple, "x86_64") ? "x86_64-linux-android" : "aarch64-linux-android";
+        concat(content, f(string,
+            "set(CMAKE_C_STANDARD_LIBRARIES   \"-lm\" CACHE STRING \"\")\n"
+            "set(CMAKE_CXX_STANDARD_LIBRARIES \"-nostdlib++ -L%o/usr/lib/%s -lc++_shared -lm\" CACHE STRING \"\")\n",
+            a->sysroot, abi));
+    }
     // an apple target names its sdk and floor through cmake's own knobs
     // cmake wants the sdk's own name (iPhoneOS*.sdk), not our link to it
     if (ios)
@@ -1782,7 +1801,8 @@ static string device_meson_cross(silver a) {
     symbol triple = platform_triple(a);
     bool   win    = platform_is_windows(a);
     cstr   pl     = a->platform->chars;
-    symbol system = win ? "windows" : strstr(pl, "macos") || strstr(pl, "ios") ? "darwin" : "linux";
+    symbol system = win ? "windows" : strstr(pl, "macos") || strstr(pl, "ios") ? "darwin" :
+                    strstr(pl, "android") ? "android" : "linux";
     symbol cpu_f  = strstr(triple, "arm64")   ? "aarch64" :
                     strstr(triple, "aarch64") ? "aarch64" :
                     strstr(triple, "riscv")   ? "riscv64" :
@@ -2311,12 +2331,493 @@ static void silver_ios_bundle(silver a) {
     a->live_binary = hold(app);
 }
 
+// ---- android: an apk is a zip with a binary manifest and a v2 signature
+// block. both are written here; openssl does the rsa part, as it does for
+// the keys, and nothing of the android sdk is needed beyond the ndk
+
+typedef struct { u8* p; size_t n, cap; } bytes;
+
+static void bput(bytes* b, const void* d, size_t n) {
+    if (b->n + n > b->cap) { b->cap = (b->n + n) * 2 + 1024; b->p = realloc(b->p, b->cap); }
+    memcpy(b->p + b->n, d, n);
+    b->n += n;
+}
+static void b16(bytes* b, u32 v) { u8 d[2] = { (u8)v, (u8)(v >> 8) }; bput(b, d, 2); }
+static void b32(bytes* b, u32 v) { u8 d[4] = { (u8)v, (u8)(v >> 8), (u8)(v >> 16), (u8)(v >> 24) }; bput(b, d, 4); }
+static void b64(bytes* b, u64 v) { b32(b, (u32)v); b32(b, (u32)(v >> 32)); }
+static void bfix32(bytes* b, size_t at, u32 v) { u8* d = b->p + at; d[0] = v; d[1] = v >> 8; d[2] = v >> 16; d[3] = v >> 24; }
+static void bpad(bytes* b, size_t al) { u8 z = 0; while (b->n % al) bput(b, &z, 1); }
+static bool bload(bytes* b, path p) {
+    FILE* f = fopen(p->chars, "rb");
+    if (!f) return false;
+    u8 buf[65536];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), f)) > 0) bput(b, buf, n);
+    fclose(f);
+    return true;
+}
+
+static u32 crc32_of(const u8* d, size_t n) {
+    static u32 t[256];
+    if (!t[1]) for (u32 i = 0; i < 256; i++) {
+        u32 c = i;
+        for (int k = 0; k < 8; k++) c = (c & 1) ? 0xedb88320u ^ (c >> 1) : c >> 1;
+        t[i] = c;
+    }
+    u32 c = 0xffffffffu;
+    for (size_t i = 0; i < n; i++) c = t[(c ^ d[i]) & 0xff] ^ (c >> 8);
+    return ~c;
+}
+
+static void sha256(const u8* d, size_t n, u8 out[32]) {
+    static const u32 K[64] = {
+        0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+        0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+        0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+        0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+        0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+        0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+        0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+        0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2 };
+    u32 h[8] = { 0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19 };
+    // the padded message: length, 0x80, zeros, the bit length big-endian
+    size_t total = ((n + 9 + 63) / 64) * 64;
+    u8*    m     = calloc(1, total);
+    memcpy(m, d, n);
+    m[n] = 0x80;
+    u64 bits = (u64)n * 8;
+    for (int i = 0; i < 8; i++) m[total - 1 - i] = (u8)(bits >> (8 * i));
+    #define R(x, k) (((x) >> (k)) | ((x) << (32 - (k))))
+    for (size_t off = 0; off < total; off += 64) {
+        u32 w[64];
+        for (int i = 0; i < 16; i++)
+            w[i] = (u32)m[off + 4*i] << 24 | (u32)m[off + 4*i + 1] << 16 | (u32)m[off + 4*i + 2] << 8 | m[off + 4*i + 3];
+        for (int i = 16; i < 64; i++) {
+            u32 s0 = R(w[i-15], 7) ^ R(w[i-15], 18) ^ (w[i-15] >> 3);
+            u32 s1 = R(w[i-2], 17) ^ R(w[i-2], 19) ^ (w[i-2] >> 10);
+            w[i] = w[i-16] + s0 + w[i-7] + s1;
+        }
+        u32 a = h[0], b = h[1], c = h[2], dd = h[3], e = h[4], f = h[5], g = h[6], hh = h[7];
+        for (int i = 0; i < 64; i++) {
+            u32 t1 = hh + (R(e, 6) ^ R(e, 11) ^ R(e, 25)) + ((e & f) ^ (~e & g)) + K[i] + w[i];
+            u32 t2 = (R(a, 2) ^ R(a, 13) ^ R(a, 22)) + ((a & b) ^ (a & c) ^ (b & c));
+            hh = g; g = f; f = e; e = dd + t1; dd = c; c = b; b = a; a = t1 + t2;
+        }
+        h[0] += a; h[1] += b; h[2] += c; h[3] += dd; h[4] += e; h[5] += f; h[6] += g; h[7] += hh;
+    }
+    #undef R
+    free(m);
+    for (int i = 0; i < 8; i++) { out[4*i] = h[i] >> 24; out[4*i+1] = h[i] >> 16; out[4*i+2] = h[i] >> 8; out[4*i+3] = h[i]; }
+}
+
+// the binary xml android reads: a string pool (attribute names carrying a
+// resource id first, in id order), the id map, then the element chunks
+typedef struct { cstr s; u32 id; } axml_str;
+typedef struct { axml_str strs[64]; int n, nids; bytes body; } axml;
+typedef struct { cstr name; int type; cstr sval; u32 ival; } axml_attr;
+
+#define AXML_STRING 3
+#define AXML_INT    0x10
+#define AXML_BOOL   0x12
+
+static int axml_index(axml* x, cstr s) {
+    for (int i = 0; i < x->n; i++) if (strcmp(x->strs[i].s, s) == 0) return i;
+    verify(x->n < 64, "axml: string pool exceeded");
+    x->strs[x->n].s = s;
+    return x->n++;
+}
+
+static void axml_elem(axml* x, cstr name, axml_attr* at, int n) {
+    bytes* b = &x->body;
+    b32(b, 0x00100102);
+    b32(b, 36 + 20 * n);
+    b32(b, 0); b32(b, 0xffffffff);
+    b32(b, 0xffffffff);
+    b32(b, axml_index(x, name));
+    b16(b, 20); b16(b, 20); b16(b, n);
+    b16(b, 0); b16(b, 0); b16(b, 0);
+    for (int i = 0; i < n; i++) {
+        int ni = axml_index(x, at[i].name);
+        b32(b, ni < x->nids ? axml_index(x, "http://schemas.android.com/apk/res/android") : 0xffffffff);
+        b32(b, ni);
+        int raw = at[i].type == AXML_STRING ? axml_index(x, at[i].sval) : -1;
+        b32(b, raw);
+        b16(b, 8); bput(b, "\0", 1); bput(b, &(u8){ at[i].type }, 1);
+        b32(b, at[i].type == AXML_STRING ? (u32)raw : at[i].type == AXML_BOOL ? (at[i].ival ? 0xffffffff : 0) : at[i].ival);
+    }
+}
+
+static void axml_end(axml* x, cstr name) {
+    bytes* b = &x->body;
+    b32(b, 0x00100103); b32(b, 24); b32(b, 0); b32(b, 0xffffffff);
+    b32(b, 0xffffffff); b32(b, axml_index(x, name));
+}
+
+static void axml_write(axml* x, bytes* out) {
+    int   prefix = axml_index(x, "android");
+    int   uri    = axml_index(x, "http://schemas.android.com/apk/res/android");
+    bytes pool   = {0};
+    for (int i = 0; i < x->n; i++) b32(&pool, 0);
+    // offsets first, then utf-16 strings, each length-prefixed and 0-ended
+    for (int i = 0; i < x->n; i++) {
+        bfix32(&pool, 4 * i, (u32)(pool.n - 4 * x->n));
+        cstr s = x->strs[i].s;
+        b16(&pool, (u32)strlen(s));
+        for (cstr c = s; *c; c++) b16(&pool, (u8)*c);
+        b16(&pool, 0);
+    }
+    bpad(&pool, 4);
+    bytes ns = {0};
+    b32(&ns, 0x00100100); b32(&ns, 24); b32(&ns, 0); b32(&ns, 0xffffffff);
+    b32(&ns, prefix);
+    b32(&ns, uri);
+    b32(out, 0x00080003);
+    b32(out, 0);
+    b16(out, 1); b16(out, 28); b32(out, 28 + pool.n);
+    b32(out, x->n); b32(out, 0); b32(out, 0); b32(out, 28 + 4 * x->n); b32(out, 0);
+    bput(out, pool.p, pool.n);
+    b16(out, 0x180); b16(out, 8); b32(out, 8 + 4 * x->nids);
+    for (int i = 0; i < x->nids; i++) b32(out, x->strs[i].id);
+    bput(out, ns.p, ns.n);
+    bput(out, x->body.p, x->body.n);
+    ns.p[0] = 0x01; bput(out, ns.p, ns.n);
+    bfix32(out, 4, out->n);
+    free(pool.p); free(ns.p);
+}
+
+static void android_manifest(silver a, bytes* out, string ver) {
+    axml x = {0};
+    // every android: attribute used below, in resource id order
+    axml_str ids[] = {
+        { "label",             0x01010001 }, { "name",           0x01010003 },
+        { "hasCode",           0x0101000c }, { "debuggable",     0x0101000f },
+        { "exported",          0x01010010 }, { "launchMode",     0x0101001d },
+        { "configChanges",     0x0101001f }, { "value",          0x01010024 },
+        { "minSdkVersion",     0x0101020c }, { "targetSdkVersion", 0x01010270 },
+        { "versionCode",       0x0101021b }, { "versionName",    0x0101021c },
+        { "extractNativeLibs", 0x010104ea } };
+    for (int i = 0; i < 13; i++) x.strs[x.n++] = ids[i];
+    x.nids = x.n;
+    string pkg  = f(string, "com.silver.%o", a->name);
+    string host = f(string, "%o-host", a->name);
+    axml_elem(&x, "manifest", (axml_attr[]) {
+        { "versionCode", AXML_INT, null, 1 }, { "versionName", AXML_STRING, ver->chars },
+        { "package", AXML_STRING, pkg->chars } }, 3);
+    axml_elem(&x, "uses-sdk", (axml_attr[]) {
+        { "minSdkVersion", AXML_INT, null, 33 }, { "targetSdkVersion", AXML_INT, null, 34 } }, 2);
+    axml_end(&x, "uses-sdk");
+    axml_elem(&x, "uses-permission", (axml_attr[]) {
+        { "name", AXML_STRING, "android.permission.INTERNET" } }, 1);
+    axml_end(&x, "uses-permission");
+    axml_elem(&x, "application", (axml_attr[]) {
+        { "label", AXML_STRING, a->name->chars }, { "hasCode", AXML_BOOL, null, 0 },
+        { "debuggable", AXML_BOOL, null, 1 }, { "extractNativeLibs", AXML_BOOL, null, 1 } }, 4);
+    // the activity is android's own NativeActivity; lib_name is the host
+    axml_elem(&x, "activity", (axml_attr[]) {
+        { "label", AXML_STRING, a->name->chars }, { "name", AXML_STRING, "android.app.NativeActivity" },
+        { "exported", AXML_BOOL, null, 1 }, { "launchMode", AXML_INT, null, 2 },
+        { "configChanges", AXML_INT, null, 0x17a0 } }, 5);
+    axml_elem(&x, "meta-data", (axml_attr[]) {
+        { "name", AXML_STRING, "android.app.lib_name" }, { "value", AXML_STRING, host->chars } }, 2);
+    axml_end(&x, "meta-data");
+    axml_elem(&x, "intent-filter", null, 0);
+    axml_elem(&x, "action", (axml_attr[]) { { "name", AXML_STRING, "android.intent.action.MAIN" } }, 1);
+    axml_end(&x, "action");
+    axml_elem(&x, "category", (axml_attr[]) { { "name", AXML_STRING, "android.intent.category.LAUNCHER" } }, 1);
+    axml_end(&x, "category");
+    axml_end(&x, "intent-filter");
+    axml_end(&x, "activity");
+    axml_end(&x, "application");
+    axml_end(&x, "manifest");
+    axml_write(&x, out);
+    free(x.body.p);
+}
+
+// one stored entry; its data aligned so .so files map straight from the zip
+static void apk_add(bytes* zip, bytes* cd, cstr name, const u8* d, size_t n, size_t align) {
+    u32    crc  = crc32_of(d, n);
+    size_t at   = zip->n;
+    size_t nlen = strlen(name);
+    size_t pad  = (align - (at + 30 + nlen + 6) % align) % align;
+    b32(zip, 0x04034b50); b16(zip, 10); b16(zip, 0); b16(zip, 0); b16(zip, 0); b16(zip, 0x21);
+    b32(zip, crc); b32(zip, n); b32(zip, n); b16(zip, nlen); b16(zip, 6 + pad);
+    bput(zip, name, nlen);
+    b16(zip, 0xd935); b16(zip, 2 + pad); b16(zip, align);
+    for (size_t i = 0; i < pad; i++) bput(zip, "\0", 1);
+    bput(zip, d, n);
+    b32(cd, 0x02014b50); b16(cd, 20); b16(cd, 10); b16(cd, 0); b16(cd, 0); b16(cd, 0); b16(cd, 0x21);
+    b32(cd, crc); b32(cd, n); b32(cd, n); b16(cd, nlen); b16(cd, 0); b16(cd, 0);
+    b16(cd, 0); b16(cd, 0); b32(cd, 0); b32(cd, at);
+    bput(cd, name, nlen);
+}
+
+static void apk_eocd(bytes* b, int entries, size_t cd_size, size_t cd_off) {
+    b32(b, 0x06054b50); b16(b, 0); b16(b, 0); b16(b, entries); b16(b, entries);
+    b32(b, cd_size); b32(b, cd_off); b16(b, 0);
+}
+
+static void apk_chunks(bytes* digests, const u8* d, size_t n, int* count) {
+    for (size_t off = 0; off < n; off += 1048576) {
+        size_t len = n - off < 1048576 ? n - off : 1048576;
+        bytes  c   = {0};
+        bput(&c, "\xa5", 1); b32(&c, len); bput(&c, d + off, len);
+        u8 h[32];
+        sha256(c.p, c.n, h);
+        bput(digests, h, 32);
+        free(c.p);
+        (*count)++;
+    }
+}
+
+// the v2 block over the three zip sections. a key is made once per device
+// dir with openssl; the block carries the signature and the certificate
+static bool apk_sign(silver a, path root, bytes* zip, bytes* cd, bytes* out, int entries) {
+    path key = f(path, "%o/sign.key", root);
+    path crt = f(path, "%o/sign.crt", root);
+    path tmp = f(path, "%o/build", root);
+    make_dir(tmp);
+    if (!file_exists("%o", key) &&
+        exec(a->verbose, "openssl req -x509 -newkey rsa:2048 -nodes -days 10000 -subj /CN=silver "
+             "-keyout %o -out %o 2>/dev/null", key, crt) != 0) return false;
+    bytes der = {0}, pub = {0};
+    if (exec(false, "openssl x509 -in %o -outform DER -out %o/sign.der", crt, tmp) != 0 ||
+        exec(false, "openssl x509 -in %o -pubkey -noout | openssl pkey -pubin -outform DER -out %o/sign.pub", crt, tmp) != 0 ||
+        !bload(&der, f(path, "%o/sign.der", tmp)) || !bload(&pub, f(path, "%o/sign.pub", tmp))) return false;
+
+    // digest: 1M chunks of entries, central directory, then the eocd as it
+    // would read with the directory offset pointing at this block
+    bytes eocd = {0};
+    apk_eocd(&eocd, entries, cd->n, zip->n);
+    bytes chunks = {0};
+    int   count  = 0;
+    apk_chunks(&chunks, zip->p, zip->n, &count);
+    apk_chunks(&chunks, cd->p, cd->n, &count);
+    apk_chunks(&chunks, eocd.p, eocd.n, &count);
+    bytes top = {0};
+    bput(&top, "\x5a", 1); b32(&top, count); bput(&top, chunks.p, chunks.n);
+    u8 digest[32];
+    sha256(top.p, top.n, digest);
+
+    bytes sd = {0};
+    b32(&sd, 4 + 4 + 4 + 32); b32(&sd, 4 + 4 + 32); b32(&sd, 0x0103); b32(&sd, 32); bput(&sd, digest, 32);
+    b32(&sd, 4 + der.n); b32(&sd, der.n); bput(&sd, der.p, der.n);
+    b32(&sd, 0);
+    path sd_file = f(path, "%o/sign.sd", tmp);
+    FILE* sf = fopen(sd_file->chars, "wb");
+    if (!sf) return false;
+    fwrite(sd.p, 1, sd.n, sf);
+    fclose(sf);
+    bytes sig = {0};
+    if (exec(false, "openssl dgst -sha256 -sign %o -out %o/sign.sig %o", key, tmp, sd_file) != 0 ||
+        !bload(&sig, f(path, "%o/sign.sig", tmp))) return false;
+
+    bytes signer = {0};
+    b32(&signer, sd.n); bput(&signer, sd.p, sd.n);
+    b32(&signer, 4 + 4 + 4 + sig.n); b32(&signer, 4 + 4 + sig.n); b32(&signer, 0x0103); b32(&signer, sig.n); bput(&signer, sig.p, sig.n);
+    b32(&signer, pub.n); bput(&signer, pub.p, pub.n);
+    bytes v2 = {0};
+    b32(&v2, 4 + signer.n); b32(&v2, signer.n); bput(&v2, signer.p, signer.n);
+
+    // the block: (u64 len, u32 id, value) pairs, padded to a page, its size
+    // at both ends and the magic last
+    size_t body = 8 + 4 + v2.n;
+    size_t pad  = (4096 - (8 + body + 8 + 16) % 4096) % 4096;
+    if (pad && pad < 12) pad += 4096;
+    size_t size = body + (pad ? pad : 0) + 8 + 16;
+    b64(out, size);
+    b64(out, 4 + v2.n); b32(out, 0x7109871a); bput(out, v2.p, v2.n);
+    if (pad) { b64(out, pad - 8); b32(out, 0x42726577); for (size_t i = 0; i < pad - 12; i++) bput(out, "\0", 1); }
+    b64(out, size);
+    bput(out, "APK Sig Block 42", 16);
+    free(der.p); free(pub.p); free(eocd.p); free(chunks.p); free(top.p); free(sd.p); free(sig.p); free(signer.p); free(v2.p);
+    return true;
+}
+
+// the package's lib dir is named for the abi
+static cstr android_abi(silver a) {
+    return strstr(platform_triple(a), "x86_64") ? "x86_64" : "arm64-v8a";
+}
+
+// the shared-object closure of a binary: every DT_NEEDED found in the
+// build dir, the device's lib dir or the ndk's shared libc++, copied into
+// the package. anything the api-level dir carries is the system's
+static void android_bundle_libs(silver a, path bin, bytes* zip, bytes* cd, array done) {
+    path   root   = f(path, "%s/platform/%o", SILVER, target_dir(a));
+    symbol triple = platform_triple(a);
+    char   base[64];
+    snprintf(base, sizeof(base), "%s", triple);
+    for (int n = strlen(base); n > 0 && isdigit(base[n - 1]); n--) base[n - 1] = 0;
+    string out   = command_run((command)f(string, "%s/platform/native/bin/llvm-readelf --needed-libs %o", SILVER, bin), false);
+    array  lines = split(out, "\n");
+    each(lines, string, ln0) {
+        string ln = trim(ln0);
+        if (!ends_with(ln, ".so")) continue;
+        if (index_of(done, (Au)ln) >= 0) continue;
+        if (file_exists("%o/usr/lib/%s/33/%o", a->sysroot, base, ln)) continue;
+        path c1 = f(path, "%o/%o", a->build_dir, ln);
+        path c2 = f(path, "%o/lib/%o", root, ln);
+        path c3 = f(path, "%o/usr/lib/%s/%o", a->sysroot, base, ln);
+        path src = file_exists("%o", c1) ? c1 : file_exists("%o", c2) ? c2 : file_exists("%o", c3) ? c3 : null;
+        if (!src) { print("[%o] android: %o not found for the package", a->name, ln); continue; }
+        push(done, (Au)ln);
+        bytes d = {0};
+        bload(&d, src);
+        apk_add(zip, cd, ((string)f(string, "lib/%s/%o", android_abi(a), ln))->chars, d.p, d.n, 16384);
+        free(d.p);
+        android_bundle_libs(a, src, zip, cd, done);
+    }
+}
+
+// <build>/<name>.apk: the host, the product and its closure under lib/,
+// share/<name> under assets/ with a list the host extracts by, the manifest
+static void silver_android_bundle(silver a) {
+    string name  = a->name;
+    string share = silver_install_name(a);
+    path   root  = f(path, "%s/platform/%o", SILVER, target_dir(a));
+    path   tools = f(path, "%s/platform/native/bin", SILVER);
+    path   apk   = f(path, "%o/%o.apk", a->build_dir, name);
+    symbol triple = platform_triple(a);
+    string ver   = silver_release_version(a);
+    if (!ver) ver = string("1.0");
+    print("[%o] android: staging %o", name, apk);
+
+    // the host: NativeActivity loads it by name and it ticks the product
+    string leaf   = f(string, "%o.%o", stem(a->product), ext(a->product));
+    path   host   = f(path, "%o/lib%o-host.so", a->build_dir, name);
+    path   devlib = f(path, "%o/libsilver-devices.so", a->build_dir);
+    verify(file_exists("%o", devlib), "android: devices not built for %o (%o)", a->platform, devlib);
+    cstr habi = strstr(triple, "x86_64") ? "x86_64-linux-android" : "aarch64-linux-android";
+    verify(exec(a->verbose, "%o/clang -target %s --sysroot=%o -fuse-ld=lld -B%o %s %s -shared -fPIC "
+        "-ftls-model=global-dynamic -Wl,-soname,lib%o-host.so -I%s/devices -DSILVER_PRODUCT='\"%o\"' -DSILVER_SHARE_NAME='\"%o\"' "
+        "%s/src/silver-host-android.c %o -L%o/lib -L%o/usr/lib/%s/33 -L%o/usr/lib/%s -lAu -landroid -llog -o %o",
+        tools, triple, a->sysroot, tools, a->debug ? "-g" : "-O2", platform_abi_link(a),
+        name, SILVER, leaf, share, SILVER, devlib, root, a->sysroot, habi, a->sysroot, habi, host) == 0,
+        "android: host link failed");
+
+    bytes zip = {0}, cd = {0};
+    int   entries = 0;
+    bytes man = {0};
+    android_manifest(a, &man, ver);
+    apk_add(&zip, &cd, "AndroidManifest.xml", man.p, man.n, 4); entries++;
+    free(man.p);
+
+    array done = array(alloc, 64);
+    bytes d = {0};
+    bload(&d, host);
+    apk_add(&zip, &cd, ((string)f(string, "lib/%s/lib%o-host.so", android_abi(a), name))->chars, d.p, d.n, 16384); entries++;
+    free(d.p);
+    push(done, (Au)f(string, "lib%o-host.so", name));
+    d = (bytes){0};
+    bload(&d, a->product);
+    apk_add(&zip, &cd, ((string)f(string, "lib/%s/%o", android_abi(a), leaf))->chars, d.p, d.n, 16384); entries++;
+    free(d.p);
+    push(done, (Au)leaf);
+    int before = len(done);
+    android_bundle_libs(a, a->product, &zip, &cd, done);
+    android_bundle_libs(a, host, &zip, &cd, done);
+    entries += len(done) - before;
+
+    // share/<name>: the asset dir lists no subdirectories, so a list goes
+    // with it, and a stamp tells the host when to extract again
+    path share_src = f(path, "%o/share/%o", a->install, share);
+    if (dir_exists("%o", share_src)) {
+        string list  = command_run((command)f(string, "cd %o && find . -type f | sort | sed 's|^\\./||'", share_src), false);
+        array  files = split(list, "\n");
+        bytes  ls    = {0};
+        each(files, string, rel) {
+            if (!len(rel)) continue;
+            bytes fd = {0};
+            bload(&fd, f(path, "%o/%o", share_src, rel));
+            apk_add(&zip, &cd, ((string)f(string, "assets/share/%o/%o", share, rel))->chars, fd.p, fd.n, 4); entries++;
+            free(fd.p);
+            bput(&ls, rel->chars, len(rel)); bput(&ls, "\n", 1);
+        }
+        apk_add(&zip, &cd, "assets/share.list", ls.p, ls.n, 4); entries++;
+        free(ls.p);
+    }
+    string stamp = f(string, "%o-%i", ver, (i32)time(null));
+    apk_add(&zip, &cd, "assets/share.stamp", (u8*)stamp->chars, len(stamp), 4); entries++;
+
+    bytes block = {0};
+    verify(apk_sign(a, root, &zip, &cd, &block, entries), "android: signing failed — is openssl installed?");
+    FILE* f = fopen(apk->chars, "wb");
+    verify(f, "android: cannot write %o", apk);
+    fwrite(zip.p, 1, zip.n, f);
+    fwrite(block.p, 1, block.n, f);
+    fwrite(cd.p, 1, cd.n, f);
+    bytes eocd = {0};
+    apk_eocd(&eocd, entries, cd.n, zip.n + block.n);
+    fwrite(eocd.p, 1, eocd.n, f);
+    fclose(f);
+    free(zip.p); free(cd.p); free(block.p); free(eocd.p);
+    a->live_binary = hold(apk);
+}
+
+static void silver_mobile_bundle(silver a) {
+    if (target_is_android(a)) silver_android_bundle(a); else silver_ios_bundle(a);
+}
+
 // push to the device and start it there. ssh owns the credentials — the
 // device names a host ALIAS (~/.ssh/config), never a user or a password.
 // a device with no host is a build target only
 static void device_run(silver a) {
     Device dev = a->target;
     if (!dev) return;
+    // adb finds the phone itself; host is a serial only when several are on
+    if (target_is_android(a)) {
+        if (build_lock_fd >= 0) { flock(build_lock_fd, LOCK_UN); close(build_lock_fd); build_lock_fd = -1; }
+        path   apk = f(path, "%o/%o.apk", a->build_dir, a->name);
+        path   sdk = f(path, "%s/platform/%o/sdk", SILVER, target_dir(a));
+        string adb = f(string, "%o/platform-tools/adb%s%o", sdk,
+            dev->host && len(dev->host) ? " -s " : "", dev->host && len(dev->host) ? dev->host : string(""));
+        if (!file_exists("%o", apk)) { print("[%o] android: no package at %o", a->name, apk); a->error = true; return; }
+        // the emulator: its avd is written here the first time, then it is
+        // started when none is running, and waited for until android is up
+        if (strstr(a->platform->chars, "sim")) {
+            path avd = f(path, "%s/platform/%o/avd/silver.avd", SILVER, target_dir(a));
+            if (!dir_exists("%o", avd)) {
+                make_dir(avd);
+                cstr abi = android_abi(a);
+                path_save(f(path, "%o/../silver.ini", avd), (Au)f(string,
+                    "avd.ini.encoding=UTF-8\npath=%o\npath.rel=avd/silver.avd\ntarget=android-34\n", avd), null);
+                path_save(f(path, "%o/config.ini", avd), (Au)f(string,
+                    "AvdId=silver\navd.ini.displayname=silver\navd.ini.encoding=UTF-8\n"
+                    "abi.type=%s\nhw.cpu.arch=%s\nhw.cpu.ncore=4\nhw.ramSize=2048\n"
+                    "image.sysdir.1=system-images/android-34/google_apis/%s/\n"
+                    "tag.id=google_apis\ntag.display=Google APIs\nPlayStore.enabled=no\n"
+                    "hw.lcd.width=1080\nhw.lcd.height=2400\nhw.lcd.density=420\n"
+                    "hw.gpu.enabled=yes\nhw.gpu.mode=host\nhw.keyboard=yes\nhw.sdCard=no\n"
+                    "hw.audioInput=no\ndisk.dataPartition.size=4G\nfastboot.forceColdBoot=no\n",
+                    abi, strcmp(abi, "x86_64") == 0 ? "x86_64" : "arm64", abi), null);
+            }
+            if (exec(false, "%o devices 2>/dev/null | grep -q '^emulator-'", adb) != 0) {
+                print("[%o] starting the emulator", a->name);
+                // swiftshader renders in software, so this boots the same with
+                // or without a gpu and a display; a dev still gets a window
+                exec(false, "ANDROID_SDK_ROOT=%o ANDROID_AVD_HOME=%o/.. %o/emulator/emulator -avd silver "
+                     "-gpu swiftshader_indirect -no-boot-anim -no-snapshot-save "
+                     "> %o/../emulator.log 2>&1 &", sdk, avd, sdk, avd);
+            }
+            if (exec(false, "%o wait-for-device shell 'while [ \"$(getprop sys.boot_completed 2>/dev/null | tr -d \"\\r\")\" != \"1\" ]; "
+                     "do sleep 1; done'", adb) != 0) {
+                print("[%o] android: the emulator did not come up — see platform/%o/emulator.log", a->name, target_dir(a));
+                a->error = true;
+                return;
+            }
+        }
+        print("[%o] installing on %s", a->name, strstr(a->platform->chars, "sim") ? "the emulator" : "the phone");
+        if (exec(a->verbose, "%o install -r %o", adb, apk) != 0) {
+            print("[%o] android: install failed — is a phone plugged in with usb debugging on?", a->name);
+            a->error = true;
+            return;
+        }
+        print("[%o] starting", a->name);
+        exec(a->verbose, "%o shell am start -n com.silver.%o/android.app.NativeActivity", adb, a->name);
+        // its log, from the moment it has a pid
+        exec(false, "p=''; for i in 1 2 3 4 5 6 7 8 9 10; do p=$(%o shell pidof -s com.silver.%o 2>/dev/null | tr -d '\\r'); "
+             "[ -n \"$p\" ] && break; sleep 1; done; [ -n \"$p\" ] && %o logcat --pid=$p", adb, a->name, adb);
+        return;
+    }
     if (!dev->host || !len(dev->host)) return;
     // the app runs for as long as it likes: the build lock goes first
     if (build_lock_fd >= 0) { flock(build_lock_fd, LOCK_UN); close(build_lock_fd); build_lock_fd = -1; }
@@ -4004,8 +4505,8 @@ AU_EXPORT void silver_init(silver a) {
         module_erase(a->autype, null);
         // the bundle is re-staged and re-signed even when the product is
         // current: profiles and devices change without a source edit
-        if (a->platform && strstr(a->platform->chars, "ios") && !a->is_external && ((aether)a)->is_live)
-            silver_ios_bundle(a);
+        if (target_is_mobile(a) && !a->is_external && ((aether)a)->is_live)
+            silver_mobile_bundle(a);
         // silver-host.c is the LIVE-app launcher ONLY — a plain app has its own
         // main, so never build the host for it (it would overwrite the real exe).
         // recompiled (never cached) for live apps, matching the gated build below.
@@ -4014,7 +4515,7 @@ AU_EXPORT void silver_init(silver a) {
             // silently SKIPPED recompiling it -- an edit to silver-host.c only
             // took effect on a full build, and only there did its errors appear
             path host_dst = f(path, "%o/%o%s", a->build_dir, a->name, app_ext);
-            if (file_exists("%o", host_dst) && !(a->platform && strstr(a->platform->chars, "ios")))
+            if (file_exists("%o", host_dst) && !target_is_mobile(a))
                 build_silver_host(a);
         }
         // the host is what tests and ships: know it before either
@@ -9246,6 +9747,76 @@ static bool ensure_apple_runtime(silver a, symbol triple, string tgt,
     return true;
 }
 
+// a phone has no silver on it either: the same set, as bionic .so files.
+// libc++ is the ndk's shared one, which the package carries beside them
+static bool ensure_android_runtime(silver a, symbol triple, string tgt, string ldld,
+                                   string tools, string core_lib) {
+    path root    = f(path, "%s/platform/%o", SILVER, target_dir(a));
+    path lib_dir = f(path, "%o/lib",   root);
+    path objs    = f(path, "%o/build", root);
+    make_dir(lib_dir);
+    make_dir(objs);
+    // bionic keeps the shared libc/libm and crt under usr/lib/<triple>/<api>
+    // and libc++_shared under usr/lib/<triple>; the api dir must come FIRST,
+    // or -lc resolves to the static libc.a beside libc++_shared, whose
+    // internal hidden symbols do not link standalone
+    cstr abi = strstr(triple, "x86_64") ? "x86_64-linux-android" : "aarch64-linux-android";
+    concat(core_lib, f(string, "-L%o -L%o/usr/lib/%s/33 -L%o/usr/lib/%s ",
+        lib_dir, a->sysroot, abi, a->sysroot, abi));
+    // the clang driver puts the <triple> dir (static libc.a) ahead of the
+    // <triple>/<api> dir (shared libc.so); naming the api dir first here
+    // pulls the shared libc, so the runtime .so does not statically absorb
+    // bionic's malloc/gwp_asan (whose IE-model TLS a dlopen then rejects)
+    string sys_l = f(string, "-L%o/usr/lib/%s/33 -L%o/usr/lib/%s ",
+        a->sysroot, abi, a->sysroot, abi);
+
+    if (!file_exists("%o/libffi.a", lib_dir)) {
+        print("[ffi] building for %s", triple);
+        path ffi_b = f(path, "%o/libffi", objs);
+        make_dir(ffi_b);
+        if (exec(a->verbose, "cd %o && %s/checkout/libffi/configure --host=%s-linux-android "
+                 "--prefix=%o --disable-shared --disable-docs --disable-multi-os-directory "
+                 "CC='%o/clang %o -fPIC' CXX='%o/clang++ %o -fPIC' LD='%o/ld.lld' AR='%o/llvm-ar' "
+                 "RANLIB='%o/llvm-ranlib' && make -j8 install",
+                 ffi_b, SILVER, strstr(triple, "x86_64") ? "x86_64" : "aarch64",
+                 root, tools, tgt, tools, tgt, tools, tools, tools) != 0) return false;
+    }
+
+    string inc = f(string,
+        "-I %s/install/build/src/silver -I %s/src -I %s/install/build/src "
+        "-I %s/platform/native/include -I %o/include",
+        SILVER, SILVER, SILVER, SILVER, root);
+    string base = f(string, "%s -Wno-nullability-completeness -Wno-expansion-to-defined "
+        "-fPIC -fvisibility=default -DSILVER='\"%s\"' %s", core_warn, SILVER, a->debug ? "-g" : "-O2");
+
+    if (!file_exists("%o/libAu.so", lib_dir)) {
+        print("[Au] building the runtime for %s", triple);
+        path au_o = f(path, "%o/Au.o",    objs);
+        path po_o = f(path, "%o/posix.o", objs);
+        if (exec(a->verbose, "%o/clang %o %o -DMODULE='\"Au\"' -I %s/install/build/src/Au %o -c %s/src/Au.c -o %o",
+                 tools, tgt, base, SILVER, inc, SILVER, au_o) != 0) return false;
+        if (exec(a->verbose, "%o/clang++ %o %o -std=c++17 -DMODULE='\"posix\"' -I %s/install/build/src/posix %o -c %s/src/posix.cc -o %o",
+                 tools, tgt, base, SILVER, inc, SILVER, po_o) != 0) return false;
+        if (exec(a->verbose, "%o/clang++ %o %o -shared -Wl,-soname,libAu.so %o %o -o %o/libAu.so "
+                 "-L%o %o -lffi -llog",
+                 tools, tgt, ldld, au_o, po_o, lib_dir, lib_dir, sys_l) != 0) return false;
+    }
+
+    pairs(a->libs, li) {
+        string nm = (string)instanceof(li->key, string);
+        if (!nm || cmp(nm, "Au") == 0)  continue;
+        if (!is_core_module(nm->chars)) continue;
+        if (file_exists("%o/lib%o.so", lib_dir, nm)) continue;
+        print("[%o] building for the device", nm);
+        path obj = f(path, "%o/%o.o", objs, nm);
+        if (exec(a->verbose, "%o/clang %o %o -DMODULE='\"%o\"' -I %s/install/build/src/%o %o -c %s/src/%o.c -o %o",
+                 tools, tgt, base, nm, SILVER, nm, inc, SILVER, nm, obj) != 0) return false;
+        if (exec(a->verbose, "%o/clang++ %o %o -shared -Wl,-soname,lib%o.so %o -o %o/lib%o.so -L%o %o -lAu",
+                 tools, tgt, ldld, nm, obj, lib_dir, nm, lib_dir, sys_l) != 0) return false;
+    }
+    return true;
+}
+
 // a windows DLL must resolve every symbol at link time, so every Au submodule
 // the app imported needs its own build for the device. built once, beside its
 // sysroot; returns the import libs to hand the module link
@@ -9313,10 +9884,27 @@ static bool platform_is_windows(silver a) {
     return strstr(p, "windows") != NULL;
 }
 
+// bionic, not glibc: neither a linux nor an apple target, though it is ELF
+static bool target_is_android(silver a) {
+    cstr p = a->platform ? a->platform->chars : "";
+    return strstr(p, "android") != NULL;
+}
+
+// a phone ships the app inside a signed package with its own host
+static bool target_is_mobile(silver a) {
+    cstr p = a->platform ? a->platform->chars : "";
+    return strstr(p, "ios") != NULL || strstr(p, "android") != NULL;
+}
+
 static symbol platform_triple(silver a) {
     cstr p = a->platform ? a->platform->chars : "";
     if (strstr(p, "ios"))                             return strstr(p, "simulator") ?
                                                              "arm64-apple-ios16.0-simulator" : "arm64-apple-ios16.0";
+    // the api level is part of the triple: it selects the sysroot's lib dir.
+    // the emulator runs this machine's own architecture
+    if (strstr(p, "android"))                         return strstr(p, "x86_64") ||
+                                                             (strstr(p, "sim") && strcmp(arch, "x86_64") == 0) ?
+                                                             "x86_64-linux-android33" : "aarch64-linux-android33";
     if (strstr(p, "windows")) {
         if (strstr(p, "arm64"))  return "aarch64-w64-windows-gnu";
         if (strstr(p, "x86_64")) return "x86_64-w64-windows-gnu";
@@ -9337,6 +9925,16 @@ static symbol platform_triple(silver a) {
 static symbol platform_abi_clang(silver a) {
     cstr p = a->platform ? a->platform->chars : "";
     if (strstr(p, "riscv")) return "-march=rv64gc -mabi=lp64d ";
+    // the ndk keys its arch headers by the triple without its api level,
+    // a dir this clang does not add on its own. every silver library on a
+    // phone is dlopen'd, and android's loader rejects initial-exec TLS in a
+    // dlopened object — so all its thread-locals must use the dynamic model
+    if (strstr(p, "android")) {
+        static char inc[1024];
+        snprintf(inc, sizeof(inc), "-isystem %s/usr/include/%s-linux-android -ftls-model=global-dynamic ",
+                 a->sysroot->chars, strstr(platform_triple(a), "x86_64") ? "x86_64" : "aarch64");
+        return inc;
+    }
     return "";
 }
 
@@ -9354,6 +9952,8 @@ static symbol platform_abi_link(silver a) {
     if (strstr(p, "mips")) return "-Wl,-z,execstack ";
     // mingw's clang driver still reaches for gcc's runtime by default
     if (strstr(p, "windows")) return "-rtlib=compiler-rt -unwindlib=libunwind ";
+    // android 15 loads 16k-page devices: every segment aligns to that
+    if (strstr(p, "android")) return "-Wl,-z,max-page-size=16384 ";
     return "";
 }
 
@@ -9627,7 +10227,8 @@ none silver_build_product(silver a) {
         // mingw carries one flat include tree, so it names no such path
         bool   win      = platform_is_windows(a);
         bool   apple    = target_is_apple(a);
-        string arch_inc = win || apple ? string("") :
+        bool   android  = target_is_android(a);
+        string arch_inc = win || apple || android ? string("") :
             f(string, "-isystem %o/usr/include/%s ", a->sysroot, triple);
         // an apple sysroot is an sdk, which clang takes as -isysroot
         string tgt   =
@@ -9671,7 +10272,7 @@ none silver_build_product(silver a) {
             cstr   std_flag = is_cpp ? "-std=c++17" : "-std=c11";
             // the device sdk's libc++ headers match the libc++ it ships;
             // clang's newer ones name symbols the device lacks
-            string cxx_abi  = !is_cpp ? string("") : apple ?
+            string cxx_abi  = !is_cpp ? string("") : (apple || android) ?
                 f(string, "-nostdinc++ -isystem %o/usr/include/c++/v1 ", a->sysroot) :
                 string(platform_abi_cxx(a));
             cstr   lang_flag = source_lang_flag(a, ext);
@@ -9698,6 +10299,11 @@ none silver_build_product(silver a) {
             a->error = true;
             return;
         }
+        if (android && !ensure_android_runtime(a, triple, tgt, ldld, tools, core_lib)) {
+            print("[%o] could not build the Au runtime for %s", a->name, triple);
+            a->error = true;
+            return;
+        }
 
         // use clang++ when C++ objects are present
         bool has_cpp_d = false;
@@ -9719,19 +10325,20 @@ none silver_build_product(silver a) {
         // both are ELF-only: a PE resolves dlls by exe dir and PATH, and it
         // binds its own symbols first without being told to
         // $ORIGIN/../lib: a packaged /opt/<app>/bin finds its bundled lib/
-        string rpaths = win ? string("") : apple ?
+        // android resolves sonames from the package's own lib dir: no rpath
+        string rpaths = win || android ? string("") : apple ?
             f(string, "-Wl,-rpath,@loader_path -Wl,-rpath,@executable_path/Frameworks -Wl,-rpath,%s/platform/%o/lib ", SILVER, target_dir(a)) :
             f(string, "-Wl,-rpath,%o -Wl,-rpath,%o/lib -Wl,-rpath,'$ORIGIN' -Wl,-rpath,'$ORIGIN/../lib' ", a->build_dir, install);
         // a library carries its leaf as soname: consumers record that, not
         // the absolute build path, and resolve by rpath
         string shared_d = a->is_library ? (target_is_apple(a) || win ? string(shared) :
             f(string, "%s -Wl,-soname,%o", shared, path_filename(a->product))) : string("");
-        if (!win && a->base_install)
+        if (!win && !android && a->base_install)
             concat(rpaths, f(string, "-L%o/lib -Wl,-rpath,%o/lib ",
                 a->base_install, a->base_install));
         cstr   bsym   = (a->is_library && !win && !apple) ? "-Wl,-Bsymbolic" : "";
-        // the host's install/lib is the wrong platform for an apple device
-        path   link_inst = apple ? (path)f(path, "%o/usr", a->sysroot) : install;
+        // the host's install/lib is the wrong platform for a phone
+        path   link_inst = apple || android ? (path)f(path, "%o/usr", a->sysroot) : install;
         string x_link = f(string, "%o/%s %o%o%s %s %s %o %o/%o.o%o %o %o-o %o -L%o -L%o/lib %o%o %o %o %o",
             tools, linker_d, tgt, ldld,
             shared_d->chars, a->debug ? "-g" : "",
@@ -9751,9 +10358,9 @@ none silver_build_product(silver a) {
             verify(create_symlink(a->product, a->product_link),
                 "could not create product symlink from %o -> %o", a->product_link, a->product);
         }
-        // the root ios app ships as a bundle; libraries stay bare dylibs
-        if (apple && strstr(a->platform->chars, "ios") && !a->is_external && ((aether)a)->is_live)
-            silver_ios_bundle(a);
+        // the root phone app ships as a bundle; libraries stay bare
+        if (target_is_mobile(a) && !a->is_external && ((aether)a)->is_live)
+            silver_mobile_bundle(a);
 
     } else {
 
@@ -9870,8 +10477,8 @@ none silver_build_product(silver a) {
     publish_product(a);
 
     // for live_app modules: compile the host launcher as the app binary (never cached)
-    // an ios app got its host inside its bundle
-    if (((aether)a)->is_live && !(a->platform && strstr(a->platform->chars, "ios"))) {
+    // a phone app got its host inside its bundle
+    if (((aether)a)->is_live && !target_is_mobile(a)) {
         path host_dst = build_silver_host(a);
         a->live_binary = hold(host_dst);
         // symlink install/bin/<name> -> the built host binary, so the app runs
