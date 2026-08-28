@@ -2,6 +2,7 @@ import vec
 import img
 import trinity
 import spectra
+import speech
 import <stdio.h>
 import <stdlib.h>
 

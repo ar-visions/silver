@@ -143,6 +143,12 @@ element knes : trinity
 	mutable pad_st       : u32               # A B Sel St U D L R (bits 0-7)
 	mutable pad_shift    : u32
 	mutable pad_strobe   : u8
+	# --record name / --playback name: one pad byte per emulated frame,
+	# so a session can be replayed without a hand on the keys
+	public  record       : path
+	public  playback     : path
+	mutable rec_f        : handle             # @FILE; silver cannot null-test a @FILE member yet
+	mutable play_f       : handle
 	mutable screen_tex   : Texture
 	mutable booted       : bool
 	mutable frames       : u32
@@ -545,6 +551,10 @@ element knes : trinity
 
 	# ---- cartridge: iNES format, mapper 0 (NROM) ----
 	func load_cart [] -> none
+		# no rom, or one not found as given: look in the share's roms/
+		if [ !rom || !rom.exists[] ]
+			name : string [ (rom) ? rom.filename[] : 'mario.nes' ]
+			rom = path 'roms/{name}'
 		f : @FILE [ fopen[ rom, 'rb' ] ]
 		if [ ! f ]
 			puts 'knes: could not open ROM {rom}'
@@ -1391,6 +1401,19 @@ element knes : trinity
 		cur_chr1 = m1_chr1
 
 	func run_frame [] -> none
+		if [ playback ]
+			if [ !play_f ] play_f = handle[ fopen[ playback, 'rb' ] ]
+			if [ play_f ]
+				pf : @FILE [ cast @FILE [ play_f ] ]
+				b  : u8 [ 0 ]
+				if [ fread[ @b, 1, 1, pf ] == 1 ] pad_st = u32[ b ]
+		if [ record ]
+			if [ !rec_f ] rec_f = handle[ fopen[ record, 'wb' ] ]
+			if [ rec_f ]
+				rf : @FILE [ cast @FILE [ rec_f ] ]
+				b  : u8 [ u8[ pad_st ] ]
+				fwrite[ @b, 1, 1, rf ]
+				fflush[ rf ]
 		for [ line: i32 0, line < 262, line += 1 ]
 			if [ line == 0 ]                      # pre-render v reload: vertical from t
 				ppu.eff_sy  = u8[ ((ppu.t_reg >> 2) & 0xF8) | ((ppu.t_reg >> 12) & 7) ]

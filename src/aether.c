@@ -444,7 +444,8 @@ AU_EXPORT void report_coverage(aether a);
 AU_EXPORT void init_coverage(aether a);
 AU_EXPORT void finalize_coverage(aether a);
 AU_EXPORT void emit_coverage_register(aether);
-AU_EXPORT void coverage_set_func_name(u32 func_id, char* name);
+AU_EXPORT void coverage_set_func_name(aether a, u32 func_id, char* name);
+AU_EXPORT void finalize_timing_names(aether a);
 
 // set debug source location on the IR builder
 AU_EXPORT void alloc_origin_args(aether a, enode* out_src, Au* out_line, Au* out_seq);
@@ -10781,10 +10782,12 @@ AU_EXPORT none aether_push_scope(aether a, Au arg, int label) {
             emit_debug_params(a, fn);
         a->coverage_seq_local = null; // reset per-function __seq alloca
         if (a->timing && !fn->timing_start_value) {
-            fn->timing_func_id = a->next_func_id++;
+            // one id space for every core: the counter lives on the root
+            aether r = a->root ? a->root : a;
+            fn->timing_func_id = __atomic_fetch_add(&r->next_func_id, 1, __ATOMIC_SEQ_CST);
             fn->timing_start_value = emit_func_timing_start(a, fn->timing_func_id);
             if (a->coverage || a->timing)
-                coverage_set_func_name(fn->timing_func_id, fn->autype->alt ? fn->autype->alt : fn->autype->ident);
+                coverage_set_func_name(a, fn->timing_func_id, fn->autype->alt ? fn->autype->alt : fn->autype->ident);
         }
 
         // set debug location to first body statement BEFORE any user code
@@ -11238,6 +11241,8 @@ static void* emit_job_run(void* arg) {
 
 // each core owns its module and target machine, so the objects emit at once
 AU_EXPORT bool aether_emit_object(aether a, path obj_path) {
+    // every core has emitted: the timing names are complete now
+    if (a->timing) finalize_timing_names(a);
     // the object writer reads the module's triple, and a module may have been
     // created after set_target — stamp every one right before it emits
     for (int i = 0; i < ll_n(a); i++) {
@@ -11320,6 +11325,20 @@ AU_EXPORT void llvm_reinit(aether a) {
     }
     B        = LLVMCreateBuilderInContext(a->module_ctx);
     a->target_triple  = LLVMGetDefaultTargetTriple();
+#ifdef __APPLE__
+    // llvm's default names the RUNNING os (macosx26.0); the linker's floor
+    // is the sdk's, and every object then warns. one deployment for both
+    {
+        cstr t = a->target_triple;
+        cstr m = strstr(t, "-macosx");
+        if (!m) m = strstr(t, "-darwin");
+        if (m) {
+            char fixed[256];
+            snprintf(fixed, sizeof(fixed), "%.*s-macosx13.0", (int)(m - t), t);
+            a->target_triple = strdup(fixed);
+        }
+    }
+#endif
 
     cstr err = NULL;
     if (LLVMGetTargetFromTriple(a->target_triple, &a->target_ref, &err))
