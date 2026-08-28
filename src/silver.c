@@ -1623,7 +1623,7 @@ static void exporter(silver a) {
         string mod_file = cast(string, exp->module_file);
         string rel_mod = mid(mod_file, exp->project_path->count + 1, len(exp->project_path) - exp->project_path->count);
         string  tag         = f(string, "%o-%o", i->key, exp->version);
-        string  cmd         = f(string, "git rev-parse %o:%o", tag, rel_mod);
+        string  cmd         = f(string, "git rev-parse %o:%o 2>/dev/null", tag, rel_mod);
         string  rev_parse   = command_run((command)cmd, false);
         string  hash_cmd    = f(string, "git hash-object %o", exp->module_file);
         string  hash        = command_run((command)hash_cmd, false);

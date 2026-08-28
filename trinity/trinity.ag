@@ -71,18 +71,22 @@ import KhronosGroup:Vulkan-Tools/734638e
      -DBUILD_CUBE=OFF
      -DBUILD_ICD=OFF
 
+# the platform macro exposes the surface api and, on win32, the
+# external-memory api (shared textures)
 ifdef [ windows ]
-    # before glfw pulls vulkan.h: the win32 external-memory api (shared
-    # textures) only declares itself under this platform macro
     import <vulkan/vulkan.h>
         +VK_USE_PLATFORM_WIN32_KHR
+        -lvulkan
+ifdef [ apple ]
+    import <vulkan/vulkan.h>
+        +VK_USE_PLATFORM_METAL_EXT
+        -lvulkan
+ifdef [ linux ]
+    import <vulkan/vulkan.h>
+        +VK_USE_PLATFORM_XCB_KHR
+        -lvulkan
 
-import glfw:glfw/fdd14e6 <GLFW/glfw3.h>
-    +GLFW_INCLUDE_NONE
-    +GLFW_INCLUDE_VULKAN
-    -lvulkan -lglfw3
-    -framework Cocoa -framework IOKit -framework CoreFoundation
-    -framework CoreGraphics -framework QuartzCore
+import devices
 
 
 import freetype:freetype/VER-2-13-3 <ft2build.h, freetype/freetype.h>
@@ -312,7 +316,7 @@ abstract live_app media_app
             Au.auto_free[false]
             usleep[ 16000 ]
             return !Au.quit_requested[]
-        glfwPollEvents[]
+        platform_poll[]
         pwn : Window [ w ]
         pwn.pad_pump[]
         ifdef [ linux ]
@@ -359,7 +363,7 @@ abstract live_app media_app
         probe : path 'afprobe'
         header : Au.header[ probe ]
         if [ header.managed > 100000 ] puts 'AFPOOL ix={header.managed} — pool NOT draining'
-        return !glfwWindowShouldClose[ w.glfw ] && !Au.quit_requested[]
+        return !platform_window_should_close[ w.glfw ] && !Au.quit_requested[]
 
     ifdef [ linux ]
         func share_publish [ side: i32 ]
@@ -1020,12 +1024,8 @@ abstract live_app media_app
         if [ text_mode ]
             return
         if [ !Au.live_window_get[] ]
-            init_res : glfwInit[]
-            expect init_res, "glfw init"
-            if [ !glfwVulkanSupported[] ]
-                fault "glfw does not support vulkan"
-                glfwTerminate[]
-                return
+            init_res : platform_init[]
+            expect init_res, "platform init"
         existing_vk : handle Au.live_vk_get[]
         if [ existing_vk ]
             vk = cast vk_context [ existing_vk ]
@@ -1925,7 +1925,7 @@ Display Window
         app_size_h = height
         iw : i32 [ (ide_size_w > 0) ? ide_size_w : 1888 ]
         ih : i32 [ (ide_size_h > 0) ? ide_size_h : 888 ]
-        if [ glfw && (iw != width || ih != height) ] glfwSetWindowSize[ glfw, iw, ih ]
+        if [ glfw && (iw != width || ih != height) ] platform_window_set_size[ glfw, iw, ih ]
         ide_active = true
         host_post[ 0, i32[ HM.shell ], 1, 0, 0 ]
         restyle = true
@@ -1934,7 +1934,7 @@ Display Window
         ide_size_w = width
         ide_size_h = height
         if [ glfw && app_size_w > 0 && app_size_h > 0 ]
-            glfwSetWindowSize[ glfw, app_size_w, app_size_h ]
+            platform_window_set_size[ glfw, app_size_w, app_size_h ]
 
     func app_render [] -> Elements
         e : Elements [ ]
@@ -2022,14 +2022,8 @@ Display Window
         g : handle [ Au.live_window_get[] ]
         if [ !g ] return
         cursor_kind = kind
-        if [ kind == 1 ]
-            if [ !cursor_hresize ] cursor_hresize = glfwCreateStandardCursor[ GLFW_HRESIZE_CURSOR ]
-            glfwSetCursor[ g, cursor_hresize ]
-        el [ kind == 2 ]
-            if [ !cursor_vresize ] cursor_vresize = glfwCreateStandardCursor[ GLFW_VRESIZE_CURSOR ]
-            glfwSetCursor[ g, cursor_vresize ]
-        el
-            glfwSetCursor[ g, null ]
+        # 1 = horizontal resize, 2 = vertical resize, else arrow
+        platform_set_cursor[ g, kind ]
 
     public func find_target [ e: element, ev: Event, must: element ] -> element
         if [ !e || !e.bounds || e.disable || e.ghost || e.hide || e.opacity <= 0.0 ]
@@ -2111,13 +2105,13 @@ Display Window
     # most gamepads and a hat on others, so all three are read here
     public func pad_pump [ ]
         for [ j: i32 0, j < 16, j += 1 ]
-            if [ !glfwJoystickPresent[ j ] ] continue
+            if [ !platform_joystick_present[ j ] ] continue
             nb : i32 [ 0 ]
-            b  : @u8 [ glfwGetJoystickButtons[ j, @nb ] ]
+            b  : @u8 [ platform_joystick_buttons[ j, @nb ] ]
             na : i32 [ 0 ]
-            ax : @f32 [ glfwGetJoystickAxes[ j, @na ] ]
+            ax : @f32 [ platform_joystick_axes[ j, @na ] ]
             nh : i32 [ 0 ]
-            ht : @u8 [ glfwGetJoystickHats[ j, @nh ] ]
+            ht : @u8 [ platform_joystick_hats[ j, @nh ] ]
             if [ b ]
                 if [ nb > 32 ] nb = 32
                 for [ i: i32 0, i < nb, i += 1 ]
@@ -2680,23 +2674,9 @@ Display Window
             return
         if [ on ]
             # remember windowed geometry
-            sx : i32
-            sy : i32
-            sw : i32
-            sh : i32
-            glfwGetWindowPos [ glfw, @sx, @sy ]
-            glfwGetWindowSize[ glfw, @sw, @sh ]
-            fs_saved_x = sx
-            fs_saved_y = sy
-            fs_saved_w = sw
-            fs_saved_h = sh
-            mon  : glfwGetPrimaryMonitor[]
-            mode : @GLFWvidmode [ glfwGetVideoMode[ mon ] ]
-            glfwSetWindowMonitor[ glfw, mon, 0, 0,
-                mode.width, mode.height, mode.refreshRate ]
+            platform_window_set_fullscreen[ glfw, true ]
         el
-            glfwSetWindowMonitor[ glfw, null, fs_saved_x, fs_saved_y,
-                fs_saved_w, fs_saved_h, 0 ]
+            platform_window_set_fullscreen[ glfw, false ]
         fs_active = on
 
     public func resize [ w: i32, h: i32 ] -> Window
@@ -4218,7 +4198,7 @@ abstract media_app trinity
 func save-persistent []
     glfw : handle [ Au.live_window_get[] ]
     if [ !glfw ] return
-    win : cast Window [ glfwGetWindowUserPointer[ glfw ] ]
+    win : cast Window [ platform_window_get_user[ glfw ] ]
     if [ win && win.app_object ]
         state_persist_store[ win.app_object ]
 
