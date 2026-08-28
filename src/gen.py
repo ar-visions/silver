@@ -56,7 +56,9 @@ def get_platform_info():
         },
         'Darwin': {
             'exe': '', 'lib_pre': 'lib', 'lib': '.a', 'shared': '.dylib', 'obj': '.o',
-            'cc': f'{silver}/bin/clang', 'cxx': f'{silver}/bin/clang++',
+            # apple's own asan runtime is the one that knows this os
+            'cc':  'xcrun clang'   if is_asan else f'{silver}/bin/clang',
+            'cxx': 'xcrun clang++' if is_asan else f'{silver}/bin/clang++',
             'ar': f'{silver}/bin/llvm-ar', 'ninja': 'ninja',
             'inc': [], 'lib_dirs': [],
             'cflags':   [f'-isysroot{os_sdk}'],

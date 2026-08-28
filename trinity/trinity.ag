@@ -34,7 +34,8 @@ ifndef [ windows ]
 
 import KhronosGroup:Vulkan-Headers/29184b9
 
-import KhronosGroup:Vulkan-Loader/e042a3a
+ifndef [ ios ]
+    import KhronosGroup:Vulkan-Loader/e042a3a
 
 ifdef [ apple ] 
     import KhronosGroup:MoltenVK/db445ff
@@ -50,26 +51,30 @@ import KhronosGroup:SPIRV-Tools/vulkan-sdk-1.4.341.0
 import KhronosGroup:Vulkan-Utility-Libraries/vulkan-sdk-1.4.341.0
     -DVULKAN_HEADERS_INSTALL_DIR={install}
 
-import KhronosGroup:Vulkan-ValidationLayers/vulkan-sdk-1.4.341.0
-    -DVULKAN_HEADERS_INSTALL_DIR={install}
-    # windows installs the layer to bin, where VK_LAYER_PATH above cannot see
-    # it. BINDIR is this project's only lever on that dir, and its only user,
-    # so the dll, its pdb and the manifest land together -- which is what the
-    # manifest's own relative library_path needs. unix installs by LIBDIR,
-    # so the manifest must point into lib -- a bare filename means dlopen
-    # search, which never looks there
-    -DCMAKE_INSTALL_BINDIR=share/vulkan/explicit_layer.d
-    { (linux) ?? >> sed -i 's|"library_path": "libVkLayer_khronos_validation.so"|"library_path": "../../../lib/libVkLayer_khronos_validation.so"|' {install}/share/vulkan/explicit_layer.d/VkLayer_khronos_validation.json }
+ifndef [ ios ]
+    import KhronosGroup:Vulkan-ValidationLayers/vulkan-sdk-1.4.341.0
+      -DVULKAN_HEADERS_INSTALL_DIR={install}
+      # windows installs the layer to bin, where VK_LAYER_PATH above cannot see
+      # it. BINDIR is this project's only lever on that dir, and its only user,
+      # so the dll, its pdb and the manifest land together -- which is what the
+      # manifest's own relative library_path needs. unix installs by LIBDIR,
+      # so the manifest must point into lib -- a bare filename means dlopen
+      # search, which never looks there
+      -DCMAKE_INSTALL_BINDIR=share/vulkan/explicit_layer.d
+      { (linux) ?? >> sed -i 's|"library_path": "libVkLayer_khronos_validation.so"|"library_path": "../../../lib/libVkLayer_khronos_validation.so"|' {install}/share/vulkan/explicit_layer.d/VkLayer_khronos_validation.json }
 
 import KhronosGroup:glslang/715c850
     -DVULKAN_HEADERS_INSTALL_DIR={install}
     -DENABLE_OPT=0
+    -lglslang -lSPIRV -lMachineIndependent -lGenericCodeGen -lOSDependent
+    -lglslang-default-resource-limits
 
-import KhronosGroup:Vulkan-Tools/734638e
-     -DVULKAN_HEADERS_INSTALL_DIR={install}
-     -DMOLTENVK_REPO_ROOT={root_path}/checkout/MoltenVK
-     -DBUILD_CUBE=OFF
-     -DBUILD_ICD=OFF
+ifndef [ ios ]
+    import KhronosGroup:Vulkan-Tools/734638e
+         -DVULKAN_HEADERS_INSTALL_DIR={install}
+         -DMOLTENVK_REPO_ROOT={root_path}/checkout/MoltenVK
+         -DBUILD_CUBE=OFF
+         -DBUILD_ICD=OFF
 
 # the platform macro exposes the surface api and, on win32, the
 # external-memory api (shared textures)
@@ -78,9 +83,15 @@ ifdef [ windows ]
         +VK_USE_PLATFORM_WIN32_KHR
         -lvulkan
 ifdef [ apple ]
-    import <vulkan/vulkan.h>
-        +VK_USE_PLATFORM_METAL_EXT
-        -lvulkan
+    ifdef [ ios ]
+        # no loader on ios: MoltenVK is the vulkan library itself
+        import <vulkan/vulkan.h>
+            +VK_USE_PLATFORM_METAL_EXT
+            -lMoltenVK -framework Metal -framework IOSurface -framework CoreGraphics -framework QuartzCore
+    ifndef [ ios ]
+        import <vulkan/vulkan.h>
+            +VK_USE_PLATFORM_METAL_EXT
+            -lvulkan
 ifdef [ linux ]
     import <vulkan/vulkan.h>
         +VK_USE_PLATFORM_XCB_KHR
@@ -118,6 +129,10 @@ import PixarAnimationStudios:OpenSubdiv/v3_7_0
     -DNO_DX=1
     -DNO_PTEX=1
     -DNO_GLFW=1
+    -DOSD_PATCH_SHADER_SOURCE_GLSL=OFF
+    -DOSD_PATCH_SHADER_SOURCE_HLSL=OFF
+    -DOSD_PATCH_SHADER_SOURCE_MSL=OFF
+    -DCMAKE_DISABLE_FIND_PACKAGE_OpenGLES=ON
     -DBUILD_SHARED_LIBS=OFF
     -DCMAKE_POSITION_INDEPENDENT_CODE=ON
 

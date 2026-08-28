@@ -1530,16 +1530,18 @@ static void build_unit_args(aether a, import_unit* u) {
         args.push_back("-resource-dir");
         args.push_back(a->resource_dir->chars);
     }
-    if (a->isysroot) {
+    // a device build reads the device sdk, never this machine's
+    cstr sysroot = cross ? a->target_sysroot->chars : a->isysroot ? a->isysroot->chars : null;
+    if (sysroot) {
         args.push_back("-isysroot");
-        args.push_back(a->isysroot->chars);
+        args.push_back(sysroot);
 #ifdef __APPLE__
         // one libc++ per process: the runtime links the SDK's, so C++
         // imports read its headers, not the newer ones clang ships
         if (u->cpp) {
             args.push_back("-nostdinc++");
             args.push_back("-isystem");
-            args.push_back(std::string(a->isysroot->chars) + "/usr/include/c++/v1");
+            args.push_back(std::string(sysroot) + "/usr/include/c++/v1");
         }
 #endif
     }

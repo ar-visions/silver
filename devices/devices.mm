@@ -10,7 +10,7 @@
 #if TARGET_OS_IPHONE
 #import "UIKit/UIKit.h"   // quoted: the .mm scanner would link it on macOS
 #else
-#import <Cocoa/Cocoa.h>
+#import "Cocoa/Cocoa.h"   // quoted: the .mm scanner would link it on ios
 #endif
 
 struct platform_window {
@@ -350,6 +350,7 @@ platform_window* platform_window_create(int width, int height, const char* title
         w->window.delegate = d;
         v.layer.contentsScale = w->window.backingScaleFactor;
         [v updateDrawable];
+        fprintf(stderr, "devices: window %dx%d points, scale %.2f\n", width, height, (float)w->window.backingScaleFactor);
         if (visible) platform_window_show(w);
     }
     return w;
@@ -492,6 +493,7 @@ static platform_window* g_win;
         int id = [self slotFor:t];
         if (id < 0) continue;
         CGPoint p = [t locationInView:self];
+        fprintf(stderr, "devices: touch %d phase %d at %.0f,%.0f\n", id, phase, p.x, p.y);
         if (w->on_touch) w->on_touch(w, id, phase, p.x, p.y);
         // first finger doubles as the mouse so pointer code runs unchanged
         if (id == 0) {
@@ -500,6 +502,9 @@ static platform_window* g_win;
                 w->on_mouse(w, PLATFORM_MOUSE_LEFT, PLATFORM_PRESS, 0);
             if ((phase == PLATFORM_TOUCH_END || phase == PLATFORM_TOUCH_CANCEL) && w->on_mouse)
                 w->on_mouse(w, PLATFORM_MOUSE_LEFT, PLATFORM_RELEASE, 0);
+            // a finger lifts clean off: no pointer remains to hover anything
+            if ((phase == PLATFORM_TOUCH_END || phase == PLATFORM_TOUCH_CANCEL) && w->on_enter)
+                w->on_enter(w, 0);
         }
         if (phase == PLATFORM_TOUCH_END || phase == PLATFORM_TOUCH_CANCEL) w->touches[id] = nil;
     }
@@ -553,12 +558,21 @@ platform_window* platform_window_create(int width, int height, const char* title
     v->w = w;
     v.contentScaleFactor = screen.nativeScale;
     v.multipleTouchEnabled = YES;
+    // the drawable is sized now, not at first layout: the swapchain is
+    // created from it before uikit ever lays the view out
+    CAMetalLayer* ml = (CAMetalLayer*)v.layer;
+    ml.contentsScale = screen.nativeScale;
+    ml.drawableSize  = CGSizeMake(screen.bounds.size.width * screen.nativeScale,
+                                  screen.bounds.size.height * screen.nativeScale);
     vc.view = v;
     w->vc = vc;
     w->view = v;
     w->window.rootViewController = vc;
     w->fullscreen = true;
     g_win = w;
+    fprintf(stderr, "devices: window %dx%d points, scale %.2f, drawable %dx%d\n",
+        (int)screen.bounds.size.width, (int)screen.bounds.size.height, (float)screen.nativeScale,
+        (int)ml.drawableSize.width, (int)ml.drawableSize.height);
     if (visible) platform_window_show(w);
     return w;
 }
