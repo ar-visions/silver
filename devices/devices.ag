@@ -1,0 +1,27 @@
+export 0.1.0
+
+# window + input + native gpu surface, one api on every os.
+# the c implementation is devices.mm (apple) and devices.c (win32, xcb)
+
+ifdef [ apple ]
+    import <host.h>
+        -framework Cocoa -framework QuartzCore -framework GameController
+
+ifdef [ linux ]
+    import <host.h>
+        -lxcb -lxcb-keysyms
+
+ifdef [ windows ]
+    import <host.h>
+        -luser32 -lgdi32 -lshell32 -lxinput
+
+# instance extensions a surface on this os needs; vk adds its own after
+func surface_extensions [] -> vec string
+    r : vec string []
+    r.push[ string[ 'VK_KHR_surface' ] ]
+    r.push[ string[ platform_surface_extension[] ] ]
+    return r
+
+# placeholder until the window object moves here from trinity
+class Devices
+    public name : string
