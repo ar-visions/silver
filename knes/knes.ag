@@ -217,6 +217,7 @@ element knes : trinity
 	mutable pub_time     : i64               # wall us at publish
 	mutable pub_model    : i64               # phase-locked publish clock (jitter-free)
 	mutable fb_spr       : new u32 [ 256 * 240 ]   # sprite layer, alpha 0 = empty
+	mutable line_spr     : new i32 [ 64 ]          # sprites on the current scanline
 	mutable pub_spr      : new u32 [ 256 * 240 ]
 	mutable spr_tex      : Texture
 	mutable pub_hud      : new u32 [ 256 * 240 ]   # HUD rows (scroll != camera), anchored
@@ -1341,6 +1342,14 @@ element knes : trinity
 				if [ line_sy[ y ] != line_sy[ y - 1 ] || ((line_nt[ y ] ^ line_nt[ y - 1 ]) & 2) != 0 ] vanch = y
 			bg_on = (line_mask[ y ] & 0x08) != 0
 			sp_on = (line_mask[ y ] & 0x10) != 0
+			sh : i32 [ (big) ? 16 : 8 ]
+			nsl : i32 [ 0 ]
+			if [ sp_on ]
+				for [ si0: i32 0, si0 < 64, si0 += 1 ]
+					sy0 : i32 [ i32[ ppu.oam[ si0 * 4 ] ] + 1 ]
+					if [ y >= sy0 && y < sy0 + sh ]
+						line_spr[ nsl ] = si0
+						nsl += 1
 			for [ x: i32 0, x < 256, x += 1 ]
 				o : u32 [ ub ]
 				bpx : u32 [ 0 ]
@@ -1367,10 +1376,9 @@ element knes : trinity
 						pal : u32 [ (at >> qs) & 3 ]
 						o = nes_pal[ i32[ pal_shot[ pal * 4 + bpx ] ] & 63 ]
 				if [ sp_on ]
-					sh : i32 [ (big) ? 16 : 8 ]
-					for [ si: i32 0, si < 64, si += 1 ]
+					for [ k: i32 0, k < nsl, k += 1 ]
+						si : i32 [ line_spr[ k ] ]
 						sy : i32 [ i32[ ppu.oam[ si * 4 ] ] + 1 ]
-						if [ y < sy || y >= sy + sh ] continue
 						sx : i32 [ i32[ ppu.oam[ si * 4 + 3 ] ] ]
 						if [ x < sx || x >= sx + 8 ] continue
 						tl : u32 [ u32[ ppu.oam[ si * 4 + 1 ] ] ]
@@ -1626,12 +1634,11 @@ element knes : trinity
 		if [ split > 0 ]
 			memcpy[ pub_hud, ppu.framebuf, split * 256 * 4 ]
 			for [ er: i32 0, er < split, er += 1 ]
-				memcpy[ pub_framebuf + er * 1024, ppu.framebuf + split * 1024, 1024 ]
+				memcpy[ @pub_framebuf[ er * 256 ], @ppu.framebuf[ split * 256 ], 1024 ]
 		if [ bsplit < 240 ]
-			bo : i32 [ bsplit * 256 * 4 ]
-			memcpy[ pub_hud + bo, ppu.framebuf + bo, (240 - bsplit) * 256 * 4 ]
+			memcpy[ @pub_hud[ bsplit * 256 ], @ppu.framebuf[ bsplit * 256 ], (240 - bsplit) * 256 * 4 ]
 			for [ er2: i32 bsplit, er2 < 240, er2 += 1 ]
-				memcpy[ pub_framebuf + er2 * 1024, ppu.framebuf + (bsplit - 1) * 1024, 1024 ]
+				memcpy[ @pub_framebuf[ er2 * 256 ], @ppu.framebuf[ (bsplit - 1) * 256 ], 1024 ]
 		if [ trace ]
 			if [ split != dbg_split || bsplit != dbg_bsplit || u32[ ppu.mask ] != dbg_mask ]
 				puts 'CH f{frames} split={split} bsplit={bsplit} mask={ppu.mask} ctrl={ppu.ctrl} dy={dy} dx={dx}'
