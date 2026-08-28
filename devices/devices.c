@@ -529,6 +529,7 @@ static xcb_atom_t atom(const char* name) {
     return a;
 }
 
+static void handle(xcb_generic_event_t* ev);
 static platform_window* find(xcb_window_t id) {
     for (platform_window* w = g_windows; w; w = w->next) if (w->win == id) return w;
     return NULL;
