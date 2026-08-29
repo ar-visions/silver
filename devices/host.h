@@ -163,6 +163,8 @@ bool  platform_joystick_present (int j);
 const uint8_t* platform_joystick_buttons (int j, int* count);
 const float*   platform_joystick_axes    (int j, int* count);
 const uint8_t* platform_joystick_hats    (int j, int* count);
+// device motion: accelerometer (g) and gyro (rad/s), false where there is none
+bool  platform_motion(float* accel, float* gyro);
 
 /* callbacks */
 void  platform_set_key_callback    (platform_window* w, platform_key_fn fn);

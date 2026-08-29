@@ -429,11 +429,13 @@ bool platform_joystick_present(int j) { XINPUT_STATE s; return j >= 0 && j < 4 &
 const uint8_t* platform_joystick_buttons(int j, int* n) { if (!pad_read(j)) { *n = 0; return NULL; } *n = 15; return g_pad_buttons[j]; }
 const float*   platform_joystick_axes   (int j, int* n) { if (!pad_read(j)) { *n = 0; return NULL; } *n = 6;  return g_pad_axes[j]; }
 const uint8_t* platform_joystick_hats   (int j, int* n) { if (!pad_read(j)) { *n = 0; return NULL; } *n = 1;  return g_pad_hats[j]; }
+bool platform_motion(float* accel, float* gyro) { return false; }
 
 #elif defined(__ANDROID__)
 // ================================================================ android
 // NativeActivity calls in on the java thread; the app runs on its own,
 // with a looper that carries those calls and the input queue to it
+#include <jni.h>
 #include <android/native_activity.h>
 #include <android/native_window.h>
 #include <android/window.h>
@@ -441,6 +443,7 @@ const uint8_t* platform_joystick_hats   (int j, int* n) { if (!pad_read(j)) { *n
 #include <android/input.h>
 #include <android/configuration.h>
 #include <android/log.h>
+#include <android/sensor.h>
 #include <pthread.h>
 #include <unistd.h>
 #include <time.h>
@@ -467,7 +470,7 @@ struct platform_window {
 };
 
 enum { CMD_WINDOW = 1, CMD_QUEUE, CMD_FOCUS, CMD_BLUR, CMD_RESIZE, CMD_DESTROY };
-enum { ID_CMD = 1, ID_INPUT };
+enum { ID_CMD = 1, ID_INPUT, ID_SENSOR };
 
 static ANativeActivity* g_activity;
 static ANativeWindow*   g_anw;
@@ -483,6 +486,13 @@ static int              g_cmd[2];
 static int            (*g_main)(int, char**);
 static bool             g_destroyed;
 static double           g_t0;
+static ASensorManager*    g_sensors;
+static ASensorEventQueue* g_sensor_q;
+static const ASensor*     g_accel_s;
+static const ASensor*     g_gyro_s;
+static float              g_accel[3];
+static float              g_gyro[3];
+static bool               g_motion;
 
 static double now(void) {
     struct timespec ts;
@@ -676,6 +686,19 @@ static void pump(int timeout_ms) {
                 if (AInputQueue_preDispatchEvent(g_queue, ev)) continue;
                 AInputQueue_finishEvent(g_queue, ev, handle_input(ev));
             }
+        } else if (ident == ID_SENSOR && g_sensor_q) {
+            ASensorEvent e;
+            while (ASensorEventQueue_getEvents(g_sensor_q, &e, 1) > 0) {
+                // ASENSOR_STANDARD_GRAVITY normalizes to g, matching the iOS accelerometer
+                if (e.type == ASENSOR_TYPE_ACCELEROMETER) {
+                    g_accel[0] = e.acceleration.x / ASENSOR_STANDARD_GRAVITY;
+                    g_accel[1] = e.acceleration.y / ASENSOR_STANDARD_GRAVITY;
+                    g_accel[2] = e.acceleration.z / ASENSOR_STANDARD_GRAVITY;
+                    g_motion = true;
+                } else if (e.type == ASENSOR_TYPE_GYROSCOPE) {
+                    g_gyro[0] = e.vector.x; g_gyro[1] = e.vector.y; g_gyro[2] = e.vector.z;
+                }
+            }
         }
     }
 }
@@ -683,6 +706,14 @@ static void pump(int timeout_ms) {
 static void* app_thread(void* arg) {
     g_looper = ALooper_prepare(ALOOPER_PREPARE_ALLOW_NON_CALLBACKS);
     ALooper_addFd(g_looper, g_cmd[0], ID_CMD, ALOOPER_EVENT_INPUT, NULL, NULL);
+    g_sensors = ASensorManager_getInstanceForPackage("");
+    if (g_sensors) {
+        g_sensor_q = ASensorManager_createEventQueue(g_sensors, g_looper, ID_SENSOR, NULL, NULL);
+        g_accel_s  = ASensorManager_getDefaultSensor(g_sensors, ASENSOR_TYPE_ACCELEROMETER);
+        g_gyro_s   = ASensorManager_getDefaultSensor(g_sensors, ASENSOR_TYPE_GYROSCOPE);
+        if (g_sensor_q && g_accel_s) { ASensorEventQueue_enableSensor(g_sensor_q, g_accel_s); ASensorEventQueue_setEventRate(g_sensor_q, g_accel_s, 16667); }
+        if (g_sensor_q && g_gyro_s)  { ASensorEventQueue_enableSensor(g_sensor_q, g_gyro_s);  ASensorEventQueue_setEventRate(g_sensor_q, g_gyro_s,  16667); }
+    }
     g_main(0, NULL);
     // the app is done: the activity goes with it, unless it went first
     if (!g_destroyed) ANativeActivity_finish(g_activity);
@@ -726,8 +757,28 @@ int platform_run(platform_loop_fn loop, void* ctx) {
 void platform_poll(void) { pump(0); }
 
 // the window is the activity's: this waits for it, then describes it
+// the app's window shape picks the orientation: landscape when it is wider
+// than tall. NativeActivity has no ndk call for it, so it goes through java
+static void request_orientation(bool landscape) {
+    JavaVM* vm = g_activity->vm;
+    JNIEnv* env = NULL;
+    if ((*vm)->AttachCurrentThread(vm, &env, NULL) != JNI_OK || !env) {
+        __android_log_print(ANDROID_LOG_INFO, "silver", "devices: orientation: no jni env");
+        return;
+    }
+    jclass    cls = (*env)->GetObjectClass(env, g_activity->clazz);
+    jmethodID mid = (*env)->GetMethodID(env, cls, "setRequestedOrientation", "(I)V");
+    // ActivityInfo: SCREEN_ORIENTATION_SENSOR_LANDSCAPE = 6, SENSOR_PORTRAIT = 7
+    if (mid) (*env)->CallVoidMethod(env, g_activity->clazz, mid, landscape ? 6 : 7);
+    if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionDescribe(env); (*env)->ExceptionClear(env); }
+    __android_log_print(ANDROID_LOG_INFO, "silver", "devices: orientation %s mid=%p", landscape ? "landscape" : "portrait", (void*)mid);
+    (*env)->DeleteLocalRef(env, cls);
+    (*vm)->DetachCurrentThread(vm);
+}
+
 platform_window* platform_window_create(int width, int height, const char* title, bool visible) {
     platform_window* w = (platform_window*)calloc(1, sizeof(platform_window));
+    request_orientation(width > height);
     AConfiguration* cfg = AConfiguration_new();
     AConfiguration_fromAssetManager(cfg, g_activity->assetManager);
     int density = AConfiguration_getDensity(cfg);
@@ -736,6 +787,15 @@ platform_window* platform_window_create(int width, int height, const char* title
     w->fullscreen = true;
     g_win = w;
     while (!g_anw && !g_destroyed) pump(-1);
+    // the rotation lands as a new surface a moment later: wait for it so the
+    // first swapchain is the right shape (3s cap: a locked rotation never comes)
+    if (width > height) {
+        double t0 = now();
+        while (!g_destroyed && (!g_anw || ANativeWindow_getWidth(g_anw) < ANativeWindow_getHeight(g_anw)) && now() - t0 < 3.0)
+            pump(50);
+        // never leave without a surface: the rotated one may still be on its way
+        while (!g_anw && !g_destroyed) pump(-1);
+    }
     fprintf(stderr, "devices: window %dx%d px, scale %.2f\n",
         g_anw ? ANativeWindow_getWidth(g_anw) : 0, g_anw ? ANativeWindow_getHeight(g_anw) : 0, w->scale);
     return w;
@@ -778,6 +838,13 @@ bool platform_joystick_present(int j) { return false; }
 const uint8_t* platform_joystick_buttons(int j, int* n) { *n = 0; return NULL; }
 const float*   platform_joystick_axes   (int j, int* n) { *n = 0; return NULL; }
 const uint8_t* platform_joystick_hats   (int j, int* n) { *n = 0; return NULL; }
+// the sensor queue lives on the app thread's looper; pump() drains it
+bool platform_motion(float* accel, float* gyro) {
+    if (!g_motion) return false;
+    if (accel) { accel[0] = g_accel[0]; accel[1] = g_accel[1]; accel[2] = g_accel[2]; }
+    if (gyro)  { gyro[0]  = g_gyro[0];  gyro[1]  = g_gyro[1];  gyro[2]  = g_gyro[2];  }
+    return true;
+}
 
 #else
 // ================================================================ linux / xcb
@@ -1447,6 +1514,7 @@ bool platform_joystick_present(int j) { return js_open(j); }
 const uint8_t* platform_joystick_buttons(int j, int* n) { if (!js_open(j)) { *n = 0; return NULL; } js_pump(j); *n = g_js_nb[j]; return g_js_buttons[j]; }
 const float*   platform_joystick_axes   (int j, int* n) { if (!js_open(j)) { *n = 0; return NULL; } js_pump(j); *n = g_js_na[j]; return g_js_axes[j]; }
 const uint8_t* platform_joystick_hats   (int j, int* n) { if (!js_open(j)) { *n = 0; return NULL; } js_pump(j); *n = 1; return g_js_hats[j]; }
+bool platform_motion(float* accel, float* gyro) { return false; }
 #endif
 
 #if !defined(__APPLE__)

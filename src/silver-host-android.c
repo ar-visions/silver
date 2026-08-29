@@ -128,6 +128,14 @@ static int host_main(int argc, char** argv) {
     setvbuf(stdout, NULL, _IOLBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
     const char* dir = g_activity->internalDataPath;
+    // bionic sets no HOME or /tmp; the app's private data dir is the only
+    // writable root, so point the path helpers (cache/storage/config) and
+    // tmpfile there — they resolve through HOME/TMPDIR like any posix app
+    setenv("HOME", dir, 1);
+    char tmp[1024];
+    snprintf(tmp, sizeof(tmp), "%s/cache", dir);
+    mkdirs(tmp); mkdir(tmp, 0755);
+    setenv("TMPDIR", tmp, 1);
     extract_share(dir);
     char share[1024];
     snprintf(share, sizeof(share), "%s/share/%s", dir, SILVER_SHARE_NAME);
