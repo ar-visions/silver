@@ -3832,6 +3832,9 @@ Texture Display
     # at width*scale and the canvas viewport uniform stays logical, so the whole
     # UI rasterizes at native pixels without changing any layout coordinate.
     public scale                : f32
+    # >0: scale = px / logical_width so the app sees exactly this many points across
+    public logical_width        : i32
+    intern prof_frames          : i32
     intern swap_image_count     : u32
     intern swap_image_current   : u32
     intern ev                   : Event
@@ -3933,6 +3936,10 @@ Texture Display
                 extent.width  = u32[ ww_i ]
                 extent.height = u32[ wh_i ]
             scale = platform_window_scale[ glfw ]
+            if [ logical_width > 0 && extent.width > 0 ]
+                scale  = f32[ extent.width ] / logical_width
+                width  = logical_width
+                height = i32[ extent.height / scale ]
         el
             width  = w_new
             height = h_new
@@ -3972,7 +3979,8 @@ Texture Display
                 imageArrayLayers:      1,
                 imageUsage:            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                 imageSharingMode:      VK_SHARING_MODE_EXCLUSIVE,
-                preTransform:          caps.currentTransform,
+                # identity: the compositor rotates for us (a rotated surface would need pre-rotated rendering)
+                preTransform:          (caps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR) ? VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR : caps.currentTransform,
                 compositeAlpha:        VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
                 presentMode:           present_mode,
                 clipped:               VK_TRUE,
@@ -4050,13 +4058,22 @@ Texture Display
         on_compose*[]
 
         now_ms : i64 [ epoch_millis[] ]
+        prof_frames += 1
+        prof_report : bool [ prof_frames % 120 == 0 ]
+        if [ prof_report ] fprintf[ stderr, "frame: %d targets\n", i32[ list.count ] ]
         for [ r: Render ] in list
             hz : f32 [ r.draw_hz ]
             if [ hz > 0.0 && r.has_drawn ]
                 due : i64 [ i64[ 1000.0 / hz ] ]
                 if [ now_ms - r.last_draw_ms < due ] continue
+            r.timing = true
+            td0 : i64 [ epoch_micros[] ]
             r.draw*[]
+            td1 : i64 [ epoch_micros[] ]
             r.sync_fence*[]
+            td2 : i64 [ epoch_micros[] ]
+            if [ prof_report ]
+                fprintf[ stderr, "  target %s %dx%d draw_us=%d wait_us=%d gpu_us=%d\n", (r.tag) ? r.tag.chars : "?", r.width, r.height, i32[ td1 - td0 ], i32[ td2 - td1 ], i32[ r.gpu_us ] ]
             r.has_drawn    = true
             r.last_draw_ms = now_ms
 
@@ -4065,10 +4082,10 @@ Texture Display
         if [ swap_renders ]
             result: vkAcquireNextImageKHR[ vk.device, vk_swapchain, UINT64_MAX,
                 semaphore_frame.vk_image_available_semaphore, null, @swap_image_current ]
-            if [ result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ]
+            if [ result == VK_ERROR_OUT_OF_DATE_KHR ]
                 swap_needs_recreate = true
             el
-                expect result == VK_SUCCESS, "failed to acquire swapchain image"
+                expect result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR, "failed to acquire swapchain image"
                 swap_render_current = swap_renders[swap_image_current]
                 last_render[].color.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
                 swap_render_current.color.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
@@ -4099,10 +4116,10 @@ Texture Display
                 result = vkQueuePresentKHR[ vk.queue, presentInfo ]
                 swap_render_current.color.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
                 semaphore_frame = swap_renders[semaphore_frame == swap_renders.first[]]
-                if [ result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ]
+                if [ result == VK_ERROR_OUT_OF_DATE_KHR ]
                     swap_needs_recreate = true
                 el
-                    expect result == VK_SUCCESS, "present"
+                    expect result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR, "present"
                     swap_render_current.sync_fence[]
                     # real pixels are on the surface now — safe to map
                     if [ !shown && !hidden && glfw ]
@@ -4275,6 +4292,10 @@ Texture Display
             scale         = platform_window_scale[ glfw ]
             width         = ww_i
             height        = wh_i
+            if [ logical_width > 0 && pw_i > 0 ]
+                scale  = f32[ pw_i ] / logical_width
+                width  = logical_width
+                height = i32[ ph_i / scale ]
             extent.width  = u32[ pw_i ]
             extent.height = u32[ ph_i ]
             puts 'display: {width}x{height} points, {extent.width}x{extent.height} px, scale {scale}'
@@ -4621,8 +4642,11 @@ func get_required_extensions [ vk: vk_context ]
         result[count] = "VK_KHR_get_physical_device_properties2"
         count += 1
     ifdef [ debug ]
-        result[count] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME
-        count += 1
+        # the android emulator's driver has no instance debug_utils, and one
+        # missing instance extension fails vkCreateInstance outright
+        ifndef [ android ]
+            result[count] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME
+            count += 1
     verbose: getenv[ "VERBOSE" ] != null
     for [ i: i32 0, i < count, i += 1 ]
         vk.instance_exts.push strdup[ result[i] ]

@@ -15,6 +15,8 @@ el
 
 import img
 
+import knik0:faad2/2.11.2 <neaacdec.h>
+    -lfaad
 
 export extensions ['.wav': FileType.binary]
 
@@ -176,6 +178,83 @@ el [ windows ]
         func close []
             if [ pcm_handle ] wasapi_out_close[ pcm_handle ]
             pcm_handle = null
+            active = false
+
+el [ android ]
+    import <aaudio/AAudio.h>
+        -laaudio
+
+    # no capture path on android yet
+    class spectra
+        public size:        i32
+        public sample_rate: i32
+        public channels:    i32
+        public device:      cstr
+        public re:          @f32
+        public im:          @f32
+        public buf:         @i16
+        public bins:        @f32
+
+        func init []
+            channels = 1
+            re   = new f32 [ size ]
+            im   = new f32 [ size ]
+            buf  = new i16 [ size ]
+            bins = new f32 [ size / 2 ]
+
+        func open [] -> bool
+            return false
+
+        func capture [] -> bool
+            return false
+
+        func drain []
+            return
+
+        func close []
+            return
+
+    class AudioOut
+        public sample_rate : i32 [ 48000 ]
+        public channels    : i32 [ 2 ]
+        public buffer_size : sz  [ 1024 ]
+        public device      : string
+        public active      : bool
+        public buffer      : @i16
+        intern stream      : @AAudioStream
+        intern writes      : i64
+
+        func open [] -> bool
+            buffer = calloc[ 1, buffer_size * channels * 2 ]
+            b : @AAudioStreamBuilder [ null ]
+            if [ AAudio_createStreamBuilder[ @b ] != AAUDIO_OK ] return false
+            AAudioStreamBuilder_setDirection      [ b, AAUDIO_DIRECTION_OUTPUT ]
+            AAudioStreamBuilder_setSampleRate     [ b, sample_rate ]
+            AAudioStreamBuilder_setChannelCount   [ b, channels ]
+            AAudioStreamBuilder_setFormat         [ b, AAUDIO_FORMAT_PCM_I16 ]
+            AAudioStreamBuilder_setPerformanceMode[ b, AAUDIO_PERFORMANCE_MODE_LOW_LATENCY ]
+            ok : bool [ AAudioStreamBuilder_openStream[ b, @stream ] == AAUDIO_OK ]
+            AAudioStreamBuilder_delete[ b ]
+            if [ !ok ] return false
+            got : i32 [ AAudioStream_getSampleRate[ stream ] ]
+            printf[ "AudioOut: asked %d Hz -> got %d Hz (aaudio)\n", sample_rate, got ]
+            if [ AAudioStream_requestStart[ stream ] != AAUDIO_OK ]
+                AAudioStream_close[ stream ]
+                stream = null
+                return false
+            active = true
+            return true
+
+        func write [ frames: i32 ] -> none
+            if [ !stream ] return
+            AAudioStream_write[ stream, buffer, frames, 1000000000 ]
+            writes += 1
+
+        func close []
+            if [ stream ]
+                AAudioStream_requestStop[ stream ]
+                AAudioStream_close[ stream ]
+            stream = null
             active = false
 
 el
@@ -547,9 +626,77 @@ func wav_load [ p: path ] -> AudioClip
     pcm : new i16 [ cnt ]
     memcpy[ pcm, @buf[ doff ], i64[ cnt ] * 2 ]
     clip : AudioClip [ rate: rate, channels: ch, frames: nfr ]
+    pcm.hold[]
     clip.pcm = pcm
     return clip
 
+
+# AAC in a CAF or M4A container via faad2; RIFF falls through to wav
+func caf_load [ p: path ] -> AudioClip
+    fp : @FILE [ fopen[ '{p}', 'rb' ] ]
+    if [ !fp ]
+        puts 'caf: cannot open {p}'
+        return null
+    fseek[ fp, 0, SEEK_END ]
+    fsz : i32 [ ftell[ fp ] ]
+    fseek[ fp, 0, SEEK_SET ]
+    buf : new u8 [ fsz ]
+    fread[ buf, 1, fsz, fp ]
+    fclose[ fp ]
+    st : AacStream [ null ]
+    if [ be32[ buf, 0 ] == 1667327590 ]
+        st = caf_parse[ buf, fsz ]
+    el [ be32[ buf, 4 ] == 1718909296 ]
+        st = m4a_parse[ buf, fsz ]
+    if [ !st ]
+        if [ be32[ buf, 0 ] == 1380533830 ]
+            return wav_load[ p ]
+        puts 'caf: unsupported container: {p}'
+        return null
+    h : NeAACDecOpen[]
+    conf : NeAACDecGetCurrentConfiguration[ h ]
+    conf.outputFormat = FAAD_FMT_16BIT
+    NeAACDecSetConfiguration[ h, conf ]
+    sr9 : u64 [ 0 ]
+    ch9 : u8 [ 0 ]
+    ir : i64 [ NeAACDecInit2[ h, @buf[ st.asc_o ], u64[ st.asc_n ], @sr9, @ch9 ] ]
+    if [ ir != 0 ]
+        puts 'caf: faad init failed on {p}'
+        NeAACDecClose[ h ]
+        return null
+    ch : i32 [ ch9 ]
+    rate : i32 [ sr9 ]
+    cap : i64 [ (st.npkts + 2) * 2048 * ch ]
+    pcm : new i16 [ cap ]
+    wr : i64 [ 0 ]
+    np : i32 [ st.npkts ]
+    for [ k: i32 0, k < np, k += 1 ]
+        info : NeAACDecFrameInfo
+        doff : i32 [ st.offs[ k ] ]
+        psz  : i32 [ st.sizes[ k ] ]
+        smp : @i16 [ NeAACDecDecode[ h, @info, @buf[ doff ], psz ] ]
+        if [ info.error != 0 || !smp ] continue
+        if [ info.channels > 0 ] ch = info.channels
+        ns : i64 [ info.samples ]
+        if [ wr + ns > cap ] break
+        nb : i64 [ ns * 2 ]
+        memcpy[ @pcm[ wr ], smp, nb ]
+        wr += ns
+    NeAACDecClose[ h ]
+    start : i64 [ st.priming * ch ]
+    total : i64 [ wr - start ]
+    if [ st.nvalid > 0 ]
+        nv : i64 [ st.nvalid * ch ]
+        if [ nv < total ] total = nv
+    if [ total < 0 ] total = 0
+    if [ start > 0 && total > 0 ]
+        tb : i64 [ total * 2 ]
+        memmove[ pcm, @pcm[ start ], tb ]
+    clip : AudioClip [ rate: rate, channels: ch, frames: total / ch ]
+    pcm.hold[]
+    clip.pcm = pcm
+    puts 'caf: {p} rate={rate} ch={ch} frames={clip.frames} cap={cap} wr={wr} start={start} nvalid={st.nvalid} npkts={st.npkts}'
+    return clip
 
 class Voice
     public clip   : AudioClip
@@ -573,6 +720,9 @@ class AudioMixer
             return false
         voices = vec Voice []
         voices.hold[]
+        # fixed pool: the mix thread iterates this while play_p runs
+        for [ i: i32 0, i < 16, i += 1 ]
+            voices += Voice [ ]
         nacc : i32 [ out.buffer_size * 2 ]
         acc = new i32 [ nacc ]
         tid : local u64 [ 1 ]
@@ -583,8 +733,8 @@ class AudioMixer
         if [ !c || !out || !out.active ] return
         for [ v: Voice ] in voices
             if [ !v.active ]
-                v.clip = c
                 v.pos = 0.0
+                v.clip = c
                 v.gain = gain2
                 v.pitch = pitch2
                 v.loop = loop2
@@ -597,6 +747,16 @@ class AudioMixer
     func play [ c: AudioClip, loop2: bool, gain2: f32 ]
         play_p[ c, loop2, gain2, 1.0 ]
 
+    func set_gain [ c: AudioClip, gain2: f32 ]
+        if [ !voices ] return
+        for [ v: Voice ] in voices
+            if [ v.active && v.clip == c ] v.gain = gain2
+
+    func stop_clip [ c: AudioClip ]
+        if [ !voices ] return
+        for [ v: Voice ] in voices
+            if [ v.clip == c ] v.active = false
+
     func mix_entry [] -> none
         n : i32 [ out.buffer_size ]
         n2 : i32 [ n * 2 ]
@@ -605,6 +765,7 @@ class AudioMixer
             for [ v: Voice ] in voices
                 if [ !v.active ] continue
                 c : v.clip
+                if [ !c || !c.pcm || c.frames < 2 ] continue
                 step : f64 [ f64[ c.rate ] / f64[ sample_rate ] * f64[ v.pitch ] ]
                 ch : i32 [ c.channels ]
                 for [ i: i32 0, i < n, i += 1 ]

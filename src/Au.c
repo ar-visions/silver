@@ -9913,6 +9913,9 @@ AU_EXPORT void __coverage_report(void);
 static void __coverage_sigint(int sig) {
     __coverage_report();
     au_leak_report();
+    // a phone forwards stderr to logcat over a pipe thread: let it drain
+    fflush(stderr);
+    usleep(300000);
     signal(SIGINT, SIG_DFL);
     raise(SIGINT);
 }
