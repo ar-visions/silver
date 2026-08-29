@@ -2651,7 +2651,9 @@ static void android_bundle_libs(silver a, path bin, bytes* zip, bytes* cd, array
     array  lines = split(out, "\n");
     each(lines, string, ln0) {
         string ln = trim(ln0);
-        if (!ends_with(ln, ".so")) continue;
+        // a versioned soname (libpng16.so.16) is a dependency too: match a
+        // ".so" anywhere, not just at the end, and skip the readelf header
+        if (index_of(ln, ".so") < 0) continue;
         if (index_of(done, (Au)ln) >= 0) continue;
         if (file_exists("%o/usr/lib/%s/33/%o", a->sysroot, base, ln)) continue;
         path c1 = f(path, "%o/%o", a->build_dir, ln);
@@ -2721,7 +2723,7 @@ static void silver_android_bundle(silver a) {
     // with it, and a stamp tells the host when to extract again
     path share_src = f(path, "%o/share/%o", a->install, share);
     if (dir_exists("%o", share_src)) {
-        string list  = command_run((command)f(string, "cd %o && find . -type f | sort | sed 's|^\\./||'", share_src), false);
+        string list  = command_run((command)f(string, "cd %o && find -L . -type f | sort | sed 's|^\\./||'", share_src), false);
         array  files = split(list, "\n");
         bytes  ls    = {0};
         each(files, string, rel) {
@@ -2792,10 +2794,11 @@ static void device_run(silver a) {
             }
             if (exec(false, "%o devices 2>/dev/null | grep -q '^emulator-'", adb) != 0) {
                 print("[%o] starting the emulator", a->name);
-                // swiftshader renders in software, so this boots the same with
-                // or without a gpu and a display; a dev still gets a window
+                // -gpu auto uses the host gpu when there is one (full speed on a
+                // dev's machine) and falls back to software only when headless,
+                // where swiftshader renders the same frames slower
                 exec(false, "ANDROID_SDK_ROOT=%o ANDROID_AVD_HOME=%o/.. %o/emulator/emulator -avd silver "
-                     "-gpu swiftshader_indirect -no-boot-anim -no-snapshot-save "
+                     "-gpu auto -no-boot-anim -no-snapshot-save "
                      "> %o/../emulator.log 2>&1 &", sdk, avd, sdk, avd);
             }
             if (exec(false, "%o wait-for-device shell 'while [ \"$(getprop sys.boot_completed 2>/dev/null | tr -d \"\\r\")\" != \"1\" ]; "
@@ -2804,6 +2807,25 @@ static void device_run(silver a) {
                 a->error = true;
                 return;
             }
+        }
+#ifdef __linux__
+        // a stock phone in adb mode has no udev rule, so its usb node is
+        // root-only and adb answers "no permissions". say exactly what to run
+        // a fresh server: a running one keeps the node's old permissions
+        if (!strstr(a->platform->chars, "sim")) exec(false, "%o kill-server >/dev/null 2>&1", adb);
+        if (!strstr(a->platform->chars, "sim") &&
+            exec(false, "%o devices 2>/dev/null | grep -q 'no permissions'", adb) == 0) {
+            print("[%o] android: the phone's usb node is root-only (no udev rule for adb). run once, then retry:", a->name);
+            print("  sudo sh -c 'echo \"SUBSYSTEM==\\\"usb\\\", ATTR{idVendor}==\\\"18d1\\\", MODE=\\\"0666\\\", TAG+=\\\"uaccess\\\"\" > /etc/udev/rules.d/51-android.rules' && sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=usb --action=add");
+            a->error = true;
+            return;
+        }
+#endif
+        if (!strstr(a->platform->chars, "sim") &&
+            exec(false, "%o devices 2>/dev/null | grep -q 'unauthorized'", adb) == 0) {
+            print("[%o] android: the phone is asking \"Allow USB debugging?\" — tap Allow on it, then retry", a->name);
+            a->error = true;
+            return;
         }
         print("[%o] installing on %s", a->name, strstr(a->platform->chars, "sim") ? "the emulator" : "the phone");
         if (exec(a->verbose, "%o install -r %o", adb, apk) != 0) {
@@ -8298,6 +8320,7 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
         micro*  ar        = in_context ? (micro*)&au->members : (micro*)&au->args;
 
         if (!t) {
+            validate(n, "expected argument name (reserved word?) in argument %i", seq);
             if (!read_if(a, ":")) {
                 // no colon: treat name as a type (C-style declaration)
                 t = elookup(n->chars);
@@ -9952,8 +9975,17 @@ static symbol platform_abi_link(silver a) {
     if (strstr(p, "mips")) return "-Wl,-z,execstack ";
     // mingw's clang driver still reaches for gcc's runtime by default
     if (strstr(p, "windows")) return "-rtlib=compiler-rt -unwindlib=libunwind ";
-    // android 15 loads 16k-page devices: every segment aligns to that
-    if (strstr(p, "android")) return "-Wl,-z,max-page-size=16384 ";
+    // android 15 loads 16k-page devices: every segment aligns to that. the
+    // /<api> lib dir (shared libc.so) must precede the driver's <triple> dir
+    // (static libc.a), or a .so absorbs bionic's malloc and its IE-model TLS
+    if (strstr(p, "android")) {
+        static char lk[1024];
+        cstr abi = strstr(platform_triple(a), "x86_64") ? "x86_64-linux-android" : "aarch64-linux-android";
+        snprintf(lk, sizeof(lk),
+            "-Wl,-z,max-page-size=16384 -L%s/usr/lib/%s/33 -L%s/usr/lib/%s ",
+            a->sysroot->chars, abi, a->sysroot->chars, abi);
+        return lk;
+    }
     return "";
 }
 
@@ -12800,6 +12832,14 @@ void silver_write_header(silver a) {
     fclose(method_f);
 
 
+    // a system header is written bare so the target's own search path
+    // resolves it: the file is shared by every platform's build
+    #define IMPORT_INCLUDE(i) ({ \
+        string _s = string(((path)(i))->chars); \
+        string _sr = a->sysroot ? f(string, "%o/usr/include/", a->sysroot) : null; \
+        if (_sr && starts_with(_s, _sr->chars)) _s = mid(_s, len(_sr), len(_s) - len(_sr)); \
+        else if (starts_with(_s, "/usr/include/")) _s = mid(_s, 13, len(_s) - 13); \
+        _s; })
     // write import header
     line(import_f, "#ifndef _%o_IMPORT_",   NAME);
     line(import_f, "#define _%o_IMPORT_\n", NAME);
@@ -12808,7 +12848,7 @@ void silver_write_header(silver a) {
         if (!im->is_cpp) continue;
         line(import_f, "#ifdef __cplusplus");
         each(im->include_paths, path, i)
-            line(import_f, "#include <%o>", i);
+            line(import_f, "#include <%o>", IMPORT_INCLUDE(i));
         line(import_f, "#endif");
     }
     line(import_f, "#ifdef __cplusplus");
@@ -12818,7 +12858,7 @@ void silver_write_header(silver a) {
     each(a->imports, import, im) {
         if (im->is_cpp) continue;
         each(im->include_paths, path, i)
-            line(import_f, "#include <%o>", i);
+            line(import_f, "#include <%o>", IMPORT_INCLUDE(i));
     }
 
     line(import_f, "#include <Au/public>");

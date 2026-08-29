@@ -4,6 +4,9 @@
 #import <Foundation/Foundation.h>
 #import <QuartzCore/CAMetalLayer.h>
 #import <GameController/GameController.h>
+#if TARGET_OS_IPHONE
+#import <CoreMotion/CoreMotion.h>
+#endif
 #include <string.h>
 #include <stdlib.h>
 
@@ -155,6 +158,7 @@ static void emit_codepoints(platform_window* w, NSString* s) {
 
 #if !TARGET_OS_IPHONE
 // ================================================================ macOS
+bool platform_motion(float* accel, float* gyro) { return false; }
 
 // macOS virtual keycode → GLFW key number
 static const short mac_keys[128] = {
@@ -460,6 +464,24 @@ void platform_show_keyboard(platform_window* w, bool show) {}
 
 #else
 // ================================================================ iOS
+
+static CMMotionManager* g_motion_mgr;
+// accelerometer in g, gyro in rad/s — started on first ask
+bool platform_motion(float* accel, float* gyro) {
+    if (!g_motion_mgr) {
+        g_motion_mgr = [[CMMotionManager alloc] init];
+        g_motion_mgr.accelerometerUpdateInterval = 1.0 / 60.0;
+        g_motion_mgr.gyroUpdateInterval = 1.0 / 60.0;
+        if (g_motion_mgr.accelerometerAvailable) [g_motion_mgr startAccelerometerUpdates];
+        if (g_motion_mgr.gyroAvailable) [g_motion_mgr startGyroUpdates];
+    }
+    CMAccelerometerData* d = g_motion_mgr.accelerometerData;
+    if (!d) return false;
+    if (accel) { accel[0] = d.acceleration.x; accel[1] = d.acceleration.y; accel[2] = d.acceleration.z; }
+    CMGyroData* g = g_motion_mgr.gyroData;
+    if (gyro) { gyro[0] = g ? g.rotationRate.x : 0; gyro[1] = g ? g.rotationRate.y : 0; gyro[2] = g ? g.rotationRate.z : 0; }
+    return true;
+}
 
 static platform_loop_fn g_loop;
 static void*            g_loop_ctx;

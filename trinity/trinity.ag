@@ -1336,6 +1336,8 @@ Display Window
 
     public func apply_args [ inst: element, e: element ] -> bool
         if [ typeid[ inst ] != typeid[ e ] ] return false
+        # the root app is its own render; state members may lack compare*
+        if [ inst == e ] return false
         changed : false
         il        : string [ inst.label ]
         el_       : string [ e.label ]
@@ -2126,6 +2128,10 @@ Display Window
         ev.pad.button = code
         ev.pad.state  = i32[ on ]
         pad_event[ ev ]
+
+    # device motion: accelerometer (g) + gyro (rad/s); false on a desktop
+    public func motion [ ac: @f32, gy: @f32 ] -> bool
+        return platform_motion[ ac, gy ]
 
     # joysticks are polled, not called back. a d-pad is an axis pair on
     # most gamepads and a hat on others, so all three are read here
@@ -4104,6 +4110,8 @@ func state_persist_load [ target: Au ]
 abstract media_app trinity
     public root         : element
     public title        : string
+    # fixed logical width (points) on a device: the height follows the aspect, like a 480-wide game screen
+    public logical_width : i32
     public hidden       : bool
     public startup_path : path
     intern msaa_samples : i64
@@ -4141,6 +4149,7 @@ abstract media_app trinity
         adopt[ 'title' ]
         adopt[ 'width' ]
         adopt[ 'height' ]
+        adopt[ 'logical_width' ]
         adopt[ 'lock_aspect' ]
         if [ lock_aspect ]
             aspect_w = width
@@ -4170,7 +4179,7 @@ abstract media_app trinity
                 return
         window : Window[ app_object: root, title:(title) ?? rt.ident, st: Style [ root ],
             width:(width) ?? 1888, height:(height) ?? 888,
-            hidden: hidden, lock_aspect: lock_aspect ]
+            hidden: hidden, lock_aspect: lock_aspect, logical_width: logical_width ]
         expect window.vk, "context didnt work"
         w = window
         Au.hold[ w ]
@@ -4207,7 +4216,7 @@ abstract media_app trinity
             ah : i32 [ (height) ?? 720 ]
             awin : Window[ app_object: root, title:(title) ?? rt.ident, st: Style [ root ],
                 width: aw, height: ah, backbuffer: true,
-                format: Pixel.rgba8 ]
+                format: Pixel.rgba8, logical_width: logical_width ]
             w = awin
             Au.hold[ w ]
             root.vk = awin.vk
