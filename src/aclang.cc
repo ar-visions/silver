@@ -1386,6 +1386,24 @@ static inline llvm::Module *unwrap(LLVMModuleRef M) {
 // Main include function
 // ============================================================================
 
+// framework include: First/Header.h -> First.framework/Headers/Header.h
+static path lookup_framework(aether e, string include) {
+    if (!e->framework_paths) return null;
+    symbol ch    = include->chars;
+    symbol slash = strchr(ch, '/');
+    size_t n     = slash ? (size_t)(slash - ch) : 0;
+    char   fw[256];
+    if (!n || n >= sizeof(fw)) return null;
+    memcpy(fw, ch, n);
+    fw[n] = 0;
+    each(e->framework_paths, path, fp) {
+        path r = f(path, "%o/%s.framework/Headers/%s", fp, fw, slash + 1);
+        if (path_exists(r))
+            return r;
+    }
+    return null;
+}
+
 path aether_lookup_include(aether e, string include) {
     // a device build resolves system headers in the DEVICE's sysroot, never
     // on this machine. a header the target does not have (unistd.h on
@@ -1410,7 +1428,9 @@ path aether_lookup_include(aether e, string include) {
                 path r = f(path, "%o/%o", i, include);
                 if (path_exists(r)) return r;
             }
-        return null;
+        // an apple device carries frameworks too, and set_target already
+        // pointed framework_paths at ITS sdk, not this machine's
+        return lookup_framework(e, include);
     }
     array ipaths = a(e->sys_inc_paths, e->sys_exc_paths, e->include_paths);
     if (file_exists("%o", include))
@@ -1430,22 +1450,8 @@ path aether_lookup_include(aether e, string include) {
             }
     }
 
-    // framework include: First/Header.h -> First.framework/Headers/Header.h
-    if (e->framework_paths) {
-        symbol ch    = include->chars;
-        symbol slash = strchr(ch, '/');
-        size_t n     = slash ? (size_t)(slash - ch) : 0;
-        char   fw[256];
-        if (n && n < sizeof(fw)) {
-            memcpy(fw, ch, n);
-            fw[n] = 0;
-            each(e->framework_paths, path, fp) {
-                path r = f(path, "%o/%s.framework/Headers/%s", fp, fw, slash + 1);
-                if (path_exists(r))
-                    return r;
-            }
-        }
-    }
+    path fwr = lookup_framework(e, include);
+    if (fwr) return fwr;
 
     // not found in silver's tracked paths. don't be fatal: a system header may
     // be #ifdef-guarded out on this platform (e.g. <pty.h> on macOS, which uses

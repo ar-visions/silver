@@ -2218,6 +2218,16 @@ static path ios_profile(silver a, string udid, string* team) {
     return null;
 }
 
+// `export landscape: true` in the app's module. read here because the plist
+// is written before a line of the app has run
+static bool ios_landscape(silver a) {
+    silver  og  = a->is_external ? a->is_external : a;
+    exports exp = (exports)get(og->exports, (Au)string(a->name->chars));
+    array   v   = exp && exp->areas ?
+        (array)get(exp->areas, (Au)string("landscape")) : null;
+    return v && len(v) && cmp((string)v->origin[0], "true") == 0;
+}
+
 // <build>/<Name>.app: the ios host, Frameworks/ with the product and its
 // closure, share/<name>, the profile, then one signature per binary
 static void silver_ios_bundle(silver a) {
@@ -2282,14 +2292,31 @@ static void silver_ios_bundle(silver a) {
         "  <key>UIDeviceFamily</key><array><integer>1</integer><integer>2</integer></array>\n"
         "  <key>UIRequiresFullScreen</key><true/>\n"
         "  <key>UILaunchScreen</key><dict/>\n"
+        // the app's Documents/ holds the diagnostics it writes when there is
+        // no console (silver.log, screenshots). without this the container is
+        // private and `devicectl device copy from` cannot reach it
+        "  <key>UIFileSharingEnabled</key><true/>\n"
+        // MultipeerConnectivity is blocked outright on ios 14+ unless the app
+        // declares the bonjour services it browses and why it wants the LAN
+        "  <key>NSLocalNetworkUsageDescription</key>"
+        "<string>Two-player racing with a nearby device.</string>\n"
+        "  <key>NSBonjourServices</key><array>\n"
+        "    <string>_orion._tcp</string>\n"
+        "    <string>_orion._udp</string>\n"
+        "  </array>\n"
         "  <key>UISupportedInterfaceOrientations</key><array>\n"
-        "    <string>UIInterfaceOrientationPortrait</string>\n"
-        "    <string>UIInterfaceOrientationLandscapeLeft</string>\n"
-        "    <string>UIInterfaceOrientationLandscapeRight</string>\n"
+        "%s"
         "  </array>\n"
         "</dict></plist>\n",
         name, name, name, name, ver, ver,
-        sim ? "iPhoneSimulator" : "iPhoneOS", sim ? "iphonesimulator" : "iphoneos");
+        sim ? "iPhoneSimulator" : "iPhoneOS", sim ? "iphonesimulator" : "iphoneos",
+        // uikit intersects the view controller's mask with THIS list, so a
+        // landscape app that still names Portrait launches portrait and draws
+        // sideways. `export landscape: true` in the module says which it is
+        ios_landscape(a)
+            ? "    <string>UIInterfaceOrientationLandscapeLeft</string>\n"
+              "    <string>UIInterfaceOrientationLandscapeRight</string>\n"
+            : "    <string>UIInterfaceOrientationPortrait</string>\n");
     path_save(f(path, "%o/Info.plist", app), (Au)plist, null);
 
     // the simulator takes an ad-hoc signature and no profile
@@ -10309,8 +10336,11 @@ none silver_build_product(silver a) {
                 string(platform_abi_cxx(a));
             cstr   lang_flag = source_lang_flag(a, ext);
             string st       = stem(i);
-            verify(exec(a->verbose, "%o/%s %o%s %o%s %o %s -c %o -o %o -I%o/include/%o -I%o/include -I%o/include/Au -I%s/platform/%o/include",
-                tools, compiler, tgt, std_flag, cxx_abi, lang_flag, ccflags, a->debug ? "-g" : "", i, i_name, install, st, install, install, SILVER, target_dir(a)) == 0,
+            // same suppressions the native line uses: a device build compiles the
+            // SAME sources, and without them vendored headers (vk_mem_alloc.h)
+            // bury the output in -Wnullability-completeness
+            verify(exec(a->verbose, "%o/%s %o%s %o%s %s %o %s -c %o -o %o -I%o/include/%o -I%o/include -I%o/include/Au -I%s/platform/%o/include",
+                tools, compiler, tgt, std_flag, cxx_abi, lang_flag, core_warn, ccflags, a->debug ? "-g" : "", i, i_name, install, st, install, install, SILVER, target_dir(a)) == 0,
                 "failed to compile %o (platform: %o)", i, a->platform);
             if (len(objs)) append(objs, " ");
             concat(objs, i_name);
@@ -10613,6 +10643,20 @@ path module_exists(silver a, array idents, bool binary_finary, bool* is_bin) {
     if (file_exists("%o", sf)) {
         *is_bin = false;
         return sf;
+    }
+
+    // an app OUTSIDE the silver tree (~/src/orion) still imports silver's own
+    // modules by name, and they live at <root>/<name>/<name>.ag. finding the
+    // SOURCE is what lets a device build make its own device copy: the binary
+    // fallback below only ever finds install/, which is this machine's build,
+    // and linking that into an ios product gives "has platform macOS"
+    if (a->root_path && len(idents) == 1) {
+        path rf = absolute(f(path, "%o/%o/%o.ag",
+            a->root_path, stem(to_path), stem(to_path)));
+        if (file_exists("%o", rf)) {
+            *is_bin = false;
+            return rf;
+        }
     }
 
     // it could be a sub module
@@ -11423,10 +11467,29 @@ enode parse_export(silver a) {
     }
 
     // export area ['value', 'value'] — registry entry (export extensions ['.n64'])
+    // export name: value      — a manifest flag the bundler reads (export
+    //                           landscape: true). same areas map, one value
     if (t && t->chars[0] >= 'a' && t->chars[0] <= 'z') {
         string area = read_alpha(a);
         validate(area, "expected export area name");
-        validate(read_if(a, "["), "expected [ after export %o", area);
+        if (read_if(a, ":")) {
+            string val = read_alpha(a);
+            if (!val) val = read_string(a);
+            validate(val, "expected value for export %o", area);
+            silver og2 = a->is_external ? a->is_external : a;
+            exports e2 = (exports)get(og2->exports, (Au)string(a->name->chars));
+            if (!e2) {
+                e2 = exports(module_path, a->module_path, module_file, a->module_file,
+                             project_path, a->project_path,
+                             install_name, silver_install_name(a));
+                set(og2->exports, (Au)string(a->name->chars), (Au)e2);
+            }
+            if (!e2->areas)
+                e2->areas = map(hsize, 8);
+            set(e2->areas, (Au)area, (Au)a(interpolate(val, (Au)a)));
+            return e_noop(a, null);
+        }
+        validate(read_if(a, "["), "expected [ or : after export %o", area);
         silver og = a->is_external ? a->is_external : a;
         exports exp = (exports)get(og->exports, (Au)string(a->name->chars));
         if (!exp) {
@@ -12035,6 +12098,18 @@ enode parse_import(silver a) {
                 external_name    = silver_install_name(external);
                 external_product = hold(external->product);
 
+                // the artifact keeper can be an instance that never reached the
+                // tail of silver_init (an out-of-tree app on a --clean build):
+                // artifacts is null there, and index_of walks a null array
+                if (!og->artifacts) og->artifacts = hold(array(32));
+                if (!a->artifacts)  a->artifacts  = hold(array(32));
+
+                // the artifact keeper can be an instance that never reached the
+                // tail of silver_init (an out-of-tree app, --clean): artifacts
+                // is null there and index_of walks a null array
+                if (!og->artifacts) og->artifacts = hold(array(32));
+                if (!a->artifacts)  a->artifacts  = hold(array(32));
+
                 if (external_product) {
                     if (index_of(og->artifacts, (Au)external_product) < 0) {
                         push(og->artifacts, (Au)external_product);
@@ -12083,6 +12158,11 @@ enode parse_import(silver a) {
                 // a --format build skips build_product (no codegen/link), so an external
                 // has no product → external_product is null. only link it when it exists;
                 // --format doesn't link anyway, so skipping is correct (not a workaround).
+                if (getenv("SILVER_DBG_PRODUCT"))
+                    printf("[dbgprod] %s: host=%s external=%s\n",
+                        external_name ? external_name->chars : "?",
+                        host_product ? host_product->chars : "(null)",
+                        external_product ? external_product->chars : "(null)");
                 if (external_product)
                     set(a->libs, (Au)string(external_product->chars), (Au)_bool(true));
             } // end else (not frag)
@@ -12183,6 +12263,12 @@ enode parse_import(silver a) {
     // loads the actual library here -- DO NOT integrate external->autype module; we load it direct with our own
     // and let the runtime register itself
     // this is so we may be Au-centric, and language agnostic
+    if (getenv("SILVER_DBG_PRODUCT"))
+        printf("[dbgprod:mdl] %s host=%s external=%s codegen=%d\n",
+            mdl->external_name ? mdl->external_name->chars : "?",
+            mdl->host_product ? mdl->host_product->chars : "(null)",
+            mdl->external_product ? mdl->external_product->chars : "(null)",
+            is_codegen ? 1 : 0);
     if (!is_codegen && (import_Au || mod || lib_path)) {
         import_Au(a,
             mdl->external_name,
@@ -12193,6 +12279,9 @@ enode parse_import(silver a) {
         // the loader took the host copy; the link must take the device's
         if (mdl->host_product && mdl->external_product &&
             compare(mdl->host_product, mdl->external_product) != 0) {
+            if (getenv("SILVER_DBG_PRODUCT"))
+                printf("[dbgprod:swap] host=%s -> device=%s\n",
+                    mdl->host_product->chars, mdl->external_product->chars);
             map_rm(a->libs, (Au)string(mdl->host_product->chars));
             set(a->libs, (Au)string(mdl->external_product->chars), (Au)_bool(true));
         }

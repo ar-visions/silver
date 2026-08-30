@@ -2,13 +2,19 @@
 #include "host.h"
 #include <TargetConditionals.h>
 #import <Foundation/Foundation.h>
+#if !TARGET_OS_IPHONE
+#import <IOKit/IOKitLib.h>
+#endif
 #import <QuartzCore/CAMetalLayer.h>
 #import <GameController/GameController.h>
 #if TARGET_OS_IPHONE
 #import <CoreMotion/CoreMotion.h>
+#import <MultipeerConnectivity/MultipeerConnectivity.h>
 #endif
 #include <string.h>
 #include <stdlib.h>
+#include <unistd.h>
+#include <pthread.h>
 
 #if TARGET_OS_IPHONE
 #import "UIKit/UIKit.h"   // quoted: the .mm scanner would link it on macOS
@@ -159,6 +165,29 @@ static void emit_codepoints(platform_window* w, NSString* s) {
 #if !TARGET_OS_IPHONE
 // ================================================================ macOS
 bool platform_motion(float* accel, float* gyro) { return false; }
+int  platform_orientation(void) { return 0; }
+// macOS has no vendor id; the hardware uuid is the closest stable equivalent
+const char* platform_device_id(void) {
+    static char id[64];
+    if (!id[0]) {
+        io_registry_entry_t root = IORegistryEntryFromPath(kIOMainPortDefault, "IOService:/");
+        CFStringRef uuid = (CFStringRef)IORegistryEntryCreateCFProperty(
+            root, CFSTR(kIOPlatformUUIDKey), kCFAllocatorDefault, 0);
+        if (uuid) {
+            CFStringGetCString(uuid, id, sizeof(id), kCFStringEncodingUTF8);
+            CFRelease(uuid);
+        }
+        IOObjectRelease(root);
+    }
+    return id;
+}
+
+bool platform_peer_start(const char* service) { return false; }
+void platform_peer_stop(void) {}
+bool platform_peer_connected(void) { return false; }
+const char* platform_peer_name(void) { return ""; }
+void platform_peer_send(const void* data, int len, bool reliable) {}
+int platform_peer_poll(void* out, int max) { return 0; }
 
 // macOS virtual keycode → GLFW key number
 static const short mac_keys[128] = {
@@ -299,6 +328,9 @@ static float mac_scale(platform_window* w);
 @end
 
 bool platform_init(void) {
+    static bool inited = false;
+    if (inited) return true;
+    inited = true;
     @autoreleasepool {
         g_t0 = CACurrentMediaTime();
         [NSApplication sharedApplication];
@@ -465,6 +497,137 @@ void platform_show_keyboard(platform_window* w, bool show) {}
 #else
 // ================================================================ iOS
 
+// 0 portrait, 1 landscape-left, 2 landscape-right. UIKit's enum is
+// LandscapeLeft = home button LEFT, which is the opposite of the device
+// orientation enum -- report the INTERFACE one, that is what the accelerometer
+// has to be corrected against
+int platform_orientation(void) {
+    UIInterfaceOrientation o = UIInterfaceOrientationPortrait;
+    for (UIScene* sc in UIApplication.sharedApplication.connectedScenes) {
+        if (![sc isKindOfClass:[UIWindowScene class]]) continue;
+        o = ((UIWindowScene*)sc).interfaceOrientation;
+        break;
+    }
+    if (o == UIInterfaceOrientationLandscapeLeft)  return 1;
+    if (o == UIInterfaceOrientationLandscapeRight) return 2;
+    return 0;
+}
+
+// ---------------------------------------------------------------- peers
+// EAGLView.mm ran a GKPeerPickerController and a GKSession; GKSession is gone
+// from ios, so this is MultipeerConnectivity with the invitation accepted
+// automatically -- the picker existed only to choose a peer, and the old game
+// only ever talked to one.
+@interface SpPeer : NSObject <MCSessionDelegate,
+    MCNearbyServiceAdvertiserDelegate, MCNearbyServiceBrowserDelegate>
+@end
+
+static MCPeerID*               g_me;
+static MCSession*              g_sess;
+static MCNearbyServiceAdvertiser* g_adv;
+static MCNearbyServiceBrowser* g_brw;
+static SpPeer*                 g_peer_del;
+static bool                    g_peer_up;
+#define PEER_Q 64
+static NSData*                 g_peer_q[PEER_Q];
+static int                     g_peer_n;
+static pthread_mutex_t         g_peer_lock = PTHREAD_MUTEX_INITIALIZER;
+
+@implementation SpPeer
+- (void)session:(MCSession*)s peer:(MCPeerID*)p didChangeState:(MCSessionState)st {
+    g_peer_up = (st == MCSessionStateConnected);
+}
+// MCSession delivers on a background queue, so packets are queued here and
+// drained by the game thread in platform_peer_poll rather than reaching game
+// state directly
+- (void)session:(MCSession*)s didReceiveData:(NSData*)d fromPeer:(MCPeerID*)p {
+    pthread_mutex_lock(&g_peer_lock);
+    if (g_peer_n < PEER_Q) {
+        g_peer_q[g_peer_n] = [d copy];
+        g_peer_n++;
+    }
+    pthread_mutex_unlock(&g_peer_lock);
+}
+- (void)session:(MCSession*)s didReceiveStream:(NSInputStream*)st
+       withName:(NSString*)n fromPeer:(MCPeerID*)p {}
+- (void)session:(MCSession*)s didStartReceivingResourceWithName:(NSString*)n
+       fromPeer:(MCPeerID*)p withProgress:(NSProgress*)pr {}
+- (void)session:(MCSession*)s didFinishReceivingResourceWithName:(NSString*)n
+       fromPeer:(MCPeerID*)p atURL:(NSURL*)u withError:(NSError*)e {}
+// the old picker auto-paired too: one peer, no prompt
+- (void)advertiser:(MCNearbyServiceAdvertiser*)a
+didReceiveInvitationFromPeer:(MCPeerID*)p withContext:(NSData*)c
+ invitationHandler:(void (^)(BOOL, MCSession*))h { h(YES, g_sess); }
+- (void)browser:(MCNearbyServiceBrowser*)b foundPeer:(MCPeerID*)p
+withDiscoveryInfo:(NSDictionary*)i {
+    [b invitePeer:p toSession:g_sess withContext:nil timeout:20];
+}
+- (void)browser:(MCNearbyServiceBrowser*)b lostPeer:(MCPeerID*)p {}
+@end
+
+bool platform_peer_start(const char* service) {
+    if (g_sess) return true;
+    NSString* svc = [NSString stringWithUTF8String:service ?: "orion"];
+    g_peer_del = [[SpPeer alloc] init];
+    g_me   = [[MCPeerID alloc] initWithDisplayName:UIDevice.currentDevice.name];
+    g_sess = [[MCSession alloc] initWithPeer:g_me securityIdentity:nil
+              encryptionPreference:MCEncryptionNone];
+    g_sess.delegate = g_peer_del;
+    g_adv = [[MCNearbyServiceAdvertiser alloc] initWithPeer:g_me
+             discoveryInfo:nil serviceType:svc];
+    g_adv.delegate = g_peer_del;
+    g_brw = [[MCNearbyServiceBrowser alloc] initWithPeer:g_me serviceType:svc];
+    g_brw.delegate = g_peer_del;
+    [g_adv startAdvertisingPeer];
+    [g_brw startBrowsingForPeers];
+    return true;
+}
+
+void platform_peer_stop(void) {
+    [g_adv stopAdvertisingPeer];
+    [g_brw stopBrowsingForPeers];
+    [g_sess disconnect];
+    g_adv = nil; g_brw = nil; g_sess = nil; g_me = nil;
+    g_peer_del = nil; g_peer_up = false;
+}
+
+bool platform_peer_connected(void) { return g_peer_up; }
+
+// the joined peer's display name, for the second player's car label
+const char* platform_peer_name(void) {
+    static char nm[64];
+    nm[0] = 0;
+    if (g_sess && g_sess.connectedPeers.count > 0) {
+        MCPeerID* p = g_sess.connectedPeers.firstObject;
+        snprintf(nm, sizeof(nm), "%s", p.displayName.UTF8String);
+    }
+    return nm;
+}
+
+void platform_peer_send(const void* data, int len, bool reliable) {
+    if (!g_sess || g_sess.connectedPeers.count == 0 || len <= 0) return;
+    NSData* d = [NSData dataWithBytes:data length:len];
+    [g_sess sendData:d toPeers:g_sess.connectedPeers
+            withMode:reliable ? MCSessionSendDataReliable
+                              : MCSessionSendDataUnreliable error:nil];
+}
+
+// copy the oldest queued packet out, or 0 when there is nothing waiting
+int platform_peer_poll(void* out, int max) {
+    int n = 0;
+    pthread_mutex_lock(&g_peer_lock);
+    if (g_peer_n > 0) {
+        NSData* d = g_peer_q[0];
+        n = (int)d.length;
+        if (n > max) n = max;
+        memcpy(out, d.bytes, n);
+        for (int i = 1; i < g_peer_n; i++) g_peer_q[i - 1] = g_peer_q[i];
+        g_peer_n--;
+    }
+    pthread_mutex_unlock(&g_peer_lock);
+    return n;
+}
+
 static CMMotionManager* g_motion_mgr;
 // accelerometer in g, gyro in rad/s — started on first ask
 bool platform_motion(float* accel, float* gyro) {
@@ -545,11 +708,24 @@ static platform_window* g_win;
 - (void)touchesCancelled:(NSSet<UITouch*>*)ts withEvent:(UIEvent*)e { [self touches:ts phase:PLATFORM_TOUCH_CANCEL]; }
 @end
 
+// the app's window shape picks the orientation, same rule as android:
+// landscape when it is wider than tall. set before the root controller is
+// attached, so uikit's first layout is already the right way round
+static bool g_landscape = false;
+
 @interface PlatformViewController : UIViewController
 @end
 @implementation PlatformViewController
 - (BOOL)prefersStatusBarHidden { return YES; }
 - (BOOL)prefersHomeIndicatorAutoHidden { return YES; }
+// no swipe affordance along the edges: the game owns every gesture, and the
+// system's hint bar sits on top of the frame
+- (UIRectEdge)preferredScreenEdgesDeferringSystemGestures { return UIRectEdgeAll; }
+- (BOOL)shouldAutorotate { return YES; }
+- (UIInterfaceOrientationMask)supportedInterfaceOrientations {
+    return g_landscape ? UIInterfaceOrientationMaskLandscape
+                       : UIInterfaceOrientationMaskPortrait;
+}
 @end
 
 @interface PlatformAppDelegate : UIResponder <UIApplicationDelegate>
@@ -568,13 +744,81 @@ static platform_window* g_win;
 - (void)applicationDidBecomeActive:(UIApplication*)a  { if (g_win && g_win->on_focus) g_win->on_focus(g_win, 1); }
 @end
 
-bool platform_init(void) { g_t0 = CACurrentMediaTime(); return true; }
+// a tap-launched app has no console -- devicectl only attaches one when IT
+// starts the process -- so fd 1/2 also go to a file the app can be asked for
+// later. it is a LOG: it installs once and it stops at LOG_CAP.
+#define LOG_CAP (1 << 20)   // 1 MB, hard
+
+static int    g_log_out = -1;   // dup of the REAL stderr, taken before any dup2
+static FILE*  g_log_f;
+static size_t g_log_n;
+
+static void* log_pump(void* arg) {
+    int rd = (int)(intptr_t)arg;
+    char buf[4096];
+    ssize_t n;
+    while ((n = read(rd, buf, sizeof(buf))) > 0) {
+        // the console always gets it; the file only until the cap
+        if (g_log_out >= 0) { ssize_t w = write(g_log_out, buf, n); (void)w; }
+        if (!g_log_f) continue;
+        if (g_log_n + (size_t)n > LOG_CAP) {
+            fputs("\n-- log capped at 1MB --\n", g_log_f);
+            fclose(g_log_f);
+            g_log_f = NULL;
+            continue;
+        }
+        fwrite(buf, 1, n, g_log_f);
+        fflush(g_log_f);
+        g_log_n += (size_t)n;
+    }
+    return NULL;
+}
+
+static void log_capture(void) {
+    // ONCE. a second call would dup() the pipe already on fd 2 as if it were
+    // the real stderr, and the pump would then feed its own input
+    static bool captured = false;
+    if (captured) return;
+    captured = true;
+    const char* home = getenv("HOME");
+    if (!home) return;
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/Documents/silver.log", home);
+    g_log_f = fopen(path, "w");     // truncate: one launch, one log
+    if (!g_log_f) return;
+    g_log_n = 0;
+    int fds[2];
+    if (pipe(fds) != 0) { fclose(g_log_f); g_log_f = NULL; return; }
+    g_log_out = dup(2);
+    dup2(fds[1], 1);
+    dup2(fds[1], 2);
+    close(fds[1]);
+    setvbuf(stdout, NULL, _IONBF, 0);
+    setvbuf(stderr, NULL, _IONBF, 0);
+    pthread_t t;
+    pthread_create(&t, NULL, log_pump, (void*)(intptr_t)fds[0]);
+    pthread_detach(t);
+}
+
+// called TWICE on ios: silver-host-ios.c:55 before platform_run, then again
+// from Display.init (trinity.ag:1065). re-running it reset g_t0 and moved the
+// clock under everything reading platform_time
+bool platform_init(void) {
+    static bool inited = false;
+    if (inited) return true;
+    inited = true;
+    g_t0 = CACurrentMediaTime();
+    log_capture();
+    return true;
+}
 void platform_terminate(void) {}
 
 // UIKit owns the loop: the app's first tick must create its window
 int platform_run(platform_loop_fn loop, void* ctx) {
     g_loop = loop; g_loop_ctx = ctx;
-    return UIApplicationMain(0, NULL, nil, @"PlatformAppDelegate");
+    // argv is declared non-null: hand it a real empty vector, not NULL
+    char* argv0[] = { (char*)"app", NULL };
+    return UIApplicationMain(1, argv0, nil, @"PlatformAppDelegate");
 }
 
 void platform_poll(void) {}
@@ -582,9 +826,14 @@ void platform_poll(void) {}
 platform_window* platform_window_create(int width, int height, const char* title, bool visible) {
     platform_window* w = (platform_window*)calloc(1, sizeof(platform_window));
     UIScreen* screen = [UIScreen mainScreen];
-    w->window = [[UIWindow alloc] initWithFrame:screen.bounds];
+    g_landscape = width > height;
+    // do NOT pre-swap this: a landscape drawable inside a portrait window just
+    // draws sideways. the plist's UISupportedInterfaceOrientations and the view
+    // controller's mask rotate the scene, and layoutSubviews resizes from there
+    CGRect b = screen.bounds;
+    w->window = [[UIWindow alloc] initWithFrame:b];
     PlatformViewController* vc = [[PlatformViewController alloc] init];
-    PlatformUIView* v = [[PlatformUIView alloc] initWithFrame:screen.bounds];
+    PlatformUIView* v = [[PlatformUIView alloc] initWithFrame:b];
     v->w = w;
     v.contentScaleFactor = screen.nativeScale;
     v.multipleTouchEnabled = YES;
@@ -592,17 +841,18 @@ platform_window* platform_window_create(int width, int height, const char* title
     // created from it before uikit ever lays the view out
     CAMetalLayer* ml = (CAMetalLayer*)v.layer;
     ml.contentsScale = screen.nativeScale;
-    ml.drawableSize  = CGSizeMake(screen.bounds.size.width * screen.nativeScale,
-                                  screen.bounds.size.height * screen.nativeScale);
+    ml.drawableSize  = CGSizeMake(b.size.width * screen.nativeScale,
+                                  b.size.height * screen.nativeScale);
     vc.view = v;
     w->vc = vc;
     w->view = v;
     w->window.rootViewController = vc;
     w->fullscreen = true;
     g_win = w;
-    fprintf(stderr, "devices: window %dx%d points, scale %.2f, drawable %dx%d\n",
-        (int)screen.bounds.size.width, (int)screen.bounds.size.height, (float)screen.nativeScale,
-        (int)ml.drawableSize.width, (int)ml.drawableSize.height);
+    fprintf(stderr, "devices: window %dx%d points, scale %.2f, drawable %dx%d, %s\n",
+        (int)b.size.width, (int)b.size.height, (float)screen.nativeScale,
+        (int)ml.drawableSize.width, (int)ml.drawableSize.height,
+        g_landscape ? "landscape" : "portrait");
     if (visible) platform_window_show(w);
     return w;
 }

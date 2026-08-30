@@ -11181,6 +11181,15 @@ AU_EXPORT none aether_set_target(aether a, symbol triple) {
             LLVMDisposeTargetMachine((LLVMTargetMachineRef)a->target_machines[i]);
     a->target_triple = t;
     a->target_ref    = tref;
+    // frameworks belong to the SDK being parsed, not to this machine. a cross
+    // parse that kept the host's /System/Library/Frameworks read macOS headers
+    // under a device triple and registered none of the framework's types
+    // (AudioToolbox -> "found AudioQueueRef"); an apple device names its own,
+    // and no other platform has frameworks at all
+    if (a->target_sysroot)
+        a->framework_paths = strstr(t, "apple")
+            ? hold(a(f(path, "%o/System/Library/Frameworks", a->target_sysroot)))
+            : hold(array(alloc, 1));
     // generic cpu and no feature string: the device names the arch, and a
     // host-specific cpu (x86-64-v3) is meaningless anywhere else
     // debian riscv64 is rv64gc/lp64d: without the extensions the objects
