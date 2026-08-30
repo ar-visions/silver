@@ -375,6 +375,11 @@ abstract live_app media_app
             child : bool [ getenv[ 'SILVER_ISOLATE_CHILD' ] != null ]
             if [ (win.ide_asked || child) && !win.ide_active ] share_publish[ 0 ]
             instr_publish[]
+        # TRIN_SHOT=<name>: capture without the arg parser, for a sandboxed
+        # device where flags cannot reach the app
+        if [ !screenshot ]
+            env_shot : cstr [ getenv[ 'TRIN_SHOT' ] ]
+            if [ env_shot ] screenshot = path '{env_shot}'
         if [ screenshot ]
             shot_frames += 1
             if [ shot_frames >= shot_frame ]
@@ -382,8 +387,15 @@ abstract live_app media_app
                 render : w.last_render[]
                 if [ render && render.color ]
                     im : Image [ render.color ]
-                    im.png[ screenshot ]
-                    puts 'screenshot: {screenshot}'
+                    # ios cwd is the signed bundle, which is read-only: a
+                    # relative shot has nowhere to land. put it in the app
+                    # container, where devicectl can copy it back off
+                    dest : path [ screenshot ]
+                    ifdef [ ios ]
+                        hm : cstr [ getenv[ 'HOME' ] ]
+                        if [ hm ] dest = path '{hm}/Documents/{screenshot}'
+                    im.png[ dest ]
+                    puts 'screenshot: {dest}'
                     exit[ 0 ]
         Au.auto_free[false]
         probe : path 'afprobe'
@@ -1128,6 +1140,9 @@ Display Window
     # a backdrop element publishes its render target here; the blur/frost
     # chain builds off it the first frame it appears
     public backdrop              : Render
+    # every compositor pass. the DRAW list is derived from this: the full
+    # chain only when an element actually declares frost, else r_view alone
+    mutable chain                : vec Render
     # resize replaced attachments: the frost chain rebinds as if fresh
     mutable rebind_frost         : bool
     mutable m_reduce             : Model
@@ -2133,6 +2148,46 @@ Display Window
     public func motion [ ac: @f32, gy: @f32 ] -> bool
         return platform_motion[ ac, gy ]
 
+    # interface orientation: 0 portrait, 1 landscape-left, 2 landscape-right.
+    # accelerometer axes are DEVICE-relative, so tilt steering has to correct
+    # for which way round the interface is or it inverts
+    public func orientation [ ] -> i32
+        return platform_orientation[ ]
+
+    # stable per-install id (ios identifierForVendor). used to mark a player's
+    # own row in an online record list
+    # peer-to-peer, the shape the old game's GKSession had. the app supplies a
+    # receive handler and sends bytes; pairing is automatic
+    public func peer_start [ service: string ] -> bool
+        return platform_peer_start[ service.chars ]
+
+    public func peer_stop [ ]
+        platform_peer_stop[ ]
+
+    public func peer_connected [ ] -> bool
+        return platform_peer_connected[ ]
+
+    # ios shows no soft keyboard unless the view is asked; harmless elsewhere
+    public func show_keyboard [ on: bool ]
+        if [ glfw ] platform_show_keyboard[ glfw, on ]
+
+    public func peer_name [ ] -> string
+        cs : symbol [ platform_peer_name[ ] ]
+        if [ !cs ] return ''
+        return string[ cs ]
+
+    public func peer_send [ data: @u8, len: i32, reliable: bool ]
+        platform_peer_send[ data, len, reliable ]
+
+    # drain one packet; 0 when nothing is waiting
+    public func peer_poll [ out: @u8, max: i32 ] -> i32
+        return platform_peer_poll[ out, max ]
+
+    public func device_id [ ] -> string
+        cs : symbol [ platform_device_id[ ] ]
+        if [ !cs ] return ''
+        return string[ cs ]
+
     # joysticks are polled, not called back. a d-pad is an axis pair on
     # most gamepads and a hat on others, so all three are read here
     public func pad_pump [ ]
@@ -2346,6 +2401,10 @@ Display Window
         target : string [ (f && f.id) ? f.id : '(none)' ]
         parent : string [ (f && f.parent && f.parent.id) ? f.parent.id : '(none)' ]
         puts 'PRESS at {world_m.x},{world_m.y} -> {target} in {parent}'
+        if [ f && f.elements ]
+            for [ c: element, cid: string ] in f.elements
+                if [ c.bounds ]
+                    puts '  child {cid} @ {c.bounds.x},{c.bounds.y} {c.bounds.w}x{c.bounds.h}'
         press_route[ f, ev ]
 
     # dispatch to a KNOWN target: the routing press_event does after hit-test
@@ -2497,7 +2556,20 @@ Display Window
     # still points at the dead texture, and rebind_model faithfully
     # rebinds to it. re-wire the chain from CURRENT colors, in order
     func rewire_frost [ ]
-        if [ !m_reduce || !m_view ] return
+        if [ !m_view ] return
+        # no frost element ever appeared: there is no chain to wire. the
+        # composite reads the background for all three samplers
+        if [ !m_reduce ]
+            # no chain: background, frost and blur are all the backdrop, so
+            # ux.frag's blur/frost branch resolves to the real image
+            src8 : Texture [ (backdrop) ? backdrop.color : compose.color ]
+            m_view.samplers = map Texture[string] [
+                'background': src8,
+                'frost':      src8,
+                'blur':       src8,
+                'compose':    compose.color ]
+            m_view.rebind_model[]
+            return
         src9 : Texture [ (backdrop) ? backdrop.color : compose.color ]
         m_reduce.samplers  = map Texture[string] [ 'color': src9 ]
         m_reduce.rebind_model[]
@@ -2531,7 +2603,94 @@ Display Window
         m_view.rebind_model[]
         frost_bound = frost_eff[]
 
-    # whichever element declared frost owns the backdrop; no app rigging
+    # the blur/frost passes are built ONLY when an element actually declares
+    # frost. a game window never has one, so they are never created, never
+    # allocated and never drawn -- 11 passes, 6 of them full-resolution
+    func build_frost_chain [ ]
+        if [ chain ] return
+        ctx: vk_context[ a.vk ]
+        source : Texture [ (backdrop) ? backdrop.color : compose.color ]
+
+        m_reduce  = Model  [ w: a, samplers: map Texture[string] [ 'color': source ] ]
+        r_reduce  = Render [ vk: ctx, w: a, wscale: 1.0, models: [m_reduce ] ]
+        m_reduce.hold[]
+        r_reduce.hold[]
+
+        m_reduce0 = Model  [ w: a, samplers: map Texture[string] [ 'color': r_reduce.color ] ]
+        r_reduce0 = Render [ vk: ctx, w: a, wscale: 0.5, models: [m_reduce0 ] ]
+        m_reduce0.hold[]
+        r_reduce0.hold[]
+
+        m_reduce1 = Model  [ w: a, samplers: map Texture[string] [ 'color': r_reduce0.color ] ]
+        r_reduce1 = Render [ vk: ctx, w: a, wscale: 0.25, models: [m_reduce1 ] ]
+        m_reduce1.hold[]
+        r_reduce1.hold[]
+
+        fbv : BlurV [ vk: ctx, name: 'blur-v', reduction_scale: 4.0 ]
+        fbv.hold[]
+        m_blur_v  = Model  [ w: a, s: fbv, samplers: map Texture[string] [ 'color': r_reduce1.color ] ]
+        r_blur_v  = Render [ vk: ctx, w: a, wscale: 1.0, models: [m_blur_v ] ]
+        m_blur_v.hold[]
+        r_blur_v.hold[]
+
+        fbl : Blur [ vk: ctx, name: 'blur', reduction_scale: 4.0 ]
+        fbl.hold[]
+        m_blur    = Model  [ w: a, s: fbl, samplers: map Texture[string] [ 'color': r_blur_v.color ] ]
+        r_blur    = Render [ vk: ctx, w: a, wscale: 1.0, models: [m_blur ] ]
+        m_blur.hold[]
+        r_blur.hold[]
+
+        sbv : BlurV [ vk: ctx, name: 'blur-v', reduction_scale: 2.0 ]
+        sbv.hold[]
+        m_soft_v  = Model  [ w: a, s: sbv, samplers: map Texture[string] [ 'color': r_reduce0.color ] ]
+        r_soft_v  = Render [ vk: ctx, w: a, wscale: 1.0, models: [m_soft_v ] ]
+        m_soft_v.hold[]
+        r_soft_v.hold[]
+
+        sbl : Blur [ vk: ctx, name: 'blur', reduction_scale: 2.0 ]
+        sbl.hold[]
+        m_soft    = Model  [ w: a, s: sbl, samplers: map Texture[string] [ 'color': r_soft_v.color ] ]
+        r_soft    = Render [ vk: ctx, w: a, wscale: 1.0, models: [m_soft ] ]
+        m_soft.hold[]
+        r_soft.hold[]
+
+        m_reduce2 = Model  [ w: a, samplers: map Texture[string] [ 'color': r_reduce1.color ] ]
+        r_reduce2 = Render [ vk: ctx, w: a, wscale: 0.125, models: [m_reduce2 ] ]
+        m_reduce2.hold[]
+        r_reduce2.hold[]
+
+        m_reduce3 = Model  [ w: a, samplers: map Texture[string] [ 'color': r_reduce2.color ] ]
+        r_reduce3 = Render [ vk: ctx, w: a, wscale: 0.0625, models: [m_reduce3 ] ]
+        m_reduce3.hold[]
+        r_reduce3.hold[]
+
+        bv : BlurV [ vk: ctx, name: 'blur-v', reduction_scale: 16.0 ]
+        bv.hold[]
+        m_frost_v = Model  [ w: a,   s: bv, samplers: map Texture[string] [ 'color': r_reduce3.color ] ]
+        r_frost_v = Render [ vk: ctx, w: a, wscale: 1.0, models: [m_frost_v ] ]
+        m_frost_v.hold[]
+        r_frost_v.hold[]
+
+        bl : Blur [ vk: ctx, name: 'blur', reduction_scale: 16.0 ]
+        bl.hold[]
+        m_frost   = Model  [ w: a,   s: bl, samplers: map Texture[string] [ 'color': r_frost_v.color ] ]
+        r_frost   = Render [ vk: ctx, w: a, wscale: 1.0, models: [m_frost ] ]
+        m_frost.hold[]
+        r_frost.hold[]
+
+
+        chain = vec Render [] [
+            r_reduce, r_reduce0, r_reduce1, r_blur_v, r_blur,
+            r_soft_v, r_soft,
+            r_reduce2, r_reduce3, r_frost_v, r_frost,
+            r_view ]
+        rewire_frost[]
+        list = chain
+
+    # whichever element declared frost owns the backdrop; no app rigging.
+    # with no frost element the composite still needs a real background --
+    # the app's own target. compose is cleared to #888, so falling back to
+    # it renders a flat gray frame
     func bind_backdrop [ ]
         if [ !element_targets ] return
         found : Render [ null ]
@@ -2539,6 +2698,16 @@ Display Window
             if [ r && r.owner && r.owner.frost ]
                 found = r
                 break
+        if [ found && !chain && is_setup ] build_frost_chain[]
+        if [ !found ]
+            # owner is an OPTIONAL backref: an app that registers its own
+            # target (orion's 'orion_wv') never sets one. requiring it here
+            # left backdrop null, and rewire_frost then wired background,
+            # frost and blur all to compose -- the flat #888 gray frame
+            for [ r: Render, rid: string ] in element_targets
+                if [ r && !r.skip && (!r.owner || !r.owner.hide) ]
+                    found = r
+                    break
         if [ !found ] return
         # a resize replaced every attachment: rewire the WHOLE chain from
         # current colors. no reveal reset — that reads as a flash
@@ -2549,6 +2718,7 @@ Display Window
         if [ fresh ]
             backdrop = found
             reveal   = 0.0
+            puts 'BACKDROP -> {found.id} {found.width}x{found.height} chain={(chain) ? 1 : 0} m_reduce={(m_reduce) ? 1 : 0}'
         if [ rb9 ]
             rewire_frost[]
             if [ !fresh ] return
@@ -2559,12 +2729,16 @@ Display Window
         if [ m_view ]
             frost_bound = frost_eff[]
             uxs : UXBackground [ m_view.s ]
-            if [ uxs ] uxs.dim_floor = backdrop.owner.frost_lift
+            if [ uxs ] uxs.dim_floor = (backdrop.owner) ? backdrop.owner.frost_lift : 0.0
             if [ fresh ] m_view.samplers[ 'background' ] = backdrop.color
             fr : frost_src[]
             bl : blur_src[]
-            if [ fr ] m_view.samplers[ 'frost' ] = fr.color
-            if [ bl ] m_view.samplers[ 'blur'  ] = bl.color
+            # ux.frag picks background ONLY when compose.r < 0.502; compose is
+            # cleared to #888 (0.533), so the else branch runs and samples
+            # blur/frost. with no chain those must resolve to the backdrop or
+            # every pixel comes back as the flat #888 clear
+            m_view.samplers[ 'frost' ] = (fr) ? fr.color : backdrop.color
+            m_view.samplers[ 'blur'  ] = (bl) ? bl.color : backdrop.color
             m_view.rebind_model[]
 
     func update [ ]
@@ -2593,109 +2767,41 @@ Display Window
             is_setup = true
             ctx: vk_context[ a.vk ]
 
-            # source is compose until a frost element publishes its target
-            if [ true ]
-                source : Texture [ (backdrop) ? backdrop.color : compose.color ]
-
-                m_reduce  = Model  [ w: a, samplers: map Texture[string] [ 'color': source ] ]
-                r_reduce  = Render [ vk: ctx, w: a, wscale: 1.0, models: [m_reduce ] ]
-                m_reduce.hold[]
-                r_reduce.hold[]
-
-                m_reduce0 = Model  [ w: a, samplers: map Texture[string] [ 'color': r_reduce.color ] ]
-                r_reduce0 = Render [ vk: ctx, w: a, wscale: 0.5, models: [m_reduce0 ] ]
-                m_reduce0.hold[]
-                r_reduce0.hold[]
-
-                m_reduce1 = Model  [ w: a, samplers: map Texture[string] [ 'color': r_reduce0.color ] ]
-                r_reduce1 = Render [ vk: ctx, w: a, wscale: 0.25, models: [m_reduce1 ] ]
-                m_reduce1.hold[]
-                r_reduce1.hold[]
-
-                fbv : BlurV [ vk: ctx, name: 'blur-v', reduction_scale: 4.0 ]
-                fbv.hold[]
-                m_blur_v  = Model  [ w: a, s: fbv, samplers: map Texture[string] [ 'color': r_reduce1.color ] ]
-                r_blur_v  = Render [ vk: ctx, w: a, wscale: 1.0, models: [m_blur_v ] ]
-                m_blur_v.hold[]
-                r_blur_v.hold[]
-
-                fbl : Blur [ vk: ctx, name: 'blur', reduction_scale: 4.0 ]
-                fbl.hold[]
-                m_blur    = Model  [ w: a, s: fbl, samplers: map Texture[string] [ 'color': r_blur_v.color ] ]
-                r_blur    = Render [ vk: ctx, w: a, wscale: 1.0, models: [m_blur ] ]
-                m_blur.hold[]
-                r_blur.hold[]
-
-                sbv : BlurV [ vk: ctx, name: 'blur-v', reduction_scale: 2.0 ]
-                sbv.hold[]
-                m_soft_v  = Model  [ w: a, s: sbv, samplers: map Texture[string] [ 'color': r_reduce0.color ] ]
-                r_soft_v  = Render [ vk: ctx, w: a, wscale: 1.0, models: [m_soft_v ] ]
-                m_soft_v.hold[]
-                r_soft_v.hold[]
-
-                sbl : Blur [ vk: ctx, name: 'blur', reduction_scale: 2.0 ]
-                sbl.hold[]
-                m_soft    = Model  [ w: a, s: sbl, samplers: map Texture[string] [ 'color': r_soft_v.color ] ]
-                r_soft    = Render [ vk: ctx, w: a, wscale: 1.0, models: [m_soft ] ]
-                m_soft.hold[]
-                r_soft.hold[]
-
-                m_reduce2 = Model  [ w: a, samplers: map Texture[string] [ 'color': r_reduce1.color ] ]
-                r_reduce2 = Render [ vk: ctx, w: a, wscale: 0.125, models: [m_reduce2 ] ]
-                m_reduce2.hold[]
-                r_reduce2.hold[]
-
-                m_reduce3 = Model  [ w: a, samplers: map Texture[string] [ 'color': r_reduce2.color ] ]
-                r_reduce3 = Render [ vk: ctx, w: a, wscale: 0.0625, models: [m_reduce3 ] ]
-                m_reduce3.hold[]
-                r_reduce3.hold[]
-
-                bv : BlurV [ vk: ctx, name: 'blur-v', reduction_scale: 16.0 ]
-                bv.hold[]
-                m_frost_v = Model  [ w: a,   s: bv, samplers: map Texture[string] [ 'color': r_reduce3.color ] ]
-                r_frost_v = Render [ vk: ctx, w: a, wscale: 1.0, models: [m_frost_v ] ]
-                m_frost_v.hold[]
-                r_frost_v.hold[]
-
-                bl : Blur [ vk: ctx, name: 'blur', reduction_scale: 16.0 ]
-                bl.hold[]
-                m_frost   = Model  [ w: a,   s: bl, samplers: map Texture[string] [ 'color': r_frost_v.color ] ]
-                r_frost   = Render [ vk: ctx, w: a, wscale: 1.0, models: [m_frost ] ]
-                m_frost.hold[]
-                r_frost.hold[]
-
-                shader : UXBackground [ vk: ctx, name: 'ux' ]
-                shader.hold[]
-                m_view    = Model [ w: w, s: shader,
-                    samplers: map Texture[string] [
-                        'background':     source,
-                        'frost':          r_frost.color,
-                        'blur':           r_blur.color,
-                        'compose':        compose.color
-                    ]
+            shader : UXBackground [ vk: ctx, name: 'ux' ]
+            shader.hold[]
+            # no frost chain exists yet: frost/blur sample the background
+            # itself, so nothing reads an image that was never rendered
+            src0 : Texture [ (backdrop) ? backdrop.color : compose.color ]
+            m_view    = Model [ w: w, s: shader,
+                samplers: map Texture[string] [
+                    'background':     src0,
+                    'frost':          src0,
+                    'blur':           src0,
+                    'compose':        compose.color
                 ]
+            ]
 
-                r_view    = Render [ vk: ctx, w: a,
-                    color: screen.color,
-                    wscale: 1.0, clear_color: vec4f [ 1.0, 1.0, 1.0, 1.0 ],
-                    models: [m_view ] ]
-                m_view.hold[]
-                r_view.hold[]
+            r_view    = Render [ vk: ctx, w: a,
+                color: screen.color,
+                wscale: 1.0, clear_color: vec4f [ 1.0, 1.0, 1.0, 1.0 ],
+                models: [m_view ] ]
+            m_view.hold[]
+            r_view.hold[]
 
-                ux_shader : UXBackground [ shader ]
-                ux_shader.low_color  = vec4f [ 0.0, 0.1, 0.2, 1.0 ]
-                ux_shader.high_color = vec4f [ 1.0, 0.8, 0.8, 1.0 ]
+            ux_shader : UXBackground [ shader ]
+            ux_shader.low_color  = vec4f [ 0.0, 0.1, 0.2, 1.0 ]
+            ux_shader.high_color = vec4f [ 1.0, 0.8, 0.8, 1.0 ]
 
-                # the backdrop draws itself as an element target, not here
-                list = vec Render [] [
-                    r_reduce, r_reduce0, r_reduce1, r_blur_v, r_blur,
-                    r_soft_v, r_soft,
-                    r_reduce2, r_reduce3, r_frost_v, r_frost,
-                    r_view ]
+            # the backdrop draws itself as an element target, not here
+            list = vec Render [] [ r_view ]
         el
-            if [ list ]
+            if [ chain ]
+                for [ r: Render ] in chain
+                    r.update[]
+            el [ list ]
                 for [ r: Render ] in list
                     r.update[]
+            if [ r_view ]
                 r_view.color = screen.color
                 r_view.update[]
                 # mode-aware: frost/blur follow frost_src, not r_frost

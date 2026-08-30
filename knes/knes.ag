@@ -1541,7 +1541,11 @@ element knes : trinity
 
 	func wall_us [] -> i64
 		tsp : local i64 [ 2 ]
-		clock_gettime[ 1, tsp ]
+		# CLOCK_MONOTONIC is 1 on linux but 6 on macOS; id 1 there fails
+		# and leaves tsp garbage, which broke the smooth-scroll interp
+		cid : i32 [ 1 ]
+		ifdef [ apple ] cid = 6
+		clock_gettime[ cid, tsp ]
 		return tsp[0] * 1000000 + tsp[1] / 1000
 
 	func vdp_pick [ i: i32 ] -> u32
