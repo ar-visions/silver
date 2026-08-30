@@ -3698,7 +3698,11 @@ class Texture
                     anisotropyEnable:        (ansio > 0) ? VK_TRUE : VK_FALSE,
                     maxAnisotropy:           ansio,
                     minLod:                  0.0,
-                    maxLod:                  f32 mip_levels,
+                    # levels are 0 .. mip_levels-1. passing the COUNT let the
+                    # sampler reach one level past the last one the image owns
+                    # -- with the common mip_levels of 1 that is any minified
+                    # fetch reading a level that was never rendered
+                    maxLod:                  f32[ mip_levels - 1 ],
                     borderColor:             VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE,
                     unnormalizedCoordinates: VK_FALSE,
                     compareEnable:           VK_FALSE,
@@ -4049,11 +4053,22 @@ Texture Display
             swap_needs_recreate = false
             resize*[ width, height ]
 
+        # TRIN_BATCH_SYNC: submit every target first and drain once, instead of
+        # stalling the cpu on each target's fence before recording the next.
+        # experiment only — a pass that SAMPLES a previous target still needs a
+        # gpu-side barrier, which this does not add
+        batch_sync : bool [ getenv[ 'TRIN_BATCH_SYNC' ] != null ]
+
         for [ r: Render, id: string ] in element_targets
             if [ !r || r.skip ] continue
             if [ r.owner && (r.owner.hide || r.owner.opacity <= 0.0) ] continue
             r.draw*[]
-            r.sync_fence*[]
+            if [ !batch_sync ] r.sync_fence*[]
+        if [ batch_sync ]
+            for [ r: Render, id: string ] in element_targets
+                if [ !r || r.skip ] continue
+                if [ r.owner && (r.owner.hide || r.owner.opacity <= 0.0) ] continue
+                r.sync_fence*[]
 
         on_compose*[]
 
@@ -4070,12 +4085,16 @@ Texture Display
             td0 : i64 [ epoch_micros[] ]
             r.draw*[]
             td1 : i64 [ epoch_micros[] ]
-            r.sync_fence*[]
+            if [ !batch_sync ] r.sync_fence*[]
             td2 : i64 [ epoch_micros[] ]
             if [ prof_report ]
                 fprintf[ stderr, "  target %s %dx%d draw_us=%d wait_us=%d gpu_us=%d\n", (r.tag) ? r.tag.chars : "?", r.width, r.height, i32[ td1 - td0 ], i32[ td2 - td1 ], i32[ r.gpu_us ] ]
             r.has_drawn    = true
             r.last_draw_ms = now_ms
+
+        if [ batch_sync ]
+            for [ r: Render ] in list
+                r.sync_fence*[]
 
         on_screen*[]
 
@@ -4115,7 +4134,12 @@ Texture Display
                 swap_render_current.color.transition[ VK_IMAGE_LAYOUT_PRESENT_SRC_KHR ]
                 result = vkQueuePresentKHR[ vk.queue, presentInfo ]
                 swap_render_current.color.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
-                semaphore_frame = swap_renders[semaphore_frame == swap_renders.first[]]
+                # rotate over EVERY swapchain image, not just two. this used a
+                # bool index (first[] ? 1 : 0), which is correct only when the
+                # driver hands back 2 images -- a real iphone backs the surface
+                # with CAMetalLayer's 3 drawables, and the third acquire then
+                # re-signalled a semaphore belonging to another in-flight frame
+                semaphore_frame = swap_renders[ (swap_image_current + 1) % swap_image_count ]
                 if [ result == VK_ERROR_OUT_OF_DATE_KHR ]
                     swap_needs_recreate = true
                 el

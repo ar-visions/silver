@@ -890,3 +890,68 @@ fixed. vscale/filtering was ruled out (slow at low res too). Facts measured:
   via glslang (no glslangValidator binary). devices.agi holds both devices.
 - Homebrew is gone; ninja/autotools/swig are built into install/ by bootstrap.
 - Linker warnings fixed generally: objects pin macosx13.0; no shared libunwind.
+
+## Orion port — TODO (2026-08-30)
+
+orion is a separate repo at `~/src/orion`; module `~/src/orion/orion/orion.ag`.
+Build with `silver orion --build` run from `~/src/orion`.
+
+### The core defect
+
+The original draws ALL 2D ui in a fixed 480x320 space (`game.mm:40`
+`g_iGameWidth = 480`, `g_iGameHeight = 320`). `Textures_Load` (textures.mm)
+returns `tw`/`th` in that same space, so HD only ever swapped in a denser
+atlas — it never changed a single coordinate. In `race.mm` position and size
+are both 480x320 numbers.
+
+The port threw that space away and re-derived each coordinate by hand-doubling
+it at the call site, while `art_size` kept returning the undoubled size.
+Positions came out at 2x, sizes at 1x. That single mismatch is the miscropped
+and misplaced race lights, the overlapping lap-time text, the wrong best-lap
+list and the wrong track selection. Every doubled pair found so far:
+
+| sprite | race.mm | port had |
+| --- | --- | --- |
+| lap label | 5, 10 | 10, 20 |
+| place | 5, 50 | 10, 100 |
+| laps.png | 480-80, 15 | w-160, 30 |
+| lap times | 480-100, 31 + 37n | w-200, 62/136/210 |
+| racelights y | -70 | -140 |
+| racelights lights | +13, +85 apart, +5.5 | +26, +170 apart, +11 |
+| wrongway | 40 | 80 |
+| help_racemenu | 12 | 24 |
+
+Fixing a call site at a time only moves the bug. Use the design space.
+
+### Done
+
+- `ui_scale[]` = `ux.width / 480.0`, `ds_h[]` = `ux.height / ui_scale[]`
+- `draw_art` now takes DESIGN coords and scales position AND size
+- `art_size` returns design units (was already right, unchanged)
+- `race_overlay` back on race.mm's literals; `w` = 480.0, `h` = `ds_h[]`
+- `steer_touch` converts mouse pixels into design units before hit-testing
+- `on_overlay`: trophy, award, burnout and the multiplayer strip converted
+- parse crash fixed: `for [ c: i8 ] in <string>` handed the for's condition an
+  empty token array and died at `0:0` with no line. Index the string instead.
+
+### To do
+
+- Convert the rest, all still authored at 2x: `OrionButton.draw` (draws a
+  64x64 atlas def at an explicit 128x128), `LapList` rows + country flags,
+  `OrionSlider`, `OrionTabs`, `Shade`, `CreditsView`, `ImageView`, and the CSS
+  `Region { l12px t20px w150px h150px }` layouts throughout `render`.
+- Track selection shows no track preview at all — Kalen suspects the camera.
+- The time-trial / best-lap list is still wrong.
+- touchsteer's `h - tsz.y - 15.0` is the previous author's number, never
+  checked against the original's `xTouchSteer`/`yTouchSteer` globals.
+- `PORT.md`'s only unticked item: the post-race Name entry box + Submit
+  (`race.mm:1397 Race_AddTextBox`). Its `mutable` field is missing under an
+  orphaned comment, and `laps_post` fires automatically at race end instead of
+  on Submit.
+
+### Do not
+
+Do not bisect a .ag parse error by truncating the file: functions are built on
+parallel threads (`build_fn_worker`) and the first error aborts, so the signal
+is meaningless. Add a `backtrace_symbols_fd` dump at the failing `validate`
+(`src/silver.c:6280`) instead — it names the caller in one run.

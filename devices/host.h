@@ -165,6 +165,28 @@ const float*   platform_joystick_axes    (int j, int* count);
 const uint8_t* platform_joystick_hats    (int j, int* count);
 // device motion: accelerometer (g) and gyro (rad/s), false where there is none
 bool  platform_motion(float* accel, float* gyro);
+// interface orientation: 0 portrait, 1 landscape-left, 2 landscape-right.
+// the accelerometer axes are DEVICE-relative, so a tilt-steered app must
+// know which way round the interface is or its steering inverts
+int   platform_orientation(void);
+// a stable per-install id. ios gives identifierForVendor; android ANDROID_ID;
+// macos the hardware uuid. empty where the platform has no notion of one
+const char* platform_device_id(void);
+/* peer-to-peer, the GKSession shape the old game used: send bytes to the peer,
+   get bytes back. GKSession itself is gone from ios; MultipeerConnectivity is
+   its successor and takes the same two calls. */
+// advertise and browse under `service` (a bonjour type, <= 15 chars, a-z0-9-)
+bool  platform_peer_start(const char* service);
+void  platform_peer_stop(void);
+// true once a peer is joined
+bool  platform_peer_connected(void);
+// the joined peer's display name, empty when unpaired
+const char* platform_peer_name(void);
+// reliable maps to MCSessionSendDataReliable, else unreliable
+void  platform_peer_send(const void* data, int len, bool reliable);
+// drain one queued packet into `out`; returns its length, 0 when empty.
+// MCSession delivers off-thread, so packets are queued and polled here
+int   platform_peer_poll(void* out, int max);
 
 /* callbacks */
 void  platform_set_key_callback    (platform_window* w, platform_key_fn fn);

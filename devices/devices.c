@@ -430,6 +430,14 @@ const uint8_t* platform_joystick_buttons(int j, int* n) { if (!pad_read(j)) { *n
 const float*   platform_joystick_axes   (int j, int* n) { if (!pad_read(j)) { *n = 0; return NULL; } *n = 6;  return g_pad_axes[j]; }
 const uint8_t* platform_joystick_hats   (int j, int* n) { if (!pad_read(j)) { *n = 0; return NULL; } *n = 1;  return g_pad_hats[j]; }
 bool platform_motion(float* accel, float* gyro) { return false; }
+int platform_orientation(void) { return 0; }
+const char* platform_device_id(void) { return ""; }
+bool platform_peer_start(const char* service) { return false; }
+void platform_peer_stop(void) {}
+bool platform_peer_connected(void) { return false; }
+const char* platform_peer_name(void) { return ""; }
+void platform_peer_send(const void* data, int len, bool reliable) {}
+int platform_peer_poll(void* out, int max) { return 0; }
 
 #elif defined(__ANDROID__)
 // ================================================================ android
@@ -759,7 +767,9 @@ void platform_poll(void) { pump(0); }
 // the window is the activity's: this waits for it, then describes it
 // the app's window shape picks the orientation: landscape when it is wider
 // than tall. NativeActivity has no ndk call for it, so it goes through java
+static bool g_landscape_req = false;
 static void request_orientation(bool landscape) {
+    g_landscape_req = landscape;
     JavaVM* vm = g_activity->vm;
     JNIEnv* env = NULL;
     if ((*vm)->AttachCurrentThread(vm, &env, NULL) != JNI_OK || !env) {
@@ -845,6 +855,17 @@ bool platform_motion(float* accel, float* gyro) {
     if (gyro)  { gyro[0]  = g_gyro[0];  gyro[1]  = g_gyro[1];  gyro[2]  = g_gyro[2];  }
     return true;
 }
+// android reports orientation through the java layer; the window shape
+// already drives request_orientation, so mirror that decision here
+int platform_orientation(void) { return g_landscape_req ? 2 : 0; }
+
+const char* platform_device_id(void) { return ""; }
+bool platform_peer_start(const char* service) { return false; }
+void platform_peer_stop(void) {}
+bool platform_peer_connected(void) { return false; }
+const char* platform_peer_name(void) { return ""; }
+void platform_peer_send(const void* data, int len, bool reliable) {}
+int platform_peer_poll(void* out, int max) { return 0; }
 
 #else
 // ================================================================ linux / xcb
@@ -1515,6 +1536,14 @@ const uint8_t* platform_joystick_buttons(int j, int* n) { if (!js_open(j)) { *n 
 const float*   platform_joystick_axes   (int j, int* n) { if (!js_open(j)) { *n = 0; return NULL; } js_pump(j); *n = g_js_na[j]; return g_js_axes[j]; }
 const uint8_t* platform_joystick_hats   (int j, int* n) { if (!js_open(j)) { *n = 0; return NULL; } js_pump(j); *n = 1; return g_js_hats[j]; }
 bool platform_motion(float* accel, float* gyro) { return false; }
+int platform_orientation(void) { return 0; }
+const char* platform_device_id(void) { return ""; }
+bool platform_peer_start(const char* service) { return false; }
+void platform_peer_stop(void) {}
+bool platform_peer_connected(void) { return false; }
+const char* platform_peer_name(void) { return ""; }
+void platform_peer_send(const void* data, int len, bool reliable) {}
+int platform_peer_poll(void* out, int max) { return 0; }
 #endif
 
 #if !defined(__APPLE__)
