@@ -1287,12 +1287,12 @@ Display Window
         ly : f32 [ min[ screenshot_y0, screenshot_y1 ] ]
         hx : f32 [ max[ screenshot_x0, screenshot_x1 ] ]
         hy : f32 [ max[ screenshot_y0, screenshot_y1 ] ]
-        sx : f32 [ f32[ screenshot_image.width ] / f32[ width ] ]
-        sy : f32 [ f32[ screenshot_image.height ] / f32[ height ] ]
-        x0 : i32 [ i32[ lx * sx ] ]
-        y0 : i32 [ i32[ ly * sy ] ]
-        x1 : i32 [ i32[ hx * sx + 0.999 ] ]
-        y1 : i32 [ i32[ hy * sy + 0.999 ] ]
+        sx : f32 [ screenshot_image.width ] / f32[ width ]
+        sy : f32 [ screenshot_image.height ] / f32[ height ]
+        x0 : i32 [ lx * sx ]
+        y0 : i32 [ ly * sy ]
+        x1 : i32 [ hx * sx + 0.999 ]
+        y1 : i32 [ hy * sy + 0.999 ]
         if [ x1 <= x0 || y1 <= y0 ] return
         cropped : Image screenshot_image.crop[ x0, y0, x1 - x0, y1 - y0 ]
         stamp : i64 epoch_millis[]
@@ -2307,6 +2307,10 @@ Display Window
         if [ capture ]
             ev.mouse.pos = orig_pos
             m = find_target[ root, ev, capture ]
+            # a re-instanced tree orphans the capture: never eat the move
+            if [ !m ]
+                ev.mouse.pos = orig_pos
+                m = find_target[ root, ev, null ]
         move_pos : vec2f [ ev.mouse.pos ]
         # hover / leave bubble runs in screen space, as before
         ev.mouse.pos = orig_pos
@@ -2349,6 +2353,10 @@ Display Window
             if [ !ev.no_propagation && app_object ]
                 ev.target = m
                 app_object.on_move*[ ev ]
+        el [ app_object ]
+            # drags must keep flowing to the app between hit targets
+            ev.target = null
+            app_object.on_move*[ ev ]
         ev.mouse.pos = move_pos
         if [ f && f.layers ]
             sbl : cast ScrollLayer [ f.layers['scrollbar'] ]
@@ -2703,9 +2711,11 @@ Display Window
             # owner is an OPTIONAL backref: an app that registers its own
             # target (orion's 'orion_wv') never sets one. requiring it here
             # left backdrop null, and rewire_frost then wired background,
-            # frost and blur all to compose -- the flat #888 gray frame
+            # frost and blur all to compose -- the flat #888 gray frame.
+            # an OWNED target without frost is an element's own render (the
+            # avatar): never the window backdrop, or it stretches behind the editor
             for [ r: Render, rid: string ] in element_targets
-                if [ r && !r.skip && (!r.owner || !r.owner.hide) ]
+                if [ r && !r.skip && !r.owner ]
                     found = r
                     break
         if [ !found ] return

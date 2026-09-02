@@ -43,6 +43,20 @@ Do not infer work, scope, history, or a report from incomplete information. Befo
 
 You do not have enough information until you first ask the user if there is anything else about the feature along with your summation of what you know.  Realize, all work is done this way.
 
+## Rule #6b — Never re-ask about assigned work
+
+A reported bug IS the assignment. Never end a turn asking "want me
+to do X now?" when X was already named. Finish the current item,
+report it in one or two sentences, start the next named item.
+
+## Rule #6c — Track every named item
+
+When Kalen names several defects or tasks, keep an explicit list
+and work it in his stated order. New reports ADD to the list; they
+never replace earlier ones. Never drop an item unfinished without
+saying so. Keep the live list in AGENTS.md and update it as items
+land.
+
 ## Rule #7 — Never capture the desktop
 
 Never capture the desktop or enumerate desktop windows. Use the
@@ -436,6 +450,74 @@ C typedef aliases to pointer types (e.g. `typedef VkPhysicalDevice_T* VkPhysical
 - **`au_ancestor(au)`**: Walks `src` chain unconditionally to the terminal type. Goes through pointers. Stops at enums. Use for opaque type detection.
 
 ## Recent Compiler Discoveries
+
+## Active work: orion2 complete Hyper Race port
+
+Work these items in order. Do not drop unfinished items.
+
+`/src/hyper-race` is the only game reference. Never read,
+search, compare, copy from, or modify `/src/orion`.
+
+1. Inventory Hyper Race code, assets, and runtime behavior.
+2. Create the `orion2` Silver module using Trinity pipelines.
+3. Preserve the old top-left, y-axis-down game coordinates.
+4. Preserve the master and medium bitmap font atlases.
+5. Port menus, dialogs, HUD, and touch or pointer controls.
+6. Port tracks, cars, cameras, rendering, and effects.
+7. Port racing rules, physics, AI, progression, and replays.
+8. Port music, sound effects, settings, and saved state.
+9. Keep one shared game layer for Android, iOS, Linux,
+   Windows, and macOS. Trinity and Devices own platforms.
+10. Validate focused components, the module, and full game.
+    - Transfer each source method without redesign or substitutes.
+    - Use Canvas shapes only where the source draws a shape.
+    - Fix the race fragment shader uniform lookup.
+    - Keep the released menu action alive through dispatch.
+    - Restore the live demo behind the main menu.
+    - Replace the invented car-select window with the original
+      open platform scene, bottom dock, and side controls.
+    - Keep the car specifications and progress bars in their
+      original source-defined positions.
+    - Replace the invented track selector with the original live
+      track view, bottom track dock, and background track loading.
+    - Fix the car body mesh appearing partly transparent.
+    - Port the car body lighting pass.
+    - Port the windscreen reflection pass.
+    - Port the engine and jet-cone passes.
+    - Apply the jet light to the selection platform.
+    - Fix the startup loading crash from the app log.
+    - Show only Loading on the startup loading screen.
+    - Preserve alpha transparency on the initial logo.
+    - Remove the invented press-to-continue screen.
+    - Fix the corrupt world scene geometry and transforms.
+    - Port source camera motion as 3D Bézier curves.
+    - Fix the vertically reversed car-selection dock graphic.
+    - Use the source square preview MVP for every dock car.
+    - Match the source OpenGL car-atlas V coordinates.
+    - Animate dock previews through the source transition.
+    - Keep glass in its source-specific reflection pass.
+    - Tile the side dock from its source dialog atlas pieces.
+    - Port the exact List-atlas GroupBox header and bottom pass.
+    - Keep the 1500 ms source progress-bar transition.
+    - Pack all 15 source jet-cone vertex floats.
+    - Restore the visible windscreen reflection pass.
+    - Replace the incorrect jet ribbons with source jet shading.
+    - Match the source car-select passes and dock transforms.
+    - Roll selection jet UVs; keep dock preview UVs fixed.
+    - Build menu dialog frames from the source atlas tiles.
+    - Apply the source font y offset beside menu icons.
+    - Disable orion2 live reload during app validation.
+    - Restore the dock atlas size and preview orientation.
+    - Restore the live sector environment in car selection.
+    - Keep the sector sky at the far depth plane.
+    - Match the original car-selection light application.
+    - Keep cars 3 world units above selection platforms.
+    - Keep dock car render targets right-side up.
+    - Ray march all three jet masks on every XML jet.
+    - Keep XML jet positions and cones on negative z.
+    - Validate every jet with a full 15-sided cylinder.
+    - Flip the car-shadow image on its y axis.
+    - Drive a race through the Trinity app socket.
 
 ### Type Resolution
 - **`au_ancestor(au)`**: walks `src` chain to the terminal type. Stops at enums. Used in `etype_access` for member lookup through aliases, pointers, and typedefs.
@@ -890,68 +972,3 @@ fixed. vscale/filtering was ruled out (slow at low res too). Facts measured:
   via glslang (no glslangValidator binary). devices.agi holds both devices.
 - Homebrew is gone; ninja/autotools/swig are built into install/ by bootstrap.
 - Linker warnings fixed generally: objects pin macosx13.0; no shared libunwind.
-
-## Orion port — TODO (2026-08-30)
-
-orion is a separate repo at `~/src/orion`; module `~/src/orion/orion/orion.ag`.
-Build with `silver orion --build` run from `~/src/orion`.
-
-### The core defect
-
-The original draws ALL 2D ui in a fixed 480x320 space (`game.mm:40`
-`g_iGameWidth = 480`, `g_iGameHeight = 320`). `Textures_Load` (textures.mm)
-returns `tw`/`th` in that same space, so HD only ever swapped in a denser
-atlas — it never changed a single coordinate. In `race.mm` position and size
-are both 480x320 numbers.
-
-The port threw that space away and re-derived each coordinate by hand-doubling
-it at the call site, while `art_size` kept returning the undoubled size.
-Positions came out at 2x, sizes at 1x. That single mismatch is the miscropped
-and misplaced race lights, the overlapping lap-time text, the wrong best-lap
-list and the wrong track selection. Every doubled pair found so far:
-
-| sprite | race.mm | port had |
-| --- | --- | --- |
-| lap label | 5, 10 | 10, 20 |
-| place | 5, 50 | 10, 100 |
-| laps.png | 480-80, 15 | w-160, 30 |
-| lap times | 480-100, 31 + 37n | w-200, 62/136/210 |
-| racelights y | -70 | -140 |
-| racelights lights | +13, +85 apart, +5.5 | +26, +170 apart, +11 |
-| wrongway | 40 | 80 |
-| help_racemenu | 12 | 24 |
-
-Fixing a call site at a time only moves the bug. Use the design space.
-
-### Done
-
-- `ui_scale[]` = `ux.width / 480.0`, `ds_h[]` = `ux.height / ui_scale[]`
-- `draw_art` now takes DESIGN coords and scales position AND size
-- `art_size` returns design units (was already right, unchanged)
-- `race_overlay` back on race.mm's literals; `w` = 480.0, `h` = `ds_h[]`
-- `steer_touch` converts mouse pixels into design units before hit-testing
-- `on_overlay`: trophy, award, burnout and the multiplayer strip converted
-- parse crash fixed: `for [ c: i8 ] in <string>` handed the for's condition an
-  empty token array and died at `0:0` with no line. Index the string instead.
-
-### To do
-
-- Convert the rest, all still authored at 2x: `OrionButton.draw` (draws a
-  64x64 atlas def at an explicit 128x128), `LapList` rows + country flags,
-  `OrionSlider`, `OrionTabs`, `Shade`, `CreditsView`, `ImageView`, and the CSS
-  `Region { l12px t20px w150px h150px }` layouts throughout `render`.
-- Track selection shows no track preview at all — Kalen suspects the camera.
-- The time-trial / best-lap list is still wrong.
-- touchsteer's `h - tsz.y - 15.0` is the previous author's number, never
-  checked against the original's `xTouchSteer`/`yTouchSteer` globals.
-- `PORT.md`'s only unticked item: the post-race Name entry box + Submit
-  (`race.mm:1397 Race_AddTextBox`). Its `mutable` field is missing under an
-  orphaned comment, and `laps_post` fires automatically at race end instead of
-  on Submit.
-
-### Do not
-
-Do not bisect a .ag parse error by truncating the file: functions are built on
-parallel threads (`build_fn_worker`) and the first error aborts, so the signal
-is meaningless. Add a `backtrace_symbols_fd` dump at the failing `validate`
-(`src/silver.c:6280`) instead — it names the caller in one run.

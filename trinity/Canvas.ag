@@ -18,6 +18,7 @@ enum DrawMode
     image_vec   : 10
     # box-average the source footprint when shrinking
     image_min   : 11
+    image_explosion : 12
 
 # ---- path command tags ----
 enum path_cmd
@@ -148,6 +149,8 @@ shader CanvasUI
     mutable fill_offset   : f32
     mutable stroke_offset : f32
     mutable stroke_sides  : vec4f
+    # multiplies sampled texels in the image modes; 1,1,1,1 = off
+    mutable image_tint    : vec4f
     attrib  atlas      : LayoutBinding [
         type:typeid[ CanvasUISurface ], id: CanvasUISurface.atlas, count:1, format:typeid[ u8 ]
     ]
@@ -450,10 +453,24 @@ shader CanvasUI
         if (mode == 5.0) {{
             vec2 uv    = (lpos - ubo.rect.xy) / ubo.rect.zw;
             uv         = mix(ubo.grad0.xy, ubo.grad0.zw, uv);
-            vec4 texel = texture(image, uv);
+            vec4 texel = texture(image, uv) * ubo.image_tint;
             float aa   = (max_rr <= 0.0) ? step(0.5, rect_cov)
                                          : 1.0 - smoothstep(-0.5, 0.5, dist);
             o_color    = texel * aa * opacity;
+            return;
+        }}
+
+        if (mode == 12.0) {{
+            vec2 uv = (lpos - ubo.rect.xy) / ubo.rect.zw;
+            uv = mix(ubo.grad0.xy, ubo.grad0.zw, uv);
+            vec4 texel = texture(image, uv);
+            float aa = (max_rr <= 0.0) ? step(0.5, rect_cov)
+                                        : 1.0 - smoothstep(-0.5, 0.5, dist);
+            float a = clamp((texel.a + texel.a) *
+                ubo.image_tint.a * opacity,0.0,1.0) * aa;
+            vec3 rgb = texel.rgb * ubo.image_tint.rgb +
+                ubo.image_tint.rgb;
+            o_color = vec4(rgb * a,a);
             return;
         }}
 
@@ -1279,11 +1296,13 @@ Render Canvas
     intern mask_override  : Texture
     intern vec_override   : bool
     intern min_override   : bool
+    intern explosion_override : bool
     intern image_dirty   : vec bool [ 64 ]
     public  content_w     : i32
     public  content_h     : i32
     mutable image_uv      : vec4f
     mutable mask_uv       : vec4f
+    mutable img_tint      : vec4f [ 1.0, 1.0, 1.0, 1.0 ]
     public  quantize      : bool
     public format	   : Pixel[Pixel.rgba8]
     mutable cur_xform  : affine
@@ -1822,6 +1841,9 @@ Render Canvas
         if [ state_depth == 0 ] return 1.0
         return states[state_depth - 1].opacity
 
+    func set_image_tint [ r: f32, g: f32, b: f32, a2: f32 ]
+        img_tint = vec4f [ r, g, b, a2 ]
+
     func set_blur_radius [ br: f32 ]
         states[state_depth - 1].blur_rad = br
 
@@ -2069,6 +2091,7 @@ Render Canvas
         ui_shader.xform_row0 = vec4f [ st.transform.ma, st.transform.mb,
                                        st.transform.mc, st.transform.md ]
         ui_shader.xform_row1 = vec4f [ st.transform.tx, st.transform.ty, 0.0, 0.0 ]
+        ui_shader.image_tint = img_tint
         ui_shader.glow_sides          = st.glow_sides
         ui_shader.inner_glow_color    = st.inner_glow_color
         ui_shader.inner_shadow_color  = st.inner_shadow_color
@@ -2361,6 +2384,17 @@ Render Canvas
         draw_image[ tex, dst ]
         min_override = false
 
+    func draw_image_explosion_crop [ tex: Texture, dst: rect,
+        u0: f32, v0: f32, u1: f32, v1: f32,
+        r: f32, g: f32, b: f32, alpha: f32 ]
+        img_tint = vec4f[r,g,b,alpha]
+        image_uv = vec4f[u0,v0,u1,v1]
+        explosion_override = true
+        draw_image[tex,dst]
+        explosion_override = false
+        image_uv = vec4f[0.0,0.0,1.0,1.0]
+        img_tint = vec4f[1.0,1.0,1.0,1.0]
+
     # dst shows only the u0,v0..u1,v1 sub-rect of tex
     func draw_image_crop [ tex: Texture, dst: rect, u0: f32, v0: f32, u1: f32, v1: f32 ]
         image_uv = vec4f [ u0, v0, u1, v1 ]
@@ -2550,6 +2584,8 @@ Render Canvas
             is_r8    : bool [ image_override && image_override.pixel_format == Pixel.u8 ]
             img_mode : f32  [ (vec_override)  ? DrawMode.image_vec
                             : (min_override)  ? DrawMode.image_min
+                            : (explosion_override) ?
+                                DrawMode.image_explosion
                             : (mask_override) ? DrawMode.image_masked
                             : ((is_r8) ? DrawMode.image_r : DrawMode.image) ]
             mode     : f32  [ (image_override) ? img_mode : DrawMode.solid ]

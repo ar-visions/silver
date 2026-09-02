@@ -1344,7 +1344,9 @@ platform_window* platform_window_create(int width, int height, const char* title
     uint32_t mask = XCB_CW_BACK_PIXEL | XCB_CW_EVENT_MASK;
     uint32_t values[2] = { g_screen->black_pixel,
         XCB_EVENT_MASK_KEY_PRESS | XCB_EVENT_MASK_KEY_RELEASE | XCB_EVENT_MASK_BUTTON_PRESS |
-        XCB_EVENT_MASK_BUTTON_RELEASE | XCB_EVENT_MASK_POINTER_MOTION | XCB_EVENT_MASK_ENTER_WINDOW |
+        XCB_EVENT_MASK_BUTTON_RELEASE | XCB_EVENT_MASK_POINTER_MOTION |
+        /* the implicit button grab reports motion by THIS mask */
+        XCB_EVENT_MASK_BUTTON_MOTION | XCB_EVENT_MASK_ENTER_WINDOW |
         XCB_EVENT_MASK_LEAVE_WINDOW | XCB_EVENT_MASK_STRUCTURE_NOTIFY | XCB_EVENT_MASK_FOCUS_CHANGE };
     xcb_create_window(g_conn, XCB_COPY_FROM_PARENT, w->win, g_screen->root, 0, 0, width, height, 0,
         XCB_WINDOW_CLASS_INPUT_OUTPUT, g_screen->root_visual, mask, values);
@@ -1537,7 +1539,17 @@ const float*   platform_joystick_axes   (int j, int* n) { if (!js_open(j)) { *n 
 const uint8_t* platform_joystick_hats   (int j, int* n) { if (!js_open(j)) { *n = 0; return NULL; } js_pump(j); *n = 1; return g_js_hats[j]; }
 bool platform_motion(float* accel, float* gyro) { return false; }
 int platform_orientation(void) { return 0; }
-const char* platform_device_id(void) { return ""; }
+/* the machine id stands in for the phone's unique identifier */
+const char* platform_device_id(void) {
+    static char id[64];
+    if (!id[0]) {
+        FILE* f = fopen("/etc/machine-id", "r");
+        if (f) { if (!fgets(id, sizeof id, f)) id[0] = 0; fclose(f); }
+        size_t n = strlen(id);
+        while (n && (id[n - 1] == '\n' || id[n - 1] == '\r')) id[--n] = 0;
+    }
+    return id;
+}
 bool platform_peer_start(const char* service) { return false; }
 void platform_peer_stop(void) {}
 bool platform_peer_connected(void) { return false; }

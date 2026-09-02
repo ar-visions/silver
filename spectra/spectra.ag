@@ -423,6 +423,7 @@ el
 
 # decoded PCM, interleaved S16
 class AudioClip
+    public name     : string
     public rate     : i32
     public channels : i32
     public frames   : i64
@@ -495,10 +496,10 @@ func caf_parse [ buf: @u8, fsz: i32 ] -> AacStream
         ct : i64 [ be32[ buf, o ] ]
         cs : i64 [ be64[ buf, o + 4 ] ]
         o += 12
-        if [ ct == 1802659689 ]
+        if [ ct == 1802857321 ]
             kuki_o = o
             kuki_n = i32[ cs ]
-        el [ ct == 1885432180 ]
+        el [ ct == 1885432692 ]
             pakt_o = o
         el [ ct == 1684108385 ]
             data_o = o + 4
@@ -709,6 +710,8 @@ func caf_load [ p: path ] -> AudioClip
     clip : AudioClip [ rate: rate, channels: ch, frames: total / ch ]
     pcm.hold[]
     clip.pcm = pcm
+    clip.name = '{p}'
+    clip.name.hold[]
     puts 'caf: {p} rate={rate} ch={ch} frames={clip.frames} cap={cap} wr={wr} start={start} nvalid={st.nvalid} npkts={st.npkts}'
     return clip
 
@@ -749,6 +752,16 @@ class AudioMixer
         pthread_create[ tid, null, @mix_entry, a ]
         return true
 
+    # agent 'listen' support: one line per ACTIVE voice with its level
+    public func report [] -> vec string
+        r : vec string [ ]
+        if [ voices ]
+            for [ v: Voice ] in voices
+                if [ !v.active || !v.clip ] continue
+                nm : string [ (v.clip.name) ? v.clip.name : 'clip' ]
+                r += '{nm} gain={v.gain} pitch={v.pitch} loop={v.loop}'
+        return r
+
     func play_p [ c: AudioClip, loop2: bool, gain2: f32, pitch2: f32 ]
         if [ !c ] return
         ifdef [ apple ]
@@ -765,9 +778,6 @@ class AudioMixer
                 v.loop = loop2
                 v.active = true
                 return
-        nv : Voice [ clip: c, pos: 0.0, gain: gain2, pitch: pitch2, loop: loop2 ]
-        voices += nv
-        nv.active = true
 
     func play [ c: AudioClip, loop2: bool, gain2: f32 ]
         play_p[ c, loop2, gain2, 1.0 ]
@@ -1060,4 +1070,3 @@ func spectrograph [ c: AudioClip, out2: path, w2: i32, h2: i32, fmin: f32, fmax:
                     pd[ di + 3 ] = 255
     img2.png[ out2 ]
     return true
-
