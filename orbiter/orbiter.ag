@@ -317,8 +317,10 @@ element EditorView
             t['pause'] = RunButton [ icon: (e.run_view.is_paused*[]) ? 'play' : 'pause',
                 selected: e.run_view.is_paused*[], manual_mode: true ]
             t['steps'] = StepButtons [ buttons: [ 'step_next', 'step_in', 'step_out' ], manual: true ]
+        # caret at the end: a fresh instance would otherwise insert at 0
+        a9 : string o.file_args[ args_src[] ]
         t['args'] = ArgsField [ label: 'arguments',
-            edit: o.file_args[ args_src[] ], focusable: true ]
+            edit: a9, sel_col: a9.count, anchor_col: a9.count, focusable: true ]
         if [ band_status[].count > 0 ]
             t['our_app_error'] = AppError [ label: band_status[], manual_mode: true,
                 info: !err_showing[] ]
@@ -1234,6 +1236,10 @@ element orbiter : trinity # implements compiler
     # the status bar's center toggle: scene-only viewing
     public hide_ui       : bool
     public findbar_text  : string
+    # the args field edited this frame; its edit is copied to the session
+    mutable args_field   : element
+    mutable args_editor  : Editor
+    mutable args_sync    : bool
     intern find_last_query : string
     intern find_last_scope : string
     intern find_scan_mt  : i64
@@ -2277,6 +2283,15 @@ element orbiter : trinity # implements compiler
         run_search[]
 
     public func on_overlay [ cv: Canvas ]
+        # run args are per source file, kept in the session state: the
+        # field's edit is the one source, copied after the layer edited it
+        if [ args_sync ]
+            args_sync = false
+            fs9 : file_state (args_editor) ? fstate[ args_editor.band_src[] ] : null
+            if [ fs9 && args_field ]
+                fs9.args = (args_field.edit) ? args_field.edit : ''
+                fs9.args.hold[]
+                save_session[]
         for [ i: i32 0, i < editor_slots.count, i += 1 ]
             ed : Editor pane_at[ i ]
             if [ !ed || !ed.run_view || !ed.app_view ] continue
@@ -4196,15 +4211,15 @@ element orbiter : trinity # implements compiler
                 if [ uxw ] uxw.will_animate = true
         # run args are per source file, kept in the session state
         if [ ev.target.id == 'args' ]
+            # the editable layer edits the text after this; the session
+            # copies the field's edit next frame (args_sync)
             if [ ev.key.text && ev.key.text.count > 0 ]
-                eda : Editor pane_of[ ev.target ]
-                fs9 : file_state (eda) ? fstate[ eda.band_src[] ] : null
-                if [ fs9 ]
-                    fs9.args = (fs9.args) ? fs9.args + ev.key.text : ev.key.text
-                    save_session[]
-                    ev.target.pristine = false
-                    uxw : Window ev.target.ux
-                    if [ uxw ] uxw.will_animate = true
+                args_field  = ev.target
+                args_editor = pane_of[ ev.target ]
+                args_sync   = true
+                ev.target.pristine = false
+                uxw : Window ev.target.ux
+                if [ uxw ] uxw.will_animate = true
         # typing into an editor's title (the finder/magnify control)
         if [ ev.target.id == 'title' ]
             if [ ev.key.text && ev.key.text.count > 0 ]
@@ -4280,23 +4295,14 @@ element orbiter : trinity # implements compiler
                 if [ uxw ] uxw.will_animate = true
 
         if [ ev.target.id == 'args' ]
+            # backspace, arrows and escape (clear) are the editable layer's;
+            # the session copies the field's edit next frame (args_sync)
             if [ !ev.key.state ] return
-            ka  : i32 [ i32 ev.key.unicode ]
-            eda : Editor pane_of[ ev.target ]
-            fs9 : file_state (eda) ? fstate[ eda.band_src[] ] : null
-            if [ fs9 && ka == 259 && fs9.args && fs9.args.count > 0 ]
-                fs9.args = fs9.args.mid[ 0, fs9.args.count - 1 ]
-                save_session[]
-                ev.target.pristine = false
-                if [ ev.target.ux ] ev.target.ux.will_animate = true
-                ev.no_default = true
-            # escape clears the field: a wrong value had no way out but backspace
-            el [ fs9 && ka == 256 ]
-                fs9.args = ''
-                save_session[]
-                ev.target.pristine = false
-                if [ ev.target.ux ] ev.target.ux.will_animate = true
-                ev.no_default = true
+            args_field  = ev.target
+            args_editor = pane_of[ ev.target ]
+            args_sync   = true
+            ev.target.pristine = false
+            if [ ev.target.ux ] ev.target.ux.will_animate = true
             return
 
         if [ ev.target.id == 'find' || ev.target.id == 'replace' || ev.target.id == 'pattern' ]

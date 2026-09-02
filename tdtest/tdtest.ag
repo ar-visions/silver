@@ -1,0 +1,187 @@
+import <stdio.h>
+import <string.h>
+import <stdlib.h>
+import <math.h>
+
+func rd_f32 [ b: @u8, o: i32 ] -> f32
+    fv : local f32 [ 1 ]
+    memcpy[ fv, @b[ o ], 4 ]
+    return fv[ 0 ]
+
+func rd_i32 [ b: @u8, o: i32 ] -> i32
+    iv : local i32 [ 1 ]
+    memcpy[ iv, @b[ o ], 4 ]
+    return iv[ 0 ]
+
+class TechDataValue
+    public next   : TechDataValue
+    public key    : string
+    public value  : @u8
+    public length : i32
+
+class TechDataTable
+    public first : TechDataValue
+    public last  : TechDataValue
+    public file  : path
+    public ready : bool
+
+    func find [ key: string ] -> TechDataValue
+        for [ item: TechDataValue first, item, item = item.next ]
+            if [ item.key == key ] return item
+        return null
+
+    func append [ key: string, value: @u8, length: i32 ]
+        item : TechDataValue [ ]
+        item.key = key
+        data : new u8 [ length + 1 ]
+        if [ length > 0 ] memcpy[ data, value, length ]
+        data[ length ] = 0
+        item.value = data
+        item.length = length
+        if [ last ]
+            last.next = item
+        el
+            first = item
+        last = item
+
+    public func free [ ]
+        first = null
+        last = null
+
+    public func read [ ]
+        free[]
+        fp : @FILE [ fopen[ '{file}', 'rb' ] ]
+        if [ !fp ] return
+        while [ true ]
+            key_len : i32
+            if [ fread[ @key_len, 4, 1, fp ] != 1 ] break
+            if [ key_len <= 0 || key_len > 4096 ] break
+            key_data : new u8 [ key_len + 1 ]
+            if [ fread[ key_data, 1, key_len, fp ] != key_len ] break
+            key_data[ key_len ] = 0
+            kp : @u8 [ key_data ]
+            key : string [ cast cstr [ kp ] ]
+            value_len : i32
+            if [ fread[ @value_len, 4, 1, fp ] != 1 ] break
+            if [ value_len < 0 || value_len > 1048576 ] break
+            value_data : new u8 [ value_len + 1 ]
+            if [ value_len > 0 ]
+                if [ fread[ value_data, 1, value_len, fp ] != value_len ] break
+            value_data[ value_len ] = 0
+            append[ key, value_data, value_len ]
+        fclose[ fp ]
+
+    public func write [ ]
+        if [ !ready ] return
+        fp : @FILE [ fopen[ '{file}', 'wb' ] ]
+        if [ !fp ]
+            puts 'techdata: cannot write {file}'
+            return
+        for [ item: TechDataValue first, item, item = item.next ]
+            key_len : i32 [ item.key.count ]
+            fwrite[ @key_len, 4, 1, fp ]
+            fwrite[ item.key.chars, 1, key_len, fp ]
+            fwrite[ @item.length, 4, 1, fp ]
+            if [ item.length > 0 ]
+                fwrite[ item.value, 1, item.length, fp ]
+        fclose[ fp ]
+
+    public func get [ key: string ] -> TechDataValue
+        return find[ key ]
+
+    public func set [ key: string, value: @u8, length: i32, save: bool ]
+        item : find[ key ]
+        if [ !item ]
+            append[ key, value, length ]
+        el
+            data : new u8 [ length + 1 ]
+            if [ length > 0 ] memcpy[ data, value, length ]
+            data[ length ] = 0
+            item.value = data
+            item.length = length
+        if [ save ] write[]
+
+    public func get_bool [ key: string ] -> bool
+        item : get[ key ]
+        if [ !item || item.length < 1 ] return false
+        return item.value[ 0 ] != 0
+
+    public func set_bool [ key: string, value: bool ]
+        raw : local bool [ 1 ]
+        raw[ 0 ] = value
+        set[ key, @raw[ 0 ], 1, false ]
+
+    public func get_i32 [ key: string, dflt: i32 ] -> i32
+        item : get[ key ]
+        if [ !item || item.length != 4 ] return dflt
+        return rd_i32[ item.value, 0 ]
+
+    public func set_i32 [ key: string, value: i32, save: bool ]
+        raw : local i32 [ 1 ]
+        raw[ 0 ] = value
+        set[ key, @raw[ 0 ], 4, save ]
+
+    public func get_f32 [ key: string, dflt: f32 ] -> f32
+        item : get[ key ]
+        if [ !item || item.length != 4 ] return dflt
+        return rd_f32[ item.value, 0 ]
+
+    public func set_f32 [ key: string, value: f32, save: bool ]
+        raw : local f32 [ 1 ]
+        raw[ 0 ] = value
+        set[ key, @raw[ 0 ], 4, save ]
+
+    public func get_str [ key: string, dflt: string ] -> string
+        item : get[ key ]
+        if [ !item || item.length <= 0 ] return dflt
+        return string[ cast cstr [ item.value ] ]
+
+    public func set_str [ key: string, value: string, save: bool ]
+        set[ key, value.chars, value.count, save ]
+
+class vec3t
+    public x : f32
+    public y : f32
+    public z : f32
+
+func v3t_sub [ a2: vec3t, b2: vec3t ] -> vec3t
+    return vec3t [ a2.x - b2.x, a2.y - b2.y, a2.z - b2.z ]
+
+func v3t_len [ v: vec3t ] -> f32
+    return sqrtf[ v.x * v.x + v.y * v.y + v.z * v.z ]
+
+# by-value struct return fed DIRECTLY into another call vs through a
+# local: both must give the same length
+expect func t_nested_struct_return [] -> bool
+    a2 : vec3t [ 3.0, 0.0, 4.0 ]
+    b2 : vec3t [ 0.0, 0.0, 0.0 ]
+    step : vec3t [ v3t_sub[ a2, b2 ] ]
+    len_local  : f32 [ v3t_len[ step ] ]
+    len_nested : f32 [ v3t_len[ v3t_sub[ a2, b2 ] ] ]
+    puts 'nested={len_nested} local={len_local}'
+    return len_local == 5.0 && len_nested == 5.0
+
+expect func t_techdata_roundtrip [] -> bool
+    t : TechDataTable [ ]
+    t.file = path '/tmp/td_test.bin'
+    t.ready = true
+    t.set_f32[ 'Music Level', 0.5, false ]
+    t.set_f32[ 'Sound FX Level', 0.75, false ]
+    t.set_i32[ 'Selected Car', 3, false ]
+    t.set_bool[ 'Touch Steer', true ]
+    t.set_str[ 'Name', 'Kalen', false ]
+    t.write[]
+    t.read[]
+    a1 : bool [ t.get_f32[ 'Music Level', 0.0 ] == 0.5 ]
+    a2 : bool [ t.get_f32[ 'Sound FX Level', 0.0 ] == 0.75 ]
+    a3 : bool [ t.get_i32[ 'Selected Car', 0 ] == 3 ]
+    a4 : bool [ t.get_bool[ 'Touch Steer' ] ]
+    a5 : bool [ t.get_str[ 'Name', '' ] == 'Kalen' ]
+    t.set_f32[ 'Music Level', 0.25, true ]
+    t.read[]
+    b1 : bool [ t.get_f32[ 'Music Level', 0.0 ] == 0.25 ]
+    b2 : bool [ t.get_f32[ 'Sound FX Level', 0.0 ] == 0.75 ]
+    b3 : bool [ t.get_i32[ 'Selected Car', 0 ] == 3 ]
+    b4 : bool [ t.get_str[ 'Name', '' ] == 'Kalen' ]
+    puts 'pass1 {a1} {a2} {a3} {a4} {a5} pass2 {b1} {b2} {b3} {b4}'
+    return a1 && a2 && a3 && a4 && a5 && b1 && b2 && b3 && b4

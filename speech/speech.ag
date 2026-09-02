@@ -43,76 +43,7 @@ import https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro
 
 export extensions ['.flac': FileType.binary, '.ogg': FileType.binary]
 
-func caf_load [ p: path ] -> AudioClip
-    fp : @FILE [ fopen[ '{p}', 'rb' ] ]
-    if [ !fp ]
-        puts 'caf: cannot open {p}'
-        return null
-    fseek[ fp, 0, SEEK_END ]
-    fsz : i32 [ i32[ ftell[ fp ] ] ]
-    fseek[ fp, 0, SEEK_SET ]
-    buf : new u8 [ fsz ]
-    fread[ buf, 1, fsz, fp ]
-    fclose[ fp ]
-    st : AacStream [ null ]
-    if [ be32[ buf, 0 ] == 1667327590 ]
-        st = caf_parse[ buf, fsz ]
-    el [ be32[ buf, 4 ] == 1718909296 ]
-        st = m4a_parse[ buf, fsz ]
-    if [ !st ]
-        # ID3 tag or bare MPEG sync = mp3, decode via libmpg123
-        if [ (buf[0] == 73 && buf[1] == 68 && buf[2] == 51) || buf[0] == 255 ]
-            puts 'caf: mp3 is not supported: {p}'
-            return null
-        # RIFF = wav
-        if [ be32[ buf, 0 ] == 1380533830 ]
-            return wav_load[ p ]
-        puts 'caf: unsupported container: {p}'
-        return null
-    h : NeAACDecOpen[]
-    conf : NeAACDecGetCurrentConfiguration[ h ]
-    conf.outputFormat = FAAD_FMT_16BIT
-    NeAACDecSetConfiguration[ h, conf ]
-    sr9 : u64 [ 0 ]
-    ch9 : u8 [ 0 ]
-    ir : i64 [ NeAACDecInit2[ h, @buf[ st.asc_o ], u64[ st.asc_n ], @sr9, @ch9 ] ]
-    if [ ir != 0 ]
-        puts 'caf: faad init failed on {p}'
-        NeAACDecClose[ h ]
-        return null
-    ch : i32 [ i32[ ch9 ] ]
-    rate : i32 [ i32[ sr9 ] ]
-    cap : i64 [ (st.npkts + 2) * 2048 * ch ]
-    pcm : new i16 [ cap ]
-    wr : i64 [ 0 ]
-    np : i32 [ i32[ st.npkts ] ]
-    for [ k: i32 0, k < np, k += 1 ]
-        info : NeAACDecFrameInfo
-        doff : i32 [ st.offs[ k ] ]
-        psz  : i32 [ st.sizes[ k ] ]
-        smp : @i16 [ NeAACDecDecode[ h, @info, @buf[ doff ], psz ] ]
-        if [ info.error != 0 || !smp ] continue
-        if [ i32[ info.channels ] > 0 ] ch = i32[ info.channels ]
-        ns : i64 [ i64[ info.samples ] ]
-        if [ wr + ns > cap ] break
-        nb : i64 [ ns * 2 ]
-        memcpy[ @pcm[ wr ], smp, nb ]
-        wr += ns
-    NeAACDecClose[ h ]
-    start : i64 [ i64[ st.priming ] * ch ]
-    total : i64 [ wr - start ]
-    if [ st.nvalid > 0 ]
-        nv : i64 [ st.nvalid * ch ]
-        if [ nv < total ] total = nv
-    if [ total < 0 ] total = 0
-    if [ start > 0 && total > 0 ]
-        tb : i64 [ total * 2 ]
-        memmove[ pcm, @pcm[ start ], tb ]
-    clip : AudioClip [ rate: rate, channels: ch, frames: total / ch ]
-    clip.pcm = pcm
-    puts 'caf: {p} rate={rate} ch={ch} frames={clip.frames}'
-    return clip
-
+# caf_load lives in spectra (the audio core every module links)
 
 func whisper_pcm [ c: AudioClip ] -> @f32
     out9 : new f32 [ 480000 ]
