@@ -346,9 +346,13 @@ AU_EXPORT token aether_loc(aether a) {
     } \
 })
 
+// silver sets this to clear its progress line before an error prints
+AU_EXPORT void (*aether_error_prelude)(void) = NULL;
+
 #undef verify
 #define verify(cond, t, ...) ({ \
     if (!(cond)) { \
+        if (aether_error_prelude) aether_error_prelude(); \
         fault(t __VA_OPT__(,) __VA_ARGS__); \
         fflush(stderr); \
         raise(SIGTRAP); \
@@ -6270,25 +6274,19 @@ enode aether_e_create(aether a, etype mdl, Au args, bool no_pool) { sequencer
                         LLVMValueRef ld = LLVMBuildLoad2(B, ptr_ty, _llvalue((enode)value), "field_ptr_load");
                         value = with_value(ld, enode(mod, a, autype, value->autype, loaded, true));
                     }
-                    // unloaded ELEMENT GEP from a sized array (or through a
-                    // pointer) feeding a primitive field: the GEP points at
-                    // one element — load it, or the pointer bits land in
-                    // the field (vec4f [ arr[i], ... ] built from garbage)
-                    if (!value->loaded && m->src && m->src->is_primitive &&
-                        value->autype && value->autype->src &&
-                        (value->autype->elements > 0 || value->autype->src->is_pointer ||
-                         value->autype->src->elements > 0) &&
+                    // unloaded element GEP (`vec3f [ m.m[12], ... ]`) feeding a primitive field: load it, or the pointer bits land in the field
+                    if (!value->loaded && m->src && m->src->is_primitive && !m->src->is_pointer && !m->is_pointer &&
+                        LLVMGetTypeKind(LLVMStructGetTypeAtIndex(_lltype_slot(rmdl), index)) != LLVMPointerTypeKind &&
                         _llvalue((enode)value) &&
-                        LLVMGetInstructionOpcode(_llvalue((enode)value)) == LLVMGetElementPtr) {
-                        Au_t ea = value->autype->src;
-                        if (ea && ea->is_pointer && ea->src) ea = ea->src;
-                        if (ea && ea->is_primitive) {
-                            etype et = u(etype, ea);
-                            if (!et) et = etype_prep(a, ea);
-                            LLVMValueRef ld = LLVMBuildLoad2(B, _lltype_slot(et),
-                                _llvalue((enode)value), "field_elem_load");
-                            value = with_value(ld, enode(mod, a, autype, ea, loaded, true));
-                        }
+                        LLVMGetTypeKind(LLVMTypeOf(_llvalue((enode)value))) == LLVMPointerTypeKind) {
+                        Au_t ea = au_arg_type((Au)value);
+                        while (ea && (ea->is_pointer || ea->elements > 0) && ea->src) ea = ea->src;
+                        if (!ea || !ea->is_primitive || ea->is_pointer) ea = m->src;
+                        etype et = u(etype, ea);
+                        if (!et) et = etype_prep(a, ea);
+                        LLVMValueRef ld = LLVMBuildLoad2(B, _lltype_slot(et),
+                            _llvalue((enode)value), "field_elem_load");
+                        value = with_value(ld, enode(mod, a, autype, ea, loaded, true));
                     }
                     if (all_const && !LLVMIsConstant(_llvalue((enode)value)))
                         all_const = false;

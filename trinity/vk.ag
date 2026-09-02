@@ -3482,7 +3482,7 @@ class Texture
                     aspectMask:     VK_IMAGE_ASPECT_COLOR_BIT,
                     mipLevel:       0,
                     baseArrayLayer: 0,
-                    layerCount:     1
+                    layerCount:     layer_count
                 ],
                 imageOffset: VkOffset3D [ 0, 0, 0 ],
                 imageExtent: VkExtent3D [ width, height, 1 ]
@@ -3838,6 +3838,9 @@ Texture Display
     public scale                : f32
     # >0: scale = px / logical_width so the app sees exactly this many points across
     public logical_width        : i32
+    # android pre-rotation: surface transform in degrees; the swapchain is native-oriented
+    intern swap_rot             : i32
+    intern swap_shader          : UVQuad
     intern prof_frames          : i32
     intern swap_image_count     : u32
     intern swap_image_current   : u32
@@ -3917,6 +3920,24 @@ Texture Display
     public func has_pending_resize [ ] -> bool
         return (pending_w > 0 && pending_h > 0) || swap_needs_recreate
 
+    # a 90/270 surface takes its swapchain in native orientation: the window
+    # (and every logical size) stays as the app sees it; only extent turns
+    func surface_rotation [ tr: VkSurfaceTransformFlagBitsKHR ]
+        swap_rot = 0
+        if [ tr == VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR ]  swap_rot = 90
+        el [ tr == VK_SURFACE_TRANSFORM_ROTATE_180_BIT_KHR ] swap_rot = 180
+        el [ tr == VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR ] swap_rot = 270
+        if [ (swap_rot == 90 || swap_rot == 270) && extent.width > extent.height ]
+            t9 : u32 [ extent.width ]
+            extent.width  = extent.height
+            extent.height = t9
+        if [ swap_shader ]
+            m : mat4f.identity[]
+            if [ swap_rot != 0 ]
+                h9 : f32 [ 0.0 - radians[ f32[ swap_rot ] ] * 0.5 ]
+                m = m.rotate[ quatf [ x: 0.0, y: 0.0, z: sin[ h9 ], w: cos[ h9 ] ] ]
+            swap_shader.model = m
+
     public func resize [ w_new: i32, h_new: i32 ] -> Display
         # Re-query into a stack local. The intern `surface_caps` ref field only
         # holds a raw pointer to the new'd struct from init; on later resizes that
@@ -3940,10 +3961,11 @@ Texture Display
                 extent.width  = u32[ ww_i ]
                 extent.height = u32[ wh_i ]
             scale = platform_window_scale[ glfw ]
-            if [ logical_width > 0 && extent.width > 0 ]
-                scale  = f32[ extent.width ] / logical_width
+            surface_rotation[ caps.currentTransform ]
+            if [ logical_width > 0 && width > 0 ]
+                scale  = f32[ (swap_rot == 90 || swap_rot == 270) ? extent.height : extent.width ] / logical_width
                 width  = logical_width
-                height = i32[ extent.height / scale ]
+                height = i32[ ((swap_rot == 90 || swap_rot == 270) ? extent.width : extent.height) / scale ]
         el
             width  = w_new
             height = h_new
@@ -3983,8 +4005,7 @@ Texture Display
                 imageArrayLayers:      1,
                 imageUsage:            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                 imageSharingMode:      VK_SHARING_MODE_EXCLUSIVE,
-                # identity: the compositor rotates for us (a rotated surface would need pre-rotated rendering)
-                preTransform:          (caps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR) ? VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR : caps.currentTransform,
+                preTransform:          caps.currentTransform,
                 compositeAlpha:        VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
                 presentMode:           present_mode,
                 clipped:               VK_TRUE,
@@ -4002,7 +4023,10 @@ Texture Display
                 samplers : map Au[string] [
                     "color": top
                 ]
-                swap_model = Model [ vk: vk, w: a, samplers: samplers ]
+                swap_shader = UVQuad [ vk: vk, name: 'uv-quad' ]
+                swap_shader.hold[]
+                swap_model = Model [ vk: vk, w: a, s: swap_shader, samplers: samplers ]
+                surface_rotation[ caps.currentTransform ]
 
             vkGetSwapchainImagesKHR[ vk.device, vk_swapchain, @swap_image_count, null ]
             
@@ -4322,6 +4346,9 @@ Texture Display
                 height = i32[ ph_i / scale ]
             extent.width  = u32[ pw_i ]
             extent.height = u32[ ph_i ]
+            caps0 : VkSurfaceCapabilitiesKHR
+            vkGetPhysicalDeviceSurfaceCapabilitiesKHR[ vk.physical_device, vk_surface, @caps0 ]
+            surface_rotation[ caps0.currentTransform ]
             puts 'display: {width}x{height} points, {extent.width}x{extent.height} px, scale {scale}'
         el
             surface_format.format     = (format == Pixel.rgbaf32) ? VK_FORMAT_R32G32B32A32_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM

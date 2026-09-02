@@ -133,21 +133,50 @@ class Http
         return tail2.mid[ 0, ve ]
 
     static func download [ url: string, dest: path ] -> i64
+        return request[ 'GET', url, dest, null, 0, null ]
+
+    # multipart/form-data upload of one file under field name, the response body lands in dest
+    static func upload [ url: string, dest: path, field: string, file: path ] -> i64
+        fp : @FILE [ fopen[ file.chars, 'rb' ] ]
+        if [ !fp ]
+            puts 'net: cannot read {file}'
+            return -1
+        fseek[ fp, 0, SEEK_END ]
+        fsz : i64 [ ftell[ fp ] ]
+        fseek[ fp, 0, SEEK_SET ]
+        bd : string 'Orion_Racer_Replay_Transfer_$'
+        head : string '--{bd}\r\nContent-Disposition: form-data; name="{field}"; filename="{file.filename[]}"\r\nContent-Type: application/octet-stream\r\n\r\n'
+        tail : string '\r\n--{bd}--\r\n'
+        n : i64 [ head.count + fsz + tail.count ]
+        body : new u8 [ n ]
+        memcpy[ body, head.chars, head.count ]
+        rd : i64 [ fread[ @body[ head.count ], 1, fsz, fp ] ]
+        fclose[ fp ]
+        if [ rd != fsz ] return -1
+        memcpy[ @body[ head.count + fsz ], tail.chars, tail.count ]
+        return request[ 'POST', url, dest, body, n, 'multipart/form-data; boundary={bd}' ]
+
+    static func request [ method: string, url: string, dest: path, body: @u8, body_n: i64, content_type: string ] -> i64
         u : UrlParts [ ]
         u.from_url[ url ]
         if [ !u.valid ]
             puts 'net: bad url {url}'
             return -1
         for [ hop: i32 0, hop < 6, hop += 1 ]
-            puts 'net: download {u.host}{u.query}'
+            puts 'net: {method} {u.host}{u.query}'
             t : TLSClient [ host: u.host, port: u.port ]
             if [ !t.connected ]
                 puts 'net: no tls connection to {u.host}:{u.port}'
                 t.close[]
                 return -1
-            req : string 'GET {u.query} HTTP/1.1\r\nHost: {u.host}\r\nUser-Agent: silver\r\nAccept: */*\r\nConnection: close\r\n\r\n'
+            extra : string [ (body_n > 0) ? 'Content-Type: {content_type}\r\nContent-Length: {body_n}\r\n' : '' ]
+            req : string '{method} {u.query} HTTP/1.1\r\nHost: {u.host}\r\nUser-Agent: silver\r\nAccept: */*\r\n{extra}Connection: close\r\n\r\n'
             if [ t.send[ cast @u8 [ req.chars ], req.count ] != req.count ]
                 puts 'net: send failed to {u.host}'
+                t.close[]
+                return -1
+            if [ body_n > 0 && t.send[ body, body_n ] != body_n ]
+                puts 'net: body send failed to {u.host}'
                 t.close[]
                 return -1
             # headers: byte-at-a-time until the blank line

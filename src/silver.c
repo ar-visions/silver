@@ -1143,6 +1143,11 @@ static void progress_clear_line() {
     progress_lines = 0;
 }
 
+// an error never prints on the tail of the progress line
+extern void (*aether_error_prelude)(void);
+#undef verify
+#define verify(a, t, ...) ({ if (!(a)) { progress_clear_line(); string res = (string)formatter((Au_t)null, true, stderr, (Au)true, seq, (symbol)t, ## __VA_ARGS__); if (level_err >= fault_level) { halt(res, null); } false; } else { true; } true; })
+
 static void progress_draw(silver a, double frac) {
     if (a->verbose || !isatty(2)) return;
     if (frac < 0) frac = 0;
@@ -14947,6 +14952,7 @@ etype silver_read_def(silver a, interface access) {
 // importing 
 int main(int argc, cstrs argv) {
     setvbuf(stdout, NULL, _IONBF, 0);   // TEMP
+    aether_error_prelude = progress_clear_line;
 #ifdef _WIN32
     // there is no rpath here: a module we dlopen finds its own dependencies
     // (opencv, OpenEXR, ...) through PATH, so put our directories first
