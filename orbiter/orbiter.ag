@@ -1117,6 +1117,8 @@ class FmtWatch
     public announced : bool
     public kicked    : bool
     public start_us  : i64 [ 0 ]
+    # set when the file's handler module colours it in-process
+    public fn        : hook
 
 element orbiter : trinity # implements compiler
     public width         : i32    [ 1888 ]
@@ -1528,7 +1530,7 @@ element orbiter : trinity # implements compiler
                 if [ sl9[i] == scene ] scene_ix = i
         # sessions saved when there were four stages can hold a 3, which
         # now wraps past clear and reads as frost
-        frost_ix = frost_ix % 3
+        frost_ix = frost_ix % 4
 
     func load_settings []
         sp  : agi_path[]
@@ -1644,6 +1646,48 @@ element orbiter : trinity # implements compiler
         fw : FmtWatch [ proj: stem, file: f, map: '{startup_path}/install/syntax/{stem}.f', start_us: epoch_micros[] ]
         fmt_watch[ k ] = fw
 
+    # the handler module's lib exports `syntax`; it colours in-process
+    func fmt_start_fn [ f: path, lib: string ]
+        if [ !startup_path ] startup_path = path.path_startup[]
+        # buffers key on the absolute path; the map's source must match
+        fw : FmtWatch [ proj: lib, file: f.absolute[], map: '', start_us: epoch_micros[], kicked: true, announced: true ]
+        fmt_watch[ '{f}' ] = fw
+        so : path '{startup_path}/install/build/lib{lib}.so'
+        if [ !so.exists[] ] return
+        # local: only dlsym on this handle needs its symbols
+        h : dlopen[ so.chars, RTLD_NOW ]
+        if [ !h ]
+            puts 'syntax: dlopen failed for {so}'
+            return
+        sym : string 'syntax'
+        fw.fn = cast hook [ dlsym[ h, sym.chars ] ]
+        if [ !fw.fn ] puts 'syntax: {lib} exports no syntax function'
+        el puts 'syntax: {lib} colours {fw.file}'
+
+    # re-ask the handler whenever the file on disk changes
+    func fmt_poll_fn [ fw: FmtWatch ]
+        if [ !fw.file ] return
+        sm : i64 [ fw.file.modified_time[] ]
+        if [ fw.mtime > 0 && sm <= fw.mtime ] return
+        # the buffer is shared by every pane: ask once it is loaded
+        ed0 : Editor null
+        for [ i: i32 0, i < editor_slots.count, i += 1 ]
+            ed : Editor pane_at[ i ]
+            if [ ed && !ed0 ] ed0 = ed
+        if [ !ed0 || !ed0.has_buffer[ fw.file ] ] return
+        fn : hook fw.fn
+        ff : fmt_file fn[ fw.file ]
+        if [ !ff ] return
+        fw.mtime = sm
+        lns9 : vec Au ff.lines
+        puts 'syntax: {fw.proj} mapped {lns9.count} lines for {ff.source}'
+        ed0.apply_format[ ff ]
+        for [ i: i32 0, i < editor_slots.count, i += 1 ]
+            ed : Editor pane_at[ i ]
+            if [ ed ] ed.pristine = false
+        win : ux
+        if [ win ] win.will_animate = true
+
     func fmt_sync []
         if [ !fmt_watch ] fmt_watch = map FmtWatch [string] []
         if [ !open_files ] return
@@ -1655,7 +1699,15 @@ element orbiter : trinity # implements compiler
             if [ !f ] continue
             fn : string f.filename[]
             if [ fn.count < 3 ] continue
-            if [ fn.mid[ fn.count - 3, 3 ].compare[ '.ag' ] != 0 ] continue
+            if [ fn.mid[ fn.count - 3, 3 ].compare[ '.ag' ] != 0 ]
+                # not silver: the extension's handler module colours it
+                ed  : Editor pane_at[ i ]
+                lib : string (ed) ? ed.handler_lib_for[ f ] : null
+                if [ !lib ] continue
+                k2 : string '{f}'
+                if [ live.index_of[ k2 ] < 0 ] live += k2
+                if [ !fmt_watch[ k2 ] ] fmt_start_fn[ f, lib ]
+                continue
             main : path fmt_main[ f ]
             k : string '{main}'
             if [ live.index_of[ k ] < 0 ] live += k
@@ -1670,6 +1722,9 @@ element orbiter : trinity # implements compiler
     func fmt_poll []
         if [ !fmt_watch ] return
         for [ fw: FmtWatch, name: string ] in fmt_watch
+            if [ fw.fn ]
+                fmt_poll_fn[ fw ]
+                continue
             if [ fw.kicked && fw.pid == 0 && fw.file ]
                 sm : i64 [ fw.file.modified_time[] ]
                 if [ fw.src_mtime > 0 && sm > fw.src_mtime ]
@@ -2971,8 +3026,17 @@ element orbiter : trinity # implements compiler
         ed.nav_tools   = null
         ed.nav_default = null
         if [ is_search && ed.src ]
-            ed.nav_tools   = (ed.file_is_binary[ ed.src ]) ? view_tools_bin : view_tools
+            bin9 : bool [ ed.file_is_binary[ ed.src ] ]
             ed.nav_default = ed.default_view_for[ ed.src ]
+            ed.nav_tools   = (bin9) ? view_tools_bin : view_tools
+            # an ascii file whose default is a handler (markdown) still
+            # edits as text: the plain editor leads the rail after it
+            if [ !bin9 && ed.handler_module_for[ ed.src ] ]
+                t9 : vec string []
+                t9.push[ 'text' ]
+                for [ s: string ] in view_tools
+                    t9.push[ s ]
+                ed.nav_tools = t9
         if [ slot >= 0 && slot < open_files.count ]
             # reload ONLY on real change: a blanket load_file remounts
             # every pane's view and flashes the ones not involved
@@ -3091,6 +3155,8 @@ element orbiter : trinity # implements compiler
         # the scene retints the ui; null theme restores the authored values
         if [ ux && ux.st ]
             ux.st.set_theme[ e.theme*[] ]
+            # the solid stage paints the theme's editor background
+            ux.solid_color = ux.st.theme_color[ '#140a2acc' ]
             ux.restyle = true
         return e
 
@@ -3879,7 +3945,7 @@ element orbiter : trinity # implements compiler
             ev.no_default = true
             return
         if [ ev.target.id == 'frost_name' ]
-            frost_ix = (frost_ix + 1) % 3
+            frost_ix = (frost_ix + 1) % 4
             ux.frost_mode = frost_ix
             save_session[]
             ev.no_default = true
@@ -4661,6 +4727,7 @@ element orbiter : trinity # implements compiler
             puts 'FROST ix={frost_ix} mode={(ux) ? ux.frost_mode : -9} eff={(ux) ? ux.frost_eff[] : -9}'
             frost_dbg9 = frost_ix
             if [ ux ] frost_dbg8 = ux.frost_mode
+            if [ ux && ux.st ] ux.solid_color = ux.st.theme_color[ '#140a2acc' ]
         if [ ux ] ux.frost_mode = frost_ix
         speed_apply[]
         if [ ux ] ux.orbit_mode = orbit_ix % orbit_list[].count

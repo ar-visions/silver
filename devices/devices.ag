@@ -13,7 +13,9 @@ ifdef [ apple ]
 
 ifdef [ linux ]
     import <host.h>
+        -I/usr/include/libdrm
         -lxcb
+        -ldrm
 
 ifdef [ android ]
     import <host.h>

@@ -44,6 +44,9 @@ struct platform_window {
 static double g_freq, g_t0;
 
 const char* platform_surface_extension(void) { return "VK_KHR_win32_surface"; }
+int platform_is_kms(void) { return 0; }
+int platform_kms_scanout_buffer(int* w, int* h, int* stride) { return -1; }
+void platform_window_present_dmabuf(int fd, int w, int h, int stride, uint32_t fourcc) {}
 
 double platform_time(void) {
     LARGE_INTEGER c; QueryPerformanceCounter(&c);
@@ -510,6 +513,9 @@ static double now(void) {
 double platform_time(void) { return now() - g_t0; }
 
 const char* platform_surface_extension(void) { return "VK_KHR_android_surface"; }
+int platform_is_kms(void) { return 0; }
+int platform_kms_scanout_buffer(int* w, int* h, int* stride) { return -1; }
+void platform_window_present_dmabuf(int fd, int w, int h, int stride, uint32_t fourcc) {}
 
 static void send_cmd(int c) { u_char b = c; write(g_cmd[1], &b, 1); }
 
@@ -875,6 +881,10 @@ int platform_peer_poll(void* out, int max) { return 0; }
 #include <unistd.h>
 #include <time.h>
 #include <linux/joystick.h>
+#include <linux/input.h>
+#include <xf86drm.h>
+#include <xf86drmMode.h>
+#include <sys/mman.h>
 #include <sys/ioctl.h>
 #include <errno.h>
 
@@ -915,6 +925,291 @@ static xcb_keysym_t*     g_syms;
 static int               g_syms_min, g_syms_per, g_syms_count;
 static platform_window*  g_windows;
 
+// kms: no x server (orbiter-os guest). the display itself is the vulkan
+// surface (VK_KHR_display); input comes straight from evdev
+static bool   g_kms;
+static int    g_ev[32];
+static int    g_ev_n;
+static int    g_ev_abs_max[32];
+static double g_mx, g_my;
+static bool   g_moved;
+static int    g_drm_fd = -1;    // master: the guest scans out a dma-buf here
+static uint32_t g_drm_conn;     // the connected connector
+static int    g_drm_w, g_drm_h; // its preferred mode
+static uint32_t g_drm_crtc;
+static drmModeModeInfo g_drm_mode;
+// a scanned-out dma-buf, cached by fd so re-presents only redraw
+static int      g_scan_fd = -1;
+static uint32_t g_scan_fb;
+
+// the first card with a connected connector; we stay master so the
+// vulkan driver can take the display through VK_EXT_acquire_drm_display
+static void kms_open_drm(void) {
+    char path[32];
+    for (int i = 0; i < 4 && g_drm_fd < 0; i++) {
+        snprintf(path, sizeof(path), "/dev/dri/card%d", i);
+        int fd = open(path, O_RDWR | O_CLOEXEC);
+        if (fd < 0) continue;
+        drmModeRes* res = drmModeGetResources(fd);
+        if (!res) { close(fd); continue; }
+        for (int c = 0; c < res->count_connectors && g_drm_fd < 0; c++) {
+            drmModeConnector* conn = drmModeGetConnector(fd, res->connectors[c]);
+            if (!conn) continue;
+            if (conn->connection == DRM_MODE_CONNECTED && conn->count_modes > 0) {
+                g_drm_fd   = fd;
+                g_drm_conn = conn->connector_id;
+                g_drm_mode = conn->modes[0];
+                g_drm_w    = conn->modes[0].hdisplay;
+                g_drm_h    = conn->modes[0].vdisplay;
+                drmModeEncoder* enc = conn->encoder_id ? drmModeGetEncoder(fd, conn->encoder_id) : NULL;
+                g_drm_crtc = enc ? enc->crtc_id : 0;
+                if (enc) drmModeFreeEncoder(enc);
+                if (!g_drm_crtc) {
+                    drmModeRes* r2 = drmModeGetResources(fd);
+                    if (r2 && r2->count_crtcs > 0) g_drm_crtc = r2->crtcs[0];
+                    if (r2) drmModeFreeResources(r2);
+                }
+                fprintf(stderr, "kms: %s connector %u %dx%d\n", path, g_drm_conn, g_drm_w, g_drm_h);
+            }
+            drmModeFreeConnector(conn);
+        }
+        drmModeFreeResources(res);
+        if (g_drm_fd < 0) close(fd);
+    }
+    // release card0 entirely: venus must be able to open it as drm master
+    // and own the display for VK_KHR_display. we only needed the mode size.
+    if (g_drm_fd >= 0) { close(g_drm_fd); g_drm_fd = -1; }
+    if (g_drm_w == 0) fprintf(stderr, "kms: no connected display on /dev/dri/card0..3\n");
+}
+
+// scan out a venus-exported dma-buf: import it as a framebuffer once, then
+// each frame flush it. the guest renders into this same GPU memory, and
+// qemu shares the scanout resource to the host — the dma path, no vnc
+// virtio-gpu will not scan out an arbitrary venus dma-buf (AddFB2 ENOENT).
+// so KMS owns the scanout: a native virtio-gpu dumb buffer, exported as a
+// dma-buf that venus imports and renders into. this is scanout-capable AND
+// zero-copy — the guest's gpu writes the very memory the host scans out.
+static uint32_t g_scan_handle;
+static int      g_scan_w, g_scan_h;
+
+// create the scanout dumb buffer + framebuffer, set the mode, and return a
+// dma-buf fd for venus to import (with its stride). -1 on failure.
+int platform_kms_scanout_buffer(int* w, int* h, int* stride) {
+    if (!g_kms || g_drm_fd < 0) return -1;
+    if (g_scan_fb == 0) {
+        struct drm_mode_create_dumb c = { .width = g_drm_mode.hdisplay, .height = g_drm_mode.vdisplay, .bpp = 32 };
+        if (drmIoctl(g_drm_fd, DRM_IOCTL_MODE_CREATE_DUMB, &c)) {
+            fprintf(stderr, "kms: create_dumb failed: %s\n", strerror(errno)); return -1;
+        }
+        g_scan_handle = c.handle;
+        g_scan_w = c.width; g_scan_h = c.height;
+        uint32_t handles[4] = { c.handle, 0, 0, 0 };
+        uint32_t strides[4] = { c.pitch, 0, 0, 0 };
+        uint32_t offsets[4] = { 0, 0, 0, 0 };
+        // DRM_FORMAT_XRGB8888 is virtio-gpu's canonical scanout format
+        uint32_t fourcc = 0x34325258;
+        int rc = drmModeAddFB2(g_drm_fd, c.width, c.height, fourcc, handles, strides, offsets, &g_scan_fb, 0);
+        if (rc) { fprintf(stderr, "kms: scanout AddFB2 failed: %s\n", strerror(errno)); return -1; }
+        drmModeSetCrtc(g_drm_fd, g_drm_crtc, g_scan_fb, 0, 0, &g_drm_conn, 1, &g_drm_mode);
+        int fd = -1;
+        if (drmPrimeHandleToFD(g_drm_fd, c.handle, DRM_CLOEXEC | DRM_RDWR, &fd)) {
+            fprintf(stderr, "kms: HandleToFD failed: %s\n", strerror(errno)); return -1;
+        }
+        g_scan_fd = fd;
+        fprintf(stderr, "kms: scanout dumb %ux%u pitch %u fb %u fd %d\n", c.width, c.height, c.pitch, g_scan_fb, fd);
+        if (stride) *stride = c.pitch;
+    } else if (stride) {
+        *stride = g_scan_w * 4;
+    }
+    if (w) *w = g_scan_w;
+    if (h) *h = g_scan_h;
+    return g_scan_fd;
+}
+
+// venus wrote a new frame into the scanout buffer; tell the host to re-read
+void platform_window_present_dmabuf(int fd, int w, int h, int stride, uint32_t fourcc) {
+    if (!g_kms || g_drm_fd < 0 || g_scan_fb == 0) return;
+    drmModeClip clip = { 0, 0, (uint16_t)g_scan_w, (uint16_t)g_scan_h };
+    drmModeDirtyFB(g_drm_fd, g_scan_fb, &clip, 1);
+}
+
+static void kms_open_inputs(void) {
+    char path[32];
+    for (int i = 0; i < 32 && g_ev_n < 32; i++) {
+        snprintf(path, sizeof(path), "/dev/input/event%d", i);
+        int fd = open(path, O_RDONLY | O_NONBLOCK);
+        if (fd < 0) continue;
+        struct input_absinfo ai;
+        g_ev_abs_max[g_ev_n] = ioctl(fd, EVIOCGABS(ABS_X), &ai) == 0 ? ai.maximum : 0;
+        g_ev[g_ev_n++] = fd;
+    }
+}
+
+// evdev key code -> glfw key number
+static int evkey_to_key(int c) {
+    // evdev numbers keys by keyboard row; glfw by letter
+    static const char* row1 = "qwertyuiop";
+    static const char* row2 = "asdfghjkl";
+    static const char* row3 = "zxcvbnm";
+    if (c >= KEY_1 && c <= KEY_9)   return PLATFORM_KEY_0 + 1 + (c - KEY_1);
+    if (c >= KEY_F1 && c <= KEY_F10) return PLATFORM_KEY_F1 + (c - KEY_F1);
+    if (c == KEY_F11 || c == KEY_F12) return PLATFORM_KEY_F1 + 10 + (c - KEY_F11);
+    if (c >= KEY_Q && c <= KEY_P)   return PLATFORM_KEY_A + (row1[c - KEY_Q] - 'a');
+    if (c >= KEY_A && c <= KEY_L)   return PLATFORM_KEY_A + (row2[c - KEY_A] - 'a');
+    if (c >= KEY_Z && c <= KEY_M)   return PLATFORM_KEY_A + (row3[c - KEY_Z] - 'a');
+    if (c >= KEY_KP7 && c <= KEY_KP9) return PLATFORM_KEY_KP_0 + 7 + (c - KEY_KP7);
+    if (c >= KEY_KP4 && c <= KEY_KP6) return PLATFORM_KEY_KP_0 + 4 + (c - KEY_KP4);
+    if (c >= KEY_KP1 && c <= KEY_KP3) return PLATFORM_KEY_KP_0 + 1 + (c - KEY_KP1);
+    switch (c) {
+        case KEY_0:          return PLATFORM_KEY_0;
+        case KEY_SPACE:      return PLATFORM_KEY_SPACE;
+        case KEY_APOSTROPHE: return PLATFORM_KEY_APOSTROPHE;
+        case KEY_COMMA:      return PLATFORM_KEY_COMMA;
+        case KEY_MINUS:      return PLATFORM_KEY_MINUS;
+        case KEY_DOT:        return PLATFORM_KEY_PERIOD;
+        case KEY_SLASH:      return PLATFORM_KEY_SLASH;
+        case KEY_SEMICOLON:  return PLATFORM_KEY_SEMICOLON;
+        case KEY_EQUAL:      return PLATFORM_KEY_EQUAL;
+        case KEY_LEFTBRACE:  return PLATFORM_KEY_LEFT_BRACKET;
+        case KEY_BACKSLASH:  return PLATFORM_KEY_BACKSLASH;
+        case KEY_RIGHTBRACE: return PLATFORM_KEY_RIGHT_BRACKET;
+        case KEY_GRAVE:      return PLATFORM_KEY_GRAVE_ACCENT;
+        case KEY_ESC:        return PLATFORM_KEY_ESCAPE;
+        case KEY_ENTER:      return PLATFORM_KEY_ENTER;
+        case KEY_TAB:        return PLATFORM_KEY_TAB;
+        case KEY_BACKSPACE:  return PLATFORM_KEY_BACKSPACE;
+        case KEY_INSERT:     return PLATFORM_KEY_INSERT;
+        case KEY_DELETE:     return PLATFORM_KEY_DELETE;
+        case KEY_RIGHT:      return PLATFORM_KEY_RIGHT;
+        case KEY_LEFT:       return PLATFORM_KEY_LEFT;
+        case KEY_DOWN:       return PLATFORM_KEY_DOWN;
+        case KEY_UP:         return PLATFORM_KEY_UP;
+        case KEY_PAGEUP:     return PLATFORM_KEY_PAGE_UP;
+        case KEY_PAGEDOWN:   return PLATFORM_KEY_PAGE_DOWN;
+        case KEY_HOME:       return PLATFORM_KEY_HOME;
+        case KEY_END:        return PLATFORM_KEY_END;
+        case KEY_CAPSLOCK:   return PLATFORM_KEY_CAPS_LOCK;
+        case KEY_SCROLLLOCK: return PLATFORM_KEY_SCROLL_LOCK;
+        case KEY_NUMLOCK:    return PLATFORM_KEY_NUM_LOCK;
+        case KEY_SYSRQ:      return PLATFORM_KEY_PRINT_SCREEN;
+        case KEY_PAUSE:      return PLATFORM_KEY_PAUSE;
+        case KEY_KP0:        return PLATFORM_KEY_KP_0;
+        case KEY_KPDOT:      return PLATFORM_KEY_KP_DECIMAL;
+        case KEY_KPSLASH:    return PLATFORM_KEY_KP_DIVIDE;
+        case KEY_KPASTERISK: return PLATFORM_KEY_KP_MULTIPLY;
+        case KEY_KPMINUS:    return PLATFORM_KEY_KP_SUBTRACT;
+        case KEY_KPPLUS:     return PLATFORM_KEY_KP_ADD;
+        case KEY_KPENTER:    return PLATFORM_KEY_KP_ENTER;
+        case KEY_KPEQUAL:    return PLATFORM_KEY_KP_EQUAL;
+        case KEY_LEFTSHIFT:  return PLATFORM_KEY_LEFT_SHIFT;
+        case KEY_LEFTCTRL:   return PLATFORM_KEY_LEFT_CONTROL;
+        case KEY_LEFTALT:    return PLATFORM_KEY_LEFT_ALT;
+        case KEY_LEFTMETA:   return PLATFORM_KEY_LEFT_SUPER;
+        case KEY_RIGHTSHIFT: return PLATFORM_KEY_RIGHT_SHIFT;
+        case KEY_RIGHTCTRL:  return PLATFORM_KEY_RIGHT_CONTROL;
+        case KEY_RIGHTALT:   return PLATFORM_KEY_RIGHT_ALT;
+        case KEY_RIGHTMETA:  return PLATFORM_KEY_RIGHT_SUPER;
+        case KEY_COMPOSE:    return PLATFORM_KEY_MENU;
+    }
+    return 0;
+}
+
+// us layout: the text a key press produces, 0 when none
+static uint32_t evkey_to_char(int c, bool shift) {
+    static const char* digits  = "1234567890";
+    static const char* shifted = "!@#$%^&*()";
+    if (c >= KEY_1 && c <= KEY_9) return (shift ? shifted : digits)[c - KEY_1];
+    if (c == KEY_0) return shift ? ')' : '0';
+    int k = evkey_to_key(c);
+    if (k >= PLATFORM_KEY_A && k <= PLATFORM_KEY_Z) return shift ? k : k + ('a' - 'A');
+    if (c >= KEY_KP1 && c <= KEY_KP3) return '1' + (c - KEY_KP1);
+    if (c >= KEY_KP4 && c <= KEY_KP6) return '4' + (c - KEY_KP4);
+    if (c >= KEY_KP7 && c <= KEY_KP9) return '7' + (c - KEY_KP7);
+    switch (c) {
+        case KEY_SPACE:      return ' ';
+        case KEY_APOSTROPHE: return shift ? '"' : '\'';
+        case KEY_COMMA:      return shift ? '<' : ',';
+        case KEY_MINUS:      return shift ? '_' : '-';
+        case KEY_DOT:        return shift ? '>' : '.';
+        case KEY_SLASH:      return shift ? '?' : '/';
+        case KEY_SEMICOLON:  return shift ? ':' : ';';
+        case KEY_EQUAL:      return shift ? '+' : '=';
+        case KEY_LEFTBRACE:  return shift ? '{' : '[';
+        case KEY_BACKSLASH:  return shift ? '|' : '\\';
+        case KEY_RIGHTBRACE: return shift ? '}' : ']';
+        case KEY_GRAVE:      return shift ? '~' : '`';
+        case KEY_KP0:        return '0';
+        case KEY_KPDOT:      return '.';
+        case KEY_KPSLASH:    return '/';
+        case KEY_KPASTERISK: return '*';
+        case KEY_KPMINUS:    return '-';
+        case KEY_KPPLUS:     return '+';
+        case KEY_KPEQUAL:    return '=';
+    }
+    return 0;
+}
+
+static void key_event(platform_window* w, int key, int scan, int action, int mods);
+
+static int kms_mods(platform_window* w) {
+    int m = 0;
+    if (w->keys[PLATFORM_KEY_LEFT_SHIFT]   || w->keys[PLATFORM_KEY_RIGHT_SHIFT])   m |= PLATFORM_MOD_SHIFT;
+    if (w->keys[PLATFORM_KEY_LEFT_CONTROL] || w->keys[PLATFORM_KEY_RIGHT_CONTROL]) m |= PLATFORM_MOD_CONTROL;
+    if (w->keys[PLATFORM_KEY_LEFT_ALT]     || w->keys[PLATFORM_KEY_RIGHT_ALT])     m |= PLATFORM_MOD_ALT;
+    if (w->keys[PLATFORM_KEY_LEFT_SUPER]   || w->keys[PLATFORM_KEY_RIGHT_SUPER])   m |= PLATFORM_MOD_SUPER;
+    return m;
+}
+
+static void kms_event(platform_window* w, int dev, struct input_event* e) {
+    if (e->type == EV_KEY) {
+        int c = e->code;
+        if (c == BTN_LEFT || c == BTN_RIGHT || c == BTN_MIDDLE) {
+            int b = c == BTN_LEFT ? PLATFORM_MOUSE_LEFT : c == BTN_RIGHT ? PLATFORM_MOUSE_RIGHT : PLATFORM_MOUSE_MIDDLE;
+            if (w->on_mouse) w->on_mouse(w, b, e->value ? PLATFORM_PRESS : PLATFORM_RELEASE, w->mods);
+            return;
+        }
+        int key = evkey_to_key(c);
+        if (!key) return;
+        // evdev value: 0 release, 1 press, 2 autorepeat
+        int action = e->value == 0 ? PLATFORM_RELEASE : e->value == 2 ? PLATFORM_REPEAT : PLATFORM_PRESS;
+        if (key) w->keys[key] = action != PLATFORM_RELEASE;
+        int mods = kms_mods(w);
+        key_event(w, key, c, action, mods);
+        if (action != PLATFORM_RELEASE && !(mods & (PLATFORM_MOD_CONTROL | PLATFORM_MOD_SUPER))) {
+            uint32_t cp = evkey_to_char(c, (mods & PLATFORM_MOD_SHIFT) != 0);
+            if (cp && w->on_char) w->on_char(w, cp);
+        }
+    } else if (e->type == EV_REL) {
+        if (e->code == REL_X) { g_mx += e->value; g_moved = true; }
+        else if (e->code == REL_Y) { g_my += e->value; g_moved = true; }
+        else if (e->code == REL_WHEEL && w->on_scroll) w->on_scroll(w, 0, e->value);
+        else if (e->code == REL_HWHEEL && w->on_scroll) w->on_scroll(w, e->value, 0);
+    } else if (e->type == EV_ABS && g_ev_abs_max[dev] > 0) {
+        // a tablet reports 0..max across the whole screen
+        double s = (double)e->value / (double)g_ev_abs_max[dev];
+        if (e->code == ABS_X) { g_mx = s * w->width;  g_moved = true; }
+        else if (e->code == ABS_Y) { g_my = s * w->height; g_moved = true; }
+    } else if (e->type == EV_SYN && g_moved) {
+        g_moved = false;
+        if (g_mx < 0) g_mx = 0; if (g_mx > w->width - 1)  g_mx = w->width - 1;
+        if (g_my < 0) g_my = 0; if (g_my > w->height - 1) g_my = w->height - 1;
+        if (w->on_cursor) w->on_cursor(w, g_mx, g_my);
+    }
+}
+
+static void kms_poll(void) {
+    platform_window* w = g_windows;
+    if (!w) return;
+    struct input_event ev[64];
+    for (int i = 0; i < g_ev_n; i++) {
+        for (;;) {
+            ssize_t n = read(g_ev[i], ev, sizeof(ev));
+            if (n <= 0) break;
+            for (int k = 0; k < (int)(n / sizeof(ev[0])); k++) kms_event(w, i, &ev[k]);
+        }
+    }
+}
+
 static xcb_keysym_t keysym_of(xcb_keycode_t code, int col) {
     int i = (int)code - g_syms_min;
     if (!g_syms || i < 0 || i >= g_syms_count || col >= g_syms_per) return 0;
@@ -950,7 +1245,8 @@ static xcb_generic_event_t* next_event(void) {
 static xcb_atom_t A_WM_PROTOCOLS, A_WM_DELETE, A_NET_WM_STATE, A_NET_WM_STATE_FULLSCREEN,
                   A_CLIPBOARD, A_UTF8_STRING, A_TARGETS, A_PLATFORM_SEL;
 
-const char* platform_surface_extension(void) { return "VK_KHR_xcb_surface"; }
+const char* platform_surface_extension(void) { return g_kms ? "VK_KHR_display" : "VK_KHR_xcb_surface"; }
+int platform_is_kms(void) { return g_kms ? 1 : 0; }
 
 static double now(void) {
     struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
@@ -1295,7 +1591,17 @@ bool platform_init(void) {
     g_t0 = now();
     int screen_n;
     g_conn = xcb_connect(NULL, &screen_n);
-    if (!g_conn || xcb_connection_has_error(g_conn)) return false;
+    if (!g_conn || xcb_connection_has_error(g_conn)) {
+        // no x server: the guest draws on the display itself
+        if (g_conn) xcb_disconnect(g_conn);
+        g_conn = NULL;
+        g_kms  = true;
+        fprintf(stderr, "devices: no x server, kms mode\n");
+        kms_open_drm();
+        kms_open_inputs();
+        fprintf(stderr, "devices: %d evdev inputs\n", g_ev_n);
+        return true;
+    }
     xcb_screen_iterator_t it = xcb_setup_roots_iterator(xcb_get_setup(g_conn));
     for (int i = 0; i < screen_n; i++) xcb_screen_next(&it);
     g_screen = it.data;
@@ -1321,6 +1627,10 @@ bool platform_init(void) {
 }
 
 void platform_terminate(void) {
+    for (int i = 0; i < g_ev_n; i++) close(g_ev[i]);
+    g_ev_n = 0;
+    if (g_drm_fd >= 0) close(g_drm_fd);
+    g_drm_fd = -1;
     free(g_syms);
     if (g_conn) xcb_disconnect(g_conn);
     g_syms = NULL; g_conn = NULL;
@@ -1332,6 +1642,7 @@ int platform_run(platform_loop_fn loop, void* ctx) {
 }
 
 void platform_poll(void) {
+    if (g_kms) { kms_poll(); return; }
     xcb_generic_event_t* ev;
     while ((ev = next_event())) { handle(ev); free(ev); }
     xcb_flush(g_conn);
@@ -1340,6 +1651,11 @@ void platform_poll(void) {
 platform_window* platform_window_create(int width, int height, const char* title, bool visible) {
     platform_window* w = calloc(1, sizeof(platform_window));
     w->width = width; w->height = height;
+    if (g_kms) { // one window: the display; vk sizes it from the mode
+        if (g_drm_w > 0) { w->width = g_drm_w; w->height = g_drm_h; }
+        w->next = g_windows; g_windows = w;
+        return w;
+    }
     w->win = xcb_generate_id(g_conn);
     uint32_t mask = XCB_CW_BACK_PIXEL | XCB_CW_EVENT_MASK;
     uint32_t values[2] = { g_screen->black_pixel,
@@ -1364,16 +1680,19 @@ platform_window* platform_window_create(int width, int height, const char* title
 void platform_window_destroy(platform_window* w) {
     if (!w) return;
     for (platform_window** p = &g_windows; *p; p = &(*p)->next) if (*p == w) { *p = w->next; break; }
-    if (w->cursor) xcb_free_cursor(g_conn, w->cursor);
-    xcb_destroy_window(g_conn, w->win);
-    xcb_flush(g_conn);
+    if (!g_kms) {
+        if (w->cursor) xcb_free_cursor(g_conn, w->cursor);
+        xcb_destroy_window(g_conn, w->win);
+        xcb_flush(g_conn);
+    }
     free(w->clip); free(w->clip_own);
     free(w);
 }
 
-void platform_window_show(platform_window* w) { xcb_map_window(g_conn, w->win); xcb_flush(g_conn); }
+void platform_window_show(platform_window* w) { if (g_kms) return; xcb_map_window(g_conn, w->win); xcb_flush(g_conn); }
 
 void platform_window_set_title(platform_window* w, const char* t) {
+    if (g_kms) return;
     if (!t) t = "";
     xcb_change_property(g_conn, XCB_PROP_MODE_REPLACE, w->win, XCB_ATOM_WM_NAME, A_UTF8_STRING, 8, strlen(t), t);
     xcb_change_property(g_conn, XCB_PROP_MODE_REPLACE, w->win, atom("_NET_WM_NAME"), A_UTF8_STRING, 8, strlen(t), t);
@@ -1381,6 +1700,11 @@ void platform_window_set_title(platform_window* w, const char* t) {
 }
 
 void platform_window_set_size(platform_window* w, int width, int height) {
+    if (g_kms) { // the display mode decides; vk reports it here
+        w->width = width; w->height = height;
+        if (w->on_size) w->on_size(w, width, height);
+        return;
+    }
     uint32_t v[2] = { width, height };
     xcb_configure_window(g_conn, w->win, XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT, v);
     xcb_flush(g_conn);
@@ -1395,6 +1719,7 @@ void platform_window_get_framebuffer(platform_window* w, int* width, int* height
 float platform_window_scale(platform_window* w) { return 1.0f; }
 
 void platform_window_get_pos(platform_window* w, int* x, int* y) {
+    if (g_kms) { if (x) *x = 0; if (y) *y = 0; return; }
     xcb_translate_coordinates_reply_t* r = xcb_translate_coordinates_reply(g_conn,
         xcb_translate_coordinates(g_conn, w->win, g_screen->root, 0, 0), NULL);
     if (r) { w->x = r->dst_x; w->y = r->dst_y; free(r); }
@@ -1402,6 +1727,7 @@ void platform_window_get_pos(platform_window* w, int* x, int* y) {
 }
 
 void platform_window_set_pos(platform_window* w, int x, int y) {
+    if (g_kms) return;
     uint32_t v[2] = { x, y };
     xcb_configure_window(g_conn, w->win, XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y, v);
     xcb_flush(g_conn);
@@ -1409,6 +1735,7 @@ void platform_window_set_pos(platform_window* w, int x, int y) {
 
 void platform_window_set_aspect(platform_window* w, int num, int den) {
     w->aspect_num = num; w->aspect_den = den;
+    if (g_kms) return;
     // WM_NORMAL_HINTS: flags(PAspect=0x80) .. min_aspect, max_aspect at [11..14]
     uint32_t hints[18] = {0};
     hints[0] = 0x80;
@@ -1419,6 +1746,7 @@ void platform_window_set_aspect(platform_window* w, int num, int den) {
 }
 
 void platform_window_set_fullscreen(platform_window* w, bool on) {
+    if (g_kms) { w->fullscreen = on; return; }
     xcb_client_message_event_t e = {0};
     e.response_type = XCB_CLIENT_MESSAGE;
     e.format = 32;
@@ -1437,13 +1765,15 @@ void platform_window_safe_area(platform_window* w, int* t, int* l, int* b, int* 
 }
 
 void platform_window_native(platform_window* w, platform_native* out) {
-    out->kind = PLATFORM_NATIVE_XCB;
+    out->kind = g_kms ? PLATFORM_NATIVE_KMS : PLATFORM_NATIVE_XCB;
     out->a = g_conn;
     out->b = NULL;
-    out->window = w->win;
+    out->window = g_kms ? g_drm_conn : w->win;
+    out->fd = g_drm_fd;
 }
 
 void platform_set_cursor(platform_window* w, int kind) {
+    if (g_kms) return;
     // core cursor font glyphs: 108 sb_h_double_arrow, 116 sb_v_double_arrow, 152 xterm, 60 hand2
     int glyph = kind == PLATFORM_CURSOR_HRESIZE ? 108 : kind == PLATFORM_CURSOR_VRESIZE ? 116 :
                 kind == PLATFORM_CURSOR_IBEAM ? 152 : kind == PLATFORM_CURSOR_HAND ? 60 : -1;
@@ -1463,6 +1793,7 @@ void platform_set_cursor(platform_window* w, int kind) {
 void platform_set_clipboard(platform_window* w, const char* text) {
     free(w->clip_own);
     w->clip_own = strdup(text ? text : "");
+    if (g_kms) return;
     xcb_set_selection_owner(g_conn, w->win, A_CLIPBOARD, XCB_CURRENT_TIME);
     xcb_flush(g_conn);
 }
@@ -1470,6 +1801,7 @@ void platform_set_clipboard(platform_window* w, const char* text) {
 const char* platform_get_clipboard(platform_window* w) {
     free(w->clip); w->clip = NULL;
     if (w->clip_own) { w->clip = strdup(w->clip_own); return w->clip; }
+    if (g_kms) return NULL;
     xcb_convert_selection(g_conn, w->win, A_CLIPBOARD, A_UTF8_STRING, A_PLATFORM_SEL, XCB_CURRENT_TIME);
     xcb_flush(g_conn);
     double t0 = now();

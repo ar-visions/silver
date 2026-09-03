@@ -7,6 +7,8 @@ import trinity
 import <alsa/asoundlib.h>
 import <GLFW/glfw3.h>
 	-lasound
+import <zstd.h>
+	-lzstd
 import <stdio.h>
 import <stdlib.h>
 import <string.h>
@@ -16,6 +18,7 @@ import <pthread.h>
 import <unistd.h>
     +_DEFAULT_SOURCE
     +_XOPEN_SOURCE=500
+import <time.h>
 
 import <reference/ares/ares_cosim.h>
 	-l{root_path}/n64/reference/ares/libares_cosim.a
@@ -42,6 +45,17 @@ class cpu_vr4300
 	c_entrylo1 : u32
 	c_entryhi  : u32
 	c_pagemask : u32
+	c_context  : u64
+	c_xcontext : u64
+	c_badvaddr : u32
+	c_lladdr   : u32
+	c_watchlo  : u32
+	c_watchhi  : u32
+	c_parity   : u32
+	c_taglo    : u32
+	c_errepc   : u32
+	c_latch    : u32                # last MTC0 value: reads of undefined CP0 regs
+	cp2_latch  : u64                # COP2 has no registers, only this latch
 	tlb_hi    : new u32 [ 32 ]      # raw EntryHi per TLB entry
 	tlb_pm    : new u32 [ 32 ]
 	tlb_lo0   : new u32 [ 32 ]
@@ -118,6 +132,8 @@ ModelViewProject N64GX
 	attrib v_env  : VertexOutput [ type:typeid[ vec4f ] ]
 	attrib v_rect : VertexOutput [ type:typeid[ vec4f ] ]
 	attrib v_wrap : VertexOutput [ type:typeid[ vec4f ] ]
+	attrib v_fog  : VertexOutput [ type:typeid[ vec4f ] ]
+	attrib v_cmb  : VertexOutput [ type:typeid[ vec4f ] ]
 
 	attrib fragColor : FragmentOutput [ type:typeid[ vec4f ] ]
 
@@ -135,11 +151,13 @@ ModelViewProject N64GX
 		mat4 M  = mat4(r0, r1, r2, r3);          // rows as columns => M = rowmajor^T, so M*v == v*rows
 		vec4 clip = M * vec4(a_pos, 1.0);
 		int flags = int(a_aux.y + 0.5);
-		int ms = int(a_aux.w + 0.5) * 4;
+		int ms = int(a_aux.w + 0.5) * 6;
 		v_rect = texelFetch(state, ivec2(ms + 0, 2), 0);
 		v_wrap = texelFetch(state, ivec2(ms + 1, 2), 0);
 		v_prim = texelFetch(state, ivec2(ms + 2, 2), 0);
 		v_env  = texelFetch(state, ivec2(ms + 3, 2), 0);
+		v_fog  = texelFetch(state, ivec2(ms + 4, 2), 0);
+		v_cmb  = texelFetch(state, ivec2(ms + 5, 2), 0);
 		vec4 col = a_col;
 		vec2 uv  = a_uv;
 		if ((flags & 1) != 0) {                  // lit: a_col.xyz = normal
@@ -152,12 +170,22 @@ ModelViewProject N64GX
 				if (i >= nl) break;
 				vec3 lc = texelFetch(state, ivec2(ls + 1 + i * 2, 1), 0).rgb;
 				vec3 ld = texelFetch(state, ivec2(ls + 2 + i * 2, 1), 0).rgb;
-				float d = max(dot(normalize(n), normalize(ld)), 0.0);   // N64 light dirs (e.g. 0x28,0x28,0x28) are not unit — normalize
+				float nn = length(n) * length(ld);                        // N64 light dirs (e.g. 0x28,0x28,0x28) are not unit — normalize
+				float d = (nn > 0.0) ? max(dot(n, ld) / nn, 0.0) : 0.0;  // zero normal / dir: ambient only, never NaN
 				c += lc * d;
 			}
 			col = vec4(min(c, vec3(1.0)), a_col.w);
-			if ((flags & 2) != 0)                // texgen: uv from normal
-				uv = vec2(n.x * 0.5 + 0.5, 0.5 - n.y * 0.5) * v_rect.zw;
+			if ((flags & 2) != 0) {              // texgen: uv from normal against the LOOKAT axes
+				vec4 lk = texelFetch(state, ivec2(ls + 7, 1), 0);
+				int  lp = int(lk.w + 0.5);
+				vec3 ly = (vec3(float((lp >> 16) & 255), float((lp >> 8) & 255), float(lp & 255)) - 128.0) / 128.0;
+				uv = vec2(dot(n, lk.xyz) * 0.5 + 0.5, 0.5 - dot(n, ly) * 0.5) * v_rect.zw;
+			}
+		}
+		float fogv = 0.0;
+		if ((flags & 32768) != 0) {              // G_FOG: RSP replaces shade alpha with the fog factor
+			fogv = clamp((clip.z / clip.w) * v_fog.x + v_fog.y, 0.0, 255.0) / 255.0;
+			col.a = fogv;
 		}
 		v_col = col;
 		v_uv  = uv;
@@ -166,7 +194,7 @@ ModelViewProject N64GX
 		float vidx = float(gl_VertexIndex);
 		float vtri = floor(vidx / 3.0) * 3.0;                           // flat per-triangle key: no intra-tri depth ramp
 		float vord = (vidx < vsplit) ? -1.0 : (vtri / max(vtot, 1.0));   // -1 = backdrop (before first z-enabled 3D), else draw-order
-		v_aux = vec4(vord, a_aux.y, a_aux.z, a_aux.w);   // x repurposed: z-disabled depth key
+		v_aux = vec4(vord, a_aux.y, fogv, a_aux.w);      // x: z-disabled depth key, z: fog factor
 		gl_Position = vec4(clip.x, clip.y, (clip.z + clip.w) * 0.5, clip.w);
 	}
 
@@ -191,20 +219,59 @@ ModelViewProject N64GX
 		int flags = int(v_aux.y + 0.5);
 		if ((flags & 1024) != 0 && gl_FrontFacing) discard;
 		if ((flags & 2048) != 0 && !gl_FrontFacing) discard;
-		vec4 col = v_col;
+		vec4 tex = vec4(1.0);
 		if ((flags & 4) != 0) {
-			float tsx = wrapc(v_uv.x, v_wrap.x, v_wrap.z, v_rect.z);
-			float tsy = wrapc(v_uv.y, v_wrap.y, v_wrap.w, v_rect.w);
-			vec4 tex = texelFetch(atlas, ivec2(v_rect.xy + vec2(tsx, tsy)), 0);
-			int cc = (flags >> 4) & 7;
-			if (cc == 1)      col.rgb = mix(col.rgb, v_prim.rgb, tex.rgb);
-			else if (cc == 2) col.rgb = min(col.rgb + tex.rgb, vec3(1.0));
-			else if (cc == 3) col = tex;
-			else { col.rgb *= tex.rgb; col.a *= tex.a; }
-			if ((flags & 8) != 0) col.rgb *= v_prim.rgb;
-			if ((flags & 128) != 0 && col.a < 0.5) discard;
-		} else {
-			if ((flags & 128) != 0 && col.a < 0.02) discard;
+			ivec2 ro = ivec2(v_rect.xy + 0.5);                        // rect origin is an interpolated varying: round it, never truncate into the neighbour slot
+			if ((flags & 131072) != 0) {                              // G_TF_BILERP: texel centres sit at +0.5, blend the 2x2 neighbourhood
+				vec2 st = v_uv - 0.5;
+				vec2 fr = fract(st);
+				vec2 b = floor(st);
+				float x0 = wrapc(b.x, v_wrap.x, v_wrap.z, v_rect.z);
+				float x1 = wrapc(b.x + 1.0, v_wrap.x, v_wrap.z, v_rect.z);
+				float y0 = wrapc(b.y, v_wrap.y, v_wrap.w, v_rect.w);
+				float y1 = wrapc(b.y + 1.0, v_wrap.y, v_wrap.w, v_rect.w);
+				vec4 t00 = texelFetch(atlas, ro + ivec2(floor(x0), floor(y0)), 0);
+				vec4 t10 = texelFetch(atlas, ro + ivec2(floor(x1), floor(y0)), 0);
+				vec4 t01 = texelFetch(atlas, ro + ivec2(floor(x0), floor(y1)), 0);
+				vec4 t11 = texelFetch(atlas, ro + ivec2(floor(x1), floor(y1)), 0);
+				tex = mix(mix(t00, t10, fr.x), mix(t01, t11, fr.x), fr.y);
+			} else {
+				float tsx = wrapc(v_uv.x, v_wrap.x, v_wrap.z, v_rect.z);
+				float tsy = wrapc(v_uv.y, v_wrap.y, v_wrap.w, v_rect.w);
+				tex = texelFetch(atlas, ro + ivec2(floor(vec2(tsx, tsy))), 0);
+			}
+		}
+		int cw0 = int(v_cmb.x + 0.5);                    // RDP colour combiner: (A - B) * C + D per cycle
+		int cw1 = int(v_cmb.y + 0.5);                    // mux tables as angrylion set_*_input
+		int aw  = int(v_cmb.z + 0.5);
+		vec4 comb = vec4(0.0);
+		for (int cy = 0; cy < 2; cy++) {
+			if (cy == 0 && v_cmb.w < 0.5) continue;
+			int cw = (cy == 0) ? cw0 : cw1;
+			int ac = (cy == 0) ? (aw >> 12) : aw;
+			vec3 rA[8]  = vec3[8](comb.rgb, tex.rgb, tex.rgb, v_prim.rgb, v_col.rgb, v_env.rgb, vec3(1.0), vec3(0.5));
+			vec3 rB[8]  = vec3[8](comb.rgb, tex.rgb, tex.rgb, v_prim.rgb, v_col.rgb, v_env.rgb, vec3(0.0), vec3(0.0));
+			vec3 rC[16] = vec3[16](comb.rgb, tex.rgb, tex.rgb, v_prim.rgb, v_col.rgb, v_env.rgb, vec3(0.0), vec3(comb.a), vec3(tex.a), vec3(tex.a), vec3(v_prim.a), vec3(v_col.a), vec3(v_env.a), vec3(0.0), vec3(v_fog.w), vec3(0.0));
+			vec3 rD[8]  = vec3[8](comb.rgb, tex.rgb, tex.rgb, v_prim.rgb, v_col.rgb, v_env.rgb, vec3(1.0), vec3(0.0));
+			float aS[8] = float[8](comb.a, tex.a, tex.a, v_prim.a, v_col.a, v_env.a, 1.0, 0.0);
+			float aC[8] = float[8](0.0, tex.a, tex.a, v_prim.a, v_col.a, v_env.a, v_fog.w, 0.0);
+			int sa = (cw >> 12) & 15;
+			int sb = (cw >> 8) & 15;
+			int sc = (cw >> 3) & 31;
+			vec3 A = (sa < 8) ? rA[sa] : vec3(0.0);
+			vec3 B = (sb < 8) ? rB[sb] : vec3(0.0);
+			vec3 C = (sc < 16) ? rC[sc] : vec3(0.0);
+			float fa = aS[(ac >> 9) & 7];
+			float fb = aS[(ac >> 6) & 7];
+			float fc = aC[(ac >> 3) & 7];
+			float fd = aS[ac & 7];
+			comb = vec4(clamp((A - B) * C + rD[cw & 7], 0.0, 1.0), clamp((fa - fb) * fc + fd, 0.0, 1.0));
+		}
+		vec4 col = comb;
+		if ((flags & 128) != 0 && col.a < 0.5) discard;
+		if ((flags & 65536) != 0) {                                                    // fog blender: CLR_FOG * A_SHADE + CLR_IN * (1 - A_SHADE)
+			int fc = int(v_fog.z + 0.5);
+			col.rgb = mix(col.rgb, vec3(float((fc >> 16) & 255), float((fc >> 8) & 255), float(fc & 255)) / 255.0, v_aux.z);
 		}
 		if ((flags & 512) != 0) col.a = max(col.r, max(col.g, col.b));
 		else if ((flags & 256) == 0) col.a = 1.0;
@@ -214,7 +281,7 @@ ModelViewProject N64GX
 			else gl_FragDepth = clamp(1.0 - v_aux.x, 0.0001, 0.9999);                  //   overlay (after 3D): near, painter order
 		}
 		else if ((flags & 16384) != 0) gl_FragDepth = clamp(gl_FragCoord.z - 0.0002, 0.0, 1.0);  // decal: beat coplanar surface
-		else gl_FragDepth = gl_FragCoord.z;
+		else gl_FragDepth = clamp(gl_FragCoord.z - max(v_aux.x, 0.0) * 0.00002, 0.0, 1.0);   // RDP dz tolerance: a later coplanar draw wins
 		fragColor = col;
 	}
 
@@ -296,7 +363,10 @@ element n64 : trinity
 	public  height       : i32    [ 720 ]
 	public  title        : string [ 'n64' ]
 	public  background   : string [ 'Background' ]
-	public  rom          : path
+	default rom          : path           # positional: the ROM
+	public  state        : path           # --state <file>: our n64.state or a gopher64 .stateN zip
+	mutable gs_buf       : @u8            # postcard cursor for gopher64 state parsing
+	mutable gs_pos       : i64
 	public  volume       : f32 [ 0.02 ]
 	mutable cpu          : cpu_vr4300
 	mutable oracle       : ares          # in-loop ares reference (co-sim)
@@ -674,6 +744,17 @@ element n64 : trinity
 	mutable gx_sx1       : i32 [ 320 ]
 	mutable gx_sy1       : i32 [ 240 ]
 	mutable gx_half1     : u32
+	mutable gx_fogm      : f32              # G_MW_FOG multiplier
+	mutable gx_fogo      : f32              # G_MW_FOG offset
+	mutable gx_fogc      : u32              # SETFOGCOLOR
+	mutable gx_blendc    : u32              # SETBLENDCOLOR
+	mutable gx_primz     : u32              # SETPRIMDEPTH
+	mutable gx_keyr      : u32              # SETKEYR
+	mutable gx_keygb     : u32              # SETKEYGB
+	mutable gx_conv      : new u32 [ 2 ]    # SETCONVERT, both words
+	mutable gx_look      : new f32 [ 6 ] [ 1.0, 0.0, 0.0, 0.0, 1.0, 0.0 ]   # LOOKATX, LOOKATY dirs
+	mutable gx_bl_fog    : bool
+	mutable gx_rect      : bool             # material for a texrect: always textured, combiner irrelevant in COPY mode
 	mutable gx_vp        : new f32 [ 6 ]     # scale x y z, trans x y z
 	mutable gx_dls       : new u32 [ 20 ]
 	mutable gx_dsp       : i32
@@ -690,6 +771,7 @@ element n64 : trinity
 	mutable gx_lsslot    : i32 [ -1 ]
 	mutable gx_matslot   : i32 [ -1 ]
 	mutable at_stage     : new u32 [ 1048576 ]   # 1024x1024 atlas staging
+	mutable pub_at_stage : new u32 [ 1048576 ]   # render-thread copy, taken under pub_lock
 	mutable at_dirty     : bool
 	mutable at_dbg       : i32
 	mutable uv_dbg       : i32
@@ -720,9 +802,7 @@ element n64 : trinity
 	mutable gx_dbgl      : i32
 	mutable gx_cc_tex    : bool [ true ]
 	mutable gx_cc_shade  : bool [ true ]
-	mutable gx_cc_add    : bool
-	mutable gx_cc_prim   : bool
-	mutable gx_cc_lerp   : bool
+	mutable gx_primlod   : u32              # SETPRIMCOLOR prim_lod_frac
 	mutable gx_bl_add    : bool
 	mutable gx_bl_xlu    : bool
 	mutable gx_ccw1      : u32
@@ -751,6 +831,12 @@ element n64 : trinity
 	mutable hash_on      : bool             # N64_HASH: per-instruction state hash to stderr
 	mutable hash_seq     : u64
 	mutable hold_f       : i32              # N64_HOLD: pause emu at this frame (debug capture)
+	mutable auto_press   : bool             # N64_AUTO: scripted Start/A presses (read once at init)
+	mutable auto_press2  : bool
+	mutable t_frame      : i64              # trace timings (ns per 60 frames): whole tick, gfx HLE, audio drain, publish
+	mutable t_gfx        : i64
+	mutable t_ai         : i64
+	mutable t_pub        : i64
 	mutable gx_pc        : u32              # current display-list command address (source trace)
 	mutable trc_n        : i32              # source-trace line budget
 	mutable gx_zsplit    : i32              # vertex index of first z-enabled draw this frame (z-disabled before = backdrop)
@@ -770,6 +856,8 @@ element n64 : trinity
 			if [ atoi[ gpe ] == 0 ] gpu_on = false
 		he9 : symbol [ getenv[ 'N64_HOLD' ] ]
 		if [ he9 ] hold_f = atoi[ he9 ]
+		if [ getenv[ 'N64_AUTO' ] ] auto_press = true
+		if [ getenv[ 'N64_AUTO2' ] ] auto_press2 = true
 		sse : symbol [ getenv[ 'N64_SS' ] ]
 		if [ sse ]
 			sv9 : i32 [ atoi[ sse ] ]
@@ -787,6 +875,9 @@ element n64 : trinity
 
 	# ---------------- ROM + HLE boot ----------------
 	func load_rom [] -> bool
+		if [ !rom ]
+			puts 'n64: no rom given (n64 [--state <file>] <rom.z64>)'
+			return false
 		f : @FILE [ fopen[ rom.chars, 'rb' ] ]
 		if [ !f ]
 			puts 'n64: cannot open rom {rom}'
@@ -1313,7 +1404,10 @@ element n64 : trinity
 					(u32[dmem[0xFD8]] << 24) | (u32[dmem[0xFD9]] << 16) | (u32[dmem[0xFDA]] << 8) | u32[dmem[0xFDB]],
 					(u32[dmem[0xFDC]] << 24) | (u32[dmem[0xFDD]] << 16) | (u32[dmem[0xFDE]] << 8) | u32[dmem[0xFDF]] ]
 				if [ tt == 2 ] audio_task[]
-				if [ tt == 1 ] gfx_task[]
+				if [ tt == 1 ]
+					tg : i64 [ now_ns[] ]
+					gfx_task[]
+					t_gfx += now_ns[] - tg
 				if [ !cosim ]                                    # cosim: SP_STATUS + SP/DP int come from ares
 					sp_status = (sp_status & 0x7FC0) | 0x1 | 0x200   # halt + SIG2, preserve intr-on-break/signals
 					mi_intr = mi_intr | 0x1
@@ -1998,6 +2092,19 @@ element n64 : trinity
 		for [ i: i32 0, i < 16, i += 1 ]
 			gx_mats[ ob + i ] = gx_mats[ ab + i ]
 
+	func gx_mvp_ensure []
+		if [ gx_mvp_ok ] return
+		gx_mmul[ (1 + gx_mvi) * 16, 0, 224 ]
+		gx_mvp_ok = true
+
+	# write one 16-bit half (integer or fraction) of MVP element e, as G_MW_MATRIX / gSPForceMatrix do in DMEM
+	func gx_mtx_patch [ e: i32, h: u32, frac: bool ]
+		fx : i32 [ i32[ gx_mats[ 224 + e ] * 65536.0 ] ]
+		if [ frac ] fx = (fx & (~i32[ 0xFFFF ])) | i32[ h & 0xFFFF ]
+		el fx = (i32[ sx16[ h ] ] << 16) | (fx & 0xFFFF)
+		gx_mats[ 224 + e ] = f32[ fx ] / 65536.0
+		gx_mslot = -1
+
 	func gx_mtx_cmd [ par: u32, ad: u32 ]
 		gx_mtx_read[ ad ]
 		if [ gx_dmp > 0 ]
@@ -2139,12 +2246,12 @@ element n64 : trinity
 				gx_vt[ ob + 6 ] = cr
 				gx_vt[ ob + 7 ] = cg
 				gx_vt[ ob + 8 ] = cb
-				if [ gx_geom & 0x40000 ]                     # texture gen: uv from normal
+				if [ gx_geom & 0x40000 ]                     # texture gen: normal against the LOOKAT axes
 					tn8 : i32 [ gx_tile ]
 					tws : f32 [ f32[ i32[ (tl_lrs[ tn8 ] - tl_uls[ tn8 ]) >> 2 ] ] ]
 					tht : f32 [ f32[ i32[ (tl_lrt[ tn8 ] - tl_ult[ tn8 ]) >> 2 ] ] ]
-					gx_vt[ ob + 4 ] = (nx * 0.5 + 0.5) * tws
-					gx_vt[ ob + 5 ] = (0.5 - ny * 0.5) * tht
+					gx_vt[ ob + 4 ] = ((nx * gx_look[ 0 ] + ny * gx_look[ 1 ] + nz * gx_look[ 2 ]) * 0.5 + 0.5) * tws
+					gx_vt[ ob + 5 ] = (0.5 - (nx * gx_look[ 3 ] + ny * gx_look[ 4 ] + nz * gx_look[ 5 ]) * 0.5) * tht
 			el
 				if [ dbg_on && gx_dbgl > 0 && i == 0 ]
 					gx_dbgl -= 1
@@ -2152,6 +2259,10 @@ element n64 : trinity
 				gx_vt[ ob + 6 ] = f32[ dr_r8[ va + 12 ] ] / 255.0
 				gx_vt[ ob + 7 ] = f32[ dr_r8[ va + 13 ] ] / 255.0
 				gx_vt[ ob + 8 ] = f32[ dr_r8[ va + 14 ] ] / 255.0
+			if [ gx_geom & 0x10000 ]                         # G_FOG: shade alpha = fog factor of clip z/w
+				cwf : f32 [ gx_vt[ ob + 3 ] ]
+				fgv : f32 [ (cwf > 0.001) ? (gx_vt[ ob + 2 ] / cwf) * gx_fogm + gx_fogo : 0.0 ]
+				aa = gx_clamp01[ fgv / 255.0 ]
 			gx_vt[ ob + 9 ] = aa
 
 	func gx_texel [ su: i32, tv: i32 ] -> u32
@@ -2381,8 +2492,11 @@ element n64 : trinity
 		if [ ton && frames >= 820 && frames <= 821 ]
 			tnu : i32 [ gx_tile ]
 			printf[ "n64 UVW timg=%06X scr=(%d,%d,%d,%d) fmt=%u siz=%u line=%u tmem=%u tsz=(%d,%d) mask=(%u,%u) w=%.4f f%u\n", gx_timg & 0xFFFFFF, bx0/gx_ss, by0/gx_ss, bx1/gx_ss, by1/gx_ss, tl_fmt[ tnu ], tl_siz[ tnu ], tl_line[ tnu ], tl_tmem[ tnu ], i32[ (tl_lrs[ tnu ] - tl_uls[ tnu ]) >> 2 ], i32[ (tl_lrt[ tnu ] - tl_ult[ tnu ]) >> 2 ], tl_masks[ tnu ], tl_maskt[ tnu ], f64[ w0v ], frames ]
-		gx_bl_add = (((gx_oth_l >> 22) & 3) == 1) && (((gx_oth_l >> 18) & 3) == 2)
-		gx_bl_xlu = (((gx_oth_l >> 22) & 3) == 1) && (((gx_oth_l >> 18) & 3) == 0)
+		gx_bl_fog = ((gx_oth_l >> 30) & 3) == 3              # cycle-1 P = CLR_FOG: surface blend moves to cycle 2
+		bsh : u32 [ (gx_bl_fog) ? 20 : 22 ]
+		gx_bl_add = (((gx_oth_l >> bsh) & 3) == 1) && (((gx_oth_l >> (bsh - 4)) & 3) == 2)
+		gx_bl_xlu = (((gx_oth_l >> bsh) & 3) == 1) && (((gx_oth_l >> (bsh - 4)) & 3) == 0)
+		gx_cut : bool [ (gx_oth_l & 0x1003) != 0 ]           # cutout only with CVG_X_ALPHA or alpha compare
 		for [ py: i32 by0, py < by1, py += 1 ]
 			fy : f32 [ f32[ py ] + 0.5 ]
 			for [ px: i32 bx0, px < bx1, px += 1 ]
@@ -2440,16 +2554,23 @@ element n64 : trinity
 						if [ gx_bl_xlu ]
 							pxa = oa
 							if [ oa == 0 ] skip = true
-						el
+						el [ gx_cut ]
 							if [ oa < 5 ] skip = true
 							if [ ton && oa < 128 ] skip = true
 						if [ !skip ]
 							if [ zon && !zdec ] zbuf[ zi ] = zv
+							if [ gx_bl_fog ]                        # fog blender: mix toward fog color by shade alpha
+								fga : f32 [ gx_clamp01[ l0 * a0 + l1 * a1 + l2 * a2 ] ]
+								fgr : f32 [ f32[ (oc >> 24) & 0xFF ] * (1.0 - fga) + f32[ (gx_fogc >> 24) & 0xFF ] * fga ]
+								fgg : f32 [ f32[ (oc >> 16) & 0xFF ] * (1.0 - fga) + f32[ (gx_fogc >> 16) & 0xFF ] * fga ]
+								fgb : f32 [ f32[ (oc >> 8) & 0xFF ] * (1.0 - fga) + f32[ (gx_fogc >> 8) & 0xFF ] * fga ]
+								oc = (u32[ fgr ] << 24) | (u32[ fgg ] << 16) | (u32[ fgb ] << 8) | oa
 							gx_putpix[ px, py, (oc >> 24) & 0xFF, (oc >> 16) & 0xFF, (oc >> 8) & 0xFF, pxa ]
 
 	func gx_raster_done []
 		gx_bl_add = false
 		gx_bl_xlu = false
+		gx_bl_fog = false
 
 	func gx_tri_out [ nin: i32 ]
 		# clip against cw > eps
@@ -2509,7 +2630,7 @@ element n64 : trinity
 		if [ st_mtx_n >= 511 ]
 			if [ dbg_on ] printf[ "n64 OVERFLOW mtx palette f%u\n", frames ]
 			return 510
-		gx_mmul[ (1 + gx_mvi) * 16, 0, 224 ]
+		gx_mvp_ensure[]
 		for [ i: i32 0, i < 16, i += 1 ]
 			gx_mats[ 192 + i ] = 0.0
 		gx_mats[ 192 ]      = gx_vp[ 0 ] / 160.0
@@ -2518,11 +2639,11 @@ element n64 : trinity
 		gx_mats[ 192 + 12 ] = gx_vp[ 3 ] / 160.0 - 1.0
 		gx_mats[ 192 + 13 ] = gx_vp[ 4 ] / 120.0 - 1.0
 		gx_mats[ 192 + 15 ] = 1.0
-		gx_mmul[ 224, 192, 224 ]
+		gx_mmul[ 224, 192, 208 ]                             # viewport fold into scratch: the MVP stays patchable
 		sl : i32 [ st_mtx_n ]
 		st_mtx_n += 1
 		for [ rr: i32 0, rr < 4, rr += 1 ]
-			st_put[ sl * 4 + rr, 0, gx_mats[ 224 + rr * 4 ], gx_mats[ 224 + rr * 4 + 1 ], gx_mats[ 224 + rr * 4 + 2 ], gx_mats[ 224 + rr * 4 + 3 ] ]
+			st_put[ sl * 4 + rr, 0, gx_mats[ 208 + rr * 4 ], gx_mats[ 208 + rr * 4 + 1 ], gx_mats[ 208 + rr * 4 + 2 ], gx_mats[ 208 + rr * 4 + 3 ] ]
 		gx_mslot = sl
 		return sl
 
@@ -2540,6 +2661,8 @@ element n64 : trinity
 			lb4 : i32 [ li * 6 ]
 			st_put[ sl * 8 + 1 + li * 2, 1, gx_lights[ lb4 ], gx_lights[ lb4 + 1 ], gx_lights[ lb4 + 2 ], 0.0 ]
 			st_put[ sl * 8 + 2 + li * 2, 1, gx_lights[ lb4 + 3 ], gx_lights[ lb4 + 4 ], gx_lights[ lb4 + 5 ], 0.0 ]
+		lyp : i32 [ ((i32[ gx_look[ 3 ] * 128.0 ] + 128) << 16) | ((i32[ gx_look[ 4 ] * 128.0 ] + 128) << 8) | (i32[ gx_look[ 5 ] * 128.0 ] + 128) ]
+		st_put[ sl * 8 + 7, 1, gx_look[ 0 ], gx_look[ 1 ], gx_look[ 2 ], f32[ lyp ] ]   # texgen axes: LOOKATX, packed LOOKATY
 		if [ dbg_on && frames == 449 ]
 			printf[ "n64 LIGHTSET slot=%d nl=%d amb=(%.2f,%.2f,%.2f) L0col=(%.2f,%.2f,%.2f) f%u\n", sl, gx_nl, f64[ gx_lights[ na2 ] ], f64[ gx_lights[ na2 + 1 ] ], f64[ gx_lights[ na2 + 2 ] ], f64[ gx_lights[ 0 ] ], f64[ gx_lights[ 1 ] ], f64[ gx_lights[ 2 ] ], frames ]
 		gx_lsslot = sl
@@ -2598,7 +2721,7 @@ element n64 : trinity
 				at_stage[ (ry + ty) * 1024 + rx + txx ] = 0xFF000000 & ((pxv & 0xFF) * 0x1000000) | (((pxv >> 8) & 0xFF) << 16) | (((pxv >> 16) & 0xFF) << 8) | ((pxv >> 24) & 0xFF)
 		at_dirty = true
 		if [ dbg_on ]
-			printf[ "n64 ATLAS fmt=%u siz=%u line=%u tmem=%u ts=%ux%u uls=%u ult=%u mask=%u,%u cm=%u,%u -> %dx%d f%u\n", tl_fmt[tn], tl_siz[tn], tl_line[tn], tl_tmem[tn], (tl_lrs[tn] - tl_uls[tn]) / 4 + 1, (tl_lrt[tn] - tl_ult[tn]) / 4 + 1, tl_uls[tn] >> 2, tl_ult[tn] >> 2, tl_masks[tn], tl_maskt[tn], tl_cms[tn], tl_cmt[tn], tw, th, frames ]
+			printf[ "n64 ATLAS fmt=%u siz=%u line=%u tmem=%u ts=%ux%u uls=%u ult=%u mask=%u,%u cm=%u,%u -> %dx%d slot=%d rect=%d,%d hash=%016llx timg=%06X f%u\n", tl_fmt[tn], tl_siz[tn], tl_line[tn], tl_tmem[tn], (tl_lrs[tn] - tl_uls[tn]) / 4 + 1, (tl_lrt[tn] - tl_ult[tn]) / 4 + 1, tl_uls[tn] >> 2, tl_ult[tn] >> 2, tl_masks[tn], tl_maskt[tn], tl_cms[tn], tl_cmt[tn], tw, th, atk_n, rx, ry, u64[ hh ], gx_timg & 0xFFFFFF, frames ]
 		if [ ld_dump && ld_dumpn < 400 ]
 			ld_dumpn += 1
 			printf[ "n64 TILE slot=%d geom=%05X othl=%08X zcmp=%d zupd=%d zmode=%d timg=%06X cc=%06X.%08X\n", atk_n, gx_geom & 0xFFFFF, gx_oth_l, i32[ (gx_oth_l >> 4) & 1 ], i32[ (gx_oth_l >> 5) & 1 ], i32[ (gx_oth_l >> 10) & 3 ], gx_timg & 0xFFFFFF, gx_ccw1 & 0xFFFFFF, gx_ccw2 ]
@@ -2617,16 +2740,24 @@ element n64 : trinity
 
 	func st_mat_ensure [] -> i32
 		if [ gx_matslot >= 0 ] return gx_matslot
-		if [ st_mat_n >= 511 ]
+		if [ st_mat_n >= 341 ]
 			if [ dbg_on ] printf[ "n64 OVERFLOW material palette f%u\n", frames ]
-			return 510
+			return 340
 		sl : i32 [ st_mat_n ]
 		st_mat_n += 1
 		tn : i32 [ gx_tile ]
 		asl : i32 [ 0 ]
-		if [ gx_texon && gx_cc_tex ] asl = at_ensure[]
+		if [ (gx_texon && gx_cc_tex) || gx_rect ] asl = at_ensure[]
 		rb : i32 [ asl * 4 ]
-		st_put[ sl * 4, 2, f32[ atk_rect[ rb ] ], f32[ atk_rect[ rb + 1 ] ], f32[ atk_rect[ rb + 2 ] ], f32[ atk_rect[ rb + 3 ] ] ]
+		st_put[ sl * 6, 2, f32[ atk_rect[ rb ] ], f32[ atk_rect[ rb + 1 ] ], f32[ atk_rect[ rb + 2 ] ], f32[ atk_rect[ rb + 3 ] ] ]
+		st_put[ sl * 6 + 4, 2, gx_fogm, gx_fogo, f32[ gx_fogc >> 8 ], f32[ gx_primlod ] / 255.0 ]   # fog: fm fo packed-rgb; prim lod frac
+		cc0 : u32 [ (gx_csel[ 0 ] << 12) | (gx_csel[ 1 ] << 8) | (gx_csel[ 2 ] << 3) | gx_csel[ 3 ] ]   # SETCOMBINE muxes: a b c d per cycle
+		cc1 : u32 [ (gx_csel[ 4 ] << 12) | (gx_csel[ 5 ] << 8) | (gx_csel[ 6 ] << 3) | gx_csel[ 7 ] ]
+		cca : u32 [ (gx_csel[ 8 ] << 21) | (gx_csel[ 9 ] << 18) | (gx_csel[ 10 ] << 15) | (gx_csel[ 11 ] << 12) | (gx_csel[ 12 ] << 9) | (gx_csel[ 13 ] << 6) | (gx_csel[ 14 ] << 3) | gx_csel[ 15 ] ]
+		if [ gx_rect && ((gx_oth_h >> 20) & 3) == 2 ]      # COPY mode: the texel is copied, combiner bypassed
+			cc1 = (8 << 12) | (8 << 8) | (16 << 3) | 1
+			cca = (7 << 9) | (7 << 6) | (7 << 3) | 1
+		st_put[ sl * 6 + 5, 2, f32[ cc0 ], f32[ cc1 ], f32[ cca ], (((gx_oth_h >> 20) & 3) == 1) ? 1.0 : 0.0 ]
 		wms : f32 [ 0.0 ]
 		wmt : f32 [ 0.0 ]
 		if [ tl_masks[ tn ] > 0 ] wms = f32[ 1 << i32[ tl_masks[ tn ] ] ]
@@ -2635,9 +2766,9 @@ element n64 : trinity
 		clT : i32 [ i32[ (tl_lrt[ tn ] - tl_ult[ tn ]) >> 2 ] + 1 ]
 		if [ clS < 1 ] clS = 1
 		if [ clT < 1 ] clT = 1
-		st_put[ sl * 4 + 1, 2, wms, wmt, f32[ tl_cms[ tn ] + u32[ clS ] * 4 ], f32[ tl_cmt[ tn ] + u32[ clT ] * 4 ] ]
-		st_put[ sl * 4 + 2, 2, f32[ (gx_prim >> 24) & 0xFF ] / 255.0, f32[ (gx_prim >> 16) & 0xFF ] / 255.0, f32[ (gx_prim >> 8) & 0xFF ] / 255.0, f32[ gx_prim & 0xFF ] / 255.0 ]
-		st_put[ sl * 4 + 3, 2, f32[ (gx_env >> 24) & 0xFF ] / 255.0, f32[ (gx_env >> 16) & 0xFF ] / 255.0, f32[ (gx_env >> 8) & 0xFF ] / 255.0, f32[ gx_env & 0xFF ] / 255.0 ]
+		st_put[ sl * 6 + 1, 2, wms, wmt, f32[ tl_cms[ tn ] + u32[ clS ] * 4 ], f32[ tl_cmt[ tn ] + u32[ clT ] * 4 ] ]
+		st_put[ sl * 6 + 2, 2, f32[ (gx_prim >> 24) & 0xFF ] / 255.0, f32[ (gx_prim >> 16) & 0xFF ] / 255.0, f32[ (gx_prim >> 8) & 0xFF ] / 255.0, f32[ gx_prim & 0xFF ] / 255.0 ]
+		st_put[ sl * 6 + 3, 2, f32[ (gx_env >> 24) & 0xFF ] / 255.0, f32[ (gx_env >> 16) & 0xFF ] / 255.0, f32[ (gx_env >> 8) & 0xFF ] / 255.0, f32[ gx_env & 0xFF ] / 255.0 ]
 		if [ dbg_on && gx_texon && gx_cc_tex && frames >= 448 && frames < 452 && mr_dbg < 6 ]
 			mr_dbg += 1
 			printf[ "n64 MATRECT mat=%d asl=%d rect=(%d,%d,%d,%d) wms=%.0f cm=%u,%u fmt=%u siz=%u f%u\n", sl, asl, atk_rect[ rb ], atk_rect[ rb + 1 ], atk_rect[ rb + 2 ], atk_rect[ rb + 3 ], f64[ wms ], tl_cms[ tn ], tl_cmt[ tn ], tl_fmt[ tn ], tl_siz[ tn ], frames ]
@@ -2649,24 +2780,25 @@ element n64 : trinity
 		if [ lit ] fl = fl | 1
 		ton : bool [ gx_texon && gx_cc_tex ]
 		if [ ton ] fl = fl | 4
-		if [ gx_cc_prim && !gx_cc_lerp ] fl = fl | 8
-		cc : u32 [ 0 ]
-		if [ gx_cc_lerp ] cc = 1
-		el [ gx_cc_add ] cc = 2
-		el [ ton && !gx_cc_shade ] cc = 3
-		fl = fl | (cc << 4)
 		if [ gx_geom & 0x2000 ] fl = fl | 1024
 		if [ gx_geom & 0x1000 ] fl = fl | 2048
 		if [ (gx_geom & 1) == 0 ] fl = fl | 4096
-		xl : bool [ (((gx_oth_l >> 22) & 3) == 1) && (((gx_oth_l >> 18) & 3) == 0) ]
-		ad : bool [ (((gx_oth_l >> 22) & 3) == 1) && (((gx_oth_l >> 18) & 3) == 2) ]
+		if [ gx_geom & 0x10000 ] fl = fl | 32768              # G_FOG: shade alpha = fog factor
+		if [ ((gx_oth_h >> 12) & 3) != 0 ] fl = fl | 131072   # G_TF_BILERP / AVERAGE: filter texels
+		fogb : bool [ ((gx_oth_l >> 30) & 3) == 3 ]          # cycle-1 P = CLR_FOG: fog blender, surface blend in cycle 2
+		if [ fogb ] fl = fl | 65536
+		bsh : u32 [ (fogb) ? 20 : 22 ]
+		xl : bool [ (((gx_oth_l >> bsh) & 3) == 1) && (((gx_oth_l >> (bsh - 4)) & 3) == 0) ]
+		ad : bool [ (((gx_oth_l >> bsh) & 3) == 1) && (((gx_oth_l >> (bsh - 4)) & 3) == 2) ]
 		if [ ad ] fl = fl | 512
 		el [ xl ] fl = fl | 256
-		el fl = fl | 128
+		el [ (gx_oth_l & 0x1003) != 0 ] fl = fl | 128       # cutout only with CVG_X_ALPHA or alpha compare
 		if [ ((gx_oth_h >> 20) & 3) >= 2 ] fl = fl | 8192   # FILL/COPY cycle = screen clear/blit: force to far background
 		if [ ((gx_oth_l >> 10) & 3) == 3 ] fl = fl | 16384  # decal z-mode: bias toward camera vs coplanar surface
-		if [ dbg_on && ton && frames >= 448 && frames < 452 && mr_dbg < 12 ]
-			printf[ "n64 FLAGS fl=%X geom=%08X oth_l=%08X lerp=%d add=%d shade=%d prim=%d tex=%d texon=%d xl=%d ad=%d f%u\n", fl, gx_geom, gx_oth_l, gx_cc_lerp, gx_cc_add, gx_cc_shade, gx_cc_prim, gx_cc_tex, gx_texon, xl, ad, frames ]
+		if [ dbg_on && frames == 1302 && mr_dbg < 4000 ]
+			mr_dbg += 1
+			mb9 : i32 [ (2 * 2048 + gx_matslot * 6) * 4 ]
+			printf[ "n64 FLAGS fl=%X geom=%08X cc=%06X.%08X timg=%06X tile=%d tmem=%u line=%u ts=%ux%u mat=%d rect=%.0f,%.0f,%.0f,%.0f wrap=%.0f,%.0f,%.0f,%.0f pc=%06X v0=%.0f,%.0f,%.0f uv=%.1f,%.1f uv1=%.1f,%.1f uv2=%.1f,%.1f sl=%d,%d,%d f%u\n", fl, gx_geom, gx_ccw1 & 0xFFFFFF, gx_ccw2, gx_timg & 0xFFFFFF, gx_tile, tl_tmem[ gx_tile ], tl_line[ gx_tile ], (tl_lrs[ gx_tile ] - tl_uls[ gx_tile ]) / 4 + 1, (tl_lrt[ gx_tile ] - tl_ult[ gx_tile ]) / 4 + 1, gx_matslot, f64[ st_tex[ mb9 ] ], f64[ st_tex[ mb9 + 1 ] ], f64[ st_tex[ mb9 + 2 ] ], f64[ st_tex[ mb9 + 3 ] ], f64[ st_tex[ mb9 + 4 ] ], f64[ st_tex[ mb9 + 5 ] ], f64[ st_tex[ mb9 + 6 ] ], f64[ st_tex[ mb9 + 7 ] ], gx_pc & 0xFFFFFF, f64[ gx_vraw[ gx_ti0 * 12 ] ], f64[ gx_vraw[ gx_ti0 * 12 + 1 ] ], f64[ gx_vraw[ gx_ti0 * 12 + 2 ] ], f64[ gx_vraw[ gx_ti0 * 12 + 3 ] ], f64[ gx_vraw[ gx_ti0 * 12 + 4 ] ], f64[ gx_vraw[ gx_ti1 * 12 + 3 ] ], f64[ gx_vraw[ gx_ti1 * 12 + 4 ] ], f64[ gx_vraw[ gx_ti2 * 12 + 3 ] ], f64[ gx_vraw[ gx_ti2 * 12 + 4 ] ], gx_ti0, gx_ti1, gx_ti2, frames ]
 		if [ ld_dump && ld_dumpn < 400 && (fl & 4) != 0 ]
 			ld_dumpn += 1
 			printf[ "n64 FLAG geom=%05X zbuf=%d fl=%X (4096=%d)\n", gx_geom & 0xFFFFF, i32[ (gx_geom & 1) != 0 ], fl, i32[ (fl & 4096) != 0 ] ]
@@ -2839,13 +2971,15 @@ element n64 : trinity
 					gx_pn_v[ ga + 1, gb + 1, L, fl, mat ]
 					gx_pn_v[ ga, gb + 1, L, fl, mat ]
 
-	func gxe_quad [ qx0: f32, qy0: f32, qx1: f32, qy1: f32, zz: f32, u0: f32, v0: f32, u1: f32, v1: f32, cr: f32, cg: f32, cb: f32, fl: u32, mat: i32 ]
+	func gxe_quad [ qx0: f32, qy0: f32, qx1: f32, qy1: f32, zz: f32, u0: f32, v0: f32, u1: f32, v1: f32, cr: f32, cg: f32, cb: f32, fl: u32, mat: i32, flip: bool ]
 		if [ gxv_n >= 131058 ] return
 		for [ k: i32 0, k < 6, k += 1 ]
-			cx : f32 [ ((k == 1 || k == 2 || k == 4)) ? qx1 : qx0 ]
-			cy : f32 [ ((k == 2 || k == 4 || k == 5)) ? qy1 : qy0 ]
-			cu : f32 [ ((k == 1 || k == 2 || k == 4)) ? u1 : u0 ]
-			cv : f32 [ ((k == 2 || k == 4 || k == 5)) ? v1 : v0 ]
+			rx : bool [ k == 1 || k == 2 || k == 4 ]
+			by : bool [ k == 2 || k == 4 || k == 5 ]
+			cx : f32 [ (rx) ? qx1 : qx0 ]
+			cy : f32 [ (by) ? qy1 : qy0 ]
+			cu : f32 [ ((flip) ? by : rx) ? u1 : u0 ]        # flip: u follows y, v follows x
+			cv : f32 [ ((flip) ? rx : by) ? v1 : v0 ]
 			ob : i32 [ gxv_n * 13 ]
 			gxv[ ob ]      = cx
 			gxv[ ob + 1 ]  = cy
@@ -2906,7 +3040,7 @@ element n64 : trinity
 			gx_clip[ 20 + k ] = gx_vt[ s2 + k ]
 		gx_tri_out[ 3 ]
 
-	func gx_texrect [ w1: u32, w2: u32, wst: u32, wdxy: u32 ]
+	func gx_texrect [ w1: u32, w2: u32, wst: u32, wdxy: u32, flip: bool ]
 		xl : i32 [ i32[ (w1 >> 12) & 0xFFF ] >> 2 ]
 		yl : i32 [ i32[ w1 & 0xFFF ] >> 2 ]
 		tn : i32 [ i32[ (w2 >> 24) & 7 ] ]
@@ -2932,12 +3066,14 @@ element n64 : trinity
 			gx_matslot = -1
 			ton0 : bool [ gx_texon ]                         # texrect always textures (G_TEXTURE state is for RSP tris only)
 			gx_texon = true
+			gx_rect = true
 			mat : i32 [ st_mat_ensure[] ]
+			gx_rect = false
 			gx_texon = ton0
 			gx_matslot = -1
-			du : f32 [ f32[ xl - xh ] * fdx ]
-			dv : f32 [ f32[ yl - yh ] * fdy ]
-			gxe_quad[ f32[ xh ], f32[ yh ], f32[ xl ], f32[ yl ], 0.02, fs0, ft0, fs0 + du, ft0 + dv, 1.0, 1.0, 1.0, 4 | (3 << 4) | 128, mat ]
+			du : f32 [ (flip) ? f32[ yl - yh ] * fdy : f32[ xl - xh ] * fdx ]   # flip: s runs along y, t along x
+			dv : f32 [ (flip) ? f32[ xl - xh ] * fdx : f32[ yl - yh ] * fdy ]
+			gxe_quad[ f32[ xh ], f32[ yh ], f32[ xl ], f32[ yl ], 0.02, fs0, ft0, fs0 + du, ft0 + dv, 1.0, 1.0, 1.0, 4 | (3 << 4) | 128, mat, flip ]
 			gx_tile = ot
 			return
 		x0c : i32 [ ((xh < gx_sx0) ? gx_sx0 : xh) * gx_ss ]
@@ -2949,9 +3085,10 @@ element n64 : trinity
 		ssf2 : f32 [ f32[ gx_ss ] ]
 		for [ py: i32 y0c, py < y1c, py += 1 ]
 			tv : i32 [ i32[ ft0 + (f32[ py ] / ssf2 - f32[ yh ]) * fdy ] ]
+			sy : i32 [ i32[ fs0 + (f32[ py ] / ssf2 - f32[ yh ]) * fdy ] ]
 			for [ px: i32 x0c, px < x1c, px += 1 ]
 				su : i32 [ i32[ fs0 + (f32[ px ] / ssf2 - f32[ xh ]) * fdx ] ]
-				tx : u32 [ gx_texel[ su, tv ] ]
+				tx : u32 [ (flip) ? gx_texel[ sy, i32[ ft0 + (f32[ px ] / ssf2 - f32[ xh ]) * fdx ] ] : gx_texel[ su, tv ] ]
 				if [ (tx & 0xFF) >= 128 ]
 					gx_putpix[ px, py, (tx >> 24) & 0xFF, (tx >> 16) & 0xFF, (tx >> 8) & 0xFF, 255 ]
 		gx_tile = ot
@@ -2971,7 +3108,7 @@ element n64 : trinity
 			fr9 : u32 [ (pf16 >> 11) & 31 ]
 			fg9 : u32 [ (pf16 >> 6) & 31 ]
 			fb9 : u32 [ (pf16 >> 1) & 31 ]
-			gxe_quad[ f32[ xh ], f32[ yh ], f32[ xl + 1 ], f32[ yl + 1 ], 0.998, 0.0, 0.0, 0.0, 0.0, f32[ (fr9 << 3) | (fr9 >> 2) ] / 255.0, f32[ (fg9 << 3) | (fg9 >> 2) ] / 255.0, f32[ (fb9 << 3) | (fb9 >> 2) ] / 255.0, 128 | 8192, 0 ]
+			gxe_quad[ f32[ xh ], f32[ yh ], f32[ xl + 1 ], f32[ yl + 1 ], 0.998, 0.0, 0.0, 0.0, 0.0, f32[ (fr9 << 3) | (fr9 >> 2) ] / 255.0, f32[ (fg9 << 3) | (fg9 >> 2) ] / 255.0, f32[ (fb9 << 3) | (fb9 >> 2) ] / 255.0, 128 | 8192, 0, false ]
 			return
 		px16 : u32 [ (gx_fill >> 16) & 0xFFFF ]
 		fr5 : u32 [ (px16 >> 11) & 31 ]
@@ -3037,7 +3174,8 @@ element n64 : trinity
 			gx_zset = false
 			st_mtx_n = 1
 			st_ls_n = 0
-			st_mat_n = 0
+			st_mat_n = 1                                 # material 0 = shade passthrough (fill rects): colour = SHADE, alpha = SHADE
+			st_put[ 5, 2, 0.0, f32[ (8 << 12) | (8 << 8) | (16 << 3) | 4 ], f32[ (7 << 9) | (7 << 6) | (7 << 3) | 4 ], 0.0 ]
 			gx_mslot = -1
 			gx_lsslot = -1
 			gx_matslot = -1
@@ -3092,6 +3230,17 @@ element n64 : trinity
 					gx_vp[ 3 ] = f32[ dr_r16[ ma + 8 ] ] / 4.0
 					gx_vp[ 4 ] = f32[ dr_r16[ ma + 10 ] ] / 4.0
 					gx_vp[ 5 ] = f32[ dr_r16[ ma + 12 ] ] / 4.0
+				el [ mi2 == 0x82 || mi2 == 0x84 ]            # LOOKATY / LOOKATX: texgen axes (Light_t dir at +8)
+					lk : i32 [ (mi2 == 0x84) ? 0 : 3 ]
+					gx_look[ lk ]     = f32[ dr_s8[ ma + 8 ] ] / 128.0
+					gx_look[ lk + 1 ] = f32[ dr_s8[ ma + 9 ] ] / 128.0
+					gx_look[ lk + 2 ] = f32[ dr_s8[ ma + 10 ] ] / 128.0
+					gx_lsslot = -1
+				el [ mi2 == 0x9E || mi2 == 0x98 || mi2 == 0x9A || mi2 == 0x9C ]   # gSPForceMatrix: 8 halves of the MVP each
+					gx_mvp_ensure[]
+					fmb : i32 [ (mi2 == 0x9E || mi2 == 0x9A) ? 0 : 8 ]
+					for [ k: i32 0, k < 8, k += 1 ]
+						gx_mtx_patch[ fmb + k, dr_ru16[ ma + u32[ k * 2 ] ], mi2 == 0x9A || mi2 == 0x9C ]
 				el [ mi2 >= 0x86 ]                           # lights: L0.. then ambient
 					ln2 : i32 [ i32[ (mi2 - 0x86) >> 1 ] ]
 					if [ dbg_on && gx_dbgl > 0 ]
@@ -3141,7 +3290,7 @@ element n64 : trinity
 				n_tri += 2
 				gx_tri_cmd[ i32[ (w1 >> 16) & 0xFF ] / 2, i32[ (w1 >> 8) & 0xFF ] / 2, i32[ w1 & 0xFF ] / 2 ]
 				gx_tri_cmd[ i32[ (w2 >> 16) & 0xFF ] / 2, i32[ (w2 >> 8) & 0xFF ] / 2, i32[ w2 & 0xFF ] / 2 ]
-			el [ cmd == 0xBE && gx_ex ]                      # G_CULLDL: draw anyway (no cull)
+			el [ cmd == 0xBE ]                               # G_CULLDL: draw anyway (no cull)
 				n_tri += 0
 			el [ cmd == 0xB2 && gx_ex ]                      # G_MODIFYVTX: ignored for now
 				n_tri += 0
@@ -3167,9 +3316,45 @@ element n64 : trinity
 					gx_nl = i32[ ((w2 - 0x80000000) / 32) - 1 ]
 					if [ gx_nl < 0 ] gx_nl = 0
 					if [ gx_nl > 7 ] gx_nl = 7
+				el [ mwi == 8 ]                              # fog: s16 multiplier | s16 offset
+					gx_fogm = f32[ i32[ sx16[ w2 >> 16 ] ] ]
+					gx_fogo = f32[ i32[ sx16[ w2 ] ] ]
+					gx_matslot = -1
+				el [ mwi == 0 ]                              # G_MW_MATRIX: patch two 16-bit halves of the MVP
+					gx_mvp_ensure[]
+					mo : u32 [ (w1 >> 8) & 0xFFFF ]
+					me : i32 [ i32[ (mo & 0x1F) >> 1 ] ]
+					gx_mtx_patch[ me, w2 >> 16, (mo & 0x20) != 0 ]
+					gx_mtx_patch[ me + 1, w2 & 0xFFFF, (mo & 0x20) != 0 ]
+				el [ mwi == 0x0C ]                           # G_MW_POINTS: gSPModifyVertex (40-byte DMEM vertex)
+					po : i32 [ i32[ (w1 >> 8) & 0xFFFF ] ]
+					psl : i32 [ po / 40 ]
+					pfd : i32 [ po - psl * 40 ]
+					if [ psl > 15 ] psl = 15
+					prb : i32 [ psl * 12 ]
+					pob : i32 [ psl * 10 ]
+					if [ pfd == 0x10 ]                       # RGBA replaces color (and any normal)
+						gx_vraw[ prb + 5 ] = f32[ (w2 >> 24) & 0xFF ] / 255.0
+						gx_vraw[ prb + 6 ] = f32[ (w2 >> 16) & 0xFF ] / 255.0
+						gx_vraw[ prb + 7 ] = f32[ (w2 >> 8) & 0xFF ] / 255.0
+						gx_vraw[ prb + 8 ] = f32[ w2 & 0xFF ] / 255.0
+						gx_vraw[ prb + 9 ] = 0.0
+						gx_vt[ pob + 6 ] = gx_vraw[ prb + 5 ]
+						gx_vt[ pob + 7 ] = gx_vraw[ prb + 6 ]
+						gx_vt[ pob + 8 ] = gx_vraw[ prb + 7 ]
+						gx_vt[ pob + 9 ] = gx_vraw[ prb + 8 ]
+					el [ pfd == 0x14 ]                       # ST
+						gx_vraw[ prb + 3 ] = f32[ i32[ sx16[ w2 >> 16 ] ] ] * gx_texs / 32.0
+						gx_vraw[ prb + 4 ] = f32[ i32[ sx16[ w2 ] ] ] * gx_text / 32.0
+						gx_vt[ pob + 4 ] = gx_vraw[ prb + 3 ]
+						gx_vt[ pob + 5 ] = gx_vraw[ prb + 4 ]
+					el gx_unk[ cmd ] = gx_unk[ cmd ] + 1          # XYSCREEN/ZSCREEN: not representable in HLE
+				el [ mwi == 4 || mwi == 0x0E ]               # clip ratio / perspnorm: RSP precision only
+					gx_nl = gx_nl
 			el [ cmd == 0xB4 ]                               # G_RDPHALF_1
 				gx_half1 = w2
 			el [ cmd == 0xBA ]                               # G_SETOTHERMODE_H
+				gx_matslot = -1
 				sft : u32 [ (w1 >> 8) & 0xFF ]
 				num : u32 [ w1 & 0xFF ]
 				msk3 : u32 [ ((u32[1] << num) - 1) << sft ]
@@ -3183,12 +3368,26 @@ element n64 : trinity
 			el [ cmd == 0xEF ]                               # G_RDPSETOTHERMODE
 				gx_oth_h = w1 & 0xFFFFFF
 				gx_oth_l = w2
-			el [ cmd == 0xE4 ]                               # G_TEXRECT (2 extra words)
+			el [ cmd == 0xE4 || cmd == 0xE5 ]                # G_TEXRECT / G_TEXRECTFLIP (2 extra words)
 				ws : u32 [ dr_r32[ pc + 4 ] ]
 				wd : u32 [ dr_r32[ pc + 12 ] ]
 				pc += 16
 				n_txr += 1
-				gx_texrect[ w1, w2, ws, wd ]
+				gx_texrect[ w1, w2, ws, wd, cmd == 0xE5 ]
+			el [ cmd == 0xEA ]                               # G_SETKEYGB
+				gx_keygb = w2
+			el [ cmd == 0xEB ]                               # G_SETKEYR
+				gx_keyr = w2
+			el [ cmd == 0xEC ]                               # G_SETCONVERT
+				gx_conv[ 0 ] = w1
+				gx_conv[ 1 ] = w2
+			el [ cmd == 0xEE ]                               # G_SETPRIMDEPTH
+				gx_primz = w2
+			el [ cmd == 0xF8 ]                               # G_SETFOGCOLOR
+				gx_fogc = w2
+				gx_matslot = -1
+			el [ cmd == 0xF9 ]                               # G_SETBLENDCOLOR
+				gx_blendc = w2
 			el [ cmd == 0xED ]                               # G_SETSCISSOR
 				gx_sx0 = i32[ (w1 >> 12) & 0xFFF ] >> 2
 				gx_sy0 = i32[ w1 & 0xFFF ] >> 2
@@ -3270,9 +3469,6 @@ element n64 : trinity
 				cd1 : u32 [ (w2 >> 6) & 7 ]
 				gx_cc_tex = (ca0 == 1 || ca0 == 2 || cb0 == 1 || cb0 == 2 || cc0 == 1 || cc0 == 2 || cd0 == 1 || cd0 == 2 || ca1 == 1 || ca1 == 2 || cb1 == 1 || cb1 == 2 || cc1 == 1 || cc1 == 2 || cd1 == 1 || cd1 == 2)
 				gx_cc_shade = (ca0 == 4 || cb0 == 4 || cc0 == 4 || cd0 == 4 || ca1 == 4 || cb1 == 4 || cc1 == 4 || cd1 == 4)
-				gx_cc_add = (cd0 == 4) && (ca0 == 1 || ca0 == 2)
-				gx_cc_prim = (cc0 == 3)
-				gx_cc_lerp = (ca0 == 3) && (cb0 == 4) && (cc0 == 1) && (cd0 == 4)
 				gx_csel[ 0 ]=ca0  gx_csel[ 1 ]=cb0  gx_csel[ 2 ]=cc0  gx_csel[ 3 ]=cd0
 				gx_csel[ 4 ]=ca1  gx_csel[ 5 ]=cb1  gx_csel[ 6 ]=cc1  gx_csel[ 7 ]=cd1
 				gx_csel[ 8 ]=(w1 >> 12) & 7  gx_csel[ 9 ]=(w2 >> 12) & 7  gx_csel[ 10 ]=(w1 >> 9) & 7  gx_csel[ 11 ]=(w2 >> 9) & 7
@@ -3280,6 +3476,7 @@ element n64 : trinity
 			el [ cmd == 0xFA ]                               # G_SETPRIMCOLOR
 				gx_matslot = -1
 				gx_prim = w2
+				gx_primlod = w1 & 0xFF
 			el [ cmd == 0xFB ]                               # G_SETENVCOLOR
 				gx_matslot = -1
 				gx_env = w2
@@ -3309,7 +3506,7 @@ element n64 : trinity
 					rtt_n += 1
 					if [ dbg_on && frames >= 440 && frames < 620 ]
 						printf[ "n64 RTT-CIMG addr=%06X w=%d f%u\n", gx_cimg, gx_ciw, frames ]
-			el [ cmd == 0x00 || cmd == 0xB5 || cmd == 0xB2 || cmd == 0xE6 || cmd == 0xE7 || cmd == 0xE8 || cmd == 0xE9 || cmd == 0xB3 ]
+			el [ cmd == 0x00 || cmd == 0xB5 || cmd == 0xB2 || cmd == 0xE6 || cmd == 0xE7 || cmd == 0xE8 || cmd == 0xE9 || cmd == 0xB3 || cmd == 0xC0 ]
 				cmd = cmd                                    # known no-ops / handled elsewhere
 			el
 				gx_unk[ cmd ] = gx_unk[ cmd ] + 1
@@ -3323,6 +3520,7 @@ element n64 : trinity
 			for [ i: i32 0, i < 24576, i += 1 ]
 				pub_st[ i ] = st_tex[ i ]
 			if [ at_dirty ]
+				memcpy[ pub_at_stage, at_stage, 1048576 * 4 ]
 				pub_at_dirty = true
 				at_dirty = false
 			pub_lock.unlock[]
@@ -3445,21 +3643,21 @@ element n64 : trinity
 		cpu.pc  = 0x80000180
 		cpu.npc = 0x80000184
 
-	func take_exc [ code: u32, cur: u32 ]
-		if [ dbg_esc < 40 ]
+	# ares Exception::trigger: ExcCode + CE; EPC/BD only when EXL was clear
+	func take_exc [ code: u32, cur: u32, ce: u32 ]
+		if [ dbg_esc < 40 && code != 11 ]
 			dbg_esc += 1
 			printf[ "n64 FAULT exc=%u pc=%08X op=%08X f%u\n", code, cur, rd32v[ cur ], frames ]
-		cpu.c_cause = (cpu.c_cause & (~u32[0x3000007C])) | ((code & 0x1F) << 2)   # CE 0
-		cpu.c_epc = cur
-		cpu.c_status = cpu.c_status | 0x2                    # EXL
-		cpu.pc  = 0x80000180
-		cpu.npc = 0x80000184
-
-	func take_cpu [ cur: u32 ]
-		cpu.c_cause = (cpu.c_cause & (~u32[0x7C])) | (11 << 2)
-		cpu.c_cause = (cpu.c_cause & (~u32[0x30000000])) | 0x10000000
-		cpu.c_epc = cur
-		cpu.c_status = cpu.c_status | 0x2                    # EXL
+		cpu.c_cause = (cpu.c_cause & (~u32[0x3000007C])) | ((code & 0x1F) << 2) | ((ce & 3) << 28)
+		if [ (cpu.c_status & 0x2) == 0 ]
+			if [ in_ds ]
+				cpu.c_epc = cur - 4
+				cpu.c_cause = cpu.c_cause | 0x80000000
+			el
+				cpu.c_epc = cur
+				cpu.c_cause = cpu.c_cause & (~u32[0x80000000])
+			cpu.c_status = cpu.c_status | 0x2                # EXL
+		in_ds = false
 		cpu.pc  = 0x80000180
 		cpu.npc = 0x80000184
 
@@ -3553,22 +3751,22 @@ element n64 : trinity
 	func rd8  [ va: u32 ] -> u32
 		p : u32 [ vmap[ va ] ]
 		dcache[ va, p, false ]
-		cpu.c_count += i64[ io_rcost[ va, p ] ]
+		if [ !dc_cached ] cpu.c_count += i64[ io_rcost[ va, p ] ]
 		return rd_phys8[ p ]
 	func rd16 [ va: u32 ] -> u32
 		p : u32 [ vmap[ va ] ]
 		dcache[ va, p, false ]
-		cpu.c_count += i64[ io_rcost[ va, p ] ]
+		if [ !dc_cached ] cpu.c_count += i64[ io_rcost[ va, p ] ]
 		return (rd_phys8[ p ] << 8) | rd_phys8[ p + 1 ]
 	func rd32v [ va: u32 ] -> u32
 		p : u32 [ vmap[ va ] ]
 		dcache[ va, p, false ]
-		cpu.c_count += i64[ io_rcost[ va, p ] ]
+		if [ !dc_cached ] cpu.c_count += i64[ io_rcost[ va, p ] ]
 		return rd_phys32[ p ]
 	func rd64 [ va: u32 ] -> i64
 		p : u32 [ vmap[ va ] ]
 		dcache[ va, p, false ]
-		cpu.c_count += i64[ io_rcost[ va, p ] ]
+		if [ !dc_cached ] cpu.c_count += i64[ io_rcost[ va, p ] ]
 		h : u32 [ rd_phys32[ p ] ]
 		l : u32 [ rd_phys32[ p + 4 ] ]
 		return (i64[ h ] << 32) | i64[ l ]
@@ -3750,19 +3948,8 @@ element n64 : trinity
 		cpu.fcr31 = cpu.fcr31 | 0x4
 		return false
 
-	# take the FP exception (ExcCode 15), BD-aware like take_int
 	func take_fpe [ cur: u32 ]
-		cpu.c_cause = (cpu.c_cause & (~u32[ 0x3000007C ])) | (15 << 2)
-		if [ in_ds ]
-			cpu.c_epc = cur - 4
-			cpu.c_cause = cpu.c_cause | 0x80000000
-		el
-			cpu.c_epc = cur
-			cpu.c_cause = cpu.c_cause & (~u32[ 0x80000000 ])
-		in_ds = false
-		cpu.c_status = cpu.c_status | 0x2
-		cpu.pc = 0x80000180
-		cpu.npc = 0x80000184
+		take_exc[ 15, cur, 0 ]
 	func fpe_unimpl_exc [ cur: u32 ] -> bool
 		fpe_unimpl[]
 		take_fpe[ cur ]
@@ -4281,6 +4468,9 @@ element n64 : trinity
 		sc[ 61]=u64[cosim_seq]
 		sc[ 62]=u64[vi_hlpf]  sc[ 63]=u64[vi_qld]  sc[ 64]=u64[vi_leappat]  sc[ 65]=u64[vi_hleap0]  sc[ 66]=u64[vi_hleap1]
 		sc[ 67]=u64[si_lat]  sc[ 68]=u64[sp_status]
+		sc[ 69]=cpu.c_context  sc[ 70]=cpu.c_xcontext  sc[ 71]=u64[cpu.c_badvaddr]  sc[ 72]=u64[cpu.c_lladdr]
+		sc[ 73]=u64[cpu.c_watchlo]  sc[ 74]=u64[cpu.c_watchhi]  sc[ 75]=u64[cpu.c_parity]  sc[ 76]=u64[cpu.c_taglo]
+		sc[ 77]=u64[cpu.c_errepc]  sc[ 78]=u64[cpu.c_latch]  sc[ 79]=cpu.cp2_latch
 		fwrite[ sc, 8, 80, f ]
 		fclose[ f ]
 		return 0
@@ -4322,9 +4512,302 @@ element n64 : trinity
 		cosim_seq=i64[sc[ 61]]
 		vi_hlpf=u32[sc[ 62]]  vi_qld=u32[sc[ 63]]  vi_leappat=u32[sc[ 64]]  vi_hleap0=u32[sc[ 65]]  vi_hleap1=u32[sc[ 66]]
 		si_lat=u32[sc[ 67]]  sp_status=u32[sc[ 68]]
+		cpu.c_context=sc[ 69]  cpu.c_xcontext=sc[ 70]  cpu.c_badvaddr=u32[sc[ 71]]  cpu.c_lladdr=u32[sc[ 72]]
+		cpu.c_watchlo=u32[sc[ 73]]  cpu.c_watchhi=u32[sc[ 74]]  cpu.c_parity=u32[sc[ 75]]  cpu.c_taglo=u32[sc[ 76]]
+		cpu.c_errepc=u32[sc[ 77]]  cpu.c_latch=u32[sc[ 78]]  cpu.cp2_latch=sc[ 79]
 		c_cmp_prev = cpu.c_count                    # crossing window restarts at resume
 		c_sysbase  = cpu.c_count                    # sys_clk continues from checkpoint value
 		return 0
+
+	# ---------------- gopher64 save state (zip of zstd entries; "device" = postcard of its Device struct) ----------------
+	func gs_u8 [] -> u32
+		v : u32 [ u32[ gs_buf[ gs_pos ] ] ]
+		gs_pos += 1
+		return v
+
+	func gs_var [] -> u64                               # postcard varint (LEB128); u128 fields keep their low 64 bits
+		v : u64 [ 0 ]
+		sh : u32 [ 0 ]
+		while [ true ]
+			c : u64 [ u64[ gs_u8[] ] ]
+			if [ sh < 64 ] v = v | ((c & 0x7F) << sh)
+			sh += 7
+			if [ c < 0x80 ] return v
+		return v
+
+	func gs_vars [ n: i32 ]
+		for [ i: i32 0, i < n, i += 1 ] gs_var[]
+
+	func gs_vec_skip []                                 # Vec<u8>: varint length + bytes
+		n : i64 [ i64[ gs_var[] ] ]
+		gs_pos += n
+
+	func gs_opt_var []                                  # Option<usize>
+		if [ gs_u8[] != 0 ] gs_var[]
+
+	func gs_le16 [ p: i64 ] -> i64
+		return i64[ gs_buf[ p ] ] | (i64[ gs_buf[ p + 1 ] ] << 8)
+
+	func gs_le32 [ p: i64 ] -> i64
+		return gs_le16[ p ] | (gs_le16[ p + 2 ] << 16)
+
+	func gs_tlb [ ti: i32 ]                             # gopher64 TlbEntry -> raw EntryHi/PageMask/EntryLo pair
+		msk : u64 [ gs_var[] ]
+		vpn : u64 [ gs_var[] ]
+		gs_u8[]                                          # region
+		g : u64 [ u64[ gs_u8[] ] ]
+		asid : u64 [ u64[ gs_u8[] ] ]
+		pfe : u64 [ gs_var[] ]
+		ce : u64 [ u64[ gs_u8[] ] ]
+		de : u64 [ u64[ gs_u8[] ] ]
+		ve : u64 [ u64[ gs_u8[] ] ]
+		pfo : u64 [ gs_var[] ]
+		co : u64 [ u64[ gs_u8[] ] ]
+		do9 : u64 [ u64[ gs_u8[] ] ]
+		vo : u64 [ u64[ gs_u8[] ] ]
+		gs_vars[ 6 ]                                     # derived start/end/phys
+		cpu.tlb_hi[ ti ]  = u32[ (vpn << 13) | asid ]
+		cpu.tlb_pm[ ti ]  = u32[ msk << 13 ]
+		cpu.tlb_lo0[ ti ] = u32[ (pfe << 6) | (ce << 3) | (de << 2) | (ve << 1) | g ]
+		cpu.tlb_lo1[ ti ] = u32[ (pfo << 6) | (co << 3) | (do9 << 2) | (vo << 1) | g ]
+		if [ ve != 0 || vo != 0 ] cpu.tlb_used = true
+
+	func load_gopher [ dev: @u8, sav: @u8 ] -> i32
+		gs_buf = dev
+		gs_pos = 0
+		gs_vars[ 2 ]                                     # SpeedLimiter
+		gs_u8[]
+		gs_vars[ 2 ]
+		gs_var[]                                         # byte_swap
+		gs_pos += 11                                     # Savestate: 3 bools + f64
+		gs_var[]                                         # cop0 reg_latch
+		c0 : local u64 [ 32 ]
+		for [ i: i32 0, i < 32, i += 1 ] c0[ i ] = gs_var[]
+		gs_vars[ 32 ]                                    # reg_write_masks
+		for [ k: i32 0, k < 2, k += 1 ]                  # tlb_lut_r / tlb_lut_w maps
+			nl : i64 [ i64[ gs_var[] ] ]
+			for [ i: i64 0, i < nl, i += 1 ]
+				gs_vars[ 2 ]
+				gs_u8[]
+		for [ i: i32 0, i < 32, i += 1 ] gs_tlb[ i ]
+		gs_u8[]                                          # is_event
+		gs_var[]                                         # fcr0
+		cpu.fcr31 = u32[ gs_var[] ]
+		gs_pos += 128                                    # fgr32 mirror
+		for [ i: i32 0, i < 32, i += 1 ]
+			cpu.fpr[ i ] = u64[ gs_le32[ gs_pos ] ] | (u64[ gs_le32[ gs_pos + 4 ] ] << 32)
+			gs_pos += 8
+		gs_var[]                                         # cop2 latch
+		bst : u64 [ gs_var[] ]                           # branch state: 3 = delay slot of a taken branch
+		bpc : u64 [ gs_var[] ]
+		for [ i: i32 0, i < 32, i += 1 ] cpu.r[ i ] = i64[ gs_var[] ]
+		cpu.pc = u32[ gs_var[] ]
+		gs_var[]                                         # pc_phys
+		cpu.lo = i64[ gs_var[] ]
+		cpu.hi = i64[ gs_var[] ]
+		gs_u8[]                                          # running
+		cpu.ll_bit = gs_u8[] != 0
+		gs_u8[]                                          # overclock
+		gs_var[]                                         # clock_rate
+		evvi : u64 [ 0 ]                                 # events[3] = next VI refresh, absolute count
+		for [ i: i32 0, i < 15, i += 1 ]
+			een : u32 [ gs_u8[] ]
+			ecnt : u64 [ gs_var[] ]
+			if [ i == 3 && een != 0 ] evvi = ecnt
+		gs_vars[ 2 ]
+		cpu.npc = cpu.pc + 4
+		in_ds = (bst == 3) || (bst == 4)
+		if [ bst == 3 ] cpu.npc = u32[ bpc ]
+		cpu.c_compare = u32[ c0[ 11 ] ] << 1
+		cpu.c_index=u32[c0[ 0 ]]  cpu.c_entrylo0=u32[c0[ 2 ]]  cpu.c_entrylo1=u32[c0[ 3 ]]  cpu.c_context=c0[ 4 ]
+		cpu.c_pagemask=u32[c0[ 5 ]]  cpu.c_wired=u32[c0[ 6 ]]  cpu.c_badvaddr=u32[c0[ 8 ]]  cpu.c_count=u32[c0[ 9 ]]
+		cpu.c_entryhi=u32[c0[ 10 ]]  cpu.c_status=u32[c0[ 12 ]]  cpu.c_cause=u32[c0[ 13 ]]
+		cpu.c_epc=u32[c0[ 14 ]]  cpu.c_config=u32[c0[ 16 ]]  cpu.c_lladdr=u32[c0[ 17 ]]  cpu.c_watchlo=u32[c0[ 18 ]]
+		cpu.c_watchhi=u32[c0[ 19 ]]  cpu.c_xcontext=c0[ 20 ]  cpu.c_parity=u32[c0[ 26 ]]  cpu.c_taglo=u32[c0[ 28 ]]  cpu.c_errepc=u32[c0[ 30 ]]
+		gs_pos += 1984                                   # PIF ROM
+		memcpy[ pif_ram, @gs_buf[ gs_pos ], 64 ]
+		gs_pos += 64
+		for [ i: i32 0, i < 5, i += 1 ]                  # PifChannel
+			gs_opt_var[]  gs_opt_var[]  gs_opt_var[]  gs_opt_var[]  gs_opt_var[]
+			gs_var[]
+		gs_vec_skip[]                                    # Cart: is_viewer, pal, latch, cic, rtc
+		gs_u8[]
+		gs_var[]
+		gs_u8[]
+		gs_var[]
+		gs_vec_skip[]                                    # sc64
+		gs_vars[ 7 ]
+		gs_u8[]
+		gs_vars[ 15 ]
+		gs_var[]
+		nw : i64 [ i64[ gs_var[] ] ]
+		for [ i: i64 0, i < nw, i += 1 ] gs_var[]
+		gs_vec_skip[]
+		gs_vars[ 3 ]                                     # flashram
+		gs_pos += 128
+		gs_vars[ 2 ]
+		gs_var[]                                         # rtc_timestamp
+		for [ i: i32 0, i < 512, i += 1 ]                # icache
+			gs_u8[]
+			gs_vars[ 10 ]
+		dl_ad : local u32 [ 512 ]                        # dirty dcache lines: RDRAM is stale behind them
+		dl_w  : local u32 [ 2048 ]
+		dl_n : i32 [ 0 ]
+		for [ i: i32 0, i < 512, i += 1 ]                # dcache
+			dv : u32 [ gs_u8[] ]
+			dd : u32 [ gs_u8[] ]
+			dtag : u32 [ u32[ gs_var[] ] ]
+			didx : u32 [ u32[ gs_var[] ] ]
+			for [ k: i32 0, k < 4, k += 1 ] dl_w[ dl_n * 4 + k ] = u32[ gs_var[] ]
+			if [ dv != 0 ] dc_tag[ i ] = (dtag & 0x1FFFF000) | 1
+			if [ dv != 0 && dd != 0 ]
+				dl_ad[ dl_n ] = (dtag | didx) & 0x1FFFFFFC
+				dl_n += 1
+		gs_vars[ 1024 ]                                  # RSP decoded opcodes
+		gs_vars[ 2 ]                                     # instruction types
+		gs_u8[]
+		gs_vars[ 2 ]                                     # branch state
+		gs_pos += 4
+		gs_var[]                                         # cycle counter
+		gs_vars[ 17 ]                                    # shuffle: seq length + 16
+		gs_vars[ 32 ]                                    # gpr
+		gs_vars[ 33 ]                                    # vpr: seq length + 32
+		gs_vars[ 1024 ]                                  # reciprocal tables
+		gs_vars[ 8 ]                                     # vcc/vco/vce/acc
+		gs_u8[]
+		gs_vars[ 2 ]
+		sp_mem = u32[ gs_var[] ]
+		sp_dram = u32[ gs_var[] ]
+		gs_vars[ 2 ]
+		sp_status = u32[ gs_var[] ]
+		gs_vars[ 2 ]
+		sp_semaphore = u32[ gs_var[] ]
+		sp_pc = u32[ gs_var[] ]
+		gs_var[]
+		memcpy[ dmem, @gs_buf[ gs_pos ], 0x1000 ]
+		memcpy[ imem, @gs_buf[ gs_pos + 0x1000 ], 0x1000 ]
+		gs_pos += 0x2000
+		gs_vars[ 9 ]                                     # RSP dma fifo, last status
+		gs_u8[]                                          # run_after_dma
+		dpc_startr = u32[ gs_var[] ]
+		dpc_endr = u32[ gs_var[] ]
+		dpc_currentr = u32[ gs_var[] ]
+		dpc_status = u32[ gs_var[] ]
+		gs_vars[ 8 ]                                     # dpc 4..7, dps
+		gs_u8[]                                          # wait_frozen
+		gs_var[]                                         # last_status_value
+		rn : i64 [ i64[ gs_var[] ] ]                     # RDRAM: host-endian words, byte i lives at i^3
+		for [ i: i64 0, i < rn && i < 0x800000, i += 1 ] rdram[ i ^ 3 ] = gs_buf[ gs_pos + i ]
+		gs_pos += rn
+		for [ i: i32 0, i < dl_n, i += 1 ]               # write back the dirty dcache lines
+			for [ k: i32 0, k < 4, k += 1 ]
+				dad : u32 [ dl_ad[ i ] + u32[ k * 4 ] ]
+				dw : u32 [ dl_w[ i * 4 + k ] ]
+				if [ dad + 4 <= 0x800000 ]
+					rdram[ dad ]     = u8[ dw >> 24 ]
+					rdram[ dad + 1 ] = u8[ (dw >> 16) & 0xFF ]
+					rdram[ dad + 2 ] = u8[ (dw >> 8) & 0xFF ]
+					rdram[ dad + 3 ] = u8[ dw & 0xFF ]
+		gs_vars[ 41 ]                                    # rdram size + 4x10 regs
+		mi_mode = u32[ gs_var[] ]
+		gs_var[]
+		mi_intr = u32[ gs_var[] ]
+		mi_mask = u32[ gs_var[] ]
+		pi_dram = u32[ gs_var[] ]
+		pi_cart = u32[ gs_var[] ]
+		gs_vars[ 2 ]
+		pi_status = u32[ gs_var[] ]
+		gs_vars[ 9 ]
+		vr : local u32 [ 14 ]
+		for [ i: i32 0, i < 14, i += 1 ] vr[ i ] = u32[ gs_var[] ]
+		for [ i: i32 0, i < 14, i += 1 ]
+			if [ i != 4 && i != 5 && i != 9 && i != 11 ] io_write[ 0x04400000 + u32[ i * 4 ], vr[ i ] ]
+		vi_hstart = vr[ 9 ]
+		gs_var[]                                         # vi clock
+		vdel : u64 [ gs_var[] ]                          # counts per field
+		vi_field = u32[ gs_var[] ]
+		vcps : u64 [ gs_var[] ]                          # counts per half-line
+		vrem : u64 [ evvi - c0[ 9 ] ]                    # counts until the next refresh
+		if [ vcps > 0 && vrem <= vdel ] vi_vcounter = u32[ ((vdel - vrem) / vcps) >> 1 ]
+		vi_line_clk = sys_clk
+		vi_clkfrac = 0
+		gs_pos += 16                                     # frame_time, elapsed_time
+		ar : local u32 [ 6 ]
+		for [ i: i32 0, i < 6, i += 1 ] ar[ i ] = u32[ gs_var[] ]
+		ai_dram = ar[ 0 ]
+		ai_len = ar[ 1 ]
+		ai_ctrl = ar[ 2 ]
+		io_write[ 0x04500010, ar[ 4 ] ]
+		io_write[ 0x04500014, ar[ 5 ] ]
+		ai_fifo_n = 0
+		aiq : i32 [ 0 ]                                  # AI_STATUS full / busy = queue depth
+		if [ (ar[ 3 ] & 0x40000000) != 0 ] aiq = 1
+		if [ (ar[ 3 ] & 0x80000000) != 0 ] aiq = 2
+		for [ i: i32 0, i < 2, i += 1 ]
+			fa : u32 [ u32[ gs_var[] ] ]
+			fl : u32 [ u32[ gs_var[] ] ]
+			gs_var[]
+			if [ i < aiq ]
+				ai_fifo_dram[ ai_fifo_n ] = fa
+				ai_fifo_len[ ai_fifo_n ] = fl
+				ai_fifo_n += 1
+		gs_var[]                                         # last_read
+		gs_u8[]                                          # delayed_carry
+		gs_var[]                                         # freq
+		si_dram = u32[ gs_var[] ]
+		gs_vars[ 5 ]
+		si_status = u32[ gs_var[] ]
+		gs_buf = sav                                     # Saves: eeprom first (Vec<u8>)
+		gs_pos = 0
+		ne : i64 [ i64[ gs_var[] ] ]
+		for [ i: i64 0, i < ne && i < 512, i += 1 ] eeprom[ i ] = gs_buf[ gs_pos + i ]
+		mi_check[]
+		c_cmp_prev = cpu.c_count
+		c_sysbase  = cpu.c_count
+		return 0
+
+	func load_state [ fn: cstr ] -> i32              # gopher64 zip (PK) or our n64.state
+		f : @FILE [ fopen[ fn, 'rb' ] ]
+		if [ ! f ] return 1
+		fseek[ f, 0, SEEK_END ]
+		fsz : i64 [ ftell[ f ] ]
+		rewind[ f ]
+		fb : new u8 [ fsz ]
+		fread[ fb, 1, fsz, f ]
+		fclose[ f ]
+		if [ fsz < 22 || fb[ 0 ] != 0x50 || fb[ 1 ] != 0x4B ] return load_ours[ fn ]
+		gs_buf = fb
+		eo : i64 [ fsz - 22 ]                            # end-of-central-directory record
+		while [ eo >= 0 && !(fb[ eo ] == 0x50 && fb[ eo + 1 ] == 0x4B && fb[ eo + 2 ] == 5 && fb[ eo + 3 ] == 6) ] eo -= 1
+		if [ eo < 0 ] return 2
+		nent : i64 [ gs_le16[ eo + 10 ] ]
+		cd0 : i64 [ gs_le32[ eo + 16 ] ]
+		dsz : i64 [ 0 ]
+		ssz : i64 [ 0 ]
+		cd : i64 [ cd0 ]
+		for [ e: i64 0, e < nent, e += 1 ]                  # pass 1: entry sizes
+			if [ gs_le32[ cd ] != 0x02014B50 ] return 3
+			nln : i64 [ gs_le16[ cd + 28 ] ]
+			if [ nln == 6 && strncmp[ @fb[ cd + 46 ], 'device', 6 ] == 0 ] dsz = gs_le32[ cd + 24 ]
+			if [ nln == 5 && strncmp[ @fb[ cd + 46 ], 'saves', 5 ] == 0 ] ssz = gs_le32[ cd + 24 ]
+			cd += 46 + nln + gs_le16[ cd + 30 ] + gs_le16[ cd + 32 ]
+		if [ dsz == 0 || ssz == 0 ] return 5
+		dev : new u8 [ dsz ]
+		sav : new u8 [ ssz ]
+		cd = cd0
+		for [ e: i64 0, e < nent, e += 1 ]                  # pass 2: inflate the two entries
+			csz : i64 [ gs_le32[ cd + 20 ] ]
+			usz : i64 [ gs_le32[ cd + 24 ] ]
+			nln : i64 [ gs_le16[ cd + 28 ] ]
+			lho : i64 [ gs_le32[ cd + 42 ] ]
+			isdev : bool [ nln == 6 && strncmp[ @fb[ cd + 46 ], 'device', 6 ] == 0 ]
+			issav : bool [ nln == 5 && strncmp[ @fb[ cd + 46 ], 'saves', 5 ] == 0 ]
+			if [ isdev || issav ]
+				dat : i64 [ lho + 30 + gs_le16[ lho + 26 ] + gs_le16[ lho + 28 ] ]
+				got : u64 [ ZSTD_decompress[ (isdev) ? dev : sav, u64[ usz ], @fb[ dat ], u64[ csz ] ] ]
+				if [ got != u64[ usz ] ] return 4
+			cd += 46 + nln + gs_le16[ cd + 30 ] + gs_le16[ cd + 32 ]
+		return load_gopher[ dev, sav ]
 
 	func step []
 		if [ cosim ]
@@ -4346,7 +4829,7 @@ element n64 : trinity
 		op  : u32 [ rd_phys32[ fpa ] ]                # fetch: icache path, not dcache
 		c_istart = cpu.c_count                        # instruction-start count (MTC0 Count preserves this instr's cost)
 		cpu.c_count += 1                              # fetch base (ares step(1*2)/2), BEFORE the data read
-		cpu.c_count += i64[ io_rcost[ cpu.pc, fpa ] ] # uncached fetch (IMEM/KSEG1) pays RCP read cost
+		if [ !dc_cached ] cpu.c_count += i64[ io_rcost[ cpu.pc, fpa ] ]   # uncached fetch (IMEM/KSEG1) pays RCP read cost
 		icache[ cpu.pc, fpa ]                         # cached fetch: charge I-cache miss fill
 		cur : u32 [ cpu.pc ]
 		if [ hash_on ]
@@ -4401,12 +4884,13 @@ element n64 : trinity
 		cpu.pc  = cpu.npc
 		cpu.npc = cpu.pc + 4
 		c0 : u32 [ cpu.c_count ]                              # exec adds multicycle stall cycles (mul/div/...)
-		cosim_pbase = u32[ cpu.r[ (op >> 21) & 31 ] ]        # base reg before exec (culprit report)
+		if [ cosim ]
+			cosim_pbase = u32[ cpu.r[ (op >> 21) & 31 ] ]    # base reg before exec (culprit report)
+			cosim_ppc = cur                                   # remember for co-sim culprit report
+			cosim_pop = op
 		ds_pend = false                                      # branch/jump sets this if next instr is a delay slot
 		exec[ op, cur ]
 		in_ds = ds_pend                                      # next instruction is a delay slot iff this branched
-		cosim_ppc = cur                                       # remember for co-sim culprit report
-		cosim_pop = op
 		cpu.r[ 0 ] = 0
 		dcyc : u32 [ cpu.c_count - c0 ]
 		if [ dcyc > 200 ] dcyc = 0                            # guard: mtc0 COUNT write, not a cycle cost
@@ -4416,8 +4900,8 @@ element n64 : trinity
 		sc : u32 [ cpu.c_count - c_sysbase ]                  # counts elapsed since last tick (wrap-safe)
 		c_sysbase = cpu.c_count
 		sys_clk = sys_clk + 2 * i64[ sc ]                    # ares vi.clock == 2*count (full step clocks)
-		vi_sync[]                                             # advance VI line counter to this cycle
-		ai_sync[]                                             # cycle-accurate AI DMA + interrupt
+		if [ sys_clk > vi_line_clk ] vi_sync[]                # advance VI line counter to this cycle
+		if [ sys_clk > ai_clk ] ai_sync[]                     # cycle-accurate AI DMA + interrupt
 		d   : u32 [ cpu.c_count - c_cmp_prev ]                # counts advanced this step (mod 2^32)
 		off : u32 [ cpu.c_compare - c_cmp_prev - 1 ]          # prev..Compare distance
 		if [ off < d ]                                        # Compare crossed, even on a multi-count jump
@@ -4452,10 +4936,10 @@ element n64 : trinity
 		rt : i32 [ i32[ (op >> 16) & 31 ] ]
 		rd : i32 [ i32[ (op >> 11) & 31 ] ]
 		sa : i32 [ i32[ (op >> 6) & 31 ] ]
-		im : i64 [ sx16[ op ] ]
 		zi : u32 [ op & 0xFFFF ]
+		im : i64 [ i64[ i32[ zi ^ 0x8000 ] - 0x8000 ] ]      # sign-extended immediate, inline
 		if [ (o == 0x11 || o == 0x31 || o == 0x35 || o == 0x39 || o == 0x3D) && (cpu.c_status & 0x20000000) == 0 ]
-			take_cpu[ cur ]
+			take_exc[ 11, cur, 1 ]
 			return
 		switch [ o ]
 		case 0x00
@@ -4474,6 +4958,23 @@ element n64 : trinity
 			el [ rti == 16 || rti == 17 ]                      # BLTZAL/BGEZAL
 				c = (rti == 16) ? (cpu.r[ rs ] < 0) : (cpu.r[ rs ] >= 0)
 				cpu.r[ 31 ] = sx32[ cur + 8 ]
+			el [ rti == 18 || rti == 19 ]                      # BLTZALL/BGEZALL
+				cpu.r[ 31 ] = sx32[ cur + 8 ]
+				branch[ (rti == 18) ? (cpu.r[ rs ] < 0) : (cpu.r[ rs ] >= 0), cur, op, true ]
+				return
+			el [ rti >= 8 && rti <= 14 && rti != 13 ]          # TGEI TGEIU TLTI TLTIU TEQI TNEI
+				tr : bool [ false ]
+				if [ rti == 8 ]  tr = cpu.r[ rs ] >= im
+				el [ rti == 9 ]  tr = u64[ cpu.r[ rs ] ] >= u64[ im ]
+				el [ rti == 10 ] tr = cpu.r[ rs ] < im
+				el [ rti == 11 ] tr = u64[ cpu.r[ rs ] ] < u64[ im ]
+				el [ rti == 12 ] tr = cpu.r[ rs ] == im
+				el tr = cpu.r[ rs ] != im
+				if [ tr ] take_exc[ 13, cur, 0 ]
+				return
+			el
+				take_exc[ 10, cur, 0 ]
+				return
 			branch[ c, cur, op, false ]
 		case 0x02                                              # J
 			cpu.npc = ((cur + 4) & 0xF0000000) | ((op & 0x3FFFFFF) << 2)
@@ -4490,7 +4991,13 @@ element n64 : trinity
 			branch[ cpu.r[ rs ] <= 0, cur, op, false ]
 		case 0x07
 			branch[ cpu.r[ rs ] > 0, cur, op, false ]
-		case 0x08, 0x09                                        # ADDI/ADDIU
+		case 0x08                                              # ADDI: overflow faults
+			s8 : u32 [ u32[ cpu.r[ rs ] ] + u32[ im ] ]
+			if [ ovf_add[ u64[ u32[ cpu.r[ rs ] ] ], u64[ u32[ im ] ], u64[ s8 ], 0x80000000 ] ]
+				take_exc[ 12, cur, 0 ]
+				return
+			cpu.r[ rt ] = sx32[ s8 ]
+		case 0x09
 			cpu.r[ rt ] = sx32[ u32[ cpu.r[ rs ] ] + u32[ im ] ]
 		case 0x0A
 			cpu.r[ rt ] = (cpu.r[ rs ] < im) ? 1 : 0
@@ -4505,9 +5012,19 @@ element n64 : trinity
 		case 0x0F
 			cpu.r[ rt ] = sx32[ zi << 16 ]
 		case 0x10
-			exec_cop0[ op, rs, rt, rd ]
+			exec_cop0[ op, rs, rt, rd, cur ]
 		case 0x11
 			exec_cop1[ op, cur ]
+		case 0x12, 0x32, 0x36, 0x3A, 0x3E                      # COP2 (ares: LWC2/LDC2/SWC2/SDC2 decode the same)
+			if [ (cpu.c_status & 0x40000000) == 0 ]
+				take_exc[ 11, cur, 2 ]
+				return
+			if [ rs == 0 || rs == 2 ] cpu.r[ rt ] = sx32[ u32[ cpu.cp2_latch ] ]   # MFC2/CFC2
+			el [ rs == 1 ] cpu.r[ rt ] = i64[ cpu.cp2_latch ]                     # DMFC2
+			el [ rs == 4 || rs == 5 || rs == 6 ] cpu.cp2_latch = u64[ cpu.r[ rt ] ] # MTC2/DMTC2/CTC2
+			el
+				take_exc[ 10, cur, 2 ]
+				return
 		case 0x14
 			branch[ cpu.r[ rs ] == cpu.r[ rt ], cur, op, true ]
 		case 0x15
@@ -4516,7 +5033,13 @@ element n64 : trinity
 			branch[ cpu.r[ rs ] <= 0, cur, op, true ]
 		case 0x17
 			branch[ cpu.r[ rs ] > 0, cur, op, true ]
-		case 0x18, 0x19                                        # DADDI/U
+		case 0x18                                              # DADDI: overflow faults
+			s18 : u64 [ u64[ cpu.r[ rs ] ] + u64[ im ] ]
+			if [ ovf_add[ u64[ cpu.r[ rs ] ], u64[ im ], s18, 0x8000000000000000 ] ]
+				take_exc[ 12, cur, 0 ]
+				return
+			cpu.r[ rt ] = i64[ s18 ]
+		case 0x19
 			cpu.r[ rt ] = cpu.r[ rs ] + im
 		case 0x1A                                              # LDL (unaligned dword merge)
 			la : u32 [ u32[ cpu.r[ rs ] + im ] ]
@@ -4575,6 +5098,50 @@ element n64 : trinity
 			el wr8v[ a4, d4 >> 24 ]
 		case 0x2B
 			wr32v[ u32[ cpu.r[ rs ] + im ], u32[ cpu.r[ rt ] ] ]
+		case 0x2C                                              # SDL (ares big-endian table)
+			a6 : u32 [ u32[ cpu.r[ rs ] + im ] ]
+			d6 : u64 [ u64[ cpu.r[ rt ] ] ]
+			b6 : u32 [ a6 & (~u32[7]) ]
+			al6 : u32 [ a6 & 7 ]
+			if [ al6 == 0 ] wr64[ b6, i64[ d6 ] ]
+			el [ al6 == 1 ]
+				wr8v[ b6 | 1, u32[ d6 >> 56 ] ]
+				wr16v[ b6 | 2, u32[ d6 >> 40 ] ]
+				wr32v[ b6 | 4, u32[ d6 >> 8 ] ]
+			el [ al6 == 2 ]
+				wr16v[ b6 | 2, u32[ d6 >> 48 ] ]
+				wr32v[ b6 | 4, u32[ d6 >> 16 ] ]
+			el [ al6 == 3 ]
+				wr8v[ b6 | 3, u32[ d6 >> 56 ] ]
+				wr32v[ b6 | 4, u32[ d6 >> 24 ] ]
+			el [ al6 == 4 ] wr32v[ b6 | 4, u32[ d6 >> 32 ] ]
+			el [ al6 == 5 ]
+				wr8v[ b6 | 5, u32[ d6 >> 56 ] ]
+				wr16v[ b6 | 6, u32[ d6 >> 40 ] ]
+			el [ al6 == 6 ] wr16v[ b6 | 6, u32[ d6 >> 48 ] ]
+			el wr8v[ b6 | 7, u32[ d6 >> 56 ] ]
+		case 0x2D                                              # SDR (ares big-endian table)
+			a7 : u32 [ u32[ cpu.r[ rs ] + im ] ]
+			d7 : u64 [ u64[ cpu.r[ rt ] ] ]
+			b7 : u32 [ a7 & (~u32[7]) ]
+			al7 : u32 [ a7 & 7 ]
+			if [ al7 == 0 ] wr8v[ b7, u32[ d7 ] ]
+			el [ al7 == 1 ] wr16v[ b7, u32[ d7 ] ]
+			el [ al7 == 2 ]
+				wr16v[ b7, u32[ d7 >> 8 ] ]
+				wr8v[ b7 | 2, u32[ d7 ] ]
+			el [ al7 == 3 ] wr32v[ b7, u32[ d7 ] ]
+			el [ al7 == 4 ]
+				wr32v[ b7, u32[ d7 >> 8 ] ]
+				wr8v[ b7 | 4, u32[ d7 ] ]
+			el [ al7 == 5 ]
+				wr32v[ b7, u32[ d7 >> 16 ] ]
+				wr16v[ b7 | 4, u32[ d7 ] ]
+			el [ al7 == 6 ]
+				wr32v[ b7, u32[ d7 >> 24 ] ]
+				wr16v[ b7 | 4, u32[ d7 >> 8 ] ]
+				wr8v[ b7 | 6, u32[ d7 ] ]
+			el wr64[ b7, i64[ d7 ] ]
 		case 0x2E                                              # SWR (ares: partial byte/half/word, no RMW read)
 			a5 : u32 [ u32[ cpu.r[ rs ] + im ] ]
 			d5 : u32 [ u32[ cpu.r[ rt ] ] ]
@@ -4590,9 +5157,14 @@ element n64 : trinity
 			return
 		case 0x30                                              # LL
 			cpu.r[ rt ] = sx32[ rd32v[ u32[ cpu.r[ rs ] + im ] ] ]
+			cpu.c_lladdr = vmap[ u32[ cpu.r[ rs ] + im ] ] >> 4
 			cpu.ll_bit = true
 		case 0x31
 			fset32[ rt, rd32v[ u32[ cpu.r[ rs ] + im ] ] ]
+		case 0x34                                              # LLD
+			cpu.r[ rt ] = rd64[ u32[ cpu.r[ rs ] + im ] ]
+			cpu.c_lladdr = vmap[ u32[ cpu.r[ rs ] + im ] ] >> 4
+			cpu.ll_bit = true
 		case 0x35
 			fset64[ rt, u64[ rd64[ u32[ cpu.r[ rs ] + im ] ] ] ]
 		case 0x37
@@ -4603,13 +5175,23 @@ element n64 : trinity
 			cpu.ll_bit = false
 		case 0x39
 			wr32v[ u32[ cpu.r[ rs ] + im ], fget32[ rt ] ]
+		case 0x3C                                              # SCD
+			if [ cpu.ll_bit ] wr64[ u32[ cpu.r[ rs ] + im ], cpu.r[ rt ] ]
+			cpu.r[ rt ] = (cpu.ll_bit) ? 1 : 0
+			cpu.ll_bit = false
 		case 0x3D
 			wr64[ u32[ cpu.r[ rs ] + im ], i64[ fget64[ rt ] ] ]
 		case 0x3F
 			wr64[ u32[ cpu.r[ rs ] + im ], cpu.r[ rt ] ]
 		default
-			take_exc[ 10, cur ]                                # Reserved Instruction
+			take_exc[ 10, cur, 0 ]                             # Reserved Instruction
 			return
+
+	# signed overflow of a+b / a-b (ares ADD/SUB tests); sign = the format's sign bit
+	func ovf_add [ xa: u64, b: u64, s: u64, sign: u64 ] -> bool
+		return ((~(xa ^ b)) & (xa ^ s) & sign) != 0
+	func ovf_sub [ xa: u64, b: u64, s: u64, sign: u64 ] -> bool
+		return ((xa ^ b) & (xa ^ s) & sign) != 0
 
 	# high 64 bits of unsigned 64x64 product (for DMULT/DMULTU)
 	func umulhi [ xa: u64, b: u64 ] -> u64
@@ -4646,6 +5228,12 @@ element n64 : trinity
 			cpu.r[ rd ] = sx32[ cpu.pc + 4 ]
 			cpu.npc = u32[ cpu.r[ rs ] ]
 			ds_pend = true
+		case 0x0C                                              # SYSCALL
+			take_exc[ 8, cur, 0 ]
+			return
+		case 0x0D                                              # BREAK
+			take_exc[ 9, cur, 0 ]
+			return
 		case 0x0F                                              # SYNC
 			return
 		case 0x10
@@ -4735,9 +5323,21 @@ element n64 : trinity
 				cpu.lo = -1
 				cpu.hi = i64[ ds2 ]
 			cpu.c_count += 68                                  # ref: ares DDIVU
-		case 0x20, 0x21
+		case 0x20                                              # ADD: overflow faults
+			s20 : u32 [ u32[ cpu.r[ rs ] ] + u32[ cpu.r[ rt ] ] ]
+			if [ ovf_add[ u64[ u32[ cpu.r[ rs ] ] ], u64[ u32[ cpu.r[ rt ] ] ], u64[ s20 ], 0x80000000 ] ]
+				take_exc[ 12, cur, 0 ]
+				return
+			cpu.r[ rd ] = sx32[ s20 ]
+		case 0x21
 			cpu.r[ rd ] = sx32[ u32[ cpu.r[ rs ] ] + u32[ cpu.r[ rt ] ] ]
-		case 0x22, 0x23
+		case 0x22                                              # SUB: overflow faults
+			s22 : u32 [ u32[ cpu.r[ rs ] ] - u32[ cpu.r[ rt ] ] ]
+			if [ ovf_sub[ u64[ u32[ cpu.r[ rs ] ] ], u64[ u32[ cpu.r[ rt ] ] ], u64[ s22 ], 0x80000000 ] ]
+				take_exc[ 12, cur, 0 ]
+				return
+			cpu.r[ rd ] = sx32[ s22 ]
+		case 0x23
 			cpu.r[ rd ] = sx32[ u32[ cpu.r[ rs ] ] - u32[ cpu.r[ rt ] ] ]
 		case 0x24
 			cpu.r[ rd ] = cpu.r[ rs ] & cpu.r[ rt ]
@@ -4751,10 +5351,32 @@ element n64 : trinity
 			cpu.r[ rd ] = (cpu.r[ rs ] < cpu.r[ rt ]) ? 1 : 0
 		case 0x2B
 			cpu.r[ rd ] = (u64[ cpu.r[ rs ] ] < u64[ cpu.r[ rt ] ]) ? 1 : 0
-		case 0x2C, 0x2D
+		case 0x2C                                              # DADD: overflow faults
+			s2c : u64 [ u64[ cpu.r[ rs ] ] + u64[ cpu.r[ rt ] ] ]
+			if [ ovf_add[ u64[ cpu.r[ rs ] ], u64[ cpu.r[ rt ] ], s2c, 0x8000000000000000 ] ]
+				take_exc[ 12, cur, 0 ]
+				return
+			cpu.r[ rd ] = i64[ s2c ]
+		case 0x2D
 			cpu.r[ rd ] = cpu.r[ rs ] + cpu.r[ rt ]
-		case 0x2E, 0x2F
+		case 0x2E                                              # DSUB: overflow faults
+			s2e : u64 [ u64[ cpu.r[ rs ] ] - u64[ cpu.r[ rt ] ] ]
+			if [ ovf_sub[ u64[ cpu.r[ rs ] ], u64[ cpu.r[ rt ] ], s2e, 0x8000000000000000 ] ]
+				take_exc[ 12, cur, 0 ]
+				return
+			cpu.r[ rd ] = i64[ s2e ]
+		case 0x2F
 			cpu.r[ rd ] = cpu.r[ rs ] - cpu.r[ rt ]
+		case 0x30, 0x31, 0x32, 0x33, 0x34, 0x36                # TGE TGEU TLT TLTU TEQ TNE
+			tr2 : bool [ false ]
+			if [ f == 0x30 ] tr2 = cpu.r[ rs ] >= cpu.r[ rt ]
+			el [ f == 0x31 ] tr2 = u64[ cpu.r[ rs ] ] >= u64[ cpu.r[ rt ] ]
+			el [ f == 0x32 ] tr2 = cpu.r[ rs ] < cpu.r[ rt ]
+			el [ f == 0x33 ] tr2 = u64[ cpu.r[ rs ] ] < u64[ cpu.r[ rt ] ]
+			el [ f == 0x34 ] tr2 = cpu.r[ rs ] == cpu.r[ rt ]
+			el tr2 = cpu.r[ rs ] != cpu.r[ rt ]
+			if [ tr2 ] take_exc[ 13, cur, 0 ]
+			return
 		case 0x38
 			dv4 : i64 [ cpu.r[ rt ] ]
 			cpu.r[ rd ] = dv4 << u32[ sa ]
@@ -4774,52 +5396,99 @@ element n64 : trinity
 			dv9 : i64 [ cpu.r[ rt ] ]
 			cpu.r[ rd ] = dv9 >> u32[ sa + 32 ]
 		default
-			take_exc[ 10, cur ]                                # Reserved Instruction
+			take_exc[ 10, cur, 0 ]                             # Reserved Instruction
 			return
 
-	func exec_cop0 [ op: u32, rs: i32, rt: i32, rd: i32 ]
-		if [ rs == 0 ]                                         # MFC0
-			v : u32 [ 0 ]
-			if [ rd == 0 ]  v = cpu.c_index
-			el [ rd == 2 ]  v = cpu.c_entrylo0
-			el [ rd == 3 ]  v = cpu.c_entrylo1
-			el [ rd == 5 ]  v = cpu.c_pagemask
-			el [ rd == 9 ]  v = c_istart >> 1                 # ares reads count BEFORE this instr's clocks
-			el [ rd == 10 ] v = cpu.c_entryhi
-			el [ rd == 11 ] v = cpu.c_compare >> 1            # ares Compare = scc.compare >> 1
-			el [ rd == 12 ] v = cpu.c_status
-			el [ rd == 13 ] v = cpu.c_cause
-			el [ rd == 14 ] v = cpu.c_epc
-			el [ rd == 16 ] v = cpu.c_config
-			cpu.r[ rt ] = sx32[ v ]
+	# CP0 Random: counts down each cycle from 31 to Wired (ares draws host random; ours stays deterministic)
+	func cp0_random [] -> u32
+		w : u32 [ cpu.c_wired & 0x3F ]
+		if [ w > 31 ] return cpu.c_count & 63
+		return 31 - (cpu.c_count % (32 - w))
+
+	# ares getControlRegister: address-like registers sign-extend for DMFC0
+	func cp0_read [ rd: i32 ] -> u64
+		if [ rd == 0 ]  return u64[ cpu.c_index ]
+		if [ rd == 1 ]  return u64[ cp0_random[] ]
+		if [ rd == 2 ]  return u64[ cpu.c_entrylo0 ]
+		if [ rd == 3 ]  return u64[ cpu.c_entrylo1 ]
+		if [ rd == 4 ]  return cpu.c_context
+		if [ rd == 5 ]  return u64[ cpu.c_pagemask ]
+		if [ rd == 6 ]  return u64[ cpu.c_wired ]
+		if [ rd == 8 ]  return u64[ sx32[ cpu.c_badvaddr ] ]
+		if [ rd == 9 ]  return u64[ c_istart >> 1 ]            # ares reads count BEFORE this instr's clocks
+		if [ rd == 10 ] return u64[ sx32[ cpu.c_entryhi ] ]
+		if [ rd == 11 ] return u64[ cpu.c_compare >> 1 ]       # ares Compare = scc.compare >> 1
+		if [ rd == 12 ] return u64[ cpu.c_status ]
+		if [ rd == 13 ] return u64[ cpu.c_cause ]
+		if [ rd == 14 ] return u64[ sx32[ cpu.c_epc ] ]
+		if [ rd == 15 ] return 0x0B22                          # PRId: VR4300 implementation 0x0B revision 0x22
+		if [ rd == 16 ] return u64[ cpu.c_config ]
+		if [ rd == 17 ] return u64[ cpu.c_lladdr ]
+		if [ rd == 18 ] return u64[ cpu.c_watchlo ]
+		if [ rd == 19 ] return u64[ cpu.c_watchhi ]
+		if [ rd == 20 ] return cpu.c_xcontext
+		if [ rd == 26 ] return u64[ cpu.c_parity ]
+		if [ rd == 27 ] return 0                               # CacheError: unused
+		if [ rd == 28 ] return u64[ cpu.c_taglo ]
+		if [ rd == 29 ] return 0                               # TagHi
+		if [ rd == 30 ] return u64[ sx32[ cpu.c_errepc ] ]
+		return u64[ cpu.c_latch ]                              # 7, 21-25, 31: last written value
+
+	# ares setControlRegister: read-only bits kept, reserved bits dropped
+	func cp0_write [ rd: i32, v: u64 ]
+		v2 : u32 [ u32[ v ] ]
+		cpu.c_latch = v2
+		if [ rd == 0 ]  cpu.c_index = v2 & 0x8000003F
+		el [ rd == 2 ]  cpu.c_entrylo0 = v2 & 0x3FFFFFFF
+		el [ rd == 3 ]  cpu.c_entrylo1 = v2 & 0x3FFFFFFF
+		el [ rd == 4 ]  cpu.c_context = (cpu.c_context & 0x7FFFF0) | (v & (~u64[ 0x7FFFFF ]))
+		el [ rd == 5 ]  cpu.c_pagemask = v2 & 0x01FFE000
+		el [ rd == 6 ]  cpu.c_wired = v2 & 0x3F
+		el [ rd == 9 ]
+			accr : u32 [ cpu.c_count - c_istart ]   # ares adds this instr's clocks AFTER the write
+			cpu.c_count = (v2 << 1) + accr          # ares scc.count = value<<1, then += clocks
+			c_cmp_prev  = cpu.c_count
+			c_sysbase   = c_sysbase + (v2 << 1) - c_istart   # shift base by rewrite delta: sys_clk keeps this instr's clocks (ares VI keeps them)
+		el [ rd == 10 ] cpu.c_entryhi = v2 & 0xFFFFE0FF
+		el [ rd == 11 ]
+			cpu.c_compare = v2 << 1            # ares scc.compare = MTC0 value << 1
+			c_cmp_prev    = cpu.c_count
+			cpu.c_cause = cpu.c_cause & (~u32[0x8000])
+		el [ rd == 12 ] cpu.c_status = (cpu.c_status & 0x00200000) | (v2 & 0xFF57FFFF)   # TS read-only; 19/23 unused
+		el [ rd == 13 ] cpu.c_cause = (cpu.c_cause & (~u32[0x300])) | (v2 & 0x300)
+		el [ rd == 14 ] cpu.c_epc = v2
+		el [ rd == 16 ] cpu.c_config = (cpu.c_config & 0x70000000) | (v2 & 0x0F00800F) | 0x00066460   # EC read-only
+		el [ rd == 17 ] cpu.c_lladdr = v2
+		el [ rd == 18 ] cpu.c_watchlo = v2 & 0xFFFFFFFB
+		el [ rd == 19 ] cpu.c_watchhi = v2 & 0xF
+		el [ rd == 20 ] cpu.c_xcontext = (cpu.c_xcontext & 0x1FFFFFFFF) | (v & (~u64[ 0x1FFFFFFFF ]))
+		el [ rd == 26 ] cpu.c_parity = v2 & 0xFF
+		el [ rd == 28 ] cpu.c_taglo = v2 & 0x0FFFFFC0
+		el [ rd == 30 ] cpu.c_errepc = v2
+
+	func tlb_write [ ti: i32 ]
+		cpu.tlb_hi[ ti ]  = cpu.c_entryhi
+		cpu.tlb_pm[ ti ]  = cpu.c_pagemask
+		cpu.tlb_lo0[ ti ] = cpu.c_entrylo0
+		cpu.tlb_lo1[ ti ] = cpu.c_entrylo1
+		cpu.tlb_used = true
+
+	func exec_cop0 [ op: u32, rs: i32, rt: i32, rd: i32, cur: u32 ]
+		if [ rs == 0 || rs == 1 ]                              # MFC0 / DMFC0
+			v : u64 [ cp0_read[ rd ] ]
+			cpu.r[ rt ] = (rs == 0) ? sx32[ u32[ v ] ] : i64[ v ]
 			return
-		if [ rs == 4 ]                                         # MTC0
-			v2 : u32 [ u32[ cpu.r[ rt ] ] ]
-			if [ rd == 0 ]  cpu.c_index = v2
-			el [ rd == 2 ]  cpu.c_entrylo0 = v2
-			el [ rd == 3 ]  cpu.c_entrylo1 = v2
-			el [ rd == 5 ]  cpu.c_pagemask = v2
-			el [ rd == 9 ]
-				accr : u32 [ cpu.c_count - c_istart ]   # ares adds this instr's clocks AFTER the write
-				cpu.c_count = (v2 << 1) + accr          # ares scc.count = value<<1, then += clocks
-				c_cmp_prev  = cpu.c_count
-				c_sysbase   = c_sysbase + (v2 << 1) - c_istart   # shift base by rewrite delta: sys_clk keeps this instr's clocks (ares VI keeps them)
-			el [ rd == 10 ] cpu.c_entryhi = v2
-			el [ rd == 11 ]
-				cpu.c_compare = v2 << 1            # ares scc.compare = MTC0 value << 1
-				c_cmp_prev    = cpu.c_count
-				cpu.c_cause = cpu.c_cause & (~u32[0x8000])
-			el [ rd == 12 ] cpu.c_status = v2
-			el [ rd == 13 ] cpu.c_cause = (cpu.c_cause & (~u32[0x300])) | (v2 & 0x300)
-			el [ rd == 14 ] cpu.c_epc = v2
+		if [ rs == 4 || rs == 5 ]                              # MTC0 / DMTC0
+			cp0_write[ rd, (rs == 4) ? u64[ sx32[ u32[ cpu.r[ rt ] ] ] ] : u64[ cpu.r[ rt ] ] ]
+			return
+		if [ rs < 16 ]                                         # CFC0/CTC0/BC0: reserved
+			take_exc[ 10, cur, 0 ]
 			return
 		if [ (op & 0x3F) == 0x02 ]                             # TLBWI
-			ti : i32 [ i32[ cpu.c_index & 31 ] ]
-			cpu.tlb_hi[ ti ]  = cpu.c_entryhi
-			cpu.tlb_pm[ ti ]  = cpu.c_pagemask
-			cpu.tlb_lo0[ ti ] = cpu.c_entrylo0
-			cpu.tlb_lo1[ ti ] = cpu.c_entrylo1
-			cpu.tlb_used = true
+			tlb_write[ i32[ cpu.c_index & 31 ] ]
+			return
+		if [ (op & 0x3F) == 0x06 ]                             # TLBWR
+			tlb_write[ i32[ cp0_random[] & 31 ] ]
 			return
 		if [ (op & 0x3F) == 0x08 ]                             # TLBP (ares CPU::TLBP)
 			cpu.c_index = 0x80000000                           # probeFailure=1
@@ -4845,9 +5514,13 @@ element n64 : trinity
 				printf[ "n64 ERET to bogus epc=%08X f%u\n", cpu.c_epc, frames ]
 			if [ dbg_on && frames >= 200 && frames < 280 ]
 				printf[ "n64 ERET %08X ra=%08X f%u\n", cpu.c_epc, u32[ cpu.r[31] ], frames ]
-			cpu.pc  = cpu.c_epc
+			if [ cpu.c_status & 0x4 ]                        # ERL: return from error vector
+				cpu.pc = cpu.c_errepc
+				cpu.c_status = cpu.c_status & (~u32[0x4])
+			el
+				cpu.pc = cpu.c_epc
+				cpu.c_status = cpu.c_status & (~u32[0x2])
 			cpu.npc = cpu.pc + 4
-			cpu.c_status = cpu.c_status & (~u32[0x2])
 			cpu.ll_bit = false
 
 	func exec_cop1 [ op: u32, cur: u32 ]
@@ -4864,6 +5537,12 @@ element n64 : trinity
 			return
 		if [ rs == 2 ]
 			cpu.r[ rt ] = sx32[ (fs == 31) ? cpu.fcr31 : 0xA00 ]
+			return
+		if [ rs == 3 || rs == 7 ]                              # DCFC1/DCTC1: unimplemented-op FPU fault
+			fpe_unimpl_exc[ cur ]
+			return
+		if [ rs >= 9 && rs <= 15 ]
+			take_exc[ 10, cur, 0 ]
 			return
 		if [ rs == 4 ]
 			fset32[ fs, u32[ cpu.r[ rt ] ] ]
@@ -4905,6 +5584,7 @@ element n64 : trinity
 			el [ fn == 8 ]  ftoint[ fd, sv9, ab_a, 0, false, true, 0, true, cur ]
 			el [ fn == 10 ] ftoint[ fd, sv9, ab_a, 0, false, true, 2, false, cur ]
 			el [ fn == 11 ] ftoint[ fd, sv9, ab_a, 0, false, true, 3, false, cur ]
+			el [ fn == 32 ] fpe_unimpl_exc[ cur ]                                 # cvt.s.s
 			el [ fn == 33 ] fcvt_d_s[ fd, ab_a, cur ]
 			el [ fn == 36 ] ftoint[ fd, sv9, ab_a, 0, false, false, 4, false, cur ]
 			el [ fn == 37 ] ftoint[ fd, sv9, ab_a, 0, false, true, 4, false, cur ]
@@ -4961,6 +5641,7 @@ element n64 : trinity
 			el [ fn == 10 ] ftoint[ fd, dv9, 0, dd_a, true, true, 2, false, cur ]
 			el [ fn == 11 ] ftoint[ fd, dv9, 0, dd_a, true, true, 3, false, cur ]
 			el [ fn == 32 ] fcvt_s_d[ fd, dd_a, cur ]
+			el [ fn == 33 ] fpe_unimpl_exc[ cur ]                                 # cvt.d.d
 			el [ fn == 36 ] ftoint[ fd, dv9, 0, dd_a, true, false, 4, false, cur ]
 			el [ fn == 37 ] ftoint[ fd, dv9, 0, dd_a, true, true, 4, false, cur ]
 			el [ fn >= 48 ] fcmp[ dd_a, dd_b, true, fn, cur ]
@@ -4978,6 +5659,7 @@ element n64 : trinity
 			cpu.fcr31 = cpu.fcr31 & (~u32[ 0x3F000 ])
 			if [ fn == 32 ] fcvt_s_w[ fd, iw, cur ]                               # cvt.s.w
 			el [ fn == 33 ] fcvt_d_w[ fd, iw, cur ]                               # cvt.d.w
+			el [ (fn >= 8 && fn <= 15) || fn == 36 || fn == 37 ] fpe_unimpl_exc[ cur ]   # round/trunc/ceil/floor/cvt.w/cvt.l from W
 			cpu.c_count += 4                                   # cvt.s.w/cvt.d.w lat5 (ref: ares FCVT_S_W/FCVT_D_W)
 			return
 		if [ rs == 21 ]                                        # fmt L
@@ -4985,6 +5667,7 @@ element n64 : trinity
 			cpu.fcr31 = cpu.fcr31 & (~u32[ 0x3F000 ])
 			if [ fn == 32 ] fcvt_s_l[ fd, il, cur ]                               # cvt.s.l
 			el [ fn == 33 ] fcvt_d_l[ fd, il, cur ]                               # cvt.d.l
+			el [ (fn >= 8 && fn <= 15) || fn == 36 || fn == 37 ] fpe_unimpl_exc[ cur ]   # round/trunc/ceil/floor/cvt.w/cvt.l from L
 			cpu.c_count += 4                                   # cvt.s.l/cvt.d.l lat5 (ref: ares FCVT_S_L/FCVT_D_L)
 
 	func fcmp [ ab: u64, bb: u64, is64: bool, fn: u32, cur: u32 ]
@@ -5043,12 +5726,14 @@ element n64 : trinity
 		while [ !vi_refreshed && fstep < 4000000 ]
 			step[]
 			fstep += 1
-		if [ dbg_on && getenv[ 'N64_AUTO' ] ]
+		if [ auto_press ]
 			if [ frames == 400 ] pad_st = pad_st | 0x1000
 			if [ frames == 410 ] pad_st = pad_st & (~u32[0x1000])
-			if [ frames == 470 && getenv[ 'N64_AUTO2' ] ] pad_st = pad_st | 0x8000
+			if [ frames == 470 && auto_press2 ] pad_st = pad_st | 0x8000
 			if [ frames == 480 ] pad_st = pad_st & (~u32[0x8000])
-		if [ !getenv[ 'N64_NO_AIDRAIN' ] ] ai_drain[]
+		ta : i64 [ now_ns[] ]
+		ai_drain[]
+		t_ai += now_ns[] - ta
 		if [ dbg_on && frames == 600 ]
 			printf[ "n64 f600 pc=%08X ra=%08X sp=%08X a0=%08X op=%08X\n", cpu.pc, u32[ cpu.r[31] ], u32[ cpu.r[29] ], u32[ cpu.r[4] ], rd32v[ cpu.pc ] ]
 			printf[ "n64 regs a1=%08X a2=%08X a3=%08X v0=%08X v1=%08X s0=%08X s1=%08X s2=%08X s3=%08X t0=%08X\n", u32[ cpu.r[5] ], u32[ cpu.r[6] ], u32[ cpu.r[7] ], u32[ cpu.r[2] ], u32[ cpu.r[3] ], u32[ cpu.r[16] ], u32[ cpu.r[17] ], u32[ cpu.r[18] ], u32[ cpu.r[19] ], u32[ cpu.r[8] ] ]
@@ -5074,7 +5759,11 @@ element n64 : trinity
 			fparm = (agt >= 95) && (agt <= 97)
 		frames += 1
 		if [ trace && (frames % 60) == 0 ]
-			printf[ "n64 f%u pc=%08X sp_stat=%X mi=%X/%X vi_org=%06X\n", frames, cpu.pc, sp_status, mi_intr, mi_mask, vi_origin ]
+			printf[ "n64 f%u pc=%08X sp_stat=%X mi=%X/%X vi_org=%06X ms/60f: frame=%lld gfx=%lld ai=%lld pub=%lld\n", frames, cpu.pc, sp_status, mi_intr, mi_mask, vi_origin, t_frame / 1000000, t_gfx / 1000000, t_ai / 1000000, t_pub / 1000000 ]
+			t_frame = 0
+			t_gfx = 0
+			t_ai = 0
+			t_pub = 0
 
 	func publish []
 		pub_lock.lock[]
@@ -5112,16 +5801,20 @@ element n64 : trinity
 		pub_valid = true
 		pub_lock.unlock[]
 
+	func now_ns [] -> i64
+		ts : local timespec [ 1 ]
+		clock_gettime[ CLOCK_MONOTONIC, ts ]
+		return i64[ ts[ 0 ].tv_sec ] * 1000000000 + i64[ ts[ 0 ].tv_nsec ]
+
 	func emu_tick []
 		root : path.path_startup[]
+		t0 : i64 [ now_ns[] ]
 		run_frame[]
-		if [ !getenv[ 'N64_NO_PUBLISH' ] ] publish[]
-		if [ ld_dump ] dump_fb[ '/tmp/n64_fb.ppm' ]
-		if [ !ld_dump && frames == 840 ] dump_fb[ '/tmp/n64_b840.ppm' ]
-		if [ !ld_dump && frames == 900 ] dump_fb[ '/tmp/n64_b900.ppm' ]
-		if [ !ld_dump && frames == 960 ] dump_fb[ '/tmp/n64_b960.ppm' ]
-		if [ !ld_dump && frames == 1040 ] dump_fb[ '/tmp/n64_b1040.ppm' ]
-		if [ !ld_dump && frames >= 820 ] dump_fb[ '/tmp/n64_boot.ppm' ]
+		t1 : i64 [ now_ns[] ]
+		publish[]
+		t2 : i64 [ now_ns[] ]
+		t_frame += t2 - t0
+		t_pub += t2 - t1
 		if [ hold_f > 0 && frames >= hold_f ] paused = true
 		if [ ld_dump && ld_ticks < 45 ]
 			ld_ticks += 1
@@ -5150,6 +5843,10 @@ element n64 : trinity
 				emu_running = false
 				return
 			boot[]
+			if [ state ]
+				rst : i32 [ load_state[ state.chars ] ]
+				printf[ "n64: state load <- %s (%d) pc=%08X\n", state.chars, rst, cpu.pc ]
+				fflush[ null ]
 			if [ loadstate_requested[] ]
 				rls : i32 [ load_ours[ '{root}/n64/n64.state' ] ]
 				printf[ "n64: startup state load <- n64.state (%d)\n", rls ]
@@ -5302,7 +5999,7 @@ element n64 : trinity
 			if [ !r_render ] return
 			pub_lock.lock[]
 			if [ pub_at_dirty ]
-				r_atlas.upload[ at_stage, 1024 * 1024 * 4 ]
+				r_atlas.upload[ pub_at_stage, 1024 * 1024 * 4 ]
 				pub_at_dirty = false
 			pub_st[ 2047 * 4 ] = f32[ pub_gxv_n ]     # total drawn vertices → shader draw-order normalizer (texel 2047,0)
 			pub_st[ 2046 * 4 ] = f32[ pub_zsplit ]    # first z-enabled vertex index → z-disabled backdrop/overlay split (texel 2046,0)
@@ -5312,10 +6009,6 @@ element n64 : trinity
 			for [ i: i32 0, i < nf9, i += 1 ]
 				vd9[ i ] = pub_gxv[ i ]
 			vlim : i32 [ pub_gxv_n ]
-			vpe : symbol [ getenv[ 'N64_VLIM' ] ]
-			if [ vpe ]
-				vp9 : i32 [ atoi[ vpe ] ]
-				if [ vp9 > 0 && vp9 < 100 ] vlim = pub_gxv_n * vp9 / 100
 			r_vbo.vertex_count = vlim
 			pub_lock.unlock[]
 			r_vbo.upload_verts[]

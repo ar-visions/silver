@@ -1,0 +1,478 @@
+# qemu — hosts a qemu machine as a trinity element over its VNC socket
+export 1.0.0
+export extensions ['.img', '.qcow2', '.iso']
+
+import virglrenderer/main from https://gitlab.freedesktop.org/virgl/virglrenderer
+    PKG_CONFIG_PATH={install}/lib/pkgconfig
+    PYTHONPATH={install}/pylib
+    PATH={install}/pylib/bin:{install}/bin:/usr/bin:/bin
+    -Dvenus=true
+    -Dtests=false
+
+import qemu:qemu/e47e2d0
+    PKG_CONFIG_PATH={install}/lib/pkgconfig
+    --target-list=x86_64-softmmu
+    --enable-virglrenderer
+    --enable-opengl
+    --extra-ldflags=-Wl,-rpath,{install}/lib
+    --disable-docs
+    --disable-werror
+
+import dbus_display
+    -I/usr/include/gio-unix-2.0
+    -I/usr/include/glib-2.0
+    -I/usr/lib/x86_64-linux-gnu/glib-2.0/include
+    -lgio-2.0
+    -lgobject-2.0
+    -lglib-2.0
+
+import trinity
+import vec
+import <stdio.h>
+import <stdlib.h>
+import <string.h>
+import <unistd.h>
+    +_DEFAULT_SOURCE
+import <pthread.h>
+import <time.h>
+import <signal.h>
+import <sys/prctl.h>
+import <sys/socket.h>
+import <sys/un.h>
+import <sys/wait.h>
+
+element qemu : trinity
+    public  width      : i32    [ 1280 ]
+    public  height     : i32    [ 800 ]
+    public  title      : string [ 'qemu' ]
+    public  background : string [ 'Background' ]
+    default src        : path                # disk image or iso
+    public  kernel     : path
+    public  initrd     : path
+    public  append     : string              # kernel command line
+    public  memory     : i32                 # guest ram in MB
+    public  gpu        : bool                # venus: guest vulkan on the host gpu
+    public  serial     : path                # guest console log
+    mutable pid        : i32
+    mutable sock       : i32
+    mutable sock_path  : string
+    mutable fb         : @u8                 # guest pixels, rgba8
+    mutable fb_w       : i32
+    mutable fb_h       : i32
+    mutable fb_lock    : mutex
+    mutable tex        : Texture
+    mutable started    : bool
+    mutable stop       : bool
+    mutable running    : bool
+    mutable buttons    : i32                 # rfb button mask
+    mutable rects      : i32                 # framebuffer rects received
+    mutable tex_gen    : i32 [ -1 ]          # dbus scanout generation shown
+    mutable tex_y0     : bool                # scanout row 0 is top (no flip)
+    mutable fit        : rect                # where the guest screen lands
+
+    func init []
+        animated  = true
+        focusable = true
+        sock      = -1
+        if [ memory == 0 ] memory = 1024
+        if [ src ] title = '{src.filename[]}'
+
+    func launch []
+        started = true
+        pd : i32 [ getpid[] ]
+        ts : i64 [ time[ null ] ]
+        # a reload makes a new element in the same process: its own socket
+        # peer-to-peer D-Bus display (no bus daemon, host-side): we pass our
+        # socket to qemu via QMP add_client; qemu hands back the scanout dma-buf
+        sock_path = '/tmp/silver-qemu-{pd}-{ts}.qmp'
+        unlink[ sock_path.chars ]
+        root : path.path_startup[]
+        qbin : path '{root}/install/bin/qemu-system-x86_64'
+        cmd : string '{qbin} -m {memory} -display dbus,gl=on,p2p=on -qmp unix:path={sock_path},server=on,wait=off'
+        if [ gpu ]
+            cmd = cmd + ' -device virtio-vga-gl,venus=true,blob=true,hostmem=4G'
+            cmd = cmd + ' -device virtio-keyboard-pci -device virtio-tablet-pci'
+        el cmd = cmd + ' -device virtio-vga-gl'
+        if [ serial ] cmd = cmd + ' -serial file:"{serial}"'
+        if [ access[ '/dev/kvm', R_OK | W_OK ] == 0 ] cmd = cmd + ' -enable-kvm -cpu host'
+        if [ kernel ] cmd = cmd + ' -kernel "{kernel}"'
+        if [ initrd ] cmd = cmd + ' -initrd "{initrd}"'
+        if [ append ] cmd = cmd + ' -append "{append}"'
+        if [ src ]
+            ax : src.ext[]
+            if [ ax == 'iso' ] cmd = cmd + ' -cdrom "{src}"'
+            el
+                fmt : string (ax == 'qcow2') ? 'qcow2' : 'raw'
+                cmd = cmd + ' -drive file="{src}",format={fmt}'
+        puts 'qemu: {cmd}'
+        cmd = 'exec {cmd}'          # sh must become qemu, not parent it
+        dashc : string '-c'
+        pid = fork[]
+        if [ pid == 0 ]
+            # the machine dies with the element's process: no orphans on
+            # a window close or a reload
+            prctl[ PR_SET_PDEATHSIG, SIGTERM ]
+            execl[ '/bin/sh', 'sh', dashc.chars, cmd.chars, null ]
+            _exit[ 1 ]
+        if [ pid < 0 ]
+            puts 'qemu: fork failed'
+            return
+        # connect the D-Bus display client; it captures the scanout dma-buf
+        qemu_dbus_start[ sock_path.chars ]
+
+    func connect_vnc [] -> bool
+        sa : sockaddr_un
+        memset[ @sa, 0, sizeof[ sockaddr_un ] ]
+        sa.sun_family = AF_UNIX
+        strcpy[ @sa.sun_path[0], sock_path.chars ]
+        for [ t: i32 0, t < 200, t += 1 ]
+            if [ stop ] return false
+            fd : i32 [ socket[ AF_UNIX, SOCK_STREAM, 0 ] ]
+            if [ connect[ fd, cast @sockaddr [ @sa ], sizeof[ sockaddr_un ] ] == 0 ]
+                sock = fd
+                return true
+            close[ fd ]
+            usleep[ 50000 ]
+        return false
+
+    func rd [ p: @u8, n: i32 ] -> bool
+        got : i32 [ 0 ]
+        while [ got < n ]
+            r : i32 [ i32[ read[ sock, p + got, n - got ] ] ]
+            if [ r <= 0 ] return false
+            got += r
+        return true
+
+    func wr [ p: @u8, n: i32 ]
+        if [ sock < 0 ] return
+        write[ sock, p, n ]
+
+    func be16 [ p: @u8 ] -> i32
+        return (i32[ p[0] ] << 8) | i32[ p[1] ]
+
+    func be32 [ p: @u8 ] -> i32
+        return (i32[ p[0] ] << 24) | (i32[ p[1] ] << 16) | (i32[ p[2] ] << 8) | i32[ p[3] ]
+
+    func put16 [ p: @u8, v: i32 ]
+        p[0] = u8[ (v >> 8) & 255 ]
+        p[1] = u8[ v & 255 ]
+
+    func put32 [ p: @u8, v: i32 ]
+        p[0] = u8[ (v >> 24) & 255 ]
+        p[1] = u8[ (v >> 16) & 255 ]
+        p[2] = u8[ (v >> 8) & 255 ]
+        p[3] = u8[ v & 255 ]
+
+    func fb_alloc [ w: i32, h: i32 ]
+        fb_lock.lock[]
+        if [ fb ] free[ fb ]
+        fb   = calloc[ 1, w * h * 4 ]
+        fb_w = w
+        fb_h = h
+        fb_lock.unlock[]
+
+    # rfb pixel format: 32bpp, red in the low byte, so the wire is rgba
+    func send_setup []
+        pf : local u8 [ 20 ]
+        memset[ @pf[0], 0, 20 ]
+        pf[4]  = 32                      # bits per pixel
+        pf[5]  = 24                      # depth
+        pf[7]  = 1                       # true colour
+        put16[ @pf[8],  255 ]            # red max
+        put16[ @pf[10], 255 ]            # green max
+        put16[ @pf[12], 255 ]            # blue max
+        pf[14] = 0                       # red shift
+        pf[15] = 8                       # green shift
+        pf[16] = 16                      # blue shift
+        wr[ @pf[0], 20 ]
+        enc : local u8 [ 12 ]
+        memset[ @enc[0], 0, 12 ]
+        enc[0] = 2                       # SetEncodings
+        put16[ @enc[2], 2 ]
+        put32[ @enc[4], 0 ]              # raw
+        put32[ @enc[8], -223 ]           # DesktopSize
+        wr[ @enc[0], 12 ]
+
+    func request_update [ incremental: bool ]
+        m : local u8 [ 10 ]
+        m[0] = 3                         # FramebufferUpdateRequest
+        m[1] = (incremental) ? 1 : 0
+        put16[ @m[2], 0 ]
+        put16[ @m[4], 0 ]
+        put16[ @m[6], fb_w ]
+        put16[ @m[8], fb_h ]
+        wr[ @m[0], 10 ]
+
+    func handshake [] -> bool
+        ver : local u8 [ 12 ]
+        if [ !rd[ @ver[0], 12 ] ] return false
+        wr[ @ver[0], 12 ]
+        nsec : local u8 [ 1 ]
+        if [ !rd[ @nsec[0], 1 ] ] return false
+        if [ nsec[0] == 0 ] return false
+        types : local u8 [ 256 ]
+        if [ !rd[ @types[0], i32[ nsec[0] ] ] ] return false
+        pick : local u8 [ 1 ]
+        pick[0] = 1                      # security: none
+        wr[ @pick[0], 1 ]
+        res : local u8 [ 4 ]
+        if [ !rd[ @res[0], 4 ] ] return false
+        if [ be32[ @res[0] ] != 0 ] return false
+        shared : local u8 [ 1 ]
+        shared[0] = 1
+        wr[ @shared[0], 1 ]
+        si : local u8 [ 24 ]
+        if [ !rd[ @si[0], 24 ] ] return false
+        fb_alloc[ be16[ @si[0] ], be16[ @si[2] ] ]
+        nlen : i32 [ be32[ @si[20] ] ]
+        name : @u8 [ calloc[ 1, nlen + 1 ] ]
+        ok : bool [ rd[ name, nlen ] ]
+        free[ name ]
+        return ok
+
+    func read_rect [] -> bool
+        h : local u8 [ 12 ]
+        if [ !rd[ @h[0], 12 ] ] return false
+        x  : i32 [ be16[ @h[0] ] ]
+        y  : i32 [ be16[ @h[2] ] ]
+        w  : i32 [ be16[ @h[4] ] ]
+        ht : i32 [ be16[ @h[6] ] ]
+        enc : i32 [ be32[ @h[8] ] ]
+        if [ enc == -223 ]
+            puts 'qemu: desktop size {w}x{ht}'
+            fb_alloc[ w, ht ]
+            request_update[ false ]
+            return true
+        rects += 1
+        if [ rects <= 3 || rects % 500 == 0 ] puts 'qemu: rect {rects}: {x},{y} {w}x{ht} enc {enc}'
+        if [ enc != 0 ] return false
+        row : @u8 [ calloc[ 1, w * 4 ] ]
+        for [ r: i32 0, r < ht, r += 1 ]
+            if [ !rd[ row, w * 4 ] ]
+                free[ row ]
+                return false
+            yy : i32 [ y + r ]
+            if [ yy >= fb_h ] continue
+            fb_lock.lock[]
+            dst : @u8 [ fb + (yy * fb_w + x) * 4 ]
+            for [ c: i32 0, c < w, c += 1 ]
+                if [ x + c >= fb_w ] break
+                dst[c * 4]     = row[c * 4]
+                dst[c * 4 + 1] = row[c * 4 + 1]
+                dst[c * 4 + 2] = row[c * 4 + 2]
+                dst[c * 4 + 3] = 255
+            fb_lock.unlock[]
+        free[ row ]
+        return true
+
+    func rfb_entry [] -> none
+        running = true
+        if [ connect_vnc[] && handshake[] ]
+            puts 'qemu: vnc connected, {fb_w}x{fb_h}'
+            send_setup[]
+            request_update[ false ]
+            while [ !stop ]
+                mt : local u8 [ 4 ]
+                if [ !rd[ @mt[0], 1 ] ] break
+                if [ mt[0] == 0 ]
+                    if [ !rd[ @mt[1], 3 ] ] break
+                    n : i32 [ be16[ @mt[2] ] ]
+                    bad : bool [ false ]
+                    for [ i: i32 0, i < n, i += 1 ]
+                        if [ !read_rect[] ]
+                            bad = true
+                            break
+                    if [ bad ] break
+                    if [ ux ] ux.will_animate = true
+                    request_update[ true ]
+                el [ mt[0] == 2 ]
+                    continue                 # bell
+                el [ mt[0] == 3 ]
+                    if [ !rd[ @mt[1], 3 ] ] break
+                    ln : local u8 [ 4 ]
+                    if [ !rd[ @ln[0], 4 ] ] break
+                    n2 : i32 [ be32[ @ln[0] ] ]
+                    cut : @u8 [ calloc[ 1, n2 + 1 ] ]
+                    rd[ cut, n2 ]
+                    free[ cut ]
+                el break
+        el puts 'qemu: vnc connect failed'
+        # the machine may have died under us: say how
+        st : i32 [ 0 ]
+        if [ pid > 0 && waitpid[ pid, @st, WNOHANG ] == pid ]
+            if [ WIFSIGNALED[ st ] ]
+                sg : i32 [ WTERMSIG[ st ] ]
+                puts 'qemu: exited by signal {sg}'
+            el
+                ec : i32 [ WEXITSTATUS[ st ] ]
+                puts 'qemu: exited with code {ec}'
+        running = false
+
+    func send_key [ keysym: i32, down: bool ]
+        m : local u8 [ 8 ]
+        memset[ @m[0], 0, 8 ]
+        m[0] = 4                         # KeyEvent
+        m[1] = (down) ? 1 : 0
+        put32[ @m[4], keysym ]
+        wr[ @m[0], 8 ]
+
+    func send_pointer [ px: f32, py: f32 ]
+        if [ fit.w <= 0.0 || fb_w == 0 ] return
+        gx : i32 [ i32[ (px - fit.x) / fit.w * f32[ fb_w ] ] ]
+        gy : i32 [ i32[ (py - fit.y) / fit.h * f32[ fb_h ] ] ]
+        if [ gx < 0 ] gx = 0
+        if [ gy < 0 ] gy = 0
+        if [ gx >= fb_w ] gx = fb_w - 1
+        if [ gy >= fb_h ] gy = fb_h - 1
+        m : local u8 [ 6 ]
+        m[0] = 5                         # PointerEvent
+        m[1] = u8[ buttons ]
+        put16[ @m[2], gx ]
+        put16[ @m[4], gy ]
+        wr[ @m[0], 6 ]
+
+    # trinity buttons: 0 left 1 right 2 middle; rfb bits: 1 left 2 middle 4 right
+    func button_bit [ b: i32 ] -> i32
+        if [ b == 0 ] return 1
+        if [ b == 1 ] return 4
+        if [ b == 2 ] return 2
+        return 0
+
+    public func on_press [ ev: Event ]
+        set_focus[]
+        buttons = buttons | button_bit[ ev.mouse.button ]
+        send_pointer[ ev.mouse.pos.x, ev.mouse.pos.y ]
+        ev.stop[]
+
+    public func on_release [ ev: Event ]
+        buttons = buttons & (~button_bit[ ev.mouse.button ])
+        send_pointer[ ev.mouse.pos.x, ev.mouse.pos.y ]
+
+    public func on_move [ ev: Event ]
+        send_pointer[ ev.mouse.pos.x, ev.mouse.pos.y ]
+
+    public func on_wheel [ ev: Event ]
+        bit : i32 [ (ev.mouse.wheel_delta.y > 0.0) ? 8 : 16 ]
+        buttons = buttons | bit
+        send_pointer[ ev.mouse.pos.x, ev.mouse.pos.y ]
+        buttons = buttons & (~bit)
+        send_pointer[ ev.mouse.pos.x, ev.mouse.pos.y ]
+
+    # glfw key code to x11 keysym
+    func keysym [ code: i32 ] -> i32
+        if [ code >= 65 && code <= 90 ] return code + 32
+        if [ code >= 32 && code <= 126 ] return code
+        if [ code >= 290 && code <= 301 ] return 0xffbe + (code - 290)
+        if [ code >= 320 && code <= 329 ] return 0xffb0 + (code - 320)
+        if [ code == 256 ] return 0xff1b   # escape
+        if [ code == 257 ] return 0xff0d   # enter
+        if [ code == 258 ] return 0xff09   # tab
+        if [ code == 259 ] return 0xff08   # backspace
+        if [ code == 260 ] return 0xff63   # insert
+        if [ code == 261 ] return 0xffff   # delete
+        if [ code == 262 ] return 0xff53   # right
+        if [ code == 263 ] return 0xff51   # left
+        if [ code == 264 ] return 0xff54   # down
+        if [ code == 265 ] return 0xff52   # up
+        if [ code == 266 ] return 0xff55   # page up
+        if [ code == 267 ] return 0xff56   # page down
+        if [ code == 268 ] return 0xff50   # home
+        if [ code == 269 ] return 0xff57   # end
+        if [ code == 280 ] return 0xffe5   # caps lock
+        if [ code == 330 ] return 0xffae   # keypad decimal
+        if [ code == 331 ] return 0xffaf   # keypad divide
+        if [ code == 332 ] return 0xffaa   # keypad multiply
+        if [ code == 333 ] return 0xffad   # keypad subtract
+        if [ code == 334 ] return 0xffab   # keypad add
+        if [ code == 335 ] return 0xff8d   # keypad enter
+        if [ code == 340 ] return 0xffe1   # left shift
+        if [ code == 341 ] return 0xffe3   # left control
+        if [ code == 342 ] return 0xffe9   # left alt
+        if [ code == 343 ] return 0xffeb   # left super
+        if [ code == 344 ] return 0xffe2   # right shift
+        if [ code == 345 ] return 0xffe4   # right control
+        if [ code == 346 ] return 0xffea   # right alt
+        if [ code == 347 ] return 0xffec   # right super
+        return 0
+
+    public func on_key [ ev: Event ]
+        ks : i32 [ keysym[ i32[ ev.key.unicode ] ] ]
+        if [ ks == 0 ] return
+        send_key[ ks, ev.key.state != 0 ]
+        ev.stop[]
+
+    public func draw [ w: Window ]
+        if [ !w || w.draw_stage != CanvasType.screen ] return
+        if [ bounds.w <= 0.0 || bounds.h <= 0.0 ] return
+        if [ !started ] launch[]
+        if [ pid > 0 ]
+            st : i32 [ 0 ]
+            if [ waitpid[ pid, @st, WNOHANG ] == pid ]
+                if [ WIFSIGNALED[ st ] ]
+                    sg : i32 [ WTERMSIG[ st ] ]
+                    puts 'qemu: machine died by signal {sg}'
+                el
+                    ec : i32 [ WEXITSTATUS[ st ] ]
+                    puts 'qemu: machine exited with code {ec}'
+                pid = 0
+        cv : Canvas [ w.screen ]
+        if [ !cv || !cv.vk ] return
+        vp : rect [ x: 0.0, y: 0.0, w: bounds.w, h: bounds.h ]
+        # pull the guest scanout dma-buf; re-import only when the buffer changes
+        sw : i32
+        sh : i32
+        sstride : i32
+        sfourcc : u32
+        smod : u64
+        sgen : i32
+        sdirty : i32
+        sy0 : i32
+        dfd : i32 [ qemu_dbus_scanout[ @sw, @sh, @sstride, @sfourcc, @smod, @sgen, @sdirty, @sy0 ] ]
+        if [ dfd < 0 ] return
+        # qemu emits transient oversized scanouts on mode changes; keep the
+        # last good frame instead of showing a wrong-sized one
+        if [ sw > 2560 || sh > 1600 || sw <= 0 || sh <= 0 ]
+            close[ dfd ]
+            if [ !tex ] return
+            ar2 : f32 [ f32[ fb_w ] / f32[ fb_h ] ]
+            fw2 : f32 [ vp.w ]
+            fh2 : f32 [ fw2 / ar2 ]
+            if [ fh2 > vp.h ]
+                fh2 = vp.h
+                fw2 = fh2 * ar2
+            fit2 : rect [ x: vp.x + (vp.w - fw2) * 0.5, y: vp.y + (vp.h - fh2) * 0.5, w: fw2, h: fh2 ]
+            if [ tex_y0 ] cv.draw_image_crop[ tex, fit2, 0.0, 1.0, 1.0, 0.0 ]
+            el cv.draw_image[ tex, fit2 ]
+            return
+        if [ sgen != tex_gen ]
+            puts 'qemu: scanout {sw}x{sh} stride {sstride} fourcc {sfourcc} mod {smod}'
+            tex = cv.vk.import_scanout_tex[ dfd, sw, sh, 44, sstride, smod, cv.w ]   # 44 = VK_FORMAT_B8G8R8A8_UNORM
+            if [ tex ] tex.transition[ 5 ]   # VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+            tex_gen = sgen
+            tex_y0  = sy0 != 0
+            fb_w    = sw
+            fb_h    = sh
+        el close[ dfd ]
+        if [ !tex ] return
+        ar : f32 [ f32[ fb_w ] / f32[ fb_h ] ]
+        fw : f32 [ vp.w ]
+        fh : f32 [ fw / ar ]
+        if [ fh > vp.h ]
+            fh = vp.h
+            fw = fh * ar
+        fit = rect [ x: vp.x + (vp.w - fw) * 0.5, y: vp.y + (vp.h - fh) * 0.5, w: fw, h: fh ]
+        # qemu's y0_top says row 0's origin; a gl scanout is bottom-up, so
+        # flip V (v0=1, v1=0) unless the buffer is already top-down
+        if [ tex_y0 ] cv.draw_image_crop[ tex, fit, 0.0, 1.0, 1.0, 0.0 ]
+        el cv.draw_image[ tex, fit ]
+
+    func dealloc []
+        stop = true
+        if [ sock >= 0 ] shutdown[ sock, SHUT_RDWR ]
+        while [ running ] usleep[ 2000 ]
+        if [ sock >= 0 ] close[ sock ]
+        if [ pid > 0 ]
+            kill[ pid, SIGTERM ]
+            waitpid[ pid, null, 0 ]
+        if [ sock_path ] unlink[ sock_path.chars ]
+        if [ fb ] free[ fb ]

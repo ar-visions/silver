@@ -1075,6 +1075,9 @@ class vk_context
             ppEnabledLayerNames:     @validation_layer
         ], null, @instance ]
 
+        if [ result != VK_SUCCESS ]
+            rc : i32 [ result ]
+            puts 'vkCreateInstance failed: {rc}'
         expect result == VK_SUCCESS, "failed to create Vulkan instance"
 
         if [ enable_validation ]
@@ -1088,6 +1091,19 @@ class vk_context
         physical_devices: local VkPhysicalDevice [ device_count ]
         vkEnumeratePhysicalDevices[ instance, @device_count, physical_devices ]
         physical_device = physical_devices[0]
+        # SILVER_VK_VENDOR pins the device by vendor (amd/nvidia/intel). a
+        # venus consumer must sample on the SAME gpu that replays venus, or a
+        # cross-gpu dma-buf imports as tiled garbage.
+        vendor_env : cstr [ getenv[ 'SILVER_VK_VENDOR' ] ]
+        if [ vendor_env ]
+            vsel : string [ vendor_env ]
+            want : u32 [ (vsel == 'amd') ? u32[ 0x1002 ] : (vsel == 'nvidia') ? u32[ 0x10de ] : u32[ 0x8086 ] ]
+            for [ i: u32 0, i < device_count, i += 1 ]
+                pdprops : VkPhysicalDeviceProperties
+                vkGetPhysicalDeviceProperties[ physical_devices[i], @pdprops ]
+                if [ pdprops.vendorID == want ]
+                    physical_device = physical_devices[i]
+                    break
 
         # check device extensions
         ext_count: u32 0
@@ -1415,6 +1431,93 @@ class vk_context
                 vk_format: fmt, vk_image: img, vk_memory: mem ]
             t.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
             return t
+
+        # kms scanout: import a LINEAR virtio-gpu dumb buffer (the display's
+        # own framebuffer) so venus renders straight into the scanned-out
+        # memory. optimal tiling would mismatch the dumb buffer's layout.
+        public func import_scanout_tex [ dma_fd: i32, w2: i32, h2: i32, fmt: i32, stride: i32, modifier: u64, disp: Display ] -> Texture
+            ext : VkExternalMemoryImageCreateInfo [ ]
+            ext.sType       = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO
+            ext.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT
+            # the dma-buf carries a drm format modifier. a real tiled modifier
+            # needs the explicit-modifier path; INVALID (0x00ff..) or LINEAR (0)
+            # means plain linear memory — describe THAT or the sampler reads
+            # tiled garbage (esp. cross-gpu: amd buffer, nvidia sampler)
+            # three cases by modifier: 0 = LINEAR; INVALID (0x00ff..) = the
+            # producer didn't say, so let the SAME driver read its own buffer
+            # with default OPTIMAL tiling; anything else = explicit modifier.
+            is_linear  : bool [ modifier == 0 ]
+            is_unknown : bool [ modifier == u64[ 0x00FFFFFFFFFFFFFF ] ]
+            layout : VkSubresourceLayout [ ]
+            layout.offset     = 0
+            layout.rowPitch   = stride
+            drm : VkImageDrmFormatModifierExplicitCreateInfoEXT [ ]
+            drm.sType                       = VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_EXPLICIT_CREATE_INFO_EXT
+            drm.drmFormatModifier           = modifier
+            drm.drmFormatModifierPlaneCount = 1
+            drm.pPlaneLayouts               = @layout
+            drm.pNext                       = @ext
+            info : VkImageCreateInfo [ ]
+            info.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO
+            info.pNext         = (is_linear || is_unknown) ? cast handle [ @ext ] : cast handle [ @drm ]
+            info.imageType     = VK_IMAGE_TYPE_2D
+            info.format        = fmt
+            info.extent        = VkExtent3D [ w2, h2, 1 ]
+            info.mipLevels     = 1
+            info.arrayLayers   = 1
+            info.samples       = VK_SAMPLE_COUNT_1_BIT
+            info.tiling        = (is_linear) ? VK_IMAGE_TILING_LINEAR : (is_unknown) ? VK_IMAGE_TILING_OPTIMAL : VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT
+            info.usage         = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT
+            info.sharingMode   = VK_SHARING_MODE_EXCLUSIVE
+            info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED
+            img : VkImage [ null ]
+            err : i32 [ vkCreateImage[ device, @info, null, @img ] ]
+            if [ err != 0 ]
+                puts 'scanout import: vkCreateImage failed {err}'
+                return null
+            mreq : VkMemoryRequirements [ ]
+            vkGetImageMemoryRequirements[ device, img, @mreq ]
+            fd_props : VkMemoryFdPropertiesKHR [ ]
+            fd_props.sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR
+            err = _vkGetMemoryFdPropertiesKHR[ device,
+                VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, dma_fd, @fd_props ]
+            if [ err != 0 ]
+                puts 'scanout import: fd props failed {err}'
+                return null
+            allowed : u32 [ mreq.memoryTypeBits & fd_props.memoryTypeBits ]
+            if [ allowed == 0 ]
+                puts 'scanout import: no memory type'
+                return null
+            mti : u32 [ 0 ]
+            for [ k: u32 0, k < 32, k += 1 ]
+                if [ allowed & (u32[1] << k) ]
+                    mti = k
+                    break
+            ded : VkMemoryDedicatedAllocateInfo [ ]
+            ded.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO
+            ded.image = img
+            imp : VkImportMemoryFdInfoKHR [ ]
+            imp.sType      = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR
+            imp.pNext      = @ded
+            imp.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT
+            imp.fd         = dma_fd
+            mai : VkMemoryAllocateInfo [ ]
+            mai.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO
+            mai.pNext           = @imp
+            mai.allocationSize  = mreq.size
+            mai.memoryTypeIndex = mti
+            mem : VkDeviceMemory [ null ]
+            err = vkAllocateMemory[ device, @mai, null, @mem ]
+            if [ err != 0 ]
+                puts 'scanout import: allocate failed {err}'
+                return null
+            err = vkBindImageMemory[ device, img, mem, 0 ]
+            if [ err != 0 ]
+                puts 'scanout import: bind failed {err}'
+                return null
+            puts 'scanout import: ok {w2}x{h2}'
+            return Texture [ vk: a, w: disp, width: w2, height: h2,
+                vk_format: fmt, vk_image: img, vk_memory: mem ]
 
         # consumer: import a dma-buf fd as a TRANSFER_SRC buffer (Camera recipe)
         func import_dmabuf [ dma_fd: i32, byte_size: i32, out_buf: @VkBuffer, out_mem: @VkDeviceMemory ] -> bool
@@ -3298,6 +3401,8 @@ class Texture
     # allocate as an exportable dma-buf so other processes can import this
     # exact GPU memory (cross-process shared Vulkan texture)
     public shareable        : bool
+    public host_linear      : bool   # LINEAR tiling, for a dma-buf the display scans out
+    intern row_stride       : i32    # bytes per row of a host_linear image
     # NOTE: appended LAST — inserting mid-schema shifts af-bit indices of the
     # members after it (misread set-detection broke m7_src's mip/aniso config)
     # > 1 = 3D image; a sampler Image is a strip of depth slices
@@ -3601,7 +3706,7 @@ class Texture
                 mipLevels:     mip_levels,
                 arrayLayers:   layer_count,
                 samples:       VK_SAMPLE_COUNT_1_BIT,
-                tiling:        VK_IMAGE_TILING_OPTIMAL,
+                tiling:        (host_linear) ? VK_IMAGE_TILING_LINEAR : VK_IMAGE_TILING_OPTIMAL,
                 usage:         usage,
                 sharingMode:   VK_SHARING_MODE_EXCLUSIVE,
                 initialLayout: VK_IMAGE_LAYOUT_UNDEFINED
@@ -3618,6 +3723,11 @@ class Texture
                         expect r9 == VK_SUCCESS, 'shared texture: vkCreateImage failed'
                         shared_fd = vk.export_image_memory[ vk_image, @vk_memory ]
                         expect shared_fd >= 0, 'shared texture: export failed'
+                        if [ host_linear ]
+                            sub : VkImageSubresource [ aspectMask: VK_IMAGE_ASPECT_COLOR_BIT ]
+                            sl  : VkSubresourceLayout [ ]
+                            vkGetImageSubresourceLayout[ vk.device, vk_image, @sub, @sl ]
+                            row_stride = i32[ sl.rowPitch ]
                 if [ !vk_image ]
                     alloc_info: VmaAllocationCreateInfo [
                         usage: VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE
@@ -3817,6 +3927,10 @@ Texture Display
     # resize replaced attachments: the swap blit must rebind its sampler
     intern  rebind_swap         : bool
     public element_targets      : map   Render [string]
+    # a registered target the frame does not render (solid backdrop mode)
+    public skip_target          : Render
+    # print the per-target frame timing every 120 frames (--prof_log)
+    public prof_log             : bool
     # headless element hosts (trinity offscreen objects) pumped by the app
     # loop alongside this window; vec Au — the class lives in trinity.ag
     mutable offscreens           : vec Au []
@@ -3866,7 +3980,7 @@ Texture Display
     intern pending_w            : i32
     intern pending_h            : i32
     intern last_resize_t        : f64
-    intern resize_debounce_s    : f64 [ 0.188 ]
+    intern resize_debounce_s    : f64 [ 0.03 ]
     # set when acquire/present reports SUBOPTIMAL/OUT_OF_DATE. on SUBOPTIMAL the
     # acquire still signals the image-available semaphore; skipping the frame leaves
     # it signaled, and the next acquire on that same semaphore trips
@@ -3875,6 +3989,8 @@ Texture Display
     intern swap_needs_recreate  : bool
     intern in_callback_draw     : bool
     public backbuffer           : bool
+    public kms                  : bool   # guest display: no ide, no dma-buf share
+    mutable scan_tex            : Texture  # kms: linear exportable frame the display scans out
     # text mode: terminal character-grid output. no glfw window, no vk surface
     # or swapchain, no vk_context — the Display only hosts the element tree + layout
     # while Window.draw_console paints to a terminal (see trinity.ag).
@@ -4083,11 +4199,16 @@ Texture Display
         # gpu-side barrier, which this does not add
         batch_sync : bool [ getenv[ 'TRIN_BATCH_SYNC' ] != null ]
 
+        frame_dbg : bool [ getenv[ 'TRIN_FRAME_DBG' ] != null ]
+        dbg_n : i32 [ 0 ]
         for [ r: Render, id: string ] in element_targets
-            if [ !r || r.skip ] continue
+            if [ !r || r.skip || r == skip_target ] continue
             if [ r.owner && (r.owner.hide || r.owner.opacity <= 0.0) ] continue
+            if [ frame_dbg ] puts 'FRAME: element_target {id} draw'
             r.draw*[]
+            if [ frame_dbg ] puts 'FRAME: element_target {id} drawn'
             if [ !batch_sync ] r.sync_fence*[]
+            if [ frame_dbg ] puts 'FRAME: element_target {id} synced'
         if [ batch_sync ]
             for [ r: Render, id: string ] in element_targets
                 if [ !r || r.skip ] continue
@@ -4098,7 +4219,7 @@ Texture Display
 
         now_ms : i64 [ epoch_millis[] ]
         prof_frames += 1
-        prof_report : bool [ prof_frames % 120 == 0 ]
+        prof_report : bool [ prof_log && prof_frames % 120 == 0 ]
         if [ prof_report ] fprintf[ stderr, "frame: %d targets\n", i32[ list.count ] ]
         for [ r: Render ] in list
             hz : f32 [ r.draw_hz ]
@@ -4192,6 +4313,57 @@ Texture Display
         b.unmap[ ]
         return result
 
+    # kms guest: the display is the surface (VK_KHR_display), leased
+    # through the drm master fd devices opened
+    func create_display_surface [ drm_fd: i32, connector: u32, surf: @handle ] -> VkResult
+        # venus owns the display directly: enumerate it (nobody else holds
+        # the virtio-gpu drm master), then present through its own scanout
+        nd : u32 0
+        vkGetPhysicalDeviceDisplayPropertiesKHR[ vk.physical_device, @nd, null ]
+        puts 'display: venus reports {nd} displays'
+        expect nd > 0, "venus enumerates no display"
+        dprops : local VkDisplayPropertiesKHR [ nd ]
+        vkGetPhysicalDeviceDisplayPropertiesKHR[ vk.physical_device, @nd, dprops ]
+        disp : VkDisplayKHR [ dprops[0].display ]
+        m : u32 0
+        vkGetDisplayModePropertiesKHR[ vk.physical_device, disp, @m, null ]
+        expect m > 0, "no display mode"
+        modes : local VkDisplayModePropertiesKHR [ m ]
+        vkGetDisplayModePropertiesKHR[ vk.physical_device, disp, @m, modes ]
+        best : u32 0
+        for [ i: u32 1, i < m, i += 1 ]
+            if [ modes[i].parameters.visibleRegion.width > modes[best].parameters.visibleRegion.width ] best = i
+        ext : VkExtent2D modes[best].parameters.visibleRegion
+        pc : u32 0
+        vkGetPhysicalDeviceDisplayPlanePropertiesKHR[ vk.physical_device, @pc, null ]
+        expect pc > 0, "no display plane"
+        planes : local VkDisplayPlanePropertiesKHR [ pc ]
+        vkGetPhysicalDeviceDisplayPlanePropertiesKHR[ vk.physical_device, @pc, planes ]
+        plane : u32 0
+        for [ i: u32 0, i < pc, i += 1 ]
+            dc : u32 0
+            vkGetDisplayPlaneSupportedDisplaysKHR[ vk.physical_device, i, @dc, null ]
+            sup : local VkDisplayKHR [ dc + 1 ]
+            vkGetDisplayPlaneSupportedDisplaysKHR[ vk.physical_device, i, @dc, sup ]
+            ok : bool false
+            for [ j: u32 0, j < dc, j += 1 ]
+                if [ sup[j] == disp ] ok = true
+            if [ ok ]
+                plane = i
+                break
+        info : VkDisplaySurfaceCreateInfoKHR [
+            sType:           VK_STRUCTURE_TYPE_DISPLAY_SURFACE_CREATE_INFO_KHR,
+            displayMode:     modes[best].displayMode,
+            planeIndex:      plane,
+            planeStackIndex: planes[plane].currentStackIndex,
+            transform:       VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
+            globalAlpha:     1.0,
+            alphaMode:       VK_DISPLAY_PLANE_ALPHA_OPAQUE_BIT_KHR,
+            imageExtent:     ext ]
+        width  = i32[ ext.width ]
+        height = i32[ ext.height ]
+        return vkCreateDisplayPlaneSurfaceKHR[ vk.instance, @info, null, surf ]
+
     func init [ ]
         if [ !format ]
             format = Pixel.rgba8
@@ -4212,7 +4384,24 @@ Texture Display
             return
 
         surf : handle
-        if [ !backbuffer ]
+        # guest console (kms): a window for input + size, but NO vulkan
+        # surface. render offscreen and scan out the frame as a dma-buf.
+        if [ platform_is_kms[] && !backbuffer ]
+            kms  = true
+            # a window only as the input target; venus owns the display itself
+            glfw = platform_window_create[ width, height, title.chars, false ]
+            expect glfw, "Failed to create window"
+            Au.live_window_set[ glfw ]
+            platform_window_set_user    [ glfw, handle[ a ] ]
+            platform_set_key_callback   [ glfw, @handle_key ]
+            platform_set_mouse_callback [ glfw, @handle_mouse ]
+            platform_set_cursor_callback[ glfw, @handle_cursor ]
+            platform_set_scroll_callback[ glfw, @handle_scroll ]
+            platform_set_char_callback  [ glfw, @handle_char ]
+            kr : VkResult [ create_display_surface[ 0 - 1, 0, @surf ] ]
+            expect kr == VK_SUCCESS, "kms display surface failed"
+            Au.live_surface_set[ surf ]
+        el [ !backbuffer ]
             glfw = handle Au.live_window_get[]
             if [ !glfw ]
                 # born invisible: mapping it before the ux shaders are built
@@ -4258,11 +4447,15 @@ Texture Display
                     wci.hwnd      = native.b
                     result = vkCreateWin32SurfaceKHR[ vk.instance, @wci, null, @surf ]
                 ifdef [ linux ]
-                    xci : VkXcbSurfaceCreateInfoKHR
-                    xci.sType      = VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR
-                    xci.connection = native.a
-                    xci.window     = native.window
-                    result = vkCreateXcbSurfaceKHR[ vk.instance, @xci, null, @surf ]
+                    if [ native.kind == PLATFORM_NATIVE_KMS ]
+                        kms    = true
+                        result = create_display_surface[ native.fd, native.window, @surf ]
+                    el
+                        xci : VkXcbSurfaceCreateInfoKHR
+                        xci.sType      = VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR
+                        xci.connection = native.a
+                        xci.window     = native.window
+                        result = vkCreateXcbSurfaceKHR[ vk.instance, @xci, null, @surf ]
                 ifdef [ android ]
                     aci : VkAndroidSurfaceCreateInfoKHR
                     aci.sType  = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR
@@ -4685,6 +4878,13 @@ func get_required_extensions [ vk: vk_context ]
     result: new symbol [ count + 4 ]
     result[0] = "VK_KHR_surface"
     result[1] = platform_surface_extension[]
+    ifdef [ linux ]
+        # kms guest: the display is leased from our drm master fd
+        if [ strcmp[ result[1], "VK_KHR_display" ] == 0 ]
+            result[count] = "VK_EXT_direct_mode_display"
+            count += 1
+            result[count] = "VK_EXT_acquire_drm_display"
+            count += 1
     ifdef [ apple ]
         # portability enumeration is the loader's; ios talks to MoltenVK direct
         ifndef [ ios ]

@@ -1,0 +1,10 @@
+# colortest — one solid color: proves a display path end to end
+export 1.0.0
+
+import trinity
+
+element main : trinity
+    public width      : i32    [ 1280 ]
+    public height     : i32    [ 800 ]
+    public title      : string [ 'colortest' ]
+    public background : string [ '#ff8800' ]

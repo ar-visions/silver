@@ -404,6 +404,7 @@ ResourceView AppView
     mutable cmd        : string      # console command (streams the app's log)
     mutable dispatched : bool        # cmd handed to its console session (once per run)
     public  clean_build : bool       # '*' marker: silver-host runs --clean first
+    public  viewer      : bool       # a file handler: hosted to view, never under the debugger
     mutable doc        : path
     mutable pend_w     : i32
     mutable pend_h     : i32
@@ -792,7 +793,9 @@ ResourceView AppView
         fn  : src.filename[]
         di  : i32 [ fn.index_of[ '.' ] ]
         mod : (di > 0) ? fn.mid[ 0, di ] : fn
-        mark : string [ (clean_build) ? '!*' : '!' ]
+        # '!' asks the host to stop the app for the debugger; a viewer never does
+        dbg9 : string [ (viewer) ? '' : '!' ]
+        mark : string [ (clean_build) ? '{dbg9}*' : dbg9 ]
         # flags BEFORE the doc: Au_with_cstrs stops parsing at the first
         # positional, so a trailing flag would never reach the app's schema
         ma9 : string [ (module_args && module_args.count > 0) ? '{module_args} ' : '' ]
@@ -2189,6 +2192,8 @@ Control Editor
     intern static export_registry : map string[string]
     # ext -> the FileType its owning module exported (ascii/binary/agnostic)
     intern static export_ftype    : map string[string]
+    # ext -> the <owner>-<module> export stem, which names its lib
+    intern static export_lib      : map string[string]
     intern static bin_view_cached : string
     mutable lines         : list string
     mutable close_icon    : SVGModel
@@ -2743,24 +2748,33 @@ Control Editor
         if [ !files ] return
         for [ fi: i32 0, fi < files.count, fi += 1 ]
             ff  : fmt_file files[fi]
-            if [ !ff || !ff.source ] continue
-            key : string '{ff.source}'
-            fcm : map FileBuf [string] buffers[]
-            buf : FileBuf fcm[ key ]
-            if [ !buf ]
-                buf = FileBuf []
-                fcm[ key ] = buf
-            buf.line_regs = vec Au []
-            lns : vec Au ff.lines
-            nl  : i32 [ lns.count ]
-            for [ li: i32 0, li < nl, li += 1 ]
-                ltk  : vec fmt_token lns[ li ]
-                regs : vec ColorRegion []
-                nt   : i32 [ ltk.count ]
-                for [ ti: i32 0, ti < nt, ti += 1 ]
-                    tk : fmt_token ltk[ ti ]
-                    regs.push[ ColorRegion [ col: i32 tk.column, len: i32 tk.length, color: fmt_theme[ i32 tk.syntax ], kind: i32 tk.syntax, dsrc: tk.decl_source, dline: i32 tk.decl_line ] ]
-                buf.line_regs.push[ regs ]
+            apply_format[ ff ]
+
+    # a loaded buffer for this file; colouring never creates one, since
+    # load_text treats an existing buffer as already read
+    public func has_buffer [ p: path ] -> bool
+        fcm : map FileBuf [string] buffers[]
+        buf : FileBuf (fcm) ? fcm[ '{p.absolute[]}' ] : null
+        return (buf && buf.lines) ? true : false
+
+    # one file's map, from the .f or straight from its handler module
+    public func apply_format [ ff: fmt_file ]
+        if [ !ff || !ff.source ] return
+        key : string '{ff.source}'
+        fcm : map FileBuf [string] buffers[]
+        buf : FileBuf fcm[ key ]
+        if [ !buf ] return
+        buf.line_regs = vec Au []
+        lns : vec Au ff.lines
+        nl  : i32 [ lns.count ]
+        for [ li: i32 0, li < nl, li += 1 ]
+            ltk  : vec fmt_token lns[ li ]
+            regs : vec ColorRegion []
+            nt   : i32 [ ltk.count ]
+            for [ ti: i32 0, ti < nt, ti += 1 ]
+                tk : fmt_token ltk[ ti ]
+                regs.push[ ColorRegion [ col: i32 tk.column, len: i32 tk.length, color: fmt_theme[ i32 tk.syntax ], kind: i32 tk.syntax, dsrc: tk.decl_source, dline: i32 tk.decl_line ] ]
+            buf.line_regs.push[ regs ]
 
     func line_get [ vr: i32 ] -> string
         if [ show_hits && hits ]
@@ -3063,6 +3077,7 @@ Control Editor
         if [ export_registry ] return
         export_registry = map string[string] []
         export_ftype    = map string[string] []
+        export_lib      = map string[string] []
         root : path.path_startup[]
         if [ !root ] return
         d : path '{root}/install/export'
@@ -3071,7 +3086,9 @@ Control Editor
         for [ e: path ] in entries
             ax : e.ext[]
             if [ ax && ax == 'agi' ]
-                mod     : e.stem[]
+                # the export is named <owner>-<module>; the host and the
+                # build need the MODULE (silver-markdown.agi -> markdown)
+                mod     : module_of_export[ root, e.stem[] ]
                 ftext : string e.load[ typeid[string], null ]
                 if [ ftext ]
                     ix : ftext.index_of[ 'extensions:' ]
@@ -3088,6 +3105,7 @@ Control Editor
                                 el
                                     ex3 : ftext.mid[ q0, i - q0 ]
                                     export_registry[ ex3 ] = mod
+                                    export_lib[ ex3 ] = e.stem[]
                                     q0 = 0 - 1
                                     # optional ': FileType' the module declared
                                     j3 : i32 [ i + 1 ]
@@ -3108,12 +3126,31 @@ Control Editor
                                         if [ k3 > j3 ] export_ftype[ ex3 ] = ftext.mid[ j3, k3 - j3 ]
                             i += 1
 
+    # <owner>-<module> export stem -> the module whose source dir exists
+    # under root; owners may carry dashes, so segments drop from the left
+    func module_of_export [ root: path, stem: string ] -> string
+        nm : string [ stem ]
+        while [ nm && nm.count > 0 ]
+            src9 : path '{root}/{nm}/{nm}.ag'
+            if [ src9.exists[] ] return nm
+            dash : i32 [ nm.index_of[ '-' ] ]
+            if [ dash < 0 ] break
+            nm = nm.mid[ dash + 1, nm.count - dash - 1 ]
+        return stem
+
     # exported handler module for a file's extension, or null
     func handler_module_for [ p: path ] -> string
         ext : file_ext[ p ]
         if [ ext.count == 0 ] return null
         ensure_export_registry[]
         return export_registry[ ext ]
+
+    # the handler's lib stem (silver-markdown) for a file's extension, or null
+    func handler_lib_for [ p: path ] -> string
+        ext : file_ext[ p ]
+        if [ ext.count == 0 ] return null
+        ensure_export_registry[]
+        return export_lib[ ext ]
 
     # a named view that can render bytes, asked of the views themselves
     func binary_view_name [] -> string
@@ -3159,6 +3196,7 @@ Control Editor
         nv : AppView [ ]
         nv.src = path '{root}/{mod}/{mod}.ag'
         nv.doc = p
+        nv.viewer = true
         orb9 : cast orbiter [ ux.app_object ]
         if [ orb9 ]
             fa9 : string orb9.file_args[ p ]
@@ -3439,11 +3477,14 @@ Control Editor
         if [ mounted && mounted.compare[ key ] == 0 ] return
         mounted = key
         close_view[]
+        # a hosted handler (the markdown viewer) gives way to any other view
         if [ want.compare[ 'text' ] == 0 ]
+            close_app[]
             load_text[]
             return
         t : Au_t view_type[ want ]
         if [ t ]
+            close_app[]
             rview     = ResourceView [ Au.new_object[ t, null, null, true, __FILE__, __LINE__, __SEQUENCE__ ] ]
             rview.src = src
             animated  = rview.continuous*[]     # emulator panes redraw every frame
@@ -3664,9 +3705,14 @@ Control Editor
         if [ buf && buf.mtime == mtime ]
             lines = buf.lines
             swap_history[ buf ]   # restore this file's own undo/redo (or seed it)
+            n9 : i32 [ (lines) ? lines.count : 0 ]
+            puts 'load_text: cached {key} lines={n9}'
             return
         ftext : string src.load[ typeid[string], null ]
-        if [ !ftext ] return
+        if [ !ftext ]
+            puts 'load_text: no text for {key}'
+            return
+        puts 'load_text: read {key} bytes={ftext.count}'
         parts : ftext.split["\n"]
         new_lines : list string []
         for [ i: i32 0, i < parts.count, i += 1 ]

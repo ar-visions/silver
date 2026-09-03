@@ -431,3 +431,120 @@ element markdown : trinity
         cv.paint[]
         # the base element scrolls anything with a content height
         content_h = laid_h + pad * 2.0
+
+# ---- syntax map: orbiter asks the handler to colour a .md it edits ----
+
+func tok [ tk: vec fmt_token, col: i32, len: i32, kind: Syntax ]
+    if [ len > 0 ] tk.push[ fmt_token [ column: col, length: len, syntax: kind ] ]
+
+# the index just past the closing run of ch, or -1
+func close_run [ s: string, from: i32, ch: i32, run: i32 ] -> i32
+    n : i32 [ i32 s.count ]
+    j : i32 [ from ]
+    while [ j + run <= n ]
+        hit : bool [ true ]
+        for [ k: i32 0, k < run, k += 1 ]
+            if [ s[j + k] != ch ] hit = false
+        if [ hit ] return j + run
+        j += 1
+    return -1
+
+# a list marker's width at i: '- ', '* ', '+ ' or '12. '
+func marker_len [ s: string, i: i32 ] -> i32
+    n : i32 [ i32 s.count ]
+    if [ i + 1 < n && (s[i] == 45 || s[i] == 42 || s[i] == 43) && s[i + 1] == 32 ] return 2
+    j : i32 [ i ]
+    while [ j < n && s[j] >= 48 && s[j] <= 57 ] j += 1
+    if [ j > i && j + 1 < n && s[j] == 46 && s[j + 1] == 32 ] return j + 2 - i
+    return 0
+
+# a rule is three or more of one of - * _ and nothing else
+func is_rule [ s: string, i: i32 ] -> bool
+    n : i32 [ i32 s.count ]
+    if [ i >= n ] return false
+    c : i32 [ s[i] ]
+    if [ c != 45 && c != 42 && c != 95 ] return false
+    cnt : i32 [ 0 ]
+    for [ j: i32 i, j < n, j += 1 ]
+        if [ s[j] == c ]
+            cnt += 1
+        el [ s[j] != 32 ]
+            return false
+    return cnt >= 3
+
+# code spans, emphasis, links and tags inside one line of prose
+func inline_tokens [ s: string, from: i32, tk: vec fmt_token ]
+    n : i32 [ i32 s.count ]
+    j : i32 [ from ]
+    while [ j < n ]
+        c : i32 [ s[j] ]
+        if [ c == 96 ]
+            e : i32 [ close_run[ s, j + 1, 96, 1 ] ]
+            if [ e < 0 ] break
+            tok[ tk, j, e - j, Syntax._str ]
+            j = e
+        el [ c == 42 || c == 95 ]
+            run : i32 [ (j + 1 < n && s[j + 1] == c) ? 2 : 1 ]
+            e   : i32 [ close_run[ s, j + run, c, run ] ]
+            if [ e < 0 ]
+                j += run
+                continue
+            tok[ tk, j, e - j, (run == 2) ? Syntax._classname : Syntax._meta ]
+            j = e
+        el [ c == 91 ]
+            e : i32 [ close_run[ s, j + 1, 93, 1 ] ]
+            if [ e < 0 ]
+                j += 1
+                continue
+            tok[ tk, j, e - j, Syntax._usertoken ]
+            if [ e < n && s[e] == 40 ]
+                u : i32 [ close_run[ s, e + 1, 41, 1 ] ]
+                if [ u > 0 ]
+                    tok[ tk, e, u - e, Syntax._function ]
+                    e = u
+            j = e
+        el [ c == 60 ]
+            e : i32 [ close_run[ s, j + 1, 62, 1 ] ]
+            if [ e < 0 ]
+                j += 1
+                continue
+            tok[ tk, j, e - j, Syntax._type ]
+            j = e
+        el
+            j += 1
+
+# the same shape the .f map gives silver source: one token list per line
+func syntax [ src: path ] -> fmt_file
+    lns  : vec Au []
+    text : cast string [ src.load[ typeid[ string ], null ] ]
+    if [ text ]
+        lines   : text.split[ '\n' ]
+        in_code : bool [ false ]
+        for [ li: i32 0, li < i32[ lines.count ], li += 1 ]
+            s  : string lines[ li ]
+            n  : i32 [ i32 s.count ]
+            tk : vec fmt_token []
+            i  : i32 [ 0 ]
+            while [ i < n && s[i] == 32 ] i += 1
+            fence : bool [ i + 2 < n && s[i] == 96 && s[i + 1] == 96 && s[i + 2] == 96 ]
+            if [ fence ]
+                tok[ tk, i, n - i, Syntax._punctuation ]
+                in_code = !in_code
+            el [ in_code ]
+                tok[ tk, i, n - i, Syntax._str ]
+            el [ i < n && s[i] == 35 ]
+                j : i32 [ i ]
+                while [ j < n && s[j] == 35 ] j += 1
+                tok[ tk, i, j - i, Syntax._punctuation ]
+                tok[ tk, j, n - j, Syntax._keyword ]
+            el [ i < n && s[i] == 62 ]
+                tok[ tk, i, 1, Syntax._punctuation ]
+                tok[ tk, i + 1, n - i - 1, Syntax._comment ]
+            el [ is_rule[ s, i ] ]
+                tok[ tk, i, n - i, Syntax._punctuation ]
+            el
+                m : i32 [ marker_len[ s, i ] ]
+                tok[ tk, i, m, Syntax._punctuation ]
+                inline_tokens[ s, i + m, tk ]
+            lns.push[ tk ]
+    return fmt_file [ source: '{src}', mtime: src.modified_time[], lines: lns ]
