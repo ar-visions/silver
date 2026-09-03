@@ -44,12 +44,14 @@ typedef struct platform_window platform_window;
 #define PLATFORM_NATIVE_WIN32     2   /* a: HINSTANCE, b: HWND        */
 #define PLATFORM_NATIVE_XCB       3   /* a: xcb_connection_t*, b: u32 */
 #define PLATFORM_NATIVE_ANDROID   4   /* a: ANativeWindow*            */
+#define PLATFORM_NATIVE_KMS       5   /* fd: drm master, window: connector id */
 
 typedef struct platform_native {
     int   kind;
     void* a;
     void* b;
-    uint32_t window;   /* xcb window id */
+    uint32_t window;   /* xcb window id; kms: connector id */
+    int   fd;          /* kms: drm master fd */
 } platform_native;
 
 /* GLFW key numbering */
@@ -147,6 +149,10 @@ void  platform_window_set_fullscreen    (platform_window* w, bool on);
 bool  platform_window_fullscreen        (platform_window* w);
 void  platform_window_safe_area         (platform_window* w, int* top, int* left, int* bottom, int* right);
 void  platform_window_native            (platform_window* w, platform_native* out);
+/* kms: scan out a dma-buf fd as the display framebuffer (no-op elsewhere) */
+void  platform_window_present_dmabuf    (int fd, int width, int height, int stride, uint32_t fourcc);
+int   platform_is_kms                   (void);  /* guest console: no window system */
+int   platform_kms_scanout_buffer      (int* w, int* h, int* stride);
 void  platform_window_set_user          (platform_window* w, void* user);
 void* platform_window_get_user          (platform_window* w);
 

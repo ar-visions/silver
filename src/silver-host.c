@@ -16,6 +16,7 @@
 #include <sys/syscall.h>
 #ifdef __linux__
 #include <sys/prctl.h>
+#include <ucontext.h>
 #endif
 #include <fcntl.h>
 #endif
@@ -545,7 +546,8 @@ static int supervise_wait(int argc, char** argv, const char* appname,
             fprintf(stderr, "silver-host: app ended: signal %d (%s)\n",
                 WTERMSIG(st), strsignal(WTERMSIG(st)));
             symbolize_crash_log(appname);
-        }
+        } else
+            fprintf(stderr, "silver-host: app ended: exit %d\n", WEXITSTATUS(st));
         // the peer process is gone — the shared window went with it, so the
         // session ends. (stop in the IDE never lands here: it stops the
         // peer's WORLD in place, the process and window live on.)
@@ -616,9 +618,42 @@ static void isolate_reap(void) {
     if (WIFSIGNALED(st)) symbolize_crash_log(getenv(ISOLATE_APP_ENV));
 }
 
-static void crash_handler(int sig) {
+static void crash_handler(int sig, siginfo_t* si, void* ucv) {
     void* frames[64];
-    int   nframes = backtrace(frames, 64);
+    int   nframes = 0;
+    // the faulting pc from the context is the one address that is always
+    // right, and the unwinder below can itself fault (the guest did): say
+    // the pc FIRST, straight to stderr, then unwind
+#if defined(__linux__) && defined(__x86_64__)
+    if (ucv) {
+        void* pc = (void*)((ucontext_t*)ucv)->uc_mcontext.gregs[REG_RIP];
+        Dl_info di;
+        char    pl[256];
+        int     pn;
+        if (dladdr(pc, &di) && di.dli_fname && di.dli_fbase)
+            pn = snprintf(pl, sizeof(pl), "%s: signal %d at %s +0x%lx\n", g_app_name, sig,
+                di.dli_fname, (unsigned long)((char*)pc - (char*)di.dli_fbase));
+        else
+            pn = snprintf(pl, sizeof(pl), "%s: signal %d at 0x%lx (no module)\n", g_app_name, sig,
+                (unsigned long)pc);
+        if (pn > 0) (void)write(STDERR_FILENO, pl, (size_t)pn);
+        frames[nframes++] = pc;
+        // a call through a null pointer: the caller's return address is
+        // the top of the stack, and the unwinder cannot see past pc 0
+        if (!pc) {
+            void** sp = (void**)((ucontext_t*)ucv)->uc_mcontext.gregs[REG_RSP];
+            void*  ra = sp ? *sp : NULL;
+            if (ra && dladdr(ra, &di) && di.dli_fname && di.dli_fbase) {
+                pn = snprintf(pl, sizeof(pl), "%s: called from %s +0x%lx\n", g_app_name,
+                    di.dli_fname, (unsigned long)((char*)ra - (char*)di.dli_fbase) - 1);
+                if (pn > 0) (void)write(STDERR_FILENO, pl, (size_t)pn);
+                frames[nframes++] = ra;
+            }
+        }
+    }
+#endif
+    (void)si;
+    nframes += backtrace(frames + nframes, 64 - nframes);
     // Au keeps the last strings it freed; ask it to name them, if it is
     // in this process (the host does not link it)
     void (*notes)(void) = (void (*)(void))dlsym(RTLD_DEFAULT, "au_crash_notes");
@@ -654,6 +689,10 @@ static void crash_handler(int sig) {
                 char fl[600];
                 int  fn = snprintf(fl, sizeof(fl), "  @ %s +0x%lx\n",
                     di.dli_fname, off);
+                if (fn > 0) (void)write(lf, fl, (size_t)fn);
+            } else { // no module owns it: a jump through a bad pointer
+                char fl[64];
+                int  fn = snprintf(fl, sizeof(fl), "  @ ? 0x%lx\n", (unsigned long)frames[i]);
                 if (fn > 0) (void)write(lf, fl, (size_t)fn);
             }
         }
@@ -946,7 +985,73 @@ static int rebuild_blocking(const char* name, int clean) {
     return rebuild_status(rc, name);
 }
 
+#if defined(__linux__)
+#include <sys/mount.h>
+// orbiter-os: this host IS init. the kernel hands us a bare rootfs,
+// so mount what a process expects before anything else looks
+// init must never return: the kernel panics and its trace scrolls the
+// real message off the screen. hold the console instead
+static void init_hold(void) {
+    if (getpid() != 1) return;  // a forked helper exiting is not init
+    fflush(stdout);              // exit flushes AFTER atexit: do it now
+    fflush(stderr);
+    fprintf(stderr, "init: orbiter exited; holding the console\n");
+    // the screen: the app's drm lease closed with it, so the text console
+    // has the display again. show the tail of the app log there
+    int tty = open("/dev/tty0", O_WRONLY);
+    char lp[256];
+    snprintf(lp, sizeof(lp), "%s/%s.log", temp_dir(), g_app_name);
+    int lf = open(lp, O_RDONLY);
+    fprintf(stderr, "init: app log %s %s\n", lp, lf >= 0 ? "" : "MISSING");
+    if (lf >= 0) {
+        off_t end = lseek(lf, 0, SEEK_END);
+        lseek(lf, end > 6000 ? end - 6000 : 0, SEEK_SET);
+        char buf[4096];
+        ssize_t n;
+        while ((n = read(lf, buf, sizeof(buf))) > 0) {
+            if (tty >= 0) (void)write(tty, buf, (size_t)n);
+            (void)write(STDERR_FILENO, buf, (size_t)n);   // serial too
+        }
+        close(lf);
+    }
+    if (tty >= 0) {
+        const char* m = "\ninit: orbiter exited; holding the console\n";
+        (void)write(tty, m, strlen(m));
+        close(tty);
+    }
+    for (;;) pause();
+}
+static void init_mount(const char* fs, const char* at) {
+    int rc = mount(fs, at, fs, 0, NULL);
+    fprintf(stderr, "init: mount %s %s%s\n", fs, at, rc ? " FAILED" : "");
+}
+static void init_as_pid1(void) {
+    if (getpid() != 1) return;
+    fprintf(stderr, "init: orbiter launcher is pid 1\n");
+    init_mount("devtmpfs", "/dev");
+    init_mount("proc",     "/proc");
+    init_mount("sysfs",    "/sys");
+    init_mount("tmpfs",    "/tmp");
+    init_mount("tmpfs",    "/run");
+    setenv("HOME", "/root", 1);  // the kernel hands init HOME=/
+    setenv("XDG_RUNTIME_DIR", "/run", 1);
+    setenv("PATH", "/src/silver/install/bin:/usr/bin:/bin", 1);
+    fprintf(stderr, "init: env HOME=%s LD_LIBRARY_PATH=%s\n",
+        getenv("HOME"), getenv("LD_LIBRARY_PATH") ? getenv("LD_LIBRARY_PATH") : "(unset)");
+    atexit(init_hold);
+    // a heartbeat on the serial console: tells a stalled guest from a
+    // stalled app when the log goes quiet
+    if (fork() == 0) {
+        for (int t = 5;; t += 5) { sleep(5); fprintf(stderr, "init: alive %ds\n", t); }
+    }
+    fprintf(stderr, "init: loading the app\n");
+}
+#else
+static void init_as_pid1(void) {}
+#endif
+
 int main(int argc, char** argv) {
+    init_as_pid1();
 #ifdef _WIN32
     // the module we dlopen pulls vulkan-1, opencv, OpenEXR, libpng ... and they
     // live in install/bin. windows has no rpath, so the loader finds them only
@@ -996,6 +1101,7 @@ int main(int argc, char** argv) {
     strncpy(self2, abspath, sizeof(self2) - 1); self2[sizeof(self2) - 1] = '\0';
     char* name         = basename(self);
     const char* bindir = dirname(self2);
+    g_app_name = name;   // the crash handler and init's log dump name files by it
 #ifdef _WIN32
     // argv[0] carries .exe here; the module and its product are named without it
     { char* dot = strrchr(name, '.');
@@ -1062,8 +1168,8 @@ int main(int argc, char** argv) {
         struct sigaction  sa;
         sigaltstack(&ss, NULL);
         memset(&sa, 0, sizeof(sa));
-        sa.sa_handler = crash_handler;
-        sa.sa_flags   = SA_ONSTACK;
+        sa.sa_sigaction = crash_handler;
+        sa.sa_flags     = SA_ONSTACK | SA_SIGINFO;
         sigaction(SIGSEGV, &sa, NULL);
         sigaction(SIGABRT, &sa, NULL);
         sigaction(SIGBUS,  &sa, NULL);

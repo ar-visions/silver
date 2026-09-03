@@ -2,3 +2,14 @@ extend random
 
 func rng_extension_value [] -> i32
     return 42
+
+# the extension is compiled into random: its intern state is in reach
+func rng_extension_intern [] -> i32
+    return rng_state.test1
+
+# an extension can add a class to the module it extends
+class Dice
+    public sides : i32
+
+    func roll [] -> i32
+        return 1 + i32[ rng_range[ u64[ sides ] ] ]

@@ -11222,7 +11222,21 @@ AU_EXPORT string aether_core_objects(aether a, path obj_path) {
 }
 
 // each core's module emits its own object; core 0 keeps obj_path
-typedef struct { LLVMTargetMachineRef tm; LLVMModuleRef m; char* path; bool ok; bool asan; } emit_job;
+typedef struct { LLVMTargetMachineRef tm; LLVMModuleRef m; char* path; bool ok; bool asan; bool optimize; } emit_job;
+
+// -O2: the module's own switch (off under --debug), run before codegen
+static bool optimize_module(LLVMModuleRef m, LLVMTargetMachineRef tm) {
+    LLVMPassBuilderOptionsRef o = LLVMCreatePassBuilderOptions();
+    LLVMErrorRef e = LLVMRunPasses(m, "default<O2>", tm, o);
+    LLVMDisposePassBuilderOptions(o);
+    if (e) {
+        char* msg = LLVMGetErrorMessage(e);
+        fprintf(stderr, "O2 pass failed: %s\n", msg);
+        LLVMDisposeErrorMessage(msg);
+        return false;
+    }
+    return true;
+}
 
 // --asan: every defined function opts in, then the asan pass instruments
 // the module in place (the old external clang step used to do this)
@@ -11248,6 +11262,7 @@ static void* emit_job_run(void* arg) {
     emit_job* j = (emit_job*)arg;
     char* err = NULL;
     if (j->asan && !asan_instrument(j->m, j->tm)) { j->ok = false; return null; }
+    if (j->optimize && !optimize_module(j->m, j->tm)) { j->ok = false; return null; }
     j->ok = !LLVMTargetMachineEmitToFile(j->tm, j->m, j->path, LLVMObjectFile, &err);
     if (!j->ok && err) {
         fprintf(stderr, "emit .o failed: %s\n", err);
@@ -11283,6 +11298,7 @@ AU_EXPORT bool aether_emit_object(aether a, path obj_path) {
         jobs[n].path = (char*)cstring(hold(p));
         jobs[n].ok   = false;
         jobs[n].asan = a->asan;
+        jobs[n].optimize = !a->debug;
         n++;
     }
     for (int i = 1; i < n; i++)

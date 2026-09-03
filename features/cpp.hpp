@@ -103,3 +103,12 @@ struct point2 {
 }
 
 }
+
+// macros silver reaches: a function-like one is wrapped per call, a string one is read from the import unit
+#define twice(x) ((x) * 2)
+#define MACRO_NAME "macro"
+
+// a macro that names a type reads as that type; expression macros expand as tokens
+#define cpp_int int
+#define cpp_intp int*
+#define cpp_max(a, b) ((a) > (b) ? (a) : (b))

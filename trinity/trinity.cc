@@ -499,6 +499,7 @@ extern char** environ;   // macOS declares it nowhere public
 static int  g_log_real = -1;
 static int  g_log_file = -1;
 static int  g_log_done = 0;
+static int  g_log_pipe = -1;
 
 static void* host_log_thread(void* a) {
     int rd = (int)(long)a;
@@ -509,6 +510,23 @@ static void* host_log_thread(void* a) {
         if (g_log_file >= 0) { ssize_t w = write(g_log_file, buf, n); (void)w; }
     }
     return 0;
+}
+
+// exit() ends the tee thread with whatever is still in the pipe: an expect
+// or fault message written moments before. drain it ourselves on the way out
+static void host_log_drain(void) {
+    if (g_log_pipe < 0) return;
+#ifndef _WIN32
+    fflush(stdout);
+    fflush(stderr);
+    fcntl(g_log_pipe, F_SETFL, fcntl(g_log_pipe, F_GETFL) | O_NONBLOCK);
+    char buf[8192];
+    ssize_t n;
+    while ((n = read(g_log_pipe, buf, sizeof(buf))) > 0) {
+        if (g_log_real >= 0) { ssize_t w = write(g_log_real, buf, n); (void)w; }
+        if (g_log_file >= 0) { ssize_t w = write(g_log_file, buf, n); (void)w; }
+    }
+#endif
 }
 
 HOST_API void host_log_setup(const char* name) {
@@ -595,6 +613,8 @@ HOST_API void host_log_setup(const char* name) {
     pthread_t t;
     pthread_create(&t, 0, host_log_thread, (void*)(long)pf[0]);
     pthread_detach(t);
+    g_log_pipe = pf[0];
+    atexit(host_log_drain);
 }
 
 // glsl -> spir-v in process: ios cannot exec glslangValidator, and no

@@ -328,8 +328,8 @@ abstract live_app media_app
                 return !Au.quit_requested[]
             if [ attach ]
                 render*[]
-                share_publish[ 0 ]
-                instr_publish[]
+                if [ !w.kms ] share_publish[ 0 ]
+                if [ !w.kms ] instr_publish[]
                 alive : bool [ attach_pump[] ]
                 # hosted apps return before the main loop's pump, so the
                 # agent socket would never open for the ones we host
@@ -373,8 +373,10 @@ abstract live_app media_app
         ifdef [ linux ]
             win : Window [ w ]
             child : bool [ getenv[ 'SILVER_ISOLATE_CHILD' ] != null ]
-            if [ (win.ide_asked || child) && !win.ide_active ] share_publish[ 0 ]
-            instr_publish[]
+            # the guest display has no ide consumer, and venus faults on the
+            # dma-buf export the share path uses — never share on kms
+            if [ !w.kms && (win.ide_asked || child) && !win.ide_active ] share_publish[ 0 ]
+            if [ !w.kms ] instr_publish[]
         # TRIN_SHOT=<name>: capture without the arg parser, for a sandboxed
         # device where flags cannot reach the app
         if [ !screenshot ]
@@ -406,6 +408,7 @@ abstract live_app media_app
     ifdef [ linux ]
         func share_publish [ side: i32 ]
             if [ getenv[ 'SILVER_HEADLESS' ] ] return
+            if [ w.kms ] return
             wn : Window [ w ]
             scv : Canvas [ wn.screen ]
             if [ !scv ] return
@@ -1140,6 +1143,8 @@ Display Window
     # a backdrop element publishes its render target here; the blur/frost
     # chain builds off it the first frame it appears
     public backdrop              : Render
+    # the flat background the solid stage paints instead of the scene
+    public solid_color           : rgba [ '#101014' ]
     # every compositor pass. the DRAW list is derived from this: the full
     # chain only when an element actually declares frost, else r_view alone
     mutable chain                : vec Render
@@ -2539,14 +2544,17 @@ Display Window
     # so they are one in name too: clear.
     # r_reduce is NOT a reduction -- it is wscale 1.0 off the backdrop,
     # a full-res pass-through. it only heads the chain that reduces
+    # stage 3, solid: the scene is not rendered at all; the background
+    # shader paints solid_color, the theme's flat background
     public func frost_name [ ] -> string
         e : i32 [ frost_eff[] ]
         if [ e == 1 ] return 'blur'
         if [ e == 2 ] return 'clear'
+        if [ e == 3 ] return 'solid'
         return 'frost'
 
     public func frost_step [ d: i32 ]
-        frost_mode = (frost_eff[] + d + 3) % 3
+        frost_mode = (frost_eff[] + d + 4) % 4
 
     func frost_src [ ] -> Render
         e : i32 [ frost_eff[] ]
@@ -2753,6 +2761,13 @@ Display Window
 
     func update [ ]
         bind_backdrop[]
+        # solid stage: the backdrop target is not rendered this frame and
+        # the background shader paints solid_color instead of sampling
+        sol9 : bool [ frost_eff[] == 3 ]
+        skip_target = (sol9) ? backdrop : null
+        if [ m_view ]
+            uxs9 : UXBackground [ m_view.s ]
+            if [ uxs9 ] uxs9.solid_color = (sol9) ? vec4f [ solid_color.r, solid_color.g, solid_color.b, 1.0 ] : vec4f [ 0.0, 0.0, 0.0, 0.0 ]
         if [ !glyph ]
             glyph = Canvas [ w:a, vk: vk, format: Pixel.u8, :width, :height ]
             glyph.hold[]
@@ -5348,6 +5363,8 @@ ModelViewProject UXBackground
     mutable reveal       : f32
     mutable _dpad1       : f32
     mutable _dpad2       : f32
+    # a > 0: paint this and sample nothing (the solid stage)
+    mutable solid_color  : vec4f
 
     attrib background     : LayoutBinding [ type:typeid[ UXSurface ], id:UXSurface.background,     count:1, format: typeid[ rgba8 ] ]
     attrib frost          : LayoutBinding [ type:typeid[ UXSurface ], id:UXSurface.frost,          count:1, format: typeid[ rgba8 ] ]
@@ -5388,6 +5405,10 @@ ModelViewProject UXBackground
 
     # 44
     func fragment [] -> GLSL none {
+        if (ubo.solid_color.a > 0.0) {
+            fragColor = vec4(ubo.solid_color.rgb, 1.0);
+            return;
+        }
         vec4  comp     = texture(compose,        v_uv);
         float luminance = 1.0 - ((comp.b - 0.5020) * 2.0);
         // a backdrop element may ask to keep more of its own light

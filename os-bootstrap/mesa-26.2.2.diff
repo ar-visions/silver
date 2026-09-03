@@ -1,0 +1,42 @@
+diff --git a/src/virtio/vulkan/vn_wsi.c b/src/virtio/vulkan/vn_wsi.c
+index e73ab48c2fe..4a3b45fe604 100644
+--- a/src/virtio/vulkan/vn_wsi.c
++++ b/src/virtio/vulkan/vn_wsi.c
+@@ -10,6 +10,11 @@
+ 
+ #include "vn_wsi.h"
+ 
++/* orbiter-os: venus normally has no KMS display; open the virtio primary
++ * node so VK_KHR_display can drive a bare guest console. */
++#include <fcntl.h>
++#include <unistd.h>
++
+ #include "vk_enum_to_str.h"
+ #include "wsi_common_entrypoints.h"
+ 
+@@ -176,9 +181,15 @@ vn_wsi_init(struct vn_physical_device *physical_dev)
+ 
+    const VkAllocationCallbacks *alloc =
+       &physical_dev->instance->base.vk.alloc;
++
++   /* orbiter-os: a display fd lets wsi_display enumerate the virtio-gpu
++    * connector, so a bare guest (no compositor) can present via
++    * VK_KHR_display. -1 (upstream) leaves the display WSI inert. */
++   int display_fd = open("/dev/dri/card0", O_RDWR | O_CLOEXEC);
++
+    VkResult result = wsi_device_init(
+       &physical_dev->wsi_device, vn_physical_device_to_handle(physical_dev),
+-      vn_wsi_proc_addr, alloc, -1, &physical_dev->instance->drirc.options,
++      vn_wsi_proc_addr, alloc, display_fd, &physical_dev->instance->drirc.options,
+       &(struct wsi_device_options){
+          .sw_device = use_sw_device,
+          .extra_xwayland_image = true,
+@@ -186,7 +197,7 @@ vn_wsi_init(struct vn_physical_device *physical_dev)
+    if (result != VK_SUCCESS)
+       return result;
+ 
+-   physical_dev->wsi_device.supports_scanout = false;
++   physical_dev->wsi_device.supports_scanout = true;
+    physical_dev->wsi_device.supports_modifiers =
+       physical_dev->base.vk.supported_extensions.EXT_image_drm_format_modifier;
+    physical_dev->base.vk.wsi_device = &physical_dev->wsi_device;

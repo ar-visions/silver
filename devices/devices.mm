@@ -58,6 +58,9 @@ static double g_t0 = 0;
 double platform_time(void) { return CACurrentMediaTime() - g_t0; }
 
 const char* platform_surface_extension(void) { return "VK_EXT_metal_surface"; }
+int platform_is_kms(void) { return 0; }
+int platform_kms_scanout_buffer(int* w, int* h, int* stride) { return -1; }
+void platform_window_present_dmabuf(int fd, int w, int h, int stride, uint32_t fourcc) {}
 
 static void key_event(platform_window* w, int key, int scan, int action, int mods) {
     if (key < 0 || key > PLATFORM_KEY_LAST) key = 0;
