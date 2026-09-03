@@ -1,0 +1,44 @@
+import <stdio.h>
+
+struct v2
+    x: f32
+    y: f32
+
+    func dot [ b: v2 ] -> f32
+        return x * b.x + y * b.y
+
+class Counter
+    public  count  : i64
+    intern  hidden : i64
+    mutable label  : string
+    static  made   : i64
+
+    func init []
+        hidden = 7
+
+    func inc []
+        count += 1
+
+    public func value [] -> i64
+        return count
+
+    cast -> string [ 'count-{count}' ]
+    operator +  [ n: i64 ] -> i64 [ count + n ]
+
+Counter Doubler
+    func inc []
+        super.inc[]
+        count += 1
+
+class Named
+    expect  name  : string
+    mutable score : i64
+    intern  hits  : i64
+
+    func bump_hits [] -> i64
+        hits += 1
+        return hits
+
+    construct [ n: i64 ]
+        name = 'n-{n}'
+        score = n

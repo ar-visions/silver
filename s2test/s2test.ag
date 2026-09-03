@@ -1,0 +1,184 @@
+import <stdio.h>
+import <s2macros.hpp>
+import madler:zlib/51b7f2a <zlib.h>
+    -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+    -lz
+import troglobit:libuev/v2.4.1 <uev/uev.h>   # autotools: configure and make, in the checkout
+    --disable-examples
+    -luev
+import fribidi:fribidi/v1.0.16 <fribidi.h>   # meson; its .pc file supplies the include path
+    -Ddocs=false
+    -Dtests=false
+    -lfribidi
+import vec
+
+class Counter
+    public count : i64
+
+    func inc []
+        count += 1
+
+expect func t_c_typedef_file [] -> bool
+    fp: @FILE [ fopen[ '/tmp/features-file.bin', 'wb' ] ]   # FILE is a C typedef; a record from C has no Au header
+    n:  i32 [ 42 ]
+    fwrite[ @n, 4, 1, fp ]
+    fclose[ fp ]
+    fp2: @FILE [ fopen[ '/tmp/features-file.bin', 'rb' ] ]
+    m: i32
+    r: i64 [ fread[ @m, 4, 1, fp2 ] ]
+    fclose[ fp2 ]
+    return r == 1 && m == 42
+
+expect func t_bare_method_call [] -> bool
+    c: Counter [ count: 1 ]
+    c.inc                           # no brackets: a method without arguments is called
+    c.inc
+    return c.count == 3
+
+expect func t_vec_module [] -> bool
+    a: vec2f [ 1.0, 2.0 ]           # an Au struct: fields from its record, returned by value in the C ABI
+    b: vec2f [ 3.0, 4.0 ]
+    c: vec2f [ a.add[ b ] ]         # a struct method from the record; the result comes back by value
+    return c.x == 4.0 && c.y == 6.0 && a.dot[ b ] == 11.0
+
+expect func t_switch_string [] -> bool
+    s: string [ 'two' ]
+    r: i32 [ 0 ]
+    switch [ s ]                    # a non-primitive subject compares case by case
+        case 'one'
+            r = 1
+        case 'two', 'three'
+            r = 2
+        default
+            r = 3
+    return r == 2
+
+class Box
+    public w : i32
+    public h : i32
+    intern static on_make : hook    # Au (*)(Au)
+    intern static made    : i32
+
+    static func bump []             # a static func sees the statics only
+        made += 1
+
+    func init []
+        bump[]
+
+    func count [] -> i32
+        return made
+
+    func refs [] -> i32
+        info : header[ a ]          # the Au header behind self; a names self
+        return info.refs
+
+    func checked [] -> bool
+        caught : bool [ false ]
+        try
+            check w > 100, 'small' # Au's check raises when false
+        catch [ message: string ]
+            caught = message == 'small'
+        return caught
+
+class Filled                        # init has no body here: s2test.cc defines Filled_init
+    public n : i32
+    func init []
+
+func accumulate [ acc: @i32, x: i32, y: i32 ]
+    acc[ 0 ] = acc[ 0 ] + x + y
+
+expect func t_prop_block [] -> bool
+    w : i32 [ 3 ]
+    h : i32 [ 4 ]
+    b : Box                         # a prop block: name: value with commas, :name shorthand
+        w: w,
+        :h
+    return b.w == 3 && b.h == 4
+
+expect func t_arg_block [] -> bool
+    acc : local i32 [ 1 ]
+    acc[ 0 ] = 0
+    accumulate                      # arguments as an indented block
+        @acc[ 0 ], 1,
+        2
+    return acc[ 0 ] == 3
+
+expect func t_sizeof_bare [] -> bool
+    return sizeof i32 == 4 && sizeof [ i64 ] == 8
+
+expect func t_check [] -> bool
+    b : Box [ w: 1 ]
+    return b.checked[]
+
+expect func t_self_a_header [] -> bool
+    b : Box [ w: 1 ]
+    b.hold[]
+    return b.refs[] >= 1 && b.count[] >= 1
+
+expect func t_au_root_method [] -> bool
+    b : Box [ w: 2, h: 5 ]
+    c : Box [ b.copy[] ]            # Au's own copy, reached through any class
+    return c.w == 2 && c.h == 5
+
+expect func t_companion_method [] -> bool
+    f : Filled [ ]
+    return f.n == 7
+
+expect func t_c_macros [] -> bool
+    return twice[ 21 ] == 42 && string [ MACRO_NAME ] == 'macro'
+
+expect func t_cstr_literal_eq [] -> bool
+    s : string [ 'png' ]
+    return s == "png" && s != "jpg"
+
+expect func t_git_import [] -> bool
+    v : string [ zlibVersion[] ]
+    return v.count > 0
+
+expect func t_au_types [] -> bool
+    n : sz [ 3 ]
+    return n + 4 == 7
+
+expect func t_autotools_import [] -> bool
+    ctx : uev_ctx_t [ ]
+    rc  : uev_init[ ctx ]
+    uev_exit[ ctx ]
+    return rc == 0
+
+expect func t_meson_import [] -> bool
+    return fribidi_get_bidi_type[ 1488 ] == FRIBIDI_TYPE_RTL   # alef reads right to left
+
+expect func t_type_macros [] -> bool
+    n : cpp_int [ 5 ]               # a C macro naming a type reads as that type
+    p : cpp_intp [ @n ]
+    return p[ 0 ] == 5 && sizeof cpp_int == 4 && cpp_max[ 3, 9 ] == 9
+
+app s2test
+    func init []
+        puts 's2test'
+
+class AsyncJob
+    public x   : i64
+    public out : i64
+
+class AsyncHost
+    public tag : i64
+
+# an inline lambda works too — captures ride its context, and a
+# captured OBJECT's members read through it on the worker thread
+expect func t_async_inline [] -> bool
+    base : i64 [ 7 ]
+    h : AsyncHost [ tag: 1000 ]
+    j1 : AsyncJob [ x: 3 ]
+    j2 : AsyncJob [ x: 5 ]
+    w : vec Au []
+    w.push[ j1 ]
+    w.push[ j2 ]
+    f : lambda [ arg: object ]
+        j : AsyncJob [ arg ]
+        j.out = j.x * 10 + base + h.tag
+    t : async [ work_fn: f, work: w ]
+    t.sync[ null ]
+    expect j1.out == 1037, 'j1.out = {j1.out}'
+    expect j2.out == 1057, 'j2.out = {j2.out}'
+    return true

@@ -1,0 +1,6 @@
+Layer root_bg [ ]
+    fill_color: #ff8800
+
+element.root {
+    layers.root_bg [ ]
+}

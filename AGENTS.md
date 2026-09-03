@@ -69,6 +69,37 @@ interacting with apps.
 
 ---
 
+## orbiter-os — live list (Sep 3 2026)
+
+Goal: orbiter-os (Linux + orbiter as init) running inside the `qemu`
+element in a trinity window. Decisions: Venus virtio-gpu for guest
+Vulkan; kernel + initramfs first, the `.img` installer after.
+
+1. DONE `qemu/qemu.ag` element: boots a raw .img over VNC (verified).
+2. DONE silver imports: `from <url>` repos, configure-before-meson,
+   `>` lines replace make, self-import guards.
+3. DONE qemu built with virglrenderer (venus) via import.
+4. DONE Linux 6.18 kernel via URL import in os-bootstrap.
+5. DONE devices KMS mode: evdev input, DRM master, VK_KHR_display.
+6. DONE trinity create_display_surface (acquire_drm_display).
+7. DONE os-bootstrap: newc cpio (orbiter/app + ldd closure + Mesa
+   venus + share); silver-host is PID 1 init (mounts, log dump).
+8. DONE qemu element gpu/venus/serial; child dies with element.
+VERIFIED so far: guest boots, venus loads, VK_KHR_display acquires
+connector 38 at 1280x800 (orbiter-os/serial.log).
+VENUS DISPLAY FIXED (Sep 3 late): built Mesa 26.2.2 from source and
+patched vn_wsi.c (os-bootstrap/mesa-26.2.2.diff) — pass /dev/dri/card0
+as the display fd + supports_scanout=true. Guest venus now enumerates
+the display and presents via VK_KHR_display continuously (40s, no
+errors). See memory [[orbiter-os-qemu]].
+NEXT: the scanout is a GPU blob — software VNC/screendump can't read
+it. Replace the qemu element's RFB/VNC with qemu D-Bus display
+(ScanoutDMABUF) and import the dma-buf into a trinity Texture. That is
+the dma transport; it completes guest venus → scanout → element.
+Test hidden only: `silver os-bootstrap --hidden --app colortest`.
+
+---
+
 silver is a native build language with an LLVM backend. It compiles `.ag` source files into native binaries via LLVM IR. The compiler itself is written in C, built on the **Au** object system.
 
 ## Build & Run

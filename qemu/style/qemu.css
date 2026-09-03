@@ -1,0 +1,10 @@
+Layer root_bg [ ]
+    fill_color: #000
+
+element.root {
+    layers.root_bg [ ]
+}
+
+qemu {
+    area: l0 t0 r0 b0
+}

@@ -1,0 +1,13 @@
+import <stdio.h>
+import imod
+
+expect func t_imod [] -> bool
+    c: Counter [ count: 5 ]
+    c.inc
+    c.inc
+    n: Named [ 3 ]
+    return c.value[] == 7 && string [ c ] == 'count-7' && n.score == 3 && n.name == 'n-3' && (c + 1) == 8
+
+app itest
+    func init []
+        puts 'itest'

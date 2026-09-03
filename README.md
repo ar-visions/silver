@@ -9,7 +9,7 @@ information, on Linux, macOS, and Windows.
 ```
 import KhronosGroup:Vulkan-Headers/29184b9
 import glfw:glfw/fdd14e6 <GLFW/glfw3.h>
-    +GLFW_INCLUDE_VULKAN
+    +GLFW_INCLUDE_VULKAN2
 ```
 
 An import clones the repository at that commit, detects its build system,
@@ -27,6 +27,13 @@ class greeter
 g : greeter [ name: 'world' ]
 g.hello
 ```
+
+
+```silver
+a:1
+```
+
+test
 
 Objects run on **Au**, a C runtime: reference counting, reflection, single
 inheritance. C, C++, and silver use the same object model. A method declared

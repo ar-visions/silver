@@ -49,6 +49,8 @@ hires
 *.seq
 *.pt
 *.gen
+*.cpio
+packages/*
 europa
 /models
 /shaders
@@ -67,4 +69,13 @@ hyperspace/share/textures/head/*.png
 .gitignore
 ref
 pluto-tiles
-packages
+packages# orbiter-os build output: 1GB initramfs + serial log (never commit)
+orbiter-os/
+# silver build caches
+*/.silver2/
+.silver2/
+# autotools-generated (from dependency builds)
+config.guess
+config.sub
+ltmain.sh
+install-sh

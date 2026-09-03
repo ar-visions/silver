@@ -5,3 +5,7 @@ func ext_triple [ n: i32 ] -> i32
 
 func ext_name [] -> string
     return 'from-More'
+
+# an extension shares the module's interns: c_add is an intern func of features
+func ext_adds [] -> i32
+    return c_add[ 20, 22 ]

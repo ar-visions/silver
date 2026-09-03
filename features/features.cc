@@ -1,6 +1,10 @@
 // C++ companion: bodies for the intern funcs declared in features.ag.
 // extern "C" is required — silver links by the plain symbol name
 #include <vector>
+#include <import>
+
+// a class method declared without a body in features.ag: its body is here
+extern "C" none Filled_init(Filled a) { a->n = 7; }
 
 extern "C" int cc_mul(int a, int b) {
     return a * b;

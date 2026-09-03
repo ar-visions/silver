@@ -1,0 +1,269 @@
+# os-bootstrap — assembles orbiter-os (linux + orbiter as init) and boots it in a qemu element
+export 1.0.0
+
+import https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.tar.xz
+    > test -f {install}/share/silver-os-bootstrap/bzImage || mkdir -p {install}/build/linux
+    > test -f {install}/share/silver-os-bootstrap/bzImage || tar xf {import_file} -C {install}/build/linux --strip-components=1
+    > test -f {install}/share/silver-os-bootstrap/bzImage || make -C {install}/build/linux -j16 defconfig
+    > test -f {install}/share/silver-os-bootstrap/bzImage || {install}/build/linux/scripts/config --file {install}/build/linux/.config -e VIRTIO_PCI -e VIRTIO_BLK -e VIRTIO_INPUT -e VIRTIO_CONSOLE -e HW_RANDOM_VIRTIO -e DRM -e DRM_VIRTIO_GPU -e DRM_FBDEV_EMULATION -e INPUT_EVDEV -e DEVTMPFS -e DEVTMPFS_MOUNT -e BLK_DEV_INITRD -e TMPFS -e KVM_GUEST -e PARAVIRT -e VIRTIO_NET -e NET_9P -e NET_9P_VIRTIO -e 9P_FS
+    > test -f {install}/share/silver-os-bootstrap/bzImage || make -C {install}/build/linux -j16 olddefconfig
+    > test -f {install}/share/silver-os-bootstrap/bzImage || make -C {install}/build/linux -j16 bzImage
+    > mkdir -p {install}/share/silver-os-bootstrap
+    > cp -n {install}/build/linux/arch/x86/boot/bzImage {install}/share/silver-os-bootstrap/bzImage
+
+# the guest's venus vulkan driver, built newer than the host's system
+# mesa: the system libvulkan_virtio.so crashes on dma-buf export
+import mesa/mesa-26.2.2 from https://gitlab.freedesktop.org/mesa/mesa
+    PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:{install}/lib/pkgconfig
+    PYTHONPATH={install}/pylib
+    PATH={install}/pylib/bin:{install}/bin:/usr/bin:/bin
+    > {install}/bin/python3 -m pip install --quiet --target {install}/pylib mako pyyaml meson
+    -Dvulkan-drivers=virtio
+    -Dgallium-drivers=
+    -Dplatforms=
+    -Dglx=disabled
+    -Degl=disabled
+    -Dgbm=disabled
+    -Dllvm=disabled
+    -Dvideo-codecs=
+
+import trinity
+import qemu
+import <stdio.h>
+import <stdlib.h>
+import <string.h>
+import <unistd.h>
+import <time.h>
+import <sys/stat.h>
+
+# one entry of the guest file system
+class OsFile
+    public src  : string       # host file to copy; empty for dir, link, device
+    public dst  : string       # guest path, no leading slash
+    public link : string       # symlink target
+    public dir  : bool
+    public dev  : bool         # the console character device
+
+element main : trinity
+    public  width      : i32    [ 1280 ]
+    public  height     : i32    [ 800 ]
+    public  title      : string [ 'orbiter-os' ]
+    public  background : string [ 'Background' ]
+    public  memory     : i32    [ 4096 ]
+    public  app        : string [ 'orbiter' ]          # the guest's init
+    public  share_max  : i64    [ 32 * 1024 * 1024 ]   # skip share dirs larger than this
+    mutable install    : path
+    mutable root       : path
+    mutable out_dir    : path
+    mutable kernel     : path
+    mutable initrd     : path
+    mutable serial     : path
+    mutable files      : vec OsFile
+    mutable seen       : map bool [ string ]
+
+    func init []
+        install = path.path_install[].normalize[]
+        root    = path.path_startup[]
+        out_dir = path '{root}/orbiter-os'
+        out_dir.make_dir[]
+        kernel  = path '{install}/share/silver-os-bootstrap/bzImage'
+        initrd  = path '{out_dir}/initramfs.cpio'
+        serial  = path '{out_dir}/serial.log'
+        assemble[]
+
+    # guest path of a host path: same absolute path, no leading slash
+    func guest [ p: string ] -> string
+        if [ p.starts_with[ '/' ] ] return p.mid[ 1, i32[ p.count ] - 1 ]
+        return p
+
+    func add_dir [ dst: string ]
+        if [ dst.count == 0 || seen.contains[ dst ] ] return
+        seen[ dst ] = true
+        n : i64 [ dst.rindex_of[ '/' ] ]
+        if [ n > 0 ] add_dir[ dst.mid[ 0, i32[ n ] ] ]
+        files.push[ OsFile [ dst: dst, dir: true ] ]
+
+    func file_size [ src: string ] -> i64
+        f : handle fopen[ src.chars, 'rb' ]
+        if [ !f ] return 0
+        fseek[ f, 0, SEEK_END ]
+        n : i64 [ ftell[ f ] ]
+        fclose[ f ]
+        return n
+
+    func add_file [ src: string ]
+        dst : guest[ src ]
+        if [ seen.contains[ dst ] ] return
+        p : path [ src ]
+        if [ !p.exists[] && !p.is_symlink[] ] return
+        if [ !p.is_symlink[] && p.is_dir[] ]
+            add_dir[ dst ]           # the directory entry itself, then its files
+            add_tree[ src ]
+            return
+        seen[ dst ] = true
+        n : i64 [ dst.rindex_of[ '/' ] ]
+        if [ n > 0 ] add_dir[ dst.mid[ 0, i32[ n ] ] ]
+        if [ p.is_symlink[] ]
+            buf : local i8 [ 4096 ]
+            len : i64 [ readlink[ src.chars, @buf[0], 4095 ] ]
+            if [ len <= 0 ] return
+            buf[len] = 0
+            target : string [ @buf[0] ]
+            files.push[ OsFile [ dst: dst, link: target ] ]
+            # a linked file must exist in the guest too; a linked
+            # directory (install) is walked by what is asked for
+            sp : p.parent_dir[]
+            full : (target.starts_with[ '/' ]) ? target : '{sp}/{target}'
+            tp : path [ full ]
+            if [ !tp.is_dir[] ] add_file[ full ]
+        el
+            files.push[ OsFile [ src: src, dst: dst ] ]
+
+    func add_tree [ src: string ]
+        d : path [ src ]
+        entries : d.ls[ null, false ]
+        if [ !entries ] return
+        for [ e: path ] in entries
+            add_file[ '{e}' ]
+
+    # every shared library the loader will pull for this binary
+    func add_deps [ bin: string ]
+        cmd : 'ldd "{bin}"'
+        fp : handle popen[ cmd.chars, 'r' ]
+        if [ !fp ] return
+        line : local i8 [ 4096 ]
+        while [ fgets[ @line[0], 4096, fp ] ]
+            s : string [ @line[0] ]
+            s = s.trim[]
+            at : i64 [ s.index_of[ '=> ' ] ]
+            if [ at >= 0 ] s = s.mid[ i32[ at ] + 3, i32[ s.count ] - i32[ at ] - 3 ]
+            sp : i64 [ s.index_of[ ' ' ] ]
+            if [ sp > 0 ] s = s.mid[ 0, i32[ sp ] ]
+            if [ s.starts_with[ '/' ] ] add_file[ s ]
+        pclose[ fp ]
+
+    func tree_size [ src: string ] -> i64
+        d : path [ src ]
+        entries : d.ls[ null, false ]
+        total : i64 [ 0 ]
+        if [ !entries ] return 0
+        for [ e: path ] in entries
+            if [ e.is_symlink[] ] continue
+            if [ e.is_dir[] ] total += tree_size[ '{e}' ]
+            el total += file_size[ '{e}' ]
+        return total
+
+    func assemble []
+        files = vec OsFile []
+        seen  = map bool [ string ] []
+        add_dir[ 'dev' ]
+        add_dir[ 'proc' ]
+        add_dir[ 'sys' ]
+        add_dir[ 'tmp' ]
+        add_dir[ 'root' ]
+        add_dir[ 'run' ]
+        files.push[ OsFile [ dst: 'dev/console', dev: true ] ]
+        # the install symlink, orbiter's launcher and every module product
+        add_file[ '{root}/install' ]
+        add_file[ '{install}/build/{app}' ]
+        add_deps[ '{install}/build/{app}' ]
+        add_file[ '{install}/build/libsilver-{app}.so' ]
+        add_deps[ '{install}/build/libsilver-{app}.so' ]
+        # the launcher loads the product this link names
+        add_file[ '{install}/build/silver-{app}.product' ]
+        puts 'os-bootstrap: launcher done, {files.count} entries'
+        # the share dir of every module in that closure rides along when small
+        mods : vec string []
+        for [ e: OsFile ] in files
+            nm : e.dst
+            at : i64 [ nm.rindex_of[ '/' ] ]
+            if [ at >= 0 ] nm = nm.mid[ i32[ at ] + 1, i32[ nm.count ] - i32[ at ] - 1 ]
+            if [ nm.starts_with[ 'libsilver-' ] && nm.ends_with[ '.so' ] ]
+                mods.push[ nm.mid[ 10, i32[ nm.count ] - 13 ] ]
+        for [ mod: string ] in mods
+            sh : '{install}/share/silver-{mod}'
+            shp : path [ sh ]
+            if [ shp.exists[] && tree_size[ sh ] <= share_max ]
+                puts 'os-bootstrap: share silver-{mod}'
+                add_file[ sh ]
+        add_file[ '{install}/share/orbiter' ]
+        puts 'os-bootstrap: products done, {files.count} entries'
+        # guest vulkan: our freshly-built mesa venus (not the host system
+        # one, whose dma-buf export crashes)
+        venus : '{install}/lib/libvulkan_virtio.so'
+        add_file[ venus ]
+        add_deps[ venus ]
+        icds : path '{install}/share/vulkan/icd.d'
+        for [ j: path ] in icds.ls[ null, false ]
+            if [ j.filename[].starts_with[ 'virtio_icd' ] ] add_file[ '{j}' ]
+        add_file[ '{install}/lib/libvulkan.so.1' ]
+        add_deps[ '{install}/lib/libvulkan.so.1' ]
+        write_cpio[]
+
+    func cpio_pad [ f: @FILE, n: i64 ]
+        k : i64 [ n ]
+        while [ (k % 4) != 0 ]
+            fputc[ 0, f ]
+            k += 1
+
+    # newc header: 6-char magic then 13 8-digit hex fields, then the name
+    func cpio_header [ f: @FILE, name: string, mode: u32, size: i64, ino: i32, mtime: i64, rmajor: i32, rminor: i32 ]
+        nlen : i32 [ i32[ name.count ] + 1 ]
+        fprintf[ f, "070701%08x%08x%08x%08x%08x%08x%08x%08x%08x%08x%08x%08x%08x",
+            ino, mode, 0, 0, 1, i32[ mtime ], i32[ size ], 0, 0, rmajor, rminor, nlen, 0 ]
+        fwrite[ name.chars, 1, nlen, f ]
+        cpio_pad[ f, 110 + nlen ]
+
+    func write_cpio []
+        f : @FILE [ fopen[ initrd.chars, 'wb' ] ]
+        if [ !f ]
+            puts 'os-bootstrap: cannot write {initrd}'
+            return
+        ino : i32 [ 1 ]
+        # cpio mode words: file type then permissions (octal 040755 …)
+        mode_dir  : u32 [ 0x41ED ]
+        mode_file : u32 [ 0x81ED ]
+        mode_link : u32 [ 0xA1FF ]
+        mode_con  : u32 [ 0x2180 ]
+        buf : @u8 [ malloc[ 1 << 20 ] ]
+        now : i64 [ time[ null ] ]
+        for [ e: OsFile ] in files
+            ino += 1
+            if [ e.dir ]
+                cpio_header[ f, e.dst, mode_dir, 0, ino, now, 0, 0 ]
+            el [ e.dev ]
+                # major 5 minor 1 is the kernel console
+                cpio_header[ f, e.dst, mode_con, 0, ino, now, 5, 1 ]
+            el [ e.link ]
+                cpio_header[ f, e.dst, mode_link, e.link.count, ino, now, 0, 0 ]
+                fwrite[ e.link.chars, 1, e.link.count, f ]
+                cpio_pad[ f, e.link.count ]
+            el
+                size : i64 [ file_size[ e.src ] ]
+                sp : path [ e.src ]
+                # the launcher compares product and source times: keep them
+                cpio_header[ f, e.dst, mode_file, size, ino, sp.modified_time[] / 1000, 0, 0 ]
+                src : handle fopen[ e.src.chars, 'rb' ]
+                left : i64 [ size ]
+                while [ src && left > 0 ]
+                    n : i64 [ fread[ buf, 1, (left < (1 << 20)) ? left : (1 << 20), src ] ]
+                    if [ n <= 0 ] break
+                    fwrite[ buf, 1, n, f ]
+                    left -= n
+                if [ src ] fclose[ src ]
+                cpio_pad[ f, size ]
+        free[ buf ]
+        cpio_header[ f, 'TRAILER!!!', 0, 0, 0, 0, 0, 0 ]
+        fclose[ f ]
+        puts 'os-bootstrap: {files.count} entries -> {initrd}'
+
+    public func render [] -> Elements
+        # unknown name=value words reach init as its environment; the
+        # loader reads LD_LIBRARY_PATH once, at exec, so it rides here
+        # the last console is init's stdio: serial, since orbiter's own
+        # display takes the screen over; read orbiter-os/serial.log
+        cmdline : 'console=tty0 console=ttyS0 nokaslr rdinit={install}/build/{app} LD_LIBRARY_PATH={install}/lib:{install}/build VK_DRIVER_FILES={install}/share/vulkan/icd.d/virtio_icd.x86_64.json VK_LOADER_DEBUG=error'
+        return Elements [
+            "vm": qemu [ kernel: kernel, initrd: initrd, append: cmdline,
+                         memory: memory, gpu: true, serial: serial ]
+        ]

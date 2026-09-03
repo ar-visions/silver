@@ -39,23 +39,23 @@ class spc_state
 	sp             	: u8
 	psw            	: u8
 	direct_page    	: u8
-	ports          	: new u8 [ 4 ]              # SPC-visible APU input (committed)
-	in_stage       	: new u8 [ 4 ]              # CPU writes here; committed to ports on CPU read (atomic)
-	oports         	: new u8 [ 4 ]
-	oports_prev    	: new u8 [ 4 ]      # value before the last write (returned if the write's clock is past the CPU read's clock)
-	oports_ts      	: new i64 [ 4 ]     # SPC-clock (spc.pos) at which each port was last written
-	iports_ts      	: new i64 [ 4 ]     # CPU-clock (spc.pos+cycle_accum) at which the CPU last wrote each input port; SPC read returns in_stage (pre-write) if this is in the SPC's future
+	ports          	: vec u8 [ 4 ]              # SPC-visible APU input (committed)
+	in_stage       	: vec u8 [ 4 ]              # CPU writes here; committed to ports on CPU read (atomic)
+	oports         	: vec u8 [ 4 ]
+	oports_prev    	: vec u8 [ 4 ]      # value before the last write (returned if the write's clock is past the CPU read's clock)
+	oports_ts      	: vec i64 [ 4 ]     # SPC-clock (spc.pos) at which each port was last written
+	iports_ts      	: vec i64 [ 4 ]     # CPU-clock (spc.pos+cycle_accum) at which the CPU last wrote each input port; SPC read returns in_stage (pre-write) if this is in the SPC's future
 	pos            	: i64               # monotonic SPC position in accum units (advances per SPC opcode)
 	echo_pos       	: u16
 	echo_history_l 	: f32
 	echo_history_r 	: f32
-	fir_hist_l     	: new f32 [ 8 ]
-	fir_hist_r     	: new f32 [ 8 ]
+	fir_hist_l     	: vec f32 [ 8 ]
+	fir_hist_r     	: vec f32 [ 8 ]
 	fir_idx        	: i32
 	lp_l           	: f32              # output low-pass state (SNES soft rolloff)
 	lp_r           	: f32
-	channels       	: new dsp_channel [ 8 ]
-	dsp            	: new u8 [ 128 ]
+	channels       	: vec dsp_channel [ 8 ]
+	dsp            	: vec u8 [ 128 ]
 	audio_buffer   	: @i16
 	buffer_size    	: sz
 	sample_rate    	: i32
@@ -64,41 +64,41 @@ class spc_state
 	audio_sub      	: i32               # SMP-cycle sub-counter toward the next 32-cycle sample
 	op_cyc         	: i32               # SMP cycles consumed by the current SPC instruction (base + branch-taken)
 	timer_on       	: u8                # $F1 bits 0-2: timer enables
-	timer_target   	: new u8 [ 3 ]      # $FA-$FC dividers (0 => 256)
-	timer_count    	: new u8 [ 3 ]      # $FD-$FF 4-bit output counters
-	timer_stage    	: new i32 [ 3 ]     # internal pre-divider accumulators
+	timer_target   	: vec u8 [ 3 ]      # $FA-$FC dividers (0 => 256)
+	timer_count    	: vec u8 [ 3 ]      # $FD-$FF 4-bit output counters
+	timer_stage    	: vec i32 [ 3 ]     # internal pre-divider accumulators
 	tcyc           	: i32               # SPC cycle accumulator for timers
 	kon_latch      	: u8                # KON bits written since last DSP sample
 	koff_latch     	: u8                # KOFF bits written since last DSP sample
-	ram            	: new u8 [ 0x10000 ]
+	ram            	: vec u8 [ 0x10000 ]
 
 class ppu_state
-	vram        	: new u8 [ 0x10000 ]    # 32K words, byte-addressed as word*2 + sel
-	cgram       	: new u8 [ 0x200 ]      # 256 colors x 2 bytes (BGR555)
-	oam         	: new u8 [ 0x220 ]      # 512 main + 32 high
-	vram_shot   	: new u8 [ 0x10000 ]    # VRAM latched at end of active display (games stream OBJ tiles in vblank)
-	cgram_shot  	: new u8 [ 0x200 ]      # CGRAM latched at end of active display
-	oam_shot    	: new u8 [ 0x220 ]      # OAM latched at end of active display
+	vram        	: vec u8 [ 0x10000 ]    # 32K words, byte-addressed as word*2 + sel
+	cgram       	: vec u8 [ 0x200 ]      # 256 colors x 2 bytes (BGR555)
+	oam         	: vec u8 [ 0x220 ]      # 512 main + 32 high
+	vram_shot   	: vec u8 [ 0x10000 ]    # VRAM latched at end of active display (games stream OBJ tiles in vblank)
+	cgram_shot  	: vec u8 [ 0x200 ]      # CGRAM latched at end of active display
+	oam_shot    	: vec u8 [ 0x220 ]      # OAM latched at end of active display
 	inidisp_shot	: u8                    # INIDISP (brightness/force-blank) latched at end of active display
-	framebuf    	: new u32 [ 256 * 224 ] # RGBA8 output
-	obj_color   	: new u32 [ 256 * 224 ] # sprite layer: resolved color (0 = transparent)
-	obj_prio    	: new u8  [ 256 * 224 ] # sprite layer: per-pixel OBJ priority (0-3)
-	obj_bgr     	: new u16 [ 256 * 224 ] # sprite layer: BGR555 color (for color math)
-	obj_idx     	: new u8  [ 256 * 224 ] # sprite layer: OAM index of the winning sprite (world/screen split)
-	px_bgr      	: new u16 [ 256 * 224 ] # top main-screen pixel BGR555 (pre-brightness, for color math)
-	px_src      	: new u8  [ 256 * 224 ] # source layer per pixel: 0-3=BG1-4, 5=OBJ, 8=backdrop
-	sub_bgr     	: new u16 [ 256 * 224 ] # top SUB-screen pixel BGR555 (for color-math subscreen blend)
-	sub_src     	: new u8  [ 256 * 224 ] # sub-screen source layer per pixel (8=COL/fixed backdrop)
+	framebuf    	: vec u32 [ 256 * 224 ] # RGBA8 output
+	obj_color   	: vec u32 [ 256 * 224 ] # sprite layer: resolved color (0 = transparent)
+	obj_prio    	: vec u8  [ 256 * 224 ] # sprite layer: per-pixel OBJ priority (0-3)
+	obj_bgr     	: vec u16 [ 256 * 224 ] # sprite layer: BGR555 color (for color math)
+	obj_idx     	: vec u8  [ 256 * 224 ] # sprite layer: OAM index of the winning sprite (world/screen split)
+	px_bgr      	: vec u16 [ 256 * 224 ] # top main-screen pixel BGR555 (pre-brightness, for color math)
+	px_src      	: vec u8  [ 256 * 224 ] # source layer per pixel: 0-3=BG1-4, 5=OBJ, 8=backdrop
+	sub_bgr     	: vec u16 [ 256 * 224 ] # top SUB-screen pixel BGR555 (for color-math subscreen blend)
+	sub_src     	: vec u8  [ 256 * 224 ] # sub-screen source layer per pixel (8=COL/fixed backdrop)
 	inidisp     	: u8                    # $2100 brightness(0-3) + forced-blank(bit7)
 	obsel       	: u8                    # $2101 sprite size + name base
 	bgmode      	: u8                    # $2105 BG mode (bits0-2) + per-BG tile size
 	mosaic      	: u8                    # $2106
-	bg_sc       	: new u8 [ 4 ]          # $2107-A tilemap base/size per BG
-	bg_nba      	: new u8 [ 2 ]          # $210B/C char-data base nibbles (BG1/2, BG3/4)
-	bg_hofs     	: new u16 [ 4 ]         # $210D.. H scroll per BG (10/13-bit)
-	bg_vofs     	: new u16 [ 4 ]         # V scroll per BG
+	bg_sc       	: vec u8 [ 4 ]          # $2107-A tilemap base/size per BG
+	bg_nba      	: vec u8 [ 2 ]          # $210B/C char-data base nibbles (BG1/2, BG3/4)
+	bg_hofs     	: vec u16 [ 4 ]         # $210D.. H scroll per BG (10/13-bit)
+	bg_vofs     	: vec u16 [ 4 ]         # V scroll per BG
 	ofs_latch   	: u8                    # shared write-twice prev byte for scroll
-	ofs_hl      	: new u8 [ 8 ]          # per-scroll-reg low/high toggle
+	ofs_hl      	: vec u8 [ 8 ]          # per-scroll-reg low/high toggle
 	vmain       	: u8                    # $2115 VRAM address increment control
 	vram_addr   	: u16                   # $2116/7 word address
 	vram_pre    	: u16                   # read prefetch latch
@@ -158,7 +158,7 @@ class cpu_state
 	public b      			: u8
 	public xh     			: u8
 	public yh     			: u8
-	public ports  			: new u8 [ 4 ]
+	public ports  			: vec u8 [ 4 ]
 	public memory 			: @u8
 
 
@@ -276,7 +276,7 @@ element asnes : trinity
 	# the F-key rom view: '' = the game alone. shell instruments are separate
 	public  view           	: string [ '' ]
 	mutable chr_tex        	: Texture
-	mutable chr_buf        	: new u32 [ 256 * 1024 ]  # 2bpp fills all 4096 tiles
+	mutable chr_buf        	: vec u32 [ 256 * 1024 ]  # 2bpp fills all 4096 tiles
 	mutable chr_h          	: i32                     # rows currently in chr_tex
 	mutable chr_have       	: bool                    # chr_tex holds a decode
 	# built text, not rebuilt per frame. R refreshes, as does any change
@@ -299,12 +299,12 @@ element asnes : trinity
 	mutable screen_tex     	: Texture
 	mutable m7_src         	: Texture          # 1024x1024 RGBA: unpacked Mode-7 plane (palette applied)
 	mutable m7_mat         	: Texture          # 256x1 rgba32f: per-scanline { originX, originY, a, c }
-	mutable m7_buf         	: new u32 [ 1024 * 1024 ]   # CPU staging for m7_src
-	mutable m7_matbuf      	: new f32 [ 768 * 4 ]       # CPU staging for m7_mat: row 0 = affine, row 1 = window bounds, row 2 = math flags + coldata
+	mutable m7_buf         	: vec u32 [ 1024 * 1024 ]   # CPU staging for m7_src
+	mutable m7_matbuf      	: vec f32 [ 768 * 4 ]       # CPU staging for m7_mat: row 0 = affine, row 1 = window bounds, row 2 = math flags + coldata
 	mutable m7_shader      	: Mode7
 	mutable m7_model       	: Model
 	mutable m7_render      	: Render
-	mutable m7_buf2x       	: new u32 [ 2048 * 2048 ]   # vec_m7: corner-cut 2x of m7_buf, baked at unpack (CPU — no GPU sync hazards)
+	mutable m7_buf2x       	: vec u32 [ 2048 * 2048 ]   # vec_m7: corner-cut 2x of m7_buf, baked at unpack (CPU — no GPU sync hazards)
 	public  m7_gpu         	: bool [ true ]    # render the Mode-7 plane on the GPU (CPU path leaves it transparent)
 	mutable m7_vhash       	: i64              # last unpacked Mode-7 VRAM hash (skip re-unpack when unchanged)
 	mutable m7_bri_cache   	: i32 [ -1 ]       # brightness baked into the cached m7_src
@@ -322,39 +322,39 @@ element asnes : trinity
 	mutable load_req       	: bool             # 'L' key -> load savestate next frame
 	mutable state_loaded   	: bool             # --state boot-load done
 	mutable post_load      	: i32              # frames elapsed since --state load (for instant capture)
-	mutable test_buf       	: new u32 [ 256 * 224 ]
+	mutable test_buf       	: vec u32 [ 256 * 224 ]
 	mutable test_t         	: i32
-	mutable hdma_addr      	: new u16 [ 8 ]         # A2A table running pointer per channel
-	mutable hdma_line      	: new u8  [ 8 ]         # line counter per channel
-	mutable hdma_ind       	: new u16 [ 8 ]         # indirect data address per channel
-	mutable hdma_do        	: new u8  [ 8 ]         # do-transfer flag per channel
-	mutable hdma_done      	: new u8  [ 8 ]         # channel completed for this frame
-	mutable line_mode      	: new u8  [ 224 ]       # per-scanline BGMODE snapshot
-	mutable line_tm        	: new u8  [ 224 ]       # per-scanline TM snapshot
-	mutable line_ts        	: new u8  [ 224 ]       # per-scanline TS (sub-screen layer enable) snapshot
-	mutable line_h         	: new u16 [ 4 * 224 ]   # per-scanline H scroll, [bg*224+y]
-	mutable line_v         	: new u16 [ 4 * 224 ]   # per-scanline V scroll
-	mutable line_m7a       	: new i16 [ 224 ]       # per-scanline Mode 7 matrix (HDMA'd)
-	mutable line_m7b       	: new i16 [ 224 ]
-	mutable line_m7c       	: new i16 [ 224 ]
-	mutable line_m7d       	: new i16 [ 224 ]
-	mutable line_coldata   	: new u16 [ 224 ]       # per-scanline COLDATA (HDMA'd fog color)
-	mutable line_cgadsub   	: new u8  [ 224 ]       # per-scanline CGADSUB (color-math enable/mode)
-	mutable line_cgwsel    	: new u8  [ 224 ]       # per-scanline CGWSEL (color-math region select)
-	mutable line_wobjsel   	: new u8  [ 224 ]       # per-scanline WOBJSEL (color window enable/invert)
-	mutable line_wobjlog   	: new u8  [ 224 ]       # per-scanline WOBJLOG (color window combine logic)
-	mutable line_wh0       	: new u8  [ 224 ]       # per-scanline window1 left  (HDMA'd)
-	mutable line_wh1       	: new u8  [ 224 ]       # per-scanline window1 right
-	mutable line_wh2       	: new u8  [ 224 ]       # per-scanline window2 left
-	mutable line_wh3       	: new u8  [ 224 ]       # per-scanline window2 right
-	mutable line_tmw       	: new u8  [ 224 ]       # per-scanline TMW (BG window main-screen disable)
-	mutable line_tsw       	: new u8  [ 224 ]       # per-scanline TSW (BG window sub-screen disable)
-	mutable line_w12sel    	: new u8  [ 224 ]       # per-scanline W12SEL (BG1/2 window enable/invert)
-	mutable line_w34sel    	: new u8  [ 224 ]       # per-scanline W34SEL (BG3/4 window enable/invert)
-	mutable line_wbglog    	: new u8  [ 224 ]       # per-scanline WBGLOG (BG window1/2 combine logic)
-	mutable line_inidisp   	: new u8  [ 224 ]       # per-scanline INIDISP (ff3 blanks at line 215 for early vblank work and restores brightness in vblank — one global sample reads 80 and blacked the frame)
-	mutable line_bgsc      	: new u8  [ 896 ]       # per-scanline BGxSC tilemap base (ff3 HDMAs $2107 inside dialog boxes: BG1 base 48->40 points at the blank dialog tilemap; frame-global base drew the map inside the box)
-	mutable line_nba       	: new u8  [ 448 ]       # per-scanline BG12NBA/BG34NBA char base (render-time live read raced vblank writes: ff3 battle BG1 char base fetched from the menu value -> font checkerboard)
+	mutable hdma_addr      	: vec u16 [ 8 ]         # A2A table running pointer per channel
+	mutable hdma_line      	: vec u8  [ 8 ]         # line counter per channel
+	mutable hdma_ind       	: vec u16 [ 8 ]         # indirect data address per channel
+	mutable hdma_do        	: vec u8  [ 8 ]         # do-transfer flag per channel
+	mutable hdma_done      	: vec u8  [ 8 ]         # channel completed for this frame
+	mutable line_mode      	: vec u8  [ 224 ]       # per-scanline BGMODE snapshot
+	mutable line_tm        	: vec u8  [ 224 ]       # per-scanline TM snapshot
+	mutable line_ts        	: vec u8  [ 224 ]       # per-scanline TS (sub-screen layer enable) snapshot
+	mutable line_h         	: vec u16 [ 4 * 224 ]   # per-scanline H scroll, [bg*224+y]
+	mutable line_v         	: vec u16 [ 4 * 224 ]   # per-scanline V scroll
+	mutable line_m7a       	: vec i16 [ 224 ]       # per-scanline Mode 7 matrix (HDMA'd)
+	mutable line_m7b       	: vec i16 [ 224 ]
+	mutable line_m7c       	: vec i16 [ 224 ]
+	mutable line_m7d       	: vec i16 [ 224 ]
+	mutable line_coldata   	: vec u16 [ 224 ]       # per-scanline COLDATA (HDMA'd fog color)
+	mutable line_cgadsub   	: vec u8  [ 224 ]       # per-scanline CGADSUB (color-math enable/mode)
+	mutable line_cgwsel    	: vec u8  [ 224 ]       # per-scanline CGWSEL (color-math region select)
+	mutable line_wobjsel   	: vec u8  [ 224 ]       # per-scanline WOBJSEL (color window enable/invert)
+	mutable line_wobjlog   	: vec u8  [ 224 ]       # per-scanline WOBJLOG (color window combine logic)
+	mutable line_wh0       	: vec u8  [ 224 ]       # per-scanline window1 left  (HDMA'd)
+	mutable line_wh1       	: vec u8  [ 224 ]       # per-scanline window1 right
+	mutable line_wh2       	: vec u8  [ 224 ]       # per-scanline window2 left
+	mutable line_wh3       	: vec u8  [ 224 ]       # per-scanline window2 right
+	mutable line_tmw       	: vec u8  [ 224 ]       # per-scanline TMW (BG window main-screen disable)
+	mutable line_tsw       	: vec u8  [ 224 ]       # per-scanline TSW (BG window sub-screen disable)
+	mutable line_w12sel    	: vec u8  [ 224 ]       # per-scanline W12SEL (BG1/2 window enable/invert)
+	mutable line_w34sel    	: vec u8  [ 224 ]       # per-scanline W34SEL (BG3/4 window enable/invert)
+	mutable line_wbglog    	: vec u8  [ 224 ]       # per-scanline WBGLOG (BG window1/2 combine logic)
+	mutable line_inidisp   	: vec u8  [ 224 ]       # per-scanline INIDISP (ff3 blanks at line 215 for early vblank work and restores brightness in vblank — one global sample reads 80 and blacked the frame)
+	mutable line_bgsc      	: vec u8  [ 896 ]       # per-scanline BGxSC tilemap base (ff3 HDMAs $2107 inside dialog boxes: BG1 base 48->40 points at the blank dialog tilemap; frame-global base drew the map inside the box)
+	mutable line_nba       	: vec u8  [ 448 ]       # per-scanline BG12NBA/BG34NBA char base (render-time live read raced vblank writes: ff3 battle BG1 char base fetched from the menu value -> font checkerboard)
 	mutable cpu            	: cpu_state
 	mutable spc            	: spc_state
 	mutable audio          	: AudioOut         # spectra sink (ALSA linux / AudioQueue mac)
@@ -407,15 +407,15 @@ element asnes : trinity
 	mutable dbg_ev         	: i32               # capped rendezvous event log counter
 	mutable dbg_ev2        	: i32               # capped: CPU port writes
 	mutable dbg_ev3        	: i32               # capped: IPL handshake region
-	mutable tr_addr        	: new u32 [32]      # instruction ring buffer (pbr<<16|pc)
-	mutable tr_b0          	: new u8 [32]
-	mutable tr_b1          	: new u8 [32]
-	mutable tr_b2          	: new u8 [32]
-	mutable tr_b3          	: new u8 [32]
-	mutable tr_p           	: new u16 [32]
-	mutable tr_a           	: new u16 [32]
-	mutable tr_x           	: new u16 [32]
-	mutable tr_y           	: new u16 [32]
+	mutable tr_addr        	: vec u32 [32]      # instruction ring buffer (pbr<<16|pc)
+	mutable tr_b0          	: vec u8 [32]
+	mutable tr_b1          	: vec u8 [32]
+	mutable tr_b2          	: vec u8 [32]
+	mutable tr_b3          	: vec u8 [32]
+	mutable tr_p           	: vec u16 [32]
+	mutable tr_a           	: vec u16 [32]
+	mutable tr_x           	: vec u16 [32]
+	mutable tr_y           	: vec u16 [32]
 	mutable tr_i           	: i32
 	mutable tr_done        	: bool
 	mutable last_rd        	: u32               # last data-read effective 24-bit address
@@ -466,18 +466,18 @@ element asnes : trinity
 	mutable dbg_bgr        	: i32               # BGRAW diag print budget
 	mutable dbg_spr        	: i32               # SPRC class-flip diag budget
 	mutable dbg_m7l        	: i32               # M7EASE diag print budget
-	mutable bgg_prevh      	: new i32 [ 4 ]     # prev hofs per BG (rep line)
-	mutable bgg_prevv      	: new i32 [ 4 ]
-	mutable bgg_dx         	: new f32 [ 4 ]     # published scroll delta per BG
-	mutable bgg_dy         	: new f32 [ 4 ]
-	mutable bgg_t          	: new i64 [ 4 ]     # publish timestamp (PLL clock)
-	mutable bgg_p          	: new i64 [ 4 ]     # replay window us (cadence)
-	mutable bgg_gap        	: new i32 [ 4 ]     # frames since last movement
-	mutable spr_prevx      	: new i32 [ 128 ]   # prev OAM positions (world matching)
-	mutable spr_prevy      	: new i32 [ 128 ]
-	mutable spr_world      	: new u8  [ 128 ]   # 1 = rides the BG1 camera
-	mutable spr_hit        	: new u8  [ 128 ]   # consecutive world-match frames (hysteresis)
-	mutable spr_miss       	: new u8  [ 128 ]   # consecutive mismatch frames
+	mutable bgg_prevh      	: vec i32 [ 4 ]     # prev hofs per BG (rep line)
+	mutable bgg_prevv      	: vec i32 [ 4 ]
+	mutable bgg_dx         	: vec f32 [ 4 ]     # published scroll delta per BG
+	mutable bgg_dy         	: vec f32 [ 4 ]
+	mutable bgg_t          	: vec i64 [ 4 ]     # publish timestamp (PLL clock)
+	mutable bgg_p          	: vec i64 [ 4 ]     # replay window us (cadence)
+	mutable bgg_gap        	: vec i32 [ 4 ]     # frames since last movement
+	mutable spr_prevx      	: vec i32 [ 128 ]   # prev OAM positions (world matching)
+	mutable spr_prevy      	: vec i32 [ 128 ]
+	mutable spr_world      	: vec u8  [ 128 ]   # 1 = rides the BG1 camera
+	mutable spr_hit        	: vec u8  [ 128 ]   # consecutive world-match frames (hysteresis)
+	mutable spr_miss       	: vec u8  [ 128 ]   # consecutive mismatch frames
 	mutable spr_m1x        	: i32               # BG1 delta last frame (phase-lag match)
 	mutable spr_m1y        	: i32
 	mutable spr_m2x        	: i32               # BG2 delta last frame
@@ -485,18 +485,18 @@ element asnes : trinity
 	mutable spr_anchor     	: i32               # plane the sprite population follows: 0=BG1 1=BG2
 	mutable lay_out        	: @u32           # ppu_bg_line layer target (valid when lay_en)
 	mutable lay_en         	: bool              # ppu_bg_line writes to lay_out, not the composed planes
-	mutable lay_bd         	: new u32 [ 73728 ] # backdrop plane: its own layer, never under tiles
-	mutable lay_bg1        	: new u32 [ 73728 ] # provenance layers, 288x256: 16px overscan bleed
-	mutable lay_bg2        	: new u32 [ 73728 ]
-	mutable lay_bg3        	: new u32 [ 73728 ]
-	mutable lay_sw         	: new u32 [ 57344 ] # world sprites (ride BG1)
-	mutable lay_ss         	: new u32 [ 57344 ] # screen sprites (pinned)
-	mutable pub_layb       	: new u32 [ 73728 ]
-	mutable pub_lay1       	: new u32 [ 73728 ]
-	mutable pub_lay2       	: new u32 [ 73728 ]
-	mutable pub_lay3       	: new u32 [ 73728 ]
-	mutable pub_layw       	: new u32 [ 57344 ]
-	mutable pub_lays       	: new u32 [ 57344 ]
+	mutable lay_bd         	: vec u32 [ 73728 ] # backdrop plane: its own layer, never under tiles
+	mutable lay_bg1        	: vec u32 [ 73728 ] # provenance layers, 288x256: 16px overscan bleed
+	mutable lay_bg2        	: vec u32 [ 73728 ]
+	mutable lay_bg3        	: vec u32 [ 73728 ]
+	mutable lay_sw         	: vec u32 [ 57344 ] # world sprites (ride BG1)
+	mutable lay_ss         	: vec u32 [ 57344 ] # screen sprites (pinned)
+	mutable pub_layb       	: vec u32 [ 73728 ]
+	mutable pub_lay1       	: vec u32 [ 73728 ]
+	mutable pub_lay2       	: vec u32 [ 73728 ]
+	mutable pub_lay3       	: vec u32 [ 73728 ]
+	mutable pub_layw       	: vec u32 [ 57344 ]
+	mutable pub_lays       	: vec u32 [ 57344 ]
 	mutable pub_layered    	: bool              # this frame published provenance layers
 	mutable pub_b3hi       	: bool              # BGMODE bit3 at rep line: BG3 rides above sprites
 	mutable lay_hash       	: u32               # inputs hash of the last plane build
@@ -555,35 +555,35 @@ element asnes : trinity
 	mutable pub_m7vofs     	: u16
 	mutable pub_m7x        	: i16
 	mutable pub_m7y        	: i16
-	mutable pub_framebuf   	: new u32 [ 57344 ]  # published CPU-composited frame (render thread uploads this, never ppu.framebuf)
-	mutable pub_vram       	: new u8  [ 65536 ]  # published VRAM for the m7 GPU bake
-	mutable pub_cgram      	: new u8  [ 512 ]
-	mutable pub_oam        	: new u8  [ 0x220 ]  # published OAM for the sprite view
-	mutable pub_wram       	: new u8  [ 0x20000 ]# published 128K work RAM for the ram view
-	mutable pub_m7a        	: new i16 [ 224 ]    # published per-line m7 matrices for the GPU pass
-	mutable pub_m7b        	: new i16 [ 224 ]
-	mutable pub_m7c        	: new i16 [ 224 ]
-	mutable pub_m7d        	: new i16 [ 224 ]
-	mutable m7f_a          	: new f32 [ 224 ]   # displayed per-line matrix coefficients
-	mutable m7f_b          	: new f32 [ 224 ]
-	mutable m7f_c          	: new f32 [ 224 ]
-	mutable m7f_d          	: new f32 [ 224 ]
+	mutable pub_framebuf   	: vec u32 [ 57344 ]  # published CPU-composited frame (render thread uploads this, never ppu.framebuf)
+	mutable pub_vram       	: vec u8  [ 65536 ]  # published VRAM for the m7 GPU bake
+	mutable pub_cgram      	: vec u8  [ 512 ]
+	mutable pub_oam        	: vec u8  [ 0x220 ]  # published OAM for the sprite view
+	mutable pub_wram       	: vec u8  [ 0x20000 ]# published 128K work RAM for the ram view
+	mutable pub_m7a        	: vec i16 [ 224 ]    # published per-line m7 matrices for the GPU pass
+	mutable pub_m7b        	: vec i16 [ 224 ]
+	mutable pub_m7c        	: vec i16 [ 224 ]
+	mutable pub_m7d        	: vec i16 [ 224 ]
+	mutable m7f_a          	: vec f32 [ 224 ]   # displayed per-line matrix coefficients
+	mutable m7f_b          	: vec f32 [ 224 ]
+	mutable m7f_c          	: vec f32 [ 224 ]
+	mutable m7f_d          	: vec f32 [ 224 ]
 	mutable m7f_last       	: i64               # last ease step (us, wall clock)
-	mutable pub_mode       	: new u8  [ 224 ]
-	mutable pub_wh0        	: new u8  [ 224 ]    # published per-line color-window + math state for the m7 GPU pass
-	mutable pub_wh1        	: new u8  [ 224 ]
-	mutable pub_wh2        	: new u8  [ 224 ]
-	mutable pub_wh3        	: new u8  [ 224 ]
-	mutable pub_wobjsel    	: new u8  [ 224 ]
-	mutable pub_wobjlog    	: new u8  [ 224 ]
-	mutable pub_cgwsel     	: new u8  [ 224 ]
-	mutable pub_cgadsub    	: new u8  [ 224 ]
-	mutable pub_coldata    	: new u16 [ 224 ]
+	mutable pub_mode       	: vec u8  [ 224 ]
+	mutable pub_wh0        	: vec u8  [ 224 ]    # published per-line color-window + math state for the m7 GPU pass
+	mutable pub_wh1        	: vec u8  [ 224 ]
+	mutable pub_wh2        	: vec u8  [ 224 ]
+	mutable pub_wh3        	: vec u8  [ 224 ]
+	mutable pub_wobjsel    	: vec u8  [ 224 ]
+	mutable pub_wobjlog    	: vec u8  [ 224 ]
+	mutable pub_cgwsel     	: vec u8  [ 224 ]
+	mutable pub_cgadsub    	: vec u8  [ 224 ]
+	mutable pub_coldata    	: vec u16 [ 224 ]
 	mutable itv_ms30       	: i64               # wall ms between on_render entries per 30-frame window
 	mutable itv_max30      	: i64               # WORST single interval in that window: a 64ms alsa ring dies to one stall, not to an average
 	mutable emu_max30      	: i64               # worst single frame's emulation cost in that window
 	mutable last_entry     	: i64
-	mutable sline          	: i32               # per-line register snapshot cursor: row y latches at the START of hardware line y+1 (dot 0+), BEFORE that line's IRQ handler writes — mid-line sampling caught the fzero horizon handler half-done (new scroll, old mode = one noise line)
+	mutable sline          	: i32               # per-line register snapshot cursor: row y latches at the START of hardware line y+1 (dot 0+), BEFORE that line's IRQ handler writes — mid-line sampling caught the fzero horizon handler half-done (vec scroll, old mode = one noise line)
 	mutable hline          	: i32               # HDMA/snapshot line cursor — advanced mid-instruction in cpu_tick at the exact master dot (L*1364+1104), reset per frame
 	mutable dbg_cached     	: bool              # debug env flags read once into the env_* mutables below
 	mutable env_cputrace   	: bool              # cached ASNES_CPUTRACE
@@ -617,7 +617,7 @@ element asnes : trinity
 	mutable dbg_t          	: i32               # capped: submodule-3 handler trace
 	intern  echo_out_l     	: f32
 	intern  echo_out_r     	: f32
-	intern  gauss          	: new i16 [512] [
+	intern  gauss          	: vec i16 [512] [
 		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1
 		1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2
 		2, 2, 3, 3, 3, 3, 3, 4, 4, 4, 4, 4, 5, 5, 5, 5
@@ -652,12 +652,12 @@ element asnes : trinity
 		1300, 1300, 1301, 1302, 1302, 1303, 1303, 1303, 1304, 1304, 1304, 1304, 1304, 1305, 1305, 1305
 	]
 
-	intern  env_rate : new i32 [32] [
+	intern  env_rate : vec i32 [32] [
 		0, 2048, 1536, 1280, 1024, 768, 640, 512, 384, 320, 256, 192,
 		160, 128, 96, 80, 64, 48, 40, 32, 24, 20, 16, 12, 10, 8, 6, 5, 4, 3, 2, 1
 	]
 
-	intern  spc_cyc : new u8 [256] [
+	intern  spc_cyc : vec u8 [256] [
 		2,8,4,5,3,4,3,6, 2,6,5,4,5,4,6,8,
 		2,8,4,5,4,5,5,6, 5,5,6,5,2,2,4,6,
 		2,8,4,5,3,4,3,6, 2,6,5,4,5,4,5,4,
@@ -4522,7 +4522,7 @@ element asnes : trinity
 		oam   : u32 [ fnv_range[ ppu.oam,   0, 0x220 ] ]
 		apu   : u32 [ fnv_range[ spc.ram,   0, 0x10000 ] ]
 		dsp   : u32 [ fnv_range[ spc.dsp,   0, 128 ] ]
-		b : new u8 [ 4096 ]
+		b : vec u8 [ 4096 ]
 		o : i32 [ 0 ]
 		# --- CPU registers ---
 		o = st_w16[ b, o, cpu.pc ]
@@ -4720,7 +4720,7 @@ element asnes : trinity
 		fwrite[ ppu.vram,  1, 0x10000, wf ]
 		fwrite[ ppu.cgram, 1, 0x200,   wf ]
 		fwrite[ ppu.oam,   1, 0x220,   wf ]
-		rg : new u8 [ 64 ]
+		rg : vec u8 [ 64 ]
 		rg[0]  = ppu.inidisp
 		rg[1]  = ppu.bgmode
 		rg[2]  = ppu.mosaic
@@ -4840,7 +4840,7 @@ element asnes : trinity
 		if [ !wf ] return
 		mg : symbol [ 'ASNESSV2' ]
 		fwrite[ mg, 1, 8, wf ]
-		pb : new u8 [ 1024 ]
+		pb : vec u8 [ 1024 ]
 		memset[ pb, 0, 1024 ]
 		rp : symbol [ rom.chars ]
 		rl : i32 [ i32[ strlen[ rp ] ] ]
@@ -4853,7 +4853,7 @@ element asnes : trinity
 		fwrite[ ppu.oam,   1, 0x220,   wf ]
 		fwrite[ spc.ram,   1, 0x10000, wf ]
 		fwrite[ spc.dsp,   1, 128,     wf ]
-		b : new u8 [ 4096 ]
+		b : vec u8 [ 4096 ]
 		o : i32 [ 0 ]
 		o = st_w16[ b, o, cpu.pc ]
 		o = st_w8[ b, o, cpu.a ]
@@ -4990,11 +4990,11 @@ element asnes : trinity
 		if [ !cpu || !spc ] return
 		rf : @FILE [ fopen[ fn, 'rb' ] ]
 		if [ !rf ] return
-		hb : new u8 [ 8 ]
+		hb : vec u8 [ 8 ]
 		fread[ hb, 1, 8, rf ]
 		mg : symbol [ 'ASNESSV2' ]
 		if [ memcmp[ hb, mg, 8 ] == 0 ]
-			pb : new u8 [ 1024 ]
+			pb : vec u8 [ 1024 ]
 			fread[ pb, 1, 1024, rf ]
 			rp : symbol [ rom.chars ]
 			if [ strcmp[ pb, rp ] != 0 ]
@@ -5009,7 +5009,7 @@ element asnes : trinity
 		fread[ ppu.oam,   1, 0x220,   rf ]
 		fread[ spc.ram,   1, 0x10000, rf ]
 		fread[ spc.dsp,   1, 128,     rf ]
-		b : new u8 [ 4096 ]
+		b : vec u8 [ 4096 ]
 		fread[ b, 1, 4096, rf ]
 		fclose[ rf ]
 		o : i32 [ 0 ]

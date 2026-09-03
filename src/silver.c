@@ -4001,6 +4001,7 @@ static void silver_run_tests(silver a) {
 }
 
 AU_EXPORT void silver_init(silver a) {
+    aether_error_prelude = progress_clear_line;   // an error never prints on the tail of the progress line
     hold(a);
 
     // one build at a time: the root instance holds a lock for the session
@@ -4291,17 +4292,11 @@ AU_EXPORT void silver_init(silver a) {
         }
     }
 
-    // a module builds in the config THIS compiler was built in; there is one
-    // silver on disk, so it is by definition the one last built. --release
-    // is the one override: it tests, then ships, whatever silver is
-    if (!a->is_external && !a->release) {
-#ifdef CONFIG_RELEASE
-        a->release = true;
-#else
-        a->release = false;
-#endif
-        a->debug   = !a->release;
-    }
+    // module optimization is the module's own switch: -O2 unless --debug
+    // (-O0 -g). --release is the separate test-then-ship path, and it never
+    // builds a debug module
+    if (a->release) a->debug = false;
+    if (a->is_external) a->debug = ((silver)a->is_external)->debug;   // imports build the way the root does
     a->defs_expect  = map(hsize, 4);
     a->defs_used    = map(hsize, 4);
     a->defs_hash    = defs_hash;
@@ -4564,6 +4559,10 @@ AU_EXPORT void silver_init(silver a) {
         // silver-host.c is the LIVE-app launcher ONLY — a plain app has its own
         // main, so never build the host for it (it would overwrite the real exe).
         // recompiled (never cached) for live apps, matching the gated build below.
+        // the host is what tests and ships: know it before either.
+        // --build reaches here with is_live unset, so recover FIRST or the
+        // launcher below is skipped and a silver-host.c edit never takes
+        silver_recover_live(a);
         if (((aether)a)->is_live) {
             // with app_ext missing this never found the host, so a cached build
             // silently SKIPPED recompiling it -- an edit to silver-host.c only
@@ -4572,8 +4571,6 @@ AU_EXPORT void silver_init(silver a) {
             if (file_exists("%o", host_dst) && !target_is_mobile(a))
                 build_silver_host(a);
         }
-        // the host is what tests and ships: know it before either
-        silver_recover_live(a);
         // --export: run export funcs even on a cached build, no launch
         if (a->export) { silver_run_exports(a); return; }
         silver_run_tests(a);
@@ -9010,6 +9007,9 @@ string import_config(array input) {
         }
         if (starts_with(t, "+"))
             continue;
+        // NAME=value lines are the build's env, never its arguments
+        if (isalpha(t->chars[0]) && strchr(t->chars, '='))
+            continue;
         if (starts_with(t, "-framework")) {
             i++; // skip the framework name that follows
             continue;
@@ -9374,6 +9374,7 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
     // a dependency may invoke windres or clang itself, with flags of its own
     // that our toolchain file never reaches. CPATH is how the target headers
     // still arrive, since clang reads it for every compile it runs
+    env = env ? interpolate(env, (Au)a) : env; // {install} in env lines
     string  cenv        = (a->sysroot && platform_is_windows(a))
                         ? f(string, "CPATH=%o/include %o ", a->sysroot, env)
                         : env;
@@ -9398,7 +9399,10 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
     // checkout or symlink to src
     if (!dir_exists("%o", project_f)) {
         path src_path = f(path, "%o/%o", a->src_loc, name);
-        if (dir_exists("%o", src_path)) {
+        path self_dir = a->module ? absolute(a->module) : null;
+        // a module is never its own dependency (qemu imports qemu)
+        bool is_self  = self_dir && strcmp(absolute(src_path)->chars, self_dir->chars) == 0;
+        if (dir_exists("%o", src_path) && !is_self) {
             checkout_verify(a, label, "symlink", "symlink",
                 f(command, "ln -s %o %o", src_path, project_f));
             project_f = src_path;
@@ -9433,6 +9437,15 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
     path build_f    = (owner && len(owner))
                     ? f(path, "%o/build/%o/%o", install, owner, name)
                     : f(path, "%o/build/%o", install, name);
+    // a module product owns install/build/<module> (the qemu launcher);
+    // a dep whose owner is that same name (qemu:qemu) would build into
+    // install/build/qemu/ and collide. namespace such a dep under .<owner>.
+    path build_top  = (owner && len(owner)) ? parent_dir(build_f) : build_f;
+    bool name_clash = owner && len(owner) && a->name && eq(owner, a->name->chars);
+    if (name_clash || (file_exists("%o", build_top) && !dir_exists("%o", build_top)))
+        build_f = (owner && len(owner))
+                ? f(path, "%o/build/.%o/%o", install, owner, name)
+                : f(path, "%o/build/.%o", install, name);
     path rust_f     = f(path, "%o/Cargo.toml", project_f);
     path meson_f    = f(path, "%o/meson.build", project_f);
     // --uninstall: cmake's install_manifest.txt is the ledger of what this
@@ -9481,7 +9494,8 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
     path silver_f   = f(path, "%o/%o/%o.ag", project_f, msel, msel);
     path gn_f       = f(path, "%o/BUILD.gn", project_f);
     bool is_rust    = file_exists("%o", rust_f);
-    bool is_meson   = file_exists("%o", meson_f);
+    // a checked-in configure is the entry (qemu wraps meson in one)
+    bool is_meson   = file_exists("%o", meson_f) && !file_exists("%o/configure", project_f);
     bool is_cmake   = file_exists("%o", cmake_f);
     bool is_gn      = file_exists("%o", gn_f);
     bool is_silver  = file_exists("%o", silver_f);
@@ -9586,8 +9600,8 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
 
         string x_meson = device_meson_cross(a);
         checkout_verify(a, label, "setup", "setup",
-            f(command, "%o meson setup %o --prefix=%o --buildtype=%s %o%o",
-              cenv, build_f, install, build, x_meson, config));
+            f(command, "%o meson setup %o %o --prefix=%o --libdir=lib --buildtype=%s %o%o",
+              cenv, build_f, project_f, install, build, x_meson, config));
 
         checkout_verify(a, label, "build", "compile",
             f(command, "%o meson compile -C %o", cenv, build_f));
@@ -9684,18 +9698,19 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
             }
             if (file_exists("%o/%o", project_f, configure)) {
                 checkout_verify(a, label, "configure", "configure",
-                    f(command, "%o (cd %o && %o%s --prefix=%o %o%o)",
-                      cenv, project_f, configure,
+                    f(command, "(cd %o && %o %o%s --prefix=%o %o%o)",
+                      project_f, cenv, configure,
                       debug ? " --enable-debug" : "",
                       install, x_host, config));
             }
         }
 
         path Makefile = f(path, "%o/Makefile", project_f);
-        if (file_exists("%o", Makefile))
+        // `>` lines are the whole build when given (linux: no make install)
+        if (file_exists("%o", Makefile) && !(prebuild && len(prebuild)))
             checkout_verify(a, label, "build", "make",
-                f(command, "%o (cd %o && make PREFIX=%o -f %o install)",
-                  cenv, project_f, install, Makefile));
+                f(command, "(cd %o && %o make PREFIX=%o -j16 install)",
+                  project_f, cenv, install));
     }
 
     run_import_commands(a, label, postbuild,
@@ -10067,7 +10082,7 @@ string compile_implements(silver a, array files, string cflags) {
         string base_inc = a->base_install ?
             f(string, " -I%o/include -I%o/include/Au", a->base_install, a->base_install) : string("");
         string cmd = f(string, "%o/bin/%s %s %s %s %o %o %s -w -c %o -o %o -I%o/include/%o -I%o/include -I%o/include/Au%o",
-            tool_root, compiler, std_flag, lang_flag, sysroot_flag, own_link, cflags, a->debug ? "-g" : "", i, i_name, install, st, install, install, base_inc);
+            tool_root, compiler, std_flag, lang_flag, sysroot_flag, own_link, cflags, a->debug ? "-g" : "-O2", i, i_name, install, st, install, install, base_inc);
         if (a->verbose) print("[%o] %o", a->name, cmd);
         verify(exec(a->verbose, "%o", cmd) == 0, "failed to compile %o", i);
         au_exec_prefix(null);
@@ -10345,7 +10360,7 @@ none silver_build_product(silver a) {
             // SAME sources, and without them vendored headers (vk_mem_alloc.h)
             // bury the output in -Wnullability-completeness
             verify(exec(a->verbose, "%o/%s %o%s %o%s %s %o %s -c %o -o %o -I%o/include/%o -I%o/include -I%o/include/Au -I%s/platform/%o/include",
-                tools, compiler, tgt, std_flag, cxx_abi, lang_flag, core_warn, ccflags, a->debug ? "-g" : "", i, i_name, install, st, install, install, SILVER, target_dir(a)) == 0,
+                tools, compiler, tgt, std_flag, cxx_abi, lang_flag, core_warn, ccflags, a->debug ? "-g" : "-O2", i, i_name, install, st, install, install, SILVER, target_dir(a)) == 0,
                 "failed to compile %o (platform: %o)", i, a->platform);
             if (len(objs)) append(objs, " ");
             concat(objs, i_name);
@@ -11703,6 +11718,8 @@ enode parse_import(silver a) {
         cc       = bb && read_if(a, ":") ? expect_alpha(a) : null;
 
         mod = find_module((cstr)aa->chars);
+        // the module being compiled is never its own import (qemu:qemu)
+        if (mod == a->autype) mod = null;
         Au_t f = mod ? f : find_type((cstr)aa->chars, null);
 
         if (mod) {
@@ -11798,6 +11815,14 @@ enode parse_import(silver a) {
         }
     }
 
+    // `from <url>` names the repo; it must be read before the body
+    // read below swallows the rest of the line as config
+    if (read_if(a, "from")) {
+        token ut = read_compacted(a); // the lexer split https://host/owner/project
+        validate(ut, "expected uri");
+        uri = hold(string(ut->chars));
+    }
+
     map define_map = null;
     bool import_cpp = false;
     array b = hold(import_conditionals(a, read_body(a)));
@@ -11877,11 +11902,6 @@ enode parse_import(silver a) {
         set(a->frameworks, framework_name(framework), _bool(true));
         if (!len(includes))
             push(includes, (Au)f(path, "%o/%o.h", framework, framework));
-    }
-
-    if (read_if(a, "from")) {
-        uri = hold(read_alpha(a)); // todo: compact neighboring tokens with https:// and git://
-        validate(uri, "expected uri");
     }
 
     if (is_framework_import) {
@@ -11969,8 +11989,9 @@ enode parse_import(silver a) {
             string str_mpath = join(mpath, "/") ? cc : string("");
             path_str = len(str_mpath) ? f(string, "blob/%o/%o", commit, str_mpath) : string("");
         }
-        uri = f(string, "https://%o/%o/%o%s%o", service, user, project,
-                cast(bool, path_str) ? "/" : "", path_str);
+        if (!uri) // `from` named the repo already
+            uri = f(string, "https://%o/%o/%o%s%o", service, user, project,
+                    cast(bool, path_str) ? "/" : "", path_str);
     }
 
     validate(!with_exts || (module_source && !is_codegen),
@@ -14952,7 +14973,6 @@ etype silver_read_def(silver a, interface access) {
 // importing 
 int main(int argc, cstrs argv) {
     setvbuf(stdout, NULL, _IONBF, 0);   // TEMP
-    aether_error_prelude = progress_clear_line;
 #ifdef _WIN32
     // there is no rpath here: a module we dlopen finds its own dependencies
     // (opencv, OpenEXR, ...) through PATH, so put our directories first
