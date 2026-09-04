@@ -1,10 +1,19 @@
 # colortest — one solid color: proves a display path end to end
 export 1.0.0
 
+import vec
+import img
 import trinity
 
-element main : trinity
+element colortest : trinity
     public width      : i32    [ 1280 ]
     public height     : i32    [ 800 ]
     public title      : string [ 'colortest' ]
-    public background : string [ '#ff8800' ]
+
+    func init []
+        animated = true
+
+    # the actual clear color: a direct GPU clear of the screen canvas
+    public func on_canvas [ cv: Canvas ]
+        if [ !cv ] return
+        cv.reset[ vec4f[ 1.0, 0.0, 1.0, 1.0 ] ]

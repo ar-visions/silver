@@ -2189,7 +2189,7 @@ declare_class_4(const_tokens, tokens, array, collective)
 // the .f wire format. ONE definition: the writer lives in silver.c and the
 // reader in Au.c, and a version that moved on only one side would either
 // reject every map or silently misparse it
-#define SILVER_FMT_VERSION  4u            // v4: line-major records
+#define SILVER_FMT_VERSION  5u            // v5: + per-line scope
 #define SILVER_FMT_MAGIC    0x53464D54u   // 'SFMT'
 #define SILVER_FMT_SECTION  0xC0DEFACEu
 #define SILVER_FMT_END      0x00000000u
@@ -2202,15 +2202,26 @@ declare_class_4(const_tokens, tokens, array, collective)
     M(AA,BB, i, prop, public, num,    decl_line)
 declare_class(fmt_token)
 
+// the Au_t a source line sits inside: its qualified name (Class.method) and
+// the line it was declared on, so a reader can name the scope and jump to it
+#define fmt_scope_module_ Au
+#define fmt_scope_schema(AA,BB,...) \
+    M(AA,BB, i, prop, public, string, name) \
+    M(AA,BB, i, prop, public, num,    line)
+declare_class(fmt_scope)
+
 // one file's section of the map: canonical source path, its mtime, and its
 // lines — one array of fmt_token per source line, so an editor line edit is
 // a structural insert/remove, never a renumbering of every later token.
+// scopes runs parallel to lines: scopes[L] is the innermost definition line
+// L is inside (name empty when it is inside none).
 // produced by path.read_format (the single shared .f loader for silver + orbiter).
 #define fmt_file_module_ Au
 #define fmt_file_schema(AA,BB,...) \
     M(AA,BB, i, prop, public, string, source) \
     M(AA,BB, i, prop, public, i64,    mtime) \
-    M(AA,BB, i, prop, public, Au,     lines)
+    M(AA,BB, i, prop, public, Au,     lines) \
+    M(AA,BB, i, prop, public, Au,     scopes)
 declare_class(fmt_file)
 
 #define path_module_ Au

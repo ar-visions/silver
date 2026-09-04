@@ -231,12 +231,15 @@ Layer CommitLayer
                 el [ ti == cb.chip_hov ]
                     cv.fill_color  [ rgba['#6cb6ff22'] ]
                     cv.stroke_color[ rgba['#6cb6ffcc'] ]
+                    # mouse over: glow in the same colour as the border
+                    cv.inner_glow  [ rgba['#6cb6ffcc'], 14.0 ]
                 el
                     cv.fill_color  [ rgba['#10142088'] ]
                     cv.stroke_color[ rgba['#fff3'] ]
                 cv.stroke_width[ (act9) ? 2.0 : 1.0 ]
                 cv.rounded_rect[ bounds.x + 4.0, tyy, 60.0, 64.0, 8.0, 8.0, 8.0, 8.0 ]
                 cv.paint       [ ]
+                cv.inner_glow  [ rgba['#0000'], 0.0 ]
                 cv.stroke_width[ 0.0 ]
                 tico : SVGModel ed.ficons.named[ tnm, 36 ]
                 if [ tico ]
@@ -296,6 +299,8 @@ Layer CommitLayer
             cv.fill_color[ cb.theme_rgba['#220022aa'] ]
             cv.stroke_width[ 1.0 ]
             cv.stroke_color[ (dirty) ? cb.theme_rgba['#ffffff'] : ((thov) ? cb.theme_rgba['#ff7aa4cc'] : cb.theme_rgba['#ff5a8a99']) ]
+            # mouse over: glow in the same colour as the border
+            if [ thov ] cv.inner_glow[ cb.theme_rgba['#ff7aa4cc'], 12.0 ]
             cv.rect_to[ tx, ty + 3.0, 144.0, lh - 6.0 ]
             cv.paint[ ]
             cv.restore[ ]
@@ -418,7 +423,7 @@ Layer CommitLayer
                 vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
         # the browse list rides the same scroll, below the band; a
         # 4px breath keeps the hover clear of the divider
-        cv.font_size[ 18 ]
+        cv.font_size[ 16 ]
         ltm : cv.measure_text[ 'x' ]
         ly : f32 [ yb + f32[ band9 ] * lh + ((band9 > 0) ? 8.0 : 0.0) ]
         nls : i32 [ 0 ]
@@ -477,7 +482,7 @@ Layer CommitLayer
                     cv.draw_text[ ndl9,
                         rect [ x: nbx + nfw + 12.0, y: ry, w: ndw, h: 30.0 ],
                         vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
-                    cv.font_size[ 18 ]
+                    cv.font_size[ 16 ]
                     continue
                 if [ nls - 1 == cb.hov_list ]
                     cv.save[ ]
@@ -485,6 +490,8 @@ Layer CommitLayer
                     cv.fill_color[ rgba['#ff6a2e2a'] ]
                     cv.stroke_width[ 1.0 ]
                     cv.stroke_color[ rgba['#ff8a3a99'] ]
+                    # mouse over: glow in the same colour as the border
+                    cv.inner_glow[ rgba['#ff8a3a99'], 12.0 ]
                     cv.rect_to[ x0 + 2.0, ry + 1.0, bounds.x + bounds.w - x0 - 22.0, 28.0 ]
                     cv.paint[ ]
                     cv.restore[ ]
@@ -522,10 +529,42 @@ Layer CommitLayer
                     cv.stroke_color[ rgba['#ffffff'] ]
                     cv.draw_svg[ ico, x0 + 8.0, round[ ry + 4.5 ], 21.0, 21.0 ]
                     tx0 = x0 + 37.0
+                # a module dir gets a FIXED name column so its extension chips
+                # line up across every row; everything else keeps the full width
+                exl9 : cb.ext_list[ h ]
+                has9 : bool [ exl9.count > 0 ]
+                nmw9 : f32 [ (has9) ? 240.0 : bounds.x + bounds.w - tx0 - 24.0 ]
+                cv.font_size[ 16 ]
                 cv.fill_color[ (h.is_dir) ? rgba['#6cb6ff'] : rgba['#fff'] ]
                 cv.draw_text[ nm,
-                    rect [ x: tx0, y: ry, w: bounds.x + bounds.w - tx0 - 24.0, h: 30.0 ],
-                    vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+                    rect [ x: tx0, y: ry, w: nmw9, h: 30.0 ],
+                    vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null ]
+                # one-click chips for the module's own sources, sitting inside
+                # the row's full-width selection; each highlights on its own
+                if [ has9 ]
+                    ecw9 : f32 [ 34.0 ]
+                    egp9 : f32 [ 2.0 ]
+                    ex9  : f32 [ tx0 + nmw9 + 8.0 ]
+                    cb.ext_x0 = ex9 - bounds.x
+                    # chips read as a small tag, not a second filename
+                    cv.font_size[ 12 ]
+                    for [ ei9: i32 0, ei9 < exl9.count, ei9 += 1 ]
+                        cxx9 : f32 [ ex9 + f32[ ei9 ] * (ecw9 + egp9) ]
+                        ehv9 : bool [ nls - 1 == cb.hov_list && ei9 == cb.hov_ext ]
+                        cv.save[ ]
+                        cv.rounded[ 5.0, 5.0, 5.0, 5.0 ]
+                        cv.fill_color[ (ehv9) ? rgba['#6cb6ff33'] : rgba['#ffffff10'] ]
+                        cv.stroke_width[ 1.0 ]
+                        cv.stroke_color[ (ehv9) ? rgba['#8fd0ff'] : rgba['#ffffff33'] ]
+                        if [ ehv9 ] cv.inner_glow[ rgba['#8fd0ff'], 10.0 ]
+                        cv.rect_to[ cxx9, ry + 4.0, ecw9, 22.0 ]
+                        cv.paint[ ]
+                        cv.restore[ ]
+                        cv.fill_color[ (ehv9) ? rgba['#ffffff'] : rgba['#b9b2cc'] ]
+                        cv.draw_text[ exl9[ ei9 ],
+                            rect [ x: cxx9, y: ry, w: ecw9, h: 30.0 ],
+                            vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+                    cv.font_size[ 16 ]
                 if [ h.dir && h.dir.count > 0 ]
                     fnw : f32 [ cv.measure_text[ nm ].w ]
                     col : f32 [ bounds.x + bounds.w * 0.5 ]
@@ -548,6 +587,12 @@ element CommitView
     # hovered browse-list display row
     mutable hov_list : i32 [ -1 ]
     mutable chip_hov : i32 [ -1 ]
+    # module row: hovered extension chip (.ag/.cc/.rs/.c), -1 = none.
+    # ext_x0 is where the chips start, relative to bounds.x (draw sets it)
+    mutable hov_ext  : i32 [ -1 ]
+    mutable ext_x0   : f32 [ 0.0 ]
+    # dir -> space-joined extensions that exist; a stat per frame is not free
+    mutable ext_c    : map string [string]
     # THIS view's commit form: no tab ever sees another's state
     mutable commit_open : bool
     mutable commit_text : vec string
@@ -586,6 +631,24 @@ element CommitView
             thumb_radius: 4.0
     }
     mutable sb_drag : bool
+
+    # a module dir holds <stem>/<stem>.ag and friends. return the ones that
+    # actually exist so the row can offer them as one-click chips. cached by
+    # dir: this is asked for every visible module row, every frame
+    func ext_list [ h: FindHit ] -> vec string
+        none9 : vec string [ ]
+        if [ !h || !h.is_module || !h.file || h.text.count == 0 ] return none9
+        if [ !ext_c ] ext_c = map string [string] [ ]
+        k9 : '{h.file}'
+        if [ !ext_c.contains[ k9 ] ]
+            s9 : string ''
+            for [ x9: string ] in vec string [] [ 'ag', 'cc', 'rs', 'c' ]
+                p9 : path '{h.file}/{h.text}.{x9}'
+                if [ p9.exists[] ] s9 = (s9.count > 0) ? '{s9} {x9}' : '{x9}'
+            ext_c[ k9 ] = s9
+        v9 : ext_c[ k9 ]
+        if [ !v9 || v9.count == 0 ] return none9
+        return v9.split[ ' ' ]
 
     func lay [] -> CommitLayer
         return (layers) ? cast CommitLayer [ layers['content'] ] : null
@@ -685,6 +748,7 @@ element CommitView
             hov_tab  = -1
             hov_ctl  = -1
             hov_list = -1
+            hov_ext  = -1
             chip_hov = -1
             pristine = false
 
@@ -709,6 +773,7 @@ element CommitView
         nctl : i32 [ -1 ]
         nlst : i32 [ -1 ]
         nchp : i32 [ -1 ]
+        next9 : i32 [ -1 ]
         if [ rx < 68.0 ]
             # chips are fixed: undo the scroll the event carries
             ryf : f32 [ ry - scroll.y ]
@@ -736,12 +801,20 @@ element CommitView
                     el [ rx >= ndx0 && rx <= ndx1 ] nctl = 4
                 el
                     nlst = r - band_st
-        if [ nrow != hov_row || ntab != hov_tab || nctl != hov_ctl || nlst != hov_list || nchp != chip_hov ]
+                    # module row: which extension chip is under the cursor
+                    exm9 : ext_list[ hf9 ]
+                    if [ exm9.count > 0 && rx >= ext_x0 ]
+                        ecs9 : f32 [ 36.0 ]
+                        ci9  : i32 [ i32[ (rx - ext_x0) / ecs9 ] ]
+                        if [ ci9 >= 0 && ci9 < exm9.count && (rx - ext_x0) - f32[ ci9 ] * ecs9 <= 34.0 ]
+                            next9 = ci9
+        if [ nrow != hov_row || ntab != hov_tab || nctl != hov_ctl || nlst != hov_list || nchp != chip_hov || next9 != hov_ext ]
             hov_row  = nrow
             hov_tab  = ntab
             hov_ctl  = nctl
             hov_list = nlst
             chip_hov = nchp
+            hov_ext  = next9
             pristine = false
             ux.will_animate = true
 
@@ -845,6 +918,16 @@ element CommitView
                     o.pending_finder = pane
                     if [ ux ] ux.restyle = true
                 return
+            # an extension chip opens that source directly — the whole point
+            # is not having to walk into the module folder to reach its .ag
+            exp9 : ext_list[ h ]
+            if [ exp9.count > 0 && rx >= ext_x0 ]
+                ecs9 : f32 [ 36.0 ]
+                cp9  : i32 [ i32[ (rx - ext_x0) / ecs9 ] ]
+                if [ cp9 >= 0 && cp9 < exp9.count && (rx - ext_x0) - f32[ cp9 ] * ecs9 <= 34.0 ]
+                    o.open_in_pane[ path '{h.file}/{h.text}.{exp9[ cp9 ]}', pane ]
+                    o.exit_finder[]
+                    return
             if [ h.is_dir && h.file ]
                 o.nav_root = h.file
                 scroll.y    = 0.0

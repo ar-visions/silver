@@ -1252,6 +1252,20 @@ Mixable Glow
         if [ aa.count >= 2 ]
             blur = f32 aa[1].real_value[]
 
+    # a transition calls mix[] on the Mixable. without this override the base
+    # returns an empty Mixable, so a glow SNAPS instead of animating — which
+    # is why `inner_glow: ..., 200ms cubic` did nothing
+    public func mix [ b: Mixable, f: f64 ] -> Mixable
+        o : Glow [ b ]
+        if [ !o ] return a
+        t : f32 [ f32[ f ] ]
+        return Glow [
+            blur:  blur + (o.blur - blur) * t,
+            color: rgba [ r: color.r + (o.color.r - color.r) * t,
+                          g: color.g + (o.color.g - color.g) * t,
+                          b: color.b + (o.color.b - color.b) * t,
+                          a: color.a + (o.color.a - color.a) * t ] ]
+
 # only for background elements
 Mixable Transform
     public offset   : vec2f

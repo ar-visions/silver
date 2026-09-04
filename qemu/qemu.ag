@@ -27,6 +27,7 @@ import dbus_display
     -lglib-2.0
 
 import trinity
+import img
 import vec
 import <stdio.h>
 import <stdlib.h>
@@ -53,8 +54,9 @@ element qemu : trinity
     public  memory     : i32                 # guest ram in MB
     public  gpu        : bool                # venus: guest vulkan on the host gpu
     public  serial     : path                # guest console log
+    public  log        : path                # qemu guest errors + scanout trace
     mutable pid        : i32
-    mutable sock       : i32
+    mutable sock       : i32    [ -1 ]       # dealloc runs on never-inited copies
     mutable sock_path  : string
     mutable fb         : @u8                 # guest pixels, rgba8
     mutable fb_w       : i32
@@ -73,7 +75,6 @@ element qemu : trinity
     func init []
         animated  = true
         focusable = true
-        sock      = -1
         if [ memory == 0 ] memory = 1024
         if [ src ] title = '{src.filename[]}'
 
@@ -88,12 +89,13 @@ element qemu : trinity
         unlink[ sock_path.chars ]
         root : path.path_startup[]
         qbin : path '{root}/install/bin/qemu-system-x86_64'
-        cmd : string '{qbin} -m {memory} -display dbus,gl=on,p2p=on -qmp unix:path={sock_path},server=on,wait=off'
+        cmd : string '{qbin} -m {memory} -smp 4 -display dbus,gl=on,p2p=on -qmp unix:path={sock_path},server=on,wait=off'
         if [ gpu ]
             cmd = cmd + ' -device virtio-vga-gl,venus=true,blob=true,hostmem=4G'
             cmd = cmd + ' -device virtio-keyboard-pci -device virtio-tablet-pci'
         el cmd = cmd + ' -device virtio-vga-gl'
         if [ serial ] cmd = cmd + ' -serial file:"{serial}"'
+        if [ log ] cmd = cmd + ' -D "{log}" -d guest_errors'
         if [ access[ '/dev/kvm', R_OK | W_OK ] == 0 ] cmd = cmd + ' -enable-kvm -cpu host'
         if [ kernel ] cmd = cmd + ' -kernel "{kernel}"'
         if [ initrd ] cmd = cmd + ' -initrd "{initrd}"'
@@ -432,6 +434,7 @@ element qemu : trinity
         # qemu emits transient oversized scanouts on mode changes; keep the
         # last good frame instead of showing a wrong-sized one
         if [ sw > 2560 || sh > 1600 || sw <= 0 || sh <= 0 ]
+            if [ sgen != tex_gen ] puts 'qemu: dropped scanout {sw}x{sh}'
             close[ dfd ]
             if [ !tex ] return
             ar2 : f32 [ f32[ fb_w ] / f32[ fb_h ] ]
@@ -446,7 +449,12 @@ element qemu : trinity
             return
         if [ sgen != tex_gen ]
             puts 'qemu: scanout {sw}x{sh} stride {sstride} fourcc {sfourcc} mod {smod}'
-            tex = cv.vk.import_scanout_tex[ dfd, sw, sh, 44, sstride, smod, cv.w ]   # 44 = VK_FORMAT_B8G8R8A8_UNORM
+            # XB24/AB24 (X/A-BGR) are R,G,B,X in memory = R8G8B8A8_UNORM (37);
+            # XR24/AR24 (X/A-RGB) are B,G,R,X in memory = B8G8R8A8_UNORM (44)
+            xb24 : u32 [ 875709016 ]         # DRM_FORMAT_XBGR8888
+            ab24 : u32 [ 875708993 ]         # DRM_FORMAT_ABGR8888
+            vfmt : i32 [ (sfourcc == xb24 || sfourcc == ab24) ? 37 : 44 ]
+            tex = cv.vk.import_scanout_tex[ dfd, sw, sh, vfmt, sstride, smod, cv.w ]
             if [ tex ] tex.transition[ 5 ]   # VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
             tex_gen = sgen
             tex_y0  = sy0 != 0
@@ -467,6 +475,7 @@ element qemu : trinity
         el cv.draw_image[ tex, fit ]
 
     func dealloc []
+        if [ !started ] return           # render copies never launched anything
         stop = true
         if [ sock >= 0 ] shutdown[ sock, SHUT_RDWR ]
         while [ running ] usleep[ 2000 ]

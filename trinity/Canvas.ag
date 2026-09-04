@@ -567,8 +567,13 @@ shader CanvasUI
                 float hf_p   = smoothstep(-wp, wp, dv_p - dh_p);
                 float sw_p   = sw_h_p * hf_p + sw_v_p * (1.0 - hf_p);
                 float nd_p   = -dist_p;
+                // cap the AA to half the stroke: for a thin (~1px) stroke the
+                // ~1px AA on each edge would otherwise overlap and the stroke
+                // never reaches full opacity — the "1px looks like a blurry
+                // 2px" bug. clamped, a 1px stroke fills its pixel solid.
+                float aa_p   = min(wp, sw_p * 0.5);
                 stroke_cov = (sw_p > 0.0 && stroke_width > 0.0)
-                    ? smoothstep(-wp, wp, nd_p) * (1.0 - smoothstep(sw_p - wp, sw_p + wp, nd_p))
+                    ? smoothstep(-aa_p, aa_p, nd_p) * (1.0 - smoothstep(sw_p - aa_p, sw_p + aa_p, nd_p))
                     : 0.0;
             }}
 
@@ -1768,6 +1773,10 @@ Render Canvas
 
     func transform_ty [] -> f32
         return states[state_depth - 1].transform.ty
+
+    # device-pixel scale of the current transform (pixels per logical unit)
+    func transform_scale [] -> f32
+        return states[state_depth - 1].transform.ma
 
     func set_crop [ x0: f32, y0: f32, x1: f32, y1: f32 ]
         states[state_depth - 1].crop = vec4f [ x0, y0, x1, y1 ]

@@ -11,6 +11,12 @@ Option NodeList
         return 0
     func row_label [ i: i32 ] -> string
         return ''
+    # two-column rows: left/right cells drawn at a fixed gutter so they
+    # align down the list (empty left = single-label row_label mode)
+    func row_col0 [ i: i32 ] -> string
+        return ''
+    func row_col1 [ i: i32 ] -> string
+        return ''
     func activate [ idx: i32 ]
         return
 
@@ -83,6 +89,8 @@ Layer NodeLayer
     public sel_color   : string
     public sel_radius  : f32
     public text_color  : string
+    # left-column width in px; >0 switches rows to two aligned columns
+    public col_w       : f32
 
     func draw [ cv: Canvas ]
         nl : NodeList[ parent ]
@@ -121,9 +129,27 @@ Layer NodeLayer
                 cv.paint[]
                 cv.restore[]
             cv.fill_color[ (text_color) ? text_color : '#d4d4d4' ]
-            cv.draw_text[ nl.row_label*[ i ],
-                rect [ x: x0 + 8.0, y: y, w: bounds.w - 16.0, h: lh ],
-                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+            if [ col_w > 0.0 ]
+                # left column, a thin divider, then the right column — the
+                # gutter is fixed so every row lines up
+                cv.draw_text[ nl.row_col0*[ i ],
+                    rect [ x: x0 + 8.0, y: y, w: col_w - 6.0, h: lh ],
+                    vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null ]
+                dx : f32 [ x0 + 8.0 + col_w ]
+                cv.fill_color[ (text_color) ? text_color : '#d4d4d4' ]
+                cv.draw_text[ nl.row_col1*[ i ],
+                    rect [ x: dx + 10.0, y: y, w: bounds.w - (col_w + 26.0), h: lh ],
+                    vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null ]
+            el
+                cv.draw_text[ nl.row_label*[ i ],
+                    rect [ x: x0 + 8.0, y: y, w: bounds.w - 16.0, h: lh ],
+                    vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+        # one solid divider down the whole column, not a dash per row
+        if [ col_w > 0.0 ]
+            cv.fill_color[ '#ffffff26' ]
+            cv.stroke_width[ 0.0 ]
+            cv.rect_to[ x0 + 8.0 + col_w, bounds.y, 1.0, bounds.h ]
+            cv.paint[]
         cv.clear_crop[]
 
 class Frame
@@ -142,6 +168,7 @@ NodeList Callstack
             label_size: 15
             row_spacing: 1.2
             text_color: #cfe
+            col_w: 150
     }
     public frames : vec Au
 
@@ -149,11 +176,28 @@ NodeList Callstack
         if [ !frames ] return 0
         return frames.count
 
-    func row_label [ i: i32 ] -> string
-        if [ !frames || i < 0 || i >= frames.count ] return ''
-        f : Frame frames[i]
+    func fr [ i: i32 ] -> Frame
+        if [ !frames || i < 0 || i >= frames.count ] return null
+        return Frame frames[i]
+
+    # left column: filename:line. right column: function name (reversed
+    # from the usual, per the design)
+    func row_col0 [ i: i32 ] -> string
+        f : Frame fr[ i ]
+        if [ !f ] return ''
         fn : string [ (f.file) ? f.file.filename[] : '' ]
-        return '{f.func_name}   {fn}:{f.line}'
+        return '{fn}:{f.line}'
+
+    func row_col1 [ i: i32 ] -> string
+        f : Frame fr[ i ]
+        return (f) ? f.func_name : ''
+
+    # kept for the filter (row_match searches this)
+    func row_label [ i: i32 ] -> string
+        f : Frame fr[ i ]
+        if [ !f ] return ''
+        fn : string [ (f.file) ? f.file.filename[] : '' ]
+        return '{fn}:{f.line} {f.func_name}'
 
     func activate [ idx: i32 ]
         return
