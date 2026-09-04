@@ -1689,8 +1689,11 @@ Layer EditorLayer
                     if [ slot.canvas && slot.hash == rhash ]
                         slot.frame = editor.cl_frame
                         break
-        # composite the glyph canvas back through the edge fade
-        editor.text_blit[ cv, bounds, fade_t, fade_r, fade_b, fade_l ]
+        # composite the glyph canvas back through the edge fade. the pinned
+        # band pushes the top shadow down so it falls from under the band
+        pins : vec i32 editor.pinned_rows[]
+        pt   : f32 [ (showing) ? 0.0 : f32[ pins.count ] * lh ]
+        editor.text_blit[ cv, bounds, fade_t, fade_r, fade_b, fade_l, pt ]
         for [ li: i32 0, li < editor.line_count[], li += 1 ]
             y : f32 [ round[ y0 + f32[li] * lh - editor.scroll.y ] ]
             # ctrl/cmd held: outline every token that resolves, so the
@@ -2113,15 +2116,14 @@ Layer EditorLayer
 
         # the scopes the view is inside stay drawn at the top, over the rows
         # they would otherwise scroll past. a click on one goes there
-        pins : vec i32 editor.pinned_rows[]
         if [ pins.count > 0 && !showing ]
             cmt_p : rgba['#7a8290']
-            cv.font_size[ code_fs ]
+            cv.font_size[ num_fs ]
             for [ pi: i32 0, pi < pins.count, pi += 1 ]
                 pr : i32 [ pins[ pi ] ]
                 pn : i32 [ pr + 1 ]
                 py : f32 [ round[ bounds.y + f32[ pi ] * lh ] ]
-                cv.fill_color[ rgba['#16161cf0'] ]
+                cv.fill_color[ (pi == editor.hover_pin) ? rgba['#534'] : rgba['#312'] ]
                 cv.stroke_width[ 0.0 ]
                 cv.rect_to[ bounds.x, py, bounds.w, lh ]
                 cv.paint[ ]
@@ -2134,7 +2136,7 @@ Layer EditorLayer
                     cv.draw_canvas[ slc.canvas, x0, py,
                         f32[ slc.canvas.content_w ], f32[ slc.canvas.content_h ] ]
             cv.fill_color[ rgba['#ffffff26'] ]
-            cv.rect_to[ bounds.x, round[ bounds.y + f32[ pins.count ] * lh ], bounds.w, 1.0 ]
+            cv.rect_to[ bounds.x, round[ bounds.y + f32[ pins.count ] * lh ] - 1.0, bounds.w, 1.0 ]
             cv.paint[ ]
 
 
@@ -2290,6 +2292,9 @@ Control Editor
     public  replacing     : bool
     # append LAST: member order sets AF bit indices
     mutable fade_r        : f32 [ -1.0 ]
+    mutable fade_p        : f32 [ 0.0 ]
+    # pinned band row under the mouse, -1 outside it
+    mutable hover_pin     : i32 [ -1 ]
 
     func bp_color [ cond: string ] -> rgba
         if [ cond && cond.count > 0 ] return rgba['#3b82f638']   # conditional
@@ -2804,22 +2809,22 @@ Control Editor
                 regs.push[ ColorRegion [ col: i32 tk.column, len: i32 tk.length, color: fmt_theme[ i32 tk.syntax ], kind: i32 tk.syntax, dsrc: tk.decl_source, dline: i32 tk.decl_line ] ]
             buf.line_regs.push[ regs ]
 
-    # the definition the top line in view sits inside, by the map's scopes
-    public func scope_at [] -> string
+    # the definition a source row sits inside, by the map's scopes
+    func scope_name_at [ row: i32 ] -> string
         if [ !cur_buf || !cur_buf.line_scope ] return null
         scopes : vec Au cur_buf.line_scope
-        lh  : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
-        top : i32 [ scroll.y / lh ]
-        if [ top < 0 || top >= scopes.count ] return null
-        entry : fmt_scope scopes[ top ]
+        if [ row < 0 || row >= scopes.count ] return null
+        entry : fmt_scope scopes[ row ]
         if [ !entry || !entry.name || entry.name.count == 0 ] return null
         return entry.name
 
-    # the line a scope was declared on, by its qualified name
-    public func scope_line [ name: string ] -> i32
+    # the line a scope was declared on, by its qualified name: the nearest
+    # one at or above row, since two ifdef branches can share a name
+    public func scope_line [ name: string, row: i32 ] -> i32
         if [ !cur_buf || !cur_buf.line_scope || !name ] return -1
         scopes : vec Au cur_buf.line_scope
-        for [ i: i32 0, i < scopes.count, i += 1 ]
+        from   : i32 [ (row < scopes.count) ? row : i32[ scopes.count ] - 1 ]
+        for [ i: i32 from, i >= 0, i -= 1 ]
             entry : fmt_scope scopes[ i ]
             if [ entry && entry.name && entry.name == name ] return i32 entry.line
         return -1
@@ -2828,17 +2833,36 @@ Control Editor
     # visible row is inside, each only once its own row has scrolled off
     public func pinned_rows [] -> vec i32
         rows : vec i32 []
-        name : string scope_at[]
-        if [ !name || name.count == 0 || show_hits || flat_active ] return rows
-        lh  : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
-        top : i32 [ scroll.y / lh ]
-        dot : i32 [ name.index_of[ '.' ] ]
-        if [ dot > 0 ]
-            head : i32 [ scope_line[ name.mid[ 0, dot ] ] ]
-            if [ head > 0 && head - 1 < top ] rows.push[ head - 1 ]
-        inner : i32 [ scope_line[ name ] ]
-        below : i32 [ top + i32[ rows.count ] ]
-        if [ inner > 0 && inner - 1 < below ] rows.push[ inner - 1 ]
+        if [ show_hits || flat_active ] return rows
+        lh   : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
+        top  : i32 [ scroll.y / lh ]
+        prev : i32 [ -1 ]
+        # each level reads the row just under the band as it stands, so a
+        # scope pins the moment its line slips under the band's edge. a
+        # level is one dotted part of the qualified name: record, function,
+        # then any ifdef branches inside
+        for [ level: i32 0, level < 8, level += 1 ]
+            row  : i32 [ top + i32[ rows.count ] ]
+            name : string scope_name_at[ row ]
+            if [ !name || name.count == 0 ] break
+            cut  : i32 [ name.count ]
+            seen : i32 [ 0 ]
+            for [ k: i32 0, k < name.count, k += 1 ]
+                if [ name[k] == 46 ]
+                    if [ seen == level ]
+                        cut = k
+                        break
+                    seen += 1
+            deepest : bool [ cut == name.count ]
+            want : string name.mid[ 0, cut ]
+            line : i32 [ scope_line[ want, row ] ]
+            drow : i32 [ line - 1 ]
+            # the innermost pins as soon as it touches the band, so the
+            # scope it replaces is never erased a row before it arrives
+            if [ line > 0 && (drow < row || (deepest && drow == row)) && drow != prev ]
+                rows.push[ drow ]
+                prev = drow
+            if [ deepest ] break
         return rows
 
     # put the caret on a 1-based line and bring it into view
@@ -3461,11 +3485,13 @@ Control Editor
         return text_canvas
 
     # white keeps, black hides: a straight ramp on whichever edges fade
-    func text_blit [ cv: Canvas, b: rect, ft: f32, fr: f32, fb: f32, fl: f32 ]
+    # pt: the pinned band's height; the mask starts under it, so the top
+    # shadow falls from the band's edge and the rows beneath it stay hidden
+    func text_blit [ cv: Canvas, b: rect, ft: f32, fr: f32, fb: f32, fl: f32, pt: f32 ]
         if [ !text_canvas ] return
         tw : i32 [ text_canvas.content_w ]
         th : i32 [ text_canvas.content_h ]
-        if [ ft <= 0.0 && fr <= 0.0 && fb <= 0.0 && fl <= 0.0 ]
+        if [ ft <= 0.0 && fr <= 0.0 && fb <= 0.0 && fl <= 0.0 && pt <= 0.0 ]
             cv.draw_canvas[ text_canvas, b.x, b.y, f32[ tw ], f32[ th ] ]
             return
         if [ !fade_mask ]
@@ -3475,20 +3501,21 @@ Control Editor
         el [ fade_mask.content_w != tw || fade_mask.content_h != th ]
             fade_mask.resize[ tw, th ]
         if [ fade_mask.content_w != fade_w || fade_mask.content_h != fade_h
-             || ft != fade_t || fr != fade_r || fb != fade_b || fl != fade_l ]
+             || ft != fade_t || fr != fade_r || fb != fade_b || fl != fade_l || pt != fade_p ]
             fade_w = fade_mask.content_w
             fade_h = fade_mask.content_h
             fade_t = ft
             fade_r = fr
             fade_b = fb
             fade_l = fl
+            fade_p = pt
             fade_mask.reset[ vec4f [ 0.0, 0.0, 0.0, 1.0 ] ]
             fade_mask.save[]
             fade_mask.glow_falloff[ 1.0 ]
             fade_mask.fill_color[ rgba['#fff'] ]
             fade_mask.inner_glow_sides[ rgba['#000'], ft, fr, fb, fl ]
             fade_mask.stroke_width[ 0.0 ]
-            fade_mask.rect_to[ 0.0, 0.0, f32[ tw ], f32[ th ] ]
+            fade_mask.rect_to[ 0.0, pt, f32[ tw ], f32[ th ] - pt ]
             fade_mask.paint[]
             fade_mask.restore[]
         cv.draw_canvas_masked[ text_canvas, fade_mask, b.x, b.y, f32[ tw ], f32[ th ] ]
@@ -3930,13 +3957,6 @@ Control Editor
         cw    : f32 [ (cw_cache > 0.0) ? cw_cache : 8.0 ]
         rel_y : f32 [ ev.mouse.pos.y - ele.bounds.y - ((show_hits) ? 10.0 : 0.0) ]
         if [ rel_y < 0.0 ] return false
-        # a pinned scope row: go to the declaration it stands in for
-        pins : vec i32 pinned_rows[]
-        if [ pins.count > 0 && rel_y < f32[ pins.count ] * lh ]
-            pi : i32 [ rel_y / lh ]
-            pr : i32 [ pins[ pi ] ]
-            goto_line[ pr + 1 ]
-            return true
         if [ grid_mode && show_hits && hits ]
             gli : i32 [ grid_hit_index[ ev.mouse.pos.x - ele.bounds.x, rel_y, ele.bounds.w ] ]
             if [ gli >= 0 ]
@@ -4007,6 +4027,28 @@ Control Editor
         if [ ux ] ux.restyle = true
 
     func on_press [ ev: Event ]
+        # the pinned band is drawn over everything: a press on one of its
+        # rows goes to that declaration and nothing else sees the press
+        pel  : (layers) ? cast EditorLayer [ layers['content'] ] : null
+        pins : vec i32 pinned_rows[]
+        if [ pel && pel.bounds && pins.count > 0 ]
+            plh  : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
+            # event pos is CONTENT space; the band is at the top of the VIEW
+            prel : f32 [ ev.mouse.pos.y - pel.bounds.y - scroll.y ]
+            if [ prel >= 0.0 && prel < f32[ pins.count ] * plh ]
+                pi : i32 [ prel / plh ]
+                pr : i32 [ pins[ pi ] ]
+                # the line lands exactly where its header row was, so the
+                # rows above it stay pinned and it reads as the same thing
+                sel_line      = pr
+                anchor_line   = pr
+                scroll.y      = f32[ pr - pi ] * plh
+                if [ scroll.y < 0.0 ] scroll.y = 0.0
+                scroll_target = scroll.y
+                pristine      = false
+                ev.no_default     = true
+                ev.no_propagation = true
+                return
         # the rail is first in line: nothing else may eat its press
         rail9 : i32 [ tool_hit[ ev.mouse.pos.x, ev.mouse.pos.y ] ]
         puts 'EDPRESS rv={(run_view) ? 1 : 0} av={(app_view) ? 1 : 0} rail={rail9} hits={(show_hits) ? 1 : 0}'
@@ -4227,6 +4269,19 @@ Control Editor
         if [ rel_y < 0 ]
             hl  = -1
             hg = false
+        # the pinned band hides the rows under it: the hover is the band's
+        pins : vec i32 pinned_rows[]
+        hp   : i32 [ -1 ]
+        # rel_y is CONTENT space; the band is at the top of the VIEW
+        vy   : f32 [ rel_y - scroll.y ]
+        if [ pins.count > 0 && vy >= 0.0 && vy < f32[ pins.count ] * lh ]
+            hl = -1
+            hg = false
+            hp = i32 [ vy / lh ]
+        if [ hp != hover_pin ]
+            hover_pin = hp
+            pristine  = false
+            ux.will_animate = true
         ha : i32 [ -1 ]
         if [ hl >= 0 && row_var[ hl ] == null ]
             bvh : variable base_var_of[ row_src[ hl ] ]

@@ -2032,6 +2032,47 @@ void silver_fmt_end(silver a) {
     rename(tmp->chars, a->format->chars);
 }
 
+// ifdef branches are scopes too, but they are not Au_t members: the parser
+// notes each one here (file, first line, last line of its block, name) and
+// write_fmt folds the ones for its file in as spans with a known end
+typedef struct { char* path; u32 line, end; char* name; } fmt_span;
+static fmt_span*       fmt_spans;
+static int             fmt_nspan, fmt_spancap;
+// parse runs on import threads too: the list grows under a lock
+static pthread_mutex_t fmt_span_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static void fmt_span_end(silver a, token kw, u32 end, cstr name) {
+    if (!a->format || !len(a->format) || !kw || !kw->source) return;
+    // an inline body (if [x] return) is a line, not a scope to keep in view
+    if (end <= (u32)kw->line) return;
+    path canon = absolute(kw->source);
+    cstr cp    = (canon && len(canon)) ? canon->chars : kw->source->chars;
+    pthread_mutex_lock(&fmt_span_lock);
+    // a lambda body is read again per instantiation: one span per site
+    bool have = false;
+    for (int i = 0; i < fmt_nspan && !have; i++)
+        if (fmt_spans[i].line == (u32)kw->line && strcmp(fmt_spans[i].name, name) == 0 &&
+            strcmp(fmt_spans[i].path, cp) == 0) have = true;
+    if (!have) {
+        if (fmt_nspan == fmt_spancap) {
+            fmt_spancap = fmt_spancap ? fmt_spancap * 2 : 64;
+            fmt_spans   = realloc(fmt_spans, fmt_spancap * sizeof(fmt_span));
+        }
+        fmt_spans[fmt_nspan].path = strdup(cp);
+        fmt_spans[fmt_nspan].line = (u32)kw->line;
+        fmt_spans[fmt_nspan].end  = end;
+        fmt_spans[fmt_nspan].name = strdup(name);
+        fmt_nspan++;
+    }
+    pthread_mutex_unlock(&fmt_span_lock);
+}
+
+static void fmt_span_put(silver a, token kw, array block, cstr name) {
+    if (!block || !len(block)) return;
+    token last = (token)get(block, len(block) - 1);
+    fmt_span_end(a, kw, (u32)last->line, name);
+}
+
 void silver_write_fmt(silver a, array toks) {
     if (!a->format || !a->format->count || !toks || !toks->count) return;
     path src = null;
@@ -2076,64 +2117,88 @@ void silver_write_fmt(silver a, array toks) {
     each(toks, token, t) if (t->line >= 1) { lcount[t->line - 1]++; nv++; }
 
     // SCOPES. what a line is INSIDE of, taken from the parsed module rather
-    // than re-read from text: every Au_t this file declares gives a name and
-    // the line it starts on, and depth is its nesting (record 1, member 2).
-    // a scope runs until the next declaration at the same or shallower depth
+    // than re-read from text: every record and function this file declares
+    // gives a name and the line it starts on, and every ifdef branch a span
+    // with a known end. nesting is what it is in silver -- indentation --
+    // so a scope holds until the next entry at its indent or shallower,
+    // and a span also ends where its block does
+    u32* lind = calloc(nlines ? nlines : 1, 4);      // first token's indent per line
+    u32* lset = calloc(nlines ? nlines : 1, 4);
+    each(toks, token, t)
+        if (t->line >= 1 && !lset[t->line - 1]) { lind[t->line - 1] = (u32)t->indent; lset[t->line - 1] = 1; }
     Au_t  mt_au = a->autype;
     u32   ndef  = 0;
     u32   dcap  = 64;
-    struct sdef { u32 line, depth; char* name; }* defs = malloc(dcap * sizeof(*defs));
-    #define SDEF_PUT(L, D, NM) do { \
-        if (ndef == dcap) { dcap *= 2; defs = realloc(defs, dcap * sizeof(*defs)); } \
-        defs[ndef].line = (u32)(L); defs[ndef].depth = (D); defs[ndef].name = (NM); ndef++; \
+    struct sdef { u32 line, end, indent; char* name; }* defs = malloc(dcap * sizeof(*defs));
+    #define SDEF_PUT(L, E, NM) do { \
+        if ((u32)(L) >= 1 && (u32)(L) <= nlines) { \
+            if (ndef == dcap) { dcap *= 2; defs = realloc(defs, dcap * sizeof(*defs)); } \
+            defs[ndef].line = (u32)(L); defs[ndef].end = (u32)(E); \
+            defs[ndef].indent = lind[(L) - 1]; defs[ndef].name = (NM); ndef++; \
+        } else free(NM); \
     } while (0)
     for (int i = 0; mt_au && i < mt_au->members.count; i++) {
         Au_t m = (Au_t)mt_au->members.origin[i];
         // a property is a line, not a scope: only records and functions nest
         if (!m || !m->ident || m->member_type == AU_MEMBER_VAR) continue;
         bool mine = m->source && m->src_line > 0 && strcmp(m->source, cp) == 0;
-        if (mine) SDEF_PUT(m->src_line, 1, strdup(m->ident));
+        if (mine) SDEF_PUT(m->src_line, 0, strdup(m->ident));
         for (int j = 0; j < m->members.count; j++) {
             Au_t s = (Au_t)m->members.origin[j];
             if (!s || !s->ident || !s->source || s->src_line <= 0) continue;
             if (s->member_type != AU_MEMBER_FUNC) continue;
             if (strcmp(s->source, cp) != 0) continue;
-            char* q = malloc(strlen(m->ident) + strlen(s->ident) + 2);
-            sprintf(q, "%s.%s", m->ident, s->ident);
-            SDEF_PUT(s->src_line, 2, q);
+            SDEF_PUT(s->src_line, 0, strdup(s->ident));
         }
     }
+    pthread_mutex_lock(&fmt_span_lock);
+    for (int i = 0; i < fmt_nspan; i++)
+        if (strcmp(fmt_spans[i].path, cp) == 0)
+            SDEF_PUT(fmt_spans[i].line, fmt_spans[i].end, strdup(fmt_spans[i].name));
+    pthread_mutex_unlock(&fmt_span_lock);
     #undef SDEF_PUT
-    for (u32 i = 1; i < ndef; i++) {                 // insertion sort: by line, then depth
+    for (u32 i = 1; i < ndef; i++) {                 // insertion sort by line
         struct sdef k = defs[i];
         int j = (int)i - 1;
-        while (j >= 0 && (defs[j].line > k.line ||
-                         (defs[j].line == k.line && defs[j].depth > k.depth))) {
-            defs[j + 1] = defs[j]; j--;
-        }
+        while (j >= 0 && defs[j].line > k.line) { defs[j + 1] = defs[j]; j--; }
         defs[j + 1] = k;
     }
-    // intern the distinct names, then walk the lines with a scope stack
-    u32* sname = calloc(ndef ? ndef : 1, 4);         // defs index -> 1-based table index
-    u32* stab  = calloc(ndef ? ndef : 1, 4);         // table index -> defs index
-    u32  ns    = 0;
-    for (u32 i = 0; i < ndef; i++) {
-        for (u32 t = 0; t < ns; t++)
-            if (strcmp(defs[stab[t]].name, defs[i].name) == 0) { sname[i] = t + 1; break; }
-        if (!sname[i]) { stab[ns] = i; sname[i] = ++ns; }
-    }
-    u32* lscope = calloc(nlines ? nlines : 1, 4);
-    u32  stack[16]; u32 sdepth = 0; u32 di = 0;
+    // walk the lines with a scope stack. a name is qualified by the scope
+    // it opens inside as it is pushed -- only the walk knows that -- so a
+    // method under a class-level ifdef reads Class.ifdef x.method
+    u32*   sname  = calloc(ndef ? ndef : 1, 4);      // defs index -> 1-based table index
+    char** stab   = calloc(ndef ? ndef : 1, sizeof(char*));
+    u32*   sline  = calloc(ndef ? ndef : 1, 4);      // table index -> declaration line
+    u32    ns     = 0;
+    u32*   lscope = calloc(nlines ? nlines : 1, 4);
+    u32    stack[16]; u32 sdepth = 0; u32 di = 0;
     for (u32 L = 1; L <= nlines; L++) {
+        // a span that ended takes everything opened inside it with it
+        for (u32 s = 0; s < sdepth; s++)
+            if (defs[stack[s]].end && defs[stack[s]].end < L) { sdepth = s; break; }
         while (di < ndef && defs[di].line <= L) {
-            while (sdepth && defs[stack[sdepth - 1]].depth >= defs[di].depth) sdepth--;
+            struct sdef* d = &defs[di];
+            while (sdepth && defs[stack[sdepth - 1]].indent >= d->indent) sdepth--;
+            if (sdepth) {
+                cstr  pn = stab[sname[stack[sdepth - 1]] - 1];
+                char* q  = malloc(strlen(pn) + strlen(d->name) + 2);
+                sprintf(q, "%s.%s", pn, d->name);
+                free(d->name);
+                d->name = q;
+            }
+            // keyed by name AND line: two `ifdef linux` in one scope are two entries
+            for (u32 t = 0; t < ns; t++)
+                if (sline[t] == d->line && strcmp(stab[t], d->name) == 0) { sname[di] = t + 1; break; }
+            if (!sname[di]) { stab[ns] = d->name; sline[ns] = d->line; sname[di] = ++ns; }
             if (sdepth < 16) stack[sdepth++] = di;
             di++;
         }
         if (sdepth) lscope[L - 1] = sname[stack[sdepth - 1]];
     }
+    free(lind);
+    free(lset);
     u32 stotal = 4;
-    for (u32 t = 0; t < ns; t++) stotal += 4 + (u32)strlen(defs[stab[t]].name) + 4;
+    for (u32 t = 0; t < ns; t++) stotal += 4 + (u32)strlen(stab[t]) + 4;
 
     u32  total = 4 + 4 + cl + 8 + ptotal + stotal + 4 + nlines * 8 + nv * 20;
     unsigned char* b = malloc(total);
@@ -2151,11 +2216,10 @@ void silver_write_fmt(silver a, array toks) {
     }
     FMT_PUT(ns);
     for (u32 t = 0; t < ns; t++) {
-        struct sdef* d = &defs[stab[t]];
-        u32 nl = (u32)strlen(d->name);
+        u32 nl = (u32)strlen(stab[t]);
         FMT_PUT(nl);
-        memcpy(b + o, d->name, nl); o += nl;
-        FMT_PUT(d->line);
+        memcpy(b + o, stab[t], nl); o += nl;
+        FMT_PUT(sline[t]);
     }
     FMT_PUT(nlines);
     // records are variable-length: place each line's scope and count now, then
@@ -2188,6 +2252,7 @@ void silver_write_fmt(silver a, array toks) {
     free(defs);
     free(sname);
     free(stab);
+    free(sline);
     free(lscope);
     fmt_put(cp, b, total, mt);
 }
@@ -7602,14 +7667,18 @@ static void validate_try_block(silver a, array body) {
 
 enode parse_try(silver a) { sequencer
     validate(read_if(a, "try"), "expected try");
+    token try_tok = element(a, -1);
     array try_tokens = read_body(a);
+    fmt_span_put(a, try_tok, try_tokens, "try");
     validate(try_tokens && len(try_tokens), "expected try body");
     validate_try_block(a, try_tokens);
 
     array catch_tokens = null;
     array finally_tokens = null;
     string catch_name = null;
+    token  catch_tok  = null;
     if (read_if(a, "catch")) {
+        catch_tok = element(a, -1);
         if (next_is(a, "[")) {
             array spec = read_within(a);
             push_tokens(a, (tokens)spec, 0);
@@ -7626,12 +7695,15 @@ enode parse_try(silver a) { sequencer
             pop_tokens(a, false);
         }
         catch_tokens = read_body(a);
+        fmt_span_put(a, catch_tok, catch_tokens, "catch");
         validate(catch_tokens && len(catch_tokens),
             "expected catch body");
         validate_try_block(a, catch_tokens);
     }
     if (read_if(a, "finally")) {
+        token fin_tok = element(a, -1);
         finally_tokens = read_body(a);
+        fmt_span_put(a, fin_tok, finally_tokens, "finally");
         validate(finally_tokens && len(finally_tokens),
             "expected finally body");
         validate_try_block(a, finally_tokens);
@@ -10976,6 +11048,7 @@ static enode parse_inline_lambda(silver a) { static int seq = 0; seq++;
         scratch->rtype = rt->autype;
     }
     array body = (array)hold(read_body(a));
+    fmt_span_put(a, key, body, "lambda");
     validate(body && len(body), "expected lambda body");
 
     push_scope(a, (Au)scratch, 40);
@@ -14429,12 +14502,16 @@ enode parse_ifdef_else(silver a, bool negate) {
 
     // first ifdef [cond] / ifndef [cond]
     validate(read_if(a, negate ? "ifndef" : "ifdef"), "expected ifdef or ifndef");
+    token kw_tok = element(a, -1);
     validate(read_if(a, "["), "expected [ after ifdef");
     string def_name = read_alpha(a);
     validate(def_name, "expected identifier after ifdef [");
     bool cond = eval_define(a, def_name) != negate;
     validate(read_if(a, "]"), "expected ] after ifdef condition");
     array block = read_body(a);
+    char span_nm[256];
+    snprintf(span_nm, sizeof span_nm, "%s %s", negate ? "ifndef" : "ifdef", def_name->chars);
+    fmt_span_put(a, kw_tok, block, span_nm);
     if (cond) {
         push_tokens(a, (tokens)block, 0);
         while (peek(a))
@@ -14445,16 +14522,21 @@ enode parse_ifdef_else(silver a, bool negate) {
 
     // chain of el [cond] / el
     while (read_if(a, "el")) {
+        token  el_tok   = element(a, -1);
+        string el_name  = null;
         bool has_cond = false;
         bool el_cond  = false;
         if (read_if(a, "[")) {
-            string el_name = read_alpha(a);
+            el_name = read_alpha(a);
             validate(el_name, "expected identifier after el [");
             el_cond  = eval_define(a, el_name);
             has_cond = true;
             validate(read_if(a, "]"), "expected ] after ifdef el condition");
         }
         array block = read_body(a);
+        char el_nm[256];
+        snprintf(el_nm, sizeof el_nm, "el%s%s", has_cond ? " " : "", has_cond ? el_name->chars : "");
+        fmt_span_put(a, el_tok, block, el_nm);
         if (has_cond) {
             if (!one_truth && el_cond) {
                 push_tokens(a, (tokens)block, 0);
@@ -14492,10 +14574,12 @@ enode parse_if_else(silver a) {
     bool is_const = false;
     etype mdl_read = null;
     validate(next_is(a, "["), "expected [ after if");
+    token if_tok = element(a, -1);
     array cond  = read_within(a);
     verify(cond, "expected [condition] after if");
     array block = read_body(a);
     verify(block, "expected body");
+    fmt_span_put(a, if_tok, block, "if");
     push(tokens_cond,  (Au)cond);
     push(tokens_block, (Au)block);
 
@@ -14505,11 +14589,13 @@ enode parse_if_else(silver a) {
         // (el stmt on the el's own line) is read against the `if` line above, wrongly
         // treated as a block, and clipped to empty by the indent check.
         a->statement_origin = hold(element(a, -1));
+        token el_tok = element(a, -1);
         bool is_const = false;
         etype mdl_read = null;
         array cond  = next_is(a, "[") ? read_within(a) : null; // null when no [...] → final else
         array block = read_body(a);
         verify(block, "expected body after el");
+        fmt_span_put(a, el_tok, block, "el");
         push(tokens_cond,  (Au)(cond ? cond : array()));
         push(tokens_block, (Au)block);
         if (!cond)
@@ -14524,6 +14610,8 @@ enode parse_if_else(silver a) {
 enode parse_switch(silver a) {
 
     validate(read_if(a, "switch") != null, "expected switch");
+    token sw_tok = element(a, -1);
+    u32   sw_end = 0;                       // the switch spans to its last case
     enode e_expr = parse_expression(a, null, false, true);
     map cases = map(hsize, 16);
     array expr_def = null;
@@ -14534,6 +14622,7 @@ enode parse_switch(silver a) {
 
         if (read_if(a, "case")) {
             a->statement_origin = hold(element(a, -1));
+            token case_tok = element(a, -1);
             array body = null;
             array values = array(alloc, 4);
 
@@ -14552,8 +14641,10 @@ enode parse_switch(silver a) {
                 all_const &= is_const;
                 push(values, (Au)value);
             } while (read_if(a, ","));
-            
+
             body = read_body(a);
+            fmt_span_put(a, case_tok, body, "case");
+            if (body && len(body)) sw_end = (u32)((token)get(body, len(body) - 1))->line;
             
             // point each value at the same body
             each(values, array, value)
@@ -14561,12 +14652,16 @@ enode parse_switch(silver a) {
             continue;
         } else if (read_if(a, "default")) {
             a->statement_origin = hold(element(a, -1));
+            token def_tok = element(a, -1);
             expr_def = read_body(a);
+            fmt_span_put(a, def_tok, expr_def, "default");
+            if (expr_def && len(expr_def)) sw_end = (u32)((token)get(expr_def, len(expr_def) - 1))->line;
             continue;
         } else
             break;
     }
 
+    fmt_span_end(a, sw_tok, sw_end, "switch");
     subprocedure build_expr = subproc(a, expr_builder, hint_mdl);
     subprocedure build_body = subproc(a, block_builder, null);
     if (all_const)
@@ -14692,6 +14787,7 @@ enode parse_for(silver a) { sequencer
 
     array body = read_body(a);
     verify(body, "expected for-body");
+    fmt_span_put(a, for_token, body, for_token->chars);
 
     if (!all) {
         // for \n body \n while [cond]  — do-while form
