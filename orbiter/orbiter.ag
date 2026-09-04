@@ -202,14 +202,6 @@ element EditorView
         if [ !e || !e.view_name || e.view_name.count == 0 ] return ''
         return (e.view_name != 'text') ? e.view_name : ''
 
-    # what the caret is inside of; empty while the name is being edited
-    func title_scope [] -> string
-        if [ findbar_on[] || newfile ] return ''
-        e : Editor text_of[]
-        if [ !e ] return ''
-        s : string e.scope_at[]
-        return (s) ? s : ''
-
     func title_els [] -> Elements
         o : orb[]
         w : Window ux
@@ -218,22 +210,6 @@ element EditorView
         # the editor is never locked while debugging; the run band steps
         t : Elements o.title_nav[ file[], null, false, w, false, e->dbg_open, menu_open[],
             (e && e.rview) ? true : false, e->rview, findbar_on[], tfoc, pane_index ]
-        # the scope buttons, from where the title measured the name to end.
-        # each is keyed by its qualified name, which is what it jumps to
-        scope : string title_scope[]
-        prev  : EditorTitle (elements) ? elements['title'] : null
-        if [ !tfoc && scope.count > 0 && prev && prev.scope_ws ]
-            x    : f32 [ prev.scope_x ]
-            i    : i32 [ 0 ]
-            qual : string ''
-            for [ part: string ] in scope.split[ '.' ]
-                if [ i >= prev.scope_ws.count ] break
-                qual = (qual.count > 0) ? '{qual}.{part}' : part
-                w : f32 [ prev.scope_ws[ i ] ]
-                t[ qual ] = ScopeButton [ label: part, manual_mode: true,
-                    area: Region [ 'l{x}px t0 w{w}px h0.9' ] ]
-                x = x + w + 4.0
-                i += 1
         if [ psess[].count > 0 ]
             t['ctx_copy'] = LabelButton [ label: 'context', manual_mode: true ]
             t['ctx_shot'] = LabelButton [ label: 'screen',  manual_mode: true ]
@@ -440,7 +416,6 @@ element EditorView
             conflict: newfile && newfile_exists[]
             no_scroll: true
             hint: title_hint[]
-            scope: title_scope[]
             elements: title_els[] ]
         t['split'] = Splitter [ area: Region { l0 t1.3 r0 b0 }, vertical: true,
             inner: pane_els[], deflt: 180.0,
@@ -468,12 +443,6 @@ element EditorTitle
     public conflict : bool
     # painted after the name, never part of the editable label
     public hint     : string
-    # the definition the caret is in; the buttons after the name show it
-    public scope     : string
-    # where those go, measured here since the name width is text
-    mutable scope_x  : f32
-    mutable scope_ws : vec f32
-    mutable scope_of : string
     mutable ficons  : FileIcons
     style : CSS {
         area: l0 t0 r0 h1.3
@@ -512,25 +481,6 @@ element EditorTitle
         cv.font_size[ 19 ]
         name_m : cv.measure_text[ label ]
         trail  : f32 [ 98.0 + name_m.w + 16.0 ]
-        if [ !scope || scope.count == 0 ]
-            scope_ws = null
-        el
-            # one width per part, measured once per distinct scope
-            if [ !scope_ws || scope != scope_of ]
-                cv.font_size[ 12 ]
-                widths : vec f32 []
-                for [ part: string ] in scope.split[ '.' ]
-                    pm : cv.measure_text[ part ]
-                    pw : f32 [ pm.w ]
-                    seg : f32 [ pw + 40.0 ]
-                    widths.push[ seg ]
-                scope_ws = widths
-                scope_of = scope
-            scope_x = trail
-            for [ i: i32 0, i < scope_ws.count, i += 1 ]
-                w : f32 [ scope_ws[ i ] ]
-                trail = trail + w + 4.0
-            trail = trail + 8.0
         if [ hint && hint.count > 0 ]
             cv.font_size[ 13 ]
             cv.fill_color[ '#ffffff66' ]
@@ -544,16 +494,16 @@ element EditorTitle
 Option NavButton
     style : CSS {
         layers.body:
-            fill_color: #ffffff0c, 200ms cubic
+            fill_color: #ffffff0c
             radius: 8
             stroke_width: 0.5
-            stroke_color: #ffffff33, 200ms cubic
-            inner_glow: #0000 0, 200ms cubic
+            stroke_color: #ffffff33
+            inner_glow: #0000 0
         :hovered
             layers.body:
-                fill_color: #ffffff1c, 200ms cubic
-                stroke_color: #ffffff55, 200ms cubic
-                inner_glow: #fcc6 20, 200ms cubic
+                fill_color: #ffffff1c
+                stroke_color: #ffffff55
+                inner_glow: #fcc6 20
         :pressed
             layers.body:
                 fill_color: #ffffff2e
@@ -694,12 +644,6 @@ NavButton LabelButton
     area   : Region { r0+ t0 w2.2 h0.9 }
     tlabel : Layer [ label_color: rgba [ '#fffa' ], label_size: 14,
         label_align: vec2f [ x: 0.5, y: 0.5 ] ]
-
-# what the top line in view is inside; a size down from a nav label
-LabelButton ScopeButton
-    tlabel : Layer [ label_color: rgba [ '#fffa' ], label_size: 12,
-        label_align: vec2f [ x: 0.5, y: 0.5 ] ]
-
 
 # staged live-reload: small button at the left of the bottom status bar
 Option ReloadButton
@@ -928,16 +872,16 @@ NavButton OrbiterButton
 LButton RunButton
     style : CSS {
         layers.body:
-            fill_color: #ffffff0c, 200ms cubic
+            fill_color: #ffffff0c
             radius: 8
             stroke_width: 0.5
-            stroke_color: #ffffff33, 200ms cubic
-            inner_glow: #0000 0, 200ms cubic
+            stroke_color: #ffffff33
+            inner_glow: #0000 0
         :hovered
             layers.body:
-                fill_color: #ffffff1c, 200ms cubic
-                stroke_color: #ffffff55, 200ms cubic
-                inner_glow: #fcc6 20, 200ms cubic
+                fill_color: #ffffff1c
+                stroke_color: #ffffff55
+                inner_glow: #fcc6 20
         :pressed
             layers.body:
                 fill_color: #ffffff2e
@@ -4206,17 +4150,6 @@ element orbiter : trinity # implements compiler
             ev.no_default = true
             if [ ev.target ] ev.target.ux.restyle = true
             return
-
-        # a scope button: its id IS the qualified name it jumps to
-        eds : Editor pane_of[ ev.target ]
-        if [ eds ]
-            line : i32 [ eds.scope_line[ ev.target.id ] ]
-            if [ line > 0 ]
-                eds.goto_line[ line ]
-                ev.no_default = true
-                if [ ev.target ] ev.target.ux.restyle = true
-                force_update[]
-                return
 
         if [ ev.target.id == 'magnify' ]
             findbar_open = !findbar_open
