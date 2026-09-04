@@ -291,6 +291,12 @@ ielement element
     public func theme [ ] -> map string [string]
         return null
 
+    # the flat backdrop color: a scene overrides this to return its own
+    # space/clear color, so the solid stage fills that while the scene
+    # stays mounted. a=0 means "no override" (not a backdrop element)
+    public func bg_color [ ] -> rgba
+        return null
+
     public func on_dictate [ on: bool ]
         return
 
@@ -399,6 +405,11 @@ ielement element
                 dur : i64 [ ct.duration.get_millis[] ]
                 ms  : i64 [ cur_millis - ct.start ]
                 p   : f64 [ ct.pos[ f64[ ms ] / f64[ dur ] ] ]
+                # a running transition must ask for the next frame; the
+                # values were easing while nothing redrew them
+                if [ ms < dur ]
+                    pristine = false
+                    if [ ux ] ux.will_animate = true
                 if [ ct.type && ct.from && ct.to ]
                     from_t : typeid[ ct.from ]
                     if [ (from_t.traits & (1 << 8)) != 0 ]

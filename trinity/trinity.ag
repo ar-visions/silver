@@ -261,6 +261,11 @@ abstract live_app media_app
     # the built-in memory instrument's samples, oldest first
     intern  mem_hist    : vec f32
     intern  app_pid : i32
+    # env protocol, read once in init; every frame reads these
+    intern  isolate_app   : bool
+    intern  isolate_child : bool
+    intern  headless      : bool
+    intern  home_dir      : cstr
     # aspect captured at init — resize requests are clamped to it
     intern  aspect_w    : i32
     intern  aspect_h    : i32
@@ -303,7 +308,7 @@ abstract live_app media_app
             if [ file ]
                 fprintf[ file, "app=%s attach=%d isolate=%d slot=%d\n",
                     path.path_share_name[], (attach) ? 1 : 0,
-                    (getenv[ 'SILVER_ISOLATE_APP' ]) ? 1 : 0, host_slot[] ]
+                    (isolate_app) ? 1 : 0, host_slot[] ]
                 fclose[ file ]
         if [ w ]
             bwn : Window [ w ]
@@ -316,14 +321,13 @@ abstract live_app media_app
                         bwn.restyle   = true
 
         ifdef [ linux ]
-            if [ attach && getenv[ 'SILVER_ISOLATE_APP' ] ]
+            if [ attach && isolate_app ]
                 render*[]
                 share_publish[ 1 ]
                 ide_pump[]
                 if [ debug ] agent_pump[]
                 Au.auto_free[ false ]
                 usleep[ 4000 ]
-                if [ app_pid == 0 ] app_pid = parse_app_pid[]
                 if [ app_pid > 0 && host_pid_alive[ app_pid ] == 0 ] return false
                 return !Au.quit_requested[]
             if [ attach ]
@@ -372,16 +376,10 @@ abstract live_app media_app
         render*[]
         ifdef [ linux ]
             win : Window [ w ]
-            child : bool [ getenv[ 'SILVER_ISOLATE_CHILD' ] != null ]
             # the guest display has no ide consumer, and venus faults on the
             # dma-buf export the share path uses — never share on kms
-            if [ !w.kms && (win.ide_asked || child) && !win.ide_active ] share_publish[ 0 ]
+            if [ !w.kms && (win.ide_asked || isolate_child) && !win.ide_active ] share_publish[ 0 ]
             if [ !w.kms ] instr_publish[]
-        # TRIN_SHOT=<name>: capture without the arg parser, for a sandboxed
-        # device where flags cannot reach the app
-        if [ !screenshot ]
-            env_shot : cstr [ getenv[ 'TRIN_SHOT' ] ]
-            if [ env_shot ] screenshot = path '{env_shot}'
         if [ screenshot ]
             shot_frames += 1
             if [ shot_frames >= shot_frame ]
@@ -394,8 +392,7 @@ abstract live_app media_app
                     # container, where devicectl can copy it back off
                     dest : path [ screenshot ]
                     ifdef [ ios ]
-                        hm : cstr [ getenv[ 'HOME' ] ]
-                        if [ hm ] dest = path '{hm}/Documents/{screenshot}'
+                        if [ home_dir ] dest = path '{home_dir}/Documents/{screenshot}'
                     im.png[ dest ]
                     puts 'screenshot: {dest}'
                     exit[ 0 ]
@@ -407,7 +404,7 @@ abstract live_app media_app
 
     ifdef [ linux ]
         func share_publish [ side: i32 ]
-            if [ getenv[ 'SILVER_HEADLESS' ] ] return
+            if [ headless ] return
             if [ w.kms ] return
             wn : Window [ w ]
             scv : Canvas [ wn.screen ]
@@ -585,7 +582,7 @@ abstract live_app media_app
         # instruments are inspectors, not the game: they sample at 8hz, on
         # their OWN surfaces, so nothing here touches the app's frame
         func instr_publish []
-            if [ getenv[ 'SILVER_HEADLESS' ] ] return
+            if [ headless ] return
             list : instr_list[]
             if [ !list || list.count == 0 ] return
             now : i64 [ epoch_millis[] ]
@@ -1062,6 +1059,16 @@ abstract live_app media_app
 
     func init [ ]
         next_second = epoch_millis[] / 1000
+        app_pid       = parse_app_pid[]
+        isolate_app   = getenv[ 'SILVER_ISOLATE_APP' ] != null
+        isolate_child = getenv[ 'SILVER_ISOLATE_CHILD' ] != null
+        headless      = getenv[ 'SILVER_HEADLESS' ] != null
+        home_dir      = getenv[ 'HOME' ]
+        # TRIN_SHOT=<name>: capture without the arg parser, for a sandboxed
+        # device where flags cannot reach the app
+        if [ !screenshot ]
+            env_shot : cstr [ getenv[ 'TRIN_SHOT' ] ]
+            if [ env_shot ] screenshot = path '{env_shot}'
         if [ text_mode ]
             return
         if [ !Au.live_window_get[] ]
@@ -1943,9 +1950,8 @@ Display Window
         return root.is_animating[]
 
     func capture_context []
-        sess : getenv[ 'SILVER_ISOLATE_SESSION' ]
-        if [ !sess ] return
-        ss : string [ sess ]
+        if [ !isolate_session ] return
+        ss : string [ isolate_session ]
         lr : last_render[]
         if [ lr && lr.color ]
             im : Image [ lr.color ]
@@ -2748,6 +2754,9 @@ Display Window
             frost_bound = frost_eff[]
             uxs : UXBackground [ m_view.s ]
             if [ uxs ] uxs.dim_floor = (backdrop.owner) ? backdrop.owner.frost_lift : 0.0
+            # push the flat color to the shader the moment the scene mounts
+            # or the stage changes, so the solid stage is right on frame one
+            apply_solid[]
             if [ fresh ] m_view.samplers[ 'background' ] = backdrop.color
             fr : frost_src[]
             bl : blur_src[]
@@ -2759,15 +2768,22 @@ Display Window
             m_view.samplers[ 'blur'  ] = (bl) ? bl.color : backdrop.color
             m_view.rebind_model[]
 
+    # push solid_color to the background shader NOW, not on the next resize.
+    # on-change only (scene mount / stage flip), so the flat stage is correct
+    # from the first frame even while a scene's 3d models still load async
+    public func apply_solid [ ] -> bool
+        s9 : bool [ frost_eff[] == 3 ]
+        # solid: the scene target is not drawn at all, only the flat color
+        skip_target = (s9) ? backdrop : null
+        if [ !m_view ] return false
+        uxs : UXBackground [ m_view.s ]
+        if [ !uxs ] return false
+        uxs.solid_color = (s9) ? vec4f [ solid_color.r, solid_color.g, solid_color.b, 1.0 ] : vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+        return true
+
     func update [ ]
         bind_backdrop[]
-        # solid stage: the backdrop target is not rendered this frame and
-        # the background shader paints solid_color instead of sampling
-        sol9 : bool [ frost_eff[] == 3 ]
-        skip_target = (sol9) ? backdrop : null
-        if [ m_view ]
-            uxs9 : UXBackground [ m_view.s ]
-            if [ uxs9 ] uxs9.solid_color = (sol9) ? vec4f [ solid_color.r, solid_color.g, solid_color.b, 1.0 ] : vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+        apply_solid[]
         if [ !glyph ]
             glyph = Canvas [ w:a, vk: vk, format: Pixel.u8, :width, :height ]
             glyph.hold[]
@@ -2786,7 +2802,7 @@ Display Window
             compose.hold[]
         compose.resize[ width, height ]
         compose.update[]
-        compose.clear[ string[ "#888" ] ]
+        compose.clear[ string[ "#413" ] ]
 
         if [ !is_setup ]
             is_setup = true
@@ -3915,9 +3931,20 @@ Display Window
                 fills : bool [ b.w >= e.bounds.w - 0.01 && b.h >= e.bounds.h - 0.01 ]
                 bleed : f32 [ (fills && r_tl <= 0.0 && r_tr <= 0.0 && r_br <= 0.0 && r_bl <= 0.0
                               && sw_max <= 0.0) ? 2.0 : 0.0 ]
+                # integral placement: snap the layer rect to the device pixel
+                # grid (accounting for the canvas translate + scale) so a 1px
+                # stroke/edge lands on one pixel row instead of straddling two
+                lsc7 : f32 [ draw_cv.transform_scale[] ]
+                if [ lsc7 <= 0.0 ] lsc7 = 1.0
+                ltx7 : f32 [ draw_cv.transform_tx[] ]
+                lty7 : f32 [ draw_cv.transform_ty[] ]
+                bx7  : f32 [ (round[ b.x * lsc7 + ltx7 ] - ltx7) / lsc7 ]
+                by7  : f32 [ (round[ b.y * lsc7 + lty7 ] - lty7) / lsc7 ]
+                bw7  : f32 [ round[ b.w * lsc7 ] / lsc7 ]
+                bh7  : f32 [ round[ b.h * lsc7 ] / lsc7 ]
                 # x only: the seam is vertical, y would bleed upward
-                draw_cv.rounded_rect     [ b.x - bleed, b.y,
-                                           b.w + bleed * 2.0, b.h,
+                draw_cv.rounded_rect     [ bx7 - bleed, by7,
+                                           bw7 + bleed * 2.0, bh7,
                                            r_tl, r_tr, r_br, r_bl ]
                 draw_cv.fill_color       [ (layer.fill_color && layer.fill_color.a > 0.0) ? layer.fill_color : rgba [ '#00000000' ] ]
                 draw_cv.stroke_color     [ layer.stroke_color ]
@@ -4072,6 +4099,12 @@ Display Window
             e.mask_glow.z = (mxs > 0.5 && e.scroll.y < mxs - 0.5) ? e.scroll_fade : 0.0
         mask_on : bool [ e.mask_glow.x > 0.0 || e.mask_glow.y > 0.0 || e.mask_glow.z > 0.0 || e.mask_glow.w > 0.0 ]
         if [ e.cache_canvas && !e.animated && stage == CanvasType.screen ]
+            # snap the cache blit to the device grid: a cached element sitting
+            # at a fractional screen pixel smears its whole border over two
+            bsc9 : f32 [ cv.transform_scale[] ]
+            if [ bsc9 <= 0.0 ] bsc9 = 1.0
+            bsx9 : f32 [ (round[ cv.transform_tx[] ] - cv.transform_tx[]) / bsc9 ]
+            bsy9 : f32 [ (round[ cv.transform_ty[] ] - cv.transform_ty[]) / bsc9 ]
             if [ mask_on ]
                 glow_changed : bool [ e.mask_bg.x != e.mask_glow.x || e.mask_bg.y != e.mask_glow.y || e.mask_bg.z != e.mask_glow.z || e.mask_bg.w != e.mask_glow.w ]
                 if [ !e.mask_canvas || e.mask_w != ew || e.mask_h != eh || glow_changed ]
@@ -4107,11 +4140,11 @@ Display Window
                     e.mask_canvas.restore[]
                     e.mask_bg = e.mask_glow
                 cv.draw_canvas_masked[ e.cache_canvas, e.mask_canvas,
-                    0.0 - f32 [ e.cache_ox ], 0.0 - f32 [ e.cache_oy ], f32 [ ew ], f32 [ eh ] ]
+                    0.0 - f32 [ e.cache_ox ] + bsx9, 0.0 - f32 [ e.cache_oy ] + bsy9, f32 [ ew ], f32 [ eh ] ]
             el
                 if [ dbg_blit < 14 ]
                     dbg_blit += 1
-                cv.draw_canvas[ e.cache_canvas, 0.0 - f32 [ e.cache_ox ], 0.0 - f32 [ e.cache_oy ], f32 [ ew ], f32 [ eh ] ]
+                cv.draw_canvas[ e.cache_canvas, 0.0 - f32 [ e.cache_ox ] + bsx9, 0.0 - f32 [ e.cache_oy ] + bsy9, f32 [ ew ], f32 [ eh ] ]
             sbl : ScrollLayer (e.layers) ? cast ScrollLayer [ e.layers['scrollbar'] ] : null
             if [ sbl && sbl.ctype == stage && !sbl.hide ]
                 sbl.bounds = (sbl.area) ? sbl.area.rectangle[ e.bounds, null, null, e.fc, false, 0.0, 0.0 ] : e.bounds.copy[]
@@ -4517,6 +4550,14 @@ element TButtons
         if [ n == 0 || !bounds ] return
         cv : Canvas w.screen
         if [ !hovered ] hover_ix = -1
+        # integral placement: the element origin is often a fractional device
+        # pixel, which smears a 1px stroke. snap the whole draw to the grid
+        sc9  : f32 [ cv.transform_scale[] ]
+        if [ sc9 <= 0.0 ] sc9 = 1.0
+        snx9 : f32 [ (round[ cv.transform_tx[] ] - cv.transform_tx[]) / sc9 ]
+        sny9 : f32 [ (round[ cv.transform_ty[] ] - cv.transform_ty[]) / sc9 ]
+        cv.save[]
+        cv.translate[ snx9, sny9 ]
         seg_w : f32 [ bounds.w / f32[ n ] ]
         for [ i: i32 0, i < n, i += 1 ]
             x  : f32 [ f32[ i ] * seg_w ]
@@ -4524,16 +4565,15 @@ element TButtons
             bl : f32 [ (i == 0)     ? seg_radius : 0.0 ]
             tr : f32 [ (i == n - 1) ? seg_radius : 0.0 ]
             br : f32 [ (i == n - 1) ? seg_radius : 0.0 ]
-            fcol : theme_rgba[ '#614' ]
-            # at rest there is NO glow: hover and the lit state are the
-            # only things that draw an edge, so nothing lingers when the
-            # cursor leaves
-            gc   : rgba [ rest_glow ]
-            gpx  : f32  [ rest_px ]
+            # near-clear at rest, NO glow — only hover/lit draw a glow, so
+            # nothing lingers when the cursor leaves
+            fcol : rgba [ '#ffffff0c' ]
+            gc   : rgba [ '#0000' ]
+            gpx  : f32  [ 0.0 ]
             off  : bool [ disable || ((disable_mask & (1 << i)) != 0) ]
             # hover brightens first, at half strength...
             if [ i == hover_ix && !off ]
-                fcol = theme_rgba[ '#413' ]
+                fcol = rgba [ '#ffffff1c' ]
                 gc   = rgba [ '#fcc3' ]
                 gpx  = 18.0
             # ...then the toggled state always brightens over it
@@ -4571,16 +4611,20 @@ element TButtons
                 cv.draw_text[ buttons[ i ], rect [ x: x, y: 0.0, w: seg_w, h: bounds.h ],
                     vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
             if [ off ] cv.set_opacity[ 1.0 ]
-        dvy : f32 [ bounds.h * 0.2 ]
-        dvh : f32 [ bounds.h * 0.6 ]
-        for [ i: i32 1, i < n, i += 1 ]
-            dx : f32 [ f32[ i ] * seg_w ]
-            cv.fill_color[ rgba [ r: 0.0, g: 0.0, b: 0.0, a: 0.3 ] ]
-            cv.rounded_rect[ dx - 1.0, dvy, 1.0, dvh, 0.0, 0.0, 0.0, 0.0 ]
-            cv.paint[ ]
-            cv.fill_color[ rgba [ r: 1.0, g: 1.0, b: 1.0, a: 0.3 ] ]
-            cv.rounded_rect[ dx, dvy, 1.0, dvh, 0.0, 0.0, 0.0, 0.0 ]
-            cv.paint[ ]
+        # one semi-clear 1px outline around the whole group; no segment
+        # notches. origin is grid-snapped above; round the size too so both
+        # edges land on whole device pixels. stroke_sides drives coverage
+        dw9  : f32 [ round[ bounds.w * sc9 ] / sc9 ]
+        dh9  : f32 [ round[ bounds.h * sc9 ] / sc9 ]
+        cv.fill_color[ rgba [ '#0000' ] ]
+        cv.set_stroke_size[ 0.5 ]
+        cv.stroke_sides[ 0.5, 0.5, 0.5, 0.5 ]
+        cv.stroke_color[ rgba [ '#ffffff33' ] ]
+        cv.rounded_rect[ 0.0, 0.0, dw9, dh9, seg_radius, seg_radius, seg_radius, seg_radius ]
+        cv.paint[ ]
+        cv.set_stroke_size[ 0.0 ]
+        cv.stroke_sides[ 0.0, 0.0, 0.0, 0.0 ]
+        cv.restore[ ]
 
     func on_press [ ev: Event ]
         i : i32 [ seg_at[ ev ] ]

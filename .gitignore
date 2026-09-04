@@ -50,6 +50,7 @@ hires
 *.pt
 *.gen
 *.cpio
+*/packages/*
 packages/*
 europa
 /models
