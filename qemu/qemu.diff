@@ -1,0 +1,111 @@
+diff --git a/hw/display/virtio-gpu-virgl.c b/hw/display/virtio-gpu-virgl.c
+index 145a0b3879..ae6c2889c3 100644
+--- a/hw/display/virtio-gpu-virgl.c
++++ b/hw/display/virtio-gpu-virgl.c
+@@ -970,9 +970,44 @@ void virtio_gpu_virgl_process_cmd(VirtIOGPU *g,
+     }
+ 
+     trace_virtio_gpu_fence_ctrl(cmd->cmd_hdr.fence_id, cmd->cmd_hdr.type);
++    /* orbiter-os: a fence on a context ring must retire when that ring's
++     * gpu queue finishes, not when virgl's cpu timeline passes it. the
++     * legacy ctx0 fence let venus guests run ahead of the gpu and re-record
++     * command buffers still being executed. */
++    if (cmd->cmd_hdr.flags & VIRTIO_GPU_FLAG_INFO_RING_IDX) {
++        virgl_renderer_context_create_fence(cmd->cmd_hdr.ctx_id,
++                                            VIRGL_RENDERER_FENCE_FLAG_MERGEABLE,
++                                            cmd->cmd_hdr.ring_idx,
++                                            cmd->cmd_hdr.fence_id);
++        return;
++    }
+     virgl_renderer_create_fence(cmd->cmd_hdr.fence_id, cmd->cmd_hdr.type);
+ }
+ 
++static void virgl_write_context_fence(void *opaque, uint32_t ctx_id,
++                                      uint32_t ring_idx, uint64_t fence_id)
++{
++    VirtIOGPU *g = opaque;
++    struct virtio_gpu_ctrl_command *cmd, *tmp;
++
++    QTAILQ_FOREACH_SAFE(cmd, &g->fenceq, next, tmp) {
++        if (!(cmd->cmd_hdr.flags & VIRTIO_GPU_FLAG_INFO_RING_IDX) ||
++            cmd->cmd_hdr.ctx_id != ctx_id ||
++            cmd->cmd_hdr.ring_idx != ring_idx ||
++            cmd->cmd_hdr.fence_id > fence_id) {
++            continue;
++        }
++        trace_virtio_gpu_fence_resp(cmd->cmd_hdr.fence_id);
++        virtio_gpu_ctrl_response_nodata(g, cmd, VIRTIO_GPU_RESP_OK_NODATA);
++        QTAILQ_REMOVE(&g->fenceq, cmd, next);
++        g_free(cmd);
++        g->inflight--;
++        if (virtio_gpu_stats_enabled(g->parent_obj.conf)) {
++            trace_virtio_gpu_dec_inflight_fences(g->inflight);
++        }
++    }
++}
++
+ static void virgl_write_fence(void *opaque, uint32_t fence)
+ {
+     VirtIOGPU *g = opaque;
+@@ -983,7 +1018,8 @@ static void virgl_write_fence(void *opaque, uint32_t fence)
+          * the guest can end up emitting fences out of order
+          * so we should check all fenced cmds not just the first one.
+          */
+-        if (cmd->cmd_hdr.fence_id > fence) {
++        if (cmd->cmd_hdr.fence_id > fence ||
++            (cmd->cmd_hdr.flags & VIRTIO_GPU_FLAG_INFO_RING_IDX)) {
+             continue;
+         }
+         trace_virtio_gpu_fence_resp(cmd->cmd_hdr.fence_id);
+@@ -1031,8 +1067,9 @@ static int virgl_make_context_current(void *opaque, int scanout_idx,
+ }
+ 
+ static struct virgl_renderer_callbacks virtio_gpu_3d_cbs = {
+-    .version             = 1,
++    .version             = 3,
+     .write_fence         = virgl_write_fence,
++    .write_context_fence = virgl_write_context_fence,
+     .create_gl_context   = virgl_create_context,
+     .destroy_gl_context  = virgl_destroy_context,
+     .make_current        = virgl_make_context_current,
+@@ -1067,7 +1104,7 @@ static void virtio_gpu_fence_poll(void *opaque)
+     virgl_renderer_poll();
+     virtio_gpu_process_cmdq(g);
+     if (!QTAILQ_EMPTY(&g->cmdq) || !QTAILQ_EMPTY(&g->fenceq)) {
+-        timer_mod(gl->fence_poll, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + 10);
++        timer_mod(gl->fence_poll, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + 1);
+     }
+ }
+ 
+diff --git a/hw/display/virtio-gpu.c b/hw/display/virtio-gpu.c
+index 7d22d03bbf..0e697ff5ff 100644
+--- a/hw/display/virtio-gpu.c
++++ b/hw/display/virtio-gpu.c
+@@ -168,6 +168,11 @@ void virtio_gpu_ctrl_response(VirtIOGPU *g,
+         resp->flags |= VIRTIO_GPU_FLAG_FENCE;
+         resp->fence_id = cmd->cmd_hdr.fence_id;
+         resp->ctx_id = cmd->cmd_hdr.ctx_id;
++        /* orbiter-os: the guest matches a ring fence by its ring index */
++        if (cmd->cmd_hdr.flags & VIRTIO_GPU_FLAG_INFO_RING_IDX) {
++            resp->flags |= VIRTIO_GPU_FLAG_INFO_RING_IDX;
++            resp->ring_idx = cmd->cmd_hdr.ring_idx;
++        }
+     }
+     virtio_gpu_ctrl_hdr_bswap(resp);
+     s = iov_from_buf(cmd->elem.in_sg, cmd->elem.in_num, 0, resp, resp_len);
+diff --git a/ui/dbus-listener.c b/ui/dbus-listener.c
+index 99738e769b..2c4aefcd77 100644
+--- a/ui/dbus-listener.c
++++ b/ui/dbus-listener.c
+@@ -597,7 +597,10 @@ static void dbus_cursor_dmabuf(DisplayChangeListener *dcl,
+ static void dbus_release_dmabuf(DisplayChangeListener *dcl,
+                                 QemuDmaBuf *dmabuf)
+ {
+-    dbus_scanout_disable(dcl);
++    /* orbiter-os: a released dmabuf is the previous scanout, not the current
++     * one; disabling here discards the ScanoutDMABUF queued just before it,
++     * so the listener never sees a flipping guest. The listener holds its own
++     * dup of the fd, so there is nothing to release on this side. */
+ }
+ #endif /* GBM */
+ 

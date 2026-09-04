@@ -1927,7 +1927,24 @@ static unsigned char* fmt_serialize(fmt_file ff, u32* out_total) {
     u32 ptotal = 4;
     for (u32 i = 0; i < np; i++) ptotal += 4 + (u32)strlen(dp[i]);
 
-    u32  total = 4 + 4 + cl + 8 + ptotal + 4 + nlines * 4 + n * 20;
+    // scopes: intern the distinct named ones, then index each line at emit
+    vector      sv = (vector)ff->scopes;
+    fmt_scope*  sl = sv ? (fmt_scope*)sv->origin : null;
+    u32         nsl = sv ? (u32)sv->count : 0;
+    fmt_scope*  sp = calloc(nsl ? nsl : 1, sizeof(fmt_scope));
+    u32         ns = 0;
+    for (u32 L = 0; L < nsl; L++) {
+        fmt_scope s = sl[L];
+        if (!s || !s->name || !len(s->name)) continue;
+        bool have = false;
+        for (u32 i = 0; i < ns; i++)
+            if (sp[i] == s || strcmp(sp[i]->name->chars, s->name->chars) == 0) { have = true; break; }
+        if (!have) sp[ns++] = s;
+    }
+    u32 stotal = 4;
+    for (u32 i = 0; i < ns; i++) stotal += 4 + (u32)strlen(sp[i]->name->chars) + 4;
+
+    u32  total = 4 + 4 + cl + 8 + ptotal + stotal + 4 + nlines * 8 + n * 20;
     unsigned char* b = malloc(total);
     u32 o = 0;
     #define SP(v) do { u32 _v = (u32)(v); memcpy(b + o, &_v, 4); o += 4; } while (0)
@@ -1941,10 +1958,22 @@ static unsigned char* fmt_serialize(fmt_file ff, u32* out_total) {
         SP(pl);
         memcpy(b + o, dp[i], pl); o += pl;
     }
+    SP(ns);
+    for (u32 i = 0; i < ns; i++) {
+        u32 nl = (u32)strlen(sp[i]->name->chars);
+        SP(nl);
+        memcpy(b + o, sp[i]->name->chars, nl); o += nl;
+        SP(sp[i]->line);
+    }
     SP(nlines);
     for (u32 L = 0; L < nlines; L++) {
         u32        nt  = (u32)lns[L]->count;
         fmt_token* tks = (fmt_token*)lns[L]->origin;
+        u32        six = 0;
+        if (L < nsl && sl[L] && sl[L]->name && len(sl[L]->name))
+            for (u32 i = 0; i < ns; i++)
+                if (strcmp(sp[i]->name->chars, sl[L]->name->chars) == 0) { six = i + 1; break; }
+        SP(six);
         SP(nt);
         for (u32 t = 0; t < nt; t++) {
             fmt_token tk = tks[t];
@@ -1958,6 +1987,7 @@ static unsigned char* fmt_serialize(fmt_file ff, u32* out_total) {
     }
     #undef SP
     free(dp);
+    free(sp);
     *out_total = total;
     return b;
 }
@@ -2045,7 +2075,67 @@ void silver_write_fmt(silver a, array toks) {
     u32  nv = 0;
     each(toks, token, t) if (t->line >= 1) { lcount[t->line - 1]++; nv++; }
 
-    u32  total = 4 + 4 + cl + 8 + ptotal + 4 + nlines * 4 + nv * 20;
+    // SCOPES. what a line is INSIDE of, taken from the parsed module rather
+    // than re-read from text: every Au_t this file declares gives a name and
+    // the line it starts on, and depth is its nesting (record 1, member 2).
+    // a scope runs until the next declaration at the same or shallower depth
+    Au_t  mt_au = a->autype;
+    u32   ndef  = 0;
+    u32   dcap  = 64;
+    struct sdef { u32 line, depth; char* name; }* defs = malloc(dcap * sizeof(*defs));
+    #define SDEF_PUT(L, D, NM) do { \
+        if (ndef == dcap) { dcap *= 2; defs = realloc(defs, dcap * sizeof(*defs)); } \
+        defs[ndef].line = (u32)(L); defs[ndef].depth = (D); defs[ndef].name = (NM); ndef++; \
+    } while (0)
+    for (int i = 0; mt_au && i < mt_au->members.count; i++) {
+        Au_t m = (Au_t)mt_au->members.origin[i];
+        // a property is a line, not a scope: only records and functions nest
+        if (!m || !m->ident || m->member_type == AU_MEMBER_VAR) continue;
+        bool mine = m->source && m->src_line > 0 && strcmp(m->source, cp) == 0;
+        if (mine) SDEF_PUT(m->src_line, 1, strdup(m->ident));
+        for (int j = 0; j < m->members.count; j++) {
+            Au_t s = (Au_t)m->members.origin[j];
+            if (!s || !s->ident || !s->source || s->src_line <= 0) continue;
+            if (s->member_type != AU_MEMBER_FUNC) continue;
+            if (strcmp(s->source, cp) != 0) continue;
+            char* q = malloc(strlen(m->ident) + strlen(s->ident) + 2);
+            sprintf(q, "%s.%s", m->ident, s->ident);
+            SDEF_PUT(s->src_line, 2, q);
+        }
+    }
+    #undef SDEF_PUT
+    for (u32 i = 1; i < ndef; i++) {                 // insertion sort: by line, then depth
+        struct sdef k = defs[i];
+        int j = (int)i - 1;
+        while (j >= 0 && (defs[j].line > k.line ||
+                         (defs[j].line == k.line && defs[j].depth > k.depth))) {
+            defs[j + 1] = defs[j]; j--;
+        }
+        defs[j + 1] = k;
+    }
+    // intern the distinct names, then walk the lines with a scope stack
+    u32* sname = calloc(ndef ? ndef : 1, 4);         // defs index -> 1-based table index
+    u32* stab  = calloc(ndef ? ndef : 1, 4);         // table index -> defs index
+    u32  ns    = 0;
+    for (u32 i = 0; i < ndef; i++) {
+        for (u32 t = 0; t < ns; t++)
+            if (strcmp(defs[stab[t]].name, defs[i].name) == 0) { sname[i] = t + 1; break; }
+        if (!sname[i]) { stab[ns] = i; sname[i] = ++ns; }
+    }
+    u32* lscope = calloc(nlines ? nlines : 1, 4);
+    u32  stack[16]; u32 sdepth = 0; u32 di = 0;
+    for (u32 L = 1; L <= nlines; L++) {
+        while (di < ndef && defs[di].line <= L) {
+            while (sdepth && defs[stack[sdepth - 1]].depth >= defs[di].depth) sdepth--;
+            if (sdepth < 16) stack[sdepth++] = di;
+            di++;
+        }
+        if (sdepth) lscope[L - 1] = sname[stack[sdepth - 1]];
+    }
+    u32 stotal = 4;
+    for (u32 t = 0; t < ns; t++) stotal += 4 + (u32)strlen(defs[stab[t]].name) + 4;
+
+    u32  total = 4 + 4 + cl + 8 + ptotal + stotal + 4 + nlines * 8 + nv * 20;
     unsigned char* b = malloc(total);
     u32 o = 0;
     #define FMT_PUT(v) do { u32 _v = (u32)(v); memcpy(b + o, &_v, 4); o += 4; } while (0)
@@ -2059,11 +2149,20 @@ void silver_write_fmt(silver a, array toks) {
         FMT_PUT(pl);
         memcpy(b + o, dp[i], pl); o += pl;
     }
+    FMT_PUT(ns);
+    for (u32 t = 0; t < ns; t++) {
+        struct sdef* d = &defs[stab[t]];
+        u32 nl = (u32)strlen(d->name);
+        FMT_PUT(nl);
+        memcpy(b + o, d->name, nl); o += nl;
+        FMT_PUT(d->line);
+    }
     FMT_PUT(nlines);
-    // records are variable-length: place each line's count now, then
+    // records are variable-length: place each line's scope and count now, then
     // drop tokens into their line's slots in one pass over toks
     u32* tpos = malloc((nlines ? nlines : 1) * sizeof(u32));
     for (u32 L = 0; L < nlines; L++) {
+        memcpy(b + o, &lscope[L], 4); o += 4;
         memcpy(b + o, &lcount[L], 4);
         tpos[L] = o + 4;
         o += 4 + lcount[L] * 20;
@@ -2085,6 +2184,11 @@ void silver_write_fmt(silver a, array toks) {
     free(tpos);
     free(lcount);
     free(dp);
+    for (u32 i = 0; i < ndef; i++) free(defs[i].name);
+    free(defs);
+    free(sname);
+    free(stab);
+    free(lscope);
     fmt_put(cp, b, total, mt);
 }
 

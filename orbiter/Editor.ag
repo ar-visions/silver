@@ -12,6 +12,8 @@ class FileBuf
     public sync_i     : i32 [ 0 ]
     # one vec ColorRegion per source line, parallel to lines
     public line_regs  : vec Au
+    # the definition each line sits inside, parallel to lines
+    public line_scope : vec Au
 
 class FindHit
     public is_header : bool
@@ -2002,7 +2004,8 @@ Layer EditorLayer
             if [ has_sel ]
                 cv.save[ ]
                 cv.rounded[ 4.0, 4.0, 4.0, 4.0 ]
-                cv.inner_glow[ rgba['#fff1'], 16.0 ]
+                # selection reads as a glow, not a bordered box
+                cv.inner_glow[ sel_brd_val, 14.0 ]
                 pad : 2
                 for [ li: i32 start_line, li <= end_line, li += 1 ]
                     y_row  : f32 [ round[ y0 + f32[li] * lh - editor.scroll.y ] ]
@@ -2047,11 +2050,9 @@ Layer EditorLayer
                         editor.filter_next = true
 
                     cv.fill_color  [ sel_col_val ]
-                    cv.stroke_color[ sel_brd_val ]
-                    cv.stroke_width[ 0.5 ]
+                    cv.stroke_width[ 0.0 ]
                     cv.rect_to     [ rr.x, rr.y - 0.5, rr.w, rr.h + 1 ]
                     cv.paint       [ ]
-                    cv.stroke_width[ 0.0 ]
                 cv.restore[ ]
 
                 tx : f32 [ cv.transform_tx[] ]
@@ -2109,6 +2110,32 @@ Layer EditorLayer
 
         draw_tools[ cv, editor ]
         cv.clear_crop[ ]
+
+        # the scopes the view is inside stay drawn at the top, over the rows
+        # they would otherwise scroll past. a click on one goes there
+        pins : vec i32 editor.pinned_rows[]
+        if [ pins.count > 0 && !showing ]
+            cmt_p : rgba['#7a8290']
+            cv.font_size[ code_fs ]
+            for [ pi: i32 0, pi < pins.count, pi += 1 ]
+                pr : i32 [ pins[ pi ] ]
+                pn : i32 [ pr + 1 ]
+                py : f32 [ round[ bounds.y + f32[ pi ] * lh ] ]
+                cv.fill_color[ rgba['#16161cf0'] ]
+                cv.stroke_width[ 0.0 ]
+                cv.rect_to[ bounds.x, py, bounds.w, lh ]
+                cv.paint[ ]
+                cv.fill_color[ rgba['#ffffff80'] ]
+                cv.draw_text[ '{pn}',
+                    rect [ x: bounds.x, y: py, w: gut_w - 6.0, h: lh ],
+                    vec2f [ 1.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+                slc : code_slot[ cv, editor, pr, editor.draw_line[ pr ], cmt_p, lh, cw_tm.w, code_fs ]
+                if [ slc && slc.canvas ]
+                    cv.draw_canvas[ slc.canvas, x0, py,
+                        f32[ slc.canvas.content_w ], f32[ slc.canvas.content_h ] ]
+            cv.fill_color[ rgba['#ffffff26'] ]
+            cv.rect_to[ bounds.x, round[ bounds.y + f32[ pins.count ] * lh ], bounds.w, 1.0 ]
+            cv.paint[ ]
 
 
 Control Editor
@@ -2764,7 +2791,8 @@ Control Editor
         fcm : map FileBuf [string] buffers[]
         buf : FileBuf fcm[ key ]
         if [ !buf ] return
-        buf.line_regs = vec Au []
+        buf.line_regs  = vec Au []
+        buf.line_scope = ff.scopes
         lns : vec Au ff.lines
         nl  : i32 [ lns.count ]
         for [ li: i32 0, li < nl, li += 1 ]
@@ -2775,6 +2803,57 @@ Control Editor
                 tk : fmt_token ltk[ ti ]
                 regs.push[ ColorRegion [ col: i32 tk.column, len: i32 tk.length, color: fmt_theme[ i32 tk.syntax ], kind: i32 tk.syntax, dsrc: tk.decl_source, dline: i32 tk.decl_line ] ]
             buf.line_regs.push[ regs ]
+
+    # the definition the top line in view sits inside, by the map's scopes
+    public func scope_at [] -> string
+        if [ !cur_buf || !cur_buf.line_scope ] return null
+        scopes : vec Au cur_buf.line_scope
+        lh  : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
+        top : i32 [ scroll.y / lh ]
+        if [ top < 0 || top >= scopes.count ] return null
+        entry : fmt_scope scopes[ top ]
+        if [ !entry || !entry.name || entry.name.count == 0 ] return null
+        return entry.name
+
+    # the line a scope was declared on, by its qualified name
+    public func scope_line [ name: string ] -> i32
+        if [ !cur_buf || !cur_buf.line_scope || !name ] return -1
+        scopes : vec Au cur_buf.line_scope
+        for [ i: i32 0, i < scopes.count, i += 1 ]
+            entry : fmt_scope scopes[ i ]
+            if [ entry && entry.name && entry.name == name ] return i32 entry.line
+        return -1
+
+    # the declaration rows kept drawn at the top: the scopes the first
+    # visible row is inside, each only once its own row has scrolled off
+    public func pinned_rows [] -> vec i32
+        rows : vec i32 []
+        name : string scope_at[]
+        if [ !name || name.count == 0 || show_hits || flat_active ] return rows
+        lh  : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
+        top : i32 [ scroll.y / lh ]
+        dot : i32 [ name.index_of[ '.' ] ]
+        if [ dot > 0 ]
+            head : i32 [ scope_line[ name.mid[ 0, dot ] ] ]
+            if [ head > 0 && head - 1 < top ] rows.push[ head - 1 ]
+        inner : i32 [ scope_line[ name ] ]
+        below : i32 [ top + i32[ rows.count ] ]
+        if [ inner > 0 && inner - 1 < below ] rows.push[ inner - 1 ]
+        return rows
+
+    # put the caret on a 1-based line and bring it into view
+    public func goto_line [ lno: i32 ]
+        sl : i32 [ (lno > 0) ? lno - 1 : 0 ]
+        sel_line    = sl
+        anchor_line = sl
+        lh  : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
+        vh  : f32 [ (bounds) ? bounds.h : 600.0 ]
+        top : f32 [ f32[ sl ] * lh ]
+        if [ top < scroll.y || top + lh > scroll.y + vh ]
+            scroll.y = top - vh * 0.4
+            if [ scroll.y < 0.0 ] scroll.y = 0.0
+            scroll_target = scroll.y
+        pristine = false
 
     func line_get [ vr: i32 ] -> string
         if [ show_hits && hits ]
@@ -2813,9 +2892,14 @@ Control Editor
         lines.insert_after[ val, i - 1 ]
         if [ cur_buf && cur_buf.line_regs && i <= cur_buf.line_regs.count ]
             cur_buf.line_regs.insert[ vec ColorRegion [], i ]
+        # a new line belongs to the scope the line above it is in
+        if [ cur_buf && cur_buf.line_scope && i > 0 && i <= cur_buf.line_scope.count ]
+            cur_buf.line_scope.insert[ cur_buf.line_scope[ i - 1 ], i ]
     func raw_remove [ i: i32 ]
         if [ cur_buf && cur_buf.line_regs ]
             cur_buf.line_regs.remove[ i ]
+        if [ cur_buf && cur_buf.line_scope && i < cur_buf.line_scope.count ]
+            cur_buf.line_scope.remove[ i ]
         lines.remove[ i ]
 
     func rec [ op: LineOp ]
@@ -3846,6 +3930,13 @@ Control Editor
         cw    : f32 [ (cw_cache > 0.0) ? cw_cache : 8.0 ]
         rel_y : f32 [ ev.mouse.pos.y - ele.bounds.y - ((show_hits) ? 10.0 : 0.0) ]
         if [ rel_y < 0.0 ] return false
+        # a pinned scope row: go to the declaration it stands in for
+        pins : vec i32 pinned_rows[]
+        if [ pins.count > 0 && rel_y < f32[ pins.count ] * lh ]
+            pi : i32 [ rel_y / lh ]
+            pr : i32 [ pins[ pi ] ]
+            goto_line[ pr + 1 ]
+            return true
         if [ grid_mode && show_hits && hits ]
             gli : i32 [ grid_hit_index[ ev.mouse.pos.x - ele.bounds.x, rel_y, ele.bounds.w ] ]
             if [ gli >= 0 ]

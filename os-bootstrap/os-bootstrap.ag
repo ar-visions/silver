@@ -58,6 +58,7 @@ element main : trinity
     mutable kernel     : path
     mutable initrd     : path
     mutable serial     : path
+    mutable log        : path
     mutable files      : vec OsFile
     mutable seen       : map bool [ string ]
 
@@ -69,6 +70,7 @@ element main : trinity
         kernel  = path '{install}/share/silver-os-bootstrap/bzImage'
         initrd  = path '{out_dir}/initramfs.cpio'
         serial  = path '{out_dir}/serial.log'
+        log     = path '{out_dir}/qemu.log'
         assemble[]
 
     # guest path of a host path: same absolute path, no leading slash
@@ -262,8 +264,9 @@ element main : trinity
         # loader reads LD_LIBRARY_PATH once, at exec, so it rides here
         # the last console is init's stdio: serial, since orbiter's own
         # display takes the screen over; read orbiter-os/serial.log
-        cmdline : 'console=tty0 console=ttyS0 nokaslr rdinit={install}/build/{app} LD_LIBRARY_PATH={install}/lib:{install}/build VK_DRIVER_FILES={install}/share/vulkan/icd.d/virtio_icd.x86_64.json VK_LOADER_DEBUG=error'
+        # no fbdev: the kernel framebuffer never owns the display, only the app does
+        cmdline : 'console=ttyS0 drm_kms_helper.fbdev_emulation=0 nokaslr rdinit={install}/build/{app} LD_LIBRARY_PATH={install}/lib:{install}/build VK_DRIVER_FILES={install}/share/vulkan/icd.d/virtio_icd.x86_64.json VK_LOADER_DEBUG=error VN_DEBUG=result'
         return Elements [
             "vm": qemu [ kernel: kernel, initrd: initrd, append: cmdline,
-                         memory: memory, gpu: true, serial: serial ]
+                         memory: memory, gpu: true, serial: serial, log: log ]
         ]

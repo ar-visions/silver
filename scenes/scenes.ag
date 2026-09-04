@@ -599,6 +599,8 @@ EarthShader CloudShader
 
 element EarthPrev
     frost : true
+    public func bg_color [ ] -> rgba
+        return color
     # eased camera distance / angle; p_set marks the first frame
     intern e_cur  : f32
     intern p_cur  : f32
@@ -945,6 +947,8 @@ ModelViewProject MoonShader
 
 element Moon
     frost : true
+    public func bg_color [ ] -> rgba
+        return color
     frost_sharp : true
     # eased camera distance / angle; p_set marks the first frame
     intern e_cur  : f32
@@ -1244,6 +1248,8 @@ ModelViewProject GaiaShader
 
 element MilkyWay
     frost : true
+    public func bg_color [ ] -> rgba
+        return color
     frost_sharp : true
     # eased field of view; orbit steps zoom the gaze, not a distance
     intern e_cur  : f32
@@ -1625,6 +1631,8 @@ ModelViewProject SaturnShader
 
 element Titan
     frost : true
+    public func bg_color [ ] -> rgba
+        return color
     frost_sharp : true
     # eased camera distance / angle; p_set marks the first frame
     intern e_cur  : f32
@@ -2285,6 +2293,8 @@ ModelViewProject EnceladusShader
 
 element Enceladus
     frost : true
+    public func bg_color [ ] -> rgba
+        return color
     frost_sharp : true
     intern e_cur  : f32
     intern p_cur  : f32
@@ -3649,6 +3659,8 @@ export func europa_maps []
 
 element Europa
     frost : true
+    public func bg_color [ ] -> rgba
+        return color
     frost_sharp : true
     intern e_cur  : f32
     intern p_cur  : f32
@@ -6972,6 +6984,8 @@ func build_carpet [] -> GltfModel
 
 element Terra
     frost : true
+    public func bg_color [ ] -> rgba
+        return color
     frost_sharp : true
     intern olymp  : TerraShader
     intern owater : TerraWaterShader
@@ -7679,6 +7693,8 @@ ModelViewProject MarsSkyShader
 
 element Mars
     frost : true
+    public func bg_color [ ] -> rgba
+        return color
     frost_sharp : true
     intern surf   : MarsShader
     intern msky   : MarsSkyShader
@@ -8101,6 +8117,8 @@ ModelViewProject AuroraShader
 # up as a hoop rather than lying flat across the disk
 element Uranus
     frost : true
+    public func bg_color [ ] -> rgba
+        return color
     frost_sharp : true
     intern e_cur  : f32
     intern p_cur  : f32
@@ -8352,6 +8370,8 @@ element Uranus
 
 element Neptune
     frost : true
+    public func bg_color [ ] -> rgba
+        return color
     frost_sharp : true
     intern e_cur  : f32
     intern p_cur  : f32
@@ -8872,6 +8892,8 @@ ModelViewProject JungleShader
 
 element Earth
     frost : true
+    public func bg_color [ ] -> rgba
+        return color
     frost_sharp : true
     intern e_cur  : f32
     intern p_cur  : f32
@@ -9586,6 +9608,8 @@ ModelViewProject SynthPost
 
 element Synthwave
     frost : true
+    public func bg_color [ ] -> rgba
+        return rgba [ r: 0.03, g: 0.01, b: 0.07, a: 1.0 ]
     frost_sharp : true
     # sky + range drawn once per size, then reduced and blurred for the mirror
     mutable gaia_img    : Image
@@ -10914,6 +10938,8 @@ export func nubis_export []
 
 element Clouds
     frost : true
+    public func bg_color [ ] -> rgba
+        return rgba [ r: 0.0, g: 0.0, b: 0.0, a: 1.0 ]
     frost_sharp : true
     mutable sky        : NubisSky
     mutable vmodel     : Model
@@ -12613,6 +12639,8 @@ ModelViewProject PlutoSky
 
 element Pluto
     frost : true
+    public func bg_color [ ] -> rgba
+        return color
     frost_sharp : true
     intern surf   : PlutoGround
     intern psky   : PlutoSky

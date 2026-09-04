@@ -991,6 +991,8 @@ static int rebuild_blocking(const char* name, int clean) {
 // so mount what a process expects before anything else looks
 // init must never return: the kernel panics and its trace scrolls the
 // real message off the screen. hold the console instead
+static void init_console_bind(int on);
+
 static void init_hold(void) {
     if (getpid() != 1) return;  // a forked helper exiting is not init
     fflush(stdout);              // exit flushes AFTER atexit: do it now
@@ -998,6 +1000,7 @@ static void init_hold(void) {
     fprintf(stderr, "init: orbiter exited; holding the console\n");
     // the screen: the app's drm lease closed with it, so the text console
     // has the display again. show the tail of the app log there
+    init_console_bind(1);
     int tty = open("/dev/tty0", O_WRONLY);
     char lp[256];
     snprintf(lp, sizeof(lp), "%s/%s.log", temp_dir(), g_app_name);
@@ -1025,6 +1028,26 @@ static void init_mount(const char* fs, const char* at) {
     int rc = mount(fs, at, fs, 0, NULL);
     fprintf(stderr, "init: mount %s %s%s\n", fs, at, rc ? " FAILED" : "");
 }
+// the kernel's framebuffer console shares the display with the app: both
+// flip the crtc. bind it only while the app is not on screen
+static void init_console_bind(int on) {
+    for (int i = 0; i < 4; i++) {
+        char p[64], name[64] = {0};
+        snprintf(p, sizeof p, "/sys/class/vtconsole/vtcon%d/name", i);
+        int f = open(p, O_RDONLY);
+        if (f < 0) continue;
+        read(f, name, sizeof name - 1);
+        close(f);
+        if (!strstr(name, "frame buffer")) continue;
+        snprintf(p, sizeof p, "/sys/class/vtconsole/vtcon%d/bind", i);
+        f = open(p, O_WRONLY);
+        if (f < 0) continue;
+        write(f, on ? "1" : "0", 1);
+        close(f);
+        fprintf(stderr, "init: framebuffer console %s\n", on ? "bound" : "unbound");
+    }
+}
+
 static void init_as_pid1(void) {
     if (getpid() != 1) return;
     fprintf(stderr, "init: orbiter launcher is pid 1\n");
@@ -1044,6 +1067,7 @@ static void init_as_pid1(void) {
     if (fork() == 0) {
         for (int t = 5;; t += 5) { sleep(5); fprintf(stderr, "init: alive %ds\n", t); }
     }
+    init_console_bind(0);
     fprintf(stderr, "init: loading the app\n");
 }
 #else

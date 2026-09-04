@@ -10,7 +10,7 @@ import project
 import dbg
 import spectra
 import speech
-
+ 
 # import c headers
 import <stdio.h>
     -lm
@@ -202,6 +202,14 @@ element EditorView
         if [ !e || !e.view_name || e.view_name.count == 0 ] return ''
         return (e.view_name != 'text') ? e.view_name : ''
 
+    # what the caret is inside of; empty while the name is being edited
+    func title_scope [] -> string
+        if [ findbar_on[] || newfile ] return ''
+        e : Editor text_of[]
+        if [ !e ] return ''
+        s : string e.scope_at[]
+        return (s) ? s : ''
+
     func title_els [] -> Elements
         o : orb[]
         w : Window ux
@@ -210,12 +218,25 @@ element EditorView
         # the editor is never locked while debugging; the run band steps
         t : Elements o.title_nav[ file[], null, false, w, false, e->dbg_open, menu_open[],
             (e && e.rview) ? true : false, e->rview, findbar_on[], tfoc, pane_index ]
+        # the scope buttons, from where the title measured the name to end.
+        # each is keyed by its qualified name, which is what it jumps to
+        scope : string title_scope[]
+        prev  : EditorTitle (elements) ? elements['title'] : null
+        if [ !tfoc && scope.count > 0 && prev && prev.scope_ws ]
+            x    : f32 [ prev.scope_x ]
+            i    : i32 [ 0 ]
+            qual : string ''
+            for [ part: string ] in scope.split[ '.' ]
+                if [ i >= prev.scope_ws.count ] break
+                qual = (qual.count > 0) ? '{qual}.{part}' : part
+                w : f32 [ prev.scope_ws[ i ] ]
+                t[ qual ] = ScopeButton [ label: part, manual_mode: true,
+                    area: Region [ 'l{x}px t0 w{w}px h0.9' ] ]
+                x = x + w + 4.0
+                i += 1
         if [ psess[].count > 0 ]
             t['ctx_copy'] = LabelButton [ label: 'context', manual_mode: true ]
             t['ctx_shot'] = LabelButton [ label: 'screen',  manual_mode: true ]
-        # inserted last so right-flow puts it left of the title's controls
-        if [ e && e.run_view && !e.run_view.ended ]
-            t['gotosrc'] = BandSource [ label: 'active', manual_mode: true ]
         if [ newfile ]
             # create mode has its own cancel: never two close buttons
             t.rm[ 'histnav' ]
@@ -298,7 +319,7 @@ element EditorView
             if [ app_pip[] ] smask = smask | (1 << ibtn.count)
             ibtn.push[ 'pip' ]
             iico.push[ 'pip' ]
-        iw : f32 [ 1.2 * f32[ ibtn.count ] ]
+        iw : f32 [ 1.4 * f32[ ibtn.count ] ]
         return TButtons [ buttons: ibtn, icon_ids: iico,
             manual: true, sel_mask: smask,
             rest_glow: rgba [ '#ccf2' ], rest_px: 16.0,
@@ -419,6 +440,7 @@ element EditorView
             conflict: newfile && newfile_exists[]
             no_scroll: true
             hint: title_hint[]
+            scope: title_scope[]
             elements: title_els[] ]
         t['split'] = Splitter [ area: Region { l0 t1.3 r0 b0 }, vertical: true,
             inner: pane_els[], deflt: 180.0,
@@ -446,6 +468,12 @@ element EditorTitle
     public conflict : bool
     # painted after the name, never part of the editable label
     public hint     : string
+    # the definition the caret is in; the buttons after the name show it
+    public scope     : string
+    # where those go, measured here since the name width is text
+    mutable scope_x  : f32
+    mutable scope_ws : vec f32
+    mutable scope_of : string
     mutable ficons  : FileIcons
     style : CSS {
         area: l0 t0 r0 h1.3
@@ -481,14 +509,34 @@ element EditorTitle
             cv.draw_svg[ mdl, 70.0, (bounds.h - isz) * 0.5, isz, isz ]
         # the view we are in, trailing the name. painted, so the label
         # stays the editable field and this can never be selected
+        cv.font_size[ 19 ]
+        name_m : cv.measure_text[ label ]
+        trail  : f32 [ 98.0 + name_m.w + 16.0 ]
+        if [ !scope || scope.count == 0 ]
+            scope_ws = null
+        el
+            # one width per part, measured once per distinct scope
+            if [ !scope_ws || scope != scope_of ]
+                cv.font_size[ 12 ]
+                widths : vec f32 []
+                for [ part: string ] in scope.split[ '.' ]
+                    pm : cv.measure_text[ part ]
+                    pw : f32 [ pm.w ]
+                    seg : f32 [ pw + 40.0 ]
+                    widths.push[ seg ]
+                scope_ws = widths
+                scope_of = scope
+            scope_x = trail
+            for [ i: i32 0, i < scope_ws.count, i += 1 ]
+                w : f32 [ scope_ws[ i ] ]
+                trail = trail + w + 4.0
+            trail = trail + 8.0
         if [ hint && hint.count > 0 ]
-            cv.font_size[ 19 ]
-            m9 : cv.measure_text[ label ]
             cv.font_size[ 13 ]
             cv.fill_color[ '#ffffff66' ]
             cv.stroke_width[ 0.0 ]
             cv.draw_text[ hint,
-                rect [ x: 98.0 + m9.w + 16.0, y: 0.0, w: bounds.w, h: bounds.h ],
+                rect [ x: trail, y: 0.0, w: bounds.w, h: bounds.h ],
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
             cv.paint[]
 
@@ -496,21 +544,24 @@ element EditorTitle
 Option NavButton
     style : CSS {
         layers.body:
-            fill_color: #614
+            fill_color: #ffffff0c, 200ms cubic
             radius: 8
-            inner_glow: #ccf2 16
+            stroke_width: 0.5
+            stroke_color: #ffffff33, 200ms cubic
+            inner_glow: #0000 0, 200ms cubic
         :hovered
             layers.body:
-                fill_color: #826
-                inner_glow: #fcc6 20
+                fill_color: #ffffff1c, 200ms cubic
+                stroke_color: #ffffff55, 200ms cubic
+                inner_glow: #fcc6 20, 200ms cubic
         :pressed
             layers.body:
-                fill_color: #438
-                inner_glow: #ccf8 22
+                fill_color: #ffffff2e
+                stroke_color: #ffffff66
         :selected
             layers.body:
                 fill_color: #c8641e
-                inner_glow: #ffae5ea2 18
+                stroke_color: #ffae5e88
     }
 
 Avatar OrbiterAvatar
@@ -642,6 +693,11 @@ Avatar OrbiterAvatar
 NavButton LabelButton
     area   : Region { r0+ t0 w2.2 h0.9 }
     tlabel : Layer [ label_color: rgba [ '#fffa' ], label_size: 14,
+        label_align: vec2f [ x: 0.5, y: 0.5 ] ]
+
+# what the top line in view is inside; a size down from a nav label
+LabelButton ScopeButton
+    tlabel : Layer [ label_color: rgba [ '#fffa' ], label_size: 12,
         label_align: vec2f [ x: 0.5, y: 0.5 ] ]
 
 
@@ -848,7 +904,7 @@ NavButton OrbiterButton
             fill_color: #0000
             radius: 8
             inner_glow: #0000 0
-            stroke_width: 1
+            stroke_width: 0.5
             stroke_color: #fff4
         layers.iconl:
             image_scale: 1.1
@@ -872,25 +928,28 @@ NavButton OrbiterButton
 LButton RunButton
     style : CSS {
         layers.body:
-            fill_color: #614
-            radius: 6
-            inner_glow: #ccf2 16
+            fill_color: #ffffff0c, 200ms cubic
+            radius: 8
+            stroke_width: 0.5
+            stroke_color: #ffffff33, 200ms cubic
+            inner_glow: #0000 0, 200ms cubic
         :hovered
             layers.body:
-                fill_color: #826
-                inner_glow: #fcc6 20
+                fill_color: #ffffff1c, 200ms cubic
+                stroke_color: #ffffff55, 200ms cubic
+                inner_glow: #fcc6 20, 200ms cubic
         :pressed
             layers.body:
-                fill_color: #438
-                inner_glow: #ccf8 22
+                fill_color: #ffffff2e
+                stroke_color: #ffffff66
         :shifted
             layers.body:
-                fill_color: #26e
-                inner_glow: #9cf8 20
+                fill_color: #ffffff2e
+                stroke_color: #9cf8aa
         :selected
             layers.body:
                 fill_color: #c8641e
-                inner_glow: #ffae5ea2 18
+                stroke_color: #ffae5e88
     }
 
 RunButton SoundButton
@@ -907,7 +966,7 @@ element PatternField
         layers.body:
             fill_color: #0000
             radius: 8
-            stroke_width: 1
+            stroke_width: 0.5
             stroke_color: #fff2
         layers.face:
             label_color: #fff6
@@ -953,7 +1012,7 @@ element ArgsField
         layers.body:
             fill_color: #0000
             radius: 8
-            stroke_width: 1
+            stroke_width: 0.5
             stroke_color: #fff2
         layers.face:
             label_color: #fff6
@@ -989,7 +1048,7 @@ element ReplaceField
         layers.body:
             fill_color: #0000
             radius: 8
-            stroke_width: 1
+            stroke_width: 0.5
             stroke_color: #fff2
         layers.face:
             label_color: #fff6
@@ -1163,6 +1222,7 @@ element orbiter : trinity # implements compiler
     intern orbit_hello_at : i32
     # one-shot startup voice test fired
     intern orbit_voice_tested : bool
+    intern frost_pushed  : i32 [ -1 ]         # last frost stage synced to shader
     # the crash verdict has been typed into the agent session
     intern orbit_reported : bool
     intern orbit_enter_at : i32
@@ -1174,6 +1234,9 @@ element orbiter : trinity # implements compiler
     intern orbit_dstate   : i32 [ -1 ]
     # attached app's pid — once it dies this shell must exit
     intern orbit_app_pid  : i32 [ 0 ]
+    intern orbit_isolate  : string           # SILVER_ISOLATE_SESSION, read in init
+    intern orbit_status   : string           # SILVER_ISOLATE_STATUS, read in init
+    intern orbit_sroot    : string           # SILVER root, read in init
     intern orbit_oc       : string
     intern orbit_cc       : string
     intern debuggers     : map dbg [string]
@@ -1359,6 +1422,22 @@ element orbiter : trinity # implements compiler
             el
                 resource    = module_args
                 module_args = ''
+        # every env lookup happens here, once; frames read the members
+        se : getenv[ 'SILVER_ISOLATE_SESSION' ]
+        if [ se ]
+            orbit_isolate = string [ se ]
+            orbit_isolate.hold[]
+        st : getenv[ 'SILVER_ISOLATE_STATUS' ]
+        if [ st ]
+            orbit_status = string [ st ]
+            orbit_status.hold[]
+        sv : getenv[ 'SILVER' ]
+        orbit_sroot = (sv) ? string [ sv ] : string '{startup_path}'
+        orbit_sroot.hold[]
+        pe : getenv[ 'SILVER_ISOLATE_APP_PID' ]
+        if [ pe ]
+            ps : string [ pe ]
+            orbit_app_pid = i32[ ps.integer_value[] ]
         ae : getenv[ 'SILVER_ISOLATE_APP' ]
         if [ ae ]
             orbit_app = string [ ae ]
@@ -1873,8 +1952,7 @@ element orbiter : trinity # implements compiler
             m6 = ((body && body.count > 0) ? '{orbit_ctx} {body}' : orbit_ctx)
         if [ !m6 || m6.count == 0 ] return
         ss : string ''
-        se : getenv[ 'SILVER_ISOLATE_SESSION' ]
-        if [ se ] ss = string [ se ]
+        if [ orbit_isolate ] ss = orbit_isolate
         shot : path '/tmp/silver-app-{ss}.png'
         tree : path '/tmp/silver-app-{ss}.agi'
         if [ shot.exists[] ] m6 = 'app screenshot: {shot}  {m6}'
@@ -1939,12 +2017,6 @@ element orbiter : trinity # implements compiler
 
     func orbit_frame [ w: Window ]
         if [ attach ]
-            if [ orbit_app_pid == 0 ]
-                orbit_app_pid = -1
-                pe : getenv[ 'SILVER_ISOLATE_APP_PID' ]
-                if [ pe ]
-                    ps : string [ pe ]
-                    orbit_app_pid = i32[ ps.integer_value[] ]
             if [ orbit_app_pid > 0 && host_pid_alive[ orbit_app_pid ] == 0 ] exit[ 0 ]
         # render every frame so the WndProc pump keeps running
         w.will_animate = true
@@ -1956,8 +2028,7 @@ element orbiter : trinity # implements compiler
                 vt9 : string 'orbiter voice is working'
                 tts_say[ vt9.chars, 8, 1.0 ]
         if [ !orbit_ctx ]
-            sv : getenv[ 'SILVER' ]
-            sroot : string ((sv) ? string [ sv ] : string '{startup_path}')
+            sroot : string [ orbit_sroot ]
             vox : string 'every single reply must end with one line of the exact form speak {orbit_oc} one short spoken sentence {orbit_cc} — that line is synthesized aloud to the user; never omit it. the user speaks by voice and their words arrive wrapped user {orbit_oc} like this {orbit_cc}.'
             prm : string 'the app {orbit_app} runs under orbiter. its source is {sroot}/{orbit_app}/{orbit_app}.ag. when it crashes the report is typed here — investigate and help fix it.'
             if [ attach ]
@@ -2006,7 +2077,7 @@ element orbiter : trinity # implements compiler
                 puts 'speak-scan: voicing "{ut}" (tts_init rc {rc2})'
                 if [ rc2 == 0 ]
                     tts_say[ ut.chars, 8, 1.0 ]
-        st : getenv[ 'SILVER_ISOLATE_STATUS' ]
+        st : string [ orbit_status ]
         if [ st && !orbit_reported ]
             orbit_reported = true
             orbit_send[ 'the app crashed: {st} — investigate.' ]
@@ -3155,8 +3226,11 @@ element orbiter : trinity # implements compiler
         # the scene retints the ui; null theme restores the authored values
         if [ ux && ux.st ]
             ux.st.set_theme[ e.theme*[] ]
-            # the solid stage paints the theme's editor background
-            ux.solid_color = ux.st.theme_color[ '#140a2acc' ]
+            # the solid stage fills the scene's OWN backdrop color, so the
+            # flat background is the mounted scene's color, not a fixed hex
+            bgc9 : e.bg_color*[]
+            if [ bgc9 && bgc9.a > 0.0 ] ux.solid_color = bgc9
+            ux.apply_solid[]
             ux.restyle = true
         return e
 
@@ -3575,19 +3649,9 @@ element orbiter : trinity # implements compiler
         open_in_pane[ fp, 0 ]
         ed : Editor pane_at[ 0 ]
         if [ ed ]
-            sl : i32 [ (lno > 0) ? lno - 1 : 0 ]
-            ed.sel_line = sl
-            ed.sel_col  = col
-            ed.anchor_line = sl
-            ed.anchor_col  = col
-            lh  : f32 [ (ed.lh_cache > 0.0) ? ed.lh_cache : 22.0 ]
-            vh  : f32 [ (ed.bounds) ? ed.bounds.h : 600.0 ]
-            top : f32 [ f32[ sl ] * lh ]
-            if [ top < ed.scroll.y || top + lh > ed.scroll.y + vh ]
-                ed.scroll.y = top - vh * 0.4
-                if [ ed.scroll.y < 0.0 ] ed.scroll.y = 0.0
-                ed.scroll_target = ed.scroll.y
-            ed.pristine = false
+            ed.goto_line[ lno ]
+            ed.sel_col    = col
+            ed.anchor_col = col
         return true
 
     func jump_to_error [ logpath: string ]
@@ -4143,6 +4207,17 @@ element orbiter : trinity # implements compiler
             if [ ev.target ] ev.target.ux.restyle = true
             return
 
+        # a scope button: its id IS the qualified name it jumps to
+        eds : Editor pane_of[ ev.target ]
+        if [ eds ]
+            line : i32 [ eds.scope_line[ ev.target.id ] ]
+            if [ line > 0 ]
+                eds.goto_line[ line ]
+                ev.no_default = true
+                if [ ev.target ] ev.target.ux.restyle = true
+                force_update[]
+                return
+
         if [ ev.target.id == 'magnify' ]
             findbar_open = !findbar_open
             if [ findbar_open ] pending_findfocus = true
@@ -4619,14 +4694,6 @@ element orbiter : trinity # implements compiler
                 edo.attach_app_run[ orbit_app ]
                 orbit_bound = true
 
-        # AVSOAK: auto summon/dismiss every 3s to reproduce the remount crash
-        if [ getenv[ 'AVSOAK' ] ]
-            sum9  : i64  [ Au.epoch_millis[] / 3000 ]
-            want9 : bool [ (sum9 & 1) == 1 ]
-            if [ want9 != show_orbiter ]
-                show_orbiter = want9
-                puts 'AVSOAK show={show_orbiter}'
-                if [ ux ] ux.restyle = true
         attach_publish[]
         sync_volume[]
         for [ pi2: i32 0, pi2 < editor_slots.count, pi2 += 1 ]
@@ -4727,8 +4794,14 @@ element orbiter : trinity # implements compiler
             puts 'FROST ix={frost_ix} mode={(ux) ? ux.frost_mode : -9} eff={(ux) ? ux.frost_eff[] : -9}'
             frost_dbg9 = frost_ix
             if [ ux ] frost_dbg8 = ux.frost_mode
-            if [ ux && ux.st ] ux.solid_color = ux.st.theme_color[ '#140a2acc' ]
+            if [ ux && scene_el ]
+                bgc8 : scene_el.bg_color*[]
+                if [ bgc8 && bgc8.a > 0.0 ] ux.solid_color = bgc8
+                ux.apply_solid[]
         if [ ux ] ux.frost_mode = frost_ix
+        # push the flat color the instant the stage is set (retry until the
+        # shader exists), so load shows the solid color, never the gradient
+        if [ ux && frost_pushed != frost_ix && ux.apply_solid[] ] frost_pushed = frost_ix
         speed_apply[]
         if [ ux ] ux.orbit_mode = orbit_ix % orbit_list[].count
         if [ ux ] ux.angle_mode = angle_value[]

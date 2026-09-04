@@ -1,3 +1,4 @@
+#include <fcntl.h>
 // qemu D-Bus display client: peer-to-peer (no bus daemon), host-side only.
 // connects to `-display dbus,addr=unix:path=<sock>`, registers a Listener,
 // and captures the guest scanout as a dma-buf fd for trinity to import.
@@ -245,7 +246,12 @@ static gpointer dbus_thread(gpointer data) {
 // start the client on its own glib main-loop thread. addr like
 // "unix:path=/tmp/qemu-dbus-1234.sock"
 int qemu_dbus_start(const char* qmp_path) {
+    // stdin is closed in a hosted app: keep fd 0 occupied, or every fd that
+    // arrives over the socket lands on 0 and glib's fd tracking loses it
+    if (fcntl(0, F_GETFD) < 0) { int z = open("/dev/null", O_RDONLY); if (z != 0 && z >= 0) close(z); }
     setvbuf(stderr, NULL, _IONBF, 0);   // g_printerr diagnostics unbuffered
+    { char l[256]; ssize_t n = readlink("/proc/self/fd/0", l, sizeof(l) - 1);
+      fprintf(stderr, "qemu dbus: fd 0 is %s\n", n > 0 ? (l[n] = 0, l) : "closed"); }
     fprintf(stderr, "qemu dbus: start %s\n", qmp_path);
     start_args* a = g_new0(start_args, 1);
     a->qmp = g_strdup(qmp_path);
