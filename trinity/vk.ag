@@ -752,7 +752,9 @@ class Render
             result = vkCreateFence[ vk.device, @fenceInfo, null, @vk_fences[ri] ]
             if [ result != VK_SUCCESS ]
                 rvi : i32 [ result ]
-                puts 'vkCreateFence failed: result={rvi} (-4=device_lost -1/-2=oom)'
+                dh : handle [ vk.dev_handle[] ]
+                lv : handle [ Au.live_vk_get[] ]
+                puts 'vkCreateFence failed: result={rvi} (-4=device_lost -1/-2=oom) device={dh} live_vk={lv}'
             expect result == VK_SUCCESS, "failed to create fence"
         vk_fence = vk_fences[0]
 
@@ -1303,6 +1305,7 @@ class vk_context
         vkDeviceWaitIdle[ device ]
 
     func dealloc [ ]
+        puts 'vk_context dealloc: destroying device'
         vmaDestroyAllocator [ allocator ]
         vkDeviceWaitIdle    [ device ]
         vkDestroyDevice     [ device, null ]
@@ -3658,6 +3661,7 @@ class Texture
                 sampler_size = (img) ? img.byte_count[] : 0
                 ansio        = (anisotropy > 0) ? anisotropy : ((img) ? 4 : 0)
                 if [ img ]
+                    expect img.width > 0, 'texture: {img.uri} did not load'
                     width  = img.width
                     height = (depth > 1) ? img.height / depth : img.height
             el [ sampler ]
