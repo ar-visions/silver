@@ -10,6 +10,8 @@ import project
 import dbg
 import spectra
 import speech
+# handlers are found at runtime through their export, but built here
+import code
  
 # import c headers
 import <stdio.h>

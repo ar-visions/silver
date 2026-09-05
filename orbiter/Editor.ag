@@ -12,8 +12,11 @@ class FileBuf
     public sync_i     : i32 [ 0 ]
     # one vec ColorRegion per source line, parallel to lines
     public line_regs  : vec Au
-    # the definition each line sits inside, parallel to lines
-    public line_scope : vec Au
+    # nesting by indentation: the nearest line above each with a smaller
+    # indent (-1 at top level), blank lines inheriting their predecessor's.
+    # rebuilt on demand once the lines change
+    public line_parent : vec i32
+    public tree_dirty  : bool [ true ]
 
 class FindHit
     public is_header : bool
@@ -2796,8 +2799,7 @@ Control Editor
         fcm : map FileBuf [string] buffers[]
         buf : FileBuf fcm[ key ]
         if [ !buf ] return
-        buf.line_regs  = vec Au []
-        buf.line_scope = ff.scopes
+        buf.line_regs = vec Au []
         lns : vec Au ff.lines
         nl  : i32 [ lns.count ]
         for [ li: i32 0, li < nl, li += 1 ]
@@ -2809,60 +2811,60 @@ Control Editor
                 regs.push[ ColorRegion [ col: i32 tk.column, len: i32 tk.length, color: fmt_theme[ i32 tk.syntax ], kind: i32 tk.syntax, dsrc: tk.decl_source, dline: i32 tk.decl_line ] ]
             buf.line_regs.push[ regs ]
 
-    # the definition a source row sits inside, by the map's scopes
-    func scope_name_at [ row: i32 ] -> string
-        if [ !cur_buf || !cur_buf.line_scope ] return null
-        scopes : vec Au cur_buf.line_scope
-        if [ row < 0 || row >= scopes.count ] return null
-        entry : fmt_scope scopes[ row ]
-        if [ !entry || !entry.name || entry.name.count == 0 ] return null
-        return entry.name
+    # nesting by indentation, for any file: each line's parent is the
+    # nearest line above it with a smaller indent. a blank line inherits
+    # its predecessor's, so it never ends a scope
+    func line_tree []
+        if [ !cur_buf || !lines ] return
+        n : i32 [ lines.count ]
+        if [ !cur_buf.tree_dirty && cur_buf.line_parent && cur_buf.line_parent.count == n ] return
+        tree   : vec i32 []
+        sline  : vec i32 []       # open lines, outermost first
+        sind   : vec i32 []       # and their indents
+        above  : i32 [ -1 ]
+        for [ i: i32 0, i < n, i += 1 ]
+            ln  : string lines.value_by_index[ i ]
+            ind : i32 [ 0 ]
+            while [ ln && ind < ln.count && (ln[ind] == 32 || ln[ind] == 9) ] ind += 1
+            if [ !ln || ind >= ln.count ]
+                tree.push[ above ]
+                continue
+            while [ sind.count > 0 ]
+                tind : i32 [ sind[ sind.count - 1 ] ]
+                if [ tind < ind ] break
+                sind.pop[]
+                sline.pop[]
+            above = (sline.count > 0) ? i32[ sline[ sline.count - 1 ] ] : -1
+            tree.push[ above ]
+            sline.push[ i ]
+            sind.push[ ind ]
+        cur_buf.line_parent = tree
+        cur_buf.tree_dirty  = false
 
-    # the line a scope was declared on, by its qualified name: the nearest
-    # one at or above row, since two ifdef branches can share a name
-    public func scope_line [ name: string, row: i32 ] -> i32
-        if [ !cur_buf || !cur_buf.line_scope || !name ] return -1
-        scopes : vec Au cur_buf.line_scope
-        from   : i32 [ (row < scopes.count) ? row : i32[ scopes.count ] - 1 ]
-        for [ i: i32 from, i >= 0, i -= 1 ]
-            entry : fmt_scope scopes[ i ]
-            if [ entry && entry.name && entry.name == name ] return i32 entry.line
-        return -1
-
-    # the declaration rows kept drawn at the top: the scopes the first
-    # visible row is inside, each only once its own row has scrolled off
+    # the header rows kept drawn at the top: the lines the first visible
+    # row is nested under, outermost first, each only once it has scrolled
+    # off. each level reads the row just under the band as it stands
     public func pinned_rows [] -> vec i32
         rows : vec i32 []
-        if [ show_hits || flat_active ] return rows
+        if [ show_hits || flat_active || !cur_buf ] return rows
+        line_tree[]
+        tree : vec i32 cur_buf.line_parent
+        if [ !tree ] return rows
         lh   : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
-        top  : i32 [ scroll.y / lh ]
-        prev : i32 [ -1 ]
-        # each level reads the row just under the band as it stands, so a
-        # scope pins the moment its line slips under the band's edge. a
-        # level is one dotted part of the qualified name: record, function,
-        # then any ifdef branches inside
-        for [ level: i32 0, level < 8, level += 1 ]
-            row  : i32 [ top + i32[ rows.count ] ]
-            name : string scope_name_at[ row ]
-            if [ !name || name.count == 0 ] break
-            cut  : i32 [ name.count ]
-            seen : i32 [ 0 ]
-            for [ k: i32 0, k < name.count, k += 1 ]
-                if [ name[k] == 46 ]
-                    if [ seen == level ]
-                        cut = k
-                        break
-                    seen += 1
-            deepest : bool [ cut == name.count ]
-            want : string name.mid[ 0, cut ]
-            line : i32 [ scope_line[ want, row ] ]
-            drow : i32 [ line - 1 ]
-            # the innermost pins as soon as it touches the band, so the
-            # scope it replaces is never erased a row before it arrives
-            if [ line > 0 && (drow < row || (deepest && drow == row)) && drow != prev ]
-                rows.push[ drow ]
-                prev = drow
-            if [ deepest ] break
+        # a pixel of easing under a row boundary must not read as the row above
+        top  : i32 [ (scroll.y + 1.0) / lh ]
+        for [ level: i32 0, level < 16, level += 1 ]
+            row : i32 [ top + i32[ rows.count ] ]
+            if [ row < 0 || row >= tree.count ] break
+            # the row's ancestors, innermost first
+            chain : vec i32 []
+            for [ p: i32 [ tree[ row ] ], p >= 0, p = i32[ tree[ p ] ] ]
+                chain.push[ p ]
+            if [ level >= chain.count ] break
+            h : i32 [ chain[ chain.count - 1 - level ] ]
+            # a header stays nested under the one above it in the band
+            if [ rows.count > 0 && h <= i32[ rows[ rows.count - 1 ] ] ] break
+            rows.push[ h ]
         return rows
 
     # put the caret on a 1-based line and bring it into view
@@ -2908,6 +2910,7 @@ Control Editor
         lines.remove[ i ]
         lines.insert_after[ val, i - 1 ]
         edit_line_regs[ i, old, val ]
+        if [ cur_buf ] cur_buf.tree_dirty = true
 
 
     # raw line ops (no recording) — used by undo/redo replay.
@@ -2916,14 +2919,11 @@ Control Editor
         lines.insert_after[ val, i - 1 ]
         if [ cur_buf && cur_buf.line_regs && i <= cur_buf.line_regs.count ]
             cur_buf.line_regs.insert[ vec ColorRegion [], i ]
-        # a new line belongs to the scope the line above it is in
-        if [ cur_buf && cur_buf.line_scope && i > 0 && i <= cur_buf.line_scope.count ]
-            cur_buf.line_scope.insert[ cur_buf.line_scope[ i - 1 ], i ]
+        if [ cur_buf ] cur_buf.tree_dirty = true
     func raw_remove [ i: i32 ]
         if [ cur_buf && cur_buf.line_regs ]
             cur_buf.line_regs.remove[ i ]
-        if [ cur_buf && cur_buf.line_scope && i < cur_buf.line_scope.count ]
-            cur_buf.line_scope.remove[ i ]
+        if [ cur_buf ] cur_buf.tree_dirty = true
         lines.remove[ i ]
 
     func rec [ op: LineOp ]
@@ -2984,6 +2984,7 @@ Control Editor
             lines.push[ s ]
         # whole-buffer swap: per-line regions no longer correspond
         fmt_invalidate[]
+        if [ cur_buf ] cur_buf.tree_dirty = true
 
     func apply_undo [ g: EditAction ]
         if [ g.full_before ]
@@ -3246,12 +3247,20 @@ Control Editor
             nm = nm.mid[ dash + 1, nm.count - dash - 1 ]
         return stem
 
-    # exported handler module for a file's extension, or null
+    # exported handler module that VIEWS a file's extension, or null. only
+    # an app (a trinity element) can be hosted on a file; a lib that only
+    # processes text (a syntax map) is not a view, so the file stays in the
+    # code editor. silver's own rule tells them apart: an app has its host
+    # binary beside the product
     func handler_module_for [ p: path ] -> string
         ext : file_ext[ p ]
         if [ ext.count == 0 ] return null
         ensure_export_registry[]
-        return export_registry[ ext ]
+        hm : string export_registry[ ext ]
+        if [ !hm ] return null
+        root : path.path_startup[]
+        host : path '{root}/install/build/{hm}'
+        return (host.exists[]) ? hm : null
 
     # the handler's lib stem (silver-markdown) for a file's extension, or null
     func handler_lib_for [ p: path ] -> string
@@ -4011,7 +4020,11 @@ Control Editor
                     return true
             # a modifier click in here is OURS whether or not it resolved.
             # falling through hands it to the style inspector, and cmd
-            # does not mean 'inspect this element' inside the editor
+            # does not mean 'inspect this element' inside the editor.
+            # unresolved, it is a plain click: the anchor moves with the
+            # caret, or it reads as a shift-click from the old anchor
+            anchor_line = sel_line
+            anchor_col  = sel_col
             ev.no_default = true
             return true
         return false
@@ -4045,6 +4058,9 @@ Control Editor
                 scroll.y      = f32[ pr - pi ] * plh
                 if [ scroll.y < 0.0 ] scroll.y = 0.0
                 scroll_target = scroll.y
+                # no easing left over to pull it a pixel off the row
+                scroll_goal   = scroll.y
+                scroll_anim   = false
                 pristine      = false
                 ev.no_default     = true
                 ev.no_propagation = true

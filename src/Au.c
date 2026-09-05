@@ -7295,11 +7295,9 @@ AU_EXPORT i64 path_modified_time(path a) {
 // (one per source file), each carrying its canonical path, source mtime, and per-line
 // token arrays. used by BOTH silver (incremental: skip files whose mtime is unchanged)
 // and orbiter (syntax coloring) — there is no second copy of this parser anywhere.
-// layout (LE): u32 magic('SFMT') u32 ver(=5);  section: u32 0xC0DEFACE u32 path_len,
-//   path bytes, i64 mtime, u32 decl_count, decl_count*{u32 len, bytes},
-//   u32 scope_count, scope_count*{u32 len, bytes, u32 line}, u32 line_count,
-//   line_count*{u32 scope_idx, u32 ntok, ntok*{u32 col,len,syntax,decl_idx,decl_line}};
-//   end: u32 0.  scope_idx is 1-based; 0 = the line is inside no definition.
+// layout (LE): u32 magic('SFMT') u32 ver(=4);  section: u32 0xC0DEFACE u32 path_len,
+//   path bytes, i64 mtime, u32 decl_count, decl_count*{u32 len, bytes}, u32 line_count,
+//   line_count*{u32 ntok, ntok*{u32 col,len,syntax,decl_idx,decl_line}};  end: u32 0.
 AU_EXPORT Au path_read_format(path a) {
     Au out = (Au)vector_of(typeid(Au));
     FILE* f = fopen((cstr)a->chars, "rb");
@@ -7330,34 +7328,14 @@ AU_EXPORT Au path_read_format(path a) {
             pb[pl] = 0;
             dp[i] = pb;
         }
-        // the scopes this file declares: every line points at one of these
-        u32       ns = 0;
-        fmt_scope none = fmt_scope(name, string(""), line, (num)0);
-        fmt_scope* sc = null;
-        if (ok && fread(&ns, 4, 1, f) != 1) ok = false;
-        if (ok && ns) sc = calloc(ns, sizeof(fmt_scope));
-        for (u32 i = 0; ok && i < ns; i++) {
-            u32 sl = 0, sline = 0;
-            if (fread(&sl, 4, 1, f) != 1) { ok = false; break; }
-            char* sb = malloc((size_t)sl + 1);
-            if (fread(sb, 1, sl, f) != sl) { free(sb); ok = false; break; }
-            sb[sl] = 0;
-            if (fread(&sline, 4, 1, f) != 1) { free(sb); ok = false; break; }
-            sc[i] = hold(fmt_scope(name, string(sb), line, (num)sline));
-            free(sb);
-        }
         u32 nlines = 0;
         if (ok && fread(&nlines, 4, 1, f) != 1) ok = false;
         fmt_file ff = fmt_file(
             source, string(p), mtime, mt,
-            lines,  hold((Au)vector_of(typeid(Au))),
-            scopes, hold((Au)vector_of(typeid(fmt_scope))));
+            lines, hold((Au)vector_of(typeid(Au))));
         free(p);
         for (u32 L = 0; ok && L < nlines; L++) {
-            u32 six = 0, ntok = 0;
-            if (fread(&six, 4, 1, f) != 1) { ok = false; break; }
-            vector_push((vector)ff->scopes,
-                (Au)((sc && six > 0 && six <= ns) ? sc[six - 1] : none));
+            u32 ntok = 0;
             if (fread(&ntok, 4, 1, f) != 1) { ok = false; break; }
             vector ltk = vector_of(typeid(fmt_token));
             for (u32 t = 0; t < ntok; t++) {
@@ -7372,8 +7350,6 @@ AU_EXPORT Au path_read_format(path a) {
         }
         for (u32 i = 0; i < np; i++) if (dp && dp[i]) free(dp[i]);
         free(dp);
-        for (u32 i = 0; i < ns; i++) if (sc && sc[i]) drop(sc[i]);
-        free(sc);
         vector_push((vector)out, (Au)ff);
         if (!ok) break;
     }
@@ -10154,7 +10130,6 @@ define_class(tokens, array, token)
 define_class(const_tokens, tokens, token)
 
 define_class(fmt_token, Au)
-define_class(fmt_scope, Au)
 define_class(fmt_file, Au)
 
 define_class(item, Au)
