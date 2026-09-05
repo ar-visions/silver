@@ -1077,6 +1077,8 @@ abstract live_app media_app
         existing_vk : handle Au.live_vk_get[]
         if [ existing_vk ]
             vk = cast vk_context [ existing_vk ]
+            dh : handle [ vk.dev_handle[] ]
+            puts 'media_app: reusing vk device {dh}'
             vk.font_cache = null
         el
             vk = vk_context[]
