@@ -11,17 +11,18 @@ enum { K_NONE, K_KEYWORD, K_TYPE, K_IDENT, K_FUNCTION, K_PARAM, K_PROPERTY, K_NU
        K_STR, K_CHARACTER, K_BOOLEAN, K_COMMENT, K_OP, K_PUNCT, K_NAMESPACE, K_CONSTANT,
        K_USERTOKEN, K_PARENT, K_CLASSNAME, K_META };
 
-typedef struct { int line, col, len, kind; } ctok;
+// decl: the line in this file where the token's name is defined, 0 if none
+typedef struct { int line, col, len, kind, decl; } ctok;
 static ctok* toks;
 static int   ntok, tokcap;
 
-static void put(int line, int col, int len, int kind) {
+static void put(int line, int col, int len, int kind, int decl) {
     if (len <= 0) return;
     if (ntok == tokcap) {
         tokcap = tokcap ? tokcap * 2 : 1024;
         toks   = realloc(toks, tokcap * sizeof(ctok));
     }
-    toks[ntok++] = (ctok){ line, col, len, kind };
+    toks[ntok++] = (ctok){ line, col, len, kind, decl };
 }
 
 // a spelling that spans lines lands as one piece per line
@@ -29,9 +30,30 @@ static void put_span(int line, int col, const char* sp, int n, int kind) {
     int start = 0;
     for (int i = 0; i <= n; i++)
         if (i == n || sp[i] == '\n') {
-            put(line, col, i - start, kind);
+            put(line, col, i - start, kind, 0);
             line++; col = 0; start = i + 1;
         }
+}
+
+// the names this file defines, first definition wins: a later use of the
+// name gets that line, which is what a cmd-click goes to
+typedef struct { const char* s; int n, line; } cdef;
+static cdef* defs;
+static int   ndef, defcap;
+
+static int def_line(const char* s, int n) {
+    for (int i = 0; i < ndef; i++)
+        if (defs[i].n == n && memcmp(defs[i].s, s, n) == 0) return defs[i].line;
+    return 0;
+}
+
+static void def_put(const char* s, int n, int line) {
+    if (n <= 0 || def_line(s, n)) return;
+    if (ndef == defcap) {
+        defcap = defcap ? defcap * 2 : 256;
+        defs   = realloc(defs, defcap * sizeof(cdef));
+    }
+    defs[ndef++] = (cdef){ s, n, line };
 }
 
 static char* run(const char* cmd) {
@@ -131,8 +153,10 @@ static void parse_c(const char* path) {
         if (n == cap) { cap *= 2; rs = realloc(rs, cap * sizeof(rec)); }
         rs[n++] = r;
     }
-    int directive_line = 0;                    // a #include's target reads as a string
-    int include_line   = 0;
+    int  directive_line = 0;                   // a #include's target reads as a string
+    int  include_line   = 0;
+    int* kinds = malloc((n ? n : 1) * sizeof(int));
+    ndef = 0;
     for (int i = 0; i < n; i++) {
         rec* r = &rs[i];
         int kind = K_OP;
