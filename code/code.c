@@ -223,7 +223,8 @@ static void parse_c(const char* path) {
                  (SP_IS(prev, "struct") || SP_IS(prev, "enum") || SP_IS(prev, "union")) &&
                  next && KIND_IS(next, "l_brace"))
             def_put(r->sp, r->splen, r->line);
-        else if (next && KIND_IS(next, "semi")) {
+        else if (next && KIND_IS(next, "semi") && (i + 2 >= n || rs[i + 2].line != r->line)) {
+            // the name a typedef line ends with; a member inside its braces is not it
             int j = i;
             while (j > 0 && rs[j - 1].line == r->line) j--;
             if (KIND_IS(&rs[j], "raw_identifier") && SP_IS(&rs[j], "typedef"))
@@ -311,5 +312,5 @@ int code_parse(const char* path, const char* lang) {
 int code_token(int i, int field) {
     if (i < 0 || i >= ntok) return 0;
     ctok* t = &toks[i];
-    return field == 0 ? t->line : field == 1 ? t->col : field == 2 ? t->len : t->kind;
+    return field == 0 ? t->line : field == 1 ? t->col : field == 2 ? t->len : field == 3 ? t->kind : t->decl;
 }
