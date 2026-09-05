@@ -222,8 +222,9 @@ Layer CommitLayer
             bas9 : i32 [ ed.tool_base[] ]
             for [ ti: i32 0, ti < bas9 + ed.nav_tools.count, ti += 1 ]
                 tnm : string (bas9 == 1 && ti == 0) ? ed.nav_default : ed.nav_tools[ ti - bas9 ]
-                # chips top-align with the first tab row's pill
-                tyy : f32 [ bounds.y + 7.0 + f32[ ti ] * 68.0 ]
+                # chips top-align with the first tab row's pill; the
+                # project's consoles stack up from the bottom (tool_y)
+                tyy : f32 [ bounds.y + 3.0 + ed.tool_y[ ti, bounds.h ] ]
                 act9 : bool [ ed.view_name && ed.view_name.count > 0 && ed.view_name == tnm ]
                 if [ act9 ]
                     cv.fill_color  [ rgba['#6cb6ff33'] ]
@@ -241,7 +242,11 @@ Layer CommitLayer
                 cv.paint       [ ]
                 cv.inner_glow  [ rgba['#0000'], 0.0 ]
                 cv.stroke_width[ 0.0 ]
-                tico : SVGModel ed.ficons.named[ tnm, 36 ]
+                # a console view has its own mark (gear for a shell, chat for an agent)
+                inm  : string tnm
+                cico : string orb.console_icon[ tnm ]
+                if [ cico ] inm = cico
+                tico : SVGModel ed.ficons.named[ inm, 36 ]
                 if [ tico ]
                     # selected = orangish white; resting = off purple white
                     cv.svg_override[ (act9) ? rgba['#ffe6d2'] : ((ti == cb.chip_hov) ? rgba['#ffffff'] : rgba['#cfc6e8']) ]
@@ -775,9 +780,16 @@ element CommitView
         nchp : i32 [ -1 ]
         next9 : i32 [ -1 ]
         if [ rx < 68.0 ]
-            # chips are fixed: undo the scroll the event carries
+            # chips are fixed: undo the scroll the event carries. placed
+            # by tool_y, as drawn: consoles sit at the bottom
             ryf : f32 [ ry - scroll.y ]
-            if [ ryf >= 7.0 ] nchp = i32[ (ryf - 7.0) / 68.0 ]
+            ev9 : EditorView view[]
+            ed9 : Editor [ (ev9) ? ev9.text_of[] : null ]
+            if [ ed9 && ed9.nav_tools ]
+                nt9 : i32 [ ed9.tool_base[] + i32[ ed9.nav_tools.count ] ]
+                for [ ti: i32 0, ti < nt9, ti += 1 ]
+                    ty9 : f32 [ 3.0 + ed9.tool_y[ ti, ly.bounds.h ] ]
+                    if [ ryf >= ty9 && ryf < ty9 + 64.0 ] nchp = ti
         el
             trs : i32 [ o.commit_tab_rows[ ly.bounds.w - 76.0, reveal_all ] ]
             r : i32 [ row_at[ ry, trs ] ]
@@ -852,10 +864,14 @@ element CommitView
         # rail chips first, fixed at left: undo the carried scroll
         if [ rx < 68.0 ]
             ryf : f32 [ ry - scroll.y ]
-            if [ ed && ed.nav_tools && ryf >= 7.0 ]
-                ci : i32 [ i32[ (ryf - 7.0) / 68.0 ] ]
-                if [ ci >= 0 && ci < ed.tool_base[] + ed.nav_tools.count ]
-                    ed.press_tool[ ci ]
+            if [ ed && ed.nav_tools ]
+                # placed by tool_y, as drawn and hovered: consoles at the bottom
+                nt9 : i32 [ ed.tool_base[] + i32[ ed.nav_tools.count ] ]
+                for [ ci: i32 0, ci < nt9, ci += 1 ]
+                    ty9 : f32 [ 3.0 + ed.tool_y[ ci, ly.bounds.h ] ]
+                    if [ ryf >= ty9 && ryf < ty9 + 64.0 ]
+                        ed.press_tool[ ci ]
+                        break
             return
         trs : i32 [ o.commit_tab_rows[ ly.bounds.w - 76.0, reveal_all ] ]
         r : i32 [ row_at[ ry, trs ] ]

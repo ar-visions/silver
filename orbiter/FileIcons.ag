@@ -51,8 +51,11 @@ class FileIcons
         key : '{nm}|{sz9}'
         mdl : SVGModel mi_models[ key ]
         if [ !mdl ]
-            ip : path 'images/material/{nm}.svg'
-            if [ !ip.exists[] ] ip = path 'images/{nm}.svg'
+            # the editor view wears orbiter's own mark (the path-only svg).
+            # a fresh local: assigning over nm drops the caller's reference
+            fn : string (nm == 'editor') ? 'orbiter4' : nm
+            ip : path 'images/material/{fn}.svg'
+            if [ !ip.exists[] ] ip = path 'images/{fn}.svg'
             if [ !ip.exists[] ] return null
             mdl = SVGModel [ ip ]
             mi_models[ key ] = mdl

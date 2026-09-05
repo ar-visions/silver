@@ -196,13 +196,19 @@ element EditorView
         if [ s.count > 0 ]
             h : i32 [ s.index_of[ '#' ] ]
             return (h > 0) ? s.mid[ 0, h ] : s
+        # a console view is not about the file: the title is its name alone
+        e : Editor text_of[]
+        o : orb[]
+        if [ e && o && e.view_name && o.console_of[ e.view_name ] ] return e.view_name
         p : file[]
         return (p) ? p.filename[] : 'Open'
 
     func title_hint [] -> string
         e : Editor text_of[]
+        o : orb[]
         if [ !e || !e.view_name || e.view_name.count == 0 ] return ''
-        return (e.view_name != 'text') ? e.view_name : ''
+        if [ o && o.console_of[ e.view_name ] ] return ''
+        return (e.view_name != 'editor') ? e.view_name : ''
 
     func title_els [] -> Elements
         o : orb[]
@@ -210,8 +216,11 @@ element EditorView
         e : Editor text_of[]
         tfoc : bool [ (w && w.focus && w.focus.id == 'title' && w.focus.parent == a) ? true : false ]
         # the editor is never locked while debugging; the run band steps
+        # a console view is not a resource view of the file: the finder's
+        # close and the nav arrows keep their places over it
+        isres : bool [ e && e.rview && !(e.view_name && o.console_of[ e.view_name ]) ]
         t : Elements o.title_nav[ file[], null, false, w, false, e->dbg_open, menu_open[],
-            (e && e.rview) ? true : false, e->rview, findbar_on[], tfoc, pane_index ]
+            isres, e->rview, findbar_on[], tfoc, pane_index ]
         if [ psess[].count > 0 ]
             t['ctx_copy'] = LabelButton [ label: 'context', manual_mode: true ]
             t['ctx_shot'] = LabelButton [ label: 'screen',  manual_mode: true ]
@@ -641,11 +650,36 @@ Avatar OrbiterAvatar
 
 
 
+# a console from the project's agi (shell, claude), as a view the rail
+# lists like any other: the pane composes the Console for that session
+ResourceView ConsoleView
+    public session  : string
+    public sessions : map ConsoleSession[string]
+    public launch   : string
+    # not a file's view: the process is given the folder in view
+    public folder   : path
+    func applies [] -> FileType
+        return FileType.agnostic
+    func continuous [] -> bool
+        return true
+    func view_element [] -> element
+        return Console [ session_id: session, sessions: sessions, feed: null,
+            launch: launch, cwd: '{folder}', animated: true ]
+
 # geometry-only tweaks stay code members; base css inherits through
 NavButton LabelButton
     area   : Region { r0+ t0 w2.2 h0.9 }
     tlabel : Layer [ label_color: rgba [ '#fffa' ], label_size: 14,
         label_align: vec2f [ x: 0.5, y: 0.5 ] ]
+
+# centered in the title: icon at the left, 'close <mode>' beside it
+NavButton CloseChip
+    area   : Region { l50%-2.6 t0 w5.2 h0.9 }
+    tlabel : Layer [ label_color: rgba [ '#fffa' ], label_size: 14,
+        label_align: vec2f [ x: 0.5, y: 0.5 ], label_offset: vec2f [ x: 10.0, y: 0.0 ] ]
+    func init []
+        iconl.image_align = Align [ x: XAlign.left, y: YAlign.middle ]
+        iconl.image_scale = 0.8
 
 # staged live-reload: small button at the left of the bottom status bar
 Option ReloadButton
@@ -1332,6 +1366,9 @@ element orbiter : trinity # implements compiler
     intern frost_dbg8    : i32 [ -9 ]
 
     func init []
+        # draw carries the per-frame work (session pump, run dispatch, pane
+        # close-outs), and an element draws only when dirty or animated
+        animated = true
         au_live_set_defer[ 1 ]
         # the syntax service rebuilds our own module — never self-reload
         au_live_set_reload[ 0 ]
@@ -1839,6 +1876,39 @@ element orbiter : trinity # implements compiler
                 cmd_str = (cmd_str.count > 0) ? cmd_str + ' ' + c.chars : c.chars
         return cmd_str
 
+    # a console the project's agi declares: a view name of ours
+    func console_of [ nm: string ] -> bool
+        if [ !consoles || !nm || nm.count == 0 ] return false
+        ci : ConsoleInstance consoles[ nm ]
+        return (ci) ? true : false
+
+    # the consoles as rail entries: dir context, offered with or without a file
+    func console_views [] -> vec string
+        v : vec string []
+        if [ consoles ]
+            for [ ci: ConsoleInstance, cn: string ] in consoles
+                v.push[ cn ]
+        return v
+
+    # a console is dir context, not a file's: picking one in a pane lets
+    # go of the pane's file, and with it every view of that file
+    func pane_drop_file [ pi: i32 ]
+        if [ pi < 0 || pi >= editor_slots.count ] return
+        editor_slots[ pi ] = -1
+        ed : Editor pane_at[ pi ]
+        if [ ed ]
+            ed.src        = null
+            ed.loaded_src = null
+        save_session[]
+
+    # the rail's mark for a console view: a shell wears the gear (the
+    # material console svg does not draw), an agent the chat mark;
+    # null for a name that is not a console
+    func console_icon [ nm: string ] -> string
+        if [ !console_of[ nm ] ] return null
+        ci : ConsoleInstance consoles[ nm ]
+        return (ci && ci.kind == 'shell') ? 'gear' : 'chatgpt'
+
     # the agent console named in orbiter.agi; shell is not one
     func agent_sid [] -> string
         if [ consoles ]
@@ -1864,6 +1934,15 @@ element orbiter : trinity # implements compiler
         ed_sessions[sid] = s
         s.start[]
         return s
+
+    # a cached element repaints only when it is itself marked: every
+    # console in the tree, since a session's bytes just moved
+    func dirty_consoles [ e: element ]
+        if [ !e ] return
+        if [ e inherits Console ] e.pristine = false
+        if [ e.elements ]
+            for [ ce: element, ck: string ] in e.elements
+                dirty_consoles[ ce ]
 
     func feed_agent [ text: string ] -> none
         if [ !consoles ] return
@@ -2402,12 +2481,16 @@ element orbiter : trinity # implements compiler
         # no close chip — Escape closes the finder
         edp9 : Editor pane_at[ pane_ix ]
         # the chip closes a view the user PICKED. the file's own natural
-        # view (text, or a byte view for a binary format) closes to nothing
+        # view (text, or a byte view for a binary format) closes to nothing,
+        # and a console is not a closable state: the nav arrows stay
         hx9  : bool [ edp9 && edp9.view_name && edp9.view_name.count > 0
-                      && edp9.view_name != edp9.fallback_view_for[ edp9.src ] ]
+                      && edp9.view_name != edp9.fallback_view_for[ edp9.src ]
+                      && !console_of[ edp9.view_name ] ]
         dc9  : bool [ edp9 && edp9.diff_commit && edp9.diff_commit.count > 0 ]
         if [ dc9 || hx9 ]
-            els['panel_close'] = LButton [ icon: 'close', manual_mode: true ]
+            # in the history arrows' slot, sized like them: the title never shifts
+            els['panel_close'] = LButton [ icon: 'close', manual_mode: true,
+                area: Region [ 'l0+ t0 w1.8 h0.9' ] ]
         # the left slot closes the finder — Esc's clickable twin, sized
         # exactly like the history arrows so the title never shifts
         if [ engaged && !is_resource ]
@@ -2417,8 +2500,9 @@ element orbiter : trinity # implements compiler
                 disable_mask: 0,
                 icon_scale: 0.585, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0,
                 area: Region [ 'l0+ t0 w1.8 h0.9' ] ]
-        # editing only: cmd+left / cmd+right as clickable history arrows
-        if [ !engaged && !is_resource ]
+        # editing only: cmd+left / cmd+right as clickable history arrows.
+        # a close takes their place; the two are never shown together
+        if [ !engaged && !is_resource && !(dc9 || hx9) ]
             nnav : vec string [] [ 'nav_back', 'nav_fwd' ]
             nico : vec string [] [ 'left', 'right' ]
             ndm : i32 [ 0 ]
@@ -2434,14 +2518,14 @@ element orbiter : trinity # implements compiler
         con9   : bool [ psess9 && psess9.count > 0 ]
         tnav : vec string []
         tmask : i32 [ 0 ]
-        # find is reachable at all times, not just inside the nav
-        if [ !is_resource ]
+        # find is reachable from the editor and from its own bar; not while
+        # the nav list is up on a title focus, where it says nothing true
+        if [ !is_resource && (!engaged || fb_on) ]
             # magnify lights while the findbar is open
             if [ fb_on ] tmask = 1
             tnav.push[ 'magnify' ]
         if [ editor_slots.count > 1 ] tnav.push[ 'undock' ]
         if [ editor_slots.count < 4 && !con9 ] tnav.push[ 'dock' ]
-        if [ agent_pane[] < 0 && pane_ix == last_editor_pane[] ] tnav.push[ 'gear' ]
         wn9 : f32 [ f32[ tnav.count ] * 1.15 ]
         if [ tnav.count > 0 ]
             els['tabnav'] = TButtons [ buttons: tnav, manual: true, sel_mask: tmask,
@@ -3033,6 +3117,12 @@ element orbiter : trinity # implements compiler
         for [ s: string ] in any9a
             view_tools.push[ s ]
             view_tools_bin.push[ s ]
+        # the project's consoles are views too, on every file's rail
+        if [ consoles ]
+            for [ ci: ConsoleInstance, cn: string ] in consoles
+                view_tools.push[ cn ]
+                view_tools_bin.push[ cn ]
+                view_mods[ cn ] = 'orbiter'
 
     func apply_pane [ ed: Editor, is_search: bool, slot: i32 ]
         if [ !ed ] return
@@ -3046,14 +3136,17 @@ element orbiter : trinity # implements compiler
             bin9 : bool [ ed.file_is_binary[ ed.src ] ]
             ed.nav_default = ed.default_view_for[ ed.src ]
             ed.nav_tools   = (bin9) ? view_tools_bin : view_tools
-            # an ascii file whose default is a handler (markdown) still
-            # edits as text: the plain editor leads the rail after it
-            if [ !bin9 && ed.handler_module_for[ ed.src ] ]
+            # the code editor is a view like the others, named and first
+            # on every text file's rail: never the unlisted default
+            if [ !bin9 ]
                 t9 : vec string []
-                t9.push[ 'text' ]
+                t9.push[ 'editor' ]
                 for [ s: string ] in view_tools
                     t9.push[ s ]
                 ed.nav_tools = t9
+        el [ is_search ]
+            # no file: dir context, so the consoles alone are on the rail
+            ed.nav_tools = console_views[]
         if [ slot >= 0 && slot < open_files.count ]
             # reload ONLY on real change: a blanket load_file remounts
             # every pane's view and flashes the ones not involved
@@ -4186,17 +4279,12 @@ element orbiter : trinity # implements compiler
                 editor_slots += -1
                 pane_console += ''
                 active_pane = editor_slots.count - 1
+                # a new pane is not a file yet: it opens on the nav list,
+                # where the location gets picked (its title takes focus)
+                pending_finder = active_pane
             save_session[]
             if [ ev.target ] ev.target.ux.restyle = true
-            return
-        if [ ev.target.id == 'gear' ]
-            if [ !agent_open && editor_slots.count < 4 ]
-                agent_open  = true
-                active_pane = editor_slots.count
-                ensure_console[ orbit_sid ]
-            save_session[]
-            if [ ev.target ] ev.target.ux.restyle = true
-            ev.no_default = true
+            force_update[]
             return
         if [ ev.target.id == 'undock' ]
             puts 'on_press: UNDOCK handler reached'
@@ -4670,7 +4758,10 @@ element orbiter : trinity # implements compiler
             for [ s: ConsoleSession, k: string ] in ed_sessions
                 if [ s.pty_fd >= 0 ]
                     w.will_animate = true
-                    s.read_output[]
+                    # the app wrote: the consoles repaint as a press would
+                    if [ s.read_output[] ]
+                        w.restyle = true
+                        dirty_consoles[ w.root ]
         if [ ed_sessions ]
             ags : ConsoleSession ed_sessions[ orbit_sid ]
             if [ ags && ags.agent_busy[] ] busy_at = epoch_millis[]
@@ -4757,14 +4848,16 @@ element orbiter : trinity # implements compiler
     # reload_busy/ready: staged reload button, or live compile status.
     # ui_hide sits dead center: scene-only toggle
     func status_els [] -> Elements
+        # solid: the scene is only a theme, so its motion toggles go
+        solid9 : bool [ ux.frost_eff[] == 3 ]
         return Elements [
             'scene_next'  : SceneArrow [ icon: 'right', manual_mode: true ],
             'scene_name'  : SceneName  [ label: scene_name[].lcase[] ],
             'scene_prev'  : SceneArrow [ icon: 'left', manual_mode: true ],
             'frost_name'  : SceneName  [ label: ux.frost_name[] ],
-            'speed_name'  : SceneName  [ label: speed_name[] ],
-            'orbit_name'  : SceneName  [ label: orbit_name[] ],
-            'angle_name'  : SceneName  [ label: angle_name[] ],
+            'speed_name'  : (solid9) ? null : SceneName  [ label: speed_name[] ],
+            'orbit_name'  : (solid9) ? null : SceneName  [ label: orbit_name[] ],
+            'angle_name'  : (solid9) ? null : SceneName  [ label: angle_name[] ],
             'reload_busy' : (au_live_get_pending[] == 2)
                 ? ReloadStatus [ label: 'compiling...' ] : null,
             'reload_ready': (au_live_get_pending[] == 1)
