@@ -245,19 +245,50 @@ static void parse_c(const char* path) {
     free(out);
 }
 
-// python's tokenize, classified in the script, printed as line col len kind
+// python's tokenize for the tokens, its ast for what defines a name: each
+// module, function and class is a scope holding what it binds, and a name
+// resolves from the innermost scope holding its line outward. printed as
+// line col len kind decl
 static const char* py_script =
-"import tokenize,keyword,sys\n"
+"import tokenize,keyword,sys,ast\n"
 "f=sys.argv[1]\n"
-"lines=open(f,encoding='utf-8',errors='replace').read().split('\\n')\n"
+"src=open(f,encoding='utf-8',errors='replace').read()\n"
+"lines=src.split('\\n')\n"
 "toks=list(tokenize.tokenize(open(f,'rb').readline))\n"
-"defs={}\n"
-"prev=None\n"
-"for i,t in enumerate(toks):\n"
-"    if t.type==tokenize.NAME and t.string not in defs:\n"
-"        if prev and prev.string in ('def','class'): defs[t.string]=t.start[0]\n"
-"        elif t.start[1]==0 and i+1<len(toks) and toks[i+1].string=='=': defs[t.string]=t.start[0]\n"
-"    if t.type not in (tokenize.NL,tokenize.NEWLINE,tokenize.INDENT,tokenize.DEDENT,tokenize.COMMENT): prev=t\n"
+"scopes=[]\n"
+"def walk(node,si):\n"
+"    b=scopes[si][2]\n"
+"    if isinstance(node,(ast.FunctionDef,ast.AsyncFunctionDef,ast.ClassDef)):\n"
+"        b.setdefault(node.name,node.lineno)\n"
+"        scopes.append((node.lineno,getattr(node,'end_lineno',node.lineno),{},si)); ci=len(scopes)-1\n"
+"        if not isinstance(node,ast.ClassDef):\n"
+"            a=node.args\n"
+"            for x in a.posonlyargs+a.args+a.kwonlyargs+([a.vararg] if a.vararg else [])+([a.kwarg] if a.kwarg else []):\n"
+"                scopes[ci][2].setdefault(x.arg,x.lineno)\n"
+"        for c in ast.iter_child_nodes(node): walk(c,ci)\n"
+"        return\n"
+"    if isinstance(node,ast.Name) and isinstance(node.ctx,ast.Store): b.setdefault(node.id,node.lineno)\n"
+"    elif isinstance(node,ast.ExceptHandler) and node.name: b.setdefault(node.name,node.lineno)\n"
+"    elif isinstance(node,(ast.Import,ast.ImportFrom)):\n"
+"        for al in node.names:\n"
+"            nm=al.asname or al.name.split('.')[0]\n"
+"            if nm!='*': b.setdefault(nm,node.lineno)\n"
+"    for c in ast.iter_child_nodes(node): walk(c,si)\n"
+"try:\n"
+"    tree=ast.parse(src)\n"
+"    scopes.append((1,len(lines)+1,{},-1))\n"
+"    walk(tree,0)\n"
+"except Exception:\n"
+"    scopes=[]\n"
+"def resolve(name,line):\n"
+"    best=-1\n"
+"    for i,(s,e,b,p) in enumerate(scopes):\n"
+"        if s<=line<=e and (best<0 or (e-s)<(scopes[best][1]-scopes[best][0])): best=i\n"
+"    while best>=0:\n"
+"        s,e,b,p=scopes[best]\n"
+"        if name in b: return b[name]\n"
+"        best=p\n"
+"    return 0\n"
 "prev=None\n"
 "for i,t in enumerate(toks):\n"
 "    k=None; s=t.string\n"
@@ -277,7 +308,7 @@ static const char* py_script =
 "    elif t.type==tokenize.COMMENT: k=11\n"
 "    elif t.type==tokenize.OP: k=13 if s in '()[]{},;:.' else 12\n"
 "    if k is not None:\n"
-"        d=defs.get(s,0) if t.type==tokenize.NAME else 0\n"
+"        d=resolve(s,t.start[0]) if t.type==tokenize.NAME else 0\n"
 "        (l1,c1),(l2,c2)=t.start,t.end\n"
 "        if l1==l2: print(l1,c1,c2-c1,k,d)\n"
 "        else:\n"
@@ -301,11 +332,74 @@ static void parse_py(const char* path) {
     free(out);
 }
 
+// any other text file: a plain lexer. words, numbers, quoted strings,
+// #, // and /* */ comments, and the rest as punctuation -- enough to read
+// by, with no claim about the language
+static void parse_generic(const char* path) {
+    FILE* f = fopen(path, "rb");
+    if (!f) return;
+    fseek(f, 0, SEEK_END);
+    long n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (n <= 0 || n > (8 << 20)) { fclose(f); return; }
+    char* s = malloc(n + 1);
+    if (fread(s, 1, n, f) != (size_t)n) { free(s); fclose(f); return; }
+    fclose(f);
+    s[n] = 0;
+    if (memchr(s, 0, n < 4096 ? n : 4096)) { free(s); return; }     // binary: nothing to colour
+    int line = 1, col = 0, in_block = 0;
+    for (long i = 0; i < n; ) {
+        char c = s[i];
+        if (c == '\n') { line++; col = 0; i++; continue; }
+        long j = i;
+        int  kind = K_PUNCT;
+        if (in_block) {
+            while (j < n && s[j] != '\n' && !(s[j] == '*' && j + 1 < n && s[j + 1] == '/')) j++;
+            if (j < n && s[j] == '*') { j += 2; in_block = 0; }
+            kind = K_COMMENT;
+        }
+        else if (c == ' ' || c == '\t' || c == '\r') { i++; col++; continue; }
+        else if (c == '#' || (c == '/' && i + 1 < n && s[i + 1] == '/')) {
+            while (j < n && s[j] != '\n') j++;
+            kind = K_COMMENT;
+        }
+        else if (c == '/' && i + 1 < n && s[i + 1] == '*') {
+            in_block = 1;
+            j = i + 2;
+            while (j < n && s[j] != '\n' && !(s[j] == '*' && j + 1 < n && s[j + 1] == '/')) j++;
+            if (j < n && s[j] == '*') { j += 2; in_block = 0; }
+            kind = K_COMMENT;
+        }
+        else if (c == '"' || c == '\'') {
+            j = i + 1;
+            while (j < n && s[j] != c && s[j] != '\n') { if (s[j] == '\\' && j + 1 < n) j++; j++; }
+            if (j < n && s[j] == c) j++;
+            kind = K_STR;
+        }
+        else if (c >= '0' && c <= '9') {
+            while (j < n && ((s[j] >= '0' && s[j] <= '9') || (s[j] >= 'a' && s[j] <= 'z') ||
+                             (s[j] >= 'A' && s[j] <= 'Z') || s[j] == '.' || s[j] == '_')) j++;
+            kind = K_NUMBER;
+        }
+        else if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || (unsigned char)c >= 0x80) {
+            while (j < n && ((s[j] >= 'a' && s[j] <= 'z') || (s[j] >= 'A' && s[j] <= 'Z') ||
+                             (s[j] >= '0' && s[j] <= '9') || s[j] == '_' || (unsigned char)s[j] >= 0x80)) j++;
+            kind = K_IDENT;
+        }
+        else { j = i + 1; kind = strchr("()[]{};,.", c) ? K_PUNCT : K_OP; }
+        put(line, col, (int)(j - i), kind, 0);
+        col += (int)(j - i);
+        i = j;
+    }
+    free(s);
+}
+
 // tokens for path, by its language; the count, then fields by index
 int code_parse(const char* path, const char* lang) {
     ntok = 0;
-    if (strcmp(lang, "py") == 0) parse_py(path);
-    else                         parse_c(path);
+    if      (strcmp(lang, "py") == 0) parse_py(path);
+    else if (strcmp(lang, "c")  == 0) parse_c(path);
+    else                              parse_generic(path);
     return ntok;
 }
 

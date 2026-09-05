@@ -1747,6 +1747,35 @@ AU_EXPORT void module_erase_silver(void) {
     pthread_rwlock_unlock(&modules_lock);
 }
 
+// an image about to unload: a registry entry living inside it faults on the
+// next find_type walk, so null those and say who they were
+AU_EXPORT int module_purge_image(void* addr_in_image) {
+#ifdef _WIN32
+    return 0;
+#else
+    Dl_info img;
+    if (!addr_in_image || !dladdr(addr_in_image, &img)) return 0;
+    int purged = 0;
+    micro*            lists[2] = { &modules, au_current_space ? &au_current_space->modules : null };
+    pthread_rwlock_t* locks[2] = { &modules_lock, au_current_space ? &au_current_space->lock : null };
+    for (int l = 0; l < 2; l++) {
+        if (!lists[l]) continue;
+        pthread_rwlock_wrlock(locks[l]);
+        for (int i = 0; i < lists[l]->count; i++) {
+            Au_t m = (Au_t)lists[l]->origin[i];
+            Dl_info mi;
+            if (!m || !dladdr((void*)m, &mi) || mi.dli_fbase != img.dli_fbase) continue;
+            fprintf(stderr, "module_purge_image: '%s' still registered inside %s\n",
+                m->ident ? m->ident : "?", img.dli_fname);
+            lists[l]->origin[i] = null;
+            purged++;
+        }
+        pthread_rwlock_unlock(locks[l]);
+    }
+    return purged;
+#endif
+}
+
 AU_EXPORT void au_space_begin(void* owner) {
     if (au_current_space && au_space_owner == owner) {
         // same owner re-entering (watch mode): reset the existing space
@@ -2230,6 +2259,19 @@ AU_EXPORT Au_t find_module(symbol name) {
     return null;
 }
 
+// a registry slot whose module reads as nonsense is a stale pointer: say
+// which slot, and what sits either side of it, rather than fault on it
+static bool module_sane(Au_t mod, micro_* list, int i, symbol which) {
+    if (mod->members.count >= 0 && mod->members.count < 65536 && mod->ident) return true;
+    Au_t before = (i > 0) ? (Au_t)list->origin[i - 1] : null;
+    Au_t after  = (i + 1 < list->count) ? (Au_t)list->origin[i + 1] : null;
+    fprintf(stderr, "find_type: stale module %p at %s[%d] (count %d) between '%s' and '%s'\n",
+        (void*)mod, which, i, mod->members.count,
+        (before && before->ident) ? before->ident : "-",
+        (after  && after->ident)  ? after->ident  : "-");
+    return false;
+}
+
 AU_EXPORT Au_t find_type(symbol name, Au_t m) {
     if (!name)
         return null;
@@ -2238,6 +2280,7 @@ AU_EXPORT Au_t find_type(symbol name, Au_t m) {
         pthread_rwlock_rdlock(&au_current_space->lock);
         for (int i = 0; i < au_current_space->modules.count; i++) {
             Au_t mod = (Au_t)au_current_space->modules.origin[i];
+            if (mod && !module_sane(mod, &au_current_space->modules, i, "space")) continue;
             if (mod && (!m || m == mod)) {
                 for (int j = 0; j < mod->members.count; j++) {
                     Au_t type = (Au_t)mod->members.origin[j];
@@ -2253,6 +2296,7 @@ AU_EXPORT Au_t find_type(symbol name, Au_t m) {
         pthread_rwlock_rdlock(&modules_lock);
         for (int i = 0; i < modules.count; i++) {
             Au_t mod = (Au_t)modules.origin[i];
+            if (mod && !module_sane(mod, &modules, i, "modules")) continue;
             if (mod && (!m || m == mod)) {
                 for (int j = 0; j < mod->members.count; j++) {
                     Au_t type = (Au_t)mod->members.origin[j];
@@ -2269,6 +2313,7 @@ AU_EXPORT Au_t find_type(symbol name, Au_t m) {
     pthread_rwlock_rdlock(&modules_lock);
     for (int i = 0; i < modules.count; i++) {
         Au_t mod = (Au_t)modules.origin[i];
+        if (mod && !module_sane(mod, &modules, i, "modules")) continue;
         if (mod && (!m || m == mod)) {
             if (m && m != mod)
                 continue;
