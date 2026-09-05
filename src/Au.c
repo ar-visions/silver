@@ -6976,6 +6976,12 @@ AU_EXPORT string path_mime(path a) {
 }
 
 AU_EXPORT none path_cd(path a) {
+    char was[4096];
+    if (!getcwd(was, sizeof(was))) was[0] = 0;
+    Dl_info di;
+    void* caller = __builtin_return_address(0);
+    const char* who = (dladdr(caller, &di) && di.dli_sname) ? di.dli_sname : "?";
+    fprintf(stderr, "cd: %s -> %s (from %s)\n", was, a->chars, who);
     chdir(a->chars);
 }
 

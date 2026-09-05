@@ -21,6 +21,7 @@
 #include <fcntl.h>
 #endif
 #include <sys/stat.h>
+#include <dirent.h>
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
 #endif
@@ -792,6 +793,29 @@ static time_t file_mtime(const char* path) {
     return (stat(path, &s) == 0) ? s.st_mtime : 0;
 }
 
+// open fds, memory mappings, resident memory: what a failing alloc is short of
+static void host_resources(const char* name, const char* when) {
+    int fds = 0, maps = 0;
+    DIR* d = opendir("/proc/self/fd");
+    if (d) { while (readdir(d)) fds++; closedir(d); }
+    FILE* m = fopen("/proc/self/maps", "r");
+    if (m) { int c; while ((c = fgetc(m)) != EOF) if (c == '\n') maps++; fclose(m); }
+    long rss_kb = 0;
+    FILE* s = fopen("/proc/self/status", "r");
+    if (s) {
+        char line[256];
+        while (fgets(line, sizeof(line), s))
+            if (sscanf(line, "VmRSS: %ld", &rss_kb) == 1) break;
+        fclose(s);
+    }
+    fprintf(stderr, "%s: %s fds=%d maps=%d rss=%ldMB\n", name, when, fds, maps, rss_kb / 1024);
+}
+
+static void host_cd(const char* dir) {
+    fprintf(stderr, "cd: host -> %s\n", dir);
+    chdir(dir);
+}
+
 static void cd_share(const char* bindir, const char* app) {
     char share[4096];
     const char* name = app;
@@ -801,13 +825,13 @@ static void cd_share(const char* bindir, const char* app) {
     snprintf(share, sizeof(share), "%s/../share/%s", bindir, name);
     struct stat st;
     if (stat(share, &st) == 0 && S_ISDIR(st.st_mode)) {
-        chdir(share);
+        host_cd(share);
         return;
     }
     // a system install names the share after the app, as the bin is
     snprintf(share, sizeof(share), "%s/../share/%s", bindir, app);
     if (stat(share, &st) == 0 && S_ISDIR(st.st_mode))
-        chdir(share);
+        host_cd(share);
 }
 
 static void* try_dlopen(const char* lib) {
@@ -1449,7 +1473,10 @@ int main(int argc, char** argv) {
         time_t cur = file_mtime(product);
         if (force || (!reload_off && !compile_pid && cur != last_mtime)) {
             last_mtime = cur;
-            fprintf(stderr, "%s: reloading\n", name);
+            char cwd_now[4096];
+            if (!getcwd(cwd_now, sizeof(cwd_now))) cwd_now[0] = 0;
+            fprintf(stderr, "%s: reloading (cwd %s)\n", name, cwd_now);
+            host_resources(name, "before destroy");
 
             // Destroy the OLD instance FIRST. Its silver_live_destroy runs
             // module_erase_silver, clearing the old silver modules — so the
@@ -1502,6 +1529,7 @@ int main(int argc, char** argv) {
             stash_args(handle, argc, argv);
             if (do_init) do_init();
             fprintf(stderr, "%s: reload complete\n", name);
+            host_resources(name, "after init");
 
             // refresh source watch list from new artifacts
             load_sources(artifacts, srcs, &nsr);

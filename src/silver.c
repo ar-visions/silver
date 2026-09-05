@@ -10107,10 +10107,11 @@ static void symlink_resources(path src, path dst) {
             make_dir(d);
             symlink_resources(s, d);
         } else {
-            struct stat st;
-            if (lstat(d->chars, &st) == 0)
-                unlink(d->chars);
-            symlink(abs_s->chars, d->chars);
+            // a running app reads these: swap the link in place, no gap
+            path tmp = form(path, "%o.link", d);
+            unlink(tmp->chars);
+            if (symlink(abs_s->chars, tmp->chars) == 0)
+                rename(tmp->chars, d->chars);
         }
     }
     closedir(dir);

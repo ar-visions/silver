@@ -35,7 +35,6 @@ ifdef [ linux ]
 ifdef [ windows ]
     import <posix.h>    # declares forkpty, which always fails here
 
-
 # import our own sub-modules
 import FileIcons
 import Navigate

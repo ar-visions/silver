@@ -3,6 +3,7 @@
 // this module asserts the C++ way: one expression, no message
 #undef assert
 #include <cassert>
+#include <cerrno>
 
 // silver free functions are not emitted into the generated header
 extern "C" Image jpeg_decode(path uri);
@@ -98,7 +99,9 @@ none Image_init(Image a) {
     } else if (string_eq(ext, "png")) {
         FILE* file = fopen(uri, "rb");
         if (!file) {
-            fprintf(stderr, "Image: cannot open %s\n", uri);
+            char cwd[4096];
+            if (!getcwd(cwd, sizeof(cwd))) cwd[0] = 0;
+            fprintf(stderr, "Image: cannot open %s (cwd %s, errno %s)\n", uri, cwd, strerror(errno));
             return;
         }
 
