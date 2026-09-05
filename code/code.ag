@@ -1,0 +1,33 @@
+# code — token maps for other languages' files, by asking their own tools:
+# clang for c and c++, python for python. orbiter colours with the result
+export 1.0.0
+export extensions ['.c': FileType.ascii, '.h': FileType.ascii, '.cc': FileType.ascii, '.cpp': FileType.ascii, '.hpp': FileType.ascii, '.py': FileType.ascii]
+
+import vec
+
+# the c side runs the tool and keeps its tokens: line (1-based), column,
+# length and Syntax kind, read back a field at a time
+intern func code_parse [ cstr, cstr ] -> i32
+intern func code_token [ i32, i32 ] -> i32
+
+# the same shape the .f map gives silver source: one token list per line
+func syntax [ src: path ] -> fmt_file
+    lns  : vec Au []
+    ext  : string src.ext[]
+    lang : string (ext == 'py' || ext == '.py') ? 'py' : 'c'
+    p    : string '{src}'
+    n    : i32 [ code_parse[ p.chars, lang.chars ] ]
+    cur  : vec fmt_token []
+    line : i32 [ 1 ]
+    for [ i: i32 0, i < n, i += 1 ]
+        tl : i32 [ code_token[ i, 0 ] ]
+        while [ line < tl ]
+            lns.push[ cur ]
+            cur = vec fmt_token []
+            line += 1
+        col  : i32 [ code_token[ i, 1 ] ]
+        len  : i32 [ code_token[ i, 2 ] ]
+        kind : i32 [ code_token[ i, 3 ] ]
+        cur.push[ fmt_token [ column: col, length: len, syntax: Syntax [ kind ] ] ]
+    lns.push[ cur ]
+    return fmt_file [ source: p, mtime: src.modified_time[], lines: lns ]
