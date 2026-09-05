@@ -3125,7 +3125,7 @@ Control Editor
                 if [ !ln || ln.count == 0 ] continue
                 if [ rview.commit_line*[ ln ] ] ok += 1
                 el bad += 1
-            puts 'assembly: {ok} lines applied, {bad} rejected'
+            log 'assembly: {ok} lines applied, {bad} rejected'
             return
         if [ show_hits && hits ]
             if [ sel_line < 0 || sel_line >= hits.count ] return
@@ -3339,7 +3339,7 @@ Control Editor
     func launch_handler [ mod: string, p: path, vw: string ]
         root : path.path_startup[]
         if [ !root ] return
-        puts 'launch_handler: {mod} for {p} view={vw}'
+        log 'launch_handler: {mod} for {p} view={vw}'
         nv : AppView [ ]
         nv.src = path '{root}/{mod}/{mod}.ag'
         nv.doc = p
@@ -3868,13 +3868,13 @@ Control Editor
             lines = buf.lines
             swap_history[ buf ]   # restore this file's own undo/redo (or seed it)
             n9 : i32 [ (lines) ? lines.count : 0 ]
-            puts 'load_text: cached {key} lines={n9}'
+            log 'load_text: cached {key} lines={n9}'
             return
         ftext : string src.load[ typeid[string], null ]
         if [ !ftext ]
-            puts 'load_text: no text for {key}'
+            log 'load_text: no text for {key}'
             return
-        puts 'load_text: read {key} bytes={ftext.count}'
+        log 'load_text: read {key} bytes={ftext.count}'
         parts : ftext.split["\n"]
         new_lines : list string []
         for [ i: i32 0, i < parts.count, i += 1 ]
@@ -3913,7 +3913,7 @@ Control Editor
         if [ hm9 ]
             launch_handler[ hm9, src, '' ]
             return
-        puts 'toggle_app_run: starting {src}'
+        log 'toggle_app_run: starting {src}'
         nv : AppView [ ]
         nv.src   = src
         nv.clean_build = clean
@@ -4111,7 +4111,7 @@ Control Editor
                 return
         # the rail is first in line: nothing else may eat its press
         rail9 : i32 [ tool_hit[ ev.mouse.pos.x, ev.mouse.pos.y ] ]
-        puts 'EDPRESS rv={(run_view) ? 1 : 0} av={(app_view) ? 1 : 0} rail={rail9} hits={(show_hits) ? 1 : 0}'
+        log 'EDPRESS rv={(run_view) ? 1 : 0} av={(app_view) ? 1 : 0} rail={rail9} hits={(show_hits) ? 1 : 0}'
         if [ rail9 >= 0 ]
             press_tool[ rail9 ]
             ev.no_default = true
@@ -4579,13 +4579,13 @@ Control Editor
 
         if [ (ev.key.ctrl || ev.key.meta) && ev.key.unicode == 67 ]    # Key.C
             txt : string selected_text[]
-            puts 'copy: len={txt.count} ux={(ux) ? 1 : 0}'
+            log 'copy: len={txt.count} ux={(ux) ? 1 : 0}'
             if [ txt.count > 0 && ux ] ux.set_clipboard[ txt ]
             return
 
         if [ (ev.key.ctrl || ev.key.meta) && ev.key.unicode == 88 ]    # Key.X
             txt : string selected_text[]
-            puts 'cut: len={txt.count} ux={(ux) ? 1 : 0}'
+            log 'cut: len={txt.count} ux={(ux) ? 1 : 0}'
             if [ txt.count > 0 && ux ]
                 ux.set_clipboard[ txt ]
                 delete_selection[]
@@ -4595,7 +4595,7 @@ Control Editor
         if [ (ev.key.ctrl || ev.key.meta) && ev.key.unicode == 86 ]    # Key.V
             if [ ux ]
                 clip : string ux.get_clipboard[]
-                puts 'paste: len={clip.count}'
+                log 'paste: len={clip.count}'
                 if [ clip && clip.count > 0 ]
                     insert_text[ clip ]
                     ux.will_animate = true

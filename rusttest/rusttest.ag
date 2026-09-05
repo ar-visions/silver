@@ -5,4 +5,4 @@ app rusttest
         n : i32 [ 41 ]
         s : cstr [ rust_bump[ @n ] ]
         msg : string [ s ]
-        puts 'rust says {msg}, n = {n}'
+        log 'rust says {msg}, n = {n}'

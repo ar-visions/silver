@@ -18,7 +18,7 @@ class ts_model
         us : string '{uri}'
         hnd = ts_load[ us.chars ]
         if [ !hnd ]
-            puts 'torchscript: cannot load {uri}'
+            log 'torchscript: cannot load {uri}'
             exit[ 1 ]
 
     func forward1 [ img2: tensor, out: tensor, s2: i32 ]
@@ -302,7 +302,7 @@ class Observer
     # every view fed: one look call over both, weighted by obscure
     public func track_rig []
         if [ trace ]
-            puts 'trk: have {havev[0]} {havev[1]} obs {obsv[0]} {obsv[1]} sc {scv[0]} {scv[1]}'
+            log 'trk: have {havev[0]} {havev[1]} obs {obsv[0]} {obsv[1]} sc {scv[0]} {scv[1]}'
         if [ obsv[0] >= 1.0 && obsv[1] >= 1.0 ]
             live = false
             return
@@ -314,7 +314,7 @@ class Observer
         ney : f32 [ o8.floats[5] + bias_y ]
         nez : f32 [ o8.floats[6] ]
         if [ trace ]
-            puts 'trk: obs {obsv[0]} {obsv[1]} sc {scv[0]} {scv[1]} eye {nex} {ney} {nez}'
+            log 'trk: obs {obsv[0]} {obsv[1]} sc {scv[0]} {scv[1]} eye {nex} {ney} {nez}'
         # the model never saw closer than dist_min; do not invent it
         if [ nez > -0.2032 ] nez = -0.2032
         if [ !live ]
@@ -1240,7 +1240,7 @@ element ModelView
                             anch_ry = pv4[1]
                             anch_rz = pv4[2]
         if [ bl4 <= 0.75 || br4 <= 0.75 ]
-            puts 'anchors: no painted corners (_V_EYE red) — radius-push fallback'
+            log 'anchors: no painted corners (_V_EYE red) — radius-push fallback'
         sdx : f32 [ anch_lx - anch_rx ]
         sdy : f32 [ anch_ly - anch_ry ]
         sdz : f32 [ anch_lz - anch_rz ]
@@ -1372,7 +1372,7 @@ element ModelView
                     wout[ v ] = wv
                     if [ wv > 0.0 ] non0 += 1
                 return wout
-        puts 'region {rname}: not found on the Head primitive'
+        log 'region {rname}: not found on the Head primitive'
         return null
 
     public func nose_length [ d: f32 ]
@@ -1551,10 +1551,10 @@ element ModelView
             ra : f32 [ gxd - meas_az ]
             re : f32 [ gyd - meas_el ]
             if [ ra > 0.01 || ra < -0.01 || re > 0.01 || re < -0.01 ]
-                puts 'solve_eye L={is_l} MISS az={gxd}!={meas_az} el={gyd}!={meas_el}'
+                log 'solve_eye L={is_l} MISS az={gxd}!={meas_az} el={gyd}!={meas_el}'
                 return false
         el
-            puts 'solve_eye L={is_l} UNGATED (fwd_set false) az={gxd} el={gyd}'
+            log 'solve_eye L={is_l} UNGATED (fwd_set false) az={gxd} el={gyd}'
         return true
 
     func aim_at_plot [ fp: hyperspace, u: f32, v: f32 ] -> bool
@@ -2195,7 +2195,7 @@ element ModelView
                     s = '{s}f {fa} {fb} {fc2}\n'
         ob : path '{sdir}/{cap_idx}-check.obj'
         ob.save[ s, null ]
-        puts 'check obj: {cap_idx}-check.obj'
+        log 'check obj: {cap_idx}-check.obj'
 
     func save_verify_frame [ fp: hyperspace ]
         cap : Image [ vrender.color ]
@@ -2328,7 +2328,7 @@ element ModelView
             gaze_x = (gaze_lx + gaze_rx) * 0.5
             gaze_y = (gaze_ly + gaze_ry) * 0.5
             apply_eyes_down[]
-            puts 'gaze mark: ({tgt_x}, {tgt_y}, {tgt_z})'
+            log 'gaze mark: ({tgt_x}, {tgt_y}, {tgt_z})'
         edited : bool [ false ]
         if [ ev.key.unicode == 83 ]
             eye_slant[ (ev.key.shift) ? -0.02 : 0.02 ]
@@ -2421,15 +2421,15 @@ element ModelView
             return
         hc : vmodel.cages[ head_ci ]
         if [ !hc.rep || !hc.cage_buf ]
-            puts 'eyes-down: cage has no rep/cage_buf'
+            log 'eyes-down: cage has no rep/cage_buf'
             return
         for [ msh: Mesh ] in gmodel.meshes
             if [ !msh.extras ]
-                puts 'eyes-down: mesh has no extras'
+                log 'eyes-down: mesh has no extras'
                 continue
             names : msh.extras.targetNames
             if [ !names ]
-                puts 'eyes-down: extras has no targetNames'
+                log 'eyes-down: extras has no targetNames'
                 continue
             for [ prim: Primitive ] in msh.primitives
                 if [ !prim.targets ] continue
@@ -3650,7 +3650,7 @@ element ModelView
                         fwrite[ recbuf, 4, i64[ 6 ], f ]
                     fclose[ f ]
                 np += 1
-        puts 'export: idx={idx} patches={np} scan={scan_px} win={patch_px} stride={patch_stride}'
+        log 'export: idx={idx} patches={np} scan={scan_px} win={patch_px} stride={patch_stride}'
 
     public func begin_export [] -> none
         if [ export_step != 0 ] return
@@ -3678,7 +3678,7 @@ element ModelView
                 cap_a = null
                 export_idx += 1
                 export_step = 0
-                puts 'hyperspace: exported sample {export_idx}'
+                log 'hyperspace: exported sample {export_idx}'
         if [ vrender && capture_left > 0 && anch_set ]
             fpc : picker[]
             if [ rig ] fpc = rig
@@ -3978,7 +3978,7 @@ element ModelView
                                             cap_gc[ gb9 + 2 ] = sz9 / sn9
                                         el
                                             cap_gc[ gb9 ] = 1000000.0
-                                if [ cap_gn < 0 ] puts 'lid groups: none painted (_V_LID*, _V_LIDSHAPE_*)'
+                                if [ cap_gn < 0 ] log 'lid groups: none painted (_V_LID*, _V_LIDSHAPE_*)'
                             bp9 : @f32 [ hc9.cage_buf.data ]
                             if [ cap_gn > 0 ]
                                 gsc : local f32 [ 21 ] [ 0.25, 0.20, 0.18, 0.12, 0.06, 0.28, 0.30, 0.34, 0.18, 0.18, 0.18, 0.18, 0.18, 0.18, 0.18, 0.18, 0.18, 0.18, 0.18, 0.18, 0.18 ]
@@ -4342,7 +4342,7 @@ element ModelView
                 el [ capture_state == 1 ]
                     if [ !save_plot_sample[ fpc, cap_cam ] ]
                         clip_rejects += 1
-                        if [ (clip_rejects % 200) == 0 ] puts 'plot capture: {clip_rejects} poses re-rolled (donor record unusable)'
+                        if [ (clip_rejects % 200) == 0 ] log 'plot capture: {clip_rejects} poses re-rolled (donor record unusable)'
                         cap_cam = 0
                         cap_look_i = 0
                         capture_state = 0
@@ -4377,9 +4377,9 @@ element ModelView
                                 cap_look_i += 1
                                 if [ cap_look_i >= fpc.looks ] cap_look_i = 0
                                 wi9 : i32 [ cap_idx - 1 ]
-                                puts 'gen: {wi9}-face0.png + {wi9}.agi, {capture_left} left'
+                                log 'gen: {wi9}-face0.png + {wi9}.agi, {capture_left} left'
                                 if [ capture_left == 0 ]
-                                    puts 'plot capture complete: {cap_idx} samples'
+                                    log 'plot capture complete: {cap_idx} samples'
                                     if [ fpc.gen > 0 ] exit[ 0 ]
                     if [ capture_state == 3 ]
                         capture_state = 2
@@ -4409,9 +4409,9 @@ element ModelView
                     cap_look_i += 1
                     if [ cap_look_i >= fpc.looks ] cap_look_i = 0
                     wi9 : i32 [ cap_idx - 1 ]
-                    puts 'gen: {wi9}-face0.png + {wi9}.agi, {capture_left} left'
+                    log 'gen: {wi9}-face0.png + {wi9}.agi, {capture_left} left'
                     if [ capture_left == 0 ]
-                        puts 'plot capture complete: {cap_idx} samples'
+                        log 'plot capture complete: {cap_idx} samples'
                         if [ fpc.gen > 0 ] exit[ 0 ]
         # the picker fed new landmarks -> rebuild this face to them
         if [ vrender && (face_idx != baked_fidx || span_mm != baked_span || nostril_span != baked_nos || mid_nose != baked_mid || nostril_y != baked_ny) ]
@@ -4504,7 +4504,7 @@ element ModelView
                                 cimg5 : eim.crop[ dx5 * 128, dy5 * 128, 128, 128 ]
                                 cid5 : i32 [ dy5 * 32 + dx5 ]
                                 cimg5.png[ path '{idir}/{kk}-{cid5}.png' ]
-                        puts 'iris preview: 1024 {kk} variants -> {idir}'
+                        log 'iris preview: 1024 {kk} variants -> {idir}'
                 etx : Texture [ w: w, vk: cv.vk, linear: true, mip_levels: eml, sampler: eim ]
                 etx.hold[]
                 sm[ kk ] = etx
@@ -4865,7 +4865,7 @@ element hyperspace : trinity
             dv9 : cam_dev[ cd ]
             dp9 : path '{dv9}'
             if [ !dp9.exists[] ]
-                puts 'record ERROR: camera missing — {dv9}'
+                log 'record ERROR: camera missing — {dv9}'
                 return
         rd : rec_dir[]
         rec_i = 0
@@ -4887,7 +4887,7 @@ element hyperspace : trinity
         rec_mode = 'record'
         ux.set_fullscreen[ true ]
         kind : string [ (noise) ? 'NOISE negatives' : 'face pairs' ]
-        puts 'record {kind}: -> {rd} starting at {rec_i} (click to stop)'
+        log 'record {kind}: -> {rd} starting at {rec_i} (click to stop)'
 
     func rec_frand [] -> f32
         rec_seed = rec_seed * 1664525 + 1013904223
@@ -5093,7 +5093,7 @@ element hyperspace : trinity
                 ann_tex = null
                 ann_img = null
                 ann_lc = -1
-                puts 'annotate: all pairs plotted'
+                log 'annotate: all pairs plotted'
                 return
             fid9 : ann_files[ ann_i ]
             cs9 : cam_role[ ann_cam ]
@@ -5113,7 +5113,7 @@ element hyperspace : trinity
         ip : path '{rec_dir[]}/{fid}-{cam}.png'
         im : Image [ uri: ip ]
         if [ im.width <= 0 ]
-            puts 'annotate ERROR: cannot load {ip}'
+            log 'annotate ERROR: cannot load {ip}'
             return
         im.hold[]
         ann_img = im
@@ -5122,7 +5122,7 @@ element hyperspace : trinity
         ann_lf.hold[]
         ann_lc = ann_cam
         ann_refresh_marks[]
-        puts 'annotate {fid}-{cam} ({im.width}x{im.height}) ({ann_i + 1}/{ann_files.count})'
+        log 'annotate {fid}-{cam} ({im.width}x{im.height}) ({ann_i + 1}/{ann_files.count})'
 
     func start_annotate []
         rd : rec_dir[]
@@ -5139,7 +5139,7 @@ element hyperspace : trinity
             if [ rec_pair_missing[ k ] ] ann_files += string '{k}'
             k += 1
         if [ ann_files.count == 0 ]
-            puts 'annotate: nothing to plot (record first, or all done)'
+            log 'annotate: nothing to plot (record first, or all done)'
             return
         n5 : i32 [ ann_files.count ]
         fs5 : new i64 [ n5 ]
@@ -5385,7 +5385,7 @@ element hyperspace : trinity
         tb_gy = 0.0
         rec_mode = 'test'
         ux.set_fullscreen[ true ]
-        puts 'testbed: cascade live (esc to quit)'
+        log 'testbed: cascade live (esc to quit)'
 
     func bench_dir [] -> path
         mkdir[ '/src/hyperspace-sessions', 493 ]
@@ -5400,7 +5400,7 @@ element hyperspace : trinity
             dv9 : cam_dev[ cd ]
             dp9 : path '{dv9}'
             if [ !dp9.exists[] ]
-                puts 'benchmark ERROR: camera missing — {dv9}'
+                log 'benchmark ERROR: camera missing — {dv9}'
                 return
         bd : bench_dir[]
         bench_i = 0
@@ -5419,7 +5419,7 @@ element hyperspace : trinity
         bench_last = 0
         rec_mode = 'bench'
         ux.set_fullscreen[ true ]
-        puts 'benchmark: -> {bd} starting at {bench_i} — follow the mark (click to stop)'
+        log 'benchmark: -> {bd} starting at {bench_i} — follow the mark (click to stop)'
 
     func cam_ray [ c: i32, nx: f32, ny: f32, ox: @f32, dx: @f32 ]
         c5 : i32 [ c * 5 ]
@@ -5506,7 +5506,7 @@ element hyperspace : trinity
                         cnt9 += 1
                 k9 += 1
             nose_k[ c9 ] = (cnt9 > 0) ? acc9 / f32[ cnt9 ] : 0.55
-            puts 'calib: {cam_role[ c9 ]} nose drop {nose_k[ c9 ]} from {cnt9} records'
+            log 'calib: {cam_role[ c9 ]} nose drop {nose_k[ c9 ]} from {cnt9} records'
 
     func rec_solve [ fid: string, out9: @f32 ] -> bool
         vis9 : i32 [ rec_vis[ fid ] ]
@@ -5723,7 +5723,7 @@ element hyperspace : trinity
             tn += 1
         recs_n = 0
         if [ tn == 0 ]
-            puts 'records: 0 fitted poses loaded for generation'
+            log 'records: 0 fitted poses loaded for generation'
             return
         sya : new f32 [ tn ]
         spa : new f32 [ tn ]
@@ -5752,7 +5752,7 @@ element hyperspace : trinity
             if [ dr9 > 40.0 || dr9 < -40.0 ] bad9 = true
             fid6 : i32 [ tmp_fid[ i6 ] ]
             if [ bad9 ]
-                puts 'rec {fid6}: REJECTED yaw={dy9} pitch={dp9} roll={dr9}'
+                log 'rec {fid6}: REJECTED yaw={dy9} pitch={dp9} roll={dr9}'
                 continue
             recs_dat[ recs_n * 9 + 0 ] = dy9 / 57.29578
             recs_dat[ recs_n * 9 + 1 ] = dp9 / 57.29578
@@ -5770,11 +5770,11 @@ element hyperspace : trinity
             recs_n += 1
         mydeg : f32 [ my6 * 57.29578 ]
         mpdeg : f32 [ mp6 * 57.29578 ]
-        puts 'records: {recs_n} of {tn} poses usable, {recs_noise_n} noise frames, {hair_n} hair patches (bias removed: yaw={mydeg} pitch={mpdeg})'
+        log 'records: {recs_n} of {tn} poses usable, {recs_noise_n} noise frames, {hair_n} hair patches (bias removed: yaw={mydeg} pitch={mpdeg})'
         np9 : i32 [ 0 ]
         for [ i9: i32 0, i9 < recs_n, i9 += 1 ]
             if [ recs_pos[ i9 * 3 ] > -900.0 ] np9 += 1
-        puts 'records: {np9} of {recs_n} fix the head in space (both cameras annotated)'
+        log 'records: {np9} of {recs_n} fix the head in space (both cameras annotated)'
 
     public func on_click [ ev: Event ]
         # batch generation is non-interactive: stray input on the gen
@@ -5783,13 +5783,13 @@ element hyperspace : trinity
         if [ rec_mode == 'record' ]
             rec_mode = ''
             ux.set_fullscreen[ false ]
-            puts 'record: stopped at {rec_i} pairs'
+            log 'record: stopped at {rec_i} pairs'
             ev.stop[]
             return
         if [ rec_mode == 'bench' ]
             rec_mode = ''
             ux.set_fullscreen[ false ]
-            puts 'benchmark: stopped at {bench_i} pairs'
+            log 'benchmark: stopped at {bench_i} pairs'
             ev.stop[]
             return
         if [ rec_mode == 'annotate' ]
@@ -6076,7 +6076,7 @@ element hyperspace : trinity
                 s : string 'images:\n    {q0}: {bench_i}-{q0}.png\n    {q1}: {bench_i}-{q1}.png\ncameras: {cam_n}\nlook: {bench_u} {bench_v}\nhead: {head_u} {head_v}\nhead_in: {head_in}\n'
                 ag : path '{bd}/{bench_i}.agi'
                 ag.save[ s, null ]
-                if [ bench_i % 10 == 0 ] puts 'benchmark: {bench_i} pairs ({q0}={okt} {q1}={okb})'
+                if [ bench_i % 10 == 0 ] log 'benchmark: {bench_i} pairs ({q0}={okt} {q1}={okb})'
                 bench_i += 1
             return
 
@@ -6087,7 +6087,7 @@ element hyperspace : trinity
             c0v : cam_view[ 0 ]
             c1v : cam_view[ 1 ]
             if [ rec_i % 50 == 0 && c0v && c0v.camera && c1v && c1v.camera ]
-                puts 'rec cams: {cam_role[ 0 ]} dev={c0v.camera.device} {cam_role[ 1 ]} dev={c1v.camera.device}'
+                log 'rec cams: {cam_role[ 0 ]} dev={c0v.camera.device} {cam_role[ 1 ]} dev={c1v.camera.device}'
             now3 : i64 [ epoch_millis[] ]
             if [ rec_noise && now3 - rec_last >= 600 ]
                 rec_last = now3
@@ -6105,7 +6105,7 @@ element hyperspace : trinity
                 if [ rec_noise ] s = string '{s}noise: true\n'
                 ag : path '{rd}/{rec_i}.agi'
                 ag.save[ s, null ]
-                if [ rec_i % 10 == 0 ] puts 'record: {rec_i} pairs ({w0}={okt} {w1}={okb})'
+                if [ rec_i % 10 == 0 ] log 'record: {rec_i} pairs ({w0}={okt} {w1}={okb})'
                 rec_i += 1
             return
         if [ rec_mode == 'annotate' ]
@@ -6244,12 +6244,12 @@ element hyperspace : trinity
             cage_v  = mv.picked_vert
             cage_scatter[ vote_0 ]
             cage_scatter[ vote_1 ]
-            puts 'cage propose: cage={cage_ci} vert={cage_v}'
+            log 'cage propose: cage={cage_ci} vert={cage_v}'
         el
             if [ !mv.vmodel ] return
             face_main.vmodel.cage_copy_from[ mv.vmodel ]
             save_mask[ face_main ]
-            puts 'cage merge: face_idx={mv.face_idx} -> main'
+            log 'cage merge: face_idx={mv.face_idx} -> main'
 
     public func save_mask [ mv: ModelView ]
         if [ !mv || !mv.vmodel || !mv.vmodel.cages ] return
@@ -6259,7 +6259,7 @@ element hyperspace : trinity
         fpn : '{sdir}/user.cage'
         fh : @FILE [ fopen[ fpn.chars, 'wb' ] ]
         if [ !fh ]
-            puts 'mask save failed: {fpn}'
+            log 'mask save failed: {fpn}'
             return
         hdr : local i32 [ 2 ]
         hdr[0] = 777001
@@ -6277,7 +6277,7 @@ element hyperspace : trinity
             for [ i: i32 0, i < n3, i += 1 ] dbuf[ i ] = cur[ i ] - t.base[ i ]
             fwrite[ dbuf, 4, i64[ n3 ], fh ]
         fclose[ fh ]
-        puts 'mask saved: {fpn}'
+        log 'mask saved: {fpn}'
 
     public func load_mask [ mv: ModelView ]
         if [ !mv || !mv.vmodel || !mv.vmodel.cages ] return
@@ -6287,7 +6287,7 @@ element hyperspace : trinity
         hdr : local i32 [ 2 ]
         fread[ hdr, 4, i64[ 2 ], fh ]
         if [ hdr[0] != 777001 || hdr[1] != i32[ mv.vmodel.cages.count ] ]
-            puts 'mask mismatch (header): {fpn}'
+            log 'mask mismatch (header): {fpn}'
             fclose[ fh ]
             return
         for [ ci: i32 0, ci < mv.vmodel.cages.count, ci += 1 ]
@@ -6295,7 +6295,7 @@ element hyperspace : trinity
             nvh : local i32 [ 1 ]
             fread[ nvh, 4, i64[ 1 ], fh ]
             if [ nvh[0] != t.nv ]
-                puts 'mask mismatch (cage {ci}): {fpn}'
+                log 'mask mismatch (cage {ci}): {fpn}'
                 fclose[ fh ]
                 return
             if [ !t.cage_buf || !t.base ] continue
@@ -6362,7 +6362,7 @@ element hyperspace : trinity
         if [ ab_sigma > 1.5 ]  ab_sigma = 1.5
         if [ ab_sigma < 0.15 ] ab_sigma = 0.15
         resample[]
-        puts 'hyperspace: pick {i} sigma={ab_sigma} eye={c_eye} nos={c_nos} mid={c_mid} ny={c_ny}'
+        log 'hyperspace: pick {i} sigma={ab_sigma} eye={c_eye} nos={c_nos} mid={c_mid} ny={c_ny}'
 
     public func on_key [ ev: Event ]
         if [ !ev.key.state ] return
@@ -6383,7 +6383,7 @@ element hyperspace : trinity
             camx : cam_role[ ann_cam ]
             fidx : i32 [ i32[ atof[ ann_files[ ann_i ].chars ] ] ]
             agi_put2[ fidx, '{camx}_hidden', 'true' ]
-            puts 'annotate: #{fidx} {camx} hidden'
+            log 'annotate: #{fidx} {camx} hidden'
             ann_refresh_marks[]
             ann_sub = 7
             ann_ext = ev.key.shift
@@ -6396,18 +6396,18 @@ element hyperspace : trinity
                 cam8 : cam_role[ ann_cam ]
                 fidh : i32 [ i32[ atof[ ann_files[ ann_i ].chars ] ] ]
                 agi_put2[ fidh, '{cam8}_hair', '{nx8} {ny8}' ]
-                puts 'annotate: #{fidh} {cam8} hair at ({nx8}, {ny8})'
+                log 'annotate: #{fidh} {cam8} hair at ({nx8}, {ny8})'
                 ann_refresh_marks[]
             return
         if [ rec_mode == 'annotate' && ev.key.unicode == 70 ]
             fidn7 : i32 [ i32[ atof[ ann_files[ ann_i ].chars ] ] ]
             agi_put2[ fidn7, 'face_id', 'true' ]
-            puts 'annotate: #{fidn7} marked face identifier'
+            log 'annotate: #{fidn7} marked face identifier'
             return
         if [ rec_mode == 'annotate' && ev.key.unicode == 78 ]
             fidn6 : i32 [ i32[ atof[ ann_files[ ann_i ].chars ] ] ]
             agi_put2[ fidn6, string 'noise', string 'true' ]
-            puts 'annotate: #{fidn6} marked noise'
+            log 'annotate: #{fidn6} marked noise'
             ann_sub = 7
             ann_cam = 1
             ann_ext = ev.key.shift
@@ -6429,7 +6429,7 @@ element hyperspace : trinity
         if [ recs_n == 0 ]
             load_recs[]
         if [ recs_n < 10 ]
-            puts 'generation needs 10 annotated records, have {recs_n} — record + plot oc first'
+            log 'generation needs 10 annotated records, have {recs_n} — record + plot oc first'
             if [ gen > 0 ] exit[ 1 ]
             return
         if [ !cap_os ]
@@ -6442,7 +6442,7 @@ element hyperspace : trinity
             # one headless frame builds the model, cages and anchors
             cap_os.frame[]
         if [ !cap_view.vmodel ]
-            puts 'capture view not ready yet'
+            log 'capture view not ready yet'
             return
         if [ face_main && face_main.vmodel ]
             cap_view.vmodel.cage_copy_from[ face_main.vmodel ]
@@ -6467,7 +6467,7 @@ element hyperspace : trinity
         lk5 : i32 [ (looks > 0) ? looks : 1 ]
         n5 : i32 [ np5 * lk5 ]
         cap_view.begin_capture[ n5 ]
-        puts 'plot capture: {np5} poses x {lk5} looks = {n5} samples -> session {session}'
+        log 'plot capture: {np5} poses x {lk5} looks = {n5} samples -> session {session}'
 
     public func render [] -> Elements
         if [ !seeded ]

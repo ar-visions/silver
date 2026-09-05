@@ -249,7 +249,7 @@ class op
     public quantized: bool
 
     func forward [] -> none
-        puts 'forward'
+        log 'forward'
 ```
 - `class` = heap-allocated, reference-counted
 - `struct` = inlay/value type
@@ -307,7 +307,7 @@ asm [ args ]                # void/statement-level asm
 
 ### String Interpolation
 ```
-puts 'hello {name}, value is {x}'
+log 'hello {name}, value is {x}'
 ```
 
 ### Collections

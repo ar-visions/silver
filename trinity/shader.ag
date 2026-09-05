@@ -301,7 +301,7 @@ class shader
             # .spv look stale and forced a full recompile each start
             fp: fopen[ p, "wb" ]
             if [ !fp ]
-                printf[ "failed to write shader: %s\n", p.chars ]
+                log 'failed to write shader: {p}'
                 continue
             fputs[ src, fp ]
             fclose[ fp ]
@@ -374,14 +374,14 @@ class shader
                     spv_ok = rd == 4 && magic == 0x07230203 && slen >= 20 && (slen % 4) == 0
             make_spv : !spv_ok ||
                 input.modified_time[] > spv_file.modified_time[]
-            if [ make_spv ] puts 'shader: {spv_file.filename[]} stale (valid={spv_ok}) — compiling'
+            if [ make_spv ] log 'hader: {spv_file.filename[]} stale (valid={spv_ok}) — compiling'
 
             if [ make_spv ]
-                puts 'compiling shader: {shader_file}'
+                log 'ompiling shader: {shader_file}'
                 # in process through glslang: no tool on disk, no shell
                 result: i32 [ trinity_glsl_to_spv[ shader_file.chars, spv_file.chars ] ]
                 if [ result != 0 ]
-                    puts 'shader compilation failed for: {shader_file}'
+                    log 'hader compilation failed for: {shader_file}'
                     exit[ 1 ]
                 recompiled = true
             el
@@ -389,7 +389,7 @@ class shader
                     continue
             fp: fopen[ spv_file.chars, "rb" ]
             if [ !fp ]
-                puts 'failed to open SPIR-V file: {spv_file}'
+                log 'ailed to open SPIR-V file: {spv_file}'
                 exit[ 1 ]
             fseek[ fp, 0, SEEK_END ]
             length: ftell[ fp ]
@@ -397,7 +397,7 @@ class shader
             spirv: malloc[ length ]
             if [ !spirv ]
                 fclose[ fp ]
-                puts 'failed to allocate memory for SPIR-V'
+                log 'ailed to allocate memory for SPIR-V'
                 exit[ 1 ]
             fread[ spirv, 1, length, fp ]
             fclose[ fp ]
@@ -409,7 +409,7 @@ class shader
             mod: VkShaderModule
             vkResult: vkCreateShaderModule[ vk.device, createInfo, null, @mod ]
             if [ vkResult != VK_SUCCESS ]
-                puts 'failed to create vulkan shader module: {spv_file}'
+                log 'ailed to create vulkan shader module: {spv_file}'
                 free[ spirv ]
                 exit[ 1 ]
             values[i] = mod
@@ -1328,7 +1328,7 @@ func mat_tex [ m: Model, mdl: GltfModel, ti: TextureInfo, name: string, out: map
     tx : Texture m.tex_cache[ key ]
     if [ !tx ]
         if [ !p.exists[] ]
-            puts 'gltf: material texture missing: {p}'
+            log 'ltf: material texture missing: {p}'
             return
         im : Image [ uri: p ]
         mx : i32 [ (im.width > im.height) ? im.width : im.height ]

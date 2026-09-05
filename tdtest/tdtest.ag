@@ -75,7 +75,7 @@ class TechDataTable
         if [ !ready ] return
         fp : @FILE [ fopen[ '{file}', 'wb' ] ]
         if [ !fp ]
-            puts 'techdata: cannot write {file}'
+            log 'techdata: cannot write {file}'
             return
         for [ item: TechDataValue first, item, item = item.next ]
             key_len : i32 [ item.key.count ]
@@ -158,7 +158,7 @@ expect func t_nested_struct_return [] -> bool
     step : vec3t [ v3t_sub[ a2, b2 ] ]
     len_local  : f32 [ v3t_len[ step ] ]
     len_nested : f32 [ v3t_len[ v3t_sub[ a2, b2 ] ] ]
-    puts 'nested={len_nested} local={len_local}'
+    log 'nested={len_nested} local={len_local}'
     return len_local == 5.0 && len_nested == 5.0
 
 expect func t_techdata_roundtrip [] -> bool
@@ -183,5 +183,5 @@ expect func t_techdata_roundtrip [] -> bool
     b2 : bool [ t.get_f32[ 'Sound FX Level', 0.0 ] == 0.75 ]
     b3 : bool [ t.get_i32[ 'Selected Car', 0 ] == 3 ]
     b4 : bool [ t.get_str[ 'Name', '' ] == 'Kalen' ]
-    puts 'pass1 {a1} {a2} {a3} {a4} {a5} pass2 {b1} {b2} {b3} {b4}'
+    log 'pass1 {a1} {a2} {a3} {a4} {a5} pass2 {b1} {b2} {b3} {b4}'
     return a1 && a2 && a3 && a4 && a5 && b1 && b2 && b3 && b4

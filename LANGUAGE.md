@@ -302,7 +302,7 @@ value: ptr ?? fallback
 Single quotes interpolate, double quotes are literals:
 
 ```
-puts 'hello {name}, value is {x}'
+log 'hello {name}, value is {x}'
 ```
 
 ---
@@ -513,7 +513,7 @@ z: i32 sub
 
 ```
 lambda on_event [ event: string :: source: string ] -> bool
-    puts '{source}: {event}'
+    log '{source}: {event}'
     return true
 ```
 

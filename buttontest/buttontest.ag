@@ -92,7 +92,7 @@ element buttontest : trinity
         if [ !e ] return
         if [ e.id == 'hello' ]
             clicks += 1
-            puts 'LIVE RELOADED! count={clicks}'
+            log 'LIVE RELOADED! count={clicks}'
         ev.stop[]
 
     public func render [] -> Elements

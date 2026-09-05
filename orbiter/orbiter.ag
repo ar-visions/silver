@@ -387,7 +387,7 @@ element EditorView
             is_console = is_con
             pristine   = false
         if [ o.find_showing ]
-            puts 'FIND show: pane={id} searchable={(searchable[]) ? 1 : 0} sp={o.search_pane[]} hits={o.find_hits->count}'
+            log 'FIND show: pane={id} searchable={(searchable[]) ? 1 : 0} sp={o.search_pane[]} hits={o.find_hits->count}'
         e : Editor text_of[]
         if [ e && e.rview ]
             cfeed : e.rview.context_feed*[]
@@ -591,7 +591,7 @@ Avatar OrbiterAvatar
         orb  : orbiter [ ux.app_object ]
         if [ !st_logged ]
             st_logged = true
-            puts 'ONSTATE reached m={m} orb={bool[orb]} busy={orb->busy}'
+            log 'ONSTATE reached m={m} orb={bool[orb]} busy={orb->busy}'
         want : f32 [ rest_tilt ]
         amt  : f32 [ ease_amount ]
         if [ orb->busy ]
@@ -618,7 +618,7 @@ Avatar OrbiterAvatar
             aura.spin  = spin_phase
             if [ orb->busy != spin_dbg ]
                 spin_dbg = orb->busy
-                puts 'SPIN busy={orb->busy} rate={spin_rate} goal={gs} ff={ux->frame_factor}'
+                log 'SPIN busy={orb->busy} rate={spin_rate} goal={gs} ff={ux->frame_factor}'
         if [ !rotate ]
             rotate = vec Rotation []
             rotate.push[ Rotation [ '0 1 0 30deg' ] ]
@@ -1368,9 +1368,6 @@ element orbiter : trinity # implements compiler
         # draw carries the per-frame work (session pump, run dispatch, pane
         # close-outs), and an element draws only when dirty or animated
         animated = true
-        au_live_set_defer[ 1 ]
-        # the syntax service rebuilds our own module — never self-reload
-        au_live_set_reload[ 0 ]
         breakpoints    = map string[string] []
 
         target_names   = vec string []
@@ -1471,7 +1468,7 @@ element orbiter : trinity # implements compiler
                     el
                         dbg_start = true
                 el
-                    puts 'orbiter: no such resource {resource}'
+                    log 'orbiter: no such resource {resource}'
         if [ orbit_app ]
             pending_run = -1
             active_pane = 0
@@ -1595,10 +1592,10 @@ element orbiter : trinity # implements compiler
 
     func load_settings []
         sp  : agi_path[]
-        puts 'load_settings: startup_path={startup_path} -> agi={sp}'
+        log 'load_settings: startup_path={startup_path} -> agi={sp}'
         txt : string [ sp.load[ typeid[string], null ] ]
         if [ !txt || txt.count == 0 ]
-            puts 'load_settings: no/empty file at {sp}'
+            log 'load_settings: no/empty file at {sp}'
             return
         settings_mtime = sp.modified_time[]
         if [ projects ] projects.clear[]
@@ -1609,14 +1606,14 @@ element orbiter : trinity # implements compiler
                 if [ p.cwd ] p.cwd = resolve_local[ p.cwd ]
         sync_targets[]
         if [ projects ]
-            puts 'loaded {projects.count} projects:'
+            log 'loaded {projects.count} projects:'
             for [ p: Project, name: string ] in projects
-                puts '  {name}: root={p.root}'
+                log '  {name}: root={p.root}'
                 if [ p.deps ]
                     for [ d: token ] in p.deps
-                        puts '    dep: {d.chars}'
+                        log '    dep: {d.chars}'
         el
-            puts 'loaded 0 projects (projects is null)'
+            log 'loaded 0 projects (projects is null)'
 
     func sync_targets []
         target_names = vec string []
@@ -1718,12 +1715,12 @@ element orbiter : trinity # implements compiler
         # local: only dlsym on this handle needs its symbols
         h : dlopen[ so.chars, RTLD_NOW ]
         if [ !h ]
-            puts 'syntax: dlopen failed for {so}'
+            log 'syntax: dlopen failed for {so}'
             return
         sym : string 'syntax'
         fw.fn = cast hook [ dlsym[ h, sym.chars ] ]
-        if [ !fw.fn ] puts 'syntax: {lib} exports no syntax function'
-        el puts 'syntax: {lib} colours {fw.file}'
+        if [ !fw.fn ] log 'syntax: {lib} exports no syntax function'
+        el log 'syntax: {lib} colours {fw.file}'
 
     # re-ask the handler whenever the file on disk changes
     func fmt_poll_fn [ fw: FmtWatch ]
@@ -1741,7 +1738,7 @@ element orbiter : trinity # implements compiler
         if [ !ff ] return
         fw.mtime = sm
         lns9 : vec Au ff.lines
-        puts 'syntax: {fw.proj} mapped {lns9.count} lines for {ff.source}'
+        log 'syntax: {fw.proj} mapped {lns9.count} lines for {ff.source}'
         ed0.apply_format[ ff ]
         for [ i: i32 0, i < editor_slots.count, i += 1 ]
             ed : Editor pane_at[ i ]
@@ -1796,7 +1793,7 @@ element orbiter : trinity # implements compiler
                     fw.src_mtime = sm
         for [ fw: FmtWatch, name: string ] in fmt_watch
             if [ !fw.announced ]
-                puts 'syntax: {name} language service starting...'
+                log 'syntax: {name} language service starting...'
                 fw.announced = true
             if [ fw.fd >= 0 ]
                 dbuf : local i8 [256]
@@ -1810,14 +1807,14 @@ element orbiter : trinity # implements compiler
                     code : i32 [ (st >> 8) & 0xFF ]
                     sig  : i32 [ st & 0x7F ]
                     if [ sig != 0 ]
-                        puts 'syntax: {name} CRASHED (signal {sig}) — see /tmp/orbiter-fmt-{fw.proj}.log'
+                        log 'syntax: {name} CRASHED (signal {sig}) — see /tmp/orbiter-fmt-{fw.proj}.log'
                     el [ code != 0 ]
-                        puts 'syntax: {name} build FAILED (code {code}) — see /tmp/orbiter-fmt-{fw.proj}.log'
+                        log 'syntax: {name} build FAILED (code {code}) — see /tmp/orbiter-fmt-{fw.proj}.log'
                         # jump the editor to silver's first emitted error location
                         err_mod = name
                         jump_to_error[ '/tmp/orbiter-fmt-{fw.proj}.log' ]
                     el
-                        puts 'syntax: {name} language service finished'
+                        log 'syntax: {name} language service finished'
                         # only the module that failed may clear its own error
                         if [ err_mod && err_mod == name ]
                             err_file = null
@@ -1968,7 +1965,7 @@ element orbiter : trinity # implements compiler
     func orbit_send [ body: string ]
         s6 : ConsoleSession orbit_session[]
         if [ !s6 ]
-            puts 'orbit_send: NO session'
+            log 'orbit_send: NO session'
             return
         m6 : string body
         if [ !orbit_ctx_sent && orbit_ctx && orbit_ctx.count > 0 ]
@@ -1988,7 +1985,7 @@ element orbiter : trinity # implements compiler
         if [ mt != 1 ] return
         s : i32 [ wp ]
         if [ s == orbit_dstate ] return
-        puts 'orbiter on_host dictate: {orbit_dstate} -> {s}'
+        log 'orbiter on_host dictate: {orbit_dstate} -> {s}'
         orbit_dstate = s
         if [ s == 1 ]
             rc : dictation_start[]
@@ -2017,7 +2014,7 @@ element orbiter : trinity # implements compiler
             if [ rc == 0 ]
                 orbit_cap_on = true
                 listen_file  = src
-        puts 'orbiter: mic {orbit_cap_on} file {listen_file}'
+        log 'orbiter: mic {orbit_cap_on} file {listen_file}'
 
     public func listening [] -> bool
         return orbit_cap_on
@@ -2029,7 +2026,7 @@ element orbiter : trinity # implements compiler
         orbit_flushing = false
         dt : dictation_take[]
         if [ !dt || dt.count == 0 ] return
-        puts 'orbiter: submitting take "{dt}"'
+        log 'orbiter: submitting take "{dt}"'
         bd : string dt
         if [ listen_file ] bd = '{listen_file}  {dt}'
         listen_file = null
@@ -2047,7 +2044,7 @@ element orbiter : trinity # implements compiler
         if [ !orbit_voice_tested ]
             orbit_voice_tested = true
             rcv : i32 [ tts_init[ '' ] ]
-            puts 'voice-test: tts_init rc {rcv}'
+            log 'voice-test: tts_init rc {rcv}'
             if [ rcv == 0 ]
                 vt9 : string 'orbiter voice is working'
                 tts_say[ vt9.chars, 8, 1.0 ]
@@ -2098,7 +2095,7 @@ element orbiter : trinity # implements compiler
                 if [ dup ] continue
                 orbit_spoken.push[ ut ]
                 rc2 : i32 [ tts_init[ '' ] ]
-                puts 'speak-scan: voicing "{ut}" (tts_init rc {rc2})'
+                log 'speak-scan: voicing "{ut}" (tts_init rc {rc2})'
                 if [ rc2 == 0 ]
                     tts_say[ ut.chars, 8, 1.0 ]
         st : string [ orbit_status ]
@@ -2167,10 +2164,10 @@ element orbiter : trinity # implements compiler
             l2  : path [ ps2.chars ]
             if [ l2.exists[] ] loc = l2
         if [ !loc ]
-            puts 'start_debug {name}: no binary to launch'
+            log 'start_debug {name}: no binary to launch'
             return
         ensure_console[ name ]
-        puts 'start_debug {name}: launching {loc}'
+        log 'start_debug {name}: launching {loc}'
         if [ !debuggers ] debuggers = map dbg [string] []
         d : dbg [ location: loc, target: a, auto_start: false ]
         debuggers[name] = d
@@ -2224,7 +2221,7 @@ element orbiter : trinity # implements compiler
             l2  : path [ ps2.chars ]
             if [ l2.exists[] ] loc = l2
         if [ !loc ]
-            puts 'attach_appview: no binary for {mod}'
+            log 'attach_appview: no binary for {mod}'
             av.attaching = false
             av.note      = ''
             return
@@ -2232,7 +2229,7 @@ element orbiter : trinity # implements compiler
         d.attach[ pid ]
         if [ !d.active ]
             kill[ pid, SIGCONT ]
-            puts 'attach_appview: attach failed — {mod} pid={pid} continued undebugged'
+            log 'attach_appview: attach failed — {mod} pid={pid} continued undebugged'
             av.attaching = false
             av.note      = ''
             return
@@ -2244,7 +2241,7 @@ element orbiter : trinity # implements compiler
         d.cont[]
         # clear the pre-init SIGSTOP group-stop; cont alone won't
         kill[ pid, SIGCONT ]
-        puts 'attach_appview: attached {mod} pid={pid}'
+        log 'attach_appview: attached {mod} pid={pid}'
         o.attach_mod     = mod
         o.attach_av      = av
         o.attach_pending = d
@@ -2335,7 +2332,7 @@ element orbiter : trinity # implements compiler
         return null
     func dbg_on_break [ cur: cursor ] -> Au
         if [ !cur ] return null
-        puts 'dbg break {cur.source}:{cur.line}'
+        log 'dbg break {cur.source}:{cur.line}'
         apply_break[ cur ]
         return null
 
@@ -2402,7 +2399,7 @@ element orbiter : trinity # implements compiler
             if [ win ] win.will_animate = true
         return null
     func dbg_on_crash [ cur: cursor ] -> Au
-        if [ cur ] puts 'dbg crash {cur.source}:{cur.line}'
+        if [ cur ] log 'dbg crash {cur.source}:{cur.line}'
         if [ cur ] apply_break[ cur ]
         return null
 
@@ -2728,14 +2725,14 @@ element orbiter : trinity # implements compiler
         p : path (a_slot >= 0 && a_slot < open_files.count) ? open_files[a_slot] : null
         scan_current : bool [ find_in_file[] && p ]
         if [ scan_current ]
-            puts 'FIND bail: in-file mode, p={p}'
+            log 'FIND bail: in-file mode, p={p}'
             find_showing = false
             return
         root : path project_root[]
         find_scanned = 0
         find_scan_mt = 0
         walk_find[ root, q ]
-        puts 'FIND walk: root={root} scanned={find_scanned} hits={find_hits.count} sp={search_pane[]} fbpane={findbar_pane}'
+        log 'FIND walk: root={root} scanned={find_scanned} hits={find_hits.count} sp={search_pane[]} fbpane={findbar_pane}'
         if [ find_hits.count == 0 ]
             find_hits.push[ FindHit [ is_header: true, text: 'No results in {find_scanned} files', dir: 'within {root}', file: null ] ]
             find_hits.push[ FindHit [ is_header: true, text: '', file: null ] ]
@@ -2789,7 +2786,7 @@ element orbiter : trinity # implements compiler
             if [ !ln || ln.index_of[ q ] < 0 ] continue                                                         
             ed.ed_set[ li, str_replace_all[ ln, q, r ] ]                                                        
             cnt += 1                                                                                            
-        puts 'REPLACE in-file: {cnt} lines'                                                                     
+        log 'REPLACE in-file: {cnt} lines'                                                                     
         ed.pristine = false                                                                                     
         if [ ux ] ux.will_animate = true                                                                        
                                                                                                                 
@@ -2842,7 +2839,7 @@ element orbiter : trinity # implements compiler
             if [ mt9 > find_scan_mt ] find_scan_mt = mt9                                                                                
             files += 1                                                                                          
             cnt   += hitn                                                                                       
-        puts 'REPLACE: {cnt} lines in {files} files, {skip} stale skipped'                                      
+        log 'REPLACE: {cnt} lines in {files} files, {skip} stale skipped'                                      
         if [ ux ] ux.will_animate = true 
 
     func next_match []
@@ -3235,7 +3232,7 @@ element orbiter : trinity # implements compiler
         if [ !lib.exists[] ] return
         # module init registers its types
         h : dlopen[ lib.chars, 258 ]
-        if [ !h ] puts 'scenes: dlopen failed for {lib}'
+        if [ !h ] log 'scenes: dlopen failed for {lib}'
 
     # built once per scene: new_object is pool-managed, so hold it
     func scene_element [] -> element
@@ -3247,7 +3244,7 @@ element orbiter : trinity # implements compiler
             scene_module_ensure[ nm ]
             st = Au.find_type[ nm.chars, null ]
         if [ !st ]
-            puts 'scene: no class for {nm}'
+            log 'scene: no class for {nm}'
             return null
         # unmount does not call on_unload: unregister the outgoing target
         if [ scene_el && scene_el.id && ux && ux.element_targets ]
@@ -3260,7 +3257,7 @@ element orbiter : trinity # implements compiler
         scene_el    = e
         scene_el_nm = string [ nm ]
         scene_el_nm.hold[]
-        puts 'scene: built {nm}'
+        log 'scene: built {nm}'
         # the scene retints the ui; null theme restores the authored values
         if [ ux && ux.st ]
             ux.st.set_theme[ e.theme*[] ]
@@ -3949,7 +3946,7 @@ element orbiter : trinity # implements compiler
 
     func on_press [ ev: Event ]
         if [ !ev.target ] return
-        puts 'on_press: target={ev.target.id}'
+        log 'on_press: target={ev.target.id}'
         # working in a pane makes it active: keys act where you are
         epv : Editor pane_of[ ev.target ]
         if [ epv && epv.pane_index >= 0 && epv.pane_index < editor_slots.count ]
@@ -4077,7 +4074,7 @@ element orbiter : trinity # implements compiler
             if [ ev.target ] ev.target.ux.restyle = true
             ev.no_default = true
             return
-        puts 'on_press: {ev.target.id}'
+        log 'on_press: {ev.target.id}'
         for [ i: i32 0, i < open_files.count, i += 1 ]
             key : string 'tab_{i}'
             if [ ev.target.id == key ]
@@ -4273,7 +4270,7 @@ element orbiter : trinity # implements compiler
             return
 
         if [ ev.target.id == 'dock' ]
-            puts 'on_press: DOCK handler reached'
+            log 'on_press: DOCK handler reached'
             if [ editor_slots.count < 4 ]
                 editor_slots += -1
                 pane_console += ''
@@ -4286,7 +4283,7 @@ element orbiter : trinity # implements compiler
             force_update[]
             return
         if [ ev.target.id == 'undock' ]
-            puts 'on_press: UNDOCK handler reached'
+            log 'on_press: UNDOCK handler reached'
             for [ e: element* ev.target, e, e = e.parent ]
                 if [ e.id && e.id.count >= 5 && e.id.mid[ 0, 4 ] == 'pane' ]
                     pi : i32 [ e.id.mid[ 4, e.id.count - 4 ].real_value[] ]
@@ -4501,7 +4498,7 @@ element orbiter : trinity # implements compiler
                         pattern_text = pattern_text.mid[ 0, pattern_text.count - 1 ]
             el [ k == 257 ]    # Key.Enter
                 in_file : bool [ find_in_file[] ]
-                puts 'FIND enter: tgt={ev.target.id} q="{findbar_text}" pat="{pattern_text}" in_file={(in_file) ? 1 : 0}'
+                log 'FIND enter: tgt={ev.target.id} q="{findbar_text}" pat="{pattern_text}" in_file={(in_file) ? 1 : 0}'
                 if [ ev.target.id == 'replace' ]
                     run_replace[]
                 el [ in_file ]
@@ -4649,10 +4646,10 @@ element orbiter : trinity # implements compiler
                     el
                         cycle_adding = true
                         cycle_count += 1
-                        puts 'CYCLE {cycle_count}'
+                        log 'CYCLE {cycle_count}'
 
         if [ au_mem_fraction[] > 0.20 ]
-            puts 'orbiter: memory exceeded 20% of system RAM — quitting '
+            log 'orbiter: memory exceeded 20% of system RAM — quitting '
             exit[ 1 ]
 
         if [ index_research && !index_building ]
@@ -4749,7 +4746,7 @@ element orbiter : trinity # implements compiler
                 es = ConsoleSession []
                 es.name = esid
                 ed_sessions[esid] = es
-            puts 'run: dispatch {esid}: {edp.run_view.cmd}'
+            log 'run: dispatch {esid}: {edp.run_view.cmd}'
             es.launch_cmd = ''
             es.restart[]
             es.pending = edp.run_view.cmd
@@ -4814,9 +4811,9 @@ element orbiter : trinity # implements compiler
             band_h_save -= 1
             if [ band_h_save == 0 ] save_session[]
         frame_no9 += 1
-        if [ frame_no9 <= 30 ] puts 'frame {frame_no9} at {Au.epoch_millis[]}'
+        if [ frame_no9 <= 30 ] log 'frame {frame_no9} at {Au.epoch_millis[]}'
         if [ frost_dbg9 != frost_ix || (ux && frost_dbg8 != ux.frost_mode) ]
-            puts 'FROST ix={frost_ix} mode={(ux) ? ux.frost_mode : -9} eff={(ux) ? ux.frost_eff[] : -9}'
+            log 'FROST ix={frost_ix} mode={(ux) ? ux.frost_mode : -9} eff={(ux) ? ux.frost_eff[] : -9}'
             frost_dbg9 = frost_ix
             if [ ux ] frost_dbg8 = ux.frost_mode
             if [ ux && scene_el ]

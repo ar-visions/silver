@@ -22,7 +22,7 @@ class greeter
     public name : string
 
     func hello []
-        puts 'hello, {name}'
+        log 'hello, {name}'
 
 g : greeter [ name: 'world' ]
 g.hello

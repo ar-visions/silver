@@ -204,7 +204,7 @@ func libri_translate [ root: path, subset: string, outdir: path, limit: i32 ] ->
     idxp : path '{root}/{subset}-align.txt'
     s : cast string [ idxp.load[ typeid[ string ], null ] ]
     if [ !s ]
-        puts 'libri_translate: cannot read {idxp} (run the extract step)'
+        log 'libri_translate: cannot read {idxp} (run the extract step)'
         return 0
     mkdir[ '{outdir}', 493 ]
     lines : s.split[ '\n' ]
@@ -280,10 +280,10 @@ func libri_translate [ root: path, subset: string, outdir: path, limit: i32 ] ->
         ag : path '{outdir}/{subset}_{n9}.agi'
         ag.save[ body, null ]
         n9 += 1
-        if [ (n9 % 100) == 0 ] puts 'libri_translate: {n9} translated'
+        if [ (n9 % 100) == 0 ] log 'libri_translate: {n9} translated'
         Au.auto_free[ false ]
         if [ limit > 0 && n9 >= limit ] break
-    puts 'libri_translate: {root} ({subset}) -> {outdir}: {n9} clips'
+    log 'libri_translate: {root} ({subset}) -> {outdir}: {n9} clips'
     return n9
 
 func cv_translate [ dataset: path, split: string, outdir: path, limit: i32 ] -> i32
@@ -294,7 +294,7 @@ func cv_translate [ dataset: path, split: string, outdir: path, limit: i32 ] -> 
     tsvp : path '{dataset}/{split}.tsv'
     s : cast string [ tsvp.load[ typeid[ string ], null ] ]
     if [ !s ]
-        puts 'cv_translate: cannot read {tsvp}'
+        log 'cv_translate: cannot read {tsvp}'
         return 0
     mkdir[ '{outdir}', 493 ]
     lines : s.split[ '\n' ]
@@ -356,10 +356,10 @@ func cv_translate [ dataset: path, split: string, outdir: path, limit: i32 ] -> 
         ag : path '{outdir}/{split}_{n9}.agi'
         ag.save[ body, null ]
         n9 += 1
-        if [ (n9 % 100) == 0 ] puts 'cv_translate: {n9} translated'
+        if [ (n9 % 100) == 0 ] log 'cv_translate: {n9} translated'
         Au.auto_free[ false ]
         if [ limit > 0 && n9 >= limit ] break
-    puts 'cv_translate: {dataset} ({split}) -> {outdir}: {n9} clips'
+    log 'cv_translate: {dataset} ({split}) -> {outdir}: {n9} clips'
     return n9
 
 coverage test
@@ -390,10 +390,10 @@ coverage test
     func run[] -> Au
         out = AudioOut [ sample_rate: 48000, channels: 2, buffer_size: 1024 ]
         if [ ! out.open[] ]
-            puts 'spectra test: audio device unavailable'
+            log 'spectra test: audio device unavailable'
             return false
         if [ ! out.active ]
-            puts 'spectra test: open ok but active not set'
+            log 'spectra test: open ok but active not set'
             return false
         st : vec i32 [] [ 4,4,5,7, 7,5,4,2, 0,0,2,4, 4,2,2,  4,4,5,7, 7,5,4,2, 0,0,2,4, 2,0,0 ]
         bt : vec i32 [] [ 2,2,2,2, 2,2,2,2, 2,2,2,2, 3,1,4,  2,2,2,2, 2,2,2,2, 2,2,2,2, 3,1,4 ]
@@ -401,7 +401,7 @@ coverage test
             f : f64 [ 261.63 * pow[ 2.0, f64[ st[n] ] / 12.0 ] ]
             tone[ f, bt[n] * 250 ]
         out.close
-        puts 'spectra test: AudioOut ok'
+        log 'spectra test: AudioOut ok'
         return true
 
 
@@ -512,13 +512,13 @@ func dictation_start [] -> i32
     if [ !dict.ok ]
         dict.ok = dict.cap.open[]
     if [ !dict.ok ]
-        puts 'dictation: no capture device'
+        log 'dictation: no capture device'
         return 1
     if [ !dict.net ]
         d9 : path.path_storage[ 'spectra' ]
         wm : path '{d9}/whisper-small.safetensors'
         if [ wm.exists[] ]
-            puts 'dictation: loading whisper-small…'
+            log 'dictation: loading whisper-small…'
             n8 : WhisperNet [ src: wm ]
             if [ n8.valid ]
                 n8.hold[]
@@ -526,11 +526,11 @@ func dictation_start [] -> i32
                 dict.raw = new i16 [ 1536000 ]
                 r9 : cast Au [ dict.raw ]
                 r9.hold[]
-                puts 'dictation: whisper ready — speak; a pause transcribes'
+                log 'dictation: whisper ready — speak; a pause transcribes'
             el
-                puts 'dictation: whisper load failed — capture only'
+                log 'dictation: whisper load failed — capture only'
         el
-            puts 'dictation: no whisper weights — capture only'
+            log 'dictation: no whisper weights — capture only'
     dict.cap.drain[]
     dict.job     = null
     dict.wr      = 0
@@ -539,18 +539,18 @@ func dictation_start [] -> i32
     dict.drop    = false
     dict.flushed = false
     dict.txt     = ''
-    puts 'dictation: capturing (fresh, backlog dropped)'
+    log 'dictation: capturing (fresh, backlog dropped)'
     return 0
 
 func dictation_stop [] -> none
     dict.lvl = 0.0
-    puts 'dictation: take ended'
+    log 'dictation: take ended'
 
 func dictation_release [] -> none
     if [ !dict.ok ] return
     dict.cap.close[]
     dict.ok = false
-    puts 'dictation: released'
+    log 'dictation: released'
 
 func dictation_poll [] -> bool
     if [ !dict.ok ] return false
@@ -607,7 +607,7 @@ func dict_spawn [ a: i64, b: i64 ]
     j5.hold[]
     if [ dict.gpu && dict.gpu.threaded[] ] j5.gpu = dict.gpu
     dict.job = j5
-    puts 'dictation: transcribing {n5 / 48000}s speech + 1s pad…'
+    log 'dictation: transcribing {n5 / 48000}s speech + 1s pad…'
     pthread_create[ @dict.tid, null, @spectra_whisper_thread, cast handle [ j5 ] ]
     pthread_detach[ dict.tid ]
 
@@ -633,7 +633,7 @@ func dict_write_wav [ pcm: @i16, n: i64 ]
     fwrite[ @hdr[0], 1, 44, fp ]
     fwrite[ pcm, 1, bytes, fp ]
     fclose[ fp ]
-    puts 'dictation: wrote {p} ({n} samples)'
+    log 'dictation: wrote {p} ({n} samples)'
 
 func strip_annotations [ s: string ] -> string
     if [ !s ] return s
@@ -653,11 +653,11 @@ func strip_annotations [ s: string ] -> string
 func dictation_harvest []
     if [ !dict.job || !dict.job.done ] return
     t8 : string dict.job.text
-    puts 'dictation harvest: raw "{t8}" drop={dict.drop}'
+    log 'dictation harvest: raw "{t8}" drop={dict.drop}'
     if [ t8 && t8.count > 0 && !dict.drop ]
         clean : string strip_annotations[ t8 ]
         if [ clean && clean.count > 0 ]
-            puts 'dictation:{clean}'
+            log 'dictation:{clean}'
             dict.txt = clean
             dict.txt.hold[]
     dict.job = null
@@ -678,7 +678,7 @@ func dictation_cancel []
     dict.wr      = 0
     dict.flushed = true
     dictation_stop[]
-    puts 'dictation: cancelled'
+    log 'dictation: cancelled'
 
 func dictation_level [] -> f32
     return dict.lvl
@@ -690,16 +690,16 @@ func dictation_gpu [ cv: Canvas ] -> bool
     if [ !dict.net || !cv ] return false
     if [ dict.gpu ] return true
     if [ dict.gpu_no ] return false
-    puts 'dictation: building gpu pipelines…'
+    log 'dictation: building gpu pipelines…'
     g0 : whisper_vk [ model: dict.net, vk: cv.vk, win: cv.w ]
     if [ !g0.valid ]
-        puts 'dictation: gpu unavailable — cpu encoder'
+        log 'dictation: gpu unavailable — cpu encoder'
         dict.gpu_no = true
         return false
     g0.hold[]
     dict.gpu = g0
     dict.gpu_thr = g0.threaded[]
-    puts 'dictation: gpu encoder ready (threaded {dict.gpu_thr})'
+    log 'dictation: gpu encoder ready (threaded {dict.gpu_thr})'
     return true
 
 func dictation_take [] -> string
@@ -728,7 +728,7 @@ func tts_init [ dir: cstr ] -> i32
     dd  : string '{kokoro}/espeak-ng-data'
     mp  : path '{mdl}'
     if [ !mp.exists[] ]
-        puts 'tts: no model at {mdl}'
+        log 'tts: no model at {mdl}'
         return 1
     prov : string 'cpu'
     cfg : SherpaOnnxOfflineTtsConfig [
@@ -740,9 +740,9 @@ func tts_init [ dir: cstr ] -> i32
         max_num_sentences: 1 ]
     tts.eng = SherpaOnnxCreateOfflineTts[ @cfg ]
     if [ !tts.eng ]
-        puts 'tts: engine failed'
+        log 'tts: engine failed'
         return 2
-    puts 'tts: ready ({kokoro})'
+    log 'tts: ready ({kokoro})'
     tts.ok = true
     return 0
 
@@ -926,7 +926,7 @@ element main : trinity
             mk3 = '{mk3}{v3} '
         body3 = '{body3}marks: {mk3}\n'
         ap.save[ body3, null ]
-        puts 'annotate: {split}_{ann_id} marks: {mk3}'
+        log 'annotate: {split}_{ann_id} marks: {mk3}'
 
     func whisper_weights [ nm: string ] -> path
         d : path.path_storage[ 'spectra' ]
@@ -952,29 +952,29 @@ element main : trinity
         mp2.save[ nm, null ]
 
     func init []
-		puts 'init called' 
+		log 'init called' 
         if [ file && whisper && whisper.count > 0 ]
             c8 : caf_load[ file ]
             if [ !c8 ] exit[ 1 ]
             mel8 : whisper_mel[ c8 ]
             if [ mel_png[ mel8, path out ] ]
-                puts 'whisper mel: {out}'
+                log 'whisper mel: {out}'
             dst8 : whisper_weights[ whisper ]
             if [ dst8.exists[] ]
                 wsp8 : WhisperNet [ src: dst8 ]
                 if [ wsp8.valid ]
-                    puts 'whisper: encoding…'
+                    log 'whisper: encoding…'
                     enc8 : wsp8.encode[ mel8 ]
-                    puts 'whisper: decoding…'
+                    log 'whisper: decoding…'
                     ids8 : wsp8.transcribe[ enc8, 64 ]
                     txt8 : wsp8.text_for[ ids8 ]
                     if [ txt8 ]
-                        puts 'whisper:{txt8}'
+                        log 'whisper:{txt8}'
                     el
                         line8 : string [ '' ]
                         for [ k8: i32 0, k8 < ids8.count, k8 += 1 ]
                             line8 = '{line8} {ids8[k8]}'
-                        puts 'whisper tokens:{line8}'
+                        log 'whisper tokens:{line8}'
             exit[ 0 ]
         if [ whisper && whisper.count > 0 ]
             dst : whisper_weights[ whisper ]
@@ -982,31 +982,31 @@ element main : trinity
             if [ !vjs.exists[] ]
                 nv0 : i64 [ Http.download[ 'https://huggingface.co/openai/whisper-{whisper}/resolve/main/vocab.json', vjs ] ]
                 if [ nv0 > 0 ]
-                    puts 'spectra: fetched vocab ({nv0} bytes)'
+                    log 'spectra: fetched vocab ({nv0} bytes)'
             if [ !dst.exists[] ]
-                puts 'spectra: fetching whisper-{whisper} weights…'
+                log 'spectra: fetching whisper-{whisper} weights…'
                 n9 : i64 [ Http.download[ 'https://huggingface.co/openai/whisper-{whisper}/resolve/main/model.safetensors', dst ] ]
                 if [ n9 <= 0 ]
-                    puts 'spectra: download failed'
+                    log 'spectra: download failed'
                     exit[ 1 ]
                 mb9 : i64 [ n9 / 1048576 ]
-                puts 'spectra: wrote {dst} ({mb9} MB)'
+                log 'spectra: wrote {dst} ({mb9} MB)'
             if [ check ]
                 # verify the reader end-to-end (header + one tensor)
                 st9 : safetensors [ src: dst ]
                 t9 : st9.tensor_named[ 'model.decoder.embed_positions.weight' ]
                 if [ !t9 ]
-                    puts 'spectra: {dst} present but reader failed'
+                    log 'spectra: {dst} present but reader failed'
                     exit[ 1 ]
                 n9c : i64 [ t9.tensor_shape.total[] ]
                 sum9 : f64 [ 0.0 ]
                 for [ i9: i64 0, i9 < n9c, i9 += 1 ]
                     sum9 += f64[ t9.floats[i9] ]
                 mean9 : f64 [ sum9 / f64[ n9c ] ]
-                puts 'spectra: whisper-{whisper} ok — {n9c} floats, mean {mean9}'
+                log 'spectra: whisper-{whisper} ok — {n9c} floats, mean {mean9}'
                 wsp : WhisperNet [ src: dst ]
                 if [ !wsp.valid ]
-                    puts 'spectra: whisper model load failed'
+                    log 'spectra: whisper model load failed'
                     exit[ 1 ]
                 mel9 : tensor [ tensor_shape: 8x80 ]
                 for [ tt: i32 0, tt < 8, tt += 1 ]
@@ -1018,7 +1018,7 @@ element main : trinity
                 for [ i9: i64 0, i9 < ne9, i9 += 1 ]
                     se9 += f64[ enc9.floats[i9] ]
                 me9 : f64 [ se9 / f64[ ne9 ] ]
-                puts 'spectra: encode ok — {ne9} floats, mean {me9}, first {enc9.floats[0]} {enc9.floats[1]} {enc9.floats[2]}'
+                log 'spectra: encode ok — {ne9} floats, mean {me9}, first {enc9.floats[0]} {enc9.floats[1]} {enc9.floats[2]}'
                 # decoder smoke: one greedy step from the seed prompt
                 seed9 : new i32 [ 8 ]
                 seed9[0] = 50258
@@ -1026,23 +1026,23 @@ element main : trinity
                 seed9[2] = 50359
                 seed9[3] = 50363
                 tk9 : i32 [ wsp.decode_step[ enc9, cast handle [ seed9 ], 4 ] ]
-                puts 'spectra: decode ok — first token {tk9}'
+                log 'spectra: decode ok — first token {tk9}'
                 exit[ 0 ]
         if [ libri ]
             if [ !outdir ]
-                puts 'spectra: --libri needs --outdir'
+                log 'spectra: --libri needs --outdir'
                 exit[ 1 ]
             libri_translate[ path libri, split, path outdir, limit ]
             exit[ 0 ]
         if [ dataset ]
             if [ !outdir ]
-                puts 'spectra: --dataset needs --outdir'
+                log 'spectra: --dataset needs --outdir'
                 exit[ 1 ]
             cv_translate[ path dataset, split, path outdir, limit ]
             exit[ 0 ]
         if [ annotate ]
             if [ !outdir ]
-                puts 'spectra: --annotate needs --outdir (the translated set)'
+                log 'spectra: --annotate needs --outdir (the translated set)'
                 exit[ 1 ]
             n5 : i32 [ 0 ]
             for [ true ]
@@ -1050,7 +1050,7 @@ element main : trinity
                 if [ !p5.exists[] ] break
                 n5 += 1
             if [ n5 < 1 ]
-                puts 'spectra: no {split}_*.agi under {outdir}'
+                log 'spectra: no {split}_*.agi under {outdir}'
                 exit[ 1 ]
             ann_n = n5
             ann_marks = new f32 [ 256 ]
@@ -1058,25 +1058,25 @@ element main : trinity
             ann_pick[]
             animated = true
             focusable = true
-            puts 'annotate: {ann_n} clips — click between words; click a mark again to finish; U undo, N skip, space replay'
+            log 'annotate: {ann_n} clips — click between words; click a mark again to finish; U undo, N skip, space replay'
             return
         if [ file && out && out.count > 0 ]
             c : caf_load[ file ]
             if [ !c ] exit[ 1 ]
             if [ spectrograph[ c, path out, img_w, img_h, 20.0, 10000.0, false, null ] ]
-                puts 'spectrograph: {out}'
+                log 'spectrograph: {out}'
             exit[ 0 ]
         if [ file ]
             pclip = caf_load[ file ]
             if [ !pclip ]
-                puts 'spectra: cannot decode {file}'
+                log 'spectra: cannot decode {file}'
                 exit[ 1 ]
             pclip.hold[]
             pmix = AudioMixer [ sample_rate: pclip.rate ]
             pmix.hold[]
             if [ pmix.start[] ]
                 pmix.play_p[ pclip, false, 1.0, 1.0 ]
-            puts 'spectra: playing {file} ({pclip.frames} frames @ {pclip.rate})'
+            log 'spectra: playing {file} ({pclip.frames} frames @ {pclip.rate})'
             # then build the scrub track
             trk : path '/tmp/spectra-track-{getpid[]}.png'
             if [ spectrograph[ pclip, trk, img_w, img_h, 20.0, 10000.0, false, null ] ]
@@ -1085,23 +1085,23 @@ element main : trinity
         cap = spectra [ size: 2048, sample_rate: 48000, device: 'default' ]
         cap.hold[]
         cap_ok = cap.open[]
-        if [ !cap_ok ] puts 'spectra: no capture device — window stays silent'
+        if [ !cap_ok ] log 'spectra: no capture device — window stays silent'
         if [ cap_ok ]
             wname : string [ whisper ]
             if [ !wname || wname.count == 0 ] wname = saved_model[]
             if [ !wname || wname.count == 0 ] wname = 'small'
             wm : whisper_weights[ wname ]
             if [ wm.exists[] ]
-                puts 'spectra: loading whisper-{wname}…'
+                log 'spectra: loading whisper-{wname}…'
                 w_net = WhisperNet [ src: wm ]
                 w_net.hold[]
                 if [ w_net.valid ]
                     w_raw = new i16 [ 1536000 ]
                     hold[ cast Au [ w_raw ] ]
                     save_model[ wname ]
-                    puts 'spectra: whisper ready — speak; a pause transcribes'
+                    log 'spectra: whisper ready — speak; a pause transcribes'
             el [ whisper ]
-                puts 'spectra: no {wm}'
+                log 'spectra: no {wm}'
         # stream continuously: repaint every frame, never cache-skip
         animated = true
 
@@ -1272,7 +1272,7 @@ element main : trinity
             st_act[ st_x ] = st_ema
             if [ w_net && !w_gtry ]
                 w_gtry = true
-                puts 'whisper: building gpu pipelines…'
+                log 'whisper: building gpu pipelines…'
                 g0 : whisper_vk [ model: w_net, vk: cv.vk, win: w ]
                 if [ g0.valid ]
                     g0.hold[]
@@ -1289,9 +1289,9 @@ element main : trinity
                     for [ ig: i64 0, ig < ng, ig += 1 ]
                         sg += f64[ eg.floats[ig] ]
                         sc += f64[ ec.floats[ig] ]
-                    puts 'whisper: gpu encoder ready — parity gpu {sg / f64[ng]} cpu {sc / f64[ng]}'
+                    log 'whisper: gpu encoder ready — parity gpu {sg / f64[ng]} cpu {sc / f64[ng]}'
                 el
-                    puts 'whisper: gpu unavailable — cpu encoder'
+                    log 'whisper: gpu unavailable — cpu encoder'
             if [ w_net && w_raw ]
                 ns5 : i64 [ cap.size ]
                 for [ i5: i64 0, i5 < ns5, i5 += 1 ]
@@ -1335,13 +1335,13 @@ element main : trinity
                                         e7.hold[]
                                         j5.enc = e7
                                 w_job = j5
-                                puts 'whisper: transcribing {n5 / 48000}s…'
+                                log 'whisper: transcribing {n5 / 48000}s…'
                                 pthread_create[ @w_tid, null, @spectra_whisper_thread, cast handle [ j5 ] ]
                                 pthread_detach[ w_tid ]
             if [ w_job && w_job.done ]
                 w_text = w_job.text
                 if [ w_text && w_text.count > 0 ]
-                    puts 'whisper:{w_text}'
+                    log 'whisper:{w_text}'
                     # anchor the transcript to its own span on the sweep
                     nw5 : SpectWord [ x0: i32[ w_job.c0 ], x1: i32[ w_job.c1 ], text: w_text ]
                     st_words += nw5

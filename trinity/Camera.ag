@@ -220,7 +220,7 @@ class Camera
         ifdef [ linux ]
             fd = open[ device.chars, O_RDWR | O_NONBLOCK ]
             expect fd >= 0, 'camera: failed to open {device}'
-            printf[ "sizeof v4l2_buffer silver=%u vs kernel=88\n", sizeof[v4l2_buffer] ]
+            log 'sizeof v4l2_buffer silver={sizeof[v4l2_buffer]} vs kernel=88'
 
             vfmt : v4l2_format [ ]
             vfmt.type                = V4L2_BUF_TYPE_VIDEO_CAPTURE
@@ -229,18 +229,17 @@ class Camera
             vfmt.fmt.pix.pixelformat = V4L2_PIX_FMT_GREY
             vfmt.fmt.pix.field       = V4L2_FIELD_NONE
             err : i32 [ ioctl[ fd, 0xC0D05605, @vfmt ] ]
-            printf "%i\n", sizeof[v4l2_format]
+            log 'sizeof v4l2_format={sizeof[v4l2_format]}'
             if [ err != 0 ]
                 perror[ 'camera: VIDIOC_S_FMT' ]
             expect err == 0, 'camera: VIDIOC_S_FMT failed'
             width     = vfmt.fmt.pix.width
             height    = vfmt.fmt.pix.height
             row_pitch = vfmt.fmt.pix.bytesperline
-            printf[ "camera: S_FMT ok w=%i h=%i bpl=%u sizeimage=%u\n",
-                width, height, row_pitch, vfmt.fmt.pix.sizeimage ]
+            log 'camera: S_FMT ok w={width} h={height} bpl={row_pitch} sizeimage={vfmt.fmt.pix.sizeimage}'
 
             if [ !cpu_upload && !vk._vkGetMemoryFdPropertiesKHR ]
-                puts 'camera: DMA-BUF unavailable; using CPU upload'
+                log 'camera: DMA-BUF unavailable; using CPU upload'
                 cpu_upload = true
 
             req : v4l2_requestbuffers [ ]
@@ -263,8 +262,7 @@ class Camera
                 qb.index  = i
                 err = ioctl[ fd, VIDIOC_QUERYBUF, @qb ]
                 expect err == 0, 'camera: VIDIOC_QUERYBUF {i} failed'
-                printf[ "camera: QUERYBUF %i -> length=%u m.offset=%u memory=%u bytesused=%u\n",
-                    i, qb.length, qb.m.offset, qb.memory, qb.bytesused ]
+                log 'camera: QUERYBUF {i} -> length={qb.length} m.offset={qb.m.offset} memory={qb.memory} bytesused={qb.bytesused}'
 
                 ptr : handle mmap[ null, qb.length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, qb.m.offset ]
                 expect ptr != MAP_FAILED, 'camera: mmap {i} failed'

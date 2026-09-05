@@ -3562,7 +3562,7 @@ element asnes : trinity
 				el
 					memcpy[ cpu.memory + b * 0x10000 + 0x8000, rombuf + chunk * 0x10000 + 0x8000, 0x8000 ]
 			is_hirom = true
-			puts 'HiROM mapping'
+			log 'HiROM mapping'
 		el
 			for [ b: i32 0, b < 0x100, b += 1 ]
 				if [ b == 0x7E ] continue
@@ -3819,7 +3819,7 @@ element asnes : trinity
 		if [ down ]
 			if   [ code == 45 ] volume = clamp[ volume - 0.02, 0.0, 1.0 ]
 			el [ code == 61 || code == 43 ] volume = clamp[ volume + 0.02, 0.0, 1.0 ]
-			if [ code == 45 || code == 61 || code == 43 ] puts 'asnes volume {volume}'
+			if [ code == 45 || code == 61 || code == 43 ] log 'asnes volume {volume}'
 			if [ code == 57 ] dump_req = true              # '9' -> dump layer planes
 			# F1..F7 pick a rom view, F1 returns to the game
 			if [ code == 290 ] view = ''
@@ -3870,7 +3870,7 @@ element asnes : trinity
 		dump_layer[ pub_lay3, 288, 256, 'bg3' ]
 		dump_layer[ pub_layw, 256, 224, 'spw' ]
 		dump_layer[ pub_lays, 256, 224, 'sps' ]
-		puts 'asnes: layers written to /tmp/asnes-*.png'
+		log 'asnes: layers written to /tmp/asnes-*.png'
 
 	# ---- rom views -------------------------------------------------
 	func vtext [ cv: Canvas, s: string, x: f32, y: f32, col: string ]
@@ -4776,7 +4776,7 @@ element asnes : trinity
 		ppu_render[]                                   # ensure framebuf reflects current state
 		fwrite[ ppu.framebuf, 4, 256 * 224, wf ]       # actual rendered output (ground truth)
 		fclose[ wf ]
-		puts 'asnes snapshot written'
+		log 'asnes snapshot written'
 
 	func ppu_screenshot [ fn: symbol ]
 		ppu_render[]
@@ -4799,7 +4799,7 @@ element asnes : trinity
 			nib: u32 [ u32[nb] & 0x0F ]
 			if [ g & 1 ] nib = (u32[nb] >> 4) & 0x0F
 			printf[ "  BG%d scr=%04X char=%04X hofs=%d vofs=%d on=%d\n", g + 1, ((u32[sc] >> 2) & 0x3F) * 0x400, nib * 0x1000, i32[ppu.bg_hofs[g]], i32[ppu.bg_vofs[g]], (ppu.tm >> g) & 1 ]
-		puts 'asnes screenshot {fn}'
+		log 'asnes screenshot {fn}'
 
 	func ppu_shot_bg [ fn: symbol, bg: i32, bpp: i32 ]
 		bg0 : u16 [ ppu_cgram_color[ 0 ] ]
@@ -4812,7 +4812,7 @@ element asnes : trinity
 		shot : Image [ width: 256, height: 224, format: Pixel.rgba8 ]
 		memcpy[ shot.vdata[], ppu.framebuf, 256 * 224 * 4 ]
 		shot.png[ path fn ]
-		puts 'asnes bg{bg} -> {fn}'
+		log 'asnes bg{bg} -> {fn}'
 
 	func ppu_atlas [ fn: symbol, cbase: u32 ]
 		for [ i: i32 0, i < 256 * 224, i += 1 ]
@@ -4832,7 +4832,7 @@ element asnes : trinity
 		shot : Image [ width: 256, height: 224, format: Pixel.rgba8 ]
 		memcpy[ shot.vdata[], ppu.framebuf, 256 * 224 * 4 ]
 		shot.png[ path fn ]
-		puts 'asnes atlas {cbase} -> {fn}'
+		log 'asnes atlas {cbase} -> {fn}'
 
 	func save_state [ fn: symbol ]
 		if [ !cpu || !spc ] return
@@ -4984,7 +4984,7 @@ element asnes : trinity
 			o = st_w8[ b, o, hdma_done[k] ]
 		fwrite[ b, 1, 4096, wf ]
 		fclose[ wf ]
-		puts 'asnes state saved'
+		log 'asnes state saved'
 
 	func load_state [ fn: symbol ]
 		if [ !cpu || !spc ] return
@@ -4998,7 +4998,7 @@ element asnes : trinity
 			fread[ pb, 1, 1024, rf ]
 			rp : symbol [ rom.chars ]
 			if [ strcmp[ pb, rp ] != 0 ]
-				puts 'asnes state is for a different rom — not loading'
+				log 'asnes state is for a different rom — not loading'
 				fclose[ rf ]
 				return
 		el
@@ -5254,7 +5254,7 @@ element asnes : trinity
 			o += 1
 			hdma_done[k] = b[o]
 			o += 1
-		puts 'asnes state loaded'
+		log 'asnes state loaded'
 
 	func st_w8 [ b: @u8, o: i32, v: u8 ] -> i32
 		b[o] = v
@@ -5317,7 +5317,7 @@ element asnes : trinity
 			if [ ff ]
 				fclose[ ff ]
 				load_state[ '/tmp/asnes_flash.state' ]
-				puts 'asnes flash: state restored after reload'
+				log 'asnes flash: state restored after reload'
 		if [ state_loaded && state ]
 			post_load += 1
 			seq : symbol [ getenv[ 'ASNES_SEQ' ] ]
@@ -5383,7 +5383,7 @@ element asnes : trinity
 			save_req = false
 			sp : state_path[]
 			save_state[ sp.chars ]
-			puts 'asnes: state saved to {sp}'
+			log 'asnes: state saved to {sp}'
 			write_snapshot[ '/tmp/asnes_snap.bin' ]
 		if [ load_req ]
 			load_req = false
@@ -5634,7 +5634,7 @@ element asnes : trinity
 				usleep[ 2000 ]
 			if [ getenv[ 'SILVER_RELOAD_SAVE' ] && cpu ]
 				save_state[ '/tmp/asnes_flash.state' ]
-				puts 'asnes flash: state saved for reload'
+				log 'asnes flash: state saved for reload'
 
 	func dealloc []
 		if [ emu_started ]

@@ -95,7 +95,7 @@ class n64_audio_out
 		if [ ok ]
 			perr : i32 [ snd_pcm_prepare[ pcm_handle ] ]
 			if [ perr < 0 ]
-				puts 'n64 audio: prepare failed {snd_strerror[ perr ]}'
+				log 'n64 audio: prepare failed {snd_strerror[ perr ]}'
 				ok = false
 		return ok
 
@@ -876,11 +876,11 @@ element n64 : trinity
 	# ---------------- ROM + HLE boot ----------------
 	func load_rom [] -> bool
 		if [ !rom ]
-			puts 'n64: no rom given (n64 [--state <file>] <rom.z64>)'
+			log 'n64: no rom given (n64 [--state <file>] <rom.z64>)'
 			return false
 		f : @FILE [ fopen[ rom.chars, 'rb' ] ]
 		if [ !f ]
-			puts 'n64: cannot open rom {rom}'
+			log 'n64: cannot open rom {rom}'
 			return false
 		fseek[ f, 0, SEEK_END ]
 		rom_size = ftell[ f ]
@@ -950,7 +950,7 @@ element n64 : trinity
 			cpu.pc  = 0xBFC00000
 			cpu.npc = 0xBFC00004
 			booted  = true
-			puts 'n64: LLE boot from 0xBFC00000 (real PIF ROM IPL), entry={entry}'
+			log 'n64: LLE boot from 0xBFC00000 (real PIF ROM IPL), entry={entry}'
 			if [ cosim ]
 				oracle = ares []
 				lr : i32 [ oracle.load[ rom.chars ] ]
@@ -962,7 +962,7 @@ element n64 : trinity
 					fflush[ null ]
 					exit[ 9 ]
 				if [ lr != 0 ]
-					puts 'n64 cosim: ares load failed ({lr}) — lockstep off'
+					log 'n64 cosim: ares load failed ({lr}) — lockstep off'
 					cosim = false
 				el
 					cosim_next = cosim_iv
@@ -1079,7 +1079,7 @@ element n64 : trinity
 						if [ lr2 == 0 && lo2 == 0 ]
 							cosim_seq  = sseq                # both sides loaded AT the frontier — no replay
 							cosim_next = sseq + cosim_iv
-							puts 'n64 cosim: RESUME at validated seq={sseq} — ours+ares loaded directly, no replay'
+							log 'n64 cosim: RESUME at validated seq={sseq} — ours+ares loaded directly, no replay'
 							printf[ "n64 cosim: at resume count ours=%u ares=%llu ; VI vcount ours=%u ares=%u\n", cpu.c_count, oracle.acount[], vi_vcounter, oracle.avcount[] ]
 							if [ aresfb_requested[] ]
 								cap_mode = true                  # step past frontier without halting on diverge
@@ -1103,9 +1103,9 @@ element n64 : trinity
 								fflush[ null ]
 								exit[ 7 ]
 						el
-							puts 'n64 cosim: checkpoint load failed (ares={lr2} ours={lo2}) — fresh lockstep'
+							log 'n64 cosim: checkpoint load failed (ares={lr2} ours={lo2}) — fresh lockstep'
 					el
-						puts 'n64 cosim: fresh lockstep from 0xBFC00000 (--reset or no checkpoint)'
+						log 'n64 cosim: fresh lockstep from 0xBFC00000 (--reset or no checkpoint)'
 			return
 		sz : i64 [ 0x100000 ]
 		if [ rom_size - 0x1000 < sz ] sz = rom_size - 0x1000
@@ -1124,7 +1124,7 @@ element n64 : trinity
 		cpu.pc  = entry
 		cpu.npc = entry + 4
 		booted  = true
-		puts 'n64: booted entry={entry} rom {rom_size} bytes'
+		log 'n64: booted entry={entry} rom {rom_size} bytes'
 
 	# ---------------- physical memory ----------------
 	func rd_phys8 [ pa: u32 ] -> u32
@@ -2018,7 +2018,7 @@ element n64 : trinity
 				audio = ao
 				if [ trace ] printf[ "n64 audio: %d Hz\n", freq ]
 			el
-				puts 'n64: audio device unavailable — continuing muted'
+				log 'n64: audio device unavailable — continuing muted'
 				audio_fail = true
 		oi : i32 [ 0 ]
 		while [ oi < ai_out_n ]                              # decoupled from CPU-facing fifo/interrupt
@@ -5749,7 +5749,7 @@ element n64 : trinity
 			if [ gdf ]
 				fwrite[ rdram, 1, 0x800000, gdf ]
 				fclose[ gdf ]
-				puts 'n64 dumped rdram to /tmp/n64_gd.bin'
+				log 'n64 dumped rdram to /tmp/n64_gd.bin'
 			spb : u32 [ u32[ cpu.r[29] ] & 0x7FFFFF ]
 			for [ k: i32 0, k < 64, k += 1 ]
 				sv : u32 [ dr_r32[ spb + u32[ k * 4 ] ] ]
@@ -5981,7 +5981,7 @@ element n64 : trinity
 		r_model.r = r_render
 		r_render.models = vec Model [] [ r_model ]
 		r_vbo.vertex_count = 0
-		puts 'n64 gpu: render target {gw}x{gh} (4x reduce)'
+		log 'n64 gpu: render target {gw}x{gh} (4x reduce)'
 
 	public func paint [ cv: Canvas, vp: rect ]
 		bounds = vp

@@ -598,7 +598,7 @@ struct SilverOptions {
     const char*        module;
     const char*        platform;
     struct DeviceInfo* device;
-    bool test, lib, coverage, timing, release, rsync, lldb, build;
+    bool test, lib, coverage, timing, logging, release, rsync, lldb, build;
     const char** extend_paths;
     int          extend_count;
     bool         clean;
@@ -647,6 +647,7 @@ typedef struct SilverState { // everything the compiler holds while it
     List        test_names, test_skips;
     List        struct_rets;
     bool        coverage, timing;
+    bool        logging; // keep the log statements in a release build
     bool        clean; // the output tree goes first: every product and
                 // checkout is made again   // the two report flags; the
                 // Au runtime prints the report at exit and on ctrl-c
@@ -10733,6 +10734,7 @@ int silver2_compile(
     S->release              = options->release;
     S->coverage             = options->coverage;
     S->timing               = options->timing;
+    S->logging              = options->logging;
     S->build                = options->build;
     S->clean                = options->clean;
     S->rsync                = options->rsync;
@@ -11018,6 +11020,7 @@ none silver_init(silver a) { // Au has read the command line
     options.clean    = a->clean;
     options.coverage = a->coverage;
     options.timing   = a->timing;
+    options.logging  = a->logging;
     options.release  = a->release && !a->debug;
     options.rsync    = a->rsync;
     options.lldb     = a->lldb;
@@ -11053,8 +11056,8 @@ static int build_import(const char* module_path,
     SilverState* up = S;
     silver       dep =
         silver(module, path(module_path), lib, true, clean, up->clean,
-               coverage, up->coverage, timing, up->timing, release,
-               up->release, extend,
+               coverage, up->coverage, timing, up->timing, logging,
+               up->logging, release, up->release, extend,
                extend_path ? path(extend_path) : (path)null, device,
                for_target && up->device.alias ? string(up->device.alias)
                                               : (string)null,

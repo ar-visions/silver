@@ -3224,6 +3224,8 @@ AU_EXPORT enode aether_e_log(aether a, enode self, enode msg) {
     emit_guard;
     a->is_const_op = false;
     if (a->no_build) return e_noop(a, etypeid(none));
+    // a release keeps its log statements in the source, not in the binary: --logging keeps them
+    if (a->release && !a->logging) return e_noop(a, etypeid(none));
     debug_emit(a);
     efunc f_log = (efunc)u(efunc,
         find_member(etypeid(Au)->autype, "log", AU_MEMBER_FUNC, 0, false));
@@ -12609,7 +12611,13 @@ AU_EXPORT enode aether_e_direct_cast(aether a, enode input, etype target) {
             LLVMGetTypeKind(LLVMTypeOf(val)) == LLVMPointerTypeKind) {
             val = LLVMBuildLoad2(B, target_ll, val, "direct_cast");
             loaded9 = true;
-        } else
+        } else if (LLVMGetTypeKind(target_ll) == LLVMPointerTypeKind &&
+                   LLVMGetTypeKind(LLVMTypeOf(val)) == LLVMIntegerTypeKind)
+            val = LLVMBuildIntToPtr(B, val, target_ll, "direct_cast");
+        else if (LLVMGetTypeKind(target_ll) == LLVMIntegerTypeKind &&
+                 LLVMGetTypeKind(LLVMTypeOf(val)) == LLVMPointerTypeKind)
+            val = LLVMBuildPtrToInt(B, val, target_ll, "direct_cast");
+        else
             val = LLVMBuildBitCast(B, val, target_ll, "direct_cast");
     }
     return with_value(val, enode(mod, a, loaded, loaded9, autype, target->autype));

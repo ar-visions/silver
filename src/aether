@@ -129,6 +129,7 @@ forward(evar)
     M(A,U,i, prop,     public,  enode,                    alloc_count) \
     M(A,U,i, prop,     public,  bool,                     coverage) \
     M(A,U,i, prop,     public,  bool,                     timing) \
+    M(A,U,i, prop,     public,  bool,                     logging) \
     M(A,U,i, prop,     public,  i32,                      next_func_id) \
     M(A,U,i, prop,     public,  i32,                      next_probe_id) \
     M(A,U,i, prop,     public,  path,                     current_import) \

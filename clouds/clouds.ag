@@ -198,7 +198,7 @@ class CloudBake
         bake_weather[ path '../clouds/baked/weather.png' ]
         bake_tops[ path '../clouds/baked/tops.png' ]
         bake_ms : i64 [ (epoch_micros[] - t0) / 1000 ]
-        puts 'clouds: noise set baked in {bake_ms} ms'
+        log 'clouds: noise set baked in {bake_ms} ms'
 
     # shape 128^3: R perlin-worley, G/B/A worley fbm at rising freq
     func bake_shape [ out: path ]
@@ -357,7 +357,7 @@ export func clouds_export []
     if [ !force && sp.exists[] && p1.exists[] && p2.exists[] && p3.exists[] && p4.exists[] ]
         old : string [ sp.load[ typeid[string], null ] ]
         if [ old && old == stamp ]
-            puts 'clouds: noise set current'
+            log 'clouds: noise set current'
             return
     clouds_bake[]
     sp.save[ stamp, null ]
@@ -1532,7 +1532,7 @@ element SkyView
         if [ !vrender ]
             p1 : path '../clouds/baked/shape.png'
             if [ !p1.exists[] ]
-                puts 'clouds: no baked noise — baking live (SILVER_EXPORT=1 bakes at build)'
+                log 'clouds: no baked noise — baking live (SILVER_EXPORT=1 bakes at build)'
                 clouds_bake[]
             tx_shape   = load_texture[ cv.vk, w, path '../clouds/baked/shape.png', 128 ]
             tx_detail  = load_texture[ cv.vk, w, path '../clouds/baked/detail.png', 32 ]
@@ -1797,7 +1797,7 @@ element clouds : trinity
         if [ sun_az >= 0.0 ] cur.sun_az = sun_az
         prev = copy_state[ cur ]
         prev.hold[]
-        puts 'clouds: 1-6 weather  arrows look  t/g sun  e/d exposure  q quality  v view  f fly  +/- speed  pgup/pgdn height  r temporal'
+        log 'clouds: 1-6 weather  arrows look  t/g sun  e/d exposure  q quality  v view  f fly  +/- speed  pgup/pgdn height  r temporal'
 
     public func on_key [ ev: Event ]
         if [ !ev.key.state ] return

@@ -663,10 +663,10 @@ element EarthPrev
 
     func load_bg [ arg: object :: t: EarthPrev ]
         t0 : i64 [ Au.epoch_millis[] ]
-        puts 'scene load_bg start at {t0}'
+        log 'scene load_bg start at {t0}'
         t.build_models[]
         t1 : i64 [ Au.epoch_millis[] ]
-        puts 'scene load_bg done in {t1 - t0}ms at {t1}'
+        log 'scene load_bg done in {t1 - t0}ms at {t1}'
         t.ready = true
 
     func draw [ w: Window ]
@@ -1039,10 +1039,10 @@ element Moon
 
     func load_bg [ arg: object :: t: Moon ]
         t0 : i64 [ Au.epoch_millis[] ]
-        puts 'scene load_bg start at {t0}'
+        log 'scene load_bg start at {t0}'
         t.build_models[]
         t1 : i64 [ Au.epoch_millis[] ]
-        puts 'scene load_bg done in {t1 - t0}ms at {t1}'
+        log 'scene load_bg done in {t1 - t0}ms at {t1}'
         t.ready = true
 
     func draw [ w: Window ]
@@ -1343,10 +1343,10 @@ element MilkyWay
 
     func load_bg [ arg: object :: t: MilkyWay ]
         t0 : i64 [ Au.epoch_millis[] ]
-        puts 'scene load_bg start at {t0}'
+        log 'scene load_bg start at {t0}'
         t.load_files[]
         t1 : i64 [ Au.epoch_millis[] ]
-        puts 'scene load_bg done in {t1 - t0}ms at {t1}'
+        log 'scene load_bg done in {t1 - t0}ms at {t1}'
         t.ready = true
 
     func draw [ w: Window ]
@@ -1714,10 +1714,10 @@ element Titan
 
     func load_bg [ arg: object :: t: Titan ]
         t0 : i64 [ Au.epoch_millis[] ]
-        puts 'scene load_bg start at {t0}'
+        log 'scene load_bg start at {t0}'
         t.build_models[]
         t1 : i64 [ Au.epoch_millis[] ]
-        puts 'scene load_bg done in {t1 - t0}ms at {t1}'
+        log 'scene load_bg done in {t1 - t0}ms at {t1}'
         t.ready = true
 
     func draw [ w: Window ]
@@ -2397,10 +2397,10 @@ element Enceladus
 
     func load_bg [ arg: object :: t: Enceladus ]
         t0 : i64 [ Au.epoch_millis[] ]
-        puts 'scene load_bg start at {t0}'
+        log 'scene load_bg start at {t0}'
         t.build_models[]
         t1 : i64 [ Au.epoch_millis[] ]
-        puts 'scene load_bg done in {t1 - t0}ms at {t1}'
+        log 'scene load_bg done in {t1 - t0}ms at {t1}'
         t.ready = true
 
     func draw [ w: Window ]
@@ -3504,7 +3504,7 @@ func europa_build_maps [ H: @f32, AO: @f32, CV: @f32, EM: @f32, MM: @f32, w: i32
     g5 : @f32 [ @SB[ so[5] ] ]
     g6 : @f32 [ @SB[ so[6] ] ]
     g7 : @f32 [ @SB[ so[7] ] ]
-    puts 'europa: patching {ns} sources over {w}x{h}'
+    log 'europa: patching {ns} sources over {w}x{h}'
     for [ y: i32 0, y < h, y += 1 ]
         v : f32 [ (f32[ y ] + 0.5) / f32[ h ] ]
         lat : f32 [ (0.5 - v) * 3.14159265 ]
@@ -3589,7 +3589,7 @@ func europa_build_maps [ H: @f32, AO: @f32, CV: @f32, EM: @f32, MM: @f32, w: i32
             if [ m4 > 1.0 ] m4 = 1.0
             MM[ y * w + x ] = hm * m4
     n9 : i32 [ w * h ]
-    puts 'europa: baking AO'
+    log 'europa: baking AO'
     eu_bake_ao[ H, AO, w, h, 60.0 ]
     AB : new f32 [ n9 ]
     eu_blur[ AO, AB, w, h, 2 ]
@@ -3639,7 +3639,7 @@ func europa_bake []
     bd.make_dir[]
     pk.png[ path '../scenes/baked/europa-pk.png' ]
     nk.png[ path '../scenes/baked/europa-nk.png' ]
-    puts 'europa: baked maps written'
+    log 'europa: baked maps written'
 
 export func europa_maps []
     # token hash of the bake code: recompute only when it changes
@@ -3652,7 +3652,7 @@ export func europa_maps []
     if [ sp.exists[] && pkp.exists[] && nkp.exists[] ]
         old : string [ sp.load[ typeid[string], null ] ]
         if [ old && old == stamp ]
-            puts 'europa: baked maps current ({stamp})'
+            log 'europa: baked maps current ({stamp})'
             return
     europa_bake[]
     sp.save[ stamp, null ]
@@ -3766,7 +3766,7 @@ element Europa
         pkp : path '../scenes/baked/europa-pk.png'
         nkp : path '../scenes/baked/europa-nk.png'
         if [ !pkp.exists[] || !nkp.exists[] ]
-            puts 'europa: no baked maps — baking live (SILVER_EXPORT=1 bakes at build)'
+            log 'europa: no baked maps — baking live (SILVER_EXPORT=1 bakes at build)'
             europa_bake[]
         pk : Image [ uri: pkp, linear: true, wrap_u: true ]
         nk : Image [ uri: nkp, linear: true, wrap_u: true ]
@@ -3835,10 +3835,10 @@ element Europa
             jetv[ nj * 4 + 2 ] = clj * sin[ lonj ]
             jetv[ nj * 4 + 3 ] = st
             nj += 1
-        puts 'europa: {nj} geyser sites'
-        puts 'europa: j0 {jetv[0]} {jetv[1]} {jetv[2]} w{jetv[3]}'
-        puts 'europa: j1 {jetv[4]} {jetv[5]} {jetv[6]} w{jetv[7]}'
-        puts 'europa: j2 {jetv[8]} {jetv[9]} {jetv[10]} w{jetv[11]}'
+        log 'europa: {nj} geyser sites'
+        log 'europa: j0 {jetv[0]} {jetv[1]} {jetv[2]} w{jetv[3]}'
+        log 'europa: j1 {jetv[4]} {jetv[5]} {jetv[6]} w{jetv[7]}'
+        log 'europa: j2 {jetv[8]} {jetv[9]} {jetv[10]} w{jetv[11]}'
         glow = EuropaGlowShader [ vk: vk ]
         gl_samplers : map Image [string] [
             'height': pk
@@ -3942,10 +3942,10 @@ element Europa
 
     func load_bg [ arg: object :: t: Europa ]
         t0 : i64 [ Au.epoch_millis[] ]
-        puts 'scene load_bg start at {t0}'
+        log 'scene load_bg start at {t0}'
         t.build_models[]
         t1 : i64 [ Au.epoch_millis[] ]
-        puts 'scene load_bg done in {t1 - t0}ms at {t1}'
+        log 'scene load_bg done in {t1 - t0}ms at {t1}'
         t.ready = true
 
     func draw [ w: Window ]
@@ -4175,9 +4175,9 @@ func mola_load [ M: @i16 ] -> bool
     ev : symbol [ getenv[ 'SILVER' ] ]
     if [ ev ] root = path [ string [ ev ] ]
     if [ !root ]
-        puts 'mola: no SILVER root — cannot locate the tiles'
+        log 'mola: no SILVER root — cannot locate the tiles'
         return false
-    puts 'mola: reading tiles from {root}/checkout/mola'
+    log 'mola: reading tiles from {root}/checkout/mola'
     bands : vec string [] [ '88n', '44n', '00n', '44s' ]
     lons  : vec string [] [ '000', '090', '180', '270' ]
     tw : i32 [ 11520 ]
@@ -4189,12 +4189,12 @@ func mola_load [ M: @i16 ] -> bool
             fn : string '{root}/checkout/mola/megt{bands[b]}{lons[l]}hb.img'
             fp : handle [ fopen[ fn.chars, 'rb' ] ]
             if [ !fp ]
-                puts 'mola: cannot open {fn}'
+                log 'mola: cannot open {fn}'
                 return false
             for [ y: i32 0, y < th, y += 1 ]
                 nr : i32 [ i32[ fread[ @row[0], 1, tw * 2, fp ] ] ]
                 if [ nr < tw * 2 ]
-                    puts 'mola: short read in {fn} row {y}'
+                    log 'mola: short read in {fn} row {y}'
                     fclose[ fp ]
                     return false
                 base : i32 [ (b * th + y) * gw + l * tw ]
@@ -4205,7 +4205,7 @@ func mola_load [ M: @i16 ] -> bool
                     if [ v > 32767 ] v = v - 65536
                     M[ base + x ] = i16[ v ]
             fclose[ fp ]
-    puts 'mola: loaded 16 tiles into 46080x22528'
+    log 'mola: loaded 16 tiles into 46080x22528'
     return true
 
 # our uv space is not MOLA's: u = 0 sits at longitude 180, and v spans
@@ -4259,7 +4259,7 @@ func mars_build_height [ H: @f32, w: i32, h: i32 ]
     disp : f32 [ 0.0088 ]
     detl : f32 [ 0.00030 ]
     ee : f32 [ 1.0 / 8192.0 ]
-    puts 'mars: patching {ns} sources over {w}x{h}'
+    log 'mars: patching {ns} sources over {w}x{h}'
     for [ y: i32 0, y < h, y += 1 ]
         v : f32 [ (f32[ y ] + 0.5) / f32[ h ] ]
         for [ x: i32 0, x < w, x += 1 ]
@@ -4356,7 +4356,7 @@ func mars_bake []
     bd.make_dir[]
     pk.png[ path '../scenes/baked/mars-pk.png' ]
     nk.png[ path '../scenes/baked/mars-nk.png' ]
-    puts 'mars: baked maps written'
+    log 'mars: baked maps written'
 
 # the real thing: MOLA straight through, no invented detail. the
 # displacement map stays at 8192 (the mesh is 3072 wide, so that is
@@ -4370,7 +4370,7 @@ func mars_bake_mola [] -> bool
     oh : i32 [ 23040 ]
     M : new i16 [ gw * gh ]
     if [ !mola_load[ M ] ]
-        puts 'mars: MOLA tiles missing — run the download first'
+        log 'mars: MOLA tiles missing — run the download first'
         return false
     R : f32 [ mars_radius[] ]
     ex : f32 [ mars_exag[] ]
@@ -4417,7 +4417,7 @@ func mars_bake_mola [] -> bool
     bd : path '../scenes/baked'
     bd.make_dir[]
     pk.png[ path '../scenes/baked/mars-pk.png' ]
-    puts 'mars: displacement map written ({dw}x{dh})'
+    log 'mars: displacement map written ({dw}x{dh})'
 
     # slope. one degree of latitude is a fixed distance; one of
     # longitude shrinks as cos(lat), so the east-west run has to carry
@@ -4453,7 +4453,7 @@ func mars_bake_mola [] -> bool
             nd[ b3 + 2 ] = 0
             nd[ b3 + 3 ] = 255
     nk.png[ path '../scenes/baked/mars-nk.png' ]
-    puts 'mars: global slope written ({dw}x{dh})'
+    log 'mars: global slope written ({dw}x{dh})'
 
     # the valley, at MOLA's own 463m. only this box gets it: the whole
     # planet at full resolution is a gigapixel of slope nobody orbits
@@ -4486,8 +4486,8 @@ func mars_bake_mola [] -> bool
             vvd[ o ] = u8[ pv * 127.0 + 128.0 ]
     vsu.png[ path '../scenes/baked/mars-vsu.png' ]
     vsv.png[ path '../scenes/baked/mars-vsv.png' ]
-    puts 'mars: valles slope written ({vw}x{vh})'
-    puts 'mars: MOLA bake complete'
+    log 'mars: valles slope written ({vw}x{vh})'
+    log 'mars: MOLA bake complete'
     return true
 
 # how many times the rock material repeats across the equator, and how
@@ -4605,7 +4605,7 @@ func mars_bake_detail [] -> bool
         p9 : path '../scenes/textures/{names[i]}'
         im : Image [ uri: p9 ]
         if [ im.width == 0 ]
-            puts 'mars: detail source {names[i]} missing'
+            log 'mars: detail source {names[i]} missing'
             return false
         imgs.push[ im ]
         sw[i] = im.width
@@ -4632,7 +4632,7 @@ func mars_bake_detail [] -> bool
         psig : f32 [ sqrt[ pvar / f32[ pn ] ] ]
         if [ psig < 0.000001 ] psig = 0.000001
         for [ k: i32 0, k < pn, k += 1 ] pp[ k ] = (pp[ k ] - pmu) / psig * 0.18 + 0.5
-        puts 'mars: plate {names[i]} mean {pmu} sigma {psig}'
+        log 'mars: plate {names[i]} mean {pmu} sigma {psig}'
     g0 : @f32 [ @SB[ so[0] ] ]
     g1 : @f32 [ @SB[ so[1] ] ]
     g2 : @f32 [ @SB[ so[2] ] ]
@@ -4645,7 +4645,7 @@ func mars_bake_detail [] -> bool
     h9 : i32 [ 2048 ]
     n9 : i32 [ w9 * h9 ]
     D : new f32 [ n9 ]
-    puts 'mars: patching rock detail over {w9}x{h9}'
+    log 'mars: patching rock detail over {w9}x{h9}'
     for [ y: i32 0, y < h9, y += 1 ]
         v : f32 [ f32[ y ] / f32[ h9 ] ]
         for [ x: i32 0, x < w9, x += 1 ]
@@ -4701,7 +4701,7 @@ func mars_bake_detail [] -> bool
         dvar += dd9 * dd9
     dsig : f32 [ sqrt[ dvar / f32[ n9 ] ] ]
     if [ dsig < 0.000001 ] dsig = 0.000001
-    puts 'mars: detail height mean {dmean} sigma {dsig}'
+    log 'mars: detail height mean {dmean} sigma {dsig}'
 
     # scale the packed slope by the field's own gradient RMS, so the
     # 8 bits are spent on the range the material actually occupies
@@ -4718,7 +4718,7 @@ func mars_bake_detail [] -> bool
     rms : f32 [ sqrt[ acc2 / f32[ n9 ] ] ]
     if [ rms < 0.000001 ] rms = 0.000001
     gsc : f32 [ 1.0 / (rms * 3.0) ]
-    puts 'mars: detail gradient rms {rms}'
+    log 'mars: detail gradient rms {rms}'
 
     dn : Image [ width: w9, height: h9, format: Pixel.rgba8, linear: true, wrap_u: true, wrap_v: true ]
     dd : @u8 [ dn.vdata[] ]
@@ -4752,7 +4752,7 @@ func mars_bake_detail [] -> bool
     bd : path '../scenes/baked'
     bd.make_dir[]
     dn.png[ path '../scenes/baked/mars-dn.png' ]
-    puts 'mars: rock detail written ({w9}x{h9})'
+    log 'mars: rock detail written ({w9}x{h9})'
     return true
 
 # WHERE to augment. the colour map is useless as albedo -- it has
@@ -4769,12 +4769,12 @@ func mars_bake_detail [] -> bool
 func mars_bake_edge [] -> bool
     cim : Image [ uri: path '../scenes/textures/mars-color-8192x4096.png' ]
     if [ cim.width == 0 ]
-        puts 'mars: colour map missing — cannot build the edge map'
+        log 'mars: colour map missing — cannot build the edge map'
         return false
     w9 : i32 [ cim.width ]
     h9 : i32 [ cim.height ]
     n9 : i32 [ w9 * h9 ]
-    puts 'mars: sobel over {w9}x{h9}'
+    log 'mars: sobel over {w9}x{h9}'
     L : new f32 [ n9 ]
     eu_lum[ cim, L ]
 
@@ -4803,7 +4803,7 @@ func mars_bake_edge [] -> bool
     # accumulator runs out of mantissa a third of the way down 33M texels
     iw : i32 [ w9 + 1 ]
     I : new f64 [ iw * (h9 + 1) ]
-    puts 'mars: integral image {iw}x{h9 + 1}'
+    log 'mars: integral image {iw}x{h9 + 1}'
     for [ y: i32 0, y < h9, y += 1 ]
         rs : f64 [ 0.0 ]
         for [ x: i32 0, x < w9, x += 1 ]
@@ -4832,7 +4832,7 @@ func mars_bake_edge [] -> bool
     if [ a1m < 0.000001 ] a1m = 0.000001
     if [ a2m < 0.000001 ] a2m = 0.000001
     if [ a3m < 0.000001 ] a3m = 0.000001
-    puts 'mars: edge means {a1m} {a2m} {a3m}'
+    log 'mars: edge means {a1m} {a2m} {a3m}'
     smx9 : f32 [ 0.0 ]
     for [ i: i32 0, i < n9, i += 1 ]
         if [ S[i] > smx9 ] smx9 = S[i]
@@ -4855,7 +4855,7 @@ func mars_bake_edge [] -> bool
     bd : path '../scenes/baked'
     bd.make_dir[]
     ek.png[ path '../scenes/baked/mars-ek.png' ]
-    puts 'mars: edge map written ({w9}x{h9})'
+    log 'mars: edge map written ({w9}x{h9})'
     return true
 
 # mean of the sobel field over a box, from the integral image: four
@@ -4886,7 +4886,7 @@ func mars_edge_map []
     if [ sp.exists[] && ekp.exists[] ]
         old : string [ sp.load[ typeid[string], null ] ]
         if [ old && old == stamp ]
-            puts 'mars: edge map current ({stamp})'
+            log 'mars: edge map current ({stamp})'
             return
     if [ mars_bake_edge[] ] sp.save[ stamp, null ]
 
@@ -4901,7 +4901,7 @@ func mars_edge_map []
 func mars_bake_river [] -> bool
     pk : Image [ uri: path '../scenes/baked/mars-pk.png' ]
     if [ pk.width == 0 ]
-        puts 'mars: no height map — cannot cut rivers'
+        log 'mars: no height map — cannot cut rivers'
         return false
     W9 : i32 [ pk.width ]
     H9 : i32 [ pk.height ]
@@ -4914,7 +4914,7 @@ func mars_bake_river [] -> bool
     bw : i32 [ x1 - x0 ]
     bh : i32 [ y1 - y0 ]
     nb : i32 [ bw * bh ]
-    puts 'mars: cutting rivers over {bw}x{bh}'
+    log 'mars: cutting rivers over {bw}x{bh}'
     T : new i32 [ nb ]
     for [ y: i32 0, y < bh, y += 1 ]
         for [ x: i32 0, x < bw, x += 1 ]
@@ -4969,7 +4969,7 @@ func mars_bake_river [] -> bool
     amx : f32 [ 1.0 ]
     for [ i: i32 0, i < nb, i += 1 ]
         if [ acc[ i ] > amx ] amx = acc[ i ]
-    puts 'mars: largest catchment {amx} cells'
+    log 'mars: largest catchment {amx} cells'
     riv : new f32 [ nb ]
     thr : f32 [ 24.0 ]
     lt : f32 [ log[ thr ] ]
@@ -5026,7 +5026,7 @@ func mars_bake_river [] -> bool
     bd : path '../scenes/baked'
     bd.make_dir[]
     rv.png[ path '../scenes/baked/mars-rv.png' ]
-    puts 'mars: rivers written, {nriv} water texels'
+    log 'mars: rivers written, {nriv} water texels'
     return true
 
 func mars_river_map []
@@ -5041,7 +5041,7 @@ func mars_river_map []
     if [ sp.exists[] && rvp.exists[] ]
         old : string [ sp.load[ typeid[string], null ] ]
         if [ old && old == stamp ]
-            puts 'mars: rivers current ({stamp})'
+            log 'mars: rivers current ({stamp})'
             return
     if [ mars_bake_river[] ] sp.save[ stamp, null ]
 
@@ -5095,7 +5095,7 @@ func mars_bake_cloud [] -> bool
     n : i32 [ 64 ]
     gw : i32 [ n * 8 ]
     gh : i32 [ n * 8 ]
-    puts 'mars: baking {n}^3 cloud volume as {gw}x{gh} atlas'
+    log 'mars: baking {n}^3 cloud volume as {gw}x{gh} atlas'
     im : Image [ width: gw, height: gh, format: Pixel.rgba8, linear: true, wrap_u: true, wrap_v: true ]
     dd : @u8 [ im.vdata[] ]
     inv : f32 [ 1.0 / f32[ n ] ]
@@ -5122,7 +5122,7 @@ func mars_bake_cloud [] -> bool
     bd : path '../scenes/baked'
     bd.make_dir[]
     im.png[ path '../scenes/baked/mars-cld.png' ]
-    puts 'mars: cloud volume written'
+    log 'mars: cloud volume written'
     return true
 
 func mars_cloud_map []
@@ -5135,7 +5135,7 @@ func mars_cloud_map []
     if [ sp.exists[] && cp.exists[] ]
         old : string [ sp.load[ typeid[string], null ] ]
         if [ old && old == stamp ]
-            puts 'mars: cloud volume current ({stamp})'
+            log 'mars: cloud volume current ({stamp})'
             return
     if [ mars_bake_cloud[] ] sp.save[ stamp, null ]
 
@@ -5150,17 +5150,17 @@ func nep_lerp [ a: f32, b: f32, t: f32 ] -> f32
 func neptune_bake [] -> bool
     si : Image [ uri: path '../scenes/textures/saturn-color.png' ]
     if [ si.width == 0 ]
-        puts 'neptune: saturn plate missing'
+        log 'neptune: saturn plate missing'
         return false
     ji : Image [ uri: path '../scenes/textures/jupiter-color.png' ]
     if [ ji.width == 0 ]
-        puts 'neptune: jupiter plate missing'
+        log 'neptune: jupiter plate missing'
         return false
     w9 : i32 [ si.width ]
     h9 : i32 [ si.height ]
     jw : i32 [ ji.width ]
     jh : i32 [ ji.height ]
-    puts 'neptune: composing {w9}x{h9} saturn with {jw}x{jh} jupiter patches'
+    log 'neptune: composing {w9}x{h9} saturn with {jw}x{jh} jupiter patches'
     sp9 : i32 [ si.pixel_size ]
     sdat : @u8 [ si.vdata[] ]
     jp9 : i32 [ ji.pixel_size ]
@@ -5257,7 +5257,7 @@ func neptune_bake [] -> bool
     bd : path '../scenes/baked'
     bd.make_dir[]
     im.png[ path '../scenes/baked/neptune-color.png' ]
-    puts 'neptune: colour map written'
+    log 'neptune: colour map written'
     return true
 
 # separable running box, wrapping in x and clamping in y. eu_blur is
@@ -5352,7 +5352,7 @@ func neptune_storm [] -> bool
         od[ b4 + 2 ] = 0
         od[ b4 + 3 ] = 255
     im.png[ path '../scenes/baked/neptune-storm.png' ]
-    puts 'neptune: storm map written'
+    log 'neptune: storm map written'
     return true
 
 # the ring strip, computed rather than sourced -- neptune has no
@@ -5423,7 +5423,7 @@ func neptune_rings [] -> bool
     bd : path '../scenes/baked'
     bd.make_dir[]
     im.png[ path '../scenes/baked/neptune-ring.png' ]
-    puts 'neptune: ring strip written'
+    log 'neptune: ring strip written'
     return true
 
 func neptune_maps []
@@ -5438,7 +5438,7 @@ func neptune_maps []
     if [ sp.exists[] && cp.exists[] && stp.exists[] && rgp.exists[] ]
         old : string [ sp.load[ typeid[string], null ] ]
         if [ old && old == stamp ]
-            puts 'neptune: colour map current ({stamp})'
+            log 'neptune: colour map current ({stamp})'
             return
     if [ neptune_bake[] && neptune_storm[] && neptune_rings[] ] sp.save[ stamp, null ]
 
@@ -5457,13 +5457,13 @@ func ur_fold [ t: f32 ] -> f32
 func uranus_bake [] -> bool
     si : Image [ uri: path '../scenes/textures/saturn-color.png' ]
     if [ si.width == 0 ]
-        puts 'uranus: saturn plate missing'
+        log 'uranus: saturn plate missing'
         return false
     w9 : i32 [ si.width ]
     h9 : i32 [ si.height ]
     sp9 : i32 [ si.pixel_size ]
     sdat : @u8 [ si.vdata[] ]
-    puts 'uranus: folding {w9}x{h9} of saturn into more bands'
+    log 'uranus: folding {w9}x{h9} of saturn into more bands'
     im : Image [ width: w9, height: h9, format: Pixel.rgba8, linear: true, wrap_u: true ]
     od : @u8 [ im.vdata[] ]
     for [ y: i32 0, y < h9, y += 1 ]
@@ -5521,7 +5521,7 @@ func uranus_bake [] -> bool
     bd : path '../scenes/baked'
     bd.make_dir[]
     im.png[ path '../scenes/baked/uranus-color.png' ]
-    puts 'uranus: colour map written'
+    log 'uranus: colour map written'
     return true
 
 # the same sobel neptune uses, on uranus' own plate
@@ -5561,7 +5561,7 @@ func uranus_storm [] -> bool
         od[ b4 + 2 ] = 0
         od[ b4 + 3 ] = 255
     im.png[ path '../scenes/baked/uranus-storm.png' ]
-    puts 'uranus: storm map written'
+    log 'uranus: storm map written'
     return true
 
 # URANUS' RINGS: thirteen of them, narrow and dark, epsilon brightest.
@@ -5618,7 +5618,7 @@ func uranus_rings [] -> bool
     bd : path '../scenes/baked'
     bd.make_dir[]
     im.png[ path '../scenes/baked/uranus-ring.png' ]
-    puts 'uranus: ring strip written'
+    log 'uranus: ring strip written'
     return true
 
 func uranus_maps []
@@ -5633,7 +5633,7 @@ func uranus_maps []
     if [ sp.exists[] && cp.exists[] && stp.exists[] && rgp.exists[] ]
         old : string [ sp.load[ typeid[string], null ] ]
         if [ old && old == stamp ]
-            puts 'uranus: maps current ({stamp})'
+            log 'uranus: maps current ({stamp})'
             return
     if [ uranus_bake[] && uranus_storm[] && uranus_rings[] ] sp.save[ stamp, null ]
 
@@ -5667,7 +5667,7 @@ export func mars_maps []
     if [ sp.exists[] && pkp.exists[] && nkp.exists[] ]
         old : string [ sp.load[ typeid[string], null ] ]
         if [ old && old == stamp ]
-            puts 'mars: baked maps current ({stamp})'
+            log 'mars: baked maps current ({stamp})'
             mars_detail_map[]
             mars_edge_map[]
             mars_river_map[]
@@ -5695,7 +5695,7 @@ func mars_detail_map []
     if [ sp.exists[] && dnp.exists[] ]
         old : string [ sp.load[ typeid[string], null ] ]
         if [ old && old == stamp ]
-            puts 'mars: rock detail current ({stamp})'
+            log 'mars: rock detail current ({stamp})'
             return
     if [ mars_bake_detail[] ] sp.save[ stamp, null ]
 
@@ -6904,7 +6904,7 @@ func build_carpet [] -> GltfModel
     kk += 1
     m1 : i32 [ kk ]
     nr : i32 [ kk - 1 ]
-    puts 'CARPET rings={nr} steps={na} tris={nr * na * 2}'
+    log 'CARPET rings={nr} steps={na} tris={nr * na * 2}'
     nv : i32 [ n1 * m1 ]
     nv3 : i32 [ nv * 3 ]
     nv2 : i32 [ nv * 2 ]
@@ -7003,11 +7003,11 @@ element Terra
 
     func build_models[]
         built = true
-        puts 'TERRA build_models: start'
+        log 'TERRA build_models: start'
         o_gltf : build_carpet[]
         o_gltf.hold[]
         o_gltf.compute_worlds[]
-        puts 'TERRA build_models: sphere built'
+        log 'TERRA build_models: sphere built'
         olymp = TerraShader [ vk: vk ]
         pkp : path '../scenes/baked/mars-pk.png'
         nkp : path '../scenes/baked/mars-nk.png'
@@ -7015,16 +7015,16 @@ element Terra
         ekp : path '../scenes/baked/mars-ek.png'
         rvp : path '../scenes/baked/mars-rv.png'
         if [ !pkp.exists[] || !nkp.exists[] ]
-            puts 'mars: no baked maps — baking live (SILVER_EXPORT=1 bakes at build)'
+            log 'mars: no baked maps — baking live (SILVER_EXPORT=1 bakes at build)'
             mars_bake_mola[]
         if [ !dnp.exists[] ]
-            puts 'mars: no rock detail — baking live'
+            log 'mars: no rock detail — baking live'
             mars_bake_detail[]
         if [ !ekp.exists[] ]
-            puts 'mars: no edge map — baking live'
+            log 'mars: no edge map — baking live'
             mars_bake_edge[]
         if [ !rvp.exists[] ]
-            puts 'mars: no river map — baking live'
+            log 'mars: no river map — baking live'
             mars_bake_river[]
         # data maps MUST be linear or the sampler re-linearizes them and
         # the whole surface drops below its real height
@@ -7039,7 +7039,7 @@ element Terra
             'veg_c':  Image [ uri: path '../scenes/textures/mars-veg-forest.png', surface: TerraSurface.veg_c, linear: true, wrap_u: true, wrap_v: true ],
             'river':  Image [ uri: rvp, surface: TerraSurface.river, linear: true, wrap_u: true ]
         ]
-        puts 'TERRA build_models: maps loaded'
+        log 'TERRA build_models: maps loaded'
         # the projection y-flip reverses triangle winding, so back-face
         # culling would cull the whole carpet
         o_model : Model [ vk: vk, w: ux, id: o_gltf, s: olymp, samplers: o_samplers,
@@ -7057,7 +7057,7 @@ element Terra
         osky = TerraSkyShader [ vk: vk ]
         cldp : path '../scenes/baked/mars-cld.png'
         if [ !cldp.exists[] ]
-            puts 'mars: no cloud volume — baking live'
+            log 'mars: no cloud volume — baking live'
             mars_bake_cloud[]
         # the volume tiles on all three axes, so both axes wrap
         s_samplers : map Image [string] [
@@ -7078,7 +7078,7 @@ element Terra
             straight_alpha: true, cull_none: true ]
         # backdrop FIRST, then ground, sea, and the air over both
         models  = vec Model [] [ g_model, o_model, w_model, s_model ]
-        puts 'TERRA build_models: done, {models.count} model(s)'
+        log 'TERRA build_models: done, {models.count} model(s)'
 
     func create_target[]
         if [ target || !models || models.count == 0 ] return
@@ -7324,8 +7324,8 @@ element Terra
         gsky.time  = ux.time * 60000.0
         dbg_n += 1
         if [ dbg_n < 3 ]
-            puts 'TERRA mode={i32[ ux.orbit_mode ]} e_cur={e_cur} hmax={olymp.hmax} smax={olymp.smax}'
-            puts 'TERRA eye={_eye.x},{_eye.y},{_eye.z} eye_m={em.x},{em.y},{em.z},{em.w} hdist={olymp.hdist} e_r={e_r}'
+            log 'TERRA mode={i32[ ux.orbit_mode ]} e_cur={e_cur} hmax={olymp.hmax} smax={olymp.smax}'
+            log 'TERRA eye={_eye.x},{_eye.y},{_eye.z} eye_m={em.x},{em.y},{em.z},{em.w} hdist={olymp.hdist} e_r={e_r}'
 # MARS, THE PLANET AS IT IS. same carpet mesh and same MOLA maps as
 # Terra, but nothing is terraformed: no sea, no planting, no rivers,
 # no snow and no cloud deck. only the map's own iron colour, the rock
@@ -7719,13 +7719,13 @@ element Mars
         dnp : path '../scenes/baked/mars-dn.png'
         ekp : path '../scenes/baked/mars-ek.png'
         if [ !pkp.exists[] || !nkp.exists[] ]
-            puts 'mars: no baked maps — baking live (SILVER_EXPORT=1 bakes at build)'
+            log 'mars: no baked maps — baking live (SILVER_EXPORT=1 bakes at build)'
             mars_bake_mola[]
         if [ !dnp.exists[] ]
-            puts 'mars: no rock detail — baking live'
+            log 'mars: no rock detail — baking live'
             mars_bake_detail[]
         if [ !ekp.exists[] ]
-            puts 'mars: no edge map — baking live'
+            log 'mars: no edge map — baking live'
             mars_bake_edge[]
         # data maps MUST be linear or the sampler re-linearizes them and
         # the whole surface drops below its real height
@@ -8143,7 +8143,7 @@ element Uranus
         st : path '../scenes/baked/uranus-storm.png'
         rg : path '../scenes/baked/uranus-ring.png'
         if [ !cp.exists[] || !st.exists[] || !rg.exists[] ]
-            puts 'uranus: no baked maps — composing live'
+            log 'uranus: no baked maps — composing live'
             uranus_bake[]
             uranus_storm[]
             uranus_rings[]
@@ -8395,7 +8395,7 @@ element Neptune
         st : path '../scenes/baked/neptune-storm.png'
         rg : path '../scenes/baked/neptune-ring.png'
         if [ !cp.exists[] || !st.exists[] || !rg.exists[] ]
-            puts 'neptune: no baked maps — composing live'
+            log 'neptune: no baked maps — composing live'
             neptune_bake[]
             neptune_storm[]
             neptune_rings[]
@@ -9282,7 +9282,7 @@ func synth_bake [] -> bool
     fputs[ '{{"buffer":0,"byteLength":{bi},"byteOffset":{b3 * 2 + b2},"target":34963}}],', fg ]
     fputs[ '"buffers":[{{"byteLength":{b3 * 2 + b2 + bi},"uri":"synth-grid.bin"}}]}}', fg ]
     fclose[ fg ]
-    puts 'synthwave: range baked'
+    log 'synthwave: range baked'
     return true
 
 export func synth_export []
@@ -9298,7 +9298,7 @@ export func synth_export []
     if [ sp.exists[] && hp.exists[] && gp.exists[] ]
         old : string [ sp.load[ typeid[string], null ] ]
         if [ old && old == stamp ]
-            puts 'synthwave: range current ({stamp})'
+            log 'synthwave: range current ({stamp})'
             return
     if [ synth_bake[] ] sp.save[ stamp, null ]
 
@@ -9650,15 +9650,15 @@ element Synthwave
         gaia_shader = GaiaShader [ vk: vk ]
         gaia_model  = Model  [ vk: vk, w: ux, id: gaia_geom, s: gaia_shader,
             straight_alpha: true, cull_none: true, samplers: map Au[string] [ 'color': gaia_img ] ]
-        puts 'synthwave: before terrain ux {ux.width}x{ux.height} scale {ux.scale}'
+        log 'synthwave: before terrain ux {ux.width}x{ux.height} scale {ux.scale}'
         hmap_img    = Image [ uri: path '../scenes/baked/synth-height.png', surface: SynthSurface.height ]
-        puts 'synthwave: hmap {hmap_img.width}x{hmap_img.height} ux {ux.width}x{ux.height}'
+        log 'synthwave: hmap {hmap_img.width}x{hmap_img.height} ux {ux.width}x{ux.height}'
         terr_geom   = GltfModel.open[ path '../scenes/baked/synth-grid.gltf' ]
-        puts 'synthwave: gltf open ux {ux.width}x{ux.height}'
+        log 'synthwave: gltf open ux {ux.width}x{ux.height}'
         terr_shader = SynthTerrain [ vk: vk, name: 'synthterrain' ]
         terr_model  = Model  [ vk: vk, w: ux, id: terr_geom, s: terr_shader, cull_none: true,
             samplers: map Au[string] [ 'height': hmap_img ] ]
-        puts 'synthwave: terrain model ux {ux.width}x{ux.height} scale {ux.scale}'
+        log 'synthwave: terrain model ux {ux.width}x{ux.height} scale {ux.scale}'
         sky_render  = Render [ vk: vk, w: ux, wscale: 1.0, use_depth: true,
             clear_color: vec4f [ 0.03, 0.01, 0.07, 1.0 ], models: [ gaia_model, terr_model ] ]
         red_model   = Model  [ w: ux, samplers: map Au[string] [ 'color': sky_render.color ] ]
@@ -9969,7 +9969,7 @@ class CloudBake
         bake_weather[ path '../scenes/baked/nubis-weather.png' ]
         bake_tops[ path '../scenes/baked/nubis-tops.png' ]
         bake_ms : i64 [ (epoch_micros[] - t0) / 1000 ]
-        puts 'clouds: nubis noise set baked in {bake_ms} ms'
+        log 'clouds: nubis noise set baked in {bake_ms} ms'
 
     # shape 128^3: R perlin-worley, G/B/A worley fbm at rising freq
     func bake_shape [ out: path ]
@@ -10931,7 +10931,7 @@ export func nubis_export []
     if [ !force && sp.exists[] && p1.exists[] && p2.exists[] && p3.exists[] && p4.exists[] ]
         old : string [ sp.load[ typeid[string], null ] ]
         if [ old && old == stamp ]
-            puts 'clouds: nubis noise set current'
+            log 'clouds: nubis noise set current'
             return
     nubis_bake[]
     sp.save[ stamp, null ]
@@ -11348,7 +11348,7 @@ element Clouds
         prev.hold[]
         p1 : path '../scenes/baked/nubis-shape.png'
         if [ !p1.exists[] ]
-            puts 'clouds: no baked noise — baking live (SILVER_EXPORT=1 bakes at build)'
+            log 'clouds: no baked noise — baking live (SILVER_EXPORT=1 bakes at build)'
             nubis_bake[]
         tx_shape   = load_texture[ path '../scenes/baked/nubis-shape.png', 128, 8 ]
         tx_detail  = load_texture[ path '../scenes/baked/nubis-detail.png', 32, 6 ]
@@ -11671,7 +11671,7 @@ func pl_tile [ nm: string ] -> PlTile
     t.rl = Image [ uri: path '../silver-scenes/textures/pluto-tiles/{nm}_elevation.png' ]
     t.sp = Image [ uri: path '../silver-scenes/textures/pluto-tiles/{nm}_specular.png' ]
     if [ t.im.width == 0 || t.rl.width == 0 || t.sp.width == 0 ]
-        puts 'pluto: tile {nm} missing'
+        log 'pluto: tile {nm} missing'
         return null
     return t
 
@@ -11777,7 +11777,7 @@ func pluto_bake [] -> bool
         for [ q: string ] in parts
             if [ q.count > 0 ] grid.push[ q ]
     if [ grid.count != 128 ]
-        puts 'pluto: table is {grid.count} cells, not 128'
+        log 'pluto: table is {grid.count} cells, not 128'
         return false
     # 16 x 8 cells of 512: a plate at 1:1 spans two cells (45 degrees)
     # colour and height at 16K x 8K; specular, plate weights and the
@@ -11803,7 +11803,7 @@ func pluto_bake [] -> bool
     # by its coverage at the end -- overlaps blend, nothing wins
     prad : f32 [ 170.0 ]
     np9  : i32 [ i32[ f32[ n9 ] * 12.0 / (prad * prad * 3.14159) ] ]
-    puts 'pluto: painting {np9} patches from a 16x8 table'
+    log 'pluto: painting {np9} patches from a 16x8 table'
     for [ s: i32 0, s < np9, s += 1 ]
         px : f32 [ pl_rand[ st ] * f32[ w9 ] ]
         py : f32 [ pl_rand[ st ] * f32[ h9 ] ]
@@ -12079,7 +12079,7 @@ func pluto_bake [] -> bool
     st_t.png[ path '../silver-scenes/baked/pluto-strip-tex.png' ]
     st_e.png[ path '../silver-scenes/baked/pluto-strip-elev.png' ]
     sm.png[ path '../silver-scenes/baked/pluto-spec.png' ]
-    puts 'pluto: maps written'
+    log 'pluto: maps written'
     return true
 
 func pluto_maps []
@@ -12100,7 +12100,7 @@ func pluto_maps []
     if [ sp.exists[] && cp.exists[] && hp.exists[] && gp.exists[] ]
         old : string [ sp.load[ typeid[string], null ] ]
         if [ old && old == stamp ]
-            puts 'pluto: maps current ({stamp})'
+            log 'pluto: maps current ({stamp})'
             return
     if [ pluto_bake[] ] sp.save[ stamp, null ]
 
@@ -12673,7 +12673,7 @@ element Pluto
         hp : path '../silver-scenes/baked/pluto-height.png'
         gp : path '../silver-scenes/baked/pluto-spec.png'
         if [ !cp.exists[] || !hp.exists[] || !gp.exists[] ]
-            puts 'pluto: no baked maps — painting live'
+            log 'pluto: no baked maps — painting live'
             pluto_bake[]
         surf = PlutoGround [ vk: vk ]
         se = Image [ uri: path '../silver-scenes/baked/pluto-strip-elev.png', linear: true, wrap_u: true, wrap_v: true ]

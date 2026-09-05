@@ -118,7 +118,7 @@ class ConsoleSession
                 execl[ '/bin/bash', 'bash', norc.chars, null ]
             _exit[ 1 ]
         el [ pid < 0 ]
-            puts 'ConsoleSession.start[{name}]: forkpty FAILED (pid={pid})'
+            log 'onsoleSession.start[{name}]: forkpty FAILED (pid={pid})'
         el
             fcntl[ pty_fd, F_SETFL, O_NONBLOCK ]
 
@@ -1196,7 +1196,7 @@ element Console
             if [ launch && launch.count > 0 ] s.launch_cmd = launch
             if [ cwd && cwd.count > 0 ]       s.cwd = cwd
             if [ sid != 'system' ]
-                puts 'session[]: creating + starting "{sid}" (launch="{launch}")'
+                log 'ession[]: creating + starting "{sid}" (launch="{launch}")'
                 s.start[]
             sessions[sid] = s
             pristine = false
