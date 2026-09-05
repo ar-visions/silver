@@ -113,7 +113,7 @@ element crashman : trinity
         if [ mt != 1 ] return
         s : i32 [ wp ]
         if [ s == dstate ] return
-        puts 'crashman on_host dictate: {dstate} -> {s}'
+        log 'crashman on_host dictate: {dstate} -> {s}'
         dstate = s
         if [ s == 1 ]
             rc : dictation_start[]
@@ -139,13 +139,13 @@ element crashman : trinity
 
     func agent_send [ body: string ]
         if [ !agent ]
-            puts 'agent_send: NO agent bound'
+            log 'agent_send: NO agent bound'
             return
         s6 : ConsoleSession agent.session[]
         if [ !s6 ]
-            puts 'agent_send: NO session'
+            log 'agent_send: NO session'
             return
-        puts 'agent_send: {body}'
+        log 'agent_send: {body}'
         m6 : string body
         if [ !ctx_sent && ctx && ctx.count > 0 ]
             ctx_sent = true
@@ -260,7 +260,7 @@ element crashman : trinity
                 flushing = false
                 dt : dictation_take[]
                 if [ dt && dt.count > 0 ]
-                    puts 'crashman: submitting take "{dt}"'
+                    log 'crashman: submitting take "{dt}"'
                     agent_send[ 'user {oc} {dt} {cc}' ]
         if [ st && !reported && agent ]
             reported = true

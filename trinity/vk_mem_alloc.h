@@ -14112,7 +14112,7 @@ VkResult VmaAllocator_T::AllocateMemory(
             VK_NULL_HANDLE,
             vkMemReq.size,
             vkMemReq.alignment,
-            requiresDedicatedAllocation || prefersDedicatedAllocation,
+            requiresDedicatedAllocation, // silver: NVIDIA prefers dedicated for every image, one driver fd each
             dedicatedBuffer,
             dedicatedImage,
             dedicatedBufferImageUsage,

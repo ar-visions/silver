@@ -214,6 +214,7 @@ func au_mem_phys      [] -> i64
 func agent_sock_open  [ nm: cstr ] -> i32
 func agent_sock_line  [ buf: @i8, cap: i32 ] -> i32
 func agent_sock_reply [ s: cstr ]
+func handle_slot_set  [ slot: handle, value: handle ]
 func agent_sock_send  [ nm: cstr, txt: cstr ] -> i32
 func agent_sock_ask   [ nm: cstr, txt: cstr, out: @i8, cap: i32 ] -> i32
 
@@ -394,12 +395,12 @@ abstract live_app media_app
                     ifdef [ ios ]
                         if [ home_dir ] dest = path '{home_dir}/Documents/{screenshot}'
                     im.png[ dest ]
-                    puts 'screenshot: {dest}'
+                    log 'screenshot: {dest}'
                     exit[ 0 ]
         Au.auto_free[false]
         probe : path 'afprobe'
         header : Au.header[ probe ]
-        if [ header.managed > 100000 ] puts 'AFPOOL ix={header.managed} — pool NOT draining'
+        if [ header.managed > 100000 ] log 'AFPOOL ix={header.managed} — pool NOT draining'
         return !platform_window_should_close[ w.glfw ] && !Au.quit_requested[]
 
     ifdef [ linux ]
@@ -411,7 +412,7 @@ abstract live_app media_app
             if [ !scv ] return
             tx : Texture [ scv.color ]
             if [ !tx || !tx.vk_image ] return
-            #puts 'WSIZE win={wn.width}x{wn.height} pend={wn.pending_w}x{wn.pending_h} scv={scv.width}x{scv.height} tex={tx.width}x{tx.height}'
+            #log 'WSIZE win={wn.width}x{wn.height} pend={wn.pending_w}x{wn.pending_h} scv={scv.width}x{scv.height} tex={tx.width}x{tx.height}'
             if [ !share_tex0 || share_tex0.width != tx.width || share_tex0.height != tx.height ]
                 share_tex0 = Texture [ vk: vk, w: wn, width: tx.width, height: tx.height,
                     vk_format: tx.vk_format, shareable: true ]
@@ -610,7 +611,7 @@ abstract live_app media_app
                     ls : instr_read[ nm ]
                     if [ ls ]
                         for [ k: i32 0, k < ls.count, k += 1 ]
-                            puts '[{nm}] {ls[k]}'
+                            log '[{nm}] {ls[k]}'
                 if [ !instr_cv ] instr_cv = map Canvas [string] []
                 # the shell says the width; the app says the height
                 if [ !instr_w ] instr_w = map i32 [string] []
@@ -1078,7 +1079,7 @@ abstract live_app media_app
         if [ existing_vk ]
             vk = cast vk_context [ existing_vk ]
             dh : handle [ vk.dev_handle[] ]
-            puts 'media_app: reusing vk device {dh}'
+            log 'media_app: reusing vk device {dh}'
             vk.font_cache = null
         el
             vk = vk_context[]
@@ -1312,7 +1313,7 @@ Display Window
         stamp : i64 epoch_millis[]
         screenshot_path = path '/tmp/silver-crop-{stamp}.png'
         cropped.png[ screenshot_path ]
-        puts 'screenshot: {screenshot_path}'
+        log 'screenshot: {screenshot_path}'
 
     func screenshot_rect [ x: f32, y: f32, rw: f32, rh: f32 ]
         if [ rw < 0.5 || rh < 0.5 ] return
@@ -1521,10 +1522,10 @@ Display Window
                     mc : cast Layers [ inst.member_object[ entry.member_map ] ]
                     if [ mc && mc.hsize <= 0 ]
                         info : header [ mc ]
-                        puts 'bad mc: inst={inst.id} member={entry.member_map.ident} hsize={mc.hsize} key={entry.bl.key}'
+                        log 'bad mc: inst={inst.id} member={entry.member_map.ident} hsize={mc.hsize} key={entry.bl.key}'
                     if [ !mc || mc.hsize <= 0 ]
                         mc = map Layer[string][]
-                        printf["mc object for %s (%p) is %p\n", inst.id.chars, inst, mc]
+                        log 'mc object created for {inst.id}'
                         inst.member_set[ entry.member_map, mc ]
                     if [ !mc.contains[entry.bl.key] ]
                         inst_type : Au_t [ (entry.bl.type_name && entry.bl.type_name.count) ? Au.find_type[entry.bl.type_name.chars, null] : null ]
@@ -1578,7 +1579,7 @@ Display Window
                 entries : style_avail [ prop ]
                 if [ !entries ]
                     continue
-                #puts 'apply_style:   {prop} entries={entries.count}'
+                #log 'apply_style:   {prop} entries={entries.count}'
                 first : cast StyleEntry [ entries[0] ]
 
                 if [ first.bl.property && first.bl.key ]
@@ -1725,7 +1726,7 @@ Display Window
             time_scale_last = time_scale
         time = time_base
              + f64[ now - time_anchor_ms ] / 1000.0 / 1000.0 * f64[ time_scale ]
-        #puts 'frame_factor: raw={raw}s frame_factor={frame_factor}'
+        #log 'frame_factor: raw={raw}s frame_factor={frame_factor}'
         last_frame_ms = now
         frame_seq += 1
 
@@ -1970,10 +1971,10 @@ Display Window
         capture_context[]
         ide_asked = true
         rc : i32 [ host_ask_orbiter[] ]
-        puts 'ide_ensure: ask sent (rc {rc})'
+        log 'ide_ensure: ask sent (rc {rc})'
 
     func ide_open []
-        puts 'ide_open: active={ide_active} asked={ide_asked}'
+        log 'ide_open: active={ide_active} asked={ide_asked}'
         if [ ide_active ] return
         ide_ensure[]
         capture_context[]
@@ -2421,11 +2422,11 @@ Display Window
         f : find_target[ root, ev, null ]
         target : string [ (f && f.id) ? f.id : '(none)' ]
         parent : string [ (f && f.parent && f.parent.id) ? f.parent.id : '(none)' ]
-        puts 'PRESS at {world_m.x},{world_m.y} -> {target} in {parent}'
+        log 'PRESS at {world_m.x},{world_m.y} -> {target} in {parent}'
         if [ f && f.elements ]
             for [ c: element, cid: string ] in f.elements
                 if [ c.bounds ]
-                    puts '  child {cid} @ {c.bounds.x},{c.bounds.y} {c.bounds.w}x{c.bounds.h}'
+                    log '  child {cid} @ {c.bounds.x},{c.bounds.y} {c.bounds.w}x{c.bounds.h}'
         press_route[ f, ev ]
 
     # dispatch to a KNOWN target: the routing press_event does after hit-test
@@ -2744,7 +2745,7 @@ Display Window
         if [ fresh ]
             backdrop = found
             reveal   = 0.0
-            puts 'BACKDROP -> {found.id} {found.width}x{found.height} chain={(chain) ? 1 : 0} m_reduce={(m_reduce) ? 1 : 0}'
+            log 'BACKDROP -> {found.id} {found.width}x{found.height} chain={(chain) ? 1 : 0} m_reduce={(m_reduce) ? 1 : 0}'
         if [ rb9 ]
             rewire_frost[]
             if [ !fresh ] return
@@ -3808,7 +3809,7 @@ Display Window
             e.cache_ox = margin_l
             e.cache_oy = margin_t
 
-        #puts 'target_cv set'
+        #log 'target_cv set'
         target_cv : (e.cache_canvas && !e.animated && stage == CanvasType.screen) ? e.cache_canvas : cv
         element_text : (e.label && e.label.count) ? e.label : null
 
@@ -3834,7 +3835,7 @@ Display Window
         redraw : bool [ e.animated || !e.pristine || stage == CanvasType.compose ]
         if [ redraw && e.cache_canvas && !e.animated && stage == CanvasType.screen ]
             eid : string [ (e.id && e.id.count > 0) ? e.id : '(noid)' ]
-            #puts 'REDRAW {eid} {ew}x{eh} pristine={e.pristine}'
+            #log 'REDRAW {eid} {ew}x{eh} pristine={e.pristine}'
         if [ redraw && e.cache_canvas && !e.animated && stage == CanvasType.screen ]
             e.cache_canvas.reset[ vec4f[0.0, 0.0, 0.0, 0.0] ]
             if [ e.cache_ox > 0 || e.cache_oy > 0 ]
@@ -3998,7 +3999,7 @@ Display Window
                     draw_cv.stroke_grad_mirror [ false ]
                 if [ layer.inner_glow ]
                     if [ !layer.inner_glow.color ]
-                        puts 'DBG glow null-color: element={e.id} layer={lkey}'
+                        log 'DBG glow null-color: element={e.id} layer={lkey}'
                     el
                         draw_cv.inner_glow   [ layer.inner_glow.color, layer.inner_glow.blur ]
                 draw_cv.paint            [ ]
@@ -4390,7 +4391,7 @@ abstract media_app trinity
             render   *[]
             w.resize[ aw, ah ]
             awin.restyle = true
-            puts 'attach: hosted {aw}x{ah} (slot {host_slot[]})'
+            log 'attach: hosted {aw}x{ah} (slot {host_slot[]})'
 
 
 
@@ -5195,12 +5196,12 @@ element IDEOverlay
             fd0 : i32 [ host_tex_pull[ host_slot[], 1, 0, @wide, @tall, @fmt ] ]
             fd1 : i32 [ host_tex_pull[ host_slot[], 1, 1, @wide, @tall, @fmt ] ]
             if [ fd0 < 0 || fd1 < 0 ]
-                puts 'overlay: pull failed gen {latest} fds {fd0},{fd1}'
+                log 'overlay: pull failed gen {latest} fds {fd0},{fd1}'
                 return
             tex0 = cv.vk.import_shared_tex[ fd0, wide, tall, fmt, cv.w ]
             tex1 = cv.vk.import_shared_tex[ fd1, wide, tall, fmt, cv.w ]
             gen = latest
-            puts 'overlay: imported orbiter surface {wide}x{tall} gen {latest}'
+            log 'overlay: imported orbiter surface {wide}x{tall} gen {latest}'
 
     func front [] -> Texture
         fr : i32 [ host_tex_front[ host_slot[], 1 ] ]
@@ -5337,7 +5338,7 @@ element UXGenerics
                     if [ !recording ] ux.capture_context[]
                     # signal orbiter THROUGH the supervisor — reload-proof
                     host_dictate_set[ (recording) ? 1 : 0 ]
-                    puts 'app: host_dictate_set {(recording) ? 1 : 0}'
+                    log 'app: host_dictate_set {(recording) ? 1 : 0}'
                 if [ target ] target.on_dictate*[ recording ]
             if [ ux ] ux.restyle = true
             ev.stop[]
@@ -5507,7 +5508,7 @@ expect func test [ vk: vk_context ] -> bool
     img: Image[c.color]
     p: path 'canvas_test.png'
     img.png[ p ]
-    puts 'wrote canvas_test.png'
+    log 'wrote canvas_test.png'
 
     # average color across Image
     pixels: img.width * img.height
@@ -5525,6 +5526,6 @@ expect func test [ vk: vk_context ] -> bool
     avg_g: g_sum / pixels
     avg_b: b_sum / pixels
     avg_a: a_sum / pixels
-    puts 'average color: r={avg_r} g={avg_g} b={avg_b} a={avg_a}'
+    log 'average color: r={avg_r} g={avg_g} b={avg_b} a={avg_a}'
 
     return avg_a > 10 && (avg_r > 0 || avg_g > 0 || avg_b > 0)

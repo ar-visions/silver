@@ -134,6 +134,7 @@ class Render
     intern  paint_n                        : i32 [ 64 ]   # batch ceiling: paints per command buffer before drain
     intern  ring_last                      : i32           # most recently submitted slot (sync_fence target)
     intern  ring_primed                    : vec i32 [8]   # slot has a pending submit to wait on (0/1)
+    intern  ring_has                       : vec i32 [8]   # slot holds a fence borrowed from the pool (0/1)
     # batched recording: a canvas opens ONE command buffer (begin_record) and records
     # every paint into it, advancing draw_slot (the per-paint descriptor/UBO ring index)
     # per paint; the single submit happens at sync_fence (flush_submit). collapses N
@@ -299,10 +300,18 @@ class Render
         s : i32 [ ring_i ]
         if [ ring_primed[s] != 0 ]
             vkWaitForFences[ vk.device, 1, @vk_fences[s], VK_TRUE, UINT64_MAX ]
+            vk_fence = vk_fences[s]
+            vk.fence_release[ vk_fence ]
+            handle_slot_set[ @vk_fences[s], null ]
+            ring_primed[s] = 0
+            ring_has[s]    = 0
         ts_read[ s ]
         vk_command_buffer = vk_command_buffers[s]
+        if [ ring_has[s] == 0 ]
+            vk.fence_acquire[]
+            handle_slot_set[ @vk_fences[s], cast handle [ vk.fence_new ] ]
+            ring_has[s] = 1
         vk_fence          = vk_fences[s]
-        vkResetFences[ vk.device, 1, @vk_fence ]
         vkResetCommandBuffer[ vk_command_buffer, 0 ]
         vkBeginCommandBuffer[ vk_command_buffer, VkCommandBufferBeginInfo [
             sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -424,8 +433,17 @@ class Render
         s : i32 [ ring_i ]
         if [ ring_primed[s] != 0 ]
             vkWaitForFences[ vk.device, 1, @vk_fences[s], VK_TRUE, UINT64_MAX ]
+            vk_fence = vk_fences[s]
+            vk.fence_release[ vk_fence ]
+            handle_slot_set[ @vk_fences[s], null ]
+            ring_primed[s] = 0
+            ring_has[s]    = 0
         ts_read[ s ]
         vk_command_buffer = vk_command_buffers[s]
+        if [ ring_has[s] == 0 ]
+            vk.fence_acquire[]
+            handle_slot_set[ @vk_fences[s], cast handle [ vk.fence_new ] ]
+            ring_has[s] = 1
         vk_fence          = vk_fences[s]
         vk.cur_ring       = s
         draw_slot         = s
@@ -562,8 +580,8 @@ class Render
         flush_submit[]
         # a slot with no pending submit has an unsignalable fence — nothing to wait
         if [ ring_primed[ring_last] == 0 ] return
-        if [ !vk_fences[ring_last] ]
-            puts 'sync_fence on TORN-DOWN render tag={tag} {width}x{height} — zombie registration'
+        if [ ring_has[ring_last] == 0 ]
+            log 'sync_fence on TORN-DOWN render tag={tag} {width}x{height} — zombie registration'
             return
         t0: i64 [ epoch_micros[] ]
         result: vkWaitForFences[ vk.device, 1, @vk_fences[ring_last], VK_TRUE, UINT64_MAX ]
@@ -571,11 +589,18 @@ class Render
         vk.sync_calls += 1
         if [ result != VK_SUCCESS ]
             rc9 : i32 [ cast i32 [ result ] ]
-            puts 'fence wait failed: id {id} {width}x{height} result {rc9} slot {ring_last}'
+            log 'fence wait failed: id {id} {width}x{height} result {rc9} slot {ring_last}'
          expect result == VK_SUCCESS, "fence wait failed"
         # the wait drained every in-flight submit (command buffers run in submit order, so
         # ring_last done ⟹ all prior done): every slot is free now, rewind the ring to 0.
         draw_slot = 0
+        for [ ri: i32 0, ri < ring_n, ri += 1 ]
+            if [ ring_has[ri] != 0 && ring_primed[ri] != 0 ]
+                vk_fence = vk_fences[ri]
+                vk.fence_release[ vk_fence ]
+                handle_slot_set[ @vk_fences[ri], null ]
+                ring_primed[ri] = 0
+                ring_has[ri]    = 0
 
     # idempotent ring teardown: fences, semaphores, framebuffers, render
     # passes, command buffers — leaked rings exhaust vkCreateFence
@@ -586,7 +611,7 @@ class Render
         # the gpu may still be on this ring: freeing its command buffers and
         # framebuffers under it faults the device
         for [ ri: i32 0, ri < ring_n, ri += 1 ]
-            if [ vk_fences[ri] && ring_primed[ri] != 0 ]
+            if [ ring_has[ri] != 0 && ring_primed[ri] != 0 ]
                 vkWaitForFences[ vk.device, 1, @vk_fences[ri], VK_TRUE, UINT64_MAX ]
                 ring_primed[ri] = 0
         for [ i: 0, i < 2, i += 1 ]
@@ -597,9 +622,11 @@ class Render
                 vkDestroyRenderPass[ vk.device, vk_render_pass[i], null ]
                 vk_render_pass[i] = null
         for [ ri: i32 0, ri < ring_n, ri += 1 ]
-            if [ vk_fences[ri] ]
-                vkDestroyFence[ vk.device, vk_fences[ri], null ]
-                vk_fences[ri] = null
+            if [ ring_has[ri] != 0 ]
+                vk_fence = vk_fences[ri]
+                vk.fence_release[ vk_fence ]
+                handle_slot_set[ @vk_fences[ri], null ]
+                ring_has[ri] = 0
         if [ vk_image_available_semaphore ]
             vkDestroySemaphore[ vk.device, vk_image_available_semaphore, null ]
             vk_image_available_semaphore = null
@@ -643,7 +670,7 @@ class Render
         vk_command_buffer = vk_command_buffers[0]
 
         if [ getenv[ 'TRIN_UBOLOG' ] ]
-            printf[ "PASSLOG tag=%s load_existing=%d\n", (tag) ? tag.chars : "?", i32[ load_existing ] ]
+            log 'PASSLOG tag={tag} load_existing={load_existing}'
         color_load_op  : VkAttachmentLoadOp [ (load_existing) ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR ]
         color_init_lay : VkImageLayout      [ (load_existing) ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED ]
         has_depth_init : bool [ use_depth ]
@@ -742,21 +769,6 @@ class Render
             expect result == VK_SUCCESS, "failed to create image available semaphore"
             result = vkCreateSemaphore[ vk.device, @semaphore_info, null, @vk_render_finished_semaphore ]
             expect result == VK_SUCCESS, "failed to create render finished semaphore"
-
-        fenceInfo : VkFenceCreateInfo [
-            sType: VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
-            flags: VK_FENCE_CREATE_SIGNALED_BIT
-        ]
-        # one fence per ring slot (ring_n = frames-in-flight, NOT the paint batch ceiling)
-        for [ ri: i32 0, ri < ring_n, ri += 1 ]
-            result = vkCreateFence[ vk.device, @fenceInfo, null, @vk_fences[ri] ]
-            if [ result != VK_SUCCESS ]
-                rvi : i32 [ result ]
-                dh : handle [ vk.dev_handle[] ]
-                lv : handle [ Au.live_vk_get[] ]
-                puts 'vkCreateFence failed: result={rvi} (-4=device_lost -1/-2=oom) device={dh} live_vk={lv}'
-            expect result == VK_SUCCESS, "failed to create fence"
-        vk_fence = vk_fences[0]
 
         if [ reduce ]
             reduce_model = Model [ vk: vk, w: w, s: vk.reduce_shader[ ] ]
@@ -958,6 +970,9 @@ class vk_context
     intern  defer_texs          : vec TexDefer
     intern  defer_drops         : vec DropDefer
     intern  frame_no            : i64
+    intern  fence_pool          : vec u64
+    public  fence_new           : VkFence
+    public  pending_cmds        : vec Command
     public  bindres_calls       : i32
     public  bindres_us          : i64
     public  br_schema_us        : i64
@@ -987,6 +1002,18 @@ class vk_context
     # once per rendered frame: destroy entries 8+ frames old (>> ring depth)
     func defer_tick [] -> none
         frame_no += 1
+        # a one-shot command whose work finished hands its fence back now, not at reuse
+        if [ pending_cmds && pending_cmds.count > 0 ]
+            still_pending : vec Command []
+            for [ command: Command ] in pending_cmds
+                still_running : bool [ false ]
+                if [ command.pending ]
+                    still_running = vkGetFenceStatus[ device, command.fence ] != VK_SUCCESS
+                if [ still_running ]
+                    still_pending.push[ command ]
+                el
+                    command.reap[]
+            pending_cmds = still_pending
         if [ defer_list && defer_list.count > 0 ]
             keep : vec Buffer []
             for [ b: Buffer ] in defer_list
@@ -1086,7 +1113,7 @@ class vk_context
 
         if [ result != VK_SUCCESS ]
             rc : i32 [ result ]
-            puts 'vkCreateInstance failed: {rc}'
+            log 'vkCreateInstance failed: {rc}'
         expect result == VK_SUCCESS, "failed to create Vulkan instance"
 
         if [ enable_validation ]
@@ -1304,8 +1331,37 @@ class vk_context
     func wait_idle [ ]
         vkDeviceWaitIdle[ device ]
 
+    # nvidia holds a driver fd per fence: a fence is borrowed for one in-flight submit
+    # the borrowed fence is left in fence_new: silver cannot take @ of a local handle
+    func fence_acquire [ ]
+        if [ !fence_pool ] fence_pool = vec u64 []
+        pooled : i32 [ fence_pool.count ]
+        if [ pooled > 0 ]
+            fence_new = cast VkFence [ fence_pool[ pooled - 1 ] ]
+            fence_pool.remove[ pooled - 1 ]
+            return
+        fence_info : VkFenceCreateInfo [ sType: VK_STRUCTURE_TYPE_FENCE_CREATE_INFO ]
+        fence_new = null
+        create_result : i32 [ vkCreateFence[ device, @fence_info, null, @fence_new ] ]
+        expect create_result == VK_SUCCESS, 'failed to create fence'
+
+    # the pool keeps handle bits, not objects: a vec of handles would hold them
+    func fence_release [ fence: VkFence ]
+        if [ !fence ] return
+        if [ !fence_pool ] fence_pool = vec u64 []
+        fence_new = fence
+        # a startup burst would otherwise park hundreds of fds in the pool for good
+        if [ fence_pool.count >= 16 ]
+            vkDestroyFence[ device, fence_new, null ]
+            return
+        vkResetFences[ device, 1, @fence_new ]
+        fence_pool.push[ cast u64 [ fence_new ] ]
+
     func dealloc [ ]
-        puts 'vk_context dealloc: destroying device'
+        log 'vk_context dealloc: destroying device'
+        for [ i: i32 0, i < fence_pool.count, i += 1 ]
+            fence_new = cast VkFence [ fence_pool[i] ]
+            vkDestroyFence[ device, fence_new, null ]
         vmaDestroyAllocator [ allocator ]
         vkDeviceWaitIdle    [ device ]
         vkDestroyDevice     [ device, null ]
@@ -1483,7 +1539,7 @@ class vk_context
             img : VkImage [ null ]
             err : i32 [ vkCreateImage[ device, @info, null, @img ] ]
             if [ err != 0 ]
-                puts 'scanout import: vkCreateImage failed {err}'
+                log 'scanout import: vkCreateImage failed {err}'
                 return null
             mreq : VkMemoryRequirements [ ]
             vkGetImageMemoryRequirements[ device, img, @mreq ]
@@ -1492,11 +1548,11 @@ class vk_context
             err = _vkGetMemoryFdPropertiesKHR[ device,
                 VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, dma_fd, @fd_props ]
             if [ err != 0 ]
-                puts 'scanout import: fd props failed {err}'
+                log 'scanout import: fd props failed {err}'
                 return null
             allowed : u32 [ mreq.memoryTypeBits & fd_props.memoryTypeBits ]
             if [ allowed == 0 ]
-                puts 'scanout import: no memory type'
+                log 'scanout import: no memory type'
                 return null
             mti : u32 [ 0 ]
             for [ k: u32 0, k < 32, k += 1 ]
@@ -1519,13 +1575,13 @@ class vk_context
             mem : VkDeviceMemory [ null ]
             err = vkAllocateMemory[ device, @mai, null, @mem ]
             if [ err != 0 ]
-                puts 'scanout import: allocate failed {err}'
+                log 'scanout import: allocate failed {err}'
                 return null
             err = vkBindImageMemory[ device, img, mem, 0 ]
             if [ err != 0 ]
-                puts 'scanout import: bind failed {err}'
+                log 'scanout import: bind failed {err}'
                 return null
-            puts 'scanout import: ok {w2}x{h2}'
+            log 'scanout import: ok {w2}x{h2}'
             # the driver owns dma_fd now; shared_fd must not name it (or fd 0)
             return Texture [ vk: a, w: disp, width: w2, height: h2,
                 vk_format: fmt, vk_image: img, vk_memory: mem, opaque: true, shared_fd: 0 - 1 ]
@@ -1823,7 +1879,7 @@ class vk_context
                     queueFamilyIndex: u32[ compute_family ],
                     flags:            VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT
                 ]
-                cres : vkCreateCommandPool[ device, cpool_info, null, @compute_pool ]
+                    cres : vkCreateCommandPool[ device, cpool_info, null, @compute_pool ]
                 expect cres == VK_SUCCESS, "failed to create compute pool"
 
     intern func create_mipmaps [ vk_image: VkImage, w: i32, h: i32, d: i32, mips: i32, layers: i32 ]
@@ -1971,9 +2027,12 @@ class Gpu
             vertex.update[ vertex_data ]
 
     func init [ ]
-        if [ vertex_size ]
-            vertex_data = vec i8 [ vertex_size * vertex_count ]
-        if [ index_size ]
+        # external buffers draw directly: no host copy to fill
+        if [ vertex_size && !ext_vertex ]
+            vbytes : i32 [ vertex_size * vertex_count ]
+            if [ vbytes > 1000000 ] log '{name} vertex bytes {vbytes}'
+            vertex_data = vec i8 [ vbytes ]
+        if [ index_size && !ext_index ]
             index_data  = vec i8 [ index_size * index_count ]
 
 
@@ -2354,10 +2413,10 @@ class Pipeline
                     expect meta_type, "meta data not set on Surface/extension"
                     all: Surface_resources[ enum_type, enum_value, meta_type, a ]
                     if [ all.count != 1 ]
-                        puts 'BINDCHK {mem.ident} value={enum_value} count={all.count} nsamplers={samplers.count}'
+                        log 'BINDCHK {mem.ident} value={enum_value} count={all.count} nsamplers={samplers.count}'
                         for [ img2: Image, nm2: string ] in samplers
-                            puts 'BINDCHK   sampler key {nm2} -> {Au.evalue[ enum_type, nm2.chars ]}'
-                        puts 'BINDCHK enum {enum_type.ident}: 0={Au.estring[ enum_type, 0 ]} 1={Au.estring[ enum_type, 1 ]}'
+                            log 'BINDCHK   sampler key {nm2} -> {Au.evalue[ enum_type, nm2.chars ]}'
+                        log 'BINDCHK enum {enum_type.ident}: 0={Au.estring[ enum_type, 0 ]} 1={Au.estring[ enum_type, 1 ]}'
                     expect all.count == 1, "binding arrays (count > 1) not supported in this code path"
                     res: all[0]
                     expect res inherits Gpu, "expected Gpu resource"
@@ -3160,7 +3219,8 @@ class Command
     func begin [ ] 
         if [ pending ]
             vkWaitForFences[ vk.device, 1, @fence, VK_TRUE, UINT64_MAX ]
-            vkResetFences[ vk.device, 1, @fence ]
+            vk.fence_release[ fence ]
+            fence   = null
             pending = false
         vkResetCommandBuffer[ cmd, 0 ]
         vkBeginCommandBuffer[ cmd, VkCommandBufferBeginInfo [
@@ -3176,10 +3236,20 @@ class Command
             pCommandBuffers:    @cmd
         ]
         if [ !fence ]
-            fi : VkFenceCreateInfo [ sType: VK_STRUCTURE_TYPE_FENCE_CREATE_INFO ]
-            vkCreateFence[ vk.device, @fi, null, @fence ]
+            vk.fence_acquire[]
+            fence = vk.fence_new
+            expect fence, 'null fence from pool'
         vkQueueSubmit[ vk.queue, 1, si, fence ]
         pending = true
+        if [ !vk.pending_cmds ] vk.pending_cmds = vec Command []
+        vk.pending_cmds.push[ a ]
+
+    # the submit is done: return the fence without waiting for a reuse
+    func reap [ ]
+        if [ !pending ] return
+        vk.fence_release[ fence ]
+        fence   = null
+        pending = false
 
     func init [ ]
         alloc_info: VkCommandBufferAllocateInfo [
@@ -3193,8 +3263,7 @@ class Command
     func dealloc [ ]
         if [ pending ]
             vkWaitForFences[ vk.device, 1, @fence, VK_TRUE, UINT64_MAX ]
-        if [ fence ]
-            vkDestroyFence[ vk.device, fence, null ]
+        if [ fence ] vk.fence_release[ fence ]
         if [ cmd ]
             vkFreeCommandBuffers[ vk.device, vk.command_pool, 1, @cmd ]
 
@@ -3510,16 +3579,6 @@ class Texture
         vk_layout = new_layout
 
         
-    func hex_dump [ name: symbol, data: @u8, size: i32 ]
-        printf[ "%s (%d bytes):\n", name, size ]
-        for [ i: i32 0, i < size, i += 1 ]
-            b: u8 data[ i ]
-            printf[ "%02x ", u32[b] ]
-            if [ (i + 1) % 16 == 0 ]
-                printf[ "\n" ]
-        if [ size % 16 != 0 ]    
-            printf[ "\n" ]
-
     func test_vma [ ]                                                   
         allocator: VmaAllocator                                         
         result: vmaCreateAllocator[ VmaAllocatorCreateInfo [            
@@ -4204,7 +4263,7 @@ Texture Display
         now_ms : i64 [ epoch_millis[] ]
         prof_frames += 1
         prof_report : bool [ prof_log && prof_frames % 120 == 0 ]
-        if [ prof_report ] fprintf[ stderr, "frame: %d targets\n", i32[ list.count ] ]
+        if [ prof_report ] log 'frame: {list.count} targets'
         for [ r: Render ] in list
             hz : f32 [ r.draw_hz ]
             if [ hz > 0.0 && r.has_drawn ]
@@ -4217,7 +4276,7 @@ Texture Display
             r.sync_fence*[]
             td2 : i64 [ epoch_micros[] ]
             if [ prof_report ]
-                fprintf[ stderr, "  target %s %dx%d draw_us=%d wait_us=%d gpu_us=%d\n", (r.tag) ? r.tag.chars : "?", r.width, r.height, i32[ td1 - td0 ], i32[ td2 - td1 ], i32[ r.gpu_us ] ]
+                log '  target {r.tag} {r.width}x{r.height} draw_us={td1 - td0} wait_us={td2 - td1} gpu_us={r.gpu_us}'
             r.has_drawn    = true
             r.last_draw_ms = now_ms
 
@@ -4303,7 +4362,7 @@ Texture Display
         # the virtio-gpu drm master), then present through its own scanout
         nd : u32 0
         vkGetPhysicalDeviceDisplayPropertiesKHR[ vk.physical_device, @nd, null ]
-        puts 'display: venus reports {nd} displays'
+        log 'display: venus reports {nd} displays'
         expect nd > 0, "venus enumerates no display"
         dprops : local VkDisplayPropertiesKHR [ nd ]
         vkGetPhysicalDeviceDisplayPropertiesKHR[ vk.physical_device, @nd, dprops ]
@@ -4531,7 +4590,7 @@ Texture Display
             caps0 : VkSurfaceCapabilitiesKHR
             vkGetPhysicalDeviceSurfaceCapabilitiesKHR[ vk.physical_device, vk_surface, @caps0 ]
             surface_rotation[ caps0.currentTransform ]
-            puts 'display: {width}x{height} points, {extent.width}x{extent.height} px, scale {scale}'
+            log 'display: {width}x{height} points, {extent.width}x{extent.height} px, scale {scale}'
         el
             surface_format.format     = (format == Pixel.rgbaf32) ? VK_FORMAT_R32G32B32A32_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM
             surface_format.colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR
@@ -4701,7 +4760,7 @@ func Surface_resources [ surface_enum_type: Au_t, surface_value: Surface, meta_t
 
 intern func trinity_log [severity: VkDebugUtilsMessageSeverityFlagBitsEXT, types: VkDebugUtilsMessageTypeFlagsEXT, callbackData:   @VkDebugUtilsMessengerCallbackDataEXT, userData:       handle ] -> bool
     if [ severity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT ]
-        printf[ "validator: %s", callbackData.pMessage ]
+        log 'validator: {callbackData.pMessage}'
     return false
 
 
@@ -4912,7 +4971,7 @@ func environment_dump [ vk: vk_context, tx: Texture, size9: i32, mips: i32, tag:
                 dst[i] = u8[ v * 255.0 ]
             b.unmap[]
             im.png[ path '/tmp/env_{tag}_f{f}_m{m}.png' ]
-    puts 'environment_dump: wrote /tmp/env_{tag}_f*_m*.png'
+    log 'environment_dump: wrote /tmp/env_{tag}_f*_m*.png'
 
 func environment [ vk: vk_context, img: Image, r_axis: vec3f, rotation: f32 ] -> Texture
     ii:2

@@ -173,7 +173,7 @@ element main : trinity
         add_deps[ '{install}/build/libsilver-{app}.so' ]
         # the launcher loads the product this link names
         add_file[ '{install}/build/silver-{app}.product' ]
-        puts 'os-bootstrap: launcher done, {files.count} entries'
+        log 'os-bootstrap: launcher done, {files.count} entries'
         # the share dir of every module in that closure rides along when small
         mods : vec string []
         for [ e: OsFile ] in files
@@ -186,10 +186,10 @@ element main : trinity
             sh : '{install}/share/silver-{mod}'
             shp : path [ sh ]
             if [ shp.exists[] && tree_size[ sh ] <= share_max ]
-                puts 'os-bootstrap: share silver-{mod}'
+                log 'os-bootstrap: share silver-{mod}'
                 add_file[ sh ]
         add_file[ '{install}/share/orbiter' ]
-        puts 'os-bootstrap: products done, {files.count} entries'
+        log 'os-bootstrap: products done, {files.count} entries'
         # guest vulkan: our freshly-built mesa venus (not the host system
         # one, whose dma-buf export crashes)
         venus : '{install}/lib/libvulkan_virtio.so'
@@ -219,7 +219,7 @@ element main : trinity
     func write_cpio []
         f : @FILE [ fopen[ initrd.chars, 'wb' ] ]
         if [ !f ]
-            puts 'os-bootstrap: cannot write {initrd}'
+            log 'os-bootstrap: cannot write {initrd}'
             return
         ino : i32 [ 1 ]
         # cpio mode words: file type then permissions (octal 040755 …)
@@ -257,7 +257,7 @@ element main : trinity
         free[ buf ]
         cpio_header[ f, 'TRAILER!!!', 0, 0, 0, 0, 0, 0 ]
         fclose[ f ]
-        puts 'os-bootstrap: {files.count} entries -> {initrd}'
+        log 'os-bootstrap: {files.count} entries -> {initrd}'
 
     public func render [] -> Elements
         # unknown name=value words reach init as its environment; the

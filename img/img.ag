@@ -1109,7 +1109,7 @@ func exr_decode [ u: path ] -> Image
             fseek[ f, i64[ asz ], SEEK_CUR ]
 
     if [ comp != EXR_NONE && comp != EXR_ZIPS && comp != EXR_ZIP ]
-        puts 'exr: unsupported compression {comp} in {u}'
+        log 'exr: unsupported compression {comp} in {u}'
         fclose f
         return null
 
@@ -1157,7 +1157,7 @@ func exr_decode [ u: path ] -> Image
             dlen : uLongf [ uLongf[ nb ] ]
             rc : i32 [ uncompress[ raw, @dlen, packed, uLong[ sz ] ] ]
             if [ rc != 0 ]
-                puts 'exr: uncompress rc {rc} sz {sz} nb {nb}'
+                log 'exr: uncompress rc {rc} sz {sz} nb {nb}'
                 fclose[ f ]
                 return null
             memcpy[ packed, raw, i64[ nb ] ]
@@ -1226,7 +1226,7 @@ expect func test_exr_file [] -> bool
     if [ !p.exists[] ] return false
     im : exr_decode[ p ]
     if [ !im ] return false
-    puts 'exr: decoded {im.width}x{im.height}'
+    log 'exr: decoded {im.width}x{im.height}'
     return im.width > 0 && im.height > 0
 
 expect func test_jpeg [] -> bool
@@ -1235,7 +1235,7 @@ expect func test_jpeg [] -> bool
     if [ !p.exists[] ] return false
     im : jpeg_decode[ p ]
     if [ !im ] return false
-    puts 'jpeg: decoded {im.width}x{im.height}'
+    log 'jpeg: decoded {im.width}x{im.height}'
     if [ im.width != 8192 || im.height != 4096 ] return false
     c : im.crop[ 3400, 1700, 640, 480 ]
     c.png[ path '/tmp/jpegtest.png' ]

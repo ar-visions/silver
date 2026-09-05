@@ -31,13 +31,13 @@ element Cube3D
     mutable gmodel  : GltfModel
 
     func dealloc []
-        puts 'hypercube: Cube3D dealloc'
+        log 'hypercube: Cube3D dealloc'
 
     public func draw [ w: Window ]
         if [ w.draw_stage != CanvasType.screen ] return
         cv : Canvas [ w.screen ]
         if [ !vrender ]
-            puts 'hypercube: Cube3D creates target'
+            log 'hypercube: Cube3D creates target'
             vshader = ViewerLit [ vk: cv.vk, name: 'viewer' ]
             vshader.hold[]
             gmodel = GltfModel [ model_path.load[ typeid[ GltfModel ], null ] ]
@@ -207,7 +207,7 @@ element hypercube : trinity
             ux.set_fullscreen[ true ]
             trk = Observer [ mdir: models_dir, trace: true ]
             trk.hold[]
-            puts 'hypercube: f = align/look, x = flip parallax, arrows = y bias, esc = quit'
+            log 'hypercube: f = align/look, x = flip parallax, arrows = y bias, esc = quit'
         e : Elements [ ]
         # feeds first: on_overlay only gets frames from views made
         # before the cube. they paint off and are drawn by hand

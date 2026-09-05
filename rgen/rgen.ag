@@ -271,7 +271,7 @@ element rgen : trinity
 	func save_state [] -> none
 		f : @FILE [ fopen[ '/tmp/rgen_state.bin', 'wb' ] ]
 		if [ ! f ]
-			puts 'rgen: cannot write state'
+			log 'rgen: cannot write state'
 			return
 		fwrite[ m68k.d, 4, 8, f ]
 		fwrite[ m68k.a, 4, 8, f ]
@@ -298,12 +298,12 @@ element rgen : trinity
 		fwrite[ vdp.vsram, 2, 40, f ]
 		fwrite[ vdp.regs,  1, 24, f ]
 		fclose[ f ]
-		puts 'rgen: state saved at frame {frames}'
+		log 'rgen: state saved at frame {frames}'
 
 	func load_state [] -> none
 		f : @FILE [ fopen[ '/tmp/rgen_state.bin', 'rb' ] ]
 		if [ ! f ]
-			puts 'rgen: no state file'
+			log 'rgen: no state file'
 			return
 		fread[ m68k.d, 4, 8, f ]
 		fread[ m68k.a, 4, 8, f ]
@@ -329,7 +329,7 @@ element rgen : trinity
 		fread[ vdp.vsram, 2, 40, f ]
 		fread[ vdp.regs,  1, 24, f ]
 		fclose[ f ]
-		puts 'rgen: state loaded, frame {frames} pc={m68k.pc}'
+		log 'rgen: state loaded, frame {frames} pc={m68k.pc}'
 
 	# One-time boot: construct chip state, reset, open audio.
 	func boot [] -> none
@@ -341,7 +341,7 @@ element rgen : trinity
 		# 53267 Hz = YM2612 native: 68k clock / 144
 		audio = AudioOut [ sample_rate: 53267, channels: 2, buffer_size: 1024 ]
 		if [ ! audio.open[] ]
-			puts 'rgen: audio device unavailable — continuing muted'
+			log 'rgen: audio device unavailable — continuing muted'
 		for [ av: i32 0, av < 15, av += 1 ]
 			ea : f64 [ pow[ 10.0, -0.1 * f64[ av ] ] ]
 			psg_volt[ av ] = i32[ 8000.0 * ea ]
@@ -365,7 +365,7 @@ element rgen : trinity
 		if [ rom ]
 			f : @FILE [ fopen[ rom, 'rb' ] ]
 			if [ ! f ]
-				puts 'rgen: could not open ROM {rom}'
+				log 'rgen: could not open ROM {rom}'
 			el
 				fseek[ f, 0, SEEK_END ]
 				cart_size = ftell[ f ]
@@ -373,9 +373,9 @@ element rgen : trinity
 				cart = calloc[ 1, cart_size ]
 				fread[ cart, 1, cart_size, f ]
 				fclose[ f ]
-				puts 'rgen: cart loaded, {cart_size} bytes'
+				log 'rgen: cart loaded, {cart_size} bytes'
 				m68k_reset[]
-				puts 'rgen: reset pc={m68k.pc} ssp={m68k.ssp}'
+				log 'rgen: reset pc={m68k.pc} ssp={m68k.ssp}'
 				if [ resume ] load_state[]
 		booted = true
 
@@ -486,7 +486,7 @@ element rgen : trinity
 		generate_audio[]
 		frames += 1
 		if [ (frames % 60) == 0 ]
-			puts 'f{frames} pc={m68k.pc} gm={ram68k[0xF600]} vints={vints} zpc={z80.pc} dac={dac_writes}'
+			log 'f{frames} pc={m68k.pc} gm={ram68k[0xF600]} vints={vints} zpc={z80.pc} dac={dac_writes}'
 		if [ frames_exit > 0 && frames >= u32[ frames_exit ] ]
 			nzv : i32 [ 0 ]
 			for [ vi: i32 0, vi < 0x10000, vi += 1 ]
@@ -498,7 +498,7 @@ element rgen : trinity
 			fb0 : u32 [ vdp.framebuf[ 0 ] ]
 			for [ pi: i32 0, pi < 320 * 224, pi += 1 ]
 				if [ vdp.framebuf[ pi ] != fb0 ] nfb += 1
-			puts 'rgen: frames_exit {frames_exit} vram_nz={nzv} cram_nz={nzc} fb_diff={nfb} r2={vdp.regs[2]} r4={vdp.regs[4]} r12={vdp.regs[12]} pc={m68k.pc}'
+			log 'rgen: frames_exit {frames_exit} vram_nz={nzv} cram_nz={nzc} fb_diff={nfb} r2={vdp.regs[2]} r4={vdp.regs[4]} r12={vdp.regs[12]} pc={m68k.pc}'
 			df : @FILE [ fopen[ '/tmp/rgen_vdp.bin', 'wb' ] ]
 			if [ df ]
 				fwrite[ vdp.vram,  1, 0x10000, df ]
@@ -515,7 +515,7 @@ element rgen : trinity
 					fputc[ i32[ (qp >> 8) & 0xFF ], pf ]
 					fputc[ i32[ (qp >> 16) & 0xFF ], pf ]
 				fclose[ pf ]
-				puts 'rgen: state + framebuf dumped'
+				log 'rgen: state + framebuf dumped'
 			_exit[ 0 ]                       # thread-side exit: skip teardown races
 
 	func emu_entry [] -> none
@@ -2877,7 +2877,7 @@ element rgen : trinity
 			dv : u32 [ ea_read[ mode, rm, 1 ] & 0xFFFF ]
 			et : i32 [ ea_time[ mode, rm, false ] ]
 			if [ dv == 0 ]
-				puts 'rgen 68k: DIVU by zero (exception pending impl)'
+				log 'rgen 68k: DIVU by zero (exception pending impl)'
 				return 42 + et                             # §14 divide-by-zero
 			dd : u32 [ m68k.d[ reg ] ]
 			if [ (dd >> 16) >= dv ]                        # overflow early-out
@@ -2910,7 +2910,7 @@ element rgen : trinity
 			et2 : i32 [ ea_time[ mode, rm, false ] ]
 			dvs : i32 [ i32[ i16[ u16[ dvw ] ] ] ]
 			if [ dvs == 0 ]
-				puts 'rgen 68k: DIVS by zero (exception pending impl)'
+				log 'rgen 68k: DIVS by zero (exception pending impl)'
 				return 42 + et2
 			dds : i32 [ i32[ m68k.d[ reg ] ] ]
 			c2 : i32 [ 6 ]                                 # Ijor model [§4]
@@ -2991,7 +2991,7 @@ element rgen : trinity
 		return ((sz2 == 2) ? 8 : 6) + 2 * cnt
 
 	func op_illegal [ op: u16 ] -> i32
-		if [ trace ] puts 'rgen 68k: unhandled opcode {op} at {m68k.pc - 2}'
+		if [ trace ] log 'rgen 68k: unhandled opcode {op} at {m68k.pc - 2}'
 		return 4
 
 	func m68k_step [] -> i32
@@ -3000,7 +3000,7 @@ element rgen : trinity
 		if [ m68k.stopped ] return 4
 		op  : u16 [ fetch16[] ]
 		if [ trace && icount < 260 ]
-			puts 'i{icount} pc={m68k.pc - 2} op={op}'
+			log 'i{icount} pc={m68k.pc - 2} op={op}'
 			icount += 1
 		top : i32 [ i32[ (op >> 12) & 0xF ] ]
 		switch [ top ]

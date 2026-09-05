@@ -106,7 +106,7 @@ element qemu : trinity
             el
                 fmt : string (ax == 'qcow2') ? 'qcow2' : 'raw'
                 cmd = cmd + ' -drive file="{src}",format={fmt}'
-        puts 'qemu: {cmd}'
+        log 'qemu: {cmd}'
         cmd = 'exec {cmd}'          # sh must become qemu, not parent it
         dashc : string '-c'
         pid = fork[]
@@ -117,7 +117,7 @@ element qemu : trinity
             execl[ '/bin/sh', 'sh', dashc.chars, cmd.chars, null ]
             _exit[ 1 ]
         if [ pid < 0 ]
-            puts 'qemu: fork failed'
+            log 'qemu: fork failed'
             return
         # connect the D-Bus display client; it captures the scanout dma-buf
         qemu_dbus_start[ sock_path.chars ]
@@ -241,12 +241,12 @@ element qemu : trinity
         ht : i32 [ be16[ @h[6] ] ]
         enc : i32 [ be32[ @h[8] ] ]
         if [ enc == -223 ]
-            puts 'qemu: desktop size {w}x{ht}'
+            log 'qemu: desktop size {w}x{ht}'
             fb_alloc[ w, ht ]
             request_update[ false ]
             return true
         rects += 1
-        if [ rects <= 3 || rects % 500 == 0 ] puts 'qemu: rect {rects}: {x},{y} {w}x{ht} enc {enc}'
+        if [ rects <= 3 || rects % 500 == 0 ] log 'qemu: rect {rects}: {x},{y} {w}x{ht} enc {enc}'
         if [ enc != 0 ] return false
         row : @u8 [ calloc[ 1, w * 4 ] ]
         for [ r: i32 0, r < ht, r += 1 ]
@@ -270,7 +270,7 @@ element qemu : trinity
     func rfb_entry [] -> none
         running = true
         if [ connect_vnc[] && handshake[] ]
-            puts 'qemu: vnc connected, {fb_w}x{fb_h}'
+            log 'qemu: vnc connected, {fb_w}x{fb_h}'
             send_setup[]
             request_update[ false ]
             while [ !stop ]
@@ -298,16 +298,16 @@ element qemu : trinity
                     rd[ cut, n2 ]
                     free[ cut ]
                 el break
-        el puts 'qemu: vnc connect failed'
+        el log 'qemu: vnc connect failed'
         # the machine may have died under us: say how
         st : i32 [ 0 ]
         if [ pid > 0 && waitpid[ pid, @st, WNOHANG ] == pid ]
             if [ WIFSIGNALED[ st ] ]
                 sg : i32 [ WTERMSIG[ st ] ]
-                puts 'qemu: exited by signal {sg}'
+                log 'qemu: exited by signal {sg}'
             el
                 ec : i32 [ WEXITSTATUS[ st ] ]
-                puts 'qemu: exited with code {ec}'
+                log 'qemu: exited with code {ec}'
         running = false
 
     func send_key [ keysym: i32, down: bool ]
@@ -412,10 +412,10 @@ element qemu : trinity
             if [ waitpid[ pid, @st, WNOHANG ] == pid ]
                 if [ WIFSIGNALED[ st ] ]
                     sg : i32 [ WTERMSIG[ st ] ]
-                    puts 'qemu: machine died by signal {sg}'
+                    log 'qemu: machine died by signal {sg}'
                 el
                     ec : i32 [ WEXITSTATUS[ st ] ]
-                    puts 'qemu: machine exited with code {ec}'
+                    log 'qemu: machine exited with code {ec}'
                 pid = 0
         cv : Canvas [ w.screen ]
         if [ !cv || !cv.vk ] return
@@ -434,7 +434,7 @@ element qemu : trinity
         # qemu emits transient oversized scanouts on mode changes; keep the
         # last good frame instead of showing a wrong-sized one
         if [ sw > 2560 || sh > 1600 || sw <= 0 || sh <= 0 ]
-            if [ sgen != tex_gen ] puts 'qemu: dropped scanout {sw}x{sh}'
+            if [ sgen != tex_gen ] log 'qemu: dropped scanout {sw}x{sh}'
             close[ dfd ]
             if [ !tex ] return
             ar2 : f32 [ f32[ fb_w ] / f32[ fb_h ] ]
@@ -448,7 +448,7 @@ element qemu : trinity
             el cv.draw_image[ tex, fit2 ]
             return
         if [ sgen != tex_gen ]
-            puts 'qemu: scanout {sw}x{sh} stride {sstride} fourcc {sfourcc} mod {smod}'
+            log 'qemu: scanout {sw}x{sh} stride {sstride} fourcc {sfourcc} mod {smod}'
             # XB24/AB24 (X/A-BGR) are R,G,B,X in memory = R8G8B8A8_UNORM (37);
             # XR24/AR24 (X/A-RGB) are B,G,R,X in memory = B8G8R8A8_UNORM (44)
             xb24 : u32 [ 875709016 ]         # DRM_FORMAT_XBGR8888

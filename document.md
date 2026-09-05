@@ -38,7 +38,7 @@ into the same module. A module can be an app:
 ```
 app features
     func init []
-        puts 'features module'
+        log 'features module'
 ```
 
 `export` states a version, sets an environment variable at module init,

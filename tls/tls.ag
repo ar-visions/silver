@@ -42,26 +42,26 @@ class TLSClient
             ca2 : path '/etc/pki/tls/certs/ca-bundle.crt'
             if [ ca2.exists[] ] ca_ok = mbedtls_x509_crt_parse_file[ @cacert, ca2.chars ]
         if [ ca_ok != 0 ]
-            puts 'net: no CA bundle (ssl/trust.crt or system certs)'
+            log 'net: no CA bundle (ssl/trust.crt or system certs)'
             return
         ps : string '{port}'
         crc : i32 [ mbedtls_net_connect[ @net_ctx, host.chars, ps.chars, MBEDTLS_NET_PROTO_TCP ] ]
         if [ crc != 0 ]
-            puts 'net: connect to {host}:{port} failed ({crc})'
+            log 'net: connect to {host}:{port} failed ({crc})'
             return
         dfc : i32 [ mbedtls_ssl_config_defaults[ @conf, MBEDTLS_SSL_IS_CLIENT, MBEDTLS_SSL_TRANSPORT_STREAM, MBEDTLS_SSL_PRESET_DEFAULT ] ]
         if [ dfc != 0 ]
-            puts 'net: ssl config_defaults failed ({dfc})'
+            log 'net: ssl config_defaults failed ({dfc})'
             return
         mbedtls_ssl_conf_authmode  [ @conf, MBEDTLS_SSL_VERIFY_REQUIRED ]
         mbedtls_ssl_conf_ca_chain  [ @conf, @cacert, null ]
         suc : i32 [ mbedtls_ssl_setup[ @ssl, @conf ] ]
         if [ suc != 0 ]
-            puts 'net: ssl setup failed ({suc})'
+            log 'net: ssl setup failed ({suc})'
             return
         shc : i32 [ mbedtls_ssl_set_hostname[ @ssl, host.chars ] ]
         if [ shc != 0 ]
-            puts 'net: set_hostname failed ({shc})'
+            log 'net: set_hostname failed ({shc})'
             return
         mbedtls_ssl_set_bio[ @ssl, @net_ctx, @mbedtls_net_send, @mbedtls_net_recv, null ]
         for [ true ]
@@ -70,7 +70,7 @@ class TLSClient
                 connected = true
                 return
             if [ hs != MBEDTLS_ERR_SSL_WANT_READ && hs != MBEDTLS_ERR_SSL_WANT_WRITE ]
-                puts 'net: tls handshake failed ({hs}) for {host}'
+                log 'net: tls handshake failed ({hs}) for {host}'
                 return
 
     func send [ data: @u8, n: i64 ] -> i64
@@ -139,7 +139,7 @@ class Http
     static func upload [ url: string, dest: path, field: string, file: path ] -> i64
         fp : @FILE [ fopen[ file.chars, 'rb' ] ]
         if [ !fp ]
-            puts 'net: cannot read {file}'
+            log 'net: cannot read {file}'
             return -1
         fseek[ fp, 0, SEEK_END ]
         fsz : i64 [ ftell[ fp ] ]
@@ -160,23 +160,23 @@ class Http
         u : UrlParts [ ]
         u.from_url[ url ]
         if [ !u.valid ]
-            puts 'net: bad url {url}'
+            log 'net: bad url {url}'
             return -1
         for [ hop: i32 0, hop < 6, hop += 1 ]
-            puts 'net: {method} {u.host}{u.query}'
+            log 'net: {method} {u.host}{u.query}'
             t : TLSClient [ host: u.host, port: u.port ]
             if [ !t.connected ]
-                puts 'net: no tls connection to {u.host}:{u.port}'
+                log 'net: no tls connection to {u.host}:{u.port}'
                 t.close[]
                 return -1
             extra : string [ (body_n > 0) ? 'Content-Type: {content_type}\r\nContent-Length: {body_n}\r\n' : '' ]
             req : string '{method} {u.query} HTTP/1.1\r\nHost: {u.host}\r\nUser-Agent: silver\r\nAccept: */*\r\n{extra}Connection: close\r\n\r\n'
             if [ t.send[ cast @u8 [ req.chars ], req.count ] != req.count ]
-                puts 'net: send failed to {u.host}'
+                log 'net: send failed to {u.host}'
                 t.close[]
                 return -1
             if [ body_n > 0 && t.send[ body, body_n ] != body_n ]
-                puts 'net: body send failed to {u.host}'
+                log 'net: body send failed to {u.host}'
                 t.close[]
                 return -1
             # headers: byte-at-a-time until the blank line
@@ -199,7 +199,7 @@ class Http
                 loc : header_value[ hdr, 'ocation: ' ]
                 t.close[]
                 if [ !loc ]
-                    puts 'net: {code} with no location'
+                    log 'net: {code} with no location'
                     return -1
                 # relative redirect: keep host, swap the query path
                 if [ loc.chars[0] == '/' ]
@@ -207,18 +207,18 @@ class Http
                 el
                     u.from_url[ loc ]
                     if [ !u.valid ]
-                        puts 'net: bad redirect location {loc}'
+                        log 'net: bad redirect location {loc}'
                         return -1
                 continue
             if [ code != 200 ]
-                puts 'net: status {code} for {u.host}'
+                log 'net: status {code} for {u.host}'
                 t.close[]
                 return -1
             cl : header_value[ hdr, 'ontent-Length: ' ]
             total : i64 [ (cl) ? atoll[ cl.chars ] : -1 ]
             fp : @FILE [ fopen[ dest.chars, 'wb' ] ]
             if [ !fp ]
-                puts 'net: cannot write {dest}'
+                log 'net: cannot write {dest}'
                 t.close[]
                 return -1
             csz  : i32 [ 262144 ]
@@ -237,12 +237,12 @@ class Http
                     mark = got
                     mb  : i64 [ got / 1048576 ]
                     mbt : i64 [ total / 1048576 ]
-                    puts 'net: {mb} / {mbt} MB'
+                    log 'net: {mb} / {mbt} MB'
                 if [ total > 0 && got >= total ] break
             fclose[ fp ]
             t.close[]
             if [ got < 0 || (total > 0 && got < total) ]
-                puts 'net: body short — got {got} of {total}'
+                log 'net: body short — got {got} of {total}'
                 return -1
             return got
         return -1

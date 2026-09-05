@@ -1593,15 +1593,6 @@ Render Canvas
     func current_state [] -> CanvasState
         return states[state_depth - 1]
 
-    func hex_dump [ name: symbol, data: @u8, size: i32 ]
-        for [ i: i32 0, i < size, i += 1 ]
-            b: u8 data[ i ]
-            printf[ "%02x ", u32[b] ]
-            if [ (i + 1) % 16 == 0 ]
-                printf[ "\n" ]
-        if [ size % 16 != 0 ]    
-            printf[ "\n" ]
-
     func clear [ color: rgba ]
         clr : sk_color[ color ]
         clear_color = clr

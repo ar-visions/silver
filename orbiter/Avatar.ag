@@ -874,12 +874,12 @@ element Avatar
         rs : f32 [ (render_scale > 0.0) ? render_scale : 1.0 ]
         vs : f32 [ (vol_scale    > 0.0) ? vol_scale    : 0.25 ]
         dscale : f32 [ (w_ref && w_ref.scale > 0.0) ? w_ref.scale : 1.0 ]
-        puts 'create_target: bounds={bounds.x},{bounds.y},{bounds.w},{bounds.h} render_scale={render_scale} rs={rs} dscale={dscale}'
+        log 'create_target: bounds={bounds.x},{bounds.y},{bounds.w},{bounds.h} render_scale={render_scale} rs={rs} dscale={dscale}'
 
         if [ geo_models.count ]
             gwf : f32 [ bounds.w * rs ]
             ghf : f32 [ bounds.h * rs ]
-            puts 'GEOTGT bounds={bounds.w}x{bounds.h} rs={rs} -> {gwf}x{ghf}'
+            log 'GEOTGT bounds={bounds.w}x{bounds.h} rs={rs} -> {gwf}x{ghf}'
             gw : i32 [ gwf ]
             gh : i32 [ ghf ]
             target = Render [

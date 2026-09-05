@@ -612,7 +612,7 @@ class Style
     func report_errors [ ]
         if [ errors && errors.count ]
             for [ msg: string ] in errors
-                puts '{msg}'
+                log '{msg}'
             fault 'css: {errors.count} error(s)'
 
     func cache_members [ ]
@@ -1435,7 +1435,7 @@ func parse_qualifiers [ bl:StyleBlock, p: @cstr ] -> vec StyleQualifier
             if [ v.type ]
                 v.ty = Au.find_type[ v.type.chars, null ]
                 if [ !v.ty ]
-                    puts 'style: unknown type {v.type} — block disabled'
+                    log 'style: unknown type {v.type} — block disabled'
                     bl.invalid = true
                 if [ v.ty && !processed && bl.types.index_of[ v.ty ] == -1 ]
                     bl.types.push[ v.ty ]

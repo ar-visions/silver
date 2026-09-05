@@ -321,11 +321,11 @@ export func bake_greeting []
     if [ !force && sp.exists[] && op.exists[] ]
         old : string [ sp.load[ typeid[string], null ] ]
         if [ old && old == stamp ]
-            puts 'features: baked artifact current'
+            log 'features: baked artifact current'
             return
     op.save[ bake_text[], null ]
     sp.save[ stamp, null ]
-    puts 'features: baked artifact written'
+    log 'features: baked artifact written'
 
 # ---- expect func declares a test the compiler runs ----
 
@@ -2140,4 +2140,4 @@ expect func t_extension_class [] -> bool
 
 app features
     func init []
-        puts 'features module — run with silver --test features'
+        log 'features module — run with silver --test features'

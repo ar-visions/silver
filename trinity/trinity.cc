@@ -11,6 +11,9 @@ extern "C" const char* path_share_name();
 #define VMA_IMPLEMENTATION
 #include <vk_mem_alloc.h>
 
+// silver cannot store a C handle into a vec slot by index; write it here
+HOST_API void handle_slot_set(void** slot, void* value) { *slot = value; }
+
 #if defined(__linux__)
 #include <unistd.h>
 #include <fcntl.h>

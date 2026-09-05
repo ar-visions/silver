@@ -137,7 +137,7 @@ el [ windows ]
         func open [] -> bool
             pcm = wasapi_cap_open [ device, sample_rate, channels, size ]
             if [ !pcm ]
-                puts 'spectra: no capture endpoint'
+                log 'spectra: no capture endpoint'
                 return false
             return true
 
@@ -392,7 +392,7 @@ el
             if [ ok ]
                 perr : i32 [ snd_pcm_prepare[ pcm_handle ] ]
                 if [ perr < 0 ]
-                    puts 'AudioOut: prepare failed {snd_strerror[ perr ]}'
+                    log 'AudioOut: prepare failed {snd_strerror[ perr ]}'
                     ok = false
             active = ok
             return ok
@@ -605,7 +605,7 @@ func m4a_parse [ buf: @u8, fsz: i32 ] -> AacStream
 func wav_load [ p: path ] -> AudioClip
     fp : @FILE [ fopen[ '{p}', 'rb' ] ]
     if [ !fp ]
-        puts 'wav: cannot open {p}'
+        log 'wav: cannot open {p}'
         return null
     fseek[ fp, 0, SEEK_END ]
     fsz : i32 [ i32[ ftell[ fp ] ] ]
@@ -614,7 +614,7 @@ func wav_load [ p: path ] -> AudioClip
     fread[ buf, 1, fsz, fp ]
     fclose[ fp ]
     if [ fsz < 44 || be32[ buf, 0 ] != 1380533830 || be32[ buf, 8 ] != 1463899717 ]
-        puts 'wav: not RIFF/WAVE: {p}'
+        log 'wav: not RIFF/WAVE: {p}'
         return null
     rate : i32 [ 0 ]
     ch : i32 [ 0 ]
@@ -634,7 +634,7 @@ func wav_load [ p: path ] -> AudioClip
             dsz = csz
         o += 8 + csz + (csz % 2)
     if [ rate < 1 || ch < 1 || bits != 16 || dsz < 2 ]
-        puts 'wav: unsupported format in {p} (need PCM S16)'
+        log 'wav: unsupported format in {p} (need PCM S16)'
         return null
     nfr : i64 [ i64[ dsz ] / i64[ ch * 2 ] ]
     cnt : i32 [ i32[ nfr ] * ch ]
@@ -650,7 +650,7 @@ func wav_load [ p: path ] -> AudioClip
 func caf_load [ p: path ] -> AudioClip
     fp : @FILE [ fopen[ '{p}', 'rb' ] ]
     if [ !fp ]
-        puts 'caf: cannot open {p}'
+        log 'caf: cannot open {p}'
         return null
     fseek[ fp, 0, SEEK_END ]
     fsz : i32 [ ftell[ fp ] ]
@@ -666,7 +666,7 @@ func caf_load [ p: path ] -> AudioClip
     if [ !st ]
         if [ be32[ buf, 0 ] == 1380533830 ]
             return wav_load[ p ]
-        puts 'caf: unsupported container: {p}'
+        log 'caf: unsupported container: {p}'
         return null
     h : NeAACDecOpen[]
     conf : NeAACDecGetCurrentConfiguration[ h ]
@@ -676,7 +676,7 @@ func caf_load [ p: path ] -> AudioClip
     ch9 : u8 [ 0 ]
     ir : i64 [ NeAACDecInit2[ h, @buf[ st.asc_o ], u64[ st.asc_n ], @sr9, @ch9 ] ]
     if [ ir != 0 ]
-        puts 'caf: faad init failed on {p}'
+        log 'caf: faad init failed on {p}'
         NeAACDecClose[ h ]
         return null
     ch : i32 [ ch9 ]
@@ -712,7 +712,7 @@ func caf_load [ p: path ] -> AudioClip
     clip.pcm = pcm
     clip.name = '{p}'
     clip.name.hold[]
-    puts 'caf: {p} rate={rate} ch={ch} frames={clip.frames} cap={cap} wr={wr} start={start} nvalid={st.nvalid} npkts={st.npkts}'
+    log 'caf: {p} rate={rate} ch={ch} frames={clip.frames} cap={cap} wr={wr} start={start} nvalid={st.nvalid} npkts={st.npkts}'
     return clip
 
 class Voice
@@ -736,10 +736,10 @@ class AudioMixer
         ifdef [ apple ]
             av = sp_av_open[ sample_rate ]
             if [ av ] return true
-            puts 'mixer: coreaudio engine unavailable, using the software mix'
+            log 'mixer: coreaudio engine unavailable, using the software mix'
         out = AudioOut [ sample_rate: sample_rate, channels: 2, buffer_size: 1024 ]
         if [ !out.open[] ]
-            puts 'mixer: audio device unavailable'
+            log 'mixer: audio device unavailable'
             return false
         voices = vec Voice []
         voices.hold[]

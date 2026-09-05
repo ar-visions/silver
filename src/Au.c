@@ -3446,14 +3446,15 @@ AU_EXPORT symbol au_log_last(void) { return au_log_buf; }
 // the binding stamp ('Holder:ident') prefixes every message
 AU_EXPORT none Au_log(Au a, symbol msg) {
     Au hd = a ? header(a) : null;
+    char stamp[128];
     if (hd && hd->bind && hd->holder && hd->holder->ident)
-        snprintf(au_log_buf, sizeof(au_log_buf), "%s:%s %s",
-            hd->holder->ident, hd->bind, msg);
+        snprintf(stamp, sizeof(stamp), "[%s:%s]", hd->holder->ident, hd->bind);
     else if (a)
-        snprintf(au_log_buf, sizeof(au_log_buf), "%s %s",
-            isa(a)->ident ? isa(a)->ident : "?", msg);
+        snprintf(stamp, sizeof(stamp), "[%s]", isa(a)->ident ? isa(a)->ident : "?");
     else
-        snprintf(au_log_buf, sizeof(au_log_buf), "%s", msg);
+        stamp[0] = 0;
+    // the stamp column is 16 wide so messages line up
+    snprintf(au_log_buf, sizeof(au_log_buf), "%-16s%s", stamp, msg);
     puts(au_log_buf);
 }
 
@@ -6976,12 +6977,6 @@ AU_EXPORT string path_mime(path a) {
 }
 
 AU_EXPORT none path_cd(path a) {
-    char was[4096];
-    if (!getcwd(was, sizeof(was))) was[0] = 0;
-    Dl_info di;
-    void* caller = __builtin_return_address(0);
-    const char* who = (dladdr(caller, &di) && di.dli_sname) ? di.dli_sname : "?";
-    fprintf(stderr, "cd: %s -> %s (from %s)\n", was, a->chars, who);
     chdir(a->chars);
 }
 

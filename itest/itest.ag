@@ -10,4 +10,4 @@ expect func t_imod [] -> bool
 
 app itest
     func init []
-        puts 'itest'
+        log 'itest'

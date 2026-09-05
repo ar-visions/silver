@@ -155,7 +155,7 @@ expect func t_type_macros [] -> bool
 
 app s2test
     func init []
-        puts 's2test'
+        log 's2test'
 
 class AsyncJob
     public x   : i64

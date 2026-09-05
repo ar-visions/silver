@@ -320,13 +320,13 @@ class GltfBuffer
             rp2 : Res.res_path[ alt ]
             fp = fopen[ rp2.chars, "rb" ]
         if [ !fp ]
-            puts 'GltfBuffer: failed to open {name}'
+            log 'GltfBuffer: failed to open {name}'
             return
         fseek[ fp, 0, SEEK_END ]
         length: i64 [ ftell[ fp ] ]
         rewind[ fp ]
         if [ byteLength > 0 && u64[ length ] < byteLength ]
-            puts 'GltfBuffer: {uri.chars} is {length} bytes but the gltf declares {byteLength} — unfetched git-lfs pointer? (git lfs pull)'
+            log 'GltfBuffer: {uri.chars} is {length} bytes but the gltf declares {byteLength} — unfetched git-lfs pointer? (git lfs pull)'
         buf: new u8 [ length ]
         fread[ buf, 1, length, fp ]
         fclose[ fp ]
@@ -423,7 +423,7 @@ class Res
             nm : names[ i ]
             fp : @FILE [ fopen[ '{base}/{nm}', 'rb' ] ]
             if [ !fp ]
-                puts 'res: cannot open {base}/{nm}'
+                log 'res: cannot open {base}/{nm}'
                 return false
             fseek[ fp, 0, SEEK_END ]
             sz : u64 [ u64[ ftell[ fp ] ] ]
@@ -433,7 +433,7 @@ class Res
             chash[ i ] = res_hkey[ nm, sz ]
         out : @FILE [ fopen[ dest.chars, 'wb' ] ]
         if [ !out ]
-            puts 'res: cannot write {dest.chars}'
+            log 'res: cannot write {dest.chars}'
             return false
         m  : u32 [ magic ]
         v  : u32 [ 2 ]
@@ -470,7 +470,7 @@ class Res
                 remain = remain - u64[ got ]
             fclose[ fp ]
         fclose[ out ]
-        puts 'res: packed {n} files -> {dest.chars} ({total} bytes, obscured={ob})'
+        log 'res: packed {n} files -> {dest.chars} ({total} bytes, obscured={ob})'
         return true
 
     func load [ res_path: path, base_dir: path, cache_dir: path, password: string ] -> bool
@@ -480,7 +480,7 @@ class Res
         ipw    = password
         fp : @FILE [ fopen[ res_path.chars, 'rb' ] ]
         if [ !fp ]
-            puts 'res: cannot open {res_path.chars}'
+            log 'res: cannot open {res_path.chars}'
             return false
         m  : u32 [ 0 ]
         v  : u32 [ 0 ]
@@ -491,7 +491,7 @@ class Res
         fread[ @ob, 4, 1, fp ]
         fread[ @c,  4, 1, fp ]
         if [ m != magic ]
-            puts 'res: bad magic in {res_path.chars}'
+            log 'res: bad magic in {res_path.chars}'
             fclose[ fp ]
             return false
         iobsc  = ob != 0
@@ -560,7 +560,7 @@ class Res
     func extract_all []
         for [ i: i32 0, i < icount, i += 1 ]
             ensure[ i, '' ]
-        puts 'res: extract_all {icount} entries -> {icache.chars}'
+        log 'res: extract_all {icount} entries -> {icache.chars}'
 
     func find [ name: string ] -> path
         p : path name

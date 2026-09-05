@@ -1428,7 +1428,7 @@ int main(int argc, char** argv) {
                         if (set_pending) set_pending(1);
                     }
                     apply_compile = 0;
-                    fprintf(stderr, "%s: recompile FAILED — keeping the running build "
+                    fprintf(stderr, "[%s] recompile FAILED — keeping the running build "
                         "(fix the errors above; the app stays up)\n", name);
                 }
             } else if (r < 0) {
@@ -1449,10 +1449,10 @@ int main(int argc, char** argv) {
             host_pending = 0;
             if (!sources_newer(product, srcs, nsr)) {
                 if (set_pending) set_pending(0);
-                fprintf(stderr, "%s: apply requested — product fresh, reloading\n", name);
+                fprintf(stderr, "[%s] apply requested — product fresh, reloading\n", name);
                 force = 1;
             } else if (!compile_pid) {
-                fprintf(stderr, "%s: apply requested — recompiling\n", name);
+                fprintf(stderr, "[%s] apply requested — recompiling\n", name);
                 if (set_pending) set_pending(2);
                 apply_compile = 1;
                 compile_pid = rebuild_spawn(name, 0);
@@ -1475,7 +1475,7 @@ int main(int argc, char** argv) {
             last_mtime = cur;
             char cwd_now[4096];
             if (!getcwd(cwd_now, sizeof(cwd_now))) cwd_now[0] = 0;
-            fprintf(stderr, "%s: reloading (cwd %s)\n", name, cwd_now);
+            fprintf(stderr, "[%s] reloading (cwd %s)\n", name, cwd_now);
             host_resources(name, "before destroy");
 
             // Destroy the OLD instance FIRST. Its silver_live_destroy runs
@@ -1513,7 +1513,7 @@ int main(int argc, char** argv) {
                 new_handle = reload_dlopen(lib, file_mtime(product));
             }
             if (!new_handle) {
-                fprintf(stderr, "%s: reload failed: %s\n", name, dlerror());
+                fprintf(stderr, "[%s] reload failed: %s\n", name, dlerror());
                 return 1;
             }
             // registry entries inside the old image would fault after dlclose
@@ -1528,7 +1528,7 @@ int main(int argc, char** argv) {
             do_destroy= dlsym(handle, DESTROY_SYM);
             stash_args(handle, argc, argv);
             if (do_init) do_init();
-            fprintf(stderr, "%s: reload complete\n", name);
+            fprintf(stderr, "[%s] reload complete\n", name);
             host_resources(name, "after init");
 
             // refresh source watch list from new artifacts

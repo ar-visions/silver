@@ -558,12 +558,12 @@ element knes : trinity
 			rom = path 'roms/{name}'
 		f : @FILE [ fopen[ rom, 'rb' ] ]
 		if [ ! f ]
-			puts 'knes: could not open ROM {rom}'
+			log 'knes: could not open ROM {rom}'
 			return
 		hdr : new u8 [ 16 ]
 		fread[ hdr, 1, 16, f ]
 		if [ hdr[0] != 0x4E || hdr[1] != 0x45 || hdr[2] != 0x53 || hdr[3] != 0x1A ]
-			puts 'knes: not an iNES file'
+			log 'knes: not an iNES file'
 			fclose[ f ]
 			return
 		prg_size = sz[ hdr[4] ] * 0x4000
@@ -583,8 +583,8 @@ element knes : trinity
 		fclose[ f ]
 		mir_mode = (mirror_v) ? 2 : 3
 		if [ mapper == 1 ] m1_ctrl = 0x0C            # PRG mode 3 at power-on
-		el [ mapper != 0 ] puts 'knes: mapper {mapper} not yet supported (NROM/MMC1)'
-		puts 'knes: prg={prg_size} chr={chr_size} mapper={mapper} vmirror={(mirror_v) ? 1 : 0}'
+		el [ mapper != 0 ] log 'knes: mapper {mapper} not yet supported (NROM/MMC1)'
+		log 'knes: prg={prg_size} chr={chr_size} mapper={mapper} vmirror={(mirror_v) ? 1 : 0}'
 
 	func nt_index [ a2: u32 ] -> u32
 		t : u32 [ (a2 >> 10) & 3 ]
@@ -859,7 +859,7 @@ element knes : trinity
 		cpu.sp = 0xFD
 		cpu.p  = 0x24
 		cpu.pc = u16[ rd16[ 0xFFFC ] ]
-		puts 'knes: reset pc={cpu.pc}'
+		log 'knes: reset pc={cpu.pc}'
 
 	# one instruction; returns CPU cycles
 	func cpu_step [] -> i32
@@ -1179,7 +1179,7 @@ element knes : trinity
 			if [ acc ] cpu.a = u8[ v2 ]
 			el bus_wr[ ea2, u8[ v2 ] ]
 			return rc
-		if [ trace ] puts 'knes 6502: unhandled opcode {op}'
+		if [ trace ] log 'knes 6502: unhandled opcode {op}'
 		return 2
 
 	func apu_wr [ a2: u32, v: u8 ] -> none
@@ -1501,13 +1501,13 @@ element knes : trinity
 		fwrite[ ppu.chr_ram, 1, 0x2000, f ]
 		fwrite[ prg_ram, 1, 0x2000, f ]
 		fclose[ f ]
-		puts 'knes: state saved at frame {frames}'
+		log 'knes: state saved at frame {frames}'
 
 	func load_state [] -> none
 		spx : rom.change_ext[ 'state' ]
 		f : @FILE [ fopen[ spx, 'rb' ] ]
 		if [ ! f ]
-			puts 'knes: no state file'
+			log 'knes: no state file'
 			return
 		fread[ st_hdr, 4, 16, f ]
 		cpu.a = u8[ st_hdr[ 0 ] ]
@@ -1537,7 +1537,7 @@ element knes : trinity
 		fread[ ppu.chr_ram, 1, 0x2000, f ]
 		fread[ prg_ram, 1, 0x2000, f ]
 		fclose[ f ]
-		puts 'knes: state loaded, frame {frames} pc={cpu.pc}'
+		log 'knes: state loaded, frame {frames} pc={cpu.pc}'
 
 	func wall_us [] -> i64
 		tsp : local i64 [ 2 ]
@@ -1592,7 +1592,7 @@ element knes : trinity
 		if [ dy >= 240 ] dy -= 480
 		if [ dy <= -240 ] dy += 480
 		if [ dy > 32 || dy < -32 ] dy = 0
-		if [ trace && dy != 0 ] puts 'dy={dy} camy={camy}'
+		if [ trace && dy != 0 ] log 'dy={dy} camy={camy}'
 		cam_prev_y = camy
 		cur_dx = dx
 		cur_dy = dy
@@ -1645,7 +1645,7 @@ element knes : trinity
 				memcpy[ @pub_framebuf[ er2 * 256 ], @ppu.framebuf[ (bsplit - 1) * 256 ], 1024 ]
 		if [ trace ]
 			if [ split != dbg_split || bsplit != dbg_bsplit || u32[ ppu.mask ] != dbg_mask ]
-				puts 'CH f{frames} split={split} bsplit={bsplit} mask={ppu.mask} ctrl={ppu.ctrl} dy={dy} dx={dx}'
+				log 'CH f{frames} split={split} bsplit={bsplit} mask={ppu.mask} ctrl={ppu.ctrl} dy={dy} dx={dx}'
 				dbg_split = split
 				dbg_bsplit = bsplit
 				dbg_mask = u32[ ppu.mask ]
@@ -1680,7 +1680,7 @@ element knes : trinity
 		generate_audio[]
 		frames += 1
 		if [ (frames % 60) == 0 ]
-			puts 'f{frames} pc={cpu.pc} ctrl={ppu.ctrl} mask={ppu.mask} sx={ppu.scroll_x} nt={ppu.ctrl & 3}'
+			log 'f{frames} pc={cpu.pc} ctrl={ppu.ctrl} mask={ppu.mask} sx={ppu.scroll_x} nt={ppu.ctrl & 3}'
 		if [ frames_exit > 0 && ticks >= i64[ frames_exit ] ]
 			nzc : i32 [ 0 ]
 			for [ ci: i32 0, ci < 0x2000, ci += 1 ]
@@ -1694,8 +1694,8 @@ element knes : trinity
 				fwrite[ ppu.palette, 1, 32, vf ]
 				fwrite[ ppu.chr_ram, 1, 0x2000, vf ]
 				fclose[ vf ]
-			puts 'L70 sy={line_sy[70]} nt={line_nt[70]} sx={line_sx[70]} | L150 sy={line_sy[150]} nt={line_nt[150]} | L30 sy={line_sy[30]} nt={line_nt[30]} t={ppu.t_reg}'
-			puts 'chr_nz={nzc} nt_nz={nzn} pal0={ppu.palette[0]} pal1={ppu.palette[1]} m1ctrl={m1_ctrl} chr0={m1_chr0} chr1={m1_chr1} prgb={m1_prg} mir={mir_mode}'
+			log 'L70 sy={line_sy[70]} nt={line_nt[70]} sx={line_sx[70]} | L150 sy={line_sy[150]} nt={line_nt[150]} | L30 sy={line_sy[30]} nt={line_nt[30]} t={ppu.t_reg}'
+			log 'chr_nz={nzc} nt_nz={nzn} pal0={ppu.palette[0]} pal1={ppu.palette[1]} m1ctrl={m1_ctrl} chr0={m1_chr0} chr1={m1_chr1} prgb={m1_prg} mir={mir_mode}'
 			pf : @FILE [ fopen[ '/tmp/knes_fb.ppm', 'wb' ] ]
 			if [ pf ]
 				fprintf[ pf, "P6\n256 240\n255\n" ]
@@ -1705,7 +1705,7 @@ element knes : trinity
 					fputc[ i32[ (qp >> 8) & 0xFF ], pf ]
 					fputc[ i32[ (qp >> 16) & 0xFF ], pf ]
 				fclose[ pf ]
-				puts 'knes: framebuf dumped'
+				log 'knes: framebuf dumped'
 			_exit[ 0 ]
 
 	func emu_entry [] -> none
@@ -1744,7 +1744,7 @@ element knes : trinity
 		apu = nes_apu []
 		audio = AudioOut [ sample_rate: 53267, channels: 2, buffer_size: 1024 ]
 		if [ ! audio.open[] ]
-			puts 'knes: audio device unavailable — continuing muted'
+			log 'knes: audio device unavailable — continuing muted'
 		apu.n_lfsr = 1
 		# APU length counter + noise period tables (NESdev facts)
 		lt : i32 [ 0 ]
