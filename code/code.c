@@ -193,8 +193,53 @@ static void parse_c(const char* path) {
                 if (IS(c_punct[k])) { kind = K_PUNCT; break; }
         }
         #undef IS
-        put_span(r->line, r->col, r->sp, r->splen, kind);
+        kinds[i] = kind;
     }
+    // DEFINITIONS. a function name with its body on the line (or the brace
+    // opening the next), a #define, a struct/enum/union with a body, and
+    // the name a typedef line gives; a prototype or a call is neither
+    for (int i = 0; i < n; i++) {
+        rec* r = &rs[i];
+        if (r->klen != 14 || memcmp(r->kind, "raw_identifier", 14) != 0) continue;
+        rec* prev = (i > 0) ? &rs[i - 1] : NULL;
+        rec* next = (i + 1 < n) ? &rs[i + 1] : NULL;
+        int  same_prev = prev && prev->line == r->line;
+        #define KIND_IS(rr, k) ((rr)->klen == (int)strlen(k) && memcmp((rr)->kind, k, (rr)->klen) == 0)
+        #define SP_IS(rr, k)   ((rr)->splen == (int)strlen(k) && memcmp((rr)->sp, k, (rr)->splen) == 0)
+        if (kinds[i] == K_FUNCTION && same_prev &&
+            (KIND_IS(prev, "raw_identifier") || KIND_IS(prev, "star") || KIND_IS(prev, "amp"))) {
+            int body = 0, j = i + 1;
+            for (; j < n && rs[j].line == r->line; j++) {
+                if (KIND_IS(&rs[j], "l_brace")) { body = 1; break; }
+                if (KIND_IS(&rs[j], "semi"))    { body = 0; j = n; break; }
+            }
+            if (!body && j < n && rs[j].line == r->line + 1 && KIND_IS(&rs[j], "l_brace")) body = 1;
+            if (body) def_put(r->sp, r->splen, r->line);
+        }
+        else if (same_prev && KIND_IS(prev, "raw_identifier") && SP_IS(prev, "define") &&
+                 i > 1 && KIND_IS(&rs[i - 2], "hash"))
+            def_put(r->sp, r->splen, r->line);
+        else if (same_prev && KIND_IS(prev, "raw_identifier") &&
+                 (SP_IS(prev, "struct") || SP_IS(prev, "enum") || SP_IS(prev, "union")) &&
+                 next && KIND_IS(next, "l_brace"))
+            def_put(r->sp, r->splen, r->line);
+        else if (next && KIND_IS(next, "semi")) {
+            int j = i;
+            while (j > 0 && rs[j - 1].line == r->line) j--;
+            if (KIND_IS(&rs[j], "raw_identifier") && SP_IS(&rs[j], "typedef"))
+                def_put(r->sp, r->splen, r->line);
+        }
+        #undef KIND_IS
+        #undef SP_IS
+    }
+    for (int i = 0; i < n; i++) {
+        rec* r = &rs[i];
+        int  k = kinds[i];
+        int  d = (k == K_IDENT || k == K_FUNCTION || k == K_TYPE) ? def_line(r->sp, r->splen) : 0;
+        if (d) put(r->line, r->col, r->splen, k, d);
+        else   put_span(r->line, r->col, r->sp, r->splen, k);
+    }
+    free(kinds);
     free(rs);
     free(out);
 }
@@ -205,6 +250,13 @@ static const char* py_script =
 "f=sys.argv[1]\n"
 "lines=open(f,encoding='utf-8',errors='replace').read().split('\\n')\n"
 "toks=list(tokenize.tokenize(open(f,'rb').readline))\n"
+"defs={}\n"
+"prev=None\n"
+"for i,t in enumerate(toks):\n"
+"    if t.type==tokenize.NAME and t.string not in defs:\n"
+"        if prev and prev.string in ('def','class'): defs[t.string]=t.start[0]\n"
+"        elif t.start[1]==0 and i+1<len(toks) and toks[i+1].string=='=': defs[t.string]=t.start[0]\n"
+"    if t.type not in (tokenize.NL,tokenize.NEWLINE,tokenize.INDENT,tokenize.DEDENT,tokenize.COMMENT): prev=t\n"
 "prev=None\n"
 "for i,t in enumerate(toks):\n"
 "    k=None; s=t.string\n"
@@ -224,12 +276,13 @@ static const char* py_script =
 "    elif t.type==tokenize.COMMENT: k=11\n"
 "    elif t.type==tokenize.OP: k=13 if s in '()[]{},;:.' else 12\n"
 "    if k is not None:\n"
+"        d=defs.get(s,0) if t.type==tokenize.NAME else 0\n"
 "        (l1,c1),(l2,c2)=t.start,t.end\n"
-"        if l1==l2: print(l1,c1,c2-c1,k)\n"
+"        if l1==l2: print(l1,c1,c2-c1,k,d)\n"
 "        else:\n"
-"            print(l1,c1,len(lines[l1-1])-c1,k)\n"
-"            for L in range(l1+1,l2): print(L,0,len(lines[L-1]),k)\n"
-"            print(l2,0,c2,k)\n"
+"            print(l1,c1,len(lines[l1-1])-c1,k,0)\n"
+"            for L in range(l1+1,l2): print(L,0,len(lines[L-1]),k,0)\n"
+"            print(l2,0,c2,k,0)\n"
 "    if t.type not in (tokenize.NL,tokenize.NEWLINE,tokenize.INDENT,tokenize.DEDENT,tokenize.COMMENT): prev=t\n";
 
 static void parse_py(const char* path) {
@@ -238,8 +291,8 @@ static void parse_py(const char* path) {
     char* out = run(cmd);
     if (!out) return;
     for (const char* p = out; *p; ) {
-        int line, col, len, kind;
-        if (sscanf(p, "%d %d %d %d", &line, &col, &len, &kind) == 4) put(line, col, len, kind);
+        int line, col, len, kind, decl;
+        if (sscanf(p, "%d %d %d %d %d", &line, &col, &len, &kind, &decl) == 5) put(line, col, len, kind, decl);
         const char* nl = strchr(p, '\n');
         if (!nl) break;
         p = nl + 1;
