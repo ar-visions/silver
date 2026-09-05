@@ -23,6 +23,7 @@ class ConsoleSession
     mutable pid        : i32 [ 0  ]
     mutable name       : string
     mutable launch_cmd : string
+    mutable cwd        : string
     mutable pending    : string
     mutable esc_state  : i32 [ 0  ]
     mutable esc_n0     : i32 [ 0  ]
@@ -100,6 +101,8 @@ class ConsoleSession
         if [ pty_fd >= 0 ] return
         pid = forkpty[ @pty_fd, null, null, null ]
         if [ pid == 0 ]
+            # the folder the process is given, when the view has one
+            if [ cwd && cwd.count > 0 ] chdir[ cwd.chars ]
             setenv[ 'TERM', 'xterm-256color', 1 ]
             setenv[ 'COLORTERM', 'truecolor', 1 ]
             if [ launch_cmd && launch_cmd.count > 0 ]
@@ -745,8 +748,9 @@ class ConsoleSession
             ioctl[ pty_fd, TIOCSWINSZ, @ws[0] ]
         user_scrolled = false
 
-    func read_output []
-        if [ pty_fd < 0 ] return
+    # true when the app wrote something: the view repaints on that
+    func read_output [] -> bool
+        if [ pty_fd < 0 ] return false
         read_calls += 1
         buf : local i8 [ 2 ]
         buf[1] = 0
@@ -763,6 +767,7 @@ class ConsoleSession
             write_input[ pending + '\r' ]
             pending = ''
             if [ running ] run_armed = true
+        return got.count > 0
 
     func feed_fd [ fd: i32 ]
         if [ fd < 0 ] return
@@ -1178,6 +1183,7 @@ element Console
     public  feed       : list string
     public  sessions   : map ConsoleSession[string]
     public  launch     : string
+    public  cwd        : string
     public  run_line   : string
     mutable last_run   : string
 
@@ -1188,6 +1194,7 @@ element Console
             s = ConsoleSession []
             s.name = sid
             if [ launch && launch.count > 0 ] s.launch_cmd = launch
+            if [ cwd && cwd.count > 0 ]       s.cwd = cwd
             if [ sid != 'system' ]
                 puts 'session[]: creating + starting "{sid}" (launch="{launch}")'
                 s.start[]
@@ -1249,6 +1256,9 @@ element Console
             s.send_esc[ ev.key.text ]
         el
             s.write_input[ ev.key.text ]
+        # what a press does after its handlers: mark and restyle
+        pristine = false
+        if [ ux ] ux.restyle = true
 
     func paste [ text: string ]
         s : ConsoleSession session[]
@@ -1277,7 +1287,11 @@ element Console
                 return
         ele : Layer (layers) ? layers[ 'content' ] : null
         vh  : f32 [ (ele && ele.bounds) ? ele.bounds.h : 0.0 ]
-        if [ term_key[ s, ev, vh ] ] pristine = false
+        term_key[ s, ev, vh ]
+        # a key the app answers (enter, backspace) echoes back through the
+        # pty: repaint as a press would, whatever term_key made of it
+        pristine = false
+        if [ ux ] ux.restyle = true
 
     func place_cursor [ ev: Event ]
         s : ConsoleSession session[]

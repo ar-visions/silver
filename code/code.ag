@@ -15,7 +15,10 @@ intern func code_token [ i32, i32 ] -> i32
 func syntax [ src: path ] -> fmt_file
     lns  : vec Au []
     ext  : string src.ext[]
-    lang : string (ext == 'py' || ext == '.py') ? 'py' : 'c'
+    if [ ext.count > 0 && ext[0] == 46 ] ext = ext.mid[ 1, ext.count - 1 ]
+    # c and python have their tools; anything else gets the plain lexer
+    isc  : bool [ ext == 'c' || ext == 'h' || ext == 'cc' || ext == 'cpp' || ext == 'hpp' ]
+    lang : string (ext == 'py') ? 'py' : ((isc) ? 'c' : 'text')
     p    : string '{src}'
     n    : i32 [ code_parse[ p.chars, lang.chars ] ]
     cur  : vec fmt_token []

@@ -2802,7 +2802,7 @@ Display Window
             compose.hold[]
         compose.resize[ width, height ]
         compose.update[]
-        compose.clear[ string[ "#413" ] ]
+        compose.clear[ string[ "#888" ] ]
 
         if [ !is_setup ]
             is_setup = true

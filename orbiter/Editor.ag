@@ -1203,7 +1203,7 @@ Layer EditorLayer
         bas9 : i32 [ editor.tool_base[] ]
         for [ ti: i32 0, ti < bas9 + editor.nav_tools.count, ti += 1 ]
             tnm : string (bas9 == 1 && ti == 0) ? editor.nav_default : editor.nav_tools[ ti - bas9 ]
-            tyy : f32 [ bounds.y + 4.0 + f32[ ti ] * 68.0 ]
+            tyy : f32 [ bounds.y + editor.tool_y[ ti, bounds.h ] ]
             # the view you are IN reads as a border, not a hover tint
             act9 : bool [ editor.view_name && editor.view_name.count > 0
                           && editor.view_name == tnm ]
@@ -1220,7 +1220,13 @@ Layer EditorLayer
             cv.rounded_rect[ dxx, tyy, 60.0, 64.0, 8.0, 8.0, 8.0, 8.0 ]
             cv.paint       [ ]
             cv.stroke_width[ 0.0 ]
-            tico : SVGModel editor.ficons.named[ tnm, 36 ]
+            # a console view has its own mark (gear for a shell, chat for an agent)
+            orbt : cast orbiter [ editor.ux.app_object ]
+            inm  : string tnm
+            if [ orbt ]
+                cico : string orbt.console_icon[ tnm ]
+                if [ cico ] inm = cico
+            tico : SVGModel editor.ficons.named[ inm, 36 ]
             if [ tico ]
                 # selected = orangish white; resting = off purple white
                 cv.svg_override[ (act9) ? rgba['#ffe6d2'] : ((ti == editor.tool_hover) ? rgba['#ffffff'] : rgba['#cfc6e8']) ]
@@ -2486,6 +2492,23 @@ Control Editor
         return (nav_default && nav_default.count > 0) ? 1 : 0
 
     # left tool rail: cell index under the mouse, -1 off
+    # where rail chip ti sits in a rail h tall: a file's views stack down
+    # from the top; the project's consoles are not file views and stack
+    # up from the bottom, in their own group
+    func tool_y [ ti: i32, h: f32 ] -> f32
+        n    : i32 [ tool_base[] + ((nav_tools) ? i32[ nav_tools.count ] : 0) ]
+        orbt : cast orbiter [ ux.app_object ]
+        nc   : i32 [ 0 ]
+        if [ orbt && nav_tools ]
+            for [ k: i32 i32[ nav_tools.count ] - 1, k >= 0, k -= 1 ]
+                nm9 : string nav_tools[ k ]
+                if [ !orbt.console_of[ nm9 ] ] break
+                nc += 1
+        if [ ti >= n - nc ]
+            from_end : i32 [ n - 1 - ti ]
+            return h - 4.0 - 64.0 - f32[ from_end ] * 68.0
+        return 4.0 + f32[ ti ] * 68.0
+
     func tool_hit [ mx: f32, my: f32 ] -> i32
         if [ !nav_tools || nav_tools.count == 0 ] return -1
         ele : (layers) ? cast EditorLayer [ layers['content'] ] : null
@@ -2493,10 +2516,11 @@ Control Editor
         rx : f32 [ mx - ele.bounds.x ]
         ry : f32 [ my - ele.bounds.y ]
         if [ rx < 0.0 || rx > 64.0 ] return -1
-        if [ ry < 4.0 ] return -1
-        idx : i32 [ (ry - 4.0) / 68.0 ]
-        if [ idx < 0 || idx >= tool_base[] + nav_tools.count ] return -1
-        return idx
+        n : i32 [ tool_base[] + i32[ nav_tools.count ] ]
+        for [ ti: i32 0, ti < n, ti += 1 ]
+            y : f32 [ tool_y[ ti, ele.bounds.h ] ]
+            if [ ry >= y && ry < y + 64.0 ] return ti
+        return -1
 
     func word_char [ c: i32 ] -> bool
         return (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95
@@ -3267,7 +3291,13 @@ Control Editor
         ext : file_ext[ p ]
         if [ ext.count == 0 ] return null
         ensure_export_registry[]
-        return export_lib[ ext ]
+        lib : string export_lib[ ext ]
+        if [ lib ] return lib
+        # no export claims it: the code handler's plain lexer colours any
+        # text file, when that handler is built
+        root : path.path_startup[]
+        so   : path '{root}/install/build/libsilver-code.so'
+        return (so.exists[]) ? 'silver-code' : null
 
     # a named view that can render bytes, asked of the views themselves
     func binary_view_name [] -> string
@@ -3281,18 +3311,18 @@ Control Editor
             if [ ft == FileType.binary || ft == FileType.agnostic ]
                 bin_view_cached = nm
                 return nm
-        return 'text'
+        return 'editor'
 
     # what to show with nothing launched. the owning module exported
     # whether its format is binary; never sniff, never key off the ext
     func fallback_view_for [ p: path ] -> string
-        if [ !p ] return 'text'
+        if [ !p ] return 'editor'
         ensure_export_registry[]
         ext : file_ext[ p ]
-        if [ ext.count == 0 ] return 'text'
+        if [ ext.count == 0 ] return 'editor'
         ft : string export_ftype[ ext ]
         if [ ft && ft == 'binary' ] return binary_view_name[]
-        return 'text'
+        return 'editor'
 
     # default action's name: peer handler module or hosted element
     func default_view_for [ p: path ] -> string
@@ -3587,7 +3617,7 @@ Control Editor
         d : string default_view_for[ src ]
         if [ d && d.count > 0 ] return d
         if [ file_is_binary[ src ] ] return 'b16'
-        return 'text'
+        return 'editor'
 
     # the only place a view is torn down or constructed
     func mount [ want: string ]
@@ -3598,14 +3628,23 @@ Control Editor
         mounted = key
         close_view[]
         # a hosted handler (the markdown viewer) gives way to any other view
-        if [ want.compare[ 'text' ] == 0 ]
+        if [ want.compare[ 'editor' ] == 0 ]
             close_app[]
             load_text[]
+            view_name = 'editor'
             return
-        t : Au_t view_type[ want ]
-        if [ t ]
+        t    : Au_t view_type[ want ]
+        orbc : cast orbiter [ ux.app_object ]
+        # a console the project declares is a view we compose ourselves
+        isc  : bool [ orbc && orbc.console_of[ want ] ]
+        if [ t || isc ]
             close_app[]
-            rview     = ResourceView [ Au.new_object[ t, null, null, true, __FILE__, __LINE__, __SEQUENCE__ ] ]
+            if [ isc ]
+                # the folder in view is what the process gets, not a file
+                fold : path [ (orbc.nav_root) ? orbc.nav_root : orbc.project_root[] ]
+                rview = ConsoleView [ session: want, sessions: orbc.ed_sessions,
+                    launch: orbc.agent_cmd[ want ], folder: fold ]
+            el         rview = ResourceView [ Au.new_object[ t, null, null, true, __FILE__, __LINE__, __SEQUENCE__ ] ]
             rview.src = src
             animated  = rview.continuous*[]     # emulator panes redraw every frame
             lines     = list string []
@@ -3789,7 +3828,10 @@ Control Editor
             anchor_col  = 0
             dragging    = false
         loaded_src = src
-        if [ !src ]
+        # a console is not a file's view: it mounts with no file at all
+        orbn : cast orbiter [ ux.app_object ]
+        isc  : bool [ orbn && view_name && orbn.console_of[ view_name ] ]
+        if [ !src && !isc ]
             mounted = null
             close_view[]
             close_app[]
@@ -4034,6 +4076,8 @@ Control Editor
         orb : cast orbiter [ ux.app_object ]
         bas : i32 [ tool_base[] ]
         nm  : string [ (bas == 1 && idx == 0) ? '' : nav_tools[ idx - bas ] ]
+        # a console is dir context: the pane lets go of its file first
+        if [ orb && orb.console_of[ nm ] ] orb.pane_drop_file[ pane_index ]
         view_name = nm
         load_file[]
         if [ orb ] orb.exit_find_mode[]
