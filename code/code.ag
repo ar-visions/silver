@@ -6,7 +6,8 @@ export extensions ['.c': FileType.ascii, '.h': FileType.ascii, '.cc': FileType.a
 import vec
 
 # the c side runs the tool and keeps its tokens: line (1-based), column,
-# length and Syntax kind, read back a field at a time
+# length, Syntax kind and the line in this file the name is defined on
+# (0 for none), read back a field at a time
 intern func code_parse [ cstr, cstr ] -> i32
 intern func code_token [ i32, i32 ] -> i32
 
@@ -28,6 +29,9 @@ func syntax [ src: path ] -> fmt_file
         col  : i32 [ code_token[ i, 1 ] ]
         len  : i32 [ code_token[ i, 2 ] ]
         kind : i32 [ code_token[ i, 3 ] ]
-        cur.push[ fmt_token [ column: col, length: len, syntax: Syntax [ kind ] ] ]
+        decl : i32 [ code_token[ i, 4 ] ]
+        # a definition in this file: cmd-click goes there, as the .f map does for silver
+        cur.push[ fmt_token [ column: col, length: len, syntax: Syntax [ kind ],
+            decl_source: (decl > 0) ? p : null, decl_line: decl ] ]
     lns.push[ cur ]
     return fmt_file [ source: p, mtime: src.modified_time[], lines: lns ]
