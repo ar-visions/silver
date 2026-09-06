@@ -7826,7 +7826,9 @@ enode parse_statement(silver a)
         validate(member_meta && is_class(member_meta),
             "expected class type for member meta A");
         if (read_if(a, ",")) {
-            member_meta_b = read_etype(a, null);
+            // a bare class name: read_etype would take the bracket as type args
+            string bname = read_alpha(a);
+            member_meta_b = bname ? (etype)rlookup((aether)a, bname) : null;
             validate(member_meta_b && is_class(member_meta_b),
                 "expected class type for member meta B");
             if (next_is(a, "[")) {

@@ -366,7 +366,7 @@ element n64 : trinity
 	public  lock_aspect  : bool   [ true ]
 	public  title        : string [ 'n64' ]
 	public  background   : string [ 'Background' ]
-	default rom          : path           # positional: the ROM
+	default [ Launch ] rom : path           # positional: the ROM
 	public  state        : path           # --state <file>: our n64.state or a gopher64 .stateN zip
 	mutable gs_buf       : @u8            # postcard cursor for gopher64 state parsing
 	mutable gs_pos       : i64

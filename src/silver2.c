@@ -3856,7 +3856,7 @@ def_var(Value record_val, const char* name, Type* type, long offset,
                       // def_prop with offset, access, meta
     int access = traits & AU_TRAIT_IS_HIDDEN ? 1 : 2;
     return call_au(
-        "def_prop", "ppppliipppiipip", 14, record_val, const_str(name),
+        "def_prop", "ppppliipppiipipp", 15, record_val, const_str(name),
         type_record(type),
         const_i64((traits & ~AU_TRAIT_IS_HIDDEN) | AU_TRAIT_IPROP),
         const_i32(offset), const_i32(0),
@@ -3864,7 +3864,8 @@ def_var(Value record_val, const char* name, Type* type, long offset,
         LLVMConstNull(S->ir.ptr), LLVMConstNull(S->ir.ptr),
         const_i32(0), const_i32(access), const_str(S->cur_file),
         const_i32(0),
-        meta ? type_record(type_of(meta)) : LLVMConstNull(S->ir.ptr));
+        meta ? type_record(type_of(meta)) : LLVMConstNull(S->ir.ptr),
+        LLVMConstNull(S->ir.ptr));
 }
 static Value def_fn(Value record_val, const char* name,
                     Type* result_type, int kind, u64 traits,
@@ -3874,13 +3875,14 @@ static Value def_fn(Value record_val, const char* name,
                     Node* meta) { // register a function member with
                                   // named, typed arguments
     Value member = call_au(
-        "def_func", "ppppiiilppipppip", 15, record_val, const_str(name),
+        "def_func", "ppppiiilppipppipp", 16, record_val, const_str(name),
         type_record(result_type), const_i64(kind), const_i64(2),
         const_i64(optype), const_i64(traits), func_val,
         alt_name ? const_str(alt_name) : LLVMConstNull(S->ir.ptr),
         const_i64(slot), LLVMConstNull(S->ir.ptr),
         LLVMConstNull(S->ir.ptr), const_str(S->cur_file), const_i64(0),
-        meta ? type_record(type_of(meta)) : LLVMConstNull(S->ir.ptr));
+        meta ? type_record(type_of(meta)) : LLVMConstNull(S->ir.ptr),
+        LLVMConstNull(S->ir.ptr));
     for (int i = 0; i < arg_count; i++)
         call_au("def_arg", "ppppl", 4, member,
                 const_str(arg_names && arg_names[i] ? arg_names[i]

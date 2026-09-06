@@ -10248,7 +10248,8 @@ AU_EXPORT none aether_build_module_initializer(aether a, enode init) {
                 mem->meta.b ? e_typeid(a, u(etype, (Au_t)mem->meta.b)) : e_null(a, etypeid(Au)),
                 mem->source ? (Au)const_string(chars, mem->source) : (Au)e_null(a, etypeid(symbol)),
                 _i32(mem->src_line),
-                mem->meta.m ? e_typeid(a, u(etype, mem->meta.m)) : e_null(a, etypeid(Au_t))
+                mem->meta.m ? e_typeid(a, u(etype, mem->meta.m)) : e_null(a, etypeid(Au_t)),
+                mem->meta.member_b ? e_typeid(a, u(etype, mem->meta.member_b)) : e_null(a, etypeid(Au_t))
             ), false, false);
 
             arg_list(mem, arg) {
@@ -10301,7 +10302,8 @@ AU_EXPORT none aether_build_module_initializer(aether a, enode init) {
                 _i32(mem->access_type),
                 mem->source ? (Au)const_string(chars, mem->source) : (Au)e_null(a, etypeid(symbol)),
                 _i32(mem->src_line),
-                mem->meta.m ? e_typeid(a, u(etype, mem->meta.m)) : e_null(a, etypeid(Au_t))
+                mem->meta.m ? e_typeid(a, u(etype, mem->meta.m)) : e_null(a, etypeid(Au_t)),
+                mem->meta.member_b ? e_typeid(a, u(etype, mem->meta.member_b)) : e_null(a, etypeid(Au_t))
             ), false, false);
         }
     }
@@ -10439,7 +10441,8 @@ AU_EXPORT none aether_build_module_initializer(aether a, enode init) {
                     mem->meta.b ? e_typeid(a, u(etype, (Au_t)mem->meta.b)) : e_null(a, etypeid(Au)),
                     mem->source ? (Au)const_string(chars, mem->source) : (Au)e_null(a, etypeid(symbol)),
                     _i32(mem->src_line),
-                    mem->meta.m ? e_typeid(a, u(etype, mem->meta.m)) : e_null(a, etypeid(Au_t))
+                    mem->meta.m ? e_typeid(a, u(etype, mem->meta.m)) : e_null(a, etypeid(Au_t)),
+                    mem->meta.member_b ? e_typeid(a, u(etype, mem->meta.member_b)) : e_null(a, etypeid(Au_t))
                 ), false, false);
 
                 // structs have no vtable — skip function pointer slot assignment
@@ -10536,7 +10539,8 @@ AU_EXPORT none aether_build_module_initializer(aether a, enode init) {
                     _i32(mem->access_type),
                     mem->source ? (Au)const_string(chars, mem->source) : (Au)e_null(a, etypeid(symbol)),
                     _i32(mem->src_line),
-                    mem->meta.m ? e_typeid(a, u(etype, mem->meta.m)) : e_null(a, etypeid(Au_t))
+                    mem->meta.m ? e_typeid(a, u(etype, mem->meta.m)) : e_null(a, etypeid(Au_t)),
+                    mem->meta.member_b ? e_typeid(a, u(etype, mem->meta.member_b)) : e_null(a, etypeid(Au_t))
                 ), false, false);
             } else if (mem->member_type == AU_MEMBER_ENUMV) {
                 static int seq = 0;

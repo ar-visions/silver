@@ -29,17 +29,16 @@ class FileIcons
         if [ !mi_loaded ] load[]
         if [ !mi_exts ] return null
         nm : string
-        if [ mi_names ]
-            v0 : string mi_names[ fname ]
-            if [ v0 ] nm = v0
+        if [ !fname ] return null
+        if [ mi_names && mi_names.contains[ fname ] ] nm = mi_names[ fname ]
         if [ !nm ]
             n : i32 [ fname.count ]
             for [ i: i32 0, i < n, i += 1 ]
                 if [ fname[i] == 46 && i + 1 < n ]
                     ex9 : string fname.mid[ i + 1, n - i - 1 ]
-                    v1  : string mi_exts[ ex9 ]
-                    if [ v1 ]
-                        nm = v1
+                    # typed search text carries any dot: an unknown key faults
+                    if [ mi_exts.contains[ ex9 ] ]
+                        nm = mi_exts[ ex9 ]
                         break
         if [ !nm ] nm = string [ 'file' ]
         return named[ nm, sz9 ]
