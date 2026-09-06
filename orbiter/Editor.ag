@@ -752,6 +752,16 @@ ResourceView AppView
         if [ !ready ]    return 'starting {app_mod}...'
         return null
 
+    # one word for the instance chip; empty once the app is up and drawing
+    func status_word [] -> string
+        if [ ended ]     return 'exited'
+        if [ paused ]    return 'paused'
+        if [ attaching ] return 'attaching'
+        st8 : i32 [ (slot >= 0) ? host_app_state[ slot ] : 0 ]
+        if [ st8 == 1 ]  return 'compiling'
+        if [ !ready ]    return 'starting'
+        return ''
+
     func overlay [ cv: Canvas, bounds: rect ]
         st9 : i32 [ (slot >= 0) ? host_app_state[ slot ] : 0 ]
         msg : string [ (st9 == 1) ? 'compiling {app_mod}…' : 'starting {app_mod}…' ]
@@ -2113,11 +2123,10 @@ element ToolRail : Toolbar
     user_events : false
     public top  : f32
     func owner [] -> Editor
-        ed : Editor[ parent ]
-        if [ ed ] return ed
-        cb : CommitView[ parent ]
-        ev9 : EditorView (cb) ? cb.view[] : null
-        return (ev9) ? ev9.text_of[] : null
+        # a real type check: a plain cast hands back the commit view as an
+        # Editor, and its nav_tools slot is garbage — the nav-list crash
+        if [ parent && parent inherits Editor ] return Editor[ parent ]
+        return null
     public func draw [ w: Window ]
         if [ w.draw_stage != CanvasType.screen ] return
         cv : Canvas w.screen
@@ -2149,7 +2158,8 @@ element ToolRail : Toolbar
             cv.paint       [ ]
             cv.stroke_width[ 0.0 ]
             # a console view has its own mark (gear for a shell, chat for an agent)
-            orbt : cast orbiter [ editor.ux.app_object ]
+            # the rail's own window: a browsed-over editor may be detached (no ux)
+            orbt : cast orbiter [ ux.app_object ]
             inm  : string tnm
             if [ orbt ]
                 cico : string orbt.console_icon[ tnm ]
@@ -2241,7 +2251,8 @@ Control Editor
     mutable nav_tools     : vec string
     mutable nav_default   : string
     mutable tool_hover    : i32 [ -1 ]
-    mutable run_view      : AppView
+    mutable run_view      : AppView          # the selected instance: shown and debugged
+    mutable run_views     : vec AppView      # every instance this pane started
     mutable app_view      : bool
     mutable session_view  : string
     mutable saved_scroll  : f32
@@ -2536,7 +2547,9 @@ Control Editor
     # up from the bottom, in their own group
     func tool_y [ ti: i32, h: f32 ] -> f32
         n    : i32 [ tool_base[] + ((nav_tools) ? i32[ nav_tools.count ] : 0) ]
-        orbt : cast orbiter [ ux.app_object ]
+        # a detached editor (nav list open) has no window
+        oa9  : Au (ux) ? ux.app_object : null
+        orbt : cast orbiter [ oa9 ]
         nc   : i32 [ 0 ]
         if [ orbt && nav_tools ]
             for [ k: i32 i32[ nav_tools.count ] - 1, k >= 0, k -= 1 ]
@@ -3692,8 +3705,14 @@ Control Editor
             orb8 : cast orbiter [ ux.app_object ]
             if [ orb8 && run_view.app_mod ] orb8.stop_debug[ run_view.app_mod ]
             run_view.release*[]
-        run_view = null
-        app_view = false
+        # drop the closed instance; the newest remaining one is selected
+        keep : vec AppView []
+        if [ run_views ]
+            for [ v: AppView ] in run_views
+                if [ v != run_view ] keep.push[ v ]
+        run_views = keep
+        run_view = (keep.count > 0) ? keep[ keep.count - 1 ] : null
+        app_view = run_view != null
 
     # which view this pane should show: the user's pick, else the default
     func resolve_view [] -> string
@@ -3989,6 +4008,11 @@ Control Editor
                 if [ es9 ] es9.print_text[ '\r\nstopped\r\n' ]
             close_app[]
             pristine  = false
+            # another instance remains: it takes the pane
+            if [ run_view ]
+                app_view = true
+                if [ ux ] ux.restyle = true
+                return
             no_scroll = false
             # stopping is a view choice: show the file, do not relaunch.
             # a binary format lands in a byte view, not in text
@@ -3996,13 +4020,17 @@ Control Editor
             load_file[]
             if [ ux ] ux.restyle = true
             return
+        start_instance[ clean ]
+
+    # play: a new instance beside the others, and it becomes the selected one
+    func start_instance [ clean: bool ]
         if [ !src ] return
         view_name = ''
         hm9 : handler_module_for[ src ]
         if [ hm9 ]
             launch_handler[ hm9, src, '' ]
             return
-        log 'toggle_app_run: starting {src}'
+        log 'start_instance: starting {src}'
         nv : AppView [ ]
         nv.src   = src
         nv.clean_build = clean
@@ -4011,12 +4039,33 @@ Control Editor
             fa8 : string orb8.file_args[ src ]
             nv.module_args = (fa8 && fa8.count > 0) ? fa8 : orb8.module_args
         nv.start[]                     # serve socket + build the run command
+        if [ !run_views ] run_views = vec AppView []
+        run_views.push[ nv ]
         run_view = nv
         app_view = true
         animated = true
         pristine = false
         no_scroll = true
         if [ ux ] ux.restyle = true
+
+    func select_instance [ i: i32 ]
+        if [ !run_views || i < 0 || i >= run_views.count ] return
+        run_view  = run_views[ i ]
+        app_view  = true
+        animated  = true
+        pristine  = false
+        no_scroll = true
+        if [ ux ] ux.restyle = true
+
+    # the chip's [x]: stop that instance; the last one left takes the pane
+    func close_instance [ i: i32 ]
+        select_instance[ i ]
+        toggle_app_run[ false ]
+
+    func instance_name [ i: i32 ] -> string
+        av : AppView run_views[ i ]
+        m : string (av.app_mod && av.app_mod.count > 0) ? av.app_mod : ((src) ? src.stem[] : 'app')
+        return '{m} {i + 1}'
 
     func attach_app_run [ mod: string ]
         if [ run_view ] return

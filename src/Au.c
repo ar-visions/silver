@@ -1265,7 +1265,7 @@ static Au_t _push_arg(Au_t type, bool add_arg) {
     return au;
 }
 
-AU_EXPORT Au_t def_prop(Au_t context, symbol ident, Au_t type, u64 traits, u32 offset, u32 abi_size, ARef value, Au_t meta_a, Au meta_b, i32 index, i32 access, symbol source, i32 src_line, Au_t meta_m) {
+AU_EXPORT Au_t def_prop(Au_t context, symbol ident, Au_t type, u64 traits, u32 offset, u32 abi_size, ARef value, Au_t meta_a, Au meta_b, i32 index, i32 access, symbol source, i32 src_line, Au_t meta_m, Au_t member_b) {
     Au_t prop = def(context, ident, AU_MEMBER_VAR, traits);
     prop->access_type = (interface)access;
     if (source) prop->source = cstr_copy((cstr)source);
@@ -1278,6 +1278,7 @@ AU_EXPORT Au_t def_prop(Au_t context, symbol ident, Au_t type, u64 traits, u32 o
     prop->meta.a    = meta_a;
     prop->meta.b    = meta_b && !instanceof(meta_b, Au_t) ? hold(meta_b) : meta_b;
     prop->meta.m    = meta_m;
+    prop->meta.member_b = member_b;
     prop->af_index     = index; // AF-bit slot position (computed by the codegen)
     if (context && context->ident && ident &&
         strcmp(context->ident, "Option") == 0 && strcmp(ident, "selected") == 0)
@@ -1316,7 +1317,7 @@ AU_EXPORT Au_t def_meta(Au_t context, symbol ident, Au_t arg) {
 
 Au_t def_func(Au_t type, symbol ident, Au_t rtype, u32 member_type,
         u32 access_type, u32 operator_type, u64 traits, ARef value, symbol alt, i32 index,
-        Au_t meta_a, Au meta_b, symbol source, i32 src_line, Au_t meta_m) {
+        Au_t meta_a, Au meta_b, symbol source, i32 src_line, Au_t meta_m, Au_t member_b) {
     Au_t func = def(type, ident, AU_MEMBER_TYPE, traits);
     if (source) func->source = cstr_copy((cstr)source);
     func->src_line      = src_line;
@@ -1330,6 +1331,7 @@ Au_t def_func(Au_t type, symbol ident, Au_t rtype, u32 member_type,
     func->meta.a        = meta_a;
     func->meta.m = meta_m;
     func->meta.b        = meta_b;
+    func->meta.member_b = member_b;
     return func;
 }
 
@@ -2102,6 +2104,7 @@ AU_EXPORT none push_type(Au_t type, Au_t to_mod) {
         def_member(mt, "a", typeid(Au_t), AU_MEMBER_VAR, 0)->offset = offsetof(meta_t, a);
         def_member(mt, "b", typeid(Au),   AU_MEMBER_VAR, 0)->offset = offsetof(meta_t, b);
         def_member(mt, "m", typeid(Au_t), AU_MEMBER_VAR, 0)->offset = offsetof(meta_t, m);
+        def_member(mt, "member_b", typeid(Au_t), AU_MEMBER_VAR, 0)->offset = offsetof(meta_t, member_b);
  
         Au_t required_bits = def_member(au_t, "required_bits",  typeid(u64), AU_MEMBER_VAR, 0);
         required_bits->elements = 4;
@@ -5923,8 +5926,12 @@ AU_EXPORT none  string_reserve(string a, num extra) {
 }
 
 AU_EXPORT none  string_alloc_ahead(string a, i64 extra_space) {
-    if (extra_space + a->count >= a->alloc)
-        string_alloc_sz(a, (a->alloc << 1) + extra_space);
+    // a formatted string carries alloc == 0: grow from what it holds, not
+    // from alloc, or the copy in alloc_sz runs past the new buffer
+    if (extra_space + a->count >= a->alloc) {
+        i64 base = a->alloc > a->count ? a->alloc : a->count;
+        string_alloc_sz(a, (base << 1) + extra_space);
+    }
 }
 
 AU_EXPORT none  string_append(string a, symbol b) {

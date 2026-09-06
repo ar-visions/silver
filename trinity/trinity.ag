@@ -4928,15 +4928,18 @@ Button Option
 # utility: a horizontal 0..1 slider. click or drag anywhere on the track
 Control VolumeSlider
     public value    : f32 [ 0.5 ]
+    public pad_l    : f32              # px kept clear at the left for an embedded label
+    public changed  : bool             # set when the user moves it; the owner clears it
     intern dragging : bool
     intern vol_inset : f32 [ 7.0 ]     # track inset = widest knob radius
 
     func set_from_x [ x: f32 ]
-        track : f32 [ bounds.w - vol_inset * 2.0 ]
+        track : f32 [ bounds.w - vol_inset * 2.0 - pad_l ]
         if [ track <= 0.0 ] return
-        frac : f32 [ clamp[ (x - vol_inset) / track, 0.0, 1.0 ] ]
+        frac : f32 [ clamp[ (x - vol_inset - pad_l) / track, 0.0, 1.0 ] ]
         if [ frac == value ] return
         value    = frac
+        changed  = true
         pristine = false
         if [ ux ] ux.will_animate = true
 
@@ -4966,8 +4969,8 @@ Control VolumeSlider
         th : f32 [ 3.0 ]
         cy : f32 [ bounds.h * 0.5 ]
         ty : f32 [ cy - th * 0.5 ]
-        x0 : f32 [ vol_inset ]
-        tw : f32 [ bounds.w - vol_inset * 2.0 ]
+        x0 : f32 [ vol_inset + pad_l ]
+        tw : f32 [ bounds.w - vol_inset * 2.0 - pad_l ]
         if [ tw <= 0.0 ] return
         cv.fill_color[ '#ffffff33' ]
         cv.rounded_rect[ x0, ty, tw, th, th * 0.5, th * 0.5, th * 0.5, th * 0.5 ]
