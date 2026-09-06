@@ -1196,7 +1196,7 @@ element Console
             if [ launch && launch.count > 0 ] s.launch_cmd = launch
             if [ cwd && cwd.count > 0 ]       s.cwd = cwd
             if [ sid != 'system' ]
-                log 'ession[]: creating + starting "{sid}" (launch="{launch}")'
+                log 'session[]: creating + starting "{sid}" (launch="{launch}")'
                 s.start[]
             sessions[sid] = s
             pristine = false

@@ -420,6 +420,7 @@ ResourceView AppView
     mutable ready      : bool
     mutable ended       : bool
     mutable paused     : bool        # peer frozen (SIGSTOP) — last frame shows
+    mutable stopped    : bool        # parked in the debugger: never ask it anything
     mutable note       : string
     mutable aw         : i32
     mutable ah         : i32
@@ -525,7 +526,7 @@ ResourceView AppView
         # ask what it offers. KEEP asking until it answers — the app opens
         # its agent socket a moment after it is ready, and a one-shot ask
         # that lands in that gap leaves the bar with no instruments button
-        if [ ready && !instr_ask && app_mod && app_mod.count > 0 ]
+        if [ ready && !instr_ask && !stopped && app_mod && app_mod.count > 0 ]
             ak9 : i64 [ epoch_millis[] ]
             if [ instr_ak == 0 || ak9 - instr_ak > 500 ]
                 instr_ak = ak9
@@ -616,6 +617,8 @@ ResourceView AppView
 
     # pull each instrument's own surface. gen 0 means it has none
     func instr_service [ cv: Canvas ]
+        # a stopped app answers nothing: every ask would wait its full timeout
+        if [ stopped ] return
         # nothing toggles any more, so the state has to be asked for
         nw9 : i64 [ epoch_millis[] ]
         if [ app_mod && (instr_ms == 0 || nw9 - instr_ms > 1000) ]
@@ -1256,8 +1259,9 @@ Layer EditorLayer
             el
                 editor.ux.will_animate = true
         if [ editor.run_view ]
+            editor.run_view.stopped = editor.stopped[]
             editor.run_view.service[ cv ]
-            if [ editor.app_view && !editor.show_hits ]
+            if [ editor.app_view && !editor.show_hits && !editor.stopped[] ]
                 b2 : rect [ x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h ]
                 bot : element (editor.elements) ? editor.elements['bottom'] : null
                 if [ bot && bot.bounds && bot.bounds.h > 0.0 ]
@@ -1337,6 +1341,8 @@ Layer EditorLayer
         cv.font_size[ code_fs ]
         cw_tm   : cv.measure_text[ 'x' ]
         lh      : f32 [ round[ cv.get_line_height[] * ((label_height > 0.0) ? label_height : 1.0) ] ]
+        # the pinned band at the top: nothing row-bound draws under it
+        pt0     : f32 [ (showing) ? 0.0 : f32[ editor.pinned_rows[].count ] * lh ]
         ndigits : i32 [ 1 ]
         ncount  : i32 [ editor.line_count[] ]
         while [ ncount >= 10 ]
@@ -1527,7 +1533,7 @@ Layer EditorLayer
                 # single-line headers are one slot; double headers span two.
                 gh = (editor.single_line) ? lh - 2.0 : lh * 2.0 - 2.0
             hy : f32 [ y0 + f32[ gl ] * lh - editor.scroll.y ]
-            if [ hy + gh >= bounds.y && hy <= bounds.y + bounds.h ]
+            if [ hy >= bounds.y + pt0 && hy <= bounds.y + bounds.h ]
                 # hover sits 4px left of the grid; right edge matches the zone
                 glow_row[ cv, bounds.x + lin + 8.0, hy + 1.0, bounds.w - lin - rin - 32.0, gh ]
 
@@ -1538,7 +1544,7 @@ Layer EditorLayer
             if [ editor.row_header[ li ] ] continue
             if [ editor.row_var[ li ] ] continue
             yg : f32 [ round[ y0 + f32[li] * lh - editor.scroll.y ] ]
-            if [ yg + lh < bounds.y ] continue
+            if [ yg < bounds.y + pt0 ] continue
             if [ yg > bounds.y + bounds.h ] break
             bsl  : i32  [ editor.row_src[ li ] ]
             rnum : i32  [ (showing && hits) ? hits[li].line : bsl + 1 ]
@@ -1709,7 +1715,7 @@ Layer EditorLayer
             # jump targets announce themselves. drawn HERE, in the blit,
             # never into the line canvas -- that is cached by text hash
             # and the outline would survive the key coming back up
-            if [ editor.mod_down && !editor.show_hits && !editor.row_header[ li ] ]
+            if [ editor.mod_down && !editor.show_hits && !editor.row_header[ li ] && !editor.row_var[ li ] ]
                 if [ y + lh >= bounds.y && y <= bounds.y + bounds.h ]
                     ln9  : editor.line_get[ li ]
                     msl9 : i32 [ editor.row_src[ li ] ]
@@ -1838,7 +1844,7 @@ Layer EditorLayer
                         cv.draw_svg[ ico, hiox, hioy, hisz, hisz ]
                         cv.paint[ ]
                 continue
-            if [ y + lh < bounds.y ] continue
+            if [ y < bounds.y + pt0 ] continue
             if [ y > bounds.y + bounds.h ] break
             ln    : editor.line_get[ li ]
             rvd   : variable editor.row_var[ li ]
@@ -1881,10 +1887,11 @@ Layer EditorLayer
                 summ : editor.var_summary[ bv ]
                 if [ !summ || summ.count == 0 ] continue
                 ya : f32 [ round[ y0 + f32[li] * lh - editor.scroll.y ] ]
-                if [ ya + lh < bounds.y ] continue
+                if [ ya < bounds.y + pt0 ] continue
                 if [ ya > bounds.y + bounds.h ] break
                 # expandable objects get a [+]/[-] toggle after the summary
-                tog : (editor.var_expandable[ bv ]) ? ((bv.expanded) ? '  [-]' : '  [+]') : ''
+                # open only on the line whose [+] was clicked
+                tog : (editor.var_expandable[ bv ]) ? ((bv.expanded && editor.row_src[ li ] == editor.open_src) ? '  [-]' : '  [+]') : ''
                 ax   : f32 [ x0 + f32[ editor.ann_col[ li ] ] * cw_tm.w ]
                 if [ editor.hover_ann == li ]
                     cv.save[ ]
@@ -1917,7 +1924,8 @@ Layer EditorLayer
                     mpos : i32 [ base + rel ]
                     pre : f32 [ cv.measure_text[ editor.display_of[ ln.mid[ 0, mpos ] ] ].w ]
                     mw  : f32 [ cv.measure_text[ editor.display_of[ ln.mid[ mpos, qn ] ] ].w ]
-                    mx  : f32 [ x0 + pre - 1.0 ]
+                    # a row's text starts at its own indent (a variable row hangs left)
+                    mx  : f32 [ x0 + editor.row_indent[ li ] + pre - 1.0 ]
                     if [ li == editor.sel_line && mpos == editor.sel_col ]
                         cv.fill_color   [ rgba['#ffcc66'] ]
                         cv.stroke_width [ 0.0 ]
@@ -1925,7 +1933,7 @@ Layer EditorLayer
                         cv.paint        [ ]
                         cv.fill_color   [ rgba['#101418'] ]
                         cv.draw_text    [ editor.display_of[ ln.mid[ mpos, qn ] ],
-                            rect [ x: x0 + pre, y: y, w: mw + 2.0, h: lh ],
+                            rect [ x: mx + 1.0, y: y, w: mw + 2.0, h: lh ],
                             vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
                         cv.paint        [ ]
                     el
@@ -1959,7 +1967,7 @@ Layer EditorLayer
                         if [ bok && aok ]
                             pre : f32 [ cv.measure_text[ editor.display_of[ ln.mid[ 0, mpos ] ] ].w ]
                             mw  : f32 [ cv.measure_text[ editor.display_of[ ln.mid[ mpos, tn ] ] ].w ]
-                            mx  : f32 [ x0 + pre - 1.0 ]
+                            mx  : f32 [ x0 + editor.row_indent[ li ] + pre - 1.0 ]
                             cv.fill_color   [ rgba['#0000'] ]
                             cv.stroke_color [ rgba['#6cb6ffaa'] ]
                             cv.stroke_width [ 1.0 ]
@@ -2021,7 +2029,7 @@ Layer EditorLayer
                 pad : 2
                 for [ li: i32 start_line, li <= end_line, li += 1 ]
                     y_row  : f32 [ round[ y0 + f32[li] * lh - editor.scroll.y ] ]
-                    if [ y_row + lh < bounds.y || y_row > bounds.y + bounds.h ] continue
+                    if [ y_row < bounds.y + pt0 || y_row > bounds.y + bounds.h ] continue
                     is_sl  : bool [ li == start_line ]
                     is_el  : bool [ li == end_line ]
                     lnv    : editor.line_get[ li ]
@@ -2071,7 +2079,7 @@ Layer EditorLayer
                 ty : f32 [ cv.transform_ty[] ]
                 for [ li: i32 start_line, li <= end_line, li += 1 ]
                     y_row  : f32 [ round[ y0 + f32[li] * lh - editor.scroll.y ] ]
-                    if [ y_row + lh < bounds.y || y_row > bounds.y + bounds.h ] continue
+                    if [ y_row < bounds.y + pt0 || y_row > bounds.y + bounds.h ] continue
                     is_sl  : bool [ li == start_line ]
                     is_el  : bool [ li == end_line ]
                     lnv    : editor.line_get[ li ]
@@ -2098,7 +2106,7 @@ Layer EditorLayer
             # lists are not text editors: never draw a caret there
             if [ parent.focused && !in_list ]
                 y_sel : f32 [ round[ y0 + f32[editor.sel_line] * lh - editor.scroll.y ] ]
-                if [ y_sel + lh >= bounds.y && y_sel <= bounds.y + bounds.h ]
+                if [ y_sel >= bounds.y + pt0 && y_sel <= bounds.y + bounds.h ]
                     use_fr : bool [ has_sel && editor.filter_rect ]
                     cx : f32
                     cy : f32
@@ -2117,7 +2125,7 @@ Layer EditorLayer
 
             cv.restore[ ]
 
-        if [ editor.run_view && !editor.app_view && !editor.show_hits ]
+        if [ editor.run_view && !editor.app_view && !editor.show_hits && !editor.stopped[] ]
             editor.run_view.draw_pip[ cv, bounds ]
 
         draw_tools[ cv, editor ]
@@ -2130,7 +2138,7 @@ Layer EditorLayer
             cv.font_size[ num_fs ]
             for [ pi: i32 0, pi < pins.count, pi += 1 ]
                 pr : i32 [ pins[ pi ] ]
-                pn : i32 [ pr + 1 ]
+                pn : i32 [ editor.row_src[ pr ] + 1 ]
                 py : f32 [ round[ bounds.y + f32[ pi ] * lh ] ]
                 cv.fill_color[ (pi == editor.hover_pin) ? rgba['#534'] : rgba['#312'] ]
                 cv.stroke_width[ 0.0 ]
@@ -2140,7 +2148,7 @@ Layer EditorLayer
                 cv.draw_text[ '{pn}',
                     rect [ x: bounds.x, y: py, w: gut_w - 6.0, h: lh ],
                     vec2f [ 1.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
-                slc : code_slot[ cv, editor, pr, editor.draw_line[ pr ], cmt_p, lh, cw_tm.w, code_fs ]
+                slc : code_slot[ cv, editor, editor.row_src[ pr ], editor.draw_line[ pr ], cmt_p, lh, cw_tm.w, code_fs ]
                 if [ slc && slc.canvas ]
                     cv.draw_canvas[ slc.canvas, x0, py,
                         f32[ slc.canvas.content_w ], f32[ slc.canvas.content_h ] ]
@@ -2251,6 +2259,7 @@ Control Editor
     mutable tab_w         : i32 [ 4 ]
     # currently expanded variables, outermost first
     mutable open_chain    : vec Au
+    mutable open_src      : i32 [ -1 ]   # the file line whose [+] opened the tree; one line, not every line naming the variable
     mutable fmt_mtime     : i64 [ 0 ]
     mutable disk_ms       : i64 [ 0 ]
     mutable scroll_target : f32 [ 0.0 ]
@@ -2274,6 +2283,8 @@ Control Editor
     mutable edit_cc       : i32 [ -1 ]
     mutable stop_line     : i32 [ -1 ]
     mutable stop_col      : i32 [ -1 ]
+    mutable stop_pending  : i32          # a debugger stop line waiting for its file to load
+    mutable stop_pending_col : i32
     public  debug_running : bool
     public  debugger      : dbg
     public  debug_vars    : vec Au
@@ -2351,18 +2362,24 @@ Control Editor
     # the chain is outermost-first; esc collapses the innermost
     func expand_only [ v9: variable ]
         if [ !v9 ] return
+        # children are read from lldb only now, on the click
+        if [ v9.has_kids && (!v9.children || v9.children.count == 0) ]
+            d9 : dbg active_dbg[]
+            if [ d9 ] v9.children = d9.read_children[ v9.path ]
+        log 'expand {v9.path} kids={v9.has_kids} children={(v9.children) ? v9.children.count : 0}'
         if [ !open_chain ] open_chain = vec Au []
-        nested : bool [ false ]
-        if [ open_chain.count > 0 ]
-            lastv : variable open_chain[ open_chain.count - 1 ]
-            if [ lastv && lastv.children ]
-                for [ ci: i32 0, ci < lastv.children.count, ci += 1 ]
-                    if [ lastv.children[ci] == v9 ] nested = true
-        if [ !nested ]
-            for [ i9: i32 0, i9 < open_chain.count, i9 += 1 ]
-                ov : variable open_chain[i9]
-                if [ ov ] ov.expanded = false
-            open_chain = vec Au []
+        # the chain stays open down to the ancestor that owns the clicked row;
+        # only what hangs below that ancestor closes (a sibling swaps in)
+        keep : i32 [ -1 ]
+        for [ i9: i32 0, i9 < open_chain.count, i9 += 1 ]
+            ov : variable open_chain[i9]
+            if [ !ov || !ov.children ] continue
+            for [ ci: i32 0, ci < ov.children.count, ci += 1 ]
+                if [ ov.children[ci] == v9 ] keep = i9
+        for [ i9: i32 open_chain.count - 1, i9 > keep, i9 -= 1 ]
+            ov : variable open_chain[i9]
+            if [ ov ] ov.expanded = false
+            open_chain.remove[ i9 ]
         v9.expanded = true
         open_chain.push[ v9 ]
 
@@ -2415,7 +2432,7 @@ Control Editor
 
     # has fields → expandable.
     func var_expandable [ v: variable ] -> bool
-        return v && v.children && v.children.count > 0
+        return v && (v.has_kids || (v.children && v.children.count > 0))
 
     func splice_var [ v: variable, depth: i32 ]
         if [ !v || !v.expanded || !v.children ] return
@@ -2432,7 +2449,7 @@ Control Editor
         for [ bli: i32 0, bli < base, bli += 1 ]
             flat_rows.push[ VRow [ src: bli ] ]
             bv9 : variable base_var_of[ bli ]
-            if [ bv9 ]
+            if [ bv9 && bli == open_src ]
                 splice_var[ bv9, 1 ]
         flat_active = flat_rows.count > base
 
@@ -2445,6 +2462,14 @@ Control Editor
         if [ !flat_active || !flat_rows || vr < 0 || vr >= flat_rows.count ] return vr
         r : VRow flat_rows[ vr ]
         return r.src
+
+    # the view row a variable's own row sits on, or -1 when it is not shown
+    func var_row [ v: variable ] -> i32
+        if [ !flat_active || !flat_rows || !v ] return -1
+        for [ vr: i32 0, vr < flat_rows.count, vr += 1 ]
+            r : VRow flat_rows[ vr ]
+            if [ r.var == v ] return vr
+        return -1
 
     func row_var [ vr: i32 ] -> variable
         if [ !flat_active || !flat_rows || vr < 0 || vr >= flat_rows.count ] return null
@@ -2868,9 +2893,10 @@ Control Editor
     # the header rows kept drawn at the top: the lines the first visible
     # row is nested under, outermost first, each only once it has scrolled
     # off. each level reads the row just under the band as it stands
+    # the band is VIEW rows: the scope tree is file lines, mapped both ways
     public func pinned_rows [] -> vec i32
         rows : vec i32 []
-        if [ show_hits || flat_active || !cur_buf ] return rows
+        if [ show_hits || !cur_buf ] return rows
         line_tree[]
         tree : vec i32 cur_buf.line_parent
         if [ !tree ] return rows
@@ -2879,13 +2905,19 @@ Control Editor
         top  : i32 [ (scroll.y + 1.0) / lh ]
         for [ level: i32 0, level < 16, level += 1 ]
             row : i32 [ top + i32[ rows.count ] ]
-            if [ row < 0 || row >= tree.count ] break
-            # the row's ancestors, innermost first
+            if [ row < 0 || row >= line_count[] ] break
+            # an expanded variable row belongs to the line it hangs under
+            sr : i32 [ row_src[ row ] ]
+            while [ sr < 0 && row > 0 ]
+                row -= 1
+                sr = row_src[ row ]
+            if [ sr < 0 || sr >= tree.count ] break
+            # the line's ancestors, innermost first
             chain : vec i32 []
-            for [ p: i32 [ tree[ row ] ], p >= 0, p = i32[ tree[ p ] ] ]
+            for [ p: i32 [ tree[ sr ] ], p >= 0, p = i32[ tree[ p ] ] ]
                 chain.push[ p ]
             if [ level >= chain.count ] break
-            h : i32 [ chain[ chain.count - 1 - level ] ]
+            h : i32 [ vis_row[ chain[ chain.count - 1 - level ] ] ]
             # a header stays nested under the one above it in the band
             if [ rows.count > 0 && h <= i32[ rows[ rows.count - 1 ] ] ] break
             rows.push[ h ]
@@ -2893,16 +2925,35 @@ Control Editor
 
     # put the caret on a 1-based line and bring it into view
     public func goto_line [ lno: i32 ]
-        sl : i32 [ (lno > 0) ? lno - 1 : 0 ]
+        sl : i32 [ vis_row[ (lno > 0) ? lno - 1 : 0 ] ]
         sel_line    = sl
         anchor_line = sl
         lh  : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
         vh  : f32 [ (bounds) ? bounds.h : 600.0 ]
         top : f32 [ f32[ sl ] * lh ]
-        if [ top < scroll.y || top + lh > scroll.y + vh ]
+        # the pinned band covers the top rows: a line under it is not in view
+        band : f32 [ f32[ pinned_rows[].count ] * lh ]
+        if [ top < scroll.y + band || top + lh > scroll.y + vh ]
             scroll.y = top - vh * 0.4
             if [ scroll.y < 0.0 ] scroll.y = 0.0
             scroll_target = scroll.y
+        pristine = false
+
+    # a debugger stop: the arrow, the scroll, and a navigation entry for it
+    public func apply_stop [ lno: i32, col: i32 ]
+        sl : i32 [ (lno > 0) ? lno - 1 : 0 ]
+        stop_line = sl
+        stop_col  = col
+        lh  : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
+        vh  : f32 [ (bounds) ? bounds.h : 600.0 ]
+        top : f32 [ f32[ vis_row[ sl ] ] * lh ]
+        # the pinned band covers the top rows: a line under it is not in view
+        band : f32 [ f32[ pinned_rows[].count ] * lh ]
+        if [ top < scroll.y + band || top + lh > scroll.y + vh ]
+            scroll.y = top - vh * 0.4
+            if [ scroll.y < 0.0 ] scroll.y = 0.0
+            scroll_target = scroll.y
+        if [ nav && src ] nav.record[ pane_index, '{src.absolute[]}', sl, col, scroll.y ]
         pristine = false
 
     func line_get [ vr: i32 ] -> string
@@ -3629,7 +3680,7 @@ Control Editor
         close_view[]
         # a hosted handler (the markdown viewer) gives way to any other view
         if [ want.compare[ 'editor' ] == 0 ]
-            close_app[]
+            if [ !active_dbg[] ] close_app[]
             load_text[]
             view_name = 'editor'
             return
@@ -3822,7 +3873,8 @@ Control Editor
         # a new file returns to the default view and drops the old file's app
         if [ ns9.compare[ ls9 ] != 0 ]
             view_name = ''
-            close_app[]
+            # a debugger stepping into another module moves the pane; the app stays
+            if [ !active_dbg[] ] close_app[]
             sel_line    = -1
             anchor_line = -1
             anchor_col  = 0
@@ -3839,6 +3891,10 @@ Control Editor
             lines.push[ '' ]
             return
         mount[ resolve_view[] ]
+        # a stop that arrived before this file was in: land on it now
+        if [ stop_pending > 0 ]
+            apply_stop[ stop_pending, stop_pending_col ]
+            stop_pending = 0
 
     func load_text []
         pristine = false
@@ -3942,6 +3998,16 @@ Control Editor
         animated  = true
         pristine  = false
         if [ ux ] ux.restyle = true
+
+    # the live debugger, asked of orbiter: the debugger member only refreshes on a re-render
+    func active_dbg [] -> dbg
+        orb : cast orbiter [ ux.app_object ]
+        return (orb) ? orb.active_debugger[] : null
+
+    # a debugger stop lifts the app off the pane: the source and its arrow show
+    func stopped [] -> bool
+        d : dbg active_dbg[]
+        return (d && !d.running) ? true : false
 
     func toggle_app_view []
         if [ !run_view ] return
@@ -4116,7 +4182,7 @@ Control Editor
             press_tool[ rail9 ]
             ev.no_default = true
             return
-        if [ run_view ]
+        if [ run_view && !stopped[] ]
             if [ app_view ]
                 # the pip toggle is a button on the app bar, not a chip
                 # in the corner: every press here belongs to the app
@@ -4214,10 +4280,21 @@ Control Editor
             if [ ry >= 0.0 ]
                 cln : i32      [ clamp[ ry / lhp, 0, line_count[] - 1 ] ]
                 rv  : variable row_var[ cln ]
+                log 'var click row={cln} rel_x={rel_x} rowvar={(rv) ? rv.name : "-"} base={(base_var_of[ row_src[ cln ] ]) ? base_var_of[ row_src[ cln ] ].name : "-"}'
                 if [ rv ]
-                    if [ var_expandable[ rv ] ]
+                    # the [+]/[-] sits right after the row's text; the text itself selects like a comment
+                    tgx : f32 [ gutter_w + row_indent[ cln ] + f32[ line_get[ cln ].count ] * cwp ]
+                    if [ var_expandable[ rv ] && rel_x >= tgx ]
                         if [ rv.expanded ] collapse_from[ rv ]
                         el                 expand_only[ rv ]
+                        # a sibling above may have closed: keep the clicked row where it was
+                        rebuild_flat[]
+                        nr9 : i32 [ var_row[ rv ] ]
+                        if [ nr9 >= 0 ] scroll.y += f32[ nr9 - cln ] * lhp
+                        if [ scroll.y < 0.0 ] scroll.y = 0.0
+                        scroll_target = scroll.y
+                        scroll_goal   = scroll.y
+                        scroll_anim   = false
                         pristine = false
                         ux.will_animate = true
                         return
@@ -4227,8 +4304,18 @@ Control Editor
                         if [ var_expandable[ bv ] ]
                             axp : f32 [ gutter_w + f32[ ann_col[ cln ] ] * cwp ]
                             if [ rel_x > axp ]
-                                if [ bv.expanded ] collapse_from[ bv ]
-                                el                 expand_only[ bv ]
+                                src9 : i32 [ row_src[ cln ] ]
+                                if [ bv.expanded && open_src == src9 ] collapse_from[ bv ]
+                                el
+                                    open_src = src9
+                                    expand_only[ bv ]
+                                # rows above may have opened or closed: keep the clicked line where it was
+                                rebuild_flat[]
+                                scroll.y += f32[ vis_row[ src9 ] - cln ] * lhp
+                                if [ scroll.y < 0.0 ] scroll.y = 0.0
+                                scroll_target = scroll.y
+                                scroll_goal   = scroll.y
+                                scroll_anim   = false
                                 pristine = false
                                 ux.will_animate = true
                                 return
@@ -4273,6 +4360,9 @@ Control Editor
                 breakpoints.rm[ key ]
             el
                 breakpoints[key] = string[]
+            log 'breakpoint toggle {key} on={(cur) ? 0 : 1}'
+            orbb : cast orbiter [ ux.app_object ]
+            if [ orbb ] orbb.breakpoints_changed[]
             pristine = false
             return
         if [ !ev.key.shift ]
@@ -4407,7 +4497,7 @@ Control Editor
         ux.will_animate = true
 
     func on_char [ ev: Event ]
-        if [ run_view && app_view && !nav_list && !show_hits ] return
+        if [ run_view && app_view && !nav_list && !show_hits && !stopped[] ] return
         if [ flat_active ] return
         if [ line_count[] <= 0 ] return
         if [ sel_line < 0 ] sel_line = 0

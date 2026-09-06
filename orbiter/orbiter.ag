@@ -323,7 +323,8 @@ element EditorView
             t['stop']  = RunButton [ icon: 'stop', manual_mode: true ]
             t['pause'] = RunButton [ icon: (e.run_view.is_paused*[]) ? 'play' : 'pause',
                 selected: e.run_view.is_paused*[], manual_mode: true ]
-            t['steps'] = StepButtons [ buttons: [ 'step_next', 'step_in', 'step_out' ], manual: true ]
+            t['steps'] = StepButtons [ buttons: [ 'continue', 'step_next', 'step_in', 'step_out' ],
+                icon_ids: [ 'play', 'step_next', 'step_in', 'step_out' ], manual: true ]
         # caret at the end: a fresh instance would otherwise insert at 0
         a9 : string o.file_args[ args_src[] ]
         t['args'] = ArgsField [ label: 'arguments',
@@ -357,8 +358,8 @@ element EditorView
         # the callstack is orbiter's own, and the ONLY thing that joins the
         # console here. instruments live in their column
         if [ o.show_instruments ] inner['callstack'] = Callstack [ frames: o.debug_frames[] ]
-        # console alone fills; console + callstack is an even split
-        t['split'] = Splitter [ area: Region { l0 t1.3 r0 b0 }, inner: inner, deflt: 0.0 ]
+        # console alone fills; beside it the callstack takes 3/8 of the width
+        t['split'] = Splitter [ area: Region { l0 t1.3 r0 b0 }, inner: inner, deflt: 0.0, share: 0.375 ]
         return t
 
     func pane_els [] -> Elements
@@ -981,7 +982,7 @@ TButtons StepButtons
     rest_glow : rgba [ '#ccf2' ]
     rest_px   : f32  [ 16.0 ]
     style : CSS {
-        area: l0+ t0 w4.32 h0.9
+        area: l0+ t0 w5.76 h0.9
     }
 
 # run arguments for the pane's app; sits in the run band header
@@ -1220,6 +1221,13 @@ element orbiter : trinity # implements compiler
     intern orbit_cc       : string
     intern debuggers     : map dbg [string]
     intern debug_vars         : vec Au
+    intern frame_cache        : vec Au
+    # the debugger reports on its poll thread; the frame applies these
+    intern pending_stop       : bool
+    intern pending_src        : string
+    intern pending_line       : i32
+    intern pending_col        : i32
+    intern pending_exit       : exited
     intern last_bp_count      : i32 [ -1 ]
     intern settings_mtime    : i64
     intern settings_check_ms : i64
@@ -1851,15 +1859,19 @@ element orbiter : trinity # implements compiler
                 fmt_spawn[ fw ]
                 fw.kicked = true
 
+    # the callstack is read from lldb once per stop; every render reads the cache
     func debug_frames [] -> vec Au
+        return (frame_cache) ? frame_cache : vec Au []
+
+    func refresh_frames []
         fr : vec Au []
         dv : dbg active_debugger[]
-        if [ !dv ] return fr
-        dfr : dv.read_frames[]
-        if [ !dfr ] return fr
-        for [ df: frame ] in dfr
-            fr.push[ Frame [ func_name: df.func_name, file: df.source, line: i32[ df.line ] ] ]
-        return fr
+        if [ dv ]
+            dfr : dv.read_frames[]
+            if [ dfr ]
+                for [ df: frame ] in dfr
+                    fr.push[ Frame [ func_name: df.func_name, file: df.source, line: i32[ df.line ] ] ]
+        frame_cache = fr
 
     func agent_cmd [ sid: string ] -> string
         base : string sid
@@ -2312,6 +2324,18 @@ element orbiter : trinity # implements compiler
             bp9 : d.set_breakpoint[ path [ bsrc ], u32[ blin ], 0 ]
             if [ bp9 ] d.bps.push[ bp9 ]
 
+    # a gutter toggle reaches every live debugger: drop its set, bind the map again
+    func breakpoints_changed []
+        if [ !debuggers ] return
+        for [ d: dbg, name: string ] in debuggers
+            log 'breakpoints_changed {name} active={(d && d.active) ? 1 : 0}'
+            if [ !d || !d.active ] continue
+            if [ d.bps ]
+                for [ bp: breakpoint ] in d.bps
+                    d.remove_breakpoint[ bp ]
+            d.bps = vec breakpoint []
+            sync_breakpoints[ d, '{startup_path}/{name}' ]
+
     # attaching lldb parks the app in ptrace-stop: one frame, no input, no
     # resize. only debug a module the user actually set a breakpoint in
     func module_has_breakpoints [ mdir: string ] -> bool
@@ -2332,32 +2356,31 @@ element orbiter : trinity # implements compiler
         return null
     func dbg_on_break [ cur: cursor ] -> Au
         if [ !cur ] return null
-        log 'dbg break {cur.source}:{cur.line}'
-        apply_break[ cur ]
+        log 'dbg break {cur.source}:{cur.line} t={Au.epoch_millis[]}'
+        # the cursor's members die with the poll thread's pool: copy them out
+        pending_src  = '{cur.source}'
+        pending_line = i32[ cur.line ]
+        pending_col  = i32[ cur.column ]
+        pending_stop = true
+        # the frame applies it: wake the window now, not at the next mouse move
+        if [ ux ] ux.will_animate = true
         return null
 
-    func apply_break [ cur: cursor ]
-        if [ !cur ] return
-        src : path cur.source
-        ln  : i32  [ cur.line ]
+    func apply_break [ src_name: string, ln: i32, col: i32 ]
+        src : path [ (src_name && src_name.count > 0) ? path [ src_name.chars ] : null ]
         # a stop in system code (glibc etc.) has no openable source
         if [ src && !src.exists[] ] src = null
         if [ src ]
             open_in_pane[ src, 0 ]
             ed : Editor pane_at[ 0 ]
             if [ ed ]
-                # stop_line drives the white ">" arrow / current-line glow.
-                sl : i32 [ (ln > 0) ? ln - 1 : 0 ]
-                ed.stop_line = sl
-                ed.stop_col  = i32[ cur.column ]
-                lh  : f32 [ (ed.lh_cache > 0.0) ? ed.lh_cache : 22.0 ]
-                vh  : f32 [ (ed.bounds) ? ed.bounds.h : 600.0 ]
-                top : f32 [ f32[sl] * lh ]
-                if [ top < ed.scroll.y || top + lh > ed.scroll.y + vh ]
-                    ed.scroll.y = top - vh * 0.4
-                    if [ ed.scroll.y < 0.0 ] ed.scroll.y = 0.0
-                    ed.scroll_target = ed.scroll.y
-                ed.pristine  = false
+                # the file is in already: land now; otherwise land once it loads
+                same : bool [ ed.loaded_src && '{ed.loaded_src.absolute[]}' == '{src.absolute[]}' ]
+                if [ same ]
+                    ed.apply_stop[ ln, col ]
+                el
+                    ed.stop_pending     = ln
+                    ed.stop_pending_col = col
         dv : active_debugger[]
         # args and locals are disjoint in lldb; the func line needs the args.
         # locals go FIRST: base_var_at takes the first name that matches, and
@@ -2373,6 +2396,7 @@ element orbiter : trinity # implements compiler
                 for [ v9: variable ] in ag9
                     all9.push[ v9 ]
             debug_vars = all9
+            refresh_frames[]
         win : ux
         win.will_animate = true
 
@@ -2384,8 +2408,14 @@ element orbiter : trinity # implements compiler
                 ed.stop_col   = -1
                 ed.pristine   = false
         # no live frame anymore → drop the inspected variables.
-        debug_vars = null
+        debug_vars  = null
+        frame_cache = null
     func dbg_on_exit [ e: exited ] -> Au
+        pending_exit = e
+        if [ ux ] ux.will_animate = true
+        return null
+
+    func apply_exit [ e: exited ]
         clear_stop_lines[]
         es : ConsoleSession (ed_sessions) ? ed_sessions[ active_target ] : null
         de : dbg (debuggers) ? debuggers[ active_target ] : null
@@ -2397,10 +2427,16 @@ element orbiter : trinity # implements compiler
             es.print_text[ '\r\n[process exited, code {code}]\r\n' ]
             win : ux
             if [ win ] win.will_animate = true
-        return null
+
     func dbg_on_crash [ cur: cursor ] -> Au
-        if [ cur ] log 'dbg crash {cur.source}:{cur.line}'
-        if [ cur ] apply_break[ cur ]
+        if [ !cur ] return null
+        log 'dbg crash {cur.source}:{cur.line}'
+        pending_src  = '{cur.source}'
+        pending_line = i32[ cur.line ]
+        pending_col  = i32[ cur.column ]
+        pending_stop = true
+        # the frame applies it: wake the window now, not at the next mouse move
+        if [ ux ] ux.will_animate = true
         return null
 
     func file_slot [ p: path ] -> i32
@@ -4074,7 +4110,7 @@ element orbiter : trinity # implements compiler
             if [ ev.target ] ev.target.ux.restyle = true
             ev.no_default = true
             return
-        log 'on_press: {ev.target.id}'
+        log 'on_press: {ev.target.id} t={Au.epoch_millis[]}'
         for [ i: i32 0, i < open_files.count, i += 1 ]
             key : string 'tab_{i}'
             if [ ev.target.id == key ]
@@ -4196,10 +4232,11 @@ element orbiter : trinity # implements compiler
         # StepButtons renames itself to the pressed segment; it sits in the run
         # band header, so the press lands here and not on the Editor
         if [ ev.target.id == 'step_next' || ev.target.id == 'step_in' ||
-             ev.target.id == 'step_out' ]
+             ev.target.id == 'step_out'  || ev.target.id == 'continue' ]
             d5 : dbg active_debugger[]
             if [ d5 ]
-                if [ ev.target.id == 'step_next' ] d5.step_over[]
+                if [ ev.target.id == 'continue' ]     d5.cont[]
+                el [ ev.target.id == 'step_next' ] d5.step_over[]
                 el [ ev.target.id == 'step_in' ]   d5.step_into[]
                 el                                 d5.step_out[]
             ev.no_default = true
@@ -4812,6 +4849,15 @@ element orbiter : trinity # implements compiler
             if [ band_h_save == 0 ] save_session[]
         frame_no9 += 1
         if [ frame_no9 <= 30 ] log 'frame {frame_no9} at {Au.epoch_millis[]}'
+        if [ pending_stop ]
+            pending_stop = false
+            t0 : i64 [ Au.epoch_millis[] ]
+            apply_break[ pending_src, pending_line, pending_col ]
+            log 'applied break t={t0} took={Au.epoch_millis[] - t0}ms'
+        if [ pending_exit ]
+            ex9 : exited pending_exit
+            pending_exit = null
+            apply_exit[ ex9 ]
         if [ frost_dbg9 != frost_ix || (ux && frost_dbg8 != ux.frost_mode) ]
             log 'FROST ix={frost_ix} mode={(ux) ? ux.frost_mode : -9} eff={(ux) ? ux.frost_eff[] : -9}'
             frost_dbg9 = frost_ix
