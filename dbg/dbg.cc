@@ -385,12 +385,17 @@ static string render_value(lldb::SBValue v) {
 // pointer's child is its pointee; Au objects cycle through type/vtable pointers), so
 // the depth cap is what stops the recursion from looping. levels beyond this come back
 // empty (the user can't expand past them — acceptable for the inline preview).
-#define DBG_MAX_DEPTH 3
+// a child's own lldb path, so its children can be read later on demand
+static string child_path(const char* ppath, string name, bool parent_is_ptr) {
+    if (!ppath || !*ppath) return hold(f(string, "%s", name->chars));
+    if (name->chars[0] == '[') return hold(f(string, "%s%s", ppath, name->chars));
+    // lldb paths follow C: a member of a pointer is reached with ->
+    return hold(f(string, parent_is_ptr ? "%s->%s" : "%s.%s", ppath, name->chars));
+}
 
-// read a value's children to DBG_MAX_DEPTH levels so nested objects (and a string's
-// inner fields) can be expanded inline. __-prefixed header fields (the af-bit struct
+// one level of a value's children. __-prefixed header fields (the af-bit struct
 // __fbits, the vtable pointer, etc.) are skipped — not user data.
-Au read_children_depth(dbg debug, lldb::SBValue value, int depth) {
+Au read_children_depth(dbg debug, lldb::SBValue value, int depth, const char* ppath) {
     Au result = (Au)vector_of(typeid(Au));
 
     for (int i = 0, n = (int)value.GetNumChildren(); i < n; ++i) {
@@ -415,8 +420,10 @@ Au read_children_depth(dbg debug, lldb::SBValue value, int depth) {
         // gives garbage and the row expands into nonsense
         bool        nul  = child.TypeIsPointerType() &&
                            child.GetValueAsUnsigned(0) == 0;
-        Au ar = (depth > 0 && !leaf && !nul && child.GetNumChildren() > 0)
-            ? hold(read_children_depth(debug, child, depth - 1))
+        bool        kids = !leaf && !nul && child.GetNumChildren() > 0;
+        string      path = child_path(ppath, name, value.TypeIsPointerType());
+        Au ar = (depth > 0 && kids)
+            ? hold(read_children_depth(debug, child, depth - 1, path->chars))
             : hold((Au)vector_of(typeid(Au)));
         variable v = new0(variable,
             debug,      debug,
@@ -424,15 +431,13 @@ Au read_children_depth(dbg debug, lldb::SBValue value, int depth) {
             type,       type,
             value,      val,
             children,   (vector)ar);
+        v->path     = path;
+        v->has_kids = kids;
 
         vector_push((vector)result, (Au)v);
     }
 
     return result;
-}
-
-Au read_children(dbg debug, lldb::SBValue value) {
-    return read_children_depth(debug, value, DBG_MAX_DEPTH);
 }
 
 DBG_API Au dbg_read_vars(dbg debug, Au result, lldb::SBValueList vars) {
@@ -446,9 +451,11 @@ DBG_API Au dbg_read_vars(dbg debug, Au result, lldb::SBValueList vars) {
         string val  = render_value(value);
         bool   nul  = value.TypeIsPointerType() &&
                       value.GetValueAsUnsigned(0) == 0;
-        Au     kids = null;
-        if (nul) kids = (Au)vector_of(typeid(Au));
-        else     kids = read_children(debug, value);
+        // top level only: walking every member three deep took a second per stop.
+        // the [+] reads a variable's children through read_children when clicked
+        const char* vsm  = value.GetSummary();
+        bool        leaf = (vsm && vsm[0]);
+        Au     kids = (Au)vector_of(typeid(Au));
         variable v  = new0(variable,
             debug,      debug,
             name,       name,
@@ -456,9 +463,20 @@ DBG_API Au dbg_read_vars(dbg debug, Au result, lldb::SBValueList vars) {
             value,      val,
             children,   (vector)hold(kids)
         );
+        v->path     = hold(f(string, "%s", nm ? nm : ""));
+        v->has_kids = !leaf && !nul && value.GetNumChildren() > 0;
         vector_push((vector)result, (Au)v);
     }
     return result;
+}
+
+DBG_API vector dbg_read_children(dbg debug, string path) {
+    Au result = (Au)vector_of(typeid(Au));
+    if (!dbg_at_stop(debug) || !path || !path->count) return (vector)result;
+    lldb::SBFrame frame = S(debug)->process.GetSelectedThread().GetSelectedFrame();
+    lldb::SBValue value = frame.GetValueForVariablePath(path->chars);
+    if (!value.IsValid()) return (vector)result;
+    return (vector)read_children_depth(debug, value, 0, path->chars);
 }
 
 DBG_API vector dbg_read_arguments(dbg debug) {

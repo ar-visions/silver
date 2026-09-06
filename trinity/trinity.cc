@@ -347,24 +347,34 @@ HOST_API int agent_sock_open(const char* name) {
     return 1;
 }
 
-// client: ask a running app one line and read its reply. 0 = nobody home
-HOST_API int agent_sock_ask(const char* name, const char* line,
-                              char* out, int cap) {
-    if (!name || !*name || !line || !out || cap < 2) return 0;
+// a peer parked in the debugger has a full backlog: a blocking connect would
+// hang the caller for good, so connect without waiting and treat busy as away
+static int agent_connect(const char* name) {
     const char* rt = getenv("XDG_RUNTIME_DIR");
     char pathb[256];
     snprintf(pathb, sizeof(pathb), "%s/trinity-%s.sock",
              (rt && *rt) ? rt : "/tmp", name);
-    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
-    if (fd < 0) return 0;
+    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+    if (fd < 0) return -1;
     struct sockaddr_un su;
     memset(&su, 0, sizeof(su));
     su.sun_family = AF_UNIX;
     strncpy(su.sun_path, pathb, sizeof(su.sun_path) - 1);
     if (connect(fd, (struct sockaddr*)&su, sizeof(su)) != 0) {
         close(fd);
-        return 0;
+        return -1;
     }
+    int fl = fcntl(fd, F_GETFL, 0);
+    if (fl >= 0) fcntl(fd, F_SETFL, fl & ~O_NONBLOCK);
+    return fd;
+}
+
+// client: ask a running app one line and read its reply. 0 = nobody home
+HOST_API int agent_sock_ask(const char* name, const char* line,
+                              char* out, int cap) {
+    if (!name || !*name || !line || !out || cap < 2) return 0;
+    int fd = agent_connect(name);
+    if (fd < 0) return 0;
     size_t n = strlen(line);
     if (write(fd, line, n) != (ssize_t)n) { close(fd); return 0; }
     // the app answers on its next frame; wait briefly rather than spin
@@ -387,20 +397,8 @@ HOST_API int agent_sock_ask(const char* name, const char* line,
 // client: hand one line to an app that is already running. 0 = nobody home
 HOST_API int agent_sock_send(const char* name, const char* line) {
     if (!name || !*name || !line || !*line) return 0;
-    const char* rt = getenv("XDG_RUNTIME_DIR");
-    char pathb[256];
-    snprintf(pathb, sizeof(pathb), "%s/trinity-%s.sock",
-             (rt && *rt) ? rt : "/tmp", name);
-    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    int fd = agent_connect(name);
     if (fd < 0) return 0;
-    struct sockaddr_un su;
-    memset(&su, 0, sizeof(su));
-    su.sun_family = AF_UNIX;
-    strncpy(su.sun_path, pathb, sizeof(su.sun_path) - 1);
-    if (connect(fd, (struct sockaddr*)&su, sizeof(su)) != 0) {
-        close(fd);
-        return 0;
-    }
     size_t  n = strlen(line);
     ssize_t w = write(fd, line, n);
     close(fd);

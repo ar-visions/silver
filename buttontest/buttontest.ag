@@ -96,6 +96,7 @@ element buttontest : trinity
         ev.stop[]
 
     public func render [] -> Elements
+		i:2
         return Elements [
             "hello": ClickButton [ label: 'click me' ]
         ]
