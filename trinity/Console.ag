@@ -661,10 +661,12 @@ class ConsoleSession
                 el
                     esc_pi = 15
                 return
-            if [ c == 63 || c == 62 || c == 33 ]
+            # private markers ? > ! < = : the kitty keyboard pop (CSI < u) was
+            # falling through and printing its final byte
+            if [ c == 63 || c == 62 || c == 33 || c == 60 || c == 61 ]
                 esc_priv = c
                 return
-            if [ c == 32 || c == 34 || c == 36 || c == 39 ]
+            if [ c == 32 || c == 34 || c == 36 || c == 39 || c == 58 ]
                 return
             esc_state = 0
             dispatch_csi[ c ]
@@ -965,6 +967,72 @@ func paint_term [ cv: Canvas, s: ConsoleSession, bounds: rect, flt: string, feed
         cv.clear_crop[]
         return total_h
 
+# block elements (U+2580..U+259F) as quadrant bits: UL=1 UR=2 LL=4 LR=8; -1 = not a quadrant glyph
+func block_quads [ ch: i32 ] -> i32
+    if [ ch == 0x2588 ] return 15
+    if [ ch == 0x2580 ] return 3
+    if [ ch == 0x2584 ] return 12
+    if [ ch == 0x258C ] return 5
+    if [ ch == 0x2590 ] return 10
+    if [ ch == 0x2596 ] return 4
+    if [ ch == 0x2597 ] return 8
+    if [ ch == 0x2598 ] return 1
+    if [ ch == 0x2599 ] return 13
+    if [ ch == 0x259A ] return 9
+    if [ ch == 0x259B ] return 7
+    if [ ch == 0x259C ] return 11
+    if [ ch == 0x259D ] return 2
+    if [ ch == 0x259E ] return 6
+    if [ ch == 0x259F ] return 14
+    return -1
+
+# the font has no block elements: a cell's blocks are painted as rectangles
+func draw_block [ cv: Canvas, ch: i32, x: f32, y: f32, cw: f32, lh: f32, packed: i32 ]
+    cv.stroke_width[ 0.0 ]
+    cv.fill_color[ col_of[ packed ] ]
+    q : i32 [ block_quads[ ch ] ]
+    if [ q >= 0 ]
+        hw : f32 [ cw * 0.5 ]
+        hh : f32 [ lh * 0.5 ]
+        # one rect per paint: the path holds a single rect
+        if [ q == 15 ]
+            cv.rect_to[ x, y, cw, lh ]
+            cv.paint[]
+            return
+        if [ (q & 1) != 0 ]
+            cv.rect_to[ x, y, hw, hh ]
+            cv.paint[]
+        if [ (q & 2) != 0 ]
+            cv.rect_to[ x + hw, y, cw - hw, hh ]
+            cv.paint[]
+        if [ (q & 4) != 0 ]
+            cv.rect_to[ x, y + hh, hw, lh - hh ]
+            cv.paint[]
+        if [ (q & 8) != 0 ]
+            cv.rect_to[ x + hw, y + hh, cw - hw, lh - hh ]
+            cv.paint[]
+        return
+    if [ ch >= 0x2581 && ch <= 0x2587 ]
+        # lower eighths: 1/8 .. 7/8 of the cell from the bottom
+        eh : f32 [ lh * f32[ ch - 0x2580 ] / 8.0 ]
+        cv.rect_to[ x, y + lh - eh, cw, eh ]
+    el [ ch >= 0x2589 && ch <= 0x258F ]
+        # left eighths: 7/8 .. 1/8 of the cell from the left
+        ew : f32 [ cw * f32[ 0x2590 - ch ] / 8.0 ]
+        cv.rect_to[ x, y, ew, lh ]
+    el [ ch == 0x2594 ]
+        cv.rect_to[ x, y, cw, lh / 8.0 ]
+    el [ ch == 0x2595 ]
+        cv.rect_to[ x + cw * 7.0 / 8.0, y, cw / 8.0, lh ]
+    el [ ch >= 0x2591 && ch <= 0x2593 ]
+        # shades: a full cell at a quarter, half, three quarters
+        cv.fill_color[ rgba [ r: f32[(packed >> 16) & 255] / 255.0, g: f32[(packed >> 8) & 255] / 255.0, b: f32[packed & 255] / 255.0, a: f32[ ch - 0x2590 ] * 0.25 ] ]
+        cv.rect_to[ x, y, cw, lh ]
+    cv.paint[]
+
+func is_block [ ch: i32 ] -> bool
+    return ch >= 0x2580 && ch <= 0x259F
+
 func draw_cells [ cv: Canvas, s: ConsoleSession, cells: @TermCell, off: i32, n: i32, x0: f32, y: f32, lh: f32, cw: f32 ]
     if [ n <= 0 ] return
     c : i32 [ 0 ]
@@ -989,10 +1057,19 @@ func draw_cells [ cv: Canvas, s: ConsoleSession, cells: @TermCell, off: i32, n: 
         for [ ci: i32 c, ci < c2 && blank, ci += 1 ]
             if [ cells[off + ci].ch != 32 ] blank = false
         if [ !blank ]
-            txt : string s.cells_text[ cells, off, c, c2 ]
             cv.fill_color[ col_of[ rfg ] ]
-            cv.draw_text[ txt, rect [ x: rx, y: y, w: rw + cw, h: lh ],
-                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+            # text runs between block cells; each block cell is geometry
+            seg : i32 [ c ]
+            for [ ci: i32 c, ci <= c2, ci += 1 ]
+                ch9 : i32 [ (ci < c2) ? cells[off + ci].ch : 0 ]
+                blk : bool [ ci < c2 && is_block[ ch9 ] ]
+                if [ ci == c2 || blk ]
+                    if [ ci > seg ]
+                        txt : string s.cells_text[ cells, off, seg, ci ]
+                        cv.draw_text[ txt, rect [ x: x0 + f32[seg] * cw, y: y, w: f32[ci - seg] * cw + cw, h: lh ],
+                            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+                    if [ blk ] draw_block[ cv, ch9, x0 + f32[ci] * cw, y, cw, lh, rfg ]
+                    seg = ci + 1
         c = c2
 
 func draw_row [ cv: Canvas, s: ConsoleSession, r: i32, x0: f32, y: f32, lh: f32, cw: f32 ]

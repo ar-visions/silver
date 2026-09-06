@@ -2990,12 +2990,13 @@ di_au_t(void) { // the generic Au_t record: what a type record looks
         di_member("alloc", 12, 32, i32t)};
     LLVMMetadataRef micro =
         di_struct("micro_", sizeof(micro_), micro_members, 3);
-    LLVMMetadataRef meta_members[3] = {di_member("a", 0, 64, au_t),
+    LLVMMetadataRef meta_members[4] = {di_member("a", 0, 64, au_t),
                                        di_member("b", 8, 64, ptr),
-                                       di_member("m", 16, 64, au_t)};
+                                       di_member("m", 16, 64, au_t),
+                                       di_member("member_b", 24, 64, au_t)};
     LLVMMetadataRef meta =
         di_struct("meta_t_", sizeof(meta_t_), meta_members,
-                  3); // the meta triple stays generic
+                  4); // the meta stays generic
 #define AU_T_MEMBERS(SELF, PARENT, FT)                                 \
     di_member("context", offsetof(struct _Au_t, context), 64, PARENT), \
         di_member("type", offsetof(struct _Au_t, type), 64, au_t),     \
@@ -3123,11 +3124,12 @@ static LLVMMetadataRef di_type_record(
         di_member("alloc", 12, 32, i32t)};
     LLVMMetadataRef micro =
         di_struct("micro_", sizeof(micro_), micro_members, 3);
-    LLVMMetadataRef meta_members[3] = {di_member("a", 0, 64, au_t),
+    LLVMMetadataRef meta_members[4] = {di_member("a", 0, 64, au_t),
                                        di_member("b", 8, 64, ptr),
-                                       di_member("m", 16, 64, au_t)};
+                                       di_member("m", 16, 64, au_t),
+                                       di_member("member_b", 24, 64, au_t)};
     LLVMMetadataRef meta =
-        di_struct("meta_t_", sizeof(meta_t_), meta_members, 3);
+        di_struct("meta_t_", sizeof(meta_t_), meta_members, 4);
     LLVMMetadataRef parent     = type->base && type->base->decl
                                      ? di_type_record(type->base)
                                      : au_t;

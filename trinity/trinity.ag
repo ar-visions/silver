@@ -993,6 +993,9 @@ abstract live_app media_app
                     wn.ev.clear[]
                     wn.ev.key.text = line.mid[ 5, line.count - 5 ]
                     wn.text_event[ wn.ev ]
+                el [ cmd == 'resize' && parts.count >= 3 ]
+                    # a real window resize, so the resize path can be driven and shot
+                    if [ wn.glfw ] platform_window_set_size[ wn.glfw, i32[ parts[1].integer_value[] ], i32[ parts[2].integer_value[] ] ]
                 el [ cmd == 'wheel' && parts.count >= 4 ]
                     wn.ev.clear[]
                     wn.ev.mouse.pos.x = f32[ parts[1].real_value[] ]
@@ -4220,6 +4223,9 @@ class offscreen
         if [ w ] w.draw[]
 
 class StatePersist
+
+# `public [ Launch ] x : T [ default ]` — a launch parameter the host may offer
+class Launch
 
 func state_persist_path [ target: Au ] -> path
     if [ !target ] return null

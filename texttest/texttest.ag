@@ -1,0 +1,33 @@
+# texttest — block glyphs as geometry, over a black cell background like the claude logo
+export 1.0.0
+
+import vec
+import img
+import trinity
+
+element texttest : trinity
+    public width      : i32    [ 640 ]
+    public height     : i32    [ 200 ]
+    public title      : string [ 'texttest' ]
+
+    func init []
+        animated = true
+
+    public func on_canvas [ cv: Canvas ]
+        if [ !cv ] return
+        cv.reset[ vec4f[ 0.1, 0.05, 0.12, 1.0 ] ]
+        cw : f32 [ 12.0 ]
+        lh : f32 [ 24.0 ]
+        glyphs : vec i32 [] [ 0x2590, 0x259B, 0x2588, 0x2588, 0x2588, 0x259B, 0x2588, 0x259D, 0x259C, 0x2580, 0x2596, 0x2597 ]
+        for [ i: i32 0, i < glyphs.count, i += 1 ]
+            x : f32 [ 20.0 + f32[ i ] * cw ]
+            cv.fill_color[ rgba['#000000'] ]
+            cv.stroke_width[ 0.0 ]
+            cv.rect_to[ x, 40.0, cw, lh ]
+            cv.paint[]
+            draw_block[ cv, glyphs[i], x, 40.0, cw, lh, 0xd77757 ]
+        cv.fill_color[ rgba['#d77757'] ]
+        cv.font_size[ 16 ]
+        cv.draw_text[ 'blocks above should be orange with black cutouts', rect [ x: 20.0, y: 90.0, w: 600.0, h: 24.0 ],
+            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+        cv.paint[]

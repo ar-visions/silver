@@ -127,13 +127,14 @@ ModelViewProject N64GX
 
 	attrib v_col  : VertexOutput [ type:typeid[ vec4f ] ]
 	attrib v_uv   : VertexOutput [ type:typeid[ vec2f ] ]
-	attrib v_aux  : VertexOutput [ type:typeid[ vec4f ] ]
-	attrib v_prim : VertexOutput [ type:typeid[ vec4f ] ]
-	attrib v_env  : VertexOutput [ type:typeid[ vec4f ] ]
-	attrib v_rect : VertexOutput [ type:typeid[ vec4f ] ]
-	attrib v_wrap : VertexOutput [ type:typeid[ vec4f ] ]
-	attrib v_fog  : VertexOutput [ type:typeid[ vec4f ] ]
-	attrib v_cmb  : VertexOutput [ type:typeid[ vec4f ] ]
+	attrib v_aux  : VertexOutput [ type:typeid[ vec4f ], flat: true ]
+	attrib v_prim : VertexOutput [ type:typeid[ vec4f ], flat: true ]
+	attrib v_env  : VertexOutput [ type:typeid[ vec4f ], flat: true ]
+	attrib v_rect : VertexOutput [ type:typeid[ vec4f ], flat: true ]
+	attrib v_wrap : VertexOutput [ type:typeid[ vec4f ], flat: true ]
+	attrib v_fog  : VertexOutput [ type:typeid[ vec4f ], flat: true ]
+	attrib v_cmb  : VertexOutput [ type:typeid[ vec4f ], flat: true ]
+	attrib v_fogf : VertexOutput [ type:typeid[ f32 ] ]
 
 	attrib fragColor : FragmentOutput [ type:typeid[ vec4f ] ]
 
@@ -177,7 +178,7 @@ ModelViewProject N64GX
 			col = vec4(min(c, vec3(1.0)), a_col.w);
 			if ((flags & 2) != 0) {              // texgen: uv from normal against the LOOKAT axes
 				vec4 lk = texelFetch(state, ivec2(ls + 7, 1), 0);
-				int  lp = int(lk.w + 0.5);
+				int  lp = int(lk.w);                 // packed 24-bit: above 2^23 a +0.5 flips the low bit
 				vec3 ly = (vec3(float((lp >> 16) & 255), float((lp >> 8) & 255), float(lp & 255)) - 128.0) / 128.0;
 				uv = vec2(dot(n, lk.xyz) * 0.5 + 0.5, 0.5 - dot(n, ly) * 0.5) * v_rect.zw;
 			}
@@ -194,7 +195,8 @@ ModelViewProject N64GX
 		float vidx = float(gl_VertexIndex);
 		float vtri = floor(vidx / 3.0) * 3.0;                           // flat per-triangle key: no intra-tri depth ramp
 		float vord = (vidx < vsplit) ? -1.0 : (vtri / max(vtot, 1.0));   // -1 = backdrop (before first z-enabled 3D), else draw-order
-		v_aux = vec4(vord, a_aux.y, fogv, a_aux.w);      // x: z-disabled depth key, z: fog factor
+		v_aux = vec4(vord, a_aux.y, 0.0, a_aux.w);       // x: z-disabled depth key
+		v_fogf = fogv;
 		gl_Position = vec4(clip.x, clip.y, (clip.z + clip.w) * 0.5, clip.w);
 	}
 
@@ -243,7 +245,7 @@ ModelViewProject N64GX
 		}
 		int cw0 = int(v_cmb.x + 0.5);                    // RDP colour combiner: (A - B) * C + D per cycle
 		int cw1 = int(v_cmb.y + 0.5);                    // mux tables as angrylion set_*_input
-		int aw  = int(v_cmb.z + 0.5);
+		int aw  = int(v_cmb.z);                          // packed 24-bit: above 2^23 a +0.5 flips the low bit
 		vec4 comb = vec4(0.0);
 		for (int cy = 0; cy < 2; cy++) {
 			if (cy == 0 && v_cmb.w < 0.5) continue;
@@ -270,8 +272,8 @@ ModelViewProject N64GX
 		vec4 col = comb;
 		if ((flags & 128) != 0 && col.a < 0.5) discard;
 		if ((flags & 65536) != 0) {                                                    // fog blender: CLR_FOG * A_SHADE + CLR_IN * (1 - A_SHADE)
-			int fc = int(v_fog.z + 0.5);
-			col.rgb = mix(col.rgb, vec3(float((fc >> 16) & 255), float((fc >> 8) & 255), float(fc & 255)) / 255.0, v_aux.z);
+			int fc = int(v_fog.z);
+			col.rgb = mix(col.rgb, vec3(float((fc >> 16) & 255), float((fc >> 8) & 255), float(fc & 255)) / 255.0, v_fogf);
 		}
 		if ((flags & 512) != 0) col.a = max(col.r, max(col.g, col.b));
 		else if ((flags & 256) == 0) col.a = 1.0;
@@ -361,6 +363,7 @@ class ares
 element n64 : trinity
 	public  width        : i32    [ 960 ]
 	public  height       : i32    [ 720 ]
+	public  lock_aspect  : bool   [ true ]
 	public  title        : string [ 'n64' ]
 	public  background   : string [ 'Background' ]
 	default rom          : path           # positional: the ROM
@@ -396,7 +399,9 @@ element n64 : trinity
 	mutable dbg_icm        : i64          # icache misses
 	mutable dbg_rcc        : i64          # io_rcost nonzero charges
 	mutable cosim_cdef     : i64          # running net count deficit (ares - ours)
-	mutable rdram        : new u8 [ 0x800000 ]
+	mutable rdram        : new u8 [ 0x800000 ]   # host-endian words: N64 byte i lives at i^3
+	mutable rdram16      : @u16
+	mutable rdram32      : @u32
 	mutable dmem         : new u8 [ 0x1000 ]
 	mutable imem         : new u8 [ 0x1000 ]
 	mutable pif_ram      : new u8 [ 64 ]
@@ -670,7 +675,7 @@ element n64 : trinity
 	mutable gx_vt        : new f32 [ 160 ]   # 16 slots x 10: cx cy cz cw u v r g b a
 	mutable gx_clip      : new f32 [ 80 ]    # near-clip scratch (up to 8 verts)
 	mutable gx_scr       : new f32 [ 80 ]    # screen-space: sx sy sz invw u_ow v_ow r g b a
-	public  smooth       : i32 [ 0 ]         # tess level (0=off, 2/3 typical)
+	public [ Launch, Slider [ 0, 4 ] ] smooth : i32 [ 0 ]   # tess level (0=off, 2/3 typical)
 	mutable gx_smooth_cos: f32 [ 0.5 ]       # hard-edge gate: min normal dot to smooth (cos 60deg)
 	mutable pn_P         : new f32 [ 9 ]     # 3 corner positions (obj)
 	mutable pn_N         : new f32 [ 9 ]     # 3 corner normals (normalized)
@@ -792,6 +797,7 @@ element n64 : trinity
 	mutable r_state      : Texture
 	mutable r_render     : Render
 	mutable r_pipeline   : Pipeline
+	mutable r_pipeline_nz : Pipeline           # same shader, depth writes off (N64 Z_UPD clear)
 	mutable r_model      : Model
 	mutable r_vbo        : Gpu
 	mutable gx_dbgc      : i32
@@ -842,10 +848,17 @@ element n64 : trinity
 	mutable gx_zsplit    : i32              # vertex index of first z-enabled draw this frame (z-disabled before = backdrop)
 	mutable gx_zset      : bool             # whether gx_zsplit has been captured this frame
 	mutable pub_zsplit   : i32              # published gx_zsplit for the paint thread
+	mutable gx_run       : new i32 [ 12288 ]   # draw runs: (pipeline, first vertex, count); pipeline 1 = Z_UPD off
+	mutable gx_run_n     : i32
+	mutable pub_run      : new i32 [ 12288 ]
+	mutable pub_run_n    : i32
+	mutable r_runs       : new i32 [ 12288 ]   # paint thread's copy, handed to the Model
 
 	func init []
 		animated  = true
 		focusable = true
+		rdram16 = @u16 [ rdram ]
+		rdram32 = @u32 [ rdram ]
 		if [ getenv[ 'N64_DBG' ] ] dbg_on = true
 		if [ getenv[ 'N64_HASH' ] ] hash_on = true
 		if [ getenv[ 'N64_LLE' ] ] lle = true
@@ -1098,7 +1111,7 @@ element n64 : trinity
 								for [ pg: u32 0, pg < 0x800000, pg += 0x1000 ]
 									nd : i32 [ 0 ]
 									for [ o: u32 0, o < 0x1000, o += 1 ]
-										if [ rdram[ pg + o ] != oracle.rd8[ pg + o ] ] nd += 1
+										if [ rdram[ (pg + o) ^ 3 ] != oracle.rd8[ pg + o ] ] nd += 1
 									if [ nd > 200 ] printf[ "n64 RDDIFF page=%06X ndiff=%d\n", pg, nd ]
 								fflush[ null ]
 								exit[ 7 ]
@@ -1111,7 +1124,7 @@ element n64 : trinity
 		if [ rom_size - 0x1000 < sz ] sz = rom_size - 0x1000
 		dst : i64 [ i64[ entry & 0x1FFFFFFF ] ]
 		for [ i: i64 0, i < sz, i += 1 ]
-			rdram[ dst + i ] = rom_data[ 0x1000 + i ]
+			rdram[ (dst + i) ^ 3 ] = rom_data[ 0x1000 + i ]
 		wr_phys32[ 0x300, 1 ]                # osTvType: NTSC
 		wr_phys32[ 0x308, 0xB0000000 ]       # osRomBase: cart domain 1
 		wr_phys32[ 0x318, 0x800000 ]         # osMemSize for 6102
@@ -1127,8 +1140,25 @@ element n64 : trinity
 		log 'n64: booted entry={entry} rom {rom_size} bytes'
 
 	# ---------------- physical memory ----------------
+	func rd_h [ pa: u32 ] -> u32
+		return u32[ rdram16[ (pa ^ 2) >> 1 ] ]
+
+	func wr_h [ pa: u32, v: u32 ]
+		rdram16[ (pa ^ 2) >> 1 ] = u16[ v ]
+
+	func rd_w [ pa: u32 ] -> u32
+		return rdram32[ pa >> 2 ]
+
+	func wr_w [ pa: u32, v: u32 ]
+		rdram32[ pa >> 2 ] = v
+
+	func rdram_swap []
+		for [ k: u32 0, k < 0x200000, k += 1 ]
+			w : u32 [ rdram32[ k ] ]
+			rdram32[ k ] = (w >> 24) | ((w >> 8) & 0xFF00) | ((w << 8) & 0xFF0000) | (w << 24)
+
 	func rd_phys8 [ pa: u32 ] -> u32
-		if [ pa < 0x800000 ] return u32[ rdram[ pa ] ]
+		if [ pa < 0x800000 ] return u32[ rdram[ pa ^ 3 ] ]
 		if [ pa >= 0x04000000 && pa < 0x04001000 ] return u32[ dmem[ pa & 0xFFF ] ]
 		if [ pa >= 0x04001000 && pa < 0x04002000 ] return u32[ imem[ pa & 0xFFF ] ]
 		if [ pa >= 0x10000000 && pa < 0x10000000 + u32[ rom_size ] ] return u32[ rom_data[ pa - 0x10000000 ] ]
@@ -1142,7 +1172,7 @@ element n64 : trinity
 			if [ ld_dump && pa >= 0x2209E0 && pa < 0x220AC8 && dbg_wv < 400 && (pa & 0xF) == 0 ]
 				dbg_wv += 1
 				printf[ "n64 MWRITE8 pa=%06X v=%02X pc=%08X ra=%08X f%u\n", pa, v & 0xFF, cpu.pc, u32[ cpu.r[31] ], frames ]
-			rdram[ pa ] = u8[ v ]
+			rdram[ pa ^ 3 ] = u8[ v ]
 			return
 		if [ pa >= 0x04000000 && pa < 0x04001000 ]
 			dmem[ pa & 0xFFF ] = u8[ v ]
@@ -1156,7 +1186,7 @@ element n64 : trinity
 
 	func rd_phys32 [ pa: u32 ] -> u32
 		if [ pa < 0x800000 ]
-			return (u32[rdram[pa]] << 24) | (u32[rdram[pa+1]] << 16) | (u32[rdram[pa+2]] << 8) | u32[rdram[pa+3]]
+			return rd_w[ pa ]
 		if [ pa >= 0x04000000 && pa < 0x04002000 ]
 			b : u32 [ pa & 0x1FFF ]
 			m : @u8 [ (b < 0x1000) ? dmem : imem ]
@@ -1191,10 +1221,7 @@ element n64 : trinity
 					printf[ "  %08X %08X %08X %08X\n", dr_r32[ jb9 ], dr_r32[ jb9 + 4 ], dr_r32[ jb9 + 8 ], dr_r32[ jb9 + 12 ] ]
 				vt9 : u32 [ dr_r32[ 0x1BA030 ] ]
 				printf[ "  weightnode=%08X\n", vt9 ]
-			rdram[pa]   = u8[ v >> 24 ]
-			rdram[pa+1] = u8[ v >> 16 ]
-			rdram[pa+2] = u8[ v >> 8 ]
-			rdram[pa+3] = u8[ v ]
+			wr_w[ pa, v ]
 			return
 		if [ pa >= 0x04000000 && pa < 0x04002000 ]
 			b : u32 [ pa & 0x1FFF ]
@@ -1278,11 +1305,11 @@ element n64 : trinity
 				dd : u32 [ da + i ]
 				if [ dd < 0x800000 ]
 					if [ to_sp ]
-						if [ mo < 0x1000 ] dmem[ mo ] = rdram[ dd ]
-						el imem[ mo & 0xFFF ] = rdram[ dd ]
+						if [ mo < 0x1000 ] dmem[ mo ] = rdram[ dd ^ 3 ]
+						el imem[ mo & 0xFFF ] = rdram[ dd ^ 3 ]
 					el
-						if [ mo < 0x1000 ] rdram[ dd ] = dmem[ mo ]
-						el rdram[ dd ] = imem[ mo & 0xFFF ]
+						if [ mo < 0x1000 ] rdram[ dd ^ 3 ] = dmem[ mo ]
+						el rdram[ dd ^ 3 ] = imem[ mo & 0xFFF ]
 			ma += ln
 			da += ln + skip
 
@@ -1361,10 +1388,11 @@ element n64 : trinity
 				w1 = (u32[dmem[b9+4]] << 24) | (u32[dmem[b9+5]] << 16) | (u32[dmem[b9+6]] << 8) | u32[dmem[b9+7]]
 			el
 				b8 : u32 [ a9 & 0x7FFFF8 ]
-				w0 = (u32[rdram[b8]] << 24) | (u32[rdram[b8+1]] << 16) | (u32[rdram[b8+2]] << 8) | u32[rdram[b8+3]]
-				w1 = (u32[rdram[b8+4]] << 24) | (u32[rdram[b8+5]] << 16) | (u32[rdram[b8+6]] << 8) | u32[rdram[b8+7]]
+				w0 = rd_w[ b8 ]
+				w1 = rd_w[ b8 + 4 ]
 			op9 : u32 [ (w0 >> 24) & 0x3F ]
-			printf[ "RDP %02X %08X %08X\n", op9, w0, w1 ]
+			ifdef [ N64_DEBUG ]
+				printf[ "RDP %02X %08X %08X\n", op9, w0, w1 ]
 			if [ op9 == 0x29 ]
 				mi_intr = mi_intr | 0x20
 				mi_check[]
@@ -1372,8 +1400,9 @@ element n64 : trinity
 		dpc_currentr = dpc_endr
 
 	func io_write [ pa: u32, v: u32 ]
-		if [ (pa & 0xFFFF0000) == 0x04100000 || (pa & 0xFFFF0000) == 0x04040000 ]
-			printf[ "IOW %08X = %08X pc=%08X\n", pa, v, cpu.pc ]
+		ifdef [ N64_DEBUG ]
+			if [ (pa & 0xFFFF0000) == 0x04100000 || (pa & 0xFFFF0000) == 0x04040000 ]
+				printf[ "IOW %08X = %08X pc=%08X\n", pa, v, cpu.pc ]
 		if [ dbg_on && frames >= 224 && frames < 232 ]
 			printf[ "n64 IOW %08X = %08X (pc=%08X)\n", pa, v, cpu.pc ]
 		if [ hash_on && pa >= 0x04800000 && pa < 0x04800020 ] printf[ "SIW %08X=%08X seq=%llu\n", pa, v, hash_seq ]
@@ -1394,15 +1423,16 @@ element n64 : trinity
 			if [ (v & 0x2) != 0 && (v & 0x1) == 0 ] sp_status = sp_status | 0x1             # set halt
 			if [ (v & 0x1) != 0 && (v & 0x2) == 0 && (v & 0x40) == 0 && (sp_status & 0x20) == 0 ]  # clear halt (not single-step): START -> HLE the task
 				tt : u32 [ (u32[dmem[0xFC0]] << 24) | (u32[dmem[0xFC1]] << 16) | (u32[dmem[0xFC2]] << 8) | u32[dmem[0xFC3]] ]
-				printf[ "SPTASK type=%u pc=%08X hdr:", tt, sp_pc ]
-				for [ th: u32 0, th < 16, th += 4 ]
-					tw : u32 [ (u32[dmem[0xFC0+th]] << 24) | (u32[dmem[0xFC1+th]] << 16) | (u32[dmem[0xFC2+th]] << 8) | u32[dmem[0xFC3+th]] ]
-					printf[ " %08X", tw ]
-				printf[ " | %08X %08X %08X %08X\n",
-					(u32[dmem[0xFD0]] << 24) | (u32[dmem[0xFD1]] << 16) | (u32[dmem[0xFD2]] << 8) | u32[dmem[0xFD3]],
-					(u32[dmem[0xFD4]] << 24) | (u32[dmem[0xFD5]] << 16) | (u32[dmem[0xFD6]] << 8) | u32[dmem[0xFD7]],
-					(u32[dmem[0xFD8]] << 24) | (u32[dmem[0xFD9]] << 16) | (u32[dmem[0xFDA]] << 8) | u32[dmem[0xFDB]],
-					(u32[dmem[0xFDC]] << 24) | (u32[dmem[0xFDD]] << 16) | (u32[dmem[0xFDE]] << 8) | u32[dmem[0xFDF]] ]
+				ifdef [ N64_DEBUG ]
+					printf[ "SPTASK type=%u pc=%08X hdr:", tt, sp_pc ]
+					for [ th: u32 0, th < 16, th += 4 ]
+						tw : u32 [ (u32[dmem[0xFC0+th]] << 24) | (u32[dmem[0xFC1+th]] << 16) | (u32[dmem[0xFC2+th]] << 8) | u32[dmem[0xFC3+th]] ]
+						printf[ " %08X", tw ]
+					printf[ " | %08X %08X %08X %08X\n",
+						(u32[dmem[0xFD0]] << 24) | (u32[dmem[0xFD1]] << 16) | (u32[dmem[0xFD2]] << 8) | u32[dmem[0xFD3]],
+						(u32[dmem[0xFD4]] << 24) | (u32[dmem[0xFD5]] << 16) | (u32[dmem[0xFD6]] << 8) | u32[dmem[0xFD7]],
+						(u32[dmem[0xFD8]] << 24) | (u32[dmem[0xFD9]] << 16) | (u32[dmem[0xFDA]] << 8) | u32[dmem[0xFDB]],
+						(u32[dmem[0xFDC]] << 24) | (u32[dmem[0xFDD]] << 16) | (u32[dmem[0xFDE]] << 8) | u32[dmem[0xFDF]] ]
 				if [ tt == 2 ] audio_task[]
 				if [ tt == 1 ]
 					tg : i64 [ now_ns[] ]
@@ -1536,7 +1566,7 @@ element n64 : trinity
 				printf[ "n64 PIDMA cart=%08X dram=%06X len=%u f%u\n", pi_cart, pi_dram, ln, frames ]
 			for [ i: u32 0, i < ln, i += 1 ]
 				bv : u32 [ (src + i64[i] < rom_size && src + i64[i] >= 0) ? u32[ rom_data[ src + i64[i] ] ] : 0 ]
-				if [ pi_dram + i < 0x800000 ] rdram[ pi_dram + i ] = u8[ bv ]
+				if [ pi_dram + i < 0x800000 ] rdram[ (pi_dram + i) ^ 3 ] = u8[ bv ]
 			pi_status = pi_status | 0x1                       # dmaBusy; interrupt deferred (ares)
 			pi_dma_p  = true
 			pi_dma_at = c_istart + (pi_dma_dur[ v & 0xFFFFFF, pi_cart ] + 1) / 2
@@ -1585,7 +1615,7 @@ element n64 : trinity
 		if [ pa == 0x04800004 ]                              # SI read64: PIF -> RDRAM
 			pif_joybus[]
 			for [ i: u32 0, i < 64, i += 1 ]
-				rdram[ si_dram + i ] = pif_ram[ i ]
+				rdram[ (si_dram + i) ^ 3 ] = pif_ram[ i ]
 			si_status = (si_status & 0x1000) | 0x0141        # dmaBusy|pch=4|dmaState=1
 			si_dma_p  = true                                 # defer completion interrupt (real HW: ~ms later)
 			si_dma_at = c_istart + (pif_est_timing[] * 3 + 1) / 2   # ares SI_DMA_Read: estimateTiming*3 thread-clocks
@@ -1593,7 +1623,7 @@ element n64 : trinity
 			return
 		if [ pa == 0x04800010 ]                              # SI write64: RDRAM -> PIF
 			for [ i: u32 0, i < 64, i += 1 ]
-				pif_ram[ i ] = rdram[ si_dram + i ]
+				pif_ram[ i ] = rdram[ (si_dram + i) ^ 3 ]
 			if [ pif_state < 5 ] pif_tick []
 			pif_joybus[]
 			si_status = (si_status & 0x1000) | 0x0411        # dmaBusy|pch=1|dmaState=4
@@ -1629,29 +1659,25 @@ element n64 : trinity
 
 	func dr_r16 [ ad: u32 ] -> i32
 		oo : u32 [ ad & 0x7FFFFE ]
-		vv : i32 [ (i32[ rdram[oo] ] << 8) | i32[ rdram[oo + 1] ] ]
+		vv : i32 [ i32[ rd_h[ oo ] ] ]
 		if [ vv >= 0x8000 ] vv -= 0x10000
 		return vv
 
 	func dr_ru16 [ ad: u32 ] -> u32
 		oo : u32 [ ad & 0x7FFFFE ]
-		return (u32[ rdram[oo] ] << 8) | u32[ rdram[oo + 1] ]
+		return rd_h[ oo ]
 
 	func dr_w16 [ ad: u32, v: i32 ]
 		oo : u32 [ ad & 0x7FFFFE ]
-		rdram[ oo ]     = u8[ (v >> 8) & 0xFF ]
-		rdram[ oo + 1 ] = u8[ v & 0xFF ]
+		wr_h[ oo, u32[ v ] ]
 
 	func dr_r32 [ ad: u32 ] -> u32
 		oo : u32 [ ad & 0x7FFFFC ]
-		return (u32[rdram[oo]] << 24) | (u32[rdram[oo + 1]] << 16) | (u32[rdram[oo + 2]] << 8) | u32[rdram[oo + 3]]
+		return rd_w[ oo ]
 
 	func dr_w32 [ ad: u32, v: u32 ]
 		oo : u32 [ ad & 0x7FFFFC ]
-		rdram[ oo ]     = u8[ (v >> 24) & 0xFF ]
-		rdram[ oo + 1 ] = u8[ (v >> 16) & 0xFF ]
-		rdram[ oo + 2 ] = u8[ (v >> 8) & 0xFF ]
-		rdram[ oo + 3 ] = u8[ v & 0xFF ]
+		wr_w[ oo, v ]
 
 	func fnv_u64 [ h: u64, v: u64 ] -> u64
 		r : u64 [ h ]
@@ -1730,14 +1756,14 @@ element n64 : trinity
 		ss : u32 [ ad & (~u32[7]) ]
 		cc : u32 [ (count + 7) & (~u32[7]) ]
 		for [ i: u32 0, i < cc, i += 1 ]
-			ab_w8[ dd + i, u32[ rdram[ (ss + i) & 0x7FFFFF ] ] ]
+			ab_w8[ dd + i, u32[ rdram[ ((ss + i) & 0x7FFFFF) ^ 3 ] ] ]
 
 	func a_savebuf [ ad: u32, dm: u32, count: u32 ]
 		dd : u32 [ dm & (~u32[3]) ]
 		ss : u32 [ ad & (~u32[7]) ]
 		cc : u32 [ (count + 7) & (~u32[7]) ]
 		for [ i: u32 0, i < cc, i += 1 ]
-			rdram[ (ss + i) & 0x7FFFFF ] = u8[ ab_r8[ dd + i ] ]
+			rdram[ ((ss + i) & 0x7FFFFF) ^ 3 ] = u8[ ab_r8[ dd + i ] ]
 
 	func a_move [ dmo: u32, dmi: u32, count: u32 ]
 		for [ i: u32 0, i < count, i += 1 ]
@@ -2060,10 +2086,10 @@ element n64 : trinity
 
 
 	func dr_r8 [ ad: u32 ] -> u32
-		return u32[ rdram[ ad & 0x7FFFFF ] ]
+		return u32[ rdram[ (ad & 0x7FFFFF) ^ 3 ] ]
 
 	func dr_s8 [ ad: u32 ] -> i32
-		vv : i32 [ i32[ u32[ rdram[ ad & 0x7FFFFF ] ] ] ]
+		vv : i32 [ i32[ u32[ rdram[ (ad & 0x7FFFFF) ^ 3 ] ] ] ]
 		if [ vv >= 0x80 ] vv -= 0x100
 		return vv
 
@@ -2410,8 +2436,7 @@ element n64 : trinity
 			lpy : i32 [ py / gx_ss ]
 			off : u32 [ (gx_cimg + u32[ (lpy * gx_ciw + lpx) * 2 ]) & 0x7FFFFE ]
 			v16 : u32 [ ((rr2 >> 3) << 11) | ((gg2 >> 3) << 6) | ((bb2 >> 3) << 1) | 1 ]
-			rdram[ off ]     = u8[ (v16 >> 8) & 0xFF ]
-			rdram[ off + 1 ] = u8[ v16 & 0xFF ]
+			wr_h[ off, v16 ]
 
 	func gx_raster [ o0: i32, o1: i32, o2: i32 ]
 		x0 : f32 [ gx_scr[ o0 ] ]
@@ -2769,9 +2794,9 @@ element n64 : trinity
 		st_put[ sl * 6 + 1, 2, wms, wmt, f32[ tl_cms[ tn ] + u32[ clS ] * 4 ], f32[ tl_cmt[ tn ] + u32[ clT ] * 4 ] ]
 		st_put[ sl * 6 + 2, 2, f32[ (gx_prim >> 24) & 0xFF ] / 255.0, f32[ (gx_prim >> 16) & 0xFF ] / 255.0, f32[ (gx_prim >> 8) & 0xFF ] / 255.0, f32[ gx_prim & 0xFF ] / 255.0 ]
 		st_put[ sl * 6 + 3, 2, f32[ (gx_env >> 24) & 0xFF ] / 255.0, f32[ (gx_env >> 16) & 0xFF ] / 255.0, f32[ (gx_env >> 8) & 0xFF ] / 255.0, f32[ gx_env & 0xFF ] / 255.0 ]
-		if [ dbg_on && gx_texon && gx_cc_tex && frames >= 448 && frames < 452 && mr_dbg < 6 ]
-			mr_dbg += 1
-			printf[ "n64 MATRECT mat=%d asl=%d rect=(%d,%d,%d,%d) wms=%.0f cm=%u,%u fmt=%u siz=%u f%u\n", sl, asl, atk_rect[ rb ], atk_rect[ rb + 1 ], atk_rect[ rb + 2 ], atk_rect[ rb + 3 ], f64[ wms ], tl_cms[ tn ], tl_cmt[ tn ], tl_fmt[ tn ], tl_siz[ tn ], frames ]
+		fm9 : i32 [ i32[ frames ] ]
+		if [ dbg_on && hold_f > 0 && fm9 >= hold_f - 1 ]
+			printf[ "n64 MATRECT mat=%d asl=%d texon=%d cctex=%d rect=(%d,%d,%d,%d) tile=%d timg=%06X prim=%08X env=%08X oth=%08X.%08X cc=%06X.%08X csel=%u,%u,%u,%u/%u,%u,%u,%u cca=%06X f%u\n", sl, asl, i32[ gx_texon ], i32[ gx_cc_tex ], atk_rect[ rb ], atk_rect[ rb + 1 ], atk_rect[ rb + 2 ], atk_rect[ rb + 3 ], tn, gx_timg & 0xFFFFFF, gx_prim, gx_env, gx_oth_h, gx_oth_l, gx_ccw1 & 0xFFFFFF, gx_ccw2, gx_csel[ 8 ], gx_csel[ 9 ], gx_csel[ 10 ], gx_csel[ 11 ], gx_csel[ 12 ], gx_csel[ 13 ], gx_csel[ 14 ], gx_csel[ 15 ], cca, frames ]
 		gx_matslot = sl
 		return sl
 
@@ -2795,14 +2820,27 @@ element n64 : trinity
 		el [ (gx_oth_l & 0x1003) != 0 ] fl = fl | 128       # cutout only with CVG_X_ALPHA or alpha compare
 		if [ ((gx_oth_h >> 20) & 3) >= 2 ] fl = fl | 8192   # FILL/COPY cycle = screen clear/blit: force to far background
 		if [ ((gx_oth_l >> 10) & 3) == 3 ] fl = fl | 16384  # decal z-mode: bias toward camera vs coplanar surface
-		if [ dbg_on && frames == 1302 && mr_dbg < 4000 ]
+		fr9 : i32 [ i32[ frames ] ]
+		hm1 : i32 [ hold_f - 1 ]
+		if [ dbg_on && hold_f > 0 && mr_dbg < 4000 && fr9 >= hm1 ]
 			mr_dbg += 1
 			mb9 : i32 [ (2 * 2048 + gx_matslot * 6) * 4 ]
-			printf[ "n64 FLAGS fl=%X geom=%08X cc=%06X.%08X timg=%06X tile=%d tmem=%u line=%u ts=%ux%u mat=%d rect=%.0f,%.0f,%.0f,%.0f wrap=%.0f,%.0f,%.0f,%.0f pc=%06X v0=%.0f,%.0f,%.0f uv=%.1f,%.1f uv1=%.1f,%.1f uv2=%.1f,%.1f sl=%d,%d,%d f%u\n", fl, gx_geom, gx_ccw1 & 0xFFFFFF, gx_ccw2, gx_timg & 0xFFFFFF, gx_tile, tl_tmem[ gx_tile ], tl_line[ gx_tile ], (tl_lrs[ gx_tile ] - tl_uls[ gx_tile ]) / 4 + 1, (tl_lrt[ gx_tile ] - tl_ult[ gx_tile ]) / 4 + 1, gx_matslot, f64[ st_tex[ mb9 ] ], f64[ st_tex[ mb9 + 1 ] ], f64[ st_tex[ mb9 + 2 ] ], f64[ st_tex[ mb9 + 3 ] ], f64[ st_tex[ mb9 + 4 ] ], f64[ st_tex[ mb9 + 5 ] ], f64[ st_tex[ mb9 + 6 ] ], f64[ st_tex[ mb9 + 7 ] ], gx_pc & 0xFFFFFF, f64[ gx_vraw[ gx_ti0 * 12 ] ], f64[ gx_vraw[ gx_ti0 * 12 + 1 ] ], f64[ gx_vraw[ gx_ti0 * 12 + 2 ] ], f64[ gx_vraw[ gx_ti0 * 12 + 3 ] ], f64[ gx_vraw[ gx_ti0 * 12 + 4 ] ], f64[ gx_vraw[ gx_ti1 * 12 + 3 ] ], f64[ gx_vraw[ gx_ti1 * 12 + 4 ] ], f64[ gx_vraw[ gx_ti2 * 12 + 3 ] ], f64[ gx_vraw[ gx_ti2 * 12 + 4 ] ], gx_ti0, gx_ti1, gx_ti2, frames ]
+			printf[ "n64 FLAGS fl=%X geom=%08X oth=%08X.%08X cc=%06X.%08X timg=%06X tile=%d tmem=%u line=%u ts=%ux%u mat=%d rect=%.0f,%.0f,%.0f,%.0f wrap=%.0f,%.0f,%.0f,%.0f pc=%06X v0=%.0f,%.0f,%.0f uv=%.1f,%.1f uv1=%.1f,%.1f uv2=%.1f,%.1f sl=%d,%d,%d f%u\n", fl, gx_geom, gx_oth_h, gx_oth_l, gx_ccw1 & 0xFFFFFF, gx_ccw2, gx_timg & 0xFFFFFF, gx_tile, tl_tmem[ gx_tile ], tl_line[ gx_tile ], (tl_lrs[ gx_tile ] - tl_uls[ gx_tile ]) / 4 + 1, (tl_lrt[ gx_tile ] - tl_ult[ gx_tile ]) / 4 + 1, gx_matslot, f64[ st_tex[ mb9 ] ], f64[ st_tex[ mb9 + 1 ] ], f64[ st_tex[ mb9 + 2 ] ], f64[ st_tex[ mb9 + 3 ] ], f64[ st_tex[ mb9 + 4 ] ], f64[ st_tex[ mb9 + 5 ] ], f64[ st_tex[ mb9 + 6 ] ], f64[ st_tex[ mb9 + 7 ] ], gx_pc & 0xFFFFFF, f64[ gx_vraw[ gx_ti0 * 12 ] ], f64[ gx_vraw[ gx_ti0 * 12 + 1 ] ], f64[ gx_vraw[ gx_ti0 * 12 + 2 ] ], f64[ gx_vraw[ gx_ti0 * 12 + 3 ] ], f64[ gx_vraw[ gx_ti0 * 12 + 4 ] ], f64[ gx_vraw[ gx_ti1 * 12 + 3 ] ], f64[ gx_vraw[ gx_ti1 * 12 + 4 ] ], f64[ gx_vraw[ gx_ti2 * 12 + 3 ] ], f64[ gx_vraw[ gx_ti2 * 12 + 4 ] ], gx_ti0, gx_ti1, gx_ti2, frames ]
 		if [ ld_dump && ld_dumpn < 400 && (fl & 4) != 0 ]
 			ld_dumpn += 1
 			printf[ "n64 FLAG geom=%05X zbuf=%d fl=%X (4096=%d)\n", gx_geom & 0xFFFFF, i32[ (gx_geom & 1) != 0 ], fl, i32[ (fl & 4096) != 0 ] ]
 		return fl
+
+	# extend the current draw run with the vertex about to be emitted; a Z_UPD change opens a new run
+	func gx_run_note []
+		zu : i32 [ ((gx_oth_l & 0x20) != 0) ? 0 : 1 ]
+		if [ gx_run_n == 0 || gx_run[ (gx_run_n - 1) * 3 ] != zu ]
+			if [ gx_run_n < 4096 ]
+				gx_run[ gx_run_n * 3 ]     = zu
+				gx_run[ gx_run_n * 3 + 1 ] = gxv_n
+				gx_run[ gx_run_n * 3 + 2 ] = 0
+				gx_run_n += 1
+		gx_run[ (gx_run_n - 1) * 3 + 2 ] += 1
 
 	func gxe_vert [ sl: i32, fl: u32, mat: i32 ]
 		if [ gxv_n >= 131064 ]
@@ -2833,6 +2871,7 @@ element n64 : trinity
 		if [ dbg_on && frames == 449 && uv_dbg < 16 ]
 			uv_dbg += 1
 			printf[ "n64 VTXUV flv=%X lit=%d col/n=(%.2f,%.2f,%.2f) vls=%.0f pos=(%.1f,%.1f) f%u\n", flv, flv & 1, f64[ gx_vraw[ rb + 5 ] ], f64[ gx_vraw[ rb + 6 ] ], f64[ gx_vraw[ rb + 7 ] ], f64[ gx_vraw[ rb + 11 ] ], f64[ gx_vraw[ rb ] ], f64[ gx_vraw[ rb + 1 ] ], frames ]
+		gx_run_note[]
 		gxv_n += 1
 
 	func gx_pn_gate [ i0: i32, i1: i32, i2: i32 ] -> bool
@@ -2932,6 +2971,7 @@ element n64 : trinity
 		gxv[ ob + 10 ] = f32[ flv ]
 		gxv[ ob + 11 ] = vls
 		gxv[ ob + 12 ] = f32[ mat ]
+		gx_run_note[]
 		gxv_n += 1
 
 	func gx_pn_v [ ga: i32, gb: i32, L: i32, fl: u32, mat: i32 ]
@@ -2994,6 +3034,7 @@ element n64 : trinity
 			gxv[ ob + 10 ] = f32[ fl ]
 			gxv[ ob + 11 ] = 0.0
 			gxv[ ob + 12 ] = f32[ mat ]
+			gx_run_note[]
 			gxv_n += 1
 
 	func gx_tri_cmd [ i0: i32, i1: i32, i2: i32 ]
@@ -3120,8 +3161,7 @@ element n64 : trinity
 				for [ px: i32 xh, px <= xl, px += 1 ]
 					if [ px >= 0 && px < gx_ciw ]
 						off : u32 [ (gx_cimg + u32[ (py * gx_ciw + px) * 2 ]) & 0x7FFFFE ]
-						rdram[ off ]     = u8[ (px16 >> 8) & 0xFF ]
-						rdram[ off + 1 ] = u8[ px16 & 0xFF ]
+						wr_h[ off, px16 ]
 		sy9 : i32 [ yh * gx_ss ]
 		ey9 : i32 [ (yl + 1) * gx_ss ]
 		sx9 : i32 [ xh * gx_ss ]
@@ -3142,14 +3182,15 @@ element n64 : trinity
 		gx_ex = false
 		sb9 : u32 [ (ud9 > 0x400) ? ud9 - 0x400 : 0 ]
 		for [ si9: u32 sb9, si9 < ud9 + 0x800 && si9 + 5 < 0x800000, si9 += 1 ]
-			if [ rdram[si9] == 0x46 && rdram[si9+1] == 0x33 && rdram[si9+2] == 0x44 && rdram[si9+3] == 0x45 && rdram[si9+4] == 0x58 ]
+			if [ rdram[si9 ^ 3] == 0x46 && rdram[(si9+1) ^ 3] == 0x33 && rdram[(si9+2) ^ 3] == 0x44 && rdram[(si9+3) ^ 3] == 0x45 && rdram[(si9+4) ^ 3] == 0x58 ]
 				gx_ex = true
 		if [ gx_ex && !gx_ex_said ]
 			gx_ex_said = true
 			printf[ "n64 gfx: F3DEX ucode detected\n" ]
-		if [ frames >= 32 && !gx_dmpd ]
-			gx_dmpd = true
-			gx_dmp = 400
+		ifdef [ N64_DEBUG ]
+			if [ frames >= 32 && !gx_dmpd ]
+				gx_dmpd = true
+				gx_dmp = 400
 		if [ ld_dump ] printf[ "n64 GFXTASK dp=%06X frame=%d\n", dp & 0x7FFFFF, frames ]
 		for [ i: i32 0, i < 16, i += 1 ]
 			gx_seg[ i ] = 0
@@ -3170,6 +3211,7 @@ element n64 : trinity
 			gx_dbgl = 30
 		if [ gpu_on ]
 			gxv_n = 0
+			gx_run_n = 0
 			gx_zsplit = 0
 			gx_zset = false
 			st_mtx_n = 1
@@ -3517,6 +3559,9 @@ element n64 : trinity
 				pub_gxv[ i ] = gxv[ i ]
 			pub_gxv_n = gxv_n
 			pub_zsplit = (gx_zset) ? gx_zsplit : 0
+			pub_run_n = gx_run_n
+			for [ i: i32 0, i < gx_run_n * 3, i += 1 ]
+				pub_run[ i ] = gx_run[ i ]
 			for [ i: i32 0, i < 24576, i += 1 ]
 				pub_st[ i ] = st_tex[ i ]
 			if [ at_dirty ]
@@ -4421,8 +4466,8 @@ element n64 : trinity
 				hi7 = u32[ oracle.rd8[ a7 ] ]
 				lo7 = u32[ oracle.rd8[ a7 + 1 ] ]
 			el
-				hi7 = u32[ rdram[ a7 ] ]
-				lo7 = u32[ rdram[ a7 + 1 ] ]
+				hi7 = u32[ rdram[ a7 ^ 3 ] ]
+				lo7 = u32[ rdram[ (a7 + 1) ^ 3 ] ]
 			px : u32 [ (hi7 << 8) | lo7 ]
 			r5 : u32 [ (px >> 11) & 31 ]
 			g5 : u32 [ (px >> 6) & 31 ]
@@ -4436,7 +4481,9 @@ element n64 : trinity
 	func save_ours [ fn: cstr ] -> i32
 		f : @FILE [ fopen[ fn, 'wb' ] ]
 		if [ ! f ] return 1
-		fwrite[ rdram, 1, 0x800000, f ]
+		be : new u8 [ 0x800000 ]
+		for [ i: u32 0, i < 0x800000, i += 1 ] be[ i ] = rdram[ i ^ 3 ]
+		fwrite[ be, 1, 0x800000, f ]
 		fwrite[ dmem, 1, 0x1000, f ]
 		fwrite[ imem, 1, 0x1000, f ]
 		fwrite[ pif_ram, 1, 64, f ]
@@ -4479,6 +4526,7 @@ element n64 : trinity
 		f : @FILE [ fopen[ fn, 'rb' ] ]
 		if [ ! f ] return 1
 		fread[ rdram, 1, 0x800000, f ]
+		rdram_swap[]
 		fread[ dmem, 1, 0x1000, f ]
 		fread[ imem, 1, 0x1000, f ]
 		fread[ pif_ram, 1, 64, f ]
@@ -4697,17 +4745,14 @@ element n64 : trinity
 		gs_u8[]                                          # wait_frozen
 		gs_var[]                                         # last_status_value
 		rn : i64 [ i64[ gs_var[] ] ]                     # RDRAM: host-endian words, byte i lives at i^3
-		for [ i: i64 0, i < rn && i < 0x800000, i += 1 ] rdram[ i ^ 3 ] = gs_buf[ gs_pos + i ]
+		for [ i: i64 0, i < rn && i < 0x800000, i += 1 ] rdram[ i ] = gs_buf[ gs_pos + i ]
 		gs_pos += rn
 		for [ i: i32 0, i < dl_n, i += 1 ]               # write back the dirty dcache lines
 			for [ k: i32 0, k < 4, k += 1 ]
 				dad : u32 [ dl_ad[ i ] + u32[ k * 4 ] ]
 				dw : u32 [ dl_w[ i * 4 + k ] ]
 				if [ dad + 4 <= 0x800000 ]
-					rdram[ dad ]     = u8[ dw >> 24 ]
-					rdram[ dad + 1 ] = u8[ (dw >> 16) & 0xFF ]
-					rdram[ dad + 2 ] = u8[ (dw >> 8) & 0xFF ]
-					rdram[ dad + 3 ] = u8[ dw & 0xFF ]
+					wr_w[ dad, dw ]
 		gs_vars[ 41 ]                                    # rdram size + 4x10 regs
 		mi_mode = u32[ gs_var[] ]
 		gs_var[]
@@ -4876,7 +4921,7 @@ element n64 : trinity
 			fp : u32 [ u32[ cpu.r[4] ] & 0x7FFFFF ]
 			fs : local u8 [ 64 ]
 			for [ k: i32 0, k < 60, k += 1 ]
-				fchr : u32 [ u32[ rdram[ fp + u32[k] ] ] ]
+				fchr : u32 [ u32[ rdram[ (fp + u32[k]) ^ 3 ] ] ]
 				if [ fchr >= 32 && fchr < 127 ] fs[ k ] = u8[ fchr ]
 				el fs[ k ] = 46
 			fs[ 60 ] = 0
@@ -5740,7 +5785,7 @@ element n64 : trinity
 			a0p : u32 [ u32[ cpu.r[4] ] & 0x7FFFFF ]
 			sb : local u8 [ 100 ]
 			for [ k: i32 0, k < 96, k += 1 ]
-				ch : u32 [ u32[ rdram[ a0p + u32[k] ] ] ]
+				ch : u32 [ u32[ rdram[ (a0p + u32[k]) ^ 3 ] ] ]
 				if [ ch >= 32 && ch < 127 ] sb[ k ] = u8[ ch ]
 				el sb[ k ] = 46
 			sb[ 96 ] = 0
@@ -5788,12 +5833,12 @@ element n64 : trinity
 		org : u32 [ vi_origin & 0x7FFFFF ]
 		if [ fmt == 3 ]
 			for [ i: i32 0, i < w2 * h2, i += 1 ]
-				p : u32 [ (u32[rdram[org + u32[i*4]]] << 24) | (u32[rdram[org + u32[i*4] + 1]] << 16) | (u32[rdram[org + u32[i*4] + 2]] << 8) | u32[rdram[org + u32[i*4] + 3]] ]
+				p : u32 [ rd_w[ org + u32[i*4] ] ]
 				pub_framebuf[ i ] = 0xFF000000 | ((p >> 8) & 0xFF0000) | ((p >> 8) & 0xFF00) | ((p >> 8) & 0xFF) | 0
 				pub_framebuf[ i ] = 0xFF000000 | (((p >> 8) & 0xFF) << 16) | (((p >> 16) & 0xFF) << 8) | ((p >> 24) & 0xFF)
 		el [ fmt == 2 ]
 			for [ i: i32 0, i < w2 * h2, i += 1 ]
-				px : u32 [ (u32[rdram[org + u32[i*2]]] << 8) | u32[rdram[org + u32[i*2] + 1]] ]
+				px : u32 [ rd_h[ org + u32[i*2] ] ]
 				r5 : u32 [ (px >> 11) & 31 ]
 				g5 : u32 [ (px >> 6) & 31 ]
 				b5 : u32 [ (px >> 1) & 31 ]
@@ -5815,7 +5860,11 @@ element n64 : trinity
 		t2 : i64 [ now_ns[] ]
 		t_frame += t2 - t0
 		t_pub += t2 - t1
-		if [ hold_f > 0 && frames >= hold_f ] paused = true
+		if [ hold_f > 0 && frames >= hold_f ]
+			paused = true
+			if [ dbg_on && !ld_dumped ]
+				ld_dumped = true
+				dump_atlas[ '{root}/n64/atlas.raw' ]
 		if [ ld_dump && ld_ticks < 45 ]
 			ld_ticks += 1
 			if [ ld_ticks == 4 ] dump_fb[ '/tmp/n64_t04.ppm' ]
@@ -5978,6 +6027,9 @@ element n64 : trinity
 		r_model = Model [ vk: cv.vk, w: cv.w, s: r_shader, samplers: map Au[string] [ 'atlas': r_atlas, 'state': r_state ] ]
 		r_model.pipelines = vec Pipeline []
 		r_model.pipelines.push[ r_pipeline ]
+		r_pipeline_nz = Pipeline [ vk: cv.vk, w: cv.w, name: string 'n64gx', r: r_render, s: r_shader, vbo: r_vbo, samplers: map Au[string] [ 'atlas': r_atlas, 'state': r_state ], straight_alpha: true, cull_none: true, depth_no_write: true ]
+		r_model.pipelines.push[ r_pipeline_nz ]
+		r_model.runs = @i32 [ r_runs ]
 		r_model.r = r_render
 		r_render.models = vec Model [] [ r_model ]
 		r_vbo.vertex_count = 0
@@ -6010,6 +6062,9 @@ element n64 : trinity
 				vd9[ i ] = pub_gxv[ i ]
 			vlim : i32 [ pub_gxv_n ]
 			r_vbo.vertex_count = vlim
+			for [ i: i32 0, i < pub_run_n * 3, i += 1 ]
+				r_runs[ i ] = pub_run[ i ]
+			r_model.run_n = pub_run_n
 			pub_lock.unlock[]
 			r_vbo.upload_verts[]
 			r_render.update[]

@@ -186,6 +186,7 @@ typedef struct meta_t_ {
     struct _Au_t*   a; // element/key type
     struct _Au*     b; // flexible: value type, shape, etc.
     struct _Au_t*   m; // member annotation: `name [ Cls ] : T`
+    struct _Au_t*   member_b; // second annotation: `[ Cls, Ctrl [ args ] ]` — the control that describes the member
 } meta_t_;
 
 // this is the standard _Au_t declaration

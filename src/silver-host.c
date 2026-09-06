@@ -7,6 +7,7 @@
 #else
 #include <dlfcn.h>
 #include <unistd.h>
+#include <sys/resource.h>
 #include <libgen.h>
 #include <signal.h>
 #include <execinfo.h>
@@ -1101,6 +1102,15 @@ static void init_as_pid1(void) {}
 
 int main(int argc, char** argv) {
     init_as_pid1();
+#ifndef _WIN32
+    // the nvidia driver opens a /dev/nvidia fd per GPU allocation: a reload's
+    // init spike passes the 1024 soft limit, so run at the hard limit
+    struct rlimit nofile;
+    if (getrlimit(RLIMIT_NOFILE, &nofile) == 0 && nofile.rlim_cur < nofile.rlim_max) {
+        nofile.rlim_cur = nofile.rlim_max;
+        setrlimit(RLIMIT_NOFILE, &nofile);
+    }
+#endif
 #ifdef _WIN32
     // the module we dlopen pulls vulkan-1, opencv, OpenEXR, libpng ... and they
     // live in install/bin. windows has no rpath, so the loader finds them only
@@ -1491,6 +1501,7 @@ int main(int argc, char** argv) {
             // process IS a reload, so the fresh instance may restore the flash state.
             setenv("SILVER_RELOAD_SAVE", "1", 1);
             if (do_destroy) do_destroy();
+            host_resources(name, "after destroy");
             unsetenv("SILVER_RELOAD_SAVE");
             setenv("SILVER_RELOAD_LOAD", "1", 1);
 
