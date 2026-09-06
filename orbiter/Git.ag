@@ -216,48 +216,6 @@ Layer CommitLayer
         cv.stroke_width[ 0.0 ]
         wtx : f32 [ cv.transform_tx[] ]
         wty : f32 [ cv.transform_ty[] ]
-        # rail chips, fixed at top-left — same dress as the editor rail
-        if [ ed && ed.nav_tools && ed.nav_tools.count > 0 ]
-            if [ !ed.ficons ] ed.ficons = FileIcons []
-            bas9 : i32 [ ed.tool_base[] ]
-            for [ ti: i32 0, ti < bas9 + ed.nav_tools.count, ti += 1 ]
-                tnm : string (bas9 == 1 && ti == 0) ? ed.nav_default : ed.nav_tools[ ti - bas9 ]
-                # chips top-align with the first tab row's pill; the
-                # project's consoles stack up from the bottom (tool_y)
-                tyy : f32 [ bounds.y + 3.0 + ed.tool_y[ ti, bounds.h ] ]
-                act9 : bool [ ed.view_name && ed.view_name.count > 0 && ed.view_name == tnm ]
-                if [ act9 ]
-                    cv.fill_color  [ rgba['#6cb6ff33'] ]
-                    cv.stroke_color[ rgba['#8fd0ff'] ]
-                el [ ti == cb.chip_hov ]
-                    cv.fill_color  [ rgba['#6cb6ff22'] ]
-                    cv.stroke_color[ rgba['#6cb6ffcc'] ]
-                    # mouse over: glow in the same colour as the border
-                    cv.inner_glow  [ rgba['#6cb6ffcc'], 14.0 ]
-                el
-                    cv.fill_color  [ rgba['#10142088'] ]
-                    cv.stroke_color[ rgba['#fff3'] ]
-                cv.stroke_width[ (act9) ? 2.0 : 1.0 ]
-                cv.rounded_rect[ bounds.x + 4.0, tyy, 60.0, 64.0, 8.0, 8.0, 8.0, 8.0 ]
-                cv.paint       [ ]
-                cv.inner_glow  [ rgba['#0000'], 0.0 ]
-                cv.stroke_width[ 0.0 ]
-                # a console view has its own mark (gear for a shell, chat for an agent)
-                inm  : string tnm
-                cico : string orb.console_icon[ tnm ]
-                if [ cico ] inm = cico
-                tico : SVGModel ed.ficons.named[ inm, 36 ]
-                if [ tico ]
-                    # selected = orangish white; resting = off purple white
-                    cv.svg_override[ (act9) ? rgba['#ffe6d2'] : ((ti == cb.chip_hov) ? rgba['#ffffff'] : rgba['#cfc6e8']) ]
-                    cv.draw_svg[ tico, bounds.x + 16.0, tyy + 6.0, 36.0, 36.0 ]
-                    cv.svg_override_off[]
-                cv.font_size[ 11.0 ]
-                cv.fill_color[ rgba['#c9c4dd'] ]
-                tlb : string tnm
-                if [ tnm == 'git' ] tlb = 'diff'
-                cv.draw_text[ tlb, rect [ x: bounds.x + 4.0, y: tyy + 44.0, w: 60.0, h: 16.0 ],
-                    vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
         # content right of the rail; everything below rides one scroll
         x0  : f32 [ bounds.x + 76.0 ]
         cw9 : f32 [ bounds.w - 76.0 ]
@@ -705,6 +663,9 @@ element CommitView
         commit_open = false
         commit_text = null
         pristine = false
+
+    func render [] -> Elements
+        return Elements [ 'rail' : ToolRail [ top: 3.0, area: Region [ 'l0 t0 w64px b0' ] ] ]
 
     func view [] -> EditorView
         for [ e9: element* a, e9, e9 = e9.parent ]

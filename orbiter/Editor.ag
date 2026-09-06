@@ -160,7 +160,7 @@ ResourceView B16
         return FileType.agnostic
     mutable hx_fh     : handle
     mutable hx_size   : i64
-    mutable hx_win    : ref u8         # 16KB read window over the file
+    mutable hx_win    : vec u8 [ 16384 ]   # 16KB read window over the file; a member, never a pooled `new`
     mutable hx_woff   : i64 [ -1 ]     # window's byte offset (-1 = empty)
     mutable hx_wlen   : i32
     mutable hx_scroll : f32            # editor scroll.y, stashed pre-render
@@ -189,10 +189,9 @@ ResourceView B16
     # slide the 16KB window so [off, off+need) is resident
     func hx_window [ off: i64, need: i32 ] -> bool
         if [ !hx_fh ] return false
-        if [ !hx_win ] hx_win = new u8 [ 16384 ]
         if [ hx_woff >= 0 && off >= hx_woff && (off + i64[ need ]) <= (hx_woff + i64[ hx_wlen ]) ] return true
         fseek[ hx_fh, off, 0 ]
-        rd : i64 [ fread[ hx_win, 1, 16384, hx_fh ] ]
+        rd : i64 [ fread[ @hx_win[0], 1, 16384, hx_fh ] ]
         hx_woff = off
         hx_wlen = i32[ rd ]
         return hx_wlen >= need
@@ -1196,54 +1195,6 @@ Layer EditorLayer
         use.frame = editor.cl_frame
         return use
 
-    # left tool rail: vertical buttons, icon over title, 64px wide
-    # the extension's handler module leads as the default action
-    func draw_tools [ cv: Canvas, editor: Editor ]
-        if [ !editor.nav_tools || editor.nav_tools.count == 0 ] return
-        if [ !editor.ficons ] editor.ficons = FileIcons []
-        # left inset matches the chips' top padding
-        dxx  : f32 [ bounds.x + 4.0 ]
-        bas9 : i32 [ editor.tool_base[] ]
-        for [ ti: i32 0, ti < bas9 + editor.nav_tools.count, ti += 1 ]
-            tnm : string (bas9 == 1 && ti == 0) ? editor.nav_default : editor.nav_tools[ ti - bas9 ]
-            tyy : f32 [ bounds.y + editor.tool_y[ ti, bounds.h ] ]
-            # the view you are IN reads as a border, not a hover tint
-            act9 : bool [ editor.view_name && editor.view_name.count > 0
-                          && editor.view_name == tnm ]
-            if [ act9 ]
-                cv.fill_color  [ rgba['#6cb6ff33'] ]
-                cv.stroke_color[ rgba['#8fd0ff'] ]
-            el [ ti == editor.tool_hover ]
-                cv.fill_color  [ rgba['#6cb6ff22'] ]
-                cv.stroke_color[ rgba['#6cb6ffcc'] ]
-            el
-                cv.fill_color  [ rgba['#10142088'] ]
-                cv.stroke_color[ rgba['#fff3'] ]
-            cv.stroke_width[ (act9) ? 2.0 : 1.0 ]
-            cv.rounded_rect[ dxx, tyy, 60.0, 64.0, 8.0, 8.0, 8.0, 8.0 ]
-            cv.paint       [ ]
-            cv.stroke_width[ 0.0 ]
-            # a console view has its own mark (gear for a shell, chat for an agent)
-            orbt : cast orbiter [ editor.ux.app_object ]
-            inm  : string tnm
-            if [ orbt ]
-                cico : string orbt.console_icon[ tnm ]
-                if [ cico ] inm = cico
-            tico : SVGModel editor.ficons.named[ inm, 36 ]
-            if [ tico ]
-                # selected = orangish white; resting = off purple white
-                cv.svg_override[ (act9) ? rgba['#ffe6d2'] : ((ti == editor.tool_hover) ? rgba['#ffffff'] : rgba['#cfc6e8']) ]
-                cv.draw_svg[ tico, dxx + 12.0, tyy + 6.0, 36.0, 36.0 ]
-                cv.svg_override_off[]
-            cv.font_size[ 11.0 ]
-            cv.fill_color[ rgba['#c9c4dd'] ]
-            # an owned label: binding the vec's string and then assigning
-            # over it drops a reference this local never held, and the
-            # vec's entry frees under it
-            tlb : string [ (tnm == 'git') ? 'diff' : '{tnm}' ]
-            cv.draw_text[ tlb, rect [ x: dxx, y: tyy + 44.0, w: 60.0, h: 16.0 ],
-                vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
-
     func draw [ cv: Canvas ]
         editor : Editor[ parent ]
         if [ !editor ] return
@@ -1518,7 +1469,6 @@ Layer EditorLayer
                 cv.fill_color[ (h.is_dir) ? rgba['#6cb6ff'] : rgba['#fff'] ]
                 cv.draw_text[ h.text, rect [ x: cx + gm, y: ty, w: grid_cw - gm * 2.0, h: 16.0 ],
                     vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null ]
-            draw_tools[ cv, editor ]
             cv.clear_crop[ ]
             return
 
@@ -2128,7 +2078,6 @@ Layer EditorLayer
         if [ editor.run_view && !editor.app_view && !editor.show_hits && !editor.stopped[] ]
             editor.run_view.draw_pip[ cv, bounds ]
 
-        draw_tools[ cv, editor ]
         cv.clear_crop[ ]
 
         # the scopes the view is inside stay drawn at the top, over the rows
@@ -2156,6 +2105,69 @@ Layer EditorLayer
             cv.rect_to[ bounds.x, round[ bounds.y + f32[ pins.count ] * lh ] - 1.0, bounds.w, 1.0 ]
             cv.paint[ ]
 
+
+# left tool rail: vertical buttons, icon over title, 64px wide
+# the extension's handler module leads as the default action
+element ToolRail : Toolbar
+    animated    : true
+    user_events : false
+    public top  : f32
+    func owner [] -> Editor
+        ed : Editor[ parent ]
+        if [ ed ] return ed
+        cb : CommitView[ parent ]
+        ev9 : EditorView (cb) ? cb.view[] : null
+        return (ev9) ? ev9.text_of[] : null
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen ] return
+        cv : Canvas w.screen
+        editor : Editor owner[]
+        if [ !editor || !editor.nav_tools || editor.nav_tools.count == 0 ] return
+        if [ !editor.ficons ] editor.ficons = FileIcons []
+        cb  : CommitView[ parent ]
+        hov : i32 [ (cb) ? cb.chip_hov : editor.tool_hover ]
+        # left inset matches the chips' top padding
+        dxx  : f32 [ 4.0 ]
+        bas9 : i32 [ editor.tool_base[] ]
+        for [ ti: i32 0, ti < bas9 + editor.nav_tools.count, ti += 1 ]
+            tnm : string (bas9 == 1 && ti == 0) ? editor.nav_default : editor.nav_tools[ ti - bas9 ]
+            tyy : f32 [ top + editor.tool_y[ ti, bounds.h ] ]
+            # the view you are IN reads as a border, not a hover tint
+            act9 : bool [ editor.view_name && editor.view_name.count > 0
+                          && editor.view_name == tnm ]
+            if [ act9 ]
+                cv.fill_color  [ rgba['#6cb6ff33'] ]
+                cv.stroke_color[ rgba['#8fd0ff'] ]
+            el [ ti == hov ]
+                cv.fill_color  [ rgba['#6cb6ff22'] ]
+                cv.stroke_color[ rgba['#6cb6ffcc'] ]
+            el
+                cv.fill_color  [ rgba['#10142088'] ]
+                cv.stroke_color[ rgba['#fff3'] ]
+            cv.stroke_width[ (act9) ? 2.0 : 1.0 ]
+            cv.rounded_rect[ dxx, tyy, 60.0, 64.0, 8.0, 8.0, 8.0, 8.0 ]
+            cv.paint       [ ]
+            cv.stroke_width[ 0.0 ]
+            # a console view has its own mark (gear for a shell, chat for an agent)
+            orbt : cast orbiter [ editor.ux.app_object ]
+            inm  : string tnm
+            if [ orbt ]
+                cico : string orbt.console_icon[ tnm ]
+                if [ cico ] inm = cico
+            tico : SVGModel editor.ficons.named[ inm, 36 ]
+            if [ tico ]
+                # selected = orangish white; resting = off purple white
+                cv.svg_override[ (act9) ? rgba['#ffe6d2'] : ((ti == hov) ? rgba['#ffffff'] : rgba['#cfc6e8']) ]
+                cv.draw_svg[ tico, dxx + 12.0, tyy + 6.0, 36.0, 36.0 ]
+                cv.svg_override_off[]
+            cv.font_size[ 11.0 ]
+            cv.fill_color[ rgba['#c9c4dd'] ]
+            # an owned label: binding the vec's string and then assigning
+            # over it drops a reference this local never held, and the
+            # vec's entry frees under it
+            tlb : string [ (tnm == 'git') ? 'diff' : '{tnm}' ]
+            cv.draw_text[ tlb, rect [ x: dxx, y: tyy + 44.0, w: 60.0, h: 16.0 ],
+                vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
 
 Control Editor
     style : CSS {
@@ -2240,6 +2252,8 @@ Control Editor
     intern static export_ftype    : map string[string]
     # ext -> the <owner>-<module> export stem, which names its lib
     intern static export_lib      : map string[string]
+    # module -> 'name=type=default;...' from the export's launch: line
+    intern static export_launch   : map string[string]
     intern static bin_view_cached : string
     mutable lines         : list string
     mutable close_icon    : SVGModel
@@ -3262,6 +3276,7 @@ Control Editor
         export_registry = map string[string] []
         export_ftype    = map string[string] []
         export_lib      = map string[string] []
+        export_launch   = map string[string] []
         root : path.path_startup[]
         if [ !root ] return
         d : path '{root}/install/export'
@@ -3275,6 +3290,24 @@ Control Editor
                 mod     : module_of_export[ root, e.stem[] ]
                 ftext : string e.load[ typeid[string], null ]
                 if [ ftext ]
+                    lx : ftext.index_of[ 'launch:' ]
+                    if [ lx >= 0 ]
+                        li  : i32 [ i32[ lx ] ]
+                        ln2 : i32 [ i32[ ftext.count ] ]
+                        lq  : i32 [ 0 - 1 ]
+                        spec : string ''
+                        while [ li < ln2 ]
+                            lc : i32 [ (i32 ftext.chars[li]) & 255 ]
+                            if [ lc == 10 ] break
+                            if [ lc == 39 ]
+                                if [ lq < 0 ]
+                                    lq = li + 1
+                                el
+                                    ent : ftext.mid[ lq, li - lq ]
+                                    spec = (spec.count > 0) ? '{spec};{ent}' : ent
+                                    lq = 0 - 1
+                            li += 1
+                        export_launch[ mod ] = spec
                     ix : ftext.index_of[ 'extensions:' ]
                     if [ ix >= 0 ]
                         i  : i32 [ i32[ ix ] ]

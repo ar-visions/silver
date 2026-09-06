@@ -188,14 +188,14 @@ class shader
                     vo: cast VertexOutput [ val ]
                     gtype: glsl_type_name[ vo.type ]
                     if [ gtype ]
-                        result = '{result}layout(location = {vert_loc_out}) out {gtype} {mem.ident};\n'
+                        result = '{result}layout(location = {vert_loc_out}) {(vo.flat) ? "flat " : ""}out {gtype} {mem.ident};\n'
                     vert_loc_out += 1
 
                 el [ val inherits VertexOutput && stage == ShaderStage.fragment ]
                     vo: cast VertexOutput [ val ]
                     gtype: glsl_type_name[ vo.type ]
                     if [ gtype ]
-                        result = '{result}layout(location = {frag_loc_in}) in {gtype} {mem.ident};\n'
+                        result = '{result}layout(location = {frag_loc_in}) {(vo.flat) ? "flat " : ""}in {gtype} {mem.ident};\n'
                     frag_loc_in += 1
 
                 el [ val inherits FragmentInput && stage == ShaderStage.fragment ]
@@ -409,7 +409,7 @@ class shader
             mod: VkShaderModule
             vkResult: vkCreateShaderModule[ vk.device, createInfo, null, @mod ]
             if [ vkResult != VK_SUCCESS ]
-                log 'ailed to create vulkan shader module: {spv_file}'
+                log 'ailed to create vulkan shader module: {spv_file} length={length} result={i32[ vkResult ]}'
                 free[ spirv ]
                 exit[ 1 ]
             values[i] = mod

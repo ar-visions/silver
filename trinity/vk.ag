@@ -38,6 +38,7 @@ class VertexInput
 
 class VertexOutput
     public type : Au_t
+    public flat : bool
 
 class FragmentInput
     public type : Au_t
@@ -534,6 +535,15 @@ class Render
                 for [ m: Model ] in models
                     sm9 : i32 [ (m.s) ? i32[ m.s.states ] : 0 ]
                     if [ sm9 != 0 && (state_mask & sm9) != sm9 ] continue
+                    if [ m.run_n > 0 ]
+                        for [ k: i32 0, k < m.run_n * 3, k += 3 ]
+                            pi9 : i32 [ m.runs[ k ] ]
+                            v0  : i32 [ m.runs[ k + 1 ] ]
+                            vn  : i32 [ m.runs[ k + 2 ] ]
+                            p9  : m.pipelines[ pi9 ]
+                            p9.draw_range[ frame, v0, vn ]
+                            vk.pipe_draws += 1
+                        continue
                     for [ p: Pipeline ] in m.pipelines
                         p.draw[ frame ]
                         vk.pipe_draws += 1
@@ -2301,6 +2311,10 @@ class Pipeline
             t.transition_in[ f, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
 
     public   func draw [ f: handle ]
+        draw_range[ f, 0, -1 ]
+
+    # draw vertices [first, first + count); count < 0 draws the whole buffer
+    public   func draw_range [ f: handle, first: i32, count: i32 ]
         if [ !vk_render ]
             return
         if [ !resources ]
@@ -2322,7 +2336,7 @@ class Pipeline
                 vbo.index_type[ ] ]
             vkCmdDrawIndexed[ frame, vbo.index_count, 1, 0, 0, 0 ]
         el
-            vkCmdDraw[ frame, vbo.vertex_count, 1, 0, 0 ]
+            vkCmdDraw[ frame, (count < 0) ? vbo.vertex_count : count, 1, first, 0 ]
 
     public   func bind_resources [ ]
         vk.bindres_calls += 1
@@ -2872,6 +2886,9 @@ class Model
     # primitives sharing a material reuse the same Texture
     mutable tex_cache       : map Au[string] [ ]
     public pipelines        : vec Pipeline
+    # ordered draw runs as (pipeline index, first vertex, count) triples; run_n = 0 lets every pipeline draw its whole buffer
+    public runs             : @i32
+    public run_n            : i32
     # straight-alpha output (rgb, a) when true; default false = premul (rgb*a, a).
     # forwarded to every Pipeline this Model builds; toggle for shaders that
     # emit unpremultiplied alpha (e.g. cloud, text overlay).
@@ -4155,6 +4172,9 @@ Texture Display
                     m.rebind_model[ ]
         for [ r: Render ] in list
             r.update[ ]
+            # a rate-limited target keeps last frame's "drawn" and would be
+            # composed at its new size before it renders: force the redraw
+            r.has_drawn = false
             if [ resized && r.models ]
                 for [ m: Model ] in r.models
                     m.rebind_model[ ]

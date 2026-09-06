@@ -182,6 +182,16 @@ element EditorView
         d : i32 [ m.index_of[ '.' ] ]
         return (d > 0) ? m.mid[ 0, d ] : m
 
+    # the band module's launch parameters from its export, null if none
+    func launch_spec [] -> string
+        e : Editor text_of[]
+        if [ !e ] return null
+        e.ensure_export_registry[]
+        if [ !e.export_launch ] return null
+        m : string band_mod[]
+        if [ !e.export_launch.contains[ m ] ] return null
+        return e.export_launch[ m ]
+
     # args belong to the DOC a handler opened, not the handler's own source
     func args_src [] -> path
         r : rview[]
@@ -243,6 +253,7 @@ element EditorView
             if [ e && e.rview ]
                 vel : element e.rview.view_element*[]
                 if [ vel ] edels['view'] = vel
+            edels['rail'] = ToolRail [ area: Region [ 'l0 t2px w64px b2px' ] ]
             dbgr : dbg o.active_debugger[]
             t['text'] = Editor [
                 src: file[]
@@ -325,10 +336,8 @@ element EditorView
                 selected: e.run_view.is_paused*[], manual_mode: true ]
             t['steps'] = StepButtons [ buttons: [ 'continue', 'step_next', 'step_in', 'step_out' ],
                 icon_ids: [ 'play', 'step_next', 'step_in', 'step_out' ], manual: true ]
-        # caret at the end: a fresh instance would otherwise insert at 0
-        a9 : string o.file_args[ args_src[] ]
-        t['args'] = ArgsField [ label: 'arguments',
-            edit: a9, sel_col: a9.count, anchor_col: a9.count, focusable: true ]
+        # the launch panel owns the run args; this toggles it over the console
+        t['launch_btn'] = RunButton [ icon: 'gear', selected: o.show_launch, manual_mode: true ]
         if [ band_status[].count > 0 ]
             t['our_app_error'] = AppError [ label: band_status[], manual_mode: true,
                 info: !err_showing[] ]
@@ -359,8 +368,22 @@ element EditorView
         # console here. instruments live in their column
         if [ o.show_instruments ] inner['callstack'] = Callstack [ frames: o.debug_frames[] ]
         # console alone fills; beside it the callstack takes 3/8 of the width
-        t['split'] = Splitter [ area: Region { l0 t1.3 r0 b0 }, inner: inner, deflt: 0.0, share: 0.375 ]
+        # the launch panel is a toolbar under the tools: the console starts below it
+        hh : f32 [ launch_h[] ]
+        ct : f32 [ 1.3 + hh ]
+        t['split'] = Splitter [ area: Region [ 'l0 t{ct} r0 b0' ], inner: inner, deflt: 0.0, share: 0.375 ]
+        if [ hh > 0.0 ]
+            t['launch_panel'] = LaunchPanel [ spec: launch_spec[], args: o.file_args[ args_src[] ],
+                topmost: true, area: Region [ 'l0 t1.3 r0 h{hh}' ] ]
         return t
+
+    # launch panel height in units, 0 when hidden: it is a toolbar, so the band floor grows by it
+    func launch_h [] -> f32
+        o : orb[]
+        if [ !o.show_launch ] return 0.0
+        ls : string launch_spec[]
+        rows : i32 [ (ls && ls.count > 0) ? i32[ ls.split[ ';' ].count ] : 1 ]
+        return f32[ rows ] + 0.4
 
     func pane_els [] -> Elements
         t : Elements [ ]
@@ -428,9 +451,10 @@ element EditorView
             no_scroll: true
             hint: title_hint[]
             elements: title_els[] ]
+        # the band floor grows by the open launch panel: it is a toolbar, never clipped
         t['split'] = Splitter [ area: Region { l0 t1.3 r0 b0 }, vertical: true,
             inner: pane_els[], deflt: 180.0,
-            min_size: 44.0 ]
+            min_size: 44.0 + launch_h[] * fc ]
         if [ browse_active[] ]
             # the surface is a peer of the editor pane: it takes the
             # split's live text region, never the whole view
@@ -1078,6 +1102,108 @@ Button PillButton
                 inner_glow: #ffae5ea2 18
     }
 
+# launch panel: the app's `[ Launch ]` members as controls, over the console
+Check LaunchCheck
+    body : Layer [ fill_color: rgba [ '#ffffff0c' ], radius: Radius [ '6' ],
+        stroke_width: 0.5, stroke_color: rgba [ '#ffffff33' ] ]
+    style : CSS {
+        layers.body:
+            fill_color: #ffffff0c
+            stroke_color: #ffffff33
+        :selected
+            layers.body:
+                fill_color: #6cb6ff66
+                stroke_color: #8fd0ff
+    }
+
+ArgsField LaunchField
+
+element LaunchLabel
+    face : Layer [ label_color: rgba [ '#c9c4dd' ], label_size: 14,
+        label_align: vec2f [ x: 0.0, y: 0.5 ] ]
+
+element LaunchPanel
+    body : Layer [ fill_color: rgba [ '#0f1220ee' ], stroke_width: 0.5, stroke_color: rgba [ '#fff2' ] ]
+    public spec : string        # 'name=type=default;...'
+    public args : string        # the file's current run args
+
+    # --name's value in args, else the default
+    func arg_value [ name: string, deflt: string ] -> string
+        if [ !args ] return deflt
+        parts : args.split[ ' ' ]
+        for [ i: i32 0, i + 1 < parts.count, i += 1 ]
+            if [ parts[ i ] == '--{name}' ] return parts[ i + 1 ]
+        return deflt
+
+    func render [] -> Elements
+        t : Elements []
+        y : f32 [ 0.2 ]
+        if [ !spec || spec.count == 0 ]
+            t['lp_none'] = LaunchLabel [ label: 'no launch parameters', area: Region [ 'l0.3 t{y} w8 h0.9' ] ]
+            return t
+        ents : spec.split[ ';' ]
+        for [ ent: string ] in ents
+            f : ent.split[ '=' ]
+            if [ f.count < 2 ] continue
+            nm : string f[ 0 ]
+            ty : string f[ 1 ]
+            df : string (f.count > 2) ? f[ 2 ] : ''
+            cur : string arg_value[ nm, df ]
+            desc : string (f.count > 3) ? f[ 3 ] : ''
+            t['lp_lbl_{nm}'] = LaunchLabel [ label: nm, area: Region [ 'l0.3 t{y} w5.5 h0.9' ] ]
+            if [ ty == 'bool' ]
+                t['lp_{nm}'] = LaunchCheck [ selected: cur == 'true',
+                    area: Region [ 'l6 t{y} w0.9 h0.9' ] ]
+            el [ desc.starts_with[ 'Slider' ] ]
+                rg : vec2f [ slider_range[ desc ] ]
+                cv : f32 [ cur.real_value[] ]
+                fr : f32 [ (rg.y > rg.x) ? (cv - rg.x) / (rg.y - rg.x) : 0.0 ]
+                t['lp_{nm}'] = VolumeSlider [ value: fr, area: Region [ 'l6 t{y} w6 h0.9' ] ]
+            el
+                t['lp_{nm}'] = LaunchField [ edit: cur, sel_col: cur.count, anchor_col: cur.count,
+                    focusable: true, area: Region [ 'l6 t{y} w6 h0.9' ] ]
+            y += 1.0
+        return t
+
+    # 'Slider[min,max]' -> (min, max); a bare Slider is 0..1
+    func slider_range [ desc: string ] -> vec2f
+        o : i32 [ i32[ desc.index_of[ '[' ] ] ]
+        c : i32 [ i32[ desc.index_of[ ']' ] ] ]
+        if [ o < 0 || c <= o ] return vec2f [ 0.0, 1.0 ]
+        ab : desc.mid[ o + 1, c - o - 1 ].split[ ',' ]
+        if [ ab.count < 2 ] return vec2f [ 0.0, 1.0 ]
+        lo : f32 [ ab[ 0 ].real_value[] ]
+        hi : f32 [ ab[ 1 ].real_value[] ]
+        return vec2f [ lo, hi ]
+
+    # the args line the controls describe: only values off their defaults
+    func compose [] -> string
+        out : string ''
+        if [ !spec || !elements ] return out
+        ents : spec.split[ ';' ]
+        for [ ent: string ] in ents
+            f : ent.split[ '=' ]
+            if [ f.count < 2 ] continue
+            nm : string f[ 0 ]
+            df : string (f.count > 2) ? f[ 2 ] : ''
+            key : string 'lp_{nm}'
+            if [ !elements.contains[ key ] ] continue
+            c : element elements[ key ]
+            desc : string (f.count > 3) ? f[ 3 ] : ''
+            v : string
+            if [ f[ 1 ] == 'bool' ] v = (c.selected) ? 'true' : 'false'
+            el [ desc.starts_with[ 'Slider' ] ]
+                vs : cast VolumeSlider [ c ]
+                rg : vec2f [ slider_range[ desc ] ]
+                val : f32 [ rg.x + ((vs) ? vs.value : 0.0) * (rg.y - rg.x) ]
+                dv  : f32 [ df.real_value[] ]
+                if [ val - dv < 0.001 && dv - val < 0.001 ] continue
+                v = (f[ 1 ] == 'f32' || f[ 1 ] == 'f64') ? '{val.2f}' : '{val.0f}'
+            el v = c.edit
+            if [ !v || v == df ] continue
+            out = (out.count > 0) ? '{out} --{nm} {v}' : '--{nm} {v}'
+        return out
+
 element RunBand
     style : CSS {
         area: l0 t0 r0 b0
@@ -1160,15 +1286,15 @@ class FmtWatch
     public fn        : hook
 
 element orbiter : trinity # implements compiler
-    public width         : i32    [ 1888 ]
-    public height        : i32    [ 888 ]
-    public background    : string [ 'Background' ]
+    public [ Launch ] width   : i32    [ 1888 ]
+    public [ Launch ] height  : i32    [ 888 ]
+    public [ Launch ] background : string [ 'Background' ]
     # the committed backdrop scene and each pane's file + caret
     intern [ StatePersist ] scene       : string
     intern [ StatePersist ] pane_states : vec pane_state
     # false keeps the scenes module out of the process entirely
-    public show_scene    : bool   [ true ]
-    public live_reload   : bool   [ true ]
+    public [ Launch ] show_scene  : bool   [ true ]
+    public [ Launch ] live_reload : bool   [ true ]
     public startup_path  : path
     # the whole argv tail: the thing we open, then the module's own args.
     # split in init — resource keeps the first token, module_args the rest
@@ -1237,7 +1363,7 @@ element orbiter : trinity # implements compiler
     public editor_slots     : vec i32
     intern pane_console     : vec string
     # the ai/agent console is separate state; always projected last
-    public agent_open       : bool
+    public [ Launch ] agent_open : bool
     intern console_seq      : i32
     intern pending_finder   : i32 [ -1 ]
     intern pending_run      : i32 [ -1 ]
@@ -1253,9 +1379,9 @@ element orbiter : trinity # implements compiler
     intern console_w_save   : i32
     intern [ StatePersist ] band_h           : i32
     intern band_h_save      : i32
-    public show_instruments : bool
+    public [ Launch ] show_instruments : bool
     # the variables panel — the other tab of the stack menu
-    public show_variables   : bool
+    public [ Launch ] show_variables : bool
     # summon-only: never saved, never active at startup
     intern show_orbiter     : bool
     intern listen_file      : path
@@ -1276,9 +1402,9 @@ element orbiter : trinity # implements compiler
     intern git_dirty : bool
     # ONE buffer mapping for every pane and view, keyed by absolute path
     public file_cache    : map FileBuf [string]
-    public show_avatar   : bool [ true ]
+    public [ Launch ] show_avatar : bool [ true ]
     public avatar_expanded : bool
-    public avatar_enabled  : bool
+    public [ Launch ] avatar_enabled : bool
     public filter_text   : string
     public find_text     : string
     public findbar_open  : bool
@@ -1286,7 +1412,7 @@ element orbiter : trinity # implements compiler
     # restored carets, applied after each editor loads
     intern pending_sel   : vec vec2i
     # the status bar's center toggle: scene-only viewing
-    public hide_ui       : bool
+    public [ Launch ] hide_ui : bool
     public findbar_text  : string
     # the args field edited this frame; its edit is copied to the session
     mutable args_field   : element
@@ -1303,7 +1429,7 @@ element orbiter : trinity # implements compiler
     # carries show_hits, so list_focused would revive the list forever
     intern finder_off    : bool
     # app bar volume, pushed to the running app when it moves
-    public app_volume    : f32 [ 0.5 ]
+    public [ Launch, Slider [ 0.0, 1.0 ] ] app_volume : f32 [ 0.5 ]
     # mute holds the slider where it is and sends the app a zero
     public app_muted     : bool
     intern app_vol_sent  : f32 [ -1.0 ]
@@ -1340,9 +1466,10 @@ element orbiter : trinity # implements compiler
     public browse_header_size : i32 [ 18 ]
     public browse_dir_size : i32 [ 16 ]
     public [ StatePersist ] breakpoints   : map string[string]
-    public code_font_size : i32 [ 19 ]
+    public [ Launch, Slider [ 10, 32 ] ] code_font_size : i32 [ 19 ]
     # append LAST: member order sets AF bit indices
-    public show_instr_col : bool
+    public [ Launch ] show_instr_col : bool
+    public show_launch    : bool            # launch panel over the console
     # module whose build set err_file; only it may clear
     intern err_mod       : string
     # index into scene_list[]; the bottom bar steps it
@@ -2472,7 +2599,9 @@ element orbiter : trinity # implements compiler
             args_sync = false
             fs9 : file_state (args_editor) ? fstate[ args_editor.band_src[] ] : null
             if [ fs9 && args_field ]
-                fs9.args = (args_field.edit) ? args_field.edit : ''
+                lp9 : cast LaunchPanel [ args_field.parent ]
+                if [ lp9 ] fs9.args = lp9.compose[]
+                el fs9.args = (args_field.edit) ? args_field.edit : ''
                 fs9.args.hold[]
                 save_session[]
         for [ i: i32 0, i < editor_slots.count, i += 1 ]
@@ -4170,6 +4299,19 @@ element orbiter : trinity # implements compiler
             force_update[]
             return
         
+        if [ ev.target.id == 'launch_btn' ]
+            show_launch = !show_launch
+            if [ ev.target ] ev.target.ux.restyle = true
+            ev.no_default = true
+            return
+        # launch panel: a control change re-composes the run args next frame
+        if [ ev.target.id && ev.target.id.starts_with[ 'lp_' ] ]
+            args_field  = ev.target
+            args_editor = pane_of[ ev.target ]
+            args_sync   = true
+            if [ ev.target ] ev.target.ux.restyle = true
+            ev.no_default = true
+            return
         if [ ev.target.id == 'run' ]
             for [ e: element* ev.target, e, e = e.parent ]
                 if [ e inherits EditorView ]
@@ -4407,7 +4549,7 @@ element orbiter : trinity # implements compiler
                 uxw : Window ev.target.ux
                 if [ uxw ] uxw.will_animate = true
         # run args are per source file, kept in the session state
-        if [ ev.target.id == 'args' ]
+        if [ ev.target.id && ev.target.id.starts_with[ 'lp_' ] ]
             # the editable layer edits the text after this; the session
             # copies the field's edit next frame (args_sync)
             if [ ev.key.text && ev.key.text.count > 0 ]
@@ -4491,7 +4633,7 @@ element orbiter : trinity # implements compiler
                 uxw : Window ev.target.ux
                 if [ uxw ] uxw.will_animate = true
 
-        if [ ev.target.id == 'args' ]
+        if [ ev.target.id && ev.target.id.starts_with[ 'lp_' ] ]
             # backspace, arrows and escape (clear) are the editable layer's;
             # the session copies the field's edit next frame (args_sync)
             if [ !ev.key.state ] return
@@ -4837,6 +4979,14 @@ element orbiter : trinity # implements compiler
             be9 : element find_el[ pe9, 'band' ]
             if [ !be9 ] continue
             bh9 : f32 [ be9.extent ]
+            # an open launch panel is a toolbar: the band grows to show all of it
+            evx : EditorView pe9
+            lh9 : f32 [ (evx) ? evx.launch_h[] : 0.0 ]
+            if [ lh9 > 0.0 && bh9 > 0.0 && pe9.fc > 0.0 ]
+                need9 : f32 [ (1.3 + lh9) * pe9.fc ]
+                if [ bh9 < need9 ]
+                    be9.extent = need9
+                    bh9 = need9
             if [ bh9 <= 0.0 && band_h > 0 ]
                 half8 : f32 [ ((bounds) ? bounds.h : 900.0) * 0.5 ]
                 use8  : f32 [ f32[ band_h ] ]

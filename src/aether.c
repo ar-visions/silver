@@ -11283,6 +11283,13 @@ AU_EXPORT bool aether_emit_object(aether a, path obj_path) {
         LLVMModuleRef m = ll_mod(a, i);
         if (!m || !a->target_triple) continue;
         LLVMSetTarget(m, a->target_triple);
+        // O2 folds struct offsets with the module's datalayout: without the
+        // target's it uses llvm's default (i64 aligned to 4) and every C
+        // struct with an i64 after an i32 lands its fields 4 bytes early
+        LLVMTargetDataRef td = LLVMCreateTargetDataLayout((LLVMTargetMachineRef)a->target_machines[i]);
+        char* dl = LLVMCopyStringRepOfTargetData(td);
+        if (dl) { LLVMSetDataLayout(m, dl); LLVMDisposeMessage(dl); }
+        LLVMDisposeTargetData(td);
         // the float ABI travels as a module flag, the way clang emits it
         if (strstr(a->target_triple, "riscv"))
             LLVMAddModuleFlag(m, LLVMModuleFlagBehaviorError, "target-abi", 10,
@@ -11592,7 +11599,7 @@ AU_EXPORT none aether_init(aether a) {
             a->install = install;
         }
     }
-    a->debug     = !a->release;
+    if (a->release) a->debug = false;
     a->root_path = absolute(f(path, "%o/../..", a->install));
     a->include_paths    = a(f(path, "%o/include", a->install));
     if (a->base_install)

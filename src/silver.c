@@ -1253,7 +1253,7 @@ void silver_parse(silver a) {
     bool target_ios = a->platform && len(a->platform) && strstr(a->platform->chars, "ios") != NULL;
     bool target_and = target_is_android(a);
 
-    etype_register((aether)a, (Au)m_debug, (Au)hold(e_operand(a, _bool(!a->release), etypeid(bool))), false);
+    etype_register((aether)a, (Au)m_debug, (Au)hold(e_operand(a, _bool(a->debug), etypeid(bool))), false);
     etype_register((aether)a, (Au)m_mac,   (Au)hold(e_operand(a, _bool(target_mac), etypeid(bool))), false);
     etype_register((aether)a, (Au)m_lin,   (Au)hold(e_operand(a, _bool(target_lin), etypeid(bool))), false);
     etype_register((aether)a, (Au)m_win,   (Au)hold(e_operand(a, _bool(target_win), etypeid(bool))), false);
@@ -7818,13 +7818,28 @@ enode parse_statement(silver a)
     validate(!(has_access && rec_top && is_struct(rec_top)),
         "access levels are not applicable to struct members");
 
-    etype member_meta = null;
+    etype  member_meta   = null;
+    etype  member_meta_b = null;   // `[ Launch, Slider [ 0.0, 1.0 ] ]`: a control class describes the member
+    string meta_b_args   = null;   // its bracket arguments as text
     if (rec_top && read_if(a, "[")) {
         member_meta = read_etype(a, null);
         validate(member_meta && is_class(member_meta),
             "expected class type for member meta A");
+        if (read_if(a, ",")) {
+            member_meta_b = read_etype(a, null);
+            validate(member_meta_b && is_class(member_meta_b),
+                "expected class type for member meta B");
+            if (next_is(a, "[")) {
+                array bt = read_initializer(a);
+                meta_b_args = string(alloc, 64);
+                if (bt) each(bt, token, t) {
+                    if (eq(t, "[") || eq(t, "]")) continue;
+                    concat(meta_b_args, string(t->chars));
+                }
+            }
+        }
         validate(read_if(a, "]"),
-            "expected ] after member meta A");
+            "expected ] after member meta");
     }
 
     //print_tokens(a, seq);
@@ -8132,6 +8147,36 @@ enode parse_statement(silver a)
             e = (enode)mem;
             etype_register((aether)a, (Au)au, (Au)mem, true);
 
+            // a `[ Launch ]` member is a launch parameter: the export carries
+            // name=type=default so a host offers it without loading the module
+            if (member_meta && member_meta->autype->ident && rtype->autype->ident &&
+                strcmp(member_meta->autype->ident, "Launch") == 0) {
+                silver  og = a->is_external ? a->is_external : a;
+                exports ex = (exports)get(og->exports, (Au)string(a->name->chars));
+                if (!ex) {
+                    ex = exports(module_path, a->module_path, module_file, a->module_file,
+                                 project_path, a->project_path,
+                                 install_name, silver_install_name(a));
+                    set(og->exports, (Au)string(a->name->chars), (Au)ex);
+                }
+                if (!ex->areas) ex->areas = map(hsize, 8);
+                array lvals = (array)get(ex->areas, (Au)string("launch"));
+                if (!lvals) {
+                    lvals = array(8);
+                    set(ex->areas, (Au)string("launch"), (Au)lvals);
+                }
+                string spec = f(string, "%s=%s=", au->ident, rtype->autype->ident);
+                if (expr) each(expr, token, t) {
+                    if (eq(t, "[") || eq(t, "]")) continue;
+                    concat(spec, string(t->chars));
+                }
+                if (member_meta_b && member_meta_b->autype->ident) {
+                    concat(spec, f(string, "=%s", member_meta_b->autype->ident));
+                    if (meta_b_args) concat(spec, f(string, "[%o]", meta_b_args));
+                }
+                push(lvals, (Au)spec);
+            }
+
             efunc fn = (efunc)get(a->registry, (Au)e->autype);
             verify(fn && fn == e && fn->autype == mem->autype, "unexpected registration state");
 
@@ -8183,6 +8228,7 @@ enode parse_statement(silver a)
             mem->autype->member_type == AU_MEMBER_VAR),
             "member meta A applies only to fields and functions");
         mem->autype->meta.m = member_meta->autype;
+        if (member_meta_b) mem->autype->meta.member_b = member_meta_b->autype;
     }
 
     pop_tokens(a, e != null); // if its a type, we consume the tokens, otherwise we let read_enode handle it
