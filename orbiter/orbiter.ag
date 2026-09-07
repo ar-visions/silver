@@ -183,14 +183,42 @@ element EditorView
         return (d > 0) ? m.mid[ 0, d ] : m
 
     # the band module's launch parameters from its export, null if none
+    # the launch parameters are META on the module's own members, compiled in;
+    # dlopen the module so its types register, find its element, walk members
+    # tagged [ Launch ], and build the panel's spec string from what we read
+    # launch parameters come from the module's compiled meta, serialized by the
+    # compiler into its export; read that text (cheap) — never dlopen the module
     func launch_spec [] -> string
-        e : Editor text_of[]
-        if [ !e ] return null
-        e.ensure_export_registry[]
-        if [ !e.export_launch ] return null
+        o : orb[]
+        if [ !o ] return null
         m : string band_mod[]
-        if [ !e.export_launch.contains[ m ] ] return null
-        return e.export_launch[ m ]
+        if [ !m || m.count == 0 ] return null
+        if [ !o.launch_specs ] o.launch_specs = map string [string] []
+        if [ o.launch_specs.contains[ m ] ] return o.launch_specs[ m ]
+        if [ !o.startup_path ] o.startup_path = path.path_startup[]
+        agi : path '{o.startup_path}/install/export/silver-{m}.agi'
+        spec : string ''
+        if [ agi.exists[] ]
+            ftext : string agi.load[ typeid[string], null ]
+            if [ ftext ]
+                lx : ftext.index_of[ 'launch:' ]
+                if [ lx >= 0 ]
+                    i  : i32 [ i32[ lx ] ]
+                    n2 : i32 [ i32[ ftext.count ] ]
+                    q0 : i32 [ 0 - 1 ]
+                    while [ i < n2 ]
+                        c : i32 [ (i32 ftext.chars[i]) & 255 ]
+                        if [ c == 10 ] break
+                        if [ c == 39 ]
+                            if [ q0 < 0 ]
+                                q0 = i + 1
+                            el
+                                ent : ftext.mid[ q0, i - q0 ]
+                                spec = (spec.count > 0) ? '{spec};{ent}' : ent
+                                q0 = 0 - 1
+                        i += 1
+        o.launch_specs[ m ] = spec
+        return spec
 
     # args belong to the DOC a handler opened, not the handler's own source
     func args_src [] -> path
@@ -253,7 +281,7 @@ element EditorView
             if [ e && e.rview ]
                 vel : element e.rview.view_element*[]
                 if [ vel ] edels['view'] = vel
-            edels['rail'] = ToolRail [ area: Region [ 'l0 t2px w64px b2px' ] ]
+            edels['rail'] = ToolRail [ no_scroll: true, area: Region [ 'l0 t2px w64px b2px' ] ]
             dbgr : dbg o.active_debugger[]
             t['text'] = Editor [
                 src: file[]
@@ -378,21 +406,19 @@ element EditorView
         # the callstack is orbiter's own, and the ONLY thing that joins the
         # console here. instruments live in their column
         if [ o.show_instruments ] inner['callstack'] = Callstack [ frames: o.debug_frames[] ]
-        # console alone fills; beside it the callstack takes 3/8 of the width
-        # the launch panel is a toolbar under the tools: the console starts below it
+        # a single-line launch bar sits under the tools; the console starts below it
         hh : f32 [ launch_h[] ]
-        # the launch page takes the console's place while it is open
+        ct : f32 [ 1.3 + hh ]
+        t['split'] = Splitter [ area: Region [ 'l0 t{ct} r0 b0' ], inner: inner, deflt: 0.0, share: 0.375 ]
         if [ hh > 0.0 ]
             t['launch_panel'] = LaunchPanel [ spec: launch_spec[], args: o.file_args[ args_src[] ],
-                area: Region { l0 t1.3 r0 b0 } ]
-        el
-            t['split'] = Splitter [ area: Region { l0 t1.3 r0 b0 }, inner: inner, deflt: 0.0, share: 0.375 ]
+                topmost: true, area: Region [ 'l0 t1.3 r0 h{hh}' ] ]
         return t
 
-    # launch panel height in units, 0 when hidden: one toolbar row, so the band floor grows by it
+    # launch bar height in units, 0 when hidden: one row, 20% taller than a chip
     func launch_h [] -> f32
         o : orb[]
-        return (o.show_launch) ? 1.3 : 0.0
+        return (o.show_launch) ? 1.32 : 0.0
 
     func pane_els [] -> Elements
         t : Elements [ ]
@@ -712,6 +738,7 @@ NavButton InstChip
 
 # a launch path: name and value on a button; a press brings the nav list to pick the file
 NavButton LaunchPath
+    public is_resource : bool   # picked from the module's own extensions across the search path
     tlabel : Layer [ label_color: rgba [ '#fff6' ], label_size: 14,
         label_align: vec2f [ x: 0.0, y: 0.5 ], label_offset: vec2f [ x: 8.0, y: 0.0 ] ]
 
@@ -1144,7 +1171,8 @@ Check LaunchCheck
 # one element per parameter: the name sits inside, the value edits to its right
 # the name takes its word plus two spaces; the value begins right after
 func launch_name_w [ name: string ] -> f32
-    return 0.42 * f32[ ((name) ? i32[ name.count ] : 0) + 2 ]
+    # glyph advance at label_size 13 is ~0.25 units; ~2 spaces after, no clip
+    return 0.25 * f32[ (name) ? i32[ name.count ] : 0 ] + 0.45
 
 ArgsField LaunchField
     name : Layer [ label_color: rgba [ '#c9c4dd' ], label_size: 13,
@@ -1181,6 +1209,20 @@ element LaunchPanel
             if [ parts[ i ] == '--{name}' ] return parts[ i + 1 ]
         return deflt
 
+    # the positional arg (a resource): the token that is neither a --flag nor a
+    # flag's value. compose writes it bare, so arg_value can't see it
+    func arg_positional [] -> string
+        if [ !args ] return ''
+        parts : args.split[ ' ' ]
+        i : i32 [ 0 ]
+        while [ i < parts.count ]
+            p : string parts[ i ]
+            if [ p.starts_with[ '--' ] ]
+                i += 2
+            el
+                return p
+        return ''
+
     # one row, flowing left to right; every control carries its own name
     func render [] -> Elements
         t : Elements []
@@ -1198,23 +1240,42 @@ element LaunchPanel
             nm : string f[ 0 ]
             ty : string f[ 1 ]
             df : string (f.count > 2) ? f[ 2 ] : ''
-            cur : string arg_value[ nm, df ]
+            cur : string (f[ 1 ] == 'resource') ? arg_positional[] : arg_value[ nm, df ]
             desc : string (f.count > 3) ? f[ 3 ] : ''
             sl : bool [ desc.starts_with[ 'Slider' ] ]
-            nw : f32 [ 0.4 + launch_name_w[ nm ] ]
-            isp : bool [ ty == 'path' ]
-            pvw : f32 [ (isp) ? 0.42 * f32[ (cur.count < 40) ? i32[ cur.count ] : 40 ] + 1.0 : 3.5 ]
-            w  : f32 [ (ty == 'bool') ? nw + 0.2 : ((sl) ? nw + 5.0 : nw + pvw) ]
-            if [ x + w > pw - 0.3 && x > 0.3 ]
-                x = 0.3
-                y += 1.1
+            en : bool [ desc.starts_with[ 'Enum' ] ]
+            nw : f32 [ launch_name_w[ nm ] ]     # text width + 2 spaces, no extra
+            isp : bool [ ty == 'path' || ty == 'resource' ]
+            # a path shows just its filename, capped; the full path is in edit
+            disp : string cur
+            if [ isp && cur.count > 0 ]
+                cp9 : path cur
+                disp = cp9.filename[]
+            dn9  : i32 [ (disp.count < 22) ? i32[ disp.count ] : 22 ]
+            pvw : f32 [ 3.5 ]     # fixed field width; the value clips, never resizes the box
+            w  : f32 [ (ty == 'bool') ? nw + 0.2 : ((sl || en) ? nw + 6.5 : nw + pvw) ]
             if [ ty == 'bool' ]
                 t['lp_{nm}'] = LaunchCheck [ label: nm, selected: cur == 'true',
                     area: Region [ 'l{x} t{y} w{w} h0.9' ] ]
             el [ isp ]
                 # a path is picked from the nav list: a button, not an editable field
-                t['lp_{nm}'] = LaunchPath [ label: '{nm}  {cur}', edit: cur, manual_mode: true,
-                    area: Region [ 'l{x} t{y} w{w} h0.9' ] ]
+                t['lp_{nm}'] = LaunchPath [ label: '{nm}  {disp}', edit: cur, manual_mode: true,
+                    is_resource: ty == 'resource', area: Region [ 'l{x} t{y} w{w} h0.9' ] ]
+            el [ en ]
+                # an enum: a segmented button group, one segment per value, the
+                # field name as a small label to its left
+                names : enum_names[ desc ]
+                idx9  : i32 [ enum_index[ desc, cur, df ] ]
+                # width per segment scales with its longest label so text never merges
+                mxl9 : i32 [ 0 ]
+                for [ en9: string ] in names
+                    if [ i32[ en9.count ] > mxl9 ] mxl9 = i32[ en9.count ]
+                gw9   : f32 [ (0.22 * f32[ mxl9 ] + 0.8) * f32[ names.count ] ]
+                w = nw + gw9
+                # same height as the rom/path box so the fonts match
+                t['lp_{nm}_lbl'] = LaunchLabel [ label: nm, area: Region [ 'l{x} t{y} w{nw} h0.9' ] ]
+                t['lp_{nm}'] = TButtons [ buttons: names, icons: false, manual: false,
+                    selected: idx9, area: Region [ 'l{x + nw} t{y} w{gw9} h0.9' ] ]
             el [ sl ]
                 rg : vec2f [ slider_range[ desc ] ]
                 cv : f32 [ cur.real_value[] ]
@@ -1226,6 +1287,40 @@ element LaunchPanel
                     focusable: true, area: Region [ 'l{x} t{y} w{w} h0.9' ] ]
             x += w + 0.3
         return t
+
+    # 'Enum[none:0,low:2,high:3]' -> the names, and the ints, and the current stop
+    func enum_pairs [ desc: string ] -> vec string
+        o : i32 [ i32[ desc.index_of[ '[' ] ] ]
+        c : i32 [ i32[ desc.index_of[ ']' ] ] ]
+        if [ o < 0 || c <= o ] return vec string []
+        return desc.mid[ o + 1, c - o - 1 ].split[ ',' ]
+
+    func enum_names [ desc: string ] -> vec string
+        out : vec string []
+        for [ p: string ] in enum_pairs[ desc ]
+            kv : p.split[ ':' ]
+            out.push[ (kv.count > 0) ? kv[ 0 ] : p ]
+        return out
+
+    func enum_vals [ desc: string ] -> vec i32
+        out : vec i32 []
+        for [ p: string ] in enum_pairs[ desc ]
+            kv : p.split[ ':' ]
+            out.push[ (kv.count > 1) ? i32[ kv[ 1 ].real_value[] ] : 0 ]
+        return out
+
+    # index of the stop whose int equals cur (else the default's, else 0)
+    # the stored value is the enum NAME (compose emits names); match by name
+    # first, then fall back to an integer value (default df is the int)
+    func enum_index [ desc: string, cur: string, df: string ] -> i32
+        names : enum_names[ desc ]
+        for [ i: i32 0, i < names.count, i += 1 ]
+            if [ names[ i ] == cur ] return i
+        vals : enum_vals[ desc ]
+        want : i32 [ (cur.count > 0) ? i32[ cur.real_value[] ] : i32[ df.real_value[] ] ]
+        for [ i: i32 0, i < vals.count, i += 1 ]
+            if [ vals[ i ] == want ] return i
+        return 0
 
     # 'Slider[min,max]' -> (min, max); a bare Slider is 0..1
     func slider_range [ desc: string ] -> vec2f
@@ -1241,6 +1336,7 @@ element LaunchPanel
     # the args line the controls describe: only values off their defaults
     func compose [] -> string
         out : string ''
+        pos : string ''
         if [ !spec || !elements ] return out
         ents : spec.split[ ';' ]
         for [ ent: string ] in ents
@@ -1254,6 +1350,16 @@ element LaunchPanel
             desc : string (f.count > 3) ? f[ 3 ] : ''
             v : string
             if [ f[ 1 ] == 'bool' ] v = (c.selected) ? 'true' : 'false'
+            el [ desc.starts_with[ 'Enum' ] ]
+                if [ !(c inherits TButtons) ] continue
+                tb : TButtons c
+                idx : i32 [ tb.selected ]
+                vals  : enum_vals[ desc ]
+                enames : enum_names[ desc ]
+                if [ idx < 0 || idx >= vals.count ] continue
+                # the module converts an enum arg by its value NAME, not its int
+                if [ '{vals[ idx ]}' == df ] continue
+                v = enames[ idx ]
             el [ desc.starts_with[ 'Slider' ] ]
                 sv : f32 [ 0.0 ]
                 if [ c inherits VolumeSlider ]
@@ -1266,7 +1372,13 @@ element LaunchPanel
                 v = (f[ 1 ] == 'f32' || f[ 1 ] == 'f64') ? '{val.2f}' : '{val.0f}'
             el v = c.edit
             if [ !v || v == df ] continue
-            out = (out.count > 0) ? '{out} --{nm} {v}' : '--{nm} {v}'
+            # a resource is the app's positional argument (bare path); every
+            # other field is a --name flag. flags first, positional last
+            if [ f[ 1 ] == 'resource' ]
+                pos = (pos.count > 0) ? '{pos} {v}' : v
+            el
+                out = (out.count > 0) ? '{out} --{nm} {v}' : '--{nm} {v}'
+        if [ pos.count > 0 ] out = (out.count > 0) ? '{out} {pos}' : pos
         return out
 
 element RunBand
@@ -1484,6 +1596,9 @@ element orbiter : trinity # implements compiler
     mutable args_editor  : Editor
     mutable args_sync    : bool
     mutable pick_field   : string           # launch path field waiting on the nav list
+    mutable launch_specs : map string[string]    # module -> panel spec, read once from its compiled meta
+    mutable pick_exts    : vec string           # a resource pick lists only these extensions
+    mutable pick_cache   : vec path             # files found once for the current pick; keystrokes filter it
     mutable pick_editor  : Editor
     intern find_last_query : string
     intern find_last_scope : string
@@ -3222,6 +3337,27 @@ element orbiter : trinity # implements compiler
             if [ es.count > 0 && es[0] == '/' ] es = es.mid[ 1, es.count - 1 ]
         return glob_match[ pattern_text, es ]
 
+    # resource pick: collect files whose extension the module exports, from
+    # the real tree (ignoring gitignore) into pick_cache; heavy build/vendor
+    # trees are skipped so the scan is fast
+    func walk_resource [ dir: path ]
+        entries : dir.ls[ null, false ]
+        if [ !entries ] return
+        for [ i: i32 0, i < entries.count, i += 1 ]
+            e : path entries[i]
+            if [ e.is_dir[] ]
+                dn : string e.filename[]
+                if [ dn == '.git' || dn == 'checkout' || dn == 'build' ] continue
+                if [ dn == 'platform' || dn == 'install' || dn == 'packages' ] continue
+                if [ dn.count > 0 && dn.chars[0] == 46 ] continue
+                walk_resource[ e ]
+            el
+                fx : string '.{e.ext[]}'
+                for [ px: string ] in pick_exts
+                    if [ px == fx ]
+                        pick_cache.push[ e ]
+                        break
+
     func walk_find [ dir: path, q: string ]
         entries : dir.ls[ null, false ]
         if [ !entries ] return
@@ -3817,7 +3953,20 @@ element orbiter : trinity # implements compiler
             combined : list string []
             find_hits = vec FindHit []
             nav_dock_rows = 0
-            if [ find_text && find_text.count > 0 ]
+            pickx : bool [ pick_field && pick_field.count > 0 && pick_exts && pick_exts.count > 0 ]
+            if [ pickx ]
+                # a resource pick: walk the tree ONCE (NOT the gitignore index)
+                # for the module's extensions, then keystrokes filter the cache
+                if [ !pick_cache ]
+                    pick_cache = vec path []
+                    # a resource lives anywhere in the project's search path,
+                    # not the current folder: always walk from the project root
+                    walk_resource[ project_root[] ]
+                for [ p9: path ] in pick_cache
+                    if [ find_text && find_text.count > 0 && p9.filename[].index_of[ find_text ] < 0 ] continue
+                    push_file_hit[ p9, true ]
+                    combined.push[ '{p9}' ]
+            el [ find_text && find_text.count > 0 ]
                 matches : list string [ index_search[ find_text ] ]
                 for [ i: i32 0, i < matches.count, i += 1 ]
                     p : path '{matches.value_by_index[ i ]}'
@@ -3829,9 +3978,11 @@ element orbiter : trinity # implements compiler
                 # the commit surface is its own element (CommitView); the
                 # list only keeps the snapshot fresh for it
                 nb : string [ (nav_root) ? '{nav_root}' : '{project_root[]}' ]
-                if [ !git_busy && (!git_snap || git_snap.base.compare[ nb ] != 0) ] git_summarize[]
+                # picking a path for a launch field: plain files, no git, no pins
+                picking : bool [ pick_field && pick_field.count > 0 ]
+                if [ !picking && !git_busy && (!git_snap || git_snap.base.compare[ nb ] != 0) ] git_summarize[]
                 # consoles are not files and do not belong in this list
-                if [ docked && show_pins ]
+                if [ docked && show_pins && !picking ]
                     d0 : i32 [ find_hits.count ]
                     for [ i: i32 0, i < docked.count, i += 1 ]
                         dp : path docked[i]
@@ -3868,8 +4019,9 @@ element orbiter : trinity # implements compiler
                                 push_file_hit[ e, grid_mode ]
                                 combined.push[ '{e}' ]
                     # bottom of the results: a break, then the create buttons
-                    find_hits.push[ FindHit [ is_header: true, is_spacer: true, text: '' ] ]
-                    find_hits.push[ FindHit [ is_header: true, is_newfile: true, text: 'new file' ] ]
+                    if [ !picking ]
+                        find_hits.push[ FindHit [ is_header: true, is_spacer: true, text: '' ] ]
+                        find_hits.push[ FindHit [ is_header: true, is_newfile: true, text: 'new file' ] ]
             find_results = combined
         # empty results keep the view up: it says so instead of vanishing
         nav_showing = active
@@ -3918,7 +4070,30 @@ element orbiter : trinity # implements compiler
         exit_finder[]
         save_session[]
 
+    # the module a pane's launch page describes
+    func band_mod_of [ ed: Editor ] -> string
+        if [ ed.run_view && ed.run_view.app_mod ] return ed.run_view.app_mod
+        return (ed.src) ? ed.src.stem[] : 'app'
+
+    # the nav list was up only to pick a path for a launch field: hand it
+    # over and close, never view the file
+    func pick_deliver [ p: path ] -> bool
+        if [ !pick_field || pick_field.count == 0 ] return false
+        fe9 : element find_el[ a, pick_field ]
+        if [ fe9 ]
+            fe9.edit    = '{p}'
+            args_field  = fe9
+            args_editor = pick_editor
+            args_sync   = true
+        pick_field = null
+        pick_exts  = null
+        pick_cache = null
+        exit_finder[]
+        if [ ux ] ux.restyle = true
+        return true
+
     func open_in_pane [ p: path, pi: i32 ]
+        if [ pick_deliver[ p ] ] return
         if [ pi >= 0 && pi < editor_slots.count && pi < nav_panes.count ]
             cur : Editor pane_at[ pi ]
             if [ cur && cur.src ]
@@ -4002,6 +4177,7 @@ element orbiter : trinity # implements compiler
         open_at_line[ err_file, active_pane, err_line ]
 
     func open_at_line [ p: path, pi: i32, to_line: i32 ]
+        if [ pick_deliver[ p ] ] return
         findbar_open = false
         find_showing = false
         open_in_pane[ p, pi ]
@@ -4182,17 +4358,7 @@ element orbiter : trinity # implements compiler
         if [ !h.is_header && h.line > 0 && h.file ]
             if [ dbl ] open_at_line[ h.file, ed.pane_index, h.line ]
             return true
-        if [ h.file && pick_field && pick_field.count > 0 ]
-            # the nav list was up to pick a path for a launch field
-            fe9 : element find_el[ a, pick_field ]
-            if [ fe9 ]
-                fe9.edit    = '{h.file}'
-                args_field  = fe9
-                args_editor = pick_editor
-                args_sync   = true
-            pick_field = null
-            exit_finder[]
-            return true
+        if [ h.file && pick_deliver[ h.file ] ] return true
         if [ h.file ]
             # browse file link / result filename header → open the file
             open_in_pane[ h.file, ed.pane_index ]
@@ -4395,6 +4561,19 @@ element orbiter : trinity # implements compiler
             if [ ev.target ] ev.target.ux.restyle = true
             ev.no_default = true
             return
+        # an enum's segmented buttons: the press already set TButtons.selected.
+        # store NOW — a poll next frame loses it, because the re-render rebuilds
+        # the buttons with selected := args before the poll reads it
+        if [ ev.target inherits TButtons && ev.target.parent && ev.target.parent inherits LaunchPanel ]
+            lpb : LaunchPanel ev.target.parent
+            edb : Editor pane_of[ ev.target ]
+            fsb : file_state (edb) ? fstate[ edb.band_src[] ] : null
+            if [ fsb ]
+                fsb.args = lpb.compose[]
+                fsb.args.hold[]
+                save_session[]
+            if [ ev.target ] ev.target.ux.restyle = true
+            return
         # launch panel: a control change re-composes the run args next frame
         if [ ev.target.id && ev.target.id.starts_with[ 'lp_' ] ]
             # a path: the nav list picks the file for it
@@ -4402,14 +4581,25 @@ element orbiter : trinity # implements compiler
                 lp8 : LaunchPath ev.target
                 pick_field  = ev.target.id
                 pick_editor = pane_of[ ev.target ]
+                # a resource: the module's exported extensions narrow the list
+                pick_exts  = vec string []
+                pick_cache = null
+                if [ lp8.is_resource && pick_editor ]
+                    pick_editor.ensure_export_registry[]
+                    bm8 : string band_mod_of[ pick_editor ]
+                    if [ pick_editor.export_registry ]
+                        for [ mod9: string, ex9: string ] in pick_editor.export_registry
+                            if [ mod9 == bm8 ] pick_exts.push[ ex9 ]
                 cur9 : path (lp8.edit && lp8.edit.count > 0) ? path lp8.edit : null
                 if [ cur9 && cur9.exists[] ] nav_root = (cur9.is_dir[]) ? cur9 : cur9.parent_dir[]
-                log 'launch: pick {pick_field} root={nav_root}'
                 focus_finder[]
                 run_search[]
                 ev.no_default     = true
                 ev.no_propagation = true
                 return
+            # a slider drives itself (drag) and reports via `changed`, polled
+            # in on_overlay; do NOT consume its press or it can't move
+            if [ ev.target inherits VolumeSlider ] return
             # no_default below stops the click, so a chip toggles here
             if [ ev.target inherits Check ]
                 ck9 : Check ev.target
@@ -5083,14 +5273,6 @@ element orbiter : trinity # implements compiler
             be9 : element find_el[ pe9, 'band' ]
             if [ !be9 ] continue
             bh9 : f32 [ be9.extent ]
-            # an open launch panel is a toolbar: the band grows to show all of it
-            evx : EditorView pe9
-            lh9 : f32 [ (evx) ? evx.launch_h[] : 0.0 ]
-            if [ lh9 > 0.0 && bh9 > 0.0 && pe9.fc > 0.0 ]
-                need9 : f32 [ (1.3 + lh9) * pe9.fc ]
-                if [ bh9 < need9 ]
-                    be9.extent = need9
-                    bh9 = need9
             if [ bh9 <= 0.0 && band_h > 0 ]
                 half8 : f32 [ ((bounds) ? bounds.h : 900.0) * 0.5 ]
                 use8  : f32 [ f32[ band_h ] ]

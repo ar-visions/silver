@@ -16,12 +16,16 @@ class FileIcons
         if [ !mm ] return
         fe9 : map mm[ 'fileExtensions' ]
         fn9 : map mm[ 'fileNames' ]
+        # own copies: the parsed json is freed later, and a child map went
+        # with it while the nav list was still drawing icons
         if [ fe9 ]
-            mi_exts = fe9
-            mi_exts.hold[]
+            mi_exts = map string [string] []
+            for [ v9: string, k9: string ] in fe9
+                mi_exts[ k9 ] = v9
         if [ fn9 ]
-            mi_names = fn9
-            mi_names.hold[]
+            mi_names = map string [string] []
+            for [ v8: string, k8: string ] in fn9
+                mi_names[ k8 ] = v8
         mi_models = map SVGModel [string] []
 
     # one model per (icon, size): draw_svg caches a single raster per model

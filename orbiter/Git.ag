@@ -220,7 +220,9 @@ Layer CommitLayer
         x0  : f32 [ bounds.x + 76.0 ]
         cw9 : f32 [ bounds.w - 76.0 ]
         cv.set_crop[ wtx + x0, wty + bounds.y, wtx + bounds.x + bounds.w, wty + bounds.y + bounds.h ]
-        files : vec string (orb.git_snap) ? orb.git_snap.files : null
+        # picking a path for a launch field: files only, no git tabs or summary
+        picking : bool [ orb.pick_field && orb.pick_field.count > 0 ]
+        files : vec string (orb.git_snap && !picking) ? orb.git_snap.files : null
         nfl : i32 [ (files) ? files.count : 0 ]
         cap : i32 [ orb.commit_cap[ cw9 ] ]
         trs : i32 [ (nfl > 0) ? orb.commit_tab_rows[ cw9, cb.reveal_all ] : 0 ]
@@ -665,7 +667,7 @@ element CommitView
         pristine = false
 
     func render [] -> Elements
-        return Elements [ 'rail' : ToolRail [ top: 3.0, area: Region [ 'l0 t0 w64px b0' ] ] ]
+        return Elements [ 'rail' : ToolRail [ top: 3.0, no_scroll: true, area: Region [ 'l0 t0 w64px b0' ] ] ]
 
     func view [] -> EditorView
         for [ e9: element* a, e9, e9 = e9.parent ]
@@ -676,6 +678,8 @@ element CommitView
     # event y already includes the element's own scroll offset
     func row_at [ ry: f32, trs: i32 ] -> i32
         band9 : i32 [ band_st ]
+        # move_event already delivers scroll-adjusted local coords (find_target
+        # sets local + scroll), so do NOT add scroll again — that double-counts
         ry9 : f32 [ ry - 4.0 ]
         if [ ry9 < 0.0 ] return -1
         if [ ry9 < f32[ band9 ] * 36.0 ] return i32[ ry9 / 36.0 ]

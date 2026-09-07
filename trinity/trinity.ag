@@ -4227,6 +4227,9 @@ class StatePersist
 # `public [ Launch ] x : T [ default ]` — a launch parameter the host may offer
 class Launch
 
+# a path the module handles: a host picks it by the module's exported extensions
+path resource
+
 func state_persist_path [ target: Au ] -> path
     if [ !target ] return null
     ty : Au_t typeid[ target ]
@@ -4615,7 +4618,7 @@ element TButtons
                 cv.fill_color[ rgba [ '#fff' ] ]
                 cv.draw_svg[ svg, ix, iy, isz, isz ]
             el
-                cv.font_size[ bounds.h * 0.40 ]
+                cv.font_size[ bounds.h * 0.5 ]
                 cv.fill_color[ rgba [ '#fff' ] ]
                 cv.draw_text[ buttons[ i ], rect [ x: x, y: 0.0, w: seg_w, h: bounds.h ],
                     vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
@@ -4929,14 +4932,20 @@ Button Option
 Control VolumeSlider
     public value    : f32 [ 0.5 ]
     public pad_l    : f32              # px kept clear at the left for an embedded label
+    public pad_r    : f32              # px kept clear at the right for a value label
+    public stops    : i32             # >1 snaps to that many discrete positions (enum)
+    public value_text : string        # drawn right-aligned in pad_r (the enum's level)
     public changed  : bool             # set when the user moves it; the owner clears it
     intern dragging : bool
     intern vol_inset : f32 [ 7.0 ]     # track inset = widest knob radius
 
     func set_from_x [ x: f32 ]
-        track : f32 [ bounds.w - vol_inset * 2.0 - pad_l ]
+        track : f32 [ bounds.w - vol_inset * 2.0 - pad_l - pad_r ]
         if [ track <= 0.0 ] return
         frac : f32 [ clamp[ (x - vol_inset - pad_l) / track, 0.0, 1.0 ] ]
+        if [ stops > 1 ]
+            step : i32 [ i32[ frac * f32[ stops - 1 ] + 0.5 ] ]
+            frac = f32[ step ] / f32[ stops - 1 ]
         if [ frac == value ] return
         value    = frac
         changed  = true
@@ -4970,11 +4979,18 @@ Control VolumeSlider
         cy : f32 [ bounds.h * 0.5 ]
         ty : f32 [ cy - th * 0.5 ]
         x0 : f32 [ vol_inset + pad_l ]
-        tw : f32 [ bounds.w - vol_inset * 2.0 - pad_l ]
+        tw : f32 [ bounds.w - vol_inset * 2.0 - pad_l - pad_r ]
         if [ tw <= 0.0 ] return
         cv.fill_color[ '#ffffff33' ]
         cv.rounded_rect[ x0, ty, tw, th, th * 0.5, th * 0.5, th * 0.5, th * 0.5 ]
         cv.paint[]
+        # enum stops: a notch at each position
+        if [ stops > 1 ]
+            cv.fill_color[ '#ffffff66' ]
+            for [ si: i32 0, si < stops, si += 1 ]
+                nx : f32 [ x0 + tw * f32[ si ] / f32[ stops - 1 ] ]
+                cv.rounded_rect[ nx - 1.0, cy - 5.0, 2.0, 10.0, 1.0, 1.0, 1.0, 1.0 ]
+                cv.paint[]
         fw : f32 [ tw * clamp[ value, 0.0, 1.0 ] ]
         if [ fw > 0.5 ]
             cv.fill_color[ '#ffffff' ]
@@ -4984,6 +5000,12 @@ Control VolumeSlider
         cv.fill_color[ '#ffffff' ]
         cv.rounded_rect[ kx, cy - kr, kr * 2.0, kr * 2.0, kr, kr, kr, kr ]
         cv.paint[]
+        # the enum's current level, right of the track, in the reserved pad
+        if [ value_text && value_text.count > 0 && pad_r > 0.0 ]
+            cv.font_size[ 14.0 ]
+            cv.fill_color[ '#e8e8ec' ]
+            cv.draw_text[ value_text, rect [ x: bounds.w - pad_r, y: 0.0, w: pad_r - 6.0, h: bounds.h ],
+                vec2f [ 1.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
 
 element Toolbar
     func render[] -> Elements
