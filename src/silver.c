@@ -8149,8 +8149,9 @@ enode parse_statement(silver a)
             e = (enode)mem;
             etype_register((aether)a, (Au)au, (Au)mem, true);
 
-            // a `[ Launch ]` member is a launch parameter: the export carries
-            // name=type=default so a host offers it without loading the module
+            // a `[ Launch ]` member is a launch parameter: serialize its meta
+            // (name=type=default[=Enum[n:v,...]]) into the module's export so a
+            // host offers it without dlopening the whole module
             if (member_meta && member_meta->autype->ident && rtype->autype->ident &&
                 strcmp(member_meta->autype->ident, "Launch") == 0) {
                 silver  og = a->is_external ? a->is_external : a;
@@ -8163,18 +8164,23 @@ enode parse_statement(silver a)
                 }
                 if (!ex->areas) ex->areas = map(hsize, 8);
                 array lvals = (array)get(ex->areas, (Au)string("launch"));
-                if (!lvals) {
-                    lvals = array(8);
-                    set(ex->areas, (Au)string("launch"), (Au)lvals);
-                }
+                if (!lvals) { lvals = array(8); set(ex->areas, (Au)string("launch"), (Au)lvals); }
                 string spec = f(string, "%s=%s=", au->ident, rtype->autype->ident);
                 if (expr) each(expr, token, t) {
                     if (eq(t, "[") || eq(t, "]")) continue;
                     concat(spec, string(t->chars));
                 }
-                if (member_meta_b && member_meta_b->autype->ident) {
-                    concat(spec, f(string, "=%s", member_meta_b->autype->ident));
-                    if (meta_b_args) concat(spec, f(string, "[%o]", meta_b_args));
+                if (rtype->autype->is_enum) {
+                    concat(spec, string("=Enum["));
+                    Au_t et = rtype->autype; bool first_e = true;
+                    for (int ei = 0; ei < et->members.count; ei++) {
+                        Au_t ev = (Au_t)et->members.origin[ei];
+                        if (!ev || ev->member_type != AU_MEMBER_ENUMV) continue;
+                        i32 iv = ev->value ? *(i32*)ev->value : 0;
+                        concat(spec, f(string, "%s%s:%i", first_e ? "" : ",", ev->ident, iv));
+                        first_e = false;
+                    }
+                    concat(spec, string("]"));
                 }
                 push(lvals, (Au)spec);
             }

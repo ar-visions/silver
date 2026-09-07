@@ -2431,6 +2431,24 @@ AU_EXPORT i32 evalue(Au_t type, cstr cs) {
             }
         }
     }
+    // a numeric string is the enum value itself: match a member by value, else
+    // take the number as-is (an int-backed enum accepts either name or number)
+    {
+        const char* p = cs;
+        if (*p == '-' || *p == '+') p++;
+        bool numeric = *p != 0;
+        for (const char* q = p; *q; q++) if (!isdigit((unsigned char)*q)) { numeric = false; break; }
+        if (numeric) {
+            int want = atoi(cs);
+            for (num i = 0; i < type->members.count; i++) {
+                Au_t mem = (Au_t)type->members.origin[i];
+                if ((mem->member_type & AU_MEMBER_ENUMV) &&
+                    *(i32*)enum_member_value(type, mem) == want)
+                    return want;
+            }
+            return want;
+        }
+    }
     fault("enum not found");
     return 0;
 }

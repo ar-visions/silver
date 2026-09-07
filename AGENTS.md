@@ -51,7 +51,7 @@ report it in one or two sentences, start the next named item.
 
 ## Rule #6c — Track every named item
 
-When Kalen names several defects or tasks, keep an explicit list
+When user names several defects or tasks, keep an explicit list
 and work it in his stated order. New reports ADD to the list; they
 never replace earlier ones. Never drop an item unfinished without
 saying so. Keep the live list in AGENTS.md and update it as items
@@ -549,6 +549,15 @@ search, compare, copy from, or modify `/src/orion`.
     - Validate every jet with a full 15-sided cylinder.
     - Flip the car-shadow image on its y axis.
     - Drive a race through the Trinity app socket.
+    - DONE Create the road-edge material suite and 36
+      center-road pattern suites.
+    - DONE Create the 4096-pixel straight plasma road
+      material suite with vertical y-axis inlays.
+    - DONE Create the 2048-pixel plasma track road set:
+      straight, tapered transition, and solid sections with
+      doubled side plasma, a narrow center plasma, a deeper
+      center cutout, vertical asphalt wear, and aligned albedo,
+      normal, metallic, specular, and AO maps.
 
 ### Type Resolution
 - **`au_ancestor(au)`**: walks `src` chain to the terminal type. Stops at enums. Used in `etype_access` for member lookup through aliases, pointers, and typedefs.
@@ -999,7 +1008,7 @@ fixed. vscale/filtering was ruled out (slow at low res too). Facts measured:
   `speech` (orbiter, crashman import it). mpg123 removed entirely.
 - iOS: `silver -d iphonesim app` builds, bundles, installs and launches in the
   booted simulator with logs streamed back; `-d iphone` builds and signs (never
-  install/launch on the phone unless Kalen asks). Shaders compile in-process
+  install/launch on the phone unless user asks). Shaders compile in-process
   via glslang (no glslangValidator binary). devices.agi holds both devices.
 - Homebrew is gone; ninja/autotools/swig are built into install/ by bootstrap.
 - Linker warnings fixed generally: objects pin macosx13.0; no shared libunwind.
