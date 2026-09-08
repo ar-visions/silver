@@ -8278,7 +8278,9 @@ enode parse_statement(silver a)
             cf->origin_token = entry;
             if (entry && entry->source)
                 cf->source_file = hold((path)entry->source);
-            cf->autype->access_type = interface_intern;
+            // public: an intern function with no meta is never registered on the
+            // type, and set_property finds the block by name at runtime
+            cf->autype->access_type = interface_public;
         }
     }
 

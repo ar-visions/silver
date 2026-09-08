@@ -204,6 +204,8 @@ func host_app_state   [ slot: i32 ] -> i32
 func host_app_pid     [ slot: i32 ] -> i32
 func host_app_count   [ ] -> i32
 func host_app_name    [ slot: i32, out: @i8, cap: i32 ] -> i32
+func Au_call_changed  [ a: Au, name: cstr ] -> i32
+func Au_call_named    [ a: Au, name: cstr ] -> i32
 func host_app_stop    [ slot: i32 ]
 func host_app_verdict [ slot: i32 ] -> i32
 func host_app_pause   [ slot: i32 ]
@@ -240,6 +242,8 @@ abstract live_app media_app
     intern  path_said   : bool
     intern  next_second : i64
     intern  frames      : i32
+    # the last whole second's counters, answered to `stats` on the agent socket
+    intern  stat_line   : string
     public  attach      : path
     # the shared surface pair + which one we fill next
     intern  share_tex0  : Texture
@@ -259,6 +263,8 @@ abstract live_app media_app
     intern  instr_pub   : map i32     [string]
     # the WIDTH the shell gives this instrument. the height is ours
     intern  instr_w     : map i32     [string]
+    # the entries as last logged: the same again is not written again
+    intern  instr_last  : map string  [string]
     intern  instr_ms    : i64
     # test-pattern accounting: publish count and the last interval
     # the built-in memory instrument's samples, oldest first
@@ -357,6 +363,7 @@ abstract live_app media_app
         second : epoch_millis[] / 1000
         if [ next_second != second ]
             next_second = second
+            stat_line = 'fps {frames} submits {vk.submit_calls} syncs {vk.sync_calls} sync_us {vk.sync_us} paints {vk.paint_calls} draws {vk.pipe_draws} draw_us {vk.draw_us} update_us {vk.update_us} sdf_miss {vk.sdf_miss} geom_us {vk.geom_us}'
             vk.pipe_draws   = 0
             vk.resize_us    = 0
             vk.resize_calls = 0
@@ -464,7 +471,20 @@ abstract live_app media_app
             for [ ty : typeid[ target ], ty && ty != typeid[ Au ], ty = ty.context ]
                 for [ i: i32 0, i < ty.members.count, i += 1 ]
                     mem : Au_t ty.members.origin[i]
-                    if [ !mem || mem.member_type != AU_MEMBER_VAR ] continue
+                    if [ !mem ] continue
+                    # an Action is a method: it has no value, the host calls it
+                    if [ mem.member_type == AU_MEMBER_FUNC ]
+                        fmt : Au_t mem.meta.m
+                        if [ !fmt || !Au.inherits[ fmt, typeid[ Action ] ] ] continue
+                        fnm : string [ mem.ident ]
+                        if [ out && out.count > 0 ]
+                            fkey  : string ';{fnm}='
+                            fhead : string '{fnm}='
+                            if [ out.starts_with[ fhead ] || out.index_of[ fkey ] >= 0 ] continue
+                        fent : string '{fnm}=action==Action=live'
+                        out = (out && out.count > 0) ? '{out};{fent}' : fent
+                        continue
+                    if [ mem.member_type != AU_MEMBER_VAR ] continue
                     mt : Au_t mem.meta.m
                     if [ !mt || !Au.inherits[ mt, typeid[ Launch ] ] ] continue
                     # an empty literal has no chars: nothing empty is ever interpolated here
@@ -508,6 +528,13 @@ abstract live_app media_app
                         rg : Range [ Au.new_object[ mb, null, null, true, __FILE__, __LINE__, __SEQUENCE__ ] ]
                         if [ rg ] ent = '{ent}=Range[{rg.min},{rg.max}]'
                     el [ mb && Au.inherits[ mb, typeid[ KeyBind ] ] ] ent = '{ent}=Key'
+                    el [ mb && Au.inherits[ mb, typeid[ Stepper ] ] ]
+                        sp : Stepper [ Au.new_object[ mb, null, null, true, __FILE__, __LINE__, __SEQUENCE__ ] ]
+                        if [ sp ] ent = '{ent}=Stepper[{sp.min},{sp.max},{sp.step}]'
+                    el [ mb && Au.inherits[ mb, typeid[ Color ] ] ]     ent = '{ent}=Color'
+                    el [ mb && Au.inherits[ mb, typeid[ PadBind ] ] ]   ent = '{ent}=Pad'
+                    el [ mb && Au.inherits[ mb, typeid[ Directory ] ] ] ent = '{ent}=Dir'
+                    el [ mb && Au.inherits[ mb, typeid[ Multiline ] ] ] ent = '{ent}=Text'
                     el [ en ] ent = '{ent}=Enum[{en}]'
                     if [ Au.inherits[ mt, typeid[ Live ] ] ] ent = '{ent}=live'
                     out = (out && out.count > 0) ? '{out};{ent}' : ent
@@ -685,8 +712,15 @@ abstract live_app media_app
                 # logging writes the entries to the app log, pane or no pane
                 ls : instr_read[ nm ]
                 if [ ls ]
+                    jn : string [ '' ]
                     for [ k: i32 0, k < ls.count, k += 1 ]
-                        log '[{nm}] {ls[k]}'
+                        jn = '{jn}{ls[k]}\n'
+                    if [ !instr_last ] instr_last = map string [string] []
+                    was : string (instr_last.contains[ nm ]) ? instr_last[ nm ] : null
+                    if [ !was || was.compare[ jn ] != 0 ]
+                        instr_last[ nm ] = jn
+                        for [ k: i32 0, k < ls.count, k += 1 ]
+                            log '[{nm}] {ls[k]}'
                 if [ !instr_cv ] instr_cv = map Canvas [string] []
                 # the shell says the width; the app says the height
                 if [ !instr_w ] instr_w = map i32 [string] []
@@ -920,6 +954,10 @@ abstract live_app media_app
                 if [ aa ]
                     header : Au.header[ aa ]
                     name = string [ header.au.ident ]
+                # hosted: one socket PER INSTANCE, or the newest instance of a
+                # module would answer for every other one
+                sl9 : i32 [ host_slot[] ]
+                if [ sl9 > 0 ] name = '{name}-{sl9}'
                 agent_on = agent_sock_open[ name ] != 0
                 if [ !agent_on ] return
             while [ true ]
@@ -1006,9 +1044,28 @@ abstract live_app media_app
                     if [ !mem ] reply = (reply.count == 0) ? 'memory' : '{reply} memory'
                     agent_sock_reply[ '{reply}\n' ]
                     continue
+                # probe <member>: run its change block by hand — 1 ran, 0 none, -1 unimplemented
+                el [ cmd == 'probe' && parts.count >= 2 ]
+                    pr9 : i32 [ (aa) ? Au_call_changed[ aa, parts[1].chars ] : 0 ]
+                    agent_sock_reply[ '{pr9}\n' ]
+                    continue
                 el [ cmd == 'props' ]
                     ps9 : string props_spec[]
                     agent_sock_reply[ (ps9 && ps9.count > 0) ? '{ps9}\n' : '\n' ]
+                    continue
+                # stats: the last second's frame and gpu counters
+                el [ cmd == 'stats' ]
+                    agent_sock_reply[ (stat_line && stat_line.count > 0) ? '{stat_line}\n' : '\n' ]
+                    continue
+                # call <name>: run an Action method of the app, no arguments
+                el [ cmd == 'call' && parts.count >= 2 ]
+                    fm9 : Au_t [ (aa) ? find_member[ typeid[ aa ], parts[1].chars,
+                        AU_MEMBER_FUNC, 0, true ] : null ]
+                    ok9 : bool [ false ]
+                    if [ fm9 ]
+                        am9 : Au_t fm9.meta.m
+                        if [ am9 && Au.inherits[ am9, typeid[ Action ] ] ] ok9 = Au_call_named[ aa, parts[1].chars ] == 1
+                    agent_sock_reply[ (ok9) ? 'ok\n' : 'unknown\n' ]
                     continue
                 el [ cmd == 'set' && parts.count >= 3 ]
                     member : Au_t [ (aa) ? find_member[ typeid[ aa ], parts[1].chars,
@@ -4332,6 +4389,27 @@ Range VolumeRange
 # a key binding on an i32 keycode: the host's editor reads 'press key' and
 # captures the next key for it, one member per button
 class KeyBind
+
+# a method the host may call while the app runs: `public [ Action ] func reset []`
+Live Action
+
+# a '#rrggbb' string: the host shows a swatch beside the hex
+class Color
+
+# a gamepad button binding on an i32 button code, one member per button
+class PadBind
+
+# a number stepped between min and max: the host draws - value +
+class Stepper
+    public min  : f32 [ 0.0 ]
+    public max  : f32 [ 100.0 ]
+    public step : f32 [ 1.0 ]
+
+# a folder on a path member, picked from the host's nav list
+class Directory
+
+# a longer string: the host gives it a taller field
+class Multiline
 
 # a path the module handles: a host picks it by the module's exported extensions
 path resource

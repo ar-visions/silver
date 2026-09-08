@@ -259,6 +259,7 @@ Option InstancePanel
     mutable chip_y   : f32
     mutable chip_wd  : f32
     mutable icons    : map SVGModel [string]
+    mutable pip_drag : bool          # a press went to the pip: moves and the release follow it
 
     func icon [ nm: string ] -> SVGModel
         if [ !icons ] icons = map SVGModel [string] []
@@ -276,7 +277,7 @@ Option InstancePanel
     # always the same five: pip, and the four that only work at a debugger stop
     func action_disabled [ av: AppView ] -> i32
         m : i32 [ 0 ]
-        if [ av.ended ] m = m | 1
+        if [ av.ended || av.held ] m = m | 1
         if [ !(av.debugger && av.debugger.active && !av.debugger.running) ] m = m | 30
         return m
 
@@ -331,12 +332,12 @@ Option InstancePanel
         return (ac.count > 0) ? row_h[] + 8.0 : 0.0
 
 
-    # the pane's app while it is in pip: the panel holds the pip then
+    # the selected instance while it is in pip: the one pip the panel holds
     func pip_av [] -> AppView
         ed9 : Editor editor[]
-        if [ !ed9 || !ed9.run_view || ed9.app_view ] return null
+        if [ !ed9 || !ed9.run_view ] return null
         av : AppView ed9.run_view
-        return (av.have_frame && av.ah > 0 && av.aw > 0) ? av : null
+        return (av.pip && av.have_frame && av.ah > 0 && av.aw > 0) ? av : null
 
     func pip_px [] -> f32
         av : AppView pip_av[]
@@ -349,6 +350,8 @@ Option InstancePanel
         return inst_px[] + pip_px[]
 
     func launch_px [] -> f32
+        # no instance selected: no properties at all
+        if [ !app[] ] return 0.0
         lp : element (elements) ? elements['launch_panel'] : null
         if [ lp && lp inherits LaunchPanel ]
             l9 : LaunchPanel lp
@@ -375,17 +378,21 @@ Option InstancePanel
         lh : f32 [ launch_px[] ]
         # the running instance's own props; else what the module answered last; else its export
         av9 : AppView app[]
-        sp9 : string (av9 && av9.props && av9.props.count > 0) ? av9.props : orb.module_spec[ ev9.band_mod[] ]
+        lv9 : bool [ (av9 && av9.props && av9.props.count > 0) ? true : false ]
+        sp9 : string (lv9) ? av9.props : orb.module_spec[ ev9.band_mod[] ]
         if [ !sp9 || sp9.count == 0 ] sp9 = ev9.launch_spec[]
-        t['launch_panel'] = LaunchPanel [ spec: sp9, args: orb.file_args[ ev9.args_src[] ],
-            area: Region [ 'l0 t{ip}px r0 h{lh}px' ] ]
+        # the selected instance edits ITS args; with none selected there is no list
+        if [ av9 ]
+            ar9 : string (av9.module_args) ? av9.module_args : ''
+            t['launch_panel'] = LaunchPanel [ spec: sp9, args: ar9, inst: av9.iid, live_vals: lv9,
+                area: Region [ 'l0 t{ip}px r0 h{lh}px' ] ]
+        # the callstack sits under the instruments, right above the step group
+        fp : f32 [ foot_px[] ]
         cp : f32 [ stack_px[] ]
         if [ cp > 0.0 ]
-            cy : f32 [ ip + lh + row_h[] ]
             ch : f32 [ cp - row_h[] ]
-            t['callstack'] = Callstack [ frames: orb.debug_frames[], area: Region [ 'l0 t{cy}px r0 h{ch}px' ] ]
+            t['callstack'] = Callstack [ frames: orb.debug_frames[], area: Region [ 'l0 b{fp}px r0 h{ch}px' ] ]
         # the selected instance's group: square segments edge to edge at the bottom
-        fp : f32 [ foot_px[] ]
         if [ fp > 0.0 ]
             li : vec AppView inst_list[]
             sv9 : AppView li[ sel_index[] ]
@@ -399,6 +406,7 @@ Option InstancePanel
         return t
 
     func inst_color [ av: AppView ] -> rgba
+        if [ av.held ]   return rgba [ '#8f89a3' ]
         if [ av.ended ]  return rgba [ '#ef5350' ]
         if [ av.paused ] return rgba [ '#ffb74d' ]
         return rgba [ '#66bb6a' ]
@@ -408,20 +416,33 @@ Option InstancePanel
 
     # chip ix in ONE flow that wraps at the panel width; lands in chip_x/chip_y/chip_wd,
     # measured from the top of the chip band, so press and draw agree
+    # rows break at the width; every row that breaks is stretched to fill it,
+    # the slack shared evenly across its cells
     func chip_pos [ names: vec string, ix: i32 ] -> bool
-        x : f32 [ 0.0 ]
-        y : f32 [ 0.0 ]
-        for [ i: i32 0, i < names.count, i += 1 ]
-            w : f32 [ chip_w[ names[ i ] ] ]
-            if [ x > 0.0 && x + w > bounds.w ]
-                x = 0.0
-                y += row_h[]
-            if [ i == ix ]
-                chip_x  = x
+        if [ ix < 0 || ix >= names.count ] return false
+        y  : f32 [ 0.0 ]
+        r0 : i32 [ 0 ]
+        while [ r0 < names.count ]
+            # the cells of this row, by their natural widths
+            r1  : i32 [ r0 ]
+            sum : f32 [ 0.0 ]
+            while [ r1 < names.count ]
+                w : f32 [ chip_w[ names[ r1 ] ] ]
+                if [ r1 > r0 && sum + w > bounds.w ] break
+                sum += w
+                r1 += 1
+            n9    : i32 [ r1 - r0 ]
+            extra : f32 [ (bounds.w > sum) ? (bounds.w - sum) / f32[ n9 ] : 0.0 ]
+            if [ ix < r1 ]
+                x : f32 [ 0.0 ]
+                for [ i: i32 r0, i < ix, i += 1 ]
+                    x += chip_w[ names[ i ] ] + extra
+                chip_x  = round[ x ]
                 chip_y  = y
-                chip_wd = w
+                chip_wd = round[ x + chip_w[ names[ ix ] ] + extra ] - round[ x ]
                 return true
-            x += w
+            y += row_h[]
+            r0 = r1
         return false
 
     func chips_h [ names: vec string ] -> f32
@@ -457,6 +478,24 @@ Option InstancePanel
         return -1
 
     # a title toggles that one's logging. nothing here turns an
+    # the pip's app sees the mouse move over it and every drag to its release
+    func on_move [ ev: Event ]
+        pv : AppView pip_av[]
+        if [ !pv ] return
+        if [ pip_drag || ev.mouse.pos.y < head_px[] ]
+            pv.vsx = 0.0
+            pv.vsy = 0.0
+            pv.view_move[ ev ]
+
+    func on_release [ ev: Event ]
+        if [ !pip_drag ] return
+        pip_drag = false
+        pv : AppView pip_av[]
+        if [ pv ]
+            pv.vsx = 0.0
+            pv.vsy = 0.0
+            pv.view_release[ ev ]
+
     # instrument off — they are ALL shown, always
     func on_press [ ev: Event ]
         li : vec AppView inst_list[]
@@ -475,7 +514,7 @@ Option InstancePanel
                         if [ my >= y8 && my < y8 + rh ]
                             if [ ev.mouse.pos.x < 24.0 ]
                                 if [ ev.key.shift ] ed9.close_instance[ i ]
-                                el orb.instance_action[ ed9, av9, (av9.paused || av9.ended) ? 'play' : 'pause' ]
+                                el orb.instance_action[ ed9, av9, (av9.paused || av9.ended || av9.held) ? 'play' : 'pause' ]
                             el [ i == sel_index[] ]
                                 # the selected one again: unselect, the pane goes back to its file
                                 ed9.run_view = null
@@ -488,17 +527,21 @@ Option InstancePanel
             ev.no_default = true
             if [ ux ] ux.restyle = true
             return
+        # the pip is the app: its presses go to the instance, as in the editor
         pv : AppView pip_av[]
         if [ pv && ev.mouse.pos.y < head_px[] ]
-            ed8 : Editor editor[]
-            if [ ed8 ] ed8.toggle_app_view[]
+            pv.vsx = 0.0
+            pv.vsy = 0.0
+            if [ pv.view_press[ ev ] ]
+                pip_drag = true
+                if [ ux ] ux.set_capture[ a ]
             pristine = false
             ev.no_default = true
             if [ ux ] ux.restyle = true
             return
         av : app[]
         if [ !av || !av.instr_names ] return
-        top : f32 [ head_px[] + launch_px[] + stack_px[] ]
+        top : f32 [ head_px[] + launch_px[] ]
         for [ i: i32 0, i < av.instr_names.count, i += 1 ]
             if [ !chip_pos[ av.instr_names, i ] ] continue
             cy : f32 [ top + chip_y ]
@@ -520,12 +563,18 @@ Option InstancePanel
         cv.fill_color[ rgba [ '#1a1726' ] ]
         cv.rect_to[ 0.0, 0.0, bounds.w, rh - 1.0 ]
         cv.paint[]
+        # the +> icon is images/add_instance.svg; the triangle stands in until it exists
+        ni9 : SVGModel icon[ 'add_instance' ]
         cv.fill_color[ rgba [ '#66bb6a' ] ]
-        cv.move_to[ 9.0, 7.0 ]
-        cv.line_to[ 19.0, 13.0 ]
-        cv.line_to[ 9.0, 19.0 ]
-        cv.close_path[]
-        cv.paint[]
+        if [ ni9 ]
+            cv.stroke_color[ rgba [ '#66bb6a' ] ]
+            cv.draw_svg[ ni9, 6.0, 6.0, 14.0, 14.0 ]
+        el
+            cv.move_to[ 9.0, 7.0 ]
+            cv.line_to[ 19.0, 13.0 ]
+            cv.line_to[ 9.0, 19.0 ]
+            cv.close_path[]
+            cv.paint[]
         cv.font_size[ 13 ]
         cv.fill_color[ rgba [ '#e8e2f5' ] ]
         cv.draw_text[ 'new instance', rect [ x: 24.0, y: 0.0, w: bounds.w - 32.0, h: rh ],
@@ -535,13 +584,17 @@ Option InstancePanel
             for [ i: i32 0, i < li.count, i += 1 ]
                 av9 : AppView li[ i ]
                 sel9 : bool [ ed9 && ed9.run_view == av9 ]
+                # the selected row glows blue from its edges inward
+                cv.save[]
                 cv.fill_color[ (sel9) ? rgba [ '#2a2340' ] : rgba [ '#1a1726' ] ]
+                if [ sel9 ] cv.inner_glow[ rgba [ '#4f9cffaa' ], 12.0 ]
                 cv.rect_to[ 0.0, y8, bounds.w, rh - 1.0 ]
                 cv.paint[]
+                cv.restore[]
                 # the one icon on the row: the state's color, and it IS the pause/resume
                 # toggle. shift held turns it into the [x] that closes the instance
                 sh9 : bool [ orb.shift_down ]
-                ic9 : SVGModel icon[ (sh9) ? 'close' : ((av9.paused || av9.ended) ? 'play' : 'pause') ]
+                ic9 : SVGModel icon[ (sh9) ? 'close' : ((av9.paused || av9.ended || av9.held) ? 'play' : 'pause') ]
                 if [ ic9 ]
                     cv.fill_color[ (sh9) ? rgba [ '#ef5350' ] : inst_color[ av9 ] ]
                     cv.stroke_color[ (sh9) ? rgba [ '#ef5350' ] : inst_color[ av9 ] ]
@@ -565,9 +618,12 @@ Option InstancePanel
             ph : f32 [ pip_px[] ]
             pw : f32 [ ph * f32[ pv.aw ] / f32[ pv.ah ] ]
             if [ pw > bounds.w ] pw = bounds.w
+            # the pip rect is in this panel's own coordinates: no scroll offset
+            pv.vsx = 0.0
+            pv.vsy = 0.0
             pv.draw_pip_in[ cv, rect [ x: round[ (bounds.w - pw) * 0.5 ], y: inst_px[], w: pw, h: ph ] ]
         if [ stack_px[] > 0.0 ]
-            ty : f32 [ head_px[] + launch_px[] ]
+            ty : f32 [ bounds.h - foot_px[] - stack_px[] ]
             cv.fill_color[ rgba [ '#2a2340' ] ]
             cv.rect_to[ 0.0, ty, bounds.w, rh - 1.0 ]
             cv.paint[]
@@ -584,7 +640,7 @@ Option InstancePanel
             settle = now
         sizing : bool [ now - settle < 200 ]
         # one flow of chips; the lit one is the single instrument on: it logs and shows
-        top : f32 [ head_px[] + launch_px[] + stack_px[] ]
+        top : f32 [ head_px[] + launch_px[] ]
         act : string av.instr_active[]
         chip_row[ cv, av.instr_names, top, act, 0.0, 0.0 ]
         if [ !act ] return
@@ -602,7 +658,7 @@ Option InstancePanel
         ft : av.instr_front[ act ]
         if [ ft ]
             th : f32 [ f32[ ft.height ] ]
-            if [ y9 + th > bounds.h - foot_px[] ] th = bounds.h - foot_px[] - y9
+            if [ y9 + th > bounds.h - foot_px[] - stack_px[] ] th = bounds.h - foot_px[] - stack_px[] - y9
             if [ th > 0.0 ] cv.draw_image[ ft, rect [ x: 0.0, y: y9, w: f32[ ft.width ], h: th ] ]
             return
         rw : vec string (rows && rows.contains[ act ]) ? rows[ act ] : null
@@ -610,7 +666,7 @@ Option InstancePanel
         cv.font_size[ 12 ]
         cv.fill_color[ rgba [ '#cfd6e4' ] ]
         for [ k: i32 0, k < rw.count, k += 1 ]
-            if [ y9 > bounds.h - foot_px[] - 12.0 ] break
+            if [ y9 > bounds.h - foot_px[] - stack_px[] - 12.0 ] break
             cv.draw_text[ '{rw[k]}', rect [ x: 8.0, y: y9, w: bounds.w - 12.0, h: 15.0 ],
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
             y9 += 15.0
