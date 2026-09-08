@@ -271,14 +271,15 @@ Option InstancePanel
     # the selected instance's group: at a debugger stop continue and the steps.
     # closing is uncommon: shift shows an [x] on every row instead
     func action_chips [ av: AppView ] -> vec string
-        b : vec string [] [ 'pip', 'continue', 'step_next', 'step_in', 'step_out' ]
+        b : vec string [] [ 'pip', 'pause', 'continue', 'step_next', 'step_in', 'step_out' ]
         return b
 
-    # always the same five: pip, and the four that only work at a debugger stop
+    # always the same six: pip and pause on a running instance, the four
+    # steps only at a debugger stop
     func action_disabled [ av: AppView ] -> i32
         m : i32 [ 0 ]
-        if [ av.ended || av.held ] m = m | 1
-        if [ !(av.debugger && av.debugger.active && !av.debugger.running) ] m = m | 30
+        if [ av.ended || av.held ] m = m | 3
+        if [ !(av.debugger && av.debugger.active && !av.debugger.running) ] m = m | 60
         return m
 
     func sel_index [] -> i32
@@ -341,7 +342,7 @@ Option InstancePanel
 
     func pip_px [] -> f32
         av : AppView pip_av[]
-        if [ !av ] return 0.0
+        if [ !av || !bounds ] return 0.0
         h : f32 [ bounds.w * f32[ av.ah ] / f32[ av.aw ] ]
         if [ h > 260.0 ] h = 260.0
         return h
@@ -349,49 +350,100 @@ Option InstancePanel
     func head_px [] -> f32
         return inst_px[] + pip_px[]
 
-    func launch_px [] -> f32
-        # no instance selected: no properties at all
-        if [ !app[] ] return 0.0
-        lp : element (elements) ? elements['launch_panel'] : null
-        if [ lp && lp inherits LaunchPanel ]
-            l9 : LaunchPanel lp
-            if [ l9.content_h > 0.0 ] return l9.content_h
-        return 1.3 * fc
-
-    # frames only exist at a stop; running, the section is not there at all
-    func stack_px [] -> f32
+    # the frames of the selected instance at a stop, none otherwise
+    func stack_rows [] -> i32
         orb : cast orbiter [ ux.app_object ]
         av  : AppView app[]
         dv  : dbg (av) ? av.debugger : null
-        if [ !orb || !dv || !dv.active || dv.running ] return 0.0
+        if [ !orb || !dv || !dv.active || dv.running ] return 0
         fr : vec Au orb.debug_frames[]
-        if [ !fr || fr.count == 0 ] return 0.0
-        n : i32 [ (fr.count < 8) ? fr.count : 8 ]
-        return row_h[] + f32[ n ] * 20.0 + 4.0
+        if [ !fr || fr.count == 0 ] return 0
+        return (fr.count < 8) ? fr.count : 8
+
+    # the accordion: properties, instruments, callstack. one is open and
+    # fills; the others are headers, above it from the top, below it from
+    # the bottom
+    func open_ix [] -> i32
+        orb : cast orbiter [ ux.app_object ]
+        if [ !orb ] return -1
+        if [ orb.props_open ] return 0
+        if [ orb.instr_open ] return 1
+        if [ orb.stack_open ] return 2
+        return -1
+
+    # the first render comes before any layout: no bounds yet
+    func panel_h [] -> f32
+        return (bounds) ? bounds.h : 0.0
+
+    func sect_y [ i: i32 ] -> f32
+        k : i32 [ open_ix[] ]
+        if [ k < 0 || i <= k ] return head_px[] + f32[ i ] * row_h[]
+        return panel_h[] - foot_px[] - f32[ 3 - i ] * row_h[]
+
+    # where the open section's content ends: the folded headers under it
+    func sect_bottom [] -> f32
+        k : i32 [ open_ix[] ]
+        if [ k < 0 ] return panel_h[] - foot_px[]
+        return panel_h[] - foot_px[] - f32[ 2 - k ] * row_h[]
+
+    # a click on a header opens that section, closing the others; on the
+    # open one it folds, leaving none
+    func sect_toggle [ i: i32 ]
+        orb : cast orbiter [ ux.app_object ]
+        if [ !orb ] return
+        was : bool [ open_ix[] == i ]
+        orb.props_open = !was && i == 0
+        orb.instr_open = !was && i == 1
+        orb.stack_open = !was && i == 2
+
+    # a section header: a fold marker at the left when asked, the name beside it
+    func section_title [ cv: Canvas, y: f32, text: string, open: bool, marker: bool ]
+        rh : f32 [ row_h[] ]
+        cv.fill_color[ (open) ? rgba [ '#413' ] : rgba [ '#212' ] ]
+        cv.rect_to[ 0.0, y, bounds.w, rh - 1.0 ]
+        cv.paint[]
+        # the names line up whether or not a marker sits before them
+        tx : f32 [ 22.0 ]
+        if [ marker ]
+            cv.fill_color[ rgba [ '#9a93b3' ] ]
+            if [ open ]
+                cv.move_to[ 8.0, y + 10.0 ]
+                cv.line_to[ 16.0, y + 10.0 ]
+                cv.line_to[ 12.0, y + 16.0 ]
+            el
+                cv.move_to[ 9.0, y + 8.0 ]
+                cv.line_to[ 15.0, y + 13.0 ]
+                cv.line_to[ 9.0, y + 18.0 ]
+            cv.close_path[]
+            cv.paint[]
+        cv.font_size[ 13 ]
+        cv.fill_color[ rgba [ '#e8e2f5' ] ]
+        cv.draw_text[ text, rect [ x: tx, y: y, w: bounds.w - tx - 8.0, h: rh ],
+            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
 
     func render [] -> Elements
         ev9 : EditorView view[]
         orb : cast orbiter [ ux.app_object ]
         if [ !ev9 || !orb ] return null
         t  : Elements []
-        ip : f32 [ head_px[] ]
-        lh : f32 [ launch_px[] ]
         # the running instance's own props; else what the module answered last; else its export
         av9 : AppView app[]
         lv9 : bool [ (av9 && av9.props && av9.props.count > 0) ? true : false ]
         sp9 : string (lv9) ? av9.props : orb.module_spec[ ev9.band_mod[] ]
         if [ !sp9 || sp9.count == 0 ] sp9 = ev9.launch_spec[]
-        # the selected instance edits ITS args; with none selected there is no list
-        if [ av9 ]
-            ar9 : string (av9.module_args) ? av9.module_args : ''
-            t['launch_panel'] = LaunchPanel [ spec: sp9, args: ar9, inst: av9.iid, live_vals: lv9,
-                area: Region [ 'l0 t{ip}px r0 h{lh}px' ] ]
-        # the callstack sits under the instruments, right above the step group
+        # the open section runs from under its header to the folded headers below
         fp : f32 [ foot_px[] ]
-        cp : f32 [ stack_px[] ]
-        if [ cp > 0.0 ]
-            ch : f32 [ cp - row_h[] ]
-            t['callstack'] = Callstack [ frames: orb.debug_frames[], area: Region [ 'l0 b{fp}px r0 h{ch}px' ] ]
+        sb9 : f32 [ panel_h[] - sect_bottom[] ]
+        # the selected instance edits ITS args; with none selected there is no list
+        if [ av9 && orb.props_open ]
+            ar9 : string (av9.module_args) ? av9.module_args : ''
+            py9 : f32 [ sect_y[ 0 ] + row_h[] ]
+            # one canvas for the whole list: its controls paint straight onto this panel
+            t['launch_panel'] = LaunchPanel [ spec: sp9, args: ar9, inst: av9.iid, live_vals: lv9, no_cache: true,
+                area: Region [ 'l0 t{py9}px r0 b{sb9}px' ] ]
+        if [ av9 && orb.stack_open && stack_rows[] > 0 ]
+            cy9 : f32 [ sect_y[ 2 ] + row_h[] ]
+            t['callstack'] = Callstack [ frames: orb.debug_frames[], area: Region [ 'l0 t{cy9}px r0 b{sb9}px' ] ]
         # the selected instance's group: square segments edge to edge at the bottom
         if [ fp > 0.0 ]
             li : vec AppView inst_list[]
@@ -399,7 +451,7 @@ Option InstancePanel
             ac : vec string action_chips[ sv9 ]
             ed9 : Editor editor[]
             # pip is the one toggle in the group: lit while the app sits in the pip
-            sm : i32 [ (ed9 && !ed9.app_view) ? 1 : 0 ]
+            sm : i32 [ ((ed9 && !ed9.app_view) ? 1 : 0) | ((sv9.paused) ? 2 : 0) ]
             t['steps'] = TButtons [ buttons: ac, manual: true, seg_radius: 0.0, sel_mask: sm,
                 disable_mask: action_disabled[ sv9 ],
                 area: Region [ 'l0 b{fp}px r0 h{fp}px' ] ]
@@ -514,7 +566,7 @@ Option InstancePanel
                         if [ my >= y8 && my < y8 + rh ]
                             if [ ev.mouse.pos.x < 24.0 ]
                                 if [ ev.key.shift ] ed9.close_instance[ i ]
-                                el orb.instance_action[ ed9, av9, (av9.paused || av9.ended || av9.held) ? 'play' : 'pause' ]
+                                el orb.instance_action[ ed9, av9, (av9.ended || av9.held) ? 'play' : 'stop' ]
                             el [ i == sel_index[] ]
                                 # the selected one again: unselect, the pane goes back to its file
                                 ed9.run_view = null
@@ -540,8 +592,20 @@ Option InstancePanel
             if [ ux ] ux.restyle = true
             return
         av : app[]
-        if [ !av || !av.instr_names ] return
-        top : f32 [ head_px[] + launch_px[] ]
+        if [ !av ] return
+        # the three headers of the accordion
+        orb7 : cast orbiter [ ux.app_object ]
+        my7  : f32 [ ev.mouse.pos.y ]
+        for [ si7: i32 0, si7 < 3, si7 += 1 ]
+            hy7 : f32 [ sect_y[ si7 ] ]
+            if [ my7 >= hy7 && my7 < hy7 + row_h[] ]
+                sect_toggle[ si7 ]
+                pristine = false
+                ev.no_default = true
+                if [ ux ] ux.restyle = true
+                return
+        if [ !av.instr_names || (orb7 && !orb7.instr_open) ] return
+        top : f32 [ sect_y[ 1 ] + row_h[] ]
         for [ i: i32 0, i < av.instr_names.count, i += 1 ]
             if [ !chip_pos[ av.instr_names, i ] ] continue
             cy : f32 [ top + chip_y ]
@@ -594,7 +658,8 @@ Option InstancePanel
                 # the one icon on the row: the state's color, and it IS the pause/resume
                 # toggle. shift held turns it into the [x] that closes the instance
                 sh9 : bool [ orb.shift_down ]
-                ic9 : SVGModel icon[ (sh9) ? 'close' : ((av9.paused || av9.ended || av9.held) ? 'play' : 'pause') ]
+                # the row's one icon starts or stops the instance; pause lives in the step group
+                ic9 : SVGModel icon[ (sh9) ? 'close' : ((av9.ended || av9.held) ? 'play' : 'stop') ]
                 if [ ic9 ]
                     cv.fill_color[ (sh9) ? rgba [ '#ef5350' ] : inst_color[ av9 ] ]
                     cv.stroke_color[ (sh9) ? rgba [ '#ef5350' ] : inst_color[ av9 ] ]
@@ -622,17 +687,14 @@ Option InstancePanel
             pv.vsx = 0.0
             pv.vsy = 0.0
             pv.draw_pip_in[ cv, rect [ x: round[ (bounds.w - pw) * 0.5 ], y: inst_px[], w: pw, h: ph ] ]
-        if [ stack_px[] > 0.0 ]
-            ty : f32 [ bounds.h - foot_px[] - stack_px[] ]
-            cv.fill_color[ rgba [ '#2a2340' ] ]
-            cv.rect_to[ 0.0, ty, bounds.w, rh - 1.0 ]
-            cv.paint[]
-            cv.font_size[ 13 ]
-            cv.fill_color[ rgba [ '#e8e2f5' ] ]
-            cv.draw_text[ 'callstack', rect [ x: 8.0, y: ty, w: bounds.w - 26.0, h: rh ],
-                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
         av : app[]
-        if [ !av || !av.instr_names ] return
+        if [ !av || !orb ] return
+        # the accordion's three headers; the chips once the app answers
+        nm9 : string orb.instance_name[ av ]
+        section_title[ cv, sect_y[ 0 ], '{nm9} properties',  orb.props_open, false ]
+        section_title[ cv, sect_y[ 1 ], '{nm9} instruments', orb.instr_open, false ]
+        section_title[ cv, sect_y[ 2 ], '{nm9} callstack',   orb.stack_open, false ]
+        if [ !orb.instr_open || !av.instr_names ] return
         n  : i32 [ av.instr_names.count ]
         now : i64 [ epoch_millis[] ]
         if [ bounds.w != last_w ]
@@ -640,7 +702,7 @@ Option InstancePanel
             settle = now
         sizing : bool [ now - settle < 200 ]
         # one flow of chips; the lit one is the single instrument on: it logs and shows
-        top : f32 [ head_px[] + launch_px[] ]
+        top : f32 [ sect_y[ 1 ] + row_h[] ]
         act : string av.instr_active[]
         chip_row[ cv, av.instr_names, top, act, 0.0, 0.0 ]
         if [ !act ] return
@@ -658,7 +720,7 @@ Option InstancePanel
         ft : av.instr_front[ act ]
         if [ ft ]
             th : f32 [ f32[ ft.height ] ]
-            if [ y9 + th > bounds.h - foot_px[] - stack_px[] ] th = bounds.h - foot_px[] - stack_px[] - y9
+            if [ y9 + th > sect_bottom[] ] th = sect_bottom[] - y9
             if [ th > 0.0 ] cv.draw_image[ ft, rect [ x: 0.0, y: y9, w: f32[ ft.width ], h: th ] ]
             return
         rw : vec string (rows && rows.contains[ act ]) ? rows[ act ] : null
@@ -666,7 +728,7 @@ Option InstancePanel
         cv.font_size[ 12 ]
         cv.fill_color[ rgba [ '#cfd6e4' ] ]
         for [ k: i32 0, k < rw.count, k += 1 ]
-            if [ y9 > bounds.h - foot_px[] - stack_px[] - 12.0 ] break
+            if [ y9 > sect_bottom[] - 12.0 ] break
             cv.draw_text[ '{rw[k]}', rect [ x: 8.0, y: y9, w: bounds.w - 12.0, h: 15.0 ],
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
             y9 += 15.0

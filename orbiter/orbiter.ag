@@ -753,13 +753,22 @@ NavButton KeyField
     }
     func on_press [ ev: Event ]
         armed = true
+        label = 'press key'
         if [ ux ] ux.set_focus[ a ]
         pristine = false
         ev.no_default     = true
         ev.no_propagation = true
     func on_key [ ev: Event ]
         if [ !armed || !ev.key.state ] return
+        # escape backs out: the binding stays what it was
+        if [ ev.key.unicode == 256 ]
+            armed    = false
+            label    = key_name[ code ]
+            pristine = false
+            ev.no_default = true
+            return
         code    = i32[ ev.key.unicode ]
+        label   = key_name[ code ]
         armed   = false
         changed = true
         pristine = false
@@ -797,6 +806,7 @@ NavButton PadField
     }
     func on_press [ ev: Event ]
         armed = true
+        label = 'press button'
         if [ ux ] ux.set_focus[ a ]
         pristine = false
         ev.no_default     = true
@@ -804,6 +814,7 @@ NavButton PadField
     func on_pad [ ev: Event ]
         if [ !armed || !ev.pad.state ] return
         code    = ev.pad.button
+        label   = pad_name[ code ]
         armed   = false
         changed = true
         pristine = false
@@ -991,6 +1002,8 @@ Option AppError
 # the bar owns every gap in here, edges included, instead of each
 # control carrying its own l8px/r0 offset
 Group StatusBar
+    # the whole bar paints straight to the screen: none of its chips cache
+    no_cache : true
     style : CSS {
         area: l0 b22px r0 h22px
         spacing_x: 1px
@@ -1468,23 +1481,21 @@ element LaunchPanel
                 t['lp_{nm}'] = LaunchPath [ label: dsp, edit: pv9, path_value: pv9, manual_mode: true,
                     is_resource: ty == 'resource', is_dir: desc.starts_with[ 'Dir' ], area: ar9 ]
             el [ desc.starts_with[ 'Key' ] ]
-                kc9 : i32 [ i32[ cur.integer_value[] ] ]
-                arm : bool [ false ]
+                # the mounted field sets its own label; the rebuild echoes it back
+                # unchanged, since a changed or missing label drops the focus
                 if [ ex9 && ex9 inherits KeyField ]
                     kfx : KeyField ex9
-                    kc9 = kfx.code
-                    arm = kfx.armed
-                t['lp_{nm}'] = KeyField [ label: (arm) ? 'press key' : key_name[ kc9 ], code: kc9,
-                    manual_mode: true, area: ar9 ]
+                    t['lp_{nm}'] = KeyField [ label: kfx.label, code: kfx.code, manual_mode: true, area: ar9 ]
+                el
+                    kc9 : i32 [ i32[ cur.integer_value[] ] ]
+                    t['lp_{nm}'] = KeyField [ label: key_name[ kc9 ], code: kc9, manual_mode: true, area: ar9 ]
             el [ desc.starts_with[ 'Pad' ] ]
-                pc9 : i32 [ i32[ cur.integer_value[] ] ]
-                parm : bool [ false ]
                 if [ ex9 && ex9 inherits PadField ]
                     pfx : PadField ex9
-                    pc9  = pfx.code
-                    parm = pfx.armed
-                t['lp_{nm}'] = PadField [ label: (parm) ? 'press button' : pad_name[ pc9 ], code: pc9,
-                    manual_mode: true, area: ar9 ]
+                    t['lp_{nm}'] = PadField [ label: pfx.label, code: pfx.code, manual_mode: true, area: ar9 ]
+                el
+                    pc9 : i32 [ i32[ cur.integer_value[] ] ]
+                    t['lp_{nm}'] = PadField [ label: pad_name[ pc9 ], code: pc9, manual_mode: true, area: ar9 ]
             el [ desc.starts_with[ 'Stepper' ] ]
                 if [ ex9 ]
                     t['lp_{nm}'] = StepField [ area: ar9 ]
@@ -1982,6 +1993,10 @@ element orbiter : trinity # implements compiler
     # the last props a module's instance answered: its config outlives the run
     public [ StatePersist ] module_props : map string [string]
     mutable shift_down    : bool
+    # the instance panel's sections fold on their headers
+    mutable props_open    : bool [ true ]
+    mutable stack_open    : bool [ true ]
+    mutable instr_open    : bool [ true ]
     # module whose build set err_file; only it may clear
     intern err_mod       : string
     # index into scene_list[]; the bottom bar steps it
@@ -3309,10 +3324,11 @@ element orbiter : trinity # implements compiler
         land_paused[ av ]
         if [ ux ] ux.restyle = true
 
-    # the instance row's icons: pause/play, and at a stop continue and the steps
+    # the instance row's icon starts or stops it; the step group pauses,
+    # continues and steps
     func instance_action [ ed: Editor, av: AppView, act: string ]
         if [ !av ] return
-        if [ act.compare[ 'pause' ] == 0 || act.compare[ 'play' ] == 0 ]
+        if [ act.compare[ 'play' ] == 0 ]
             if [ av.held ]
                 # first start: the file's args as they stand right now
                 if [ !(av.module_args && av.module_args.count > 0) ]
@@ -3321,10 +3337,22 @@ element orbiter : trinity # implements compiler
                 av.held = false
                 if [ ed ] ed.app_view = true
                 return
-            if [ av.ended ]
-                av.ended = false
-                av.note  = ''
-            el app_pause_toggle[ av ]
+            if [ av.ended ] av.restart[ false ]
+            return
+        if [ act.compare[ 'stop' ] == 0 ]
+            # the process goes; the instance stays, not running, with its args
+            av.release[]
+            av.debugger = null
+            av.attached = false
+            av.started  = false
+            av.ended    = false
+            av.paused   = false
+            av.held     = true
+            av.note     = ''
+            return
+        if [ act.compare[ 'pause' ] == 0 ]
+            if [ av.held || av.ended ] return
+            app_pause_toggle[ av ]
             # paused -> back to the source, running -> the app
             want : bool [ !av.paused ]
             if [ ed && ed.app_view != want ] ed.toggle_app_view[]
@@ -4994,7 +5022,7 @@ element orbiter : trinity # implements compiler
             ev.no_default = true
             return
         # the instance panel's group renames itself to the pressed segment
-        if [ ev.target.id == 'continue' || ev.target.id == 'step_next' ||
+        if [ ev.target.id == 'continue' || ev.target.id == 'step_next' || ev.target.id == 'pause' ||
              ev.target.id == 'step_in'  || ev.target.id == 'step_out' ]
             eds : Editor pane_of[ ev.target ]
             if [ eds && eds.run_view ] instance_action[ eds, eds.run_view, ev.target.id ]
