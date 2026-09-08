@@ -9842,7 +9842,9 @@ static bool ensure_apple_runtime(silver a, symbol triple, string tgt,
     string base = f(string, "%s -Wno-nullability-completeness -Wno-expansion-to-defined "
         "-fPIC -fvisibility=default -DSILVER='\"%s\"' %s", core_warn, SILVER, a->debug ? "-g" : "-O2");
 
-    if (!file_exists("%o/libAu.dylib", lib_dir)) {
+    // a stale device libAu has a different type layout; missing = 0
+    path au_lib = f(path, "%o/libAu.dylib", lib_dir);
+    if (modified_time(au_lib) < modified_time(f(path, "%s/src/Au.c", SILVER))) {
         print("[Au] building the runtime for %s", triple);
         path au_o = f(path, "%o/Au.o",    objs);
         path po_o = f(path, "%o/posix.o", objs);
@@ -9859,7 +9861,10 @@ static bool ensure_apple_runtime(silver a, symbol triple, string tgt,
         string nm = (string)instanceof(li->key, string);
         if (!nm || cmp(nm, "Au") == 0)  continue;
         if (!is_core_module(nm->chars)) continue;
-        if (file_exists("%o/lib%o.dylib", lib_dir, nm)) continue;
+        // rebuilt behind its own source or behind libAu
+        i64 lib_t = modified_time(f(path, "%o/lib%o.dylib", lib_dir, nm));
+        if (lib_t >= modified_time(f(path, "%s/src/%o.c", SILVER, nm)) &&
+            lib_t >= modified_time(au_lib)) continue;
         print("[%o] building for the device", nm);
         path obj = f(path, "%o/%o.o", objs, nm);
         if (exec(a->verbose, "%o/clang %o %o -DMODULE='\"%o\"' -I %s/install/build/src/%o %o -c %s/src/%o.c -o %o",

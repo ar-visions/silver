@@ -516,6 +516,16 @@ int platform_orientation(void) {
     return 0;
 }
 
+// identifierForVendor: stable until every vendor app is removed
+const char* platform_device_id(void) {
+    static char id[64];
+    if (!id[0]) {
+        NSString* s = UIDevice.currentDevice.identifierForVendor.UUIDString;
+        if (s) strlcpy(id, s.UTF8String, sizeof(id));
+    }
+    return id;
+}
+
 // ---------------------------------------------------------------- peers
 // EAGLView.mm ran a GKPeerPickerController and a GKSession; GKSession is gone
 // from ios, so this is MultipeerConnectivity with the invitation accepted
