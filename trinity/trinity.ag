@@ -326,7 +326,7 @@ abstract live_app media_app
                 render*[]
                 share_publish[ 1 ]
                 ide_pump[]
-                if [ debug ] agent_pump[]
+                agent_pump[]
                 Au.auto_free[ false ]
                 usleep[ 4000 ]
                 if [ app_pid > 0 && host_pid_alive[ app_pid ] == 0 ] return false
@@ -338,7 +338,7 @@ abstract live_app media_app
                 alive : bool [ attach_pump[] ]
                 # hosted apps return before the main loop's pump, so the
                 # agent socket would never open for the ones we host
-                if [ debug ] agent_pump[]
+                agent_pump[]
                 Au.auto_free[ false ]
                 usleep[ 4000 ]
                 return alive && !Au.quit_requested[]
@@ -351,7 +351,7 @@ abstract live_app media_app
         pwn : Window [ w ]
         pwn.pad_pump[]
         ifdef [ linux ]
-            if [ debug ] agent_pump[]
+            agent_pump[]
         second : epoch_millis[] / 1000
         if [ next_second != second ]
             next_second = second
@@ -4689,7 +4689,7 @@ element Splitter
     func target_of [ ch: element, span: f32, n: i32 ] -> f32
         if [ ch ]
             v : f32 [ ch.extent ]
-            if [ v > 0.0 ] return v
+            if [ v > 0.0 ] return (v < min_size) ? min_size : v
             if [ v < 0.0 && snap_close ] return 0.0
         if [ deflt > 0.0 ] return deflt
         if [ share > 0.0 ] return span * share

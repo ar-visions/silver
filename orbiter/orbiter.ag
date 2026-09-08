@@ -375,7 +375,7 @@ element EditorView
                 cx : Elements []
                 cx['inst_x_{i}'] = InstClose [ icon: 'close', manual_mode: true ]
                 t['inst_{i}'] = InstChip [ label: lb, selected: av == e.run_view, manual_mode: true,
-                    elements: cx, area: Region [ 'l0.3+ t0 w{cw} h0.9' ] ]
+                    elements: cx, area: Region [ 'l0+ t0 w{cw} h0.9' ] ]
         # the status now lives in the chip; this stays for a compile error
         if [ err_showing[] && band_status[].count > 0 ]
             t['our_app_error'] = AppError [ label: band_status[], manual_mode: true,
@@ -2559,9 +2559,10 @@ element orbiter : trinity # implements compiler
             ap9 : av.src.parent_dir[]
             if [ ap9 ] adir9 = '{ap9}'
         o.sync_breakpoints[ d, adir9 ]
-        d.cont[]
-        # clear the pre-init SIGSTOP group-stop; cont alone won't
-        kill[ pid, SIGCONT ]
+        if [ !av.pause_pending ]
+            d.cont[]
+            # clear the pre-init SIGSTOP group-stop; cont alone won't
+            kill[ pid, SIGCONT ]
         log 'attach_appview: attached {mod} pid={pid}'
         o.attach_mod     = mod
         o.attach_av      = av
@@ -2608,6 +2609,11 @@ element orbiter : trinity # implements compiler
         if [ attach_av ]
             attach_av.attaching = false
             attach_av.note      = ''
+            attach_av.debugger  = attach_pending
+            if [ attach_av.pause_pending ]
+                attach_av.pause_pending = false
+                if [ attach_av.paused ] land_paused[ attach_av ]
+                el attach_pending.cont[]
         attach_pending = null
         attach_av      = null
 
@@ -2823,6 +2829,28 @@ element orbiter : trinity # implements compiler
         if [ !d ] return
         d.stop[]
         clear_stop_lines[]
+
+    func app_pause_toggle [ av: AppView ]
+        if [ av.debugger ] active_target = av.app_mod
+        if [ av.debugger || av.paused || av.ended || av.slot < 0 ]
+            av.pause_toggle*[]
+            return
+        av.paused        = true
+        av.pause_pending = true
+        av.attached      = false
+        attach_appview[ av, host_app_pid[ av.slot ] ]
+
+    func land_paused [ av: AppView ]
+        if [ !av || !av.paused || !av.debugger || av.debugger.running ] return
+        active_target = av.app_mod
+        for [ pi: i32 0, pi < editor_slots.count, pi += 1 ]
+            ed : Editor pane_at[ pi ]
+            if [ ed && ed.run_view == av && ed.app_view ] ed.toggle_app_view[]
+        for [ df: frame ] in av.debugger.read_frames[]
+            sp : string '{df.source}'
+            if [ df.line > 0 && sp.ends_with[ '.ag' ] ]
+                apply_break[ sp, i32[ df.line ], 0 ]
+                return
 
     func active_debugger [] -> dbg
         if [ !debuggers ] return null
@@ -4620,7 +4648,9 @@ element orbiter : trinity # implements compiler
                     edi : Editor pane_at[ evi.pane_index ]
                     if [ edi ]
                         if [ xk ] edi.close_instance[ ix ]
-                        el edi.select_instance[ ix ]
+                        el
+                            edi.select_instance[ ix ]
+                            land_paused[ edi.run_view ]
                     break
             if [ ev.target ] ev.target.ux.restyle = true
             ev.no_default     = true
@@ -4656,7 +4686,7 @@ element orbiter : trinity # implements compiler
                             av3.ended = false
                             av3.note = ''
                         el
-                            av3.pause_toggle*[]
+                            app_pause_toggle[ av3 ]
                         # paused -> back to the source, running -> the app.
                         # toggle_app_view owns the reload, so go through it
                         want : bool [ !av3.paused ]
