@@ -154,6 +154,13 @@ DBG_API Au dbg_poll(dbg debug) {
                 (long long)(thread.GetStopReasonDataCount() > 0
                     ? thread.GetStopReasonDataAtIndex(0) : -1),
                 (int)is_ag, file_path, line);
+            {   // no line info in a release build: the module offset is the next best thing
+                lldb::SBFrame   f0 = thread.GetFrameAtIndex(0);
+                lldb::SBAddress pa = f0.GetPCAddress();
+                const char*     mn = f0.GetModule().GetFileSpec().GetFilename();
+                printf("dbg stop: pc %s+0x%llx in %s\n", mn ? mn : "?",
+                    (unsigned long long)pa.GetFileAddress(), f0.GetFunctionName() ? f0.GetFunctionName() : "?");
+            }
             fflush(stdout);
             if ((is_step || is_sig) && !is_ag) {
                 S(debug)->process.Continue();   // running stays true; poll catches next stop

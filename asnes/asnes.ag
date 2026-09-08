@@ -264,13 +264,21 @@ element asnes : trinity
 	public  lock_aspect    	: bool   [ true ]
 	public  background     	: string [ 'Background' ]
 	public  spc_rom        	: path
-	default rom            	: path
+	# a new rom at runtime: stop the machine thread, drop the machine, and the
+	# frame loads the rom and starts it again the way it does at boot
+	default [ Live ] rom  : resource
+		if [ emu_started ]
+			emu_stop = true
+			while [ emu_running ] usleep[ 1000 ]
+			emu_stop    = false
+			emu_started = false
+		cpu = null
 	public  state          	: path             # --state <file>: boot then load this savestate
 	public  beep           	: bool
 	public  spcfile        	: path
 	public  spctest        	: bool
 	public  putest         	: bool             # display-pipeline test: CPU buffer -> Texture -> screen
-	public  volume         	: f32              # playback volume 0..1 (adjustable; default 0.22)
+	public [ Live, VolumeRange ] volume : f32  # playback volume 0..1 (adjustable; default 0.22)
 	public  bind           	: bool             # --bind: ask for each button, write binds.agi
 	mutable dump_req       	: bool             # '9': write each layer plane to /tmp
 	# the F-key rom view: '' = the game alone. shell instruments are separate

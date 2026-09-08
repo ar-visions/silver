@@ -3873,6 +3873,18 @@ AU_EXPORT Au Au_set_property(Au a, symbol name, Au value) {
     // a struct has no ftable to dispatch through
     if (type->is_struct) Au_member_set(a, m, value);
     else                 member_set(a, m, value);
+    // a change block on the member (silver: statements under its declaration)
+    // runs after the store, once the object is past its init
+    if (!type->is_struct && (header(a)->iflags & 0x01)) {
+        char cn[256];
+        snprintf(cn, sizeof(cn), "_changed_%s", name);
+        Au_t cf = find_member(type, cn, AU_MEMBER_FUNC, 0, true);
+        if (cf && cf->value) {
+            array args = new(array, alloc, 1);
+            push(args, a);
+            method_call(cf, args);
+        }
+    }
     return value;
 }
 

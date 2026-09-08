@@ -114,6 +114,11 @@ static void stash_args(void* handle, int argc, char** argv) {
 #define MAX_SOURCES 128
 
 static const char* g_app_name = "app";
+static int         g_log_slot = -1;   // hosted slot > 0 logs to <app>.<slot>.log
+static void app_log_path(char* out, size_t cap, const char* name, int slot) {
+    if (slot > 0) snprintf(out, cap, "%s/%s.%d.log", temp_dir(), name, slot);
+    else          snprintf(out, cap, "%s/%s.log",    temp_dir(), name);
+}
 
 // ---- process isolation (SILVER_ISOLATE=1) -----------------------------------
 // normally the module is dlopen'd straight into this process: no IPC, no added
@@ -293,12 +298,15 @@ static void spawn_slot_app(int k, const char* bindir) {
     snprintf(bin, sizeof(bin), "%s/%s", bindir, nm);
     // fresh app log for this run; the app APPENDS (host_log_setup honors the slot),
     // so the build output below + the app's runtime both land here for the console.
-    { char lp[256]; snprintf(lp, sizeof(lp), "%s/%s.log", temp_dir(), nm);
+    { char lp[256]; app_log_path(lp, sizeof(lp), nm, k);
       int lfd = open(lp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
       if (lfd >= 0) close(lfd); }
     // always build before a run: the host has no staleness view of a slot
     // app's sources, and silver's own cache no-ops when nothing changed
-    if (rebuild_blocking(nm, clean) != 0) {
+    g_log_slot = k;
+    int built = rebuild_blocking(nm, clean);
+    g_log_slot = -1;
+    if (built != 0) {
         fprintf(stderr, "silver-host: %s build failed — slot %d dead\n", name, k);
         ap->verdict = -1000;
         ap->state = 3;
@@ -677,7 +685,7 @@ static void crash_handler(int sig, siginfo_t* si, void* ucv) {
     // we re-raise. backtrace_symbols_fd is async-signal-safe (no malloc), so it
     // survives even a heap-corruption crash. append: the tee already truncated.
     char lp[256];
-    snprintf(lp, sizeof(lp), "%s/%s.log", temp_dir(), g_app_name);
+    app_log_path(lp, sizeof(lp), g_app_name, g_log_slot);
     int lf = open(lp, O_WRONLY | O_CREAT | O_APPEND, 0644);
     if (lf >= 0) {
         (void)write(lf, hdr, (size_t)hl);
@@ -948,7 +956,7 @@ static pid_t rebuild_spawn(const char* name, int clean) {
     // /tmp/<app>.log) shows the compilation. spawn_slot_app truncated it beforehand,
     // and the app appends (host_log_setup) so build + runtime share the one file.
     char lp[256];
-    snprintf(lp, sizeof(lp), "%s/%s.log", temp_dir(), name);
+    app_log_path(lp, sizeof(lp), name, g_log_slot);
     { int hfd = open(lp, O_WRONLY | O_CREAT | O_APPEND, 0644);
       if (hfd >= 0) {
           char h[300];
@@ -1029,7 +1037,7 @@ static void init_hold(void) {
     init_console_bind(1);
     int tty = open("/dev/tty0", O_WRONLY);
     char lp[256];
-    snprintf(lp, sizeof(lp), "%s/%s.log", temp_dir(), g_app_name);
+    app_log_path(lp, sizeof(lp), g_app_name, g_log_slot);
     int lf = open(lp, O_RDONLY);
     fprintf(stderr, "init: app log %s %s\n", lp, lf >= 0 ? "" : "MISSING");
     if (lf >= 0) {
@@ -1200,6 +1208,8 @@ int main(int argc, char** argv) {
         }
     }
     g_app_name = name;
+    { const char* se = getenv("SILVER_APP_SLOT");
+      g_log_slot = (se && *se) ? atoi(se) : -1; }
     // the log is named for the APP, not the root element — so the tee
     // (host_log_setup) and the crash handler agree on <logdir>/<app>.log
 #ifdef SILVER_SHARE_NAME

@@ -4,16 +4,17 @@
    height="11"
    viewBox="0 0 11 11"
    version="1.1"
-   id="svg8"
+   id="svg6"
    sodipodi:docname="step_out.svg"
-   xml:space="preserve"
    inkscape:version="1.2.2 (b0a8486541, 2022-12-01)"
    xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
    xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
    xmlns="http://www.w3.org/2000/svg"
-   xmlns:svg="http://www.w3.org/2000/svg"><defs
-     id="defs12" /><sodipodi:namedview
-     id="namedview10"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <defs
+     id="defs10" />
+  <sodipodi:namedview
+     id="namedview8"
      pagecolor="#505050"
      bordercolor="#eeeeee"
      borderopacity="1"
@@ -22,17 +23,33 @@
      inkscape:pagecheckerboard="0"
      inkscape:deskcolor="#505050"
      showgrid="true"
-     inkscape:zoom="46.681818"
-     inkscape:cx="4.466407"
-     inkscape:cy="7.9581305"
+     inkscape:zoom="93.363636"
+     inkscape:cx="4.3753652"
+     inkscape:cy="5.5214216"
      inkscape:window-width="2494"
      inkscape:window-height="1371"
      inkscape:window-x="66"
      inkscape:window-y="32"
      inkscape:window-maximized="1"
-     inkscape:current-layer="svg8"><inkscape:grid
+     inkscape:current-layer="svg6">
+    <inkscape:grid
        type="xygrid"
-       id="grid409" /></sodipodi:namedview><path
-     style="color:#000000;fill:#ffffff;stroke-width:1.29502;stroke-linecap:round;-inkscape-stroke:none"
-     d="M 5.4773314,2.9514134 1.296355,6.9047502 A 0.83698764,0.83698764 0 0 0 1.260944,8.0859458 0.83698764,0.83698764 0 0 0 2.4446688,8.1213568 L 5.4798603,5.2505714 8.5555212,8.1415912 a 0.83698764,0.83698764 0 0 0 1.1837252,-0.035411 0.83698764,0.83698764 0 0 0 -0.03794,-1.1837247 z"
-     id="path12249" /></svg>
+       id="grid347" />
+  </sodipodi:namedview>
+  <g
+     id="g351"
+     transform="matrix(0,-1,-1,0,10.721911,11.566809)">
+    <path
+       style="fill:#ffffff"
+       d="M 2.5671322,1.2530471 A 0.83634742,0.83634742 0 0 0 2.5327485,2.4343694 L 5.3988668,5.4674937 2.5106446,8.5423699 a 0.83634742,0.83634742 0 0 0 0.036841,1.1813223 0.83634742,0.83634742 0 0 0 1.1837781,-0.036841 L 7.6976563,5.465038 3.7484543,1.2849749 A 0.83634742,0.83634742 0 0 0 2.5671322,1.2530471 Z"
+       id="path4" />
+    <rect
+       style="fill:#ffffff;stroke-width:2.10879;stroke-linecap:round"
+       id="rect345"
+       width="1.6567314"
+       height="8.8812819"
+       x="8.1745892"
+       y="1.0516789"
+       ry="0.62888318" />
+  </g>
+</svg>

@@ -202,6 +202,8 @@ func host_tex_pull    [ slot: i32, side: i32, which: i32, w2: @i32, h2: @i32, fm
 func host_app_request [ nm: cstr ] -> i32
 func host_app_state   [ slot: i32 ] -> i32
 func host_app_pid     [ slot: i32 ] -> i32
+func host_app_count   [ ] -> i32
+func host_app_name    [ slot: i32, out: @i8, cap: i32 ] -> i32
 func host_app_stop    [ slot: i32 ]
 func host_app_verdict [ slot: i32 ] -> i32
 func host_app_pause   [ slot: i32 ]
@@ -228,7 +230,7 @@ abstract live_app media_app
     public  height      : i32
     public  lock_aspect : bool
     # playback gain 0..1, driven by the shell's slider over the socket
-    public  volume      : f32  [ 1.0 ]
+    public [ Live, VolumeRange ] volume : f32 [ 1.0 ]
     public  live_reload : bool [ true ]
     public  text_mode   : bool [ false ]
     public  screenshot  : path
@@ -454,6 +456,71 @@ abstract live_app media_app
 
         # every instrument as 'name:side:log'. side is -1 when it has no
         # view, which is the normal case — a view is only an option
+        # every Launch/Live member of the app and of this base, in the
+        # host's spec form: name=type=value[=Range[min,max]|=Enum[n:v,..]][=live]
+        func props_of [ target: Au, acc: string ] -> string
+            out : string acc
+            if [ !target ] return out
+            for [ ty : typeid[ target ], ty && ty != typeid[ Au ], ty = ty.context ]
+                for [ i: i32 0, i < ty.members.count, i += 1 ]
+                    mem : Au_t ty.members.origin[i]
+                    if [ !mem || mem.member_type != AU_MEMBER_VAR ] continue
+                    mt : Au_t mem.meta.m
+                    if [ !mt || !Au.inherits[ mt, typeid[ Launch ] ] ] continue
+                    # an empty literal has no chars: nothing empty is ever interpolated here
+                    # the enum's stops first: they also say how to print the value
+                    en : string [ null ]
+                    if [ mem.src && mem.src.members.count > 0 ]
+                        for [ k: i32 0, k < mem.src.members.count, k += 1 ]
+                            ev : Au_t mem.src.members.origin[k]
+                            if [ !ev || ev.member_type != AU_MEMBER_ENUMV ] continue
+                            pv : cast @i32 [ ev.value ]
+                            iv : i32 [ pv[0] ]
+                            evn : string [ ev.ident ]
+                            en = (en) ? '{en},{evn}:{iv}' : '{evn}:{iv}'
+                    v  : target.member_object[ mem ]
+                    ent : string [ mem.ident ]
+                    # the app's own member of a name wins over the base's: the app is walked first
+                    if [ out && out.count > 0 ]
+                        key  : string ';{ent}='
+                        head : string '{ent}='
+                        if [ out.starts_with[ head ] || out.index_of[ key ] >= 0 ] continue
+                    ent = '{ent}='
+                    # a cstr must never be truth-tested: the compiler reads it as an object
+                    if [ mem.src ]
+                        tn : string [ mem.src.ident ]
+                        ent = '{ent}{tn}'
+                    ent = '{ent}='
+                    # a boxed primitive has no text of its own: print it by its type
+                    if [ v && mem.src ]
+                        if [ en || mem.src == typeid[ i32 ] || mem.src == typeid[ i64 ] ||
+                             mem.src == typeid[ u32 ] || mem.src == typeid[ u64 ] || mem.src == typeid[ bool ] ]
+                            iv : i32 [ i32[ v ] ]
+                            if [ mem.src == typeid[ bool ] ] ent = (iv != 0) ? '{ent}true' : '{ent}false'
+                            el ent = '{ent}{iv}'
+                        el [ mem.src == typeid[ f32 ] || mem.src == typeid[ f64 ] ]
+                            fv : f32 [ f32[ v ] ]
+                            ent = '{ent}{fv}'
+                        el [ mem.src == typeid[ string ] || Au.inherits[ mem.src, typeid[ path ] ] ]
+                            ent = '{ent}{v}'
+                    mb : Au_t mem.meta.member_b
+                    if [ mb && Au.inherits[ mb, typeid[ Range ] ] ]
+                        rg : Range [ Au.new_object[ mb, null, null, true, __FILE__, __LINE__, __SEQUENCE__ ] ]
+                        if [ rg ] ent = '{ent}=Range[{rg.min},{rg.max}]'
+                    el [ mb && Au.inherits[ mb, typeid[ KeyBind ] ] ] ent = '{ent}=Key'
+                    el [ en ] ent = '{ent}=Enum[{en}]'
+                    if [ Au.inherits[ mt, typeid[ Live ] ] ] ent = '{ent}=live'
+                    out = (out && out.count > 0) ? '{out};{ent}' : ent
+            return out
+
+        func props_spec [] -> string
+            wn : Window [ w ]
+            ao : element [ cast element [ wn.app_object ] ]
+            out : string [ null ]
+            if [ ao ] out = props_of[ ao, out ]
+            out = props_of[ a, out ]
+            return out
+
         func instr_state [] -> string
             rs : string [ '' ]
             sl : instr_list[]
@@ -606,12 +673,20 @@ abstract live_app media_app
                 nm : string list[i]
                 if [ !nm || nm.count == 0 ] continue
                 nm.hold[]
+                # ONE instrument is on at a time: it logs AND publishes its
+                # view. the others neither read nor paint
+                if [ !instr_has[ instr_logs, nm ] ]
+                    if [ instr_has[ instr_view, nm ] ]
+                        instr_view[ nm ] = 0
+                        if [ instr_pub ] instr_pub[ nm ] = 0
+                        host_tex_clear[ host_slot[], 2 + i ]
+                    nm.drop[]
+                    continue
                 # logging writes the entries to the app log, pane or no pane
-                if [ instr_has[ instr_logs, nm ] ]
-                    ls : instr_read[ nm ]
-                    if [ ls ]
-                        for [ k: i32 0, k < ls.count, k += 1 ]
-                            log '[{nm}] {ls[k]}'
+                ls : instr_read[ nm ]
+                if [ ls ]
+                    for [ k: i32 0, k < ls.count, k += 1 ]
+                        log '[{nm}] {ls[k]}'
                 if [ !instr_cv ] instr_cv = map Canvas [string] []
                 # the shell says the width; the app says the height
                 if [ !instr_w ] instr_w = map i32 [string] []
@@ -930,6 +1005,20 @@ abstract live_app media_app
                     # overrides ours
                     if [ !mem ] reply = (reply.count == 0) ? 'memory' : '{reply} memory'
                     agent_sock_reply[ '{reply}\n' ]
+                    continue
+                el [ cmd == 'props' ]
+                    ps9 : string props_spec[]
+                    agent_sock_reply[ (ps9 && ps9.count > 0) ? '{ps9}\n' : '\n' ]
+                    continue
+                el [ cmd == 'set' && parts.count >= 3 ]
+                    member : Au_t [ (aa) ? find_member[ typeid[ aa ], parts[1].chars,
+                        AU_MEMBER_VAR, 0, true ] : null ]
+                    isvol : bool [ parts[1].compare[ 'volume' ] == 0 ]
+                    if [ member ]
+                        val : Au.convert[ member.src, parts[2] ]
+                        if [ val ] aa.set_property[ parts[1], val ]
+                    if [ isvol ] volume = f32[ parts[2].real_value[] ]
+                    agent_sock_reply[ (member || isvol) ? 'ok\n' : 'unknown\n' ]
                     continue
                 # the shell's slider. an app with its own volume gets it too
                 el [ cmd == 'volume' ]
@@ -4226,6 +4315,23 @@ class StatePersist
 
 # `public [ Launch ] x : T [ default ]` — a launch parameter the host may offer
 class Launch
+
+# a launch parameter the host may also set while the app runs (`set name value`)
+Launch Live
+
+# meta B is the control: `[ Live, VolumeRange ]`. its members are the runtime
+# defaults the app instances when it answers `props`; no arguments in the meta
+class Range
+    public min : f32 [ 0.0 ]
+    public max : f32 [ 1.0 ]
+
+Range VolumeRange
+    min : 0.0
+    max : 1.0
+
+# a key binding on an i32 keycode: the host's editor reads 'press key' and
+# captures the next key for it, one member per button
+class KeyBind
 
 # a path the module handles: a host picks it by the module's exported extensions
 path resource

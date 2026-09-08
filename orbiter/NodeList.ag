@@ -168,7 +168,7 @@ NodeList Callstack
             label_size: 15
             row_spacing: 1.2
             text_color: #cfe
-            col_w: 150
+            col_w: 100
     }
     public frames : vec Au
 
@@ -185,7 +185,9 @@ NodeList Callstack
     func row_col0 [ i: i32 ] -> string
         f : Frame fr[ i ]
         if [ !f ] return ''
-        fn : string [ (f.file) ? f.file.filename[] : '' ]
+        # no line info (a release build, or system code): say so, not -1
+        if [ f.line <= 0 || !f.file ] return '??'
+        fn : f.file.filename[]
         return '{fn}:{f.line}'
 
     func row_col1 [ i: i32 ] -> string
@@ -235,7 +237,7 @@ NodeList Fields
 
 # ONE column, right of the editor, holding every live instrument. the
 # stack at the top selects which one shows; only that one is drawn
-Option InstrumentColumn
+Option InstancePanel
     # the app publishes on its own clock, so this must repaint on ours.
     # without it the pane only redraws when input dirties it, which is
     # why it appeared to update on clicks and hovers
@@ -253,9 +255,41 @@ Option InstrumentColumn
     # the drag: titles only, then come back once the width holds still
     mutable last_w   : f32
     mutable settle   : i64
+    mutable chip_x   : f32
+    mutable chip_y   : f32
+    mutable chip_wd  : f32
+    mutable icons    : map SVGModel [string]
+
+    func icon [ nm: string ] -> SVGModel
+        if [ !icons ] icons = map SVGModel [string] []
+        if [ icons.contains[ nm ] ] return icons[ nm ]
+        m : SVGModel [ path 'images/{nm}.svg' ]
+        icons[ nm ] = m
+        return m
+
+    # the selected instance's group: at a debugger stop continue and the steps.
+    # closing is uncommon: shift shows an [x] on every row instead
+    func action_chips [ av: AppView ] -> vec string
+        b : vec string [] [ 'pip', 'continue', 'step_next', 'step_in', 'step_out' ]
+        return b
+
+    # always the same five: pip, and the four that only work at a debugger stop
+    func action_disabled [ av: AppView ] -> i32
+        m : i32 [ 0 ]
+        if [ av.ended ] m = m | 1
+        if [ !(av.debugger && av.debugger.active && !av.debugger.running) ] m = m | 30
+        return m
+
+    func sel_index [] -> i32
+        li  : vec AppView inst_list[]
+        ed9 : Editor editor[]
+        if [ !li || !ed9 || !ed9.run_view ] return -1
+        for [ i: i32 0, i < li.count, i += 1 ]
+            if [ li[ i ] == ed9.run_view ] return i
+        return -1
 
     func row_h [] -> f32
-        return 22.0
+        return 26.0
 
     # found at draw time, never passed in: taking it as a prop would make
     # the pane's shape depend on what is read back out of the pane
@@ -270,95 +304,316 @@ Option InstrumentColumn
                 return AppView ed9.run_view
         return null
 
-    # the y each instrument's title sits at, so press and draw agree
-    func title_y [ av: AppView, ix: i32 ] -> f32
-        y9 : f32 [ 0.0 ]
-        for [ i: i32 0, i < ix, i += 1 ]
-            nm : string av.instr_names[i]
-            y9 += row_h[]
-            ft : av.instr_front[ nm ]
-            if [ ft ] y9 += f32[ ft.height ]
-            el      y9 += body_h[ av, nm ]
-        return y9
+    func view [] -> EditorView
+        for [ e: element* a, e, e = e.parent ]
+            if [ e inherits EditorView ] return EditorView e
+        return null
 
-    func body_h [ av: AppView, nm: string ] -> f32
-        rw : vec string (rows) ? rows[ nm ] : null
-        if [ !rw || rw.count == 0 ] return 0.0
-        return f32[ rw.count ] * 16.0 + 4.0
+    func editor [] -> Editor
+        orb : cast orbiter [ ux.app_object ]
+        ev9 : EditorView view[]
+        return (orb && ev9) ? orb.pane_at[ ev9.pane_index ] : null
+
+    func inst_list [] -> vec AppView
+        ed9 : Editor editor[]
+        return (ed9) ? ed9.instances[] : null
+
+    func inst_px [] -> f32
+        li : vec AppView inst_list[]
+        return f32[ ((li) ? li.count : 0) + 1 ] * row_h[]
+
+    # the selected instance's group sits at the panel's bottom
+    func foot_px [] -> f32
+        s : i32 [ sel_index[] ]
+        if [ s < 0 ] return 0.0
+        li : vec AppView inst_list[]
+        ac : vec string action_chips[ li[ s ] ]
+        return (ac.count > 0) ? row_h[] + 8.0 : 0.0
+
+
+    # the pane's app while it is in pip: the panel holds the pip then
+    func pip_av [] -> AppView
+        ed9 : Editor editor[]
+        if [ !ed9 || !ed9.run_view || ed9.app_view ] return null
+        av : AppView ed9.run_view
+        return (av.have_frame && av.ah > 0 && av.aw > 0) ? av : null
+
+    func pip_px [] -> f32
+        av : AppView pip_av[]
+        if [ !av ] return 0.0
+        h : f32 [ bounds.w * f32[ av.ah ] / f32[ av.aw ] ]
+        if [ h > 260.0 ] h = 260.0
+        return h
+
+    func head_px [] -> f32
+        return inst_px[] + pip_px[]
+
+    func launch_px [] -> f32
+        lp : element (elements) ? elements['launch_panel'] : null
+        if [ lp && lp inherits LaunchPanel ]
+            l9 : LaunchPanel lp
+            if [ l9.content_h > 0.0 ] return l9.content_h
+        return 1.3 * fc
+
+    # frames only exist at a stop; running, the section is not there at all
+    func stack_px [] -> f32
+        orb : cast orbiter [ ux.app_object ]
+        av  : AppView app[]
+        dv  : dbg (av) ? av.debugger : null
+        if [ !orb || !dv || !dv.active || dv.running ] return 0.0
+        fr : vec Au orb.debug_frames[]
+        if [ !fr || fr.count == 0 ] return 0.0
+        n : i32 [ (fr.count < 8) ? fr.count : 8 ]
+        return row_h[] + f32[ n ] * 20.0 + 4.0
+
+    func render [] -> Elements
+        ev9 : EditorView view[]
+        orb : cast orbiter [ ux.app_object ]
+        if [ !ev9 || !orb ] return null
+        t  : Elements []
+        ip : f32 [ head_px[] ]
+        lh : f32 [ launch_px[] ]
+        # the running instance's own props; else what the module answered last; else its export
+        av9 : AppView app[]
+        sp9 : string (av9 && av9.props && av9.props.count > 0) ? av9.props : orb.module_spec[ ev9.band_mod[] ]
+        if [ !sp9 || sp9.count == 0 ] sp9 = ev9.launch_spec[]
+        t['launch_panel'] = LaunchPanel [ spec: sp9, args: orb.file_args[ ev9.args_src[] ],
+            area: Region [ 'l0 t{ip}px r0 h{lh}px' ] ]
+        cp : f32 [ stack_px[] ]
+        if [ cp > 0.0 ]
+            cy : f32 [ ip + lh + row_h[] ]
+            ch : f32 [ cp - row_h[] ]
+            t['callstack'] = Callstack [ frames: orb.debug_frames[], area: Region [ 'l0 t{cy}px r0 h{ch}px' ] ]
+        # the selected instance's group: square segments edge to edge at the bottom
+        fp : f32 [ foot_px[] ]
+        if [ fp > 0.0 ]
+            li : vec AppView inst_list[]
+            sv9 : AppView li[ sel_index[] ]
+            ac : vec string action_chips[ sv9 ]
+            ed9 : Editor editor[]
+            # pip is the one toggle in the group: lit while the app sits in the pip
+            sm : i32 [ (ed9 && !ed9.app_view) ? 1 : 0 ]
+            t['steps'] = TButtons [ buttons: ac, manual: true, seg_radius: 0.0, sel_mask: sm,
+                disable_mask: action_disabled[ sv9 ],
+                area: Region [ 'l0 b{fp}px r0 h{fp}px' ] ]
+        return t
+
+    func inst_color [ av: AppView ] -> rgba
+        if [ av.ended ]  return rgba [ '#ef5350' ]
+        if [ av.paused ] return rgba [ '#ffb74d' ]
+        return rgba [ '#66bb6a' ]
+
+    func chip_w [ nm: string ] -> f32
+        return 7.0 * f32[ nm.count ] + 16.0
+
+    # chip ix in ONE flow that wraps at the panel width; lands in chip_x/chip_y/chip_wd,
+    # measured from the top of the chip band, so press and draw agree
+    func chip_pos [ names: vec string, ix: i32 ] -> bool
+        x : f32 [ 0.0 ]
+        y : f32 [ 0.0 ]
+        for [ i: i32 0, i < names.count, i += 1 ]
+            w : f32 [ chip_w[ names[ i ] ] ]
+            if [ x > 0.0 && x + w > bounds.w ]
+                x = 0.0
+                y += row_h[]
+            if [ i == ix ]
+                chip_x  = x
+                chip_y  = y
+                chip_wd = w
+                return true
+            x += w
+        return false
+
+    func chips_h [ names: vec string ] -> f32
+        if [ !names || names.count == 0 ] return 0.0
+        if [ !chip_pos[ names, names.count - 1 ] ] return 0.0
+        return chip_y + row_h[]
+
+    # one flow of chips at y: draws them, or with the press point given, returns the hit
+    func chip_row [ cv: Canvas, names: vec string, y: f32, lit: string, px: f32, py: f32 ] -> i32
+        for [ i: i32 0, i < names.count, i += 1 ]
+            nm : string names[ i ]
+            if [ !chip_pos[ names, i ] ] continue
+            cy : f32 [ y + chip_y ]
+            rh : f32 [ row_h[] ]
+            if [ !cv ]
+                if [ px >= chip_x && px < chip_x + chip_wd && py >= cy && py < cy + rh ] return i
+                continue
+            # a pixel grid like the other controls: flat cells, 1px rules, no rounding
+            on9 : bool [ lit && lit.compare[ nm ] == 0 ]
+            cv.stroke_width[ 0.0 ]
+            cv.fill_color[ (on9) ? rgba [ '#6cb6ff' ] : rgba [ '#2a2340' ] ]
+            cv.rect_to[ chip_x, cy, chip_wd, rh ]
+            cv.paint[]
+            cv.fill_color[ rgba [ '#ffffff1a' ] ]
+            cv.rect_to[ chip_x + chip_wd - 1.0, cy, 1.0, rh ]
+            cv.paint[]
+            cv.rect_to[ chip_x, cy + rh - 1.0, chip_wd, 1.0 ]
+            cv.paint[]
+            cv.font_size[ 12 ]
+            cv.fill_color[ (on9) ? rgba [ '#0f1220' ] : rgba [ '#e8e2f5' ] ]
+            cv.draw_text[ nm, rect [ x: chip_x, y: cy, w: chip_wd, h: rh ],
+                vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+        return -1
 
     # a title toggles that one's logging. nothing here turns an
     # instrument off — they are ALL shown, always
     func on_press [ ev: Event ]
+        li : vec AppView inst_list[]
+        if [ ev.mouse.pos.y < inst_px[] ]
+            rh  : f32 [ row_h[] ]
+            ed9 : Editor editor[]
+            orb : cast orbiter [ ux.app_object ]
+            ev9 : EditorView view[]
+            my  : f32 [ ev.mouse.pos.y ]
+            if [ ed9 && orb && ev9 ]
+                if [ my < rh ] ed9.start_instance[ ev.key.shift ]
+                el [ li ]
+                    y8 : f32 [ rh ]
+                    for [ i: i32 0, i < li.count, i += 1 ]
+                        av9 : AppView li[ i ]
+                        if [ my >= y8 && my < y8 + rh ]
+                            if [ ev.mouse.pos.x < 24.0 ]
+                                if [ ev.key.shift ] ed9.close_instance[ i ]
+                                el orb.instance_action[ ed9, av9, (av9.paused || av9.ended) ? 'play' : 'pause' ]
+                            el [ i == sel_index[] ]
+                                # the selected one again: unselect, the pane goes back to its file
+                                ed9.run_view = null
+                                ed9.app_view = false
+                                ed9.load_file[]
+                            el orb.show_instance[ av9.iid, ev9.pane_index ]
+                            break
+                        y8 += rh
+            pristine = false
+            ev.no_default = true
+            if [ ux ] ux.restyle = true
+            return
+        pv : AppView pip_av[]
+        if [ pv && ev.mouse.pos.y < head_px[] ]
+            ed8 : Editor editor[]
+            if [ ed8 ] ed8.toggle_app_view[]
+            pristine = false
+            ev.no_default = true
+            if [ ux ] ux.restyle = true
+            return
         av : app[]
         if [ !av || !av.instr_names ] return
+        top : f32 [ head_px[] + launch_px[] + stack_px[] ]
         for [ i: i32 0, i < av.instr_names.count, i += 1 ]
-            ty : f32 [ title_y[ av, i ] ]
-            if [ ev.mouse.pos.y >= ty && ev.mouse.pos.y < ty + row_h[] ]
-                av.instr_toggle[ av.instr_names[i], true ]
+            if [ !chip_pos[ av.instr_names, i ] ] continue
+            cy : f32 [ top + chip_y ]
+            if [ ev.mouse.pos.x >= chip_x && ev.mouse.pos.x < chip_x + chip_wd &&
+                 ev.mouse.pos.y >= cy && ev.mouse.pos.y < cy + row_h[] ]
+                av.instr_select[ av.instr_names[ i ] ]
                 pristine = false
                 ev.no_default = true
                 return
 
     public func draw [ w: Window ]
-        if [ w.draw_stage != CanvasType.screen ] return
-        av : app[]
-        if [ !bounds || !av || !av.instr_names ] return
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
         cv : Canvas w.screen
-        n  : i32 [ av.instr_names.count ]
         rh : f32 [ row_h[] ]
         cv.stroke_width[ 0.0 ]
+        li  : vec AppView inst_list[]
+        ed9 : Editor editor[]
+        orb : cast orbiter [ ux.app_object ]
+        cv.fill_color[ rgba [ '#1a1726' ] ]
+        cv.rect_to[ 0.0, 0.0, bounds.w, rh - 1.0 ]
+        cv.paint[]
+        cv.fill_color[ rgba [ '#66bb6a' ] ]
+        cv.move_to[ 9.0, 7.0 ]
+        cv.line_to[ 19.0, 13.0 ]
+        cv.line_to[ 9.0, 19.0 ]
+        cv.close_path[]
+        cv.paint[]
+        cv.font_size[ 13 ]
+        cv.fill_color[ rgba [ '#e8e2f5' ] ]
+        cv.draw_text[ 'new instance', rect [ x: 24.0, y: 0.0, w: bounds.w - 32.0, h: rh ],
+            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+        if [ li && orb ]
+            y8 : f32 [ rh ]
+            for [ i: i32 0, i < li.count, i += 1 ]
+                av9 : AppView li[ i ]
+                sel9 : bool [ ed9 && ed9.run_view == av9 ]
+                cv.fill_color[ (sel9) ? rgba [ '#2a2340' ] : rgba [ '#1a1726' ] ]
+                cv.rect_to[ 0.0, y8, bounds.w, rh - 1.0 ]
+                cv.paint[]
+                # the one icon on the row: the state's color, and it IS the pause/resume
+                # toggle. shift held turns it into the [x] that closes the instance
+                sh9 : bool [ orb.shift_down ]
+                ic9 : SVGModel icon[ (sh9) ? 'close' : ((av9.paused || av9.ended) ? 'play' : 'pause') ]
+                if [ ic9 ]
+                    cv.fill_color[ (sh9) ? rgba [ '#ef5350' ] : inst_color[ av9 ] ]
+                    cv.stroke_color[ (sh9) ? rgba [ '#ef5350' ] : inst_color[ av9 ] ]
+                    cv.draw_svg[ ic9, 6.0, y8 + 6.0, 14.0, 14.0 ]
+                # the name at the left; the status right-aligned and padded, running carries the pid
+                nm9 : string orb.instance_name[ av9 ]
+                sw9 : string av9.status_word[]
+                if [ !sw9 || sw9.count == 0 ]
+                    pid9 : i32 [ (av9.slot >= 0 && !av9.ended) ? host_app_pid[ av9.slot ] : 0 ]
+                    sw9 = (av9.ended) ? 'stopped' : ((pid9 > 0) ? 'running ({pid9})' : 'running')
+                cv.font_size[ 13 ]
+                cv.fill_color[ rgba [ '#e8e2f5' ] ]
+                cv.draw_text[ nm9, rect [ x: 24.0, y: y8, w: bounds.w - 100.0, h: rh ],
+                    vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+                cv.fill_color[ inst_color[ av9 ] ]
+                cv.draw_text[ sw9, rect [ x: 24.0, y: y8, w: bounds.w - 34.0, h: rh ],
+                    vec2f [ 1.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+                y8 += rh
+        pv : AppView pip_av[]
+        if [ pv ]
+            ph : f32 [ pip_px[] ]
+            pw : f32 [ ph * f32[ pv.aw ] / f32[ pv.ah ] ]
+            if [ pw > bounds.w ] pw = bounds.w
+            pv.draw_pip_in[ cv, rect [ x: round[ (bounds.w - pw) * 0.5 ], y: inst_px[], w: pw, h: ph ] ]
+        if [ stack_px[] > 0.0 ]
+            ty : f32 [ head_px[] + launch_px[] ]
+            cv.fill_color[ rgba [ '#2a2340' ] ]
+            cv.rect_to[ 0.0, ty, bounds.w, rh - 1.0 ]
+            cv.paint[]
+            cv.font_size[ 13 ]
+            cv.fill_color[ rgba [ '#e8e2f5' ] ]
+            cv.draw_text[ 'callstack', rect [ x: 8.0, y: ty, w: bounds.w - 26.0, h: rh ],
+                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+        av : app[]
+        if [ !av || !av.instr_names ] return
+        n  : i32 [ av.instr_names.count ]
         now : i64 [ epoch_millis[] ]
         if [ bounds.w != last_w ]
             last_w = bounds.w
             settle = now
         sizing : bool [ now - settle < 200 ]
-        # the entries of every instrument, re-asked twice a second
+        # one flow of chips; the lit one is the single instrument on: it logs and shows
+        top : f32 [ head_px[] + launch_px[] + stack_px[] ]
+        act : string av.instr_active[]
+        chip_row[ cv, av.instr_names, top, act, 0.0, 0.0 ]
+        if [ !act ] return
+        y9 : f32 [ top + chips_h[ av.instr_names ] ]
+        # the entries of the one instrument on, re-asked twice a second
         if [ !sizing && (ask_ms == 0 || now - ask_ms > 500) ]
             ask_ms = now
             if [ !rows ] rows = map Au [string] []
-            for [ i: i32 0, i < n, i += 1 ]
-                nk : string av.instr_names[i]
-                rows[ nk ] = av.instr_entries[ nk ]
-        y9 : f32 [ 0.0 ]
-        for [ i: i32 0, i < n, i += 1 ]
-            nm : string av.instr_names[i]
-            if [ y9 > bounds.h ] break
-            # the title: the ONE thing you can click, and it logs
-            cv.fill_color[ rgba [ '#2a2340' ] ]
-            cv.rect_to[ 0.0, y9, bounds.w, rh - 1.0 ]
-            cv.paint[]
-            cv.font_size[ 13 ]
-            cv.fill_color[ rgba [ '#e8e2f5' ] ]
-            cv.draw_text[ nm, rect [ x: 8.0, y: y9, w: bounds.w - 26.0, h: rh ],
+            rows[ act ] = av.instr_entries[ act ]
+        # mid-drag: chips only. asking for a new width here would rebuild
+        # the canvas in the app on every frame
+        if [ sizing ] return
+        # we give the width, the app gives the height: its own size
+        av.instr_width[ act, i32[ bounds.w ] ]
+        ft : av.instr_front[ act ]
+        if [ ft ]
+            th : f32 [ f32[ ft.height ] ]
+            if [ y9 + th > bounds.h - foot_px[] ] th = bounds.h - foot_px[] - y9
+            if [ th > 0.0 ] cv.draw_image[ ft, rect [ x: 0.0, y: y9, w: f32[ ft.width ], h: th ] ]
+            return
+        rw : vec string (rows && rows.contains[ act ]) ? rows[ act ] : null
+        if [ !rw ] return
+        cv.font_size[ 12 ]
+        cv.fill_color[ rgba [ '#cfd6e4' ] ]
+        for [ k: i32 0, k < rw.count, k += 1 ]
+            if [ y9 > bounds.h - foot_px[] - 12.0 ] break
+            cv.draw_text[ '{rw[k]}', rect [ x: 8.0, y: y9, w: bounds.w - 12.0, h: 15.0 ],
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
-            if [ av.instr_is_logging[ nm ] ]
-                cv.fill_color[ rgba [ '#ff6b6b' ] ]
-                cv.rounded_rect[ bounds.w - 15.0, y9 + 8.0, 6.0, 6.0, 3.0, 3.0, 3.0, 3.0 ]
-                cv.paint[]
-            y9 += rh
-            # mid-drag: the title band only. asking for a new width here
-            # would rebuild every canvas in the app on every frame
-            if [ sizing ] continue
-            # we give the width, the app gives the height: its own size
-            av.instr_width[ nm, i32[ bounds.w ] ]
-            ft : av.instr_front[ nm ]
-            if [ ft ]
-                th : f32 [ f32[ ft.height ] ]
-                if [ y9 + th > bounds.h ] th = bounds.h - y9
-                if [ th > 0.0 ]
-                    cv.draw_image[ ft, rect [ x: 0.0, y: y9, w: f32[ ft.width ], h: th ] ]
-                    y9 += th
-                continue
-            rw : vec string (rows) ? rows[ nm ] : null
-            if [ !rw ] continue
-            cv.font_size[ 12 ]
-            cv.fill_color[ rgba [ '#cfd6e4' ] ]
-            for [ k: i32 0, k < rw.count, k += 1 ]
-                if [ y9 > bounds.h - 12.0 ] break
-                cv.draw_text[ '{rw[k]}', rect [ x: 8.0, y: y9, w: bounds.w - 12.0, h: 15.0 ],
-                    vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
-                y9 += 15.0
-            y9 += 4.0
+            y9 += 15.0
 
 NodeList Toolbox
     style : CSS {

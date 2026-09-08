@@ -263,6 +263,16 @@ HOST_API int host_app_pid(int slot) {
     return hs->app[slot].app_pid;
 }
 
+HOST_API int host_app_count(void) { return HOST_APPS; }
+
+HOST_API int host_app_name(int slot, char* out, int cap) {
+    HostShared* hs = host_shared();
+    if (!hs || !out || cap < 2 || slot < 0 || slot >= HOST_APPS) return 0;
+    strncpy(out, (const char*)hs->app[slot].name, cap - 1);
+    out[cap - 1] = 0;
+    return (int)strlen(out);
+}
+
 // stop a hosted app; silver-host reaps it and marks the slot exited.
 // NEVER slot 0: the peer OWNS the shared window — one window, many
 // processes is the whole design. stopping the peer stops its WORLD, in
@@ -466,6 +476,8 @@ HOST_API int  host_tex_pull(int s, int sd, int wh, int* w, int* h, int* f) { ret
 HOST_API int  host_app_request(const char* nm)                   { return -1; }
 HOST_API int  host_app_state(int s)                              { return 0; }
 HOST_API int  host_app_pid(int s)                                { return 0; }
+HOST_API int  host_app_count(void)                               { return 0; }
+HOST_API int  host_app_name(int s, char* o, int c)               { return 0; }
 HOST_API void host_app_stop(int s)                               { }
 HOST_API int  host_app_verdict(int s)                            { return 0; }
 HOST_API void host_app_pause(int s)                              { }
@@ -547,12 +559,14 @@ HOST_API void host_log_setup(const char* name) {
     { char* dot = strrchr(base, '.');
       if (dot && strcmp(dot, ".exe") == 0) *dot = '\0'; }
 
+    const char* slot = getenv("SILVER_APP_SLOT");
+    int sl = (slot && *slot) ? atoi(slot) : 0;
     char path[512];
-    snprintf(path, sizeof(path), "%s/%s.log", dir, base);
+    if (sl > 0) snprintf(path, sizeof(path), "%s/%s.%d.log", dir, base, sl);
+    else        snprintf(path, sizeof(path), "%s/%s.log", dir, base);
     // hosted apps (spawned into a slot) APPEND: the supervisor already truncated the
     // log and wrote the build output into it — the console tails this file, so
     // truncating here would erase the compilation output. the primary app truncates.
-    const char* slot = getenv("SILVER_APP_SLOT");
     int lflags = (slot && *slot) ? (O_WRONLY | O_CREAT | O_APPEND)
                                  : (O_WRONLY | O_CREAT | O_TRUNC);
     g_log_file = open(path, lflags, 0644);
