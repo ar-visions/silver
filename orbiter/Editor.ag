@@ -2152,7 +2152,9 @@ Layer EditorLayer
             cv.restore[ ]
 
         orbp : cast orbiter [ editor.ux.app_object ]
-        if [ editor.run_view && !editor.app_view && !editor.show_hits && !editor.stopped[] && !(orbp && orbp.show_instr_col) ]
+        # the instance panel holds the pip while it is up, which is whenever the module has instances
+        li8 : vec AppView editor.instances[]
+        if [ editor.run_view && !editor.app_view && !editor.show_hits && !editor.stopped[] && !(li8 && li8.count > 0) ]
             editor.run_view.draw_pip[ cv, bounds ]
 
         cv.clear_crop[ ]
@@ -3758,7 +3760,7 @@ Control Editor
         orb8 : cast orbiter [ ux.app_object ]
         ms   : path band_src[]
         if [ run_view ]
-            if [ orb8 && run_view.app_mod ] orb8.stop_debug[ run_view.app_mod ]
+            if [ orb8 && run_view.app_mod ] orb8.stop_debug[ orb8.dbg_key[ run_view ] ]
             run_view.release*[]
             if [ orb8 ] orb8.remove_instance[ run_view ]
         # drop the closed instance; the newest remaining one is selected
