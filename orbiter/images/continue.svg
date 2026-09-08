@@ -4,17 +4,17 @@
    height="11"
    viewBox="0 0 11 11"
    version="1.1"
-   id="svg6"
-   sodipodi:docname="step_in.svg"
+   id="svg390"
+   sodipodi:docname="continue.svg"
    inkscape:version="1.2.2 (b0a8486541, 2022-12-01)"
    xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
    xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
    xmlns="http://www.w3.org/2000/svg"
    xmlns:svg="http://www.w3.org/2000/svg">
   <defs
-     id="defs10" />
+     id="defs394" />
   <sodipodi:namedview
-     id="namedview8"
+     id="namedview392"
      pagecolor="#505050"
      bordercolor="#eeeeee"
      borderopacity="1"
@@ -22,34 +22,29 @@
      inkscape:pageopacity="0"
      inkscape:pagecheckerboard="0"
      inkscape:deskcolor="#505050"
-     showgrid="true"
+     showgrid="false"
      inkscape:zoom="93.363636"
-     inkscape:cx="4.3753652"
-     inkscape:cy="5.5214216"
+     inkscape:cx="4.9323272"
+     inkscape:cy="5.5107108"
      inkscape:window-width="2494"
      inkscape:window-height="1371"
      inkscape:window-x="66"
      inkscape:window-y="32"
      inkscape:window-maximized="1"
-     inkscape:current-layer="svg6">
+     inkscape:current-layer="svg390">
     <inkscape:grid
        type="xygrid"
-       id="grid347" />
+       id="grid513" />
   </sodipodi:namedview>
-  <g
-     id="g351"
-     transform="rotate(90,5.6353392,5.0865721)">
-    <path
-       style="fill:#ffffff"
-       d="M 2.5671322,1.2530471 A 0.83634742,0.83634742 0 0 0 2.5327485,2.4343694 L 5.3988668,5.4674937 2.5106446,8.5423699 a 0.83634742,0.83634742 0 0 0 0.036841,1.1813223 0.83634742,0.83634742 0 0 0 1.1837781,-0.036841 L 7.6976563,5.465038 3.7484543,1.2849749 A 0.83634742,0.83634742 0 0 0 2.5671322,1.2530471 Z"
-       id="path4" />
-    <rect
-       style="fill:#ffffff;stroke-width:2.10879;stroke-linecap:round"
-       id="rect345"
-       width="1.6567314"
-       height="8.8812819"
-       x="8.1745892"
-       y="1.0516789"
-       ry="0.62888318" />
-  </g>
+  <circle
+     style="fill:#ffffff"
+     cx="3.4952254"
+     cy="5.5419703"
+     r="1.4"
+     id="circle386" />
+  <path
+     style="fill:#ffffff"
+     transform="translate(1.6,0)"
+     d="M 2.9671322,1.2530471 A 0.83634742,0.83634742 0 0 0 2.9327485,2.4343694 L 5.7988668,5.4674937 2.9106446,8.5423699 a 0.83634742,0.83634742 0 0 0 0.036841,1.1813223 0.83634742,0.83634742 0 0 0 1.1837781,-0.036841 L 8.0976563,5.465038 4.1484543,1.2849749 A 0.83634742,0.83634742 0 0 0 2.9671322,1.2530471 Z"
+     id="path388" />
 </svg>

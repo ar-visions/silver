@@ -5278,6 +5278,11 @@ static array read_initializer(silver a) { sequencer
     }
 
     else if (n->indent > p->indent && n->line > p->line) {
+        // an indented block of `name: value` pairs is a multi-line initializer.
+        // anything else under a member is its change block, which
+        // parse_statement reads after the declaration
+        token second = element(a, 1);
+        if (!second || !eq(second, ":")) return null;
         // count open brackets from the line preceding the continuation
         int pre_brackets = 0;
         token prev_tok = (a->cursor > 0) ? (token)a->tokens->origin[a->cursor - 1] : null;
@@ -8153,7 +8158,8 @@ enode parse_statement(silver a)
             // (name=type=default[=Enum[n:v,...]]) into the module's export so a
             // host offers it without dlopening the whole module
             if (member_meta && member_meta->autype->ident && rtype->autype->ident &&
-                strcmp(member_meta->autype->ident, "Launch") == 0) {
+                (strcmp(member_meta->autype->ident, "Launch") == 0 ||
+                 strcmp(member_meta->autype->ident, "Live")   == 0)) {
                 silver  og = a->is_external ? a->is_external : a;
                 exports ex = (exports)get(og->exports, (Au)string(a->name->chars));
                 if (!ex) {
@@ -8182,6 +8188,7 @@ enode parse_statement(silver a)
                     }
                     concat(spec, string("]"));
                 }
+                if (strcmp(member_meta->autype->ident, "Live") == 0) concat(spec, string("=live"));
                 push(lvals, (Au)spec);
             }
 
@@ -8240,6 +8247,40 @@ enode parse_statement(silver a)
     }
 
     pop_tokens(a, e != null); // if its a type, we consume the tokens, otherwise we let read_enode handle it
+
+    // a change block under a member: statements that run after every store to
+    // it (never the constructor's fill). `-> expr` is the inline form. it is a
+    // method named _changed_<member> taking only `a`; stores call it, and so
+    // does set_property at runtime
+    if (mem && e == (enode)mem && rec_top && !def_func && !is_ctr &&
+        mem->autype->member_type == AU_MEMBER_VAR && mem->autype->ident) {
+        read_if(a, "->");
+        array blk = read_body(a);
+        if (len(blk)) {
+            string fname = f(string, "_changed_%s", mem->autype->ident);
+            Au_t   fau   = def(top_scope(a), fname->chars, AU_MEMBER_DECL, 0);
+            etype_register((aether)a, (Au)fau, (Au)null, true);
+            // parse_func reads `[ args ]` then the body: hand it an empty arg list
+            token first = (token)blk->origin[0];
+            array synth = array(alloc, len(blk) + 2);
+            cstr brs[2] = { "[", "]" };
+            for (int bi = 0; bi < 2; bi++) {
+                token br = token(brs[bi]);
+                br->line   = first->line;
+                br->indent = first->indent;
+                br->source = first->source;
+                push(synth, (Au)br);
+            }
+            each(blk, token, bt) push(synth, (Au)bt);
+            push_tokens(a, (tokens)synth, 0);
+            efunc cf = parse_func(a, fau, AU_MEMBER_FUNC, AU_TRAIT_IMETHOD, OPType__undefined, null);
+            pop_tokens(a, false);
+            cf->origin_token = entry;
+            if (entry && entry->source)
+                cf->source_file = hold((path)entry->source);
+            cf->autype->access_type = interface_intern;
+        }
+    }
 
     if (!mem && !e && peek(a)) {
         a->left_hand = true;
@@ -14271,6 +14312,20 @@ enode silver_parse_assignment(silver a, enode mem, OPType op_val, bool is_const)
 
     enode result = e_assign(a, mem, (Au)R, op_val);
     mem->autype->is_assigned = true;
+    // a change block on the member runs after the store, outside init/dealloc
+    if (mem->autype->member_type == AU_MEMBER_VAR && mem->autype->context && mem->autype->ident) {
+        string cname = f(string, "_changed_%s", mem->autype->ident);
+        Au_t   cf    = find_member(mem->autype->context, cname->chars, AU_MEMBER_FUNC, 0, true);
+        if (cf) {
+            efunc cur = context_func(a);
+            bool lifecycle = cur && (cur->autype->member_type == AU_MEMBER_CONSTRUCT ||
+                (cur->autype->ident && (strcmp(cur->autype->ident, "init") == 0 ||
+                                        strcmp(cur->autype->ident, "dealloc") == 0)));
+            enode obj = mem->target ? mem->target : (cur ? cur->target : null);
+            if (!lifecycle && obj)
+                e_fn_call(a, (efunc)u(efunc, cf), a(obj), false, true);
+        }
+    }
     return mem;
 }
 

@@ -489,7 +489,15 @@ Layer CommitLayer
                         mim : SVGModel ed.ficons.icon[ nm, 21 ]
                         if [ mim ] ico = mim
                 tx0 : f32 [ x0 + 8.0 ]
-                if [ ico ]
+                av9 : AppView (h.inst > 0 && orb) ? orb.instance_by[ h.inst ] : null
+                ft9 : Texture (av9 && av9.have_frame) ? av9.front[] : null
+                if [ ft9 && ft9.width > 0 && ft9.height > 0 ]
+                    th9 : f32 [ 26.0 ]
+                    tw9 : f32 [ th9 * f32[ ft9.width ] / f32[ ft9.height ] ]
+                    if [ tw9 > 64.0 ] tw9 = 64.0
+                    cv.draw_image[ ft9, rect [ x: x0 + 8.0, y: round[ ry + 2.0 ], w: round[ tw9 ], h: th9 ] ]
+                    tx0 = x0 + 16.0 + round[ tw9 ]
+                el [ ico ]
                     cv.fill_color[ rgba['#ffffff'] ]
                     cv.stroke_color[ rgba['#ffffff'] ]
                     cv.draw_svg[ ico, x0 + 8.0, round[ ry + 4.5 ], 21.0, 21.0 ]
@@ -909,6 +917,10 @@ element CommitView
                     o.open_in_pane[ path '{h.file}/{h.text}.{exp9[ cp9 ]}', pane ]
                     o.exit_finder[]
                     return
+            if [ h.inst > 0 ]
+                o.show_instance[ h.inst, pane ]
+                o.exit_finder[]
+                return
             if [ h.is_dir && h.file ]
                 o.nav_root = h.file
                 scroll.y    = 0.0

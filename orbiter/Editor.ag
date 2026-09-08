@@ -31,6 +31,7 @@ class FindHit
     public is_newfile : bool
     # directory holds <stem>/<stem>.ag: a silver module
     public is_module  : bool
+    public inst       : i32
 
 class VRow
     public src   : i32 [ -1 ]
@@ -404,6 +405,8 @@ ResourceView AppView
     public  attaching  : bool        # lldb attach is running on a worker
     mutable debugger   : dbg
     mutable pause_pending : bool
+    mutable iid        : i32
+    mutable props      : string
     mutable tex0       : Texture     # the app's shared surface pair, imported
     mutable tex1       : Texture
     mutable gen        : i32         # generation of the imported surface
@@ -527,7 +530,7 @@ ResourceView AppView
         # ask what it offers. KEEP asking until it answers — the app opens
         # its agent socket a moment after it is ready, and a one-shot ask
         # that lands in that gap leaves the bar with no instruments button
-        if [ ready && !instr_ask && !stopped && app_mod && app_mod.count > 0 ]
+        if [ ready && !instr_ask && !stopped && !paused && app_mod && app_mod.count > 0 ]
             ak9 : i64 [ epoch_millis[] ]
             if [ instr_ak == 0 || ak9 - instr_ak > 500 ]
                 instr_ak = ak9
@@ -541,6 +544,11 @@ ResourceView AppView
                         if [ agent_sock_ask[ app_mod.chars, 'aspect\n', @vb8[0], 512 ] > 0 ]
                             la8 : string [ @vb8[0] ]
                             locked = la8.trim[] == '1'
+                        # the app enumerates its own Launch/Live members
+                        pb8 : local i8 [ 4096 ]
+                        if [ agent_sock_ask[ app_mod.chars, 'props\n', @pb8[0], 4096 ] > 0 ]
+                            ps8 : string [ @pb8[0] ]
+                            props = ps8.trim[]
                         # the app's own gain seeds the slider, once
                         if [ agent_sock_ask[ app_mod.chars, 'volume\n', @vb8[0], 512 ] > 0 ]
                             lv8 : string [ @vb8[0] ]
@@ -616,10 +624,26 @@ ResourceView AppView
         if [ agent_sock_ask[ app_mod.chars, 'instr-log {nm}\n', @cb[0], 512 ] > 0 ]
             instr_apply[ string [ @cb[0] ] ]
 
+    # one instrument on at a time: nm turns on and every other turns off;
+    # nm already on turns off, leaving none
+    func instr_select [ nm: string ]
+        if [ !instr_names ] return
+        was : bool [ instr_is_logging[ nm ] ]
+        for [ i: i32 0, i < instr_names.count, i += 1 ]
+            on : string instr_names[ i ]
+            if [ on.compare[ nm ] != 0 && instr_is_logging[ on ] ] instr_toggle[ on, false ]
+        if [ !was ] instr_toggle[ nm, true ]
+
+    func instr_active [] -> string
+        if [ !instr_names ] return null
+        for [ i: i32 0, i < instr_names.count, i += 1 ]
+            if [ instr_is_logging[ instr_names[ i ] ] ] return instr_names[ i ]
+        return null
+
     # pull each instrument's own surface. gen 0 means it has none
     func instr_service [ cv: Canvas ]
-        # a stopped app answers nothing: every ask would wait its full timeout
-        if [ stopped ] return
+        # a stopped or frozen app answers nothing: every ask would wait its full timeout
+        if [ stopped || paused ] return
         # nothing toggles any more, so the state has to be asked for
         nw9 : i64 [ epoch_millis[] ]
         if [ app_mod && (instr_ms == 0 || nw9 - instr_ms > 1000) ]
@@ -679,6 +703,8 @@ ResourceView AppView
     # the entries themselves, asked of the running instance
     func instr_entries [ nm: string ] -> vec string
         if [ !app_mod || !nm || nm.count == 0 ] return null
+        # a parked peer answers nothing: the ask would sit its whole timeout, every frame
+        if [ stopped || paused ] return null
         rb : local i8 [ 8192 ]
         if [ agent_sock_ask[ app_mod.chars, 'instr-read {nm}\n', @rb[0], 8192 ] <= 0 ] return null
         rs : string [ @rb[0] ]
@@ -724,19 +750,24 @@ ResourceView AppView
         draw_frame[ cv, bounds ]
 
     func draw_pip [ cv: Canvas, bounds: rect ]
+        if [ ah <= 0 ] return
+        ar : f32 [ f32[ aw ] / f32[ ah ] ]
+        pw : f32 [ bounds.w * 0.30 ]
+        ph : f32 [ pw / ar ]
+        draw_pip_in[ cv, rect [ x: bounds.x + bounds.w - pw - 16.0, y: bounds.y + bounds.h - ph - 16.0, w: pw, h: ph ] ]
+
+    # the pip at a given rect: the instance panel holds it when it is open
+    func draw_pip_in [ cv: Canvas, r: rect ]
         ft : front[]
         if [ !ft || !have_frame ] return
         # the pip owns no fit rect. leaving a stale one from a previous
         # maximised run would let view_press claim presses over nothing
         fitw = 0.0
         fith = 0.0
-        ar : f32 [ f32[ aw ] / f32[ ah ] ]
-        pw : f32 [ bounds.w * 0.30 ]
-        ph : f32 [ pw / ar ]
-        pipx = bounds.x + bounds.w - pw - 16.0
-        pipy = bounds.y + bounds.h - ph - 16.0
-        pipw = pw
-        piph = ph
+        pipx = r.x
+        pipy = r.y
+        pipw = r.w
+        piph = r.h
         cv.draw_image_min[ ft, rect [ x: pipx, y: pipy, w: pipw, h: piph ] ]
 
     func hit_pip [ x: f32, y: f32 ] -> bool
@@ -825,7 +856,11 @@ ResourceView AppView
             ended = true
             note = 'no silver-host supervisor'
             return
-        cmd = 'tail -n +1 -F /tmp/{mod}.log'
+        root9 : path.path_startup[]
+        cmd = 'tail -n +1 -F {root9}/install/tmp/silver-{mod}.{slot}.log'
+
+    func console_id [] -> string
+        return 'ed:{app_mod}'
 
     func on_key [ ev: Event ]
         k9 : i32 [ i32[ ev.key.unicode ] ]
@@ -1845,6 +1880,11 @@ Layer EditorLayer
             cv.font_size[ code_fs ]
             cv.fill_color[ rgba['#6a9955cc'] ]
             for [ li: i32 0, li < editor.line_count[], li += 1 ]
+                # on-screen rows only: the variable match below walks every
+                # local and every member of `a` against the line's text
+                ya : f32 [ round[ y0 + f32[li] * lh - editor.scroll.y ] ]
+                if [ ya + lh <= bounds.y + pt0 ] continue
+                if [ ya > bounds.y + bounds.h ] break
                 if [ editor.row_header[ li ] ] continue
                 if [ editor.row_var[ li ] ] continue   # virtual field rows drawn already
                 bsl : i32 [ editor.row_src[ li ] ]
@@ -1853,9 +1893,6 @@ Layer EditorLayer
                 if [ !bv ] continue
                 summ : editor.var_summary[ bv ]
                 if [ !summ || summ.count == 0 ] continue
-                ya : f32 [ round[ y0 + f32[li] * lh - editor.scroll.y ] ]
-                if [ ya + lh <= bounds.y + pt0 ] continue
-                if [ ya > bounds.y + bounds.h ] break
                 # expandable objects get a [+]/[-] toggle after the summary
                 # open only on the line whose [+] was clicked
                 tog : (editor.var_expandable[ bv ]) ? ((bv.expanded && editor.row_src[ li ] == editor.open_src) ? '  [-]' : '  [+]') : ''
@@ -2092,7 +2129,8 @@ Layer EditorLayer
 
             cv.restore[ ]
 
-        if [ editor.run_view && !editor.app_view && !editor.show_hits && !editor.stopped[] ]
+        orbp : cast orbiter [ editor.ux.app_object ]
+        if [ editor.run_view && !editor.app_view && !editor.show_hits && !editor.stopped[] && !(orbp && orbp.show_instr_col) ]
             editor.run_view.draw_pip[ cv, bounds ]
 
         cv.clear_crop[ ]
@@ -2259,7 +2297,6 @@ Control Editor
     mutable nav_default   : string
     mutable tool_hover    : i32 [ -1 ]
     mutable run_view      : AppView          # the selected instance: shown and debugged
-    mutable run_views     : vec AppView      # every instance this pane started
     mutable app_view      : bool
     mutable session_view  : string
     mutable saved_scroll  : f32
@@ -2320,6 +2357,9 @@ Control Editor
     public  debug_vars    : vec Au
     mutable flat_rows     : vec VRow
     mutable flat_active   : bool
+    mutable flat_vars     : vec Au
+    mutable flat_lines    : i32 [ -1 ]
+    mutable flat_open     : i32 [ -1 ]
     mutable hover_ann     : i32 [ -1 ]
     mutable lh_cache      : f32 [ 0.0 ]
     mutable cw_cache      : f32 [ 0.0 ]
@@ -2471,7 +2511,12 @@ Control Editor
             flat_rows.push[ VRow [ src: -1, var: c, depth: depth ] ]
             splice_var[ c, depth + 1 ]
 
+    # the walk matches every variable against every line: only when something changed
     func rebuild_flat []
+        if [ flat_rows && debug_vars == flat_vars && lines.count == flat_lines && open_src == flat_open ] return
+        flat_vars  = debug_vars
+        flat_lines = lines.count
+        flat_open  = open_src
         flat_rows = vec VRow []
         flat_active = false
         if [ !debug_vars ] return
@@ -3435,6 +3480,7 @@ Control Editor
             nv.module_args = (nv.module_args && nv.module_args.count > 0)
                 ? '{nv.module_args} --view {vw}' : '--view {vw}'
         nv.start[]
+        if [ orb9 ] orb9.add_instance[ nv ]
         run_view  = nv
         app_view  = true
         animated  = true
@@ -3687,18 +3733,20 @@ Control Editor
 
     # stop the app this pane launched
     func close_app []
+        orb8 : cast orbiter [ ux.app_object ]
+        ms   : path band_src[]
         if [ run_view ]
-            orb8 : cast orbiter [ ux.app_object ]
             if [ orb8 && run_view.app_mod ] orb8.stop_debug[ run_view.app_mod ]
             run_view.release*[]
+            if [ orb8 ] orb8.remove_instance[ run_view ]
         # drop the closed instance; the newest remaining one is selected
-        keep : vec AppView []
-        if [ run_views ]
-            for [ v: AppView ] in run_views
-                if [ v != run_view ] keep.push[ v ]
-        run_views = keep
-        run_view = (keep.count > 0) ? keep[ keep.count - 1 ] : null
+        keep : vec AppView (orb8) ? orb8.instances_of[ ms ] : null
+        run_view = (keep && keep.count > 0) ? keep[ keep.count - 1 ] : null
         app_view = run_view != null
+
+    func instances [] -> vec AppView
+        orb : cast orbiter [ ux.app_object ]
+        return (orb) ? orb.instances_of[ band_src[] ] : null
 
     # which view this pane should show: the user's pick, else the default
     func resolve_view [] -> string
@@ -3993,7 +4041,7 @@ Control Editor
         if [ run_view ]
             orb9 : cast orbiter [ ux.app_object ]
             if [ orb9 && run_view.app_mod ]
-                es9 : ConsoleSession (orb9.ed_sessions) ? orb9.ed_sessions[ 'ed:{run_view.app_mod}' ] : null
+                es9 : ConsoleSession (orb9.ed_sessions) ? orb9.ed_sessions[ run_view.console_id[] ] : null
                 if [ es9 ] es9.print_text[ '\r\nstopped\r\n' ]
             close_app[]
             pristine  = false
@@ -4027,8 +4075,7 @@ Control Editor
             fa8 : string orb8.file_args[ src ]
             nv.module_args = (fa8 && fa8.count > 0) ? fa8 : orb8.module_args
         nv.start[]                     # serve socket + build the run command
-        if [ !run_views ] run_views = vec AppView []
-        run_views.push[ nv ]
+        if [ orb8 ] orb8.add_instance[ nv ]
         run_view = nv
         app_view = true
         animated = true
@@ -4037,9 +4084,10 @@ Control Editor
         if [ ux ] ux.restyle = true
 
     func select_instance [ i: i32 ]
-        if [ !run_views || i < 0 || i >= run_views.count ] return
+        li : vec AppView instances[]
+        if [ !li || i < 0 || i >= li.count ] return
         if [ !run_view ] app_view = true
-        run_view  = run_views[ i ]
+        run_view  = li[ i ]
         animated  = true
         pristine  = false
         no_scroll = true
@@ -4051,9 +4099,10 @@ Control Editor
         toggle_app_run[ false ]
 
     func instance_name [ i: i32 ] -> string
-        av : AppView run_views[ i ]
+        li : vec AppView instances[]
+        av : AppView li[ i ]
         m : string (av.app_mod && av.app_mod.count > 0) ? av.app_mod : ((src) ? src.stem[] : 'app')
-        return '{m} {i + 1}'
+        return '{m} {av.iid}'
 
     func attach_app_run [ mod: string ]
         if [ run_view ] return
@@ -4358,6 +4407,7 @@ Control Editor
                         if [ rv.expanded ] collapse_from[ rv ]
                         el                 expand_only[ rv ]
                         # a sibling above may have closed: keep the clicked row where it was
+                        flat_lines = -1
                         rebuild_flat[]
                         nr9 : i32 [ var_row[ rv ] ]
                         if [ nr9 >= 0 ] scroll.y += f32[ nr9 - cln ] * lhp
@@ -4380,6 +4430,7 @@ Control Editor
                                     open_src = src9
                                     expand_only[ bv ]
                                 # rows above may have opened or closed: keep the clicked line where it was
+                                flat_lines = -1
                                 rebuild_flat[]
                                 scroll.y += f32[ vis_row[ src9 ] - cln ] * lhp
                                 if [ scroll.y < 0.0 ] scroll.y = 0.0

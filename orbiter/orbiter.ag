@@ -194,7 +194,24 @@ element EditorView
         m : string band_mod[]
         if [ !m || m.count == 0 ] return null
         if [ !o.launch_specs ] o.launch_specs = map string [string] []
-        if [ o.launch_specs.contains[ m ] ] return o.launch_specs[ m ]
+        if [ !o.launch_specs_mt ] o.launch_specs_mt = map i64 [string] []
+        # a rebuild rewrites the export: the cache is keyed on its mtime
+        if [ !o.startup_path ] o.startup_path = path.path_startup[]
+        agi9 : path '{o.startup_path}/install/export/silver-{m}.agi'
+        mt9  : i64 [ (agi9.exists[]) ? agi9.modified_time[] : 0 ]
+        if [ o.launch_specs.contains[ m ] && o.launch_specs_mt.contains[ m ] && o.launch_specs_mt[ m ] == mt9 ]
+            return o.launch_specs[ m ]
+        o.launch_specs_mt[ m ] = mt9
+        spec : string read_launch[ m ]
+        # every trinity app carries the base's live properties (volume)
+        if [ m.compare[ 'trinity' ] != 0 ]
+            base : string read_launch[ 'trinity' ]
+            if [ base.count > 0 ] spec = (spec.count > 0) ? '{spec};{base}' : base
+        o.launch_specs[ m ] = spec
+        return spec
+
+    func read_launch [ m: string ] -> string
+        o : orb[]
         if [ !o.startup_path ] o.startup_path = path.path_startup[]
         agi : path '{o.startup_path}/install/export/silver-{m}.agi'
         spec : string ''
@@ -217,7 +234,6 @@ element EditorView
                                 spec = (spec.count > 0) ? '{spec};{ent}' : ent
                                 q0 = 0 - 1
                         i += 1
-        o.launch_specs[ m ] = spec
         return spec
 
     # args belong to the DOC a handler opened, not the handler's own source
@@ -300,7 +316,7 @@ element EditorView
                 elements: edels ]
         # NOT keyed 'instruments' — that is the TButton's id, and on_press
         # dispatches on id, so the column would close on every click
-        if [ o.show_instr_col ] t['instr_col'] = InstrumentColumn [ ]
+        if [ o.show_instr_col ] t['instance_panel'] = InstancePanel [ ]
         return t
 
     # the error chip belongs to the file it names: only show it
@@ -327,100 +343,26 @@ element EditorView
         s : r.status_text[]
         return (s) ? s : ''
 
-    # ONE button for the whole instruments column. the stack inside it
-    # picks which instrument, never this bar
-    func instr_buttons [] -> TButtons
-        o : orb[]
-        r : rview[]
-        ibtn : vec string [] [ 'callstack' ]
-        iico : vec string [] [ 'callstack' ]
-        smask : i32 [ 0 ]
-        if [ o.show_instruments ] smask = smask | 1
-        if [ r && r.instr_names && r.instr_names.count > 0 ]
-            if [ o.show_instr_col ] smask = smask | (1 << ibtn.count)
-            ibtn.push[ 'instruments' ]
-            iico.push[ 'chart' ]
-        if [ app_running[] ]
-            if [ app_pip[] ] smask = smask | (1 << ibtn.count)
-            ibtn.push[ 'pip' ]
-            iico.push[ 'pip' ]
-        iw : f32 [ 1.4 * f32[ ibtn.count ] ]
-        return TButtons [ buttons: ibtn, icon_ids: iico,
-            manual: true, sel_mask: smask,
-            rest_glow: rgba [ '#ccf2' ], rest_px: 16.0,
-            area: Region [ 'r0+ t0 w{iw} h0.9' ] ]
-
-    func tool_els [] -> Elements
-        o : orb[]
-        e : Editor text_of[]
-        t : Elements []
-        # play always starts another instance; the running one gets stop, pause, steps
-        t['run'] = RunButton [ icon: 'play', manual_mode: true ]
-        if [ app_running[] ]
-            t['pause'] = RunButton [ icon: (e.run_view.is_paused*[]) ? 'play' : 'pause',
-                selected: e.run_view.is_paused*[], manual_mode: true ]
-            t['steps'] = StepButtons [ buttons: [ 'continue', 'step_next', 'step_in', 'step_out' ],
-                icon_ids: [ 'play', 'step_next', 'step_in', 'step_out' ], manual: true ]
-        # the launch panel owns the run args; this toggles it over the console
-        t['launch_btn'] = RunButton [ icon: 'gear', selected: o.show_launch, manual_mode: true ]
-        # one chip per instance: its name and an [x]; the selected one is shown and debugged
-        if [ e && e.run_views ]
-            for [ i: i32 0, i < e.run_views.count, i += 1 ]
-                av : AppView e.run_views[ i ]
-                nm : string e.instance_name[ i ]
-                sw : string av.status_word[]
-                lb : string (sw.count > 0) ? '{nm}  {sw}' : nm
-                # half again as wide as the name: room for its one status word
-                cw : f32 [ (0.42 * f32[ nm.count ] + 1.6) * 1.5 ]
-                cx : Elements []
-                cx['inst_x_{i}'] = InstClose [ icon: 'close', manual_mode: true ]
-                t['inst_{i}'] = InstChip [ label: lb, selected: av == e.run_view, manual_mode: true,
-                    elements: cx, area: Region [ 'l0+ t0 w{cw} h0.9' ] ]
-        # the status now lives in the chip; this stays for a compile error
-        if [ err_showing[] && band_status[].count > 0 ]
-            t['our_app_error'] = AppError [ label: band_status[], manual_mode: true,
-                info: !err_showing[] ]
-        t['instruments'] = instr_buttons[]
-        # no value: prop on the slider — it is re-applied every rebuild
-        # and would stamp over the drag. mute follows it in the flow
-        if [ app_running[] ]
-            t['volume'] = VolumeSlider [ area: Region { r0+ t0.15 w4 h0.6 } ]
-            t['mute']   = SoundButton [ icon: (o.app_muted) ? 'mute' : 'volume', icon_scale: 2.4,
-                area: Region { r0+ t0 w1.4 h0.9 }, manual_mode: true ]
-        return t
-
+    # the console alone: its filter box is the one control. pip, pause,
+    # the steps and volume all live in the instance panel
     func band_els [] -> Elements
         o : orb[]
         e : Editor text_of[]
         t : Elements []
-        t['tools'] = ToolsHeader [ spacing_x: 0.2, spacing_y: 0.2, topmost: true,
-            elements: tool_els[] ]
         cf : Elements []
         cf['console_filter'] = element [ area: Region { r8px t4px w6 h32px },
             label: band_mod[], focusable: true, no_scroll: true ]
         inner : Elements [ ]
-        inner['console'] = RunConsole [ session_id: 'ed:{band_mod[]}',
+        inner['console'] = RunConsole [ session_id: (e && e.run_view) ? e.run_view.console_id[] : 'ed:all',
             sessions: o.ed_sessions, feed: null,
             run_line: (e && e.run_view) ? e.run_view.cmd : null,
             animated: true, elements: cf ]
-        # the callstack is orbiter's own, and the ONLY thing that joins the
-        # console here. instruments live in their column
-        if [ o.show_instruments ] inner['callstack'] = Callstack [ frames: o.debug_frames[] ]
-        # a single-line launch bar sits under the tools; the console starts below it
-        hh : f32 [ launch_h[] ]
-        ct : f32 [ 1.3 + hh ]
-        t['split'] = Splitter [ area: Region [ 'l0 t{ct} r0 b0' ], inner: inner, deflt: 0.0, share: 0.375 ]
-        if [ hh > 0.0 ]
-            t['launch_panel'] = LaunchPanel [ spec: launch_spec[], args: o.file_args[ args_src[] ],
-                topmost: true, area: Region [ 'l0 t1.3 r0 h{hh}' ] ]
+        # the console stands alone; the callstack is an instrument in the panel
+        t['split'] = Splitter [ area: Region { l0 t0 r0 b0 }, inner: inner, deflt: 0.0, share: 0.375 ]
         return t
 
-    # launch bar height in units, 0 when hidden: one row, 20% taller than a chip
-    func launch_h [] -> f32
-        o : orb[]
-        return (o.show_launch) ? 1.32 : 0.0
-
     func pane_els [] -> Elements
+        o : orb[]
         t : Elements [ ]
         # the editor and the instruments column are the two sides of ONE
         # split. it is mounted ALWAYS, even with the column hidden — a
@@ -428,10 +370,10 @@ element EditorView
         # editor loses run_view and unmounts the whole band
         # 100px floor, and 0 snaps it off the way any other pane does
         t['text'] = Splitter [ area: Region { l0 t0 r0 b0 },
-            inner: text_els[], deflt: 150.0, min_size: 100.0, snap_close: true ]
+            inner: text_els[], deflt: 280.0, min_size: 100.0, snap_close: true ]
         # the run band + console, INSIDE this tab. pip keeps the band: the
         # app shrinks into the editor and its instruments stay open
-        if [ run_ok[] ] t['band'] = RunBand [ elements: band_els[] ]
+        if [ run_ok[] && o.show_console ] t['band'] = RunBand [ elements: band_els[] ]
         return t
 
     # reconciliation runs on the frame hook, never in render
@@ -460,8 +402,9 @@ element EditorView
         spl : element (elements) ? elements['split'] : null
         if [ cbv && spl && spl.elements && spl.bounds ]
             tx9 : element spl.elements['text']
-            if [ tx9 && tx9.bounds && cbv.bounds ]
-                same : bool [ cbv.bounds.x == spl.bounds.x + tx9.bounds.x && cbv.bounds.y == spl.bounds.y + tx9.bounds.y && cbv.bounds.w == tx9.bounds.w && cbv.bounds.h == tx9.bounds.h ]
+            ed9 : element (tx9 && tx9.elements) ? tx9.elements['text'] : null
+            if [ ed9 && ed9.bounds && tx9.bounds && cbv.bounds ]
+                same : bool [ cbv.bounds.x == spl.bounds.x + tx9.bounds.x + ed9.bounds.x && cbv.bounds.y == spl.bounds.y + tx9.bounds.y + ed9.bounds.y && cbv.bounds.w == ed9.bounds.w && cbv.bounds.h == ed9.bounds.h ]
                 if [ !same ]
                     if [ ux ] ux.restyle = true
 
@@ -489,18 +432,21 @@ element EditorView
         # the band floor grows by the open launch panel: it is a toolbar, never clipped
         t['split'] = Splitter [ area: Region { l0 t1.3 r0 b0 }, vertical: true,
             inner: pane_els[], deflt: 180.0,
-            min_size: 44.0 + launch_h[] * fc ]
+            min_size: 44.0 ]
         if [ browse_active[] ]
             # the surface is a peer of the editor pane: it takes the
             # split's live text region, never the whole view
             spl9 : element (elements) ? elements['split'] : null
             tx8  : element (spl9 && spl9.elements) ? spl9.elements['text'] : null
-            if [ tx8 && tx8.bounds && spl9.bounds && tx8.bounds.h > 0.0 ]
-                # bounds are parent-relative: compose split + pane
-                cx8 : f32 [ spl9.bounds.x + tx8.bounds.x ]
-                cy8 : f32 [ spl9.bounds.y + tx8.bounds.y ]
-                cw8 : f32 [ tx8.bounds.w ]
-                ch8 : f32 [ tx8.bounds.h ]
+            # tx8 is the editor|panel split: the surface takes the EDITOR's slot
+            # inside it, never the instance panel beside it
+            ed8  : element (tx8 && tx8.elements) ? tx8.elements['text'] : null
+            if [ ed8 && ed8.bounds && tx8 && tx8.bounds && spl9.bounds && ed8.bounds.h > 0.0 ]
+                # bounds are parent-relative: compose split + inner split + editor
+                cx8 : f32 [ spl9.bounds.x + tx8.bounds.x + ed8.bounds.x ]
+                cy8 : f32 [ spl9.bounds.y + tx8.bounds.y + ed8.bounds.y ]
+                cw8 : f32 [ ed8.bounds.w ]
+                ch8 : f32 [ ed8.bounds.h ]
                 t['commit'] = CommitView [ focusable: true, scroll_fade: 24.0,
                     area: Region [ 'l{cx8}px t{cy8}px w{cw8}px h{ch8}px' ] ]
             el
@@ -739,8 +685,84 @@ NavButton InstChip
 # a launch path: name and value on a button; a press brings the nav list to pick the file
 NavButton LaunchPath
     public is_resource : bool   # picked from the module's own extensions across the search path
+    public path_value  : string # the full path; the label shows only its name
     tlabel : Layer [ label_color: rgba [ '#fff6' ], label_size: 14,
         label_align: vec2f [ x: 0.0, y: 0.5 ], label_offset: vec2f [ x: 8.0, y: 0.0 ] ]
+    # inside the grid: no border, no rounding, a flat fill that lifts on hover
+    body : Layer [ fill_color: rgba [ '#ffffff10' ], radius: Radius [ '0' ], stroke_width: 0.0 ]
+    style : CSS {
+        layers.body:
+            fill_color: #ffffff10
+            radius: 0
+            stroke_width: 0
+        :hovered
+            layers.body:
+                fill_color: #ffffff22
+    }
+
+# a GLFW keycode as the user would name it
+func key_name [ code: i32 ] -> string
+    if [ code <= 0 ] return 'none'
+    if [ code >= 65 && code <= 90 ]
+        letters : 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+        return letters.mid[ code - 65, 1 ]
+    if [ code >= 48 && code <= 57 ]
+        digits : '0123456789'
+        return digits.mid[ code - 48, 1 ]
+    if [ code >= 290 && code <= 301 ] return 'f{code - 289}'
+    if [ code == 32 ]  return 'space'
+    if [ code == 256 ] return 'esc'
+    if [ code == 257 ] return 'enter'
+    if [ code == 258 ] return 'tab'
+    if [ code == 259 ] return 'backspace'
+    if [ code == 261 ] return 'delete'
+    if [ code == 262 ] return 'right'
+    if [ code == 263 ] return 'left'
+    if [ code == 264 ] return 'down'
+    if [ code == 265 ] return 'up'
+    if [ code == 340 ] return 'left shift'
+    if [ code == 341 ] return 'left ctrl'
+    if [ code == 342 ] return 'left alt'
+    if [ code == 344 ] return 'right shift'
+    if [ code == 345 ] return 'right ctrl'
+    if [ code == 346 ] return 'right alt'
+    return 'key {code}'
+
+# a key binding: the label names the key; a press arms it and reads
+# 'press key' until the next key lands, which becomes the value
+NavButton KeyField
+    public  code    : i32
+    mutable armed   : bool
+    mutable changed : bool
+    focusable : true
+    tlabel : Layer [ label_color: rgba [ '#fff6' ], label_size: 14,
+        label_align: vec2f [ x: 0.0, y: 0.5 ], label_offset: vec2f [ x: 8.0, y: 0.0 ] ]
+    body : Layer [ fill_color: rgba [ '#ffffff10' ], radius: Radius [ '0' ], stroke_width: 0.0 ]
+    style : CSS {
+        layers.body:
+            fill_color: #ffffff10
+            radius: 0
+            stroke_width: 0
+        :hovered
+            layers.body:
+                fill_color: #ffffff22
+        :focused
+            layers.body:
+                fill_color: #2f6b4a40
+    }
+    func on_press [ ev: Event ]
+        armed = true
+        if [ ux ] ux.set_focus[ a ]
+        pristine = false
+        ev.no_default     = true
+        ev.no_propagation = true
+    func on_key [ ev: Event ]
+        if [ !armed || !ev.key.state ] return
+        code    = i32[ ev.key.unicode ]
+        armed   = false
+        changed = true
+        pristine = false
+        ev.no_default = true
 
 # centered in the title: icon at the left, 'close <mode>' beside it
 NavButton CloseChip
@@ -1154,8 +1176,8 @@ Button PillButton
 
 # launch panel: the app's `[ Launch ]` members as controls, over the console
 Check LaunchCheck
-    body : Layer [ fill_color: rgba [ '#ffffff0c' ], radius: Radius [ '6' ],
-        stroke_width: 0.5, stroke_color: rgba [ '#ffffff33' ] ]
+    body : Layer [ fill_color: rgba [ '#ffffff0c' ], radius: Radius [ '0' ],
+        stroke_width: 0.0, stroke_color: rgba [ '#ffffff33' ] ]
     face : Layer [ label_color: rgba [ '#e8e8ec' ], label_size: 13,
         label_align: vec2f [ x: 0.5, y: 0.5 ] ]
     style : CSS {
@@ -1177,8 +1199,18 @@ func launch_name_w [ name: string ] -> f32
 ArgsField LaunchField
     name : Layer [ label_color: rgba [ '#c9c4dd' ], label_size: 13,
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
-    face : Layer [ label_color: rgba [ '#fff6' ], label_size: 15, editable: true,
+    face : Layer [ label_color: rgba [ '#fff6' ], label_size: 14, editable: true,
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
+    # inside the grid: the rules are the borders
+    style : CSS {
+        layers.body:
+            fill_color: #0000
+            radius: 0
+            stroke_width: 0
+        :focused
+            layers.body:
+                fill_color: #2f6b4a40
+    }
     func init []
         nw : f32 [ launch_name_w[ label ] ]
         vx : f32 [ 0.4 + nw ]
@@ -1200,6 +1232,9 @@ element LaunchPanel
     body : Layer [ fill_color: rgba [ '#0f1220ee' ], stroke_width: 0.5, stroke_color: rgba [ '#fff2' ] ]
     public spec : string        # 'name=type=default;...'
     public args : string        # the file's current run args
+    mutable content_h : f32
+    mutable rows_h    : f32
+    mutable col_x     : f32
 
     # --name's value in args, else the default
     func arg_value [ name: string, deflt: string ] -> string
@@ -1223,16 +1258,28 @@ element LaunchPanel
                 return p
         return ''
 
-    # one row, flowing left to right; every control carries its own name
+    func field_desc [ f: vec string ] -> string
+        for [ i: i32 3, i < f.count, i += 1 ]
+            if [ f[ i ].compare[ 'live' ] != 0 ] return f[ i ]
+        return ''
+
+    func field_live [ f: vec string ] -> bool
+        for [ i: i32 3, i < f.count, i += 1 ]
+            if [ f[ i ].compare[ 'live' ] == 0 ] return true
+        return false
+
+    # a field view: one property per row, the name at the left, the value filling the rest
     func render [] -> Elements
         t : Elements []
         if [ !spec || spec.count == 0 ]
             t['lp_none'] = LaunchLabel [ label: 'no launch parameters', area: Region [ 'l0.3 t0.2 w8 h0.9' ] ]
+            content_h = 1.3 * fc
             return t
-        # a page: controls flow left to right and wrap into rows
-        pw : f32 [ (bounds && bounds.w > 0.0 && fc > 0.0) ? bounds.w / fc : 60.0 ]
-        x  : f32 [ 0.3 ]
-        y  : f32 [ 0.2 ]
+        # a grid like the callstack's: 20px rows, a name column, 1px rules between
+        pw : f32 [ (bounds && bounds.w > 0.0) ? bounds.w : 280.0 ]
+        lw : f32 [ round[ pw * 0.38 ] ]
+        rh : f32 [ 24.0 ]
+        y  : f32 [ 0.0 ]
         ents : spec.split[ ';' ]
         for [ ent: string ] in ents
             f : ent.split[ '=' ]
@@ -1241,52 +1288,120 @@ element LaunchPanel
             ty : string f[ 1 ]
             df : string (f.count > 2) ? f[ 2 ] : ''
             cur : string (f[ 1 ] == 'resource') ? arg_positional[] : arg_value[ nm, df ]
-            desc : string (f.count > 3) ? f[ 3 ] : ''
-            sl : bool [ desc.starts_with[ 'Slider' ] ]
+            desc : string field_desc[ f ]
+            sl : bool [ desc.starts_with[ 'Slider' ] || desc.starts_with[ 'Range' ] ]
             en : bool [ desc.starts_with[ 'Enum' ] ]
-            nw : f32 [ launch_name_w[ nm ] ]     # text width + 2 spaces, no extra
             isp : bool [ ty == 'path' || ty == 'resource' ]
-            # a path shows just its filename, capped; the full path is in edit
-            disp : string cur
-            if [ isp && cur.count > 0 ]
-                cp9 : path cur
-                disp = cp9.filename[]
-            dn9  : i32 [ (disp.count < 22) ? i32[ disp.count ] : 22 ]
-            pvw : f32 [ 3.5 ]     # fixed field width; the value clips, never resizes the box
-            w  : f32 [ (ty == 'bool') ? nw + 0.2 : ((sl || en) ? nw + 6.5 : nw + pvw) ]
+            cx : f32 [ lw + 1.0 ]
+            t['lp_{nm}_lbl'] = LaunchLabel [ label: nm, area: Region [ 'l6px t{y}px w{lw - 6.0}px h{rh}px' ] ]
+            # the panel rebuilds every frame. a control's value is given ONCE, when
+            # it first mounts; after that the mounted control owns it — a pick, a
+            # keystroke or a drag must never be stamped over by the stored args
+            ex9 : element (elements) ? elements['lp_{nm}'] : null
+            ar9 : Region [ 'l{cx}px t{y}px r0 h{rh}px' ]
             if [ ty == 'bool' ]
-                t['lp_{nm}'] = LaunchCheck [ label: nm, selected: cur == 'true',
-                    area: Region [ 'l{x} t{y} w{w} h0.9' ] ]
+                ck9 : Region [ 'l{cx}px t{y}px w{rh}px h{rh}px' ]
+                if [ ex9 ]
+                    t['lp_{nm}'] = LaunchCheck [ label: '', area: ck9 ]
+                el
+                    t['lp_{nm}'] = LaunchCheck [ label: '', selected: cur == 'true', area: ck9 ]
             el [ isp ]
                 # a path is picked from the nav list: a button, not an editable field
-                t['lp_{nm}'] = LaunchPath [ label: '{nm}  {disp}', edit: cur, manual_mode: true,
-                    is_resource: ty == 'resource', area: Region [ 'l{x} t{y} w{w} h0.9' ] ]
+                pv9 : string cur
+                if [ ex9 && ex9 inherits LaunchPath ]
+                    lpx : LaunchPath ex9
+                    if [ lpx.path_value && lpx.path_value.count > 0 ] pv9 = lpx.path_value
+                dsp : string pv9
+                if [ pv9.count > 0 ]
+                    pp9 : path pv9
+                    dsp = pp9.filename[]
+                t['lp_{nm}'] = LaunchPath [ label: dsp, edit: pv9, path_value: pv9, manual_mode: true,
+                    is_resource: ty == 'resource', area: ar9 ]
+            el [ desc.starts_with[ 'Key' ] ]
+                kc9 : i32 [ i32[ cur.integer_value[] ] ]
+                arm : bool [ false ]
+                if [ ex9 && ex9 inherits KeyField ]
+                    kfx : KeyField ex9
+                    kc9 = kfx.code
+                    arm = kfx.armed
+                t['lp_{nm}'] = KeyField [ label: (arm) ? 'press key' : key_name[ kc9 ], code: kc9,
+                    manual_mode: true, area: ar9 ]
             el [ en ]
-                # an enum: a segmented button group, one segment per value, the
-                # field name as a small label to its left
                 names : enum_names[ desc ]
-                idx9  : i32 [ enum_index[ desc, cur, df ] ]
-                # width per segment scales with its longest label so text never merges
-                mxl9 : i32 [ 0 ]
-                for [ en9: string ] in names
-                    if [ i32[ en9.count ] > mxl9 ] mxl9 = i32[ en9.count ]
-                gw9   : f32 [ (0.22 * f32[ mxl9 ] + 0.8) * f32[ names.count ] ]
-                w = nw + gw9
-                # same height as the rom/path box so the fonts match
-                t['lp_{nm}_lbl'] = LaunchLabel [ label: nm, area: Region [ 'l{x} t{y} w{nw} h0.9' ] ]
-                t['lp_{nm}'] = TButtons [ buttons: names, icons: false, manual: false,
-                    selected: idx9, area: Region [ 'l{x + nw} t{y} w{gw9} h0.9' ] ]
+                if [ ex9 ]
+                    t['lp_{nm}'] = TButtons [ buttons: names, icons: false, manual: false, seg_radius: 0.0, area: ar9 ]
+                el
+                    idx9 : i32 [ enum_index[ desc, cur, df ] ]
+                    t['lp_{nm}'] = TButtons [ buttons: names, icons: false, manual: false, seg_radius: 0.0,
+                        selected: idx9, area: ar9 ]
             el [ sl ]
-                rg : vec2f [ slider_range[ desc ] ]
-                cv : f32 [ cur.real_value[] ]
-                fr : f32 [ (rg.y > rg.x) ? (cv - rg.x) / (rg.y - rg.x) : 0.0 ]
-                t['lp_{nm}'] = LaunchSlider [ label: nm, value: fr, pad_l: nw * fc,
-                    area: Region [ 'l{x} t{y} w{w} h0.9' ] ]
+                if [ ex9 ]
+                    t['lp_{nm}'] = LaunchSlider [ label: '', area: ar9 ]
+                el
+                    rg : vec2f [ slider_range[ desc ] ]
+                    cv : f32 [ cur.real_value[] ]
+                    fr : f32 [ (rg.y > rg.x) ? (cv - rg.x) / (rg.y - rg.x) : 0.0 ]
+                    t['lp_{nm}'] = LaunchSlider [ label: '', value: fr, area: ar9 ]
             el
-                t['lp_{nm}'] = LaunchField [ label: nm, edit: cur, sel_col: cur.count, anchor_col: cur.count,
-                    focusable: true, area: Region [ 'l{x} t{y} w{w} h0.9' ] ]
-            x += w + 0.3
+                if [ ex9 ]
+                    t['lp_{nm}'] = LaunchField [ label: '', focusable: true, area: ar9 ]
+                el
+                    t['lp_{nm}'] = LaunchField [ label: '', edit: cur, sel_col: cur.count, anchor_col: cur.count,
+                        focusable: true, area: ar9 ]
+            y += rh
+        content_h = y
+        rows_h    = y
+        col_x     = lw
         return t
+
+    # the 1px rules: one under every row, one between the name and value columns
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds || rows_h <= 0.0 ] return
+        cv : Canvas w.screen
+        cv.stroke_width[ 0.0 ]
+        cv.fill_color[ rgba [ '#ffffff1a' ] ]
+        for [ y9: f32 24.0, y9 <= rows_h, y9 += 24.0 ]
+            cv.rect_to[ 0.0, y9 - 1.0, bounds.w, 1.0 ]
+            cv.paint[]
+        cv.rect_to[ col_x, 0.0, 1.0, rows_h ]
+        cv.paint[]
+
+    # the control's current value as the app takes it; null when the control is not up
+    func value_of [ f: vec string ] -> string
+        if [ !elements || f.count < 2 ] return null
+        key : string 'lp_{f[ 0 ]}'
+        if [ !elements.contains[ key ] ] return null
+        c : element elements[ key ]
+        desc : string field_desc[ f ]
+        if [ f[ 1 ] == 'bool' ] return (c.selected) ? 'true' : 'false'
+        if [ desc.starts_with[ 'Enum' ] ]
+            if [ !(c inherits TButtons) ] return null
+            tb : TButtons c
+            enames : enum_names[ desc ]
+            if [ tb.selected < 0 || tb.selected >= enames.count ] return null
+            return enames[ tb.selected ]
+        if [ desc.starts_with[ 'Slider' ] || desc.starts_with[ 'Range' ] ]
+            if [ !(c inherits VolumeSlider) ] return null
+            vs : VolumeSlider c
+            rg : vec2f [ slider_range[ desc ] ]
+            val : f32 [ rg.x + vs.value * (rg.y - rg.x) ]
+            return (f[ 1 ] == 'f32' || f[ 1 ] == 'f64') ? '{val.2f}' : '{val.0f}'
+        if [ c inherits LaunchPath ]
+            lp : LaunchPath c
+            if [ lp.path_value && lp.path_value.count > 0 ] return lp.path_value
+        if [ c inherits KeyField ]
+            kf : KeyField c
+            return '{kf.code}'
+        return c.edit
+
+    # every live field's value goes to the running instance
+    func push_live [ mod: string ]
+        if [ !spec || !mod || mod.count == 0 ] return
+        for [ ent: string ] in spec.split[ ';' ]
+            f : ent.split[ '=' ]
+            if [ f.count < 2 || !field_live[ f ] ] continue
+            v : string value_of[ f ]
+            if [ v ] agent_sock_send[ mod.chars, 'set {f[ 0 ]} {v}\n' ]
 
     # 'Enum[none:0,low:2,high:3]' -> the names, and the ints, and the current stop
     func enum_pairs [ desc: string ] -> vec string
@@ -1331,6 +1446,8 @@ element LaunchPanel
         if [ ab.count < 2 ] return vec2f [ 0.0, 1.0 ]
         lo : f32 [ ab[ 0 ].real_value[] ]
         hi : f32 [ ab[ 1 ].real_value[] ]
+        # an empty range maps every position to lo: treat it as unit
+        if [ hi <= lo ] return vec2f [ 0.0, 1.0 ]
         return vec2f [ lo, hi ]
 
     # the args line the controls describe: only values off their defaults
@@ -1344,34 +1461,21 @@ element LaunchPanel
             if [ f.count < 2 ] continue
             nm : string f[ 0 ]
             df : string (f.count > 2) ? f[ 2 ] : ''
-            key : string 'lp_{nm}'
-            if [ !elements.contains[ key ] ] continue
-            c : element elements[ key ]
-            desc : string (f.count > 3) ? f[ 3 ] : ''
-            v : string
-            if [ f[ 1 ] == 'bool' ] v = (c.selected) ? 'true' : 'false'
-            el [ desc.starts_with[ 'Enum' ] ]
-                if [ !(c inherits TButtons) ] continue
-                tb : TButtons c
-                idx : i32 [ tb.selected ]
-                vals  : enum_vals[ desc ]
-                enames : enum_names[ desc ]
-                if [ idx < 0 || idx >= vals.count ] continue
+            desc : string field_desc[ f ]
+            v : string value_of[ f ]
+            if [ !v ] continue
+            if [ desc.starts_with[ 'Enum' ] ]
+                vals : enum_vals[ desc ]
+                ix   : i32 [ enum_index[ desc, v, df ] ]
                 # the module converts an enum arg by its value NAME, not its int
-                if [ '{vals[ idx ]}' == df ] continue
-                v = enames[ idx ]
-            el [ desc.starts_with[ 'Slider' ] ]
-                sv : f32 [ 0.0 ]
-                if [ c inherits VolumeSlider ]
-                    vs : VolumeSlider c
-                    sv = vs.value
-                rg : vec2f [ slider_range[ desc ] ]
-                val : f32 [ rg.x + sv * (rg.y - rg.x) ]
+                if [ ix >= 0 && ix < vals.count && '{vals[ ix ]}' == df ] continue
+            el [ desc.starts_with[ 'Slider' ] || desc.starts_with[ 'Range' ] ]
+                val : f32 [ v.real_value[] ]
                 dv  : f32 [ df.real_value[] ]
                 if [ val - dv < 0.001 && dv - val < 0.001 ] continue
-                v = (f[ 1 ] == 'f32' || f[ 1 ] == 'f64') ? '{val.2f}' : '{val.0f}'
-            el v = c.edit
-            if [ !v || v == df ] continue
+            # a path is never "the default": a running instance reports its own
+            # path as the default, and dropping it here emptied the box
+            el [ !(f[ 1 ] == 'path' || f[ 1 ] == 'resource') && v == df ] continue
             # a resource is the app's positional argument (bare path); every
             # other field is a --name flag. flags first, positional last
             if [ f[ 1 ] == 'resource' ]
@@ -1395,6 +1499,27 @@ Console RunConsole
             label_height: 1.0
             label_size: 16
     }
+    # lines carry their instance id as '<iid>: '; the pane's selected instance
+    # reads blue, the module's other instances fade, untagged lines stay plain
+    func line_mark [ ln: string ] -> i32
+        if [ !ln ] return 0
+        n : i32 [ 0 ]
+        i : i32 [ 0 ]
+        while [ i < ln.count ]
+            c : i32 [ (i32 ln.chars[ i ]) & 255 ]
+            if [ c < 48 || c > 57 ] break
+            n = n * 10 + (c - 48)
+            i += 1
+        if [ i == 0 || i >= ln.count || ((i32 ln.chars[ i ]) & 255) != 58 ] return 0
+        orb : cast orbiter [ ux.app_object ]
+        if [ !orb ] return 0
+        for [ e: element* a, e, e = e.parent ]
+            if [ e inherits EditorView ]
+                ev9 : EditorView e
+                ed9 : Editor orb.pane_at[ ev9.pane_index ]
+                if [ !ed9 || !ed9.run_view ] return 0
+                return (ed9.run_view.iid == n) ? 1 : 2
+        return 0
 
 
 Group ToolsHeader
@@ -1597,6 +1722,7 @@ element orbiter : trinity # implements compiler
     mutable args_sync    : bool
     mutable pick_field   : string           # launch path field waiting on the nav list
     mutable launch_specs : map string[string]    # module -> panel spec, read once from its compiled meta
+    mutable launch_specs_mt : map i64[string]    # and the export's mtime it was read at
     mutable pick_exts    : vec string           # a resource pick lists only these extensions
     mutable pick_cache   : vec path             # files found once for the current pick; keystrokes filter it
     mutable pick_editor  : Editor
@@ -1652,6 +1778,10 @@ element orbiter : trinity # implements compiler
     # append LAST: member order sets AF bit indices
     public show_instr_col : bool
     public show_launch    : bool            # launch panel over the console
+    public show_console   : bool
+    # the last props a module's instance answered: its config outlives the run
+    public [ StatePersist ] module_props : map string [string]
+    mutable shift_down    : bool
     # module whose build set err_file; only it may clear
     intern err_mod       : string
     # index into scene_list[]; the bottom bar steps it
@@ -1666,6 +1796,9 @@ element orbiter : trinity # implements compiler
     intern attach_pending  : dbg
     intern attach_mod      : string
     intern attach_av       : AppView
+    mutable instances      : vec AppView
+    mutable inst_seq       : i32
+    intern  all_cmd        : string
     intern frame_no9       : i32
     public scene_load    : string
     intern scene_el      : element
@@ -1706,6 +1839,7 @@ element orbiter : trinity # implements compiler
         active_panel   = 'files'
         active_target  = 'silver'
         restore_session[]
+        adopt_live_slots[]
         nav_root       = project_root[]
         # warm the git snapshot now: the view reads it, never fetches
         git_summarize[]
@@ -2785,6 +2919,14 @@ element orbiter : trinity # implements compiler
         lp0 : element find_el[ a, 'launch_panel' ]
         if [ lp0 && lp0.elements ]
             for [ ce: element, ck: string ] in lp0.elements
+                if [ ce inherits KeyField ]
+                    kf0 : KeyField ce
+                    if [ kf0.changed ]
+                        kf0.changed = false
+                        args_field  = ce
+                        args_editor = pane_of[ ce ]
+                        args_sync   = true
+                    continue
                 if [ !(ce inherits VolumeSlider) ] continue
                 vs0 : VolumeSlider ce
                 if [ vs0.changed ]
@@ -2796,11 +2938,12 @@ element orbiter : trinity # implements compiler
         # field's edit is the one source, copied after the layer edited it
         if [ args_sync ]
             args_sync = false
-            fs9 : file_state (args_editor) ? fstate[ args_editor.band_src[] ] : null
+            fs9 : file_state args_state_of[ args_editor ]
             if [ fs9 && args_field ]
                 if [ args_field.parent && args_field.parent inherits LaunchPanel ]
                     lp9 : LaunchPanel args_field.parent
                     fs9.args = lp9.compose[]
+                    if [ args_editor.run_view && !args_editor.run_view.ended ] lp9.push_live[ args_editor.run_view.app_mod ]
                     if [ ux ] ux.restyle = true
                 el fs9.args = (args_field.edit) ? args_field.edit : ''
                 fs9.args.hold[]
@@ -2839,6 +2982,133 @@ element orbiter : trinity # implements compiler
         av.pause_pending = true
         av.attached      = false
         attach_appview[ av, host_app_pid[ av.slot ] ]
+
+    func add_instance [ av: AppView ]
+        if [ !instances ] instances = vec AppView []
+        inst_seq += 1
+        av.iid = inst_seq
+        instances.push[ av ]
+
+    func remove_instance [ av: AppView ]
+        keep : vec AppView []
+        if [ instances ]
+            for [ v: AppView ] in instances
+                if [ v != av ] keep.push[ v ]
+        instances = keep
+
+    func instances_of [ p: path ] -> vec AppView
+        out : vec AppView []
+        if [ !instances || !p ] return out
+        ps : string '{p.absolute[]}'
+        for [ v: AppView ] in instances
+            if [ !v.src ] continue
+            vs : string '{v.src.absolute[]}'
+            if [ vs.compare[ ps ] == 0 ] out.push[ v ]
+        return out
+
+    func instance_by [ iid: i32 ] -> AppView
+        if [ instances ]
+            for [ v: AppView ] in instances
+                if [ v.iid == iid ] return v
+        return null
+
+    func adopt_live_slots []
+        root : path.path_startup[]
+        if [ !root ] return
+        for [ s: i32 1, s < host_app_count[], s += 1 ]
+            if [ host_app_state[ s ] != 2 ] continue
+            pid : i32 [ host_app_pid[ s ] ]
+            if [ pid <= 0 || host_pid_alive[ pid ] == 0 ] continue
+            nb : local i8 [ 192 ]
+            if [ host_app_name[ s, @nb[0], 192 ] <= 0 ] continue
+            req : string [ @nb[0] ]
+            dbg9 : bool [ req.starts_with[ '!' ] ]
+            while [ req.count > 0 && (req.starts_with[ '!' ] || req.starts_with[ '*' ]) ]
+                req = req.mid[ 1, req.count - 1 ]
+            parts : req.split[ ' ' ]
+            if [ parts.count == 0 ] continue
+            mod : string parts[ 0 ]
+            if [ mod.count == 0 || mod.compare[ 'orbiter' ] == 0 ] continue
+            nv : AppView [ ]
+            nv.src      = path '{root}/{mod}/{mod}.ag'
+            nv.app_mod  = mod
+            nv.slot     = s
+            nv.started  = true
+            nv.attached = true
+            nv.viewer   = !dbg9
+            if [ req.count > mod.count ] nv.module_args = req.mid[ mod.count + 1, req.count - mod.count - 1 ]
+            nv.cmd      = 'tail -n +1 -F {root}/install/tmp/silver-{mod}.{s}.log'
+            add_instance[ nv ]
+
+    # one console per module: every live instance's log, each line tagged by its
+    # id. no module = the global log, every instance of every module
+    func console_cmd [ mod: string ] -> string
+        c : string ''
+        n : i32 [ 0 ]
+        if [ !instances ] return c
+        for [ v: AppView ] in instances
+            if [ v.ended || v.slot <= 0 || !v.app_mod ] continue
+            if [ mod && v.app_mod.compare[ mod ] != 0 ] continue
+            one : string 'tail -n +1 -F {startup_path}/install/tmp/silver-{mod}.{v.slot}.log | sed -u "s/^/{v.iid}: /"'
+            c = (n == 0) ? one : '{c} & {one}'
+            n += 1
+        return (n > 0) ? '{c} & wait' : c
+
+    # the args the panel reads and writes are ONE state: the view's args source
+    # (a handler's document when there is one), never the pane's file alone
+    func args_state_of [ ed: Editor ] -> file_state
+        if [ !ed ] return null
+        pv : element pane_view[ ed.pane_index ]
+        if [ pv && pv inherits EditorView ]
+            ev : EditorView pv
+            return fstate[ ev.args_src[] ]
+        return fstate[ ed.band_src[] ]
+
+    # a module's props as its last instance answered them, null when it never ran
+    func module_spec [ mod: string ] -> string
+        if [ !module_props || !mod || !module_props.contains[ mod ] ] return null
+        return module_props[ mod ]
+
+    func instance_name [ av: AppView ] -> string
+        m : string (av.app_mod && av.app_mod.count > 0) ? av.app_mod : ((av.src) ? av.src.stem[] : 'app')
+        return '{m} {av.iid}'
+
+    func instance_label [ av: AppView ] -> string
+        sw : string av.status_word[]
+        return (sw.count > 0) ? '{instance_name[ av ]}  {sw}' : instance_name[ av ]
+
+    func show_instance [ iid: i32, pi: i32 ]
+        av : AppView instance_by[ iid ]
+        ed : Editor pane_at[ pi ]
+        if [ !av || !ed ] return
+        ed.run_view  = av
+        ed.app_view  = true
+        ed.animated  = true
+        ed.pristine  = false
+        ed.no_scroll = true
+        active_pane  = pi
+        land_paused[ av ]
+        if [ ux ] ux.restyle = true
+
+    # the instance row's icons: pause/play, and at a stop continue and the steps
+    func instance_action [ ed: Editor, av: AppView, act: string ]
+        if [ !av ] return
+        if [ act.compare[ 'pause' ] == 0 || act.compare[ 'play' ] == 0 ]
+            if [ av.ended ]
+                av.ended = false
+                av.note  = ''
+            el app_pause_toggle[ av ]
+            # paused -> back to the source, running -> the app
+            want : bool [ !av.paused ]
+            if [ ed && ed.app_view != want ] ed.toggle_app_view[]
+            return
+        d : dbg av.debugger
+        if [ !d || !d.active ] return
+        active_target = av.app_mod
+        if [ act.compare[ 'continue' ] == 0 ]       d.cont[]
+        el [ act.compare[ 'step_next' ] == 0 ] d.step_over[]
+        el [ act.compare[ 'step_in' ] == 0 ]   d.step_into[]
+        el [ act.compare[ 'step_out' ] == 0 ]  d.step_out[]
 
     func land_paused [ av: AppView ]
         if [ !av || !av.paused || !av.debugger || av.debugger.running ] return
@@ -2908,11 +3178,24 @@ element orbiter : trinity # implements compiler
             # magnify lights while the findbar is open
             if [ fb_on ] tmask = 1
             tnav.push[ 'magnify' ]
-        if [ editor_slots.count > 1 ] tnav.push[ 'undock' ]
-        if [ editor_slots.count < 4 && !con9 ] tnav.push[ 'dock' ]
+        if [ show_instr_col ] tmask = tmask | (1 << tnav.count)
+        tnav.push[ 'instruments' ]
+        # NOT 'console': that is the RunConsole element's own id, and on_press
+        # dispatches on id, so a click in the console would toggle it away
+        if [ show_console ] tmask = tmask | (1 << tnav.count)
+        tnav.push[ 'console_tab' ]
+        # one button: + adds a tab; with shift held it reads − and closes this one
+        if [ (editor_slots.count < 4 && !con9) || (shift_down && editor_slots.count > 1) ] tnav.push[ 'dock' ]
+        tico : vec string []
+        for [ tn: string ] in tnav
+            ic9 : string tn
+            if [ tn.compare[ 'instruments' ] == 0 ] ic9 = 'chart'
+            if [ tn.compare[ 'console_tab' ] == 0 ] ic9 = 'console'
+            if [ tn.compare[ 'dock' ] == 0 && shift_down ] ic9 = 'undock'
+            tico.push[ ic9 ]
         wn9 : f32 [ f32[ tnav.count ] * 1.15 ]
         if [ tnav.count > 0 ]
-            els['tabnav'] = TButtons [ buttons: tnav, manual: true, sel_mask: tmask,
+            els['tabnav'] = TButtons [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask,
                 rest_glow: rgba [ '#ccf2' ], rest_px: 16.0,
                 area: Region [ 'r0+ t0 w{wn9} h0.9' ] ]
 
@@ -3792,7 +4075,6 @@ element orbiter : trinity # implements compiler
             return
         if [ editor_slots.count <= 1 || pi < 0 || pi >= editor_slots.count ] return
         pe : Editor pane_at[ pi ]
-        if [ pe && pe.run_view ] pe.toggle_app_run[ false ]
         if [ pe && pe.rview ]
             pe.rview.release*[]
             pe.rview = null
@@ -4010,18 +4292,24 @@ element orbiter : trinity # implements compiler
                 picking : bool [ pick_field && pick_field.count > 0 ]
                 if [ !picking && !git_busy && (!git_snap || git_snap.base.compare[ nb ] != 0) ] git_summarize[]
                 # consoles are not files and do not belong in this list
+                d0 : i32 [ find_hits.count ]
+                if [ instances && !picking ]
+                    for [ av9: AppView ] in instances
+                        find_hits.push[ FindHit [ is_header: true, text: instance_label[ av9 ], dir: '', file: av9.src, inst: av9.iid ] ]
+                        if [ !browse_single ]
+                            find_hits.push[ FindHit [ is_header: true, text: '', file: av9.src ] ]
+                        combined.push[ '{av9.src}' ]
                 if [ docked && show_pins && !picking ]
-                    d0 : i32 [ find_hits.count ]
                     for [ i: i32 0, i < docked.count, i += 1 ]
                         dp : path docked[i]
                         if [ dp ]
                             push_file_hit[ dp, true ]
                             combined.push[ '{dp}' ]
-                    # an empty pin section owns no divider and no spacer
-                    if [ find_hits.count > d0 ]
-                        nav_dock_rows = find_hits.count
-                        if [ browse_single ]
-                            find_hits.push[ FindHit [ is_header: true, is_spacer: true, text: '' ] ]
+                # an empty pin section owns no divider and no spacer
+                if [ find_hits.count > d0 ]
+                    nav_dock_rows = find_hits.count
+                    if [ browse_single ]
+                        find_hits.push[ FindHit [ is_header: true, is_spacer: true, text: '' ] ]
                 if [ !nav_root ] nav_root = target_roots[0]
                 if [ nav_root ]
                     pr  : path   project_root[]
@@ -4110,6 +4398,9 @@ element orbiter : trinity # implements compiler
         fe9 : element find_el[ a, pick_field ]
         if [ fe9 ]
             fe9.edit    = '{p}'
+            if [ fe9 inherits LaunchPath ]
+                lp9 : LaunchPath fe9
+                lp9.path_value = '{p}'
             args_field  = fe9
             args_editor = pick_editor
             args_sync   = true
@@ -4347,6 +4638,10 @@ element orbiter : trinity # implements compiler
         if [ !ed || row < 0 || row >= find_hits.count ] return false
         h : FindHit find_hits[ row ]
         if [ !h || h.is_spacer ] return true
+        if [ h.inst > 0 ]
+            show_instance[ h.inst, ed.pane_index ]
+            exit_find_mode[]
+            return true
         if [ h.session && h.session.count > 0 ]
             cpi : i32 [ ed.pane_index ]
             while [ pane_console.count <= cpi ]
@@ -4466,8 +4761,18 @@ element orbiter : trinity # implements compiler
                     start_debug[ active_target ]
             ev.no_default = true
             return
-        if [ ev.target.id == 'callstack' ]
-            show_instruments = !show_instruments
+        # the instance panel's group renames itself to the pressed segment
+        if [ ev.target.id == 'continue' || ev.target.id == 'step_next' ||
+             ev.target.id == 'step_in'  || ev.target.id == 'step_out' ]
+            eds : Editor pane_of[ ev.target ]
+            if [ eds && eds.run_view ] instance_action[ eds, eds.run_view, ev.target.id ]
+            if [ ev.target ] ev.target.ux.restyle = true
+            ev.no_default = true
+            return
+        if [ ev.target.id == 'console_tab' ]
+            show_console = !show_console
+            if [ ev.target ] ev.target.ux.restyle = true
+            ev.no_default = true
             return
         if [ ev.target.id == 'instruments' ]
             show_instr_col = !show_instr_col
@@ -4584,21 +4889,17 @@ element orbiter : trinity # implements compiler
             force_update[]
             return
         
-        if [ ev.target.id == 'launch_btn' ]
-            show_launch = !show_launch
-            if [ ev.target ] ev.target.ux.restyle = true
-            ev.no_default = true
-            return
         # an enum's segmented buttons: the press already set TButtons.selected.
         # store NOW — a poll next frame loses it, because the re-render rebuilds
         # the buttons with selected := args before the poll reads it
         if [ ev.target inherits TButtons && ev.target.parent && ev.target.parent inherits LaunchPanel ]
             lpb : LaunchPanel ev.target.parent
             edb : Editor pane_of[ ev.target ]
-            fsb : file_state (edb) ? fstate[ edb.band_src[] ] : null
+            fsb : file_state args_state_of[ edb ]
             if [ fsb ]
                 fsb.args = lpb.compose[]
                 fsb.args.hold[]
+                if [ edb.run_view && !edb.run_view.ended ] lpb.push_live[ edb.run_view.app_mod ]
                 save_session[]
             if [ ev.target ] ev.target.ux.restyle = true
             return
@@ -4626,8 +4927,9 @@ element orbiter : trinity # implements compiler
                 ev.no_propagation = true
                 return
             # a slider drives itself (drag) and reports via `changed`, polled
-            # in on_overlay; do NOT consume its press or it can't move
-            if [ ev.target inherits VolumeSlider ] return
+            # in on_overlay; do NOT consume its press or it can't move. a key
+            # field arms itself the same way and reports once a key lands
+            if [ ev.target inherits VolumeSlider || ev.target inherits KeyField ] return
             # no_default below stops the click, so a chip toggles here
             if [ ev.target inherits Check ]
                 ck9 : Check ev.target
@@ -4636,77 +4938,6 @@ element orbiter : trinity # implements compiler
             args_editor = pane_of[ ev.target ]
             args_sync   = true
             ev.no_default = true
-            return
-        # instance chips: the name selects, the [x] closes
-        if [ ev.target.id && ev.target.id.starts_with[ 'inst_' ] ]
-            xk : bool [ ev.target.id.starts_with[ 'inst_x_' ] ]
-            ns : i32 [ (xk) ? 7 : 5 ]
-            ix : i32 [ atoi[ ev.target.id.mid[ ns, i32[ ev.target.id.count ] - ns ].chars ] ]
-            for [ e: element* ev.target, e, e = e.parent ]
-                if [ e inherits EditorView ]
-                    evi : EditorView e
-                    edi : Editor pane_at[ evi.pane_index ]
-                    if [ edi ]
-                        if [ xk ] edi.close_instance[ ix ]
-                        el
-                            edi.select_instance[ ix ]
-                            land_paused[ edi.run_view ]
-                    break
-            if [ ev.target ] ev.target.ux.restyle = true
-            ev.no_default     = true
-            ev.no_propagation = true
-            return
-        if [ ev.target.id == 'run' ]
-            for [ e: element* ev.target, e, e = e.parent ]
-                if [ e inherits EditorView ]
-                    ev2 : EditorView e
-                    ed : Editor pane_at[ ev2.pane_index ]
-                    if [ ed ]
-                        av2 : AppView ed.run_view
-                        if [ av2 && av2.ended ]
-                            # stopped peer: play brings the session back
-                            av2.ended = false
-                            av2.note = ''
-                        el
-                            # shift+click = build-run --clean; play always adds an instance
-                            ed.start_instance[ ev.key.shift ]
-                    break
-            if [ ev.target ] ev.target.ux.restyle = true
-            ev.no_default = true
-            return
-        # pause/resume ONLY: the play button no longer does double duty
-        if [ ev.target.id == 'pause' ]
-            for [ e: element* ev.target, e, e = e.parent ]
-                if [ e inherits EditorView ]
-                    ev3 : EditorView e
-                    ed3 : Editor pane_at[ ev3.pane_index ]
-                    if [ ed3 && ed3.run_view ]
-                        av3 : AppView ed3.run_view
-                        if [ av3.ended ]
-                            av3.ended = false
-                            av3.note = ''
-                        el
-                            app_pause_toggle[ av3 ]
-                        # paused -> back to the source, running -> the app.
-                        # toggle_app_view owns the reload, so go through it
-                        want : bool [ !av3.paused ]
-                        if [ ed3.app_view != want ] ed3.toggle_app_view[]
-                    break
-            if [ ev.target ] ev.target.ux.restyle = true
-            ev.no_default = true
-            return
-        # StepButtons renames itself to the pressed segment; it sits in the run
-        # band header, so the press lands here and not on the Editor
-        if [ ev.target.id == 'step_next' || ev.target.id == 'step_in' ||
-             ev.target.id == 'step_out'  || ev.target.id == 'continue' ]
-            d5 : dbg active_debugger[]
-            if [ d5 ]
-                if [ ev.target.id == 'continue' ]     d5.cont[]
-                el [ ev.target.id == 'step_next' ] d5.step_over[]
-                el [ ev.target.id == 'step_in' ]   d5.step_into[]
-                el                                 d5.step_out[]
-            ev.no_default = true
-            if [ ev.target ] ev.target.ux.restyle = true
             return
 
         # back to the source of the app this band is running
@@ -4773,6 +5004,15 @@ element orbiter : trinity # implements compiler
             return
 
         if [ ev.target.id == 'dock' ]
+            if [ ev.key.shift ]
+                log 'on_press: UNDOCK handler reached'
+                for [ e: element* ev.target, e, e = e.parent ]
+                    if [ e.id && e.id.count >= 5 && e.id.mid[ 0, 4 ] == 'pane' ]
+                        pi : i32 [ e.id.mid[ 4, e.id.count - 4 ].real_value[] ]
+                        close_pane[ pi ]
+                        break
+                if [ ev.target ] ev.target.ux.restyle = true
+                return
             log 'on_press: DOCK handler reached'
             if [ editor_slots.count < 4 ]
                 editor_slots += -1
@@ -4784,15 +5024,6 @@ element orbiter : trinity # implements compiler
             save_session[]
             if [ ev.target ] ev.target.ux.restyle = true
             force_update[]
-            return
-        if [ ev.target.id == 'undock' ]
-            log 'on_press: UNDOCK handler reached'
-            for [ e: element* ev.target, e, e = e.parent ]
-                if [ e.id && e.id.count >= 5 && e.id.mid[ 0, 4 ] == 'pane' ]
-                    pi : i32 [ e.id.mid[ 4, e.id.count - 4 ].real_value[] ]
-                    close_pane[ pi ]
-                    break
-            if [ ev.target ] ev.target.ux.restyle = true
             return
         if [ ev.target.id == 'ctx_copy' ]
             request_context[]
@@ -4897,6 +5128,12 @@ element orbiter : trinity # implements compiler
                 run_search[]
 
     func on_key [ ev: Event ]
+        ks9 : i32 [ i32[ ev.key.unicode ] ]
+        if [ ks9 == 340 || ks9 == 344 ]
+            sd9 : bool [ ev.key.state != 0 ]
+            if [ sd9 != shift_down ]
+                shift_down = sd9
+                if [ ux ] ux.restyle = true
         # global chords need no focus target
         if [ ev.key.state && (ev.key.ctrl || ev.key.meta) ]
             kc : i32 [ i32[ ev.key.unicode ] ]
@@ -5216,8 +5453,34 @@ element orbiter : trinity # implements compiler
                 edo.attach_app_run[ orbit_app ]
                 orbit_bound = true
 
+        if [ instances ]
+            for [ av8: AppView ] in instances
+                if [ av8.props && av8.props.count > 0 && av8.app_mod ]
+                    if [ !module_props ] module_props = map string [string] []
+                    module_props[ av8.app_mod ] = av8.props
+                if [ av8.slot < 0 || av8.ended ] continue
+                shown8 : bool [ false ]
+                for [ pi8: i32 0, pi8 < editor_slots.count, pi8 += 1 ]
+                    e8 : Editor pane_at[ pi8 ]
+                    if [ e8 && e8.run_view == av8 ] shown8 = true
+                if [ !shown8 ]
+                    av8.stopped = (av8.debugger && av8.debugger.active && !av8.debugger.running) ? true : false
+                    av8.service[ w.screen ]
         attach_publish[]
         sync_volume[]
+        # the global log: every instance's log in one session, retailed as the set changes
+        gc9 : string console_cmd[ null ]
+        if [ gc9.count > 0 && (!all_cmd || all_cmd.compare[ gc9 ] != 0) ]
+            all_cmd = gc9
+            if [ !ed_sessions ] ed_sessions = map ConsoleSession [string] [ ]
+            ga9 : ConsoleSession ed_sessions[ 'ed:all' ]
+            if [ !ga9 ]
+                ga9 = ConsoleSession []
+                ga9.name = 'ed:all'
+                ed_sessions[ 'ed:all' ] = ga9
+            ga9.launch_cmd = ''
+            ga9.restart[]
+            ga9.pending = gc9
         for [ pi2: i32 0, pi2 < editor_slots.count, pi2 += 1 ]
             edp : Editor pane_at[ pi2 ]
             if [ !edp || !edp.run_view ] continue
@@ -5239,20 +5502,19 @@ element orbiter : trinity # implements compiler
             if [ !edp.run_view.cmd ] continue
             if [ edp.run_view.dispatched ] continue
             edp.run_view.dispatched = true
-            efn : string edp.src.filename[]
-            edi : i32 [ efn.index_of[ '.' ] ]
-            if [ edi > 0 ] efn = efn.mid[ 0, edi ]
-            esid : string 'ed:{efn}'
+            esid : string edp.run_view.console_id[]
             if [ !ed_sessions ] ed_sessions = map ConsoleSession [string] [ ]
             es : ConsoleSession ed_sessions[esid]
             if [ !es ]
                 es = ConsoleSession []
                 es.name = esid
                 ed_sessions[esid] = es
-            log 'run: dispatch {esid}: {edp.run_view.cmd}'
+            cc : string console_cmd[ edp.run_view.app_mod ]
+            if [ cc.count == 0 ] cc = edp.run_view.cmd
+            log 'run: dispatch {esid}: {cc}'
             es.launch_cmd = ''
             es.restart[]
-            es.pending = edp.run_view.cmd
+            es.pending = cc
         if [ ed_sessions ]
             for [ s: ConsoleSession, k: string ] in ed_sessions
                 if [ s.pty_fd >= 0 ]

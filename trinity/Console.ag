@@ -811,11 +811,12 @@ Layer TermLayer
         if [ !con ] return
         s : ConsoleSession con.session[]
         if [ !s ] return
-        ch : f32 [ paint_term[ cv, s, bounds, con.filter[], con.feed, label_size, label_height ] ]
+        ch : f32 [ paint_term[ cv, con, s, bounds, con.filter[], con.feed, label_size, label_height ] ]
         con.content_h = ch
         con.scroll.y  = s.scroll
 
-func paint_term [ cv: Canvas, s: ConsoleSession, bounds: rect, flt: string, feed: list string, label_size: f32, label_height: f32 ] -> f32
+func paint_term [ cv: Canvas, con_el: object, s: ConsoleSession, bounds: rect, flt: string, feed: list string, label_size: f32, label_height: f32 ] -> f32
+        con : cast Console [ con_el ]
         if [ label_size > 0.0 ] cv.font_size[ i32[label_size] ]
         lh : f32 [ round[ cv.get_line_height[] * ((label_height > 0.0) ? label_height : 1.0) ] ]
         if [ lh < 1.0 ] lh = 1.0
@@ -861,7 +862,8 @@ func paint_term [ cv: Canvas, s: ConsoleSession, bounds: rect, flt: string, feed
                 dr += 1
                 if [ y + lh < bounds.y ] continue
                 if [ y > bounds.y + bounds.h ] break
-                cv.fill_color[ '#fff' ]
+                mk : i32 [ con.line_mark*[ ln ] ]
+                cv.fill_color[ (mk == 2) ? '#ffffff55' : '#fff' ]
                 cv.draw_text[ ln, rect [ x: x0, y: y, w: bounds.w, h: lh ],
                     vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
             for [ r: i32 0, r < s.rows, r += 1 ]
@@ -871,7 +873,8 @@ func paint_term [ cv: Canvas, s: ConsoleSession, bounds: rect, flt: string, feed
                 dr += 1
                 if [ y + lh < bounds.y ] continue
                 if [ y > bounds.y + bounds.h ] break
-                cv.fill_color[ '#fff' ]
+                mk : i32 [ con.line_mark*[ ln ] ]
+                cv.fill_color[ (mk == 2) ? '#ffffff55' : '#fff' ]
                 cv.draw_text[ ln, rect [ x: x0, y: y, w: bounds.w, h: lh ],
                     vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
             cv.paint[]
@@ -924,6 +927,7 @@ func paint_term [ cv: Canvas, s: ConsoleSession, bounds: rect, flt: string, feed
             s.cache_cw = cw
             s.cache_lh = lh
 
+        pm : i32 [ 0 ]
         if [ !s.in_alt && sc_count > 0 ]
             last_li : i32 [ sc_count - 1 ]
             vlo : i32 [ clamp[ i32[ (s.scroll - lh) / lh ], 0, last_li ] ]
@@ -931,21 +935,37 @@ func paint_term [ cv: Canvas, s: ConsoleSession, bounds: rect, flt: string, feed
             for [ slc: TermLineCache ] in s.sb_lines
                 if [ slc.li >= 0 && (slc.li < vlo || slc.li > vhi) ]
                     slc.li = -1
+            # a wrapped line tags only its first row: the mark carries to the rest
+            for [ bi: i32 vlo - 1, bi >= 0 && bi > vlo - 200, bi -= 1 ]
+                bm : i32 [ con.line_mark*[ s.scrollback.value_by_index[ bi ] ] ]
+                if [ bm != 0 ]
+                    pm = bm
+                    break
             for [ li: i32 vlo, li <= vhi, li += 1 ]
+                mk : i32 [ con.line_mark*[ s.scrollback.value_by_index[ li ] ] ]
+                if [ mk == 0 ] mk = pm
+                el pm = mk
                 y : f32 [ y0 + f32[li] * lh - s.scroll ]
                 if [ y + lh < bounds.y ] continue
                 if [ y > bounds.y + bounds.h ] break
                 slc : sb_slot[ cv, s, li, fs, lh, cw ]
                 if [ slc && slc.canvas ]
+                    mark_line[ cv, mk, x0, y, bounds.w, lh ]
                     cv.draw_canvas[ slc.canvas, x0, round[ y ], f32[ slc.canvas.content_w ], lh ]
+                    if [ mk == 2 ] cv.set_opacity[ 1.0 ]
 
         for [ r: i32 0, r < s.rows, r += 1 ]
+            mk : i32 [ con.line_mark*[ s.row_to_string[ r ] ] ]
+            if [ mk == 0 ] mk = pm
+            el pm = mk
             y : f32 [ y0 + f32[base + r] * lh - s.scroll ]
             if [ y + lh < bounds.y ] continue
             if [ y > bounds.y + bounds.h ] break
             lvc : live_slot[ cv, s, r, fs, lh, cw ]
             if [ lvc && lvc.canvas ]
+                mark_line[ cv, mk, x0, y, bounds.w, lh ]
                 cv.draw_canvas[ lvc.canvas, x0, round[ y ], f32[ lvc.canvas.content_w ], lh ]
+                if [ mk == 2 ] cv.set_opacity[ 1.0 ]
 
         if [ s.hover_link_line >= 0 ]
             uy : f32 [ y0 + f32[ s.hover_link_line ] * lh - s.scroll ]
@@ -966,6 +986,10 @@ func paint_term [ cv: Canvas, s: ConsoleSession, bounds: rect, flt: string, feed
             cv.paint[]
         cv.clear_crop[]
         return total_h
+
+# 2 = another instance's line: faded. the selected one's lines stay plain
+func mark_line [ cv: Canvas, mk: i32, x0: f32, y: f32, w: f32, lh: f32 ]
+    if [ mk == 2 ] cv.set_opacity[ 0.35 ]
 
 # block elements (U+2580..U+259F) as quadrant bits: UL=1 UR=2 LL=4 LR=8; -1 = not a quadrant glyph
 func block_quads [ ch: i32 ] -> i32
@@ -1281,6 +1305,10 @@ element Console
             animated = true
             pristine = false
         return s
+
+    # 0 = plain, 1 = the selected instance's line, 2 = another instance's line
+    func line_mark [ ln: string ] -> i32
+        return 0
 
     func filter [] -> string
         if [ !elements ] return null
