@@ -236,6 +236,9 @@ ielement element
 
     public  animated     : bool
     public  selected     : bool
+    # a mode: no cache canvas of its own, and none for anything under it.
+    # a pane of many small controls paints them straight onto its parent
+    public  no_cache     : bool
     intern cache_canvas  : Canvas
     intern cache_w       : i32
     intern cache_h       : i32

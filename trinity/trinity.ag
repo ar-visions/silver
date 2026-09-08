@@ -3945,7 +3945,11 @@ Display Window
         if [ margin_b > 0 ] margin_b += 1
         ew : i32 [ i32[ceilf[e.bounds.w]] + 1 + margin_l + margin_r ]
         eh : i32 [ i32[ceilf[e.bounds.h]] + 1 + margin_t + margin_b ]
-        if [ ( ew > 0 && eh > 0 ) && ( !e.cache_canvas || e.cache_w != ew || e.cache_h != eh ) ]
+        # the no_cache mode reaches down: an element under one paints as it does
+        nc : bool [ e.no_cache ]
+        for [ pe: element* e.parent, pe && !nc, pe = pe.parent ]
+            if [ pe.no_cache ] nc = true
+        if [ !nc && ( ew > 0 && eh > 0 ) && ( !e.cache_canvas || e.cache_w != ew || e.cache_h != eh ) ]
             if [ e.cache_canvas ]
                 e.cache_canvas.resize[ ew, eh ]
                 e.pristine = false
@@ -3959,7 +3963,7 @@ Display Window
             e.cache_oy = margin_t
 
         #log 'target_cv set'
-        target_cv : (e.cache_canvas && !e.animated && stage == CanvasType.screen) ? e.cache_canvas : cv
+        target_cv : (e.cache_canvas && !e.animated && !nc && stage == CanvasType.screen) ? e.cache_canvas : cv
         element_text : (e.label && e.label.count) ? e.label : null
 
         sx       : f32  [ (e.scaling.x != 0.0) ? e.scaling.x : 1.0 ]
@@ -3981,11 +3985,12 @@ Display Window
                 cv.scale_xy[ sx, sy ]
             cv.translate[ -pivot_x, -pivot_y ]
 
-        redraw : bool [ e.animated || !e.pristine || stage == CanvasType.compose ]
-        if [ redraw && e.cache_canvas && !e.animated && stage == CanvasType.screen ]
+        # painted straight to the screen, an uncached element draws every frame
+        redraw : bool [ e.animated || !e.pristine || nc || stage == CanvasType.compose ]
+        if [ redraw && e.cache_canvas && !e.animated && !nc && stage == CanvasType.screen ]
             eid : string [ (e.id && e.id.count > 0) ? e.id : '(noid)' ]
             #log 'REDRAW {eid} {ew}x{eh} pristine={e.pristine}'
-        if [ redraw && e.cache_canvas && !e.animated && stage == CanvasType.screen ]
+        if [ redraw && e.cache_canvas && !e.animated && !nc && stage == CanvasType.screen ]
             e.cache_canvas.reset[ vec4f[0.0, 0.0, 0.0, 0.0] ]
             if [ e.cache_ox > 0 || e.cache_oy > 0 ]
                 target_cv.save[]
@@ -3993,7 +3998,7 @@ Display Window
 
         e.needs_frame = false
 
-        defer_scroll : bool [ e.cache_canvas && !e.animated && stage == CanvasType.screen ]
+        defer_scroll : bool [ e.cache_canvas && !e.animated && !nc && stage == CanvasType.screen ]
 
         e_mask : i32 [ 0 ]
         if [ e.hovered   ] e_mask += i32[ State.hovered ]
@@ -4250,7 +4255,7 @@ Display Window
             e.mask_glow.x = (e.scroll.y > 0.5) ? e.scroll_fade : 0.0
             e.mask_glow.z = (mxs > 0.5 && e.scroll.y < mxs - 0.5) ? e.scroll_fade : 0.0
         mask_on : bool [ e.mask_glow.x > 0.0 || e.mask_glow.y > 0.0 || e.mask_glow.z > 0.0 || e.mask_glow.w > 0.0 ]
-        if [ e.cache_canvas && !e.animated && stage == CanvasType.screen ]
+        if [ e.cache_canvas && !e.animated && !nc && stage == CanvasType.screen ]
             # snap the cache blit to the device grid: a cached element sitting
             # at a fractional screen pixel smears its whole border over two
             bsc9 : f32 [ cv.transform_scale[] ]
@@ -4691,6 +4696,7 @@ element Group2
 
 element TButtons
     animated : true
+    no_cache : true
     public  buttons   : vec string    # segment ids, e.g. [ 'minus', 'plus' ]
     public  icons     : bool [ true ] # ids resolve to images/<id>.svg
     # per-segment icon name when the id is not the file name

@@ -485,6 +485,7 @@ ResourceView AppView
         if [ st == 3 && !ended ]
             ended   = true
             paused = false
+            instr_clear[]
             v9 : i32 [ host_app_verdict[ slot ] ]
             if [ v9 <= -1000 ]
                 note = 'build failed'
@@ -635,7 +636,18 @@ ResourceView AppView
         for [ i: i32 0, i < instr_names.count, i += 1 ]
             on : string instr_names[ i ]
             if [ on.compare[ nm ] != 0 && instr_is_logging[ on ] ] instr_toggle[ on, false ]
-        if [ !was ] instr_toggle[ nm, true ]
+        # the lit one again goes off: none is up then
+        instr_toggle[ nm, !was ]
+
+    # the process is gone: no instrument is up, and the next one asks again
+    func instr_clear []
+        instr_names = null
+        instr_ask   = false
+        instr_live  = null
+        instr_logs  = null
+        instr_side  = null
+        instr_gen   = null
+        instr_pw    = null
 
     func instr_active [] -> string
         if [ !instr_names ] return null
@@ -987,6 +999,7 @@ ResourceView AppView
         note       = ''
 
     intern func cleanup []
+        instr_clear[]
         if [ slot >= 0 ]
             if [ paused ] host_app_resume[ slot ]
             if [ slot > 0 ] host_post2[ slot, 1, i32[ HM.close ], 0, 0, 0 ]
@@ -4134,6 +4147,11 @@ Control Editor
 
     # a debugger stop lifts the app off the pane: the source and its arrow show
     func stopped [] -> bool
+        # the pane's own instance says whether it is parked: another instance of
+        # the same module at a stop must not hide this one
+        if [ run_view ]
+            d9 : dbg run_view.debugger
+            return (d9 && d9.active && !d9.running) ? true : false
         d : dbg active_dbg[]
         return (d && !d.running) ? true : false
 
