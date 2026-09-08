@@ -406,6 +406,8 @@ ResourceView AppView
     mutable debugger   : dbg
     mutable pause_pending : bool
     mutable iid        : i32
+    mutable held       : bool        # made, not running: a click on its row starts it
+    mutable pip        : bool        # shown small beside the source: the instance's own state
     mutable props      : string
     mutable tex0       : Texture     # the app's shared surface pair, imported
     mutable tex1       : Texture
@@ -471,6 +473,7 @@ ResourceView AppView
         return true
 
     func service [ cv: Canvas ]
+        if [ held ] return
         if [ !started ] start[]
         if [ slot < 0 ] return
         st : i32 [ host_app_state[ slot ] ]
@@ -535,22 +538,22 @@ ResourceView AppView
             if [ instr_ak == 0 || ak9 - instr_ak > 500 ]
                 instr_ak = ak9
                 vb8 : local i8 [ 512 ]
-                if [ agent_sock_ask[ app_mod.chars, 'instruments\n', @vb8[0], 512 ] > 0 ]
+                if [ agent_sock_ask[ sock_name[].chars, 'instruments\n', @vb8[0], 512 ] > 0 ]
                     vs8 : string [ @vb8[0] ]
                     vt8 : string vs8.trim[]
                     if [ vt8 && vt8.count > 0 ]
                         instr_names = vt8.split[ ' ' ]
                         instr_ask   = true
-                        if [ agent_sock_ask[ app_mod.chars, 'aspect\n', @vb8[0], 512 ] > 0 ]
+                        if [ agent_sock_ask[ sock_name[].chars, 'aspect\n', @vb8[0], 512 ] > 0 ]
                             la8 : string [ @vb8[0] ]
                             locked = la8.trim[] == '1'
                         # the app enumerates its own Launch/Live members
                         pb8 : local i8 [ 4096 ]
-                        if [ agent_sock_ask[ app_mod.chars, 'props\n', @pb8[0], 4096 ] > 0 ]
+                        if [ agent_sock_ask[ sock_name[].chars, 'props\n', @pb8[0], 4096 ] > 0 ]
                             ps8 : string [ @pb8[0] ]
                             props = ps8.trim[]
                         # the app's own gain seeds the slider, once
-                        if [ agent_sock_ask[ app_mod.chars, 'volume\n', @vb8[0], 512 ] > 0 ]
+                        if [ agent_sock_ask[ sock_name[].chars, 'volume\n', @vb8[0], 512 ] > 0 ]
                             lv8 : string [ @vb8[0] ]
                             app_vol = f32[ lv8.trim[].real_value[] ]
         instr_service[ cv ]
@@ -621,7 +624,7 @@ ResourceView AppView
     func instr_toggle [ nm: string, logging: bool ]
         if [ !app_mod || !nm || nm.count == 0 ] return
         cb : local i8 [ 512 ]
-        if [ agent_sock_ask[ app_mod.chars, 'instr-log {nm}\n', @cb[0], 512 ] > 0 ]
+        if [ agent_sock_ask[ sock_name[].chars, 'instr-log {nm}\n', @cb[0], 512 ] > 0 ]
             instr_apply[ string [ @cb[0] ] ]
 
     # one instrument on at a time: nm turns on and every other turns off;
@@ -649,7 +652,7 @@ ResourceView AppView
         if [ app_mod && (instr_ms == 0 || nw9 - instr_ms > 1000) ]
             instr_ms = nw9
             sb : local i8 [ 1024 ]
-            if [ agent_sock_ask[ app_mod.chars, 'instr\n', @sb[0], 1024 ] > 0 ]
+            if [ agent_sock_ask[ sock_name[].chars, 'instr\n', @sb[0], 1024 ] > 0 ]
                 instr_apply[ string [ @sb[0] ] ]
         if [ !instr_live || instr_live.count == 0 ] return
         if [ !itex0 ]     itex0     = map Texture [string] []
@@ -698,7 +701,7 @@ ResourceView AppView
         if [ !instr_pw ] instr_pw = map i32 [string] []
         if [ instr_num[ instr_pw, nm, -1 ] == iw ] return
         instr_pw[ nm ] = iw
-        agent_sock_send[ app_mod.chars, 'instr-width {nm} {iw}\n' ]
+        agent_sock_send[ sock_name[].chars, 'instr-width {nm} {iw}\n' ]
 
     # the entries themselves, asked of the running instance
     func instr_entries [ nm: string ] -> vec string
@@ -706,7 +709,7 @@ ResourceView AppView
         # a parked peer answers nothing: the ask would sit its whole timeout, every frame
         if [ stopped || paused ] return null
         rb : local i8 [ 8192 ]
-        if [ agent_sock_ask[ app_mod.chars, 'instr-read {nm}\n', @rb[0], 8192 ] <= 0 ] return null
+        if [ agent_sock_ask[ sock_name[].chars, 'instr-read {nm}\n', @rb[0], 8192 ] <= 0 ] return null
         rs : string [ @rb[0] ]
         rt : string rs.trim[]
         if [ rt.count == 0 ] return null
@@ -787,6 +790,7 @@ ResourceView AppView
 
     # one word for the instance chip; empty once the app is up and drawing
     func status_word [] -> string
+        if [ held ]      return 'not running'
         if [ ended ]     return 'exited'
         if [ paused ]    return 'paused'
         if [ attaching ] return 'attaching'
@@ -852,12 +856,17 @@ ResourceView AppView
         req : string [ (doc) ? '{mark}{mod} {ma9}{doc}' : '{mark}{mod} {ma9}' ]
         app_mod = mod
         slot = host_app_request[ req.chars ]
+        log 'start: {req} -> slot {slot}'
         if [ slot < 0 ]
             ended = true
             note = 'no silver-host supervisor'
             return
         root9 : path.path_startup[]
         cmd = 'tail -n +1 -F {root9}/install/tmp/silver-{mod}.{slot}.log'
+
+    # hosted apps open one socket per instance: trinity-<mod>-<slot>.sock
+    func sock_name [] -> string
+        return (slot > 0) ? '{app_mod}-{slot}' : app_mod
 
     func console_id [] -> string
         return 'ed:{app_mod}'
@@ -4074,7 +4083,7 @@ Control Editor
         if [ orb8 ]
             fa8 : string orb8.file_args[ src ]
             nv.module_args = (fa8 && fa8.count > 0) ? fa8 : orb8.module_args
-        nv.start[]                     # serve socket + build the run command
+        nv.held = true                 # not running until its row is clicked
         if [ orb8 ] orb8.add_instance[ nv ]
         run_view = nv
         app_view = true
@@ -4086,8 +4095,8 @@ Control Editor
     func select_instance [ i: i32 ]
         li : vec AppView instances[]
         if [ !li || i < 0 || i >= li.count ] return
-        if [ !run_view ] app_view = true
         run_view  = li[ i ]
+        app_view  = !run_view.pip
         animated  = true
         pristine  = false
         no_scroll = true
@@ -4131,6 +4140,8 @@ Control Editor
     func toggle_app_view []
         if [ !run_view ] return
         app_view = !app_view
+        # the pip belongs to the instance: it keeps it when another is selected
+        run_view.pip = !app_view
         if [ !app_view ] load_file[]
 
     public func on_unload [ ]

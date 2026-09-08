@@ -3863,6 +3863,8 @@ AU_EXPORT none Au_hold_members(Au a) {
     }
 }
 
+AU_EXPORT int Au_call_changed(Au a, symbol name);
+
 AU_EXPORT Au Au_set_property(Au a, symbol name, Au value) {
     Au_t type = isa(a);
     Au_t m = find_member(type, (cstr)name, AU_MEMBER_VAR, 0, true);
@@ -3875,17 +3877,39 @@ AU_EXPORT Au Au_set_property(Au a, symbol name, Au value) {
     else                 member_set(a, m, value);
     // a change block on the member (silver: statements under its declaration)
     // runs after the store, once the object is past its init
-    if (!type->is_struct && (header(a)->iflags & 0x01)) {
-        char cn[256];
-        snprintf(cn, sizeof(cn), "_changed_%s", name);
-        Au_t cf = find_member(type, cn, AU_MEMBER_FUNC, 0, true);
-        if (cf && cf->value) {
-            array args = new(array, alloc, 1);
-            push(args, a);
-            method_call(cf, args);
-        }
-    }
+    if (!type->is_struct && (header(a)->iflags & 0x01))
+        Au_call_changed(a, name);
     return value;
+}
+
+// the member's change block, if the class declares one: 1 called, 0 none,
+// -1 declared but never implemented
+AU_EXPORT int Au_call_changed(Au a, symbol name) {
+    if (!a || !name) return 0;
+    Au_t type = isa(a);
+    if (!type || type->is_struct) return 0;
+    char cn[256];
+    snprintf(cn, sizeof(cn), "_changed_%s", name);
+    Au_t cf = find_member(type, cn, AU_MEMBER_FUNC, 0, true);
+    if (!cf) return 0;
+    if (!cf->value) return -1;
+    array args = new(array, alloc, 1);
+    push(args, a);
+    method_call(cf, args);
+    return 1;
+}
+
+// call a method that takes no arguments, by name: 1 called, 0 no such method
+AU_EXPORT int Au_call_named(Au a, symbol name) {
+    if (!a || !name) return 0;
+    Au_t type = isa(a);
+    if (!type || type->is_struct) return 0;
+    Au_t cf = find_member(type, (cstr)name, AU_MEMBER_FUNC, 0, true);
+    if (!cf || !cf->value) return 0;
+    array args = new(array, alloc, 1);
+    push(args, a);
+    method_call(cf, args);
+    return 1;
 }
 
 

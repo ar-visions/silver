@@ -392,15 +392,37 @@ Layer CommitLayer
         ltm : cv.measure_text[ 'x' ]
         ly : f32 [ yb + f32[ band9 ] * lh + ((band9 > 0) ? 8.0 : 0.0) ]
         nls : i32 [ 0 ]
+        # rows are 30px; an instance is a card: a 96px thumbnail with two lines under it
+        ry9 : f32 [ ly ]
+        # cards flow left to right, as many per line as fit, then wrap
+        cdw9  : f32 [ 152.0 ]
+        per9 : i32 [ i32[ (bounds.w - 100.0) / cdw9 ] ]
+        if [ per9 < 1 ] per9 = 1
+        ci9  : i32 [ 0 ]
+        lyc9 : f32 [ ly ]
         if [ orb.find_hits ]
             for [ hi: i32 0, hi < orb.find_hits.count, hi += 1 ]
                 h : FindHit orb.find_hits[hi]
                 if [ !h ] continue
                 # continuation rows of double-height headers: not ours
                 if [ h.is_header && !h.is_spacer && !h.is_newfile && h.text.count == 0 ] continue
-                ry : f32 [ ly + f32[ nls ] * 30.0 ]
+                rh9 : f32 [ (h.inst > 0) ? 148.0 : 30.0 ]
+                ry  : f32 [ ry9 ]
+                cx9 : f32 [ x0 + 8.0 ]
+                if [ h.inst > 0 ]
+                    if [ ci9 > 0 && ci9 < per9 ]
+                        ry = lyc9
+                    el
+                        ci9  = 0
+                        lyc9 = ry9
+                        ry9 += rh9
+                    cx9 = x0 + 8.0 + f32[ ci9 ] * cdw9
+                    ci9 += 1
+                el
+                    ci9 = 0
+                    ry9 += rh9
                 nls += 1
-                if [ ry + 30.0 < bounds.y || ry > bounds.y + bounds.h ] continue
+                if [ ry + rh9 < bounds.y || ry > bounds.y + bounds.h ] continue
                 if [ h.is_spacer ]
                     # same pixel break as the band divider
                     cv.fill_color[ rgba['#fff2'] ]
@@ -449,7 +471,7 @@ Layer CommitLayer
                         vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
                     cv.font_size[ 16 ]
                     continue
-                if [ nls - 1 == cb.hov_list ]
+                if [ nls - 1 == cb.hov_list && h.inst == 0 ]
                     cv.save[ ]
                     cv.rounded[ 8.0, 8.0, 8.0, 8.0 ]
                     cv.fill_color[ rgba['#ff6a2e2a'] ]
@@ -457,9 +479,44 @@ Layer CommitLayer
                     cv.stroke_color[ rgba['#ff8a3a99'] ]
                     # mouse over: glow in the same colour as the border
                     cv.inner_glow[ rgba['#ff8a3a99'], 12.0 ]
-                    cv.rect_to[ x0 + 2.0, ry + 1.0, bounds.x + bounds.w - x0 - 22.0, 28.0 ]
+                    cv.rect_to[ x0 + 2.0, ry + 1.0, bounds.x + bounds.w - x0 - 22.0, rh9 - 2.0 ]
                     cv.paint[ ]
                     cv.restore[ ]
+                # an instance: its live frame as a 96px thumbnail, the name and
+                # status under it, and the module in blue under that
+                if [ h.inst > 0 ]
+                    if [ nls - 1 == cb.hov_list ]
+                        cv.save[ ]
+                        cv.rounded[ 8.0, 8.0, 8.0, 8.0 ]
+                        cv.fill_color[ rgba['#ff6a2e2a'] ]
+                        cv.stroke_width[ 1.0 ]
+                        cv.stroke_color[ rgba['#ff8a3a99'] ]
+                        cv.inner_glow[ rgba['#ff8a3a99'], 12.0 ]
+                        cv.rect_to[ cx9 - 4.0, ry + 1.0, cdw9 - 8.0, rh9 - 2.0 ]
+                        cv.paint[ ]
+                        cv.restore[ ]
+                    av9 : AppView (orb) ? orb.instance_by[ h.inst ] : null
+                    ft9 : Texture (av9 && av9.have_frame) ? av9.front[] : null
+                    tw9 : f32 [ cdw9 - 24.0 ]
+                    if [ ft9 && ft9.width > 0 && ft9.height > 0 ]
+                        tw9 = 96.0 * f32[ ft9.width ] / f32[ ft9.height ]
+                        if [ tw9 > cdw9 - 24.0 ] tw9 = cdw9 - 24.0
+                        cv.draw_image[ ft9, rect [ x: cx9, y: round[ ry + 6.0 ], w: round[ tw9 ], h: 96.0 ] ]
+                    el
+                        cv.fill_color[ rgba['#000000'] ]
+                        cv.stroke_width[ 0.0 ]
+                        cv.rect_to[ cx9, round[ ry + 6.0 ], tw9, 96.0 ]
+                        cv.paint[ ]
+                    cv.font_size[ 16 ]
+                    cv.fill_color[ rgba['#fff'] ]
+                    cv.draw_text[ (av9) ? orb.instance_label[ av9 ] : h.text,
+                        rect [ x: cx9, y: ry + 104.0, w: cdw9 - 24.0, h: 20.0 ],
+                        vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null ]
+                    cv.fill_color[ rgba['#6cb6ff'] ]
+                    cv.draw_text[ (av9 && av9.app_mod) ? av9.app_mod : '',
+                        rect [ x: cx9, y: ry + 124.0, w: cdw9 - 24.0, h: 20.0 ],
+                        vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null ]
+                    continue
                 # find-result line: the matching source text, indented
                 if [ !h.is_header && h.line > 0 ]
                     cv.fill_color[ rgba['#7a8290'] ]
@@ -489,15 +546,7 @@ Layer CommitLayer
                         mim : SVGModel ed.ficons.icon[ nm, 21 ]
                         if [ mim ] ico = mim
                 tx0 : f32 [ x0 + 8.0 ]
-                av9 : AppView (h.inst > 0 && orb) ? orb.instance_by[ h.inst ] : null
-                ft9 : Texture (av9 && av9.have_frame) ? av9.front[] : null
-                if [ ft9 && ft9.width > 0 && ft9.height > 0 ]
-                    th9 : f32 [ 26.0 ]
-                    tw9 : f32 [ th9 * f32[ ft9.width ] / f32[ ft9.height ] ]
-                    if [ tw9 > 64.0 ] tw9 = 64.0
-                    cv.draw_image[ ft9, rect [ x: x0 + 8.0, y: round[ ry + 2.0 ], w: round[ tw9 ], h: th9 ] ]
-                    tx0 = x0 + 16.0 + round[ tw9 ]
-                el [ ico ]
+                if [ ico ]
                     cv.fill_color[ rgba['#ffffff'] ]
                     cv.stroke_color[ rgba['#ffffff'] ]
                     cv.draw_svg[ ico, x0 + 8.0, round[ ry + 4.5 ], 21.0, 21.0 ]
@@ -549,7 +598,7 @@ Layer CommitLayer
                         vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
         cb.list_st = nls
         # 16px of air after the last row (the create buttons)
-        cb.content_h = f32[ band9 ] * lh + f32[ nls ] * 30.0 + 16.0 + ((band9 > 0) ? 8.0 : 0.0)
+        cb.content_h = f32[ band9 ] * lh + (ry9 - ly) + 16.0 + ((band9 > 0) ? 8.0 : 0.0)
         cv.clear_crop[ ]
 
 element CommitView
@@ -684,7 +733,7 @@ element CommitView
 
     # the display row under y (band rows then list rows), -1 outside.
     # event y already includes the element's own scroll offset
-    func row_at [ ry: f32, trs: i32 ] -> i32
+    func row_at [ ry: f32, rx: f32, trs: i32 ] -> i32
         band9 : i32 [ band_st ]
         # move_event already delivers scroll-adjusted local coords (find_target
         # sets local + scroll), so do NOT add scroll again — that double-counts
@@ -693,7 +742,36 @@ element CommitView
         if [ ry9 < f32[ band9 ] * 36.0 ] return i32[ ry9 / 36.0 ]
         ly9 : f32 [ ry9 - f32[ band9 ] * 36.0 - ((band9 > 0) ? 8.0 : 0.0) ]
         if [ ly9 < 0.0 ] return -1
-        return band9 + i32[ ly9 / 30.0 ]
+        # rows are 30px; instance cards flow several to a line: walk the list
+        # the way draw lays it out, and pick a card by x within its line
+        o : orb9[]
+        if [ !o || !o.find_hits ] return -1
+        cw9  : f32 [ 152.0 ]
+        per9 : i32 [ i32[ (bounds.w - 100.0) / cw9 ] ]
+        if [ per9 < 1 ] per9 = 1
+        y8 : f32 [ 0.0 ]
+        ly8 : f32 [ 0.0 ]
+        ci : i32 [ 0 ]
+        dr : i32 [ 0 ]
+        for [ hi: i32 0, hi < o.find_hits.count, hi += 1 ]
+            h : FindHit o.find_hits[hi]
+            if [ !h ] continue
+            if [ h.is_header && !h.is_spacer && !h.is_newfile && h.text.count == 0 ] continue
+            if [ h.inst > 0 ]
+                if [ !(ci > 0 && ci < per9) ]
+                    ci  = 0
+                    ly8 = y8
+                    y8 += 148.0
+                cx : f32 [ 84.0 + f32[ ci ] * cw9 ]
+                ci += 1
+                if [ ly9 >= ly8 && ly9 < ly8 + 148.0 && rx >= cx - 4.0 && rx < cx + cw9 - 12.0 ] return band9 + dr
+            el
+                ci = 0
+                if [ ly9 < y8 ] return -1
+                if [ ly9 < y8 + 30.0 ] return band9 + dr
+                y8 += 30.0
+            dr += 1
+        return -1
 
     # lines that actually exist in the box: text, plus the line the
     # caret has opened. an empty box is exactly one line
@@ -765,7 +843,7 @@ element CommitView
                     if [ ryf >= ty9 && ryf < ty9 + 64.0 ] nchp = ti
         el
             trs : i32 [ o.commit_tab_rows[ ly.bounds.w - 76.0, reveal_all ] ]
-            r : i32 [ row_at[ ry, trs ] ]
+            r : i32 [ row_at[ ry, rx, trs ] ]
             cx0 : f32 [ 76.0 ]
             if [ r >= 0 && r < trs ]
                 cx : i32 [ i32[ (rx - cx0) / 150.0 ] ]
@@ -847,7 +925,7 @@ element CommitView
                         break
             return
         trs : i32 [ o.commit_tab_rows[ ly.bounds.w - 76.0, reveal_all ] ]
-        r : i32 [ row_at[ ry, trs ] ]
+        r : i32 [ row_at[ ry, rx, trs ] ]
         cx0 : f32 [ 76.0 ]
         if [ r >= 0 && r < trs && o.git_snap && o.git_snap.files ]
             cx : i32 [ i32[ (rx - cx0) / 150.0 ] ]

@@ -267,6 +267,7 @@ element asnes : trinity
 	# a new rom at runtime: stop the machine thread, drop the machine, and the
 	# frame loads the rom and starts it again the way it does at boot
 	default [ Live ] rom  : resource
+		log 'rom changed: {rom} (thread {(emu_started) ? 1 : 0})'
 		if [ emu_started ]
 			emu_stop = true
 			while [ emu_running ] usleep[ 1000 ]
@@ -280,6 +281,19 @@ element asnes : trinity
 	public  putest         	: bool             # display-pipeline test: CPU buffer -> Texture -> screen
 	public [ Live, VolumeRange ] volume : f32  # playback volume 0..1 (adjustable; default 0.22)
 	public  bind           	: bool             # --bind: ask for each button, write binds.agi
+	# the keyboard, one key per SNES button: the host's panel reads 'press key' for each
+	public [ Live, KeyBind ] key_up     : i32 [ 87 ]
+	public [ Live, KeyBind ] key_down   : i32 [ 83 ]
+	public [ Live, KeyBind ] key_left   : i32 [ 65 ]
+	public [ Live, KeyBind ] key_right  : i32 [ 68 ]
+	public [ Live, KeyBind ] key_a      : i32 [ 46 ]
+	public [ Live, KeyBind ] key_b      : i32 [ 47 ]
+	public [ Live, KeyBind ] key_x      : i32 [ 59 ]
+	public [ Live, KeyBind ] key_y      : i32 [ 39 ]
+	public [ Live, KeyBind ] key_l      : i32 [ 81 ]
+	public [ Live, KeyBind ] key_r      : i32 [ 69 ]
+	public [ Live, KeyBind ] key_select : i32 [ 340 ]
+	public [ Live, KeyBind ] key_start  : i32 [ 257 ]
 	mutable dump_req       	: bool             # '9': write each layer plane to /tmp
 	# the F-key rom view: '' = the game alone. shell instruments are separate
 	public  view           	: string [ '' ]
@@ -3808,18 +3822,18 @@ element asnes : trinity
 			return
 		bit  : i32  [ bind_key_bit[ code ] ]
 		if [ bit < 0 ]
-			if   [ code == 87 ]  bit = 11                   # W  Up
-			el [ code == 83 ]  bit = 10                   # S  Down
-			el [ code == 65 ]  bit = 9                    # A  Left
-			el [ code == 68 ]  bit = 8                    # D  Right
-			el [ code == 47 ]  bit = 15                   # /  B
-			el [ code == 39 ]  bit = 14                   # '  Y
-			el [ code == 46 ]  bit = 7                    # .  A
-			el [ code == 59 ]  bit = 6                    # ;  X
-			el [ code == 257 ] bit = 12                   # Enter  Start
-			el [ code == 340 || code == 344 ] bit = 13    # Shift  Select
-			el [ code == 81 ]  bit = 5                    # Q  L
-			el [ code == 69 ]  bit = 4                    # E  R
+			if   [ code == key_up ]     bit = 11
+			el [ code == key_down ]   bit = 10
+			el [ code == key_left ]   bit = 9
+			el [ code == key_right ]  bit = 8
+			el [ code == key_b ]      bit = 15
+			el [ code == key_y ]      bit = 14
+			el [ code == key_a ]      bit = 7
+			el [ code == key_x ]      bit = 6
+			el [ code == key_start ]  bit = 12
+			el [ code == key_select ] bit = 13
+			el [ code == key_l ]      bit = 5
+			el [ code == key_r ]      bit = 4
 		if [ bit >= 0 ]
 			m : u16 [ u16[1 << bit] ]
 			if [ down ] pad1 = pad1 | m
@@ -3922,19 +3936,21 @@ element asnes : trinity
 	# CGRAM: 16 rows of 16, the palettes everything else indexes into
 	func view_pal [ cv: Canvas, vp: rect ]
 		view_header[ cv, vp, 'palette — CGRAM 256 entries, BGR555' ]
-		sw : f32 [ (vp.w - 40.0) / 16.0 ]
+		# the grid starts at the left edge; the row labels take the rest
+		sw : f32 [ (vp.w - 36.0) / 16.0 ]
 		if [ sw > 34.0 ] sw = 34.0
 		for [ r: i32 0, r < 16, r += 1 ]
 			for [ c: i32 0, c < 16, c += 1 ]
 				ix : i32 [ r * 16 + c ]
-				px : f32 [ vp.x + 20.0 + f32[c] * sw ]
+				px : f32 [ vp.x + f32[c] * sw ]
 				py : f32 [ vp.y + 40.0 + f32[r] * sw ]
 				cv.fill_color[ cg_hex[ ix ] ]
 				cv.stroke_width[ 0.0 ]
 				cv.rect_to[ px, py, sw - 2.0, sw - 2.0 ]
 				cv.paint[]
-			vtext[ cv, '{hex2[ r * 16 ]}', vp.x + 20.0 + 16.0 * sw + 8.0,
-				vp.y + 40.0 + f32[r] * sw + sw * 0.5, '#8a8a8a' ]
+			# vtext centers on a 16px box: start it half a box above the row's middle
+			vtext[ cv, '{hex2[ r * 16 ]}', vp.x + 16.0 * sw + 8.0,
+				vp.y + 40.0 + f32[r] * sw + sw * 0.5 - 8.0, '#8a8a8a' ]
 
 	# character data straight out of VRAM, decoded with a chosen palette.
 	# ALL of it: 64K is 2048 tiles at 4bpp, which fits without paging
