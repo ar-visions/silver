@@ -3915,6 +3915,16 @@ Display Window
         cv.save[]
         if [ e.opacity < 1.0 ]
             cv.set_opacity[ cv.get_opacity[] * e.opacity ]
+        # the no_cache mode reaches down: an element under one paints as it does
+        nc : bool [ e.no_cache ]
+        for [ pe: element* e.parent, pe && !nc, pe = pe.parent ]
+            if [ pe.no_cache ] nc = true
+        # no canvas of its own to clip it: a scrolling uncached element crops
+        # to its bounds, or its rows would paint past them
+        if [ nc && e.content_h > 0.0 ]
+            ncx : f32 [ cv.transform_tx[] ]
+            ncy : f32 [ cv.transform_ty[] ]
+            cv.set_crop[ ncx, ncy, ncx + e.bounds.w, ncy + e.bounds.h ]
         margin_l : i32 [ 0 ]
         margin_t : i32 [ 0 ]
         margin_r : i32 [ 0 ]
@@ -3945,10 +3955,6 @@ Display Window
         if [ margin_b > 0 ] margin_b += 1
         ew : i32 [ i32[ceilf[e.bounds.w]] + 1 + margin_l + margin_r ]
         eh : i32 [ i32[ceilf[e.bounds.h]] + 1 + margin_t + margin_b ]
-        # the no_cache mode reaches down: an element under one paints as it does
-        nc : bool [ e.no_cache ]
-        for [ pe: element* e.parent, pe && !nc, pe = pe.parent ]
-            if [ pe.no_cache ] nc = true
         if [ !nc && ( ew > 0 && eh > 0 ) && ( !e.cache_canvas || e.cache_w != ew || e.cache_h != eh ) ]
             if [ e.cache_canvas ]
                 e.cache_canvas.resize[ ew, eh ]
@@ -4312,6 +4318,17 @@ Display Window
                 sbty : f32 [ cv.transform_ty[] ]
                 cv.set_crop[ sbtx, sbty, sbtx + e.bounds.w, sbty + e.bounds.h ]
                 sbl.draw[ cv ]
+                cv.restore[ ]
+
+        # an uncached element has no blit pass: its scrollbar draws here
+        if [ nc && stage == CanvasType.screen ]
+            sbn : ScrollLayer (e.layers) ? cast ScrollLayer [ e.layers['scrollbar'] ] : null
+            if [ sbn && sbn.ctype == stage && !sbn.hide ]
+                sbn.bounds = (sbn.area) ? sbn.area.rectangle[ e.bounds, null, null, e.fc, false, 0.0, 0.0 ] : e.bounds.copy[]
+                sbn.bounds.x -= e.bounds.x
+                sbn.bounds.y -= e.bounds.y
+                cv.save[ ]
+                sbn.draw[ cv ]
                 cv.restore[ ]
 
         last_2 : element

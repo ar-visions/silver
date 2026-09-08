@@ -314,9 +314,10 @@ element EditorView
                 hits: o.find_hits,
                 find_query: (searchable[] && findbar_on[]) ? o.findbar_text : '',
                 elements: edels ]
-        # NOT keyed 'instruments' — that is the TButton's id, and on_press
-        # dispatches on id, so the column would close on every click
-        if [ o.show_instr_col ] t['instance_panel'] = InstancePanel [ ]
+        # the panel is up whenever this pane's module has instances, and not otherwise
+        ed9 : Editor o.pane_at[ pane_index ]
+        li9 : vec AppView (ed9) ? ed9.instances[] : null
+        if [ li9 && li9.count > 0 ] t['instance_panel'] = InstancePanel [ ]
         return t
 
     # the error chip belongs to the file it names: only show it
@@ -1377,9 +1378,13 @@ element LaunchLabel
 
 element LaunchPanel
     body : Layer [ fill_color: rgba [ '#0f1220ee' ], stroke_width: 0.5, stroke_color: rgba [ '#fff2' ] ]
+    # the standard scrollbar: the rows scroll when the section is shorter than they are
+    scrollbar : ScrollLayer [ overlay: true, area: Region { l0 t0 r0 b0 },
+        thumb_color: '#fff3', thumb_w: 6.0, thumb_min_h: 32.0, thumb_radius: 4.0 ]
     public spec : string        # 'name=type=default;...'
     public args : string        # the file's current run args
-    mutable content_h : f32
+    # content_h is the element's own: a redeclaration here would be a SECOND
+    # member, and trinity's scroll, crop and scrollbar read the base one
     mutable rows_h    : f32
     mutable col_x     : f32
     mutable rule_ys   : vec f32     # the bottom of every row: rows are not all one height
@@ -1431,7 +1436,12 @@ element LaunchPanel
         pw : f32 [ (bounds && bounds.w > 0.0) ? bounds.w : 280.0 ]
         lw : f32 [ round[ pw * 0.38 ] ]
         rh : f32 [ 24.0 ]
-        y  : f32 [ 0.0 ]
+        # px rows do not follow the element's scroll on their own: the offset
+        # goes into their areas, and the same offset serves the hit test
+        vh9 : f32 [ (bounds) ? bounds.h : 0.0 ]
+        if [ vh9 > 0.0 && scroll.y > content_h - vh9 ] scroll.y = (content_h > vh9) ? content_h - vh9 : 0.0
+        if [ scroll.y < 0.0 ] scroll.y = 0.0
+        y  : f32 [ 0.0 - scroll.y ]
         # another instance, or a new spec: every control takes its value again
         reseed : bool [ inst != last_inst || !last_spec || last_spec.compare[ spec ] != 0 ]
         last_inst = inst
@@ -1533,8 +1543,8 @@ element LaunchPanel
                         focusable: true, area: ar9 ]
             y += rhx
             rule_ys.push[ y ]
-        content_h = y
-        rows_h    = y
+        content_h = y + scroll.y
+        rows_h    = content_h
         col_x     = lw
         return t
 
@@ -1548,7 +1558,7 @@ element LaunchPanel
             for [ y9: f32 ] in rule_ys
                 cv.rect_to[ 0.0, y9 - 1.0, bounds.w, 1.0 ]
                 cv.paint[]
-        cv.rect_to[ col_x, 0.0, 1.0, rows_h ]
+        cv.rect_to[ col_x, 0.0 - scroll.y, 1.0, rows_h ]
         cv.paint[]
 
     # the control's current value as the app takes it; null when the control is not up
@@ -1770,6 +1780,13 @@ class pane_state
     public file      : path
     public selection : vec2i
 
+# an instance as the session keeps it: the module it is of, its args, its pip.
+# it comes back not running; a click on its row starts it again
+class inst_state
+    public src  : path
+    public args : string
+    public pip  : bool
+
 class FileChg
     public adds : i32
     public dels : i32
@@ -1804,6 +1821,8 @@ element orbiter : trinity # implements compiler
     # the committed backdrop scene and each pane's file + caret
     intern [ StatePersist ] scene       : string
     intern [ StatePersist ] pane_states : vec pane_state
+    intern [ StatePersist ] inst_states : vec inst_state
+    mutable session_dirty : bool       # instances changed: the frame saves
     # false keeps the scenes module out of the process entirely
     public show_scene  : bool   [ true ]
     public live_reload : bool   [ true ]
@@ -1994,9 +2013,10 @@ element orbiter : trinity # implements compiler
     public [ StatePersist ] module_props : map string [string]
     mutable shift_down    : bool
     # the instance panel's sections fold on their headers
+    # one open at a time: properties to begin with
     mutable props_open    : bool [ true ]
-    mutable stack_open    : bool [ true ]
-    mutable instr_open    : bool [ true ]
+    mutable stack_open    : bool
+    mutable instr_open    : bool
     # module whose build set err_file; only it may clear
     intern err_mod       : string
     # index into scene_list[]; the bottom bar steps it
@@ -2227,6 +2247,13 @@ element orbiter : trinity # implements compiler
                 panes.push[ pane_state [
                     file: open_files[slot], selection: sel9 ] ]
         pane_states = panes
+        # the instances, by module: viewers are file handlers, not the user's
+        ists : vec inst_state []
+        if [ instances ]
+            for [ av: AppView ] in instances
+                if [ av.viewer || !av.src ] continue
+                ists.push[ inst_state [ src: av.src, args: (av.module_args) ? av.module_args : '', pip: av.pip ] ]
+        inst_states = ists
         scene       = scene_loaded[]
         save-persistent[]
 
@@ -2255,6 +2282,17 @@ element orbiter : trinity # implements compiler
         # sessions saved when there were four stages can hold a 3, which
         # now wraps past clear and reads as frost
         frost_ix = frost_ix % 4
+        # the instances come back held, with their args; adopt_live_slots then
+        # takes over any of them still running under the host
+        if [ inst_states ]
+            for [ st: inst_state ] in inst_states
+                if [ !st || !st.src ] continue
+                nv : AppView [ ]
+                nv.src         = st.src
+                nv.module_args = st.args
+                nv.pip         = st.pip
+                nv.held        = true
+                add_instance[ nv ]
 
     func load_settings []
         sp  : agi_path[]
@@ -2950,11 +2988,17 @@ element orbiter : trinity # implements compiler
         if [ !ve9 ] return null
         return VolumeSlider [ ve9 ]
 
+    # an instance's debugger is keyed by the instance, not its module: two
+    # instances of one module each keep their own
+    func dbg_key [ av: AppView ] -> string
+        return '{av.app_mod}#{av.iid}'
+
     func attach_publish []
         if [ !attach_pending ] return
         if [ !debuggers ] debuggers = map dbg [string] []
-        debuggers[ attach_mod ] = attach_pending
-        active_target  = attach_mod
+        dk9 : string (attach_av) ? dbg_key[ attach_av ] : attach_mod
+        debuggers[ dk9 ] = attach_pending
+        active_target  = dk9
         if [ attach_av ]
             attach_av.attaching = false
             attach_av.note      = ''
@@ -3207,7 +3251,7 @@ element orbiter : trinity # implements compiler
         clear_stop_lines[]
 
     func app_pause_toggle [ av: AppView ]
-        if [ av.debugger ] active_target = av.app_mod
+        if [ av.debugger ] active_target = dbg_key[ av ]
         if [ av.debugger || av.paused || av.ended || av.slot < 0 ]
             av.pause_toggle*[]
             return
@@ -3221,6 +3265,7 @@ element orbiter : trinity # implements compiler
         inst_seq += 1
         av.iid = inst_seq
         instances.push[ av ]
+        session_dirty = true
 
     func remove_instance [ av: AppView ]
         keep : vec AppView []
@@ -3228,6 +3273,7 @@ element orbiter : trinity # implements compiler
             for [ v: AppView ] in instances
                 if [ v != av ] keep.push[ v ]
         instances = keep
+        session_dirty = true
 
     func instances_of [ p: path ] -> vec AppView
         out : vec AppView []
@@ -3271,7 +3317,22 @@ element orbiter : trinity # implements compiler
             nv.viewer   = !dbg9
             if [ req.count > mod.count ] nv.module_args = req.mid[ mod.count + 1, req.count - mod.count - 1 ]
             nv.cmd      = 'tail -n +1 -F {root}/install/tmp/silver-{mod}.{s}.log'
-            add_instance[ nv ]
+            # a restored instance of this module still held: it IS this one
+            took : bool [ false ]
+            if [ instances ]
+                for [ hv: AppView ] in instances
+                    if [ took || !hv.held || !hv.src ] continue
+                    if [ '{hv.src}' != '{nv.src}' ] continue
+                    hv.app_mod  = nv.app_mod
+                    hv.slot     = nv.slot
+                    hv.started  = true
+                    hv.attached = true
+                    hv.viewer   = nv.viewer
+                    hv.cmd      = nv.cmd
+                    hv.held     = false
+                    if [ nv.module_args && nv.module_args.count > 0 ] hv.module_args = nv.module_args
+                    took = true
+            if [ !took ] add_instance[ nv ]
 
     # one console per module: every live instance's log, each line tagged by its
     # id. no module = the global log, every instance of every module
@@ -3359,7 +3420,7 @@ element orbiter : trinity # implements compiler
             return
         d : dbg av.debugger
         if [ !d || !d.active ] return
-        active_target = av.app_mod
+        active_target = dbg_key[ av ]
         if [ act.compare[ 'continue' ] == 0 ]       d.cont[]
         el [ act.compare[ 'step_next' ] == 0 ] d.step_over[]
         el [ act.compare[ 'step_in' ] == 0 ]   d.step_into[]
@@ -3367,7 +3428,7 @@ element orbiter : trinity # implements compiler
 
     func land_paused [ av: AppView ]
         if [ !av || !av.paused || !av.debugger || av.debugger.running ] return
-        active_target = av.app_mod
+        active_target = dbg_key[ av ]
         for [ pi: i32 0, pi < editor_slots.count, pi += 1 ]
             ed : Editor pane_at[ pi ]
             if [ ed && ed.run_view == av && ed.app_view ] ed.toggle_app_view[]
@@ -3433,8 +3494,8 @@ element orbiter : trinity # implements compiler
             # magnify lights while the findbar is open
             if [ fb_on ] tmask = 1
             tnav.push[ 'magnify' ]
-        if [ show_instr_col ] tmask = tmask | (1 << tnav.count)
-        tnav.push[ 'instruments' ]
+        # one click adds an instance; the panel comes up with it
+        tnav.push[ 'new_instance' ]
         # NOT 'console': that is the RunConsole element's own id, and on_press
         # dispatches on id, so a click in the console would toggle it away
         if [ show_console ] tmask = tmask | (1 << tnav.count)
@@ -3444,7 +3505,7 @@ element orbiter : trinity # implements compiler
         tico : vec string []
         for [ tn: string ] in tnav
             ic9 : string tn
-            if [ tn.compare[ 'instruments' ] == 0 ] ic9 = 'chart'
+            if [ tn.compare[ 'new_instance' ] == 0 ] ic9 = 'add_instance'
             if [ tn.compare[ 'console_tab' ] == 0 ] ic9 = 'console'
             if [ tn.compare[ 'dock' ] == 0 && shift_down ] ic9 = 'undock'
             tico.push[ ic9 ]
@@ -5034,8 +5095,9 @@ element orbiter : trinity # implements compiler
             if [ ev.target ] ev.target.ux.restyle = true
             ev.no_default = true
             return
-        if [ ev.target.id == 'instruments' ]
-            show_instr_col = !show_instr_col
+        if [ ev.target.id == 'new_instance' ]
+            edn : Editor pane_of[ ev.target ]
+            if [ edn ] edn.start_instance[ shift_down ]
             if [ ev.target ] ev.target.ux.restyle = true
             ev.no_default = true
             return
@@ -5756,6 +5818,9 @@ element orbiter : trinity # implements compiler
                     av8.stopped = (av8.debugger && av8.debugger.active && !av8.debugger.running) ? true : false
                     av8.service[ w.screen ]
         attach_publish[]
+        if [ session_dirty ]
+            session_dirty = false
+            save_session[]
         sync_volume[]
         # the global log: every instance's log in one session, retailed as the set changes
         gc9 : string console_cmd[ null ]

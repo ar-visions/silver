@@ -322,7 +322,7 @@ Option InstancePanel
 
     func inst_px [] -> f32
         li : vec AppView inst_list[]
-        return f32[ ((li) ? li.count : 0) + 1 ] * row_h[]
+        return f32[ (li) ? li.count : 0 ] * row_h[]
 
     # the selected instance's group sits at the panel's bottom
     func foot_px [] -> f32
@@ -399,9 +399,13 @@ Option InstancePanel
     # a section header: a fold marker at the left when asked, the name beside it
     func section_title [ cv: Canvas, y: f32, text: string, open: bool, marker: bool ]
         rh : f32 [ row_h[] ]
-        cv.fill_color[ (open) ? rgba [ '#413' ] : rgba [ '#212' ] ]
+        cv.save[]
+        cv.fill_color[ (open) ? rgba [ '#312' ] : rgba [ '#212' ] ]
+        # the open one glows from its edges, a touch brighter on red and blue
+        if [ open ] cv.inner_glow[ rgba [ '#615' ], 10.0 ]
         cv.rect_to[ 0.0, y, bounds.w, rh - 1.0 ]
         cv.paint[]
+        cv.restore[]
         # the names line up whether or not a marker sits before them
         tx : f32 [ 22.0 ]
         if [ marker ]
@@ -558,9 +562,8 @@ Option InstancePanel
             ev9 : EditorView view[]
             my  : f32 [ ev.mouse.pos.y ]
             if [ ed9 && orb && ev9 ]
-                if [ my < rh ] ed9.start_instance[ ev.key.shift ]
-                el [ li ]
-                    y8 : f32 [ rh ]
+                if [ li ]
+                    y8 : f32 [ 0.0 ]
                     for [ i: i32 0, i < li.count, i += 1 ]
                         av9 : AppView li[ i ]
                         if [ my >= y8 && my < y8 + rh ]
@@ -624,27 +627,9 @@ Option InstancePanel
         li  : vec AppView inst_list[]
         ed9 : Editor editor[]
         orb : cast orbiter [ ux.app_object ]
-        cv.fill_color[ rgba [ '#1a1726' ] ]
-        cv.rect_to[ 0.0, 0.0, bounds.w, rh - 1.0 ]
-        cv.paint[]
-        # the +> icon is images/add_instance.svg; the triangle stands in until it exists
-        ni9 : SVGModel icon[ 'add_instance' ]
-        cv.fill_color[ rgba [ '#66bb6a' ] ]
-        if [ ni9 ]
-            cv.stroke_color[ rgba [ '#66bb6a' ] ]
-            cv.draw_svg[ ni9, 6.0, 6.0, 14.0, 14.0 ]
-        el
-            cv.move_to[ 9.0, 7.0 ]
-            cv.line_to[ 19.0, 13.0 ]
-            cv.line_to[ 9.0, 19.0 ]
-            cv.close_path[]
-            cv.paint[]
-        cv.font_size[ 13 ]
-        cv.fill_color[ rgba [ '#e8e2f5' ] ]
-        cv.draw_text[ 'new instance', rect [ x: 24.0, y: 0.0, w: bounds.w - 32.0, h: rh ],
-            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+        # the rows begin at the top: adding an instance is the tab bar's button
         if [ li && orb ]
-            y8 : f32 [ rh ]
+            y8 : f32 [ 0.0 ]
             for [ i: i32 0, i < li.count, i += 1 ]
                 av9 : AppView li[ i ]
                 sel9 : bool [ ed9 && ed9.run_view == av9 ]
