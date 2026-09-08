@@ -402,6 +402,8 @@ ResourceView AppView
     mutable module_args : string     # orbiter's tail args, forwarded to the module
     public  attached   : bool        # orbiter has attached lldb to this app's pid
     public  attaching  : bool        # lldb attach is running on a worker
+    mutable debugger   : dbg
+    mutable pause_pending : bool
     mutable tex0       : Texture     # the app's shared surface pair, imported
     mutable tex1       : Texture
     mutable gen        : i32         # generation of the imported surface
@@ -913,6 +915,11 @@ ResourceView AppView
 
     func pause_toggle []
         if [ ended || slot < 0 ] return
+        if [ debugger && debugger.active ]
+            if [ paused ] debugger.cont[]
+            el            debugger.pause[]
+            paused = !paused
+            return
         if [ paused ]
             host_app_resume[ slot ]
             paused = false
@@ -1493,7 +1500,7 @@ Layer EditorLayer
                 # single-line headers are one slot; double headers span two.
                 gh = (editor.single_line) ? lh - 2.0 : lh * 2.0 - 2.0
             hy : f32 [ y0 + f32[ gl ] * lh - editor.scroll.y ]
-            if [ hy >= bounds.y + pt0 && hy <= bounds.y + bounds.h ]
+            if [ hy + gh > bounds.y + pt0 && hy <= bounds.y + bounds.h ]
                 # hover sits 4px left of the grid; right edge matches the zone
                 glow_row[ cv, bounds.x + lin + 8.0, hy + 1.0, bounds.w - lin - rin - 32.0, gh ]
 
@@ -1504,7 +1511,7 @@ Layer EditorLayer
             if [ editor.row_header[ li ] ] continue
             if [ editor.row_var[ li ] ] continue
             yg : f32 [ round[ y0 + f32[li] * lh - editor.scroll.y ] ]
-            if [ yg < bounds.y + pt0 ] continue
+            if [ yg + lh <= bounds.y + pt0 ] continue
             if [ yg > bounds.y + bounds.h ] break
             bsl  : i32  [ editor.row_src[ li ] ]
             rnum : i32  [ (showing && hits) ? hits[li].line : bsl + 1 ]
@@ -1804,7 +1811,7 @@ Layer EditorLayer
                         cv.draw_svg[ ico, hiox, hioy, hisz, hisz ]
                         cv.paint[ ]
                 continue
-            if [ y < bounds.y + pt0 ] continue
+            if [ y + lh <= bounds.y + pt0 ] continue
             if [ y > bounds.y + bounds.h ] break
             ln    : editor.line_get[ li ]
             rvd   : variable editor.row_var[ li ]
@@ -1847,7 +1854,7 @@ Layer EditorLayer
                 summ : editor.var_summary[ bv ]
                 if [ !summ || summ.count == 0 ] continue
                 ya : f32 [ round[ y0 + f32[li] * lh - editor.scroll.y ] ]
-                if [ ya < bounds.y + pt0 ] continue
+                if [ ya + lh <= bounds.y + pt0 ] continue
                 if [ ya > bounds.y + bounds.h ] break
                 # expandable objects get a [+]/[-] toggle after the summary
                 # open only on the line whose [+] was clicked
@@ -1989,7 +1996,7 @@ Layer EditorLayer
                 pad : 2
                 for [ li: i32 start_line, li <= end_line, li += 1 ]
                     y_row  : f32 [ round[ y0 + f32[li] * lh - editor.scroll.y ] ]
-                    if [ y_row < bounds.y + pt0 || y_row > bounds.y + bounds.h ] continue
+                    if [ y_row + lh <= bounds.y + pt0 || y_row > bounds.y + bounds.h ] continue
                     is_sl  : bool [ li == start_line ]
                     is_el  : bool [ li == end_line ]
                     lnv    : editor.line_get[ li ]
@@ -2039,7 +2046,7 @@ Layer EditorLayer
                 ty : f32 [ cv.transform_ty[] ]
                 for [ li: i32 start_line, li <= end_line, li += 1 ]
                     y_row  : f32 [ round[ y0 + f32[li] * lh - editor.scroll.y ] ]
-                    if [ y_row < bounds.y + pt0 || y_row > bounds.y + bounds.h ] continue
+                    if [ y_row + lh <= bounds.y + pt0 || y_row > bounds.y + bounds.h ] continue
                     is_sl  : bool [ li == start_line ]
                     is_el  : bool [ li == end_line ]
                     lnv    : editor.line_get[ li ]
@@ -2066,7 +2073,7 @@ Layer EditorLayer
             # lists are not text editors: never draw a caret there
             if [ parent.focused && !in_list ]
                 y_sel : f32 [ round[ y0 + f32[editor.sel_line] * lh - editor.scroll.y ] ]
-                if [ y_sel >= bounds.y + pt0 && y_sel <= bounds.y + bounds.h ]
+                if [ y_sel + lh > bounds.y + pt0 && y_sel <= bounds.y + bounds.h ]
                     use_fr : bool [ has_sel && editor.filter_rect ]
                     cx : f32
                     cy : f32
@@ -3711,7 +3718,8 @@ Control Editor
         close_view[]
         # a hosted handler (the markdown viewer) gives way to any other view
         if [ want.compare[ 'editor' ] == 0 ]
-            if [ !active_dbg[] ] close_app[]
+            if [ run_view && run_view.viewer ] close_app[]
+            app_view = false
             load_text[]
             view_name = 'editor'
             return
@@ -3720,7 +3728,8 @@ Control Editor
         # a console the project declares is a view we compose ourselves
         isc  : bool [ orbc && orbc.console_of[ want ] ]
         if [ t || isc ]
-            close_app[]
+            if [ run_view && run_view.viewer ] close_app[]
+            app_view = false
             if [ isc ]
                 # the folder in view is what the process gets, not a file
                 fold : path [ (orbc.nav_root) ? orbc.nav_root : orbc.project_root[] ]
@@ -3747,7 +3756,7 @@ Control Editor
         m9   : string [ (ow9 && ow9.count > 0) ? ow9 : want ]
         # one instance for any given viewer, always new: picking a view
         # closes whatever was running and launches with it
-        if [ run_view ] close_app[]
+        if [ run_view && run_view.viewer ] close_app[]
         if [ m9 ] launch_handler[ m9, src, (ow9 && ow9.count > 0) ? want : '' ]
 
     # a disk change (agents editing) becomes ONE undo item: the buffer
@@ -3905,7 +3914,8 @@ Control Editor
         if [ ns9.compare[ ls9 ] != 0 ]
             view_name = ''
             # a debugger stepping into another module moves the pane; the app stays
-            if [ !active_dbg[] ] close_app[]
+            if [ run_view && run_view.viewer ] close_app[]
+            app_view    = false
             sel_line    = -1
             anchor_line = -1
             anchor_col  = 0
@@ -3987,9 +3997,8 @@ Control Editor
                 if [ es9 ] es9.print_text[ '\r\nstopped\r\n' ]
             close_app[]
             pristine  = false
-            # another instance remains: it takes the pane
+            # another instance remains: it keeps the pane, or the pip
             if [ run_view ]
-                app_view = true
                 if [ ux ] ux.restyle = true
                 return
             no_scroll = false
@@ -4029,8 +4038,8 @@ Control Editor
 
     func select_instance [ i: i32 ]
         if [ !run_views || i < 0 || i >= run_views.count ] return
+        if [ !run_view ] app_view = true
         run_view  = run_views[ i ]
-        app_view  = true
         animated  = true
         pristine  = false
         no_scroll = true
@@ -4711,7 +4720,9 @@ Control Editor
                 toggle_app_run[ ev.key.shift ]
             return
         if [ mk == 297 && run_view ]
-            run_view.pause_toggle*[]
+            orb8 : cast orbiter [ ux.app_object ]
+            if [ orb8 ] orb8.app_pause_toggle[ run_view ]
+            if [ app_view == run_view.is_paused*[] ] toggle_app_view[]
             return
         # escape collapses the innermost open field expansion
         if [ ev.key.unicode == 256 && collapse_last[] ]

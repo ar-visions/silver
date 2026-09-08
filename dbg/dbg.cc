@@ -47,6 +47,7 @@ struct dbg_state {
     lldb::SBTarget   target;
     lldb::SBProcess  process;
     lldb::SBListener listener;
+    bool             interrupted;
 };
 #define S(d)  ((dbg_state*)(d)->impl)
 #define BP(b) ((lldb::SBBreakpoint*)(b)->lldb_bp)
@@ -130,6 +131,25 @@ DBG_API Au dbg_poll(dbg debug) {
             int  fl = 0; while (file_path[fl]) fl++;
             bool is_ag = line_entry.IsValid() && line > 0 && fl >= 3 &&
                          file_path[fl-3] == '.' && file_path[fl-2] == 'a' && file_path[fl-1] == 'g';
+            if (S(debug)->interrupted) {
+                S(debug)->interrupted = false;
+                uint32_t nf = thread.GetNumFrames();
+                for (uint32_t fi = 0; fi < nf; ++fi) {
+                    lldb::SBFrame     fr = thread.GetFrameAtIndex(fi);
+                    lldb::SBLineEntry le = fr.GetLineEntry();
+                    char fp[1024]; fp[0] = 0;
+                    le.GetFileSpec().GetPath(fp, sizeof(fp));
+                    int n = 0; while (fp[n]) n++;
+                    if (!le.IsValid() || le.GetLine() == 0 || n < 3 ||
+                        fp[n-3] != '.' || fp[n-2] != 'a' || fp[n-1] != 'g') continue;
+                    thread.SetSelectedFrame(fi);
+                    line   = le.GetLine();
+                    column = le.GetColumn();
+                    source = f(path, "%s", fp);
+                    break;
+                }
+                is_sig = false;
+            }
             printf("dbg stop: reason=%d sig=%lld ag=%d at %s:%u\n", (int)reason,
                 (long long)(thread.GetStopReasonDataCount() > 0
                     ? thread.GetStopReasonDataAtIndex(0) : -1),
@@ -353,6 +373,7 @@ DBG_API none dbg_pause(dbg debug) {
     if (!debug->active || !debug->impl) return;
     lldb::SBProcess process = S(debug)->process;
     if (!process.IsValid() || process.GetState() != lldb::eStateRunning) return;
+    S(debug)->interrupted = true;
     process.Stop();
 }
 
