@@ -4375,58 +4375,59 @@ Texture Display
         b.unmap[ ]
         return result
 
-    # kms guest: the display is the surface (VK_KHR_display), leased
-    # through the drm master fd devices opened
-    func create_display_surface [ drm_fd: i32, connector: u32, surf: @handle ] -> VkResult
-        # venus owns the display directly: enumerate it (nobody else holds
-        # the virtio-gpu drm master), then present through its own scanout
-        nd : u32 0
-        vkGetPhysicalDeviceDisplayPropertiesKHR[ vk.physical_device, @nd, null ]
-        log 'display: venus reports {nd} displays'
-        expect nd > 0, "venus enumerates no display"
-        dprops : local VkDisplayPropertiesKHR [ nd ]
-        vkGetPhysicalDeviceDisplayPropertiesKHR[ vk.physical_device, @nd, dprops ]
-        disp : VkDisplayKHR [ dprops[0].display ]
-        m : u32 0
-        vkGetDisplayModePropertiesKHR[ vk.physical_device, disp, @m, null ]
-        expect m > 0, "no display mode"
-        modes : local VkDisplayModePropertiesKHR [ m ]
-        vkGetDisplayModePropertiesKHR[ vk.physical_device, disp, @m, modes ]
-        # the connector's own mode (devices read it from kms) is first; a
-        # bigger mode only costs venus fill rate and the host drops it
-        best : u32 0
-        for [ i: u32 0, i < m, i += 1 ]
-            if [ modes[i].parameters.visibleRegion.width == u32[ width ] && modes[i].parameters.visibleRegion.height == u32[ height ] ] best = i
-        ext : VkExtent2D modes[best].parameters.visibleRegion
-        pc : u32 0
-        vkGetPhysicalDeviceDisplayPlanePropertiesKHR[ vk.physical_device, @pc, null ]
-        expect pc > 0, "no display plane"
-        planes : local VkDisplayPlanePropertiesKHR [ pc ]
-        vkGetPhysicalDeviceDisplayPlanePropertiesKHR[ vk.physical_device, @pc, planes ]
-        plane : u32 0
-        for [ i: u32 0, i < pc, i += 1 ]
-            dc : u32 0
-            vkGetDisplayPlaneSupportedDisplaysKHR[ vk.physical_device, i, @dc, null ]
-            sup : local VkDisplayKHR [ dc + 1 ]
-            vkGetDisplayPlaneSupportedDisplaysKHR[ vk.physical_device, i, @dc, sup ]
-            ok : bool false
-            for [ j: u32 0, j < dc, j += 1 ]
-                if [ sup[j] == disp ] ok = true
-            if [ ok ]
-                plane = i
-                break
-        info : VkDisplaySurfaceCreateInfoKHR [
-            sType:           VK_STRUCTURE_TYPE_DISPLAY_SURFACE_CREATE_INFO_KHR,
-            displayMode:     modes[best].displayMode,
-            planeIndex:      plane,
-            planeStackIndex: planes[plane].currentStackIndex,
-            transform:       VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
-            globalAlpha:     1.0,
-            alphaMode:       VK_DISPLAY_PLANE_ALPHA_OPAQUE_BIT_KHR,
-            imageExtent:     ext ]
-        width  = i32[ ext.width ]
-        height = i32[ ext.height ]
-        return vkCreateDisplayPlaneSurfaceKHR[ vk.instance, @info, null, surf ]
+    ifdef [ linux ]
+        # kms guest: the display is the surface (VK_KHR_display), leased
+        # through the drm master fd devices opened
+        func create_display_surface [ drm_fd: i32, connector: u32, surf: @handle ] -> VkResult
+            # venus owns the display directly: enumerate it (nobody else holds
+            # the virtio-gpu drm master), then present through its own scanout
+            nd : u32 0
+            vkGetPhysicalDeviceDisplayPropertiesKHR[ vk.physical_device, @nd, null ]
+            log 'display: venus reports {nd} displays'
+            expect nd > 0, "venus enumerates no display"
+            dprops : local VkDisplayPropertiesKHR [ nd ]
+            vkGetPhysicalDeviceDisplayPropertiesKHR[ vk.physical_device, @nd, dprops ]
+            disp : VkDisplayKHR [ dprops[0].display ]
+            m : u32 0
+            vkGetDisplayModePropertiesKHR[ vk.physical_device, disp, @m, null ]
+            expect m > 0, "no display mode"
+            modes : local VkDisplayModePropertiesKHR [ m ]
+            vkGetDisplayModePropertiesKHR[ vk.physical_device, disp, @m, modes ]
+            # the connector's own mode (devices read it from kms) is first; a
+            # bigger mode only costs venus fill rate and the host drops it
+            best : u32 0
+            for [ i: u32 0, i < m, i += 1 ]
+                if [ modes[i].parameters.visibleRegion.width == u32[ width ] && modes[i].parameters.visibleRegion.height == u32[ height ] ] best = i
+            ext : VkExtent2D modes[best].parameters.visibleRegion
+            pc : u32 0
+            vkGetPhysicalDeviceDisplayPlanePropertiesKHR[ vk.physical_device, @pc, null ]
+            expect pc > 0, "no display plane"
+            planes : local VkDisplayPlanePropertiesKHR [ pc ]
+            vkGetPhysicalDeviceDisplayPlanePropertiesKHR[ vk.physical_device, @pc, planes ]
+            plane : u32 0
+            for [ i: u32 0, i < pc, i += 1 ]
+                dc : u32 0
+                vkGetDisplayPlaneSupportedDisplaysKHR[ vk.physical_device, i, @dc, null ]
+                sup : local VkDisplayKHR [ dc + 1 ]
+                vkGetDisplayPlaneSupportedDisplaysKHR[ vk.physical_device, i, @dc, sup ]
+                ok : bool false
+                for [ j: u32 0, j < dc, j += 1 ]
+                    if [ sup[j] == disp ] ok = true
+                if [ ok ]
+                    plane = i
+                    break
+            info : VkDisplaySurfaceCreateInfoKHR [
+                sType:           VK_STRUCTURE_TYPE_DISPLAY_SURFACE_CREATE_INFO_KHR,
+                displayMode:     modes[best].displayMode,
+                planeIndex:      plane,
+                planeStackIndex: planes[plane].currentStackIndex,
+                transform:       VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
+                globalAlpha:     1.0,
+                alphaMode:       VK_DISPLAY_PLANE_ALPHA_OPAQUE_BIT_KHR,
+                imageExtent:     ext ]
+            width  = i32[ ext.width ]
+            height = i32[ ext.height ]
+            return vkCreateDisplayPlaneSurfaceKHR[ vk.instance, @info, null, surf ]
 
     func init [ ]
         sess : getenv[ 'SILVER_ISOLATE_SESSION' ]
@@ -4466,9 +4467,10 @@ Texture Display
             platform_set_cursor_callback[ glfw, @handle_cursor ]
             platform_set_scroll_callback[ glfw, @handle_scroll ]
             platform_set_char_callback  [ glfw, @handle_char ]
-            kr : VkResult [ create_display_surface[ 0 - 1, 0, @surf ] ]
-            expect kr == VK_SUCCESS, "kms display surface failed"
-            Au.live_surface_set[ surf ]
+            ifdef [ linux ]
+                kr : VkResult [ create_display_surface[ 0 - 1, 0, @surf ] ]
+                expect kr == VK_SUCCESS, "kms display surface failed"
+                Au.live_surface_set[ surf ]
         el [ !backbuffer ]
             glfw = handle Au.live_window_get[]
             if [ !glfw ]
