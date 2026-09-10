@@ -188,21 +188,25 @@ def build_import(name, uri, commit, _config_lines, install_dir, extra):
     checkout_dir.parent.mkdir(parents=True, exist_ok=True)
     build_dir.mkdir(parents=True, exist_ok=True)
 
-    # fetch or clone
+    # fetch or clone, shallow: only the pinned commit comes down, never the history
     if last_uri == uri and last_commit == commit:
         pass
     elif checkout_dir.exists():
         if commit:
-            run(f"git -C {checkout_dir} fetch origin")
-            run(f"git -C {checkout_dir} checkout {commit}")
-            run(f"git -C {checkout_dir} pull origin {commit}", check=False)
+            run(f"git -C {checkout_dir} fetch --depth 1 origin {commit}")
+            run(f"git -C {checkout_dir} checkout --detach FETCH_HEAD")
     else:
-        run(f"git clone {uri} {checkout_dir}")
         if commit:
-            run(f"git -C {checkout_dir} checkout {commit}")
+            checkout_dir.mkdir(parents=True, exist_ok=True)
+            run(f"git -C {checkout_dir} init -q")
+            run(f"git -C {checkout_dir} remote add origin {uri}")
+            run(f"git -C {checkout_dir} fetch --depth 1 origin {commit}")
+            run(f"git -C {checkout_dir} checkout --detach FETCH_HEAD")
+        else:
+            run(f"git clone --depth 1 {uri} {checkout_dir}")
 
     if (checkout_dir / '.git').exists():
-        run(f"git -C {checkout_dir} submodule update --init --recursive")
+        run(f"git -C {checkout_dir} submodule update --init --recursive --depth 1")
 
     if overlay_diff.exists():
         # skip when the diff is already applied (reverse applies cleanly)
