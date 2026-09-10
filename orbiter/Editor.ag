@@ -137,6 +137,9 @@ class ResourceView
         return false
     func view_move [ ev: Event ] -> bool
         return false
+    # the pane owns a mouse lock for the view: motion arrives as ev.mouse.delta
+    func view_lock_move [ ev: Event ]
+        return
     func view_wheel [ ev: Event ] -> bool
         return false
     func view_release [ ev: Event ]
@@ -415,6 +418,7 @@ ResourceView AppView
     mutable cmd        : string      # console command (streams the app's log)
     mutable dispatched : bool        # cmd handed to its console session (once per run)
     public  clean_build : bool       # '*' marker: silver-host runs --clean first
+    public  debug_build : bool       # '#' marker: the module builds -O0 -g for the debugger
     public  viewer      : bool       # a file handler: hosted to view, never under the debugger
     mutable doc        : path
     mutable pend_w     : i32
@@ -424,6 +428,12 @@ ResourceView AppView
     mutable pend_us    : i64
     mutable started    : bool
     mutable ready      : bool
+    # mouse lock asked by the app (HM.lock): 1 lock, 2 release; centre in app px; carried fractions
+    mutable lock_req   : i32
+    mutable lock_cx    : i32
+    mutable lock_cy    : i32
+    mutable lock_ax    : f32
+    mutable lock_ay    : f32
     mutable ended       : bool
     mutable paused     : bool        # peer frozen (SIGSTOP) — last frame shows
     mutable stopped    : bool        # parked in the debugger: never ask it anything
@@ -476,6 +486,13 @@ ResourceView AppView
         if [ held ] return
         if [ !started ] start[]
         if [ slot < 0 ] return
+        for [ i: i32 0, i < 16, i += 1 ]
+            t : i32 [ host_poll2[ slot, 0 ] ]
+            if [ t == 0 ] break
+            if [ t == i32[ HM.lock ] ]
+                lock_req = (host_pa[] != 0) ? 1 : 2
+                lock_cx  = host_pb[]
+                lock_cy  = host_pc[]
         st : i32 [ host_app_state[ slot ] ]
         if [ st == 4 && !paused ]
             paused = true
@@ -861,7 +878,9 @@ ResourceView AppView
         mod : (di > 0) ? fn.mid[ 0, di ] : fn
         # '!' asks the host to stop the app for the debugger; a viewer never does
         dbg9 : string [ (viewer) ? '' : '!' ]
-        mark : string [ (clean_build) ? '{dbg9}*' : dbg9 ]
+        dbb9 : string [ (debug_build) ? '#' : '' ]
+        cln9 : string [ (clean_build) ? '*' : '' ]
+        mark : string '{dbg9}{dbb9}{cln9}'
         # flags BEFORE the doc: Au_with_cstrs stops parsing at the first
         # positional, so a trailing flag would never reach the app's schema
         ma9 : string [ (module_args && module_args.count > 0) ? '{module_args} ' : '' ]
@@ -948,6 +967,20 @@ ResourceView AppView
         host_post2[ slot, 1, i32[ HM.move ], i32[ bx ], i32[ by ], 0 ]
         return true
 
+    # locked: the delta scales to app pixels and rides as a move from the app's lock centre
+    func view_lock_move [ ev: Event ]
+        if [ ended || !ready || slot < 0 ] return
+        r9 : view_rect[]
+        if [ r9.w <= 0.0 ] return
+        lock_ax += ev.mouse.delta.x * f32[ aw ] / r9.w
+        lock_ay += ev.mouse.delta.y * f32[ ah ] / r9.h
+        dx : i32 [ i32[ lock_ax ] ]
+        dy : i32 [ i32[ lock_ay ] ]
+        if [ dx == 0 && dy == 0 ] return
+        lock_ax -= f32[ dx ]
+        lock_ay -= f32[ dy ]
+        host_post2[ slot, 1, i32[ HM.move ], lock_cx + dx, lock_cy + dy, 0 ]
+
     func view_wheel [ ev: Event ] -> bool
         if [ ended || !ready || slot < 0 ] return false
         r9 : view_rect[]
@@ -997,6 +1030,10 @@ ResourceView AppView
         fade_us    = 0
         seen_us    = 0
         note       = ''
+        # the new process parks for the debugger like the first did: release it again
+        attached   = false
+        attaching  = false
+        debugger   = null
 
     intern func cleanup []
         instr_clear[]
@@ -1286,6 +1323,10 @@ Layer EditorLayer
         if [ editor.run_view ]
             editor.run_view.stopped = editor.stopped[]
             editor.run_view.service[ cv ]
+            if [ editor.run_view.lock_req != 0 ]
+                if [ editor.run_view.lock_req == 1 ] editor.ux.mouse_lock[ editor ]
+                el editor.ux.mouse_unlock[]
+                editor.run_view.lock_req = 0
             if [ editor.app_view && !editor.show_hits && !editor.stopped[] ]
                 b2 : rect [ x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h ]
                 bot : element (editor.elements) ? editor.elements['bottom'] : null
@@ -3768,9 +3809,13 @@ Control Editor
         run_view = (keep && keep.count > 0) ? keep[ keep.count - 1 ] : null
         app_view = run_view != null
 
+    # the instances of the module this pane shows: the shown instance's own
+    # module when one was picked from the nav list, else the pane's file
     func instances [] -> vec AppView
         orb : cast orbiter [ ux.app_object ]
-        return (orb) ? orb.instances_of[ band_src[] ] : null
+        if [ !orb ] return null
+        src9 : path (run_view && run_view.src) ? run_view.src : band_src[]
+        return orb.instances_of[ src9 ]
 
     # which view this pane should show: the user's pick, else the default
     func resolve_view [] -> string
@@ -4531,6 +4576,9 @@ Control Editor
         pristine = false
 
     func on_move [ ev: Event ]
+        if [ run_view && ux.locked == a ]
+            run_view.view_lock_move*[ ev ]
+            return
         # not just when maximised: the side panel forwards hover too
         if [ run_view ]
             if [ run_view.view_move*[ ev ] ] return

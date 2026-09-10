@@ -908,6 +908,9 @@ class vk_context
     intern  compute_pool        : VkCommandPool
     intern  compute_family      : i32 [ -1 ]
     intern  compute_index       : i32
+    # the h.264 encoder's queue; -1 family = no video encode on this device
+    intern  encode_queue        : VkQueue
+    intern  encode_family       : i32 [ -1 ]
 
     # handle accessors for cross-module compute consumers (ai): field
     # reads from another module land at shifted offsets past interns
@@ -1167,12 +1170,24 @@ class vk_context
         dmabuf_supported      : bool false
         drm_mod_supported     : bool false
         ext_mem_win32_supported : bool false
+        video_queue_supported   : bool false
+        video_encode_supported  : bool false
+        video_h264_supported    : bool false
+        sync2_supported         : bool false
         swapchain_ext         : symbol VK_KHR_SWAPCHAIN_EXTENSION_NAME
         for [ i: u32 0, i < ext_count, i += 1 ]
             ext : extensions[i].extensionName
             device_exts.push[ ext ]
             if [ strcmp[ ext, VK_KHR_SWAPCHAIN_EXTENSION_NAME ] == 0 ]
                 swapchain_supported = true
+            if [ strcmp[ ext, VK_KHR_VIDEO_QUEUE_EXTENSION_NAME ] == 0 ]
+                video_queue_supported = true
+            if [ strcmp[ ext, VK_KHR_VIDEO_ENCODE_QUEUE_EXTENSION_NAME ] == 0 ]
+                video_encode_supported = true
+            if [ strcmp[ ext, VK_KHR_VIDEO_ENCODE_H264_EXTENSION_NAME ] == 0 ]
+                video_h264_supported = true
+            if [ strcmp[ ext, VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME ] == 0 ]
+                sync2_supported = true
             if [ strcmp[ ext, VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME ] == 0 ]
                 ext_mem_supported = true
             if [ strcmp[ ext, VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME ] == 0 ]
@@ -1188,10 +1203,22 @@ class vk_context
                 portability_supported = true
         expect swapchain_supported, "VK_KHR_swapchain not supported by physical device"
 
-        enabled_dev_exts  : vec symbol [ 8 ]
+        enabled_dev_exts  : vec symbol [ 12 ]
         enabled_ext_count : u32 0
         enabled_dev_exts[ enabled_ext_count ] = VK_KHR_SWAPCHAIN_EXTENSION_NAME
         enabled_ext_count += 1
+
+        # h.264 encode on the video queue; the video extensions require synchronization2
+        video_encode : bool [ video_queue_supported && video_encode_supported && video_h264_supported && sync2_supported ]
+        if [ video_encode ]
+            enabled_dev_exts[ enabled_ext_count ] = VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME
+            enabled_ext_count += 1
+            enabled_dev_exts[ enabled_ext_count ] = VK_KHR_VIDEO_QUEUE_EXTENSION_NAME
+            enabled_ext_count += 1
+            enabled_dev_exts[ enabled_ext_count ] = VK_KHR_VIDEO_ENCODE_QUEUE_EXTENSION_NAME
+            enabled_ext_count += 1
+            enabled_dev_exts[ enabled_ext_count ] = VK_KHR_VIDEO_ENCODE_H264_EXTENSION_NAME
+            enabled_ext_count += 1
 
         ifdef [ linux ]
             if [ ext_mem_supported && ext_mem_fd_supported && dmabuf_supported ]
@@ -1218,8 +1245,13 @@ class vk_context
                 enabled_ext_count += 1
 
         # query device features
+        sync2_features: VkPhysicalDeviceSynchronization2Features [
+            sType:            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES,
+            synchronization2: VK_TRUE
+        ]
         buffer_addr_features: VkPhysicalDeviceBufferDeviceAddressFeatures [
             sType:               VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES,
+            pNext:               (video_encode) ? @sync2_features : null,
             bufferDeviceAddress: VK_TRUE
         ]
         features2: VkPhysicalDeviceFeatures2 [
@@ -1248,10 +1280,19 @@ class vk_context
                 compute_family = 0
                 compute_index  = 1
 
+        # the encoder lives on its own family: the video queue
+        encode_family = -1
+        if [ video_encode ]
+            for [ qi: u32 1, qi < qf_count, qi += 1 ]
+                if [ (qf_props[qi].queueFlags & VK_QUEUE_VIDEO_ENCODE_BIT_KHR) != 0 && i32[ qi ] != compute_family ]
+                    encode_family = i32[ qi ]
+                    break
+
         # create logical device
         pris   : local f32 [2] [ 1.0, 0.0 ]
         pris_c : local f32 [1] [ 0.0 ]
-        qinfos : local VkDeviceQueueCreateInfo [2]
+        pris_e : local f32 [1] [ 0.0 ]
+        qinfos : local VkDeviceQueueCreateInfo [3]
         qinfos[0] = VkDeviceQueueCreateInfo [
             sType:               VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
             queueFamilyIndex:    0,
@@ -1267,6 +1308,13 @@ class vk_context
                 queueFamilyIndex:    u32[ compute_family ],
                 queueCount:          1,
                 pQueuePriorities:    pris_c ]
+        if [ encode_family >= 0 ]
+            qinfos[qi_count] = VkDeviceQueueCreateInfo [
+                sType:               VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+                queueFamilyIndex:    u32[ encode_family ],
+                queueCount:          1,
+                pQueuePriorities:    pris_e ]
+            qi_count += 1
         result = vkCreateDevice[ physical_device, VkDeviceCreateInfo [
             sType:                   VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
             pNext:                   @features2,
@@ -1503,6 +1551,80 @@ class vk_context
             expect err == 0, 'share: vkAllocateMemory (import) failed'
             err = vkBindImageMemory[ device, img, mem, 0 ]
             expect err == 0, 'share: vkBindImageMemory (import) failed'
+            t : Texture [ vk: a, w: disp, width: w2, height: h2,
+                vk_format: fmt, vk_image: img, vk_memory: mem ]
+            t.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
+            return t
+
+        # a client's dma-buf as a Wayland compositor hands it over: an explicit
+        # DRM format modifier with the plane laid out as the producer says.
+        # the fd is consumed. fourcc is the DRM code: ARGB/XRGB8888 = bgra here
+        func import_dmabuf_image [ dma_fd: i32, w2: i32, h2: i32, fourcc: u32, modifier: u64,
+                                   stride: u32, offset: u32, disp: Display ] -> Texture
+            fmt : i32 [ VK_FORMAT_B8G8R8A8_UNORM ]
+            # 'AB24' / 'XB24' are abgr in memory: rgba as vulkan reads it
+            if [ fourcc == 0x34324241 || fourcc == 0x34324258 ] fmt = VK_FORMAT_R8G8B8A8_UNORM
+            plane : VkSubresourceLayout [ ]
+            plane.offset   = offset
+            plane.rowPitch = stride
+            plane.size     = 0
+            mci : VkImageDrmFormatModifierExplicitCreateInfoEXT [ ]
+            mci.sType                    = VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_EXPLICIT_CREATE_INFO_EXT
+            mci.drmFormatModifier        = modifier
+            mci.drmFormatModifierPlaneCount = 1
+            mci.pPlaneLayouts            = @plane
+            ext : VkExternalMemoryImageCreateInfo [ ]
+            ext.sType       = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO
+            ext.pNext       = @mci
+            ext.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT
+            info : VkImageCreateInfo [ ]
+            info.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO
+            info.pNext         = @ext
+            info.imageType     = VK_IMAGE_TYPE_2D
+            info.format        = fmt
+            info.extent        = VkExtent3D [ w2, h2, 1 ]
+            info.mipLevels     = 1
+            info.arrayLayers   = 1
+            info.samples       = VK_SAMPLE_COUNT_1_BIT
+            info.tiling        = VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT
+            info.usage         = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT
+            info.sharingMode   = VK_SHARING_MODE_EXCLUSIVE
+            info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED
+            img : VkImage [ null ]
+            err : i32 [ vkCreateImage[ device, @info, null, @img ] ]
+            expect err == 0, 'dmabuf: vkCreateImage (drm modifier) failed'
+            mreq : VkMemoryRequirements [ ]
+            vkGetImageMemoryRequirements[ device, img, @mreq ]
+            fd_props : VkMemoryFdPropertiesKHR [ ]
+            fd_props.sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR
+            err = _vkGetMemoryFdPropertiesKHR[ device,
+                VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, dma_fd, @fd_props ]
+            expect err == 0, 'dmabuf: vkGetMemoryFdPropertiesKHR failed'
+            allowed : u32 [ mreq.memoryTypeBits & fd_props.memoryTypeBits ]
+            expect allowed != 0, 'dmabuf: no memory type for the fd'
+            mti : u32 [ 0 ]
+            for [ k: u32 0, k < 32, k += 1 ]
+                if [ allowed & (u32[1] << k) ]
+                    mti = k
+                    break
+            ded : VkMemoryDedicatedAllocateInfo [ ]
+            ded.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO
+            ded.image = img
+            imp : VkImportMemoryFdInfoKHR [ ]
+            imp.sType      = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR
+            imp.pNext      = @ded
+            imp.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT
+            imp.fd         = dma_fd
+            mai : VkMemoryAllocateInfo [ ]
+            mai.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO
+            mai.pNext           = @imp
+            mai.allocationSize  = mreq.size
+            mai.memoryTypeIndex = mti
+            mem : VkDeviceMemory [ null ]
+            err = vkAllocateMemory[ device, @mai, null, @mem ]
+            expect err == 0, 'dmabuf: vkAllocateMemory (import) failed'
+            err = vkBindImageMemory[ device, img, mem, 0 ]
+            expect err == 0, 'dmabuf: vkBindImageMemory failed'
             t : Texture [ vk: a, w: disp, width: w2, height: h2,
                 vk_format: fmt, vk_image: img, vk_memory: mem ]
             t.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
@@ -1882,6 +2004,8 @@ class vk_context
             expect result == VK_SUCCESS, "failed to create command pool"
             # compute queue + its own pool: owned by whichever worker thread
             # runs compute — never shared with the graphics queue or pool
+            if [ encode_family >= 0 ]
+                vkGetDeviceQueue[ device, u32[ encode_family ], 0, @encode_queue ]
             if [ compute_family >= 0 ]
                 vkGetDeviceQueue[ device, u32[ compute_family ], u32[ compute_index ], @compute_queue ]
                 cpool_info: VkCommandPoolCreateInfo [
@@ -3232,8 +3356,10 @@ class Command
     # only a reuse of THIS buffer waits, and only for its own work
     intern fence   : VkFence
     intern pending : bool
+    # signalled by the submit, for work queued on another queue
+    public signal  : VkSemaphore
 
-    func begin [ ] 
+    func begin [ ]
         if [ pending ]
             vkWaitForFences[ vk.device, 1, @fence, VK_TRUE, UINT64_MAX ]
             vk.fence_release[ fence ]
@@ -3248,9 +3374,11 @@ class Command
     func submit [ ] 
         vkEndCommandBuffer[ cmd ]
         si: VkSubmitInfo [
-            sType:              VK_STRUCTURE_TYPE_SUBMIT_INFO,
-            commandBufferCount: 1,
-            pCommandBuffers:    @cmd
+            sType:                VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            commandBufferCount:   1,
+            pCommandBuffers:      @cmd,
+            signalSemaphoreCount: (signal) ? 1 : 0,
+            pSignalSemaphores:    @signal
         ]
         if [ !fence ]
             vk.fence_acquire[]

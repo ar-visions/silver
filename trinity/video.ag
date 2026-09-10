@@ -1,0 +1,686 @@
+extend trinity
+
+import <video.h>
+
+enum EncodeSurface
+    src:  0
+    nv12: 1
+
+# rgba to nv12: each invocation packs four pixels of luma, and on even rows
+# two chroma pairs, into the plane buffer the encoder reads
+shader NV12Convert
+    mutable cw : i32
+    mutable ch : i32
+    attrib src  : LayoutBinding [ type:typeid[ EncodeSurface ], id: EncodeSurface.src,  count:1, format: typeid[ rgba8 ] ]
+    attrib nv12 : StorageBuffer [ type:typeid[ EncodeSurface ], id: EncodeSurface.nv12, count:1, format: typeid[ u32 ], writable: true ]
+
+    func compute [] -> GLSL none {
+        ivec2 gid   = ivec2(gl_GlobalInvocationID.xy);
+        int   quads = ubo.cw / 4;
+        if (gid.x >= quads || gid.y >= ubo.ch) return;
+        ivec2 lim  = textureSize(src, 0) - ivec2(1, 1);
+        uint  luma = 0u;
+        for (int i = 0; i < 4; i++) {{
+            vec3  c = texelFetch(src, min(ivec2(gid.x * 4 + i, gid.y), lim), 0).rgb;
+            float y = 16.0 + 65.481 * c.r + 128.553 * c.g + 24.966 * c.b;
+            luma |= uint(clamp(y, 0.0, 255.0) + 0.5) << (8 * i);
+        }}
+        nv12[gid.y * quads + gid.x] = luma;
+        if ((gid.y & 1) == 0) {{
+            uint chroma = 0u;
+            for (int i = 0; i < 2; i++) {{
+                ivec2 p = ivec2(gid.x * 4 + i * 2, gid.y);
+                vec3  c = texelFetch(src, min(p, lim), 0).rgb
+                        + texelFetch(src, min(p + ivec2(1, 0), lim), 0).rgb
+                        + texelFetch(src, min(p + ivec2(0, 1), lim), 0).rgb
+                        + texelFetch(src, min(p + ivec2(1, 1), lim), 0).rgb;
+                c *= 0.25;
+                float u = 128.0 - 37.797 * c.r - 74.203 * c.g + 112.0  * c.b;
+                float v = 128.0 + 112.0  * c.r - 93.786 * c.g - 18.214 * c.b;
+                chroma |= uint(clamp(u, 0.0, 255.0) + 0.5) << (16 * i);
+                chroma |= uint(clamp(v, 0.0, 255.0) + 0.5) << (16 * i + 8);
+            }}
+            nv12[(ubo.cw * ubo.ch) / 4 + (gid.y / 2) * quads + gid.x] = chroma;
+        }}
+    }
+
+
+# h.264 on the vulkan video queue: the picture never leaves the gpu, only
+# the bitstream comes back
+class Encoder
+    context vk          : vk_context
+    public  width       : i32
+    public  height      : i32
+    public  fps         : i32
+    public  qp          : i32 [ 20 ]
+    public  fd          : i32
+    intern  coded_w     : i32
+    intern  coded_h     : i32
+    intern  gop         : i32
+    intern  h264_profile : VkVideoEncodeH264ProfileInfoKHR
+    intern  usage       : VkVideoEncodeUsageInfoKHR
+    intern  profile     : VkVideoProfileInfoKHR
+    intern  profiles    : VkVideoProfileListInfoKHR
+    intern  h264_caps   : VkVideoEncodeH264CapabilitiesKHR
+    intern  encode_caps : VkVideoEncodeCapabilitiesKHR
+    intern  caps        : VkVideoCapabilitiesKHR
+    intern  rc_layer    : VkVideoEncodeRateControlLayerInfoKHR
+    intern  rc_h264     : VkVideoEncodeH264RateControlInfoKHR
+    intern  rc          : VkVideoEncodeRateControlInfoKHR
+    intern  quality     : VkVideoEncodeQualityLevelInfoKHR
+    intern  session     : VkVideoSessionKHR
+    intern  params      : VkVideoSessionParametersKHR
+    intern  session_memory : vec u64
+    # a handle out-param has to be a member: a local comes back null
+    intern  memory_new  : VkDeviceMemory
+    intern  sps         : StdVideoH264SequenceParameterSet
+    intern  vui         : StdVideoH264SequenceParameterSetVui
+    intern  pps         : StdVideoH264PictureParameterSet
+    intern  header      : vec u8
+    intern  header_sent : bool
+    intern  src_image   : VkImage
+    intern  src_alloc   : VmaAllocation
+    intern  src_view    : VkImageView
+    intern  src_layout  : VkImageLayout
+    intern  dpb_image   : VkImage
+    intern  dpb_alloc   : VmaAllocation
+    intern  dpb_view0   : VkImageView
+    intern  dpb_view1   : VkImageView
+    intern  bits        : VkBuffer
+    intern  bits_alloc  : VmaAllocation
+    intern  bits_map    : handle
+    intern  bits_size   : i64
+    intern  queries     : VkQueryPool
+    intern  pool        : VkCommandPool
+    intern  cmd         : VkCommandBuffer
+    intern  fence       : VkFence
+    intern  pending     : bool
+    intern  frames      : i32
+    intern  prev_frame_num : i32
+    intern  prev_poc    : i32
+    intern  idr_id      : i32
+    intern  _vkGetPhysicalDeviceVideoCapabilitiesKHR     : PFN_vkGetPhysicalDeviceVideoCapabilitiesKHR
+    intern  _vkGetPhysicalDeviceVideoFormatPropertiesKHR : PFN_vkGetPhysicalDeviceVideoFormatPropertiesKHR
+    intern  _vkCreateVideoSessionKHR                     : PFN_vkCreateVideoSessionKHR
+    intern  _vkDestroyVideoSessionKHR                    : PFN_vkDestroyVideoSessionKHR
+    intern  _vkGetVideoSessionMemoryRequirementsKHR      : PFN_vkGetVideoSessionMemoryRequirementsKHR
+    intern  _vkBindVideoSessionMemoryKHR                 : PFN_vkBindVideoSessionMemoryKHR
+    intern  _vkCreateVideoSessionParametersKHR           : PFN_vkCreateVideoSessionParametersKHR
+    intern  _vkDestroyVideoSessionParametersKHR          : PFN_vkDestroyVideoSessionParametersKHR
+    intern  _vkGetEncodedVideoSessionParametersKHR       : PFN_vkGetEncodedVideoSessionParametersKHR
+    intern  _vkCmdBeginVideoCodingKHR                    : PFN_vkCmdBeginVideoCodingKHR
+    intern  _vkCmdEndVideoCodingKHR                      : PFN_vkCmdEndVideoCodingKHR
+    intern  _vkCmdControlVideoCodingKHR                  : PFN_vkCmdControlVideoCodingKHR
+    intern  _vkCmdEncodeVideoKHR                         : PFN_vkCmdEncodeVideoKHR
+
+    # a plain layout change; the semaphore already ordered the memory
+    func layout [ f: VkCommandBuffer, image: VkImage, from: VkImageLayout, to: VkImageLayout, layers: i32 ]
+        barrier : VkImageMemoryBarrier [
+            sType:               VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            srcAccessMask:       VK_ACCESS_MEMORY_WRITE_BIT,
+            dstAccessMask:       VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+            oldLayout:           from,
+            newLayout:           to,
+            srcQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED,
+            dstQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED,
+            image:               image,
+            subresourceRange:    VkImageSubresourceRange [
+                aspectMask:     VK_IMAGE_ASPECT_COLOR_BIT,
+                baseMipLevel:   0,
+                levelCount:     1,
+                baseArrayLayer: 0,
+                layerCount:     layers ] ]
+        vkCmdPipelineBarrier[ f, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+            0, 0, null, 0, null, 1, @barrier ]
+
+    func picture_format [ use: i32 ] -> VkFormat
+        info : VkPhysicalDeviceVideoFormatInfoKHR [
+            sType:      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VIDEO_FORMAT_INFO_KHR,
+            pNext:      @profiles,
+            imageUsage: use ]
+        n : u32 0
+        _vkGetPhysicalDeviceVideoFormatPropertiesKHR[ vk.physical_device, @info, @n, null ]
+        expect n > 0 && n <= 16, 'encode: no picture format for this usage'
+        formats : local VkVideoFormatPropertiesKHR [16]
+        for [ i: u32 0, i < n, i += 1 ]
+            formats[i] = VkVideoFormatPropertiesKHR [ sType: VK_STRUCTURE_TYPE_VIDEO_FORMAT_PROPERTIES_KHR ]
+        _vkGetPhysicalDeviceVideoFormatPropertiesKHR[ vk.physical_device, @info, @n, formats ]
+        for [ i: u32 0, i < n, i += 1 ]
+            if [ formats[i].format == VK_FORMAT_G8_B8R8_2PLANE_420_UNORM ] return formats[i].format
+        return formats[0].format
+
+    func init []
+        dev : VkDevice [ vk.device ]
+        _vkGetPhysicalDeviceVideoCapabilitiesKHR     = vkGetInstanceProcAddr[ vk.instance, "vkGetPhysicalDeviceVideoCapabilitiesKHR" ]
+        _vkGetPhysicalDeviceVideoFormatPropertiesKHR = vkGetInstanceProcAddr[ vk.instance, "vkGetPhysicalDeviceVideoFormatPropertiesKHR" ]
+        _vkCreateVideoSessionKHR                     = vkGetDeviceProcAddr[ dev, "vkCreateVideoSessionKHR" ]
+        _vkDestroyVideoSessionKHR                    = vkGetDeviceProcAddr[ dev, "vkDestroyVideoSessionKHR" ]
+        _vkGetVideoSessionMemoryRequirementsKHR      = vkGetDeviceProcAddr[ dev, "vkGetVideoSessionMemoryRequirementsKHR" ]
+        _vkBindVideoSessionMemoryKHR                 = vkGetDeviceProcAddr[ dev, "vkBindVideoSessionMemoryKHR" ]
+        _vkCreateVideoSessionParametersKHR           = vkGetDeviceProcAddr[ dev, "vkCreateVideoSessionParametersKHR" ]
+        _vkDestroyVideoSessionParametersKHR          = vkGetDeviceProcAddr[ dev, "vkDestroyVideoSessionParametersKHR" ]
+        _vkGetEncodedVideoSessionParametersKHR       = vkGetDeviceProcAddr[ dev, "vkGetEncodedVideoSessionParametersKHR" ]
+        _vkCmdBeginVideoCodingKHR                    = vkGetDeviceProcAddr[ dev, "vkCmdBeginVideoCodingKHR" ]
+        _vkCmdEndVideoCodingKHR                      = vkGetDeviceProcAddr[ dev, "vkCmdEndVideoCodingKHR" ]
+        _vkCmdControlVideoCodingKHR                  = vkGetDeviceProcAddr[ dev, "vkCmdControlVideoCodingKHR" ]
+        _vkCmdEncodeVideoKHR                         = vkGetDeviceProcAddr[ dev, "vkCmdEncodeVideoKHR" ]
+        expect _vkCmdEncodeVideoKHR, 'encode: vulkan video entry points missing'
+
+        coded_w = (width  + 15) / 16 * 16
+        coded_h = (height + 15) / 16 * 16
+        gop     = fps * 2
+
+        h264_profile = VkVideoEncodeH264ProfileInfoKHR [
+            sType:         VK_STRUCTURE_TYPE_VIDEO_ENCODE_H264_PROFILE_INFO_KHR,
+            stdProfileIdc: STD_VIDEO_H264_PROFILE_IDC_HIGH ]
+        usage = VkVideoEncodeUsageInfoKHR [
+            sType:             VK_STRUCTURE_TYPE_VIDEO_ENCODE_USAGE_INFO_KHR,
+            pNext:             @h264_profile,
+            videoUsageHints:   VK_VIDEO_ENCODE_USAGE_STREAMING_BIT_KHR,
+            videoContentHints: VK_VIDEO_ENCODE_CONTENT_RENDERED_BIT_KHR,
+            tuningMode:        VK_VIDEO_ENCODE_TUNING_MODE_LOW_LATENCY_KHR ]
+        profile = VkVideoProfileInfoKHR [
+            sType:               VK_STRUCTURE_TYPE_VIDEO_PROFILE_INFO_KHR,
+            pNext:               @usage,
+            videoCodecOperation: VK_VIDEO_CODEC_OPERATION_ENCODE_H264_BIT_KHR,
+            chromaSubsampling:   VK_VIDEO_CHROMA_SUBSAMPLING_420_BIT_KHR,
+            lumaBitDepth:        VK_VIDEO_COMPONENT_BIT_DEPTH_8_BIT_KHR,
+            chromaBitDepth:      VK_VIDEO_COMPONENT_BIT_DEPTH_8_BIT_KHR ]
+        profiles = VkVideoProfileListInfoKHR [
+            sType:        VK_STRUCTURE_TYPE_VIDEO_PROFILE_LIST_INFO_KHR,
+            profileCount: 1,
+            pProfiles:    @profile ]
+
+        h264_caps.sType   = VK_STRUCTURE_TYPE_VIDEO_ENCODE_H264_CAPABILITIES_KHR
+        encode_caps.sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_CAPABILITIES_KHR
+        encode_caps.pNext = @h264_caps
+        caps.sType        = VK_STRUCTURE_TYPE_VIDEO_CAPABILITIES_KHR
+        caps.pNext        = @encode_caps
+        res : VkResult [ _vkGetPhysicalDeviceVideoCapabilitiesKHR[ vk.physical_device, @profile, @caps ] ]
+        expect res == VK_SUCCESS, 'encode: h.264 encode profile not supported'
+        max_w : i32 [ caps.maxCodedExtent.width ]
+        max_h : i32 [ caps.maxCodedExtent.height ]
+        expect coded_w <= max_w && coded_h <= max_h, 'encode: frame larger than the encoder allows'
+        levels : i32 [ encode_caps.maxQualityLevels ]
+        quality = VkVideoEncodeQualityLevelInfoKHR [
+            sType:        VK_STRUCTURE_TYPE_VIDEO_ENCODE_QUALITY_LEVEL_INFO_KHR,
+            qualityLevel: levels - 1 ]
+
+        src_format : VkFormat [ picture_format[ VK_IMAGE_USAGE_VIDEO_ENCODE_SRC_BIT_KHR ] ]
+        dpb_format : VkFormat [ picture_format[ VK_IMAGE_USAGE_VIDEO_ENCODE_DPB_BIT_KHR ] ]
+        expect src_format == VK_FORMAT_G8_B8R8_2PLANE_420_UNORM, 'encode: encoder does not take nv12'
+
+        session_info : VkVideoSessionCreateInfoKHR [
+            sType:                      VK_STRUCTURE_TYPE_VIDEO_SESSION_CREATE_INFO_KHR,
+            queueFamilyIndex:           u32[ vk.encode_family ],
+            pVideoProfile:              @profile,
+            pictureFormat:              src_format,
+            maxCodedExtent:             VkExtent2D [ coded_w, coded_h ],
+            referencePictureFormat:     dpb_format,
+            maxDpbSlots:                2,
+            maxActiveReferencePictures: 1,
+            pStdHeaderVersion:          @caps.stdHeaderVersion ]
+        res = _vkCreateVideoSessionKHR[ dev, @session_info, null, @session ]
+        expect res == VK_SUCCESS, 'encode: vkCreateVideoSessionKHR failed'
+
+        nreq : u32 0
+        _vkGetVideoSessionMemoryRequirementsKHR[ dev, session, @nreq, null ]
+        expect nreq <= 8, 'encode: too many session memory bindings'
+        reqs  : local VkVideoSessionMemoryRequirementsKHR [8]
+        binds : local VkBindVideoSessionMemoryInfoKHR [8]
+        for [ i: u32 0, i < nreq, i += 1 ]
+            reqs[i] = VkVideoSessionMemoryRequirementsKHR [ sType: VK_STRUCTURE_TYPE_VIDEO_SESSION_MEMORY_REQUIREMENTS_KHR ]
+        _vkGetVideoSessionMemoryRequirementsKHR[ dev, session, @nreq, reqs ]
+        session_memory = vec u64 []
+        for [ i: u32 0, i < nreq, i += 1 ]
+            types : u32 [ reqs[i].memoryRequirements.memoryTypeBits ]
+            size  : i64 [ reqs[i].memoryRequirements.size ]
+            memory_info : VkMemoryAllocateInfo [
+                sType:           VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                allocationSize:  size,
+                memoryTypeIndex: vk.find_memory_type[ types, 0 ] ]
+            res = vkAllocateMemory[ dev, @memory_info, null, @memory_new ]
+            expect res == VK_SUCCESS, 'encode: session memory'
+            session_memory.push[ cast u64 [ memory_new ] ]
+            binds[i] = VkBindVideoSessionMemoryInfoKHR [
+                sType:           VK_STRUCTURE_TYPE_BIND_VIDEO_SESSION_MEMORY_INFO_KHR,
+                memoryBindIndex: reqs[i].memoryBindIndex,
+                memory:          memory_new,
+                memoryOffset:    0,
+                memorySize:      size ]
+        res = _vkBindVideoSessionMemoryKHR[ dev, session, nreq, binds ]
+        expect res == VK_SUCCESS, 'encode: vkBindVideoSessionMemoryKHR failed'
+
+        h264_sps[ @sps, @vui, coded_w, coded_h, width, height, fps ]
+        h264_pps[ @pps ]
+        add : VkVideoEncodeH264SessionParametersAddInfoKHR [
+            sType:       VK_STRUCTURE_TYPE_VIDEO_ENCODE_H264_SESSION_PARAMETERS_ADD_INFO_KHR,
+            stdSPSCount: 1,
+            pStdSPSs:    @sps,
+            stdPPSCount: 1,
+            pStdPPSs:    @pps ]
+        h264_params : VkVideoEncodeH264SessionParametersCreateInfoKHR [
+            sType:              VK_STRUCTURE_TYPE_VIDEO_ENCODE_H264_SESSION_PARAMETERS_CREATE_INFO_KHR,
+            pNext:              @quality,
+            maxStdSPSCount:     1,
+            maxStdPPSCount:     1,
+            pParametersAddInfo: @add ]
+        params_info : VkVideoSessionParametersCreateInfoKHR [
+            sType:        VK_STRUCTURE_TYPE_VIDEO_SESSION_PARAMETERS_CREATE_INFO_KHR,
+            pNext:        @h264_params,
+            videoSession: session ]
+        res = _vkCreateVideoSessionParametersKHR[ dev, @params_info, null, @params ]
+        expect res == VK_SUCCESS, 'encode: vkCreateVideoSessionParametersKHR failed'
+
+        # the encoded sps and pps go out ahead of the first frame
+        h264_get : VkVideoEncodeH264SessionParametersGetInfoKHR [
+            sType:       VK_STRUCTURE_TYPE_VIDEO_ENCODE_H264_SESSION_PARAMETERS_GET_INFO_KHR,
+            writeStdSPS: VK_TRUE,
+            writeStdPPS: VK_TRUE,
+            stdSPSId:    0,
+            stdPPSId:    0 ]
+        get : VkVideoEncodeSessionParametersGetInfoKHR [
+            sType:                  VK_STRUCTURE_TYPE_VIDEO_ENCODE_SESSION_PARAMETERS_GET_INFO_KHR,
+            pNext:                  @h264_get,
+            videoSessionParameters: params ]
+        header_size : u64 0
+        _vkGetEncodedVideoSessionParametersKHR[ dev, @get, null, @header_size, null ]
+        header = vec u8 [ header_size ]
+        res = _vkGetEncodedVideoSessionParametersKHR[ dev, @get, null, @header_size, header ]
+        expect res == VK_SUCCESS, 'encode: could not read the sps and pps'
+        log 'encode: h.264 {width}x{height} (coded {coded_w}x{coded_h}) on the video queue'
+
+        families : local u32 [2]
+        families[0] = vk.queue_family_index
+        families[1] = vk.encode_family
+        src_info : VkImageCreateInfo [
+            sType:                 VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            pNext:                 @profiles,
+            imageType:             VK_IMAGE_TYPE_2D,
+            format:                src_format,
+            extent:                VkExtent3D [ coded_w, coded_h, 1 ],
+            mipLevels:             1,
+            arrayLayers:           1,
+            samples:               VK_SAMPLE_COUNT_1_BIT,
+            tiling:                VK_IMAGE_TILING_OPTIMAL,
+            usage:                 VK_IMAGE_USAGE_VIDEO_ENCODE_SRC_BIT_KHR | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+            sharingMode:           VK_SHARING_MODE_CONCURRENT,
+            queueFamilyIndexCount: 2,
+            pQueueFamilyIndices:   families,
+            initialLayout:         VK_IMAGE_LAYOUT_UNDEFINED ]
+        device_memory : VmaAllocationCreateInfo [ usage: VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE ]
+        res = vmaCreateImage[ vk.allocator, @src_info, @device_memory, @src_image, @src_alloc, null ]
+        expect res == VK_SUCCESS, 'encode: input picture'
+        src_layout = VK_IMAGE_LAYOUT_UNDEFINED
+        src_view_info : VkImageViewCreateInfo [
+            sType:            VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            image:            src_image,
+            viewType:         VK_IMAGE_VIEW_TYPE_2D,
+            format:           src_format,
+            subresourceRange: VkImageSubresourceRange [
+                aspectMask: VK_IMAGE_ASPECT_COLOR_BIT, baseMipLevel: 0, levelCount: 1, baseArrayLayer: 0, layerCount: 1 ] ]
+        res = vkCreateImageView[ dev, @src_view_info, null, @src_view ]
+        expect res == VK_SUCCESS, 'encode: input picture view'
+
+        dpb_info : VkImageCreateInfo [
+            sType:         VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            pNext:         @profiles,
+            imageType:     VK_IMAGE_TYPE_2D,
+            format:        dpb_format,
+            extent:        VkExtent3D [ coded_w, coded_h, 1 ],
+            mipLevels:     1,
+            arrayLayers:   2,
+            samples:       VK_SAMPLE_COUNT_1_BIT,
+            tiling:        VK_IMAGE_TILING_OPTIMAL,
+            usage:         VK_IMAGE_USAGE_VIDEO_ENCODE_DPB_BIT_KHR,
+            sharingMode:   VK_SHARING_MODE_EXCLUSIVE,
+            initialLayout: VK_IMAGE_LAYOUT_UNDEFINED ]
+        res = vmaCreateImage[ vk.allocator, @dpb_info, @device_memory, @dpb_image, @dpb_alloc, null ]
+        expect res == VK_SUCCESS, 'encode: reference pictures'
+        dpb_view_info : VkImageViewCreateInfo [
+            sType:            VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            image:            dpb_image,
+            viewType:         VK_IMAGE_VIEW_TYPE_2D,
+            format:           dpb_format,
+            subresourceRange: VkImageSubresourceRange [
+                aspectMask: VK_IMAGE_ASPECT_COLOR_BIT, baseMipLevel: 0, levelCount: 1, baseArrayLayer: 0, layerCount: 1 ] ]
+        res = vkCreateImageView[ dev, @dpb_view_info, null, @dpb_view0 ]
+        expect res == VK_SUCCESS, 'encode: reference view 0'
+        dpb_view_info.subresourceRange.baseArrayLayer = 1
+        res = vkCreateImageView[ dev, @dpb_view_info, null, @dpb_view1 ]
+        expect res == VK_SUCCESS, 'encode: reference view 1'
+
+        # room for an idr frame at any bitrate; the size alignment comes from the caps
+        align : i64 [ caps.minBitstreamBufferSizeAlignment ]
+        bits_size = (i64[ coded_w ] * coded_h * 2 + align - 1) / align * align
+        bits_info : VkBufferCreateInfo [
+            sType:       VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            pNext:       @profiles,
+            size:        bits_size,
+            usage:       VK_BUFFER_USAGE_VIDEO_ENCODE_DST_BIT_KHR,
+            sharingMode: VK_SHARING_MODE_EXCLUSIVE ]
+        host_memory : VmaAllocationCreateInfo [
+            usage:         VMA_MEMORY_USAGE_AUTO,
+            flags:         VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT,
+            requiredFlags: VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT ]
+        mapped : VmaAllocationInfo
+        res = vmaCreateBuffer[ vk.allocator, @bits_info, @host_memory, @bits, @bits_alloc, @mapped ]
+        expect res == VK_SUCCESS, 'encode: bitstream buffer'
+        bits_map = mapped.pMappedData
+
+        feedback : VkQueryPoolVideoEncodeFeedbackCreateInfoKHR [
+            sType:               VK_STRUCTURE_TYPE_QUERY_POOL_VIDEO_ENCODE_FEEDBACK_CREATE_INFO_KHR,
+            pNext:               @profile,
+            encodeFeedbackFlags: VK_VIDEO_ENCODE_FEEDBACK_BITSTREAM_BUFFER_OFFSET_BIT_KHR | VK_VIDEO_ENCODE_FEEDBACK_BITSTREAM_BYTES_WRITTEN_BIT_KHR ]
+        query_info : VkQueryPoolCreateInfo [
+            sType:      VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+            pNext:      @feedback,
+            queryType:  VK_QUERY_TYPE_VIDEO_ENCODE_FEEDBACK_KHR,
+            queryCount: 1 ]
+        res = vkCreateQueryPool[ dev, @query_info, null, @queries ]
+        expect res == VK_SUCCESS, 'encode: feedback query'
+
+        pool_info : VkCommandPoolCreateInfo [
+            sType:            VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+            queueFamilyIndex: u32[ vk.encode_family ],
+            flags:            VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT ]
+        res = vkCreateCommandPool[ dev, @pool_info, null, @pool ]
+        expect res == VK_SUCCESS, 'encode: command pool'
+        vkAllocateCommandBuffers[ dev, VkCommandBufferAllocateInfo [
+            sType:              VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            commandPool:        pool,
+            level:              VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+            commandBufferCount: 1 ], @cmd ]
+        vk.fence_acquire[]
+        fence = vk.fence_new
+
+        # constant quality: rate control OFF, a fixed QP per frame. CBR on this
+        # driver starved the stream to ~2 Mbps and pumped QP sky-high (blocky,
+        # only clearing at each IDR). a flat low QP keeps every frame crisp.
+        # GOP/IDR placement is driven by us via IdrPicFlag, not by rate control.
+        min_qp : i32 [ h264_caps.minQp ]
+        max_qp : i32 [ h264_caps.maxQp ]
+        if [ qp < min_qp ] qp = min_qp
+        if [ qp > max_qp ] qp = max_qp
+        log 'encode: constant QP {qp} (range {min_qp}..{max_qp})'
+        rc = VkVideoEncodeRateControlInfoKHR [
+            sType:           VK_STRUCTURE_TYPE_VIDEO_ENCODE_RATE_CONTROL_INFO_KHR,
+            rateControlMode: VK_VIDEO_ENCODE_RATE_CONTROL_MODE_DISABLED_BIT_KHR,
+            layerCount:      0 ]
+
+    # graphics queue: the converted planes land in the input picture
+    func upload [ f: VkCommandBuffer, planes: Buffer ]
+        layout[ f, src_image, src_layout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1 ]
+        src_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
+        regions : local VkBufferImageCopy [2]
+        regions[0] = VkBufferImageCopy [
+            bufferOffset:      0,
+            bufferRowLength:   0,
+            bufferImageHeight: 0,
+            imageSubresource:  VkImageSubresourceLayers [
+                aspectMask: VK_IMAGE_ASPECT_PLANE_0_BIT, mipLevel: 0, baseArrayLayer: 0, layerCount: 1 ],
+            imageOffset: VkOffset3D [ x: 0, y: 0, z: 0 ],
+            imageExtent: VkExtent3D [ width: coded_w, height: coded_h, depth: 1 ] ]
+        regions[1] = VkBufferImageCopy [
+            bufferOffset:      i64[ coded_w ] * coded_h,
+            bufferRowLength:   0,
+            bufferImageHeight: 0,
+            imageSubresource:  VkImageSubresourceLayers [
+                aspectMask: VK_IMAGE_ASPECT_PLANE_1_BIT, mipLevel: 0, baseArrayLayer: 0, layerCount: 1 ],
+            imageOffset: VkOffset3D [ x: 0, y: 0, z: 0 ],
+            imageExtent: VkExtent3D [ width: coded_w / 2, height: coded_h / 2, depth: 1 ] ]
+        vkCmdCopyBufferToImage[ f, planes.vk_buffer, src_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 2, regions ]
+
+    # encode queue: one frame; wait is the graphics work that filled the picture
+    func encode [ wait: VkSemaphore ]
+        if [ pending ] drain[]
+        idr       : bool [ frames % gop == 0 ]
+        cur       : i32  [ frames % 2 ]
+        prev      : i32  [ 1 - cur ]
+        frame_num : i32  [ frames % gop ]
+        poc       : i32  [ frame_num * 2 ]
+        vkResetCommandBuffer[ cmd, 0 ]
+        vkBeginCommandBuffer[ cmd, VkCommandBufferBeginInfo [
+            sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            flags: VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT ] ]
+        layout[ cmd, src_image, src_layout, VK_IMAGE_LAYOUT_VIDEO_ENCODE_SRC_KHR, 1 ]
+        src_layout = VK_IMAGE_LAYOUT_VIDEO_ENCODE_SRC_KHR
+        if [ frames == 0 ]
+            layout[ cmd, dpb_image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_VIDEO_ENCODE_DPB_KHR, 2 ]
+        vkCmdResetQueryPool[ cmd, queries, 0, 1 ]
+
+        pic      : StdVideoEncodeH264PictureInfo
+        refs     : StdVideoEncodeH264ReferenceListsInfo
+        slice    : StdVideoEncodeH264SliceHeader
+        ref_cur  : StdVideoEncodeH264ReferenceInfo
+        ref_prev : StdVideoEncodeH264ReferenceInfo
+        h264_picture  [ @pic, @refs, idr, frame_num, poc, idr_id, prev ]
+        h264_slice    [ @slice, idr ]
+        h264_reference[ @ref_cur, idr, frame_num, poc ]
+        h264_reference[ @ref_prev, false, prev_frame_num, prev_poc ]
+        dpb_cur : VkVideoEncodeH264DpbSlotInfoKHR [
+            sType:             VK_STRUCTURE_TYPE_VIDEO_ENCODE_H264_DPB_SLOT_INFO_KHR,
+            pStdReferenceInfo: @ref_cur ]
+        dpb_prev : VkVideoEncodeH264DpbSlotInfoKHR [
+            sType:             VK_STRUCTURE_TYPE_VIDEO_ENCODE_H264_DPB_SLOT_INFO_KHR,
+            pStdReferenceInfo: @ref_prev ]
+        res_cur : VkVideoPictureResourceInfoKHR [
+            sType:            VK_STRUCTURE_TYPE_VIDEO_PICTURE_RESOURCE_INFO_KHR,
+            codedOffset:      VkOffset2D [ 0, 0 ],
+            codedExtent:      VkExtent2D [ coded_w, coded_h ],
+            baseArrayLayer:   0,
+            imageViewBinding: (cur == 0) ? dpb_view0 : dpb_view1 ]
+        res_prev : VkVideoPictureResourceInfoKHR [
+            sType:            VK_STRUCTURE_TYPE_VIDEO_PICTURE_RESOURCE_INFO_KHR,
+            codedOffset:      VkOffset2D [ 0, 0 ],
+            codedExtent:      VkExtent2D [ coded_w, coded_h ],
+            baseArrayLayer:   0,
+            imageViewBinding: (prev == 0) ? dpb_view0 : dpb_view1 ]
+        # a slot that was never set up is bound without an index; an active one keeps its index
+        slots : local VkVideoReferenceSlotInfoKHR [2]
+        slots[0] = VkVideoReferenceSlotInfoKHR [
+            sType:            VK_STRUCTURE_TYPE_VIDEO_REFERENCE_SLOT_INFO_KHR,
+            pNext:            @dpb_cur,
+            slotIndex:        (frames >= 2) ? cur : -1,
+            pPictureResource: @res_cur ]
+        slots[1] = VkVideoReferenceSlotInfoKHR [
+            sType:            VK_STRUCTURE_TYPE_VIDEO_REFERENCE_SLOT_INFO_KHR,
+            pNext:            @dpb_prev,
+            slotIndex:        prev,
+            pPictureResource: @res_prev ]
+        begin : VkVideoBeginCodingInfoKHR [
+            sType:                  VK_STRUCTURE_TYPE_VIDEO_BEGIN_CODING_INFO_KHR,
+            pNext:                  @rc,
+            videoSession:           session,
+            videoSessionParameters: params,
+            referenceSlotCount:     (idr) ? 1 : 2,
+            pReferenceSlots:        slots ]
+        _vkCmdBeginVideoCodingKHR[ cmd, @begin ]
+        if [ frames == 0 ]
+            level : VkVideoEncodeQualityLevelInfoKHR [
+                sType:        VK_STRUCTURE_TYPE_VIDEO_ENCODE_QUALITY_LEVEL_INFO_KHR,
+                pNext:        @rc,
+                qualityLevel: quality.qualityLevel ]
+            control : VkVideoCodingControlInfoKHR [
+                sType: VK_STRUCTURE_TYPE_VIDEO_CODING_CONTROL_INFO_KHR,
+                pNext: @level,
+                flags: VK_VIDEO_CODING_CONTROL_RESET_BIT_KHR | VK_VIDEO_CODING_CONTROL_ENCODE_RATE_CONTROL_BIT_KHR | VK_VIDEO_CODING_CONTROL_ENCODE_QUALITY_LEVEL_BIT_KHR ]
+            _vkCmdControlVideoCodingKHR[ cmd, @control ]
+        nalu : VkVideoEncodeH264NaluSliceInfoKHR [
+            sType:           VK_STRUCTURE_TYPE_VIDEO_ENCODE_H264_NALU_SLICE_INFO_KHR,
+            constantQp:      qp,
+            pStdSliceHeader: @slice ]
+        h264_pic : VkVideoEncodeH264PictureInfoKHR [
+            sType:               VK_STRUCTURE_TYPE_VIDEO_ENCODE_H264_PICTURE_INFO_KHR,
+            naluSliceEntryCount: 1,
+            pNaluSliceEntries:   @nalu,
+            pStdPictureInfo:     @pic,
+            generatePrefixNalu:  VK_FALSE ]
+        setup : VkVideoReferenceSlotInfoKHR [
+            sType:            VK_STRUCTURE_TYPE_VIDEO_REFERENCE_SLOT_INFO_KHR,
+            pNext:            @dpb_cur,
+            slotIndex:        cur,
+            pPictureResource: @res_cur ]
+        info : VkVideoEncodeInfoKHR [
+            sType:               VK_STRUCTURE_TYPE_VIDEO_ENCODE_INFO_KHR,
+            pNext:               @h264_pic,
+            dstBuffer:           bits,
+            dstBufferOffset:     0,
+            dstBufferRange:      bits_size,
+            srcPictureResource:  VkVideoPictureResourceInfoKHR [
+                sType:            VK_STRUCTURE_TYPE_VIDEO_PICTURE_RESOURCE_INFO_KHR,
+                codedOffset:      VkOffset2D [ 0, 0 ],
+                codedExtent:      VkExtent2D [ coded_w, coded_h ],
+                baseArrayLayer:   0,
+                imageViewBinding: src_view ],
+            pSetupReferenceSlot: @setup,
+            referenceSlotCount:  (idr) ? 0 : 1,
+            pReferenceSlots:     @slots[1] ]
+        vkCmdBeginQuery[ cmd, queries, 0, 0 ]
+        _vkCmdEncodeVideoKHR[ cmd, @info ]
+        vkCmdEndQuery[ cmd, queries, 0 ]
+        end : VkVideoEndCodingInfoKHR [ sType: VK_STRUCTURE_TYPE_VIDEO_END_CODING_INFO_KHR ]
+        _vkCmdEndVideoCodingKHR[ cmd, @end ]
+        vkEndCommandBuffer[ cmd ]
+
+        stages  : local VkPipelineStageFlags [1] [ VK_PIPELINE_STAGE_ALL_COMMANDS_BIT ]
+        wait_on : VkSemaphore [ wait ]
+        submit  : VkSubmitInfo [
+            sType:              VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            waitSemaphoreCount: (wait) ? 1 : 0,
+            pWaitSemaphores:    @wait_on,
+            pWaitDstStageMask:  stages,
+            commandBufferCount: 1,
+            pCommandBuffers:    @cmd ]
+        vkResetFences[ vk.device, 1, @fence ]
+        res : VkResult [ vkQueueSubmit[ vk.encode_queue, 1, @submit, fence ] ]
+        expect res == VK_SUCCESS, 'encode: submit'
+        pending        = true
+        prev_frame_num = frame_num
+        prev_poc       = poc
+        if [ idr ] idr_id = (idr_id + 1) % 65536
+        frames += 1
+
+    # the finished frame goes to the pipe; called before the next encode
+    func drain []
+        if [ !pending ] return
+        vkWaitForFences[ vk.device, 1, @fence, VK_TRUE, UINT64_MAX ]
+        pending = false
+        result : vec u32 [ 3 ]
+        qr : VkResult [ vkGetQueryPoolResults[ vk.device, queries, 0, 1, 12, @result[0], 12,
+            VK_QUERY_RESULT_WITH_STATUS_BIT_KHR ] ]
+        if [ qr != VK_SUCCESS || i32[ result[2] ] <= 0 ]
+            log 'encode: frame dropped (status {result[2]})'
+            return
+        if [ !header_sent ]
+            write[ fd, @header[0], header.count ]
+            header_sent = true
+        vmaInvalidateAllocation[ vk.allocator, bits_alloc, 0, VK_WHOLE_SIZE ]
+        bytes  : @u8 [ bits_map ]
+        offset : i64 [ result[0] ]
+        count  : i64 [ result[1] ]
+        write[ fd, @bytes[ offset ], count ]
+
+    func dealloc []
+        if [ pending ] vkWaitForFences[ vk.device, 1, @fence, VK_TRUE, UINT64_MAX ]
+        dev : VkDevice [ vk.device ]
+        if [ fence ]     vk.fence_release[ fence ]
+        if [ pool ]      vkDestroyCommandPool[ dev, pool, null ]
+        if [ queries ]   vkDestroyQueryPool[ dev, queries, null ]
+        if [ bits ]      vmaDestroyBuffer[ vk.allocator, bits, bits_alloc ]
+        if [ dpb_view0 ] vkDestroyImageView[ dev, dpb_view0, null ]
+        if [ dpb_view1 ] vkDestroyImageView[ dev, dpb_view1, null ]
+        if [ dpb_image ] vmaDestroyImage[ vk.allocator, dpb_image, dpb_alloc ]
+        if [ src_view ]  vkDestroyImageView[ dev, src_view, null ]
+        if [ src_image ] vmaDestroyImage[ vk.allocator, src_image, src_alloc ]
+        if [ params ]    _vkDestroyVideoSessionParametersKHR[ dev, params, null ]
+        if [ session ]   _vkDestroyVideoSessionKHR[ dev, session, null ]
+        if [ session_memory ]
+            for [ m: u64 ] in session_memory
+                vkFreeMemory[ dev, cast VkDeviceMemory [ m ], null ]
+
+
+# streams the screen to the encoder at the recording rate: a slow app
+# repeats its last frame, a fast one skips, so the clock stays real
+class Recorder
+    context vk      : vk_context
+    context w       : Display
+    public  fd      : i32
+    public  width   : i32
+    public  height  : i32
+    public  fps     : i32
+    public  qp      : i32 [ 20 ]
+    intern  scaled  : Texture
+    intern  convert : NV12Convert
+    intern  pipe    : Pipeline
+    intern  planes  : Buffer
+    intern  cmd     : Command
+    intern  ready   : VkSemaphore
+    intern  encoder : Encoder
+    intern  start   : i64
+    intern  sent    : i64
+
+    func init []
+        cmd = Command [ vk: vk ]
+        semaphore_info : VkSemaphoreCreateInfo [ sType: VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO ]
+        vkCreateSemaphore[ vk.device, @semaphore_info, null, @ready ]
+
+    func setup [ tx: Texture ]
+        encoder = Encoder [ vk: vk, width: width, height: height, fps: fps, qp: qp, fd: fd ]
+        scaled  = Texture [ vk: vk, w: w, width: encoder.coded_w, height: encoder.coded_h,
+            vk_format: tx.vk_format, tag: 'record' ]
+        planes  = Buffer [ vk: vk, size: i64[ encoder.coded_w ] * encoder.coded_h * 3 / 2,
+            u_storage: true, u_src: true, m_device_local: true ]
+        convert    = NV12Convert [ vk: vk ]
+        convert.cw = encoder.coded_w
+        convert.ch = encoder.coded_h
+        pipe = Pipeline [ vk: vk, w: w, name: 'nv12', s: convert, default_model: mat4f.identity[],
+            samplers: map Au[string] [ 'src': scaled, 'nv12': planes ] ]
+        pipe.dispatch_x = (encoder.coded_w / 4 + 15) / 16
+        pipe.dispatch_y = (encoder.coded_h + 15) / 16
+        start = epoch_micros[]
+
+    func capture [ tx: Texture ]
+        if [ !tx || !tx.vk_image ] return
+        if [ !encoder ] setup[ tx ]
+        due : i64 [ (epoch_micros[] - start) * fps / 1000000 ]
+        if [ due <= sent ] return
+        cmd.begin
+        encoder.drain[]
+        prev : VkImageLayout [ tx.vk_layout ]
+        tx.transition_in    [ cmd.cmd, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL ]
+        scaled.transition_in[ cmd.cmd, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ]
+        vkCmdBlitImage[ cmd.cmd, tx.vk_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            scaled.vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+            VkImageBlit [
+                srcSubresource: VkImageSubresourceLayers [
+                    aspectMask: VK_IMAGE_ASPECT_COLOR_BIT, mipLevel: 0, baseArrayLayer: 0, layerCount: 1 ],
+                srcOffsets: [ VkOffset3D [ 0, 0, 0 ], VkOffset3D [ tx.width, tx.height, 1 ] ],
+                dstSubresource: VkImageSubresourceLayers [
+                    aspectMask: VK_IMAGE_ASPECT_COLOR_BIT, mipLevel: 0, baseArrayLayer: 0, layerCount: 1 ],
+                dstOffsets: [ VkOffset3D [ 0, 0, 0 ], VkOffset3D [ width, height, 1 ] ] ],
+            VK_FILTER_LINEAR ]
+        tx.transition_in    [ cmd.cmd, prev ]
+        scaled.transition_in[ cmd.cmd, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
+        pipe.dispatch[ cmd.cmd ]
+        vkCmdPipelineBarrier[ cmd.cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+            1, VkMemoryBarrier [
+                sType:         VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+                srcAccessMask: VK_ACCESS_SHADER_WRITE_BIT,
+                dstAccessMask: VK_ACCESS_TRANSFER_READ_BIT ],
+            0, null, 0, null ]
+        encoder.upload[ cmd.cmd, planes ]
+        cmd.signal = ready
+        cmd.submit
+        repeats : i64 [ due - sent ]
+        if [ repeats > 4 ] repeats = 4
+        for [ i: i64 0, i < repeats, i += 1 ]
+            if [ i > 0 ] encoder.drain[]
+            if [ i == 0 ]
+                encoder.encode[ ready ]
+            el
+                encoder.encode[ null ]
+            sent += 1
+
+    func dealloc []
+        if [ ready ] vkDestroySemaphore[ vk.device, ready, null ]

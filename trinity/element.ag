@@ -165,6 +165,9 @@ ielement element
     mutable sel_col         : i32 [ -1 ]
     mutable anchor_col      : i32 [ 0 ]
     mutable text_dragging   : bool
+    # --record <file[@mbps]>: gpu h.264 of the screen to a raw .h264 file; an
+    # optional @N sets the bitrate ceiling in Mbps (e.g. out.h264@80)
+    public  record          : string
 
     public func on_click   [ ev: Event ] return
     public func on_hover   [ ev: Event ] return
@@ -462,6 +465,7 @@ alias StyleTransitions : map StyleTransition[string]
 
 struct MouseState
     wheel_delta : vec2f
+    delta       : vec2f      # motion since the last move; from the lock centre while the mouse is locked
     pos         : vec2f
     button      : i32
     state       : i32

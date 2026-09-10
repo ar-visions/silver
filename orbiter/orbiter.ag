@@ -189,9 +189,13 @@ element EditorView
     # launch parameters come from the module's compiled meta, serialized by the
     # compiler into its export; read that text (cheap) — never dlopen the module
     func launch_spec [] -> string
+        return launch_spec_of[ band_mod[] ]
+
+    # the export's launch line for any module: the panel asks for the instance's
+    # own module, which is not always the pane's file
+    func launch_spec_of [ m: string ] -> string
         o : orb[]
         if [ !o ] return null
-        m : string band_mod[]
         if [ !m || m.count == 0 ] return null
         if [ !o.launch_specs ] o.launch_specs = map string [string] []
         if [ !o.launch_specs_mt ] o.launch_specs_mt = map i64 [string] []
@@ -1309,6 +1313,24 @@ Check LaunchCheck
                 fill_color: #6cb6ff66
                 stroke_color: #8fd0ff
     }
+    # the panel's press toggles it; a click toggling it again would undo that
+    func on_click [ ev: Event ]
+        return
+    # the mark: a filled check inside the box while selected
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !selected || !bounds ] return
+        cv : Canvas [ w.screen ]
+        s  : f32 [ (bounds.w < bounds.h) ? bounds.w : bounds.h ]
+        cv.stroke_width[ 0.0 ]
+        cv.fill_color[ rgba [ '#e8f4ff' ] ]
+        cv.move_to[ s * 0.20, s * 0.52 ]
+        cv.line_to[ s * 0.42, s * 0.74 ]
+        cv.line_to[ s * 0.82, s * 0.30 ]
+        cv.line_to[ s * 0.72, s * 0.20 ]
+        cv.line_to[ s * 0.42, s * 0.54 ]
+        cv.line_to[ s * 0.30, s * 0.42 ]
+        cv.close_path[]
+        cv.paint[]
 
 # one element per parameter: the name sits inside, the value edits to its right
 # the name takes its word plus two spaces; the value begins right after
@@ -1390,6 +1412,9 @@ element LaunchPanel
     mutable rule_ys   : vec f32     # the bottom of every row: rows are not all one height
     public  inst      : i32         # the instance shown; a change re-seeds every control
     public  live_vals : bool        # the spec's defaults are the running instance's own values
+    # the instance's own switch above its properties: a debug build on its next start
+    public  dbg_row   : bool
+    public  dbg_on    : bool
     mutable last_spec : string
     mutable last_inst : i32
 
@@ -1447,6 +1472,14 @@ element LaunchPanel
         last_inst = inst
         last_spec = spec
         rule_ys   = vec f32 []
+        # the build switch is the instance's, not the module's: orbiter owns its state,
+        # so its value is given every frame
+        if [ dbg_row ]
+            t['lp_debug_lbl'] = LaunchLabel [ label: 'debug', area: Region [ 'l6px t{y}px w{lw - 6.0}px h{rh}px' ] ]
+            t['lp_debug'] = LaunchCheck [ label: '', selected: dbg_on,
+                area: Region [ 'l{lw + 1.0}px t{y}px w{rh}px h{rh}px' ] ]
+            y += rh
+            rule_ys.push[ y ]
         ents : spec.split[ ';' ]
         for [ ent: string ] in ents
             f : ent.split[ '=' ]
@@ -1783,9 +1816,10 @@ class pane_state
 # an instance as the session keeps it: the module it is of, its args, its pip.
 # it comes back not running; a click on its row starts it again
 class inst_state
-    public src  : path
-    public args : string
-    public pip  : bool
+    public src   : path
+    public args  : string
+    public pip   : bool
+    public debug : bool
 
 class FileChg
     public adds : i32
@@ -1897,6 +1931,9 @@ element orbiter : trinity # implements compiler
     public agent_open : bool
     intern console_seq      : i32
     intern pending_finder   : i32 [ -1 ]
+    # an instance picked from the nav list: shown once its source is in the pane
+    mutable pending_show      : i32
+    mutable pending_show_pane : i32
     intern pending_run      : i32 [ -1 ]
     intern pending_findfocus : bool
     intern find_scanned : i32
@@ -2252,7 +2289,8 @@ element orbiter : trinity # implements compiler
         if [ instances ]
             for [ av: AppView ] in instances
                 if [ av.viewer || !av.src ] continue
-                ists.push[ inst_state [ src: av.src, args: (av.module_args) ? av.module_args : '', pip: av.pip ] ]
+                ists.push[ inst_state [ src: av.src, args: (av.module_args) ? av.module_args : '', pip: av.pip,
+                    debug: av.debug_build ] ]
         inst_states = ists
         scene       = scene_loaded[]
         save-persistent[]
@@ -2291,6 +2329,7 @@ element orbiter : trinity # implements compiler
                 nv.src         = st.src
                 nv.module_args = st.args
                 nv.pip         = st.pip
+                nv.debug_build = st.debug
                 nv.held        = true
                 add_instance[ nv ]
 
@@ -3352,6 +3391,9 @@ element orbiter : trinity # implements compiler
     # (a handler's document when there is one), never the pane's file alone
     func args_state_of [ ed: Editor ] -> file_state
         if [ !ed ] return null
+        # an instance picked from the nav list keeps its own module's config,
+        # whatever file the pane happens to show
+        if [ ed.run_view && !ed.run_view.viewer && ed.run_view.src ] return fstate[ ed.run_view.src ]
         pv : element pane_view[ ed.pane_index ]
         if [ pv && pv inherits EditorView ]
             ev : EditorView pv
@@ -3375,6 +3417,15 @@ element orbiter : trinity # implements compiler
         av : AppView instance_by[ iid ]
         ed : Editor pane_at[ pi ]
         if [ !av || !ed ] return
+        # the instance's own source comes into the pane first; the show waits a
+        # frame for the load, which would otherwise clear the app view again
+        if [ av.src && !av.viewer ]
+            bs9 : path ed.band_src[]
+            if [ !bs9 || '{bs9.absolute[]}' != '{av.src.absolute[]}' ]
+                open_in_pane[ av.src, pi ]
+                pending_show      = iid
+                pending_show_pane = pi
+                return
         ed.run_view  = av
         # an instance in pip stays in pip when it is selected
         ed.app_view  = !av.pip
@@ -4520,8 +4571,8 @@ element orbiter : trinity # implements compiler
         if [ !reveal && r > 3 ] r = 3
         return r
 
-    # stage everything and commit; the message comes from the view
-    func do_commit [ cmsg: string ]
+    # stage everything, commit and push; the message comes from the view. push = false (shift) keeps it local
+    func do_commit [ cmsg: string, push: bool ]
         r9 : path repo_root[]
         if [ !r9 || !cmsg || cmsg.count == 0 ] return
         # the message rides a shell line: escape for double quotes
@@ -4532,6 +4583,7 @@ element orbiter : trinity # implements compiler
             esc = esc + cmsg.mid[ i, 1 ]
         git_capture[ r9, 'add -A', false ]
         git_capture[ r9, 'commit -m "{esc}"', false ]
+        if [ push ] git_capture[ r9, 'push', false ]
         git_summarize[]
         if [ ux ] ux.restyle = true
 
@@ -5226,6 +5278,15 @@ element orbiter : trinity # implements compiler
                 save_session[]
             if [ ev.target ] ev.target.ux.restyle = true
             return
+        # the instance's build switch: flips on the instance, takes effect on its next start
+        if [ ev.target.id == 'lp_debug' ]
+            edd : Editor pane_of[ ev.target ]
+            if [ edd && edd.run_view ]
+                edd.run_view.debug_build = !edd.run_view.debug_build
+                session_dirty = true
+            if [ ev.target ] ev.target.ux.restyle = true
+            ev.no_default = true
+            return
         # launch panel: a control change re-composes the run args next frame
         if [ ev.target.id && ev.target.id.starts_with[ 'lp_' ] ]
             # a path: the nav list picks the file for it
@@ -5818,6 +5879,16 @@ element orbiter : trinity # implements compiler
                     av8.stopped = (av8.debugger && av8.debugger.active && !av8.debugger.running) ? true : false
                     av8.service[ w.screen ]
         attach_publish[]
+        if [ pending_show > 0 ]
+            edp9 : Editor pane_at[ pending_show_pane ]
+            avp9 : AppView instance_by[ pending_show ]
+            if [ !edp9 || !avp9 || !avp9.src ]
+                pending_show = 0
+            el
+                bsp9 : path edp9.band_src[]
+                if [ bsp9 && '{bsp9.absolute[]}' == '{avp9.src.absolute[]}' ]
+                    pending_show = 0
+                    show_instance[ avp9.iid, pending_show_pane ]
         if [ session_dirty ]
             session_dirty = false
             save_session[]

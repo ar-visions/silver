@@ -152,6 +152,7 @@ import shader
 import Style
 import Canvas
 import Console
+import video
 
 scalar sec : i64
     cast -> ns  [ a * 1000000000 ]
@@ -179,6 +180,8 @@ enum HM
     resize  : 9
     close   : 10
     shell   : 11
+    # app -> ide: a = on/off, b c = the lock centre in app pixels
+    lock    : 12
 
 func host_ask_orbiter [] -> i32
 func host_dictate_set [ v: i32 ]
@@ -239,6 +242,11 @@ abstract live_app media_app
     # --shot-frame N: which frame to capture (default 60)
     public  shot_frame  : i32 [ 60 ]
     intern  shot_frames : i32
+    # --record <file or url>: encode the screen every frame; a url streams live
+    public  record      : string
+    public  record_fps  : i32 [ 60 ]
+    intern  recorder    : Recorder
+    intern  rec_wait    : i32
     intern  path_said   : bool
     intern  next_second : i64
     intern  frames      : i32
@@ -284,6 +292,62 @@ abstract live_app media_app
         if [ !pe ] return 0
         ps : string [ pe ]
         return i32[ ps.integer_value[] ]
+
+    # the encoder pipe lives in Au, so a reload keeps writing the same take
+    func record_pump []
+        if [ !record || !w ] return
+        wn  : Window [ w ]
+        scv : Canvas [ wn.screen ]
+        if [ !scv ] return
+        tx  : Texture [ scv.color ]
+        if [ !tx || !tx.vk_image ] return
+        if [ !recorder ]
+            # record is 'path' or 'path@qp'; split the quality (lower QP = better) off the path
+            at    : num [ record.index_of[ '@' ] ]
+            rpath : string [ (at >= 0) ? record.mid[ 0, at ] : record ]
+            rqp   : i32 [ (at >= 0) ? i32[ record.mid[ at + 1, record.count - at - 1 ].integer_value[] ] : 10 ]
+            fd : i32 [ Au.live_record_get[] ]
+            if [ !fd ]
+                # give the app's audio a moment to open, so the track starts with the video
+                rec_wait += 1
+                if [ wn.record_rate == 0 && rec_wait < 30 ] return
+                fd = record_spawn[ rpath, wn ]
+                Au.live_record_set[ fd, tx.width, tx.height ]
+            recorder = Recorder [ vk: vk, w: w, fd: fd, fps: record_fps, qp: rqp,
+                width: Au.live_record_width[], height: Au.live_record_height[] ]
+        recorder.capture[ tx ]
+
+    # the encoder writes a standard annex-b h.264 elementary stream; a .h264 path
+    # takes it as-is (plays in mpv, vlc, ffplay); .mp4/.mkv/.mov go through ffmpeg,
+    # which only boxes the stream (no re-encode) so an editor gets timestamps
+    func record_spawn [ rpath: string, wn: Window ] -> i32
+        expect vk.encode_family >= 0, 'record: this gpu has no vulkan video encoder'
+        expect !strstr[ rpath.chars, '://' ], 'record: only a file path is supported'
+        if [ rpath.ends_with[ '.mp4' ] || rpath.ends_with[ '.mkv' ] || rpath.ends_with[ '.mov' ] ]
+            cmd : string 'ffmpeg -loglevel error -y -f h264 -r {record_fps} -i - -c copy "{rpath}"'
+            fifo : string ''
+            ifdef [ linux ]
+                if [ wn.record_rate > 0 ]
+                    # the audio rides a fifo as ffmpeg's second input; it is opened before the
+                    # video probe so neither side waits on the other
+                    fifo = '/tmp/silver-rec-{getpid[]}.fifo'
+                    unlink[ fifo.chars ]
+                    mkfifo[ fifo.chars, 0x1B0 ]
+                    cmd = 'ffmpeg -loglevel error -y -f s16le -ar 48000 -ac 2 -i "{fifo}" -f h264 -r {record_fps} -i - -map 1:v -map 0:a -c:v copy -c:a aac -b:a 192k "{rpath}"'
+            pf : @FILE [ popen[ cmd.chars, 'w' ] ]
+            expect pf, 'record: cannot start ffmpeg for {rpath}'
+            ifdef [ linux ]
+                if [ fifo.count > 0 ]
+                    wn.rec_afd = open[ fifo.chars, O_WRONLY, 0 ]
+                    unlink[ fifo.chars ]
+            log 'record: {rpath} (h.264{(wn.rec_afd >= 0) ? " + aac" : ""} via ffmpeg)'
+            return fileno[ pf ]
+        mode  : i32 [ 0x1A4 ]  # 0644
+        flags : i32 [ O_WRONLY | O_CREAT | O_TRUNC ]
+        fd    : i32 [ open[ rpath.chars, flags, mode ] ]
+        expect fd >= 0, 'record: cannot open {rpath}'
+        log 'record: {rpath} (raw h.264)'
+        return fd
 
     func run [ ]
         au_live_set_reload[ (live_reload) ? 1 : 0 ]
@@ -332,6 +396,7 @@ abstract live_app media_app
         ifdef [ linux ]
             if [ attach && isolate_app ]
                 render*[]
+                record_pump[]
                 share_publish[ 1 ]
                 ide_pump[]
                 agent_pump[]
@@ -341,6 +406,7 @@ abstract live_app media_app
                 return !Au.quit_requested[]
             if [ attach ]
                 render*[]
+                record_pump[]
                 if [ !w.kms ] share_publish[ 0 ]
                 if [ !w.kms ] instr_publish[]
                 alive : bool [ attach_pump[] ]
@@ -384,6 +450,7 @@ abstract live_app media_app
             vk.bindres_us    = 0
             vk.br_schema_us  = 0
         render*[]
+        record_pump[]
         ifdef [ linux ]
             win : Window [ w ]
             # the guest display has no ide consumer, and venus faults on the
@@ -1359,15 +1426,22 @@ Display Window
     # weak: these point AT tree elements, they do not own them. owning meant
     # Au_drop_members released the app instance on window teardown — a drop
     # against a reference that was never a hold
+    # an app with sound sets record_rate when its output opens; record_audio then feeds
+    # the recording's second ffmpeg input (s16 stereo, resampled to 48 kHz) for the AAC track
+    public  record_rate         : i32
+    mutable rec_afd             : i32 [ -1 ]
+    mutable rec_pos             : f64
     manual capture              : element
     manual focus                : element
     manual hovered              : element
+    manual locked               : element      # mouse lock owner: cursor hidden at its centre, moves arrive as deltas
     manual action_pressed       : element
     manual context_pressed      : element
     mutable restyle             : bool
     mutable will_animate        : bool
     mutable draw_stage          : CanvasType
     mutable mouse               : vec2f
+    mutable last_move           : vec2f
     mutable last_click_us       : i64
     mutable last_click_pos      : vec2f
     public  stdout_overlay      : bool [ false ]
@@ -2231,6 +2305,53 @@ Display Window
         # 1 = horizontal resize, 2 = vertical resize, else arrow
         platform_set_cursor[ g, kind ]
 
+    # mouse lock: the cursor hides and sits at the element's centre; every move
+    # reaches the element as ev.mouse.delta from there. Esc releases. a hosted
+    # app has no cursor of its own, so it asks the ide to lock for it
+    func lock_centre [ e: element ] -> vec2f
+        return [ f32[ i32[ e.bounds.x + e.bounds.w * 0.5 ] ], f32[ i32[ e.bounds.y + e.bounds.h * 0.5 ] ] ]
+
+    public func mouse_lock [ e: element ]
+        if [ !e || !e.bounds ] return
+        locked = e
+        c : vec2f lock_centre[ e ]
+        g : handle [ Au.live_window_get[] ]
+        if [ g ]
+            platform_cursor_lock[ g, 1 ]
+            platform_warp_cursor[ g, i32[ c.x ], i32[ c.y ] ]
+        mouse     = c
+        last_move = c
+        host_post[ 0, i32[ HM.lock ], 1, i32[ c.x ], i32[ c.y ] ]     # hosted: the ide locks for us; standalone: no channel, dropped
+
+    # interleaved s16 stereo frames at the app's rate, linearly resampled to 48 kHz for ffmpeg
+    public func record_audio [ pcm: @i16, nfr: i32, rate: i32 ]
+        ifdef [ linux ]
+            if [ rec_afd < 0 || nfr <= 0 || rate <= 0 ] return
+            step : f64 [ f64[ rate ] / 48000.0 ]
+            out  : local i16 [ 8192 ]
+            n    : i32 [ 0 ]
+            pos  : f64 [ rec_pos ]
+            while [ pos < f64[ nfr ] ]
+                i0 : i32 [ i32[ pos ] ]
+                i1 : i32 [ (i0 + 1 < nfr) ? i0 + 1 : i0 ]
+                fr : f64 [ pos - f64[ i0 ] ]
+                out[ n * 2 ]     = i16[ f64[ pcm[ i0 * 2 ] ] * (1.0 - fr) + f64[ pcm[ i1 * 2 ] ] * fr ]
+                out[ n * 2 + 1 ] = i16[ f64[ pcm[ i0 * 2 + 1 ] ] * (1.0 - fr) + f64[ pcm[ i1 * 2 + 1 ] ] * fr ]
+                n += 1
+                if [ n == 4096 ]
+                    write[ rec_afd, @out[ 0 ], n * 4 ]
+                    n = 0
+                pos += step
+            rec_pos = pos - f64[ nfr ]
+            if [ n > 0 ] write[ rec_afd, @out[ 0 ], n * 4 ]
+
+    public func mouse_unlock []
+        if [ !locked ] return
+        locked = null
+        g : handle [ Au.live_window_get[] ]
+        if [ g ] platform_cursor_lock[ g, 0 ]
+        host_post[ 0, i32[ HM.lock ], 0, 0, 0 ]
+
     public func find_target [ e: element, ev: Event, must: element ] -> element
         if [ !e || !e.bounds || e.disable || e.ghost || e.hide || e.opacity <= 0.0 ]
             return null
@@ -2403,6 +2524,8 @@ Display Window
             shift = s2
             if [ root ] dirty_tree[ root ]
             will_animate = true
+        # esc releases a mouse lock; the key still travels so a hosted app releases its side too
+        if [ locked && ev.key.unicode == 256 && ev.key.state ] mouse_unlock[]
         ev.target = focus
         if [ focus && focus.on_key*[ ev ] ] return
         # esc while dictating CANCELS the take — nothing submits
@@ -2463,6 +2586,24 @@ Display Window
                 screenshot_y1 = p.y
                 will_animate = true
             return
+        ev.mouse.delta = [ ev.mouse.pos.x - last_move.x, ev.mouse.pos.y - last_move.y ]
+        last_move = ev.mouse.pos
+        if [ locked ]
+            if [ !locked.bounds ]
+                mouse_unlock[]
+            el
+                c : vec2f lock_centre[ locked ]
+                if [ ev.mouse.pos.x == c.x && ev.mouse.pos.y == c.y ] return   # the warp back reports itself
+                ev.mouse.delta = [ ev.mouse.pos.x - c.x, ev.mouse.pos.y - c.y ]
+                ev.origin = locked
+                ev.target = locked
+                locked.on_move*[ ev ]
+                if [ app_object && app_object != locked ] app_object.on_move*[ ev ]
+                g : handle [ Au.live_window_get[] ]
+                if [ g ] platform_warp_cursor[ g, i32[ c.x ], i32[ c.y ] ]
+                mouse     = c
+                last_move = c
+                return
         orig_pos : vec2f [ ev.mouse.pos ]
         f : find_target[ root, ev, null ]
         ev.origin = f
@@ -4542,6 +4683,7 @@ abstract media_app trinity
         adopt[ 'screenshot' ]
         adopt[ 'shot_frame' ]
         adopt[ 'attach' ]
+        adopt[ 'record' ]
         rt : typeid[ root ]
         if [ text_mode ]
             console_size[]
