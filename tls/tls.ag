@@ -135,6 +135,35 @@ class Http
     static func download [ url: string, dest: path ] -> i64
         return request[ 'GET', url, dest, null, 0, null ]
 
+    # one PUT; the status code comes back (-1 when the request never got an answer)
+    static func put [ url: string, body: @u8, body_n: i64, content_type: string, agent: string ] -> i32
+        u : UrlParts [ ]
+        u.from_url[ url ]
+        if [ !u.valid ] return -1
+        t : TLSClient [ host: u.host, port: u.port ]
+        if [ !t.connected ]
+            t.close[]
+            return -1
+        req : string 'PUT {u.query} HTTP/1.1\r\nHost: {u.host}\r\nUser-Agent: {agent}\r\nContent-Type: {content_type}\r\nContent-Length: {body_n}\r\nConnection: close\r\n\r\n'
+        ok : bool [ t.send[ cast @u8 [ req.chars ], req.count ] == req.count ]
+        if [ ok && body_n > 0 ] ok = t.send[ body, body_n ] == body_n
+        code : i32 [ -1 ]
+        if [ ok ]
+            hbuf : local u8 [ 4096 ]
+            hn   : i32 [ 0 ]
+            while [ hn < 4095 ]
+                r : i64 [ t.recv[ @hbuf[ hn ], 1 ] ]
+                if [ r != 1 ] break
+                hn += 1
+                if [ hn >= 4 && hbuf[ hn - 4 ] == 13 && hbuf[ hn - 3 ] == 10 && hbuf[ hn - 2 ] == 13 && hbuf[ hn - 1 ] == 10 ] break
+            hbuf[ hn ] = 0
+            if [ hn > 12 ]
+                hdr : string [ cast cstr [ @hbuf[ 0 ] ] ]
+                cs  : hdr.mid[ 9, 3 ]
+                code = atoi[ cs.chars ]
+        t.close[]
+        return code
+
     # multipart/form-data upload of one file under field name, the response body lands in dest
     static func upload [ url: string, dest: path, field: string, file: path ] -> i64
         fp : @FILE [ fopen[ file.chars, 'rb' ] ]
