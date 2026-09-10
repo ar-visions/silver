@@ -87,3 +87,5 @@ scenes/textures/
 # ares comparison captures and diag dumps
 n64/*.ppm
 n64/*.raw
+n64/ares_*.bin
+n64/ucode_data.bin
