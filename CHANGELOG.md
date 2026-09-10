@@ -3,6 +3,9 @@
 ## Repository size reduction (Sep 9–10 2026)
 History was rewritten; every commit hash from the first foundry commit onward changed.
 Any clone from before Sep 9 2026 must be re-cloned, not pulled.
+No source code was removed by any of the rewrites: only binary assets and build output
+(textures, models, media, generated files) left the history. Every .ag, .c, .cc and .h
+revision is intact, with its author and date.
 
 Starting point: `.git` 1.7 GB (393 MB packed + 253 MB abandoned temp packs + 1 GB loose objects).
 
