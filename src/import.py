@@ -208,6 +208,12 @@ def build_import(name, uri, commit, _config_lines, install_dir, extra):
     if (checkout_dir / '.git').exists():
         run(f"git -C {checkout_dir} submodule update --init --recursive --depth 1")
 
+    # the .g configs address a checkout by project name alone
+    # ($SILVER/checkout/llvm-project); the tree is owner/project, so link the flat name
+    flat = Path(root) / 'checkout' / project
+    if not flat.exists() and not flat.is_symlink():
+        flat.symlink_to(checkout_dir)
+
     if overlay_diff.exists():
         # skip when the diff is already applied (reverse applies cleanly)
         applied = subprocess.run(f"git -C {checkout_dir} apply --reverse --check {overlay_diff}",
