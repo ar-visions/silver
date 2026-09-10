@@ -11,6 +11,7 @@ Keep it in step with the imports.
 |---|---|---|---|---|---|
 | FreeType | VER-2-13-3 | trinity | https://github.com/freetype/freetype | FreeType License (FTL); GPL-2.0 alternative | David Turner, Robert Wilhelm, Werner Lemberg and the FreeType project |
 | FriBidi | v1.0.16 | features | https://github.com/fribidi/fribidi | LGPL-2.1-or-later | Behdad Esfahbod, Dov Grobgeld, Roozbeh Pournader |
+| FAAC | 3aa4c6d | trinity (recording's AAC track, shared library) | https://github.com/knik0/faac | LGPL-2.1-or-later | M. Bakker, Krzysztof Nikiel and the FAAC contributors |
 | libpng | 07b8803 | img | https://github.com/glennrp/libpng | PNG Reference Library License v2 | Glenn Randers-Pehrson, Cosmin Truta and contributors |
 | zlib | 51b7f2a | img, features | https://github.com/madler/zlib | zlib License | Jean-loup Gailly, Mark Adler |
 | Vulkan-Headers | 29184b9 | trinity, wintest | https://github.com/KhronosGroup/Vulkan-Headers | Apache-2.0 OR MIT | The Khronos Group |

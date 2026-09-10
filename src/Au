@@ -1078,6 +1078,10 @@ forward(any)
     M(AA,BB, s, method, public, i32,    live_record_width) \
     M(AA,BB, s, method, public, i32,    live_record_height) \
     M(AA,BB, s, method, public, none,   live_record_set, i32, i32, i32) \
+    M(AA,BB, s, method, public, i64,    live_record_seq) \
+    M(AA,BB, s, method, public, i64,    live_record_vtime) \
+    M(AA,BB, s, method, public, i64,    live_record_atime) \
+    M(AA,BB, s, method, public, none,   live_record_mux_set, i64, i64, i64) \
     M(AA,BB, s, method, public, Au_t,   typeid_string,  Au_t) \
     M(AA,BB, s, method, public, none,   validate_meta,  Au_t, Au_t) \
     M(AA,BB, s, method, public, Au_t,   module_lookup,  symbol) \
