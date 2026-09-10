@@ -160,6 +160,9 @@ void* platform_window_get_user          (platform_window* w);
 int   platform_get_key          (platform_window* w, int key);
 int   platform_get_mods         (platform_window* w);
 void  platform_set_cursor       (platform_window* w, int kind);
+/* mouse lock: hide the cursor while on (the kind comes back on release), warp it (client px) */
+void  platform_cursor_lock      (platform_window* w, int on);
+void  platform_warp_cursor      (platform_window* w, int x, int y);
 void  platform_set_clipboard    (platform_window* w, const char* text);
 const char* platform_get_clipboard (platform_window* w);
 void  platform_show_keyboard    (platform_window* w, bool show);

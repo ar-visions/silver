@@ -1432,7 +1432,9 @@ path aether_lookup_include(aether e, string include) {
         // pointed framework_paths at ITS sdk, not this machine's
         return lookup_framework(e, include);
     }
-    array ipaths = a(e->sys_inc_paths, e->sys_exc_paths, e->include_paths);
+    // silver's own installed headers come first: a pinned import (the Vulkan
+    // headers) must win over whatever version the system happens to carry
+    array ipaths = a(e->include_paths, e->sys_inc_paths, e->sys_exc_paths);
     if (file_exists("%o", include))
         return path(include);
 
@@ -1557,6 +1559,15 @@ static void build_unit_args(aether a, import_unit* u) {
 #endif
     }
 
+    // silver's own installed headers come BEFORE the system's: a pinned
+    // import (the Vulkan headers) must win over the version the system carries
+    if (a->include_paths)
+        for (int i = 0; i < a->include_paths->count; i++) {
+            path inc_path = (path)a->include_paths->origin[i];
+            args.push_back("-isystem");
+            args.push_back(inc_path->chars);
+        }
+
     struct {
         symbol ident;
         array  paths;
@@ -1580,13 +1591,6 @@ static void build_unit_args(aether a, import_unit* u) {
             path fw_path = (path)a->framework_paths->origin[i];
             string fw_arg = f(string, "-F%o", fw_path);
             args.push_back(fw_arg->chars);
-        }
-
-    if (a->include_paths)
-        for (int i = 0; i < a->include_paths->count; i++) {
-            path inc_path = (path)a->include_paths->origin[i];
-            args.push_back("-isystem");
-            args.push_back(inc_path->chars);
         }
 
     if (!u->cpp)
@@ -2167,6 +2171,16 @@ path aether_include(aether e, Au inc, string ns) {
         args.push_back(e->isysroot->chars);
     }
 
+    // silver's own installed headers come BEFORE the system's: a pinned
+    // import (the Vulkan headers) must win over the version the system carries
+    if (e->include_paths)
+        for (int i = 0; i < e->include_paths->count; i++) {
+            path inc_path = (path)e->include_paths->origin[i];
+            string arg = f(string, "%o", inc_path);
+            args.push_back("-isystem");
+            args.push_back(arg->chars);
+        }
+
     struct {
         symbol ident;
         array  paths;
@@ -2208,14 +2222,6 @@ path aether_include(aether e, Au inc, string ns) {
             }
         }
     }
-
-    if (e->include_paths)
-        for (int i = 0; i < e->include_paths->count; i++) {
-            path inc_path = (path)e->include_paths->origin[i];
-            string arg = f(string, "%o", inc_path);
-            args.push_back("-isystem");
-            args.push_back(arg->chars);
-        }
 
     args.push_back("-nostdinc++");
     args.push_back("-c");

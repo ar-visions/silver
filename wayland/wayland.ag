@@ -1,0 +1,133 @@
+import trinity
+import vec
+import <stdio.h>
+import <stdlib.h>
+import <string.h>
+    -I/usr/include/pixman-1
+    -I/usr/include/libdrm
+    -I{root_path}/wayland
+    -lwlroots
+    -lwayland-server
+    -lxkbcommon
+    +WLR_USE_UNSTABLE
+
+# the compositor lives in wayland.c on wlroots; this is its surface
+func wlc_create         [ w: i32, h: i32 ] -> i32
+func wlc_socket         [] -> cstr
+func wlc_pump           []
+func wlc_resize         [ w: i32, h: i32 ]
+func wlc_fullscreen     [ on: i32 ]
+func wlc_frame_id       [] -> u64
+func wlc_frame_gen      [] -> u64
+func wlc_frame_w        [] -> i32
+func wlc_frame_h        [] -> i32
+func wlc_frame_format   [] -> u32
+func wlc_frame_modifier [] -> u64
+func wlc_frame_stride   [] -> u32
+func wlc_frame_offset   [] -> u32
+func wlc_frame_fd       [] -> i32
+func wlc_pointer_motion [ x: f32, y: f32 ]
+func wlc_pointer_button [ x: f32, y: f32, button: i32, state: i32 ]
+func wlc_pointer_axis   [ dx: f32, dy: f32 ]
+func wlc_key            [ glfw: i32, state: i32 ]
+func wlc_spawn          [ cmd: cstr ] -> i32
+
+# a Wayland display as one silver app: every client composites into the pane,
+# and the pane's mouse and keys go to the client under them
+element wayland : trinity
+    public  width  : i32 [ 1280 ]
+    public  height : i32 [ 800 ]
+    # a client to start on the display, e.g. 'firefox' or 'foot'
+    public [ Launch ] run : string
+    # pixels of the window's top kept out of the pane: the output is made that
+    # much taller and drawn that much higher, so an app's own header bar falls
+    # above the edge. 46 hides a GNOME header bar
+    public [ Live ] crop_top : i32 [ 46 ]
+    # the shell passes every app its gain; the element must own the member
+    # or the argument parser prints usage and drops the rest
+    public [ Live, VolumeRange ] volume : f32 [ 1.0 ]
+    mutable up       : bool
+    mutable spawned  : bool
+    # the imports, one per swapchain buffer the output cycles through
+    mutable frames   : map Texture [string]
+    mutable shown    : u64
+    mutable last_w   : i32
+    mutable last_h   : i32
+
+    # the compositor pumps from draw: every frame, never cache-skipped
+    func init []
+        animated = true
+
+    func ensure [ w: i32, h: i32 ]
+        if [ up ] return
+        if [ wlc_create[ w, h ] == 0 ]
+            log 'wayland: the compositor did not start'
+            return
+        up = true
+        log 'wayland: display {string[ wlc_socket[] ]} up at {w}x{h}'
+
+    # the output follows the pane's size
+    func frame_out [ cv: Canvas, vp: rect ]
+        w9 : i32 [ i32[ vp.w ] ]
+        h9 : i32 [ i32[ vp.h ] + ((crop_top > 0) ? crop_top : 0) ]
+        if [ w9 < 16 || h9 < 16 ] return
+        ensure[ w9, h9 ]
+        if [ !up ] return
+        if [ w9 != last_w || h9 != last_h ]
+            last_w = w9
+            last_h = h9
+            wlc_resize[ w9, h9 ]
+        if [ !spawned && run && run.count > 0 ]
+            spawned = true
+            pid9 : i32 [ wlc_spawn[ run.chars ] ]
+            log 'wayland: started {run} (pid {pid9})'
+        wlc_pump[]
+        fid : u64 [ wlc_frame_id[] ]
+        if [ fid == 0 ] return
+        key : string '{fid}'
+        if [ !frames ] frames = map Texture [string] []
+        t : Texture (frames.contains[ key ]) ? frames[ key ] : null
+        if [ !t ]
+            fw : i32 [ wlc_frame_w[] ]
+            fh : i32 [ wlc_frame_h[] ]
+            fd : i32 [ wlc_frame_fd[] ]
+            if [ fd < 0 || fw <= 0 || fh <= 0 ] return
+            t = cv.vk.import_dmabuf_image[ fd, fw, fh, wlc_frame_format[], wlc_frame_modifier[],
+                wlc_frame_stride[], wlc_frame_offset[], cv.w ]
+            t.hold[]
+            frames[ key ] = t
+            log 'wayland: imported frame {key} {fw}x{fh} modifier {wlc_frame_modifier[]}'
+        shown = fid
+        ct : f32 [ (crop_top > 0) ? f32[ crop_top ] : 0.0 ]
+        cv.draw_image[ t, rect [ x: vp.x, y: vp.y - ct, w: f32[ t.width ], h: f32[ t.height ] ] ]
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen ] return
+        ux.will_animate = true
+        frame_out[ w.screen, rect [ x: 0.0, y: 0.0, w: bounds.w, h: bounds.h ] ]
+
+    # the pane's y plus the cropped top is the window's y
+    func win_y [ y: f32 ] -> f32
+        return y + ((crop_top > 0) ? f32[ crop_top ] : 0.0)
+
+    public func on_press [ ev: Event ]
+        if [ !up ] return
+        wlc_pointer_motion[ ev.mouse.pos.x, win_y[ ev.mouse.pos.y ] ]
+        wlc_pointer_button[ ev.mouse.pos.x, win_y[ ev.mouse.pos.y ], ev.mouse.button, 1 ]
+        if [ ux ] ux.set_focus[ a ]
+
+    public func on_release [ ev: Event ]
+        if [ !up ] return
+        wlc_pointer_button[ ev.mouse.pos.x, win_y[ ev.mouse.pos.y ], ev.mouse.button, 0 ]
+
+    public func on_move [ ev: Event ]
+        if [ !up ] return
+        wlc_pointer_motion[ ev.mouse.pos.x, win_y[ ev.mouse.pos.y ] ]
+
+    public func on_wheel [ ev: Event ]
+        if [ !up ] return
+        wlc_pointer_axis[ ev.mouse.wheel_delta.x, ev.mouse.wheel_delta.y ]
+
+    public func on_key [ ev: Event ]
+        if [ !up ] return
+        wlc_key[ i32[ ev.key.unicode ], (ev.key.state) ? 1 : 0 ]

@@ -425,6 +425,30 @@ Option InstancePanel
         cv.draw_text[ text, rect [ x: tx, y: y, w: bounds.w - tx - 8.0, h: rh ],
             vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
 
+    # the export lists the module's properties; a props answer (live or the last one
+    # kept) gives their current values, and anything it adds goes after
+    func merge_spec [ base: string, vals: string ] -> string
+        if [ !base || base.count == 0 ] return vals
+        if [ !vals || vals.count == 0 ] return base
+        out : string ''
+        be : base.split[ ';' ]
+        ve : vals.split[ ';' ]
+        for [ e: string ] in be
+            pick : string e
+            f : e.split[ '=' ]
+            for [ v: string ] in ve
+                g : v.split[ '=' ]
+                if [ f.count > 0 && g.count > 0 && g[ 0 ].compare[ f[ 0 ] ] == 0 ] pick = v
+            out = (out.count > 0) ? '{out};{pick}' : pick
+        for [ v: string ] in ve
+            g : v.split[ '=' ]
+            found : bool [ false ]
+            for [ e: string ] in be
+                f : e.split[ '=' ]
+                if [ f.count > 0 && g.count > 0 && f[ 0 ].compare[ g[ 0 ] ] == 0 ] found = true
+            if [ !found ] out = (out.count > 0) ? '{out};{v}' : v
+        return out
+
     func render [] -> Elements
         ev9 : EditorView view[]
         orb : cast orbiter [ ux.app_object ]
@@ -433,8 +457,10 @@ Option InstancePanel
         # the running instance's own props; else what the module answered last; else its export
         av9 : AppView app[]
         lv9 : bool [ (av9 && av9.props && av9.props.count > 0) ? true : false ]
-        sp9 : string (lv9) ? av9.props : orb.module_spec[ ev9.band_mod[] ]
-        if [ !sp9 || sp9.count == 0 ] sp9 = ev9.launch_spec[]
+        # the spec is the INSTANCE's module, which need not be the pane's file
+        mod9 : string (av9) ? ((av9.app_mod && av9.app_mod.count > 0) ? av9.app_mod : av9.src.stem[]) : ev9.band_mod[]
+        pv9 : string (lv9) ? av9.props : orb.module_spec[ mod9 ]
+        sp9 : string merge_spec[ ev9.launch_spec_of[ mod9 ], pv9 ]
         # the open section runs from under its header to the folded headers below
         fp : f32 [ foot_px[] ]
         sb9 : f32 [ panel_h[] - sect_bottom[] ]
@@ -444,6 +470,7 @@ Option InstancePanel
             py9 : f32 [ sect_y[ 0 ] + row_h[] ]
             # one canvas for the whole list: its controls paint straight onto this panel
             t['launch_panel'] = LaunchPanel [ spec: sp9, args: ar9, inst: av9.iid, live_vals: lv9, no_cache: true,
+                dbg_row: true, dbg_on: av9.debug_build,
                 area: Region [ 'l0 t{py9}px r0 b{sb9}px' ] ]
         if [ av9 && orb.stack_open && stack_rows[] > 0 ]
             cy9 : f32 [ sect_y[ 2 ] + row_h[] ]

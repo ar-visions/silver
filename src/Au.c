@@ -1716,6 +1716,19 @@ AU_EXPORT void   live_surface_set(handle s) { au_live_surface = s; }
 AU_EXPORT handle live_swapchain_get() { return au_live_swapchain; }
 AU_EXPORT void   live_swapchain_set(handle s) { au_live_swapchain = s; }
 
+// the recording encoder's pipe outlives the module, so a reload keeps the take
+static int au_live_record   = 0;
+static int au_live_record_w = 0;
+static int au_live_record_h = 0;
+AU_EXPORT int  live_record_get()    { return au_live_record; }
+AU_EXPORT int  live_record_width()  { return au_live_record_w; }
+AU_EXPORT int  live_record_height() { return au_live_record_h; }
+AU_EXPORT void live_record_set(int fd, int w, int h) {
+    au_live_record   = fd;
+    au_live_record_w = w;
+    au_live_record_h = h;
+}
+
 AU_EXPORT void module_erase(Au_t module, symbol name) {
     if (!module && !name) return;
     micro* mods = au_current_space ? &au_current_space->modules : &modules;

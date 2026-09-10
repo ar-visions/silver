@@ -50,6 +50,7 @@ struct platform_window {
     NSView*            view;
     id                 delegate;
     NSCursor*          cursor;
+    bool               locked;
 #endif
 };
 
@@ -482,6 +483,20 @@ void platform_set_cursor(platform_window* w, int kind) {
     if (w->cursor) [w->cursor set]; else [[NSCursor arrowCursor] set];
 }
 
+void platform_cursor_lock(platform_window* w, int on) {
+    if (w->locked == (on != 0)) return;
+    w->locked = on != 0;
+    if (on) [NSCursor hide]; else [NSCursor unhide];
+}
+
+void platform_warp_cursor(platform_window* w, int x, int y) {
+    NSPoint p = [w->view convertPoint:NSMakePoint(x, y) toView:nil];
+    NSRect  r = [w->window convertRectToScreen:NSMakeRect(p.x, p.y, 0, 0)];
+    CGFloat h = [[NSScreen screens][0] frame].size.height;      // CG space hangs from the top of the main display
+    CGWarpMouseCursorPosition(CGPointMake(r.origin.x, h - r.origin.y));
+    CGAssociateMouseAndMouseCursorPosition(true);
+}
+
 void platform_set_clipboard(platform_window* w, const char* text) {
     NSPasteboard* pb = [NSPasteboard generalPasteboard];
     [pb clearContents];
@@ -900,6 +915,8 @@ void platform_window_native(platform_window* w, platform_native* out) {
     out->window = 0;
 }
 void platform_set_cursor(platform_window* w, int kind) {}
+void platform_cursor_lock(platform_window* w, int on) {}
+void platform_warp_cursor(platform_window* w, int x, int y) {}
 void platform_set_clipboard(platform_window* w, const char* text) {
     [UIPasteboard generalPasteboard].string = [NSString stringWithUTF8String:text ? text : ""];
 }

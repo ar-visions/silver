@@ -501,21 +501,37 @@ Layer CommitLayer
                     if [ ft9 && ft9.width > 0 && ft9.height > 0 ]
                         tw9 = 96.0 * f32[ ft9.width ] / f32[ ft9.height ]
                         if [ tw9 > cdw9 - 24.0 ] tw9 = cdw9 - 24.0
-                        cv.draw_image[ ft9, rect [ x: cx9, y: round[ ry + 6.0 ], w: round[ tw9 ], h: 96.0 ] ]
+                    # the picture sits centered in the card box, which starts 4px
+                    # left of the content and is 8px narrower than the cell
+                    tx9 : f32 [ round[ cx9 - 4.0 + (cdw9 - 8.0 - tw9) * 0.5 ] ]
+                    # the picture with 6px corners and a thin border around it
+                    cv.save[ ]
+                    cv.rounded[ 6.0, 6.0, 6.0, 6.0 ]
+                    cv.stroke_width[ 0.0 ]
+                    if [ ft9 && ft9.width > 0 && ft9.height > 0 ]
+                        cv.draw_image[ ft9, rect [ x: tx9, y: round[ ry + 6.0 ], w: round[ tw9 ], h: 96.0 ] ]
                     el
                         cv.fill_color[ rgba['#000000'] ]
-                        cv.stroke_width[ 0.0 ]
-                        cv.rect_to[ cx9, round[ ry + 6.0 ], tw9, 96.0 ]
+                        cv.rect_to[ tx9, round[ ry + 6.0 ], tw9, 96.0 ]
                         cv.paint[ ]
+                    cv.fill_color[ rgba['#0000'] ]
+                    cv.stroke_width[ 1.0 ]
+                    cv.stroke_color[ rgba['#ffffff40'] ]
+                    cv.rect_to[ tx9, round[ ry + 6.0 ], round[ tw9 ], 96.0 ]
+                    cv.paint[ ]
+                    cv.restore[ ]
+                    # two lines: the instance's name, and its state in blue under it
+                    st9 : string (av9) ? av9.status_word[] : ''
+                    if [ av9 && (!st9 || st9.count == 0) ] st9 = 'running'
                     cv.font_size[ 16 ]
                     cv.fill_color[ rgba['#fff'] ]
-                    cv.draw_text[ (av9) ? orb.instance_label[ av9 ] : h.text,
-                        rect [ x: cx9, y: ry + 104.0, w: cdw9 - 24.0, h: 20.0 ],
-                        vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null ]
+                    cv.draw_text[ (av9) ? orb.instance_name[ av9 ] : h.text,
+                        rect [ x: cx9 - 4.0, y: ry + 104.0, w: cdw9 - 8.0, h: 20.0 ],
+                        vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null ]
                     cv.fill_color[ rgba['#6cb6ff'] ]
-                    cv.draw_text[ (av9 && av9.app_mod) ? av9.app_mod : '',
-                        rect [ x: cx9, y: ry + 124.0, w: cdw9 - 24.0, h: 20.0 ],
-                        vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null ]
+                    cv.draw_text[ st9,
+                        rect [ x: cx9 - 4.0, y: ry + 124.0, w: cdw9 - 8.0, h: 20.0 ],
+                        vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null ]
                     continue
                 # find-result line: the matching source text, indented
                 if [ !h.is_header && h.line > 0 ]
@@ -718,7 +734,7 @@ element CommitView
             if [ !l9 || l9.trim[].count == 0 ] continue
             msg = (msg.count > 0) ? msg + '\n' + l9 : l9
         if [ msg.count == 0 ] return
-        o.do_commit[ msg ]
+        o.do_commit[ msg, !o.shift_down ]
         commit_open = false
         commit_text = null
         pristine = false

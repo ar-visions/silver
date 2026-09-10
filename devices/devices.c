@@ -32,6 +32,7 @@ struct platform_window {
     bool               should_close;
     bool               fullscreen;
     bool               tracking;
+    bool               locked;
     int                aspect_num, aspect_den;
     char*              clip;
     HWND               hwnd;
@@ -372,6 +373,18 @@ void platform_set_cursor(platform_window* w, int kind) {
         default:                      w->cursor = NULL; break;
     }
     SetCursor(w->cursor ? w->cursor : LoadCursorW(NULL, IDC_ARROW));
+}
+
+void platform_cursor_lock(platform_window* w, int on) {
+    if (w->locked == (on != 0)) return;
+    w->locked = on != 0;
+    ShowCursor(on ? FALSE : TRUE);
+}
+
+void platform_warp_cursor(platform_window* w, int x, int y) {
+    POINT p = { x, y };
+    ClientToScreen(w->hwnd, &p);
+    SetCursorPos(p.x, p.y);
 }
 
 void platform_set_clipboard(platform_window* w, const char* text) {
@@ -844,6 +857,8 @@ void platform_window_native(platform_window* w, platform_native* out) {
     out->window = 0;
 }
 void platform_set_cursor(platform_window* w, int kind) {}
+void platform_cursor_lock(platform_window* w, int on) {}
+void platform_warp_cursor(platform_window* w, int x, int y) {}
 void platform_set_clipboard(platform_window* w, const char* text) {}
 const char* platform_get_clipboard(platform_window* w) { return NULL; }
 void platform_show_keyboard(platform_window* w, bool show) {
@@ -911,6 +926,7 @@ struct platform_window {
     int                width, height;
     int                x, y;
     xcb_cursor_t       cursor;
+    xcb_cursor_t       blank;      // the invisible cursor while the mouse is locked
     xcb_atom_t         wm_delete;
     // xdnd: the source offering a drop, and whether it offers file uris
     xcb_window_t       xdnd_src;
@@ -1785,8 +1801,29 @@ void platform_set_cursor(platform_window* w, int kind) {
         xcb_create_glyph_cursor(g_conn, w->cursor, font, font, glyph, glyph + 1, 0, 0, 0, 0xffff, 0xffff, 0xffff);
         xcb_close_font(g_conn, font);
     }
-    uint32_t v = w->cursor;
+    uint32_t v = w->blank ? w->blank : w->cursor;
     xcb_change_window_attributes(g_conn, w->win, XCB_CW_CURSOR, &v);
+    xcb_flush(g_conn);
+}
+
+void platform_cursor_lock(platform_window* w, int on) {
+    if (g_kms) return;
+    if (w->blank) { xcb_free_cursor(g_conn, w->blank); w->blank = 0; }
+    if (on) {
+        xcb_pixmap_t pm = xcb_generate_id(g_conn);
+        xcb_create_pixmap(g_conn, 1, pm, w->win, 1, 1);
+        w->blank = xcb_generate_id(g_conn);
+        xcb_create_cursor(g_conn, w->blank, pm, pm, 0, 0, 0, 0, 0, 0, 0, 0);
+        xcb_free_pixmap(g_conn, pm);
+    }
+    uint32_t v = w->blank ? w->blank : w->cursor;
+    xcb_change_window_attributes(g_conn, w->win, XCB_CW_CURSOR, &v);
+    xcb_flush(g_conn);
+}
+
+void platform_warp_cursor(platform_window* w, int x, int y) {
+    if (g_kms) return;
+    xcb_warp_pointer(g_conn, XCB_NONE, w->win, 0, 0, 0, 0, (int16_t)x, (int16_t)y);
     xcb_flush(g_conn);
 }
 

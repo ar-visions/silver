@@ -285,14 +285,20 @@ static void spawn_slot_app(int k, const char* bindir) {
         if (*p) *p++ = 0;
     }
     // leading markers: '!' = debug (the app self-stops before init so orbiter
-    // can attach lldb); '*' = clean (full --clean rebuild before the spawn).
-    int   dbg = 0, clean = 0;
+    // can attach lldb); '*' = clean (full --clean rebuild before the spawn);
+    // '#' = a debug BUILD (-O0 -g), so the debugger sees source lines
+    int   dbg = 0, clean = 0, dbgb = 0;
     char* nm  = name;
-    while (*nm == '!' || *nm == '*') {
+    while (*nm == '!' || *nm == '*' || *nm == '#') {
         if (*nm == '!') dbg   = 1;
         if (*nm == '*') clean = 1;
+        if (*nm == '#') dbgb  = 1;
         nm++;
     }
+    // the build type rides in the environment: this build, and the app's own
+    // rebuilds when its sources change, all read it
+    if (dbgb) setenv("SILVER_DEBUG_BUILD", "1", 1);
+    else      unsetenv("SILVER_DEBUG_BUILD");
     // app binaries live beside this supervisor binary (one products dir)
     char bin[4300];
     snprintf(bin, sizeof(bin), "%s/%s", bindir, nm);
@@ -328,12 +334,14 @@ static void spawn_slot_app(int k, const char* bindir) {
     snprintf(slotenv, sizeof(slotenv), "SILVER_APP_SLOT=%d", k);
     int n = 0;
     while (environ[n]) n++;
-    char** cenv = malloc((n + 4) * sizeof(char*));
+    char** cenv = malloc((n + 5) * sizeof(char*));
     memcpy(cenv, environ, n * sizeof(char*));
-    cenv[n]     = fdenv;
-    cenv[n + 1] = slotenv;
-    cenv[n + 2] = dbg ? (char*)"SILVER_DEBUG=1" : NULL;
-    cenv[n + 3] = NULL;
+    int ce = n;
+    cenv[ce++] = fdenv;
+    cenv[ce++] = slotenv;
+    if (dbg)  cenv[ce++] = (char*)"SILVER_DEBUG=1";
+    if (dbgb) cenv[ce++] = (char*)"SILVER_DEBUG_BUILD=1";
+    cenv[ce] = NULL;
     pid_t pid = 0;
     int rc = posix_spawn(&pid, bin, &fa, NULL, cargv, cenv);
     posix_spawn_file_actions_destroy(&fa);
@@ -931,6 +939,8 @@ static int sources_newer(const char* product, source_watch* srcs, int nsr) {
 // silver builds; the caller reaps with waitpid(WNOHANG) and reloads on success.
 static pid_t rebuild_spawn(const char* name, int clean) {
     char cmd[8192];
+    // a debug build (-O0 -g) when the launch asked for one: per build, nothing sticky
+    const char* dbgb = getenv("SILVER_DEBUG_BUILD") ? " --debug" : "";
     // --build: compile ONLY. bare `silver <app>` would LAUNCH the app (silver_live_run execs
     // the live host), spawning a whole second process+window on every reload while this one
     // keeps running. we just want the fresh .so produced so the host below hot-swaps it.
@@ -945,12 +955,12 @@ static pid_t rebuild_spawn(const char* name, int clean) {
     // silver's own flags come BEFORE the module name; anything after it is
     // handed to the app, so a trailing --build would launch instead of compile
     snprintf(cmd, sizeof(cmd),
-        "cd /d \"%s\" && \"%s\\install\\build\\silver.exe\" --build%s %s",
-        root, root, clean ? " --clean" : "", name);
+        "cd /d \"%s\" && \"%s\\install\\build\\silver.exe\" --build%s%s %s",
+        root, root, clean ? " --clean" : "", dbgb, name);
 #else
     snprintf(cmd, sizeof(cmd),
-        "cd \"" SILVER_ROOT "\" && \"" SILVER_ROOT "/install/bin/silver\" %s --build%s",
-        name, clean ? " --clean" : "");
+        "cd \"" SILVER_ROOT "\" && \"" SILVER_ROOT "/install/bin/silver\" %s --build%s%s",
+        name, clean ? " --clean" : "", dbgb);
 #endif
     // send the compile output to the app's OWN log so orbiter's console (which tails
     // /tmp/<app>.log) shows the compilation. spawn_slot_app truncated it beforehand,
