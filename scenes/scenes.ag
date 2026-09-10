@@ -1306,6 +1306,27 @@ export func bake_jupiter []
     jup.png[ out ]
     log 'scenes: jupiter map baked -> {out}'
 
+# saturn: Solar System Scope's map (CC BY 4.0); their "8k" download is 4096x2048
+export func bake_saturn []
+    root : path.path_startup[]
+    out  : path '{root}/scenes/textures/saturn-color.png'
+    force : getenv[ 'SILVER_EXPORT_FORCE' ]
+    if [ !force && out.exists[] ]
+        log 'scenes: saturn map current'
+        return
+    dir : path.path_storage[ 'scenes' ]
+    src : path '{dir}/saturn-sss.jpg'
+    if [ !src.exists[] ]
+        n : i64 [ Http.download[ 'https://www.solarsystemscope.com/textures/download/8k_saturn.jpg', src ] ]
+        log 'scenes: fetched the saturn map ({n} bytes)'
+    im : Image [ uri: src ]
+    if [ !im || im.width == 0 ]
+        log 'scenes: cannot read {src}'
+        return
+    sat : im.resize[ 4096, 2048 ]
+    sat.png[ out ]
+    log 'scenes: saturn map baked -> {out}'
+
 element MilkyWay
     frost : true
     public func bg_color [ ] -> rgba
