@@ -202,6 +202,13 @@ export NATIVE="$SILVER/platform/native"
 export IMPORT="$SILVER/install"
 export BUILD="$IMPORT/build"
 export PATH="$BUILD:$IMPORT/bin:$PATH"
+# macOS: pin the toolchain and SDK once. otherwise every cmake configure asks
+# xcrun for them again (a second a call with Xcode installed) and the build
+# follows whatever xcode-select points at that minute
+if [ "$(uname -s)" = "Darwin" ]; then
+    export DEVELOPER_DIR="${DEVELOPER_DIR:-$(xcode-select -p)}"
+    export SDKROOT="${SDKROOT:-$(xcrun --sdk macosx --show-sdk-path)}"
+fi
 export ARCH="$ARCH"
 
 # rpath (@executable_path/../lib) resolves our libs at runtime, so this should
