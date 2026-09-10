@@ -6,6 +6,7 @@ import vec
 import img
 import gltf
 import trinity
+import tls
 
 import <stdio.h>
 import <stdlib.h>
@@ -1246,6 +1247,20 @@ ModelViewProject GaiaShader
         fragColor  = vec4(sky * tint * g * dust, 1.0);
     }
 
+# download a backdrop map from its source URL into the user cache (path_storage,
+# ~/.local/state/scenes — outside the repo, never committed), downsample to
+# w x h, and hand back the Image. cached across launches. shared by every scene
+func fetch_map [ url: string, cache: string, w: i32, h: i32, surf: Surface ] -> Image
+    dir  : path.path_storage[ 'scenes' ]
+    file : path '{dir}/{cache}'
+    if [ !file.exists[] ]
+        n : i64 [ Http.download[ url, file ] ]
+        if [ n > 0 ] log 'scenes: fetched {cache} ({n} bytes)'
+    src : Image [ uri: file, surface: surf ]
+    if [ !src || (src.width == w && src.height == h) ] return src
+    return src.resize[ w, h ]
+
+
 element MilkyWay
     frost : true
     public func bg_color [ ] -> rgba
@@ -1275,6 +1290,7 @@ element MilkyWay
     func load_files[]
         gltf_path : path '../scenes/models/earth.gltf'
         geom      = GltfModel.open[ gltf_path ]
+        # the same Gaia all-sky map the other scenes wrap their spheres with
         img_color = Image [ uri: path '../scenes/textures/gaia.png', surface: GaiaSurface.color ]
 
     # main thread: every vk object this scene owns
