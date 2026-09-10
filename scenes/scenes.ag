@@ -1261,6 +1261,28 @@ func fetch_map [ url: string, cache: string, w: i32, h: i32, surf: Surface ] -> 
     return src.resize[ w, h ]
 
 
+# the sky every scene wraps: ESO's GigaGalaxy Zoom panorama (eso0932a, the 27 MB
+# original), fetched once into the user cache and resampled to 4096x2048 at export
+export func bake_sky []
+    root : path.path_startup[]
+    out  : path '{root}/scenes/textures/gaia.png'
+    force : getenv[ 'SILVER_EXPORT_FORCE' ]
+    if [ !force && out.exists[] ]
+        log 'scenes: sky map current'
+        return
+    dir : path.path_storage[ 'scenes' ]
+    src : path '{dir}/eso0932a.tif'
+    if [ !src.exists[] ]
+        n : i64 [ Http.download[ 'https://cdn.eso.org/images/original/eso0932a.tif', src ] ]
+        log 'scenes: fetched eso0932a.tif ({n} bytes)'
+    im : Image [ uri: src ]
+    if [ !im || im.width == 0 ]
+        log 'scenes: cannot read {src}'
+        return
+    sky : im.resize[ 4096, 2048 ]
+    sky.png[ out ]
+    log 'scenes: sky map baked -> {out}'
+
 element MilkyWay
     frost : true
     public func bg_color [ ] -> rgba

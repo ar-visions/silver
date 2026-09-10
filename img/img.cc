@@ -8,6 +8,7 @@
 // silver free functions are not emitted into the generated header
 extern "C" Image jpeg_decode(path uri);
 extern "C" Image exr_decode(path uri);
+extern "C" Image tiff_decode(path uri);
 
 // read Images without conversion; for .png and .exr
 // this facilitates grayscale maps, environment color, 
@@ -67,10 +68,10 @@ none Image_init(Image a) {
 
     string ext = path_ext(a->uri);
     symbol uri = (symbol)a->uri->chars;
-    if (string_eq(ext, "jpg") || string_eq(ext, "jpeg")) {
-        // baseline decode lives in silver (jpeg_decode in img.ag);
+    if (string_eq(ext, "jpg") || string_eq(ext, "jpeg") || string_eq(ext, "tif") || string_eq(ext, "tiff")) {
+        // baseline decode lives in silver (jpeg_decode / tiff_decode in img.ag);
         // adopt its pixels rather than copying the whole surface
-        Image src = jpeg_decode(a->uri);
+        Image src = string_eq(ext, "jpg") || string_eq(ext, "jpeg") ? jpeg_decode(a->uri) : tiff_decode(a->uri);
         assert (src);
         Au src_header = header((Au)src);
         a->width      = src->width;

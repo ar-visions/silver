@@ -8,6 +8,9 @@ import glennrp:libpng/07b8803 <png.h>
 
 import <string.h>
 import <stdlib.h>
+import <tiff-min.h>
+    -I{root_path}/img
+    -ltiff
 import vec
 
 enum Join
@@ -1208,6 +1211,26 @@ func jpeg_decode [ uri: path ] -> Image
     if [ d.width <= 0 || d.height <= 0 ] return null
     im : Image [ width: d.width, height: d.height, format: Pixel.rgba8, channels: 4 ]
     d.to_rgba[ im.vdata[] ]
+    return im
+
+# decode a TIFF into an rgba8 Image through libtiff (any compression it knows);
+# its RGBA raster is R,G,B,A bytes in memory order, which is our rgba8
+func tiff_decode [ uri: path ] -> Image
+    t : @TIFF [ TIFFOpen[ '{uri}', 'r' ] ]
+    if [ !t ] return null
+    w : local u32 [ 1 ]
+    h : local u32 [ 1 ]
+    w[ 0 ] = 0
+    h[ 0 ] = 0
+    TIFFGetField[ t, TIFFTAG_IMAGEWIDTH, @w[ 0 ] ]
+    TIFFGetField[ t, TIFFTAG_IMAGELENGTH, @h[ 0 ] ]
+    if [ w[ 0 ] == 0 || h[ 0 ] == 0 ]
+        TIFFClose[ t ]
+        return null
+    im : Image [ width: i32[ w[ 0 ] ], height: i32[ h[ 0 ] ], format: Pixel.rgba8, channels: 4 ]
+    ok : i32 [ TIFFReadRGBAImageOriented[ t, w[ 0 ], h[ 0 ], cast @u32 [ im.vdata[] ], ORIENTATION_TOPLEFT, 0 ] ]
+    TIFFClose[ t ]
+    if [ ok == 0 ] return null
     return im
 
 expect func test_exr [] -> bool
