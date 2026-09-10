@@ -9504,20 +9504,22 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
                 f(command, "ln -s %o %o", src_path, project_f));
             project_f = src_path;
         } else {
+            // shallow: only the pinned commit comes down, never the history
             if (!commit) {
                 checkout_verify(a, label, "clone", "clone",
-                    f(command, "git clone --progress %o %o",
+                    f(command, "git clone --progress --depth 1 %o %o",
                         uri, project_f));
             } else if (is_commit_hash(commit)) {
                 checkout_verify(a, label, "clone", "clone",
-                    f(command, "git clone --progress %o %o",
-                        uri, project_f));
+                    f(command, "mkdir -p %o && git -C %o init -q && git -C %o remote add origin %o && "
+                               "git -C %o fetch --progress --depth 1 origin %o",
+                        project_f, project_f, project_f, uri, project_f, commit));
                 checkout_verify(a, label, "checkout", "checkout",
-                    f(command, "git -C %o checkout %o", project_f, commit));
+                    f(command, "git -C %o checkout --detach FETCH_HEAD", project_f));
             } else {
                 checkout_verify(a, label, "clone", "clone",
                     f(command,
-                        "git clone --progress --branch %o --single-branch %o %o",
+                        "git clone --progress --depth 1 --branch %o --single-branch %o %o",
                         commit, uri, project_f));
             }
 
@@ -9652,7 +9654,7 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
     if (dir_exists("%o/.git", project_f) || file_exists("%o/.git", project_f))
         checkout_verify(a, label, "submodule", "submodule",
             f(command,
-              "git -C %o submodule update --init --recursive --progress",
+              "git -C %o submodule update --init --recursive --depth 1 --progress",
               project_f));
 
     // this is the only place we 'cd' anywhere, where there are serial shell commands
