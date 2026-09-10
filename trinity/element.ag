@@ -168,6 +168,8 @@ ielement element
     # --record <file[@mbps]>: gpu h.264 of the screen to a raw .h264 file; an
     # optional @N sets the bitrate ceiling in Mbps (e.g. out.h264@80)
     public  record          : string
+    # --record_mic: the microphone goes into the recording, mixed with the app's sound
+    public  record_mic      : bool
 
     public func on_click   [ ev: Event ] return
     public func on_hover   [ ev: Event ] return

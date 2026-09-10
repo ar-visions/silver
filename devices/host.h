@@ -197,6 +197,13 @@ void  platform_peer_send(const void* data, int len, bool reliable);
 // MCSession delivers off-thread, so packets are queued and polled here
 int   platform_peer_poll(void* out, int max);
 
+/* microphone: the input the system has selected for recording, mono s16 at the
+   rate it runs (written to *rate). read returns the frames now available, 0 when
+   none yet, negative once the device is gone */
+bool  platform_mic_open (int* rate);
+int   platform_mic_read (int16_t* out, int frames);
+void  platform_mic_close(void);
+
 /* callbacks */
 void  platform_set_key_callback    (platform_window* w, platform_key_fn fn);
 void  platform_set_char_callback   (platform_window* w, platform_char_fn fn);

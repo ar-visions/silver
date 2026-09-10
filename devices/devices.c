@@ -14,6 +14,9 @@
 #include <windowsx.h>
 #include <shellapi.h>
 #include <xinput.h>
+#include <initguid.h>
+#include <mmdeviceapi.h>
+#include <audioclient.h>
 
 struct platform_window {
     platform_key_fn    on_key;
@@ -385,6 +388,58 @@ void platform_warp_cursor(platform_window* w, int x, int y) {
     POINT p = { x, y };
     ClientToScreen(w->hwnd, &p);
     SetCursorPos(p.x, p.y);
+}
+
+/* wasapi shared mode on the default capture endpoint, in the mix format it gives us */
+static IAudioClient*        g_mic;
+static IAudioCaptureClient* g_mic_cap;
+static WAVEFORMATEX*        g_mic_fmt;
+bool platform_mic_open(int* rate) {
+    if (g_mic) return true;
+    CoInitializeEx(NULL, COINIT_MULTITHREADED);
+    IMMDeviceEnumerator* en = NULL;
+    IMMDevice* dev = NULL;
+    if (FAILED(CoCreateInstance(&CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL, &IID_IMMDeviceEnumerator, (void**)&en))) return false;
+    HRESULT hr = en->lpVtbl->GetDefaultAudioEndpoint(en, eCapture, eConsole, &dev);
+    en->lpVtbl->Release(en);
+    if (FAILED(hr)) return false;
+    hr = dev->lpVtbl->Activate(dev, &IID_IAudioClient, CLSCTX_ALL, NULL, (void**)&g_mic);
+    dev->lpVtbl->Release(dev);
+    if (FAILED(hr)) return false;
+    g_mic->lpVtbl->GetMixFormat(g_mic, &g_mic_fmt);
+    hr = g_mic->lpVtbl->Initialize(g_mic, AUDCLNT_SHAREMODE_SHARED, 0, 10000000, 0, g_mic_fmt, NULL);
+    if (SUCCEEDED(hr)) hr = g_mic->lpVtbl->GetService(g_mic, &IID_IAudioCaptureClient, (void**)&g_mic_cap);
+    if (SUCCEEDED(hr)) hr = g_mic->lpVtbl->Start(g_mic);
+    if (FAILED(hr)) { platform_mic_close(); return false; }
+    *rate = (int)g_mic_fmt->nSamplesPerSec;
+    return true;
+}
+int platform_mic_read(int16_t* out, int frames) {
+    if (!g_mic_cap) return -1;
+    UINT32 avail = 0;
+    if (FAILED(g_mic_cap->lpVtbl->GetNextPacketSize(g_mic_cap, &avail)) || avail == 0) return 0;
+    BYTE* data; UINT32 n; DWORD flags;
+    if (FAILED(g_mic_cap->lpVtbl->GetBuffer(g_mic_cap, &data, &n, &flags, NULL, NULL))) return 0;
+    int ch = g_mic_fmt->nChannels, take = (int)n < frames ? (int)n : frames;
+    bool f32 = g_mic_fmt->wFormatTag == WAVE_FORMAT_IEEE_FLOAT ||
+              (g_mic_fmt->wFormatTag == WAVE_FORMAT_EXTENSIBLE && g_mic_fmt->wBitsPerSample == 32);
+    for (int i = 0; i < take; i++) {
+        float v = 0;
+        for (int c = 0; c < ch; c++)
+            v += f32 ? ((float*)data)[i * ch + c] : ((int16_t*)data)[i * ch + c] / 32768.0f;
+        v /= ch;
+        if (flags & AUDCLNT_BUFFERFLAGS_SILENT) v = 0;
+        out[i] = (int16_t)(v > 1 ? 32767 : v < -1 ? -32768 : v * 32767);
+    }
+    g_mic_cap->lpVtbl->ReleaseBuffer(g_mic_cap, n);
+    return take;
+}
+void platform_mic_close(void) {
+    if (g_mic) g_mic->lpVtbl->Stop(g_mic);
+    if (g_mic_cap) g_mic_cap->lpVtbl->Release(g_mic_cap);
+    if (g_mic)     g_mic->lpVtbl->Release(g_mic);
+    if (g_mic_fmt) CoTaskMemFree(g_mic_fmt);
+    g_mic = NULL; g_mic_cap = NULL; g_mic_fmt = NULL;
 }
 
 void platform_set_clipboard(platform_window* w, const char* text) {
@@ -858,6 +913,9 @@ void platform_window_native(platform_window* w, platform_native* out) {
 }
 void platform_set_cursor(platform_window* w, int kind) {}
 void platform_cursor_lock(platform_window* w, int on) {}
+bool platform_mic_open(int* rate) { return false; }
+int  platform_mic_read(int16_t* out, int frames) { return -1; }
+void platform_mic_close(void) {}
 void platform_warp_cursor(platform_window* w, int x, int y) {}
 void platform_set_clipboard(platform_window* w, const char* text) {}
 const char* platform_get_clipboard(platform_window* w) { return NULL; }
@@ -892,6 +950,7 @@ int platform_peer_poll(void* out, int max) { return 0; }
 // ================================================================ linux / xcb
 #include <xcb/xcb.h>
 #include <X11/keysym.h>
+#include <alsa/asoundlib.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <time.h>
@@ -1825,6 +1884,37 @@ void platform_warp_cursor(platform_window* w, int x, int y) {
     if (g_kms) return;
     xcb_warp_pointer(g_conn, XCB_NONE, w->win, 0, 0, 0, 0, (int16_t)x, (int16_t)y);
     xcb_flush(g_conn);
+}
+
+/* 'default' is the input the sound server (pipewire/pulse) has selected */
+static snd_pcm_t* g_mic;
+bool platform_mic_open(int* rate) {
+    if (g_mic) return true;
+    if (snd_pcm_open(&g_mic, "default", SND_PCM_STREAM_CAPTURE, 0) < 0) return false;
+    snd_pcm_hw_params_t* hw;
+    snd_pcm_hw_params_malloc(&hw);
+    snd_pcm_hw_params_any(g_mic, hw);
+    snd_pcm_hw_params_set_access(g_mic, hw, SND_PCM_ACCESS_RW_INTERLEAVED);
+    snd_pcm_hw_params_set_format(g_mic, hw, SND_PCM_FORMAT_S16_LE);
+    snd_pcm_hw_params_set_channels(g_mic, hw, 1);
+    unsigned r = 48000; int dir = 0;
+    snd_pcm_hw_params_set_rate_near(g_mic, hw, &r, &dir);
+    int rc = snd_pcm_hw_params(g_mic, hw);
+    snd_pcm_hw_params_free(hw);
+    if (rc < 0) { snd_pcm_close(g_mic); g_mic = NULL; return false; }
+    *rate = (int)r;
+    return true;
+}
+int platform_mic_read(int16_t* out, int frames) {
+    if (!g_mic) return -1;
+    int got = (int)snd_pcm_readi(g_mic, out, frames);
+    if (got < 0) { snd_pcm_prepare(g_mic); return 0; }
+    return got;
+}
+void platform_mic_close(void) {
+    if (!g_mic) return;
+    snd_pcm_close(g_mic);
+    g_mic = NULL;
 }
 
 void platform_set_clipboard(platform_window* w, const char* text) {
