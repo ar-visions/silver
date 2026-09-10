@@ -7,6 +7,7 @@ ifdef [ apple ]
 import gltf
 import vec
 import img
+import tls
 
 ifdef [ windows ]
 	import <posix.h>     # the posix surface, all in one header
@@ -328,8 +329,8 @@ abstract live_app media_app
                 fd = record_spawn[ rpath, fmt ]
                 Au.live_record_set[ fd, tx.width, tx.height ]
             recorder = Recorder [ vk: vk, w: w, fd: fd, fps: record_fps, qp: rqp, format: fmt,
-                width: Au.live_record_width[], height: Au.live_record_height[] ]
-            if [ fmt == 'mp4' ]
+                target: record_target[ rpath ], width: Au.live_record_width[], height: Au.live_record_height[] ]
+            if [ fmt != 'h264' ]
                 aac = Aac [ ]
                 recorder.asc = aac.asc
                 wn.rec = AudioRing [ ]
@@ -342,7 +343,7 @@ abstract live_app media_app
     # track is padded with silence to stay level with the video; once it has one,
     # only a stall longer than a second is padded
     func record_audio_pump [ wn: Window ]
-        mux : Mp4 [ recorder.mux ]
+        mux : Muxer [ recorder.mux ]
         for [ true ]
             if [ !wn.rec.take[ @apcm[ 0 ], 1024 ] ]
                 behind : i64 [ mux.video_samples[] - afed ]
@@ -351,26 +352,37 @@ abstract live_app media_app
                 memset[ @apcm[ 0 ], 0, 4096 ]
             n : i32 [ aac.encode[ @apcm[ 0 ], @aout[ 0 ], 8192 ] ]
             afed += 1024
-            if [ n > 0 ] mux.audio[ @aout[ 0 ], i64[ n ] ]
+            if [ n > 0 ] mux.audio*[ @aout[ 0 ], i64[ n ] ]
 
     func record_close []
         if [ recorder ] recorder.close[]
 
-    # .mp4 (also .m4v, .mov) is our own fragmented mp4: h.264 + aac; .h264 is the
-    # encoder's annex-b stream as-is (plays in mpv, vlc, ffplay)
+    # .mp4 (also .m4v, .mov) is our own fragmented mp4: h.264 + aac; .ts is a
+    # transport stream of the same; .h264 is the encoder's annex-b stream as-is.
+    # youtube://<stream key>, or an https ingest url ending in file=, goes live over hls
     func record_format [ rpath: string ] -> string
         if [ rpath.ends_with[ '.mp4' ] || rpath.ends_with[ '.m4v' ] || rpath.ends_with[ '.mov' ] ] return 'mp4'
+        if [ rpath.ends_with[ '.ts' ] ] return 'ts'
         if [ rpath.ends_with[ '.h264' ] || rpath.ends_with[ '.264' ] ] return 'h264'
-        expect false, 'record: {rpath}: the target is .mp4 (h.264 + aac) or .h264 (the raw stream)'
+        if [ rpath.starts_with[ 'youtube://' ] || rpath.starts_with[ 'https://' ] ] return 'hls'
+        expect false, 'record: {rpath}: the target is .mp4 or .ts (h.264 + aac), .h264 (the raw stream), or youtube://<stream key>'
         return null
+
+    func record_target [ rpath: string ] -> string
+        if [ rpath.starts_with[ 'youtube://' ] ]
+            return 'https://a.upload.youtube.com/http_upload_hls?cid={rpath.mid[ 10, rpath.count - 10 ]}&copy=0&file='
+        return rpath
 
     func record_spawn [ rpath: string, fmt: string ] -> i32
         expect vk.encode_family >= 0, 'record: this gpu has no vulkan video encoder'
+        if [ fmt == 'hls' ]
+            log 'record: live to {record_target[ rpath ]} (h.264 + aac over hls)'
+            return -1
         mode  : i32 [ 0x1A4 ]  # 0644
         flags : i32 [ O_WRONLY | O_CREAT | O_TRUNC ]
         fd    : i32 [ open[ rpath.chars, flags, mode ] ]
         expect fd >= 0, 'record: cannot open {rpath}: {strerror[ errno ]}'
-        log 'record: {rpath} ({(fmt == "mp4") ? "h.264 + aac" : "raw h.264"})'
+        log 'record: {rpath} ({(fmt == "h264") ? "raw h.264" : "h.264 + aac"})'
         return fd
 
     func run [ ]

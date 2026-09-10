@@ -5,6 +5,8 @@ import <string.h>
 import <unistd.h>
 import <fcntl.h>
 import <math.h>
+ifndef [ windows ]
+    import <pthread.h>
 
 # interleaved frames at any rate, mono or stereo, resampled (linear) to 48 kHz
 # stereo; pos carries the fractional read position between calls
@@ -112,18 +114,62 @@ class Aac
 # fragmented mp4 on a file descriptor: ftyp + moov once, then a moof/mdat pair
 # per gop. every fragment stands alone, so a take survives a reload or a crash
 # with only the open gop lost; players and editors read it as a plain .mp4
-class Mp4
+# what the encoder and the audio pump hand frames to: an mp4 or a transport stream
+class Muxer
     public  fd       : i32
     public  fps      : i32
     public  width    : i32
     public  height   : i32
-    public  seq      : i64                  # fragment sequence number
+    public  seq      : i64                  # fragment or segment sequence number
     public  vtime    : i64                  # video samples written
     public  atime    : i64                  # audio samples written (48 kHz frames)
-    public  started  : bool                 # the file already holds ftyp + moov
+    public  started  : bool                 # the file already holds its header
     intern  sps      : vec u8
     intern  pps      : vec u8
     intern  asc      : vec u8
+    intern  vcount   : i32                  # video samples in the open fragment
+    intern  acount   : i32
+
+    func begin [ header: vec u8, audio_asc: vec u8 ] return
+    func video [ data: @u8, n: i64, key: bool ] return
+    func audio [ data: @u8, n: i64 ] return
+    func close [] return
+
+    # where the video stands, in 48 kHz audio frames, so the sound track can keep level
+    func video_samples [] -> i64
+        return (vtime + i64[ vcount ]) * 48000 / i64[ fps ]
+
+    # end of the nal that starts at s: the next start code, or n
+    func nal_end [ data: @u8, s: i64, n: i64 ] -> i64
+        e : i64 [ s ]
+        while [ e + 2 < n ]
+            if [ data[ e ] == 0 && data[ e + 1 ] == 0 ]
+                if [ data[ e + 2 ] == 1 ] return e
+                if [ data[ e + 2 ] == 0 && e + 3 < n && data[ e + 3 ] == 1 ] return e
+            e += 1
+        return n
+
+    # the sps and pps out of the encoder's annex-b header
+    func parameter_sets [ header: vec u8 ]
+        n : i64 [ header.count ]
+        i : i64 [ 0 ]
+        while [ i + 3 < n ]
+            if [ header[ i ] == 0 && header[ i + 1 ] == 0 && header[ i + 2 ] == 1 ]
+                s : i64 [ i + 3 ]
+                e : i64 [ nal_end[ @header[ 0 ], s, n ] ]
+                t : i64 [ i64[ header[ s ] ] & 31 ]
+                if [ t == 7 ]
+                    sps = vec u8 [ e - s ]
+                    memcpy[ @sps[ 0 ], @header[ s ], e - s ]
+                if [ t == 8 ]
+                    pps = vec u8 [ e - s ]
+                    memcpy[ @pps[ 0 ], @header[ s ], e - s ]
+                i = e
+            el
+                i += 1
+        expect sps.count > 0 && pps.count > 0, 'mux: the encoder gave no sps/pps'
+
+Muxer Mp4
     intern  tick     : i64                  # video timescale units per frame
     intern  hdr      : new u8  [ 262144 ]   # box scratch
     intern  hn       : i64
@@ -131,11 +177,9 @@ class Mp4
     intern  vn       : i64
     intern  vsize    : new i32 [ 4096 ]
     intern  vkey     : new u8  [ 4096 ]
-    intern  vcount   : i32
     intern  adata    : new u8  [ 2097152 ]
     intern  an       : i64
     intern  asize    : new i32 [ 4096 ]
-    intern  acount   : i32
 
     func w8  [ v: i64 ]
         hdr[ hn ] = u8[ v & 255 ]
@@ -182,36 +226,10 @@ class Mp4
         if [ hn > 0 ] write[ fd, @hdr[ 0 ], hn ]
         hn = 0
 
-    # end of the nal that starts at s: the next start code, or n
-    func nal_end [ data: @u8, s: i64, n: i64 ] -> i64
-        e : i64 [ s ]
-        while [ e + 2 < n ]
-            if [ data[ e ] == 0 && data[ e + 1 ] == 0 ]
-                if [ data[ e + 2 ] == 1 ] return e
-                if [ data[ e + 2 ] == 0 && e + 3 < n && data[ e + 3 ] == 1 ] return e
-            e += 1
-        return n
-
     # the encoder's annex-b parameter sets become the avcC record; audio_asc empty = no audio track
     func begin [ header: vec u8, audio_asc: vec u8 ]
         tick = 90000 / i64[ fps ]
-        n : i64 [ header.count ]
-        i : i64 [ 0 ]
-        while [ i + 3 < n ]
-            if [ header[ i ] == 0 && header[ i + 1 ] == 0 && header[ i + 2 ] == 1 ]
-                s : i64 [ i + 3 ]
-                e : i64 [ nal_end[ @header[ 0 ], s, n ] ]
-                t : i64 [ i64[ header[ s ] ] & 31 ]
-                if [ t == 7 ]
-                    sps = vec u8 [ e - s ]
-                    memcpy[ @sps[ 0 ], @header[ s ], e - s ]
-                if [ t == 8 ]
-                    pps = vec u8 [ e - s ]
-                    memcpy[ @pps[ 0 ], @header[ s ], e - s ]
-                i = e
-            el
-                i += 1
-        expect sps.count > 0 && pps.count > 0, 'mp4: the encoder gave no sps/pps'
+        parameter_sets[ header ]
         asc = audio_asc
         if [ started ] return
         started = true
@@ -526,12 +544,302 @@ class Mp4
         vcount = 0
         acount = 0
 
-    # where the video stands, in 48 kHz audio frames, so the sound track can keep level
-    func video_samples [] -> i64
-        return (vtime + i64[ vcount ]) * 48000 / i64[ fps ]
-
     func close []
         fragment[]
+
+# mpeg-2 crc, the one psi tables carry
+func crc32_mpeg [ data: @u8, n: i64 ] -> i64
+    crc : i64 [ 0xFFFFFFFF ]
+    for [ i: i64 0, i < n, i += 1 ]
+        crc ^= i64[ data[ i ] ] << 24
+        for [ b: i32 0, b < 8, b += 1 ]
+            crc = ((crc & 0x80000000) != 0) ? ((crc << 1) ^ 0x04C11DB7) : (crc << 1)
+            crc &= 0xFFFFFFFF
+    return crc
+
+# the text of a live media playlist: the last segments in order, each named by
+# the session it came from and its number
+func hls_playlist [ session: i64, first: i64, durs: @i32, count: i32 ] -> string
+    target : i32 [ 1 ]
+    for [ i: i32 0, i < count, i += 1 ]
+        if [ (durs[ i ] + 999) / 1000 > target ] target = (durs[ i ] + 999) / 1000
+    s : string '#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:{target}\n#EXT-X-MEDIA-SEQUENCE:{first}\n'
+    for [ i: i32 0, i < count, i += 1 ]
+        ms : i32 [ durs[ i ] % 1000 ]
+        s = '{s}#EXTINF:{durs[ i ] / 1000}.{(ms < 10) ? "00" : ((ms < 100) ? "0" : "")}{ms},\ns{session}_{first + i64[ i ]}.ts\n'
+    return s
+
+# hls ingest: segments queue through a byte ring to a thread that PUTs each one
+# to the ingest url behind an updated playlist, the way youtube asks for them
+class Hls
+    public  base     : string               # the ingest url up to and including file=
+    public  session  : i64                  # names stay unique across restarts
+    public  agent    : string [ 'silver/trinity/0.1' ]
+    intern  ring     : new u8 [ 33554432 ]
+    intern  w        : i64
+    intern  r        : i64
+    intern  on       : bool
+    intern  seg      : new u8 [ 16777216 ]
+    intern  durs     : new i32 [ 8 ]
+    intern  count    : i32
+    intern  first    : i64                  # sequence number of durs[ 0 ]
+    public  next     : i64                  # sequence number the next segment takes
+    public  sent     : i64
+    public  failed   : i64
+
+    # a finished segment onto the queue; a queue the uploads cannot keep up with drops it
+    func enqueue [ data: @u8, n: i64, dur_ms: i32 ]
+        cap : i64 [ 33554432 ]
+        if [ cap - (w - r) < n + 8 ]
+            log 'hls: upload is behind, a {n / 1024} KB segment was dropped'
+            return
+        put_ring[ n ]
+        put_ring[ i64[ dur_ms ] ]
+        for [ i: i64 0, i < n, i += 1 ]
+            ring[ (w + i) % cap ] = data[ i ]
+        w += n
+
+    func put_ring [ v: i64 ]
+        cap : i64 [ 33554432 ]
+        for [ i: i64 0, i < 4, i += 1 ]
+            ring[ (w + i) % cap ] = u8[ (v >> (24 - i * 8)) & 255 ]
+        w += 4
+
+    func get_ring [] -> i64
+        cap : i64 [ 33554432 ]
+        v : i64 [ 0 ]
+        for [ i: i64 0, i < 4, i += 1 ]
+            v = (v << 8) | i64[ ring[ (r + i) % cap ] ]
+        r += 4
+        return v
+
+    # the next queued segment into seg; its duration, or -1 when the queue is empty
+    func dequeue [ n_out: @i64 ] -> i32
+        if [ w == r ] return -1
+        cap : i64 [ 33554432 ]
+        n   : i64 [ get_ring[] ]
+        dur : i64 [ get_ring[] ]
+        for [ i: i64 0, i < n, i += 1 ]
+            seg[ i ] = ring[ (r + i) % cap ]
+        r += n
+        n_out[ 0 ] = n
+        return i32[ dur ]
+
+    func start []
+        ifndef [ windows ]
+            if [ on ] return
+            on = true
+            tid : local u64 [ 1 ]
+            pthread_create[ tid, null, @entry, a ]
+
+    # queued segments are still going out: give them a moment before the process ends
+    func stop []
+        waited : i32 [ 0 ]
+        while [ w != r && waited < 500 ]
+            usleep[ 20000 ]
+            waited += 1
+        on = false
+
+    func entry [] -> none
+        n : local i64 [ 1 ] [ 0 ]
+        while [ on || w != r ]
+            dur : i32 [ dequeue[ @n[ 0 ] ] ]
+            if [ dur < 0 ]
+                usleep[ 20000 ]
+                continue
+            if [ count == 8 ]
+                for [ i: i32 1, i < 8, i += 1 ]
+                    durs[ i - 1 ] = durs[ i ]
+                count -= 1
+                first += 1
+            if [ count == 0 ] first = next
+            durs[ count ] = dur
+            count += 1
+            name : string 's{session}_{next}.ts'
+            pl   : hls_playlist[ session, first, @durs[ 0 ], count ]
+            c1 : i32 [ Http.put[ '{base}media.m3u8', cast @u8 [ pl.chars ], pl.count, 'application/vnd.apple.mpegurl', agent ] ]
+            c2 : i32 [ Http.put[ '{base}{name}', @seg[ 0 ], n[ 0 ], 'video/mp2t', agent ] ]
+            if [ (c1 != 200 && c1 != 202) || (c2 != 200 && c2 != 202) ]
+                failed += 1
+                log 'hls: segment {next} not taken (playlist {c1}, segment {c2})'
+            el
+                sent += 1
+                if [ sent == 1 ] log 'hls: live, {n[ 0 ] / 1024} KB segments every {dur} ms'
+            next += 1
+
+# mpeg transport stream: pat + pmt, then h.264 and adts aac in pes packets, cut
+# into a self-contained segment at every keyframe. segments go to hls when it is
+# set, else in a row to fd as one .ts file
+Muxer Ts
+    public  hls      : Hls
+    intern  tick     : i64                  # 90 kHz units per frame
+    intern  seg      : new u8 [ 16777216 ]
+    intern  sn       : i64
+    intern  pes      : new u8 [ 4194304 ]   # one packetised elementary stream payload
+    intern  cc       : new u8 [ 4 ]         # continuity: pat, pmt, video, audio
+    intern  frames   : i32                  # video frames in the open segment
+
+    func begin [ header: vec u8, audio_asc: vec u8 ]
+        tick = 90000 / i64[ fps ]
+        parameter_sets[ header ]
+        asc = audio_asc
+
+    # one 188-byte packet; a pcr rides the adaptation field of the first packet of a
+    # video access unit; short payloads are padded with stuffing. bytes taken from payload
+    func packet [ pid: i64, pusi: bool, pcr: i64, payload: @u8, n: i64, ci: i32 ] -> i64
+        at : i64 [ sn ]
+        seg[ at ]     = 0x47
+        seg[ at + 1 ] = u8[ ((pusi) ? 0x40 : 0) | ((pid >> 8) & 0x1F) ]
+        seg[ at + 2 ] = u8[ pid & 255 ]
+        room : i64 [ 184 ]
+        if [ pcr >= 0 ] room = 176
+        take : i64 [ (n < room) ? n : room ]
+        af   : i64 [ 184 - take ]           # adaptation field bytes, including its length byte
+        seg[ at + 3 ] = u8[ ((af > 0) ? 0x30 : 0x10) | i64[ cc[ ci ] ] ]
+        cc[ ci ] = u8[ (i64[ cc[ ci ] ] + 1) & 15 ]
+        p : i64 [ at + 4 ]
+        if [ af > 0 ]
+            seg[ p ] = u8[ af - 1 ]
+            p += 1
+            if [ af > 1 ]
+                seg[ p ] = u8[ (pcr >= 0) ? 0x10 : 0 ]
+                p += 1
+                if [ pcr >= 0 ]
+                    base : i64 [ pcr / 300 ]
+                    ext  : i64 [ pcr % 300 ]
+                    seg[ p ]     = u8[ (base >> 25) & 255 ]
+                    seg[ p + 1 ] = u8[ (base >> 17) & 255 ]
+                    seg[ p + 2 ] = u8[ (base >> 9) & 255 ]
+                    seg[ p + 3 ] = u8[ (base >> 1) & 255 ]
+                    seg[ p + 4 ] = u8[ ((base & 1) << 7) | 0x7E | (ext >> 8) ]
+                    seg[ p + 5 ] = u8[ ext & 255 ]
+                    p += 6
+                while [ p < at + 4 + af ]
+                    seg[ p ] = 0xFF
+                    p += 1
+        memcpy[ @seg[ p ], payload, take ]
+        sn += 188
+        return take
+
+    # a whole pes payload across as many packets as it takes
+    func send [ pid: i64, payload: @u8, n: i64, pcr: i64, ci: i32 ]
+        at   : i64 [ 0 ]
+        pusi : bool [ true ]
+        while [ at < n ]
+            at += packet[ pid, pusi, (pusi) ? pcr : -1, @payload[ at ], n - at, ci ]
+            pusi = false
+
+    # program association and map: one program, video 0x100 (pcr), audio 0x101
+    func tables []
+        pat : local u8 [ 184 ]
+        memset[ @pat[ 0 ], 0xFF, 184 ]
+        pat[ 0 ] = 0                        # pointer
+        src : local u8 [ 12 ] [ 0x00, 0xB0, 0x0D, 0x00, 0x01, 0xC1, 0x00, 0x00, 0x00, 0x01, 0xF0, 0x00 ]
+        memcpy[ @pat[ 1 ], @src[ 0 ], 12 ]
+        put_crc[ @pat[ 1 ], 12 ]
+        packet[ 0, true, -1, @pat[ 0 ], 184, 0 ]
+        pmt : local u8 [ 184 ]
+        memset[ @pmt[ 0 ], 0xFF, 184 ]
+        pmt[ 0 ] = 0
+        srm : local u8 [ 22 ] [ 0x02, 0xB0, 0x17, 0x00, 0x01, 0xC1, 0x00, 0x00, 0xE1, 0x00, 0xF0, 0x00,
+                                 0x1B, 0xE1, 0x00, 0xF0, 0x00,  0x0F, 0xE1, 0x01, 0xF0, 0x00 ]
+        memcpy[ @pmt[ 1 ], @srm[ 0 ], 22 ]
+        put_crc[ @pmt[ 1 ], 22 ]
+        packet[ 0x1000, true, -1, @pmt[ 0 ], 184, 1 ]
+
+    func put_crc [ section: @u8, n: i64 ]
+        c : i64 [ crc32_mpeg[ section, n ] ]
+        section[ n ]     = u8[ (c >> 24) & 255 ]
+        section[ n + 1 ] = u8[ (c >> 16) & 255 ]
+        section[ n + 2 ] = u8[ (c >> 8) & 255 ]
+        section[ n + 3 ] = u8[ c & 255 ]
+
+    # pes header with a pts; length 0 leaves the packet unbounded (video)
+    func pes_header [ stream: i64, length: i64, pts: i64 ] -> i64
+        pes[ 0 ] = 0
+        pes[ 1 ] = 0
+        pes[ 2 ] = 1
+        pes[ 3 ] = u8[ stream ]
+        pes[ 4 ] = u8[ (length >> 8) & 255 ]
+        pes[ 5 ] = u8[ length & 255 ]
+        pes[ 6 ] = 0x80
+        pes[ 7 ] = 0x80                     # pts only: no b-frames, dts is pts
+        pes[ 8 ] = 5
+        pes[ 9 ]  = u8[ 0x21 | ((pts >> 29) & 0x0E) ]
+        pes[ 10 ] = u8[ (pts >> 22) & 255 ]
+        pes[ 11 ] = u8[ 0x01 | ((pts >> 14) & 0xFE) ]
+        pes[ 12 ] = u8[ (pts >> 7) & 255 ]
+        pes[ 13 ] = u8[ 0x01 | ((pts << 1) & 0xFE) ]
+        return 14
+
+    func put_nal [ at: i64, nal: @u8, n: i64 ] -> i64
+        pes[ at ]     = 0
+        pes[ at + 1 ] = 0
+        pes[ at + 2 ] = 0
+        pes[ at + 3 ] = 1
+        memcpy[ @pes[ at + 4 ], nal, n ]
+        return at + 4 + n
+
+    # a picture: delimiter, the parameter sets on a keyframe, then its slices
+    func video [ data: @u8, n: i64, key: bool ]
+        if [ frames > 0 && (key || sn > 12582912) ] cut[]
+        if [ sn == 0 ] tables[]
+        pts : i64 [ 90000 + (vtime + i64[ vcount ]) * tick ]
+        at  : i64 [ pes_header[ 0xE0, 0, pts ] ]
+        aud : local u8 [ 2 ] [ 0x09, 0xF0 ]
+        at = put_nal[ at, @aud[ 0 ], 2 ]
+        if [ key ]
+            at = put_nal[ at, @sps[ 0 ], sps.count ]
+            at = put_nal[ at, @pps[ 0 ], pps.count ]
+        i : i64 [ 0 ]
+        while [ i + 3 <= n ]
+            if [ data[ i ] == 0 && data[ i + 1 ] == 0 && data[ i + 2 ] == 1 ]
+                s : i64 [ i + 3 ]
+                e : i64 [ nal_end[ data, s, n ] ]
+                t : i64 [ i64[ data[ s ] ] & 31 ]
+                if [ t != 7 && t != 8 && t != 9 ] at = put_nal[ at, @data[ s ], e - s ]
+                i = e
+            el
+                i += 1
+        send[ 0x100, @pes[ 0 ], at, (pts - 45000) * 300, 2 ]
+        vcount += 1
+        frames += 1
+
+    # one aac block behind an adts header
+    func audio [ data: @u8, n: i64 ]
+        if [ sn == 0 ] tables[]
+        pts : i64 [ 90000 + (atime + i64[ acount ] * 1024) * 15 / 8 ]
+        len : i64 [ 7 + n ]
+        at  : i64 [ pes_header[ 0xC0, 8 + len, pts ] ]
+        pes[ at ]     = 0xFF
+        pes[ at + 1 ] = 0xF1                # mpeg-4, no crc
+        pes[ at + 2 ] = 0x4C                # aac-lc, 48 kHz, stereo (high bit)
+        pes[ at + 3 ] = u8[ 0x80 | (len >> 11) ]
+        pes[ at + 4 ] = u8[ (len >> 3) & 255 ]
+        pes[ at + 5 ] = u8[ ((len & 7) << 5) | 0x1F ]
+        pes[ at + 6 ] = 0xFC
+        memcpy[ @pes[ at + 7 ], data, n ]
+        send[ 0x101, @pes[ 0 ], at + len, -1, 3 ]
+        acount += 1
+
+    # the open segment out: to the uploader, or onto the file
+    func cut []
+        if [ sn == 0 ] return
+        if [ hls ]
+            hls.enqueue[ @seg[ 0 ], sn, i32[ i64[ frames ] * 1000 / i64[ fps ] ] ]
+        el
+            write[ fd, @seg[ 0 ], sn ]
+        seq   += 1
+        vtime += i64[ vcount ]
+        atime += i64[ acount ] * 1024
+        sn     = 0
+        vcount = 0
+        acount = 0
+        frames = 0
+
+    func close []
+        cut[]
+        if [ hls ] hls.stop[]
 
 # ---- tests: silver --test trinity ----
 
@@ -737,6 +1045,91 @@ expect func t_mp4_continue [] -> bool
     tv : i64 [ find_box[ p, 8, box_end[ p, 0 ], 'traf' ] ]
     dt : i64 [ find_box[ p, tv + 8, box_end[ p, tv ], 'tfdt' ] ]
     return rd32[ p, mf + 12 ] == 7 && rd64[ p, dt + 12 ] == 150000 && m.seq == 8 && m.vtime == 101 && m.atime == 4096
+
+# the standard pat section carries the crc every stream in the wild shows for it
+expect func t_ts_crc [] -> bool
+    pat : local u8 [ 12 ] [ 0x00, 0xB0, 0x0D, 0x00, 0x01, 0xC1, 0x00, 0x00, 0x00, 0x01, 0xF0, 0x00 ]
+    return crc32_mpeg[ @pat[ 0 ], 12 ] == 0x2AB104B2
+
+# a segment: pat, pmt, then a video access unit with its pcr, pts, delimiter and
+# parameter sets, an adts audio frame, continuity counters; a keyframe cuts it
+expect func t_ts_segment [] -> bool
+    fd : i32 [ mux_temp_open[ 'ts' ] ]
+    t  : Ts [ fd: fd, fps: 60, width: 320, height: 240 ]
+    a  : Aac [ ]
+    t.begin[ mux_test_header[], a.asc ]
+    f1 : local u8 [ 14 ] [ 0, 0, 0, 1, 0x09, 0xF0, 0, 0, 0, 1, 0x65, 0x88, 0x84, 0x21 ]
+    f2 : local u8 [ 7 ]  [ 0, 0, 1, 0x41, 0x9A, 0x22, 0x33 ]
+    ab : local u8 [ 5 ]  [ 0xDE, 0xAD, 0xBE, 0xEF, 0x01 ]
+    t.video[ @f1[ 0 ], 14, true ]
+    t.audio[ @ab[ 0 ], 5 ]
+    t.video[ @f2[ 0 ], 7, false ]
+    if [ t.seq != 0 ] return false
+    t.video[ @f1[ 0 ], 14, true ]          # a keyframe: the first segment closes ahead of it
+    if [ t.seq != 1 || t.vtime != 2 || t.atime != 1024 ] return false
+    first : i64 [ mux_temp_size[ fd ] ]
+    t.close[]
+    n : i64 [ mux_temp_size[ fd ] ]
+    b : new u8 [ n ]
+    mux_temp_read[ fd, @b[ 0 ], n ]
+    close[ fd ]
+    p : @u8 [ @b[ 0 ] ]
+    if [ first % 188 != 0 || n % 188 != 0 || first != 188 * 5 ] return false
+    # packet 0: pat, program 1 at pid 0x1000
+    if [ b[ 0 ] != 0x47 || b[ 1 ] != 0x40 || b[ 2 ] != 0 || b[ 3 ] != 0x10 || b[ 4 ] != 0 ] return false
+    if [ b[ 5 ] != 0 || b[ 15 ] != 0xF0 || b[ 16 ] != 0 || rd32[ p, 17 ] != 0x2AB104B2 || b[ 21 ] != 0xFF ] return false
+    # packet 1: pmt, pcr on the video pid, h.264 at 0x100 and adts aac at 0x101
+    q : i64 [ 188 ]
+    if [ b[ q + 1 ] != 0x50 || b[ q + 2 ] != 0 || b[ q + 3 ] != 0x10 || b[ q + 5 ] != 2 ] return false
+    if [ b[ q + 13 ] != 0xE1 || b[ q + 14 ] != 0 || b[ q + 17 ] != 0x1B || b[ q + 19 ] != 0 || b[ q + 22 ] != 0x0F || b[ q + 24 ] != 1 ] return false
+    # packet 2: the keyframe. pusi, adaptation with a pcr, pes for stream e0 with pts 90000
+    q = 376
+    if [ b[ q + 1 ] != 0x41 || b[ q + 2 ] != 0 || b[ q + 3 ] != 0x30 || b[ q + 5 ] != 0x10 ] return false
+    pcr_base : i64 [ (i64[ b[ q + 6 ] ] << 25) | (i64[ b[ q + 7 ] ] << 17) | (i64[ b[ q + 8 ] ] << 9) | (i64[ b[ q + 9 ] ] << 1) | (i64[ b[ q + 10 ] ] >> 7) ]
+    if [ pcr_base != 45000 ] return false
+    h : i64 [ q + 5 + i64[ b[ q + 4 ] ] ]   # the pes starts after the adaptation field
+    if [ b[ h ] != 0 || b[ h + 1 ] != 0 || b[ h + 2 ] != 1 || b[ h + 3 ] != 0xE0 || b[ h + 4 ] != 0 || b[ h + 5 ] != 0 ] return false
+    if [ b[ h + 7 ] != 0x80 || b[ h + 8 ] != 5 || b[ h + 9 ] != 0x21 || b[ h + 10 ] != 0 || b[ h + 11 ] != 0x05 || b[ h + 12 ] != 0xBF || b[ h + 13 ] != 0x21 ] return false
+    # delimiter, sps, pps, then the slice; the frame's own delimiter is not repeated
+    e : i64 [ h + 14 ]
+    if [ rd32[ p, e ] != 1 || b[ e + 4 ] != 0x09 || rd32[ p, e + 6 ] != 1 || b[ e + 10 ] != 0x67 ] return false
+    if [ rd32[ p, e + 18 ] != 1 || b[ e + 22 ] != 0x68 || rd32[ p, e + 26 ] != 1 || b[ e + 30 ] != 0x65 || b[ e + 33 ] != 0x21 ] return false
+    # packet 3: the audio pes, bounded, with a 7-byte adts header ahead of the 5 bytes
+    q = 564
+    if [ b[ q + 1 ] != 0x41 || b[ q + 2 ] != 1 || b[ q + 3 ] != 0x30 ] return false
+    h = q + 5 + i64[ b[ q + 4 ] ]
+    if [ b[ h + 3 ] != 0xC0 || b[ h + 4 ] != 0 || b[ h + 5 ] != 20 || b[ h + 9 ] != 0x21 ] return false
+    if [ b[ h + 14 ] != 0xFF || b[ h + 15 ] != 0xF1 || b[ h + 16 ] != 0x4C || b[ h + 17 ] != 0x80 || b[ h + 18 ] != 1 || b[ h + 19 ] != 0x9F || b[ h + 20 ] != 0xFC || b[ h + 21 ] != 0xDE ] return false
+    # packet 4: the second frame on the video pid, counter 1, pts one tick on
+    q = 752
+    if [ b[ q + 1 ] != 0x41 || b[ q + 2 ] != 0 || (b[ q + 3 ] & 15) != 1 ] return false
+    h = q + 5 + i64[ b[ q + 4 ] ]
+    if [ b[ h + 12 ] != 0xCA || b[ h + 13 ] != 0xD9 ] return false          # 91500
+    # the second segment starts with its own pat, counters carrying on
+    q = first
+    return b[ q ] == 0x47 && b[ q + 1 ] == 0x40 && b[ q + 2 ] == 0 && (b[ q + 3 ] & 15) == 1 && t.seq == 2 && t.vtime == 3
+
+# the playlist names the last segments after the session, numbered in sequence
+expect func t_hls_playlist [] -> bool
+    durs : local i32 [ 3 ] [ 2000, 1983, 2017 ]
+    s : hls_playlist[ 5, 3, @durs[ 0 ], 3 ]
+    return s == '#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:3\n#EXT-X-MEDIA-SEQUENCE:3\n#EXTINF:2.000,\ns5_3.ts\n#EXTINF:1.983,\ns5_4.ts\n#EXTINF:2.017,\ns5_5.ts\n'
+
+# segments queue in order with their durations; an overfull queue drops
+expect func t_hls_queue [] -> bool
+    h  : Hls [ ]
+    s1 : local u8 [ 4 ] [ 1, 2, 3, 4 ]
+    s2 : local u8 [ 2 ] [ 9, 8 ]
+    n  : local i64 [ 1 ] [ 0 ]
+    if [ h.dequeue[ @n[ 0 ] ] != -1 ] return false
+    h.enqueue[ @s1[ 0 ], 4, 2000 ]
+    h.enqueue[ @s2[ 0 ], 2, 1500 ]
+    if [ h.dequeue[ @n[ 0 ] ] != 2000 || n[ 0 ] != 4 || h.seg[ 0 ] != 1 || h.seg[ 3 ] != 4 ] return false
+    if [ h.dequeue[ @n[ 0 ] ] != 1500 || n[ 0 ] != 2 || h.seg[ 0 ] != 9 ] return false
+    if [ h.dequeue[ @n[ 0 ] ] != -1 ] return false
+    big : new u8 [ 33554432 ]
+    h.enqueue[ @big[ 0 ], 33554432, 2000 ]
+    return h.dequeue[ @n[ 0 ] ] == -1
 
 # where the picture stands, in audio frames
 expect func t_mp4_video_samples [] -> bool
