@@ -320,27 +320,36 @@ abstract live_app media_app
     # the encoder writes a standard annex-b h.264 elementary stream; a .h264 path
     # takes it as-is (plays in mpv, vlc, ffplay); .mp4/.mkv/.mov go through ffmpeg,
     # which only boxes the stream (no re-encode) so an editor gets timestamps
+    # a stream target (rtmp://, rtmps://, YouTube's ingest url with the stream key on
+    # the end) goes out as FLV: the same h.264 copied, AAC audio, or silence when the
+    # app has no sound, since ingest refuses a video-only stream
     func record_spawn [ rpath: string, wn: Window ] -> i32
         expect vk.encode_family >= 0, 'record: this gpu has no vulkan video encoder'
-        expect !strstr[ rpath.chars, '://' ], 'record: only a file path is supported'
-        if [ rpath.ends_with[ '.mp4' ] || rpath.ends_with[ '.mkv' ] || rpath.ends_with[ '.mov' ] ]
-            cmd : string 'ffmpeg -loglevel error -y -f h264 -r {record_fps} -i - -c copy "{rpath}"'
+        stream : bool [ strstr[ rpath.chars, '://' ] != null ]
+        flv    : bool [ stream || rpath.ends_with[ '.flv' ] ]
+        if [ flv || rpath.ends_with[ '.mp4' ] || rpath.ends_with[ '.mkv' ] || rpath.ends_with[ '.mov' ] ]
+            aud  : string ''                 # ffmpeg input 0: the app's audio
             fifo : string ''
             ifdef [ linux ]
                 if [ wn.record_rate > 0 ]
-                    # the audio rides a fifo as ffmpeg's second input; it is opened before the
+                    # the audio rides a fifo as ffmpeg's first input; it is opened before the
                     # video probe so neither side waits on the other
                     fifo = '/tmp/silver-rec-{getpid[]}.fifo'
                     unlink[ fifo.chars ]
                     mkfifo[ fifo.chars, 0x1B0 ]
-                    cmd = 'ffmpeg -loglevel error -y -f s16le -ar 48000 -ac 2 -i "{fifo}" -f h264 -r {record_fps} -i - -map 1:v -map 0:a -c:v copy -c:a aac -b:a 192k "{rpath}"'
+                    aud = '-f s16le -ar 48000 -ac 2 -i "{fifo}"'
+            if [ aud.count == 0 && stream ] aud = '-f lavfi -i anullsrc=r=48000:cl=stereo'
+            out : string (flv) ? '-f flv "{rpath}"' : '"{rpath}"'
+            cmd : string (aud.count > 0)
+                ? 'ffmpeg -loglevel error -y {aud} -f h264 -r {record_fps} -i - -map 1:v -map 0:a -c:v copy -c:a aac -b:a 160k {out}'
+                : 'ffmpeg -loglevel error -y -f h264 -r {record_fps} -i - -c copy {out}'
             pf : @FILE [ popen[ cmd.chars, 'w' ] ]
             expect pf, 'record: cannot start ffmpeg for {rpath}'
             ifdef [ linux ]
                 if [ fifo.count > 0 ]
                     wn.rec_afd = open[ fifo.chars, O_WRONLY, 0 ]
                     unlink[ fifo.chars ]
-            log 'record: {rpath} (h.264{(wn.rec_afd >= 0) ? " + aac" : ""} via ffmpeg)'
+            log 'record: {rpath} (h.264{(wn.rec_afd >= 0) ? " + aac" : ""}{(stream) ? ", streaming" : ""} via ffmpeg)'
             return fileno[ pf ]
         mode  : i32 [ 0x1A4 ]  # 0644
         flags : i32 [ O_WRONLY | O_CREAT | O_TRUNC ]
