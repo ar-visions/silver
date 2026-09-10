@@ -80,3 +80,6 @@ config.guess
 config.sub
 ltmain.sh
 install-sh
+
+# planet maps: downloaded, never committed
+scenes/textures/
