@@ -11,6 +11,8 @@ BUILD_ROOT ?= $(SILVER)/install/build
 # the vendored ninja — invoked by absolute path so the build never depends on ninja
 # being on PATH (no env-var/PATH requirement to build silver).
 NINJA := $(SILVER)/install/bin/ninja
+# a laptop idles to sleep mid-build; on macOS hold it awake for the ninja run
+AWAKE := $(if $(filter Darwin,$(shell uname -s)),caffeinate -i,)
 
 export PROJECT_PATH
 export PROJECT_NAME
@@ -52,7 +54,7 @@ endif
 
 build: bootstrap
 	echo "$(NINJA) -j8 -v -C $(BUILD_ROOT) -f $(PROJECT_NAME).ninja"
-	$(NINJA) -j8 -v -C $(BUILD_ROOT) -f $(PROJECT_NAME).ninja
+	$(AWAKE) $(NINJA) -j8 -v -C $(BUILD_ROOT) -f $(PROJECT_NAME).ninja
 	@ln -sfn "$(BUILD_ROOT)/silver" "$(SILVER)/install/bin/silver"; \
 	echo "silver -> $(BUILD_ROOT)/silver (last built wins)"
 

@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -e
 
+# macOS idles to sleep mid-build; hold the wake assertion for as long as we run
+if [ "$(uname -s)" = "Darwin" ]; then caffeinate -i -w $$ & fi
+
 ARCH=""
 export PIP_BREAK_SYSTEM_PACKAGES=1
 
