@@ -1,5 +1,34 @@
 # silver changelog
 
+## Repository size reduction (Sep 9–10 2026)
+History was rewritten; every commit hash from the first foundry commit onward changed.
+Any clone from before Sep 9 2026 must be re-cloned, not pulled.
+
+Starting point: `.git` 1.7 GB (393 MB packed + 253 MB abandoned temp packs + 1 GB loose objects).
+
+1. Backup before anything: `/src/silver-backup-2026-09-09.tar` (35.6 GB, the whole tree with `.git`,
+   without `install` and `platform/`). Textures also copied to `/src/silver-textures-2026-09-09/`.
+2. Deleted the nine `refs/codex/turn-diffs/checkpoints/*` refs (Codex working snapshots; they alone
+   held orion2/music, art and tracks, ~245 MB). Removed the temp packs, expired the reflog, `gc --prune=now`
+   → 579 MB packed. Everything left was reachable from master.
+3. `git filter-repo --invert-paths` on `foundry/` and `features/.silver2` (history only, nothing tracked)
+   → 550 MB. Force-pushed.
+4. `git filter-repo --invert-paths` on `scenes/textures/` (457 MB of planet maps, the bulk of the repo).
+   The files stayed on disk; `scenes/textures/` was ignored → 97 MB. Force-pushed.
+5. Re-added only the source maps the scenes use (mars height + veg masks + stone, moon displace, gaia,
+   jupiter, saturn, ring, titan, purple pair, pluto tiles; 89 MB). Earth maps, enceladus, europa, moon
+   colour, mars colour and `hires/` stay ignored; earth and mars colour are built procedurally.
+6. Untracked and ignored scratch output: `n64/ares_*.ppm`, `n64/ares_*.bin`, `n64/ucode_data.bin`.
+   Removed `scenes/models/cybertruck`, `archive/landscape.png`.
+7. `git filter-repo --invert-paths` on `outputs/` (orion2 road-generator output, 43 MB) → 137 MB. Force-pushed.
+8. The four downloadable maps became export bakes (`export func bake_sky / bake_jupiter / bake_saturn /
+   bake_titan` in scenes.ag) with `silver --export scenes`; their pngs are untracked and ignored. img
+   reads TIFF through the system libtiff. Sources and licenses are in THIRD_PARTY.md.
+   The old copies remain in history (two commits each); a further rewrite would take the repo to ~60 MB.
+
+Result: `.git` 137 MB, checkout 121 MB, 1,617 files. Never in the repo: `checkout/` (git imports, MOLA
+tiles), `n64/reference/`, `ref/` ROMs, `platform/`.
+
 ## LLDB debug info member offsets (lldb.c)
 - `m->offset` is a runtime field, always 0 at compile time — LLDB showed corrupt values
 - fix: use `LLVMOffsetOfElement(target_data, struct_type, m->index)` for actual byte offsets
