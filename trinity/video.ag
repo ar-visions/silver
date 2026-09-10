@@ -78,6 +78,8 @@ class Encoder
     intern  pps         : StdVideoH264PictureParameterSet
     intern  header      : vec u8
     intern  header_sent : bool
+    public  mux         : Mp4               # takes the frames instead of the raw fd
+    intern  pending_idr : bool
     intern  src_image   : VkImage
     intern  src_alloc   : VmaAllocation
     intern  src_view    : VkImageView
@@ -435,6 +437,7 @@ class Encoder
     func encode [ wait: VkSemaphore ]
         if [ pending ] drain[]
         idr       : bool [ frames % gop == 0 ]
+        pending_idr = idr
         cur       : i32  [ frames % 2 ]
         prev      : i32  [ 1 - cur ]
         frame_num : i32  [ frames % gop ]
@@ -573,13 +576,16 @@ class Encoder
             log 'encode: frame dropped (status {result[2]})'
             return
         if [ !header_sent ]
-            write[ fd, @header[0], header.count ]
+            if [ !mux ] write[ fd, @header[0], header.count ]
             header_sent = true
         vmaInvalidateAllocation[ vk.allocator, bits_alloc, 0, VK_WHOLE_SIZE ]
         bytes  : @u8 [ bits_map ]
         offset : i64 [ result[0] ]
         count  : i64 [ result[1] ]
-        write[ fd, @bytes[ offset ], count ]
+        if [ mux ]
+            mux.video[ @bytes[ offset ], count, pending_idr ]
+        el
+            write[ fd, @bytes[ offset ], count ]
 
     func dealloc []
         if [ pending ] vkWaitForFences[ vk.device, 1, @fence, VK_TRUE, UINT64_MAX ]
@@ -610,6 +616,9 @@ class Recorder
     public  height  : i32
     public  fps     : i32
     public  qp      : i32 [ 20 ]
+    public  format  : string                # 'mp4' boxes the stream with an aac track; 'h264' is the raw stream
+    public  asc     : vec u8                # the aac track's AudioSpecificConfig, empty for none
+    public  mux     : Mp4
     intern  scaled  : Texture
     intern  convert : NV12Convert
     intern  pipe    : Pipeline
@@ -627,6 +636,14 @@ class Recorder
 
     func setup [ tx: Texture ]
         encoder = Encoder [ vk: vk, width: width, height: height, fps: fps, qp: qp, fd: fd ]
+        if [ format == 'mp4' ]
+            # a reload continues the take: the file already holds the header and
+            # the fragment sequence carries on from where the last module left it
+            seq : i64 [ Au.live_record_seq[] ]
+            mux = Mp4 [ fd: fd, fps: fps, width: width, height: height, started: seq > 0,
+                seq: (seq > 0) ? seq : 1, vtime: Au.live_record_vtime[], atime: Au.live_record_atime[] ]
+            mux.begin[ encoder.header, asc ]
+            encoder.mux = mux
         scaled  = Texture [ vk: vk, w: w, width: encoder.coded_w, height: encoder.coded_h,
             vk_format: tx.vk_format, tag: 'record' ]
         planes  = Buffer [ vk: vk, size: i64[ encoder.coded_w ] * encoder.coded_h * 3 / 2,
@@ -681,6 +698,11 @@ class Recorder
             el
                 encoder.encode[ null ]
             sent += 1
+
+    # the last frame out of the gpu and the open fragment onto the disk
+    func close []
+        if [ encoder ] encoder.drain[]
+        if [ mux ] mux.close[]
 
     func dealloc []
         if [ ready ] vkDestroySemaphore[ vk.device, ready, null ]

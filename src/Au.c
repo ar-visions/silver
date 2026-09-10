@@ -1728,6 +1728,16 @@ AU_EXPORT void live_record_set(int fd, int w, int h) {
     au_live_record_w = w;
     au_live_record_h = h;
 }
+// the muxer's place in the take: fragment sequence and the decode time of each track
+static num au_live_record_seq = 0, au_live_record_vt = 0, au_live_record_at = 0;
+AU_EXPORT num  live_record_seq()   { return au_live_record_seq; }
+AU_EXPORT num  live_record_vtime() { return au_live_record_vt; }
+AU_EXPORT num  live_record_atime() { return au_live_record_at; }
+AU_EXPORT void live_record_mux_set(num seq, num vt, num at) {
+    au_live_record_seq = seq;
+    au_live_record_vt  = vt;
+    au_live_record_at  = at;
+}
 
 AU_EXPORT void module_erase(Au_t module, symbol name) {
     if (!module && !name) return;

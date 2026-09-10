@@ -19,6 +19,7 @@ import <math.h>
 import <vk_mem_alloc.h>
 import <sys/stat.h>
 import <fcntl.h>
+import <errno.h>
 ifndef [ windows ]
 	import <sys/ioctl.h>
 
@@ -46,6 +47,11 @@ ifdef [ apple ]
         >> mkdir -p {root_path}/checkout/MoltenVK/Package/Release/MoltenVK/dynamic/dylib/macOS/
         >> ln -sf {root_path}/platform/native/lib/libMoltenVK.dylib {root_path}/checkout/MoltenVK/Package/Release/MoltenVK/dynamic/dylib/macOS/libMoltenVK.dylib
 
+
+# aac for the recording's sound track (LGPL-2.1, linked as a shared library)
+import knik0:faac/3aa4c6d3b0d99223dfb8cab922f2db3ff9ce66b8 <faac.h>
+    -Dfrontend=false
+    -lfaac
 
 import KhronosGroup:SPIRV-Headers/vulkan-sdk-1.4.341.0
 
@@ -156,6 +162,7 @@ import Style
 import Canvas
 import Console
 import video
+import mux
 
 scalar sec : i64
     cast -> ns  [ a * 1000000000 ]
@@ -251,7 +258,10 @@ abstract live_app media_app
     # --record_mic: the microphone goes into the recording, mixed with the app's sound
     public  record_mic  : bool
     intern  recorder    : Recorder
-    intern  rec_wait    : i32
+    intern  aac         : Aac
+    intern  afed        : i64                # audio frames handed to the encoder
+    intern  apcm        : new i16 [ 2048 ]   # one aac block of stereo frames
+    intern  aout        : new u8  [ 8192 ]
     intern  path_said   : bool
     intern  next_second : i64
     intern  frames      : i32
@@ -311,58 +321,56 @@ abstract live_app media_app
             at    : num [ record.index_of[ '@' ] ]
             rpath : string [ (at >= 0) ? record.mid[ 0, at ] : record ]
             rqp   : i32 [ (at >= 0) ? i32[ record.mid[ at + 1, record.count - at - 1 ].integer_value[] ] : 10 ]
+            fmt   : record_format[ rpath ]
             fd : i32 [ Au.live_record_get[] ]
             if [ !fd ]
-                # give the app's audio a moment to open, so the track starts with the video
-                rec_wait += 1
-                if [ wn.record_rate == 0 && rec_wait < 30 ] return
-                # the mic alone carries the track when the app has no sound of its own
                 if [ record_mic ] wn.mic_start[]
-                fd = record_spawn[ rpath, wn ]
+                fd = record_spawn[ rpath, fmt ]
                 Au.live_record_set[ fd, tx.width, tx.height ]
-            recorder = Recorder [ vk: vk, w: w, fd: fd, fps: record_fps, qp: rqp,
+            recorder = Recorder [ vk: vk, w: w, fd: fd, fps: record_fps, qp: rqp, format: fmt,
                 width: Au.live_record_width[], height: Au.live_record_height[] ]
+            if [ fmt == 'mp4' ]
+                aac = Aac [ ]
+                recorder.asc = aac.asc
+                wn.rec = AudioRing [ ]
         recorder.capture[ tx ]
+        if [ recorder.mux ]
+            record_audio_pump[ wn ]
+            Au.live_record_mux_set[ recorder.mux.seq, recorder.mux.vtime, recorder.mux.atime ]
 
-    # the encoder writes a standard annex-b h.264 elementary stream; a .h264 path
-    # takes it as-is (plays in mpv, vlc, ffplay); .mp4/.mkv/.mov go through ffmpeg,
-    # which only boxes the stream (no re-encode) so an editor gets timestamps
-    # a stream target (rtmp://, rtmps://, YouTube's ingest url with the stream key on
-    # the end) goes out as FLV: the same h.264 copied, AAC audio, or silence when the
-    # app has no sound, since ingest refuses a video-only stream
-    func record_spawn [ rpath: string, wn: Window ] -> i32
+    # the ring drains in 1024-frame blocks. before the app has any sound source the
+    # track is padded with silence to stay level with the video; once it has one,
+    # only a stall longer than a second is padded
+    func record_audio_pump [ wn: Window ]
+        mux : Mp4 [ recorder.mux ]
+        for [ true ]
+            if [ !wn.rec.take[ @apcm[ 0 ], 1024 ] ]
+                behind : i64 [ mux.video_samples[] - afed ]
+                source : bool [ wn.record_rate > 0 || wn.mic_on ]
+                if [ behind < ((source) ? 48000 : 1024) ] break
+                memset[ @apcm[ 0 ], 0, 4096 ]
+            n : i32 [ aac.encode[ @apcm[ 0 ], @aout[ 0 ], 8192 ] ]
+            afed += 1024
+            if [ n > 0 ] mux.audio[ @aout[ 0 ], i64[ n ] ]
+
+    func record_close []
+        if [ recorder ] recorder.close[]
+
+    # .mp4 (also .m4v, .mov) is our own fragmented mp4: h.264 + aac; .h264 is the
+    # encoder's annex-b stream as-is (plays in mpv, vlc, ffplay)
+    func record_format [ rpath: string ] -> string
+        if [ rpath.ends_with[ '.mp4' ] || rpath.ends_with[ '.m4v' ] || rpath.ends_with[ '.mov' ] ] return 'mp4'
+        if [ rpath.ends_with[ '.h264' ] || rpath.ends_with[ '.264' ] ] return 'h264'
+        expect false, 'record: {rpath}: the target is .mp4 (h.264 + aac) or .h264 (the raw stream)'
+        return null
+
+    func record_spawn [ rpath: string, fmt: string ] -> i32
         expect vk.encode_family >= 0, 'record: this gpu has no vulkan video encoder'
-        stream : bool [ strstr[ rpath.chars, '://' ] != null ]
-        flv    : bool [ stream || rpath.ends_with[ '.flv' ] ]
-        if [ flv || rpath.ends_with[ '.mp4' ] || rpath.ends_with[ '.mkv' ] || rpath.ends_with[ '.mov' ] ]
-            aud  : string ''                 # ffmpeg input 0: the app's audio
-            fifo : string ''
-            ifdef [ linux ]
-                if [ wn.record_rate > 0 || wn.mic_on ]
-                    # the audio rides a fifo as ffmpeg's first input; it is opened before the
-                    # video probe so neither side waits on the other
-                    fifo = '/tmp/silver-rec-{getpid[]}.fifo'
-                    unlink[ fifo.chars ]
-                    mkfifo[ fifo.chars, 0x1B0 ]
-                    aud = '-f s16le -ar 48000 -ac 2 -i "{fifo}"'
-            if [ aud.count == 0 && stream ] aud = '-f lavfi -i anullsrc=r=48000:cl=stereo'
-            out : string (flv) ? '-f flv "{rpath}"' : '"{rpath}"'
-            cmd : string (aud.count > 0)
-                ? 'ffmpeg -loglevel error -y {aud} -f h264 -r {record_fps} -i - -map 1:v -map 0:a -c:v copy -c:a aac -b:a 160k {out}'
-                : 'ffmpeg -loglevel error -y -f h264 -r {record_fps} -i - -c copy {out}'
-            pf : @FILE [ popen[ cmd.chars, 'w' ] ]
-            expect pf, 'record: cannot start ffmpeg for {rpath}'
-            ifdef [ linux ]
-                if [ fifo.count > 0 ]
-                    wn.rec_afd = open[ fifo.chars, O_WRONLY, 0 ]
-                    unlink[ fifo.chars ]
-            log 'record: {rpath} (h.264{(wn.rec_afd >= 0) ? " + aac" : ""}{(stream) ? ", streaming" : ""} via ffmpeg)'
-            return fileno[ pf ]
         mode  : i32 [ 0x1A4 ]  # 0644
         flags : i32 [ O_WRONLY | O_CREAT | O_TRUNC ]
         fd    : i32 [ open[ rpath.chars, flags, mode ] ]
-        expect fd >= 0, 'record: cannot open {rpath}'
-        log 'record: {rpath} (raw h.264)'
+        expect fd >= 0, 'record: cannot open {rpath}: {strerror[ errno ]}'
+        log 'record: {rpath} ({(fmt == "mp4") ? "h.264 + aac" : "raw h.264"})'
         return fd
 
     func run [ ]
@@ -488,12 +496,15 @@ abstract live_app media_app
                         if [ home_dir ] dest = path '{home_dir}/Documents/{screenshot}'
                     im.png[ dest ]
                     log 'screenshot: {dest}'
+                    record_close[]
                     exit[ 0 ]
         Au.auto_free[false]
         probe : path 'afprobe'
         header : Au.header[ probe ]
         if [ header.managed > 100000 ] log 'AFPOOL ix={header.managed} — pool NOT draining'
-        return !platform_window_should_close[ w.glfw ] && !Au.quit_requested[]
+        alive : bool [ !platform_window_should_close[ w.glfw ] && !Au.quit_requested[] ]
+        if [ !alive ] record_close[]
+        return alive
 
     ifdef [ linux ]
         func share_publish [ side: i32 ]
@@ -1442,18 +1453,17 @@ Display Window
     # weak: these point AT tree elements, they do not own them. owning meant
     # Au_drop_members released the app instance on window teardown — a drop
     # against a reference that was never a hold
-    # an app with sound sets record_rate when its output opens; record_audio then feeds
-    # the recording's second ffmpeg input (s16 stereo, resampled to 48 kHz) for the AAC track
+    # an app with sound sets record_rate when its output opens; record_audio then
+    # resamples its frames to 48 kHz stereo into rec, which the recording's pump
+    # drains as the aac track (rec exists only while a recording wants sound)
     public  record_rate         : i32
-    mutable rec_afd             : i32 [ -1 ]
+    mutable rec                 : AudioRing
     mutable rec_pos             : f64
-    # microphone for the recording: a capture thread fills a ring of 48 kHz stereo
-    # frames; record_audio mixes them in, or the thread writes them itself while
-    # the app has no sound
+    mutable rec_out             : new i16 [ 65536 ]       # one call's resampled frames
+    # microphone for the recording: a capture thread fills mic; record_audio mixes
+    # it into the app's sound, or the thread feeds rec itself while the app has none
     mutable mic_on              : bool
-    mutable mic_ring            : new i16 [ 262144 ]      # 131072 stereo frames, ~2.7 s
-    mutable mic_w               : i64
-    mutable mic_r               : i64
+    mutable mic                 : AudioRing
     manual capture              : element
     manual focus                : element
     manual hovered              : element
@@ -2348,46 +2358,18 @@ Display Window
 
     # interleaved s16 stereo frames at the app's rate, linearly resampled to 48 kHz for ffmpeg,
     # with whatever the microphone has captured since last time mixed in
+    # stereo frames at the app's rate (8192 at most per call at 12 kHz and up)
     public func record_audio [ pcm: @i16, nfr: i32, rate: i32 ]
-        ifdef [ linux ]
-            if [ rec_afd < 0 || nfr <= 0 || rate <= 0 ] return
-            step : f64 [ f64[ rate ] / 48000.0 ]
-            out  : local i16 [ 8192 ]
-            n    : i32 [ 0 ]
-            pos  : f64 [ rec_pos ]
-            while [ pos < f64[ nfr ] ]
-                i0 : i32 [ i32[ pos ] ]
-                i1 : i32 [ (i0 + 1 < nfr) ? i0 + 1 : i0 ]
-                fr : f64 [ pos - f64[ i0 ] ]
-                out[ n * 2 ]     = i16[ f64[ pcm[ i0 * 2 ] ] * (1.0 - fr) + f64[ pcm[ i1 * 2 ] ] * fr ]
-                out[ n * 2 + 1 ] = i16[ f64[ pcm[ i0 * 2 + 1 ] ] * (1.0 - fr) + f64[ pcm[ i1 * 2 + 1 ] ] * fr ]
-                n += 1
-                if [ n == 4096 ]
-                    mic_mix[ @out[ 0 ], n ]
-                    write[ rec_afd, @out[ 0 ], n * 4 ]
-                    n = 0
-                pos += step
-            rec_pos = pos - f64[ nfr ]
-            if [ n > 0 ]
-                mic_mix[ @out[ 0 ], n ]
-                write[ rec_afd, @out[ 0 ], n * 4 ]
-
-    # add the mic ring's next frames into a block of 48 kHz stereo, clamped
-    func mic_mix [ out: @i16, n: i32 ]
-        if [ !mic_on ] return
-        for [ i: i32 0, i < n, i += 1 ]
-            if [ mic_r >= mic_w ] return
-            k : i32 [ i32[ (mic_r % 131072) * 2 ] ]
-            l : i32 [ i32[ out[ i * 2 ] ] + i32[ mic_ring[ k ] ] ]
-            r : i32 [ i32[ out[ i * 2 + 1 ] ] + i32[ mic_ring[ k + 1 ] ] ]
-            out[ i * 2 ]     = i16[ (l > 32767) ? 32767 : ((l < -32768) ? -32768 : l) ]
-            out[ i * 2 + 1 ] = i16[ (r > 32767) ? 32767 : ((r < -32768) ? -32768 : r) ]
-            mic_r += 1
+        if [ !rec || nfr <= 0 || rate <= 0 ] return
+        n : i32 [ resample[ pcm, nfr, 2, rate, @rec_out[ 0 ], 32768, @rec_pos ] ]
+        if [ mic ] mic.add_into[ @rec_out[ 0 ], n ]
+        rec.put[ @rec_out[ 0 ], n ]
 
     # open the system's recording input and read it on its own thread
     public func mic_start []
         ifndef [ windows ]
             if [ mic_on ] return
+            mic    = AudioRing [ ]
             mic_on = true
             tid : local u64 [ 1 ]
             pthread_create[ tid, null, @mic_entry, a ]
@@ -2401,7 +2383,6 @@ Display Window
                 return
             log 'record: microphone on at {rate[ 0 ]} Hz'
             # the device runs at whatever rate it has; the track is 48 kHz, so resample
-            step   : f64 [ f64[ rate[ 0 ] ] / 48000.0 ]
             mpos   : f64 [ 0.0 ]
             mono   : local i16 [ 1024 ]
             stereo : local i16 [ 4096 ]
@@ -2411,26 +2392,12 @@ Display Window
                 if [ got == 0 ]
                     usleep[ 2000 ]
                     continue
-                n : i32 [ 0 ]
-                while [ mpos < f64[ got ] && n < 2048 ]
-                    i0 : i32 [ i32[ mpos ] ]
-                    i1 : i32 [ (i0 + 1 < got) ? i0 + 1 : i0 ]
-                    fr : f64 [ mpos - f64[ i0 ] ]
-                    v  : i16 [ i16[ f64[ mono[ i0 ] ] * (1.0 - fr) + f64[ mono[ i1 ] ] * fr ] ]
-                    stereo[ n * 2 ]     = v
-                    stereo[ n * 2 + 1 ] = v
-                    n += 1
-                    mpos += step
-                mpos -= f64[ got ]
-                # the app's sound owns the track once it starts; until then the mic writes it alone
+                n : i32 [ resample[ @mono[ 0 ], got, 1, rate[ 0 ], @stereo[ 0 ], 2048, @mpos ] ]
+                # the app's sound owns the track once it starts; until then the mic feeds it alone
                 if [ record_rate == 0 ]
-                    if [ rec_afd >= 0 ] write[ rec_afd, @stereo[ 0 ], n * 4 ]
+                    if [ rec ] rec.put[ @stereo[ 0 ], n ]
                 el
-                    for [ i: i32 0, i < n, i += 1 ]
-                        k : i32 [ i32[ (mic_w % 131072) * 2 ] ]
-                        mic_ring[ k ]     = stereo[ i * 2 ]
-                        mic_ring[ k + 1 ] = stereo[ i * 2 + 1 ]
-                        mic_w += 1
+                    mic.put[ @stereo[ 0 ], n ]
             platform_mic_close[]
 
     public func mouse_unlock []

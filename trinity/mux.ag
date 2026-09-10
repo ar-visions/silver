@@ -1,0 +1,798 @@
+extend trinity
+
+import <faac.h>
+import <string.h>
+import <unistd.h>
+import <fcntl.h>
+import <math.h>
+
+# interleaved frames at any rate, mono or stereo, resampled (linear) to 48 kHz
+# stereo; pos carries the fractional read position between calls
+func resample [ pcm: @i16, nfr: i32, channels: i32, rate: i32, out: @i16, cap: i32, pos: @f64 ] -> i32
+    step : f64 [ f64[ rate ] / 48000.0 ]
+    p    : f64 [ pos[ 0 ] ]
+    n    : i32 [ 0 ]
+    while [ p < f64[ nfr ] && n < cap ]
+        i0 : i32 [ i32[ p ] ]
+        i1 : i32 [ (i0 + 1 < nfr) ? i0 + 1 : i0 ]
+        fr : f64 [ p - f64[ i0 ] ]
+        l  : i16 [ i16[ f64[ pcm[ i0 * channels ] ] * (1.0 - fr) + f64[ pcm[ i1 * channels ] ] * fr ] ]
+        r  : i16 [ (channels > 1) ? i16[ f64[ pcm[ i0 * channels + 1 ] ] * (1.0 - fr) + f64[ pcm[ i1 * channels + 1 ] ] * fr ] : l ]
+        out[ n * 2 ]     = l
+        out[ n * 2 + 1 ] = r
+        n += 1
+        p += step
+    pos[ 0 ] = p - f64[ nfr ]
+    return n
+
+# 48 kHz stereo frames between one writer and one reader; a full ring drops what
+# the writer brings rather than blocking it
+class AudioRing
+    intern  data  : new i16 [ 524288 ]      # 262144 frames, ~5.4 s
+    public  w     : i64
+    public  r     : i64
+
+    func frames [] -> i64
+        return w - r
+
+    func put [ pcm: @i16, n: i32 ]
+        for [ i: i32 0, i < n, i += 1 ]
+            if [ w - r >= 262144 ] return
+            k : i64 [ (w % 262144) * 2 ]
+            data[ k ]     = pcm[ i * 2 ]
+            data[ k + 1 ] = pcm[ i * 2 + 1 ]
+            w += 1
+
+    # n frames out, or nothing when fewer are there
+    func take [ out: @i16, n: i32 ] -> bool
+        if [ w - r < i64[ n ] ] return false
+        for [ i: i32 0, i < n, i += 1 ]
+            k : i64 [ (r % 262144) * 2 ]
+            out[ i * 2 ]     = data[ k ]
+            out[ i * 2 + 1 ] = data[ k + 1 ]
+            r += 1
+        return true
+
+    # add what is there into n frames, clamped
+    func add_into [ out: @i16, n: i32 ]
+        for [ i: i32 0, i < n, i += 1 ]
+            if [ r >= w ] return
+            k : i64 [ (r % 262144) * 2 ]
+            l : i32 [ i32[ out[ i * 2 ] ] + i32[ data[ k ] ] ]
+            g : i32 [ i32[ out[ i * 2 + 1 ] ] + i32[ data[ k + 1 ] ] ]
+            out[ i * 2 ]     = i16[ (l > 32767) ? 32767 : ((l < -32768) ? -32768 : l) ]
+            out[ i * 2 + 1 ] = i16[ (g > 32767) ? 32767 : ((g < -32768) ? -32768 : g) ]
+            r += 1
+
+# aac-lc, 48 kHz stereo: 1024 frames per channel in, one raw aac block out.
+# the muxers wrap the blocks (an mp4 sample, an adts frame in a transport stream)
+class Aac
+    public  rate     : i32 [ 48000 ]
+    public  channels : i32 [ 2 ]
+    public  bitrate  : i32 [ 160000 ]
+    public  asc      : vec u8               # AudioSpecificConfig the container carries
+    public  max_out  : i32
+    intern  enc      : @faac_encoder
+
+    func init []
+        p : faac_params
+        faac_params_init[ @p, sizeof faac_params ]
+        p.sample_rate   = u32[ rate ]
+        p.num_channels  = u32[ channels ]
+        p.mpeg_version  = FAAC_MPEG4
+        p.object_type   = FAAC_OBJ_LOW
+        p.joint_mode    = FAAC_JOINT_MS
+        p.use_tns       = true
+        p.bit_rate      = u32[ bitrate / channels ]
+        p.output_format = FAAC_STREAM_RAW
+        p.input_format  = FAAC_INPUT_16BIT
+        st : faac_status [ faac_encoder_open[ @p, @enc ] ]
+        expect st == FAAC_OK, 'aac: {faac_strerror[ st ]}'
+        info : faac_encoder_info
+        info.struct_size = sizeof faac_encoder_info
+        faac_encoder_get_info[ enc, @info ]
+        expect info.frame_samples == 1024, 'aac: unexpected frame size {info.frame_samples}'
+        max_out = i32[ info.max_output_bytes ]
+        ptr : @u8  [ null ]
+        len : u32  [ 0 ]
+        faac_encoder_asc[ enc, @ptr, @len ]
+        asc = vec u8 [ len ]
+        memcpy[ @asc[ 0 ], ptr, len ]
+
+    # 1024 interleaved frames; the bytes of one block, 0 while the encoder primes
+    func encode [ pcm: @i16, out: @u8, cap: i32 ] -> i32
+        n  : u32 [ 0 ]
+        st : faac_status [ faac_encoder_encode[ enc, pcm, u32[ 1024 * channels ], out, u32[ cap ], @n ] ]
+        if [ st != FAAC_OK ] return -1
+        return i32[ n ]
+
+    func dealloc []
+        if [ enc ] faac_encoder_close[ @enc ]
+
+# fragmented mp4 on a file descriptor: ftyp + moov once, then a moof/mdat pair
+# per gop. every fragment stands alone, so a take survives a reload or a crash
+# with only the open gop lost; players and editors read it as a plain .mp4
+class Mp4
+    public  fd       : i32
+    public  fps      : i32
+    public  width    : i32
+    public  height   : i32
+    public  seq      : i64                  # fragment sequence number
+    public  vtime    : i64                  # video samples written
+    public  atime    : i64                  # audio samples written (48 kHz frames)
+    public  started  : bool                 # the file already holds ftyp + moov
+    intern  sps      : vec u8
+    intern  pps      : vec u8
+    intern  asc      : vec u8
+    intern  tick     : i64                  # video timescale units per frame
+    intern  hdr      : new u8  [ 262144 ]   # box scratch
+    intern  hn       : i64
+    intern  vdata    : new u8  [ 16777216 ] # the open fragment's video samples, avcc framed
+    intern  vn       : i64
+    intern  vsize    : new i32 [ 4096 ]
+    intern  vkey     : new u8  [ 4096 ]
+    intern  vcount   : i32
+    intern  adata    : new u8  [ 2097152 ]
+    intern  an       : i64
+    intern  asize    : new i32 [ 4096 ]
+    intern  acount   : i32
+
+    func w8  [ v: i64 ]
+        hdr[ hn ] = u8[ v & 255 ]
+        hn += 1
+    func w16 [ v: i64 ]
+        w8[ v >> 8 ]
+        w8[ v ]
+    func w32 [ v: i64 ]
+        w8[ v >> 24 ]
+        w8[ v >> 16 ]
+        w8[ v >> 8 ]
+        w8[ v ]
+    func w64 [ v: i64 ]
+        w32[ v >> 32 ]
+        w32[ v & 0xFFFFFFFF ]
+    func wtag [ s: string ]
+        wbytes[ cast @u8 [ s.chars ], 4 ]
+    func wbytes [ p: @u8, n: i64 ]
+        memcpy[ @hdr[ hn ], p, n ]
+        hn += n
+    func wzero [ n: i64 ]
+        for [ i: i64 0, i < n, i += 1 ]
+            w8[ 0 ]
+    # a box: size patched at end; returns where it began
+    func begin_box [ tag: string ] -> i64
+        at : i64 [ hn ]
+        w32[ 0 ]
+        wtag[ tag ]
+        return at
+    func begin_full [ tag: string, version: i64, flags: i64 ] -> i64
+        at : i64 [ begin_box[ tag ] ]
+        w8[ version ]
+        w8[ flags >> 16 ]
+        w16[ flags & 65535 ]
+        return at
+    func end_box [ at: i64 ]
+        patch32[ at, hn - at ]
+    func patch32 [ at: i64, v: i64 ]
+        hdr[ at ]     = u8[ (v >> 24) & 255 ]
+        hdr[ at + 1 ] = u8[ (v >> 16) & 255 ]
+        hdr[ at + 2 ] = u8[ (v >> 8) & 255 ]
+        hdr[ at + 3 ] = u8[ v & 255 ]
+    func flush_hdr []
+        if [ hn > 0 ] write[ fd, @hdr[ 0 ], hn ]
+        hn = 0
+
+    # end of the nal that starts at s: the next start code, or n
+    func nal_end [ data: @u8, s: i64, n: i64 ] -> i64
+        e : i64 [ s ]
+        while [ e + 2 < n ]
+            if [ data[ e ] == 0 && data[ e + 1 ] == 0 ]
+                if [ data[ e + 2 ] == 1 ] return e
+                if [ data[ e + 2 ] == 0 && e + 3 < n && data[ e + 3 ] == 1 ] return e
+            e += 1
+        return n
+
+    # the encoder's annex-b parameter sets become the avcC record; audio_asc empty = no audio track
+    func begin [ header: vec u8, audio_asc: vec u8 ]
+        tick = 90000 / i64[ fps ]
+        n : i64 [ header.count ]
+        i : i64 [ 0 ]
+        while [ i + 3 < n ]
+            if [ header[ i ] == 0 && header[ i + 1 ] == 0 && header[ i + 2 ] == 1 ]
+                s : i64 [ i + 3 ]
+                e : i64 [ nal_end[ @header[ 0 ], s, n ] ]
+                t : i64 [ i64[ header[ s ] ] & 31 ]
+                if [ t == 7 ]
+                    sps = vec u8 [ e - s ]
+                    memcpy[ @sps[ 0 ], @header[ s ], e - s ]
+                if [ t == 8 ]
+                    pps = vec u8 [ e - s ]
+                    memcpy[ @pps[ 0 ], @header[ s ], e - s ]
+                i = e
+            el
+                i += 1
+        expect sps.count > 0 && pps.count > 0, 'mp4: the encoder gave no sps/pps'
+        asc = audio_asc
+        if [ started ] return
+        started = true
+        hn = 0
+        b : i64 [ begin_box[ 'ftyp' ] ]
+        wtag[ 'isom' ]
+        w32[ 512 ]
+        wtag[ 'isom' ]
+        wtag[ 'iso2' ]
+        wtag[ 'avc1' ]
+        wtag[ 'mp41' ]
+        end_box[ b ]
+        moov[]
+        flush_hdr[]
+
+    func matrix []
+        w32[ 65536 ]
+        w32[ 0 ]
+        w32[ 0 ]
+        w32[ 0 ]
+        w32[ 65536 ]
+        w32[ 0 ]
+        w32[ 0 ]
+        w32[ 0 ]
+        w32[ 1073741824 ]
+
+    func moov []
+        m : i64 [ begin_box[ 'moov' ] ]
+        b : i64 [ begin_full[ 'mvhd', 0, 0 ] ]
+        w32[ 0 ]                       # created
+        w32[ 0 ]                       # modified
+        w32[ 1000 ]                    # timescale
+        w32[ 0 ]                       # duration: unknown, the fragments carry it
+        w32[ 65536 ]                   # rate 1.0
+        w16[ 256 ]                     # volume 1.0
+        wzero[ 10 ]
+        matrix[]
+        wzero[ 24 ]
+        w32[ 3 ]                       # next track id
+        end_box[ b ]
+        trak_video[]
+        if [ asc.count > 0 ] trak_audio[]
+        x : i64 [ begin_box[ 'mvex' ] ]
+        trex[ 1 ]
+        if [ asc.count > 0 ] trex[ 2 ]
+        end_box[ x ]
+        end_box[ m ]
+
+    func trex [ track: i64 ]
+        b : i64 [ begin_full[ 'trex', 0, 0 ] ]
+        w32[ track ]
+        w32[ 1 ]                       # default sample description
+        w32[ 0 ]
+        w32[ 0 ]
+        w32[ 0 ]
+        end_box[ b ]
+
+    func tkhd [ track: i64, audio: bool ]
+        b : i64 [ begin_full[ 'tkhd', 0, 3 ] ]
+        w32[ 0 ]
+        w32[ 0 ]
+        w32[ track ]
+        w32[ 0 ]
+        w32[ 0 ]                       # duration
+        wzero[ 8 ]
+        w16[ 0 ]                       # layer
+        w16[ 0 ]                       # alternate group
+        w16[ (audio) ? 256 : 0 ]       # volume
+        w16[ 0 ]
+        matrix[]
+        w32[ (audio) ? 0 : (i64[ width ] << 16) ]
+        w32[ (audio) ? 0 : (i64[ height ] << 16) ]
+        end_box[ b ]
+
+    func mdhd [ timescale: i64 ]
+        b : i64 [ begin_full[ 'mdhd', 0, 0 ] ]
+        w32[ 0 ]
+        w32[ 0 ]
+        w32[ timescale ]
+        w32[ 0 ]
+        w16[ 0x55C4 ]                  # 'und'
+        w16[ 0 ]
+        end_box[ b ]
+
+    func hdlr [ kind: string, name: string ]
+        b : i64 [ begin_full[ 'hdlr', 0, 0 ] ]
+        w32[ 0 ]
+        wtag[ kind ]
+        wzero[ 12 ]
+        wbytes[ cast @u8 [ name.chars ], name.count + 1 ]
+        end_box[ b ]
+
+    func dinf []
+        d : i64 [ begin_box[ 'dinf' ] ]
+        r : i64 [ begin_full[ 'dref', 0, 0 ] ]
+        w32[ 1 ]
+        u : i64 [ begin_full[ 'url ', 0, 1 ] ]
+        end_box[ u ]
+        end_box[ r ]
+        end_box[ d ]
+
+    # the empty sample tables a fragmented file carries
+    func stbl_tail []
+        b : i64 [ begin_full[ 'stts', 0, 0 ] ]
+        w32[ 0 ]
+        end_box[ b ]
+        b = begin_full[ 'stsc', 0, 0 ]
+        w32[ 0 ]
+        end_box[ b ]
+        b = begin_full[ 'stsz', 0, 0 ]
+        w32[ 0 ]
+        w32[ 0 ]
+        end_box[ b ]
+        b = begin_full[ 'stco', 0, 0 ]
+        w32[ 0 ]
+        end_box[ b ]
+
+    func trak_video []
+        t : i64 [ begin_box[ 'trak' ] ]
+        tkhd[ 1, false ]
+        md : i64 [ begin_box[ 'mdia' ] ]
+        mdhd[ 90000 ]
+        hdlr[ 'vide', 'VideoHandler' ]
+        mi : i64 [ begin_box[ 'minf' ] ]
+        v : i64 [ begin_full[ 'vmhd', 0, 1 ] ]
+        wzero[ 8 ]
+        end_box[ v ]
+        dinf[]
+        st : i64 [ begin_box[ 'stbl' ] ]
+        sd : i64 [ begin_full[ 'stsd', 0, 0 ] ]
+        w32[ 1 ]
+        e : i64 [ begin_box[ 'avc1' ] ]
+        wzero[ 6 ]
+        w16[ 1 ]                       # data reference
+        wzero[ 16 ]
+        w16[ i64[ width ] ]
+        w16[ i64[ height ] ]
+        w32[ 0x00480000 ]              # 72 dpi
+        w32[ 0x00480000 ]
+        w32[ 0 ]
+        w16[ 1 ]                       # frame count
+        wzero[ 32 ]                    # compressor name
+        w16[ 24 ]                      # depth
+        w16[ 65535 ]
+        c : i64 [ begin_box[ 'avcC' ] ]
+        w8[ 1 ]
+        w8[ i64[ sps[ 1 ] ] ]          # profile
+        w8[ i64[ sps[ 2 ] ] ]          # compatibility
+        w8[ i64[ sps[ 3 ] ] ]          # level
+        w8[ 255 ]                      # 4-byte nal lengths
+        w8[ 225 ]                      # one sps
+        w16[ sps.count ]
+        wbytes[ @sps[ 0 ], sps.count ]
+        w8[ 1 ]                        # one pps
+        w16[ pps.count ]
+        wbytes[ @pps[ 0 ], pps.count ]
+        end_box[ c ]
+        end_box[ e ]
+        end_box[ sd ]
+        stbl_tail[]
+        end_box[ st ]
+        end_box[ mi ]
+        end_box[ md ]
+        end_box[ t ]
+
+    func trak_audio []
+        t : i64 [ begin_box[ 'trak' ] ]
+        tkhd[ 2, true ]
+        md : i64 [ begin_box[ 'mdia' ] ]
+        mdhd[ 48000 ]
+        hdlr[ 'soun', 'SoundHandler' ]
+        mi : i64 [ begin_box[ 'minf' ] ]
+        s : i64 [ begin_full[ 'smhd', 0, 0 ] ]
+        w32[ 0 ]
+        end_box[ s ]
+        dinf[]
+        st : i64 [ begin_box[ 'stbl' ] ]
+        sd : i64 [ begin_full[ 'stsd', 0, 0 ] ]
+        w32[ 1 ]
+        e : i64 [ begin_box[ 'mp4a' ] ]
+        wzero[ 6 ]
+        w16[ 1 ]                       # data reference
+        wzero[ 8 ]
+        w16[ 2 ]                       # channels
+        w16[ 16 ]                      # sample size
+        w32[ 0 ]
+        w32[ 48000 << 16 ]
+        d : i64 [ begin_full[ 'esds', 0, 0 ] ]
+        dsi : i64 [ asc.count ]
+        w8[ 3 ]                        # ES_Descriptor
+        w8[ 3 + 5 + 13 + 2 + dsi + 3 ]
+        w16[ 0 ]                       # es id
+        w8[ 0 ]
+        w8[ 4 ]                        # DecoderConfigDescriptor
+        w8[ 13 + 2 + dsi ]
+        w8[ 0x40 ]                     # mpeg-4 audio
+        w8[ 0x15 ]                     # audio stream
+        w8[ 0 ]
+        w16[ 0 ]                       # buffer size
+        w32[ 320000 ]                  # max bitrate
+        w32[ 160000 ]                  # average bitrate
+        w8[ 5 ]                        # DecoderSpecificInfo
+        w8[ dsi ]
+        wbytes[ @asc[ 0 ], dsi ]
+        w8[ 6 ]                        # SLConfigDescriptor
+        w8[ 1 ]
+        w8[ 2 ]
+        end_box[ d ]
+        end_box[ e ]
+        end_box[ sd ]
+        stbl_tail[]
+        end_box[ st ]
+        end_box[ mi ]
+        end_box[ md ]
+        end_box[ t ]
+
+    # one encoded picture, annex-b in; parameter sets and delimiters are dropped,
+    # every other nal gets a 4-byte length. a keyframe closes the open fragment first
+    func video [ data: @u8, n: i64, key: bool ]
+        if [ vcount > 0 && (key || vn > 12582912 || vcount == 4096) ] fragment[]
+        at : i64 [ vn ]
+        i  : i64 [ 0 ]
+        while [ i + 3 <= n ]
+            if [ data[ i ] == 0 && data[ i + 1 ] == 0 && data[ i + 2 ] == 1 ]
+                s : i64 [ i + 3 ]
+                e : i64 [ nal_end[ data, s, n ] ]
+                t : i64 [ i64[ data[ s ] ] & 31 ]
+                if [ t != 7 && t != 8 && t != 9 ]
+                    len : i64 [ e - s ]
+                    vdata[ vn ]     = u8[ (len >> 24) & 255 ]
+                    vdata[ vn + 1 ] = u8[ (len >> 16) & 255 ]
+                    vdata[ vn + 2 ] = u8[ (len >> 8) & 255 ]
+                    vdata[ vn + 3 ] = u8[ len & 255 ]
+                    memcpy[ @vdata[ vn + 4 ], @data[ s ], len ]
+                    vn += 4 + len
+                i = e
+            el
+                i += 1
+        vsize[ vcount ] = i32[ vn - at ]
+        vkey [ vcount ] = u8[ (key) ? 1 : 0 ]
+        vcount += 1
+
+    # one aac block (1024 frames)
+    func audio [ data: @u8, n: i64 ]
+        if [ acount == 4096 || an + n > 2097152 ] fragment[]
+        memcpy[ @adata[ an ], data, n ]
+        an += n
+        asize[ acount ] = i32[ n ]
+        acount += 1
+
+    # moof + mdat for everything collected; the decode times continue from the last
+    func fragment []
+        if [ vcount == 0 && acount == 0 ] return
+        hn = 0
+        m : i64 [ begin_box[ 'moof' ] ]
+        b : i64 [ begin_full[ 'mfhd', 0, 0 ] ]
+        w32[ seq ]
+        end_box[ b ]
+        # sample data follows the moof and the 8-byte mdat header; the offsets are
+        # patched once the moof size is known
+        vrun : i64 [ 0 ]
+        arun : i64 [ 0 ]
+        if [ vcount > 0 ]
+            t : i64 [ begin_box[ 'traf' ] ]
+            b = begin_full[ 'tfhd', 0, 0x020008 ]
+            w32[ 1 ]
+            w32[ tick ]
+            end_box[ b ]
+            b = begin_full[ 'tfdt', 1, 0 ]
+            w64[ vtime * tick ]
+            end_box[ b ]
+            b = begin_full[ 'trun', 0, 0x601 ]
+            w32[ i64[ vcount ] ]
+            vrun = hn
+            w32[ 0 ]
+            for [ i: i32 0, i < vcount, i += 1 ]
+                w32[ i64[ vsize[ i ] ] ]
+                w32[ (vkey[ i ] != 0) ? 0x02000000 : 0x01010000 ]
+            end_box[ b ]
+            end_box[ t ]
+        if [ acount > 0 ]
+            t : i64 [ begin_box[ 'traf' ] ]
+            b = begin_full[ 'tfhd', 0, 0x020008 ]
+            w32[ 2 ]
+            w32[ 1024 ]
+            end_box[ b ]
+            b = begin_full[ 'tfdt', 1, 0 ]
+            w64[ atime ]
+            end_box[ b ]
+            b = begin_full[ 'trun', 0, 0x201 ]
+            w32[ i64[ acount ] ]
+            arun = hn
+            w32[ 0 ]
+            for [ i: i32 0, i < acount, i += 1 ]
+                w32[ i64[ asize[ i ] ] ]
+            end_box[ b ]
+            end_box[ t ]
+        end_box[ m ]
+        moof_size : i64 [ hn ]
+        if [ vcount > 0 ] patch32[ vrun, moof_size + 8 ]
+        if [ acount > 0 ] patch32[ arun, moof_size + 8 + vn ]
+        w32[ 8 + vn + an ]
+        wtag[ 'mdat' ]
+        flush_hdr[]
+        if [ vn > 0 ] write[ fd, @vdata[ 0 ], vn ]
+        if [ an > 0 ] write[ fd, @adata[ 0 ], an ]
+        seq   += 1
+        vtime += i64[ vcount ]
+        atime += i64[ acount ] * 1024
+        vn     = 0
+        an     = 0
+        vcount = 0
+        acount = 0
+
+    # where the video stands, in 48 kHz audio frames, so the sound track can keep level
+    func video_samples [] -> i64
+        return (vtime + i64[ vcount ]) * 48000 / i64[ fps ]
+
+    func close []
+        fragment[]
+
+# ---- tests: silver --test trinity ----
+
+func rd32 [ b: @u8, at: i64 ] -> i64
+    return (i64[ b[ at ] ] << 24) | (i64[ b[ at + 1 ] ] << 16) | (i64[ b[ at + 2 ] ] << 8) | i64[ b[ at + 3 ] ]
+
+func rd64 [ b: @u8, at: i64 ] -> i64
+    return (rd32[ b, at ] << 32) | rd32[ b, at + 4 ]
+
+func tag_at [ b: @u8, at: i64, tag: string ] -> bool
+    return memcmp[ @b[ at + 4 ], tag.chars, 4 ] == 0
+
+# the box named tag among the siblings in [from, to), or -1
+func find_box [ b: @u8, from: i64, to: i64, tag: string ] -> i64
+    at : i64 [ from ]
+    while [ at + 8 <= to ]
+        size : i64 [ rd32[ b, at ] ]
+        if [ size < 8 ] return -1
+        if [ tag_at[ b, at, tag ] ] return at
+        at += size
+    return -1
+
+func box_end [ b: @u8, at: i64 ] -> i64
+    return at + rd32[ b, at ]
+
+# a scratch file the muxer writes; read_all brings it back
+func mux_temp_open [ name: string ] -> i32
+    p : string '/tmp/silver-mux-{getpid[]}-{name}.mp4'
+    return open[ p.chars, O_RDWR | O_CREAT | O_TRUNC, 0x1A4 ]
+
+func mux_temp_size [ fd: i32 ] -> i64
+    return lseek[ fd, 0, SEEK_END ]
+
+func mux_temp_read [ fd: i32, out: @u8, n: i64 ]
+    lseek[ fd, 0, SEEK_SET ]
+    read[ fd, out, n ]
+
+# a made-up annex-b header: sps (baseline 0x42) and pps
+func mux_test_header [] -> vec u8
+    h : vec u8 [ 20 ]
+    src : local u8 [ 20 ] [ 0, 0, 0, 1, 0x67, 0x42, 0xC0, 0x1E, 0x8C, 0x68, 0x10, 0x10, 0, 0, 0, 1, 0x68, 0xCE, 0x3C, 0x80 ]
+    memcpy[ @h[ 0 ], @src[ 0 ], 20 ]
+    return h
+
+# 48 kHz stereo aac-lc has the two-byte config 11 90
+expect func t_aac_config [] -> bool
+    a : Aac [ ]
+    return a.asc.count == 2 && a.asc[ 0 ] == 0x11 && a.asc[ 1 ] == 0x90 && a.max_out > 0
+
+# a tone comes out as blocks once the encoder has primed, each within max_out
+expect func t_aac_encode [] -> bool
+    a   : Aac [ ]
+    pcm : local i16 [ 2048 ]
+    out : local u8  [ 8192 ]
+    blocks : i32 [ 0 ]
+    for [ b: i32 0, b < 8, b += 1 ]
+        for [ i: i32 0, i < 1024, i += 1 ]
+            v : i16 [ i16[ sin[ f64[ b * 1024 + i ] * 0.0576 ] * 12000.0 ] ]
+            pcm[ i * 2 ]     = v
+            pcm[ i * 2 + 1 ] = v
+        n : i32 [ a.encode[ @pcm[ 0 ], @out[ 0 ], 8192 ] ]
+        if [ n < 0 || n > a.max_out ] return false
+        if [ n > 0 ] blocks += 1
+    return blocks >= 6
+
+# ftyp, then a moov with both tracks, the avcC carrying the sps/pps and an mvex
+expect func t_mp4_header [] -> bool
+    fd : i32 [ mux_temp_open[ 'header' ] ]
+    m  : Mp4 [ fd: fd, fps: 60, width: 640, height: 480, seq: 1 ]
+    a  : Aac [ ]
+    m.begin[ mux_test_header[], a.asc ]
+    n : i64 [ mux_temp_size[ fd ] ]
+    b : new u8 [ n ]
+    mux_temp_read[ fd, @b[ 0 ], n ]
+    close[ fd ]
+    if [ !tag_at[ @b[ 0 ], 0, 'ftyp' ] ] return false
+    moov : i64 [ box_end[ @b[ 0 ], 0 ] ]
+    if [ !tag_at[ @b[ 0 ], moov, 'moov' ] || box_end[ @b[ 0 ], moov ] != n ] return false
+    mend : i64 [ box_end[ @b[ 0 ], moov ] ]
+    if [ find_box[ @b[ 0 ], moov + 8, mend, 'mvhd' ] < 0 ] return false
+    t1 : i64 [ find_box[ @b[ 0 ], moov + 8, mend, 'trak' ] ]
+    if [ t1 < 0 ] return false
+    t2 : i64 [ find_box[ @b[ 0 ], box_end[ @b[ 0 ], t1 ], mend, 'trak' ] ]
+    if [ t2 < 0 ] return false
+    # video: trak/mdia/minf/stbl/stsd/avc1/avcC
+    md  : i64 [ find_box[ @b[ 0 ], t1 + 8, box_end[ @b[ 0 ], t1 ], 'mdia' ] ]
+    mi  : i64 [ find_box[ @b[ 0 ], md + 8, box_end[ @b[ 0 ], md ], 'minf' ] ]
+    st  : i64 [ find_box[ @b[ 0 ], mi + 8, box_end[ @b[ 0 ], mi ], 'stbl' ] ]
+    sd  : i64 [ find_box[ @b[ 0 ], st + 8, box_end[ @b[ 0 ], st ], 'stsd' ] ]
+    if [ md < 0 || mi < 0 || st < 0 || sd < 0 ] return false
+    av  : i64 [ sd + 16 ]
+    if [ !tag_at[ @b[ 0 ], av, 'avc1' ] ] return false
+    if [ rd32[ @b[ 0 ], av + 32 ] != (640 << 16) + 480 ] return false      # width, height
+    cc  : i64 [ av + 8 + 78 ]
+    if [ !tag_at[ @b[ 0 ], cc, 'avcC' ] ] return false
+    if [ b[ cc + 8 ] != 1 || b[ cc + 9 ] != 0x42 || b[ cc + 12 ] != 255 || b[ cc + 13 ] != 225 ] return false
+    if [ rd32[ @b[ 0 ], cc + 14 ] >> 16 != 8 || b[ cc + 16 ] != 0x67 || b[ cc + 23 ] != 0x10 ] return false
+    if [ b[ cc + 24 ] != 1 || rd32[ @b[ 0 ], cc + 25 ] >> 16 != 4 || b[ cc + 27 ] != 0x68 ] return false
+    # audio: stsd/mp4a/esds with the asc inside
+    md  = find_box[ @b[ 0 ], t2 + 8, box_end[ @b[ 0 ], t2 ], 'mdia' ]
+    mi  = find_box[ @b[ 0 ], md + 8, box_end[ @b[ 0 ], md ], 'minf' ]
+    st  = find_box[ @b[ 0 ], mi + 8, box_end[ @b[ 0 ], mi ], 'stbl' ]
+    sd  = find_box[ @b[ 0 ], st + 8, box_end[ @b[ 0 ], st ], 'stsd' ]
+    if [ mi < 0 || find_box[ @b[ 0 ], mi + 8, box_end[ @b[ 0 ], mi ], 'smhd' ] < 0 ] return false
+    mp  : i64 [ sd + 16 ]
+    if [ !tag_at[ @b[ 0 ], mp, 'mp4a' ] ] return false
+    if [ rd32[ @b[ 0 ], mp + 24 ] != (2 << 16) + 16 || rd32[ @b[ 0 ], mp + 32 ] != 48000 << 16 ] return false
+    es  : i64 [ mp + 36 ]
+    if [ !tag_at[ @b[ 0 ], es, 'esds' ] || b[ es + 12 ] != 3 || b[ es + 17 ] != 4 || b[ es + 19 ] != 0x40 ] return false
+    if [ b[ es + 32 ] != 5 || b[ es + 33 ] != 2 || b[ es + 34 ] != 0x11 || b[ es + 35 ] != 0x90 || b[ es + 36 ] != 6 ] return false
+    # mvex: one trex per track
+    mv  : i64 [ find_box[ @b[ 0 ], moov + 8, mend, 'mvex' ] ]
+    if [ mv < 0 ] return false
+    x1  : i64 [ find_box[ @b[ 0 ], mv + 8, box_end[ @b[ 0 ], mv ], 'trex' ] ]
+    x2  : i64 [ find_box[ @b[ 0 ], box_end[ @b[ 0 ], x1 ], box_end[ @b[ 0 ], mv ], 'trex' ] ]
+    return x1 > 0 && x2 > 0 && rd32[ @b[ 0 ], x1 + 12 ] == 1 && rd32[ @b[ 0 ], x2 + 12 ] == 2
+
+# frames become length-framed samples (delimiters and parameter sets dropped), a
+# keyframe closes the fragment, the run tables and offsets land on the bytes
+expect func t_mp4_fragment [] -> bool
+    fd : i32 [ mux_temp_open[ 'fragment' ] ]
+    m  : Mp4 [ fd: fd, fps: 60, width: 320, height: 240, seq: 1 ]
+    a  : Aac [ ]
+    m.begin[ mux_test_header[], a.asc ]
+    head : i64 [ mux_temp_size[ fd ] ]
+    # frame 1: delimiter, then an idr slice of 4 bytes (4-byte start codes)
+    f1 : local u8 [ 14 ] [ 0, 0, 0, 1, 0x09, 0xF0, 0, 0, 0, 1, 0x65, 0x88, 0x84, 0x21 ]
+    # frame 2: a 3-byte start code and a 4-byte non-idr slice
+    f2 : local u8 [ 7 ]  [ 0, 0, 1, 0x41, 0x9A, 0x22, 0x33 ]
+    # frame 3: a keyframe again, so the fragment closes ahead of it
+    f3 : local u8 [ 9 ]  [ 0, 0, 0, 1, 0x65, 0x11, 0x22, 0x33, 0x44 ]
+    ab : local u8 [ 5 ]  [ 0xDE, 0xAD, 0xBE, 0xEF, 0x01 ]
+    m.video[ @f1[ 0 ], 14, true ]
+    m.video[ @f2[ 0 ], 7, false ]
+    m.audio[ @ab[ 0 ], 5 ]
+    m.audio[ @ab[ 0 ], 5 ]
+    m.video[ @f3[ 0 ], 9, true ]
+    if [ m.seq != 2 || m.vtime != 2 || m.atime != 2048 ] return false
+    m.close[]
+    if [ m.seq != 3 || m.vtime != 3 ] return false
+    n : i64 [ mux_temp_size[ fd ] ]
+    b : new u8 [ n ]
+    mux_temp_read[ fd, @b[ 0 ], n ]
+    close[ fd ]
+    p : @u8 [ @b[ 0 ] ]
+    moof : i64 [ head ]
+    if [ !tag_at[ p, moof, 'moof' ] ] return false
+    mend : i64 [ box_end[ p, moof ] ]
+    mf   : i64 [ find_box[ p, moof + 8, mend, 'mfhd' ] ]
+    if [ mf < 0 || rd32[ p, mf + 12 ] != 1 ] return false
+    tv   : i64 [ find_box[ p, moof + 8, mend, 'traf' ] ]
+    ta   : i64 [ find_box[ p, box_end[ p, tv ], mend, 'traf' ] ]
+    if [ tv < 0 || ta < 0 ] return false
+    fh   : i64 [ find_box[ p, tv + 8, box_end[ p, tv ], 'tfhd' ] ]
+    dt   : i64 [ find_box[ p, tv + 8, box_end[ p, tv ], 'tfdt' ] ]
+    tr   : i64 [ find_box[ p, tv + 8, box_end[ p, tv ], 'trun' ] ]
+    if [ rd32[ p, fh + 8 ] != 0x020008 || rd32[ p, fh + 12 ] != 1 || rd32[ p, fh + 16 ] != 1500 ] return false
+    if [ rd64[ p, dt + 12 ] != 0 ] return false
+    if [ rd32[ p, tr + 8 ] != 0x601 || rd32[ p, tr + 12 ] != 2 ] return false
+    off  : i64 [ rd32[ p, tr + 16 ] ]
+    if [ off != (mend - moof) + 8 ] return false
+    if [ rd32[ p, tr + 20 ] != 8 || rd32[ p, tr + 24 ] != 0x02000000 ] return false      # 4 + 4, sync
+    if [ rd32[ p, tr + 28 ] != 8 || rd32[ p, tr + 32 ] != 0x01010000 ] return false      # 4 + 4, not sync
+    # the mdat: header, then the two video samples, then the audio
+    md   : i64 [ mend ]
+    if [ !tag_at[ p, md, 'mdat' ] || rd32[ p, md ] != 8 + 16 + 10 ] return false
+    v0   : i64 [ moof + off ]
+    if [ rd32[ p, v0 ] != 4 || b[ v0 + 4 ] != 0x65 || b[ v0 + 7 ] != 0x21 ] return false
+    if [ rd32[ p, v0 + 8 ] != 4 || b[ v0 + 12 ] != 0x41 || b[ v0 + 15 ] != 0x33 ] return false
+    fa   : i64 [ find_box[ p, ta + 8, box_end[ p, ta ], 'tfhd' ] ]
+    ra   : i64 [ find_box[ p, ta + 8, box_end[ p, ta ], 'trun' ] ]
+    if [ rd32[ p, fa + 12 ] != 2 || rd32[ p, fa + 16 ] != 1024 ] return false
+    if [ rd32[ p, ra + 8 ] != 0x201 || rd32[ p, ra + 12 ] != 2 || rd32[ p, ra + 20 ] != 5 ] return false
+    a0   : i64 [ moof + rd32[ p, ra + 16 ] ]
+    if [ a0 != v0 + 16 || b[ a0 ] != 0xDE || b[ a0 + 9 ] != 0x01 ] return false
+    # the second fragment: sequence 2, video continues at 2 frames, no audio traf
+    moof = box_end[ p, md ]
+    if [ !tag_at[ p, moof, 'moof' ] || box_end[ p, box_end[ p, moof ] ] != n ] return false
+    mend = box_end[ p, moof ]
+    mf   = find_box[ p, moof + 8, mend, 'mfhd' ]
+    tv   = find_box[ p, moof + 8, mend, 'traf' ]
+    dt   = find_box[ p, tv + 8, box_end[ p, tv ], 'tfdt' ]
+    if [ rd32[ p, mf + 12 ] != 2 || rd64[ p, dt + 12 ] != 3000 ] return false
+    return find_box[ p, box_end[ p, tv ], mend, 'traf' ] < 0
+
+# a take resumed after a reload: no header again, the sequence and times carry on
+expect func t_mp4_continue [] -> bool
+    fd : i32 [ mux_temp_open[ 'continue' ] ]
+    m  : Mp4 [ fd: fd, fps: 60, width: 320, height: 240, started: true, seq: 7, vtime: 100, atime: 4096 ]
+    a  : Aac [ ]
+    m.begin[ mux_test_header[], a.asc ]
+    if [ mux_temp_size[ fd ] != 0 ] return false
+    f : local u8 [ 9 ] [ 0, 0, 0, 1, 0x65, 0x11, 0x22, 0x33, 0x44 ]
+    m.video[ @f[ 0 ], 9, true ]
+    m.close[]
+    n : i64 [ mux_temp_size[ fd ] ]
+    b : new u8 [ n ]
+    mux_temp_read[ fd, @b[ 0 ], n ]
+    close[ fd ]
+    p  : @u8 [ @b[ 0 ] ]
+    if [ !tag_at[ p, 0, 'moof' ] ] return false
+    mf : i64 [ find_box[ p, 8, box_end[ p, 0 ], 'mfhd' ] ]
+    tv : i64 [ find_box[ p, 8, box_end[ p, 0 ], 'traf' ] ]
+    dt : i64 [ find_box[ p, tv + 8, box_end[ p, tv ], 'tfdt' ] ]
+    return rd32[ p, mf + 12 ] == 7 && rd64[ p, dt + 12 ] == 150000 && m.seq == 8 && m.vtime == 101 && m.atime == 4096
+
+# where the picture stands, in audio frames
+expect func t_mp4_video_samples [] -> bool
+    m : Mp4 [ fps: 60, vtime: 30 ]
+    return m.video_samples[] == 24000
+
+# put and take, an exact take or nothing, wrap-around, a full ring drops
+expect func t_audio_ring [] -> bool
+    r   : AudioRing [ ]
+    src : local i16 [ 8 ] [ 1, 2, 3, 4, 5, 6, 7, 8 ]
+    out : local i16 [ 8 ]
+    r.put[ @src[ 0 ], 3 ]
+    if [ r.frames[] != 3 || !r.take[ @out[ 0 ], 2 ] || out[ 0 ] != 1 || out[ 3 ] != 4 ] return false
+    if [ r.take[ @out[ 0 ], 2 ] || r.frames[] != 1 ] return false
+    # spin the ring past its end many times over
+    for [ i: i32 0, i < 400000, i += 1 ]
+        r.put[ @src[ 0 ], 1 ]
+        r.take[ @out[ 0 ], 1 ]
+    if [ r.frames[] != 1 || out[ 0 ] != 1 || out[ 1 ] != 2 ] return false
+    for [ i: i32 0, i < 300000, i += 1 ]
+        r.put[ @src[ 4 ], 1 ]
+    if [ r.frames[] != 262144 ] return false
+    r.take[ @out[ 0 ], 1 ]
+    return r.take[ @out[ 0 ], 1 ] && out[ 0 ] == 5 && out[ 1 ] == 6
+
+# adding into a block clamps at the rails and stops where the ring runs dry
+expect func t_audio_ring_add [] -> bool
+    r   : AudioRing [ ]
+    src : local i16 [ 4 ] [ 30000, -30000, 100, 100 ]
+    out : local i16 [ 6 ] [ 10000, -10000, 5, 5, 7, 7 ]
+    r.put[ @src[ 0 ], 2 ]
+    r.add_into[ @out[ 0 ], 3 ]
+    return out[ 0 ] == 32767 && out[ 1 ] == -32768 && out[ 2 ] == 105 && out[ 3 ] == 105 && out[ 4 ] == 7 && r.frames[] == 0
+
+# 48 kHz passes through; 96 kHz halves with the phase carried across calls;
+# 24 kHz doubles with a linear blend; mono lands on both channels
+expect func t_resample [] -> bool
+    src : local i16 [ 17640 ]
+    out : local i16 [ 32768 ]
+    for [ i: i32 0, i < 8820, i += 1 ]
+        src[ i * 2 ]     = i16[ i ]
+        src[ i * 2 + 1 ] = i16[ -i ]
+    pos : f64 [ 0.0 ]
+    n : i32 [ resample[ @src[ 0 ], 100, 2, 48000, @out[ 0 ], 16384, @pos ] ]
+    if [ n != 100 || out[ 0 ] != 0 || out[ 198 ] != 99 || out[ 199 ] != -99 ] return false
+    # 4411 frames at a step of 2 take every other frame and leave one over
+    pos = 0.0
+    n = resample[ @src[ 0 ], 4411, 2, 96000, @out[ 0 ], 16384, @pos ]
+    if [ n != 2206 || out[ 2 ] != 2 || pos != 1.0 ] return false
+    n = resample[ @src[ 0 ], 4411, 2, 96000, @out[ 0 ], 16384, @pos ]
+    if [ n != 2205 || out[ 0 ] != 1 || pos != 0.0 ] return false
+    # stereo ramp at half steps: 0, 0.5, 1, 1.5 ... truncated
+    pos = 0.0
+    n = resample[ @src[ 0 ], 100, 2, 24000, @out[ 0 ], 16384, @pos ]
+    if [ n != 200 || out[ 2 ] != 0 || out[ 4 ] != 1 || out[ 6 ] != 1 || out[ 8 ] != 2 || out[ 9 ] != -2 ] return false
+    # mono: the same words read as single samples 0, 0, 1, -1, 2, -2 ...
+    pos = 0.0
+    n = resample[ @src[ 0 ], 100, 1, 24000, @out[ 0 ], 16384, @pos ]
+    return n == 200 && out[ 8 ] == 1 && out[ 9 ] == 1 && out[ 12 ] == -1 && out[ 13 ] == -1

@@ -3094,6 +3094,9 @@ static string silver_release_version(silver a) {
     return null;
 }
 
+static int silver_spawn_product(silver a, path bin, bool lib, path cwd,
+                                cstr env, cstr env_force);
+
 static void silver_live_run(silver a) {
     // a failed build must NOT launch (or relaunch) the app. execvp'ing the host on an
     // error makes the host re-trigger `silver <app>`, which fails and re-execs — the
@@ -3176,6 +3179,18 @@ static void silver_live_run(silver a) {
         execvp(argv[0], argv);
         fprintf(stderr, "execvp failed for %s: %s\n", argv[0], strerror(errno));
         _exit(1);
+    }
+    // --test on a library: there is no exe to run, so load it and let its module
+    // init run the expects (the same load a --release gate does)
+    if (a->test && !a->is_external && !a->build && a->product && file_exists("%o", a->product)) {
+        string ex = ext(a->product);
+        if (eq(ex, "so") || eq(ex, "dylib") || eq(ex, "dll")) {
+            path share = f(path, "%o/share/%o", a->install, silver_install_name(a));
+            make_dir(share);
+            int st = silver_spawn_product(a, a->product, true, share, "SILVER_EXPECT", null);
+            verify(WIFEXITED(st) && WEXITSTATUS(st) == 0, "expect tests failed for %o", a->name);
+            return;
+        }
     }
     // declining to run a directly-invoked app is never the intent: name the
     // flags that stopped it rather than exiting 0 with nothing said. NOT gated
@@ -5430,6 +5445,9 @@ static shape parse_shape(string str, string* str_res, i64* index) {
             (p == 'o' && d >= '0' && d <= '7'))
             return null;
     }
+    // a leading zero with digits after it is C's octal: a literal, never a shape
+    if (idx(str, h) == '0' && h + 1 < ln && isdigit(idx(str, h + 1)))
+        return null;
     for (int i = *index; i < ln; i++) {
         i32 chr = idx(str, i);
         bool start = (i == *index);
@@ -5569,7 +5587,14 @@ static Au parse_numeric(string str, string* str_res, i64* index) {
         string crop = mid(str, start, i - start);
         *str_res = crop;
         *index = i;
-        return is_float ? _f64(strtod(crop->chars, NULL)) : _i64(strtoll(crop->chars, NULL, 10));
+        if (is_float) return _f64(strtod(crop->chars, NULL));
+        // a leading zero is C's octal (O_CREAT is 0100 in fcntl.h); the headers
+        // we import mean it that way, so a plain 0-prefixed literal reads as base 8
+        cstr digits = crop->chars + (crop->chars[0] == '-');
+        bool octal  = digits[0] == '0' && isdigit(digits[1]);
+        for (cstr p = digits; octal && *p && isdigit(*p); p++)
+            if (*p > '7') octal = false;
+        return _i64(strtoll(crop->chars, NULL, octal ? 8 : 10));
     }
     return null;
 }
