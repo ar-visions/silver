@@ -83,3 +83,7 @@ install-sh
 
 # planet maps: downloaded, never committed
 scenes/textures/
+
+# ares comparison captures and diag dumps
+n64/*.ppm
+n64/*.raw
