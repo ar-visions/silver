@@ -154,6 +154,30 @@ def get_element(arr, index, default=None):
         return arr[index]
     return default
 
+# parallel jobs the machine can actually carry: its performance cores (an M2's
+# efficiency cores only slow a compile down), capped so LLVM's links, ~2 GB each,
+# stay out of swap. ninja's -l holds the load there when a laptop throttles
+def build_jobs():
+    cores = os.cpu_count() or 4
+    mem_gb = 0
+    if sys.platform == 'darwin':
+        try:
+            cores  = int(subprocess.getoutput('sysctl -n hw.perflevel0.physicalcpu') or cores)
+            mem_gb = int(subprocess.getoutput('sysctl -n hw.memsize')) // (1 << 30)
+        except Exception:
+            pass
+    elif sys.platform.startswith('linux'):
+        try:
+            for line in open('/proc/meminfo'):
+                if line.startswith('MemAvailable:'):
+                    mem_gb = int(line.split()[1]) // (1 << 20)
+        except Exception:
+            pass
+    jobs = cores
+    if mem_gb > 0:
+        jobs = min(jobs, max(1, mem_gb // 2))
+    return max(1, jobs)
+
 def build_import(name, uri, commit, _config_lines, install_dir, extra):
     # we might need an argument for this in import, but i dont see cases other than the compiler
     if extra == 'native':
@@ -311,14 +335,14 @@ def build_import(name, uri, commit, _config_lines, install_dir, extra):
         run(f"cmake {tc} {cmake_args}", cwd=build_dir)
         
         # build & install
-        cpu_count = os.cpu_count() or 4
+        jobs = build_jobs()
         if is_ninja:
             # use the vendored ninja by absolute path (no PATH dependence); fall back to
             # PATH only in the brief pre-bootstrap window before it's installed.
             ninja_bin = str(NATIVE / "bin" / "ninja")
             if not os.path.exists(ninja_bin): ninja_bin = "ninja"
-            print(f'running ninja for {name}')
-            run(f"{ninja_bin} -j{max(1, cpu_count//2)}", cwd=build_dir)
+            print(f'running ninja for {name} with {jobs} jobs')
+            run(f"{ninja_bin} -j{jobs} -l{jobs}", cwd=build_dir)
             run(f"{ninja_bin} install", cwd=build_dir)
         else:
             run('cmake --build . --config Release --target INSTALL', cwd=build_dir)
