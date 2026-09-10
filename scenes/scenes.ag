@@ -1261,8 +1261,9 @@ func fetch_map [ url: string, cache: string, w: i32, h: i32, surf: Surface ] -> 
     return src.resize[ w, h ]
 
 
-# the sky every scene wraps: ESO's GigaGalaxy Zoom panorama (eso0932a, the 27 MB
-# original), fetched once into the user cache and resampled to 4096x2048 at export
+# the sky every scene wraps: ESA's Gaia DR2 all-sky map (brightness and colour of
+# 1.7 billion stars, plate carree), fetched once into the user cache and resampled
+# to 4096x2048 at export
 export func bake_sky []
     root : path.path_startup[]
     out  : path '{root}/scenes/textures/gaia.png'
@@ -1271,10 +1272,10 @@ export func bake_sky []
         log 'scenes: sky map current'
         return
     dir : path.path_storage[ 'scenes' ]
-    src : path '{dir}/eso0932a.tif'
+    src : path '{dir}/gaia-dr2-cartesian-4000x2000.png'
     if [ !src.exists[] ]
-        n : i64 [ Http.download[ 'https://cdn.eso.org/images/original/eso0932a.tif', src ] ]
-        log 'scenes: fetched eso0932a.tif ({n} bytes)'
+        n : i64 [ Http.download[ 'https://sci.esa.int/documents/33580/35361/1567215018536-ESA_Gaia_DR2_AllSky_Brightness_Colour_Cartesian_4000x2000.png', src ] ]
+        log 'scenes: fetched the Gaia DR2 sky map ({n} bytes)'
     im : Image [ uri: src ]
     if [ !im || im.width == 0 ]
         log 'scenes: cannot read {src}'
