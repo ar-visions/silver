@@ -190,7 +190,8 @@ def parse_g_file(path):
                     j = i + 1
                     while j < len(lines) and (lines[j].startswith(" ") or lines[j].startswith("\t")):
                         cfg_line = lines[j].strip()
-                        if cfg_line:
+                        # a comment line would reach the shell and swallow every flag after it
+                        if cfg_line and not cfg_line.startswith('#'):
                             configs.append(cfg_line)
                         j += 1
                     imports.append((alias, uri, commit, configs, extra))

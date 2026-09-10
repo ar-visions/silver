@@ -17,6 +17,15 @@ DEBUG  = v['DEBUG'] or v['ASAN']
 os.environ['IMPORT'] = IMPORT
 os.environ['SDK']    = SDK
 
+# a laptop idles to sleep mid-build; hold the wake assertion for as long as we run
+if sys.platform == 'darwin':
+    subprocess.Popen(['caffeinate', '-i', '-w', str(os.getpid())])
+elif sys.platform == 'win32':
+    import ctypes
+    ES_CONTINUOUS      = 0x80000000
+    ES_SYSTEM_REQUIRED = 0x00000001
+    ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)
+
 def run(cmd, cwd=None, check=True):
     print(">", cmd)
     subprocess.run(cmd, cwd=cwd, shell=True, check=check)
@@ -343,7 +352,7 @@ def build_import(name, uri, commit, _config_lines, install_dir, extra):
             if not os.path.exists(ninja_bin): ninja_bin = "ninja"
             print(f'running ninja for {name} with {jobs} jobs')
             run(f"{ninja_bin} -j{jobs} -l{jobs}", cwd=build_dir)
-            run(f"{ninja_bin} install", cwd=build_dir)
+            run(f"cmake --install . --prefix {install_dir}", cwd=build_dir)
         else:
             run('cmake --build . --config Release --target INSTALL', cwd=build_dir)
     else:

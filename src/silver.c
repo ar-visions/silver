@@ -78,7 +78,27 @@ static building* building_find(cstr name) {
     return null;
 }
 
+// a laptop idles to sleep mid-build; hold the machine awake for as long as we run
+#ifdef _WIN32
+__declspec(dllimport) unsigned long __stdcall SetThreadExecutionState(unsigned long flags);
+#define ES_SYSTEM_REQUIRED 0x00000001
+#define ES_CONTINUOUS      0x80000000
+#endif
+static void stay_awake(void) {
+#if defined(_WIN32)
+    SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED);   // per thread, so every caller asks
+#elif defined(__APPLE__)
+    static bool held = false;
+    if (held) return;
+    held = true;
+    char cmd[64];
+    snprintf(cmd, sizeof(cmd), "caffeinate -i -w %i &", (i32)getpid());
+    system(cmd);
+#endif
+}
+
 static void building_add(cstr name) {
+    stay_awake();
     building* b = (building*)calloc(1, sizeof(building));
     snprintf(b->name, sizeof(b->name), "%s", name);
     b->owner = pthread_self();
@@ -9394,6 +9414,7 @@ static bool checkout_output(void* ctx, cstr buf, ssize_t bytes) {
 
 static int checkout_exec(silver a, string label,
                          symbol phase, command cmd) {
+    stay_awake();
     checkout_progress_t p = {
         .label = label,
         .phase = phase,

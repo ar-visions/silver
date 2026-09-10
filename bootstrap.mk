@@ -42,7 +42,7 @@ endif
 
 build: bootstrap
 	echo "ninja -j8 -v -C $(BUILD_ROOT) -f $(PROJECT_NAME).ninja"
-	ninja -j8 -v -C $(BUILD_ROOT) -f $(PROJECT_NAME).ninja
+	$(if $(filter Darwin,$(shell uname -s)),caffeinate -i,) ninja -j8 -v -C $(BUILD_ROOT) -f $(PROJECT_NAME).ninja
 
 clean:
 ifeq ($(OS),Windows_NT)
