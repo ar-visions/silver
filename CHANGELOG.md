@@ -24,9 +24,9 @@ Starting point: `.git` 1.7 GB (393 MB packed + 253 MB abandoned temp packs + 1 G
 8. The four downloadable maps became export bakes (`export func bake_sky / bake_jupiter / bake_saturn /
    bake_titan` in scenes.ag) with `silver --export scenes`; their pngs are untracked and ignored. img
    reads TIFF through the system libtiff. Sources and licenses are in THIRD_PARTY.md.
-   The old copies remain in history (two commits each); a further rewrite would take the repo to ~60 MB.
+9. `git filter-repo --invert-paths` on those four pngs, so no version of them remains → 102 MB. Force-pushed.
 
-Result: `.git` 137 MB, checkout 121 MB, 1,617 files. Never in the repo: `checkout/` (git imports, MOLA
+Result: `.git` 102 MB, checkout 121 MB, 1,617 files; the 55 MB of tracked source maps is now the largest part. Never in the repo: `checkout/` (git imports, MOLA
 tiles), `n64/reference/`, `ref/` ROMs, `platform/`.
 
 ## LLDB debug info member offsets (lldb.c)
