@@ -7,6 +7,7 @@
 #endif
 #import <QuartzCore/CAMetalLayer.h>
 #import <GameController/GameController.h>
+#import <AudioToolbox/AudioToolbox.h>
 #if TARGET_OS_IPHONE
 #import <CoreMotion/CoreMotion.h>
 #import <MultipeerConnectivity/MultipeerConnectivity.h>
@@ -930,3 +931,54 @@ void platform_show_keyboard(platform_window* w, bool show) {
     if (show) [w->view becomeFirstResponder]; else [w->view resignFirstResponder];
 }
 #endif
+
+/* audio queue on the system's default input; its callback fills a ring that read drains */
+static AudioQueueRef    g_mic;
+static int16_t          g_mic_ring[48000 * 4];
+static volatile int64_t g_mic_w, g_mic_r;
+static void mic_input(void* user, AudioQueueRef q, AudioQueueBufferRef buf, const AudioTimeStamp* ts,
+                      UInt32 count, const AudioStreamPacketDescription* desc) {
+    const int16_t* s = (const int16_t*)buf->mAudioData;
+    int cap = (int)(sizeof(g_mic_ring) / sizeof(g_mic_ring[0]));
+    for (UInt32 i = 0; i < count; i++) g_mic_ring[(g_mic_w + i) % cap] = s[i];
+    g_mic_w += count;
+    AudioQueueEnqueueBuffer(q, buf, 0, NULL);
+}
+bool platform_mic_open(int* rate) {
+    if (g_mic) return true;
+    AudioStreamBasicDescription f = {0};
+    f.mSampleRate       = 48000;
+    f.mFormatID         = kAudioFormatLinearPCM;
+    f.mFormatFlags      = kLinearPCMFormatFlagIsSignedInteger | kLinearPCMFormatFlagIsPacked;
+    f.mChannelsPerFrame = 1;
+    f.mBitsPerChannel   = 16;
+    f.mBytesPerFrame    = 2;
+    f.mFramesPerPacket  = 1;
+    f.mBytesPerPacket   = 2;
+    if (AudioQueueNewInput(&f, mic_input, NULL, NULL, NULL, 0, &g_mic) != noErr) return false;
+    for (int i = 0; i < 3; i++) {
+        AudioQueueBufferRef b;
+        AudioQueueAllocateBuffer(g_mic, 480 * 2, &b);
+        AudioQueueEnqueueBuffer(g_mic, b, 0, NULL);
+    }
+    g_mic_w = g_mic_r = 0;
+    if (AudioQueueStart(g_mic, NULL) != noErr) { platform_mic_close(); return false; }
+    *rate = 48000;
+    return true;
+}
+int platform_mic_read(int16_t* out, int frames) {
+    if (!g_mic) return -1;
+    int cap = (int)(sizeof(g_mic_ring) / sizeof(g_mic_ring[0]));
+    int64_t have = g_mic_w - g_mic_r;
+    if (have > cap) { g_mic_r = g_mic_w - cap; have = cap; }
+    int n = have < frames ? (int)have : frames;
+    for (int i = 0; i < n; i++) out[i] = g_mic_ring[(g_mic_r + i) % cap];
+    g_mic_r += n;
+    return n;
+}
+void platform_mic_close(void) {
+    if (!g_mic) return;
+    AudioQueueStop(g_mic, true);
+    AudioQueueDispose(g_mic, true);
+    g_mic = NULL;
+}

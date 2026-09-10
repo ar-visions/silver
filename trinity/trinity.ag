@@ -28,6 +28,9 @@ ifdef [ linux ]
 	import <linux/videodev2.h>
 
 ifndef [ windows ]
+	import <pthread.h>
+
+ifndef [ windows ]
     import <unistd.h>
         +_DEFAULT_SOURCE
         +_XOPEN_SOURCE=500
@@ -245,6 +248,8 @@ abstract live_app media_app
     # --record <file or url>: encode the screen every frame; a url streams live
     public  record      : string
     public  record_fps  : i32 [ 60 ]
+    # --record_mic: the microphone goes into the recording, mixed with the app's sound
+    public  record_mic  : bool
     intern  recorder    : Recorder
     intern  rec_wait    : i32
     intern  path_said   : bool
@@ -311,6 +316,8 @@ abstract live_app media_app
                 # give the app's audio a moment to open, so the track starts with the video
                 rec_wait += 1
                 if [ wn.record_rate == 0 && rec_wait < 30 ] return
+                # the mic alone carries the track when the app has no sound of its own
+                if [ record_mic ] wn.mic_start[]
                 fd = record_spawn[ rpath, wn ]
                 Au.live_record_set[ fd, tx.width, tx.height ]
             recorder = Recorder [ vk: vk, w: w, fd: fd, fps: record_fps, qp: rqp,
@@ -331,7 +338,7 @@ abstract live_app media_app
             aud  : string ''                 # ffmpeg input 0: the app's audio
             fifo : string ''
             ifdef [ linux ]
-                if [ wn.record_rate > 0 ]
+                if [ wn.record_rate > 0 || wn.mic_on ]
                     # the audio rides a fifo as ffmpeg's first input; it is opened before the
                     # video probe so neither side waits on the other
                     fifo = '/tmp/silver-rec-{getpid[]}.fifo'
@@ -1440,6 +1447,13 @@ Display Window
     public  record_rate         : i32
     mutable rec_afd             : i32 [ -1 ]
     mutable rec_pos             : f64
+    # microphone for the recording: a capture thread fills a ring of 48 kHz stereo
+    # frames; record_audio mixes them in, or the thread writes them itself while
+    # the app has no sound
+    mutable mic_on              : bool
+    mutable mic_ring            : new i16 [ 262144 ]      # 131072 stereo frames, ~2.7 s
+    mutable mic_w               : i64
+    mutable mic_r               : i64
     manual capture              : element
     manual focus                : element
     manual hovered              : element
@@ -2332,7 +2346,8 @@ Display Window
         last_move = c
         host_post[ 0, i32[ HM.lock ], 1, i32[ c.x ], i32[ c.y ] ]     # hosted: the ide locks for us; standalone: no channel, dropped
 
-    # interleaved s16 stereo frames at the app's rate, linearly resampled to 48 kHz for ffmpeg
+    # interleaved s16 stereo frames at the app's rate, linearly resampled to 48 kHz for ffmpeg,
+    # with whatever the microphone has captured since last time mixed in
     public func record_audio [ pcm: @i16, nfr: i32, rate: i32 ]
         ifdef [ linux ]
             if [ rec_afd < 0 || nfr <= 0 || rate <= 0 ] return
@@ -2348,11 +2363,75 @@ Display Window
                 out[ n * 2 + 1 ] = i16[ f64[ pcm[ i0 * 2 + 1 ] ] * (1.0 - fr) + f64[ pcm[ i1 * 2 + 1 ] ] * fr ]
                 n += 1
                 if [ n == 4096 ]
+                    mic_mix[ @out[ 0 ], n ]
                     write[ rec_afd, @out[ 0 ], n * 4 ]
                     n = 0
                 pos += step
             rec_pos = pos - f64[ nfr ]
-            if [ n > 0 ] write[ rec_afd, @out[ 0 ], n * 4 ]
+            if [ n > 0 ]
+                mic_mix[ @out[ 0 ], n ]
+                write[ rec_afd, @out[ 0 ], n * 4 ]
+
+    # add the mic ring's next frames into a block of 48 kHz stereo, clamped
+    func mic_mix [ out: @i16, n: i32 ]
+        if [ !mic_on ] return
+        for [ i: i32 0, i < n, i += 1 ]
+            if [ mic_r >= mic_w ] return
+            k : i32 [ i32[ (mic_r % 131072) * 2 ] ]
+            l : i32 [ i32[ out[ i * 2 ] ] + i32[ mic_ring[ k ] ] ]
+            r : i32 [ i32[ out[ i * 2 + 1 ] ] + i32[ mic_ring[ k + 1 ] ] ]
+            out[ i * 2 ]     = i16[ (l > 32767) ? 32767 : ((l < -32768) ? -32768 : l) ]
+            out[ i * 2 + 1 ] = i16[ (r > 32767) ? 32767 : ((r < -32768) ? -32768 : r) ]
+            mic_r += 1
+
+    # open the system's recording input and read it on its own thread
+    public func mic_start []
+        ifndef [ windows ]
+            if [ mic_on ] return
+            mic_on = true
+            tid : local u64 [ 1 ]
+            pthread_create[ tid, null, @mic_entry, a ]
+
+    func mic_entry [] -> none
+        ifndef [ windows ]
+            rate : local i32 [ 1 ] [ 0 ]
+            if [ !platform_mic_open[ @rate[ 0 ] ] ]
+                log 'record: no microphone'
+                mic_on = false
+                return
+            log 'record: microphone on at {rate[ 0 ]} Hz'
+            # the device runs at whatever rate it has; the track is 48 kHz, so resample
+            step   : f64 [ f64[ rate[ 0 ] ] / 48000.0 ]
+            mpos   : f64 [ 0.0 ]
+            mono   : local i16 [ 1024 ]
+            stereo : local i16 [ 4096 ]
+            while [ mic_on ]
+                got : i32 [ platform_mic_read[ @mono[ 0 ], 480 ] ]
+                if [ got < 0 ] break
+                if [ got == 0 ]
+                    usleep[ 2000 ]
+                    continue
+                n : i32 [ 0 ]
+                while [ mpos < f64[ got ] && n < 2048 ]
+                    i0 : i32 [ i32[ mpos ] ]
+                    i1 : i32 [ (i0 + 1 < got) ? i0 + 1 : i0 ]
+                    fr : f64 [ mpos - f64[ i0 ] ]
+                    v  : i16 [ i16[ f64[ mono[ i0 ] ] * (1.0 - fr) + f64[ mono[ i1 ] ] * fr ] ]
+                    stereo[ n * 2 ]     = v
+                    stereo[ n * 2 + 1 ] = v
+                    n += 1
+                    mpos += step
+                mpos -= f64[ got ]
+                # the app's sound owns the track once it starts; until then the mic writes it alone
+                if [ record_rate == 0 ]
+                    if [ rec_afd >= 0 ] write[ rec_afd, @stereo[ 0 ], n * 4 ]
+                el
+                    for [ i: i32 0, i < n, i += 1 ]
+                        k : i32 [ i32[ (mic_w % 131072) * 2 ] ]
+                        mic_ring[ k ]     = stereo[ i * 2 ]
+                        mic_ring[ k + 1 ] = stereo[ i * 2 + 1 ]
+                        mic_w += 1
+            platform_mic_close[]
 
     public func mouse_unlock []
         if [ !locked ] return
@@ -4693,6 +4772,7 @@ abstract media_app trinity
         adopt[ 'shot_frame' ]
         adopt[ 'attach' ]
         adopt[ 'record' ]
+        adopt[ 'record_mic' ]
         rt : typeid[ root ]
         if [ text_mode ]
             console_size[]

@@ -6,16 +6,17 @@ export 0.1.0
 ifdef [ apple ]
     ifdef [ ios ]
         import <host.h>
-            -framework UIKit -framework QuartzCore -framework GameController -framework Foundation
+            -framework UIKit -framework QuartzCore -framework GameController -framework Foundation -framework AudioToolbox
     ifndef [ ios ]
         import <host.h>
-            -framework Cocoa -framework QuartzCore -framework GameController
+            -framework Cocoa -framework QuartzCore -framework GameController -framework AudioToolbox
 
 ifdef [ linux ]
     import <host.h>
         -I/usr/include/libdrm
         -lxcb
         -ldrm
+        -lasound
 
 ifdef [ android ]
     import <host.h>
@@ -23,7 +24,7 @@ ifdef [ android ]
 
 ifdef [ windows ]
     import <host.h>
-        -luser32 -lgdi32 -lshell32 -lxinput
+        -luser32 -lgdi32 -lshell32 -lxinput -lole32
 
 # instance extensions a surface on this os needs; vk adds its own after
 func surface_extensions [] -> vec string
