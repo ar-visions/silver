@@ -1327,6 +1327,28 @@ export func bake_saturn []
     sat.png[ out ]
     log 'scenes: saturn map baked -> {out}'
 
+# titan: NASA/JPL-Caltech/SSI Cassini ISS mosaic PIA22770 "Titan Mosaic: The Surface Under
+# the Haze" (https://www.jpl.nasa.gov/images/pia22770-titan-mosaic-the-surface-under-the-haze/),
+# 5760x2880, kept at its own size
+export func bake_titan []
+    root : path.path_startup[]
+    out  : path '{root}/scenes/textures/titan-color.png'
+    force : getenv[ 'SILVER_EXPORT_FORCE' ]
+    if [ !force && out.exists[] ]
+        log 'scenes: titan map current'
+        return
+    dir : path.path_storage[ 'scenes' ]
+    src : path '{dir}/titan-pia22770.jpg'
+    if [ !src.exists[] ]
+        n : i64 [ Http.download[ 'https://d2pn8kiwq2w21t.cloudfront.net/original_images/jpegPIA22770.jpg', src ] ]
+        log 'scenes: fetched the titan map ({n} bytes)'
+    im : Image [ uri: src ]
+    if [ !im || im.width == 0 ]
+        log 'scenes: cannot read {src}'
+        return
+    im.png[ out ]
+    log 'scenes: titan map baked -> {out}'
+
 element MilkyWay
     frost : true
     public func bg_color [ ] -> rgba
