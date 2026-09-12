@@ -106,6 +106,10 @@ class Render
     # 40 on a 160hz one. wall clock is the only display-independent
     # way to say 'four times a second'
     public  draw_hz                        : f32
+    # a rate-limited target is due once 1/draw_hz has passed since it drew
+    public func due [ now_ms: i64 ] -> bool
+        if [ draw_hz <= 0.0 || !has_drawn ] return true
+        return now_ms - last_draw_ms >= i64[ 1000.0 / draw_hz ]
     # wall-clock ms of the last draw, for the rate gate above
     intern  last_draw_ms                   : i64
     # the owning element's live State mask — gates models whose shader
@@ -131,7 +135,9 @@ class Render
     intern  vk_command_buffers             : vec VkCommandBuffer [8]
     intern  vk_fences                      : vec VkFence          [8]
     intern  ring_i                         : i32
-    intern  ring_n                         : i32 [ 3 ]    # frames-in-flight (command-buffer/fence ring)
+    # a slot is reused only after its submit retired: 3 stalled the fourth
+    # batch of a frame on the first; the arrays hold 8
+    intern  ring_n                         : i32 [ 8 ]    # frames-in-flight (command-buffer/fence ring)
     intern  paint_n                        : i32 [ 64 ]   # batch ceiling: paints per command buffer before drain
     intern  ring_last                      : i32           # most recently submitted slot (sync_fence target)
     intern  ring_primed                    : vec i32 [8]   # slot has a pending submit to wait on (0/1)
@@ -941,6 +947,9 @@ class vk_context
     intern  _vkCreateDebugUtilsMessengerEXT : PFN_vkCreateDebugUtilsMessengerEXT
     intern  _vkGetMemoryFdPropertiesKHR     : PFN_vkGetMemoryFdPropertiesKHR
     intern  _vkGetMemoryFdKHR               : PFN_vkGetMemoryFdKHR
+    ifdef [ apple ]
+        # metal names shared memory with an IOSurface, not a dma-buf fd
+        intern _vkExportMetalObjectsEXT         : PFN_vkExportMetalObjectsEXT
     ifdef [ windows ]
         # windows names shared memory with a HANDLE, not a dma-buf fd
         intern _vkGetMemoryWin32HandleKHR           : PFN_vkGetMemoryWin32HandleKHR
@@ -968,6 +977,19 @@ class vk_context
     public  update_us           : i64
     public  draw_us             : i64
     public  resize_us           : i64
+    public  swap_recreates      : i32
+    public  glyph_miss          : i32
+    public  stats_log           : bool
+    # draw phases, accumulated per second for the stat line
+    public  ph_targets          : i64
+    public  ph_compose          : i64
+    public  ph_list             : i64
+    public  ph_screen           : i64
+    public  ph_swap             : i64
+    public  ph_layout           : i64
+    public  ph_elems            : i64
+    public  ph_overlay          : i64
+    public  ph_flush            : i64
     public  resize_calls        : i32
     public  paint_calls         : i32
     public  pipe_draws          : i32
@@ -1170,6 +1192,7 @@ class vk_context
         dmabuf_supported      : bool false
         drm_mod_supported     : bool false
         ext_mem_win32_supported : bool false
+        metal_objects_supported : bool false
         video_queue_supported   : bool false
         video_encode_supported  : bool false
         video_h264_supported    : bool false
@@ -1197,6 +1220,9 @@ class vk_context
             ifdef [ windows ]
                 if [ strcmp[ ext, VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME ] == 0 ]
                     ext_mem_win32_supported = true
+            ifdef [ apple ]
+                if [ strcmp[ ext, VK_EXT_METAL_OBJECTS_EXTENSION_NAME ] == 0 ]
+                    metal_objects_supported = true
             if [ strcmp[ ext, VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME ] == 0 ]
                 drm_mod_supported = true
             if [ strcmp[ ext, "VK_KHR_portability_subset" ] == 0 ]
@@ -1220,7 +1246,7 @@ class vk_context
             enabled_dev_exts[ enabled_ext_count ] = VK_KHR_VIDEO_ENCODE_H264_EXTENSION_NAME
             enabled_ext_count += 1
 
-        ifdef [ linux ]
+        ifdef [ unix ]
             if [ ext_mem_supported && ext_mem_fd_supported && dmabuf_supported ]
                 enabled_dev_exts[ enabled_ext_count ] = VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME
                 enabled_ext_count += 1
@@ -1242,6 +1268,11 @@ class vk_context
         ifdef [ apple ]
             if [ portability_supported ]
                 enabled_dev_exts[ enabled_ext_count ] = "VK_KHR_portability_subset"
+                enabled_ext_count += 1
+            # the share path's handle type here: an IOSurface names the same
+            # GPU memory across processes, exactly as a dma-buf fd does
+            if [ metal_objects_supported ]
+                enabled_dev_exts[ enabled_ext_count ] = VK_EXT_METAL_OBJECTS_EXTENSION_NAME
                 enabled_ext_count += 1
 
         # query device features
@@ -1327,10 +1358,14 @@ class vk_context
         expect result == VK_SUCCESS, "cannot create logical device"
         queue_family_index = -1
 
-        ifdef [ linux ]
+        ifdef [ unix ]
             if [ ext_mem_supported && ext_mem_fd_supported && dmabuf_supported ]
                 _vkGetMemoryFdPropertiesKHR = vkGetDeviceProcAddr[ device, "vkGetMemoryFdPropertiesKHR" ]
                 _vkGetMemoryFdKHR           = vkGetDeviceProcAddr[ device, "vkGetMemoryFdKHR" ]
+
+        ifdef [ apple ]
+            if [ metal_objects_supported ]
+                _vkExportMetalObjectsEXT = vkGetDeviceProcAddr[ device, "vkExportMetalObjectsEXT" ]
 
         ifdef [ windows ]
             if [ ext_mem_supported && ext_mem_win32_supported ]
@@ -1455,110 +1490,180 @@ class vk_context
         fault "could not find memory type"
         return 0
 
-    ifdef [ linux ]
+    ifdef [ unix ]
         # backing for a shareable texture: a dedicated, exportable dma-buf
         # allocation bound to the image the app renders into. returns the fd
         # naming this GPU memory cross-process; it stays open for the
         # texture's whole life so consumers can pull duplicates of it.
         func export_image_memory [ img: VkImage, out_mem: @VkDeviceMemory ] -> i32
-            expect _vkGetMemoryFdKHR, 'share: vkGetMemoryFdKHR not loaded'
-            mreq : VkMemoryRequirements [ ]
-            vkGetImageMemoryRequirements[ device, img, @mreq ]
-            mti : u32 [ find_memory_type[ mreq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT ] ]
-            exp : VkExportMemoryAllocateInfo [ ]
-            exp.sType       = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO
-            exp.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT
-            ded : VkMemoryDedicatedAllocateInfo [ ]
-            ded.sType  = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO
-            ded.image  = img
-            ded.pNext  = @exp
-            mai : VkMemoryAllocateInfo [ ]
-            mai.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO
-            mai.pNext           = @ded
-            mai.allocationSize  = mreq.size
-            mai.memoryTypeIndex = mti
-            mem : VkDeviceMemory [ null ]
-            err : i32 [ vkAllocateMemory[ device, @mai, null, @mem ] ]
-            expect err == 0, 'share: vkAllocateMemory (export) failed'
-            err = vkBindImageMemory[ device, img, mem, 0 ]
-            expect err == 0, 'share: vkBindImageMemory (export) failed'
-            gi : VkMemoryGetFdInfoKHR [ ]
-            gi.sType      = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR
-            gi.memory     = mem
-            gi.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT
-            fd : i32 [ 0 - 1 ]
-            err = _vkGetMemoryFdKHR[ device, @gi, @fd ]
-            expect err == 0, 'share: vkGetMemoryFdKHR failed'
-            out_mem = mem
-            return fd
+            ifdef [ apple ]
+                # metal backs the image with an IOSurface (asked for at create).
+                # its global id is the handle other processes look it up by;
+                # the memory itself is allocated and bound the ordinary way
+                if [ !_vkExportMetalObjectsEXT ] return 0 - 1
+                mrq : VkMemoryRequirements [ ]
+                vkGetImageMemoryRequirements[ device, img, @mrq ]
+                mai9 : VkMemoryAllocateInfo [ ]
+                mai9.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO
+                mai9.allocationSize  = mrq.size
+                mai9.memoryTypeIndex = find_memory_type[ mrq.memoryTypeBits,
+                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT ]
+                mem9 : VkDeviceMemory [ null ]
+                if [ vkAllocateMemory[ device, @mai9, null, @mem9 ] != 0 ] return 0 - 1
+                if [ vkBindImageMemory[ device, img, mem9, 0 ] != 0 ] return 0 - 1
+                ios9 : VkExportMetalIOSurfaceInfoEXT [ ]
+                ios9.sType = VK_STRUCTURE_TYPE_EXPORT_METAL_IO_SURFACE_INFO_EXT
+                ios9.image = img
+                xo9 : VkExportMetalObjectsInfoEXT [ ]
+                xo9.sType = VK_STRUCTURE_TYPE_EXPORT_METAL_OBJECTS_INFO_EXT
+                xo9.pNext = @ios9
+                _vkExportMetalObjectsEXT[ device, @xo9 ]
+                if [ !ios9.ioSurface ] return 0 - 1
+                out_mem = mem9
+                return i32[ IOSurfaceGetID[ handle[ ios9.ioSurface ] ] ]
+
+            el
+                # the driver offers no fd export: the caller falls back
+                if [ !_vkGetMemoryFdKHR ] return 0 - 1
+                mreq : VkMemoryRequirements [ ]
+                vkGetImageMemoryRequirements[ device, img, @mreq ]
+                mti : u32 [ find_memory_type[ mreq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT ] ]
+                exp : VkExportMemoryAllocateInfo [ ]
+                exp.sType       = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO
+                exp.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT
+                ded : VkMemoryDedicatedAllocateInfo [ ]
+                ded.sType  = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO
+                ded.image  = img
+                ded.pNext  = @exp
+                mai : VkMemoryAllocateInfo [ ]
+                mai.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO
+                mai.pNext           = @ded
+                mai.allocationSize  = mreq.size
+                mai.memoryTypeIndex = mti
+                mem : VkDeviceMemory [ null ]
+                err : i32 [ vkAllocateMemory[ device, @mai, null, @mem ] ]
+                expect err == 0, 'share: vkAllocateMemory (export) failed'
+                err = vkBindImageMemory[ device, img, mem, 0 ]
+                expect err == 0, 'share: vkBindImageMemory (export) failed'
+                gi : VkMemoryGetFdInfoKHR [ ]
+                gi.sType      = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR
+                gi.memory     = mem
+                gi.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT
+                fd : i32 [ 0 - 1 ]
+                err = _vkGetMemoryFdKHR[ device, @gi, @fd ]
+                expect err == 0, 'share: vkGetMemoryFdKHR failed'
+                out_mem = mem
+                return fd
 
         # consumer: import a published screen texture. the dma-buf fd IS the
         # same GPU memory the publisher renders into — sampling it shows the
         # publisher's live frame. the fd is consumed by the import.
         func import_shared_tex [ dma_fd: i32, w2: i32, h2: i32, fmt: i32, disp: Display ] -> Texture
-            ext : VkExternalMemoryImageCreateInfo [ ]
-            ext.sType       = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO
-            ext.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT
-            info : VkImageCreateInfo [ ]
-            info.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO
-            info.pNext         = @ext
-            info.imageType     = VK_IMAGE_TYPE_2D
-            info.format        = fmt
-            info.extent        = VkExtent3D [ w2, h2, 1 ]
-            info.mipLevels     = 1
-            info.arrayLayers   = 1
-            info.samples       = VK_SAMPLE_COUNT_1_BIT
-            info.tiling        = VK_IMAGE_TILING_OPTIMAL
-            info.usage         = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-                                 VK_IMAGE_USAGE_TRANSFER_DST_BIT     |
-                                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT     |
-                                 VK_IMAGE_USAGE_SAMPLED_BIT
-            info.sharingMode   = VK_SHARING_MODE_EXCLUSIVE
-            info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED
-            img : VkImage [ null ]
-            err : i32 [ vkCreateImage[ device, @info, null, @img ] ]
-            expect err == 0, 'share: vkCreateImage (import) failed'
-            mreq : VkMemoryRequirements [ ]
-            vkGetImageMemoryRequirements[ device, img, @mreq ]
-            expect _vkGetMemoryFdPropertiesKHR, 'share: vkGetMemoryFdPropertiesKHR not loaded'
-            fd_props : VkMemoryFdPropertiesKHR [ ]
-            fd_props.sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR
-            err = _vkGetMemoryFdPropertiesKHR[ device,
-                VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, dma_fd, @fd_props ]
-            expect err == 0, 'share: vkGetMemoryFdPropertiesKHR failed'
-            allowed : u32 [ mreq.memoryTypeBits & fd_props.memoryTypeBits ]
-            expect allowed != 0, 'share: no memory type for dmabuf fd'
-            mti : u32 [ 0 ]
-            for [ k: u32 0, k < 32, k += 1 ]
-                if [ allowed & (u32[1] << k) ]
-                    mti = k
-                    break
-            ded : VkMemoryDedicatedAllocateInfo [ ]
-            ded.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO
-            ded.image = img
-            imp : VkImportMemoryFdInfoKHR [ ]
-            imp.sType      = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR
-            imp.pNext      = @ded
-            imp.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT
-            imp.fd         = dma_fd
-            mai : VkMemoryAllocateInfo [ ]
-            mai.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO
-            mai.pNext           = @imp
-            mai.allocationSize  = mreq.size
-            mai.memoryTypeIndex = mti
-            mem : VkDeviceMemory [ null ]
-            err = vkAllocateMemory[ device, @mai, null, @mem ]
-            expect err == 0, 'share: vkAllocateMemory (import) failed'
-            err = vkBindImageMemory[ device, img, mem, 0 ]
-            expect err == 0, 'share: vkBindImageMemory (import) failed'
-            t : Texture [ vk: a, w: disp, width: w2, height: h2,
-                vk_format: fmt, vk_image: img, vk_memory: mem ]
-            t.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
-            return t
+            ifdef [ apple ]
+                # the handle is an IOSurface id: the surface it names is the
+                # publisher's own, so the image made from it is its live frame
+                sf9 : handle [ IOSurfaceLookup[ u32[ dma_fd ] ] ]
+                if [ !sf9 ] return null
+                im9 : VkImportMetalIOSurfaceInfoEXT [ ]
+                im9.sType     = VK_STRUCTURE_TYPE_IMPORT_METAL_IO_SURFACE_INFO_EXT
+                im9.ioSurface = sf9
+                ci9 : VkImageCreateInfo [ ]
+                ci9.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO
+                ci9.pNext         = @im9
+                ci9.imageType     = VK_IMAGE_TYPE_2D
+                ci9.format        = fmt
+                ci9.extent        = VkExtent3D [ w2, h2, 1 ]
+                ci9.mipLevels     = 1
+                ci9.arrayLayers   = 1
+                ci9.samples       = VK_SAMPLE_COUNT_1_BIT
+                ci9.tiling        = VK_IMAGE_TILING_OPTIMAL
+                ci9.usage         = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                                    VK_IMAGE_USAGE_TRANSFER_DST_BIT     |
+                                    VK_IMAGE_USAGE_TRANSFER_SRC_BIT     |
+                                    VK_IMAGE_USAGE_SAMPLED_BIT
+                ci9.sharingMode   = VK_SHARING_MODE_EXCLUSIVE
+                ci9.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED
+                ig9 : VkImage [ null ]
+                if [ vkCreateImage[ device, @ci9, null, @ig9 ] != 0 ] return null
+                mq9 : VkMemoryRequirements [ ]
+                vkGetImageMemoryRequirements[ device, ig9, @mq9 ]
+                ma9 : VkMemoryAllocateInfo [ ]
+                ma9.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO
+                ma9.allocationSize  = mq9.size
+                ma9.memoryTypeIndex = find_memory_type[ mq9.memoryTypeBits,
+                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT ]
+                mm9 : VkDeviceMemory [ null ]
+                if [ vkAllocateMemory[ device, @ma9, null, @mm9 ] != 0 ] return null
+                if [ vkBindImageMemory[ device, ig9, mm9, 0 ] != 0 ] return null
+                t9 : Texture [ vk: a, w: disp, width: w2, height: h2,
+                    vk_format: fmt, vk_image: ig9, vk_memory: mm9, shared_fd: 0 - 1 ]
+                t9.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
+                return t9
 
-        # a client's dma-buf as a Wayland compositor hands it over: an explicit
-        # DRM format modifier with the plane laid out as the producer says.
-        # the fd is consumed. fourcc is the DRM code: ARGB/XRGB8888 = bgra here
+            el
+                if [ !_vkGetMemoryFdPropertiesKHR ] return null
+                ext : VkExternalMemoryImageCreateInfo [ ]
+                ext.sType       = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO
+                ext.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT
+                info : VkImageCreateInfo [ ]
+                info.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO
+                info.pNext         = @ext
+                info.imageType     = VK_IMAGE_TYPE_2D
+                info.format        = fmt
+                info.extent        = VkExtent3D [ w2, h2, 1 ]
+                info.mipLevels     = 1
+                info.arrayLayers   = 1
+                info.samples       = VK_SAMPLE_COUNT_1_BIT
+                info.tiling        = VK_IMAGE_TILING_OPTIMAL
+                info.usage         = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                                     VK_IMAGE_USAGE_TRANSFER_DST_BIT     |
+                                     VK_IMAGE_USAGE_TRANSFER_SRC_BIT     |
+                                     VK_IMAGE_USAGE_SAMPLED_BIT
+                info.sharingMode   = VK_SHARING_MODE_EXCLUSIVE
+                info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED
+                img : VkImage [ null ]
+                err : i32 [ vkCreateImage[ device, @info, null, @img ] ]
+                expect err == 0, 'share: vkCreateImage (import) failed'
+                mreq : VkMemoryRequirements [ ]
+                vkGetImageMemoryRequirements[ device, img, @mreq ]
+                fd_props : VkMemoryFdPropertiesKHR [ ]
+                fd_props.sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR
+                err = _vkGetMemoryFdPropertiesKHR[ device,
+                    VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, dma_fd, @fd_props ]
+                expect err == 0, 'share: vkGetMemoryFdPropertiesKHR failed'
+                allowed : u32 [ mreq.memoryTypeBits & fd_props.memoryTypeBits ]
+                expect allowed != 0, 'share: no memory type for dmabuf fd'
+                mti : u32 [ 0 ]
+                for [ k: u32 0, k < 32, k += 1 ]
+                    if [ allowed & (u32[1] << k) ]
+                        mti = k
+                        break
+                ded : VkMemoryDedicatedAllocateInfo [ ]
+                ded.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO
+                ded.image = img
+                imp : VkImportMemoryFdInfoKHR [ ]
+                imp.sType      = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR
+                imp.pNext      = @ded
+                imp.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT
+                imp.fd         = dma_fd
+                mai : VkMemoryAllocateInfo [ ]
+                mai.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO
+                mai.pNext           = @imp
+                mai.allocationSize  = mreq.size
+                mai.memoryTypeIndex = mti
+                mem : VkDeviceMemory [ null ]
+                err = vkAllocateMemory[ device, @mai, null, @mem ]
+                expect err == 0, 'share: vkAllocateMemory (import) failed'
+                err = vkBindImageMemory[ device, img, mem, 0 ]
+                expect err == 0, 'share: vkBindImageMemory (import) failed'
+                t : Texture [ vk: a, w: disp, width: w2, height: h2,
+                    vk_format: fmt, vk_image: img, vk_memory: mem ]
+                t.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
+                return t
+
+            # a client's dma-buf as a Wayland compositor hands it over: an explicit
+            # DRM format modifier with the plane laid out as the producer says.
+            # the fd is consumed. fourcc is the DRM code: ARGB/XRGB8888 = bgra here
         func import_dmabuf_image [ dma_fd: i32, w2: i32, h2: i32, fourcc: u32, modifier: u64,
                                    stride: u32, offset: u32, disp: Display ] -> Texture
             fmt : i32 [ VK_FORMAT_B8G8R8A8_UNORM ]
@@ -3916,16 +4021,30 @@ class Texture
             ]
 
             if [ !vk_image && vk_format ]
-                ifdef [ linux ]
+                ifdef [ unix ]
                     if [ shareable ]
                         ext9 : VkExternalMemoryImageCreateInfo [ ]
                         ext9.sType       = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO
                         ext9.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT
-                        info.pNext = @ext9
+                        xmo9 : VkExportMetalObjectCreateInfoEXT [ ]
+                        xmo9.sType            = VK_STRUCTURE_TYPE_EXPORT_METAL_OBJECT_CREATE_INFO_EXT
+                        xmo9.exportObjectType = VK_EXPORT_METAL_OBJECT_TYPE_METAL_IOSURFACE_BIT_EXT
+                        ifdef [ apple ]
+                            info.pNext = @xmo9
+                        el
+                            info.pNext = @ext9
                         r9 : i32 [ vkCreateImage[ vk.device, @info, null, @vk_image ] ]
-                        expect r9 == VK_SUCCESS, 'shared texture: vkCreateImage failed'
-                        shared_fd = vk.export_image_memory[ vk_image, @vk_memory ]
-                        expect shared_fd >= 0, 'shared texture: export failed'
+                        # a driver that does not take this handle type shares
+                        # nothing: the texture is still made, the normal way
+                        if [ r9 != VK_SUCCESS ]
+                            vk_image = null
+                            info.pNext = null
+                        el
+                            shared_fd = vk.export_image_memory[ vk_image, @vk_memory ]
+                            if [ shared_fd < 0 ]
+                                vkDestroyImage[ vk.device, vk_image, null ]
+                                vk_image = null
+                                info.pNext = null
                         if [ host_linear ]
                             sub : VkImageSubresource [ aspectMask: VK_IMAGE_ASPECT_COLOR_BIT ]
                             sl  : VkSubresourceLayout [ ]
@@ -4295,6 +4414,9 @@ Texture Display
         for [ r: Render, id: string ] in element_targets
             if [ !r ] continue
             r.update[ ]
+            # its attachment was just reallocated: a rate-limited backdrop
+            # must draw NOW, or the chain composes uninitialized memory
+            r.has_drawn = false
             if [ resized && r.models ]
                 for [ m: Model ] in r.models
                     m.rebind_model[ ]
@@ -4398,25 +4520,32 @@ Texture Display
         # freshly-cleared canvases for one frame: the black flash on resize.
         if [ swap_needs_recreate && !backbuffer ]
             swap_needs_recreate = false
+            vk.swap_recreates += 1
             resize*[ width, height ]
 
+        now_ms : i64 [ epoch_millis[] ]
+        tp0 : i64 [ epoch_micros[] ]
         for [ r: Render, id: string ] in element_targets
             if [ !r || r.skip || r == skip_target ] continue
             if [ r.owner && (r.owner.hide || r.owner.opacity <= 0.0) ] continue
+            if [ !r.due[ now_ms ] ] continue
             r.draw*[]
             r.sync_fence*[]
+            r.has_drawn    = true
+            r.last_draw_ms = now_ms
 
+        tp1 : i64 [ epoch_micros[] ]
         on_compose*[]
+        tp2 : i64 [ epoch_micros[] ]
 
-        now_ms : i64 [ epoch_millis[] ]
         prof_frames += 1
         prof_report : bool [ prof_log && prof_frames % 120 == 0 ]
         if [ prof_report ] log 'frame: {list.count} targets'
+        bd9 : Render [ (win) ? win.backdrop : null ]
         for [ r: Render ] in list
-            hz : f32 [ r.draw_hz ]
-            if [ hz > 0.0 && r.has_drawn ]
-                due : i64 [ i64[ 1000.0 / hz ] ]
-                if [ now_ms - r.last_draw_ms < due ] continue
+            if [ !r.due[ now_ms ] ] continue
+            # a chain stage reads the backdrop: unchanged since its last pass, skip
+            if [ bd9 && r != list.last[] && r.has_drawn && bd9.last_draw_ms <= r.last_draw_ms ] continue
             r.timing = true
             td0 : i64 [ epoch_micros[] ]
             r.draw*[]
@@ -4428,15 +4557,19 @@ Texture Display
             r.has_drawn    = true
             r.last_draw_ms = now_ms
 
+        tp3 : i64 [ epoch_micros[] ]
         on_screen*[]
+        tp4 : i64 [ epoch_micros[] ]
 
         if [ swap_renders ]
             result: vkAcquireNextImageKHR[ vk.device, vk_swapchain, UINT64_MAX,
                 semaphore_frame.vk_image_available_semaphore, null, @swap_image_current ]
-            if [ result == VK_ERROR_OUT_OF_DATE_KHR ]
+            # SUBOPTIMAL too: on MoltenVK it means the extent no longer matches
+            # the layer's drawable, and that presents nothing (gray on resize)
+            if [ result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ]
                 swap_needs_recreate = true
             el
-                expect result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR, "failed to acquire swapchain image"
+                expect result == VK_SUCCESS, "failed to acquire swapchain image"
                 swap_render_current = swap_renders[swap_image_current]
                 last_render[].color.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
                 swap_render_current.color.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
@@ -4475,15 +4608,23 @@ Texture Display
                 # with CAMetalLayer's 3 drawables, and the third acquire then
                 # re-signalled a semaphore belonging to another in-flight frame
                 semaphore_frame = swap_renders[ (swap_image_current + 1) % swap_image_count ]
-                if [ result == VK_ERROR_OUT_OF_DATE_KHR ]
+                expect result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR || result == VK_ERROR_OUT_OF_DATE_KHR, "present"
+                if [ result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ]
                     swap_needs_recreate = true
-                el
-                    expect result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR, "present"
-                    swap_render_current.sync_fence[]
-                    # real pixels are on the surface now — safe to map
+                if [ result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR ]
+                    # the blit's slot fence guards its reuse; only the first
+                    # frame waits here, so the window shows with real pixels
                     if [ !shown && !hidden && glfw ]
+                        swap_render_current.sync_fence[]
                         shown = true
                         platform_window_show[ glfw ]
+                        if [ prof_log ] log 'SHOWN t={epoch_millis[]}'
+        tp5 : i64 [ epoch_micros[] ]
+        vk.ph_targets += tp1 - tp0
+        vk.ph_compose += tp2 - tp1
+        vk.ph_list    += tp3 - tp2
+        vk.ph_screen  += tp4 - tp3
+        vk.ph_swap    += tp5 - tp4
 
 
     cast -> Image
@@ -4709,13 +4850,17 @@ Texture Display
             present_modes: vec VkPresentModeKHR [ present_mode_count ]
             vkGetPhysicalDeviceSurfacePresentModesKHR[
                 vk.physical_device, vk_surface, @present_mode_count, present_modes ]
+            # vsync, always: MAILBOX presents the newest finished frame on the
+            # refresh and never tears, FIFO queues them. IMMEDIATE is not a
+            # third option here -- it only tears, and the extra frames buy
+            # nothing the sub-frame interpolation can use
             present_mode = VK_PRESENT_MODE_FIFO_KHR
             for [ i: u32 0, i < present_mode_count, i += 1 ]
                 if [ present_modes[i] == VK_PRESENT_MODE_MAILBOX_KHR ]
                     present_mode = VK_PRESENT_MODE_MAILBOX_KHR
                     break
-                el [ present_modes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR ]
-                    present_mode = VK_PRESENT_MODE_IMMEDIATE_KHR
+            pm9 : i32 [ present_mode ]
+            log 'swap: present mode {pm9} ({present_mode_count} offered)'
 
             # width/height are LOGICAL (window points) so layout/CSS coords match
             # every OS. scale = device pixels / points (2.0 on retina): canvas

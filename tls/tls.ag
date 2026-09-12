@@ -1,6 +1,6 @@
 export 0.1.0
 
-import Mbed-TLS:mbedtls/ec40440 <mbedtls/ssl.h>
+import Mbed-TLS:mbedtls/ec4044008d2d069da38288bc76b0fee34ec78646 <mbedtls/ssl.h>
     -DENABLE_TESTING=0
     -DPSA_CRYPTO_DRIVERS=0
     -DCMAKE_POSITION_INDEPENDENT_CODE=1
@@ -31,7 +31,7 @@ class TLSClient
         mbedtls_ssl_config_init   [ @conf ]
         mbedtls_x509_crt_init     [ @cacert ]
         psa_crypto_init           [ ]
-        # local trust first, then the system CA bundle (debian / rh)
+        # local trust first, then the system CA bundle (debian / rh / macOS)
         ca_ok : i32 [ -1 ]
         ca0 : path 'ssl/trust.crt'
         if [ ca0.exists[] ] ca_ok = mbedtls_x509_crt_parse_file[ @cacert, ca0.chars ]
@@ -41,6 +41,15 @@ class TLSClient
         if [ ca_ok != 0 ]
             ca2 : path '/etc/pki/tls/certs/ca-bundle.crt'
             if [ ca2.exists[] ] ca_ok = mbedtls_x509_crt_parse_file[ @cacert, ca2.chars ]
+        ifdef [ apple ]
+            # apple keeps its roots in the keychain (/etc/ssl/cert.pem is a
+            # stale copy missing newer roots); export them once to storage
+            if [ ca_ok != 0 ]
+                dir : path.path_storage[ 'silver' ]
+                ca3 : path '{dir}/trust.crt'
+                if [ !ca3.exists[] ]
+                    system[ 'security find-certificate -a -p /System/Library/Keychains/SystemRootCertificates.keychain > "{ca3}"' ]
+                if [ ca3.exists[] ] ca_ok = mbedtls_x509_crt_parse_file[ @cacert, ca3.chars ]
         if [ ca_ok != 0 ]
             log 'net: no CA bundle (ssl/trust.crt or system certs)'
             return

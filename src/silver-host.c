@@ -210,11 +210,9 @@ static int isolate_requested(int argc, char** argv) {
     const char* v = getenv(ISOLATE_ENV);
     if (v && *v) return strcmp(v, "0") != 0;
     if (getenv(IDE_ENV)) return 0;
-#ifdef __linux__
+#ifndef _WIN32
     return 1;
 #else
-    // the child hands frames over a dma-buf: linux only. elsewhere the app
-    // stays in process until an IOSurface path exists (SILVER_ISOLATE=1 to force)
     return 0;
 #endif
 }

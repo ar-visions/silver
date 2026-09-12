@@ -1,16 +1,29 @@
-import madler:zlib/51b7f2a <zlib.h>
+import madler:zlib/51b7f2abdade71cd9bb0e7a373ef2610ec6f9daf <zlib.h>
     -DCMAKE_POLICY_VERSION_MINIMUM=3.5
     -lz
 
-import glennrp:libpng/07b8803 <png.h>
+import glennrp:libpng/3061454d980de7d53608f594194cfac722721d2a <png.h>
     -lpng
     { (android) ?? -DPNG_ARM_NEON=off }
 
 import <string.h>
 import <stdlib.h>
+import libtiff/v4.7.2 from https://gitlab.com/libtiff/libtiff
+    -Dtiff-tools=OFF
+    -Dtiff-tests=OFF
+    -Dtiff-contrib=OFF
+    -Dtiff-docs=OFF
+    -Dtiff-cxx=OFF
+    -Djpeg=OFF
+    -Dold-jpeg=OFF
+    -Djbig=OFF
+    -Dlzma=OFF
+    -Dzstd=OFF
+    -Dwebp=OFF
+    -Dlerc=OFF
+    -ltiff
 import <tiff-min.h>
     -I{root_path}/img
-    -ltiff
 import vec
 
 enum Join

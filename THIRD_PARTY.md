@@ -12,20 +12,21 @@ Keep it in step with the imports.
 | FreeType | VER-2-13-3 | trinity | https://github.com/freetype/freetype | FreeType License (FTL); GPL-2.0 alternative | David Turner, Robert Wilhelm, Werner Lemberg and the FreeType project |
 | FriBidi | v1.0.16 | features | https://github.com/fribidi/fribidi | LGPL-2.1-or-later | Behdad Esfahbod, Dov Grobgeld, Roozbeh Pournader |
 | FAAC | 3aa4c6d | trinity (recording's AAC track, shared library) | https://github.com/knik0/faac | LGPL-2.1-or-later | M. Bakker, Krzysztof Nikiel and the FAAC contributors |
-| libpng | 07b8803 | img | https://github.com/glennrp/libpng | PNG Reference Library License v2 | Glenn Randers-Pehrson, Cosmin Truta and contributors |
-| zlib | 51b7f2a | img, features | https://github.com/madler/zlib | zlib License | Jean-loup Gailly, Mark Adler |
-| Vulkan-Headers | 29184b9 | trinity, wintest | https://github.com/KhronosGroup/Vulkan-Headers | Apache-2.0 OR MIT | The Khronos Group |
+| libpng | 3061454d980de7d53608f594194cfac722721d2a | img | https://github.com/glennrp/libpng | PNG Reference Library License v2 | Glenn Randers-Pehrson, Cosmin Truta and contributors |
+| libtiff | v4.7.2 | img | https://gitlab.com/libtiff/libtiff | libtiff License (BSD-style) | Sam Leffler, Silicon Graphics, Inc. and contributors |
+| zlib | 51b7f2abdade71cd9bb0e7a373ef2610ec6f9daf | img, features | https://github.com/madler/zlib | zlib License | Jean-loup Gailly, Mark Adler |
+| Vulkan-Headers | 29184b98984f6169a5e83e97557a77cff1e5b0ca | trinity, wintest | https://github.com/KhronosGroup/Vulkan-Headers | Apache-2.0 OR MIT | The Khronos Group |
 | Vulkan-Utility-Libraries | vulkan-sdk-1.4.341.0 | trinity | https://github.com/KhronosGroup/Vulkan-Utility-Libraries | Apache-2.0 | The Khronos Group, LunarG |
 | Vulkan-Tools | 734638e | trinity | https://github.com/KhronosGroup/Vulkan-Tools | Apache-2.0 | The Khronos Group, LunarG |
 | Vulkan-ValidationLayers | vulkan-sdk-1.4.341.0 | trinity | https://github.com/KhronosGroup/Vulkan-ValidationLayers | Apache-2.0 | The Khronos Group, LunarG |
 | SPIRV-Headers | vulkan-sdk-1.4.341.0 | trinity | https://github.com/KhronosGroup/SPIRV-Headers | MIT | The Khronos Group |
 | SPIRV-Tools | vulkan-sdk-1.4.341.0 | trinity | https://github.com/KhronosGroup/SPIRV-Tools | Apache-2.0 | The Khronos Group, Google |
-| glslang | 715c850 | trinity | https://github.com/KhronosGroup/glslang | BSD-3-Clause with Apache-2.0 and MIT parts (see its LICENSE.txt) | The Khronos Group, Google, LunarG, John Kessenich |
+| glslang | 715c8500e7cd67f2eba9e60e98852a1ed49d2f15 | trinity | https://github.com/KhronosGroup/glslang | BSD-3-Clause with Apache-2.0 and MIT parts (see its LICENSE.txt) | The Khronos Group, Google, LunarG, John Kessenich |
 | MoltenVK | db445ff | trinity (macOS) | https://github.com/KhronosGroup/MoltenVK | Apache-2.0 | The Brenwill Workshop, The Khronos Group |
 | OpenSubdiv | v3_7_0 | trinity | https://github.com/PixarAnimationStudios/OpenSubdiv | Apache-2.0 (Pixar modified) | Pixar Animation Studios |
 | sherpa-onnx | v1.13.4 | speech | https://github.com/k2-fsa/sherpa-onnx | Apache-2.0 | Next-gen Kaldi (k2-fsa) |
 | FAAD2 | 2.11.2 | spectra, speech | https://github.com/knik0/faad2 | GPL-2.0-or-later (commercial license available) | Nero AG, Fabian Greffrath, Krzysztof Nikiel and contributors |
-| Mbed TLS | ec40440 | tls | https://github.com/Mbed-TLS/mbedtls | Apache-2.0 OR GPL-2.0-or-later | Arm Limited and contributors |
+| Mbed TLS | ec4044008d2d069da38288bc76b0fee34ec78646 | tls | https://github.com/Mbed-TLS/mbedtls | Apache-2.0 OR GPL-2.0-or-later | Arm Limited and contributors |
 | QEMU | e47e2d0 | qemu | https://github.com/qemu/qemu | GPL-2.0-only (mixed, see its LICENSE) | Fabrice Bellard and the QEMU project |
 | virglrenderer | main | qemu | https://gitlab.freedesktop.org/virgl/virglrenderer | MIT | Dave Airlie, Collabora and contributors |
 | Mesa | 26.2.2 | os-bootstrap | https://gitlab.freedesktop.org/mesa/mesa | MIT (with other permissive parts) | The Mesa 3D project |

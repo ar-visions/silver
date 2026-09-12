@@ -270,13 +270,14 @@ AU_EXPORT none TLS_init(TLS tls) {
             return;
         }
     } else {
-        // local trust first, then the system CA bundle (debian / rh paths)
+        // local trust first, then the system CA bundle (debian / rh / macOS paths)
         static cstr ca_paths[] = {
             "ssl/trust.crt",
             "/etc/ssl/certs/ca-certificates.crt",
-            "/etc/pki/tls/certs/ca-bundle.crt" };
+            "/etc/pki/tls/certs/ca-bundle.crt",
+            "/etc/ssl/cert.pem" };
         int parse_res = -1;
-        for (int ci = 0; ci < 3 && parse_res != 0; ci++)
+        for (int ci = 0; ci < (int)(sizeof(ca_paths) / sizeof(ca_paths[0])) && parse_res != 0; ci++)
             if (file_exists("%s", ca_paths[ci]))
                 parse_res = mbedtls_x509_crt_parse_file(&tls->srvcert, ca_paths[ci]);
         if (parse_res != 0)

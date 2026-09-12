@@ -5454,6 +5454,21 @@ AU_EXPORT Au map_value_by_index(map m, num idx) {
 
 AU_EXPORT Au list_push(list a, Au e);
 
+// equal when the same keys hold values that compare equal
+AU_EXPORT num map_compare(map a, map b) {
+    if (a == b) return 0;
+    if (!a || !b) return a ? 1 : -1;
+    if (a->count != b->count) return a->count < b->count ? -1 : 1;
+    pairs(a, i) {
+        Au v = map_get(b, i->key);
+        if (i->value == v) continue;
+        if (!i->value || !v) return i->value ? 1 : -1;
+        num c = compare(i->value, v);
+        if (c != 0) return c;
+    }
+    return 0;
+}
+
 AU_EXPORT none map_set(map m, Au k, Au v) {
     if (!m->hlist) m->hlist = (item*)calloc(m->hsize, sizeof(item));
     item i = map_fetch(m, k);
@@ -6929,7 +6944,7 @@ AU_EXPORT bool vector_equals(vector a, vector b) {
     for (num i = 0; i < a->count; i++) {
         if (xa[i] == xb[i]) continue;
         if (!xa[i] || !xb[i]) return false;
-        if (Au_compare(xa[i], xb[i]) != 0) return false;
+        if (compare(xa[i], xb[i]) != 0) return false; // by content, not by struct bytes
     }
     return true;
 }
@@ -7712,6 +7727,17 @@ AU_EXPORT path path_storage(cstr app) {
     path p = f(path, "%o", dir);
     make_dir(p);
     return p;
+}
+
+// the platform's file name for a shared library called name
+AU_EXPORT string path_library(cstr name) {
+#ifdef _WIN32
+    return f(string, "%s.dll", name);
+#elif defined(__APPLE__)
+    return f(string, "lib%s.dylib", name);
+#else
+    return f(string, "lib%s.so", name);
+#endif
 }
 
 AU_EXPORT bool path_is_symlink(path p) {

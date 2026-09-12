@@ -1,7 +1,7 @@
 type: shared
 modules: Au
 link: -lmbedtls -lmbedx509 -lmbedcrypto -lpthread
-import:     Mbed-TLS:mbedtls/ec40440 as mbedtls
+import:     Mbed-TLS:mbedtls/ec4044008d2d069da38288bc76b0fee34ec78646 as mbedtls
     -DPython3_EXECUTABLE={'$IMPORT/bin/python3' if not win else 'python'}
     -DCMAKE_C_COMPILER="{'clang-cl' if win else 'gcc'}"
     -DCMAKE_CXX_COMPILER="{'clang-cl' if win else 'g++'}"

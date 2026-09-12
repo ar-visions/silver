@@ -1325,7 +1325,9 @@ Render Canvas
     intern  text_max_verts   : i32 [ 4096 ]
     intern  text_vbo_ring    : vec Gpu
     intern  text_vbo_idx     : i32 [ 0 ]
-    intern  text_ring_n      : i32 [ 8 ]
+    # a wrap fences the GPU: 8 slots fenced every few text runs on a busy
+    # frame; 64 wraps every few frames
+    intern  text_ring_n      : i32 [ 64 ]
     intern  blur_count       : i32 [ 8 ]
     intern  blur_stages      : vec Render
     intern  blur_v_arr       : vec Render
@@ -2895,6 +2897,7 @@ class GlyphAtlas
         if [ existing.cached ]
             return existing
 
+        vk.glyph_miss += 1
         g : GlyphEntry font.get_glyph [ codepoint ]
         if [ !g.cached ]
             return GlyphAtlasSlot [ cached: false ]
