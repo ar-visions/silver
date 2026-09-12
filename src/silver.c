@@ -1266,6 +1266,9 @@ void silver_parse(silver a) {
     Au_t m_mac   = def_member(a->autype, "apple",   typeid(bool), AU_MEMBER_VAR, AU_TRAIT_CONST);
     Au_t m_lin   = def_member(a->autype, "linux",   typeid(bool), AU_MEMBER_VAR, AU_TRAIT_CONST);
     Au_t m_win   = def_member(a->autype, "windows", typeid(bool), AU_MEMBER_VAR, AU_TRAIT_CONST);
+    // every posix target: linux, apple, android. hosting, sockets and
+    // process code that is the same on all of them gates on this one
+    Au_t m_unix  = def_member(a->autype, "unix",    typeid(bool), AU_MEMBER_VAR, AU_TRAIT_CONST);
     Au_t m_x86   = def_member(a->autype, "x86_64",  typeid(bool), AU_MEMBER_VAR, AU_TRAIT_CONST);
     Au_t m_arm64 = def_member(a->autype, "arm64",   typeid(bool), AU_MEMBER_VAR, AU_TRAIT_CONST);
     Au_t m_ios   = def_member(a->autype, "ios",     typeid(bool), AU_MEMBER_VAR, AU_TRAIT_CONST);
@@ -1277,10 +1280,15 @@ void silver_parse(silver a) {
     etype_register((aether)a, (Au)m_mac,   (Au)hold(e_operand(a, _bool(target_mac), etypeid(bool))), false);
     etype_register((aether)a, (Au)m_lin,   (Au)hold(e_operand(a, _bool(target_lin), etypeid(bool))), false);
     etype_register((aether)a, (Au)m_win,   (Au)hold(e_operand(a, _bool(target_win), etypeid(bool))), false);
+    etype_register((aether)a, (Au)m_unix,  (Au)hold(e_operand(a, _bool(!target_win), etypeid(bool))), false);
     etype_register((aether)a, (Au)m_x86,   (Au)hold(e_operand(a, _bool(strcmp(target_arch, "x86_64") == 0), etypeid(bool))), false);
     etype_register((aether)a, (Au)m_arm64, (Au)hold(e_operand(a, _bool(strcmp(target_arch, "arm64")  == 0), etypeid(bool))), false);
     etype_register((aether)a, (Au)m_ios,   (Au)hold(e_operand(a, _bool(target_ios), etypeid(bool))), false);
     etype_register((aether)a, (Au)m_and,   (Au)hold(e_operand(a, _bool(target_and), etypeid(bool))), false);
+    // the module's own share directory name (install/share/<share_name>)
+    Au_t m_share = def_member(a->autype, "share_name", typeid(symbol), AU_MEMBER_VAR, AU_TRAIT_CONST);
+    etype_register((aether)a, (Au)m_share, (Au)hold(e_operand(a,
+        (Au)const_string(chars, silver_install_name(a)->chars), etypeid(symbol))), false);
 
     // AU_MEMBER_* constants — available as const i32 in all .ag code
     struct { const char* name; int value; } au_consts[] = {
@@ -2119,7 +2127,7 @@ static path build_silver_host(silver a) {
     path host_dst = f(path, "%o/%o%s", a->build_dir, a->name, app_ext);
     verify(file_exists("%o", host_src), "silver-host.c not found at %o", host_src);
 #ifdef __APPLE__
-    cstr host_libs = "-isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk -lAu -lglfw3 -lm -framework Cocoa -framework IOKit -framework CoreFoundation -framework CoreGraphics -framework QuartzCore";
+    cstr host_libs = "-isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk -lAu -lm -framework Cocoa -framework IOKit -framework CoreFoundation -framework CoreGraphics -framework QuartzCore";
 #elif defined(_WIN32)
     // glfw's win32 backend; no dl/X11/m here
     // -lAu: the posix shims (dlopen, backtrace, basename, ...) live in posix.obj
@@ -6412,8 +6420,11 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
                     else   mem = (enode)rlookup((aether)a, alpha);
                 }
 
-                if (!mem && scope_mdl) {
-                    Au_t sm = find_member(scope_mdl->autype, alpha->chars, 0, 0, true);
+                // an expected enum's member wins over a function of the same
+                // name (macOS stdlib declares random(); Initializer.random)
+                if (scope_mdl && (!mem || (scope_mdl->autype->is_enum && is_func((Au)mem)))) {
+                    Au_t sm = mem ? find_member(scope_mdl->autype, alpha->chars, AU_MEMBER_ENUMV, 0, false)
+                                  : find_member(scope_mdl->autype, alpha->chars, 0, 0, true);
                     if (sm)
                         mem = access((enode)scope_mdl, alpha);
                 }
@@ -8233,6 +8244,8 @@ enode parse_statement(silver a)
                     }
                     concat(spec, string("]"));
                 }
+                // a Range meta (VolumeRange) is a slider: the bare form is 0..1
+                // to the host; the running instance answers props with its bounds
                 if (strcmp(member_meta->autype->ident, "Live") == 0) concat(spec, string("=live"));
                 push(lvals, (Au)spec);
             }
@@ -9555,13 +9568,19 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
                 checkout_verify(a, label, "clone", "clone",
                     f(command, "git clone --progress --depth 1 %o %o",
                         uri, project_f));
-            } else if (is_commit_hash(commit)) {
+            } else if (is_commit_hash(commit) && len(commit) == 40) {
                 checkout_verify(a, label, "clone", "clone",
                     f(command, "mkdir -p %o && git -C %o init -q && git -C %o remote add origin %o && "
                                "git -C %o fetch --progress --depth 1 origin %o",
                         project_f, project_f, project_f, uri, project_f, commit));
                 checkout_verify(a, label, "checkout", "checkout",
                     f(command, "git -C %o checkout --detach FETCH_HEAD", project_f));
+            } else if (is_commit_hash(commit)) {
+                // a short hash cannot be fetched by want; take the history and check it out
+                checkout_verify(a, label, "clone", "clone",
+                    f(command, "git clone --progress %o %o", uri, project_f));
+                checkout_verify(a, label, "checkout", "checkout",
+                    f(command, "git -C %o checkout --detach %o", project_f, commit));
             } else {
                 checkout_verify(a, label, "clone", "clone",
                     f(command,
@@ -12094,6 +12113,10 @@ enode parse_import(silver a) {
         // if the module is built into our run-time already, we support this
         if (mod && !module_source) {
             set(a->libs, string(mod->ident), (Au)_bool(true));
+            // silver's api is aether's types; a dynamiclib on macOS resolves
+            // every symbol at link, so the module that calls them links it too
+            if (eq(string(mod->ident), "silver"))
+                set(a->libs, string("aether"), (Au)_bool(true));
             external_name = hold(string(mod->ident));
         } else if (!mod && !module_source && !lib_path) {
             prev(a);

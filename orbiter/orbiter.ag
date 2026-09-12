@@ -207,10 +207,49 @@ element EditorView
             return o.launch_specs[ m ]
         o.launch_specs_mt[ m ] = mt9
         spec : string read_launch[ m ]
-        # every trinity app carries the base's live properties (volume)
+        # the module itself is the source: its app type, instanced with its
+        # defaults, answers the same props the running app does (metas included)
+        ln9  : string 'silver-{m}'
+        lib9 : path '{o.startup_path}/install/build/{path.path_library[ ln9.chars ]}'
+        if [ o.stats ] log 'SPEC lib {lib9} exists={lib9.exists[]}'
+        if [ lib9.exists[] ]
+            h9 : dlopen[ lib9.chars, 258 ]
+            # the module registers its types from its initializer
+            if [ h9 ]
+                isym9 : string 'silver_{m}_initializer'
+                ifn9  : cast hook [ dlsym[ h9, isym9.chars ] ]
+                if [ o.stats ] log 'SPEC initializer={(ifn9) ? 1 : 0}'
+                if [ ifn9 ] ifn9[]
+            ty9 : Au_t (h9) ? Au.find_type[ m.chars, null ] : null
+            if [ o.stats ] log 'SPEC handle={(h9) ? 1 : 0} type={(ty9) ? 1 : 0}'
+            if [ o.stats && h9 ]
+                md9 : Au_t Au.find_module[ m.chars ]
+                log 'SPEC module={(md9) ? 1 : 0} members={(md9) ? md9.members.count : 0}'
+                if [ md9 ]
+                    for [ mi9: i32 0, mi9 < md9.members.count, mi9 += 1 ]
+                        mm9 : Au_t md9.members.origin[ mi9 ]
+                        if [ mm9 && mm9.ident ] log 'SPEC   member {mm9.ident} mt={mm9.member_type}'
+            if [ ty9 ]
+                ob9 : Au.new_object[ ty9, null, null, true, __FILE__, __LINE__, __SEQUENCE__ ]
+                mod9 : string (ob9) ? props_of[ ob9, null ] : null
+                if [ o.stats ] log 'SPEC props: {(mod9) ? mod9 : "(null)"}'
+                if [ mod9 && mod9.count > 0 ] spec = mod9
+        if [ o.stats ] log 'SPEC {m}: {spec}'
+        # every trinity app carries the base's live properties (volume);
+        # the module's own entry of the same name wins, since a duplicate
+        # row shares its element key and blanks the first
         if [ m.compare[ 'trinity' ] != 0 ]
             base : string read_launch[ 'trinity' ]
-            if [ base.count > 0 ] spec = (spec.count > 0) ? '{spec};{base}' : base
+            for [ be9: string ] in base.split[ ';' ]
+                bf9 : be9.split[ '=' ]
+                if [ bf9.count == 0 ] continue
+                bn9 : string bf9[ 0 ]
+                if [ bn9.count == 0 ] continue
+                dup9 : bool [ false ]
+                for [ se9: string ] in spec.split[ ';' ]
+                    sf9 : se9.split[ '=' ]
+                    if [ sf9.count > 0 && sf9[ 0 ].compare[ bn9 ] == 0 ] dup9 = true
+                if [ !dup9 ] spec = (spec.count > 0) ? '{spec};{be9}' : be9
         o.launch_specs[ m ] = spec
         return spec
 
@@ -382,8 +421,7 @@ element EditorView
         return t
 
     # reconciliation runs on the frame hook, never in render
-    public func draw [ w: Window ]
-        if [ w.draw_stage != CanvasType.screen ] return
+    public func tick [ w: Window ]
         settle[]
 
     func settle []
@@ -2073,6 +2111,7 @@ element orbiter : trinity # implements compiler
     intern  all_cmd        : string
     intern frame_no9       : i32
     public scene_load    : string
+    public stats         : bool      # --stats: per-second frame stats on the terminal
     intern scene_el      : element
     intern scene_el_nm   : string
     # index into speed_list[]; 0 is subtle, the default
@@ -2087,9 +2126,8 @@ element orbiter : trinity # implements compiler
     intern frost_dbg8    : i32 [ -9 ]
 
     func init []
-        # draw carries the per-frame work (session pump, run dispatch, pane
-        # close-outs), and an element draws only when dirty or animated
-        animated = true
+        # tick carries the per-frame work (session pump, run dispatch, pane
+        # close-outs); a paint happens only when something marks it dirty
         breakpoints    = map string[string] []
 
         target_names   = vec string []
@@ -2453,7 +2491,7 @@ element orbiter : trinity # implements compiler
         # buffers key on the absolute path; the map's source must match
         fw : FmtWatch [ proj: lib, file: f.absolute[], map: '', start_us: epoch_micros[], kicked: true, announced: true ]
         fmt_watch[ '{f}' ] = fw
-        so : path '{startup_path}/install/build/lib{lib}.so'
+        so : path '{startup_path}/install/build/{path.path_library[ lib.chars ]}'
         if [ !so.exists[] ] return
         # local: only dlsym on this handle needs its symbols
         h : dlopen[ so.chars, RTLD_NOW ]
@@ -2572,7 +2610,9 @@ element orbiter : trinity # implements compiler
                     # a map older than its source describes text that is
                     # already gone: its line/col ranges land on the wrong
                     # spans. leave the last good colouring until the
-                    # service catches up
+                    # service catches up -- but a pane with no colouring yet
+                    # takes the stale map now rather than nothing for the
+                    # minutes the service needs
                     fresh : bool [ true ]
                     if [ fw.file ]
                         sm2 : i64 [ fw.file.modified_time[] ]
@@ -2580,7 +2620,7 @@ element orbiter : trinity # implements compiler
                     applied : bool [ false ]
                     for [ i: i32 0, i < editor_slots.count, i += 1 ]
                         ed : Editor pane_at[ i ]
-                        if [ fresh && ed && ed.fmt_mtime < m ]
+                        if [ ed && (fresh || ed.fmt_mtime == 0) && ed.fmt_mtime < m ]
                             ed.load_format[ fw.map ]
                             ed.fmt_mtime = m
                             ed.pristine = false
@@ -2924,18 +2964,7 @@ element orbiter : trinity # implements compiler
 
     # attach before the child's PR_SET_PTRACER fails under yama
     func proc_stopped [ pid: i32 ] -> bool
-        ps : string '/proc/{pid}/stat'
-        fp : fopen[ ps.chars, 'rb' ]
-        if [ !fp ] return false
-        b : local i8 [ 512 ]
-        n : i32 [ i32[ fread[ @b[0], 1, 511, fp ] ] ]
-        fclose[ fp ]
-        if [ n < 4 ] return false
-        i : i32 [ n - 1 ]
-        while [ i > 0 && b[i] != 41 ]
-            i -= 1
-        if [ i + 2 >= n ] return false
-        return b[i + 2] == 84
+        return host_pid_stopped[ pid ] != 0
 
     # lldb attach loads the whole binary's symbols — seconds of work that used
     # to run inside update_all and hold the first paint. it goes to a worker;
@@ -3429,7 +3458,6 @@ element orbiter : trinity # implements compiler
         ed.run_view  = av
         # an instance in pip stays in pip when it is selected
         ed.app_view  = !av.pip
-        ed.animated  = true
         ed.pristine  = false
         ed.no_scroll = true
         active_pane  = pi
@@ -3498,7 +3526,7 @@ element orbiter : trinity # implements compiler
         hasfile  : bool [ p && p.exists[] ]
         els : Elements []
         browse_open : bool [ menu_open && nav_showing ]
-        engaged : bool [ browse_open || fb_on || tfoc ]
+        engaged : bool [ browse_open || fb_on || tfoc || nav_showing || (pick_field && pick_field.count > 0) ]
         # no close chip — Escape closes the finder
         edp9 : Editor pane_at[ pane_ix ]
         # the chip closes a view the user PICKED. the file's own natural
@@ -3561,7 +3589,9 @@ element orbiter : trinity # implements compiler
             if [ tn.compare[ 'dock' ] == 0 && shift_down ] ic9 = 'undock'
             tico.push[ ic9 ]
         wn9 : f32 [ f32[ tnav.count ] * 1.15 ]
-        if [ tnav.count > 0 ]
+        # the finder is modal: no tab strip under its rows, or a press on
+        # the first row lands on a console/dock segment
+        if [ tnav.count > 0 && !(engaged && !fb_on) ]
             els['tabnav'] = TButtons [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask,
                 rest_glow: rgba [ '#ccf2' ], rest_px: 16.0,
                 area: Region [ 'r0+ t0 w{wn9} h0.9' ] ]
@@ -4287,7 +4317,7 @@ element orbiter : trinity # implements compiler
         mod : string (scene_mods) ? scene_mods[ nm ] : null
         if [ !mod || mod.count == 0 ] return
         if [ !startup_path ] startup_path = path.path_startup[]
-        lib : path '{startup_path}/install/build/lib{mod}.so'
+        lib : path '{startup_path}/install/build/{path.path_library[ mod.chars ]}'
         if [ !lib.exists[] ] return
         # module init registers its types
         h : dlopen[ lib.chars, 258 ]
@@ -4626,7 +4656,10 @@ element orbiter : trinity # implements compiler
         sp     : string search_pane[]
         title_focus : bool [ (win && win.focus && win.focus.id == 'title') ? true : false ]
         if [ title_focus || (find_text && find_text.count > 0) ] finder_off = false
-        active : bool [ !finder_off && (title_focus || (find_text && find_text.count > 0) || list_focused[]) ]
+        # a pick in progress keeps the finder modal whatever holds focus: a
+        # press on its rows must never fall through to the tabs beneath
+        picking9 : bool [ pick_field && pick_field.count > 0 ]
+        active : bool [ !finder_off && (picking9 || title_focus || (find_text && find_text.count > 0) || list_focused[]) ]
         if [ active ]
             combined : list string []
             find_hits = vec FindHit []
@@ -4762,6 +4795,7 @@ element orbiter : trinity # implements compiler
     # the nav list was up only to pick a path for a launch field: hand it
     # over and close, never view the file
     func pick_deliver [ p0: path ] -> bool
+        if [ stats ] log 'PICK deliver {p0}'
         if [ !pick_field || pick_field.count == 0 ] return false
         # a folder field given a file takes the file's folder
         p : path (pick_dir && p0 && !p0.is_dir[]) ? p0.parent_dir[] : p0
@@ -4778,7 +4812,9 @@ element orbiter : trinity # implements compiler
         pick_dir   = false
         pick_exts  = null
         pick_cache = null
-        exit_finder[]
+        # the full close: nav/find flags drop NOW, or the frame between the
+        # pick and the next search paints the browse surface with its tabs
+        exit_find_mode[]
         if [ ux ] ux.restyle = true
         return true
 
@@ -5063,6 +5099,7 @@ element orbiter : trinity # implements compiler
         return false
 
     func on_press [ ev: Event ]
+        if [ stats ] log 'PRESS target={(ev.target && ev.target.id) ? ev.target.id : "(noid)"} pick={(pick_field) ? pick_field : ""} nav={nav_showing} find={find_showing} finder_off={finder_off}'
         if [ !ev.target ] return
         log 'on_press: target={ev.target.id}'
         # working in a pane makes it active: keys act where you are
@@ -5758,6 +5795,12 @@ element orbiter : trinity # implements compiler
                 ev.target.pristine = false
                 if [ ev.target.ux ] ev.target.ux.restyle = true
     
+    # a hosted app is serviced from draw: its release gate, the debugger
+    # attach and the slot state all live there. an element only draws when
+    # it is dirty, so a live instance keeps this one asking for frames
+    public func tick [ w: Window ]
+        if [ instances && instances.count > 0 ] pristine = false
+
     public func draw [ w: Window ]
         if [ w.draw_stage != CanvasType.screen ] return
         if [ orbit_cap_on ] dictation_gpu[ Canvas w.screen ]
@@ -6005,6 +6048,12 @@ element orbiter : trinity # implements compiler
                 if [ bgc8 && bgc8.a > 0.0 ] ux.solid_color = bgc8
                 ux.apply_solid[]
         if [ ux ] ux.frost_mode = frost_ix
+        if [ ux ]
+            sl9 : string scene_loaded[]
+            ux.expect_backdrop = sl9 && sl9.count > 0 && sl9.compare[ 'none' ] != 0
+        if [ ux ] ux.stats = stats
+        if [ ux ] ux.prof_log = stats
+        if [ ux && ux.vk ] ux.vk.stats_log = stats
         # push the flat color the instant the stage is set (retry until the
         # shader exists), so load shows the solid color, never the gradient
         if [ ux && frost_pushed != frost_ix && ux.apply_solid[] ] frost_pushed = frost_ix

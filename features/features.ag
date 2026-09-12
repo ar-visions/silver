@@ -10,7 +10,7 @@ import <stdio.h>                    # C header, read by libclang
 import <string.h>
 import <stdlib.h>
 import <ctype.h, limits.h>     # several headers in one line
-import madler:zlib/51b7f2a <zlib.h>  # a git import: owner:repo/commit, built with cmake; flags below
+import madler:zlib/51b7f2abdade71cd9bb0e7a373ef2610ec6f9daf <zlib.h>  # a git import: owner:repo/commit, built with cmake; flags below
     -DCMAKE_POLICY_VERSION_MINIMUM=3.5
     -lz
 import troglobit:libuev/v2.4.1 <uev/uev.h>   # autotools: configure and make, in the checkout

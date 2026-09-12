@@ -620,24 +620,24 @@ element EarthPrev
 
     func build_models[]
         built     = true
-        gltf_path : path '../scenes/models/earth.gltf'
+        gltf_path : path '../{share_name}/models/earth.gltf'
         gltf      : GltfModel.open[ gltf_path ]
         earth     = EarthShader [ vk: vk ]
         ocean     = OceanShader [ vk: vk ]
         cloud     = CloudShader [ vk: vk ]
         #purple = Purple [ vk: vk ]
 
-        u : path '../scenes/textures/earth-color-8192x4096.png'
+        u : path '../{share_name}/textures/earth-color-8192x4096.png'
         earth_color : Image [ uri: u, surface: EarthSurface.color ]
         earth_samplers : map Image [string] [
             'color':      earth_color,
-            'normal':     Image [ uri: path '../scenes/textures/earth-normal-8192x4096.png',     surface: EarthSurface.normal ],
-            'elevation':  Image [ uri: path '../scenes/textures/earth-elevation-8192x4096.png',  surface: EarthSurface.elevation ],
-            'water':      Image [ uri: path '../scenes/textures/earth-water-8192x4096.png',      surface: EarthSurface.water ],
-            'water_blur': Image [ uri: path '../scenes/textures/earth-water-blur-8192x4096.png', surface: EarthSurface.water_blur ],
-            'cloud':      Image [ uri: path '../scenes/textures/earth-cloud-8192x4096.png',      surface: EarthSurface.cloud ],
-            'bathymetry': Image [ uri: path '../scenes/textures/earth-bathymetry-8192x4096.png', surface: EarthSurface.bathymetry ],
-            'lights':     Image [ uri: path '../scenes/textures/earth-lights-8192x4096.png',     surface: EarthSurface.lights ]
+            'normal':     Image [ uri: path '../{share_name}/textures/earth-normal-8192x4096.png',     surface: EarthSurface.normal ],
+            'elevation':  Image [ uri: path '../{share_name}/textures/earth-elevation-8192x4096.png',  surface: EarthSurface.elevation ],
+            'water':      Image [ uri: path '../{share_name}/textures/earth-water-8192x4096.png',      surface: EarthSurface.water ],
+            'water_blur': Image [ uri: path '../{share_name}/textures/earth-water-blur-8192x4096.png', surface: EarthSurface.water_blur ],
+            'cloud':      Image [ uri: path '../{share_name}/textures/earth-cloud-8192x4096.png',      surface: EarthSurface.cloud ],
+            'bathymetry': Image [ uri: path '../{share_name}/textures/earth-bathymetry-8192x4096.png', surface: EarthSurface.bathymetry ],
+            'lights':     Image [ uri: path '../{share_name}/textures/earth-lights-8192x4096.png',     surface: EarthSurface.lights ]
         ]
         earth_model : Model [ vk: vk, w: ux, id: gltf, s: earth, samplers: earth_samplers, straight_alpha: true ]
         ocean_model : Model [ vk: vk, w: ux, id: gltf, s: ocean, samplers: earth_samplers, straight_alpha: true ]
@@ -971,7 +971,7 @@ element Moon
 
     func build_models[]
         built     = true
-        gltf_path : path '../scenes/models/earth.gltf'
+        gltf_path : path '../{share_name}/models/earth.gltf'
         gltf      : GltfModel.open[ gltf_path ]
         moon      = MoonShader  [ vk: vk ]
         earth     = EarthShader [ vk: vk ]
@@ -980,18 +980,18 @@ element Moon
 
         # the ground: one map, lit flat with the regolith noise
         moon_samplers : map Image [string] [
-            'color':  Image [ uri: path '../scenes/textures/moon-color-8192x4096.jpg',    surface: MoonSurface.color ],
-            'height': Image [ uri: path '../scenes/textures/moon-displace-2048x1024.png', surface: MoonSurface.height ]
+            'color':  Image [ uri: path '../{share_name}/textures/moon-color-8192x4096.jpg',    surface: MoonSurface.color ],
+            'height': Image [ uri: path '../{share_name}/textures/moon-displace-2048x1024.png', surface: MoonSurface.height ]
         ]
         earth_samplers : map Image [string] [
-            'color':      Image [ uri: path '../scenes/textures/earth-color-8192x4096.png',      surface: EarthSurface.color ],
-            'normal':     Image [ uri: path '../scenes/textures/earth-normal-8192x4096.png',     surface: EarthSurface.normal ],
-            'elevation':  Image [ uri: path '../scenes/textures/earth-elevation-8192x4096.png',  surface: EarthSurface.elevation ],
-            'water':      Image [ uri: path '../scenes/textures/earth-water-8192x4096.png',      surface: EarthSurface.water ],
-            'water_blur': Image [ uri: path '../scenes/textures/earth-water-blur-8192x4096.png', surface: EarthSurface.water_blur ],
-            'cloud':      Image [ uri: path '../scenes/textures/earth-cloud-8192x4096.png',      surface: EarthSurface.cloud ],
-            'bathymetry': Image [ uri: path '../scenes/textures/earth-bathymetry-8192x4096.png', surface: EarthSurface.bathymetry ],
-            'lights':     Image [ uri: path '../scenes/textures/earth-lights-8192x4096.png',     surface: EarthSurface.lights ]
+            'color':      Image [ uri: path '../{share_name}/textures/earth-color-8192x4096.png',      surface: EarthSurface.color ],
+            'normal':     Image [ uri: path '../{share_name}/textures/earth-normal-8192x4096.png',     surface: EarthSurface.normal ],
+            'elevation':  Image [ uri: path '../{share_name}/textures/earth-elevation-8192x4096.png',  surface: EarthSurface.elevation ],
+            'water':      Image [ uri: path '../{share_name}/textures/earth-water-8192x4096.png',      surface: EarthSurface.water ],
+            'water_blur': Image [ uri: path '../{share_name}/textures/earth-water-blur-8192x4096.png', surface: EarthSurface.water_blur ],
+            'cloud':      Image [ uri: path '../{share_name}/textures/earth-cloud-8192x4096.png',      surface: EarthSurface.cloud ],
+            'bathymetry': Image [ uri: path '../{share_name}/textures/earth-bathymetry-8192x4096.png', surface: EarthSurface.bathymetry ],
+            'lights':     Image [ uri: path '../{share_name}/textures/earth-lights-8192x4096.png',     surface: EarthSurface.lights ]
         ]
         moon_model  : Model [ vk: vk, w: ux, id: gltf, s: moon,  samplers: moon_samplers,  straight_alpha: true ]
         earth_model : Model [ vk: vk, w: ux, id: gltf, s: earth, samplers: earth_samplers, straight_alpha: true ]
@@ -1376,10 +1376,10 @@ element MilkyWay
 
     # worker thread: file reads and pixel decodes only, never a vk call
     func load_files[]
-        gltf_path : path '../scenes/models/earth.gltf'
+        gltf_path : path '../{share_name}/models/earth.gltf'
         geom      = GltfModel.open[ gltf_path ]
         # the same Gaia all-sky map the other scenes wrap their spheres with
-        img_color = Image [ uri: path '../scenes/textures/gaia.png', surface: GaiaSurface.color ]
+        img_color = Image [ uri: path '../{share_name}/textures/gaia.png', surface: GaiaSurface.color ]
 
     # main thread: every vk object this scene owns
     func build_models[]
@@ -1415,8 +1415,7 @@ element MilkyWay
             models:      models ]
         target.hold[]
         target.owner  = a
-        # swapping the map entry is what the window reads as a new backdrop;
-        # it restarts reveal at 0 and fades the loaded scene in over the flat
+        # swapping the map entry is what the window reads as a new backdrop
         ux.element_targets[ id ] = target
 
     # unregister only; we keep our ref so the GPU graph outlives the frame
@@ -1756,23 +1755,23 @@ element Titan
 
     func build_models[]
         built     = true
-        gltf_path : path '../scenes/models/earth.gltf'
+        gltf_path : path '../{share_name}/models/earth.gltf'
         gltf      : GltfModel.open[ gltf_path ]
         titan     = TitanShader [ vk: vk ]
         t_samplers : map Image [string] [
-            'color': Image [ uri: path '../scenes/textures/titan-color.png', surface: TitanSurface.color ]
+            'color': Image [ uri: path '../{share_name}/textures/titan-color.png', surface: TitanSurface.color ]
         ]
         titan_model : Model [ vk: vk, w: ux, id: gltf, s: titan, samplers: t_samplers, straight_alpha: true ]
         saturn    = SaturnShader [ vk: vk ]
         s_samplers : map Image [string] [
-            'color': Image [ uri: path '../scenes/textures/saturn-color.png', surface: TitanSurface.color,
+            'color': Image [ uri: path '../{share_name}/textures/saturn-color.png', surface: TitanSurface.color,
                 wrap_u: true ],
-            'height': Image [ uri: path '../scenes/textures/saturn-ring-alpha.png', surface: TitanSurface.height ]
+            'height': Image [ uri: path '../{share_name}/textures/saturn-ring-alpha.png', surface: TitanSurface.height ]
         ]
         saturn_model : Model [ vk: vk, w: ux, id: gltf, s: saturn, samplers: s_samplers, straight_alpha: true ]
         rings     = RingShader [ vk: vk ]
         r_samplers : map Image [string] [
-            'color': Image [ uri: path '../scenes/textures/saturn-ring-alpha.png', surface: TitanSurface.color ]
+            'color': Image [ uri: path '../{share_name}/textures/saturn-ring-alpha.png', surface: TitanSurface.color ]
         ]
         ring_model : Model [ vk: vk, w: ux, id: gltf, s: rings, samplers: r_samplers,
             straight_alpha: true ]
@@ -2419,43 +2418,43 @@ element Enceladus
 
     func build_models[]
         built     = true
-        gltf_path : path '../scenes/models/earth.gltf'
+        gltf_path : path '../{share_name}/models/earth.gltf'
         gltf      : GltfModel.open[ gltf_path ]
         enc       = EnceladusShader [ vk: vk ]
         e_samplers : map Image [string] [
-            'height': Image [ uri: path '../scenes/textures/enceladus-detail.png', surface: TitanSurface.height,
+            'height': Image [ uri: path '../{share_name}/textures/enceladus-detail.png', surface: TitanSurface.height,
                 wrap_u: true, wrap_v: true ],
             # a second, unrelated map so the surface is not one grain
-            'height2': Image [ uri: path '../scenes/textures/moon-displace-2048x1024.png', surface: TitanSurface.height2,
+            'height2': Image [ uri: path '../{share_name}/textures/moon-displace-2048x1024.png', surface: TitanSurface.height2,
                 wrap_u: true, wrap_v: true ],
-            'nrm_a': Image [ uri: path '../scenes/textures/enceladus-na.png', surface: TitanSurface.nrm_a,
+            'nrm_a': Image [ uri: path '../{share_name}/textures/enceladus-na.png', surface: TitanSurface.nrm_a,
                 wrap_u: true, wrap_v: true ],
-            'nrm_b': Image [ uri: path '../scenes/textures/enceladus-nb.png', surface: TitanSurface.nrm_b,
+            'nrm_b': Image [ uri: path '../{share_name}/textures/enceladus-nb.png', surface: TitanSurface.nrm_b,
                 wrap_u: true, wrap_v: true ]
         ]
         enc_model : Model [ vk: vk, w: ux, id: gltf, s: enc, samplers: e_samplers, straight_alpha: true ]
         plume     = PlumeShader [ vk: vk ]
         p_samplers : map Image [string] [
-            'color': Image [ uri: path '../scenes/textures/enceladus-color.png', surface: TitanSurface.color ]
+            'color': Image [ uri: path '../{share_name}/textures/enceladus-color.png', surface: TitanSurface.color ]
         ]
         plume_model : Model [ vk: vk, w: ux, id: gltf, s: plume, samplers: p_samplers,
             straight_alpha: true, cull_none: true, depth_no_test: true ]
         saturn    = SaturnShader [ vk: vk ]
         s_samplers : map Image [string] [
-            'color': Image [ uri: path '../scenes/textures/saturn-color.png', surface: TitanSurface.color,
+            'color': Image [ uri: path '../{share_name}/textures/saturn-color.png', surface: TitanSurface.color,
                 wrap_u: true ],
-            'height': Image [ uri: path '../scenes/textures/saturn-ring-alpha.png', surface: TitanSurface.height ]
+            'height': Image [ uri: path '../{share_name}/textures/saturn-ring-alpha.png', surface: TitanSurface.height ]
         ]
         saturn_model : Model [ vk: vk, w: ux, id: gltf, s: saturn, samplers: s_samplers, straight_alpha: true ]
         rings     = RingShader [ vk: vk ]
         r_samplers : map Image [string] [
-            'color': Image [ uri: path '../scenes/textures/saturn-ring-alpha.png', surface: TitanSurface.color ]
+            'color': Image [ uri: path '../{share_name}/textures/saturn-ring-alpha.png', surface: TitanSurface.color ]
         ]
         ring_model : Model [ vk: vk, w: ux, id: gltf, s: rings, samplers: r_samplers,
             straight_alpha: true ]
         sky       = GaiaShader [ vk: vk ]
         sky_samplers : map Image [string] [
-            'color': Image [ uri: path '../scenes/textures/gaia.png', surface: GaiaSurface.color ]
+            'color': Image [ uri: path '../{share_name}/textures/gaia.png', surface: GaiaSurface.color ]
         ]
         sky_model : Model [ vk: vk, w: ux, id: gltf, s: sky, samplers: sky_samplers,
             straight_alpha: true, cull_none: true ]
@@ -3589,7 +3588,7 @@ func europa_build_maps [ H: @f32, AO: @f32, CV: @f32, EM: @f32, MM: @f32, w: i32
     imgs : vec Image []
     total : i32 [ 0 ]
     for [ i: i32 0, i < ns, i += 1 ]
-        p9 : path '../scenes/textures/{names[i]}.png'
+        p9 : path '../{share_name}/textures/{names[i]}.png'
         im : Image [ uri: p9 ]
         imgs.push[ im ]
         sw[i] = im.width
@@ -3739,10 +3738,10 @@ func europa_bake []
             nd[ b3 + 1 ] = u8[ (0.0 - dy) * 127.0 + 128.0 ]
             nd[ b3 + 2 ] = u8[ MM[ y * w9 + x ] * 255.0 ]
             nd[ b3 + 3 ] = u8[ EM[ y * w9 + x ] * 255.0 ]
-    bd : path '../scenes/baked'
+    bd : path '../{share_name}/baked'
     bd.make_dir[]
-    pk.png[ path '../scenes/baked/europa-pk.png' ]
-    nk.png[ path '../scenes/baked/europa-nk.png' ]
+    pk.png[ path '../{share_name}/baked/europa-pk.png' ]
+    nk.png[ path '../{share_name}/baked/europa-nk.png' ]
     log 'europa: baked maps written'
 
 export func europa_maps []
@@ -3750,9 +3749,9 @@ export func europa_maps []
     hv : u64 [ @europa_build_maps ]
     hb : u64 [ @europa_bake ]
     stamp : string '{hv}-{hb}'
-    sp  : path '../scenes/baked/europa.hash'
-    pkp : path '../scenes/baked/europa-pk.png'
-    nkp : path '../scenes/baked/europa-nk.png'
+    sp  : path '../{share_name}/baked/europa.hash'
+    pkp : path '../{share_name}/baked/europa-pk.png'
+    nkp : path '../{share_name}/baked/europa-nk.png'
     if [ sp.exists[] && pkp.exists[] && nkp.exists[] ]
         old : string [ sp.load[ typeid[string], null ] ]
         if [ old && old == stamp ]
@@ -3865,10 +3864,10 @@ element Europa
 
     func build_models[]
         built = true
-        gltf_path : path '../scenes/models/earth.gltf'
+        gltf_path : path '../{share_name}/models/earth.gltf'
         gltf      : GltfModel.open[ gltf_path ]
-        pkp : path '../scenes/baked/europa-pk.png'
-        nkp : path '../scenes/baked/europa-nk.png'
+        pkp : path '../{share_name}/baked/europa-pk.png'
+        nkp : path '../{share_name}/baked/europa-nk.png'
         if [ !pkp.exists[] || !nkp.exists[] ]
             log 'europa: no baked maps — baking live (SILVER_EXPORT=1 bakes at build)'
             europa_bake[]
@@ -3951,7 +3950,7 @@ element Europa
             straight_alpha: true, cull_none: true, depth_no_test: true ]
         # storm map: sobel contrast of the jupiter texture, baked at
         # startup — discharges live where the bands shear hardest
-        ji : Image [ uri: path '../scenes/textures/jupiter-color.png' ]
+        ji : Image [ uri: path '../{share_name}/textures/jupiter-color.png' ]
         jw : i32 [ ji.width ]
         jh : i32 [ ji.height ]
         jl : new f32 [ jw * jh ]
@@ -3993,14 +3992,14 @@ element Europa
             sd[ b4 + 3 ] = 255
         jup = JupiterShader [ vk: vk ]
         j_samplers : map Image [string] [
-            'color': Image [ uri: path '../scenes/textures/jupiter-color.png', surface: TitanSurface.color,
+            'color': Image [ uri: path '../{share_name}/textures/jupiter-color.png', surface: TitanSurface.color,
                 wrap_u: true ],
             'height': sbi
         ]
         jup_model : Model [ vk: vk, w: ux, id: gltf, s: jup, samplers: j_samplers, straight_alpha: true ]
         sky       = GaiaShader [ vk: vk ]
         sky_samplers : map Image [string] [
-            'color': Image [ uri: path '../scenes/textures/gaia.png', surface: GaiaSurface.color ]
+            'color': Image [ uri: path '../{share_name}/textures/gaia.png', surface: GaiaSurface.color ]
         ]
         sky_model : Model [ vk: vk, w: ux, id: gltf, s: sky, samplers: sky_samplers,
             straight_alpha: true, cull_none: true ]
@@ -4331,7 +4330,7 @@ func mola_at [ M: @i16, ux: i32, uy: i32 ] -> f32
 # exactly as it did per-fragment, but now it runs ONCE at 8192x4096
 # instead of three times per pixel per frame
 func mars_build_height [ H: @f32, w: i32, h: i32 ]
-    bim : Image [ uri: path '../scenes/textures/mars-height-8192x4096.png' ]
+    bim : Image [ uri: path '../{share_name}/textures/mars-height-8192x4096.png' ]
     bw : i32 [ bim.width ]
     bh : i32 [ bim.height ]
     B : new f32 [ bw * bh ]
@@ -4345,7 +4344,7 @@ func mars_build_height [ H: @f32, w: i32, h: i32 ]
     imgs : vec Image []
     total : i32 [ 0 ]
     for [ i: i32 0, i < ns, i += 1 ]
-        p9 : path '../scenes/textures/{names[i]}.png'
+        p9 : path '../{share_name}/textures/{names[i]}.png'
         im : Image [ uri: p9 ]
         imgs.push[ im ]
         sw[i] = im.width
@@ -4456,10 +4455,10 @@ func mars_bake []
             nd[ b3 + 1 ] = u8[ sv * 127.0 + 128.0 ]
             nd[ b3 + 2 ] = 0
             nd[ b3 + 3 ] = 255
-    bd : path '../scenes/baked'
+    bd : path '../{share_name}/baked'
     bd.make_dir[]
-    pk.png[ path '../scenes/baked/mars-pk.png' ]
-    nk.png[ path '../scenes/baked/mars-nk.png' ]
+    pk.png[ path '../{share_name}/baked/mars-pk.png' ]
+    nk.png[ path '../{share_name}/baked/mars-nk.png' ]
     log 'mars: baked maps written'
 
 # the real thing: MOLA straight through, no invented detail. the
@@ -4518,9 +4517,9 @@ func mars_bake_mola [] -> bool
             pd[ b2 + 1 ] = 0
             pd[ b2 + 2 ] = 0
             pd[ b2 + 3 ] = u8[ hq % 256 ]
-    bd : path '../scenes/baked'
+    bd : path '../{share_name}/baked'
     bd.make_dir[]
-    pk.png[ path '../scenes/baked/mars-pk.png' ]
+    pk.png[ path '../{share_name}/baked/mars-pk.png' ]
     log 'mars: displacement map written ({dw}x{dh})'
 
     # slope. one degree of latitude is a fixed distance; one of
@@ -4556,7 +4555,7 @@ func mars_bake_mola [] -> bool
             nd[ b3 + 1 ] = u8[ pv * 127.0 + 128.0 ]
             nd[ b3 + 2 ] = 0
             nd[ b3 + 3 ] = 255
-    nk.png[ path '../scenes/baked/mars-nk.png' ]
+    nk.png[ path '../{share_name}/baked/mars-nk.png' ]
     log 'mars: global slope written ({dw}x{dh})'
 
     # the valley, at MOLA's own 463m. only this box gets it: the whole
@@ -4588,8 +4587,8 @@ func mars_bake_mola [] -> bool
             o : i32 [ y * vw + x ]
             vud[ o ] = u8[ pu * 127.0 + 128.0 ]
             vvd[ o ] = u8[ pv * 127.0 + 128.0 ]
-    vsu.png[ path '../scenes/baked/mars-vsu.png' ]
-    vsv.png[ path '../scenes/baked/mars-vsv.png' ]
+    vsu.png[ path '../{share_name}/baked/mars-vsu.png' ]
+    vsv.png[ path '../{share_name}/baked/mars-vsv.png' ]
     log 'mars: valles slope written ({vw}x{vh})'
     log 'mars: MOLA bake complete'
     return true
@@ -4706,7 +4705,7 @@ func mars_bake_detail [] -> bool
     imgs : vec Image []
     total : i32 [ 0 ]
     for [ i: i32 0, i < ns, i += 1 ]
-        p9 : path '../scenes/textures/{names[i]}'
+        p9 : path '../{share_name}/textures/{names[i]}'
         im : Image [ uri: p9 ]
         if [ im.width == 0 ]
             log 'mars: detail source {names[i]} missing'
@@ -4853,9 +4852,9 @@ func mars_bake_detail [] -> bool
             dd[ b4 + 1 ] = u8[ gy * 127.0 + 128.0 ]
             dd[ b4 + 2 ] = u8[ hn * 127.0 + 128.0 ]
             dd[ b4 + 3 ] = u8[ rg * 255.0 ]
-    bd : path '../scenes/baked'
+    bd : path '../{share_name}/baked'
     bd.make_dir[]
-    dn.png[ path '../scenes/baked/mars-dn.png' ]
+    dn.png[ path '../{share_name}/baked/mars-dn.png' ]
     log 'mars: rock detail written ({w9}x{h9})'
     return true
 
@@ -4871,7 +4870,7 @@ func mars_bake_detail [] -> bool
 # normal amplitude by these: busy ground gets high frequency, dead
 # flat plains stay flat
 func mars_bake_edge [] -> bool
-    cim : Image [ uri: path '../scenes/textures/mars-color-8192x4096.png' ]
+    cim : Image [ uri: path '../{share_name}/textures/mars-color-8192x4096.png' ]
     if [ cim.width == 0 ]
         log 'mars: colour map missing — cannot build the edge map'
         return false
@@ -4956,9 +4955,9 @@ func mars_bake_edge [] -> bool
             ed[ b4 + 1 ] = u8[ e2 * 255.0 ]
             ed[ b4 + 2 ] = u8[ e3 * 255.0 ]
             ed[ b4 + 3 ] = u8[ e4 * 255.0 ]
-    bd : path '../scenes/baked'
+    bd : path '../{share_name}/baked'
     bd.make_dir[]
-    ek.png[ path '../scenes/baked/mars-ek.png' ]
+    ek.png[ path '../{share_name}/baked/mars-ek.png' ]
     log 'mars: edge map written ({w9}x{h9})'
     return true
 
@@ -4985,8 +4984,8 @@ func mars_edge_map []
     h2 : u64 [ @mars_box ]
     h3 : u64 [ @eu_lum ]
     stamp : string '{h1}-{h2}-{h3}'
-    sp : path '../scenes/baked/mars-ek.hash'
-    ekp : path '../scenes/baked/mars-ek.png'
+    sp : path '../{share_name}/baked/mars-ek.hash'
+    ekp : path '../{share_name}/baked/mars-ek.png'
     if [ sp.exists[] && ekp.exists[] ]
         old : string [ sp.load[ typeid[string], null ] ]
         if [ old && old == stamp ]
@@ -5003,7 +5002,7 @@ func mars_edge_map []
 # R = water, G = sand bank, and only inside the canyon -- the plateau
 # above the rim drains off the box and carries nothing
 func mars_bake_river [] -> bool
-    pk : Image [ uri: path '../scenes/baked/mars-pk.png' ]
+    pk : Image [ uri: path '../{share_name}/baked/mars-pk.png' ]
     if [ pk.width == 0 ]
         log 'mars: no height map — cannot cut rivers'
         return false
@@ -5127,9 +5126,9 @@ func mars_bake_river [] -> bool
             rd[ b4 ]     = u8[ riv[ i ] * 255.0 ]
             rd[ b4 + 1 ] = u8[ bank[ i ] * 255.0 ]
             if [ riv[ i ] > 0.05 ] nriv += 1
-    bd : path '../scenes/baked'
+    bd : path '../{share_name}/baked'
     bd.make_dir[]
-    rv.png[ path '../scenes/baked/mars-rv.png' ]
+    rv.png[ path '../{share_name}/baked/mars-rv.png' ]
     log 'mars: rivers written, {nriv} water texels'
     return true
 
@@ -5140,8 +5139,8 @@ func mars_river_map []
     h4 : u64 [ @mars_vv0 ]
     h5 : u64 [ @mars_vv1 ]
     stamp : string '{h1}-{h2}-{h3}-{h4}-{h5}'
-    sp : path '../scenes/baked/mars-rv.hash'
-    rvp : path '../scenes/baked/mars-rv.png'
+    sp : path '../{share_name}/baked/mars-rv.hash'
+    rvp : path '../{share_name}/baked/mars-rv.png'
     if [ sp.exists[] && rvp.exists[] ]
         old : string [ sp.load[ typeid[string], null ] ]
         if [ old && old == stamp ]
@@ -5223,9 +5222,9 @@ func mars_bake_cloud [] -> bool
                 dd[ o + 1 ] = u8[ w8  * 255.0 ]
                 dd[ o + 2 ] = u8[ w16 * 255.0 ]
                 dd[ o + 3 ] = u8[ w32 * 255.0 ]
-    bd : path '../scenes/baked'
+    bd : path '../{share_name}/baked'
     bd.make_dir[]
-    im.png[ path '../scenes/baked/mars-cld.png' ]
+    im.png[ path '../{share_name}/baked/mars-cld.png' ]
     log 'mars: cloud volume written'
     return true
 
@@ -5234,8 +5233,8 @@ func mars_cloud_map []
     h2 : u64 [ @cl_worley ]
     h3 : u64 [ @cl_hash ]
     stamp : string '{h1}-{h2}-{h3}'
-    sp : path '../scenes/baked/mars-cld.hash'
-    cp : path '../scenes/baked/mars-cld.png'
+    sp : path '../{share_name}/baked/mars-cld.hash'
+    cp : path '../{share_name}/baked/mars-cld.png'
     if [ sp.exists[] && cp.exists[] ]
         old : string [ sp.load[ typeid[string], null ] ]
         if [ old && old == stamp ]
@@ -5252,11 +5251,11 @@ func nep_lerp [ a: f32, b: f32, t: f32 ] -> f32
     return a + (b - a) * t
 
 func neptune_bake [] -> bool
-    si : Image [ uri: path '../scenes/textures/saturn-color.png' ]
+    si : Image [ uri: path '../{share_name}/textures/saturn-color.png' ]
     if [ si.width == 0 ]
         log 'neptune: saturn plate missing'
         return false
-    ji : Image [ uri: path '../scenes/textures/jupiter-color.png' ]
+    ji : Image [ uri: path '../{share_name}/textures/jupiter-color.png' ]
     if [ ji.width == 0 ]
         log 'neptune: jupiter plate missing'
         return false
@@ -5358,9 +5357,9 @@ func neptune_bake [] -> bool
             od[ ob + 1 ] = u8[ ng * 255.0 ]
             od[ ob + 2 ] = u8[ nb * 255.0 ]
             od[ ob + 3 ] = 255
-    bd : path '../scenes/baked'
+    bd : path '../{share_name}/baked'
     bd.make_dir[]
-    im.png[ path '../scenes/baked/neptune-color.png' ]
+    im.png[ path '../{share_name}/baked/neptune-color.png' ]
     log 'neptune: colour map written'
     return true
 
@@ -5409,7 +5408,7 @@ func nep_box [ S: @f32, T: @f32, w: i32, h: i32, rx: i32, ry: i32 ]
 # more numerous, never thicker. blurred at radius 16 first, the same
 # threshold gives a median of 86 texels and a p90 of 349
 func neptune_storm [] -> bool
-    ci : Image [ uri: path '../scenes/baked/neptune-color.png' ]
+    ci : Image [ uri: path '../{share_name}/baked/neptune-color.png' ]
     if [ ci.width == 0 ] return false
     w9 : i32 [ ci.width ]
     h9 : i32 [ ci.height ]
@@ -5455,7 +5454,7 @@ func neptune_storm [] -> bool
         od[ b4 + 1 ] = 0
         od[ b4 + 2 ] = 0
         od[ b4 + 3 ] = 255
-    im.png[ path '../scenes/baked/neptune-storm.png' ]
+    im.png[ path '../{share_name}/baked/neptune-storm.png' ]
     log 'neptune: storm map written'
     return true
 
@@ -5524,9 +5523,9 @@ func neptune_rings [] -> bool
             od[ b4 + 1 ] = u8[ cg * 255.0 ]
             od[ b4 + 2 ] = u8[ cb * 255.0 ]
             od[ b4 + 3 ] = u8[ a9 * 255.0 ]
-    bd : path '../scenes/baked'
+    bd : path '../{share_name}/baked'
     bd.make_dir[]
-    im.png[ path '../scenes/baked/neptune-ring.png' ]
+    im.png[ path '../{share_name}/baked/neptune-ring.png' ]
     log 'neptune: ring strip written'
     return true
 
@@ -5535,10 +5534,10 @@ func neptune_maps []
     h2 : u64 [ @neptune_storm ]
     h3 : u64 [ @neptune_rings ]
     stamp : string '{h1}-{h2}-{h3}'
-    sp : path '../scenes/baked/neptune.hash'
-    cp : path '../scenes/baked/neptune-color.png'
-    stp : path '../scenes/baked/neptune-storm.png'
-    rgp : path '../scenes/baked/neptune-ring.png'
+    sp : path '../{share_name}/baked/neptune.hash'
+    cp : path '../{share_name}/baked/neptune-color.png'
+    stp : path '../{share_name}/baked/neptune-storm.png'
+    rgp : path '../{share_name}/baked/neptune-ring.png'
     if [ sp.exists[] && cp.exists[] && stp.exists[] && rgp.exists[] ]
         old : string [ sp.load[ typeid[string], null ] ]
         if [ old && old == stamp ]
@@ -5559,7 +5558,7 @@ func ur_fold [ t: f32 ] -> f32
     return x * 2.0
 
 func uranus_bake [] -> bool
-    si : Image [ uri: path '../scenes/textures/saturn-color.png' ]
+    si : Image [ uri: path '../{share_name}/textures/saturn-color.png' ]
     if [ si.width == 0 ]
         log 'uranus: saturn plate missing'
         return false
@@ -5622,15 +5621,15 @@ func uranus_bake [] -> bool
             od[ ob + 1 ] = u8[ ng * 255.0 ]
             od[ ob + 2 ] = u8[ nb * 255.0 ]
             od[ ob + 3 ] = 255
-    bd : path '../scenes/baked'
+    bd : path '../{share_name}/baked'
     bd.make_dir[]
-    im.png[ path '../scenes/baked/uranus-color.png' ]
+    im.png[ path '../{share_name}/baked/uranus-color.png' ]
     log 'uranus: colour map written'
     return true
 
 # the same sobel neptune uses, on uranus' own plate
 func uranus_storm [] -> bool
-    ci : Image [ uri: path '../scenes/baked/uranus-color.png' ]
+    ci : Image [ uri: path '../{share_name}/baked/uranus-color.png' ]
     if [ ci.width == 0 ] return false
     w9 : i32 [ ci.width ]
     h9 : i32 [ ci.height ]
@@ -5664,7 +5663,7 @@ func uranus_storm [] -> bool
         od[ b4 + 1 ] = 0
         od[ b4 + 2 ] = 0
         od[ b4 + 3 ] = 255
-    im.png[ path '../scenes/baked/uranus-storm.png' ]
+    im.png[ path '../{share_name}/baked/uranus-storm.png' ]
     log 'uranus: storm map written'
     return true
 
@@ -5719,9 +5718,9 @@ func uranus_rings [] -> bool
             od[ b4 + 1 ] = u8[ cg * 255.0 ]
             od[ b4 + 2 ] = u8[ cb * 255.0 ]
             od[ b4 + 3 ] = u8[ a9 * 255.0 ]
-    bd : path '../scenes/baked'
+    bd : path '../{share_name}/baked'
     bd.make_dir[]
-    im.png[ path '../scenes/baked/uranus-ring.png' ]
+    im.png[ path '../{share_name}/baked/uranus-ring.png' ]
     log 'uranus: ring strip written'
     return true
 
@@ -5730,10 +5729,10 @@ func uranus_maps []
     h2 : u64 [ @uranus_storm ]
     h3 : u64 [ @uranus_rings ]
     stamp : string '{h1}-{h2}-{h3}'
-    sp : path '../scenes/baked/uranus.hash'
-    cp : path '../scenes/baked/uranus-color.png'
-    stp : path '../scenes/baked/uranus-storm.png'
-    rgp : path '../scenes/baked/uranus-ring.png'
+    sp : path '../{share_name}/baked/uranus.hash'
+    cp : path '../{share_name}/baked/uranus-color.png'
+    stp : path '../{share_name}/baked/uranus-storm.png'
+    rgp : path '../{share_name}/baked/uranus-ring.png'
     if [ sp.exists[] && cp.exists[] && stp.exists[] && rgp.exists[] ]
         old : string [ sp.load[ typeid[string], null ] ]
         if [ old && old == stamp ]
@@ -5765,9 +5764,9 @@ export func mars_maps []
     hb : u64 [ @mars_vv0 ]
     hc : u64 [ @mars_vv1 ]
     stamp : string '{h1}-{h2}-{h3}-{h4}-{h5}-{h6}-{h7}-{h8}-{h9}-{ha}-{hb}-{hc}'
-    sp : path '../scenes/baked/mars.hash'
-    pkp : path '../scenes/baked/mars-pk.png'
-    nkp : path '../scenes/baked/mars-nk.png'
+    sp : path '../{share_name}/baked/mars.hash'
+    pkp : path '../{share_name}/baked/mars-pk.png'
+    nkp : path '../{share_name}/baked/mars-nk.png'
     if [ sp.exists[] && pkp.exists[] && nkp.exists[] ]
         old : string [ sp.load[ typeid[string], null ] ]
         if [ old && old == stamp ]
@@ -5794,8 +5793,8 @@ func mars_detail_map []
     h4 : u64 [ @eu_sstep ]
     h5 : u64 [ @eu_lum ]
     stamp : string '{h1}-{h2}-{h3}-{h4}-{h5}'
-    sp : path '../scenes/baked/mars-dn.hash'
-    dnp : path '../scenes/baked/mars-dn.png'
+    sp : path '../{share_name}/baked/mars-dn.hash'
+    dnp : path '../{share_name}/baked/mars-dn.png'
     if [ sp.exists[] && dnp.exists[] ]
         old : string [ sp.load[ typeid[string], null ] ]
         if [ old && old == stamp ]
@@ -7113,11 +7112,11 @@ element Terra
         o_gltf.compute_worlds[]
         log 'TERRA build_models: sphere built'
         olymp = TerraShader [ vk: vk ]
-        pkp : path '../scenes/baked/mars-pk.png'
-        nkp : path '../scenes/baked/mars-nk.png'
-        dnp : path '../scenes/baked/mars-dn.png'
-        ekp : path '../scenes/baked/mars-ek.png'
-        rvp : path '../scenes/baked/mars-rv.png'
+        pkp : path '../{share_name}/baked/mars-pk.png'
+        nkp : path '../{share_name}/baked/mars-nk.png'
+        dnp : path '../{share_name}/baked/mars-dn.png'
+        ekp : path '../{share_name}/baked/mars-ek.png'
+        rvp : path '../{share_name}/baked/mars-rv.png'
         if [ !pkp.exists[] || !nkp.exists[] ]
             log 'mars: no baked maps — baking live (SILVER_EXPORT=1 bakes at build)'
             mars_bake_mola[]
@@ -7137,10 +7136,10 @@ element Terra
             'nrm':    Image [ uri: nkp, surface: TerraSurface.nrm,    linear: true, wrap_u: true ],
             'detail': Image [ uri: dnp, surface: TerraSurface.detail, linear: true, wrap_u: true, wrap_v: true ],
             'edge':   Image [ uri: ekp, surface: TerraSurface.edge,   linear: true, wrap_u: true ],
-            'color':  Image [ uri: path '../scenes/textures/mars-color-8192x4096.jpg', surface: TerraSurface.color, linear: true, wrap_u: true ],
-            'veg_a':  Image [ uri: path '../scenes/textures/mars-veg-sand.png',   surface: TerraSurface.veg_a, linear: true, wrap_u: true, wrap_v: true ],
-            'veg_b':  Image [ uri: path '../scenes/textures/mars-veg-grass.png',  surface: TerraSurface.veg_b, linear: true, wrap_u: true, wrap_v: true ],
-            'veg_c':  Image [ uri: path '../scenes/textures/mars-veg-forest.png', surface: TerraSurface.veg_c, linear: true, wrap_u: true, wrap_v: true ],
+            'color':  Image [ uri: path '../{share_name}/textures/mars-color-8192x4096.jpg', surface: TerraSurface.color, linear: true, wrap_u: true ],
+            'veg_a':  Image [ uri: path '../{share_name}/textures/mars-veg-sand.png',   surface: TerraSurface.veg_a, linear: true, wrap_u: true, wrap_v: true ],
+            'veg_b':  Image [ uri: path '../{share_name}/textures/mars-veg-grass.png',  surface: TerraSurface.veg_b, linear: true, wrap_u: true, wrap_v: true ],
+            'veg_c':  Image [ uri: path '../{share_name}/textures/mars-veg-forest.png', surface: TerraSurface.veg_c, linear: true, wrap_u: true, wrap_v: true ],
             'river':  Image [ uri: rvp, surface: TerraSurface.river, linear: true, wrap_u: true ]
         ]
         log 'TERRA build_models: maps loaded'
@@ -7159,7 +7158,7 @@ element Terra
         # the sky shell needs no maps at all -- it works entirely from
         # the ray's geometry. drawn LAST so it lays over both surfaces
         osky = TerraSkyShader [ vk: vk ]
-        cldp : path '../scenes/baked/mars-cld.png'
+        cldp : path '../{share_name}/baked/mars-cld.png'
         if [ !cldp.exists[] ]
             log 'mars: no cloud volume — baking live'
             mars_bake_cloud[]
@@ -7174,9 +7173,9 @@ element Terra
             straight_alpha: false, cull_none: true, depth_no_test: true ]
         # the galaxy behind everything, same plate the saturn scenes use
         gsky = GaiaShader [ vk: vk ]
-        g_gltf : GltfModel.open[ path '../scenes/models/earth.gltf' ]
+        g_gltf : GltfModel.open[ path '../{share_name}/models/earth.gltf' ]
         g_samplers : map Image [string] [
-            'color': Image [ uri: path '../scenes/textures/gaia.png', surface: GaiaSurface.color ]
+            'color': Image [ uri: path '../{share_name}/textures/gaia.png', surface: GaiaSurface.color ]
         ]
         g_model : Model [ vk: vk, w: ux, id: g_gltf, s: gsky, samplers: g_samplers,
             straight_alpha: true, cull_none: true ]
@@ -7818,10 +7817,10 @@ element Mars
         o_gltf.hold[]
         o_gltf.compute_worlds[]
         surf = MarsShader [ vk: vk ]
-        pkp : path '../scenes/baked/mars-pk.png'
-        nkp : path '../scenes/baked/mars-nk.png'
-        dnp : path '../scenes/baked/mars-dn.png'
-        ekp : path '../scenes/baked/mars-ek.png'
+        pkp : path '../{share_name}/baked/mars-pk.png'
+        nkp : path '../{share_name}/baked/mars-nk.png'
+        dnp : path '../{share_name}/baked/mars-dn.png'
+        ekp : path '../{share_name}/baked/mars-ek.png'
         if [ !pkp.exists[] || !nkp.exists[] ]
             log 'mars: no baked maps — baking live (SILVER_EXPORT=1 bakes at build)'
             mars_bake_mola[]
@@ -7838,7 +7837,7 @@ element Mars
             'nrm':    Image [ uri: nkp, surface: MarsSurface.nrm,    linear: true, wrap_u: true ],
             'detail': Image [ uri: dnp, surface: MarsSurface.detail, linear: true, wrap_u: true, wrap_v: true ],
             'edge':   Image [ uri: ekp, surface: MarsSurface.edge,   linear: true, wrap_u: true ],
-            'color':  Image [ uri: path '../scenes/textures/mars-color-8192x4096.jpg', surface: MarsSurface.color, linear: true, wrap_u: true ]
+            'color':  Image [ uri: path '../{share_name}/textures/mars-color-8192x4096.jpg', surface: MarsSurface.color, linear: true, wrap_u: true ]
         ]
         # the projection y-flip reverses triangle winding, so back-face
         # culling would cull the whole carpet
@@ -7851,9 +7850,9 @@ element Mars
             straight_alpha: false, cull_none: true, depth_no_test: true ]
         # the galaxy behind everything, same plate the saturn scenes use
         gsky = GaiaShader [ vk: vk ]
-        g_gltf : GltfModel.open[ path '../scenes/models/earth.gltf' ]
+        g_gltf : GltfModel.open[ path '../{share_name}/models/earth.gltf' ]
         g_samplers : map Image [string] [
-            'color': Image [ uri: path '../scenes/textures/gaia.png', surface: GaiaSurface.color ]
+            'color': Image [ uri: path '../{share_name}/textures/gaia.png', surface: GaiaSurface.color ]
         ]
         g_model : Model [ vk: vk, w: ux, id: g_gltf, s: gsky, samplers: g_samplers,
             straight_alpha: true, cull_none: true ]
@@ -8241,11 +8240,11 @@ element Uranus
 
     func build_models[]
         built     = true
-        gltf_path : path '../scenes/models/earth.gltf'
+        gltf_path : path '../{share_name}/models/earth.gltf'
         gltf      : GltfModel.open[ gltf_path ]
-        cp : path '../scenes/baked/uranus-color.png'
-        st : path '../scenes/baked/uranus-storm.png'
-        rg : path '../scenes/baked/uranus-ring.png'
+        cp : path '../{share_name}/baked/uranus-color.png'
+        st : path '../{share_name}/baked/uranus-storm.png'
+        rg : path '../{share_name}/baked/uranus-ring.png'
         if [ !cp.exists[] || !st.exists[] || !rg.exists[] ]
             log 'uranus: no baked maps — composing live'
             uranus_bake[]
@@ -8271,7 +8270,7 @@ element Uranus
             straight_alpha: true, cull_none: true, depth_no_test: true ]
         sky = GaiaShader [ vk: vk ]
         sky_samplers : map Image [string] [
-            'color': Image [ uri: path '../scenes/textures/gaia.png', surface: GaiaSurface.color ]
+            'color': Image [ uri: path '../{share_name}/textures/gaia.png', surface: GaiaSurface.color ]
         ]
         sky_model : Model [ vk: vk, w: ux, id: gltf, s: sky, samplers: sky_samplers,
             straight_alpha: true, cull_none: true ]
@@ -8493,11 +8492,11 @@ element Neptune
 
     func build_models[]
         built     = true
-        gltf_path : path '../scenes/models/earth.gltf'
+        gltf_path : path '../{share_name}/models/earth.gltf'
         gltf      : GltfModel.open[ gltf_path ]
-        cp : path '../scenes/baked/neptune-color.png'
-        st : path '../scenes/baked/neptune-storm.png'
-        rg : path '../scenes/baked/neptune-ring.png'
+        cp : path '../{share_name}/baked/neptune-color.png'
+        st : path '../{share_name}/baked/neptune-storm.png'
+        rg : path '../{share_name}/baked/neptune-ring.png'
         if [ !cp.exists[] || !st.exists[] || !rg.exists[] ]
             log 'neptune: no baked maps — composing live'
             neptune_bake[]
@@ -8518,7 +8517,7 @@ element Neptune
             straight_alpha: true ]
         sky = GaiaShader [ vk: vk ]
         sky_samplers : map Image [string] [
-            'color': Image [ uri: path '../scenes/textures/gaia.png', surface: GaiaSurface.color ]
+            'color': Image [ uri: path '../{share_name}/textures/gaia.png', surface: GaiaSurface.color ]
         ]
         sky_model : Model [ vk: vk, w: ux, id: gltf, s: sky, samplers: sky_samplers,
             straight_alpha: true, cull_none: true ]
@@ -9013,8 +9012,8 @@ element Earth
     public color  : rgba [ r:0.004, g:0.006, b:0.014, a:1.0 ]
 
     func load_files[]
-        geom = GltfModel.open[ path '../scenes/models/earth.gltf' ]
-        img_forest = Image [ uri: path '../scenes/textures/mars-veg-jungle.png',
+        geom = GltfModel.open[ path '../{share_name}/models/earth.gltf' ]
+        img_forest = Image [ uri: path '../{share_name}/textures/mars-veg-jungle.png',
             surface: JungleSurface.forest, linear: true, wrap_u: true, wrap_v: true ]
 
     func build_models[]
@@ -9323,9 +9322,9 @@ func synth_bake [] -> bool
             pd[ b2 + 1 ] = u8[ 0 ]
             pd[ b2 + 2 ] = u8[ 0 ]
             pd[ b2 + 3 ] = u8[ hq % 256 ]
-    bd : path '../scenes/baked'
+    bd : path '../{share_name}/baked'
     bd.make_dir[]
-    pk.png[ path '../scenes/baked/synth-height.png' ]
+    pk.png[ path '../{share_name}/baked/synth-height.png' ]
     # the flat grid: positions on the lake plane, uv over the map.
     # 1024 rows run two loops deep so the far end fogs out, not clips
     gn : i32 [ 512 ]
@@ -9362,7 +9361,7 @@ func synth_bake [] -> bool
             I[ q + 4 ] = u32[ k + gn ]
             I[ q + 5 ] = u32[ k + gn + 1 ]
             q += 6
-    fb : fopen[ path '../scenes/baked/synth-grid.bin', "wb" ]
+    fb : fopen[ path '../{share_name}/baked/synth-grid.bin', "wb" ]
     if [ !fb ] return false
     fwrite[ @P[ 0 ], 4, n3, fb ]
     fwrite[ @N[ 0 ], 4, n3, fb ]
@@ -9372,7 +9371,7 @@ func synth_bake [] -> bool
     b3 : i32 [ n3 * 4 ]
     b2 : i32 [ n2 * 4 ]
     bi : i32 [ ni * 4 ]
-    fg : fopen[ path '../scenes/baked/synth-grid.gltf', "wb" ]
+    fg : fopen[ path '../{share_name}/baked/synth-grid.gltf', "wb" ]
     if [ !fg ] return false
     fputs[ '{{"asset":{{"version":"2.0"}},"scene":0,"scenes":[{{"nodes":[0]}}],"nodes":[{{"mesh":0}}],', fg ]
     fputs[ '"meshes":[{{"primitives":[{{"attributes":{{"POSITION":0,"NORMAL":1,"TEXCOORD_0":2}},"indices":3}}]}}],', fg ]
@@ -9396,9 +9395,9 @@ export func synth_export []
     h4 : u64 [ @synth_row ]
     h5 : u64 [ @synth_talus ]
     stamp : string '{h1}-{h2}-{h3}-{h4}-{h5}'
-    sp : path '../scenes/baked/synth.hash'
-    hp : path '../scenes/baked/synth-height.png'
-    gp : path '../scenes/baked/synth-grid.gltf'
+    sp : path '../{share_name}/baked/synth.hash'
+    hp : path '../{share_name}/baked/synth-height.png'
+    gp : path '../{share_name}/baked/synth-grid.gltf'
     if [ sp.exists[] && hp.exists[] && gp.exists[] ]
         old : string [ sp.load[ typeid[string], null ] ]
         if [ old && old == stamp ]
@@ -9749,15 +9748,15 @@ element Synthwave
     func create_target[]
         if [ target ] return
         # the galaxy: the same gaia sphere the other scenes wrap in
-        gaia_img    = Image [ uri: path '../scenes/textures/gaia.png', surface: GaiaSurface.color ]
-        gaia_geom   = GltfModel.open[ path '../scenes/models/earth.gltf' ]
+        gaia_img    = Image [ uri: path '../{share_name}/textures/gaia.png', surface: GaiaSurface.color ]
+        gaia_geom   = GltfModel.open[ path '../{share_name}/models/earth.gltf' ]
         gaia_shader = GaiaShader [ vk: vk ]
         gaia_model  = Model  [ vk: vk, w: ux, id: gaia_geom, s: gaia_shader,
             straight_alpha: true, cull_none: true, samplers: map Au[string] [ 'color': gaia_img ] ]
         log 'synthwave: before terrain ux {ux.width}x{ux.height} scale {ux.scale}'
-        hmap_img    = Image [ uri: path '../scenes/baked/synth-height.png', surface: SynthSurface.height ]
+        hmap_img    = Image [ uri: path '../{share_name}/baked/synth-height.png', surface: SynthSurface.height ]
         log 'synthwave: hmap {hmap_img.width}x{hmap_img.height} ux {ux.width}x{ux.height}'
-        terr_geom   = GltfModel.open[ path '../scenes/baked/synth-grid.gltf' ]
+        terr_geom   = GltfModel.open[ path '../{share_name}/baked/synth-grid.gltf' ]
         log 'synthwave: gltf open ux {ux.width}x{ux.height}'
         terr_shader = SynthTerrain [ vk: vk, name: 'synthterrain' ]
         terr_model  = Model  [ vk: vk, w: ux, id: terr_geom, s: terr_shader, cull_none: true,
@@ -10065,13 +10064,13 @@ class CloudBake
 
     func run []
         t0 : i64 [ epoch_micros[] ]
-        bd : path '../scenes/baked'
+        bd : path '../{share_name}/baked'
         bd.make_dir[]
-        bake_shape[ path '../scenes/baked/nubis-shape.png' ]
-        bake_detail[ path '../scenes/baked/nubis-detail.png' ]
-        bake_curl[ path '../scenes/baked/nubis-curl.png' ]
-        bake_weather[ path '../scenes/baked/nubis-weather.png' ]
-        bake_tops[ path '../scenes/baked/nubis-tops.png' ]
+        bake_shape[ path '../{share_name}/baked/nubis-shape.png' ]
+        bake_detail[ path '../{share_name}/baked/nubis-detail.png' ]
+        bake_curl[ path '../{share_name}/baked/nubis-curl.png' ]
+        bake_weather[ path '../{share_name}/baked/nubis-weather.png' ]
+        bake_tops[ path '../{share_name}/baked/nubis-tops.png' ]
         bake_ms : i64 [ (epoch_micros[] - t0) / 1000 ]
         log 'clouds: nubis noise set baked in {bake_ms} ms'
 
@@ -11026,11 +11025,11 @@ export func nubis_export []
     h1 : u64 [ @nubis_bake ]
     bv : i32 [ nubis_bake_version[] ]
     stamp : string '{h1}-{bv}'
-    sp : path '../scenes/baked/nubis.hash'
-    p1 : path '../scenes/baked/nubis-shape.png'
-    p2 : path '../scenes/baked/nubis-detail.png'
-    p3 : path '../scenes/baked/nubis-curl.png'
-    p4 : path '../scenes/baked/nubis-weather.png'
+    sp : path '../{share_name}/baked/nubis.hash'
+    p1 : path '../{share_name}/baked/nubis-shape.png'
+    p2 : path '../{share_name}/baked/nubis-detail.png'
+    p3 : path '../{share_name}/baked/nubis-curl.png'
+    p4 : path '../{share_name}/baked/nubis-weather.png'
     force : getenv[ 'SILVER_EXPORT_FORCE' ]
     if [ !force && sp.exists[] && p1.exists[] && p2.exists[] && p3.exists[] && p4.exists[] ]
         old : string [ sp.load[ typeid[string], null ] ]
@@ -11450,19 +11449,19 @@ element Clouds
         goal = states[ preset ]
         prev = copy_state[ cur ]
         prev.hold[]
-        p1 : path '../scenes/baked/nubis-shape.png'
+        p1 : path '../{share_name}/baked/nubis-shape.png'
         if [ !p1.exists[] ]
             log 'clouds: no baked noise — baking live (SILVER_EXPORT=1 bakes at build)'
             nubis_bake[]
-        tx_shape   = load_texture[ path '../scenes/baked/nubis-shape.png', 128, 8 ]
-        tx_detail  = load_texture[ path '../scenes/baked/nubis-detail.png', 32, 6 ]
-        tx_curl    = load_texture[ path '../scenes/baked/nubis-curl.png', 1, 1 ]
-        tx_weather = load_texture[ path '../scenes/baked/nubis-weather.png', 1, 1 ]
-        tx_tvar    = load_texture[ path '../scenes/baked/nubis-tops.png', 1, 1 ]
-        tx_stars   = load_texture[ path '../scenes/textures/gaia.png', 1, 1 ]
-        wimg = Image [ uri: path '../scenes/baked/nubis-weather.png', linear: true ]
+        tx_shape   = load_texture[ path '../{share_name}/baked/nubis-shape.png', 128, 8 ]
+        tx_detail  = load_texture[ path '../{share_name}/baked/nubis-detail.png', 32, 6 ]
+        tx_curl    = load_texture[ path '../{share_name}/baked/nubis-curl.png', 1, 1 ]
+        tx_weather = load_texture[ path '../{share_name}/baked/nubis-weather.png', 1, 1 ]
+        tx_tvar    = load_texture[ path '../{share_name}/baked/nubis-tops.png', 1, 1 ]
+        tx_stars   = load_texture[ path '../{share_name}/textures/gaia.png', 1, 1 ]
+        wimg = Image [ uri: path '../{share_name}/baked/nubis-weather.png', linear: true ]
         wimg.hold[]
-        timg = Image [ uri: path '../scenes/baked/nubis-tops.png', linear: true ]
+        timg = Image [ uri: path '../{share_name}/baked/nubis-tops.png', linear: true ]
         timg.hold[]
         build_island[]
         build_waves[ cur.wind ]
@@ -11771,9 +11770,9 @@ class PlTile
 
 func pl_tile [ nm: string ] -> PlTile
     t : PlTile [ ]
-    t.im = Image [ uri: path '../silver-scenes/textures/pluto-tiles/{nm}_texture.png' ]
-    t.rl = Image [ uri: path '../silver-scenes/textures/pluto-tiles/{nm}_elevation.png' ]
-    t.sp = Image [ uri: path '../silver-scenes/textures/pluto-tiles/{nm}_specular.png' ]
+    t.im = Image [ uri: path '../{share_name}/textures/pluto-tiles/{nm}_texture.png' ]
+    t.rl = Image [ uri: path '../{share_name}/textures/pluto-tiles/{nm}_elevation.png' ]
+    t.sp = Image [ uri: path '../{share_name}/textures/pluto-tiles/{nm}_specular.png' ]
     if [ t.im.width == 0 || t.rl.width == 0 || t.sp.width == 0 ]
         log 'pluto: tile {nm} missing'
         return null
@@ -12051,8 +12050,10 @@ func pluto_bake [] -> bool
         hd[ b4 + 1 ] = u8[ h16 & 255 ]
         hd[ b4 + 2 ] = u8[ h16 >> 8 ]
         hd[ b4 + 3 ] = 255
-    im.png[ path '../silver-scenes/baked/pluto-color.png' ]
-    hm.png[ path '../silver-scenes/baked/pluto-height.png' ]
+    bd : path '../{share_name}/baked'
+    bd.make_dir[]
+    im.png[ path '../{share_name}/baked/pluto-color.png' ]
+    hm.png[ path '../{share_name}/baked/pluto-height.png' ]
     sm : Image [ width: w8, height: h8, format: Pixel.rgba8, linear: true, wrap_u: true ]
     smd : @u8 [ sm.vdata[] ]
     # which plates painted each pixel: four weights in one map, two in the next
@@ -12175,14 +12176,12 @@ func pluto_bake [] -> bool
                 sld9[ o9 + 1 ] = v8
                 sld9[ o9 + 2 ] = v8
                 sld9[ o9 + 3 ] = 255
-    bd : path '../silver-scenes/baked'
-    bd.make_dir[]
-    st_l.png[ path '../silver-scenes/baked/pluto-strip-elev-lo.png' ]
-    wa.png[ path '../silver-scenes/baked/pluto-brush-a.png' ]
-    wb.png[ path '../silver-scenes/baked/pluto-brush-b.png' ]
-    st_t.png[ path '../silver-scenes/baked/pluto-strip-tex.png' ]
-    st_e.png[ path '../silver-scenes/baked/pluto-strip-elev.png' ]
-    sm.png[ path '../silver-scenes/baked/pluto-spec.png' ]
+    st_l.png[ path '../{share_name}/baked/pluto-strip-elev-lo.png' ]
+    wa.png[ path '../{share_name}/baked/pluto-brush-a.png' ]
+    wb.png[ path '../{share_name}/baked/pluto-brush-b.png' ]
+    st_t.png[ path '../{share_name}/baked/pluto-strip-tex.png' ]
+    st_e.png[ path '../{share_name}/baked/pluto-strip-elev.png' ]
+    sm.png[ path '../{share_name}/baked/pluto-spec.png' ]
     log 'pluto: maps written'
     return true
 
@@ -12197,10 +12196,10 @@ func pluto_maps []
     h7 : u64 [ @pl_cell_brush ]
     h8 : u64 [ @pl_plate ]
     stamp : string '{h1}-{h2}-{h3}-{h4}-{h5}-{h6}-{h7}-{h8}'
-    sp : path '../silver-scenes/baked/pluto.hash'
-    cp : path '../silver-scenes/baked/pluto-color.png'
-    hp : path '../silver-scenes/baked/pluto-height.png'
-    gp : path '../silver-scenes/baked/pluto-spec.png'
+    sp : path '../{share_name}/baked/pluto.hash'
+    cp : path '../{share_name}/baked/pluto-color.png'
+    hp : path '../{share_name}/baked/pluto-height.png'
+    gp : path '../{share_name}/baked/pluto-spec.png'
     if [ sp.exists[] && cp.exists[] && hp.exists[] && gp.exists[] ]
         old : string [ sp.load[ typeid[string], null ] ]
         if [ old && old == stamp ]
@@ -12773,18 +12772,18 @@ element Pluto
         o_gltf = build_carpet[]
         o_gltf.hold[]
         o_gltf.compute_worlds[]
-        cp : path '../silver-scenes/baked/pluto-color.png'
-        hp : path '../silver-scenes/baked/pluto-height.png'
-        gp : path '../silver-scenes/baked/pluto-spec.png'
+        cp : path '../{share_name}/baked/pluto-color.png'
+        hp : path '../{share_name}/baked/pluto-height.png'
+        gp : path '../{share_name}/baked/pluto-spec.png'
         if [ !cp.exists[] || !hp.exists[] || !gp.exists[] ]
             log 'pluto: no baked maps — painting live'
             pluto_bake[]
         surf = PlutoGround [ vk: vk ]
-        se = Image [ uri: path '../silver-scenes/baked/pluto-strip-elev.png', linear: true, wrap_u: true, wrap_v: true ]
+        se = Image [ uri: path '../{share_name}/baked/pluto-strip-elev.png', linear: true, wrap_u: true, wrap_v: true ]
         se.hold[]
-        st = Image [ uri: path '../silver-scenes/baked/pluto-strip-tex.png', linear: true, wrap_u: true, wrap_v: true ]
+        st = Image [ uri: path '../{share_name}/baked/pluto-strip-tex.png', linear: true, wrap_u: true, wrap_v: true ]
         st.hold[]
-        sl = Image [ uri: path '../silver-scenes/baked/pluto-strip-elev-lo.png', linear: true, wrap_u: true, wrap_v: true ]
+        sl = Image [ uri: path '../{share_name}/baked/pluto-strip-elev-lo.png', linear: true, wrap_u: true, wrap_v: true ]
         sl.hold[]
         cimg = Image [ uri: cp, linear: true, wrap_u: true ]
         cimg.hold[]
@@ -12792,15 +12791,15 @@ element Pluto
         himg.hold[]
         p_samplers = map Au [string] [
             'spec':   Image [ uri: gp, surface: PlutoSurface.spec,   linear: true, wrap_u: true ],
-            'wa':     Image [ uri: path '../silver-scenes/baked/pluto-brush-a.png', surface: PlutoSurface.wa, linear: true, wrap_u: true ],
-            'wb':     Image [ uri: path '../silver-scenes/baked/pluto-brush-b.png', surface: PlutoSurface.wb, linear: true, wrap_u: true ]
+            'wa':     Image [ uri: path '../{share_name}/baked/pluto-brush-a.png', surface: PlutoSurface.wa, linear: true, wrap_u: true ],
+            'wb':     Image [ uri: path '../{share_name}/baked/pluto-brush-b.png', surface: PlutoSurface.wb, linear: true, wrap_u: true ]
         ]
         p_samplers.hold[]
         psky = PlutoSky [ vk: vk ]
         gsky = GaiaShader [ vk: vk ]
-        g_gltf : GltfModel.open[ path '../silver-scenes/models/earth.gltf' ]
+        g_gltf : GltfModel.open[ path '../{share_name}/models/earth.gltf' ]
         g_samplers : map Image [string] [
-            'color': Image [ uri: path '../silver-scenes/textures/gaia.png', surface: GaiaSurface.color ]
+            'color': Image [ uri: path '../{share_name}/textures/gaia.png', surface: GaiaSurface.color ]
         ]
         g_model : Model [ vk: vk, w: ux, id: g_gltf, s: gsky, samplers: g_samplers,
             straight_alpha: true, cull_none: true ]

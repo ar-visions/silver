@@ -338,16 +338,24 @@ bool platform_init(void) {
     inited = true;
     @autoreleasepool {
         g_t0 = CACurrentMediaTime();
+        // an app hosted in a pane owns no window of its own: it renders into a
+        // shared surface the ide draws. as an accessory it still gets a metal
+        // device and events, but no dock icon, no menu bar, and no focus steal
+        const char* hslot = getenv("SILVER_APP_SLOT");
+        bool hosted = hslot && *hslot && atoi(hslot) > 0;
         [NSApplication sharedApplication];
-        [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
-        NSMenu* bar = [[NSMenu alloc] init];
-        NSMenuItem* appItem = [bar addItemWithTitle:@"" action:nil keyEquivalent:@""];
-        NSMenu* appMenu = [[NSMenu alloc] init];
-        [appMenu addItemWithTitle:@"Quit" action:@selector(terminate:) keyEquivalent:@"q"];
-        appItem.submenu = appMenu;
-        [NSApp setMainMenu:bar];
+        [NSApp setActivationPolicy:hosted ? NSApplicationActivationPolicyAccessory
+                                          : NSApplicationActivationPolicyRegular];
+        if (!hosted) {
+            NSMenu* bar = [[NSMenu alloc] init];
+            NSMenuItem* appItem = [bar addItemWithTitle:@"" action:nil keyEquivalent:@""];
+            NSMenu* appMenu = [[NSMenu alloc] init];
+            [appMenu addItemWithTitle:@"Quit" action:@selector(terminate:) keyEquivalent:@"q"];
+            appItem.submenu = appMenu;
+            [NSApp setMainMenu:bar];
+        }
         [NSApp finishLaunching];
-        [NSApp activateIgnoringOtherApps:YES];
+        if (!hosted) [NSApp activateIgnoringOtherApps:YES];
     }
     return true;
 }
@@ -373,6 +381,12 @@ platform_window* platform_window_create(int width, int height, const char* title
     @autoreleasepool {
         NSUInteger style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
                            NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable;
+        // no larger than the screen: shown at a size that fits, the window
+        // is not resized by the system on its first appearance
+        NSRect vis = [[NSScreen mainScreen] visibleFrame];
+        CGFloat title_h = [NSWindow frameRectForContentRect:NSMakeRect(0, 0, 100, 100) styleMask:style].size.height - 100;
+        if (width  > (int)vis.size.width)              width  = (int)vis.size.width;
+        if (height > (int)(vis.size.height - title_h)) height = (int)(vis.size.height - title_h);
         NSRect r = NSMakeRect(0, 0, width, height);
         w->window = [[NSWindow alloc] initWithContentRect:r styleMask:style
                      backing:NSBackingStoreBuffered defer:NO];

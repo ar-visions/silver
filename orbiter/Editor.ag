@@ -1191,8 +1191,12 @@ Layer EditorLayer
         use.frame = editor.cl_frame
         return use
 
-    func band_hash [ editor: Editor, bs: i32, bands: i32, code_fs: i32 ] -> i64
+    func band_hash [ editor: Editor, bs: i32, bands: i32, code_fs: i32, hcol: i32, vis_w: i32 ] -> i64
         h : i64 [ i64[ bs ] * 1099511628211 + i64[ code_fs ] ]
+        # the band holds the visible window only: the column it starts at
+        # and its width are part of what it caches
+        h = (h ^ i64[ hcol ]) * 1099511628211
+        h = (h ^ i64[ vis_w ]) * 1099511628211
         for [ k: i32 0, k < bands, k += 1 ]
             li : i32 [ bs + k ]
             if [ li >= editor.line_count[] ] break
@@ -1206,9 +1210,11 @@ Layer EditorLayer
             h = (h ^ code_hash[ editor, editor.row_src[ li ], ln ]) * 1099511628211
         return h
 
-    func code_band [ cv: Canvas, editor: Editor, bs: i32, bands: i32, cmt_c: rgba, lh: f32, cw: f32, code_fs: i32 ] -> EdLineCache
+    func code_band [ cv: Canvas, editor: Editor, bs: i32, bands: i32, cmt_c: rgba, lh: f32, cw: f32, code_fs: i32, hcol: i32, vis_w: i32 ] -> EdLineCache
         if [ !editor.code_lines ] editor.code_lines = vec EdLineCache []
-        h    : i64 [ band_hash[ editor, bs, bands, code_fs ] ]
+        h    : i64 [ band_hash[ editor, bs, bands, code_fs, hcol, vis_w ] ]
+        # text starts hcol columns to the left: shift+scroll pans it
+        hoff     : f32 [ f32[ hcol ] * cw ]
         maxw     : i32 [ 1 ]
         has_code : bool [ false ]
         for [ k: i32 0, k < bands, k += 1 ]
@@ -1218,10 +1224,12 @@ Layer EditorLayer
             ln : editor.draw_line[ li ]
             if [ ln.count == 0 ] continue
             has_code = true
-            cwi : i32 [ i32[ ceil[ f32[ editor.display_of[ ln ].count ] * cw + cw ] ] ]
+            cwi : i32 [ i32[ ceil[ f32[ editor.display_of[ ln ].count ] * cw + cw - hoff ] ] ]
             if [ cwi > maxw ] maxw = cwi
         if [ !has_code ] return null
-        if [ maxw > 16000 ] maxw = 16000
+        # never wider than the pane: what lies past it is reached by
+        # horizontal scroll, which re-renders the band at its new column
+        if [ maxw > vis_w + i32[ cw ] ] maxw = vis_w + i32[ cw ]
         lc_h : i32 [ i32[ ceil[ f32[ bands ] * lh ] ] + 1 ]
         # cache hit → reuse, just tick the frame
         for [ slot: EdLineCache ] in editor.code_lines
@@ -1265,7 +1273,7 @@ Layer EditorLayer
                         tc = cmt_c
                         break
                 lc.fill_color[ tc ]
-                lc.draw_text[ disp, rect [ x: 0.0, y: yk, w: rw, h: lh ],
+                lc.draw_text[ disp, rect [ x: 0.0 - hoff, y: yk, w: rw, h: lh ],
                     vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
             el
                 col : i32 [ 0 ]
@@ -1277,14 +1285,14 @@ Layer EditorLayer
                     sl : i32 [ cr.len ]
                     if [ c0 + sl > ll ] sl = ll - c0
                     if [ c0 > col ]
-                        gx : f32 [ f32[ editor.display_of[ ln.mid[ 0, col ] ].count ] * cw ]
+                        gx : f32 [ f32[ editor.display_of[ ln.mid[ 0, col ] ].count ] * cw - hoff ]
                         lc.fill_color[ rgba['#fff'] ]
                         lc.draw_text[ editor.display_of[ ln.mid[ col, c0 - col ] ],
                             rect [ x: gx, y: yk, w: rw, h: lh ],
                             vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
                         col = c0
                     if [ sl > 0 ]
-                        tx : f32 [ f32[ editor.display_of[ ln.mid[ 0, c0 ] ].count ] * cw ]
+                        tx : f32 [ f32[ editor.display_of[ ln.mid[ 0, c0 ] ].count ] * cw - hoff ]
                         lc.fill_color[ cr.color ]
                         lc.draw_text[ ln.mid[ c0, sl ],
                             rect [ x: tx, y: yk, w: rw, h: lh ],
@@ -1296,7 +1304,7 @@ Layer EditorLayer
                         if [ ln[kk] == 35 ]
                             gc = cmt_c
                             break
-                    ex : f32 [ f32[ editor.display_of[ ln.mid[ 0, col ] ].count ] * cw ]
+                    ex : f32 [ f32[ editor.display_of[ ln.mid[ 0, col ] ].count ] * cw - hoff ]
                     lc.fill_color[ gc ]
                     lc.draw_text[ editor.display_of[ ln.mid[ col, ll - col ] ],
                         rect [ x: ex, y: yk, w: rw, h: lh ],
@@ -1321,12 +1329,6 @@ Layer EditorLayer
             el
                 editor.ux.will_animate = true
         if [ editor.run_view ]
-            editor.run_view.stopped = editor.stopped[]
-            editor.run_view.service[ cv ]
-            if [ editor.run_view.lock_req != 0 ]
-                if [ editor.run_view.lock_req == 1 ] editor.ux.mouse_lock[ editor ]
-                el editor.ux.mouse_unlock[]
-                editor.run_view.lock_req = 0
             if [ editor.app_view && !editor.show_hits && !editor.stopped[] ]
                 b2 : rect [ x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h ]
                 bot : element (editor.elements) ? editor.elements['bottom'] : null
@@ -1722,11 +1724,11 @@ Layer EditorLayer
         # restore the code font before drawing line content
         cv.font_size[ code_fs ]
         tcv.font_size[ code_fs ]
-        if [ editor.scroll.x > 0.0 ]
-            cv.set_crop[ wtx + bounds.x + gut_w, wty + bounds.y,
-                wtx + bounds.x + bounds.w - rin, wty + bounds.y + vh ]
-            if [ tcv != cv ]
-                tcv.set_crop[ gut_w, 0.0, bounds.w - rin, vh ]
+        # body rows never paint into the pinned band's strip, nor under
+        # the gutter when scrolled. the screen crop for the overlays is set
+        # after the blit: the band's fills and the blit itself are not clipped
+        if [ (editor.scroll.x > 0.0 || pt0 > 0.0) && tcv != cv ]
+            tcv.set_crop[ gut_w, pt0, bounds.w - rin, vh ]
         if [ editor.band_rows != 1 ]
             br : i32 [ (editor.band_rows >= 2) ? editor.band_rows : 8 ]
             fr : i32 [ i32[ editor.scroll.y / lh ] ]
@@ -1735,11 +1737,18 @@ Layer EditorLayer
             fb : i32 [ fr / br ]
             lb : i32 [ lr / br ]
             cmt_b : rgba['#7a8290']
+            # bands hold the visible window: whole columns scrolled off the
+            # left, and the pane's text width
+            hcol9 : i32 [ (showing) ? 0 : i32[ editor.scroll.x / cw_tm.w ] ]
+            if [ hcol9 < 0 ] hcol9 = 0
+            hoff9 : f32 [ f32[ hcol9 ] * cw_tm.w ]
+            visw9 : i32 [ i32[ ceil[ bounds.w - lin - gut_w - rin ] ] ]
+            if [ visw9 < 1 ] visw9 = 1
             if [ editor.code_lines ]
                 for [ b: i32 fb, b <= lb, b += 1 ]
                     bs : i32 [ b * br ]
                     if [ bs >= editor.line_count[] ] break
-                    bh : i64 [ band_hash[ editor, bs, br, code_fs ] ]
+                    bh : i64 [ band_hash[ editor, bs, br, code_fs, hcol9, visw9 ] ]
                     for [ slot: EdLineCache ] in editor.code_lines
                         if [ slot.canvas && slot.hash == bh ]
                             slot.frame = editor.cl_frame
@@ -1747,12 +1756,12 @@ Layer EditorLayer
             for [ b: i32 fb, b <= lb, b += 1 ]
                 bs : i32 [ b * br ]
                 if [ bs >= editor.line_count[] ] break
-                bnd : EdLineCache code_band[ cv, editor, bs, br, cmt_b, lh, cw_tm.w, code_fs ]
+                bnd : EdLineCache code_band[ cv, editor, bs, br, cmt_b, lh, cw_tm.w, code_fs, hcol9, visw9 ]
                 if [ bnd && bnd.canvas ]
                     by : f32 [ y0 + f32[ bs ] * lh - editor.scroll.y ]
                     # native size: scaling to br*lh compresses the rows
                     # and selected-text overdraw no longer lines up
-                    tcv.draw_canvas[ bnd.canvas, x0 + tox, round[ by ] + toy,
+                    tcv.draw_canvas[ bnd.canvas, x0 + hoff9 + tox, round[ by ] + toy,
                         f32[ bnd.canvas.content_w ], f32[ bnd.canvas.content_h ] ]
             tcv.paint[ ]
         el [ editor.code_lines ]
@@ -1773,7 +1782,48 @@ Layer EditorLayer
         # band pushes the top shadow down so it falls from under the band
         pins : vec i32 editor.pinned_rows[]
         pt   : f32 [ (showing) ? 0.0 : f32[ pins.count ] * lh ]
-        editor.text_blit[ cv, bounds, fade_t, fade_r, fade_b, fade_l, pt ]
+        # the scopes the view is inside stay drawn at the top, over the rows
+        # they would otherwise scroll past. a click on one goes there.
+        # their fills and numbers go on screen; their text rides the text
+        # canvas so it scrolls, clips and fades exactly like a body row
+        if [ pins.count > 0 && !showing ]
+            cmt_p : rgba['#7a8290']
+            cv.font_size[ num_fs ]
+            # the body numbers are still queued in the text pass: submit
+            # them now, or they land after these fills and show through
+            cv.flush_text[ ]
+            if [ tcv != cv ] tcv.set_crop[ gut_w, 0.0, bounds.w - rin, pt ]
+            for [ pi: i32 0, pi < pins.count, pi += 1 ]
+                pr : i32 [ pins[ pi ] ]
+                pn : i32 [ editor.row_src[ pr ] + 1 ]
+                py : f32 [ round[ bounds.y + f32[ pi ] * lh ] ]
+                cv.fill_color[ (pi == editor.hover_pin) ? rgba['#534'] : rgba['#312'] ]
+                cv.stroke_width[ 0.0 ]
+                cv.rect_to[ bounds.x, py, bounds.w, lh ]
+                cv.paint[ ]
+                cv.fill_color[ rgba['#ffffff80'] ]
+                cv.draw_text[ '{pn}',
+                    rect [ x: bounds.x, y: py, w: gut_w - 6.0, h: lh ],
+                    vec2f [ 1.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+                slc : code_slot[ cv, editor, editor.row_src[ pr ], editor.draw_line[ pr ], cmt_p, lh, cw_tm.w, code_fs ]
+                if [ slc && slc.canvas ]
+                    tcv.draw_canvas[ slc.canvas, x0 + tox, py + toy,
+                        f32[ slc.canvas.content_w ], f32[ slc.canvas.content_h ] ]
+            if [ tcv != cv ]
+                tcv.paint[ ]
+                tcv.clear_crop[ ]
+            cv.fill_color[ rgba['#ffffff26'] ]
+            cv.rect_to[ bounds.x, round[ bounds.y + pt ] - 1.0, bounds.w, 1.0 ]
+            cv.paint[ ]
+            # the numbers borrowed the gutter font: the selection overdraw
+            # and caret below measure and draw in the code font
+            cv.font_size[ code_fs ]
+        editor.text_blit[ cv, bounds, fade_t, fade_r, fade_b, fade_l, pt, (fade_l > 0.0) ? lin + gut_w : 0.0 ]
+        # overlays (outlines, selection, caret) stay under the band and
+        # inside the text area
+        if [ editor.scroll.x > 0.0 || pt0 > 0.0 ]
+            cv.set_crop[ wtx + bounds.x + gut_w, wty + bounds.y + pt0,
+                wtx + bounds.x + bounds.w - rin, wty + bounds.y + vh ]
         for [ li: i32 0, li < editor.line_count[], li += 1 ]
             y : f32 [ round[ y0 + f32[li] * lh - editor.scroll.y ] ]
             # ctrl/cmd held: outline every token that resolves, so the
@@ -2074,8 +2124,10 @@ Layer EditorLayer
             cw          : f32 [ cw_tm.w ]
             has_sel : bool [ start_line != end_line || start_col != end_col ]
 
-            scrolled : bool [ editor.scroll.y != editor.last_scroll_y ]
+            # any scroll snaps the selection: the glide is for the mouse alone
+            scrolled : bool [ editor.scroll.y != editor.last_scroll_y || editor.scroll.x != editor.last_scroll_x ]
             editor.last_scroll_y = editor.scroll.y
+            editor.last_scroll_x = editor.scroll.x
             resized  : bool [ (bounds.w - rin) != editor.last_view_w ]
             editor.last_view_w = bounds.w - rin
             if [ editor.last_sel_line != sl || editor.last_sel_col != ac || editor.last_before != before ]
@@ -2199,31 +2251,6 @@ Layer EditorLayer
             editor.run_view.draw_pip[ cv, bounds ]
 
         cv.clear_crop[ ]
-
-        # the scopes the view is inside stay drawn at the top, over the rows
-        # they would otherwise scroll past. a click on one goes there
-        if [ pins.count > 0 && !showing ]
-            cmt_p : rgba['#7a8290']
-            cv.font_size[ num_fs ]
-            for [ pi: i32 0, pi < pins.count, pi += 1 ]
-                pr : i32 [ pins[ pi ] ]
-                pn : i32 [ editor.row_src[ pr ] + 1 ]
-                py : f32 [ round[ bounds.y + f32[ pi ] * lh ] ]
-                cv.fill_color[ (pi == editor.hover_pin) ? rgba['#534'] : rgba['#312'] ]
-                cv.stroke_width[ 0.0 ]
-                cv.rect_to[ bounds.x, py, bounds.w, lh ]
-                cv.paint[ ]
-                cv.fill_color[ rgba['#ffffff80'] ]
-                cv.draw_text[ '{pn}',
-                    rect [ x: bounds.x, y: py, w: gut_w - 6.0, h: lh ],
-                    vec2f [ 1.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
-                slc : code_slot[ cv, editor, editor.row_src[ pr ], editor.draw_line[ pr ], cmt_p, lh, cw_tm.w, code_fs ]
-                if [ slc && slc.canvas ]
-                    cv.draw_canvas[ slc.canvas, x0, py,
-                        f32[ slc.canvas.content_w ], f32[ slc.canvas.content_h ] ]
-            cv.fill_color[ rgba['#ffffff26'] ]
-            cv.rect_to[ bounds.x, round[ bounds.y + f32[ pins.count ] * lh ] - 1.0, bounds.w, 1.0 ]
-            cv.paint[ ]
 
 
 # left tool rail: vertical buttons, icon over title, 64px wide
@@ -2437,6 +2464,7 @@ Control Editor
     mutable filter_rect   : rect
     mutable filter_next   : false
     mutable last_scroll_y : f32
+    mutable last_scroll_x : f32
     mutable last_view_w   : f32
     mutable hover_line    : i32 [ -1 ]
     mutable gutter_w      : f32 [ 0.0 ]
@@ -2448,6 +2476,7 @@ Control Editor
     # append LAST: member order sets AF bit indices
     mutable fade_r        : f32 [ -1.0 ]
     mutable fade_p        : f32 [ 0.0 ]
+    mutable fade_k        : f32 [ 0.0 ]
     # pinned band row under the mouse, -1 outside it
     mutable hover_pin     : i32 [ -1 ]
 
@@ -3489,7 +3518,7 @@ Control Editor
         # no export claims it: the code handler's plain lexer colours any
         # text file, when that handler is built
         root : path.path_startup[]
-        so   : path '{root}/install/build/libsilver-code.so'
+        so   : path '{root}/install/build/{path.path_library[ 'silver-code' ]}'
         return (so.exists[]) ? 'silver-code' : null
 
     # a named view that can render bytes, asked of the views themselves
@@ -3548,7 +3577,6 @@ Control Editor
         if [ orb9 ] orb9.add_instance[ nv ]
         run_view  = nv
         app_view  = true
-        animated  = true
         pristine  = false
         no_scroll = true
         focusable = true
@@ -3720,7 +3748,9 @@ Control Editor
     # white keeps, black hides: a straight ramp on whichever edges fade
     # pt: the pinned band's height; the mask starts under it, so the top
     # shadow falls from the band's edge and the rows beneath it stay hidden
-    func text_blit [ cv: Canvas, b: rect, ft: f32, fr: f32, fb: f32, fl: f32, pt: f32 ]
+    # kl: the gutter's width; the left ramp starts at the text's edge, not
+    # the canvas's, or it spends itself under the line numbers
+    func text_blit [ cv: Canvas, b: rect, ft: f32, fr: f32, fb: f32, fl: f32, pt: f32, kl: f32 ]
         if [ !text_canvas ] return
         tw : i32 [ text_canvas.content_w ]
         th : i32 [ text_canvas.content_h ]
@@ -3734,7 +3764,7 @@ Control Editor
         el [ fade_mask.content_w != tw || fade_mask.content_h != th ]
             fade_mask.resize[ tw, th ]
         if [ fade_mask.content_w != fade_w || fade_mask.content_h != fade_h
-             || ft != fade_t || fr != fade_r || fb != fade_b || fl != fade_l || pt != fade_p ]
+             || ft != fade_t || fr != fade_r || fb != fade_b || fl != fade_l || pt != fade_p || kl != fade_k ]
             fade_w = fade_mask.content_w
             fade_h = fade_mask.content_h
             fade_t = ft
@@ -3742,14 +3772,20 @@ Control Editor
             fade_b = fb
             fade_l = fl
             fade_p = pt
+            fade_k = kl
             fade_mask.reset[ vec4f [ 0.0, 0.0, 0.0, 1.0 ] ]
             fade_mask.save[]
             fade_mask.glow_falloff[ 1.0 ]
             fade_mask.fill_color[ rgba['#fff'] ]
             fade_mask.inner_glow_sides[ rgba['#000'], ft, fr, fb, fl ]
             fade_mask.stroke_width[ 0.0 ]
-            fade_mask.rect_to[ 0.0, pt, f32[ tw ], f32[ th ] - pt ]
+            fade_mask.rect_to[ kl, pt, f32[ tw ] - kl, f32[ th ] - pt ]
             fade_mask.paint[]
+            # the pinned band's strip: clipped to the text area, no fade
+            if [ pt > 0.0 ]
+                fade_mask.inner_glow_sides[ rgba['#000'], 0.0, 0.0, 0.0, 0.0 ]
+                fade_mask.rect_to[ kl, 0.0, f32[ tw ] - kl, pt ]
+                fade_mask.paint[]
             fade_mask.restore[]
         cv.draw_canvas_masked[ text_canvas, fade_mask, b.x, b.y, f32[ tw ], f32[ th ] ]
 
@@ -3783,6 +3819,19 @@ Control Editor
             diff_kinds[i] = diff_kinds[ i + 1 ]
         diff_kinds.pop[]
         rebuild_diff_src[]
+
+    # the instance is serviced every frame; the pane repaints every frame
+    # only while an app streams frames into it, or a view asks for it
+    public func tick [ w: Window ]
+        if [ run_view ]
+            run_view.stopped = stopped[]
+            run_view.service[ w.screen ]
+            if [ run_view.lock_req != 0 ]
+                if [ run_view.lock_req == 1 ] ux.mouse_lock[ a ]
+                el ux.mouse_unlock[]
+                run_view.lock_req = 0
+        live : bool [ run_view && app_view && !show_hits && !run_view.held && !run_view.ended && !stopped[] ]
+        animated = live || (rview && rview.continuous*[])
 
     # drop the in-pane view; the running app has its own lifetime
     func close_view []
@@ -4147,7 +4196,6 @@ Control Editor
         if [ orb8 ] orb8.add_instance[ nv ]
         run_view = nv
         app_view = true
-        animated = true
         pristine = false
         no_scroll = true
         if [ ux ] ux.restyle = true
@@ -4157,7 +4205,6 @@ Control Editor
         if [ !li || i < 0 || i >= li.count ] return
         run_view  = li[ i ]
         app_view  = !run_view.pip
-        animated  = true
         pristine  = false
         no_scroll = true
         if [ ux ] ux.restyle = true
@@ -4183,7 +4230,6 @@ Control Editor
         nv.cmd     = 'tail -n +1 -F /tmp/{mod}.log'
         run_view  = nv
         app_view  = false
-        animated  = true
         pristine  = false
         if [ ux ] ux.restyle = true
 

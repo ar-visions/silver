@@ -1905,9 +1905,11 @@ AU_EXPORT enode aether_e_cmp_op(aether a, OPType optype, enode L, enode R) {
     // compare. without this, the slot pointer gets ptrtoint'd in the pointer
     // mismatch path below — comparing the address's low byte to the literal
     // (e.g. `scan[0] == '{'` becomes "is the slot pointer's low byte 123").
-    if (!L->loaded && is_prim(L->autype))
+    // an ENUM slot is the same case: `modes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR`
+    // compared the element's ADDRESS, so it read false for every element.
+    if (!L->loaded && (is_prim(L->autype) || is_enum(L->autype)))
         L = e_load(a, L, null);
-    if (!R->loaded && is_prim(R->autype))
+    if (!R->loaded && (is_prim(R->autype) || is_enum(R->autype)))
         R = e_load(a, R, null);
 
     // a scalar (200px, 25.4cm) is a struct wrapping one number: compare

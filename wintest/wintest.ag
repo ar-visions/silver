@@ -1,4 +1,4 @@
-import KhronosGroup:Vulkan-Headers/29184b9
+import KhronosGroup:Vulkan-Headers/29184b98984f6169a5e83e97557a77cff1e5b0ca
 
 func wintest_answer [] -> i32
     return 42

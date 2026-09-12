@@ -858,7 +858,8 @@ element CommitView
                     ty9 : f32 [ 3.0 + ed9.tool_y[ ti, ly.bounds.h ] ]
                     if [ ryf >= ty9 && ryf < ty9 + 64.0 ] nchp = ti
         el
-            trs : i32 [ o.commit_tab_rows[ ly.bounds.w - 76.0, reveal_all ] ]
+            # picking: files only, no git tabs (as draw lays it out)
+            trs : i32 [ (o.pick_field && o.pick_field.count > 0) ? 0 : o.commit_tab_rows[ ly.bounds.w - 76.0, reveal_all ] ]
             r : i32 [ row_at[ ry, rx, trs ] ]
             cx0 : f32 [ 76.0 ]
             if [ r >= 0 && r < trs ]
@@ -940,7 +941,8 @@ element CommitView
                         ed.press_tool[ ci ]
                         break
             return
-        trs : i32 [ o.commit_tab_rows[ ly.bounds.w - 76.0, reveal_all ] ]
+        # picking: files only, no git tabs (as draw lays it out)
+        trs : i32 [ (o.pick_field && o.pick_field.count > 0) ? 0 : o.commit_tab_rows[ ly.bounds.w - 76.0, reveal_all ] ]
         r : i32 [ row_at[ ry, rx, trs ] ]
         cx0 : f32 [ 76.0 ]
         if [ r >= 0 && r < trs && o.git_snap && o.git_snap.files ]

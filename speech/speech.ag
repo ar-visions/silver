@@ -496,7 +496,7 @@ struct DictState
     act   : i64
     quiet : i32
     job   : WhisperJob
-    tid   : u64
+    tid   : pthread_t
     polls : i32
     drop    : bool
     flushed : bool
@@ -837,7 +837,7 @@ element main : trinity
     intern w_start : i64
     intern w_act   : i64                   # last sample where speech energy held
     intern w_quiet : i32
-    intern w_tid   : u64
+    intern w_tid   : pthread_t
     intern w_job   : WhisperJob
     intern w_text  : string
     intern w_gpu   : whisper_vk

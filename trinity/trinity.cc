@@ -14,7 +14,7 @@ extern "C" const char* path_share_name();
 // silver cannot store a C handle into a vec slot by index; write it here
 HOST_API void handle_slot_set(void** slot, void* value) { *slot = value; }
 
-#if defined(__linux__)
+#if !defined(_WIN32)
 #include <unistd.h>
 #include <fcntl.h>
 #include <string.h>
@@ -28,6 +28,37 @@ HOST_API void handle_slot_set(void** slot, void* value) { *slot = value; }
 HOST_API int host_pid_alive(int pid) {
     if (pid <= 0) return 0;
     return kill(pid, 0) == 0 ? 1 : 0;
+}
+
+// is pid parked in a stop? the host gates a debug launch with SIGSTOP before
+// init, and the ide must see that park to release (or attach to) the app.
+// /proc on linux, the process table everywhere else — the same question.
+#ifndef __linux__
+#include <sys/sysctl.h>
+#endif
+HOST_API int host_pid_stopped(int pid) {
+    if (pid <= 0) return 0;
+#ifdef __linux__
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/%d/stat", pid);
+    FILE* f = fopen(path, "rb");
+    if (!f) return 0;
+    char buf[512];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    if (n < 4) return 0;
+    buf[n] = 0;
+    // the state letter follows the parenthesised comm, which may hold spaces
+    char* rp = strrchr(buf, ')');
+    if (!rp || !rp[1] || !rp[2]) return 0;
+    return rp[2] == 'T' ? 1 : 0;
+#else
+    struct kinfo_proc ki;
+    size_t sz     = sizeof(ki);
+    int    mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_PID, pid };
+    if (sysctl(mib, 4, &ki, &sz, NULL, 0) != 0 || sz == 0) return 0;
+    return ki.kp_proc.p_stat == SSTOP ? 1 : 0;
+#endif
 }
 
 // ===========================================================================
@@ -44,10 +75,13 @@ HOST_API int host_pid_alive(int pid) {
 // this struct layout MIRRORS silver-host.c — keep the two in lockstep.
 // ===========================================================================
 #include <fcntl.h>
+#include <stdio.h>
 #include <sys/mman.h>
 #include <stdint.h>
 #include <sys/syscall.h>
+#ifdef __linux__
 #include <sys/prctl.h>
+#endif
 
 enum {
     HM_NONE    = 0,
@@ -164,7 +198,9 @@ HOST_API void host_tex_publish(int slot, int side, int fd0, int fd1, int w, int 
     SharedTex*  t  = host_tex_at(slot, side);
     if (!hs || !t) return;
     // let any same-uid consumer pull our fds (yama scope 1 blocks otherwise)
+#ifdef __linux__
     prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY, 0, 0, 0);
+#endif
     t->pid    = (int)getpid();
     t->fd0    = fd0;
     t->fd1    = fd1;
@@ -219,12 +255,18 @@ HOST_API int host_tex_pull(int slot, int side, int which, int* w, int* h, int* f
     if (w)   *w   = t->width;
     if (h)   *h   = t->height;
     if (fmt) *fmt = t->format;
+#ifdef __linux__
+    // a dma-buf fd is only a number in the publisher: duplicate the real one
     if (t->pid == (int)getpid()) return dup(fd);
     int pfd = (int)syscall(SYS_pidfd_open, (pid_t)t->pid, 0);
     if (pfd < 0) return -1;
     int r = (int)syscall(SYS_pidfd_getfd, pfd, fd, 0);
     close(pfd);
     return r;
+#else
+    // an IOSurface id is global: it names the same surface in every process
+    return fd;
+#endif
 }
 
 // ask silver-host to build (if needed) + spawn a module into a free slot.
@@ -343,8 +385,10 @@ HOST_API int agent_sock_open(const char* name) {
     snprintf(pathb, sizeof(pathb), "%s/trinity-%s.sock",
              (rt && *rt) ? rt : "/tmp", name);
     unlink(pathb);
-    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0) return 0;
+    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+    fcntl(fd, F_SETFD, FD_CLOEXEC);
     struct sockaddr_un su;
     memset(&su, 0, sizeof(su));
     su.sun_family = AF_UNIX;
@@ -364,8 +408,10 @@ static int agent_connect(const char* name) {
     char pathb[256];
     snprintf(pathb, sizeof(pathb), "%s/trinity-%s.sock",
              (rt && *rt) ? rt : "/tmp", name);
-    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0) return -1;
+    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+    fcntl(fd, F_SETFD, FD_CLOEXEC);
     struct sockaddr_un su;
     memset(&su, 0, sizeof(su));
     su.sun_family = AF_UNIX;
@@ -419,8 +465,10 @@ HOST_API int agent_sock_send(const char* name, const char* line) {
 HOST_API int agent_sock_line(char* out, int cap) {
     if (g_agent_srv < 0 || !out || cap < 2) return 0;
     if (g_agent_cli < 0) {
-        g_agent_cli = accept4(g_agent_srv, 0, 0, SOCK_NONBLOCK | SOCK_CLOEXEC);
+        g_agent_cli = accept(g_agent_srv, 0, 0);
         if (g_agent_cli < 0) return 0;
+        fcntl(g_agent_cli, F_SETFL, fcntl(g_agent_cli, F_GETFL, 0) | O_NONBLOCK);
+        fcntl(g_agent_cli, F_SETFD, FD_CLOEXEC);
         g_agent_len = 0;
     }
     for (;;) {
@@ -448,17 +496,20 @@ HOST_API int agent_sock_line(char* out, int cap) {
 
 HOST_API void agent_sock_reply(const char* s) {
     if (g_agent_cli < 0 || !s || !*s) return;
+#ifndef MSG_NOSIGNAL
+#define MSG_NOSIGNAL 0
+#endif
     ssize_t w = send(g_agent_cli, s, strlen(s), MSG_NOSIGNAL);
     (void)w;
 }
 
 #else
-// non-linux stubs: hosting is linux-only (dma-buf, memfd, pidfd), but the
-// symbols must exist so the module links. every call reports "nothing there".
+// windows stubs: the symbols must exist so the module links. every call reports "nothing there".
 HOST_API int  host_ask_orbiter(void)                             { return -1; }
 HOST_API void host_dictate_set(int v)                            { }
 HOST_API void host_live_set(int v)                               { }
 HOST_API int  host_pid_alive(int pid)                            { return 0; }
+HOST_API int  host_pid_stopped(int pid)                          { return 0; }
 HOST_API int  host_slot(void)                                    { return 0; }
 HOST_API void host_post(int r, int t, int a, int b, int c)       { }
 HOST_API int  host_poll(int r)                                   { return 0; }

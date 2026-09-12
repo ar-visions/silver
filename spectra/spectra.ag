@@ -46,6 +46,36 @@ ifdef [ apple ]
         c : @u64 [ user ]
         c[0] += 1
 
+    # no capture path on apple yet
+    class spectra
+        public size:        i32
+        public sample_rate: i32
+        public channels:    i32
+        public device:      cstr
+        public re:          @f32
+        public im:          @f32
+        public buf:         @i16
+        public bins:        @f32
+
+        func init []
+            channels = 1
+            re   = new f32 [ size ]
+            im   = new f32 [ size ]
+            buf  = new i16 [ size ]
+            bins = new f32 [ size / 2 ]
+
+        func open [] -> bool
+            return false
+
+        func capture [] -> bool
+            return false
+
+        func drain []
+            return
+
+        func close []
+            return
+
     class AudioOut
         public sample_rate : i32 [ 48000 ]
         public channels    : i32 [ 2 ]

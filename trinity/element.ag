@@ -261,6 +261,7 @@ ielement element
     public mask_inset    : vec4f
     mutable pristine     : bool [ false ]
     mutable needs_frame  : bool
+    intern  paint_us     : i64      # --stats: this second's own paint time
     mutable fc           : f32
     public  opacity      : f32 [ 1.0 ]
     # own layout extent; the parent arranger reads and writes
@@ -286,6 +287,11 @@ ielement element
         ux.release_focus[ a ]
 
     public func draw [ w: Window ]
+        return
+
+    # per-frame state work, once per element, never a paint: set pristine
+    # false (or animated) when what it found needs one
+    public func tick [ w: Window ]
         return
 
     # runs AFTER children compose — chrome that must sit on top of them
@@ -583,6 +589,7 @@ class Layer
     public blur_y           : f32
     intern blur_canvas      : Canvas
     intern blur_dirty       : bool
+    intern blur_ms          : i64    # when the blur last rendered; background_hz paces it
     intern blur_bw          : i32
     intern blur_bh          : i32
 

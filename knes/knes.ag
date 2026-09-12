@@ -87,14 +87,23 @@ element knes : trinity
 	public  height       : i32    [ 896 ]    # 224 x4 (top/bottom 8 cropped)
 	public  lock_aspect  : bool   [ true ]
 	public  background   : string [ 'Background' ]
-	default rom          : path
+	default [ Live ] rom : resource
+		log 'rom changed: {rom} (thread {(emu_started) ? 1 : 0})'
+		if [ emu_started ]
+			emu_stop = true
+			while [ emu_running ] usleep[ 1000 ]
+			emu_stop    = false
+			emu_started = false
+		# the next draw boots again: load_cart sets prg, and the thread follows
+		prg    = null
+		booted = false
 	public  frames_exit  : i32
 	public  resume       : bool
 	public  save_at      : i32
 	public  autowalk     : i32               # hold Up for N frames from frame 5 (repro rig)
+	public [ Live, VolumeRange ] volume : f32 [ 0.04 ]   # playback volume 0..1, a slider on the host
 	public  seq_from     : i32               # dump composited frames [from,to) as PPMs
 	public  seq_to       : i32
-	public  volume       : f32
 	public  vscale       : bool [ true ]     # VectorScale: continuous edges, any zoom
 	public  se_2d        : bool              # Super Eagle 2x basis + sharp lift
 	public  blocky       : bool              # sharp-bilinear hard squares

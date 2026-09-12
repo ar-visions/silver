@@ -37,7 +37,7 @@ ifndef [ windows ]
         +_DEFAULT_SOURCE
         +_XOPEN_SOURCE=500
 
-import KhronosGroup:Vulkan-Headers/29184b9
+import KhronosGroup:Vulkan-Headers/29184b98984f6169a5e83e97557a77cff1e5b0ca
 
 ifndef [ ios ]
     ifndef [ android ]
@@ -75,7 +75,7 @@ ifndef [ ios ]
       -DCMAKE_INSTALL_BINDIR=share/vulkan/explicit_layer.d
       { (linux) ?? >> sed -i 's|"library_path": "libVkLayer_khronos_validation.so"|"library_path": "../../../lib/libVkLayer_khronos_validation.so"|' {install}/share/vulkan/explicit_layer.d/VkLayer_khronos_validation.json }
 
-import KhronosGroup:glslang/715c850
+import KhronosGroup:glslang/715c8500e7cd67f2eba9e60e98852a1ed49d2f15
     -DVULKAN_HEADERS_INSTALL_DIR={install}
     -DENABLE_OPT=0
     -lglslang -lSPIRV -lMachineIndependent -lGenericCodeGen -lOSDependent
@@ -104,7 +104,7 @@ ifdef [ apple ]
     ifndef [ ios ]
         import <vulkan/vulkan.h>
             +VK_USE_PLATFORM_METAL_EXT
-            -lvulkan
+            -lvulkan -framework IOSurface
 ifdef [ linux ]
     import <vulkan/vulkan.h>
         +VK_USE_PLATFORM_XCB_KHR
@@ -194,11 +194,17 @@ enum HM
     # app -> ide: a = on/off, b c = the lock centre in app pixels
     lock    : 12
 
+ifdef [ apple ]
+    # an IOSurface's global id is its cross-process name, as a dma-buf fd is
+    func IOSurfaceGetID  [ s: handle ] -> u32
+    func IOSurfaceLookup [ csid: u32 ] -> handle
+
 func host_ask_orbiter [] -> i32
 func host_dictate_set [ v: i32 ]
 func host_live_set    [ v: i32 ]
 func host_log_setup   [ name: cstr ]
 func host_pid_alive   [ pid: i32 ] -> i32
+func host_pid_stopped [ pid: i32 ] -> i32
 func host_slot        [] -> i32
 func host_post        [ ring: i32, type: i32, a: i32, b: i32, c: i32 ]
 func host_poll        [ ring: i32 ] -> i32
@@ -235,6 +241,86 @@ func agent_sock_reply [ s: cstr ]
 func handle_slot_set  [ slot: handle, value: handle ]
 func agent_sock_send  [ nm: cstr, txt: cstr ] -> i32
 func agent_sock_ask   [ nm: cstr, txt: cstr, out: @i8, cap: i32 ] -> i32
+
+# the launch/live property spec of any object, read from its type: the
+# running app answers props with it, and a host enumerates a module by
+# building a default instance of its app type and asking the same
+
+func props_of [ target: Au, acc: string ] -> string
+    out : string acc
+    if [ !target ] return out
+    for [ ty : typeid[ target ], ty && ty != typeid[ Au ], ty = ty.context ]
+        for [ i: i32 0, i < ty.members.count, i += 1 ]
+            mem : Au_t ty.members.origin[i]
+            if [ !mem ] continue
+            # an Action is a method: it has no value, the host calls it
+            if [ mem.member_type == AU_MEMBER_FUNC ]
+                fmt : Au_t mem.meta.m
+                if [ !fmt || !Au.inherits[ fmt, typeid[ Action ] ] ] continue
+                fnm : string [ mem.ident ]
+                if [ out && out.count > 0 ]
+                    fkey  : string ';{fnm}='
+                    fhead : string '{fnm}='
+                    if [ out.starts_with[ fhead ] || out.index_of[ fkey ] >= 0 ] continue
+                fent : string '{fnm}=action==Action=live'
+                out = (out && out.count > 0) ? '{out};{fent}' : fent
+                continue
+            if [ mem.member_type != AU_MEMBER_VAR ] continue
+            mt : Au_t mem.meta.m
+            if [ !mt || !Au.inherits[ mt, typeid[ Launch ] ] ] continue
+            # an empty literal has no chars: nothing empty is ever interpolated here
+            # the enum's stops first: they also say how to print the value
+            en : string [ null ]
+            if [ mem.src && mem.src.members.count > 0 ]
+                for [ k: i32 0, k < mem.src.members.count, k += 1 ]
+                    ev : Au_t mem.src.members.origin[k]
+                    if [ !ev || ev.member_type != AU_MEMBER_ENUMV ] continue
+                    pv : cast @i32 [ ev.value ]
+                    iv : i32 [ pv[0] ]
+                    evn : string [ ev.ident ]
+                    en = (en) ? '{en},{evn}:{iv}' : '{evn}:{iv}'
+            v  : target.member_object[ mem ]
+            ent : string [ mem.ident ]
+            # the app's own member of a name wins over the base's: the app is walked first
+            if [ out && out.count > 0 ]
+                key  : string ';{ent}='
+                head : string '{ent}='
+                if [ out.starts_with[ head ] || out.index_of[ key ] >= 0 ] continue
+            ent = '{ent}='
+            # a cstr must never be truth-tested: the compiler reads it as an object
+            if [ mem.src ]
+                tn : string [ mem.src.ident ]
+                ent = '{ent}{tn}'
+            ent = '{ent}='
+            # a boxed primitive has no text of its own: print it by its type
+            if [ v && mem.src ]
+                if [ en || mem.src == typeid[ i32 ] || mem.src == typeid[ i64 ] ||
+                     mem.src == typeid[ u32 ] || mem.src == typeid[ u64 ] || mem.src == typeid[ bool ] ]
+                    iv : i32 [ i32[ v ] ]
+                    if [ mem.src == typeid[ bool ] ] ent = (iv != 0) ? '{ent}true' : '{ent}false'
+                    el ent = '{ent}{iv}'
+                el [ mem.src == typeid[ f32 ] || mem.src == typeid[ f64 ] ]
+                    fv : f32 [ f32[ v ] ]
+                    ent = '{ent}{fv}'
+                el [ mem.src == typeid[ string ] || Au.inherits[ mem.src, typeid[ path ] ] ]
+                    ent = '{ent}{v}'
+            mb : Au_t mem.meta.member_b
+            if [ mb && Au.inherits[ mb, typeid[ Range ] ] ]
+                rg : Range [ Au.new_object[ mb, null, null, true, __FILE__, __LINE__, __SEQUENCE__ ] ]
+                if [ rg ] ent = '{ent}=Range[{rg.min},{rg.max}]'
+            el [ mb && Au.inherits[ mb, typeid[ KeyBind ] ] ] ent = '{ent}=Key'
+            el [ mb && Au.inherits[ mb, typeid[ Stepper ] ] ]
+                sp : Stepper [ Au.new_object[ mb, null, null, true, __FILE__, __LINE__, __SEQUENCE__ ] ]
+                if [ sp ] ent = '{ent}=Stepper[{sp.min},{sp.max},{sp.step}]'
+            el [ mb && Au.inherits[ mb, typeid[ Color ] ] ]     ent = '{ent}=Color'
+            el [ mb && Au.inherits[ mb, typeid[ PadBind ] ] ]   ent = '{ent}=Pad'
+            el [ mb && Au.inherits[ mb, typeid[ Directory ] ] ] ent = '{ent}=Dir'
+            el [ mb && Au.inherits[ mb, typeid[ Multiline ] ] ] ent = '{ent}=Text'
+            el [ en ] ent = '{ent}=Enum[{en}]'
+            if [ Au.inherits[ mt, typeid[ Live ] ] ] ent = '{ent}=live'
+            out = (out && out.count > 0) ? '{out};{ent}' : ent
+    return out
+
 
 abstract live_app media_app
     context w           : Display*
@@ -429,7 +515,7 @@ abstract live_app media_app
                         bwn.dict_live = host_pa[] != 0
                         bwn.restyle   = true
 
-        ifdef [ linux ]
+        ifdef [ unix ]
             if [ attach && isolate_app ]
                 render*[]
                 record_pump[]
@@ -460,15 +546,27 @@ abstract live_app media_app
         platform_poll[]
         pwn : Window [ w ]
         pwn.pad_pump[]
-        ifdef [ linux ]
+        ifdef [ unix ]
             agent_pump[]
         second : epoch_millis[] / 1000
         if [ next_second != second ]
             next_second = second
-            stat_line = 'fps {frames} submits {vk.submit_calls} syncs {vk.sync_calls} sync_us {vk.sync_us} paints {vk.paint_calls} draws {vk.pipe_draws} draw_us {vk.draw_us} update_us {vk.update_us} sdf_miss {vk.sdf_miss} geom_us {vk.geom_us}'
+            stat_line = 'fps {frames} submits {vk.submit_calls} syncs {vk.sync_calls} sync_us {vk.sync_us} paints {vk.paint_calls} draws {vk.pipe_draws} draw_us {vk.draw_us} update_us {vk.update_us} sdf_miss {vk.sdf_miss} glyph_miss {vk.glyph_miss} geom_us {vk.geom_us} recreates {vk.swap_recreates} | targets {vk.ph_targets} compose {vk.ph_compose} list {vk.ph_list} screen {vk.ph_screen} swap {vk.ph_swap} | layout {vk.ph_layout} elems {vk.ph_elems} overlay {vk.ph_overlay} flush {vk.ph_flush}'
+            if [ pwn.stats ] log '{stat_line}'
+            if [ pwn.stats ] log 'paint_us:{pwn.paint_top[]}'
             vk.pipe_draws   = 0
             vk.resize_us    = 0
             vk.resize_calls = 0
+            vk.swap_recreates = 0
+            vk.ph_targets = 0
+            vk.ph_compose = 0
+            vk.ph_list    = 0
+            vk.ph_screen  = 0
+            vk.ph_swap    = 0
+            vk.ph_layout  = 0
+            vk.ph_elems   = 0
+            vk.ph_overlay = 0
+            vk.ph_flush   = 0
             frames = 0
             vk.submit_calls = 0
             vk.sync_calls   = 0
@@ -478,6 +576,7 @@ abstract live_app media_app
             vk.paint_calls  = 0
             vk.sdf_hit      = 0
             vk.sdf_miss     = 0
+            vk.glyph_miss   = 0
             vk.sdf_rect     = 0
             vk.geom_us      = 0
             vk.render_allocs = 0
@@ -487,7 +586,7 @@ abstract live_app media_app
             vk.br_schema_us  = 0
         render*[]
         record_pump[]
-        ifdef [ linux ]
+        ifdef [ unix ]
             win : Window [ w ]
             # the guest display has no ide consumer, and venus faults on the
             # dma-buf export the share path uses — never share on kms
@@ -518,7 +617,7 @@ abstract live_app media_app
         if [ !alive ] record_close[]
         return alive
 
-    ifdef [ linux ]
+    ifdef [ unix ]
         func share_publish [ side: i32 ]
             if [ headless ] return
             if [ w.kms ] return
@@ -534,6 +633,8 @@ abstract live_app media_app
                 share_tex1 = Texture [ vk: vk, w: wn, width: tx.width, height: tx.height,
                     vk_format: tx.vk_format, shareable: true ]
                 share_back = 0
+                # no exportable memory on this driver: nothing to share
+                if [ share_tex0.shared_fd < 0 || share_tex1.shared_fd < 0 ] return
                 host_tex_publish[ host_slot[], side, share_tex0.shared_fd, share_tex1.shared_fd,
                     tx.width, tx.height, i32[ tx.vk_format ] ]
             bt : (share_back == 0) ? share_tex0 : share_tex1
@@ -571,81 +672,6 @@ abstract live_app media_app
         # view, which is the normal case — a view is only an option
         # every Launch/Live member of the app and of this base, in the
         # host's spec form: name=type=value[=Range[min,max]|=Enum[n:v,..]][=live]
-        func props_of [ target: Au, acc: string ] -> string
-            out : string acc
-            if [ !target ] return out
-            for [ ty : typeid[ target ], ty && ty != typeid[ Au ], ty = ty.context ]
-                for [ i: i32 0, i < ty.members.count, i += 1 ]
-                    mem : Au_t ty.members.origin[i]
-                    if [ !mem ] continue
-                    # an Action is a method: it has no value, the host calls it
-                    if [ mem.member_type == AU_MEMBER_FUNC ]
-                        fmt : Au_t mem.meta.m
-                        if [ !fmt || !Au.inherits[ fmt, typeid[ Action ] ] ] continue
-                        fnm : string [ mem.ident ]
-                        if [ out && out.count > 0 ]
-                            fkey  : string ';{fnm}='
-                            fhead : string '{fnm}='
-                            if [ out.starts_with[ fhead ] || out.index_of[ fkey ] >= 0 ] continue
-                        fent : string '{fnm}=action==Action=live'
-                        out = (out && out.count > 0) ? '{out};{fent}' : fent
-                        continue
-                    if [ mem.member_type != AU_MEMBER_VAR ] continue
-                    mt : Au_t mem.meta.m
-                    if [ !mt || !Au.inherits[ mt, typeid[ Launch ] ] ] continue
-                    # an empty literal has no chars: nothing empty is ever interpolated here
-                    # the enum's stops first: they also say how to print the value
-                    en : string [ null ]
-                    if [ mem.src && mem.src.members.count > 0 ]
-                        for [ k: i32 0, k < mem.src.members.count, k += 1 ]
-                            ev : Au_t mem.src.members.origin[k]
-                            if [ !ev || ev.member_type != AU_MEMBER_ENUMV ] continue
-                            pv : cast @i32 [ ev.value ]
-                            iv : i32 [ pv[0] ]
-                            evn : string [ ev.ident ]
-                            en = (en) ? '{en},{evn}:{iv}' : '{evn}:{iv}'
-                    v  : target.member_object[ mem ]
-                    ent : string [ mem.ident ]
-                    # the app's own member of a name wins over the base's: the app is walked first
-                    if [ out && out.count > 0 ]
-                        key  : string ';{ent}='
-                        head : string '{ent}='
-                        if [ out.starts_with[ head ] || out.index_of[ key ] >= 0 ] continue
-                    ent = '{ent}='
-                    # a cstr must never be truth-tested: the compiler reads it as an object
-                    if [ mem.src ]
-                        tn : string [ mem.src.ident ]
-                        ent = '{ent}{tn}'
-                    ent = '{ent}='
-                    # a boxed primitive has no text of its own: print it by its type
-                    if [ v && mem.src ]
-                        if [ en || mem.src == typeid[ i32 ] || mem.src == typeid[ i64 ] ||
-                             mem.src == typeid[ u32 ] || mem.src == typeid[ u64 ] || mem.src == typeid[ bool ] ]
-                            iv : i32 [ i32[ v ] ]
-                            if [ mem.src == typeid[ bool ] ] ent = (iv != 0) ? '{ent}true' : '{ent}false'
-                            el ent = '{ent}{iv}'
-                        el [ mem.src == typeid[ f32 ] || mem.src == typeid[ f64 ] ]
-                            fv : f32 [ f32[ v ] ]
-                            ent = '{ent}{fv}'
-                        el [ mem.src == typeid[ string ] || Au.inherits[ mem.src, typeid[ path ] ] ]
-                            ent = '{ent}{v}'
-                    mb : Au_t mem.meta.member_b
-                    if [ mb && Au.inherits[ mb, typeid[ Range ] ] ]
-                        rg : Range [ Au.new_object[ mb, null, null, true, __FILE__, __LINE__, __SEQUENCE__ ] ]
-                        if [ rg ] ent = '{ent}=Range[{rg.min},{rg.max}]'
-                    el [ mb && Au.inherits[ mb, typeid[ KeyBind ] ] ] ent = '{ent}=Key'
-                    el [ mb && Au.inherits[ mb, typeid[ Stepper ] ] ]
-                        sp : Stepper [ Au.new_object[ mb, null, null, true, __FILE__, __LINE__, __SEQUENCE__ ] ]
-                        if [ sp ] ent = '{ent}=Stepper[{sp.min},{sp.max},{sp.step}]'
-                    el [ mb && Au.inherits[ mb, typeid[ Color ] ] ]     ent = '{ent}=Color'
-                    el [ mb && Au.inherits[ mb, typeid[ PadBind ] ] ]   ent = '{ent}=Pad'
-                    el [ mb && Au.inherits[ mb, typeid[ Directory ] ] ] ent = '{ent}=Dir'
-                    el [ mb && Au.inherits[ mb, typeid[ Multiline ] ] ] ent = '{ent}=Text'
-                    el [ en ] ent = '{ent}=Enum[{en}]'
-                    if [ Au.inherits[ mt, typeid[ Live ] ] ] ent = '{ent}=live'
-                    out = (out && out.count > 0) ? '{out};{ent}' : ent
-            return out
-
         func props_spec [] -> string
             wn : Window [ w ]
             ao : element [ cast element [ wn.app_object ] ]
@@ -1434,8 +1460,6 @@ Display Window
     # 0 frost, 1 blur, 2 soft, 3 raw
     public  frost_mode           : i32 [ 0 ]
     mutable frost_bound          : i32 [ -2 ]
-    # backdrop fade-in: 0 on a fresh bind, ramps to 1
-    mutable reveal               : f32
     # half-size blur; the sharp frost path uses it for the mid stage
     mutable m_soft_v             : Model
     mutable r_soft_v             : Render
@@ -1503,6 +1527,29 @@ Display Window
 
     # backdrop composite redraws per second. 0 = every frame
     public  background_hz       : f32
+    # print the per-second frame stats (fps, fences, paints, draws) on the terminal
+    public  stats               : bool
+    # the costliest element this second (own paint, children excluded); zeroed on read
+    func paint_max [ e: element, best: vec Au ]
+        if [ !e ] return
+        cur : element (best.count > 0) ? cast element [ best[0] ] : null
+        if [ e.paint_us > 0 && (!cur || e.paint_us > cur.paint_us) ]
+            if [ best.count > 0 ] best[0] = Au[ e ]
+            el best.push[ Au[ e ] ]
+        if [ e.elements ]
+            for [ ee: element, id: string ] in e.elements
+                paint_max[ ee, best ]
+
+    public func paint_top [] -> string
+        out : string ''
+        for [ n9: i32 0, n9 < 8, n9 += 1 ]
+            best : vec Au []
+            paint_max[ root, best ]
+            if [ best.count == 0 ] break
+            be : element cast element [ best[0] ]
+            out = '{out} {(be.id && be.id.count > 0) ? be.id : "(noid)"}={be.paint_us}'
+            be.paint_us = 0
+        return out
     # 0 low, 1 high, 2 far. each scene maps it to its own distance
     public  orbit_mode          : i32
     # 0 flat-on, 1 angled, 2 steep. mapped per scene like orbit_mode
@@ -1654,6 +1701,8 @@ Display Window
                 if [ strcmp[ member.ident, "elements" ] == 0 ] continue
                 if [ strcmp[ member.ident, "label" ] == 0 ] continue
                 if [ strcmp[ member.ident, "edit" ] == 0 ] continue
+                # placement state is written by update_element, never rendered
+                if [ strcmp[ member.ident, "first" ] == 0 || strcmp[ member.ident, "last" ] == 0 || strcmp[ member.ident, "middle" ] == 0 || strcmp[ member.ident, "odd" ] == 0 || strcmp[ member.ident, "even" ] == 0 ] continue
                 if [ !e.AF_get_member[ member ] ] continue
                 cur : inst.member_object[ member ]
                 nv  : e.member_object[ member ]
@@ -1666,8 +1715,18 @@ Display Window
                 el
                     differs = (!cur) != (!nv) || ((cur && nv) && cur.compare*[ nv ] != 0)
                 if [ differs ]
+                    # a prop that holds rendered elements (a splitter's inner
+                    # map) is structure, not paint: the children detect their
+                    # own changes, so the fresh reference is taken quietly
+                    structural : bool [ nv && nv inherits element ]
+                    if [ !structural && nv && nv inherits map ]
+                        mm9 : map nv
+                        for [ v9: Au, k9: string ] in mm9
+                            structural = v9 && v9 inherits element
+                            break
+                    if [ stats && !structural ] log 'ARG {(inst.id && inst.id.count > 0) ? inst.id : "(noid)"} {member.ident}'
                     inst.member_set[ member, nv ]
-                    changed = true
+                    if [ !structural ] changed = true
                     if [ strcmp[ member.ident, "icon" ] == 0 ]
                         bb : Button [ inst inherits Button ]
                         if [ bb ] bb.sync_icon[]
@@ -2010,6 +2069,9 @@ Display Window
             for [ i: i32 0, i < list.count - 1, i += 1 ]
                 render : Render list[i]
                 render.draw_hz = rate
+            # the backdrop itself paces the same: the chain only re-blurs a
+            # backdrop that has redrawn
+            if [ backdrop ] backdrop.draw_hz = rate
 
         # deferred focus: runs here, after input and before any draw.
         # NOT `focus_id && root` -- string && element is convertible, so
@@ -3094,14 +3156,13 @@ Display Window
                     break
         if [ !found ] return
         # a resize replaced every attachment: rewire the WHOLE chain from
-        # current colors. no reveal reset — that reads as a flash
+        # current colors
         rb9 : bool [ rebind_frost ]
         rebind_frost = false
         # scene swaps replace the target: rebind, don't bind once
         fresh : bool [ found != backdrop ]
         if [ fresh ]
             backdrop = found
-            reveal   = 0.0
             log 'BACKDROP -> {found.id} {found.width}x{found.height} chain={(chain) ? 1 : 0} m_reduce={(m_reduce) ? 1 : 0}'
         if [ rb9 ]
             rewire_frost[]
@@ -3131,6 +3192,14 @@ Display Window
     # push solid_color to the background shader NOW, not on the next resize.
     # on-change only (scene mount / stage flip), so the flat stage is correct
     # from the first frame even while a scene's 3d models still load async
+    # the app declares a backdrop is coming (a configured scene): loaded
+    # once it has drawn. with none declared, the first frame is loaded
+    public expect_backdrop : bool
+
+    public func loaded [] -> bool
+        if [ backdrop ] return backdrop.has_drawn
+        return !expect_backdrop
+
     public func apply_solid [ ] -> bool
         s9 : bool [ frost_eff[] == 3 ]
         # solid: the scene target is not drawn at all, only the flat color
@@ -3238,17 +3307,6 @@ Display Window
         # a frost element publishes its target mid-frame, not on resize
         bind_backdrop   [ ]
         if [ !ide_active ] animate [ ]
-        # the fade ticks here: update[] only runs on resize, and animate[]
-        # (which owns frame_factor) is skipped entirely while the ide is up
-        if [ backdrop && reveal < 1.0 ]
-            reveal += 0.03 * (frame_factor > 0.0) ? frame_factor : 1.0
-            if [ reveal > 1.0 ] reveal = 1.0
-            will_animate = true
-        el [ !backdrop ]
-            reveal = 1.0
-        if [ m_view ]
-            b : UXBackground [ m_view.s ]
-            if [ b ] b.reveal = reveal
 
     func on_screen []
         if [ !screen ] return
@@ -3266,7 +3324,9 @@ Display Window
 
         app_object.on_canvas*[ screen ]
 
+        ts0 : i64 [ epoch_micros[] ]
         layout_element[ root, null, null, null, screen ]
+        ts1 : i64 [ epoch_micros[] ]
 
         if [ ide_active && root.elements ]
             shell : cast element [ root.elements[ 'hostedshell' ] ]
@@ -3277,7 +3337,9 @@ Display Window
         el
             draw_element[ root, CanvasType.screen, null ]
 
+        ts2 : i64 [ epoch_micros[] ]
         app_object.on_overlay*[ screen ]
+        ts3 : i64 [ epoch_micros[] ]
 
         if [ stdout_overlay && !text_mode && !hidden ]
             Au.stdout_tee[]
@@ -3322,10 +3384,15 @@ Display Window
             vec2f [ 0.0, 0.0 ],
             false ]
         ##
+        ts4 : i64 [ epoch_micros[] ]
         screen.paint[]
         screen.flush_text[]
         screen.sync_fence[]
         screen.restore[]
+        vk.ph_layout  += ts1 - ts0
+        vk.ph_elems   += ts2 - ts1
+        vk.ph_overlay += ts3 - ts2
+        vk.ph_flush   += epoch_micros[] - ts4
 
 
     func box_bits [ cp: i32 ] -> i32
@@ -4199,11 +4266,13 @@ Display Window
                 cv.scale_xy[ sx, sy ]
             cv.translate[ -pivot_x, -pivot_y ]
 
+        if [ stage == CanvasType.screen ] e.tick*[ a ]
         # painted straight to the screen, an uncached element draws every frame
         redraw : bool [ e.animated || !e.pristine || nc || stage == CanvasType.compose ]
+        tpe0 : i64 [ (stats) ? epoch_micros[] : 0 ]
         if [ redraw && e.cache_canvas && !e.animated && !nc && stage == CanvasType.screen ]
             eid : string [ (e.id && e.id.count > 0) ? e.id : '(noid)' ]
-            #log 'REDRAW {eid} {ew}x{eh} pristine={e.pristine}'
+            if [ stats ] log 'REDRAW {eid} {ew}x{eh} pristine={e.pristine} animated={e.animated} nc={nc}'
         if [ redraw && e.cache_canvas && !e.animated && !nc && stage == CanvasType.screen ]
             e.cache_canvas.reset[ vec4f[0.0, 0.0, 0.0, 0.0] ]
             if [ e.cache_ox > 0 || e.cache_oy > 0 ]
@@ -4266,7 +4335,8 @@ Display Window
                 pad     : f32 [ blur_r * 2.0 ]
                 bw : i32 [ i32[b.w + pad] + 1 ]
                 bh : i32 [ i32[b.h + pad] + 1 ]
-                if [ !layer.blur_canvas || layer.blur_bw != bw || layer.blur_bh != bh ]
+                resized9 : bool [ !layer.blur_canvas || layer.blur_bw != bw || layer.blur_bh != bh ]
+                if [ resized9 ]
                     layer.blur_canvas = Canvas [ w: a, vk: vk, format: Pixel.rgba8, width: bw, height: bh ]
                     layer.blur_canvas.update[]
                     layer.blur_bw = bw
@@ -4274,7 +4344,12 @@ Display Window
                     layer.blur_dirty = true
                 if [ !e.pristine ]
                     layer.blur_dirty = true
-                if [ layer.blur_dirty ]
+                # the blur cascade is several fenced passes: pace it at the
+                # backdrop rate (subtle = 4 Hz) unless the size changed
+                now9 : i64 [ epoch_millis[] ]
+                due9 : bool [ background_hz <= 0.0 || now9 - layer.blur_ms >= i64[ 1000.0 / background_hz ] ]
+                if [ layer.blur_dirty && (resized9 || due9) ]
+                    layer.blur_ms = now9
                     layer.blur_canvas.reset[ vec4f[0.0, 0.0, 0.0, 0.0] ]
                     draw_cv = layer.blur_canvas
                     draw_cv.save[]
@@ -4539,6 +4614,7 @@ Display Window
                 sbn.draw[ cv ]
                 cv.restore[ ]
 
+        if [ stats && stage == CanvasType.screen ] e.paint_us += epoch_micros[] - tpe0
         last_2 : element
         for [ ee: element, id: string ] in e.elements
             if [ ee.topmost ] continue
@@ -4764,7 +4840,7 @@ abstract media_app trinity
             cwin.restyle = true
             Au.auto_free[ true ]
             return
-        ifdef [ linux ]
+        ifdef [ unix ]
             if [ attach ]
                 at_start[ rt ]
                 Au.auto_free[ true ]
@@ -4776,6 +4852,8 @@ abstract media_app trinity
         w = window
         Au.hold[ w ]
         root.vk = window.vk
+        # the app loads hidden
+        window.hidden = true
         w.update *[]
         render   *[]
         w.resize[w.width, w.height]
@@ -4798,11 +4876,14 @@ abstract media_app trinity
                 if [ os ] os.frame[]
         u1 : i64 [ epoch_micros[] ]
         window.draw[]
+        # loaded hidden; shown once the scene has drawn (--hidden stays hidden)
+        if [ window.hidden && !hidden && window.loaded[] ]
+            window.hidden = false
         vk.update_us += u1 - u0
         vk.draw_us   += epoch_micros[] - u1
         frames += 1
 
-    ifdef [ linux ]
+    ifdef [ unix ]
         func at_start [ rt: Au_t ]
             aw : i32 [ (width)  ?? 1280 ]
             ah : i32 [ (height) ?? 720 ]
@@ -5061,6 +5142,7 @@ element TButtons
         if [ disable || (disable_mask & (1 << i)) != 0 ] return
         if [ !manual ] selected = i
         a.id = buttons[ i ]
+        if [ ux && ux.stats ] log 'TBUTTONS press seg={i} id={buttons[ i ]}'
 
     func on_move [ ev: Event ]
         hover_ix = seg_at[ ev ]
@@ -5068,7 +5150,6 @@ element TButtons
             hover_ix = -1
 
 element Splitter
-    animated : true
     public inner       : map element [ string ]
     public vertical   : bool
     public line_color : rgba [ '#222' ]     # the 1px divider line
@@ -5176,8 +5257,8 @@ element Splitter
         if [ dbgf > 0 ] dbgf -= 1
         return out
 
-    public func draw [ w: Window ]
-        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+    public func tick [ w: Window ]
+        if [ !bounds ] return
         ids : order[]
         n   : i32 [ ids.count ]
         if [ n == 0 ] return
@@ -5637,7 +5718,7 @@ element IDEOverlay
     mutable req_h   : i32
 
     func service [ cv: Canvas ]
-        ifdef [ linux ]
+        ifdef [ unix ]
             latest : i32 [ host_tex_gen[ host_slot[], 1 ] ]
             if [ latest == gen || latest <= 0 ] return
             wide : i32
@@ -5857,7 +5938,7 @@ ModelViewProject UXBackground
     mutable low_color    : vec4f
     mutable high_color   : vec4f
     mutable dim_floor    : f32
-    mutable reveal       : f32
+    mutable _dpad0       : f32
     mutable _dpad1       : f32
     mutable _dpad2       : f32
     # a > 0: paint this and sample nothing (the solid stage)
@@ -5910,10 +5991,9 @@ ModelViewProject UXBackground
         float luminance = 1.0 - ((comp.b - 0.5020) * 2.0);
         // a backdrop element may ask to keep more of its own light
         luminance = max(luminance, ubo.dim_floor);
-        // the scene fades up from black as it finishes loading
-        vec3  bgc = texture(background, v_uv).rgb * ubo.reveal;
-        vec3  blc = texture(blur,       v_uv).rgb * ubo.reveal;
-        vec3  frc = texture(frost,      v_uv).rgb * ubo.reveal;
+        vec3  bgc = texture(background, v_uv).rgb;
+        vec3  blc = texture(blur,       v_uv).rgb;
+        vec3  frc = texture(frost,      v_uv).rgb;
         vec3  f;
 
         if (comp.r < 0.5020) {

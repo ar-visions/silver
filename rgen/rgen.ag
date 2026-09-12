@@ -129,7 +129,16 @@ element rgen : trinity
 	public  height       : i32    [ 896 ]    # 224 x4
 	public  lock_aspect  : bool   [ true ]
 	public  background   : string [ 'Background' ]
-	default rom          : path              # cartridge image
+	default [ Live ] rom : resource          # cartridge image
+		log 'rom changed: {rom} (thread {(emu_started) ? 1 : 0})'
+		if [ emu_started ]
+			emu_stop = true
+			while [ emu_running ] usleep[ 1000 ]
+			emu_stop    = false
+			emu_started = false
+		# the next draw boots again: boot loads cart, and the thread follows
+		cart   = null
+		booted = false
 	public  frames_exit  : i32               # auto-quit after N frames (0 = run forever)
 	public  resume       : bool              # boot into /tmp/rgen_state.bin
 	public  save_at      : i32               # auto-save state at frame N (0 = off)
@@ -195,7 +204,7 @@ element rgen : trinity
 	mutable sample_frac  : i64               # 53267/59.9227 fractional sample carry
 	mutable psg_volt     : new i32 [ 16 ]    # PSG 2dB attenuation steps -> amplitude
 	mutable psg_acc      : i64               # PSG clock/16 accumulator vs sample rate
-	public  volume       : f32               # master volume 0..1 (default 0.25)
+	public [ Live, VolumeRange ] volume : f32 [ 0.25 ]   # master volume 0..1, a slider on the host
 	mutable logsin       : new i32 [ 256 ]   # -log2(sin) quarter table (generated)
 	mutable expt         : new i32 [ 256 ]   # 2^-x/256 * 2048 table (generated)
 	mutable fm_l         : i32               # last FM sample, stereo
