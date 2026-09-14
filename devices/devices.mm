@@ -426,6 +426,17 @@ void platform_window_show(platform_window* w) {
     [NSApp activateIgnoringOtherApps:YES];
 }
 
+void platform_window_hide(platform_window* w) {
+    [w->window orderOut:nil];
+}
+
+int platform_window_refresh_hz(platform_window* w) {
+    NSScreen* s = w->window.screen ? w->window.screen : [NSScreen mainScreen];
+    if (!s) return 60;
+    if (@available(macOS 12.0, *)) { int hz = (int)s.maximumFramesPerSecond; return hz > 0 ? hz : 60; }
+    return 60;
+}
+
 void platform_window_set_title(platform_window* w, const char* t) {
     w->window.title = [NSString stringWithUTF8String:t ? t : ""];
 }
@@ -902,6 +913,8 @@ platform_window* platform_window_create(int width, int height, const char* title
 
 void platform_window_destroy(platform_window* w) { if (w) { w->window.hidden = YES; free(w->clip); free(w); } }
 void platform_window_show(platform_window* w) { [w->window makeKeyAndVisible]; }
+void platform_window_hide(platform_window* w) {}
+int  platform_window_refresh_hz(platform_window* w) { return 60; }
 void platform_window_set_title(platform_window* w, const char* t) {}
 void platform_window_set_size(platform_window* w, int width, int height) {}
 void platform_window_get_size(platform_window* w, int* width, int* height) {

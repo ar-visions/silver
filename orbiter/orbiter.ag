@@ -400,7 +400,7 @@ element EditorView
         inner['console'] = RunConsole [ session_id: (e && e.run_view) ? e.run_view.console_id[] : 'ed:all',
             sessions: o.ed_sessions, feed: null,
             run_line: (e && e.run_view) ? e.run_view.cmd : null,
-            animated: true, elements: cf ]
+            elements: cf ]
         # the console stands alone; the callstack is an instrument in the panel
         t['split'] = Splitter [ area: Region { l0 t0 r0 b0 }, inner: inner, deflt: 0.0, share: 0.375 ]
         return t
@@ -940,6 +940,7 @@ NavButton CloseChip
 
 # staged live-reload: small button at the left of the bottom status bar
 Option ReloadButton
+    no_cache : true
     tlabel : Layer [ label_color: rgba [ '#fff' ], label_size: 14,
         label_align: vec2f [ x: 0.5, y: 0.5 ],
         label_offset: vec2f [ x: 0.0, y: -1.0 ],
@@ -961,6 +962,7 @@ Option ReloadButton
 
 # center of the status bar: hides everything above it but the scene
 Option HideToggle
+    no_cache : true
     tlabel : Layer [ label_color: rgba [ '#fff9' ], label_size: 13,
         label_align: vec2f [ x: 0.5, y: 0.5 ],
         label_offset: vec2f [ x: 0.0, y: -1.0 ] ]
@@ -981,6 +983,7 @@ Option HideToggle
 
 # non-clickable chip in the same spot: what the reload is doing right now
 element ReloadStatus
+    no_cache : true
     style : CSS {
         area: l8px t2px w110px h18px
         layers.body:
@@ -999,6 +1002,7 @@ element ReloadStatus
 # scrolling up to its # annotation. a plain label from the bar's left edge;
 # it gives the spot up while a reload chip is showing
 element DebugValue
+    no_cache : true
     style : CSS {
         area: l8px t2px r8px h18px
         layers.body:
@@ -1068,8 +1072,6 @@ Option AppError
 # the bar owns every gap in here, edges included, instead of each
 # control carrying its own l8px/r0 offset
 Group StatusBar
-    # the whole bar paints straight to the screen: none of its chips cache
-    no_cache : true
     style : CSS {
         area: l0 b22px r0 h22px
         spacing_x: 1px
@@ -1086,6 +1088,7 @@ Group StatusBar
 
 # scene stepper arrow; icon is images/left.svg | right.svg
 Option SceneArrow
+    no_cache : true
     # NO hand-written t2px: the bar's spacing owns every gap now, and
     # 2px on top of it put an 18px icon at y=6 in a 22px bar
     area : Region { r0+ t0px w18px h18px }
@@ -1114,6 +1117,7 @@ Option SceneArrow
     }
 
 element SceneName
+    no_cache : true
     style : CSS {
         area: r0+ t0px w101px h18px
         layers.body:
@@ -1476,6 +1480,7 @@ element LaunchPanel
     # the instance's own switch above its properties: a debug build on its next start
     public  dbg_row   : bool
     public  dbg_on    : bool
+    public  pid_val   : i32         # the running process, shown read-only; 0 = none
     mutable last_spec : string
     mutable last_inst : i32
 
@@ -1514,10 +1519,6 @@ element LaunchPanel
     # a field view: one property per row, the name at the left, the value filling the rest
     func render [] -> Elements
         t : Elements []
-        if [ !spec || spec.count == 0 ]
-            t['lp_none'] = LaunchLabel [ label: 'no launch parameters', area: Region [ 'l0.3 t0.2 w8 h0.9' ] ]
-            content_h = 1.3 * fc
-            return t
         # a grid like the callstack's: 20px rows, a name column, 1px rules between
         pw : f32 [ (bounds && bounds.w > 0.0) ? bounds.w : 280.0 ]
         lw : f32 [ round[ pw * 0.38 ] ]
@@ -1541,6 +1542,20 @@ element LaunchPanel
                 area: Region [ 'l{lw + 1.0}px t{y}px w{rh}px h{rh}px' ] ]
             y += rh
             rule_ys.push[ y ]
+        # the instance's pid: orbiter's row, read-only, given every frame
+        if [ dbg_row ]
+            t['lp_pid_lbl'] = LaunchLabel [ label: 'pid', area: Region [ 'l6px t{y}px w{lw - 6.0}px h{rh}px' ] ]
+            t['lp_pid_val'] = LaunchLabel [ label: (pid_val > 0) ? '{pid_val}' : '-',
+                area: Region [ 'l{lw + 7.0}px t{y}px r0 h{rh}px' ] ]
+            y += rh
+            rule_ys.push[ y ]
+        if [ !spec || spec.count == 0 ]
+            t['lp_none'] = LaunchLabel [ label: 'no launch parameters', area: Region [ 'l6px t{y}px r0 h{rh}px' ] ]
+            y += rh
+            content_h = y + scroll.y
+            rows_h    = content_h
+            col_x     = lw
+            return t
         ents : spec.split[ ';' ]
         for [ ent: string ] in ents
             f : ent.split[ '=' ]
@@ -1616,11 +1631,12 @@ element LaunchPanel
             el [ en ]
                 names : enum_names[ desc ]
                 if [ ex9 ]
-                    t['lp_{nm}'] = TButtons [ buttons: names, icons: false, manual: false, seg_radius: 0.0, area: ar9 ]
+                    t['lp_{nm}'] = TButtons [ buttons: names, icons: false, manual: false, seg_radius: 0.0,
+                        label_px: rh * 0.5 - 2.0, area: ar9 ]
                 el
                     idx9 : i32 [ enum_index[ desc, cur, df ] ]
                     t['lp_{nm}'] = TButtons [ buttons: names, icons: false, manual: false, seg_radius: 0.0,
-                        selected: idx9, area: ar9 ]
+                        selected: idx9, label_px: rh * 0.5 - 2.0, area: ar9 ]
             el [ sl ]
                 if [ ex9 ]
                     t['lp_{nm}'] = LaunchSlider [ label: '', area: ar9 ]
@@ -1880,7 +1896,9 @@ class inst_state
     public src   : path
     public args  : string
     public pip   : bool
+    public display : i32
     public debug : bool
+    public pane  : i32 [ -1 ]     # the pane showing it, -1 when none
 
 class FileChg
     public adds : i32
@@ -1940,37 +1958,18 @@ element orbiter : trinity # implements compiler
     public consoles      : map ConsoleInstance [string]
     intern ed_sessions   : map ConsoleSession [string]
     intern shot_n        : i32
-    intern orbit_app      : string
-    # summoned shell bound its pane-0 AppView to the peer (once)
-    intern orbit_bound    : bool
-    # the agent tab's session id ('' = shell mode off)
+    # the agent tab's session id ('' = agent tab off)
     public orbit_sid      : string
     # the one agent session is working — drives the avatar tilt
     public busy           : bool
     intern busy_at        : i64
     intern cell_dumped    : bool
-    intern orbit_ctx      : string
-    intern orbit_ctx_sent : bool
-    intern orbit_hello_at : i32
-    # one-shot startup voice test fired
-    intern orbit_voice_tested : bool
     intern frost_pushed  : i32 [ -1 ]         # last frost stage synced to shader
-    # the crash verdict has been typed into the agent session
-    intern orbit_reported : bool
-    intern orbit_enter_at : i32
-    intern orbit_spoken   : vec string
     # mic capture running / final transcription winding down
     intern orbit_cap_on   : bool
     intern orbit_flushing : bool
     # last dictate command (edge-detect) via on_host
     intern orbit_dstate   : i32 [ -1 ]
-    # attached app's pid — once it dies this shell must exit
-    intern orbit_app_pid  : i32 [ 0 ]
-    intern orbit_isolate  : string           # SILVER_ISOLATE_SESSION, read in init
-    intern orbit_status   : string           # SILVER_ISOLATE_STATUS, read in init
-    intern orbit_sroot    : string           # SILVER root, read in init
-    intern orbit_oc       : string
-    intern orbit_cc       : string
     intern debuggers     : map dbg [string]
     intern debug_vars         : vec Au
     intern frame_cache        : vec Au
@@ -2188,39 +2187,6 @@ element orbiter : trinity # implements compiler
             el
                 resource    = module_args
                 module_args = ''
-        # every env lookup happens here, once; frames read the members
-        se : getenv[ 'SILVER_ISOLATE_SESSION' ]
-        if [ se ]
-            orbit_isolate = string [ se ]
-            orbit_isolate.hold[]
-        st : getenv[ 'SILVER_ISOLATE_STATUS' ]
-        if [ st ]
-            orbit_status = string [ st ]
-            orbit_status.hold[]
-        sv : getenv[ 'SILVER' ]
-        orbit_sroot = (sv) ? string [ sv ] : string '{startup_path}'
-        orbit_sroot.hold[]
-        pe : getenv[ 'SILVER_ISOLATE_APP_PID' ]
-        if [ pe ]
-            ps : string [ pe ]
-            orbit_app_pid = i32[ ps.integer_value[] ]
-        ae : getenv[ 'SILVER_ISOLATE_APP' ]
-        if [ ae ]
-            orbit_app = string [ ae ]
-            orbit_app.hold[]
-            ob : local i8 [ 3 ]
-            ob[0] = 123
-            ob[1] = 123
-            ob[2] = 0
-            orbit_oc = string [ @ob[0] ]
-            orbit_oc.hold[]
-            cb : local i8 [ 3 ]
-            cb[0] = 125
-            cb[1] = 125
-            cb[2] = 0
-            orbit_cc = string [ @cb[0] ]
-            orbit_cc.hold[]
-            if [ !resource || resource.count == 0 ] resource = orbit_app
         dbg_start : bool [ false ]
         if [ resource && resource.count > 0 ]
             rp : path '{startup_path}/{resource}'
@@ -2256,15 +2222,9 @@ element orbiter : trinity # implements compiler
                         dbg_start = true
                 el
                     log 'orbiter: no such resource {resource}'
-        if [ orbit_app ]
-            pending_run = -1
-            active_pane = 0
         orbit_sid = agent_sid[]
         orbit_sid.hold[]
         if [ !ed_sessions ] ed_sessions = map ConsoleSession [string] [ ]
-        if [ orbit_app && !ed_sessions[ orbit_sid ] ]
-            agent_open = true
-            ensure_console[ orbit_sid ]
         filter_text    = ''
         find_text      = ''
         findbar_open   = false
@@ -2353,8 +2313,12 @@ element orbiter : trinity # implements compiler
         if [ instances ]
             for [ av: AppView ] in instances
                 if [ av.viewer || !av.src ] continue
+                pn9 : i32 [ -1 ]
+                for [ i: i32 0, i < editor_slots.count, i += 1 ]
+                    e8 : Editor pane_at[ i ]
+                    if [ e8 && e8.run_view == av ] pn9 = i
                 ists.push[ inst_state [ src: av.src, args: (av.module_args) ? av.module_args : '', pip: av.pip,
-                    debug: av.debug_build ] ]
+                    display: av.display, debug: av.debug_build, pane: pn9 ] ]
         inst_states = ists
         scene       = scene_loaded[]
         save-persistent[]
@@ -2392,10 +2356,16 @@ element orbiter : trinity # implements compiler
                 nv : AppView [ ]
                 nv.src         = st.src
                 nv.module_args = st.args
-                nv.pip         = st.pip
+                # a session from before display: pip false meant full
+                nv.display     = (st.display > 0) ? st.display : ((st.pip) ? 0 : 1)
+                nv.pip         = nv.display == 0
                 nv.debug_build = st.debug
                 nv.held        = true
                 add_instance[ nv ]
+                # the one a pane showed comes back into it once that pane is up
+                if [ st.pane >= 0 ]
+                    pending_show      = nv.iid
+                    pending_show_pane = st.pane
 
     func load_settings []
         sp  : agi_path[]
@@ -2807,39 +2777,6 @@ element orbiter : trinity # implements compiler
         s.write_input[ text ]
         s.send_esc[ '[201~' ]
 
-    # the supervised-app agent session (shell mode only)
-    func orbit_session [] -> ConsoleSession
-        if [ !orbit_sid || orbit_sid.count == 0 ] return null
-        if [ !ed_sessions ] return null
-        return ed_sessions[orbit_sid]
-
-    public func orbit_relaunch []
-        k : string 'SILVER_ISOLATE_RESTART'
-        v : string '1'
-        setenv[ k.chars, v.chars, 1 ]
-
-    public func orbit_close []
-        host_post[ 1, i32[ HM.close ], 0, 0, 0 ]
-
-    func orbit_send [ body: string ]
-        s6 : ConsoleSession orbit_session[]
-        if [ !s6 ]
-            log 'orbit_send: NO session'
-            return
-        m6 : string body
-        if [ !orbit_ctx_sent && orbit_ctx && orbit_ctx.count > 0 ]
-            orbit_ctx_sent = true
-            m6 = ((body && body.count > 0) ? '{orbit_ctx} {body}' : orbit_ctx)
-        if [ !m6 || m6.count == 0 ] return
-        ss : string ''
-        if [ orbit_isolate ] ss = orbit_isolate
-        shot : path '/tmp/silver-app-{ss}.png'
-        tree : path '/tmp/silver-app-{ss}.agi'
-        if [ shot.exists[] ] m6 = 'app screenshot: {shot}  {m6}'
-        if [ tree.exists[] ] m6 = 'element tree: {tree}  {m6}'
-        s6.write_input[ '{m6}\r' ]
-        orbit_enter_at = 120
-
     public func on_host [ mt: i32, wp: i32, lp: i32, xp: i32 ]
         if [ mt != 1 ] return
         s : i32 [ wp ]
@@ -2889,83 +2826,8 @@ element orbiter : trinity # implements compiler
         bd : string dt
         if [ listen_file ] bd = '{listen_file}  {dt}'
         listen_file = null
-        if [ orbit_app ]
-            orbit_send[ 'user {orbit_oc} {bd} {orbit_cc}' ]
-            return
         sa : ConsoleSession ensure_console[ orbit_sid ]
         if [ sa ] sa.write_input[ '{bd}\r' ]
-
-    func orbit_frame [ w: Window ]
-        if [ attach ]
-            if [ orbit_app_pid > 0 && host_pid_alive[ orbit_app_pid ] == 0 ] exit[ 0 ]
-        # render every frame so the WndProc pump keeps running
-        w.will_animate = true
-        if [ !orbit_voice_tested ]
-            orbit_voice_tested = true
-            rcv : i32 [ tts_init[ '' ] ]
-            log 'voice-test: tts_init rc {rcv}'
-            if [ rcv == 0 ]
-                vt9 : string 'orbiter voice is working'
-                tts_say[ vt9.chars, 8, 1.0 ]
-        if [ !orbit_ctx ]
-            sroot : string [ orbit_sroot ]
-            vox : string 'every single reply must end with one line of the exact form speak {orbit_oc} one short spoken sentence {orbit_cc} — that line is synthesized aloud to the user; never omit it. the user speaks by voice and their words arrive wrapped user {orbit_oc} like this {orbit_cc}.'
-            prm : string 'the app {orbit_app} runs under orbiter. its source is {sroot}/{orbit_app}/{orbit_app}.ag. when it crashes the report is typed here — investigate and help fix it.'
-            if [ attach ]
-                prm = 'the user switched to orbiter from the running app {orbit_app}. its source is {sroot}/{orbit_app}/{orbit_app}.ag — assist with the app live; if it faults, the crash report is typed here.'
-            orbit_ctx = '{prm} {vox}'
-            orbit_ctx.hold[]
-        if [ !orbit_ctx_sent ]
-            if [ orbit_hello_at == 0 ] orbit_hello_at = 240
-            orbit_hello_at -= 1
-            if [ orbit_hello_at == 1 ] orbit_send[ '' ]
-        # the deferred submit Enter (see orbit_send)
-        if [ orbit_enter_at > 0 ]
-            orbit_enter_at -= 1
-            if [ orbit_enter_at == 0 ]
-                s7 : ConsoleSession orbit_session[]
-                if [ s7 ] s7.write_input[ '\r' ]
-        s2 : ConsoleSession orbit_session[]
-        if [ s2 ]
-            if [ !orbit_spoken ]
-                orbit_spoken = vec string []
-                orbit_spoken.hold[]
-            mk : string 'speak {orbit_oc}'
-            nl : i32 [ s2.line_count[] ]
-            lo : i32 [ (nl > 60) ? nl - 60 : 0 ]
-            for [ li: i32 lo, li < nl, li += 1 ]
-                ln2 : string s2.line_get[ li ]
-                if [ !ln2 || ln2.count == 0 ] continue
-                a2 : i32 [ ln2.index_of[ mk ] ]
-                if [ a2 < 0 ] continue
-                st2  : i32 [ a2 + i32[ mk.count ] ]
-                rest : string ln2.mid[ st2, ln2.count - st2 ]
-                b2 : i32 [ rest.index_of[ orbit_cc ] ]
-                if [ b2 <= 0 ] continue
-                ut : string rest.mid[ 0, b2 ]
-                if [ !ut || ut.count == 0 ] continue
-                # the prompt's own example echoes on screen — never say it
-                if [ ut == ' one short spoken sentence ' ] continue
-                dup : bool [ false ]
-                for [ sp2: string ] in orbit_spoken
-                    if [ sp2 == ut ]
-                        dup = true
-                        break
-                if [ dup ] continue
-                orbit_spoken.push[ ut ]
-                rc2 : i32 [ tts_init[ '' ] ]
-                log 'speak-scan: voicing "{ut}" (tts_init rc {rc2})'
-                if [ rc2 == 0 ]
-                    tts_say[ ut.chars, 8, 1.0 ]
-        st : string [ orbit_status ]
-        if [ st && !orbit_reported ]
-            orbit_reported = true
-            orbit_send[ 'the app crashed: {st} — investigate.' ]
-            if [ tts_init[ '' ] == 0 ]
-                sp : string 'the app crashed with {st}.'
-                tts_say[ sp.chars, 8, 1.0 ]
-        el [ !st ]
-            orbit_reported = false
 
     func request_context [] -> none
         done : bool [ false ]
@@ -3550,8 +3412,9 @@ element orbiter : trinity # implements compiler
                 pending_show_pane = pi
                 return
         ed.run_view  = av
+        session_dirty = true
         # an instance in pip stays in pip when it is selected
-        ed.app_view  = !av.pip
+        ed.app_view  = av.display == 1
         ed.pristine  = false
         ed.no_scroll = true
         active_pane  = pi
@@ -3560,6 +3423,20 @@ element orbiter : trinity # implements compiler
 
     # the instance row's icon starts or stops it; the step group pauses,
     # continues and steps
+    # the instance's display: every change is live in the process (its
+    # frames come to the pane, or its own window shows); nothing relaunches
+    func set_display [ ed: Editor, av: AppView, d: i32 ]
+        old : i32 [ av.display ]
+        if [ old == d ] return
+        av.display = d
+        av.pip     = d == 0
+        av.disp_ms = epoch_millis[]
+        session_dirty = true
+        if [ ed && ed.run_view == av ]
+            want : bool [ d == 1 ]
+            if [ ed.app_view != want ] ed.toggle_app_view[]
+            av.pip = d == 0
+
     func instance_action [ ed: Editor, av: AppView, act: string ]
         if [ !av ] return
         if [ act.compare[ 'play' ] == 0 ]
@@ -3569,8 +3446,8 @@ element orbiter : trinity # implements compiler
                     fs : file_state args_state_of[ ed ]
                     if [ fs && fs.args && fs.args.count > 0 ] av.module_args = fs.args
                 av.held = false
-                # a restored instance keeps its pip: the pane shows it one way, never both
-                if [ ed ] ed.app_view = !av.pip
+                # a restored instance keeps its display: the pane shows it one way, never both
+                if [ ed ] ed.app_view = av.display == 1
                 return
             if [ av.ended ] av.restart[ false ]
             return
@@ -5360,16 +5237,6 @@ element orbiter : trinity # implements compiler
             ev.no_default = true
             return
         # pip shrinks the app into the editor; its instruments stay open
-        if [ ev.target.id == 'pip' ]
-            for [ e: element* ev.target, e, e = e.parent ]
-                if [ e inherits EditorView ]
-                    ev6 : EditorView e
-                    ed6 : Editor pane_at[ ev6.pane_index ]
-                    if [ ed6 ] ed6.toggle_app_view[]
-                    break
-            if [ ev.target ] ev.target.ux.restyle = true
-            ev.no_default = true
-            return
         if [ ev.target.id == 'scene_prev' ]
             scene_step[ -1 ]
             ev.no_default = true
@@ -5475,6 +5342,12 @@ element orbiter : trinity # implements compiler
         if [ ev.target inherits TButtons && ev.target.parent && ev.target.parent inherits LaunchPanel ]
             lpb : LaunchPanel ev.target.parent
             edb : Editor pane_of[ ev.target ]
+            # the display is trinity's live enum, and orbiter acts on it too:
+            # the pane view, and a relaunch when hosted turns windowed or back
+            if [ edb && edb.run_view && lpb.elements && lpb.elements.contains[ 'lp_display' ] &&
+                 lpb.elements[ 'lp_display' ] == ev.target ]
+                tbd : TButtons ev.target
+                if [ tbd.selected >= 0 && tbd.selected <= 3 ] set_display[ edb, edb.run_view, tbd.selected ]
             fsb : file_state args_state_of[ edb ]
             if [ fsb ]
                 fsb.args = lpb.compose[]
@@ -6002,7 +5875,6 @@ element orbiter : trinity # implements compiler
     public func draw [ w: Window ]
         if [ w.draw_stage != CanvasType.screen ] return
         if [ orbit_cap_on ] dictation_gpu[ Canvas w.screen ]
-        if [ orbit_app ] orbit_frame[ w ]
         mic_frame[]
 
         if [ cycle ]
@@ -6084,17 +5956,20 @@ element orbiter : trinity # implements compiler
             # is picked up on the 60-second interval
             if [ git_dirty && now_ms - git_last >= 60000 ] git_summarize[]
 
-        if [ orbit_app && attach && !orbit_bound ]
-            edo : Editor pane_at[ 0 ]
-            if [ edo ]
-                edo.attach_app_run[ orbit_app ]
-                orbit_bound = true
-
         if [ instances ]
             for [ av8: AppView ] in instances
                 if [ av8.props && av8.props.count > 0 && av8.app_mod ]
                     if [ !module_props ] module_props = map string [string] []
                     module_props[ av8.app_mod ] = av8.props
+                # the app changed its own display: the pane and panel follow it
+                if [ av8.disp_pending >= 0 ]
+                    dp8 : i32 [ av8.disp_pending ]
+                    av8.disp_pending = -1
+                    ed8 : Editor null
+                    for [ i: i32 0, i < editor_slots.count, i += 1 ]
+                        e8 : Editor pane_at[ i ]
+                        if [ e8 && e8.run_view == av8 ] ed8 = e8
+                    set_display[ ed8, av8, dp8 ]
                 # a held one waits for its row; an unstarted one starts here even unshown
                 if [ av8.held || av8.ended ] continue
                 # the host parks a new app for the debugger; release it shown or not
@@ -6119,14 +5994,16 @@ element orbiter : trinity # implements compiler
                     if [ e8 && e8.run_view == av8 ] shown8 = true
                 if [ !shown8 ]
                     av8.stopped = (av8.debugger && av8.debugger.active && !av8.debugger.running) ? true : false
+                    # the pace of an app shown in the pane: this display's refresh
+                    if [ av8.host_hz <= 0 ] av8.host_hz = w.refresh_hz[]
                     av8.service[ w.screen ]
         attach_publish[]
         if [ pending_show > 0 ]
             edp9 : Editor pane_at[ pending_show_pane ]
             avp9 : AppView instance_by[ pending_show ]
-            if [ !edp9 || !avp9 || !avp9.src ]
+            if [ !avp9 || !avp9.src ]
                 pending_show = 0
-            el
+            el [ edp9 ]
                 bsp9 : path edp9.band_src[]
                 if [ bsp9 && '{bsp9.absolute[]}' == '{avp9.src.absolute[]}' ]
                     pending_show = 0
@@ -6170,11 +6047,8 @@ element orbiter : trinity # implements compiler
         if [ ed_sessions ]
             for [ s: ConsoleSession, k: string ] in ed_sessions
                 if [ s.pty_fd >= 0 ]
-                    w.will_animate = true
-                    # the app wrote: the consoles repaint as a press would
-                    if [ s.read_output[] ]
-                        w.restyle = true
-                        dirty_consoles[ w.root ]
+                    # the app wrote: the consoles showing it repaint, nothing else
+                    if [ s.read_output[] ] dirty_consoles[ w.root ]
         if [ ed_sessions ]
             ags : ConsoleSession ed_sessions[ orbit_sid ]
             if [ ags && ags.agent_busy[] ] busy_at = epoch_millis[]
@@ -6184,7 +6058,6 @@ element orbiter : trinity # implements compiler
                 if [ !d || !d.active ] continue
                 ds : ConsoleSession ed_sessions[ dn ]
                 if [ !ds ] continue
-                w.will_animate = true
                 ds.feed_fd[ d.fifo_fd_out ]
                 ds.feed_fd[ d.fifo_fd_err ]
 

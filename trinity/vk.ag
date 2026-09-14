@@ -1007,6 +1007,7 @@ class vk_context
     intern  frame_no            : i64
     intern  fence_pool          : vec u64
     public  fence_new           : VkFence
+    public  copy_cmd_last       : VkCommandBuffer   # the buffer copy_image_async just submitted
     public  pending_cmds        : vec Command
     public  bindres_calls       : i32
     public  bindres_us          : i64
@@ -2078,6 +2079,63 @@ class vk_context
         vkFreeCommandBuffers[ device, command_pool, 1, @cmd ]
         src.transition[ prev ]
         dst.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
+
+    # the same copy submitted with a fence and no wait: the frame goes on
+    # while the gpu copies. copy_cmd_last holds the buffer for copy_done
+    func copy_image_async [ src: Texture, dst: Texture ] -> VkFence
+        if [ !src || !dst || !src.vk_image || !dst.vk_image ] return null
+        cmd : VkCommandBuffer
+        vkAllocateCommandBuffers[ device, VkCommandBufferAllocateInfo [
+            sType:              VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            commandPool:        command_pool,
+            level:              VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+            commandBufferCount: 1 ], @cmd ]
+        prev : VkImageLayout [ src.vk_layout ]
+        vkBeginCommandBuffer[ cmd, VkCommandBufferBeginInfo [
+            sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            flags: VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT ] ]
+        src.transition_in[ cmd, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL ]
+        src.vk_layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
+        dst.transition_in[ cmd, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ]
+        dst.vk_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
+        vkCmdCopyImage[ cmd, src.vk_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            dst.vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+            VkImageCopy [
+                srcSubresource: VkImageSubresourceLayers [
+                    aspectMask:     VK_IMAGE_ASPECT_COLOR_BIT,
+                    mipLevel:       0,
+                    baseArrayLayer: 0,
+                    layerCount:     1 ],
+                srcOffset: VkOffset3D [ x: 0, y: 0, z: 0 ],
+                dstSubresource: VkImageSubresourceLayers [
+                    aspectMask:     VK_IMAGE_ASPECT_COLOR_BIT,
+                    mipLevel:       0,
+                    baseArrayLayer: 0,
+                    layerCount:     1 ],
+                dstOffset: VkOffset3D [ x: 0, y: 0, z: 0 ],
+                extent: VkExtent3D [ width: u32[ src.width ], height: u32[ src.height ], depth: 1 ] ] ]
+        src.transition_in[ cmd, prev ]
+        src.vk_layout = prev
+        dst.transition_in[ cmd, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
+        dst.vk_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+        vkEndCommandBuffer[ cmd ]
+        fence_acquire[]
+        f9 : VkFence [ fence_new ]
+        vkQueueSubmit[ queue, 1, VkSubmitInfo [
+            sType:              VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            commandBufferCount: 1,
+            pCommandBuffers:    @cmd ], f9 ]
+        copy_cmd_last = cmd
+        return f9
+
+    # has an async copy finished? when it has, its buffer and fence go back
+    func copy_done [ f9: VkFence, cmd: VkCommandBuffer ] -> bool
+        if [ !f9 ] return true
+        if [ vkGetFenceStatus[ device, f9 ] != VK_SUCCESS ] return false
+        cb9 : VkCommandBuffer [ cmd ]
+        if [ cb9 ] vkFreeCommandBuffers[ device, command_pool, 1, @cb9 ]
+        fence_release[ f9 ]
+        return true
 
     func attach [ vk_surface:handle ]
         if [ queue_family_index == -1 ]
@@ -4561,7 +4619,9 @@ Texture Display
         on_screen*[]
         tp4 : i64 [ epoch_micros[] ]
 
-        if [ swap_renders ]
+        # a hidden window presents nothing: its drawable acquire would stall
+        # every frame while the app shows in orbiter's pane instead
+        if [ swap_renders && !hidden ]
             result: vkAcquireNextImageKHR[ vk.device, vk_swapchain, UINT64_MAX,
                 semaphore_frame.vk_image_available_semaphore, null, @swap_image_current ]
             # SUBOPTIMAL too: on MoltenVK it means the extent no longer matches

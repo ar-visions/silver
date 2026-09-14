@@ -136,6 +136,8 @@ double platform_time     (void);
 platform_window* platform_window_create (int width, int height, const char* title, bool visible);
 void  platform_window_destroy           (platform_window* w);
 void  platform_window_show              (platform_window* w);
+void  platform_window_hide              (platform_window* w);
+int   platform_window_refresh_hz        (platform_window* w);
 bool  platform_window_should_close      (platform_window* w);
 void  platform_window_set_title         (platform_window* w, const char* title);
 void  platform_window_set_size          (platform_window* w, int width, int height);

@@ -372,6 +372,10 @@ static symbol lib_static = ".a";
 static symbol app_ext = "";
 static symbol platform = "darwin";
 static symbol shared   = "-dynamiclib";
+
+// build status, one line per step, flushed: a host pipes this into the
+// app's log, and the console shows it while the build runs
+#define build_status(...) do { print(__VA_ARGS__); fflush(stdout); } while (0)
 #endif
 
 #define next_is(a, ...) silver_next_is_eq(a, __VA_ARGS__, null)
@@ -1667,8 +1671,11 @@ static void exporter(silver a) {
                 char line[1024];
                 int  off = snprintf(line, sizeof(line), "%s: [", ((string)j->key)->chars);
                 bool first = true;
+                // a launch spec is one string, colons and all (Enum[a:0,b:1]);
+                // the other areas (extensions) are key: value pairs
+                bool launch = strcmp(((string)j->key)->chars, "launch") == 0;
                 each(vals, string, v) {
-                    char* col = strchr(v->chars, ':');
+                    char* col = launch ? NULL : strchr(v->chars, ':');
                     if (col)
                         off += snprintf(line + off, sizeof(line) - off, "%s'%.*s': %s",
                                         first ? "" : ", ", (int)(col - v->chars), v->chars, col + 1);
@@ -4616,6 +4623,7 @@ AU_EXPORT void silver_init(silver a) {
     pthread_mutex_unlock(&compiled_lock);
 
     if (!update_product) {
+        build_status("[%o] up to date", a->name);
         a->product = hold(absolute(a->product_link));
         deploy_module_resources(a);
         publish_product(a);
@@ -4649,6 +4657,7 @@ AU_EXPORT void silver_init(silver a) {
         return;
     }
 
+    build_status("[%o] compiling %o", a->name, path_filename(a->module_file));
     verify(dir_exists("%o", a->install), "silver-import location not found");
     verify(len(a->module), "no source given");
     verify(file_exists("%o", a->module_file), "module-source not found: %o", a->module_file);
@@ -6286,6 +6295,10 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
     enode  mem                = null;
     string alpha              = null;
     int    depth              = 0;
+    // the object a dotted store lands on (`obj.member = v`): its change
+    // block runs on obj, not on the function's own self
+    enode  chain_obj          = null;
+    a->assign_obj = null;
     bool   skip_member_check  = false;
 
     if (module) {
@@ -6673,6 +6686,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
         // More chaining - push context for next iteration
         validate(!is_func((Au)mem), "cannot resolve into function");
         if (mem->autype && !module) {
+            chain_obj = mem;
             push_scope(a, (Au)mem, 20);
             depth++;
         }
@@ -6690,6 +6704,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
     pop_tokens(a, save_tokens);
 
     if (assign_type && mem) {
+        a->assign_obj = chain_obj;
         token k = element(a, 0);
         if  (!k) return mem;
         num assign_index = index_of(assign, (Au)k);
@@ -8297,6 +8312,17 @@ enode parse_statement(silver a)
                 if (expr) each(expr, token, t) {
                     if (eq(t, "[") || eq(t, "]")) continue;
                     concat(spec, string(t->chars));
+                }
+                // an enum with no default starts at its first value: say so,
+                // or a host reads the empty default as "changed" on every pick
+                if (!expr && rtype->autype->is_enum) {
+                    Au_t et = rtype->autype;
+                    for (int ei = 0; ei < et->members.count; ei++) {
+                        Au_t ev = (Au_t)et->members.origin[ei];
+                        if (!ev || ev->member_type != AU_MEMBER_ENUMV) continue;
+                        concat(spec, f(string, "%i", ev->value ? *(i32*)ev->value : 0));
+                        break;
+                    }
                 }
                 if (rtype->autype->is_enum) {
                     concat(spec, string("=Enum["));
@@ -10784,6 +10810,7 @@ none silver_build_product(silver a) {
 #else
     string shared_n = string(a->is_library ? shared : "");
 #endif
+    build_status("[%o] linking %o", a->name, path_filename(link_out));
     verify(exec(a->verbose, "%o/bin/%s %s %s %s %o %s %o/%o.o%o %o -o %o -L%o/lib -L%o %o %o %o %o %s",
         a->base_install ? a->base_install : install, linker, shared_n->chars, a->debug ? "-g" : "",
 
@@ -10817,6 +10844,7 @@ none silver_build_product(silver a) {
 
     // the file is on disk now — waiters may take it
     publish_product(a);
+    build_status("[%o] built %o", a->name, path_filename(a->product));
 
     // for live_app modules: compile the host launcher as the app binary (never cached)
     // a phone app got its host inside its bundle
@@ -14316,8 +14344,10 @@ etype etype_of(enode mem) {
 
 
 enode silver_parse_assignment(silver a, enode mem, OPType op_val, bool is_const) { sequencer
+    // the store's object, taken before the right-hand parse can replace it
+    enode assign_obj = a->assign_obj;
+    a->assign_obj = null;
 
-    
     // handle setter logic, state set by parse_member
     if (a->setter_key_tokens && a->setter_fn) {
         array  key_tokens    = a->setter_key_tokens;
@@ -14484,7 +14514,8 @@ enode silver_parse_assignment(silver a, enode mem, OPType op_val, bool is_const)
             bool lifecycle = cur && (cur->autype->member_type == AU_MEMBER_CONSTRUCT ||
                 (cur->autype->ident && (strcmp(cur->autype->ident, "init") == 0 ||
                                         strcmp(cur->autype->ident, "dealloc") == 0)));
-            enode obj = mem->target ? mem->target : (cur ? cur->target : null);
+            enode obj = assign_obj ? assign_obj :
+                        (mem->target ? mem->target : (cur ? cur->target : null));
             if (!lifecycle && obj)
                 e_fn_call(a, (efunc)u(efunc, cf), a(obj), false, true);
         }

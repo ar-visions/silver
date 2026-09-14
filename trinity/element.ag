@@ -14,6 +14,13 @@ enum Ease
     elastic : 9
     bounce  : 10
 
+# where the app shows: in orbiter's panel or pane, or its own window
+enum DisplayMode
+    PIP    : 0
+    Full   : 1
+    Window : 2
+    Screen : 3
+
 enum Direction
     inward  : 0
     outward : 1
@@ -170,6 +177,10 @@ ielement element
     public  record          : string
     # --record_mic: the microphone goes into the recording, mixed with the app's sound
     public  record_mic      : bool
+    # --display: where the app shows. Screen goes to the window here; a
+    # host reads it live and follows PIP, Full and Window on its side
+    public [ Live ] display : DisplayMode
+        if [ ux ] ux.set_fullscreen[ display == DisplayMode.Screen ]
 
     public func on_click   [ ev: Event ] return
     public func on_hover   [ ev: Event ] return

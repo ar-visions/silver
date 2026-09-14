@@ -77,6 +77,8 @@ typedef struct {
 #define HOST_APP_DEBUG       1  // the app stops before init so orbiter can attach lldb
 #define HOST_APP_CLEAN       2  // a full --clean rebuild before the spawn
 #define HOST_APP_DEBUG_BUILD 4  // built -O0 -g, so the debugger sees source lines
+#define HOST_APP_DISPLAY_SHIFT 3 // bits 3-4: trinity's Display (0 pip, 1 full, 2 window, 3 screen)
+#define HOST_APP_HZ_SHIFT      8 // bits 8-15: the host display's refresh rate
 typedef struct {
     volatile int32_t host_pid;  // this supervisor; spawn requests SIGUSR1 it
     HostApp app[HOST_APPS];
@@ -139,23 +141,13 @@ static void app_log_path(char* out, size_t cap, const char* name, int slot) {
 // window and reports what failed over the last frame the app published.
 #define ISOLATE_ENV        "SILVER_ISOLATE"
 #define ISOLATE_CHILD_ENV  "SILVER_ISOLATE_CHILD"
-#define ISOLATE_APP_ENV    "SILVER_ISOLATE_APP"
-#define ISOLATE_APP_PID_ENV "SILVER_ISOLATE_APP_PID"
-// the SESSION key = this supervisor's pid. it names only the agent-context
-// snapshot files (PNG/tree) the agent ingests — NOT the channel, which is an
-// anonymous memfd inherited by fd, so N app copies never collide.
-#define ISOLATE_SESSION_ENV "SILVER_ISOLATE_SESSION"
-#define ISOLATE_STATUS_ENV "SILVER_ISOLATE_STATUS"
 #define IDE_ENV            "IN_IDE"
-#define ISOLATE_RESTART_ENV "SILVER_ISOLATE_RESTART"
-#define ISOLATE_SHELL      "orbiter"
 // the configuration this host was built for. a debug build names its products
 // apart from a release one, and this is how the host finds its own chain
 #ifndef SILVER_BUILD_TAG
 #define SILVER_BUILD_TAG ""
 #endif
 
-static pid_t g_isolate_child = 0;
 static char  g_isolate_cwd[4096];
 static char  g_exe_path[4096];       // this binary, resolved in main
 static int   g_argc;
@@ -294,6 +286,8 @@ static void spawn_slot_app(int k, const char* bindir) {
     int   dbg   = (ap->flags & HOST_APP_DEBUG)       != 0;
     int   clean = (ap->flags & HOST_APP_CLEAN)       != 0;
     int   dbgb  = (ap->flags & HOST_APP_DEBUG_BUILD) != 0;
+    int   disp  = (ap->flags >> HOST_APP_DISPLAY_SHIFT) & 3;
+    static const char* dnames[] = { "PIP", "Full", "Window", "Screen" };
     char* nm    = name;
     // the build type rides in the environment: this build, and the app's own
     // rebuilds when its sources change, all read it
@@ -321,8 +315,8 @@ static void spawn_slot_app(int k, const char* bindir) {
     char* cargv[MAX_APP_ARGS + 4];
     int   ca = 0;
     cargv[ca++] = bin;
-    cargv[ca++] = (char*)"--attach";
-    cargv[ca++] = (char*)"shm";
+    // every instance owns a window: pip and full keep it hidden and publish
+    // frames to the slot, so a display change never restarts the process
     for (int i = 0; i < n_app_args; i++) cargv[ca++] = app_args[i];
     cargv[ca] = NULL;
     posix_spawn_file_actions_t fa;
@@ -334,11 +328,24 @@ static void spawn_slot_app(int k, const char* bindir) {
     snprintf(slotenv, sizeof(slotenv), "SILVER_APP_SLOT=%d", k);
     int n = 0;
     while (environ[n]) n++;
-    char** cenv = malloc((n + 5) * sizeof(char*));
-    memcpy(cenv, environ, n * sizeof(char*));
-    int ce = n;
+    char** cenv = malloc((n + 8) * sizeof(char*));
+    // orbiter's own isolate marker stays here: an app that inherits it
+    // skips its own supervision and never reports to us
+    int ce = 0;
+    for (int i = 0; i < n; i++)
+        if (strncmp(environ[i], "SILVER_ISOLATE", 14) != 0) cenv[ce++] = environ[i];
+    // an instance is ours: no supervisor of its own
+    cenv[ce++] = (char*)"SILVER_ISOLATE=0";
     cenv[ce++] = fdenv;
     cenv[ce++] = slotenv;
+    // the display rides in the env: the app's args parse on its element,
+    // which does not carry trinity's props
+    static char dispenv[32];
+    snprintf(dispenv, sizeof(dispenv), "SILVER_DISPLAY=%s", dnames[disp]);
+    cenv[ce++] = dispenv;
+    static char hzenv[32];
+    snprintf(hzenv, sizeof(hzenv), "SILVER_HZ=%d", (ap->flags >> HOST_APP_HZ_SHIFT) & 255);
+    cenv[ce++] = hzenv;
     if (dbg)  cenv[ce++] = (char*)"SILVER_DEBUG=1";
     if (dbgb) cenv[ce++] = (char*)"SILVER_DEBUG_BUILD=1";
     cenv[ce] = NULL;
@@ -367,13 +374,9 @@ static void slots_shutdown(void) {
     }
 }
 
-// the app asks for orbiter by signaling its supervisor with SIGUSR1
-static volatile sig_atomic_t g_ask_orbiter = 0;
-static void on_sigusr1(int sig) { (void)sig; g_ask_orbiter = 1; }
-// the attached orbiter's pid, so a reload can't summon a SECOND one — the
-// app hot-reloads (claude editing it), re-asks, and we must reuse the shell
-// that is already up rather than orphaning it.
-static pid_t g_shell_pid = 0;
+// a slot request wakes the supervisor with SIGUSR1: the signal only cuts
+// the poll wait short — the request itself is state 1 in the slot
+static void on_sigusr1(int sig) { (void)sig; }
 // the supervised peer (slot 0) — the process that owns the window
 static pid_t g_peer_pid  = 0;
 
@@ -397,10 +400,8 @@ static void host_wait_peer(pid_t p) {
 }
 
 static void host_shutdown(void) {
-    if (g_shell_pid > 0 && kill(g_shell_pid, 0) == 0) kill(g_shell_pid, SIGTERM);
     slots_shutdown();
     host_wait_peer(g_peer_pid);
-    host_wait_peer(g_isolate_child);
 }
 
 static void host_exit_signal(int sig) {
@@ -424,11 +425,6 @@ static int supervise_wait(int argc, char** argv, const char* appname,
     g_argc = argc;
     g_argv = argv;
     if (!getcwd(g_isolate_cwd, sizeof(g_isolate_cwd))) g_isolate_cwd[0] = '\0';
-    // session key still names the agent-context snapshots (real PNG/tree
-    // files the agent ingests) — NOT the channel, which is anonymous.
-    char sess[64];
-    snprintf(sess, sizeof(sess), "%d", (int)getpid());
-    setenv(ISOLATE_SESSION_ENV, sess, 1);
     // the anonymous channel exists BEFORE any child, so all inherit the same
     // memfd. no file, no socket, no session-keyed path.
     shm_create();
@@ -463,55 +459,7 @@ static int supervise_wait(int argc, char** argv, const char* appname,
         // WUNTRACED: a frozen peer (crash handler raised SIGSTOP) reports here
         pid_t r  = waitpid(-1, &st, WNOHANG | WUNTRACED);
         if (r == 0 || (r < 0 && errno == EINTR)) {
-            if (!g_ask_orbiter) {
-                if (r == 0) usleep(30000);
-                continue;
-            }
-            g_ask_orbiter = 0;
-            if (spawned) continue;
-            // a shell is already attached (the app hot-reloaded and re-asked)
-            // — reuse it, never spawn a duplicate. kill(pid,0) probes liveness.
-            if (g_shell_pid > 0 && kill(g_shell_pid, 0) == 0) {
-                fprintf(stderr, "silver-host: orbiter already up (pid %d) — reusing\n",
-                    (int)g_shell_pid);
-                continue;
-            }
-            // the app asked: orbiter INSIDE the app. the app's screen texture
-            // is published in slot 0; orbiter pulls the fd itself — nothing
-            // to broker, nothing to inherit but the channel memfd.
-            char shell[4200];
-            snprintf(shell, sizeof(shell), "%s/%s", bindir, ISOLATE_SHELL);
-            char* sargv[] = { shell, "--attach", "shm", NULL };
-            posix_spawn_file_actions_t fa;
-            posix_spawn_file_actions_init(&fa);
-            static char fdenv[32];
-            shm_inherit(&fa, fdenv, sizeof(fdenv));
-            int n = 0;
-            while (environ[n]) n++;
-            char** cenv = malloc((n + 5) * sizeof(char*));
-            memcpy(cenv, environ, n * sizeof(char*));
-            static char appenv[256];
-            snprintf(appenv, sizeof(appenv), ISOLATE_APP_ENV "=%s", appname);
-            static char pidenv[64];
-            snprintf(pidenv, sizeof(pidenv), ISOLATE_APP_PID_ENV "=%d", (int)pid);
-            static char slotenv[32];
-            snprintf(slotenv, sizeof(slotenv), "SILVER_APP_SLOT=%d", 0);
-            cenv[n]     = appenv;
-            cenv[n + 1] = pidenv;
-            cenv[n + 2] = slotenv;
-            cenv[n + 3] = fdenv;
-            cenv[n + 4] = NULL;
-            pid_t sp = 0;
-            int rc = posix_spawn(&sp, shell, &fa, NULL, sargv, cenv);
-            posix_spawn_file_actions_destroy(&fa);
-            free(cenv);
-            if (rc != 0)
-                fprintf(stderr, "silver-host: orbiter spawn failed: %s\n", strerror(rc));
-            else {
-                g_shell_pid = sp;
-                fprintf(stderr, "silver-host: orbiter attached inside %s (pid %d)\n",
-                    appname, (int)sp);
-            }
+            if (r == 0) usleep(30000);
             continue;
         }
         if (r < 0) {
@@ -522,29 +470,23 @@ static int supervise_wait(int argc, char** argv, const char* appname,
         if (WIFSTOPPED(st)) {
             // slot-app stops (the debug gate, F8 pauses) are not ours
             if (r != pid) continue;
-            // the peer froze at a crash site (handler marked state 4). NO
-            // new window EVER: the slot carries the verdict — an attached
-            // orbiter (same window) shows it paused; we just keep waiting.
+            // the peer froze at a crash site (handler marked state 4): the
+            // slot carries the verdict, the crash log is symbolized, and
+            // the session ends here
             if (!g_shm || g_shm->app[0].state != 4) continue;
             int fsig = -g_shm->app[0].verdict;
             fprintf(stderr, "silver-host: peer frozen — signal %d (%s)\n",
                 fsig, strsignal(fsig));
             symbolize_crash_log(appname);
-            // no crash agent attached: nobody can inspect the freeze
-            if (!(g_shell_pid > 0 && kill(g_shell_pid, 0) == 0)) {
-                fprintf(stderr, "silver-host: no crash agent — closing\n");
-                kill(pid, SIGCONT);
-                waitpid(pid, &st, 0);
-                g_shm->app[0].state = 3;
-                slots_shutdown();
-                g_peer_pid = 0;
-                *exit_code = 128 + fsig;
-                return 0;
-            }
-            continue;
+            kill(pid, SIGCONT);
+            waitpid(pid, &st, 0);
+            g_shm->app[0].state = 3;
+            slots_shutdown();
+            g_peer_pid = 0;
+            *exit_code = 128 + fsig;
+            return 0;
         }
-        if (r != pid) {                    // a hosted app or the shell exited
-            if (r == g_shell_pid) g_shell_pid = 0;
+        if (r != pid) {                    // a hosted app exited
             if (g_shm)
                 for (int k = 1; k < HOST_APPS; k++)
                     if (g_shm->app[k].app_pid == (int32_t)r) {
@@ -570,71 +512,12 @@ static int supervise_wait(int argc, char** argv, const char* appname,
         // the peer process is gone — the shared window went with it, so the
         // session ends. (stop in the IDE never lands here: it stops the
         // peer's WORLD in place, the process and window live on.)
-        if (g_shell_pid > 0 && kill(g_shell_pid, 0) == 0) kill(g_shell_pid, SIGTERM);
         slots_shutdown();
         g_peer_pid = 0;
         *exit_code = WIFSIGNALED(st) ? 128 + WTERMSIG(st)
                    : (WIFEXITED(st) ? WEXITSTATUS(st) : 1);
         return 0;
     }
-}
-
-// orbiter asks for a relaunch by setting SILVER_ISOLATE_RESTART (env is
-// process-global — same channel as the status verdict, other direction).
-// the app comes back WINDOWED (its own window, the usual mode) — orbiter
-// keeps its window and keeps reaping, so a re-crash posts a fresh verdict.
-static void isolate_restart_check(void) {
-    const char* r = getenv(ISOLATE_RESTART_ENV);
-    if (!r || !*r) return;
-    if (g_isolate_child) {
-        // a frozen peer never blocks a relaunch: kill + reap it first
-        if (g_shm && g_shm->app[0].state == 4) {
-            kill(g_isolate_child, SIGKILL);
-            kill(g_isolate_child, SIGCONT);
-            int st; waitpid(g_isolate_child, &st, 0);
-            g_isolate_child = 0;
-        } else
-            return;
-    }
-    unsetenv(ISOLATE_RESTART_ENV);
-    unsetenv(ISOLATE_STATUS_ENV);
-    pid_t pid = isolate_spawn();
-    if (pid > 0) {
-        g_isolate_child = pid;
-        if (g_shm) {
-            g_shm->app[0].app_pid = (int32_t)pid;
-            g_shm->app[0].verdict = 0;
-            g_shm->app[0].state   = 2;
-        }
-        fprintf(stderr, "silver-host: relaunched app as pid %d\n", pid);
-    }
-}
-
-// reap a dead isolated child without blocking; publish what happened through
-// the environment (same process — orbiter reads it with getenv each frame).
-static void isolate_reap(void) {
-    if (!g_isolate_child) return;
-    int   st = 0;
-    pid_t r  = waitpid(g_isolate_child, &st, WNOHANG);
-    if (r != g_isolate_child) {
-        if (r < 0) g_isolate_child = 0;
-        return;
-    }
-    g_isolate_child = 0;
-    char msg[128];
-    if (WIFSIGNALED(st))
-        snprintf(msg, sizeof(msg), "signal %d (%s)",
-            WTERMSIG(st), strsignal(WTERMSIG(st)));
-    else
-        snprintf(msg, sizeof(msg), "exit %d", WEXITSTATUS(st));
-    fprintf(stderr, "silver-host: isolated app died: %s\n", msg);
-    setenv(ISOLATE_STATUS_ENV, msg, 1);
-    if (g_shm) {
-        g_shm->app[0].verdict = WIFSIGNALED(st)
-            ? -WTERMSIG(st) : WEXITSTATUS(st) + 1;
-        g_shm->app[0].state = 3;
-    }
-    if (WIFSIGNALED(st)) symbolize_crash_log(getenv(ISOLATE_APP_ENV));
 }
 
 static void crash_handler(int sig, siginfo_t* si, void* ucv) {
@@ -1190,32 +1073,13 @@ int main(int argc, char** argv) {
     // later handed it the share dir as its launch cwd and made both processes
     // race the same rebuild. the supervisor blocks in supervise_wait for the
     // app's whole normal lifetime; it also spawns hosted apps into channel
-    // slots on request. only a crash (or SIGUSR1 ask) continues this process
-    // below AS the orbiter shell — same bindir, name swapped. orbiter itself
-    // is supervised like any app — its silver-host hosts its pane apps.
+    // slots on request. orbiter itself is supervised like any app — its
+    // silver-host hosts its pane apps.
     if (isolate_requested(argc, argv)) {
         int exit_code = 0;
         int r = supervise_wait(argc, argv, name, bindir, &exit_code);
         if (r == 0) return exit_code;
-        if (r > 0) {
-            // orbiter IS the crash shell — it must not relaunch itself
-            if (strcmp(name, ISOLATE_SHELL) == 0) return exit_code ? exit_code : 1;
-            name = ISOLATE_SHELL;
-        }
         // r < 0: isolation unavailable — run the app in-process below
-    } else if (strcmp(name, ISOLATE_SHELL) == 0) {
-        // an unsupervised orbiter start is just the IDE: no inherited agent
-        // contract (launching from inside a supervised app's console leaks
-        // the env) — only --attach shells keep it
-        int attached = 0;
-        for (int i = 1; i < argc; i++)
-            if (strcmp(argv[i], "--attach") == 0) attached = 1;
-        if (!attached && !getenv(ISOLATE_CHILD_ENV)) {
-            unsetenv(ISOLATE_APP_ENV);
-            unsetenv(ISOLATE_APP_PID_ENV);
-            unsetenv(ISOLATE_STATUS_ENV);
-            unsetenv(ISOLATE_SESSION_ENV);
-        }
     }
     g_app_name = name;
     { const char* se = getenv("SILVER_APP_SLOT");
@@ -1386,11 +1250,6 @@ int main(int argc, char** argv) {
     int apply_compile = 0;  // the in-flight compile was user-requested (defer apply)
 
     while (do_frame && do_frame()) {
-        // isolated child died? publish the verdict for orbiter to render.
-        // and relaunch it when orbiter asks (SILVER_ISOLATE_RESTART).
-        isolate_reap();
-        isolate_restart_check();
-
         // app<->host signals (resolved each iter — handle changes across reloads)
         au_live_set_pending_fn set_pending = (au_live_set_pending_fn)dlsym(handle, "au_live_set_pending");
         au_live_take_apply_fn  take_apply  = (au_live_take_apply_fn) dlsym(handle, "au_live_take_apply");
@@ -1569,12 +1428,6 @@ int main(int argc, char** argv) {
         }
     }
 
-    // orbiter closed: take the isolated child down with the window
-    if (g_isolate_child) {
-        kill(g_isolate_child, SIGTERM);
-        waitpid(g_isolate_child, NULL, 0);
-        g_isolate_child = 0;
-    }
     if (do_destroy) do_destroy();
     if (handle)     dlclose(handle);
     return 0;
