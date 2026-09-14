@@ -19,6 +19,9 @@ Option NodeList
         return ''
     func activate [ idx: i32 ]
         return
+    # a row that cannot be picked: drawn faint, never selected
+    func row_enabled [ i: i32 ] -> bool
+        return true
 
     func flt [] -> string
         if [ !elements ] return null
@@ -58,26 +61,32 @@ Option NodeList
     func on_press [ ev: Event ]
         ev.stop[]
         rel_y : f32 [ ev.mouse.pos.y - content_y ]
+        log 'LISTPRESS {id} y={ev.mouse.pos.y} content_y={content_y} rel_y={rel_y} row_h={row_height} rows={row_count*[]} dbl={(ev.mouse.double_click) ? 1 : 0}'
         if [ rel_y < 0.0 ] return
         idx   : i32 [ visible_index[ i32[ rel_y / row_height ], flt[] ] ]
-        if [ idx < 0 ] return
+        log 'LISTPRESS {id} idx={idx}'
+        if [ idx < 0 || !row_enabled*[ idx ] ] return
         select[ idx ]
 
     func on_key [ ev: Event ]
         if [ !ev.key.state || row_count*[] == 0 ] return
         key : i32 [ ev.key.unicode ]
-        if [ key == 265 ]    # Key.Up
-            if [ sel > 0 ]
-                sel -= 1
-                scroll_to_sel[]
-                pristine = false
-        el [ key == 264 ]    # Key.Down
-            if [ sel < row_count*[] - 1 ]
-                sel += 1
-                scroll_to_sel[]
-                pristine = false
+        if [ key == 265 ]    # Key.Up: the nearest pickable row above
+            for [ j: i32 sel - 1, j >= 0, j -= 1 ]
+                if [ row_enabled*[ j ] ]
+                    sel = j
+                    scroll_to_sel[]
+                    pristine = false
+                    break
+        el [ key == 264 ]    # Key.Down: the nearest pickable row below
+            for [ j: i32 sel + 1, j < row_count*[], j += 1 ]
+                if [ row_enabled*[ j ] ]
+                    sel = j
+                    scroll_to_sel[]
+                    pristine = false
+                    break
         el [ key == 257 || key == 32 ]    # Key.Enter / Key.Space
-            if [ sel >= 0 ]
+            if [ sel >= 0 && row_enabled*[ sel ] ]
                 select[ sel ]
 
     func render [] -> Elements
@@ -119,7 +128,10 @@ Layer NodeLayer
             dr += 1
             if [ y + lh < bounds.y ] continue
             if [ y > bounds.y + bounds.h ] break
-            if [ i == nl.sel ]
+            # a row that cannot be picked is faint and never highlighted
+            en : bool [ nl.row_enabled*[ i ] ]
+            tc : string [ (en) ? ((text_color) ? text_color : '#d4d4d4') : '#ffffff40' ]
+            if [ en && i == nl.sel ]
                 r : f32 [ (sel_radius > 0.0) ? sel_radius : 0.0 ]
                 cv.save[]
                 cv.rounded[ r, r, r, r ]
@@ -128,7 +140,7 @@ Layer NodeLayer
                 cv.rect_to[ x0 + 1.5, y + 0.5, bounds.w - 4.0, lh - 1.0 ]
                 cv.paint[]
                 cv.restore[]
-            cv.fill_color[ (text_color) ? text_color : '#d4d4d4' ]
+            cv.fill_color[ tc ]
             if [ col_w > 0.0 ]
                 # left column, a thin divider, then the right column — the
                 # gutter is fixed so every row lines up
@@ -136,7 +148,7 @@ Layer NodeLayer
                     rect [ x: x0 + 8.0, y: y, w: col_w - 6.0, h: lh ],
                     vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null ]
                 dx : f32 [ x0 + 8.0 + col_w ]
-                cv.fill_color[ (text_color) ? text_color : '#d4d4d4' ]
+                cv.fill_color[ tc ]
                 cv.draw_text[ nl.row_col1*[ i ],
                     rect [ x: dx + 10.0, y: y, w: bounds.w - (col_w + 26.0), h: lh ],
                     vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null ]
@@ -194,6 +206,11 @@ NodeList Callstack
         f : Frame fr[ i ]
         return (f) ? f.func_name : ''
 
+    # a frame with no known location (??) has nowhere to go
+    func row_enabled [ i: i32 ] -> bool
+        f : Frame fr[ i ]
+        return (f && f.file && f.line > 0) ? true : false
+
     # kept for the filter (row_match searches this)
     func row_label [ i: i32 ] -> string
         f : Frame fr[ i ]
@@ -201,8 +218,29 @@ NodeList Callstack
         fn : string [ (f.file) ? f.file.filename[] : '' ]
         return '{fn}:{f.line} {f.func_name}'
 
+    # a frame names a place in the source: go there. frames with no line
+    # info (system code, a release build) have nowhere to go
     func activate [ idx: i32 ]
-        return
+        f : Frame fr[ idx ]
+        log 'STACKGO idx={idx} frame={(f) ? 1 : 0} file={(f && f.file) ? "{f.file}" : "-"} line={(f) ? f.line : -1}'
+        if [ !f || !f.file || f.line <= 0 ] return
+        if [ !f.file.exists[] ]
+            log 'STACKGO no such file {f.file}'
+            return
+        orb : cast orbiter [ ux.app_object ]
+        if [ !orb ]
+            log 'STACKGO no orbiter'
+            return
+        # the pane this panel rides in, or the active one if it rides none
+        pi : i32 [ orb.active_pane ]
+        for [ e: element* a, e, e = e.parent ]
+            if [ e inherits EditorView ]
+                ev9 : EditorView e
+                pi = ev9.pane_index
+                break
+        orb.open_at_line[ f.file, pi, f.line ]
+        ed9 : Editor orb.pane_at[ pi ]
+        log 'STACKGO opened pane={pi} src={(ed9 && ed9.src) ? "{ed9.src}" : "-"} sel={(ed9) ? ed9.sel_line : -1} rv={(ed9 && ed9.run_view) ? 1 : 0} av={(ed9 && ed9.app_view) ? 1 : 0}'
 
     func render [] -> Elements
         return null
@@ -375,16 +413,13 @@ Option InstancePanel
     func panel_h [] -> f32
         return (bounds) ? bounds.h : 0.0
 
-    func sect_y [ i: i32 ] -> f32
-        k : i32 [ open_ix[] ]
-        if [ k < 0 || i <= k ] return head_px[] + f32[ i ] * row_h[]
-        return panel_h[] - foot_px[] - f32[ 3 - i ] * row_h[]
+    # ONE row of tabs for all three sections; the open one's content runs
+    # from under it to the footer, so nothing folds above or below any more
+    func tab_y [] -> f32
+        return head_px[]
 
-    # where the open section's content ends: the folded headers under it
     func sect_bottom [] -> f32
-        k : i32 [ open_ix[] ]
-        if [ k < 0 ] return panel_h[] - foot_px[]
-        return panel_h[] - foot_px[] - f32[ 2 - k ] * row_h[]
+        return panel_h[] - foot_px[]
 
     # a click on a header opens that section, closing the others; on the
     # open one it folds, leaving none
@@ -465,16 +500,32 @@ Option InstancePanel
         fp : f32 [ foot_px[] ]
         sb9 : f32 [ panel_h[] - sect_bottom[] ]
         # the selected instance edits ITS args; with none selected there is no list
+        # one row of tabs for properties, instruments and callstack: the lit
+        # one is open and its content fills the panel beneath
+        if [ av9 ]
+            ok9 : i32 [ open_ix[] ]
+            t['sections'] = TButtons [ icons: false, seg_radius: 0.0, manual: true,
+                buttons: vec string [] [ 'properties', 'instruments', 'callstack' ],
+                sel_mask: (ok9 >= 0) ? (1 << ok9) : 0,
+                label_px: row_h[] * 0.5 - 2.0,
+                area: Region [ 'l0 t{tab_y[]}px r0 h{row_h[]}px' ] ]
         if [ av9 && orb.props_open ]
             ar9 : string (av9.module_args) ? av9.module_args : ''
-            py9 : f32 [ sect_y[ 0 ] + row_h[] ]
+            py9 : f32 [ tab_y[] + row_h[] ]
             # one canvas for the whole list: its controls paint straight onto this panel
             t['launch_panel'] = LaunchPanel [ spec: sp9, args: ar9, inst: av9.iid, live_vals: lv9, no_cache: true,
                 dbg_row: true, dbg_on: av9.debug_build,
                 area: Region [ 'l0 t{py9}px r0 b{sb9}px' ] ]
         if [ av9 && orb.stack_open && stack_rows[] > 0 ]
-            cy9 : f32 [ sect_y[ 2 ] + row_h[] ]
-            t['callstack'] = Callstack [ frames: orb.debug_frames[], area: Region [ 'l0 t{cy9}px r0 b{sb9}px' ] ]
+            cy9 : f32 [ tab_y[] + row_h[] ]
+            # one toggle over the list: frames with no known source, listed or not
+            t['stack_unknown'] = TButtons [ icons: false, seg_radius: 0.0, manual: true,
+                buttons: vec string [] [ 'show unknown source' ],
+                sel_mask: (orb.stack_unknown) ? 1 : 0,
+                label_px: row_h[] * 0.5 - 2.0,
+                area: Region [ 'l0 t{cy9}px r0 h{row_h[]}px' ] ]
+            ly9 : f32 [ cy9 + row_h[] ]
+            t['callstack'] = Callstack [ frames: orb.stack_frames[], area: Region [ 'l0 t{ly9}px r0 b{sb9}px' ] ]
         # the selected instance's group: square segments edge to edge at the bottom
         if [ fp > 0.0 ]
             li : vec AppView inst_list[]
@@ -623,19 +674,9 @@ Option InstancePanel
             return
         av : app[]
         if [ !av ] return
-        # the three headers of the accordion
         orb7 : cast orbiter [ ux.app_object ]
-        my7  : f32 [ ev.mouse.pos.y ]
-        for [ si7: i32 0, si7 < 3, si7 += 1 ]
-            hy7 : f32 [ sect_y[ si7 ] ]
-            if [ my7 >= hy7 && my7 < hy7 + row_h[] ]
-                sect_toggle[ si7 ]
-                pristine = false
-                ev.no_default = true
-                if [ ux ] ux.restyle = true
-                return
         if [ !av.instr_names || (orb7 && !orb7.instr_open) ] return
-        top : f32 [ sect_y[ 1 ] + row_h[] ]
+        top : f32 [ tab_y[] + row_h[] ]
         for [ i: i32 0, i < av.instr_names.count, i += 1 ]
             if [ !chip_pos[ av.instr_names, i ] ] continue
             cy : f32 [ top + chip_y ]
@@ -701,11 +742,7 @@ Option InstancePanel
             pv.draw_pip_in[ cv, rect [ x: round[ (bounds.w - pw) * 0.5 ], y: inst_px[], w: pw, h: ph ] ]
         av : app[]
         if [ !av || !orb ] return
-        # the accordion's three headers; the chips once the app answers
-        nm9 : string orb.instance_name[ av ]
-        section_title[ cv, sect_y[ 0 ], '{nm9} properties',  orb.props_open, false ]
-        section_title[ cv, sect_y[ 1 ], '{nm9} instruments', orb.instr_open, false ]
-        section_title[ cv, sect_y[ 2 ], '{nm9} callstack',   orb.stack_open, false ]
+        # the sections are a tab row built in render; the chips once the app answers
         if [ !orb.instr_open || !av.instr_names ] return
         n  : i32 [ av.instr_names.count ]
         now : i64 [ epoch_millis[] ]
@@ -714,7 +751,7 @@ Option InstancePanel
             settle = now
         sizing : bool [ now - settle < 200 ]
         # one flow of chips; the lit one is the single instrument on: it logs and shows
-        top : f32 [ sect_y[ 1 ] + row_h[] ]
+        top : f32 [ tab_y[] + row_h[] ]
         act : string av.instr_active[]
         chip_row[ cv, av.instr_names, top, act, 0.0, 0.0 ]
         if [ !act ] return

@@ -110,7 +110,7 @@ make                    # builds debug (default)
 make release            # builds release with -O2
 make clean              # cleans generated headers
 
-# Compile a .ag program (foundry/ prefix is optional — it's searched first)
+# Compile a module from the repository root
 ./platform/native/debug/silver trinity
 
 # silver [flags] <module> [app-args…] — silver's flags come BEFORE the
@@ -135,6 +135,8 @@ silver --clean orbiter
 
 ## Project Structure
 
+Application and library module directories live at the repository root.
+
 ```
 src/
   Au              # Au object system header (types, macros, memory, declare_class)
@@ -148,13 +150,12 @@ src/
   silver.g        # silver build descriptor (app, modules: Au net aether)
   macros.h        # C macros for declare_class, schema definitions
   object.h        # Low-level object header/vtable layout
-foundry/          # silver application projects (each has a .ag file)
-  ai/ai.ag        # Neural network library (tensors, ops, keras model, training)
-  ai-test/        # AI test application
-  test/test.ag    # General language test
-  random/         # Random number generation module
-  orbiter/        # Orbiter project
-  ...
+ai/ai.ag        # Neural network library (tensors, ops, keras model, training)
+ai-test/        # AI test application
+test/test.ag    # General language test
+random/         # Random number generation module
+orbiter/        # Orbiter project
+...
 platform/native/  # Built SDK (bin/, lib/, include/)
 checkout/         # Vendored dependencies (llvm-project, mbedtls, etc.)
 ```
@@ -436,9 +437,9 @@ expect func test [ vk: vk_context ] -> bool
     return result
 ```
 
-Test by compiling and running foundry projects:
+Test by compiling and running modules from the repository root:
 ```bash
-make && ./platform/native/debug/silver foundry/ai-test/ai-test.ag
+make && ./platform/native/debug/silver ai-test/ai-test.ag
 ```
 
 ## Aether Codegen Best Practices
@@ -608,7 +609,7 @@ search, compare, copy from, or modify `/src/orion`.
 - `--clean` flag propagates to all external imports.
 - `--watch` flag replaces old `--build` (watch is opt-in, one-shot is default).
 - `-I` paths stripped of prefix when added to include_paths (was storing `-I/path` instead of `/path`).
-- Module search: if module not found locally, searches `SILVER/foundry/name/name.ag`.
+- Module search: if module not found locally, searches `SILVER/name/name.ag`.
 
 ### Cast Syntax
 - `(expr) to Type` — parsed in `parse_ternary` after `(expr)` closes.
@@ -679,7 +680,7 @@ Windows spells libraries differently and `-lfoo` has no `libfoo.so` symlink to f
 
 ### Module name collisions
 
-`src/net.c` (silver's own, linked into `silver.exe`) and `foundry/net/net.ag` both produced `install/build/net.dll`. Linux quietly overwrote one with the other; Windows refuses to write a mapped DLL and exposed it. `foundry/net` is now **`foundry/tls`** (`spectra.ag` imports `tls`). Watch for this shape generally — foundry modules and `src/` modules share one output directory.
+`src/net.c` (silver's own, linked into `silver.exe`) and `net/net.ag` both produced `install/build/net.dll`. Linux quietly overwrote one with the other; Windows refuses to write a mapped DLL and exposed it. `net` is now **`tls`** (`spectra.ag` imports `tls`). Watch for this shape generally — root-level modules and `src/` modules share one output directory.
 
 ### Dependency checkouts
 
@@ -694,7 +695,7 @@ Windows spells libraries differently and `-lfoo` has no `libfoo.so` symlink to f
 
 ### Audio
 
-`foundry/spectra/spectra.cc` is the WASAPI backend behind `spectra.ag`'s `el [ windows ]` branch: `spectra` (capture) and `AudioOut` (playback), same surface as the ALSA pair, FFT stays in silver. Shared mode with `AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | SRC_DEFAULT_QUALITY` is what lets a plain 16-bit ask through instead of being handed the device mix format. The GUIDs are `EXTERN_C const IID` declarations — their definitions are in `uuid.lib`, hence `-lole32 -luuid` in `spectra.g`.
+`spectra/spectra.cc` is the WASAPI backend behind `spectra.ag`'s `el [ windows ]` branch: `spectra` (capture) and `AudioOut` (playback), same surface as the ALSA pair, FFT stays in silver. Shared mode with `AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | SRC_DEFAULT_QUALITY` is what lets a plain 16-bit ask through instead of being handed the device mix format. The GUIDs are `EXTERN_C const IID` declarations — their definitions are in `uuid.lib`, hence `-lole32 -luuid` in `spectra.g`.
 
 **`<module>.cc` is attached on every platform** (silver.c picks up `<module_path>/<stem>.{c,cc,rs,mm}`), so a platform-specific implementation file must wrap itself in `#ifdef _WIN32` or it breaks the other platforms.
 

@@ -72,6 +72,8 @@ class dbg
     func start              [ ]
     func attach             [ pid: i32 ]
     func stop               [ ]
+    func park               [ ]
+    func adopt              [ owner: Au ]
     func read_arguments     [ ] -> vec Au
     func read_locals        [ ] -> vec Au
     func read_children      [ var_path: string ] -> vec Au

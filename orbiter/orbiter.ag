@@ -12,7 +12,7 @@ import spectra
 import speech
 # handlers are found at runtime through their export, but built here
 import code
- 
+
 # import c headers
 import <stdio.h>
     -lm
@@ -210,7 +210,7 @@ element EditorView
         # the module itself is the source: its app type, instanced with its
         # defaults, answers the same props the running app does (metas included)
         ln9  : string 'silver-{m}'
-        lib9 : path '{o.startup_path}/install/build/{path.path_library[ ln9.chars ]}'
+        lib9 : path o.module_lib[ ln9 ]
         if [ o.stats ] log 'SPEC lib {lib9} exists={lib9.exists[]}'
         if [ lib9.exists[] ]
             h9 : dlopen[ lib9.chars, 258 ]
@@ -512,7 +512,7 @@ element EditorTitle
             stroke_color: #fff2
         layers.tface:
             label_color: #fff
-            label_size: 19
+            label_size: 17
             editable: true
             label_align: 0.0 0.5
             label_offset: 98.0 0.0
@@ -537,7 +537,7 @@ element EditorTitle
             cv.draw_svg[ mdl, 70.0, (bounds.h - isz) * 0.5, isz, isz ]
         # the view we are in, trailing the name. painted, so the label
         # stays the editable field and this can never be selected
-        cv.font_size[ 19 ]
+        cv.font_size[ 17 ]
         name_m : cv.measure_text[ label ]
         trail  : f32 [ 98.0 + name_m.w + 16.0 ]
         if [ hint && hint.count > 0 ]
@@ -718,6 +718,11 @@ ResourceView ConsoleView
 NavButton LabelButton
     area   : Region { r0+ t0 w2.2 h0.9 }
     tlabel : Layer [ label_color: rgba [ '#fffa' ], label_size: 14,
+        label_align: vec2f [ x: 0.5, y: 0.5 ] ]
+
+# the companion row beside the title: the same chip, two points smaller
+LabelButton CompanionButton
+    tlabel : Layer [ label_color: rgba [ '#fffa' ], label_size: 12,
         label_align: vec2f [ x: 0.5, y: 0.5 ] ]
 
 # a running instance: name at the left, its [x] sits a little in from the right edge
@@ -986,6 +991,24 @@ element ReloadStatus
             label_color: #ffda
             label_size: 14
             label_align: 0.5 0.5
+            label_offset: 0.0 -1.0
+    }
+
+# the editor's tooltip: the class and function the caret sits in, and at a
+# debugger stop the clicked name's type and value, so it reads here instead of
+# scrolling up to its # annotation. a plain label from the bar's left edge;
+# it gives the spot up while a reload chip is showing
+element DebugValue
+    style : CSS {
+        area: l8px t2px r8px h18px
+        layers.body:
+            fill_color: #0000
+            radius: 0
+            inner_glow: #0000 0
+        layers.face:
+            label_color: #cfe6ff
+            label_size: 14
+            label_align: 0.0 0.5
             label_offset: 0.0 -1.0
     }
 
@@ -1997,6 +2020,7 @@ element orbiter : trinity # implements compiler
     # commit hash the stacked diff view presents
     public [ StatePersist ] active_target : string
     intern fmt_watch  : map FmtWatch [string]
+    intern fmt_borrowed : map string [string]   # file -> the mtime fmt_borrow last looked for
     # git snapshot: fetched by a thread, swapped in on the main thread.
     # refreshed on file save and otherwise every 60 seconds
     intern git_snap  : GitSnap
@@ -2091,6 +2115,8 @@ element orbiter : trinity # implements compiler
     # one open at a time: properties to begin with
     mutable props_open    : bool [ true ]
     mutable stack_open    : bool
+    mutable stack_unknown : bool         # the callstack lists frames with no known source too
+    mutable last_tip      : string       # diagnostic: the tooltip state last logged
     mutable instr_open    : bool
     # module whose build set err_file; only it may clear
     intern err_mod       : string
@@ -2491,7 +2517,7 @@ element orbiter : trinity # implements compiler
         # buffers key on the absolute path; the map's source must match
         fw : FmtWatch [ proj: lib, file: f.absolute[], map: '', start_us: epoch_micros[], kicked: true, announced: true ]
         fmt_watch[ '{f}' ] = fw
-        so : path '{startup_path}/install/build/{path.path_library[ lib.chars ]}'
+        so : path module_lib[ lib ]
         if [ !so.exists[] ] return
         # local: only dlsym on this handle needs its symbols
         h : dlopen[ so.chars, RTLD_NOW ]
@@ -2526,6 +2552,43 @@ element orbiter : trinity # implements compiler
             if [ ed ] ed.pristine = false
         win : ux
         if [ win ] win.will_animate = true
+
+    # an open file with no colouring takes its section from whichever map holds
+    # one: a module built as another's dependency writes its files into that
+    # root's map, never its own, and a pane only applies a map when the map
+    # changes. tried once per file version; the newest section wins, and one older
+    # than the file is refused where every section is applied (apply_format)
+    func fmt_borrow []
+        if [ !startup_path ] startup_path = path.path_startup[]
+        if [ !fmt_borrowed ] fmt_borrowed = map string [string] []
+        for [ i: i32 0, i < editor_slots.count, i += 1 ]
+            ed : Editor pane_at[ i ]
+            if [ !ed || !ed.src || !ed.cur_buf ] continue
+            if [ ed.cur_buf.line_regs && ed.cur_buf.line_regs.count > 0 ] continue
+            fa : string '{ed.src.absolute[]}'
+            if [ !fa.ends_with[ '.ag' ] ] continue
+            sm : string '{ed.src.modified_time[]}'
+            if [ fmt_borrowed.contains[ fa ] && fmt_borrowed[ fa ] == sm ] continue
+            fmt_borrowed[ fa ] = sm
+            sd : path '{startup_path}/install/syntax'
+            entries : sd.ls[ null, false ]
+            if [ !entries ] continue
+            best : fmt_file null
+            for [ j: i32 0, j < entries.count, j += 1 ]
+                e : path entries[j]
+                if [ e.ext[] != 'f' ] continue
+                files : vec Au e.read_format[]
+                if [ !files ] continue
+                for [ fi: i32 0, fi < files.count, fi += 1 ]
+                    ff : fmt_file files[fi]
+                    if [ !ff || !ff.source || '{ff.source}' != fa ] continue
+                    if [ !best || ff.mtime > best.mtime ] best = ff
+            if [ !best ] continue
+            log 'syntax: {fa} coloured from another module map'
+            ed.apply_format[ best ]
+            ed.pristine = false
+            win : ux
+            if [ win ] win.will_animate = true
 
     func fmt_sync []
         if [ !fmt_watch ] fmt_watch = map FmtWatch [string] []
@@ -2637,6 +2700,15 @@ element orbiter : trinity # implements compiler
     # the callstack is read from lldb once per stop; every render reads the cache
     func debug_frames [] -> vec Au
         return (frame_cache) ? frame_cache : vec Au []
+
+    # the frames the callstack lists: one with no known source only when asked
+    func stack_frames [] -> vec Au
+        all : vec Au debug_frames[]
+        if [ stack_unknown ] return all
+        known : vec Au []
+        for [ fr: Frame ] in all
+            if [ fr && fr.file && fr.line > 0 ] known.push[ fr ]
+        return known
 
     func refresh_frames []
         fr : vec Au []
@@ -3322,11 +3394,17 @@ element orbiter : trinity # implements compiler
         if [ av.debugger ] active_target = dbg_key[ av ]
         if [ av.debugger || av.paused || av.ended || av.slot < 0 ]
             av.pause_toggle*[]
-            return
-        av.paused        = true
-        av.pause_pending = true
-        av.attached      = false
-        attach_appview[ av, host_app_pid[ av.slot ] ]
+        el
+            av.paused        = true
+            av.pause_pending = true
+            av.attached      = false
+            attach_appview[ av, host_app_pid[ av.slot ] ]
+        # a pause opens the callstack tab; its frames fill in when the stop lands
+        if [ av.paused ]
+            props_open = false
+            instr_open = false
+            stack_open = true
+            if [ ux ] ux.restyle = true
 
     func add_instance [ av: AppView ]
         if [ !instances ] instances = vec AppView []
@@ -3369,9 +3447,8 @@ element orbiter : trinity # implements compiler
             nb : local i8 [ 192 ]
             if [ host_app_name[ s, @nb[0], 192 ] <= 0 ] continue
             req : string [ @nb[0] ]
-            dbg9 : bool [ req.starts_with[ '!' ] ]
-            while [ req.count > 0 && (req.starts_with[ '!' ] || req.starts_with[ '*' ]) ]
-                req = req.mid[ 1, req.count - 1 ]
+            fl9  : i32  [ host_app_flags[ s ] ]
+            dbg9 : bool [ (fl9 & 1) != 0 ]
             parts : req.split[ ' ' ]
             if [ parts.count == 0 ] continue
             mod : string parts[ 0 ]
@@ -3384,7 +3461,7 @@ element orbiter : trinity # implements compiler
             nv.attached = true
             nv.viewer   = !dbg9
             if [ req.count > mod.count ] nv.module_args = req.mid[ mod.count + 1, req.count - mod.count - 1 ]
-            nv.cmd      = 'tail -n +1 -F {root}/install/tmp/silver-{mod}.{s}.log'
+            nv.cmd      = 'tail -n +1 -F {root}/install/tmp/{mod}.{s}.log'
             # a restored instance of this module still held: it IS this one
             took : bool [ false ]
             if [ instances ]
@@ -3400,7 +3477,24 @@ element orbiter : trinity # implements compiler
                     hv.held     = false
                     if [ nv.module_args && nv.module_args.count > 0 ] hv.module_args = nv.module_args
                     took = true
+                    nv   = hv
             if [ !took ] add_instance[ nv ]
+            # a debug launch: the orbiter before this reload left its session parked
+            # with the host; adopt it, its stop comes back with it. none kept: attach
+            if [ dbg9 ]
+                kd9 : cast dbg [ host_kept[ 'dbg{s}' ] ]
+                if [ kd9 && kd9.active ]
+                    if [ !debuggers ] debuggers = map dbg [string] []
+                    dk9 : string dbg_key[ nv ]
+                    debuggers[ dk9 ] = kd9
+                    nv.debugger      = kd9
+                    active_target    = dk9
+                    kd9.drop[]
+                    kd9.adopt[ a ]
+                el
+                    if [ kd9 ] kd9.drop[]
+                    nv.attached = false
+                    attach_appview[ nv, pid ]
 
     # one console per module: every live instance's log, each line tagged by its
     # id. no module = the global log, every instance of every module
@@ -3411,7 +3505,7 @@ element orbiter : trinity # implements compiler
         for [ v: AppView ] in instances
             if [ v.ended || v.slot <= 0 || !v.app_mod ] continue
             if [ mod && v.app_mod.compare[ mod ] != 0 ] continue
-            one : string 'tail -n +1 -F {startup_path}/install/tmp/silver-{v.app_mod}.{v.slot}.log | sed -u "s/^/{v.iid}: /"'
+            one : string 'tail -n +1 -F {startup_path}/install/tmp/{v.app_mod}.{v.slot}.log | sed -u "s/^/{v.iid}: /"'
             c = (n == 0) ? one : '{c} & {one}'
             n += 1
         return (n > 0) ? '{c} & wait' : c
@@ -3475,7 +3569,8 @@ element orbiter : trinity # implements compiler
                     fs : file_state args_state_of[ ed ]
                     if [ fs && fs.args && fs.args.count > 0 ] av.module_args = fs.args
                 av.held = false
-                if [ ed ] ed.app_view = true
+                # a restored instance keeps its pip: the pane shows it one way, never both
+                if [ ed ] ed.app_view = !av.pip
                 return
             if [ av.ended ] av.restart[ false ]
             return
@@ -3522,11 +3617,38 @@ element orbiter : trinity # implements compiler
         d : dbg debuggers[ active_target ]
         return (d && d.active) ? d : null
 
+    # THE source files a silver module may carry, and the only ones. the .ag
+    # is what makes the directory a module, so it leads. the title's
+    # companion row and the nav list's module chips both ask here
+    public func module_exts [ dir: path, stem: string ] -> vec string
+        out : vec string []
+        if [ !dir || !stem || stem.count == 0 ] return out
+        for [ x9: string ] in vec string [] [ 'ag', 'c', 'cc', 'mm', 'rs' ]
+            p9 : path '{dir}/{stem}.{x9}'
+            if [ p9.exists[] ] out.push[ x9 ]
+        return out
+
+    # a file's companions sit BESIDE it, never in a subfolder: same folder,
+    # same stem, one of the source extensions
+    func companion_exts [ p: path ] -> vec string
+        return (p) ? module_exts[ p.parent_dir[], p.stem[] ] : vec string []
+
+    # the companion of p carrying this extension, or null
+    func companion_path [ p: path, ex: string ] -> path
+        if [ !p || !ex ] return null
+        c9 : path '{p.parent_dir[]}/{p.stem[]}.{ex}'
+        return (c9.exists[]) ? c9 : null
+
     func title_nav [ p: path, grp: vec path, has_diff: bool, win: Window, dbg_locked: bool, dbg_open: bool, menu_open: bool, is_resource: bool, rv: ResourceView, fb_on: bool, tfoc: bool, pane_ix: i32 ] -> Elements
         hasfile  : bool [ p && p.exists[] ]
         els : Elements []
         browse_open : bool [ menu_open && nav_showing ]
-        engaged : bool [ browse_open || fb_on || tfoc || nav_showing || (pick_field && pick_field.count > 0) ]
+        # nav_showing and pick_field are the SHELL's state, not this pane's:
+        # unqualified they made every pane's title claim the finder and show
+        # its close chip at once. only the pane that owns the search does
+        mine9 : bool [ search_pane[] == 'pane{pane_ix}' ]
+        engaged : bool [ browse_open || fb_on || tfoc ||
+                         (mine9 && (nav_showing || (pick_field && pick_field.count > 0))) ]
         # no close chip — Escape closes the finder
         edp9 : Editor pane_at[ pane_ix ]
         # the chip closes a view the user PICKED. the file's own natural
@@ -3562,6 +3684,29 @@ element orbiter : trinity # implements compiler
                 icon_scale: 0.45, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0,
                 area: Region [ 'l0+ t0 w1.8 h0.9' ] ]
 
+        # a silver module's companions: <name>.ag and whatever sits beside it
+        # under the same name. the open one is lit; a press opens its sibling.
+        # they sit AFTER the painted name, at the offset the title's own draw
+        # measures for its trailing hint — so they are placed, never flowed
+        if [ hasfile && !engaged ]
+            cx9 : string [ (p) ? p.ext[] : '' ]
+            cel9 : vec string companion_exts[ p ]
+            cvt9 : Canvas [ (win) ? win.screen : null ]
+            if [ cvt9 && cel9.count > 0 ]
+                cvt9.font_size[ 19 ]
+                nmw9 : f32 [ cvt9.measure_text[ p.filename[] ].w ]
+                cxa9 : f32 [ 98.0 + nmw9 + 16.0 ]
+                hnt9 : string [ (edp9) ? edp9.view_name : null ]
+                if [ hnt9 && hnt9.count > 0 && hnt9 != 'editor' && !console_of[ hnt9 ] ]
+                    cvt9.font_size[ 13 ]
+                    cxa9 += cvt9.measure_text[ hnt9 ].w + 10.0
+                for [ ci9: i32 0, ci9 < cel9.count, ci9 += 1 ]
+                    ex9 : string cel9[ ci9 ]
+                    bx9 : f32 [ cxa9 + f32[ ci9 ] * 40.0 ]
+                    els['cmp_{ex9}'] = CompanionButton [ label: ex9, manual_mode: true,
+                        selected: ex9 == cx9,
+                        area: Region [ 'l{bx9}px t0.065 w36px h0.81' ] ]
+
         psess9 : string (agent_open && pane_ix == editor_slots.count) ? orbit_sid :
             ((pane_ix < pane_console.count) ? pane_console[pane_ix] : '')
         con9   : bool [ psess9 && psess9.count > 0 ]
@@ -3573,12 +3718,21 @@ element orbiter : trinity # implements compiler
             # magnify lights while the findbar is open
             if [ fb_on ] tmask = 1
             tnav.push[ 'magnify' ]
-        # one click adds an instance; the panel comes up with it
-        tnav.push[ 'new_instance' ]
-        # NOT 'console': that is the RunConsole element's own id, and on_press
-        # dispatches on id, so a click in the console would toggle it away
-        if [ show_console ] tmask = tmask | (1 << tnav.count)
-        tnav.push[ 'console_tab' ]
+        # the run tabs belong to a runnable pane only (an .ag module, a handled
+        # file, a running app): the same test that gates the console band
+        runnable9 : bool [ false ]
+        if [ pane_ix < editor_slots.count ]
+            pvr9 : element pane_view[ pane_ix ]
+            if [ pvr9 && pvr9 inherits EditorView ]
+                evr9 : EditorView pvr9
+                runnable9 = evr9.run_ok[]
+        if [ runnable9 ]
+            # one click adds an instance; the panel comes up with it
+            tnav.push[ 'new_instance' ]
+            # NOT 'console': that is the RunConsole element's own id, and on_press
+            # dispatches on id, so a click in the console would toggle it away
+            if [ show_console ] tmask = tmask | (1 << tnav.count)
+            tnav.push[ 'console_tab' ]
         # one button: + adds a tab; with shift held it reads − and closes this one
         if [ (editor_slots.count < 4 && !con9) || (shift_down && editor_slots.count > 1) ] tnav.push[ 'dock' ]
         tico : vec string []
@@ -3732,8 +3886,20 @@ element orbiter : trinity # implements compiler
     public func on_unload [ ]
         save_session[]
         if [ debuggers ]
+            # a reload keeps a hosted app's session: the host holds it parked across
+            # the swap and the reloaded orbiter adopts it, a stop and all
+            reloading : bool [ getenv[ 'SILVER_RELOAD_SAVE' ] != null ]
             for [ d: dbg, name: string ] in debuggers
-                if [ d && d.active ] d.stop[]
+                if [ !d || !d.active ] continue
+                ks9 : i32 [ -1 ]
+                if [ reloading && instances ]
+                    for [ av9: AppView ] in instances
+                        if [ av9.debugger == d && av9.slot > 0 ] ks9 = av9.slot
+                if [ ks9 > 0 ]
+                    d.park[]
+                    d.hold[]
+                    host_keep[ 'dbg{ks9}', d ]
+                el d.stop[]
             debuggers = null
         if [ index_watches ]
             for [ iw: watch ] in index_watches
@@ -4312,12 +4478,28 @@ element orbiter : trinity # implements compiler
         if [ ix < 0 ] ix = 0
         return sl[ ix ]
 
+    # a module builds to one file per configuration (release, and -dbg).
+    # we load these INTO THIS PROCESS, so the configuration must be ours: a
+    # module of the other one drags its own trinity, devices and spectra in
+    # beside the ones already loaded -- two vulkan stacks, duplicate objc
+    # classes, and the GPU out of memory before the second frame.
+    # the other configuration only serves when ours was never built
+    public func module_lib [ ln: string ] -> path
+        if [ !startup_path ] startup_path = path.path_startup[]
+        tag : string [ (debug) ? '-dbg' : '' ]
+        mn9 : string '{ln}{tag}'
+        own : path '{startup_path}/install/build/{path.path_library[ mn9.chars ]}'
+        if [ own.exists[] ] return own
+        an9 : string [ (debug) ? '{ln}' : '{ln}-dbg' ]
+        alt : path '{startup_path}/install/build/{path.path_library[ an9.chars ]}'
+        return (alt.exists[]) ? alt : own
+
     # scenes compile separately; load the lib only if it is available
     func scene_module_ensure [ nm: string ]
         mod : string (scene_mods) ? scene_mods[ nm ] : null
         if [ !mod || mod.count == 0 ] return
         if [ !startup_path ] startup_path = path.path_startup[]
-        lib : path '{startup_path}/install/build/{path.path_library[ mod.chars ]}'
+        lib : path module_lib[ mod ]
         if [ !lib.exists[] ] return
         # module init registers its types
         h : dlopen[ lib.chars, 258 ]
@@ -4909,24 +5091,11 @@ element orbiter : trinity # implements compiler
         open_in_pane[ p, pi ]
         ed : Editor pane_at[ pi ]
         if [ !ed ] return
-        sl : i32 [ (to_line > 0) ? to_line - 1 : 0 ]
-        ed.sel_line    = sl
-        ed.sel_col     = 0
-        ed.anchor_line = sl
-        ed.anchor_col  = 0
-        lh : f32 [ (ed.lh_cache > 0.0) ? ed.lh_cache : 22.0 ]
-        vh : f32 [ (ed.bounds) ? ed.bounds.h : 600.0 ]
-        tp : f32 [ f32[ sl ] * lh ]
-        if [ tp < ed.scroll.y || tp + lh > ed.scroll.y + vh ]
-            ed.scroll.y      = tp - vh * 0.4
-            if [ ed.scroll.y < 0.0 ] ed.scroll.y = 0.0
-            ed.scroll_target = ed.scroll.y
-        ed.saved_scroll = ed.scroll.y
-        ed.pristine = false
-        # the ARRIVAL is its own nav point: landing on a definition has
-        # to be somewhere you can come back to, not just somewhere you left
-        if [ ed.nav && ed.src ]
-            ed.nav.record[ pi, '{ed.src.absolute[]}', ed.sel_line, ed.sel_col, ed.scroll.y ]
+        # the ARRIVAL is its own nav point (land_on records it). a file not yet
+        # in would have its load reset the caret: that landing waits for the load
+        same : bool [ ed.loaded_src && '{ed.loaded_src.absolute[]}' == '{p.absolute[]}' ]
+        if [ same ] ed.land_on[ to_line ]
+        el          ed.goto_pending = to_line
 
     func force_update []
         win : ux
@@ -5457,6 +5626,35 @@ element orbiter : trinity # implements compiler
             if [ ev.target ] ev.target.ux.restyle = true
             force_update[]
             return
+        if [ ev.target.id.starts_with[ 'cmp_' ] ]
+            tid9 : string ev.target.id
+            ex9  : string tid9.mid[ 4, tid9.count - 4 ]
+            ed9  : Editor pane_of[ ev.target ]
+            pi9  : i32 [ (ed9) ? ed9.pane_index : active_pane ]
+            f9   : path (ed9) ? ed9.src : null
+            cp9  : path companion_path[ f9, ex9 ]
+            if [ cp9 ] open_in_pane[ cp9, pi9 ]
+            if [ ev.target ] ev.target.ux.restyle = true
+            ev.no_default = true
+            return
+        # the instance panel's section tabs: the lit one is open, a press on
+        # it folds it away. one row for all three, so this is the only toggle
+        if [ ev.target.id == 'properties' || ev.target.id == 'instruments' || ev.target.id == 'callstack' ]
+            wp9 : bool [ props_open ]
+            wi9 : bool [ instr_open ]
+            ws9 : bool [ stack_open ]
+            props_open = (ev.target.id == 'properties') && !wp9
+            instr_open = (ev.target.id == 'instruments') && !wi9
+            stack_open = (ev.target.id == 'callstack') && !ws9
+            if [ ev.target ] ev.target.ux.restyle = true
+            ev.no_default = true
+            return
+        # the callstack's one toggle: list frames with no known source, or not
+        if [ ev.target.id == 'show unknown source' ]
+            stack_unknown = !stack_unknown
+            if [ ev.target ] ev.target.ux.restyle = true
+            ev.no_default = true
+            return
         if [ ev.target.id == 'ctx_copy' ]
             request_context[]
             if [ ev.target ] ev.target.ux.restyle = true
@@ -5881,6 +6079,7 @@ element orbiter : trinity # implements compiler
                 load_settings[]
             fmt_sync[]
             fmt_poll[]
+            fmt_borrow[]
             # refresh policy: saves kick now; the watcher's dirty mark
             # is picked up on the 60-second interval
             if [ git_dirty && now_ms - git_last >= 60000 ] git_summarize[]
@@ -6076,10 +6275,35 @@ element orbiter : trinity # implements compiler
     # right-flow: first inserted sits furthest right.
     # reload_busy/ready: staged reload button, or live compile status.
     # ui_hide sits dead center: scene-only toggle
+    # the tooltip's hover value: what the button under the pointer is. a group
+    # of segments names the one hovered; any other button its label, else its id
+    func hover_tip [ e: element ] -> string
+        if [ !e ] return ''
+        if [ e inherits TButtons ]
+            tb9 : TButtons e
+            return tb9.hover_name[]
+        if [ e inherits Button ]
+            if [ e.label && e.label.count > 0 ] return e.label
+            return (e.id) ? e.id : ''
+        return ''
+
     func status_els [] -> Elements
         # solid: the scene is only a theme, so its motion toggles go
         solid9 : bool [ ux.frost_eff[] == 3 ]
+        # the tooltip: where the caret sits, and at a stop the clicked name's type and value
+        edv9 : Editor pane_at[ active_pane ]
+        tip9 : string (edv9) ? edv9.tip_text[ (edv9.debug_vars && active_debugger[]) ? true : false ] : ''
+        # two layers: the set value (the click's tip, which hovering never
+        # clears) and the hover value of the button under the pointer. the
+        # hover shows while it lasts; leaving the button shows the set value
+        htip9  : string hover_tip[ (ux) ? ux.hovered : null ]
+        shown9 : string (htip9.count > 0) ? htip9 : ((tip9) ? tip9 : '')
+        tipk9 : string '{active_pane}|{(edv9) ? 1 : 0}|{(edv9 && edv9.debug_vars) ? 1 : 0}|{(active_debugger[]) ? 1 : 0}|{tip9}'
+        if [ !last_tip || last_tip != tipk9 ]
+            last_tip = tipk9
+            log 'TIPBAR pane={active_pane} ed={(edv9) ? 1 : 0} vars={(edv9 && edv9.debug_vars) ? edv9.debug_vars.count : -1} dbg={(active_debugger[]) ? 1 : 0} tip={tip9}'
         return Elements [
+            'debug_value' : (shown9.count > 0 && au_live_get_pending[] == 0) ? DebugValue [ label: shown9 ] : null,
             'scene_next'  : SceneArrow [ icon: 'right', manual_mode: true ],
             'scene_name'  : SceneName  [ label: scene_name[].lcase[] ],
             'scene_prev'  : SceneArrow [ icon: 'left', manual_mode: true ],
@@ -6096,7 +6320,7 @@ element orbiter : trinity # implements compiler
     # scene: built once per scene — a fresh element each frame churns its
     # Render; a per-scene key re-appends last and covers the ui.
     # panes: hide keeps them mounted at opacity 0 — no unmount churn.
-    # avatar: ALWAYS mounted, window-anchored; :summoned slides it in.
+    # avatar: not mounted for now; it will live somewhere else.
     # error: ORBITER'S OWN state, one tab off the top edge — an error from
     # an app we happen to be running belongs to that app's run band
     public func render [] -> Elements
@@ -6106,7 +6330,6 @@ element orbiter : trinity # implements compiler
                 inner: pane_views[], deflt: 0.0, even: true, snap_close: true,
                 opacity: (hide_ui) ? 0.0 : 1.0 ],
             'status' : StatusBar [ elements: status_els[] ],
-            'avatar' : OrbiterAvatar [ topmost: true, summoned: show_orbiter ],
             'error'  : (!hide_ui && err_file && err_line > 0 && err_is_own[])
                 ? ErrorButton [ label: 'error {err_file.filename[]}:{err_line}',
                     topmost: true, manual_mode: true ] : null ]

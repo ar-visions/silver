@@ -89,6 +89,7 @@ ifndef [ ios ]
          -DBUILD_CUBE=OFF
          -DBUILD_ICD=OFF
 
+
 # the platform macro exposes the surface api and, on win32, the
 # external-memory api (shared textures)
 ifdef [ windows ]
@@ -219,7 +220,8 @@ func host_tex_clear   [ slot: i32, side: i32 ]
 func host_tex_flip    [ slot: i32, side: i32, front: i32 ]
 func host_tex_front   [ slot: i32, side: i32 ] -> i32
 func host_tex_pull    [ slot: i32, side: i32, which: i32, w2: @i32, h2: @i32, fmt: @i32 ] -> i32
-func host_app_request [ nm: cstr ] -> i32
+func host_app_request [ nm: cstr, flags: i32 ] -> i32
+func host_app_flags   [ slot: i32 ] -> i32
 func host_app_state   [ slot: i32 ] -> i32
 func host_app_pid     [ slot: i32 ] -> i32
 func host_app_count   [ ] -> i32
@@ -239,6 +241,8 @@ func agent_sock_open  [ nm: cstr ] -> i32
 func agent_sock_line  [ buf: @i8, cap: i32 ] -> i32
 func agent_sock_reply [ s: cstr ]
 func handle_slot_set  [ slot: handle, value: handle ]
+func host_keep        [ key: cstr, value: handle ]
+func host_kept        [ key: cstr ] -> handle
 func agent_sock_send  [ nm: cstr, txt: cstr ] -> i32
 func agent_sock_ask   [ nm: cstr, txt: cstr, out: @i8, cap: i32 ] -> i32
 
@@ -351,6 +355,10 @@ abstract live_app media_app
     intern  aout        : new u8  [ 8192 ]
     intern  path_said   : bool
     intern  next_second : i64
+    # a hosted frame's pace: 0 means 60. the frame sleeps out what is left of
+    # the interval, not a flat pause on top of however long the frame took
+    public  frame_hz    : i32
+    intern  frame_due   : i64
     intern  frames      : i32
     # the last whole second's counters, answered to `stats` on the agent socket
     intern  stat_line   : string
@@ -496,6 +504,17 @@ abstract live_app media_app
             if [ inner.count > 0 ] em['elements'] = inner
         return em
 
+    # a hosted app has no display refresh to wait on: sleep until the next
+    # frame is due. a frame more than an interval late starts the clock over
+    # rather than racing to catch up
+    func pace_frame []
+        hz   : i32 [ (frame_hz > 0) ? frame_hz : 60 ]
+        step : i64 [ 1000000 / i64[ hz ] ]
+        now  : i64 [ epoch_micros[] ]
+        if [ frame_due == 0 || now - frame_due > step ] frame_due = now
+        frame_due += step
+        if [ frame_due > now ] usleep[ u32[ frame_due - now ] ]
+
     func frame [ ] -> bool
         if [ !path_said ]
             path_said = true
@@ -523,7 +542,7 @@ abstract live_app media_app
                 ide_pump[]
                 agent_pump[]
                 Au.auto_free[ false ]
-                usleep[ 4000 ]
+                pace_frame[]
                 if [ app_pid > 0 && host_pid_alive[ app_pid ] == 0 ] return false
                 return !Au.quit_requested[]
             if [ attach ]
@@ -536,7 +555,7 @@ abstract live_app media_app
                 # agent socket would never open for the ones we host
                 agent_pump[]
                 Au.auto_free[ false ]
-                usleep[ 4000 ]
+                pace_frame[]
                 return alive && !Au.quit_requested[]
         if [ text_mode ]
             render*[]
@@ -4374,8 +4393,10 @@ Display Window
                 # so anything reaching past the fill reads transparent.
                 # ...and ONLY for a layer that fills the whole element. an
                 # inset layer would just grow past where it was asked to be.
+                # and ONLY into the cache: on screen the 2px reach past the
+                # element's edge and show as a rim beside its own content
                 fills : bool [ b.w >= e.bounds.w - 0.01 && b.h >= e.bounds.h - 0.01 ]
-                bleed : f32 [ (fills && r_tl <= 0.0 && r_tr <= 0.0 && r_br <= 0.0 && r_bl <= 0.0
+                bleed : f32 [ (fills && target_cv != cv && r_tl <= 0.0 && r_tr <= 0.0 && r_br <= 0.0 && r_bl <= 0.0
                               && sw_max <= 0.0) ? 2.0 : 0.0 ]
                 # integral placement: snap the layer rect to the device pixel
                 # grid (accounting for the canvas translate + scale) so a 1px
@@ -4965,13 +4986,7 @@ Layer ScrollLayer
         track_vis  = vis_h
         scroll_max = max_sc
         grab_w     = base_w * 2.0 + 6.0
-        if [ prox > 0.0 ]
-            cv.fill_color  [ rgba['#0000'] ]
-            cv.stroke_color[ rgba[ r:1.0, g:1.0, b:1.0, a: 0.133 * prox ] ]
-            cv.stroke_width[ 1.0 ]
-            cv.rect_to     [ thumb_x, top, eff_w, vis_h ]
-            cv.paint       [ ]
-            cv.stroke_width[ 0.0 ]
+        cv.stroke_width[ 0.0 ]
         cv.fill_color[ thumb_color ]
         cv.rounded_rect[ thumb_x, thumb_y, eff_w, thumb_h, r, r, r, r ]
         cv.paint[]
@@ -5016,12 +5031,19 @@ element TButtons
     public  seg_radius : f32 [ 8.0 ]
     # icon height as a fraction of the control's height
     public  icon_scale : f32 [ 0.55 ]
+    # text segments: point size, 0 = half the control's height
+    public  label_px  : f32
     # rest-state edge, off by default; set to match neighboring buttons
     public  rest_glow  : rgba
     public  rest_px    : f32
     intern  svg_cache : map SVGModel [string]
     intern  svg_miss  : map i32      [string]
     intern  hover_ix  : i32 [ -1 ]
+
+    # the segment under the pointer, by its id; '' when none is
+    func hover_name [] -> string
+        if [ !hovered || !buttons || hover_ix < 0 || hover_ix >= buttons.count ] return ''
+        return buttons[ hover_ix ]
 
     func theme_rgba [ s: string ] -> rgba
         if [ ux && ux.st ] return ux.st.theme_color[ s ]
@@ -5116,7 +5138,7 @@ element TButtons
                 cv.fill_color[ rgba [ '#fff' ] ]
                 cv.draw_svg[ svg, ix, iy, isz, isz ]
             el
-                cv.font_size[ bounds.h * 0.5 ]
+                cv.font_size[ (label_px > 0.0) ? label_px : bounds.h * 0.5 ]
                 cv.fill_color[ rgba [ '#fff' ] ]
                 cv.draw_text[ buttons[ i ], rect [ x: x, y: 0.0, w: seg_w, h: bounds.h ],
                     vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
@@ -5145,9 +5167,12 @@ element TButtons
         if [ ux && ux.stats ] log 'TBUTTONS press seg={i} id={buttons[ i ]}'
 
     func on_move [ ev: Event ]
+        was : i32 [ hover_ix ]
         hover_ix = seg_at[ ev ]
         if [ hover_ix >= 0 && (disable || (disable_mask & (1 << hover_ix)) != 0) ]
             hover_ix = -1
+        # the window's tooltip names the hovered segment: a new one redraws it
+        if [ hover_ix != was && ux ] ux.restyle = true
 
 element Splitter
     public inner       : map element [ string ]
@@ -5164,6 +5189,10 @@ element Splitter
     intern drag_ix    : i32
     intern last_n     : i32
     intern dseam      : vec f32              # divider px positions, hit-test + draw
+    # the seam as one number: the line is an overlay, so when it moves the
+    # pixel it used to sit on belongs to a child that must repaint to erase
+    # it. without this the old line stays and the seam reads two px wide
+    intern dseam_sig  : f32 [ -1.0 ]
     intern cursor_on  : bool                 # WE set the resize cursor; restore it
     intern dbgf       : i32                  # count-change debug frames left
 
@@ -5255,6 +5284,14 @@ element Splitter
                 out[ 'dv{i}' ] = hd
                 pos += gap
         if [ dbgf > 0 ] dbgf -= 1
+        sig9 : f32 [ f32[ dseam.count ] ]
+        for [ di9: i32 0, di9 < dseam.count, di9 += 1 ]
+            sig9 = sig9 * 7.0 + dseam[ di9 ]
+        if [ sig9 != dseam_sig ]
+            dseam_sig = sig9
+            pristine  = false
+            for [ ce9: element, ck9: string ] in out
+                if [ ce9 ] ce9.pristine = false
         return out
 
     public func tick [ w: Window ]
@@ -5281,32 +5318,9 @@ element Splitter
             pristine        = false
             ux.will_animate = true
 
-    # the seam sits ON TOP of the panes. drawn in `draw` it lands UNDER them,
-    # and their translucent backgrounds re-tint it with whatever is behind
-    public func draw_over [ w: Window ]
-        if [ w.draw_stage != CanvasType.screen || !bounds || !dseam ] return
-        cv : Canvas w.screen
-        # ONE plain rect, integer origin in SCREEN space, exactly 1px thick.
-        # plain[] drops inherited radii/glow/blur — all sticky paint state
-        cv.save[]
-        cv.plain[]
-        cv.hard_edge[]
-        cv.fill_color[ line_color ]
-        stx : f32 [ cv.transform_tx[] ]
-        sty : f32 [ cv.transform_ty[] ]
-        # integers everywhere: whole-pixel origin, exactly 1px thick,
-        # whole-pixel length. no half-pixel anything
-        for [ di: i32 0, di < dseam.count, di += 1 ]
-            if [ vertical ]
-                my : f32 [ floor[ dseam[ di ] + sty ] - sty ]
-                mx : f32 [ floor[ stx ] - stx ]
-                cv.rect_to[ mx, my, round[ bounds.w ], 1.0 ]
-            el
-                mx : f32 [ floor[ dseam[ di ] + stx ] - stx ]
-                my : f32 [ floor[ sty ] - sty ]
-                cv.rect_to[ mx, my, 1.0, round[ bounds.h ] ]
-            cv.paint[ ]
-        cv.restore[]
+    # NOTHING is painted in the seam: the gap between panes is a window onto
+    # whatever sits behind them, the backdrop scene included. a line here
+    # covered it, and a stale one left the seam reading two px wide
 
     func on_press [ ev: Event ]
         if [ !bounds || !dseam ] return

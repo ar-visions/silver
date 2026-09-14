@@ -680,9 +680,10 @@ element CommitView
         k9 : '{h.file}'
         if [ !ext_c.contains[ k9 ] ]
             s9 : string ''
-            for [ x9: string ] in vec string [] [ 'ag', 'cc', 'rs', 'c' ]
-                p9 : path '{h.file}/{h.text}.{x9}'
-                if [ p9.exists[] ] s9 = (s9.count > 0) ? '{s9} {x9}' : '{x9}'
+            ob9 : orbiter orb9[]
+            if [ ob9 ]
+                for [ x9: string ] in ob9.module_exts[ h.file, h.text ]
+                    s9 = (s9.count > 0) ? '{s9} {x9}' : '{x9}'
             ext_c[ k9 ] = s9
         v9 : ext_c[ k9 ]
         if [ !v9 || v9.count == 0 ] return none9

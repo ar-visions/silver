@@ -36,24 +36,55 @@ static void put_span(int line, int col, const char* sp, int n, int kind) {
 }
 
 // the names this file defines, first definition wins: a later use of the
-// name gets that line, which is what a cmd-click goes to
-typedef struct { const char* s; int n, line; } cdef;
-static cdef* defs;
+// name gets that line, which is what a cmd-click goes to. a hash table:
+// a header the size of vulkan_core.h defines twelve thousand names and
+// uses them a hundred thousand times, and a linear scan took minutes
+typedef struct { const char* s; int n, line, kind, strong; } cdef;
+static cdef* defs;                 // open addressing, s == NULL for empty
 static int   ndef, defcap;
 
-static int def_line(const char* s, int n) {
-    for (int i = 0; i < ndef; i++)
-        if (defs[i].n == n && memcmp(defs[i].s, s, n) == 0) return defs[i].line;
-    return 0;
+static unsigned def_hash(const char* s, int n) {
+    unsigned h = 2166136261u;
+    for (int i = 0; i < n; i++) h = (h ^ (unsigned char)s[i]) * 16777619u;
+    return h;
 }
 
-static void def_put(const char* s, int n, int line) {
-    if (n <= 0 || def_line(s, n)) return;
-    if (ndef == defcap) {
-        defcap = defcap ? defcap * 2 : 256;
-        defs   = realloc(defs, defcap * sizeof(cdef));
+static cdef* def_slot(const char* s, int n) {
+    unsigned m = (unsigned)defcap - 1;
+    for (unsigned i = def_hash(s, n) & m; ; i = (i + 1) & m) {
+        cdef* d = &defs[i];
+        if (!d->s || (d->n == n && memcmp(d->s, s, n) == 0)) return d;
     }
-    defs[ndef++] = (cdef){ s, n, line };
+}
+
+static cdef* def_get(const char* s, int n) {
+    if (!defcap) return NULL;
+    cdef* d = def_slot(s, n);
+    return d->s ? d : NULL;
+}
+
+static void def_clear(void) {
+    ndef = 0;
+    if (defs) memset(defs, 0, defcap * sizeof(cdef));
+}
+
+// strong: a body, a #define, a typedef. weak: a prototype or a handle
+// macro, which a strong definition later in the file takes over from
+static void def_put(const char* s, int n, int line, int kind, int strong) {
+    if (n <= 0) return;
+    if ((ndef + 1) * 2 > defcap) {                          // half full: double
+        int   ocap = defcap;
+        cdef* old  = defs;
+        defcap = ocap ? ocap * 2 : 1024;
+        defs   = calloc(defcap, sizeof(cdef));
+        for (int i = 0; i < ocap; i++)
+            if (old[i].s) *def_slot(old[i].s, old[i].n) = old[i];
+        free(old);
+    }
+    cdef* d = def_slot(s, n);
+    if (d->s && (d->strong || !strong)) return;             // first definition wins
+    if (!d->s) ndef++;
+    *d = (cdef){ s, n, line, kind, strong };
 }
 
 static char* run(const char* cmd) {
@@ -73,6 +104,11 @@ static char* run(const char* cmd) {
     return buf;
 }
 
+// one raw token record: kind 'spelling'<tabs/flags>Loc=<file:line:col>\n
+// the spelling can hold quotes, tabs and newlines, so the record is cut
+// at its Loc and the spelling closed at the last quote before it
+typedef struct { const char* kind; int klen; const char* sp; int splen; int line, col; } rec;
+
 static const char* c_keywords[] = {
     "auto","break","case","const","continue","default","do","else","enum","extern","for",
     "goto","if","inline","register","restrict","return","sizeof","static","struct","switch",
@@ -91,16 +127,21 @@ static const char* c_types[] = {
 static const char* c_punct[] = {
     "l_paren","r_paren","l_brace","r_brace","l_square","r_square","semi","comma", NULL };
 
+// does the kind name (klen bytes, not terminated) contain sub? strstr on it
+// ran off the end of the name into the rest of the dump: every token
+// walked megabytes looking for a string literal that was not there
+static int kind_has(const rec* r, const char* sub) {
+    int sl = (int)strlen(sub);
+    for (int i = 0; i + sl <= r->klen; i++)
+        if (memcmp(r->kind + i, sub, sl) == 0) return 1;
+    return 0;
+}
+
 static int in_table(const char** t, const char* s, int n) {
     for (int i = 0; t[i]; i++)
         if ((int)strlen(t[i]) == n && memcmp(t[i], s, n) == 0) return 1;
     return 0;
 }
-
-// one raw token record: kind 'spelling'<tabs/flags>Loc=<file:line:col>\n
-// the spelling can hold quotes, tabs and newlines, so the record is cut
-// at its Loc and the spelling closed at the last quote before it
-typedef struct { const char* kind; int klen; const char* sp; int splen; int line, col; } rec;
 
 static const char* next_rec(const char* p, rec* r) {
     const char* loc = strstr(p, "\tLoc=<");
@@ -156,7 +197,7 @@ static void parse_c(const char* path) {
     int  directive_line = 0;                   // a #include's target reads as a string
     int  include_line   = 0;
     int* kinds = malloc((n ? n : 1) * sizeof(int));
-    ndef = 0;
+    def_clear();
     for (int i = 0; i < n; i++) {
         rec* r = &rs[i];
         int kind = K_OP;
@@ -184,8 +225,8 @@ static void parse_c(const char* path) {
         else if (IS("numeric_constant")) kind = K_NUMBER;
         else if (IS("comment"))          kind = K_COMMENT;
         else if (IS("hash"))             kind = K_META;
-        else if (strstr(r->kind, "string_literal") && strstr(r->kind, "string_literal") < r->kind + r->klen) kind = K_STR;
-        else if (strstr(r->kind, "char_constant")  && strstr(r->kind, "char_constant")  < r->kind + r->klen) kind = K_CHARACTER;
+        else if (kind_has(r, "string_literal")) kind = K_STR;
+        else if (kind_has(r, "char_constant"))  kind = K_CHARACTER;
         else if (include_line == r->line) kind = K_STR;
         else {
             kind = K_OP;
@@ -195,40 +236,86 @@ static void parse_c(const char* path) {
         #undef IS
         kinds[i] = kind;
     }
-    // DEFINITIONS. a function name with its body on the line (or the brace
-    // opening the next), a #define, a struct/enum/union with a body, and
-    // the name a typedef line gives; a prototype or a call is neither
+    // DEFINITIONS. a #define, a function with its body on the line (or the
+    // brace opening the next), a struct/enum/union with a body and each
+    // constant an enum body names, the name a typedef line gives. a
+    // prototype at file scope and the argument of a handle-declaring macro
+    // (VK_DEFINE_HANDLE(VkInstance)) count too, but weakly: a real
+    // definition further down takes the name from them
+    int  depth = 0, enum_depth = -1;           // brace depth, and the body depth of the enum being read
+    char counted[256];                         // per open brace: does it count? extern "C" { does not:
+    int  nbrace = 0;                           // a header's whole body sits inside one, still at file scope
     for (int i = 0; i < n; i++) {
         rec* r = &rs[i];
+        #define KIND_IS(rr, k) ((rr)->klen == (int)strlen(k) && memcmp((rr)->kind, k, (rr)->klen) == 0)
+        #define SP_IS(rr, k)   ((rr)->splen == (int)strlen(k) && memcmp((rr)->sp, k, (rr)->splen) == 0)
+        if (KIND_IS(r, "l_brace")) {
+            int linkage = i > 1 && kind_has(&rs[i - 1], "string_literal") &&
+                          KIND_IS(&rs[i - 2], "raw_identifier") && SP_IS(&rs[i - 2], "extern");
+            if (nbrace < (int)sizeof counted) counted[nbrace] = !linkage;
+            nbrace++;
+            if (!linkage) depth++;
+            continue;
+        }
+        if (KIND_IS(r, "r_brace")) {
+            if (nbrace > 0) nbrace--;
+            if (nbrace >= (int)sizeof counted || counted[nbrace]) {
+                if (depth == enum_depth) enum_depth = -1;
+                depth--;
+            }
+            continue;
+        }
         if (r->klen != 14 || memcmp(r->kind, "raw_identifier", 14) != 0) continue;
         rec* prev = (i > 0) ? &rs[i - 1] : NULL;
         rec* next = (i + 1 < n) ? &rs[i + 1] : NULL;
         int  same_prev = prev && prev->line == r->line;
-        #define KIND_IS(rr, k) ((rr)->klen == (int)strlen(k) && memcmp((rr)->kind, k, (rr)->klen) == 0)
-        #define SP_IS(rr, k)   ((rr)->splen == (int)strlen(k) && memcmp((rr)->sp, k, (rr)->splen) == 0)
+        // #define NAME, first: a function-like macro also reads as a call
+        if (same_prev && KIND_IS(prev, "raw_identifier") && SP_IS(prev, "define") &&
+            i > 1 && KIND_IS(&rs[i - 2], "hash")) {
+            if (kinds[i] != K_FUNCTION) kinds[i] = K_CONSTANT;
+            def_put(r->sp, r->splen, r->line, kinds[i], 1);
+            continue;
+        }
+        if (SP_IS(r, "enum") && next) {
+            rec* nb = (KIND_IS(next, "raw_identifier") && i + 2 < n) ? &rs[i + 2] : next;
+            if (KIND_IS(nb, "l_brace")) enum_depth = depth + 1;
+            continue;
+        }
+        if (enum_depth >= 0 && depth == enum_depth && prev && (KIND_IS(prev, "l_brace") || KIND_IS(prev, "comma"))) {
+            kinds[i] = K_CONSTANT;
+            def_put(r->sp, r->splen, r->line, K_CONSTANT, 1);
+            continue;
+        }
         if (kinds[i] == K_FUNCTION && same_prev &&
             (KIND_IS(prev, "raw_identifier") || KIND_IS(prev, "star") || KIND_IS(prev, "amp"))) {
-            int body = 0, j = i + 1;
+            int body = 0, proto = 0, j = i + 1;
             for (; j < n && rs[j].line == r->line; j++) {
                 if (KIND_IS(&rs[j], "l_brace")) { body = 1; break; }
-                if (KIND_IS(&rs[j], "semi"))    { body = 0; j = n; break; }
+                if (KIND_IS(&rs[j], "semi"))    { proto = 1; break; }
             }
-            if (!body && j < n && rs[j].line == r->line + 1 && KIND_IS(&rs[j], "l_brace")) body = 1;
-            if (body) def_put(r->sp, r->splen, r->line);
+            if (!body && !proto && j < n && rs[j].line == r->line + 1 && KIND_IS(&rs[j], "l_brace")) body = 1;
+            if (body)                        def_put(r->sp, r->splen, r->line, K_FUNCTION, 1);
+            else if (depth == 0)             def_put(r->sp, r->splen, r->line, K_FUNCTION, 0);
         }
-        else if (same_prev && KIND_IS(prev, "raw_identifier") && SP_IS(prev, "define") &&
-                 i > 1 && KIND_IS(&rs[i - 2], "hash"))
-            def_put(r->sp, r->splen, r->line);
+        else if (kinds[i] == K_FUNCTION && depth == 0 && !same_prev && i + 3 < n &&
+                 KIND_IS(&rs[i + 1], "l_paren") && KIND_IS(&rs[i + 2], "raw_identifier") && KIND_IS(&rs[i + 3], "r_paren") &&
+                 (i + 4 >= n || rs[i + 4].line != r->line || KIND_IS(&rs[i + 4], "semi"))) {
+            // MACRO(Name) alone on a file-scope line: a handle or type declared by macro
+            kinds[i + 2] = K_TYPE;
+            def_put(rs[i + 2].sp, rs[i + 2].splen, r->line, K_TYPE, 0);
+        }
         else if (same_prev && KIND_IS(prev, "raw_identifier") &&
                  (SP_IS(prev, "struct") || SP_IS(prev, "enum") || SP_IS(prev, "union")) &&
                  next && KIND_IS(next, "l_brace"))
-            def_put(r->sp, r->splen, r->line);
+            def_put(r->sp, r->splen, r->line, K_TYPE, 1);
         else if (next && KIND_IS(next, "semi") && (i + 2 >= n || rs[i + 2].line != r->line)) {
             // the name a typedef line ends with; a member inside its braces is not it
             int j = i;
             while (j > 0 && rs[j - 1].line == r->line) j--;
-            if (KIND_IS(&rs[j], "raw_identifier") && SP_IS(&rs[j], "typedef"))
-                def_put(r->sp, r->splen, r->line);
+            if (KIND_IS(&rs[j], "raw_identifier") && SP_IS(&rs[j], "typedef")) {
+                kinds[i] = K_TYPE;
+                def_put(r->sp, r->splen, r->line, K_TYPE, 1);
+            }
         }
         #undef KIND_IS
         #undef SP_IS
@@ -236,8 +323,10 @@ static void parse_c(const char* path) {
     for (int i = 0; i < n; i++) {
         rec* r = &rs[i];
         int  k = kinds[i];
-        int  d = (k == K_IDENT || k == K_FUNCTION || k == K_TYPE) ? def_line(r->sp, r->splen) : 0;
-        if (d) put(r->line, r->col, r->splen, k, d);
+        cdef* d = (k == K_IDENT || k == K_FUNCTION || k == K_TYPE || k == K_CONSTANT) ? def_get(r->sp, r->splen) : NULL;
+        // a use of a defined name colours as what it defines: a type, a constant, a function
+        if (d && k == K_IDENT) k = d->kind;
+        if (d) put(r->line, r->col, r->splen, k, d->line);
         else   put_span(r->line, r->col, r->sp, r->splen, k);
     }
     free(kinds);
