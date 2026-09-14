@@ -104,6 +104,7 @@ declare_class(Device)
     M(X, Y, i, prop,     intern,  map,    inline_lambdas) \
     M(X, Y, i, prop,     intern,  array,  pending_lambdas) \
     M(X, Y, i, prop,     intern,  array,  fmt_ext) \
+    M(X, Y, i, prop,     intern,  map,    out_defs) \
     M(X, Y, i, prop,     public,  array,  extensions) \
     M(X, Y, i, method,   public,  none,   write_header) \
     M(X, Y, i, method,   public,  enode,  parse_member_expr, enode, bool) \

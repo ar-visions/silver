@@ -71,8 +71,12 @@ typedef struct {
     volatile int32_t app_pid;   // process bound to this slot
     volatile int32_t state;     // 0 free, 1 spawn requested, 2 live, 3 exited
     volatile int32_t verdict;   // 0 unset, >0 exit code+1, <0 -signal, -1000 build failed
+    volatile int32_t flags;     // HOST_APP_* launch flags; never in the name
     char name[192];             // "module [default-arg]" to spawn
 } HostApp;
+#define HOST_APP_DEBUG       1  // the app stops before init so orbiter can attach lldb
+#define HOST_APP_CLEAN       2  // a full --clean rebuild before the spawn
+#define HOST_APP_DEBUG_BUILD 4  // built -O0 -g, so the debugger sees source lines
 typedef struct {
     volatile int32_t host_pid;  // this supervisor; spawn requests SIGUSR1 it
     HostApp app[HOST_APPS];
@@ -145,6 +149,11 @@ static void app_log_path(char* out, size_t cap, const char* name, int slot) {
 #define IDE_ENV            "IN_IDE"
 #define ISOLATE_RESTART_ENV "SILVER_ISOLATE_RESTART"
 #define ISOLATE_SHELL      "orbiter"
+// the configuration this host was built for. a debug build names its products
+// apart from a release one, and this is how the host finds its own chain
+#ifndef SILVER_BUILD_TAG
+#define SILVER_BUILD_TAG ""
+#endif
 
 static pid_t g_isolate_child = 0;
 static char  g_isolate_cwd[4096];
@@ -282,24 +291,17 @@ static void spawn_slot_app(int k, const char* bindir) {
         while (*p && *p != ' ') p++;
         if (*p) *p++ = 0;
     }
-    // leading markers: '!' = debug (the app self-stops before init so orbiter
-    // can attach lldb); '*' = clean (full --clean rebuild before the spawn);
-    // '#' = a debug BUILD (-O0 -g), so the debugger sees source lines
-    int   dbg = 0, clean = 0, dbgb = 0;
-    char* nm  = name;
-    while (*nm == '!' || *nm == '*' || *nm == '#') {
-        if (*nm == '!') dbg   = 1;
-        if (*nm == '*') clean = 1;
-        if (*nm == '#') dbgb  = 1;
-        nm++;
-    }
+    int   dbg   = (ap->flags & HOST_APP_DEBUG)       != 0;
+    int   clean = (ap->flags & HOST_APP_CLEAN)       != 0;
+    int   dbgb  = (ap->flags & HOST_APP_DEBUG_BUILD) != 0;
+    char* nm    = name;
     // the build type rides in the environment: this build, and the app's own
     // rebuilds when its sources change, all read it
     if (dbgb) setenv("SILVER_DEBUG_BUILD", "1", 1);
     else      unsetenv("SILVER_DEBUG_BUILD");
     // app binaries live beside this supervisor binary (one products dir)
     char bin[4300];
-    snprintf(bin, sizeof(bin), "%s/%s", bindir, nm);
+    snprintf(bin, sizeof(bin), "%s/%s%s", bindir, nm, dbgb ? "-dbg" : "");
     // fresh app log for this run; the app APPENDS (host_log_setup honors the slot),
     // so the build output below + the app's runtime both land here for the console.
     { char lp[256]; app_log_path(lp, sizeof(lp), nm, k);
@@ -518,7 +520,7 @@ static int supervise_wait(int argc, char** argv, const char* appname,
             return 0;
         }
         if (WIFSTOPPED(st)) {
-            // slot-app stops (the '!' debug gate, F8 pauses) are not ours
+            // slot-app stops (the debug gate, F8 pauses) are not ours
             if (r != pid) continue;
             // the peer froze at a crash site (handler marked state 4). NO
             // new window EVER: the slot carries the verdict — an attached
@@ -1292,21 +1294,23 @@ int main(int argc, char** argv) {
 #ifdef SILVER_SHARE_NAME
     build_name = SILVER_SHARE_NAME;
 #endif
+    char build_key[512];
+    snprintf(build_key, sizeof(build_key), "%s%s", build_name, SILVER_BUILD_TAG);
     char product[4096];
     snprintf(product, sizeof(product), "%s/%s.product", bindir,
-        build_name);
+        build_key);
     // a system install keeps nothing beside /usr/bin/<name>: the product
     // and its libs live in ../lib/<name>/
     char libdir[4096];
     snprintf(libdir, sizeof(libdir), "%s/../lib/%s", bindir, name);
     if (access(product, F_OK) != 0)
-        snprintf(product, sizeof(product), "%s/%s.product", libdir, build_name);
+        snprintf(product, sizeof(product), "%s/%s.product", libdir, build_key);
 
     char artifacts[4096];
     snprintf(artifacts, sizeof(artifacts), "%s/%s.source", bindir,
-        build_name);
+        build_key);
     if (access(artifacts, F_OK) != 0)
-        snprintf(artifacts, sizeof(artifacts), "%s/%s.source", libdir, build_name);
+        snprintf(artifacts, sizeof(artifacts), "%s/%s.source", libdir, build_key);
 
     // record the launch cwd before we cd to the share, so the app can resolve its
     // config (e.g. orbiter.agi) against where it was started, not the share dir.

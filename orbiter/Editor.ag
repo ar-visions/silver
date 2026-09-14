@@ -16,6 +16,8 @@ class FileBuf
     # indent (-1 at top level), blank lines inheriting their predecessor's.
     # rebuilt on demand once the lines change
     public line_parent : vec i32
+    # the last line inside each line's scope (itself when it opens none)
+    public line_last   : vec i32
     public tree_dirty  : bool [ true ]
 
 class FindHit
@@ -70,6 +72,9 @@ class EdLineCache
     mutable canvas : Canvas
     mutable hash   : i64 [ -1 ]
     mutable frame  : i32 [ -1 ]
+    # the visible width this strip was drawn to cover. a pane narrower than
+    # it reuses the strip untouched; only a pane that grows past it redraws
+    mutable cover  : i32 [ -1 ]
 
 class ResourceView
     mutable src    : path
@@ -417,8 +422,8 @@ ResourceView AppView
     mutable gen        : i32         # generation of the imported surface
     mutable cmd        : string      # console command (streams the app's log)
     mutable dispatched : bool        # cmd handed to its console session (once per run)
-    public  clean_build : bool       # '*' marker: silver-host runs --clean first
-    public  debug_build : bool       # '#' marker: the module builds -O0 -g for the debugger
+    public  clean_build : bool       # silver-host runs --clean first
+    public  debug_build : bool       # the module builds -O0 -g for the debugger
     public  viewer      : bool       # a file handler: hosted to view, never under the debugger
     mutable doc        : path
     mutable pend_w     : i32
@@ -876,24 +881,22 @@ ResourceView AppView
         fn  : src.filename[]
         di  : i32 [ fn.index_of[ '.' ] ]
         mod : (di > 0) ? fn.mid[ 0, di ] : fn
-        # '!' asks the host to stop the app for the debugger; a viewer never does
-        dbg9 : string [ (viewer) ? '' : '!' ]
-        dbb9 : string [ (debug_build) ? '#' : '' ]
-        cln9 : string [ (clean_build) ? '*' : '' ]
-        mark : string '{dbg9}{dbb9}{cln9}'
+        # the host's launch flags (silver-host HOST_APP_*): 1 stops the app for
+        # the debugger, which a viewer never asks; 2 builds clean; 4 builds -O0 -g
+        fl9 : i32 [ ((viewer) ? 0 : 1) | ((clean_build) ? 2 : 0) | ((debug_build) ? 4 : 0) ]
         # flags BEFORE the doc: Au_with_cstrs stops parsing at the first
         # positional, so a trailing flag would never reach the app's schema
         ma9 : string [ (module_args && module_args.count > 0) ? '{module_args} ' : '' ]
-        req : string [ (doc) ? '{mark}{mod} {ma9}{doc}' : '{mark}{mod} {ma9}' ]
+        req : string [ (doc) ? '{mod} {ma9}{doc}' : '{mod} {ma9}' ]
         app_mod = mod
-        slot = host_app_request[ req.chars ]
-        log 'start: {req} -> slot {slot}'
+        slot = host_app_request[ req.chars, fl9 ]
+        log 'start: {req} flags {fl9} -> slot {slot}'
         if [ slot < 0 ]
             ended = true
             note = 'no silver-host supervisor'
             return
         root9 : path.path_startup[]
-        cmd = 'tail -n +1 -F {root9}/install/tmp/silver-{mod}.{slot}.log'
+        cmd = 'tail -n +1 -F {root9}/install/tmp/{mod}.{slot}.log'
 
     # hosted apps open one socket per instance: trinity-<mod>-<slot>.sock
     func sock_name [] -> string
@@ -1191,12 +1194,12 @@ Layer EditorLayer
         use.frame = editor.cl_frame
         return use
 
-    func band_hash [ editor: Editor, bs: i32, bands: i32, code_fs: i32, hcol: i32, vis_w: i32 ] -> i64
+    func band_hash [ editor: Editor, bs: i32, bands: i32, code_fs: i32, hcol: i32 ] -> i64
         h : i64 [ i64[ bs ] * 1099511628211 + i64[ code_fs ] ]
-        # the band holds the visible window only: the column it starts at
-        # and its width are part of what it caches
+        # the band holds the visible window only, so the column it starts at
+        # is part of what it caches. the WIDTH is not: a strip is drawn wider
+        # than the pane and reused until the pane outgrows it
         h = (h ^ i64[ hcol ]) * 1099511628211
-        h = (h ^ i64[ vis_w ]) * 1099511628211
         for [ k: i32 0, k < bands, k += 1 ]
             li : i32 [ bs + k ]
             if [ li >= editor.line_count[] ] break
@@ -1212,7 +1215,10 @@ Layer EditorLayer
 
     func code_band [ cv: Canvas, editor: Editor, bs: i32, bands: i32, cmt_c: rgba, lh: f32, cw: f32, code_fs: i32, hcol: i32, vis_w: i32 ] -> EdLineCache
         if [ !editor.code_lines ] editor.code_lines = vec EdLineCache []
-        h    : i64 [ band_hash[ editor, bs, bands, code_fs, hcol, vis_w ] ]
+        h    : i64 [ band_hash[ editor, bs, bands, code_fs, hcol ] ]
+        # drawn a tenth wider than the pane: a drag reveals into the slack
+        # instead of rebuilding every strip on every pixel of movement
+        want : i32 [ i32[ ceil[ f32[ vis_w ] * 1.1 ] ] ]
         # text starts hcol columns to the left: shift+scroll pans it
         hoff     : f32 [ f32[ hcol ] * cw ]
         maxw     : i32 [ 1 ]
@@ -1227,13 +1233,14 @@ Layer EditorLayer
             cwi : i32 [ i32[ ceil[ f32[ editor.display_of[ ln ].count ] * cw + cw - hoff ] ] ]
             if [ cwi > maxw ] maxw = cwi
         if [ !has_code ] return null
-        # never wider than the pane: what lies past it is reached by
-        # horizontal scroll, which re-renders the band at its new column
-        if [ maxw > vis_w + i32[ cw ] ] maxw = vis_w + i32[ cw ]
+        # never unbounded: what lies past the slack is reached by horizontal
+        # scroll, which re-renders the band at its new column
+        if [ maxw > want + i32[ cw ] ] maxw = want + i32[ cw ]
         lc_h : i32 [ i32[ ceil[ f32[ bands ] * lh ] ] + 1 ]
-        # cache hit → reuse, just tick the frame
+        # cache hit → reuse, just tick the frame. a strip already covering
+        # this width serves any narrower pane; only growing past it redraws
         for [ slot: EdLineCache ] in editor.code_lines
-            if [ slot.canvas && slot.hash == h ]
+            if [ slot.canvas && slot.hash == h && slot.cover >= vis_w ]
                 slot.frame = editor.cl_frame
                 return slot
         use : EdLineCache [ null ]
@@ -1311,8 +1318,39 @@ Layer EditorLayer
                         vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
         lc.paint[ ]
         use.hash  = h
+        use.cover = want
         use.frame = editor.cl_frame
         return use
+
+    # ctrl/cmd held: outline every token on a row that resolves, so the jump
+    # targets announce themselves. body rows and the pinned header band both
+    # draw through here, each at its own y
+    func outline_jumps [ cv: Canvas, editor: Editor, li: i32, x0: f32, y: f32, lh: f32, cw: f32 ]
+        ln9  : editor.line_get[ li ]
+        msl9 : i32 [ editor.row_src[ li ] ]
+        nrg9 : i32 [ editor.line_reg_count[ msl9 ] ]
+        for [ ri9: i32 0, ri9 < nrg9, ri9 += 1 ]
+            cr9 : ColorRegion editor.line_reg[ msl9, ri9 ]
+            c09 : i32 [ cr9.col ]
+            sl9 : i32 [ cr9.len ]
+            if [ c09 < 0 || sl9 <= 0 ] continue
+            if [ c09 + sl9 > ln9.count ] continue
+            w9 : ln9.mid[ c09, sl9 ]
+            # the map already resolved this token. a module
+            # name is the one case it cannot -- that is a file
+            ok9 : bool [ cr9.dsrc && cr9.dline > 0 ]
+            if [ cr9.kind == 14 ] ok9 = editor.module_path[ w9 ] != null
+            if [ !ok9 ] continue
+            tx9 : f32 [ f32[ editor.display_of[ ln9.mid[ 0, c09 ] ].count ] * cw ]
+            ww9 : f32 [ f32[ editor.display_of[ w9 ].count ] * cw ]
+            cv.save[ ]
+            cv.rounded[ 3.0, 3.0, 3.0, 3.0 ]
+            cv.fill_color[ rgba['#3b6fe022'] ]
+            cv.stroke_width[ 1.0 ]
+            cv.stroke_color[ rgba['#8cf9'] ]
+            cv.rect_to[ x0 + tx9 - 1.0, y + 1.0, ww9 + 2.0, lh - 2.0 ]
+            cv.paint[ ]
+            cv.restore[ ]
 
     func draw [ cv: Canvas ]
         editor : Editor[ parent ]
@@ -1409,8 +1447,13 @@ Layer EditorLayer
         cv.font_size[ code_fs ]
         cw_tm   : cv.measure_text[ 'x' ]
         lh      : f32 [ round[ cv.get_line_height[] * ((label_height > 0.0) ? label_height : 1.0) ] ]
-        # the pinned band at the top: nothing row-bound draws under it
-        pt0     : f32 [ (showing) ? 0.0 : f32[ editor.pinned_rows[].count ] * lh ]
+        # the pinned band at the top: nothing row-bound draws under it.
+        # lh_cache first — pinned_rows measures with it, and a stale one
+        # counted a different band here than the draw below, reserving a
+        # strip for a band that never appeared
+        editor.lh_cache = lh
+        pins0   : vec i32 editor.pinned_rows[]
+        pt0     : f32 [ (showing) ? 0.0 : f32[ pins0.count ] * lh ]
         ndigits : i32 [ 1 ]
         ncount  : i32 [ editor.line_count[] ]
         while [ ncount >= 10 ]
@@ -1450,7 +1493,6 @@ Layer EditorLayer
             fade_b = lh
             fade_r = 48.0
 
-        editor.lh_cache  = lh
         editor.cw_cache  = cw_tm.w
         editor.text_lines_frame = 0
         editor.cl_frame += 1
@@ -1724,10 +1766,13 @@ Layer EditorLayer
         # restore the code font before drawing line content
         cv.font_size[ code_fs ]
         tcv.font_size[ code_fs ]
-        # body rows never paint into the pinned band's strip, nor under
-        # the gutter when scrolled. the screen crop for the overlays is set
-        # after the blit: the band's fills and the blit itself are not clipped
-        if [ (editor.scroll.x > 0.0 || pt0 > 0.0) && tcv != cv ]
+        # body rows paint into the text area and nowhere else: not under the
+        # gutter, not into the pinned band's strip, and not past the right
+        # inset -- a strip is drawn wider than the pane on purpose, so the
+        # slack has to be clipped here or it reaches the panel beside us.
+        # the screen crop for the overlays is set after the blit, so the
+        # band's own fills and the blit itself stay unclipped
+        if [ tcv != cv ]
             tcv.set_crop[ gut_w, pt0, bounds.w - rin, vh ]
         if [ editor.band_rows != 1 ]
             br : i32 [ (editor.band_rows >= 2) ? editor.band_rows : 8 ]
@@ -1748,9 +1793,9 @@ Layer EditorLayer
                 for [ b: i32 fb, b <= lb, b += 1 ]
                     bs : i32 [ b * br ]
                     if [ bs >= editor.line_count[] ] break
-                    bh : i64 [ band_hash[ editor, bs, br, code_fs, hcol9, visw9 ] ]
+                    bh : i64 [ band_hash[ editor, bs, br, code_fs, hcol9 ] ]
                     for [ slot: EdLineCache ] in editor.code_lines
-                        if [ slot.canvas && slot.hash == bh ]
+                        if [ slot.canvas && slot.hash == bh && slot.cover >= visw9 ]
                             slot.frame = editor.cl_frame
                             break
             for [ b: i32 fb, b <= lb, b += 1 ]
@@ -1780,8 +1825,8 @@ Layer EditorLayer
                         break
         # composite the glyph canvas back through the edge fade. the pinned
         # band pushes the top shadow down so it falls from under the band
-        pins : vec i32 editor.pinned_rows[]
-        pt   : f32 [ (showing) ? 0.0 : f32[ pins.count ] * lh ]
+        pins : vec i32 pins0
+        pt   : f32 [ pt0 ]
         # the scopes the view is inside stay drawn at the top, over the rows
         # they would otherwise scroll past. a click on one goes there.
         # their fills and numbers go on screen; their text rides the text
@@ -1812,6 +1857,13 @@ Layer EditorLayer
             if [ tcv != cv ]
                 tcv.paint[ ]
                 tcv.clear_crop[ ]
+            # ctrl/cmd held: the headers' jump targets outline like a body row's
+            if [ editor.mod_down ]
+                cv.set_crop[ wtx + bounds.x + gut_w, wty + bounds.y,
+                    wtx + bounds.x + bounds.w - rin, wty + bounds.y + pt ]
+                for [ pi: i32 0, pi < pins.count, pi += 1 ]
+                    outline_jumps[ cv, editor, pins[ pi ], x0, round[ bounds.y + f32[ pi ] * lh ], lh, cw_tm.w ]
+                cv.clear_crop[ ]
             cv.fill_color[ rgba['#ffffff26'] ]
             cv.rect_to[ bounds.x, round[ bounds.y + pt ] - 1.0, bounds.w, 1.0 ]
             cv.paint[ ]
@@ -1832,31 +1884,7 @@ Layer EditorLayer
             # and the outline would survive the key coming back up
             if [ editor.mod_down && !editor.show_hits && !editor.row_header[ li ] && !editor.row_var[ li ] ]
                 if [ y + lh >= bounds.y && y <= bounds.y + bounds.h ]
-                    ln9  : editor.line_get[ li ]
-                    msl9 : i32 [ editor.row_src[ li ] ]
-                    nrg9 : i32 [ editor.line_reg_count[ msl9 ] ]
-                    for [ ri9: i32 0, ri9 < nrg9, ri9 += 1 ]
-                        cr9 : ColorRegion editor.line_reg[ msl9, ri9 ]
-                        c09 : i32 [ cr9.col ]
-                        sl9 : i32 [ cr9.len ]
-                        if [ c09 < 0 || sl9 <= 0 ] continue
-                        if [ c09 + sl9 > ln9.count ] continue
-                        w9 : ln9.mid[ c09, sl9 ]
-                        # the map already resolved this token. a module
-                        # name is the one case it cannot -- that is a file
-                        ok9 : bool [ cr9.dsrc && cr9.dline > 0 ]
-                        if [ cr9.kind == 14 ] ok9 = editor.module_path[ w9 ] != null
-                        if [ !ok9 ] continue
-                        tx9 : f32 [ f32[ editor.display_of[ ln9.mid[ 0, c09 ] ].count ] * cw_tm.w ]
-                        ww9 : f32 [ f32[ editor.display_of[ w9 ].count ] * cw_tm.w ]
-                        cv.save[ ]
-                        cv.rounded[ 3.0, 3.0, 3.0, 3.0 ]
-                        cv.fill_color[ rgba['#3b6fe022'] ]
-                        cv.stroke_width[ 1.0 ]
-                        cv.stroke_color[ rgba['#8cf9'] ]
-                        cv.rect_to[ x0 + tx9 - 1.0, y + 1.0, ww9 + 2.0, lh - 2.0 ]
-                        cv.paint[ ]
-                        cv.restore[ ]
+                    outline_jumps[ cv, editor, li, x0, y, lh, cw_tm.w ]
             if [ editor.row_header[ li ] ]
                 if [ editor.row_cont[ li ] ] continue
                 if [ editor.row_spacer[ li ] ]
@@ -1896,7 +1924,6 @@ Layer EditorLayer
                         vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
                     continue
                 fis_dir : bool [ fhh->is_dir ]
-                if [ fis_dir && fnm->count > 0 ] fnm = '{fnm}/'
                 if [ !editor.file_icon ]
                     ffp2 : path 'images/file.svg'
                     if [ ffp2.exists[] ] editor.file_icon = SVGModel [ ffp2 ]
@@ -2443,6 +2470,7 @@ Control Editor
     mutable stop_line     : i32 [ -1 ]
     mutable stop_col      : i32 [ -1 ]
     mutable stop_pending  : i32          # a debugger stop line waiting for its file to load
+    mutable goto_pending  : i32          # a navigation's 1-based line waiting for its file to load
     mutable stop_pending_col : i32
     public  debug_running : bool
     public  debugger      : dbg
@@ -2520,6 +2548,79 @@ Control Editor
             for [ ci: i32 0, ci < sv.children.count, ci += 1 ]
                 cv9 : variable sv.children[ci]
                 if [ line_declares[ line, bli, cv9 ] ] return cv9
+        return null
+
+    # the name a source line declares: a function's after `func`, a type's
+    # after its base at the top level (`NodeList Callstack`). '' otherwise
+    func decl_name [ bli: i32 ] -> string
+        if [ bli < 0 || bli >= lines.count ] return ''
+        text : string lines.value_by_index[ bli ]
+        if [ !text || text.count == 0 ] return ''
+        top  : bool [ text[0] != 32 && text[0] != 9 ]
+        ws   : vec string []
+        for [ w: string ] in text.split[ ' ' ]
+            if [ w && w.count > 0 ] ws.push[ w ]
+        i : i32 [ 0 ]
+        while [ i < ws.count && (ws[i] == 'public' || ws[i] == 'intern' || ws[i] == 'mutable' ||
+                ws[i] == 'static' || ws[i] == 'expect' || ws[i] == 'export' || ws[i] == 'abstract' ||
+                ws[i] == 'manual' || ws[i] == 'context') ]
+            i += 1
+        if [ i >= ws.count ] return ''
+        if [ ws[i] == 'func' || ws[i] == 'lambda' ]
+            if [ i + 1 >= ws.count ] return ''
+            fn : string ws[ i + 1 ]
+            b  : i32 [ fn.index_of[ '[' ] ]
+            return (b > 0) ? fn.mid[ 0, b ] : fn
+        if [ ws[i] == 'construct' || ws[i] == 'cast' ] return ws[i]
+        if [ top && i == 0 && ws.count >= 2 && ws[0] != 'import' && ws[0] != 'extend' && ws[0] != 'app' ]
+            return ws[1]
+        return ''
+
+    # where a row sits: its enclosing type and function, outermost first
+    func scope_of [ vr: i32 ] -> string
+        line_tree[]
+        if [ !cur_buf || !cur_buf.line_parent ] return ''
+        tree : vec i32 cur_buf.line_parent
+        sr   : i32 [ row_src[ vr ] ]
+        if [ sr < 0 || sr >= tree.count ] return ''
+        names : vec string []
+        for [ p: i32 [ sr ], p >= 0, p = i32[ tree[ p ] ] ]
+            nm : string decl_name[ p ]
+            if [ nm && nm.count > 0 ] names.push[ nm ]
+        out : string ''
+        for [ i: i32 names.count - 1, i >= 0, i -= 1 ]
+            out = (out.count > 0) ? '{out}.{names[i]}' : names[i]
+        return out
+
+    # the tooltip in the status bar's lower left: where the caret sits, and at a
+    # debugger stop the clicked name's type and value
+    func tip_text [ stopped: bool ] -> string
+        if [ sel_line < 0 || show_hits || nav_list ] return ''
+        sc  : string scope_of[ sel_line ]
+        tok : string cursor_token[]
+        v   : variable (stopped && tok.count > 0) ? var_named[ tok ] : null
+        what : string (v) ? ((v.type && v.type.count > 0) ? '{v.name}: {v.type} = {v.value}' : '{v.name} = {v.value}') : tok
+        if [ sc.count > 0 && what.count > 0 ] return '{sc}  {what}'
+        return (sc.count > 0) ? sc : what
+
+    # the variable a clicked name stands for at the stop: a local or arg,
+    # else a member of self
+    func var_named [ nm: string ] -> variable
+        if [ !debug_vars || !nm || nm.count == 0 ] return null
+        for [ k: i32 0, k < debug_vars.count, k += 1 ]
+            v : variable debug_vars[k]
+            if [ v && v.name && v.name.count == nm.count && v.name == nm ] return v
+        for [ k: i32 0, k < debug_vars.count, k += 1 ]
+            sv : variable debug_vars[k]
+            if [ !sv || !sv.name || sv.name.count != 1 || sv.name[0] != 97 ] continue
+            # self's members are read from lldb only on demand: read them now
+            if [ sv.has_kids && (!sv.children || sv.children.count == 0) ]
+                d9 : dbg active_dbg[]
+                if [ d9 ] sv.children = d9.read_children[ sv.path ]
+            if [ !sv.children ] continue
+            for [ ci: i32 0, ci < sv.children.count, ci += 1 ]
+                cv9 : variable sv.children[ci]
+                if [ cv9 && cv9.name && cv9.name.count == nm.count && cv9.name == nm ] return cv9
         return null
 
     # one expansion open at a time, unless it nests inside the open one.
@@ -2720,6 +2821,33 @@ Control Editor
 
     func word_char [ c: i32 ] -> bool
         return (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95
+
+    # cmd/ctrl click: go to what the token at row ln, column cl resolves to.
+    # the caret already sits there (cursor_token reads it). true when it went
+    func jump_to_def [ ln: i32, cl: i32 ] -> bool
+        w9  : cursor_token[]
+        ob9 : cast orbiter [ ux.app_object ]
+        if [ !ob9 || !w9 || w9.count == 0 ] return false
+        cr8 : region_at[ row_src[ ln ], cl ]
+        # a module name navigates to the module itself -- that is
+        # a FILE, the one thing the map cannot resolve for us
+        if [ cr8 && cr8.kind == 14 ]
+            mp9 : module_path[ w9 ]
+            if [ mp9 ]
+                if [ nav && src ]
+                    nav.record[ pane_index, '{src.absolute[]}', ln, cl, scroll.y ]
+                ob9.open_at_line[ mp9, pane_index, 1 ]
+                return true
+        # everything else the compiler already resolved: a type,
+        # a silver function, or a C function out of a header
+        if [ cr8 && cr8.dsrc && cr8.dline > 0 ]
+            # drop a nav point BEFORE leaving, or there is no
+            # way back from wherever the definition lives
+            if [ nav && src ]
+                nav.record[ pane_index, '{src.absolute[]}', ln, cl, scroll.y ]
+            ob9.open_at_line[ path '{cr8.dsrc}', pane_index, cr8.dline ]
+            return true
+        return false
 
     func cursor_token [] -> string
         if [ sel_line < 0 || sel_line >= line_count[] ] return ''
@@ -3016,6 +3144,10 @@ Control Editor
     public func apply_format [ ff: fmt_file ]
         if [ !ff || !ff.source ] return
         key : string '{ff.source}'
+        # a section older than its file describes text that is gone: every span
+        # lands on the wrong columns. it never colours, whichever map it came in
+        sp9 : path [ ff.source.chars ]
+        if [ ff.mtime > 0 && sp9.exists[] && ff.mtime < sp9.modified_time[] ] return
         fcm : map FileBuf [string] buffers[]
         buf : FileBuf fcm[ key ]
         if [ !buf ] return
@@ -3058,7 +3190,15 @@ Control Editor
             tree.push[ above ]
             sline.push[ i ]
             sind.push[ ind ]
+        # where each scope ends: a line's last reaches down to its
+        # children's, so walking up from the bottom settles every parent
+        ends : vec i32 []
+        for [ i: i32 0, i < n, i += 1 ] ends.push[ i ]
+        for [ i: i32 n - 1, i > 0, i -= 1 ]
+            p : i32 [ tree[ i ] ]
+            if [ p >= 0 && i32[ ends[ i ] ] > i32[ ends[ p ] ] ] ends[ p ] = ends[ i ]
         cur_buf.line_parent = tree
+        cur_buf.line_last   = ends
         cur_buf.tree_dirty  = false
 
     # the header rows kept drawn at the top: the lines the first visible
@@ -3072,6 +3212,7 @@ Control Editor
         tree : vec i32 cur_buf.line_parent
         if [ !tree ] return rows
         lh   : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
+        ends : vec i32 cur_buf.line_last
         # a pixel of easing under a row boundary must not read as the row above
         top  : i32 [ (scroll.y + 1.0) / lh ]
         for [ level: i32 0, level < 16, level += 1 ]
@@ -3087,12 +3228,31 @@ Control Editor
             chain : vec i32 []
             for [ p: i32 [ tree[ sr ] ], p >= 0, p = i32[ tree[ p ] ] ]
                 chain.push[ p ]
+            # a header of exactly this depth arriving at its slot freezes
+            # there: it joins the band the moment the band reaches it, so
+            # the band never grows over the first line of its body
+            if [ level == chain.count && ends && sr < ends.count && i32[ ends[ sr ] ] > sr ]
+                rows.push[ row ]
+                continue
             if [ level >= chain.count ] break
             h : i32 [ vis_row[ chain[ chain.count - 1 - level ] ] ]
             # a header stays nested under the one above it in the band
             if [ rows.count > 0 && h <= i32[ rows[ rows.count - 1 ] ] ] break
             rows.push[ h ]
         return rows
+
+    # arrive at a 1-based line as if the user clicked the end of it: the caret
+    # there, no range, the line in view, the pane focused, a nav point to return to
+    public func land_on [ lno: i32 ]
+        goto_line[ lno ]
+        ln9 : string line_get[ sel_line ]
+        sel_col      = (ln9) ? ln9.count : 0
+        anchor_col   = sel_col
+        saved_scroll = scroll.y
+        pristine     = false
+        if [ ux ] ux.set_focus[ a ]
+        if [ nav && src ]
+            nav.record[ pane_index, '{src.absolute[]}', sel_line, sel_col, scroll.y ]
 
     # put the caret on a 1-based line and bring it into view
     public func goto_line [ lno: i32 ]
@@ -3517,8 +3677,9 @@ Control Editor
         if [ lib ] return lib
         # no export claims it: the code handler's plain lexer colours any
         # text file, when that handler is built
-        root : path.path_startup[]
-        so   : path '{root}/install/build/{path.path_library[ 'silver-code' ]}'
+        orb9 : cast orbiter [ ux.app_object ]
+        if [ !orb9 ] return null
+        so   : path orb9.module_lib[ 'silver-code' ]
         return (so.exists[]) ? 'silver-code' : null
 
     # a named view that can render bytes, asked of the views themselves
@@ -4081,6 +4242,9 @@ Control Editor
             view_name = ''
             # a debugger stepping into another module moves the pane; the app stays
             if [ run_view && run_view.viewer ] close_app[]
+            # a module picked from the nav list lets go of the old module's instance (it keeps running);
+            # an instance stopped in the debugger stays: walking its frames opens other modules
+            el [ run_view && src && stop_pending == 0 && !stopped[] && (!run_view.src || '{run_view.src.absolute[]}' != '{src.absolute[]}') ] run_view = null
             app_view    = false
             sel_line    = -1
             anchor_line = -1
@@ -4102,6 +4266,10 @@ Control Editor
         if [ stop_pending > 0 ]
             apply_stop[ stop_pending, stop_pending_col ]
             stop_pending = 0
+        # a navigation that opened this file lands now: the load reset the caret
+        if [ goto_pending > 0 ]
+            land_on[ goto_pending ]
+            goto_pending = 0
 
     func load_text []
         pristine = false
@@ -4343,30 +4511,9 @@ Control Editor
         # only types LOADED in this process resolve: orbiter's own
         # sources and its imports, not an unrelated module's
         if [ ev.key.ctrl || ev.key.meta ]
-            w9  : cursor_token[]
-            ob9 : cast orbiter [ ux.app_object ]
-            if [ ob9 && w9 && w9.count > 0 ]
-                cr8 : region_at[ row_src[ ln ], cl ]
-                # a module name navigates to the module itself -- that is
-                # a FILE, the one thing the map cannot resolve for us
-                if [ cr8 && cr8.kind == 14 ]
-                    mp9 : module_path[ w9 ]
-                    if [ mp9 ]
-                        if [ nav && src ]
-                            nav.record[ pane_index, '{src.absolute[]}', ln, cl, scroll.y ]
-                        ob9.open_at_line[ mp9, pane_index, 1 ]
-                        ev.no_default = true
-                        return true
-                # everything else the compiler already resolved: a type,
-                # a silver function, or a C function out of a header
-                if [ cr8 && cr8.dsrc && cr8.dline > 0 ]
-                    # drop a nav point BEFORE leaving, or there is no
-                    # way back from wherever the definition lives
-                    if [ nav && src ]
-                        nav.record[ pane_index, '{src.absolute[]}', ln, cl, scroll.y ]
-                    ob9.open_at_line[ path '{cr8.dsrc}', pane_index, cr8.dline ]
-                    ev.no_default = true
-                    return true
+            if [ jump_to_def[ ln, cl ] ]
+                ev.no_default = true
+                return true
             # a modifier click in here is OURS whether or not it resolved.
             # falling through hands it to the style inspector, and cmd
             # does not mean 'inspect this element' inside the editor.
@@ -4404,8 +4551,19 @@ Control Editor
                 pr : i32 [ pins[ pi ] ]
                 # the line lands exactly where its header row was, so the
                 # rows above it stay pinned and it reads as the same thing
+                # the column comes off the header's own row, as a click on that line would
+                pcw  : f32 [ (cw_cache > 0.0) ? cw_cache : 8.0 ]
+                pvx  : f32 [ round[ (ev.mouse.pos.x - pel.bounds.x - gutter_w - row_indent[ pr ]) / pcw ] ]
+                pcl  : i32 [ model_col[ line_get[ pr ], i32[ pvx ] ] ]
                 sel_line      = pr
                 anchor_line   = pr
+                sel_col       = pcl
+                anchor_col    = pcl
+                # cmd/ctrl on a header goes where its token resolves, as in the body
+                if [ (ev.key.ctrl || ev.key.meta) && jump_to_def[ pr, pcl ] ]
+                    ev.no_default     = true
+                    ev.no_propagation = true
+                    return
                 scroll.y      = f32[ pr - pi ] * plh
                 if [ scroll.y < 0.0 ] scroll.y = 0.0
                 scroll_target = scroll.y
@@ -4620,6 +4778,9 @@ Control Editor
             if [ place_cursor[ ev ] ] return
         dragging = true
         pristine = false
+        # the status bar's tooltip follows the caret: redraw it
+        if [ ux ] ux.restyle = true
+        log 'TIPPRESS pane={pane_index} sel={sel_line} col={sel_col} tok={cursor_token[]} scope={scope_of[ sel_line ]} vars={(debug_vars) ? debug_vars.count : -1} hits={(show_hits) ? 1 : 0} nav={(nav_list) ? 1 : 0}'
 
     func on_move [ ev: Event ]
         if [ run_view && ux.locked == a ]
@@ -4743,7 +4904,7 @@ Control Editor
         ux.will_animate = true
 
     func on_char [ ev: Event ]
-        if [ run_view && app_view && !nav_list && !show_hits && !stopped[] ] return
+        if [ run_view && app_view && !run_view.held && !run_view.ended && !nav_list && !show_hits && !stopped[] ] return
         if [ flat_active ] return
         if [ line_count[] <= 0 ] return
         if [ sel_line < 0 ] sel_line = 0
@@ -4879,7 +5040,7 @@ Control Editor
         # the finder owns the keyboard while it is up: forwarding to the app
         # ate escape, so the list could not be closed
         ui_keys : bool [ nav_list || show_hits ]
-        if [ run_view && app_view && !ui_keys && !ev.key.ctrl && !ev.key.meta ]
+        if [ run_view && app_view && !run_view.held && !run_view.ended && !ui_keys && !ev.key.ctrl && !ev.key.meta ]
             run_view.on_key*[ ev ]
             return
         if [ rview && !ui_keys && !ev.key.ctrl && !ev.key.meta ]

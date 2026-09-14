@@ -793,8 +793,12 @@ LLVMMetadataRef debug_struct_type(aether a, Au_t type_au, bool w) {
                 m->member_type != AU_MEMBER_CONSTRUCT) continue;
             if (midx >= member_count) break;
 
-            cstr fname     = m->alt ? m->alt : (m->ident ? m->ident : "_fn");
+            // the label is the method's own name (the class scope reads it as
+            // Class::method); alt is the real symbol, kept as the linkage name
+            cstr fname     = m->ident ? m->ident : "_fn";
             u32  fname_len = strlen(fname);
+            cstr lname     = m->alt ? m->alt : fname;
+            u32  lname_len = strlen(lname);
 
             LLVMMetadataRef sr_type = debug_subroutine_type(a, m, false);
             if (!sr_type) {
@@ -806,7 +810,7 @@ LLVMMetadataRef debug_struct_type(aether a, Au_t type_au, bool w) {
                 a->dbg_builder,
                 fwd_decl,
                 fname, fname_len,
-                fname, fname_len,
+                lname, lname_len,
                 a->file, 0,
                 sr_type,
                 false, false, 0,
@@ -1277,8 +1281,22 @@ void emit_debug_function(aether a, efunc fn, bool w) {
     u32 line = (efn && efn->origin_token) ? efn->origin_token->line :
                a->statement_origin ? a->statement_origin->line : 0;
     u32 scope_line = line;
-    cstr name = au->alt ? au->alt : au->ident;
+    // a method's label is Class.method, written as the name itself: lldb
+    // shows a C unit's function by its linkage name whenever one is present,
+    // and never qualifies by scope, so a method carries no linkage name.
+    // the real symbol (alt) is untouched and still resolves by name
+    char label[512];
+    cstr name = au->ident ? au->ident : au->alt;
+    cstr link = au->alt ? au->alt : name;
+    bool in_class = au->context && au->context->ident &&
+                    (au->is_imethod || au->context->is_class);
+    if (in_class) {
+        snprintf(label, sizeof(label), "%s.%s", au->context->ident, name);
+        name = label;
+        link = "";
+    }
     u32 name_len = strlen(name);
+    u32 link_len = strlen(link);
 
     // for instance methods, scope inside the class DI type if available
     LLVMMetadataRef scope = a->compile_unit;
@@ -1291,7 +1309,7 @@ void emit_debug_function(aether a, efunc fn, bool w) {
         a->dbg_builder,
         scope,
         name, name_len,         // name
-        name, name_len,         // linkage name
+        link, link_len,         // linkage name
         file_ref, line,         // file, line (declaration)
         sr_type,                // subroutine type
         false,                  // is local to unit

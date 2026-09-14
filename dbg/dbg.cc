@@ -3,6 +3,7 @@
 //#include <unistd.h>
 //#include <features.h>
 #include <lldb/API/LLDB.h>
+#include <mutex>
 #include <import>
 #undef   read
 #include <sys/types.h>
@@ -47,7 +48,11 @@ struct dbg_state {
     lldb::SBTarget   target;
     lldb::SBProcess  process;
     lldb::SBListener listener;
-    bool             interrupted;
+    bool             interrupted = false;
+    // parked: the owner is reloading and its callbacks point into an image
+    // being unloaded. the poll thread delivers nothing until dbg_adopt
+    bool             parked      = false;
+    std::mutex       deliver;
 };
 #define S(d)  ((dbg_state*)(d)->impl)
 #define BP(b) ((lldb::SBBreakpoint*)(b)->lldb_bp)
@@ -67,6 +72,14 @@ struct dbg_state {
 extern "C" {
 
 static Au dbg_poll_thunk(Au ctx, Au w);
+
+// every callback into the owner goes through here: a parked session holds its
+// events (dbg_adopt replays the stop), and park waits out a delivery in flight
+static void dbg_deliver(dbg debug, callback cb, Au arg) {
+    std::lock_guard<std::mutex> g(S(debug)->deliver);
+    if (S(debug)->parked || !cb) return;
+    cb((Au)debug->target, arg);
+}
 
 DBG_API Au dbg_poll(dbg debug) {
     lldb::SBEvent event;
@@ -94,7 +107,7 @@ DBG_API Au dbg_poll(dbg debug) {
             exited e = construct(exited,
                 debug,  debug,
                 code,   exit_code);
-            debug->on_exit(debug->target, (Au)e);
+            dbg_deliver(debug, debug->on_exit, (Au)e);
             continue;   // loop ends (active == false)
         }
 
@@ -133,20 +146,36 @@ DBG_API Au dbg_poll(dbg debug) {
                          file_path[fl-3] == '.' && file_path[fl-2] == 'a' && file_path[fl-1] == 'g';
             if (S(debug)->interrupted) {
                 S(debug)->interrupted = false;
-                uint32_t nf = thread.GetNumFrames();
-                for (uint32_t fi = 0; fi < nf; ++fi) {
-                    lldb::SBFrame     fr = thread.GetFrameAtIndex(fi);
-                    lldb::SBLineEntry le = fr.GetLineEntry();
-                    char fp[1024]; fp[0] = 0;
-                    le.GetFileSpec().GetPath(fp, sizeof(fp));
-                    int n = 0; while (fp[n]) n++;
-                    if (!le.IsValid() || le.GetLine() == 0 || n < 3 ||
-                        fp[n-3] != '.' || fp[n-2] != 'a' || fp[n-1] != 'g') continue;
-                    thread.SetSelectedFrame(fi);
-                    line   = le.GetLine();
-                    column = le.GetColumn();
-                    source = f(path, "%s", fp);
-                    break;
+                // an interrupt stops EVERY thread, and the one the process
+                // hands back is whichever the kernel names first — on macOS a
+                // worker parked in __psynch_cvwait, with no source and no
+                // useful stack. find the thread that is actually in .ag code
+                // and select it, so the pane lands on the line and the call
+                // stack is the app's, not a condition variable's.
+                uint32_t nt    = S(debug)->process.GetNumThreads();
+                bool     found = false;
+                for (uint32_t ti = 0; ti < nt && !found; ++ti) {
+                    lldb::SBThread th = S(debug)->process.GetThreadAtIndex(ti);
+                    if (!th.IsValid()) continue;
+                    uint32_t nf = th.GetNumFrames();
+                    for (uint32_t fi = 0; fi < nf; ++fi) {
+                        lldb::SBFrame     fr = th.GetFrameAtIndex(fi);
+                        lldb::SBLineEntry le = fr.GetLineEntry();
+                        char fp[1024]; fp[0] = 0;
+                        le.GetFileSpec().GetPath(fp, sizeof(fp));
+                        int n = 0; while (fp[n]) n++;
+                        if (!le.IsValid() || le.GetLine() == 0 || n < 3 ||
+                            fp[n-3] != '.' || fp[n-2] != 'a' || fp[n-1] != 'g') continue;
+                        S(debug)->process.SetSelectedThread(th);
+                        th.SetSelectedFrame(fi);
+                        thread = th;
+                        line   = le.GetLine();
+                        column = le.GetColumn();
+                        source = f(path, "%s", fp);
+                        is_ag  = true;
+                        found  = true;
+                        break;
+                    }
                 }
                 is_sig = false;
             }
@@ -172,7 +201,7 @@ DBG_API Au dbg_poll(dbg debug) {
                 source, source,
                 line,   line,
                 column, column);
-            debug->on_break(debug->target, (Au)cur);
+            dbg_deliver(debug, debug->on_break, (Au)cur);
 
         } else if (state == lldb::eStateCrashed) {
             debug->running = false;
@@ -181,7 +210,7 @@ DBG_API Au dbg_poll(dbg debug) {
                 source, source,
                 line,   line,
                 column, column);
-            debug->on_crash(debug->target, (Au)cur);
+            dbg_deliver(debug, debug->on_crash, (Au)cur);
         }
     }
     return null;
@@ -342,6 +371,49 @@ DBG_API none dbg_stop(dbg debug) {
     // drains a closed/reused fd.
     if (debug->fifo_fd_out >= 0) { close(debug->fifo_fd_out); debug->fifo_fd_out = -1; }
     if (debug->fifo_fd_err >= 0) { close(debug->fifo_fd_err); debug->fifo_fd_err = -1; }
+}
+
+// the owner is reloading: the session, its process and its breakpoints stay
+// exactly as they are (a stop stays stopped); only the callbacks let go, since
+// they point into the image being unloaded
+DBG_API none dbg_park(dbg debug) {
+    if (!debug->impl) return;
+    std::lock_guard<std::mutex> g(S(debug)->deliver);
+    S(debug)->parked = true;
+    debug->target    = null;
+    debug->on_stdout = null;
+    debug->on_stderr = null;
+    debug->on_break  = null;
+    debug->on_exit   = null;
+    debug->on_crash  = null;
+}
+
+// the reloaded owner takes the session back: bind its callbacks, and if the
+// process sits at a stop, hand that stop over so the pane lands on it again
+DBG_API none dbg_adopt(dbg debug, Au owner) {
+    if (!debug->impl || !owner) return;
+    {
+        std::lock_guard<std::mutex> g(S(debug)->deliver);
+        debug->target    = owner;
+        debug->on_stdout = Au_binding((Au)debug, owner, true, typeid(Au), typeid(iobuffer), null, "on_stdout");
+        debug->on_stderr = Au_binding((Au)debug, owner, true, typeid(Au), typeid(iobuffer), null, "on_stderr");
+        debug->on_break  = Au_binding((Au)debug, owner, true, typeid(Au), typeid(cursor),   null, "on_break");
+        debug->on_exit   = Au_binding((Au)debug, owner, true, typeid(Au), typeid(exited),  null, "on_exit");
+        debug->on_crash  = Au_binding((Au)debug, owner, true, typeid(Au), typeid(cursor),   null, "on_crash");
+        S(debug)->parked = false;
+    }
+    lldb::SBProcess process = S(debug)->process;
+    if (!debug->active || !process.IsValid() || process.GetState() != lldb::eStateStopped) return;
+    lldb::SBLineEntry le = process.GetSelectedThread().GetSelectedFrame().GetLineEntry();
+    char fp[1024]; fp[0] = 0;
+    le.GetFileSpec().GetPath(fp, sizeof(fp));
+    debug->running = false;
+    cursor cur = construct(cursor,
+        debug,  debug,
+        source, f(path, "%s", fp),
+        line,   le.GetLine(),
+        column, le.GetColumn());
+    dbg_deliver(debug, debug->on_break, (Au)cur);
 }
 
 // a step/continue is only valid when the inferior is alive AND halted at a stop.

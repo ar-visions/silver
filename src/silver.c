@@ -127,6 +127,11 @@ static bool is_silver_repo(silver a) {
         cmp(a->git_project, "silver") == 0;
 }
 
+// a debug build must never share a file name with a release one: staleness is
+// decided by timestamps alone, so identically named products silently mix
+// configurations -- one module built -O0 -g beside others still optimized
+static symbol silver_build_tag(silver a) { return a->debug ? "-dbg" : ""; }
+
 static string silver_install_name(silver a) {
     if (!a->git_owner) return a->name;
     string prefix = is_silver_repo(a)
@@ -1006,10 +1011,18 @@ static void* build_fn_worker(void* arg) {
     au_codegen_active_set((aether)a);
     attempt() {
         int nwork = len(w->work);
-        for (int i = w->first; i < nwork; i += w->step) {
+        // jobs are dealt out by class group: a class's functions are contiguous
+        // in the work list and all build on one worker (a free function is a
+        // group of its own), never function by function across the classes
+        int   group = -1;
+        etype prev  = null;
+        for (int i = 0; i < nwork; i++) {
             if (w->root->error) break; // first error stops all workers
-            efunc    f2  = (efunc)w->work->origin[i];
             etype    rec = (etype)w->wrec->origin[i];
+            if (i == 0 || !rec || rec != prev) group++;
+            prev = rec;
+            if (group % w->step != w->first) continue;
+            efunc    f2  = (efunc)w->work->origin[i];
             callback pre = get(w->inits, (Au)f2) ? build_init_preamble : null;
             if (rec) push_scope(a, (Au)rec, 27);
             build_fn(a, f2, pre, null);
@@ -1423,6 +1436,14 @@ void silver_parse(silver a) {
         if (rec && !mem->is_system && !mem->is_schema && !rec->parsing && !rec->user_built)
             build_record_parse(a, rec);
     }
+
+    // every func Class.method body must have met its declaration in the class
+    if (a->out_defs)
+        pairs(a->out_defs, i) {
+            array d = (array)i->value;
+            validate(!d || len(d) != 2,
+                "func %o: declare the method inside its class first", i->key);
+        }
 
     /// phase 2: implement all LLVM types (records and free functions)
     members(a->autype, mem) {
@@ -2124,7 +2145,8 @@ static path build_silver_host(silver a) {
     path host_src = f(path, "%s/src/silver-host.c", SILVER);
     string share_name = silver_install_name(a);
     // app_ext is "" on unix and ".exe" here; exec cannot find it without one
-    path host_dst = f(path, "%o/%o%s", a->build_dir, a->name, app_ext);
+    path host_dst = f(path, "%o/%o%s%s", a->build_dir, a->name,
+        silver_build_tag(a), app_ext);
     verify(file_exists("%o", host_src), "silver-host.c not found at %o", host_src);
 #ifdef __APPLE__
     cstr host_libs = "-isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk -lAu -lm -framework Cocoa -framework IOKit -framework CoreFoundation -framework CoreGraphics -framework QuartzCore";
@@ -2144,14 +2166,14 @@ static path build_silver_host(silver a) {
     // link to a temp, then replace: a running app or a mid-scan file locks
     // the exe against in-place relink (LNK1168). the temp always writes.
     path host_out = f(path, "%o.new%i", host_dst, (i32)getpid());
-    vexec(a->verbose, "silver-host", "%s/install/bin/clang %s %s -o %o %o %s %s -D_CRT_SECURE_NO_WARNINGS -D_CRT_NONSTDC_NO_WARNINGS -I%s/install/include -L%s/install/lib -DSILVER_ROOT=\\\"%s\\\" -DSILVER_SHARE_NAME=\\\"%o\\\"",
-        SILVER, a->debug ? "-O0 -g" : "-O2", a->asan ? "-fsanitize=address -shared-libasan" : "", host_out, host_src, host_libs, subsystem, SILVER, SILVER, SILVER, SILVER, share_name);
+    vexec(a->verbose, "silver-host", "%s/install/bin/clang %s %s -o %o %o %s %s -D_CRT_SECURE_NO_WARNINGS -D_CRT_NONSTDC_NO_WARNINGS -I%s/install/include -L%s/install/lib -DSILVER_ROOT=\\\"%s\\\" -DSILVER_SHARE_NAME=\\\"%o\\\" -DSILVER_BUILD_TAG=\\\"%s\\\"",
+        SILVER, a->debug ? "-O0 -g" : "-O2", a->asan ? "-fsanitize=address -shared-libasan" : "", host_out, host_src, host_libs, subsystem, SILVER, SILVER, SILVER, SILVER, share_name, silver_build_tag(a));
     verify(au_replace_file(host_out->chars, host_dst->chars) == 0,
         "could not replace %o: locked by another process", host_dst);
 #else
     // libAu resolves by soname: the tree's lib/ here, /usr/lib/<app>/ packaged
-    vexec(a->verbose, "silver-host", "%s/install/bin/clang %s %s -o %o %o %s -I%s/install/include -L%s/install/lib -Wl,-rpath,%s/install/lib -Wl,-rpath,'$ORIGIN/../lib/%o' -DSILVER_ROOT='\"%s\"' -DSILVER_SHARE_NAME='\"%o\"'",
-        SILVER, a->debug ? "-O0 -g" : "-O2", a->asan ? "-fsanitize=address -shared-libasan" : "", host_dst, host_src, host_libs, SILVER, SILVER, SILVER, a->name, SILVER, share_name);
+    vexec(a->verbose, "silver-host", "%s/install/bin/clang %s %s -o %o %o %s -I%s/install/include -L%s/install/lib -Wl,-rpath,%s/install/lib -Wl,-rpath,'$ORIGIN/../lib/%o' -DSILVER_ROOT='\"%s\"' -DSILVER_SHARE_NAME='\"%o\"' -DSILVER_BUILD_TAG='\"%s\"'",
+        SILVER, a->debug ? "-O0 -g" : "-O2", a->asan ? "-fsanitize=address -shared-libasan" : "", host_dst, host_src, host_libs, SILVER, SILVER, SILVER, a->name, SILVER, share_name, silver_build_tag(a));
 #endif
     return host_dst;
 }
@@ -3058,10 +3080,11 @@ static void uninstall_products(silver a) {
     string install_name = silver_install_name(a);
     exec(a->verbose,
         "rm -rf %o/lib%o.so %o/%o.artifacts %o/%o.product %o/%o.source "
-        "%o/%o.o %o/%o.o.core*.o %o/%o.bc %o/%o.ll %o/%o "
+        "%o/%o.o %o/%o.o.core*.o %o/%o-dbg.o %o/%o-dbg.o.core*.o %o/%o.bc %o/%o.ll %o/%o "
         "%o/export/%o.agi %o/share/%o %o/share/%o %o/syntax/%o.f",
         a->build_dir, install_name, a->build_dir, install_name,
         a->build_dir, install_name, a->build_dir, install_name,
+        a->build_dir, a->name, a->build_dir, a->name,
         a->build_dir, a->name, a->build_dir, a->name,
         a->build_dir, a->name, a->build_dir, a->name, a->build_dir, a->name,
         a->install, install_name, a->install, install_name,
@@ -3076,7 +3099,8 @@ static void silver_recover_live(silver a) {
     if (((aether)a)->is_live || a->is_external) return;
     // the same app_ext the host was written with, or a cached run finds
     // nothing and silver exits 0 having neither built nor launched
-    path host = f(path, "%o/%o%s", a->build_dir, a->name, app_ext);
+    path host = f(path, "%o/%o%s%s", a->build_dir, a->name,
+        silver_build_tag(a), app_ext);
     if (file_exists("%o", host)) {
         ((aether)a)->is_live = true;
         if (!a->live_binary) a->live_binary = hold(host);
@@ -4410,12 +4434,13 @@ AU_EXPORT void silver_init(silver a) {
     string install_name = silver_install_name(a);
     drop(((aether)a)->share_name);
     ((aether)a)->share_name = hold(install_name);
-    a->product_link = f(path, "%o/%o.product", a->build_dir,
-        install_name);
-    a->artifacts_path = f(path, "%o/%o.artifacts", a->build_dir,
-        install_name);
-    a->source_path = f(path, "%o/%o.source", a->build_dir,
-        install_name);
+    symbol build_tag = silver_build_tag(a);
+    a->product_link = f(path, "%o/%o%s.product", a->build_dir,
+        install_name, build_tag);
+    a->artifacts_path = f(path, "%o/%o%s.artifacts", a->build_dir,
+        install_name, build_tag);
+    a->source_path = f(path, "%o/%o%s.source", a->build_dir,
+        install_name, build_tag);
     if (!a->format || !len(a->format))
         a->format = f(path, "%o/syntax/%o.f", a->install, a->name);
 
@@ -4610,7 +4635,8 @@ AU_EXPORT void silver_init(silver a) {
             // with app_ext missing this never found the host, so a cached build
             // silently SKIPPED recompiling it -- an edit to silver-host.c only
             // took effect on a full build, and only there did its errors appear
-            path host_dst = f(path, "%o/%o%s", a->build_dir, a->name, app_ext);
+            path host_dst = f(path, "%o/%o%s%s", a->build_dir, a->name,
+                silver_build_tag(a), app_ext);
             if (file_exists("%o", host_dst) && !target_is_mobile(a))
                 build_silver_host(a);
         }
@@ -7971,6 +7997,46 @@ enode parse_statement(silver a)
         read_if(a, "func")       != null : false;
     if (def_func && module)
         a->has_module_func = true;
+
+    // func Class.method -- the body of a method declared inside its class. the
+    // header (args and return) and body are held by Class.method; parse_func
+    // hands them to the declaration when phase 1 parses the class body
+    if (def_func && module && element(a, 1) && eq(element(a, 1), ".")) {
+        token  ctok  = peek(a);
+        string cname = read_alpha(a);
+        validate(cname, "expected class name before .");
+        ctok->syntax = Syntax__type;
+        consume(a, Syntax__none);   // .
+        string mname = read_alpha(a);
+        validate(mname, "expected method name after %o.", cname);
+        token  mtok  = element(a, -1);
+        validate(access != interface_expect,
+            "expect func %o.%o: a test is a module function, never a class method", cname, mname);
+        etype  crec  = (etype)elookup(cname->chars);
+        validate(crec && (is_class(crec) || is_struct(crec)),
+            "func %o.%o: %o is not a class or struct", cname, mname, cname);
+        validate(crec->autype->module == a->autype,
+            "func %o.%o: a method body is written only for a class of this module", cname, mname);
+        validate(!crec->user_built,
+            "func %o.%o: the class body was already parsed", cname, mname);
+
+        // the header: the rest of its line; then the indented body beneath it
+        array header = hold(array(alloc, 16));
+        while (peek(a) && peek(a)->line == mtok->line) {
+            push(header, (Au)peek(a));
+            consume(a, Syntax__none);
+        }
+        array mbody = read_body(a);
+        array def   = hold(array(alloc, 2));
+        push(def, (Au)header);
+        push(def, (Au)(mbody ? hold(mbody) : hold(array(alloc, 1))));
+
+        if (!a->out_defs) a->out_defs = hold(map(hsize, 16));
+        string key = f(string, "%o.%o", cname, mname);
+        validate(!get(a->out_defs, (Au)key), "%o is defined twice", key);
+        set(a->out_defs, (Au)hold(key), (Au)def);
+        return e_noop(a, null);
+    }
     bool      is_cast   = !f && !is_static && !(def_func|is_lambda) ?
         read_if(a, "cast")       != null : false;
     bool      is_oper   = !f && !is_static && !(def_func|is_lambda) && !is_cast ?
@@ -8415,6 +8481,7 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
     etype rec_ctx = context_class(a);
     if (!rec_ctx) rec_ctx = context_struct(a);
 
+    int hdr_start = a->cursor;   // the declared header, for a func Class.method body to match
     validate(member_type == AU_MEMBER_CAST || read_if(a, "["), "expected function args [");
     Au_t au = mem; //def(top_scope(a), ident ? ident->chars : null, AU_MEMBER_FUNC, traits);
     verify(mem->member_type == AU_MEMBER_DECL, "already defined: %o", mem); // since we allow for prop-style invocation of functions, the design must be no clashing with var names
@@ -8659,7 +8726,25 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
     bool is_init    = rec_ctx && eq(name, "init");
     bool is_dealloc = rec_ctx && eq(name, "dealloc");
 
+    int   hdr_end = a->cursor;
     array b = inline_expr ? inline_expr : (array)read_body(a);
+
+    // a method declared here with its body written outside: func Class.method
+    string out_key = (rec_ctx && a->out_defs && member_type == AU_MEMBER_FUNC)
+        ? f(string, "%s.%o", rec_ctx->autype->ident, name) : null;
+    array  out_def = out_key ? (array)get(a->out_defs, (Au)out_key) : null;
+    if (out_def && len(out_def) == 2) {
+        validate(!inline_expr && !len(b),
+            "%o has a body in its class and outside it", out_key);
+        array hdr = (array)out_def->origin[0];
+        bool  same = (int)len(hdr) == hdr_end - hdr_start;
+        for (int i = 0; same && i < (int)len(hdr); i++)
+            same = eq((token)hdr->origin[i],
+                ((token)a->tokens->origin[hdr_start + i])->chars);
+        validate(same, "%o: its header does not match the declaration in the class", out_key);
+        b = (array)out_def->origin[1];
+        set(a->out_defs, (Au)out_key, (Au)hold(array(alloc, 1)));   // used
+    }
     // all instances of func enode need special handling to bind the unique user space to it; or, we could make efunc
 
     efunc func = efunc(
@@ -10232,7 +10317,8 @@ string compile_implements(silver a, array files, string cflags) {
             concat(objs, a_name);
             continue;
         }
-        string i_name   = f(string, "%o/%o.o", a->build_dir, filename(i));
+        // tagged like the module's own objects: a debug product's map points here
+        string i_name   = f(string, "%o/%o%s.o", a->build_dir, filename(i), silver_build_tag(a));
         bool   is_cpp   = is_cpp_source_ext(a, ext);
         cstr   compiler = is_cpp ? "clang++" : "clang";
         cstr   std_flag = is_cpp ? "-std=c++17" : "-std=c11";
@@ -10375,11 +10461,12 @@ none silver_build_product(silver a) {
     }
     string product_name = a->is_library
         ? silver_install_name(a) : a->name;
-    path product    = f(path, "%o/%s%o%s%o%s%o%s",
+    path product    = f(path, "%o/%s%o%s%o%s%o%s%s",
         a->build_dir, a->is_library ? t_pre : "", product_name,
         len(ext_tag) ? "-" : "", ext_tag,
         len(a->defs_hash) ? "-" : "",
         a->defs_hash,
+        silver_build_tag(a),
         a->is_library ? t_lib : t_app);
     
     if (a->product) drop(a->product);
@@ -10494,7 +10581,7 @@ none silver_build_product(silver a) {
         // and its modules and machines outlive whatever init did
         set_target((aether)a, triple);
         // every core emits its own object; an external llc sees only core 0
-        path   x_obj = f(path, "%o/%o.o", a->build_dir, a->name);
+        path   x_obj = f(path, "%o/%o%s.o", a->build_dir, a->name, silver_build_tag(a));
         verify(emit_object(a, x_obj), ".o emission failed (platform: %o)", a->platform);
         string x_core = core_objects(a, x_obj);
 
@@ -10515,7 +10602,7 @@ none silver_build_product(silver a) {
                 concat(objs, a_name);
                 continue;
             }
-            string i_name   = f(string, "%o/%o.o", a->build_dir, filename(i));
+            string i_name   = f(string, "%o/%o%s.o", a->build_dir, filename(i), silver_build_tag(a));
             bool   is_cpp   = is_cpp_source_ext(a, ext);
             cstr   compiler = is_cpp ? "clang++" : "clang";
             cstr   std_flag = is_cpp ? "-std=c++17" : "-std=c11";
@@ -10616,8 +10703,11 @@ none silver_build_product(silver a) {
 
     } else {
 
-    // worker cores emit their own objects alongside core 0's
-    path   obj_path  = f(path, "%o/%o.o", a->build_dir, a->name);
+    // worker cores emit their own objects alongside core 0's. the build tag
+    // keeps a debug build's objects apart from a release build's: a mach-o
+    // debug map points lldb at these files, and a release build rewriting
+    // them leaves the debug product with no line info at all
+    path   obj_path  = f(path, "%o/%o%s.o", a->build_dir, a->name, silver_build_tag(a));
     verify(emit_object(a, obj_path), ".o emission failed");
     string core_objs = core_objects(a, obj_path);
 

@@ -14,6 +14,37 @@ extern "C" const char* path_share_name();
 // silver cannot store a C handle into a vec slot by index; write it here
 HOST_API void handle_slot_set(void** slot, void* value) { *slot = value; }
 
+// what a module hands the host to hold across its own reload: the process and
+// this library outlive the swap, the module's objects do not. host_kept gives
+// a value back once and forgets it; a key kept twice holds only the newest
+#include <cstring>
+#define HOST_KEEP 32
+static struct { char key[64]; void* value; } g_host_keep[HOST_KEEP];
+
+HOST_API void host_keep(const char* key, void* value) {
+    if (!key || !*key) return;
+    int free_at = -1;
+    for (int i = 0; i < HOST_KEEP; i++) {
+        if (g_host_keep[i].value && strcmp(g_host_keep[i].key, key) == 0) { free_at = i; break; }
+        if (!g_host_keep[i].value && free_at < 0) free_at = i;
+    }
+    if (free_at < 0) return;
+    strncpy(g_host_keep[free_at].key, key, sizeof(g_host_keep[free_at].key) - 1);
+    g_host_keep[free_at].key[sizeof(g_host_keep[free_at].key) - 1] = 0;
+    g_host_keep[free_at].value = value;
+}
+
+HOST_API void* host_kept(const char* key) {
+    if (!key || !*key) return nullptr;
+    for (int i = 0; i < HOST_KEEP; i++)
+        if (g_host_keep[i].value && strcmp(g_host_keep[i].key, key) == 0) {
+            void* v = g_host_keep[i].value;
+            g_host_keep[i].value = nullptr;
+            return v;
+        }
+    return nullptr;
+}
+
 #if !defined(_WIN32)
 #include <unistd.h>
 #include <fcntl.h>
@@ -118,6 +149,7 @@ typedef struct {
     volatile int32_t app_pid;   // process bound to this slot
     volatile int32_t state;     // 0 free, 1 spawn requested, 2 live, 3 exited
     volatile int32_t verdict;   // 0 unset, >0 exit code+1, <0 -signal, -1000 build failed
+    volatile int32_t flags;     // launch flags (silver-host's HOST_APP_*); never in the name
     char name[192];             // "module [default-arg]" silver-host spawns
 } HostApp;
 typedef struct {
@@ -271,7 +303,7 @@ HOST_API int host_tex_pull(int slot, int side, int which, int* w, int* h, int* f
 
 // ask silver-host to build (if needed) + spawn a module into a free slot.
 // returns the slot to watch, or -1 (no supervisor / table full).
-HOST_API int host_app_request(const char* nm) {
+HOST_API int host_app_request(const char* nm, int flags) {
     HostShared* hs = host_shared();
     if (!hs || !nm || !*nm || hs->host_pid <= 0) return -1;
     for (int i = 1; i < HOST_APPS; i++) {
@@ -282,6 +314,7 @@ HOST_API int host_app_request(const char* nm) {
             ap->to_app.tail = ap->to_app.head;
             ap->app_pid = 0;
             ap->verdict = 0;
+            ap->flags   = flags;
             strncpy((char*)ap->name, nm, sizeof(ap->name) - 1);
             ((char*)ap->name)[sizeof(ap->name) - 1] = 0;
             __sync_synchronize();
@@ -306,6 +339,12 @@ HOST_API int host_app_pid(int slot) {
 }
 
 HOST_API int host_app_count(void) { return HOST_APPS; }
+
+HOST_API int host_app_flags(int slot) {
+    HostShared* hs = host_shared();
+    if (!hs || slot < 0 || slot >= HOST_APPS) return 0;
+    return hs->app[slot].flags;
+}
 
 HOST_API int host_app_name(int slot, char* out, int cap) {
     HostShared* hs = host_shared();
@@ -524,7 +563,8 @@ HOST_API void host_tex_clear(int s, int sd)                      { }
 HOST_API void host_tex_flip(int s, int sd, int fr)               { }
 HOST_API int  host_tex_front(int s, int sd)                      { return -1; }
 HOST_API int  host_tex_pull(int s, int sd, int wh, int* w, int* h, int* f) { return -1; }
-HOST_API int  host_app_request(const char* nm)                   { return -1; }
+HOST_API int  host_app_request(const char* nm, int f)            { return -1; }
+HOST_API int  host_app_flags(int s)                              { return 0; }
 HOST_API int  host_app_state(int s)                              { return 0; }
 HOST_API int  host_app_pid(int s)                                { return 0; }
 HOST_API int  host_app_count(void)                               { return 0; }
@@ -596,8 +636,12 @@ static void host_log_drain(void) {
 HOST_API void host_log_setup(const char* name) {
     if (g_log_done || !name || !*name) return;
     g_log_done = 1;
+    // a hosted app appends to the log its supervisor already wrote the build
+    // into, and that file is named by the module: only the primary app takes
+    // its share name
+    const char* slot_env = getenv("SILVER_APP_SLOT");
     const char* app = path_share_name();
-    if (app && *app) name = app;
+    if (app && *app && !(slot_env && *slot_env)) name = app;
 
     // silver-host publishes the directory it writes its own logs into, so the
     // two agree by construction rather than by two copies of the same rule
