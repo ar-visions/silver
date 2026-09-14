@@ -194,13 +194,14 @@ enum HM
     shell   : 11
     # app -> ide: a = on/off, b c = the lock centre in app pixels
     lock    : 12
+    # ide -> app: draw one frame; a paned app renders in step with the host
+    frame   : 13
 
 ifdef [ apple ]
     # an IOSurface's global id is its cross-process name, as a dma-buf fd is
     func IOSurfaceGetID  [ s: handle ] -> u32
     func IOSurfaceLookup [ csid: u32 ] -> handle
 
-func host_ask_orbiter [] -> i32
 func host_dictate_set [ v: i32 ]
 func host_live_set    [ v: i32 ]
 func host_log_setup   [ name: cstr ]
@@ -296,8 +297,12 @@ func props_of [ target: Au, acc: string ] -> string
                 tn : string [ mem.src.ident ]
                 ent = '{ent}{tn}'
             ent = '{ent}='
-            # a boxed primitive has no text of its own: print it by its type
-            if [ v && mem.src ]
+            # a boxed primitive has no text of its own: print it by its type.
+            # a null box IS zero: say 0 (or false), never nothing
+            if [ !v && mem.src && (en || mem.src == typeid[ i32 ] || mem.src == typeid[ i64 ] ||
+                 mem.src == typeid[ u32 ] || mem.src == typeid[ u64 ] || mem.src == typeid[ bool ]) ]
+                ent = (mem.src == typeid[ bool ]) ? '{ent}false' : '{ent}0'
+            el [ v && mem.src ]
                 if [ en || mem.src == typeid[ i32 ] || mem.src == typeid[ i64 ] ||
                      mem.src == typeid[ u32 ] || mem.src == typeid[ u64 ] || mem.src == typeid[ bool ] ]
                     iv : i32 [ i32[ v ] ]
@@ -339,6 +344,8 @@ abstract live_app media_app
     public [ Live, VolumeRange ] volume : f32 [ 1.0 ]
     public  live_reload : bool [ true ]
     public  text_mode   : bool [ false ]
+    intern  paned       : bool         # a windowed app showing in orbiter's pane or pip
+    intern  frame_req   : bool         # the host asked for a frame (HM.frame)
     public  screenshot  : path
     # --shot-frame N: which frame to capture (default 60)
     public  shot_frame  : i32 [ 60 ]
@@ -367,6 +374,8 @@ abstract live_app media_app
     intern  share_tex0  : Texture
     intern  share_tex1  : Texture
     intern  share_back  : i32
+    intern  share_fence : VkFence          # the copy in flight into share_back
+    intern  share_cmd   : VkCommandBuffer
     # one shared surface per instrument, on side 2 + its slot. a toggled
     # off slot keeps its place, so a live instrument's side never moves
     intern  instr_slots : vec string
@@ -526,7 +535,9 @@ abstract live_app media_app
                 fclose[ file ]
         if [ w ]
             bwn : Window [ w ]
-            if [ !attach ]
+            # a paned app reads ring 1 in attach_pump: this drain would eat
+            # its presses and releases (a lost release is a stuck key)
+            if [ !attach && !paned ]
                 for [ pk: i32 0, pk < 128, pk += 1 ]
                     ht : i32 [ host_poll[ 1 ] ]
                     if [ ht == 0 ] break
@@ -607,10 +618,30 @@ abstract live_app media_app
         record_pump[]
         ifdef [ unix ]
             win : Window [ w ]
+            # a windowed app set to PIP or Full lives on in orbiter's pane: its
+            # frames go to its slot, its own window leaves the screen, and
+            # orbiter's input and resizes reach it, all without a relaunch
+            ao9 : element [ cast element [ win.app_object ] ]
+            pane9 : bool [ ao9 && host_slot[] > 0 && i32[ ao9.display ] <= 1 ]
+            if [ pane9 != paned ]
+                paned = pane9
+                win.set_shown[ !pane9 ]
+            if [ pane9 ] attach_pump[]
             # the guest display has no ide consumer, and venus faults on the
             # dma-buf export the share path uses — never share on kms
-            if [ !w.kms && (win.ide_asked || isolate_child) && !win.ide_active ] share_publish[ 0 ]
+            if [ !w.kms && (isolate_child || pane9) && !win.ide_active ] share_publish[ 0 ]
             if [ !w.kms ] instr_publish[]
+            # no present paces a hidden window: the host does. one frame per
+            # frame it draws, so the pane shows every frame once, in step;
+            # its own refresh rate is the fallback when no request comes
+            if [ pane9 ]
+                frame_req = false
+                hz9  : i32 [ (frame_hz > 0) ? frame_hz : 60 ]
+                t09  : i64 [ epoch_micros[] ]
+                lim9 : i64 [ 2000000 / i64[ hz9 ] ]
+                while [ !frame_req && epoch_micros[] - t09 < lim9 ]
+                    attach_pump[]
+                    if [ !frame_req ] usleep[ 50 ]
         if [ screenshot ]
             shot_frames += 1
             if [ shot_frames >= shot_frame ]
@@ -646,6 +677,13 @@ abstract live_app media_app
             tx : Texture [ scv.color ]
             if [ !tx || !tx.vk_image ] return
             #log 'WSIZE win={wn.width}x{wn.height} pend={wn.pending_w}x{wn.pending_h} scv={scv.width}x{scv.height} tex={tx.width}x{tx.height}'
+            # a copy still in flight: the frame goes on; it flips once done
+            if [ share_fence ]
+                if [ !vk.copy_done[ share_fence, share_cmd ] ] return
+                share_fence = null
+                share_cmd   = null
+                host_tex_flip[ host_slot[], side, share_back ]
+                share_back = 1 - share_back
             if [ !share_tex0 || share_tex0.width != tx.width || share_tex0.height != tx.height ]
                 share_tex0 = Texture [ vk: vk, w: wn, width: tx.width, height: tx.height,
                     vk_format: tx.vk_format, shareable: true ]
@@ -657,9 +695,19 @@ abstract live_app media_app
                 host_tex_publish[ host_slot[], side, share_tex0.shared_fd, share_tex1.shared_fd,
                     tx.width, tx.height, i32[ tx.vk_format ] ]
             bt : (share_back == 0) ? share_tex0 : share_tex1
-            vk.copy_image[ tx, bt ]
-            host_tex_flip[ host_slot[], side, share_back ]
-            share_back = 1 - share_back
+            # in step with the host: the frame it asked for is front before it
+            # draws, so the copy waits here. otherwise it runs alongside
+            if [ paned ]
+                f9 : VkFence [ vk.copy_image_async[ tx, bt ] ]
+                c9 : VkCommandBuffer [ vk.copy_cmd_last ]
+                if [ f9 ]
+                    vkWaitForFences[ vk.device, 1, @f9, VK_TRUE, UINT64_MAX ]
+                    vk.copy_done[ f9, c9 ]
+                host_tex_flip[ host_slot[], side, share_back ]
+                share_back = 1 - share_back
+            el
+                share_fence = vk.copy_image_async[ tx, bt ]
+                share_cmd   = vk.copy_cmd_last
 
         # every instrument this app offers, in a fixed order — its index
         # IS its surface side. nothing is toggled off, so a name never
@@ -947,7 +995,12 @@ abstract live_app media_app
                 t : i32 [ host_poll[ 1 ] ]
                 if [ t == 0 ] break
                 if [ t == i32[ HM.close ] ] return false
-                if [ t == i32[ HM.key ] ]
+                if [ t == i32[ HM.live ] ]
+                    wn.dict_live = host_pa[] != 0
+                    wn.restyle   = true
+                el [ t == i32[ HM.frame ] ]
+                    frame_req = true
+                el [ t == i32[ HM.key ] ]
                     wn.ev.clear[]
                     wn.ev.key.unicode = host_pa[]
                     wn.ev.key.state   = host_pb[]
@@ -1436,7 +1489,6 @@ Display Window
     mutable ide_active          : bool
     mutable dict_on             : bool
     mutable dict_live           : bool
-    mutable ide_asked           : bool
     mutable app_size_w          : i32
     mutable app_size_h          : i32
     mutable ide_size_w          : i32
@@ -2315,17 +2367,8 @@ Display Window
             tp : path '/tmp/silver-app-{ss}.agi'
             tp.save[ Au.string_agi[ tree ], null ]
 
-    func ide_ensure []
-        if [ ide_asked ] return
-        capture_context[]
-        ide_asked = true
-        rc : i32 [ host_ask_orbiter[] ]
-        log 'ide_ensure: ask sent (rc {rc})'
-
     func ide_open []
-        log 'ide_open: active={ide_active} asked={ide_asked}'
         if [ ide_active ] return
-        ide_ensure[]
         capture_context[]
         app_size_w = width
         app_size_h = height
@@ -2674,6 +2717,11 @@ Display Window
             will_animate = true
         # esc releases a mouse lock; the key still travels so a hosted app releases its side too
         if [ locked && ev.key.unicode == 256 && ev.key.state ] mouse_unlock[]
+        # esc leaves full-screen: the app's display says so, and its updater acts
+        if [ fs_active && ev.key.unicode == 256 && ev.key.state ]
+            ae9 : element [ cast element [ app_object ] ]
+            if [ ae9 ] ae9.display = DisplayMode.Window
+            el set_fullscreen[ false ]
         ev.target = focus
         if [ focus && focus.on_key*[ ev ] ] return
         # esc while dictating CANCELS the take — nothing submits
@@ -3295,6 +3343,20 @@ Display Window
                 r_view.update[]
                 # mode-aware: frost/blur follow frost_src, not r_frost
                 rewire_frost[]
+
+    # the display's refresh rate, for pacing what has no present of its own
+    func refresh_hz [] -> i32
+        if [ !glfw ] return 60
+        hz : i32 [ platform_window_refresh_hz[ glfw ] ]
+        return (hz > 0) ? hz : 60
+
+    # the window on or off the screen: off while the app shows in orbiter
+    func set_shown [ on: bool ]
+        if [ text_mode || backbuffer || !glfw ] return
+        # hidden also holds the first present's auto-show off
+        hidden = !on
+        if [ on ] platform_window_show[ glfw ]
+        el        platform_window_hide[ glfw ]
 
     func set_fullscreen [ on: bool ]
         if [ on == fs_active ]
@@ -4209,7 +4271,8 @@ Display Window
         cv.save[]
         if [ e.opacity < 1.0 ]
             cv.set_opacity[ cv.get_opacity[] * e.opacity ]
-        # the no_cache mode reaches down: an element under one paints as it does
+        # no_cache: no canvas of its own, it paints onto its parent's. that
+        # reaches down: an element under one paints as it does
         nc : bool [ e.no_cache ]
         for [ pe: element* e.parent, pe && !nc, pe = pe.parent ]
             if [ pe.no_cache ] nc = true
@@ -4286,7 +4349,8 @@ Display Window
             cv.translate[ -pivot_x, -pivot_y ]
 
         if [ stage == CanvasType.screen ] e.tick*[ a ]
-        # painted straight to the screen, an uncached element draws every frame
+        # an uncached element paints whenever it is reached: onto a cached
+        # parent's canvas as that canvas repaints, else onto the screen
         redraw : bool [ e.animated || !e.pristine || nc || stage == CanvasType.compose ]
         tpe0 : i64 [ (stats) ? epoch_micros[] : 0 ]
         if [ redraw && e.cache_canvas && !e.animated && !nc && stage == CanvasType.screen ]
@@ -4387,17 +4451,6 @@ Display Window
                 draw_cv.set_stroke_join  [ layer.stroke_join ]
                 draw_cv.rounded          [ r_tl, r_tr, r_br, r_bl ]
                 draw_cv.stroke_sides     [ sw_top, sw_right, sw_bot, sw_left ]
-                # OVERDRAW: a square unstroked fill paints past its bounds so
-                # the canvas has no unpainted margin for a sample to land in.
-                # the cache texture is quantised up to 64px and never shrinks,
-                # so anything reaching past the fill reads transparent.
-                # ...and ONLY for a layer that fills the whole element. an
-                # inset layer would just grow past where it was asked to be.
-                # and ONLY into the cache: on screen the 2px reach past the
-                # element's edge and show as a rim beside its own content
-                fills : bool [ b.w >= e.bounds.w - 0.01 && b.h >= e.bounds.h - 0.01 ]
-                bleed : f32 [ (fills && target_cv != cv && r_tl <= 0.0 && r_tr <= 0.0 && r_br <= 0.0 && r_bl <= 0.0
-                              && sw_max <= 0.0) ? 2.0 : 0.0 ]
                 # integral placement: snap the layer rect to the device pixel
                 # grid (accounting for the canvas translate + scale) so a 1px
                 # stroke/edge lands on one pixel row instead of straddling two
@@ -4409,9 +4462,7 @@ Display Window
                 by7  : f32 [ (round[ b.y * lsc7 + lty7 ] - lty7) / lsc7 ]
                 bw7  : f32 [ round[ b.w * lsc7 ] / lsc7 ]
                 bh7  : f32 [ round[ b.h * lsc7 ] / lsc7 ]
-                # x only: the seam is vertical, y would bleed upward
-                draw_cv.rounded_rect     [ bx7 - bleed, by7,
-                                           bw7 + bleed * 2.0, bh7,
+                draw_cv.rounded_rect     [ bx7, by7, bw7, bh7,
                                            r_tl, r_tr, r_br, r_bl ]
                 draw_cv.fill_color       [ (layer.fill_color && layer.fill_color.a > 0.0) ? layer.fill_color : rgba [ '#00000000' ] ]
                 draw_cv.stroke_color     [ layer.stroke_color ]
@@ -4549,6 +4600,21 @@ Display Window
             if [ stage == CanvasType.screen ]  a.screen  = target_cv
             #if [ stage == CanvasType.compose ] a.compose = target_cv
             e.draw*[ a ]
+            # the uncached children paint into this canvas, part of the cache
+            if [ e.cache_canvas && !e.animated && !nc && stage == CanvasType.screen && e.elements ]
+                for [ pass9: i32 0, pass9 < 2, pass9 += 1 ]
+                    for [ ee: element, id: string ] in e.elements
+                        if [ !ee.no_cache || ee.hide || ee.animated ] continue
+                        if [ (pass9 == 0) != !ee.topmost ] continue
+                        target_cv.save[]
+                        if [ ee.bounds ]
+                            relx : bool [ ee.area && ee.area.l.relative ]
+                            rely : bool [ ee.area && ee.area.t.relative ]
+                            sx : f32 [ (ee.no_scroll || !relx) ? 0.0 : e.scroll.x ]
+                            sy : f32 [ (ee.no_scroll || !rely) ? 0.0 : e.scroll.y ]
+                            target_cv.translate[ ee.bounds.x - sx, ee.bounds.y - sy ]
+                        draw_element[ ee, stage, null ]
+                        target_cv.restore[]
             a.screen  = prev_screen
             #a.compose = prev_compose
             drop[ prev_screen ]
@@ -4636,9 +4702,15 @@ Display Window
                 cv.restore[ ]
 
         if [ stats && stage == CanvasType.screen ] e.paint_us += epoch_micros[] - tpe0
+        cached9 : bool [ e.cache_canvas && !e.animated && !nc && stage == CanvasType.screen ]
         last_2 : element
         for [ ee: element, id: string ] in e.elements
             if [ ee.topmost ] continue
+            # an uncached child lives in this cache: its change repaints us.
+            # an animated one paints every frame onto the composed target
+            if [ cached9 && ee.no_cache && !ee.animated ]
+                if [ !ee.pristine ] e.pristine = false
+                continue
             cv.save[]
             if [ ee.bounds ]
                 relx : bool [ ee.area && ee.area.l.relative ]
@@ -4651,6 +4723,9 @@ Display Window
             cv.restore[]
         for [ ee: element, id: string ] in e.elements
             if [ !ee.topmost ] continue
+            if [ cached9 && ee.no_cache && !ee.animated ]
+                if [ !ee.pristine ] e.pristine = false
+                continue
             cv.save[]
             if [ ee.bounds ]
                 relx : bool [ ee.area && ee.area.l.relative ]
@@ -4849,6 +4924,22 @@ abstract media_app trinity
         adopt[ 'attach' ]
         adopt[ 'record' ]
         adopt[ 'record_mic' ]
+        # SILVER_DISPLAY=<PIP|Full|Window|Screen>: the host's launch display.
+        # PIP and Full start with the window never shown: the frames go to
+        # orbiter's pane, and Window brings the window up later, live
+        dsp9 : cstr [ getenv[ 'SILVER_DISPLAY' ] ]
+        if [ dsp9 ]
+            ds9 : string [ dsp9 ]
+            if [ ds9 == 'Full' ]   root.display = DisplayMode.Full
+            if [ ds9 == 'Window' ] root.display = DisplayMode.Window
+            if [ ds9 == 'Screen' ] root.display = DisplayMode.Screen
+            if [ ds9 == 'PIP' || ds9 == 'Full' ] hidden = true
+        # SILVER_HZ: the host display's refresh, the pace of a paned app
+        hz9 : cstr [ getenv[ 'SILVER_HZ' ] ]
+        if [ hz9 ]
+            hs9 : string [ hz9 ]
+            hv9 : i32 [ i32[ hs9.integer_value[] ] ]
+            if [ hv9 >= 24 && hv9 <= 480 ] frame_hz = hv9
         rt : typeid[ root ]
         if [ text_mode ]
             console_size[]
@@ -5018,7 +5109,7 @@ element Group2
         return null
 
 element TButtons
-    animated : true
+    # no canvas of its own: it paints onto its parent's, when it changes
     no_cache : true
     public  buttons   : vec string    # segment ids, e.g. [ 'minus', 'plus' ]
     public  icons     : bool [ true ] # ids resolve to images/<id>.svg
@@ -5164,6 +5255,7 @@ element TButtons
         if [ disable || (disable_mask & (1 << i)) != 0 ] return
         if [ !manual ] selected = i
         a.id = buttons[ i ]
+        pristine = false
         if [ ux && ux.stats ] log 'TBUTTONS press seg={i} id={buttons[ i ]}'
 
     func on_move [ ev: Event ]
@@ -5172,7 +5264,9 @@ element TButtons
         if [ hover_ix >= 0 && (disable || (disable_mask & (1 << hover_ix)) != 0) ]
             hover_ix = -1
         # the window's tooltip names the hovered segment: a new one redraws it
-        if [ hover_ix != was && ux ] ux.restyle = true
+        if [ hover_ix != was ]
+            pristine = false
+            if [ ux ] ux.restyle = true
 
 element Splitter
     public inner       : map element [ string ]
@@ -5388,6 +5482,8 @@ element Control
         return null
 
 Control Button
+    # no canvas of its own: it paints onto its parent's, when it changes
+    no_cache : true
     public icon  : string
     iconl : Layer [ image_align: Align [ x: XAlign.middle, y: YAlign.middle ], image_scale: 1.7 ]
     intern icon_cur : string
@@ -5878,8 +5974,6 @@ element UXGenerics
                 recording = !recording
                 if [ ux ]
                     ux.dict_on = recording
-                    # first record: summon the agent service (mic owner)
-                    if [ recording ] ux.ide_ensure[]
                     if [ !recording ] ux.capture_context[]
                     # signal orbiter THROUGH the supervisor — reload-proof
                     host_dictate_set[ (recording) ? 1 : 0 ]

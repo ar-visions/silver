@@ -1301,9 +1301,6 @@ element Console
                 s.start[]
             sessions[sid] = s
             pristine = false
-        if [ s.pty_fd >= 0 && !animated ]
-            animated = true
-            pristine = false
         return s
 
     # 0 = plain, 1 = the selected instance's line, 2 = another instance's line

@@ -387,14 +387,6 @@ HOST_API void host_app_resume(int slot) {
     if (pid > 0) kill((pid_t)pid, SIGCONT);
 }
 
-// ask the supervising silver-host to bring up orbiter (SIGUSR1). guarded on
-// the isolate-child marker so an unsupervised app never signals its ide.
-HOST_API int host_ask_orbiter(void) {
-    if (!getenv("SILVER_ISOLATE_CHILD")) return -1;
-    HostShared* hs = host_shared();
-    if (hs && hs->host_pid > 0) return kill((pid_t)hs->host_pid, SIGUSR1);
-    return kill(getppid(), SIGUSR1);
-}
 
 // dictate (app->ide) and live-confirm (ide->app) are single latest-wins
 // signals over the rings
@@ -544,7 +536,6 @@ HOST_API void agent_sock_reply(const char* s) {
 
 #else
 // windows stubs: the symbols must exist so the module links. every call reports "nothing there".
-HOST_API int  host_ask_orbiter(void)                             { return -1; }
 HOST_API void host_dictate_set(int v)                            { }
 HOST_API void host_live_set(int v)                               { }
 HOST_API int  host_pid_alive(int pid)                            { return 0; }

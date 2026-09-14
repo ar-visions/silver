@@ -416,6 +416,8 @@ ResourceView AppView
     mutable iid        : i32
     mutable held       : bool        # made, not running: a click on its row starts it
     mutable pip        : bool        # shown small beside the source: the instance's own state
+    # 0 pip, 1 full (the pane), 2 its own window, 3 that window full-screen
+    public  display    : i32
     mutable props      : string
     mutable tex0       : Texture     # the app's shared surface pair, imported
     mutable tex1       : Texture
@@ -467,6 +469,10 @@ ResourceView AppView
     mutable instr_pw    : map i32     [string]
     mutable instr_ms    : i64
     mutable instr_ak    : i64
+    mutable props_ak    : i64        # the last props re-ask: live values read back twice a second
+    mutable disp_ms     : i64        # when the user last picked a display: the app's echo lags it
+    mutable disp_pending : i32 [ -1 ] # a display the app reported that orbiter has yet to follow
+    mutable host_hz     : i32        # this display's refresh, given by the pane that starts it
     mutable itex0       : map Texture [string]
     mutable itex1       : map Texture [string]
     mutable dbg_nw     : i32
@@ -579,6 +585,33 @@ ResourceView AppView
                         if [ agent_sock_ask[ sock_name[].chars, 'volume\n', @vb8[0], 512 ] > 0 ]
                             lv8 : string [ @vb8[0] ]
                             app_vol = f32[ lv8.trim[].real_value[] ]
+        # a paned app draws one frame per frame we draw: this frame shows the
+        # one it made for the last request, and the next request goes out now,
+        # so it renders while we draw and present. one frame of latency, and
+        # every frame shown once as long as it answers within a frame
+        if [ started && slot >= 0 && display <= 1 && !held && !ended && !paused ]
+            host_post2[ slot, 1, i32[ HM.frame ], 0, 0, 0 ]
+        # the app's live props, re-read twice a second: a value the app changed
+        # itself (esc leaving full-screen) shows here without a round trip.
+        # gated on the process, not on a frame: a windowed or still-loading
+        # instance answers its socket long before (or without) drawing here
+        if [ started && slot >= 0 && !stopped && !paused && !ended && !held && app_mod && app_mod.count > 0 ]
+            pk9 : i64 [ epoch_millis[] ]
+            if [ props_ak == 0 || pk9 - props_ak > 500 ]
+                props_ak = pk9
+                pb9 : local i8 [ 4096 ]
+                if [ agent_sock_ask[ sock_name[].chars, 'props\n', @pb9[0], 4096 ] > 0 ]
+                    ps9 : string [ @pb9[0] ]
+                    pt9 : string ps9.trim[]
+                    if [ pt9 && pt9.count > 0 ] props = pt9
+                    # the app's display is the truth: a change it made (esc, its
+                    # own code) is followed here, unless the user's pick is in flight
+                    if [ props && pk9 - disp_ms > 1500 ]
+                        for [ ent9: string ] in props.split[ ';' ]
+                            f9 : ent9.split[ '=' ]
+                            if [ f9.count > 2 && f9[ 0 ] == 'display' ]
+                                dv9 : i32 [ (f9[ 2 ].count > 0) ? i32[ f9[ 2 ].integer_value[] ] : 0 ]
+                                if [ dv9 >= 0 && dv9 <= 3 && dv9 != display ] disp_pending = dv9
         instr_service[ cv ]
         if [ ready && fade_us == 0 && seen_us != 0 ]
             if [ epoch_micros[] - seen_us > 1500000 ] fade_us = epoch_micros[]
@@ -819,6 +852,8 @@ ResourceView AppView
         if [ attaching ] return 'attaching debugger to {app_mod}...'
         st7 : i32 [ (slot >= 0) ? host_app_state[ slot ] : 0 ]
         if [ st7 == 1 ]  return 'compiling {app_mod}...'
+        # its own window: no frame ever arrives here, so nothing is awaited
+        if [ display >= 2 ] return null
         if [ !ready ]    return 'starting {app_mod}...'
         return null
 
@@ -830,6 +865,7 @@ ResourceView AppView
         if [ attaching ] return 'attaching'
         st8 : i32 [ (slot >= 0) ? host_app_state[ slot ] : 0 ]
         if [ st8 == 1 ]  return 'compiling'
+        if [ display >= 2 ] return ''
         if [ !ready ]    return 'starting'
         return ''
 
@@ -883,7 +919,10 @@ ResourceView AppView
         mod : (di > 0) ? fn.mid[ 0, di ] : fn
         # the host's launch flags (silver-host HOST_APP_*): 1 stops the app for
         # the debugger, which a viewer never asks; 2 builds clean; 4 builds -O0 -g
-        fl9 : i32 [ ((viewer) ? 0 : 1) | ((clean_build) ? 2 : 0) | ((debug_build) ? 4 : 0) ]
+        # bits 8-15: this display's refresh, the pace of an app shown in the pane
+        hz9 : i32 [ (host_hz > 0) ? host_hz : 60 ]
+        fl9 : i32 [ ((viewer) ? 0 : 1) | ((clean_build) ? 2 : 0) | ((debug_build) ? 4 : 0) |
+                    ((display & 3) << 3) | ((hz9 & 255) << 8) ]
         # flags BEFORE the doc: Au_with_cstrs stops parsing at the first
         # positional, so a trailing flag would never reach the app's schema
         ma9 : string [ (module_args && module_args.count > 0) ? '{module_args} ' : '' ]
@@ -3734,6 +3773,7 @@ Control Editor
         if [ vw && vw.count > 0 ]
             nv.module_args = (nv.module_args && nv.module_args.count > 0)
                 ? '{nv.module_args} --view {vw}' : '--view {vw}'
+        nv.host_hz = (ux) ? ux.refresh_hz[] : 60
         nv.start[]
         if [ orb9 ] orb9.add_instance[ nv ]
         run_view  = nv
@@ -4244,7 +4284,8 @@ Control Editor
             if [ run_view && run_view.viewer ] close_app[]
             # a module picked from the nav list lets go of the old module's instance (it keeps running);
             # an instance stopped in the debugger stays: walking its frames opens other modules
-            el [ run_view && src && stop_pending == 0 && !stopped[] && (!run_view.src || '{run_view.src.absolute[]}' != '{src.absolute[]}') ] run_view = null
+            el [ run_view && src && stop_pending == 0 && !stopped[] && (!run_view.src || '{run_view.src.absolute[]}' != '{src.absolute[]}') ]
+                run_view = null
             app_view    = false
             sel_line    = -1
             anchor_line = -1
@@ -4372,7 +4413,7 @@ Control Editor
         li : vec AppView instances[]
         if [ !li || i < 0 || i >= li.count ] return
         run_view  = li[ i ]
-        app_view  = !run_view.pip
+        app_view  = run_view.display == 1
         pristine  = false
         no_scroll = true
         if [ ux ] ux.restyle = true
@@ -4421,6 +4462,7 @@ Control Editor
         app_view = !app_view
         # the pip belongs to the instance: it keeps it when another is selected
         run_view.pip = !app_view
+        if [ run_view.display <= 1 ] run_view.display = (app_view) ? 1 : 0
         if [ !app_view ] load_file[]
 
     public func on_unload [ ]

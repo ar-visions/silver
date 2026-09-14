@@ -301,6 +301,8 @@ void platform_window_destroy(platform_window* w) {
 }
 
 void platform_window_show(platform_window* w) { ShowWindow(w->hwnd, SW_SHOW); SetForegroundWindow(w->hwnd); }
+void platform_window_hide(platform_window* w) { ShowWindow(w->hwnd, SW_HIDE); }
+int  platform_window_refresh_hz(platform_window* w) { return 60; }
 
 void platform_window_set_title(platform_window* w, const char* t) {
     WCHAR* wt = to_wide(t); SetWindowTextW(w->hwnd, wt); free(wt);
@@ -887,6 +889,8 @@ platform_window* platform_window_create(int width, int height, const char* title
 
 void platform_window_destroy(platform_window* w) { if (w) { if (g_win == w) g_win = NULL; free(w->clip); free(w); } }
 void platform_window_show(platform_window* w) {}
+void platform_window_hide(platform_window* w) {}
+int  platform_window_refresh_hz(platform_window* w) { return 60; }
 void platform_window_set_title(platform_window* w, const char* t) {}
 void platform_window_set_size(platform_window* w, int width, int height) {}
 void platform_window_get_size(platform_window* w, int* width, int* height) {
@@ -1765,6 +1769,8 @@ void platform_window_destroy(platform_window* w) {
 }
 
 void platform_window_show(platform_window* w) { if (g_kms) return; xcb_map_window(g_conn, w->win); xcb_flush(g_conn); }
+void platform_window_hide(platform_window* w) { if (g_kms) return; xcb_unmap_window(g_conn, w->win); xcb_flush(g_conn); }
+int  platform_window_refresh_hz(platform_window* w) { return 60; }
 
 void platform_window_set_title(platform_window* w, const char* t) {
     if (g_kms) return;
