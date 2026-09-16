@@ -199,9 +199,7 @@ element knes : trinity
 	mutable pss_shader   : PixelSharp
 	mutable pss_model    : Model
 	mutable pss_render   : Render
-	mutable vs_shader    : VectorScale
-	mutable vsh_shader   : VectorScale
-	mutable vss_shader   : VectorScale
+	mutable vs_shader    : VectorLayers      # all four layers in one pass
 	mutable line_sx      : new u8 [ 240 ]    # per-line scroll snapshots (SMB
 	mutable line_sy      : new u8 [ 240 ]    # status-bar split: scroll only
 	mutable line_nt      : new u8 [ 240 ]    # exists between s0 hit and vblank)
@@ -238,9 +236,6 @@ element knes : trinity
 	mutable spr_world    : new u8 [ 64 ]     # per-slot world-locked flag (sticky)
 	mutable cur_dx       : i32
 	mutable cur_dy       : i32
-	mutable vsw_shader   : VectorScale
-	mutable psw_model    : Model
-	mutable psw_render   : Render
 
 	func init []
 		animated   = true                    # emulator: repaint every frame, never cache-skip (NOT style-owned `volatile`)
@@ -1905,18 +1900,11 @@ element knes : trinity
 					ses_render = Render [ vk: cv.vk, w: cv.w, wscale: 0.5, models: [ses_model ] ]
 				if [ vscale ]
 					# continuous edge reconstruction straight to window res
-					vs_shader = VectorScale [ vk: cv.vk, name: 'vectorscale' ]
-					ps_model  = Model [ w: cv.w, s: vs_shader, samplers: map Texture[string] [ 'color': screen_tex ] ]
+					# one pass samples all four layers (keys are Surface slots)
+					vs_shader = VectorLayers [ vk: cv.vk, name: 'vectorlayers' ]
+					ps_model  = Model [ w: cv.w, s: vs_shader, samplers: map Texture[string] [
+						'color': screen_tex, 'normal': sprw_tex, 'emission': hud_tex, 'rough': spr_tex ] ]
 					ps_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: [ps_model ] ]
-					vsh_shader = VectorScale [ vk: cv.vk, name: 'vectorscale' ]
-					psh_model  = Model [ w: cv.w, s: vsh_shader, samplers: map Texture[string] [ 'color': hud_tex ] ]
-					psh_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: [psh_model ] ]
-					vss_shader = VectorScale [ vk: cv.vk, name: 'vectorscale' ]
-					pss_model  = Model [ w: cv.w, s: vss_shader, samplers: map Texture[string] [ 'color': spr_tex ] ]
-					pss_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: [pss_model ] ]
-					vsw_shader = VectorScale [ vk: cv.vk, name: 'vectorscale' ]
-					psw_model  = Model [ w: cv.w, s: vsw_shader, samplers: map Texture[string] [ 'color': sprw_tex ] ]
-					psw_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: [psw_model ] ]
 				el
 					ps_shader = PixelSharp [ vk: cv.vk, name: 'pixelsharp' ]
 					ps_model  = Model [ w: cv.w, s: ps_shader, samplers: map Texture[string] [ 'color': (se_2d) ? se_render.color : screen_tex ] ]
@@ -1938,31 +1926,31 @@ element knes : trinity
 					ses_render.update[]
 					ses_render.draw[]
 					ses_render.flush_submit[]
-					se_render.sync_fence[]
-					seh_render.sync_fence[]
-					ses_render.sync_fence[]
-				ps_render.update[]
-				ps_render.draw[]
-				ps_render.flush_submit[]
-				psh_render.update[]
-				psh_render.draw[]
-				psh_render.flush_submit[]
-				pss_render.update[]
-				pss_render.draw[]
-				pss_render.flush_submit[]
-				if [ psw_render ]
-					psw_render.update[]
-					psw_render.draw[]
-					psw_render.flush_submit[]
-				ps_render.sync_fence[]
-				cv.draw_image[ ps_render.color, out ]
-				if [ psw_render ]
-					psw_render.sync_fence[]
-					cv.draw_image[ psw_render.color, out ]   # world sprites glide with bg
-				psh_render.sync_fence[]
-				cv.draw_image[ psh_render.color, out_spr ]
-				pss_render.sync_fence[]
-				cv.draw_image[ pss_render.color, out_spr ]
+				# no fence per layer: the queue runs the layer submits before the
+				# canvas paints that sample them
+				if [ vscale ]
+					# bg + world sprites glide on the scroll offset, hud + sprites stay
+					vs_shader.r0 = vec4f [ ox / ow, oy / oh, 1.0, 1.0 ]
+					vs_shader.r1 = vs_shader.r0
+					vs_shader.r2 = vec4f [ 0.0, 0.0, 1.0, 1.0 ]
+					vs_shader.r3 = vs_shader.r2
+					ps_render.update[]
+					ps_render.draw[]
+					ps_render.flush_submit[]
+					cv.draw_image[ ps_render.color, out_spr ]
+				el
+					ps_render.update[]
+					ps_render.draw[]
+					ps_render.flush_submit[]
+					psh_render.update[]
+					psh_render.draw[]
+					psh_render.flush_submit[]
+					pss_render.update[]
+					pss_render.draw[]
+					pss_render.flush_submit[]
+					cv.draw_image[ ps_render.color, out ]
+					cv.draw_image[ psh_render.color, out_spr ]
+					cv.draw_image[ pss_render.color, out_spr ]
 			el
 				cv.draw_image[ screen_tex, out ]
 		el

@@ -152,6 +152,10 @@ class Render
     # flush_submit, or before a compute dispatch). on a tile GPU each render pass is a
     # full framebuffer load+store, so collapsing N paints to one pass is the big win.
     intern  pass_open                      : bool
+    # the current paint has no compute work (flat rect / image): keep the
+    # render pass open and skip the dispatch instead of a full-canvas SDF
+    # pass + framebuffer load/store per paint
+    public  compute_skip                   : bool
     intern  draw_slot                      : i32
     intern  vk_swap_image                  : VkImage
     intern  vk_fence                       : VkFence              # current slot (= [ring_i])
@@ -380,17 +384,19 @@ class Render
         # compute dispatches (image-layout barriers) are illegal inside a render pass —
         # if one is open from prior paints, close it before dispatching.
         has_compute : bool [ false ]
-        for [ m: Model ] in models
-            for [ p: Pipeline ] in m.pipelines
-                if [ p.vk_compute ] has_compute = true
+        if [ !compute_skip ]
+            for [ m: Model ] in models
+                for [ p: Pipeline ] in m.pipelines
+                    if [ p.vk_compute ] has_compute = true
         if [ has_compute && pass_open ]
             vkCmdEndRenderPass[ frame ]
             pass_open = false
-        for [ m: Model ] in models
-            smd9 : i32 [ (m.s) ? i32[ m.s.states ] : 0 ]
-            if [ smd9 != 0 && (state_mask & smd9) != smd9 ] continue
-            for [ p: Pipeline ] in m.pipelines
-                p.dispatch[ frame ]
+        if [ has_compute ]
+            for [ m: Model ] in models
+                smd9 : i32 [ (m.s) ? i32[ m.s.states ] : 0 ]
+                if [ smd9 != 0 && (state_mask & smd9) != smd9 ] continue
+                for [ p: Pipeline ] in m.pipelines
+                    p.dispatch[ frame ]
         # open ONE render pass for the whole recording and keep it OPEN across paints.
         # within a pass, alpha-blended draws compose in rasterization order with no
         # barrier; on a tile GPU this avoids a framebuffer load+store per paint.
@@ -4309,6 +4315,9 @@ Texture Display
     public element_targets      : map   Render [string]
     # a registered target the frame does not render (solid backdrop mode)
     public skip_target          : Render
+    # under a pane's cover (backdrop_bypass) the backdrop still repaints ONCE
+    # after a resize or a frost/scene change, then holds: never per frame
+    public backdrop_once        : bool
     # print the per-target frame timing every 120 frames (--prof_log)
     public prof_log             : bool
     # headless element hosts (trinity offscreen objects) pumped by the app
@@ -4436,6 +4445,7 @@ Texture Display
             swap_shader.model = m
 
     public func resize [ w_new: i32, h_new: i32 ] -> Display
+        backdrop_once = true
         # Re-query into a stack local. The intern `surface_caps` ref field only
         # holds a raw pointer to the new'd struct from init; on later resizes that
         # allocation has been recycled and reading currentTransform/minImageCount
@@ -4583,14 +4593,22 @@ Texture Display
 
         now_ms : i64 [ epoch_millis[] ]
         tp0 : i64 [ epoch_micros[] ]
+        # a covered backdrop holds its frame, except the one repaint a resize
+        # or a mode change asks for (rate gates step aside for that one)
+        bp9  : bool [ win && win.backdrop_bypass ]
+        once9 : bool [ bp9 && backdrop_once ]
+        hold9 : bool [ bp9 && !backdrop_once ]
+        drew9 : bool [ false ]
         for [ r: Render, id: string ] in element_targets
             if [ !r || r.skip || r == skip_target ] continue
+            if [ hold9 && win.backdrop == r ] continue
             if [ r.owner && (r.owner.hide || r.owner.opacity <= 0.0) ] continue
-            if [ !r.due[ now_ms ] ] continue
+            if [ !r.due[ now_ms ] && !once9 ] continue
             r.draw*[]
             r.sync_fence*[]
             r.has_drawn    = true
             r.last_draw_ms = now_ms
+            if [ win && win.backdrop == r ] drew9 = true
 
         tp1 : i64 [ epoch_micros[] ]
         on_compose*[]
@@ -4601,9 +4619,11 @@ Texture Display
         if [ prof_report ] log 'frame: {list.count} targets'
         bd9 : Render [ (win) ? win.backdrop : null ]
         for [ r: Render ] in list
-            if [ !r.due[ now_ms ] ] continue
+            if [ !r.due[ now_ms ] && !once9 ] continue
+            # covered by a pane: only the screen compose (last) draws
+            if [ hold9 && r != list.last[] ] continue
             # a chain stage reads the backdrop: unchanged since its last pass, skip
-            if [ bd9 && r != list.last[] && r.has_drawn && bd9.last_draw_ms <= r.last_draw_ms ] continue
+            if [ !once9 && bd9 && r != list.last[] && r.has_drawn && bd9.last_draw_ms <= r.last_draw_ms ] continue
             r.timing = true
             td0 : i64 [ epoch_micros[] ]
             r.draw*[]
@@ -4615,6 +4635,7 @@ Texture Display
             r.has_drawn    = true
             r.last_draw_ms = now_ms
 
+        if [ once9 && (drew9 || !bd9) ] backdrop_once = false
         tp3 : i64 [ epoch_micros[] ]
         on_screen*[]
         tp4 : i64 [ epoch_micros[] ]

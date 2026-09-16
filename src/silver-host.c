@@ -62,12 +62,18 @@ static void symbolize_crash_log(const char* appname);
 #define HM_SLOTS   1024
 #define HOST_APPS  8
 #define HOST_TEX   10
+#define HOST_AUDIO 49152        // stereo frames of sound per slot (~1 s at 48 kHz)
 typedef struct { int32_t type, a, b, c; } HostMsg;
 typedef struct { volatile uint32_t head, tail; HostMsg m[HM_SLOTS]; } HostRing;
 typedef struct { volatile int32_t pid, fd0, fd1, front, gen, width, height, format; } SharedTex;
 typedef struct {
     HostRing  to_ide, to_app;
     SharedTex tex[HOST_TEX];    // 0 app screen, 1 ide overlay, 2.. instruments
+    // the app's sound as it plays (AudioOut tees every write): stereo i16 at
+    // audio_rate, so a recording on the ide side carries the pane's audio
+    volatile int32_t  audio_rate;
+    volatile uint32_t audio_w, audio_r;
+    int16_t  audio[HOST_AUDIO * 2];
     volatile int32_t app_pid;   // process bound to this slot
     volatile int32_t state;     // 0 free, 1 spawn requested, 2 live, 3 exited
     volatile int32_t verdict;   // 0 unset, >0 exit code+1, <0 -signal, -1000 build failed

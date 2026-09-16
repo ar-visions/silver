@@ -531,12 +531,12 @@ element asnes : trinity
 	mutable lay3_tex       	: Texture
 	mutable layw_tex       	: Texture
 	mutable lays_tex       	: Texture
-	mutable vsc_shader     	: VectorScale
-	mutable vs1_shader     	: VectorScale
-	mutable vs2_shader     	: VectorScale
-	mutable vs3_shader     	: VectorScale
-	mutable vsw_shader     	: VectorScale
-	mutable vss_shader     	: VectorScale
+	mutable vla_shader     	: VectorLayers     # planes b, 3, 2, 1 in one pass
+	mutable vla_model      	: Model
+	mutable vla_render     	: Render
+	mutable vlb_shader     	: VectorLayers     # planes w, 3, s over it
+	mutable vlb_model      	: Model
+	mutable vlb_render     	: Render
 	mutable psc_shader     	: PixelSharp
 	mutable ps1_shader     	: PixelSharp
 	mutable ps2_shader     	: PixelSharp
@@ -4375,16 +4375,10 @@ element asnes : trinity
 					ses_render.update[]
 					ses_render.draw[]
 					ses_render.flush_submit[]
-					se1_render.sync_fence[]
-					se2_render.sync_fence[]
-					se3_render.sync_fence[]
-					sew_render.sync_fence[]
-					ses_render.sync_fence[]
 				el
 					se_render.update[]
 					se_render.draw[]
 					se_render.flush_submit[]
-					se_render.sync_fence[]
 			if [ lay_on && !m7_active ]
 				oc1_render.update[]
 				oc1_render.draw[]
@@ -4405,8 +4399,8 @@ element asnes : trinity
 				occ_render.update[]
 				occ_render.draw[]
 				occ_render.flush_submit[]
+		# no fence before a pass's image is painted: the queue runs the pass first
 		if [ m7_active ]
-			m7_render.sync_fence[]
 			cv.draw_image[ m7_render.color, out ]
 		if [ lay_on && !m7_active ]
 			g_now : i64 [ wall_ms[] * 1000 ]
@@ -4429,30 +4423,44 @@ element asnes : trinity
 			rw : rect [ x: vp.x + owx, y: vp.y + owy, w: vp.w, h: vp.h ]
 			# this plane carries real tile art, not a flat color: filter it
 			rb : rect [ x: vp.x - 16.0 * g_scx, y: vp.y - 16.0 * g_scy, w: 288.0 * g_scx, h: 256.0 * g_scy ]
-			if [ vscale ] cv.draw_image_vec[ layb_tex, rb ]
-			el        cv.draw_image[ layb_tex, rb ]
+			if [ !vscale ] cv.draw_image[ layb_tex, rb ]
 			if [ vscale ]
-				# each plane reconstructed as it paints: its texture, its shape
-				if [ !b3 ] cv.draw_image_vec[ lay3_tex, r3 ]
-				cv.draw_image_vec[ lay2_tex, r2 ]
-				cv.draw_image_vec[ lay1_tex, r1 ]
-				cv.draw_image_vec[ layw_tex, rw ]
-				if [ b3 ] cv.draw_image_vec[ lay3_tex, r3 ]
-				cv.draw_image_vec[ lays_tex, out ]
+				# the six planes reconstructed and composed in two passes over rb
+				# (four planes is the fast shape): b, 3, 2, 1 then w, 3, s over
+				# it; plane 3 rides whichever pass its priority bit puts it in,
+				# off by rect in the other. rects are relative to rb
+				if [ ! vla_render ]
+					vla_shader = VectorLayers [ vk: cv.vk, name: 'vectorlayers' ]
+					vla_model  = Model [ w: cv.w, s: vla_shader, samplers: map Texture[string] [
+						'color': layb_tex, 'normal': lay3_tex, 'emission': lay2_tex, 'rough': lay1_tex ] ]
+					vla_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: [vla_model ] ]
+					vlb_shader = VectorLayers [ vk: cv.vk, name: 'vectorlayers' ]
+					vlb_model  = Model [ w: cv.w, s: vlb_shader, samplers: map Texture[string] [
+						'color': layw_tex, 'normal': lay3_tex, 'emission': lays_tex, 'rough': lays_tex ] ]
+					vlb_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: [vlb_model ] ]
+				p3 : vec4f [ (r3.x - rb.x) / rb.w, (r3.y - rb.y) / rb.h, 1.0, 1.0 ]
+				vla_shader.r0 = vec4f [ 0.0, 0.0, 1.0, 1.0 ]
+				vla_shader.r1 = (b3) ? vec4f [ 0.0, 0.0, 0.0, 0.0 ] : p3
+				vla_shader.r2 = vec4f [ (r2.x - rb.x) / rb.w, (r2.y - rb.y) / rb.h, 1.0, 1.0 ]
+				vla_shader.r3 = vec4f [ (r1.x - rb.x) / rb.w, (r1.y - rb.y) / rb.h, 1.0, 1.0 ]
+				vlb_shader.r0 = vec4f [ (rw.x - rb.x) / rb.w, (rw.y - rb.y) / rb.h, rw.w / rb.w, rw.h / rb.h ]
+				vlb_shader.r1 = (b3) ? p3 : vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+				vlb_shader.r2 = vec4f [ (out.x - rb.x) / rb.w, (out.y - rb.y) / rb.h, out.w / rb.w, out.h / rb.h ]
+				vlb_shader.r3 = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+				vla_render.update[]
+				vla_render.draw[]
+				vla_render.flush_submit[]
+				vlb_render.update[]
+				vlb_render.draw[]
+				vlb_render.flush_submit[]
+				cv.draw_image[ vla_render.color, rb ]
+				cv.draw_image[ vlb_render.color, rb ]
 			el [ scaled ]
-				if [ !b3 ]
-					oc3_render.sync_fence[]
-					cv.draw_image[ oc3_render.color, r3 ]
-				oc2_render.sync_fence[]
+				if [ !b3 ] cv.draw_image[ oc3_render.color, r3 ]
 				cv.draw_image[ oc2_render.color, r2 ]
-				oc1_render.sync_fence[]
 				cv.draw_image[ oc1_render.color, r1 ]
-				ocw_render.sync_fence[]
 				cv.draw_image[ ocw_render.color, rw ]
-				if [ b3 ]
-					oc3_render.sync_fence[]
-					cv.draw_image[ oc3_render.color, r3 ]
-				ocs_render.sync_fence[]
+				if [ b3 ]  cv.draw_image[ oc3_render.color, r3 ]
 				cv.draw_image[ ocs_render.color, out ]
 			el
 				if [ !b3 ] cv.draw_image[ lay3_tex, r3 ]
@@ -4464,7 +4472,6 @@ element asnes : trinity
 		el [ vscale ]
 			cv.draw_image_vec[ screen_tex, out ]
 		el [ scaled ]
-			occ_render.sync_fence[]
 			cv.draw_image[ occ_render.color, out ]
 		el
 			cv.draw_image[ screen_tex, out ]

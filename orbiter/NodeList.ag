@@ -1,6 +1,9 @@
 extend orbiter
 
 Option NodeList
+    # a scrolling container owns its canvas (Button, its base, is uncached):
+    # its rows clip at its bounds and repaint only when it changes
+    no_cache : false
     mutable sel        : i32 [ -1 ]
     mutable row_height : f32 [ 20.0 ]
     mutable content_y  : f32 [ 0.0 ]
@@ -385,7 +388,7 @@ element InstrView
 # stack at the top selects which one shows; only that one is drawn.
 # the panel itself is cached: tick dirties it when what it shows changes,
 # and the pip and the instrument surface animate in canvases of their own
-Option InstancePanel
+Control InstancePanel
     style : CSS {
         area: l0 t0 r0 b0
         layers.ibase:

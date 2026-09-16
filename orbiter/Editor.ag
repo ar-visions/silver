@@ -20,6 +20,48 @@ class FileBuf
     public line_last   : vec i32
     public tree_dirty  : bool [ true ]
 
+# a repository a host lists for a user
+class RepoInfo
+    public full : string        # owner/name
+    public name : string
+    public desc : string
+
+# a checkout in flight: git's progress read off its own pipe, no console.
+# phase: cloning, building, done, failed
+class RepoClone
+    public full  : string
+    public name  : string
+    public dir   : string
+    public fh    : handle
+    public fd    : i32 [ -1 ]
+    public pct   : f32
+    public phase : string
+    public tail  : string
+
+# where repositories live: how a user's are listed and how one is cloned.
+# github for now; a second host is a second instance of this, not a path
+class RepoHost
+    public name  : string [ 'github' ]
+    public token : string           # a personal access token: 5000 requests an hour, private repos, who we are
+    public me    : string           # the token's login, once known
+    func auth [] -> string
+        return (token && token.count > 0) ? '-H "Authorization: Bearer {token}" ' : ''
+    # our own listing goes through /user/repos (private ones included).
+    # 100 a page is the host's most; page 2, 3.. continue the list
+    func list_cmd [ user: string, page: i32 ] -> string
+        own : bool [ token && token.count > 0 && me && me.count > 0 && me.compare[ user ] == 0 ]
+        url : string (own) ? 'https://api.github.com/user/repos?per_page=100&sort=updated&affiliation=owner&page={page}' : 'https://api.github.com/users/{user}/repos?per_page=100&sort=updated&page={page}'
+        return 'curl -s {auth[]}-H "Accept: application/vnd.github+json" "{url}"'
+    # one repository by owner/name (any case): its canonical name and description
+    func repo_cmd [ full: string ] -> string
+        return 'curl -s {auth[]}-H "Accept: application/vnd.github+json" "https://api.github.com/repos/{full}"'
+    func user_cmd [] -> string
+        return 'curl -s {auth[]}-H "Accept: application/vnd.github+json" "https://api.github.com/user"'
+    # over ssh: the key is the credential we have, and it reaches private repos
+    func clone_url [ full: string ] -> string [ 'git@github.com:{full}.git' ]
+    # who the key says we are: "Hi <login>! You've successfully authenticated"
+    func whoami_cmd [] -> string [ 'ssh -T git@github.com 2>&1' ]
+
 class FindHit
     public is_header : bool
     public text      : string
@@ -34,6 +76,12 @@ class FindHit
     # directory holds <stem>/<stem>.ag: a silver module
     public is_module  : bool
     public inst       : i32
+    # owner/name of a remote repository row: picking it checks the repo out
+    public repo       : string
+    # the repository is already checked out beside this one
+    public checked    : bool
+    # the trailing row of a listing: picking it fetches the next page
+    public more       : bool
 
 class VRow
     public src   : i32 [ -1 ]
@@ -473,6 +521,10 @@ ResourceView AppView
     mutable disp_ms     : i64        # when the user last picked a display: the app's echo lags it
     mutable disp_pending : i32 [ -1 ] # a display the app reported that orbiter has yet to follow
     mutable host_hz     : i32        # this display's refresh, given by the pane that starts it
+    mutable pane_req    : i32        # DIAG: frame requests posted this second
+    mutable pane_flip   : i32        # DIAG: front flips seen this second
+    mutable pane_seen   : i32        # DIAG: last front + 1 (0 = none yet)
+    mutable pane_sec    : i64
     mutable itex0       : map Texture [string]
     mutable itex1       : map Texture [string]
     mutable dbg_nw     : i32
@@ -591,6 +643,22 @@ ResourceView AppView
         # every frame shown once as long as it answers within a frame
         if [ started && slot >= 0 && display <= 1 && !held && !ended && !paused ]
             host_post2[ slot, 1, i32[ HM.frame ], 0, 0, 0 ]
+            pane_req += 1
+            fr9 : i32 [ host_tex_front[ slot, 0 ] + 1 ]
+            if [ fr9 != pane_seen ]
+                pane_seen  = fr9
+                pane_flip += 1
+            ps9 : i64 [ epoch_millis[] / 1000 ]
+            if [ ps9 != pane_sec ]
+                pw9 : Window [ cv.w ]
+                if [ pane_sec != 0 && pw9 && pw9.stats ] log 'PANE slot={slot} req={pane_req} flips={pane_flip}'
+                pane_sec  = ps9
+                pane_req  = 0
+                pane_flip = 0
+        # the app's sound rides its slot's ring: into the recording, if one is on
+        if [ started && slot >= 0 && !held && !ended ]
+            pa9 : Window [ cv.w ]
+            if [ pa9 ] pa9.record_pull[ slot ]
         # the app's live props, re-read twice a second: a value the app changed
         # itself (esc leaving full-screen) shows here without a round trip.
         # gated on the process, not on a frame: a windowed or still-loading
@@ -1504,6 +1572,7 @@ Layer EditorLayer
         # start where the zone pills do (shift-click handles pinning)
         if [ showing && hits && editor.nav_list ] gut_w = 12.0
         editor.gutter_w = gut_w
+        if [ !showing ] editor.hunks_check[]
         if [ editor.scroll.x < 0.0 ] editor.scroll.x = 0.0
         # left tool rail pushes the nav content right by 64px
         lin     : f32 [ (editor.nav_tools && editor.nav_tools.count > 0) ? 64.0 : 0.0 ]
@@ -1735,6 +1804,17 @@ Layer EditorLayer
             cv.fill_color[ (line_gutter) ? line_gutter : rgba['#ffffff08'] ]
             cv.rect_to[ bounds.x + 2.0, yg + 1.0, gut_w - 4.0, lh - 2.0 ]
             cv.paint[ ]
+            # the git state of the row, as the gutter's own colour: added
+            # green, changed blue, a removed run as a red edge above. a
+            # label only: nothing here hovers or takes a press
+            if [ !showing && !editor.diff_kinds && editor.hunks && rnum > 0 ]
+                hk9 : i32 [ editor.hunk_at[ rnum - 1 ] ]
+                if [ hk9 >= 0 ]
+                    kd9 : i32 [ editor.hunks[ hk9 * 3 + 2 ] ]
+                    cv.fill_color[ (kd9 == 1) ? rgba['#7fd18b44'] : ((kd9 == 2) ? rgba['#6cb6ff44'] : rgba['#ff6a6a']) ]
+                    if [ kd9 == 3 ] cv.rect_to[ bounds.x + 2.0, yg - 1.0, gut_w - 4.0, 2.0 ]
+                    el             cv.rect_to[ bounds.x + 2.0, yg + 1.0, gut_w - 4.0, lh - 2.0 ]
+                    cv.paint[ ]
             if [ !showing && stop_vrow == li ]
                 mid : f32 [ yg + lh * 0.5 ]
                 cv.save[ ]
@@ -2317,6 +2397,53 @@ Layer EditorLayer
             editor.run_view.draw_pip[ cv, bounds ]
 
         cv.clear_crop[ ]
+        # the file's git state laid inside the scrollbar's track as rails:
+        # where the added (green), changed (blue) and removed (red) runs sit
+        # in the whole file. as wide as the track less 1px a side, half
+        # alpha, solid under the pointer, and fading out as the thumb nears
+        # (gone 8px from its edge, full 16px away). the thumb paints over
+        sb9 : ScrollLayer (editor.layers) ? cast ScrollLayer [ editor.layers['scrollbar'] ] : null
+        if [ sb9 && sb9.bounds && !showing && !editor.no_scroll && editor.content_h > bounds.h ]
+            top9 : f32 [ bounds.y + 8.0 ]
+            vis9 : f32 [ sb9.bounds.y + sb9.bounds.h - top9 ]
+            tot9 : f32 [ editor.content_h ]
+            if [ vis9 >= 32.0 && tot9 > 0.0 && !editor.diff_kinds && editor.hunks ]
+                # the track's width follows the pointer, as the layer's does
+                prox9 : f32 [ 0.0 ]
+                if [ editor.hovered ]
+                    fr9 : f32 [ (1.0 - editor.cursor_pos.x) * editor.bounds.w ]
+                    prox9 = clamp[ 1.0 - fr9 / 90.0, 0.0, 1.0 ]
+                if [ sb9.active ] prox9 = 1.0
+                effw9 : f32 [ sb9.thumb_w * (1.0 + prox9) ]
+                cx9   : f32 [ sb9.bounds.x + sb9.bounds.w - sb9.thumb_w ]
+                rx9   : f32 [ cx9 - effw9 * 0.5 + 1.0 ]
+                rw9   : f32 [ effw9 - 2.0 ]
+                thy9  : f32 [ top9 + sb9.thumb_y_px ]
+                thb9  : f32 [ thy9 + sb9.thumb_h_px ]
+                cv.save[ ]
+                cv.stroke_width[ 0.0 ]
+                nh9 : i32 [ i32[ editor.hunks.count ] / 3 ]
+                for [ i9: i32 0, i9 < nh9, i9 += 1 ]
+                    r09 : i32 [ editor.hunks[ i9 * 3 ] ]
+                    rn9 : i32 [ editor.hunks[ i9 * 3 + 1 ] ]
+                    kd8 : i32 [ editor.hunks[ i9 * 3 + 2 ] ]
+                    ry9 : f32 [ top9 + f32[ r09 ] * lh / tot9 * vis9 ]
+                    rh9 : f32 [ f32[ rn9 ] * lh / tot9 * vis9 ]
+                    if [ rh9 < 6.0 ] rh9 = 6.0
+                    # distance to the thumb's nearest edge, 0 when under it
+                    d9 : f32 [ 0.0 ]
+                    if [ ry9 + rh9 <= thy9 ] d9 = thy9 - (ry9 + rh9)
+                    el [ ry9 >= thb9 ]      d9 = ry9 - thb9
+                    fa9 : f32 [ clamp[ (d9 - 8.0) / 8.0, 0.0, 1.0 ] ]
+                    if [ fa9 <= 0.0 ] continue
+                    hv8 : bool [ editor.rail_hover1 == i9 + 1 ]
+                    al9 : f32 [ ((hv8) ? 1.0 : 0.5) * fa9 ]
+                    if [ kd8 == 1 ]      cv.fill_color[ rgba[ r: 0.498, g: 0.820, b: 0.545, a: al9 ] ]
+                    el [ kd8 == 2 ]      cv.fill_color[ rgba[ r: 0.424, g: 0.714, b: 1.0,   a: al9 ] ]
+                    el                   cv.fill_color[ rgba[ r: 1.0,   g: 0.416, b: 0.416, a: al9 ] ]
+                    cv.rounded_rect[ rx9, ry9, rw9, rh9, 4.0, 4.0, 4.0, 4.0 ]
+                    cv.paint[ ]
+                cv.restore[ ]
 
 
 # left tool rail: vertical buttons, icon over title, 64px wide
@@ -2427,6 +2554,13 @@ Control Editor
     # commit hash this view diffs against; read-only stacked diff
     public  diff_commit   : string
     mutable loaded_diff   : string
+    # the file's git hunks against HEAD, as (first row, rows, kind) triples:
+    # kind 1 added, 2 changed, 3 removed (rows 0; the mark sits above the row).
+    # hunk_sig says what they were computed for; rail_hover1 = index + 1 of
+    # the rail beside the scrollbar under the pointer
+    mutable hunks         : vec i32
+    mutable hunk_sig      : string
+    mutable rail_hover1   : i32
     # per-row diff kind: 0 context, 1 removed, 2 added
     mutable diff_kinds    : vec i32
     # display row -> real file line; -1 on removed rows (base only)
@@ -2454,6 +2588,10 @@ Control Editor
     mutable nav_tools     : vec string
     mutable nav_default   : string
     mutable tool_hover    : i32 [ -1 ]
+    # the view picker under the title's chip: open, and the cell under the mouse
+    mutable view_pick     : bool [ false ]
+    mutable pick_hover    : i32 [ -1 ]
+    mutable view_thumbs   : map Canvas[string]
     mutable run_view      : AppView          # the selected instance: shown and debugged
     mutable app_view      : bool
     mutable session_view  : string
@@ -3811,6 +3949,31 @@ Control Editor
         if [ !t ] return null
         return ResourceView [ Au.new_object[ t, null, null, true, __FILE__, __LINE__, __SEQUENCE__ ] ]
 
+    # a view's look at this file, rendered small for the picker: only a
+    # view that paints itself (hex, image) has one; a composed view (git,
+    # a console) and a peer module's view show their icon instead
+    func view_thumb [ nm: string, cv: Canvas, tw: i32, th: i32 ] -> Canvas
+        if [ !src || !nm || nm.count == 0 || nm == 'editor' ] return null
+        if [ !view_thumbs ] view_thumbs = map Canvas[string] []
+        key : string '{nm}|{src.absolute[]}'
+        ex  : Canvas view_thumbs[ key ]
+        if [ ex ] return ex
+        t : Au_t view_type[ nm ]
+        if [ !t ] return null
+        rv : ResourceView [ Au.new_object[ t, null, null, true, __FILE__, __LINE__, __SEQUENCE__ ] ]
+        if [ !rv ] return null
+        vel : element rv.view_element*[]
+        if [ vel ] return null
+        rv.src = src
+        tc : Canvas [ vk: cv.vk, w: cv.w, format: Pixel.rgba8,
+            width: tw, height: th, load_existing: true, quantize: true, tag: 'vthumb' ]
+        tc.update[]
+        tc.reset[ vec4f [ 0.0, 0.0, 0.0, 0.0 ] ]
+        rv.render*[ tc, rect [ x: 0.0, y: 0.0, w: f32[ tw ], h: f32[ th ] ] ]
+        rv.release*[]
+        view_thumbs[ key ] = tc
+        return tc
+
     func thumb_for [ p: path, cv: Canvas ] -> Texture
         if [ !p ] return null
         if [ !thumb_cache ] thumb_cache = map Texture[string] []
@@ -4312,6 +4475,115 @@ Control Editor
             land_on[ goto_pending ]
             goto_pending = 0
 
+    # the hunks are recomputed when the file, its saved state or the git
+    # snapshot changed; git diff -U0 against HEAD, over the checkout the
+    # file sits in
+    func hunks_check []
+        if [ !src || diff_commit ] return
+        orb8 : cast orbiter [ ux.app_object ]
+        if [ !orb8 ] return
+        sa9 : string '{src.absolute[]}'
+        fb9 : FileBuf (orb8.file_cache) ? orb8.file_cache[ sa9 ] : null
+        ch9 : FileChg orb8.file_changes[ src ]
+        sig : string '{sa9}|{(fb9) ? fb9.sync_i : 0}|{(ch9) ? ch9.adds : 0}|{(ch9) ? ch9.dels : 0}'
+        if [ hunk_sig && hunk_sig.compare[ sig ] == 0 ] return
+        hunk_sig = sig
+        hunks    = vec i32 []
+        sd9  : path src.directory[]
+        root : path orb8.checkout_root[ sd9 ]
+        if [ !root ] return
+        rt9  : string '{root}'
+        rel9 : string [ (sa9.count > rt9.count) ? sa9.mid[ rt9.count + 1, sa9.count - rt9.count - 1 ] : sa9 ]
+        out : vec string git_capture[ root, 'diff -U0 HEAD -- "{rel9}"', false ]
+        for [ ln: string ] in out
+            if [ !ln.starts_with[ '@@' ] ] continue
+            # @@ -a,b +c,d @@ : c the first new row (1-based), d rows; b old rows
+            pl : i32 [ ln.index_of[ '+' ] ]
+            if [ pl < 0 ] continue
+            rest : string ln.mid[ pl + 1, ln.count - pl - 1 ]
+            sp9  : i32 [ rest.index_of[ ' ' ] ]
+            if [ sp9 > 0 ] rest = rest.mid[ 0, sp9 ]
+            cm9  : i32 [ rest.index_of[ ',' ] ]
+            cs9  : string (cm9 >= 0) ? rest.mid[ 0, cm9 ] : rest
+            ds9  : string (cm9 >= 0) ? rest.mid[ cm9 + 1, rest.count - cm9 - 1 ] : '1'
+            c9 : i32 [ i32[ cs9.integer_value[] ] ]
+            d9 : i32 [ i32[ ds9.integer_value[] ] ]
+            # the old side: -a,b
+            ml : i32 [ ln.index_of[ '-' ] ]
+            b9 : i32 [ 1 ]
+            if [ ml >= 0 && ml < pl ]
+                orest : string ln.mid[ ml + 1, pl - ml - 1 ]
+                osp : i32 [ orest.index_of[ ' ' ] ]
+                if [ osp > 0 ] orest = orest.mid[ 0, osp ]
+                ocm : i32 [ orest.index_of[ ',' ] ]
+                b9 = (ocm >= 0) ? i32[ orest.mid[ ocm + 1, orest.count - ocm - 1 ].integer_value[] ] : 1
+            # removed after line c: the mark above row c (0-based); else the
+            # rows from c-1, added when nothing was there before, changed otherwise
+            hr0 : i32 [ (d9 == 0) ? c9 : c9 - 1 ]
+            hrn : i32 [ d9 ]
+            hkd : i32 [ (d9 == 0) ? 3 : ((b9 == 0) ? 1 : 2) ]
+            hunks.push[ hr0 ]
+            hunks.push[ hrn ]
+            hunks.push[ hkd ]
+
+    # the hunk holding row, -1 when none (a removal counts on its row)
+    func hunk_at [ row: i32 ] -> i32
+        if [ !hunks ] return -1
+        n9 : i32 [ i32[ hunks.count ] / 3 ]
+        for [ i: i32 0, i < n9, i += 1 ]
+            r0 : i32 [ hunks[ i * 3 ] ]
+            rn : i32 [ hunks[ i * 3 + 1 ] ]
+            if [ rn == 0 ]
+                if [ row == r0 ] return i
+            el [ row >= r0 && row < r0 + rn ] return i
+        return -1
+
+    # the git rail under the pointer (index), -1 off: inside the
+    # scrollbar's track, the same geometry the layer draws
+    func rail_at [ mx: f32, my: f32 ] -> i32
+        if [ !hunks || diff_kinds || show_hits || finder_list ] return -1
+        ele : (layers) ? cast EditorLayer [ layers['content'] ] : null
+        sb  : ScrollLayer (layers) ? cast ScrollLayer [ layers['scrollbar'] ] : null
+        if [ !ele || !ele.bounds || !sb || !sb.bounds || content_h <= ele.bounds.h ] return -1
+        lh  : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
+        top : f32 [ ele.bounds.y + 8.0 ]
+        vis : f32 [ sb.bounds.y + sb.bounds.h - top ]
+        if [ vis < 32.0 || content_h <= 0.0 ] return -1
+        # the track's column at its widest, where the pointer is when it presses
+        cx  : f32 [ sb.bounds.x + sb.bounds.w - sb.thumb_w ]
+        if [ mx < cx - sb.thumb_w || mx >= cx + sb.thumb_w ] return -1
+        vy  : f32 [ my - scroll.y ]
+        n   : i32 [ i32[ hunks.count ] / 3 ]
+        for [ i: i32 0, i < n, i += 1 ]
+            ry : f32 [ top + f32[ hunks[ i * 3 ] ] * lh / content_h * vis ]
+            rh : f32 [ f32[ hunks[ i * 3 + 1 ] ] * lh / content_h * vis ]
+            if [ rh < 6.0 ] rh = 6.0
+            if [ vy >= ry && vy < ry + rh ] return i
+        return -1
+
+    # a rail's click: the caret to the hunk's first row, brought into view
+    func hunk_goto [ i: i32 ]
+        if [ !hunks || i < 0 || i * 3 + 2 >= hunks.count ] return
+        r0 : i32 [ hunks[ i * 3 ] ]
+        if [ r0 >= line_count[] ] r0 = line_count[] - 1
+        if [ r0 < 0 ] r0 = 0
+        if [ nav && src ] nav.record[ pane_index, '{src.absolute[]}', sel_line, sel_col, scroll.y ]
+        sel_line    = r0
+        sel_col     = 0
+        anchor_line = r0
+        anchor_col  = 0
+        lh : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
+        vh : f32 [ (bounds) ? bounds.h : 600.0 ]
+        tp : f32 [ f32[ r0 ] * lh ]
+        if [ tp < scroll.y || tp + lh > scroll.y + vh ]
+            scroll.y = tp - vh * 0.4
+            if [ scroll.y < 0.0 ] scroll.y = 0.0
+            scroll_target = scroll.y
+            scroll_goal   = scroll.y
+            scroll_anim   = false
+        pristine = false
+        if [ ux ] ux.will_animate = true
+
     func load_text []
         pristine = false
         loaded_diff = diff_commit
@@ -4580,8 +4852,36 @@ Control Editor
         if [ ux ] ux.restyle = true
 
     func on_press [ ev: Event ]
-        # the pinned band is drawn over everything: a press on one of its
-        # rows goes to that declaration and nothing else sees the press
+        # the scrollbar's thumb and the git rails beside it come first: the
+        # pinned band drawn under them must never take their press
+        ele0 : (layers) ? cast EditorLayer [ layers['content'] ] : null
+        sb0  : ScrollLayer (layers) ? cast ScrollLayer [ layers['scrollbar'] ] : null
+        if [ ele0 && ele0.bounds && sb0 && sb0.scroll_max > 0.0 ]
+            grab0 : f32 [ (sb0.thumb_w > 0.0) ? sb0.thumb_w * 2.0 + 8.0 : 16.0 ]
+            if [ ev.mouse.pos.x - ele0.bounds.x > ele0.bounds.w - grab0 ]
+                my0 : f32 [ ev.mouse.pos.y - ele0.bounds.y - scroll.y ]
+                # the thumb itself first; off it, a rail under the pointer
+                # goes to its hunk; else the track jumps the thumb there
+                if [ my0 < sb0.thumb_y_px || my0 >= sb0.thumb_y_px + sb0.thumb_h_px ]
+                    prl0 : i32 [ rail_at[ ev.mouse.pos.x, ev.mouse.pos.y ] ]
+                    if [ prl0 >= 0 ]
+                        hunk_goto[ prl0 ]
+                        if [ ux ] ux.set_focus[ a ]
+                        ev.no_default = true
+                        return
+                sb0.grab_at[ my0 ]
+                sy0 : f32 [ sb0.drag_to[ my0 ] ]
+                if [ sy0 >= 0.0 ]
+                    scroll.y        = sy0
+                    scroll_target   = sy0
+                    scroll_dragging = true
+                    sb0.active      = true
+                    pristine        = false
+                    ux.will_animate = true
+                if [ rview ] ev.no_default = true
+                return
+        # the pinned band is drawn over everything else: a press on one of
+        # its rows goes to that declaration and nothing else sees the press
         pel  : (layers) ? cast EditorLayer [ layers['content'] ] : null
         pins : vec i32 pinned_rows[]
         if [ pel && pel.bounds && pins.count > 0 ]
@@ -4653,24 +4953,6 @@ Control Editor
                     if [ ux ] ux.set_focus[ a ]
                     ev.no_default = true
                     return
-        sbe : (layers) ? cast EditorLayer [ layers['content'] ] : null
-        sbl : ScrollLayer (layers) ? cast ScrollLayer [ layers['scrollbar'] ] : null
-        sbg : f32 [ (sbl && sbl.thumb_w > 0.0) ? sbl.thumb_w * 2.0 + 8.0 : 16.0 ]
-        if [ rview && sbe && sbl && sbl.scroll_max > 0.0 ]
-            sbx : f32 [ ev.mouse.pos.x - sbe.bounds.x ]
-            if [ sbx > sbe.bounds.w - sbg ]
-                smy : f32 [ ev.mouse.pos.y - sbe.bounds.y - scroll.y ]
-                sbl.grab_at[ smy ]
-                ssy : f32 [ sbl.drag_to[ smy ] ]
-                if [ ssy >= 0.0 ]
-                    scroll.y        = ssy
-                    scroll_target   = ssy
-                    scroll_dragging = true
-                    sbl.active      = true
-                    pristine        = false
-                    ux.will_animate = true
-                ev.no_default = true
-                return
         if [ rview && !rview.view_text*[ rview.view_sel ] ]
             if [ rview.view_press*[ ev ] ]
                 ev.no_default = true
@@ -4762,20 +5044,6 @@ Control Editor
                                 pristine = false
                                 ux.will_animate = true
                                 return
-        sb : ScrollLayer (layers) ? cast ScrollLayer [ layers['scrollbar'] ] : null
-        grab : f32 [ (sb && sb.thumb_w > 0.0) ? sb.thumb_w * 2.0 + 8.0 : 16.0 ]
-        if [ ele && sb && sb.scroll_max > 0.0 && rel_x > ele.bounds.w - grab ]
-            my : f32 [ ev.mouse.pos.y - ele.bounds.y - scroll.y ]
-            sb.grab_at[ my ]
-            sy : f32 [ sb.drag_to[ my ] ]
-            if [ sy >= 0.0 ]
-                scroll.y        = sy
-                scroll_target   = sy
-                scroll_dragging = true
-                sb.active       = true
-                pristine        = false
-                ux.will_animate = true
-            return
         if [ ele && elements && elements['pins'] && rel_x > ele.bounds.w - 144.0 ]
             return
         if [ ele && rel_x < gutter_w ]
@@ -4868,6 +5136,17 @@ Control Editor
         if [ rel_y < 0 ]
             hl  = -1
             hg = false
+        # the git rail in the scrollbar's track under the pointer, the thumb aside
+        rl1 : i32 [ rail_at[ ev.mouse.pos.x, ev.mouse.pos.y ] + 1 ]
+        sbh : ScrollLayer (layers) ? cast ScrollLayer [ layers['scrollbar'] ] : null
+        if [ rl1 > 0 && sbh && ele && ele.bounds ]
+            vyh : f32 [ ev.mouse.pos.y - ele.bounds.y - scroll.y ]
+            if [ vyh >= sbh.thumb_y_px && vyh < sbh.thumb_y_px + sbh.thumb_h_px ] rl1 = 0
+        if [ rl1 != rail_hover1 ]
+            rail_hover1 = rl1
+            pristine = false
+            ux.will_animate = true
+        if [ rl1 > 0 ] hl = -1
         # the pinned band hides the rows under it: the hover is the band's
         pins : vec i32 pinned_rows[]
         hp   : i32 [ -1 ]
