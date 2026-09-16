@@ -221,6 +221,9 @@ func host_tex_clear   [ slot: i32, side: i32 ]
 func host_tex_flip    [ slot: i32, side: i32, front: i32 ]
 func host_tex_front   [ slot: i32, side: i32 ] -> i32
 func host_tex_pull    [ slot: i32, side: i32, which: i32, w2: @i32, h2: @i32, fmt: @i32 ] -> i32
+func host_audio_put   [ slot: i32, pcm: @i16, frames: i32, rate: i32, channels: i32 ]
+func host_audio_take  [ slot: i32, out: @i16, max_frames: i32 ] -> i32
+func host_audio_rate  [ slot: i32 ] -> i32
 func host_app_request [ nm: cstr, flags: i32 ] -> i32
 func host_app_flags   [ slot: i32 ] -> i32
 func host_app_state   [ slot: i32 ] -> i32
@@ -346,6 +349,9 @@ abstract live_app media_app
     public  text_mode   : bool [ false ]
     intern  paned       : bool         # a windowed app showing in orbiter's pane or pip
     intern  frame_req   : bool         # the host asked for a frame (HM.frame)
+    intern  pane_reqs   : i32          # DIAG: requests answered this second
+    intern  pane_tmo    : i32          # DIAG: frames drawn on the fallback timer
+    intern  pane_sec    : i64
     public  screenshot  : path
     # --shot-frame N: which frame to capture (default 60)
     public  shot_frame  : i32 [ 60 ]
@@ -439,6 +445,8 @@ abstract live_app media_app
                 wn.rec = AudioRing [ ]
         recorder.capture[ tx ]
         if [ recorder.mux ]
+            # this process's own sound (its AudioOut tees into its slot's ring)
+            wn.record_pull[ host_slot[] ]
             record_audio_pump[ wn ]
             Au.live_record_mux_set[ recorder.mux.seq, recorder.mux.vtime, recorder.mux.atime ]
 
@@ -642,6 +650,19 @@ abstract live_app media_app
                 while [ !frame_req && epoch_micros[] - t09 < lim9 ]
                     attach_pump[]
                     if [ !frame_req ] usleep[ 50 ]
+                if [ frame_req ] pane_reqs += 1
+                el                pane_tmo  += 1
+                psec9 : i64 [ epoch_millis[] / 1000 ]
+                if [ psec9 != pane_sec ]
+                    if [ pane_sec != 0 && win.stats ] log 'PANED reqs={pane_reqs} timeouts={pane_tmo}'
+                    pane_sec  = psec9
+                    pane_reqs = 0
+                    pane_tmo  = 0
+            # a Full pane runs in step with this window: one frame per refresh,
+            # so its requests go out at the display's rate, not the loop's
+            if [ win.backdrop_bypass ]
+                frame_hz = win.refresh_hz[]
+                pace_frame[]
         if [ screenshot ]
             shot_frames += 1
             if [ shot_frames >= shot_frame ]
@@ -1530,6 +1551,9 @@ Display Window
     # -1 = follow the scene; the status bar sets it explicitly
     # 0 frost, 1 blur, 2 soft, 3 raw
     public  frost_mode           : i32 [ 0 ]
+    # a pane covers the ui (Full app view): the backdrop scene and its
+    # frost chain do not draw; the panels keep their last frost
+    public  backdrop_bypass      : bool
     mutable frost_bound          : i32 [ -2 ]
     # half-size blur; the sharp frost path uses it for the mid stage
     mutable m_soft_v             : Model
@@ -1857,16 +1881,22 @@ Display Window
             src_m : Au.find_member[ typeid[ inst ], best.binding.chars, AU_MEMBER_VAR, 0, true ]
             if [ src_m ]
                 src_ptr : @f32 [ inst.member_ref[ src_m ] ]
-
+                # dirty only on a real change: an unconditional mark kept
+                # every bound element repainting forever (dirty -> apply ->
+                # dirty), the whole app tree every frame
+                moved : bool [ false ]
                 if [ best.filter > 0.0 ]
                     decay : pow[ best.filter, inst.ux.frame_factor ]
                     for [ i: i32 0, i < float_count, i += 1 ]
-                        dst_ptr[i] = dst_ptr[i] + (src_ptr[i] - dst_ptr[i]) * (1.0 - decay)
+                        nv : f32 [ dst_ptr[i] + (src_ptr[i] - dst_ptr[i]) * (1.0 - decay) ]
+                        if [ nv - dst_ptr[i] > 0.0001 || nv - dst_ptr[i] < -0.0001 ] moved = true
+                        dst_ptr[i] = nv
                 el
                     for [ i: i32 0, i < float_count, i += 1 ]
+                        if [ dst_ptr[i] != src_ptr[i] ] moved = true
                         dst_ptr[i] = src_ptr[i]
 
-                inst.pristine = false
+                if [ moved ] inst.pristine = false
             return
 
         if [ best.filter > 0.0 && inlay_val ]
@@ -2495,6 +2525,19 @@ Display Window
     # interleaved s16 stereo frames at the app's rate, linearly resampled to 48 kHz for ffmpeg,
     # with whatever the microphone has captured since last time mixed in
     # stereo frames at the app's rate (8192 at most per call at 12 kHz and up)
+    # drain a slot's sound ring into the recording: our own slot, or a pane
+    # instance's from orbiter. nothing is read while no recording wants sound
+    public func record_pull [ slot: i32 ]
+        if [ !rec ] return
+        buf : local i16 [ 8192 ]
+        for [ true ]
+            n : i32 [ host_audio_take[ slot, @buf[ 0 ], 4096 ] ]
+            if [ n <= 0 ] break
+            rt : i32 [ host_audio_rate[ slot ] ]
+            if [ rt <= 0 ] continue
+            record_rate = rt
+            record_audio[ @buf[ 0 ], n, rt ]
+
     public func record_audio [ pcm: @i16, nfr: i32, rate: i32 ]
         if [ !rec || nfr <= 0 || rate <= 0 ] return
         n : i32 [ resample[ pcm, nfr, 2, rate, @rec_out[ 0 ], 32768, @rec_pos ] ]
@@ -3067,6 +3110,7 @@ Display Window
     # still points at the dead texture, and rebind_model faithfully
     # rebinds to it. re-wire the chain from CURRENT colors, in order
     func rewire_frost [ ]
+        backdrop_once = true
         if [ !m_view ] return
         # no frost element ever appeared: there is no chain to wire. the
         # composite reads the background for all three samplers
@@ -3268,6 +3312,7 @@ Display Window
         return !expect_backdrop
 
     public func apply_solid [ ] -> bool
+        backdrop_once = true
         s9 : bool [ frost_eff[] == 3 ]
         # solid: the scene target is not drawn at all, only the flat color
         skip_target = (s9) ? backdrop : null
@@ -3278,6 +3323,7 @@ Display Window
         return true
 
     func update [ ]
+        backdrop_once = true
         bind_backdrop[]
         apply_solid[]
         if [ !glyph ]
@@ -4704,6 +4750,14 @@ Display Window
         if [ stats && stage == CanvasType.screen ] e.paint_us += epoch_micros[] - tpe0
         cached9 : bool [ e.cache_canvas && !e.animated && !nc && stage == CanvasType.screen ]
         last_2 : element
+        # cached children compose onto the shared target, not into this cache:
+        # a scrolling element crops them to its bounds or its rows land past
+        # them (topmost children, popups, stay free)
+        if [ e.content_h > 0.0 && stage == CanvasType.screen ]
+            ccx9 : f32 [ cv.transform_tx[] ]
+            ccy9 : f32 [ cv.transform_ty[] ]
+            cv.save[]
+            cv.crop_within[ ccx9, ccy9, ccx9 + e.bounds.w, ccy9 + e.bounds.h ]
         for [ ee: element, id: string ] in e.elements
             if [ ee.topmost ] continue
             # an uncached child lives in this cache: its change repaints us.
@@ -4721,6 +4775,7 @@ Display Window
             draw_element[ ee, stage, last_2 ]
             last_2 = ee
             cv.restore[]
+        if [ e.content_h > 0.0 && stage == CanvasType.screen ] cv.restore[]
         for [ ee: element, id: string ] in e.elements
             if [ !ee.topmost ] continue
             if [ cached9 && ee.no_cache && !ee.animated ]
@@ -5077,7 +5132,13 @@ Layer ScrollLayer
         track_vis  = vis_h
         scroll_max = max_sc
         grab_w     = base_w * 2.0 + 6.0
-        cv.stroke_width[ 0.0 ]
+        if [ prox > 0.0 ]
+            cv.fill_color  [ rgba['#0000'] ]
+            cv.stroke_color[ rgba[ r:1.0, g:1.0, b:1.0, a: 0.133 * prox ] ]
+            cv.stroke_width[ 1.0 ]
+            cv.rect_to     [ thumb_x, top, eff_w, vis_h ]
+            cv.paint       [ ]
+            cv.stroke_width[ 0.0 ]
         cv.fill_color[ thumb_color ]
         cv.rounded_rect[ thumb_x, thumb_y, eff_w, thumb_h, r, r, r, r ]
         cv.paint[]

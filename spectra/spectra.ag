@@ -130,6 +130,7 @@ ifdef [ apple ]
             AudioQueueEnqueueBuffer[ queue, b, 0, null ]
             used += 1
             next  = ( next + 1 ) % 4
+            host_audio_put[ host_slot[], buffer, frames, sample_rate, channels ]
 
         func close []
             if [ ! active ] return
@@ -214,6 +215,7 @@ el [ windows ]
         func write [ frames: i32 ] -> none
             if [ ! pcm_handle ] return
             wr : i32 [ wasapi_out_write[ pcm_handle, buffer, frames ] ]
+            host_audio_put[ host_slot[], buffer, frames, sample_rate, channels ]
             # a short write drops the remainder; count it like the alsa path
             if [ wr < frames ]
                 shorts += 1
@@ -292,6 +294,7 @@ el [ android ]
         func write [ frames: i32 ] -> none
             if [ !stream ] return
             AAudioStream_write[ stream, buffer, frames, 1000000000 ]
+            host_audio_put[ host_slot[], buffer, frames, sample_rate, channels ]
             writes += 1
 
         func close []
@@ -429,6 +432,7 @@ el
 
         func write [ frames: i32 ] -> none
             if [ ! pcm_handle ] return
+            host_audio_put[ host_slot[], buffer, frames, sample_rate, channels ]
             wr : i64 [ snd_pcm_writei[ pcm_handle, buffer, frames ] ]
             if [ wr < 0 ]
                 # every recover is an xrun, and an xrun is an audible click

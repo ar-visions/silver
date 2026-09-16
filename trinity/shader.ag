@@ -887,6 +887,100 @@ ModelViewProject VectorScale
     }
 
 
+# up to four emulator planes VectorScaled and composed in ONE pass, in
+# index order, premultiplied. each plane has its rect in output uv (x, y,
+# w, h; w 0 = plane off), so planes glide on their own scroll offsets.
+# four straight-line plane calls is the fast shape: six copies of the plane
+# body, or one body in a loop choosing its texture, both compile 3x slower
+ModelViewProject VectorLayers
+    mutable r0 : vec4f
+    mutable r1 : vec4f
+    mutable r2 : vec4f
+    mutable r3 : vec4f
+
+    attrib l0 : LayoutBinding [ type:typeid[ Surface ], id:Surface.color,    count:1, format: typeid[ rgba8 ] ]
+    attrib l1 : LayoutBinding [ type:typeid[ Surface ], id:Surface.normal,   count:1, format: typeid[ rgba8 ] ]
+    attrib l2 : LayoutBinding [ type:typeid[ Surface ], id:Surface.emission, count:1, format: typeid[ rgba8 ] ]
+    attrib l3 : LayoutBinding [ type:typeid[ Surface ], id:Surface.rough,    count:1, format: typeid[ rgba8 ] ]
+
+    attrib pos       : VertexInput    [ type:typeid[ vec3f ] ]
+    attrib uv        : VertexInput    [ type:typeid[ vec2f ] ]
+    attrib v_uv      : VertexOutput   [ type:typeid[ vec2f ] ]
+    attrib fragColor : FragmentOutput [ type:typeid[ vec4f ] ]
+
+    func init [ ]
+        model = mat4f.identity[]
+        eye:    vec3f [ 0.0, 0.0, 2.0 ]
+        center: vec3f [ 0.0, 0.0, 0.0 ]
+        up:     vec3f [ 0.0, 1.0, 0.0 ]
+        view  = mat4f.look_at[ eye, center, up ]
+        proj  = mat4f.ortho[ -1, 1, -1, 1, 0.1, 10.0 ]
+        r0 = vec4f [ 0.0, 0.0, 1.0, 1.0 ]
+
+    func vertex [] -> GLSL none {
+        v_uv        = uv;
+        gl_Position = vec4(pos.x, pos.y, 0.0, 1.0);
+    }
+
+    # same coverage and (near) the same color = one shape; a mask, no branch
+    func vs_eq [ a: @vec4f, b: @vec4f ] -> GLSL float {
+        vec4 d = a - b;
+        return (abs(d.a) <= 0.5 && dot(d, d) < 0.0004) ? 1.0 : 0.0;
+    }
+
+    # one plane at output uv st through its rect r, premultiplied; transparent
+    # off the plane or off its texture. w = one destination pixel in texel
+    # units (fwidth is fragment-only and helpers land in both stages, so the
+    # caller passes it). BRANCHLESS past the plane gate: the corner cuts are
+    # masks, so a busy plane (a level full of tile edges) costs the same as a
+    # flat one; as branches, dense edges ran every path and tripled the pass
+    func vs_layer [ tex: @sampler2D, r: @vec4f, st: @vec2f, w: @f32 ] -> GLSL vec4f {
+        if (r.z <= 0.0 || r.w <= 0.0) return vec4(0.0);
+        vec2 lu = (st - r.xy) / r.zw;
+        float inside = (lu.x >= 0.0 && lu.y >= 0.0 && lu.x < 1.0 && lu.y < 1.0) ? 1.0 : 0.0;
+        ivec2 ts = textureSize(tex, 0);
+        vec2 pt = lu * vec2(ts);
+        ivec2 ip = ivec2(floor(pt));
+        vec2 fp = fract(pt);
+        ivec2 mx = ts - 1;
+        vec4 E = texelFetch(tex, clamp(ip,                ivec2(0), mx), 0);
+        vec4 U = texelFetch(tex, clamp(ip + ivec2( 0,-1), ivec2(0), mx), 0);
+        vec4 D = texelFetch(tex, clamp(ip + ivec2( 0, 1), ivec2(0), mx), 0);
+        vec4 L = texelFetch(tex, clamp(ip + ivec2(-1, 0), ivec2(0), mx), 0);
+        vec4 R = texelFetch(tex, clamp(ip + ivec2( 1, 0), ivec2(0), mx), 0);
+        // a corner cuts when its two neighbors agree, the opposing sides
+        // differ, and the corner color is not the center's
+        float open = (1.0 - vs_eq(U, D)) * (1.0 - vs_eq(L, R));
+        float cL = open * (1.0 - vs_eq(L, E));
+        float cR = open * (1.0 - vs_eq(R, E));
+        float mLU = cL * vs_eq(L, U);
+        float mRU = cR * vs_eq(R, U);
+        float mLD = cL * vs_eq(L, D);
+        float mRD = cR * vs_eq(R, D);
+        vec4 c = E;
+        c = mix(c, mix(L, c, clamp((fp.x + fp.y - 0.5) / w + 0.5, 0.0, 1.0)),                 mLU);
+        c = mix(c, mix(R, c, clamp(((1.0 - fp.x) + fp.y - 0.5) / w + 0.5, 0.0, 1.0)),         mRU);
+        c = mix(c, mix(L, c, clamp((fp.x + (1.0 - fp.y) - 0.5) / w + 0.5, 0.0, 1.0)),         mLD);
+        c = mix(c, mix(R, c, clamp(((1.0 - fp.x) + (1.0 - fp.y) - 0.5) / w + 0.5, 0.0, 1.0)), mRD);
+        return vec4(c.rgb * c.a, c.a) * inside;
+    }
+
+    func fragment [] -> GLSL none {
+        // one destination pixel in texel units, from the base plane: every
+        // plane maps its texels at the same density (fwidth stays here, in
+        // the fragment body and uniform control flow)
+        vec2 pt = (v_uv / ubo.r0.zw) * vec2(textureSize(l0, 0));
+        float w = max(fwidth(pt.x + pt.y), 1e-5);
+        vec4 c = vs_layer(l0, ubo.r0, v_uv, w);
+        vec4 l = vs_layer(l1, ubo.r1, v_uv, w);
+        c = l + c * (1.0 - l.a);
+        l = vs_layer(l2, ubo.r2, v_uv, w);
+        c = l + c * (1.0 - l.a);
+        l = vs_layer(l3, ubo.r3, v_uv, w);
+        fragColor = l + c * (1.0 - l.a);
+    }
+
+
 enum SubdivSurface
     in_pos:      0
     face_corner: 1

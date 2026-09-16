@@ -130,6 +130,7 @@ enum {
 #define HM_SLOTS  1024
 #define HOST_APPS 8
 #define HOST_TEX  10
+#define HOST_AUDIO 49152       // stereo frames of sound per slot (~1 s at 48 kHz)
 typedef struct { int32_t type, a, b, c; } HostMsg;
 typedef struct { volatile uint32_t head, tail; HostMsg m[HM_SLOTS]; } HostRing;
 // a cross-process shared Vulkan surface: TWO textures + a front index, so a
@@ -146,6 +147,12 @@ typedef struct {
     HostRing  to_app;      // toward the app side (input, resize, close)
     // 0 = the app's screen, 1 = orbiter's overlay, 2.. = one per instrument
     SharedTex tex[HOST_TEX];
+    // the app's sound as it plays (AudioOut tees every write): stereo i16 at
+    // audio_rate, so a recording on the ide side carries the pane's audio.
+    // SPSC; the producer never waits, a lagging reader skips to the newest
+    volatile int32_t  audio_rate;
+    volatile uint32_t audio_w, audio_r;
+    int16_t  audio[HOST_AUDIO * 2];
     volatile int32_t app_pid;   // process bound to this slot
     volatile int32_t state;     // 0 free, 1 spawn requested, 2 live, 3 exited
     volatile int32_t verdict;   // 0 unset, >0 exit code+1, <0 -signal, -1000 build failed
@@ -207,6 +214,62 @@ HOST_API int host_poll2(int slot, int ring) {
 HOST_API int host_pa(void) { return g_last.a; }
 HOST_API int host_pb(void) { return g_last.b; }
 HOST_API int host_pc(void) { return g_last.c; }
+
+// a slot's sound ring: the shared one under silver-host, a local one for a
+// process run on its own (it records itself, nobody else reads it)
+typedef struct { volatile int32_t* rate; volatile uint32_t* w; volatile uint32_t* r; int16_t* buf; } AudioAt;
+static struct { volatile int32_t rate; volatile uint32_t w, r; int16_t buf[HOST_AUDIO * 2]; } g_local_audio;
+static int audio_at(int slot, AudioAt* a) {
+    HostShared* h = host_shared();
+    if (h && slot >= 0 && slot < HOST_APPS) {
+        HostApp* ap = &h->app[slot];
+        a->rate = &ap->audio_rate; a->w = &ap->audio_w; a->r = &ap->audio_r; a->buf = ap->audio;
+        return 1;
+    }
+    if (slot != 0 && h) return 0;
+    a->rate = &g_local_audio.rate; a->w = &g_local_audio.w; a->r = &g_local_audio.r; a->buf = g_local_audio.buf;
+    return 1;
+}
+
+// the app side: every AudioOut write lands here as stereo frames at rate
+HOST_API void host_audio_put(int slot, const int16_t* pcm, int frames, int rate, int channels) {
+    AudioAt a;
+    if (!pcm || frames <= 0 || channels <= 0 || !audio_at(slot, &a)) return;
+    *a.rate = rate;
+    uint32_t w = *a.w;
+    for (int i = 0; i < frames; i++) {
+        uint32_t k = (w % HOST_AUDIO) * 2;
+        int16_t l = pcm[i * channels];
+        int16_t r = (channels >= 2) ? pcm[i * channels + 1] : l;
+        a.buf[k] = l; a.buf[k + 1] = r;
+        w++;
+    }
+    __sync_synchronize();
+    *a.w = w;
+}
+
+// the recording side: up to max stereo frames; a reader further behind than
+// the ring holds resumes at the oldest frame still there
+HOST_API int host_audio_take(int slot, int16_t* out, int max_frames) {
+    AudioAt a;
+    if (!out || max_frames <= 0 || !audio_at(slot, &a)) return 0;
+    uint32_t w = *a.w, r = *a.r;
+    if (w - r > HOST_AUDIO) r = w - HOST_AUDIO;
+    int n = (int)(w - r);
+    if (n > max_frames) n = max_frames;
+    for (int i = 0; i < n; i++) {
+        uint32_t k = (r % HOST_AUDIO) * 2;
+        out[i * 2] = a.buf[k]; out[i * 2 + 1] = a.buf[k + 1];
+        r++;
+    }
+    __sync_synchronize();
+    *a.r = r;
+    return n;
+}
+HOST_API int host_audio_rate(int slot) {
+    AudioAt a;
+    return audio_at(slot, &a) ? *a.rate : 0;
+}
 
 // own-slot conveniences (the common case for an app or a summoned orbiter)
 HOST_API void host_post(int ring, int type, int a, int b, int c) {

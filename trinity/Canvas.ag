@@ -1777,6 +1777,21 @@ Render Canvas
     func clear_crop []
         states[state_depth - 1].crop = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
 
+    # crop to a rect inside whatever crop is already set: an inner scroller
+    # within an outer one keeps the outer's edges
+    func crop_within [ x0: f32, y0: f32, x1: f32, y1: f32 ]
+        c : vec4f [ states[state_depth - 1].crop ]
+        nx0 : f32 [ x0 ]
+        ny0 : f32 [ y0 ]
+        nx1 : f32 [ x1 ]
+        ny1 : f32 [ y1 ]
+        if [ c.z > c.x ]
+            if [ c.x > nx0 ] nx0 = c.x
+            if [ c.y > ny0 ] ny0 = c.y
+            if [ c.z < nx1 ] nx1 = c.z
+            if [ c.w < ny1 ] ny1 = c.w
+        states[state_depth - 1].crop = vec4f [ nx0, ny0, nx1, ny1 ]
+
     # both of these must write EVERY field in the glow family. paint
     # state is sticky, so a field one sets and the other leaves alone
     # carries over from whatever painted last
@@ -2565,6 +2580,7 @@ Render Canvas
             return
 
         if [ pcount == 5 && n == 4 ]
+            compute_skip = true    # rect / image: no SDF pass
             setup_shader [ st, bx0, by0, bw, bh ]
             pr9 : vec4f [ path.corner_radii ]
             # plain rect_to has no path radii — keep the state's cv.rounded
@@ -2620,6 +2636,7 @@ Render Canvas
                 if [ draw_slot >= 0 && draw_slot < 64 ]
                     image_dirty[ draw_slot ] = true
         el
+            compute_skip = false
             sdf_w  : i32 [ width / 2 ]
             sdf_h  : i32 [ height / 2 ]
             pad    : f32 [ maxf [ 4.0, st.stroke_width * 0.5 + 4.0 ] ]

@@ -23,6 +23,109 @@ func git_capture [ root: path, args: string, keep_ws: bool ] -> vec string
     pclose[ fh ]
     return out
 
+# the string value of one pretty-printed json line ("key": "value",); '' for null
+func json_line_value [ ln: string ] -> string
+    ci : i32 [ ln.index_of[ ':' ] ]
+    if [ ci < 0 ] return ''
+    raw9 : string ln.mid[ ci + 1, ln.count - ci - 1 ]
+    rest : string raw9.trim[]
+    if [ rest.count < 2 || rest.chars[ 0 ] != 34 ] return ''
+    q1 : i32 [ rest.rindex_of[ '"' ] ]
+    if [ q1 <= 0 ] return ''
+    return rest.mid[ 1, q1 - 1 ]
+
+# the login the host greets our key with; '' when it does not know us
+func repo_whoami [ host: RepoHost ] -> string
+    cmd : string host.whoami_cmd[]
+    fh  : handle popen[ cmd.chars, "r" ]
+    if [ !fh ] return ''
+    b : local i8 [ 1024 ]
+    who : string ''
+    while [ fgets[ @b[0], 1024, fh ] ]
+        ln0 : string[ @b[0] ]
+        hi : i32 [ ln0.index_of[ 'Hi ' ] ]
+        ex : i32 [ ln0.index_of[ '!' ] ]
+        if [ hi >= 0 && ex > hi + 3 ] who = ln0.mid[ hi + 3, ex - hi - 3 ]
+    pclose[ fh ]
+    return who
+
+# the token's login from the host; '' without a token or on any failure
+func repo_token_login [ host: RepoHost ] -> string
+    if [ !host.token || host.token.count == 0 ] return ''
+    cmd : string host.user_cmd[]
+    fh  : handle popen[ cmd.chars, "r" ]
+    if [ !fh ] return ''
+    b : local i8 [ 4096 ]
+    who : string ''
+    while [ fgets[ @b[0], 4096, fh ] ]
+        ln0 : string[ @b[0] ]
+        ln  : string ln0.trim[]
+        if [ ln.starts_with[ '"login":' ] && who.count == 0 ] who = json_line_value[ ln ]
+    pclose[ fh ]
+    return who
+
+# a listing reply (pretty json, one field per line) as repositories
+func repo_parse [ text: string ] -> vec RepoInfo
+    items : vec RepoInfo []
+    if [ !text ] return items
+    lines : text.split[ '\n' ]
+    cur : RepoInfo null
+    for [ ln0: string ] in lines
+        ln : string ln0.trim[]
+        if [ ln.starts_with[ '"full_name":' ] ]
+            cur = RepoInfo []
+            cur.full = json_line_value[ ln ]
+            sl : i32 [ cur.full.rindex_of[ '/' ] ]
+            cur.name = (sl >= 0) ? cur.full.mid[ sl + 1, cur.full.count - sl - 1 ] : cur.full
+            cur.desc = ''
+            items.push[ cur ]
+        el [ cur && ln.starts_with[ '"description":' ] ]
+            cur.desc = json_line_value[ ln ]
+    return items
+
+# the on-disk listing: first line the fetch time (ms), pages fetched and
+# whether more remain, then full<tab>desc
+func repo_cache_write [ p: path, items: vec RepoInfo, page: i32, more: bool ]
+    ps : string '{p}'
+    fh : handle fopen[ ps.chars, "w" ]
+    if [ !fh ] return
+    now9 : i64 [ Au.epoch_millis[] ]
+    fprintf[ fh, "%lld %d %d\n", now9, page, (more) ? 1 : 0 ]
+    for [ it: RepoInfo ] in items
+        fprintf[ fh, "%s\t%s\n", it.full.chars, it.desc.chars ]
+    fclose[ fh ]
+
+func repo_cache_read [ p: path, at: @i64, page: @i32, more: @i32 ] -> vec RepoInfo
+    items : vec RepoInfo []
+    ps : string '{p}'
+    fh : handle fopen[ ps.chars, "r" ]
+    if [ !fh ] return null
+    b : local i8 [ 4096 ]
+    first : bool [ true ]
+    oldfmt : bool [ false ]
+    while [ fgets[ @b[0], 4096, fh ] ]
+        ln0 : string[ @b[0] ]
+        ln  : string ln0.trim[]
+        if [ first ]
+            first = false
+            hp : vec string ln.split[ ' ' ]
+            at[0]   = (hp.count > 0) ? i64[ hp[0].integer_value[] ] : 0
+            page[0] = (hp.count > 1) ? i32[ hp[1].integer_value[] ] : 1
+            more[0] = (hp.count > 2) ? i32[ hp[2].integer_value[] ] : 0
+            oldfmt  = hp.count < 3
+            continue
+        tb : i32 [ ln.index_of[ '\t' ] ]
+        it : RepoInfo []
+        it.full = (tb >= 0) ? ln.mid[ 0, tb ] : ln
+        it.desc = (tb >= 0) ? ln.mid[ tb + 1, ln.count - tb - 1 ] : ''
+        sl : i32 [ it.full.rindex_of[ '/' ] ]
+        it.name = (sl >= 0) ? it.full.mid[ sl + 1, it.full.count - sl - 1 ] : it.full
+        items.push[ it ]
+    fclose[ fh ]
+    # a cache written before paging: a full page means there may be more
+    if [ oldfmt && items.count >= 100 ] more[0] = 1
+    return items
+
 class GitRow
     public is_branch : bool
     public current   : bool
@@ -216,9 +319,151 @@ Layer CommitLayer
         cv.stroke_width[ 0.0 ]
         wtx : f32 [ cv.transform_tx[] ]
         wty : f32 [ cv.transform_ty[] ]
-        # content right of the rail; everything below rides one scroll
-        x0  : f32 [ bounds.x + 76.0 ]
-        cw9 : f32 [ bounds.w - 76.0 ]
+        # the navigation column, fixed, right of the rail: users and projects
+        sw9 : f32 [ cb.side_w ]
+        sx9 : f32 [ bounds.x + 6.0 ]
+        cv.set_crop[ wtx + sx9, wty + bounds.y, wtx + sx9 + sw9, wty + bounds.y + bounds.h ]
+        cb.side_keys = vec string []
+        cb.side_ys   = vec f32 []
+        cv.font_size[ 13 ]
+        # clamp the column's own scroll to what it holds
+        smax9 : f32 [ cb.side_h - bounds.h ]
+        if [ smax9 < 0.0 ] smax9 = 0.0
+        if [ cb.side_scroll > smax9 ] cb.side_scroll = smax9
+        if [ cb.side_scroll < 0.0 ] cb.side_scroll = 0.0
+        sy9 : f32 [ bounds.y + 10.0 - cb.side_scroll ]
+        srh : f32 [ 24.0 ]
+        for [ sec9: i32 0, sec9 < 2, sec9 += 1 ]
+            names9 : vec string orb.repo_users
+            if [ sec9 == 0 ]
+                # you first, always there and never removable: the login the
+                # key answers to, then everyone added
+                me9 : string orb.self_user_of[]
+                users9 : vec string []
+                if [ me9 && me9.count > 0 ] users9.push[ me9 ]
+                if [ orb.repo_users ]
+                    for [ u9: string ] in orb.repo_users
+                        if [ me9 && me9.count > 0 && u9.compare[ me9 ] == 0 ] continue
+                        users9.push[ u9 ]
+                names9 = users9
+            el
+                names9 = orb.side_projects_of[]
+            cv.fill_color[ rgba['#ffffff55'] ]
+            cv.draw_text[ (sec9 == 0) ? 'users' : 'projects',
+                rect [ x: sx9 + 4.0, y: sy9, w: sw9 - 12.0, h: srh ],
+                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+            if [ sec9 == 0 ]
+                # the + that adds a user: gray, lit under the pointer
+                cb.plus_y = sy9 - bounds.y
+                cv.fill_color[ (cb.hov_plus) ? rgba['#8fd0ff'] : rgba['#ffffff55'] ]
+                cv.draw_text[ '+',
+                    rect [ x: sx9 + sw9 - 30.0, y: sy9, w: 20.0, h: srh ],
+                    vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+            sy9 += srh
+            if [ sec9 == 0 && cb.add_user ]
+                # the row being typed: a box with the name so far and a caret
+                cv.save[ ]
+                cv.rounded[ 6.0, 6.0, 6.0, 6.0 ]
+                cv.fill_color[ rgba['#ffffff10'] ]
+                cv.stroke_width[ 1.0 ]
+                cv.stroke_color[ rgba['#8fd0ff88'] ]
+                cv.rect_to[ sx9, sy9 + 1.0, sw9 - 8.0, srh - 2.0 ]
+                cv.paint[ ]
+                cv.restore[ ]
+                at9 : string (cb.add_text) ? cb.add_text : ''
+                cv.fill_color[ rgba['#ffffff'] ]
+                cv.draw_text[ at9,
+                    rect [ x: sx9 + 8.0, y: sy9, w: sw9 - 20.0, h: srh ],
+                    vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+                atw9 : f32 [ cv.measure_text[ at9 ].w ]
+                cv.stroke_width[ 0.0 ]
+                cv.rect_to[ sx9 + 8.0 + atw9 + 1.0, sy9 + 5.0, 1.5, srh - 10.0 ]
+                cv.paint[ ]
+                cb.side_keys.push[ 'e:' ]
+                oye9 : f32 [ sy9 - bounds.y ]
+                cb.side_ys.push[ oye9 ]
+                sy9 += srh
+            # a selected user narrows the projects to that user's checkouts
+            # (yours are the plain names); none selected shows them all
+            su9 : string (sec9 == 1) ? orb.side_user : null
+            me8 : string (sec9 == 1) ? orb.self_user_of[] : null
+            if [ names9 ]
+                for [ nm9: string ] in names9
+                    if [ su9 && su9.count > 0 ]
+                        own9 : bool [ nm9.index_of[ '/' ] < 0 ]
+                        if [ me8 && me8.count > 0 && su9.compare[ me8 ] == 0 ]
+                            if [ !own9 ] continue
+                        el
+                            if [ !nm9.starts_with[ '{su9}/' ] ] continue
+                    key9 : string (sec9 == 0) ? 'u:{nm9}' : 'p:{nm9}'
+                    on9 : bool [ false ]
+                    if [ sec9 == 0 ]
+                        on9 = orb.side_user && orb.side_user.compare[ nm9 ] == 0
+                    el
+                        # lit when the navigator is in this checkout (or below it):
+                        # by path, so user/name keys match like plain names
+                        nrs : string (orb.nav_root) ? '{orb.nav_root}' : ''
+                        rd9 : path orb.repo_dir[ nm9 ]
+                        rds : string '{rd9}'
+                        rdp : string '{rd9}/'
+                        on9 = (!orb.find_text || orb.find_text.count == 0) && (nrs.compare[ rds ] == 0 || nrs.starts_with[ rdp ])
+                    hov9 : bool [ cb.hov_side == cb.side_keys.count ]
+                    if [ on9 || hov9 ]
+                        cv.save[ ]
+                        cv.rounded[ 6.0, 6.0, 6.0, 6.0 ]
+                        cv.fill_color[ (on9) ? rgba['#6cb6ff22'] : rgba['#ffffff10'] ]
+                        cv.stroke_width[ 0.0 ]
+                        cv.rect_to[ sx9, sy9 + 1.0, sw9 - 8.0, srh - 2.0 ]
+                        cv.paint[ ]
+                        cv.restore[ ]
+                    dk9 : bool [ sec9 == 1 && orb.repo_docked[ nm9 ] ]
+                    # another user's checkout reads user:repository (the disk
+                    # path stays user/repository)
+                    # ...unless that user is the one selected: then the list is
+                    # already theirs and the name alone fits
+                    lbl9 : string nm9
+                    sl9 : i32 [ nm9.index_of[ '/' ] ]
+                    if [ sec9 == 1 && sl9 > 0 ]
+                        own8 : string nm9.mid[ 0, sl9 ]
+                        if [ su9 && su9.count > 0 && su9.compare[ own8 ] == 0 ]
+                            lbl9 = nm9.mid[ sl9 + 1, nm9.count - sl9 - 1 ]
+                        el
+                            lbl9 = own8 + ':' + nm9.mid[ sl9 + 1, nm9.count - sl9 - 1 ]
+                    cv.fill_color[ (on9) ? rgba['#ffffff'] : ((dk9) ? rgba['#9fd0ff'] : rgba['#c8c2d8']) ]
+                    cv.draw_text[ lbl9,
+                        rect [ x: sx9 + 8.0, y: sy9, w: sw9 - 36.0, h: srh ],
+                        vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null ]
+                    # shift held: a - next to every added user (never you) removes it
+                    if [ sec9 == 0 && orb.shift_down && cb.side_keys.count > 0 ]
+                        cv.fill_color[ (hov9) ? rgba['#ff8a8a'] : rgba['#ffffff55'] ]
+                        cv.draw_text[ '-',
+                            rect [ x: sx9 + sw9 - 30.0, y: sy9, w: 20.0, h: srh ],
+                            vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+                    # the dock toggle at the row's right: lit when the checkout
+                    # is in the search set
+                    if [ sec9 == 1 ]
+                        cv.save[ ]
+                        cv.rounded[ 4.0, 4.0, 4.0, 4.0 ]
+                        cv.fill_color[ (dk9) ? rgba['#6cb6ff'] : rgba['#0000'] ]
+                        cv.stroke_width[ 1.0 ]
+                        cv.stroke_color[ (dk9) ? rgba['#6cb6ff'] : rgba['#ffffff33'] ]
+                        cv.rect_to[ sx9 + sw9 - 24.0, sy9 + 8.0, 8.0, 8.0 ]
+                        cv.paint[ ]
+                        cv.restore[ ]
+                    oy9 : f32 [ sy9 - bounds.y ]
+                    cb.side_keys.push[ key9 ]
+                    cb.side_ys.push[ oy9 ]
+                    sy9 += srh
+            sy9 += 10.0
+        cb.side_h = sy9 + cb.side_scroll - bounds.y
+        # a hairline between the column and the content
+        cv.fill_color[ rgba['#ffffff14'] ]
+        cv.stroke_width[ 0.0 ]
+        cv.rect_to[ sx9 + sw9 - 1.0, bounds.y + 8.0, 1.0, bounds.h - 16.0 ]
+        cv.paint[ ]
+        # content right of the column; everything below rides one scroll
+        x0  : f32 [ bounds.x + 14.0 + sw9 ]
+        cw9 : f32 [ bounds.w - 14.0 - sw9 ]
         cv.set_crop[ wtx + x0, wty + bounds.y, wtx + bounds.x + bounds.w, wty + bounds.y + bounds.h ]
         # picking a path for a launch field: files only, no git tabs or summary
         picking : bool [ orb.pick_field && orb.pick_field.count > 0 ]
@@ -396,7 +641,7 @@ Layer CommitLayer
         ry9 : f32 [ ly ]
         # cards flow left to right, as many per line as fit, then wrap
         cdw9  : f32 [ 152.0 ]
-        per9 : i32 [ i32[ (bounds.w - 100.0) / cdw9 ] ]
+        per9 : i32 [ i32[ (bounds.w - 100.0 - sw9) / cdw9 ] ]
         if [ per9 < 1 ] per9 = 1
         ci9  : i32 [ 0 ]
         lyc9 : f32 [ ly ]
@@ -573,7 +818,14 @@ Layer CommitLayer
                 has9 : bool [ exl9.count > 0 ]
                 nmw9 : f32 [ (has9) ? 240.0 : bounds.x + bounds.w - tx0 - 24.0 ]
                 cv.font_size[ 16 ]
-                cv.fill_color[ (h.is_dir) ? rgba['#6cb6ff'] : rgba['#fff'] ]
+                # a repository row: light blue when checked out, faint when
+                # not, amber while it clones
+                rcl9 : RepoClone (h.repo && h.repo.count > 0 && orb.repo_clones) ? orb.repo_clones[ h.repo ] : null
+                if [ rcl9 && rcl9.fd < 0 && rcl9.phase.compare[ 'failed' ] != 0 ] rcl9 = null
+                if [ h.repo && h.repo.count > 0 ]
+                    cv.fill_color[ (rcl9) ? rgba['#ffb070'] : ((h.checked) ? rgba['#8fd0ff'] : rgba['#6a6580']) ]
+                el
+                    cv.fill_color[ (h.is_dir) ? rgba['#6cb6ff'] : rgba['#fff'] ]
                 cv.draw_text[ nm,
                     rect [ x: tx0, y: ry, w: nmw9, h: 30.0 ],
                     vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null ]
@@ -603,15 +855,40 @@ Layer CommitLayer
                             rect [ x: cxx9, y: ry, w: ecw9, h: 30.0 ],
                             vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
                     cv.font_size[ 16 ]
-                if [ h.dir && h.dir.count > 0 ]
+                if [ rcl9 ]
+                    # the clone's bar in the description column: a 2px white
+                    # outline and an offset white fill inside it, then the phase
+                    bx9 : f32 [ bounds.x + bounds.w * 0.5 ]
+                    bw9 : f32 [ 160.0 ]
+                    cv.save[ ]
+                    cv.fill_color[ rgba['#0000'] ]
+                    cv.stroke_width[ 2.0 ]
+                    cv.stroke_color[ rgba['#ffffff'] ]
+                    cv.rect_to[ bx9, ry + 9.0, bw9, 12.0 ]
+                    cv.paint[ ]
+                    cv.stroke_width[ 0.0 ]
+                    cv.fill_color[ rgba['#ffffff'] ]
+                    fw9 : f32 [ (bw9 - 8.0) * ((rcl9.pct > 1.0) ? 1.0 : rcl9.pct) ]
+                    if [ fw9 > 0.0 ]
+                        cv.rect_to[ bx9 + 4.0, ry + 13.0, fw9, 4.0 ]
+                        cv.paint[ ]
+                    cv.restore[ ]
+                    pc9 : i32 [ i32[ rcl9.pct * 100.0 ] ]
+                    lbl9 : string (rcl9.phase.compare[ 'cloning' ] == 0) ? 'cloning {pc9}%' : rcl9.phase
+                    cv.fill_color[ (rcl9.phase.compare[ 'failed' ] == 0) ? rgba['#ff6a6a'] : rgba['#ffffffaa'] ]
+                    cv.draw_text[ lbl9,
+                        rect [ x: bx9 + bw9 + 12.0, y: ry, w: bounds.x + bounds.w - 24.0 - bx9 - bw9 - 12.0, h: 30.0 ],
+                        vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+                el [ h.dir && h.dir.count > 0 ]
                     fnw : f32 [ cv.measure_text[ nm ].w ]
                     col : f32 [ bounds.x + bounds.w * 0.5 ]
                     end : f32 [ tx0 + fnw + ltm.w * 2.0 ]
                     dx  : f32 [ (end > col) ? end : col ]
-                    cv.fill_color[ rgba['#ffffff66'] ]
+                    cv.fill_color[ (h.repo && h.repo.count > 0 && !h.checked) ? rgba['#ffffff2e'] : rgba['#ffffff66'] ]
+                    # a description runs on: it ends in an ellipsis at the edge
                     cv.draw_text[ h.dir,
                         rect [ x: dx, y: ry, w: bounds.x + bounds.w - 24.0 - dx, h: 30.0 ],
-                        vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+                        vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], (h.repo && h.repo.count > 0) ? Overflow.ellipsis : Overflow.clip, null ]
         cb.list_st = nls
         # 16px of air after the last row (the create buttons)
         cb.content_h = f32[ band9 ] * lh + (ry9 - ly) + 16.0 + ((band9 > 0) ? 8.0 : 0.0)
@@ -655,6 +932,23 @@ element CommitView
     mutable nfx1 : f32 [ 0.0 ]
     mutable ndx0 : f32 [ 0.0 ]
     mutable ndx1 : f32 [ 0.0 ]
+    # the navigation column between the rail and the list: its rows as
+    # drawn (u:<user>, p:<project>) with their tops, for the hit test
+    mutable side_w    : f32 [ 168.0 ]
+    mutable side_keys : vec string
+    mutable side_ys   : vec f32
+    mutable hov_side  : i32 [ -1 ]
+    # the + on the users header opens an editing row: enter adds, esc drops
+    mutable hov_plus  : bool
+    mutable add_user  : bool
+    mutable add_text  : string
+    mutable plus_y    : f32 [ 0.0 ]
+    # the column scrolls on its own: its offset and its full height as drawn
+    mutable side_scroll : f32 [ 0.0 ]
+    mutable side_h      : f32 [ 0.0 ]
+    # what the status bar's tip shows for the row under the pointer: a
+    # column row's or a repository row's full name
+    mutable side_tip    : string
 
     style : CSS {
         area: l0 t0 r0 b0
@@ -764,7 +1058,7 @@ element CommitView
         o : orb9[]
         if [ !o || !o.find_hits ] return -1
         cw9  : f32 [ 152.0 ]
-        per9 : i32 [ i32[ (bounds.w - 100.0) / cw9 ] ]
+        per9 : i32 [ i32[ (bounds.w - 100.0 - side_w) / cw9 ] ]
         if [ per9 < 1 ] per9 = 1
         y8 : f32 [ 0.0 ]
         ly8 : f32 [ 0.0 ]
@@ -779,7 +1073,8 @@ element CommitView
                     ci  = 0
                     ly8 = y8
                     y8 += 148.0
-                cx : f32 [ 84.0 + f32[ ci ] * cw9 ]
+                # cards start where draw puts them: past the column and the 8px inset
+                cx : f32 [ 22.0 + side_w + f32[ ci ] * cw9 ]
                 ci += 1
                 if [ ly9 >= ly8 && ly9 < ly8 + 148.0 && rx >= cx - 4.0 && rx < cx + cw9 - 12.0 ] return band9 + dr
             el
@@ -847,7 +1142,16 @@ element CommitView
         nlst : i32 [ -1 ]
         nchp : i32 [ -1 ]
         next9 : i32 [ -1 ]
-        if [ rx < 68.0 ]
+        nsid : i32 [ (rx < 6.0 + side_w) ? side_row_at[ ry - scroll.y ] : -1 ]
+        ryp9 : f32 [ ry - scroll.y ]
+        nplus : bool [ rx >= 6.0 + side_w - 30.0 && rx < 6.0 + side_w - 10.0 && ryp9 >= plus_y && ryp9 < plus_y + 24.0 ]
+        if [ nplus != hov_plus ]
+            hov_plus = nplus
+            pristine = false
+            ux.will_animate = true
+        if [ nsid >= 0 ]
+            nsid = nsid
+        el [ rx < 68.0 ]
             # chips are fixed: undo the scroll the event carries. placed
             # by tool_y, as drawn: consoles sit at the bottom
             ryf : f32 [ ry - scroll.y ]
@@ -858,11 +1162,13 @@ element CommitView
                 for [ ti: i32 0, ti < nt9, ti += 1 ]
                     ty9 : f32 [ 3.0 + ed9.tool_y[ ti, ly.bounds.h ] ]
                     if [ ryf >= ty9 && ryf < ty9 + 64.0 ] nchp = ti
+        el [ rx < 14.0 + side_w ]
+            nsid = -1
         el
             # picking: files only, no git tabs (as draw lays it out)
-            trs : i32 [ (o.pick_field && o.pick_field.count > 0) ? 0 : o.commit_tab_rows[ ly.bounds.w - 76.0, reveal_all ] ]
+            trs : i32 [ (o.pick_field && o.pick_field.count > 0) ? 0 : o.commit_tab_rows[ ly.bounds.w - 14.0 - side_w, reveal_all ] ]
             r : i32 [ row_at[ ry, rx, trs ] ]
-            cx0 : f32 [ 76.0 ]
+            cx0 : f32 [ 14.0 + side_w ]
             if [ r >= 0 && r < trs ]
                 cx : i32 [ i32[ (rx - cx0) / 150.0 ] ]
                 if [ rx >= cx0 && cx >= 0 && cx < cap_st && (rx - cx0) - f32[ cx ] * 150.0 <= 144.0 ]
@@ -889,15 +1195,54 @@ element CommitView
                         ci9  : i32 [ i32[ (rx - ext_x0) / ecs9 ] ]
                         if [ ci9 >= 0 && ci9 < exm9.count && (rx - ext_x0) - f32[ ci9 ] * ecs9 <= 34.0 ]
                             next9 = ci9
-        if [ nrow != hov_row || ntab != hov_tab || nctl != hov_ctl || nlst != hov_list || nchp != chip_hov || next9 != hov_ext ]
+        # the tip: the full name of the column row or repository row hovered
+        tip9 : string ''
+        if [ nsid >= 0 && side_keys && nsid < side_keys.count ]
+            tk9 : string side_keys[ nsid ]
+            tv9 : string tk9.mid[ 2, tk9.count - 2 ]
+            ts9 : i32 [ tv9.index_of[ '/' ] ]
+            tip9 = (ts9 > 0) ? tv9.mid[ 0, ts9 ] + ':' + tv9.mid[ ts9 + 1, tv9.count - ts9 - 1 ] : tv9
+        el [ nlst >= 0 && o.find_hits ]
+            th9 : i32 [ list_hit[ nlst ] ]
+            if [ th9 >= 0 && th9 < o.find_hits.count ]
+                hh9 : FindHit o.find_hits[ th9 ]
+                if [ hh9 && hh9.repo && hh9.repo.count > 0 ]
+                    rs9 : i32 [ hh9.repo.index_of[ '/' ] ]
+                    tip9 = (rs9 > 0) ? hh9.repo.mid[ 0, rs9 ] + ':' + hh9.repo.mid[ rs9 + 1, hh9.repo.count - rs9 - 1 ] : hh9.repo
+        if [ !side_tip || side_tip.compare[ tip9 ] != 0 ] side_tip = tip9
+        if [ nrow != hov_row || ntab != hov_tab || nctl != hov_ctl || nlst != hov_list || nchp != chip_hov || next9 != hov_ext || nsid != hov_side ]
             hov_row  = nrow
             hov_tab  = ntab
             hov_ctl  = nctl
             hov_list = nlst
             chip_hov = nchp
             hov_ext  = next9
+            hov_side = nsid
             pristine = false
             ux.will_animate = true
+
+    # the wheel over the column scrolls the column, nothing else
+    func on_wheel [ ev: Event ]
+        ly : lay[]
+        if [ ly ]
+            rx : f32 [ ev.mouse.pos.x - ly.bounds.x ]
+            if [ rx < 6.0 + side_w ]
+                side_scroll += f32[ ev.mouse.wheel_delta.y ] * 26.0 * -1.0
+                smax9 : f32 [ side_h - ly.bounds.h ]
+                if [ smax9 < 0.0 ] smax9 = 0.0
+                if [ side_scroll > smax9 ] side_scroll = smax9
+                if [ side_scroll < 0.0 ] side_scroll = 0.0
+                pristine = false
+                ux.will_animate = true
+                return
+        super.on_wheel[ ev ]
+
+    # the navigation column row under a fixed (unscrolled) y, -1 outside
+    func side_row_at [ ryf: f32 ] -> i32
+        if [ !side_ys ] return -1
+        for [ i: i32 0, i < side_ys.count, i += 1 ]
+            if [ ryf >= side_ys[i] && ryf < side_ys[i] + 24.0 ] return i
+        return -1
 
     func on_release [ ev: Event ]
         sb_drag = false
@@ -930,7 +1275,29 @@ element CommitView
                 pristine    = false
                 ux.will_animate = true
             return
-        # rail chips first, fixed at left: undo the carried scroll
+        # the navigation column first, at the far left, fixed
+        if [ rx < 6.0 + side_w ]
+            ryp9 : f32 [ ry - scroll.y ]
+            if [ rx >= 6.0 + side_w - 30.0 && ryp9 >= plus_y && ryp9 < plus_y + 24.0 ]
+                add_user = true
+                add_text = ''
+                if [ ux ] ux.set_focus[ a ]
+                pristine = false
+                return
+            si9 : i32 [ side_row_at[ ry - scroll.y ] ]
+            if [ si9 >= 0 && side_keys && si9 < side_keys.count ]
+                key9 : string side_keys[ si9 ]
+                val9 : string key9.mid[ 2, key9.count - 2 ]
+                if [ key9.starts_with[ 'e:' ] ]
+                    if [ ux ] ux.set_focus[ a ]
+                el [ key9.starts_with[ 'u:' ] && o.shift_down && si9 > 0 && rx >= 6.0 + side_w - 32.0 ]
+                    o.repo_forget[ val9 ]
+                el [ key9.starts_with[ 'u:' ] ] o.side_pick_user[ val9 ]
+                el [ rx >= 6.0 + side_w - 32.0 ] o.repo_dock_toggle[ val9 ]
+                el                              o.side_pick_project[ val9 ]
+                pristine = false
+                return
+        # rail chips next, fixed at left: undo the carried scroll
         if [ rx < 68.0 ]
             ryf : f32 [ ry - scroll.y ]
             if [ ed && ed.nav_tools ]
@@ -943,9 +1310,10 @@ element CommitView
                         break
             return
         # picking: files only, no git tabs (as draw lays it out)
-        trs : i32 [ (o.pick_field && o.pick_field.count > 0) ? 0 : o.commit_tab_rows[ ly.bounds.w - 76.0, reveal_all ] ]
+        if [ rx < 14.0 + side_w ] return
+        trs : i32 [ (o.pick_field && o.pick_field.count > 0) ? 0 : o.commit_tab_rows[ ly.bounds.w - 14.0 - side_w, reveal_all ] ]
         r : i32 [ row_at[ ry, rx, trs ] ]
-        cx0 : f32 [ 76.0 ]
+        cx0 : f32 [ 14.0 + side_w ]
         if [ r >= 0 && r < trs && o.git_snap && o.git_snap.files ]
             cx : i32 [ i32[ (rx - cx0) / 150.0 ] ]
             if [ rx >= cx0 && cx >= 0 && cx < cap_st && (rx - cx0) - f32[ cx ] * 150.0 <= 144.0 ]
@@ -1018,6 +1386,17 @@ element CommitView
                 o.show_instance[ h.inst, pane ]
                 o.exit_finder[]
                 return
+            # the listing's last row: the next page
+            if [ h.more ]
+                o.repo_more_fetch[]
+                pristine = false
+                return
+            # a repository row: a checkout opens in this pane; a missing one
+            # starts cloning and stays in the list, its progress on the row
+            if [ h.repo && h.repo.count > 0 ]
+                o.repo_checkout[ h.repo, pane ]
+                pristine = false
+                return
             if [ h.is_dir && h.file ]
                 o.nav_root = h.file
                 scroll.y    = 0.0
@@ -1039,6 +1418,12 @@ element CommitView
                 o.exit_finder[]
 
     func on_char [ ev: Event ]
+        if [ add_user ]
+            ch9 : string [ ev.key.text ]
+            if [ ch9.count == 0 || (ch9[0] >= 0 && ch9[0] < 32) ] return
+            add_text = ((add_text) ? add_text : '') + ch9
+            pristine = false
+            return
         if [ !commit_open || !commit_text ] return
         ch : string [ ev.key.text ]
         if [ ch.count == 0 || (ch[0] >= 0 && ch[0] < 32) ] return
@@ -1052,6 +1437,24 @@ element CommitView
 
     func on_key [ ev: Event ]
         if [ !ev.key.state ] return
+        if [ add_user ]
+            ka : i32 [ i32 ev.key.unicode ]
+            if [ ka == 256 ]           # esc: the row goes
+                add_user = false
+                add_text = ''
+            el [ ka == 257 ]           # enter: the user is added and listed
+                nm9 : string (add_text) ? add_text.trim[] : ''
+                add_user = false
+                add_text = ''
+                if [ nm9.count > 0 ]
+                    o9 : orb9[]
+                    if [ o9 ]
+                        o9.repo_remember[ nm9 ]
+                        o9.side_pick_user[ nm9 ]
+            el [ ka == 259 ]           # backspace
+                if [ add_text && add_text.count > 0 ] add_text = add_text.mid[ 0, add_text.count - 1 ]
+            pristine = false
+            return
         if [ !commit_open || !commit_text ] return
         k : i32 [ i32 ev.key.unicode ]
         ml : string [ (cl >= 0 && cl < commit_text.count) ? commit_text[cl] : null ]
