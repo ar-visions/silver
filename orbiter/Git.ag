@@ -265,6 +265,14 @@ NodeList GitList
             if [ f.count < 2 ] continue
             rows.push[ GitRow [
                 hash: f[0], text: f[1], when: (f.count > 2) ? f[2] : '' ] ]
+        # the row of the repository's current reference is the selection
+        orb9 : orbiter [ ux.app_object ]
+        ref9 : string [ (orb9) ? orb9.git_ref_of[ orb9.repo_root[] ] : 'HEAD' ]
+        for [ i: i32 0, i < rows.count, i += 1 ]
+            r9 : GitRow rows[i]
+            if [ (r9.is_branch && r9.text == ref9) || (!r9.is_branch && r9.hash == ref9) ]
+                sel = i
+                break
         if [ sel < 0 && rows.count > 0 ] sel = 0
         pristine = false
 
@@ -276,14 +284,15 @@ NodeList GitList
             git_capture[ root, 'checkout {r.text}', false ]
             refresh[]
             return
-        # commit: leave this view, showing the editor on the commit's diff.
-        # the diff belongs to THIS pane — other tabs keep their own
+        # commit: it becomes the repository's reference (the tabs and every
+        # pane's marks read against it), and the pane returns to its file
         orb : orbiter [ ux.app_object ]
         if [ orb ]
+            orb.set_git_ref[ orb.repo_root[], r.hash ]
+            sel = idx
             ed : Editor orb.pane_of[ a ]
             if [ ed ]
-                ed.diff_commit = r.hash
-                ed.view_name   = ''
+                ed.view_name = ''
                 ed.load_file[]
             ux.restyle = true
 

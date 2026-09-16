@@ -2206,6 +2206,10 @@ element orbiter : trinity # implements compiler
     public [ StatePersist ] repo_users : vec string
     # the docked checkouts: the finder's one search spans all of them
     public [ StatePersist ] docked_repos : vec string
+    # the reference each repository's changes are read against (the
+    # changed-file tabs, the editor's rails, tints and ghost rows), by
+    # the repository's root: HEAD until a commit is picked in the git list
+    public [ StatePersist ] git_refs     : map string [string]
     # where checkouts live: ~/src unless set; not where orbiter was started.
     # ours sit flat there (<src>/<name>); other users' under <src>/<user>/<name>
     public [ StatePersist ] src_root   : string
@@ -4800,7 +4804,8 @@ element orbiter : trinity # implements compiler
         if [ rl.count > 0 ]
             sn.repo  = rl[0]
             rp : path '{sn.repo}'
-            ch : repo_changed[ rp ]
+            ref9 : string git_ref_of[ rp ]
+            ch : repo_changed[ rp, ref9 ]
             # closest to the repo root first: fewest separators
             srt : vec string []
             for [ i: i32 0, i < ch.count, i += 1 ]
@@ -4815,7 +4820,7 @@ element orbiter : trinity # implements compiler
             sn.files = srt
             ins9 : i32 [ 0 ]
             del9 : i32 [ 0 ]
-            ss9 : git_capture[ rp, 'diff --shortstat HEAD', false ]
+            ss9 : git_capture[ rp, 'diff --shortstat {ref9}', false ]
             if [ ss9.count > 0 ]
                 pr9 : ss9[0].split[ ',' ]
                 for [ i: i32 0, i < pr9.count, i += 1 ]
@@ -4830,7 +4835,7 @@ element orbiter : trinity # implements compiler
                     p : path open_files[i]
                     if [ !p ] continue
                     k : string '{p.absolute[]}'
-                    ns : git_capture[ rp, 'diff --numstat HEAD -- {k}', false ]
+                    ns : git_capture[ rp, 'diff --numstat {ref9} -- {k}', false ]
                     if [ ns.count == 0 ] continue
                     f9 : ns[0].split[ '\t' ]
                     if [ f9.count < 2 ] continue
@@ -4852,6 +4857,20 @@ element orbiter : trinity # implements compiler
         for [ i: i32 0, i < s.count, i += 1 ]
             if [ s.chars[i] == 47 ] n9 += 1
         return n9
+
+    func git_ref_of [ root: path ] -> string
+        if [ !root || !git_refs ] return 'HEAD'
+        r : string git_refs[ '{root.absolute[]}' ]
+        return (r && r.count > 0) ? r : 'HEAD'
+
+    # a new reference: the tabs and every pane's marks re-read against it
+    func set_git_ref [ root: path, rf: string ]
+        if [ !root ] return
+        if [ !git_refs ] git_refs = map string [string] []
+        git_refs[ '{root.absolute[]}' ] = (rf && rf.count > 0) ? rf : 'HEAD'
+        git_dirty = true
+        git_summarize[]
+        force_update[]
 
     # the browsed folder's home repo — arbitrary per location
     func repo_root [] -> path
@@ -4889,18 +4908,18 @@ element orbiter : trinity # implements compiler
         git_summarize[]
         if [ ux ] ux.restyle = true
 
-    # changed files in the browsed repo, paths relative to its root
-    func repo_changed [ repo: path ] -> vec string
+    # the files that differ from a reference in the browsed repo, paths
+    # relative to its root: the tracked differences, then what is untracked
+    # (a whole untracked directory lists as 'dir/': keep the dir name)
+    func repo_changed [ repo: path, rf: string ] -> vec string
         out : vec string []
-        st : git_capture[ repo, 'status --porcelain', false ]
-        for [ i: i32 0, i < st.count, i += 1 ]
-            ln9 : string st[i]
-            sx  : i32 [ ln9.index_of[ ' ' ] ]
-            if [ sx < 0 ] continue
-            fp9 : string ln9.mid[ sx + 1, ln9.count - sx - 1 ].trim[]
-            ax  : i32 [ fp9.index_of[ ' -> ' ] ]
-            if [ ax >= 0 ] fp9 = fp9.mid[ ax + 4, fp9.count - ax - 4 ]
-            # untracked directories list as 'dir/': keep the dir name
+        df : git_capture[ repo, 'diff --name-only {rf}', false ]
+        for [ i: i32 0, i < df.count, i += 1 ]
+            fp9 : string df[i].trim[]
+            if [ fp9.count > 0 ] out += fp9
+        un : git_capture[ repo, 'ls-files --others --exclude-standard --directory', false ]
+        for [ i: i32 0, i < un.count, i += 1 ]
+            fp9 : string un[i].trim[]
             if [ fp9.count > 0 && fp9.chars[ fp9.count - 1 ] == 47 ] fp9 = fp9.mid[ 0, fp9.count - 1 ]
             if [ fp9.count > 0 ] out += fp9
         return out
