@@ -1544,7 +1544,12 @@ Layer EditorLayer
                 editor.rview.vh = bounds.h
                 editor.rview.vsx = editor.scroll.x
                 editor.rview.vsy = editor.scroll.y
+                # the view paints in its own canvas state: a font it sets
+                # (the hex view's) must not become the next layout's em,
+                # or every em-sized area (the title) shrinks to it
+                cv.save[ ]
                 editor.rview.render*[ cv, bounds ]
+                cv.restore[ ]
                 return
         if [ !editor.lines ] return
         showing : bool [ editor.show_hits ]
@@ -1809,11 +1814,13 @@ Layer EditorLayer
             # the git state of the row, as the gutter's own colour: added
             # green, changed blue, a removed run as a red edge above. a
             # label only: nothing here hovers or takes a press
-            if [ !showing && !editor.diff_kinds && editor.hunks && rnum > 0 ]
+            if [ !showing && editor.git_on && !editor.diff_kinds && editor.hunks && rnum > 0 ]
                 hk9 : i32 [ editor.hunk_at[ rnum - 1 ] ]
                 if [ hk9 >= 0 ]
                     kd9 : i32 [ editor.hunks[ hk9 * 3 + 2 ] ]
-                    cv.fill_color[ (kd9 == 1) ? rgba['#7fd18b44'] : ((kd9 == 2) ? rgba['#6cb6ff44'] : rgba['#ff6a6a']) ]
+                    # three colours, one shade each: added green, changed
+                    # blue, removed red (the rails and ghost rows use the same)
+                    cv.fill_color[ (kd9 == 1) ? rgba['#7fd18b66'] : ((kd9 == 2) ? rgba['#6cb6ff66'] : rgba['#ff6a6a']) ]
                     if [ kd9 == 3 ] cv.rect_to[ bounds.x + 2.0, yg - 1.0, gut_w - 4.0, 2.0 ]
                     el             cv.rect_to[ bounds.x + 2.0, yg + 1.0, gut_w - 4.0, lh - 2.0 ]
                     cv.paint[ ]
@@ -1878,9 +1885,9 @@ Layer EditorLayer
                 cv.rect_to[ bounds.x, yt, bounds.w - rin, yb - yt ]
                 cv.paint[ ]
         # ghost rows (a removed run shown in place) wear the removed tint
-        if [ editor.ghost_hunk >= 0 && editor.flat_active && !showing && !editor.finder_list ]
+        if [ editor.git_on && editor.ghost_hunk >= 0 && editor.flat_active && !showing && !editor.finder_list ]
             cv.stroke_width[ 0.0 ]
-            cv.fill_color[ rgba['#58202055'] ]
+            cv.fill_color[ rgba['#ff6a6a66'] ]
             ng8 : i32 [ editor.line_count[] ]
             for [ li: i32 0, li < ng8, li += 1 ]
                 if [ !editor.row_ghost[ li ] ] continue
@@ -2418,7 +2425,7 @@ Layer EditorLayer
         # and fading out as the thumb nears
         # (gone 8px from its edge, full 16px away). the thumb paints over
         sb9 : ScrollLayer (editor.layers) ? cast ScrollLayer [ editor.layers['scrollbar'] ] : null
-        if [ sb9 && sb9.bounds && !showing && !editor.no_scroll && editor.content_h > bounds.h ]
+        if [ sb9 && sb9.bounds && !showing && editor.git_on && !editor.no_scroll && editor.content_h > bounds.h ]
             top9 : f32 [ bounds.y + 8.0 ]
             vis9 : f32 [ sb9.bounds.y + sb9.bounds.h - top9 ]
             tot9 : f32 [ editor.content_h ]
@@ -2580,6 +2587,9 @@ Control Editor
     # kind 1 added, 2 changed, 3 removed (rows 0; the mark sits above the row).
     # hunk_sig says what they were computed for; rail_hover1 = index + 1 of
     # the rail beside the scrollbar under the pointer
+    # the git diff view, a tab that is on or off: the gutter tints, the
+    # rails and the ghost rows show only while it is on
+    public  git_on        : bool
     mutable hunks         : vec i32
     mutable hunk_sig      : string
     mutable rail_hover1   : i32
@@ -2964,6 +2974,20 @@ Control Editor
         if [ !flat_active || !flat_rows || vr < 0 || vr >= flat_rows.count ] return null
         r : VRow flat_rows[ vr ]
         return r.var
+
+    # the virtual rows are ghost rows alone (no debug variables): the file
+    # stays editable around them, they are only information
+    func ghost_only [] -> bool
+        return flat_active && ghost_hunk >= 0 && !debug_vars
+
+    # a view row's source row while ghost rows are open: a ghost row maps
+    # to the file row it sits before; past the end maps past the end
+    func src_row [ vr: i32 ] -> i32
+        if [ !ghost_only[] || !flat_rows ] return vr
+        if [ vr >= 0 && vr < flat_rows.count ]
+            r : VRow flat_rows[ vr ]
+            return (r.src >= 0) ? r.src : ghost_at
+        return (lines) ? lines.count : 0
 
     # a ghost row: a removed line shown in place, no file line behind it
     func row_ghost [ vr: i32 ] -> bool
@@ -3538,25 +3562,30 @@ Control Editor
         if [ show_hits && hits ]
             hits[i].text = val
             return
-        old : string line_get[ i ]
+        # i is a SOURCE row: the callers map a view row through src_row
+        os9 : string lines.value_by_index[ i ]
+        old : string [ (os9) ? os9 : '' ]
         lines.remove[ i ]
         lines.insert_after[ val, i - 1 ]
         edit_line_regs[ i, old, val ]
         if [ cur_buf ] cur_buf.tree_dirty = true
 
 
-    # raw line ops (no recording) — used by undo/redo replay.
+    # raw line ops (no recording) — used by undo/redo replay. source rows:
+    # open ghost rows slide with the file rows they sit before
     func raw_set    [ i: i32, val: string ]    line_set[ i, val ]
     func raw_insert [ i: i32, val: string ]
         lines.insert_after[ val, i - 1 ]
         if [ cur_buf && cur_buf.line_regs && i <= cur_buf.line_regs.count ]
             cur_buf.line_regs.insert[ vec ColorRegion [], i ]
         if [ cur_buf ] cur_buf.tree_dirty = true
+        if [ ghost_hunk >= 0 && i < ghost_at ] ghost_at += 1
     func raw_remove [ i: i32 ]
         if [ cur_buf && cur_buf.line_regs ]
             cur_buf.line_regs.remove[ i ]
         if [ cur_buf ] cur_buf.tree_dirty = true
         lines.remove[ i ]
+        if [ ghost_hunk >= 0 && i < ghost_at ] ghost_at -= 1
 
     func rec [ op: LineOp ]
         if [ show_hits || diff_commit ] return
@@ -3579,8 +3608,10 @@ Control Editor
         cur_group.ops.push[ op ]
         touch_hist[]
 
-    func ed_set [ i: i32, val: string ]
-        old : line_get[ i ]
+    func ed_set [ vi: i32, val: string ]
+        if [ row_ghost[ vi ] ] return        # information only, never edited
+        i   : i32 [ src_row[ vi ] ]
+        old : line_get[ vi ]
         line_set[ i, val ]
         if [ diff_commit ]
             # touching a commit-only row adopts it into our file
@@ -3591,8 +3622,12 @@ Control Editor
             return
         rec[ LineOp [ at: i, kind: 0, before: old, after: val ] ]
 
-    func ed_insert [ i: i32, val: string ]     # val becomes line i (shifts the rest down)
+    func ed_insert [ vi: i32, val: string ]    # val becomes line vi (shifts the rest down)
+        i  : i32 [ src_row[ vi ] ]
+        gh : bool [ row_ghost[ vi ] ]
         raw_insert[ i, val ]                    # inserts the line AND its empty region row
+        # a line inserted at the ghosts' own row goes above them
+        if [ gh && ghost_hunk >= 0 && i == ghost_at ] ghost_at += 1
         if [ diff_commit ]
             kinds_insert[ i ]
             diff_dirty   = true
@@ -3600,8 +3635,10 @@ Control Editor
             return
         rec[ LineOp [ at: i, kind: 1, after: val ] ]
 
-    func ed_remove [ i: i32 ]
-        old : line_get[ i ]
+    func ed_remove [ vi: i32 ]
+        if [ row_ghost[ vi ] ] return        # information only, never edited
+        i   : i32 [ src_row[ vi ] ]
+        old : line_get[ vi ]
         raw_remove[ i ]                         # removes the line AND its region row
         if [ diff_commit ]
             kinds_remove[ i ]
@@ -4345,7 +4382,7 @@ Control Editor
     # a disk change (agents editing) becomes ONE undo item: the buffer
     # swaps to disk content; cmd+Z restores what was here before
     func reload_from_disk []
-        if [ !src || diff_commit || show_hits || flat_active || !hist ] return
+        if [ !src || diff_commit || show_hits || (flat_active && !ghost_only[]) || !hist ] return
         key : '{src.absolute[]}'
         fcm8 : map FileBuf [string] buffers[]
         buf : FileBuf fcm8[ key ]
@@ -4532,7 +4569,7 @@ Control Editor
     # snapshot changed; git diff -U0 against HEAD, over the checkout the
     # file sits in
     func hunks_check []
-        if [ !src || diff_commit ] return
+        if [ !src || diff_commit || !git_on ] return
         orb8 : cast orbiter [ ux.app_object ]
         if [ !orb8 ] return
         sa9 : string '{src.absolute[]}'
@@ -4636,7 +4673,7 @@ Control Editor
     # the git rail under the pointer (index), -1 off: inside the
     # scrollbar's track, the same geometry the layer draws
     func rail_at [ mx: f32, my: f32 ] -> i32
-        if [ !hunks || diff_kinds || show_hits || finder_list ] return -1
+        if [ !git_on || !hunks || diff_kinds || show_hits || finder_list ] return -1
         ele : (layers) ? cast EditorLayer [ layers['content'] ] : null
         sb  : ScrollLayer (layers) ? cast ScrollLayer [ layers['scrollbar'] ] : null
         if [ !ele || !ele.bounds || !sb || !sb.bounds || content_h <= ele.bounds.h ] return -1
@@ -5167,7 +5204,7 @@ Control Editor
             if [ row_ghost[ vrl ] ]
                 ghost_toggle[ ghost_hunk ]
                 return
-            ghk : i32 [ (hunks) ? hunk_at[ row_src[ vrl ] ] : -1 ]
+            ghk : i32 [ (git_on && hunks) ? hunk_at[ row_src[ vrl ] ] : -1 ]
             if [ ghk >= 0 && hunks[ ghk * 3 + 2 ] == 3 ]
                 ghost_toggle[ ghk ]
                 return
@@ -5263,6 +5300,8 @@ Control Editor
             hl = -1
             hg = false
             hp = i32 [ vy / lh ]
+        # a scrollbar drag crossing the band is not a hover on its rows
+        if [ scroll_dragging ] hp = -1
         if [ hp != hover_pin ]
             hover_pin = hp
             pristine  = false
@@ -5333,7 +5372,8 @@ Control Editor
 
     func on_char [ ev: Event ]
         if [ run_view && app_view && !run_view.held && !run_view.ended && !nav_list && !show_hits && !stopped[] ] return
-        if [ flat_active ] return
+        if [ flat_active && !ghost_only[] ] return
+        if [ row_ghost[ sel_line ] ] return
         if [ line_count[] <= 0 ] return
         if [ sel_line < 0 ] sel_line = 0
         if [ sel_col  < 0 ] sel_col  = 0
@@ -5571,7 +5611,7 @@ Control Editor
             pristine = false
             return
 
-        edits_locked : bool [ row_header[ row ] || flat_active ]
+        edits_locked : bool [ row_header[ row ] || (flat_active && !ghost_only[]) || row_ghost[ row ] ]
 
         # printables arrive via on_char — they must not collapse the anchor
         if [ key != 257 && key != 258 && key != 259 && !(key >= 262 && key <= 265) ] return

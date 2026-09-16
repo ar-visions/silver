@@ -375,7 +375,9 @@ static symbol shared   = "-dynamiclib";
 
 // build status, one line per step, flushed: a host pipes this into the
 // app's log, and the console shows it while the build runs
-#define build_status(...) do { print(__VA_ARGS__); fflush(stdout); } while (0)
+// build status lines belong to the build log: printed with --verbose, or when
+// nothing is drawing the progress line (stderr not a tty); never over it
+#define build_status(a, ...) do { if ((a)->verbose || !isatty(2)) { print(__VA_ARGS__); fflush(stdout); } } while (0)
 #endif
 
 #define next_is(a, ...) silver_next_is_eq(a, __VA_ARGS__, null)
@@ -4623,7 +4625,7 @@ AU_EXPORT void silver_init(silver a) {
     pthread_mutex_unlock(&compiled_lock);
 
     if (!update_product) {
-        build_status("[%o] up to date", a->name);
+        build_status(a, "[%o] up to date", a->name);
         a->product = hold(absolute(a->product_link));
         deploy_module_resources(a);
         publish_product(a);
@@ -4657,7 +4659,7 @@ AU_EXPORT void silver_init(silver a) {
         return;
     }
 
-    build_status("[%o] compiling %o", a->name, path_filename(a->module_file));
+    build_status(a, "[%o] compiling %o", a->name, path_filename(a->module_file));
     verify(dir_exists("%o", a->install), "silver-import location not found");
     verify(len(a->module), "no source given");
     verify(file_exists("%o", a->module_file), "module-source not found: %o", a->module_file);
@@ -10810,7 +10812,7 @@ none silver_build_product(silver a) {
 #else
     string shared_n = string(a->is_library ? shared : "");
 #endif
-    build_status("[%o] linking %o", a->name, path_filename(link_out));
+    build_status(a, "[%o] linking %o", a->name, path_filename(link_out));
     verify(exec(a->verbose, "%o/bin/%s %s %s %s %o %s %o/%o.o%o %o -o %o -L%o/lib -L%o %o %o %o %o %s",
         a->base_install ? a->base_install : install, linker, shared_n->chars, a->debug ? "-g" : "",
 
@@ -10844,7 +10846,7 @@ none silver_build_product(silver a) {
 
     // the file is on disk now — waiters may take it
     publish_product(a);
-    build_status("[%o] built %o", a->name, path_filename(a->product));
+    build_status(a, "[%o] built %o", a->name, path_filename(a->product));
 
     // for live_app modules: compile the host launcher as the app binary (never cached)
     // a phone app got its host inside its bundle
