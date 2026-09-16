@@ -151,6 +151,9 @@ ielement element
     public  width           : i32
     public  height          : i32
     mutable hovered         : bool
+    # the pointer within half the element's size of its edges, in window
+    # space (no parent's bounds confine it): the :near style state
+    mutable near            : bool
     mutable pressed         : bool
     mutable focused         : bool
     mutable first           : bool
@@ -434,6 +437,10 @@ ielement element
                 # values were easing while nothing redrew them
                 if [ ms < dur ]
                     pristine = false
+                    # an uncached element paints onto a cached parent's
+                    # canvas: that canvas must repaint too, or the frames
+                    # the transition asks for show nothing new
+                    for [ p: element* parent, p, p = p.parent ] p.pristine = false
                     if [ ux ] ux.will_animate = true
                 if [ ct.type && ct.from && ct.to ]
                     from_t : typeid[ ct.from ]

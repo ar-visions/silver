@@ -512,8 +512,10 @@ abstract live_app media_app
         if [ e.edit && e.edit.count > 0 ]
             em['edit'] = e.edit
         if [ e.focused   ] em['focused']   = 'true'
+        if [ e.hovered   ] em['hovered']   = 'true'
         if [ e.hide      ] em['hide']      = 'true'
         if [ e.focusable ] em['focusable'] = 'true'
+        if [ e.opacity < 1.0 ] em['opacity'] = '{e.opacity}'
         if [ e.elements ]
             inner : map object [string] []
             for [ ch: element, k: string ] in e.elements
@@ -1154,6 +1156,19 @@ abstract live_app media_app
                     if [ found ] return found
             return null
 
+        # an element's rect in window space: its parents' origins summed,
+        # each scrolling parent's offset taken back out
+        func agent_world [ e: element ] -> rect
+            r : rect [ x: 0.0, y: 0.0, w: (e.bounds) ? e.bounds.w : 0.0, h: (e.bounds) ? e.bounds.h : 0.0 ]
+            for [ c: element* e, c, c = c.parent ]
+                if [ c.bounds ]
+                    r.x += c.bounds.x
+                    r.y += c.bounds.y
+                if [ c.parent && !c.no_scroll ]
+                    r.x -= c.parent.scroll.x
+                    r.y -= c.parent.scroll.y
+            return r
+
         func agent_press [ wn: Window, mx: f32, my: f32, btn: i32, st: i32, md: i32 ]
             wn.ev.clear[]
             wn.mouse.x = f64[ mx ]
@@ -1377,6 +1392,15 @@ abstract live_app media_app
                     fe : element agent_find[ wn.root, parts[1] ]
                     if [ fe ] wn.set_focus[ fe ]
                     el ok = false
+                # bounds <id>: x y w h in window space, or none
+                el [ cmd == 'bounds' && parts.count >= 2 ]
+                    be : element agent_find[ wn.root, parts[1] ]
+                    if [ be && be.bounds ]
+                        br : rect agent_world[ be ]
+                        agent_sock_reply[ '{br.x} {br.y} {br.w} {br.h}\n' ]
+                        continue
+                    agent_sock_reply[ 'none\n' ]
+                    continue
                 el [ cmd == 'tree' ]
                     # agi: block keys are the element ids
                     if [ wn.root ]
@@ -1389,6 +1413,11 @@ abstract live_app media_app
                     # first frames: the render target isn't filled yet
                     if [ render && render.color && render.color.vk_image && render.has_drawn ]
                         im : Image [ render.color ]
+                        # shot <path> x y w h: that region alone, in window units
+                        if [ parts.count >= 6 ]
+                            sc8 : f32 [ (wn.scale > 0.0) ? wn.scale : 1.0 ]
+                            im = im.crop[ i32[ parts[2].real_value[] * sc8 ], i32[ parts[3].real_value[] * sc8 ],
+                                          i32[ parts[4].real_value[] * sc8 ], i32[ parts[5].real_value[] * sc8 ] ]
                         im.png[ path [ parts[1].chars ] ]
                     el ok = false
                 el
@@ -1868,6 +1897,13 @@ Display Window
             ct.container  = value_holder
             if [ cur            ] cur.drop[]
             if [ best.instance  ] best.instance.drop[]
+            log 'TRANS arm {(inst.id) ? inst.id : "(noid)"} {mem} -> "{best.value}" hovered={(inst.hovered) ? 1 : 0}'
+            # a transition armed here runs on frames: ask for the first
+            # one, or it only advances when something else redraws. the
+            # cached canvases above it must repaint for it to show
+            inst.pristine = false
+            for [ p: element* inst.parent, p, p = p.parent ] p.pristine = false
+            will_animate  = true
             return
 
         float_count : i32 [ member.src.typesize / 4 ]
@@ -2219,6 +2255,17 @@ Display Window
                 if [ !instance.id ]
                     brand_new = true # component within element map
                 el [ typeid[instance] != typeid[e] ]
+                    # the window must not keep pointing into what goes:
+                    # a hover tip or a focus on it would read freed memory
+                    for [ h: element* hovered, h, h = h.parent ]
+                        if [ h == instance ]
+                            hovered = null
+                            break
+                    for [ h: element* focus, h, h = h.parent ]
+                        if [ h == instance ]
+                            focus = null
+                            break
+                    if [ capture == instance ] capture = null
                     instance.release_tree[]
                     if [ instance.ux ] instance.ux.vk.defer_drop[ instance ]
                     parent.elements.rm[ id ]
@@ -2586,6 +2633,30 @@ Display Window
         if [ g ] platform_cursor_lock[ g, 0 ]
         host_post[ 0, i32[ HM.lock ], 0, 0, 0 ]
 
+    # near: the pointer within half an element's size of its edges, in
+    # window space (a parent's bounds never confine it): the :near style
+    # state. every move re-evaluates the whole tree, since an element that
+    # is not repainting still has to notice the pointer approaching. ox,oy
+    # is the parent's window-space origin with its scroll taken out
+    func near_walk [ e: element, ox: f32, oy: f32 ]
+        if [ !e || !e.elements ] return
+        for [ c: element, id: string ] in e.elements
+            # a render may leave a null slot (a chip that is not up)
+            if [ !c || !c.bounds ] continue
+            cx : f32 [ ox + c.bounds.x - ((c.no_scroll) ? 0.0 : e.scroll.x) ]
+            cy : f32 [ oy + c.bounds.y - ((c.no_scroll) ? 0.0 : e.scroll.y) ]
+            if [ !c.hide && c.opacity > 0.0 && c.bounds.w > 0.0 && c.bounds.h > 0.0 ]
+                hw : f32 [ c.bounds.w * 0.5 ]
+                hh : f32 [ c.bounds.h * 0.5 ]
+                mx : f32 [ f32[ mouse.x ] ]
+                my : f32 [ f32[ mouse.y ] ]
+                nr : bool [ mx >= cx - hw && mx < cx + c.bounds.w + hw && my >= cy - hh && my < cy + c.bounds.h + hh ]
+                if [ nr != c.near ]
+                    c.near = nr
+                    for [ p: element* c, p, p = p.parent ] p.pristine = false
+                    restyle = true
+            near_walk[ c, cx, cy ]
+
     public func find_target [ e: element, ev: Event, must: element ] -> element
         if [ !e || !e.bounds || e.disable || e.ghost || e.hide || e.opacity <= 0.0 ]
             return null
@@ -2844,6 +2915,9 @@ Display Window
                 last_move = c
                 return
         orig_pos : vec2f [ ev.mouse.pos ]
+        mouse.x = f64[ ev.mouse.pos.x ]
+        mouse.y = f64[ ev.mouse.pos.y ]
+        near_walk[ root, 0.0, 0.0 ]
         f : find_target[ root, ev, null ]
         ev.origin = f
         m : element [ f ]
@@ -2873,6 +2947,7 @@ Display Window
                 if [ !leave_consumed && app_object ]
                     ev.target = prev
                     app_object.on_leave*[ ev ]
+            if [ stats ] log 'HOVER {(prev && prev.id) ? prev.id : "(none)"} -> {(f && f.id) ? f.id : "(none)"} at {ev.mouse.pos.x},{ev.mouse.pos.y}'
             hovered = f
             if [ f ]
                 f.hovered = true
@@ -4177,6 +4252,10 @@ Display Window
             rect [ x: 0, y: 0, w: e.parent.bounds.w, h: e.parent.bounds.h ] :
             rect [ x: 0, y: 0, w: width, h: height ] ]
 
+        # the em comes from the default font, never from whatever size the
+        # last draw left on the canvas (a hex or git view's) -- that
+        # shrank every em-sized area, the title first
+        cv.font_size[ 0 ]
         cv.ensure_font[]
         e.fc = 22.0
         if [ cv.font ]
@@ -5117,11 +5196,11 @@ Layer ScrollLayer
         max_sc  : f32 [ total_h - vis_h ]
         thumb_y : f32 [ top + (max_sc > 0.0) ? (e.scroll.y / max_sc) * travel : 0.0 ]
         base_w  : f32 [ thumb_w ]
-        near : f32 [ 90.0 ]
-        prox : f32 [ 0.0 ]
+        reach : f32 [ 90.0 ]
+        prox  : f32 [ 0.0 ]
         if [ e.hovered ]
             from_right : f32 [ (1.0 - e.cursor_pos.x) * e.bounds.w ]
-            prox = clamp[ 1.0 - from_right / near, 0.0, 1.0 ]
+            prox = clamp[ 1.0 - from_right / reach, 0.0, 1.0 ]
         if [ active ] prox = 1.0
         eff_w : f32 [ base_w * (1.0 + prox) ]
         r     : f32 [ thumb_radius * (1.0 - prox) ]
@@ -5191,6 +5270,37 @@ element TButtons
     intern  svg_cache : map SVGModel [string]
     intern  svg_miss  : map i32      [string]
     intern  hover_ix  : i32 [ -1 ]
+    # the strip's own id: a press hands the app the segment's name as the
+    # target id, and the next move gives the strip its name back
+    intern  strip_id  : string
+    # collapse: at rest the strip is one segment wide and shows rest_icon;
+    # the style grows its area (a transition on :hovered) and the draw
+    # follows: segments keep bounds.h * seg_aspect each from the right
+    # edge, and the icons fade in, clipped to what the strip has revealed
+    public  collapse   : bool
+    public  seg_aspect : f32 [ 1.2778 ]
+    public  rest_icon  : string [ 'more' ]
+
+    func seg_width [] -> f32
+        n : i32 [ (buttons) ? buttons.count : 1 ]
+        if [ n < 1 ] n = 1
+        if [ collapse ] return bounds.h * seg_aspect
+        return bounds.w / f32[ n ]
+
+    # 0..1: how much of the full strip the area has grown to
+    func reveal [] -> f32
+        if [ !collapse || !buttons || buttons.count <= 1 ] return 1.0
+        sw   : f32 [ seg_width[] ]
+        full : f32 [ sw * f32[ buttons.count ] ]
+        if [ full <= sw ] return 1.0
+        return clamp[ (bounds.w - sw) / (full - sw), 0.0, 1.0 ]
+
+    # a segment's left edge: shared width from the left, or its own
+    # width from the right when the strip collapses
+    func seg_x [ i: i32 ] -> f32
+        sw : f32 [ seg_width[] ]
+        if [ !collapse ] return f32[ i ] * sw
+        return bounds.w - f32[ buttons.count - i ] * sw
 
     # the segment under the pointer, by its id; '' when none is
     func hover_name [] -> string
@@ -5225,6 +5335,12 @@ element TButtons
         if [ n == 0 ] return -1
         rel : f32 [ ev.mouse.pos.x ]
         if [ rel < 0.0 || rel >= bounds.w ] return -1
+        if [ collapse ]
+            # only a fully revealed strip has segments to hit
+            if [ reveal[] < 0.999 ] return -1
+            k : i32 [ i32[ (bounds.w - rel) / seg_width[] ] ]
+            i : i32 [ n - 1 - k ]
+            return (i >= 0) ? i : -1
         return i32 [ rel / (bounds.w / f32[ n ]) ]
 
     public func draw [ w: Window ]
@@ -5242,9 +5358,25 @@ element TButtons
         sny9 : f32 [ (round[ cv.transform_ty[] ] - cv.transform_ty[]) / sc9 ]
         cv.save[]
         cv.translate[ snx9, sny9 ]
-        seg_w : f32 [ bounds.w / f32[ n ] ]
+        seg_w : f32 [ seg_width[] ]
+        rv9   : f32 [ reveal[] ]
+        op0   : f32 [ cv.get_opacity[] ]
+        if [ collapse ]
+            # what the strip has grown to shows; the rest waits past its edge
+            cwx : f32 [ cv.transform_tx[] ]
+            cwy : f32 [ cv.transform_ty[] ]
+            cv.set_crop[ cwx, cwy, cwx + bounds.w, cwy + bounds.h ]
+            # one rounded ground over what has grown: the segments' own
+            # rest fills would show their square inner corners at the
+            # strip's growing edge and the dots chip
+            cv.fill_color[ rgba [ '#ffffff0c' ] ]
+            cv.rounded[ seg_radius, seg_radius, seg_radius, seg_radius ]
+            cv.rounded_rect[ 0.0, 0.0, bounds.w, bounds.h, seg_radius, seg_radius, seg_radius, seg_radius ]
+            cv.paint[ ]
+            cv.rounded[ 0.0, 0.0, 0.0, 0.0 ]
         for [ i: i32 0, i < n, i += 1 ]
-            x  : f32 [ f32[ i ] * seg_w ]
+            x  : f32 [ seg_x[ i ] ]
+            if [ x + seg_w <= 0.0 ] continue
             tl : f32 [ (i == 0)     ? seg_radius : 0.0 ]
             bl : f32 [ (i == 0)     ? seg_radius : 0.0 ]
             tr : f32 [ (i == n - 1) ? seg_radius : 0.0 ]
@@ -5268,21 +5400,26 @@ element TButtons
                 gpx  = 18.0
             gl : f32 [ (i == 0)     ? gpx : 0.0 ]
             gr : f32 [ (i == n - 1) ? gpx : 0.0 ]
-            cv.fill_color[ fcol ]
-            # radius FIRST: the glow follows the corners only if it knows them
-            cv.rounded[ tl, tr, br, bl ]
-            # a segment owning BOTH ends takes the uniform path, the one
-            # the css layers use — sides pin the glow and lose the corners
-            if [ gl > 0.0 && gr > 0.0 ] cv.inner_glow[ gc, gpx ]
-            el                          cv.inner_glow_sides[ gc, gpx, gr, gpx, gl ]
-            cv.rounded_rect[ x, 0.0, seg_w, bounds.h, tl, tr, br, bl ]
-            cv.paint[ ]
-            cv.inner_glow_sides[ rgba [ '#0000' ], 0.0, 0.0, 0.0, 0.0 ]
-            # both are STATE: leaving the radius set clips the icon after it
-            cv.rounded[ 0.0, 0.0, 0.0, 0.0 ]
+            # a collapsing strip has its ground already: a segment paints
+            # only its hover or lit state, and only once fully revealed
+            seg_bg : bool [ !collapse || (rv9 >= 0.999 && gpx > 0.0) ]
+            if [ seg_bg ]
+                cv.fill_color[ fcol ]
+                # radius FIRST: the glow follows the corners only if it knows them
+                cv.rounded[ tl, tr, br, bl ]
+                # a segment owning BOTH ends takes the uniform path, the one
+                # the css layers use — sides pin the glow and lose the corners
+                if [ gl > 0.0 && gr > 0.0 ] cv.inner_glow[ gc, gpx ]
+                el                          cv.inner_glow_sides[ gc, gpx, gr, gpx, gl ]
+                cv.rounded_rect[ x, 0.0, seg_w, bounds.h, tl, tr, br, bl ]
+                cv.paint[ ]
+                cv.inner_glow_sides[ rgba [ '#0000' ], 0.0, 0.0, 0.0, 0.0 ]
+                # both are STATE: leaving the radius set clips the icon after it
+                cv.rounded[ 0.0, 0.0, 0.0, 0.0 ]
             icon : string [ (icon_ids && i < icon_ids.count) ? icon_ids[i] : buttons[i] ]
             svg  : SVGModel (icons) ? seg_svg[ icon ] : null
-            if [ off ] cv.set_opacity[ 0.35 ]
+            # the icons fade in with the reveal; a disabled one stays dim
+            cv.set_opacity[ op0 * ((off) ? 0.35 : 1.0) * rv9 ]
             if [ svg ]
                 isz : f32 [ bounds.h * ((icon_scale > 0.0) ? icon_scale : 0.55) ]
                 ix  : f32 [ x + (seg_w - isz) * 0.5 ]
@@ -5294,7 +5431,16 @@ element TButtons
                 cv.fill_color[ rgba [ '#fff' ] ]
                 cv.draw_text[ buttons[ i ], rect [ x: x, y: 0.0, w: seg_w, h: bounds.h ],
                     vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
-            if [ off ] cv.set_opacity[ 1.0 ]
+            cv.set_opacity[ op0 ]
+        # the rest icon sits in the last slot and fades as the set reveals
+        if [ collapse && rv9 < 1.0 ]
+            rsvg : SVGModel seg_svg[ rest_icon ]
+            if [ rsvg ]
+                rsz : f32 [ bounds.h * ((icon_scale > 0.0) ? icon_scale : 0.55) ]
+                cv.set_opacity[ op0 * (1.0 - rv9) ]
+                cv.fill_color[ rgba [ '#fff' ] ]
+                cv.draw_svg[ rsvg, bounds.w - seg_w + (seg_w - rsz) * 0.5, (bounds.h - rsz) * 0.5, rsz, rsz ]
+                cv.set_opacity[ op0 ]
         # one semi-clear 1px outline around the whole group; no segment
         # notches. origin is grid-snapped above; round the size too so both
         # edges land on whole device pixels. stroke_sides drives coverage
@@ -5315,11 +5461,13 @@ element TButtons
         if [ i < 0 ] return
         if [ disable || (disable_mask & (1 << i)) != 0 ] return
         if [ !manual ] selected = i
+        if [ !strip_id ] strip_id = a.id
         a.id = buttons[ i ]
         pristine = false
         if [ ux && ux.stats ] log 'TBUTTONS press seg={i} id={buttons[ i ]}'
 
     func on_move [ ev: Event ]
+        if [ strip_id && a.id != strip_id ] a.id = strip_id
         was : i32 [ hover_ix ]
         hover_ix = seg_at[ ev ]
         if [ hover_ix >= 0 && (disable || (disable_mask & (1 << hover_ix)) != 0) ]
@@ -5493,12 +5641,12 @@ element Splitter
     func on_move [ ev: Event ]
         if [ !bounds ] return
         hat  : f32 [ (vertical) ? ev.mouse.pos.y : ev.mouse.pos.x ]
-        near : bool [ drag_ix > 0 ]
-        if [ !near && dseam ]
+        seam_near : bool [ drag_ix > 0 ]
+        if [ !seam_near && dseam ]
             for [ di: i32 0, di < dseam.count, di += 1 ]
                 d : f32 [ dseam[ di ] ]
-                if [ hat >= d - bar && hat <= d + bar ] near = true
-        if [ near ]
+                if [ hat >= d - bar && hat <= d + bar ] seam_near = true
+        if [ seam_near ]
             ux.seam_cursor[ (vertical) ? 2 : 1 ]
             cursor_on = true
         el [ cursor_on ]

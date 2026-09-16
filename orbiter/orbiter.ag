@@ -1253,6 +1253,52 @@ element SceneName
                 label_color: #ffff
     }
 
+# the title's tab strip: one chip of dots at rest; the pointer near it (within
+# half its size of its edges) grows it leftward to the whole set over 222ms
+# and back, the icons fading in
+# with the reveal. the width to grow to is the set's count, one class each
+# (a subclass's style replaces its base's, so each carries the rest rule)
+TButtons NavTabs
+    collapse : true
+    style : CSS {
+        area: r0+ t0 w1.15 h0.9, 222ms cubic outward
+    }
+
+NavTabs NavTabs2
+    style : CSS {
+        area: r0+ t0 w1.15 h0.9, 222ms cubic outward
+        :near
+            area: r0+ t0 w2.3 h0.9, 222ms cubic outward
+    }
+
+NavTabs NavTabs3
+    style : CSS {
+        area: r0+ t0 w1.15 h0.9, 222ms cubic outward
+        :near
+            area: r0+ t0 w3.45 h0.9, 222ms cubic outward
+    }
+
+NavTabs NavTabs4
+    style : CSS {
+        area: r0+ t0 w1.15 h0.9, 222ms cubic outward
+        :near
+            area: r0+ t0 w4.6 h0.9, 222ms cubic outward
+    }
+
+NavTabs NavTabs5
+    style : CSS {
+        area: r0+ t0 w1.15 h0.9, 222ms cubic outward
+        :near
+            area: r0+ t0 w5.75 h0.9, 222ms cubic outward
+    }
+
+NavTabs NavTabs6
+    style : CSS {
+        area: r0+ t0 w1.15 h0.9, 222ms cubic outward
+        :near
+            area: r0+ t0 w6.9 h0.9, 222ms cubic outward
+    }
+
 NavButton RButton
     area : Region { r0+ t0 w1.15 h0.9 }
 
@@ -3757,6 +3803,11 @@ element orbiter : trinity # implements compiler
             if [ vl9.count > 1 ]
                 if [ edp9.view_pick ] tmask = tmask | (1 << tnav.count)
                 tnav.push[ 'view' ]
+            # the git diff view, on or off per pane, for a file in a
+            # checkout; lit while it is on
+            if [ checkout_root[ p.directory[] ] ]
+                if [ edp9.git_on ] tmask = tmask | (1 << tnav.count)
+                tnav.push[ 'git' ]
         # the run tabs belong to a runnable pane only (an .ag module, a handled
         # file, a running app): the same test that gates the console band
         runnable9 : bool [ false ]
@@ -3782,13 +3833,18 @@ element orbiter : trinity # implements compiler
             if [ tn.compare[ 'view' ] == 0 ] ic9 = 'views'
             if [ tn.compare[ 'dock' ] == 0 && shift_down ] ic9 = 'undock'
             tico.push[ ic9 ]
-        wn9 : f32 [ f32[ tnav.count ] * 1.15 ]
         # the finder is modal: no tab strip under its rows, or a press on
-        # the first row lands on a console/dock segment
+        # the first row lands on a console/dock segment. the strip rests as
+        # one chip of dots and grows to its set on hover: the class per
+        # count carries the width to grow to
         if [ tnav.count > 0 && !(engaged && !fb_on) ]
-            els['tabnav'] = TButtons [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask,
-                rest_glow: rgba [ '#ccf2' ], rest_px: 16.0,
-                area: Region [ 'r0+ t0 w{wn9} h0.9' ] ]
+            nt9 : i32 [ i32[ tnav.count ] ]
+            if [ nt9 >= 6 ]     els['tabnav'] = NavTabs6 [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0 ]
+            el [ nt9 == 5 ]     els['tabnav'] = NavTabs5 [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0 ]
+            el [ nt9 == 4 ]     els['tabnav'] = NavTabs4 [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0 ]
+            el [ nt9 == 3 ]     els['tabnav'] = NavTabs3 [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0 ]
+            el [ nt9 == 2 ]     els['tabnav'] = NavTabs2 [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0 ]
+            el                  els['tabnav'] = NavTabs  [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0 ]
 
         if [ menu_open && nav_showing && docked && docked.count > 0 ]
             els['pins'] = RButton [ icon: (show_pins) ? 'side_on' : 'side_off', selected: show_pins, manual_mode: true ]
@@ -6046,8 +6102,17 @@ element orbiter : trinity # implements compiler
                 return
         
         if [ ev.target.id == 'git' ]
-            edg : Editor pane_at[ active_pane ]
-            if [ edg ] set_pane_view[ edg, (edg.view_name == 'git') ? '' : 'git' ]
+            edg : Editor pane_of[ ev.target ]
+            if [ !edg ] edg = pane_at[ active_pane ]
+            # the tab toggles the diff view: on shows the reference list to
+            # pick against and colours the file; off drops every mark and
+            # leaves the list if it is up
+            if [ edg ]
+                edg.git_on = !edg.git_on
+                if [ edg.git_on ] set_pane_view[ edg, 'git' ]
+                el [ edg.view_name == 'git' ] set_pane_view[ edg, '' ]
+                edg.ghost_hunk = -1
+                edg.pristine   = false
             if [ ev.target ] ev.target.ux.restyle = true
             return
 
