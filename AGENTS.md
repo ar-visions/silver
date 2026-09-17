@@ -41,8 +41,6 @@ Fix one component at a time. Reproduce the exact failure with the smallest focus
 
 Do not infer work, scope, history, or a report from incomplete information. Before inspecting files, running commands, editing, or reporting, get the concrete details needed from the user. If the user has not asked for a specific action, take no action. When told to stop, stop without adding analysis or proposals.
 
-You do not have enough information until you first ask the user if there is anything else about the feature along with your summation of what you know.  Realize, all work is done this way.
-
 ## Rule #6b — Never re-ask about assigned work
 
 A reported bug IS the assignment. Never end a turn asking "want me
@@ -66,6 +64,84 @@ app's own screenshot socket and app tools for screenshots.
 
 Always use the Trinity messaging service over Unix sockets when
 interacting with apps.
+
+## Rule #9 — Foundation: the user's own agent, never ours
+
+Trinity apps talk to whatever agent session the user already
+runs. They never bundle, name, or recommend an agent. The link
+is `agent_post` (trinity.ag) over `agent_inbox_find` and
+`agent_inbox_post` (trinity.cc): the running session is found
+by its cwd in the session registry (~/.claude/sessions today),
+or an app's agi names the inbox socket as `agent_inbox`. What
+goes through it: the dictation take, a screenshot crop with its
+line. Priority "now" interrupts the session's turn; "next"
+waits. Do not add an LLM, voice, or chat backend to trinity or
+orbiter; the user decides what answers.
+
+## Rule #10 — The exchange: how an agent answers a trinity app
+
+A screenshot (ctrl/cmd+shift+S, drag, Enter) opens the exchange
+in any trinity app: the blurred capture behind, the user's box
+(one rounded frame, entries above an editable bottom line, at
+most four rows, the rest scrolling out the top), the app's
+avatar, and after the first send the agent's box on the right.
+The exchange also opens about a file: the orbiter tab in a pane's
+tab strip (icon orbiter4) opens it at the caret's line, with
+`File: <path>:<line>` as the reference (`exchange_open` on the
+Window; the capture path passes `Screenshot: <path>`). Every send
+reposts the whole conversation with that reference line. The
+FIRST post also carries the reply
+contract, and the agent honors it:
+
+- The app's socket is `$XDG_RUNTIME_DIR` (else `/tmp`)
+  `/trinity-<app>.sock`, one line per request, `app <text>`
+  reaching the app's `on_agent`. The first post quotes the path.
+- `app status <state> <text>` is the agent's word. States:
+  `busy` (working, with a line), `idle`, `done` (finished; with
+  the exchange up and a source change staged, the avatar's core
+  flame lights for 1.4 s, then the app applies its live reload:
+  a recompile when the sources are newer than the product, else
+  the swap at once),
+  `needs` (waiting on the user), `note` (a line of what the
+  agent says), `diff` (one line of a source diff it applied).
+- Everything the agent says goes back as `note` lines, and every
+  edit it applied as `diff` lines, in order: the edit's own
+  removed and added lines under a `diff --git a/x b/x` header.
+  NEVER a `git diff` of the tree for this: the tree also holds the
+  user's own uncommitted changes, which are not the agent's.
+  Consecutive `diff` lines are one entry in the agent's box: a
+  label (the file from `diff --git a/x b/x`, +added -removed)
+  that expands to the colored code when clicked. A `note` (or any
+  other state) ends the diff entry. The Edit/Write hook posts
+  this for every edit on its own (orbiter-status.py edit builds
+  it from the tool's old and new text), so an agent under the
+  hooks only posts `note` lines by hand.
+- The hooks (support/agent-hooks/orbiter-status.py, wired in
+  .claude/settings.json) post `busy`/`done`/`needs` on their own;
+  `orbiter-status.py note <text>` and `orbiter-status.py diff
+  <line>` post the rest. A `diff` line is sent as is (indentation
+  and the leading +/- matter); other text is whitespace-collapsed
+  and capped at 400 bytes. The socket's listen backlog is 64; a
+  burst still wants a retry on ECONNREFUSED.
+- An app takes statuses only while an exchange is open
+  (`shot_ask` set, up or minimized); the user's terminal chat with
+  the same session is not the app's to show. The avatar stays
+  face on and at rest until the first send through the app.
+- Drive a trinity app headless to verify: `XDG_RUNTIME_DIR=<dir>
+  SILVER_ISOLATE=0 SILVER_HEADLESS=1 platform/native/build/<app>
+  --hidden true`, then over its socket `key 83 1 3` / `key 83 0 3`
+  (ctrl+shift+S), `press x y`, `move x y`, `release x y`, `key 257
+  1` (Enter), `text <line>`, `bounds <id>`, `shot <png>`. A socket
+  path longer than the unix limit is truncated. After a capture,
+  `shot` reads the render list's last entry (the capture's blur
+  chain), so it stops reflecting the screen: use `bounds` and the
+  draw logs for per-frame state.
+- Region slots are `l t r b`: `b120px` in the SECOND slot puts the
+  TOP 120px from the bottom. A percent in the fourth slot is a
+  flow share only as a height/width (`h50%`); a percent bottom
+  edge (`b-15%+174px`) is an edge. A CSS area transition mixes
+  coordinate forms, so both ends of a moving area use the same
+  form (`l50%-195px` to `l0%+80px`, never to `l80px`).
 
 ---
 

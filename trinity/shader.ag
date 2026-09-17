@@ -473,9 +473,14 @@ ModelViewProject UVQuad
     attrib uv        : VertexInput    [ type:typeid[ vec2f ] ]
     attrib v_uv      : VertexOutput   [ type:typeid[ vec2f ] ]
     attrib fragColor : FragmentOutput [ type:typeid[ vec4f ] ]
+    # the frame's rect on the surface as a scale about the centre (a
+    # letterboxed frame is smaller than the surface); its own uniform, since
+    # ubo.model also carries the quad mesh's node matrix, which flips it
+    mutable fit      : vec4f
 
     func init [ ]
         model = mat4f.identity[]
+        fit   = vec4f [ 1.0, 1.0, 0.0, 0.0 ]
         eye:    vec3f [ 0.0, 0.0, 2.0 ]
         center: vec3f [ 0.0, 0.0, 0.0 ]
         up:     vec3f [ 0.0, 1.0, 0.0 ]
@@ -484,7 +489,7 @@ ModelViewProject UVQuad
 
     func vertex [] -> GLSL none {
         v_uv        = uv;
-        gl_Position = vec4(pos.x, pos.y, 0.0, 1.0);
+        gl_Position = vec4(pos.x * ubo.fit.x, pos.y * ubo.fit.y, 0.0, 1.0);
     }
 
     func fragment [] -> GLSL none {

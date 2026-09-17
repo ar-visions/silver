@@ -5463,7 +5463,9 @@ AU_EXPORT num map_compare(map a, map b) {
         Au v = map_get(b, i->key);
         if (i->value == v) continue;
         if (!i->value || !v) return i->value ? 1 : -1;
-        num c = compare(i->value, v);
+        // a value type with no compare of its own (a plain class) compares
+        // by identity: the raw dispatch jumped to a null compare
+        num c = au_key_compare(i->value, v);
         if (c != 0) return c;
     }
     return 0;
@@ -6558,9 +6560,9 @@ AU_EXPORT num list_compare(list a, list b) {
         return diff;
     Au_t ai_t = a->first ? isa(a->first->value) : null;
     if (ai_t) {
-        Au_t m = find_member(ai_t, "compare", AU_MEMBER_FUNC, 0, true);
+        // the same guard as map_compare: no compare on the type, identity
         for (item ai = a->first, bi = b->first; ai; ai = ai->next, bi = bi->next) {
-            num   v  = ((num(*)(Au,Au))(m->value))((Au)ai, (Au)bi);
+            num v = au_key_compare(ai->value, bi->value);
             if (v != 0) return v;
         }
     }

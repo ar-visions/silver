@@ -191,7 +191,7 @@ Layer GitLayer
                     rect [ x: x0 + 12.0, y: y, w: bounds.w * 0.62, h: lh ],
                     vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null ]
                 cv.fill_color[ (tag_color) ? tag_color : '#77708a' ]
-                cv.draw_text[ (r.current) ? 'current' : 'branch',
+                cv.draw_text[ 'branch',
                     rect [ x: x0 + bounds.w - tag_w - 12.0, y: y, w: tag_w, h: lh ],
                     vec2f [ 1.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
             el
@@ -273,28 +273,37 @@ NodeList GitList
             if [ (r9.is_branch && r9.text == ref9) || (!r9.is_branch && r9.hash == ref9) ]
                 sel = i
                 break
-        if [ sel < 0 && rows.count > 0 ] sel = 0
+        # nothing is selected until a reference is picked
         pristine = false
 
     func activate [ idx: i32 ]
         if [ !rows || idx < 0 || idx >= rows.count ] return
         r : GitRow rows[idx]
-        if [ r.is_branch ]
-            if [ r.current ] return
-            git_capture[ root, 'checkout {r.text}', false ]
-            refresh[]
-            return
-        # commit: it becomes the repository's reference (the tabs and every
-        # pane's marks read against it), and the pane returns to its file
+        # a branch or a commit: either becomes the repository's reference
+        # (the tabs and every pane's marks read against it), and the pane
+        # returns to its file. nothing is checked out here
         orb : orbiter [ ux.app_object ]
         if [ orb ]
-            orb.set_git_ref[ orb.repo_root[], r.hash ]
+            orb.set_git_ref[ orb.repo_root[], (r.is_branch) ? r.text : r.hash ]
             sel = idx
             ed : Editor orb.pane_of[ a ]
             if [ ed ]
                 ed.view_name = ''
                 ed.load_file[]
             ux.restyle = true
+
+    # escape cancels the diff view: the pane returns to its file, the tab off
+    func on_key [ ev: Event ]
+        if [ ev.key.state && i32[ ev.key.unicode ] == 256 ]
+            orb : orbiter [ ux.app_object ]
+            ed  : Editor [ (orb) ? orb.pane_of[ a ] : null ]
+            if [ orb && ed ]
+                ed.git_on = false
+                orb.set_pane_view[ ed, '' ]
+                ux.restyle = true
+            ev.no_default = true
+            return
+        super.on_key[ ev ]
 
     func init []
         if [ !root ]
@@ -1366,11 +1375,6 @@ element CommitView
             if [ hi < 0 ] return
             h : FindHit o.find_hits[hi]
             pane : i32 [ (ev9) ? ev9.pane_index : o.active_pane ]
-            if [ ev.key.shift ]
-                # shift-click pins: merge the row into the top list
-                if [ h.is_header && h.file && !h.is_spacer ] o.toggle_dock[ h.file ]
-                pristine = false
-                return
             if [ h.is_newfile ]
                 if [ ev9 && rx >= nfx0 && rx <= nfx1 ]
                     ev9.newfile_enter[ (ed) ? ed.src : null ]

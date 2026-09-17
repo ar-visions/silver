@@ -25,6 +25,7 @@
 #include <dirent.h>
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
+#include <sys/ucontext.h>
 #endif
 #include <time.h>    // time() — the future-mtime clamp in sources_newer
 #include <errno.h>
@@ -557,6 +558,39 @@ static void crash_handler(int sig, siginfo_t* si, void* ucv) {
                 if (pn > 0) (void)write(STDERR_FILENO, pl, (size_t)pn);
                 frames[nframes++] = ra;
             }
+        }
+    }
+#elif defined(__APPLE__) && defined(__aarch64__)
+    // backtrace() sees nothing from a signal context here: the pc comes
+    // from the thread state, then the callers by the frame-pointer chain
+    // ([fp] = the caller's fp, [fp+8] = the return address into it)
+    if (ucv) {
+        ucontext_t* uc = (ucontext_t*)ucv;
+        void*  pc = (void*)__darwin_arm_thread_state64_get_pc(uc->uc_mcontext->__ss);
+        void*  lr = (void*)__darwin_arm_thread_state64_get_lr(uc->uc_mcontext->__ss);
+        void** fp = (void**)__darwin_arm_thread_state64_get_fp(uc->uc_mcontext->__ss);
+        Dl_info di;
+        char    pl[256];
+        int     pn;
+        if (dladdr(pc, &di) && di.dli_fname && di.dli_fbase)
+            pn = snprintf(pl, sizeof(pl), "%s: signal %d at %s +0x%lx\n", g_app_name, sig,
+                di.dli_fname, (unsigned long)((char*)pc - (char*)di.dli_fbase));
+        else
+            pn = snprintf(pl, sizeof(pl), "%s: signal %d at 0x%lx (no module)\n", g_app_name, sig,
+                (unsigned long)pc);
+        if (pn > 0) (void)write(STDERR_FILENO, pl, (size_t)pn);
+        frames[nframes++] = pc;
+        // a leaf (or a call through a bad pointer) has not saved lr yet:
+        // it is the caller, and the chain from fp continues above it
+        if (lr && (!fp || fp[1] != lr)) frames[nframes++] = lr;
+        for (int i = 0; fp && i < 60 && nframes < 62; i++) {
+            if (((uintptr_t)fp & 7) || (uintptr_t)fp < 0x1000) break;
+            void*  ra   = fp[1];
+            void** next = (void**)fp[0];
+            if (!ra) break;
+            frames[nframes++] = ra;
+            if (next <= fp) break;
+            fp = next;
         }
     }
 #endif

@@ -247,7 +247,9 @@ Orbiter PBR
         vec3  eng_L     = normalize(eng_pos - worldPos);
         float lateral   = smoothstep(0.0, 0.707, dot(N, eng_L));
 
-        float pulse      = max(0.0, 0.5 + 0.5 * sin(ubo.time * 4.4 * ubo.pulse_width));
+        // the light cast on the inner walls follows the core's oscillation:
+        // the same phase the Core shader runs (time * 1.1 * pulse_width)
+        float pulse      = max(0.0, 0.5 + 0.5 * sin(ubo.time * 1.1 * ubo.pulse_width));
         vec3  hot_off    = vec3(0.3, 0.6, 2.0);
         vec3  hot_on     = vec3(1.4, 1.0, 0.4);
         vec3  hot        = mix(hot_off, hot_on, pulse);
@@ -258,7 +260,7 @@ Orbiter PBR
         // bottom core face: downward-facing surface glows as a warm plasma pool
         // no IOR texture on this material so drive purely from normal, not intensity
         float is_bottom  = pow(max(0.0, -dot(N, beam_up)), 3.0);
-        float core_pulse = 0.72 + 0.28 * sin(ubo.time * 2.1);
+        float core_pulse = 0.72 + 0.28 * sin(ubo.time * 1.1 * ubo.pulse_width);
         vec3  core_glow  = vec3(2.0, 0.7, 0.08) * is_bottom * core_pulse * 4.0;
         specular        *= (1.0 - is_bottom * 0.95);
 
@@ -439,7 +441,8 @@ Orbiter Aura
 						// steep gaussian radial falloff: a thin dense core at the axis,
 						// sides drop to ~1/10 by mid-radius (not a fat column)
 						float cyl_ctr = exp(-cyl_t * cyl_t * 11.0);
-						float cyl_fg  = pfog(cyl_p * 5.0 + vec3(0.0, ta * 0.25, 0.0));
+						vec3  cyl_np  = cyl_p * vec3(5.0, 2.2, 5.0) - vec3(0.0, ta * 0.9, 0.0);
+						float cyl_fg  = mix(pfog(cyl_np), pfog(cyl_np * 1.9 - vec3(0.0, ta * 1.6, 0.0)), 0.35);
 						vec3  cyl_col = mix(vec3(2.6, 1.3, 0.5), vec3(1.4, 0.6, 0.15), cyl_at / cyl_h);
 						float cyl_fad = pow(max(1.0 - cyl_at / cyl_h, 0.0), ubo.beam_fade);
 						float cyl_den = 11.0 * ubo.flame * (0.3 + cyl_fg) * cyl_ctr * cyl_fad * cyl_dt;
@@ -493,7 +496,8 @@ Orbiter Aura
 						vec3  rng_ax = rng_o + rng_d * rng_at;
 						float rng_r  = length(rng_p - rng_ax);
 						if (rng_r < rng_Ri || rng_r > rng_Ro) continue;
-						float rng_fg     = pfog(rng_p * 5.0 + vec3(0.0, ta * 0.25, 0.0));
+						vec3  rng_np     = rng_p * vec3(5.0, 2.2, 5.0) - vec3(0.0, ta * 0.9, 0.0);
+						float rng_fg     = mix(pfog(rng_np), pfog(rng_np * 1.9 - vec3(0.0, ta * 1.6, 0.0)), 0.35);
 						float rng_t      = (rng_r - rng_Ri) / (rng_Ro - rng_Ri);
 						float rng_center = sqrt(max(0.0, 1.0 - (2.0 * rng_t - 1.0) * (2.0 * rng_t - 1.0)));
 						vec3  rng_rel    = rng_p - rng_ax;
@@ -530,7 +534,8 @@ Orbiter Aura
 					if (alpha > 0.97) break;
 					vec3  cp   = ro + rd * (cor_te + (float(k) + 0.5) * cor_dt);
 					float crn  = length(cp - cor_o) / cor_R;
-					float haze = pfog(cp * 6.0 + vec3(0.0, ta * 0.3, 0.0));
+					vec3  hz_np = cp * vec3(6.0, 2.6, 6.0) - vec3(0.0, ta * 1.0, 0.0);
+					float haze = mix(pfog(hz_np), pfog(hz_np * 1.9 - vec3(0.0, ta * 1.7, 0.0)), 0.35);
 					float dens = exp(-crn * crn * 3.2) * (0.55 + 0.45 * haze);
 					vec3  cc   = mix(vec3(3.4, 1.15, 0.20), vec3(1.5, 0.40, 0.05), smoothstep(0.0, 1.0, crn));
 					float ce   = dens * cor_dt * 6.5 * ubo.flame * cor_pl;
@@ -581,7 +586,8 @@ Orbiter Core
         vec3  V      = normalize(v_eye_pos - v_world_pos);
         vec3  N      = normalize(v_normal);
         float facing = max(0.0, dot(N, V));
-        float pulse  = max(0.0, 0.8 + 0.2 * sin(ubo.time * 4.4 * ubo.pulse_width));
+        // the light surface cycles at a quarter of its old rate
+        float pulse  = max(0.0, 0.8 + 0.2 * sin(ubo.time * 1.1 * ubo.pulse_width));
         float ln     = length(v_local_pos.xz);
         float inner  = clamp(ln / 0.2, 0.0, 1.0) * (0.7 + (max(0.0, pulse - 0.2) * 1.0 + 0.2) * 0.3);
         vec4  tex    = textureLod(color, v_uv, pulse * 2.0 + 2.0 * inner);
@@ -660,6 +666,8 @@ Orbiter Plasma
 element Avatar
     # style state: drives the :summoned CSS qualifier
     public summoned          : bool
+    # animate without the summon (the exchange avatar has no slide)
+    public animate_always    : bool
     intern target            : Render
     intern vol_target        : Render
     intern models            : map Model   [string]
@@ -670,6 +678,10 @@ element Avatar
     #public shader_type       : string
     public environment_path  : string
     public render_scale      : f32   [ 4.0 ]
+    mutable clock0           : i64   # the shaders' clock anchor (first frame)
+    mutable clock_last       : i64
+    mutable clock_s          : f64   # the shaders' time, in seconds run
+    public  clock_run        : bool  [ true ]
     public vol_scale         : f32
     public clear_color       : vec4f
     public rotate            : vec Rotation
@@ -919,8 +931,8 @@ element Avatar
             vol_target.wscale = 0.0
 
     func draw [ w: Window ]
-        # spin only while summoned; slide transitions keep frames alive
-        animated = summoned
+        # spin only while summoned (or always, for one with no slide)
+        animated = summoned || animate_always
         create_target[]
         if [ !target && !vol_target ] return
 
@@ -948,7 +960,19 @@ element Avatar
                 mvp.model        = model_mat
                 mvp.proj         = _proj
                 mvp.view         = _view
-                mvp.time         = w.time
+                # the shaders' clock is wall-clock seconds from the avatar's
+                # first frame: the window's `time` is the background's, throttled
+                # by orbiter's draw-rate setting (1/64 at rest), and the flame's
+                # rising noise (ta) and the pulses froze on it
+                now9 : i64 [ epoch_millis[] ]
+                if [ clock0 == 0 ]
+                    clock0     = now9
+                    clock_last = now9
+                # the clock only runs while clock_run: the core's coloring
+                # cycles on it, and face on the avatar holds still
+                if [ clock_run ] clock_s += f64[ now9 - clock_last ] / 1000.0
+                clock_last       = now9
+                mvp.time         = clock_s
             pb9 : (sh inherits PBR)
             if [ pb9 ]
                 pb9.spoke_r0    = 0.10
