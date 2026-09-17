@@ -4361,6 +4361,16 @@ Texture Display
     public release_event        : EventDispatch
     public wheel_event          : EventDispatch
     public lock_aspect          : bool
+    # the locked aspect (the app's launch size); a surface that cannot keep
+    # it (a full screen) shows the frame centred at that aspect, the rest
+    # black: fit_* is the frame's scale within the surface and its offset
+    # in points, taken off the pointer
+    public aspect_w             : i32
+    public aspect_h             : i32
+    intern fit_sx               : f32 [ 1.0 ]
+    intern fit_sy               : f32 [ 1.0 ]
+    intern fit_ox               : f32
+    intern fit_oy               : f32
     intern resized              : bool
     # debounced resize: GLFW emits framebuffer_size continuously while dragging.
     # We don't recreate the swapchain on every callback (would hitch the frame).
@@ -4437,12 +4447,47 @@ Texture Display
             t9 : u32 [ extent.width ]
             extent.width  = extent.height
             extent.height = t9
-        if [ swap_shader ]
-            m : mat4f.identity[]
-            if [ swap_rot != 0 ]
-                h9 : f32 [ 0.0 - radians[ f32[ swap_rot ] ] * 0.5 ]
-                m = m.rotate[ quatf [ x: 0.0, y: 0.0, z: sin[ h9 ], w: cos[ h9 ] ] ]
-            swap_shader.model = m
+        swap_transform[]
+
+    # the final quad: rotated for the surface (model), scaled into the
+    # letterbox (fit, its own uniform)
+    func swap_transform []
+        if [ !swap_shader ] return
+        m : mat4f.identity[]
+        if [ swap_rot != 0 ]
+            h9 : f32 [ 0.0 - radians[ f32[ swap_rot ] ] * 0.5 ]
+            m = m.rotate[ quatf [ x: 0.0, y: 0.0, z: sin[ h9 ], w: cos[ h9 ] ] ]
+        swap_shader.model = m
+        swap_shader.fit   = vec4f [ fit_sx, fit_sy, 0.0, 0.0 ]
+
+    # a locked aspect the surface does not have: the logical frame keeps the
+    # aspect (the largest that fits) and the swap quad centres it. a surface
+    # already at the aspect (a window, orbiter's pane) is left whole
+    func fit_aspect []
+        fit_sx = 1.0
+        fit_sy = 1.0
+        fit_ox = 0.0
+        fit_oy = 0.0
+        if [ lock_aspect && aspect_w > 0 && aspect_h > 0 && logical_width <= 0 && swap_rot == 0
+             && extent.width > 0 && extent.height > 0 ]
+            ew : f32 [ f32[ extent.width ] ]
+            eh : f32 [ f32[ extent.height ] ]
+            ar : f32 [ f32[ aspect_w ] / f32[ aspect_h ] ]
+            fw : f32 [ ew ]
+            fh : f32 [ fw / ar ]
+            if [ fh > eh ]
+                fh = eh
+                fw = fh * ar
+            if [ fw < ew - 1.0 || fh < eh - 1.0 ]
+                sc : f32 [ (scale > 0.0) ? scale : 1.0 ]
+                fit_sx = fw / ew
+                fit_sy = fh / eh
+                fit_ox = (ew - fw) * 0.5 / sc
+                fit_oy = (eh - fh) * 0.5 / sc
+                width  = i32[ fw / sc ]
+                height = i32[ fh / sc ]
+                log 'FIT surface {extent.width}x{extent.height} px at aspect {aspect_w}:{aspect_h} -> frame {width}x{height} points, scale {fit_sx},{fit_sy}, offset {fit_ox},{fit_oy}'
+        swap_transform[]
 
     public func resize [ w_new: i32, h_new: i32 ] -> Display
         backdrop_once = true
@@ -4473,6 +4518,7 @@ Texture Display
                 scale  = f32[ (swap_rot == 90 || swap_rot == 270) ? extent.height : extent.width ] / logical_width
                 width  = logical_width
                 height = i32[ ((swap_rot == 90 || swap_rot == 270) ? extent.width : extent.height) / scale ]
+            fit_aspect[]
         el
             width  = w_new
             height = h_new
@@ -4966,6 +5012,7 @@ Texture Display
             caps0 : VkSurfaceCapabilitiesKHR
             vkGetPhysicalDeviceSurfaceCapabilitiesKHR[ vk.physical_device, vk_surface, @caps0 ]
             surface_rotation[ caps0.currentTransform ]
+            fit_aspect[]
             log 'display: {width}x{height} points, {extent.width}x{extent.height} px, scale {scale}'
         el
             surface_format.format     = (format == Pixel.rgbaf32) ? VK_FORMAT_R32G32B32A32_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM
@@ -5280,8 +5327,10 @@ intern func handle_enter [ win: @platform_window, entered: i32 ]
 intern func handle_cursor [ win: @platform_window, x: f64, y: f64 ]
     w: cast Window [ platform_window_get_user[ win ] ]
     w.ev.clear[]
-    w.mouse.x = x
-    w.mouse.y = y
+    # the pointer in the frame's own space: a letterboxed frame starts
+    # past the bars
+    w.mouse.x = x - f64[ w.fit_ox ]
+    w.mouse.y = y - f64[ w.fit_oy ]
     w.ev.mouse.pos.x = w.mouse.x
     w.ev.mouse.pos.y = w.mouse.y
     # carry modifiers on MOVE events too (same poll the wheel/button
@@ -5506,50 +5555,53 @@ func uniform_size [ type: Au_t ] -> num
 
 func placeholder_image [ sampler: object, size: i32, fill: @u8, sampler_size: @i32, format: @Pixel ]
     cl : typeid[sampler]
-    # a vec sampler is a vector: its element type names the pixel format
+    # a vec sampler is a vector: its element type names the pixel format.
+    # the element casts below go through THIS typed view: a cast of the
+    # object (or of a handle) points at the reference itself, and that
+    # pointer's bytes were what every placeholder got filled with
+    vs : vector sampler
     if [ sampler inherits vector ]
-        vs : vector sampler
         cl = vs.elem_type[]
     s: i32 [ size * size ]
 
     if [ cl == typeid[f32] ]
-        data_f32: @f32 [ sampler ]
+        data_f32: @f32 [ vs ]
         f32_fill: @f32 [ @fill ]
         for [ i: 0, i < s, i += 1 ]
             f32_fill[i] = data_f32[0]
         format = Pixel.f32
         sampler_size = s * sizeof[ f32 ]
     el [ cl == (typeid[i8], typeid[u8]) ]
-        data_i8:    @i8    [ sampler ]
-        data_u8:    @u8    [ sampler ]
+        data_i8:    @i8    [ vs ]
+        data_u8:    @u8    [ vs ]
         u8_fill: @u8 [ @fill ]
         for [ i: 0, i < s, i += 1 ]
             u8_fill[i] = data_i8[0]
         format = Pixel.u8
         sampler_size = s * sizeof[ i8 ]
     el [ cl == typeid[rgbf] ]
-        data_rgbf:  @rgbf  [ sampler ]
+        data_rgbf:  @rgbf  [ vs ]
         v3_fill: @rgbf [ @fill ]
         for [ i: 0, i < s, i += 1 ]
             v3_fill[i] = data_rgbf[0]
         format = Pixel.rgbf32
         sampler_size = s * sizeof[ rgbf ]
     el [ cl == typeid[rgb8] ]
-        data_rgb8:  @rgb8 [ sampler ]
+        data_rgb8:  @rgb8 [ vs ]
         v3_fill: @rgb8 [ @fill ]
         for [ i: 0, i < s, i += 1 ]
             v3_fill[i] = data_rgb8[0]
         format = Pixel.rgb8
         sampler_size = s * sizeof[ rgb8 ]
     el [ cl == typeid[rgbaf] ]
-        data_rgbaf:  @rgbaf  [ sampler ]
+        data_rgbaf:  @rgbaf  [ vs ]
         v4_fill: @rgbaf [ @fill ]
         for [ i: 0, i < s, i += 1 ]
             v4_fill[i] = data_rgbaf[0]
         format = Pixel.rgbaf32
         sampler_size = s * sizeof[ rgbaf ]
     el [ cl == typeid[rgba8] ]
-        data_rgba8:  @rgba8  [ sampler ]
+        data_rgba8:  @rgba8  [ vs ]
         v4_fill: @rgba8 [ @fill ]
         for [ i: 0, i < s, i += 1 ]
             v4_fill[i] = data_rgba8[0]

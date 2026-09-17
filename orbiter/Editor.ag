@@ -1576,7 +1576,7 @@ Layer EditorLayer
         if [ ndigits < 5 ] ndigits = 5
         gut_w   : f32 [ f32[ ndigits ] * cw_tm.w + 16.0 ]
         # browse nav shows no line numbers and no pin gutter: rows
-        # start where the zone pills do (shift-click handles pinning)
+        # start where the zone pills do
         if [ showing && hits && editor.nav_list ] gut_w = 12.0
         editor.gutter_w = gut_w
         if [ !showing ] editor.hunks_check[]
@@ -1591,8 +1591,7 @@ Layer EditorLayer
         din     : f32 [ 0.0 ]
         if [ dbg_el && dbg_el.bounds ]
             din = dbg_el.bounds.w
-        pin_in  : f32 [ (editor.elements && editor.elements['pins']) ? 144.0 : 0.0 ]
-        rin     : f32 [ maxf[ pin_in, din ] ]
+        rin     : f32 [ din ]
         # the element itself never masks: fills and the gutter stay crisp.
         # the fade rides on the text canvas alone (blitted below).
         parent.mask_glow   = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
@@ -1820,8 +1819,12 @@ Layer EditorLayer
                     kd9 : i32 [ editor.hunks[ hk9 * 3 + 2 ] ]
                     # three colours, one shade each: added green, changed
                     # blue, removed red (the rails and ghost rows use the same)
-                    cv.fill_color[ (kd9 == 1) ? rgba['#7fd18b66'] : ((kd9 == 2) ? rgba['#6cb6ff66'] : rgba['#ff6a6a']) ]
-                    if [ kd9 == 3 ] cv.rect_to[ bounds.x + 2.0, yg - 1.0, gut_w - 4.0, 2.0 ]
+                    # the removal edge brightens under the pointer on either
+                    # row it straddles: a press there shows the removed lines
+                    hvr : bool [ kd9 == 3 && editor.hover_edge
+                                 && (editor.hover_line == li || editor.hover_line == li - 1) ]
+                    cv.fill_color[ (kd9 == 1) ? rgba['#7fd18b66'] : ((kd9 == 2) ? rgba['#6cb6ff66'] : ((hvr) ? rgba['#ffb4b4'] : rgba['#ff6a6a'])) ]
+                    if [ kd9 == 3 ] cv.rect_to[ bounds.x + 2.0, yg - ((hvr) ? 1.5 : 1.0), gut_w - 4.0, (hvr) ? 3.0 : 2.0 ]
                     el             cv.rect_to[ bounds.x + 2.0, yg + 1.0, gut_w - 4.0, lh - 2.0 ]
                     cv.paint[ ]
             if [ !showing && stop_vrow == li ]
@@ -2659,6 +2662,9 @@ Control Editor
     # ctrl/cmd is held: resolvable symbols outline as clickable targets
     mutable mod_down      : bool
     mutable hover_gutter  : bool
+    # the gutter pointer within a removal edge's band (a quarter line above
+    # and below the edge): it lights, and a press there reveals the run
+    mutable hover_edge    : bool
     # true while dragging the scrollbar thumb
     mutable scroll_dragging : bool
     mutable sel_line      : i32 [ -1 ]
@@ -3423,8 +3429,9 @@ Control Editor
         sline  : vec i32 []       # open lines, outermost first
         sind   : vec i32 []       # and their indents
         above  : i32 [ -1 ]
-        for [ i: i32 0, i < n, i += 1 ]
-            ln  : string lines.value_by_index[ i ]
+        i      : i32 [ -1 ]
+        for [ ln: string ] in lines
+            i += 1
             ind : i32 [ 0 ]
             while [ ln && ind < ln.count && (ln[ind] == 32 || ln[ind] == 9) ] ind += 1
             if [ !ln || ind >= ln.count ]
@@ -4640,6 +4647,22 @@ Control Editor
             el [ row >= r0 && row < r0 + rn ] return i
         return -1
 
+    # the removal hunk whose edge band holds the pointer, -1 off: fy is the
+    # pointer's y within view row vr. the edge sits on the row's top line;
+    # its band reaches a quarter line into that row and a quarter line into
+    # the row above, so the rest of both gutter rows stays a breakpoint's
+    func edge_hunk [ vr: i32, fy: f32, lh: f32 ] -> i32
+        if [ !git_on || !hunks || vr < 0 ] return -1
+        sr : i32 [ row_src[ vr ] ]
+        if [ sr < 0 ] return -1
+        if [ fy < lh * 0.25 ]
+            h0 : i32 [ hunk_at[ sr ] ]
+            if [ h0 >= 0 && hunks[ h0 * 3 + 2 ] == 3 ] return h0
+        if [ fy > lh * 0.75 ]
+            h1 : i32 [ hunk_at[ sr + 1 ] ]
+            if [ h1 >= 0 && hunks[ h1 * 3 + 2 ] == 3 ] return h1
+        return -1
+
     # a hunk's first row as drawn: open ghost rows above it push it down
     func hunk_view_row [ i: i32 ] -> i32
         r0 : i32 [ hunks[ i * 3 ] ]
@@ -4809,9 +4832,13 @@ Control Editor
             fa8 : string orb8.file_args[ src ]
             nv.module_args = (fa8 && fa8.count > 0) ? fa8 : orb8.module_args
         nv.held = true                 # not running until its row is clicked
+        # a new instance shows by its display: PIP (the default) puts it in
+        # the panel's pip once it has a frame, Full takes the pane. the pip
+        # flag is the instance's own, as select_instance and set_display keep it
+        nv.pip  = nv.display == 0
         if [ orb8 ] orb8.add_instance[ nv ]
         run_view = nv
-        app_view = true
+        app_view = nv.display == 1
         pristine = false
         no_scroll = true
         if [ ux ] ux.restyle = true
@@ -5180,15 +5207,13 @@ Control Editor
                                 pristine = false
                                 ux.will_animate = true
                                 return
-        if [ ele && elements && elements['pins'] && rel_x > ele.bounds.w - 144.0 ]
-            return
         if [ ele && rel_x < gutter_w ]
             lh    : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
             rel_y : f32 [ ev.mouse.pos.y - ele.bounds.y - ((show_hits) ? 10.0 : 0.0) ]
             if [ rel_y < 0.0 ] return
             vrl   : i32 [ clamp [ rel_y / lh, 0, line_count[] - 1 ] ]
             if [ row_header[ vrl ] ]
-                # nav rows pin by shift-click, never by gutter press
+                # nav rows never react to a gutter press
                 if [ nav_list ] return
                 if [ show_hits && hits ]
                     remove_group[ vrl ]
@@ -5204,9 +5229,11 @@ Control Editor
             if [ row_ghost[ vrl ] ]
                 ghost_toggle[ ghost_hunk ]
                 return
-            ghk : i32 [ (git_on && hunks) ? hunk_at[ row_src[ vrl ] ] : -1 ]
-            if [ ghk >= 0 && hunks[ ghk * 3 + 2 ] == 3 ]
-                ghost_toggle[ ghk ]
+            # a press within a removal edge's band shows its lines; the rest
+            # of the gutter row is the breakpoint's
+            geh : i32 [ edge_hunk[ vrl, rel_y - f32[ vrl ] * lh, lh ] ]
+            if [ geh >= 0 ]
+                ghost_toggle[ geh ]
                 return
             ln    : i32 [ row_src[ vrl ] ]
             key   : '{src}:{ln + 1}'
@@ -5326,11 +5353,19 @@ Control Editor
             if [ in_list || oh || nh ]
                 pristine = false
                 ux.will_animate = true
+        # a removal edge lights while the gutter pointer is in its band:
+        # a change repaints, since plain rows never repaint on hover
+        he : bool [ hg && hl >= 0 && edge_hunk[ hl, rel_y - f32[ hl ] * lh, lh ] >= 0 ]
+        if [ he != hover_edge ]
+            hover_edge = he
+            pristine = false
+            ux.will_animate = true
 
     func on_leave [ ev: Event ]
         if [ hover_line != -1 || hover_gutter || hover_ann != -1 || tool_hover != -1 ]
             hover_line   = -1
             hover_gutter = false
+            hover_edge   = false
             hover_ann    = -1
             tool_hover   = -1
             pristine = false
@@ -5625,10 +5660,13 @@ Control Editor
             line  : line_get[ row    ]
             left  : line.mid[ 0, col ]
             right : line.mid[col, line.count - col]
+            # the new line keeps this one's indent (up to the caret)
+            ni : i32 [ 0 ]
+            while [ ni < col && (line[ ni ] == 32 || line[ ni ] == 9) ] ni += 1
             ed_set[ row, left ]
-            ed_insert[ row + 1, right ]
+            ed_insert[ row + 1, line.mid[ 0, ni ] + right ]
             sel_line += 1
-            sel_col   = 0
+            sel_col   = ni
             anchor_line = sel_line
             anchor_col  = sel_col
             end_edit[]

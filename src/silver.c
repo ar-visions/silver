@@ -4626,6 +4626,23 @@ AU_EXPORT void silver_init(silver a) {
 
     if (!update_product) {
         build_status(a, "[%o] up to date", a->name);
+        // a cached module still owns its dependency tree: the parent flattens
+        // it into ITS .source, and an empty subtree here was why a module
+        // built while its imports were current (spectra, speech) never saw
+        // a later trinity change. the tree comes back from our own .source
+        if (a->tree && file_exists("%o", a->source_path)) {
+            FILE *sf = fopen(a->source_path->chars, "r");
+            if (sf) {
+                char buf[4096];
+                while (fgets(buf, sizeof(buf), sf)) {
+                    buf[strcspn(buf, "\n")] = '\0';
+                    if (!*buf) continue;
+                    path p = path(buf);
+                    if (!get(a->tree, (Au)p)) set(a->tree, (Au)p, (Au)map(hsize, 8));
+                }
+                fclose(sf);
+            }
+        }
         a->product = hold(absolute(a->product_link));
         deploy_module_resources(a);
         publish_product(a);

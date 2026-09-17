@@ -1,5 +1,12 @@
+# asnes: a Super Nintendo in silver, asked for through the exchange
+# a second line on top, asked for the same way
+# a third, from the file exchange at line 1
 export 0.8.8
-export extensions ['.smc': FileType.binary, '.sfc': FileType.binary, '.spc': FileType.binary]
+export extensions [
+	'.smc': FileType.binary,
+	'.sfc': FileType.binary, 
+	'.spc': FileType.binary
+]
 
 import trinity
 import img
@@ -1424,27 +1431,26 @@ element asnes : trinity
 			x0 = -16                                     # overscan bleed columns (glide reveal)
 			x1 = 272
 		for [ x: i32 x0, x < x1, x += 1 ]
-			if [ x >= 0 && x < 256 && y >= 0 && y < 224 ]
-				if [ bg_win_masked[ bg, x, yr, scr ] ] continue
+			if [ x >= 0 && x < 256 && y >= 0 && y < 224 && bg_win_masked[ bg, x, yr, scr ] ] continue
 			hoc : u32 [ hofs ]
 			voc : u32 [ vofs ]
-			if [ opt ]
-				optx : i32 [ x + i32[hofs & 7] ]
-				if [ optx >= 8 ]
-					ct  : i32 [ (optx - 8) >> 3 ]
-					pxp : i32 [ (ct << 3) + i32[b3h & 0xFFF8] ]
-					hval : u32 [ opt_entry[ pxp, i32[b3v], yr ] ]
-					switch [ mode3 ]
-						case 2                              # both H and V (two OPT entries)
-							vval : u32 [ opt_entry[ pxp, i32[b3v] + 8, yr ] ]
-							if [ hval & optbit ] hoc = (hval & 0x3F8) | (hofs & 7)
-							if [ vval & optbit ] voc = vval & 0x3FF
-						case 4                              # one entry: bit15 selects H or V
-							if [ hval & optbit ]
-								if [ hval & 0x8000 ] voc = hval & 0x3FF
-								el hoc = (hval & 0x3F8) | (hofs & 7)
-						case 6                              # horizontal only
-							if [ hval & optbit ] hoc = (hval & 0x3F8) | (hofs & 7)
+			# offset-per-tile: the first 8 columns take the plain scroll
+			optx : i32 [ x + i32[hofs & 7] ]
+			if [ opt && optx >= 8 ]
+				ct  : i32 [ (optx - 8) >> 3 ]
+				pxp : i32 [ (ct << 3) + i32[b3h & 0xFFF8] ]
+				hval : u32 [ opt_entry[ pxp, i32[b3v], yr ] ]
+				switch [ mode3 ]
+					case 2                              # both H and V (two OPT entries)
+						vval : u32 [ opt_entry[ pxp, i32[b3v] + 8, yr ] ]
+						if [ hval & optbit ] hoc = (hval & 0x3F8) | (hofs & 7)
+						if [ vval & optbit ] voc = vval & 0x3FF
+					case 4                              # one entry: bit15 selects H or V
+						if [ hval & optbit ]
+							if [ hval & 0x8000 ] voc = hval & 0x3FF
+							el hoc = (hval & 0x3F8) | (hofs & 7)
+					case 6                              # horizontal only
+						if [ hval & optbit ] hoc = (hval & 0x3F8) | (hofs & 7)
 			sx : u32 [ (u32[x] + hoc) & hmask ]
 			syl: u32 [ (u32[y + 1] + voc) & vmask ]
 			tx : u32 [ sx >> tshift ]
@@ -1542,34 +1548,32 @@ element asnes : trinity
 			taddr : u32 [ tbase ]
 			if [ b3 & 1 ] taddr = tbase + ((1 + nsel) << 12)
 			cgb   : u32 [ 128 + pal * 16 ]
-			oy : i32 [ 0 ]
-			while [ oy < sh ]
+			# the sprite's rows on screen, then its columns: a row or a column
+			# off the visible area, or a clear pixel, moves on
+			for [ oy: i32 0, oy < sh, oy += 1 ]
 				scy : i32 [ (i32[b1] + oy) & 0xFF ]
-				if [ scy < 224 && (line_tm[scy] & 0x10) ]
-					syp : i32 [ oy ]
-					if [ vflip ] syp = sh - 1 - oy
-					cy  : u32 [ ((nlo >> 4) + u32[syp >> 3]) & 0x0F ]
-					ox : i32 [ 0 ]
-					while [ ox < sw ]
-						scx : i32 [ fx + ox ]
-						if [ scx >= 0 && scx < 256 ]
-							sxp  : i32 [ ox ]
-							if [ hflip ] sxp = sw - 1 - ox
-							cx   : u32 [ ((nlo & 0x0F) + u32[sxp >> 3]) & 0x0F ]
-							addr : u32 [ taddr + (cy * 16 + cx) * 16 + u32[syp & 7] ]
-							w01  : u32 [ ppu_vw[ addr ] ]
-							w23  : u32 [ ppu_vw[ addr + 8 ] ]
-							bit  : u32 [ u32[7 - (sxp & 7)] ]
-							col  : u32 [ ((w01 >> bit) & 1) | (((w01 >> (bit + 8)) & 1) << 1) | (((w23 >> bit) & 1) << 2) | (((w23 >> (bit + 8)) & 1) << 3) ]
-							if [ col ]
-								di : i32 [ scy * 256 + scx ]
-								ocol : u16 [ ppu_cgram_color[ cgb + col ] ]
-								ppu.obj_color[di] = ppu_color[ ocol, bright ]
-								ppu.obj_bgr[di]   = ocol
-								ppu.obj_prio[di]  = u8[oprio]
-								ppu.obj_idx[di]   = u8[n]
-						ox += 1
-				oy += 1
+				if [ scy >= 224 || !(line_tm[scy] & 0x10) ] continue
+				syp : i32 [ oy ]
+				if [ vflip ] syp = sh - 1 - oy
+				cy  : u32 [ ((nlo >> 4) + u32[syp >> 3]) & 0x0F ]
+				for [ ox: i32 0, ox < sw, ox += 1 ]
+					scx : i32 [ fx + ox ]
+					if [ scx < 0 || scx >= 256 ] continue
+					sxp  : i32 [ ox ]
+					if [ hflip ] sxp = sw - 1 - ox
+					cx   : u32 [ ((nlo & 0x0F) + u32[sxp >> 3]) & 0x0F ]
+					addr : u32 [ taddr + (cy * 16 + cx) * 16 + u32[syp & 7] ]
+					w01  : u32 [ ppu_vw[ addr ] ]
+					w23  : u32 [ ppu_vw[ addr + 8 ] ]
+					bit  : u32 [ u32[7 - (sxp & 7)] ]
+					col  : u32 [ ((w01 >> bit) & 1) | (((w01 >> (bit + 8)) & 1) << 1) | (((w23 >> bit) & 1) << 2) | (((w23 >> (bit + 8)) & 1) << 3) ]
+					if [ !col ] continue
+					di : i32 [ scy * 256 + scx ]
+					ocol : u16 [ ppu_cgram_color[ cgb + col ] ]
+					ppu.obj_color[di] = ppu_color[ ocol, bright ]
+					ppu.obj_bgr[di]   = ocol
+					ppu.obj_prio[di]  = u8[oprio]
+					ppu.obj_idx[di]   = u8[n]
 			k9 -= 1
 
 	func ppu_obj_line [ y: i32, want_prio: u32, bright: u32 ]
@@ -3158,26 +3162,25 @@ element asnes : trinity
 								sl : i32 [ (((adsr2 >> 5) & 0x07) + 1) << 8 ]
 								if [ spc.channels[ch].env_state == 1 && env <= sl ]
 									spc.channels[ch].env_state = 2
+				el [ gain & 0x80 ]
+					gmode : u8  [ (gain >> 5) & 0x03 ]
+					grate : i32 [ gain & 0x1F ]
+					gper  : i32 [ env_rate[ grate ] ]
+					if [ gper > 0 ]
+						spc.channels[ch].env_count += 1
+						if [ spc.channels[ch].env_count >= gper ]
+							spc.channels[ch].env_count = 0
+							switch [ gmode ]
+								case 0
+									env -= 32
+								case 1
+									env -= (((env - 1) >> 8) + 1)
+								case 2
+									env += 32
+								default
+									env += ((env < 0x600) ? 32 : 8)
 				el
-					if [ gain & 0x80 ]
-						gmode : u8  [ (gain >> 5) & 0x03 ]
-						grate : i32 [ gain & 0x1F ]
-						gper  : i32 [ env_rate[ grate ] ]
-						if [ gper > 0 ]
-							spc.channels[ch].env_count += 1
-							if [ spc.channels[ch].env_count >= gper ]
-								spc.channels[ch].env_count = 0
-								switch [ gmode ]
-									case 0
-										env -= 32
-									case 1
-										env -= (((env - 1) >> 8) + 1)
-									case 2
-										env += 32
-									default
-										env += ((env < 0x600) ? 32 : 8)
-					el
-						env = (gain & 0x7F) << 4                  # direct gain
+					env = (gain & 0x7F) << 4                  # direct gain
 				if [ env > 0x7FF ] env = 0x7FF
 				if [ env < 0 ] env = 0
 				spc.channels[ch].envelope = i16[ env ]

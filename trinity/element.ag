@@ -338,6 +338,8 @@ ielement element
     # loaded at runtime (scenes) are not rebuilt when this file changes
     # a raw agent line the shell forwarded; the app owns what it means
     public func on_agent   [ s: string ] return
+    # the app's avatar for the exchange under a screenshot prompt, or null
+    public func agent_avatar [] -> element return null
     # the instruments this instance can show. the shell asks, never guesses
     public func instruments [] -> vec string
         return null
@@ -730,6 +732,15 @@ class Layer
         sc  : i32 [ (col < anc) ? col : anc ]
         ec  : i32 [ (col < anc) ? anc : col ]
 
+        # the caret stays in view: text past the box's right edge slides
+        # left under it by the overshoot, and the drawing is cropped to the box
+        prefix : string [ (has_edit) ? etext.mid[ 0, col ] : '' ]
+        pm     : cv.measure_text[ prefix ]
+        right  : f32 [ bounds.x + bounds.w - ox - 4.0 ]
+        shift  : f32 [ (x0 + pm.w > right) ? (x0 + pm.w - right) : 0.0 ]
+        x0 -= shift
+        cv.set_crop[ bounds.x, bounds.y, bounds.x + bounds.w, bounds.y + bounds.h ]
+
         if [ has_edit && sc != ec ]
             cv.fill_color[ '#264f78' ]
             cv.stroke_width[ 0.0 ]
@@ -737,17 +748,16 @@ class Layer
             cv.paint[]
 
         cv.fill_color[ label_color ]
-        cv.draw_text[ disp, bounds, vec2f [ ax, ay ], vec2f [ ox, oy ], Overflow.visible, null ]
+        cv.draw_text[ disp, bounds, vec2f [ ax, ay ], vec2f [ ox - shift, oy ], Overflow.visible, null ]
         cv.paint[]
 
         if [ parent.focused && parent.sel_col >= 0 ]
-            prefix : string [ (has_edit) ? etext.mid[ 0, col ] : '' ]
-            m  : cv.measure_text[ prefix ]
-            cx : f32 [ x0 + m.w ]
+            cx : f32 [ x0 + pm.w ]
             cv.fill_color[ '#fff' ]
             cv.stroke_width[ 0.0 ]
             cv.rect_to[ cx, y0 - metrics.ascent + 2.0, 2.0, fh - 4.0 ]
             cv.paint[]
+        cv.clear_crop[]
 
 
 class Event

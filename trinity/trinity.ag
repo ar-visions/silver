@@ -1,3 +1,6 @@
+# a comment on top, asked for through the exchange
+# trinity: the window, the elements, and the light behind both
+# one comment, as asked through the exchange
 export 0.1.0
 export VK_LAYER_PATH: '{install}/share/vulkan/explicit_layer.d'
 ifdef [ apple ]
@@ -249,6 +252,9 @@ func host_keep        [ key: cstr, value: handle ]
 func host_kept        [ key: cstr ] -> handle
 func agent_sock_send  [ nm: cstr, txt: cstr ] -> i32
 func agent_sock_ask   [ nm: cstr, txt: cstr, out: @i8, cap: i32 ] -> i32
+func agent_inbox_find [ root: cstr, sock: cstr, sock_out: @i8, sock_cap: i32, peer_out: @i8, peer_cap: i32 ] -> i32
+func agent_inbox_post [ sock: cstr, peer: cstr, sender: cstr, txt: cstr, priority: cstr ] -> i32
+func agent_codex_post [ root: cstr, sock: cstr, session: cstr, txt: cstr ] -> i32
 
 # the launch/live property spec of any object, read from its type: the
 # running app answers props with it, and a host enumerates a module by
@@ -1200,6 +1206,9 @@ abstract live_app media_app
                 if [ sl9 > 0 ] name = '{name}-{sl9}'
                 agent_on = agent_sock_open[ name ] != 0
                 if [ !agent_on ] return
+                # the path an agent is told to answer on
+                rt9 : cstr [ getenv[ 'XDG_RUNTIME_DIR' ] ]
+                wn.agent_sock = '{(rt9 && strlen[ rt9 ] > 0) ? string[ rt9 ] : '/tmp'}/trinity-{name}.sock'
             while [ true ]
                 buf : local i8 [ 1024 ]
                 got : i32 [ agent_sock_line[ @buf[0], 1024 ] ]
@@ -1529,6 +1538,75 @@ func bind_members [ instance: element ]
             instance.layers.rm[ 'iconl' ]
             instance.layers[ string[ 'iconl' ] ] = bic
 
+# the pipeline's reduce-then-blur, one unit: `source` (already at
+# from_scale of the window) halved `steps` times, then the vertical and
+# horizontal gaussian at that reduction, output full size. the frost chain
+# builds three of these off its entry copy; the screenshot builds one off
+# its capture and runs it once
+class ReduceBlur
+    public renders : vec Render     # the reduces in order, then the two blur passes
+    public models  : vec Model      # one per render, the same order
+    public scale   : f32            # the reduction the blur runs at (2, 4, 16)
+
+    func build [ vc: vk_context, dsp: Display, source: Texture, from_scale: f32, steps: i32 ]
+        renders = vec Render []
+        models  = vec Model []
+        prev : Texture source
+        sc   : f32 [ from_scale ]
+        for [ i: i32 0, i < steps, i += 1 ]
+            sc = sc * 0.5
+            m : Model  [ w: dsp, samplers: map Texture[string] [ 'color': prev ] ]
+            r : Render [ vk: vc, w: dsp, wscale: sc, models: [m ] ]
+            models.push[ m ]
+            renders.push[ r ]
+            prev = r.color
+        scale = 1.0 / sc
+        bv : BlurV [ vk: vc, name: 'blur-v', reduction_scale: scale ]
+        bv.hold[]
+        mv : Model  [ w: dsp, s: bv, samplers: map Texture[string] [ 'color': prev ] ]
+        rv : Render [ vk: vc, w: dsp, wscale: 1.0, models: [mv ] ]
+        models.push[ mv ]
+        renders.push[ rv ]
+        bl : Blur [ vk: vc, name: 'blur', reduction_scale: scale ]
+        bl.hold[]
+        mh : Model  [ w: dsp, s: bl, samplers: map Texture[string] [ 'color': rv.color ] ]
+        rh : Render [ vk: vc, w: dsp, wscale: 1.0, models: [mh ] ]
+        models.push[ mh ]
+        renders.push[ rh ]
+
+    # a reduce's output: the chain branches off these
+    func stage [ i: i32 ] -> Texture
+        r : Render renders[ i ]
+        return r.color
+
+    func last [] -> Render
+        return renders[ renders.count - 1 ]
+
+    func color [] -> Texture
+        r : Render last[]
+        return r.color
+
+    # a resize replaced the colors: rebind every stage from CURRENT
+    # textures, in order
+    func rewire [ source: Texture ]
+        prev : Texture source
+        for [ i: i32 0, i < models.count, i += 1 ]
+            m : Model models[ i ]
+            m.samplers = map Texture[string] [ 'color': prev ]
+            m.rebind_model[]
+            r : Render renders[ i ]
+            prev = r.color
+
+    # the stages into a draw list, in order
+    func append [ to: vec Render ]
+        for [ r: Render ] in renders
+            to.push[ r ]
+
+    # run once, fenced: a one-shot source
+    func run []
+        for [ r: Render ] in renders
+            r.update*[] r.draw*[] r.sync_fence[]
+
 Display Window
     # weak: the window outlives a module reload, and live_destroy owns the app
     # instance. owning it here released one the host still held
@@ -1564,18 +1642,9 @@ Display Window
     mutable rebind_frost         : bool
     mutable m_reduce             : Model
     mutable r_reduce             : Render
-    mutable m_reduce0            : Model
-    mutable r_reduce0            : Render
-    mutable m_reduce1            : Model
-    mutable r_reduce1            : Render
-    mutable m_reduce2            : Model
-    mutable r_reduce2            : Render
-    mutable m_reduce3            : Model
-    mutable r_reduce3            : Render
-    mutable m_blur_v             : Model
-    mutable r_blur_v             : Render
-    mutable m_blur               : Model
-    mutable r_blur               : Render
+    # the three reduce-then-blur units off the entry copy: blur at 1/4,
+    # soft at 1/2, frost at 1/16
+    mutable rb_blur              : ReduceBlur
     # which stage feeds the panels: 0 frost, 1 blur, 2 soft, 3 raw
     # -1 = follow the scene; the status bar sets it explicitly
     # 0 frost, 1 blur, 2 soft, 3 raw
@@ -1585,14 +1654,8 @@ Display Window
     public  backdrop_bypass      : bool
     mutable frost_bound          : i32 [ -2 ]
     # half-size blur; the sharp frost path uses it for the mid stage
-    mutable m_soft_v             : Model
-    mutable r_soft_v             : Render
-    mutable m_soft               : Model
-    mutable r_soft               : Render
-    mutable m_frost_v            : Model
-    mutable r_frost_v            : Render
-    mutable m_frost              : Model
-    mutable r_frost              : Render
+    mutable rb_soft              : ReduceBlur
+    mutable rb_frost             : ReduceBlur
     mutable m_view               : Model
     mutable r_view               : Render
 
@@ -1700,7 +1763,24 @@ Display Window
     mutable screenshot_scale    : f32
     mutable screenshot_image    : Image
     mutable screenshot_texture  : Texture
+    mutable screenshot_blur     : ReduceBlur   # the frame through the pipeline's blur, once
     public  screenshot_path     : path
+    # a crop just taken, while the prompt for its line is up
+    mutable shot_ask            : path
+    # the exchange is up: the agent's lines and the app's avatar under the field
+    mutable agent_view          : bool
+    mutable agent_notes         : vec ShotEntry
+    mutable agent_diff_cur      : bool   # the last wire line was a diff line: the next joins it
+    mutable shot_file           : bool   # the exchange is about a file (shot_ask is its path), not a crop
+    mutable shot_line           : i32    # the line in that file, 0 for none
+    mutable agent_min           : bool     # Esc put the exchange away; the status item brings it back
+    mutable shot_text           : string   # the lines so far: every send reposts the whole message
+    mutable agent_sock          : string   # this app's socket path, quoted to the agent
+    mutable user_notes          : vec ShotEntry   # the user's lines, their own list beside the agent's
+    mutable agent_busy          : bool     # the agent said busy: the shine keeps moving
+
+    public func agent_state_busy [] -> bool
+        return agent_busy
 
     func screenshot_point [ p: vec2f ] -> vec2f
         x : f32 [ p.x ]
@@ -1715,8 +1795,18 @@ Display Window
         lr : Render last_render[]
         if [ !lr || !lr.color ] return
         screenshot_image = Image [ lr.color ]
+        # linear: the frame's bytes shown as they are. an sRGB-format
+        # texture decodes on sample and the UNORM swap writes that raw,
+        # which crushed the whole capture dark
         screenshot_texture = Texture [ vk: vk, w: a,
-            sampler: screenshot_image ]
+            sampler: screenshot_image, linear: true ]
+        # the frame through the pipeline's reduce-then-blur (1/4, as the
+        # chain's blur stage), once: what shows outside the crop
+        ctx9 : vk_context[ a.vk ]
+        rb9  : ReduceBlur []
+        rb9.build[ ctx9, a, screenshot_texture, 1.0, 2 ]
+        rb9.run[]
+        screenshot_blur     = rb9
         screenshot_scale    = time_scale
         screenshot_x0       = 0.0
         screenshot_y0       = 0.0
@@ -1734,6 +1824,106 @@ Display Window
         screenshot_texture  = null
         screenshot_image    = null
         will_animate        = true
+
+    # one of the user's lines into their list
+    func user_note [ text: string ]
+        if [ !text || text.count == 0 ] return
+        if [ !user_notes ] user_notes = vec ShotEntry []
+        user_notes.push[ ShotEntry [ text: text ] ]
+        while [ user_notes.count > 8 ] user_notes.remove[ 0 ]
+        if [ root && root.elements ]
+            ue : element root.elements[ 'unotes' ]
+            if [ ue ] ue.pristine = false
+        will_animate = true
+
+    # a line from the agent into its list
+    func agent_note [ state: string, text: string ]
+        if [ !text || text.count == 0 ] return
+        if [ !agent_notes ] agent_notes = vec ShotEntry []
+        agent_notes.push[ ShotEntry [ text: text ] ]
+        agent_diff_cur = false
+        while [ agent_notes.count > 8 ] agent_notes.remove[ 0 ]
+        if [ root && root.elements ]
+            ne : element root.elements[ 'notes' ]
+            if [ ne ] ne.pristine = false
+        will_animate = true
+
+    # a line of a source diff the agent applied: consecutive diff lines are
+    # one entry in its box, shown as a label (file, +added -removed) whose
+    # code expands when clicked
+    func agent_diff [ text: string ]
+        if [ !text ] return
+        if [ !agent_notes ] agent_notes = vec ShotEntry []
+        en : ShotEntry [ (agent_diff_cur && agent_notes.count > 0) ? agent_notes[ agent_notes.count - 1 ] : null ]
+        if [ !en || !en.diff ]
+            en = ShotEntry [ text: text, diff: vec string [] ]
+            agent_notes.push[ en ]
+            while [ agent_notes.count > 8 ] agent_notes.remove[ 0 ]
+        en.diff.push[ text ]
+        agent_diff_cur = true
+        # the label: the file from a 'diff --git a/x b/x' header (else the
+        # first line), with the line counts
+        first : string en.diff[ 0 ]
+        name  : string [ first ]
+        bat   : i32 [ first.index_of[ ' b/' ] ]
+        if [ first.starts_with[ 'diff --git ' ] && bat > 0 ] name = first.mid[ bat + 3, first.count - bat - 3 ]
+        adds : i32 [ 0 ]
+        dels : i32 [ 0 ]
+        for [ ln: string ] in en.diff
+            if [ ln.count > 0 && ln.chars[ 0 ] == 43 && !ln.starts_with[ '+++' ] ] adds += 1
+            if [ ln.count > 0 && ln.chars[ 0 ] == 45 && !ln.starts_with[ '---' ] ] dels += 1
+        en.text = '{name}  +{adds} -{dels}'
+        if [ root && root.elements ]
+            ne : element root.elements[ 'notes' ]
+            if [ ne ] ne.pristine = false
+        will_animate = true
+
+    # the exchange back up after an Esc
+    public func agent_show []
+        if [ !shot_ask ] return
+        agent_min = false
+        restyle   = true
+
+    # the prompt and the exchange go, the blur with them
+    # the exchange, about a crop (the capture's path) or a file at a line:
+    # the frame behind is blurred as the capture is, the boxes and the
+    # avatar come up, and the first send carries the reference
+    public func exchange_open [ at: path, ln: i32, is_file: bool ]
+        if [ !at ] return
+        if [ !screenshot_blur ]
+            lr : Render last_render[]
+            if [ lr && lr.color ]
+                # held in the same members the capture uses: a local image
+                # and texture die at the return while the blur still reads
+                # them (a heap fault at the next allocation)
+                screenshot_image   = Image [ lr.color ]
+                screenshot_texture = Texture [ vk: vk, w: a, sampler: screenshot_image, linear: true ]
+                ctx9 : vk_context[ a.vk ]
+                rb9  : ReduceBlur []
+                rb9.build[ ctx9, a, screenshot_texture, 1.0, 2 ]
+                rb9.run[]
+                screenshot_blur = rb9
+        shot_ask    = at
+        shot_file   = is_file
+        shot_line   = ln
+        agent_view  = false
+        agent_min   = false
+        agent_notes = null
+        user_notes  = null
+        shot_text   = ''
+        restyle     = true
+        will_animate = true
+
+    func shot_close []
+        shot_ask        = null
+        agent_view      = false
+        agent_min       = false
+        shot_text       = ''
+        user_notes      = null
+        agent_notes     = null
+        screenshot_blur = null
+        if [ focus ] release_focus[ focus ]
+        restyle = true
 
     func screenshot_save []
         if [ !screenshot_image ] return
@@ -1763,18 +1953,29 @@ Display Window
         if [ !screenshot_texture ] return
         ww : f32 [ f32[ width ] ]
         wh : f32 [ f32[ height ] ]
-        screen.draw_image[ screenshot_texture,
-            rect [ x: 0.0, y: 0.0, w: ww, h: wh ] ]
         lx : f32 [ min[ screenshot_x0, screenshot_x1 ] ]
         ly : f32 [ min[ screenshot_y0, screenshot_y1 ] ]
         hx : f32 [ max[ screenshot_x0, screenshot_x1 ] ]
         hy : f32 [ max[ screenshot_y0, screenshot_y1 ] ]
-        screen.fill_color[ '#00000099' ]
+        # the blurred frame behind, the crop sharp from the original over it
+        if [ screenshot_blur ]
+            screen.draw_image[ screenshot_blur.color[],
+                rect [ x: 0.0, y: 0.0, w: ww, h: wh ] ]
+        el
+            screen.draw_image[ screenshot_texture,
+                rect [ x: 0.0, y: 0.0, w: ww, h: wh ] ]
+        if [ hx > lx && hy > ly ]
+            screen.draw_image_crop[ screenshot_texture,
+                rect [ x: lx, y: ly, w: hx - lx, h: hy - ly ],
+                lx / ww, ly / wh, hx / ww, hy / wh ]
+        # outside the crop at half: 50% black over a linear frame is
+        # exactly a 0.5 multiply
+        screen.fill_color[ '#00000080' ]
         screenshot_rect[ 0.0, 0.0, ww, ly ]
         screenshot_rect[ 0.0, hy, ww, wh - hy ]
         screenshot_rect[ 0.0, ly, lx, hy - ly ]
         screenshot_rect[ hx, ly, ww - hx, hy - ly ]
-        screen.fill_color[ '#ffffff' ]
+        screen.fill_color[ '#ffffff80' ]
         screenshot_rect[ lx, ly, hx - lx, 2.0 ]
         screenshot_rect[ lx, hy - 2.0, hx - lx, 2.0 ]
         screenshot_rect[ lx, ly, 2.0, hy - ly ]
@@ -2470,6 +2671,26 @@ Display Window
             e[ 'uxgenerics' ] = UXGenerics [ topmost: true, target: ae ]
         if [ ide_active ]
             e[ 'hostedshell' ] = IDEOverlay [ topmost: true ]
+        if [ shot_ask && !agent_min ]
+            e[ 'shot_bg' ] = ShotBackdrop [ topmost: true ]
+            if [ agent_view ]
+                e[ 'unotes' ] = ShotUser   [ topmost: true, area: Region [ 'l24px b-15%+594px w440px h420px' ] ]
+                e[ 'shot' ]   = ShotPrompt [ topmost: true, area: Region [ 'l32px b-15%+220px w424px h40px' ], label: 'prompt description' ]
+            el
+                e[ 'unotes' ] = ShotUser   [ topmost: true ]
+                e[ 'shot' ]   = ShotPrompt [ topmost: true, label: 'prompt description' ]
+            if [ agent_view ]
+                e[ 'notes' ]  = ShotNotes [ topmost: true ]
+        # the app's exchange avatar is one instance, mounted for the life of
+        # the app and invisible between exchanges: it is never torn down.
+        # mounted AFTER the blur, or the blur paints over it
+        av : element [ (ae) ? ae.agent_avatar*[] : null ]
+        if [ av ] e[ 'agent_av' ] = av
+            # the field takes focus once the tree holds it: this render's
+            # instance is not the one that gets mounted
+            if [ root && root.elements ]
+                tf : element root.elements[ 'shot' ]
+                if [ tf && focus != tf ] set_focus[ tf ]
         return e
 
     public func update_all [ render: Elements ]
@@ -2815,9 +3036,13 @@ Display Window
         if [ screenshot_active ]
             if [ ev.key.state && ev.key.unicode == 256 ]
                 screenshot_end[]
+                screenshot_blur = null
             el [ ev.key.state && ev.key.unicode == 257 ]
+                screenshot_path = null
                 screenshot_save[]
                 screenshot_end[]
+                # the crop taken: a line to the agent goes with it
+                if [ screenshot_path ] exchange_open[ screenshot_path, 0, false ]
             return
         if [ ev.key.state && ev.key.shift &&
              (ev.key.ctrl || ev.key.meta) && ev.key.unicode == 83 ]
@@ -3171,15 +3396,15 @@ Display Window
 
     func frost_src [ ] -> Render
         e : i32 [ frost_eff[] ]
-        if [ e == 1 ] return r_blur
+        if [ e == 1 ] return rb_blur.last[]
         if [ e == 2 ] return r_reduce
-        return r_frost
+        return rb_frost.last[]
 
     func blur_src [ ] -> Render
         e : i32 [ frost_eff[] ]
-        if [ e == 1 ] return r_soft
+        if [ e == 1 ] return rb_soft.last[]
         if [ e >= 2 ] return r_reduce
-        return r_blur
+        return rb_blur.last[]
 
     # resize REPLACES render color attachments: every stage's sampler map
     # still points at the dead texture, and rebind_model faithfully
@@ -3203,32 +3428,15 @@ Display Window
         src9 : Texture [ (backdrop) ? backdrop.color : compose.color ]
         m_reduce.samplers  = map Texture[string] [ 'color': src9 ]
         m_reduce.rebind_model[]
-        m_reduce0.samplers = map Texture[string] [ 'color': r_reduce.color ]
-        m_reduce0.rebind_model[]
-        m_reduce1.samplers = map Texture[string] [ 'color': r_reduce0.color ]
-        m_reduce1.rebind_model[]
-        m_blur_v.samplers  = map Texture[string] [ 'color': r_reduce1.color ]
-        m_blur_v.rebind_model[]
-        m_blur.samplers    = map Texture[string] [ 'color': r_blur_v.color ]
-        m_blur.rebind_model[]
-        m_soft_v.samplers  = map Texture[string] [ 'color': r_reduce0.color ]
-        m_soft_v.rebind_model[]
-        m_soft.samplers    = map Texture[string] [ 'color': r_soft_v.color ]
-        m_soft.rebind_model[]
-        m_reduce2.samplers = map Texture[string] [ 'color': r_reduce1.color ]
-        m_reduce2.rebind_model[]
-        m_reduce3.samplers = map Texture[string] [ 'color': r_reduce2.color ]
-        m_reduce3.rebind_model[]
-        m_frost_v.samplers = map Texture[string] [ 'color': r_reduce3.color ]
-        m_frost_v.rebind_model[]
-        m_frost.samplers   = map Texture[string] [ 'color': r_frost_v.color ]
-        m_frost.rebind_model[]
+        rb_blur.rewire[ r_reduce.color ]
+        rb_soft.rewire[ rb_blur.stage[ 0 ] ]
+        rb_frost.rewire[ rb_blur.stage[ 1 ] ]
         fr : frost_src[]
         bl : blur_src[]
         m_view.samplers = map Texture[string] [
             'background': src9,
-            'frost':      (fr) ? fr.color : r_frost.color,
-            'blur':       (bl) ? bl.color : r_blur.color,
+            'frost':      (fr) ? fr.color : rb_frost.color[],
+            'blur':       (bl) ? bl.color : rb_blur.color[],
             'compose':    compose.color ]
         m_view.rebind_model[]
         frost_bound = frost_eff[]
@@ -3246,74 +3454,25 @@ Display Window
         m_reduce.hold[]
         r_reduce.hold[]
 
-        m_reduce0 = Model  [ w: a, samplers: map Texture[string] [ 'color': r_reduce.color ] ]
-        r_reduce0 = Render [ vk: ctx, w: a, wscale: 0.5, models: [m_reduce0 ] ]
-        m_reduce0.hold[]
-        r_reduce0.hold[]
+        # the reduce-then-blur units: blur halves the copy twice and blurs
+        # at 1/4; soft blurs the first half at 1/2; frost halves the quarter
+        # twice more and blurs at 1/16
+        rb_blur  = ReduceBlur []
+        rb_blur.hold[]
+        rb_blur.build[ ctx, a, r_reduce.color, 1.0, 2 ]
+        rb_soft  = ReduceBlur []
+        rb_soft.hold[]
+        rb_soft.build[ ctx, a, rb_blur.stage[ 0 ], 0.5, 0 ]
+        rb_frost = ReduceBlur []
+        rb_frost.hold[]
+        rb_frost.build[ ctx, a, rb_blur.stage[ 1 ], 0.25, 2 ]
 
-        m_reduce1 = Model  [ w: a, samplers: map Texture[string] [ 'color': r_reduce0.color ] ]
-        r_reduce1 = Render [ vk: ctx, w: a, wscale: 0.25, models: [m_reduce1 ] ]
-        m_reduce1.hold[]
-        r_reduce1.hold[]
-
-        fbv : BlurV [ vk: ctx, name: 'blur-v', reduction_scale: 4.0 ]
-        fbv.hold[]
-        m_blur_v  = Model  [ w: a, s: fbv, samplers: map Texture[string] [ 'color': r_reduce1.color ] ]
-        r_blur_v  = Render [ vk: ctx, w: a, wscale: 1.0, models: [m_blur_v ] ]
-        m_blur_v.hold[]
-        r_blur_v.hold[]
-
-        fbl : Blur [ vk: ctx, name: 'blur', reduction_scale: 4.0 ]
-        fbl.hold[]
-        m_blur    = Model  [ w: a, s: fbl, samplers: map Texture[string] [ 'color': r_blur_v.color ] ]
-        r_blur    = Render [ vk: ctx, w: a, wscale: 1.0, models: [m_blur ] ]
-        m_blur.hold[]
-        r_blur.hold[]
-
-        sbv : BlurV [ vk: ctx, name: 'blur-v', reduction_scale: 2.0 ]
-        sbv.hold[]
-        m_soft_v  = Model  [ w: a, s: sbv, samplers: map Texture[string] [ 'color': r_reduce0.color ] ]
-        r_soft_v  = Render [ vk: ctx, w: a, wscale: 1.0, models: [m_soft_v ] ]
-        m_soft_v.hold[]
-        r_soft_v.hold[]
-
-        sbl : Blur [ vk: ctx, name: 'blur', reduction_scale: 2.0 ]
-        sbl.hold[]
-        m_soft    = Model  [ w: a, s: sbl, samplers: map Texture[string] [ 'color': r_soft_v.color ] ]
-        r_soft    = Render [ vk: ctx, w: a, wscale: 1.0, models: [m_soft ] ]
-        m_soft.hold[]
-        r_soft.hold[]
-
-        m_reduce2 = Model  [ w: a, samplers: map Texture[string] [ 'color': r_reduce1.color ] ]
-        r_reduce2 = Render [ vk: ctx, w: a, wscale: 0.125, models: [m_reduce2 ] ]
-        m_reduce2.hold[]
-        r_reduce2.hold[]
-
-        m_reduce3 = Model  [ w: a, samplers: map Texture[string] [ 'color': r_reduce2.color ] ]
-        r_reduce3 = Render [ vk: ctx, w: a, wscale: 0.0625, models: [m_reduce3 ] ]
-        m_reduce3.hold[]
-        r_reduce3.hold[]
-
-        bv : BlurV [ vk: ctx, name: 'blur-v', reduction_scale: 16.0 ]
-        bv.hold[]
-        m_frost_v = Model  [ w: a,   s: bv, samplers: map Texture[string] [ 'color': r_reduce3.color ] ]
-        r_frost_v = Render [ vk: ctx, w: a, wscale: 1.0, models: [m_frost_v ] ]
-        m_frost_v.hold[]
-        r_frost_v.hold[]
-
-        bl : Blur [ vk: ctx, name: 'blur', reduction_scale: 16.0 ]
-        bl.hold[]
-        m_frost   = Model  [ w: a,   s: bl, samplers: map Texture[string] [ 'color': r_frost_v.color ] ]
-        r_frost   = Render [ vk: ctx, w: a, wscale: 1.0, models: [m_frost ] ]
-        m_frost.hold[]
-        r_frost.hold[]
-
-
-        chain = vec Render [] [
-            r_reduce, r_reduce0, r_reduce1, r_blur_v, r_blur,
-            r_soft_v, r_soft,
-            r_reduce2, r_reduce3, r_frost_v, r_frost,
-            r_view ]
+        chain = vec Render []
+        chain.push[ r_reduce ]
+        rb_blur.append[ chain ]
+        rb_soft.append[ chain ]
+        rb_frost.append[ chain ]
+        chain.push[ r_view ]
         rewire_frost[]
         list = chain
 
@@ -4272,23 +4431,28 @@ Display Window
         spy : f32 [ (e.use_spacing && e.parent) ? e.parent.spacing_y * e.fc : 0.0 ]
         bounds : e.area.rectangle[ rel, null, last->bounds, e.fc, false, spx, spy ]
 
-        if [ e.area && e.parent && e.parent.elements && (e.area.b.percent || e.area.r.percent) ]
+        # a percent HEIGHT or WIDTH (h50%, w50%) is a share of the parent
+        # less its fixed-size siblings; a percent EDGE (b-15%+174px) is an
+        # edge, plotted above with its offset
+        share_h : bool [ e.area.b.percent && e.area.b.y_type == YAlign.height ]
+        share_w : bool [ e.area.r.percent && e.area.r.x_type == XAlign.width ]
+        if [ e.area && e.parent && e.parent.elements && (share_h || share_w) ]
             prel   : rect [ x: 0, y: 0, w: rel.w, h: rel.h ]
             pfc    : f32  [ (e.parent.fc > 0.0) ? e.parent.fc : e.fc ]
             fixed_h : f32 0.0
             fixed_w : f32 0.0
             for [ sib: element, sid: string ] in e.parent.elements
                 if [ sib == e || !sib.area ] continue
-                if [ e.area.b.percent && sib.area.b.y_type == YAlign.height && !sib.area.b.percent ]
+                if [ share_h && sib.area.b.y_type == YAlign.height && !sib.area.b.percent ]
                     sfc : f32 [ (sib.fc > 0.0) ? sib.fc : pfc ]
                     tb  : sib.area.rectangle[ prel, null, null, sfc, false, 0.0, 0.0 ]
                     fixed_h += tb.h
-                if [ e.area.r.percent && sib.area.r.x_type == XAlign.width && !sib.area.r.percent ]
+                if [ share_w && sib.area.r.x_type == XAlign.width && !sib.area.r.percent ]
                     sfc : f32 [ (sib.fc > 0.0) ? sib.fc : pfc ]
                     tb  : sib.area.rectangle[ prel, null, null, sfc, false, 0.0, 0.0 ]
                     fixed_w += tb.w
-            if [ e.area.b.percent ] bounds.h = e.area.b.offset * (rel.h - fixed_h)
-            if [ e.area.r.percent ] bounds.w = e.area.r.offset * (rel.w - fixed_w)
+            if [ share_h ] bounds.h = e.area.b.offset * (rel.h - fixed_h)
+            if [ share_w ] bounds.w = e.area.r.offset * (rel.w - fixed_w)
 
         if [ e.area.r.content || e.area.b.content ]
             cw : f32 [ bounds.w ]
@@ -4593,7 +4757,6 @@ Display Window
                 draw_cv.stroke_color     [ layer.stroke_color ]
                 fp_x : f32 [ layer.fill_color_pos.x * e.bounds.w ]
                 fp_y : f32 [ layer.fill_color_pos.y * e.bounds.h ]
-                # DEBUG: hardcoded to test whether layer fields reach here.
                 f_rad : f32 [ layer.fill_gradient_radius ]
                 f_ax  : f32 [ draw_cv.transform_tx[] + fp_x ]
                 f_ay  : f32 [ draw_cv.transform_ty[] + fp_y ]
@@ -5003,6 +5166,40 @@ func state_persist_load [ target: Au ]
             # an empty block reads as null: never erase a live default
             if [ v9 ] target.member_set[ mem, v9 ]
 
+class AgentConnection
+    func post [ root: path, from: string, text: string, urgency: string ] -> bool
+        return false
+
+AgentConnection SocketAgentConnection
+    public socket : path
+    public token : string
+
+    func post [ root: path, from: string, text: string, urgency: string ] -> bool
+        if [ !socket ] return false
+        peer : string [ (token) ? token : '' ]
+        return agent_inbox_post[ socket.chars, peer.chars, from.chars, text.chars, urgency.chars ] != 0
+
+AgentConnection CodexAgentConnection
+    public socket : path
+    public session : string
+
+    func post [ root: path, from: string, text: string, urgency: string ] -> bool
+        endpoint : string [ (socket) ? '{socket}' : '' ]
+        thread : string [ (session) ? session : '' ]
+        return agent_codex_post[ root.chars, endpoint.chars, thread.chars, text.chars ] != 0
+
+AgentConnection ClaudeAgentConnection
+    public socket : path
+
+    func post [ root: path, from: string, text: string, urgency: string ] -> bool
+        sk : local i8 [ 512 ]
+        tk : local i8 [ 128 ]
+        explicit_socket : string [ (socket) ? '{socket}' : '' ]
+        if [ agent_inbox_find[ root.chars, explicit_socket.chars, @sk[0], 512, @tk[0], 128 ] == 0 ]
+            log 'agent: no session inbox for {root}'
+            return false
+        return agent_inbox_post[ @sk[0], @tk[0], from.chars, text.chars, urgency.chars ] != 0
+
 abstract media_app trinity
     public root         : element
     public title        : string
@@ -5010,6 +5207,10 @@ abstract media_app trinity
     public logical_width : i32
     public hidden       : bool
     public startup_path : path
+    public agent : string
+    public agent_connection : AgentConnection
+    # Legacy socket setting for the default connection.
+    public agent_inbox  : path
     intern msaa_samples : i64
     intern istroke      : f32 0
     intern ifill        : f32 0
@@ -5093,7 +5294,8 @@ abstract media_app trinity
                 return
         window : Window[ app_object: root, title:(title) ?? rt.ident, st: Style [ root ],
             width:(width) ?? 1888, height:(height) ?? 888,
-            hidden: hidden, lock_aspect: lock_aspect, logical_width: logical_width ]
+            hidden: hidden, lock_aspect: lock_aspect, logical_width: logical_width,
+            aspect_w: aspect_w, aspect_h: aspect_h ]
         expect window.vk, "context didnt work"
         w = window
         Au.hold[ w ]
@@ -5148,6 +5350,30 @@ abstract media_app trinity
 
 
 
+
+func agent_connect [ obj: Au ] -> AgentConnection
+    if [ !obj ] return null
+    connection : cast AgentConnection [ obj.get_property[ 'agent_connection' ] ]
+    if [ connection ] return connection
+    name : cast string [ obj.get_property[ 'agent' ] ]
+    if [ !name || name.count == 0 || name == 'claude' ]
+        ib : cast path [ obj.get_property[ 'agent_inbox' ] ]
+        return ClaudeAgentConnection [ socket: ib ]
+    if [ name == 'codex' ] return CodexAgentConnection []
+    log 'agent: unknown connection {name}'
+    return null
+
+func agent_post [ obj: Au, text: string, priority: string ] -> bool
+    connection : AgentConnection agent_connect[ obj ]
+    if [ !connection ] return false
+    # Apps may redeclare properties at different offsets.
+    sp : path   [ cast path   [ obj.get_property[ 'startup_path' ] ] ]
+    tt : string [ cast string [ obj.get_property[ 'title'        ] ] ]
+    rt : path [ (sp) ? sp : path.path_startup[] ]
+    fr : string [ (tt && tt.count > 0) ? tt : 'trinity' ]
+    ok : bool [ connection.post*[ rt, fr, text, priority ] ]
+    if [ !ok ] log 'agent: inbox post failed'
+    return ok
 
 func save-persistent []
     glfw : handle [ Au.live_window_get[] ]
@@ -6160,6 +6386,384 @@ Control ShadeRow
 
     func render [] -> Elements
         return null
+
+# the line that goes with a crop: mounted by the window only while it
+# asks (shot_ask), along the bottom. Enter sends the line and the crop's
+# path to the agent working this tree, interrupting its turn (an empty
+# line sends the crop alone); Esc drops both. the keys are taken here,
+# before the editable layer and the app see them
+# a line of text with a band of light sweeping it left to right: the
+# text gradient mirrored about a center that moves with time, its hue
+# drifting. t is seconds; the sweep takes 1.6 s and repeats
+func shine_text [ cv: Canvas, text: string, b: rect, size: i32, base: rgba, t: f32 ]
+    if [ !text || text.count == 0 ] return
+    cv.font_size[ size ]
+    m    : cv.measure_text[ text ]
+    band : f32 [ 90.0 ]
+    ph   : f32 [ t / 1.6 ]
+    ph   = ph - floor[ ph ]
+    ax   : f32 [ cv.transform_tx[] + b.x ]
+    ay   : f32 [ cv.transform_ty[] + b.y + b.h * 0.5 ]
+    cx   : f32 [ ax - band + ph * (m.w + 2.0 * band) ]
+    hi   : rgba [ r: 1.0, g: 1.0, b: 1.0, a: 1.0 ]
+    # the mirrored ramp: the fill color sits at the band's midpoint, the
+    # gradient color at its ends and beyond (the clamp), so the shine is
+    # the fill and the line's own color is the gradient
+    cv.fill_color      [ hi ]
+    cv.text_grad       [ base ]
+    cv.text_color_pos  [ cx - band, ay ]
+    cv.text_grad_pos   [ cx, ay ]
+    cv.text_grad_mirror[ true ]
+    cv.draw_text[ text, b, vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+    cv.paint[]
+    cv.text_grad[ rgba [ r: 0.0, g: 0.0, b: 0.0, a: 0.0 ] ]
+
+# a label drawn with the shine while it is fresh (3 s after it changed)
+# or while the agent works; label_size and label_color as any face
+Layer ShineLayer
+    mutable seen  : string
+    mutable since : i64
+    public  shine_color : rgba
+    public  shine_size  : f32
+
+    func draw [ cv: Canvas ]
+        if [ !parent ] return
+        txt : string [ (parent.label) ? parent.label : '' ]
+        if [ txt.count == 0 ] return
+        now : i64 [ epoch_millis[] ]
+        if [ !seen || seen != txt ]
+            seen  = txt
+            since = now
+        w : Window parent.ux
+        live : bool [ (now - since) < 3000 || (w && w.agent_state_busy[]) ]
+        # its own color and size: a label_color would have the engine paint
+        # the label too (centered), a second copy under the shine
+        sz : i32 [ (shine_size > 0.0) ? i32[ shine_size ] : 14 ]
+        bc : rgba [ (shine_color) ? shine_color : rgba [ '#cfe6ff' ] ]
+        # fitted to the layer with an ellipsis (a crop on this path took
+        # the process down with a long line); measured at the draw size
+        cv.font_size[ sz ]
+        if [ cv.measure_text[ txt ].w > bounds.w ]
+            n9 : i32 [ txt.count ]
+            while [ n9 > 1 && cv.measure_text[ txt.mid[ 0, n9 ] + '...' ].w > bounds.w ] n9 -= 1
+            txt = txt.mid[ 0, n9 ] + '...'
+        if [ live ]
+            shine_text[ cv, txt, bounds, sz, bc, f32[ now % 100000 ] / 1000.0 ]
+            parent.pristine = false
+            if [ w ] w.will_animate = true
+        el
+            cv.font_size[ sz ]
+            cv.fill_color[ bc ]
+            cv.draw_text[ txt, bounds, vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+            cv.paint[]
+
+# the blurred capture as the ground of the exchange: under the field,
+# the notes and the avatar, over the app
+Layer ShotGround
+    func draw [ cv: Canvas ]
+        if [ !parent ] return
+        w : Window parent.ux
+        if [ !w || !w.screenshot_blur ] return
+        cv.draw_image[ w.screenshot_blur.color[],
+            rect [ x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h ] ]
+        cv.fill_color[ '#00000040' ]
+        cv.rect_to[ bounds.x, bounds.y, bounds.w, bounds.h ]
+        cv.paint[]
+
+element ShotBackdrop
+    area   : Region { l0 t0 r0 b0 }
+    ground : ShotGround []
+
+# entries in a rounded box: each word-wrapped to the box's width, a
+# floating rule between them, the newest kept in view when they overflow.
+# shine_last lights the final line (the agent's, while it works)
+func wrap_note [ cv: Canvas, note: string, maxw: f32 ] -> vec string
+    out   : vec string []
+    words : note.split[ ' ' ]
+    line  : string ''
+    for [ wd: string ] in words
+        try9 : string [ (line.count > 0) ? '{line} {wd}' : wd ]
+        m : cv.measure_text[ try9 ]
+        if [ m.w > maxw && line.count > 0 ]
+            out.push[ line ]
+            line = wd
+        el
+            line = try9
+    if [ line.count > 0 ] out.push[ line ]
+    return out
+
+# an entry in either box: a line of text, or a diff with its label as the
+# text (open shows the code under it); y0/y1 are laid out for the click
+class ShotEntry
+    public text : string
+    public diff : vec string
+    public open : bool
+    public y0   : f32
+    public y1   : f32
+
+# tabs to spaces for the text draw (the font has no tab glyph): a diff's
+# lines keep their tabs on the wire, the box shows them at 4
+func expand_tabs [ s: string, w: i32 ] -> string
+    if [ !s || s.index_of[ '\t' ] < 0 ] return s
+    out : string ''
+    col : i32 [ 0 ]
+    for [ i: i32 0, i < s.count, i += 1 ]
+        c : i32 [ s.chars[ i ] ]
+        if [ c == 9 ]
+            n : i32 [ w - (col % w) ]
+            for [ k: i32 0, k < n, k += 1 ] out = out + ' '
+            col += n
+        el
+            out = out + s.mid[ i, 1 ]
+            col += 1
+    return out
+
+func draw_notes [ cv: Canvas, notes: vec ShotEntry, b: rect, color: rgba, shine_last: bool, t9: f32 ]
+    if [ !notes || notes.count == 0 ] return
+    pad  : f32 [ 12.0 ]
+    lh   : f32 [ 18.0 ]
+    dlh  : f32 [ 16.0 ]     # a diff line
+    gap  : f32 [ 10.0 ]
+    maxw : f32 [ b.w - pad * 2.0 ]
+    cv.font_size[ 14 ]
+    # first pass: the wrapped lines and the height they take
+    wrapped : vec Au []
+    total   : f32 [ 0.0 ]
+    n : i32 [ 0 ]
+    for [ en: ShotEntry ] in notes
+        ls : vec string wrap_note[ cv, expand_tabs[ en.text, 4 ], maxw ]
+        wrapped.push[ ls ]
+        if [ n > 0 ] total += gap
+        total += f32[ ls.count ] * lh
+        if [ en.diff && en.open ] total += f32[ en.diff.count ] * dlh + 4.0
+        n += 1
+    # newest stays in view: overflow scrolls the oldest out the top
+    y : f32 [ b.y + pad ]
+    if [ total > b.h - pad * 2.0 ] y = b.y + b.h - pad - total
+    # the crop is in world pixels: the canvas translate goes on top of the
+    # layer's local rect (as the label path does)
+    cx0 : f32 [ cv.transform_tx[] + b.x ]
+    cy0 : f32 [ cv.transform_ty[] + b.y ]
+    cv.set_crop[ cx0 + 1.0, cy0 + 1.0, cx0 + b.w - 1.0, cy0 + b.h - 1.0 ]
+    for [ e: i32 0, e < n, e += 1 ]
+        en : ShotEntry notes[ e ]
+        ls : vec string wrapped[ e ]
+        if [ e > 0 ]
+            # the rule floats between entries, inset from the sides
+            cv.fill_color[ rgba [ '#ffffff22' ] ]
+            cv.rect_to[ b.x + pad + 6.0, y + gap * 0.5 - 0.5, maxw - 12.0, 1.0 ]
+            cv.paint[]
+            y += gap
+        en.y0 = y
+        # a diff's label is its own color: it is a control, it opens.
+        # the entries before the last are a touch dimmer, so the current
+        # one stands out; under the shine the base is a little darker
+        # still, for more contrast against the band
+        last9 : bool [ e == n - 1 ]
+        lc : rgba [ (en.diff) ? rgba [ '#f2d38a' ] : (last9) ? color : rgba [ r: color.r * 0.82, g: color.g * 0.82, b: color.b * 0.82, a: color.a * 0.8 ] ]
+        sb : rgba [ r: color.r * 0.78, g: color.g * 0.78, b: color.b * 0.78, a: color.a ]
+        cv.font_size[ 14 ]
+        for [ k: i32 0, k < ls.count, k += 1 ]
+            ln  : string ls[ k ]
+            row : rect [ x: b.x + pad, y: y, w: maxw, h: lh ]
+            if [ shine_last && last9 && k == ls.count - 1 && !en.diff ]
+                shine_text[ cv, ln, row, 14, sb, t9 ]
+            el
+                cv.fill_color[ lc ]
+                cv.draw_text[ ln, row, vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+                cv.paint[]
+            y += lh
+        if [ en.diff && en.open ]
+            # the code: + green, - red, @@ blue, the rest dim; no wrap
+            cv.font_size[ 12 ]
+            y += 4.0
+            for [ dl0: string ] in en.diff
+                dl : string expand_tabs[ dl0, 4 ]
+                c0 : i32 [ (dl.count > 0) ? dl.chars[ 0 ] : 32 ]
+                dc : rgba [ (c0 == 43) ? rgba [ '#9be49b' ] : (c0 == 45) ? rgba [ '#ff9a9a' ] : (c0 == 64) ? rgba [ '#9ad8ff' ] : rgba [ '#ffffffaa' ] ]
+                cv.fill_color[ dc ]
+                cv.draw_text[ dl, rect [ x: b.x + pad + 8.0, y: y, w: maxw - 8.0, h: dlh ], vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+                cv.paint[]
+                y += dlh
+            cv.font_size[ 14 ]
+        en.y1 = y
+    cv.clear_crop[]
+
+# the user's conversation control: it starts at the middle of the
+# screen, the sent lines stack from its top, and its bottom line is the
+# editable one (the field is placed under the entries as they grow); one
+# rounded frame holds all of it
+Layer ShotUserLayer
+    mutable logged9 : i32
+    func draw [ cv: Canvas ]
+        if [ !parent ] return
+        w : Window parent.ux
+        if [ !w ] return
+        pad : f32 [ 12.0 ]
+        lh  : f32 [ 18.0 ]
+        gap : f32 [ 10.0 ]
+        row : f32 [ 40.0 ]     # the editable line
+        cv.font_size[ 14 ]
+        total : f32 [ 0.0 ]
+        n : i32 [ 0 ]
+        if [ w.user_notes ]
+            for [ note: ShotEntry ] in w.user_notes
+                ls : vec string wrap_note[ cv, note.text, bounds.w - pad * 2.0 ]
+                if [ n > 0 ] total += gap
+                total += f32[ ls.count ] * lh
+                n += 1
+        eh : f32 [ (n > 0) ? total + pad * 2.0 : 0.0 ]     # the entries' height
+        # four rows at most: beyond that the oldest scroll out the top
+        max_eh : f32 [ lh * 4.0 + gap * 3.0 + pad * 2.0 ]
+        if [ eh > max_eh ] eh = max_eh
+        if [ eh > bounds.h - row - pad ] eh = bounds.h - row - pad
+        bh : f32 [ eh + row + pad ]
+        # the frame hugs the bottom of the element and grows upward
+        fy0 : f32 [ bounds.y + bounds.h - bh ]
+        # DIAG: does this draw run, and where
+        if [ logged9 < 6 ]
+            logged9 += 1
+            log 'SHOTUSER draw stage={i32[w.draw_stage]} pristine={parent.pristine} anim={parent.animated} cache={parent.cache_canvas != null} bounds={bounds.x},{bounds.y},{bounds.w},{bounds.h} frame_y={fy0} bh={bh} elem={parent.bounds.x},{parent.bounds.y},{parent.bounds.w},{parent.bounds.h}'
+        # the frame is the element's own 'frame' layer (the engine's fill and
+        # stroke path); it hugs the bottom row and grows upward with entries
+        fl : Layer (parent.layers) ? parent.layers[ 'frame' ] : null
+        if [ fl && (!fl.bounds || fl.bounds.h != bh) ]
+            fl.area = Region [ 'l0 b{i32[bh]}px w{i32[bounds.w]}px h{i32[bh]}px' ]
+            parent.pristine = false
+        if [ n > 0 ]
+            draw_notes[ cv, w.user_notes, rect [ x: bounds.x, y: fy0, w: bounds.w, h: eh ],
+                rgba [ '#ffffffcc' ], false, 0.0 ]
+            # the rule above the editable line
+            cv.fill_color[ rgba [ '#ffffff22' ] ]
+            cv.rect_to[ bounds.x + pad + 6.0, fy0 + eh - 0.5, bounds.w - pad * 2.0 - 12.0, 1.0 ]
+            cv.paint[]
+        # the field is the frame's bottom row: its place is fixed by its
+        # own style (and it moves aside with the box), never set here
+
+# bottom center until the first send, then at the bottom left (the
+# placement is a Region: a CSS area with a % offset lands wrong)
+element ShotUser
+    # Region slots are l t r b: a 'bN' in the t slot puts the TOP N px from
+    # the bottom, so the box's top sits 594px up and its 420px reach the
+    # field's row (H-220 .. H-180) with 6px around it
+    area  : Region { l50%-220px b594px w440px h420px }
+    frame : Layer [ area: Region [ 'l0 b52px w440px h52px' ], fill_color: rgba [ '#0a0a12cc' ],
+        stroke_width: 1.0, stroke_color: rgba [ '#ffffff66' ], radius: Radius [ '12' ] ]
+    lines : ShotUserLayer []
+
+# the agent's entries, right of the avatar: the current line shines
+# while the agent works
+Layer ShotNotesLayer
+    mutable shine_dbg : i64
+    func draw [ cv: Canvas ]
+        if [ !parent ] return
+        w : Window parent.ux
+        if [ !w ] return
+        # DIAG: is the shine drawn, and does the box repaint
+        if [ w.agent_busy && (epoch_millis[] / 500) != shine_dbg ]
+            shine_dbg = epoch_millis[] / 500
+            tt9 : f32 [ f32[ epoch_millis[] % 100000 ] / 1000.0 ]
+            ph9 : f32 [ tt9 / 1.6 ]
+            log 'SHINE time={w.time} time_scale={w.time_scale} stage={i32[w.draw_stage]} busy={w.agent_busy} pristine={parent.pristine} needs_frame={parent.needs_frame} notes={(w.agent_notes) ? w.agent_notes.count : 0} ms={epoch_millis[]} t={tt9} ph={ph9 - floor[ ph9 ]}'
+        draw_notes[ cv, w.agent_notes, bounds, rgba [ '#9ad8ff' ], w.agent_busy, f32[ epoch_millis[] % 100000 ] / 1000.0 ]
+        # the shine moves: the box repaints every frame while the agent
+        # works (pristine is set back after this draw; needs_frame holds it)
+        if [ w.agent_busy && w.agent_notes && w.agent_notes.count > 0 ]
+            parent.needs_frame = true
+            w.will_animate     = true
+
+element ShotNotes
+    # a click on a diff's label opens or closes its code
+    func on_press [ ev: Event ]
+        w : Window ux
+        if [ !w || !w.agent_notes ] return
+        my : f32 [ ev.mouse.pos.y ]
+        for [ en: ShotEntry ] in w.agent_notes
+            if [ en.diff && my >= en.y0 && my < en.y1 ]
+                en.open  = !en.open
+                pristine = false
+                w.will_animate = true
+                return
+
+    # the agent's box takes the right side, large; the avatar settles at
+    # the upper left over the user's small box
+    # its bottom is the user's box's bottom (H-174), and the same frame
+    area  : Region { l500px t15%+24px r24px b-15%+174px }
+    # animated: paints every frame, so the shine on the current line moves
+    animated : true
+    frame : Layer [ fill_color: rgba [ '#0a0a12cc' ], stroke_width: 1.0,
+        stroke_color: rgba [ '#ffffff66' ], radius: Radius [ '12' ] ]
+    notes : ShotNotesLayer []
+
+TextInput ShotPrompt
+    area : Region { l50%-212px b220px w424px h40px }
+    # the box's frame is the only frame: the field's own body stays clear.
+    # the field is the box's bottom row, and moves aside with it
+    style : CSS {
+        layers.body:
+            fill_color: #0000
+            stroke_width: 0.0
+        layers.face:
+            label_color: #ffffff66
+            label_size: 16
+            editable: true
+            label_align: 0.0 0.5
+            label_offset: 2.0 0.0
+    :focused
+        layers.body:
+            fill_color: #0000
+            stroke_width: 0.0
+        layers.face:
+            label_color: #ffffff66
+    :has_value
+        layers.face:
+            label_color: #ffffff
+    }
+
+    func on_key [ ev: Event ]
+        if [ !ev.key.state ] return
+        k : i32 [ ev.key.unicode ]
+        if [ k != 257 && k != 256 ] return
+        w : Window ux
+        if [ !w ] return
+        if [ k == 257 && w.shot_ask ]
+            text : string [ (edit) ? edit : '' ]
+            if [ text.count == 0 && w.agent_view ] return
+            # the lines accumulate: a user keeps elaborating, and every send
+            # reposts the whole message with the crop
+            first9 : bool [ !w.shot_text || w.shot_text.count == 0 ]
+            all : string [ (!first9) ? '{w.shot_text}\n{text}' : text ]
+            w.shot_text = all
+            ref9 : string [ (w.shot_file) ? ((w.shot_line > 0) ? 'File: {w.shot_ask}:{w.shot_line}' : 'File: {w.shot_ask}') : 'Screenshot: {w.shot_ask}' ]
+            msg : string [ (all.count > 0) ? '{all}\n\n{ref9}' : ref9 ]
+            # the exchange's first post says how to answer: everything the
+            # agent says, and the source diffs it applied, come back as
+            # note lines on this app's socket (one line per wire line)
+            if [ first9 && w.agent_sock ]
+                msg = '{msg}\n\nReply through this app as well, on the unix socket {w.agent_sock}, one wire line per text line: everything you say as: app status note <line>, and each edit you apply as its own diff (the lines you removed and added, never a git diff of the tree, which holds the user\'s changes too): app status diff <line>'
+            if [ w.app_object ] agent_post[ w.app_object, msg, 'now' ]
+            fn9   : string w.shot_ask.filename[]
+            shown : string [ (text.count > 0) ? text : fn9 ]
+            w.user_note[ shown ]
+            # a line from the user means the agent is not done: the app
+            # drops its done state (and any reload it was about to apply)
+            if [ w.app_object ] w.app_object.on_agent*[ 'status sent {shown}' ]
+            w.agent_view = true
+            edit       = ''
+            sel_col    = 0
+            anchor_col = 0
+            pristine   = false
+            w.restyle  = true
+            ev.stop[]
+            return
+        # Esc: an exchange in progress is put away (the status item brings
+        # it back); a prompt with nothing sent yet is dropped
+        if [ w.agent_view ]
+            w.agent_min = true
+            w.restyle   = true
+        el
+            w.shot_close[]
+        ev.stop[]
 
 element UXGenerics
     focusable : false

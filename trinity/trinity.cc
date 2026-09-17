@@ -465,11 +465,220 @@ HOST_API void host_live_set(int v)    { host_post(1, HM_LIVE, v, 0, 0); }
 // ===========================================================================
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <dirent.h>
+#include <spawn.h>
+#include <sys/wait.h>
+#include <string>
+
+extern char** environ;
+
+HOST_API int agent_codex_post(const char* root, const char* socket_path,
+                              const char* session, const char* text) {
+    if (!text) return 0;
+    if (!session || !*session) session = getenv("CODEX_THREAD_ID");
+    if (!session || !*session) {
+        fprintf(stderr, "agent: launch the app from its Codex session\n");
+        return 0;
+    }
+    std::string endpoint;
+    if (socket_path && *socket_path) endpoint = socket_path;
+    else {
+        const char* home = getenv("CODEX_HOME");
+        if (home && *home) endpoint = home;
+        else {
+            home = getenv("HOME");
+            if (!home || !*home) return 0;
+            endpoint = std::string(home) + "/.codex";
+        }
+        endpoint += "/app-server-control/app-server-control.sock";
+    }
+    if (access(endpoint.c_str(), F_OK) != 0) {
+        fprintf(stderr, "agent: Codex session socket is unavailable\n");
+        return 0;
+    }
+    std::string remote = "unix://" + endpoint;
+    const char* image = nullptr;
+    const char* scan = text;
+    while ((scan = strstr(scan, "\n\nScreenshot: "))) {
+        scan += strlen("\n\nScreenshot: ");
+        image = scan;
+    }
+    if (!image && strncmp(text, "Screenshot: ", 12) == 0) image = text + 12;
+    const char* args[14] = { "codex", "queue", "--remote", remote.c_str(),
+        "--thread", session, "--message", text };
+    int n = 8;
+    if (root && *root) { args[n++] = "--cd"; args[n++] = root; }
+    if (image && *image) { args[n++] = "--image"; args[n++] = image; }
+    args[n] = nullptr;
+    pid_t pid;
+    int error = posix_spawnp(&pid, args[0], nullptr, nullptr,
+        const_cast<char**>(args), environ);
+    if (error) {
+        fprintf(stderr, "agent: cannot run codex: %s\n", strerror(error));
+        return 0;
+    }
+    int status = 0;
+    pid_t waited;
+    do { waited = waitpid(pid, &status, 0); }
+    while (waited < 0 && errno == EINTR);
+    return waited == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
 
 static int  g_agent_srv = -1;
 static int  g_agent_cli = -1;
 static char g_agent_buf[8192];
 static int  g_agent_len = 0;
+
+// ---- the agent inbox: a Claude Code session's messaging socket ----
+// every live session registers itself under ~/.claude/sessions as
+// <pid>.json (its cwd and messagingSocketPath); the sibling
+// <pid>.<sha>.key carries the peer token its inbox authenticates with.
+// the wire is two JSON lines: the auth, then the user message
+
+static int inbox_read(const char* path, char* buf, int cap) {
+    FILE* f = fopen(path, "rb");
+    if (!f) return 0;
+    int n = (int)fread(buf, 1, cap - 1, f);
+    fclose(f);
+    buf[n < 0 ? 0 : n] = 0;
+    return n > 0;
+}
+
+// "key":"value" -- copied as written; paths and tokens carry no escapes
+static int inbox_str(const char* json, const char* key, char* out, int cap) {
+    char pat[128];
+    snprintf(pat, sizeof(pat), "\"%s\":\"", key);
+    const char* p = strstr(json, pat);
+    if (!p) return 0;
+    p += strlen(pat);
+    int n = 0;
+    while (*p && *p != '"' && n < cap - 1) out[n++] = *p++;
+    out[n] = 0;
+    return n > 0;
+}
+
+static long long inbox_num(const char* json, const char* key) {
+    char pat[128];
+    snprintf(pat, sizeof(pat), "\"%s\":", key);
+    const char* p = strstr(json, pat);
+    return p ? atoll(p + strlen(pat)) : -1;
+}
+
+// the token for session <pid>: its key file beside the registry entry
+static void inbox_token(const char* dir, const char* pid, char* out, int cap) {
+    out[0] = 0;
+    DIR* d = opendir(dir);
+    if (!d) return;
+    size_t pl = strlen(pid);
+    struct dirent* e;
+    while ((e = readdir(d))) {
+        size_t ln = strlen(e->d_name);
+        if (ln < pl + 5 || strncmp(e->d_name, pid, pl) != 0 || e->d_name[pl] != '.'
+            || strcmp(e->d_name + ln - 4, ".key") != 0) continue;
+        char fp[1024], buf[1024];
+        snprintf(fp, sizeof(fp), "%s/%s", dir, e->d_name);
+        if (inbox_read(fp, buf, sizeof(buf))) inbox_str(buf, "peerToken", out, cap);
+        break;
+    }
+    closedir(d);
+}
+
+// the inbox for an app: `sock` names one outright (the app's agi may say
+// so); empty, the registry is searched for the session whose cwd is the
+// longest prefix of `root`, ties to the most recently updated. a dead
+// session's stale entry is skipped by its missing socket. 1 = found
+HOST_API int agent_inbox_find(const char* root, const char* sock,
+                              char* sock_out, int sock_cap, char* token_out, int token_cap) {
+    const char* home = getenv("HOME");
+    if (!home) return 0;
+    char dir[768];
+    snprintf(dir, sizeof(dir), "%s/.claude/sessions", home);
+    char pid[32] = {0};
+    if (sock && *sock) {
+        // /tmp/cc-socks/<pid>.sock
+        const char* b = strrchr(sock, '/');
+        b = b ? b + 1 : sock;
+        int n = 0;
+        while (b[n] >= '0' && b[n] <= '9' && n < 30) { pid[n] = b[n]; n++; }
+        pid[n] = 0;
+        snprintf(sock_out, sock_cap, "%s", sock);
+    } else {
+        if (!root) return 0;
+        size_t rl = strlen(root);
+        while (rl > 1 && root[rl - 1] == '/') rl--;
+        DIR* d = opendir(dir);
+        if (!d) return 0;
+        size_t best = 0;
+        long long best_at = -1;
+        struct dirent* e;
+        while ((e = readdir(d))) {
+            size_t ln = strlen(e->d_name);
+            if (ln < 6 || strcmp(e->d_name + ln - 5, ".json") != 0) continue;
+            char fp[1024], buf[4096], cwd[512], sk[512];
+            snprintf(fp, sizeof(fp), "%s/%s", dir, e->d_name);
+            if (!inbox_read(fp, buf, sizeof(buf))) continue;
+            if (!inbox_str(buf, "cwd", cwd, sizeof(cwd))
+             || !inbox_str(buf, "messagingSocketPath", sk, sizeof(sk))) continue;
+            size_t cl = strlen(cwd);
+            if (cl > rl || strncmp(cwd, root, cl) != 0 || (cl < rl && root[cl] != '/')) continue;
+            if (access(sk, F_OK) != 0) continue;
+            long long at = inbox_num(buf, "updatedAt");
+            if (cl > best || (cl == best && at > best_at)) {
+                best    = cl;
+                best_at = at;
+                snprintf(sock_out, sock_cap, "%s", sk);
+                snprintf(pid, sizeof(pid), "%.*s", (int)(ln - 5), e->d_name);
+            }
+        }
+        closedir(d);
+        if (!pid[0]) return 0;
+    }
+    inbox_token(dir, pid, token_out, token_cap);
+    return 1;
+}
+
+// a JSON string body: quotes, backslashes and control bytes escaped
+static int inbox_put(char* out, int cap, int n, const char* s) {
+    for (; *s && n < cap - 8; s++) {
+        unsigned char c = (unsigned char)*s;
+        if      (c == '"' || c == '\\') { out[n++] = '\\'; out[n++] = (char)c; }
+        else if (c == '\n')  { out[n++] = '\\'; out[n++] = 'n'; }
+        else if (c == '\r')  { out[n++] = '\\'; out[n++] = 'r'; }
+        else if (c == '\t')  { out[n++] = '\\'; out[n++] = 't'; }
+        else if (c < 0x20)   n += snprintf(out + n, cap - n, "\\u%04x", c);
+        else                 out[n++] = (char)c;
+    }
+    return n;
+}
+
+// post one user message. priority "now" interrupts the session's current
+// turn, "next" waits for it. 1 = written
+HOST_API int agent_inbox_post(const char* sock, const char* token, const char* from,
+                              const char* text, const char* priority) {
+    if (!sock || !*sock || !text) return 0;
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) return 0;
+    fcntl(fd, F_SETFD, FD_CLOEXEC);
+    struct sockaddr_un su;
+    memset(&su, 0, sizeof(su));
+    su.sun_family = AF_UNIX;
+    strncpy(su.sun_path, sock, sizeof(su.sun_path) - 1);
+    if (connect(fd, (struct sockaddr*)&su, sizeof(su)) != 0) { close(fd); return 0; }
+    int   cap = (int)strlen(text) * 6 + 1024;
+    char* buf = (char*)malloc(cap);
+    int   n   = 0;
+    if (token && *token)
+        n += snprintf(buf + n, cap - n, "{\"type\":\"auth\",\"token\":\"%s\"}\n", token);
+    n += snprintf(buf + n, cap - n,
+        "{\"type\":\"user\",\"from\":\"%s\",\"priority\":\"%s\",\"message\":{\"role\":\"user\",\"content\":\"",
+        (from && *from) ? from : "trinity", (priority && *priority) ? priority : "now");
+    n  = inbox_put(buf, cap, n, text);
+    n += snprintf(buf + n, cap - n, "\"}}\n");
+    int ok = write(fd, buf, n) == n;
+    free(buf);
+    close(fd);
+    return ok;
+}
 
 HOST_API int agent_sock_open(const char* name) {
     if (g_agent_srv >= 0) return 1;
@@ -487,7 +696,7 @@ HOST_API int agent_sock_open(const char* name) {
     memset(&su, 0, sizeof(su));
     su.sun_family = AF_UNIX;
     strncpy(su.sun_path, pathb, sizeof(su.sun_path) - 1);
-    if (bind(fd, (struct sockaddr*)&su, sizeof(su)) != 0 || listen(fd, 1) != 0) {
+    if (bind(fd, (struct sockaddr*)&su, sizeof(su)) != 0 || listen(fd, 64) != 0) {
         close(fd);
         return 0;
     }
@@ -632,6 +841,7 @@ HOST_API int  agent_sock_line(char* out, int cap)                { return 0; }
 HOST_API void agent_sock_reply(const char* s)                    { }
 HOST_API int  agent_sock_send(const char* nm, const char* ln)    { return 0; }
 HOST_API int  agent_sock_ask(const char* nm, const char* ln, char* o, int c) { return 0; }
+HOST_API int agent_codex_post(const char*, const char*, const char*, const char*) { return 0; }
 #endif
 
 // ===========================================================================

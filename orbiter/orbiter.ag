@@ -578,16 +578,11 @@ Option NavButton
                 stroke_color: #ffae5e88
     }
 
+# the shaders and the motion; no style of its own, so a subclass's
+# placement is never contested by a base block (the style resolver takes
+# the base's area over the subclass's)
 Avatar OrbiterAvatar
     render_scale : f32 [ 4.0 ]
-
-    style : CSS {
-        area: r-14 b22 w12 h19, 700ms cubic outward
-        opacity: 0.0, 700ms cubic outward
-    :summoned
-        area: r-1 b22 w12 h19, 700ms cubic inward
-        opacity: 1.0, 700ms cubic inward
-    }
 
 
     public src_file : path
@@ -627,6 +622,10 @@ Avatar OrbiterAvatar
     # how fast the rim crosses between dark and blue
     listen_amount : f32 [ 0.20 ]
     mutable listen_cur : f32
+    # the exchange avatar: face on at first, then settled (tilted up)
+    public settled : bool
+    # its reveal: an alpha fade, flipped on the first frame it runs
+    public shown   : bool
     # summon slide: 0 = below the corner, 1 = at rest
     summon_amount : f32 [ 0.14 ]
     mutable summon_t : f32
@@ -648,7 +647,32 @@ Avatar OrbiterAvatar
             log 'ONSTATE reached m={m} orb={bool[orb]} busy={orb->busy}'
         want : f32 [ rest_tilt ]
         amt  : f32 [ ease_amount ]
-        if [ orb->busy ]
+        # the exchange avatar shows only while an exchange is up (the
+        # opacity fades either way) and takes no clicks while hidden
+        if [ animate_always ]
+            # pre-load, once laid out: the targets, models and shaders are
+            # built on the first frame with the real bounds (on_state runs
+            # while invisible; draw does not), so the exchange opens without
+            # the build stall. before layout the bounds are a stub (8x14)
+            if [ !target && !vol_target && bounds && bounds.w >= 300.0 ] create_target[]
+            vis : bool [ ux->shot_ask && !ux->agent_min ]
+            if [ vis != shown ]
+                shown       = vis
+                user_events = vis
+                if [ ux ] ux.restyle = true
+        # the exchange avatar takes the app's busy state only once a line
+        # was sent through orbiter: until then it is face on, at rest,
+        # whatever the session is doing elsewhere
+        wb : bool [ orb->busy && (!animate_always || ux->agent_view) ]
+        # the exchange avatar: face on until the first send, then settled:
+        # tilted up
+        if [ !settled && (wb || ux->agent_view) ]
+            settled = true
+            if [ ux ] ux.restyle = true
+        # face on, the exchange avatar's core holds its color: the shaders'
+        # clock runs only once it is tilted (the corner avatar always runs)
+        clock_run = !animate_always || settled
+        if [ wb || settled ]
             want = busy_tilt
             amt  = busy_amount
         tilt_cur = filter_n[ tilt_cur, want, amt, ux->frame_factor ]
@@ -659,20 +683,25 @@ Avatar OrbiterAvatar
         if [ body ] body.listen = listen_cur
         # the rim halo swells on the same clock as the tilt
         if [ aura ]
-            gp : f32 [ (orb->busy) ? busy_pulse : rest_pulse ]
-            gv : f32 [ (orb->busy) ? busy_ph    : rest_ph ]
-            gh : f32 [ (orb->busy) ? busy_halo  : rest_halo ]
+            gp : f32 [ (wb) ? busy_pulse : rest_pulse ]
+            gv : f32 [ (wb) ? busy_ph    : rest_ph ]
+            gh : f32 [ (wb) ? busy_halo  : rest_halo ]
             aura.pulse_width  = filter_n[ aura.pulse_width,  gp, amt, ux->frame_factor ]
             aura.pulse_height = filter_n[ aura.pulse_height, gv, amt, ux->frame_factor ]
             aura.halo_height  = filter_n[ aura.halo_height,  gh, amt, ux->frame_factor ]
-            gs : f32 [ (orb->busy) ? busy_spin : rest_spin ]
+            # the core flame burns while the reload swaps, with the spin at
+            # its most intense: the sign the work is landing
+            rl : bool [ orb->swap_live ]
+            fl : f32 [ (rl) ? 1.0 : 0.0 ]
+            aura.flame = filter_n[ aura.flame, fl, 0.12, ux->frame_factor ]
+            gs : f32 [ (rl) ? busy_spin * 1.8 : (wb) ? busy_spin : rest_spin ]
             spin_rate  = filter_n[ spin_rate, gs, spin_amount, ux->frame_factor ]
             spin_phase = spin_phase + spin_rate * (ux->frame_factor / 60.0)
             if [ spin_phase > 6.2831853 ] spin_phase = spin_phase - 6.2831853
             aura.spin  = spin_phase
-            if [ orb->busy != spin_dbg ]
-                spin_dbg = orb->busy
-                log 'SPIN busy={orb->busy} rate={spin_rate} goal={gs} ff={ux->frame_factor}'
+            if [ wb != spin_dbg ]
+                spin_dbg = wb
+                log 'SPIN busy={wb} rate={spin_rate} goal={gs} ff={ux->frame_factor}'
         if [ !rotate ]
             rotate = vec Rotation []
             rotate.push[ Rotation [ '0 1 0 30deg' ] ]
@@ -702,6 +731,41 @@ Avatar OrbiterAvatar
         beam_fade: 2.2, beam_cone: 0.35, flame: 0.0 ]
 
 
+
+# the corner avatar: off the edge until summoned, then slid in
+OrbiterAvatar CornerAvatar
+    style : CSS {
+        area: r-14 b22 w12 h19, 700ms cubic outward
+        opacity: 0.0, 700ms cubic outward
+    :summoned
+        area: r-1 b22 w12 h19, 700ms cubic inward
+        opacity: 1.0, 700ms cubic inward
+    }
+
+# the avatar for the exchange under the screenshot prompt
+OrbiterAvatar AgentAvatar
+    # 2x at the top center, revealed by an alpha fade (no move: a moving
+    # target resizes and fuzzes); settled only tilts it. render_scale is
+    # in window units: 4 on a 2x display is a 2x supersample of the device
+    # pixels, drawn down 2:1 for the anti-aliasing (2 was 1:1, no reduction)
+    render_scale : f32 [ 4.0 ]
+    # a square element: the camera frames the hex at the element's
+    # vertical center, so a tall one would put it mid-screen
+    # top center and large until the first send; settled, it moves to the
+    # upper left and shrinks (a cubic), leaving the right to the agent's box
+    style : CSS {
+        area: l50%-195px t0%+86px w390px h390px, 900ms cubic in_out
+        # out at once: the blur behind drops the same frame (Esc), and a
+        # fade would leave the avatar alone over the plain screen
+        opacity: 0.0
+    :shown
+        opacity: 1.0, 600ms cubic inward
+    :settled
+        # the same coordinate form as the start (a percent with a px
+        # offset): a transition mixes the two, and a percent mixed with a
+        # plain pixel value snaps
+        area: l0%+80px t15%+110px w340px h340px, 900ms cubic in_out
+    }
 
 # a console from the project's agi (shell, claude), as a view the rail
 # lists like any other: the pane composes the Console for that session
@@ -951,7 +1015,7 @@ Option ReloadButton
         label_offset: vec2f [ x: 0.0, y: -1.0 ],
         label_overflow: Overflow.ellipsis ]
     style : CSS {
-        area: l1px t0px w96px h18px
+        area: l0+ t0px w96px h18px
         layers.body:
             fill_color: #0000
             radius: 4
@@ -990,7 +1054,7 @@ Option HideToggle
 element ReloadStatus
     no_cache : true
     style : CSS {
-        area: l8px t2px w110px h18px
+        area: l0+ t0px w110px h18px
         layers.body:
             fill_color: #6b4a14
             radius: 4
@@ -1019,6 +1083,38 @@ element DebugValue
             label_size: 14
             label_align: 0.0 0.5
             label_offset: 0.0 -1.0
+    }
+
+# the agent's word in the bar: the debug value's place, with the shine
+element AgentNote
+    no_cache : true
+    # the avatar's status: a bordered button at the bar's left whose ground
+    # is the state (:agent while it works, :needs when it waits on you,
+    # :done when it finished); a click brings the exchange back
+    public agent : bool
+    public needs : bool
+    public done  : bool
+    style : CSS {
+        area: l8px t0px w300px h18px
+        layers.body:
+            fill_color: #ffffff10, 400ms cubic outward
+            radius: 6
+            stroke_width: 0.5
+            stroke_color: #fff4
+            inner_glow: #0000 0
+        layers.shine: ShineLayer
+            shine_color: #cfe6ff
+            shine_size: 14
+            area: l8px t0 r8px b0
+    :agent
+        layers.body:
+            fill_color: #1e5a6ecc, 400ms cubic inward
+    :needs
+        layers.body:
+            fill_color: #7a4a14cc, 400ms cubic inward
+    :done
+        layers.body:
+            fill_color: #1e6e3ecc, 400ms cubic inward
     }
 
 # same tab, build failed: click jumps to the error line
@@ -1186,7 +1282,7 @@ Group StatusBar
         spacing_x: 1px
         spacing_y: 2px
         layers.sbar:
-            fill_color: #625a
+            fill_color: #625a, 400ms cubic outward
             inner_glow: #8af2 26
             stroke_width: 0.5
             stroke_color: #fff2
@@ -1297,6 +1393,13 @@ NavTabs NavTabs6
         area: r0+ t0 w1.15 h0.9, 222ms cubic outward
         :near
             area: r0+ t0 w6.9 h0.9, 222ms cubic outward
+    }
+
+NavTabs NavTabs7
+    style : CSS {
+        area: r0+ t0 w1.15 h0.9, 222ms cubic outward
+        :near
+            area: r0+ t0 w8.05 h0.9, 222ms cubic outward
     }
 
 NavButton RButton
@@ -1613,6 +1716,20 @@ VolumeSlider LaunchSlider
     func init []
         nw : f32 [ launch_name_w[ label ] ]
         name.area = Region [ 'l0.4 t0 w{nw} b0' ]
+    # the panel's changing property is this one while it is held; the id
+    # is 'lp_<name>'
+    func prop_name [] -> string
+        return (id && id.count > 3) ? id.mid[ 3, id.count - 3 ] : ''
+    public func on_press [ ev: Event ]
+        if [ parent && parent inherits LaunchPanel ]
+            lp : LaunchPanel parent
+            lp.changing = prop_name[]
+        super.on_press[ ev ]
+    public func on_release [ ev: Event ]
+        if [ parent && parent inherits LaunchPanel ]
+            lp : LaunchPanel parent
+            if [ lp.changing && lp.changing == prop_name[] ] lp.changing = ''
+        super.on_release[ ev ]
 
 element LaunchLabel
     face : Layer [ label_color: rgba [ '#c9c4dd' ], label_size: 14,
@@ -1625,6 +1742,9 @@ element LaunchPanel
         thumb_color: '#fff3', thumb_w: 6.0, thumb_min_h: 32.0, thumb_radius: 4.0 ]
     public spec : string        # 'name=type=default;...'
     public args : string        # the file's current run args
+    # the property the user is engaged with (one at a time): a value received
+    # for it is not applied while it is set
+    public changing : string
     # content_h is the element's own: a redeclaration here would be a SECOND
     # member, and trinity's scroll, crop and scrollbar read the base one
     mutable rows_h    : f32
@@ -1732,7 +1852,10 @@ element LaunchPanel
             # the panel rebuilds every frame. a control's value is given ONCE, when
             # it first mounts; after that the mounted control owns it — a pick, a
             # keystroke or a drag must never be stamped over by the stored args
-            ex9 : element (elements && !reseed) ? elements['lp_{nm}'] : null
+            # a reseed (the instance reported its values, so the spec changed)
+            # never touches the one property the user is changing: its echo
+            # arriving mid-drag would set the slider under them
+            ex9 : element (elements && (!reseed || (changing && changing == nm))) ? elements['lp_{nm}'] : null
             ar9 : Region [ 'l{cx}px t{y}px r0 h{rhx}px' ]
             if [ desc.starts_with[ 'Action' ] ]
                 t['lp_{nm}'] = LaunchAction [ label: nm, manual_mode: true, area: ar9 ]
@@ -2118,6 +2241,17 @@ element orbiter : trinity # implements compiler
     # the one agent session is working — drives the avatar tilt
     public busy           : bool
     intern busy_at        : i64
+    # the agent's own word on what it is doing, posted into our socket
+    # (support/agent-hooks): busy / idle / done / needs / note, and a line
+    mutable agent_state   : string
+    mutable agent_note    : string
+    # the agent said done: the staged reload goes if the exchange is up,
+    # and the avatar's core flame burns through the swap
+    mutable agent_done    : bool
+    mutable swap_live     : bool
+    mutable swap_hot      : bool
+    mutable swap_at       : i64    # when the flame lit: the apply waits for it to burn
+    mutable done_put_away : bool   # this done already put the exchange away
     intern cell_dumped    : bool
     intern frost_pushed  : i32 [ -1 ]         # last frost stage synced to shader
     # mic capture running / final transcription winding down
@@ -2138,7 +2272,6 @@ element orbiter : trinity # implements compiler
     intern settings_mtime    : i64
     intern settings_check_ms : i64
     public [ StatePersist ] open_files       : vec path
-    public [ StatePersist ] docked           : vec path
     intern nav_dock_rows    : i32
     public editor_slots     : vec i32
     intern pane_console     : vec string
@@ -2291,7 +2424,6 @@ element orbiter : trinity # implements compiler
     mutable view_tools_bin : vec string
     mutable view_mods      : map string [string]
     public browse_single : bool
-    public show_pins     : bool [ true ]
     public grid_mode     : bool
     public browse_header_size : i32 [ 18 ]
     public browse_dir_size : i32 [ 16 ]
@@ -2353,10 +2485,13 @@ element orbiter : trinity # implements compiler
         target_roots   = vec path []
         target_srcs    = vec path []
         load_settings[]
+        # a source change is staged, never swapped on its own: the swap
+        # goes when the agent reports done with the exchange up
+        au_live_set_defer[ 1 ]
+        # the exchange avatar exists from load
+        agent_av = AgentAvatar [ topmost: true, animate_always: true ]
         file_cache     = map FileBuf [string] []
         open_files     = vec path []
-        docked         = vec path []
-        # a few default pins so the column has content to look at
         active_idx     = -1
         # one editor pane to start, empty (the 'Open' finder)
         editor_slots   = vec i32 [] [-1]
@@ -2979,6 +3114,49 @@ element orbiter : trinity # implements compiler
         s.write_input[ text ]
         s.send_esc[ '[201~' ]
 
+    # a line from the agent through our socket: 'status <state> <text>'
+    public func on_agent [ s: string ]
+        if [ !s || s.count < 7 || s.mid[ 0, 7 ] != 'status ' ] return
+        # only an exchange orbiter opened (a capture sent, up or minimized)
+        # takes the agent's statuses: the session's other work, the user's
+        # terminal chat with it, is not orbiter's to show
+        if [ !ux || !ux.shot_ask ] return
+        rest : string s.mid[ 7, s.count - 7 ]
+        sp   : i32 [ rest.index_of[ ' ' ] ]
+        # done is final: nothing the agent sends after it (a notification
+        # that it waits, a late line) reopens the exchange or the button;
+        # only the user's next line ('sent') starts it again
+        st9 : string [ (sp > 0) ? rest.mid[ 0, sp ] : rest ]
+        if [ agent_done && st9 != 'sent' ] return
+        # a diff line goes to the panel, never to the bar or the notes
+        if [ sp > 0 && rest.mid[ 0, sp ] == 'diff' ]
+            ux.agent_diff[ rest.mid[ sp + 1, rest.count - sp - 1 ] ]
+            return
+        agent_state = (sp > 0) ? rest.mid[ 0, sp ] : rest
+        agent_note  = (sp > 0) ? rest.mid[ sp + 1, rest.count - sp - 1 ] : ''
+        # 'sent' is the user's own line: not the agent's word, and not done
+        if [ ux ]
+            if [ agent_state != 'sent' ] ux.agent_note[ agent_state, agent_note ]
+            ux.agent_busy = agent_state == 'busy'
+        agent_done = agent_state == 'done'
+        if [ !agent_done ] done_put_away = false
+        if [ agent_state == 'idle' || agent_state == 'sent' ] agent_note = ''
+        if [ ux ] ux.restyle = true
+
+    # the avatar for the exchange: ONE instance, made at load, mounted for
+    # the app's life and invisible between exchanges; it is never freed.
+    # a new capture resets its tilt
+    mutable agent_av      : AgentAvatar
+    mutable agent_av_shot : path
+    public func agent_avatar [] -> element
+        if [ !agent_av ]
+            agent_av = AgentAvatar [ topmost: true, animate_always: true ]
+        sa9 : path [ (ux) ? ux.shot_ask : null ]
+        if [ sa9 && (!agent_av_shot || agent_av_shot != sa9) ]
+            agent_av_shot    = sa9
+            agent_av.settled = false
+        return agent_av
+
     public func on_host [ mt: i32, wp: i32, lp: i32, xp: i32 ]
         if [ mt != 1 ] return
         s : i32 [ wp ]
@@ -3028,6 +3206,9 @@ element orbiter : trinity # implements compiler
         bd : string dt
         if [ listen_file ] bd = '{listen_file}  {dt}'
         listen_file = null
+        # the session working this tree takes it, interrupting its turn;
+        # without one the take goes to orbiter's own agent console
+        if [ agent_post[ a, bd, 'now' ] ] return
         sa : ConsoleSession ensure_console[ orbit_sid ]
         if [ sa ] sa.write_input[ '{bd}\r' ]
 
@@ -3357,26 +3538,6 @@ element orbiter : trinity # implements compiler
         open_files.push[ p ]
         return open_files.count - 1
 
-    # is this file pinned in the (unified) dock?
-    func is_docked [ p: path ] -> bool
-        if [ !p || !docked ] return false
-        for [ i: i32 0, i < docked.count, i += 1 ]
-            if [ docked[i] == p ] return true
-        return false
-
-    func toggle_dock [ p: path ]
-        if [ !p ] return
-        if [ !docked ] docked = vec path []
-        found : bool false
-        for [ i: i32 0, i < docked.count, i += 1 ]
-            if [ docked[i] == p ]
-                docked.remove[ i ]
-                found = true
-                break
-        if [ !found ] docked.push[ p ]
-        save_session[]
-        run_search[]
-
     public func on_overlay [ cv: Canvas ]
         # a slider swallows its press: poll its changed flag instead
         lp0 : element find_el[ a, 'launch_panel' ]
@@ -3547,6 +3708,8 @@ element orbiter : trinity # implements compiler
             # with the host; adopt it, its stop comes back with it. none kept: attach
             if [ dbg9 ]
                 kd9 : cast dbg [ host_kept[ 'dbg{s}' ] ]
+                # DIAG: the session the swap left, or none
+                log 'ADOPT slot={s} mod={mod} pid={pid} kept={bool[kd9]} active={(kd9) ? kd9.active : false}'
                 if [ kd9 && kd9.active ]
                     if [ !debuggers ] debuggers = map dbg [string] []
                     dk9 : string dbg_key[ nv ]
@@ -3797,6 +3960,8 @@ element orbiter : trinity # implements compiler
             # magnify lights while the findbar is open
             if [ fb_on ] tmask = 1
             tnav.push[ 'magnify' ]
+        # the orbiter tab: the exchange about this file at the caret's line
+        if [ hasfile && edp9 && !engaged ] tnav.push[ 'agent_ask' ]
         # the file's views: a press fills the pane with the picker (lit while up)
         if [ hasfile && edp9 && !engaged ]
             vl9 : vec string views_for[ edp9 ]
@@ -3831,6 +3996,7 @@ element orbiter : trinity # implements compiler
             if [ tn.compare[ 'new_instance' ] == 0 ] ic9 = 'add_instance'
             if [ tn.compare[ 'console_tab' ] == 0 ] ic9 = 'console'
             if [ tn.compare[ 'view' ] == 0 ] ic9 = 'views'
+            if [ tn.compare[ 'agent_ask' ] == 0 ] ic9 = 'orbiter4'
             if [ tn.compare[ 'dock' ] == 0 && shift_down ] ic9 = 'undock'
             tico.push[ ic9 ]
         # the finder is modal: no tab strip under its rows, or a press on
@@ -3839,15 +4005,13 @@ element orbiter : trinity # implements compiler
         # count carries the width to grow to
         if [ tnav.count > 0 && !(engaged && !fb_on) ]
             nt9 : i32 [ i32[ tnav.count ] ]
-            if [ nt9 >= 6 ]     els['tabnav'] = NavTabs6 [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0 ]
+            if [ nt9 >= 7 ]     els['tabnav'] = NavTabs7 [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0 ]
+            el [ nt9 == 6 ]     els['tabnav'] = NavTabs6 [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0 ]
             el [ nt9 == 5 ]     els['tabnav'] = NavTabs5 [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0 ]
             el [ nt9 == 4 ]     els['tabnav'] = NavTabs4 [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0 ]
             el [ nt9 == 3 ]     els['tabnav'] = NavTabs3 [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0 ]
             el [ nt9 == 2 ]     els['tabnav'] = NavTabs2 [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0 ]
             el                  els['tabnav'] = NavTabs  [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0 ]
-
-        if [ menu_open && nav_showing && docked && docked.count > 0 ]
-            els['pins'] = RButton [ icon: (show_pins) ? 'side_on' : 'side_off', selected: show_pins, manual_mode: true ]
 
         if [ rv ]
             vel : Elements rv.title_elements*[]
@@ -4031,16 +4195,28 @@ element orbiter : trinity # implements compiler
 
     public func on_unload [ ]
         save_session[]
+        # the avatars are never freed: their teardown (the shaders' and
+        # textures' drop) crashes the process, and the reload's destroy of
+        # this instance would run it. an extra hold keeps them through the
+        # swap (one instance leaked per reload)
+        if [ agent_av ] agent_av.hold[]
+        if [ ux && ux.root && ux.root.elements ]
+            cav9 : element ux.root.elements[ 'avatar' ]
+            if [ cav9 ] cav9.hold[]
         if [ debuggers ]
             # a reload keeps a hosted app's session: the host holds it parked across
             # the swap and the reloaded orbiter adopts it, a stop and all
             reloading : bool [ getenv[ 'SILVER_RELOAD_SAVE' ] != null ]
             for [ d: dbg, name: string ] in debuggers
+                # DIAG: what the swap does with each session
+                log 'UNLOAD dbg {name} active={(d) ? d.active : false} reloading={reloading} instances={(instances) ? instances.count : 0}'
                 if [ !d || !d.active ] continue
                 ks9 : i32 [ -1 ]
                 if [ reloading && instances ]
                     for [ av9: AppView ] in instances
+                        log 'UNLOAD   av {av9.app_mod} slot={av9.slot} mine={av9.debugger == d}'
                         if [ av9.debugger == d && av9.slot > 0 ] ks9 = av9.slot
+                log 'UNLOAD   -> {(ks9 > 0) ? "park" : "stop"} slot={ks9}'
                 if [ ks9 > 0 ]
                     d.park[]
                     d.hold[]
@@ -5526,7 +5702,7 @@ element orbiter : trinity # implements compiler
                 # the commit surface is its own element (CommitView); the
                 # list only keeps the snapshot fresh for it
                 nb : string [ (nav_root) ? '{nav_root}' : '{project_root[]}' ]
-                # picking a path for a launch field: plain files, no git, no pins
+                # picking a path for a launch field: plain files, no git
                 picking : bool [ pick_field && pick_field.count > 0 ]
                 if [ !picking && !git_busy && (!git_snap || git_snap.base.compare[ nb ] != 0) ] git_summarize[]
                 # consoles are not files and do not belong in this list
@@ -5547,13 +5723,7 @@ element orbiter : trinity # implements compiler
                         if [ !browse_single ]
                             find_hits.push[ FindHit [ is_header: true, text: '', file: av9.src ] ]
                         combined.push[ '{av9.src}' ]
-                if [ docked && show_pins && !picking ]
-                    for [ i: i32 0, i < docked.count, i += 1 ]
-                        dp : path docked[i]
-                        if [ dp ]
-                            push_file_hit[ dp, true ]
-                            combined.push[ '{dp}' ]
-                # an empty pin section owns no divider and no spacer
+                # an empty instance section owns no divider and no spacer
                 if [ find_hits.count > d0 ]
                     nav_dock_rows = find_hits.count
                     if [ browse_single ]
@@ -5976,15 +6146,6 @@ element orbiter : trinity # implements compiler
             if [ e inherits Editor ]
                 ed : Editor e
                 # hits are clickable only while the list is actually shown
-                if [ ev.target == e && (nav_showing || find_showing) ]
-                    # shift-click pins: merge the row into the top list
-                    if [ ev.key.shift && ed.hover_line >= 0 && ed.hover_line < find_hits.count ]
-                        hs : FindHit find_hits[ ed.hover_line ]
-                        if [ hs && hs.is_header && hs.file && !hs.is_spacer ]
-                            toggle_dock[ hs.file ]
-                            ev.no_default = true
-                            if [ ev.target ] ev.target.ux.restyle = true
-                        return
                 if [ ev.target == e && (nav_showing || find_showing) && ed.sel_line >= 0 && ed.sel_line < find_hits.count ]
                     dbl : bool [ ev.mouse.double_click && last_hit_row == ed.sel_line ]
                     last_hit_row = ed.sel_line
@@ -6033,6 +6194,12 @@ element orbiter : trinity # implements compiler
             if [ ev.target ] ev.target.ux.restyle = true
             ev.no_default = true
             return
+        if [ ev.target.id == 'agent_ask' ]
+            eda9 : Editor pane_of[ ev.target ]
+            log 'AGENTASK press pane={bool[eda9]} src={(eda9 && eda9.src) ? string[eda9.src] : "none"} line={(eda9) ? eda9.sel_line : -1}'
+            if [ eda9 && eda9.src && ux ] ux.exchange_open[ eda9.src, eda9.sel_line + 1, true ]
+            ev.no_default = true
+            return
         if [ ev.target.id == 'console_tab' ]
             show_console = !show_console
             if [ ev.target ] ev.target.ux.restyle = true
@@ -6051,6 +6218,10 @@ element orbiter : trinity # implements compiler
             return
         if [ ev.target.id == 'scene_next' ]
             scene_step[ 1 ]
+            ev.no_default = true
+            return
+        if [ ev.target.id == 'agent_note' ]
+            ux.agent_show[]
             ev.no_default = true
             return
         if [ ev.target.id == 'frost_name' ]
@@ -6146,12 +6317,6 @@ element orbiter : trinity # implements compiler
             if [ ev.target ] ev.target.ux.restyle = true
             return
         
-        if [ ev.target.id == 'pins' ]
-            show_pins = !show_pins
-            rekeep_listing[]
-            ev.no_default = true
-            force_update[]
-            return
         
         # an enum's segmented buttons: the press already set TButtons.selected.
         # store NOW — a poll next frame loses it, because the re-render rebuilds
@@ -6486,6 +6651,8 @@ element orbiter : trinity # implements compiler
                              || (eda.diff_commit && eda.diff_commit.count > 0)) ]
         if [ ev.key.state && i32[ ev.key.unicode ] == 256 && chosen ]
             eda.diff_commit = null
+            # escape on the reference list cancels the diff view outright
+            if [ eda.view_name == 'git' ] eda.git_on = false
             set_pane_view[ eda, '' ]
             if [ ux ] ux.restyle = true
             ev.no_default = true
@@ -6894,7 +7061,33 @@ element orbiter : trinity # implements compiler
         if [ ed_sessions ]
             ags : ConsoleSession ed_sessions[ orbit_sid ]
             if [ ags && ags.agent_busy[] ] busy_at = epoch_millis[]
-            busy = (epoch_millis[] - busy_at) < 500
+            busy = (epoch_millis[] - busy_at) < 500 || agent_state == 'busy'
+            # done with the exchange up: apply the staged reload; the
+            # flame and the final spin last until the swap has landed
+            # the flame lights first and burns on its own for a moment, then
+            # the apply goes: a fresh product (an outside build) swaps the
+            # instant it is asked, which left no frame for the flame at all
+            pend9 : i32 [ au_live_get_pending[] ]
+            now9  : i64 [ epoch_millis[] ]
+            if [ agent_done && !swap_live && ux && ux.shot_ask && pend9 == 1 ]
+                swap_live = true
+                swap_hot  = false
+                swap_at   = now9
+            # done with nothing staged (the change was outside this app's
+            # dependencies): the exchange is put away as Esc would, the
+            # status button brings it back; once per done
+            el [ agent_done && !done_put_away && ux && ux.shot_ask && !ux.agent_min && pend9 == 0 ]
+                done_put_away = true
+                ux.agent_min  = true
+                ux.restyle    = true
+            if [ swap_live && !swap_hot && now9 - swap_at > 1400 ]
+                au_live_request_apply[]
+                swap_hot = true
+            # the swap replaces this instance (the flame ends with it); a
+            # build that failed leaves pending staged again: stand down
+            if [ swap_live && swap_hot && pend9 != 2 && now9 - swap_at > 4000 ]
+                swap_live  = false
+                agent_done = false
         if [ debuggers && ed_sessions ]
             for [ d: dbg, dn: string ] in debuggers
                 if [ !d || !d.active ] continue
@@ -7022,7 +7215,18 @@ element orbiter : trinity # implements compiler
             last_tip = tipk9
             log 'TIPBAR pane={active_pane} ed={(edv9) ? 1 : 0} vars={(edv9 && edv9.debug_vars) ? edv9.debug_vars.count : -1} dbg={(active_debugger[]) ? 1 : 0} tip={tip9}'
         return Elements [
-            'debug_value' : (shown9.count > 0 && au_live_get_pending[] == 0) ? DebugValue [ label: shown9 ] : null,
+            # the agent's button takes the left of the bar: no tooltip under it
+            'debug_value' : (shown9.count > 0 && au_live_get_pending[] == 0 && !(agent_note && agent_note.count > 0)) ? DebugValue [ label: shown9 ] : null,
+            'agent_note'  : (agent_note && agent_note.count > 0) ? AgentNote [ label: agent_note,
+                agent: true,
+                needs: (agent_state && agent_state == 'needs') ? true : false,
+                done:  agent_done ] : null,
+            # the reload chips flow after the button (l0+: after the sibling
+            # before them here), so nothing stacks at the bar's left
+            'reload_busy' : (au_live_get_pending[] == 2)
+                ? ReloadStatus [ label: 'compiling...' ] : null,
+            'reload_ready': (au_live_get_pending[] == 1)
+                ? ReloadButton [ label: 'reload', manual_mode: true ] : null,
             'scene_next'  : SceneArrow [ icon: 'right', manual_mode: true ],
             'scene_name'  : SceneName  [ label: scene_name[].lcase[] ],
             'scene_prev'  : SceneArrow [ icon: 'left', manual_mode: true ],
@@ -7030,16 +7234,12 @@ element orbiter : trinity # implements compiler
             'speed_name'  : (solid9) ? null : SceneName  [ label: speed_name[] ],
             'orbit_name'  : (solid9) ? null : SceneName  [ label: orbit_name[] ],
             'angle_name'  : (solid9) ? null : SceneName  [ label: angle_name[] ],
-            'reload_busy' : (au_live_get_pending[] == 2)
-                ? ReloadStatus [ label: 'compiling...' ] : null,
-            'reload_ready': (au_live_get_pending[] == 1)
-                ? ReloadButton [ label: 'reload', manual_mode: true ] : null,
             'ui_hide'     : HideToggle [ label: '-', manual_mode: true ] ]
 
     # scene: built once per scene — a fresh element each frame churns its
     # Render; a per-scene key re-appends last and covers the ui.
     # panes: hide keeps them mounted at opacity 0 — no unmount churn.
-    # avatar: not mounted for now; it will live somewhere else.
+    # avatar: ALWAYS mounted, window-anchored; :summoned slides it in.
     # error: ORBITER'S OWN state, one tab off the top edge — an error from
     # an app we happen to be running belongs to that app's run band
     public func render [] -> Elements
@@ -7049,6 +7249,7 @@ element orbiter : trinity # implements compiler
                 inner: pane_views[], deflt: 0.0, even: true, snap_close: true,
                 opacity: (hide_ui) ? 0.0 : 1.0 ],
             'status' : StatusBar [ elements: status_els[] ],
+            'avatar' : CornerAvatar [ topmost: true, summoned: show_orbiter ],
             'error'  : (!hide_ui && err_file && err_line > 0 && err_is_own[])
                 ? ErrorButton [ label: 'error {err_file.filename[]}:{err_line}',
                     topmost: true, manual_mode: true ] : null ]
