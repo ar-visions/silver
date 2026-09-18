@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "\"/Users/kalen/src/silver/support/agent-hooks/codex/codex-status.sh\" prompt", "timeout": 2}]}],
+    "PreToolUse": [
+      {"matcher": "^Bash$", "hooks": [{"type": "command", "command": "\"/Users/kalen/src/silver/support/agent-hooks/codex/codex-status.sh\" bash", "timeout": 2}]},
+      {"matcher": "(^|[._])request_user_input(_async)?$", "hooks": [{"type": "command", "command": "\"/Users/kalen/src/silver/support/agent-hooks/codex/codex-status.sh\" notify", "timeout": 2}]}
+    ],
+    "PostToolUse": [{"matcher": "^apply_patch$", "hooks": [{"type": "command", "command": "\"/Users/kalen/src/silver/support/agent-hooks/codex/codex-status.sh\" edit", "timeout": 2}]}],
+    "PermissionRequest": [{"hooks": [{"type": "command", "command": "\"/Users/kalen/src/silver/support/agent-hooks/codex/codex-status.sh\" notify", "timeout": 2}]}],
+    "Stop": [{"hooks": [{"type": "command", "command": "\"/Users/kalen/src/silver/support/agent-hooks/codex/codex-status.sh\" stop", "timeout": 2}]}],
+    "Interrupt": [{"hooks": [{"type": "command", "command": "\"/Users/kalen/src/silver/support/agent-hooks/codex/codex-status.sh\" stop", "timeout": 2}]}],
+    "SessionEnd": [{"hooks": [{"type": "command", "command": "\"/Users/kalen/src/silver/support/agent-hooks/codex/codex-status.sh\" stop", "timeout": 2}]}]
+  }
+}

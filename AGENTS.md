@@ -85,6 +85,11 @@ in any trinity app: the blurred capture behind, the user's box
 (one rounded frame, entries above an editable bottom line, at
 most four rows, the rest scrolling out the top), the app's
 avatar, and after the first send the agent's box on the right.
+The app's `.agi` lists the agents the user runs (`agents: [ claude,
+codex ]`, adapter names, the agi's bracket list; `agent:` alone is a list of one); the prompt
+shows them as a TButtons row (`AgentPick`), the lit one takes the
+first send (`agent_post_as` with the pick), and the row fades out
+as the exchange becomes a conversation.
 The exchange also opens about a file: the orbiter tab in a pane's
 tab strip (icon orbiter4) opens it at the caret's line, with
 `File: <path>:<line>` as the reference (`exchange_open` on the

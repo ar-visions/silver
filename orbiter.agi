@@ -2,6 +2,7 @@
 browse_single: 	true
 max_search: 	4000000
 code_font_size: 20
+agents: 	[ claude, codex ]
 
 projects:
 	orbiter: Project

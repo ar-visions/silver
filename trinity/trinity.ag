@@ -1776,6 +1776,7 @@ Display Window
     mutable agent_min           : bool     # Esc put the exchange away; the status item brings it back
     mutable shot_text           : string   # the lines so far: every send reposts the whole message
     mutable agent_sock          : string   # this app's socket path, quoted to the agent
+    mutable agent_pick          : string   # the agent chosen at the prompt (an `agents` name)
     mutable user_notes          : vec ShotEntry   # the user's lines, their own list beside the agent's
     mutable agent_busy          : bool     # the agent said busy: the shine keeps moving
 
@@ -2673,6 +2674,19 @@ Display Window
             e[ 'hostedshell' ] = IDEOverlay [ topmost: true ]
         if [ shot_ask && !agent_min ]
             e[ 'shot_bg' ] = ShotBackdrop [ topmost: true ]
+            # the agent to send to, chosen at the prompt; it fades out with
+            # the move to the conversation
+            nm9 : vec string agent_names[ app_object ]
+            ix9 : i32 [ 0 ]
+            for [ k9: i32 0, k9 < nm9.count, k9 += 1 ]
+                if [ agent_pick && agent_pick == nm9[ k9 ] ] ix9 = k9
+            # a mounted picker owns its selection: re-mounting with the
+            # stored index would stamp the user's press back every frame
+            if [ root && root.elements ]
+                pk0 : element root.elements[ 'agent_pick' ]
+                if [ pk0 && pk0 inherits TButtons ]
+                    tb0 : TButtons pk0
+                    if [ tb0.selected >= 0 && tb0.selected < nm9.count ] ix9 = tb0.selected
             if [ agent_view ]
                 e[ 'unotes' ] = ShotUser   [ topmost: true, area: Region [ 'l24px b-15%+594px w440px h420px' ] ]
                 e[ 'shot' ]   = ShotPrompt [ topmost: true, area: Region [ 'l32px b-15%+220px w424px h40px' ], label: 'prompt description' ]
@@ -2681,6 +2695,11 @@ Display Window
                 e[ 'shot' ]   = ShotPrompt [ topmost: true, label: 'prompt description' ]
             if [ agent_view ]
                 e[ 'notes' ]  = ShotNotes [ topmost: true ]
+            # the picker last: over the blur and the boxes
+            pw9 : i32 [ i32[ nm9.count ] * 96 ]
+            e[ 'agent_pick' ] = AgentPick [ topmost: true, buttons: nm9, selected: ix9, faded: agent_view,
+                icons: false, manual: false, seg_radius: 6.0, label_px: 13.0, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0,
+                area: Region [ 'l50%-{pw9 / 2}px b172px w{pw9}px h28px' ] ]
         # the app's exchange avatar is one instance, mounted for the life of
         # the app and invisible between exchanges: it is never torn down.
         # mounted AFTER the blur, or the blur paints over it
@@ -5208,6 +5227,9 @@ abstract media_app trinity
     public hidden       : bool
     public startup_path : path
     public agent : string
+    # the agents the user runs, by adapter name ('claude', 'codex', ...):
+    # the exchange's prompt offers the pick; `agent` alone is one of them
+    public agents : vec string
     public agent_connection : AgentConnection
     # Legacy socket setting for the default connection.
     public agent_inbox  : path
@@ -5259,6 +5281,11 @@ abstract media_app trinity
         adopt[ 'attach' ]
         adopt[ 'record' ]
         adopt[ 'record_mic' ]
+        adopt[ 'agent' ]
+        adopt[ 'agents' ]
+        adopt[ 'agent_inbox' ]
+        ag9 : Au root.get_property[ 'agents' ]
+        log 'ADOPT agents root={bool[ag9]} type={(ag9) ? string[ Au.header[ ag9 ].au.ident ] : "none"} app={bool[ a.get_property[ "agents" ] ]}'   # DIAG
         # SILVER_DISPLAY=<PIP|Full|Window|Screen>: the host's launch display.
         # PIP and Full start with the window never shown: the frames go to
         # orbiter's pane, and Window brings the window up later, live
@@ -5351,11 +5378,12 @@ abstract media_app trinity
 
 
 
-func agent_connect [ obj: Au ] -> AgentConnection
+# the adapter for a pick (the exchange's choice), else the configured one
+func agent_connect [ obj: Au, pick: string ] -> AgentConnection
     if [ !obj ] return null
     connection : cast AgentConnection [ obj.get_property[ 'agent_connection' ] ]
-    if [ connection ] return connection
-    name : cast string [ obj.get_property[ 'agent' ] ]
+    if [ connection && (!pick || pick.count == 0) ] return connection
+    name : string [ (pick && pick.count > 0) ? pick : cast string [ obj.get_property[ 'agent' ] ] ]
     if [ !name || name.count == 0 || name == 'claude' ]
         ib : cast path [ obj.get_property[ 'agent_inbox' ] ]
         return ClaudeAgentConnection [ socket: ib ]
@@ -5364,7 +5392,32 @@ func agent_connect [ obj: Au ] -> AgentConnection
     return null
 
 func agent_post [ obj: Au, text: string, priority: string ] -> bool
-    connection : AgentConnection agent_connect[ obj ]
+    return agent_post_as[ obj, null, text, priority ]
+
+# the names the exchange offers: the app's `agents` list, else its `agent`,
+# else claude
+func agent_names [ obj: Au ] -> vec string
+    out : vec string []
+    if [ obj ]
+        # agents is media_app's own member (no app redeclares it), so the
+        # base view of the app reads it at the base's offset
+        # by name: an app declares `agents` on its own type (the abstract's
+        # member is not in its layout), so the property is the one to read
+        av9 : Au obj.get_property[ 'agents' ]
+        if [ av9 ]
+            vv9 : cast vector [ av9 ]
+            for [ i: i32 0, i < vv9.count, i += 1 ]
+                n : string [ cast string [ vv9[ i ] ] ]
+                if [ n && n.count > 0 ] out.push[ n ]
+        if [ out.count == 0 ]
+            one : cast string [ obj.get_property[ 'agent' ] ]
+            if [ one && one.count > 0 ] out.push[ one ]
+    if [ out.count == 0 ] out.push[ 'claude' ]
+    log 'AGENTS names={out.count} first={out[0]}'   # DIAG
+    return out
+
+func agent_post_as [ obj: Au, pick: string, text: string, priority: string ] -> bool
+    connection : AgentConnection agent_connect[ obj, pick ]
     if [ !connection ] return false
     # Apps may redeclare properties at different offsets.
     sp : path   [ cast path   [ obj.get_property[ 'startup_path' ] ] ]
@@ -5496,6 +5549,7 @@ element TButtons
     intern  svg_cache : map SVGModel [string]
     intern  svg_miss  : map i32      [string]
     intern  hover_ix  : i32 [ -1 ]
+    intern  pick_dbg  : bool          # DIAG
     # the strip's own id: a press hands the app the segment's name as the
     # target id, and the next move gives the strip its name back
     intern  strip_id  : string
@@ -5575,6 +5629,10 @@ element TButtons
         n : i32 [ buttons.count ]
         if [ n == 0 || !bounds ] return
         cv : Canvas w.screen
+        # DIAG: the exchange's picker
+        if [ id && id == 'agent_pick' && !pick_dbg ]
+            pick_dbg = true
+            log 'PICKDRAW n={n} bounds={bounds.x},{bounds.y},{bounds.w},{bounds.h} tx={cv.transform_tx[]} ty={cv.transform_ty[]} op={cv.get_opacity[]} opacity={opacity}'
         if [ !hovered ] hover_ix = -1
         # integral placement: the element origin is often a fractional device
         # pixel, which smears a 1px stroke. snap the whole draw to the grid
@@ -6695,6 +6753,19 @@ element ShotNotes
         stroke_color: rgba [ '#ffffff66' ], radius: Radius [ '12' ] ]
     notes : ShotNotesLayer []
 
+# the agent picker over the prompt: names, one lit; :faded once the
+# exchange is a conversation (the pick is made at the first send)
+TButtons AgentPick
+    public faded : bool
+    # cached, unlike a TButtons strip: an uncached child paints into root's
+    # cache and the cached backdrop is blitted over it afterward
+    no_cache : false
+    style : CSS {
+        opacity: 1.0
+    :faded
+        opacity: 0.0, 400ms cubic outward
+    }
+
 TextInput ShotPrompt
     area : Region { l50%-212px b220px w424px h40px }
     # the box's frame is the only frame: the field's own body stays clear.
@@ -6741,7 +6812,14 @@ TextInput ShotPrompt
             # note lines on this app's socket (one line per wire line)
             if [ first9 && w.agent_sock ]
                 msg = '{msg}\n\nReply through this app as well, on the unix socket {w.agent_sock}, one wire line per text line: everything you say as: app status note <line>, and each edit you apply as its own diff (the lines you removed and added, never a git diff of the tree, which holds the user\'s changes too): app status diff <line>'
-            if [ w.app_object ] agent_post[ w.app_object, msg, 'now' ]
+            # the picker's choice is the agent, from the first send on
+            if [ w.root && w.root.elements ]
+                pk9 : element w.root.elements[ 'agent_pick' ]
+                if [ pk9 && pk9 inherits TButtons ]
+                    tb9 : TButtons pk9
+                    nm9 : vec string agent_names[ w.app_object ]
+                    if [ tb9.selected >= 0 && tb9.selected < nm9.count ] w.agent_pick = nm9[ tb9.selected ]
+            if [ w.app_object ] agent_post_as[ w.app_object, w.agent_pick, msg, 'now' ]
             fn9   : string w.shot_ask.filename[]
             shown : string [ (text.count > 0) ? text : fn9 ]
             w.user_note[ shown ]
