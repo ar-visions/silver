@@ -2218,6 +2218,9 @@ element orbiter : trinity # implements compiler
     public show_scene  : bool   [ true ]
     public live_reload : bool   [ true ]
     public startup_path  : path
+    # the agents this app's user runs (agi `agents: [ claude, codex ]`); the
+    # abstract's member is not in this type, so the agi needs it declared here
+    public agents        : vec string
     # the whole argv tail: the thing we open, then the module's own args.
     # split in init — resource keeps the first token, module_args the rest
     default module_args  : string
@@ -2714,6 +2717,9 @@ element orbiter : trinity # implements compiler
         settings_mtime = sp.modified_time[]
         if [ projects ] projects.clear[]
         Au.parse_agi[ null, txt.chars, a ]
+        tr9 : cast trinity [ a ]
+        ag9 : Au tr9.agents
+        log 'AGI agents_member={bool[ ag9 ]} count={(ag9) ? tr9.agents.count : -1} via_property={bool[ get_property[ "agents" ] ]} font={code_font_size}'   # DIAG
         if [ projects ]
             for [ p: Project, name: string ] in projects
                 p.root = resolve_local[ p.root ]
