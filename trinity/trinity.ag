@@ -2109,6 +2109,9 @@ Display Window
             ct.to        = best.instance.hold[]
             ct.type      = typeid[ best.instance ]
             ct.start     = epoch_millis[]
+            # the first frame after a load or live reload: the state lands as
+            # it is, no transition from the defaults; the arm is already over
+            if [ frame_seq <= 1 && ct.duration ] ct.start = ct.start - ct.duration.millis - 1
             ct.member    = member
             ct.invalidate = false
             ct.container  = value_holder
@@ -5556,6 +5559,7 @@ element TButtons
     public  selected  : i32 [ -1 ]
     public  sel_mask  : i32
     public  disable_mask : i32        # per-segment disable, same bits as sel_mask
+    public  danger_mask  : i32        # per-segment red icon (a destructive action), same bits
     public  seg_radius : f32 [ 8.0 ]
     # icon height as a fraction of the control's height
     public  icon_scale : f32 [ 0.55 ]
@@ -5722,15 +5726,18 @@ element TButtons
             svg  : SVGModel (icons) ? seg_svg[ icon ] : null
             # the icons fade in with the reveal; a disabled one stays dim
             cv.set_opacity[ op0 * ((off) ? 0.35 : 1.0) * rv9 ]
+            # a segment flagged in danger_mask draws its icon or label red
+            dang : bool [ (danger_mask & (1 << i)) != 0 ]
+            icol : rgba [ (dang) ? rgba [ '#ff5c5c' ] : rgba [ '#fff' ] ]
             if [ svg ]
                 isz : f32 [ bounds.h * ((icon_scale > 0.0) ? icon_scale : 0.55) ]
                 ix  : f32 [ x + (seg_w - isz) * 0.5 ]
                 iy  : f32 [ (bounds.h - isz) * 0.5 ]
-                cv.fill_color[ rgba [ '#fff' ] ]
+                cv.fill_color[ icol ]
                 cv.draw_svg[ svg, ix, iy, isz, isz ]
             el
                 cv.font_size[ (label_px > 0.0) ? label_px : bounds.h * 0.5 ]
-                cv.fill_color[ rgba [ '#fff' ] ]
+                cv.fill_color[ icol ]
                 cv.draw_text[ buttons[ i ], rect [ x: x, y: 0.0, w: seg_w, h: bounds.h ],
                     vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
             cv.set_opacity[ op0 ]

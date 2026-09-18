@@ -614,6 +614,7 @@ Avatar OrbiterAvatar
     spin_amount : f32   [ 0.04 ]
     mutable spin_rate  : f32 [ 0.25 ]
     mutable spin_phase : f32
+    mutable spin_us    : i64    # the last spin step, microseconds
     intern  spin_dbg   : bool
     # the wheel's in-plane clocking, held in every state
     clock_deg   : f32   [ 30.0 ]
@@ -694,9 +695,18 @@ Avatar OrbiterAvatar
             rl : bool [ orb->swap_live ]
             fl : f32 [ (rl) ? 1.0 : 0.0 ]
             aura.flame = filter_n[ aura.flame, fl, 0.12, ux->frame_factor ]
-            gs : f32 [ (rl) ? busy_spin * 1.8 : (wb) ? busy_spin : rest_spin ]
+            # the exchange avatar turns at the working rate face on too: its
+            # rotating light reads as rotation from the first frame
+            gs : f32 [ (rl) ? busy_spin * 1.8 : (wb || animate_always) ? busy_spin : rest_spin ]
             spin_rate  = filter_n[ spin_rate, gs, spin_amount, ux->frame_factor ]
-            spin_phase = spin_phase + spin_rate * (ux->frame_factor / 60.0)
+            # the phase runs on real time (microseconds), not the frame
+            # factor: that is whole-millisecond deltas snapped to one frame
+            # on a slow frame, and the turn sped up and slowed down with it
+            nowu9 : i64 [ epoch_micros[] ]
+            dt9   : f32 [ (spin_us > 0) ? f32[ nowu9 - spin_us ] / 1000000.0 : 0.0 ]
+            if [ dt9 > 0.25 ] dt9 = 0.25
+            spin_us    = nowu9
+            spin_phase = spin_phase + spin_rate * dt9
             if [ spin_phase > 6.2831853 ] spin_phase = spin_phase - 6.2831853
             aura.spin  = spin_phase
             if [ wb != spin_dbg ]
@@ -4007,13 +4017,16 @@ element orbiter : trinity # implements compiler
         # one button: + adds a tab; with shift held it reads − and closes this one
         if [ (editor_slots.count < 4 && !con9) || (shift_down && editor_slots.count > 1) ] tnav.push[ 'dock' ]
         tico : vec string []
+        dmask9 : i32 [ 0 ]     # with shift held the dock tab closes: its minus is red
         for [ tn: string ] in tnav
             ic9 : string tn
             if [ tn.compare[ 'new_instance' ] == 0 ] ic9 = 'add_instance'
             if [ tn.compare[ 'console_tab' ] == 0 ] ic9 = 'console'
             if [ tn.compare[ 'view' ] == 0 ] ic9 = 'views'
             if [ tn.compare[ 'agent_ask' ] == 0 ] ic9 = 'orbiter4'
-            if [ tn.compare[ 'dock' ] == 0 && shift_down ] ic9 = 'undock'
+            if [ tn.compare[ 'dock' ] == 0 && shift_down ]
+                ic9 = 'undock'
+                dmask9 = dmask9 | (1 << tico.count)
             tico.push[ ic9 ]
         # the finder is modal: no tab strip under its rows, or a press on
         # the first row lands on a console/dock segment. the strip rests as
@@ -4021,13 +4034,13 @@ element orbiter : trinity # implements compiler
         # count carries the width to grow to
         if [ tnav.count > 0 && !(engaged && !fb_on) ]
             nt9 : i32 [ i32[ tnav.count ] ]
-            if [ nt9 >= 7 ]     els['tabnav'] = NavTabs7 [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0 ]
-            el [ nt9 == 6 ]     els['tabnav'] = NavTabs6 [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0 ]
-            el [ nt9 == 5 ]     els['tabnav'] = NavTabs5 [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0 ]
-            el [ nt9 == 4 ]     els['tabnav'] = NavTabs4 [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0 ]
-            el [ nt9 == 3 ]     els['tabnav'] = NavTabs3 [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0 ]
-            el [ nt9 == 2 ]     els['tabnav'] = NavTabs2 [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0 ]
-            el                  els['tabnav'] = NavTabs  [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0 ]
+            if [ nt9 >= 7 ]     els['tabnav'] = NavTabs7 [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, danger_mask: dmask9, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0 ]
+            el [ nt9 == 6 ]     els['tabnav'] = NavTabs6 [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, danger_mask: dmask9, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0 ]
+            el [ nt9 == 5 ]     els['tabnav'] = NavTabs5 [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, danger_mask: dmask9, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0 ]
+            el [ nt9 == 4 ]     els['tabnav'] = NavTabs4 [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, danger_mask: dmask9, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0 ]
+            el [ nt9 == 3 ]     els['tabnav'] = NavTabs3 [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, danger_mask: dmask9, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0 ]
+            el [ nt9 == 2 ]     els['tabnav'] = NavTabs2 [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, danger_mask: dmask9, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0 ]
+            el                  els['tabnav'] = NavTabs  [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, danger_mask: dmask9, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0 ]
 
         if [ rv ]
             vel : Elements rv.title_elements*[]

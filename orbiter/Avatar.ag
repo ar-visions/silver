@@ -200,7 +200,8 @@ Orbiter PBR
         vec4  baseColor  = texture(color,    texCoords);
         float mat_ior    = texture(ior,      texCoords).r;
         float metallic   = texture(metal,    texCoords).r;
-        float roughness  = texture(rough,    texCoords).r;
+        // the gold a touch fuzzier than its map: the reflections soften
+        float roughness  = clamp(texture(rough, texCoords).r + 0.18, 0.0, 1.0);
         float mat_ao     = texture(ao,       texCoords).r;
         vec3  emit       = texture(emission, texCoords).rgb;
         float intensity  = texture(emission, texCoords).a;
@@ -247,20 +248,23 @@ Orbiter PBR
         vec3  eng_L     = normalize(eng_pos - worldPos);
         float lateral   = smoothstep(0.0, 0.707, dot(N, eng_L));
 
-        // the light cast on the inner walls follows the core's oscillation:
-        // the same phase the Core shader runs (time * 1.1 * pulse_width)
-        float pulse      = max(0.0, 0.5 + 0.5 * sin(ubo.time * 1.1 * ubo.pulse_width));
-        vec3  hot_off    = vec3(0.3, 0.6, 2.0);
-        vec3  hot_on     = vec3(1.4, 1.0, 0.4);
-        vec3  hot        = mix(hot_off, hot_on, pulse);
+        // the core's light on the inner walls: a steady orange at the pool
+        // that turns violet as soon as it climbs the walls (height above the
+        // core along the model's up axis), no cycling
+        float up_t   = clamp(dot(worldPos - eng_pos, beam_up) / 0.6, 0.0, 1.0);
+        vec3  hot_lo = vec3(1.9, 0.7, 0.18);
+        vec3  hot_hi = vec3(0.55, 0.3, 1.5);
+        vec3  hot    = mix(hot_lo, hot_hi, smoothstep(0.0, 1.0, up_t));
 
         hot = mix(hot, vec3(2.6, 1.0, 0.25), eng_f2);
+        // the pool's light on the bowl at its original reach and weight: the
+        // gold stays gold, the light only tints it where it faces the pool
         vec3  blue_light = metallic * eng_att * lateral * hot;
 
         // bottom core face: downward-facing surface glows as a warm plasma pool
         // no IOR texture on this material so drive purely from normal, not intensity
         float is_bottom  = pow(max(0.0, -dot(N, beam_up)), 3.0);
-        float core_pulse = 0.72 + 0.28 * sin(ubo.time * 1.1 * ubo.pulse_width);
+        float core_pulse = 1.0;   // the pool glows steady
         vec3  core_glow  = vec3(2.0, 0.7, 0.08) * is_bottom * core_pulse * 4.0;
         specular        *= (1.0 - is_bottom * 0.95);
 
@@ -339,6 +343,8 @@ Orbiter Aura
     attrib v_eye_pos : VertexOutput   [ type:typeid[ vec3f ] ]
 
 	attrib rim       : LayoutBinding [ type:typeid[ Surface ], id:Surface.rim, count:1, format: typeid[ rgba8 ] ]
+	# the geometry pass's depth: a march sample behind the metal is dropped
+	attrib height    : LayoutBinding [ type:typeid[ Surface ], id:Surface.height, count:1, format: typeid[ f32 ] ]
 
 	attrib fragColor : FragmentOutput [ type:typeid[ vec4f ] ]
 
@@ -492,6 +498,11 @@ Orbiter Aura
 					for (int j = 0; j < 32; j++) {
 						if (alpha > 0.97) break;
 						vec3  rng_p  = ro + rd * (rng_te + (float(j) + 0.5) * rng_dt);
+						{
+							vec4  cp  = ubo.proj * ubo.view * vec4(rng_p, 1.0);
+							vec2  suv = cp.xy / cp.w * 0.5 + 0.5;
+							if (cp.z / cp.w > texture(height, suv).r + 0.0005) continue;
+						}
 						float rng_at = clamp(dot(rng_p - rng_o, rng_d), 0.0, rng_bh);
 						vec3  rng_ax = rng_o + rng_d * rng_at;
 						float rng_r  = length(rng_p - rng_ax);
@@ -509,6 +520,75 @@ Orbiter Aura
 						col   += rng_col * d * (1.0 - alpha);
 						alpha += d * (1.0 - alpha);
 					}
+				}
+			}
+		}
+
+		// ── the donut: a torus the size of the ring, its inner and outer
+		// walls glazed with light (the blue region is those walls seen from
+		// above); its top and bottom carry none (axial factor). the glow
+		// streams round with the ring's rotating projection ──
+		float tor_R   = 0.515;                      // the ring's middle (walls 0.47, rim 0.56)
+		float tor_r   = 0.045;                      // the tube: the ring's width
+		// seated ON the rim (top_ring at 0.148): the volume pass has no depth
+		// against the body, so nothing of the donut may sit behind the metal
+		vec3  tor_o   = (ubo.model * vec4(0.0, 0.196, 0.0, 1.0)).xyz;
+		vec3  tor_d   = normalize(mat3(ubo.model) * vec3(0.0, 1.0, 0.0));
+		vec3  tor_ref = abs(tor_d.x) < 0.9 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 0.0, 1.0);
+		vec3  tor_tg  = normalize(cross(tor_d, tor_ref));
+		vec3  tor_bn  = cross(tor_tg, tor_d);
+		vec3  tor_oc  = ro - tor_o;
+		float tor_bR  = tor_R + tor_r;
+		float tor_qb  = dot(rd, tor_oc);
+		float tor_qc  = dot(tor_oc, tor_oc) - tor_bR * tor_bR;
+		float tor_qd  = tor_qb * tor_qb - tor_qc;
+		if (tor_qd > 0.0) {
+			float tor_sq = sqrt(tor_qd);
+			float tor_te = max(-tor_qb - tor_sq, 0.0);
+			float tor_tx = -tor_qb + tor_sq;
+			if (tor_tx > tor_te) {
+				float tor_dt = (tor_tx - tor_te) / 48.0;
+				for (int q = 0; q < 48; q++) {
+					if (alpha > 0.97) break;
+					vec3  tp  = ro + rd * (tor_te + (float(q) + 0.5) * tor_dt);
+					// behind the metal: the geometry pass's depth says so
+					{
+						vec4  cp  = ubo.proj * ubo.view * vec4(tp, 1.0);
+						vec2  suv = cp.xy / cp.w * 0.5 + 0.5;
+						float zs  = cp.z / cp.w;
+						if (zs > texture(height, suv).r + 0.0005) continue;
+					}
+					vec3  rel = tp - tor_o;
+					float h   = dot(rel, tor_d);
+					vec3  qv  = rel - tor_d * h;
+					float rr  = length(qv);
+					float dr  = rr - tor_R;
+					float cl  = max(length(vec2(dr, h)), 1e-4);
+					if (cl > tor_r) continue;
+					// the glaze: brightest at the tube's surface, smooth to its core
+					float shell = smoothstep(0.0, 1.0, cl / tor_r);
+					// axial factor: the walls (radial faces) carry it, the top and
+					// bottom none
+					float side  = pow(abs(dr) / cl, 2.0);
+					// the jet's own basis (built on the downward axis): the same
+					// angle it uses, so the band turns with it, not against it
+					float ang   = atan(dot(qv, rng_bn), dot(qv, rng_tg));
+					// the same rotation the emission jet sweeps round the ring
+					// (cos of the angle to ubo.spin, the jet's own exponent): the
+					// walls brighten and warm where it passes
+					// a diffuse band about 120 degrees wide: a smooth lobe with no
+					// edge, at half strength 60 degrees either side of the spin
+					float rot   = pow(0.5 + 0.5 * cos(ang - ubo.spin), 2.4);
+					float sweep = 0.4 + 0.6 * rot;
+					// a slow, coarse fog: fine noise at this step size reads as scales
+					vec3  np    = vec3(ang * 1.5 - ta * 0.8, h * 4.0, rr * 4.0);
+					float fg    = 0.75 + 0.25 * pfog(np);
+					// violet-blue on the outer wall, warmer on the inner one
+					vec3  tc    = (dr > 0.0) ? vec3(0.55, 0.35, 1.9) : vec3(1.4, 0.6, 1.6);
+					tc          = mix(tc, vec3(1.8, 0.9, 2.0), rot * 0.6);
+					float d     = 48.0 * shell * side * sweep * fg * tor_dt;
+					col   += tc * d * (1.0 - alpha);
+					alpha += d * (1.0 - alpha);
 				}
 			}
 		}
@@ -586,8 +666,8 @@ Orbiter Core
         vec3  V      = normalize(v_eye_pos - v_world_pos);
         vec3  N      = normalize(v_normal);
         float facing = max(0.0, dot(N, V));
-        // the light surface cycles at a quarter of its old rate
-        float pulse  = max(0.0, 0.8 + 0.2 * sin(ubo.time * 1.1 * ubo.pulse_width));
+        // the light surface holds: a steady orange glow, no cycling
+        float pulse  = 1.0;
         float ln     = length(v_local_pos.xz);
         float inner  = clamp(ln / 0.2, 0.0, 1.0) * (0.7 + (max(0.0, pulse - 0.2) * 1.0 + 0.2) * 0.3);
         vec4  tex    = textureLod(color, v_uv, pulse * 2.0 + 2.0 * inner);
@@ -595,24 +675,25 @@ Orbiter Core
         float alpha;
 
         if (v_color.g > 0.5) {
-            vec3  hot_on0 = mix(vec3(1.8, 0.2, 0.0), vec3(2.5, 1.0, 0.0), 1.0 - inner);
-            vec3  hot_on1 = mix(vec3(0.8, 0.4, 0.0), vec3(1.5, 1.5, 0.0), 1.0 - inner);
-            vec3  hot_off = vec3(0.044, 0.0, 4.4);
-            float f       = clamp(pulse, 0.0, 1.0);
-            vec3  hot     = mix(hot_off, mix(hot_on0, hot_on1, min(1.0, f)), f);
-            float detail = 0.6 + 0.4 * dot(tex.rgb, vec3(0.3 + pulse * 0.3));
-            col          = detail * hot * pulse;
-            if (inner > 0.5) {
-                col = mix(col, vec3(1.44, 1.44, 1.44), (inner - 0.5) * 2.0);
-            }
-            alpha        = tex.a;
+            // the pool: deep orange at its rim, white-hot at its center,
+            // the honeycomb only a faint texture over it, no gray rim
+            vec3  pool_rim = vec3(2.2, 0.75, 0.12);
+            vec3  pool_hot = vec3(3.2, 2.3, 1.5);
+            float center   = pow(1.0 - inner, 1.6);
+            vec3  hot      = mix(pool_rim, pool_hot, center);
+            float detail   = 0.85 + 0.15 * dot(tex.rgb, vec3(0.33));
+            col            = detail * hot;
+            alpha          = tex.a;
         } else {
             float r      = max(abs(v_local_pos.x) - 0.52, 0.0);
             float t      = clamp((r - 0.5) / (0.68 - 0.5), 0.0, 1.0);
             float glow   = 0.5 + 0.45 * t;
             float c0     =         -(ln - 0.08) / (0.044    * pulse);
             float c1     = (1.0 - (-(ln - 0.14) / (0.088))) * pulse;
-            col          = vec3(clamp(max(c0, c1), 0.4, 1.0));
+            // the rim dissolves into the pool's emission: the same orange,
+            // brightening toward the pool, never a white ring
+            float g      = clamp(max(c0, c1), 0.0, 1.0);
+            col          = mix(vec3(0.35, 0.14, 0.05), vec3(2.2, 0.9, 0.25), g);
             alpha        = 1.0;
         }
         fragColor = vec4(col, alpha);
@@ -679,6 +760,7 @@ element Avatar
     public environment_path  : string
     public render_scale      : f32   [ 4.0 ]
     mutable clock0           : i64   # the shaders' clock anchor (first frame)
+    mutable depth_bound      : i64      # the depth size the volume pass is bound to (a resize remakes the image)
     mutable clock_last       : i64
     mutable clock_s          : f64   # the shaders' time, in seconds run
     public  clock_run        : bool  [ true ]
@@ -906,6 +988,10 @@ element Avatar
             target.owner = a
             w_ref.element_targets[ id ] = target
             target.wscale = 0.0
+            # the volume pass reads this pass's depth (the same camera)
+            if [ target.depth ]
+                for [ vm: Model ] in vol_models
+                    vm.samplers[ 'height' ] = target.depth
 
         if [ vol_models.count ]
             vwf : f32 [ bounds.w * rs * vs ]
@@ -935,6 +1021,16 @@ element Avatar
         animated = summoned || animate_always
         create_target[]
         if [ !target && !vol_target ] return
+        # the volume pass samples the geometry pass's depth: a resize gives
+        # that texture a new image, and a descriptor left on the old one is a
+        # GPU page fault. rebind whenever the image changes
+        if [ target && target.depth && vol_target && vol_target.models ]
+            dk9 : i64 [ i64[ target.depth.width ] * 65536 + i64[ target.depth.height ] ]
+            if [ dk9 != depth_bound ]
+                depth_bound = dk9
+                for [ vm: Model ] in vol_target.models
+                    vm.samplers[ 'height' ] = target.depth
+                    vm.rebind_model[]
 
         # model transform from World-level rotate property
         model_mat : mat4f.identity[]
