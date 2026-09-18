@@ -4047,7 +4047,8 @@ class Texture
         if [ width > 0 || vk_image ]
             usage: VkImageUsageFlags [ 0 ]
             if [ is_depth ]
-                usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT
+                # sampled too: a volume pass reads the geometry's depth to cull
+                usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT
             el [ swap ]
                 usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT
             el [ depth > 1 ]
