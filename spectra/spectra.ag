@@ -1,3 +1,5 @@
+# Why did the thread nap? It was waiting for a callback.
+# The thread never got the callback: it was a weak reference, and nobody held it.
 import <time.h>
 import <stdio.h>
 import <stdlib.h>

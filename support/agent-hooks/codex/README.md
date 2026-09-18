@@ -1,31 +1,36 @@
-# Codex status hooks
+# Codex app communication
 
-The repository's `.codex/hooks.json` registers the adapter. Review and
-trust its definitions once through Codex CLI `/hooks`; Codex skips new
-hooks until trusted. Resume the session to load the configuration.
+The app still selects `codex` in its existing agents list. Each message
+carries its reply socket. The prompt hook binds that socket to the Codex
+session and turn; terminal work and other sessions do not send into it.
 
-| Event | Orbiter status |
+The repository's `.codex/hooks.json` registers the hooks. Codex requires
+these definitions to be trusted through `/hooks` before running them.
+Resume the session after enabling them. No trust checks are bypassed.
+
+| Event | App receives |
 | --- | --- |
-| UserPromptSubmit | busy: working |
-| PreToolUse: Bash | busy: running the command |
-| PostToolUse: apply_patch | busy: edited filename |
-| PermissionRequest | needs: approval needed |
-| PreToolUse: request_user_input or request_user_input_async | needs: waiting for your answer |
-| Stop, Interrupt, SessionEnd | idle |
+| UserPromptSubmit | busy: working; records the reply socket |
+| PreToolUse: Bash | busy: command |
+| PreToolUse: apply_patch | saves deleted file contents |
+| PostToolUse: apply_patch | each file's patch lines, then busy |
+| PermissionRequest / request_user_input | needs: reason |
+| Stop | final assistant text as note lines, then done |
+| Interrupt / SessionEnd | done |
 
-`codex-status.sh` reads the Codex event JSON. `codex-status.py` translates
-patch filenames, shell commands, and approval requests for the existing
-`../orbiter-status.py` sender. Claude's sender is unchanged.
+Progress commentary still follows the message's reply instructions.
+There is no assistant-commentary hook. Final replies use the documented
+`last_assistant_message` field rather than reading a transcript.
+Manual notes can use `codex-status.sh note "message"` with hook JSON on
+stdin, or an explicit `TRINITY_AGENT_SOCKET` environment variable.
 
-Status travels over `$XDG_RUNTIME_DIR/trinity-orbiter.sock`, defaulting
-to `/tmp/trinity-orbiter.sock`. `ORBITER_APP` selects a different app.
-Each message is one line, with at most 120 characters of status text.
-An absent Orbiter is harmless, and hooks produce no model context.
+Text is split into wire lines of at most 400 UTF-8 bytes. Diff lines
+retain their indentation and signs; the existing preview limit is 400
+characters per line. Deleted files are captured before apply_patch runs.
+Only that tool call's edits are sent; the working tree is not diffed.
+An absent app is harmless, and hook work has a bounded time budget.
+Claude's hooks and sender are unchanged.
 
-The hook commands contain this checkout's absolute path. Update that
-path if you move the checkout. These hooks report status only; prompt
-and screenshot delivery into an agent remains Trinity's `agent_post`.
-
-Test with `python3 support/agent-hooks/codex/test_status.py`.
+Run `python3 support/agent-hooks/codex/test_status.py`.
 
 [Codex hook reference](https://learn.chatgpt.com/docs/hooks)

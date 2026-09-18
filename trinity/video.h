@@ -1,6 +1,7 @@
 #ifndef TRINITY_VIDEO_H
 #define TRINITY_VIDEO_H
 #include <vulkan/vulkan.h>
+#include <vk_video/vulkan_video_codec_h264std_encode.h>
 
 // the h.264 standard structs are bitfields, which silver cannot write: filled here
 void h264_sps       (StdVideoH264SequenceParameterSet* sps, StdVideoH264SequenceParameterSetVui* vui,

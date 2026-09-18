@@ -255,6 +255,8 @@ func agent_sock_ask   [ nm: cstr, txt: cstr, out: @i8, cap: i32 ] -> i32
 func agent_inbox_find [ root: cstr, sock: cstr, sock_out: @i8, sock_cap: i32, peer_out: @i8, peer_cap: i32 ] -> i32
 func agent_inbox_post [ sock: cstr, peer: cstr, sender: cstr, txt: cstr, priority: cstr ] -> i32
 func agent_codex_post [ root: cstr, sock: cstr, session: cstr, txt: cstr ] -> i32
+func agent_codex_post_async [ root: cstr, sock: cstr, session: cstr, txt: cstr ] -> i32
+func agent_codex_poll [] -> i32
 
 # the launch/live property spec of any object, read from its type: the
 # running app answers props with it, and a host enumerates a module by
@@ -522,6 +524,8 @@ abstract live_app media_app
         if [ e.hide      ] em['hide']      = 'true'
         if [ e.focusable ] em['focusable'] = 'true'
         if [ e.opacity < 1.0 ] em['opacity'] = '{e.opacity}'
+        if [ e inherits ShotNotes && e.ux && e.ux.agent_notes ]
+            em['entries'] = e.ux.agent_notes
         if [ e.elements ]
             inner : map object [string] []
             for [ ch: element, k: string ] in e.elements
@@ -1193,6 +1197,7 @@ abstract live_app media_app
             el             wn.release_event[ wn.ev ]
 
         func agent_pump []
+            agent_codex_poll[]
             wn : Window [ w ]
             aa :  cast element [ wn.app_object ]
             if [ !agent_on ]
@@ -1844,6 +1849,16 @@ Display Window
         agent_notes.push[ ShotEntry [ text: text ] ]
         agent_diff_cur = false
         while [ agent_notes.count > 8 ] agent_notes.remove[ 0 ]
+        if [ root && root.elements ]
+            ne : element root.elements[ 'notes' ]
+            if [ ne ] ne.pristine = false
+        will_animate = true
+
+    func agent_description [ text: string ]
+        if [ !agent_notes || agent_notes.count == 0 ] return
+        en : ShotEntry agent_notes[ agent_notes.count - 1 ]
+        en.add_description[ text ]
+        agent_diff_cur = false
         if [ root && root.elements ]
             ne : element root.elements[ 'notes' ]
             if [ ne ] ne.pristine = false
@@ -2699,7 +2714,7 @@ Display Window
             pw9 : i32 [ i32[ nm9.count ] * 96 ]
             e[ 'agent_pick' ] = AgentPick [ topmost: true, buttons: nm9, selected: ix9, faded: agent_view,
                 icons: false, manual: false, seg_radius: 6.0, label_px: 13.0, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0,
-                area: Region [ 'l50%-{pw9 / 2}px b172px w{pw9}px h28px' ] ]
+                area: Region [ 'l50%-{pw9 / 2}px b282px w{pw9}px h28px' ] ]
         # the app's exchange avatar is one instance, mounted for the life of
         # the app and invisible between exchanges: it is never torn down.
         # mounted AFTER the blur, or the blur paints over it
@@ -5205,7 +5220,8 @@ AgentConnection CodexAgentConnection
     func post [ root: path, from: string, text: string, urgency: string ] -> bool
         endpoint : string [ (socket) ? '{socket}' : '' ]
         thread : string [ (session) ? session : '' ]
-        return agent_codex_post[ root.chars, endpoint.chars, thread.chars, text.chars ] != 0
+        msg : 'From: {from}\nPriority: {urgency}\n\n{text}'
+        return agent_codex_post_async[ root.chars, endpoint.chars, thread.chars, msg.chars ] != 0
 
 AgentConnection ClaudeAgentConnection
     public socket : path
@@ -5383,6 +5399,8 @@ func agent_connect [ obj: Au, pick: string ] -> AgentConnection
     if [ !obj ] return null
     connection : cast AgentConnection [ obj.get_property[ 'agent_connection' ] ]
     if [ connection && (!pick || pick.count == 0) ] return connection
+    if [ connection && pick == 'codex' && connection inherits CodexAgentConnection ] return connection
+    if [ connection && pick == 'claude' && connection inherits ClaudeAgentConnection ] return connection
     name : string [ (pick && pick.count > 0) ? pick : cast string [ obj.get_property[ 'agent' ] ] ]
     if [ !name || name.count == 0 || name == 'claude' ]
         ib : cast path [ obj.get_property[ 'agent_inbox' ] ]
@@ -6555,9 +6573,16 @@ func wrap_note [ cv: Canvas, note: string, maxw: f32 ] -> vec string
 class ShotEntry
     public text : string
     public diff : vec string
+    public description : vec string
     public open : bool
     public y0   : f32
     public y1   : f32
+    public title_y1 : f32
+
+    func add_description [ detail: string ]
+        if [ !detail ] return
+        if [ !description ] description = vec string []
+        description.push[ detail ]
 
 # tabs to spaces for the text draw (the font has no tab glyph): a diff's
 # lines keep their tabs on the wire, the box shows them at 4
@@ -6586,13 +6611,24 @@ func draw_notes [ cv: Canvas, notes: vec ShotEntry, b: rect, color: rgba, shine_
     cv.font_size[ 14 ]
     # first pass: the wrapped lines and the height they take
     wrapped : vec Au []
+    descriptions : vec Au []
     total   : f32 [ 0.0 ]
     n : i32 [ 0 ]
     for [ en: ShotEntry ] in notes
-        ls : vec string wrap_note[ cv, expand_tabs[ en.text, 4 ], maxw ]
+        title : string [ (en.description || en.diff) ? ((en.open) ? 'v {en.text}' : '> {en.text}') : en.text ]
+        ls : vec string wrap_note[ cv, expand_tabs[ title, 4 ], maxw ]
         wrapped.push[ ls ]
+        ds : vec string []
+        if [ en.description && en.open ]
+            for [ detail: string ] in en.description
+                rows : vec string wrap_note[ cv, expand_tabs[ detail, 4 ], maxw - 8.0 ]
+                if [ rows.count == 0 ] ds.push[ '' ]
+                for [ row: string ] in rows
+                    ds.push[ row ]
+        descriptions.push[ ds ]
         if [ n > 0 ] total += gap
         total += f32[ ls.count ] * lh
+        if [ ds.count > 0 ] total += f32[ ds.count ] * lh + 4.0
         if [ en.diff && en.open ] total += f32[ en.diff.count ] * dlh + 4.0
         n += 1
     # newest stays in view: overflow scrolls the oldest out the top
@@ -6618,7 +6654,7 @@ func draw_notes [ cv: Canvas, notes: vec ShotEntry, b: rect, color: rgba, shine_
         # one stands out; under the shine the base is a little darker
         # still, for more contrast against the band
         last9 : bool [ e == n - 1 ]
-        lc : rgba [ (en.diff) ? rgba [ '#f2d38a' ] : (last9) ? color : rgba [ r: color.r * 0.82, g: color.g * 0.82, b: color.b * 0.82, a: color.a * 0.8 ] ]
+        lc : rgba [ (en.diff || en.description) ? rgba [ '#f2d38a' ] : (last9) ? color : rgba [ r: color.r * 0.82, g: color.g * 0.82, b: color.b * 0.82, a: color.a * 0.8 ] ]
         sb : rgba [ r: color.r * 0.78, g: color.g * 0.78, b: color.b * 0.78, a: color.a ]
         cv.font_size[ 14 ]
         for [ k: i32 0, k < ls.count, k += 1 ]
@@ -6631,6 +6667,15 @@ func draw_notes [ cv: Canvas, notes: vec ShotEntry, b: rect, color: rgba, shine_
                 cv.draw_text[ ln, row, vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
                 cv.paint[]
             y += lh
+        en.title_y1 = y
+        ds : vec string descriptions[ e ]
+        if [ ds.count > 0 ]
+            y += 4.0
+            cv.fill_color[ rgba [ '#ffffffbb' ] ]
+            for [ detail: string ] in ds
+                cv.draw_text[ detail, rect [ x: b.x + pad + 8.0, y: y, w: maxw - 8.0, h: lh ], vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+                cv.paint[]
+                y += lh
         if [ en.diff && en.open ]
             # the code: + green, - red, @@ blue, the rest dim; no wrap
             cv.font_size[ 12 ]
@@ -6737,7 +6782,7 @@ element ShotNotes
         if [ !w || !w.agent_notes ] return
         my : f32 [ ev.mouse.pos.y ]
         for [ en: ShotEntry ] in w.agent_notes
-            if [ en.diff && my >= en.y0 && my < en.y1 ]
+            if [ (en.diff || en.description) && my >= en.y0 && my < en.title_y1 ]
                 en.open  = !en.open
                 pristine = false
                 w.will_animate = true
@@ -6799,19 +6844,16 @@ TextInput ShotPrompt
         if [ !w ] return
         if [ k == 257 && w.shot_ask ]
             text : string [ (edit) ? edit : '' ]
-            if [ text.count == 0 && w.agent_view ] return
+            if [ text.count == 0 && (!w.shot_text || w.shot_text.count == 0) && w.agent_view ] return
             # the lines accumulate: a user keeps elaborating, and every send
             # reposts the whole message with the crop
             first9 : bool [ !w.shot_text || w.shot_text.count == 0 ]
-            all : string [ (!first9) ? '{w.shot_text}\n{text}' : text ]
-            w.shot_text = all
+            all : string [ (!first9) ? ((text.count > 0) ? '{w.shot_text}\n{text}' : w.shot_text) : text ]
             ref9 : string [ (w.shot_file) ? ((w.shot_line > 0) ? 'File: {w.shot_ask}:{w.shot_line}' : 'File: {w.shot_ask}') : 'Screenshot: {w.shot_ask}' ]
             msg : string [ (all.count > 0) ? '{all}\n\n{ref9}' : ref9 ]
-            # the exchange's first post says how to answer: everything the
-            # agent says, and the source diffs it applied, come back as
-            # note lines on this app's socket (one line per wire line)
-            if [ first9 && w.agent_sock ]
-                msg = '{msg}\n\nReply through this app as well, on the unix socket {w.agent_sock}, one wire line per text line: everything you say as: app status note <line>, and each edit you apply as its own diff (the lines you removed and added, never a git diff of the tree, which holds the user\'s changes too): app status diff <line>'
+            # Every turn carries its own reply address.
+            if [ w.agent_sock ]
+                msg = '{msg}\n\nReply through this app as well, on the unix socket {w.agent_sock}, one wire line per text line: message titles as: app status note <line>, optional expandable descriptions as: app status description <line>, and each edit you apply as its own diff (the lines you removed and added, never a git diff of the tree, which holds the user\'s changes too): app status diff <line>'
             # the picker's choice is the agent, from the first send on
             if [ w.root && w.root.elements ]
                 pk9 : element w.root.elements[ 'agent_pick' ]
@@ -6819,7 +6861,13 @@ TextInput ShotPrompt
                     tb9 : TButtons pk9
                     nm9 : vec string agent_names[ w.app_object ]
                     if [ tb9.selected >= 0 && tb9.selected < nm9.count ] w.agent_pick = nm9[ tb9.selected ]
-            if [ w.app_object ] agent_post_as[ w.app_object, w.agent_pick, msg, 'now' ]
+            if [ !w.app_object || !agent_post_as[ w.app_object, w.agent_pick, msg, 'now' ] ]
+                w.user_note[ 'Send failed; press Enter to retry' ]
+                pristine = false
+                w.restyle = true
+                ev.stop[]
+                return
+            w.shot_text = all
             fn9   : string w.shot_ask.filename[]
             shown : string [ (text.count > 0) ? text : fn9 ]
             w.user_note[ shown ]

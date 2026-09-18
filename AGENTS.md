@@ -109,6 +109,9 @@ contract, and the agent honors it:
   the swap at once),
   `needs` (waiting on the user), `note` (a line of what the
   agent says), `diff` (one line of a source diff it applied).
+- Optional `app status description <line>` messages attach to the
+  preceding title. Click the title to expand or collapse the description.
+  Repeat for multiple lines; omit for a plain message.
 - Everything the agent says goes back as `note` lines, and every
   edit it applied as `diff` lines, in order: the edit's own
   removed and added lines under a `diff --git a/x b/x` header.
@@ -1094,3 +1097,30 @@ fixed. vscale/filtering was ruled out (slow at low res too). Facts measured:
   via glslang (no glslangValidator binary). devices.agi holds both devices.
 - Homebrew is gone; ninja/autotools/swig are built into install/ by bootstrap.
 - Linker warnings fixed generally: objects pin macosx13.0; no shared libunwind.
+
+## Active work: Codex app communication
+
+1. DONE Forward per-edit diff lines, including deleted files.
+2. DONE Forward final reply text; route hooks by session/turn.
+3. DONE Preserve sender; explicitly report queued delivery.
+4. DONE Preserve file references and screenshot image instructions.
+5. DONE Poll queue delivery; timeout and show errors in app.
+6. DONE Correct hook documentation; 16 hook tests pass.
+7. DONE Preserve explicit sessions when the picker selects Codex.
+8. DONE Real Orbiter screenshot reached this session; reply
+   appeared in the app tree before the test app was stopped.
+   UI timeout/retry/reply test passed.
+
+Codex hook handlers pass their tests. This existing session did not
+create a prompt-hook binding; automatic hook activation still needs
+verification after the repository hooks are trusted through `/hooks`.
+
+9. DONE Desktop executable lookup verified with a minimal PATH
+   and no CODEX variables. The real editor message reached this
+   session and its reply appeared in Orbiter before test shutdown.
+   Eight native tests and connection tests pass.
+
+10. DONE Optional expandable descriptions on message titles.
+    Description and connection tests pass; 17 hook tests pass.
+    Trinity and Orbiter build. Socket tests verify expansion,
+    collapse, plain titles, and descriptions after completion.

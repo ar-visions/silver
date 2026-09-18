@@ -43,18 +43,30 @@ expect func configured_socket [] -> bool
 
 expect func simple_selection [] -> bool
     fixture : AgentFixture []
-    selected : AgentConnection agent_connect[ fixture ]
+    selected : AgentConnection agent_connect[ fixture, null ]
     if [ typeid[ selected ] != typeid[ ClaudeAgentConnection ] ] return false
     Au.parse_agi[ null, 'agent: codex\n', fixture ]
-    selected = agent_connect[ fixture ]
+    selected = agent_connect[ fixture, null ]
     if [ typeid[ selected ] != typeid[ CodexAgentConnection ] ] return false
     Au.parse_agi[ null, 'agent: claude\n', fixture ]
-    selected = agent_connect[ fixture ]
+    selected = agent_connect[ fixture, null ]
     if [ typeid[ selected ] != typeid[ ClaudeAgentConnection ] ] return false
+    fixture.agent_connection = CodexAgentConnection [ session: 'chosen-session' ]
+    if [ agent_connect[ fixture, 'codex' ] != fixture.agent_connection ] return false
+    fixture.agent_connection = null
     fixture.agent = 'unknown'
-    return agent_connect[ fixture ] == null
+    return agent_connect[ fixture, null ] == null
+
+expect func optional_description [] -> bool
+    entry : ShotEntry [ text: 'Title' ]
+    if [ entry.description || entry.open ] return false
+    entry.add_description[ 'First line' ]
+    entry.add_description[ 'Second line' ]
+    if [ entry.text != 'Title' || entry.open ] return false
+    return entry.description.count == 2 && entry.description[1] == 'Second line'
 
 func check [] -> bool
+    expect optional_description[], 'optional description failed'
     expect configured_connection[], 'configured connection failed'
     expect configured_socket[], 'configured socket failed'
     expect simple_selection[], 'agent selection failed'

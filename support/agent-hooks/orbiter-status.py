@@ -19,9 +19,10 @@ except Exception:
 ti = data.get('tool_input') or {}
 
 if event == 'edit':
-    state, text = 'busy', 'edited ' + os.path.basename(ti.get('file_path') or '')
+    # the line is the thing itself: no 'edited' / 'running' in front of it
+    state, text = 'busy', os.path.basename(ti.get('file_path') or '')
 elif event == 'bash':
-    state, text = 'busy', 'running ' + (ti.get('description') or ti.get('command') or '')
+    state, text = 'busy', (ti.get('description') or ti.get('command') or '')
 elif event == 'prompt':
     state, text = 'busy', 'working'
 elif event == 'stop':
@@ -31,6 +32,8 @@ elif event == 'notify':
 elif event == 'diff':
     # one line of a source diff, as is: its leading +/- and indentation matter
     state, text = 'diff', (sys.argv[2] if len(sys.argv) > 2 else '')
+elif event == 'description':
+    state, text = 'description', ' '.join(sys.argv[2:])
 else:
     state, text = 'note', ' '.join(sys.argv[2:]) or event
 
