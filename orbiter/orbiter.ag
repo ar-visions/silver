@@ -3133,7 +3133,17 @@ element orbiter : trinity # implements compiler
         # that it waits, a late line) reopens the exchange or the button;
         # only the user's next line ('sent') starts it again
         st9 : string [ (sp > 0) ? rest.mid[ 0, sp ] : rest ]
-        if [ agent_done && st9 != 'sent' ] return
+        if [ sp > 0 && st9 == 'description' ]
+            ux.agent_description[ rest.mid[ sp + 1, rest.count - sp - 1 ] ]
+            return
+        if [ agent_done && st9 != 'sent' ]
+            if [ sp > 0 && st9 == 'note' ]
+                agent_note = rest.mid[ sp + 1, rest.count - sp - 1 ]
+                ux.agent_note[ st9, agent_note ]
+                ux.restyle = true
+            el [ sp > 0 && st9 == 'diff' ]
+                ux.agent_diff[ rest.mid[ sp + 1, rest.count - sp - 1 ] ]
+            return
         # a diff line goes to the panel, never to the bar or the notes
         if [ sp > 0 && rest.mid[ 0, sp ] == 'diff' ]
             ux.agent_diff[ rest.mid[ sp + 1, rest.count - sp - 1 ] ]

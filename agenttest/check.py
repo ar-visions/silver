@@ -47,9 +47,11 @@ with tempfile.TemporaryDirectory(prefix="agenttest-", dir="/tmp") as work:
             [
                 sys.executable,
                 "-c",
-                "import ctypes, sys; lib = ctypes.CDLL(sys.argv[1]); "
+                "import ctypes, sys, time; lib = ctypes.CDLL(sys.argv[1]); "
                 "lib.check.restype = ctypes.c_bool; "
-                "sys.exit(0 if lib.check() else 1)",
+                "ok = lib.check(); "
+                "exec('while lib.agent_codex_poll(): time.sleep(0.01)'); "
+                "sys.exit(0 if ok else 1)",
                 str(library),
             ],
             cwd=root,
@@ -88,7 +90,8 @@ with tempfile.TemporaryDirectory(prefix="agenttest-", dir="/tmp") as work:
     assert json.loads(codex_args.read_text()) == [
         "queue", "--remote", "unix://" + endpoint,
         "--thread", "test-session",
-        "--message", "Fix this light\n\nScreenshot: /tmp/crop with spaces.png",
-        "--cd", "/tmp/game", "--image", "/tmp/crop with spaces.png",
+        "--message", "From: Game\nPriority: now\n\nFix this light\n\nScreenshot: /tmp/crop with spaces.png"
+        "\n\nOpen the Screenshot path with your image tool before replying.",
+        "--cd", "/tmp/game",
     ]
     print("PASS: agent selection, legacy delivery, and Codex text/image arguments")

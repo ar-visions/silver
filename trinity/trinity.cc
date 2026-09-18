@@ -469,34 +469,169 @@ HOST_API void host_live_set(int v)    { host_post(1, HM_LIVE, v, 0, 0); }
 #include <spawn.h>
 #include <sys/wait.h>
 #include <string>
+#include <dlfcn.h>
+#include <sqlite3.h>
+#include <vector>
+#include <chrono>
+#include <fcntl.h>
+#include <signal.h>
 
 extern char** environ;
 
-HOST_API int agent_codex_post(const char* root, const char* socket_path,
-                              const char* session, const char* text) {
+HOST_API int agent_codex_session_find(const char* root, const char* database,
+                                      char* out, int cap) {
+    if (!root || !database || !out || cap < 2) return 0;
+    out[0] = 0;
+#ifdef __APPLE__
+    void* library = dlopen("/usr/lib/libsqlite3.dylib", RTLD_LAZY);
+#else
+    void* library = dlopen("libsqlite3.so.0", RTLD_LAZY);
+#endif
+    if (!library) return 0;
+    auto open = (decltype(&sqlite3_open_v2))dlsym(library, "sqlite3_open_v2");
+    auto exec = (decltype(&sqlite3_exec))dlsym(library, "sqlite3_exec");
+    auto close = (decltype(&sqlite3_close))dlsym(library, "sqlite3_close");
+    sqlite3* db = nullptr;
+    struct Match { std::string root; char* out; int cap; size_t best; } match{root, out, cap, 0};
+    while (match.root.size() > 1 && match.root.back() == '/') match.root.pop_back();
+    if (open && exec && close && open(database, &db, SQLITE_OPEN_READONLY, nullptr) == SQLITE_OK) {
+        auto row = [](void* context, int count, char** values, char**) -> int {
+            auto& m = *(Match*)context;
+            if (count < 2 || !values[0] || !values[1]) return 0;
+            std::string cwd = values[1];
+            while (cwd.size() > 1 && cwd.back() == '/') cwd.pop_back();
+            size_t n = cwd.size();
+            if (n <= m.best || n > m.root.size() || m.root.compare(0, n, cwd) != 0) return 0;
+            if (n < m.root.size() && cwd != "/" && m.root[n] != '/') return 0;
+            if (strlen(values[0]) >= (size_t)m.cap) return 0;
+            strcpy(m.out, values[0]);
+            m.best = n;
+            return 0;
+        };
+        int result = exec(db, "SELECT id,cwd FROM threads WHERE archived=0 ORDER BY updated_at DESC",
+                          row, &match, nullptr);
+        if (result != SQLITE_OK) out[0] = 0;
+    }
+    if (db && close) close(db);
+    dlclose(library);
+    return out[0] != 0;
+}
+
+static std::string codex_session_database() {
+    const char* configured = getenv("CODEX_HOME");
+    const char* user_home = getenv("HOME");
+    std::string directory = configured && *configured ? configured :
+        (user_home ? std::string(user_home) + "/.codex" : "");
+    if (directory.empty()) return "";
+    DIR* entries = opendir(directory.c_str());
+    if (!entries) return "";
+    std::string database;
+    int newest = -1;
+    struct dirent* entry;
+    while ((entry = readdir(entries))) {
+        int version;
+        char suffix;
+        if (sscanf(entry->d_name, "state_%d.sqlite%c", &version, &suffix) != 1) continue;
+        if (version <= newest || strstr(entry->d_name, ".sqlite") == nullptr) continue;
+        newest = version;
+        database = directory + "/" + entry->d_name;
+    }
+    closedir(entries);
+    return database;
+}
+
+struct CodexQueueJob {
+    pid_t pid;
+    int output;
+    std::chrono::steady_clock::time_point deadline;
+    std::string reply, error;
+};
+static std::vector<CodexQueueJob> codex_jobs;
+
+static std::string codex_reply_socket(const char* text) {
+    const char* prefix = "on the unix socket ";
+    const char* at = nullptr;
+    const char* scan = text;
+    while ((scan = strstr(scan, prefix))) { at = scan; scan += strlen(prefix); }
+    if (!at) return "";
+    at += strlen(prefix);
+    return std::string(at, strcspn(at, ",\r\n"));
+}
+
+static void codex_status(const std::string& path, std::string message, const char* state = "needs") {
+    if (strcmp(state, "needs") == 0) fprintf(stderr, "agent: %s\n", message.c_str());
+    if (path.empty()) return;
+    for (char& ch : message) if (ch == '\n' || ch == '\r') ch = ' ';
+    message = std::string("app status ") + state + " " + message.substr(0, 350) + "\n";
+    struct sockaddr_un address = {};
+    if (path.size() >= sizeof(address.sun_path)) return;
+    address.sun_family = AF_UNIX;
+    strcpy(address.sun_path, path.c_str());
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) return;
+    fcntl(fd, F_SETFL, O_NONBLOCK);
+#ifdef SO_NOSIGPIPE
+    int one = 1;
+    setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
+#endif
+    if (connect(fd, (struct sockaddr*)&address, sizeof(address)) == 0) {
+#ifdef MSG_NOSIGNAL
+        send(fd, message.data(), message.size(), MSG_NOSIGNAL);
+#else
+        send(fd, message.data(), message.size(), 0);
+#endif
+    }
+    close(fd);
+}
+
+static int codex_queue_poll(CodexQueueJob& job) {
+    char buffer[1024];
+    ssize_t count;
+    for (int batch = 0; batch < 8 && (count = read(job.output, buffer, sizeof(buffer))) > 0; ++batch)
+        if (job.error.size() < 4096) job.error.append(buffer, count);
+    int status = 0;
+    pid_t result = waitpid(job.pid, &status, WNOHANG);
+    if (result < 0 && errno == EINTR) return 0;
+    if (result == 0 && std::chrono::steady_clock::now() < job.deadline) return 0;
+    if (result == 0) {
+        kill(-job.pid, SIGKILL);
+        do { result = waitpid(job.pid, &status, 0); }
+        while (result < 0 && errno == EINTR);
+        job.error = "Codex queue timed out; press Enter to retry.";
+        status = -1;
+    }
+    for (int batch = 0; batch < 8 && (count = read(job.output, buffer, sizeof(buffer))) > 0; ++batch)
+        if (job.error.size() < 4096) job.error.append(buffer, count);
+    close(job.output);
+    bool ok = result == job.pid && status != -1 && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+    if (!ok) codex_status(job.reply, job.error.empty() ? "Codex send failed; press Enter to retry." : job.error);
+    if (ok) codex_status(job.reply, "Queued for Codex; runs after its current turn.", "note");
+    return ok ? 1 : -1;
+}
+
+HOST_API int agent_codex_poll() {
+    for (size_t i = 0; i < codex_jobs.size();) {
+        if (codex_queue_poll(codex_jobs[i])) codex_jobs.erase(codex_jobs.begin() + i);
+        else ++i;
+    }
+    return (int)codex_jobs.size();
+}
+
+static int codex_post(const char* root, const char* socket_path,
+                      const char* session, const char* text, bool asynchronous) {
+
     if (!text) return 0;
     if (!session || !*session) session = getenv("CODEX_THREAD_ID");
+    char discovered[128];
     if (!session || !*session) {
-        fprintf(stderr, "agent: launch the app from its Codex session\n");
-        return 0;
-    }
-    std::string endpoint;
-    if (socket_path && *socket_path) endpoint = socket_path;
-    else {
-        const char* home = getenv("CODEX_HOME");
-        if (home && *home) endpoint = home;
-        else {
-            home = getenv("HOME");
-            if (!home || !*home) return 0;
-            endpoint = std::string(home) + "/.codex";
+        std::string database = codex_session_database();
+        if (!agent_codex_session_find(root, database.c_str(), discovered, sizeof(discovered))) {
+            codex_status(codex_reply_socket(text), "No Codex session for this directory; configure the connection session.");
+            return 0;
         }
-        endpoint += "/app-server-control/app-server-control.sock";
+        session = discovered;
     }
-    if (access(endpoint.c_str(), F_OK) != 0) {
-        fprintf(stderr, "agent: Codex session socket is unavailable\n");
-        return 0;
-    }
-    std::string remote = "unix://" + endpoint;
+    std::string remote = socket_path && *socket_path ? std::string("unix://") + socket_path : "";
     const char* image = nullptr;
     const char* scan = text;
     while ((scan = strstr(scan, "\n\nScreenshot: "))) {
@@ -504,24 +639,81 @@ HOST_API int agent_codex_post(const char* root, const char* socket_path,
         image = scan;
     }
     if (!image && strncmp(text, "Screenshot: ", 12) == 0) image = text + 12;
-    const char* args[14] = { "codex", "queue", "--remote", remote.c_str(),
-        "--thread", session, "--message", text };
-    int n = 8;
+    std::string message = text;
+    if (image && *image)
+        message += "\n\nOpen the Screenshot path with your image tool before replying.";
+    const char* args[14] = { "codex", "queue" };
+    int n = 2;
+    if (!remote.empty()) { args[n++] = "--remote"; args[n++] = remote.c_str(); }
+    args[n++] = "--thread"; args[n++] = session;
+    args[n++] = "--message"; args[n++] = message.c_str();
     if (root && *root) { args[n++] = "--cd"; args[n++] = root; }
-    if (image && *image) { args[n++] = "--image"; args[n++] = image; }
     args[n] = nullptr;
+    int pipes[2];
+    if (pipe(pipes) != 0) return 0;
+    fcntl(pipes[0], F_SETFD, FD_CLOEXEC);
+    fcntl(pipes[1], F_SETFD, FD_CLOEXEC);
+    fcntl(pipes[0], F_SETFL, O_NONBLOCK);
+    posix_spawn_file_actions_t actions;
+    posix_spawn_file_actions_init(&actions);
+    posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
+    posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO, "/dev/null", O_WRONLY, 0);
+    posix_spawn_file_actions_adddup2(&actions, pipes[1], STDERR_FILENO);
+    posix_spawn_file_actions_addclose(&actions, pipes[0]);
+    posix_spawn_file_actions_addclose(&actions, pipes[1]);
+    posix_spawnattr_t attributes;
+    posix_spawnattr_init(&attributes);
+    posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETPGROUP);
+    posix_spawnattr_setpgroup(&attributes, 0);
     pid_t pid;
-    int error = posix_spawnp(&pid, args[0], nullptr, nullptr,
+    int error = posix_spawnp(&pid, args[0], &actions, &attributes,
         const_cast<char**>(args), environ);
+#ifdef __APPLE__
+    if (error == ENOENT) {
+        const char* home = getenv("HOME");
+        std::vector<std::string> directories;
+        if (home && *home) directories.push_back(std::string(home) + "/Applications");
+        directories.push_back("/Applications");
+        for (const auto& directory : directories) {
+            for (const char* bundle : {"ChatGPT.app", "Codex.app"}) {
+                std::string executable = directory + "/" + bundle + "/Contents/Resources/codex";
+                if (access(executable.c_str(), X_OK) != 0) continue;
+                error = posix_spawn(&pid, executable.c_str(), &actions, &attributes,
+                    const_cast<char**>(args), environ);
+                if (error != ENOENT) break;
+            }
+            if (error != ENOENT) break;
+        }
+    }
+#endif
+    posix_spawn_file_actions_destroy(&actions);
+    posix_spawnattr_destroy(&attributes);
+    close(pipes[1]);
+    std::string reply = codex_reply_socket(text);
     if (error) {
-        fprintf(stderr, "agent: cannot run codex: %s\n", strerror(error));
+        close(pipes[0]);
+        codex_status(reply, std::string("Cannot run codex: ") + strerror(error));
         return 0;
     }
-    int status = 0;
-    pid_t waited;
-    do { waited = waitpid(pid, &status, 0); }
-    while (waited < 0 && errno == EINTR);
-    return waited == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+    CodexQueueJob job{pid, pipes[0], std::chrono::steady_clock::now() +
+        std::chrono::seconds(5), reply, ""};
+    if (asynchronous) {
+        codex_jobs.push_back(std::move(job));
+        return 1;
+    }
+    int result;
+    while (!(result = codex_queue_poll(job))) usleep(10000);
+    return result == 1;
+}
+
+HOST_API int agent_codex_post(const char* root, const char* socket_path,
+                              const char* session, const char* text) {
+    return codex_post(root, socket_path, session, text, false);
+}
+
+HOST_API int agent_codex_post_async(const char* root, const char* socket_path,
+                                    const char* session, const char* text) {
+    return codex_post(root, socket_path, session, text, true);
 }
 
 static int  g_agent_srv = -1;
@@ -842,6 +1034,8 @@ HOST_API void agent_sock_reply(const char* s)                    { }
 HOST_API int  agent_sock_send(const char* nm, const char* ln)    { return 0; }
 HOST_API int  agent_sock_ask(const char* nm, const char* ln, char* o, int c) { return 0; }
 HOST_API int agent_codex_post(const char*, const char*, const char*, const char*) { return 0; }
+HOST_API int agent_codex_post_async(const char*, const char*, const char*, const char*) { return 0; }
+HOST_API int agent_codex_poll() { return 0; }
 #endif
 
 // ===========================================================================
