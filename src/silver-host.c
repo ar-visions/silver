@@ -294,7 +294,7 @@ static void spawn_slot_app(int k, const char* bindir) {
     int   clean = (ap->flags & HOST_APP_CLEAN)       != 0;
     int   dbgb  = (ap->flags & HOST_APP_DEBUG_BUILD) != 0;
     int   disp  = (ap->flags >> HOST_APP_DISPLAY_SHIFT) & 3;
-    static const char* dnames[] = { "PIP", "Full", "Window", "Screen" };
+    static const char* dnames[] = { "PIP", "Embed", "Window", "Screen" };
     char* nm    = name;
     // the build type rides in the environment: this build, and the app's own
     // rebuilds when its sources change, all read it
@@ -1300,6 +1300,56 @@ int main(int argc, char** argv) {
         // reload can be turned OFF by the app (au_live_set_reload(0)) — orbiter does,
         // since it edits its own dependencies and would reload ITSELF otherwise.
         int reload_off = no_reload || (get_reload && !get_reload());
+
+        // the app asked for another module (a trinity app's orbiter button
+        // asks for orbiter): launch it as its own app, with its own window
+        // and dock icon, handed this app to hold, and end this one. orbiter
+        // opens the app's source with a held instance of it and the app's
+        // last picture (SILVER_SWITCH_SHOT, set by the app, rides along)
+        typedef const char* (*au_live_take_switch_fn)(void);
+        au_live_take_switch_fn take_switch = (au_live_take_switch_fn)dlsym(handle, "au_live_take_switch");
+        const char* sw9 = take_switch ? take_switch() : NULL;
+        if (sw9 && sw9[0]) {
+            char to_bin[4300];
+            snprintf(to_bin, sizeof(to_bin), "%s/%s", bindir, sw9);
+            if (access(to_bin, X_OK) != 0 && rebuild_blocking(sw9, 0) != 0) {
+                fprintf(stderr, "[%s] cannot launch %s: build failed\n", name, sw9);
+            } else {
+                char* largv[3] = { to_bin, (char*)name, NULL };
+                posix_spawn_file_actions_t lfa;
+                posix_spawn_file_actions_init(&lfa);
+                const char* lcwd = getenv("SILVER_STARTUP");
+                if (lcwd && lcwd[0]) posix_spawn_file_actions_addchdir_np(&lfa, lcwd);
+                posix_spawnattr_t lat;
+                posix_spawnattr_init(&lat);
+                posix_spawnattr_setflags(&lat, POSIX_SPAWN_SETSID);   // outlives this app
+                int en = 0;
+                while (environ[en]) en++;
+                char** lenv = malloc((en + 2) * sizeof(char*));
+                int le = 0;
+                // a standalone launch: none of this app's host channel
+                for (int i = 0; i < en; i++)
+                    if (strncmp(environ[i], "SILVER_ISOLATE", 14) != 0 &&
+                        strncmp(environ[i], "SILVER_APP_SLOT", 15) != 0 &&
+                        strncmp(environ[i], "SILVER_SHM_FD", 13) != 0 &&
+                        strncmp(environ[i], "SILVER_DISPLAY", 14) != 0 &&
+                        strncmp(environ[i], "SILVER_RELOAD", 13) != 0)
+                        lenv[le++] = environ[i];
+                lenv[le++] = (char*)"SILVER_START_HELD=1";
+                lenv[le] = NULL;
+                pid_t lp = 0;
+                int lrc = posix_spawn(&lp, to_bin, &lfa, &lat, largv, lenv);
+                posix_spawn_file_actions_destroy(&lfa);
+                posix_spawnattr_destroy(&lat);
+                free(lenv);
+                if (lrc != 0) {
+                    fprintf(stderr, "[%s] launch %s failed: %s\n", name, sw9, strerror(lrc));
+                } else {
+                    fprintf(stderr, "[%s] launched %s (pid %d), handing it this app\n", name, sw9, (int)lp);
+                    break;   // this app ends: orbiter holds it now
+                }
+            }
+        }
 
         // watch source files — when any .ag/.c changes.
         // defer must still watch: reload_off only means "never swap the

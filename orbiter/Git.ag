@@ -518,7 +518,7 @@ Layer CommitLayer
             # bold + white border when the buffer holds unsaved edits
             dirty : bool [ false ]
             if [ orb.file_cache ]
-                kp9 : path '{rep9}/{rp}'
+                kp9 : path '{rp}'     # the aggregate's files are absolute
                 fb9 : FileBuf orb.file_cache[ '{kp9.absolute[]}' ]
                 if [ fb9 && fb9.hist_i != fb9.sync_i ] dirty = true
             # the row-highlight look, pinkish red — theme-bound
@@ -1338,7 +1338,7 @@ element CommitView
                 idx : i32 [ r * cap_st + cx ]
                 if [ idx < o.git_snap.files.count ]
                     fp9 : string o.git_snap.files[idx]
-                    o.open_in_pane[ path '{o.git_snap.repo}/{fp9}', (ev9) ? ev9.pane_index : o.active_pane ]
+                    o.open_in_pane[ path '{fp9}', (ev9) ? ev9.pane_index : o.active_pane ]
                     o.exit_finder[]
             return
         if [ trs > 0 && r == trs ]

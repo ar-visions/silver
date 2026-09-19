@@ -305,16 +305,20 @@ element PipView
         if [ !av ] return
         av.vsx = 0.0
         av.vsy = 0.0
+        av.via_pip = true
         if [ av.view_press[ ev ] ]
             pip_drag = true
             if [ ux ] ux.set_capture[ a ]
+        av.via_pip = false
         ev.no_default = true
     func on_move [ ev: Event ]
         av : AppView pv[]
         if [ !av ] return
         av.vsx = 0.0
         av.vsy = 0.0
+        av.via_pip = true
         av.view_move[ ev ]
+        av.via_pip = false
     func on_release [ ev: Event ]
         if [ !pip_drag ] return
         pip_drag = false
@@ -322,7 +326,9 @@ element PipView
         if [ !av ] return
         av.vsx = 0.0
         av.vsy = 0.0
+        av.via_pip = true
         av.view_release[ ev ]
+        av.via_pip = false
 
 # the one instrument on: its entries re-asked twice a second and its
 # surface on the app's clock, in a canvas of its own for the same reason
@@ -497,21 +503,28 @@ Control InstancePanel
 
 
     # the selected instance while it is in pip: the one pip the panel holds
+    # (a held instance shows the app's last picture there until it runs)
     func pip_av [] -> AppView
         ed9 : Editor editor[]
         if [ !ed9 || !ed9.run_view ] return null
         av : AppView ed9.run_view
-        return (av.pip && av.have_frame && av.ah > 0 && av.aw > 0) ? av : null
+        return (av.pip && (av.have_frame || av.still) && av.ah > 0 && av.aw > 0) ? av : null
 
+    # the pip gives way to the properties: whatever the instance rows, the
+    # section tabs, three property rows and the debug bar leave. it shrinks
+    # with the room, and goes when it would be too small to read (60px)
     func pip_px [] -> f32
         av : AppView pip_av[]
         if [ !av || !bounds ] return 0.0
         h : f32 [ bounds.w * f32[ av.ah ] / f32[ av.aw ] ]
         if [ h > 260.0 ] h = 260.0
+        room : f32 [ panel_h[] - inst_px[] - row_h[] * 4.0 - foot_px[] ]
+        if [ h > room ] h = room
+        if [ h < 60.0 ] return 0.0
         return h
 
     func head_px [] -> f32
-        return inst_px[] + pip_px[]
+        return inst_px[]
 
     # the frames of the selected instance at a stop, none otherwise
     func stack_rows [] -> i32
@@ -543,8 +556,9 @@ Control InstancePanel
     func tab_y [] -> f32
         return head_px[]
 
+    # the pip sits under the sections, just above the debug bar
     func sect_bottom [] -> f32
-        return panel_h[] - foot_px[]
+        return panel_h[] - foot_px[] - pip_px[]
 
     # a click on a header opens that section, closing the others; on the
     # open one it folds, leaving none
@@ -621,12 +635,18 @@ Control InstancePanel
         mod9 : string (av9) ? ((av9.app_mod && av9.app_mod.count > 0) ? av9.app_mod : av9.src.stem[]) : ev9.band_mod[]
         pv9 : string (lv9) ? av9.props : orb.module_spec[ mod9 ]
         sp9 : string merge_spec[ ev9.launch_spec_of[ mod9 ], pv9 ]
+        # Attach is gone; a list cached while it existed still names it
+        ak9 : i32 [ (sp9) ? i32[ sp9.index_of[ ',Attach:4' ] ] : -1 ]
+        if [ ak9 >= 0 ] sp9 = sp9.mid[ 0, ak9 ] + sp9.mid[ ak9 + 9, sp9.count - ak9 - 9 ]
+        # a spec cached before the rename still says Full for the pane
+        fu9 : i32 [ (sp9) ? i32[ sp9.index_of[ 'Full:1' ] ] : -1 ]
+        if [ fu9 >= 0 ] sp9 = sp9.mid[ 0, fu9 ] + 'Embed:1' + sp9.mid[ fu9 + 6, sp9.count - fu9 - 6 ]
         # trinity's display is a live prop of the running app; before it runs
         # the row still has to exist, holding what the instance will launch as
         if [ av9 && !(sp9 && (sp9.starts_with[ 'display=' ] || sp9.index_of[ ';display=' ] >= 0)) ]
             dv9 : i32 [ av9.display ]
             dn9 : string (dv9 == 3) ? '3' : ((dv9 == 2) ? '2' : ((dv9 == 1) ? '1' : '0'))
-            de9 : string 'display=DisplayMode=' + dn9 + '=Enum[PIP:0,Full:1,Window:2,Screen:3]=live'
+            de9 : string 'display=DisplayMode=' + dn9 + '=Enum[PIP:0,Embed:1,Window:2,Screen:3]=live'
             sp9 = (sp9 && sp9.count > 0) ? de9 + ';' + sp9 : de9
         # the open section runs from under its header to the folded headers below
         fp : f32 [ foot_px[] ]
@@ -652,11 +672,11 @@ Control InstancePanel
                 area: Region [ 'l0 t{py9}px r0 b{sb9}px' ] ]
         # the pip below the rows, at its aspect; the instrument surface under its chips
         pip9 : AppView pip_av[]
-        if [ pip9 && bounds ]
+        if [ pip9 && bounds && pip_px[] > 0.0 ]
             ph9 : f32 [ pip_px[] ]
             pw9 : f32 [ ph9 * f32[ pip9.aw ] / f32[ pip9.ah ] ]
             if [ pw9 > bounds.w ] pw9 = bounds.w
-            t['pip'] = PipView [ area: Region [ 'l{round[ (bounds.w - pw9) * 0.5 ]}px t{inst_px[]}px w{pw9}px h{ph9}px' ] ]
+            t['pip'] = PipView [ area: Region [ 'l{round[ (bounds.w - pw9) * 0.5 ]}px t{sect_bottom[]}px w{pw9}px h{ph9}px' ] ]
         if [ av9 && orb.instr_open && av9.instr_names && av9.instr_active[] && bounds ]
             iy9 : f32 [ tab_y[] + row_h[] + chips_h[ av9.instr_names ] ]
             t['instr'] = InstrView [ area: Region [ 'l0 t{iy9}px r0 b{sb9}px' ] ]

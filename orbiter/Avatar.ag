@@ -451,7 +451,20 @@ Orbiter Aura
 						float cyl_fg  = mix(pfog(cyl_np), pfog(cyl_np * 1.9 - vec3(0.0, ta * 1.6, 0.0)), 0.35);
 						vec3  cyl_col = mix(vec3(2.6, 1.3, 0.5), vec3(1.4, 0.6, 0.15), cyl_at / cyl_h);
 						float cyl_fad = pow(max(1.0 - cyl_at / cyl_h, 0.0), ubo.beam_fade);
-						float cyl_den = 11.0 * ubo.flame * (0.3 + cyl_fg) * cyl_ctr * cyl_fad * cyl_dt;
+						// the fog's hold on the emission scaled to 20%: the same
+						// components about their middle, so the beam reads as a
+						// uniform source with a trace of movement
+						float cyl_fs  = 0.5 + 0.2 * (cyl_fg - 0.5);
+						// two parts up the flame: the first 5% of its height a dense
+						// source at 10x with the tight core; the other 95% a diffuse
+						// haze at 2x, spread wide across the radius
+						float cyl_k   = smoothstep(0.0, 0.05, cyl_at / cyl_h);   // 0 at the source, 1 above
+						float cyl_src = mix(10.0, 2.0, cyl_k);
+						// the haze's falloff: wide, but gone well inside the flame's
+						// cylinder (at 2.5 it still had 8% at the wall and clipped flat)
+						float cyl_hz  = exp(-cyl_t * cyl_t * 6.0);
+						float cyl_rad = mix(cyl_ctr, cyl_hz, cyl_k);
+						float cyl_den = 11.0 * ubo.flame * cyl_src * (0.3 + cyl_fs) * cyl_rad * cyl_fad * cyl_dt;
 						col   += cyl_col * cyl_den * (1.0 - alpha);
 						alpha += cyl_den * (1.0 - alpha);
 					}
@@ -495,6 +508,19 @@ Orbiter Aura
 				}
 				if (rng_tx > rng_te) {
 					float rng_dt = (rng_tx - rng_te) / 32.0;
+					// a ray that skims the ring's wall edge-on (at the circle's
+					// sides on screen) crosses far more of it and drew bright lines.
+					// how edge-on is read from where the ray passes nearest the
+					// axis: inside the wall's radii it skims. smooth across the
+					// screen, so no edges; those rays are dimmed to 40%
+					float rng_tm   = -dot(rng_ocp, rng_rdp) / max(rng_a, 1e-6);
+					float rng_dmin = length(rng_ocp + rng_rdp * rng_tm);
+					float rng_mid  = 0.5 * (rng_Ri + rng_Ro);
+					float rng_half = 0.5 * (rng_Ro - rng_Ri) + 0.03;
+					float rng_skim = 1.0 - smoothstep(0.0, 1.0, abs(rng_dmin - rng_mid) / rng_half);
+					// the ring's back and front (seen through its face) lifted 1.6x,
+					// the edge-on sides held to 0.5x
+					float rng_norm = mix(1.6, 0.5, rng_skim);
 					for (int j = 0; j < 32; j++) {
 						if (alpha > 0.97) break;
 						vec3  rng_p  = ro + rd * (rng_te + (float(j) + 0.5) * rng_dt);
@@ -507,16 +533,48 @@ Orbiter Aura
 						vec3  rng_ax = rng_o + rng_d * rng_at;
 						float rng_r  = length(rng_p - rng_ax);
 						if (rng_r < rng_Ri || rng_r > rng_Ro) continue;
-						vec3  rng_np     = rng_p * vec3(5.0, 2.2, 5.0) - vec3(0.0, ta * 0.9, 0.0);
-						float rng_fg     = mix(pfog(rng_np), pfog(rng_np * 1.9 - vec3(0.0, ta * 1.6, 0.0)), 0.35);
+						// the fog lives on the beam's own axis: across it (the ring's
+						// tangent and binormal) finely, along it stretched long into
+						// streaks, and it flows up the axis at one constant rate, so
+						// nothing decelerates as it rises, tilted or face on
+						vec3  rng_rl     = rng_p - rng_o;
+						vec3  rng_np     = vec3(dot(rng_rl, rng_tg) * 5.0, rng_at * 1.1 - ta * 0.7, dot(rng_rl, rng_bn) * 5.0);
+						float rng_f3     = 0.55 * pfog(rng_np)
+						                 + 0.30 * pfog(rng_np * vec3(1.9, 1.5, 1.9) - vec3(0.0, ta * 0.35, 0.0))
+						                 + 0.15 * pfog(rng_np * vec3(3.7, 2.6, 3.7) - vec3(0.0, ta * 0.9, 0.0));
+						float rng_fg     = smoothstep(0.15, 0.85, rng_f3);
 						float rng_t      = (rng_r - rng_Ri) / (rng_Ro - rng_Ri);
-						float rng_center = sqrt(max(0.0, 1.0 - (2.0 * rng_t - 1.0) * (2.0 * rng_t - 1.0)));
+						// across the ring's width: fullest mid-ring, easing to nothing
+						// at the inner and outer walls, so a ray skimming a wall at the
+						// silhouette gathers little and no column stands out there
+						float rng_center = sin(3.14159265 * rng_t);
+						rng_center      *= rng_center;
 						vec3  rng_rel    = rng_p - rng_ax;
 						float rng_ang    = atan(dot(rng_rel, rng_bn), dot(rng_rel, rng_tg));
-						float rng_pulse  = pow(max(0.0, cos(rng_ang - ubo.spin)), 8.0);
+						// the same modulation as the donut below: the 120 degree lobe
+						// the ring cycle carries round, so the beam rises where the
+						// plasma is brightest
+						float rng_pulse  = pow(0.5 + 0.5 * cos(rng_ang - ubo.spin), 2.4);
 						vec3  rng_col    = mix(vec3(0.0, 0.35, 1.0), vec3(1.0, 0.5, 1.0), rng_pulse);
-						float rng_fad    = 1.0 - rng_at / rng_bh;
-						float d          = 10.0 * ubo.pulse_width * (0.3 + rng_fg) * rng_center * (0.2 + rng_pulse) * rng_fad * rng_dt;
+						// two parts: a noisy volume hugging the ring (fog, dense,
+						// decaying over about 0.04 units), and above it the
+						// plain beam up the full height, no fog, at 10% brightness
+						float rng_u      = 1.0 - rng_at / rng_bh;
+						// up the beam, as a share of its height: 0% at the ring's
+						// surface (no hard edge), a smooth rise to the full peak at 5%,
+						// then it settles to 10% of the peak for the rest
+						float rng_h      = rng_at / rng_bh;
+						float rng_rise   = smoothstep(0.0, 0.05, rng_h);
+						float rng_near   = rng_rise * exp(-max(rng_h - 0.05, 0.0) / 0.05);
+						// shown where the cycle is, gone opposite it: the lobe reaches
+						// zero 180 degrees from the pulse, taking the blue side away
+						// a quarter of the old strength at the peak and up the beam;
+						// the fog only 20% mixed into a steady 0..1 base
+						float rng_mod    = mix(1.0, rng_fg, 0.2);
+						float rng_vol    = rng_near * 2.0 * rng_mod;
+						float rng_beam   = rng_rise * 0.2 * rng_u;    // 10% of the peak, the full height
+						// brighter overall (x2), each ray normalised to its crossing
+						float d          = 36.0 * ubo.pulse_width * rng_center * rng_pulse * (rng_vol + rng_beam) * rng_dt * rng_norm;
 						col   += rng_col * d * (1.0 - alpha);
 						alpha += d * (1.0 - alpha);
 					}

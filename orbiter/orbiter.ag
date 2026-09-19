@@ -45,15 +45,15 @@ import Avatar
 
 # the editor under a pane's split. 'text' is the editor/instruments
 # split, and the editor keeps key 'text' inside it
+# the editor down the 'text' chain: pane split, the editor|panel split, the
+# editor|band column, the editor
 func editor_under [ spl: element ] -> Editor
-    if [ !spl || !spl.elements ] return null
-    te : element spl.elements[ 'text' ]
-    if [ !te ] return null
-    if [ te inherits Editor ] return Editor te
-    if [ !te.elements ] return null
-    ve : element te.elements[ 'text' ]
-    if [ !ve || !(ve inherits Editor) ] return null
-    return Editor ve
+    te : element [ spl ]
+    for [ d: i32 0, d < 4, d += 1 ]
+        if [ !te || !te.elements ] return null
+        te = te.elements[ 'text' ]
+        if [ te && te inherits Editor ] return Editor te
+    return null
 
 # This is the EditorView
 element EditorView
@@ -342,7 +342,7 @@ element EditorView
                 if [ vel ] edels['view'] = vel
             edels['rail'] = ToolRail [ no_scroll: true, area: Region [ 'l0 t2px w64px b2px' ] ]
             dbgr : dbg o.active_debugger[]
-            t['text'] = Editor [
+            edx : Editor [
                 src: file[]
                 hide: browse_active[] || ((e) ? e.view_pick : false)
                 breakpoints: o.breakpoints, code_font_size: o.code_font_size,
@@ -357,10 +357,19 @@ element EditorView
                 hits: o.find_hits,
                 find_query: (searchable[] && findbar_on[]) ? o.findbar_text : '',
                 elements: edels ]
+            # the editor and the run band share the column left of the
+            # instance panel: the console spans the editor only, never
+            # under the panel. the column is mounted always (a wrapper that
+            # comes and goes re-parents the editor)
+            cols : Elements []
+            cols['text'] = edx
+            if [ run_ok[] && o.show_console ] cols['band'] = RunBand [ elements: band_els[] ]
+            t['text'] = Splitter [ area: Region { l0 t0 r0 b0 }, vertical: true,
+                inner: cols, deflt: 180.0, min_size: 44.0 ]
         # the panel is up whenever this pane's module has instances, and not otherwise
         ed9 : Editor o.pane_at[ pane_index ]
         li9 : vec AppView (ed9) ? ed9.instances[] : null
-        if [ li9 && li9.count > 0 ] t['instance_panel'] = InstancePanel [ ]
+        if [ li9 && li9.count > 0 && !o.inst_hidden ] t['instance_panel'] = InstancePanel [ ]
         return t
 
     # the error chip belongs to the file it names: only show it
@@ -417,7 +426,6 @@ element EditorView
             inner: text_els[], deflt: 280.0, min_size: 100.0, snap_close: true ]
         # the run band + console, INSIDE this tab. pip keeps the band: the
         # app shrinks into the editor and its instruments stay open
-        if [ run_ok[] && o.show_console ] t['band'] = RunBand [ elements: band_els[] ]
         return t
 
     # reconciliation runs on the frame hook, never in render
@@ -426,6 +434,17 @@ element EditorView
 
     func settle []
         o : orb[]
+        # every app module has an implied default instance, held until it is
+        # started: the panel always has the app to run, and only the added
+        # ones (shift on the instance tab) carry a number
+        ed0 : Editor text_of[]
+        if [ ed0 && ed0.src && psess[].count == 0 ]
+            dir0 : string ed0.src.parent_dir[].filename[]
+            if [ ed0.src.stem[] == dir0 && ed0.src.ext[] == 'ag' ]
+                bin0 : path '{o.startup_path}/install/build/{dir0}'
+                li0  : vec AppView o.instances_of[ ed0.src ]
+                if [ bin0.exists[] && li0.count == 0 && !ed0.handler_module_for[ ed0.src ] ]
+                    ed0.start_instance[ false ]
         is_con : bool [ psess[].count > 0 ]
         if [ is_console != is_con ]
             is_console = is_con
@@ -603,11 +622,11 @@ Avatar OrbiterAvatar
     busy_tilt   : f32   [ 34.0 ]
     # the halo glow hover used to show — it answers to busy now
     rest_pulse  : f32   [ 0.4 ]
-    busy_pulse  : f32   [ 2.0 ]
+    busy_pulse  : f32   [ 0.6 ]   # the beam while working: close to rest, never the old glare
     rest_ph     : f32   [ 1.2 ]
     busy_ph     : f32   [ 2.4 ]
-    rest_halo   : f32   [ 0.4 ]
-    busy_halo   : f32   [ 0.8 ]
+    rest_halo   : f32   [ 0.8 ]   # the beam's height: twice what it was
+    busy_halo   : f32   [ 1.6 ]
     rest_spin   : f32   [ 0.25 ]
     busy_spin   : f32   [ 2.66 ]
     # how fast the RATE itself approaches; low = a long spin-up
@@ -615,6 +634,7 @@ Avatar OrbiterAvatar
     mutable spin_rate  : f32 [ 0.25 ]
     mutable spin_phase : f32
     mutable spin_us    : i64    # the last spin step, microseconds
+    mutable spin_dbg_n : i32    # DIAG
     intern  spin_dbg   : bool
     # the wheel's in-plane clocking, held in every state
     clock_deg   : f32   [ 30.0 ]
@@ -693,7 +713,9 @@ Avatar OrbiterAvatar
             # the core flame burns while the reload swaps, with the spin at
             # its most intense: the sign the work is landing
             rl : bool [ orb->swap_live ]
-            fl : f32 [ (rl) ? 1.0 : 0.0 ]
+            # the core flame burns once the agent is done (and through the
+            # reload), until the user's next line
+            fl : f32 [ (rl || orb->agent_done) ? 1.0 : 0.0 ]
             aura.flame = filter_n[ aura.flame, fl, 0.12, ux->frame_factor ]
             # the exchange avatar turns at the working rate face on too: its
             # rotating light reads as rotation from the first frame
@@ -707,6 +729,10 @@ Avatar OrbiterAvatar
             if [ dt9 > 0.25 ] dt9 = 0.25
             spin_us    = nowu9
             spin_phase = spin_phase + spin_rate * dt9
+            # DIAG: spin pacing
+            if [ animate_always && spin_dbg_n < 400 ]
+                spin_dbg_n += 1
+                log 'SPINSTEP dt={dt9} rate={spin_rate} phase={spin_phase}'
             if [ spin_phase > 6.2831853 ] spin_phase = spin_phase - 6.2831853
             aura.spin  = spin_phase
             if [ wb != spin_dbg ]
@@ -754,6 +780,13 @@ OrbiterAvatar CornerAvatar
 
 # the avatar for the exchange under the screenshot prompt
 OrbiterAvatar AgentAvatar
+    # shift-click steps the avatar through its states (face on, tilted,
+    # working, done with the flame): a look at each without an agent
+    public func on_press [ ev: Event ]
+        if [ !ev.key.shift ] return
+        orb9 : cast orbiter [ (ux) ? ux.app_object : null ]
+        if [ orb9 ] orb9.avatar_debug[]
+        ev.no_default = true
     # 2x at the top center, revealed by an alpha fade (no move: a moving
     # target resizes and fuzzes); settled only tilts it. render_scale is
     # in window units: 4 on a 2x display is a 2x supersample of the device
@@ -2106,6 +2139,10 @@ element LaunchPanel
 element RunBand
     style : CSS {
         area: l0 t0 r0 b0
+        # the line over the console's top edge, parting it from the editor
+        layers.topline:
+            fill_color: #fff2
+            area: l0 t0 r0 h1px
     }
 
 Console RunConsole
@@ -2296,6 +2333,12 @@ element orbiter : trinity # implements compiler
     mutable pending_show      : i32
     mutable pending_show_pane : i32
     intern pending_run      : i32 [ -1 ]
+    intern pending_held     : i32 [ -1 ]   # a pane to add a held instance to, once it is up
+    intern pending_held_src : path         # ...once that pane shows this source (null: any)
+    # the app this window switched from; pinned in every pane's title, it
+    # leads back to its source, and from there back to the app itself
+    intern home_mod         : string
+    manual home_av          : AppView   # its instance here: points at it, never owns it
     intern pending_findfocus : bool
     intern find_scanned : i32
     public active_pane      : i32
@@ -2309,6 +2352,7 @@ element orbiter : trinity # implements compiler
     intern [ StatePersist ] band_h           : i32
     intern band_h_save      : i32
     public show_instruments : bool
+    public inst_hidden      : bool   # the instance panel folded away; its < brings it back
     # the variables panel — the other tab of the stack menu
     public show_variables : bool
     # summon-only: never saved, never active at startup
@@ -2544,6 +2588,12 @@ element orbiter : trinity # implements compiler
                         editor_slots[0] = mi
                         active_pane = 0
                         active_idx  = mi
+                        # an app switched to us (its host set this): its source
+                        # opens with a held instance of it, stopped until started
+                        if [ getenv[ 'SILVER_START_HELD' ] ]
+                            pending_held = 0
+                            # this window came from that app: pin it in the title
+                            home_mod = rp.stem[]
                 el
                     ri : i32 [ file_slot[ rp ] ]
                     if [ editor_slots.count == 0 ] editor_slots += -1
@@ -3132,6 +3182,16 @@ element orbiter : trinity # implements compiler
 
     # a line from the agent through our socket: 'status <state> <text>'
     public func on_agent [ s: string ]
+        # an app's orbiter button while this orbiter is open: 'coupled <mod>
+        # [picture]'. the app ends; its source, a held instance of it and
+        # its last picture come here, and this window comes forward
+        if [ s && s.count > 8 && s.mid[ 0, 8 ] == 'coupled ' ]
+            rest9 : string s.mid[ 8, s.count - 8 ].trim[]
+            sp9   : i32 [ i32[ rest9.index_of[ ' ' ] ] ]
+            mod9  : string [ (sp9 > 0) ? rest9.mid[ 0, sp9 ] : rest9 ]
+            shot9 : string [ (sp9 > 0) ? rest9.mid[ sp9 + 1, rest9.count - sp9 - 1 ].trim[] : '' ]
+            couple_app[ mod9, shot9 ]
+            return
         if [ !s || s.count < 7 || s.mid[ 0, 7 ] != 'status ' ] return
         # only an exchange orbiter opened (a capture sent, up or minimized)
         # takes the agent's statuses: the session's other work, the user's
@@ -3168,6 +3228,36 @@ element orbiter : trinity # implements compiler
         if [ !agent_done ] done_put_away = false
         if [ agent_state == 'idle' || agent_state == 'sent' ] agent_note = ''
         if [ ux ] ux.restyle = true
+
+    # the exchange's debug button: each press steps the avatar to its next
+    # state, 0 face on at rest, 1 tilted, 2 working (pulse and spin), 3 done
+    # with the core flame; the exchange stays up through it
+    mutable av_dbg_step : i32
+    public func avatar_debug [] -> none
+        if [ !ux ] return
+        av_dbg_step = (av_dbg_step + 1) % 4
+        log 'avatar debug: state {av_dbg_step}'
+        agent_done    = false
+        done_put_away = true
+        ux.agent_busy = false
+        agent_state   = 'idle'
+        agent_note    = ''
+        if [ av_dbg_step == 0 ]
+            ux.agent_view = false
+            if [ agent_av ] agent_av.settled = false
+        el [ av_dbg_step == 1 ]
+            ux.agent_view = true
+        el [ av_dbg_step == 2 ]
+            ux.agent_view = true
+            agent_state   = 'busy'
+            agent_note    = 'working'
+            ux.agent_busy = true
+        el
+            ux.agent_view = true
+            agent_state   = 'done'
+            agent_note    = 'done'
+            agent_done    = true
+        ux.restyle = true
 
     # the avatar for the exchange: ONE instance, made at load, mounted for
     # the app's life and invisible between exchanges; it is never freed.
@@ -3662,6 +3752,8 @@ element orbiter : trinity # implements compiler
         inst_seq += 1
         av.iid = inst_seq
         instances.push[ av ]
+        # a new instance is seen: a folded panel opens for it
+        inst_hidden = false
         session_dirty = true
 
     func remove_instance [ av: AppView ]
@@ -3695,6 +3787,10 @@ element orbiter : trinity # implements compiler
             if [ host_app_state[ s ] != 2 ] continue
             pid : i32 [ host_app_pid[ s ] ]
             if [ pid <= 0 || host_pid_alive[ pid ] == 0 ] continue
+            # never ourselves: an app that switched to orbiter in its own
+            # window still sits in its host's slot table, and adopting that
+            # slot attached our debugger to our own process, freezing it
+            if [ pid == i32[ getpid[] ] ] continue
             nb : local i8 [ 192 ]
             if [ host_app_name[ s, @nb[0], 192 ] <= 0 ] continue
             req : string [ @nb[0] ]
@@ -3781,9 +3877,15 @@ element orbiter : trinity # implements compiler
         if [ !module_props || !mod || !module_props.contains[ mod ] ] return null
         return module_props[ mod ]
 
+    # the module's first instance is its default and carries no number; the
+    # ones added after it count from 2, per module (not the global sequence)
     func instance_name [ av: AppView ] -> string
         m : string (av.app_mod && av.app_mod.count > 0) ? av.app_mod : ((av.src) ? av.src.stem[] : 'app')
-        return '{m} {av.iid}'
+        li9 : vec AppView instances_of[ av.src ]
+        for [ k9: i32 0, k9 < li9.count, k9 += 1 ]
+            if [ li9[ k9 ] == av ]
+                return (k9 == 0) ? m : '{m} {k9 + 1}'
+        return m
 
     func instance_label [ av: AppView ] -> string
         sw : string av.status_word[]
@@ -3980,6 +4082,7 @@ element orbiter : trinity # implements compiler
         con9   : bool [ psess9 && psess9.count > 0 ]
         tnav : vec string []
         tmask : i32 [ 0 ]
+        tgo9  : i32 [ 0 ]     # segments drawn green (shift's add)
         # find is reachable from the editor and from its own bar; not while
         # the nav list is up on a title focus, where it says nothing true
         if [ !is_resource && (!engaged || fb_on) ]
@@ -4008,8 +4111,14 @@ element orbiter : trinity # implements compiler
                 evr9 : EditorView pvr9
                 runnable9 = evr9.run_ok[]
         if [ runnable9 ]
-            # one click adds an instance; the panel comes up with it
-            tnav.push[ 'new_instance' ]
+            # the instance panel's toggle, as the console's is (lit while it
+            # shows); with shift held it adds an instance instead, green
+            if [ shift_down ]
+                tgo9 = tgo9 | (1 << tnav.count)
+                tnav.push[ 'new_instance' ]
+            el
+                if [ !inst_hidden ] tmask = tmask | (1 << tnav.count)
+                tnav.push[ 'inst_tab' ]
             # NOT 'console': that is the RunConsole element's own id, and on_press
             # dispatches on id, so a click in the console would toggle it away
             if [ show_console ] tmask = tmask | (1 << tnav.count)
@@ -4021,6 +4130,7 @@ element orbiter : trinity # implements compiler
         for [ tn: string ] in tnav
             ic9 : string tn
             if [ tn.compare[ 'new_instance' ] == 0 ] ic9 = 'add_instance'
+            if [ tn.compare[ 'inst_tab' ] == 0 ] ic9 = 'menu'
             if [ tn.compare[ 'console_tab' ] == 0 ] ic9 = 'console'
             if [ tn.compare[ 'view' ] == 0 ] ic9 = 'views'
             if [ tn.compare[ 'agent_ask' ] == 0 ] ic9 = 'orbiter4'
@@ -4034,13 +4144,13 @@ element orbiter : trinity # implements compiler
         # count carries the width to grow to
         if [ tnav.count > 0 && !(engaged && !fb_on) ]
             nt9 : i32 [ i32[ tnav.count ] ]
-            if [ nt9 >= 7 ]     els['tabnav'] = NavTabs7 [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, danger_mask: dmask9, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0 ]
-            el [ nt9 == 6 ]     els['tabnav'] = NavTabs6 [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, danger_mask: dmask9, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0 ]
-            el [ nt9 == 5 ]     els['tabnav'] = NavTabs5 [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, danger_mask: dmask9, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0 ]
-            el [ nt9 == 4 ]     els['tabnav'] = NavTabs4 [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, danger_mask: dmask9, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0 ]
-            el [ nt9 == 3 ]     els['tabnav'] = NavTabs3 [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, danger_mask: dmask9, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0 ]
-            el [ nt9 == 2 ]     els['tabnav'] = NavTabs2 [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, danger_mask: dmask9, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0 ]
-            el                  els['tabnav'] = NavTabs  [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, danger_mask: dmask9, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0 ]
+            if [ nt9 >= 7 ]     els['tabnav'] = NavTabs7 [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, danger_mask: dmask9, go_mask: tgo9, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0 ]
+            el [ nt9 == 6 ]     els['tabnav'] = NavTabs6 [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, danger_mask: dmask9, go_mask: tgo9, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0 ]
+            el [ nt9 == 5 ]     els['tabnav'] = NavTabs5 [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, danger_mask: dmask9, go_mask: tgo9, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0 ]
+            el [ nt9 == 4 ]     els['tabnav'] = NavTabs4 [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, danger_mask: dmask9, go_mask: tgo9, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0 ]
+            el [ nt9 == 3 ]     els['tabnav'] = NavTabs3 [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, danger_mask: dmask9, go_mask: tgo9, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0 ]
+            el [ nt9 == 2 ]     els['tabnav'] = NavTabs2 [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, danger_mask: dmask9, go_mask: tgo9, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0 ]
+            el                  els['tabnav'] = NavTabs  [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, danger_mask: dmask9, go_mask: tgo9, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0 ]
 
         if [ rv ]
             vel : Elements rv.title_elements*[]
@@ -4056,7 +4166,36 @@ element orbiter : trinity # implements compiler
                 edit: pattern_text,
                 focusable: true ]
             els['find'] = FindField [ label: 'Find', edit: findbar_text, focusable: true ]
+        # the coupled app, pinned left of the tabs: lit on its own source
+        if [ home_mod && home_mod.count > 0 && !engaged ]
+            hs9 : path home_src[]
+            on9 : bool [ p && hs9 && '{p}' == '{hs9}' ]
+            hw9 : f32 [ 24.0 + f32[ home_mod.count ] * 8.0 ]
+            els['home_mod'] = CompanionButton [ label: home_mod, manual_mode: true,
+                selected: on9, area: Region [ 'r0+ t0.065 w{i32[ hw9 ]}px h0.81' ] ]
         return els
+
+    func couple_app [ mod: string, shot: string ]
+        if [ !mod || mod.count == 0 ] return
+        r9   : path.path_startup[]
+        src9 : path '{r9}/{mod}/{mod}.ag'
+        if [ !src9.exists[] ]
+            log 'couple: no source for {mod} at {src9}'
+            return
+        pi9 : i32 [ (active_pane >= 0) ? active_pane : 0 ]
+        open_in_pane[ src9, pi9 ]
+        home_mod = mod
+        if [ shot && shot.count > 0 ] setenv[ 'SILVER_SWITCH_SHOT', shot, 1 ]
+        pending_held     = pi9
+        pending_held_src = src9
+        if [ ux ]
+            ux.set_shown[ true ]
+            ux.restyle = true
+
+    func home_src [] -> path
+        if [ !home_mod || home_mod.count == 0 ] return null
+        r9 : path.path_startup[]
+        return path '{r9}/{home_mod}/{home_mod}.ag'
 
 
     func dock_tabs [ grp: vec path, prefix: string, active: path, win: Window ] -> Elements
@@ -4150,6 +4289,16 @@ element orbiter : trinity # implements compiler
             iw : watch [ res: d, callback: lambda on_index_change[ a ] ]
             iw.start[]
             index_watches += iw
+        # the startup directory is part of the changed-files aggregate even
+        # when the finder searches docked checkouts only: watch it too
+        pr9 : path project_root[]
+        seen9 : bool [ false ]
+        for [ d: path ] in search_dirs
+            if [ '{d}' == '{pr9}' ] seen9 = true
+        if [ !seen9 ]
+            gw : watch [ res: pr9, callback: lambda on_index_change[ a ] ]
+            gw.start[]
+            index_watches += gw
 
     # what the finder searches: every docked checkout, else this project.
     # fills search_dirs in place (the paths must be held by the member, and
@@ -4197,6 +4346,13 @@ element orbiter : trinity # implements compiler
         if [ !found ] docked_repos.push[ name ]
         save_session[]
         reroot_index[]
+        # the changed-files aggregate follows the selection now: scan at
+        # once, or on the first frame the running scan leaves free (the
+        # frame loop takes a dirty mark with no wait when git_last is 0)
+        git_dirty = true
+        git_last  = 0
+        git_summarize[]
+        if [ ux ] ux.restyle = true
 
     func reroot_index []
         # already rooted there → nothing to do
@@ -4221,6 +4377,8 @@ element orbiter : trinity # implements compiler
 
     func on_index_change [ changed: Au :: o: orbiter ] -> none
         o.index_dirty = true
+        # the changed-files scan reruns on a real change, not on a timer
+        o.git_dirty   = true
 
     public func on_unload [ ]
         save_session[]
@@ -5055,52 +5213,72 @@ element orbiter : trinity # implements compiler
         if [ !p || !git_snap || !git_snap.chg ] return null
         return git_snap.chg[ '{p.absolute[]}' ]
 
-    # thread body: every git call lives here, never on the view
+    # thread body: every git call lives here, never on the view.
+    # the changed files are one aggregate over every checkout marked [o]
+    # in the projects list, plus the directory orbiter ran in when that is
+    # a repo; with neither, the repo of the pane's root as before. files are
+    # absolute paths (they span repos)
     func git_entry [] -> none
         base : path [ (nav_root) ? nav_root : project_root[] ]
         sn : GitSnap []
         sn.hold[]
-        sn.base = '{base}'
-        rl : git_capture[ base, 'rev-parse --show-toplevel', false ]
-        if [ rl.count > 0 ]
-            sn.repo  = rl[0]
-            rp : path '{sn.repo}'
-            ref9 : string git_ref_of[ rp ]
-            ch : repo_changed[ rp, ref9 ]
-            # closest to the repo root first: fewest separators
-            srt : vec string []
-            for [ i: i32 0, i < ch.count, i += 1 ]
-                d9  : i32 [ path_depth[ ch[i] ] ]
-                at9 : i32 [ srt.count ]
-                for [ j: i32 0, j < srt.count, j += 1 ]
-                    dj : i32 [ path_depth[ srt[j] ] ]
-                    if [ d9 < dj || (d9 == dj && ch[i].compare[ srt[j] ] < 0) ]
-                        at9 = j
-                        break
-                srt.insert[ ch[i], at9 ]
-            sn.files = srt
+        sn.base = git_sel_key[]
+        tops : vec string []
+        if [ docked_repos ]
+            for [ nm: string ] in docked_repos
+                if [ !repo_local[ nm ] ] continue
+                rd9 : path repo_dir[ nm ]
+                tl9 : git_capture[ rd9, 'rev-parse --show-toplevel', false ]
+                if [ tl9.count > 0 && !vec_has[ tops, tl9[0] ] ] tops.push[ tl9[0] ]
+        st9 : path project_root[]
+        ts9 : git_capture[ st9, 'rev-parse --show-toplevel', false ]
+        if [ ts9.count > 0 && !vec_has[ tops, ts9[0] ] ] tops.push[ ts9[0] ]
+        if [ tops.count == 0 ]
+            rl : git_capture[ base, 'rev-parse --show-toplevel', false ]
+            if [ rl.count > 0 ] tops.push[ rl[0] ]
+        if [ tops.count > 0 ]
+            sn.repo  = tops[0]
+            sn.files = vec string []
+            sn.chg   = map FileChg [string] []
             ins9 : i32 [ 0 ]
             del9 : i32 [ 0 ]
-            ss9 : git_capture[ rp, 'diff --shortstat {ref9}', false ]
-            if [ ss9.count > 0 ]
-                pr9 : ss9[0].split[ ',' ]
-                for [ i: i32 0, i < pr9.count, i += 1 ]
-                    p9 : string pr9[i].trim[]
-                    if [ p9.index_of[ 'insertion' ] >= 0 ] ins9 = i32[ p9.real_value[] ]
-                    el [ p9.index_of[ 'deletion' ] >= 0 ] del9 = i32[ p9.real_value[] ]
+            for [ top: string ] in tops
+                rp : path '{top}'
+                ref9 : string git_ref_of[ rp ]
+                ch : repo_changed[ rp, ref9 ]
+                # closest to the repo root first: fewest separators
+                srt : vec string []
+                for [ i: i32 0, i < ch.count, i += 1 ]
+                    d9  : i32 [ path_depth[ ch[i] ] ]
+                    at9 : i32 [ srt.count ]
+                    for [ j: i32 0, j < srt.count, j += 1 ]
+                        dj : i32 [ path_depth[ srt[j] ] ]
+                        if [ d9 < dj || (d9 == dj && ch[i].compare[ srt[j] ] < 0) ]
+                            at9 = j
+                            break
+                    srt.insert[ ch[i], at9 ]
+                for [ f9: string ] in srt
+                    sn.files.push[ '{top}/{f9}' ]
+                ss9 : git_capture[ rp, 'diff --shortstat {ref9}', false ]
+                if [ ss9.count > 0 ]
+                    pr9 : ss9[0].split[ ',' ]
+                    for [ i: i32 0, i < pr9.count, i += 1 ]
+                        p9 : string pr9[i].trim[]
+                        if [ p9.index_of[ 'insertion' ] >= 0 ] ins9 += i32[ p9.real_value[] ]
+                        el [ p9.index_of[ 'deletion' ] >= 0 ] del9 += i32[ p9.real_value[] ]
+                if [ open_files ]
+                    for [ i: i32 0, i < open_files.count, i += 1 ]
+                        p : path open_files[i]
+                        if [ !p ] continue
+                        k : string '{p.absolute[]}'
+                        if [ !k.starts_with[ '{top}/' ] ] continue
+                        ns : git_capture[ rp, 'diff --numstat {ref9} -- {k}', false ]
+                        if [ ns.count == 0 ] continue
+                        f9 : ns[0].split[ '\t' ]
+                        if [ f9.count < 2 ] continue
+                        sn.chg[ k ] = FileChg [ adds: i32[ f9[0].real_value[] ], dels: i32[ f9[1].real_value[] ] ]
             sn.adds = ins9
             sn.dels = del9
-            sn.chg = map FileChg [string] []
-            if [ open_files ]
-                for [ i: i32 0, i < open_files.count, i += 1 ]
-                    p : path open_files[i]
-                    if [ !p ] continue
-                    k : string '{p.absolute[]}'
-                    ns : git_capture[ rp, 'diff --numstat {ref9} -- {k}', false ]
-                    if [ ns.count == 0 ] continue
-                    f9 : ns[0].split[ '\t' ]
-                    if [ f9.count < 2 ] continue
-                    sn.chg[ k ] = FileChg [ adds: i32[ f9[0].real_value[] ], dels: i32[ f9[1].real_value[] ] ]
         git_stage = sn
         git_fresh = true
         git_busy  = false
@@ -5172,6 +5350,20 @@ element orbiter : trinity # implements compiler
     # the files that differ from a reference in the browsed repo, paths
     # relative to its root: the tracked differences, then what is untracked
     # (a whole untracked directory lists as 'dir/': keep the dir name)
+    # what the changed-files scan covers: the [o] checkouts and the startup
+    # directory; a change of this string is the only thing that rescans
+    func git_sel_key [] -> string
+        k : string '{project_root[]}'
+        if [ docked_repos ]
+            for [ nm: string ] in docked_repos
+                k = '{k}|{nm}'
+        return k
+
+    func vec_has [ v: vec string, x: string ] -> bool
+        for [ e: string ] in v
+            if [ e.compare[ x ] == 0 ] return true
+        return false
+
     func repo_changed [ repo: path, rf: string ] -> vec string
         out : vec string []
         df : git_capture[ repo, 'diff --name-only {rf}', false ]
@@ -5730,7 +5922,10 @@ element orbiter : trinity # implements compiler
             el
                 # the commit surface is its own element (CommitView); the
                 # list only keeps the snapshot fresh for it
-                nb : string [ (nav_root) ? '{nav_root}' : '{project_root[]}' ]
+                # the scan is keyed on the project selection ([o] repos and
+                # the startup repo), never the folder in view: it runs again
+                # only when that selection changes
+                nb : string git_sel_key[]
                 # picking a path for a launch field: plain files, no git
                 picking : bool [ pick_field && pick_field.count > 0 ]
                 if [ !picking && !git_busy && (!git_snap || git_snap.base.compare[ nb ] != 0) ] git_summarize[]
@@ -6227,6 +6422,29 @@ element orbiter : trinity # implements compiler
             eda9 : Editor pane_of[ ev.target ]
             log 'AGENTASK press pane={bool[eda9]} src={(eda9 && eda9.src) ? string[eda9.src] : "none"} line={(eda9) ? eda9.sel_line : -1}'
             if [ eda9 && eda9.src && ux ] ux.exchange_open[ eda9.src, eda9.sel_line + 1, true ]
+            ev.no_default = true
+            return
+        # the pinned app: away from it, back to its source; on its source,
+        # back to the app itself in this window
+        if [ ev.target.id == 'home_mod' ]
+            edh : Editor pane_of[ ev.target ]
+            pih : i32 [ (edh) ? edh.pane_index : active_pane ]
+            hs9 : path home_src[]
+            if [ edh && edh.src && hs9 && '{edh.src}' == '{hs9}' ]
+                au_live_switch[ home_mod.chars ]
+            el [ hs9 ]
+                open_in_pane[ hs9, pih ]
+                # and the instance it came from is selected again, with its pip
+                edh2 : Editor pane_at[ pih ]
+                if [ edh2 && home_av ]
+                    edh2.run_view = home_av
+                    edh2.app_view = false
+                if [ ux ] ux.restyle = true
+            ev.no_default = true
+            return
+        if [ ev.target.id == 'inst_tab' ]
+            inst_hidden = !inst_hidden
+            if [ ux ] ux.restyle = true
             ev.no_default = true
             return
         if [ ev.target.id == 'console_tab' ]
@@ -6945,6 +7163,47 @@ element orbiter : trinity # implements compiler
             if [ fte ]
                 fte.set_focus[]
                 pending_finder = -1
+        # an instance's orbiter button: select it here and bring this window
+        # forward (the app never becomes a second orbiter)
+        if [ instances ]
+            for [ wv9: AppView ] in instances
+                if [ !wv9.wants_ide ] continue
+                wv9.wants_ide = false
+                wp9 : i32 [ active_pane ]
+                for [ pq9: i32 0, pq9 < editor_slots.count, pq9 += 1 ]
+                    eq9 : Editor pane_at[ pq9 ]
+                    if [ eq9 && eq9.run_view == wv9 ] wp9 = pq9
+                show_instance[ wv9.iid, wp9 ]
+                if [ ux ] ux.set_shown[ true ]
+        if [ pending_held >= 0 ]
+            hed : Editor pane_at[ pending_held ]
+            if [ hed && hed.src && (!pending_held_src || '{hed.src.absolute[]}' == '{pending_held_src.absolute[]}') ]
+                # one held instance per coupled app: coming back to orbiter
+                # again finds the one already there (the newest)
+                hv9 : AppView [ null ]
+                if [ instances ]
+                    for [ iv9: AppView ] in instances
+                        if [ iv9.held && iv9.src && '{iv9.src}' == '{hed.src}' ] hv9 = iv9
+                if [ !hv9 ]
+                    hed.start_instance[ false ]
+                    hv9 = hed.run_view
+                # the instance we came from is the pane's selection; the source
+                # stays in the pane until it starts
+                hed.run_view = hv9
+                hed.app_view = false
+                home_av      = hv9
+                # its picture from before the switch fills the pip
+                shot9 : cstr [ getenv[ 'SILVER_SWITCH_SHOT' ] ]
+                if [ shot9 && hv9 && ux && ux.screen ]
+                    im9 : Image [ '{shot9}' ]
+                    if [ im9.width > 0 && im9.height > 0 ]
+                        hv9.still = Texture [ vk: ux.screen.vk, w: ux.screen.w, sampler: im9,
+                            width: im9.width, height: im9.height, linear: true ]
+                        hv9.aw = im9.width
+                        hv9.ah = im9.height
+                if [ ux ] ux.restyle = true
+                pending_held     = -1
+                pending_held_src = null
         if [ pending_run >= 0 ]
             red : Editor pane_at[ pending_run ]
             if [ red ]
@@ -6984,9 +7243,12 @@ element orbiter : trinity # implements compiler
             fmt_sync[]
             fmt_poll[]
             fmt_borrow[]
-            # refresh policy: saves kick now; the watcher's dirty mark
-            # is picked up on the 60-second interval
-            if [ git_dirty && now_ms - git_last >= 60000 ] git_summarize[]
+            # refresh policy: nothing on a timer. the watches (FSEvents on
+            # macOS) mark the snapshot dirty on a real change, and the scan
+            # reruns on its own thread, at most once a second, so the nav
+            # list reads a finished snapshot the instant it comes up and an
+            # idle app does no work; a selection change rescans at once
+            if [ git_dirty && !git_busy && now_ms - git_last >= 1000 ] git_summarize[]
 
         if [ instances ]
             for [ av8: AppView ] in instances

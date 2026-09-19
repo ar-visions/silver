@@ -249,6 +249,7 @@ func agent_sock_line  [ buf: @i8, cap: i32 ] -> i32
 func agent_sock_reply [ s: cstr ]
 func handle_slot_set  [ slot: handle, value: handle ]
 func host_keep        [ key: cstr, value: handle ]
+func au_live_switch   [ to: cstr ] -> none
 func host_kept        [ key: cstr ] -> handle
 func agent_sock_send  [ nm: cstr, txt: cstr ] -> i32
 func agent_sock_ask   [ nm: cstr, txt: cstr, out: @i8, cap: i32 ] -> i32
@@ -1097,6 +1098,9 @@ abstract live_app media_app
                         rh = tall
                     if [ rw > 0 && rh > 0 && (rw != wn.width || rh != wn.height) ]
                         vkQueueWaitIdle[ vk.queue ]
+                        # the display reads its size from the window: size the
+                        # (hidden) window itself, in points, then resize
+                        if [ wn.glfw ] platform_window_set_size[ wn.glfw, rw, rh ]
                         wn.resize[ rw, rh ]
                         width  = rw
                         height = rh
@@ -1154,6 +1158,9 @@ abstract live_app media_app
                     wide : i32 [ host_pa[] ]
                     tall : i32 [ host_pb[] ]
                     if [ wide > 0 && tall > 0 ]
+                        # the display reads its size from the window: size the
+                        # (hidden) window itself, in points, then resize
+                        if [ wn.glfw ] platform_window_set_size[ wn.glfw, wide, tall ]
                         wn.resize[ wide, tall ]
 
         # agent socket (debug builds): line commands become real Events
@@ -2664,17 +2671,45 @@ Display Window
             tp : path '/tmp/silver-app-{ss}.agi'
             tp.save[ Au.string_agi[ tree ], null ]
 
+    # hand this app to orbiter: an open orbiter takes it over its socket;
+    # otherwise the host launches orbiter as its own app. either way orbiter
+    # opens this app's source with a held instance of it, and this app ends
     func ide_open []
         if [ ide_active ] return
+        # an orbiter already runs this app (it is an instance in a host slot
+        # above 0): go straight there. the request rides this slot's ring to
+        # that orbiter, which selects this instance and comes forward.
+        # switching in place would nest a second orbiter inside this one
+        if [ host_slot[] > 0 ]
+            host_post[ 0, i32[ HM.shell ], 1, 0, 0 ]
+            return
+        # an instance an orbiter runs (a host slot above 0) already has its
+        # orbiter: switching it would nest another one inside it
+        if [ host_slot[] > 0 ] return
         capture_context[]
-        app_size_w = width
-        app_size_h = height
-        iw : i32 [ (ide_size_w > 0) ? ide_size_w : 1888 ]
-        ih : i32 [ (ide_size_h > 0) ? ide_size_h : 888 ]
-        if [ glfw && (iw != width || ih != height) ] platform_window_set_size[ glfw, iw, ih ]
+        # the app's last frame: orbiter shows it as the held instance's pip,
+        # the picture of where this window came from. the process stays, so
+        # the path rides in its environment
+        lr9 : last_render[]
+        if [ lr9 && lr9.color ]
+            im9 : Image [ lr9.color ]
+            sp9 : path '/tmp/silver-switch-{getpid[]}.png'
+            im9.png[ sp9 ]
+            setenv[ 'SILVER_SWITCH_SHOT', '{sp9}', 1 ]
+        # an orbiter is already open: hand this app to it (its source, a held
+        # instance, this picture) and end here, rather than make a second
+        # orbiter. its socket answering is the sign it is there
+        if [ app_object ]
+            hd9 : Au.header[ app_object ]
+            nm9 : string [ hd9.au.ident ]
+            sh9 : cstr [ getenv[ 'SILVER_SWITCH_SHOT' ] ]
+            ln9 : string [ (sh9) ? 'app coupled {nm9} {sh9}\n' : 'app coupled {nm9}\n' ]
+            rb9 : local i8 [ 64 ]
+            if [ agent_sock_ask[ 'orbiter', ln9.chars, @rb9[0], 64 ] > 0 ]
+                log 'orbiter is open: {nm9} goes to it'
+                exit[ 0 ]
         ide_active = true
-        host_post[ 0, i32[ HM.shell ], 1, 0, 0 ]
-        restyle = true
+        au_live_switch[ 'orbiter' ]
 
     func ide_restore_size []
         ide_size_w = width
@@ -2713,6 +2748,7 @@ Display Window
                 e[ 'shot' ]   = ShotPrompt [ topmost: true, label: 'prompt description' ]
             if [ agent_view ]
                 e[ 'notes' ]  = ShotNotes [ topmost: true ]
+            e[ 'shot_close' ] = ShotClose [ topmost: true, icon: 'close', icon_fit: 0.6, manual_mode: true ]
             # the picker last: over the blur and the boxes
             pw9 : i32 [ i32[ nm9.count ] * 96 ]
             e[ 'agent_pick' ] = AgentPick [ topmost: true, buttons: nm9, selected: ix9, faded: agent_view,
@@ -5311,10 +5347,10 @@ abstract media_app trinity
         dsp9 : cstr [ getenv[ 'SILVER_DISPLAY' ] ]
         if [ dsp9 ]
             ds9 : string [ dsp9 ]
-            if [ ds9 == 'Full' ]   root.display = DisplayMode.Full
+            if [ ds9 == 'Embed' || ds9 == 'Full' ] root.display = DisplayMode.Embed
             if [ ds9 == 'Window' ] root.display = DisplayMode.Window
             if [ ds9 == 'Screen' ] root.display = DisplayMode.Screen
-            if [ ds9 == 'PIP' || ds9 == 'Full' ] hidden = true
+            if [ ds9 == 'PIP' || ds9 == 'Embed' || ds9 == 'Full' ] hidden = true
         # SILVER_HZ: the host display's refresh, the pace of a paned app
         hz9 : cstr [ getenv[ 'SILVER_HZ' ] ]
         if [ hz9 ]
@@ -5476,9 +5512,14 @@ Layer ScrollLayer
     mutable top_pad     : f32
     mutable grab_off    : f32
     public  active      : bool
+    intern  sb_dbg      : i32   # DIAG
 
     func draw [ cv: Canvas ]
         e : element [ parent ]
+        # DIAG: why the editor's bar is missing
+        if [ e && e.id && e.id == 'text' && sb_dbg < 3 ]
+            sb_dbg += 1
+            log 'SCROLLBAR content_h={e.content_h} eh={e.bounds.h} no_scroll={e.no_scroll} b={bounds.x},{bounds.y},{bounds.w},{bounds.h}'
         if [ !e || e.content_h <= 0.0 || e.bounds.h >= e.content_h ] return
         if [ e.no_scroll ] return
         top     : f32 [ bounds.y ]
@@ -5560,6 +5601,7 @@ element TButtons
     public  sel_mask  : i32
     public  disable_mask : i32        # per-segment disable, same bits as sel_mask
     public  danger_mask  : i32        # per-segment red icon (a destructive action), same bits
+    public  go_mask      : i32        # per-segment green icon (a creating action), same bits
     public  seg_radius : f32 [ 8.0 ]
     # icon height as a fraction of the control's height
     public  icon_scale : f32 [ 0.55 ]
@@ -5728,7 +5770,8 @@ element TButtons
             cv.set_opacity[ op0 * ((off) ? 0.35 : 1.0) * rv9 ]
             # a segment flagged in danger_mask draws its icon or label red
             dang : bool [ (danger_mask & (1 << i)) != 0 ]
-            icol : rgba [ (dang) ? rgba [ '#ff5c5c' ] : rgba [ '#fff' ] ]
+            go9  : bool [ (go_mask & (1 << i)) != 0 ]
+            icol : rgba [ (dang) ? rgba [ '#ff5c5c' ] : ((go9) ? rgba [ '#6fdc8c' ] : rgba [ '#fff' ]) ]
             if [ svg ]
                 isz : f32 [ bounds.h * ((icon_scale > 0.0) ? icon_scale : 0.55) ]
                 ix  : f32 [ x + (seg_w - isz) * 0.5 ]
@@ -6301,6 +6344,17 @@ UXMenuButton UXMenuLeft
 
 UXMenuButton UXMenuRight
     area : Region { r0.22+ t0.22 w1.0 h1.0 }
+
+# the exchange's close: top right, over everything in it. the same as Esc
+# with nothing sent, or putting it away: the exchange ends
+UXMenuButton ShotClose
+    area : Region { r16px t16px w36px h36px }
+    # cached, unlike a button: uncached, it painted into root's cache and the
+    # cached backdrop was drawn over it
+    no_cache : false
+    func on_press [ ev: Event ]
+        if [ ux ] ux.shot_close[]
+        ev.stop[]
 
 
 element TextInput
@@ -6901,8 +6955,6 @@ TextInput ShotPrompt
 element UXGenerics
     focusable : false
     mutable show_console : bool
-    mutable recording    : bool
-    mutable dict_dbg     : bool
     manual target : element   # points at an element, never owns it
     mutable expanded : string
 
@@ -6914,18 +6966,9 @@ element UXGenerics
             if [ ux ] ux.restyle = true
             ev.stop[]
         el [ e.id == 'dictate' ]
-            if [ ev.key.shift ]
-                if [ ux ] ux.ide_open[]
-            el
-                recording = !recording
-                if [ ux ]
-                    ux.dict_on = recording
-                    if [ !recording ] ux.capture_context[]
-                    # signal orbiter THROUGH the supervisor — reload-proof
-                    host_dictate_set[ (recording) ? 1 : 0 ]
-                    log 'app: host_dictate_set {(recording) ? 1 : 0}'
-                if [ target ] target.on_dictate*[ recording ]
-            if [ ux ] ux.restyle = true
+            # the orbiter button: this window becomes orbiter, with this app
+            # as an instance it runs
+            if [ ux ] ux.ide_open[]
             ev.stop[]
         el [ e.id == 'close' || e.id == 'uxgenerics' ]
             show_console = false
@@ -6980,11 +7023,11 @@ element UXGenerics
                 sheet_els[ 'list' ] = UXShadeList [ content_h: lh_est, focusable: true, elements: rows ]
             els[ 'sheet' ] = UXShadeSheet [ elements: sheet_els ]
         els[ 'tab' ]     = UXMenuLeft  [ icon: 'menu', icon_fit: 0.58, manual_mode: true, selected: show_console ]
-        if [ recording && ux && !ux.dict_on ] recording = false
-        dlv : bool [ (ux) ? ux.dict_live : false ]
-        els[ 'dictate' ] = UXMenuRight [ icon: 'orbiter4', icon_fit: 0.7,
-            manual_mode: true, selected: recording,
-            wait_state: (recording && !dlv), live_state: (recording && dlv) ]
+        # the orbiter button: a press turns this window into orbiter. an
+        # instance orbiter already runs has no button: its orbiter is open
+        if [ host_slot[] <= 0 ]
+            els[ 'dictate' ] = UXMenuRight [ icon: 'orbiter4', icon_fit: 0.7,
+                manual_mode: true ]
         return els
 
 
