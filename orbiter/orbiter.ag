@@ -728,12 +728,11 @@ Avatar OrbiterAvatar
             heat              = heat_base + (1.0 - heat_base) * flame_cur
             # the flower's grooves light with the second halo and stay fully
             # on while the jet burns
-            if [ body ] body.groove = max[ halo_cur, flame_cur ]
+            groove = max[ halo_cur, flame_cur ]
             # DIAG: does the groove reach the shader the model draws with
             if [ epoch_millis[] / 1000 != groove_dbg ]
                 groove_dbg = epoch_millis[] / 1000
-                sb9 : shader [ (shaders) ? shaders[ 'body' ] : null ]
-                log 'GROOVE anim={animate_always} halo={halo_cur} flame={flame_cur} body={bool[body]} groove={(body) ? body.groove : -1.0} same={sb9 == body} changed={orb->agent_changed} wb={wb}'
+                log 'GROOVE anim={animate_always} halo={halo_cur} flame={flame_cur} groove={groove} changed={orb->agent_changed} wb={wb}'
             # the exchange avatar turns at the working rate face on too: its
             # rotating light reads as rotation from the first frame
             gs : f32 [ (rl) ? busy_spin * 1.8 : (wb || animate_always) ? busy_spin : rest_spin ]

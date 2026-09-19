@@ -20,8 +20,6 @@ Orbiter PBR
     mutable spoke_r1     : f32
     # 0 = mic off (graphite strip), 1 = listening (blue strip)
     mutable listen       : f32
-    # the flower's groove glow: 0 dark, 1 full (the second halo stage)
-    mutable groove       : f32
 
     attrib color         : LayoutBinding [ type:typeid[ Surface ], id:Surface.color,        count:1, format: typeid[ rgba8 ] ]
     attrib normal        : LayoutBinding [ type:typeid[ Surface ], id:Surface.normal,       count:1, format: typeid[ rgba8 ] ]
@@ -316,16 +314,6 @@ Orbiter PBR
         // only low-alpha areas take the spoke tint (24 divisions paint there)
         vec4  sp_s = texture(spokes, vec2(sp_u, sp_v));
               base = mix(base, vec4(sp_s.rgb, 1.0), step(0.5, v_color.b) * (1.0 - sp_s.a));
-
-        // the flower's grooves glow: its vertex color paints them in blue,
-        // exported linear (Blender's solid blue arrives as 0.02-0.06), so it
-        // is read back in sRGB. added last: the spoke tint above replaced the
-        // full-blue verts. the separator's white verts have red too, and stay unlit
-        float groove = pow(clamp(v_color.b * (1.0 - v_color.r), 0.0, 1.0), 1.0 / 2.2);
-        base.rgb    += vec3(0.45, 0.2, 1.0) * groove * ubo.groove;
-        // DIAG: on the blue mask, red = ubo.spoke_r1 (0.55 when the upload is
-        // right), green = ubo.groove, blue = fract(ubo.time) (cycles when updating)
-        base.rgb     = mix(base.rgb, vec3(clamp(ubo.spoke_r1, 0.0, 1.0), clamp(ubo.groove, 0.0, 1.0), fract(ubo.time)), groove);
 
         fragColor = base;
     }
@@ -817,13 +805,46 @@ Orbiter Plasma
 	}
 
 
+# the groove mask: the body's geometry again, gray where the flower's
+# grooves are painted in its vertex color (blue, exported linear, read back
+# in sRGB; the separator's white verts carry red too and stay black). the
+# heat pass blurs it into the grooves' glow
+ModelViewProject GrooveMask
+    attrib a_pos     : VertexInput    [ type:typeid[ vec3f ] ]
+    attrib a_normal  : VertexInput    [ type:typeid[ vec3f ] ]
+    attrib a_uv      : VertexInput    [ type:typeid[ vec2f ] ]
+    attrib a_color_0 : VertexInput    [ type:typeid[ vec4f ] ]
+    attrib v_color   : VertexOutput   [ type:typeid[ vec4f ] ]
+    attrib fragColor : FragmentOutput [ type:typeid[ vec4f ] ]
+
+    func init []
+        model = mat4f.identity[]
+        view  = mat4f.identity[]
+        proj  = mat4f.identity[]
+
+    func vertex [] -> GLSL none {
+        v_color     = a_color_0;
+        gl_Position = ubo.proj * ubo.view * ubo.model * vec4(a_pos, 1.0);
+    }
+
+    func fragment [] -> GLSL none {
+        float g   = pow(clamp(v_color.b * (1.0 - v_color.r), 0.0, 1.0), 1.0 / 2.2);
+        g         = smoothstep(0.25, 0.9, g);
+        fragColor = vec4(g, g, g, 1.0);
+    }
+
+
 # the heat haze: the pbr pass's reduced image read back at coordinates
 # bent by noise rising off the core, strongest at the source and up the
 # jet's axis. heat 0 is the image as it was
 ModelViewProject Heat
     mutable pulse_height : f32
     mutable heat         : f32
+    # the grooves' glow: 0 dark, 1 full
+    mutable groove       : f32
     attrib color     : LayoutBinding [ type:typeid[ Surface ], id:Surface.color, count:1, format: typeid[ rgba8 ] ]
+    # the groove mask (GrooveMask's target)
+    attrib emission  : LayoutBinding [ type:typeid[ Surface ], id:Surface.emission, count:1, format: typeid[ rgba8 ] ]
 
     attrib pos       : VertexInput    [ type:typeid[ vec3f ] ]
     attrib uv        : VertexInput    [ type:typeid[ vec2f ] ]
@@ -857,9 +878,34 @@ ModelViewProject Heat
                        mix(nhash(i+vec3(0,1,1)),  nhash(i+vec3(1,1,1)), f.x), f.y), f.z);
     }
 
+    # the grooves' glow: the mask, blurred over two rings of taps, over its
+    # own sharp line
+    func groove_glow [ at: vec2f ] -> GLSL vec3f {
+        if (ubo.groove <= 0.001) return vec3(0.0);
+        vec2  mt  = 1.0 / vec2(textureSize(emission, 0));
+        float m0  = texture(emission, at).r;
+        float acc = m0 * 2.0;
+        float wsum = 2.0;
+        // three rings, each turned half a step from the last: no tap lines
+        // up with its neighbors, so the edges come out soft
+        for (int i = 0; i < 8; i++) {
+            float a  = float(i) * 0.78539816;
+            vec2  d1 = vec2(cos(a), sin(a));
+            vec2  d2 = vec2(cos(a + 0.3927), sin(a + 0.3927));
+            acc  += texture(emission, at + d1 * mt * 1.5).r * 1.5;
+            acc  += texture(emission, at + d2 * mt * 3.5).r * 1.2;
+            acc  += texture(emission, at + d1 * mt * 7.0).r;
+            wsum += 3.7;
+        }
+        float bl  = acc / wsum;
+        return vec3(0.45, 0.2, 1.0) * (0.2 * m0 + 1.5 * bl) * ubo.groove;
+    }
+
     func fragment [] -> GLSL none {
+        vec3 gl3 = groove_glow(v_uv);
         if (ubo.heat <= 0.001) {
             fragColor = texture(color, v_uv);
+            fragColor.rgb += gl3;
             return;
         }
         // the core's source, the jet's tip and the core's rim, on screen
@@ -883,6 +929,7 @@ ModelViewProject Heat
         float wgt = exp(-d * d) * pow(1.0 - h, 0.6);
         if (wgt < 0.002) {
             fragColor = texture(color, v_uv);
+            fragColor.rgb += gl3;
             return;
         }
         // noise rising along the axis (face on it swirls about the core)
@@ -908,6 +955,7 @@ ModelViewProject Heat
             }
         }
         fragColor = acc / 16.0;
+        fragColor.rgb += gl3;
     }
 
 
@@ -922,6 +970,13 @@ element Avatar
     intern heat_target       : Render
     intern heat_src          : Texture
     intern heat_bound        : i64      # the reduced image's size the heat pass is bound to
+    # the groove mask: the body again, gray on the grooves, for the heat pass's glow
+    intern mask_target       : Render
+    intern mask_bound        : i64      # the mask's size the heat pass is bound to
+    intern heat_ready        : i32      # frames the heat pass has drawn since its last (re)bind
+    public mask_s            : GrooveMask
+    # the grooves' glow: 0 dark, 1 full (set by the owner)
+    public groove            : f32
     public heat_s            : Heat
     public heat              : f32
     intern models            : map Model   [string]
@@ -1004,10 +1059,12 @@ element Avatar
             wr9.element_targets[ id ] = null
             wr9.element_targets[ '{id}-vol' ] = null
             wr9.element_targets[ '{id}-heat' ] = null
+            wr9.element_targets[ '{id}-mask' ] = null
         target      = null
         vol_target  = null
         heat_target = null
         heat_src    = null
+        mask_target = null
         super.on_unload[ ]
 
     func on_press [ ev: Event ]
@@ -1194,11 +1251,33 @@ element Avatar
             w_ref.element_targets[ '{id}-vol' ] = vol_target
             vol_target.wscale = 0.0
 
-        # the heat haze reads the reduced pbr image at its own size
-        if [ target && target.reduction ]
+        # the groove mask: the body's geometry at the device pixels,
+        # depth tested so the fins hide the grooves behind them
+        if [ target && mcache[ 'orbiter32' ] ]
+            if [ !mask_s ]
+                mask_s = GrooveMask [ vk: vk, model_id: 'orbiter32' ]
+                mask_s.groups = vec string [] [ 'outside', 'flower', 'separator' ]
+            mm9 : Model [ vk: vk, w: w_ref, s: mask_s ]
+            mm9.id = mcache[ 'orbiter32' ]
+            mm9.id.hold[]
+            mask_target = Render [
+                vk:          vk,
+                w:           w_ref,
+                width:       i32[ bounds.w * dscale ],
+                height:      i32[ bounds.h * dscale ],
+                use_depth:   true,
+                clear_color: clear_color,
+                models:      [ mm9 ] ]
+            mask_target.owner = a
+            w_ref.element_targets[ '{id}-mask' ] = mask_target
+            mask_target.wscale = 0.0
+
+        # the heat haze reads the reduced pbr image at its own size, and
+        # glows the groove mask over it
+        if [ target && target.reduction && mask_target ]
             if [ !heat_s ] heat_s = Heat [ vk: vk ]
             heat_src = target.reduction
-            hm : Model [ w: w_ref, s: heat_s, samplers: map Texture[string] [ 'color': heat_src ] ]
+            hm : Model [ w: w_ref, s: heat_s, samplers: map Texture[string] [ 'color': heat_src, 'emission': mask_target.color ] ]
             heat_target = Render [
                 vk:          vk,
                 w:           w_ref,
@@ -1313,6 +1392,9 @@ element Avatar
             ds8 : f32 [ (w.scale > 0.0) ? w.scale : 1.0 ]
             target.width  = i32[ bounds.w * rs8 * ds8 ]
             target.height = i32[ bounds.h * rs8 * ds8 ]
+            if [ mask_target ]
+                mask_target.width  = i32[ bounds.w * ds8 ]
+                mask_target.height = i32[ bounds.h * ds8 ]
             if [ vol_target ]
                 vs8 : f32 [ (vol_scale > 0.0) ? vol_scale : 0.25 ]
                 vw8 : f32 [ bounds.w * rs8 * vs8 ]
@@ -1359,23 +1441,36 @@ element Avatar
                 # come back at the same address, and the pass kept sampling the
                 # dead image
                 hk9 : i64 [ i64[ geo_tex.width ] * 65536 + i64[ geo_tex.height ] ]
-                if [ heat_src != geo_tex || heat_bound != hk9 ]
+                mk9 : i64 [ i64[ mask_target.color.width ] * 65536 + i64[ mask_target.color.height ] ]
+                if [ heat_src != geo_tex || heat_bound != hk9 || mask_bound != mk9 ]
                     heat_src   = geo_tex
                     heat_bound = hk9
+                    mask_bound = mk9
+                    heat_ready = 0
                     heat_target.width  = geo_tex.width
                     heat_target.height = geo_tex.height
                     for [ hm9: Model ] in heat_target.models
-                        hm9.samplers[ 'color' ] = geo_tex
+                        hm9.samplers[ 'color' ]    = geo_tex
+                        hm9.samplers[ 'emission' ] = mask_target.color
                         hm9.rebind_model[]
+                mask_s.model = model_mat
+                mask_s.proj  = _proj
+                mask_s.view  = _view
+                mask_target.state_mask = msk9
+                mask_target.update[]
                 heat_s.model        = model_mat
                 heat_s.proj         = _proj
                 heat_s.view         = _view
                 heat_s.time         = clock_s
                 heat_s.pulse_height = (aura) ? aura.pulse_height : 1.0
                 heat_s.heat         = heat
+                heat_s.groove       = groove
                 heat_target.state_mask = msk9
                 heat_target.update[]
-                geo_tex = heat_target.color
+                # its image is empty until it has drawn (at start, and after a
+                # resize remakes it): the plain image shows until then
+                if [ heat_ready >= 3 ] geo_tex = heat_target.color
+                el heat_ready += 1
             w.screen.draw_image[ geo_tex, b ]
         if [ vol_target ]
             w.screen.draw_image[ vol_target.color, b ]
