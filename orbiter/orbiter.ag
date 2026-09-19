@@ -640,6 +640,8 @@ Avatar OrbiterAvatar
     # the jet igniting: the flame's width swings +-25% about its own,
     # starting wide, and settles within ignite_s seconds
     ignite_amp  : f32   [ 0.25 ]
+    # the core flame's look: 0 the orange flame, 1 the violet-white beam
+    flame_style : f32   [ 1.0 ]
     ignite_hz   : f32   [ 4.0 ]
     ignite_s    : f32   [ 1.5 ]
     intern ignite_us   : i64
@@ -748,6 +750,7 @@ Avatar OrbiterAvatar
                     dk9 : f32 [ 1.0 - ip9 ]
                     fw9 = 1.0 + ignite_amp * cos[ 6.2831853 * ignite_hz * it9 ] * dk9 * dk9
             aura.flame_w      = fw9
+            aura.flame_style  = flame_style
             heat              = heat_base + (1.0 - heat_base) * flame_cur
             # the flower's grooves light with the second halo and stay fully
             # on while the jet burns
@@ -2344,6 +2347,9 @@ element orbiter : trinity # implements compiler
     intern orbit_flushing : bool
     # last dictate command (edge-detect) via on_host
     intern orbit_dstate   : i32 [ -1 ]
+    # where the take goes: -1 the agent (the listen button), 0 this window's
+    # exchange field, >0 that hosted slot's exchange field (typed in)
+    intern dict_slot      : i32 [ -1 ]
     intern debuggers     : map dbg [string]
     intern debug_vars         : vec Au
     intern frame_cache        : vec Au
@@ -3314,9 +3320,48 @@ element orbiter : trinity # implements compiler
             agent_av.settled = false
         return agent_av
 
+    # orbiter transcribes: its own exchange's mic needs no host
+    public func dictates [] -> bool
+        return true
+
+    # a dictate request for an exchange field: 3 start, 0 stop (the take is
+    # typed into that field), 2 cancel. slot 0 is this window, >0 a hosted app
+    public func dictate_to [ slot: i32, s: i32 ]
+        log 'orbiter dictate_to slot={slot} s={s}'
+        if [ s == 3 ]
+            if [ orbit_cap_on ] return
+            rc : dictation_start[]
+            if [ rc == 0 ]
+                orbit_cap_on = true
+                dict_slot    = slot
+                if [ slot > 0 ] host_post2[ slot, 1, i32[ HM.live ], 1, 0, 0 ]
+                el [ ux ]
+                    ux.dict_live = true
+                    ux.restyle   = true
+        el [ s == 2 ]
+            if [ dict_slot != slot ] return
+            dictation_cancel[]
+            orbit_cap_on   = false
+            orbit_flushing = false
+            dict_slot      = -1
+        el
+            if [ !orbit_cap_on || dict_slot != slot ] return
+            dictation_stop[]
+            orbit_cap_on   = false
+            orbit_flushing = true
+        if [ s != 3 ]
+            if [ slot > 0 ] host_post2[ slot, 1, i32[ HM.live ], 0, 0, 0 ]
+            el [ ux ]
+                ux.dict_live = false
+                ux.restyle   = true
+
     public func on_host [ mt: i32, wp: i32, lp: i32, xp: i32 ]
         if [ mt != 1 ] return
         s : i32 [ wp ]
+        # this window's exchange mic
+        if [ s == 3 || ((s == 0 || s == 2) && dict_slot == 0) ]
+            dictate_to[ 0, s ]
+            return
         if [ s == orbit_dstate ] return
         log 'orbiter on_host dictate: {orbit_dstate} -> {s}'
         orbit_dstate = s
@@ -3324,6 +3369,7 @@ element orbiter : trinity # implements compiler
             rc : dictation_start[]
             if [ rc == 0 ]
                 orbit_cap_on = true
+                dict_slot    = -1
                 host_live_set[ 1 ]
         el [ s == 2 ]
             dictation_cancel[]
@@ -3352,13 +3398,50 @@ element orbiter : trinity # implements compiler
     public func listening [] -> bool
         return orbit_cap_on
 
+    # DIAG: SILVER_DICT_FILE drives one take from that wav: the mic goes on
+    # once the window is up, and off when the feed runs out
+    intern dtest_n : i32
+    func dict_test_step []
+        if [ !getenv[ 'SILVER_DICT_FILE' ] ] return
+        dtest_n += 1
+        if [ dtest_n == 90 ]
+            log 'DICTTEST mic on'
+            dictate_to[ 0, 3 ]
+        el [ dtest_n > 90 && orbit_cap_on && dictation_feed_left[] == 0 && dictation_gpu_ready[] ]
+            log 'DICTTEST mic off'
+            dictate_to[ 0, 0 ]
+
     func mic_frame []
-        if [ orbit_cap_on ] dictation_poll[]
+        # the exchange open: the dictation model loads now, so the mic starts at once
+        if [ ux && ux.shot_ask ] dictation_preload[]
+        dict_test_step[]
+        # every block that came in since the last frame (orbiter's frames
+        # slow at rest, and one poll takes one block)
+        if [ orbit_cap_on ]
+            for [ pk9: i32 0, pk9 < 64, pk9 += 1 ]
+                if [ !dictation_poll[] ] break
         if [ !orbit_flushing ] return
         if [ !dictation_flush[] ] return
         orbit_flushing = false
         dt : dictation_take[]
+        ds9 : i32 [ dict_slot ]
+        dict_slot = -1
         if [ !dt || dt.count == 0 ] return
+        # an exchange's mic: the words are typed into its field, to review
+        # and send with enter
+        if [ ds9 > 0 ]
+            log 'orbiter: take into the exchange field of slot {ds9} "{dt}"'
+            for [ i: i32 0, i < i32[ dt.count ], i += 1 ]
+                host_post2[ ds9, 1, i32[ HM.text ], (i32 dt.chars[ i ]) & 255, 0, 0 ]
+            return
+        if [ ds9 == 0 ]
+            log 'orbiter: take into the exchange field "{dt}"'
+            if [ ux ]
+                # a fresh event: the window's own ev faulted in clear[] from here
+                tev9 : Event [ ]
+                tev9.key.text = dt
+                ux.text_event[ tev9 ]
+            return
         log 'orbiter: submitting take "{dt}"'
         bd : string dt
         if [ listen_file ] bd = '{listen_file}  {dt}'
@@ -4420,6 +4503,9 @@ element orbiter : trinity # implements compiler
         o.git_dirty   = true
 
     public func on_unload [ ]
+        # a take still transcribing runs speech's code on its thread: this
+        # unload (a quit or a reload) would unmap it under the thread
+        dictation_wait[ 60000 ]
         save_session[]
         # the avatars are never freed: their teardown (the shaders' and
         # textures' drop) crashes the process, and the reload's destroy of
@@ -7201,6 +7287,11 @@ element orbiter : trinity # implements compiler
         # an instance's orbiter button: select it here and bring this window
         # forward (the app never becomes a second orbiter)
         if [ instances ]
+            for [ dv9: AppView ] in instances
+                if [ dv9.dict_req < 0 ] continue
+                dr9 : i32 [ dv9.dict_req ]
+                dv9.dict_req = -1
+                dictate_to[ dv9.slot, dr9 ]
             for [ wv9: AppView ] in instances
                 if [ !wv9.wants_ide ] continue
                 wv9.wants_ide = false

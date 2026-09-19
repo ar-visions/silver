@@ -338,6 +338,9 @@ Orbiter Aura
 	mutable beam_cone   : f32
 	# the core flame's width, 1 = as authored (the ignition swings it)
 	mutable flame_w     : f32
+	# the core flame's look: 0 the orange flame, 1 the beam (thinner, white
+	# hot at the axis, violet at the edges, warm only at the source)
+	mutable flame_style : f32
 	attrib a_pos     : VertexInput    [ type:typeid[ vec3f ] ]
 	attrib a_uv      : VertexInput    [ type:typeid[ vec2f ] ]
 	attrib v_uv      : VertexOutput   [ type:typeid[ vec2f ] ]
@@ -403,9 +406,16 @@ Orbiter Aura
 
 		// ── core beam: a SOLID cylinder straight up the axis, same volume style AND
 		//    colors as the outer ring (fog + center weighting + angular pulse + up-fade) ──
-		float cyl_R   = 0.22 * ubo.flame_w;
-		float cyl_h   = 1.4 * ubo.pulse_height;
-		vec3  cyl_o   = (ubo.model * vec4(0.0, -0.05, 0.0, 1.0)).xyz;
+		float cyl_sty = clamp(ubo.flame_style, 0.0, 1.0);
+		// cyl_R bounds the march; the beam's shaft is cyl_R0, its base flares
+		// to 75% wider, and its blue glow reaches 2.7x the shaft: the bound
+		// holds that
+		float cyl_R0  = 0.22 * ubo.flame_w * mix(1.0, 0.6, cyl_sty);
+		float cyl_R   = cyl_R0 * mix(1.0, 2.7, cyl_sty);
+		// the beam starts at the core's surface (0.46 down the bowl, the flame
+		// starts at the rim), that much longer, and 30% taller above it
+		float cyl_h   = 1.4 * ubo.pulse_height * mix(1.0, 1.3, cyl_sty) + 0.51 * cyl_sty;
+		vec3  cyl_o   = (ubo.model * vec4(0.0, mix(-0.05, 0.46, cyl_sty), 0.0, 1.0)).xyz;
 		vec3  cyl_d   = normalize(mat3(ubo.model) * vec3(0.0, -1.0, 0.0));
 		vec3  cyl_oc  = ro - cyl_o;
 		vec3  cyl_rdp = rd - dot(rd, cyl_d) * cyl_d;
@@ -430,8 +440,11 @@ Orbiter Aura
 					cyl_tx = min(cyl_tx, max(tc0, tc1));
 				}
 				if (cyl_tx > cyl_te) {
-					float cyl_dt = (cyl_tx - cyl_te) / 32.0;
-					for (int m = 0; m < 32; m++) {
+					// the beam marches 64 steps (its twist needs the detail);
+					// the flame keeps 32
+					int   cyl_n  = (cyl_sty > 0.5) ? 64 : 32;
+					float cyl_dt = (cyl_tx - cyl_te) / float(cyl_n);
+					for (int m = 0; m < cyl_n; m++) {
 						if (alpha > 0.97) break;
 						vec3  cyl_p   = ro + rd * (cyl_te + (float(m) + 0.5) * cyl_dt);
 						float cyl_at  = clamp(dot(cyl_p - cyl_o, cyl_d), 0.0, cyl_h);
@@ -444,32 +457,187 @@ Orbiter Aura
 						// the shaft holds full width, then converges to a true
 						// POINT over the last stretch (pow curve, tip radius 0)
 						float ph_c    = max(ubo.pulse_height, 1.0);
-						float cone_k  = pow(cyl_at / cyl_h, 2.5 * ph_c);
-						float cyl_lr  = cyl_R * max(mix(1.0, 0.0, cone_k), 0.02);
+						// the beam holds its width and only closes near the top
+						float cone_k  = pow(cyl_at / cyl_h, mix(2.5 * ph_c, 6.0, cyl_sty));
+						// the beam's base flare: 75% wider at the core, easing to
+						// the shaft over the first quarter
+						float cyl_bf  = 1.0 + 0.75 * cyl_sty * (1.0 - smoothstep(0.0, 0.25, cyl_at / cyl_h));
+						float cyl_lr  = cyl_R0 * cyl_bf * max(mix(1.0, 0.0, cone_k), 0.02);
 						float cyl_t   = cyl_r / cyl_lr;
 						// steep gaussian radial falloff: a thin dense core at the axis,
 						// sides drop to ~1/10 by mid-radius (not a fat column)
 						float cyl_ctr = exp(-cyl_t * cyl_t * 11.0);
-						vec3  cyl_np  = cyl_p * vec3(5.0, 2.2, 5.0) - vec3(0.0, ta * 1.8, 0.0);
+						// the beam's noise is stretched along the axis: streaks, not puffs
+						vec3  cyl_np  = cyl_p * mix(vec3(5.0, 2.2, 5.0), vec3(9.0, 1.0, 9.0), cyl_sty) - vec3(0.0, ta * mix(1.8, 3.0, cyl_sty), 0.0);
 						float cyl_fg  = mix(pfog(cyl_np), pfog(cyl_np * 1.9 - vec3(0.0, ta * 3.0, 0.0)), 0.35);
 						vec3  cyl_col = mix(vec3(2.6, 1.3, 0.5), vec3(1.4, 0.6, 0.15), cyl_at / cyl_h);
-						float cyl_fad = pow(max(1.0 - cyl_at / cyl_h, 0.0), ubo.beam_fade);
+						// the beam: white at the axis (half its old heat) to blue at
+						// its edge, warm only right at the source (a softer orange,
+						// over the first 3.5%) so no orange haze carries up the middle
+						vec3  bm_col  = mix(vec3(1.25, 1.2, 1.6), vec3(0.3, 0.45, 2.2), smoothstep(0.0, 0.6, cyl_t));
+						bm_col        = mix(vec3(1.7, 1.05, 0.7), bm_col, smoothstep(0.0, 0.035, cyl_at / cyl_h));
+						cyl_col       = mix(cyl_col, bm_col, cyl_sty);
+						// the beam carries further up before it fades
+						float cyl_fad = pow(max(1.0 - cyl_at / cyl_h, 0.0), ubo.beam_fade * mix(1.0, 0.5, cyl_sty));
 						// the fog's hold on the emission scaled to 20%: the same
 						// components about their middle, so the beam reads as a
 						// uniform source with a trace of movement
-						float cyl_fs  = 0.5 + 0.6 * (cyl_fg - 0.5);
+						float cyl_fs  = 0.5 + mix(0.6, 0.3, cyl_sty) * (cyl_fg - 0.5);
 						// two parts up the flame: the first 5% of its height a dense
 						// source at 10x with the tight core; the other 95% a diffuse
 						// haze at 2x, spread wide across the radius
 						float cyl_k   = smoothstep(0.0, 0.05, cyl_at / cyl_h);   // 0 at the source, 1 above
-						float cyl_src = mix(10.0, 2.0, cyl_k);
+						// the beam's source is more see through (2.5x, not 10x): its
+						// white drowned the drain's twirl
+						float cyl_src = mix(mix(10.0, 2.5, cyl_sty), 2.0, cyl_k);
 						// the haze's falloff: wide, but gone well inside the flame's
 						// cylinder (at 2.5 it still had 8% at the wall and clipped flat)
 						float cyl_hz  = exp(-cyl_t * cyl_t * 6.0);
 						float cyl_rad = mix(cyl_ctr, cyl_hz, cyl_k);
-						float cyl_den = 11.0 * ubo.flame * cyl_src * (0.3 + cyl_fs) * cyl_rad * cyl_fad * cyl_dt;
+						// the beam: a tight bright core over a wide diffuse glow (blue
+						// out there by its color), gone by the march bound. over the
+						// flared base (bm_bk) the white core gives way to more blue
+						// glow, and the glow twists up off the core in spiral bands,
+						// an upside down tornado, wide at the bottom
+						float bm_bk   = 1.0 - smoothstep(0.0, 0.3, cyl_at / cyl_h);
+						vec3  bm_ref  = abs(cyl_d.x) < 0.9 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 0.0, 1.0);
+						vec3  bm_tg   = normalize(cross(cyl_d, bm_ref));
+						vec3  bm_bn   = cross(bm_tg, cyl_d);
+						vec3  bm_rel  = cyl_p - cyl_ax;
+						float bm_ang  = atan(dot(bm_rel, bm_bn), dot(bm_rel, bm_tg));
+						// the twist: perlin in a frame that turns with height (and
+						// time), with a faint trace of the three spiral bands
+						float bm_h    = cyl_at / cyl_h;
+						vec2  bm_xy   = vec2(dot(bm_rel, bm_tg), dot(bm_rel, bm_bn));
+						// the spin: 1.2 outside, twice that at the core's axis, and
+						// 4x at the base easing to half at the top. a rate that
+						// varies across the beam winds the noise tighter every
+						// second, so two lookups restart their turn on a 1.6 cycle
+						// (the shader's clock), half a cycle apart, and cross fade
+						// (each at full weight mid cycle). it rises faster too
+						float bm_rate = 1.2 * (1.0 + exp(-cyl_t * cyl_t * 2.0)) * mix(4.0, 0.5, bm_h);
+						float bm_pn   = 0.0;
+						for (int q = 0; q < 2; q++) {
+							float ph  = fract(ta / 1.6 + 0.5 * float(q));
+							float tw  = bm_h * 9.0 + bm_rate * ph * 1.6 + float(q) * 1.7;
+							vec2  rt  = vec2(cos(tw) * bm_xy.x - sin(tw) * bm_xy.y,
+							                 sin(tw) * bm_xy.x + cos(tw) * bm_xy.y);
+							bm_pn    += (1.0 - abs(2.0 * ph - 1.0)) * pfog(vec3(rt.x * 9.0, bm_h * 10.0 - ta * 3.5, rt.y * 9.0));
+						}
+						float bm_sp   = 0.5 + 0.5 * sin(3.0 * bm_ang - bm_h * 28.0 + ta * 3.5);
+						// the spiral bands only a trace: stronger, they banded.
+						// the swirl lives at the base only: up the beam it settles
+						// to an even middle, no movement by halfway
+						float bm_sw   = mix(0.55, mix(bm_sp, bm_pn, 0.9), bm_bk);
+						bm_pn         = mix(0.5, bm_pn, bm_bk);
+						// the core is dimmer (half), and turns with the twist too
+						float bm_core = 0.5 * exp(-cyl_t * cyl_t * 14.0) * (1.0 - 0.85 * bm_bk) * (0.6 + 0.8 * bm_sw);
+						// the glow is diffuse, a little steeper at the base so it
+						// stays off the walls; the twist runs up the whole beam, strong
+						float bm_glow = 0.4 * exp(-cyl_t * cyl_t * mix(1.2, 2.0, bm_bk));
+						bm_glow      *= 0.1 + 1.6 * bm_sw;
+						// the outer blue is more see through
+						bm_glow      *= mix(1.0, 0.4, smoothstep(0.5, 1.6, cyl_t));
+						// the tornado's color: light blue and pink turning into each
+						// other with the twist, a pale blue-white only at the axis;
+						// warm still right at the source
+						vec3  bm_tc   = mix(vec3(0.55, 0.85, 1.7), vec3(1.5, 0.55, 1.25), smoothstep(0.25, 0.75, bm_pn));
+						// at the base: one linear gradient, blue across to pink,
+						// laid over the disc and turning (the drain's, the same)
+						vec2  bm_gd   = vec2(cos(ta * 0.9), sin(ta * 0.9));
+						float bm_gg   = clamp(0.5 + 0.5 * dot(bm_xy, bm_gd) / max(cyl_lr * 1.5, 1e-4), 0.0, 1.0);
+						bm_tc         = mix(bm_tc, mix(vec3(0.55, 0.85, 1.7), vec3(1.5, 0.55, 1.25), bm_gg), bm_bk);
+						// the pale axis only up the shaft: the base keeps its colors
+						bm_tc         = mix(vec3(0.95, 1.05, 1.5), bm_tc, max(smoothstep(0.0, 0.35, cyl_t), bm_bk));
+						bm_tc         = mix(vec3(1.7, 1.05, 0.7), bm_tc, smoothstep(0.0, 0.035, bm_h));
+						cyl_col       = mix(cyl_col, bm_tc, cyl_sty);
+						float bm_rad  = bm_core + bm_glow;
+						cyl_rad       = mix(cyl_rad, bm_rad, cyl_sty);
+						// the beam is more see through
+						float cyl_den = 11.0 * mix(1.0, 0.6, cyl_sty) * ubo.flame * cyl_src * (0.3 + cyl_fs) * cyl_rad * cyl_fad * cyl_dt;
 						col   += cyl_col * cyl_den * (1.0 - alpha);
 						alpha += cyl_den * (1.0 - alpha);
+					}
+				}
+			}
+		}
+
+		// ── the drain (the beam's style only): a swirl that starts slow at
+		// the flower's inner rings, runs down the bowl just inside its walls
+		// and turns faster as it narrows into the core. model space: y runs
+		// from the rings' outer edge (0.13, radius 0.43) down to the core
+		// (0.47, 0.13) ──
+		if (cyl_sty > 0.01 && ubo.flame > 0.001) {
+			vec3  dr_o   = (ubo.model * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+			vec3  dr_d   = -cyl_d;                       // model +y: down the bowl
+			float dr_y0  = 0.13;
+			float dr_y1  = 0.47;
+			float dr_R   = 0.48;
+			vec3  dr_oc  = ro - dr_o;
+			vec3  dr_rdp = rd - dot(rd, dr_d) * dr_d;
+			vec3  dr_ocp = dr_oc - dot(dr_oc, dr_d) * dr_d;
+			float dr_a   = dot(dr_rdp, dr_rdp);
+			float dr_b   = 2.0 * dot(dr_rdp, dr_ocp);
+			float dr_c   = dot(dr_ocp, dr_ocp) - dr_R * dr_R;
+			float dr_ds  = dr_b * dr_b - 4.0 * dr_a * dr_c;
+			if (dr_ds >= 0.0 && dr_a > 1e-6) {
+				float dr_sq = sqrt(dr_ds);
+				float dr_te = max((-dr_b - dr_sq) / (2.0 * dr_a), 0.0);
+				float dr_tx = (-dr_b + dr_sq) / (2.0 * dr_a);
+				float dr_s0 = dot(dr_oc, dr_d);
+				float dr_dd = dot(rd, dr_d);
+				if (abs(dr_dd) > 1e-6) {
+					float tc0 = (dr_y0 - dr_s0) / dr_dd;
+					float tc1 = (dr_y1 - dr_s0) / dr_dd;
+					dr_te = max(dr_te, min(tc0, tc1));
+					dr_tx = min(dr_tx, max(tc0, tc1));
+				}
+				if (dr_tx > dr_te) {
+					vec3  dr_rf = abs(dr_d.x) < 0.9 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 0.0, 1.0);
+					vec3  dr_tg = normalize(cross(dr_d, dr_rf));
+					vec3  dr_bn = cross(dr_tg, dr_d);
+					float dr_dt = (dr_tx - dr_te) / 40.0;
+					for (int k = 0; k < 40; k++) {
+						if (alpha > 0.97) break;
+						vec3  p   = ro + rd * (dr_te + (float(k) + 0.5) * dr_dt);
+						{
+							vec4  cp  = ubo.proj * ubo.view * vec4(p, 1.0);
+							vec2  suv = cp.xy / cp.w * 0.5 + 0.5;
+							if (cp.z / cp.w > texture(height, suv).r + 0.0005) continue;
+						}
+						vec3  rl  = p - dr_o;
+						float y   = dot(rl, dr_d);
+						vec2  xy  = vec2(dot(rl, dr_tg), dot(rl, dr_bn));
+						float r   = length(xy);
+						// s: 0 at the rings, 1 at the core
+						float s   = clamp((y - dr_y0) / (dr_y1 - dr_y0), 0.0, 1.0);
+						// the funnel's wall: a layer just inside the bowl
+						float rw  = mix(0.43, 0.13, s);
+						float th  = mix(0.05, 0.035, s);
+						float sh  = exp(-pow((r - rw) / th, 2.0));
+						// a drain: no turn at the rings' outer edge, quickening as
+						// the radius closes; two lookups on a 1.6 cycle cross fade
+						// so the differing rates never wind the noise up
+						float rate = max(0.4 * (1.0 / max(r, 0.08) - 1.0 / 0.43), 0.0);
+						float n    = 0.0;
+						for (int q = 0; q < 2; q++) {
+							float ph = fract(ta / 1.6 + 0.5 * float(q));
+							float tw = rate * ph * 1.6 + float(q) * 1.7 + s * 4.0;
+							vec2  rt = vec2(cos(tw) * xy.x - sin(tw) * xy.y, sin(tw) * xy.x + cos(tw) * xy.y);
+							// the pull: the flow runs down the funnel into the core
+							n += (1.0 - abs(2.0 * ph - 1.0)) * pfog(vec3(rt.x * 10.0, s * 6.0 - ta * 1.6, rt.y * 10.0));
+						}
+						float nm  = smoothstep(0.3, 0.8, n);
+						// some of it visible out at the rings, gathering toward the core
+						float gain = mix(0.45, 1.0, smoothstep(0.0, 0.8, s));
+						// one linear gradient, blue across to pink, over the funnel's
+						// width at this depth, turning
+						vec2  gd  = vec2(cos(ta * 0.9), sin(ta * 0.9));
+						float gg  = clamp(0.5 + 0.5 * dot(xy, gd) / rw, 0.0, 1.0);
+						vec3  dc  = mix(vec3(0.55, 0.85, 1.7), vec3(1.5, 0.55, 1.25), gg);
+						float dd  = 6.0 * cyl_sty * ubo.flame * gain * sh * nm * dr_dt;
+						col   += dc * dd * (1.0 - alpha);
+						alpha += dd * (1.0 - alpha);
 					}
 				}
 			}

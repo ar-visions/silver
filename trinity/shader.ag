@@ -177,6 +177,12 @@ class shader
                     result = '{result}layout(std430, set = 1, binding = {binding}) {sb_qual}buffer {mem.ident}_t {{ {sb_elem} {mem.ident}[]; }};\n'
                     binding += 1
 
+                el [ val inherits SharedArray && stage == ShaderStage.compute ]
+                    sa: SharedArray[val]
+                    sa_elem: (sa.format == typeid[ i32 ]) ? "int" :
+                             (sa.format == typeid[ u32 ]) ? "uint" : "float"
+                    result = '{result}shared {sa_elem} {mem.ident}[{sa.count}];\n'
+
                 el [ val inherits VertexInput && stage == ShaderStage.vertex ]
                     vi: cast VertexInput [ val ]
                     gtype: glsl_type_name[ vi.type ]

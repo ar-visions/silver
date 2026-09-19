@@ -33,6 +33,12 @@ class StorageBuffer
     format   : Au_t
     writable : bool          # emit a writable (non-readonly) buffer
 
+# workgroup-shared memory in a compute shader: `shared T name[count]`.
+# no descriptor: the pipeline binds nothing for it
+class SharedArray
+    count  : u32
+    format : Au_t
+
 class VertexInput
     public type : Au_t
 
