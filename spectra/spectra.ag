@@ -26,6 +26,8 @@ export extensions ['.wav': FileType.binary]
 
 import trinity
 import vec
+# the platform's microphone (platform_mic_*): capture on apple
+import devices
 
 ifdef [ apple ]
     import <AudioToolbox/AudioToolbox.h>
@@ -44,11 +46,18 @@ ifdef [ apple ]
     intern func sp_av_stop     [ @i16 ] -> none
     intern func sp_av_close    [ ] -> none
 
+    # devices' microphone (devices.mm): the default input, mono, into a ring
+    intern func platform_mic_open  [ rate: @i32 ] -> bool
+    intern func platform_mic_read  [ out: @i16, frames: i32 ] -> i32
+    intern func platform_mic_close [ ] -> none
+
     func aq_output_done [ user: handle, q: AudioQueueRef, b: AudioQueueBufferRef ] -> none
         c : @u64 [ user ]
         c[0] += 1
 
-    # no capture path on apple yet
+    # capture on apple: the system's default input through the platform's
+    # mic (an audio queue into a ring, mono). a block is ready once size
+    # frames have come in: capture fills buf across calls and says true then
     class spectra
         public size:        i32
         public sample_rate: i32
@@ -58,25 +67,68 @@ ifdef [ apple ]
         public im:          @f32
         public buf:         @i16
         public bins:        @f32
+        # the vectors re / im / buf / bins point into: a spectra made after
+        # startup (dictation's, on the first mic press) has its new arrays
+        # freed by the next frame's auto_free unless something holds them
+        intern re_v:        vec f32
+        intern im_v:        vec f32
+        intern buf_v:       vec i16
+        intern bins_v:      vec f32
+        intern fill:        i32
+        intern opened:      bool
 
         func init []
             channels = 1
-            re   = new f32 [ size ]
-            im   = new f32 [ size ]
-            buf  = new i16 [ size ]
-            bins = new f32 [ size / 2 ]
+            re_v   = new f32 [ size ]
+            im_v   = new f32 [ size ]
+            buf_v  = new i16 [ size ]
+            bins_v = new f32 [ size / 2 ]
+            re     = re_v
+            im     = im_v
+            buf    = buf_v
+            bins   = bins_v
 
         func open [] -> bool
-            return false
+            rate : local i32 [ 1 ] [ 0 ]
+            if [ !platform_mic_open[ @rate[ 0 ] ] ]
+                log 'spectra: no capture device'
+                return false
+            sample_rate = rate[ 0 ]
+            fill   = 0
+            opened = true
+            log 'spectra: capturing at {sample_rate} Hz'
+            return true
 
         func capture [] -> bool
-            return false
+            if [ !opened ] return false
+            got : i32 [ platform_mic_read[ @buf[ fill ], size - fill ] ]
+            if [ got < 0 ] return false
+            fill += got
+            if [ fill < size ] return false
+            fill = 0
 
+            for [ i: i32 0, i < size, i += 1 ]
+                re[i] = buf[i] / 32768.0
+                im[i] = 0.0
+
+            fft [ re, im, size ]
+            half2: i32 [ size / 2 ]
+            for [ i: i32 0, i < half2, i += 1 ]
+                bins[i] = sqrt [ re[i] * re[i] + im[i] * im[i] ]
+            return true
+
+        # what came in before now is dropped: the take starts fresh
         func drain []
-            return
+            if [ !opened ] return
+            sink : local i16 [ 1024 ]
+            for [ k: i32 0, k < 256, k += 1 ]
+                if [ platform_mic_read[ @sink[ 0 ], 1024 ] < 1024 ] break
+            fill = 0
 
         func close []
-            return
+            if [ !opened ] return
+            platform_mic_close[]
+            opened = false
 
     class AudioOut
         public sample_rate : i32 [ 48000 ]
@@ -159,13 +211,24 @@ el [ windows ]
         public im:          @f32
         public buf:         @i16
         public bins:        @f32
+        # the vectors re / im / buf / bins point into: a spectra made after
+        # startup (dictation's, on the first mic press) has its new arrays
+        # freed by the next frame's auto_free unless something holds them
+        intern re_v:        vec f32
+        intern im_v:        vec f32
+        intern buf_v:       vec i16
+        intern bins_v:      vec f32
 
         func init []
             channels = 1
-            re   = new f32 [ size ]
-            im   = new f32 [ size ]
-            buf  = new i16 [ size ]
-            bins = new f32 [ size / 2 ]
+            re_v   = new f32 [ size ]
+            im_v   = new f32 [ size ]
+            buf_v  = new i16 [ size ]
+            bins_v = new f32 [ size / 2 ]
+            re     = re_v
+            im     = im_v
+            buf    = buf_v
+            bins   = bins_v
 
         func open [] -> bool
             pcm = wasapi_cap_open [ device, sample_rate, channels, size ]
@@ -242,13 +305,24 @@ el [ android ]
         public im:          @f32
         public buf:         @i16
         public bins:        @f32
+        # the vectors re / im / buf / bins point into: a spectra made after
+        # startup (dictation's, on the first mic press) has its new arrays
+        # freed by the next frame's auto_free unless something holds them
+        intern re_v:        vec f32
+        intern im_v:        vec f32
+        intern buf_v:       vec i16
+        intern bins_v:      vec f32
 
         func init []
             channels = 1
-            re   = new f32 [ size ]
-            im   = new f32 [ size ]
-            buf  = new i16 [ size ]
-            bins = new f32 [ size / 2 ]
+            re_v   = new f32 [ size ]
+            im_v   = new f32 [ size ]
+            buf_v  = new i16 [ size ]
+            bins_v = new f32 [ size / 2 ]
+            re     = re_v
+            im     = im_v
+            buf    = buf_v
+            bins   = bins_v
 
         func open [] -> bool
             return false
@@ -320,13 +394,24 @@ el
         public im:          @f32
         public buf:         @i16
         public bins:        @f32
+        # the vectors re / im / buf / bins point into: a spectra made after
+        # startup (dictation's, on the first mic press) has its new arrays
+        # freed by the next frame's auto_free unless something holds them
+        intern re_v:        vec f32
+        intern im_v:        vec f32
+        intern buf_v:       vec i16
+        intern bins_v:      vec f32
 
         func init []
             channels = 1
-            re   = new f32 [ size ]
-            im   = new f32 [ size ]
-            buf  = new i16 [ size ]
-            bins = new f32 [ size / 2 ]
+            re_v   = new f32 [ size ]
+            im_v   = new f32 [ size ]
+            buf_v  = new i16 [ size ]
+            bins_v = new f32 [ size / 2 ]
+            re     = re_v
+            im     = im_v
+            buf    = buf_v
+            bins   = bins_v
 
         func open [] -> bool
             rc: snd_pcm_open [ @pcm, device, SND_PCM_STREAM_CAPTURE, 0 ]

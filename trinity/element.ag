@@ -358,6 +358,10 @@ ielement element
     # so the instrument shows its entries alone
     public func paint_instrument [ cv: Canvas, nm: string, r: rect ] -> bool
         return false
+    # this app transcribes speech itself (orbiter): the exchange's mic works
+    # without a host. a hosted app asks its host instead
+    public func dictates [] -> bool
+        return false
 
     func unload_tree [ ]
         on_unload*[]

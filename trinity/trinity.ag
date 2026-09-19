@@ -1621,6 +1621,9 @@ class ReduceBlur
         for [ r: Render ] in renders
             r.update*[] r.draw*[] r.sync_fence[]
 
+# DIAG: the exchange mic's mount condition, logged once
+intern mic_logged : bool
+
 Display Window
     # weak: the window outlives a module reload, and live_destroy owns the app
     # instance. owning it here released one the host still held
@@ -1939,7 +1942,29 @@ Display Window
         restyle     = true
         will_animate = true
 
+    # the dictation request: 3 start (into the exchange's field), 0 stop (the
+    # take is typed in), 2 cancel. a hosted app asks its host; an app that
+    # transcribes itself (orbiter) takes it directly
+    func dictate_post [ v: i32 ]
+        if [ host_slot[] > 0 ]
+            host_dictate_set[ v ]
+            return
+        ae : cast element [ app_object ]
+        if [ ae ] ae.on_host*[ i32[ HM.dictate ], v, 0, 0 ]
+
+    # the exchange's mic: a press starts listening, the next stops and the
+    # words are typed into the field, to review and send with enter
+    func shot_mic []
+        dict_on = !dict_on
+        if [ !dict_on ] dict_live = false
+        dictate_post[ (dict_on) ? 3 : 0 ]
+        restyle = true
+
     func shot_close []
+        if [ dict_on ]
+            dict_on   = false
+            dict_live = false
+            dictate_post[ 2 ]
         shot_ask        = null
         agent_view      = false
         agent_min       = false
@@ -2744,10 +2769,20 @@ Display Window
                     if [ tb0.selected >= 0 && tb0.selected < nm9.count ] ix9 = tb0.selected
             if [ agent_view ]
                 e[ 'unotes' ] = ShotUser   [ topmost: true, area: Region [ 'l24px b-15%+594px w440px h420px' ] ]
-                e[ 'shot' ]   = ShotPrompt [ topmost: true, area: Region [ 'l32px b-15%+220px w424px h40px' ], label: 'prompt description' ]
+                e[ 'shot' ]   = ShotPrompt [ topmost: true, area: Region [ 'l32px b-15%+220px w388px h40px' ], label: 'prompt description' ]
             el
                 e[ 'unotes' ] = ShotUser   [ topmost: true ]
                 e[ 'shot' ]   = ShotPrompt [ topmost: true, label: 'prompt description' ]
+            # the mic, inside the field's right end (as a search box has it):
+            # only where something can transcribe (a host, or the app itself)
+            # DIAG: why the mic does or does not mount
+            if [ !mic_logged ]
+                mic_logged = true
+                log 'MIC host={host_slot[]} ae={bool[ae]} dictates={(ae) ? ae.dictates*[] : false} view={agent_view}'
+            if [ host_slot[] > 0 || (ae && ae.dictates*[]) ]
+                mic9 : string [ (agent_view) ? 'l420px b-15%+216px w32px h32px' : 'l50%+176px b216px w32px h32px' ]
+                e[ 'shot_mic' ] = ShotMic [ topmost: true, icon: 'mic', icon_fit: 0.55, manual_mode: true,
+                    selected: dict_on, area: Region [ mic9 ] ]
             if [ agent_view ]
                 e[ 'notes' ]  = ShotNotes [ topmost: true ]
             e[ 'shot_close' ] = ShotClose [ topmost: true, icon: 'close', icon_fit: 0.6, manual_mode: true ]
@@ -3142,7 +3177,7 @@ Display Window
         if [ ev.key.unicode == 256 && ev.key.state && dict_on ]
             dict_on   = false
             dict_live = false
-            host_dictate_set[ 2 ]
+            dictate_post[ 2 ]
             restyle = true
             return
         if [ ev.key.unicode == 256 && root ]
@@ -6345,6 +6380,13 @@ UXMenuButton ShotClose
         if [ ux ] ux.shot_close[]
         ev.stop[]
 
+UXMenuButton ShotMic
+    # cached, as ShotClose: uncached it painted under root's cached backdrop
+    no_cache : false
+    func on_press [ ev: Event ]
+        if [ ux ] ux.shot_mic[]
+        ev.stop[]
+
 
 element TextInput
     focusable : true
@@ -6850,7 +6892,8 @@ TButtons AgentPick
     }
 
 TextInput ShotPrompt
-    area : Region { l50%-212px b220px w424px h40px }
+    # 36px short of the box: the mic sits in its right end
+    area : Region { l50%-212px b220px w388px h40px }
     # the box's frame is the only frame: the field's own body stays clear.
     # the field is the box's bottom row, and moves aside with it
     style : CSS {

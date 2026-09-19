@@ -501,6 +501,7 @@ ResourceView AppView
     # until the instance runs and its own frames arrive
     mutable still      : Texture
     mutable wants_ide  : bool        # the app asked for its orbiter: this one comes forward
+    mutable dict_req   : i32 [ -1 ]  # the app's exchange mic asked: 3 start, 0 stop, 2 cancel
     # the display's pixels per point: the app's texture is in device pixels,
     # the pane and the app's own events are in points
     mutable ascale     : f32 [ 1.0 ]
@@ -569,6 +570,10 @@ ResourceView AppView
             # the app's orbiter button: this orbiter is its orbiter
             el [ t == i32[ HM.shell ] && host_pa[] == 1 ]
                 wants_ide = true
+            # the app's exchange mic: orbiter transcribes it (it takes the
+            # request from here), and types the take back
+            el [ t == i32[ HM.dictate ] ]
+                dict_req = host_pa[]
         st : i32 [ host_app_state[ slot ] ]
         if [ st == 4 && !paused ]
             paused = true

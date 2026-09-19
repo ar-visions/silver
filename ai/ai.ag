@@ -53,6 +53,13 @@ class tensor
     public offset:       i32
     public scale:        f32
     intern count:        u64
+    # the arrays init allocates: these vec members hold them, and floats /
+    # quants / grad point at their elements. a raw @ member holds nothing:
+    # the vector was freed with the frame's temporaries under a tensor that
+    # outlived that frame (the dictation model's weights)
+    intern f_vec:        vec f32
+    intern q_vec:        vec i8
+    intern g_vec:        vec f32
     
     func init [] 
         # it should error when we do not give const to printf
@@ -60,11 +67,14 @@ class tensor
         has_f32: bool [ floats ]
         count   = tensor_shape.total[]
         if [ !floats ]
-            floats = new f32[tensor_shape]
+            f_vec  = new f32[tensor_shape]
+            floats = f_vec
         if [ !quants ]
-            quants = new i8[tensor_shape]
+            q_vec  = new i8[tensor_shape]
+            quants = q_vec
         if [ !grad ]
-            grad = new f32[tensor_shape]
+            g_vec  = new f32[tensor_shape]
+            grad   = g_vec
 
         switch [ initializer ]
         case random
@@ -471,6 +481,11 @@ op dense
         dest_f:  result.floats
         bias_f:  bias.floats
         n8:      i32 [ (n / 8) * 8 ]
+        # the vector blocks are x86_64 (avx2) and arm64 (neon) asm: any
+        # other target runs the scalar tail below on every element
+        ifndef [ x86_64 ]
+            ifndef [ arm64 ]
+                n8 = 0
 
         for [ i: i32 0, i < m, i += 1 ]
             # --- AVX2 bias init (8 floats at a time) ---
@@ -480,6 +495,11 @@ op dense
                 asm x86_64
                     vmovups ymm0, ymmword ptr [bias_f + bi_off]
                     vmovups ymmword ptr [dest_f + di_off], ymm0
+                asm arm64
+                    add x9, bias_f, bi_off
+                    add x10, dest_f, di_off
+                    ldp q0, q1, [x9]
+                    stp q0, q1, [x10]
             for [ j: i32 n8, j < n, j += 1 ]
                 dest_f[i * n + j] = bias_f[j]
 
@@ -494,6 +514,16 @@ op dense
                         vmovups ymm0, ymmword ptr [dest_f + d_off]
                         vfmadd231ps ymm0, ymm1, ymm2
                         vmovups ymmword ptr [dest_f + d_off], ymm0
+                    asm arm64
+                        add x9, a_f, a_off
+                        ldr s1, [x9]
+                        add x9, other_f, b_off
+                        ldp q2, q3, [x9]
+                        add x10, dest_f, d_off
+                        ldp q4, q5, [x10]
+                        fmla v4.4s, v2.4s, v1.s[0]
+                        fmla v5.4s, v3.4s, v1.s[0]
+                        stp q4, q5, [x10]
                 for [ j: i32 n8, j < n, j += 1 ]
                     dest_f[i * n + j] += a_f[i * k + ki] * other_f[ki * n + j]
 
@@ -578,6 +608,16 @@ op dense
                     vmovups ymm0, ymmword ptr [d_w + dw_off]
                     vfmadd231ps ymm0, ymm1, ymm2
                     vmovups ymmword ptr [d_w + dw_off], ymm0
+                asm arm64
+                    add x9, inp, in_off
+                    ldr s1, [x9]
+                    add x9, d_out_f, do_off
+                    ldp q2, q3, [x9]
+                    add x10, d_w, dw_off
+                    ldp q4, q5, [x10]
+                    fmla v4.4s, v2.4s, v1.s[0]
+                    fmla v5.4s, v3.4s, v1.s[0]
+                    stp q4, q5, [x10]
             for [ i: i32 odim8, i < odim, i += 1 ]
                 d_w[j * odim + i] += d_out_f[i] * inp[j]
 
@@ -594,6 +634,15 @@ op dense
                     vmovups ymm0, ymmword ptr [acc]
                     vfmadd231ps ymm0, ymm1, ymm2
                     vmovups ymmword ptr [acc], ymm0
+                asm arm64
+                    ldp q0, q1, [acc]
+                    add x9, w, w_off
+                    ldp q2, q3, [x9]
+                    add x10, d_out_f, do_off
+                    ldp q4, q5, [x10]
+                    fmla v0.4s, v2.4s, v4.4s
+                    fmla v1.4s, v3.4s, v5.4s
+                    stp q0, q1, [acc]
             dsum: f32 [ 0.0 ]
             for [ z: i32 0, z < 8, z += 1 ]
                 dsum += acc[z]
@@ -817,6 +866,36 @@ op conv
                         vmovd    xmm4, dword ptr [acc_mem]
                         vpaddd   xmm2, xmm2, xmm4
                         vmovd    dword ptr [acc_mem], xmm2
+                    asm arm64
+                        add x9, col, c_off
+                        ldp q0, q1, [x9]
+                        mov w11, 0x80
+                        dup v6.16b, w11
+                        eor v0.16b, v0.16b, v6.16b
+                        eor v1.16b, v1.16b, v6.16b
+                        add x10, w_pk, w_off
+                        ldp q2, q3, [x10]
+                        uxtl v4.8h, v0.8b
+                        uxtl2 v5.8h, v0.16b
+                        sxtl v16.8h, v2.8b
+                        sxtl2 v17.8h, v2.16b
+                        smull v18.4s, v4.4h, v16.4h
+                        smlal2 v18.4s, v4.8h, v16.8h
+                        smlal v18.4s, v5.4h, v17.4h
+                        smlal2 v18.4s, v5.8h, v17.8h
+                        uxtl v4.8h, v1.8b
+                        uxtl2 v5.8h, v1.16b
+                        sxtl v16.8h, v3.8b
+                        sxtl2 v17.8h, v3.16b
+                        smlal v18.4s, v4.4h, v16.4h
+                        smlal2 v18.4s, v4.8h, v16.8h
+                        smlal v18.4s, v5.4h, v17.4h
+                        smlal2 v18.4s, v5.8h, v17.8h
+                        addv s19, v18.4s
+                        fmov w11, s19
+                        ldr w12, [acc_mem]
+                        add w12, w12, w11
+                        str w12, [acc_mem]
 
                 acc: i32 [ i32[acc_mem] ]
                 # scalar remainder
@@ -899,6 +978,11 @@ op conv
                     asm x86_64
                         vmovups ymm0, ymmword ptr [b + b_off]
                         vmovups ymmword ptr [out + o_off], ymm0
+                    asm arm64
+                        add x9, b, b_off
+                        add x10, out, o_off
+                        ldp q0, q1, [x9]
+                        stp q0, q1, [x10]
                 for [ oc: i32 oc8, oc < out_c, oc += 1 ]
                     out[out_base + oc] = b[oc]
 
@@ -920,6 +1004,16 @@ op conv
                                             vmovups ymm0, ymmword ptr [out + o_off]
                                             vfmadd231ps ymm0, ymm1, ymm2
                                             vmovups ymmword ptr [out + o_off], ymm0
+                                        asm arm64
+                                            add x9, inp, inp_off
+                                            ldr s1, [x9]
+                                            add x9, w, w_off
+                                            ldp q2, q3, [x9]
+                                            add x10, out, o_off
+                                            ldp q4, q5, [x10]
+                                            fmla v4.4s, v2.4s, v1.s[0]
+                                            fmla v5.4s, v3.4s, v1.s[0]
+                                            stp q4, q5, [x10]
                                     for [ oc: i32 oc8, oc < out_c, oc += 1 ]
                                         weight_idx: w_base + oc
                                         out[out_base + oc] += inp[(ih * in_w + iw) * in_c + ic] * w[weight_idx]
@@ -980,6 +1074,11 @@ op conv
                 asm x86_64
                     vmovups ymm0, ymmword ptr [b + b_off]
                     vmovups ymmword ptr [res + r_off], ymm0
+                asm arm64
+                    add x9, b, b_off
+                    add x10, res, r_off
+                    ldp q0, q1, [x9]
+                    stp q0, q1, [x10]
             for [ oc: i32 oc8, oc < out_c, oc += 1 ]
                 res[i * out_c + oc] = b[oc]
 
@@ -995,6 +1094,16 @@ op conv
                         vmovups ymm0, ymmword ptr [res + r_off]
                         vfmadd231ps ymm0, ymm1, ymm2
                         vmovups ymmword ptr [res + r_off], ymm0
+                    asm arm64
+                        add x9, col, c_off
+                        ldr s1, [x9]
+                        add x9, w, w_off
+                        ldp q2, q3, [x9]
+                        add x10, res, r_off
+                        ldp q4, q5, [x10]
+                        fmla v4.4s, v2.4s, v1.s[0]
+                        fmla v5.4s, v3.4s, v1.s[0]
+                        stp q4, q5, [x10]
                 for [ oc: i32 oc8, oc < out_c, oc += 1 ]
                     res[i * out_c + oc] += col[i * col_k + ki] * w[ki * out_c + oc]
 
@@ -1132,6 +1241,14 @@ op conv
                         vmovups ymm1, ymmword ptr [d_out_f + do_off]
                         vaddps ymm0, ymm0, ymm1
                         vmovups ymmword ptr [d_b + db_off], ymm0
+                    asm arm64
+                        add x9, d_b, db_off
+                        ldp q0, q1, [x9]
+                        add x10, d_out_f, do_off
+                        ldp q2, q3, [x10]
+                        fadd v0.4s, v0.4s, v2.4s
+                        fadd v1.4s, v1.4s, v3.4s
+                        stp q0, q1, [x9]
                 for [ oc: i32 oc8, oc < out_c, oc += 1 ]
                     d_b[oc] += d_out_f[oi_base + oc]
 
@@ -1160,6 +1277,16 @@ op conv
                                             vmovups ymm0, ymmword ptr [d_w + dw_off]
                                             vfmadd231ps ymm0, ymm1, ymm2
                                             vmovups ymmword ptr [d_w + dw_off], ymm0
+                                        asm arm64
+                                            add x9, inp, inp_off
+                                            ldr s1, [x9]
+                                            add x9, d_out_f, oi_off
+                                            ldp q2, q3, [x9]
+                                            add x10, d_w, dw_off
+                                            ldp q4, q5, [x10]
+                                            fmla v4.4s, v2.4s, v1.s[0]
+                                            fmla v5.4s, v3.4s, v1.s[0]
+                                            stp q4, q5, [x10]
 
                                     for [ oc: i32 0, oc < oc8, oc += 8 ]
                                         w_off:  i64 [ (w_base + oc) * 4 ]
@@ -1174,6 +1301,19 @@ op conv
                                             vhaddps xmm0, xmm0, xmm0
                                             vaddss xmm0, xmm0, dword ptr [d_in_f + inp_off]
                                             vmovss dword ptr [d_in_f + inp_off], xmm0
+                                        asm arm64
+                                            add x9, w, w_off
+                                            ldp q0, q1, [x9]
+                                            add x10, d_out_f, oi_off
+                                            ldp q2, q3, [x10]
+                                            fmul v0.4s, v0.4s, v2.4s
+                                            fmla v0.4s, v1.4s, v3.4s
+                                            faddp v0.4s, v0.4s, v0.4s
+                                            faddp s0, v0.2s
+                                            add x9, d_in_f, inp_off
+                                            ldr s1, [x9]
+                                            fadd s0, s0, s1
+                                            str s0, [x9]
 
                                     # scalar remainder for both
                                     for [ oc: i32 oc8, oc < out_c, oc += 1 ]
@@ -1411,6 +1551,14 @@ op pool
                                     vmovups ymm1, ymmword ptr [inp + i_off]
                                     vmaxps ymm0, ymm0, ymm1
                                     vmovups ymmword ptr [out + o_off], ymm0
+                                asm arm64
+                                    add x9, out, o_off
+                                    ldp q0, q1, [x9]
+                                    add x10, inp, i_off
+                                    ldp q2, q3, [x10]
+                                    fmax v0.4s, v0.4s, v2.4s
+                                    fmax v1.4s, v1.4s, v3.4s
+                                    stp q0, q1, [x9]
 
                 # --- scalar remainder ---
                 for [ c: i32 c8, c < in_c, c += 1 ]
@@ -1476,6 +1624,11 @@ op layer_norm
         mi : local f32 [ 2 ]
         mi_ptr : @f32 [ @mi[0] ]
         d8 : i32 [ (dim / 8) * 8 ]
+        # the vector blocks are x86_64 (avx2) and arm64 (neon) asm: any
+        # other target runs the scalar tail below on every element
+        ifndef [ x86_64 ]
+            ifndef [ arm64 ]
+                d8 = 0
         mi1_off : i64 [ 4 ]
         for [ r: i32 0, r < rows, r += 1 ]
             base: i32 [ r * dim ]
@@ -1488,6 +1641,13 @@ op layer_norm
                     vmovups ymm1, ymmword ptr [x + x_off]
                     vaddps ymm0, ymm0, ymm1
                     vmovups ymmword ptr [a_ptr], ymm0
+                asm arm64
+                    ldp q0, q1, [a_ptr]
+                    add x9, x, x_off
+                    ldp q2, q3, [x9]
+                    fadd v0.4s, v0.4s, v2.4s
+                    fadd v1.4s, v1.4s, v3.4s
+                    stp q0, q1, [a_ptr]
             mean: f32 [ acc8[0] + acc8[1] + acc8[2] + acc8[3] + acc8[4] + acc8[5] + acc8[6] + acc8[7] ]
             for [ i: i32 d8, i < dim, i += 1 ]
                 mean += x[base + i]
@@ -1504,6 +1664,17 @@ op layer_norm
                     vsubps ymm1, ymm1, ymm3
                     vfmadd231ps ymm0, ymm1, ymm1
                     vmovups ymmword ptr [a_ptr], ymm0
+                asm arm64
+                    ldp q0, q1, [a_ptr]
+                    ldr s4, [mi_ptr]
+                    dup v4.4s, v4.s[0]
+                    add x9, x, x_off
+                    ldp q2, q3, [x9]
+                    fsub v2.4s, v2.4s, v4.4s
+                    fsub v3.4s, v3.4s, v4.4s
+                    fmla v0.4s, v2.4s, v2.4s
+                    fmla v1.4s, v3.4s, v3.4s
+                    stp q0, q1, [a_ptr]
             vsum: f32 [ acc8[0] + acc8[1] + acc8[2] + acc8[3] + acc8[4] + acc8[5] + acc8[6] + acc8[7] ]
             for [ i: i32 d8, i < dim, i += 1 ]
                 dv: f32 [ x[base + i] - mean ]
@@ -1524,6 +1695,28 @@ op layer_norm
                     vmovups ymm2, ymmword ptr [b + w_off]
                     vaddps ymm1, ymm1, ymm2
                     vmovups ymmword ptr [dst + x_off], ymm1
+                asm arm64
+                    ldr s4, [mi_ptr]
+                    dup v4.4s, v4.s[0]
+                    add x9, mi_ptr, mi1_off
+                    ldr s5, [x9]
+                    dup v5.4s, v5.s[0]
+                    add x9, x, x_off
+                    ldp q0, q1, [x9]
+                    fsub v0.4s, v0.4s, v4.4s
+                    fsub v1.4s, v1.4s, v4.4s
+                    fmul v0.4s, v0.4s, v5.4s
+                    fmul v1.4s, v1.4s, v5.4s
+                    add x10, g, w_off
+                    ldp q2, q3, [x10]
+                    fmul v0.4s, v0.4s, v2.4s
+                    fmul v1.4s, v1.4s, v3.4s
+                    add x10, b, w_off
+                    ldp q2, q3, [x10]
+                    fadd v0.4s, v0.4s, v2.4s
+                    fadd v1.4s, v1.4s, v3.4s
+                    add x9, dst, x_off
+                    stp q0, q1, [x9]
             for [ i: i32 d8, i < dim, i += 1 ]
                 dst[base + i] = (x[base + i] - mean) * inv * g[i] + b[i]
 
@@ -1542,6 +1735,11 @@ op conv1d
         dst:   result.floats
         pad:   i32 [ ksize / 2 ]
         n8:    i32 [ (out_ch / 8) * 8 ]
+        # the vector blocks are x86_64 (avx2) and arm64 (neon) asm: any
+        # other target runs the scalar tail below on every element
+        ifndef [ x86_64 ]
+            ifndef [ arm64 ]
+                n8 = 0
         for [ t: i32 0, t < t_out, t += 1 ]
             drow: i32 [ t * out_ch ]
             for [ j: i32 0, j < n8, j += 8 ]
@@ -1550,6 +1748,11 @@ op conv1d
                 asm x86_64
                     vmovups ymm0, ymmword ptr [bf + bi_off]
                     vmovups ymmword ptr [dst + di_off], ymm0
+                asm arm64
+                    add x9, bf, bi_off
+                    add x10, dst, di_off
+                    ldp q0, q1, [x9]
+                    stp q0, q1, [x10]
             for [ j: i32 n8, j < out_ch, j += 1 ]
                 dst[drow + j] = bf[j]
             for [ kk: i32 0, kk < ksize, kk += 1 ]
@@ -1567,6 +1770,16 @@ op conv1d
                             vmovups ymm0, ymmword ptr [dst + d_off]
                             vfmadd231ps ymm0, ymm1, ymm2
                             vmovups ymmword ptr [dst + d_off], ymm0
+                        asm arm64
+                            add x9, x, xoff
+                            ldr s1, [x9]
+                            add x9, wf, w_off
+                            ldp q2, q3, [x9]
+                            add x10, dst, d_off
+                            ldp q4, q5, [x10]
+                            fmla v4.4s, v2.4s, v1.s[0]
+                            fmla v5.4s, v3.4s, v1.s[0]
+                            stp q4, q5, [x10]
                     xv: f32 [ x[ti * in_ch + ic] ]
                     for [ j: i32 n8, j < out_ch, j += 1 ]
                         dst[drow + j] += xv * wf[wrow + j]
@@ -1592,6 +1805,11 @@ op attention
     intern func proj [ src: @f32, rows: i32, wmat: tensor, bvec: tensor, dst: @f32 ]
         wf: wmat.floats
         n8: i32 [ (dim / 8) * 8 ]
+        # the vector blocks are x86_64 (avx2) and arm64 (neon) asm: any
+        # other target runs the scalar tail below on every element
+        ifndef [ x86_64 ]
+            ifndef [ arm64 ]
+                n8 = 0
         for [ i: i32 0, i < rows, i += 1 ]
             drow: i32 [ i * dim ]
             if [ bvec ]
@@ -1602,6 +1820,11 @@ op attention
                     asm x86_64
                         vmovups ymm0, ymmword ptr [bf + bi_off]
                         vmovups ymmword ptr [dst + di_off], ymm0
+                    asm arm64
+                        add x9, bf, bi_off
+                        add x10, dst, di_off
+                        ldp q0, q1, [x9]
+                        stp q0, q1, [x10]
                 for [ j: i32 n8, j < dim, j += 1 ]
                     dst[drow + j] = bf[j]
             el
@@ -1619,6 +1842,16 @@ op attention
                         vmovups ymm0, ymmword ptr [dst + d_off]
                         vfmadd231ps ymm0, ymm1, ymm2
                         vmovups ymmword ptr [dst + d_off], ymm0
+                    asm arm64
+                        add x9, src, s_off
+                        ldr s1, [x9]
+                        add x9, wf, w_off
+                        ldp q2, q3, [x9]
+                        add x10, dst, d_off
+                        ldp q4, q5, [x10]
+                        fmla v4.4s, v2.4s, v1.s[0]
+                        fmla v5.4s, v3.4s, v1.s[0]
+                        stp q4, q5, [x10]
                 sv: f32 [ src[drow + ki] ]
                 for [ j: i32 n8, j < dim, j += 1 ]
                     dst[drow + j] += sv * wf[wrow + j]
@@ -1635,6 +1868,12 @@ op attention
         ctx: new f32 [ sq ]
         prow: new f32 [ tkv ]
         acc8: local f32 [ 8 ]
+        # the asm blocks address the elements: a vec operand is the vector
+        # object itself, and the stores landed on its fields
+        qp:   @f32 [ @q[0] ]
+        kp:   @f32 [ @k[0] ]
+        vp:   @f32 [ @v[0] ]
+        ctxp: @f32 [ @ctx[0] ]
         proj[ input.floats, tq, wq, bq, q ]
         proj[ kv.floats, tkv, wk, null, k ]
         proj[ kv.floats, tkv, wv, bv, v ]
@@ -1643,6 +1882,11 @@ op attention
         for [ i: i32 0, i < sq, i += 1 ]
             q[i] *= qs
         h8: i32 [ (hd / 8) * 8 ]
+        # the vector blocks are x86_64 (avx2) and arm64 (neon) asm: any
+        # other target runs the scalar tail below on every element
+        ifndef [ x86_64 ]
+            ifndef [ arm64 ]
+                h8 = 0
         for [ h: i32 0, h < heads, h += 1 ]
             ho: i32 [ h * hd ]
             for [ i: i32 0, i < tq, i += 1 ]
@@ -1659,10 +1903,19 @@ op attention
                         kc_off: i64 [ (krow + c8) * 4 ]
                         asm x86_64
                             vmovups ymm0, ymmword ptr [a_ptr]
-                            vmovups ymm1, ymmword ptr [q + qc_off]
-                            vmovups ymm2, ymmword ptr [k + kc_off]
+                            vmovups ymm1, ymmword ptr [qp + qc_off]
+                            vmovups ymm2, ymmword ptr [kp + kc_off]
                             vfmadd231ps ymm0, ymm1, ymm2
                             vmovups ymmword ptr [a_ptr], ymm0
+                        asm arm64
+                            ldp q0, q1, [a_ptr]
+                            add x9, qp, qc_off
+                            ldp q2, q3, [x9]
+                            add x10, kp, kc_off
+                            ldp q4, q5, [x10]
+                            fmla v0.4s, v2.4s, v4.4s
+                            fmla v1.4s, v3.4s, v5.4s
+                            stp q0, q1, [a_ptr]
                     dot: f32 [ acc8[0] + acc8[1] + acc8[2] + acc8[3] + acc8[4] + acc8[5] + acc8[6] + acc8[7] ]
                     for [ c: i32 h8, c < hd, c += 1 ]
                         dot += q[qrow + c] * k[krow + c]
@@ -1688,10 +1941,19 @@ op attention
                         c_off: i64 [ (crow + c8) * 4 ]
                         asm x86_64
                             vbroadcastss ymm1, dword ptr [pv_ptr]
-                            vmovups ymm2, ymmword ptr [v + v_off]
-                            vmovups ymm0, ymmword ptr [ctx + c_off]
+                            vmovups ymm2, ymmword ptr [vp + v_off]
+                            vmovups ymm0, ymmword ptr [ctxp + c_off]
                             vfmadd231ps ymm0, ymm1, ymm2
-                            vmovups ymmword ptr [ctx + c_off], ymm0
+                            vmovups ymmword ptr [ctxp + c_off], ymm0
+                        asm arm64
+                            ldr s1, [pv_ptr]
+                            add x9, vp, v_off
+                            ldp q2, q3, [x9]
+                            add x10, ctxp, c_off
+                            ldp q4, q5, [x10]
+                            fmla v4.4s, v2.4s, v1.s[0]
+                            fmla v5.4s, v3.4s, v1.s[0]
+                            stp q4, q5, [x10]
                     for [ c: i32 h8, c < hd, c += 1 ]
                         ctx[crow + c] += p * v[vrow + c]
         proj[ ctx, tq, wo, bo, result.floats ]
@@ -2238,6 +2500,12 @@ class gpt2_vocab
     public valid : bool
     intern arena : @u8
     intern offs  : @i32
+    # the vectors arena / offs / inv point into: a vocab loaded after startup
+    # (dictation's, on the first mic press) has its new arrays freed by the
+    # next frame's auto_free unless something holds them
+    intern arena_v : vec u8
+    intern offs_v  : vec i32
+    intern inv_v   : vec i32
     intern nvoc  : i32
     intern inv   : @i32
 
@@ -2249,7 +2517,8 @@ class gpt2_vocab
 
     func init []
         # gpt2 bytes_to_unicode inverse: cp -> original byte
-        inv = new i32 [ 512 ]
+        inv_v = new i32 [ 512 ]
+        inv   = inv_v
         for [ i: i32 0, i < 512, i += 1 ]
             inv[i] = -1
         nshift : i32 [ 0 ]
@@ -2274,8 +2543,10 @@ class gpt2_vocab
         fclose[ fp ]
         js[fl] = 0
         nvoc  = 60000
-        arena = new u8 [ 1048576 ]
-        offs  = new i32 [ 120000 ]
+        arena_v = new u8 [ 1048576 ]
+        offs_v  = new i32 [ 120000 ]
+        arena   = arena_v
+        offs    = offs_v
         for [ i: i32 0, i < 120000, i += 1 ]
             offs[i] = 0
         p : i64 [ 0 ]
@@ -2647,7 +2918,9 @@ class whisper
         return best
 
     func transcribe [ enc: tensor, max_toks: i32 ] -> vec i32
+        tp9 : i64 [ Au.epoch_millis[] ]   # DIAG: DICTTIME
         prepare[ enc ]
+        log 'DICTTIME decode prepare {Au.epoch_millis[] - tp9} ms'
         last : i32 [ step[ 50258 ] ]
         last = step[ 50259 ]
         last = step[ 50359 ]
@@ -2668,7 +2941,9 @@ class whisper
             if [ p_hit > 0 ]
                 trimmed : vec i32 [ ]
                 for [ ti: i32 0, ti < rc - p_hit, ti += 1 ]
-                    trimmed.push[ res[ti] ]
+                    # the value, not the element: push[ res[ti] ] pushed its address
+                    tv : i32 [ res[ti] ]
+                    trimmed.push[ tv ]
                 return trimmed
             last = step[ last ]
         return res
@@ -2702,6 +2977,11 @@ class whisper
         acc8 : local f32 [ 8 ]
         a_ptr : @f32 [ @acc8[0] ]
         h8 : i32 [ (hd / 8) * 8 ]
+        # the vector blocks are x86_64 (avx2) and arm64 (neon) asm: any
+        # other target runs the scalar tail below on every element
+        ifndef [ x86_64 ]
+            ifndef [ arm64 ]
+                h8 = 0
         for [ h2: i32 0, h2 < heads, h2 += 1 ]
             ho : i32 [ h2 * hd ]
             mx : f32 [ -1.0e30f ]
@@ -2718,6 +2998,15 @@ class whisper
                         vmovups ymm2, ymmword ptr [kf + k_off]
                         vfmadd231ps ymm0, ymm1, ymm2
                         vmovups ymmword ptr [a_ptr], ymm0
+                    asm arm64
+                        ldp q0, q1, [a_ptr]
+                        add x9, q, q_off
+                        ldp q2, q3, [x9]
+                        add x10, kf, k_off
+                        ldp q4, q5, [x10]
+                        fmla v0.4s, v2.4s, v4.4s
+                        fmla v1.4s, v3.4s, v5.4s
+                        stp q0, q1, [a_ptr]
                 dot : f32 [ acc8[0] + acc8[1] + acc8[2] + acc8[3] + acc8[4] + acc8[5] + acc8[6] + acc8[7] ]
                 for [ c2: i32 h8, c2 < hd, c2 += 1 ]
                     dot += q[ho + c2] * kf[krow + c2]
@@ -2746,6 +3035,15 @@ class whisper
                         vmovups ymm0, ymmword ptr [cxo + c_off]
                         vfmadd231ps ymm0, ymm1, ymm2
                         vmovups ymmword ptr [cxo + c_off], ymm0
+                    asm arm64
+                        ldr s1, [pv_ptr]
+                        add x9, vf, v_off
+                        ldp q2, q3, [x9]
+                        add x10, cxo, c_off
+                        ldp q4, q5, [x10]
+                        fmla v4.4s, v2.4s, v1.s[0]
+                        fmla v5.4s, v3.4s, v1.s[0]
+                        stp q4, q5, [x10]
                 for [ c2: i32 h8, c2 < hd, c2 += 1 ]
                     cxo[ho + c2] += p2 * vf[vrow + c2]
 
@@ -2810,6 +3108,11 @@ class whisper
         acc8 : local f32 [ 8 ]
         a_ptr : @f32 [ @acc8[0] ]
         d8 : i32 [ (dim / 8) * 8 ]
+        # the vector blocks are x86_64 (avx2) and arm64 (neon) asm: any
+        # other target runs the scalar tail below on every element
+        ifndef [ x86_64 ]
+            ifndef [ arm64 ]
+                d8 = 0
         for [ v: i64 0, v < nvr, v += 1 ]
             erow : i64 [ v * dim ]
             for [ z2: i32 0, z2 < 8, z2 += 1 ]
@@ -2823,6 +3126,15 @@ class whisper
                     vmovups ymm2, ymmword ptr [hf + h_off]
                     vfmadd231ps ymm0, ymm1, ymm2
                     vmovups ymmword ptr [a_ptr], ymm0
+                asm arm64
+                    ldp q0, q1, [a_ptr]
+                    add x9, ef, e_off
+                    ldp q2, q3, [x9]
+                    add x10, hf, h_off
+                    ldp q4, q5, [x10]
+                    fmla v0.4s, v2.4s, v4.4s
+                    fmla v1.4s, v3.4s, v5.4s
+                    stp q0, q1, [a_ptr]
             acc : f32 [ acc8[0] + acc8[1] + acc8[2] + acc8[3] + acc8[4] + acc8[5] + acc8[6] + acc8[7] ]
             for [ c2: i32 d8, c2 < dim, c2 += 1 ]
                 acc += ef[erow + c2] * hf[c2]
@@ -2839,7 +3151,8 @@ class whisper
         tmp : new i32 [ n ]
         for [ i: i32 0, i < n, i += 1 ]
             tmp[i] = ids[i]
-        return vocab.decode[ cast handle [ tmp ], n ]
+        # the elements: a cast of the vec itself hands over the vector object
+        return vocab.decode[ cast handle [ @tmp[0] ], n ]
 
 enum WgGemmS
     a_in:  0
@@ -2856,16 +3169,32 @@ shader WgGemm
     attrib w_in  : StorageBuffer [ type:typeid[ WgGemmS ], id:WgGemmS.w_in,  count:1, format:typeid[ f32 ] ]
     attrib b_in  : StorageBuffer [ type:typeid[ WgGemmS ], id:WgGemmS.b_in,  count:1, format:typeid[ f32 ] ]
     attrib c_out : StorageBuffer [ type:typeid[ WgGemmS ], id:WgGemmS.c_out, count:1, format:typeid[ f32 ], writable:true ]
+    # 16x16 tiles of a and w, staged per workgroup: each value read from
+    # global memory once per tile instead of once per output
+    attrib tile_a : SharedArray [ count: 256, format: typeid[ f32 ] ]
+    attrib tile_w : SharedArray [ count: 256, format: typeid[ f32 ] ]
 
     func compute [] -> GLSL none {
+        uint lx  = gl_LocalInvocationID.x;
+        uint ly  = gl_LocalInvocationID.y;
         uint col = gl_GlobalInvocationID.x;
         uint row = gl_GlobalInvocationID.y;
         uint N = uint(ubo.n_cols);
-        if (col >= N || row >= uint(ubo.m_rows)) return;
+        uint M = uint(ubo.m_rows);
         uint K = uint(ubo.k_deep);
-        float acc = b_in[col];
-        uint a0 = row * K;
-        for (uint i = 0u; i < K; i++) acc += a_in[a0 + i] * w_in[i * N + col];
+        float acc = 0.0;
+        // every invocation reaches each barrier: the bounds test waits for the end
+        for (uint k0 = 0u; k0 < K; k0 += 16u) {{
+            uint ka = k0 + lx;
+            uint kw = k0 + ly;
+            tile_a[ly * 16u + lx] = (row < M && ka < K) ? a_in[row * K + ka] : 0.0;
+            tile_w[ly * 16u + lx] = (kw < K && col < N) ? w_in[kw * N + col] : 0.0;
+            barrier();
+            for (uint i = 0u; i < 16u; i++) acc += tile_a[ly * 16u + i] * tile_w[i * 16u + lx];
+            barrier();
+        }}
+        if (col >= N || row >= M) return;
+        acc += b_in[col];
         if (ubo.act == 1) {{
             // exact-form gelu via A&S erf approximation (matches the
             // cpu erff path to ~1e-7)
@@ -2929,41 +3258,64 @@ shader WgAttn
     attrib v_in  : StorageBuffer [ type:typeid[ WgAttnS ], id:WgAttnS.v_in,  count:1, format:typeid[ f32 ] ]
     attrib o_out : StorageBuffer [ type:typeid[ WgAttnS ], id:WgAttnS.o_out, count:1, format:typeid[ f32 ], writable:true ]
 
+    # one workgroup per (head, 256 queries), one query per invocation. keys and
+    # values stream through shared memory 32 at a time; each query keeps its
+    # row and accumulator in registers (head dim 64: whisper's, every size).
+    # online softmax: one pass over the keys, each dot computed once
+    attrib tk : SharedArray [ count: 2048, format: typeid[ f32 ] ]
+    attrib tv : SharedArray [ count: 2048, format: typeid[ f32 ] ]
+
     func compute [] -> GLSL none {
-        uint qi = gl_GlobalInvocationID.x;
-        uint h  = gl_GlobalInvocationID.y;
-        if (qi >= uint(ubo.tq) || h >= uint(ubo.heads)) return;
-        uint D  = uint(ubo.dim);
-        uint hd = D / uint(ubo.heads);
-        uint ho = h * hd;
-        uint q0 = qi * D + ho;
-        uint jmax = (ubo.causal == 1) ? (qi + 1u) : uint(ubo.tkv);
-        float scale = 1.0 / sqrt(float(hd));
-        // online softmax: ONE pass over keys, each QK dot computed once
-        // (was 2+hd passes — ~66x the work). acc renormalizes as the
-        // running max moves. hd <= 128 (whisper head dims are 64)
-        float acc[128];
-        for (uint c = 0u; c < hd; c++) acc[c] = 0.0;
-        float mx = -1e30;
-        float den = 0.0;
-        for (uint j = 0u; j < jmax; j++) {{
-            uint k0 = j * D + ho;
-            float dot = 0.0;
-            for (uint c = 0u; c < hd; c++) dot += q_in[q0 + c] * k_in[k0 + c];
-            dot *= scale;
-            if (dot > mx) {{
-                float r = exp(mx - dot);
-                den *= r;
-                for (uint c = 0u; c < hd; c++) acc[c] *= r;
-                mx = dot;
-            }}
-            float w = exp(dot - mx);
-            den += w;
-            uint v0 = j * D + ho;
-            for (uint c = 0u; c < hd; c++) acc[c] += w * v_in[v0 + c];
+        uint lid = gl_LocalInvocationID.y * 16u + gl_LocalInvocationID.x;
+        uint h   = gl_WorkGroupID.y;
+        uint qi  = gl_WorkGroupID.x * 256u + lid;
+        uint D   = uint(ubo.dim);
+        uint TQ  = uint(ubo.tq);
+        uint TKV = uint(ubo.tkv);
+        uint ho  = h * 64u;
+        bool live = qi < TQ && h < uint(ubo.heads);
+        float q[64];
+        float acc[64];
+        for (uint c = 0u; c < 64u; c++) {{
+            q[c]   = live ? q_in[qi * D + ho + c] * 0.125 : 0.0;
+            acc[c] = 0.0;
         }}
+        float mx  = -1e30;
+        float den = 0.0;
+        // a causal query sees keys through itself; the tiles run to the last
+        // query's reach so every invocation meets each barrier
+        uint jlast = (ubo.causal == 1) ? min(TKV, gl_WorkGroupID.x * 256u + 256u) : TKV;
+        for (uint j0 = 0u; j0 < jlast; j0 += 32u) {{
+            for (uint e = lid; e < 2048u; e += 256u) {{
+                uint kj = j0 + e / 64u;
+                uint kc = e % 64u;
+                bool in9 = kj < TKV;
+                tk[e] = in9 ? k_in[kj * D + ho + kc] : 0.0;
+                tv[e] = in9 ? v_in[kj * D + ho + kc] : 0.0;
+            }}
+            barrier();
+            if (live) {{
+                uint jn = min(32u, jlast - j0);
+                if (ubo.causal == 1 && qi + 1u < j0 + jn) jn = (qi + 1u > j0) ? qi + 1u - j0 : 0u;
+                for (uint jj = 0u; jj < jn; jj++) {{
+                    float dot = 0.0;
+                    for (uint c = 0u; c < 64u; c++) dot += q[c] * tk[jj * 64u + c];
+                    if (dot > mx) {{
+                        float r = exp(mx - dot);
+                        den *= r;
+                        for (uint c = 0u; c < 64u; c++) acc[c] *= r;
+                        mx = dot;
+                    }}
+                    float w = exp(dot - mx);
+                    den += w;
+                    for (uint c = 0u; c < 64u; c++) acc[c] += w * tv[jj * 64u + c];
+                }}
+            }}
+            barrier();
+        }}
+        if (!live) return;
         float inv = 1.0 / den;
-        for (uint c = 0u; c < hd; c++) o_out[q0 + c] = acc[c] * inv;
+        for (uint c = 0u; c < 64u; c++) o_out[qi * D + ho + c] = acc[c] * inv;
     }
 
 enum WgAddS
@@ -3187,8 +3539,9 @@ class whisper_vk
             s_at.push[ at ]
             sma : map Au[string] [ 'q_in': b_q, 'k_in': b_k, 'v_in': b_v, 'o_out': b_a ]
             pa : Pipeline [ vk: vk, w: win, name: 'wg_l{li}_at', s: at, default_model: mat4f.identity[], samplers: sma ]
-            pa.dispatch_x = (hmax + 15) / 16
-            pa.dispatch_y = 1
+            # a workgroup per (256 queries, head): see WgAttn
+            pa.dispatch_x = (hmax + 255) / 256
+            pa.dispatch_y = model.heads
             pa.hold[]
             p_at.push[ pa ]
             go : WgGemm [ vk: vk ]
@@ -3328,7 +3681,7 @@ class whisper_vk
             p_gq[li].dispatch_y  = tx
             p_gk[li].dispatch_y  = tx
             p_gv[li].dispatch_y  = tx
-            p_at[li].dispatch_x  = tx
+            p_at[li].dispatch_x  = (th + 255) / 256
             p_go[li].dispatch_y  = tx
             p_a1[li].dispatch_y  = ex
             p_ln2[li].dispatch_x = tx
@@ -3348,6 +3701,19 @@ class whisper_vk
         p_conv2.dispatch[ ch ]
         p_pos.dispatch[ ch ]
         chunk_end[ dv9, cp9, qq9, cmd ]
+        # DIAG: SILVER_ENC_PROFILE times each kernel of layer 0, one submission each
+        if [ getenv[ 'SILVER_ENC_PROFILE' ] ]
+            pn9 : vec string [] [ 'ln1', 'q', 'k', 'v', 'attn', 'o', 'add1', 'ln2', 'fc1', 'fc2', 'add2' ]
+            pl9 : vec Pipeline [] [ p_ln1[0], p_gq[0], p_gk[0], p_gv[0], p_at[0], p_go[0], p_a1[0], p_ln2[0], p_g1[0], p_g2[0], p_a2[0] ]
+            pr9 : string [ '' ]
+            for [ pi9: i32 0, pi9 < pl9.count, pi9 += 1 ]
+                t9 : i64 [ Au.epoch_millis[] ]
+                c9 : chunk_begin[ dv9, cp9 ]
+                pp9 : Pipeline pl9[ pi9 ]
+                pp9.dispatch[ cast handle [ c9 ] ]
+                chunk_end[ dv9, cp9, qq9, c9 ]
+                pr9 = '{pr9} {pn9[ pi9 ]}={Au.epoch_millis[] - t9}'
+            log 'ENCPROF th={th} layer0 ms:{pr9}'
         for [ li: i32 0, li < model.layers, li += 1 ]
             cmd2 : chunk_begin[ dv9, cp9 ]
             ch2  : cast handle [ cmd2 ]
