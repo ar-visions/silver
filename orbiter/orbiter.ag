@@ -627,6 +627,17 @@ Avatar OrbiterAvatar
     busy_ph     : f32   [ 2.4 ]
     rest_halo   : f32   [ 0.8 ]   # the beam's height: twice what it was
     busy_halo   : f32   [ 1.6 ]
+    # the halo stage's filter: state * 0.95 + goal * 0.05 a frame, about a second;
+    # once done the second halo settles back to the first at 0.99 + 0.01
+    stage_amount : f32  [ 0.05 ]
+    settle_amount : f32 [ 0.01 ]
+    mutable halo_cur   : f32
+    mutable flame_cur  : f32
+    intern  groove_dbg : i64    # DIAG
+    # the heat haze off the core: slight from the start, full once the jet
+    # burns; the spin speeds up with it (1 + heat_spin * heat)
+    heat_base   : f32   [ 0.25 ]
+    heat_spin   : f32   [ 1.0 ]
     rest_spin   : f32   [ 0.25 ]
     busy_spin   : f32   [ 2.66 ]
     # how fast the RATE itself approaches; low = a long spin-up
@@ -700,24 +711,33 @@ Avatar OrbiterAvatar
         lw : f32 [ (lv) ? 1.0 : 0.0 ]
         listen_cur = filter_n[ listen_cur, lw, listen_amount, ux->frame_factor ]
         if [ body ] body.listen = listen_cur
-        # the rim halo swells on the same clock as the tilt
+        # the halo's stages: the first at rest and while working, the second
+        # once edits come in; once done (and through the reload) the core
+        # flame burns and the second halo settles slowly back to the first.
+        # the stages are filtered, the uniforms follow them
         if [ aura ]
-            gp : f32 [ (wb) ? busy_pulse : rest_pulse ]
-            gv : f32 [ (wb) ? busy_ph    : rest_ph ]
-            gh : f32 [ (wb) ? busy_halo  : rest_halo ]
-            aura.pulse_width  = filter_n[ aura.pulse_width,  gp, amt, ux->frame_factor ]
-            aura.pulse_height = filter_n[ aura.pulse_height, gv, amt, ux->frame_factor ]
-            aura.halo_height  = filter_n[ aura.halo_height,  gh, amt, ux->frame_factor ]
-            # the core flame burns while the reload swaps, with the spin at
-            # its most intense: the sign the work is landing
             rl : bool [ orb->swap_live ]
-            # the core flame burns once the agent is done (and through the
-            # reload), until the user's next line
-            fl : f32 [ (rl || orb->agent_done) ? 1.0 : 0.0 ]
-            aura.flame = filter_n[ aura.flame, fl, 0.12, ux->frame_factor ]
+            dn : bool [ rl || orb->agent_done ]
+            hg : f32 [ (!dn && wb && orb->agent_changed) ? 1.0 : 0.0 ]
+            halo_cur  = filter_n[ halo_cur,  hg, (dn) ? settle_amount : stage_amount, ux->frame_factor ]
+            flame_cur = filter_n[ flame_cur, (dn) ? 1.0 : 0.0, stage_amount, ux->frame_factor ]
+            aura.pulse_width  = rest_pulse + (busy_pulse - rest_pulse) * halo_cur
+            aura.pulse_height = rest_ph    + (busy_ph    - rest_ph)    * halo_cur
+            aura.halo_height  = rest_halo  + (busy_halo  - rest_halo)  * halo_cur
+            aura.flame        = flame_cur
+            heat              = heat_base + (1.0 - heat_base) * flame_cur
+            # the flower's grooves light with the second halo and stay fully
+            # on while the jet burns
+            if [ body ] body.groove = max[ halo_cur, flame_cur ]
+            # DIAG: does the groove reach the shader the model draws with
+            if [ epoch_millis[] / 1000 != groove_dbg ]
+                groove_dbg = epoch_millis[] / 1000
+                sb9 : shader [ (shaders) ? shaders[ 'body' ] : null ]
+                log 'GROOVE anim={animate_always} halo={halo_cur} flame={flame_cur} body={bool[body]} groove={(body) ? body.groove : -1.0} same={sb9 == body} changed={orb->agent_changed} wb={wb}'
             # the exchange avatar turns at the working rate face on too: its
             # rotating light reads as rotation from the first frame
             gs : f32 [ (rl) ? busy_spin * 1.8 : (wb || animate_always) ? busy_spin : rest_spin ]
+            gs = gs * (1.0 + heat_spin * heat)
             spin_rate  = filter_n[ spin_rate, gs, spin_amount, ux->frame_factor ]
             # the phase runs on real time (microseconds), not the frame
             # factor: that is whole-millisecond deltas snapped to one frame
@@ -780,8 +800,8 @@ OrbiterAvatar AgentAvatar
         ev.no_default = true
     # 2x at the top center, revealed by an alpha fade (no move: a moving
     # target resizes and fuzzes); settled only tilts it. render_scale is
-    # in window units: 4 on a 2x display is a 2x supersample of the device
-    # pixels, drawn down 2:1 for the anti-aliasing (2 was 1:1, no reduction)
+    # in device pixels for the pbr pass: 4 is a 4x supersample on every
+    # display, drawn down 4:1 by the reduction pass
     render_scale : f32 [ 4.0 ]
     # a square element: the camera frames the hex at the element's
     # vertical center, so a tall one would put it mid-screen
@@ -2289,6 +2309,8 @@ element orbiter : trinity # implements compiler
     # the agent said done: the staged reload goes if the exchange is up,
     # and the avatar's core flame burns through the swap
     mutable agent_done    : bool
+    # the agent sent an edit this turn: the avatar's halo goes to its second stage
+    mutable agent_changed : bool
     mutable swap_live     : bool
     mutable swap_hot      : bool
     mutable swap_at       : i64    # when the flame lit: the apply waits for it to burn
@@ -3205,6 +3227,7 @@ element orbiter : trinity # implements compiler
         # a diff line goes to the panel, never to the bar or the notes
         if [ sp > 0 && rest.mid[ 0, sp ] == 'diff' ]
             ux.agent_diff[ rest.mid[ sp + 1, rest.count - sp - 1 ] ]
+            agent_changed = true
             return
         agent_state = (sp > 0) ? rest.mid[ 0, sp ] : rest
         agent_note  = (sp > 0) ? rest.mid[ sp + 1, rest.count - sp - 1 ] : ''
@@ -3214,18 +3237,21 @@ element orbiter : trinity # implements compiler
             ux.agent_busy = agent_state == 'busy'
         agent_done = agent_state == 'done'
         if [ !agent_done ] done_put_away = false
-        if [ agent_state == 'idle' || agent_state == 'sent' ] agent_note = ''
+        if [ agent_state == 'idle' || agent_state == 'sent' ]
+            agent_note    = ''
+            agent_changed = false
         if [ ux ] ux.restyle = true
 
     # the exchange's debug button: each press steps the avatar to its next
-    # state, 0 face on at rest, 1 tilted, 2 working (pulse and spin), 3 done
-    # with the core flame; the exchange stays up through it
+    # state, 0 face on at rest, 1 tilted, 2 working (spin, first halo), 3 edits
+    # in (second halo), 4 done with the core flame; the exchange stays up through it
     mutable av_dbg_step : i32
     public func avatar_debug [] -> none
         if [ !ux ] return
-        av_dbg_step = (av_dbg_step + 1) % 4
+        av_dbg_step = (av_dbg_step + 1) % 5
         log 'avatar debug: state {av_dbg_step}'
         agent_done    = false
+        agent_changed = av_dbg_step >= 3
         done_put_away = true
         ux.agent_busy = false
         agent_state   = 'idle'
@@ -3239,6 +3265,11 @@ element orbiter : trinity # implements compiler
             ux.agent_view = true
             agent_state   = 'busy'
             agent_note    = 'working'
+            ux.agent_busy = true
+        el [ av_dbg_step == 3 ]
+            ux.agent_view = true
+            agent_state   = 'busy'
+            agent_note    = 'editing'
             ux.agent_busy = true
         el
             ux.agent_view = true
@@ -7342,6 +7373,9 @@ element orbiter : trinity # implements compiler
             # instant it is asked, which left no frame for the flame at all
             pend9 : i32 [ au_live_get_pending[] ]
             now9  : i64 [ epoch_millis[] ]
+            # the exchange holds until the avatar's second halo has settled
+            # back to the first: the close and the apply wait on it
+            hs9 : bool [ !agent_av || agent_av.halo_cur < 0.02 ]
             if [ agent_done && !swap_live && ux && ux.shot_ask && pend9 == 1 ]
                 swap_live = true
                 swap_hot  = false
@@ -7349,16 +7383,16 @@ element orbiter : trinity # implements compiler
             # done with nothing staged (the change was outside this app's
             # dependencies): the exchange is put away as Esc would, the
             # status button brings it back; once per done
-            el [ agent_done && !done_put_away && ux && ux.shot_ask && !ux.agent_min && pend9 == 0 ]
+            el [ agent_done && !done_put_away && ux && ux.shot_ask && !ux.agent_min && pend9 == 0 && hs9 ]
                 done_put_away = true
                 ux.agent_min  = true
                 ux.restyle    = true
-            if [ swap_live && !swap_hot && now9 - swap_at > 1400 ]
+            if [ swap_live && !swap_hot && now9 - swap_at > 1400 && hs9 ]
                 au_live_request_apply[]
                 swap_hot = true
             # the swap replaces this instance (the flame ends with it); a
             # build that failed leaves pending staged again: stand down
-            if [ swap_live && swap_hot && pend9 != 2 && now9 - swap_at > 4000 ]
+            if [ swap_live && swap_hot && pend9 != 2 && now9 - swap_at > 4000 && hs9 ]
                 swap_live  = false
                 agent_done = false
         if [ debuggers && ed_sessions ]
