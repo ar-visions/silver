@@ -5339,8 +5339,6 @@ abstract media_app trinity
         adopt[ 'agent' ]
         adopt[ 'agents' ]
         adopt[ 'agent_inbox' ]
-        ag9 : Au root.get_property[ 'agents' ]
-        log 'ADOPT agents root={bool[ag9]} type={(ag9) ? string[ Au.header[ ag9 ].au.ident ] : "none"} app={bool[ a.get_property[ "agents" ] ]}'   # DIAG
         # SILVER_DISPLAY=<PIP|Full|Window|Screen>: the host's launch display.
         # PIP and Full start with the window never shown: the frames go to
         # orbiter's pane, and Window brings the window up later, live
@@ -5470,7 +5468,6 @@ func agent_names [ obj: Au ] -> vec string
             one : cast string [ obj.get_property[ 'agent' ] ]
             if [ one && one.count > 0 ] out.push[ one ]
     if [ out.count == 0 ] out.push[ 'claude' ]
-    log 'AGENTS names={out.count} first={out[0]}'   # DIAG
     return out
 
 func agent_post_as [ obj: Au, pick: string, text: string, priority: string ] -> bool
@@ -5512,14 +5509,9 @@ Layer ScrollLayer
     mutable top_pad     : f32
     mutable grab_off    : f32
     public  active      : bool
-    intern  sb_dbg      : i32   # DIAG
 
     func draw [ cv: Canvas ]
         e : element [ parent ]
-        # DIAG: why the editor's bar is missing
-        if [ e && e.id && e.id == 'text' && sb_dbg < 3 ]
-            sb_dbg += 1
-            log 'SCROLLBAR content_h={e.content_h} eh={e.bounds.h} no_scroll={e.no_scroll} b={bounds.x},{bounds.y},{bounds.w},{bounds.h}'
         if [ !e || e.content_h <= 0.0 || e.bounds.h >= e.content_h ] return
         if [ e.no_scroll ] return
         top     : f32 [ bounds.y ]
@@ -5613,7 +5605,6 @@ element TButtons
     intern  svg_cache : map SVGModel [string]
     intern  svg_miss  : map i32      [string]
     intern  hover_ix  : i32 [ -1 ]
-    intern  pick_dbg  : bool          # DIAG
     # the strip's own id: a press hands the app the segment's name as the
     # target id, and the next move gives the strip its name back
     intern  strip_id  : string
@@ -5693,10 +5684,6 @@ element TButtons
         n : i32 [ buttons.count ]
         if [ n == 0 || !bounds ] return
         cv : Canvas w.screen
-        # DIAG: the exchange's picker
-        if [ id && id == 'agent_pick' && !pick_dbg ]
-            pick_dbg = true
-            log 'PICKDRAW n={n} bounds={bounds.x},{bounds.y},{bounds.w},{bounds.h} tx={cv.transform_tx[]} ty={cv.transform_ty[]} op={cv.get_opacity[]} opacity={opacity}'
         if [ !hovered ] hover_ix = -1
         # integral placement: the element origin is often a fractional device
         # pixel, which smears a 1px stroke. snap the whole draw to the grid
@@ -6758,7 +6745,6 @@ func draw_notes [ cv: Canvas, notes: vec ShotEntry, b: rect, color: rgba, shine_
 # editable one (the field is placed under the entries as they grow); one
 # rounded frame holds all of it
 Layer ShotUserLayer
-    mutable logged9 : i32
     func draw [ cv: Canvas ]
         if [ !parent ] return
         w : Window parent.ux
@@ -6784,10 +6770,6 @@ Layer ShotUserLayer
         bh : f32 [ eh + row + pad ]
         # the frame hugs the bottom of the element and grows upward
         fy0 : f32 [ bounds.y + bounds.h - bh ]
-        # DIAG: does this draw run, and where
-        if [ logged9 < 6 ]
-            logged9 += 1
-            log 'SHOTUSER draw stage={i32[w.draw_stage]} pristine={parent.pristine} anim={parent.animated} cache={parent.cache_canvas != null} bounds={bounds.x},{bounds.y},{bounds.w},{bounds.h} frame_y={fy0} bh={bh} elem={parent.bounds.x},{parent.bounds.y},{parent.bounds.w},{parent.bounds.h}'
         # the frame is the element's own 'frame' layer (the engine's fill and
         # stroke path); it hugs the bottom row and grows upward with entries
         fl : Layer (parent.layers) ? parent.layers[ 'frame' ] : null
@@ -6818,17 +6800,10 @@ element ShotUser
 # the agent's entries, right of the avatar: the current line shines
 # while the agent works
 Layer ShotNotesLayer
-    mutable shine_dbg : i64
     func draw [ cv: Canvas ]
         if [ !parent ] return
         w : Window parent.ux
         if [ !w ] return
-        # DIAG: is the shine drawn, and does the box repaint
-        if [ w.agent_busy && (epoch_millis[] / 500) != shine_dbg ]
-            shine_dbg = epoch_millis[] / 500
-            tt9 : f32 [ f32[ epoch_millis[] % 100000 ] / 1000.0 ]
-            ph9 : f32 [ tt9 / 1.6 ]
-            log 'SHINE time={w.time} time_scale={w.time_scale} stage={i32[w.draw_stage]} busy={w.agent_busy} pristine={parent.pristine} needs_frame={parent.needs_frame} notes={(w.agent_notes) ? w.agent_notes.count : 0} ms={epoch_millis[]} t={tt9} ph={ph9 - floor[ ph9 ]}'
         draw_notes[ cv, w.agent_notes, bounds, rgba [ '#9ad8ff' ], w.agent_busy, f32[ epoch_millis[] % 100000 ] / 1000.0 ]
         # the shine moves: the box repaints every frame while the agent
         # works (pristine is set back after this draw; needs_frame holds it)

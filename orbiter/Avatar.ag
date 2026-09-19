@@ -401,7 +401,7 @@ Orbiter Aura
 		// ── core beam: a SOLID cylinder straight up the axis, same volume style AND
 		//    colors as the outer ring (fog + center weighting + angular pulse + up-fade) ──
 		float cyl_R   = 0.22;
-		float cyl_h   = 1.0 * ubo.pulse_height;
+		float cyl_h   = 1.4 * ubo.pulse_height;
 		vec3  cyl_o   = (ubo.model * vec4(0.0, -0.05, 0.0, 1.0)).xyz;
 		vec3  cyl_d   = normalize(mat3(ubo.model) * vec3(0.0, -1.0, 0.0));
 		vec3  cyl_oc  = ro - cyl_o;
@@ -447,14 +447,14 @@ Orbiter Aura
 						// steep gaussian radial falloff: a thin dense core at the axis,
 						// sides drop to ~1/10 by mid-radius (not a fat column)
 						float cyl_ctr = exp(-cyl_t * cyl_t * 11.0);
-						vec3  cyl_np  = cyl_p * vec3(5.0, 2.2, 5.0) - vec3(0.0, ta * 0.9, 0.0);
-						float cyl_fg  = mix(pfog(cyl_np), pfog(cyl_np * 1.9 - vec3(0.0, ta * 1.6, 0.0)), 0.35);
+						vec3  cyl_np  = cyl_p * vec3(5.0, 2.2, 5.0) - vec3(0.0, ta * 1.8, 0.0);
+						float cyl_fg  = mix(pfog(cyl_np), pfog(cyl_np * 1.9 - vec3(0.0, ta * 3.0, 0.0)), 0.35);
 						vec3  cyl_col = mix(vec3(2.6, 1.3, 0.5), vec3(1.4, 0.6, 0.15), cyl_at / cyl_h);
 						float cyl_fad = pow(max(1.0 - cyl_at / cyl_h, 0.0), ubo.beam_fade);
 						// the fog's hold on the emission scaled to 20%: the same
 						// components about their middle, so the beam reads as a
 						// uniform source with a trace of movement
-						float cyl_fs  = 0.5 + 0.2 * (cyl_fg - 0.5);
+						float cyl_fs  = 0.5 + 0.6 * (cyl_fg - 0.5);
 						// two parts up the flame: the first 5% of its height a dense
 						// source at 10x with the tight core; the other 95% a diffuse
 						// haze at 2x, spread wide across the radius
@@ -507,7 +507,9 @@ Orbiter Aura
 					rng_tx = min(rng_tx, max(tc0, tc1));
 				}
 				if (rng_tx > rng_te) {
-					float rng_dt = (rng_tx - rng_te) / 32.0;
+					// 96 steps: the dense root is 5% of the height and at 32 it was
+					// thinner than a step (bands); a per-pixel offset traded that for grain
+					float rng_dt = (rng_tx - rng_te) / 96.0;
 					// a ray that skims the ring's wall edge-on (at the circle's
 					// sides on screen) crosses far more of it and drew bright lines.
 					// how edge-on is read from where the ray passes nearest the
@@ -521,7 +523,7 @@ Orbiter Aura
 					// the ring's back and front (seen through its face) lifted 1.6x,
 					// the edge-on sides held to 0.5x
 					float rng_norm = mix(1.6, 0.5, rng_skim);
-					for (int j = 0; j < 32; j++) {
+					for (int j = 0; j < 96; j++) {
 						if (alpha > 0.97) break;
 						vec3  rng_p  = ro + rd * (rng_te + (float(j) + 0.5) * rng_dt);
 						{
@@ -554,7 +556,8 @@ Orbiter Aura
 						// the same modulation as the donut below: the 120 degree lobe
 						// the ring cycle carries round, so the beam rises where the
 						// plasma is brightest
-						float rng_pulse  = pow(0.5 + 0.5 * cos(rng_ang - ubo.spin), 2.4);
+						// the whole ring holds 35% of the volume; the lobe lifts to full
+						float rng_pulse  = mix(0.35, 1.0, pow(0.5 + 0.5 * cos(rng_ang - ubo.spin), 2.4));
 						vec3  rng_col    = mix(vec3(0.0, 0.35, 1.0), vec3(1.0, 0.5, 1.0), rng_pulse);
 						// two parts: a noisy volume hugging the ring (fog, dense,
 						// decaying over about 0.04 units), and above it the
@@ -571,7 +574,7 @@ Orbiter Aura
 						// a quarter of the old strength at the peak and up the beam;
 						// the fog only 20% mixed into a steady 0..1 base
 						float rng_mod    = mix(1.0, rng_fg, 0.2);
-						float rng_vol    = rng_near * 2.0 * rng_mod;
+						float rng_vol    = rng_near * 1.1 * rng_mod;
 						float rng_beam   = rng_rise * 0.2 * rng_u;    // 10% of the peak, the full height
 						// brighter overall (x2), each ray normalised to its crossing
 						float d          = 36.0 * ubo.pulse_width * rng_center * rng_pulse * (rng_vol + rng_beam) * rng_dt * rng_norm;
