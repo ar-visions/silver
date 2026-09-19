@@ -336,6 +336,8 @@ Orbiter Aura
 	mutable halo_height : f32
 	mutable beam_fade   : f32
 	mutable beam_cone   : f32
+	# the core flame's width, 1 = as authored (the ignition swings it)
+	mutable flame_w     : f32
 	attrib a_pos     : VertexInput    [ type:typeid[ vec3f ] ]
 	attrib a_uv      : VertexInput    [ type:typeid[ vec2f ] ]
 	attrib v_uv      : VertexOutput   [ type:typeid[ vec2f ] ]
@@ -357,6 +359,7 @@ Orbiter Aura
 		if [ halo_height  == 0.0 ] halo_height  = 0.4
 		if [ beam_fade    == 0.0 ] beam_fade    = 1.6
 		if [ beam_cone    == 0.0 ] beam_cone    = 0.35
+		if [ flame_w      == 0.0 ] flame_w      = 1.0
 
 	func vertex[] -> GLSL none {
 		vec2 ndc       = a_pos.xy;
@@ -400,7 +403,7 @@ Orbiter Aura
 
 		// ── core beam: a SOLID cylinder straight up the axis, same volume style AND
 		//    colors as the outer ring (fog + center weighting + angular pulse + up-fade) ──
-		float cyl_R   = 0.22;
+		float cyl_R   = 0.22 * ubo.flame_w;
 		float cyl_h   = 1.4 * ubo.pulse_height;
 		vec3  cyl_o   = (ubo.model * vec4(0.0, -0.05, 0.0, 1.0)).xyz;
 		vec3  cyl_d   = normalize(mat3(ubo.model) * vec3(0.0, -1.0, 0.0));

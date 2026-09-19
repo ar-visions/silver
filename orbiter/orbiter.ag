@@ -637,6 +637,13 @@ Avatar OrbiterAvatar
     # the heat haze off the core: slight from the start, full once the jet
     # burns; the spin speeds up with it (1 + heat_spin * heat)
     heat_base   : f32   [ 0.25 ]
+    # the jet igniting: the flame's width swings +-25% about its own,
+    # starting wide, and settles within ignite_s seconds
+    ignite_amp  : f32   [ 0.25 ]
+    ignite_hz   : f32   [ 4.0 ]
+    ignite_s    : f32   [ 1.5 ]
+    intern ignite_us   : i64
+    intern was_done    : bool
     heat_spin   : f32   [ 1.0 ]
     rest_spin   : f32   [ 0.25 ]
     busy_spin   : f32   [ 2.66 ]
@@ -720,11 +727,27 @@ Avatar OrbiterAvatar
             dn : bool [ rl || orb->agent_done ]
             hg : f32 [ (!dn && wb && orb->agent_changed) ? 1.0 : 0.0 ]
             halo_cur  = filter_n[ halo_cur,  hg, (dn) ? settle_amount : stage_amount, ux->frame_factor ]
-            flame_cur = filter_n[ flame_cur, (dn) ? 1.0 : 0.0, stage_amount, ux->frame_factor ]
+            # the flame fades out on the filter; its fade in is the ignition's
+            if [ !dn ] flame_cur = filter_n[ flame_cur, 0.0, stage_amount, ux->frame_factor ]
             aura.pulse_width  = rest_pulse + (busy_pulse - rest_pulse) * halo_cur
             aura.pulse_height = rest_ph    + (busy_ph    - rest_ph)    * halo_cur
             aura.halo_height  = rest_halo  + (busy_halo  - rest_halo)  * halo_cur
             aura.flame        = flame_cur
+            # ignition: from the moment the flame is asked for, its width
+            # oscillates from +25% through -25% and decays to none in 1.5 s,
+            # and the flame fades in over the same 1.5 s (a smoothstep)
+            if [ dn && !was_done ] ignite_us = epoch_micros[]
+            was_done = dn
+            fw9 : f32 [ 1.0 ]
+            if [ dn && ignite_us > 0 ]
+                it9 : f32 [ f32[ epoch_micros[] - ignite_us ] / 1000000.0 ]
+                ip9 : f32 [ min[ it9 / ignite_s, 1.0 ] ]
+                flame_cur = max[ flame_cur, ip9 * ip9 * (3.0 - 2.0 * ip9) ]
+                aura.flame = flame_cur
+                if [ it9 < ignite_s ]
+                    dk9 : f32 [ 1.0 - ip9 ]
+                    fw9 = 1.0 + ignite_amp * cos[ 6.2831853 * ignite_hz * it9 ] * dk9 * dk9
+            aura.flame_w      = fw9
             heat              = heat_base + (1.0 - heat_base) * flame_cur
             # the flower's grooves light with the second halo and stay fully
             # on while the jet burns
