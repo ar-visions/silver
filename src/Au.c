@@ -1630,6 +1630,23 @@ AU_EXPORT int  au_live_get_pending()      { return au_live_pending_flag; }
 AU_EXPORT void au_live_request_apply()    { au_live_apply_flag = 1; }
 AU_EXPORT int  au_live_take_apply()       { int v = au_live_apply_flag; au_live_apply_flag = 0; return v; }
 
+// app -> host: run another module in this process, in this window (the app's
+// module is destroyed and the named one loaded in its place, as a reload
+// would). trinity apps ask for orbiter; the host takes the name once
+static char au_live_switch_to[192];
+AU_EXPORT void au_live_switch(const char* name) {
+    if (!name) return;
+    strncpy(au_live_switch_to, name, sizeof(au_live_switch_to) - 1);
+    au_live_switch_to[sizeof(au_live_switch_to) - 1] = 0;
+}
+AU_EXPORT const char* au_live_take_switch() {
+    static char taken[192];
+    if (!au_live_switch_to[0]) return null;
+    strncpy(taken, au_live_switch_to, sizeof(taken));
+    au_live_switch_to[0] = 0;
+    return taken;
+}
+
 AU_EXPORT handle live_window_get() { return au_live_window; }
 AU_EXPORT void   live_window_set(handle w) { au_live_window = w; }
 
@@ -9469,34 +9486,159 @@ static void watch_add_tree(int fd, const char* dir, int depth) {
 // mark its index stale. heavy work stays on the listener's own thread.
 // no hold/drop here — Au refs are non-atomic, so the object is kept alive by
 // pause()/dealloc joining this thread before any free.
+// each running watch's wake pipe: pause writes one byte and the runner,
+// blocked in poll(), returns at once. a small table keyed by the watch keeps
+// the type's layout unchanged
+#include <poll.h>
+#define AU_WATCH_MAX 256
+static struct { watch w; int rd, wr; } au_watch_wake[AU_WATCH_MAX];
+static pthread_mutex_t au_watch_wake_mx = PTHREAD_MUTEX_INITIALIZER;
+
+static int au_watch_wake_add(watch a) {
+    int p[2];
+    if (pipe(p) != 0) return -1;
+    fcntl(p[0], F_SETFL, O_NONBLOCK);
+    pthread_mutex_lock(&au_watch_wake_mx);
+    for (int i = 0; i < AU_WATCH_MAX; i++)
+        if (!au_watch_wake[i].w) {
+            au_watch_wake[i].w  = a;
+            au_watch_wake[i].rd = p[0];
+            au_watch_wake[i].wr = p[1];
+            pthread_mutex_unlock(&au_watch_wake_mx);
+            return p[0];
+        }
+    pthread_mutex_unlock(&au_watch_wake_mx);
+    close(p[0]); close(p[1]);
+    return -1;
+}
+
+static void au_watch_wake_signal(watch a) {
+    pthread_mutex_lock(&au_watch_wake_mx);
+    for (int i = 0; i < AU_WATCH_MAX; i++)
+        if (au_watch_wake[i].w == a) { char c = 1; (void)!write(au_watch_wake[i].wr, &c, 1); break; }
+    pthread_mutex_unlock(&au_watch_wake_mx);
+}
+
+static void au_watch_wake_remove(watch a) {
+    pthread_mutex_lock(&au_watch_wake_mx);
+    for (int i = 0; i < AU_WATCH_MAX; i++)
+        if (au_watch_wake[i].w == a) {
+            close(au_watch_wake[i].rd); close(au_watch_wake[i].wr);
+            au_watch_wake[i].w = null;
+            break;
+        }
+    pthread_mutex_unlock(&au_watch_wake_mx);
+}
+
+// thread body: block in poll() on the inotify descriptor and the wake pipe.
+// nothing runs until the kernel reports a change or pause() wakes it, so an
+// idle app spends no time here. a change calls the callback once per batch
+// (the queue is drained first); the listener does the heavy work itself.
+// no hold/drop here: pause()/dealloc join this thread before any free.
 static void* watch_runner(void* arg) {
     watch a  = (watch)arg;
     int   fd = inotify_init1(IN_NONBLOCK);
     if (fd < 0) return null;
     a->fd = fd;
     if (a->res) watch_add_tree(fd, a->res->chars, 0);
+    int   wk = au_watch_wake_add(a);
 
     char buf[8192]
         __attribute__((aligned(__alignof__(struct inotify_event))));
 
     while (a->running) {
-        int len = read(fd, buf, sizeof(buf));
-        if (len > 0) {
+        struct pollfd pf[2] = { { fd, POLLIN, 0 }, { wk, POLLIN, 0 } };
+        int r = poll(pf, (wk >= 0) ? 2 : 1, (wk >= 0) ? -1 : 1000);
+        if (r < 0) { if (errno == EINTR) continue; break; }
+        if (!a->running) break;
+        if (r > 0 && (pf[0].revents & POLLIN)) {
+            bool any = false;
+            while (read(fd, buf, sizeof(buf)) > 0) any = true;   // drain the batch
             // callback is a lambda: captures ride its context
-            if (a->running && a->callback)
+            if (any && a->running && a->callback)
                 lambda_call(a->callback, null);
         }
-        // sliced, not one 200ms usleep: a single sleep made every watcher
-        // take up to 200ms to notice running=false, and joining N of them
-        // serialized that into seconds of shutdown. same 200ms tick, but
-        // the thread now leaves within 10ms of being told to
-        for (int t = 0; t < 20 && a->running; t++)
-            usleep(10000);
     }
 
+    au_watch_wake_remove(a);
     close(fd);
     a->fd = -1;
     return null;
+}
+#endif
+
+#ifdef __APPLE__
+// macOS: FSEvents. the kernel pushes changes to a stream, so an idle app
+// does no work at all (no polling thread). the CoreServices and
+// CoreFoundation calls are resolved at runtime with dlopen: no framework
+// headers here (their names collide with Au's), no link flag in Au.g.
+// the stream lives in a->tid; callbacks arrive on a private dispatch queue,
+// as the linux runner's do on its thread.
+#include <dlfcn.h>
+#include <dispatch/dispatch.h>
+typedef struct { long version; void* info; void* retain; void* release; void* describe; } au_fse_ctx;
+typedef void (*au_fse_cb)(const void*, void*, size_t, void*, const uint32_t*, const uint64_t*);
+static struct {
+    bool   tried, ok;
+    void*  (*fs_str)(void*, const char*, uint32_t);
+    void*  (*fs_arr)(void*, const void**, long, const void*);
+    void   (*fs_rel)(const void*);
+    const void* fs_cbs;
+    void*  (*fs_new)(void*, au_fse_cb, au_fse_ctx*, void*, uint64_t, double, uint32_t);
+    void   (*fs_queue)(void*, dispatch_queue_t);
+    unsigned char (*fs_go)(void*);
+    void   (*fs_halt)(void*);
+    void   (*fs_inval)(void*);
+    void   (*fs_free)(void*);
+} au_fse;
+
+static bool au_fse_load(void) {
+    if (au_fse.tried) return au_fse.ok;
+    au_fse.tried = true;
+    void* cf = dlopen("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation", RTLD_LAZY);
+    void* cs = dlopen("/System/Library/Frameworks/CoreServices.framework/CoreServices", RTLD_LAZY);
+    if (!cf || !cs) return false;
+    au_fse.fs_str     = dlsym(cf, "CFStringCreateWithCString");
+    au_fse.fs_arr     = dlsym(cf, "CFArrayCreate");
+    au_fse.fs_rel        = dlsym(cf, "CFRelease");
+    au_fse.fs_cbs  = dlsym(cf, "kCFTypeArrayCallBacks");
+    au_fse.fs_new         = dlsym(cs, "FSEventStreamCreate");
+    au_fse.fs_queue      = dlsym(cs, "FSEventStreamSetDispatchQueue");
+    au_fse.fs_go          = dlsym(cs, "FSEventStreamStart");
+    au_fse.fs_halt           = dlsym(cs, "FSEventStreamStop");
+    au_fse.fs_inval     = dlsym(cs, "FSEventStreamInvalidate");
+    au_fse.fs_free = dlsym(cs, "FSEventStreamRelease");
+    au_fse.ok = au_fse.fs_str && au_fse.fs_arr && au_fse.fs_rel &&
+        au_fse.fs_cbs && au_fse.fs_new && au_fse.fs_queue &&
+        au_fse.fs_go && au_fse.fs_halt && au_fse.fs_inval && au_fse.fs_free;
+    return au_fse.ok;
+}
+
+static dispatch_queue_t au_fse_queue(void) {
+    static dispatch_queue_t q;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ q = dispatch_queue_create("au.watch", DISPATCH_QUEUE_SERIAL); });
+    return q;
+}
+
+static void au_fse_event(const void* stream, void* info, size_t n,
+        void* paths, const uint32_t* flags, const uint64_t* ids) {
+    watch a = (watch)info;
+    if (!a || !a->running || !a->callback || n == 0) return;
+    // git's own bookkeeping (.git/index, locks, objects) changes on every
+    // status or diff; reporting it would loop a listener that runs git.
+    // a ref or HEAD move is a real change (a commit, a checkout) and stays
+    char** ps = (char**)paths;
+    bool   real = false;
+    for (size_t i = 0; i < n && !real; i++) {
+        const char* p = ps[i];
+        const char* g = p ? strstr(p, "/.git/") : null;
+        if (!g) { real = true; break; }
+        if (strstr(g, "/.git/refs/") == g || strcmp(g, "/.git/HEAD") == 0) real = true;
+    }
+    // one batch, one call: the listener marks its state stale and does the
+    // heavy work on its own thread, as on linux
+    if (real) lambda_call(a->callback, null);
 }
 #endif
 
@@ -9510,9 +9652,23 @@ AU_EXPORT none watch_dealloc(watch a) {
 }
 
 AU_EXPORT none watch_pause(watch a) {
-#ifndef __APPLE__
+#ifdef __APPLE__
+    if (!a->running) return;
+    a->running = false;
+    void* st = (void*)(uintptr_t)a->tid;
+    a->tid = 0;
+    if (st && au_fse.ok) {
+        // stop, then drain the queue so no callback is still reading `a`
+        // when this returns (pause runs before any free)
+        au_fse.fs_halt(st);
+        au_fse.fs_inval(st);
+        dispatch_sync(au_fse_queue(), ^{});
+        au_fse.fs_free(st);
+    }
+#else
     if (!a->running) return;
     a->running = false;       // runner observes this and exits its loop
+    au_watch_wake_signal(a);  // and poll() returns now, not on some event
     if (a->tid) {
         pthread_join((pthread_t)a->tid, null); // wait so it stops touching us
         a->tid = 0;
@@ -9521,7 +9677,31 @@ AU_EXPORT none watch_pause(watch a) {
 }
 
 AU_EXPORT none watch_start(watch a) {
-#ifndef __APPLE__
+#ifdef __APPLE__
+    if (a->running || !a->res || !au_fse_load()) return;
+    void* ps  = au_fse.fs_str(null, a->res->chars, 0x08000100);   // UTF-8
+    if (!ps) return;
+    const void* one[1] = { ps };
+    void* arr = au_fse.fs_arr(null, one, 1, au_fse.fs_cbs);
+    au_fse.fs_rel(ps);
+    if (!arr) return;
+    au_fse_ctx ctx = { 0, a, null, null, null };
+    // since now; 0.3s latency coalesces a burst (a build, a checkout) into
+    // one call; file-level events so a change deep in a tree is reported
+    void* st = au_fse.fs_new(null, au_fse_event, &ctx, arr,
+        0xFFFFFFFFFFFFFFFFull, 0.3, 0x10);
+    au_fse.fs_rel(arr);
+    if (!st) return;
+    a->running = true;
+    au_fse.fs_queue(st, au_fse_queue());
+    if (!au_fse.fs_go(st)) {
+        a->running = false;
+        au_fse.fs_inval(st);
+        au_fse.fs_free(st);
+        return;
+    }
+    a->tid = (i64)(uintptr_t)st;
+#else
     if (a->running || !a->res) return;
     a->running = true;
     pthread_t tid;

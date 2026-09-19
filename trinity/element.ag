@@ -17,7 +17,7 @@ enum Ease
 # where the app shows: in orbiter's panel or pane, or its own window
 enum DisplayMode
     PIP    : 0
-    Full   : 1
+    Embed  : 1    # in orbiter's pane
     Window : 2
     Screen : 3
 
@@ -340,6 +340,10 @@ ielement element
     public func on_agent   [ s: string ] return
     # the app's avatar for the exchange under a screenshot prompt, or null
     public func agent_avatar [] -> element return null
+    # the exchange's debug button: an app with an avatar steps it through
+    # its states (face on, tilted, working, done with the flame)
+    public func avatar_debug [] -> none
+        return
     # the instruments this instance can show. the shell asks, never guesses
     public func instruments [] -> vec string
         return null
