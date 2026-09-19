@@ -634,8 +634,6 @@ Avatar OrbiterAvatar
     mutable spin_rate  : f32 [ 0.25 ]
     mutable spin_phase : f32
     mutable spin_us    : i64    # the last spin step, microseconds
-    mutable spin_dbg_n : i32    # DIAG
-    intern  spin_dbg   : bool
     # the wheel's in-plane clocking, held in every state
     clock_deg   : f32   [ 30.0 ]
     mutable tilt_cur : f32
@@ -729,15 +727,8 @@ Avatar OrbiterAvatar
             if [ dt9 > 0.25 ] dt9 = 0.25
             spin_us    = nowu9
             spin_phase = spin_phase + spin_rate * dt9
-            # DIAG: spin pacing
-            if [ animate_always && spin_dbg_n < 400 ]
-                spin_dbg_n += 1
-                log 'SPINSTEP dt={dt9} rate={spin_rate} phase={spin_phase}'
             if [ spin_phase > 6.2831853 ] spin_phase = spin_phase - 6.2831853
             aura.spin  = spin_phase
-            if [ wb != spin_dbg ]
-                spin_dbg = wb
-                log 'SPIN busy={wb} rate={spin_rate} goal={gs} ff={ux->frame_factor}'
         if [ !rotate ]
             rotate = vec Rotation []
             rotate.push[ Rotation [ '0 1 0 30deg' ] ]
@@ -2777,9 +2768,6 @@ element orbiter : trinity # implements compiler
         settings_mtime = sp.modified_time[]
         if [ projects ] projects.clear[]
         Au.parse_agi[ null, txt.chars, a ]
-        tr9 : cast trinity [ a ]
-        ag9 : Au tr9.agents
-        log 'AGI agents_member={bool[ ag9 ]} count={(ag9) ? tr9.agents.count : -1} via_property={bool[ get_property[ "agents" ] ]} font={code_font_size}'   # DIAG
         if [ projects ]
             for [ p: Project, name: string ] in projects
                 p.root = resolve_local[ p.root ]
@@ -3830,8 +3818,6 @@ element orbiter : trinity # implements compiler
             # with the host; adopt it, its stop comes back with it. none kept: attach
             if [ dbg9 ]
                 kd9 : cast dbg [ host_kept[ 'dbg{s}' ] ]
-                # DIAG: the session the swap left, or none
-                log 'ADOPT slot={s} mod={mod} pid={pid} kept={bool[kd9]} active={(kd9) ? kd9.active : false}'
                 if [ kd9 && kd9.active ]
                     if [ !debuggers ] debuggers = map dbg [string] []
                     dk9 : string dbg_key[ nv ]
@@ -4395,15 +4381,11 @@ element orbiter : trinity # implements compiler
             # the swap and the reloaded orbiter adopts it, a stop and all
             reloading : bool [ getenv[ 'SILVER_RELOAD_SAVE' ] != null ]
             for [ d: dbg, name: string ] in debuggers
-                # DIAG: what the swap does with each session
-                log 'UNLOAD dbg {name} active={(d) ? d.active : false} reloading={reloading} instances={(instances) ? instances.count : 0}'
                 if [ !d || !d.active ] continue
                 ks9 : i32 [ -1 ]
                 if [ reloading && instances ]
                     for [ av9: AppView ] in instances
-                        log 'UNLOAD   av {av9.app_mod} slot={av9.slot} mine={av9.debugger == d}'
                         if [ av9.debugger == d && av9.slot > 0 ] ks9 = av9.slot
-                log 'UNLOAD   -> {(ks9 > 0) ? "park" : "stop"} slot={ks9}'
                 if [ ks9 > 0 ]
                     d.park[]
                     d.hold[]
