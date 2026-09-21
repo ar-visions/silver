@@ -206,6 +206,12 @@ Orbiter PBR
         vec3  emit       = texture(emission, texCoords).rgb;
         float intensity  = texture(emission, texCoords).a;
         vec3  albedo     = baseColor.rgb;
+        // the thin hexagonal rim: the only near-black violet on this model, so
+        // its albedo names it. its colour is all that changes, and the body's
+        // material lights it: the albedo sits well under the colour it reads on
+        // screen, since the environment and the tone curve lift it
+        float strip_m = 1.0 - step(0.06, distance(albedo, vec3(0.1065, 0.0140, 0.2573)));
+        albedo = mix(albedo, mix(vec3(0.008, 0.008, 0.008), vec3(0.42, 0.38, 0.26), ubo.listen), strip_m);
         vec3  N          = perturbNormal(n, V, texCoords);
         float NdotV      = max(dot(N, V), 0.0);
         float nonMetalF0 = pow((mat_ior - 1.0) / (mat_ior + 1.0), 2.0);
@@ -272,15 +278,14 @@ Orbiter PBR
 
         vec3  result     = (diffuse + specular) * mat_ao + core_contrib + eng_light + blue_light + core_glow;
 
-        // the thin hexagonal rim is the 'strip' material — the only near-black
-        // violet on this model, so its albedo identifies it
-        float strip_m = 1.0 - step(0.06, distance(albedo, vec3(0.1065, 0.0140, 0.2573)));
-        vec3  strip_c = mix(vec3(0.035, 0.035, 0.040), vec3(0.30, 0.68, 1.0), ubo.listen);
-        result        = mix(result, strip_c + specular * 0.35, strip_m);
 
         // gamma 0 (unset uniform) would blow the image to white — floor it
         float g_out      = max(ubo.gamma, 1.0);
         result           = pow(ACESFilm(result), vec3(1.0 / g_out));
+        // the rim takes no light at all: its colour is the final pixel, so
+        // nothing sweeps across it as the view or the halo moves
+        vec3 strip_col = mix(vec3(0.047, 0.047, 0.047), vec3(0.42, 0.38, 0.26), ubo.listen);
+        result = mix(result, strip_col, strip_m);
         return vec4(result, baseColor.a);
     }
 
@@ -981,11 +986,13 @@ Orbiter Plasma
 # in sRGB; the separator's white verts carry red too and stay black). the
 # heat pass blurs it into the grooves' glow
 ModelViewProject GrooveMask
+    attrib color     : LayoutBinding [ type:typeid[ Surface ], id:Surface.color, count:1, format: typeid[ rgba8 ] ]
     attrib a_pos     : VertexInput    [ type:typeid[ vec3f ] ]
     attrib a_normal  : VertexInput    [ type:typeid[ vec3f ] ]
     attrib a_uv      : VertexInput    [ type:typeid[ vec2f ] ]
     attrib a_color_0 : VertexInput    [ type:typeid[ vec4f ] ]
     attrib v_color   : VertexOutput   [ type:typeid[ vec4f ] ]
+    attrib v_uv      : VertexOutput   [ type:typeid[ vec2f ] ]
     attrib fragColor : FragmentOutput [ type:typeid[ vec4f ] ]
 
     func init []
@@ -995,12 +1002,18 @@ ModelViewProject GrooveMask
 
     func vertex [] -> GLSL none {
         v_color     = a_color_0;
+        v_uv        = a_uv;
         gl_Position = ubo.proj * ubo.view * ubo.model * vec4(a_pos, 1.0);
     }
 
     func fragment [] -> GLSL none {
         float g   = pow(clamp(v_color.b * (1.0 - v_color.r), 0.0, 1.0), 1.0 / 2.2);
         g         = smoothstep(0.25, 0.9, g);
+        // the rim is in this node's geometry: named by its albedo, as in the
+        // pbr pass, and kept out of the mask so no glow sweeps along it
+        vec3  alb = texture(color, v_uv).rgb;
+        float rim = 1.0 - step(0.06, distance(alb, vec3(0.1065, 0.0140, 0.2573)));
+        g        *= (1.0 - rim);
         fragColor = vec4(g, g, g, 1.0);
     }
 

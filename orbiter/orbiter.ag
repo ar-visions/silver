@@ -26,6 +26,7 @@ import <dlfcn.h>
 import <signal.h>
 import <sys/wait.h>
 import <pthread.h>
+
 ifdef [ apple ]
     import <util.h>
         -lutil
@@ -35,6 +36,7 @@ ifdef [ linux ]
 ifdef [ windows ]
     import <posix.h>    # declares forkpty, which always fails here
 
+
 # import our own sub-modules
 import FileIcons
 import Navigate
@@ -42,6 +44,8 @@ import Editor
 import NodeList
 import Git
 import Avatar
+
+
 
 # the editor under a pane's split. 'text' is the editor/instruments
 # split, and the editor keeps key 'text' inside it
@@ -69,6 +73,7 @@ element EditorView
             layers.bg:
                 fill_color: #140a2a80
     }
+
 
     func text_of [] -> Editor
         if [ !elements ] return null
@@ -201,39 +206,13 @@ element EditorView
         if [ !o.launch_specs_mt ] o.launch_specs_mt = map i64 [string] []
         # a rebuild rewrites the export: the cache is keyed on its mtime
         if [ !o.startup_path ] o.startup_path = path.path_startup[]
-        agi9 : path '{o.startup_path}/install/export/silver-{m}.agi'
+        agi9 : path '{o.startup_path}/install/export/{o.install_name_of[ m ]}.agi'
         mt9  : i64 [ (agi9.exists[]) ? agi9.modified_time[] : 0 ]
         if [ o.launch_specs.contains[ m ] && o.launch_specs_mt.contains[ m ] && o.launch_specs_mt[ m ] == mt9 ]
             return o.launch_specs[ m ]
         o.launch_specs_mt[ m ] = mt9
+        # the export is the only source: no app type is ever built here
         spec : string read_launch[ m ]
-        # the module itself is the source: its app type, instanced with its
-        # defaults, answers the same props the running app does (metas included)
-        ln9  : string 'silver-{m}'
-        lib9 : path o.module_lib[ ln9 ]
-        if [ o.stats ] log 'SPEC lib {lib9} exists={lib9.exists[]}'
-        if [ lib9.exists[] ]
-            h9 : dlopen[ lib9.chars, 258 ]
-            # the module registers its types from its initializer
-            if [ h9 ]
-                isym9 : string 'silver_{m}_initializer'
-                ifn9  : cast hook [ dlsym[ h9, isym9.chars ] ]
-                if [ o.stats ] log 'SPEC initializer={(ifn9) ? 1 : 0}'
-                if [ ifn9 ] ifn9[]
-            ty9 : Au_t (h9) ? Au.find_type[ m.chars, null ] : null
-            if [ o.stats ] log 'SPEC handle={(h9) ? 1 : 0} type={(ty9) ? 1 : 0}'
-            if [ o.stats && h9 ]
-                md9 : Au_t Au.find_module[ m.chars ]
-                log 'SPEC module={(md9) ? 1 : 0} members={(md9) ? md9.members.count : 0}'
-                if [ md9 ]
-                    for [ mi9: i32 0, mi9 < md9.members.count, mi9 += 1 ]
-                        mm9 : Au_t md9.members.origin[ mi9 ]
-                        if [ mm9 && mm9.ident ] log 'SPEC   member {mm9.ident} mt={mm9.member_type}'
-            if [ ty9 ]
-                ob9 : Au.new_object[ ty9, null, null, true, __FILE__, __LINE__, __SEQUENCE__ ]
-                mod9 : string (ob9) ? props_of[ ob9, null ] : null
-                if [ o.stats ] log 'SPEC props: {(mod9) ? mod9 : "(null)"}'
-                if [ mod9 && mod9.count > 0 ] spec = mod9
         if [ o.stats ] log 'SPEC {m}: {spec}'
         # every trinity app carries the base's live properties (volume);
         # the module's own entry of the same name wins, since a duplicate
@@ -256,7 +235,7 @@ element EditorView
     func read_launch [ m: string ] -> string
         o : orb[]
         if [ !o.startup_path ] o.startup_path = path.path_startup[]
-        agi : path '{o.startup_path}/install/export/silver-{m}.agi'
+        agi : path '{o.startup_path}/install/export/{o.install_name_of[ m ]}.agi'
         spec : string ''
         if [ agi.exists[] ]
             ftext : string agi.load[ typeid[string], null ]
@@ -369,7 +348,8 @@ element EditorView
         # the panel is up whenever this pane's module has instances, and not otherwise
         ed9 : Editor o.pane_at[ pane_index ]
         li9 : vec AppView (ed9) ? ed9.instances[] : null
-        if [ li9 && li9.count > 0 && !o.inst_hidden ] t['instance_panel'] = InstancePanel [ ]
+        if [ li9 && li9.count > 0 && !o.inst_hidden ]
+        	t['instance_panel'] = InstancePanel [ ]
         return t
 
     # the error chip belongs to the file it names: only show it
@@ -633,7 +613,6 @@ Avatar OrbiterAvatar
     settle_amount : f32 [ 0.01 ]
     mutable halo_cur   : f32
     mutable flame_cur  : f32
-    intern  groove_dbg : i64    # DIAG
     # the heat haze off the core: slight from the start, full once the jet
     # burns; the spin speeds up with it (1 + heat_spin * heat)
     heat_base   : f32   [ 0.25 ]
@@ -755,10 +734,6 @@ Avatar OrbiterAvatar
             # the flower's grooves light with the second halo and stay fully
             # on while the jet burns
             groove = max[ halo_cur, flame_cur ]
-            # DIAG: does the groove reach the shader the model draws with
-            if [ epoch_millis[] / 1000 != groove_dbg ]
-                groove_dbg = epoch_millis[] / 1000
-                log 'GROOVE anim={animate_always} halo={halo_cur} flame={flame_cur} groove={groove} changed={orb->agent_changed} wb={wb}'
             # the exchange avatar turns at the working rate face on too: its
             # rotating light reads as rotation from the first frame
             gs : f32 [ (rl) ? busy_spin * 1.8 : (wb || animate_always) ? busy_spin : rest_spin ]
@@ -1109,6 +1084,31 @@ Option ReloadButton
     }
 
 # center of the status bar: hides everything above it but the scene
+# find bar switch: search the docked remote checkouts too
+Option RemoteToggle
+    no_cache : true
+    style : CSS {
+        area: r0+ t0 w78px h0.9
+        layers.body:
+            fill_color: #0000
+            radius: 8
+            stroke_width: 0.5
+            stroke_color: #fff2
+        layers.face:
+            label_color: #fff6
+            label_size: 13
+            label_align: 0.5 0.5
+        :selected
+            layers.body:
+                fill_color: #8c4a6440
+                stroke_color: #fff4
+            layers.face:
+                label_color: #ffff
+        :hovered
+            layers.body:
+                fill_color: #fff2
+    }
+
 Option HideToggle
     no_cache : true
     tlabel : Layer [ label_color: rgba [ '#fff9' ], label_size: 13,
@@ -2411,6 +2411,10 @@ element orbiter : trinity # implements compiler
     intern git_snap  : GitSnap
     intern git_stage : GitSnap
     intern git_busy  : bool
+    # the git thread's id: a flag clears before its epilogue, so the
+    # unload joins the thread itself
+    intern git_tid   : pthread_t
+    intern git_live  : bool
     intern git_fresh : bool
     intern git_last  : i64
     # the watcher saw a source change since the last fetch
@@ -2437,12 +2441,31 @@ element orbiter : trinity # implements compiler
     mutable pick_dir     : bool             # that field takes a folder: double-click picks it
     mutable launch_specs : map string[string]    # module -> panel spec, read once from its compiled meta
     mutable launch_specs_mt : map i64[string]    # and the export's mtime it was read at
+    mutable install_names : map string[string]   # module -> owner-module, asked of git once
     mutable pick_exts    : vec string           # a resource pick lists only these extensions
     mutable pick_cache   : vec path             # files found once for the current pick; keystrokes filter it
     mutable pick_editor  : Editor
     intern find_last_query : string
     intern find_last_scope : string
     intern find_scan_mt  : i64
+    # the scan runs a slice per frame: these carry it between frames
+    intern find_busy     : bool
+    intern find_q_run    : string
+    intern find_dirs     : vec path
+    intern find_files    : vec path
+    intern find_dpos     : i32
+    intern find_pos      : i32
+    intern find_head     : FindHit
+    intern find_ticks    : i32
+    intern find_seen     : i32
+    intern find_t0       : i64
+    intern find_listed   : bool      # the file list came from the index
+    # the word index: path -> bloom of its word hashes, and the memory it
+    # is allowed to hold before new files simply go unindexed
+    intern tok_cache     : map TokBloom [string]
+    intern tok_bytes     : i64
+    intern find_q_hash   : u64       # the query, hashed as one word
+    intern find_q_word   : bool      # ... when the query IS one word
     public replace_text  : string
     public pattern_text  : string
     public find_showing  : bool
@@ -2499,6 +2522,9 @@ element orbiter : trinity # implements compiler
     public file_index    : list string
     public max_search    : i32 [ 400000 ]
     public search_external : bool [ true ]
+    # the find bar's remotes switch: the docked checkouts are searched only
+    # while it is lit, and it starts every session off
+    public search_remotes  : bool
     public find_results  : list string
     intern was_finder    : bool
     intern last_hit_row      : i32 [ -1 ]
@@ -2508,6 +2534,8 @@ element orbiter : trinity # implements compiler
     intern index_task    : async
     # guards file_index: search reads while the worker fills
     intern index_lock    : mutex
+    intern tok_lock      : mutex
+    intern tok_skip      : vec string
     # main thread raises this to stop a running worker early
     intern index_cancel  : bool
     intern index_building : bool
@@ -2558,7 +2586,6 @@ element orbiter : trinity # implements compiler
     mutable instances      : vec AppView
     mutable inst_seq       : i32
     intern  all_cmd        : string
-    intern frame_no9       : i32
     public scene_load    : string
     public stats         : bool      # --stats: per-second frame stats on the terminal
     intern scene_el      : element
@@ -2681,6 +2708,16 @@ element orbiter : trinity # implements compiler
         index_dirty    = false
         index_watches  = vec watch []
         index_lock     = mutex [ ]
+        tok_lock       = mutex [ ]
+        tok_skip       = vec string [] [
+            'png', 'jpg', 'jpeg', 'gif', 'bmp', 'ico', 'webp', 'tga', 'exr',
+            'hdr', 'ktx', 'dds', 'psd', 'ttf', 'otf', 'woff', 'woff2',
+            'wav', 'mp3', 'ogg', 'flac', 'aiff', 'mp4', 'mov', 'avi', 'mkv',
+            'zip', 'gz', 'bz2', 'xz', 'tar', '7z', 'rar', 'pdf',
+            'o', 'a', 'so', 'dylib', 'dll', 'lib', 'exe', 'obj', 'pyc',
+            'bin', 'dat', 'db', 'sqlite', 'pack', 'idx', 'spv', 'bc',
+            'safetensors', 'pt', 'onnx', 'npy', 'npz', 'jar', 'class',
+            'icns', 'dmg', 'img', 'iso', 'nes', 'sfc', 'gba', 'rom', 'n64' ]
         start_watching[]
         # kick off the index build on its worker thread
         start_index[]
@@ -4282,6 +4319,7 @@ element orbiter : trinity # implements compiler
 
         if [ fb_on ]
             # right-flow: first inserted lands furthest right
+            els['remotes'] = RemoteToggle [ label: 'remotes', manual_mode: true, selected: search_remotes ]
             els['replace'] = ReplaceField [ label: 'replace', edit: replace_text, focusable: true ]
             els['pattern'] = PatternField [
                 label: 'files (i.e *.ag)',
@@ -4356,6 +4394,48 @@ element orbiter : trinity # implements compiler
         index_lock.unlock[]
         return over
 
+    # the binaries a checkout carries: images, fonts, audio, video,
+    # archives, objects, models, roms. never read, never indexed
+    func tok_binary [ p: path ] -> bool
+        e : string p.ext[]
+        if [ !e || e.count == 0 ] return false
+        for [ b: string ] in tok_skip
+            if [ e.compare[ b ] == 0 ] return true
+        return false
+
+    # every indexed text file hashed up front: a search — or the remotes
+    # toggle — then reads no file at all. binaries and huge files are left
+    # out; the worker stops as soon as the index is cancelled
+    func tok_warm []
+        if [ !file_index ] return
+        if [ !tok_cache ] tok_cache = map TokBloom [string] [ ]
+        todo : vec string []
+        index_lock.lock[]
+        for [ fs: string ] in file_index
+            todo.push[ fs ]
+        index_lock.unlock[]
+        for [ fs: string ] in todo
+            if [ index_cancel ] return
+            fp : path fs
+            if [ !fp || !fp.exists[] ] continue
+            if [ tok_binary[ fp ] ] continue
+            mt : fp.modified_time[]
+            tok_lock.lock[]
+            tb : TokBloom tok_cache[ fs ]
+            tok_lock.unlock[]
+            if [ tb && tb.mt == mt ] continue
+            c : string [ fp.load[ typeid[string], null ] ]
+            # 300k of text is a big source file: past that the search
+            # reads it, rather than the index carrying it
+            if [ !c || c.count == 0 || c.count > 307200 ] continue
+            # a nul byte in the head: binary that the extension missed
+            nb : bool [ false ]
+            lim9 : i32 [ (c.count < 1024) ? c.count : 1024 ]
+            for [ i9: i32 0, i9 < lim9, i9 += 1 ]
+                if [ c[ i9 ] == 0 ] nb = true
+            if [ nb ] continue
+            tok_pass[ fs, mt, c, 0 ]
+
     func index_work [ dirs: vec path :: o: orbiter ] -> none
         stack : vec path []
         repos : vec path []
@@ -4402,6 +4482,7 @@ element orbiter : trinity # implements compiler
                     over : bool [ o.file_index.count >= cap ]
                     o.index_lock.unlock[]
                     if [ over ] break
+        o.tok_warm[]
         o.index_lock.lock[]
         o.index_building = false
         o.index_lock.unlock[]
@@ -4426,14 +4507,17 @@ element orbiter : trinity # implements compiler
     # fills search_dirs in place (the paths must be held by the member, and
     # this is the shape that holds them)
     func root_search []
+        r0 : path project_root[]
+        rs0 : string '{r0}'
+        if [ r0 ] search_dirs += r0
         if [ docked_repos ]
             for [ nm: string ] in docked_repos
                 if [ !repo_local[ nm ] ] continue
                 r : path repo_dir[ nm ]
+                if [ !r ] continue
+                rs9 : string '{r}'
+                if [ rs9.compare[ rs0 ] == 0 ] continue
                 search_dirs += r
-        if [ search_dirs.count == 0 ]
-            r0 : path project_root[]
-            search_dirs += r0
 
     # the roots the finder would search now, as strings, to tell a change
     func root_names [] -> string
@@ -4539,6 +4623,12 @@ element orbiter : trinity # implements compiler
         while [ index_building ]
             usleep[ 1000 ]
         index_task   = null
+        # the summarize runs this module's code on its own thread, and the
+        # attach jobs on the pool: a swap under them unmaps the code mid-run
+        if [ git_live ]
+            pthread_join[ git_tid, null ]
+            git_live = false
+        attach_tasks = null
         index_lock.lock[]
         file_index   = list string []
         index_lock.unlock[]
@@ -4581,7 +4671,7 @@ element orbiter : trinity # implements compiler
         find_hits = vec FindHit []
         q : string findbar_text
         find_last_query = q
-        find_last_scope = (pattern_text) ? pattern_text : ''
+        find_last_scope = '{(pattern_text) ? pattern_text : ''}|{(search_remotes) ? 1 : 0}'
         if [ !q || q.count == 0 ]
             find_showing = false
             return
@@ -4594,12 +4684,147 @@ element orbiter : trinity # implements compiler
             return
         root : path project_root[]
         find_scanned = 0
+        find_seen    = 0
         find_scan_mt = 0
-        walk_find[ root, q ]
-        log 'FIND walk: root={root} scanned={find_scanned} hits={find_hits.count} sp={search_pane[]} fbpane={findbar_pane}'
-        if [ find_hits.count == 0 ]
-            find_hits.push[ FindHit [ is_header: true, text: 'No results in {find_scanned} files', dir: 'within {root}', file: null ] ]
+        find_q_run   = q
+        # one word (letters, digits, underscore) searches through the index;
+        # anything else reads the files as before
+        if [ !tok_cache ] tok_cache = map TokBloom [string] [ ]
+        find_q_word = q.count > 1
+        for [ i9: i32 0, i9 < q.count, i9 += 1 ]
+            if [ !tok_is_word[ i32[ q[ i9 ] ] ] ] find_q_word = false
+        find_q_hash = (find_q_word) ? tok_hash[ q, 0, q.count ] : u64[ 0 ]
+        find_dirs    = vec path []
+        find_files   = vec path []
+        find_dirs.push[ root ]
+        if [ search_remotes && docked_repos ]
+            for [ nm9: string ] in docked_repos
+                if [ !repo_local[ nm9 ] ] continue
+                rd9 : path repo_dir[ nm9 ]
+                if [ !rd9 ] continue
+                rs9 : string '{rd9}'
+                ro9 : string '{root}'
+                if [ rs9.compare[ ro9 ] != 0 ] find_dirs.push[ rd9 ]
+        # the indexer already holds every tracked file: take the list from
+        # it and skip the directory walk entirely
+        find_listed  = false
+        if [ file_index && file_index.count > 0 && !index_building ]
+            rp9 : string '{root}'
+            index_lock.lock[]
+            for [ fs9: string ] in file_index
+                if [ !search_remotes && fs9.index_of[ rp9 ] != 0 ] continue
+                fp9 : path fs9
+                find_seen += 1
+                if [ glob_pass[ fp9 ] ] find_files.push[ fp9 ]
+            index_lock.unlock[]
+            # an index that does not cover this root answers nothing: the
+            # walk still owns that case
+            if [ find_seen > 0 ]
+                find_dirs   = vec path []
+                find_listed = true
+        find_dpos    = 0
+        find_pos     = 0
+        find_ticks   = 0
+        find_t0      = Au.epoch_millis[]
+        # the first row counts while the scan runs, then names the outcome
+        find_head    = FindHit [ is_header: true, text: 'searching...', dir: 'within {root}', file: null ]
+        find_hits.push[ find_head ]
+        find_busy    = true
+        find_showing = true
+        if [ ux ]
+            ux.will_animate = true
+            ux.restyle = true
+        return
+
+    # is there a real match row, or only the header rows
+    func find_has_hits [] -> bool
+        if [ !find_hits ] return false
+        for [ i: i32 0, i < find_hits.count, i += 1 ]
+            h : FindHit find_hits[i]
+            if [ h && !h.is_header ] return true
+        return false
+
+    # one slice of the scan, six milliseconds of it, then back to the frame
+    func find_step []
+        if [ !find_busy ] return
+        # the nav listing builds into these same rows: if it took them,
+        # this scan has nothing left to fill
+        if [ !find_hits || find_hits.count == 0 || find_hits[0] != find_head ]
+            find_busy = false
+            find_head = null
+            return
+        t0 : i64 [ epoch_micros[] ]
+        while [ find_busy && epoch_micros[] - t0 < 6000 ]
+            if [ find_dpos < find_dirs.count ]
+                d : path find_dirs[ find_dpos ]
+                find_dpos += 1
+                entries : d.ls[ null, false ]
+                if [ !entries ] continue
+                for [ i: i32 0, i < entries.count, i += 1 ]
+                    e : path entries[i]
+                    if [ e.is_dir[] ]
+                        dn : string e.filename[]
+                        if [ dn == '.git' ] continue
+                        # checkout holds other repos: walked only with remotes lit
+                        if [ dn == 'checkout' && !search_remotes ] continue
+                        find_dirs.push[ e ]
+                    el
+                        find_seen += 1
+                        if [ glob_pass[ e ] ] find_files.push[ e ]
+                continue
+            if [ find_pos < find_files.count ]
+                f : path find_files[ find_pos ]
+                find_pos += 1
+                find_scanned += 1
+                mt : f.modified_time[]
+                if [ mt > find_scan_mt ] find_scan_mt = mt
+                # a one word query goes through the index: the file's bloom
+                # answers without reading it, and a miss is final
+                if [ find_q_word ]
+                    key9 : string '{f}'
+                    tok_lock.lock[]
+                    tb9  : TokBloom tok_cache[ key9 ]
+                    tok_lock.unlock[]
+                    if [ tb9 && tb9.mt == mt ]
+                        if [ !tok_bits[ tb9, find_q_hash ] ] continue
+                    el
+                        if [ !f.exists[] ] continue
+                        c9 : string [ f.load[ typeid[string], null ] ]
+                        if [ !c9 ] continue
+                        if [ !tok_pass[ key9, mt, c9, find_q_hash ] ] continue
+                scan_file_hits[ f, find_q_run ]
+                continue
+            find_done[]
+        if [ find_busy && find_head ]
+            find_head.text = 'searching {find_scanned} files... {find_hits.count - 1} lines'
+        if [ ux ]
+            ux.will_animate = true
+            # the rows only appear on a restyle: every few frames, not each
+            find_ticks += 1
+            if [ !find_busy || find_ticks % 6 == 0 ] ux.restyle = true
+
+    func find_done []
+        find_busy  = false
+        root : path project_root[]
+        log 'FIND walk: root={root} listed={(find_listed) ? 1 : 0} seen={find_seen} scanned={find_scanned} hits={find_hits.count - 1} ms={Au.epoch_millis[] - find_t0} idx={tok_bytes} sp={search_pane[]} fbpane={findbar_pane}'
+        find_dirs  = vec path []
+        find_files = vec path []
+        if [ find_hits.count <= 1 ]
+            if [ find_head ]
+                if [ find_scanned == 0 && find_seen > 0 ]
+                    find_head.text = 'no file matches {pattern_text}'
+                    find_head.dir  = 'of {find_seen} files within {root}'
+                el
+                    find_head.text = 'No results in {find_scanned} files'
+                    find_head.dir  = 'within {root}'
             find_hits.push[ FindHit [ is_header: true, text: '', file: null ] ]
+        el
+            # the counter row goes: the results stand on their own
+            nv9 : vec FindHit []
+            for [ i: i32 1, i < find_hits.count, i += 1 ]
+                nv9.push[ find_hits[i] ]
+            find_hits = nv9
+        find_head = null
         find_showing = true
         sp : string search_pane[]
         for [ i: i32 0, i < editor_slots.count, i += 1 ]
@@ -4862,21 +5087,6 @@ element orbiter : trinity # implements compiler
                         pick_cache.push[ e ]
                         break
 
-    func walk_find [ dir: path, q: string ]
-        entries : dir.ls[ null, false ]
-        if [ !entries ] return
-        for [ i: i32 0, i < entries.count, i += 1 ]
-            e : path entries[i]
-            if [ e.is_dir[] ]
-                dn : string e.filename[]
-                if [ dn == 'checkout' || dn == '.git' ] continue
-                walk_find[ e, q ]
-            el [ glob_pass[ e ] ]
-                find_scanned += 1
-                mt : e.modified_time[]
-                if [ mt > find_scan_mt ] find_scan_mt = mt
-                scan_file_hits[ e, q ]
-
     # newest mtime in scope: newer than the scan = results stale
     func tree_mtime [ dir: path ] -> i64
         r : i64 [ 0 ]
@@ -4894,6 +5104,92 @@ element orbiter : trinity # implements compiler
                 if [ mt > r ] r = mt
         return r
 
+    # a word char: the run that makes one token
+    func tok_is_word [ c: i32 ] -> bool
+        if [ c >= 97 && c <= 122 ] return true
+        if [ c >= 65 && c <= 90 ]  return true
+        if [ c >= 48 && c <= 57 ]  return true
+        return c == 95
+
+    # FNV-1a over the word, eight bytes at a time: the bytes pack into a
+    # u64 and one multiply folds the whole group in
+    func tok_hash [ s: string, i0: i32, i1: i32 ] -> u64
+        h : u64 [ 14695981039346656037 ]
+        i : i32 [ i0 ]
+        while [ i < i1 ]
+            g : u64 [ 0 ]
+            n : i32 [ 0 ]
+            while [ n < 8 && i < i1 ]
+                g = (g << 8) | u64[ u8[ s[ i ] ] ]
+                n += 1
+                i += 1
+            h = (h ^ g) * 1099511628211
+        return h
+
+    func tok_bits [ tb: TokBloom, hv: u64 ] -> bool
+        b1 : i32 [ i32[ (hv >> 3) & u64[ tb.mask ] ] ]
+        b2 : i32 [ i32[ (hv >> 33) & u64[ tb.mask ] ] ]
+        w1 : u64 [ tb.w[ b1 >> 6 ] ]
+        if [ (w1 & (u64[1] << u64[ b1 & 63 ])) == 0 ] return false
+        w2 : u64 [ tb.w[ b2 >> 6 ] ]
+        return (w2 & (u64[1] << u64[ b2 & 63 ])) != 0
+
+    func tok_mark [ tb: TokBloom, hv: u64 ]
+        b1 : i32 [ i32[ (hv >> 3) & u64[ tb.mask ] ] ]
+        b2 : i32 [ i32[ (hv >> 33) & u64[ tb.mask ] ] ]
+        tb.w[ b1 >> 6 ] = tb.w[ b1 >> 6 ] | (u64[1] << u64[ b1 & 63 ])
+        tb.w[ b2 >> 6 ] = tb.w[ b2 >> 6 ] | (u64[1] << u64[ b2 & 63 ])
+
+    # one pass over the bytes: every word hashed, the query compared as a
+    # number, and the file's bloom built for the next search. the class test
+    # is inline here: a call per byte costs more than the hashing does
+    func tok_pass [ key: string, mt: i64, content: string, q: u64 ] -> bool
+        n    : i32 [ content.count ]
+        want : i32 [ 512 ]
+        est  : i32 [ n / 5 * 12 ]
+        while [ want < est && want < 65536 ] want = want * 2
+        tb : TokBloom [ ]
+        tb.mt   = mt
+        tb.mask = want - 1
+        tb.w    = vec u64 []
+        for [ i: i32 0, i < want / 64, i += 1 ] tb.w.push[ 0 ]
+        b   : ref u8 [ cast ref u8 [ content.chars ] ]
+        hit : bool [ false ]
+        i   : i32 [ 0 ]
+        while [ i < n ]
+            c : i32 [ i32[ b[ i ] ] ]
+            w : bool [ (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || (c >= 48 && c <= 57) || c == 95 ]
+            if [ !w ]
+                i += 1
+                continue
+            # the word, folded eight bytes at a time as it is read
+            h : u64 [ 14695981039346656037 ]
+            g : u64 [ 0 ]
+            k : i32 [ 0 ]
+            while [ w ]
+                g = (g << 8) | u64[ c ]
+                k += 1
+                if [ k == 8 ]
+                    h = (h ^ g) * 1099511628211
+                    g = 0
+                    k = 0
+                i += 1
+                if [ i >= n ] break
+                c = i32[ b[ i ] ]
+                w = (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || (c >= 48 && c <= 57) || c == 95
+            if [ k > 0 ] h = (h ^ g) * 1099511628211
+            hv : u64 [ h ]
+            if [ hv == q ] hit = true
+            tok_mark[ tb, hv ]
+        # 48 MB of index is plenty for a source tree; past that, files are
+        # read on every search as before
+        tok_lock.lock[]
+        if [ n <= 307200 ]
+            tok_cache[ key ] = tb
+            tok_bytes += i64[ want / 8 ]
+        tok_lock.unlock[]
+        return hit
+
     func scan_file_hits [ p: path, q: string ]
         if [ !p || !p.exists[] ] return
         content : string [ p.load[ typeid[string], null ] ]
@@ -4904,7 +5200,7 @@ element orbiter : trinity # implements compiler
             ln : string parts[i]
             if [ ln.index_of[ q ] >= 0 ]
                 if [ !header_added ]
-                    if [ find_hits.count > 0 ]
+                    if [ find_hits.count > 1 ]
                         find_hits.push[ FindHit [ is_header: true, is_spacer: true, text: '' ] ]
                     fn  : string p.filename[]
                     drs : string '{p.directory[]}'
@@ -5111,6 +5407,37 @@ element orbiter : trinity # implements compiler
         ix : i32 [ scene_ix % sl.count ]
         if [ ix < 0 ] ix = 0
         return sl[ ix ]
+
+    # owner-module: the compiler's name for a module's export and lib
+    public func install_name_of [ m: string ] -> string
+        if [ !install_names ] install_names = map string [string] []
+        if [ install_names.contains[ m ] ] return install_names[ m ]
+        if [ !startup_path ] startup_path = path.path_startup[]
+        root : path '{startup_path}/{m}'
+        if [ projects ]
+            for [ p: Project, name: string ] in projects
+                if [ name.compare[ m ] == 0 && p.root ] root = p.root
+        url : string ''
+        if [ root.exists[] ]
+            rl : git_capture[ root, 'remote get-url origin', false ]
+            if [ rl.count > 0 ] url = rl[0].trim[]
+        if [ url.ends_with[ '.git' ] ] url = url.mid[ 0, url.count - 4 ]
+        # https://host/owner/project, or git@host:owner/project
+        sl : i32 [ -1 ]
+        for [ i: i32 0, i < url.count, i += 1 ]
+            if [ url.chars[i] == 47 ] sl = i
+        nm : string m
+        if [ sl > 0 ]
+            proj : string url.mid[ sl + 1, url.count - sl - 1 ]
+            os9  : i32 [ -1 ]
+            for [ i: i32 0, i < sl, i += 1 ]
+                if [ url.chars[i] == 47 || url.chars[i] == 58 ] os9 = i
+            own : string url.mid[ os9 + 1, sl - os9 - 1 ]
+            # silver's own modules are named silver, as the compiler does
+            if [ own.compare[ 'ar-visions' ] == 0 && proj.compare[ 'silver' ] == 0 ] own = 'silver'
+            if [ own.count > 0 ] nm = '{own}-{m}'
+        install_names[ m ] = nm
+        return nm
 
     # a module builds to one file per configuration (release, and -dbg).
     # we load these INTO THIS PROCESS, so the configuration must be ours: a
@@ -5409,8 +5736,8 @@ element orbiter : trinity # implements compiler
         git_busy  = true
         git_dirty = false
         git_last  = Au.epoch_millis[]
-        tid : local u64 [ 1 ]
-        pthread_create[ tid, null, @git_entry, a ]
+        pthread_create[ @git_tid, null, @git_entry, a ]
+        git_live  = true
 
     func path_depth [ s: string ] -> i32
         n9 : i32 [ 0 ]
@@ -5987,7 +6314,14 @@ element orbiter : trinity # implements compiler
         # press on its rows must never fall through to the tabs beneath
         picking9 : bool [ pick_field && pick_field.count > 0 ]
         active : bool [ !finder_off && (picking9 || title_focus || (find_text && find_text.count > 0) || list_focused[]) ]
+        # a find-in-files scan and its results own these rows until the nav
+        # itself is engaged again: its own field typed into, or a pick
+        if [ active && (find_busy || find_showing) && !picking9 && (!find_text || find_text.count == 0) ]
+            nav_showing = false
+            if [ ux ] ux.will_animate = true
+            return
         if [ active ]
+            find_showing = false
             combined : list string []
             find_hits = vec FindHit []
             nav_dock_rows = 0
@@ -6318,6 +6652,18 @@ element orbiter : trinity # implements compiler
         if [ win && ed9 ] win.set_focus[ ed9 ]
         force_update[]
 
+    # the fields own their text (editable layers): read it back before a
+    # search, or a shadow copy that drifted is what gets searched
+    func findbar_sync []
+        te : element title_at[ active_pane ]
+        if [ !te || !te.elements ] return
+        fe : element te.elements['find']
+        if [ fe && fe.edit ] findbar_text = fe.edit
+        pe : element te.elements['pattern']
+        if [ pe ] pattern_text = (pe.edit) ? pe.edit.trim[] : ''
+        re9 : element te.elements['replace']
+        if [ re9 ] replace_text = (re9.edit) ? re9.edit : ''
+
     func open_find []
         finder_off   = false
         findbar_open = true
@@ -6615,6 +6961,15 @@ element orbiter : trinity # implements compiler
             scene_load = scene_name[]
             scene_load.hold[]
             save_session[]
+            ev.no_default = true
+            return
+        if [ ev.target.id == 'remotes' ]
+            search_remotes = !search_remotes
+            ev.target.selected = search_remotes
+            # the scope changed: the standing results no longer answer it
+            find_last_scope = ''
+            if [ findbar_text && findbar_text.count > 0 ] run_find_in_files[]
+            if [ ev.target ] ev.target.ux.restyle = true
             ev.no_default = true
             return
         if [ ev.target.id == 'ui_hide' ]
@@ -6937,22 +7292,10 @@ element orbiter : trinity # implements compiler
                 filter_text = filter_text + ev.key.text
                 uxw : Window ev.target.ux
                 if [ uxw ] uxw.will_animate = true
-        # typing into the find/replace bar rows (each its own query)
-        if [ ev.target.id == 'find' ]
+        # the find/replace/pattern rows: the editable layer owns the text,
+        # and findbar_sync copies the field's edit before a search
+        if [ ev.target.id == 'find' || ev.target.id == 'replace' || ev.target.id == 'pattern' ]
             if [ ev.key.text && ev.key.text.count > 0 ]
-                findbar_text = findbar_text + ev.key.text
-                ev.target.pristine = false
-                uxw : Window ev.target.ux
-                if [ uxw ] uxw.will_animate = true
-        if [ ev.target.id == 'replace' ]
-            if [ ev.key.text && ev.key.text.count > 0 ]
-                replace_text = replace_text + ev.key.text
-                ev.target.pristine = false
-                uxw : Window ev.target.ux
-                if [ uxw ] uxw.will_animate = true
-        if [ ev.target.id == 'pattern' ]
-            if [ ev.key.text && ev.key.text.count > 0 ]
-                pattern_text = pattern_text + ev.key.text
                 ev.target.pristine = false
                 uxw : Window ev.target.ux
                 if [ uxw ] uxw.will_animate = true
@@ -7065,7 +7408,7 @@ element orbiter : trinity # implements compiler
             k : i32 [ i32 ev.key.unicode ]
             if [ (ev.key.ctrl || ev.key.meta) && (k == 67 || k == 86 || k == 88) ]    # C / V / X
                 w9  : Window ev.target.ux
-                cur : string [ (ev.target.id == 'find') ? findbar_text : ((ev.target.id == 'replace') ? replace_text : pattern_text) ]
+                cur : string [ (ev.target.edit) ? ev.target.edit : '' ]
                 if [ k != 86 && w9 && cur && cur.count > 0 ] w9.set_clipboard[ cur ]
                 if [ k == 88 ] cur = ''
                 if [ k == 86 && w9 ]
@@ -7074,24 +7417,18 @@ element orbiter : trinity # implements compiler
                         nl9 : i32 [ clip.index_of[ '\n' ] ]
                         if [ nl9 >= 0 ] clip = clip.mid[ 0, nl9 ]
                         if [ clip.count > 0 ] cur = cur + clip
-                if [ ev.target.id == 'find' ]         findbar_text = cur
-                el [ ev.target.id == 'replace' ]      replace_text = cur
-                el                                    pattern_text = cur
+                ev.target.edit    = cur
+                ev.target.sel_col = cur.count
+                ev.target.anchor_col = cur.count
+                findbar_sync[]
                 ev.target.pristine = false
                 if [ ev.target.ux ] ev.target.ux.will_animate = true
                 ev.no_default = true
                 return
-            if [ k == 259 ]    # Key.Backspace
-                if [ ev.target.id == 'find' ]
-                    if [ findbar_text && findbar_text.count > 0 ]
-                        findbar_text = findbar_text.mid[ 0, findbar_text.count - 1 ]
-                el [ ev.target.id == 'replace' ]
-                    if [ replace_text && replace_text.count > 0 ]
-                        replace_text = replace_text.mid[ 0, replace_text.count - 1 ]
-                el
-                    if [ pattern_text && pattern_text.count > 0 ]
-                        pattern_text = pattern_text.mid[ 0, pattern_text.count - 1 ]
+            if [ k == 259 ]    # Key.Backspace — the editable layer edits
+                findbar_sync[]
             el [ k == 257 ]    # Key.Enter
+                findbar_sync[]
                 in_file : bool [ find_in_file[] ]
                 log 'FIND enter: tgt={ev.target.id} q="{findbar_text}" pat="{pattern_text}" in_file={(in_file) ? 1 : 0}'
                 if [ ev.target.id == 'replace' ]
@@ -7101,10 +7438,10 @@ element orbiter : trinity # implements compiler
                     find_last_scope = ''
                     find_file_next[]
                 el
-                    cur_scope  : string [ (pattern_text)    ? pattern_text    : '' ]
+                    cur_scope  : '{(pattern_text) ? pattern_text : ''}|{(search_remotes) ? 1 : 0}'
                     last_scope : string [ (find_last_scope) ? find_last_scope : '' ]
                     scope_same : bool [ cur_scope.compare[ last_scope ] == 0 ]
-                    same : bool [ scope_same && find_showing && find_hits && find_hits.count > 0 && find_last_query && findbar_text && find_last_query.compare[ findbar_text ] == 0 ]
+                    same : bool [ scope_same && find_showing && !find_busy && find_has_hits[] && find_last_query && findbar_text && find_last_query.compare[ findbar_text ] == 0 ]
                     # files changed since the scan: the results lie — rescan
                     if [ same && tree_mtime[ project_root[] ] > find_scan_mt ] same = false
                     if [ same ]
@@ -7114,6 +7451,7 @@ element orbiter : trinity # implements compiler
                 if [ ev.target.ux ] ev.target.ux.restyle = true
             el [ k == 256 ]    # Key.Escape
                 # escape collapses the bar and hides the results
+                find_busy    = false
                 findbar_open = false
                 find_showing = false
                 ev.target.ux.restyle = true
@@ -7247,6 +7585,8 @@ element orbiter : trinity # implements compiler
         repo_one_pump[ w ]
         if [ orbit_cap_on ] dictation_gpu[ Canvas w.screen ]
         mic_frame[]
+        if [ findbar_open ] findbar_sync[]
+        find_step[]
 
         if [ cycle ]
             cycle_frame += 1
@@ -7555,8 +7895,6 @@ element orbiter : trinity # implements compiler
         if [ band_h_save > 0 ]
             band_h_save -= 1
             if [ band_h_save == 0 ] save_session[]
-        frame_no9 += 1
-        if [ frame_no9 <= 30 ] log 'frame {frame_no9} at {Au.epoch_millis[]}'
         if [ pending_stop ]
             pending_stop = false
             t0 : i64 [ Au.epoch_millis[] ]

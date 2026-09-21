@@ -4,6 +4,9 @@ import <stdio.h>
 import <stdlib.h>
 import <string.h>
 import <math.h>
+ifdef [ apple ]
+    # gcd: the decoder's rows across cores (dispatch_apply_f)
+    import <dispatch/dispatch.h>
 
 import random
 import vec
@@ -416,6 +419,129 @@ op concatenate
         return null
 
 
+# decoder rows run across cores: dispatch_apply_f on apple (gcd's pool, no
+# thread made per call); elsewhere the parts run in turn
+
+# what a parallel part reads: a dense row's operands, or the vocab scan's
+class par_job
+    public a      : @f32
+    public w      : @f32
+    public b      : @f32
+    public d      : @f32
+    public m      : i32
+    public k      : i32
+    public n      : i32
+    public parts  : i32
+    public v_best : @i32
+    public v_val  : @f32
+
+# a dense forward over columns c0..c1 of every row: the bias, then the
+# multiply-adds (8 columns per vector block, the rest scalar)
+func dense_cols [ a_f: @f32, other_f: @f32, bias_f: @f32, dest_f: @f32, m: i32, k: i32, n: i32, c0: i32, c1: i32 ]
+    c8 : i32 [ c0 + ((c1 - c0) / 8) * 8 ]
+    # the vector blocks are x86_64 (avx2) and arm64 (neon) asm: any
+    # other target runs the scalar tail on every column
+    ifndef [ x86_64 ]
+        ifndef [ arm64 ]
+            c8 = c0
+    for [ i: i32 0, i < m, i += 1 ]
+        # --- AVX2 bias init (8 floats at a time) ---
+        for [ j: i32 c0, j < c8, j += 8 ]
+            bi_off: i64 [ j * 4 ]
+            di_off: i64 [ (i * n + j) * 4 ]
+            asm x86_64
+                vmovups ymm0, ymmword ptr [bias_f + bi_off]
+                vmovups ymmword ptr [dest_f + di_off], ymm0
+            asm arm64
+                add x9, bias_f, bi_off
+                add x10, dest_f, di_off
+                ldp q0, q1, [x9]
+                stp q0, q1, [x10]
+        for [ j: i32 c8, j < c1, j += 1 ]
+            dest_f[i * n + j] = bias_f[j]
+
+        for [ ki: i32 0, ki < k, ki += 1 ]
+            for [ j: i32 c0, j < c8, j += 8 ]
+                a_off: i64 [ (i * k + ki) * 4 ]
+                b_off: i64 [ (ki * n + j) * 4 ]
+                d_off: i64 [ (i * n + j) * 4 ]
+                asm x86_64
+                    vbroadcastss ymm1, dword ptr [a_f + a_off]
+                    vmovups ymm2, ymmword ptr [other_f + b_off]
+                    vmovups ymm0, ymmword ptr [dest_f + d_off]
+                    vfmadd231ps ymm0, ymm1, ymm2
+                    vmovups ymmword ptr [dest_f + d_off], ymm0
+                asm arm64
+                    add x9, a_f, a_off
+                    ldr s1, [x9]
+                    add x9, other_f, b_off
+                    ldp q2, q3, [x9]
+                    add x10, dest_f, d_off
+                    ldp q4, q5, [x10]
+                    fmla v4.4s, v2.4s, v1.s[0]
+                    fmla v5.4s, v3.4s, v1.s[0]
+                    stp q4, q5, [x10]
+            for [ j: i32 c8, j < c1, j += 1 ]
+                dest_f[i * n + j] += a_f[i * k + ki] * other_f[ki * n + j]
+
+
+# the decoder's vocab scan over rows row0..row1: the best row's index and
+# score. (no v0 / v1 names here: the asm reads them as the vector registers)
+func vocab_scan [ ef: @f32, hf: @f32, dim: i32, row0: i64, row1: i64, out_best: @i32, out_v: @f32 ]
+    best   : i32 [ 0 ]
+    best_v : f32 [ -1.0e30f ]
+    acc8 : local f32 [ 8 ]
+    a_ptr : @f32 [ @acc8[0] ]
+    d8 : i32 [ (dim / 8) * 8 ]
+    # the vector blocks are x86_64 (avx2) and arm64 (neon) asm: any
+    # other target runs the scalar tail below on every element
+    ifndef [ x86_64 ]
+        ifndef [ arm64 ]
+            d8 = 0
+    for [ v: i64 row0, v < row1, v += 1 ]
+        erow : i64 [ v * dim ]
+        for [ z2: i32 0, z2 < 8, z2 += 1 ]
+            acc8[z2] = 0.0f
+        for [ c8: i32 0, c8 < d8, c8 += 8 ]
+            e_off : i64 [ (erow + c8) * 4 ]
+            h_off : i64 [ c8 * 4 ]
+            asm x86_64
+                vmovups ymm0, ymmword ptr [a_ptr]
+                vmovups ymm1, ymmword ptr [ef + e_off]
+                vmovups ymm2, ymmword ptr [hf + h_off]
+                vfmadd231ps ymm0, ymm1, ymm2
+                vmovups ymmword ptr [a_ptr], ymm0
+            asm arm64
+                ldp q0, q1, [a_ptr]
+                add x9, ef, e_off
+                ldp q2, q3, [x9]
+                add x10, hf, h_off
+                ldp q4, q5, [x10]
+                fmla v0.4s, v2.4s, v4.4s
+                fmla v1.4s, v3.4s, v5.4s
+                stp q0, q1, [a_ptr]
+        acc : f32 [ acc8[0] + acc8[1] + acc8[2] + acc8[3] + acc8[4] + acc8[5] + acc8[6] + acc8[7] ]
+        for [ c2: i32 d8, c2 < dim, c2 += 1 ]
+            acc += ef[erow + c2] * hf[c2]
+        if [ acc > best_v ]
+            best_v = acc
+            best   = i32[ v ]
+    out_best[0] = best
+    out_v[0]    = best_v
+
+# one part of the parallel vocab scan: its share of the rows
+func vocab_part [ pctx: handle, it: u64 ] -> none
+    j : cast par_job [ pctx ]
+    nv : i64 [ i64[ j.n ] ]
+    ch : i64 [ (nv + i64[ j.parts ] - 1) / i64[ j.parts ] ]
+    v0 : i64 [ i64[ it ] * ch ]
+    v1 : i64 [ (v0 + ch < nv) ? v0 + ch : nv ]
+    ix : i32 [ i32[ it ] ]
+    j.v_best[ ix ] = 0
+    j.v_val[ ix ]  = -1.0e30f
+    if [ v0 >= nv ] return
+    vocab_scan[ j.a, j.w, j.k, v0, v1, @j.v_best[ ix ], @j.v_val[ ix ] ]
+
 op dense
     public units:              u32
     public in_dim:             u32
@@ -480,53 +606,12 @@ op dense
         other_f: weights.floats
         dest_f:  result.floats
         bias_f:  bias.floats
-        n8:      i32 [ (n / 8) * 8 ]
-        # the vector blocks are x86_64 (avx2) and arm64 (neon) asm: any
-        # other target runs the scalar tail below on every element
-        ifndef [ x86_64 ]
-            ifndef [ arm64 ]
-                n8 = 0
+
+        # one pass over every column. (split across cores for the decoder's
+        # single row it measured slower: 768x768 is too little per part)
+        dense_cols[ a_f, other_f, bias_f, dest_f, m, k, n, 0, n ]
 
         for [ i: i32 0, i < m, i += 1 ]
-            # --- AVX2 bias init (8 floats at a time) ---
-            for [ j: i32 0, j < n8, j += 8 ]
-                bi_off: i64 [ j * 4 ]
-                di_off: i64 [ (i * n + j) * 4 ]
-                asm x86_64
-                    vmovups ymm0, ymmword ptr [bias_f + bi_off]
-                    vmovups ymmword ptr [dest_f + di_off], ymm0
-                asm arm64
-                    add x9, bias_f, bi_off
-                    add x10, dest_f, di_off
-                    ldp q0, q1, [x9]
-                    stp q0, q1, [x10]
-            for [ j: i32 n8, j < n, j += 1 ]
-                dest_f[i * n + j] = bias_f[j]
-
-            for [ ki: i32 0, ki < k, ki += 1 ]
-                for [ j: i32 0, j < n8, j += 8 ]
-                    a_off: i64 [ (i * k + ki) * 4 ]
-                    b_off: i64 [ (ki * n + j) * 4 ]
-                    d_off: i64 [ (i * n + j) * 4 ]
-                    asm x86_64
-                        vbroadcastss ymm1, dword ptr [a_f + a_off]
-                        vmovups ymm2, ymmword ptr [other_f + b_off]
-                        vmovups ymm0, ymmword ptr [dest_f + d_off]
-                        vfmadd231ps ymm0, ymm1, ymm2
-                        vmovups ymmword ptr [dest_f + d_off], ymm0
-                    asm arm64
-                        add x9, a_f, a_off
-                        ldr s1, [x9]
-                        add x9, other_f, b_off
-                        ldp q2, q3, [x9]
-                        add x10, dest_f, d_off
-                        ldp q4, q5, [x10]
-                        fmla v4.4s, v2.4s, v1.s[0]
-                        fmla v5.4s, v3.4s, v1.s[0]
-                        stp q4, q5, [x10]
-                for [ j: i32 n8, j < n, j += 1 ]
-                    dest_f[i * n + j] += a_f[i * k + ki] * other_f[ki * n + j]
-
             # --- activation ---
             if [ activation == Activation.relu ]
                 for [ j: i32 0, j < n, j += 1 ]
@@ -2666,6 +2751,11 @@ class whisper
     intern xwq      : vec tensor
     intern xbq      : vec tensor
     intern xwk      : vec tensor
+    # the cross-attention keys / values per layer, when the caller has them
+    # already (the gpu encoder's cross_kv): prepare takes them instead of
+    # projecting on the cpu, then lets them go
+    public pre_kx   : vec tensor
+    public pre_vx   : vec tensor
     intern xwv      : vec tensor
     intern xbv      : vec tensor
     intern xwo      : vec tensor
@@ -2918,9 +3008,7 @@ class whisper
         return best
 
     func transcribe [ enc: tensor, max_toks: i32 ] -> vec i32
-        tp9 : i64 [ Au.epoch_millis[] ]   # DIAG: DICTTIME
         prepare[ enc ]
-        log 'DICTTIME decode prepare {Au.epoch_millis[] - tp9} ms'
         last : i32 [ step[ 50258 ] ]
         last = step[ 50259 ]
         last = step[ 50359 ]
@@ -2957,7 +3045,14 @@ class whisper
         vx_c = vec tensor [ ]
         ks_c = vec tensor [ ]
         vs_c = vec tensor [ ]
+        use_pre : bool [ pre_kx && pre_vx && pre_kx.count == layers && pre_vx.count == layers ]
         for [ li: i32 0, li < layers, li += 1 ]
+            if [ use_pre ]
+                kx_c.push[ pre_kx[li] ]
+                vx_c.push[ pre_vx[li] ]
+                ks_c.push[ rows2[ 448, dim ] ]
+                vs_c.push[ rows2[ 448, dim ] ]
+                continue
             kxt : rows2[ th, dim ]
             dk : dense [ name: 'kx', input: enc, result: kxt, weights: xwk[li], bias: zb768, in_dim: dim, out_dim: dim ]
             dk.forward[]
@@ -2968,6 +3063,8 @@ class whisper
             vx_c.push[ vxt ]
             ks_c.push[ rows2[ 448, dim ] ]
             vs_c.push[ rows2[ 448, dim ] ]
+        pre_kx = null
+        pre_vx = null
 
     intern func attend_row [ q: @f32, kc: tensor, vc: tensor, nrows: i64, cxo: @f32, prow: @f32 ]
         hd : i32 [ dim / heads ]
@@ -3101,46 +3198,21 @@ class whisper
         nf : layer_norm [ name: 'klnf', input: x, result: h, weights: dlnf_w, bias: dlnf_b, dim: dim ]
         nf.forward[]
         nvr : i64 [ dec_emb.tensor_shape[0] ]
-        best   : i32 [ 0 ]
-        best_v : f32 [ -1.0e30f ]
-        ef : dec_emb.floats
-        hf : h.floats
-        acc8 : local f32 [ 8 ]
-        a_ptr : @f32 [ @acc8[0] ]
-        d8 : i32 [ (dim / 8) * 8 ]
-        # the vector blocks are x86_64 (avx2) and arm64 (neon) asm: any
-        # other target runs the scalar tail below on every element
-        ifndef [ x86_64 ]
-            ifndef [ arm64 ]
-                d8 = 0
-        for [ v: i64 0, v < nvr, v += 1 ]
-            erow : i64 [ v * dim ]
-            for [ z2: i32 0, z2 < 8, z2 += 1 ]
-                acc8[z2] = 0.0f
-            for [ c8: i32 0, c8 < d8, c8 += 8 ]
-                e_off : i64 [ (erow + c8) * 4 ]
-                h_off : i64 [ c8 * 4 ]
-                asm x86_64
-                    vmovups ymm0, ymmword ptr [a_ptr]
-                    vmovups ymm1, ymmword ptr [ef + e_off]
-                    vmovups ymm2, ymmword ptr [hf + h_off]
-                    vfmadd231ps ymm0, ymm1, ymm2
-                    vmovups ymmword ptr [a_ptr], ymm0
-                asm arm64
-                    ldp q0, q1, [a_ptr]
-                    add x9, ef, e_off
-                    ldp q2, q3, [x9]
-                    add x10, hf, h_off
-                    ldp q4, q5, [x10]
-                    fmla v0.4s, v2.4s, v4.4s
-                    fmla v1.4s, v3.4s, v5.4s
-                    stp q0, q1, [a_ptr]
-            acc : f32 [ acc8[0] + acc8[1] + acc8[2] + acc8[3] + acc8[4] + acc8[5] + acc8[6] + acc8[7] ]
-            for [ c2: i32 d8, c2 < dim, c2 += 1 ]
-                acc += ef[erow + c2] * hf[c2]
-            if [ acc > best_v ]
-                best_v = acc
-                best   = i32[ v ]
+        # the vocab rows across cores: each part keeps its best, then the best of those
+        vb9 : local i32 [ 8 ]
+        vv9 : local f32 [ 8 ]
+        vj : par_job [ a: dec_emb.floats, w: h.floats, k: dim, n: i32[ nvr ], parts: 8, v_best: @vb9[0], v_val: @vv9[0] ]
+        ifdef [ apple ]
+            dispatch_apply_f[ 8, dispatch_get_global_queue[ 33, 0 ], cast handle [ vj ], @vocab_part ]
+        el
+            for [ it: i32 0, it < 8, it += 1 ]
+                vocab_part[ cast handle [ vj ], u64[ it ] ]
+        best   : i32 [ vb9[0] ]
+        best_v : f32 [ vv9[0] ]
+        for [ it: i32 1, it < 8, it += 1 ]
+            if [ vv9[it] > best_v ]
+                best_v = vv9[it]
+                best   = vb9[it]
         return best
 
     # token ids -> text via the loaded vocab (null when absent)
@@ -3422,6 +3494,16 @@ class whisper_vk
     intern p_g1  : vec Pipeline
     intern p_g2  : vec Pipeline
     intern p_a2  : vec Pipeline
+    # the decoder's cross-attention keys / values, projected from the encoder
+    # output here instead of on the cpu (cross_kv)
+    intern b_xk  : Buffer
+    intern b_xv  : Buffer
+    intern s_xk  : vec WgGemm
+    intern s_xv  : vec WgGemm
+    intern p_xk  : vec Pipeline
+    intern p_xv  : vec Pipeline
+    public kx_out : vec tensor
+    public vx_out : vec tensor
 
     intern func upbuf [ t: tensor ] -> Buffer
         nb : i64 [ t.tensor_shape.total[] * 4 ]
@@ -3593,7 +3675,61 @@ class whisper_vk
         p_lnf.dispatch_x = (hmax + 15) / 16
         p_lnf.dispatch_y = 1
         p_lnf.hold[]
+        # cross-attention K / V per layer: the encoder output through the
+        # decoder's cross weights (K has no bias). read back on the cpu, so cached
+        b_xk = work_buf[ i64[ hmax ] * dim * 4, true ]
+        b_xv = work_buf[ i64[ hmax ] * dim * 4, true ]
+        s_xk = vec WgGemm [ ]
+        s_xv = vec WgGemm [ ]
+        p_xk = vec Pipeline [ ]
+        p_xv = vec Pipeline [ ]
+        for [ li: i32 0, li < model.layers, li += 1 ]
+            xk : WgGemm [ vk: vk ]
+            xk.hold[]
+            s_xk.push[ xk ]
+            p_xk.push[ gemm_pipe[ 'wg_l{li}_xk', xk, b_out, upbuf[ model.xwk[li] ], b_zb, b_xk, hmax, dim ] ]
+            xv : WgGemm [ vk: vk ]
+            xv.hold[]
+            s_xv.push[ xv ]
+            p_xv.push[ gemm_pipe[ 'wg_l{li}_xv', xv, b_out, upbuf[ model.xwv[li] ], upbuf[ model.xbv[li] ], b_xv, hmax, dim ] ]
         valid = true
+
+    # the decoder's cross-attention keys / values for the last encode (th
+    # rows): kx_out / vx_out, one tensor per layer. main thread, as encode
+    func cross_kv [ th: i32 ]
+        kx_out = vec tensor [ ]
+        vx_out = vec tensor [ ]
+        tx : i32 [ (th + 15) / 16 ]
+        nel : i64 [ i64[ th ] * dim ]
+        dv9 : cast VkDevice [ vk.dev_handle[] ]
+        qq9 : cast VkQueue [ vk.compute_queue_handle[] ]
+        cp9 : cast VkCommandPool [ vk.compute_pool_handle[] ]
+        if [ !qq9 ]
+            qq9 = cast VkQueue [ vk.queue_handle[] ]
+            cp9 = cast VkCommandPool [ vk.pool_handle[] ]
+        for [ li: i32 0, li < model.layers, li += 1 ]
+            gk : WgGemm s_xk[li]
+            gk.m_rows = th
+            gk.n_cols = dim
+            gk.k_deep = dim
+            gv : WgGemm s_xv[li]
+            gv.m_rows = th
+            gv.n_cols = dim
+            gv.k_deep = dim
+            pk : Pipeline p_xk[li]
+            pv : Pipeline p_xv[li]
+            pk.dispatch_y = tx
+            pv.dispatch_y = tx
+            cmd : chunk_begin[ dv9, cp9 ]
+            pk.dispatch[ cast handle [ cmd ] ]
+            pv.dispatch[ cast handle [ cmd ] ]
+            chunk_end[ dv9, cp9, qq9, cmd ]
+            kt : model.rows2[ th, dim ]
+            memcpy[ kt.floats, b_xk.data, nel * 4 ]
+            kx_out.push[ kt ]
+            vt : model.rows2[ th, dim ]
+            memcpy[ vt.floats, b_xv.data, nel * 4 ]
+            vx_out.push[ vt ]
 
     func threaded [] -> bool
         cq : cast VkQueue [ vk.compute_queue_handle[] ]
@@ -3701,19 +3837,6 @@ class whisper_vk
         p_conv2.dispatch[ ch ]
         p_pos.dispatch[ ch ]
         chunk_end[ dv9, cp9, qq9, cmd ]
-        # DIAG: SILVER_ENC_PROFILE times each kernel of layer 0, one submission each
-        if [ getenv[ 'SILVER_ENC_PROFILE' ] ]
-            pn9 : vec string [] [ 'ln1', 'q', 'k', 'v', 'attn', 'o', 'add1', 'ln2', 'fc1', 'fc2', 'add2' ]
-            pl9 : vec Pipeline [] [ p_ln1[0], p_gq[0], p_gk[0], p_gv[0], p_at[0], p_go[0], p_a1[0], p_ln2[0], p_g1[0], p_g2[0], p_a2[0] ]
-            pr9 : string [ '' ]
-            for [ pi9: i32 0, pi9 < pl9.count, pi9 += 1 ]
-                t9 : i64 [ Au.epoch_millis[] ]
-                c9 : chunk_begin[ dv9, cp9 ]
-                pp9 : Pipeline pl9[ pi9 ]
-                pp9.dispatch[ cast handle [ c9 ] ]
-                chunk_end[ dv9, cp9, qq9, c9 ]
-                pr9 = '{pr9} {pn9[ pi9 ]}={Au.epoch_millis[] - t9}'
-            log 'ENCPROF th={th} layer0 ms:{pr9}'
         for [ li: i32 0, li < model.layers, li += 1 ]
             cmd2 : chunk_begin[ dv9, cp9 ]
             ch2  : cast handle [ cmd2 ]

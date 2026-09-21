@@ -5,6 +5,7 @@ import img
 import trinity
 import <stdio.h>
 
+
 enum Quality
     low:    0
     medium: 1
@@ -98,5 +99,5 @@ element buttontest : trinity
     public func render [] -> Elements
 		i:2
         return Elements [
-            "hello": ClickButton [ label: 'click me' ]
+            "hello": ClickButton [ label: 'click me2' ]
         ]

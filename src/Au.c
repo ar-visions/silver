@@ -1068,6 +1068,11 @@ typedef struct _AuSpace {
 __thread AuSpace au_current_space = null;
 __thread void*   au_space_owner   = null;
 
+// one bucket index for all stores; low 4 key bits are dead
+static inline size_t store_index(store s, size_t key) {
+    return (key >> 4) % (size_t)s->hsize;
+}
+
 AU_EXPORT u64 au_hash_ident(symbol s) {
     // 3 more lines to not have a string length prior is best
     //return fnv1a_hash(a->chars, a->count, OFFSET_BASIS);
@@ -1087,7 +1092,7 @@ AU_EXPORT Au_t find_member(Au_t mdl, symbol f, int member_type, u64 traits, bool
         // miss proves nothing — the scan below is the authority
         if (f && fhash && mdl->member_map) {
             store s = (store)mdl->member_map;
-            size_t idx = ((size_t)fhash >> 3) % s->hsize;
+            size_t idx = store_index(s, (size_t)fhash);
             for (item it = __atomic_load_n(&s->hlist[idx], __ATOMIC_ACQUIRE); it;
                      it = __atomic_load_n(&it->next,      __ATOMIC_ACQUIRE)) {
                 if (it->key == (Au)(uintptr_t)fhash) {
@@ -1100,7 +1105,10 @@ AU_EXPORT Au_t find_member(Au_t mdl, symbol f, int member_type, u64 traits, bool
                 }
             }
         }
-        {
+        // a map as long as the members array missed nothing
+        bool indexed = f && fhash && mdl->member_map &&
+            ((store)mdl->member_map)->count == (sz)mdl->members.count;
+        if (!indexed) {
             // map miss is not proof of absence: always fall back to scan
             for (int i = 0; i < mdl->members.count; i++) {
                 Au_t au = (Au_t)mdl->members.origin[i];
@@ -1177,12 +1185,13 @@ AU_EXPORT Au_t lexical_traits(array lex, symbol f, u64 traits, int member_type) 
             bool use_map = false;
             if (fhash && au->member_map) {
                 store s = (store)au->member_map;
-                item it = __atomic_load_n(&s->hlist[((size_t)fhash >> 3) % s->hsize], __ATOMIC_ACQUIRE);
+                item it = __atomic_load_n(&s->hlist[store_index(s, (size_t)fhash)], __ATOMIC_ACQUIRE);
                 while (it && it->key != (Au)(uintptr_t)fhash)
                     it = __atomic_load_n(&it->next, __ATOMIC_ACQUIRE);
                 // a miss means "not indexed", not "not present" — members
                 // added outside def_member never reach the map
-                if (it) {
+                // a map as long as the members array missed nothing
+                if (it || s->count == (sz)au->members.count) {
                     cand    = it;
                     use_map = true;
                 }
@@ -1363,7 +1372,7 @@ AU_EXPORT none au_member_map_insert(Au_t type, Au_t new_member) {
     }
     if (!type->member_map || !new_member->ident) return;
     store s = (store)type->member_map;
-    size_t idx = ((size_t)new_member->ident_hash >> 3) % s->hsize;
+    size_t idx = store_index(s, (size_t)new_member->ident_hash);
     item ni = calloc(1, sizeof(struct _Au) + sizeof(struct _item));
     ni = (item)(((struct _Au*)ni) + 1);
     ni->key   = (Au)(uintptr_t)new_member->ident_hash;
@@ -3057,6 +3066,7 @@ static void lg_link(Au target_data, num from_i) {
 }
 
 AU_EXPORT none au_free_pinned(void);
+static bool lg_vector_managed(vector a);
 
 AU_EXPORT none au_leak_report(void) {
     static bool reported;
@@ -3165,6 +3175,11 @@ AU_EXPORT none au_leak_report(void) {
             if (!ar->unmanaged)
                 for (num k = 0; k < ar->count; k++) lg_link(ar->origin[k], i);
         }
+        // a vec of objects holds each element, the same as an array does
+        if (inherits(t, typeid(vector)) && lg_vector_managed((vector)data)) {
+            vector vc = (vector)data;
+            for (num k = 0; k < vc->count; k++) lg_link(vc->origin[k], i);
+        }
         if (inherits(t, typeid(list)) || inherits(t, typeid(map))) {
             list ls = (list)data;
             if (!ls->unmanaged)
@@ -3246,6 +3261,8 @@ AU_EXPORT none au_leak_report(void) {
                     Au_t ot = (Au_t)ok2->au;
                     if (!ot || !ot->typesize) continue;
                     if (ok2->data != (none*)&ok2[1]) continue;
+                    // a collection's count is its buffer's, not this block's
+                    if (inherits(ot, typeid(collective))) continue;
                     num words = (ot->typesize *
                         (ok2->count ? ok2->count : 1)) / (num)sizeof(void*);
                     void** dw = (void**)ok2->data;
@@ -5339,7 +5356,7 @@ AU_EXPORT none store_dealloc(store a) {
 }
 
 AU_EXPORT Au store_get(store a, Au key) {
-    item f = a->hlist[((size_t)(uintptr_t)key >> 3) % a->hsize];
+    item f = a->hlist[store_index(a, (size_t)(uintptr_t)key)];
     for (item i = f; i; i = i->next) {
         if (i->key == key)
             return i->value;
@@ -5352,7 +5369,7 @@ static pthread_mutex_t store_wlock = PTHREAD_MUTEX_INITIALIZER;
 
 AU_EXPORT none store_set(store a, Au key, Au val) {
     pthread_mutex_lock(&store_wlock);
-    item *loc = &a->hlist[((size_t)(uintptr_t)key >> 3) % a->hsize];
+    item *loc = &a->hlist[store_index(a, (size_t)(uintptr_t)key)];
     item f = *loc;
     for (item i = f; i; i = i->next) {
         if (i->key == key) {
@@ -5374,7 +5391,7 @@ AU_EXPORT none store_set(store a, Au key, Au val) {
 
 AU_EXPORT none store_rm(store a, Au key) {
     pthread_mutex_lock(&store_wlock);
-    item *loc = &a->hlist[((size_t)(uintptr_t)key >> 3) % a->hsize];
+    item *loc = &a->hlist[store_index(a, (size_t)(uintptr_t)key)];
     item  f   = *loc;
     for (item i = f; i; i = i->next) {
         if (i->key == key) {
@@ -6680,6 +6697,7 @@ static bool vector_managed(vector a) {
     Au_t et = vector_elem_type(a);
     return et && et->is_class && !et->is_c;
 }
+static bool lg_vector_managed(vector a) { return vector_managed(a); }
 
 static i64 vector_elem_stride(Au_t et) {
     if (et && et->is_class && !et->is_c) return (i64)sizeof(none*);
@@ -9342,6 +9360,83 @@ static Au async_work_get(async t, int i) {
     return ((array)t->work)->origin[i];
 }
 
+// every async with live workers, and every detached spawn, so an image
+// about to unload can wait for the code it owns to stop running
+#define AU_ASYNC_LIVE_MAX 256
+static async           au_async_live[AU_ASYNC_LIVE_MAX];
+static void*           au_spawn_live[AU_ASYNC_LIVE_MAX];
+static pthread_mutex_t au_async_live_mx = PTHREAD_MUTEX_INITIALIZER;
+
+static void au_async_live_add(async t) {
+    pthread_mutex_lock(&au_async_live_mx);
+    for (int i = 0; i < AU_ASYNC_LIVE_MAX; i++)
+        if (!au_async_live[i]) { au_async_live[i] = t; break; }
+    pthread_mutex_unlock(&au_async_live_mx);
+}
+
+static void au_async_live_remove(async t) {
+    pthread_mutex_lock(&au_async_live_mx);
+    for (int i = 0; i < AU_ASYNC_LIVE_MAX; i++)
+        if (au_async_live[i] == t) { au_async_live[i] = null; break; }
+    pthread_mutex_unlock(&au_async_live_mx);
+}
+
+static void au_spawn_live_add(void* fn) {
+    pthread_mutex_lock(&au_async_live_mx);
+    for (int i = 0; i < AU_ASYNC_LIVE_MAX; i++)
+        if (!au_spawn_live[i]) { au_spawn_live[i] = fn; break; }
+    pthread_mutex_unlock(&au_async_live_mx);
+}
+
+static void au_spawn_live_remove(void* fn) {
+    pthread_mutex_lock(&au_async_live_mx);
+    for (int i = 0; i < AU_ASYNC_LIVE_MAX; i++)
+        if (au_spawn_live[i] == fn) { au_spawn_live[i] = null; break; }
+    pthread_mutex_unlock(&au_async_live_mx);
+}
+
+#ifndef _WIN32
+static bool au_in_image(void* fn, void* base) {
+    Dl_info fi;
+    return fn && dladdr(fn, &fi) && fi.dli_fbase == base;
+}
+#endif
+
+// an image about to unload: a worker still inside it runs freed code the
+// moment it returns, so join every task whose work lives there
+AU_EXPORT int async_wait_image(void* addr_in_image) {
+#ifdef _WIN32
+    return 0;
+#else
+    Dl_info img;
+    if (!addr_in_image || !dladdr(addr_in_image, &img)) return 0;
+    async mine[AU_ASYNC_LIVE_MAX];
+    int    n = 0;
+    pthread_mutex_lock(&au_async_live_mx);
+    for (int i = 0; i < AU_ASYNC_LIVE_MAX; i++) {
+        async t = au_async_live[i];
+        if (!t || !t->work_fn || !au_in_image((void*)t->work_fn->vfn, img.dli_fbase)) continue;
+        mine[n++] = (async)hold(t);
+    }
+    pthread_mutex_unlock(&au_async_live_mx);
+    for (int i = 0; i < n; i++) {
+        sync(mine[i], null);
+        drop(mine[i]);
+    }
+    // detached spawns cannot be joined: wait for them to leave the image
+    for (int ms = 0; ms < 30000; ms += 2) {
+        bool any = false;
+        pthread_mutex_lock(&au_async_live_mx);
+        for (int i = 0; i < AU_ASYNC_LIVE_MAX && !any; i++)
+            if (au_spawn_live[i] && au_in_image(au_spawn_live[i], img.dli_fbase)) any = true;
+        pthread_mutex_unlock(&au_async_live_mx);
+        if (!any) break;
+        usleep(2000);
+    }
+    return n;
+#endif
+}
+
 AU_EXPORT none async_init(async t) {
     i32    n = async_work_count(t);
     verify(n > 0, "no work given, no threads needed");
@@ -9362,6 +9457,7 @@ AU_EXPORT none async_init(async t) {
         lock(thread->lock);
         pthread_create(&thread->obj, null, (void*)async_runner, thread);
     }
+    au_async_live_add(t);
     for (int i = 0; i < n; i++) {
         thread_t* thread = &t->threads[i];
         unlock(thread->lock);
@@ -9369,6 +9465,7 @@ AU_EXPORT none async_init(async t) {
 }
 
 AU_EXPORT none async_dealloc(async t) {
+    au_async_live_remove(t);
     sync(t, null);
     for (int i = 0, n = async_work_count(t); i < n; i++) {
         thread_t* thread = &t->threads[i];
@@ -9380,10 +9477,12 @@ AU_EXPORT none async_dealloc(async t) {
 typedef struct { callback fn; Au target; Au work; } au_spawn_t;
 static void* au_spawn_runner(void* data) {
     au_spawn_t* s = (au_spawn_t*)data;
+    void* fn = (void*)s->fn;
     s->fn(s->target, s->work);
     // thread exit: nothing else ever drains this __thread pool
     auto_free(false);
     free(s);
+    au_spawn_live_remove(fn);
     return null;
 }
 AU_EXPORT void au_spawn(callback fn, Au target, Au work) {
@@ -9392,6 +9491,7 @@ AU_EXPORT void au_spawn(callback fn, Au target, Au work) {
     s->target = target;
     s->work   = work;
     pthread_t tid;
+    au_spawn_live_add((void*)fn);
     pthread_create(&tid, null, au_spawn_runner, s);
     pthread_detach(tid);
 }
@@ -9642,6 +9742,50 @@ static void au_fse_event(const void* stream, void* info, size_t n,
 }
 #endif
 
+// every running watch, so an unloading image can stop the ones whose
+// callback lives inside it (its code goes away; the stream does not)
+#define AU_WATCH_LIVE_MAX 256
+static watch           au_watch_live[AU_WATCH_LIVE_MAX];
+static pthread_mutex_t au_watch_live_mx = PTHREAD_MUTEX_INITIALIZER;
+
+static void au_watch_live_add(watch a) {
+    pthread_mutex_lock(&au_watch_live_mx);
+    for (int i = 0; i < AU_WATCH_LIVE_MAX; i++)
+        if (!au_watch_live[i]) { au_watch_live[i] = a; break; }
+    pthread_mutex_unlock(&au_watch_live_mx);
+}
+
+static void au_watch_live_remove(watch a) {
+    pthread_mutex_lock(&au_watch_live_mx);
+    for (int i = 0; i < AU_WATCH_LIVE_MAX; i++)
+        if (au_watch_live[i] == a) { au_watch_live[i] = null; break; }
+    pthread_mutex_unlock(&au_watch_live_mx);
+}
+
+// an image about to unload: a watch still running would call freed code on
+// its next event, so stop every watch whose callback is inside it
+AU_EXPORT int watch_pause_image(void* addr_in_image) {
+#ifdef _WIN32
+    return 0;
+#else
+    Dl_info img;
+    if (!addr_in_image || !dladdr(addr_in_image, &img)) return 0;
+    watch mine[AU_WATCH_LIVE_MAX];
+    int   n = 0;
+    pthread_mutex_lock(&au_watch_live_mx);
+    for (int i = 0; i < AU_WATCH_LIVE_MAX; i++) {
+        watch w = au_watch_live[i];
+        Dl_info ci;
+        if (!w || !w->running || !w->callback || !w->callback->vfn) continue;
+        if (!dladdr((void*)w->callback->vfn, &ci) || ci.dli_fbase != img.dli_fbase) continue;
+        mine[n++] = w;
+    }
+    pthread_mutex_unlock(&au_watch_live_mx);
+    for (int i = 0; i < n; i++) pause(mine[i]);   // drains the queue too
+    return n;
+#endif
+}
+
 AU_EXPORT none watch_init(watch a) {
     a->fd      = -1;
     a->running = false;
@@ -9652,6 +9796,7 @@ AU_EXPORT none watch_dealloc(watch a) {
 }
 
 AU_EXPORT none watch_pause(watch a) {
+    au_watch_live_remove(a);
 #ifdef __APPLE__
     if (!a->running) return;
     a->running = false;
@@ -9701,6 +9846,7 @@ AU_EXPORT none watch_start(watch a) {
         return;
     }
     a->tid = (i64)(uintptr_t)st;
+    au_watch_live_add(a);
 #else
     if (a->running || !a->res) return;
     a->running = true;
@@ -9710,6 +9856,7 @@ AU_EXPORT none watch_start(watch a) {
         return;
     }
     a->tid = (i64)tid; // joined in pause()/dealloc; object outlives the thread
+    au_watch_live_add(a);
 #endif
 }
 

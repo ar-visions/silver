@@ -496,6 +496,9 @@ class WhisperJob
     public c1   : i64
     public enc  : tensor
     public gpu  : whisper_vk
+    # the cross-attention keys / values from the gpu (null: the cpu projects)
+    public kx   : vec tensor
+    public vx   : vec tensor
 
 func spectra_whisper_thread [ arg: handle ] -> handle
     j : cast WhisperJob [ arg ]
@@ -503,23 +506,16 @@ func spectra_whisper_thread [ arg: handle ] -> handle
     if [ !enc ]
         c : AudioClip [ rate: 48000, channels: 1, frames: j.n, pcm: j.pcm ]
         m : whisper_mel[ c ]
-        # DIAG: the mel against the encoder's position table, on the thread
-        pz8 : tensor j.model.pos
-        log 'DICTJOB mel={m.tensor_shape[0]}x{m.tensor_shape[1]} pos={(pz8) ? pz8.tensor_shape[0] : -1}x{(pz8) ? pz8.tensor_shape[1] : -1} n={j.n}'
         mel_png[ m, path '/tmp/live-mel.png' ]
         if [ j.gpu ]
             enc = j.gpu.encode[ m ]
         el
             enc = j.model.encode[ m ]
-    td9 : i64 [ Au.epoch_millis[] ]   # DIAG: DICTTIME
+    if [ j.kx && j.vx ]
+        j.model.pre_kx = j.kx
+        j.model.pre_vx = j.vx
     ids : j.model.transcribe[ enc, 96 ]
-    log 'DICTTIME decode {Au.epoch_millis[] - td9} ms ({ids.count} tokens)'
     j.text = j.model.text_for[ ids ]
-    # DIAG: what the decoder produced on the worker
-    idl9 : string [ '' ]
-    for [ k9: i32 0, k9 < ids.count && k9 < 24, k9 += 1 ]
-        idl9 = '{idl9} {ids[k9]}'
-    log 'DICTIDS ({ids.count}):{idl9} text="{j.text}" enc={enc.tensor_shape[0]}x{enc.tensor_shape[1]}'
     j.done = true
     return null
 
@@ -528,10 +524,6 @@ struct DictState
     feed    : vec i16
     feed_n  : i64
     feed_at : i64
-    dbgn : i32   # DIAG
-    t0us : i64   # DIAG: when the take started (ms)
-    rds  : i64   # DIAG: samples platform_mic_read handed over
-    blks : i64   # DIAG: blocks capture completed
     cap : spectra
     ok  : bool
     lvl : f32
@@ -587,9 +579,6 @@ func dictation_start [] -> i32
     dict.flushed = false
     dict.txt     = ''
     log 'dictation: capturing (fresh, backlog dropped)'
-    dict_pos_log[ 'start' ]
-    dict.t0us = Au.epoch_millis[]
-    dict.blks = 0
     # a test take: the wav's mono samples, copied now (a clip's pcm is not
     # held past this frame)
     fe9 : cstr [ getenv[ 'SILVER_DICT_FILE' ] ]
@@ -618,9 +607,7 @@ func dict_load_net [] -> none
         dict.net_fail = true
         return
     log 'dictation: loading whisper-small…'
-    tl9 : i64 [ Au.epoch_millis[] ]   # DIAG: DICTTIME
     n8 : WhisperNet [ src: wm ]
-    log 'DICTTIME load {Au.epoch_millis[] - tl9} ms'
     if [ !n8.valid ]
         log 'dictation: whisper load failed — capture only'
         dict.net_fail = true
@@ -645,9 +632,6 @@ func dictation_preload [] -> none
 func dictation_stop [] -> none
     dict.lvl = 0.0
     log 'dictation: take ended'
-    # DIAG: samples captured against wall time (48000 a second expected)
-    el9 : f64 [ f64[ Au.epoch_millis[] - dict.t0us ] / 1000.0 ]
-    log 'DICTRATE wall={el9}s blocks={dict.blks} size={dict.cap.size} wr={dict.wr} rate={f64[ dict.wr ] / el9}/s'
 
 func dictation_release [] -> none
     if [ !dict.ok ] return
@@ -657,9 +641,6 @@ func dictation_release [] -> none
 
 func dictation_poll [] -> bool
     if [ !dict.ok ] return false
-    # DIAG: when does the model's memory go (first polls, then every 30th)
-    dict.dbgn += 1
-    if [ dict.dbgn <= 4 || (dict.dbgn % 30) == 0 ] dict_pos_log[ 'poll {dict.dbgn}' ]
     if [ dict.feed_n > 0 ]
         fz9 : i64 [ dict.cap.size ]
         if [ dict.feed_at + fz9 > dict.feed_n ] return false
@@ -667,7 +648,6 @@ func dictation_poll [] -> bool
             dict.cap.buf[i] = dict.feed[ dict.feed_at + i ]
         dict.feed_at += fz9
     el [ !dict.cap.capture[] ] return false
-    dict.blks += 1
     fmin : f32 [ 150.0 ]
     fmax : f32 [ 8000.0 ]
     nyq  : f32 [ f32[ dict.cap.sample_rate ] * 0.5 ]
@@ -716,8 +696,6 @@ func dict_spawn [ a: i64, b: i64 ]
     for [ i7: i64 n5, i7 < tot5, i7 += 1 ]
         buf5[i7] = 0
     dict_write_wav[ buf5, tot5 ]
-    # DIAG: is the encoder's position table intact when the job starts
-    dict_pos_log[ 'spawn' ]
     j5 : WhisperJob [ model: dict.net, pcm: buf5, n: tot5 ]
     j5.hold[]
     if [ dict.gpu && dict.gpu.threaded[] ] j5.gpu = dict.gpu
@@ -726,29 +704,15 @@ func dict_spawn [ a: i64, b: i64 ]
     # worker only decodes
     el [ dict.gpu ]
         c9 : AudioClip [ rate: 48000, channels: 1, frames: tot5, pcm: buf5 ]
-        tm9 : i64 [ Au.epoch_millis[] ]   # DIAG: DICTTIME
         m9 : whisper_mel[ c9 ]
-        te9 : i64 [ Au.epoch_millis[] ]
         j5.enc = dict.gpu.encode[ m9 ]
-        log 'DICTTIME mel {te9 - tm9} ms, gpu encode {Au.epoch_millis[] - te9} ms'
-        dict_enc_log[ 'gpu', j5.enc ]
+        dict.gpu.cross_kv[ i32[ j5.enc.tensor_shape[0] ] ]
+        j5.kx = dict.gpu.kx_out
+        j5.vx = dict.gpu.vx_out
     dict.job = j5
     log 'dictation: transcribing {n5 / 48000}s speech + 1s pad…'
     pthread_create[ @dict.tid, null, @spectra_whisper_thread, cast handle [ j5 ] ]
     pthread_detach[ dict.tid ]
-
-# DIAG: an encoding's shape and statistics, to compare the gpu and cpu encoders
-func dict_enc_log [ at: string, e: tensor ]
-    if [ !e ]
-        log 'DICTENC {at}: null'
-        return
-    ne : i64 [ e.tensor_shape.total[] ]
-    sm : f64 [ 0.0 ]
-    sa : f64 [ 0.0 ]
-    for [ i: i64 0, i < ne, i += 1 ]
-        sm += f64[ e.floats[i] ]
-        sa += fabs[ f64[ e.floats[i] ] ]
-    log 'DICTENC {at}: {e.tensor_shape[0]}x{e.tensor_shape[1]} mean={sm / f64[ ne ]} absmean={sa / f64[ ne ]} f0={e.floats[0]} f1={e.floats[1]} f768={e.floats[768]}'
 
 # the gpu encoder is built (or can't be): a test take holds the mic until then
 func dictation_gpu_ready [] -> bool
@@ -850,27 +814,12 @@ func dictation_level [] -> f32
 func dictation_text [] -> string
     return dict.txt
 
-# DIAG: the encoder position table's refs and data pointer (never read)
-func dict_pos_log [ at: string ]
-    if [ !dict.net ] return
-    pz9 : tensor dict.net.pos
-    if [ !pz9 ]
-        log 'DICTPOS {at}: pos is null'
-        return
-    pp9 : i64 [ i64[ cast handle [ pz9.floats ] ] ]
-    fa9 : Au [ cast Au [ pz9.floats ] ]
-    log 'DICTPOS {at}: refs={Au.header[ pz9 ].refs} floats={pp9} floats_refs={Au.header[ fa9 ].refs}'
-
 func dictation_gpu [ cv: Canvas ] -> bool
     if [ !dict.net || !cv ] return false
     if [ dict.gpu ] return true
     if [ dict.gpu_no ] return false
     log 'dictation: building gpu pipelines…'
-    dict_pos_log[ 'before gpu' ]
-    tg9 : i64 [ Au.epoch_millis[] ]   # DIAG: DICTTIME
     g0 : whisper_vk [ model: dict.net, vk: cv.vk, win: cv.w ]
-    log 'DICTTIME gpu build {Au.epoch_millis[] - tg9} ms'
-    dict_pos_log[ 'after gpu' ]
     if [ !g0.valid ]
         log 'dictation: gpu unavailable — cpu encoder'
         dict.gpu_no = true
@@ -1144,7 +1093,6 @@ element main : trinity
                 if [ wsp8.valid ]
                     log 'whisper: encoding…'
                     enc8 : wsp8.encode[ mel8 ]
-                    dict_enc_log[ 'cpu', enc8 ]
                     log 'whisper: decoding…'
                     ids8 : wsp8.transcribe[ enc8, 64 ]
                     # DIAG: the raw token ids the decoder produced
