@@ -2627,6 +2627,8 @@ AU_EXPORT int   au_leaks(void);                     // --leaks top-N (0 = leak t
 AU_EXPORT none  au_leak_report(void);               // print the leak summary once (no-op when off)
 AU_EXPORT bool  quit_requested(void);               // first ctrl-c under --leaks: orderly-quit request
 AU_EXPORT void module_erase_silver(void);
+AU_EXPORT int  watch_pause_image(void* addr_in_image);
+AU_EXPORT int  async_wait_image(void* addr_in_image);
 AU_EXPORT none validate_meta(Au_t actual, Au_t expected);
 
 #define weak_module_ Au

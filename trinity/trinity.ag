@@ -1476,6 +1476,8 @@ abstract live_app media_app
                 for [ key: string ] in keys
                     rwin.element_targets[ key ] = null
         if [ vk ]
+            # the deferred drops belong to this image: free them before it goes
+            vk.defer_flush[]
             vk.font_cache = null
             vk.shader_cache = null
         if [ w ]
@@ -1620,9 +1622,6 @@ class ReduceBlur
     func run []
         for [ r: Render ] in renders
             r.update*[] r.draw*[] r.sync_fence[]
-
-# DIAG: the exchange mic's mount condition, logged once
-intern mic_logged : bool
 
 Display Window
     # weak: the window outlives a module reload, and live_destroy owns the app
@@ -2775,10 +2774,6 @@ Display Window
                 e[ 'shot' ]   = ShotPrompt [ topmost: true, label: 'prompt description' ]
             # the mic, inside the field's right end (as a search box has it):
             # only where something can transcribe (a host, or the app itself)
-            # DIAG: why the mic does or does not mount
-            if [ !mic_logged ]
-                mic_logged = true
-                log 'MIC host={host_slot[]} ae={bool[ae]} dictates={(ae) ? ae.dictates*[] : false} view={agent_view}'
             if [ host_slot[] > 0 || (ae && ae.dictates*[]) ]
                 mic9 : string [ (agent_view) ? 'l420px b-15%+216px w32px h32px' : 'l50%+176px b216px w32px h32px' ]
                 e[ 'shot_mic' ] = ShotMic [ topmost: true, icon: 'mic', icon_fit: 0.55, manual_mode: true,
@@ -3158,6 +3153,16 @@ Display Window
              (ev.key.ctrl || ev.key.meta) && ev.key.unicode == 83 ]
             screenshot_begin[]
             return
+        # ctrl/cmd with = or -: the font unit, 4 steps of 2px each way of 22
+        if [ ev.key.state && (ev.key.ctrl || ev.key.meta) && vk ]
+            fk : i32 [ ev.key.unicode ]
+            fd : i32 [ (fk == 61 || fk == 334) ? 2 : ((fk == 45 || fk == 333) ? -2 : 0) ]
+            if [ fd != 0 ]
+                vk.font_unit = clamp[ ((vk.font_unit > 0) ? vk.font_unit : 22) + fd, 14, 30 ]
+                restyle = true
+                if [ root ] dirty_tree[ root ]
+                will_animate = true
+                return
         s2 : bool [ ev.key.shift ]
         if [ ev.key.unicode == 340 || ev.key.unicode == 344 ] s2 = (ev.key.state) ? true : false
         if [ shift != s2 ]
@@ -5665,6 +5670,8 @@ element TButtons
         sw   : f32 [ seg_width[] ]
         full : f32 [ sw * f32[ buttons.count ] ]
         if [ full <= sw ] return 1.0
+        # bounds are whole pixels: a pixel of height a segment is still full
+        if [ bounds.w + f32[ buttons.count ] * seg_aspect + 1.0 >= full ] return 1.0
         return clamp[ (bounds.w - sw) / (full - sw), 0.0, 1.0 ]
 
     # a segment's left edge: shared width from the left, or its own
@@ -5747,8 +5754,13 @@ element TButtons
             cv.paint[ ]
             cv.rounded[ 0.0, 0.0, 0.0, 0.0 ]
         for [ i: i32 0, i < n, i += 1 ]
-            x  : f32 [ seg_x[ i ] ]
-            if [ x + seg_w <= 0.0 ] continue
+            # whole pixels: a strip growing under the pointer gives fractional
+            # segment widths, and the antialiased edges left a seam beside the
+            # lit one. each segment ends where the next begins
+            x  : f32 [ roundf[ seg_x[ i ] ] ]
+            xr : f32 [ roundf[ seg_x[ i ] + seg_w ] ]
+            sw9 : f32 [ xr - x ]
+            if [ xr <= 0.0 ] continue
             tl : f32 [ (i == 0)     ? seg_radius : 0.0 ]
             bl : f32 [ (i == 0)     ? seg_radius : 0.0 ]
             tr : f32 [ (i == n - 1) ? seg_radius : 0.0 ]
@@ -5783,7 +5795,7 @@ element TButtons
                 # the css layers use — sides pin the glow and lose the corners
                 if [ gl > 0.0 && gr > 0.0 ] cv.inner_glow[ gc, gpx ]
                 el                          cv.inner_glow_sides[ gc, gpx, gr, gpx, gl ]
-                cv.rounded_rect[ x, 0.0, seg_w, bounds.h, tl, tr, br, bl ]
+                cv.rounded_rect[ x, 0.0, sw9, bounds.h, tl, tr, br, bl ]
                 cv.paint[ ]
                 cv.inner_glow_sides[ rgba [ '#0000' ], 0.0, 0.0, 0.0, 0.0 ]
                 # both are STATE: leaving the radius set clips the icon after it
@@ -5798,14 +5810,14 @@ element TButtons
             icol : rgba [ (dang) ? rgba [ '#ff5c5c' ] : ((go9) ? rgba [ '#6fdc8c' ] : rgba [ '#fff' ]) ]
             if [ svg ]
                 isz : f32 [ bounds.h * ((icon_scale > 0.0) ? icon_scale : 0.55) ]
-                ix  : f32 [ x + (seg_w - isz) * 0.5 ]
+                ix  : f32 [ x + (sw9 - isz) * 0.5 ]
                 iy  : f32 [ (bounds.h - isz) * 0.5 ]
                 cv.fill_color[ icol ]
                 cv.draw_svg[ svg, ix, iy, isz, isz ]
             el
                 cv.font_size[ (label_px > 0.0) ? label_px : bounds.h * 0.5 ]
                 cv.fill_color[ icol ]
-                cv.draw_text[ buttons[ i ], rect [ x: x, y: 0.0, w: seg_w, h: bounds.h ],
+                cv.draw_text[ buttons[ i ], rect [ x: x, y: 0.0, w: sw9, h: bounds.h ],
                     vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
             cv.set_opacity[ op0 ]
         # the rest icon sits in the last slot and fades as the set reveals
@@ -6961,6 +6973,12 @@ TextInput ShotPrompt
             anchor_col = 0
             pristine   = false
             w.restyle  = true
+            ev.stop[]
+            return
+        # Esc while the mic records: the recording stops (as the mic's own
+        # press does) and the dialog stays
+        if [ w.dict_on ]
+            w.shot_mic[]
             ev.stop[]
             return
         # Esc: an exchange in progress is put away (the status item brings

@@ -62,6 +62,13 @@ class RepoHost
     # who the key says we are: "Hi <login>! You've successfully authenticated"
     func whoami_cmd [] -> string [ 'ssh -T git@github.com 2>&1' ]
 
+# a file's words as 64 bit hashes, held in a bloom: a search asks this
+# before it reads the file again, and a miss is certain (no false negative)
+class TokBloom
+    public mt   : i64
+    public mask : i32       # bits - 1, a power of two
+    public w    : vec u64
+
 class FindHit
     public is_header : bool
     public text      : string
@@ -1604,6 +1611,11 @@ Layer EditorLayer
         # lh_cache first — pinned_rows measures with it, and a stale one
         # counted a different band here than the draw below, reserving a
         # strip for a band that never appeared
+        # a new row height keeps the same rows in view: scroll is in px
+        if [ editor.lh_cache > 0.0 && editor.lh_cache != lh ]
+            editor.scroll.y      = editor.scroll.y * lh / editor.lh_cache
+            editor.scroll_target = editor.scroll.y
+            editor.scroll_goal   = editor.scroll.y
         editor.lh_cache = lh
         pins0   : vec i32 editor.pinned_rows[]
         pt0     : f32 [ (showing) ? 0.0 : f32[ pins0.count ] * lh ]
@@ -1788,7 +1800,7 @@ Layer EditorLayer
             cv.clear_crop[ ]
             return
 
-        in_list : bool [ editor.finder_list || showing ]
+        in_list : bool [ editor.finder_list || showing || editor.outline ]
         stop_vrow : i32 [ editor.vis_row[ editor.stop_line ] ]
         hl_line : i32 [ (in_list) ? editor.hover_line : stop_vrow ]
         if [ hl_line >= 0 && hl_line < editor.line_count[] && hl_fill && !editor.row_spacer[ hl_line ] ]
@@ -1814,6 +1826,13 @@ Layer EditorLayer
             if [ yg > bounds.y + bounds.h ] break
             bsl  : i32  [ editor.row_src[ li ] ]
             rnum : i32  [ (showing && hits) ? hits[li].line : bsl + 1 ]
+            # lit with shift held, and for as long as the outline is on
+            if [ (editor.shift_down || editor.outline) && !showing && !editor.diff_commit && editor.outline_line[ bsl ] ]
+                # the one under the pointer is the one a press would take
+                ohov : bool [ editor.hover_line == li && (editor.hover_gutter || editor.outline) ]
+                cv.fill_color[ (ohov) ? rgba['#9ad8ffaa'] : rgba['#6cb6ff40'] ]
+                cv.rect_to[ bounds.x, yg, gut_w, lh ]
+                cv.paint[ ]
             if [ !showing && !editor.diff_commit ]
                 bp : editor.breakpoints['{editor.src}:{bsl + 1}']
                 if [ bp != null ]
@@ -2704,6 +2723,7 @@ Control Editor
     mutable was_showing   : bool
     # ctrl/cmd is held: resolvable symbols outline as clickable targets
     mutable mod_down      : bool
+    mutable shift_down    : bool
     mutable hover_gutter  : bool
     # the gutter pointer within a removal edge's band (a quarter line above
     # and below the edge): it lights, and a press there reveals the run
@@ -2747,6 +2767,10 @@ Control Editor
     public  debug_vars    : vec Au
     mutable flat_rows     : vec VRow
     mutable flat_active   : bool
+    mutable outline       : bool         # rows are the indent-0 lines alone
+    mutable outline_from_y    : f32
+    mutable outline_from_line : i32
+    mutable outline_from_col  : i32
     mutable flat_vars     : vec Au
     mutable flat_lines    : i32 [ -1 ]
     mutable flat_open     : i32 [ -1 ]
@@ -2986,20 +3010,80 @@ Control Editor
         flat_ghost = ghost_hunk
         flat_rows = vec VRow []
         flat_active = false
-        if [ !debug_vars && ghost_hunk < 0 ] return
+        if [ !debug_vars && ghost_hunk < 0 && !outline ] return
+        if [ outline ] line_tree[]
         base : i32 [ lines.count ]
         for [ bli: i32 0, bli <= base, bli += 1 ]
             # the ghost rows sit before the row their run was removed above
-            if [ ghost_hunk >= 0 && ghost_lines && bli == ghost_at ]
+            if [ !outline && ghost_hunk >= 0 && ghost_lines && bli == ghost_at ]
                 for [ gs: string ] in ghost_lines
                     flat_rows.push[ VRow [ src: -1, text: gs ] ]
             if [ bli == base ] break
+            if [ outline && !outline_line[ bli ] ] continue
             flat_rows.push[ VRow [ src: bli ] ]
             if [ debug_vars ]
                 bv9 : variable base_var_of[ bli ]
                 if [ bv9 && bli == open_src ]
                     splice_var[ bv9, 1 ]
-        flat_active = flat_rows.count > base
+        flat_active = outline || flat_rows.count > base
+
+    # a non-blank line with no parent: indentation alone, any language
+    func outline_line [ i: i32 ] -> bool
+        tree : vec i32 (cur_buf) ? cur_buf.line_parent : null
+        if [ !tree || i < 0 || i >= tree.count || i >= lines.count ] return false
+        if [ i32[ tree[ i ] ] >= 0 ] return false
+        ln : string lines.value_by_index[ i ]
+        for [ c: i32 0, ln && c < ln.count, c += 1 ]
+            if [ ln[c] == 32 || ln[c] == 9 ] continue
+            # a comment line is no row: it opens with '#' or '//'
+            if [ ln[c] == 35 ] return false
+            if [ ln[c] == 47 && c + 1 < ln.count && ln[c + 1] == 47 ] return false
+            return true
+        return false
+
+    # outline on or off: view row vrl keeps its place on screen
+    func outline_toggle [ vrl: i32 ]
+        lh  : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
+        osl : i32 [ row_src[ vrl ] ]
+        ocl : i32 [ row_src[ sel_line ] ]
+        # entering: where the view and caret were, for escape to return to
+        if [ !outline ]
+            outline_from_y    = scroll.y
+            outline_from_line = ocl
+            outline_from_col  = sel_col
+        outline    = !outline
+        flat_lines = -1
+        rebuild_flat[]
+        scroll.y += f32[ vis_row[ osl ] - vrl ] * lh
+        if [ scroll.y < 0.0 ] scroll.y = 0.0
+        scroll_target = scroll.y
+        scroll_goal   = scroll.y
+        scroll_anim   = false
+        # leaving puts the caret at the end of the pressed line
+        sel_line = vis_row[ (outline && ocl >= 0) ? ocl : osl ]
+        if [ !outline ] sel_col = line_get[ sel_line ].count
+        anchor_line = sel_line
+        anchor_col  = sel_col
+        hover_line  = -1
+        pristine    = false
+        ux.will_animate = true
+
+    # leave the outline for the scroll and caret it was entered from
+    func outline_cancel []
+        outline    = false
+        flat_lines = -1
+        rebuild_flat[]
+        scroll.y      = outline_from_y
+        scroll_target = scroll.y
+        scroll_goal   = scroll.y
+        scroll_anim   = false
+        sel_line    = vis_row[ (outline_from_line >= 0) ? outline_from_line : 0 ]
+        sel_col     = outline_from_col
+        anchor_line = sel_line
+        anchor_col  = sel_col
+        hover_line  = -1
+        pristine    = false
+        ux.will_animate = true
 
     # flat-row accessors (identity when no tree is open).
     # a diff's rows are base+current merged: map back to the real file line.
@@ -3027,7 +3111,7 @@ Control Editor
     # the virtual rows are ghost rows alone (no debug variables): the file
     # stays editable around them, they are only information
     func ghost_only [] -> bool
-        return flat_active && ghost_hunk >= 0 && !debug_vars
+        return flat_active && ghost_hunk >= 0 && !debug_vars && !outline
 
     # a view row's source row while ghost rows are open: a ghost row maps
     # to the file row it sits before; past the end maps past the end
@@ -3056,10 +3140,13 @@ Control Editor
     func vis_row [ bli: i32 ] -> i32
         if [ bli < 0 ] return bli
         if [ !flat_active || !flat_rows ] return bli
+        # a line the outline hides reads as the header row above it
+        best : i32 [ (outline) ? 0 : bli ]
         for [ vr: i32 0, vr < flat_rows.count, vr += 1 ]
             r : VRow flat_rows[ vr ]
             if [ r.src == bli ] return vr
-        return bli
+            if [ outline && r.src >= 0 && r.src < bli ] best = vr
+        return best
 
     func line_count [] -> i32
         if [ show_hits && hits ] return hits.count
@@ -3175,8 +3262,11 @@ Control Editor
         k9 : i32 [ ev.key.unicode ]
         if [ k9 == 341 || k9 == 345 || k9 == 343 || k9 == 347 ]
             md9 = ev.key.state != 0
-        if [ md9 == mod_down ] return
-        mod_down = md9
+        # shift held lights the gutters that take the outline press
+        sd9 : bool [ ev.key.shift ]
+        if [ k9 == 340 || k9 == 344 ] sd9 = ev.key.state != 0        if [ md9 == mod_down && sd9 == shift_down ] return
+        mod_down   = md9
+        shift_down = sd9
         pristine = false
         if [ ux ] ux.will_animate = true
 
@@ -3506,7 +3596,8 @@ Control Editor
     # the band is VIEW rows: the scope tree is file lines, mapped both ways
     public func pinned_rows [] -> vec i32
         rows : vec i32 []
-        if [ show_hits || !cur_buf ] return rows
+        # the outline is all headers already: no band over it
+        if [ show_hits || !cur_buf || outline ] return rows
         line_tree[]
         tree : vec i32 cur_buf.line_parent
         if [ !tree ] return rows
@@ -5103,6 +5194,17 @@ Control Editor
             if [ prel >= 0.0 && prel < f32[ pins.count ] * plh ]
                 pi : i32 [ prel / plh ]
                 pr : i32 [ pins[ pi ] ]
+                # shift goes to the next header under the same parent
+                ptree : vec i32 cur_buf.line_parent
+                pends : vec i32 cur_buf.line_last
+                psrc  : i32 [ row_src[ pr ] ]
+                if [ ev.key.shift && ptree && pends && psrc >= 0 && psrc < ptree.count ]
+                    ppar  : i32 [ ptree[ psrc ] ]
+                    plast : i32 [ (ppar >= 0) ? i32[ pends[ ppar ] ] : i32[ ptree.count ] - 1 ]
+                    for [ pj: i32 [ i32[ pends[ psrc ] ] + 1 ], pj <= plast, pj += 1 ]
+                        if [ i32[ ptree[ pj ] ] == ppar && i32[ pends[ pj ] ] > pj ]
+                            pr = vis_row[ pj ]
+                            break
                 # the line lands exactly where its header row was, so the
                 # rows above it stay pinned and it reads as the same thing
                 # the column comes off the header's own row, as a click on that line would
@@ -5274,6 +5376,11 @@ Control Editor
                 return
             if [ row_var[ vrl ] ] return
             if [ diff_commit ] return    # diff rows don't map to file lines
+            # shift turns the outline on; any press on an outline row leaves it
+            if [ ev.key.shift || outline ]
+                # only the lit gutters take it; a miss sets no breakpoint
+                if [ outline_line[ row_src[ vrl ] ] ] outline_toggle[ vrl ]
+                return
             # the red edge of a removed run shows its lines; a ghost row hides them
             if [ row_ghost[ vrl ] ]
                 ghost_toggle[ ghost_hunk ]
@@ -5295,6 +5402,12 @@ Control Editor
             orbb : cast orbiter [ ux.app_object ]
             if [ orbb ] orbb.breakpoints_changed[]
             pristine = false
+            return
+        # a press on an outline row opens the full text at that line
+        if [ outline && ele ]
+            olh : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
+            ory : f32 [ ev.mouse.pos.y - ele.bounds.y ]
+            if [ ory >= 0.0 && ory < f32[ line_count[] ] * olh ] outline_toggle[ i32[ ory / olh ] ]
             return
         if [ !ev.key.shift ]
             # a definition jump consumed the click: we are in another
@@ -5394,12 +5507,13 @@ Control Editor
             pristine = false
             ux.will_animate = true
         if [ hl != hover_line || hg != hover_gutter ]
-            in_list : bool [ finder_list || show_hits ]
+            in_list : bool [ finder_list || show_hits || outline ]
             oh : bool [ hover_line >= 0 && (row_header[ hover_line ] || (hover_line > 0 && row_header[ hover_line - 1 ])) ]
             nh : bool [ hl >= 0 && (row_header[ hl ] || (hl > 0 && row_header[ hl - 1 ])) ]
             hover_line   = hl
             hover_gutter = hg
-            if [ in_list || oh || nh ]
+            # shift held lights the gutters: the hovered one repaints too
+            if [ in_list || oh || nh || shift_down ]
                 pristine = false
                 ux.will_animate = true
         # a removal edge lights while the gutter pointer is in its band:
@@ -5612,6 +5726,10 @@ Control Editor
             orb8 : cast orbiter [ ux.app_object ]
             if [ orb8 ] orb8.app_pause_toggle[ run_view ]
             if [ app_view == run_view.is_paused*[] ] toggle_app_view[]
+            return
+        # escape leaves the outline for where it was entered from
+        if [ ev.key.unicode == 256 && outline ]
+            outline_cancel[]
             return
         # escape collapses the innermost open field expansion
         if [ ev.key.unicode == 256 && collapse_last[] ]

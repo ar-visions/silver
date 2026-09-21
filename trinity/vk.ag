@@ -1047,6 +1047,13 @@ class vk_context
         dd : DropDefer [ obj: o, defer_frame: frame_no ]
         defer_drops.push[ dd ]
 
+    # a module swap: the deferred owners belong to the image going away, so
+    # everything queued goes now, while its code is still mapped
+    func defer_flush [] -> none
+        if [ device ] vkDeviceWaitIdle[ device ]
+        frame_no += 1000000
+        defer_tick[]
+
     # once per rendered frame: destroy entries 8+ frames old (>> ring depth)
     func defer_tick [] -> none
         frame_no += 1
@@ -1117,6 +1124,8 @@ class vk_context
     # loaded once, borrowed by every canvas. stored as Au (CanvasFont lives in
     # Canvas.ag); Canvas casts on the way out.
     mutable font_cache: map Au [ string ]
+    # px of the default font, the size of unit 1.0; 0 reads as 22
+    mutable font_unit: i32
 
     func init [ ]
         hold[]

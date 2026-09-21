@@ -92,6 +92,10 @@ static void _type_guard_end(char* g) { (void)g; type_unlock(); }
     char _emit_g_ = (emit_lock(), (char)0); (void)_emit_g_
 #define type_guard __attribute__((cleanup(_type_guard_end))) \
     char _type_g_ = (type_lock(), (char)0); (void)_type_g_
+// taken on first need: declare AFTER emit_guard so it unwinds first
+static void _type_lazy_end(char* held) { if (*held) type_unlock(); }
+#define type_lazy __attribute__((cleanup(_type_lazy_end))) char _type_l_ = 0
+#define type_need do { if (!_type_l_) { type_lock(); _type_l_ = 1; } } while (0)
 
 // parse callbacks re-enter the parser: drop the context lock across them
 static inline int  emit_suspend() {
@@ -276,7 +280,9 @@ AU_EXPORT etype etype_prep(aether a, Au_t au) { sequencer
     if (!au) return null;
     { // fast path: already created and implemented — no lock, no writes
         etype done = u(etype, au);
-        if (done && !au->is_c && done->is_implemented && _lltype_slot(done))
+        // built: the locked path below acts only on a C enum with a slot
+        if (done && done->is_implemented && !(au->is_alias && !au->src) &&
+            !(au->is_c && _lltype_slot(done) && is_enum(done)))
             return done;
     }
     type_guard;
@@ -1433,9 +1439,21 @@ static bool ll_share_owner(aether a, etype t) {
     return true;
 }
 
+// an owner with every core's slot built is shared with no lock taken
+static bool ll_share_ready(aether a, etype t) {
+    etype owner = u(etype, t->autype);
+    if (!owner || owner == t) return false;
+    for (int i = 0; i < ll_n(a); i++)
+        if (!owner->lltypes[i]) return false;
+    for (int i = 0; i < ll_n(a); i++)
+        t->lltypes[i] = owner->lltypes[i];
+    return true;
+}
+
 // every creator below writes one type per context, under the emit lock
 #define ll_creator(NAME, EXPR) \
     LLVMTypeRef NAME(aether a, etype t) { \
+        if (ll_share_ready(a, t)) return _lltype_slot(t); \
         type_guard; \
         if (ll_share_owner(a, t)) return _lltype_slot(t); \
         for (int i = 0; i < ll_n(a); i++) { \
@@ -1454,6 +1472,7 @@ ll_creator(ll_fp16, LLVMHalfTypeInContext  (c))
 ll_creator(ll_sz,   LLVMIntPtrTypeInContext(c, ll_td(a)))
 
 AU_EXPORT LLVMTypeRef ll_int(aether a, etype t, int bits) {
+    if (ll_share_ready(a, t)) return _lltype_slot(t);
     type_guard;
     if (ll_share_owner(a, t)) return _lltype_slot(t);
     emit_guard;
@@ -8269,7 +8288,8 @@ static void build_entrypoint(aether a, efunc module_init_fn) {
             if (au_module_erase) {
                 efunc fn_erase = u(efunc, au_module_erase);
                 if (fn_erase && _llvalue((enode)fn_erase)) {
-                    LLVMValueRef mod_name = LLVMBuildGlobalStringPtr(B, a->name->chars, "mod_name");
+                    // the registry key is module_identity (the share name), not a->name
+                    LLVMValueRef mod_name = LLVMBuildGlobalStringPtr(B, module_identity(a)->chars, "mod_name");
                     LLVMTypeRef  erase_ty = LLVMFunctionType(void_ty,
                         (LLVMTypeRef[]){ptr_ty, ptr_ty}, 2, false);
                     LLVMBuildCall2(B, erase_ty, _llvalue((enode)fn_erase),
@@ -8567,19 +8587,24 @@ AU_EXPORT none push_lambda_members(aether a, efunc f) {
 
 // this is the declare (this comment stays)
 AU_EXPORT none etype_init(etype t) {
-    type_guard;
     emit_guard;
+    // the world stops only to register or to change a shared list
+    type_lazy;
     if (t->mod == null) t->mod = (aether)instanceof(t, aether);
     aether a = au_active(t->mod); // silver's mod will be a delegate to aether, not inherited
     
     t->iteration = a->iteration;
     Au_t au_store = typeid(store);
-    if (!a->registry)
-        a->registry = store();
+    if (!a->registry) {
+        type_need;
+        if (!a->registry) a->registry = store(hsize, 262144);
+    }
 
     bool etype_is_module = isa(t) == typeid(aether) || isa(t)->context == typeid(aether);
-    if (!etype_is_module && !t->autype)
+    if (!etype_is_module && !t->autype) {
+        type_need;
         t->autype = def(a->autype, null, AU_MEMBER_NAMESPACE, 0);
+    }
 
     Au_t    au  = t->autype;
     bool  named = au && au->ident && strlen(au->ident);
@@ -8608,6 +8633,7 @@ AU_EXPORT none etype_init(etype t) {
     } else if (t->is_schema && a->core == 0) {
         // one-time: build the __X_f schema autype + copy members. core 0 only;
         // worker cores reuse the shared autype and just rebuild the lltype below.
+        type_need;
         Au_t source_au = t->autype;
 
             
@@ -8687,17 +8713,21 @@ AU_EXPORT none etype_init(etype t) {
             ll_named(a, t, au->ident);
     }
 
-    if (!au->member_type)
+    if (!au->member_type) {
+        type_need;
         au->member_type = AU_MEMBER_TYPE;
+    }
 
     // we register import (enamespace) ourselves
     if (!u(etype, au) && isa(t) != typeid(enode) && !instanceof(t, enamespace)) {
-        etype_register(a, (Au)au, (Au)hold(t), false);
+        type_need;
+        if (!u(etype, au)) etype_register(a, (Au)au, (Au)hold(t), false);
     }
 
     Au_t_f* au_t = (Au_t_f*)isa(au);
 
     if (is_func((Au)au)) {
+        type_need;
         int   is_inst = au->is_imethod;
         efunc fn      = (efunc)t;
         int   n_args  = fn->autype->args.count;
@@ -8798,6 +8828,7 @@ AU_EXPORT none etype_init(etype t) {
         etype_create(a, au->src);
         ll_array(a, t, u(etype, au->src), au->elements);
     } else if (named && (!instanceof(t, enode) && (is_rec((Au)t) || au->is_union || au == typeid(Au_t)))) {
+        type_need;
         // aliases never own their lltype — resolution walks src
         if (au->is_alias) {
             // leave _lltype_slot(t) null; canonical/u(etype, src) provides type info
@@ -8919,8 +8950,10 @@ AU_EXPORT none etype_init(etype t) {
             verify(u(etype, src) && lltype(u(etype, src)), "type must be created before %o: %s", n, src_name);
             ll_ptr(a, t);
             // a shaped alloc must NEVER become the canonical pointer
-            if (!(au->traits & AU_TRAIT_SHAPED))
+            if (!(au->traits & AU_TRAIT_SHAPED) && src->ptr != au) {
+                type_need;
                 src->ptr = au;
+            }
         }
     } else if ((au->traits & AU_TRAIT_ABSTRACT) == 0) {
         
@@ -11512,7 +11545,7 @@ AU_EXPORT void aether_reinit_startup(aether a) {
     a->libs           = map(assorted, true, unmanaged, true);
     a->user_type_ids  = map(assorted, true);
     a->lexical        = array(alloc, 32, unmanaged, true, assorted, true);
-    a->registry       = store();
+    a->registry       = store(hsize, 262144);
     a->next_func_id   = 0;
     a->next_probe_id  = 0; // send out a class-3 probe
 

@@ -1695,7 +1695,9 @@ Render Canvas
         if [ font_set && font ] return
         sz : i32 [ states[state_depth - 1].font_size ]
         if [ sz <= 0 ] sz = 22
-        ds  : f32 [ (w.scale > 0) ? w.scale : 1.0 ]
+        # every size rides the font unit: 22 is unit 1.0 at rest
+        fu  : f32 [ (vk.font_unit > 0) ? f32[ vk.font_unit ] / 22.0 : 1.0 ]
+        ds  : f32 [ ((w.scale > 0) ? w.scale : 1.0) * fu ]
         dsz : i32 [ i32[ sz * ds ] ]
         if [ dsz <= 0 ] dsz = sz
         if [ !vk.font_cache ] vk.font_cache = map Au [ string ] []

@@ -1124,3 +1124,18 @@ verification after the repository hooks are trusted through `/hooks`.
     Description and connection tests pass; 17 hook tests pass.
     Trinity and Orbiter build. Socket tests verify expansion,
     collapse, plain titles, and descriptions after completion.
+
+## Active work: orbiter live reload crash (Sep 21 2026)
+
+1. OPEN Auto reload crashes orbiter. Reproduced headless
+   (touch orbiter/Editor.ag, `silver --build orbiter`). Two ways
+   it dies, one cause: the old instance is not freed on reload.
+   - Memory footprint 1783 MB -> 4264 MB -> 6956 MB over two
+     rebuilds; one rebuild fires TWO reloads. After 4-5 reloads
+     the GPU is out of memory and the Vulkan device is lost.
+   - Intermittent SIGSEGV in Au_free (Au.c:6354,
+     `cur->ft.dealloc`): a surviving object's type descriptor
+     points into the unloaded old orbiter image. The junk
+     address (0x23000000010xxxxx) is an unfixed on-disk pointer.
+   - Not fixed. Next: find what still holds the old instance
+     after media_app.destroy, and why one build reloads twice.

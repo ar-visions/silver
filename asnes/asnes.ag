@@ -4,7 +4,7 @@
 export 0.8.8
 export extensions [
 	'.smc': FileType.binary,
-	'.sfc': FileType.binary, 
+	'.sfc': FileType.binary,
 	'.spc': FileType.binary
 ]
 
@@ -14,13 +14,13 @@ import vec
 import spectra
 import <time.h>
 ifdef [ windows ]
-    # posix.h carries the posix surface windows has no header for
-    import <posix.h>
+	# posix.h carries the posix surface windows has no header for
+	import <posix.h>
 el
-    import <unistd.h>
-        +_DEFAULT_SOURCE
-        +_XOPEN_SOURCE=500
-    import <pthread.h>
+	import <unistd.h>
+		+_DEFAULT_SOURCE
+		+_XOPEN_SOURCE=500
+	import <pthread.h>
 import <math.h>
 import <stdio.h>
 import <stdlib.h>
@@ -3048,166 +3048,166 @@ element asnes : trinity
 				el drop30 += 1
 
 	func mix_one_sample [ i: i32 ]
-			apply_latches[]
+		apply_latches[]
 
-			left  : f32 [ 0.0 ]
-			right : f32 [ 0.0 ]
+		left  : f32 [ 0.0 ]
+		right : f32 [ 0.0 ]
 
-			for [ ch: u16 0, ch < 8, ch += 1 ]
-				if [ !spc.channels[ch].active ]
-					spc.channels[ch].output_l = 0.0
-					spc.channels[ch].output_r = 0.0
-					continue
+		for [ ch: u16 0, ch < 8, ch += 1 ]
+			if [ !spc.channels[ch].active ]
+				spc.channels[ch].output_l = 0.0
+				spc.channels[ch].output_r = 0.0
+				continue
 
-				ch_base : u8 [ ch * 0x10 ]
-				vol_l   : u8 [ dsp_r[ch_base + 0x00 ] ]
-				vol_r   : u8 [ dsp_r[ch_base + 0x01 ] ]
-				pitch_l : u8 [ dsp_r[ch_base + 0x02 ] ]
-				pitch_h : u8 [ dsp_r[ch_base + 0x03 ] ]
-				src_n   : u8 [ dsp_r[ch_base + 0x04 ] ]
-				adsr1   : u8 [ dsp_r[ch_base + 0x05 ] ]
-				adsr2   : u8 [ dsp_r[ch_base + 0x06 ] ]
-				gain    : u8 [ dsp_r[ch_base + 0x07 ] ]
+			ch_base : u8 [ ch * 0x10 ]
+			vol_l   : u8 [ dsp_r[ch_base + 0x00 ] ]
+			vol_r   : u8 [ dsp_r[ch_base + 0x01 ] ]
+			pitch_l : u8 [ dsp_r[ch_base + 0x02 ] ]
+			pitch_h : u8 [ dsp_r[ch_base + 0x03 ] ]
+			src_n   : u8 [ dsp_r[ch_base + 0x04 ] ]
+			adsr1   : u8 [ dsp_r[ch_base + 0x05 ] ]
+			adsr2   : u8 [ dsp_r[ch_base + 0x06 ] ]
+			gain    : u8 [ dsp_r[ch_base + 0x07 ] ]
 
-				pitch : u16 [ pitch_l | ((pitch_h & 0x3F) << 8) ]
-				if [ pitch == 0 ]
-					spc.channels[ch].output_l = 0.0
-					spc.channels[ch].output_r = 0.0
-					continue
+			pitch : u16 [ pitch_l | ((pitch_h & 0x3F) << 8) ]
+			if [ pitch == 0 ]
+				spc.channels[ch].output_l = 0.0
+				spc.channels[ch].output_r = 0.0
+				continue
 
-				dir_page     : u8  [ dsp_r[0x5D ] ]
-				src_dir      : u16 [ (dir_page << 8) + (src_n * 4) ]
-				sample_start : u16 [ spc_r16[src_dir] ]
-				sample_loop  : u16 [ spc_r16[src_dir + 2] ]
+			dir_page     : u8  [ dsp_r[0x5D ] ]
+			src_dir      : u16 [ (dir_page << 8) + (src_n * 4) ]
+			sample_start : u16 [ spc_r16[src_dir] ]
+			sample_loop  : u16 [ spc_r16[src_dir + 2] ]
 
-				spc.channels[ch].frac += pitch
-				while [ spc.channels[ch].frac >= 0x1000 ]
-					spc.channels[ch].frac -= 0x1000
-					spc.channels[ch].pos  += 1
+			spc.channels[ch].frac += pitch
+			while [ spc.channels[ch].frac >= 0x1000 ]
+				spc.channels[ch].frac -= 0x1000
+				spc.channels[ch].pos  += 1
 
-					block_pos : u16 [ sample_start + (spc.channels[ch].pos / 16) * 9 ]
-					block_header : u8  [ spc_r[ block_pos ] ]
-					sample_idx   : u8  [ spc.channels[ch].pos % 16 ]
+				block_pos : u16 [ sample_start + (spc.channels[ch].pos / 16) * 9 ]
+				block_header : u8  [ spc_r[ block_pos ] ]
+				sample_idx   : u8  [ spc.channels[ch].pos % 16 ]
 
-					sample_byte : u8  [ spc_r[ block_pos + 1 + (sample_idx / 2) ] ]
-					hi_nib      : i8 [ (sample_byte >> 4) & 0xF ]
-					lo_nib      : i8 [ sample_byte & 0xF ]
-					sample_4bit : i8 [ (sample_idx & 1) ? lo_nib : hi_nib ]
-					if [ sample_4bit > 7 ] sample_4bit -= 16
+				sample_byte : u8  [ spc_r[ block_pos + 1 + (sample_idx / 2) ] ]
+				hi_nib      : i8 [ (sample_byte >> 4) & 0xF ]
+				lo_nib      : i8 [ sample_byte & 0xF ]
+				sample_4bit : i8 [ (sample_idx & 1) ? lo_nib : hi_nib ]
+				if [ sample_4bit > 7 ] sample_4bit -= 16
 
-					shift_amt  : u8  [ block_header >> 4 ]
-					dec_sample : i32 [ i32[sample_4bit] << shift_amt ]
-					if [ shift_amt > 12 ]                  # invalid shift: sign bit only
-						dec_sample = (i32[sample_4bit] >> 4) << 11
-					bfilter    : u8  [ (block_header >> 2) & 0x3 ]
-					switch [ bfilter ]
-						case 0
-							# no filter
-						case 1
-							s0 : i32 [ spc.channels[ch].samples[0] ]
-							dec_sample += s0 + ((0 - s0) >> 4)
-						case 2
-							s0 : i32 [ spc.channels[ch].samples[0] ]
-							s1 : i32 [ spc.channels[ch].samples[1] ]
-							dec_sample += (s0 << 1) + ((0 - (s0 * 3)) >> 5) - s1 + (s1 >> 4)
-						case 3
-							s0 : i32 [ spc.channels[ch].samples[0] ]
-							s1 : i32 [ spc.channels[ch].samples[1] ]
-							dec_sample += (s0 << 1) + ((0 - (s0 * 13)) >> 6) - s1 + ((s1 * 3) >> 4)
+				shift_amt  : u8  [ block_header >> 4 ]
+				dec_sample : i32 [ i32[sample_4bit] << shift_amt ]
+				if [ shift_amt > 12 ]                  # invalid shift: sign bit only
+					dec_sample = (i32[sample_4bit] >> 4) << 11
+				bfilter    : u8  [ (block_header >> 2) & 0x3 ]
+				switch [ bfilter ]
+					case 0
+						# no filter
+					case 1
+						s0 : i32 [ spc.channels[ch].samples[0] ]
+						dec_sample += s0 + ((0 - s0) >> 4)
+					case 2
+						s0 : i32 [ spc.channels[ch].samples[0] ]
+						s1 : i32 [ spc.channels[ch].samples[1] ]
+						dec_sample += (s0 << 1) + ((0 - (s0 * 3)) >> 5) - s1 + (s1 >> 4)
+					case 3
+						s0 : i32 [ spc.channels[ch].samples[0] ]
+						s1 : i32 [ spc.channels[ch].samples[1] ]
+						dec_sample += (s0 << 1) + ((0 - (s0 * 13)) >> 6) - s1 + ((s1 * 3) >> 4)
 
-					if [ dec_sample >  32767 ] dec_sample =  32767
-					if [ dec_sample < -32768 ] dec_sample = -32768
+				if [ dec_sample >  32767 ] dec_sample =  32767
+				if [ dec_sample < -32768 ] dec_sample = -32768
 
-					spc.channels[ch].samples[3] = spc.channels[ch].samples[2]
-					spc.channels[ch].samples[2] = spc.channels[ch].samples[1]
-					spc.channels[ch].samples[1] = spc.channels[ch].samples[0]
-					spc.channels[ch].samples[0] = i16[dec_sample]
+				spc.channels[ch].samples[3] = spc.channels[ch].samples[2]
+				spc.channels[ch].samples[2] = spc.channels[ch].samples[1]
+				spc.channels[ch].samples[1] = spc.channels[ch].samples[0]
+				spc.channels[ch].samples[0] = i16[dec_sample]
 
-					if [ sample_idx == 15 && (block_header & 0x01) ]
-						spc.dsp[0x7C] = spc.dsp[0x7C] | (1 << ch)   # set ENDX
-						if [ block_header & 0x02 ]                  # loop
-							spc.channels[ch].pos = (((sample_loop - sample_start) / 9) * 16) - 1
+				if [ sample_idx == 15 && (block_header & 0x01) ]
+					spc.dsp[0x7C] = spc.dsp[0x7C] | (1 << ch)   # set ENDX
+					if [ block_header & 0x02 ]                  # loop
+						spc.channels[ch].pos = (((sample_loop - sample_start) / 9) * 16) - 1
+					el
+						spc.channels[ch].active   = 0           # one-shot finished
+						spc.channels[ch].envelope = 0
+
+			frac_v : u8  [ spc.channels[ch].frac >> 4 ]
+			interp : i16 [ gaussian_interpolate[ frac_v, ch ] ]
+
+			# --- envelope update (range 0..0x7FF) ---
+			env : i32 [ spc.channels[ch].envelope ]
+			if [ spc.channels[ch].env_state == 3 ]
+				env -= 8                                   # release: linear fade
+				if [ env <= 0 ]
+					env = 0
+					spc.channels[ch].active = 0
+			el [ adsr1 & 0x80 ]
+				arate : i32 [ adsr2 & 0x1F ]               # sustain rate default
+				if [ spc.channels[ch].env_state == 0 ]
+					arate = ((adsr1 & 0x0F) << 1) + 1         # attack
+				el [ spc.channels[ch].env_state == 1 ]
+					arate = (((adsr1 >> 4) & 0x07) << 1) + 16 # decay
+				aper : i32 [ env_rate[ arate ] ]
+				if [ aper > 0 ]
+					spc.channels[ch].env_count += 1
+					if [ spc.channels[ch].env_count >= aper ]
+						spc.channels[ch].env_count = 0
+						if [ spc.channels[ch].env_state == 0 ]
+							env += ((arate == 31) ? 1024 : 32)
+							if [ env >= 0x7FF ]
+								env = 0x7FF
+								spc.channels[ch].env_state = 1
 						el
-							spc.channels[ch].active   = 0           # one-shot finished
-							spc.channels[ch].envelope = 0
-
-				frac_v : u8  [ spc.channels[ch].frac >> 4 ]
-				interp : i16 [ gaussian_interpolate[ frac_v, ch ] ]
-
-				# --- envelope update (range 0..0x7FF) ---
-				env : i32 [ spc.channels[ch].envelope ]
-				if [ spc.channels[ch].env_state == 3 ]
-					env -= 8                                   # release: linear fade
-					if [ env <= 0 ]
-						env = 0
-						spc.channels[ch].active = 0
-				el [ adsr1 & 0x80 ]
-					arate : i32 [ adsr2 & 0x1F ]               # sustain rate default
-					if [ spc.channels[ch].env_state == 0 ]
-						arate = ((adsr1 & 0x0F) << 1) + 1         # attack
-					el [ spc.channels[ch].env_state == 1 ]
-						arate = (((adsr1 >> 4) & 0x07) << 1) + 16 # decay
-					aper : i32 [ env_rate[ arate ] ]
-					if [ aper > 0 ]
-						spc.channels[ch].env_count += 1
-						if [ spc.channels[ch].env_count >= aper ]
-							spc.channels[ch].env_count = 0
-							if [ spc.channels[ch].env_state == 0 ]
-								env += ((arate == 31) ? 1024 : 32)
-								if [ env >= 0x7FF ]
-									env = 0x7FF
-									spc.channels[ch].env_state = 1
-							el
+							env -= (((env - 1) >> 8) + 1)
+							sl : i32 [ (((adsr2 >> 5) & 0x07) + 1) << 8 ]
+							if [ spc.channels[ch].env_state == 1 && env <= sl ]
+								spc.channels[ch].env_state = 2
+			el [ gain & 0x80 ]
+				gmode : u8  [ (gain >> 5) & 0x03 ]
+				grate : i32 [ gain & 0x1F ]
+				gper  : i32 [ env_rate[ grate ] ]
+				if [ gper > 0 ]
+					spc.channels[ch].env_count += 1
+					if [ spc.channels[ch].env_count >= gper ]
+						spc.channels[ch].env_count = 0
+						switch [ gmode ]
+							case 0
+								env -= 32
+							case 1
 								env -= (((env - 1) >> 8) + 1)
-								sl : i32 [ (((adsr2 >> 5) & 0x07) + 1) << 8 ]
-								if [ spc.channels[ch].env_state == 1 && env <= sl ]
-									spc.channels[ch].env_state = 2
-				el [ gain & 0x80 ]
-					gmode : u8  [ (gain >> 5) & 0x03 ]
-					grate : i32 [ gain & 0x1F ]
-					gper  : i32 [ env_rate[ grate ] ]
-					if [ gper > 0 ]
-						spc.channels[ch].env_count += 1
-						if [ spc.channels[ch].env_count >= gper ]
-							spc.channels[ch].env_count = 0
-							switch [ gmode ]
-								case 0
-									env -= 32
-								case 1
-									env -= (((env - 1) >> 8) + 1)
-								case 2
-									env += 32
-								default
-									env += ((env < 0x600) ? 32 : 8)
-				el
-					env = (gain & 0x7F) << 4                  # direct gain
-				if [ env > 0x7FF ] env = 0x7FF
-				if [ env < 0 ] env = 0
-				spc.channels[ch].envelope = i16[ env ]
-				spc.dsp[ ch_base + 0x08 ] = u8[ (env >> 4) & 0x7F ]   # ENVX
+							case 2
+								env += 32
+							default
+								env += ((env < 0x600) ? 32 : 8)
+			el
+				env = (gain & 0x7F) << 4                  # direct gain
+			if [ env > 0x7FF ] env = 0x7FF
+			if [ env < 0 ] env = 0
+			spc.channels[ch].envelope = i16[ env ]
+			spc.dsp[ ch_base + 0x08 ] = u8[ (env >> 4) & 0x7F ]   # ENVX
 
-				final_sample : i32 [ (i32[interp] * env) >> 11 ]
-				if [ final_sample >  32767 ] final_sample =  32767
-				if [ final_sample < -32768 ] final_sample = -32768
-				l : f32 [ (final_sample / 32768.0) * (i8[vol_l] / 128.0) ]
-				r : f32 [ (final_sample / 32768.0) * (i8[vol_r] / 128.0) ]
-				spc.channels[ch].output_l = l
-				spc.channels[ch].output_r = r
-				left  += l
-				right += r
+			final_sample : i32 [ (i32[interp] * env) >> 11 ]
+			if [ final_sample >  32767 ] final_sample =  32767
+			if [ final_sample < -32768 ] final_sample = -32768
+			l : f32 [ (final_sample / 32768.0) * (i8[vol_l] / 128.0) ]
+			r : f32 [ (final_sample / 32768.0) * (i8[vol_r] / 128.0) ]
+			spc.channels[ch].output_l = l
+			spc.channels[ch].output_r = r
+			left  += l
+			right += r
 
-			mvol_l : u8 [ dsp_r[0x0C ] ]
-			mvol_r : u8 [ dsp_r[0x1C ] ]
-			left  *= i8 [ mvol_l ] / 128.0
-			right *= i8 [ mvol_r ] / 128.0
+		mvol_l : u8 [ dsp_r[0x0C ] ]
+		mvol_r : u8 [ dsp_r[0x1C ] ]
+		left  *= i8 [ mvol_l ] / 128.0
+		right *= i8 [ mvol_r ] / 128.0
 
-			echo_add[ left, right ]
-			left  = clamp[ left  + echo_out_l, -1.0, 1.0 ]
-			right = clamp[ right + echo_out_r, -1.0, 1.0 ]
+		echo_add[ left, right ]
+		left  = clamp[ left  + echo_out_l, -1.0, 1.0 ]
+		right = clamp[ right + echo_out_r, -1.0, 1.0 ]
 
-			if [ i >= 0 ]                          # i = -1: buffer full — DSP state advanced above, sample dropped
-				spc.audio_buffer[i * 2]     = i16[ left  * 32000 * volume ]
-				spc.audio_buffer[i * 2 + 1] = i16[ right * 32000 * volume ]
+		if [ i >= 0 ]                          # i = -1: buffer full — DSP state advanced above, sample dropped
+			spc.audio_buffer[i * 2]     = i16[ left  * 32000 * volume ]
+			spc.audio_buffer[i * 2 + 1] = i16[ right * 32000 * volume ]
 
 	func generate_audio [ run_cpu: bool ]
 		if [ ! audio || ! audio.active ] return

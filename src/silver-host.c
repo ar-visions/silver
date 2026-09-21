@@ -102,6 +102,8 @@ typedef void       (*au_main_args_fn)(int, char**);
 typedef void       (*au_live_set_pending_fn)(int);
 typedef int        (*au_live_take_apply_fn)(void);
 typedef int        (*module_purge_image_fn)(void*);
+typedef int        (*watch_pause_image_fn)(void*);
+typedef int        (*async_wait_image_fn)(void*);
 typedef int        (*au_live_get_defer_fn)(void);
 
 // stash the process argv into libAu (loaded inside the app .so) so silver_live_init
@@ -1498,6 +1500,13 @@ int main(int argc, char** argv) {
                 fprintf(stderr, "[%s] reload failed: %s\n", name, dlerror());
                 return 1;
             }
+            // a watch still running in the old image calls freed code on its
+            // next event: stop those before the registry purge and the close
+            watch_pause_image_fn wpause = (watch_pause_image_fn)dlsym(handle, "watch_pause_image");
+            if (wpause) wpause((void*)do_init);
+            // a worker thread still in the old image returns into freed code
+            async_wait_image_fn await = (async_wait_image_fn)dlsym(handle, "async_wait_image");
+            if (await) await((void*)do_init);
             // registry entries inside the old image would fault after dlclose
             module_purge_image_fn purge = (module_purge_image_fn)dlsym(handle, "module_purge_image");
             if (purge) purge((void*)do_init);

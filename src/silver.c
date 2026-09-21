@@ -2148,8 +2148,8 @@ void silver_write_fmt(silver a, array toks) {
 
 // run a live app by default (build+run when invoked directly). recovers is_live for
 // compile silver-host.c into build_dir/name (the live-app launcher binary) and
-// return that path. never cached — recompiled every build so a host source edit
-// (silver-host.c) always takes. callers own their own guard + symlink/live_binary.
+// return that path. rebuilt when silver-host.c is newer than the binary or
+// the compile command changed. callers own their guard + symlink/live_binary.
 static path build_silver_host(silver a) {
     path host_src = f(path, "%s/src/silver-host.c", SILVER);
     string share_name = silver_install_name(a);
@@ -2175,15 +2175,31 @@ static path build_silver_host(silver a) {
     // link to a temp, then replace: a running app or a mid-scan file locks
     // the exe against in-place relink (LNK1168). the temp always writes.
     path host_out = f(path, "%o.new%i", host_dst, (i32)getpid());
-    vexec(a->verbose, "silver-host", "%s/install/bin/clang %s %s -o %o %o %s %s -D_CRT_SECURE_NO_WARNINGS -D_CRT_NONSTDC_NO_WARNINGS -I%s/install/include -L%s/install/lib -DSILVER_ROOT=\\\"%s\\\" -DSILVER_SHARE_NAME=\\\"%o\\\" -DSILVER_BUILD_TAG=\\\"%s\\\"",
+    cstr host_fmt = "%s/install/bin/clang %s %s -o %o %o %s %s -D_CRT_SECURE_NO_WARNINGS -D_CRT_NONSTDC_NO_WARNINGS -I%s/install/include -L%s/install/lib -DSILVER_ROOT=\\\"%s\\\" -DSILVER_SHARE_NAME=\\\"%o\\\" -DSILVER_BUILD_TAG=\\\"%s\\\"";
+    string cmd = f(string, host_fmt,
         SILVER, a->debug ? "-O0 -g" : "-O2", a->asan ? "-fsanitize=address -shared-libasan" : "", host_out, host_src, host_libs, subsystem, SILVER, SILVER, SILVER, SILVER, share_name, silver_build_tag(a));
-    verify(au_replace_file(host_out->chars, host_dst->chars) == 0,
-        "could not replace %o: locked by another process", host_dst);
+    // the temp name carries the pid: the record names the real output
+    string key = f(string, host_fmt,
+        SILVER, a->debug ? "-O0 -g" : "-O2", a->asan ? "-fsanitize=address -shared-libasan" : "", host_dst, host_src, host_libs, subsystem, SILVER, SILVER, SILVER, SILVER, share_name, silver_build_tag(a));
 #else
     // libAu resolves by soname: the tree's lib/ here, /usr/lib/<app>/ packaged
-    vexec(a->verbose, "silver-host", "%s/install/bin/clang %s %s -o %o %o %s -I%s/install/include -L%s/install/lib -Wl,-rpath,%s/install/lib -Wl,-rpath,'$ORIGIN/../lib/%o' -DSILVER_ROOT='\"%s\"' -DSILVER_SHARE_NAME='\"%o\"' -DSILVER_BUILD_TAG='\"%s\"'",
+    string cmd = f(string, "%s/install/bin/clang %s %s -o %o %o %s -I%s/install/include -L%s/install/lib -Wl,-rpath,%s/install/lib -Wl,-rpath,'$ORIGIN/../lib/%o' -DSILVER_ROOT='\"%s\"' -DSILVER_SHARE_NAME='\"%o\"' -DSILVER_BUILD_TAG='\"%s\"'",
         SILVER, a->debug ? "-O0 -g" : "-O2", a->asan ? "-fsanitize=address -shared-libasan" : "", host_dst, host_src, host_libs, SILVER, SILVER, SILVER, a->name, SILVER, share_name, silver_build_tag(a));
+    string key = cmd;
 #endif
+    // same source, same command: the host already built is the host
+    path  cmd_rec = f(path, "%o.cmd", host_dst);
+    if (file_exists("%o", host_dst) && file_exists("%o", cmd_rec) &&
+        modified_time(host_dst) >= modified_time(host_src)) {
+        string was = (string)load(cmd_rec, typeid(string), null);
+        if (was && eq(was, key->chars)) return host_dst;
+    }
+    vexec(a->verbose, "silver-host", "%o", cmd);
+#ifdef _WIN32
+    verify(au_replace_file(host_out->chars, host_dst->chars) == 0,
+        "could not replace %o: locked by another process", host_dst);
+#endif
+    save(cmd_rec, (Au)key, null);
     return host_dst;
 }
 
@@ -10407,6 +10423,11 @@ static void symlink_resources(path src, path dst) {
             make_dir(d);
             symlink_resources(s, d);
         } else {
+            // a link already on this source is left alone
+            char cur[4096];
+            ssize_t cn = readlink(d->chars, cur, sizeof(cur) - 1);
+            if (cn > 0 && (size_t)cn == strlen(abs_s->chars) &&
+                memcmp(cur, abs_s->chars, (size_t)cn) == 0) continue;
             // a running app reads these: swap the link in place, no gap
             path tmp = form(path, "%o.link", d);
             unlink(tmp->chars);

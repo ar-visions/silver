@@ -4,6 +4,7 @@ Option NodeList
     # a scrolling container owns its canvas (Button, its base, is uncached):
     # its rows clip at its bounds and repaint only when it changes
     no_cache : false
+    
     mutable sel        : i32 [ -1 ]
     mutable row_height : f32 [ 20.0 ]
     mutable content_y  : f32 [ 0.0 ]
@@ -62,12 +63,12 @@ Option NodeList
         pristine = false
 
     func on_press [ ev: Event ]
+        # a modifier click belongs to the inspector, not the row
+        if [ ev.key.meta || ev.key.ctrl ] return
         ev.stop[]
         rel_y : f32 [ ev.mouse.pos.y - content_y ]
-        log 'LISTPRESS {id} y={ev.mouse.pos.y} content_y={content_y} rel_y={rel_y} row_h={row_height} rows={row_count*[]} dbl={(ev.mouse.double_click) ? 1 : 0}'
         if [ rel_y < 0.0 ] return
         idx   : i32 [ visible_index[ i32[ rel_y / row_height ], flt[] ] ]
-        log 'LISTPRESS {id} idx={idx}'
         if [ idx < 0 || !row_enabled*[ idx ] ] return
         select[ idx ]
 
@@ -405,11 +406,13 @@ Control InstancePanel
     mutable chip_y   : f32
     mutable chip_wd  : f32
     mutable icons    : map SVGModel [string]
-    mutable row_sig  : string        # what the rows showed last frame; a change repaints
+    # what the rows showed last frame; a change repaints
+    mutable row_sig  : string
 
-    # the rows change on the instances' own clocks (a start, a crash, a stop):
-    # compare what they would show and repaint only on a change. the pip
-    # coming or going needs the element tree rebuilt, not just a repaint
+    # the rows change on the instances' own clocks (a start, a crash, a
+    # stop): compare what they would show and repaint only on a change.
+    # the pip coming or going needs the element tree rebuilt, not just a
+    # repaint
     public func tick [ w: Window ]
         li  : vec AppView inst_list[]
         ed9 : Editor editor[]
@@ -420,9 +423,13 @@ Control InstancePanel
                 sel9 : bool [ ed9 && ed9.run_view == av9 ]
                 off9 : bool [ av9.ended || av9.held ]
                 sw9  : string av9.status_word[]
-                sig = '{sig}|{av9.iid}:{sw9}:{(sel9) ? 1 : 0}:{(off9) ? 1 : 0}'
+                s9 : i32 [ (sel9) ? 1 : 0 ]
+                o9 : i32 [ (off9) ? 1 : 0 ]
+                sig = '{sig}|{av9.iid}:{sw9}:{s9}:{o9}'
         pv9 : AppView pip_av[]
-        sig = '{sig}|pip{(pv9) ? 1 : 0}:{(orb && orb.shift_down) ? 1 : 0}'
+        p9 : i32 [ (pv9) ? 1 : 0 ]
+        h9 : i32 [ (orb && orb.shift_down) ? 1 : 0 ]
+        sig = '{sig}|pip{p9}:{h9}'
         if [ !row_sig || row_sig != sig ]
             had : bool [ row_sig && row_sig.index_of[ '|pip1' ] >= 0 ]
             row_sig = sig
@@ -437,10 +444,12 @@ Control InstancePanel
         icons[ nm ] = m
         return m
 
-    # the selected instance's group: at a debugger stop continue and the steps.
-    # closing is uncommon: shift shows an [x] on every row instead
+    # the selected instance's group: at a debugger stop continue and the
+    # steps. closing is uncommon: shift shows an [x] on every row
+    # instead
     func action_chips [ av: AppView ] -> vec string
-        b : vec string [] [ 'pause', 'continue', 'step_next', 'step_in', 'step_out' ]
+        b : vec string [] [
+            'pause', 'continue', 'step_next', 'step_in', 'step_out' ]
         return b
 
     # always the same six: pip and pause on a running instance, the four
@@ -448,7 +457,8 @@ Control InstancePanel
     func action_disabled [ av: AppView ] -> i32
         m : i32 [ 0 ]
         if [ av.ended || av.held ] m = m | 1
-        if [ !(av.debugger && av.debugger.active && !av.debugger.running) ] m = m | 30
+        dbg9 : dbg av.debugger
+        if [ !(dbg9 && dbg9.active && !dbg9.running) ] m = m | 30
         return m
 
     func sel_index [] -> i32
@@ -462,8 +472,8 @@ Control InstancePanel
     func row_h [] -> f32
         return 26.0
 
-    # found at draw time, never passed in: taking it as a prop would make
-    # the pane's shape depend on what is read back out of the pane
+    # found at draw time, never passed in: taking it as a prop would
+    # make the pane's shape depend on what is read back out of the pane
     func app [] -> AppView
         orb : cast orbiter [ ux.app_object ]
         if [ !orb ] return null
@@ -502,17 +512,21 @@ Control InstancePanel
         return (ac.count > 0) ? row_h[] + 8.0 : 0.0
 
 
-    # the selected instance while it is in pip: the one pip the panel holds
-    # (a held instance shows the app's last picture there until it runs)
+    # the selected instance while it is in pip: the one pip the panel
+    # holds (a held instance shows the app's last picture there until it
+    # runs)
     func pip_av [] -> AppView
         ed9 : Editor editor[]
         if [ !ed9 || !ed9.run_view ] return null
         av : AppView ed9.run_view
-        return (av.pip && (av.have_frame || av.still) && av.ah > 0 && av.aw > 0) ? av : null
+        shown : bool [ av.have_frame || av.still ]
+        sized : bool [ av.ah > 0 && av.aw > 0 ]
+        return (av.pip && shown && sized) ? av : null
 
-    # the pip gives way to the properties: whatever the instance rows, the
-    # section tabs, three property rows and the debug bar leave. it shrinks
-    # with the room, and goes when it would be too small to read (60px)
+    # the pip gives way to the properties: whatever the instance rows,
+    # the section tabs, three property rows and the debug bar leave. it
+    # shrinks with the room, and goes when it would be too small to read
+    # (60px)
     func pip_px [] -> f32
         av : AppView pip_av[]
         if [ !av || !bounds ] return 0.0
@@ -537,8 +551,8 @@ Control InstancePanel
         return (fr.count < 8) ? fr.count : 8
 
     # the accordion: properties, instruments, callstack. one is open and
-    # fills; the others are headers, above it from the top, below it from
-    # the bottom
+    # fills; the others are headers, above it from the top, below it
+    # from the bottom
     func open_ix [] -> i32
         orb : cast orbiter [ ux.app_object ]
         if [ !orb ] return -1
@@ -551,8 +565,9 @@ Control InstancePanel
     func panel_h [] -> f32
         return (bounds) ? bounds.h : 0.0
 
-    # ONE row of tabs for all three sections; the open one's content runs
-    # from under it to the footer, so nothing folds above or below any more
+    # ONE row of tabs for all three sections; the open one's content
+    # runs from under it to the footer, so nothing folds above or below
+    # any more
     func tab_y [] -> f32
         return head_px[]
 
@@ -570,12 +585,15 @@ Control InstancePanel
         orb.instr_open = !was && i == 1
         orb.stack_open = !was && i == 2
 
-    # a section header: a fold marker at the left when asked, the name beside it
-    func section_title [ cv: Canvas, y: f32, text: string, open: bool, marker: bool ]
+    # a section header: a fold marker at the left when asked, the name
+    # beside it
+    func section_title [ cv: Canvas, y: f32, text: string,
+            open: bool, marker: bool ]
         rh : f32 [ row_h[] ]
         cv.save[]
         cv.fill_color[ (open) ? rgba [ '#312' ] : rgba [ '#212' ] ]
-        # the open one glows from its edges, a touch brighter on red and blue
+        # the open one glows from its edges, a touch brighter on red and
+        # blue
         if [ open ] cv.inner_glow[ rgba [ '#615' ], 10.0 ]
         cv.rect_to[ 0.0, y, bounds.w, rh - 1.0 ]
         cv.paint[]
@@ -596,11 +614,13 @@ Control InstancePanel
             cv.paint[]
         cv.font_size[ 13 ]
         cv.fill_color[ rgba [ '#e8e2f5' ] ]
-        cv.draw_text[ text, rect [ x: tx, y: y, w: bounds.w - tx - 8.0, h: rh ],
-            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+        tr9 : rect [ x: tx, y: y, w: bounds.w - tx - 8.0, h: rh ]
+        cv.draw_text[ text, tr9, vec2f [ 0.0, 0.5 ],
+            vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
 
-    # the export lists the module's properties; a props answer (live or the last one
-    # kept) gives their current values, and anything it adds goes after
+    # the export lists the module's properties; a props answer (live or
+    # the last one kept) gives their current values, and anything it
+    # adds goes after
     func merge_spec [ base: string, vals: string ] -> string
         if [ !base || base.count == 0 ] return vals
         if [ !vals || vals.count == 0 ] return base
@@ -612,14 +632,16 @@ Control InstancePanel
             f : e.split[ '=' ]
             for [ v: string ] in ve
                 g : v.split[ '=' ]
-                if [ f.count > 0 && g.count > 0 && g[ 0 ].compare[ f[ 0 ] ] == 0 ] pick = v
+                if [ f.count == 0 || g.count == 0 ] continue
+                if [ g[ 0 ].compare[ f[ 0 ] ] == 0 ] pick = v
             out = (out.count > 0) ? '{out};{pick}' : pick
         for [ v: string ] in ve
             g : v.split[ '=' ]
             found : bool [ false ]
             for [ e: string ] in be
                 f : e.split[ '=' ]
-                if [ f.count > 0 && g.count > 0 && f[ 0 ].compare[ g[ 0 ] ] == 0 ] found = true
+                if [ f.count == 0 || g.count == 0 ] continue
+                if [ f[ 0 ].compare[ g[ 0 ] ] == 0 ] found = true
             if [ !found ] out = (out.count > 0) ? '{out};{v}' : v
         return out
 
@@ -628,76 +650,111 @@ Control InstancePanel
         orb : cast orbiter [ ux.app_object ]
         if [ !ev9 || !orb ] return null
         t  : Elements []
-        # the running instance's own props; else what the module answered last; else its export
+        # the running instance's own props; else what the module
+        # answered last; else its export
         av9 : AppView app[]
-        lv9 : bool [ (av9 && av9.props && av9.props.count > 0) ? true : false ]
-        # the spec is the INSTANCE's module, which need not be the pane's file
-        mod9 : string (av9) ? ((av9.app_mod && av9.app_mod.count > 0) ? av9.app_mod : av9.src.stem[]) : ev9.band_mod[]
+        lv9 : bool [ av9 && av9.props && av9.props.count > 0 ]
+        # the spec is the INSTANCE's module, which need not be the
+        # pane's file the INSTANCE's module, which need not be the
+        # pane's file
+        mod9 : string ev9.band_mod[]
+        if [ av9 ]
+            am9 : string av9.app_mod
+            mod9 = (am9 && am9.count > 0) ? am9 : av9.src.stem[]
         pv9 : string (lv9) ? av9.props : orb.module_spec[ mod9 ]
         sp9 : string merge_spec[ ev9.launch_spec_of[ mod9 ], pv9 ]
         # Attach is gone; a list cached while it existed still names it
         ak9 : i32 [ (sp9) ? i32[ sp9.index_of[ ',Attach:4' ] ] : -1 ]
-        if [ ak9 >= 0 ] sp9 = sp9.mid[ 0, ak9 ] + sp9.mid[ ak9 + 9, sp9.count - ak9 - 9 ]
+        if [ ak9 >= 0 ]
+            tl9 : i32 [ sp9.count - ak9 - 9 ]
+            sp9 = sp9.mid[ 0, ak9 ] + sp9.mid[ ak9 + 9, tl9 ]
         # a spec cached before the rename still says Full for the pane
         fu9 : i32 [ (sp9) ? i32[ sp9.index_of[ 'Full:1' ] ] : -1 ]
-        if [ fu9 >= 0 ] sp9 = sp9.mid[ 0, fu9 ] + 'Embed:1' + sp9.mid[ fu9 + 6, sp9.count - fu9 - 6 ]
-        # trinity's display is a live prop of the running app; before it runs
-        # the row still has to exist, holding what the instance will launch as
-        if [ av9 && !(sp9 && (sp9.starts_with[ 'display=' ] || sp9.index_of[ ';display=' ] >= 0)) ]
+        if [ fu9 >= 0 ]
+            tf9 : i32 [ sp9.count - fu9 - 6 ]
+            hd9 : string sp9.mid[ 0, fu9 ] + 'Embed:1'
+            sp9 = hd9 + sp9.mid[ fu9 + 6, tf9 ]
+        # trinity's display is a live prop of the running app; before it
+        # runs the row still has to exist, holding what the instance
+        # will launch as
+        has9 : bool [ sp9 && (sp9.starts_with[ 'display=' ]
+                          || sp9.index_of[ ';display=' ] >= 0) ]
+        if [ av9 && !has9 ]
             dv9 : i32 [ av9.display ]
-            dn9 : string (dv9 == 3) ? '3' : ((dv9 == 2) ? '2' : ((dv9 == 1) ? '1' : '0'))
-            de9 : string 'display=DisplayMode=' + dn9 + '=Enum[PIP:0,Embed:1,Window:2,Screen:3]=live'
+            dn9 : string '{dv9}'
+            en9 : string 'Enum[PIP:0,Embed:1,Window:2,Screen:3]'
+            de9 : string 'display=DisplayMode={dn9}={en9}=live'
             sp9 = (sp9 && sp9.count > 0) ? de9 + ';' + sp9 : de9
-        # the open section runs from under its header to the folded headers below
+        # the open section runs from under its header to the folded
+        # headers below
         fp : f32 [ foot_px[] ]
         sb9 : f32 [ panel_h[] - sect_bottom[] ]
-        # the selected instance edits ITS args; with none selected there is no list
-        # one row of tabs for properties, instruments and callstack: the lit
-        # one is open and its content fills the panel beneath
+        # the selected instance edits ITS args; with none selected there
+        # is no list one row of tabs for properties, instruments and
+        # callstack: the lit one is open and its content fills the panel
+        # beneath
         if [ av9 ]
             ok9 : i32 [ open_ix[] ]
-            t['sections'] = TButtons [ icons: false, seg_radius: 0.0, manual: true,
-                buttons: vec string [] [ 'properties', 'instruments', 'callstack' ],
+            t['sections'] = TButtons [
+                icons: false, seg_radius: 0.0, manual: true,
+                buttons: vec string [] [
+                    'properties', 'instruments', 'callstack' ],
                 sel_mask: (ok9 >= 0) ? (1 << ok9) : 0,
                 label_px: row_h[] * 0.5 - 2.0,
                 area: Region [ 'l0 t{tab_y[]}px r0 h{row_h[]}px' ] ]
         if [ av9 && orb.props_open ]
             ar9 : string (av9.module_args) ? av9.module_args : ''
             py9 : f32 [ tab_y[] + row_h[] ]
-            # cached like any container: a control repaints only when it changes,
-            # not every frame with the pip
-            t['launch_panel'] = LaunchPanel [ spec: sp9, args: ar9, inst: av9.iid, live_vals: lv9,
-                dbg_row: true, dbg_on: av9.debug_build,
-                pid_val: (av9.slot >= 0 && !av9.ended && !av9.held) ? host_app_pid[ av9.slot ] : 0,
+            # cached like any container: a control repaints only when it
+            # changes, not every frame with the pip
+            up9 : bool [ av9.slot >= 0 && !av9.ended && !av9.held ]
+            pd9 : i32 [ (up9) ? host_app_pid[ av9.slot ] : 0 ]
+            t['launch_panel'] = LaunchPanel [
+                spec: sp9, args: ar9, inst: av9.iid,
+                live_vals: lv9, dbg_row: true,
+                dbg_on: av9.debug_build, pid_val: pd9,
                 area: Region [ 'l0 t{py9}px r0 b{sb9}px' ] ]
-        # the pip below the rows, at its aspect; the instrument surface under its chips
+        # the pip below the rows, at its aspect; the instrument surface
+        # under its chips
         pip9 : AppView pip_av[]
         if [ pip9 && bounds && pip_px[] > 0.0 ]
             ph9 : f32 [ pip_px[] ]
             pw9 : f32 [ ph9 * f32[ pip9.aw ] / f32[ pip9.ah ] ]
             if [ pw9 > bounds.w ] pw9 = bounds.w
-            t['pip'] = PipView [ area: Region [ 'l{round[ (bounds.w - pw9) * 0.5 ]}px t{sect_bottom[]}px w{pw9}px h{ph9}px' ] ]
-        if [ av9 && orb.instr_open && av9.instr_names && av9.instr_active[] && bounds ]
+            px9 : f32 [ round[ (bounds.w - pw9) * 0.5 ] ]
+            pt9 : f32 [ sect_bottom[] ]
+            t['pip'] = PipView [ area: Region [
+                'l{px9}px t{pt9}px w{pw9}px h{ph9}px' ] ]
+        in9 : bool [ av9 && orb.instr_open && av9.instr_names ]
+        if [ in9 && av9.instr_active[] && bounds ]
             iy9 : f32 [ tab_y[] + row_h[] + chips_h[ av9.instr_names ] ]
-            t['instr'] = InstrView [ area: Region [ 'l0 t{iy9}px r0 b{sb9}px' ] ]
+            t['instr'] = InstrView [
+                area: Region [ 'l0 t{iy9}px r0 b{sb9}px' ] ]
         if [ av9 && orb.stack_open && stack_rows[] > 0 ]
             cy9 : f32 [ tab_y[] + row_h[] ]
-            # one toggle over the list: frames with no known source, listed or not
-            t['stack_unknown'] = TButtons [ icons: false, seg_radius: 0.0, manual: true,
+            # one toggle over the list: frames with no known source,
+            # listed or not
+            t['stack_unknown'] = TButtons [
+                icons: false, seg_radius: 0.0, manual: true,
                 buttons: vec string [] [ 'show unknown source' ],
                 sel_mask: (orb.stack_unknown) ? 1 : 0,
                 label_px: row_h[] * 0.5 - 2.0,
                 area: Region [ 'l0 t{cy9}px r0 h{row_h[]}px' ] ]
             ly9 : f32 [ cy9 + row_h[] ]
-            t['callstack'] = Callstack [ frames: orb.stack_frames[], area: Region [ 'l0 t{ly9}px r0 b{sb9}px' ] ]
-        # the selected instance's group: square segments edge to edge at the bottom
+            t['callstack'] = Callstack [
+                frames: orb.stack_frames[],
+                area: Region [ 'l0 t{ly9}px r0 b{sb9}px' ] ]
+        # the selected instance's group: square segments edge to edge at
+        # the bottom
         if [ fp > 0.0 ]
             li : vec AppView inst_list[]
             sv9 : AppView li[ sel_index[] ]
             ac : vec string action_chips[ sv9 ]
             ed9 : Editor editor[]
             sm : i32 [ (sv9.paused) ? 1 : 0 ]
-            t['steps'] = TButtons [ buttons: ac, manual: true, seg_radius: 0.0, sel_mask: sm,
+            t['steps'] = TButtons [
+                buttons: ac, manual: true,
+                seg_radius: 0.0, sel_mask: sm,
                 disable_mask: action_disabled[ sv9 ],
                 area: Region [ 'l0 b{fp}px r0 h{fp}px' ] ]
         return t
@@ -711,10 +768,11 @@ Control InstancePanel
     func chip_w [ nm: string ] -> f32
         return 7.0 * f32[ nm.count ] + 16.0
 
-    # chip ix in ONE flow that wraps at the panel width; lands in chip_x/chip_y/chip_wd,
-    # measured from the top of the chip band, so press and draw agree
-    # rows break at the width; every row that breaks is stretched to fill it,
-    # the slack shared evenly across its cells
+    # chip ix in ONE flow that wraps at the panel width; lands in
+    # chip_x/chip_y/chip_wd, measured from the top of the chip band, so
+    # press and draw agree rows break at the width; every row that
+    # breaks is stretched to fill it, the slack shared evenly across its
+    # cells
     func chip_pos [ names: vec string, ix: i32 ] -> bool
         if [ ix < 0 || ix >= names.count ] return false
         y  : f32 [ 0.0 ]
@@ -729,14 +787,16 @@ Control InstancePanel
                 sum += w
                 r1 += 1
             n9    : i32 [ r1 - r0 ]
-            extra : f32 [ (bounds.w > sum) ? (bounds.w - sum) / f32[ n9 ] : 0.0 ]
+            gap9  : f32 [ (bounds.w - sum) / f32[ n9 ] ]
+            extra : f32 [ (bounds.w > sum) ? gap9 : 0.0 ]
             if [ ix < r1 ]
                 x : f32 [ 0.0 ]
                 for [ i: i32 r0, i < ix, i += 1 ]
                     x += chip_w[ names[ i ] ] + extra
                 chip_x  = round[ x ]
                 chip_y  = y
-                chip_wd = round[ x + chip_w[ names[ ix ] ] + extra ] - round[ x ]
+                cw9 : f32 [ chip_w[ names[ ix ] ] ]
+                chip_wd = round[ x + cw9 + extra ] - round[ x ]
                 return true
             y += row_h[]
             r0 = r1
@@ -747,20 +807,26 @@ Control InstancePanel
         if [ !chip_pos[ names, names.count - 1 ] ] return 0.0
         return chip_y + row_h[]
 
-    # one flow of chips at y: draws them, or with the press point given, returns the hit
-    func chip_row [ cv: Canvas, names: vec string, y: f32, lit: string, px: f32, py: f32 ] -> i32
+    # one flow of chips at y: draws them, or with the press point given,
+    # returns the hit
+    func chip_row [ cv: Canvas, names: vec string, y: f32,
+            lit: string, px: f32, py: f32 ] -> i32
         for [ i: i32 0, i < names.count, i += 1 ]
             nm : string names[ i ]
             if [ !chip_pos[ names, i ] ] continue
             cy : f32 [ y + chip_y ]
             rh : f32 [ row_h[] ]
             if [ !cv ]
-                if [ px >= chip_x && px < chip_x + chip_wd && py >= cy && py < cy + rh ] return i
+                inx : bool [ px >= chip_x && px < chip_x + chip_wd ]
+                iny : bool [ py >= cy && py < cy + rh ]
+                if [ inx && iny ] return i
                 continue
-            # a pixel grid like the other controls: flat cells, 1px rules, no rounding
+            # a pixel grid like the other controls: flat cells, 1px
+            # rules, no rounding
             on9 : bool [ lit && lit.compare[ nm ] == 0 ]
             cv.stroke_width[ 0.0 ]
-            cv.fill_color[ (on9) ? rgba [ '#6cb6ff' ] : rgba [ '#2a2340' ] ]
+            bg9 : rgba [ (on9) ? '#6cb6ff' : '#2a2340' ]
+            cv.fill_color[ bg9 ]
             cv.rect_to[ chip_x, cy, chip_wd, rh ]
             cv.paint[]
             cv.fill_color[ rgba [ '#ffffff1a' ] ]
@@ -769,13 +835,18 @@ Control InstancePanel
             cv.rect_to[ chip_x, cy + rh - 1.0, chip_wd, 1.0 ]
             cv.paint[]
             cv.font_size[ 12 ]
-            cv.fill_color[ (on9) ? rgba [ '#0f1220' ] : rgba [ '#e8e2f5' ] ]
-            cv.draw_text[ nm, rect [ x: chip_x, y: cy, w: chip_wd, h: rh ],
-                vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+            fg9 : rgba [ (on9) ? '#0f1220' : '#e8e2f5' ]
+            cv.fill_color[ fg9 ]
+            cr9 : rect [ x: chip_x, y: cy, w: chip_wd, h: rh ]
+            cv.draw_text[ nm, cr9, vec2f [ 0.5, 0.5 ],
+                vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
         return -1
 
     # instrument off — they are ALL shown, always
     func on_press [ ev: Event ]
+        # a modifier click belongs to the inspector: claiming it here
+        # (the no_default below) is what kept it from the source
+        if [ ev.key.meta || ev.key.ctrl ] return
         li : vec AppView inst_list[]
         if [ ev.mouse.pos.y < inst_px[] ]
             rh  : f32 [ row_h[] ]
@@ -790,15 +861,22 @@ Control InstancePanel
                         av9 : AppView li[ i ]
                         if [ my >= y8 && my < y8 + rh ]
                             if [ ev.mouse.pos.x < 24.0 ]
-                                if [ ev.key.shift ] ed9.close_instance[ i ]
-                                el orb.instance_action[ ed9, av9, (av9.ended || av9.held) ? 'play' : 'stop' ]
+                                off8 : bool [ av9.ended || av9.held ]
+                                ac8 : string (off8) ? 'play' : 'stop'
+                                if [ ev.key.shift ]
+                                    ed9.close_instance[ i ]
+                                el
+                                    orb.instance_action[ ed9, av9, ac8 ]
                             el [ i == sel_index[] ]
-                                # the selected one again: unselect, the pane goes back to its file
+                                # the selected one again: unselect, the
+                                # pane goes back to its file
                                 ed9.run_view = null
                                 ed9.app_view = false
                                 ed9.load_file[]
                                 orb.session_dirty = true
-                            el orb.show_instance[ av9.iid, ev9.pane_index ]
+                            el
+                                orb.show_instance[ av9.iid,
+                                    ev9.pane_index ]
                             break
                         y8 += rh
             pristine = false
@@ -813,8 +891,11 @@ Control InstancePanel
         for [ i: i32 0, i < av.instr_names.count, i += 1 ]
             if [ !chip_pos[ av.instr_names, i ] ] continue
             cy : f32 [ top + chip_y ]
-            if [ ev.mouse.pos.x >= chip_x && ev.mouse.pos.x < chip_x + chip_wd &&
-                 ev.mouse.pos.y >= cy && ev.mouse.pos.y < cy + row_h[] ]
+            mx8 : f32 [ ev.mouse.pos.x ]
+            my8 : f32 [ ev.mouse.pos.y ]
+            inx : bool [ mx8 >= chip_x && mx8 < chip_x + chip_wd ]
+            iny : bool [ my8 >= cy && my8 < cy + row_h[] ]
+            if [ inx && iny ]
                 av.instr_select[ av.instr_names[ i ] ]
                 pristine = false
                 ev.no_default = true
@@ -828,7 +909,8 @@ Control InstancePanel
         li  : vec AppView inst_list[]
         ed9 : Editor editor[]
         orb : cast orbiter [ ux.app_object ]
-        # the rows begin at the top: adding an instance is the tab bar's button
+        # the rows begin at the top: adding an instance is the tab bar's
+        # button
         if [ li && orb ]
             y8 : f32 [ 0.0 ]
             for [ i: i32 0, i < li.count, i += 1 ]
@@ -836,37 +918,52 @@ Control InstancePanel
                 sel9 : bool [ ed9 && ed9.run_view == av9 ]
                 # the selected row glows blue from its edges inward
                 cv.save[]
-                cv.fill_color[ (sel9) ? rgba [ '#2a2340' ] : rgba [ '#1a1726' ] ]
+                rb9 : rgba [ (sel9) ? '#2a2340' : '#1a1726' ]
+                cv.fill_color[ rb9 ]
                 if [ sel9 ] cv.inner_glow[ rgba [ '#4f9cffaa' ], 12.0 ]
                 cv.rect_to[ 0.0, y8, bounds.w, rh - 1.0 ]
                 cv.paint[]
                 cv.restore[]
-                # the one icon on the row: the state's color, and it IS the pause/resume
-                # toggle. shift held turns it into the [x] that closes the instance
+                # the one icon on the row: the state's color, and it IS
+                # the pause/resume toggle. shift held turns it into the
+                # [x] that closes the instance
                 sh9 : bool [ orb.shift_down ]
-                # the row's one icon starts or stops the instance; pause lives in the step group
-                ic9 : SVGModel icon[ (sh9) ? 'close' : ((av9.ended || av9.held) ? 'play' : 'stop') ]
+                # the row's one icon starts or stops the instance; pause
+                # lives in the step group
+                off9 : bool [ av9.ended || av9.held ]
+                in9  : string (off9) ? 'play' : 'stop'
+                ic9  : SVGModel icon[ (sh9) ? 'close' : in9 ]
                 if [ ic9 ]
-                    cv.fill_color[ (sh9) ? rgba [ '#ef5350' ] : inst_color[ av9 ] ]
-                    cv.stroke_color[ (sh9) ? rgba [ '#ef5350' ] : inst_color[ av9 ] ]
+                    ik9 : rgba [ (sh9) ? rgba [ '#ef5350' ]
+                                       : inst_color[ av9 ] ]
+                    cv.fill_color[ ik9 ]
+                    cv.stroke_color[ ik9 ]
                     cv.draw_svg[ ic9, 6.0, y8 + 6.0, 14.0, 14.0 ]
-                # the name at the left; the status right-aligned and padded, running carries the pid
+                # the name at the left; the status right-aligned and
+                # padded, running carries the pid
                 nm9 : string orb.instance_name[ av9 ]
                 sw9 : string av9.status_word[]
-                if [ !sw9 || sw9.count == 0 ] sw9 = (av9.ended) ? 'stopped' : 'running'
+                if [ !sw9 || sw9.count == 0 ]
+                    sw9 = (av9.ended) ? 'stopped' : 'running'
                 cv.font_size[ 13 ]
                 cv.fill_color[ rgba [ '#e8e2f5' ] ]
-                cv.draw_text[ nm9, rect [ x: 24.0, y: y8, w: bounds.w - 100.0, h: rh ],
-                    vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+                nr9 : rect [ x: 24.0, y: y8,
+                    w: bounds.w - 100.0, h: rh ]
+                cv.draw_text[ nm9, nr9, vec2f [ 0.0, 0.5 ],
+                    vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
                 cv.fill_color[ inst_color[ av9 ] ]
-                cv.draw_text[ sw9, rect [ x: 24.0, y: y8, w: bounds.w - 34.0, h: rh ],
-                    vec2f [ 1.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+                sr9 : rect [ x: 24.0, y: y8,
+                    w: bounds.w - 34.0, h: rh ]
+                cv.draw_text[ sw9, sr9, vec2f [ 1.0, 0.5 ],
+                    vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
                 y8 += rh
         av : app[]
         if [ !av || !orb ] return
-        # the sections are a tab row built in render; the chips once the app answers
+        # the sections are a tab row built in render; the chips once the
+        # app answers
         if [ !orb.instr_open || !av.instr_names ] return
-        # one flow of chips; the lit one is the single instrument on: it logs and shows
+        # one flow of chips; the lit one is the single instrument on: it
+        # logs and shows
         top : f32 [ tab_y[] + row_h[] ]
         act : string av.instr_active[]
         chip_row[ cv, av.instr_names, top, act, 0.0, 0.0 ]
