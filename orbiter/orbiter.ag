@@ -3022,10 +3022,13 @@ element orbiter : trinity # implements compiler
             entries : sd.ls[ null, false ]
             if [ !entries ] continue
             best : fmt_file null
+            # this one file's section is all a map is read for
+            want9 : map string [string] []
+            want9[ fa ] = fa
             for [ j: i32 0, j < entries.count, j += 1 ]
                 e : path entries[j]
                 if [ e.ext[] != 'f' ] continue
-                files : vec Au e.read_format[]
+                files : vec Au e.read_format_of[ want9 ]
                 if [ !files ] continue
                 for [ fi: i32 0, fi < files.count, fi += 1 ]
                     ff : fmt_file files[fi]
@@ -4482,7 +4485,10 @@ element orbiter : trinity # implements compiler
                     over : bool [ o.file_index.count >= cap ]
                     o.index_lock.unlock[]
                     if [ over ] break
+            # this thread's pool: the walk's temporaries, per directory
+            Au.auto_free[ false ]
         o.tok_warm[]
+        Au.auto_free[ false ]
         o.index_lock.lock[]
         o.index_building = false
         o.index_lock.unlock[]
@@ -5730,6 +5736,8 @@ element orbiter : trinity # implements compiler
         git_stage = sn
         git_fresh = true
         git_busy  = false
+        # this thread's pool: git's output lines, held only by sn
+        Au.auto_free[ false ]
 
     func git_summarize []
         if [ git_busy ] return

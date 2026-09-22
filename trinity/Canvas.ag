@@ -19,6 +19,8 @@ enum DrawMode
     # box-average the source footprint when shrinking
     image_min   : 11
     image_explosion : 12
+    # image with a linear edge ramp computed here: no mask texture
+    image_ramp  : 13
 
 # ---- path command tags ----
 enum path_cmd
@@ -513,6 +515,32 @@ shader CanvasUI
             float aa   = (max_rr <= 0.0) ? step(0.5, rect_cov)
                                          : 1.0 - smoothstep(-0.5, 0.5, dist);
             o_color    = texel * m * aa * opacity;
+            return;
+        }}
+
+        // image_ramp: content texture faded on its edges by a linear
+        // ramp. mask_uv = fade widths (top, right, bottom, left) in the
+        // source's pixels; grad_c0 = gutter, band, source w, h; above
+        // the band there is no fade
+        if (mode == 13.0) {{
+            vec2 uv_rect = (lpos - ubo.rect.xy) / ubo.rect.zw;
+            vec2 uv    = mix(ubo.grad0.xy, ubo.grad0.zw, uv_rect);
+            vec4 texel = texture(image, uv);
+            vec2 px    = uv_rect * ubo.grad_c0.zw;     // in source pixels
+            float dt = px.y - ubo.grad_c0.y;
+            float db = ubo.grad_c0.w - px.y;
+            float dr = ubo.grad_c0.z - px.x;
+            float dl = px.x - ubo.grad_c0.x;
+            float ft = (ubo.mask_uv.x > 0.0) ? clamp(dt / ubo.mask_uv.x, 0.0, 1.0) : 1.0;
+            float fr = (ubo.mask_uv.y > 0.0) ? clamp(dr / ubo.mask_uv.y, 0.0, 1.0) : 1.0;
+            float fb = (ubo.mask_uv.z > 0.0) ? clamp(db / ubo.mask_uv.z, 0.0, 1.0) : 1.0;
+            float fl = (ubo.mask_uv.w > 0.0) ? clamp(dl / ubo.mask_uv.w, 0.0, 1.0) : 1.0;
+            float keep = min(min(ft, fr), min(fb, fl));
+            if (px.y < ubo.grad_c0.y) keep = (px.x >= ubo.grad_c0.x) ? 1.0 : 0.0;
+            if (px.x < ubo.grad_c0.x) keep = 0.0;
+            float aa   = (max_rr <= 0.0) ? step(0.5, rect_cov)
+                                         : 1.0 - smoothstep(-0.5, 0.5, dist);
+            o_color    = texel * keep * aa * opacity;
             return;
         }}
 
@@ -1299,6 +1327,9 @@ Render Canvas
     intern sdf_tex       : Texture
     intern image_override : Texture
     intern mask_override  : Texture
+    intern ramp_on        : bool       # image_ramp draw in flight
+    intern ramp_sides     : vec4f      # its fade widths, source px
+    intern ramp_rect      : vec4f      # gutter, band, source w, h
     intern vec_override   : bool
     intern min_override   : bool
     intern explosion_override : bool
@@ -1393,25 +1424,9 @@ Render Canvas
             m.finish[ a, 0 ]
 
         text_shader = CanvasText [ vk: vk ]
-        text_members : vec vertex_member_t [ 2 ]
-        text_members[0].src    = typeid[ vec2f ]
-        text_members[0].size   = 8
-        text_members[0].offset = 0
-        text_members[1].src    = typeid[ vec2f ]
-        text_members[1].size   = 8
-        text_members[1].offset = 8
-        text_vsize  : i32 [ 16 ]
-        text_vcount : i32 [ text_max_verts ]
-        text_mcount : i32 [ 2 ]
         text_vbo_ring = vec Gpu []
-
-        for [ ri: i32 0, ri < text_ring_n, ri += 1 ]
-            g : Gpu [ vk: vk, name: 'text',
-                members: text_members, member_count: text_mcount,
-                vertex_size: text_vsize, vertex_count: text_vcount ]
-            g.sync[ w ]
-            text_vbo_ring.push[ g ]
-        
+        # one slot now; the rest of the ring is made as text is drawn
+        text_ring_add[]
         text_vbo = text_vbo_ring[ 0 ]
         text_render = Render [ vk: vk, w: w,
             color: a.color,
@@ -1950,6 +1965,20 @@ Render Canvas
             return
         path.add_arc [ tx, ty, tr, start_angle, end_angle ]
 
+    # one ring slot: text_max_verts of vec2 pos and vec2 uv
+    func text_ring_add []
+        tm : vec vertex_member_t [ 2 ]
+        tm[0].src    = typeid[ vec2f ]
+        tm[0].size   = 8
+        tm[0].offset = 0
+        tm[1].src    = typeid[ vec2f ]
+        tm[1].size   = 8
+        tm[1].offset = 8
+        g : Gpu [ vk: vk, name: 'text', members: tm, member_count: 2,
+            vertex_size: 16, vertex_count: text_max_verts ]
+        g.sync[ w ]
+        text_vbo_ring.push[ g ]
+
     func draw_text_pass [ display: string, metrics: TextMetrics, pen_x_in: f32, pen_y_in: f32 ]
         if [ !font.atlas ]
             font.atlas = GlyphAtlas [ vk: vk, w: w, size: 1024 ]
@@ -1958,6 +1987,9 @@ Render Canvas
         inv : f32 [ (w.scale > 0) ? 1.0 / w.scale : 1.0 ]
         if [ text_vbo_idx % text_ring_n == 0 && text_vbo_idx > 0 ]
             text_render.sync_fence[]
+        # a canvas that draws no text keeps one slot, never all 64
+        while [ i32[ text_vbo_ring.count ] <= text_vbo_idx % text_ring_n ]
+            text_ring_add[]
         text_vbo = text_vbo_ring[ text_vbo_idx % text_ring_n ]
         text_pipeline.vbo = text_vbo
         text_vbo_idx += 1
@@ -2390,6 +2422,30 @@ Render Canvas
                     p.rebind_image[ sdf_tex ]
                     p.rebind_mask[ sdf_tex ]
 
+    # src faded on its edges: linear ramps of ft/fr/fb/fl px inward
+    # from the rect at (kl, pt) to its far corner; the band above pt
+    # and the gutter left of kl are shown whole and hidden respectively
+    func draw_canvas_ramp [ src: Canvas, x: f32, y: f32, rw: f32, rh: f32, ft: f32, fr: f32, fb: f32, fl: f32, pt: f32, kl: f32 ]
+        if [ src ]
+            src.flush_submit[]
+            src.flush_text[]
+        tex : Texture [ (src.reduction) ? src.reduction : src.color ]
+        tex.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
+        image_override = tex
+        ss  : f32 [ (src.w.scale > 0) ? src.w.scale : 1.0 ]
+        uvx : f32 [ (src.width  > 0) ? f32[ src.content_w ] * ss / f32[ src.width  ] : 1.0 ]
+        uvy : f32 [ (src.height > 0) ? f32[ src.content_h ] * ss / f32[ src.height ] : 1.0 ]
+        image_uv   = vec4f [ 0.0, 0.0, uvx, uvy ]
+        ramp_on    = true
+        ramp_sides = vec4f [ ft, fr, fb, fl ]
+        ramp_rect  = vec4f [ kl, pt, f32[ src.content_w ], f32[ src.content_h ] ]
+        path.clear[]
+        path.add_rect[ x, y, rw, rh ]
+        paint[]
+        ramp_on  = false
+        image_uv = vec4f [ 0.0, 0.0, 1.0, 1.0 ]
+        image_override = null
+
     # paint `tex` into `dst` using the full texture as source.
     # same as draw_image, reconstructing edges as it samples
     func draw_image_vec [ tex: Texture, dst: rect ]
@@ -2590,8 +2646,8 @@ Render Canvas
                 ui_shader.radii = pr9
             ui_shader.fill_color = st.fill_color
             ui_shader.grad0   = image_uv
-            ui_shader.mask_uv = mask_uv
-            ui_shader.grad_c0         = st.fill_color
+            ui_shader.mask_uv = (ramp_on) ? ramp_sides : mask_uv
+            ui_shader.grad_c0         = (ramp_on) ? ramp_rect : st.fill_color
             ui_shader.grad_c1         = st.fill_grad
             ui_shader.fill_grad_pts   = vec4f [ st.fill_color_pos.x, st.fill_color_pos.y,
                                                 st.fill_grad_pos.x,  st.fill_grad_pos.y ]
@@ -2607,6 +2663,7 @@ Render Canvas
                             : (explosion_override) ?
                                 DrawMode.image_explosion
                             : (mask_override) ? DrawMode.image_masked
+                            : (ramp_on)       ? DrawMode.image_ramp
                             : ((is_r8) ? DrawMode.image_r : DrawMode.image) ]
             mode     : f32  [ (image_override) ? img_mode : DrawMode.solid ]
             # exact-area rect: ONLY a flat filled rectangle. any gradient

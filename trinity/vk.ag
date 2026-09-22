@@ -1399,12 +1399,14 @@ class vk_context
         vkGetPhysicalDeviceMemoryProperties[ physical_device, @props ]
 
         # create VMA allocator
+        # 8 MB blocks: the 256 MB default reserved a GB mostly empty
         result = vmaCreateAllocator[ VmaAllocatorCreateInfo [
             physicalDevice:    physical_device,
             device:            device,
             instance:          instance,
             vulkanApiVersion:  VK_API_VERSION_1_2,
             pVulkanFunctions:  null,
+            preferredLargeHeapBlockSize: 8388608,
             flags:             VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT
         ], @allocator ]
         expect result == VK_SUCCESS, "cannot create vma allocator"

@@ -1577,16 +1577,19 @@ class ReduceBlur
             renders.push[ r ]
             prev = r.color
         scale = 1.0 / sc
-        bv : BlurV [ vk: vc, name: 'blur-v', reduction_scale: scale ]
+        # a blur output at one pixel per point: the retina 2x is
+        # 4x the memory for a smooth field the eye cannot resolve
+        os9 : f32 [ (dsp.scale > 1.0) ? 1.0 / dsp.scale : 1.0 ]
+        bv : BlurV [ vk: vc, name: 'blur-v', reduction_scale: scale * os9 ]
         bv.hold[]
         mv : Model  [ w: dsp, s: bv, samplers: map Texture[string] [ 'color': prev ] ]
-        rv : Render [ vk: vc, w: dsp, wscale: 1.0, models: [mv ] ]
+        rv : Render [ vk: vc, w: dsp, wscale: os9, models: [mv ] ]
         models.push[ mv ]
         renders.push[ rv ]
-        bl : Blur [ vk: vc, name: 'blur', reduction_scale: scale ]
+        bl : Blur [ vk: vc, name: 'blur', reduction_scale: scale * os9 ]
         bl.hold[]
         mh : Model  [ w: dsp, s: bl, samplers: map Texture[string] [ 'color': rv.color ] ]
-        rh : Render [ vk: vc, w: dsp, wscale: 1.0, models: [mh ] ]
+        rh : Render [ vk: vc, w: dsp, wscale: os9, models: [mh ] ]
         models.push[ mh ]
         renders.push[ rh ]
 

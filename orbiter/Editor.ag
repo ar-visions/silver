@@ -10,8 +10,11 @@ class FileBuf
     public hist_i     : i32 [ 0 ]
     # history index of the last buffer<->disk agreement (save/reload)
     public sync_i     : i32 [ 0 ]
-    # one vec ColorRegion per source line, parallel to lines
+    # one packed vec i32 per source line, parallel to lines: five per
+    # token (col, len, kind, decl file index + 1, decl line)
     public line_regs  : vec Au
+    # the declaring files the tokens name, by index
+    public decl_files : vec string
     # nesting by indentation: the nearest line above each with a smaller
     # indent (-1 at top level), blank lines inheriting their predecessor's.
     # rebuilt on demand once the lines change
@@ -2674,14 +2677,9 @@ Control Editor
     mutable diff_kinds    : vec i32
     # display row -> real file line; -1 on removed rows (base only)
     mutable diff_src      : vec i32
-    # glyphs render here, then blit through fade_mask; fills bypass both
+    # glyphs render here, then blit with an edge ramp; fills bypass it
     mutable text_canvas   : Canvas
-    mutable fade_mask     : Canvas
-    mutable fade_w        : i32 [ -1 ]
-    mutable fade_h        : i32 [ -1 ]
-    mutable fade_t        : f32 [ -1.0 ]
-    mutable fade_b        : f32 [ -1.0 ]
-    mutable fade_l        : f32 [ -1.0 ]
+    mutable reg_scratch   : ColorRegion   # line_reg's one return slot
     # commit's file lines, cached for live re-diff while editing
     mutable diff_base     : vec string
     mutable diff_dirty    : bool
@@ -2797,9 +2795,6 @@ Control Editor
     public  band_rows     : i32
     public  replacing     : bool
     # append LAST: member order sets AF bit indices
-    mutable fade_r        : f32 [ -1.0 ]
-    mutable fade_p        : f32 [ 0.0 ]
-    mutable fade_k        : f32 [ 0.0 ]
     # pinned band row under the mouse, -1 outside it
     mutable hover_pin     : i32 [ -1 ]
 
@@ -3478,12 +3473,23 @@ Control Editor
     func line_reg_count [ ml: i32 ] -> i32
         if [ !cur_buf || !cur_buf.line_regs ] return 0
         if [ ml < 0 || ml >= cur_buf.line_regs.count ] return 0
-        regs : vec ColorRegion cur_buf.line_regs[ ml ]
-        return (regs) ? regs.count : 0
+        regs : vec i32 cur_buf.line_regs[ ml ]
+        return (regs) ? regs.count / 5 : 0
 
+    # one scratch region, filled from the packed ints: read it before
+    # the next call, never keep it
     func line_reg [ ml: i32, k: i32 ] -> ColorRegion
-        regs : vec ColorRegion cur_buf.line_regs[ ml ]
-        cr   : ColorRegion regs[ k ]
+        regs : vec i32 cur_buf.line_regs[ ml ]
+        if [ !reg_scratch ] reg_scratch = ColorRegion []
+        cr : ColorRegion reg_scratch
+        b  : i32 [ k * 5 ]
+        cr.col   = i32[ regs[ b ] ]
+        cr.len   = i32[ regs[ b + 1 ] ]
+        cr.kind  = i32[ regs[ b + 2 ] ]
+        di : i32 [ i32[ regs[ b + 3 ] ] ]
+        cr.dsrc  = (di > 0 && cur_buf.decl_files && di <= cur_buf.decl_files.count) ? cur_buf.decl_files[ di - 1 ] : null
+        cr.dline = i32[ regs[ b + 4 ] ]
+        cr.color = fmt_theme[ cr.kind ]
         return cr
 
     func fmt_invalidate []
@@ -3495,7 +3501,7 @@ Control Editor
     func edit_line_regs [ i: i32, before: string, after: string ]
         if [ !cur_buf || !cur_buf.line_regs ] return
         if [ i < 0 || i >= cur_buf.line_regs.count ] return
-        regs : vec ColorRegion cur_buf.line_regs[ i ]
+        regs : vec i32 cur_buf.line_regs[ i ]
         if [ !regs || regs.count == 0 ] return
         p : i32 [ 0 ]
         while [ p < before.count && p < after.count && before[p] == after[p] ] p += 1
@@ -3503,19 +3509,29 @@ Control Editor
         while [ s < before.count - p && s < after.count - p && before[before.count - 1 - s] == after[after.count - 1 - s] ] s += 1
         d : i32 [ after.count - before.count ]
         e : i32 [ before.count - s ]
-        kept : vec ColorRegion []
-        for [ ri: i32 0, ri < regs.count, ri += 1 ]
-            cr : ColorRegion regs[ ri ]
-            if [ cr.col + cr.len <= p ]
-                kept.push[ cr ]
-            el [ cr.col >= e ]
-                cr.col = cr.col + d
-                kept.push[ cr ]
+        kept : vec i32 []
+        for [ ri: i32 0, ri < regs.count, ri += 5 ]
+            c0 : i32 [ i32[ regs[ ri ] ] ]
+            l0 : i32 [ i32[ regs[ ri + 1 ] ] ]
+            if [ c0 + l0 <= p ]
+                kept.push[ c0 ]
+            el [ c0 >= e ]
+                c1 : i32 [ c0 + d ]
+                kept.push[ c1 ]
+            el
+                continue
+            kept.push[ l0 ]
+            kept.push[ regs[ ri + 2 ] ]
+            kept.push[ regs[ ri + 3 ] ]
+            kept.push[ regs[ ri + 4 ] ]
         cur_buf.line_regs[ i ] = kept
 
     public func load_format [ mapfile: string ]
         mp    : path  '{mapfile}'
-        files : vec Au mp.read_format[]
+        # only the files with a loaded buffer: the map covers far more
+        fcm9  : map FileBuf [string] buffers[]
+        if [ !fcm9 ] return
+        files : vec Au mp.read_format_of[ fcm9 ]
         if [ !files ] return
         for [ fi: i32 0, fi < files.count, fi += 1 ]
             ff  : fmt_file files[fi]
@@ -3539,16 +3555,32 @@ Control Editor
         fcm : map FileBuf [string] buffers[]
         buf : FileBuf fcm[ key ]
         if [ !buf ] return
-        buf.line_regs = vec Au []
+        buf.line_regs  = vec Au []
+        buf.decl_files = vec string []
+        dix : map i32 [string] []
         lns : vec Au ff.lines
         nl  : i32 [ lns.count ]
         for [ li: i32 0, li < nl, li += 1 ]
             ltk  : vec fmt_token lns[ li ]
-            regs : vec ColorRegion []
             nt   : i32 [ ltk.count ]
+            n5   : i32 [ nt * 5 ]
+            regs : vec i32 [ n5 ]
             for [ ti: i32 0, ti < nt, ti += 1 ]
                 tk : fmt_token ltk[ ti ]
-                regs.push[ ColorRegion [ col: i32 tk.column, len: i32 tk.length, color: fmt_theme[ i32 tk.syntax ], kind: i32 tk.syntax, dsrc: tk.decl_source, dline: i32 tk.decl_line ] ]
+                di : i32 [ 0 ]
+                if [ tk.decl_source ]
+                    ds : string tk.decl_source
+                    if [ dix.contains[ ds ] ]
+                        di = dix[ ds ]
+                    el
+                        buf.decl_files.push[ ds ]
+                        di = buf.decl_files.count
+                        dix[ ds ] = di
+                regs.push[ i32 tk.column ]
+                regs.push[ i32 tk.length ]
+                regs.push[ i32 tk.syntax ]
+                regs.push[ di ]
+                regs.push[ i32 tk.decl_line ]
             buf.line_regs.push[ regs ]
 
     # nesting by indentation, for any file: each line's parent is the
@@ -3718,7 +3750,7 @@ Control Editor
     func raw_insert [ i: i32, val: string ]
         lines.insert_after[ val, i - 1 ]
         if [ cur_buf && cur_buf.line_regs && i <= cur_buf.line_regs.count ]
-            cur_buf.line_regs.insert[ vec ColorRegion [], i ]
+            cur_buf.line_regs.insert[ vec i32 [], i ]
         if [ cur_buf ] cur_buf.tree_dirty = true
         if [ ghost_hunk >= 0 && i < ghost_at ] ghost_at += 1
     func raw_remove [ i: i32 ]
@@ -4339,11 +4371,10 @@ Control Editor
         text_canvas.reset[ vec4f [ 0.0, 0.0, 0.0, 0.0 ] ]
         return text_canvas
 
-    # white keeps, black hides: a straight ramp on whichever edges fade
-    # pt: the pinned band's height; the mask starts under it, so the top
-    # shadow falls from the band's edge and the rows beneath it stay hidden
-    # kl: the gutter's width; the left ramp starts at the text's edge, not
-    # the canvas's, or it spends itself under the line numbers
+    # a straight ramp on whichever edges fade, made in the shader
+    # pt: the pinned band's height; the fade starts under it and the
+    # band's strip shows whole. kl: the gutter's width; the left ramp
+    # starts at the text's edge, and the gutter is hidden
     func text_blit [ cv: Canvas, b: rect, ft: f32, fr: f32, fb: f32, fl: f32, pt: f32, kl: f32 ]
         if [ !text_canvas ] return
         tw : i32 [ text_canvas.content_w ]
@@ -4351,37 +4382,7 @@ Control Editor
         if [ ft <= 0.0 && fr <= 0.0 && fb <= 0.0 && fl <= 0.0 && pt <= 0.0 ]
             cv.draw_canvas[ text_canvas, b.x, b.y, f32[ tw ], f32[ th ] ]
             return
-        if [ !fade_mask ]
-            fade_mask = Canvas [ vk: cv.vk, w: cv.w, format: Pixel.rgba8,
-                width: tw, height: th, load_existing: true, quantize: true, tag: 'edfade' ]
-            fade_mask.update[]
-        el [ fade_mask.content_w != tw || fade_mask.content_h != th ]
-            fade_mask.resize[ tw, th ]
-        if [ fade_mask.content_w != fade_w || fade_mask.content_h != fade_h
-             || ft != fade_t || fr != fade_r || fb != fade_b || fl != fade_l || pt != fade_p || kl != fade_k ]
-            fade_w = fade_mask.content_w
-            fade_h = fade_mask.content_h
-            fade_t = ft
-            fade_r = fr
-            fade_b = fb
-            fade_l = fl
-            fade_p = pt
-            fade_k = kl
-            fade_mask.reset[ vec4f [ 0.0, 0.0, 0.0, 1.0 ] ]
-            fade_mask.save[]
-            fade_mask.glow_falloff[ 1.0 ]
-            fade_mask.fill_color[ rgba['#fff'] ]
-            fade_mask.inner_glow_sides[ rgba['#000'], ft, fr, fb, fl ]
-            fade_mask.stroke_width[ 0.0 ]
-            fade_mask.rect_to[ kl, pt, f32[ tw ] - kl, f32[ th ] - pt ]
-            fade_mask.paint[]
-            # the pinned band's strip: clipped to the text area, no fade
-            if [ pt > 0.0 ]
-                fade_mask.inner_glow_sides[ rgba['#000'], 0.0, 0.0, 0.0, 0.0 ]
-                fade_mask.rect_to[ kl, 0.0, f32[ tw ] - kl, pt ]
-                fade_mask.paint[]
-            fade_mask.restore[]
-        cv.draw_canvas_masked[ text_canvas, fade_mask, b.x, b.y, f32[ tw ], f32[ th ] ]
+        cv.draw_canvas_ramp[ text_canvas, b.x, b.y, f32[ tw ], f32[ th ], ft, fr, fb, fl, pt, kl ]
 
     # removed rows exist only in the base, so they consume no file line
     func rebuild_diff_src []
