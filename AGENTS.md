@@ -1137,5 +1137,42 @@ verification after the repository hooks are trusted through `/hooks`.
      `cur->ft.dealloc`): a surviving object's type descriptor
      points into the unloaded old orbiter image. The junk
      address (0x23000000010xxxxx) is an unfixed on-disk pointer.
-   - Not fixed. Next: find what still holds the old instance
-     after media_app.destroy, and why one build reloads twice.
+   - DONE `launch_spec_of` built a second full orbiter to read
+     props; its git thread was never joined and crashed in
+     `git_capture` at dlclose. It now reads the export line only,
+     by owner name (`install_name_of`).
+   - Holders found with `--leaks`: the old orbiter sits in a
+     cycle through its paused watches' callbacks, and on_unload
+     holds both avatars on purpose (Texture_release_gpu crash).
+   - Two reloads per external build: the host's product watch
+     sees the library mid-link and again when the link ends.
+   - Not fixed: the old instance is still not freed per reload.
+
+## Active work: orbiter memory (Sep 21 2026)
+
+Target from Kalen: about 120 MB; the avatar (about 30 MB) is
+the largest object. Startup footprint measured headless.
+
+1. DONE `.f` map only for loaded buffers: `path.read_format_of`
+   skips other sections; the leaking hold on `lines` in
+   `path_read_format` is removed. 402,759 tokens -> none kept.
+2. DONE Text vertex ring made on first use (`text_ring_add`):
+   3,200 text Gpu -> 448. Footprint 2396 MB -> 1893 MB.
+3. DONE VMA block size 256 MB -> 8 MB (vk.ag): the graphics
+   footprint was mostly empty block. 1893 -> 1382 MB.
+4. DONE Editor fade mask canvas replaced by a shader ramp
+   (Canvas `image_ramp`, `draw_canvas_ramp`); blur outputs
+   (`ReduceBlur` rv/rh) at one pixel per point on retina.
+   1382 -> 1257 MB. Full-size gaussians stay full size by
+   Kalen's call: no upscaling of blur results.
+5. OPEN GPU images at startup (~750 MB real): 12 window-size
+   colour targets (screen, compose, r_reduce, r_view+depth,
+   6 blur outputs now halved, 1 empty Render unidentified),
+   3 at 2402x2402, editor text canvases per pane (23 MB each
+   at 2x plus a 4-byte SDF at half size), avatar 3120x3120
+   colour+depth (74 MB), backdrop 4096x2048 (32 MB).
+6. OPEN 11,840 uniform Buffers: 64 per `uniforms` (vk.ag:2411),
+   all baked into descriptor sets at bind; needs one buffer
+   with 64 offsets to fix.
+7. OPEN 53,197 ColorRegion objects for the loaded buffers;
+   MALLOC_SMALL is 400 MB and not yet broken down.

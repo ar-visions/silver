@@ -3067,6 +3067,7 @@ static void lg_link(Au target_data, num from_i) {
 
 AU_EXPORT none au_free_pinned(void);
 static bool lg_vector_managed(vector a);
+static i64  lg_vector_stride(vector a);
 
 AU_EXPORT none au_leak_report(void) {
     static bool reported;
@@ -3097,7 +3098,10 @@ AU_EXPORT none au_leak_report(void) {
     for (num i = 0; i < n; i++) {
         Au   h     = live[i];
         Au_t type  = (Au_t)h->au;
-        num  bytes = sizeof(struct _Au) + type->typesize * h->alloc;
+        // a vector's elements are inline at their own stride
+        num  bytes = sizeof(struct _Au) + (inherits(type, typeid(vector))
+            ? ((type->typesize + 15) & ~15) + lg_vector_stride((vector)&h[1]) * h->alloc
+            : type->typesize * h->alloc);
         total_bytes += bytes;
         num held = h->refs > 0 ? 1 : 0;
         num pin  = (h->refs <= 0 && h->managed >= AU_PINNED_BASE) ? 1 : 0;
@@ -6698,6 +6702,7 @@ static bool vector_managed(vector a) {
     return et && et->is_class && !et->is_c;
 }
 static bool lg_vector_managed(vector a) { return vector_managed(a); }
+static i64  lg_vector_stride(vector a)  { return vector_stride(a); }
 
 static i64 vector_elem_stride(Au_t et) {
     if (et && et->is_class && !et->is_c) return (i64)sizeof(none*);
@@ -7324,7 +7329,8 @@ static path _path_latest_modified(path a, ARef mvalue, map visit) {
     cstr canonical = realpath(base_dir, null);
     if (!canonical) return null;
     string k = string(canonical);
-    if (contains(visit, (Au)k)) return null;;
+    free(canonical);
+    if (contains(visit, (Au)k)) return null;
     set(visit, (Au)k, _bool(true));
     
     DIR *dir = opendir(base_dir);
@@ -7480,7 +7486,8 @@ AU_EXPORT i64 path_modified_time(path a) {
 // layout (LE): u32 magic('SFMT') u32 ver(=4);  section: u32 0xC0DEFACE u32 path_len,
 //   path bytes, i64 mtime, u32 decl_count, decl_count*{u32 len, bytes}, u32 line_count,
 //   line_count*{u32 ntok, ntok*{u32 col,len,syntax,decl_idx,decl_line}};  end: u32 0.
-AU_EXPORT Au path_read_format(path a) {
+// wanted: only sections whose source path is a key of it are built
+static Au read_format_sections(path a, map wanted) {
     Au out = (Au)vector_of(typeid(Au));
     FILE* f = fopen((cstr)a->chars, "rb");
     if (!f) return out;
@@ -7497,6 +7504,24 @@ AU_EXPORT Au path_read_format(path a) {
         p[plen] = 0;
         i64 mt = 0;
         if (fread(&mt, 8, 1, f) != 1) { free(p); break; }
+        // a section nobody asked for is stepped over: no objects made
+        if (wanted && !get(wanted, (Au)string(p))) {
+            bool sk = true;
+            u32  nd = 0, nl = 0;
+            if (fread(&nd, 4, 1, f) != 1) sk = false;
+            for (u32 i = 0; sk && i < nd; i++) {
+                u32 dl = 0;
+                if (fread(&dl, 4, 1, f) != 1 || fseek(f, (long)dl, SEEK_CUR) != 0) sk = false;
+            }
+            if (sk && fread(&nl, 4, 1, f) != 1) sk = false;
+            for (u32 L = 0; sk && L < nl; L++) {
+                u32 nt = 0;
+                if (fread(&nt, 4, 1, f) != 1 || fseek(f, (long)nt * 20, SEEK_CUR) != 0) sk = false;
+            }
+            free(p);
+            if (!sk) break;
+            continue;
+        }
         bool   ok = true;
         u32    np = 0;
         char** dp = null;
@@ -7512,9 +7537,10 @@ AU_EXPORT Au path_read_format(path a) {
         }
         u32 nlines = 0;
         if (ok && fread(&nlines, 4, 1, f) != 1) ok = false;
+        // the lines prop holds its vector: a second hold here leaked it
         fmt_file ff = fmt_file(
             source, string(p), mtime, mt,
-            lines, hold((Au)vector_of(typeid(Au))));
+            lines, (Au)vector_of(typeid(Au)));
         free(p);
         for (u32 L = 0; ok && L < nlines; L++) {
             u32 ntok = 0;
@@ -7537,6 +7563,14 @@ AU_EXPORT Au path_read_format(path a) {
     }
     fclose(f);
     return out;
+}
+
+AU_EXPORT Au path_read_format(path a) {
+    return read_format_sections(a, null);
+}
+
+AU_EXPORT Au path_read_format_of(path a, map wanted) {
+    return read_format_sections(a, wanted);
 }
 
 AU_EXPORT bool path_is_dir(path a) {
@@ -7609,8 +7643,10 @@ AU_EXPORT string path_filename(path a) {
 AU_EXPORT path path_absolute(path a) {
     path  result   = new(path);
     cstr  rpath    = realpath(a->chars, null);
+    // realpath's buffer is ours to free; it was never freed
     result->chars  = rpath ? cstr_copy(rpath) : copy_cstr("");
     result->count    = strlen(result->chars);
+    if (rpath) free(rpath);
     return result;
 }
 
