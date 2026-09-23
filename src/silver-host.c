@@ -6,6 +6,7 @@
 #include <posix.h>   // the posix surface windows lacks, in one header
 #else
 #include <dlfcn.h>
+#include <pthread.h>
 #include <unistd.h>
 #include <sys/resource.h>
 #include <libgen.h>
@@ -101,6 +102,7 @@ typedef void       (*au_compile_invoke_fn)(const char*);
 typedef void       (*au_main_args_fn)(int, char**);
 typedef void       (*au_live_set_pending_fn)(int);
 typedef int        (*au_live_take_apply_fn)(void);
+typedef int        (*au_persist_fn)(void*);
 typedef int        (*module_purge_image_fn)(void*);
 typedef int        (*watch_pause_image_fn)(void*);
 typedef int        (*async_wait_image_fn)(void*);
@@ -125,6 +127,87 @@ static void stash_args(void* handle, int argc, char** argv) {
 #define FRAME_SYM   "silver_live_frame"
 #define DESTROY_SYM "silver_live_destroy"
 #define INIT_SYM    "silver_live_init"
+
+typedef void       (*au_space_begin_fn)(void*);
+typedef void*      (*au_space_detach_fn)(void);
+typedef void       (*au_space_promote_fn)(void*);
+typedef void       (*au_auto_free_fn)(void);
+
+// a parallel reload: the new image's init runs here while the live
+// instance keeps framing on the main thread
+typedef struct {
+    pthread_t thread;
+    void*     handle;
+    void*     space;
+    int       argc;
+    char**    argv;
+    int       state;   // 0 idle, 1 loading, 2 ready for the switch
+    long      ready_at;   // when the app was told (pending 3)
+} reload_job_t;
+static reload_job_t reload_job;
+static void stash_args(void* handle, int argc, char** argv);
+static long now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long)(ts.tv_sec * 1000L + ts.tv_nsec / 1000000L);
+}
+
+typedef void  (*module_erase_fn)(void*, const char*);
+typedef void* (*find_module_fn)(const char*);
+
+// the old instance's teardown, off the main thread: destroy, wait its
+// worker threads out of the image, close the image
+typedef struct {
+    pthread_t   thread;
+    void*       handle;
+    destroy_fn  destroy;
+    void*       image;
+    const char* name;
+    int         state;   // 0 idle, 1 running
+    int         done;
+    int         destroyed;   // the instance is gone; its image still mapped
+    int         drained;     // the main thread drained its pool after that
+} close_job_t;
+static close_job_t close_job;
+
+static void* close_worker(void* arg) {
+    close_job_t* job = (close_job_t*)arg;
+    long t0 = now_ms();
+    if (job->destroy) job->destroy();
+    // this thread's pool: the teardown's temporaries, freed while mapped
+    { au_auto_free_fn af = (au_auto_free_fn)dlsym(RTLD_DEFAULT, "auto_free"); if (af) af(); }
+    long t1 = now_ms();
+    async_wait_image_fn await = (async_wait_image_fn)dlsym(job->handle, "async_wait_image");
+    if (await) await(job->image);
+    long t2 = now_ms();
+    // objects this teardown dropped to zero while they sat in the main
+    // thread's pool are freed by that thread's next drain: their types
+    // are in this image, so it stays mapped until that drain has run
+    __atomic_store_n(&job->destroyed, 1, __ATOMIC_RELEASE);
+    while (!__atomic_load_n(&job->drained, __ATOMIC_ACQUIRE)) usleep(1000);
+    dlclose(job->handle);
+    fprintf(stderr, "[%s] old instance closed: destroy %ldms workers %ldms close %ldms\n",
+        job->name, t1 - t0, t2 - t1, now_ms() - t2);
+    __atomic_store_n(&job->done, 1, __ATOMIC_RELEASE);
+    return NULL;
+}
+
+static void* reload_worker(void* arg) {
+    reload_job_t* job = (reload_job_t*)arg;
+    au_space_begin_fn  sbegin  = (au_space_begin_fn)dlsym(RTLD_DEFAULT, "au_space_begin");
+    au_auto_free_fn    scapt   = (au_auto_free_fn)dlsym(RTLD_DEFAULT, "au_space_capture");
+    au_space_detach_fn sdetach = (au_space_detach_fn)dlsym(RTLD_DEFAULT, "au_space_detach");
+    au_auto_free_fn    afree   = (au_auto_free_fn)dlsym(RTLD_DEFAULT, "auto_free");
+    if (sbegin) sbegin(job->handle);
+    if (scapt)  scapt();
+    stash_args(job->handle, job->argc, job->argv);
+    init_fn init = (init_fn)dlsym(job->handle, INIT_SYM);
+    if (init) init();
+    if (afree) afree();   // this thread's pool: refs-0 leftovers of the init
+    job->space = sdetach ? sdetach() : NULL;
+    __atomic_store_n(&job->state, 2, __ATOMIC_RELEASE);
+    return NULL;
+}
 
 #define MAX_SOURCES 128
 
@@ -816,6 +899,9 @@ static void* reload_dlopen(const char* lib, time_t ts) {
     }
     if (src) fclose(src);
     if (dst) { fclose(dst); unlink(tmp); }
+    // the product is mid-relink: opening its path hands back the
+    // image already mapped, so the caller retries the copy instead
+    if (!src) return NULL;
     return try_dlopen(lib);  // fallback
 }
 
@@ -1109,6 +1195,12 @@ int main(int argc, char** argv) {
     { char* dot = strrchr(name, '.');
       if (dot && strcmp(dot, ".exe") == 0) *dot = '\0'; }
 #endif
+    // a debug host is <name>-dbg: the module is <name>, built debug
+    { size_t nl = strlen(name);
+      if (nl > 4 && strcmp(name + nl - 4, "-dbg") == 0) {
+          name[nl - 4] = '\0';
+          setenv("SILVER_DEBUG_BUILD", "1", 1);
+      } }
 
     // BEFORE anything that changes cwd or rebuilds: the child re-runs main from
     // the launch directory and does the whole normal startup itself. hooking in
@@ -1291,7 +1383,8 @@ int main(int argc, char** argv) {
     pid_t compile_pid = 0;  // async recompile in flight — the app keeps running while it builds
     int apply_compile = 0;  // the in-flight compile was user-requested (defer apply)
 
-    while (do_frame && do_frame()) {
+    for (;;) {
+        if (!do_frame || !do_frame()) break;
         // app<->host signals (resolved each iter — handle changes across reloads)
         au_live_set_pending_fn set_pending = (au_live_set_pending_fn)dlsym(handle, "au_live_set_pending");
         au_live_take_apply_fn  take_apply  = (au_live_take_apply_fn) dlsym(handle, "au_live_take_apply");
@@ -1399,7 +1492,8 @@ int main(int argc, char** argv) {
             if (r == compile_pid) {
                 compile_pid = 0;
                 if (rebuild_status(st, name) == 0) {
-                    if (apply_compile && set_pending) set_pending(0);
+                    // pending stays 2 while the new instance loads: the app
+                    // keeps its swap state up to the switch
                     apply_compile = 0;
                     force = 1;   // good build → save + reload below
                 } else {
@@ -1428,7 +1522,9 @@ int main(int argc, char** argv) {
         // ASYNC — the app keeps rendering, pending=2 shows it compiling.
         // when an external build already left a fresh product, skip straight
         // to the swap.
-        if (defer && host_pending && take_apply && take_apply()) {
+        // never while a load is in flight: the app's go for the switch is
+        // the ready block's to take, not a new apply
+        if (defer && host_pending && reload_job.state == 0 && take_apply && take_apply()) {
             host_pending = 0;
             if (!sources_newer(product, srcs, nsr)) {
                 if (set_pending) set_pending(0);
@@ -1454,33 +1550,18 @@ int main(int argc, char** argv) {
         // force bypasses reload_off: it only arises from a good build the user
         // asked for (defer apply) — reload_off gates only self-initiated swaps
         time_t cur = file_mtime(product);
-        if (force || (!reload_off && !compile_pid && cur != last_mtime)) {
+        // mtime 0: the linker has the product unlinked, not a build
+        if (force || (!reload_off && !compile_pid && cur && cur != last_mtime
+                      && reload_job.state == 0)) {   // one load at a time
             last_mtime = cur;
             char cwd_now[4096];
             if (!getcwd(cwd_now, sizeof(cwd_now))) cwd_now[0] = 0;
             fprintf(stderr, "[%s] reloading (cwd %s)\n", name, cwd_now);
-            host_resources(name, "before destroy");
 
-            // Destroy the OLD instance FIRST. Its silver_live_destroy runs
-            // module_erase_silver, clearing the old silver modules — so the
-            // registry is CLEAN before the new .so's global constructors register
-            // fresh types. (Previously the new .so was loaded first, its
-            // constructors registered, and THEN this erase wiped the just-
-            // registered new module — leaving find_type unable to resolve the
-            // app's own element types on reload.)
-            // SILVER_RELOAD_SAVE is set ONLY for the reload-path destroy (the final
-            // exit destroy never sees it) — apps use it to flash-save live state.
-            // SILVER_RELOAD_LOAD stays set afterward: every subsequent init in this
-            // process IS a reload, so the fresh instance may restore the flash state.
-            setenv("SILVER_RELOAD_SAVE", "1", 1);
-            if (do_destroy) do_destroy();
-            host_resources(name, "after destroy");
-            unsetenv("SILVER_RELOAD_SAVE");
-            setenv("SILVER_RELOAD_LOAD", "1", 1);
-
-            // Load the new .so — its constructors register into the cleared
-            // registry. The old handle stays open until the dlclose below, so
-            // shared dependency refcounts never hit zero during the swap.
+            // the new image loads and inits BESIDE the live instance, which
+            // keeps framing: its init runs on a worker inside an Au space
+            // (its types register there, not over the live ones) and only
+            // the switch below is a frame's gap
             n = readlink(product, lib, sizeof(lib) - 1);
             if (n < 0) break;
             lib[n] = '\0';
@@ -1488,7 +1569,7 @@ int main(int argc, char** argv) {
             // an external writer (an agent rebuilding sources) can relink the
             // .so while we copy it — the torn copy fails to load. wait for the
             // write to finish and recopy instead of dying.
-            for (int rt = 0; !new_handle && rt < 10; rt++) {
+            for (int rt = 0; (!new_handle || new_handle == handle) && rt < 10; rt++) {
                 fprintf(stderr, "%s: reload copy torn — retrying (%d)\n", name, rt + 1);
                 usleep(300000);
                 n = readlink(product, lib, sizeof(lib) - 1);
@@ -1496,34 +1577,122 @@ int main(int argc, char** argv) {
                 lib[n] = '\0';
                 new_handle = reload_dlopen(lib, file_mtime(product));
             }
-            if (!new_handle) {
+            if (!new_handle || new_handle == handle) {
                 fprintf(stderr, "[%s] reload failed: %s\n", name, dlerror());
-                return 1;
+                if (set_pending) set_pending(1);
+                continue;   // the live instance goes on
             }
+            // persist slots: held from the live instance, in the new image's
+            // slots before its init; both see them until the switch
+            au_persist_fn psave = (au_persist_fn)dlsym(RTLD_DEFAULT, "au_persist_save");
+            au_persist_fn pload = (au_persist_fn)dlsym(RTLD_DEFAULT, "au_persist_load");
+            int npersist = psave ? psave(handle) : 0;
+            if (npersist && pload) {
+                pload(new_handle);
+                fprintf(stderr, "[%s] %d persist slot(s) kept\n", name, npersist);
+            }
+            // SILVER_RELOAD_LOAD stays set afterward: every subsequent init in
+            // this process IS a reload, so the fresh instance may restore the
+            // flash state. PARALLEL tells its run to leave the swapchain alone.
+            setenv("SILVER_RELOAD_LOAD", "1", 1);
+            setenv("SILVER_RELOAD_PARALLEL", "1", 1);
+            reload_job.handle = new_handle;
+            reload_job.space  = NULL;
+            reload_job.argc   = argc;
+            reload_job.argv   = argv;
+            reload_job.state  = 1;
+            if (pthread_create(&reload_job.thread, NULL, reload_worker, &reload_job) != 0) {
+                fprintf(stderr, "[%s] reload: no worker thread\n", name);
+                unsetenv("SILVER_RELOAD_PARALLEL");
+                dlclose(new_handle);
+                reload_job.state = 0;
+            }
+        }
+
+        // the switch: the new instance is built, so at this frame boundary
+        // the live one hands over the frame. its teardown runs on a thread:
+        // the main thread only stops its watches and takes it out of the
+        // registry, so the new instance's next frame is the whole gap
+        // the new instance is ready: pending 3 tells the app, which fades
+        // what it has to fade and hands back the go; the switch waits for
+        // that go, or 800 ms for an app with nothing to fade
+        if (reload_job.state == 2 && !reload_job.ready_at) {
+            reload_job.ready_at = now_ms();
+            if (set_pending) set_pending(3);
+            au_live_take_apply_fn take_go = (au_live_take_apply_fn)dlsym(RTLD_DEFAULT, "au_live_take_apply");
+            if (take_go) take_go();   // clear a stale request
+        }
+        if (reload_job.state == 2 && reload_job.ready_at) {
+            au_live_take_apply_fn take_go = (au_live_take_apply_fn)dlsym(RTLD_DEFAULT, "au_live_take_apply");
+            int go = take_go ? take_go() : 1;
+            if (!go && now_ms() - reload_job.ready_at < 800) continue;
+        }
+        if (reload_job.state == 2) {
+            reload_job.ready_at = 0;
+            pthread_join(reload_job.thread, NULL);
+            void* new_handle = reload_job.handle;
+            long t0 = now_ms();
             // a watch still running in the old image calls freed code on its
             // next event: stop those before the registry purge and the close
             watch_pause_image_fn wpause = (watch_pause_image_fn)dlsym(handle, "watch_pause_image");
             if (wpause) wpause((void*)do_init);
-            // a worker thread still in the old image returns into freed code
-            async_wait_image_fn await = (async_wait_image_fn)dlsym(handle, "async_wait_image");
-            if (await) await((void*)do_init);
-            // registry entries inside the old image would fault after dlclose
+            // the old module leaves the registry before the new one enters it:
+            // a name lookup must never land on the old types again
+            module_erase_fn merase = (module_erase_fn)dlsym(RTLD_DEFAULT, "module_erase");
+            find_module_fn  fmod   = (find_module_fn)dlsym(RTLD_DEFAULT, "find_module");
+#ifdef SILVER_SHARE_NAME
+            const char* reg_name = SILVER_SHARE_NAME;
+#else
+            const char* reg_name = name;
+#endif
+            if (merase && fmod) { void* old_mod = fmod(reg_name); if (old_mod) merase(old_mod, NULL); }
             module_purge_image_fn purge = (module_purge_image_fn)dlsym(handle, "module_purge_image");
             if (purge) purge((void*)do_init);
-            dlclose(handle);
+            au_space_promote_fn promote = (au_space_promote_fn)dlsym(RTLD_DEFAULT, "au_space_promote");
+            if (promote) promote(reload_job.space);
+            unsetenv("SILVER_RELOAD_PARALLEL");
 
-            // Initialize new instance now that old is gone
+            close_job.handle  = handle;
+            close_job.destroy = do_destroy;
+            close_job.image   = (void*)do_init;
+            close_job.name    = name;
             handle    = new_handle;
             do_init   = dlsym(handle, INIT_SYM);
             do_frame  = dlsym(handle, FRAME_SYM);
             do_destroy= dlsym(handle, DESTROY_SYM);
-            stash_args(handle, argc, argv);
-            if (do_init) do_init();
+            reload_job.state = 0;
+            if (set_pending) set_pending(0);
+            fprintf(stderr, "[%s] switch: %ldms\n", name, now_ms() - t0);
+            // SILVER_RELOAD_SAVE is set for the reload-path destroy only (the
+            // final exit destroy never sees it) — apps use it to flash-save
+            setenv("SILVER_RELOAD_SAVE", "1", 1);
+            if (close_job.state == 1) pthread_join(close_job.thread, NULL);
+            close_job.state = 1;
+            if (pthread_create(&close_job.thread, NULL, close_worker, &close_job) != 0) {
+                close_job.state = 0;
+                close_worker(&close_job);
+            }
             fprintf(stderr, "[%s] reload complete\n", name);
-            host_resources(name, "after init");
 
             // refresh source watch list from new artifacts
             load_sources(artifacts, srcs, &nsr);
+        }
+        // the old instance is destroyed: drain this thread's pool while its
+        // image is still mapped, then the close thread may unmap it
+        if (close_job.state == 1 && __atomic_load_n(&close_job.destroyed, __ATOMIC_ACQUIRE)
+            && !close_job.drained) {
+            au_auto_free_fn afree = (au_auto_free_fn)dlsym(RTLD_DEFAULT, "auto_free");
+            if (afree) afree();
+            __atomic_store_n(&close_job.drained, 1, __ATOMIC_RELEASE);
+        }
+        // the old instance is gone: the flash-save flag goes with it
+        if (close_job.state == 1 && __atomic_load_n(&close_job.done, __ATOMIC_ACQUIRE)) {
+            pthread_join(close_job.thread, NULL);
+            close_job.state     = 0;
+            close_job.done      = 0;
+            close_job.destroyed = 0;
+            close_job.drained   = 0;
+            unsetenv("SILVER_RELOAD_SAVE");
         }
     }
 

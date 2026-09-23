@@ -6,6 +6,17 @@ enum ShaderStage
     fragment : 1
     compute  : 2
 
+# a freed object touched: Au aborts with both stacks (AU_QUARANTINE)
+func au_dead_check [ a: Au, where: cstr ] -> none
+func au_module_erase_hook [ fn: handle ] -> none
+
+# a module's types leave the shader cache with the module
+func vk_module_erased [ m: Au_t ] -> none
+    vh : handle [ Au.live_vk_get[] ]
+    if [ !vh || !m ] return
+    vk : vk_context [ cast vk_context [ vh ] ]
+    vk.evict_module[ m ]
+
 class LayoutBinding
     type    : Au_t
     id      : int
@@ -70,7 +81,7 @@ class Render
     context vk                             : vk_context
     context w                              : Display
     # non-holding backref: pipeline skips when the owner isn't visible
-    mutable owner                          : element
+    manual owner                           : element
     # the display loop leaves this target alone while set
     public  skip                           : bool
     # a render target used as a reflection source has to be filterable:
@@ -139,6 +150,7 @@ class Render
     #     canvas and exhausted host memory (vkCreateFence -> OUT_OF_HOST_MEMORY).
     intern  vk_command_buffer              : VkCommandBuffer       # current slot (= [ring_i])
     intern  vk_command_buffers             : vec VkCommandBuffer [8]
+    intern  ring_pool                      : VkCommandPool
     intern  vk_fences                      : vec VkFence          [8]
     intern  ring_i                         : i32
     # a slot is reused only after its submit retired: 3 stalled the fourth
@@ -211,7 +223,9 @@ class Render
         # for swap-backed renders the Texture wraps vk_swap_image which
         # Display.resize just recreated — a plain resize would try to build a
         # new view off the stale handle. drop and rebuild in the el branch.
-        if [ color && !backbuffer ]
+        # only a swap image that actually changed: the rebuild from init's
+        # own update would hold the color twice (the store, then hold_members)
+        if [ color && !backbuffer && color.vk_image != vk_swap_image ]
             color.dealloc[]
             color = null
             if [ depth ]
@@ -325,8 +339,8 @@ class Render
         ts_read[ s ]
         vk_command_buffer = vk_command_buffers[s]
         if [ ring_has[s] == 0 ]
-            vk.fence_acquire[]
-            handle_slot_set[ @vk_fences[s], cast handle [ vk.fence_new ] ]
+            fa9 : VkFence [ vk.fence_acquire[] ]
+            handle_slot_set[ @vk_fences[s], cast handle [ fa9 ] ]
             ring_has[s] = 1
         vk_fence          = vk_fences[s]
         vkResetCommandBuffer[ vk_command_buffer, 0 ]
@@ -356,7 +370,9 @@ class Render
             commandBufferCount: 1,
             pCommandBuffers:    @vk_command_buffer
         ]
+        vk.qlock.lock[]
         vkQueueSubmit[ vk.queue, 1, @submitInfo, vk_fence ]
+        vk.qlock.unlock[]
         vk.submit_calls += 1
         ring_primed[s] = 1
         ring_last      = s
@@ -460,8 +476,8 @@ class Render
         ts_read[ s ]
         vk_command_buffer = vk_command_buffers[s]
         if [ ring_has[s] == 0 ]
-            vk.fence_acquire[]
-            handle_slot_set[ @vk_fences[s], cast handle [ vk.fence_new ] ]
+            fa9 : VkFence [ vk.fence_acquire[] ]
+            handle_slot_set[ @vk_fences[s], cast handle [ fa9 ] ]
             ring_has[s] = 1
         vk_fence          = vk_fences[s]
         vk.cur_ring       = s
@@ -583,7 +599,9 @@ class Render
                 signalSemaphoreCount: (vk_swap_image) ? 1 : 0,
                 pSignalSemaphores:    (vk_swap_image) ? @w.semaphore_frame.vk_render_finished_semaphore : null
             ]
+            vk.qlock.lock[]
             vkQueueSubmit[ vk.queue, 1, @submitInfo, vk_fence ]
+            vk.qlock.unlock[]
             # the pass's finalLayout moved the image; track it or the next
             # frame's barrier is skipped and the pass finds the wrong layout
             if [ i == 1 && bool[ reduction ] ]
@@ -661,8 +679,14 @@ class Render
         if [ vk_render_finished_semaphore ]
             vkDestroySemaphore[ vk.device, vk_render_finished_semaphore, null ]
             vk_render_finished_semaphore = null
-        if [ vk_command_buffers[0] ]
-            vkFreeCommandBuffers[ vk.device, vk.command_pool, u32[ ring_n ], vk_command_buffers ]
+        # metal has a small fixed number of counter sample buffers
+        if [ query_pool ]
+            vkDestroyQueryPool[ vk.device, query_pool, null ]
+            query_pool = null
+        # the ring's own pool: its buffers go with it, on any thread
+        if [ ring_pool ]
+            vkDestroyCommandPool[ vk.device, ring_pool, null ]
+            ring_pool = null
             for [ ci: i32 0, ci < ring_n, ci += 1 ]
                 vk_command_buffers[ci] = null
 
@@ -681,15 +705,12 @@ class Render
     func init []
         vk.render_allocs += 1
         backbuffer : !vk_swap_image
-        hold vk_framebuffer
-        hold vk_render_pass
-        hold vk_framebuffer
-        hold vk_render_pass
 
         # allocate the command-buffer ring (one per ring slot)
+        ring_pool = vk.own_pool[]
         cmdAllocInfo : VkCommandBufferAllocateInfo [
             sType:              VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-            commandPool:        vk.command_pool,
+            commandPool:        ring_pool,
             level:              VK_COMMAND_BUFFER_LEVEL_PRIMARY,
             commandBufferCount: u32[ ring_n ]
         ]
@@ -804,6 +825,25 @@ class Render
         if [ width > 2000 ]
             test2 :  2
             test2 += 2
+        # the targets are made here, not in update: a store in that
+        # delegate holds, and hold_members after init would hold again
+        s9 : f32 [ (w->scale > 0) ? w->scale : 1.0 ]
+        if [ wscale > 0 ]
+            width  = i32[ w.width  * wscale * s9 ]
+            height = i32[ w.height * wscale * s9 ]
+        if [ !color && width > 0 && height > 0 ]
+            ctag : string [ (tag) ? tag : 'rcolor' ]
+            color = Texture [ vk: vk, w: w, width: width, height: height,
+                vk_format: w.surface_format.format, swap: !backbuffer,
+                surface: Surface.color, vk_image: vk_swap_image, tag: ctag,
+                nearest: nearest, mip_levels: (mips > 1) ? mips : 1,
+                anisotropy: aniso ]
+            if [ use_depth ]
+                depth = Texture [ vk: vk, w: w, width: width, height: height,
+                    vk_format: VK_FORMAT_D32_SFLOAT, swap: !backbuffer, tag: 'rdepth' ]
+            if [ reduce ]
+                reduction = Texture [ vk: vk, w: w, width: width / 4, height: height / 4,
+                    vk_format: w.surface_format.format, swap: !backbuffer, tag: 'rreduce' ]
         # create or resize color/depth textures and framebuffer
         update[]
 
@@ -872,11 +912,10 @@ class Layout
     intern func transition [ vk: vk_context, img: VkImage, trans_to: Layout, r: ImageRange ]
         #printf[ "current layout %p\n", layout ]
         # reuse the context's transfer command instead of allocating a new one per call.
-        if [ !vk.xfer_cmd ]
-            vk.xfer_cmd = Command [ vk: vk ]
         # the shared command itself: a local copy kept its own pending flag,
         # so the buffer was re-recorded while the gpu still read it
-        vk.xfer_cmd.begin
+        xc : vk.xfer[]
+        xc.begin
         barrier: VkImageMemoryBarrier [
             sType:               VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
             oldLayout:           layout,
@@ -894,8 +933,8 @@ class Layout
         ]
         barrier.srcAccessMask = access
         barrier.dstAccessMask = trans_to.access
-        vkCmdPipelineBarrier[ vk.xfer_cmd.cmd, stage, trans_to.stage, 0, 0, null, 0, null, 1, @barrier ]
-        vk.xfer_cmd.submit
+        vkCmdPipelineBarrier[ xc.cmd, stage, trans_to.stage, 0, 0, null, 0, null, 1, @barrier ]
+        xc.submit
 
 
 # holds any object 8 frames so its dealloc runs out of flight
@@ -929,6 +968,12 @@ class vk_context
     # the h.264 encoder's queue; -1 family = no video encode on this device
     intern  encode_queue        : VkQueue
     intern  encode_family       : i32 [ -1 ]
+    # one queue, any thread: a reload inits its instance beside a live one
+    public  qlock               : mutex
+    # a command pool is one thread's: the reload's init thread gets its own
+    intern  main_thread         : u64
+    intern  command_pool2       : VkCommandPool
+    intern  xfer_cmd2           : Command
 
     # handle accessors for cross-module compute consumers (ai): field
     # reads from another module land at shifted offsets past interns
@@ -968,6 +1013,8 @@ class vk_context
         intern _vkGetMemoryWin32HandlePropertiesKHR : PFN_vkGetMemoryWin32HandlePropertiesKHR
 
     public  sampler_count       : i32
+    public  samp_tags           : map i32 [string]   # live samplers by tag or origin
+    public  samp_keys           : vec string
     # live sampler counts by Texture.tag creation site
     public  samp_rcolor         : i32
     public  samp_rdepth         : i32
@@ -1027,85 +1074,157 @@ class vk_context
 
     # queue a buffer for destruction once provably out of flight
     func defer_buffer [ b: Buffer ] -> none
+        qlock.lock[]
         if [ ! defer_list ] defer_list = vec Buffer []
         b.defer_frame = frame_no
         b.hold[]
         defer_list.push[ b ]
+        qlock.unlock[]
 
     # queue texture handles: destroying under an in-flight submit that
     # still samples them is a device fault (the fast-close SIGTRAP)
     func defer_texture [ td: TexDefer ] -> none
+        qlock.lock[]
         if [ ! defer_texs ] defer_texs = vec TexDefer []
         td.defer_frame = frame_no
         defer_texs.push[ td ]
+        qlock.unlock[]
 
     # hold obj 8 frames, then release — its dealloc (and every
     # immediate vkDestroy inside it) runs provably out of flight
     func defer_drop [ o: Au ] -> none
+        qlock.lock[]
         if [ ! defer_drops ] defer_drops = vec DropDefer []
         Au.hold[ o ]
         dd : DropDefer [ obj: o, defer_frame: frame_no ]
         defer_drops.push[ dd ]
+        qlock.unlock[]
 
-    # a module swap: the deferred owners belong to the image going away, so
-    # everything queued goes now, while its code is still mapped
-    func defer_flush [] -> none
+    # a module swap: everything queued goes now, while the image going
+    # away is still mapped (a deferred object's dealloc can reach into
+    # it through a member). the device is idle, so nothing is in flight;
+    # the next instance's frames queue into fresh lists meanwhile
+    # the shaders cached for a module's types go with the module
+    func evict_module [ m: Au_t ] -> none
+        if [ !shader_cache ] return
+        for [ i: i32 0, i < m.members.count, i += 1 ]
+            t : Au_t [ m.members.origin[ i ] ]
+            if [ t ] shader_cache.rm[ t ]
+
+    # anything queued for later release
+    func defer_pending [] -> bool
+        return (defer_list && defer_list.count > 0) || (defer_texs && defer_texs.count > 0) ||
+               (defer_drops && defer_drops.count > 0)
+
+    func defer_flush [ mod: Au_t ] -> none
+        qlock.lock[]
         if [ device ] vkDeviceWaitIdle[ device ]
         frame_no += 1000000
-        defer_tick[]
+        bwork : defer_list
+        twork : defer_texs
+        dwork : defer_drops
+        if [ bwork ] bwork.hold[]
+        if [ twork ] twork.hold[]
+        if [ dwork ] dwork.hold[]
+        defer_list  = vec Buffer []
+        defer_texs  = vec TexDefer []
+        defer_drops = vec DropDefer []
+        qlock.unlock[]
+        if [ bwork ]
+            for [ b: Buffer ] in bwork
+                b.destroy_now[]
+                b.drop[]
+            bwork.drop[]
+        if [ twork ]
+            for [ td: TexDefer ] in twork
+                tex_defer_free[ td ]
+            twork.drop[]
+        if [ dwork ]
+            for [ dd: DropDefer ] in dwork
+                Au.drop[ dd.obj ]
+            dwork.drop[]
+
+    func tex_defer_free [ td: TexDefer ] -> none
+        if [ td.vk_sampler    ] vkDestroySampler[ device, td.vk_sampler, null ]
+        if [ td.vk_image_view ] vkDestroyImageView[ device, td.vk_image_view, null ]
+        if [ td.vk_image ]
+            if [ td.vk_memory ]
+                vkDestroyImage[ device, td.vk_image, null ]
+                vkFreeMemory[ device, td.vk_memory, null ]
+                if [ td.shared_fd >= 0 ] close[ td.shared_fd ]
+            el
+                vmaDestroyImage[ allocator, td.vk_image, td.vma_alloc ]
 
     # once per rendered frame: destroy entries 8+ frames old (>> ring depth)
     func defer_tick [] -> none
         frame_no += 1
         # a one-shot command whose work finished hands its fence back now, not at reuse
         if [ pending_cmds && pending_cmds.count > 0 ]
-            still_pending : vec Command []
-            for [ command: Command ] in pending_cmds
+            qlock.lock[]
+            pwork : pending_cmds
+            pwork.hold[]
+            pending_cmds = vec Command []
+            qlock.unlock[]
+            for [ command: Command ] in pwork
                 still_running : bool [ false ]
                 if [ command.pending ]
                     still_running = vkGetFenceStatus[ device, command.fence ] != VK_SUCCESS
                 if [ still_running ]
-                    still_pending.push[ command ]
+                    qlock.lock[]
+                    pending_cmds.push[ command ]
+                    qlock.unlock[]
                 el
                     command.reap[]
-            pending_cmds = still_pending
+            pwork.drop[]
+        # swap each list out under the lock: expiring entries cascade
+        # deallocs that re-enter defer_*, and the flush thread swaps too
         if [ defer_list && defer_list.count > 0 ]
-            keep : vec Buffer []
-            for [ b: Buffer ] in defer_list
+            qlock.lock[]
+            bwork : defer_list
+            bwork.hold[]
+            defer_list = vec Buffer []
+            qlock.unlock[]
+            for [ b: Buffer ] in bwork
                 if [ frame_no - b.defer_frame >= 8 ]
                     b.destroy_now[]
                     b.drop[]
                 el
-                    keep.push[ b ]
-            defer_list = keep
+                    defer_buffer_keep[ b ]
+            bwork.drop[]
         if [ defer_texs && defer_texs.count > 0 ]
-            tkeep : vec TexDefer []
-            for [ td: TexDefer ] in defer_texs
+            qlock.lock[]
+            twork : defer_texs
+            twork.hold[]
+            defer_texs = vec TexDefer []
+            qlock.unlock[]
+            for [ td: TexDefer ] in twork
                 if [ frame_no - td.defer_frame >= 8 ]
-                    if [ td.vk_sampler    ] vkDestroySampler[ device, td.vk_sampler, null ]
-                    if [ td.vk_image_view ] vkDestroyImageView[ device, td.vk_image_view, null ]
-                    if [ td.vk_image ]
-                        if [ td.vk_memory ]
-                            vkDestroyImage[ device, td.vk_image, null ]
-                            vkFreeMemory[ device, td.vk_memory, null ]
-                            if [ td.shared_fd >= 0 ] close[ td.shared_fd ]
-                        el
-                            vmaDestroyImage[ allocator, td.vk_image, td.vma_alloc ]
+                    tex_defer_free[ td ]
                 el
-                    tkeep.push[ td ]
-            defer_texs = tkeep
+                    qlock.lock[]
+                    defer_texs.push[ td ]
+                    qlock.unlock[]
+            twork.drop[]
         if [ defer_drops && defer_drops.count > 0 ]
-            # swap first: expiring entries cascade deallocs that can
-            # re-enter defer_drop — never mutate the list being walked
+            qlock.lock[]
             dwork : defer_drops
             dwork.hold[]
             defer_drops = vec DropDefer []
+            qlock.unlock[]
             for [ dd: DropDefer ] in dwork
                 if [ frame_no - dd.defer_frame < 8 ]
+                    qlock.lock[]
                     defer_drops.push[ dd ]
+                    qlock.unlock[]
                 el
                     Au.drop[ dd.obj ]
             dwork.drop[]
+
+    # a buffer back on the list without a second hold
+    func defer_buffer_keep [ b: Buffer ] -> none
+        qlock.lock[]
+        defer_list.push[ b ]
+        qlock.unlock[]
 
     intern quad_m:    GltfModel
     # cached default shaders. constructing a fresh UVQuad / UVReduce per
@@ -1129,6 +1248,8 @@ class vk_context
 
     func init [ ]
         hold[]
+        qlock = mutex [ ]
+        main_thread = cast u64 [ pthread_self[] ]
         get_required_extensions[ a ]
         # validation layer adds 10-100x overhead PER vulkan call (every draw, descriptor
         # bind, image transition). on in debug builds, off in release.
@@ -1446,33 +1567,84 @@ class vk_context
 
     # settle the whole device — one-time creation/teardown windows only
     func wait_idle [ ]
+        # the queue is externally synchronized: never wait under a submit
+        qlock.lock[]
         vkDeviceWaitIdle[ device ]
+        qlock.unlock[]
 
     # nvidia holds a driver fd per fence: a fence is borrowed for one in-flight submit
     # the borrowed fence is left in fence_new: silver cannot take @ of a local handle
-    func fence_acquire [ ]
+    func pool [ ] -> VkCommandPool
+        me : u64 [ cast u64 [ pthread_self[] ] ]
+        if [ me == main_thread ] return command_pool
+        if [ !command_pool2 ]
+            qlock.lock[]
+            if [ !command_pool2 ]
+                pool_info: VkCommandPoolCreateInfo [
+                    sType:            VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                    queueFamilyIndex: queue_family_index,
+                    flags:            VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT
+                ]
+                r9 : vkCreateCommandPool[ device, pool_info, null, @command_pool2 ]
+                expect r9 == VK_SUCCESS, "failed to create command pool"
+            qlock.unlock[]
+        return command_pool2
+
+    # a pool of one owner's own: freeing it touches no other thread's pool
+    func own_pool [ ] -> VkCommandPool
+        p9 : VkCommandPool [ null ]
+        info9 : VkCommandPoolCreateInfo [
+            sType:            VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+            queueFamilyIndex: queue_family_index,
+            flags:            VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT
+        ]
+        r9 : vkCreateCommandPool[ device, info9, null, @p9 ]
+        expect r9 == VK_SUCCESS, "failed to create command pool"
+        return p9
+
+    # the transfer command is one thread's too
+    func xfer [ ] -> Command
+        me : u64 [ cast u64 [ pthread_self[] ] ]
+        if [ me == main_thread ]
+            if [ !xfer_cmd ] xfer_cmd = Command [ vk: a ]
+            return xfer_cmd
+        if [ !xfer_cmd2 ] xfer_cmd2 = Command [ vk: a ]
+        return xfer_cmd2
+
+    # the pool is one per device and two instances share it on a reload:
+    # the lock spans the take, and the fence comes back as the value
+    func fence_acquire [ ] -> VkFence
+        qlock.lock[]
         if [ !fence_pool ] fence_pool = vec u64 []
         pooled : i32 [ fence_pool.count ]
         if [ pooled > 0 ]
             fence_new = cast VkFence [ fence_pool[ pooled - 1 ] ]
             fence_pool.remove[ pooled - 1 ]
-            return
+            f9 : VkFence [ fence_new ]
+            qlock.unlock[]
+            return f9
         fence_info : VkFenceCreateInfo [ sType: VK_STRUCTURE_TYPE_FENCE_CREATE_INFO ]
         fence_new = null
         create_result : i32 [ vkCreateFence[ device, @fence_info, null, @fence_new ] ]
         expect create_result == VK_SUCCESS, 'failed to create fence'
+        f8 : VkFence [ fence_new ]
+        qlock.unlock[]
+        return f8
 
     # the pool keeps handle bits, not objects: a vec of handles would hold them
     func fence_release [ fence: VkFence ]
         if [ !fence ] return
+        qlock.lock[]
         if [ !fence_pool ] fence_pool = vec u64 []
         fence_new = fence
         # a startup burst would otherwise park hundreds of fds in the pool for good
         if [ fence_pool.count >= 16 ]
             vkDestroyFence[ device, fence_new, null ]
+            qlock.unlock[]
             return
         vkResetFences[ device, 1, @fence_new ]
         fence_pool.push[ cast u64 [ fence_new ] ]
+        qlock.unlock[]
 
     func dealloc [ ]
         log 'vk_context dealloc: destroying device'
@@ -2068,7 +2240,7 @@ class vk_context
         cmd : VkCommandBuffer
         vkAllocateCommandBuffers[ device, VkCommandBufferAllocateInfo [
             sType:              VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-            commandPool:        command_pool,
+            commandPool:        pool[],
             level:              VK_COMMAND_BUFFER_LEVEL_PRIMARY,
             commandBufferCount: 1 ], @cmd ]
         prev : VkImageLayout [ src.vk_layout ]
@@ -2094,12 +2266,16 @@ class vk_context
                 dstOffset: VkOffset3D [ x: 0, y: 0, z: 0 ],
                 extent: VkExtent3D [ width: u32[ src.width ], height: u32[ src.height ], depth: 1 ] ] ]
         vkEndCommandBuffer[ cmd ]
+        qlock.lock[]
         vkQueueSubmit[ queue, 1, VkSubmitInfo [
             sType:              VK_STRUCTURE_TYPE_SUBMIT_INFO,
             commandBufferCount: 1,
             pCommandBuffers:    @cmd ], null ]
+        qlock.unlock[]
+        qlock.lock[]
         vkQueueWaitIdle[ queue ]
-        vkFreeCommandBuffers[ device, command_pool, 1, @cmd ]
+        qlock.unlock[]
+        vkFreeCommandBuffers[ device, pool[], 1, @cmd ]
         src.transition[ prev ]
         dst.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
 
@@ -2110,7 +2286,7 @@ class vk_context
         cmd : VkCommandBuffer
         vkAllocateCommandBuffers[ device, VkCommandBufferAllocateInfo [
             sType:              VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-            commandPool:        command_pool,
+            commandPool:        pool[],
             level:              VK_COMMAND_BUFFER_LEVEL_PRIMARY,
             commandBufferCount: 1 ], @cmd ]
         prev : VkImageLayout [ src.vk_layout ]
@@ -2142,12 +2318,13 @@ class vk_context
         dst.transition_in[ cmd, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
         dst.vk_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
         vkEndCommandBuffer[ cmd ]
-        fence_acquire[]
-        f9 : VkFence [ fence_new ]
+        f9 : VkFence [ fence_acquire[] ]
+        qlock.lock[]
         vkQueueSubmit[ queue, 1, VkSubmitInfo [
             sType:              VK_STRUCTURE_TYPE_SUBMIT_INFO,
             commandBufferCount: 1,
             pCommandBuffers:    @cmd ], f9 ]
+        qlock.unlock[]
         copy_cmd_last = cmd
         return f9
 
@@ -2156,7 +2333,7 @@ class vk_context
         if [ !f9 ] return true
         if [ vkGetFenceStatus[ device, f9 ] != VK_SUCCESS ] return false
         cb9 : VkCommandBuffer [ cmd ]
-        if [ cb9 ] vkFreeCommandBuffers[ device, command_pool, 1, @cb9 ]
+        if [ cb9 ] vkFreeCommandBuffers[ device, pool[], 1, @cb9 ]
         fence_release[ f9 ]
         return true
 
@@ -2338,7 +2515,10 @@ class Gpu
                     wrap_u:  (img) ? img.wrap_u  : false,
                     wrap_v:  (img) ? img.wrap_v  : false ]
                 if [ img ]
-                    img.user = tx
+                    # the image owns its texture; uploaded, the texture lets it go
+                    tx.sampler = null
+                    img.user   = tx
+                    Au.hold[ tx ]
 
     # re-upload vertex_data into the existing vertex Buffer — for dynamic
     # per-frame vertex streams (owned by callers outside trinity)
@@ -2631,6 +2811,7 @@ class Pipeline
             bind_resources[]
         for [ g: Gpu ] in resources
             if [ g.tx ]
+                au_dead_check[ g.tx, 'draw' ]
                 g.tx.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
         frame: VkCommandBuffer [ f ]
         shader_uniforms.update[ ]
@@ -2667,8 +2848,12 @@ class Pipeline
         # wcount = 64*10 = 640 — the old [512] overran here once the ring grew to 64.
         buffer_infos:      local VkDescriptorBufferInfo       [512]
         descriptor_writes: local VkWriteDescriptorSet         [1024]
-        resources        = vec Gpu []
-        storage_textures = vec Texture []
+        # made in init (bind_resources is its delegate); a rebind
+        # nulled them, and a store here after construction owns them
+        if [ !resources ]        resources        = vec Gpu []
+        el                       resources.clear[]
+        if [ !storage_textures ] storage_textures = vec Texture []
+        el                       storage_textures.clear[]
 
         if [ vbo ]
             vbo.sync[ w ]
@@ -3109,7 +3294,7 @@ class Pipeline
             ]
             result = vkCreateGraphicsPipelines[
                 vk.device, null, 1, pipeline_info, null, @vk_render ]
-            expect result == VK_SUCCESS, "pipeline creation fail"
+            expect result == VK_SUCCESS, 'pipeline creation fail: {s.name}'
             
         el [ s && s.vk_comp != null ]
             comp_info: VkComputePipelineCreateInfo [
@@ -3127,15 +3312,17 @@ class Pipeline
             expect result == VK_SUCCESS, "failed to create compute pipeline"
 
     func init [ ]
+        resources        = vec Gpu []
+        storage_textures = vec Texture []
         bind_resources[]
         # serialize pipeline construction against any in-flight Gpu work.
         # the composite chain builds ~10 pipelines back-to-back during
         # Window.update, and without this fence the validator occasionally
         # caught modules / descriptor sets in a half-built state when the
         # process wasn't being paced by gdb.
-        vkDeviceWaitIdle[ vk.device ]
+        vk.wait_idle[]
         reassemble[]
-        vkDeviceWaitIdle[ vk.device ]
+        vk.wait_idle[]
 
     func dealloc [ ]
         release[]
@@ -3145,6 +3332,14 @@ class Pipeline
             vkDestroyPipeline[ vk.device, vk_render, null ]
         if [ vk_compute ]
             vkDestroyPipeline[ vk.device, vk_compute, null ]
+        # the sets pin every bound image and buffer until the pool goes
+        if [ descriptor_pool ]
+            vkDestroyDescriptorPool[ vk.device, descriptor_pool, null ]
+            descriptor_pool = null
+        for [ i: i32 0, i < 2, i += 1 ]
+            if [ descriptor_layouts[i] ]
+                vkDestroyDescriptorSetLayout[ vk.device, descriptor_layouts[i], null ]
+                descriptor_layouts[i] = null
 
 
 class gltf_part
@@ -3538,6 +3733,9 @@ class Model
 class Command
     context vk : vk_context
     intern cmd : VkCommandBuffer
+    intern pool : VkCommandPool
+    # the frame's reap and another thread's begin never cross
+    intern lk   : mutex
     # the fence takes the place of a queue-wide idle after every submit:
     # only a reuse of THIS buffer waits, and only for its own work
     intern fence   : VkFence
@@ -3546,11 +3744,13 @@ class Command
     public signal  : VkSemaphore
 
     func begin [ ]
+        lk.lock[]
         if [ pending ]
             vkWaitForFences[ vk.device, 1, @fence, VK_TRUE, UINT64_MAX ]
             vk.fence_release[ fence ]
             fence   = null
             pending = false
+        lk.unlock[]
         vkResetCommandBuffer[ cmd, 0 ]
         vkBeginCommandBuffer[ cmd, VkCommandBufferBeginInfo [
             sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -3566,26 +3766,33 @@ class Command
             signalSemaphoreCount: (signal) ? 1 : 0,
             pSignalSemaphores:    @signal
         ]
+        lk.lock[]
         if [ !fence ]
-            vk.fence_acquire[]
-            fence = vk.fence_new
+            fence = vk.fence_acquire[]
             expect fence, 'null fence from pool'
+        vk.qlock.lock[]
         vkQueueSubmit[ vk.queue, 1, si, fence ]
         pending = true
         if [ !vk.pending_cmds ] vk.pending_cmds = vec Command []
         vk.pending_cmds.push[ a ]
+        vk.qlock.unlock[]
+        lk.unlock[]
 
     # the submit is done: return the fence without waiting for a reuse
     func reap [ ]
-        if [ !pending ] return
-        vk.fence_release[ fence ]
-        fence   = null
-        pending = false
+        lk.lock[]
+        if [ pending ]
+            vk.fence_release[ fence ]
+            fence   = null
+            pending = false
+        lk.unlock[]
 
     func init [ ]
+        lk   = mutex [ ]
+        pool = vk.own_pool[]
         alloc_info: VkCommandBufferAllocateInfo [
             sType:              VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-            commandPool:        vk.command_pool,
+            commandPool:        pool,
             level:              VK_COMMAND_BUFFER_LEVEL_PRIMARY,
             commandBufferCount: 1
         ]
@@ -3595,8 +3802,7 @@ class Command
         if [ pending ]
             vkWaitForFences[ vk.device, 1, @fence, VK_TRUE, UINT64_MAX ]
         if [ fence ] vk.fence_release[ fence ]
-        if [ cmd ]
-            vkFreeCommandBuffers[ vk.device, vk.command_pool, 1, @cmd ]
+        if [ pool ] vkDestroyCommandPool[ vk.device, pool, null ]
 
 
 class Buffer
@@ -3633,7 +3839,7 @@ class Buffer
         cmd:    VkCommandBuffer
         vkAllocateCommandBuffers [ vk.device, VkCommandBufferAllocateInfo [
             sType:              VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-            commandPool:        vk.command_pool,
+            commandPool:        vk.pool[],
             level:              VK_COMMAND_BUFFER_LEVEL_PRIMARY,
             commandBufferCount: 1 ], @cmd ]
         vkBeginCommandBuffer [ cmd, VkCommandBufferBeginInfo [
@@ -3654,12 +3860,16 @@ class Buffer
                 imageOffset: VkOffset3D [ x: 0, y: 0, z: 0 ],
                 imageExtent: VkExtent3D [ width: wi, height: hi, depth: 1 ] ] ]
         vkEndCommandBuffer [ cmd ]
+        vk.qlock.lock[]
         vkQueueSubmit [ vk.queue, 1, VkSubmitInfo [
             sType:              VK_STRUCTURE_TYPE_SUBMIT_INFO,
             commandBufferCount: 1,
             pCommandBuffers:    @cmd ], null ]
+        vk.qlock.unlock[]
+        vk.qlock.lock[]
         vkQueueWaitIdle [ vk.queue ]
-        vkFreeCommandBuffers [ vk.device, vk.command_pool, 1, @cmd ]
+        vk.qlock.unlock[]
+        vkFreeCommandBuffers [ vk.device, vk.pool[], 1, @cmd ]
         tx.transition [ prev ]
 
     # readback of a single cube face / mip (validation)
@@ -3669,7 +3879,7 @@ class Buffer
         cmd: VkCommandBuffer
         vkAllocateCommandBuffers [ vk.device, VkCommandBufferAllocateInfo [
             sType:              VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-            commandPool:        vk.command_pool,
+            commandPool:        vk.pool[],
             level:              VK_COMMAND_BUFFER_LEVEL_PRIMARY,
             commandBufferCount: 1 ], @cmd ]
         vkBeginCommandBuffer [ cmd, VkCommandBufferBeginInfo [
@@ -3690,12 +3900,16 @@ class Buffer
                 imageOffset: VkOffset3D [ x: 0, y: 0, z: 0 ],
                 imageExtent: VkExtent3D [ width: w2, height: h2, depth: 1 ] ] ]
         vkEndCommandBuffer [ cmd ]
+        vk.qlock.lock[]
         vkQueueSubmit [ vk.queue, 1, VkSubmitInfo [
             sType:              VK_STRUCTURE_TYPE_SUBMIT_INFO,
             commandBufferCount: 1,
             pCommandBuffers:    @cmd ], null ]
+        vk.qlock.unlock[]
+        vk.qlock.lock[]
         vkQueueWaitIdle [ vk.queue ]
-        vkFreeCommandBuffers [ vk.device, vk.command_pool, 1, @cmd ]
+        vk.qlock.unlock[]
+        vkFreeCommandBuffers [ vk.device, vk.pool[], 1, @cmd ]
         tx.transition [ prev ]
 
     func update [ d: ARef ]
@@ -3827,9 +4041,8 @@ class Texture
         # its update[] before it reaches texture resize) already waited for
         # that Render's in-flight work. device-wide waits here compound to
         # seconds across the full composite chain.
-        dealloc     [ ]
-        init        [ ]
-        hold_members[ ]
+        dealloc    [ ]
+        create_gpu [ ]
         return a
 
     cast -> Image
@@ -3983,7 +4196,7 @@ class Texture
         if [ mip_levels > 1 ]
             # mip generation is its own out-of-band pass: it needs the copy done
             up_cmd.submit[ ]
-            vkDeviceWaitIdle[ vk.device ]
+            vk.wait_idle[]
             vk.create_mipmaps[ vk_image, width, height, (depth > 1) ? depth : 1, mip_levels, layer_count ]
             vk_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
         el
@@ -4018,12 +4231,16 @@ class Texture
             ]]
         staging.hold[]
         cmd.submit[ ]
-        vkDeviceWaitIdle[ vk.device ]
+        vk.wait_idle[]
         staging.destroy_now[ ]
         staging.drop[]
         transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
 
+    # a method, not init: resize re-runs it on an owned object
     func init [ ]
+        create_gpu[ ]
+
+    func create_gpu [ ]
         # nothing to build (no image, sampler, or backing window) → no vk needed.
         # this is the normal path for a Display/Window, whose real setup happens in
         # Display.init; it also lets a console-mode Window construct without a context.
@@ -4225,7 +4442,16 @@ class Texture
                 ]
                 r: vkCreateSampler[ vk.device, samplerInfo, null, @vk_sampler ]
                 expect r == VK_SUCCESS, "Failed to create VkSampler"
+                # the stats are shared by the worker, close and main threads
+                vk.qlock.lock[]
                 vk.sampler_count += 1
+                if [ !vk.samp_tags ] vk.samp_tags = map i32 [string] []
+                if [ !vk.samp_keys ] vk.samp_keys = vec string []
+                k9 : samp_key[]
+                if [ !vk.samp_tags.contains[ k9 ] ]
+                    vk.samp_keys += k9
+                    vk.samp_tags[ k9 ] = 0
+                vk.samp_tags[ k9 ] = vk.samp_tags[ k9 ] + 1
                 if [ !tag ]
                     vk.samp_other += 1
                 el [ tag == 'rcolor' ]
@@ -4250,11 +4476,25 @@ class Texture
                     vk.samp_svg += 1
                 el
                     vk.samp_other += 1
+                vk.qlock.unlock[]
 
     # idempotent GPU teardown — destroys sampler/view/image and nulls the
     # handles, so it's safe to call directly (canvas-driven) AND again from
     # dealloc. textures are owned by their canvas; this lets the canvas reclaim
     # the GPU resources at teardown without depending on the Au refcount.
+    # the sampler's owner for the stats: its tag, else where it was made
+    func samp_key [] -> string
+        if [ tag ] return tag
+        h9 : Au.header[ a ]
+        if [ !h9.source ] return '?:{h9.line}'
+        src9 : string [ h9.source ]
+        n9 : i32 [ src9.count ]
+        s9 : i32 [ 0 ]
+        for [ i: i32 0, i < n9, i += 1 ]
+            if [ src9[ i ] == 47 ] s9 = i + 1
+        base9 : src9.mid[ s9, n9 - s9 ]
+        return '{base9}:{h9.line}'
+
     func release_gpu [ ]
         if [ vk_sampler || vk_image_view || (!swap && vk_image) ]
             #printf[ "TEXREL tag=%s %dx%d view=%p sampler=%p\n", (tag) ? tag.chars : '-', width, height, vk_image_view, vk_sampler ]
@@ -4273,7 +4513,11 @@ class Texture
                 td.shared_fd = shared_fd
             vk.defer_texture[ td ]
         if [ vk_sampler ]
+            vk.qlock.lock[]
             vk.sampler_count -= 1
+            k9 : samp_key[]
+            if [ vk.samp_tags && vk.samp_tags.contains[ k9 ] ]
+                vk.samp_tags[ k9 ] = vk.samp_tags[ k9 ] - 1
             if [ !tag ]
                 vk.samp_other -= 1
             el [ tag == 'rcolor' ]
@@ -4298,6 +4542,7 @@ class Texture
                 vk.samp_svg -= 1
             el
                 vk.samp_other -= 1
+            vk.qlock.unlock[]
             vk_sampler = null
         vk_image_view = null
         if [ !swap && vk_image ]
@@ -4404,6 +4649,8 @@ Texture Display
     # VUID-vkAcquireNextImageKHR-semaphore-01286. so before the next acquire we
     # recreate the swapchain (fresh, unsignaled semaphores) when this is set.
     intern swap_needs_recreate  : bool
+    # a parallel reload: sized and drawing, no swapchain, no present
+    public defer_swap           : bool
     intern in_callback_draw     : bool
     public backbuffer           : bool
     public kms                  : bool   # guest display: no ide, no dma-buf share
@@ -4420,7 +4667,10 @@ Texture Display
     intern shown                : bool
 
 
+    # the frame presented: the window's screen canvas, else the list's last
+    manual final : Render
     func last_render [] -> Render
+        if [ final ] return final
         return list.last[]
 
     # copy text to the system clipboard. keeps glfw contained in trinity — apps
@@ -4569,7 +4819,7 @@ Texture Display
         if [ rwin9 ] rwin9.rebind_frost = true
 
         resized = true
-        if [ !backbuffer ]
+        if [ !backbuffer && !defer_swap ]
             old_swapchain : VkSwapchainKHR [ Au.live_swapchain_get[] ]
             result: vkCreateSwapchainKHR[ vk.device, VkSwapchainCreateInfoKHR [
                 sType:                 VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
@@ -4593,7 +4843,7 @@ Texture Display
             if [ old_swapchain != null ]
                 vkDestroySwapchainKHR[ vk.device, old_swapchain, null ]
         
-        if [ !backbuffer ]
+        if [ !backbuffer && !defer_swap ]
             if [ !swap_model ]
                 top: last_render[]
                 expect top, "last_render must be set"
@@ -4601,7 +4851,6 @@ Texture Display
                     "color": top
                 ]
                 swap_shader = UVQuad [ vk: vk, name: 'uv-quad' ]
-                swap_shader.hold[]
                 swap_model = Model [ vk: vk, w: a, s: swap_shader, samplers: samplers ]
                 surface_rotation[ caps.currentTransform ]
 
@@ -4650,7 +4899,7 @@ Texture Display
         # on_compose redraws — so the resized canvases are repainted before we
         # present. doing it in the swap section (after on_compose) presents the
         # freshly-cleared canvases for one frame: the black flash on resize.
-        if [ swap_needs_recreate && !backbuffer ]
+        if [ swap_needs_recreate && !backbuffer && !defer_swap ]
             swap_needs_recreate = false
             vk.swap_recreates += 1
             resize*[ width, height ]
@@ -4744,8 +4993,12 @@ Texture Display
                 swap_render_current.color.transition[ VK_IMAGE_LAYOUT_PRESENT_SRC_KHR ]
                 # kms flips the image at once and the host scans it out with
                 # no fence: the frame must be finished before it is presented
+                vk.qlock.lock[]
                 if [ kms ] vkQueueWaitIdle[ vk.queue ]
+                vk.qlock.unlock[]
+                vk.qlock.lock[]
                 result = vkQueuePresentKHR[ vk.queue, presentInfo ]
+                vk.qlock.unlock[]
                 swap_render_current.color.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
                 # rotate over EVERY swapchain image, not just two. this used a
                 # bool index (first[] ? 1 : 0), which is correct only when the
@@ -4898,16 +5151,9 @@ Texture Display
             # always refresh title (window is reused on reload, not created again)
             platform_window_set_title[ glfw, title.chars ]
 
-            # re-register callbacks each time (new Display instance on reload)
-            platform_window_set_user    [ glfw, handle[ a ] ]
-            platform_set_key_callback   [ glfw, @handle_key ]
-            platform_set_mouse_callback [ glfw, @handle_mouse ]
-            platform_set_cursor_callback[ glfw, @handle_cursor ]
-            platform_set_enter_callback [ glfw, @handle_enter ]
-            platform_set_char_callback  [ glfw, @handle_char ]
-            platform_set_scroll_callback[ glfw, @handle_scroll ]
-            platform_set_drop_callback  [ glfw, @handle_drop ]
-            platform_set_size_callback  [ glfw, @handle_framebuffer_size ]
+            # a parallel reload's display takes the input at the switch: until
+            # then the live one's tree is what the main thread's events reach
+            if [ !getenv[ 'SILVER_RELOAD_PARALLEL' ] ] attach_input[]
 
             # fixed-aspect apps (emulators): the WM may scale but never distort
             if [ lock_aspect ] platform_window_set_aspect[ glfw, width, height ]
@@ -5038,6 +5284,30 @@ Texture Display
             extent.width  = width
             extent.height = height
 
+    # a parallel reload builds its display beside the live one: the
+    # swapchain is made on its first owned frame, retiring the live one
+    public func defer_swapchain [ ]
+        defer_swap = true
+
+    # the window's input reaches this display's tree
+    public func attach_input [ ]
+        if [ !glfw ] return
+        platform_window_set_user    [ glfw, handle[ a ] ]
+        platform_set_key_callback   [ glfw, @handle_key ]
+        platform_set_mouse_callback [ glfw, @handle_mouse ]
+        platform_set_cursor_callback[ glfw, @handle_cursor ]
+        platform_set_enter_callback [ glfw, @handle_enter ]
+        platform_set_char_callback  [ glfw, @handle_char ]
+        platform_set_scroll_callback[ glfw, @handle_scroll ]
+        platform_set_drop_callback  [ glfw, @handle_drop ]
+        platform_set_size_callback  [ glfw, @handle_framebuffer_size ]
+
+    # the switch: this display owns the surface and the input now
+    public func take_swapchain [ ]
+        defer_swap = false
+        swap_needs_recreate = true
+        attach_input[]
+
     public func set_title [ t: string ]
         platform_window_set_title[ glfw, t.chars ]
 
@@ -5047,7 +5317,7 @@ Texture Display
         # console-mode Displays carry no vk context, so there's no device to drain
         # (and `vk.device` would dereference null). only wait when a real device exists.
         if [ vk && !backbuffer ]
-            vkDeviceWaitIdle[ vk.device ]
+            vk.wait_idle[]
             # window, surface, swapchain all owned by Au globals — do not destroy here
 
 
@@ -5542,7 +5812,9 @@ func environment [ vk: vk_context, img: Image, r_axis: vec3f, rotation: f32 ] ->
     #w.drop[ ]
     #cube.drop[ ]
     #cllone.drop[ ]
+    # the image owns its environment texture (dropped in its dealloc)
     img.user = convolve
+    Au.hold[ convolve ]
     return img.user
 
 

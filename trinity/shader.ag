@@ -3,7 +3,8 @@ extend trinity
 
 struct vertex_member_t
     src:    Au_t
-    ac:     Accessor
+    # index into the model's accessors: a struct in a vec never drops
+    ac:     i64
     size:   i64
     offset: i64
 
@@ -33,6 +34,8 @@ class shader
     intern vk_frag      : VkShaderModule
     intern vk_comp      : VkShaderModule
     intern owns_modules : bool
+    # a cache hit borrows these modules: it keeps their owner alive
+    intern mod_src      : shader
     intern ctx          : vec Au_t
 
     func context_chain [] -> vec Au_t
@@ -449,6 +452,7 @@ class shader
         rty9: typeid[ a ]
         cached: shader [ vk.shader_cache.get[ rty9 ] ]
         if [ cached ]
+            mod_src = cached
             vk_vert = cached.vk_vert
             vk_frag = cached.vk_frag
             vk_comp = cached.vk_comp
@@ -2081,7 +2085,7 @@ func model_init_pipeline [ m: Model, n: Node, prim: Primitive, msh: Mesh, s: sha
                 bv:       mdl.bufferViews[ ac.bufferView ]
                 b:        mdl.buffers[ bv.buffer ]
                 members[member_count].src    = ac.member_type[ ]
-                members[member_count].ac     = ac
+                members[member_count].ac     = ac_index
                 members[member_count].size   = members[member_count].src.typesize
                 members[member_count].offset = vertex_size
                 vertex_size += members[member_count].src.typesize
@@ -2101,12 +2105,13 @@ func model_init_pipeline [ m: Model, n: Node, prim: Primitive, msh: Mesh, s: sha
 
         for [ k: 0, k < member_count, k += 1 ]
             mem:        @members[k]
-            bv:         mdl.bufferViews[ mem.ac.bufferView ]
+            mac:        mdl.accessors[ mem.ac ]
+            bv:         mdl.bufferViews[ mac.bufferView ]
             b:          mdl.buffers[ bv.buffer ]
             expect b.data, 'gltf buffer has no data (uri failed to load): {b.uri}'
             src_base:   @i8[b.data]
-            src:        @src_base[bv.byteOffset + mem.ac.byteOffset]
-            stride:     (bv.byteStride > 0) ? bv.byteStride : mem.ac.stride
+            src:        @src_base[bv.byteOffset + mac.byteOffset]
+            stride:     (bv.byteStride > 0) ? bv.byteStride : mac.stride
 
             for [ j: 0, j < vertex_count, j += 1 ]
                 data_dst: @vdata[j * vertex_size + mem.offset]

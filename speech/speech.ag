@@ -230,10 +230,10 @@ func mel_png [ m: tensor, out2: path ] -> bool
     return true
 
 func libri_translate [ root: path, subset: string, outdir: path, limit: i32 ] -> i32
-    Au.auto_free[ true ]
     root.hold[]
     subset.hold[]
     outdir.hold[]
+    Au.auto_free[]
     idxp : path '{root}/{subset}-align.txt'
     s : cast string [ idxp.load[ typeid[ string ], null ] ]
     if [ !s ]
@@ -278,12 +278,12 @@ func libri_translate [ root: path, subset: string, outdir: path, limit: i32 ] ->
         w9 : i32 [ i32[ (c.frames - 2048) / hop9 ] ]
         if [ w9 < 16 ] continue
         if [ w9 > 4096 ]
-            Au.auto_free[ false ]
+            Au.auto_free[]
             continue
         op : path '{outdir}/{subset}_{n9}.png'
         act9 : new f32 [ w9 ]
         if [ !spectrograph[ c, op, w9, 64, 150.0, 8000.0, true, act9 ] ]
-            Au.auto_free[ false ]
+            Au.auto_free[]
             continue
         # words + end times -> per-word column spans; "" = silence
         wlist : wstr.split[ ',' ]
@@ -306,7 +306,7 @@ func libri_translate [ root: path, subset: string, outdir: path, limit: i32 ] ->
                 nw9 += 1
             t0 = t1
         if [ nw9 < 1 ]
-            Au.auto_free[ false ]
+            Au.auto_free[]
             continue
         dur : f32 [ f32[ c.frames ] / f32[ c.rate ] ]
         body : string 'image: {subset}_{n9}.png\nsentence: {sent}\nspeaker: {uttid}\nrate: {c.rate}\nframes: {c.frames}\nduration: {dur}\nsource: {wp}\nwspans: {wsp}\n'
@@ -314,16 +314,16 @@ func libri_translate [ root: path, subset: string, outdir: path, limit: i32 ] ->
         ag.save[ body, null ]
         n9 += 1
         if [ (n9 % 100) == 0 ] log 'libri_translate: {n9} translated'
-        Au.auto_free[ false ]
+        Au.auto_free[]
         if [ limit > 0 && n9 >= limit ] break
     log 'libri_translate: {root} ({subset}) -> {outdir}: {n9} clips'
     return n9
 
 func cv_translate [ dataset: path, split: string, outdir: path, limit: i32 ] -> i32
-    Au.auto_free[ true ]
     dataset.hold[]
     split.hold[]
     outdir.hold[]
+    Au.auto_free[]
     tsvp : path '{dataset}/{split}.tsv'
     s : cast string [ tsvp.load[ typeid[ string ], null ] ]
     if [ !s ]
@@ -390,7 +390,7 @@ func cv_translate [ dataset: path, split: string, outdir: path, limit: i32 ] -> 
         ag.save[ body, null ]
         n9 += 1
         if [ (n9 % 100) == 0 ] log 'cv_translate: {n9} translated'
-        Au.auto_free[ false ]
+        Au.auto_free[]
         if [ limit > 0 && n9 >= limit ] break
     log 'cv_translate: {dataset} ({split}) -> {outdir}: {n9} clips'
     return n9

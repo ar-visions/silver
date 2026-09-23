@@ -46,12 +46,16 @@ class SVGModel
     construct [ src: path ]
         expect src.exists, 'svg-path does not exist: {src}'
         f : string src.load[ typeid[string], null ]
+        # made here: load is a delegate, its store would hold twice
+        shapes = vec SVGShape []
         load[ f ]
 
     construct [ p: string ]
         src : path [ p ]
         expect src.exists, 'svg-path does not exist: {p}'
         f : src.load[ typeid[string], null ]
+        # made here: load is a delegate, its store would hold twice
+        shapes = vec SVGShape []
         load[ f ]
 
     public func load [ text: string ]
@@ -112,7 +116,8 @@ class SVGModel
             stroke_opacity:1.0,
             opacity:       1.0
         ]
-        shapes = vec SVGShape []
+        if [ !shapes ] shapes = vec SVGShape []
+        el             shapes.clear[]
         svg_walk[ shapes, svg_node.children, xf0, st0 ]
 
     public func render [ cv: Canvas, ox: f32, oy: f32, rw_in: f32, rh_in: f32 ]

@@ -393,8 +393,7 @@ class Encoder
             commandPool:        pool,
             level:              VK_COMMAND_BUFFER_LEVEL_PRIMARY,
             commandBufferCount: 1 ], @cmd ]
-        vk.fence_acquire[]
-        fence = vk.fence_new
+        fence = vk.fence_acquire[]
 
         # constant quality: rate control OFF, a fixed QP per frame. CBR on this
         # driver starved the stream to ~2 Mbps and pumped QP sky-high (blocky,
