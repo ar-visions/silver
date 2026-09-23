@@ -132,6 +132,19 @@ static bool is_silver_repo(silver a) {
 // configurations -- one module built -O0 -g beside others still optimized
 static symbol silver_build_tag(silver a) { return a->debug ? "-dbg" : ""; }
 
+// `import M with ext…` names M's product for its extensions, so an
+// extended build never resolves to (or as) the plain one
+static string silver_ext_tag(silver a) {
+    string ext_tag = string("");
+    if (a->extensions && len(a->extensions)) {
+        each (a->extensions, path, ep) {
+            append(ext_tag, ".");
+            concat(ext_tag, stem(ep));
+        }
+    }
+    return ext_tag;
+}
+
 static string silver_install_name(silver a) {
     if (!a->git_owner) return a->name;
     string prefix = is_silver_repo(a)
@@ -4460,12 +4473,13 @@ AU_EXPORT void silver_init(silver a) {
     drop(((aether)a)->share_name);
     ((aether)a)->share_name = hold(install_name);
     symbol build_tag = silver_build_tag(a);
-    a->product_link = f(path, "%o/%o%s.product", a->build_dir,
-        install_name, build_tag);
-    a->artifacts_path = f(path, "%o/%o%s.artifacts", a->build_dir,
-        install_name, build_tag);
-    a->source_path = f(path, "%o/%o%s.source", a->build_dir,
-        install_name, build_tag);
+    string ext_tag   = silver_ext_tag(a);
+    a->product_link = f(path, "%o/%o%o%s.product", a->build_dir,
+        install_name, ext_tag, build_tag);
+    a->artifacts_path = f(path, "%o/%o%o%s.artifacts", a->build_dir,
+        install_name, ext_tag, build_tag);
+    a->source_path = f(path, "%o/%o%o%s.source", a->build_dir,
+        install_name, ext_tag, build_tag);
     if (!a->format || !len(a->format))
         a->format = f(path, "%o/syntax/%o.f", a->install, a->name);
 
@@ -4729,7 +4743,7 @@ AU_EXPORT void silver_init(silver a) {
     do {
         if (retry) {
             print("awaiting iteration: %o", a->module);
-            auto_free(false);
+            auto_free();
             if (silver_compiled) {
                 silver_compiled->unmanaged = true;
                 clear(silver_compiled);
@@ -7938,6 +7952,10 @@ enode parse_statement(silver a)
     } else if (rec_top && read_if(a, "context")) {
         access = interface_context;
         traits = AU_TRAIT_IS_CONTEXT;
+    } else if (read_if(a, "persist")) {
+        // a static slot the live reload hands to the next instance
+        access = interface_public;
+        traits = AU_TRAIT_STATIC | AU_TRAIT_IS_PERSIST;
     } else if (rec_top && read_if(a, "default")) {
         /// a public that also carries the default-argument bit: a bare argv
         /// value converts into it (Au_args -> find_member AU_TRAIT_IS_DEFAULT),
@@ -8255,7 +8273,18 @@ enode parse_statement(silver a)
             mem->autype->access_type = (u8)access;
             mem->autype->member_type = AU_MEMBER_VAR;
             mem->autype->src         = canonical(rtype)->autype;
-            mem->autype->is_static   = is_static;
+            // a persist slot is static; the keyword must not clear it
+            mem->autype->is_static   = is_static || !!(traits & AU_TRAIT_IS_PERSIST);
+            // its value outlives this module's image on a reload
+            if (traits & AU_TRAIT_IS_PERSIST) {
+                Au_t pts[2] = { mem->autype->src, mem->autype->meta.a };
+                for (int pi = 0; pi < 2; pi++) {
+                    Au_t pt = pts[pi];
+                    validate(!pt || pt->module != a->autype,
+                        "persist %s: its type %s is this module's, which the reload unloads",
+                        mem->autype->ident, pt->ident);
+                }
+            }
 
             // inline fixed-size array member (e.g. `local i16 [4]`): canonical()
             // resolves the shaped stack-array type down to its element type, so
@@ -10506,15 +10535,8 @@ none silver_build_product(silver a) {
     string libs       = string("");
     array  lib_paths  = array();
 
-    // `import M with ext…` folds the extension names into M's product id so an
-    // extended build is both cache-distinct and legible (libtrinity-ext1.ext2-<hash>).
-    string ext_tag = string("");
-    if (a->extensions && len(a->extensions)) {
-        each (a->extensions, path, ep) {
-            if (len(ext_tag)) append(ext_tag, ".");
-            concat(ext_tag, stem(ep));
-        }
-    }
+    // the extension names are in the product id (libsilver-random.RandomExtra)
+    string ext_tag = silver_ext_tag(a);
     // a product is named for the machine it will RUN on, not for this one
     symbol t_pre = lib_pre, t_lib = lib_ext, t_app = app_ext;
     if (a->platform && len(a->platform)) {
@@ -10529,7 +10551,7 @@ none silver_build_product(silver a) {
         ? silver_install_name(a) : a->name;
     path product    = f(path, "%o/%s%o%s%o%s%o%s%s",
         a->build_dir, a->is_library ? t_pre : "", product_name,
-        len(ext_tag) ? "-" : "", ext_tag,
+        "", ext_tag,
         len(a->defs_hash) ? "-" : "",
         a->defs_hash,
         silver_build_tag(a),
@@ -10851,7 +10873,8 @@ none silver_build_product(silver a) {
     string shared_n = string(a->is_library ? shared : "");
 #endif
     build_status(a, "[%o] linking %o", a->name, path_filename(link_out));
-    verify(exec(a->verbose, "%o/bin/%s %s %s %s %o %s %o/%o.o%o %o -o %o -L%o/lib -L%o %o %o %o %o %s",
+    // obj_path carries the build tag: a debug link takes its own main object
+    verify(exec(a->verbose, "%o/bin/%s %s %s %s %o %s %o%o %o -o %o -L%o/lib -L%o %o %o %o %o %s",
         a->base_install ? a->base_install : install, linker, shared_n->chars, a->debug ? "-g" : "",
 
 #ifdef __linux__
@@ -10859,7 +10882,7 @@ none silver_build_product(silver a) {
 #else
         "",
 #endif
-        isysroot, cpp_pre, a->build_dir, a->name, core_objs, objs,
+        isysroot, cpp_pre, obj_path, core_objs, objs,
         link_out,
         install,
         a->build_dir, plat_link, libs, cflags, fw_flags,
@@ -12710,7 +12733,9 @@ void silver_build_user_initializer(silver a, enode prop) {
             a->bind_name   = prop->autype->ident;
             a->bind_holder = prop->autype->context;
             a->bind_au     = prop->autype->src;
+            a->attrib_build = !!(prop->autype->traits & AU_TRAIT_IS_ATTRIB);
             assign_if_cond((aether)a, (enode)L, set, set_if);
+            a->attrib_build = false;
             a->bind_name   = null;
             a->bind_holder = null;
             a->bind_au     = null;
@@ -15320,8 +15345,23 @@ etype silver_read_def(silver a, interface access) {
 
 // orbiter could build silver in this way from .c
 // importing 
+#ifndef _WIN32
+#include <signal.h>
+// a compiler crash names its stack in the build output
+static void silver_crash(int sig) {
+    void* fr[48]; int nf = backtrace(fr, 48);
+    fprintf(stderr, "silver: signal %d\n", sig);
+    backtrace_symbols_fd(fr, nf, 2);
+    signal(sig, SIG_DFL); raise(sig);
+}
+#endif
+
 int main(int argc, cstrs argv) {
     setvbuf(stdout, NULL, _IONBF, 0);   // TEMP
+#ifndef _WIN32
+    signal(SIGSEGV, silver_crash);
+    signal(SIGBUS,  silver_crash);
+#endif
 #ifdef _WIN32
     // there is no rpath here: a module we dlopen finds its own dependencies
     // (opencv, OpenEXR, ...) through PATH, so put our directories first

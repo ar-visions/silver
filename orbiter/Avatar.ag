@@ -1172,6 +1172,7 @@ element Avatar
     public environment_path  : string
     public render_scale      : f32   [ 4.0 ]
     mutable clock0           : i64   # the shaders' clock anchor (first frame)
+    mutable paint_once       : bool     # a restore: the target renders before its first paint
     mutable depth_bound      : i64      # the depth size the volume pass is bound to (a resize remakes the image)
     mutable clock_last       : i64
     mutable clock_s          : f64   # the shaders' time, in seconds run
@@ -1231,8 +1232,9 @@ element Avatar
     public  env_pitch        : f32
     intern  spoke_cv         : Canvas
     intern  rim_cv           : Canvas
-    intern  mcache           : map GltfModel[string]
-    intern  envcache         : map Texture[string]
+    # loaded once per process: a reload finds them in place
+    persist mcache           : map GltfModel[string]
+    persist envcache         : map Texture[string]
     mutable env_on           : bool
 
     # dismount: retire our render targets while they are still valid —
@@ -1396,6 +1398,7 @@ element Avatar
             gw : i32 [ gwf ]
             gh : i32 [ ghf ]
             target = Render [
+                tag:         'av',
                 vk:          vk,
                 w:           w_ref,
                 width:       gw,
@@ -1424,6 +1427,7 @@ element Avatar
             vw : i32 [ vwf ]
             vh : i32 [ vhf ]
             vol_target = Render [
+                tag:         'avvol',
                 vk:          vk,
                 w:           w_ref,
                 width:       vw,
@@ -1445,6 +1449,7 @@ element Avatar
             mm9.id = mcache[ 'orbiter32' ]
             mm9.id.hold[]
             mask_target = Render [
+                tag:         'avmask',
                 vk:          vk,
                 w:           w_ref,
                 width:       i32[ bounds.w * dscale ],
@@ -1463,6 +1468,7 @@ element Avatar
             heat_src = target.reduction
             hm : Model [ w: w_ref, s: heat_s, samplers: map Texture[string] [ 'color': heat_src, 'emission': mask_target.color ] ]
             heat_target = Render [
+                tag:         'avheat',
                 vk:          vk,
                 w:           w_ref,
                 width:       heat_src.width,
@@ -1477,6 +1483,7 @@ element Avatar
     func draw [ w: Window ]
         # spin only while summoned (or always, for one with no slide)
         animated = summoned || animate_always
+        fresh9 : bool [ !target && !vol_target ]
         create_target[]
         if [ !target && !vol_target ] return
         # the volume pass samples the geometry pass's depth: a resize gives
@@ -1616,6 +1623,18 @@ element Avatar
         ev : Event[ target: a ]
         update.invoke[ ev ]
 
+        # a target made this frame (or restored at full) renders once now:
+        # the frame's target pass ran before it existed or while it was hidden
+        if [ fresh9 || paint_once ]
+            paint_once = false
+            if [ target ]
+                target.update[]
+                target.draw[]
+                target.sync_fence[]
+            if [ vol_target ]
+                vol_target.update[]
+                vol_target.draw[]
+                vol_target.sync_fence[]
         b : rect [ x: 0.0, y: 0.0, w: bounds.w, h: bounds.h ]
         if [ target ]
             geo_tex : Texture [ (target.reduce && target.reduction) ? target.reduction : target.color ]

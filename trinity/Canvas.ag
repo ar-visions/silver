@@ -2287,9 +2287,8 @@ Render Canvas
             if [ cw4 < 1 ] cw4 = 1
             if [ ch4 < 1 ] ch4 = 1
             if [ need_alloc ]
-                if [ mdl.cache ] mdl.cache.drop[]
+                # the store owns the canvas: it drops the old, holds the new
                 mdl.cache = Canvas [ vk: vk, w: w, format: Pixel.rgba8, width: cw4, height: ch4, reduce: false, load_existing: true, tag: 'svg' ]
-                mdl.cache.hold[]
                 mdl.cache.update[]
             mdl.cache.reset[ vec4f [ 0.0, 0.0, 0.0, 0.0 ] ]
             mdl.cache_rw     = rw
@@ -2624,7 +2623,6 @@ Render Canvas
             memcpy[ path.cached_points, path.points, sizeof[ PathPt ] * pcount ]
             path.cached_pcount = pcount
             path.cached_edges      = edges
-            Au.hold[ edges ]
             path.cached_edge_count = n
             path.cached_bx0   = bx0
             path.cached_by0   = by0

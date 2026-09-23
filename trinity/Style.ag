@@ -37,7 +37,8 @@ class StyleEntry
     # shared by every element the selector matches, and fc is not
     mutable unit      : string
     mutable trans     : StyleTransition
-    mutable bl        : StyleBlock
+    # back to the owning block: the block holds this entry
+    manual bl         : StyleBlock
     manual instance  : object
     mutable line      : i32
     mutable binding   : string
@@ -70,7 +71,8 @@ class CSS : RType
 
 
 class StyleBlock
-    mutable parent  : StyleBlock
+    # back to the owning block: its blocks vec holds this one
+    manual parent   : StyleBlock
     mutable quals   : vec StyleQualifier
     mutable invalid : bool
     public entries  : StyleEntryMap
@@ -1094,6 +1096,11 @@ class StyleTransition
         easing     = (ln > 1) ? Ease[      sp[1] ] :      Ease.linear
         dir        = (ln > 2) ? Direction[ sp[2] ] : Direction.inward
 
+    # from and to are held by the arm that sets them
+    func dealloc []
+        if [ from ] from.drop[]
+        if [ to   ] to.drop[]
+
     func pos [ tf: f64 ] -> f64
         x : f64 [ clamp[ tf, 0.0, 1.0 ] ]
         switch [ easing ]
@@ -1196,7 +1203,8 @@ class StyleTransition
 
 class StyleQualifier
     intern ty        : Au_t
-    expect  bl       : StyleBlock
+    # back to the owning block: the block's quals holds this one
+    manual  bl       : StyleBlock
     mutable type     : string
     mutable id       : string
     mutable state    : string             # first state (kept for op path: state OP value)

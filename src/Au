@@ -1059,7 +1059,7 @@ forward(any)
     M(AA,BB, i, method, public, Au,     mix,            Au, f64) \
     M(AA,BB, s, method, public, none,   mix_structs,    Au_t, Au, Au, Au, f64) \
     M(AA,BB, i, method, public, Au,     member_ref,     Au_t) \
-    M(AA,BB, s, method, public, none,   auto_free,      bool) \
+    M(AA,BB, s, method, public, none,   auto_free) \
     M(AA,BB, s, method, public, bool,   quit_requested) \
     M(AA,BB, s, method, public, none,   leak_report) \
     M(AA,BB, i, method, public, Au,     initialize) \
@@ -1261,7 +1261,8 @@ declare_class(collective)
     enum_value       (E,T,Y, abstract,   7) \
     enum_value       (E,T,Y, context,    8) \
     enum_value       (E,T,Y, keyword,    9) \
-    enum_value       (E,T,Y, export,     10)
+    enum_value       (E,T,Y, export,     10) \
+    enum_value       (E,T,Y, persist,    11)
 declare_enum(interface)
 
 #define comparison_module_ Au
@@ -2613,6 +2614,9 @@ AU_EXPORT Au_t typeid_string(Au_t check);
 
 AU_EXPORT void au_space_begin(void* owner);
 AU_EXPORT void au_space_end(void* owner);
+AU_EXPORT void au_space_capture(void);
+AU_EXPORT void* au_space_detach(void);
+AU_EXPORT void au_space_promote(void* space);
 AU_EXPORT void au_space_clear(void);
 AU_EXPORT float au_mem_fraction(void); // resident set size as a fraction of total physical RAM (0..1); 0 if unknown
 AU_EXPORT i64   au_mem_rss(void);      // resident set size in BYTES; 0 if unknown

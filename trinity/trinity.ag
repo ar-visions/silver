@@ -207,6 +207,8 @@ ifdef [ apple ]
     func IOSurfaceGetID  [ s: handle ] -> u32
     func IOSurfaceLookup [ csid: u32 ] -> handle
 
+func au_census [ min: i32 ]
+func au_raw_props_set [ on: bool ]
 func host_dictate_set [ v: i32 ]
 func host_live_set    [ v: i32 ]
 func host_log_setup   [ name: cstr ]
@@ -509,7 +511,9 @@ abstract live_app media_app
 
     func run [ ]
         au_live_set_reload[ (live_reload) ? 1 : 0 ]
-        Au.auto_free[true]
+        # construction is over: the instance owns its members now,
+        # so init's temporaries can go
+        Au.auto_free[]
 
     func ux_serialize [ e: element ] -> map object [string]
         em : map object [string] []
@@ -575,7 +579,7 @@ abstract live_app media_app
                 share_publish[ 1 ]
                 ide_pump[]
                 agent_pump[]
-                Au.auto_free[ false ]
+                Au.auto_free[]
                 pace_frame[]
                 if [ app_pid > 0 && host_pid_alive[ app_pid ] == 0 ] return false
                 return !Au.quit_requested[]
@@ -588,12 +592,12 @@ abstract live_app media_app
                 # hosted apps return before the main loop's pump, so the
                 # agent socket would never open for the ones we host
                 agent_pump[]
-                Au.auto_free[ false ]
+                Au.auto_free[]
                 pace_frame[]
                 return alive && !Au.quit_requested[]
         if [ text_mode ]
             render*[]
-            Au.auto_free[false]
+            Au.auto_free[]
             usleep[ 16000 ]
             return !Au.quit_requested[]
         platform_poll[]
@@ -604,7 +608,12 @@ abstract live_app media_app
         second : epoch_millis[] / 1000
         if [ next_second != second ]
             next_second = second
-            stat_line = 'fps {frames} submits {vk.submit_calls} syncs {vk.sync_calls} sync_us {vk.sync_us} paints {vk.paint_calls} draws {vk.pipe_draws} draw_us {vk.draw_us} update_us {vk.update_us} sdf_miss {vk.sdf_miss} glyph_miss {vk.glyph_miss} geom_us {vk.geom_us} recreates {vk.swap_recreates} | targets {vk.ph_targets} compose {vk.ph_compose} list {vk.ph_list} screen {vk.ph_screen} swap {vk.ph_swap} | layout {vk.ph_layout} elems {vk.ph_elems} overlay {vk.ph_overlay} flush {vk.ph_flush}'
+            tags9 : string ''
+            if [ vk.samp_keys ]
+                for [ k9: string ] in vk.samp_keys
+                    n9 : i32 [ vk.samp_tags[ k9 ] ]
+                    if [ n9 > 0 ] tags9 = '{tags9} {k9}={n9}'
+            stat_line = 'fps {frames} submits {vk.submit_calls} syncs {vk.sync_calls} sync_us {vk.sync_us} paints {vk.paint_calls} draws {vk.pipe_draws} draw_us {vk.draw_us} update_us {vk.update_us} sdf_miss {vk.sdf_miss} glyph_miss {vk.glyph_miss} geom_us {vk.geom_us} recreates {vk.swap_recreates} | targets {vk.ph_targets} compose {vk.ph_compose} list {vk.ph_list} screen {vk.ph_screen} swap {vk.ph_swap} | layout {vk.ph_layout} elems {vk.ph_elems} overlay {vk.ph_overlay} flush {vk.ph_flush} | objects {Au.alloc_count[ null ]} samplers {vk.sampler_count} rcolor {vk.samp_rcolor} rdepth {vk.samp_rdepth} rreduce {vk.samp_rreduce} sdf {vk.samp_sdf} atlas {vk.samp_atlas} other {vk.samp_other} renders {vk.render_allocs}/{vk.ring_frees} | tags{tags9}'
             if [ pwn.stats ] log '{stat_line}'
             if [ pwn.stats ] log 'paint_us:{pwn.paint_top[]}'
             vk.pipe_draws   = 0
@@ -695,7 +704,7 @@ abstract live_app media_app
                     log 'screenshot: {dest}'
                     record_close[]
                     exit[ 0 ]
-        Au.auto_free[false]
+        Au.auto_free[]
         probe : path 'afprobe'
         header : Au.header[ probe ]
         if [ header.managed > 100000 ] log 'AFPOOL ix={header.managed} — pool NOT draining'
@@ -1099,7 +1108,9 @@ abstract live_app media_app
                         rw = wide
                         rh = tall
                     if [ rw > 0 && rh > 0 && (rw != wn.width || rh != wn.height) ]
+                        vk.qlock.lock[]
                         vkQueueWaitIdle[ vk.queue ]
+                        vk.qlock.unlock[]
                         # the display reads its size from the window: size the
                         # (hidden) window itself, in points, then resize
                         if [ wn.glfw ] platform_window_set_size[ wn.glfw, rw, rh ]
@@ -1320,6 +1331,17 @@ abstract live_app media_app
                 el [ cmd == 'stats' ]
                     agent_sock_reply[ (stat_line && stat_line.count > 0) ? '{stat_line}\n' : '\n' ]
                     continue
+                # leaks: the --leaks report now, into the app log
+                el [ cmd == 'leaks' ]
+                    Au.leak_report[]
+                    agent_sock_reply[ 'ok\n' ]
+                    continue
+                # types [min]: live objects per type into the app log
+                el [ cmd == 'types' ]
+                    mn9 : i32 [ (parts.count >= 2) ? i32[ parts[1].integer_value[] ] : 50 ]
+                    au_census[ mn9 ]
+                    agent_sock_reply[ 'ok\n' ]
+                    continue
                 # call <name>: run an Action method of the app, no arguments
                 el [ cmd == 'call' && parts.count >= 2 ]
                     fm9 : Au_t [ (aa) ? find_member[ typeid[ aa ], parts[1].chars,
@@ -1464,6 +1486,10 @@ abstract live_app media_app
                 app.unload_tree[]
                 app.release_tree[]
                 app.elements = null
+                rwin.app_object = null
+                # process-owned (managed 0): never freed, so it releases
+                # what it owns here or every instance's members stay
+                app.drop_members[]
             # lingering elements borrow these targets; free the GPU graph now
             # and CLEAR the entries — the window outlives module reloads, and a
             # stale Render dropped by the next module's map set is a double-free
@@ -1475,13 +1501,16 @@ abstract live_app media_app
                     keys.push[ tk ]
                 for [ key: string ] in keys
                     rwin.element_targets[ key ] = null
-        if [ vk ]
-            # the deferred drops belong to this image: free them before it goes
-            vk.defer_flush[]
-            vk.font_cache = null
-            vk.shader_cache = null
         if [ w ]
             w.drop[]
+        if [ vk ]
+            # what belongs to this image goes before it does, after the
+            # tree: its teardown queues more (a pipeline's uniforms hold
+            # this image's shaders). the font cache stays for the process
+            md9 : Au_t [ Au.header[ a ].au.module ]
+            vk.defer_flush[ md9 ]
+            for [ fl9: i32 0, fl9 < 8 && vk.defer_pending[], fl9 += 1 ]
+                vk.defer_flush[ md9 ]
 
     func render [ ]
         return
@@ -1508,10 +1537,10 @@ abstract live_app media_app
             vk = cast vk_context [ existing_vk ]
             dh : handle [ vk.dev_handle[] ]
             log 'media_app: reusing vk device {dh}'
-            vk.font_cache = null
         el
             vk = vk_context[]
             Au.live_vk_set[ handle[vk] ]
+            au_module_erase_hook[ @vk_module_erased ]
 
     func dealloc [ ]
         destroy[]
@@ -1535,16 +1564,20 @@ func bind_members [ instance: element ]
             if [ !lmem.src ] continue
             lv : Au instance.member_object[ lmem ]
             if [ !lv ] continue
+            # an owned object ran its init: a re-init stores unowned
+            lh : Au.header[ lv ]
             if [ Au.inherits[ lmem.src, typeid[ Layer ] ] ]
                 lvl : cast Layer [ lv ]
                 lvl.set_context_from[ instance ]
-                lvl.initialize[]
+                if [ !(lh.iflags & 1) ]
+                    lvl.initialize[]
                 if [ !instance.layers ] instance.layers = map Layer[string] []
                 instance.layers[ string[ lmem.ident ] ] = lvl
             el [ Au.inherits[ lmem.src, typeid[ shader ] ] ]
                 shv : cast shader [ lv ]
                 shv.set_context_from[ instance ]
-                shv.initialize[]
+                if [ !(lh.iflags & 1) ]
+                    shv.initialize[]
                 if [ !instance.shaders ] instance.shaders = map shader[string] []
                 instance.shaders[ string[ lmem.ident ] ] = shv
     # the icon layer paints last: re-insert to move it to the end
@@ -1572,7 +1605,7 @@ class ReduceBlur
         for [ i: i32 0, i < steps, i += 1 ]
             sc = sc * 0.5
             m : Model  [ w: dsp, samplers: map Texture[string] [ 'color': prev ] ]
-            r : Render [ vk: vc, w: dsp, wscale: sc, models: [m ] ]
+            r : Render [ vk: vc, w: dsp, wscale: sc, models: [m ], tag: 'blur' ]
             models.push[ m ]
             renders.push[ r ]
             prev = r.color
@@ -1581,15 +1614,13 @@ class ReduceBlur
         # 4x the memory for a smooth field the eye cannot resolve
         os9 : f32 [ (dsp.scale > 1.0) ? 1.0 / dsp.scale : 1.0 ]
         bv : BlurV [ vk: vc, name: 'blur-v', reduction_scale: scale * os9 ]
-        bv.hold[]
         mv : Model  [ w: dsp, s: bv, samplers: map Texture[string] [ 'color': prev ] ]
-        rv : Render [ vk: vc, w: dsp, wscale: os9, models: [mv ] ]
+        rv : Render [ vk: vc, w: dsp, wscale: os9, models: [mv ], tag: 'blur' ]
         models.push[ mv ]
         renders.push[ rv ]
         bl : Blur [ vk: vc, name: 'blur', reduction_scale: scale * os9 ]
-        bl.hold[]
         mh : Model  [ w: dsp, s: bl, samplers: map Texture[string] [ 'color': rv.color ] ]
-        rh : Render [ vk: vc, w: dsp, wscale: os9, models: [mh ] ]
+        rh : Render [ vk: vc, w: dsp, wscale: os9, models: [mh ], tag: 'blur' ]
         models.push[ mh ]
         renders.push[ rh ]
 
@@ -1626,6 +1657,29 @@ class ReduceBlur
         for [ r: Render ] in renders
             r.update*[] r.draw*[] r.sync_fence[]
 
+# the exchange and its avatar as they were when a reload swapped: the
+# next instance takes it up on its first frame (a persist slot in the app)
+class ExchangeState
+    public has         : bool
+    public shot_ask    : path
+    public shot_file   : bool
+    public shot_line   : i32
+    public shot_text   : string
+    public agent_view  : bool
+    public agent_min   : bool
+    public agent_notes : vec ShotEntry
+    public user_notes  : vec ShotEntry
+    public agent_pick  : string
+    public blur        : ReduceBlur
+    public av_halo     : f32
+    public av_flame    : f32
+    public av_tilt     : f32
+    public av_listen   : f32
+    public av_spin     : f32
+    public av_settled  : bool
+    public av_shown    : bool
+    public av_done     : bool
+
 Display Window
     # weak: the window outlives a module reload, and live_destroy owns the app
     # instance. owning it here released one the host still held
@@ -1645,8 +1699,6 @@ Display Window
     mutable cursor_vresize      : handle
     mutable cursor_kind         : i32
 
-    public compose              : Canvas
-    public glyph                : Canvas
     public screen               : Canvas
 
     # a backdrop element publishes its render target here; the blur/frost
@@ -1655,7 +1707,7 @@ Display Window
     # the flat background the solid stage paints instead of the scene
     public solid_color           : rgba [ '#101014' ]
     # every compositor pass. the DRAW list is derived from this: the full
-    # chain only when an element actually declares frost, else r_view alone
+    # chain only when an element actually declares frost, else the backdrop alone
     mutable chain                : vec Render
     # resize replaced attachments: the frost chain rebinds as if fresh
     mutable rebind_frost         : bool
@@ -1675,8 +1727,6 @@ Display Window
     # half-size blur; the sharp frost path uses it for the mid stage
     mutable rb_soft              : ReduceBlur
     mutable rb_frost             : ReduceBlur
-    mutable m_view               : Model
-    mutable r_view               : Render
 
     manual test_element : element   # points at a tree element, does not own it
     mutable dbg_blit     : i32
@@ -1798,6 +1848,8 @@ Display Window
     mutable agent_pick          : string   # the agent chosen at the prompt (an `agents` name)
     mutable user_notes          : vec ShotEntry   # the user's lines, their own list beside the agent's
     mutable agent_busy          : bool     # the agent said busy: the shine keeps moving
+    mutable swap_fade           : bool     # the reload is asked: the exchange fades on alpha
+    mutable snap_transitions    : bool     # this frame's transitions land at once (a restore)
 
     public func agent_state_busy [] -> bool
         return agent_busy
@@ -1913,6 +1965,46 @@ Display Window
         if [ !shot_ask ] return
         agent_min = false
         restyle   = true
+
+
+    # a reload: the exchange's state crosses to the next instance, which
+    # recreates it on its first frame exactly as it was
+    public func exchange_carry [ xs: ExchangeState ]
+        if [ !shot_ask ] return
+        xs.has         = true
+        xs.shot_ask    = shot_ask
+        xs.shot_file   = shot_file
+        xs.shot_line   = shot_line
+        xs.shot_text   = shot_text
+        xs.agent_view  = agent_view
+        xs.agent_min   = agent_min
+        xs.agent_notes = agent_notes
+        xs.user_notes  = user_notes
+        xs.agent_pick  = agent_pick
+        xs.blur        = screenshot_blur
+
+    public func exchange_restore [ xs: ExchangeState ]
+        shot_ask        = xs.shot_ask
+        shot_file       = xs.shot_file
+        shot_line       = xs.shot_line
+        shot_text       = xs.shot_text
+        agent_view      = xs.agent_view
+        agent_min       = xs.agent_min
+        agent_notes     = xs.agent_notes
+        user_notes      = xs.user_notes
+        agent_pick      = xs.agent_pick
+        screenshot_blur = xs.blur
+        # the blur is this window's now: its stages pointed at the last
+        # window, which the swap frees under them
+        if [ screenshot_blur && screenshot_blur.renders ]
+            for [ r9: Render ] in screenshot_blur.renders
+                r9.w = a
+                if [ r9.models ]
+                    for [ m9: Model ] in r9.models
+                        m9.w = a
+        snap_transitions = true
+        restyle      = true
+        will_animate = true
 
     # the prompt and the exchange go, the blur with them
     # the exchange, about a crop (the capture's path) or a file at a line:
@@ -2147,7 +2239,7 @@ Display Window
             ct.start     = epoch_millis[]
             # the first frame after a load or live reload: the state lands as
             # it is, no transition from the defaults; the arm is already over
-            if [ frame_seq <= 1 && ct.duration ] ct.start = ct.start - ct.duration.millis - 1
+            if [ (frame_seq <= 1 || snap_transitions) && ct.duration ] ct.start = ct.start - ct.duration.millis - 1
             ct.member    = member
             ct.invalidate = false
             ct.container  = value_holder
@@ -2449,17 +2541,24 @@ Display Window
         #log 'frame_factor: raw={raw}s frame_factor={frame_factor}'
         last_frame_ms = now
         frame_seq += 1
+        # the exchange faded out (a swap landed): it closes at 0
+        if [ swap_fade && root && root.elements ]
+            bg9 : element root.elements[ 'shot_bg' ]
+            if [ bg9 && bg9.opacity <= 0.001 ]
+                swap_fade = false
+                shot_close[]
+        snap_transitions = false
 
         # the draw rate is chosen at RUNTIME, so it has to be pushed
         # every frame. update[] only runs on resize, so setting it
         # there latched whatever rate happened to be live at startup
         # and no speed change ever reached the renders again.
-        # r_view is last and never throttled -- it is the screen
-        if [ list && list.count > 1 ]
+        # every listed pass is a chain stage: all paced alike
+        if [ list && list.count > 0 ]
             # a camera easing between orbits draws every frame or the
             # move lands in visible steps instead of a glide
             rate : f32 [ (orbit_moving) ? 0.0 : background_hz ]
-            for [ i: i32 0, i < list.count - 1, i += 1 ]
+            for [ i: i32 0, i < list.count, i += 1 ]
                 render : Render list[i]
                 render.draw_hz = rate
             # the backdrop itself paces the same: the chain only re-blurs a
@@ -2755,7 +2854,7 @@ Display Window
         if [ ide_active ]
             e[ 'hostedshell' ] = IDEOverlay [ topmost: true ]
         if [ shot_ask && !agent_min ]
-            e[ 'shot_bg' ] = ShotBackdrop [ topmost: true ]
+            e[ 'shot_bg' ] = ShotBackdrop [ topmost: true, fading: swap_fade ]
             # the agent to send to, chosen at the prompt; it fades out with
             # the move to the conversation
             nm9 : vec string agent_names[ app_object ]
@@ -2770,30 +2869,32 @@ Display Window
                     tb0 : TButtons pk0
                     if [ tb0.selected >= 0 && tb0.selected < nm9.count ] ix9 = tb0.selected
             if [ agent_view ]
-                e[ 'unotes' ] = ShotUser   [ topmost: true, area: Region [ 'l24px b-15%+594px w440px h420px' ] ]
-                e[ 'shot' ]   = ShotPrompt [ topmost: true, area: Region [ 'l32px b-15%+220px w388px h40px' ], label: 'prompt description' ]
+                e[ 'unotes' ] = ShotUser   [ topmost: true, fading: swap_fade, area: Region [ 'l24px b-15%+594px w440px h420px' ] ]
+                e[ 'shot' ]   = ShotPrompt [ topmost: true, fading: swap_fade, area: Region [ 'l32px b-15%+220px w388px h40px' ], label: 'prompt description' ]
             el
-                e[ 'unotes' ] = ShotUser   [ topmost: true ]
-                e[ 'shot' ]   = ShotPrompt [ topmost: true, label: 'prompt description' ]
+                e[ 'unotes' ] = ShotUser   [ topmost: true, fading: swap_fade ]
+                e[ 'shot' ]   = ShotPrompt [ topmost: true, fading: swap_fade, label: 'prompt description' ]
             # the mic, inside the field's right end (as a search box has it):
             # only where something can transcribe (a host, or the app itself)
             if [ host_slot[] > 0 || (ae && ae.dictates*[]) ]
                 mic9 : string [ (agent_view) ? 'l420px b-15%+216px w32px h32px' : 'l50%+176px b216px w32px h32px' ]
-                e[ 'shot_mic' ] = ShotMic [ topmost: true, icon: 'mic', icon_fit: 0.55, manual_mode: true,
+                e[ 'shot_mic' ] = ShotMic [ topmost: true, fading: swap_fade, icon: 'mic', icon_fit: 0.55, manual_mode: true,
                     selected: dict_on, area: Region [ mic9 ] ]
             if [ agent_view ]
-                e[ 'notes' ]  = ShotNotes [ topmost: true ]
-            e[ 'shot_close' ] = ShotClose [ topmost: true, icon: 'close', icon_fit: 0.6, manual_mode: true ]
+                e[ 'notes' ]  = ShotNotes [ topmost: true, fading: swap_fade ]
+            e[ 'shot_close' ] = ShotClose [ topmost: true, fading: swap_fade, icon: 'close', icon_fit: 0.6, manual_mode: true ]
             # the picker last: over the blur and the boxes
             pw9 : i32 [ i32[ nm9.count ] * 96 ]
-            e[ 'agent_pick' ] = AgentPick [ topmost: true, buttons: nm9, selected: ix9, faded: agent_view,
+            e[ 'agent_pick' ] = AgentPick [ topmost: true, buttons: nm9, selected: ix9, faded: agent_view, fading: swap_fade,
                 icons: false, manual: false, seg_radius: 6.0, label_px: 13.0, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0,
                 area: Region [ 'l50%-{pw9 / 2}px b282px w{pw9}px h28px' ] ]
         # the app's exchange avatar is one instance, mounted for the life of
         # the app and invisible between exchanges: it is never torn down.
         # mounted AFTER the blur, or the blur paints over it
         av : element [ (ae) ? ae.agent_avatar*[] : null ]
-        if [ av ] e[ 'agent_av' ] = av
+        if [ av ]
+            av.fading = swap_fade
+            e[ 'agent_av' ] = av
             # the field takes focus once the tree holds it: this render's
             # instance is not the one that gets mounted
             if [ root && root.elements ]
@@ -3529,34 +3630,12 @@ Display Window
     # rebinds to it. re-wire the chain from CURRENT colors, in order
     func rewire_frost [ ]
         backdrop_once = true
-        if [ !m_view ] return
-        # no frost element ever appeared: there is no chain to wire. the
-        # composite reads the background for all three samplers
-        if [ !m_reduce ]
-            # no chain: background, frost and blur are all the backdrop, so
-            # ux.frag's blur/frost branch resolves to the real image
-            src8 : Texture [ (backdrop) ? backdrop.color : compose.color ]
-            m_view.samplers = map Texture[string] [
-                'background': src8,
-                'frost':      src8,
-                'blur':       src8,
-                'compose':    compose.color ]
-            m_view.rebind_model[]
-            return
-        src9 : Texture [ (backdrop) ? backdrop.color : compose.color ]
-        m_reduce.samplers  = map Texture[string] [ 'color': src9 ]
+        if [ !m_reduce || !backdrop ] return
+        m_reduce.samplers  = map Texture[string] [ 'color': backdrop.color ]
         m_reduce.rebind_model[]
         rb_blur.rewire[ r_reduce.color ]
         rb_soft.rewire[ rb_blur.stage[ 0 ] ]
         rb_frost.rewire[ rb_blur.stage[ 1 ] ]
-        fr : frost_src[]
-        bl : blur_src[]
-        m_view.samplers = map Texture[string] [
-            'background': src9,
-            'frost':      (fr) ? fr.color : rb_frost.color[],
-            'blur':       (bl) ? bl.color : rb_blur.color[],
-            'compose':    compose.color ]
-        m_view.rebind_model[]
         frost_bound = frost_eff[]
 
     # the blur/frost passes are built ONLY when an element actually declares
@@ -3565,32 +3644,29 @@ Display Window
     func build_frost_chain [ ]
         if [ chain ] return
         ctx: vk_context[ a.vk ]
-        source : Texture [ (backdrop) ? backdrop.color : compose.color ]
+        source : Texture [ (backdrop) ? backdrop.color : screen.color ]
 
+        # the chain runs at one pixel per point: the backdrop is drawn
+        # so, and every reduction below keeps its size in points
+        bs9 : f32 [ (scale > 1.0) ? 1.0 / scale : 1.0 ]
         m_reduce  = Model  [ w: a, samplers: map Texture[string] [ 'color': source ] ]
-        r_reduce  = Render [ vk: ctx, w: a, wscale: 1.0, models: [m_reduce ] ]
-        m_reduce.hold[]
-        r_reduce.hold[]
+        r_reduce  = Render [ vk: ctx, w: a, wscale: bs9, models: [m_reduce ] ]
 
         # the reduce-then-blur units: blur halves the copy twice and blurs
         # at 1/4; soft blurs the first half at 1/2; frost halves the quarter
         # twice more and blurs at 1/16
         rb_blur  = ReduceBlur []
-        rb_blur.hold[]
-        rb_blur.build[ ctx, a, r_reduce.color, 1.0, 2 ]
+        rb_blur.build[ ctx, a, r_reduce.color, bs9, 2 ]
         rb_soft  = ReduceBlur []
-        rb_soft.hold[]
-        rb_soft.build[ ctx, a, rb_blur.stage[ 0 ], 0.5, 0 ]
+        rb_soft.build[ ctx, a, rb_blur.stage[ 0 ], bs9 * 0.5, 0 ]
         rb_frost = ReduceBlur []
-        rb_frost.hold[]
-        rb_frost.build[ ctx, a, rb_blur.stage[ 1 ], 0.25, 2 ]
+        rb_frost.build[ ctx, a, rb_blur.stage[ 1 ], bs9 * 0.25, 2 ]
 
         chain = vec Render []
         chain.push[ r_reduce ]
         rb_blur.append[ chain ]
         rb_soft.append[ chain ]
         rb_frost.append[ chain ]
-        chain.push[ r_view ]
         rewire_frost[]
         list = chain
 
@@ -3634,23 +3710,8 @@ Display Window
         if [ m_reduce && fresh ]
             m_reduce.samplers[ 'color' ] = backdrop.color
             m_reduce.rebind_model[]
-        if [ m_view ]
-            frost_bound = frost_eff[]
-            uxs : UXBackground [ m_view.s ]
-            if [ uxs ] uxs.dim_floor = (backdrop.owner) ? backdrop.owner.frost_lift : 0.0
-            # push the flat color to the shader the moment the scene mounts
-            # or the stage changes, so the solid stage is right on frame one
-            apply_solid[]
-            if [ fresh ] m_view.samplers[ 'background' ] = backdrop.color
-            fr : frost_src[]
-            bl : blur_src[]
-            # ux.frag picks background ONLY when compose.r < 0.502; compose is
-            # cleared to #888 (0.533), so the else branch runs and samples
-            # blur/frost. with no chain those must resolve to the backdrop or
-            # every pixel comes back as the flat #888 clear
-            m_view.samplers[ 'frost' ] = (fr) ? fr.color : backdrop.color
-            m_view.samplers[ 'blur'  ] = (bl) ? bl.color : backdrop.color
-            m_view.rebind_model[]
+        frost_bound = frost_eff[]
+        apply_solid[]
 
     # push solid_color to the background shader NOW, not on the next resize.
     # on-change only (scene mount / stage flip), so the flat stage is correct
@@ -3668,67 +3729,25 @@ Display Window
         s9 : bool [ frost_eff[] == 3 ]
         # solid: the scene target is not drawn at all, only the flat color
         skip_target = (s9) ? backdrop : null
-        if [ !m_view ] return false
-        uxs : UXBackground [ m_view.s ]
-        if [ !uxs ] return false
-        uxs.solid_color = (s9) ? vec4f [ solid_color.r, solid_color.g, solid_color.b, 1.0 ] : vec4f [ 0.0, 0.0, 0.0, 0.0 ]
         return true
 
     func update [ ]
         backdrop_once = true
         bind_backdrop[]
         apply_solid[]
-        if [ !glyph ]
-            glyph = Canvas [ w:a, vk: vk, format: Pixel.u8, :width, :height ]
-            glyph.hold[]
         if [ !screen ]
             screen = Canvas [ w:a, vk: vk, format: Pixel.rgba8, load_existing: true, :width, :height ]
-            screen.hold[]
-        glyph.resize[ width, height ]
+            # the screen is what presents and what a shot reads
+            final = screen
         screen.resize[ width, height ]
-        glyph   .update[]
         screen  .update[]
-        glyph   .clear[ string[ "#000" ] ]
         screen  .clear[ string[ "#000" ] ]
-
-        if [ !compose ]
-            compose = Canvas [ w:a, vk: vk, format: Pixel.rgba8, load_existing: true, :width, :height ]
-            compose.hold[]
-        compose.resize[ width, height ]
-        compose.update[]
-        compose.clear[ string[ "#888" ] ]
 
         if [ !is_setup ]
             is_setup = true
-            ctx: vk_context[ a.vk ]
-
-            shader : UXBackground [ vk: ctx, name: 'ux' ]
-            shader.hold[]
-            # no frost chain exists yet: frost/blur sample the background
-            # itself, so nothing reads an image that was never rendered
-            src0 : Texture [ (backdrop) ? backdrop.color : compose.color ]
-            m_view    = Model [ w: w, s: shader,
-                samplers: map Texture[string] [
-                    'background':     src0,
-                    'frost':          src0,
-                    'blur':           src0,
-                    'compose':        compose.color
-                ]
-            ]
-
-            r_view    = Render [ vk: ctx, w: a,
-                color: screen.color,
-                wscale: 1.0, clear_color: vec4f [ 1.0, 1.0, 1.0, 1.0 ],
-                models: [m_view ] ]
-            m_view.hold[]
-            r_view.hold[]
-
-            ux_shader : UXBackground [ shader ]
-            ux_shader.low_color  = vec4f [ 0.0, 0.1, 0.2, 1.0 ]
-            ux_shader.high_color = vec4f [ 1.0, 0.8, 0.8, 1.0 ]
-
-            # the backdrop draws itself as an element target, not here
-            list = vec Render [] [ r_view ]
+            # the backdrop draws itself as an element target; the frost
+            # chain joins this list once an element declares frost
+            list = vec Render []
         el
             if [ chain ]
                 for [ r: Render ] in chain
@@ -3736,11 +3755,8 @@ Display Window
             el [ list ]
                 for [ r: Render ] in list
                     r.update[]
-            if [ r_view ]
-                r_view.color = screen.color
-                r_view.update[]
-                # mode-aware: frost/blur follow frost_src, not r_frost
-                rewire_frost[]
+            # resize replaced the attachments: the chain samples the new ones
+            rewire_frost[]
 
     # the display's refresh rate, for pacing what has no present of its own
     func refresh_hz [] -> i32
@@ -3782,6 +3798,8 @@ Display Window
     func on_compose []
         if [ resizing ] return
         if [ screenshot_active ] return
+        ae9 : element [ cast element [ app_object ] ]
+        if [ ae9 ] ae9.on_frame*[ a ]
         update_all      [ app_render[] ]
         # a frost element publishes its target mid-frame, not on resize
         bind_backdrop   [ ]
@@ -3800,6 +3818,19 @@ Display Window
             screen.sync_fence[]
             screen.restore[]
             return
+
+        # the backdrop under the ui: the flat colour in the solid stage,
+        # else the blur pass for the stage, else the scene itself
+        if [ frost_eff[] == 3 || !backdrop ]
+            screen.fill_color[ solid_color ]
+            screen.rect_to[ 0.0, 0.0, f32[ width ], f32[ height ] ]
+            screen.paint[]
+        el
+            bl9 : Render blur_src[]
+            screen.draw_image[ (bl9) ? bl9.color : backdrop.color,
+                rect [ x: 0.0, y: 0.0, w: f32[ width ], h: f32[ height ] ] ]
+
+        screen.has_drawn = true
 
         app_object.on_canvas*[ screen ]
 
@@ -4671,7 +4702,7 @@ Display Window
         if [ opt->selected ] bits += i32[ State.selected ]
         e.on_state*[ bits ]
         if [ !e.parent && e != root ] return
-        cv : (stage == CanvasType.screen) ? screen : compose
+        cv : screen
         if [ !e.bounds || e.bounds.w <= 0.0 || e.bounds.h <= 0.0 ] return
         if [ e.opacity <= 0.0 ] return
         # opacity scales everything the element paints
@@ -5274,6 +5305,9 @@ func state_persist_load [ target: Au ]
     source : Au.new_object[ ty, null, null, false,
         __FILE__, __LINE__, __SEQUENCE__ ]
     Au.parse_agi[ null, txt.chars, source ]
+    # the parse's stores held: mark it owned so its teardown drops them
+    sh9 : Au.header[ source ]
+    sh9.iflags = sh9.iflags | 1
     for [ mt : ty, mt != typeid[ Au ], mt = mt.context ]
         for [ i: i32 0, i < mt.members.count, i += 1 ]
             mem : Au_t mt.members.origin[i]
@@ -5282,7 +5316,12 @@ func state_persist_load [ target: Au ]
             if [ !agi_has_key[ txt, mem.ident ] ] continue
             v9 : source.member_object[ mem ]
             # an empty block reads as null: never erase a live default
-            if [ v9 ] target.member_set[ mem, v9 ]
+            if [ v9 ]
+                # restored inside init: hold_members owns it after
+                th9 : Au.header[ target ]
+                au_raw_props_set[ (th9.iflags & 1) == 0 ]
+                target.member_set[ mem, v9 ]
+                au_raw_props_set[ false ]
 
 class AgentConnection
     func post [ root: path, from: string, text: string, urgency: string ] -> bool
@@ -5410,12 +5449,10 @@ abstract media_app trinity
             cwin.console_input_open[]
             render *[]
             cwin.restyle = true
-            Au.auto_free[ true ]
             return
         ifdef [ unix ]
             if [ attach ]
                 at_start[ rt ]
-                Au.auto_free[ true ]
                 return
         window : Window[ app_object: root, title:(title) ?? rt.ident, st: Style [ root ],
             width:(width) ?? 1888, height:(height) ?? 888,
@@ -5428,10 +5465,13 @@ abstract media_app trinity
         # the app loads hidden
         window.hidden = true
         w.update *[]
+        # a parallel reload: the live instance owns the swapchain and
+        # presents until the switch; this one sizes and draws without
+        if [ getenv[ 'SILVER_RELOAD_PARALLEL' ] ]
+            window.defer_swapchain[]
         render   *[]
         w.resize[w.width, w.height]
         window.restyle = true
-        Au.auto_free[ true ]
 
     func render[]
         if [ text_mode ]
@@ -5448,6 +5488,9 @@ abstract media_app trinity
                 os : offscreen [ os_au inherits offscreen ]
                 if [ os ] os.frame[]
         u1 : i64 [ epoch_micros[] ]
+        # the host unsets PARALLEL at the switch: the surface is ours
+        if [ window.defer_swap && !getenv[ 'SILVER_RELOAD_PARALLEL' ] ]
+            window.take_swapchain[]
         window.draw[]
         # loaded hidden; shown once the scene has drawn (--hidden stays hidden)
         if [ window.hidden && !hidden && window.loaded[] ]
@@ -5527,12 +5570,11 @@ func agent_post_as [ obj: Au, pick: string, text: string, priority: string ] -> 
     if [ !ok ] log 'agent: inbox post failed'
     return ok
 
-func save-persistent []
-    glfw : handle [ Au.live_window_get[] ]
-    if [ !glfw ] return
-    win : cast Window [ platform_window_get_user[ glfw ] ]
-    if [ win && win.app_object ]
-        state_persist_store[ win.app_object ]
+# the app names itself: the platform window is reused across a
+# reload, and its user pointer is the last instance's
+func save-persistent [ target: Au ]
+    if [ !target ] return
+    state_persist_store[ target ]
 
 func load-persistent [ target: Au ]
     state_persist_load[ target ]
@@ -6388,6 +6430,10 @@ UXMenuButton UXMenuRight
 # with nothing sent, or putting it away: the exchange ends
 UXMenuButton ShotClose
     area : Region { r16px t16px w36px h36px }
+    style : CSS {
+    :fading
+        opacity: 0.0, 3000ms cubic outward
+    }
     # cached, unlike a button: uncached, it painted into root's cache and the
     # cached backdrop was drawn over it
     no_cache : false
@@ -6398,6 +6444,10 @@ UXMenuButton ShotClose
 UXMenuButton ShotMic
     # cached, as ShotClose: uncached it painted under root's cached backdrop
     no_cache : false
+    style : CSS {
+    :fading
+        opacity: 0.0, 3000ms cubic outward
+    }
     func on_press [ ev: Event ]
         if [ ux ] ux.shot_mic[]
         ev.stop[]
@@ -6656,6 +6706,10 @@ Layer ShotGround
 element ShotBackdrop
     area   : Region { l0 t0 r0 b0 }
     ground : ShotGround []
+    style : CSS {
+    :fading
+        opacity: 0.0, 3000ms cubic outward
+    }
 
 # entries in a rounded box: each word-wrapped to the box's width, a
 # floating rule between them, the newest kept in view when they overflow.
@@ -6855,6 +6909,10 @@ element ShotUser
     frame : Layer [ area: Region [ 'l0 b52px w440px h52px' ], fill_color: rgba [ '#0a0a12cc' ],
         stroke_width: 1.0, stroke_color: rgba [ '#ffffff66' ], radius: Radius [ '12' ] ]
     lines : ShotUserLayer []
+    style : CSS {
+    :fading
+        opacity: 0.0, 3000ms cubic outward
+    }
 
 # the agent's entries, right of the avatar: the current line shines
 # while the agent works
@@ -6892,6 +6950,10 @@ element ShotNotes
     frame : Layer [ fill_color: rgba [ '#0a0a12cc' ], stroke_width: 1.0,
         stroke_color: rgba [ '#ffffff66' ], radius: Radius [ '12' ] ]
     notes : ShotNotesLayer []
+    style : CSS {
+    :fading
+        opacity: 0.0, 3000ms cubic outward
+    }
 
 # the agent picker over the prompt: names, one lit; :faded once the
 # exchange is a conversation (the pick is made at the first send)
@@ -6904,6 +6966,8 @@ TButtons AgentPick
         opacity: 1.0
     :faded
         opacity: 0.0, 400ms cubic outward
+    :fading
+        opacity: 0.0, 3000ms cubic outward
     }
 
 TextInput ShotPrompt
@@ -6930,6 +6994,8 @@ TextInput ShotPrompt
     :has_value
         layers.face:
             label_color: #ffffff
+    :fading
+        opacity: 0.0, 3000ms cubic outward
     }
 
     func on_key [ ev: Event ]
@@ -7070,78 +7136,6 @@ element UXGenerics
             els[ 'dictate' ] = UXMenuRight [ icon: 'orbiter4', icon_fit: 0.7,
                 manual_mode: true ]
         return els
-
-
-ModelViewProject UXBackground
-    mutable low_color    : vec4f
-    mutable high_color   : vec4f
-    mutable dim_floor    : f32
-    mutable _dpad0       : f32
-    mutable _dpad1       : f32
-    mutable _dpad2       : f32
-    # a > 0: paint this and sample nothing (the solid stage)
-    mutable solid_color  : vec4f
-
-    attrib background     : LayoutBinding [ type:typeid[ UXSurface ], id:UXSurface.background,     count:1, format: typeid[ rgba8 ] ]
-    attrib frost          : LayoutBinding [ type:typeid[ UXSurface ], id:UXSurface.frost,          count:1, format: typeid[ rgba8 ] ]
-    attrib blur           : LayoutBinding [ type:typeid[ UXSurface ], id:UXSurface.blur,           count:1, format: typeid[ rgba8 ] ]
-    attrib compose        : LayoutBinding [ type:typeid[ UXSurface ], id:UXSurface.compose,        count:1, format: typeid[ rgba8 ] ]
-    attrib pos       : VertexInput    [ type:typeid[ vec3f ] ]
-    attrib uv        : VertexInput    [ type:typeid[ vec2f ] ]
-    attrib v_uv      : VertexOutput   [ type:typeid[ vec2f ] ]
-    attrib fragColor : FragmentOutput [ type:typeid[ vec4f ] ]
-
-    func init [ ]
-        model = mat4f.identity[]
-        eye:    vec3f [ 0.0, 0.0, 2.0 ]
-        center: vec3f [ 0.0, 0.0, 0.0 ]
-        up:     vec3f [ 0.0, 1.0, 0.0 ]
-        view  = mat4f.look_at[ eye, center, up ]
-        proj  = mat4f.ortho[ -1, 1, -1, 1, 0.1, 10.0 ]
-
-    func rgb2hsv [ c: @vec3f ] -> GLSL vec3f {
-        vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
-        vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
-        vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
-        float d = q.x - min(q.w, q.y);
-        float e = 1.0e-10;
-        return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
-    }
-
-    func hsv2rgb [ c: @vec3f ] -> GLSL vec3f {
-        vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
-        vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
-        return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
-    }
-
-    func vertex [] -> GLSL none {
-        v_uv        = uv;
-        gl_Position = vec4(pos.x, pos.y, 0.0, 1.0);
-    }
-
-    # 44
-    func fragment [] -> GLSL none {
-        if (ubo.solid_color.a > 0.0) {
-            fragColor = vec4(ubo.solid_color.rgb, 1.0);
-            return;
-        }
-        vec4  comp     = texture(compose,        v_uv);
-        float luminance = 1.0 - ((comp.b - 0.5020) * 2.0);
-        // a backdrop element may ask to keep more of its own light
-        luminance = max(luminance, ubo.dim_floor);
-        vec3  bgc = texture(background, v_uv).rgb;
-        vec3  blc = texture(blur,       v_uv).rgb;
-        vec3  frc = texture(frost,      v_uv).rgb;
-        vec3  f;
-
-        if (comp.r < 0.5020) {
-            f = mix(bgc, blc, comp.r / 0.5020) * luminance;
-        } else {
-            f = mix(blc, frc, (comp.r - 0.5020) / (1.0 - 0.5020)) * luminance;
-        }
-
-        fragColor = vec4(f, 1.0);
-    }
 
 
 expect func test [ vk: vk_context ] -> bool

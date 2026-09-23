@@ -51,12 +51,6 @@ enum Overflow
     visible  : 2
     wrap     : 3
 
-enum UXSurface
-    background  : 0
-    frost       : 1
-    blur        : 2
-    compose     : 3
-
 enum Fill : f32
     none      : 0.00f
     blur      : 0.50f
@@ -278,6 +272,8 @@ ielement element
     intern  paint_us     : i64      # --stats: this second's own paint time
     mutable fc           : f32
     public  opacity      : f32 [ 1.0 ]
+    # :fading in a style: the element goes on alpha (the exchange at a swap)
+    public  fading       : bool
     # own layout extent; the parent arranger reads and writes
     public  extent       : f32
     mutable extent_shown : f32
@@ -338,6 +334,8 @@ ielement element
     # loaded at runtime (scenes) are not rebuilt when this file changes
     # a raw agent line the shell forwarded; the app owns what it means
     public func on_agent   [ s: string ] return
+    # the app's word each frame, before the window composes its tree
+    public func on_frame   [ w: Window ] return
     # the app's avatar for the exchange under a screenshot prompt, or null
     public func agent_avatar [] -> element return null
     # the exchange's debug button: an app with an avatar steps it through
@@ -624,11 +622,14 @@ class Layer
     public  editable    : bool
     mutable lh_cache    : f32  [ 0.0 ]
     mutable cw_cache    : f32  [ 0.0 ]
+    mutable text_x      : f32  [ 0.0 ]   # where column 0 was drawn, scrolled
+    mutable text_shift  : f32  [ 0.0 ]   # the scroll, kept while the caret shows
 
+    # a press lands on the text as drawn: after its alignment and scroll
     func hit_col [ ev: Event ] -> i32
         cw    : f32 [ (cw_cache > 0.0) ? cw_cache : 8.0 ]
         text  : string [ (parent.edit) ? parent.edit : '' ]
-        rel_x : f32 [ ev.mouse.pos.x - bounds.x ]
+        rel_x : f32 [ ev.mouse.pos.x - text_x ]
         return clamp[ i32[ round[ rel_x / cw ] ], 0, text.count ]
 
     func on_press [ ev: Event ]
@@ -740,13 +741,22 @@ class Layer
         sc  : i32 [ (col < anc) ? col : anc ]
         ec  : i32 [ (col < anc) ? anc : col ]
 
-        # the caret stays in view: text past the box's right edge slides
-        # left under it by the overshoot, and the drawing is cropped to the box
+        # the caret stays in view: the scroll holds while the caret is
+        # inside the box, and moves only as far as it takes to show it
         prefix : string [ (has_edit) ? etext.mid[ 0, col ] : '' ]
         pm     : cv.measure_text[ prefix ]
         right  : f32 [ bounds.x + bounds.w - ox - 4.0 ]
-        shift  : f32 [ (x0 + pm.w > right) ? (x0 + pm.w - right) : 0.0 ]
+        left   : f32 [ bounds.x + ox ]
+        cx0    : f32 [ x0 + pm.w - text_shift ]
+        if [ cx0 > right ]      text_shift += cx0 - right
+        el [ cx0 < left ]       text_shift -= left - cx0
+        # no scroll past the text's own end, and none at all when it fits
+        over : f32 [ x0 + metrics.w - right ]
+        if [ text_shift > over ] text_shift = (over > 0.0) ? over : 0.0
+        if [ text_shift < 0.0 ]  text_shift = 0.0
+        shift : f32 [ text_shift ]
         x0 -= shift
+        text_x = x0
         cv.set_crop[ bounds.x, bounds.y, bounds.x + bounds.w, bounds.y + bounds.h ]
 
         if [ has_edit && sc != ec ]

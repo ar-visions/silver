@@ -418,6 +418,8 @@ class Image
 
     func dealloc [ ]  # some comment
         info : header[ a ]
+        # the gpu texture cached on this image (trinity holds it here)
+        if [ user ] drop[ user ]
         if [ res_dealloc ] res_dealloc [ a ]
         if [ res_bits ] info.data = null
 

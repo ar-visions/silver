@@ -51,7 +51,7 @@ typedef enum AU_MEMBER AFlag;
 #define AU_TRAIT_VPROP       ((int64_t) 1 << 18)
 #define AU_TRAIT_IMETHOD     ((int64_t) 1 << 19)
 #define AU_TRAIT_SMETHOD     ((int64_t) 1 << 20)
-#define AU_TRAIT_TMETHOD     ((int64_t) 1 << 21)
+#define AU_TRAIT_IS_PERSIST  ((int64_t) 1 << 21)   // a static slot kept across a live reload
 #define AU_TRAIT_IFINAL      ((int64_t) 1 << 22)
 #define AU_TRAIT_FUNCPTR     ((int64_t) 1 << 23)
 #define AU_TRAIT_SCHEMA      ((int64_t) 1 << 24)
@@ -234,7 +234,7 @@ typedef struct _Au_t {
             u64 is_vprop     : 1;   // AU_TRAIT_VPROP     = 1 << 18,
             u64 is_imethod   : 1;   // AU_TRAIT_IMETHOD   = 1 << 19,
             u64 is_smethod   : 1;   // AU_TRAIT_SMETHOD   = 1 << 20,
-            u64 is_tmethod   : 1;   // AU_TRAIT_TMETHOD   = 1 << 21,
+            u64 is_persist   : 1;   // AU_TRAIT_IS_PERSIST = 1 << 21
             u64 is_ifinal    : 1;   // AU_TRAIT_IFINAL    = 1 << 22,
             u64 is_funcptr   : 1;
             u64 is_schema    : 1;

@@ -1147,6 +1147,289 @@ verification after the repository hooks are trusted through `/hooks`.
    - Two reloads per external build: the host's product watch
      sees the library mid-link and again when the link ends.
    - Not fixed: the old instance is still not freed per reload.
+2. DONE Post-reload SIGSEGV (garbage map in FileIcons_icon, "style:
+   unknown type" for every orbiter class). Cause: the host's product
+   watch fired while the linker had the product unlinked (mtime 0),
+   reload_dlopen's copy failed and its fallback dlopen(product path)
+   returned the SAME old image: no constructors, no module. Host now
+   ignores mtime 0, never falls back to the product path, and treats a
+   same-handle result as a failed load (retry). Also the double reload
+   per build.
+3. DONE `persist` keyword: `persist x : T` is a class static (IS_STATIC
+   | IS_PERSIST, interface.persist = 11) emitted as global <Class>_<x>
+   with default visibility. Before a reload au_persist_save (Au.c)
+   holds every non-null slot; au_persist_load puts them in the new
+   image's slots before its init. T (and a map/vec element type) must
+   come from a module the reload does not swap: the parser rejects a
+   type of the module itself, so the old image is dlclosed as before.
+   Avatar.mcache (GltfModel) and Avatar.envcache (Texture) persist:
+   the reloaded avatar rebinds to the loaded model and environment.
+   Verified headless, 2 slots kept per reload, 2 reloads per run.
+   - aether: an inherited class static was emitted once per subclass
+     (AgentAvatar_mcache ...) and the shared evar pointed at the last
+     one; now named by the declaring class only.
+   - Au_drop_members walked class statics (offset 0): one extra drop
+     of the instance's first member per class-typed static. Skipped
+     now, as hold_members already did.
+   - devices.mm: SILVER_HEADLESS registers as an accessory app (no
+     dock icon, no focus steal), like a hosted slot.
+4. DONE DOUBLE-DROP in the reload destroy: a lambda's `au_t` (a type
+   descriptor) was held/dropped by the member walks like an owned
+   object. Au_t-typed members are skipped in both walks (as ARef is).
+5. DONE Parallel reload (Sep 22): the new image loads and inits on a
+   worker thread while the live instance keeps framing; the switch on
+   the main thread is 1-4 ms; the old instance's destroy, worker wait
+   and dlclose run on a close thread. First owned frame 220-320 ms
+   (swapchain creation + first present), then normal. Headless, three
+   cycles clean under lldb.
+   - host: dlopen -> persist save/load -> worker init (an Au space with
+     `au_space_capture`, so its modules register there; `au_space_
+     detach`/`promote` move them to the global list at the switch,
+     after the old module is erased by pointer and its image purged).
+     A failed load keeps the live instance. `SILVER_RELOAD_PARALLEL`
+     marks the worker's init.
+   - aether: the emitted destroy erases its own module by descriptor,
+     not by name; `module_erase_silver` is no longer called there.
+   - trinity: `media_app.run` under PARALLEL sizes and draws its
+     targets but defers the swapchain (`Display.defer_swap`); `frame`
+     takes it once the host clears PARALLEL. vk_context is shared by
+     the two overlapping instances, so: `qlock` around every submit,
+     present and queue wait; `fence_acquire` returns the fence under
+     it; a per-thread command pool (`vk.pool[]`) and transfer command
+     (`vk.xfer[]`) - Vulkan forbids two threads on one pool; Command
+     `lk` serializes begin/reap/submit against the frame tick; the
+     pending list swaps under qlock; `defer_flush[ mod ]` releases
+     only the dying module's deferred drops and shader-cache entries;
+     the font cache is never cleared (trinity types, keyed name@size).
+   - Au: `Au_drop` leaves an object still in another thread's pool to
+     that pool's drain (a foreign free left a dangling pool entry).
+   - The exchange fades on alpha before the swap: `element.fading`
+     (a `:fading` style state, 600ms cubic outward) on every exchange
+     element and the AgentAvatar; `Window.swap_fade` sets it when the
+     app requests the apply, and clears it if the build fails.
+     Verified headless: all seven elements transition to 0.0 at
+     "apply requested", before the recompile and the switch.
+   - The new Window's input callbacks attach at the switch
+     (`Display.attach_input` from `take_swapchain`), not at its init:
+     on the shared platform window they took the main thread's mouse
+     events into the half-built tree (SIGSEGV in Editor_on_move).
+   - The host keeps pending at 2 from the good recompile to the switch
+     (was 0 while the new instance loaded): orbiter's 4 s stand-down
+     saw pending != 2 and cleared swap_fade, so the exchange faded back
+     in right before the cut. `set_pending(1)` on a failed load.
+   - A relaunch is needed after host or trinity changes; a reload
+     swaps the app library only.
+   - FIXED (Sep 22 23:12) reload crash in vk_context_xfer (Kalen's
+     runs, -O2 real window): two bugs. (1) trinity.ag media_app.destroy
+     had grown `hr9.managed = 1` on the app element again (the change
+     Kalen reverted before): freed the process-owned app element, a
+     DOUBLE-DROP from the map listing it. Removed. (2) Image.user is an
+     Au-typed slot (never held/dropped); Gpu.sync cached the sampler
+     Texture there raw, owned only by the Gpu's tx. The diff's
+     `resources.clear[]` on rebind now really frees that Gpu, the
+     Texture with it, and the next Gpu.sync held the dead texture from
+     img.user (found with AU_QUARANTINE=1: DEAD-USE in hold, Texture at
+     vk.ag:2486; -O2 reused the memory after the old instance's
+     teardown: GaiaShader's scene target faulted). Fix: the Image owns
+     the cached texture (Au.hold at Gpu.sync and environment, drop in
+     Image.dealloc), and the Texture nulls its sampler after upload
+     (no cycle). Verified by Kalen: two reloads, backdrop stays.
+     Diagnostic still in: the DEADTX guard in Pipeline.draw_range
+     (skips and logs a dead resource texture); remove once trusted.
+   - Fade at ready, not at apply (Sep 22 09:00): the host sets pending
+     3 once the new instance is built; orbiter fades the exchange on 3
+     and hands the go (`au_live_request_apply`) 650 ms later; the host
+     switches on the go or after 800 ms. Pending changes restyle the
+     status bar. The flame burns from done to the switch.
+   - Close-thread leftovers: objects the teardown dropped to zero while
+     in the main pool are freed by the main drain, so the close thread
+     waits for one main drain (`close_job.destroyed/drained`) before
+     dlclose. `defer_flush` releases every deferred list at the flush
+     (a deferred Model's dealloc reaches an orbiter-typed shader); the
+     defer lists are swapped under `qlock` on both threads.
+   - The veil (Kalen's spec): the exchange's blur from BEFORE the
+     reload crosses the swap (`persist swap_blur : ReduceBlur`, set in
+     request_swap by the instance that asks, taken by the next one on
+     its first frame into `Window.veil_blur`). The reloaded window
+     mounts it as a `swap_veil` ShotBackdrop on its second frame, and
+     once its first fully loaded frame has rendered (`loaded[]`) sets
+     `fading`: the style's 600 ms transition takes the old blur to 0
+     over the NEW screen, and the window drops it at 0 (`veil_end`).
+     Verified with shots: old blur -> mid-fade over the new editor ->
+     sharp. A window that blurred its own frame gave black (the frame
+     had not drawn yet) - never do that.
+   NEXT (Kalen): trinity as the host - a "trinity app". The Window,
+   device, swapchain and a Presenter live in the host and never
+   unload; app instances render into host targets; the switch is a
+   target blit with a crossfade from the old instance's last frame;
+   silver-host.c's duties (watch, rebuild spawn, isolate, slots, log
+   tee, crash) port to trinity.ag; one host binary for every app.
+
+## Active work: reload leaks and crash (Sep 23 2026)
+
+Test: `support/reload-leaks.sh [reloads]` (headless orbiter-dbg; BIN=orbiter
+for -O2; AU_QUARANTINE=1 for use-after-free; CENSUS=1 keeps the log and
+writes a per-type census; LEAKS=n + AU_LEAKS_EACH=1 [+ AU_LEAKS_TYPE,
+AU_LEAKS_LINE] adds a leak report after each reload). Fails on sampler
+growth, object growth over 0.5%, or a fault in the log.
+State: samplers flat (88), objects +29 per reload, passes on debug,
+debug+quarantine and -O2. Startup 71k -> 55k objects.
+1. DONE parser: parsed maps held twice (parse_object, agi, construct_with
+   map path); construct_with props now raw (hold_members owns them).
+2. DONE aether: stores in a construct are raw like init (post-construct
+   excluded); call_construct ends with hold_members.
+3. DONE cycles: StyleEntry.bl, StyleBlock.parent, StyleQualifier.bl manual.
+4. DONE double holds: svg cache, frost chain, scene targets, scene element
+   and name, GitSnap, swap shader, Render framebuffer/render-pass vecs,
+   SDF edges, SVG shapes (construct makes them; load reuses).
+5. DONE vertex_member_t kept an Accessor (a struct in a vec never drops):
+   it holds the accessor index now.
+6. DONE shader cache: eviction moved to module_erase (au_module_erase_hook):
+   defer_flush was handed the trinity module and evicted trinity's shared
+   shaders. A cache hit holds its owner (shader.mod_src).
+7. DONE attrib values dropped at module_erase; close thread drains its pool;
+   deferred releases flushed after the tree and Window drop.
+8. DONE session restore raw during init; state_persist_load's scratch
+   object marked owned so its teardown drops the parse.
+9. DONE per-owner command pools (Render ring, Command): the close thread
+   freed buffers from the main thread's pool (MoltenVK reset spin).
+10. OPEN +29 objects/reload: list items orphaned by a list removal
+    (list_push hold, no holder), a few parser strings, vector_of vecs.
+11. OPEN the app element itself (managed 0) outlives its image by design.
+12. OPEN intermittent silver compiler SIGSEGV during the host's rebuild,
+    only with the app running; silver now prints its backtrace on SIGSEGV.
+
+## MEMORY: the reload transition (Sep 22 2026, fixed)
+
+THE REQUIREMENT (Kalen, said many times, do not reinterpret it):
+the avatar and the exchange do not disappear at a reload. The new
+instance RECREATES them instantly, in the exact state they had,
+and keeps drawing them; the old blur fades out to the NEW screen
+with the avatar and boxes still there. Nothing is "the same
+object"; it is recreated fast from carried state. Timers start
+when the first fully loaded frame has rendered, not at apply.
+
+HOW IT WORKS NOW (verified headless with shots, 7 cycles):
+- trinity `ExchangeState` (shot_ask/file/line/text, agent_view/min,
+  the two note vecs, agent_pick, the blur, the avatar's halo/flame/
+  tilt/listen/spin/settled/shown/done), `Window.exchange_carry/
+  restore`, `snap_transitions` (every transition lands on the
+  restore frame), the exchange closing itself when shot_bg reaches
+  0 under swap_fade. All `:fading` styles are 600 ms.
+- orbiter `persist swap_carry : ExchangeState`, filled at pending 3
+  (exchange + avatar carry), then the go.
+- `element.on_frame [ w: Window ]`: the app's word each frame BEFORE
+  the window composes; `Window.on_compose` calls it on the app
+  object first. orbiter restores there (guard `!swap_asked`), so
+  frame one after the switch composes the full exchange. A restore
+  in `render[]` or `tick` was one frame late: trinity's app_render
+  reads shot_ask before the app's render runs, and the exchange
+  then mounted on frame two already fading (never seen at full).
+- Avatar `paint_once` (set by restore) and `fresh9` (made this
+  frame): the target renders once inside `draw` (update, draw,
+  sync_fence) before its first paint. The frame's element_targets
+  pass (vk.ag ~4810) runs before on_compose and skipped the avatar
+  at opacity 0, so the compose painted its empty image: a magenta
+  square on frame one.
+- The fade starts in tick the frame after the restore, once
+  `ux.loaded[]`: `ux.swap_fade` sets `fading` on every exchange
+  element and the avatar; shot_close at 0. Every `:fading` is
+  3000 ms (Kalen: long enough to judge by eye).
+- `agent_av_shot` is set at the restore: orbiter's `agent_avatar[]`
+  takes a shot_ask it has not seen as a NEW capture and resets
+  `settled`, which put the restored avatar at the fresh-exchange
+  top-center start and slid it left over 900 ms (Kalen's report).
+- OPEN, one frame: the user's box frame (ShotUser 'frame' layer)
+  draws at its base one-row height on the restore frame with the
+  entries above it; right from frame two. `ShotUserLayer.draw`
+  sizes the frame layer during its own draw and marks a repaint,
+  so the frame lags the entries by one frame by construction (a
+  fresh exchange has the same lag as each entry arrives). A fix is
+  the frame height at layout time (text measure outside a paint).
+- Drive: headless orbiter (`XDG_RUNTIME_DIR=/tmp/claude-501/ob8`,
+  a long runtime dir truncates the socket name), ctrl+shift+S, drag,
+  Enter, `app status busy`, touch orbiter/Editor.ag, `app status
+  done`, wait for "reload complete" in the host log, `shot` burst.
+  With `text carry check` + Enter before busy, the avatar is settled
+  (left) and both boxes have entries. Pass: frame one = the exchange
+  as it was, avatar at its settled place with its flame; then fading
+  over the new screen for 3 s.
+
+## MEMORY: GPU memory across reloads (Sep 22 2026, evening)
+
+Symptom (Kalen): 4-5 live reloads and orbiter dies: Metal "Insufficient
+Memory", VK_ERROR_OUT_OF_DEVICE_MEMORY, a SIGBUS in a MoltenVK submit,
+or a strncmp SIGSEGV in apply_style on a freed string. Measured
+headless: every reload left one instance's worth of textures alive
+(about 190 samplers), and one exchange open+close leaked 17.
+
+Instrument: `vk.samp_tags` / `vk.samp_keys` count live samplers by
+the texture's `tag`, else by its creation `file:line`; the stats
+line (`stats` over the app socket) prints them after `| tags`. The
+blur chain's renders carry `tag: 'blur'`. Under `--leaks`, the exit
+report walks holders ("held by X via .m"; PHANTOM = a hold no live
+object accounts for; "unbalanced hold:" names its call site) and
+`au_leak_sites(Au)` (Au.c) prints one object's recorded hold sites.
+
+The rule (Kalen): a store in `init` does not hold; `hold_members`
+after init owns the slots. A store in a method that init CALLS
+(a delegate) does hold, and hold_members holds again: a double hold
+that leaks the object forever. Delegate calls handle it manually;
+never patch aether for it.
+
+Fixed, all verified headless (3 exchange reloads, no crash):
+- Render: the color/depth/reduction textures are made in `init`
+  itself (sized from wscale as update does); `update` only resizes.
+  Before: made in `update` from init, held twice, never freed.
+- Pipeline: `resources`/`storage_textures` are made in `init` before
+  `bind_resources` (its delegate), which now clears or lazily makes
+  them instead of re-storing. Before: every pipeline's resource
+  vector (Gpu -> bound textures, buffers) was a phantom root.
+- Pipeline.dealloc destroys its descriptor pool and the two set
+  layouts; Render.destroy_ring destroys the timestamp query pool
+  (Metal has a small fixed number of counter sample buffers; the
+  "Could not create MTLCounterSampleBuffer" flood was that).
+- NOT changed (Kalen's recent code, kept): the five explicit
+  `.hold[]` in build_frost_chain and the `mdl.cache.hold[]`/`drop[]`
+  pair in Canvas.draw_svg. Removing the frost holds crashed the
+  live app on its first reload (vk_context_xfer from rewire_frost
+  after the switch, a freed chain object); the svg pair is why
+  `svg` grows 38 per reload (icon cache canvases never freed:
+  SVGModel.cache is public, the store holds, the explicit hold
+  stays at the model's dealloc). Both are open, with Kalen.
+- REVERTED (Kalen): touching the app element at destroy. It is
+  process-owned (managed 0) and stays as it was. `managed = 1` +
+  free gave DOUBLE-DROP from a map that still listed it; then
+  `app.drop_members[]` crashed the next instance's first draw
+  (Display_draw -> Texture_transition -> vk_context_xfer): objects
+  the old app element owns are still used by the new instance
+  through unheld context pointers. Do not free or drop-walk it.
+- orbiter.on_unload: paused index watches drop their callback (the
+  lambda's context held the app object; `watch_pause` drains the
+  FSEvents queue first, so clearing after it is safe).
+- exchange_restore points the carried blur's Renders and Models at
+  the new Display (`r.w = a`): their `w` is an unheld context member
+  and the old Display dies under them at the swap (Render_dealloc
+  SIGSEGV in `w.element_targets`).
+- `save-persistent [ target ]`: the window-handle lookup resolved to
+  the previous instance after a reload (the platform window is
+  reused) and the session file was never written.
+
+Still growing: samplers 191 -> 271 -> 331 -> 396 over three
+reloads, mostly `svg` (+38 each, the pair above) and `blur` (+10,
+the frost chain's holds above); rcolor/sdf/image textures now stay
+near one instance's count. rss 640 -> 936 -> 1012 -> 755 MB. No
+crash and no device loss in three exchange reloads headless. The compiler segfault on
+`if [ target ] state_persist_store[ target ]` (one-line if with a
+call) is unfixed; write the plain two-line form.
+
+OPEN, separate bug: 1 of 7 cycles SIGSEGV on the close thread in
+the old instance's destroy: silver_live_destroy -> map_dealloc ->
+Pipeline_dealloc -> vector_clear -> Texture dealloc ->
+Texture_release_gpu reads a `tag` string whose header is freed. The
+strings freed just before are the old ShotPrompt canvas's sampler
+keys ('edges', 'sdf_out', 'atlas', 'text'): a double drop in a text
+canvas's pipeline/texture chain. Stack in install/tmp/orbiter.log.
 
 ## Active work: orbiter memory (Sep 21 2026)
 
@@ -1165,14 +1448,34 @@ the largest object. Startup footprint measured headless.
    (`ReduceBlur` rv/rh) at one pixel per point on retina.
    1382 -> 1257 MB. Full-size gaussians stay full size by
    Kalen's call: no upscaling of blur results.
-5. OPEN GPU images at startup (~750 MB real): 12 window-size
+5. DONE `auto_free` lost its reset_only argument: the `[true]`
+   resets pinned 368,048 startup objects (~200 MB) for the run.
+   media_app.init no longer drains (members are raw stores until
+   hold_members after init); the first drain is in run. Worker
+   threads (index, git) drain their own pools. realpath buffers
+   in path_absolute were never freed. Packed syntax regions
+   (vec i32 x5 per token) replace ColorRegion/rgba objects.
+   1257 -> 1046 MB.
+6. DONE Scene backdrops (scenes.ag create_target) and the frost
+   reduce chain at one pixel per point on retina; r_view, screen
+   and compose stay full res. 1046 -> 1001 MB. `scenes` is its
+   own module: rebuild it separately (`silver --build scenes`).
+7. DONE `compose` and `glyph` window canvases removed: compose was
+   cleared to #888 and never painted (no compose draw stage ran),
+   so the ux shader read constants from it; glyph was unread.
+   The ux fragment is now blur * max(1, dim_floor). 1001 -> 961 MB.
+   r_view, m_view and the UXBackground shader are removed too:
+   on_screen paints the stage's blur texture (or solid_color) into
+   `screen` first. `screen` is Display.final, what presents and
+   what a shot reads. All four frost stages checked. 958 MB.
+8. OPEN GPU images at startup (~530 MB): 12 window-size
    colour targets (screen, compose, r_reduce, r_view+depth,
    6 blur outputs now halved, 1 empty Render unidentified),
    3 at 2402x2402, editor text canvases per pane (23 MB each
    at 2x plus a 4-byte SDF at half size), avatar 3120x3120
    colour+depth (74 MB), backdrop 4096x2048 (32 MB).
-6. OPEN 11,840 uniform Buffers: 64 per `uniforms` (vk.ag:2411),
+9. OPEN 11,840 uniform Buffers: 64 per `uniforms` (vk.ag:2411),
    all baked into descriptor sets at bind; needs one buffer
    with 64 offsets to fix.
-7. OPEN 53,197 ColorRegion objects for the loaded buffers;
-   MALLOC_SMALL is 400 MB and not yet broken down.
+10. OPEN small heap 216 MB not yet attributed; ~5,000 pool
+   temporaries per idle frame.

@@ -10,7 +10,6 @@ import project
 import dbg
 import spectra
 import speech
-# handlers are found at runtime through their export, but built here
 import code
 
 # import c headers
@@ -36,7 +35,6 @@ ifdef [ linux ]
 ifdef [ windows ]
     import <posix.h>    # declares forkpty, which always fails here
 
-
 # import our own sub-modules
 import FileIcons
 import Navigate
@@ -45,20 +43,18 @@ import NodeList
 import Git
 import Avatar
 
-
-
 # the editor under a pane's split. 'text' is the editor/instruments
 # split, and the editor keeps key 'text' inside it
 # the editor down the 'text' chain: pane split, the editor|panel split, the
 # editor|band column, the editor
-func editor_under [ spl: element ] -> Editor
+func editor_under [ spl: element ] -> Editor 
     te : element [ spl ]
     for [ d: i32 0, d < 4, d += 1 ]
         if [ !te || !te.elements ] return null
         te = te.elements[ 'text' ]
         if [ te && te inherits Editor ] return Editor te
     return null
-
+ 
 # This is the EditorView
 element EditorView
     public selected   : bool
@@ -304,7 +300,7 @@ element EditorView
             t.rm[ 'histnav' ]
             t['newfile_cancel'] = LButton [ icon: 'close', manual_mode: true ]
         return t
-
+ 
     func text_els [] -> Elements
         o : orb[]
         e : Editor text_of[]
@@ -581,6 +577,28 @@ Option NavButton
 # placement is never contested by a base block (the style resolver takes
 # the base's area over the subclass's)
 Avatar OrbiterAvatar
+    # the look as it is at a swap, and the same look on the next instance
+    public func carry [ xs: ExchangeState ]
+        xs.av_halo    = halo_cur
+        xs.av_flame   = flame_cur
+        xs.av_tilt    = tilt_cur
+        xs.av_listen  = listen_cur
+        xs.av_spin    = spin_phase
+        xs.av_settled = settled
+        xs.av_shown   = shown
+        xs.av_done    = was_done
+
+    public func restore [ xs: ExchangeState ]
+        halo_cur   = xs.av_halo
+        flame_cur  = xs.av_flame
+        tilt_cur   = xs.av_tilt
+        listen_cur = xs.av_listen
+        spin_phase = xs.av_spin
+        settled    = xs.av_settled
+        shown      = xs.av_shown
+        was_done   = xs.av_done
+        pristine   = false
+        paint_once = true
     render_scale : f32 [ 4.0 ]
 
 
@@ -795,6 +813,13 @@ OrbiterAvatar AgentAvatar
     # working, done with the flame): a look at each without an agent
     public func on_press [ ev: Event ]
         if [ !ev.key.shift ] return
+        # shift+meta: the exchange fade alone, no agent, no swap
+        if [ ev.key.meta && ux ]
+            ux.swap_fade = !ux.swap_fade
+            ux.restyle   = true
+            log 'swap_fade {ux.swap_fade}'
+            ev.no_default = true
+            return
         orb9 : cast orbiter [ (ux) ? ux.app_object : null ]
         if [ orb9 ] orb9.avatar_debug[]
         ev.no_default = true
@@ -819,6 +844,8 @@ OrbiterAvatar AgentAvatar
         # offset): a transition mixes the two, and a percent mixed with a
         # plain pixel value snaps
         area: l0%+80px t15%+110px w340px h340px, 900ms cubic in_out
+    :fading
+        opacity: 0.0, 3000ms cubic outward
     }
 
 # a console from the project's agi (shell, claude), as a view the rail
@@ -1395,6 +1422,7 @@ Option SceneArrow
             layers.body:
                 fill_color: #c8641e
                 inner_glow: #ffae5ea2 12
+            # reload test: the swap now loads beside the live instance
             layers.iconl:
                 image_color: #ffff
                 image_scale: 0.75
@@ -1438,6 +1466,7 @@ TButtons NavTabs
     style : CSS {
         area: r0+ t0 w1.15 h0.9, 222ms cubic outward
     }
+
 
 NavTabs NavTabs2
     style : CSS {
@@ -1655,7 +1684,7 @@ element ReplaceField
         layers.face:
             label_color: #fff6
             label_size: 16
-            editable: true
+            editable: true 
             label_align: 0.0 0.5
             label_offset: 10.0 0.0
         :focused
@@ -1823,7 +1852,7 @@ element LaunchPanel
     public args : string        # the file's current run args
     # the property the user is engaged with (one at a time): a value received
     # for it is not applied while it is set
-    public changing : string
+    public changing : string 
     # content_h is the element's own: a redeclaration here would be a SECOND
     # member, and trinity's scroll, crop and scrollbar read the base one
     mutable rows_h    : f32
@@ -2250,6 +2279,7 @@ struct vec2i
 class pane_state
     public file      : path
     public selection : vec2i
+    public scroll    : f32
 
 # an instance as the session keeps it: the module it is of, its args, its pip.
 # it comes back not running; a click on its row starts it again
@@ -2288,9 +2318,10 @@ class FmtWatch
     # set when the file's handler module colours it in-process
     public fn        : hook
 
+
 element orbiter : trinity # implements compiler
     public width   : i32    [ 1888 ]
-    public height  : i32    [ 888 ]
+    public height  : i32    [ 888 ] 
     public background : string [ 'Background' ]
     # the committed backdrop scene and each pane's file + caret
     intern [ StatePersist ] scene       : string
@@ -2338,6 +2369,48 @@ element orbiter : trinity # implements compiler
     mutable agent_changed : bool
     mutable swap_live     : bool
     mutable swap_hot      : bool
+    mutable swap_hot_at   : i64    # when the apply was asked
+    mutable swap_fading   : bool   # the next instance is ready: the go went
+    mutable swap_asked    : bool   # this instance asked for the swap
+    mutable session_sig      : i64
+    mutable session_saved_at : i64
+
+    # the session on disk follows the panes (file, caret, scroll):
+    # a change is saved at most once a minute
+    func session_follow []
+        sig9 : i64 [ 0 ]
+        for [ i: i32 0, i < editor_slots.count, i += 1 ]
+            e9 : Editor pane_at[ i ]
+            sig9 = sig9 * 131 + i64[ editor_slots[i] ]
+            if [ !e9 ] continue
+            sig9 = sig9 * 131 + i64[ e9.sel_line ]
+            sig9 = sig9 * 131 + i64[ e9.sel_col ]
+            sig9 = sig9 * 131 + i64[ e9.scroll.y ]
+        if [ sig9 == session_sig ] return
+        now9 : i64 [ epoch_millis[] ]
+        if [ now9 - session_saved_at < 60000 ] return
+        session_sig      = sig9
+        session_saved_at = now9
+        save_session[]
+    mutable pend_last     : i32 [ -1 ]
+    # the exchange and the avatar as they are at the swap: the next
+    # instance recreates them on its first frame, then they fade out
+    persist swap_carry    : ExchangeState
+    persist swap_view     : vec f32   # per pane: line, col, scroll
+    mutable carry_sent    : bool      # this instance filled the carry
+
+    # the panes' view crosses the swap in place: the slot is
+    # persisted at the load, before this fills it
+    func panes_carry []
+        if [ !swap_view ] return
+        swap_view.clear[]
+        for [ i: i32 0, i < editor_slots.count, i += 1 ]
+            e9 : Editor pane_at[ i ]
+            swap_view += (e9) ? f32[ e9.sel_line ] : -1.0
+            swap_view += (e9) ? f32[ e9.sel_col ]  : 0.0
+            swap_view += (e9) ? e9.scroll.y        : 0.0
+        carry_sent = true
+    mutable carry_landed  : bool
     mutable swap_at       : i64    # when the flame lit: the apply waits for it to burn
     mutable done_put_away : bool   # this done already put the exchange away
     intern cell_dumped    : bool
@@ -2430,6 +2503,7 @@ element orbiter : trinity # implements compiler
     public findbar_pane  : string
     # restored carets, applied after each editor loads
     intern pending_sel   : vec vec2i
+    intern pending_scroll : vec f32
     # the status bar's center toggle: scene-only viewing
     public hide_ui : bool
     public findbar_text  : string
@@ -2457,8 +2531,8 @@ element orbiter : trinity # implements compiler
     intern find_pos      : i32
     intern find_head     : FindHit
     intern find_ticks    : i32
-    intern find_seen     : i32
-    intern find_t0       : i64
+    intern find_seen     : i32 
+    intern find_t0       : i64  
     intern find_listed   : bool      # the file list came from the index
     # the word index: path -> bloom of its word hashes, and the memory it
     # is allowed to hold before new files simply go unindexed
@@ -2469,7 +2543,7 @@ element orbiter : trinity # implements compiler
     public replace_text  : string
     public pattern_text  : string
     public find_showing  : bool
-    public nav_showing   : bool
+    public nav_showing   : bool 
     # the user dismissed the finder: focus lands on the editor, which still
     # carries show_hits, so list_focused would revive the list forever
     intern finder_off    : bool
@@ -2598,10 +2672,10 @@ element orbiter : trinity # implements compiler
     intern [ StatePersist ] angle_ix      : i32 [ 1 ]
     # frost stage 0..2 (frost/blur/clear), pushed to ux.frost_mode
     intern [ StatePersist ] frost_ix      : i32
-    intern frost_dbg9    : i32 [ -9 ]
+    intern frost_dbg9    : i32 [ -9 ] 
     intern frost_dbg8    : i32 [ -9 ]
 
-    func init []
+    func init [] 
         # tick carries the per-frame work (session pump, run dispatch, pane
         # close-outs); a paint happens only when something marks it dirty
         breakpoints    = map string[string] []
@@ -2614,6 +2688,10 @@ element orbiter : trinity # implements compiler
         # goes when the agent reports done with the exchange up
         au_live_set_defer[ 1 ]
         # the exchange avatar exists from load
+        # live reload test: this comment came through the exchange
+        # parallel swap test: the next instance loads beside this one
+        # carry test: the exchange and avatar cross the swap as they were
+        # carry test 2: the avatar keeps its settled place, the fade is 3 s
         agent_av = AgentAvatar [ topmost: true, animate_always: true ]
         file_cache     = map FileBuf [string] []
         open_files     = vec path []
@@ -2667,7 +2745,7 @@ element orbiter : trinity # implements compiler
                     if [ editor_slots.count == 0 ] editor_slots += -1
                     editor_slots[0] = ri
                     active_pane = 0
-                    active_idx  = ri
+                    active_idx  = ri 
                     # the arg we were handed at startup is this file's arg
                     fs8 : file_state fstate[ rp ]
                     if [ fs8 ] fs8.args = '{rp}'
@@ -2722,7 +2800,7 @@ element orbiter : trinity # implements compiler
         # kick off the index build on its worker thread
         start_index[]
         compile_log    = list string []
-        ensure_user_config[]
+        ensure_user_config[] 
         if [ dbg_start ] start_debug[ resource ]
 
     func ensure_user_config []
@@ -2784,7 +2862,8 @@ element orbiter : trinity # implements compiler
                 sel9 : vec2i [ x: (e9) ? e9.sel_line : 0,
                     y: (e9) ? e9.sel_col : 0 ]
                 panes.push[ pane_state [
-                    file: open_files[slot], selection: sel9 ] ]
+                    file: open_files[slot], selection: sel9,
+                    scroll: (e9) ? e9.scroll.y : 0.0 ] ]
         pane_states = panes
         # the instances, by module: viewers are file handlers, not the user's
         ists : vec inst_state []
@@ -2799,18 +2878,20 @@ element orbiter : trinity # implements compiler
                     display: av.display, debug: av.debug_build, pane: pn9 ] ]
         inst_states = ists
         scene       = scene_loaded[]
-        save-persistent[]
+        save-persistent[ a ]
 
     func restore_session []
         load-persistent[ a ]
         if [ pane_states && pane_states.count > 0 ]
             editor_slots = vec i32 []
             pending_sel = vec vec2i []
+            pending_scroll = vec f32 []
             for [ i: i32 0, i < pane_states.count, i += 1 ]
                 ps9 : pane_state pane_states[i]
                 if [ ps9 && ps9.file ]
                     editor_slots += file_slot[ ps9.file ]
                     pending_sel += ps9.selection
+                    pending_scroll += ps9.scroll
             if [ editor_slots.count == 0 ] editor_slots += -1
             active_pane = 0
         el [ open_files.count > 0 && editor_slots.count > 0 ]
@@ -2897,7 +2978,7 @@ element orbiter : trinity # implements compiler
                 compile_log.push[ 'stale (source newer): {name}' ]
                 compile[ name ]
 
-    func compile_fn [ w: Au ]
+    func compile_fn [ w: Au ] 
         m: string w  
         i: silver [ component: true, module: m ]  
 
@@ -3310,11 +3391,20 @@ element orbiter : trinity # implements compiler
             agent_changed = false
         if [ ux ] ux.restyle = true
 
+    # the swap is asked of the host: the exchange goes on alpha before
+    # the switch takes it, from the flame or the status button alike
+    public func request_swap [] -> none
+        swap_asked = true
+        # the next instance reads the session in its init, before this
+        # one unloads: what is saved now is what it restores
+        save_session[]
+        au_live_request_apply[]
+
     # the exchange's debug button: each press steps the avatar to its next
     # state, 0 face on at rest, 1 tilted, 2 working (spin, first halo), 3 edits
     # in (second halo), 4 done with the core flame; the exchange stays up through it
     mutable av_dbg_step : i32
-    public func avatar_debug [] -> none
+    public func avatar_debug [] -> none 
         if [ !ux ] return
         av_dbg_step = (av_dbg_step + 1) % 5
         log 'avatar debug: state {av_dbg_step}'
@@ -4486,9 +4576,9 @@ element orbiter : trinity # implements compiler
                     o.index_lock.unlock[]
                     if [ over ] break
             # this thread's pool: the walk's temporaries, per directory
-            Au.auto_free[ false ]
+            Au.auto_free[]
         o.tok_warm[]
-        Au.auto_free[ false ]
+        Au.auto_free[]
         o.index_lock.lock[]
         o.index_building = false
         o.index_lock.unlock[]
@@ -4597,14 +4687,6 @@ element orbiter : trinity # implements compiler
         # unload (a quit or a reload) would unmap it under the thread
         dictation_wait[ 60000 ]
         save_session[]
-        # the avatars are never freed: their teardown (the shaders' and
-        # textures' drop) crashes the process, and the reload's destroy of
-        # this instance would run it. an extra hold keeps them through the
-        # swap (one instance leaked per reload)
-        if [ agent_av ] agent_av.hold[]
-        if [ ux && ux.root && ux.root.elements ]
-            cav9 : element ux.root.elements[ 'avatar' ]
-            if [ cav9 ] cav9.hold[]
         if [ debuggers ]
             # a reload keeps a hosted app's session: the host holds it parked across
             # the swap and the reloaded orbiter adopts it, a stop and all
@@ -4624,6 +4706,9 @@ element orbiter : trinity # implements compiler
         if [ index_watches ]
             for [ iw: watch ] in index_watches
                 iw.pause[ ]
+                # the callback's context is this instance: a paused
+                # watch kept it alive, and the whole tree with it
+                iw.callback = null
         index_cancel = true
         # the worker owns file_index until it exits — join before freeing
         while [ index_building ]
@@ -5490,11 +5575,10 @@ element orbiter : trinity # implements compiler
         e : element [ Au.new_object[ st, null, null, true,
             __FILE__, __LINE__, __SEQUENCE__ ] ]
         if [ !e ] return null
-        e.hold[]
         e.area = Region [ 'l0 t0 r0 b0' ]
+        # the stores own the scene and its name
         scene_el    = e
         scene_el_nm = string [ nm ]
-        scene_el_nm.hold[]
         log 'scene: built {nm}'
         # the scene retints the ui; null theme restores the authored values
         if [ ux && ux.st ]
@@ -5674,8 +5758,8 @@ element orbiter : trinity # implements compiler
     # absolute paths (they span repos)
     func git_entry [] -> none
         base : path [ (nav_root) ? nav_root : project_root[] ]
+        # git_stage's store owns it; the pool drains after that store
         sn : GitSnap []
-        sn.hold[]
         sn.base = git_sel_key[]
         tops : vec string []
         if [ docked_repos ]
@@ -5737,7 +5821,7 @@ element orbiter : trinity # implements compiler
         git_fresh = true
         git_busy  = false
         # this thread's pool: git's output lines, held only by sn
-        Au.auto_free[ false ]
+        Au.auto_free[]
 
     func git_summarize []
         if [ git_busy ] return
@@ -5819,7 +5903,7 @@ element orbiter : trinity # implements compiler
         for [ e: string ] in v
             if [ e.compare[ x ] == 0 ] return true
         return false
-
+ 
     func repo_changed [ repo: path, rf: string ] -> vec string
         out : vec string []
         df : git_capture[ repo, 'diff --name-only {rf}', false ]
@@ -6164,7 +6248,7 @@ element orbiter : trinity # implements compiler
         if [ who.count > 0 ]
             self_user = who
             save_session[]
-        return self_user
+        return self_user 
 
     # a repository's key in the column and on disk: our own by name, any
     # other user's as user/name (a path, so it works everywhere)
@@ -6403,6 +6487,9 @@ element orbiter : trinity # implements compiler
                 crs : string (cr9) ? '{cr9}/' : ''
                 if [ instances && !picking ]
                     for [ av9: AppView ] in instances
+                        # running ones only: a held or ended instance is
+                        # the panel's business, not a card in the list
+                        if [ av9.slot < 0 || av9.ended || av9.held ] continue
                         if [ crs.count > 0 ]
                             srs : string (av9.src) ? '{av9.src}' : ''
                             if [ !srs.starts_with[ crs ] ] continue
@@ -6864,7 +6951,7 @@ element orbiter : trinity # implements compiler
             ev.no_default = true
             return
         if [ ev.target.id == 'reload_ready' ]
-            au_live_request_apply[]
+            request_swap[]
             ev.no_default = true
             return
         if [ ev.target.id == 'error' || ev.target.id == 'our_app_error' ]
@@ -7587,6 +7674,7 @@ element orbiter : trinity # implements compiler
     # consoles, sessions) is state work in tick: nothing here paints, so a
     # live instance never repaints the whole app; it only keeps frames coming
     public func tick [ w: Window ]
+        session_follow[]
         if [ instances && instances.count > 0 ] w.will_animate = true
         repo_pump[ w ]
         repo_fetch_pump[ w ]
@@ -7649,7 +7737,7 @@ element orbiter : trinity # implements compiler
                     if [ eq9 && eq9.run_view == wv9 ] wp9 = pq9
                 show_instance[ wv9.iid, wp9 ]
                 if [ ux ] ux.set_shown[ true ]
-        if [ pending_held >= 0 ]
+        if [ pending_held >= 0 ] 
             hed : Editor pane_at[ pending_held ]
             if [ hed && hed.src && (!pending_held_src || '{hed.src.absolute[]}' == '{pending_held_src.absolute[]}') ]
                 # one held instance per coupled app: coming back to orbiter
@@ -7834,6 +7922,26 @@ element orbiter : trinity # implements compiler
             # instant it is asked, which left no frame for the flame at all
             pend9 : i32 [ au_live_get_pending[] ]
             now9  : i64 [ epoch_millis[] ]
+            # the status bar's reload chips follow the host's state: a tree
+            # composed while the host compiled still says so after the switch
+            if [ pend9 != pend_last ]
+                pend_last  = pend9
+                ux.restyle = true
+            if [ !swap_carry ] swap_carry = ExchangeState [ ]
+            if [ !swap_view  ] swap_view  = vec f32 []
+            # the fade starts once the first fully loaded frame has drawn
+            if [ carry_landed && ux.loaded[] ]
+                carry_landed = false
+                ux.swap_fade = true
+                ux.restyle   = true
+            # the next instance is ready (pending 3): the state crosses, then the go
+            if [ pend9 == 3 && !swap_fading ]
+                swap_fading = true
+                if [ ux ] ux.exchange_carry[ swap_carry ]
+                if [ agent_av ] agent_av.carry[ swap_carry ]
+                panes_carry[]
+                au_live_request_apply[]
+            if [ pend9 != 3 ] swap_fading = false
             # the exchange holds until the avatar's second halo has settled
             # back to the first: the close and the apply wait on it
             hs9 : bool [ !agent_av || agent_av.halo_cur < 0.02 ]
@@ -7849,13 +7957,19 @@ element orbiter : trinity # implements compiler
                 ux.agent_min  = true
                 ux.restyle    = true
             if [ swap_live && !swap_hot && now9 - swap_at > 1400 && hs9 ]
-                au_live_request_apply[]
-                swap_hot = true
-            # the swap replaces this instance (the flame ends with it); a
-            # build that failed leaves pending staged again: stand down
-            if [ swap_live && swap_hot && pend9 != 2 && now9 - swap_at > 4000 && hs9 ]
+                request_swap[]
+                swap_hot    = true
+                swap_hot_at = now9
+            # the swap replaces this instance (the flame ends with it). a
+            # build that failed puts pending back to staged: stand down,
+            # and never in the frames the host takes to start the build
+            el [ swap_live && swap_hot && pend9 == 1 && now9 - swap_hot_at > 1500 ]
+                log 'swap stand-down: the build failed, the exchange comes back'
                 swap_live  = false
+                swap_hot   = false
                 agent_done = false
+                ux.swap_fade = false
+                ux.restyle   = true
         if [ debuggers && ed_sessions ]
             for [ d: dbg, dn: string ] in debuggers
                 if [ !d || !d.active ] continue
@@ -7964,7 +8078,7 @@ element orbiter : trinity # implements compiler
             if [ e.label && e.label.count > 0 ] return e.label
             return (e.id) ? e.id : ''
         return ''
-
+ 
     func status_els [] -> Elements
         # solid: the scene is only a theme, so its motion toggles go
         solid9 : bool [ ux.frost_eff[] == 3 ]
@@ -8008,6 +8122,30 @@ element orbiter : trinity # implements compiler
     # avatar: ALWAYS mounted, window-anchored; :summoned slides it in.
     # error: ORBITER'S OWN state, one tab off the top edge — an error from
     # an app we happen to be running belongs to that app's run band
+    # the state the last instance left: it lands before the window
+    # composes, so the first frame holds the exchange as it was
+    public func on_frame [ w: Window ]
+        # the panes as the last instance had them, over the session file
+        if [ swap_view && swap_view.count > 0 && !carry_sent ]
+            n9 : i32 [ i32[ swap_view.count ] / 3 ]
+            if [ !pending_sel    ] pending_sel    = vec vec2i []
+            if [ !pending_scroll ] pending_scroll = vec f32 []
+            for [ i: i32 0, i < n9, i += 1 ]
+                sel9 : vec2i [ x: i32[ swap_view[ i * 3 ] ], y: i32[ swap_view[ i * 3 + 1 ] ] ]
+                sc9  : f32 [ swap_view[ i * 3 + 2 ] ]
+                if [ i < pending_sel.count ] pending_sel[ i ] = sel9
+                el pending_sel += sel9
+                if [ i < pending_scroll.count ] pending_scroll[ i ] = sc9
+                el pending_scroll += sc9
+            swap_view.clear[]
+        if [ swap_carry && swap_carry.has && !carry_sent ]
+            swap_carry.has = false
+            w.exchange_restore[ swap_carry ]
+            if [ agent_av ] agent_av.restore[ swap_carry ]
+            # the carried capture is the avatar's own, not a new one
+            agent_av_shot = swap_carry.shot_ask
+            carry_landed = true
+
     public func render [] -> Elements
         return (!ux) ? null : Elements [
             'scene'  : scene_element[],
@@ -8036,5 +8174,14 @@ element orbiter : trinity # implements compiler
                     e9.sel_col     = ps9.y
                     e9.anchor_line = l9
                     e9.anchor_col  = ps9.y
-                    e9.ensure_caret_visible[]
+                    # the saved scroll as it was; a session without one
+                    # brings the caret into view instead
+                    if [ pending_scroll && i9 < pending_scroll.count && pending_scroll[i9] >= 0.0 ]
+                        e9.scroll.y      = pending_scroll[i9]
+                        e9.scroll_target = e9.scroll.y
+                        e9.scroll_goal   = e9.scroll.y
+                        e9.pristine      = false
+                    el e9.ensure_caret_visible[]
                     pending_sel[i9] = vec2i [ x: -1, y: -1 ]
+
+

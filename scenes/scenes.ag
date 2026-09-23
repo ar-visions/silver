@@ -647,14 +647,14 @@ element EarthPrev
     # own render pass; the window composites its color as the backdrop
     func create_target[]
         if [ target || !models || models.count == 0 ] return
+        # the backdrop sits under frost or blur: one pixel per point
         target = Render [
             vk:          vk,
             w:           ux,
-            wscale:      1.0,
+            wscale:      (ux.scale > 1.0) ? 1.0 / ux.scale : 1.0,
             use_depth:   true,
             clear_color: vec4f [ color.r, color.g, color.b, 1.0 ],
             models:      models ]
-        target.hold[]
         target.owner  = a
         ux.element_targets[ id ] = target
 
@@ -678,6 +678,8 @@ element EarthPrev
             w9.push[ a ]
             load_task = async [ target: a, work_fn: lambda load_bg[ a ], work: w9 ]
         if [ !ready ] return
+        # the done job held this element: let it go
+        if [ load_task ] load_task = null
         create_target[]
         orbit[]
 
@@ -1001,14 +1003,14 @@ element Moon
 
     func create_target[]
         if [ target || !models || models.count == 0 ] return
+        # the backdrop sits under frost or blur: one pixel per point
         target = Render [
             vk:          vk,
             w:           ux,
-            wscale:      1.0,
+            wscale:      (ux.scale > 1.0) ? 1.0 / ux.scale : 1.0,
             use_depth:   true,
             clear_color: vec4f [ color.r, color.g, color.b, 1.0 ],
             models:      models ]
-        target.hold[]
         target.owner  = a
         ux.element_targets[ id ] = target
 
@@ -1054,6 +1056,8 @@ element Moon
             w9.push[ a ]
             load_task = async [ target: a, work_fn: lambda load_bg[ a ], work: w9 ]
         if [ !ready ] return
+        # the done job held this element: let it go
+        if [ load_task ] load_task = null
         create_target[]
         orbit[]
 
@@ -1395,6 +1399,7 @@ element MilkyWay
     func create_plain[]
         if [ plain || target ] return
         plain = Render [
+            tag:         'plain',
             vk:          vk,
             w:           ux,
             wscale:      1.0,
@@ -1406,14 +1411,15 @@ element MilkyWay
 
     func create_target[]
         if [ target || !models || models.count == 0 ] return
+        # the backdrop sits under frost or blur: one pixel per point
         target = Render [
+            tag:         'scene',
             vk:          vk,
             w:           ux,
-            wscale:      1.0,
+            wscale:      (ux.scale > 1.0) ? 1.0 / ux.scale : 1.0,
             use_depth:   true,
             clear_color: vec4f [ color.r, color.g, color.b, 1.0 ],
             models:      models ]
-        target.hold[]
         target.owner  = a
         # swapping the map entry is what the window reads as a new backdrop
         ux.element_targets[ id ] = target
@@ -1461,6 +1467,8 @@ element MilkyWay
             w9.push[ a ]
             load_task = async [ target: a, work_fn: lambda load_bg[ a ], work: w9 ]
         if [ !ready ] return
+        # the done job held this element: let it go
+        if [ load_task ] load_task = null
         if [ !built ] build_models[]
         create_target[]
         orbit[]
@@ -1779,14 +1787,14 @@ element Titan
 
     func create_target[]
         if [ target || !models || models.count == 0 ] return
+        # the backdrop sits under frost or blur: one pixel per point
         target = Render [
             vk:          vk,
             w:           ux,
-            wscale:      1.0,
+            wscale:      (ux.scale > 1.0) ? 1.0 / ux.scale : 1.0,
             use_depth:   true,
             clear_color: vec4f [ color.r, color.g, color.b, 1.0 ],
             models:      models ]
-        target.hold[]
         target.owner  = a
         ux.element_targets[ id ] = target
 
@@ -1831,6 +1839,8 @@ element Titan
             w9.push[ a ]
             load_task = async [ target: a, work_fn: lambda load_bg[ a ], work: w9 ]
         if [ !ready ] return
+        # the done job held this element: let it go
+        if [ load_task ] load_task = null
         create_target[]
         orbit[]
 
@@ -2462,14 +2472,14 @@ element Enceladus
 
     func create_target[]
         if [ target || !models || models.count == 0 ] return
+        # the backdrop sits under frost or blur: one pixel per point
         target = Render [
             vk:          vk,
             w:           ux,
-            wscale:      1.0,
+            wscale:      (ux.scale > 1.0) ? 1.0 / ux.scale : 1.0,
             use_depth:   true,
             clear_color: vec4f [ color.r, color.g, color.b, 1.0 ],
             models:      models ]
-        target.hold[]
         target.owner  = a
         ux.element_targets[ id ] = target
 
@@ -2514,6 +2524,8 @@ element Enceladus
             w9.push[ a ]
             load_task = async [ target: a, work_fn: lambda load_bg[ a ], work: w9 ]
         if [ !ready ] return
+        # the done job held this element: let it go
+        if [ load_task ] load_task = null
         create_target[]
         orbit[]
 
@@ -4007,14 +4019,14 @@ element Europa
 
     func create_target[]
         if [ target || !models || models.count == 0 ] return
+        # the backdrop sits under frost or blur: one pixel per point
         target = Render [
             vk:          vk,
             w:           ux,
-            wscale:      1.0,
+            wscale:      (ux.scale > 1.0) ? 1.0 / ux.scale : 1.0,
             use_depth:   true,
             clear_color: vec4f [ color.r, color.g, color.b, 1.0 ],
             models:      models ]
-        target.hold[]
         target.owner  = a
         ux.element_targets[ id ] = target
 
@@ -4059,6 +4071,8 @@ element Europa
             w9.push[ a ]
             load_task = async [ target: a, work_fn: lambda load_bg[ a ], work: w9 ]
         if [ !ready ] return
+        # the done job held this element: let it go
+        if [ load_task ] load_task = null
         create_target[]
         orbit[]
 
@@ -7192,7 +7206,6 @@ element Terra
             use_depth:   true,
             clear_color: vec4f [ color.r, color.g, color.b, 1.0 ],
             models:      models ]
-        target.hold[]
         target.owner  = a
         ux.element_targets[ id ] = target
 
@@ -7211,6 +7224,8 @@ element Terra
             w9.push[ a ]
             load_task = async [ target: a, work_fn: lambda load_bg[ a ], work: w9 ]
         if [ !ready ] return
+        # the done job held this element: let it go
+        if [ load_task ] load_task = null
         create_target[]
         orbit[]
 
@@ -7868,7 +7883,6 @@ element Mars
             use_depth:   true,
             clear_color: vec4f [ color.r, color.g, color.b, 1.0 ],
             models:      models ]
-        target.hold[]
         target.owner  = a
         ux.element_targets[ id ] = target
 
@@ -7910,6 +7924,8 @@ element Mars
             w9.push[ a ]
             load_task = async [ target: a, work_fn: lambda load_bg[ a ], work: w9 ]
         if [ !ready ] return
+        # the done job held this element: let it go
+        if [ load_task ] load_task = null
         create_target[]
         orbit[]
 
@@ -8278,14 +8294,14 @@ element Uranus
 
     func create_target[]
         if [ target || !models || models.count == 0 ] return
+        # the backdrop sits under frost or blur: one pixel per point
         target = Render [
             vk:          vk,
             w:           ux,
-            wscale:      1.0,
+            wscale:      (ux.scale > 1.0) ? 1.0 / ux.scale : 1.0,
             use_depth:   true,
             clear_color: vec4f [ color.r, color.g, color.b, 1.0 ],
             models:      models ]
-        target.hold[]
         target.owner  = a
         ux.element_targets[ id ] = target
 
@@ -8304,6 +8320,8 @@ element Uranus
             w9.push[ a ]
             load_task = async [ target: a, work_fn: lambda load_bg[ a ], work: w9 ]
         if [ !ready ] return
+        # the done job held this element: let it go
+        if [ load_task ] load_task = null
         create_target[]
         orbit[]
 
@@ -8525,14 +8543,14 @@ element Neptune
 
     func create_target[]
         if [ target || !models || models.count == 0 ] return
+        # the backdrop sits under frost or blur: one pixel per point
         target = Render [
             vk:          vk,
             w:           ux,
-            wscale:      1.0,
+            wscale:      (ux.scale > 1.0) ? 1.0 / ux.scale : 1.0,
             use_depth:   true,
             clear_color: vec4f [ color.r, color.g, color.b, 1.0 ],
             models:      models ]
-        target.hold[]
         target.owner  = a
         ux.element_targets[ id ] = target
 
@@ -8551,6 +8569,8 @@ element Neptune
             w9.push[ a ]
             load_task = async [ target: a, work_fn: lambda load_bg[ a ], work: w9 ]
         if [ !ready ] return
+        # the done job held this element: let it go
+        if [ load_task ] load_task = null
         create_target[]
         orbit[]
 
@@ -9026,14 +9046,14 @@ element Earth
 
     func create_target[]
         if [ target || !models || models.count == 0 ] return
+        # the backdrop sits under frost or blur: one pixel per point
         target = Render [
             vk:          vk,
             w:           ux,
-            wscale:      1.0,
+            wscale:      (ux.scale > 1.0) ? 1.0 / ux.scale : 1.0,
             use_depth:   true,
             clear_color: vec4f [ color.r, color.g, color.b, 1.0 ],
             models:      models ]
-        target.hold[]
         target.owner  = a
         ux.element_targets[ id ] = target
 
@@ -9075,6 +9095,8 @@ element Earth
             w9.push[ a ]
             load_task = async [ target: a, work_fn: lambda load_bg[ a ], work: w9 ]
         if [ !ready ] return
+        # the done job held this element: let it go
+        if [ load_task ] load_task = null
         if [ !built ] build_models[]
         create_target[]
         orbit[]
@@ -9781,7 +9803,6 @@ element Synthwave
             samplers: map Texture[string] [ 'color': grid_render.color ] ]
         target = Render [ vk: vk, w: ux, wscale: 1.0,
             clear_color: vec4f [ 0.02, 0.0, 0.04, 1.0 ], models: [ post_model ] ]
-        target.hold[]
         target.owner = a
         ux.element_targets[ id ] = target
 
@@ -11491,7 +11512,6 @@ element Clouds
         comp_model.hold[]
         target = Render [ vk: vk, w: ux, wscale: 1.0, tag: 'nubis',
             clear_color: vec4f [ 0.0, 0.0, 0.0, 1.0 ], models: [ comp_model ] ]
-        target.hold[]
         copy_model = Model [ w: ux, samplers: map Au[string] [ 'color': target.color ] ]
         copy_model.hold[]
         hist.models = vec Model [] [ copy_model ]
@@ -12844,7 +12864,6 @@ element Pluto
             use_depth:   true,
             clear_color: vec4f [ color.r, color.g, color.b, 1.0 ],
             models:      models ]
-        target.hold[]
         target.owner  = a
         ux.element_targets[ id ] = target
 
@@ -12883,6 +12902,8 @@ element Pluto
             w9.push[ a ]
             load_task = async [ target: a, work_fn: lambda load_bg[ a ], work: w9 ]
         if [ !ready ] return
+        # the done job held this element: let it go
+        if [ load_task ] load_task = null
         create_target[]
         orbit[]
 

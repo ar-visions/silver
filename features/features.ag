@@ -13,9 +13,10 @@ import <ctype.h, limits.h>     # several headers in one line
 import madler:zlib/51b7f2abdade71cd9bb0e7a373ef2610ec6f9daf <zlib.h>  # a git import: owner:repo/commit, built with cmake; flags below
     -DCMAKE_POLICY_VERSION_MINIMUM=3.5
     -lz
-import troglobit:libuev/v2.4.1 <uev/uev.h>   # autotools: configure and make, in the checkout
-    --disable-examples
-    -luev
+ifdef [ linux ]                     # libuev wraps epoll: linux only
+    import troglobit:libuev/v2.4.1 <uev/uev.h>   # autotools: configure and make, in the checkout
+        --disable-examples
+        -luev
 import fribidi:fribidi/v1.0.16 <fribidi.h>   # meson; its .pc file supplies the include path
     -Ddocs=false
     -Dtests=false
@@ -328,6 +329,19 @@ export func bake_greeting []
     log 'features: baked artifact written'
 
 # ---- expect func declares a test the compiler runs ----
+
+# tests run in definition order: the first takes the live-object
+# baseline after a drain, the last checks the suite gave it all back
+struct MemBase
+    live : i32
+
+intern mem_base : MemBase
+
+expect func t_mem_first [] -> bool
+    Au.auto_free[]
+    mem_base.live = Au.alloc_count[ null ]
+    log 'live objects at start: {mem_base.live}'
+    return mem_base.live > 0
 
 expect func t_declare [] -> bool
     x: i32 [ 42 ]                   # : declares, = assigns
@@ -697,14 +711,14 @@ expect func t_lambda [] -> bool
 expect func t_lambda_ctx_drop [] -> bool
     before: c_rss_kb[]
     r: make_and_drop[]              # 10MB rides in the lambda context
-    Au.auto_free[ false ]           # drain: Au frees at refs 0 on drain
+    Au.auto_free[]           # drain: Au frees at refs 0 on drain
     after: c_rss_kb[]
     grew: i64 [ after - before ]
     # the drain reaps the lambda at refs 0; its dealloc drops the
     # context, the context drops the payload, the 10MB unmaps
     freed_ctx: i64 [ payload_dropped ]
     q: plain_scope[]                # the same payload with no lambda
-    Au.auto_free[ false ]
+    Au.auto_free[]
     reaped: i64 [ payload_dropped - freed_ctx ]
     return r == 2 && q == 2 && freed_ctx == 1 && reaped == 1 && grew < 2048
 
@@ -2115,11 +2129,12 @@ expect func t_au_types [] -> bool
     n : sz [ 3 ]
     return n + 4 == 7
 
-expect func t_autotools_import [] -> bool
-    ctx : uev_ctx_t [ ]
-    rc  : uev_init[ ctx ]
-    uev_exit[ ctx ]
-    return rc == 0
+ifdef [ linux ]
+    expect func t_autotools_import [] -> bool
+        ctx : uev_ctx_t [ ]
+        rc  : uev_init[ ctx ]
+        uev_exit[ ctx ]
+        return rc == 0
 
 expect func t_meson_import [] -> bool
     return fribidi_get_bidi_type[ 1488 ] == FRIBIDI_TYPE_RTL   # alef reads right to left
@@ -2137,6 +2152,12 @@ expect func t_extension_class [] -> bool
     d: Dice [ sides: 6 ]            # a class RandomExtra adds to random
     r: d.roll[]
     return r >= 1 && r <= 6
+
+expect func t_mem_last [] -> bool
+    Au.auto_free[]
+    live : i32 [ Au.alloc_count[ null ] ]
+    log 'live objects at end: {live} (start {mem_base.live})'
+    return live == mem_base.live
 
 app features
     func init []

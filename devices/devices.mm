@@ -343,6 +343,8 @@ bool platform_init(void) {
         // device and events, but no dock icon, no menu bar, and no focus steal
         const char* hslot = getenv("SILVER_APP_SLOT");
         bool hosted = hslot && *hslot && atoi(hslot) > 0;
+        // headless has no window either: no dock icon, no focus steal
+        if (getenv("SILVER_HEADLESS")) hosted = true;
         [NSApplication sharedApplication];
         [NSApp setActivationPolicy:hosted ? NSApplicationActivationPolicyAccessory
                                           : NSApplicationActivationPolicyRegular];

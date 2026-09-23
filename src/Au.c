@@ -126,9 +126,69 @@ static i32 dbg_add_since_drain;
     (h)->source && strstr((h)->source, "vk.ag")) \
     __atomic_fetch_add(&dbg181[k], 1, __ATOMIC_SEQ_CST); } while (0)
 
+// TEMP-TRACE quarantine (AU_QUARANTINE=<seconds>): freed objects wait in a
+// ring with their freeing stack; a touch of one aborts with both stacks
+#define AU_QN (1 << 23)
+typedef struct { Au h; void* fr[8]; int nf; } au_qent;
+static au_qent*        au_qring = NULL;
+static int             au_qix   = 0;
+static int             au_quar  = -1;
+static double          au_quar_t0 = 0, au_quar_after = 0;
+static pthread_mutex_t au_qlock = PTHREAD_MUTEX_INITIALIZER;
+static bool au_quarantine_on(void) {
+    if (au_quar < 0) {
+        cstr e = getenv("AU_QUARANTINE");
+        au_quar = e ? 1 : 0;
+        au_quar_after = e ? atof(e) : 0;
+        struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+        au_quar_t0 = ts.tv_sec + ts.tv_nsec * 1e-9;
+    }
+    if (au_quar != 1) return false;
+    if (au_quar_after <= 0) return true;
+    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (ts.tv_sec + ts.tv_nsec * 1e-9) - au_quar_t0 >= au_quar_after;
+}
+typedef struct { Au owner; cstr member; } au_dchain;
+static __thread au_dchain au_dstack[64];
+static __thread int       au_dtop = 0;
+AU_EXPORT none au_dead_check(Au a, cstr where) {
+    if (!a || !au_quarantine_on()) return;
+    Au h = header(a);
+    if (h->refs != -8888) return;
+    for (int i = 0; i < au_dtop && i < 64; i++) {
+        Au oh = header(au_dstack[i].owner);
+        fprintf(stderr, " owner[%d] %p %s.%s (%s:%d refs=%d)\n", i, (void*)au_dstack[i].owner,
+            oh->au ? ((Au_t)oh->au)->ident : "?", au_dstack[i].member,
+            oh->source ? oh->source : "?", oh->line, oh->refs);
+    }
+    fprintf(stderr, "DEAD-USE in %s: %p type=%s at %s:%d managed=%d\n", where, (void*)a,
+        h->au ? ((Au_t)h->au)->ident : "?", h->source ? h->source : "?", h->line, h->managed);
+    pthread_mutex_lock(&au_qlock);
+    for (int i = 0; au_qring && i < AU_QN; i++)
+        if (au_qring[i].h == h) {
+            fprintf(stderr, " freed by:\n");
+            backtrace_symbols_fd(au_qring[i].fr, au_qring[i].nf, 2);
+            break;
+        }
+    pthread_mutex_unlock(&au_qlock);
+    fprintf(stderr, " used by:\n");
+    void* fr[24]; int nf = backtrace(fr, 24); backtrace_symbols_fd(fr + 1, nf - 1, 2);
+    fflush(stderr); abort();
+}
+static none au_quarantine_push(Au aa) {
+    pthread_mutex_lock(&au_qlock);
+    if (!au_qring) au_qring = calloc(AU_QN, sizeof(au_qent));
+    au_qent* e = &au_qring[au_qix];
+    au_qix = (au_qix + 1) % AU_QN;
+    if (e->h) free(e->h);
+    e->h = aa; e->nf = backtrace(e->fr, 8);
+    pthread_mutex_unlock(&au_qlock);
+}
+
 AU_EXPORT Au Au_hold(Au a) {
     if (a) {
         Au f = header(a);
+        au_dead_check(a, "hold"); // TEMP-TRACE
         if (f->managed == 0) { DBG181(f, 6); return a; } // refs of 0 is unmanaged memory (user managed)
         DBG181(f, 1);
         __atomic_fetch_add((i32*)__builtin_assume_aligned(&f->refs, 4), 1, __ATOMIC_SEQ_CST);
@@ -1063,6 +1123,7 @@ typedef struct _AuSpace {
     pthread_rwlock_t lock;
     struct _AuSpace* parent;
     void*            parent_owner;
+    bool             capture;   // loaded modules register here (a reload)
 } AuSpace_t, *AuSpace;
 
 __thread AuSpace au_current_space = null;
@@ -1211,6 +1272,8 @@ AU_EXPORT Au_t lexical_traits(array lex, symbol f, u64 traits, int member_type) 
                 } else {
                     if (ii >= au->members.count) break;
                     m = (Au_t)au->members.origin[ii++];
+                    // a worker grew the list and has not filled this slot yet
+                    if (!m) continue;
                 }
                 if (au->is_struct || au->is_class) {
                     if (((au != typeid(Au) || top_Au) && au->member_type == AU_MEMBER_TYPE) || is_func((Au)m)) {
@@ -1502,7 +1565,13 @@ AU_EXPORT Au_t emplace_type(Au_t type, Au_t context, Au_t src, Au_t module, symb
     head(type)->au = (Au_f*)typeid(Au_t_f);
     
     if (member_type == AU_MEMBER_MODULE) {
-        micro_push((micro_*)&modules, (Au)type); // we should error if we ever find a duplicate here
+        // a module loaded under a capturing space (a reload) registers there
+        if (au_current_space && au_current_space->capture) {
+            pthread_rwlock_wrlock(&au_current_space->lock);
+            micro_push((micro_*)&au_current_space->modules, (Au)type);
+            pthread_rwlock_unlock(&au_current_space->lock);
+        } else
+            micro_push((micro_*)&modules, (Au)type); // we should error if we ever find a duplicate here
     }
     return type;
 }
@@ -1590,6 +1659,17 @@ AU_EXPORT none def_init(func f) {
 }
 
 AU_EXPORT Au_t module_lookup(symbol name) {
+    if (au_current_space && au_current_space->capture) {
+        pthread_rwlock_rdlock(&au_current_space->lock);
+        for (int i = 0; i < au_current_space->modules.count; i++) {
+            Au_t m = (Au_t)au_current_space->modules.origin[i];
+            if (m && strcmp(m->ident, name) == 0) {
+                pthread_rwlock_unlock(&au_current_space->lock);
+                return m;
+            }
+        }
+        pthread_rwlock_unlock(&au_current_space->lock);
+    }
     pthread_rwlock_rdlock(&modules_lock);
     for (int i = 0; i < modules.count; i++) {
         Au_t m = (Au_t)modules.origin[i];
@@ -1765,6 +1845,15 @@ AU_EXPORT void live_record_mux_set(num seq, num vt, num at) {
     au_live_record_at  = at;
 }
 
+// a library's caches keyed by a module's types let go of them here
+typedef void (*au_erase_hook_fn)(Au_t);
+static au_erase_hook_fn au_erase_hooks[8];
+static int              au_erase_hook_n = 0;
+AU_EXPORT void au_module_erase_hook(au_erase_hook_fn fn) {
+    for (int i = 0; i < au_erase_hook_n; i++) if (au_erase_hooks[i] == fn) return;
+    if (au_erase_hook_n < 8) au_erase_hooks[au_erase_hook_n++] = fn;
+}
+
 AU_EXPORT void module_erase(Au_t module, symbol name) {
     if (!module && !name) return;
     micro* mods = au_current_space ? &au_current_space->modules : &modules;
@@ -1775,12 +1864,77 @@ AU_EXPORT void module_erase(Au_t module, symbol name) {
         if (!m || (m && !m->ident)) continue;
 
         if (m && module == m || (name && m->ident && strcmp(m->ident, name) == 0)) {
+            for (int h = 0; h < au_erase_hook_n; h++) au_erase_hooks[h](m);
+            // attrib values belong to the types: they go with the module
+            for (int ti = 0; ti < m->members.count; ti++) {
+                Au_t t = (Au_t)m->members.origin[ti];
+                if (!t || !(t->is_class || t->is_struct)) continue;
+                for (int k = 0; k < t->members.count; k++) {
+                    Au_t mem = (Au_t)t->members.origin[k];
+                    if (!mem || !(mem->traits & AU_TRAIT_IS_ATTRIB) || !mem->value) continue;
+                    if (!mem->type || !mem->type->is_class || mem->type->is_struct) continue;
+                    drop((Au)mem->value);
+                    mem->value = null;
+                }
+            }
             mods->origin[i] = null;
             m->members.count = 0;
             m->args.count = 0;
         }
     }
     pthread_rwlock_unlock(lk);
+}
+
+// persist slots: a `persist` member is a static global <Class>_<member>
+// in the module image. before a reload the host saves every non-null one
+// (held, so the destroy cannot free it); the new image's slots get them
+// back before its init. the compiler keeps their types out of the module
+// itself, so the old image can go
+typedef struct { char* sym; Au value; } au_persist_t;
+static au_persist_t* au_persists   = null;
+static int           au_persist_n  = 0;
+
+AU_EXPORT int au_persist_save(void* handle) {
+    if (!handle) return 0;
+    for (int i = 0; i < au_persist_n; i++) free(au_persists[i].sym);
+    free(au_persists); au_persists = null; au_persist_n = 0;
+    pthread_rwlock_rdlock(&modules_lock);
+    for (int mi = 0; mi < modules.count; mi++) {
+        Au_t m = (Au_t)modules.origin[mi];
+        if (!m || !m->ident || m->is_au_native) continue;
+        for (int ti = 0; ti < m->members.count; ti++) {
+            Au_t t = (Au_t)m->members.origin[ti];
+            if (!t || !t->ident || !(t->is_class || t->is_struct)) continue;
+            for (int i = 0; i < t->members.count; i++) {
+                Au_t mem = (Au_t)t->members.origin[i];
+                if (!mem || !mem->is_persist || mem->member_type != AU_MEMBER_VAR) continue;
+                char sym[512];
+                snprintf(sym, sizeof(sym), "%s_%s", t->ident, mem->ident);
+                Au* slot = (Au*)dlsym(handle, sym);
+                if (!slot || !*slot) continue;
+                au_persists = realloc(au_persists, sizeof(au_persist_t) * (au_persist_n + 1));
+                au_persists[au_persist_n].sym   = strdup(sym);
+                au_persists[au_persist_n].value = hold(*slot);
+                au_persist_n++;
+            }
+        }
+    }
+    pthread_rwlock_unlock(&modules_lock);
+    return au_persist_n;
+}
+
+// the values land in the new image's slots; the slots own them now
+AU_EXPORT int au_persist_load(void* handle) {
+    int n = 0;
+    for (int i = 0; i < au_persist_n; i++) {
+        Au* slot = (Au*)dlsym(handle, au_persists[i].sym);
+        if (!slot) { drop(au_persists[i].value); continue; }
+        *slot = au_persists[i].value;   // the save's hold is the slot's
+        n++;
+    }
+    for (int i = 0; i < au_persist_n; i++) free(au_persists[i].sym);
+    free(au_persists); au_persists = null; au_persist_n = 0;
+    return n;
 }
 
 // erase all Silver-defined modules (not C-native ones) so module_init
@@ -1852,6 +2006,40 @@ AU_EXPORT void au_space_end(void* owner) {
         pthread_rwlock_destroy(&s->lock);
         free(s);
     }
+}
+
+// a parallel reload: the loading thread inits the new image inside a
+// space, then hands the space over; the main thread makes its modules
+// global once the old image's are erased
+AU_EXPORT void au_space_capture(void) {
+    if (au_current_space) au_current_space->capture = true;
+}
+
+AU_EXPORT void* au_space_detach(void) {
+    AuSpace s = au_current_space;
+    if (!s) return null;
+    au_current_space = s->parent;
+    au_space_owner   = s->parent_owner;
+    return s;
+}
+
+AU_EXPORT void au_space_promote(void* space) {
+    AuSpace s = (AuSpace)space;
+    if (!s) return;
+    pthread_rwlock_wrlock(&modules_lock);
+    for (int i = 0; i < s->modules.count; i++) {
+        Au_t m = (Au_t)s->modules.origin[i];
+        if (!m) continue;
+        int slot = -1;
+        for (int j = 0; j < modules.count && slot < 0; j++)
+            if (!modules.origin[j]) slot = j;
+        if (slot >= 0) modules.origin[slot] = (Au_t)m;
+        else micro_push((micro_*)&modules, (Au)m);
+    }
+    pthread_rwlock_unlock(&modules_lock);
+    free(s->modules.origin);
+    pthread_rwlock_destroy(&s->lock);
+    free(s);
 }
 
 AU_EXPORT void au_space_clear(void) {
@@ -2821,19 +3009,17 @@ AU_EXPORT int command_exec(command cmd, bool verbose) {
 __thread ARef af       = null;
 __thread int  af_count = 2; // managed == 1 means its not in the af vector, managed == 0 means we are not managed memory; hold and drop are null ops
 __thread int  af_size  = 0;
-// reset-pinned (auto_free[true] at refs=0): alive for the process, freed at exit
-#define AU_PINNED_BASE 0x7000000
-__thread ARef pinned_af    = null;
-__thread int  pinned_count = 0;
-__thread int  pinned_size  = 0;
-
 AU_EXPORT none Au_free(Au);
 
 AU_EXPORT none Au_drop(Au a) {
     if (!a) return;
     Au info = header(a);
+    au_dead_check(a, "drop"); // TEMP-TRACE
     if (!info->managed) { DBG181(info, 7); return; }
     DBG181(info, 2);
+    // read before the sub: another thread's drain may free it at 0
+    i32  managed = info->managed;
+    bool foreign = managed > 1 && !(managed < af_size && af[managed] == info);
     i32 n = __atomic_sub_fetch((i32*)__builtin_assume_aligned(&info->refs, 4), 1, __ATOMIC_SEQ_CST);
     if (au_leaks()) leak_site_pop(info);
     if (n <= 0) {
@@ -2850,6 +3036,8 @@ AU_EXPORT none Au_drop(Au a) {
             return;
         }
 #endif
+        // still in another thread's pool: that drain frees it at refs 0
+        if (foreign) return;
         if (info->managed > 1 && info->managed < af_size) {
             if (af[info->managed] == info)
                 af[info->managed] = null;
@@ -2861,6 +3049,24 @@ AU_EXPORT none Au_drop(Au a) {
 }
 
 static int total_objects;
+
+// live objects per type, every registered module, to stderr:
+// `CENSUS <count> <module>.<type>` for types with >= min alive
+AU_EXPORT void au_census(int min) {
+    pthread_rwlock_rdlock(&modules_lock);
+    for (int mi = 0; mi < modules.count; mi++) {
+        Au_t m = (Au_t)modules.origin[mi];
+        if (!m || !m->ident) continue;
+        for (int ti = 0; ti < m->members.count; ti++) {
+            Au_t t = (Au_t)m->members.origin[ti];
+            if (!t || !t->ident || !(t->is_class || t->is_struct)) continue;
+            if (t->global_count >= min)
+                fprintf(stderr, "CENSUS %d %s.%s\n", t->global_count, m->ident, t->ident);
+        }
+    }
+    pthread_rwlock_unlock(&modules_lock);
+    fprintf(stderr, "CENSUS total %d\n", total_objects);
+}
 
 AU_EXPORT int alloc_count(Au_t type) {
     return type ? type->global_count : total_objects;
@@ -2982,6 +3188,26 @@ AU_EXPORT none leak_site_push(Au h, void* site, void* caller) {
     leak_release();
 }
 
+// --leaks: print an object's outstanding hold sites (a diagnostic)
+AU_EXPORT none au_leak_sites(Au h) {
+    if (!leaks_top || !h) return;
+    leak_ent* le = leak_find(header(h));
+    printf("--sites %s refs=%d nsite=%d\n", ((Au_t)header(h)->au)->ident,
+        (int)header(h)->refs, le ? (int)le->nsite : -1);
+    for (int q = 0; le && q < le->nsite; q++) {
+        printf("   hold:");
+        for (int fr = 0; fr < 2; fr++) {
+            Dl_info di;
+            void* pc = le->site[q][fr];
+            if (!pc) continue;
+            if (dladdr(pc, &di) && di.dli_sname)
+                printf(" %s+0x%lx <-", di.dli_sname, (unsigned long)((char*)pc - (char*)di.dli_saddr));
+            else printf(" %p <-", pc);
+        }
+        printf("\n");
+    }
+}
+
 AU_EXPORT none leak_site_pop(Au h) {
     if (!leak_try_acquire(64)) return;
     leak_ent* e = leak_find(h);
@@ -3065,15 +3291,26 @@ static void lg_link(Au target_data, num from_i) {
     lg_link_k2(target_data, from_i, 0, null);
 }
 
-AU_EXPORT none au_free_pinned(void);
 static bool lg_vector_managed(vector a);
 static i64  lg_vector_stride(vector a);
 
+// AU_LEAKS_TYPE is one type name or a comma list of them
+static bool leaks_type_wanted(cstr want, cstr ident) {
+    size_t n = strlen(ident);
+    for (cstr p = want; p && *p; ) {
+        cstr e = strchr(p, ',');
+        size_t l = e ? (size_t)(e - p) : strlen(p);
+        if (l == n && strncmp(p, ident, n) == 0) return true;
+        p = e ? e + 1 : null;
+    }
+    return false;
+}
+
 AU_EXPORT none au_leak_report(void) {
+    // AU_LEAKS_EACH: a report per call (every reload), not once
     static bool reported;
-    if (reported || !leaks_top) return;
+    if ((reported && !getenv("AU_LEAKS_EACH")) || !leaks_top) return;
     reported = true;
-    au_free_pinned();
     printf("--dbg181: alloc=%d hold=%d drop=%d free=%d hm=%d dm=%d "
            "hold_unmanaged=%d drop_unmanaged=%d str-adds-after-last-drain=%d\n",
         dbg181[0], dbg181[1], dbg181[2], dbg181[3], dbg181[4], dbg181[5],
@@ -3090,7 +3327,15 @@ AU_EXPORT none au_leak_report(void) {
     num n    = 0;
     Au* live = calloc(max, sizeof(Au));
     for (num i = 0; i < leak_cap && n < max; i++)
-        if (leak_set[i].p && leak_set[i].p->au) live[n++] = leak_set[i].p;
+        if (leak_set[i].p && leak_set[i].p->au) {
+            // a type in an unloaded image: its descriptor is gone
+            Dl_info di;
+            if (!dladdr((void*)leak_set[i].p->au, &di)) continue;
+            // made by code in an unloaded image: its file name went with it
+            if (leak_set[i].p->source && !dladdr((void*)leak_set[i].p->source, &di))
+                leak_set[i].p->source = null;
+            live[n++] = leak_set[i].p;
+        }
     qsort(live, n, sizeof(Au), leak_live_cmp);
 
     leak_origin* origins = calloc(n, sizeof(leak_origin));
@@ -3104,9 +3349,8 @@ AU_EXPORT none au_leak_report(void) {
             : type->typesize * h->alloc);
         total_bytes += bytes;
         num held = h->refs > 0 ? 1 : 0;
-        num pin  = (h->refs <= 0 && h->managed >= AU_PINNED_BASE) ? 1 : 0;
-        num und  = (h->refs <= 0 && h->managed >  1 &&
-                    h->managed <  AU_PINNED_BASE) ? 1 : 0;
+        num pin  = 0;
+        num und  = (h->refs <= 0 && h->managed > 1) ? 1 : 0;
         leak_origin* o = on ? &origins[on - 1] : null;
         bool same = o && strcmp(o->type->ident, type->ident) == 0 &&
             o->line == h->line &&
@@ -3122,6 +3366,19 @@ AU_EXPORT none au_leak_report(void) {
             origins[on++] = (leak_origin){ type, h->source, h->line, 1, bytes, held, pin, und };
     }
     qsort(origins, on, sizeof(leak_origin), leak_origin_cmp);
+    // AU_LEAKS_TYPE=<ident>: that type's origins first, so its holder
+    // chain prints whatever its count
+    cstr want = getenv("AU_LEAKS_TYPE");
+    cstr wline = getenv("AU_LEAKS_LINE");   // with the type: that init line only
+    if (want) {
+        num w = 0;
+        for (num i = 0; i < on; i++)
+            if (origins[i].type && origins[i].type->ident &&
+                leaks_type_wanted(want, origins[i].type->ident) &&
+                (!wline || origins[i].line == atoi(wline))) {
+                leak_origin t = origins[i]; origins[i] = origins[w]; origins[w++] = t;
+            }
+    }
 
     num top = leaks_top < on ? leaks_top : on;
     printf("--leaks: %lld Au objects alive at exit (%lld KB) from %lld init origins; top %lld:\n",
@@ -3209,13 +3466,18 @@ AU_EXPORT none au_leak_report(void) {
     }
 
     printf("--leaks holders: who still points at each leak (top %lld):\n", (i64)top);
+    // AU_LEAKS_LINE: every object at the filtered origin, not one example
+    int each_max = getenv("AU_LEAKS_LINE") ? 16 : 1;
     for (num i = 0; i < top; i++) {
         leak_origin* o = &origins[i];
+      int shown = 0;
+      for (num start = 0; start < n && shown < each_max; ) {
         num rep = -1;
-        for (num k = 0; k < n && rep < 0; k++)
+        for (num k = start; k < n && rep < 0; k++)
             if ((Au_t)live[k]->au == o->type && live[k]->line == o->line)
                 rep = k;
-        if (rep < 0) continue;
+        if (rep < 0) break;
+        start = rep + 1; shown++;
         // walk up, listing EVERY live reference at each level. a level whose
         // refs exceed its referrer count carries phantom holds — refs nothing
         // in the heap accounts for, i.e. the actual leak
@@ -3292,10 +3554,7 @@ AU_EXPORT none au_leak_report(void) {
                 }
             if (holder[cur] < 0) {
                 if (hh->refs <= 0)
-                    printf("      pool orphan — never held; %s\n",
-                        hh->managed >= AU_PINNED_BASE
-                            ? "pinned by auto_free[true] reset"
-                            : "af pool never drained (worker thread?)");
+                    printf("      pool orphan — never held; af pool never drained (worker thread?)\n");
                 else
                     printf("      ROOT — no live object points at this\n");
                 break;
@@ -3304,6 +3563,7 @@ AU_EXPORT none au_leak_report(void) {
             cur = holder[cur];
             depth++;
         }
+      }
     }
     free(ikeys); free(ivals); free(holder);
     free(lg_efrom); free(lg_eto);
@@ -3322,7 +3582,7 @@ static volatile sig_atomic_t quit_flag = 0;
 
 AU_EXPORT bool quit_requested() { return quit_flag != 0; }
 
-AU_EXPORT none leak_report() { au_leak_report(); }
+AU_EXPORT none leak_report() { au_leak_report(); fflush(stdout); }
 
 static void leak_signal(int sig) {
     // first ctrl-c: request an orderly quit — the app loop exits, the
@@ -3372,39 +3632,15 @@ AU_EXPORT Au alloc_instance(Au_t type, sz n_bytes, bool managed) {
 
 AU_EXPORT none Au_free(Au a);
 
-// exit: release everything the resets pinned (still refs=0 = pure garbage)
-AU_EXPORT none au_free_pinned(void) {
-    for (int i = 0; i < pinned_count; i++) {
-        Au a = pinned_af[i];
-        if (a && a->refs <= 0)
-            Au_free(&a[1]);
-    }
-    pinned_count = 0;
-}
-
-AU_EXPORT none auto_free(bool reset_only) {
+// drain this thread's pool: every unreferenced object in it is freed
+AU_EXPORT none auto_free(void) {
     dbg_add_since_drain = 0;
     // only managed objects go into af
     for (num i = 2; i < af_count; i++) {
         Au a = af[i];
-
-        if (a && a->refs == 0) {
-            //print("auto freeing data from %s:%i", a->source, a->line);
-            if (!reset_only) Au_free(&a[1]);
-            else {
-                // reset-pinned: keep alive for the run, free at exit
-                if (pinned_count >= pinned_size) {
-                    int ns = pinned_size ? pinned_size << 1 : 4096;
-                    ARef np = (ARef)calloc(sizeof(Au), ns);
-                    if (pinned_af) memcpy(np, pinned_af, pinned_count * sizeof(Au));
-                    free(pinned_af);
-                    pinned_af   = np;
-                    pinned_size = ns;
-                }
-                a->managed = AU_PINNED_BASE + pinned_count;
-                pinned_af[pinned_count++] = a;
-            }
-        } else if (a)
+        if (a && a->refs == 0)
+            Au_free(&a[1]);
+        else if (a)
             a->managed = 1; // says i am not in the list, but managed
     }
     af_count = 2;
@@ -3542,7 +3778,7 @@ AU_EXPORT none Au_log(Au a, symbol msg) {
 
 // managed, but NOT pooled. managed==1 is the state the header comment already
 // names: out of the af vector, still refcounted. an object born at refs==0 is
-// pool garbage, and auto_free[false] frees it with Au_free -- not a drop -- so
+// pool garbage, and auto_free frees it with Au_free -- not a drop -- so
 // anything the pool must never reap has to allocate this way
 Au alloc_new_np(Au_t type, num count, shape shape_data, Au_t meta_a, Au meta_b,
                 symbol source, i32 line, i32 seq) {
@@ -3892,6 +4128,18 @@ AU_EXPORT bool is_inlay(Au_t m) {
             m->type->traits & AU_TRAIT_POINTER) != 0;
 }
 
+// the members hold_members takes ownership of at construction end
+static bool au_member_owned(Au_t mem) {
+    if (mem->member_type != AU_MEMBER_VAR) return false;
+    if (mem->is_override || mem->is_elaborate) return false;
+    if (!mem->type || mem->is_unmanaged || mem->is_static || mem->type == typeid(ARef)) return false;
+    if (mem->type == typeid(Au_t)) return false;
+    if (is_inlay(mem) || !mem->type->is_class) return false;
+    if (mem->meta.a == typeid(weak) || mem->is_context) return false;
+    if (mem->type == typeid(Au)) return false;
+    return true;
+}
+
 AU_EXPORT none Au_hold_members(Au a) {
     Au_t type = isa(a);
     Au head = header(a);
@@ -3904,6 +4152,7 @@ AU_EXPORT none Au_hold_members(Au a) {
             // override/elaborate reuse the base slot — walk it once
             if (mem->is_override || mem->is_elaborate) continue;
             if (!mem->type || mem->is_unmanaged || mem->is_static || mem->type == typeid(ARef)) continue;
+            if (mem->type == typeid(Au_t)) continue;   // a descriptor is never owned
             bool hold = (!is_inlay(mem) && mem->type->is_class);
             if (!hold) continue;
             if (mem->meta.a == typeid(weak) || mem->is_context) continue;
@@ -4128,6 +4377,8 @@ AU_EXPORT none Au_drop_members(Au a) {
         for (num i = 0; i < type->members.count; i++) {
             Au_t m = (Au_t)type->members.origin[i];
             if (m->is_override || m->is_elaborate) continue;
+            if (m->is_static) continue;   // no instance slot (offset 0)
+            if (m->type == typeid(Au_t)) continue;   // a descriptor is never owned
             if ((m->member_type == AU_MEMBER_VAR) &&
                     ((!is_inlay(m) && m->type->is_class) ||
                      (m->is_shaped || m->type->is_shaped))) {
@@ -4145,7 +4396,10 @@ AU_EXPORT none Au_drop_members(Au a) {
                 Au*  ref = (Au*)((u8*)a + m->offset);
                 Au info = head(*ref);
                 if (*ref) DBG181(info, 5);
+                if (au_dtop < 64) { au_dstack[au_dtop].owner = a; au_dstack[au_dtop].member = m->ident; } // TEMP-TRACE
+                au_dtop++;
                 Au_drop(*ref);
+                au_dtop--;
                 *ref = null;
             }
         }
@@ -4173,6 +4427,7 @@ AU_EXPORT u64 fnv1a_hash(const none* data, size_t length, u64 hash);
 
 // auto-wash
 u64  Au_hash(Au a) {
+    au_dead_check(a, "hash"); // TEMP-TRACE
     Au_t info = isa(a);
     if (info == typeid(Au_t)) return (u64)(size_t)a;
 
@@ -4546,10 +4801,17 @@ AU_EXPORT bool constructs_with(Au_t type, Au_t with_type) {
 }
 
 /// used by parse (from json) to construct objects from data
+// set while construct_with stores a fresh object's props
+static __thread bool au_raw_props = false;
+static bool au_member_owned(Au_t mem);
+// an init's delegate stores like init: raw, until hold_members runs
+AU_EXPORT void au_raw_props_set(bool on) { au_raw_props = on; }
+
 Au construct_with(Au_t type, Au data, ctx context) { sequencer
+    // the map is the value: fresh like any construction, the store owns it
     if (type == typeid(map)) {
         verify(isa(data) == typeid(map), "expected map");
-        return hold(data);
+        return data;
     }
 
     /// this will lookup ways to construct the type from the available data
@@ -4561,12 +4823,14 @@ Au construct_with(Au_t type, Au data, ctx context) { sequencer
     if (!(type->traits & AU_TRAIT_PRIMITIVE) && data_type == typeid(map)) {
         map m = (map)data;
         result = alloc(type, 1, null, null, null, __FILE__, __LINE__, seq);
+        au_raw_props = true;
         pairs(m, i) {
             verify(isa(i->key) == typeid(string),
                 "expected string key when constructing Au from map");
             string s_key = (string)instanceof(i->key, string);
             Au_set_property(result, s_key->chars, i->value);
         }
+        au_raw_props = false;
         mdata = m;
     }
     /// check for identical constructor
@@ -4723,14 +4987,17 @@ AU_EXPORT none Au_call_construct(Au obj, Au data) {
             Au_t  arg  = au_arg_type(micro_get(&mem->args, 1));
             if (arg == data_type) {
                 ((none(*)(Au, Au))addr)(obj, data);
+                hold_members(obj);   // a construction: its raw stores are owned now
                 return;
             }
             if (arg == typeid(string) && data_type == typeid(string)) {
                 ((none(*)(Au, string))addr)(obj, (string)data);
+                hold_members(obj);   // a construction: its raw stores are owned now
                 return;
             }
             if ((arg == typeid(cstr) || arg == typeid(symbol)) && data_type == typeid(string)) {
                 ((none(*)(Au, cstr))addr)(obj, ((string)data)->chars);
+                hold_members(obj);   // a construction: its raw stores are owned now
                 return;
             }
         }
@@ -4917,6 +5184,9 @@ AU_EXPORT bool Au_member_set(Au a, Au_t m, Au value) {
         memcpy(member_ptr, value, sz);
     } else if ((Au)*member_ptr != value) {
         if (m->is_context) {
+            *member_ptr = value;
+        } else if (au_raw_props && au_member_owned(m)) {
+            // construction: hold_members owns the slot after init
             *member_ptr = value;
         } else {
             Au old = *member_ptr;
@@ -5841,7 +6111,7 @@ AU_EXPORT none  string_dealloc(string a) {
     if (a->chars) { strncpy(n->text, (cstr)a->chars, 27); n->text[27] = 0; }
     free((cstr)a->chars);
 }
-AU_EXPORT num   string_compare(string a, string b) { if (a == b) return 0; if (!a || !b) return a ? 1 : -1; return strcmp(a->chars, b->chars); }
+AU_EXPORT num   string_compare(string a, string b) { au_dead_check((Au)a, "compare"); au_dead_check((Au)b, "compare"); if (a == b) return 0; if (!a || !b) return a ? 1 : -1; return strcmp(a->chars, b->chars); } // TEMP-TRACE
 AU_EXPORT num   string_cmp    (string a, symbol b) { return strcmp(a->chars, b); }
 AU_EXPORT bool  string_eq     (string a, symbol b) { return strcmp(a->chars, b) == 0; }
 
@@ -6352,10 +6622,6 @@ AU_EXPORT none Au_free(Au a) {
     // C-imported types are flat memory — no init/dealloc/hold/drop vtable.
     // just free the allocation and skip the chain walk entirely.
     DBG181(aa, 3);
-    // pinned object freed early (held then released): clear its exit slot
-    if (aa->managed >= AU_PINNED_BASE && pinned_af &&
-        aa->managed - AU_PINNED_BASE < pinned_count)
-        pinned_af[aa->managed - AU_PINNED_BASE] = null;
     bool     is_c = aa->au && ((Au_t)aa->au)->is_c;
     // reference holder (`new Type[N]`): the held type's dealloc chain does
     // NOT apply to the holder's raw buffer; slots are user-managed refs.
@@ -6401,6 +6667,7 @@ AU_EXPORT none Au_free(Au a) {
     aa->refs = -8888;
     //printf("freeing %s %s:%i\n", type->ident, aa->source, aa->line);
 
+    if (au_quarantine_on()) { au_quarantine_push(aa); return; } // TEMP-TRACE
     free(aa);
 #else
     free(aa);
@@ -8619,8 +8886,6 @@ static Au parse_object(cstr input, Au_t schema, Au_t meta_type, cstr* remainder,
             use_schema = typeid(map);
         
         res = construct_with(use_schema, (Au)props, context); // makes a bit more sense to implement required here
-        if (use_schema == typeid(map))
-            hold(props);
     } else {
         res = (context && sym) ? get(context, (Au)sym) : null;
         if (res) {
@@ -8876,7 +9141,6 @@ static Au parse_agi_block(cstr scan, int indent, Au_t schema, Au_t meta, cstr* r
     if (rem) *rem = scan;
     if (target) return target;
     Au res = construct_with(use_schema, (Au)props, null);
-    if (use_schema == typeid(map)) hold(props);
     return res;
 }
 
@@ -9368,7 +9632,7 @@ static none async_runner(thread_t* thread) {
         lambda_call(t->work_fn, thread->w);
         // task boundary: drain THIS thread's auto-free pool (it is
         // __thread — nothing else ever collects a worker's temporaries)
-        auto_free(false);
+        auto_free();
         lock(thread->lock);
         thread->done = true;
         cond_signal(thread->lock);
@@ -9508,6 +9772,7 @@ AU_EXPORT none async_dealloc(async t) {
         drop(thread->lock);
     }
     drop(t->work);
+    drop(t->global);
 }
 
 typedef struct { callback fn; Au target; Au work; } au_spawn_t;
@@ -9516,7 +9781,7 @@ static void* au_spawn_runner(void* data) {
     void* fn = (void*)s->fn;
     s->fn(s->target, s->work);
     // thread exit: nothing else ever drains this __thread pool
-    auto_free(false);
+    auto_free();
     free(s);
     au_spawn_live_remove(fn);
     return null;

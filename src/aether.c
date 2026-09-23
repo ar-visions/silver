@@ -1176,7 +1176,11 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) { sequencer
     Au_t _p7_cls = (_p65_fn && _p65_fn->autype) ? _p65_fn->autype->context : null;
     bool _p7_deferred = _p7_cls && _p7_cls->is_user_init;
     bool _p7_self_init = false;
-    if (_in_init && !_p7_deferred && is_member_slot && _llvalue((enode)L) &&
+    // a construct runs in the same window: hold_members follows it too
+    bool _p7_ctor = (_in_init && !_p7_deferred) || (_p65_fn && _p65_fn->autype &&
+        _p65_fn->autype->member_type == AU_MEMBER_CONSTRUCT &&
+        !_p65_fn->autype->is_default);
+    if (_p7_ctor && is_member_slot && _llvalue((enode)L) &&
         LLVMGetInstructionOpcode(_llvalue((enode)L)) == LLVMGetElementPtr &&
         _p65_fn && _llvalue((enode)_p65_fn)) {
         LLVMValueRef _p7_base = LLVMGetOperand(_llvalue((enode)L), 0);
@@ -1726,7 +1730,9 @@ void ll_global(aether a, enode n, etype t, symbol name,
                 LLVMExternalLinkage : LLVMInternalLinkage);
             // elf-only: on pe the export table decides, and llvm rejects a
             // dllexport that is not default/protected visibility
-            if (!target_is_pe(a) && !external && split)
+            // a persist slot stays visible: the host finds it by dlsym
+            bool persist = n && n->autype && n->autype->is_persist;
+            if (!target_is_pe(a) && !external && split && !persist)
                 LLVMSetVisibility(g, LLVMHiddenVisibility);
             if (target_is_pe(a)) {
             // pe reaches a global defined elsewhere through its import thunk;
@@ -6451,6 +6457,8 @@ AU_EXPORT void alloc_origin_args(aether a, enode* out_src, Au* out_line, Au* out
 }
 
 AU_EXPORT enode aether_e_alloc(aether a, etype mdl, bool no_pool) {
+    // an attrib's value is the type's, made once: it never enters the pool
+    if (a->attrib_build) no_pool = true;
     // no_pool: allocate out of the auto-free vector. the pool frees anything
     // it holds at refs==0 with Au_free, behind the refcount's back
     // binding stamp: the declaration names this construction for au_log
@@ -8134,7 +8142,7 @@ static void build_entrypoint(aether a, efunc module_init_fn) {
                 // performs the mount — no run call.
                 // no_pool: nothing owns this element -- the delegate takes it
                 // as a prop and the tree only borrows it, so at refs==0 the
-                // frame loop's auto_free[false] would free it outright
+                // frame loop's auto_free would free it outright
                 enode root = e_create(a, app_element, null, true);
                 root->is_any = true;
                 {
@@ -8253,10 +8261,8 @@ static void build_entrypoint(aether a, efunc module_init_fn) {
                 if (au_af) {
                     efunc fn_af = u(efunc, au_af);
                     if (fn_af && _llvalue((enode)fn_af)) {
-                        LLVMTypeRef af_ty = LLVMFunctionType(void_ty,
-                            (LLVMTypeRef[]){LLVMInt1TypeInContext(a->module_ctx)}, 1, false);
-                        LLVMBuildCall2(B, af_ty, _llvalue((enode)fn_af),
-                            (LLVMValueRef[]){LLVMConstInt(LLVMInt1TypeInContext(a->module_ctx), 0, 0)}, 1, "");
+                        LLVMTypeRef af_ty = LLVMFunctionType(void_ty, null, 0, false);
+                        LLVMBuildCall2(B, af_ty, _llvalue((enode)fn_af), null, 0, "");
                     }
                 }
                 Au_t au_lr = find_member(typeid(Au), "leak_report", AU_MEMBER_FUNC, 0, false);
@@ -8268,32 +8274,40 @@ static void build_entrypoint(aether a, efunc module_init_fn) {
                     }
                 }
             }
-            // erase all Silver modules so a reload's module_init starts with a
-            // clean registry — AFTER the report (erase frees type idents), and
-            // still before any dlopen of the rebuilt module
-            {
-                Au_t au_erase_silver = find_member(typeid(Au), "module_erase_silver", AU_MEMBER_FUNC, 0, false);
-                if (au_erase_silver) {
-                    efunc fn_erase = u(efunc, au_erase_silver);
-                    if (fn_erase && _llvalue((enode)fn_erase)) {
-                        LLVMTypeRef erase_ty = LLVMFunctionType(void_ty, null, 0, false);
-                        LLVMBuildCall2(B, erase_ty, _llvalue((enode)fn_erase), null, 0, "");
+            // class statics of object type: the image's slots own what they
+            // hold; a persist slot was already taken by the host
+            if (au_drop) {
+                efunc fn_drop = u(efunc, au_drop);
+                if (fn_drop && _llvalue((enode)fn_drop)) {
+                    LLVMTypeRef drop_ty = LLVMFunctionType(void_ty, (LLVMTypeRef[]){ptr_ty}, 1, false);
+                    members(a->autype, t) {
+                        if (!t || !t->is_class || !t->ident) continue;
+                        members(t, mem) {
+                            if (!mem || mem->member_type != AU_MEMBER_VAR || !mem->is_static ||
+                                mem->is_persist || !mem->type || !mem->type->is_class || mem->type->is_struct)
+                                continue;
+                            string c_name = f(string, "%s_%s", t->ident, mem->ident);
+                            cstr   c_id   = (cstr)llvm_id(a, c_name->chars);
+                            LLVMValueRef g = LLVMGetNamedGlobal(a->module_ref, c_id);
+                            // a core emitted it: reach it as an external of the same name
+                            if (!g) g = LLVMAddGlobal(a->module_ref, ptr_ty, c_id);
+                            LLVMValueRef v = LLVMBuildLoad2(B, ptr_ty, g, "static_slot");
+                            LLVMBuildCall2(B, drop_ty, _llvalue((enode)fn_drop), (LLVMValueRef[]){v}, 1, "");
+                            LLVMBuildStore(B, LLVMConstNull(ptr_ty), g);
+                        }
                     }
                 }
             }
-
-            // erase this module from Au's global type registry so the next
-            // dlopen starts with a clean slate (no stale pointers into old .so)
+            // erase THIS module (by its own descriptor: the reloaded image's
+            // module of the same name is registered by the time this runs)
             Au_t au_module_erase = find_member(typeid(Au), "module_erase", AU_MEMBER_FUNC, 0, false);
             if (au_module_erase) {
                 efunc fn_erase = u(efunc, au_module_erase);
                 if (fn_erase && _llvalue((enode)fn_erase)) {
-                    // the registry key is module_identity (the share name), not a->name
-                    LLVMValueRef mod_name = LLVMBuildGlobalStringPtr(B, module_identity(a)->chars, "mod_name");
                     LLVMTypeRef  erase_ty = LLVMFunctionType(void_ty,
                         (LLVMTypeRef[]){ptr_ty, ptr_ty}, 2, false);
                     LLVMBuildCall2(B, erase_ty, _llvalue((enode)fn_erase),
-                        (LLVMValueRef[]){LLVMConstNull(ptr_ty), mod_name}, 2, "");
+                        (LLVMValueRef[]){_llvalue(e_typeid(a, (etype)a)), LLVMConstNull(ptr_ty)}, 2, "");
                 }
             }
             LLVMBuildRetVoid(B);
@@ -8445,8 +8459,7 @@ static void build_entrypoint(aether a, efunc module_init_fn) {
     e_fn_call(a, Au_drop_fn, a(m), false, false);
     efunc Au_af_fn = (efunc)u(efunc,
         find_member(typeid(Au), "auto_free", AU_MEMBER_FUNC, 0, false));
-    e_fn_call(a, Au_af_fn,
-        a((enode)e_operand(a, _bool(false), etypeid(bool))), false, false);
+    e_fn_call(a, Au_af_fn, null, false, false);
     // report HERE, while module type data is still alive — the atexit
     // fallback fires too late (LIFO) and reads erased Au_t idents
     efunc Au_lr_fn = (efunc)u(efunc,
@@ -9342,7 +9355,8 @@ none etype_implement(etype t, bool w) { sequencer
                         // (e.g. Layout_defaults vs Layout_defaults.1) and
                         // writes go to one global while metadata uses
                         // the other.
-                        string c_name = f(string, "%s_%s", au->ident, m->ident);
+                        // named by the declaring class: one global per static
+                        string c_name = f(string, "%s_%s", tt->autype->ident, m->ident);
                         cstr   c_id   = (cstr)llvm_id(a, c_name->chars);
                         evar static_node = u(evar, m) ?
                             u(evar, m) : evar(mod, a, autype, m, loaded, false);
@@ -11146,6 +11160,16 @@ AU_EXPORT bool aether_emit(aether a, ARef ref_ll, ARef ref_bc) {
     path bdir = a->build_dir ? a->build_dir : form(path, "%o/build", a->install);
     *ll = form(path, "%o/%o.ll", bdir, a);
     *bc = form(path, "%o/%o.bc", bdir, a);
+
+    // frame pointers: the crash walk and sample see every caller
+    for (int ci = 0; ci < ll_n(a); ci++) {
+        LLVMModuleRef  m  = ll_mod(a, ci);
+        LLVMContextRef mc = LLVMGetModuleContext(m);
+        for (LLVMValueRef f = LLVMGetFirstFunction(m); f; f = LLVMGetNextFunction(f))
+            if (!LLVMIsDeclaration(f))
+                LLVMAddAttributeAtIndex(f, LLVMAttributeFunctionIndex,
+                    LLVMCreateStringAttribute(mc, "frame-pointer", 13, "all", 3));
+    }
 
     bool validation_error = false;
     // dump before verbose check to catch crashes

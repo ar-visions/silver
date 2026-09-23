@@ -236,6 +236,7 @@ forward(evar)
     M(A,U,i, prop,     public,  handle,                   init_fbits) \
     M(A,U,i, prop,     public,  cstr,                     bind_name) \
     M(A,U,i, prop,     public,  Au_t,                     bind_holder) \
+    M(A,U,i, prop,     public,  bool,                     attrib_build) \
     M(A,U,i, prop,     public,  Au_t,                     bind_au) \
     M(A,U,i, prop,     public,  array,                    imports) \
     M(A,U,i, vargs,    public,  none,                     eprint, symbol) \
