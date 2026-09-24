@@ -1,6 +1,8 @@
 import vec
 import img
 import trinity
+# the hosting channel's functions link from devices
+import devices
 import spectra
 import speech
 import <stdio.h>

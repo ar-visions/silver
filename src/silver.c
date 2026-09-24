@@ -748,6 +748,8 @@ static inline enode expr_load(enode result, bool load) {
     return result;
 }
 
+static enode ternary_tail(silver a, enode cond, etype mdl_expect);
+
 static enode parse_expression(silver a, etype expect, bool hint, bool load) { sequencer
     // a [ v1, v2 ] literal against a vec-typed slot seeds a vector
     Au_t vex = vec_elem_of(expect);
@@ -783,6 +785,9 @@ static enode parse_expression(silver a, etype expect, bool hint, bool load) { se
     }
 
     enode unbias = reverse_descent(a, hint ? expect : null);
+    // C: the ternary binds looser than every binary operator
+    if (a->cmode && read_if(a, "?"))
+        unbias = ternary_tail(a, unbias, hint ? expect : null);
     return expr_load(e_create(a, expect, (Au)unbias, false), load); // parse assignment needs to expect a deref'd type, or, we call it loaded:false,
 }
 
@@ -1360,7 +1365,8 @@ void silver_parse(silver a) {
             mod,           (aether)a,
             external_name, f(string, "%o_rs", rs_stem),
             module_source, rs_file,
-            is_au_rt,      false);
+            // a C header only: no Au headers are made for it
+            is_au_rt,      true);
         rs_mdl->include_paths = hold(a(gen));
         push(a->imports, (Au)rs_mdl);
     }
@@ -7367,8 +7373,9 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
         } */
         validate(read_if(a, ")"), "expected ) after expression, found %o", peek(a));
         a->parens_depth--;
-        enode n = (enode)e_create(a, mdl_expect, (Au)
-            parse_ternary(a, (enode)expr, (etype)mdl_expect, load), false);
+        // C binds ?: to the whole expression, not to this parenthesis
+        enode n = (enode)e_create(a, mdl_expect, (Au)(a->cmode ? (enode)expr :
+            parse_ternary(a, (enode)expr, (etype)mdl_expect, load)), false);
         // (expr).member — continue member chain on parenthesized result
         while (next_is(a, ".") || next_is(a, "->")) {
             bool null_guard = read_if(a, "->") != null;
@@ -9385,6 +9392,51 @@ string import_libs(silver a, array input, map output, map fw_output) {
     return libs;
 }
 
+// the -I flags of a pkg-config file's Cflags, its ${vars} expanded
+static void pc_include_paths(silver a, string pc_file, array output) {
+    FILE* f = fopen(pc_file->chars, "r");
+    if (!f) return;
+    char  names[16][64], vals[16][1024];
+    int   nv = 0;
+    char  line[2048];
+    char  cflags[2048] = { 0 };
+    while (fgets(line, sizeof(line), f)) {
+        line[strcspn(line, "\r\n")] = 0;
+        char* eq = strchr(line, '=');
+        char* co = strchr(line, ':');
+        char  out[2048]; int o = 0;
+        // expand ${name} from the variables read so far
+        for (char* c = line; *c && o < (int)sizeof(out) - 1; ) {
+            if (c[0] == '$' && c[1] == '{') {
+                char* e = strchr(c, '}');
+                if (e) {
+                    int k = -1;
+                    for (int i = 0; i < nv; i++)
+                        if ((int)strlen(names[i]) == (int)(e - c - 2) && strncmp(names[i], c + 2, e - c - 2) == 0) k = i;
+                    if (k >= 0) { int l = strlen(vals[k]); if (o + l < (int)sizeof(out) - 1) { memcpy(out + o, vals[k], l); o += l; } }
+                    c = e + 1; continue;
+                }
+            }
+            out[o++] = *c++;
+        }
+        out[o] = 0;
+        if (eq && (!co || eq < co) && nv < 16) {
+            int nl = eq - line;
+            if (nl > 0 && nl < 64) {
+                memcpy(names[nv], line, nl); names[nv][nl] = 0;
+                char* v = strchr(out, '=');
+                snprintf(vals[nv], sizeof(vals[nv]), "%s", v ? v + 1 : "");
+                nv++;
+            }
+        } else if (strncmp(out, "Cflags:", 7) == 0)
+            snprintf(cflags, sizeof(cflags), "%s", out + 7);
+    }
+    fclose(f);
+    for (char* t = strtok(cflags, " \t"); t; t = strtok(null, " \t"))
+        if (t[0] == '-' && t[1] == 'I' && t[2])
+            push(output, (Au)f(path, "%s", t + 2));
+}
+
 void import_include_paths(silver a, array input, array output) {
     each(input, string, t) {
         if (starts_with(t, "-I")) {
@@ -11095,6 +11147,11 @@ enode silver_parse_ternary(silver a, enode expr, etype mdl_expect, bool load) {
         validate(paren,
             "ternary condition must be parenthesized: write `(cond) ? a : b`, not `cond ? a : b`");
     }
+    return ternary_tail(a, expr, mdl_expect);
+}
+
+// after the ?: the two branches, built when the condition is known
+static enode ternary_tail(silver a, enode cond, etype mdl_expect) {
     bool is_const = false;
     etype mdl_true = mdl_expect;
     array true_tokens = read_expression(a, &mdl_true, &is_const);
@@ -11102,7 +11159,7 @@ enode silver_parse_ternary(silver a, enode expr, etype mdl_expect, bool load) {
     etype mdl_false = mdl_expect;
     array false_tokens = read_expression(a, &mdl_false, &is_const);
     subprocedure build_expr = subproc(a, ternary_expr_builder, null);
-    return e_ternary_deferred(a, expr, true_tokens, false_tokens, build_expr);
+    return e_ternary_deferred(a, cond, true_tokens, false_tokens, build_expr);
 }
 
 // these are for public, intern, etc; Au-Type enums, not someting the user defines in silver context
@@ -12133,6 +12190,7 @@ enode parse_import(silver a) {
     }
 
     array includes = array(32);
+    array include_toks = array(32);   // each header's token: a miss names its line
     string first_include = null;
 
     // determine includes, uri, and config
@@ -12156,6 +12214,7 @@ enode parse_import(silver a) {
                 concat(f, (string)next(a, Syntax__str));
 
             push(includes, (Au)f);
+            push(include_toks, (Au)ft);
 
             if (!read_if(a, ",")) {
                 token n = read_if(a, ">");
@@ -12176,6 +12235,13 @@ enode parse_import(silver a) {
 
     map define_map = null;
     bool import_cpp = false;
+    // a C++ header by its extension: .hpp marks the unit
+    if (includes) each(includes, string, inc) {
+        cstr dot = strrchr(inc->chars, '.');
+        if (dot && (strcmp(dot, ".hpp") == 0 || strcmp(dot, ".hh") == 0 ||
+                    strcmp(dot, ".hxx") == 0))
+            import_cpp = true;
+    }
     array b = hold(import_conditionals(a, read_body(a)));
     if (len(b)) {
         array bt = compact_tokens(b);
@@ -12382,6 +12448,11 @@ enode parse_import(silver a) {
                  import_address ? import_address : external_name);
         // an uninstall walks the imports for their ledgers only
         if (a->uninstall) return e_noop(a, null);
+        // the project's .pc names where its headers went (a subfolder)
+        if (project) {
+            if (!a->include_paths) a->include_paths = hold(array(16));
+            pc_include_paths(a, f(string, "%o/lib/pkgconfig/%o.pc", a->install, project), a->include_paths);
+        }
         bool has_link = false;
         if (!a->frameworks)
             a->frameworks = hold(map(16));
@@ -12629,12 +12700,23 @@ enode parse_import(silver a) {
         mdl->include_paths = hold(array());
 
         // include each, collecting the clang instance for which we will invoke macros through
+        int inc_i = 0;
         each(includes, string, inc) {
             path ipath = (Au_t)isa(inc) == typeid(string) ?
                 aether_lookup_include((aether)a, (string)inc) : (path)inc;
-
-            // null = header not found in tracked paths (e.g. platform-guarded
-            // system include); skip — the C compiler resolves it itself.
+            token itok = inc_i < len(include_toks) ? (token)include_toks->origin[inc_i] : null;
+            inc_i++;
+            // a header named on the import line that no include path holds
+            // is the import's error, at that line: everything after it
+            // would only report its missing types
+            if (!ipath && itok) {
+                string s = (string)formatter(
+                    (Au_t)null, false, stderr, (Au)true, seq,
+                    (symbol)"\n%o:%i:%i (%s:%i)\nimport: header <%o> not found in any include path",
+                    (itok->source ? (Au)itok->source : (Au)a->module_file),
+                    itok->line, itok->column, __FILE__, __LINE__, inc);
+                if (level_err >= fault_level) halt(s, itok);
+            }
             if (ipath)
                 push(mdl->include_paths, (Au)ipath);
         }

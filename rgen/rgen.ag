@@ -381,7 +381,7 @@ element rgen : trinity
 
 	func wall_us [] -> i64
 		tsp : local i64 [ 2 ]
-		clock_gettime[ 1, tsp ]
+		clock_gettime[ CLOCK_MONOTONIC, tsp ]
 		return tsp[0] * 1000000 + tsp[1] / 1000
 
 	func emu_tick [] -> none

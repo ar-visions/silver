@@ -5,6 +5,8 @@ import vec
 import img
 import gltf
 import trinity
+# the hosting channel's functions link from devices
+import devices
 import silver
 import project
 import dbg
@@ -529,17 +531,19 @@ element EditorTitle
         if [ !label || label.count == 0 ] return
         if [ !ficons ] ficons = FileIcons []
         cv  : Canvas [ w.screen ]
+        # the gaps ride the font unit, as the name's size does
+        fu  : f32 [ (w.vk && w.vk.font_unit > 0) ? f32[ w.vk.font_unit ] / 22.0 : 1.0 ]
         mdl : SVGModel ficons.icon[ label, 20 ]
         if [ mdl ]
-            isz : f32 [ 20.0 ]
+            isz : f32 [ 20.0 * fu ]
             cv.fill_color[ '#ffffff' ]
             cv.stroke_color[ '#ffffff' ]
-            cv.draw_svg[ mdl, 70.0, (bounds.h - isz) * 0.5, isz, isz ]
+            cv.draw_svg[ mdl, 70.0 * fu, (bounds.h - isz) * 0.5, isz, isz ]
         # the view we are in, trailing the name. painted, so the label
         # stays the editable field and this can never be selected
         cv.font_size[ 17 ]
         name_m : cv.measure_text[ label ]
-        trail  : f32 [ 98.0 + name_m.w + 16.0 ]
+        trail  : f32 [ (98.0 + 16.0) * fu + name_m.w ]
         if [ hint && hint.count > 0 ]
             cv.font_size[ 13 ]
             cv.fill_color[ '#ffffff66' ]
@@ -2596,8 +2600,7 @@ element orbiter : trinity # implements compiler
     public file_index    : list string
     public max_search    : i32 [ 400000 ]
     public search_external : bool [ true ]
-    # the find bar's remotes switch: the docked checkouts are searched only
-    # while it is lit, and it starts every session off
+    # finds search docked checkouts only while this is lit
     public search_remotes  : bool
     public find_results  : list string
     intern was_finder    : bool
@@ -4315,19 +4318,22 @@ element orbiter : trinity # implements compiler
             cel9 : vec string companion_exts[ p ]
             cvt9 : Canvas [ (win) ? win.screen : null ]
             if [ cvt9 && cel9.count > 0 ]
+                # the gaps ride the font unit, as the name's size does
+                fu9  : f32 [ (win && win.vk && win.vk.font_unit > 0) ? f32[ win.vk.font_unit ] / 22.0 : 1.0 ]
                 cvt9.font_size[ 19 ]
                 nmw9 : f32 [ cvt9.measure_text[ p.filename[] ].w ]
-                cxa9 : f32 [ 98.0 + nmw9 + 16.0 ]
+                cxa9 : f32 [ (98.0 + 16.0) * fu9 + nmw9 ]
                 hnt9 : string [ (edp9) ? edp9.view_name : null ]
                 if [ hnt9 && hnt9.count > 0 && hnt9 != 'editor' && !console_of[ hnt9 ] ]
                     cvt9.font_size[ 13 ]
-                    cxa9 += cvt9.measure_text[ hnt9 ].w + 10.0
+                    cxa9 += cvt9.measure_text[ hnt9 ].w + 10.0 * fu9
+                cw9 : f32 [ 36.0 * fu9 ]
                 for [ ci9: i32 0, ci9 < cel9.count, ci9 += 1 ]
                     ex9 : string cel9[ ci9 ]
-                    bx9 : f32 [ cxa9 + f32[ ci9 ] * 40.0 ]
+                    bx9 : f32 [ cxa9 + f32[ ci9 ] * 40.0 * fu9 ]
                     els['cmp_{ex9}'] = CompanionButton [ label: ex9, manual_mode: true,
                         selected: ex9 == cx9,
-                        area: Region [ 'l{bx9}px t0.065 w36px h0.81' ] ]
+                        area: Region [ 'l{bx9}px t0.065 w{cw9}px h0.81' ] ]
 
         psess9 : string (agent_open && pane_ix == editor_slots.count) ? orbit_sid :
             ((pane_ix < pane_console.count) ? pane_console[pane_ix] : '')
@@ -4419,6 +4425,8 @@ element orbiter : trinity # implements compiler
                 edit: pattern_text,
                 focusable: true ]
             els['find'] = FindField [ label: 'Find', edit: findbar_text, focusable: true ]
+        el [ engaged && !is_resource && !(pick_field && pick_field.count > 0) ]
+            els['remotes'] = RemoteToggle [ label: 'remotes', manual_mode: true, selected: search_remotes ]
         # the coupled app, pinned left of the tabs: lit on its own source
         if [ home_mod && home_mod.count > 0 && !engaged ]
             hs9 : path home_src[]
@@ -4738,8 +4746,10 @@ element orbiter : trinity # implements compiler
         dists   : vec i32 []
         if [ query && query.count > 0 ]
             ql : i32 [ query.count ]
+            rp9 : string (search_remotes) ? '' : '{project_root[]}'
             index_lock.lock[]
             for [ s: string ] in file_index
+                if [ rp9.count > 0 && s.index_of[ rp9 ] != 0 ] continue
                 ridx : i32 [ s.rindex_of[ query ] ]
                 if [ ridx >= 0 ]
                     d : i32 [ s.count - (ridx + ql) ]
@@ -6626,6 +6636,11 @@ element orbiter : trinity # implements compiler
             ed.anchor_col = col
         return true
 
+    # a hosted app's build failed: its log's first error is the band's
+    public func app_build_error [ mod: string, logpath: string ]
+        err_mod = mod
+        jump_to_error[ logpath ]
+
     func jump_to_error [ logpath: string ]
         lp : path '{logpath}'
         if [ !lp.exists[] ] return
@@ -6689,7 +6704,16 @@ element orbiter : trinity # implements compiler
         own : string [ ot.ident ]
         return err_mod == own
 
-    func goto_error []
+    # the compile error for a file: its message, else null
+    public func err_text_for [ p: path ] -> string
+        if [ !p || !err_file || err_line <= 0 ] return null
+        if [ err_file.absolute[].compare[ p.absolute[] ] != 0 ] return null
+        return (err_msg && err_msg.count > 0) ? err_msg : 'error'
+
+    public func err_line_no [] -> i32
+        return err_line
+
+    public func goto_error []
         if [ !err_file || err_line <= 0 ] return
         open_at_line[ err_file, active_pane, err_line ]
 
@@ -7063,7 +7087,10 @@ element orbiter : trinity # implements compiler
             ev.target.selected = search_remotes
             # the scope changed: the standing results no longer answer it
             find_last_scope = ''
-            if [ findbar_text && findbar_text.count > 0 ] run_find_in_files[]
+            if [ findbar_open && findbar_text && findbar_text.count > 0 ] run_find_in_files[]
+            el [ nav_showing ]
+                run_search[]
+                rekeep_listing[]
             if [ ev.target ] ev.target.ux.restyle = true
             ev.no_default = true
             return
@@ -8159,6 +8186,7 @@ element orbiter : trinity # implements compiler
                     topmost: true, manual_mode: true ] : null ]
 
     public func on_canvas [ cv: Canvas ]
+    	i2 : int [ 1 ]
         super.on_canvas[ cv ]
         cv.sync_fence[ ]
         # disk watch runs here: layer draws skip pristine editors

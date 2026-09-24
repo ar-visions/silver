@@ -1916,7 +1916,8 @@ forward(array)
     M(AA,BB, i, ctr,    public, i32) \
     M(AA,BB, i, ctr,    public, Au_t) \
     M(AA,BB, i, ctr,    public, array) \
-    M(AA,BB, i, ctr,    public, path)
+    M(AA,BB, i, ctr,    public, path) \
+    M(AA,BB, s, method, public, vector, vector_convert, vector, Au_t)
 declare_class_2(vector, collective)
 
 AU_EXPORT none vector_init(vector);
@@ -1943,6 +1944,7 @@ typedef Au(*mix_fn)(Au, Au, f32);
     M(AA,BB, i, prop,   public, Au,       args) \
     M(AA,BB, i, prop,   public, Au,       context) \
     M(AA,BB, i, prop,   public, callback, vfn) \
+    M(AA,BB, i, prop,   public, u64,      ctx_objs) \
     M(AA,BB, i, method, public, Au, call, Au) \
     M(AA,BB, s, method, public, lambda, lambda_instance, Au_t, callback, Au, Au) \
     M(AA,BB, i, override, method, dealloc) \

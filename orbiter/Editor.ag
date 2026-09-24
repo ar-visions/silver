@@ -601,6 +601,11 @@ ResourceView AppView
             v9 : i32 [ host_app_verdict[ slot ] ]
             if [ v9 <= -1000 ]
                 note = 'build failed'
+                # the first error in the app's own log names file and line
+                wv9 : cast Window [ cv.w ]
+                ob9 : cast orbiter [ (wv9) ? wv9.app_object : null ]
+                rt9 : path.path_startup[]
+                if [ ob9 && app_mod ] ob9.app_build_error[ app_mod, '{rt9}/install/tmp/{app_mod}.{slot}.log' ]
             el [ v9 < 0 ]
                 sig9 : i32 [ 0 - v9 ]
                 note = 'crashed — signal {sig9}'
@@ -1525,7 +1530,8 @@ Layer EditorLayer
             el
                 editor.ux.will_animate = true
         if [ editor.run_view ]
-            if [ editor.app_view && !editor.show_hits && !editor.stopped[] ]
+            # an ended or held app has no live frame: the source shows
+            if [ editor.app_view && !editor.show_hits && !editor.stopped[] && !editor.run_view.ended && !editor.run_view.held ]
                 b2 : rect [ x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h ]
                 bot : element (editor.elements) ? editor.elements['bottom'] : null
                 if [ bot && bot.bounds && bot.bounds.h > 0.0 ]
@@ -1542,6 +1548,7 @@ Layer EditorLayer
                     if [ fal >= 1.0 ]
                         parent.mask_glow  = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
                         parent.mask_inset = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+                        editor.no_scroll = true
                         editor.run_view.draw_frame[ cv, b2 ]
                         return
         if [ editor.rview && !editor.show_hits ]
@@ -1622,6 +1629,8 @@ Layer EditorLayer
         editor.lh_cache = lh
         pins0   : vec i32 editor.pinned_rows[]
         pt0     : f32 [ (showing) ? 0.0 : f32[ pins0.count ] * lh ]
+        et9     : string editor.err_band_text[]
+        eb0     : f32 [ (et9 && !showing) ? lh : 0.0 ]
         ndigits : i32 [ 1 ]
         ncount  : i32 [ editor.line_count[] ]
         while [ ncount >= 10 ]
@@ -1699,12 +1708,12 @@ Layer EditorLayer
             # four lines of trailing air: the last line sat flush on the
             # bottom edge. every row loop stops at line_count[], so these
             # rows draw nothing — no text, no gutter number
-            editor.content_h = f32[ editor.line_count[] + 4 ] * lh
+            editor.content_h = f32[ editor.line_count[] + 4 ] * lh + eb0
         editor.scroll_speed = (editor.grid_mode) ? grid_ch : lh
         # the source is what this pane shows: it scrolls, with its bar. an
         # instance being selected (held, or shown in the pip) turned this
         # off and left the source frozen with no scrollbar
-        if [ !editor.app_view ] editor.no_scroll = false
+        editor.no_scroll = false
 
         vh : f32 [ bounds.h ]
         max_scroll : f32 [ editor.content_h - vh ]
@@ -2081,9 +2090,9 @@ Layer EditorLayer
         editor.text_blit[ cv, bounds, fade_t, fade_r, fade_b, fade_l, pt, (fade_l > 0.0) ? lin + gut_w : 0.0 ]
         # overlays (outlines, selection, caret) stay under the band and
         # inside the text area
-        if [ editor.scroll.x > 0.0 || pt0 > 0.0 ]
+        if [ editor.scroll.x > 0.0 || pt0 > 0.0 || eb0 > 0.0 ]
             cv.set_crop[ wtx + bounds.x + gut_w, wty + bounds.y + pt0,
-                wtx + bounds.x + bounds.w - rin, wty + bounds.y + vh ]
+                wtx + bounds.x + bounds.w - rin, wty + bounds.y + vh - eb0 ]
         for [ li: i32 0, li < editor.line_count[], li += 1 ]
             y : f32 [ round[ y0 + f32[li] * lh - editor.scroll.y ] ]
             # ctrl/cmd held: outline every token that resolves, so the
@@ -2541,6 +2550,35 @@ Layer EditorLayer
                     cv.rounded_rect[ rx9, ry9, rw9, rh9, rr9, rr9, rr9, rr9 ]
                     cv.paint[ ]
                 cv.restore[ ]
+        # this file's compile error, pinned along the foot as the scope
+        # headers are along the top: its line in the gutter, a click goes there
+        if [ eb0 > 0.0 ]
+            ey9 : f32 [ round[ bounds.y + bounds.h - lh ] ]
+            cv.clear_crop[ ]
+            cv.flush_text[ ]
+            cv.save[ ]
+            cv.rounded[ 0.0, 0.0, 0.0, 0.0 ]
+            cv.stroke_width[ 0.0 ]
+            # shift over it: the copy action's own colour
+            cpy9 : bool [ editor.hover_err && editor.shift_down ]
+            cv.fill_color[ (cpy9) ? rgba['#1d3a5c'] : (editor.hover_err) ? rgba['#5a2430'] : rgba['#3a1219'] ]
+            cv.rect_to[ bounds.x, ey9, bounds.w, lh ]
+            cv.paint[ ]
+            cv.fill_color[ (cpy9) ? rgba['#8cc8ff40'] : rgba['#ff8a8a40'] ]
+            cv.rect_to[ bounds.x, ey9, bounds.w, 1.0 ]
+            cv.paint[ ]
+            cv.font_size[ num_fs ]
+            cv.fill_color[ (cpy9) ? rgba['#8cc8ff99'] : rgba['#ff8a8a99'] ]
+            cv.draw_text[ '{editor.err_band_line[]}',
+                rect [ x: bounds.x, y: ey9, w: gut_w - 6.0, h: lh ],
+                vec2f [ 1.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+            cv.font_size[ code_fs ]
+            cv.fill_color[ (cpy9) ? rgba['#b8dcff'] : rgba['#ffb0b0'] ]
+            cv.draw_text[ et9,
+                rect [ x: bounds.x + lin + gut_w, y: ey9, w: bounds.w - lin - gut_w - rin - 8.0, h: lh ],
+                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null ]
+            cv.flush_text[ ]
+            cv.restore[ ]
 
 
 # left tool rail: vertical buttons, icon over title, 64px wide
@@ -2680,6 +2718,10 @@ Control Editor
     # glyphs render here, then blit with an edge ramp; fills bypass it
     mutable text_canvas   : Canvas
     mutable reg_scratch   : ColorRegion   # line_reg's one return slot
+    # ctrl/cmd+k in a row without moving: the lines collect in one clip
+    intern kill_chain    : bool
+    intern kill_row      : i32
+    intern kill_text     : string
     # commit's file lines, cached for live re-diff while editing
     mutable diff_base     : vec string
     mutable diff_dirty    : bool
@@ -2797,6 +2839,7 @@ Control Editor
     # append LAST: member order sets AF bit indices
     # pinned band row under the mouse, -1 outside it
     mutable hover_pin     : i32 [ -1 ]
+    mutable hover_err     : bool
 
     func bp_color [ cond: string ] -> rgba
         if [ cond && cond.count > 0 ] return rgba['#3b82f638']   # conditional
@@ -2885,6 +2928,7 @@ Control Editor
     # the tooltip in the status bar's lower left: where the caret sits, and at a
     # debugger stop the clicked name's type and value
     func tip_text [ stopped: bool ] -> string
+        if [ hover_err && shift_down ] return 'shift-click to copy'
         if [ sel_line < 0 || show_hits || nav_list ] return ''
         sc  : string scope_of[ sel_line ]
         tok : string cursor_token[]
@@ -3259,11 +3303,14 @@ Control Editor
             md9 = ev.key.state != 0
         # shift held lights the gutters that take the outline press
         sd9 : bool [ ev.key.shift ]
-        if [ k9 == 340 || k9 == 344 ] sd9 = ev.key.state != 0        if [ md9 == mod_down && sd9 == shift_down ] return
+        if [ k9 == 340 || k9 == 344 ] sd9 = ev.key.state != 0
+        if [ md9 == mod_down && sd9 == shift_down ] return
         mod_down   = md9
         shift_down = sd9
         pristine = false
         if [ ux ] ux.will_animate = true
+        # the error band's tooltip turns with shift
+        if [ ux && hover_err ] ux.restyle = true
 
     # the region under a column, or null. regions come straight from the
     # format map, so this carries the compiler's own classification AND
@@ -3496,8 +3543,9 @@ Control Editor
         if [ cur_buf ]
             cur_buf.line_regs = null
 
-    # keep the edited line's colors aligned: shift columns past the
-    # changed span, drop regions the change touched
+    # each token's colour stays with its text: one outside the edit moves
+    # by the edit's length, one the edit touched is found again by its
+    # text nearest its old column. no parser, no language rules
     func edit_line_regs [ i: i32, before: string, after: string ]
         if [ !cur_buf || !cur_buf.line_regs ] return
         if [ i < 0 || i >= cur_buf.line_regs.count ] return
@@ -3513,18 +3561,92 @@ Control Editor
         for [ ri: i32 0, ri < regs.count, ri += 5 ]
             c0 : i32 [ i32[ regs[ ri ] ] ]
             l0 : i32 [ i32[ regs[ ri + 1 ] ] ]
+            if [ l0 < 0 || c0 < 0 || c0 + l0 > before.count ] continue
+            nc : i32 [ -1 ]
             if [ c0 + l0 <= p ]
-                kept.push[ c0 ]
+                nc = c0
             el [ c0 >= e ]
-                c1 : i32 [ c0 + d ]
-                kept.push[ c1 ]
-            el
-                continue
+                nc = c0 + d
+            el [ l0 > 0 ]
+                nc = text_near[ after, before.mid[ c0, l0 ], c0, kept ]
+            if [ nc < 0 ] continue
+            # read as values: an element pushed as is copies its slot
+            kd : i32 [ i32[ regs[ ri + 2 ] ] ]
+            df : i32 [ i32[ regs[ ri + 3 ] ] ]
+            dl : i32 [ i32[ regs[ ri + 4 ] ] ]
+            kept.push[ nc ]
             kept.push[ l0 ]
-            kept.push[ regs[ ri + 2 ] ]
-            kept.push[ regs[ ri + 3 ] ]
-            kept.push[ regs[ ri + 4 ] ]
-        cur_buf.line_regs[ i ] = kept
+            kept.push[ kd ]
+            kept.push[ df ]
+            kept.push[ dl ]
+        cur_buf.line_regs[ i ] = regs_by_column[ kept ]
+
+    # a copy of a line's tokens at or after column `from`
+    func regs_from [ i: i32, from: i32 ] -> vec i32
+        out : vec i32 []
+        if [ !cur_buf || !cur_buf.line_regs || i < 0 || i >= cur_buf.line_regs.count ] return out
+        regs : vec i32 cur_buf.line_regs[ i ]
+        if [ !regs ] return out
+        for [ ri: i32 0, ri < regs.count, ri += 5 ]
+            c0 : i32 [ i32[ regs[ ri ] ] ]
+            if [ c0 < from ] continue
+            for [ f: i32 0, f < 5, f += 1 ]
+                v : i32 [ i32[ regs[ ri + f ] ] ]
+                out.push[ v ]
+        return out
+
+    # moved tokens land on line i, their columns shifted
+    func regs_to [ i: i32, moved: vec i32, shift: i32 ]
+        if [ !cur_buf || !cur_buf.line_regs || i < 0 || i >= cur_buf.line_regs.count ] return
+        if [ moved.count == 0 ] return
+        out : vec i32 []
+        for [ ri: i32 0, ri < moved.count, ri += 5 ]
+            c0 : i32 [ i32[ moved[ ri ] ] + shift ]
+            out.push[ c0 ]
+            for [ f: i32 1, f < 5, f += 1 ]
+                v : i32 [ i32[ moved[ ri + f ] ] ]
+                out.push[ v ]
+        cur_buf.line_regs[ i ] = out
+
+    # the column of `name` in `ln` nearest `near` that no kept token covers
+    func text_near [ ln: string, name: string, near: i32, kept: vec i32 ] -> i32
+        best : i32 [ -1 ]
+        nl : i32 [ name.count ]
+        for [ c: i32 0, c + nl <= ln.count, c += 1 ]
+            if [ ln[ c ] != name[ 0 ] ] continue
+            if [ ln.mid[ c, nl ] != name ] continue
+            free : bool [ true ]
+            for [ ki: i32 0, ki < kept.count, ki += 5 ]
+                k0 : i32 [ i32[ kept[ ki ] ] ]
+                k1 : i32 [ k0 + i32[ kept[ ki + 1 ] ] ]
+                if [ c < k1 && c + nl > k0 ] free = false
+            if [ !free ] continue
+            dc : i32 [ (c > near) ? c - near : near - c ]
+            db : i32 [ (best > near) ? best - near : near - best ]
+            if [ best < 0 || dc < db ] best = c
+        return best
+
+    # regions in column order (the found ones can land out of order)
+    func regs_by_column [ r: vec i32 ] -> vec i32
+        n : i32 [ r.count / 5 ]
+        out : vec i32 []
+        used : vec i32 [ n ]
+        for [ u: i32 0, u < n, u += 1 ] used.push[ 0 ]
+        for [ t: i32 0, t < n, t += 1 ]
+            pick : i32 [ -1 ]
+            pc   : i32 [ 0 ]
+            for [ q: i32 0, q < n, q += 1 ]
+                uq : i32 [ i32[ used[ q ] ] ]
+                if [ uq != 0 ] continue
+                cq : i32 [ i32[ r[ q * 5 ] ] ]
+                if [ pick < 0 || cq < pc ]
+                    pick = q
+                    pc   = cq
+            used[ pick ] = 1
+            for [ f: i32 0, f < 5, f += 1 ]
+                vf : i32 [ i32[ r[ pick * 5 + f ] ] ]
+                out.push[ vf ]
+        return out
 
     public func load_format [ mapfile: string ]
         mp    : path  '{mapfile}'
@@ -3626,6 +3748,16 @@ Control Editor
     # row is nested under, outermost first, each only once it has scrolled
     # off. each level reads the row just under the band as it stands
     # the band is VIEW rows: the scope tree is file lines, mapped both ways
+    # this file's compile error, drawn as a band along the foot
+    public func err_band_text [] -> string
+        if [ !ux || !src ] return null
+        o9 : cast orbiter [ ux.app_object ]
+        return (o9) ? o9.err_text_for[ src ] : null
+
+    public func err_band_line [] -> i32
+        o9 : cast orbiter [ ux.app_object ]
+        return (o9) ? o9.err_line_no[] : 0
+
     public func pinned_rows [] -> vec i32
         rows : vec i32 []
         # the outline is all headers already: no band over it
@@ -3686,7 +3818,8 @@ Control Editor
         top : f32 [ f32[ sl ] * lh ]
         # the pinned band covers the top rows: a line under it is not in view
         band : f32 [ f32[ pinned_rows[].count ] * lh ]
-        if [ top < scroll.y + band || top + lh > scroll.y + vh ]
+        foot : f32 [ (err_band_text[]) ? lh : 0.0 ]
+        if [ top < scroll.y + band || top + lh > scroll.y + vh - foot ]
             scroll.y = top - vh * 0.4
             if [ scroll.y < 0.0 ] scroll.y = 0.0
             scroll_target = scroll.y
@@ -3702,7 +3835,8 @@ Control Editor
         top : f32 [ f32[ vis_row[ sl ] ] * lh ]
         # the pinned band covers the top rows: a line under it is not in view
         band : f32 [ f32[ pinned_rows[].count ] * lh ]
-        if [ top < scroll.y + band || top + lh > scroll.y + vh ]
+        foot : f32 [ (err_band_text[]) ? lh : 0.0 ]
+        if [ top < scroll.y + band || top + lh > scroll.y + vh - foot ]
             scroll.y = top - vh * 0.4
             if [ scroll.y < 0.0 ] scroll.y = 0.0
             scroll_target = scroll.y
@@ -3887,6 +4021,38 @@ Control Editor
 
     func touch_hist []
         if [ cur_buf ] cur_buf.hist_i = hist_i
+
+    func cut_line []
+        if [ show_hits || line_count[] <= 0 ] return
+        row : i32 [ (sel_line < 0) ? 0 : sel_line ]
+        if [ row_header[ row ] || row_ghost[ row ] ] return
+        ln : string line_get[ row ]
+        piece : string '{ln}\n'
+        # the caret walks up: each cut line goes in front, in file order
+        if [ kill_chain && kill_row == row && kill_text ]
+            kill_text = '{piece}{kill_text}'
+        el
+            kill_text = piece
+        begin_edit[ 3 ]
+        if [ line_count[] > 1 ]
+            ed_remove[ row ]
+        el
+            ed_set[ row, '' ]
+        # the caret lands at the end of the line above the cut
+        to : i32 [ (row > 0) ? row - 1 : 0 ]
+        if [ to >= line_count[] ] to = line_count[] - 1
+        tl : string line_get[ to ]
+        sel_line    = to
+        sel_col     = (row > 0 && tl) ? tl.count : 0
+        anchor_line = sel_line
+        anchor_col  = sel_col
+        end_edit[]
+        kill_chain = true
+        kill_row   = sel_line
+        if [ ux ]
+            ux.set_clipboard[ kill_text ]
+            ux.will_animate = true
+        pristine = false
 
     func begin_edit [ kind: i32 ]
         if [ show_hits ] return
@@ -5155,6 +5321,20 @@ Control Editor
         if [ ux ] ux.restyle = true
 
     func on_press [ ev: Event ]
+        # the error band along the foot: a press goes to its line, nothing else
+        ebl : (layers) ? cast EditorLayer [ layers['content'] ] : null
+        if [ ebl && ebl.bounds && err_band_text[] ]
+            elh  : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
+            # event pos is CONTENT space; the band is at the foot of the VIEW
+            erel : f32 [ ev.mouse.pos.y - ebl.bounds.y - scroll.y ]
+            if [ erel >= ebl.bounds.h - elh && erel < ebl.bounds.h ]
+                o9 : cast orbiter [ ux.app_object ]
+                # shift copies the error with its file and line
+                if [ shift_down ]
+                    ux.set_clipboard[ '{src}:{err_band_line[]}: {err_band_text[]}' ]
+                el [ o9 ] o9.goto_error[]
+                ev.no_default = true
+                return
         # the scrollbar's thumb and the git rails beside it come first: the
         # pinned band drawn under them must never take their press
         ele0 : (layers) ? cast EditorLayer [ layers['content'] ] : null
@@ -5492,6 +5672,16 @@ Control Editor
             hp = i32 [ vy / lh ]
         # a scrollbar drag crossing the band is not a hover on its rows
         if [ scroll_dragging ] hp = -1
+        # the error band at the foot hides the rows under it too
+        herr : bool [ err_band_text[] != null && vy >= ele.bounds.h - lh && vy < ele.bounds.h ]
+        if [ herr ]
+            hl = -1
+            hg = false
+        if [ herr != hover_err ]
+            hover_err = herr
+            pristine  = false
+            ux.will_animate = true
+            ux.restyle = true
         if [ hp != hover_pin ]
             hover_pin = hp
             pristine  = false
@@ -5609,10 +5799,14 @@ Control Editor
         prefix : string line.mid[ 0, col ]
         suffix : string line.mid[ col, line.count - col ]
         parts  : s.split[ '\n' ]
+        # split drops the last piece when the text ends on a newline
+        if [ s[ s.count - 1 ] == 10 ] parts.push[ string [ '' ] ]
         if [ parts.count <= 1 ]
             ed_set[ row, prefix + s + suffix ]
             sel_col = col + s.count
         el
+            # the tokens after the caret move to the last new line
+            moved : vec i32 regs_from[ src_row[ row ], col ]
             ed_set[ row, prefix + parts[0] ]
             for [ i: i32 1, i < parts.count, i += 1 ]
                 val : string [ (i == parts.count - 1) ? (parts[i] + suffix) : parts[i] ]
@@ -5620,6 +5814,7 @@ Control Editor
             last_line : string parts[ parts.count - 1 ]
             sel_line = row + parts.count - 1
             sel_col  = last_line.count
+            regs_to[ src_row[ sel_line ], moved, last_line.count - col ]
         anchor_line = sel_line
         anchor_col  = sel_col
         end_edit[]
@@ -5762,6 +5957,12 @@ Control Editor
                 ux.will_animate = true
             return
 
+        # ctrl/cmd+k cuts the caret's line; presses in a row collect
+        if [ (ev.key.ctrl || ev.key.meta) && ev.key.unicode == 75 ]    # Key.K
+            cut_line[]
+            return
+        kill_chain = false
+
         if [ (ev.key.ctrl || ev.key.meta) && ev.key.unicode == 86 ]    # Key.V
             if [ ux ]
                 clip : string ux.get_clipboard[]
@@ -5831,8 +6032,11 @@ Control Editor
             # the new line keeps this one's indent (up to the caret)
             ni : i32 [ 0 ]
             while [ ni < col && (line[ ni ] == 32 || line[ ni ] == 9) ] ni += 1
+            # the tokens after the caret move to the new line
+            moved : vec i32 regs_from[ src_row[ row ], col ]
             ed_set[ row, left ]
             ed_insert[ row + 1, line.mid[ 0, ni ] + right ]
+            regs_to[ src_row[ row + 1 ], moved, ni - col ]
             sel_line += 1
             sel_col   = ni
             anchor_line = sel_line

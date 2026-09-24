@@ -1174,7 +1174,7 @@ class vk_context
                     pending_cmds.push[ command ]
                     qlock.unlock[]
                 el
-                    command.reap[]
+                    command.return_fence[]
             pwork.drop[]
         # swap each list out under the lock: expiring entries cascade
         # deallocs that re-enter defer_*, and the flush thread swaps too
@@ -3734,7 +3734,7 @@ class Command
     context vk : vk_context
     intern cmd : VkCommandBuffer
     intern pool : VkCommandPool
-    # the frame's reap and another thread's begin never cross
+    # the frame's fence return and another thread's begin never cross
     intern lk   : mutex
     # the fence takes the place of a queue-wide idle after every submit:
     # only a reuse of THIS buffer waits, and only for its own work
@@ -3778,8 +3778,18 @@ class Command
         vk.qlock.unlock[]
         lk.unlock[]
 
+    # wait here for this submit's own work
+    func finish [ ]
+        lk.lock[]
+        if [ pending ]
+            vkWaitForFences[ vk.device, 1, @fence, VK_TRUE, UINT64_MAX ]
+            vk.fence_release[ fence ]
+            fence   = null
+            pending = false
+        lk.unlock[]
+
     # the submit is done: return the fence without waiting for a reuse
-    func reap [ ]
+    func return_fence [ ]
         lk.lock[]
         if [ pending ]
             vk.fence_release[ fence ]

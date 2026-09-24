@@ -3019,12 +3019,12 @@ element asnes : trinity
 
 	func wall_ms [] -> i64
 		tsp : local i64 [ 2 ]
-		clock_gettime[ 1, tsp ]
+		clock_gettime[ CLOCK_MONOTONIC, tsp ]
 		return tsp[0] * 1000 + tsp[1] / 1000000
 
 	func wall_us [] -> i64
 		tsp : local i64 [ 2 ]
-		clock_gettime[ 1, tsp ]
+		clock_gettime[ CLOCK_MONOTONIC, tsp ]
 		return tsp[0] * 1000000 + tsp[1] / 1000
 
 	func audio_slice_size [] -> sz
@@ -3760,7 +3760,7 @@ element asnes : trinity
 		binds.buttons[ bnames[ bind_ix ] ] = sb
 		bind_ix += 1
 		if [ bind_ix >= bnames.count ]
-			save-persistent[]
+			save-persistent[ a ]
 			bind = false
 
 	func bit_for_name [ nm: string ] -> i32

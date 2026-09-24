@@ -19,12 +19,12 @@ import img
 
 import knik0:faad2/2.11.2 <neaacdec.h>
     -lfaad
+    -DBUILD_SHARED_LIBS=ON
     -DFAAD_BUILD_CLI=OFF
 
 export extensions ['.wav': FileType.binary]
 
 
-import trinity
 import vec
 # the platform's microphone (platform_mic_*): capture on apple
 import devices
