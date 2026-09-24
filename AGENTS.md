@@ -1598,7 +1598,15 @@ claude` with `{ prompt tokens, {images/x.png} }` under it. A
    the file's. The avatar is now settled only while agent_view.
 6. APPLIED, built: the exchange's claude run loaded the claude.ai
    connectors (Gmail, Calendar, Drive: needs-auth) and told the
-   user so. It runs with --strict-mcp-config: no MCP servers. orbiter32.gltf COLOR_0 is soft (839 values on
+   user so. It runs with --strict-mcp-config: no MCP servers.
+7. APPLIED, built, awaiting Kalen's look: stair-stepped edges
+   where the volume meets the metal. The volume draws at 1/4 of
+   the avatar's points (1/8 of retina pixels) and its depth test
+   was in-or-out per volume pixel. An 8-tap depth coverage test
+   had no visible effect and was taken out; vol_scale stays 0.25
+   (0.5 is far too slow, Kalen). Testing: the donut's glaze
+   peaked at its tube surface and cut to 0 outside it (a hard
+   outline); it now fades over the tube's outer 20%. orbiter32.gltf COLOR_0 is soft (839 values on
    Cylinder.001) and 8,000+ triangles span b=0 to b=1, so the
    color blends across them. The two soft reads are now on/off
    at 0.5 (Avatar.ag): the core light (`emit * v_color.r`) and

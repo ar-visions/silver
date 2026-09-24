@@ -822,6 +822,8 @@ Orbiter Aura
 					if (cl > tor_r) continue;
 					// the glaze: brightest at the tube's surface, smooth to its core
 					float shell = smoothstep(0.0, 1.0, cl / tor_r);
+					// no hard outline: a low-res ray must not see a step
+					shell      *= 1.0 - smoothstep(0.8, 1.0, cl / tor_r);
 					// axial factor: the walls (radial faces) carry it, the top and
 					// bottom none
 					float side  = pow(abs(dr) / cl, 2.0);
