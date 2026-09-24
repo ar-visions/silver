@@ -77,6 +77,19 @@ goes through it: the dictation take, a screenshot crop with its
 line. Priority "now" interrupts the session's turn; "next"
 waits. Do not add an LLM, voice, or chat backend to trinity or
 orbiter; the user decides what answers.
+A second mode runs the user's agent CLI instead: the app's
+`agent_mode: shell` (default `session`), set in configuration
+only, never a user toggle. An exchange starts its own agent in
+the project folder on its first message: `claude -p
+--input-format stream-json --output-format stream-json`, one
+process for the whole exchange, each later message written into
+its input (the new line alone); codex runs `exec --json` first,
+then `exec resume <thread>` per message. A new exchange ends the
+last one's agent. trinity reads the stream and hands each event
+to on_agent as a status (busy / note / diff / done / needs); the
+reply contract is left out, and ORBITER_APP points the repo's
+hooks nowhere. Each run's raw stream: <install/tmp>/agent-shell.log.
+silver's codegen uses the shell only.
 
 ## Rule #10 — The exchange: how an agent answers a trinity app
 
@@ -1579,6 +1592,40 @@ claude` with `{ prompt tokens, {images/x.png} }` under it. A
    class, on a new default instance, named Class.test, in
    source order (they were compiled and silently skipped).
    features: Tallied.t_class_test; 213/213.
+
+## Active work: shell-mode exchange (Sep 24 2026)
+
+1. APPLIED, awaiting Kalen's run: after a live reload the
+   exchange closed. orbiter set swap_fade once the reloaded
+   frame loaded and trinity closed the exchange at 0; that fade
+   is gone (the old blur's swap_veil still fades on its own).
+2. DONE the diff after the agent's edit: its reply's fenced
+   ```diff block became note rows, and the edit's own diff
+   listed every old line - and every new line +. shell_text
+   leaves out ```diff blocks and fence lines; shell_edit_diff
+   shows the lines both sides share as context.
+3. OPEN a line the agent added at the top draws blank until
+   selected or scrolled out and back: the new row is not
+   redrawn after the disk reload / live reload.
+4. APPLIED, built, awaiting Kalen's look: the avatar's gradient
+   rim. orbiter32.gltf COLOR_0 is soft (839 values on
+   Cylinder.001) and 8,000+ triangles span b=0 to b=1, so the
+   color blends across them. The two soft reads are now on/off
+   at 0.5 (Avatar.ag): the core light (`emit * v_color.r`) and
+   the groove glow mask (`v_color.b * (1 - v_color.r)` with its
+   gamma and smoothstep). The other reads were already on/off.
+
+## Active work: one exchange box (Sep 24 2026)
+
+1. APPLIED, not built (build needs approval): one box for the
+   user's lines and the agent's (Window.notes, ShotEntry.user;
+   ShotNotes removed). After the first send the box fills the
+   right side; the field and mic are its bottom row. Text 14 ->
+   18 px, diff 12 -> 15, prompt 16 -> 18. User lines white,
+   agent lines blue.
+2. APPLIED, not built: the wheel scrolls the box
+   (Window.notes_scroll, px up from the newest; a new entry
+   brings the newest back into view).
 
 ## MEMORY: the reload transition (Sep 22 2026, fixed)
 

@@ -332,7 +332,7 @@ export func bake_greeting []
     sp : path '{path.path_share_path[]}/data/baked.hash'
     op : path '{path.path_share_path[]}/data/baked.txt'
     # silver --export forces the bake: skip the stamp short-circuit
-    force : getenv[ 'SILVER_EXPORT_FORCE' ]
+    force : getenv[ 'SILVER_EXPORT_FORCE' ]  # null unless set
     if [ !force && sp.exists[] && op.exists[] ]
         old : string [ sp.load[ typeid[string], null ] ]
         if [ old && old == stamp ]
