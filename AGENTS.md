@@ -67,29 +67,21 @@ interacting with apps.
 
 ## Rule #9 — Foundation: the user's own agent, never ours
 
-Trinity apps talk to whatever agent session the user already
-runs. They never bundle, name, or recommend an agent. The link
-is `agent_post` (trinity.ag) over `agent_inbox_find` and
-`agent_inbox_post` (trinity.cc): the running session is found
-by its cwd in the session registry (~/.claude/sessions today),
-or an app's agi names the inbox socket as `agent_inbox`. What
-goes through it: the dictation take, a screenshot crop with its
-line. Priority "now" interrupts the session's turn; "next"
-waits. Do not add an LLM, voice, or chat backend to trinity or
-orbiter; the user decides what answers.
-A second mode runs the user's agent CLI instead: the app's
-`agent_mode: shell` (default `session`), set in configuration
-only, never a user toggle. An exchange starts its own agent in
-the project folder on its first message: `claude -p
---input-format stream-json --output-format stream-json`, one
-process for the whole exchange, each later message written into
-its input (the new line alone); codex runs `exec --json` first,
-then `exec resume <thread>` per message. A new exchange ends the
-last one's agent. trinity reads the stream and hands each event
-to on_agent as a status (busy / note / diff / done / needs); the
-reply contract is left out, and ORBITER_APP points the repo's
-hooks nowhere. Each run's raw stream: <install/tmp>/agent-shell.log.
-silver's codegen uses the shell only.
+Trinity apps run the agent CLI the user already has; they never
+bundle, name, or recommend one. There is no session mailbox and
+no hook: an exchange starts its own agent in the project folder
+on its first message. claude: `claude -p --input-format
+stream-json --output-format stream-json`, one process for the
+whole exchange, each later message written into its input (the
+new line alone). codex: `exec --json` first, then `exec resume
+<thread>` per message. A new exchange ends the last one's agent.
+trinity reads the stream and hands each event to on_agent as a
+status (busy / note / diff / done / needs); `agent_post_as`
+(trinity.ag) starts it, `agent_shell_*` (trinity.cc) runs it.
+Each run's raw stream: <install/tmp>/agent-shell.log. The
+dictation take goes to orbiter's agent console. Do not add an
+LLM, voice, or chat backend to trinity or orbiter. silver's
+codegen uses the shell too.
 
 ## Rule #10 — The exchange: how an agent answers a trinity app
 
@@ -106,14 +98,13 @@ as the exchange becomes a conversation.
 The exchange also opens about a file: the orbiter tab in a pane's
 tab strip (icon orbiter4) opens it at the caret's line, with
 `File: <path>:<line>` as the reference (`exchange_open` on the
-Window; the capture path passes `Screenshot: <path>`). Every send
-reposts the whole conversation with that reference line. The
-FIRST post also carries the reply
-contract, and the agent honors it:
+Window; the capture path passes `Screenshot: <path>`). The first
+send carries that reference line; each later send is the new line
+alone. The run's stream becomes these statuses:
 
 - The app's socket is `$XDG_RUNTIME_DIR` (else `/tmp`)
   `/trinity-<app>.sock`, one line per request, `app <text>`
-  reaching the app's `on_agent`. The first post quotes the path.
+  reaching the app's `on_agent` (tests drive statuses this way).
 - `app status <state> <text>` is the agent's word. States:
   `busy` (working, with a line), `idle`, `done` (finished; with
   the exchange up and a source change staged, the avatar's core
@@ -133,20 +124,10 @@ contract, and the agent honors it:
   Consecutive `diff` lines are one entry in the agent's box: a
   label (the file from `diff --git a/x b/x`, +added -removed)
   that expands to the colored code when clicked. A `note` (or any
-  other state) ends the diff entry. The Edit/Write hook posts
-  this for every edit on its own (orbiter-status.py edit builds
-  it from the tool's old and new text), so an agent under the
-  hooks only posts `note` lines by hand.
-- The hooks (support/agent-hooks/orbiter-status.py, wired in
-  .claude/settings.json) post `busy`/`done`/`needs` on their own;
-  `orbiter-status.py note <text>` and `orbiter-status.py diff
-  <line>` post the rest. A `diff` line is sent as is (indentation
-  and the leading +/- matter); other text is whitespace-collapsed
-  and capped at 400 bytes. The socket's listen backlog is 64; a
-  burst still wants a retry on ECONNREFUSED.
+  other state) ends the diff entry. shell_edit_diff (trinity.cc)
+  builds it from each Edit/Write tool call's old and new text.
 - An app takes statuses only while an exchange is open
-  (`shot_ask` set, up or minimized); the user's terminal chat with
-  the same session is not the app's to show. The avatar stays
+  (`shot_ask` set, up or minimized). The avatar stays
   face on and at rest until the first send through the app.
 - Drive a trinity app headless to verify: `XDG_RUNTIME_DIR=<dir>
   SILVER_ISOLATE=0 SILVER_HEADLESS=1 platform/native/build/<app>
@@ -1607,8 +1588,10 @@ claude` with `{ prompt tokens, {images/x.png} }` under it. A
 3. OPEN a line the agent added at the top draws blank until
    selected or scrolled out and back: the new row is not
    redrawn after the disk reload / live reload.
-4. APPLIED, built, awaiting Kalen's look: the avatar's gradient
-   rim. orbiter32.gltf COLOR_0 is soft (839 values on
+4. DONE (Kalen confirmed): the PBR ring light (`pl_lit`,
+   Avatar.ag) turned the other way and sat on the far side
+   from the plasma ring; its angle is mirrored across `pl_tg`.
+   Earlier on this item: the avatar's gradient rim. orbiter32.gltf COLOR_0 is soft (839 values on
    Cylinder.001) and 8,000+ triangles span b=0 to b=1, so the
    color blends across them. The two soft reads are now on/off
    at 0.5 (Avatar.ag): the core light (`emit * v_color.r`) and

@@ -20,6 +20,7 @@ Orbiter PBR
     mutable spoke_r1     : f32
     # 0 = mic off (graphite strip), 1 = listening (blue strip)
     mutable listen       : f32
+    mutable spin         : f32
 
     attrib color         : LayoutBinding [ type:typeid[ Surface ], id:Surface.color,        count:1, format: typeid[ rgba8 ] ]
     attrib normal        : LayoutBinding [ type:typeid[ Surface ], id:Surface.normal,       count:1, format: typeid[ rgba8 ] ]
@@ -276,7 +277,18 @@ Orbiter PBR
 
         vec3 core_contrib = emit * step(0.5, v_color.r);
 
-        vec3  result     = (diffuse + specular) * mat_ao + core_contrib + eng_light + blue_light + core_glow;
+        // green verts catch the ring plasma's turning light
+        vec3  pl_d     = normalize(mat3(ubo.model) * vec3(0.0, -1.0, 0.0));
+        vec3  pl_ref   = abs(pl_d.x) < 0.9 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 0.0, 1.0);
+        vec3  pl_tg    = normalize(cross(pl_d, pl_ref));
+        vec3  pl_bn    = cross(pl_tg, pl_d);
+        vec3  pl_rel   = worldPos - (ubo.model * vec4(0.0, 0.148, 0.0, 1.0)).xyz;
+        float pl_ang   = atan(dot(pl_rel, pl_bn), -dot(pl_rel, pl_tg));
+        float pl_pulse = mix(0.35, 1.0, pow(0.5 + 0.5 * cos(pl_ang - ubo.spin), 2.4));
+        vec3  pl_col   = mix(vec3(0.0, 0.35, 1.0), vec3(1.0, 0.5, 1.0), pl_pulse);
+        vec3  pl_lit   = pl_col * pl_pulse * v_color.g * 0.5;
+
+        vec3  result     = (diffuse + specular) * mat_ao + core_contrib + eng_light + blue_light + core_glow + pl_lit;
 
 
         // gamma 0 (unset uniform) would blow the image to white — floor it
@@ -934,6 +946,7 @@ Orbiter Core
 
 
 Orbiter Plasma
+	mutable spin        : f32
 	attrib a_pos        : VertexInput    [ type:typeid[ vec3f ] ]
 	attrib a_normal     : VertexInput    [ type:typeid[ vec3f ] ]
 	attrib a_uv         : VertexInput    [ type:typeid[ vec2f ] ]
@@ -962,9 +975,14 @@ Orbiter Plasma
 	}
 
 	func fragment [] -> GLSL none {
-		float theta = atan(v_local_pos.z, v_local_pos.x);
-		float wave  = sin(theta * 8.0 + ubo.time * 18.0)
-		            * cos(theta * 3.0 + ubo.time *  7.0);
+		// the halo's angle and spin: one rotation for both
+		vec3  pd    = normalize(mat3(ubo.model) * vec3(0.0, -1.0, 0.0));
+		vec3  pref  = abs(pd.x) < 0.9 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 0.0, 1.0);
+		vec3  ptg   = normalize(cross(pd, pref));
+		vec3  pbn   = cross(ptg, pd);
+		vec3  prel  = v_world_pos - (ubo.model * vec4(0.0, 0.148, 0.0, 1.0)).xyz;
+		float theta = atan(dot(prel, pbn), dot(prel, ptg)) - ubo.spin;
+		float wave  = sin(theta * 8.0) * cos(theta * 3.0);
 		vec3 N = normalize(v_normal + v_normal * wave * ubo.pulse_width * 0.2);
 
 		vec3  V    = normalize(v_eye_pos - v_world_pos);

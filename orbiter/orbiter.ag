@@ -774,6 +774,8 @@ Avatar OrbiterAvatar
             spin_phase = spin_phase + spin_rate * dt9
             if [ spin_phase > 6.2831853 ] spin_phase = spin_phase - 6.2831853
             aura.spin  = spin_phase
+            if [ body ] body.spin = spin_phase
+            if [ plasma ] plasma.spin = spin_phase
         if [ !rotate ]
             rotate = vec Rotation []
             rotate.push[ Rotation [ '0 1 0 30deg' ] ]
@@ -2353,8 +2355,6 @@ element orbiter : trinity # implements compiler
     # the agents this app's user runs (agi `agents: [ claude, codex ]`); the
     # abstract's member is not in this type, so the agi needs it declared here
     public agents        : vec string
-    # session (the default) or shell: see media_app.agent_mode
-    public agent_mode    : string
     # the whole argv tail: the thing we open, then the module's own args.
     # split in init — resource keeps the first token, module_args the rest
     default module_args  : string
@@ -2378,8 +2378,7 @@ element orbiter : trinity # implements compiler
     # the one agent session is working — drives the avatar tilt
     public busy           : bool
     intern busy_at        : i64
-    # the agent's own word on what it is doing, posted into our socket
-    # (support/agent-hooks): busy / idle / done / needs / note, and a line
+    # the shell run's state: busy / idle / done / needs / note
     mutable agent_state   : string
     mutable agent_note    : string
     # the agent said done: the staged reload goes if the exchange is up,
@@ -3642,9 +3641,7 @@ element orbiter : trinity # implements compiler
         bd : string dt
         if [ listen_file ] bd = '{listen_file}  {dt}'
         listen_file = null
-        # the session working this tree takes it, interrupting its turn;
-        # without one the take goes to orbiter's own agent console
-        if [ agent_post[ a, bd, 'now' ] ] return
+        # the take goes to orbiter's own agent console
         sa : ConsoleSession ensure_console[ orbit_sid ]
         if [ sa ] sa.write_input[ '{bd}\r' ]
 
