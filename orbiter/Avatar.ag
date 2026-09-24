@@ -21,8 +21,12 @@ Orbiter PBR
     # 0 = mic off (graphite strip), 1 = listening (blue strip)
     mutable listen       : f32
     mutable spin         : f32
+    mutable core_phase   : f32
+    # red verts: 0 idle, 1 working light / done purple
+    mutable work         : f32
+    mutable done         : f32
 
-    attrib color         : LayoutBinding [ type:typeid[ Surface ], id:Surface.color,        count:1, format: typeid[ rgba8 ] ]
+    attrib color        : LayoutBinding [ type:typeid[ Surface ], id:Surface.color,        count:1, format: typeid[ rgba8 ] ]
     attrib normal        : LayoutBinding [ type:typeid[ Surface ], id:Surface.normal,       count:1, format: typeid[ rgba8 ] ]
     attrib emission      : LayoutBinding [ type:typeid[ Surface ], id:Surface.emission,     count:1, format: typeid[ rgbaf ] ]
     attrib rough         : LayoutBinding [ type:typeid[ Surface ], id:Surface.rough,        count:1, format: typeid[ u8 ] ]
@@ -212,7 +216,7 @@ Orbiter PBR
         // material lights it: the albedo sits well under the colour it reads on
         // screen, since the environment and the tone curve lift it
         float strip_m = 1.0 - step(0.06, distance(albedo, vec3(0.1065, 0.0140, 0.2573)));
-        albedo = mix(albedo, mix(vec3(0.008, 0.008, 0.008), vec3(0.42, 0.38, 0.26), ubo.listen), strip_m);
+        albedo = mix(albedo, mix(vec3(0.008, 0.008, 0.008), vec3(0.34, 0.14, 0.52), ubo.listen), strip_m);
         vec3  N          = perturbNormal(n, V, texCoords);
         float NdotV      = max(dot(N, V), 0.0);
         float nonMetalF0 = pow((mat_ior - 1.0) / (mat_ior + 1.0), 2.0);
@@ -266,16 +270,20 @@ Orbiter PBR
         hot = mix(hot, vec3(2.6, 1.0, 0.25), eng_f2);
         // the pool's light on the bowl at its original reach and weight: the
         // gold stays gold, the light only tints it where it faces the pool
-        vec3  blue_light = metallic * eng_att * lateral * hot;
+        // 1.1 to 0.9 once per two turns of the halo
+        float core_osc   = 1.0 + 0.1 * sin(0.5 * ubo.spin);
+        vec3  blue_light = metallic * eng_att * lateral * hot * core_osc;
 
         // bottom core face: downward-facing surface glows as a warm plasma pool
         // no IOR texture on this material so drive purely from normal, not intensity
         float is_bottom  = pow(max(0.0, -dot(N, beam_up)), 3.0);
-        float core_pulse = 1.0;   // the pool glows steady
+        // 1.1 to 0.9 once per four turns of the halo
+        float core_pulse = 1.0 + 0.1 * sin(ubo.core_phase);
         vec3  core_glow  = vec3(2.0, 0.7, 0.08) * is_bottom * core_pulse * 4.0;
         specular        *= (1.0 - is_bottom * 0.95);
 
-        vec3 core_contrib = emit * step(0.5, v_color.r);
+        vec3 core_st      = mix(vec3(0.04, 0.10, 0.30) * ubo.work, vec3(0.24, 0.07, 0.38), ubo.done);
+        vec3 core_contrib = (emit + core_st) * step(0.5, v_color.r) * 0.5 * core_osc;
 
         // green verts catch the ring plasma's turning light
         vec3  pl_d     = normalize(mat3(ubo.model) * vec3(0.0, -1.0, 0.0));
@@ -878,8 +886,9 @@ Orbiter Aura
 
 
 Orbiter Core
-    
-    attrib color        : LayoutBinding [ type:typeid[ Surface ], id:Surface.color, count:1, format: typeid[ rgba8 ] ]
+    mutable core_phase  : f32
+
+    attrib color       : LayoutBinding [ type:typeid[ Surface ], id:Surface.color, count:1, format: typeid[ rgba8 ] ]
 
     attrib a_pos        : VertexInput  [ type:typeid[ vec3f ] ]
     attrib a_normal     : VertexInput  [ type:typeid[ vec3f ] ]
@@ -941,6 +950,8 @@ Orbiter Core
             col          = mix(vec3(0.35, 0.14, 0.05), vec3(2.2, 0.9, 0.25), g);
             alpha        = 1.0;
         }
+        // 1.1 to 0.9 once per four turns of the halo
+        col      *= 1.0 + 0.1 * sin(ubo.core_phase);
         fragColor = vec4(col, alpha);
     }
 

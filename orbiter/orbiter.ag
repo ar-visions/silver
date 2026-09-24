@@ -1,3 +1,8 @@
+# orbiter: never lost, just taking the scenic route
+# orbiter: it goes around in circles so you don't have to
+# it has no gravity problem, just a lot of pull requests
+# its orbit decays only when the coffee does
+# perigee is where the bugs are; apogee is where we hide
 export 1.0.0
 export views ['git': FileType.ascii, 'b16': FileType.agnostic]
 # 32352
@@ -636,6 +641,7 @@ Avatar OrbiterAvatar
     settle_amount : f32 [ 0.01 ]
     mutable halo_cur   : f32
     mutable flame_cur  : f32
+    mutable work_cur   : f32
     # the heat haze off the core: slight from the start, full once the jet
     # burns; the spin speeds up with it (1 + heat_spin * heat)
     heat_base   : f32   [ 0.25 ]
@@ -655,7 +661,8 @@ Avatar OrbiterAvatar
     spin_amount : f32   [ 0.04 ]
     mutable spin_rate  : f32 [ 0.25 ]
     mutable spin_phase : f32
-    mutable spin_us    : i64    # the last spin step, microseconds
+    mutable core_phase : f32    # core pulse, quarter of the spin
+    mutable spin_us   : i64    # the last spin step, microseconds
     # the wheel's in-plane clocking, held in every state
     clock_deg   : f32   [ 30.0 ]
     mutable tilt_cur : f32
@@ -773,9 +780,17 @@ Avatar OrbiterAvatar
             spin_us    = nowu9
             spin_phase = spin_phase + spin_rate * dt9
             if [ spin_phase > 6.2831853 ] spin_phase = spin_phase - 6.2831853
+            core_phase = core_phase + spin_rate * dt9 * 0.25
+            if [ core_phase > 6.2831853 ] core_phase = core_phase - 6.2831853
             aura.spin  = spin_phase
-            if [ body ] body.spin = spin_phase
+            if [ body ]
+                body.spin       = spin_phase
+                body.core_phase = core_phase
+                work_cur  = filter_n[ work_cur, (wb && !dn) ? 1.0 : 0.0, stage_amount, ux->frame_factor ]
+                body.work = work_cur
+                body.done = flame_cur
             if [ plasma ] plasma.spin = spin_phase
+            if [ core ] core.core_phase = core_phase
         if [ !rotate ]
             rotate = vec Rotation []
             rotate.push[ Rotation [ '0 1 0 30deg' ] ]
@@ -3503,16 +3518,12 @@ element orbiter : trinity # implements compiler
 
     # the avatar for the exchange: ONE instance, made at load, mounted for
     # the app's life and invisible between exchanges; it is never freed.
-    # a new capture resets its tilt
+    # it is settled only while the exchange is a conversation
     mutable agent_av      : AgentAvatar
-    mutable agent_av_shot : path
     public func agent_avatar [] -> element
         if [ !agent_av ]
             agent_av = AgentAvatar [ topmost: true, animate_always: true ]
-        sa9 : path [ (ux) ? ux.shot_ask : null ]
-        if [ sa9 && (!agent_av_shot || agent_av_shot != sa9) ]
-            agent_av_shot    = sa9
-            agent_av.settled = false
+        if [ ux && !ux.agent_view ] agent_av.settled = false
         return agent_av
 
     # orbiter transcribes: its own exchange's mic needs no host
@@ -8237,8 +8248,6 @@ element orbiter : trinity # implements compiler
             swap_carry.has = false
             w.exchange_restore[ swap_carry ]
             if [ agent_av ] agent_av.restore[ swap_carry ]
-            # the carried capture is the avatar's own, not a new one
-            agent_av_shot = swap_carry.shot_ask
             carry_landed = true
 
     public func render [] -> Elements

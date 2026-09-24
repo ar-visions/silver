@@ -1591,7 +1591,14 @@ claude` with `{ prompt tokens, {images/x.png} }` under it. A
 4. DONE (Kalen confirmed): the PBR ring light (`pl_lit`,
    Avatar.ag) turned the other way and sat on the far side
    from the plasma ring; its angle is mirrored across `pl_tg`.
-   Earlier on this item: the avatar's gradient rim. orbiter32.gltf COLOR_0 is soft (839 values on
+   Earlier on this item: the avatar's gradient rim.
+5. APPLIED, built, awaiting Kalen's run: a reopened exchange
+   kept the avatar at its settled (left, tilted) place. The
+   reset keyed on a new shot_ask path; a file exchange reuses
+   the file's. The avatar is now settled only while agent_view.
+6. APPLIED, built: the exchange's claude run loaded the claude.ai
+   connectors (Gmail, Calendar, Drive: needs-auth) and told the
+   user so. It runs with --strict-mcp-config: no MCP servers. orbiter32.gltf COLOR_0 is soft (839 values on
    Cylinder.001) and 8,000+ triangles span b=0 to b=1, so the
    color blends across them. The two soft reads are now on/off
    at 0.5 (Avatar.ag): the core light (`emit * v_color.r`) and
