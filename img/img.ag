@@ -439,6 +439,7 @@ class Image
         ow : i32 [ x1 - x0 ]
         oh : i32 [ y1 - y0 ]
         check ow > 0 && oh > 0, "empty crop"
+        if [ ow <= 0 || oh <= 0 ] return null
         output : Image
             width:  ow,
             height: oh,

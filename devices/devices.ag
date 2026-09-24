@@ -33,6 +33,37 @@ func surface_extensions [] -> vec string
     r.push[ string[ platform_surface_extension[] ] ]
     return r
 
+# the app hosting channel (devices.c): slots, rings, textures, sound
+func host_dictate_set [ v: i32 ]
+func host_live_set    [ v: i32 ]
+func host_slot        [] -> i32
+func host_post        [ ring: i32, type: i32, a: i32, b: i32, c: i32 ]
+func host_poll        [ ring: i32 ] -> i32
+func host_post2       [ slot: i32, ring: i32, type: i32, a: i32, b: i32, c: i32 ]
+func host_poll2       [ slot: i32, ring: i32 ] -> i32
+func host_pa          [] -> i32
+func host_pb          [] -> i32
+func host_pc          [] -> i32
+func host_tex_publish [ slot: i32, side: i32, fd0: i32, fd1: i32, w2: i32, h2: i32, fmt: i32 ]
+func host_tex_gen     [ slot: i32, side: i32 ] -> i32
+func host_tex_clear   [ slot: i32, side: i32 ]
+func host_tex_flip    [ slot: i32, side: i32, front: i32 ]
+func host_tex_front   [ slot: i32, side: i32 ] -> i32
+func host_tex_pull    [ slot: i32, side: i32, which: i32, w2: @i32, h2: @i32, fmt: @i32 ] -> i32
+func host_audio_put   [ slot: i32, pcm: @i16, frames: i32, rate: i32, channels: i32 ]
+func host_audio_take  [ slot: i32, out: @i16, max_frames: i32 ] -> i32
+func host_audio_rate  [ slot: i32 ] -> i32
+func host_app_request [ nm: cstr, flags: i32 ] -> i32
+func host_app_flags   [ slot: i32 ] -> i32
+func host_app_state   [ slot: i32 ] -> i32
+func host_app_pid     [ slot: i32 ] -> i32
+func host_app_count   [ ] -> i32
+func host_app_name    [ slot: i32, out: @i8, cap: i32 ] -> i32
+func host_app_stop    [ slot: i32 ]
+func host_app_verdict [ slot: i32 ] -> i32
+func host_app_pause   [ slot: i32 ]
+func host_app_resume  [ slot: i32 ]
+
 # placeholder until the window object moves here from trinity
 class Devices
     public name : string

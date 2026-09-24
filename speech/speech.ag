@@ -23,10 +23,6 @@ import ai
 import trinity
 import vec
 
-import knik0:faad2/2.11.2 <neaacdec.h>
-    -DBUILD_SHARED_LIBS=ON
-    -lfaad
-
 import k2-fsa:sherpa-onnx/v1.13.4 <sherpa-onnx/c-api/c-api.h>                                                             
     -DSHERPA_ONNX_ENABLE_TESTS=OFF                                                                                        
     -DSHERPA_ONNX_ENABLE_PYTHON=OFF                                                                                       

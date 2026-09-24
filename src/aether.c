@@ -306,8 +306,10 @@ AU_EXPORT etype etype_prep(aether a, Au_t au) { sequencer
 AU_EXPORT token aether_loc(aether a) {
     emit_guard;
     if (!a->tokens || !len(a->tokens)) return token("[none]");
-    i64 i = (i64)a->cursor;
+    // the fault is on what was read, not on the token after it
+    i64 i = (i64)a->cursor - 1;
     if (i >= (i64)len(a->tokens)) i = (i64)len(a->tokens) - 1;
+    if (i < 0) i = 0;
     while (i >= 0) {
         token t = (token)a->tokens->origin[i];
         if (t && t->line) return t;
@@ -554,6 +556,19 @@ static bool vec_prim_elem(enode n, Au_t* elem) {
     Au_t m = n->autype->meta.a ? n->autype->meta.a : (n->meta_a ? (Au_t)n->meta_a :
         (n->autype->member_type == AU_MEMBER_VAR && n->autype->src ? n->autype->src->meta.a : null));
     if (!m || !m->is_primitive || m->is_pointer) return false;
+    *elem = m;
+    return true;
+}
+
+// a vector whose meta element is a class
+static bool vec_class_elem(enode n, Au_t* elem) {
+    if (!n || !n->autype) return false;
+    Au_t au = n->autype;
+    while (au && au->member_type == AU_MEMBER_VAR) au = au->src;
+    if (!au || !au_is_vector(au)) return false;
+    Au_t m = n->autype->meta.a ? n->autype->meta.a : (n->meta_a ? (Au_t)n->meta_a :
+        (n->autype->member_type == AU_MEMBER_VAR && n->autype->src ? n->autype->src->meta.a : null));
+    if (!m || !m->is_class || m->is_c || m == typeid(Au)) return false;
     *elem = m;
     return true;
 }
@@ -966,6 +981,19 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) { sequencer
         /* ------------------------------------------------------------
         * Phase 5: type reconciliation
         * ------------------------------------------------------------ */
+        // a vector of another element type converts element-wise
+        Au_t le9 = null, re9 = null;
+        bool vconv9 = op_val <= OPType__assign && vec_prim_elem(L, &le9) &&
+            vec_prim_elem(res, &re9) && le9 != re9;
+        // class elements too, unless the source's already are the target's
+        if (!vconv9 && op_val <= OPType__assign && vec_class_elem(L, &le9) &&
+                vec_class_elem(res, &re9) && le9 != re9 && !inherits(re9, le9))
+            vconv9 = true;
+        if (vconv9) {
+            efunc f_cv = (efunc)u(efunc, find_member(typeid(vector), "vector_convert",
+                AU_MEMBER_FUNC, 0, false));
+            res = e_fn_call(a, f_cv, a(res, e_typeid(a, etype_prep(a, le9))), false, false);
+        }
         // explicit-ref assignment is a pointer store (rebind), NOT a value
         // reconcile: e_operand routes through canonical(L), which resolves
         // THROUGH the ref to the pointee (ref u8 -> u8) and fails with
@@ -5900,7 +5928,17 @@ enode aether_e_create(aether a, etype mdl, Au args, bool no_pool) { sequencer
             "lambda_instance", AU_MEMBER_FUNC, 0, false));
         
         etype ctx_type = u(etype, n_mdl->context_node->autype->src);
-        enode ctx_alloc = e_alloc(a, ctx_type, false);
+        // a context made during codegen has no type id: allocate its
+        // bytes, typed as the struct for the stores below
+        enode ctx_alloc;
+        bool  ctx_bytes = !resolve_typeid(a, (Au)ctx_type);
+        if (!ctx_bytes)
+            ctx_alloc = e_alloc(a, ctx_type, false);
+        else {
+            a->alloc_count = (Au)_i32((i32)LLVMABISizeOfType(ll_td(a), _lltype_slot(ctx_type)));
+            ctx_alloc = e_alloc(a, etypeid(u8), false);
+            ctx_alloc->autype = pointer(a, (Au)ctx_type)->autype;
+        }
         
         int ctx_index = 0;
         verify(len((array)args) == n_mdl->autype->members.count,
@@ -5921,6 +5959,25 @@ enode aether_e_create(aether a, etype mdl, Au args, bool no_pool) { sequencer
             ? (enode)n_mdl->target : e_null(a, etypeid(Au));
         array args = a(n_mdl->published_type, n_mdl, targ, ctx_alloc);
         enode res = e_fn_call(a, f_create, args, false, false);
+        // untyped context: the lambda names the object slots it drops
+        if (ctx_bytes) {
+            u64 mask = 0;
+            members(n_mdl->autype, cm) {
+                if (cm->member_type != AU_MEMBER_VAR) continue;
+                // a capture's src is the outer variable: take its type
+                Au_t ct = cm->src;
+                while (ct && ct->member_type == AU_MEMBER_VAR && ct->src) ct = ct->src;
+                ct = ct ? au_arg_type((Au)ct) : null;
+                if (!ct || !ct->is_class || ct->is_c) continue;
+                Au_t fm = find_member(ctx_type->autype, cm->ident, AU_MEMBER_VAR, 0, false);
+                if (!fm) continue;
+                u64 off = LLVMOffsetOfElement(ll_td(a), _lltype_slot(ctx_type), fm->member_index);
+                if (off % 8 == 0 && off / 8 < 64) mask |= (u64)1 << (off / 8);
+            }
+            if (mask)
+                e_assign(a, access(res, string("ctx_objs")),
+                    (Au)e_operand(a, _u64(mask), etypeid(u64)), OPType__assign);
+        }
         // meta_a is the lambda's return type, meta_b the func it came from:
         // a variable holding the instance needs both to call through it
         res->meta_a = hold(n_mdl->meta_a ? (Au)n_mdl->meta_a :
@@ -8539,12 +8596,19 @@ AU_EXPORT etype etype_resolve(etype t) {
 }
 
 etype struct_from_au(aether a, string name, Au_t au, bool is_system) {
+    // a second implement of the same lambda reuses its struct
+    Au_t prior = find_member(a->autype, name->chars, AU_MEMBER_TYPE, 0, false);
+    etype prior_t = prior ? u(etype, prior) : null;
+    if (prior_t) return prior_t;
     Au_t struct_au = def(a->autype, name->chars, AU_MEMBER_TYPE, AU_TRAIT_STRUCT | (is_system ? AU_TRAIT_SYSTEM : 0));
     int  index = 0;
 
     for (int i = 0; i < au->members.count; i++) {
         Au_t arg = (Au_t)au->members.origin[i];
-        Au_t mem = def_member(struct_au, arg->ident, arg->src, AU_MEMBER_VAR, 0);
+        // a capture's src is the outer variable: the field takes its type
+        Au_t ft = arg->src;
+        while (ft && ft->member_type == AU_MEMBER_VAR && ft->src) ft = ft->src;
+        Au_t mem = def_member(struct_au, arg->ident, ft, AU_MEMBER_VAR, 0);
         mem->member_index = index++;
     }
 
@@ -10016,6 +10080,14 @@ static void emit_expect_tests(aether a, Au_t module_base, efunc f) {
     LLVMBasicBlockRef bb_skip = LLVMAppendBasicBlockInContext(a->module_ctx, fnv, "expect.skip");
     LLVMBuildCondBr(B, isset, bb_run, bb_skip);
     LLVMPositionBuilderAtEnd(B, bb_run);
+    // the runtime starts before the tests, as main would start it
+    efunc fn_engage = (efunc)u(efunc,
+        find_member(etypeid(Au)->autype, "engage", AU_MEMBER_FUNC, 0, false));
+    if (fn_engage) {
+        LLVMTypeRef  eng_ty = LLVMFunctionType(LLVMVoidTypeInContext(a->module_ctx), &i8p, 1, 0);
+        LLVMValueRef nil    = LLVMConstNull(i8p);
+        LLVMBuildCall2(B, eng_ty, _llvalue((enode)fn_engage), &nil, 1, "");
+    }
     efunc fn_drop = (efunc)u(efunc,
         find_member(etypeid(Au)->autype, "drop", AU_MEMBER_FUNC, 0, false));
     members(module_base, mem) {
@@ -10863,7 +10935,14 @@ AU_EXPORT none aether_push_scope(aether a, Au arg, int label) {
 AU_EXPORT etype get_type_t_ptr(etype t);
 
 static Au_t map_etype(aether a, symbol name, int *out_depth) {
-    Au_t t = (Au_t)elookup(name); // Cast to Au_t directly if your system allows
+    // a C keyword type names a silver primitive
+    if (strcmp(name, "int")    == 0) return typeid(i32);
+    if (strcmp(name, "char")   == 0) return typeid(i8);
+    if (strcmp(name, "short")  == 0) return typeid(i16);
+    if (strcmp(name, "float")  == 0) return typeid(f32);
+    if (strcmp(name, "double") == 0) return typeid(f64);
+    if (strcmp(name, "void")   == 0) return typeid(none);
+    Au_t t = au_lookup(name);
     if (!t) return null;
 
     if (t->member_type == AU_MEMBER_TYPE) return t;
@@ -10880,6 +10959,23 @@ static Au_t map_etype(aether a, symbol name, int *out_depth) {
         (*out_depth)++;
     }
     return map_etype(a, f->chars, out_depth);
+}
+
+// an object-like macro naming a type (#define T int) becomes its alias
+AU_EXPORT none aether_macro_type(aether a, Au_t m) {
+    if (!m || m->member_type != AU_MEMBER_MACRO || m->is_functional) return;
+    int  depth = 0;
+    Au_t base  = map_etype(a, m->ident, &depth);
+    if (!base || base == m) return;
+    m->member_type = AU_MEMBER_TYPE;
+    m->src         = base;
+    m->is_alias    = true;
+    for (int i = 0; i < depth; i++)
+        m->src = pointer(a, (Au)m->src)->autype;
+    // sizeof reads the alias itself: it carries the size it names
+    m->typesize = depth ? (u64)sizeof(void*) : m->src->typesize;
+    // the type's etype replaces the one it had as a macro
+    etype_register(a, (Au)m, (Au)hold(etype(mod, a, autype, m)), true);
 }
 
 AU_EXPORT none aether_import_models(aether a, Au_t ctx, bool au_mode) {
@@ -10950,24 +11046,8 @@ AU_EXPORT none aether_import_models(aether a, Au_t ctx, bool au_mode) {
     aether_create_type_members(a, ctx);
 
     // typed macros to member type aliases
-    members (ctx, m) {
-        if (m->member_type == AU_MEMBER_MACRO && !m->is_functional) {
-            macro mac   = (macro)u(macro, m);
-            int  depth = 0;
-            Au_t base = map_etype(a, m->ident, &depth); // start from self to get full chain
-
-            if (base && base != m) { // found a resolution that isn't just self-pointing
-                m->member_type = AU_MEMBER_TYPE;
-                m->src = base;
-
-                for (int i = 0; i < depth; i++)
-                    m->src = pointer(a, (Au)m->src)->autype;
-                
-                // register type for aether
-                etype_register(a, (Au)m, (Au)hold(etype(mod, a, autype, m)), false);
-            }
-        }
-    }
+    members (ctx, m)
+        aether_macro_type(a, m);
 
     a->import_c = false;
 }
@@ -11160,6 +11240,32 @@ AU_EXPORT bool aether_emit(aether a, ARef ref_ll, ARef ref_bc) {
     path bdir = a->build_dir ? a->build_dir : form(path, "%o/build", a->install);
     *ll = form(path, "%o/%o.ll", bdir, a);
     *bc = form(path, "%o/%o.bc", bdir, a);
+
+    // a try's setjmp returns twice: locals written before a throw
+    // must reach memory, so their loads and stores go volatile
+    for (int ci = 0; ci < ll_n(a); ci++) {
+        LLVMModuleRef m = ll_mod(a, ci);
+        for (LLVMValueRef f = LLVMGetFirstFunction(m); f; f = LLVMGetNextFunction(f)) {
+            if (LLVMIsDeclaration(f)) continue;
+            bool twice = false;
+            for (LLVMBasicBlockRef bb = LLVMGetFirstBasicBlock(f); bb && !twice; bb = LLVMGetNextBasicBlock(bb))
+                for (LLVMValueRef in = LLVMGetFirstInstruction(bb); in && !twice; in = LLVMGetNextInstruction(in)) {
+                    if (LLVMGetInstructionOpcode(in) != LLVMCall) continue;
+                    LLVMValueRef callee = LLVMGetCalledValue(in);
+                    size_t nl = 0;
+                    const char* nm = callee ? LLVMGetValueName2(callee, &nl) : null;
+                    if (nm && nl == 6 && memcmp(nm, "setjmp", 6) == 0) twice = true;
+                }
+            if (!twice) continue;
+            for (LLVMBasicBlockRef bb = LLVMGetFirstBasicBlock(f); bb; bb = LLVMGetNextBasicBlock(bb))
+                for (LLVMValueRef in = LLVMGetFirstInstruction(bb); in; in = LLVMGetNextInstruction(in)) {
+                    LLVMOpcode op = LLVMGetInstructionOpcode(in);
+                    if (op != LLVMLoad && op != LLVMStore) continue;
+                    LLVMValueRef ptr = LLVMGetOperand(in, op == LLVMLoad ? 0 : 1);
+                    if (ptr && LLVMIsAAllocaInst(ptr)) LLVMSetVolatile(in, 1);
+                }
+        }
+    }
 
     // frame pointers: the crash walk and sample see every caller
     for (int ci = 0; ci < ll_n(a); ci++) {

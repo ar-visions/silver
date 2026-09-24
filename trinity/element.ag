@@ -729,8 +729,10 @@ class Layer
 
         ax    : f32 [ label_align.x ]
         ay    : f32 [ label_align.y ]
-        ox    : f32 [ label_offset.x ]
-        oy    : f32 [ label_offset.y ]
+        # offsets ride the font unit, as the label's size does
+        lfu   : f32 [ (cv.vk && cv.vk.font_unit > 0) ? f32[ cv.vk.font_unit ] / 22.0 : 1.0 ]
+        ox    : f32 [ label_offset.x * lfu ]
+        oy    : f32 [ label_offset.y * lfu ]
         fh    : f32 [ metrics.ascent - metrics.descent ]
         x0    : f32 [ bounds.x + (bounds.w - metrics.w) * ax + ox ]
         y0    : f32 [ bounds.y + metrics.ascent + (bounds.h - fh) * ay + oy ]

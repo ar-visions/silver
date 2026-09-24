@@ -1550,8 +1550,19 @@ int main(int argc, char** argv) {
         // force bypasses reload_off: it only arises from a good build the user
         // asked for (defer apply) — reload_off gates only self-initiated swaps
         time_t cur = file_mtime(product);
+        // defer mode: an outside build (the language service, an agent)
+        // only stages the swap; the app's apply takes it, fresh as it is
+        if (defer && !force && !compile_pid && cur && cur != last_mtime
+                && reload_job.state == 0) {
+            last_mtime = cur;
+            if (!host_pending) {
+                host_pending = 1;
+                if (set_pending) set_pending(1);
+                fprintf(stderr, "%s: product rebuilt — reload staged, waiting for apply\n", name);
+            }
+        }
         // mtime 0: the linker has the product unlinked, not a build
-        if (force || (!reload_off && !compile_pid && cur && cur != last_mtime
+        if (force || (!reload_off && !defer && !compile_pid && cur && cur != last_mtime
                       && reload_job.state == 0)) {   // one load at a time
             last_mtime = cur;
             char cwd_now[4096];

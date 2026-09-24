@@ -135,6 +135,7 @@ static void stamp_decl(Au_t m, const clang::Decl* d, ASTContext& ctx) {
 
 static Au_t map_clang_type(const QualType& qt, ASTContext& ctx, aether e, symbol use_name);
 extern "C" Au_t alloc_arg(Au_t, symbol, Au_t);
+extern "C" none aether_macro_type(aether, Au_t);
 
 // models register at the import, never a transient record/arg scope
 static Au_t model_scope(aether e) {
@@ -1363,6 +1364,7 @@ public:
             def,        (array)body_tokens, 
             params,     params_array, 
             va_args,    va_args);
+        if (!mi->isFunctionLike()) aether_macro_type(e, m->autype);
     }
 };
 
@@ -1764,6 +1766,7 @@ static void build_macro(aether e, pending_macro& pm) {
         def,        (array)body_tokens,
         params,     params_array,
         va_args,    pm.va_args);
+    if (!pm.function_like) aether_macro_type(e, m->autype);
 }
 
 // model one parsed unit; runs in import order, so a name this unit needs from

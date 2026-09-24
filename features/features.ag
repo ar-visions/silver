@@ -745,8 +745,9 @@ expect func t_log [] -> bool
     s3: string [ c_log_last[ ] ]
     log 'sum {7 + 3}'               # free function: message, no stamp
     s4: string [ c_log_last[ ] ]
-    return s1 == 'silver-features:b tone 7' && s2 == 'Nest:egg tone 3' &&
-           s3 == 'Nest:egg tone 5' && s4 == 'sum 10'
+    # the stamp sits in a 16-wide column; a longer one runs on
+    return s1 == '[silver-features:b]tone 7' && s2 == '[Nest:egg]      tone 3' &&
+           s3 == '[Nest:egg]      tone 5' && s4 == '                sum 10'
 
 # an inline lambda declares its args; everything else the body uses
 # is copied into its context at the instance site
@@ -1205,6 +1206,42 @@ expect func t_vec_seed_var [] -> bool
     v2 : vec string []
     v2.push[ s1 ]
     return v.count == 2 && v[ 0 ] == 'aa' && v2.first[] == 'aa'
+
+# a vec i64 assigned into a vec i32 converts each element
+expect func t_vec_convert [] -> bool
+    a : vec i64 [] [ 3, -5, 70000 ]
+    b : vec i32 []
+    b = a
+    return b.count == 3 && b[ 0 ] == 3 && b[ 1 ] == -5 && b[ 2 ] == 70000
+
+class Kelvin
+    public k : f64
+    # made from another class: a vec of Fahren converts through here
+    construct [ t: Fahren ]
+        k = (t.f - 32.0) * 5.0 / 9.0 + 273.0
+
+class Fahren
+    public f : f64
+
+class Celsius
+    public deg : f64
+    # a vec of Celsius converts to Kelvin through its own cast
+    cast -> Kelvin
+        return Kelvin [ k: deg + 273.0 ]
+
+# class elements convert by the source's cast
+expect func t_vec_convert_cast [] -> bool
+    a : vec Celsius [] [ Celsius [ deg: 10.0 ], Celsius [ deg: 20.0 ] ]
+    b : vec Kelvin []
+    b = a
+    return b.count == 2 && b[ 0 ].k == 283.0 && b[ 1 ].k == 293.0
+
+# class elements convert by the target's constructor
+expect func t_vec_convert_ctor [] -> bool
+    a : vec Fahren [] [ Fahren [ f: 32.0 ], Fahren [ f: 212.0 ] ]
+    b : vec Kelvin []
+    b = a
+    return b.count == 2 && b[ 0 ].k == 273.0 && b[ 1 ].k == 373.0
 
 # shift takes the front (ownership transfers); unshift inserts before it
 expect func t_vec_shift [] -> bool
@@ -1852,7 +1889,9 @@ expect func t_argv [] -> bool
     argv: local cstr [ 6 ] [ "app", "--depth", "4", "--fast", "game.rom", null ]
     w: ArgApp [ ]
     Au_with_cstrs[ w, @argv[ 0 ] ]  # --name value maps to public members
-    return w.depth == 4 && w.fast && string [ w.rom ] == 'game.rom'
+    ok : bool [ w.depth == 4 && w.fast && string [ w.rom ] == 'game.rom' ]
+    w.drop[]                        # the hold it takes is main's to drop
+    return ok
 
 expect func t_export_registry [] -> bool
     # The owner-qualified registry was written during build.
@@ -2103,7 +2142,9 @@ expect func t_check [] -> bool
 expect func t_self_a_header [] -> bool
     b : Box [ w: 1 ]
     b.hold[]
-    return b.refs[] >= 1 && b.count[] >= 1
+    ok : bool [ b.refs[] >= 1 && b.count[] >= 1 ]
+    b.drop[]
+    return ok
 
 expect func t_au_root_method [] -> bool
     b : Box [ w: 2, h: 5 ]

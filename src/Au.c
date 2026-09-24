@@ -268,8 +268,13 @@ AU_EXPORT cstr cstr_copy(cstr f) {
     return res;
 }
 
+AU_EXPORT __error_t* au_error_top_get(void);
+AU_EXPORT void       au_error_raise(string msg, token tok);
+
+// false raises into an enclosing try; with none, it prints and returns
 AU_EXPORT bool check(bool ch, string log) {
     if (!ch) {
+        if (au_error_top_get()) au_error_raise(log, null);
         printf("%s\n", log->chars);
         return false;
     }
@@ -1520,6 +1525,10 @@ AU_EXPORT bool lambda_cast_bool(lambda a) {
 // the context is a struct, so Au_free skips its dealloc chain —
 // release the object refs its captured fields hold here
 AU_EXPORT none lambda_dealloc(lambda a) {
+    // a context with no type of its own: its object slots, by bit
+    if (a->context)
+        for (int i = 0; i < 64; i++)
+            if ((a->ctx_objs >> i) & 1) drop(((Au*)a->context)[i]);
     if (a->context) Au_drop_members(a->context);
     drop(a->context);
     a->context = null;
@@ -3632,6 +3641,29 @@ AU_EXPORT Au alloc_instance(Au_t type, sz n_bytes, bool managed) {
 
 AU_EXPORT none Au_free(Au a);
 
+// one hold given up without a free: an object nothing holds rejoins
+// this thread's pool, and the next drain frees it unless it is held
+AU_EXPORT Au au_release(Au o) {
+    if (!o) return o;
+    Au info = header(o);
+    if (!info->managed) return o;
+    i32 n = __atomic_sub_fetch(&info->refs, 1, __ATOMIC_SEQ_CST);
+    if (au_leaks()) leak_site_pop(info);
+    if (n <= 0 && info->managed == 1) {
+        if (af_count >= af_size) {
+            ARef af_prev = af;
+            int new_size = (af_size + 16) << 2;
+            af = (ARef)calloc(sizeof(ARef), new_size);
+            if (af_prev)
+                memcpy(af, af_prev, af_size * sizeof(ARef));
+            af_size = new_size;
+        }
+        info->managed = af_count;
+        af[af_count++] = info;
+    }
+    return o;
+}
+
 // drain this thread's pool: every unreferenced object in it is freed
 AU_EXPORT none auto_free(void) {
     dbg_add_since_drain = 0;
@@ -4059,12 +4091,10 @@ AU_EXPORT none engage(cstrs argv) {
             printf("listening-to: %s\n", topics->chars);
     }
 
-    if (argv) {
-        // capture the launch cwd before we change it to the app's share dir
-        if (!startup_cwd_) startup_cwd_ = hold(path_cwd());
-        path sh = path_share_path();
-        if (sh) cd(sh);
-    }
+    // capture the launch cwd before we change it to the app's share dir
+    if (!startup_cwd_) startup_cwd_ = hold(path_cwd());
+    path sh = path_share_path();
+    if (sh) cd(sh);
 
     // call user-defined module initializers (after we have initialized)
     for (int i = 0; i < call_last_count; i++)
@@ -5856,6 +5886,8 @@ AU_EXPORT none map_clear(map m) {
     if (m->hlist) {
         for (int b = 0; b < m->hsize; b++) {
             item cur = ((item*)m->hlist)[b];
+            // clear empties the hash table along with its items
+            ((item*)m->hlist)[b] = null;
             while (cur) {
                 item next = cur->next;
                 map_rm_item(m, cur);
@@ -7053,6 +7085,61 @@ AU_EXPORT vector vector_from(array src, Au_t elem) {
     return v;
 }
 
+// a primitive element read as an integer or a float
+static bool prim_is_float(Au_t t) { return t == typeid(f32) || t == typeid(f64); }
+static i64 prim_get_i(Au_t t, u8* p) {
+    if (t == typeid(i8))   return *(i8*)p;
+    if (t == typeid(u8))   return *(u8*)p;
+    if (t == typeid(i16))  return *(i16*)p;
+    if (t == typeid(u16))  return *(u16*)p;
+    if (t == typeid(i32))  return *(i32*)p;
+    if (t == typeid(u32))  return *(u32*)p;
+    if (t == typeid(u64))  return (i64)*(u64*)p;
+    if (t == typeid(bool)) return *(bool*)p;
+    if (t == typeid(f32))  return (i64)*(f32*)p;
+    if (t == typeid(f64))  return (i64)*(f64*)p;
+    return *(i64*)p;
+}
+static f64 prim_get_f(Au_t t, u8* p) {
+    if (t == typeid(f32)) return *(f32*)p;
+    if (t == typeid(f64)) return *(f64*)p;
+    if (t == typeid(u64)) return (f64)*(u64*)p;
+    return (f64)prim_get_i(t, p);
+}
+static none prim_put(Au_t t, u8* p, Au_t from, u8* v) {
+    if (t == typeid(f32)) { *(f32*)p = (f32)prim_get_f(from, v); return; }
+    if (t == typeid(f64)) { *(f64*)p = prim_get_f(from, v); return; }
+    i64 iv = prim_get_i(from, v);
+    if      (t == typeid(i8)  || t == typeid(u8))  *(u8*)p  = (u8)iv;
+    else if (t == typeid(i16) || t == typeid(u16)) *(u16*)p = (u16)iv;
+    else if (t == typeid(i32) || t == typeid(u32)) *(u32*)p = (u32)iv;
+    else if (t == typeid(bool))                    *(bool*)p = iv != 0;
+    else                                           *(i64*)p = iv;
+}
+
+// a new vector of elem, each element converted from src's
+AU_EXPORT vector vector_convert(vector src, Au_t elem) {
+    vector v = vector_of(elem);
+    if (!src) return v;
+    Au_t st = vector_elem_type(src);
+    i64  ss = vector_stride(src);
+    bool cls = elem->is_class && !elem->is_c;
+    for (num i = 0; i < src->count; i++) {
+        // an object converts by its own cast, else elem's constructor
+        if (cls) {
+            Au o = *(Au*)((u8*)src->origin + i * ss);
+            Au r = o ? typecast(elem, o) : null;
+            if (o && !r) r = convert(elem, o);
+            vector_push(v, r);
+            continue;
+        }
+        u8 buf[16] = { 0 };
+        prim_put(elem, buf, st, (u8*)src->origin + i * ss);
+        vector_push(v, (Au)buf);
+    }
+    return v;
+}
+
 // the slot at idx; a class element is the object pointer in it
 static u8* vector_slot(vector a, num idx) {
     return (u8*)a->origin + idx * vector_stride(a);
@@ -7159,7 +7246,8 @@ AU_EXPORT Au vector_pop(vector a) {
     if (a->count <= 0) return null;
     a->count--;
     u8* slot = vector_slot(a, a->count);
-    return vector_managed(a) ? *(Au*)slot : (Au)slot;
+    // the vector's hold goes back to the pool: a caller holds to keep it
+    return vector_managed(a) ? au_release(*(Au*)slot) : (Au)slot;
 }
 
 // the front element moves to the slot past the end, then transfers
@@ -7176,7 +7264,7 @@ AU_EXPORT Au vector_shift(vector a) {
     a->count--;
     u8* slot = d + a->count * stride;
     memcpy(slot, spare, stride);
-    return vector_managed(a) ? *(Au*)slot : (Au)slot;
+    return vector_managed(a) ? au_release(*(Au*)slot) : (Au)slot;
 }
 
 AU_EXPORT Au vector_first(vector a) {
@@ -9627,7 +9715,10 @@ typedef struct thread_t {
 static none async_runner(thread_t* thread) {
     async t = thread->t;
 
-    for (; thread->next; unlock(thread->lock)) {
+    // the first work always runs: a sync can clear next before we start
+    lock(thread->lock);
+    for (;;) {
+        unlock(thread->lock);
         // work_fn is a lambda: self/captures ride its context
         lambda_call(t->work_fn, thread->w);
         // task boundary: drain THIS thread's auto-free pool (it is

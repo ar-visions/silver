@@ -209,40 +209,11 @@ ifdef [ apple ]
 
 func au_census [ min: i32 ]
 func au_raw_props_set [ on: bool ]
-func host_dictate_set [ v: i32 ]
-func host_live_set    [ v: i32 ]
 func host_log_setup   [ name: cstr ]
 func host_pid_alive   [ pid: i32 ] -> i32
 func host_pid_stopped [ pid: i32 ] -> i32
-func host_slot        [] -> i32
-func host_post        [ ring: i32, type: i32, a: i32, b: i32, c: i32 ]
-func host_poll        [ ring: i32 ] -> i32
-func host_post2       [ slot: i32, ring: i32, type: i32, a: i32, b: i32, c: i32 ]
-func host_poll2       [ slot: i32, ring: i32 ] -> i32
-func host_pa          [] -> i32
-func host_pb          [] -> i32
-func host_pc          [] -> i32
-func host_tex_publish [ slot: i32, side: i32, fd0: i32, fd1: i32, w2: i32, h2: i32, fmt: i32 ]
-func host_tex_gen     [ slot: i32, side: i32 ] -> i32
-func host_tex_clear   [ slot: i32, side: i32 ]
-func host_tex_flip    [ slot: i32, side: i32, front: i32 ]
-func host_tex_front   [ slot: i32, side: i32 ] -> i32
-func host_tex_pull    [ slot: i32, side: i32, which: i32, w2: @i32, h2: @i32, fmt: @i32 ] -> i32
-func host_audio_put   [ slot: i32, pcm: @i16, frames: i32, rate: i32, channels: i32 ]
-func host_audio_take  [ slot: i32, out: @i16, max_frames: i32 ] -> i32
-func host_audio_rate  [ slot: i32 ] -> i32
-func host_app_request [ nm: cstr, flags: i32 ] -> i32
-func host_app_flags   [ slot: i32 ] -> i32
-func host_app_state   [ slot: i32 ] -> i32
-func host_app_pid     [ slot: i32 ] -> i32
-func host_app_count   [ ] -> i32
-func host_app_name    [ slot: i32, out: @i8, cap: i32 ] -> i32
 func Au_call_changed  [ a: Au, name: cstr ] -> i32
 func Au_call_named    [ a: Au, name: cstr ] -> i32
-func host_app_stop    [ slot: i32 ]
-func host_app_verdict [ slot: i32 ] -> i32
-func host_app_pause   [ slot: i32 ]
-func host_app_resume  [ slot: i32 ]
 func au_live_set_reload [ on: i32 ]
 func au_mem_fraction  [] -> f32
 func au_mem_rss       [] -> i64
@@ -1463,7 +1434,9 @@ abstract live_app media_app
                             sc8 : f32 [ (wn.scale > 0.0) ? wn.scale : 1.0 ]
                             im = im.crop[ i32[ parts[2].real_value[] * sc8 ], i32[ parts[3].real_value[] * sc8 ],
                                           i32[ parts[4].real_value[] * sc8 ], i32[ parts[5].real_value[] * sc8 ] ]
-                        im.png[ path [ parts[1].chars ] ]
+                        # a region outside the window crops to nothing
+                        if [ im ] im.png[ path [ parts[1].chars ] ]
+                        el ok = false
                     el ok = false
                 el
                     ok = false
@@ -1501,15 +1474,17 @@ abstract live_app media_app
                     keys.push[ tk ]
                 for [ key: string ] in keys
                     rwin.element_targets[ key ] = null
+        # deferred releases go while the window lives (a Render's dealloc
+        # reads it), then again for what the window's own teardown queues
+        md9 : Au_t [ Au.header[ a ].au.module ]
+        if [ vk ]
+            vk.defer_flush[ md9 ]
+            for [ fl9: i32 0, fl9 < 8 && vk.defer_pending[], fl9 += 1 ]
+                vk.defer_flush[ md9 ]
         if [ w ]
             w.drop[]
         if [ vk ]
-            # what belongs to this image goes before it does, after the
-            # tree: its teardown queues more (a pipeline's uniforms hold
-            # this image's shaders). the font cache stays for the process
-            md9 : Au_t [ Au.header[ a ].au.module ]
-            vk.defer_flush[ md9 ]
-            for [ fl9: i32 0, fl9 < 8 && vk.defer_pending[], fl9 += 1 ]
+            for [ fl8: i32 0, fl8 < 8 && vk.defer_pending[], fl8 += 1 ]
                 vk.defer_flush[ md9 ]
 
     func render [ ]
@@ -4987,7 +4962,9 @@ Display Window
                         layer.label_font_cache = CanvasFont [ ft_lib: draw_cv.ft_lib, uri: layer.label_font, size_px: i32[layer.label_size] ]
                     draw_cv.set_font[ layer.label_font_cache ]
                 align  : vec2f [ x: layer.label_align.x, y: layer.label_align.y ]
-                offset : vec2f  [ x: layer.label_offset.x, y: layer.label_offset.y ]
+                # offsets ride the font unit, as the label's size does
+                lfu    : f32 [ (vk && vk.font_unit > 0) ? f32[ vk.font_unit ] / 22.0 : 1.0 ]
+                offset : vec2f  [ x: layer.label_offset.x * lfu, y: layer.label_offset.y * lfu ]
                 draw_cv.fill_color   [ layer.label_color ]
                 draw_cv.font_size    [ layer.label_size ]
                 draw_cv.line_height  [ layer.label_height ]

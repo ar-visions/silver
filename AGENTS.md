@@ -1299,6 +1299,95 @@ debug+quarantine and -O2. Startup 71k -> 55k objects.
 12. OPEN intermittent silver compiler SIGSEGV during the host's rebuild,
     only with the app running; silver now prints its backtrace on SIGSEGV.
 
+## Active work: editor embedded pane (Sep 23 2026)
+
+1. APPLIED, awaiting Kalen's run: an embedded app whose build
+   failed (ended) still took the pane's live-frame paint branch
+   (EditorLayer.draw); it now needs a live app (not ended, not
+   held), as tick's `live` and the input paths already did.
+2. APPLIED, awaiting Kalen's run: the scrollbar hid whenever the
+   source showed with app_view on (a stop, a failed build).
+   no_scroll is now cleared whenever the source draws and set
+   when the live app frame paints.
+3. DONE compile-error band at the editor's foot: indent-header
+   look in red, counted in the scroll range, click goes to line.
+4. DONE spectra no longer imports trinity. The app hosting
+   channel (slots, rings, shared textures, the sound ring) moved
+   from trinity.cc to devices.c, its declarations to devices.ag.
+   A module calling host_* imports devices (orbiter, crashman):
+   a cached import does not pass its libs on to the app's link.
+5. OPEN silver bug: a top-level `intern func` declared before an
+   `ifdef [ apple ]` C header import loses that header's types
+   (spectra: AudioQueueRef unknown). Declare after the imports.
+6. DONE features builds and runs its expects again: a .hpp/.hh/.hxx
+   import is C++ (outside extern "C"); the rust companion's import
+   is a C header (no Au headers); a lambda context struct is made
+   once and its capture fields take the captured variable's type.
+   t_log expects the bracketed 16-wide log stamp.
+7. DONE vec conversion: `b = a` between vectors of different element
+   types makes a new vector (Au `vector_convert`): primitives convert
+   by value, class elements by the source's cast, else the target's
+   constructor. features t_vec_convert, _cast, _ctor pass.
+8. DONE lambda contexts made during codegen have no type id: they
+   were allocated as a zero-size Au and captures overran it (async
+   inline lost its writes). They are allocated by byte size now.
+9. DONE features t_try_finally_rethrow: a local written before a
+   longjmp was lost (setjmp returns twice). In a function that calls
+   setjmp, loads/stores to its allocas are volatile (aether_emit).
+10. DONE async race: a worker checked `next` unlocked before its first
+   job; a sync-all could null it first and the job never ran
+   (t_async_inline intermittent). The first job always runs now.
+11. DONE Au `check` raises into an enclosing try (t_check); with no try
+   it still prints and returns false.
+12. DONE features t_type_macros. C/C++ header macros that name a type
+   (`#define cpp_int int`, `cpp_intp int*`) become aliases at import
+   (aether_macro_type, called from aclang.cc; C keyword types map to
+   silver primitives; the alias carries its size). In cmode `?:` binds
+   to the whole expression, not to a parenthesis before it.
+14. DONE map_clear left the hash table pointing at the items it freed; the
+   map's dealloc cleared them again (SIGSEGV in features t_mem_last).
+15. DONE features t_mem_last, all 168 expects pass (19 live at start
+   and end): engage always records the launch dir and cd's to share
+   (was only with argv), and the expect runner engages before the
+   tests; vector pop/shift hand a class element back to the pool
+   (au_release) instead of leaking the vector's hold; a byte-allocated
+   lambda context's object slots are named in lambda.ctx_objs and
+   dropped at lambda_dealloc; t_argv and t_self_a_header drop the
+   holds they take.
+
+## Active work: MoltenVK video encode, then orbiter find (Sep 23 2026)
+
+1. DONE VK_KHR_video_queue, video_encode_queue, video_encode_h264,
+   video_decode_queue and video_decode_h264 in MoltenVK over
+   VideoToolbox (MVKVideo.h/.mm, MVKCmdVideo.h/.mm). In
+   trinity/MoltenVK.diff; the video part alone for upstream is
+   trinity/moltenvk-video.patch (applies to MoltenVK db445ff).
+   - One queue family does encode and decode. H.264 only, 8-bit
+     4:2:0 NV12, progressive; VideoToolbox keeps the references.
+   - Bitstream buffers are host visible: encode writes them, and
+     decode reads them, on the CPU. Decode runs when the command
+     is encoded to Metal, then a blit copies the picture in.
+   - Decode rewrites the std SPS/PPS as H.264 bytes for
+     VideoToolbox; nal_ref_idc is 3 (the std has no field).
+   - DPB images may have array layers (trinity uses 2).
+   - Verified: orbiter --record (with --record_mic) plays back;
+     the scratchpad test vkdecode.mm decodes the recording, a
+     Main B-frame clip and a Baseline clip through
+     vkCmdDecodeVideoKHR, every frame bit-exact with AVFoundation.
+   - Upstream still needs the Xcode project entries for the four
+     new files and three frameworks (CMake is done).
+2. DONE orbiter: the remotes switch shows in the finder too (not
+   in a resource pick), and index_search skips files outside the
+   project root while it is off, as find-in-files already did.
+   Verified headless: finder "orion.ag" and find-in-files
+   "class Race" list ~/src/orion only with remotes lit.
+3. DONE recorder magenta blobs and torn text (trinity/video.ag
+   Recorder.capture). The nv12 compute read the scaled copy before
+   the copy finished: Layout's SHADER_READ wait is fragment only, so
+   a transfer-to-compute barrier now precedes the dispatch. And the
+   capture waits for its own submit (new Command.finish): the next
+   frame drew over the screen while the copy still read it.
+
 ## MEMORY: the reload transition (Sep 22 2026, fixed)
 
 THE REQUIREMENT (Kalen, said many times, do not reinterpret it):
