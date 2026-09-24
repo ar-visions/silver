@@ -1,3 +1,4 @@
+# test: the core glows 0.8 at rest, full while it works
 # orbiter: never lost, just taking the scenic route
 # orbiter: it goes around in circles so you don't have to
 # it has no gravity problem, just a lot of pull requests
@@ -789,8 +790,13 @@ Avatar OrbiterAvatar
                 work_cur  = filter_n[ work_cur, (wb && !dn) ? 1.0 : 0.0, stage_amount, ux->frame_factor ]
                 body.work = work_cur
                 body.done = flame_cur
+            # core light: 0.8 idle, 1.0 working or building
+            cb9 : f32 [ 0.8 + 0.2 * max[ work_cur, flame_cur ] ]
+            if [ body ] body.core_base = cb9
             if [ plasma ] plasma.spin = spin_phase
-            if [ core ] core.core_phase = core_phase
+            if [ core ]
+                core.core_phase = core_phase
+                core.core_base  = cb9
         if [ !rotate ]
             rotate = vec Rotation []
             rotate.push[ Rotation [ '0 1 0 30deg' ] ]
@@ -867,7 +873,7 @@ OrbiterAvatar AgentAvatar
         # the same coordinate form as the start (a percent with a px
         # offset): a transition mixes the two, and a percent mixed with a
         # plain pixel value snaps
-        area: l0%+80px t15%+110px w340px h340px, 900ms cubic in_out
+        area: l0%+30px t25%+110px w408px h408px, 900ms cubic in_out
     :fading
         opacity: 0.0, 3000ms cubic outward
     }

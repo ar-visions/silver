@@ -22,6 +22,7 @@ Orbiter PBR
     mutable listen       : f32
     mutable spin         : f32
     mutable core_phase   : f32
+    mutable core_base    : f32
     # red verts: 0 idle, 1 working light / done purple
     mutable work         : f32
     mutable done         : f32
@@ -57,6 +58,7 @@ Orbiter PBR
         model = mat4f.identity[]
         view  = mat4f.identity[]
         if [ pulse_width == 0.0 ] pulse_width = 1.0
+        if [ core_base == 0.0 ] core_base = 1.0
         if [ gamma == 0.0 ] gamma = 2.2
 
     func set_frame [ model_mat: mat4f, view_mat: mat4f, proj_mat: mat4f, ep: vec4f, t: f32 ]
@@ -278,7 +280,7 @@ Orbiter PBR
         // no IOR texture on this material so drive purely from normal, not intensity
         float is_bottom  = pow(max(0.0, -dot(N, beam_up)), 3.0);
         // 1.1 to 0.9 once per four turns of the halo
-        float core_pulse = 1.0 + 0.1 * sin(ubo.core_phase);
+        float core_pulse = ubo.core_base * (1.0 + 0.1 * sin(ubo.core_phase));
         vec3  core_glow  = vec3(2.0, 0.7, 0.08) * is_bottom * core_pulse * 4.0;
         specular        *= (1.0 - is_bottom * 0.95);
 
@@ -887,6 +889,7 @@ Orbiter Aura
 
 Orbiter Core
     mutable core_phase  : f32
+    mutable core_base   : f32
 
     attrib color       : LayoutBinding [ type:typeid[ Surface ], id:Surface.color, count:1, format: typeid[ rgba8 ] ]
 
@@ -904,6 +907,7 @@ Orbiter Core
 
     func init []
         if [ pulse_width == 0.0 ] pulse_width = 1.0
+        if [ core_base == 0.0 ] core_base = 1.0
 
     func vertex [] -> GLSL none {
         vec4 wpos   = ubo.model * vec4(a_pos, 1.0);
@@ -951,7 +955,7 @@ Orbiter Core
             alpha        = 1.0;
         }
         // 1.1 to 0.9 once per four turns of the halo
-        col      *= 1.0 + 0.1 * sin(ubo.core_phase);
+        col      *= ubo.core_base * (1.0 + 0.1 * sin(ubo.core_phase));
         fragColor = vec4(col, alpha);
     }
 
