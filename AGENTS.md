@@ -1606,7 +1606,18 @@ claude` with `{ prompt tokens, {images/x.png} }` under it. A
    had no visible effect and was taken out; vol_scale stays 0.25
    (0.5 is far too slow, Kalen). Testing: the donut's glaze
    peaked at its tube surface and cut to 0 outside it (a hard
-   outline); it now fades over the tube's outer 20%. orbiter32.gltf COLOR_0 is soft (839 values on
+   outline); it now fades over the tube's outer 20%.
+8. APPLIED, built, awaiting Kalen's look: a darker violet band
+   on the fins after the core's yellow, for contrast. The old
+   violet keyed on height above the core (over 0.6 units) and
+   never reached the fins. Replacing the orange by distance took
+   the yellow away (fins start 0.2 from the core); the orange is
+   back as it was, and a separate violet band is added beyond it
+   Now a ring light (Kalen): radius 0.28 round the core's axis,
+   0.15 above the pool light (level with the fins' tops), reach
+   0.10, blue (0.16, 0.22, 1.4) x1, wrapped facing (0.35 floor).
+   Scaled by two lobes: the halo's and the same turned 180
+   degrees (max of the two); 1 - pl_pulse was tried and dropped. orbiter32.gltf COLOR_0 is soft (839 values on
    Cylinder.001) and 8,000+ triangles span b=0 to b=1, so the
    color blends across them. The two soft reads are now on/off
    at 0.5 (Avatar.ag): the core light (`emit * v_color.r`) and

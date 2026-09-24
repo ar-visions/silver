@@ -1,10 +1,5 @@
-# test: orbiter skips leg day; it only does laps
-# test: the core glows 0.8 at rest, full while it works
-# orbiter: never lost, just taking the scenic route
-# orbiter: it goes around in circles so you don't have to
-# it has no gravity problem, just a lot of pull requests
-# its orbit decays only when the coffee does
-# perigee is where the bugs are; apogee is where we hide
+# why did the editor orbit? it could not find its center
+# orbiter: 0 gravity, 100% pull requests
 export 1.0.0
 export views ['git': FileType.ascii, 'b16': FileType.agnostic]
 # 32352
