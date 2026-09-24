@@ -275,6 +275,19 @@ Orbiter PBR
         // 1.1 to 0.9 once per two turns of the halo
         float core_osc   = 1.0 + 0.1 * sin(0.5 * ubo.spin);
         vec3  blue_light = metallic * eng_att * lateral * hot * core_osc;
+        // a blue ring light round the core, level with the fins' tops
+        vec3  rg_c   = eng_pos + beam_up * 0.15;
+        vec3  rg_rel = worldPos - rg_c;
+        float rg_h   = dot(rg_rel, beam_up);
+        vec3  rg_rad = rg_rel - rg_h * beam_up;
+        float rg_len = max(length(rg_rad), 1e-4);
+        vec3  rg_pt  = rg_c + rg_rad / rg_len * 0.28;
+        float rg_d   = length(worldPos - rg_pt);
+        float rg_f   = max(0.0, 1.0 - rg_d / 0.10);
+        vec3  rg_L   = normalize(rg_pt - worldPos);
+        // wrapped: faces turned partly away still take some
+        float rg_lat = clamp(0.35 + 0.65 * dot(N, rg_L), 0.0, 1.0);
+        vec3  rg_lit = metallic * rg_lat * rg_f * rg_f * vec3(0.16, 0.22, 1.4) * core_osc;
 
         // bottom core face: downward-facing surface glows as a warm plasma pool
         // no IOR texture on this material so drive purely from normal, not intensity
@@ -297,6 +310,9 @@ Orbiter PBR
         float pl_pulse = mix(0.35, 1.0, pow(0.5 + 0.5 * cos(pl_ang - ubo.spin), 2.4));
         vec3  pl_col   = mix(vec3(0.0, 0.35, 1.0), vec3(1.0, 0.5, 1.0), pl_pulse);
         vec3  pl_lit   = pl_col * pl_pulse * v_color.g * 0.5;
+        // the ring light's lobes: the halo's and 180 degrees round
+        float rg_pulse = max(pl_pulse, mix(0.35, 1.0, pow(0.5 - 0.5 * cos(pl_ang - ubo.spin), 2.4)));
+        blue_light    += rg_lit * rg_pulse;
 
         vec3  result     = (diffuse + specular) * mat_ao + core_contrib + eng_light + blue_light + core_glow + pl_lit;
 
