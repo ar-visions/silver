@@ -228,11 +228,6 @@ func au_live_switch   [ to: cstr ] -> none
 func host_kept        [ key: cstr ] -> handle
 func agent_sock_send  [ nm: cstr, txt: cstr ] -> i32
 func agent_sock_ask   [ nm: cstr, txt: cstr, out: @i8, cap: i32 ] -> i32
-func agent_inbox_find [ root: cstr, sock: cstr, sock_out: @i8, sock_cap: i32, peer_out: @i8, peer_cap: i32 ] -> i32
-func agent_inbox_post [ sock: cstr, peer: cstr, sender: cstr, txt: cstr, priority: cstr ] -> i32
-func agent_codex_post [ root: cstr, sock: cstr, session: cstr, txt: cstr ] -> i32
-func agent_codex_post_async [ root: cstr, sock: cstr, session: cstr, txt: cstr ] -> i32
-func agent_codex_poll [] -> i32
 func agent_shell_start [ agent: cstr, root: cstr, model: cstr, txt: cstr ] -> i32
 func agent_shell_line [ buf: @i8, cap: i32 ] -> i32
 func agent_shell_stop []
@@ -1192,7 +1187,6 @@ abstract live_app media_app
             el             wn.release_event[ wn.ev ]
 
         func agent_pump []
-            agent_codex_poll[]
             wn : Window [ w ]
             aa :  cast element [ wn.app_object ]
             # a shell run's events, as the statuses an agent would post
@@ -1211,9 +1205,6 @@ abstract live_app media_app
                 if [ sl9 > 0 ] name = '{name}-{sl9}'
                 agent_on = agent_sock_open[ name ] != 0
                 if [ !agent_on ] return
-                # the path an agent is told to answer on
-                rt9 : cstr [ getenv[ 'XDG_RUNTIME_DIR' ] ]
-                wn.agent_sock = '{(rt9 && strlen[ rt9 ] > 0) ? string[ rt9 ] : '/tmp'}/trinity-{name}.sock'
             while [ true ]
                 buf : local i8 [ 1024 ]
                 got : i32 [ agent_sock_line[ @buf[0], 1024 ] ]
@@ -1828,7 +1819,6 @@ Display Window
     mutable shot_line           : i32    # the line in that file, 0 for none
     mutable agent_min           : bool     # Esc put the exchange away; the status item brings it back
     mutable shot_text           : string   # the lines so far: every send reposts the whole message
-    mutable agent_sock          : string   # this app's socket path, quoted to the agent
     mutable agent_pick          : string   # the agent chosen at the prompt (an `agents` name)
     mutable agent_busy          : bool     # the agent said busy: the shine keeps moving
     mutable swap_fade           : bool     # the reload is asked: the exchange fades on alpha
@@ -5297,50 +5287,6 @@ func state_persist_load [ target: Au ]
                 target.member_set[ mem, v9 ]
                 au_raw_props_set[ false ]
 
-class AgentConnection
-    func post [ root: path, from: string, text: string, urgency: string ] -> bool
-        return false
-
-AgentConnection SocketAgentConnection
-    public socket : path
-    public token : string
-
-    func post [ root: path, from: string, text: string, urgency: string ] -> bool
-        if [ !socket ] return false
-        peer : string [ (token) ? token : '' ]
-        return agent_inbox_post[ socket.chars, peer.chars, from.chars, text.chars, urgency.chars ] != 0
-
-AgentConnection CodexAgentConnection
-    public socket : path
-    public session : string
-
-    func post [ root: path, from: string, text: string, urgency: string ] -> bool
-        endpoint : string [ (socket) ? '{socket}' : '' ]
-        thread : string [ (session) ? session : '' ]
-        msg : 'From: {from}\nPriority: {urgency}\n\n{text}'
-        return agent_codex_post_async[ root.chars, endpoint.chars, thread.chars, msg.chars ] != 0
-
-# the agent's CLI for the exchange, its output streamed
-AgentConnection ShellAgentConnection
-    public agent : string
-    public model : string
-
-    func post [ root: path, from: string, text: string, urgency: string ] -> bool
-        md : string [ (model) ? model : '' ]
-        return agent_shell_start[ agent.chars, root.chars, md.chars, text.chars ] != 0
-
-AgentConnection ClaudeAgentConnection
-    public socket : path
-
-    func post [ root: path, from: string, text: string, urgency: string ] -> bool
-        sk : local i8 [ 512 ]
-        tk : local i8 [ 128 ]
-        explicit_socket : string [ (socket) ? '{socket}' : '' ]
-        if [ agent_inbox_find[ root.chars, explicit_socket.chars, @sk[0], 512, @tk[0], 128 ] == 0 ]
-            log 'agent: no session inbox for {root}'
-            return false
-        return agent_inbox_post[ @sk[0], @tk[0], from.chars, text.chars, urgency.chars ] != 0
-
 abstract media_app trinity
     public root         : element
     public title        : string
@@ -5352,11 +5298,6 @@ abstract media_app trinity
     # the agents the user runs, by adapter name ('claude', 'codex', ...):
     # the exchange's prompt offers the pick; `agent` alone is one of them
     public agents : vec string
-    # configuration only: session (the mailbox) or shell (a clean run)
-    public agent_mode : string
-    public agent_connection : AgentConnection
-    # Legacy socket setting for the default connection.
-    public agent_inbox  : path
     intern msaa_samples : i64
     intern istroke      : f32 0
     intern ifill        : f32 0
@@ -5407,7 +5348,6 @@ abstract media_app trinity
         adopt[ 'record_mic' ]
         adopt[ 'agent' ]
         adopt[ 'agents' ]
-        adopt[ 'agent_inbox' ]
         # SILVER_DISPLAY=<PIP|Full|Window|Screen>: the host's launch display.
         # PIP and Full start with the window never shown: the frames go to
         # orbiter's pane, and Window brings the window up later, live
@@ -5504,30 +5444,6 @@ abstract media_app trinity
 
 
 
-# the app's configured agent_mode: shell, else the session mailbox
-func agent_shell_pick [ obj: Au, pick: string ] -> bool
-    if [ !obj ] return false
-    md : string [ cast string [ obj.get_property[ 'agent_mode' ] ] ]
-    return md && md == 'shell'
-
-# the adapter for a pick (the exchange's choice), else the configured one
-func agent_connect [ obj: Au, pick: string ] -> AgentConnection
-    if [ !obj ] return null
-    if [ agent_shell_pick[ obj, pick ] ]
-        an9 : string [ (pick && pick.count > 0) ? pick : cast string [ obj.get_property[ 'agent' ] ] ]
-        return ShellAgentConnection [ agent: (an9 && an9.count > 0) ? an9 : 'claude' ]
-    connection : cast AgentConnection [ obj.get_property[ 'agent_connection' ] ]
-    if [ connection && (!pick || pick.count == 0) ] return connection
-    if [ connection && pick == 'codex' && connection inherits CodexAgentConnection ] return connection
-    if [ connection && pick == 'claude' && connection inherits ClaudeAgentConnection ] return connection
-    name : string [ (pick && pick.count > 0) ? pick : cast string [ obj.get_property[ 'agent' ] ] ]
-    if [ !name || name.count == 0 || name == 'claude' ]
-        ib : cast path [ obj.get_property[ 'agent_inbox' ] ]
-        return ClaudeAgentConnection [ socket: ib ]
-    if [ name == 'codex' ] return CodexAgentConnection []
-    log 'agent: unknown connection {name}'
-    return null
-
 func agent_post [ obj: Au, text: string, priority: string ] -> bool
     return agent_post_as[ obj, null, text, priority ]
 
@@ -5552,16 +5468,16 @@ func agent_names [ obj: Au ] -> vec string
     if [ out.count == 0 ] out.push[ 'claude' ]
     return out
 
+# the exchange's agent CLI in the app's folder, its output streamed
 func agent_post_as [ obj: Au, pick: string, text: string, priority: string ] -> bool
-    connection : AgentConnection agent_connect[ obj, pick ]
-    if [ !connection ] return false
-    # Apps may redeclare properties at different offsets.
-    sp : path   [ cast path   [ obj.get_property[ 'startup_path' ] ] ]
-    tt : string [ cast string [ obj.get_property[ 'title'        ] ] ]
-    rt : path [ (sp) ? sp : path.path_startup[] ]
-    fr : string [ (tt && tt.count > 0) ? tt : 'trinity' ]
-    ok : bool [ connection.post*[ rt, fr, text, priority ] ]
-    if [ !ok ] log 'agent: inbox post failed'
+    if [ !obj ] return false
+    an9 : string [ (pick && pick.count > 0) ? pick : cast string [ obj.get_property[ 'agent' ] ] ]
+    nm9 : string [ (an9 && an9.count > 0) ? an9 : 'claude' ]
+    sp  : path [ cast path [ obj.get_property[ 'startup_path' ] ] ]
+    rt  : path [ (sp) ? sp : path.path_startup[] ]
+    md  : string [ '' ]
+    ok  : bool [ agent_shell_start[ nm9.chars, rt.chars, md.chars, text.chars ] != 0 ]
+    if [ !ok ] log 'agent: {nm9} did not start'
     return ok
 
 # the app names itself: the platform window is reused across a
@@ -7030,14 +6946,10 @@ TextInput ShotPrompt
                     tb9 : TButtons pk9
                     nm9 : vec string agent_names[ w.app_object ]
                     if [ tb9.selected >= 0 && tb9.selected < nm9.count ] w.agent_pick = nm9[ tb9.selected ]
-            # shell: the exchange's first message starts its agent; each
+            # the exchange's first message starts its agent; each
             # later one goes to that conversation as the new line alone
-            shell9 : bool [ agent_shell_pick[ w.app_object, w.agent_pick ] ]
-            if [ shell9 && first9 ] agent_shell_new[]
-            if [ shell9 && !first9 && text.count > 0 ] msg = text
-            # a session answers on the app's socket; a shell run is read
-            if [ w.agent_sock && !shell9 ]
-                msg = '{msg}\n\nReply through this app as well, on the unix socket {w.agent_sock}, one wire line per text line: message titles as: app status note <line>, optional expandable descriptions as: app status description <line>, and each edit you apply as its own diff (the lines you removed and added, never a git diff of the tree, which holds the user\'s changes too): app status diff <line>'
+            if [ first9 ] agent_shell_new[]
+            if [ !first9 && text.count > 0 ] msg = text
             if [ !w.app_object || !agent_post_as[ w.app_object, w.agent_pick, msg, 'now' ] ]
                 w.user_note[ 'Send failed; press Enter to retry' ]
                 pristine = false

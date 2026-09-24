@@ -1,62 +1,6 @@
 import trinity
 import <stdlib.h>
 
-AgentConnection CaptureConnection
-    public received : string
-    public directory : path
-    public sender : string
-    public priority : string
-    public accept : bool [ true ]
-
-    func post [ root: path, from: string, text: string, urgency: string ] -> bool
-        received = text
-        directory = root
-        sender = from
-        priority = urgency
-        return accept
-
-class AgentFixture
-    public startup_path : path
-    public title : string
-    public agent : string
-    public agent_connection : AgentConnection
-    public agent_inbox : path
-
-expect func configured_connection [] -> bool
-    connection : CaptureConnection []
-    fixture : AgentFixture [ startup_path: '/tmp/game', title: 'Game', agent_connection: connection ]
-    message : string 'Fix this light\n\nScreenshot: /tmp/crop with spaces.png'
-    if [ !agent_post[ fixture, message, 'now' ] ] return false
-    if [ connection.received != message ] return false
-    if [ connection.directory != fixture.startup_path ] return false
-    if [ connection.sender != 'Game' || connection.priority != 'now' ] return false
-    connection.accept = false
-    if [ agent_post[ fixture, message, 'next' ] ] return false
-    return connection.priority == 'next'
-
-expect func configured_socket [] -> bool
-    source : string 'agent_connection: SocketAgentConnection\n\tsocket: /tmp/user-agent.sock\n\ttoken: example-token\n'
-    fixture : cast AgentFixture [ Au.parse_agi[ typeid[ AgentFixture ], source.chars, null ] ]
-    if [ !fixture || !fixture.agent_connection ] return false
-    connection : cast SocketAgentConnection [ fixture.agent_connection ]
-    return connection.socket == path[ '/tmp/user-agent.sock' ] && connection.token == 'example-token'
-
-expect func simple_selection [] -> bool
-    fixture : AgentFixture []
-    selected : AgentConnection agent_connect[ fixture, null ]
-    if [ typeid[ selected ] != typeid[ ClaudeAgentConnection ] ] return false
-    Au.parse_agi[ null, 'agent: codex\n', fixture ]
-    selected = agent_connect[ fixture, null ]
-    if [ typeid[ selected ] != typeid[ CodexAgentConnection ] ] return false
-    Au.parse_agi[ null, 'agent: claude\n', fixture ]
-    selected = agent_connect[ fixture, null ]
-    if [ typeid[ selected ] != typeid[ ClaudeAgentConnection ] ] return false
-    fixture.agent_connection = CodexAgentConnection [ session: 'chosen-session' ]
-    if [ agent_connect[ fixture, 'codex' ] != fixture.agent_connection ] return false
-    fixture.agent_connection = null
-    fixture.agent = 'unknown'
-    return agent_connect[ fixture, null ] == null
-
 expect func optional_description [] -> bool
     entry : ShotEntry [ text: 'Title' ]
     if [ entry.description || entry.open ] return false
@@ -64,22 +8,3 @@ expect func optional_description [] -> bool
     entry.add_description[ 'Second line' ]
     if [ entry.text != 'Title' || entry.open ] return false
     return entry.description.count == 2 && entry.description[1] == 'Second line'
-
-func check [] -> bool
-    expect optional_description[], 'optional description failed'
-    expect configured_connection[], 'configured connection failed'
-    expect configured_socket[], 'configured socket failed'
-    expect simple_selection[], 'agent selection failed'
-    endpoint : cstr getenv[ 'TRINITY_AGENT_TEST_SOCKET' ]
-    if [ endpoint ]
-        connection : SocketAgentConnection [ socket: path[ endpoint ], token: 'test-token' ]
-        fixture : AgentFixture [ startup_path: '/tmp/game', title: 'Game', agent_connection: connection ]
-        message : string 'Fix this light\n\nScreenshot: /tmp/crop with spaces.png'
-        expect agent_post[ fixture, message, 'now' ], 'socket delivery failed'
-        fixture.agent_connection = null
-        fixture.agent_inbox = path[ endpoint ]
-        expect agent_post[ fixture, message, 'next' ], 'legacy socket delivery failed'
-        fixture.agent_connection = CodexAgentConnection [ socket: path[ endpoint ], session: 'test-session' ]
-        expect agent_post[ fixture, message, 'now' ], 'Codex delivery failed'
-    log 'agent connection tests passed'
-    return true
