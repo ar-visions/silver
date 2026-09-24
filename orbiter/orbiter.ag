@@ -1,5 +1,6 @@
 export 1.0.0
 export views ['git': FileType.ascii, 'b16': FileType.agnostic]
+# 32352
 
 import vec
 import img
@@ -730,8 +731,10 @@ Avatar OrbiterAvatar
             dn : bool [ rl || orb->agent_done ]
             hg : f32 [ (!dn && wb && orb->agent_changed) ? 1.0 : 0.0 ]
             halo_cur  = filter_n[ halo_cur,  hg, (dn) ? settle_amount : stage_amount, ux->frame_factor ]
+            # the flame burns toward a reload only; a done with none staged
+            # would leave it lit for good
             # the flame fades out on the filter; its fade in is the ignition's
-            if [ !dn ] flame_cur = filter_n[ flame_cur, 0.0, stage_amount, ux->frame_factor ]
+            if [ !rl ] flame_cur = filter_n[ flame_cur, 0.0, stage_amount, ux->frame_factor ]
             aura.pulse_width  = rest_pulse + (busy_pulse - rest_pulse) * halo_cur
             aura.pulse_height = rest_ph    + (busy_ph    - rest_ph)    * halo_cur
             aura.halo_height  = rest_halo  + (busy_halo  - rest_halo)  * halo_cur
@@ -739,10 +742,10 @@ Avatar OrbiterAvatar
             # ignition: from the moment the flame is asked for, its width
             # oscillates from +25% through -25% and decays to none in 1.5 s,
             # and the flame fades in over the same 1.5 s (a smoothstep)
-            if [ dn && !was_done ] ignite_us = epoch_micros[]
-            was_done = dn
+            if [ rl && !was_done ] ignite_us = epoch_micros[]
+            was_done = rl
             fw9 : f32 [ 1.0 ]
-            if [ dn && ignite_us > 0 ]
+            if [ rl && ignite_us > 0 ]
                 it9 : f32 [ f32[ epoch_micros[] - ignite_us ] / 1000000.0 ]
                 ip9 : f32 [ min[ it9 / ignite_s, 1.0 ] ]
                 flame_cur = max[ flame_cur, ip9 * ip9 * (3.0 - 2.0 * ip9) ]
@@ -2350,6 +2353,8 @@ element orbiter : trinity # implements compiler
     # the agents this app's user runs (agi `agents: [ claude, codex ]`); the
     # abstract's member is not in this type, so the agi needs it declared here
     public agents        : vec string
+    # session (the default) or shell: see media_app.agent_mode
+    public agent_mode    : string
     # the whole argv tail: the thing we open, then the module's own args.
     # split in init — resource keeps the first token, module_args the rest
     default module_args  : string
@@ -2427,7 +2432,6 @@ element orbiter : trinity # implements compiler
         carry_sent = true
     mutable carry_landed  : bool
     mutable swap_at       : i64    # when the flame lit: the apply waits for it to burn
-    mutable done_put_away : bool   # this done already put the exchange away
     intern cell_dumped    : bool
     intern frost_pushed  : i32 [ -1 ]         # last frost stage synced to shader
     # mic capture running / final transcription winding down
@@ -3449,7 +3453,6 @@ element orbiter : trinity # implements compiler
             if [ agent_state != 'sent' ] ux.agent_note[ agent_state, agent_note ]
             ux.agent_busy = agent_state == 'busy'
         agent_done = agent_state == 'done'
-        if [ !agent_done ] done_put_away = false
         if [ agent_state == 'idle' || agent_state == 'sent' ]
             agent_note    = ''
             agent_changed = false
@@ -3474,7 +3477,6 @@ element orbiter : trinity # implements compiler
         log 'avatar debug: state {av_dbg_step}'
         agent_done    = false
         agent_changed = av_dbg_step >= 3
-        done_put_away = true
         ux.agent_busy = false
         agent_state   = 'idle'
         agent_note    = ''
@@ -8034,11 +8036,9 @@ element orbiter : trinity # implements compiler
                 ux.restyle = true
             if [ !swap_carry ] swap_carry = ExchangeState [ ]
             if [ !swap_view  ] swap_view  = vec f32 []
-            # the fade starts once the first fully loaded frame has drawn
+            # the reloaded exchange stays open: the user closes it
             if [ carry_landed && ux.loaded[] ]
                 carry_landed = false
-                ux.swap_fade = true
-                ux.restyle   = true
             # the next instance is ready (pending 3): the state crosses, then the go
             if [ pend9 == 3 && !swap_fading ]
                 swap_fading = true
@@ -8054,13 +8054,6 @@ element orbiter : trinity # implements compiler
                 swap_live = true
                 swap_hot  = false
                 swap_at   = now9
-            # done with nothing staged (the change was outside this app's
-            # dependencies): the exchange is put away as Esc would, the
-            # status button brings it back; once per done
-            el [ agent_done && !done_put_away && ux && ux.shot_ask && !ux.agent_min && pend9 == 0 && hs9 ]
-                done_put_away = true
-                ux.agent_min  = true
-                ux.restyle    = true
             if [ swap_live && !swap_hot && now9 - swap_at > 1400 && hs9 ]
                 request_swap[]
                 swap_hot    = true

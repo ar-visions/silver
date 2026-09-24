@@ -233,6 +233,10 @@ func agent_inbox_post [ sock: cstr, peer: cstr, sender: cstr, txt: cstr, priorit
 func agent_codex_post [ root: cstr, sock: cstr, session: cstr, txt: cstr ] -> i32
 func agent_codex_post_async [ root: cstr, sock: cstr, session: cstr, txt: cstr ] -> i32
 func agent_codex_poll [] -> i32
+func agent_shell_start [ agent: cstr, root: cstr, model: cstr, txt: cstr ] -> i32
+func agent_shell_line [ buf: @i8, cap: i32 ] -> i32
+func agent_shell_stop []
+func agent_shell_new []
 
 # the launch/live property spec of any object, read from its type: the
 # running app answers props with it, and a host enumerates a module by
@@ -502,8 +506,8 @@ abstract live_app media_app
         if [ e.hide      ] em['hide']      = 'true'
         if [ e.focusable ] em['focusable'] = 'true'
         if [ e.opacity < 1.0 ] em['opacity'] = '{e.opacity}'
-        if [ e inherits ShotNotes && e.ux && e.ux.agent_notes ]
-            em['entries'] = e.ux.agent_notes
+        if [ e inherits ShotUser && e.ux && e.ux.notes ]
+            em['entries'] = e.ux.notes
         if [ e.elements ]
             inner : map object [string] []
             for [ ch: element, k: string ] in e.elements
@@ -1191,6 +1195,11 @@ abstract live_app media_app
             agent_codex_poll[]
             wn : Window [ w ]
             aa :  cast element [ wn.app_object ]
+            # a shell run's events, as the statuses an agent would post
+            for [ aa ]
+                sb : local i8 [ 1024 ]
+                if [ agent_shell_line[ @sb[0], 1024 ] <= 0 ] break
+                aa.on_agent*[ 'status {string [ @sb[0] ]}' ]
             if [ !agent_on ]
                 name : 'app'
                 if [ aa ]
@@ -1642,8 +1651,7 @@ class ExchangeState
     public shot_text   : string
     public agent_view  : bool
     public agent_min   : bool
-    public agent_notes : vec ShotEntry
-    public user_notes  : vec ShotEntry
+    public notes       : vec ShotEntry
     public agent_pick  : string
     public blur        : ReduceBlur
     public av_halo     : f32
@@ -1813,15 +1821,15 @@ Display Window
     mutable shot_ask            : path
     # the exchange is up: the agent's lines and the app's avatar under the field
     mutable agent_view          : bool
-    mutable agent_notes         : vec ShotEntry
-    mutable agent_diff_cur      : bool   # the last wire line was a diff line: the next joins it
+    mutable notes               : vec ShotEntry   # the user's lines and the agent's, in order
+    mutable notes_scroll        : f32    # px the box is scrolled up from the newest
+    mutable agent_diff_cur     : bool   # the last wire line was a diff line: the next joins it
     mutable shot_file           : bool   # the exchange is about a file (shot_ask is its path), not a crop
     mutable shot_line           : i32    # the line in that file, 0 for none
     mutable agent_min           : bool     # Esc put the exchange away; the status item brings it back
     mutable shot_text           : string   # the lines so far: every send reposts the whole message
     mutable agent_sock          : string   # this app's socket path, quoted to the agent
     mutable agent_pick          : string   # the agent chosen at the prompt (an `agents` name)
-    mutable user_notes          : vec ShotEntry   # the user's lines, their own list beside the agent's
     mutable agent_busy          : bool     # the agent said busy: the shine keeps moving
     mutable swap_fade           : bool     # the reload is asked: the exchange fades on alpha
     mutable snap_transitions    : bool     # this frame's transitions land at once (a restore)
@@ -1872,50 +1880,48 @@ Display Window
         screenshot_image    = null
         will_animate        = true
 
-    # one of the user's lines into their list
-    func user_note [ text: string ]
-        if [ !text || text.count == 0 ] return
-        if [ !user_notes ] user_notes = vec ShotEntry []
-        user_notes.push[ ShotEntry [ text: text ] ]
-        while [ user_notes.count > 8 ] user_notes.remove[ 0 ]
+    # an entry into the exchange's one list; the box repaints
+    func note_push [ en: ShotEntry ]
+        if [ !notes ] notes = vec ShotEntry []
+        notes.push[ en ]
+        notes_scroll   = 0.0
+        agent_diff_cur = false
+        while [ notes.count > 24 ] notes.remove[ 0 ]
+        notes_dirty[]
+
+    func notes_dirty []
         if [ root && root.elements ]
             ue : element root.elements[ 'unotes' ]
             if [ ue ] ue.pristine = false
         will_animate = true
 
-    # a line from the agent into its list
+    # one of the user's lines
+    func user_note [ text: string ]
+        if [ !text || text.count == 0 ] return
+        note_push[ ShotEntry [ text: text, user: true ] ]
+
+    # a line from the agent
     func agent_note [ state: string, text: string ]
         if [ !text || text.count == 0 ] return
-        if [ !agent_notes ] agent_notes = vec ShotEntry []
-        agent_notes.push[ ShotEntry [ text: text ] ]
-        agent_diff_cur = false
-        while [ agent_notes.count > 8 ] agent_notes.remove[ 0 ]
-        if [ root && root.elements ]
-            ne : element root.elements[ 'notes' ]
-            if [ ne ] ne.pristine = false
-        will_animate = true
+        note_push[ ShotEntry [ text: text ] ]
 
     func agent_description [ text: string ]
-        if [ !agent_notes || agent_notes.count == 0 ] return
-        en : ShotEntry agent_notes[ agent_notes.count - 1 ]
+        if [ !notes || notes.count == 0 ] return
+        en : ShotEntry notes[ notes.count - 1 ]
+        if [ en.user ] return
         en.add_description[ text ]
         agent_diff_cur = false
-        if [ root && root.elements ]
-            ne : element root.elements[ 'notes' ]
-            if [ ne ] ne.pristine = false
-        will_animate = true
+        notes_dirty[]
 
     # a line of a source diff the agent applied: consecutive diff lines are
     # one entry in its box, shown as a label (file, +added -removed) whose
     # code expands when clicked
     func agent_diff [ text: string ]
         if [ !text ] return
-        if [ !agent_notes ] agent_notes = vec ShotEntry []
-        en : ShotEntry [ (agent_diff_cur && agent_notes.count > 0) ? agent_notes[ agent_notes.count - 1 ] : null ]
+        en : ShotEntry [ (agent_diff_cur && notes && notes.count > 0) ? notes[ notes.count - 1 ] : null ]
         if [ !en || !en.diff ]
             en = ShotEntry [ text: text, diff: vec string [] ]
-            agent_notes.push[ en ]
-            while [ agent_notes.count > 8 ] agent_notes.remove[ 0 ]
+            note_push[ en ]
         en.diff.push[ text ]
         agent_diff_cur = true
         # the label: the file from a 'diff --git a/x b/x' header (else the
@@ -1930,10 +1936,7 @@ Display Window
             if [ ln.count > 0 && ln.chars[ 0 ] == 43 && !ln.starts_with[ '+++' ] ] adds += 1
             if [ ln.count > 0 && ln.chars[ 0 ] == 45 && !ln.starts_with[ '---' ] ] dels += 1
         en.text = '{name}  +{adds} -{dels}'
-        if [ root && root.elements ]
-            ne : element root.elements[ 'notes' ]
-            if [ ne ] ne.pristine = false
-        will_animate = true
+        notes_dirty[]
 
     # the exchange back up after an Esc
     public func agent_show []
@@ -1953,8 +1956,7 @@ Display Window
         xs.shot_text   = shot_text
         xs.agent_view  = agent_view
         xs.agent_min   = agent_min
-        xs.agent_notes = agent_notes
-        xs.user_notes  = user_notes
+        xs.notes       = notes
         xs.agent_pick  = agent_pick
         xs.blur        = screenshot_blur
 
@@ -1965,8 +1967,7 @@ Display Window
         shot_text       = xs.shot_text
         agent_view      = xs.agent_view
         agent_min       = xs.agent_min
-        agent_notes     = xs.agent_notes
-        user_notes      = xs.user_notes
+        notes           = xs.notes
         agent_pick      = xs.agent_pick
         screenshot_blur = xs.blur
         # the blur is this window's now: its stages pointed at the last
@@ -2005,8 +2006,7 @@ Display Window
         shot_line   = ln
         agent_view  = false
         agent_min   = false
-        agent_notes = null
-        user_notes  = null
+        notes       = null
         shot_text   = ''
         restyle     = true
         will_animate = true
@@ -2038,8 +2038,7 @@ Display Window
         agent_view      = false
         agent_min       = false
         shot_text       = ''
-        user_notes      = null
-        agent_notes     = null
+        notes           = null
         screenshot_blur = null
         if [ focus ] release_focus[ focus ]
         restyle = true
@@ -2844,19 +2843,17 @@ Display Window
                     tb0 : TButtons pk0
                     if [ tb0.selected >= 0 && tb0.selected < nm9.count ] ix9 = tb0.selected
             if [ agent_view ]
-                e[ 'unotes' ] = ShotUser   [ topmost: true, fading: swap_fade, area: Region [ 'l24px b-15%+594px w440px h420px' ] ]
-                e[ 'shot' ]   = ShotPrompt [ topmost: true, fading: swap_fade, area: Region [ 'l32px b-15%+220px w388px h40px' ], label: 'prompt description' ]
+                e[ 'unotes' ] = ShotUser   [ topmost: true, fading: swap_fade, area: Region [ 'l500px t15%+24px r24px b-15%+174px' ] ]
+                e[ 'shot' ]   = ShotPrompt [ topmost: true, fading: swap_fade, area: Region [ 'l512px b-15%+220px r68px b-15%+180px' ], label: 'prompt description' ]
             el
                 e[ 'unotes' ] = ShotUser   [ topmost: true, fading: swap_fade ]
                 e[ 'shot' ]   = ShotPrompt [ topmost: true, fading: swap_fade, label: 'prompt description' ]
             # the mic, inside the field's right end (as a search box has it):
             # only where something can transcribe (a host, or the app itself)
             if [ host_slot[] > 0 || (ae && ae.dictates*[]) ]
-                mic9 : string [ (agent_view) ? 'l420px b-15%+216px w32px h32px' : 'l50%+176px b216px w32px h32px' ]
+                mic9 : string [ (agent_view) ? 'l100%-60px b-15%+216px w32px h32px' : 'l50%+176px b216px w32px h32px' ]
                 e[ 'shot_mic' ] = ShotMic [ topmost: true, fading: swap_fade, icon: 'mic', icon_fit: 0.55, manual_mode: true,
                     selected: dict_on, area: Region [ mic9 ] ]
-            if [ agent_view ]
-                e[ 'notes' ]  = ShotNotes [ topmost: true, fading: swap_fade ]
             e[ 'shot_close' ] = ShotClose [ topmost: true, fading: swap_fade, icon: 'close', icon_fit: 0.6, manual_mode: true ]
             # the picker last: over the blur and the boxes
             pw9 : i32 [ i32[ nm9.count ] * 96 ]
@@ -3230,7 +3227,7 @@ Display Window
             return
         if [ ev.key.state && ev.key.shift &&
              (ev.key.ctrl || ev.key.meta) && ev.key.unicode == 83 ]
-            screenshot_begin[]
+            if [ !shot_ask || agent_min ] screenshot_begin[]
             return
         # ctrl/cmd with = or -: the font unit, 4 steps of 2px each way of 22
         if [ ev.key.state && (ev.key.ctrl || ev.key.meta) && vk ]
@@ -5323,6 +5320,15 @@ AgentConnection CodexAgentConnection
         msg : 'From: {from}\nPriority: {urgency}\n\n{text}'
         return agent_codex_post_async[ root.chars, endpoint.chars, thread.chars, msg.chars ] != 0
 
+# the agent's CLI for the exchange, its output streamed
+AgentConnection ShellAgentConnection
+    public agent : string
+    public model : string
+
+    func post [ root: path, from: string, text: string, urgency: string ] -> bool
+        md : string [ (model) ? model : '' ]
+        return agent_shell_start[ agent.chars, root.chars, md.chars, text.chars ] != 0
+
 AgentConnection ClaudeAgentConnection
     public socket : path
 
@@ -5346,6 +5352,8 @@ abstract media_app trinity
     # the agents the user runs, by adapter name ('claude', 'codex', ...):
     # the exchange's prompt offers the pick; `agent` alone is one of them
     public agents : vec string
+    # configuration only: session (the mailbox) or shell (a clean run)
+    public agent_mode : string
     public agent_connection : AgentConnection
     # Legacy socket setting for the default connection.
     public agent_inbox  : path
@@ -5496,9 +5504,18 @@ abstract media_app trinity
 
 
 
+# the app's configured agent_mode: shell, else the session mailbox
+func agent_shell_pick [ obj: Au, pick: string ] -> bool
+    if [ !obj ] return false
+    md : string [ cast string [ obj.get_property[ 'agent_mode' ] ] ]
+    return md && md == 'shell'
+
 # the adapter for a pick (the exchange's choice), else the configured one
 func agent_connect [ obj: Au, pick: string ] -> AgentConnection
     if [ !obj ] return null
+    if [ agent_shell_pick[ obj, pick ] ]
+        an9 : string [ (pick && pick.count > 0) ? pick : cast string [ obj.get_property[ 'agent' ] ] ]
+        return ShellAgentConnection [ agent: (an9 && an9.count > 0) ? an9 : 'claude' ]
     connection : cast AgentConnection [ obj.get_property[ 'agent_connection' ] ]
     if [ connection && (!pick || pick.count == 0) ] return connection
     if [ connection && pick == 'codex' && connection inherits CodexAgentConnection ] return connection
@@ -6713,6 +6730,7 @@ class ShotEntry
     public diff : vec string
     public description : vec string
     public open : bool
+    public user : bool     # the user's line, not the agent's
     public y0   : f32
     public y1   : f32
     public title_y1 : f32
@@ -6739,14 +6757,33 @@ func expand_tabs [ s: string, w: i32 ] -> string
             col += 1
     return out
 
-func draw_notes [ cv: Canvas, notes: vec ShotEntry, b: rect, color: rgba, shine_last: bool, t9: f32 ]
-    if [ !notes || notes.count == 0 ] return
+# a line's **marked** runs in `lit`; returns the state at its end
+func draw_marked [ cv: Canvas, ln: string, row: rect, base: rgba, lit: rgba, on: bool ] -> bool
+    x    : f32 [ row.x ]
+    rest : string ln
+    lit9 : bool [ on ]
+    while [ rest.count > 0 ]
+        ix : i32 [ rest.index_of[ '**' ] ]
+        seg : string [ (ix < 0) ? rest : rest.mid[ 0, ix ] ]
+        if [ seg.count > 0 ]
+            cv.fill_color[ (lit9) ? lit : base ]
+            cv.draw_text[ seg, rect [ x: x, y: row.y, w: row.x + row.w - x, h: row.h ], vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+            cv.paint[]
+            x += cv.measure_text[ seg ].w
+        if [ ix < 0 ] break
+        lit9 = !lit9
+        rest = rest.mid[ ix + 2, rest.count - ix - 2 ]
+    return lit9
+
+# scroll is px up from the newest; returns the most it can be
+func draw_notes [ cv: Canvas, notes: vec ShotEntry, b: rect, shine_last: bool, t9: f32, scroll: f32 ] -> f32
+    if [ !notes || notes.count == 0 ] return 0.0
     pad  : f32 [ 12.0 ]
-    lh   : f32 [ 18.0 ]
-    dlh  : f32 [ 16.0 ]     # a diff line
-    gap  : f32 [ 10.0 ]
+    lh   : f32 [ 23.0 ]
+    dlh  : f32 [ 19.0 ]     # a diff line
+    gap  : f32 [ 12.0 ]
     maxw : f32 [ b.w - pad * 2.0 ]
-    cv.font_size[ 14 ]
+    cv.font_size[ 18 ]
     # first pass: the wrapped lines and the height they take
     wrapped : vec Au []
     descriptions : vec Au []
@@ -6771,7 +6808,8 @@ func draw_notes [ cv: Canvas, notes: vec ShotEntry, b: rect, color: rgba, shine_
         n += 1
     # newest stays in view: overflow scrolls the oldest out the top
     y : f32 [ b.y + pad ]
-    if [ total > b.h - pad * 2.0 ] y = b.y + b.h - pad - total
+    smax : f32 [ max[ 0.0, total - (b.h - pad * 2.0) ] ]
+    if [ smax > 0.0 ] y = b.y + b.h - pad - total + clamp[ scroll, 0.0, smax ]
     # the crop is in world pixels: the canvas translate goes on top of the
     # layer's local rect (as the label path does)
     cx0 : f32 [ cv.transform_tx[] + b.x ]
@@ -6792,14 +6830,19 @@ func draw_notes [ cv: Canvas, notes: vec ShotEntry, b: rect, color: rgba, shine_
         # one stands out; under the shine the base is a little darker
         # still, for more contrast against the band
         last9 : bool [ e == n - 1 ]
+        color : rgba [ (en.user) ? rgba [ '#ffffffcc' ] : rgba [ '#9ad8ff' ] ]
         lc : rgba [ (en.diff || en.description) ? rgba [ '#f2d38a' ] : (last9) ? color : rgba [ r: color.r * 0.82, g: color.g * 0.82, b: color.b * 0.82, a: color.a * 0.8 ] ]
         sb : rgba [ r: color.r * 0.78, g: color.g * 0.78, b: color.b * 0.78, a: color.a ]
-        cv.font_size[ 14 ]
+        lit9 : rgba [ r: lc.r + (1.0 - lc.r) * 0.7, g: lc.g + (1.0 - lc.g) * 0.7, b: lc.b + (1.0 - lc.b) * 0.7, a: 1.0 ]
+        on9  : bool [ false ]
+        cv.font_size[ 18 ]
         for [ k: i32 0, k < ls.count, k += 1 ]
             ln  : string ls[ k ]
             row : rect [ x: b.x + pad, y: y, w: maxw, h: lh ]
-            if [ shine_last && last9 && k == ls.count - 1 && !en.diff ]
-                shine_text[ cv, ln, row, 14, sb, t9 ]
+            if [ on9 || ln.index_of[ '**' ] >= 0 ]
+                on9 = draw_marked[ cv, ln, row, lc, lit9, on9 ]
+            el [ shine_last && last9 && k == ls.count - 1 && !en.diff && !en.user ]
+                shine_text[ cv, ln, row, 18, sb, t9 ]
             el
                 cv.fill_color[ lc ]
                 cv.draw_text[ ln, row, vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
@@ -6816,7 +6859,7 @@ func draw_notes [ cv: Canvas, notes: vec ShotEntry, b: rect, color: rgba, shine_
                 y += lh
         if [ en.diff && en.open ]
             # the code: + green, - red, @@ blue, the rest dim; no wrap
-            cv.font_size[ 12 ]
+            cv.font_size[ 15 ]
             y += 4.0
             for [ dl0: string ] in en.diff
                 dl : string expand_tabs[ dl0, 4 ]
@@ -6826,9 +6869,10 @@ func draw_notes [ cv: Canvas, notes: vec ShotEntry, b: rect, color: rgba, shine_
                 cv.draw_text[ dl, rect [ x: b.x + pad + 8.0, y: y, w: maxw - 8.0, h: dlh ], vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
                 cv.paint[]
                 y += dlh
-            cv.font_size[ 14 ]
+            cv.font_size[ 18 ]
         en.y1 = y
     cv.clear_crop[]
+    return smax
 
 # the user's conversation control: it starts at the middle of the
 # screen, the sent lines stack from its top, and its bottom line is the
@@ -6840,14 +6884,14 @@ Layer ShotUserLayer
         w : Window parent.ux
         if [ !w ] return
         pad : f32 [ 12.0 ]
-        lh  : f32 [ 18.0 ]
-        gap : f32 [ 10.0 ]
+        lh  : f32 [ 23.0 ]
+        gap : f32 [ 12.0 ]
         row : f32 [ 40.0 ]     # the editable line
-        cv.font_size[ 14 ]
+        cv.font_size[ 18 ]
         total : f32 [ 0.0 ]
         n : i32 [ 0 ]
-        if [ w.user_notes ]
-            for [ note: ShotEntry ] in w.user_notes
+        if [ w.notes ]
+            for [ note: ShotEntry ] in w.notes
                 ls : vec string wrap_note[ cv, note.text, bounds.w - pad * 2.0 ]
                 if [ n > 0 ] total += gap
                 total += f32[ ls.count ] * lh
@@ -6856,6 +6900,8 @@ Layer ShotUserLayer
         # four rows at most: beyond that the oldest scroll out the top
         max_eh : f32 [ lh * 4.0 + gap * 3.0 + pad * 2.0 ]
         if [ eh > max_eh ] eh = max_eh
+        # the conversation fills its whole box
+        if [ w.agent_view ] eh = bounds.h
         if [ eh > bounds.h - row - pad ] eh = bounds.h - row - pad
         bh : f32 [ eh + row + pad ]
         # the frame hugs the bottom of the element and grows upward
@@ -6867,66 +6913,53 @@ Layer ShotUserLayer
             fl.area = Region [ 'l0 b{i32[bh]}px w{i32[bounds.w]}px h{i32[bh]}px' ]
             parent.pristine = false
         if [ n > 0 ]
-            draw_notes[ cv, w.user_notes, rect [ x: bounds.x, y: fy0, w: bounds.w, h: eh ],
-                rgba [ '#ffffffcc' ], false, 0.0 ]
+            smax : f32 draw_notes[ cv, w.notes, rect [ x: bounds.x, y: fy0, w: bounds.w, h: eh ],
+                w.agent_busy, f32[ epoch_millis[] % 100000 ] / 1000.0, w.notes_scroll ]
+            w.notes_scroll = clamp[ w.notes_scroll, 0.0, smax ]
             # the rule above the editable line
             cv.fill_color[ rgba [ '#ffffff22' ] ]
             cv.rect_to[ bounds.x + pad + 6.0, fy0 + eh - 0.5, bounds.w - pad * 2.0 - 12.0, 1.0 ]
             cv.paint[]
         # the field is the frame's bottom row: its place is fixed by its
         # own style (and it moves aside with the box), never set here
-
-# bottom center until the first send, then at the bottom left (the
-# placement is a Region: a CSS area with a % offset lands wrong)
-element ShotUser
-    # Region slots are l t r b: a 'bN' in the t slot puts the TOP N px from
-    # the bottom, so the box's top sits 594px up and its 420px reach the
-    # field's row (H-220 .. H-180) with 6px around it
-    area  : Region { l50%-220px b594px w440px h420px }
-    frame : Layer [ area: Region [ 'l0 b52px w440px h52px' ], fill_color: rgba [ '#0a0a12cc' ],
-        stroke_width: 1.0, stroke_color: rgba [ '#ffffff66' ], radius: Radius [ '12' ] ]
-    lines : ShotUserLayer []
-    style : CSS {
-    :fading
-        opacity: 0.0, 3000ms cubic outward
-    }
-
-# the agent's entries, right of the avatar: the current line shines
-# while the agent works
-Layer ShotNotesLayer
-    func draw [ cv: Canvas ]
-        if [ !parent ] return
-        w : Window parent.ux
-        if [ !w ] return
-        draw_notes[ cv, w.agent_notes, bounds, rgba [ '#9ad8ff' ], w.agent_busy, f32[ epoch_millis[] % 100000 ] / 1000.0 ]
-        # the shine moves: the box repaints every frame while the agent
-        # works (pristine is set back after this draw; needs_frame holds it)
-        if [ w.agent_busy && w.agent_notes && w.agent_notes.count > 0 ]
+        # the shine moves: repaint every frame while the agent works
+        if [ w.agent_busy && n > 0 ]
             parent.needs_frame = true
             w.will_animate     = true
 
-element ShotNotes
+# bottom center until the first send, then the right side, large (the
+# placement is a Region: a CSS area with a % offset lands wrong)
+element ShotUser
     # a click on a diff's label opens or closes its code
     func on_press [ ev: Event ]
         w : Window ux
-        if [ !w || !w.agent_notes ] return
+        if [ !w || !w.notes ] return
         my : f32 [ ev.mouse.pos.y ]
-        for [ en: ShotEntry ] in w.agent_notes
+        for [ en: ShotEntry ] in w.notes
             if [ (en.diff || en.description) && my >= en.y0 && my < en.title_y1 ]
                 en.open  = !en.open
                 pristine = false
                 w.will_animate = true
                 return
 
-    # the agent's box takes the right side, large; the avatar settles at
-    # the upper left over the user's small box
-    # its bottom is the user's box's bottom (H-174), and the same frame
-    area  : Region { l500px t15%+24px r24px b-15%+174px }
-    # animated: paints every frame, so the shine on the current line moves
+    # the wheel scrolls the conversation, three lines a notch
+    func on_wheel [ ev: Event ]
+        w : Window ux
+        if [ !w || !w.notes ] return
+        w.notes_scroll = max[ 0.0, w.notes_scroll + ev.mouse.wheel_delta.y * 69.0 ]
+        pristine = false
+        w.will_animate = true
+        ev.stop[]
+
+    # Region slots are l t r b: a 'bN' in the t slot puts the TOP N px from
+    # the bottom, so the box's top sits 594px up and its 420px reach the
+    # field's row (H-220 .. H-180) with 6px around it
+    area  : Region { l50%-220px b594px w440px h420px }
+    # paints every frame, so the shine on the current line moves
     animated : true
-    frame : Layer [ fill_color: rgba [ '#0a0a12cc' ], stroke_width: 1.0,
-        stroke_color: rgba [ '#ffffff66' ], radius: Radius [ '12' ] ]
-    notes : ShotNotesLayer []
+    frame : Layer [ area: Region [ 'l0 b52px w440px h52px' ], fill_color: rgba [ '#0a0a12cc' ],
+        stroke_width: 1.0, stroke_color: rgba [ '#ffffff66' ], radius: Radius [ '12' ] ]
+    lines : ShotUserLayer []
     style : CSS {
     :fading
         opacity: 0.0, 3000ms cubic outward
@@ -6958,7 +6991,7 @@ TextInput ShotPrompt
             stroke_width: 0.0
         layers.face:
             label_color: #ffffff66
-            label_size: 16
+            label_size: 18
             editable: true
             label_align: 0.0 0.5
             label_offset: 2.0 0.0
@@ -6990,9 +7023,6 @@ TextInput ShotPrompt
             all : string [ (!first9) ? ((text.count > 0) ? '{w.shot_text}\n{text}' : w.shot_text) : text ]
             ref9 : string [ (w.shot_file) ? ((w.shot_line > 0) ? 'File: {w.shot_ask}:{w.shot_line}' : 'File: {w.shot_ask}') : 'Screenshot: {w.shot_ask}' ]
             msg : string [ (all.count > 0) ? '{all}\n\n{ref9}' : ref9 ]
-            # Every turn carries its own reply address.
-            if [ w.agent_sock ]
-                msg = '{msg}\n\nReply through this app as well, on the unix socket {w.agent_sock}, one wire line per text line: message titles as: app status note <line>, optional expandable descriptions as: app status description <line>, and each edit you apply as its own diff (the lines you removed and added, never a git diff of the tree, which holds the user\'s changes too): app status diff <line>'
             # the picker's choice is the agent, from the first send on
             if [ w.root && w.root.elements ]
                 pk9 : element w.root.elements[ 'agent_pick' ]
@@ -7000,6 +7030,14 @@ TextInput ShotPrompt
                     tb9 : TButtons pk9
                     nm9 : vec string agent_names[ w.app_object ]
                     if [ tb9.selected >= 0 && tb9.selected < nm9.count ] w.agent_pick = nm9[ tb9.selected ]
+            # shell: the exchange's first message starts its agent; each
+            # later one goes to that conversation as the new line alone
+            shell9 : bool [ agent_shell_pick[ w.app_object, w.agent_pick ] ]
+            if [ shell9 && first9 ] agent_shell_new[]
+            if [ shell9 && !first9 && text.count > 0 ] msg = text
+            # a session answers on the app's socket; a shell run is read
+            if [ w.agent_sock && !shell9 ]
+                msg = '{msg}\n\nReply through this app as well, on the unix socket {w.agent_sock}, one wire line per text line: message titles as: app status note <line>, optional expandable descriptions as: app status description <line>, and each edit you apply as its own diff (the lines you removed and added, never a git diff of the tree, which holds the user\'s changes too): app status diff <line>'
             if [ !w.app_object || !agent_post_as[ w.app_object, w.agent_pick, msg, 'now' ] ]
                 w.user_note[ 'Send failed; press Enter to retry' ]
                 pristine = false
