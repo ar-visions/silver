@@ -1386,6 +1386,21 @@ debug+quarantine and -O2. Startup 71k -> 55k objects.
    capture waits for its own submit (new Command.finish): the next
    frame drew over the screen while the copy still read it.
 
+## Compiler coverage (Sep 23 2026)
+
+`make coverage` builds into install/coverage alone: aether,
+aclang, silver and silver-lib get -fprofile-instr-generate
+-fcoverage-mapping, their libraries stay beside the binary
+(rpath @executable_path first), install/lib and install/bin
+are untouched. `support/coverage.sh [module]` runs the module's
+expects with it and writes a report and install/coverage/html.
+LLVM_PROFILE_FILE uses %c: silver execs the test app, so the
+counters must already be on disk.
+First run, features 167/167: functions 71%, lines 69%,
+branches 40% (silver.c 32%, aether.c 49%, aclang.cc 71%).
+OPEN: one coverage run reported features failing; the output
+was filtered and three reruns passed, so the test is unknown.
+
 ## MEMORY: the reload transition (Sep 22 2026, fixed)
 
 THE REQUIREMENT (Kalen, said many times, do not reinterpret it):
