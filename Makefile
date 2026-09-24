@@ -17,7 +17,7 @@ AWAKE := $(if $(filter Darwin,$(shell uname -s)),caffeinate -i,)
 export PROJECT_PATH
 export PROJECT_NAME
 
-.PHONY: all bootstrap build clean debug release asan
+.PHONY: all bootstrap build clean debug release asan coverage
 
 all: debug
 
@@ -29,6 +29,11 @@ release:
 
 asan:
 	$(MAKE) BUILD_ROOT=$(SILVER)/install/build CONFIG=debug ASAN=1 build
+
+# aether and silver instrumented, in install/coverage alone
+coverage:
+	@"$(SILVER)/bootstrap.sh" --coverage
+	$(AWAKE) $(NINJA) -j8 -C $(SILVER)/install/coverage -f $(PROJECT_NAME).ninja
 
 # put `silver` on the user's PATH without any env-var/profile edits: symlink it
 # into the first writable directory already on PATH (no sudo). last `make

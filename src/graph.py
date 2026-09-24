@@ -35,6 +35,7 @@ def get_env_vars():
     parser.add_argument('--debug',          action='store_true', default=False, help='debug')
     parser.add_argument('--release',        action='store_true', default=False, help='release')
     parser.add_argument('--asan',           action='store_true', default=False, help='enable address sanitizer')
+    parser.add_argument('--coverage',       action='store_true', default=False, help='instrument aether and silver for llvm-cov')
     parser.add_argument('sdk', nargs='?', default='native',
                         help='target SDK / platform triple (default: native)')
 
@@ -55,6 +56,7 @@ def get_env_vars():
         'SDK':          args.sdk,
         'DEBUG':        args.debug,
         'ASAN':         args.asan,
+        'COVERAGE':     args.coverage,
         'IMPORT':       import_path.replace('\\', '/')
     }
 

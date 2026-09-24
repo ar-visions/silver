@@ -9,9 +9,13 @@ from graph import parse_g_file, get_env_vars
 
 args            = get_env_vars()
 is_asan         = args['ASAN']
-is_debug        = args['DEBUG'] or is_asan
+is_coverage     = args['COVERAGE']
+is_debug        = args['DEBUG'] or is_asan or is_coverage
 sdk             = args['SDK']
-fname           = "build"   # ONE core home; config lives in flags + stamp
+fname           = "coverage" if is_coverage else "build"   # ONE core home; config lives in flags + stamp
+# the modules a coverage build instruments; the rest stay plain
+covered         = {'aether', 'aclang', 'silver', 'silver-lib'}
+cov_flags       = "-fprofile-instr-generate -fcoverage-mapping"
 system          = platform.system()
 silver_root     = Path(args['SILVER'])
 silver          = Path(args['IMPORT'])
@@ -132,19 +136,19 @@ def escape_path(p):
     """escape path for ninja"""
     return norm_path(p).replace('$', '$$').replace(':', '$:')
 
-def resolve_deps(modules, deps, plat, root_p, builddir):
+def resolve_deps(modules, deps, plat, lib_p, builddir):
     out = []
     mod_map = {m['name']: m for m in modules}
     for d in deps:
         if d in mod_map:
             dep_mod = mod_map[d]
             if dep_mod['target'] == 'static':
-                out.append(f"{root_p}/lib/{plat['lib_pre']}{d}{plat['lib']}")
+                out.append(f"{lib_p}/{plat['lib_pre']}{d}{plat['lib']}")
             elif dep_mod['target'] == 'shared':
                 out_name = dep_mod.get('libname') or d
                 # windows links against the import lib, not the dll itself
                 ext = plat['lib'] if system == 'Windows' else plat['shared']
-                out.append(f"{root_p}/lib/{plat['lib_pre']}{out_name}{ext}")
+                out.append(f"{lib_p}/{plat['lib_pre']}{out_name}{ext}")
             elif dep_mod['target'] == 'app':
                 out.append(f"{builddir}/{d}{plat['exe']}")
             else:
@@ -181,6 +185,9 @@ def write_ninja(project, root, import_dir, build_dir, plat):
     import_p = norm_path(import_dir)
     # ninja paths need the drive colon escaped; flags must not be
     import_esc = escape_path(import_p)
+    # a coverage build keeps its libraries beside its own binary
+    lib_p   = build_p if is_coverage else f"{import_p}/lib"
+    lib_esc = escape_path(lib_p)
     # the interpreter running gen.py -- it already imports our modules
     python = norm_path(sys.executable)
     
@@ -293,6 +300,7 @@ def write_ninja(project, root, import_dir, build_dir, plat):
     lpath = ''
     if system == "Darwin":
         lpath = '-Wl,-rpath,@executable_path/../lib'
+        if is_coverage: lpath = '-Wl,-rpath,@executable_path ' + lpath
     elif system == "Linux":
         # $ORIGIN-relative so the binary finds its libs with NO LD_LIBRARY_PATH:
         # $ORIGIN = its own dir (e.g. debug/ siblings), $ORIGIN/../lib = the core libs
@@ -367,7 +375,8 @@ def write_ninja(project, root, import_dir, build_dir, plat):
             f"-DAU_LINK_{own}=__attribute__((dll"
             f"{'export' if src == host else 'import'}))"
             for own, src in owners.items()) if system == 'Windows' else ''
-        n.append(f"  {flags_var} = -I{build_p}/src/{inc_name}  ${flags_var} {' '.join(m['cflags'])} {au_link} -DMODULE=\\\"{mod_name}\\\"")
+        mflags = ' '.join(m['cflags'] + ([cov_flags] if is_coverage and m['name'] in covered else []))
+        n.append(f"  {flags_var} = -I{build_p}/src/{inc_name}  ${flags_var} {mflags} {au_link} -DMODULE=\\\"{mod_name}\\\"")
     n.append("")
     
     # handle extra source files not tied to modules
@@ -440,17 +449,19 @@ def write_ninja(project, root, import_dir, build_dir, plat):
         if not objs:
             continue
         
-        deps = resolve_deps(modules, m['deps'], plat, import_esc, "$builddir")
+        deps = resolve_deps(modules, m['deps'], plat, lib_esc, "$builddir")
+        # the profile runtime goes where instrumented code links
+        cov_link = ['-fprofile-instr-generate'] if is_coverage and m['name'] in covered else []
         if m['target'] == 'app':
             output = f"$builddir/{m['name']}{plat['exe']}"
             app_deps = list(deps)
             if system == 'Windows':
                 # the anchors below need every module's import lib on the line
                 app_deps = list(dict.fromkeys(deps + [
-                    f"{import_esc}/lib/{(o['libname'] or o['name'])}{plat['lib']}"
+                    f"{lib_esc}/{(o['libname'] or o['name'])}{plat['lib']}"
                     for o in modules if o['target'] == 'shared']))
             n.append(f"build {output}: link_app {objs} {' '.join(app_deps)}")
-            libs = sorted(set(m['links']))
+            libs = sorted(set(m['links'])) + cov_link
             if system == 'Windows':
                 # a dll no symbol references is never loaded, so force one
                 libs = libs + [f"-Wl,/INCLUDE:{(o['libname'] or o['name'])}_module_anchor"
@@ -460,13 +471,13 @@ def write_ninja(project, root, import_dir, build_dir, plat):
             n.append("")
 
         elif m['target'] == 'static':
-            output = f"{import_esc}/lib/{plat['lib_pre']}{m['name']}{plat['lib']}"
+            output = f"{lib_esc}/{plat['lib_pre']}{m['name']}{plat['lib']}"
             n.append(f"build {output}: link_static {objs}")
             n.append("")
 
         elif m['target'] == 'shared':
             out_name = m['libname'] if m.get('libname') else m['name']
-            output = f"{import_esc}/lib/{plat['lib_pre']}{out_name}{plat['shared']}"
+            output = f"{lib_esc}/{plat['lib_pre']}{out_name}{plat['shared']}"
             install_name = os.path.basename(output)
             outs = output
             implib = ''
@@ -476,10 +487,10 @@ def write_ninja(project, root, import_dir, build_dir, plat):
                 output = f"$builddir/{out_name}{plat['shared']}"
                 # implicit output (|): it must stay out of $out, which the
                 # link rule passes to -o
-                outs = f"{output} | {import_esc}/lib/{plat['lib_pre']}{out_name}{plat['lib']}"
-                implib = f" -Wl,--out-implib,{import_p}/lib/{plat['lib_pre']}{out_name}{plat['lib']}"
+                outs = f"{output} | {lib_esc}/{plat['lib_pre']}{out_name}{plat['lib']}"
+                implib = f" -Wl,--out-implib,{lib_p}/{plat['lib_pre']}{out_name}{plat['lib']}"
             n.append(f"build {outs}: link_shared {objs} {' '.join(deps)}")
-            libs = sorted(set(m['links']))
+            libs = sorted(set(m['links'])) + cov_link
             if implib:
                 libs = libs + [implib.strip()]
             if libs:
