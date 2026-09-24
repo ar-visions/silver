@@ -1360,8 +1360,8 @@ debug+quarantine and -O2. Startup 71k -> 55k objects.
 1. DONE VK_KHR_video_queue, video_encode_queue, video_encode_h264,
    video_decode_queue and video_decode_h264 in MoltenVK over
    VideoToolbox (MVKVideo.h/.mm, MVKCmdVideo.h/.mm). In
-   trinity/MoltenVK.diff; the video part alone for upstream is
-   trinity/moltenvk-video.patch (applies to MoltenVK db445ff).
+   trinity/MoltenVK.diff. Upstream: KhronosGroup/MoltenVK pull
+   request from ar-visions:video-encode-decode (on main).
    - One queue family does encode and decode. H.264 only, 8-bit
      4:2:0 NV12, progressive; VideoToolbox keeps the references.
    - Bitstream buffers are host visible: encode writes them, and
@@ -1374,8 +1374,6 @@ debug+quarantine and -O2. Startup 71k -> 55k objects.
      the scratchpad test vkdecode.mm decodes the recording, a
      Main B-frame clip and a Baseline clip through
      vkCmdDecodeVideoKHR, every frame bit-exact with AVFoundation.
-   - Upstream still needs the Xcode project entries for the four
-     new files and three frameworks (CMake is done).
 2. DONE orbiter: the remotes switch shows in the finder too (not
    in a resource pick), and index_search skips files outside the
    project root while it is off, as find-in-files already did.
