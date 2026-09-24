@@ -28,6 +28,7 @@ static void _emit_guard_end(char* g) { (void)g; aether_emit_unlock(); }
 #define MAX_FUNCS 512
 #define MAX_PROBES  4096
 #define TRACE_SIZE  1024
+#define MAX_COV_FILES 64
 
 // coverage probe - one per statements block, just tracks hit count
 typedef struct _coverage_probe {
@@ -128,6 +129,113 @@ void emit_coverage_register(aether a) {
             LLVMConstInt(i32_type, a->timing ? MAX_FUNCS : 0, 0),
             names
         }, 5, "");
+    if (!a->coverage) return;
+
+    // map and count are filled at finalize, after the cores
+    LLVMTypeRef map_type   = LLVMArrayType(i32_type, MAX_PROBES * 4);
+    LLVMTypeRef files_type = LLVMArrayType(ptr_type, MAX_COV_FILES);
+    a->coverage_map_global = LLVMAddGlobal(a->module_ref, map_type,
+        fmt("__cov_map_%s", a->name->chars)->chars);
+    LLVMSetInitializer(a->coverage_map_global, LLVMConstNull(map_type));
+    LLVMSetLinkage(a->coverage_map_global, LLVMInternalLinkage);
+    a->coverage_count_global = LLVMAddGlobal(a->module_ref, i32_type,
+        fmt("__cov_count_%s", a->name->chars)->chars);
+    LLVMSetInitializer(a->coverage_count_global, LLVMConstInt(i32_type, 0, 0));
+    LLVMSetLinkage(a->coverage_count_global, LLVMInternalLinkage);
+    a->coverage_files_global = LLVMAddGlobal(a->module_ref, files_type,
+        fmt("__cov_files_%s", a->name->chars)->chars);
+    LLVMSetInitializer(a->coverage_files_global, LLVMConstNull(files_type));
+    LLVMSetLinkage(a->coverage_files_global, LLVMInternalLinkage);
+
+    LLVMTypeRef lines_type = LLVMFunctionType(
+        LLVMVoidTypeInContext(a->module_ctx),
+        (LLVMTypeRef[]){ ptr_type, ptr_type, i32_type, ptr_type, i32_type }, 5, false);
+    LLVMValueRef lines_fn = LLVMAddFunction(a->module_ref, "__coverage_lines", lines_type);
+    LLVMValueRef count = LLVMBuildLoad2(B, i32_type, a->coverage_count_global, "cov_count");
+    LLVMBuildCall2(B, lines_type, lines_fn,
+        (LLVMValueRef[]){ probes, a->coverage_map_global, count,
+            a->coverage_files_global, LLVMConstInt(i32_type, MAX_COV_FILES, 0) }, 5, "");
+}
+
+// every core has emitted: the line map is complete
+AU_EXPORT void finalize_coverage_map(aether a) {
+    aether r = a->root ? a->root : a;
+    if (!r->coverage || !r->coverage_map_global) return;
+    emit_guard;
+    LLVMContextRef c    = r->module_ctx;
+    LLVMTypeRef    i32t = LLVMInt32TypeInContext(c);
+    LLVMTypeRef    ptrt = LLVMPointerTypeInContext(c, 0);
+    u32  count = r->next_probe_id < MAX_PROBES ? (u32)r->next_probe_id : MAX_PROBES;
+    u32* lines = (u32*)r->coverage_lines;
+    LLVMValueRef* vals = calloc(MAX_PROBES * 4, sizeof(LLVMValueRef));
+    for (u32 i = 0; i < MAX_PROBES * 4; i++)
+        vals[i] = LLVMConstInt(i32t, (lines && i < count * 4) ? lines[i] : 0, 0);
+    LLVMSetInitializer(r->coverage_map_global, LLVMConstArray(i32t, vals, MAX_PROBES * 4));
+    free(vals);
+    LLVMSetInitializer(r->coverage_count_global, LLVMConstInt(i32t, count, 0));
+    LLVMValueRef fvals[MAX_COV_FILES];
+    for (i32 i = 0; i < MAX_COV_FILES; i++) {
+        cstr nm = (i < r->coverage_file_count) ? r->coverage_files[i] : null;
+        if (!nm) { fvals[i] = LLVMConstNull(ptrt); continue; }
+        LLVMValueRef str = LLVMConstStringInContext(c, nm, (u32)strlen(nm), false);
+        LLVMValueRef g   = LLVMAddGlobal(r->module_ref, LLVMTypeOf(str), "__cov_file");
+        LLVMSetInitializer(g, str);
+        LLVMSetLinkage(g, LLVMPrivateLinkage);
+        LLVMSetGlobalConstant(g, true);
+        fvals[i] = g;
+    }
+    LLVMSetInitializer(r->coverage_files_global, LLVMConstArray(ptrt, fvals, MAX_COV_FILES));
+}
+
+// a core's function names the root's global by declaring it
+static LLVMValueRef cov_global(aether a, LLVMValueRef g, LLVMTypeRef t) {
+    LLVMModuleRef m = LLVMGetGlobalParent(LLVMGetBasicBlockParent(LLVMGetInsertBlock(B)));
+    cstr name = LLVMGetValueName(g);
+    LLVMValueRef mg = LLVMGetNamedGlobal(m, name);
+    return mg ? mg : LLVMAddGlobal(m, t, name);
+}
+
+// the run's block sequence, as the current module names it
+AU_EXPORT LLVMValueRef coverage_seq_ref(aether a) {
+    aether r = a->root ? a->root : a;
+    if (!r->coverage_seq_global) return null;
+    return cov_global(a, r->coverage_seq_global, LLVMInt64TypeInContext(a->module_ctx));
+}
+
+static u32 coverage_file_index(aether r, cstr s) {
+    if (!r->coverage_files) r->coverage_files = calloc(MAX_COV_FILES, sizeof(char*));
+    for (i32 i = 0; i < r->coverage_file_count; i++)
+        if (strcmp(r->coverage_files[i], s) == 0) return (u32)i;
+    if (r->coverage_file_count >= MAX_COV_FILES) return MAX_COV_FILES - 1;
+    r->coverage_files[r->coverage_file_count] = strdup(s);
+    return (u32)r->coverage_file_count++;
+}
+
+// ids come from the root: every core shares one probe table
+AU_EXPORT u32 coverage_probe_open(aether a, token t) {
+    emit_guard;
+    aether r = a->root ? a->root : a;
+    u32 id = (u32)r->next_probe_id++;
+    if (id >= MAX_PROBES) return id;
+    if (!r->coverage_lines) r->coverage_lines = calloc(MAX_PROBES * 4, sizeof(u32));
+    // the function holds its file; a token's source is weak
+    efunc fn   = aether_context_func(a);
+    path  file = (fn && fn->source_file) ? fn->source_file : t->source;
+    cstr  name = file ? ((string)file)->chars : "";
+    u32* e = (u32*)r->coverage_lines + id * 4;
+    e[0] = coverage_file_index(r, name);
+    e[1] = (u32)t->line;
+    e[2] = (u32)t->line;
+    e[3] = (u32)t->column;
+    return id;
+}
+
+AU_EXPORT void coverage_probe_close(aether a, u32 probe_id, u32 end_line) {
+    emit_guard;
+    aether r = a->root ? a->root : a;
+    if (probe_id >= MAX_PROBES || !r->coverage_lines) return;
+    u32* e = (u32*)r->coverage_lines + probe_id * 4;
+    if (end_line > e[2]) e[2] = end_line;
 }
 
 // emit probe when entering a statements block
@@ -136,20 +244,23 @@ void aether_emit_block_probe(aether a, u32 probe_id) {
     emit_guard;
     if (!a->coverage) return;
     if (a->no_build) return;
+    if (probe_id >= MAX_PROBES) return;
 
     LLVMTypeRef i64t = LLVMInt64TypeInContext(a->module_ctx);
     LLVMTypeRef i32t = LLVMInt32TypeInContext(a->module_ctx);
+    aether      r    = a->root ? a->root : a;
+    LLVMTypeRef parr = LLVMArrayType(i64t, MAX_PROBES);
+    LLVMValueRef probes = cov_global(a, r->coverage_probes_global, parr);
+    LLVMValueRef seq    = cov_global(a, r->coverage_seq_global, i64t);
 
     // increment global sequence counter
-    LLVMValueRef seq_val = LLVMBuildLoad2(B, i64t, a->coverage_seq_global, "seq");
+    LLVMValueRef seq_val = LLVMBuildLoad2(B, i64t, seq, "seq");
     LLVMValueRef seq_inc = LLVMBuildAdd(B, seq_val,
         LLVMConstInt(i64t, 1, 0), "seq_inc");
-    LLVMBuildStore(B, seq_inc, a->coverage_seq_global);
+    LLVMBuildStore(B, seq_inc, seq);
 
     // store block hit count into probes[probe_id]
-    LLVMValueRef probe_gep = LLVMBuildGEP2(B,
-        LLVMGlobalGetValueType(a->coverage_probes_global),
-        a->coverage_probes_global,
+    LLVMValueRef probe_gep = LLVMBuildGEP2(B, parr, probes,
         (LLVMValueRef[]){
             LLVMConstInt(i32t, 0, 0),
             LLVMConstInt(i32t, probe_id, 0)
@@ -274,9 +385,11 @@ void report_coverage(aether a) {
     LLVMTypeRef fn_type = LLVMFunctionType(
         LLVMVoidTypeInContext(a->module_ctx), null, 0, false);
     
-    // add function
-    LLVMValueRef __coverage_report = LLVMAddFunction(
-        a->module_ref, "__coverage_report", fn_type);
+    // one declaration per module, however many reports it makes
+    LLVMModuleRef m = LLVMGetGlobalParent(LLVMGetBasicBlockParent(LLVMGetInsertBlock(B)));
+    LLVMValueRef __coverage_report = LLVMGetNamedFunction(m, "__coverage_report");
+    if (!__coverage_report)
+        __coverage_report = LLVMAddFunction(m, "__coverage_report", fn_type);
 
     // build it
     LLVMBuildCall2(
@@ -296,7 +409,7 @@ void init_coverage(aether a) {
         a->coverage_probes_global = LLVMAddGlobal(a->module_ref, array_type,
             fmt("__cov_probes_%s", a->name->chars)->chars);
         LLVMSetInitializer(a->coverage_probes_global, LLVMConstNull(array_type));
-        LLVMSetLinkage(a->coverage_probes_global, LLVMInternalLinkage);
+        LLVMSetLinkage(a->coverage_probes_global, LLVMExternalLinkage);
 
         // global sequence counter (external linkage so LLDB can see it)
         a->coverage_seq_global = LLVMAddGlobal(a->module_ref, i64t, "__cov_seq");

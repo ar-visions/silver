@@ -6,6 +6,7 @@
 #include <sys/file.h>   // flock — serialize external-checkout builds across processes
 #include <sys/ioctl.h>
 #include <sys/wait.h>   // export funcs run forked; the build waits on them
+#include <spawn.h>
 #include <fcntl.h>
 #include <dlfcn.h>      // coverage libraries run in-process after build
 #include <ctype.h>      // package names are lower-case on every distro
@@ -53,6 +54,19 @@ static symbol platform_abi_cxx(silver a);
 static symbol platform_abi_link(silver a);
 static string device_cmake_toolchain(silver a);
 static string device_meson_cross(silver a);
+static void silver_mobile_bundle(silver a);
+static void device_run(silver a);
+static void device_debug(silver a);
+static bool ensure_apple_runtime(silver a, symbol triple, string tgt,
+                                 string tools, string core_lib);
+static bool ensure_android_runtime(silver a, symbol triple, string tgt, string ldld,
+                                   string tools, string core_lib);
+static bool ensure_core_runtime(silver a, path install, symbol triple,
+                                string tgt, string ldld, string tools, string core_lib);
+static symbol platform_abi_llc(silver a);
+#ifdef __APPLE__
+static void bundle_dylibs(silver a, path bin, path lib_dir, array done);
+#endif
 path module_exists(silver a, array idents, bool binary_finary, bool* is_bin);
 string symbol_name(Au obj);
 
@@ -288,38 +302,42 @@ static void build_record_functions(silver a, etype mrec);
 token aether_peek_safe(silver);
 
 #undef error
-#define error(t, ...) ({ \
-    struct _token* pk = aether_peek_safe(a); \
-    struct _token* prev = (struct _token*)silver_element(a, -1); \
-    if (prev && pk && prev->line != pk->line) pk = prev; \
-    /* replayed/synthesized tokens carry line 0 — fall back to the last \
-       consumed token so the module location is never dropped */ \
-    if (pk && pk->line == 0 && prev && prev->line) pk = prev; \
-    string s = (string)formatter( \
-        (Au_t)null, false, stderr, (Au) true, seq, \
-        (symbol) "\n%o:%i:%i (%s:%i%o)\n" t, \
-        (pk && pk->source ? (Au)pk->source : (Au)a->module_file), \
-        pk ? pk->line : 0, pk ? pk->column : 0, __FILE__, __LINE__, \
-        seq ? f(string, "@%i", seq) : string("") __VA_OPT__(,) __VA_ARGS__); \
-    if (level_err >= fault_level) { \
-        halt(s, aether_peek_safe(a)); \
-    } \
-    false; \
-})
+token silver_element(silver, num);
+// error/validate: their branches live here once
+static bool silver_fail(silver a, symbol file, int line, int seq,
+        bool trap, symbol t, ...) {
+    va_list args;
+    va_start(args, t);
+    string msg = (string)vformatter((Au_t)null, false, null, (Au)false, seq, t, args);
+    va_end(args);
+    struct _token* pk = aether_peek_safe(a);
+    struct _token* prev = (struct _token*)silver_element(a, -1);
+    if (prev && pk && prev->line != pk->line) pk = prev;
+    // replayed tokens carry line 0: use the last consumed
+    if (pk && pk->line == 0 && prev && prev->line) pk = prev;
+    string s = (string)formatter((Au_t)null, false, stderr, (Au)true, seq,
+        "\n%o:%i:%i (%s:%i%o)\n%o",
+        (pk && pk->source ? (Au)pk->source : (Au)a->module_file),
+        pk ? pk->line : 0, pk ? pk->column : 0, file, line,
+        seq ? f(string, "@%i", seq) : string(""), msg);
+    if (level_err >= fault_level)
+        halt(s, aether_peek_safe(a));
+    if (trap)
+        raise(SIGTRAP);
+    return false;
+}
+
+#define error(t, ...) silver_fail(a, __FILE__, __LINE__, seq, false, \
+    (symbol)t __VA_OPT__(,) __VA_ARGS__)
 
 #define log_tokens(t, ...) ({ \
     string s = (string)formatter((Au_t)null, false, stderr, (Au) true, seq, (symbol) "\n%s: %s:%i@%i, %o:%i:%i\n            " t, a->name->chars, __FILE__, __LINE__, seq, a->module_file, \
                 peek(a)->line, peek(a)->column, ##__VA_ARGS__); \
 })
 
-#define validate(cond, t, ...) ({ \
-    if (!(cond)) { \
-        error(t __VA_OPT__(,) __VA_ARGS__); \
-        raise(SIGTRAP); \
-    } else { \
-        true; \
-    } \
-})
+#define validate(cond, t, ...) ((cond) ? true : \
+    silver_fail(a, __FILE__, __LINE__, seq, true, \
+        (symbol)t __VA_OPT__(,) __VA_ARGS__))
 
 #define breakpoint(tok, t, ...) ({ \
     string s = (string)formatter((Au_t)null, false, stderr, (Au) true, seq, (symbol) "\n%s: %s:%i@%i, %o:%i:%i\n            " t, a->name->chars, __FILE__, __LINE__, seq, a->module_file, \
@@ -459,7 +477,7 @@ num index_of_cstr(Au a, cstr f) {
         return index_of((array)a, (Au)string(f));
     if (t == typeid(cstr) || t == typeid(symbol) || t == typeid(cereal)) {
         cstr v = strstr((cstr)a, f);
-        return v ? (num)(v - f) : (num)-1;
+        return v ? (num)(v - (cstr)a) : (num)-1;
     }
     fault("len not handled for type %s", t->ident);
     return 0;
@@ -1012,6 +1030,7 @@ static enode reverse_descent(silver a, etype expect) { sequencer
 }
 
 static array parse_tokens(silver a, Au input, array output);
+AU_EXPORT u64 fnv1a_hash(const none* data, size_t length, u64 hash);
 etype etype_ptr(aether a, Au_t au, enode eshape);
 
 Au   build_init_preamble(enode f, Au arg);
@@ -1203,7 +1222,8 @@ static void progress_clear_line() {
 // an error never prints on the tail of the progress line
 extern void (*aether_error_prelude)(void);
 #undef verify
-#define verify(a, t, ...) ({ if (!(a)) { progress_clear_line(); string res = (string)formatter((Au_t)null, true, stderr, (Au)true, seq, (symbol)t, ## __VA_ARGS__); if (level_err >= fault_level) { halt(res, null); } false; } else { true; } true; })
+#define verify(a, t, ...) ({ if (!(a)) { progress_clear_line(); \
+    au_verify_fail(seq, (symbol)t, ## __VA_ARGS__); } true; })
 
 static void progress_draw(silver a, double frac) {
     if (a->verbose || !isatty(2)) return;
@@ -1737,179 +1757,6 @@ void aether_reinit_startup(aether);
 void emit_debug_loc(aether, cstr, u32, u32);
 void update_current_file(aether, path);
 
-// im a module!
-static void write_target_cmake(path sdk_path, cstr system_name, cstr processor,
-                               cstr triple, cstr sysroot, path clang_bin) {
-    path   cmake_path = f(path, "%o/target.cmake", sdk_path);
-    string content    = f(string,
-        "# Auto-generated by Silver bootstrap\n"
-        "# Toolchain for %s (%s)\n\n"
-        "set(CMAKE_SYSTEM_NAME %s)\n"
-        "set(CMAKE_SYSTEM_PROCESSOR %s)\n\n"
-        "get_filename_component(TARGET_DIR \"${CMAKE_CURRENT_LIST_FILE}\" PATH)\n"
-        "set(CMAKE_C_COMPILER   \"%o/clang\" CACHE STRING \"\")\n"
-        "set(CMAKE_CXX_COMPILER \"%o/clang++\" CACHE STRING \"\")\n"
-        "set(CMAKE_LINKER       \"%o/ld.lld\" CACHE STRING \"\")\n"
-        "set(CMAKE_SYSROOT      \"%s\" CACHE STRING \"\")\n\n"
-        "set(CMAKE_C_FLAGS   \"--target=%s -fPIC\" CACHE STRING \"\")\n"
-        "set(CMAKE_CXX_FLAGS \"--target=%s -fPIC -stdlib=libc++\" CACHE STRING \"\")\n"
-        "set(CMAKE_EXE_LINKER_FLAGS    \"-fuse-ld=lld\" CACHE STRING \"\")\n"
-        "set(CMAKE_SHARED_LINKER_FLAGS \"-fuse-ld=lld\" CACHE STRING \"\")\n\n"
-        "set(CMAKE_FIND_ROOT_PATH \"${CMAKE_SYSROOT}\")\n"
-        "set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)\n"
-        "set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)\n"
-        "set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)\n"
-        "set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)\n\n"
-        "set(SILVER_TARGET_NAME \"%s\")\n"
-        "set(SILVER_TARGET_TRIPLE \"%s\")\n",
-        triple, system_name,
-        system_name, processor,
-        clang_bin, clang_bin, clang_bin, sysroot,
-        triple, triple,
-        triple, triple);
-    fdata fd = fdata(write, true, src, cmake_path);
-    file_write(fd, (Au)content);
-}
-
-
-// a dependency builds with ITS own build system, so the device's toolchain
-// has to be handed over in each one's dialect. written once per device,
-// beside its sysroot; returns the flag that points the tool at it
-static string device_cmake_toolchain(silver a) {
-    if (!a->platform || !len(a->platform) || cmp(a->platform, "native") == 0) return string("");
-    if (!a->sysroot) return string("");
-    symbol triple = platform_triple(a);
-    bool   win    = platform_is_windows(a);
-    cstr   pl     = a->platform->chars;
-    bool   ios    = strstr(pl, "ios") != NULL;
-    // android is Linux to cmake here: its own Android mode wants an ndk
-    // toolchain, and the flags below already say everything it would
-    symbol system = win ? "Windows" : ios ? "iOS" : strstr(pl, "macos") ? "Darwin" : "Linux";
-    symbol proc   = strstr(triple, "arm64")   ? "arm64"   :
-                    strstr(triple, "aarch64") ? "aarch64" :
-                    strstr(triple, "riscv")   ? "riscv64" :
-                    strstr(triple, "mips")    ? "mips64"  :
-                    strstr(triple, "arm")     ? "arm"     :
-                    strstr(triple, "i686")    ? "i686"    : "x86_64";
-    path   tools  = f(path, "%s/platform/native/bin", SILVER);
-    path   tfile  = f(path, "%s/platform/%o/target.cmake", SILVER, target_dir(a));
-
-    // windows is a mingw sysroot, so one recipe serves every target. pic is
-    // meaningless on PE, and a dependency's warnings are not the user's
-    symbol pic = win ? "" : "-fPIC ";
-    // built in pieces: the formatter writes into a fixed buffer, and a
-    // whole toolchain file overruns it
-    string content = string(alloc, 2048);
-    concat(content, f(string,
-        "# generated by silver for device platform %o\n"
-        "set(CMAKE_SYSTEM_NAME %s)\n"
-        "set(CMAKE_SYSTEM_PROCESSOR %s)\n", a->platform, system, proc));
-    concat(content, f(string,
-        "set(CMAKE_C_COMPILER   \"%o/clang\"   CACHE STRING \"\")\n"
-        "set(CMAKE_CXX_COMPILER \"%o/clang++\" CACHE STRING \"\")\n"
-        "set(CMAKE_SYSROOT      \"%o\" CACHE STRING \"\")\n",
-        tools, tools, a->sysroot));
-    concat(content, f(string,
-        "set(CMAKE_C_FLAGS   \"--target=%s %s%s-w\" CACHE STRING \"\")\n",
-        triple, platform_abi_clang(a), pic));
-    // the device sdk's libc++ headers must match the libc++ it ships; a
-    // bare sysroot does not put the ndk's on the default search path
-    string cxx_sdk = (ios || target_is_android(a)) ?
-        f(string, "-nostdinc++ -isystem %o/usr/include/c++/v1 ", a->sysroot) : string("");
-    concat(content, f(string,
-        "set(CMAKE_CXX_FLAGS \"--target=%s %s%s%s%o-w\" CACHE STRING \"\")\n",
-        triple, platform_abi_clang(a), platform_abi_cxx(a), pic, cxx_sdk));
-    // objective-c++ (.mm) takes its own flag set
-    if (ios)
-        concat(content, f(string,
-            "set(CMAKE_OBJC_FLAGS   \"--target=%s %s-w\" CACHE STRING \"\")\n"
-            "set(CMAKE_OBJCXX_FLAGS \"--target=%s %s%o-w\" CACHE STRING \"\")\n",
-            triple, pic, triple, pic, cxx_sdk));
-    // a MODULE is its own flag set: miss it and cmake falls back to the
-    // host's ld, which knows neither this target nor its libraries
-    concat(content, f(string,
-        "set(CMAKE_EXE_LINKER_FLAGS    \"-fuse-ld=lld %s\" CACHE STRING \"\")\n"
-        "set(CMAKE_SHARED_LINKER_FLAGS \"-fuse-ld=lld %s\" CACHE STRING \"\")\n",
-        platform_abi_link(a), platform_abi_link(a)));
-    concat(content, f(string,
-        "set(CMAKE_MODULE_LINKER_FLAGS \"-fuse-ld=lld %s\" CACHE STRING \"\")\n",
-        platform_abi_link(a)));
-    // bionic keeps libm apart, in the api-level dir cmake never searches:
-    // name it on every link, since find_library comes back empty. our clang
-    // is not the ndk's, so it does not add the shared libc++ itself either —
-    // name it, and the dir it lives in, on every c++ link
-    if (target_is_android(a)) {
-        cstr abi = strstr(triple, "x86_64") ? "x86_64-linux-android" : "aarch64-linux-android";
-        concat(content, f(string,
-            "set(CMAKE_C_STANDARD_LIBRARIES   \"-lm\" CACHE STRING \"\")\n"
-            "set(CMAKE_CXX_STANDARD_LIBRARIES \"-nostdlib++ -L%o/usr/lib/%s -lc++_shared -lm\" CACHE STRING \"\")\n",
-            a->sysroot, abi));
-    }
-    // an apple target names its sdk and floor through cmake's own knobs
-    // cmake wants the sdk's own name (iPhoneOS*.sdk), not our link to it
-    if (ios)
-        concat(content, f(string,
-            "set(CMAKE_OSX_SYSROOT \"%o\" CACHE STRING \"\")\n"
-            "set(CMAKE_OSX_ARCHITECTURES arm64 CACHE STRING \"\")\n"
-            "set(CMAKE_OSX_DEPLOYMENT_TARGET 16.0 CACHE STRING \"\")\n",
-            absolute(a->sysroot)));
-    // .rc is windows-only. windres, not llvm-rc: llvm-rc emits an msvc .res,
-    // and a mingw link takes objects. it also names no target of its own,
-    // and mingw's headers refuse to preprocess without one
-    if (win)
-        concat(content, f(string,
-            "set(CMAKE_RC_COMPILER \"%o/llvm-windres\" CACHE STRING \"\")\n"
-            "set(CMAKE_RC_FLAGS \"-D_WIN32%s -DRC_INVOKED -I%o/include\""
-            " CACHE STRING \"\")\n",
-            tools, strstr(triple, "i686") ? "" : " -D_WIN64", a->sysroot));
-    // the target's OWN prefix is a root too: dependencies install there, not
-    // into the sysroot, and a package search that misses it finds the host's
-    // build of the same library instead
-    concat(content, f(string,
-        "set(CMAKE_FIND_ROOT_PATH \"${CMAKE_SYSROOT};%s/platform/%o\")\n"
-        "set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)\n"
-        "set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)\n"
-        "set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)\n"
-        "set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)\n", SILVER, target_dir(a)));
-    // raw text: file_write serializes with a length prefix
-    path_save(tfile, (Au)content, null);
-    return f(string, "-DCMAKE_TOOLCHAIN_FILE=%o ", tfile);
-}
-
-// meson says the same thing in its own file
-static string device_meson_cross(silver a) {
-    if (!a->platform || !len(a->platform) || cmp(a->platform, "native") == 0) return string("");
-    if (!a->sysroot) return string("");
-    symbol triple = platform_triple(a);
-    bool   win    = platform_is_windows(a);
-    cstr   pl     = a->platform->chars;
-    symbol system = win ? "windows" : strstr(pl, "macos") || strstr(pl, "ios") ? "darwin" :
-                    strstr(pl, "android") ? "android" : "linux";
-    symbol cpu_f  = strstr(triple, "arm64")   ? "aarch64" :
-                    strstr(triple, "aarch64") ? "aarch64" :
-                    strstr(triple, "riscv")   ? "riscv64" :
-                    strstr(triple, "mips")    ? "mips64"  :
-                    strstr(triple, "arm")     ? "arm"     :
-                    strstr(triple, "i686")    ? "x86" : "x86_64";
-    path   tools  = f(path, "%s/platform/native/bin", SILVER);
-    path   xfile  = f(path, "%s/platform/%o/meson-cross.ini", SILVER, target_dir(a));
-    string content = f(string,
-        "# generated by silver for device platform %o\n"
-        "[binaries]\n"
-        "c = ['%o/clang', '--target=%s']\n"
-        "cpp = ['%o/clang++', '--target=%s']\n"
-        "ar = '%o/llvm-ar'\n"
-        "strip = '%o/llvm-strip'\n"
-        "[host_machine]\n"
-        "system = '%s'\n"
-        "cpu_family = '%s'\n"
-        "cpu = '%s'\n"
-        "endian = 'little'\n",
-        a->platform, tools, triple, tools, triple, tools, tools,
-        system, cpu_f, cpu_f);
-    path_save(xfile, (Au)content, null);
-    return f(string, "--cross-file %o ", xfile);
-}
 
 static void prepare_record_cb(Au a_au, Au t_au) {
     silver a = (silver)a_au;
@@ -2264,820 +2111,6 @@ static void* live_log_tail(void* arg) {
 #endif
 
 
-// the dylib closure of an ios binary into Frameworks/: every dependency
-// from the device tree or the build dir rewritten to @rpath/<leaf>
-static void ios_bundle_dylibs(silver a, path bin, path fw, array done) {
-    path   root  = f(path, "%s/platform/%o", SILVER, target_dir(a));
-    string out   = command_run((command)f(string, "otool -L %o", bin), false);
-    array  lines = split(out, "\n");
-    for (int i = 1; i < len(lines); i++) {
-        string ln = trim((string)lines->origin[i]);
-        int sp = index_of(ln, " (");
-        if (sp <= 0) continue;
-        string dep  = mid(ln, 0, sp);
-        path   src  = null;
-        string leaf = null;
-        if (starts_with(dep, "@rpath/")) {
-            leaf = mid(dep, 7, len(dep) - 7);
-            path c1 = f(path, "%o/%o", a->build_dir, leaf);
-            path c2 = f(path, "%o/lib/%o", root, leaf);
-            src = file_exists("%o", c1) ? c1 : file_exists("%o", c2) ? c2 : null;
-        } else if (dep->chars[0] == '/' && starts_with(dep, SILVER)) {
-            src  = path(dep->chars);
-            leaf = f(string, "%o.%o", stem(src), ext(src));
-            exec(false, "install_name_tool -change %o @rpath/%o %o", dep, leaf, bin);
-        }
-        if (!src || !leaf) continue;
-        if (index_of(done, (Au)leaf) >= 0) continue;
-        push(done, (Au)leaf);
-        path dst = f(path, "%o/%o", fw, leaf);
-        exec(false, "cp -L %o %o && chmod u+w %o", src, dst, dst);
-        exec(false, "install_name_tool -id @rpath/%o %o", leaf, dst);
-        ios_bundle_dylibs(a, dst, fw, done);
-    }
-}
-
-// the profile that names this phone: xcode 16 keeps them under UserData,
-// older ones under MobileDevice. its entitlements sign the app
-static path ios_profile(silver a, string udid, string* team) {
-    cstr dirs[] = {
-        "Library/Developer/Xcode/UserData/Provisioning Profiles",
-        "Library/MobileDevice/Provisioning Profiles", null };
-    for (int d = 0; dirs[d]; d++) {
-        string found = trim(command_run((command)f(string,
-            "for p in \"$HOME/%s\"/*.mobileprovision; do "
-            "security cms -D -i \"$p\" 2>/dev/null | grep -q %o && echo \"$p\"; done 2>/dev/null | "
-            "xargs -I{} stat -f '%%m {}' {} 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-",
-            dirs[d], udid), false));
-        if (!found || !len(found)) continue;
-        *team = trim(command_run((command)f(string,
-            "security cms -D -i \"%o\" | plutil -extract TeamIdentifier.0 raw -o - -", found), false));
-        return path(found->chars);
-    }
-    return null;
-}
-
-// `export landscape: true` in the app's module. read here because the plist
-// is written before a line of the app has run
-static bool ios_landscape(silver a) {
-    silver  og  = a->is_external ? a->is_external : a;
-    exports exp = (exports)get(og->exports, (Au)string(a->name->chars));
-    array   v   = exp && exp->areas ?
-        (array)get(exp->areas, (Au)string("landscape")) : null;
-    return v && len(v) && cmp((string)v->origin[0], "true") == 0;
-}
-
-// <build>/<Name>.app: the ios host, Frameworks/ with the product and its
-// closure, share/<name>, the profile, then one signature per binary
-static void silver_ios_bundle(silver a) {
-    Device dev   = a->target;
-    string name  = a->name;
-    string share = silver_install_name(a);
-    path   root  = f(path, "%s/platform/%o", SILVER, target_dir(a));
-    path   tools = f(path, "%s/platform/native/bin", SILVER);
-    path   app   = f(path, "%o/%o.app", a->build_dir, name);
-    path   fw    = f(path, "%o/Frameworks", app);
-    symbol triple = platform_triple(a);
-    bool   sim   = strstr(a->platform->chars, "simulator") != NULL;
-    string ver   = silver_release_version(a);
-    if (!ver) ver = string("1.0");
-    exec(false, "rm -rf %o", app);
-    make_dir(fw);
-    print("[%o] ios: staging %o", name, app);
-
-    // the host: uikit's loop ticks the product's frame
-    path   exe    = f(path, "%o/%o", app, name);
-    string leaf   = f(string, "%o.%o", stem(a->product), ext(a->product));
-    path   devlib = f(path, "%o/libsilver-devices.dylib", a->build_dir);
-    verify(file_exists("%o", devlib), "ios: devices not built for %o (%o)", a->platform, devlib);
-    verify(exec(a->verbose, "%o/clang -target %s -isysroot %o -fuse-ld=lld -B%o %s "
-        "-I%s/devices -DSILVER_PRODUCT='\"%o\"' -DSILVER_SHARE_NAME='\"%o\"' "
-        "%s/src/silver-host-ios.c %o -L%o/lib -lAu -framework UIKit -framework Foundation "
-        "-Wl,-rpath,@executable_path/Frameworks -o %o",
-        tools, triple, a->sysroot, tools, a->debug ? "-g" : "-O2",
-        SILVER, leaf, share, SILVER, devlib, root, exe) == 0,
-        "ios: host link failed");
-
-    array done = array(alloc, 64);
-    exec(false, "cp -L %o %o/%o && chmod u+w %o/%o", a->product, fw, leaf, fw, leaf);
-    exec(false, "install_name_tool -id @rpath/%o %o/%o", leaf, fw, leaf);
-    push(done, (Au)leaf);
-    ios_bundle_dylibs(a, f(path, "%o/%o", fw, leaf), fw, done);
-    ios_bundle_dylibs(a, exe, fw, done);
-
-    path share_src = f(path, "%o/share/%o", a->install, share);
-    if (dir_exists("%o", share_src)) {
-        make_dir(f(path, "%o/share", app));
-        exec(false, "cp -RL %o %o/share/%o", share_src, app, share);
-    }
-
-    string plist = f(string,
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-        "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" "
-        "\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
-        "<plist version=\"1.0\"><dict>\n"
-        "  <key>CFBundleName</key><string>%o</string>\n"
-        "  <key>CFBundleDisplayName</key><string>%o</string>\n"
-        "  <key>CFBundleIdentifier</key><string>com.silver.%o</string>\n"
-        "  <key>CFBundleExecutable</key><string>%o</string>\n"
-        "  <key>CFBundlePackageType</key><string>APPL</string>\n"
-        "  <key>CFBundleVersion</key><string>%o</string>\n"
-        "  <key>CFBundleShortVersionString</key><string>%o</string>\n"
-        "  <key>CFBundleDevelopmentRegion</key><string>en</string>\n"
-        "  <key>CFBundleSupportedPlatforms</key><array><string>%s</string></array>\n"
-        "  <key>DTPlatformName</key><string>%s</string>\n"
-        "  <key>LSRequiresIPhoneOS</key><true/>\n"
-        "  <key>MinimumOSVersion</key><string>16.0</string>\n"
-        "  <key>UIDeviceFamily</key><array><integer>1</integer><integer>2</integer></array>\n"
-        "  <key>UIRequiresFullScreen</key><true/>\n"
-        "  <key>UILaunchScreen</key><dict/>\n"
-        // the app's Documents/ holds the diagnostics it writes when there is
-        // no console (silver.log, screenshots). without this the container is
-        // private and `devicectl device copy from` cannot reach it
-        "  <key>UIFileSharingEnabled</key><true/>\n"
-        // MultipeerConnectivity is blocked outright on ios 14+ unless the app
-        // declares the bonjour services it browses and why it wants the LAN
-        "  <key>NSLocalNetworkUsageDescription</key>"
-        "<string>Two-player racing with a nearby device.</string>\n"
-        "  <key>NSBonjourServices</key><array>\n"
-        "    <string>_orion._tcp</string>\n"
-        "    <string>_orion._udp</string>\n"
-        "  </array>\n"
-        "  <key>UISupportedInterfaceOrientations</key><array>\n"
-        "%s"
-        "  </array>\n"
-        "</dict></plist>\n",
-        name, name, name, name, ver, ver,
-        sim ? "iPhoneSimulator" : "iPhoneOS", sim ? "iphonesimulator" : "iphoneos",
-        // uikit intersects the view controller's mask with THIS list, so a
-        // landscape app that still names Portrait launches portrait and draws
-        // sideways. `export landscape: true` in the module says which it is
-        ios_landscape(a)
-            ? "    <string>UIInterfaceOrientationLandscapeLeft</string>\n"
-              "    <string>UIInterfaceOrientationLandscapeRight</string>\n"
-            : "    <string>UIInterfaceOrientationPortrait</string>\n");
-    path_save(f(path, "%o/Info.plist", app), (Au)plist, null);
-
-    // the simulator takes an ad-hoc signature and no profile
-    if (sim) {
-        each(done, string, l)
-            exec(false, "codesign --force --sign - %o/%o 2>/dev/null", fw, l);
-        exec(false, "codesign --force --sign - %o 2>/dev/null", app);
-        a->live_binary = hold(app);
-        return;
-    }
-
-    // sign with the profile that lists this phone; without one the bundle
-    // still stages, it just cannot install
-    string udid = dev && dev->host ? dev->host : null;
-    string team = null;
-    path   prof = udid ? ios_profile(a, udid, &team) : null;
-    if (!prof) {
-        print("[%o] ios: no provisioning profile lists device %o — bundle unsigned", name, udid);
-        return;
-    }
-    exec(false, "cp \"%o\" %o/embedded.mobileprovision", prof, app);
-    path ents = f(path, "%o/%o.entitlements", a->build_dir, name);
-    exec(false, "security cms -D -i \"%o\" | plutil -extract Entitlements xml1 -o %o -", prof, ents);
-    string ident = a->sign && len(a->sign) ? a->sign : trim(command_run((command)f(string,
-        "security find-identity -v -p codesigning 2>/dev/null | grep 'Apple Development' | "
-        "grep '%o' | head -1 | sed 's/.*\"\\(.*\\)\"/\\1/'", team ? team : string("")), false));
-    if (!ident || !len(ident))
-        ident = trim(command_run((command)string(
-            "security find-identity -v -p codesigning 2>/dev/null | grep 'Apple Development' | "
-            "head -1 | sed 's/.*\"\\(.*\\)\"/\\1/'"), false));
-    verify(ident && len(ident), "ios: no 'Apple Development' identity in the keychain");
-    print("[%o] ios: signing as %o (team %o)", name, ident, team);
-    cstr quiet = a->verbose ? "" : " 2>/dev/null";
-    each(done, string, l)
-        verify(exec(a->verbose, "codesign --force --sign \"%o\" %o/%o%s", ident, fw, l, quiet) == 0,
-            "ios: codesign failed for %o", l);
-    verify(exec(a->verbose, "codesign --force --sign \"%o\" --entitlements %o %o%s",
-        ident, ents, app, quiet) == 0, "ios: codesign failed for %o", app);
-    a->live_binary = hold(app);
-}
-
-// ---- android: an apk is a zip with a binary manifest and a v2 signature
-// block. both are written here; openssl does the rsa part, as it does for
-// the keys, and nothing of the android sdk is needed beyond the ndk
-
-typedef struct { u8* p; size_t n, cap; } bytes;
-
-static void bput(bytes* b, const void* d, size_t n) {
-    if (b->n + n > b->cap) { b->cap = (b->n + n) * 2 + 1024; b->p = realloc(b->p, b->cap); }
-    memcpy(b->p + b->n, d, n);
-    b->n += n;
-}
-static void b16(bytes* b, u32 v) { u8 d[2] = { (u8)v, (u8)(v >> 8) }; bput(b, d, 2); }
-static void b32(bytes* b, u32 v) { u8 d[4] = { (u8)v, (u8)(v >> 8), (u8)(v >> 16), (u8)(v >> 24) }; bput(b, d, 4); }
-static void b64(bytes* b, u64 v) { b32(b, (u32)v); b32(b, (u32)(v >> 32)); }
-static void bfix32(bytes* b, size_t at, u32 v) { u8* d = b->p + at; d[0] = v; d[1] = v >> 8; d[2] = v >> 16; d[3] = v >> 24; }
-static void bpad(bytes* b, size_t al) { u8 z = 0; while (b->n % al) bput(b, &z, 1); }
-static bool bload(bytes* b, path p) {
-    FILE* f = fopen(p->chars, "rb");
-    if (!f) return false;
-    u8 buf[65536];
-    size_t n;
-    while ((n = fread(buf, 1, sizeof(buf), f)) > 0) bput(b, buf, n);
-    fclose(f);
-    return true;
-}
-
-static u32 crc32_of(const u8* d, size_t n) {
-    static u32 t[256];
-    if (!t[1]) for (u32 i = 0; i < 256; i++) {
-        u32 c = i;
-        for (int k = 0; k < 8; k++) c = (c & 1) ? 0xedb88320u ^ (c >> 1) : c >> 1;
-        t[i] = c;
-    }
-    u32 c = 0xffffffffu;
-    for (size_t i = 0; i < n; i++) c = t[(c ^ d[i]) & 0xff] ^ (c >> 8);
-    return ~c;
-}
-
-static void sha256(const u8* d, size_t n, u8 out[32]) {
-    static const u32 K[64] = {
-        0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
-        0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
-        0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
-        0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
-        0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
-        0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
-        0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
-        0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2 };
-    u32 h[8] = { 0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19 };
-    // the padded message: length, 0x80, zeros, the bit length big-endian
-    size_t total = ((n + 9 + 63) / 64) * 64;
-    u8*    m     = calloc(1, total);
-    memcpy(m, d, n);
-    m[n] = 0x80;
-    u64 bits = (u64)n * 8;
-    for (int i = 0; i < 8; i++) m[total - 1 - i] = (u8)(bits >> (8 * i));
-    #define R(x, k) (((x) >> (k)) | ((x) << (32 - (k))))
-    for (size_t off = 0; off < total; off += 64) {
-        u32 w[64];
-        for (int i = 0; i < 16; i++)
-            w[i] = (u32)m[off + 4*i] << 24 | (u32)m[off + 4*i + 1] << 16 | (u32)m[off + 4*i + 2] << 8 | m[off + 4*i + 3];
-        for (int i = 16; i < 64; i++) {
-            u32 s0 = R(w[i-15], 7) ^ R(w[i-15], 18) ^ (w[i-15] >> 3);
-            u32 s1 = R(w[i-2], 17) ^ R(w[i-2], 19) ^ (w[i-2] >> 10);
-            w[i] = w[i-16] + s0 + w[i-7] + s1;
-        }
-        u32 a = h[0], b = h[1], c = h[2], dd = h[3], e = h[4], f = h[5], g = h[6], hh = h[7];
-        for (int i = 0; i < 64; i++) {
-            u32 t1 = hh + (R(e, 6) ^ R(e, 11) ^ R(e, 25)) + ((e & f) ^ (~e & g)) + K[i] + w[i];
-            u32 t2 = (R(a, 2) ^ R(a, 13) ^ R(a, 22)) + ((a & b) ^ (a & c) ^ (b & c));
-            hh = g; g = f; f = e; e = dd + t1; dd = c; c = b; b = a; a = t1 + t2;
-        }
-        h[0] += a; h[1] += b; h[2] += c; h[3] += dd; h[4] += e; h[5] += f; h[6] += g; h[7] += hh;
-    }
-    #undef R
-    free(m);
-    for (int i = 0; i < 8; i++) { out[4*i] = h[i] >> 24; out[4*i+1] = h[i] >> 16; out[4*i+2] = h[i] >> 8; out[4*i+3] = h[i]; }
-}
-
-// the binary xml android reads: a string pool (attribute names carrying a
-// resource id first, in id order), the id map, then the element chunks
-typedef struct { cstr s; u32 id; } axml_str;
-typedef struct { axml_str strs[64]; int n, nids; bytes body; } axml;
-typedef struct { cstr name; int type; cstr sval; u32 ival; } axml_attr;
-
-#define AXML_STRING 3
-#define AXML_INT    0x10
-#define AXML_BOOL   0x12
-
-static int axml_index(axml* x, cstr s) {
-    for (int i = 0; i < x->n; i++) if (strcmp(x->strs[i].s, s) == 0) return i;
-    verify(x->n < 64, "axml: string pool exceeded");
-    x->strs[x->n].s = s;
-    return x->n++;
-}
-
-static void axml_elem(axml* x, cstr name, axml_attr* at, int n) {
-    bytes* b = &x->body;
-    b32(b, 0x00100102);
-    b32(b, 36 + 20 * n);
-    b32(b, 0); b32(b, 0xffffffff);
-    b32(b, 0xffffffff);
-    b32(b, axml_index(x, name));
-    b16(b, 20); b16(b, 20); b16(b, n);
-    b16(b, 0); b16(b, 0); b16(b, 0);
-    for (int i = 0; i < n; i++) {
-        int ni = axml_index(x, at[i].name);
-        b32(b, ni < x->nids ? axml_index(x, "http://schemas.android.com/apk/res/android") : 0xffffffff);
-        b32(b, ni);
-        int raw = at[i].type == AXML_STRING ? axml_index(x, at[i].sval) : -1;
-        b32(b, raw);
-        b16(b, 8); bput(b, "\0", 1); bput(b, &(u8){ at[i].type }, 1);
-        b32(b, at[i].type == AXML_STRING ? (u32)raw : at[i].type == AXML_BOOL ? (at[i].ival ? 0xffffffff : 0) : at[i].ival);
-    }
-}
-
-static void axml_end(axml* x, cstr name) {
-    bytes* b = &x->body;
-    b32(b, 0x00100103); b32(b, 24); b32(b, 0); b32(b, 0xffffffff);
-    b32(b, 0xffffffff); b32(b, axml_index(x, name));
-}
-
-static void axml_write(axml* x, bytes* out) {
-    int   prefix = axml_index(x, "android");
-    int   uri    = axml_index(x, "http://schemas.android.com/apk/res/android");
-    bytes pool   = {0};
-    for (int i = 0; i < x->n; i++) b32(&pool, 0);
-    // offsets first, then utf-16 strings, each length-prefixed and 0-ended
-    for (int i = 0; i < x->n; i++) {
-        bfix32(&pool, 4 * i, (u32)(pool.n - 4 * x->n));
-        cstr s = x->strs[i].s;
-        b16(&pool, (u32)strlen(s));
-        for (cstr c = s; *c; c++) b16(&pool, (u8)*c);
-        b16(&pool, 0);
-    }
-    bpad(&pool, 4);
-    bytes ns = {0};
-    b32(&ns, 0x00100100); b32(&ns, 24); b32(&ns, 0); b32(&ns, 0xffffffff);
-    b32(&ns, prefix);
-    b32(&ns, uri);
-    b32(out, 0x00080003);
-    b32(out, 0);
-    b16(out, 1); b16(out, 28); b32(out, 28 + pool.n);
-    b32(out, x->n); b32(out, 0); b32(out, 0); b32(out, 28 + 4 * x->n); b32(out, 0);
-    bput(out, pool.p, pool.n);
-    b16(out, 0x180); b16(out, 8); b32(out, 8 + 4 * x->nids);
-    for (int i = 0; i < x->nids; i++) b32(out, x->strs[i].id);
-    bput(out, ns.p, ns.n);
-    bput(out, x->body.p, x->body.n);
-    ns.p[0] = 0x01; bput(out, ns.p, ns.n);
-    bfix32(out, 4, out->n);
-    free(pool.p); free(ns.p);
-}
-
-static void android_manifest(silver a, bytes* out, string ver) {
-    axml x = {0};
-    // every android: attribute used below, in resource id order
-    axml_str ids[] = {
-        { "label",             0x01010001 }, { "name",           0x01010003 },
-        { "hasCode",           0x0101000c }, { "debuggable",     0x0101000f },
-        { "exported",          0x01010010 }, { "launchMode",     0x0101001d },
-        { "configChanges",     0x0101001f }, { "value",          0x01010024 },
-        { "minSdkVersion",     0x0101020c }, { "targetSdkVersion", 0x01010270 },
-        { "versionCode",       0x0101021b }, { "versionName",    0x0101021c },
-        { "extractNativeLibs", 0x010104ea } };
-    for (int i = 0; i < 13; i++) x.strs[x.n++] = ids[i];
-    x.nids = x.n;
-    string pkg  = f(string, "com.silver.%o", a->name);
-    string host = f(string, "%o-host", a->name);
-    axml_elem(&x, "manifest", (axml_attr[]) {
-        { "versionCode", AXML_INT, null, 1 }, { "versionName", AXML_STRING, ver->chars },
-        { "package", AXML_STRING, pkg->chars } }, 3);
-    axml_elem(&x, "uses-sdk", (axml_attr[]) {
-        { "minSdkVersion", AXML_INT, null, 33 }, { "targetSdkVersion", AXML_INT, null, 34 } }, 2);
-    axml_end(&x, "uses-sdk");
-    axml_elem(&x, "uses-permission", (axml_attr[]) {
-        { "name", AXML_STRING, "android.permission.INTERNET" } }, 1);
-    axml_end(&x, "uses-permission");
-    axml_elem(&x, "application", (axml_attr[]) {
-        { "label", AXML_STRING, a->name->chars }, { "hasCode", AXML_BOOL, null, 0 },
-        { "debuggable", AXML_BOOL, null, 1 }, { "extractNativeLibs", AXML_BOOL, null, 1 } }, 4);
-    // the activity is android's own NativeActivity; lib_name is the host
-    axml_elem(&x, "activity", (axml_attr[]) {
-        { "label", AXML_STRING, a->name->chars }, { "name", AXML_STRING, "android.app.NativeActivity" },
-        { "exported", AXML_BOOL, null, 1 }, { "launchMode", AXML_INT, null, 2 },
-        { "configChanges", AXML_INT, null, 0x17a0 } }, 5);
-    axml_elem(&x, "meta-data", (axml_attr[]) {
-        { "name", AXML_STRING, "android.app.lib_name" }, { "value", AXML_STRING, host->chars } }, 2);
-    axml_end(&x, "meta-data");
-    axml_elem(&x, "intent-filter", null, 0);
-    axml_elem(&x, "action", (axml_attr[]) { { "name", AXML_STRING, "android.intent.action.MAIN" } }, 1);
-    axml_end(&x, "action");
-    axml_elem(&x, "category", (axml_attr[]) { { "name", AXML_STRING, "android.intent.category.LAUNCHER" } }, 1);
-    axml_end(&x, "category");
-    axml_end(&x, "intent-filter");
-    axml_end(&x, "activity");
-    axml_end(&x, "application");
-    axml_end(&x, "manifest");
-    axml_write(&x, out);
-    free(x.body.p);
-}
-
-// one stored entry; its data aligned so .so files map straight from the zip
-static void apk_add(bytes* zip, bytes* cd, cstr name, const u8* d, size_t n, size_t align) {
-    u32    crc  = crc32_of(d, n);
-    size_t at   = zip->n;
-    size_t nlen = strlen(name);
-    size_t pad  = (align - (at + 30 + nlen + 6) % align) % align;
-    b32(zip, 0x04034b50); b16(zip, 10); b16(zip, 0); b16(zip, 0); b16(zip, 0); b16(zip, 0x21);
-    b32(zip, crc); b32(zip, n); b32(zip, n); b16(zip, nlen); b16(zip, 6 + pad);
-    bput(zip, name, nlen);
-    b16(zip, 0xd935); b16(zip, 2 + pad); b16(zip, align);
-    for (size_t i = 0; i < pad; i++) bput(zip, "\0", 1);
-    bput(zip, d, n);
-    b32(cd, 0x02014b50); b16(cd, 20); b16(cd, 10); b16(cd, 0); b16(cd, 0); b16(cd, 0); b16(cd, 0x21);
-    b32(cd, crc); b32(cd, n); b32(cd, n); b16(cd, nlen); b16(cd, 0); b16(cd, 0);
-    b16(cd, 0); b16(cd, 0); b32(cd, 0); b32(cd, at);
-    bput(cd, name, nlen);
-}
-
-static void apk_eocd(bytes* b, int entries, size_t cd_size, size_t cd_off) {
-    b32(b, 0x06054b50); b16(b, 0); b16(b, 0); b16(b, entries); b16(b, entries);
-    b32(b, cd_size); b32(b, cd_off); b16(b, 0);
-}
-
-static void apk_chunks(bytes* digests, const u8* d, size_t n, int* count) {
-    for (size_t off = 0; off < n; off += 1048576) {
-        size_t len = n - off < 1048576 ? n - off : 1048576;
-        bytes  c   = {0};
-        bput(&c, "\xa5", 1); b32(&c, len); bput(&c, d + off, len);
-        u8 h[32];
-        sha256(c.p, c.n, h);
-        bput(digests, h, 32);
-        free(c.p);
-        (*count)++;
-    }
-}
-
-// the v2 block over the three zip sections. a key is made once per device
-// dir with openssl; the block carries the signature and the certificate
-static bool apk_sign(silver a, path root, bytes* zip, bytes* cd, bytes* out, int entries) {
-    path key = f(path, "%o/sign.key", root);
-    path crt = f(path, "%o/sign.crt", root);
-    path tmp = f(path, "%o/build", root);
-    make_dir(tmp);
-    if (!file_exists("%o", key) &&
-        exec(a->verbose, "openssl req -x509 -newkey rsa:2048 -nodes -days 10000 -subj /CN=silver "
-             "-keyout %o -out %o 2>/dev/null", key, crt) != 0) return false;
-    bytes der = {0}, pub = {0};
-    if (exec(false, "openssl x509 -in %o -outform DER -out %o/sign.der", crt, tmp) != 0 ||
-        exec(false, "openssl x509 -in %o -pubkey -noout | openssl pkey -pubin -outform DER -out %o/sign.pub", crt, tmp) != 0 ||
-        !bload(&der, f(path, "%o/sign.der", tmp)) || !bload(&pub, f(path, "%o/sign.pub", tmp))) return false;
-
-    // digest: 1M chunks of entries, central directory, then the eocd as it
-    // would read with the directory offset pointing at this block
-    bytes eocd = {0};
-    apk_eocd(&eocd, entries, cd->n, zip->n);
-    bytes chunks = {0};
-    int   count  = 0;
-    apk_chunks(&chunks, zip->p, zip->n, &count);
-    apk_chunks(&chunks, cd->p, cd->n, &count);
-    apk_chunks(&chunks, eocd.p, eocd.n, &count);
-    bytes top = {0};
-    bput(&top, "\x5a", 1); b32(&top, count); bput(&top, chunks.p, chunks.n);
-    u8 digest[32];
-    sha256(top.p, top.n, digest);
-
-    bytes sd = {0};
-    b32(&sd, 4 + 4 + 4 + 32); b32(&sd, 4 + 4 + 32); b32(&sd, 0x0103); b32(&sd, 32); bput(&sd, digest, 32);
-    b32(&sd, 4 + der.n); b32(&sd, der.n); bput(&sd, der.p, der.n);
-    b32(&sd, 0);
-    path sd_file = f(path, "%o/sign.sd", tmp);
-    FILE* sf = fopen(sd_file->chars, "wb");
-    if (!sf) return false;
-    fwrite(sd.p, 1, sd.n, sf);
-    fclose(sf);
-    bytes sig = {0};
-    if (exec(false, "openssl dgst -sha256 -sign %o -out %o/sign.sig %o", key, tmp, sd_file) != 0 ||
-        !bload(&sig, f(path, "%o/sign.sig", tmp))) return false;
-
-    bytes signer = {0};
-    b32(&signer, sd.n); bput(&signer, sd.p, sd.n);
-    b32(&signer, 4 + 4 + 4 + sig.n); b32(&signer, 4 + 4 + sig.n); b32(&signer, 0x0103); b32(&signer, sig.n); bput(&signer, sig.p, sig.n);
-    b32(&signer, pub.n); bput(&signer, pub.p, pub.n);
-    bytes v2 = {0};
-    b32(&v2, 4 + signer.n); b32(&v2, signer.n); bput(&v2, signer.p, signer.n);
-
-    // the block: (u64 len, u32 id, value) pairs, padded to a page, its size
-    // at both ends and the magic last
-    size_t body = 8 + 4 + v2.n;
-    size_t pad  = (4096 - (8 + body + 8 + 16) % 4096) % 4096;
-    if (pad && pad < 12) pad += 4096;
-    size_t size = body + (pad ? pad : 0) + 8 + 16;
-    b64(out, size);
-    b64(out, 4 + v2.n); b32(out, 0x7109871a); bput(out, v2.p, v2.n);
-    if (pad) { b64(out, pad - 8); b32(out, 0x42726577); for (size_t i = 0; i < pad - 12; i++) bput(out, "\0", 1); }
-    b64(out, size);
-    bput(out, "APK Sig Block 42", 16);
-    free(der.p); free(pub.p); free(eocd.p); free(chunks.p); free(top.p); free(sd.p); free(sig.p); free(signer.p); free(v2.p);
-    return true;
-}
-
-// the package's lib dir is named for the abi
-static cstr android_abi(silver a) {
-    return strstr(platform_triple(a), "x86_64") ? "x86_64" : "arm64-v8a";
-}
-
-// the shared-object closure of a binary: every DT_NEEDED found in the
-// build dir, the device's lib dir or the ndk's shared libc++, copied into
-// the package. anything the api-level dir carries is the system's
-static void android_bundle_libs(silver a, path bin, bytes* zip, bytes* cd, array done) {
-    path   root   = f(path, "%s/platform/%o", SILVER, target_dir(a));
-    symbol triple = platform_triple(a);
-    char   base[64];
-    snprintf(base, sizeof(base), "%s", triple);
-    for (int n = strlen(base); n > 0 && isdigit(base[n - 1]); n--) base[n - 1] = 0;
-    string out   = command_run((command)f(string, "%s/platform/native/bin/llvm-readelf --needed-libs %o", SILVER, bin), false);
-    array  lines = split(out, "\n");
-    each(lines, string, ln0) {
-        string ln = trim(ln0);
-        // a versioned soname (libpng16.so.16) is a dependency too: match a
-        // ".so" anywhere, not just at the end, and skip the readelf header
-        if (index_of(ln, ".so") < 0) continue;
-        if (index_of(done, (Au)ln) >= 0) continue;
-        if (file_exists("%o/usr/lib/%s/33/%o", a->sysroot, base, ln)) continue;
-        path c1 = f(path, "%o/%o", a->build_dir, ln);
-        path c2 = f(path, "%o/lib/%o", root, ln);
-        path c3 = f(path, "%o/usr/lib/%s/%o", a->sysroot, base, ln);
-        path src = file_exists("%o", c1) ? c1 : file_exists("%o", c2) ? c2 : file_exists("%o", c3) ? c3 : null;
-        if (!src) { print("[%o] android: %o not found for the package", a->name, ln); continue; }
-        push(done, (Au)ln);
-        bytes d = {0};
-        bload(&d, src);
-        apk_add(zip, cd, ((string)f(string, "lib/%s/%o", android_abi(a), ln))->chars, d.p, d.n, 16384);
-        free(d.p);
-        android_bundle_libs(a, src, zip, cd, done);
-    }
-}
-
-// <build>/<name>.apk: the host, the product and its closure under lib/,
-// share/<name> under assets/ with a list the host extracts by, the manifest
-static void silver_android_bundle(silver a) {
-    string name  = a->name;
-    string share = silver_install_name(a);
-    path   root  = f(path, "%s/platform/%o", SILVER, target_dir(a));
-    path   tools = f(path, "%s/platform/native/bin", SILVER);
-    path   apk   = f(path, "%o/%o.apk", a->build_dir, name);
-    symbol triple = platform_triple(a);
-    string ver   = silver_release_version(a);
-    if (!ver) ver = string("1.0");
-    print("[%o] android: staging %o", name, apk);
-
-    // the host: NativeActivity loads it by name and it ticks the product
-    string leaf   = f(string, "%o.%o", stem(a->product), ext(a->product));
-    path   host   = f(path, "%o/lib%o-host.so", a->build_dir, name);
-    path   devlib = f(path, "%o/libsilver-devices.so", a->build_dir);
-    verify(file_exists("%o", devlib), "android: devices not built for %o (%o)", a->platform, devlib);
-    cstr habi = strstr(triple, "x86_64") ? "x86_64-linux-android" : "aarch64-linux-android";
-    verify(exec(a->verbose, "%o/clang -target %s --sysroot=%o -fuse-ld=lld -B%o %s %s -shared -fPIC "
-        "-ftls-model=global-dynamic -Wl,-soname,lib%o-host.so -I%s/devices -DSILVER_PRODUCT='\"%o\"' -DSILVER_SHARE_NAME='\"%o\"' "
-        "%s/src/silver-host-android.c %o -L%o/lib -L%o/usr/lib/%s/33 -L%o/usr/lib/%s -lAu -landroid -llog -o %o",
-        tools, triple, a->sysroot, tools, a->debug ? "-g" : "-O2", platform_abi_link(a),
-        name, SILVER, leaf, share, SILVER, devlib, root, a->sysroot, habi, a->sysroot, habi, host) == 0,
-        "android: host link failed");
-
-    bytes zip = {0}, cd = {0};
-    int   entries = 0;
-    bytes man = {0};
-    android_manifest(a, &man, ver);
-    apk_add(&zip, &cd, "AndroidManifest.xml", man.p, man.n, 4); entries++;
-    free(man.p);
-
-    array done = array(alloc, 64);
-    bytes d = {0};
-    bload(&d, host);
-    apk_add(&zip, &cd, ((string)f(string, "lib/%s/lib%o-host.so", android_abi(a), name))->chars, d.p, d.n, 16384); entries++;
-    free(d.p);
-    push(done, (Au)f(string, "lib%o-host.so", name));
-    d = (bytes){0};
-    bload(&d, a->product);
-    apk_add(&zip, &cd, ((string)f(string, "lib/%s/%o", android_abi(a), leaf))->chars, d.p, d.n, 16384); entries++;
-    free(d.p);
-    push(done, (Au)leaf);
-    int before = len(done);
-    android_bundle_libs(a, a->product, &zip, &cd, done);
-    android_bundle_libs(a, host, &zip, &cd, done);
-    entries += len(done) - before;
-
-    // share/<name>: the asset dir lists no subdirectories, so a list goes
-    // with it, and a stamp tells the host when to extract again
-    path share_src = f(path, "%o/share/%o", a->install, share);
-    if (dir_exists("%o", share_src)) {
-        string list  = command_run((command)f(string, "cd %o && find -L . -type f | sort | sed 's|^\\./||'", share_src), false);
-        array  files = split(list, "\n");
-        bytes  ls    = {0};
-        each(files, string, rel) {
-            if (!len(rel)) continue;
-            bytes fd = {0};
-            bload(&fd, f(path, "%o/%o", share_src, rel));
-            apk_add(&zip, &cd, ((string)f(string, "assets/share/%o/%o", share, rel))->chars, fd.p, fd.n, 4); entries++;
-            free(fd.p);
-            bput(&ls, rel->chars, len(rel)); bput(&ls, "\n", 1);
-        }
-        apk_add(&zip, &cd, "assets/share.list", ls.p, ls.n, 4); entries++;
-        free(ls.p);
-    }
-    string stamp = f(string, "%o-%i", ver, (i32)time(null));
-    apk_add(&zip, &cd, "assets/share.stamp", (u8*)stamp->chars, len(stamp), 4); entries++;
-
-    bytes block = {0};
-    verify(apk_sign(a, root, &zip, &cd, &block, entries), "android: signing failed — is openssl installed?");
-    FILE* f = fopen(apk->chars, "wb");
-    verify(f, "android: cannot write %o", apk);
-    fwrite(zip.p, 1, zip.n, f);
-    fwrite(block.p, 1, block.n, f);
-    fwrite(cd.p, 1, cd.n, f);
-    bytes eocd = {0};
-    apk_eocd(&eocd, entries, cd.n, zip.n + block.n);
-    fwrite(eocd.p, 1, eocd.n, f);
-    fclose(f);
-    free(zip.p); free(cd.p); free(block.p); free(eocd.p);
-    a->live_binary = hold(apk);
-}
-
-static void silver_mobile_bundle(silver a) {
-    if (target_is_android(a)) silver_android_bundle(a); else silver_ios_bundle(a);
-}
-
-// push to the device and start it there. ssh owns the credentials — the
-// device names a host ALIAS (~/.ssh/config), never a user or a password.
-// a device with no host is a build target only
-static void device_run(silver a) {
-    Device dev = a->target;
-    if (!dev) return;
-    // adb finds the phone itself; host is a serial only when several are on
-    if (target_is_android(a)) {
-        if (build_lock_fd >= 0) { flock(build_lock_fd, LOCK_UN); close(build_lock_fd); build_lock_fd = -1; }
-        path   apk = f(path, "%o/%o.apk", a->build_dir, a->name);
-        path   sdk = f(path, "%s/platform/%o/sdk", SILVER, target_dir(a));
-        string adb = f(string, "%o/platform-tools/adb%s%o", sdk,
-            dev->host && len(dev->host) ? " -s " : "", dev->host && len(dev->host) ? dev->host : string(""));
-        if (!file_exists("%o", apk)) { print("[%o] android: no package at %o", a->name, apk); a->error = true; return; }
-        // the emulator: its avd is written here the first time, then it is
-        // started when none is running, and waited for until android is up
-        if (strstr(a->platform->chars, "sim")) {
-            path avd = f(path, "%s/platform/%o/avd/silver.avd", SILVER, target_dir(a));
-            if (!dir_exists("%o", avd)) {
-                make_dir(avd);
-                cstr abi = android_abi(a);
-                path_save(f(path, "%o/../silver.ini", avd), (Au)f(string,
-                    "avd.ini.encoding=UTF-8\npath=%o\npath.rel=avd/silver.avd\ntarget=android-34\n", avd), null);
-                path_save(f(path, "%o/config.ini", avd), (Au)f(string,
-                    "AvdId=silver\navd.ini.displayname=silver\navd.ini.encoding=UTF-8\n"
-                    "abi.type=%s\nhw.cpu.arch=%s\nhw.cpu.ncore=4\nhw.ramSize=2048\n"
-                    "image.sysdir.1=system-images/android-34/google_apis/%s/\n"
-                    "tag.id=google_apis\ntag.display=Google APIs\nPlayStore.enabled=no\n"
-                    "hw.lcd.width=1080\nhw.lcd.height=2400\nhw.lcd.density=420\n"
-                    "hw.gpu.enabled=yes\nhw.gpu.mode=host\nhw.keyboard=yes\nhw.sdCard=no\n"
-                    "hw.audioInput=no\ndisk.dataPartition.size=4G\nfastboot.forceColdBoot=no\n",
-                    abi, strcmp(abi, "x86_64") == 0 ? "x86_64" : "arm64", abi), null);
-            }
-            if (exec(false, "%o devices 2>/dev/null | grep -q '^emulator-'", adb) != 0) {
-                print("[%o] starting the emulator", a->name);
-                // -gpu auto uses the host gpu when there is one (full speed on a
-                // dev's machine) and falls back to software only when headless,
-                // where swiftshader renders the same frames slower
-                exec(false, "ANDROID_SDK_ROOT=%o ANDROID_AVD_HOME=%o/.. %o/emulator/emulator -avd silver "
-                     "-gpu auto -no-boot-anim -no-snapshot-save "
-                     "> %o/../emulator.log 2>&1 &", sdk, avd, sdk, avd);
-            }
-            if (exec(false, "%o wait-for-device shell 'while [ \"$(getprop sys.boot_completed 2>/dev/null | tr -d \"\\r\")\" != \"1\" ]; "
-                     "do sleep 1; done'", adb) != 0) {
-                print("[%o] android: the emulator did not come up — see platform/%o/emulator.log", a->name, target_dir(a));
-                a->error = true;
-                return;
-            }
-        }
-#ifdef __linux__
-        // a stock phone in adb mode has no udev rule, so its usb node is
-        // root-only and adb answers "no permissions". say exactly what to run
-        // a fresh server: a running one keeps the node's old permissions
-        if (!strstr(a->platform->chars, "sim")) exec(false, "%o kill-server >/dev/null 2>&1", adb);
-        if (!strstr(a->platform->chars, "sim") &&
-            exec(false, "%o devices 2>/dev/null | grep -q 'no permissions'", adb) == 0) {
-            print("[%o] android: the phone's usb node is root-only (no udev rule for adb). run once, then retry:", a->name);
-            print("  sudo sh -c 'echo \"SUBSYSTEM==\\\"usb\\\", ATTR{idVendor}==\\\"18d1\\\", MODE=\\\"0666\\\", TAG+=\\\"uaccess\\\"\" > /etc/udev/rules.d/51-android.rules' && sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=usb --action=add");
-            a->error = true;
-            return;
-        }
-#endif
-        if (!strstr(a->platform->chars, "sim") &&
-            exec(false, "%o devices 2>/dev/null | grep -q 'unauthorized'", adb) == 0) {
-            print("[%o] android: the phone is asking \"Allow USB debugging?\" — tap Allow on it, then retry", a->name);
-            a->error = true;
-            return;
-        }
-        print("[%o] installing on %s", a->name, strstr(a->platform->chars, "sim") ? "the emulator" : "the phone");
-        if (exec(a->verbose, "%o install -r %o", adb, apk) != 0) {
-            print("[%o] android: install failed — is a phone plugged in with usb debugging on?", a->name);
-            a->error = true;
-            return;
-        }
-        print("[%o] starting", a->name);
-        exec(a->verbose, "%o shell am start -n com.silver.%o/android.app.NativeActivity", adb, a->name);
-        // its log, from the moment it has a pid
-        exec(false, "p=''; for i in 1 2 3 4 5 6 7 8 9 10; do p=$(%o shell pidof -s com.silver.%o 2>/dev/null | tr -d '\\r'); "
-             "[ -n \"$p\" ] && break; sleep 1; done; [ -n \"$p\" ] && %o logcat --pid=$p", adb, a->name, adb);
-        return;
-    }
-    if (!dev->host || !len(dev->host)) return;
-    // the app runs for as long as it likes: the build lock goes first
-    if (build_lock_fd >= 0) { flock(build_lock_fd, LOCK_UN); close(build_lock_fd); build_lock_fd = -1; }
-    // an iphone installs and launches through devicectl; host is its udid
-    if (a->platform && strstr(a->platform->chars, "ios")) {
-        path app = f(path, "%o/%o.app", a->build_dir, a->name);
-        if (!dir_exists("%o", app)) { print("[%o] ios: no bundle at %o", a->name, app); a->error = true; return; }
-        // the simulator: host names a device or 'booted'
-        if (strstr(a->platform->chars, "simulator")) {
-            if (cmp(dev->host, "booted") != 0) exec(false, "xcrun simctl boot %o 2>/dev/null", dev->host);
-            exec(false, "open -a Simulator");
-            print("[%o] installing on simulator %o", a->name, dev->host);
-            if (exec(a->verbose, "xcrun simctl install %o %o", dev->host, app) != 0) {
-                print("[%o] ios: simulator install failed — is one booted?", a->name);
-                a->error = true;
-                return;
-            }
-            print("[%o] starting on simulator %o", a->name, dev->host);
-            exec(a->verbose, "xcrun simctl launch --console %o com.silver.%o", dev->host, a->name);
-            return;
-        }
-        print("[%o] installing on %o", a->name, dev->host);
-        if (exec(a->verbose, "xcrun devicectl device install app --device %o %o", dev->host, app) != 0) {
-            print("[%o] ios: install failed — is the phone unlocked and trusted?", a->name);
-            a->error = true;
-            return;
-        }
-        print("[%o] starting on %o", a->name, dev->host);
-        exec(a->verbose, "xcrun devicectl device process launch --console --device %o com.silver.%o",
-            dev->host, a->name);
-        return;
-    }
-    path root = dev->root ? dev->root : (path)f(path, "~/silver");
-    print("[%o] sending to %o", a->name, dev->host);
-    if (exec(a->verbose, "ssh %o 'mkdir -p %o'", dev->host, root) != 0 ||
-        exec(a->verbose, "rsync -az %o %o:%o/", a->product, dev->host, root) != 0) {
-        print("[%o] cannot reach device '%o' over ssh (%o)", a->name, a->device, dev->host);
-        a->error = true;
-        return;
-    }
-    // whatever runs there now is the previous build of this app
-    string stopc = (dev->stop && len(dev->stop)) ? hold(dev->stop) :
-        f(string, "pkill -x %o 2>/dev/null; true", a->name);
-    exec(a->verbose, "ssh %o '%o'", dev->host, stopc);
-    string runc = (dev->run && len(dev->run)) ? hold(dev->run) :
-        f(string, "cd %o && ./%o", root, filename(a->product));
-    print("[%o] starting on %o", a->name, dev->host);
-    exec(a->verbose, "ssh %o '%o'", dev->host, runc);
-}
-
-// --lldb: silver hands you the debugger directly. locally that is lldb on
-// the product; with a device it is lldb HERE driving lldb-server THERE, so
-// one command gets you a session on the board. the sysroot we already
-// pulled is what resolves the device's own libraries
-static void device_debug(silver a) {
-    Device dev  = a->target;
-    path   tool = f(path, "%s/platform/native/bin/lldb", SILVER);
-    if (!file_exists("%o", tool)) {
-        print("[%o] no lldb at %o", a->name, tool);
-        a->error = true;
-        return;
-    }
-
-    symbol port = "1234";
-    if (dev && dev->host && len(dev->host)) {
-        path   root = dev->root ? dev->root : (path)f(path, "~/silver");
-        if (exec(a->verbose, "ssh %o 'mkdir -p %o'", dev->host, root) != 0 ||
-            exec(a->verbose, "rsync -az %o %o:%o/", a->product, dev->host, root) != 0) {
-            print("[%o] cannot reach device '%o' over ssh (%o)", a->name, a->device, dev->host);
-            a->error = true;
-            return;
-        }
-        // the debug wire rides ssh like everything else: the server binds
-        // LOOPBACK on the device and we forward the port. an open *:port is
-        // an unauthenticated debug server on the network
-        string srv = (dev->debugger && len(dev->debugger)) ? hold(dev->debugger) :
-            f(string, "lldb-server platform --listen 127.0.0.1:%s --server", port);
-        exec(false, "ssh %o 'pkill -f lldb-server 2>/dev/null; true'", dev->host);
-        if (exec(a->verbose, "ssh -f %o '%o >/dev/null 2>&1 &'", dev->host, srv) != 0) {
-            print("[%o] no debug server on %o — install lldb-server there, or name "
-                  "one in the device's debugger: line", a->name, dev->host);
-            a->error = true;
-            return;
-        }
-        // one forwarded port; -N carries no command, -f backgrounds it
-        exec(false, "pkill -f 'ssh -f -N -L %s:127.0.0.1:%s' 2>/dev/null; true", port, port);
-        if (exec(a->verbose, "ssh -f -N -L %s:127.0.0.1:%s %o", port, port, dev->host) != 0) {
-            print("[%o] could not forward the debug port from %o", a->name, dev->host);
-            a->error = true;
-            return;
-        }
-        // an lldb script, so the session opens already connected
-        path cmds = f(path, "%o/%o.lldb", a->build_dir, a->name);
-        string body = f(string,
-            "platform select remote-linux\n"
-            "platform connect connect://127.0.0.1:%s\n"
-            "settings set target.sysroot %o\n"
-            "target create %o\n",
-            port, a->sysroot, a->product);
-        path_save(cmds, (Au)body, null);
-        print("[%o] debugging on %o", a->name, dev->host);
-        char* argv[] = { tool->chars, "-s", cmds->chars, NULL };
-        execvp(argv[0], argv);
-        fprintf(stderr, "could not start %s\n", tool->chars);
-        _exit(1);
-    }
-    print("[%o] debugging here", a->name);
-    char* argv[] = { tool->chars, a->product->chars, NULL };
-    execvp(argv[0], argv);
-    fprintf(stderr, "could not start %s\n", tool->chars);
-    _exit(1);
-}
 
 // a module that exports `dependencies [ 'app' ]` plugs into that app at
 // runtime (the export registry names it, nothing imports it), so the app's
@@ -3151,24 +2184,6 @@ static void silver_recover_live(silver a) {
     }
 }
 
-// the version a release ships: parsed export, else the registry, else the
-// module source itself (a cached run parsed nothing and may have no registry)
-static string silver_release_version(silver a) {
-    string share = silver_install_name(a);
-    if (a->exported_version) return string(a->exported_version->chars);
-    path reg = f(path, "%o/export/%o.agi", a->install, share);
-    if (file_exists("%o", reg)) {
-        string v = trim(command_run((command)f(string,
-            "sed -n 's/^version: *//p' %o", reg), false));
-        if (len(v)) return v;
-    }
-    if (a->module_file && file_exists("%o", a->module_file)) {
-        string v = trim(command_run((command)f(string,
-            "sed -n 's/^export  *\\([0-9][0-9.]*\\).*/\\1/p' %o", a->module_file), false));
-        if (len(v)) return v;
-    }
-    return null;
-}
 
 static int silver_spawn_product(silver a, path bin, bool lib, path cwd,
                                 cstr env, cstr env_force);
@@ -3186,6 +2201,13 @@ static void silver_live_run(silver a) {
         return;
     }
     build_dependents(a);
+    // one map: the last coverage run's, cleared as this one starts
+    if (((aether)a)->coverage && !a->is_external) {
+        path lcov = f(path, "%o/tmp/coverage.lcov", a->install);
+        make_dir(f(path, "%o/tmp", a->install));
+        unlink(lcov->chars);
+        setenv("SILVER_COVERAGE_LCOV", lcov->chars, 1);
+    }
     // --lldb goes straight into a session, here or on the device. it execs
     // into lldb, so returning at all means it could not start one
     if (a->lldb && !a->is_external && !a->build) {
@@ -3351,43 +2373,6 @@ static int silver_spawn_product(silver a, path bin, bool lib, path cwd,
 
 
 #ifdef __APPLE__
-// copy the dylib closure of a Mach-O into lib/, every dependency under
-// our install or build tree rewritten to @rpath/<leaf>. system libs stay
-static void bundle_dylibs(silver a, path bin, path lib_dir, array done) {
-    string out = command_run((command)f(string, "otool -L %o", bin), false);
-    array  lines = split(out, "\n");
-    for (int i = 1; i < len(lines); i++) {
-        string ln = trim((string)lines->origin[i]);
-        int sp = index_of(ln, " (");
-        if (sp <= 0) continue;
-        string dep = mid(ln, 0, sp);
-        path   src = null;
-        string leaf = null;
-        if (starts_with(dep, "@rpath/")) {
-            leaf = mid(dep, 7, len(dep) - 7);
-            path c1 = f(path, "%o/lib/%o", a->install, leaf);
-            path c2 = f(path, "%o/%o", a->build_dir, leaf);
-            src = file_exists("%o", c1) ? c1 : file_exists("%o", c2) ? c2 : null;
-        } else if (dep->chars[0] == '/' &&
-                   (starts_with(dep, a->install->chars) ||
-                    starts_with(dep, a->build_dir->chars))) {
-            src  = path(dep->chars);
-            leaf = stem(src);
-            leaf = f(string, "%o.%o", leaf, ext(src));
-            vexec(a->verbose, "package", "install_name_tool -change %o @rpath/%o %o",
-                dep, leaf, bin);
-        }
-        if (!src || !leaf) continue;
-        if (index_of(done, (Au)leaf) >= 0) continue;
-        push(done, (Au)leaf);
-        path dst = f(path, "%o/%o", lib_dir, leaf);
-        // -L: the install tree links versioned names; ship real files
-        vexec(a->verbose, "package", "cp -L %o %o", src, dst);
-        vexec(a->verbose, "package", "chmod u+w %o", dst);
-        vexec(a->verbose, "package", "install_name_tool -id @rpath/%o %o", leaf, dst);
-        bundle_dylibs(a, dst, lib_dir, done);
-    }
-}
 
 // --release on an app: stage <Name>.app (MacOS/, lib/, share/<name>/ —
 // the same shape path_share_path and the @executable_path/../lib rpath
@@ -4338,6 +3323,7 @@ AU_EXPORT void silver_init(silver a) {
     //a->asan         = true;
 #endif
     a->exports      = map(hsize, 16);
+    a->codegens     = map(hsize, 8);
     // a cross build keeps its own build dir: the toolchain stays at install
     // (native), but mips objects must never land beside the native ones
     a->build_dir    = (a->platform && len(a->platform) && cmp(a->platform, "native") != 0)
@@ -4506,6 +3492,11 @@ AU_EXPORT void silver_init(silver a) {
                 if (entry->d_type != DT_DIR) continue;
                 path res = form(path, "%o/%s", a->module_path,
                     entry->d_name);
+                // gen/ holds generated bodies; its folders are resources
+                if (strcmp(entry->d_name, "gen") == 0) {
+                    collect_resource_dirs(og, res);
+                    continue;
+                }
                 if (index_of(og->resources, (Au)res) < 0)
                     push(og->resources, (Au)hold(res));
             }
@@ -4516,15 +3507,22 @@ AU_EXPORT void silver_init(silver a) {
     }
 
     // check extension modules (.ag files in same dir) — if any are newer, bust the cache
-    {
-        DIR *dir = opendir(a->module_path->chars);
+    // gen/ holds generated bodies: an edit there rebuilds too
+    path ext_dirs[2] = { a->module_path, f(path, "%o/gen", a->module_path) };
+    // a file removed from gen/ changes only the folder's time
+    if (dir_exists("%o", ext_dirs[1])) {
+        u64 gm = modified_time(ext_dirs[1]);
+        if (gm > module_file_m) module_file_m = gm;
+    }
+    for (int di = 0; di < 2; di++) {
+        DIR *dir = opendir(ext_dirs[di]->chars);
         if (dir) {
             struct dirent *entry;
             while ((entry = readdir(dir)) != NULL) {
                 cstr n = entry->d_name;
                 int  nl = strlen(n);
                 if (nl <= 3 || strcmp(n + nl - 3, ".ag") != 0) continue;
-                path ag = form(path, "%o/%s", a->module_path, n);
+                path ag = form(path, "%o/%s", ext_dirs[di], n);
                 u64  m  = source_mtime(a, ag);
                 if (m > module_file_m) module_file_m = m;
             }
@@ -4619,7 +3617,7 @@ AU_EXPORT void silver_init(silver a) {
     // an uninstall walks the imports for their ledgers: that is a parse
     if (a->clean || a->uninstall) update_product = true;
     // instrumented code is not the cached product: a timing run rebuilds
-    if (((aether)a)->timing) update_product = true;
+    if (((aether)a)->timing || ((aether)a)->coverage) update_product = true;
     // the syntax map is a product too: cached runs must not leave a map
     // older than the source (the editor withholds stale coloring)
     if (!a->is_external && a->format && len(a->format)) {
@@ -5147,8 +4145,9 @@ static enode read_keywords(silver a, etype mdl_expect) {
                 prev_line = ft->line;
                 concat(joined, (string)toks->origin[i]);
             }
+            // keyword text is literal: its braces never interpolate
             return (enode)e_create((aether)a, (etype)mdl_expect,
-                (Au)e_operand((aether)a, (Au)joined, etypeid(string)), false);
+                (Au)e_operand((aether)a, (Au)const_string(chars, joined->chars), etypeid(string)), false);
         }
     }
     // build tokens object at runtime: alloc + push each string
@@ -5167,7 +4166,7 @@ static enode read_keywords(silver a, etype mdl_expect) {
     efunc f_convert = (efunc)u(efunc, find_member(etypeid(Au)->autype, "__convert", AU_MEMBER_FUNC, 0, false));
     for (int i = 0; i < len(toks); i++) {
         string s = (string)toks->origin[i];
-        enode str_const = e_operand(a, (Au)s, etypeid(string));
+        enode str_const = e_operand(a, (Au)const_string(chars, s->chars), etypeid(string));
         enode type_node = e_typeid(a, etypeid(token));
         enode tok_const = e_fn_call(a, f_convert, a(type_node, str_const), false, false);
         e_fn_call(a, f_push, a(res, tok_const), false, false);
@@ -5738,6 +4737,35 @@ static bool is_char_uni(string crop, i64* out) {
     return false;
 }
 
+// {expr} keeps its escapes: it is tokenized again later
+static string unescape_interp(string s) {
+    string out = string(alloc, len(s) + 1);
+    num    n   = len(s), i = 0, run = 0;
+    while (i < n) {
+        char c = s->chars[i];
+        if (c == '{' && i + 1 < n && s->chars[i + 1] == '{') { i += 2; continue; }
+        if (c != '{') { i++; continue; }
+        concat(out, unescape(mid(s, run, i - run)));
+        num  j = i + 1;
+        int  depth = 1;
+        char q = 0;
+        while (j < n && depth) {
+            char d = s->chars[j];
+            if (q) {
+                if (d == '\\') j++;
+                else if (d == q) q = 0;
+            } else if (d == '"' || d == '\'') q = d;
+            else if (d == '{') depth++;
+            else if (d == '}') depth--;
+            j++;
+        }
+        concat(out, mid(s, i, j - i));
+        i = run = j;
+    }
+    concat(out, unescape(mid(s, run, n - run)));
+    return out;
+}
+
 static array parse_tokens(silver a, Au input, array output) { sequencer
     string input_string;
     Au_t type = isa(input);
@@ -5996,15 +5024,15 @@ static array parse_tokens(silver a, Au input, array output) { sequencer
             // combine literal strings in c
             token l = (token)last_element(tokens);
             if (cmode && l && chr == '\"' && isa(l->literal) == typeid(const_string)) {
-                string s  = mid((string)l->literal, 0, len((string)l->literal) - 1);
-                string s2 = mid(l, 1, len(l) - 2);
-                s2 = unescape(s2);
+                string s  = string(((string)l->literal)->chars);
+                string s2 = unescape(mid(crop, 1, len(crop) - 2));
                 concat(s, s2);
                 drop(l->literal);
-                l->literal = hold((Au)s);
+                l->literal = hold((Au)const_string(chars, cstring(s)));
             } else {
                 string content = mid(crop, 1, len(crop) - 2);
-                content = unescape(content);
+                content = (quote_char == '\'' && !cmode) ?
+                    unescape_interp(content) : unescape(content);
                 Au     lit = (Au)hold((quote_char == '\'') ? (Au)content : (Au)const_string(chars, cstring(content)));
                 push(tokens, (Au)token(
                                 chars, crop->chars,
@@ -6832,10 +5860,12 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
 
     if (!cmode && read_if(a, "[")) {
         // C fixed-size array: read N elements of the element type
-        if (mdl_expect && mdl_expect->autype->elements > 0 && mdl_expect->autype->src) {
-            etype elem_type = u(etype, mdl_expect->autype->src);
-            if (!elem_type) elem_type = (etype)etype_prep((aether)a, mdl_expect->autype->src);
-            array elems = array(alloc, mdl_expect->autype->elements);
+        // a typedef names the array: its size is on the target
+        Au_t fx9 = mdl_expect ? au_arg_type((Au)mdl_expect->autype) : null;
+        if (fx9 && fx9->elements > 0 && fx9->src) {
+            etype elem_type = u(etype, fx9->src);
+            if (!elem_type) elem_type = (etype)etype_prep((aether)a, fx9->src);
+            array elems = array(alloc, fx9->elements);
             while (!next_is(a, "]")) {
                 enode elem = parse_expression(a, elem_type, true, true);
                 push(elems, (Au)elem);
@@ -7250,6 +6280,9 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
             total = e_create(a, etypeid(i64), (Au)esize, false);
         // the count rides into alloc_new: elements sit inline, one allocation
         if (!a->no_build) ((aether)a)->alloc_count = total;
+        // the shape rides too: multi-index reads it from the header
+        if (!a->no_build && canonical(esize) && canonical(esize)->autype == typeid(shape))
+            ((aether)a)->alloc_shape = esize;
         enode vec   = e_create(a, spt, null, false);
         vec->meta_a = (Au)selem;
         efunc f_rs  = (efunc)u(efunc, find_member(typeid(vector), "resize",
@@ -9162,138 +8195,328 @@ etype read_etype(silver a, array* p_expr) { sequencer
 // codegen_generate_fn is aether's: it owns the codegen class and the
 // base implementation. a second definition here is a duplicate symbol.
 
-// design-time for dictation
-array read_dictation(silver a, array input) {
-    // we want to read through [ 'tokens', image[ 'file.png' ] ]
-    // also 'token here' 'and here' as two messages
-    array result = array();
+// a `using` func's block: its prompt; the body lives in gen/
+typedef struct {
+    array  prompt;          // {path} groups collapsed to one token
+    num    first;           // the block's first line in its file
+} gen_block;
 
-    push_tokens(a, (tokens)input, 0);
-    while (read_if(a, "[")) {
-        array content = array();
-        while (peek(a) && !next_is(a, "]")) {
-            if (read_if(a, "file")) {
-                verify(read_if(a, "["), "expected [ after file");
-                string file = (string)read_literal(a, typeid(string));
-                verify(file, "expected 'path' of file in resources");
-                path share = path_share_path();
-                path fpath = f(path, "%o/%o", share, file);
-                verify(exists(fpath), "path does not exist: %o", fpath);
-                verify(read_if(a, "]"), "expected ] after file [ literal string path... ] ");
-                push(content, (Au)fpath); // we need to bring in the image/media api
-            } else {
-                string msg = (string)read_literal(a, typeid(string));
-                verify(msg, "expected 'text' message");
-                push(content, (Au)msg);
-            }
-            read_if(a, ","); // optional for arrays of 1 dimension
-        }
-        verify(len(content), "expected more than one message entry");
-        verify(read_if(a, "]"), "expected ] after message");
+// one generation at a time
+static pthread_mutex_t gen_lock = PTHREAD_MUTEX_INITIALIZER;
 
-        push(result, (Au)content);
+// index of the } that closes the { at i
+static num gen_group_end(array b, num i) {
+    int depth = 0;
+    for (num j = i; j < len(b); j++) {
+        token t = (token)b->origin[j];
+        if (eq(t, "{")) depth++;
+        else if (eq(t, "}") && --depth == 0) return j;
     }
-    verify(len(result), "expected dictation message");
-    pop_tokens(a, false);
-    return result;
+    return -1;
 }
 
-array gemini_generate_fn(gemini google, Au_t f, array query) {
-    silver a = (silver)u(efunc, f)->mod;
-    error("implement gemini");
-    return null;
-}
-
-array claude_generate_fn(claude jean, Au_t f, array query) {
-    silver a = (silver)u(efunc, f)->mod;
-    error("implement claude");
-    return null;
-}
-
-array chatgpt_generate_fn(chatgpt gpt, Au_t f, array query) {
-    silver a = (silver)u(efunc, f)->mod;
-    efunc fn = u(efunc, f);    
+// {images/x.png} inside a prompt becomes one token holding its path
+static array gen_prompt(array b, num from, num to, path dir) {
     array res = array(alloc, 32);
-
-    // we need to construct the query for chatgpt from our query tokens
-    // as well as the preamble system context
-    // we have simple strings
-    string key = f(string, "%s", getenv("CHATGPT"));
-    verify(len(key),
-           "chatgpt requires an api key stored in environment variable CHATGPT");
-
-    // remote transport moved to the silver tls module;
-    // wire Http there when this feature lands
-    string str_args = string();
-    for (int i = 0; i < f->args.count; i++) {
-        Au_t mem = (Au_t)f->args.origin[i];
-        if (len(str_args))
-            append(str_args, ",");
-        concat(str_args, f(string, "%o: %o", mem, mem->type));
+    for (num i = from; i < to; i++) {
+        token t = (token)b->origin[i];
+        if (!eq(t, "{")) { push(res, (Au)t); continue; }
+        num    j   = gen_group_end(b, i);
+        string rel = string(alloc, 64);
+        for (num k = i + 1; k < j; k++)
+            concat(rel, string(((token)b->origin[k])->chars));
+        path p = f(path, "%o/%o", dir, rel);
+        push(res, (Au)token(chars, rel->chars, source, t->source,
+            line, t->line, column, t->column, literal, (Au)p));
+        i = j;
     }
-    string signature = f(string, "func %o[%o] -> %o", f, str_args, f->rtype);
-
-    // main system message
-    map sys_intro = m(
-        "role", string("system"),
-        "content", f(string, "this is silver compiler, and your job is to write the code for inside of method: %o, "
-                             "no [ braces ] containing it, just the inner method code; next we will provide entire module "
-                             "source, so you know context and other components available",
-                     signature));
-
-    // include our module source code
-    map sys_module = m(
-        "role", (Au)string("system"),
-        "content", (Au)a->source_raw);
-
-    // now we need a silver document with reasonable how-to
-    // this can be fetched from resource, as its meant for both human and AI learning
-    path docs = path_share_path();
-    path test_sf = f(path, "%o/docs/test.ag", docs);
-    string test_content = (string)load(test_sf, typeid(string), null);
-    map sys_howto = m(
-        "role", string("system"),
-        "content", test_content);
-
-    array messages = a(sys_intro, sys_module, sys_howto);
-
-    // now we have 1 line of dictation: ['this is text describing an image', image[ 'file.png' ] ]
-    // for each dictation message, there is a response from the server which we also include as assistant
-    // it must error if there are missing responses from the servea
-    array dictation = read_dictation(a, (array)fn->body);
-
-    each(dictation, array, msg) {
-        array content = array();
-        each(msg, Au, info) {
-            map item;
-            if (instanceof(info, path)) {
-                string mime_type = mime((path)info);
-                string b64 = base64((path)info);
-                map m_url = m("url", f(string, "data:%o;base64,%o", mime_type, b64)); // data:image/png;base64,
-                item = m("type", "image_url", "image_url", m_url);
-            } else if (instanceof(info, string)) {
-                item = m("type", "text", "text", info);
-            } else {
-                error("unknown type in dictation: %s", isa(info)->ident);
-            }
-            push(content, (Au)item);
-        }
-        map user_dictation = m(
-            "role", string("user"),
-            "content", content);
-
-        push(messages, (Au)user_dictation);
-        path test_sf = f(path, "%o/docs/test.ag", docs);
-    }
-
-    map user = m(
-        "role", string("user"),
-        "content", string("write a function that adds the args a and b"));
-
-    hold(messages);
-    map body = m("model", string("gpt-5"), "messages", messages);
-
     return res;
+}
+
+static gen_block gen_read(array b, path dir) {
+    gen_block g = { 0 };
+    g.first = ((token)b->origin[0])->line;
+    if (eq((token)b->origin[0], "{")) {
+        g.prompt = gen_prompt(b, 1, gen_group_end(b, 0), dir);
+        return g;
+    }
+    if (len(b) > 2 && eq((token)b->origin[0], "prompt") &&
+            eq((token)b->origin[2], "{"))
+        g.prompt = gen_prompt(b, 3, gen_group_end(b, 2), dir);
+    return g;
+}
+
+static string gen_signature(efunc fn) {
+    Au_t   f    = fn->autype;
+    string args = string(alloc, 64);
+    for (int i = f->is_imethod ? 1 : 0; i < f->args.count; i++) {
+        Au_t m = (Au_t)f->args.origin[i];
+        if (len(args)) append(args, ", ");
+        concat(args, f(string, "%s: %s", m->ident,
+            m->src && m->src->ident ? m->src->ident : "?"));
+    }
+    Au_t ctx  = f->context;
+    bool rec9 = ctx && ctx->ident && (ctx->is_class || ctx->is_struct);
+    return f(string, "func %s%s%s [ %o ] -> %s",
+        rec9 ? ctx->ident : "", rec9 ? "." : "", f->ident, args,
+        f->rtype && f->rtype->ident ? f->rtype->ident : "none");
+}
+
+static Au gen_at(Au v, symbol key) {
+    map m9 = instanceof(v, map);
+    return m9 ? get(m9, (Au)string(key)) : null;
+}
+
+// an agent's program: on PATH, else where its installer puts it
+static string gen_tool(symbol name) {
+    cstr pathv = getenv("PATH");
+    string all = string(pathv ? pathv : "");
+    each(split(all, ":"), string, dir) {
+        path p = f(path, "%o/%s", dir, name);
+        if (len(dir) && (access)(p->chars, X_OK) == 0) return (string)p;
+    }
+    cstr   home = getenv("HOME");
+    string alts[5] = {
+        f(string, "%s/.local/bin/%s", home ? home : "", name),
+        f(string, "%s/.claude/local/%s", home ? home : "", name),
+        f(string, "/Applications/ChatGPT.app/Contents/Resources/%s", name),
+        f(string, "/Applications/Codex.app/Contents/Resources/%s", name),
+        f(string, "%s/Applications/Codex.app/Contents/Resources/%s", home ? home : "", name) };
+    for (int i = 0; i < 5; i++)
+        if ((access)(alts[i]->chars, X_OK) == 0) return alts[i];
+    return null;
+}
+
+// run an agent to its end in root, output to log; false on
+// a failed start, a failed exit, or a run past limit seconds
+static bool gen_run(cstr* args, path root, path log, int limit) {
+    extern char** environ;
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    posix_spawn_file_actions_addopen(&fa, 0, "/dev/null", O_RDONLY, 0);
+    posix_spawn_file_actions_addopen(&fa, 1, log->chars, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    posix_spawn_file_actions_adddup2(&fa, 1, 2);
+    posix_spawn_file_actions_addchdir_np(&fa, root->chars);
+    pid_t pid;
+    int   rc = posix_spawn(&pid, args[0], &fa, null, (char**)args, environ);
+    posix_spawn_file_actions_destroy(&fa);
+    if (rc != 0) return false;
+    int st = 0;
+    for (int s = 0; s < limit * 10; s++) {
+        pid_t w = waitpid(pid, &st, WNOHANG);
+        if (w == pid) return WIFEXITED(st) && WEXITSTATUS(st) == 0;
+        usleep(100000);
+    }
+    kill(pid, SIGTERM);
+    waitpid(pid, &st, 0);
+    return false;
+}
+
+// one run of the user's agent, started clean
+static bool gen_once(bool is_claude, path root, string model, string text,
+        path log, int limit) {
+    string exe = gen_tool(is_claude ? "claude" : "codex");
+    if (!exe) return false;
+    cstr args[16];
+    int  n = 0;
+    args[n++] = exe->chars;
+    if (is_claude) {
+        args[n++] = "-p"; args[n++] = text->chars;
+        args[n++] = "--permission-mode"; args[n++] = "acceptEdits";
+        args[n++] = "--no-session-persistence";
+        if (model && len(model)) { args[n++] = "--model"; args[n++] = model->chars; }
+    } else {
+        args[n++] = "exec";
+        args[n++] = "-s"; args[n++] = "workspace-write";
+        args[n++] = "-C"; args[n++] = root->chars;
+        args[n++] = "--ephemeral";
+        if (model && len(model)) { args[n++] = "-m"; args[n++] = model->chars; }
+        args[n++] = text->chars;
+    }
+    args[n] = null;
+    return gen_run(args, root, log, limit);
+}
+
+// text without whitespace: a func line compared as written
+static string gen_squash(string s) {
+    string r = string(alloc, len(s) + 1);
+    for (num i = 0; i < len(s); i++)
+        if (!isspace((unsigned char)s->chars[i])) push(r, s->chars[i]);
+    return r;
+}
+
+// a gen/ file as read: its hash line, func line and body
+typedef struct {
+    string hash;            // the value on its `# hash:` line
+    string head;            // its func line, spaced as tokens
+    string text;            // the body's lines, trailing spaces cut
+    array  body;            // the body's tokens
+} gen_file;
+
+static bool gen_load(silver a, path gfile, gen_file* gf) {
+    memset(gf, 0, sizeof(*gf));
+    if (!file_exists("%o", gfile)) return false;
+    string src = (string)load(gfile, typeid(string), null);
+    if (!src) return false;
+    array lines = split(src, "\n");
+    num   fline = -1;
+    for (num i = 0; i < len(lines); i++) {
+        string ln = (string)lines->origin[i];
+        num k = 0;
+        while (k < len(ln) && isspace((unsigned char)ln->chars[k])) k++;
+        string rest = mid(ln, k, len(ln) - k);
+        if (starts_with(rest, "# hash:"))
+            gf->hash = trim(mid(rest, 7, len(rest) - 7));
+        else if (fline < 0 && starts_with(rest, "func "))
+            fline = i;
+    }
+    if (fline < 0) return false;
+    gf->text = string(alloc, len(src));
+    for (num i = fline + 1; i < len(lines); i++) {
+        string ln = (string)lines->origin[i];
+        num e = len(ln);
+        while (e > 0 && isspace((unsigned char)ln->chars[e - 1])) e--;
+        concat(gf->text, mid(ln, 0, e));
+        append(gf->text, "\n");
+    }
+    while (len(gf->text) && gf->text->chars[len(gf->text) - 1] == '\n' &&
+           (len(gf->text) == 1 || gf->text->chars[len(gf->text) - 2] == '\n'))
+        gf->text = mid(gf->text, 0, len(gf->text) - 1);
+
+    string keep = a->source_raw;
+    array  toks = array(alloc, 256);
+    parse_tokens(a, (Au)src, toks);
+    a->source_raw = keep;
+    num at = -1;
+    for (num i = 0; i < len(toks) && at < 0; i++)
+        if (eq((token)toks->origin[i], "func")) at = i;
+    if (at < 0) return false;
+    num fl   = ((token)toks->origin[at])->line;
+    gf->head = string(alloc, 128);
+    gf->body = array(alloc, 256);
+    for (num i = at; i < len(toks); i++) {
+        token t = (token)toks->origin[i];
+        t->source = (string)hold(gfile);
+        if (t->line == fl) {
+            if (len(gf->head) && !t->neighbor) append(gf->head, " ");
+            concat(gf->head, string(t->chars));
+        } else
+            push(gf->body, (Au)t);
+    }
+    return true;
+}
+
+// the cache key: the prompt's key and the body it produced
+static string gen_key(string p, string body) {
+    u64 h = 0xcbf29ce484222325ull;
+    h = fnv1a_hash(p->chars, (size_t)len(p), h);
+    h = fnv1a_hash(body->chars, (size_t)len(body), h);
+    char hx[20];
+    snprintf(hx, sizeof(hx), "%016llx", (unsigned long long)h);
+    return string(hx);
+}
+
+// tokens for a `using` func's body: gen/ if current, else the agent's
+static array gen_body(silver a, codegen cg, efunc fn, array b, bool is_claude) {
+    verify(b && len(b), "%s: expected a { prompt } block under the func",
+        fn->autype->ident);
+    path      file = (path)((token)b->origin[0])->source;
+    gen_block g    = gen_read(b, parent_dir(file));
+    verify(g.prompt && len(g.prompt), "%s: expected prompt: { ... }", fn->autype->ident);
+
+    // images go first, labeled; the prompt names them by label
+    array  images = array(alloc, 4);
+    string text   = string(alloc, 256);
+    each(g.prompt, token, t) {
+        path p = instanceof(t->literal, path);
+        if (len(text) && !t->neighbor) append(text, " ");
+        if (p) {
+            verify(exists(p), "codegen image not found: %o", p);
+            push(images, (Au)p);
+            concat(text, f(string, "Image %i", (i32)len(images)));
+        } else
+            concat(text, string(t->chars));
+    }
+
+    string agent = string(is_claude ? "claude" : "codex");
+    string sig   = gen_signature(fn);
+    u64    h     = 0xcbf29ce484222325ull;
+    string parts[3] = { agent, sig, text };
+    for (int i = 0; i < 3; i++)
+        h = fnv1a_hash(parts[i]->chars, (size_t)len(parts[i]), h);
+    each(images, path, p) {
+        string b64 = path_base64(p);
+        h = fnv1a_hash(b64->chars, (size_t)len(b64), h);
+    }
+    char   hx[20];
+    snprintf(hx, sizeof(hx), "%016llx", (unsigned long long)h);
+    string hex = string(hx);
+
+    // gen/Class.method.ag, or gen/method.ag for a module function
+    Au_t   ctx9  = fn->autype->context;
+    bool   rec9  = ctx9 && ctx9->ident && (ctx9->is_class || ctx9->is_struct);
+    path   gfile = f(path, "%o/gen/%s%s%s.ag", parent_dir(file),
+        rec9 ? ctx9->ident : "", rec9 ? "." : "", fn->autype->ident);
+    // a stamped key over this prompt and the file's body: cached
+    gen_file gf;
+    if (gen_load(a, gfile, &gf)) {
+        if (gf.hash && compare(gen_squash(gf.head), gen_squash(sig)) == 0 &&
+            compare(gf.hash, gen_key(hex, gf.text)) == 0 && len(gf.body))
+            return gf.body;
+        print("codegen: %o is out of date; regenerating", gfile);
+    }
+    unlink(gfile->chars);
+
+    string model = is_claude ? ((claude)cg)->model : ((chatgpt)cg)->model;
+    path   root  = a->project_path ? a->project_path : parent_dir(file);
+
+    // the agent reads the prompt and its images at the location
+    string req = f(string,
+        "silver codegen: %o:%i\n"
+        "Write %o as:\n"
+        "extend %o\n"
+        "# hash: %o\n"
+        "%o\n"
+        "    ...the body...",
+        file, (i32)g.first, gfile, a->name, hex, sig);
+
+    cstr  tw    = getenv("SILVER_CODEGEN_TIMEOUT");
+    int   limit = tw ? atoi(tw) : 600;
+    path  log   = f(path, "%o/tmp/codegen-%s.log", a->install, fn->autype->ident);
+
+    pthread_mutex_lock(&gen_lock);
+    print("codegen: running %o for %o", agent, sig);
+    bool ran = gen_once(is_claude, root, model, req, log, limit);
+    bool got = gen_load(a, gfile, &gf) && gf.hash && compare(gf.hash, hex) == 0;
+    if (got) {
+        // accepted: stamp the key over this prompt and this body
+        string src = (string)load(gfile, typeid(string), null);
+        string old = f(string, "# hash: %o", hex);
+        num    at  = index_of(src, cstring(old));
+        string key = gen_key(hex, gf.text);
+        save(gfile, (Au)f(string, "%o# hash: %o%o", mid(src, 0, at), key,
+            mid(src, at + len(old), len(src) - at - len(old))), null);
+    }
+    pthread_mutex_unlock(&gen_lock);
+    verify(got, "codegen: %o %s without writing %o (log %o)", agent,
+        ran ? "finished" : "failed or was not found", gfile, log);
+    verify(compare(gen_squash(gf.head), gen_squash(sig)) == 0 && len(gf.body),
+        "codegen: %o wrote %o as %o, not %o", agent, gfile, gf.head, sig);
+    return gf.body;
+}
+
+array claude_generate_fn(claude cg, efunc f, array query) {
+    return gen_body((silver)f->mod, (codegen)cg, f, query, true);
+}
+
+array chatgpt_generate_fn(chatgpt cg, efunc f, array query) {
+    return gen_body((silver)f->mod, (codegen)cg, f, query, false);
+}
+
+array gemini_generate_fn(gemini cg, efunc f, array query) {
+    silver a = (silver)f->mod;
+    error("gemini codegen is not implemented");
+    return null;
 }
 
 static array import_build_commands(array input, symbol sym) {
@@ -10124,216 +9347,6 @@ static symbol core_warn =
     "-Wno-shift-op-parentheses -Wno-covered-switch-default "
     "-Wno-nullability-completeness -Wno-expansion-to-defined";
 
-// one Au submodule, built for the device as its own dll. AU_LINK_<mod> is
-// dllimport for every consumer — the owner flips it to export, or its own
-// type-info globals never leave the dll. SILVER names the install root ON
-// THE DEVICE, not here
-static bool build_core_module(silver a, symbol mod, path lib_dir, path objs,
-                              string tgt, string ldld, string tools, string deps) {
-    path implib = f(path, "%o/lib%s.dll.a", lib_dir, mod);
-    if (file_exists("%o", implib)) return true;
-    print("[%s] building for the device", mod);
-    path   obj = f(path, "%o/%s.obj", objs, mod);
-    string inc = f(string,
-        "-I %s/install/build/src/Au -I %s/src -I %s/install/build/src -I %s/install/include",
-        SILVER, SILVER, SILVER, SILVER);
-    string defs = f(string, "-DMODULE='\"%s\"' -DSILVER='\"C:/silver\"' "
-                            "-DAU_LINK_%s=__attribute__\\(\\(dllexport\\)\\)", mod, mod);
-    if (exec(a->verbose, "%o/clang %o %s -c %s/src/%s.c -o %o %o %o",
-             tools, tgt, core_warn, SILVER, mod, obj, inc, defs) != 0) return false;
-    if (exec(a->verbose, "%o/clang++ %o %s %o -shared %o %o -o %o/%s.dll "
-             "-Wl,--out-implib,%o",
-             tools, tgt, platform_abi_cxx(a), ldld, obj, deps, lib_dir, mod, implib) != 0)
-        return false;
-    return file_exists("%o", implib);
-}
-
-// an apple device has no silver on it: Au, its ffi and every core module
-// the app reached for are cross-built once into platform/<device>/lib.
-// core_lib receives the -L that puts that dir ahead of the native one
-static bool ensure_apple_runtime(silver a, symbol triple, string tgt,
-                                 string tools, string core_lib) {
-    path root    = f(path, "%s/platform/%o", SILVER, target_dir(a));
-    path lib_dir = f(path, "%o/lib",   root);
-    path objs    = f(path, "%o/build", root);
-    make_dir(lib_dir);
-    make_dir(objs);
-    // the device libs, then the sdk's own, ahead of the host's install/lib
-    concat(core_lib, f(string, "-L%o -L%o/usr/lib ", lib_dir, a->sysroot));
-
-    // libffi is autotools: an out-of-tree configure against our clang
-    if (!file_exists("%o/libffi.a", lib_dir)) {
-        print("[ffi] building for %s", triple);
-        path ffi_b = f(path, "%o/libffi", objs);
-        make_dir(ffi_b);
-        if (exec(a->verbose, "cd %o && %s/checkout/libffi/configure --host=aarch64-apple-darwin "
-                 "--prefix=%o --disable-shared --disable-docs --disable-multi-os-directory "
-                 "CC='%o/clang %o' CXX='%o/clang++ %o' && make -j8 install",
-                 ffi_b, SILVER, root, tools, tgt, tools, tgt) != 0) return false;
-    }
-
-    string inc = f(string,
-        "-I %s/install/build/src/silver -I %s/src -I %s/install/build/src "
-        "-I %s/platform/native/include -I %o/include",
-        SILVER, SILVER, SILVER, SILVER, root);
-    string base = f(string, "%s -Wno-nullability-completeness -Wno-expansion-to-defined "
-        "-fPIC -fvisibility=default -DSILVER='\"%s\"' %s", core_warn, SILVER, a->debug ? "-g" : "-O2");
-
-    // a stale device libAu has a different type layout; missing = 0
-    path au_lib = f(path, "%o/libAu.dylib", lib_dir);
-    if (modified_time(au_lib) < modified_time(f(path, "%s/src/Au.c", SILVER))) {
-        print("[Au] building the runtime for %s", triple);
-        path au_o = f(path, "%o/Au.o",    objs);
-        path po_o = f(path, "%o/posix.o", objs);
-        if (exec(a->verbose, "%o/clang %o %o -DMODULE='\"Au\"' -I %s/install/build/src/Au %o -c %s/src/Au.c -o %o",
-                 tools, tgt, base, SILVER, inc, SILVER, au_o) != 0) return false;
-        if (exec(a->verbose, "%o/clang++ %o %o -std=c++17 -stdlib=libc++ -DMODULE='\"posix\"' -I %s/install/build/src/posix %o -c %s/src/posix.cc -o %o",
-                 tools, tgt, base, SILVER, inc, SILVER, po_o) != 0) return false;
-        if (exec(a->verbose, "%o/clang++ %o -fuse-ld=lld -B%o -dynamiclib %o %o -o %o/libAu.dylib "
-                 "-L%o -lffi -lc++ -install_name @rpath/libAu.dylib",
-                 tools, tgt, tools, au_o, po_o, lib_dir, lib_dir) != 0) return false;
-    }
-
-    pairs(a->libs, li) {
-        string nm = (string)instanceof(li->key, string);
-        if (!nm || cmp(nm, "Au") == 0)  continue;
-        if (!is_core_module(nm->chars)) continue;
-        // rebuilt behind its own source or behind libAu
-        i64 lib_t = modified_time(f(path, "%o/lib%o.dylib", lib_dir, nm));
-        if (lib_t >= modified_time(f(path, "%s/src/%o.c", SILVER, nm)) &&
-            lib_t >= modified_time(au_lib)) continue;
-        print("[%o] building for the device", nm);
-        path obj = f(path, "%o/%o.o", objs, nm);
-        if (exec(a->verbose, "%o/clang %o %o -DMODULE='\"%o\"' -I %s/install/build/src/%o %o -c %s/src/%o.c -o %o",
-                 tools, tgt, base, nm, SILVER, nm, inc, SILVER, nm, obj) != 0) return false;
-        if (exec(a->verbose, "%o/clang++ %o -fuse-ld=lld -B%o -dynamiclib %o -o %o/lib%o.dylib "
-                 "-L%o -lAu -lc++ -install_name @rpath/lib%o.dylib",
-                 tools, tgt, tools, obj, lib_dir, nm, lib_dir, nm) != 0) return false;
-    }
-    return true;
-}
-
-// a phone has no silver on it either: the same set, as bionic .so files.
-// libc++ is the ndk's shared one, which the package carries beside them
-static bool ensure_android_runtime(silver a, symbol triple, string tgt, string ldld,
-                                   string tools, string core_lib) {
-    path root    = f(path, "%s/platform/%o", SILVER, target_dir(a));
-    path lib_dir = f(path, "%o/lib",   root);
-    path objs    = f(path, "%o/build", root);
-    make_dir(lib_dir);
-    make_dir(objs);
-    // bionic keeps the shared libc/libm and crt under usr/lib/<triple>/<api>
-    // and libc++_shared under usr/lib/<triple>; the api dir must come FIRST,
-    // or -lc resolves to the static libc.a beside libc++_shared, whose
-    // internal hidden symbols do not link standalone
-    cstr abi = strstr(triple, "x86_64") ? "x86_64-linux-android" : "aarch64-linux-android";
-    concat(core_lib, f(string, "-L%o -L%o/usr/lib/%s/33 -L%o/usr/lib/%s ",
-        lib_dir, a->sysroot, abi, a->sysroot, abi));
-    // the clang driver puts the <triple> dir (static libc.a) ahead of the
-    // <triple>/<api> dir (shared libc.so); naming the api dir first here
-    // pulls the shared libc, so the runtime .so does not statically absorb
-    // bionic's malloc/gwp_asan (whose IE-model TLS a dlopen then rejects)
-    string sys_l = f(string, "-L%o/usr/lib/%s/33 -L%o/usr/lib/%s ",
-        a->sysroot, abi, a->sysroot, abi);
-
-    if (!file_exists("%o/libffi.a", lib_dir)) {
-        print("[ffi] building for %s", triple);
-        path ffi_b = f(path, "%o/libffi", objs);
-        make_dir(ffi_b);
-        if (exec(a->verbose, "cd %o && %s/checkout/libffi/configure --host=%s-linux-android "
-                 "--prefix=%o --disable-shared --disable-docs --disable-multi-os-directory "
-                 "CC='%o/clang %o -fPIC' CXX='%o/clang++ %o -fPIC' LD='%o/ld.lld' AR='%o/llvm-ar' "
-                 "RANLIB='%o/llvm-ranlib' && make -j8 install",
-                 ffi_b, SILVER, strstr(triple, "x86_64") ? "x86_64" : "aarch64",
-                 root, tools, tgt, tools, tgt, tools, tools, tools) != 0) return false;
-    }
-
-    string inc = f(string,
-        "-I %s/install/build/src/silver -I %s/src -I %s/install/build/src "
-        "-I %s/platform/native/include -I %o/include",
-        SILVER, SILVER, SILVER, SILVER, root);
-    string base = f(string, "%s -Wno-nullability-completeness -Wno-expansion-to-defined "
-        "-fPIC -fvisibility=default -DSILVER='\"%s\"' %s", core_warn, SILVER, a->debug ? "-g" : "-O2");
-
-    if (!file_exists("%o/libAu.so", lib_dir)) {
-        print("[Au] building the runtime for %s", triple);
-        path au_o = f(path, "%o/Au.o",    objs);
-        path po_o = f(path, "%o/posix.o", objs);
-        if (exec(a->verbose, "%o/clang %o %o -DMODULE='\"Au\"' -I %s/install/build/src/Au %o -c %s/src/Au.c -o %o",
-                 tools, tgt, base, SILVER, inc, SILVER, au_o) != 0) return false;
-        if (exec(a->verbose, "%o/clang++ %o %o -std=c++17 -DMODULE='\"posix\"' -I %s/install/build/src/posix %o -c %s/src/posix.cc -o %o",
-                 tools, tgt, base, SILVER, inc, SILVER, po_o) != 0) return false;
-        if (exec(a->verbose, "%o/clang++ %o %o -shared -Wl,-soname,libAu.so %o %o -o %o/libAu.so "
-                 "-L%o %o -lffi -llog",
-                 tools, tgt, ldld, au_o, po_o, lib_dir, lib_dir, sys_l) != 0) return false;
-    }
-
-    pairs(a->libs, li) {
-        string nm = (string)instanceof(li->key, string);
-        if (!nm || cmp(nm, "Au") == 0)  continue;
-        if (!is_core_module(nm->chars)) continue;
-        if (file_exists("%o/lib%o.so", lib_dir, nm)) continue;
-        print("[%o] building for the device", nm);
-        path obj = f(path, "%o/%o.o", objs, nm);
-        if (exec(a->verbose, "%o/clang %o %o -DMODULE='\"%o\"' -I %s/install/build/src/%o %o -c %s/src/%o.c -o %o",
-                 tools, tgt, base, nm, SILVER, nm, inc, SILVER, nm, obj) != 0) return false;
-        if (exec(a->verbose, "%o/clang++ %o %o -shared -Wl,-soname,lib%o.so %o -o %o/lib%o.so -L%o %o -lAu",
-                 tools, tgt, ldld, nm, obj, lib_dir, nm, lib_dir, sys_l) != 0) return false;
-    }
-    return true;
-}
-
-// a windows DLL must resolve every symbol at link time, so every Au submodule
-// the app imported needs its own build for the device. built once, beside its
-// sysroot; returns the import libs to hand the module link
-static bool ensure_core_runtime(silver a, path install, symbol triple,
-                                string tgt, string ldld, string tools, string core_lib) {
-    path lib_dir = f(path, "%s/platform/%o/lib", SILVER, target_dir(a));
-    path objs    = f(path, "%s/platform/%o/build", SILVER, target_dir(a));
-    make_dir(lib_dir);
-    make_dir(objs);
-
-    // Au is the base every other submodule links against, and the only one
-    // carrying the posix layer and the generic atomics
-    path au_lib = f(path, "%o/libAu.dll.a", lib_dir);
-    if (!file_exists("%o", au_lib)) {
-        print("[Au] building the runtime for %s", triple);
-        path au_o = f(path, "%o/Au.obj",     objs);
-        path po_o = f(path, "%o/posix.obj",  objs);
-        path at_o = f(path, "%o/atomic.obj", objs);
-        string inc = f(string,
-            "-I %s/install/build/src/Au -I %s/src -I %s/install/build/src -I %s/install/include",
-            SILVER, SILVER, SILVER, SILVER);
-        string defs = f(string, "-DMODULE='\"Au\"' -DSILVER='\"C:/silver\"' "
-                                "-DAU_LINK_Au=__attribute__\\(\\(dllexport\\)\\)");
-        if (exec(a->verbose, "%o/clang %o %s -c %s/src/Au.c -o %o %o %o",
-                 tools, tgt, core_warn, SILVER, au_o, inc, defs) != 0) return false;
-        if (exec(a->verbose, "%o/clang++ %o %s %s -c %s/src/posix.cc -o %o %o %o",
-                 tools, tgt, platform_abi_cxx(a), core_warn, SILVER, po_o, inc, defs) != 0) return false;
-        // generic atomics: linux has libatomic, windows has nothing — compiler-rt
-        // carries the implementation and we already vendor its source
-        if (exec(a->verbose, "%o/clang %o -c %s/checkout/LLVM/llvm-project/compiler-rt/lib/builtins/atomic.c "
-                 "-o %o -I %s/checkout/LLVM/llvm-project/compiler-rt/lib/builtins",
-                 tools, tgt, SILVER, at_o, SILVER) != 0) return false;
-        // psapi carries EnumProcessModules for dlsym; winpthread the posix clock
-        if (exec(a->verbose, "%o/clang++ %o %s %o -shared %o %o %o -o %o/Au.dll "
-                 "-ldbghelp -lpsapi -lwinpthread -Wl,--out-implib,%o",
-                 tools, tgt, platform_abi_cxx(a), ldld, au_o, po_o, at_o, lib_dir, au_lib) != 0)
-            return false;
-    }
-    concat(core_lib, f(string, "%o ", au_lib));
-
-    // then every other submodule this app reached for, each against Au
-    pairs(a->libs, li) {
-        string nm = (string)instanceof(li->key, string);
-        if (!nm || cmp(nm, "Au") == 0)     continue;
-        if (!is_core_module(nm->chars))    continue;
-        if (!build_core_module(a, nm->chars, lib_dir, objs, tgt, ldld, tools,
-                               f(string, "%o", au_lib))) return false;
-        concat(core_lib, f(string, "%o/lib%o.dll.a ", lib_dir, nm));
-    }
-    return true;
-}
 
 // the target triple for a platform name. with the device's own sysroot in
 // hand, llvm cross-compiles here — nothing is emulated and no image is built
@@ -10362,81 +9375,6 @@ static bool target_is_mobile(silver a) {
     return strstr(p, "ios") != NULL || strstr(p, "android") != NULL;
 }
 
-static symbol platform_triple(silver a) {
-    cstr p = a->platform ? a->platform->chars : "";
-    if (strstr(p, "ios"))                             return strstr(p, "simulator") ?
-                                                             "arm64-apple-ios16.0-simulator" : "arm64-apple-ios16.0";
-    // the api level is part of the triple: it selects the sysroot's lib dir.
-    // the emulator runs this machine's own architecture
-    if (strstr(p, "android"))                         return strstr(p, "x86_64") ||
-                                                             (strstr(p, "sim") && strcmp(arch, "x86_64") == 0) ?
-                                                             "x86_64-linux-android33" : "aarch64-linux-android33";
-    if (strstr(p, "windows")) {
-        if (strstr(p, "arm64"))  return "aarch64-w64-windows-gnu";
-        if (strstr(p, "x86_64")) return "x86_64-w64-windows-gnu";
-        return "i686-w64-windows-gnu";
-    }
-    if (strstr(p, "mips"))                            return "mips64el-linux-gnuabi64";
-    if (strstr(p, "arm64") || strstr(p, "aarch64") ||
-        strstr(p, "jetson"))                          return "aarch64-linux-gnu";
-    if (strstr(p, "arm32") || strstr(p, "armv7"))     return "arm-linux-gnueabihf";
-    if (strstr(p, "riscv"))                           return "riscv64-linux-gnu";
-    if (strstr(p, "x86_64"))                          return "x86_64-linux-gnu";
-    if (strstr(p, "x86"))                             return "i686-linux-gnu";
-    return "x86_64-linux-gnu";
-}
-
-// some targets must have their ABI named: debian riscv64 is rv64gc/lp64d,
-// and an object built for the default soft-float abi will not link at all
-static symbol platform_abi_clang(silver a) {
-    cstr p = a->platform ? a->platform->chars : "";
-    if (strstr(p, "riscv")) return "-march=rv64gc -mabi=lp64d ";
-    // the ndk keys its arch headers by the triple without its api level,
-    // a dir this clang does not add on its own. every silver library on a
-    // phone is dlopen'd, and android's loader rejects initial-exec TLS in a
-    // dlopened object — so all its thread-locals must use the dynamic model
-    if (strstr(p, "android")) {
-        static char inc[1024];
-        snprintf(inc, sizeof(inc), "-isystem %s/usr/include/%s-linux-android -ftls-model=global-dynamic ",
-                 a->sysroot->chars, strstr(platform_triple(a), "x86_64") ? "x86_64" : "aarch64");
-        return inc;
-    }
-    return "";
-}
-
-// mingw carries libc++; a posix sysroot brings its own libstdc++
-static symbol platform_abi_cxx(silver a) {
-    cstr p = a->platform ? a->platform->chars : "";
-    if (strstr(p, "windows")) return "-stdlib=libc++ ";
-    return "";
-}
-
-// debian mips64el ships crt*.o with no GNU-stack note, so lld refuses the
-// link unless an executable stack is explicitly permitted
-static symbol platform_abi_link(silver a) {
-    cstr p = a->platform ? a->platform->chars : "";
-    if (strstr(p, "mips")) return "-Wl,-z,execstack ";
-    // mingw's clang driver still reaches for gcc's runtime by default
-    if (strstr(p, "windows")) return "-rtlib=compiler-rt -unwindlib=libunwind ";
-    // android 15 loads 16k-page devices: every segment aligns to that. the
-    // /<api> lib dir (shared libc.so) must precede the driver's <triple> dir
-    // (static libc.a), or a .so absorbs bionic's malloc and its IE-model TLS
-    if (strstr(p, "android")) {
-        static char lk[1024];
-        cstr abi = strstr(platform_triple(a), "x86_64") ? "x86_64-linux-android" : "aarch64-linux-android";
-        snprintf(lk, sizeof(lk),
-            "-Wl,-z,max-page-size=16384 -L%s/usr/lib/%s/33 -L%s/usr/lib/%s ",
-            a->sysroot->chars, abi, a->sysroot->chars, abi);
-        return lk;
-    }
-    return "";
-}
-
-static symbol platform_abi_llc(silver a) {
-    cstr p = a->platform ? a->platform->chars : "";
-    if (strstr(p, "riscv")) return "-mattr=+m,+a,+f,+d,+c --target-abi=lp64d ";
-    return "";
-}
 
 string compile_implements(silver a, array files, string cflags) {
     path   install = a->install;
@@ -10519,41 +9457,6 @@ static void symlink_resources(path src, path dst) {
     closedir(dir);
 }
 
-// recursively deploy resource files from src into dst
-// directories merge; duplicate files are an error
-// only copies when filesize or mtime differs; preserves original timestamp
-static void deploy_resources(path src, path dst) {
-    DIR *dir = opendir(src->chars);
-    if (!dir) return;
-    struct dirent *entry;
-    while ((entry = readdir(dir)) != NULL) {
-        if (entry->d_name[0] == '.') continue;
-        path s = form(path, "%o/%s", src, entry->d_name);
-        path d = form(path, "%o/%s", dst, entry->d_name);
-        if (entry->d_type == DT_DIR) {
-            make_dir(d);
-            deploy_resources(s, d);
-        } else {
-            struct stat ss;
-            verify(stat(s->chars, &ss) == 0, "cannot stat resource: %o", s);
-            struct stat ds;
-            if (stat(d->chars, &ds) == 0) {
-                // dest exists: skip if same size and same mtime (already deployed)
-                if (ss.st_size == ds.st_size && ss.st_mtime == ds.st_mtime)
-                    continue;
-                // different size with same mtime = collision from another module
-                verify(ss.st_mtime != ds.st_mtime,
-                    "resource file collision: %o", d);
-            }
-            cp(s, d, false, false);
-            struct utimbuf ut;
-            ut.actime  = ss.st_atime;
-            ut.modtime = ss.st_mtime;
-            utime(d->chars, &ut);
-        }
-    }
-    closedir(dir);
-}
 
 // build with optional bc path; if no bc path we use the project file system
 // walk a module's dependency tree (key = source path, value = that source's node map)
@@ -12295,7 +11198,7 @@ enode parse_import(silver a) {
         array b = read_body(a);
         int index = 0;
         while (index < len(b)) {
-            verify(index - len(b) >= 3, "expected prop: value for codegen object");
+            verify(len(b) - index >= 3, "expected prop: value for codegen object");
             token prop_name  = (token)b->origin[index++];
             token col        = (token)b->origin[index++];
             token prop_value = (token)b->origin[index++];
@@ -12370,6 +11273,8 @@ enode parse_import(silver a) {
             error("could not find module %o", mpath);
         }
         
+    } else if (is_codegen) {
+        // a codegen class: nothing to fetch or build
     } else if (aa && !bb) {
         project     = aa;
     } else {
@@ -12622,6 +11527,13 @@ enode parse_import(silver a) {
 
     }
     else if (is_codegen) {
+        // model: 'x' lines under the import set the codegen's props
+        if (defs) pairs(defs, di) {
+            array vt = (array)di->value;
+            token v0 = vt && len(vt) ? (token)vt->origin[0] : null;
+            if (v0) set(props, (Au)string(((string)di->key)->chars),
+                (Au)(instanceof(v0->literal, string) ? (string)v0->literal : string(v0->chars)));
+        }
         cg = (codegen)construct_with(is_codegen, (Au)props, null);
         cg->mod = (aether)a;
     }
@@ -13615,6 +12527,9 @@ void build_fn(silver a, efunc f, callback preamble, callback postamble) { sequen
             e_fn_call(a, f->remote_func, call_args, false, false);
         } else if (f->cgen) {
             array gen = generate_fn(f->cgen, f, (array)f->body);
+            push_tokens(a, (tokens)gen, 0);
+            parse_statements(a);
+            pop_tokens(a, false);
         } else if (!f->inline_return && f->body) {
             array source_tokens = parse_const(a, (array)f->body);
             push_tokens(a, (tokens)source_tokens, 0);
@@ -13987,7 +12902,9 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
                 validate(within_expr || read_if(a, "]"), "expected ]");
                 
                 // for structs, assign positional args to fields
-                if (is_struct(mdl) && !inherits(mdl->autype, typeid(collective))) {
+                // a scalar has no fields: e_create wraps its value
+                if (is_struct(mdl) && !canonical(mdl)->autype->is_scalar &&
+                        !inherits(mdl->autype, typeid(collective))) {
                     map props = map(assorted, true);
                     int idx = 0;
                     Au_t scan = mdl->autype;
@@ -14044,9 +12961,9 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
         bool auto_bind = is_fields && read_if(a, ":");
         string name = null;
         // -- KEY --
-        if (is_fields && read_if(a, "{")) {
+        if (is_fields && next_is(a, "{")) {
+            // parse_field reads the braces around the key expression
             k = (Au)parse_field(a, key);
-            validate(read_if(a, "}"), "expected }");
             is_enode_key = true;
         } else if (!is_fields && is_mdl_collective) {
             // we are parsing individual scalar value f64 -> vec2f
@@ -15196,7 +14113,7 @@ etype silver_read_def(silver a, interface access) {
     bool  parent_named = is_class && def_tok && !eq(def_tok, "class");
     consume(a, parent_named ? Syntax__parent : Syntax__keyword);
     string n = read_alpha(a);
-    validate(n, "expected alpha-numeric identity, found %o", next(a, Syntax__none));
+    validate(n, "expected alpha-numeric identity, found %o", peek(a));
     // the name token is where this definition LIVES; hold it, the cursor
     // moves on long before the type is made
     token def_name_tok = element(a, -1);
@@ -15466,6 +14383,9 @@ int main(int argc, cstrs argv) {
 #endif
 
 #ifdef BUILD_LIBRARY
+// devices, bundles, packaging, runtimes: kept apart
+#include "parts/deploy.c"
+
 define_class(chatgpt, codegen)
 define_class(claude,  codegen)
 define_class(gemini,  codegen)

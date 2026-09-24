@@ -2870,6 +2870,24 @@ AU_EXPORT void halt(string msg, token tok) {
     longjmp(Au_error_top->env, 1);
 }
 
+AU_EXPORT bool au_verify_fail(int seq, symbol t, ...) {
+    va_list args;
+    va_start(args, t);
+    string res = (string)vformatter((Au_t)null, true, stderr, (Au)true, seq, t, args);
+    va_end(args);
+    if (level_err >= fault_level)
+        halt(res, null);
+    return false;
+}
+
+AU_EXPORT none au_fault(symbol func, int seq, symbol t, ...) {
+    va_list args;
+    va_start(args, t);
+    string res = (string)vformatter((Au_t)null, false, stderr, (Au)string(func), seq, t, args);
+    va_end(args);
+    halt(res, null);
+}
+
 
 
 pid_t _last_pid = 0;
@@ -4442,6 +4460,9 @@ AU_EXPORT none Au_dealloc(Au a) {
     Au_t type = (Au_t)f->au;
 
     drop_members(a);
+    // alloc, alloc2 and vector_init hold the header's shape
+    drop((Au)f->data_shape);
+    f->data_shape = null;
     // NOTE: do NOT drop f->meta_b here. collections store their value/element
     // TYPE in the header meta_b (a shared singleton, unheld) — dropping it
     // underflows the type's refcount and corrupts the heap. Au_attach's
@@ -5398,8 +5419,14 @@ AU_EXPORT num parse_formatter(cstr start, cstr res, num sz) {
 
 Au formatter(Au_t type, bool print_info, handle ff, Au opt, int seq, symbol template, ...) {
     va_list args;
-    FILE* f = (FILE*)ff;
     va_start(args, template);
+    Au r = vformatter(type, print_info, ff, opt, seq, template, args);
+    va_end(args);
+    return r;
+}
+
+AU_EXPORT Au vformatter(Au_t type, bool print_info, handle ff, Au opt, int seq, symbol template, va_list args) {
+    FILE* f = (FILE*)ff;
     string  res  = new(string, alloc, 1024);
     cstr    scan = (cstr)template;
     bool write_ln = (i64)opt == true;
@@ -5500,7 +5527,6 @@ Au formatter(Au_t type, bool print_info, handle ff, Au opt, int seq, symbol temp
             }
         }
     }
-    va_end(args);
     bool symbolic_logging = false;
     
     // handle generic logging with type and function name labels, ability to filter based on log_funcs global map
@@ -7023,7 +7049,11 @@ AU_EXPORT none vector_init(vector a) {
     Au f = head(a);
     // a ctr (with_array) may have filled origin before init runs
     f->scalar  = vector_elem_type(a);
-    f->data_shape = hold(a->data_shape);
+    // alloc_new may have put the shape in the header: keep it
+    if (a->data_shape)
+        f->data_shape = hold(a->data_shape);
+    else
+        a->data_shape = f->data_shape;
     verify(f->scalar, "scalar not set");
     if (!a->origin) {
         // alloc() sized f->count elements inline: adopt them, no second alloc
@@ -10780,6 +10810,9 @@ typedef struct _cov_module {
     uint64_t*  timings;
     uint32_t   func_count;
     char**     func_names;
+    uint32_t*  lines;        // file, first line, last line, column
+    char**     files;
+    uint32_t   file_count;
     struct _cov_module* next;
 } cov_module;
 
@@ -10793,13 +10826,13 @@ static void __coverage_sigint(int sig) {
     // a phone forwards stderr to logcat over a pipe thread: let it drain
     fflush(stderr);
     usleep(300000);
-    signal(SIGINT, SIG_DFL);
-    raise(SIGINT);
+    signal(sig, SIG_DFL);
+    raise(sig);
 }
 void __coverage_register(uint64_t* probes, uint32_t probe_count,
                          uint64_t* timings, uint32_t func_count,
                          char** func_names) {
-    cov_module* m = malloc(sizeof(cov_module));
+    cov_module* m = calloc(1, sizeof(cov_module));
     m->probes      = probes;
     m->probe_count = probe_count;
     m->timings     = timings;
@@ -10815,11 +10848,103 @@ void __coverage_register(uint64_t* probes, uint32_t probe_count,
         hooked = 1;
         atexit(__coverage_report);
         signal(SIGINT, __coverage_sigint);
+        // orbiter's stop is a SIGTERM
+        signal(SIGTERM, __coverage_sigint);
     }
+}
+
+// the probe map arrives after the counters it describes
+AU_EXPORT void __coverage_lines(uint64_t* probes, uint32_t* lines, uint32_t count,
+                                char** files, uint32_t file_count) {
+    for (cov_module* m = __cov_modules; m; m = m->next) {
+        if (m->probes != probes) continue;
+        m->lines       = lines;
+        m->probe_count = count;
+        m->files       = files;
+        m->file_count  = file_count;
+    }
+}
+
+static bool cov_line_blank(const char* s, const char* e) {
+    while (s < e && (*s == ' ' || *s == '\t' || *s == '\r')) s++;
+    return s == e || *s == '#';
+}
+
+// one lcov record per source file, to SILVER_COVERAGE_LCOV
+static void cov_write_lcov(void) {
+    const char* out = getenv("SILVER_COVERAGE_LCOV");
+    if (!out || !*out) return;
+    FILE* f = fopen(out, "w");
+    if (!f) return;
+    fprintf(f, "TN:\n");
+    for (cov_module* m = __cov_modules; m; m = m->next) {
+        if (!m->lines || !m->files) continue;
+        for (uint32_t fi = 0; fi < m->file_count; fi++) {
+            const char* src = m->files[fi];
+            if (!src || !*src) continue;
+            FILE* sf = fopen(src, "rb");
+            if (!sf) continue;
+            fseek(sf, 0, SEEK_END);
+            long n = ftell(sf);
+            fseek(sf, 0, SEEK_SET);
+            char* text = malloc(n + 1);
+            n = (long)fread(text, 1, n, sf);
+            fclose(sf);
+            text[n] = 0;
+            uint32_t nlines = 1;
+            for (long i = 0; i < n; i++) if (text[i] == '\n') nlines++;
+            const char** starts = calloc(nlines + 2, sizeof(char*));
+            uint32_t li = 1;
+            starts[1] = text;
+            for (long i = 0; i < n; i++) if (text[i] == '\n') starts[++li] = text + i + 1;
+            starts[nlines + 1] = text + n + 1;
+            // a line takes the count of the smallest block holding it
+            uint64_t* hits = calloc(nlines + 1, sizeof(uint64_t));
+            uint32_t* span = calloc(nlines + 1, sizeof(uint32_t));
+            uint64_t* outer = calloc(nlines + 1, sizeof(uint64_t));
+            uint32_t* ospan = calloc(nlines + 1, sizeof(uint32_t));
+            uint8_t*  mid   = calloc(nlines + 1, 1);
+            for (uint32_t p = 0; p < m->probe_count; p++) {
+                uint32_t* e = m->lines + p * 4;
+                if (e[0] != fi || !e[1]) continue;
+                uint32_t len = e[2] - e[1] + 1;
+                for (uint32_t l = e[1]; l <= e[2] && l <= nlines; l++) {
+                    if (!span[l] || len <= span[l]) {
+                        outer[l] = hits[l]; ospan[l] = span[l];
+                        span[l]  = len;     hits[l]  = m->probes[p];
+                        // a block starting past the indent shares the line
+                        if (l == e[1] && e[1] <= nlines) {
+                            uint32_t ind = 0;
+                            while (starts[l] + ind < starts[l + 1] - 1 &&
+                                   (starts[l][ind] == ' ' || starts[l][ind] == '\t')) ind++;
+                            mid[l] = e[3] > ind;
+                        } else mid[l] = 0;
+                    } else if (!ospan[l] || len < ospan[l]) {
+                        outer[l] = m->probes[p]; ospan[l] = len;
+                    }
+                }
+            }
+            // an inline body's line ran if its statement ran
+            for (uint32_t l = 1; l <= nlines; l++)
+                if (mid[l] && ospan[l] && outer[l] > hits[l]) hits[l] = outer[l];
+            fprintf(f, "SF:%s\n", src);
+            uint32_t lf = 0, lh = 0;
+            for (uint32_t l = 1; l <= nlines; l++) {
+                if (!span[l] || cov_line_blank(starts[l], starts[l + 1] - 1)) continue;
+                fprintf(f, "DA:%u,%llu\n", l, (unsigned long long)hits[l]);
+                lf++;
+                if (hits[l]) lh++;
+            }
+            fprintf(f, "LF:%u\nLH:%u\nend_of_record\n", lf, lh);
+            free(hits); free(span); free(outer); free(ospan); free(mid); free(starts); free(text);
+        }
+    }
+    fclose(f);
 }
 
 AU_EXPORT void __coverage_report(void) {
     if (!__cov_modules) return;
+    cov_write_lcov();
     uint32_t total_probes = 0, total_covered = 0;
     for (cov_module* m = __cov_modules; m; m = m->next) {
         for (uint32_t i = 0; i < m->probe_count; i++) {

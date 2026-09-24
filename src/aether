@@ -127,6 +127,7 @@ forward(evar)
     M(A,U,i, prop,     public,  bool,                     debug) \
     M(A,U,i, prop,     public,  bool,                     asan) \
     M(A,U,i, prop,     public,  enode,                    alloc_count) \
+    M(A,U,i, prop,     public,  enode,                    alloc_shape) \
     M(A,U,i, prop,     public,  bool,                     coverage) \
     M(A,U,i, prop,     public,  bool,                     timing) \
     M(A,U,i, prop,     public,  bool,                     logging) \
@@ -193,6 +194,12 @@ forward(evar)
     M(A,U,i, prop,     intern,  LLVMValueRef,             coverage_probes_global,  as, ARef) \
     M(A,U,i, prop,     intern,  LLVMValueRef,             coverage_seq_global,     as, ARef) \
     M(A,U,i, prop,     intern,  LLVMValueRef,             coverage_seq_local,      as, ARef) \
+    M(A,U,i, prop,     intern,  ARef,                     coverage_lines) \
+    M(A,U,i, prop,     intern,  cstrs,                    coverage_files) \
+    M(A,U,i, prop,     intern,  i32,                      coverage_file_count) \
+    M(A,U,i, prop,     intern,  LLVMValueRef,             coverage_map_global,     as, ARef) \
+    M(A,U,i, prop,     intern,  LLVMValueRef,             coverage_count_global,   as, ARef) \
+    M(A,U,i, prop,     intern,  LLVMValueRef,             coverage_files_global,   as, ARef) \
     M(A,U,i, prop,     public,  bool,                     listen_active) \
     M(A,U,i, prop,     public,  bool,                     listen_values) \
     M(A,U,i, prop,     public,  bool,                     listen_emitting) \

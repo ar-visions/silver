@@ -5,11 +5,20 @@ export 1.0.0                        # module version
 # lands after the expect tests run, so no test can observe it
 export FEATURES_MODE: 'test'
 export extensions [ '.feat' ]       # registry: export/silver-features.agi
+export landscape: true              # a one-value manifest flag
+export formats [ '.fa': FileType.ascii, '.fb' ]  # a value tagged by kind
 
 import <stdio.h>                    # C header, read by libclang
 import <string.h>
 import <stdlib.h>
 import <ctype.h, limits.h>     # several headers in one line
+import <feat.h>                     # a header with its own config block
+    -DFEAT_BASE
+    { (apple) ?? -DFEAT_OS }
+    { (linux) ?? -DFEAT_OS }
+    { (windows) ?? -DFEAT_OS }
+    { (nosuchflag) ?? -DFEAT_NEVER }
+    +FEAT_LEVEL=3
 import madler:zlib/51b7f2abdade71cd9bb0e7a373ef2610ec6f9daf <zlib.h>  # a git import: owner:repo/commit, built with cmake; flags below
     -DCMAKE_POLICY_VERSION_MINIMUM=3.5
     -lz
@@ -25,6 +34,11 @@ import vec                          # Au's own vector module: its records come f
 import <cpp.hpp>                    # C++ header: .hpp marks the unit
 import More                         # sibling .ag, headed extend
 import random with RandomExtra as rnd   # add an extension, then alias
+
+# codegen: `using` bodies come from the user's agent
+import claude
+    model: 'claude-opus-5-5'
+import chatgpt                      # its own default model
 
 # config import: a module's own members are its parameters, set here
 # by the importer and read-only inside the module
@@ -2193,6 +2207,405 @@ expect func t_extension_class [] -> bool
     d: Dice [ sides: 6 ]            # a class RandomExtra adds to random
     r: d.roll[]
     return r >= 1 && r <= 6
+
+# expect as a statement with no message
+expect func t_expect_plain [] -> bool
+    n : i32 [ 3 ]
+    expect n == 3
+    return true
+
+# C-style format suffix: a value formats to a string
+expect func t_format_suffix [] -> bool
+    x : f64 [ 3.14159 ]
+    s : x.2f
+    h : i32 [ 255 ]
+    hx : h.04x
+    return s == '3.14' && hx == '00ff'
+
+# for-in with an index key after the value
+expect func t_for_index_key [] -> bool
+    v : vec i64 [] [ 10, 20, 30 ]
+    isum : i64 [ 0 ]
+    vsum : i64 [ 0 ]
+    for [ x: i64, i: i64 ] in v
+        isum += i
+        vsum += x
+    return isum == 3 && vsum == 60
+
+# for-in over the array class, not a vec
+expect func t_for_array [] -> bool
+    arr : array []
+    arr.push[ 'a' ]
+    arr.push[ 'bc' ]
+    n : i64 [ 0 ]
+    for [ s: string ] in arr
+        n += s.count
+    return n == 3
+
+# <=> is a sign for floats, unsigned, strings, wide ints
+expect func t_spaceship_kinds [] -> bool
+    f : i32 [ 1.5 <=> 2.5 ]
+    ua : u32 [ 7 ]
+    ub : u32 [ 3 ]
+    u : i32 [ ua <=> ub ]
+    s : i32 [ 'apple' <=> 'banana' ]
+    wa : i32 [ 5 ]
+    wb : i64 [ 5 ]
+    w : i32 [ wa <=> wb ]
+    za : i64 [ 0 ]
+    zb : i64 [ 4294967296 ]
+    z : i32 [ za <=> zb ]
+    return f == -1 && u == 1 && s < 0 && w == 0 && z == -1
+
+# switch on i64 keys, with a default
+expect func t_switch_i64_default [] -> bool
+    k : i64 [ 42 ]
+    r : i32 [ 0 ]
+    switch [ k ]
+        case 1
+            r = 1
+        case 42
+            r = 2
+        default
+            r = 3
+    k2 : i64 [ 9 ]
+    r2 : i32 [ 0 ]
+    switch [ k2 ]
+        case 1
+            r2 = 1
+        default
+            r2 = 3
+    return r == 2 && r2 == 3
+
+# typeid of a value is its runtime type
+expect func t_typeid_of_value [] -> bool
+    s : string [ 'hi' ]
+    o : Au [ s ]
+    return typeid[ o ] == typeid[ string ]
+
+# element-wise ops on fixed-size local arrays
+expect func t_fixed_array_ops [] -> bool
+    a : local i32 [ 3 ] [ 1, 2, 3 ]
+    b : local i32 [ 3 ] [ 10, 20, 30 ]
+    c : local i32 [ 3 ] [ 0, 0, 0 ]
+    c = a + b
+    return c[ 0 ] == 11 && c[ 2 ] == 33
+
+# a method declared in its class, its body written outside
+class Split
+    public v : i32
+    func twice [] -> i32
+
+func Split.twice [] -> i32
+    return v * 2
+
+# an abstract method: no body, a subclass supplies it
+class Area
+    abstract func area [] -> i32
+
+Area Sq
+    public s : i32
+    func area [] -> i32
+        return s * s
+
+# a change block under a member runs after each store
+class Watched
+    public stores : i32
+    public v : i32
+        stores += 1
+
+expect func t_split_method [] -> bool
+    s : Split [ v: 21 ]
+    return s.twice[] == 42
+
+expect func t_abstract_member [] -> bool
+    q : Sq [ s: 4 ]
+    return q.area[] == 16
+
+expect func t_change_block [] -> bool
+    w : Watched [ v: 1 ]
+    w.v = 5
+    w.v = 6
+    return w.stores == 2
+
+# an enum whose values are f32
+enum Pace : f32
+    slow: 1.5
+    fast: 2.5
+
+expect func t_float_enum [] -> bool
+    p : f32 [ Pace.fast ]
+    return p == 2.5
+
+# '{' before the closing quote is a char, not interpolation
+expect func t_brace_literal [] -> bool
+    c : '{'
+    return c == 123
+
+# quotes nested inside an interpolation
+expect func t_nested_quote_interp [] -> bool
+    m : map string [ string ] [ ]
+    m[ 'k' ] = 'v'
+    s : '[{m['k']}]'
+    return s == '[v]'
+
+# a map keyed by i32, filled from a literal
+expect func t_int_key_map [] -> bool
+    m : map string [ i32 ] [ 1: 'a', 2: 'b' ]
+    return m[ 2 ] == 'b' && m.count == 2
+
+# a lambda binds two values and takes two args
+func mul_add [ a: i64, b: i64 :: base: i64, scale: i64 ] -> i64
+    return (a * b + base) * scale
+
+expect func t_lambda_multi [] -> bool
+    base : i64 [ 10 ]
+    scale : i64 [ 2 ]
+    f : lambda mul_add[ base, scale ]
+    return f[ 3, 4 ] == 44
+
+# a change block runs on a method's store, not init's
+class Watched2
+    public stores : i32
+    public v : i32
+        stores += 1
+    func init []
+        v = 9
+    func bump []
+        v += 1
+
+expect func t_change_block_self [] -> bool
+    w : Watched2 [ ]
+    a : i32 [ w.stores ]
+    w.bump[]
+    return a == 0 && w.stores == 1 && w.v == 10
+
+# a shaped vec takes one index per dimension
+expect func t_multi_index [] -> bool
+    k : vec i32 [ 2x2 ] [ 1 2, 3 4 ]
+    return k[ 1, 0 ] == 3 && k[ 0, 1 ] == 2
+
+# string keys longer than one character
+expect func t_map_long_keys [] -> bool
+    m : map i64 [ string ] [ 'alpha': 1, 'beta': 2 ]
+    return m[ 'beta' ] == 2 && m[ 'alpha' ] == 1
+
+# maps pass as args and come back as returns
+func count_map [ m: map i64 [ string ] ] -> i64
+    return m.count
+
+func mk_map [] -> map i64 [ string ]
+    r : map i64 [ string ] [ ]
+    r[ 'x' ] = 1
+    return r
+
+expect func t_map_param_return [] -> bool
+    m : mk_map[]
+    return count_map[ m ] == 1
+
+# hex floats and a capital exponent
+expect func t_numeric_forms [] -> bool
+    a : f64 [ 0x1.8P-1 ]
+    b : f64 [ 1E3 ]
+    return a == 0.75 && b == 1000.0
+
+# every char escape gives its code
+expect func t_char_escapes [] -> bool
+    tb : '\t'
+    cr : '\r'
+    z  : '\0'
+    bs : '\\'
+    q  : '\''
+    return tb == 9 && cr == 13 && z == 0 && bs == 92 && q == 39
+
+# a one-number shape, and a shape from a variable
+expect func t_vec_1d_shape [] -> bool
+    v : vec i32 [ 3 ] [ 1, 2, 3 ]
+    s : 2x2
+    w : vec f32 [ s ]
+    return v[ 2 ] == 3 && w.count == 4
+
+# a float enum counts on from the last value
+enum Gear : f64
+    low: 1
+    mid
+    top: 4.5
+
+expect func t_float_enum_forms [] -> bool
+    return f64[ Gear.mid ] == 2.0 && f64[ Gear.low ] == 1.0 && f64[ Gear.top ] == 4.5
+
+# commaless numbers match their params by type
+func mixn [ n: i64, f: f64 ] -> f64
+    return f * n
+
+expect func t_commaless_numbers [] -> bool
+    return mixn[ 2.5 4 ] == 10.0
+
+# persist makes a module static with a start value
+persist boots : i64 [ 3 ]
+
+expect func t_persist [] -> bool
+    boots += 1
+    return boots == 4
+
+# keyword blocks span lines and nest braces
+expect func t_keyword_multiline [] -> bool
+    s : string {
+        color red
+        margin 2 }
+    t : tokens { a { b } c }
+    return t.count == 5 && s.ends_with[ 'margin 2' ] && s.starts_with[ '\n' ]
+
+## a block comment
+# with a lone hash line inside
+##
+expect func t_block_comment [] -> bool
+    return true
+
+# double quotes inside an interpolation
+expect func t_quote_in_interp [] -> bool
+    m : map string [ string ] [ ]
+    m[ 'k' ] = 'v'
+    q : 'x={m["k"]}'
+    return q == 'x=v'
+
+# a scalar with its own string cast; bracket form
+scalar pct : f32
+    cast -> string [ '{i32[ f32[ a ] ]}%' ]
+
+expect func t_scalar_own_string [] -> bool
+    p : pct [ 50.0 ]
+    q : 25pct
+    s : string [ p ]
+    return s == '50%' && '{q}' == '25%'
+
+# ref params write through to the caller
+func bump_ref [ p: ref i32 ] -> none
+    p[ 0 ] += 1
+
+expect func t_ref_keyword [] -> bool
+    n : i32 [ 1 ]
+    bump_ref[ @n ]
+    return n == 2
+
+# enum meta types after the storage type
+enum Tagged : i32 [ string, i64 ]
+    one: 1
+    two: 2
+
+expect func t_enum_meta [] -> bool
+    return i32[ Tagged.two ] == 2
+
+# the module may name itself; any other name is an error
+extend features
+
+# [ Launch ] and [ Live ] members write the launch spec
+class Launch
+class Live
+class Slider
+
+enum Hue
+    red: 1
+    green: 2
+
+class LaunchHost
+    public [ Launch ] depth : i32 [ 4 ]
+    public [ Launch ] hue : Hue     # no default: its first value
+    public [ Live ] gain : f32 [ 0.5 ]
+    public [ Launch, Slider [ 0.0, 1.0 ] ] vol : f32 [ 0.25 ]
+
+expect func t_launch_specs [] -> bool
+    p: path '{path.path_install[]}/export/silver-features.agi'
+    s: string p.load[ typeid[string], null ]
+    return s.index_of[ 'depth=i32=4' ] >= 0 &&
+           s.index_of[ 'hue=Hue=1=Enum[red:1,green:2]' ] >= 0 &&
+           s.index_of[ 'gain=f32=0.5=live' ] >= 0 &&
+           s.index_of[ 'vol=f32=0.25' ] >= 0
+
+# export name: value, and a registry value tagged FileType
+expect func t_export_forms [] -> bool
+    p: path '{path.path_install[]}/export/silver-features.agi'
+    s: string p.load[ typeid[string], null ]
+    return s.index_of[ 'landscape: [\'true\']' ] >= 0 &&
+           s.index_of[ '\'.fa\': ascii' ] >= 0
+
+# the second member meta class lands in meta.member_b
+expect func t_member_meta_b [] -> bool
+    ct : Au_t [ typeid[ LaunchHost ] ]
+    m : Au.find_member[ ct, 'vol', AU_MEMBER_VAR, 0, false ]
+    return m.meta.m == typeid[ Launch ] && m.meta.member_b == typeid[ Slider ]
+
+# a class's own meta type, via < >
+class MetaHolder < string >
+    public v : i32
+
+expect func t_class_meta [] -> bool
+    ct : Au_t [ typeid[ MetaHolder ] ]
+    return ct.meta.a == typeid[ string ]
+
+# an override may return a C typedef of the base's type
+class Maker
+    func make [] -> i32
+        return 1
+
+Maker Maker2
+    func make [] -> feat_count
+        return 2
+
+expect func t_override_alias_return [] -> bool
+    m2 : Maker2 [ ]
+    m : Maker [ m2 ]
+    return m.make*[] == 2 && m.make[] == 1
+
+# a header config block: -D, { (define) ?? ... }, +N=v
+expect func t_c_header_defines [] -> bool
+    return FEAT_OS_ON == 1 && FEAT_NEVER_ON == 0 && FEAT_LEVEL == 3
+
+# C macros: cast, suffixed number, joined strings, params
+expect func t_c_macro_forms [] -> bool
+    g : string [ FEAT_GREET ]
+    return FEAT_CAST_I == 3 && FEAT_BIG == 40000 && g == 'hello' &&
+           FEAT_SUM[ 2, 3 ] == 5
+
+# a C typedef of a fixed array fills from a list
+expect func t_c_fixed_array [] -> bool
+    t : feat_trio [ 1, 2, 3 ]
+    a0 : i32 [ t[ 0 ] ]
+    a2 : i32 [ t[ 2 ] ]
+    return a0 == 1 && a2 == 3
+
+# a macro that names a function calls it
+expect func t_macro_alias_call [] -> bool
+    return feat_plus[ 2, 3 ] == 5
+
+# an enum from its name
+expect func t_enum_by_name [] -> bool
+    h : Hue [ Hue[ 'green' ] ]
+    return h == Hue.green
+
+# an escaped quote inside an interpolated expression
+expect func t_escaped_interp_quote [] -> bool
+    m : map string [ string ] [ ]
+    m[ 'a"b' ] = 'v'
+    q : '{m["a\"b"]}'
+    return q == 'v'
+
+# a map key computed from an expression in braces
+expect func t_computed_key [] -> bool
+    nm : string [ 'b' ]
+    m : map i64 [ string ] [ 'a': 1, {nm}: 2 ]
+    return m[ 'b' ] == 2 && m[ 'a' ] == 1
+
+# a body written by the user's agent from its prompt; the
+# result lives in features/gen, reused while it matches
+func gen_add [ a: i32, b: i32 ] -> i32 using claude
+    { add a and b }
+
+func gen_mul [ a: i32, b: i32 ] -> i32 using chatgpt
+    { multiply a by b }
+
+expect func t_codegen [] -> bool
+    return gen_add[ 2, 3 ] == 5 && gen_mul[ 4, 5 ] == 20
 
 expect func t_mem_last [] -> bool
     Au.auto_free[]

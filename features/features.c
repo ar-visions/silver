@@ -7,6 +7,11 @@ int c_scale(int a, int b) {
     return a * b;
 }
 
+/* named by feat.h's feat_plus macro */
+int feat_add(int a, int b) {
+    return a + b;
+}
+
 #include <stdio.h>
 #include <unistd.h>
 

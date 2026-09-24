@@ -1292,6 +1292,15 @@ extern "C" {
 none array_push(array, Au);
 }
 
+// a macro body is C: tokenize it in C mode
+static tokens c_tokens(aether e, string body) {
+    bool prev = e->cmode;
+    e->cmode = true;
+    tokens t = new0(tokens, target, (Au)e, parser, e->parse_f, input, (Au)body);
+    e->cmode = prev;
+    return t;
+}
+
 class MacroCollector2 : public clang::PPCallbacks {
 public:
     aclang_cc instance;
@@ -1335,7 +1344,7 @@ public:
 
         // Note: 'string' is a silver type constructor from 'aether/import'
         string body_str = new0(string, chars, (cstr)body_text.c_str());
-        tokens body_tokens = new0(tokens, target, (Au)e, parser, e->parse_f, input, (Au)body_str);
+        tokens body_tokens = c_tokens(e, body_str);
         token f = (token)array_first_element((array)body_tokens);
 
         // Handle Params
@@ -1744,7 +1753,7 @@ static void build_macro(aether e, pending_macro& pm) {
     if (au_lookup(n)) return;
 
     string body_str    = new0(string, chars, (cstr)pm.body.c_str());
-    tokens body_tokens = new0(tokens, target, (Au)e, parser, e->parse_f, input, (Au)body_str);
+    tokens body_tokens = c_tokens(e, body_str);
     array  params_array = nullptr;
 
     if (pm.function_like) {

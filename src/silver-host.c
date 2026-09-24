@@ -87,6 +87,7 @@ typedef struct {
 #define HOST_APP_DEBUG_BUILD 4  // built -O0 -g, so the debugger sees source lines
 #define HOST_APP_DISPLAY_SHIFT 3 // bits 3-4: trinity's Display (0 pip, 1 full, 2 window, 3 screen)
 #define HOST_APP_HZ_SHIFT      8 // bits 8-15: the host display's refresh rate
+#define HOST_APP_COVERAGE (1 << 16) // silver --coverage; the run writes coverage.lcov
 typedef struct {
     volatile int32_t host_pid;  // this supervisor; spawn requests SIGUSR1 it
     HostApp app[HOST_APPS];
@@ -378,6 +379,7 @@ static void spawn_slot_app(int k, const char* bindir) {
     int   dbg   = (ap->flags & HOST_APP_DEBUG)       != 0;
     int   clean = (ap->flags & HOST_APP_CLEAN)       != 0;
     int   dbgb  = (ap->flags & HOST_APP_DEBUG_BUILD) != 0;
+    int   cov   = (ap->flags & HOST_APP_COVERAGE)    != 0;
     int   disp  = (ap->flags >> HOST_APP_DISPLAY_SHIFT) & 3;
     static const char* dnames[] = { "PIP", "Embed", "Window", "Screen" };
     char* nm    = name;
@@ -385,6 +387,14 @@ static void spawn_slot_app(int k, const char* bindir) {
     // rebuilds when its sources change, all read it
     if (dbgb) setenv("SILVER_DEBUG_BUILD", "1", 1);
     else      unsetenv("SILVER_DEBUG_BUILD");
+    // one coverage map: the last run's, cleared as this one starts
+    static char covenv[4200];
+    snprintf(covenv, sizeof(covenv), "SILVER_COVERAGE_LCOV=%s/install/tmp/coverage.lcov", SILVER_ROOT);
+    if (cov) {
+        setenv("SILVER_COVERAGE_BUILD", "1", 1);
+        unlink(covenv + strlen("SILVER_COVERAGE_LCOV="));
+    } else
+        unsetenv("SILVER_COVERAGE_BUILD");
     // app binaries live beside this supervisor binary (one products dir)
     char bin[4300];
     snprintf(bin, sizeof(bin), "%s/%s%s", bindir, nm, dbgb ? "-dbg" : "");
@@ -440,6 +450,7 @@ static void spawn_slot_app(int k, const char* bindir) {
     cenv[ce++] = hzenv;
     if (dbg)  cenv[ce++] = (char*)"SILVER_DEBUG=1";
     if (dbgb) cenv[ce++] = (char*)"SILVER_DEBUG_BUILD=1";
+    if (cov)  cenv[ce++] = covenv;
     cenv[ce] = NULL;
     pid_t pid = 0;
     int rc = posix_spawn(&pid, bin, &fa, NULL, cargv, cenv);
@@ -952,6 +963,7 @@ static pid_t rebuild_spawn(const char* name, int clean) {
     char cmd[8192];
     // a debug build (-O0 -g) when the launch asked for one: per build, nothing sticky
     const char* dbgb = getenv("SILVER_DEBUG_BUILD") ? " --debug" : "";
+    const char* covb = getenv("SILVER_COVERAGE_BUILD") ? " --coverage" : "";
     // --build: compile ONLY. bare `silver <app>` would LAUNCH the app (silver_live_run execs
     // the live host), spawning a whole second process+window on every reload while this one
     // keeps running. we just want the fresh .so produced so the host below hot-swaps it.
@@ -966,12 +978,12 @@ static pid_t rebuild_spawn(const char* name, int clean) {
     // silver's own flags come BEFORE the module name; anything after it is
     // handed to the app, so a trailing --build would launch instead of compile
     snprintf(cmd, sizeof(cmd),
-        "cd /d \"%s\" && \"%s\\install\\build\\silver.exe\" --build%s%s %s",
-        root, root, clean ? " --clean" : "", dbgb, name);
+        "cd /d \"%s\" && \"%s\\install\\build\\silver.exe\" --build%s%s%s %s",
+        root, root, clean ? " --clean" : "", dbgb, covb, name);
 #else
     snprintf(cmd, sizeof(cmd),
-        "cd \"" SILVER_ROOT "\" && \"" SILVER_ROOT "/install/bin/silver\" %s --build%s%s",
-        name, clean ? " --clean" : "", dbgb);
+        "cd \"" SILVER_ROOT "\" && \"" SILVER_ROOT "/install/bin/silver\" %s --build%s%s%s",
+        name, clean ? " --clean" : "", dbgb, covb);
 #endif
     // send the compile output to the app's OWN log so orbiter's console (which tails
     // /tmp/<app>.log) shows the compilation. spawn_slot_app truncated it beforehand,

@@ -486,6 +486,7 @@ ResourceView AppView
     mutable dispatched : bool        # cmd handed to its console session (once per run)
     public  clean_build : bool       # silver-host runs --clean first
     public  debug_build : bool       # the module builds -O0 -g for the debugger
+    public  cov_build   : bool       # silver --coverage: the run writes coverage.lcov
     public  viewer      : bool       # a file handler: hosted to view, never under the debugger
     mutable doc        : path
     mutable pend_w     : i32
@@ -1036,9 +1037,10 @@ ResourceView AppView
         # the host's launch flags (silver-host HOST_APP_*): 1 stops the app for
         # the debugger, which a viewer never asks; 2 builds clean; 4 builds -O0 -g
         # bits 8-15: this display's refresh, the pace of an app shown in the pane
+        # bit 16: a coverage build
         hz9 : i32 [ (host_hz > 0) ? host_hz : 60 ]
         fl9 : i32 [ ((viewer) ? 0 : 1) | ((clean_build) ? 2 : 0) | ((debug_build) ? 4 : 0) |
-                    ((display & 3) << 3) | ((hz9 & 255) << 8) ]
+                    ((display & 3) << 3) | ((hz9 & 255) << 8) | ((cov_build) ? (1 << 16) : 0) ]
         # flags BEFORE the doc: Au_with_cstrs stops parsing at the first
         # positional, so a trailing flag would never reach the app's schema
         ma9 : string [ (module_args && module_args.count > 0) ? '{module_args} ' : '' ]
@@ -1884,6 +1886,16 @@ Layer EditorLayer
             cv.fill_color[ (line_gutter) ? line_gutter : rgba['#ffffff08'] ]
             cv.rect_to[ bounds.x + 2.0, yg + 1.0, gut_w - 4.0, lh - 2.0 ]
             cv.paint[ ]
+            # coverage: a gutter dot (git owns the fill); missed tints
+            ch9 : i64 [ (!showing && editor.cov_hits && bsl >= 0 && bsl < editor.cov_hits.count) ? editor.cov_hits[ bsl ] : -1 ]
+            if [ ch9 >= 0 ]
+                if [ ch9 == 0 ]
+                    cv.fill_color[ rgba['#f8514914'] ]
+                    cv.rect_to[ bounds.x + gut_w, yg, bounds.w - rin - gut_w - 1.0, lh ]
+                    cv.paint[ ]
+                cv.fill_color[ (ch9 > 0) ? rgba['#56d364'] : rgba['#f85149'] ]
+                cv.arc[ bounds.x + 9.0, yg + lh * 0.5, 3.0, 0.0, 6.2832 ]
+                cv.paint[ ]
             # the git state of the row, as the gutter's own colour: added
             # green, changed blue, a removed run as a red edge above. a
             # label only: nothing here hovers or takes a press
@@ -2777,6 +2789,10 @@ Control Editor
     mutable open_chain    : vec Au
     mutable open_src      : i32 [ -1 ]   # the file line whose [+] opened the tree; one line, not every line naming the variable
     mutable fmt_mtime     : i64 [ 0 ]
+    # the last coverage run's hits per file line, -1 where none
+    mutable cov_hits      : vec i64
+    mutable cov_stamp     : i64 [ -1 ]
+    mutable cov_src       : string
     mutable disk_ms       : i64 [ 0 ]
     mutable scroll_target : f32 [ 0.0 ]
     mutable pending_wheel : f32 [ 0.0 ]
