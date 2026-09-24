@@ -1431,10 +1431,18 @@ void silver_parse(silver a) {
     // rather than exiting 0 and reading as a pass
     if (a->test && !a->is_external) {
         bool any = false;
-        members(a->autype, mem)
+        members(a->autype, mem) {
+            // a class's own tests count as the module's
+            Au_t scope = (mem->member_type == AU_MEMBER_TYPE && mem->is_class) ? mem : null;
             if (mem->member_type == AU_MEMBER_FUNC &&
                 mem->access_type == interface_expect &&
                 mem->rtype == typeid(bool)) { any = true; break; }
+            if (scope) members(scope, cm)
+                if (cm->member_type == AU_MEMBER_FUNC &&
+                    cm->access_type == interface_expect &&
+                    cm->rtype == typeid(bool)) any = true;
+            if (any) break;
+        }
         validate(any, "--test: module %o declares no expect tests", a->name);
     }
 
@@ -8257,8 +8265,11 @@ static string gen_signature(efunc fn) {
     }
     Au_t ctx  = f->context;
     bool rec9 = ctx && ctx->ident && (ctx->is_class || ctx->is_struct);
-    return f(string, "func %s%s%s [ %o ] -> %s",
-        rec9 ? ctx->ident : "", rec9 ? "." : "", f->ident, args,
+    return f(string, "%sfunc %s%s%s %s%o%s -> %s",
+        f->access_type == interface_export ? "export " :
+        f->access_type == interface_expect ? "expect " : "",
+        rec9 ? ctx->ident : "", rec9 ? "." : "", f->ident,
+        len(args) ? "[ " : "[", args, len(args) ? " ]" : "]",
         f->rtype && f->rtype->ident ? f->rtype->ident : "none");
 }
 
@@ -8317,13 +8328,15 @@ static bool gen_once(bool is_claude, path root, string model, string text,
         path log, int limit) {
     string exe = gen_tool(is_claude ? "claude" : "codex");
     if (!exe) return false;
-    cstr args[16];
+    cstr args[20];
     int  n = 0;
     args[n++] = exe->chars;
     if (is_claude) {
         args[n++] = "-p"; args[n++] = text->chars;
         args[n++] = "--permission-mode"; args[n++] = "acceptEdits";
         args[n++] = "--no-session-persistence";
+        // the language reference lives in silver's own folder
+        args[n++] = "--add-dir"; args[n++] = SILVER;
         if (model && len(model)) { args[n++] = "--model"; args[n++] = model->chars; }
     } else {
         args[n++] = "exec";
@@ -8367,7 +8380,9 @@ static bool gen_load(silver a, path gfile, gen_file* gf) {
         string rest = mid(ln, k, len(ln) - k);
         if (starts_with(rest, "# hash:"))
             gf->hash = trim(mid(rest, 7, len(rest) - 7));
-        else if (fline < 0 && starts_with(rest, "func "))
+        else if (fline < 0 && (starts_with(rest, "func ") ||
+                               starts_with(rest, "export func ") ||
+                               starts_with(rest, "expect func ")))
             fline = i;
     }
     if (fline < 0) return false;
@@ -8392,6 +8407,10 @@ static bool gen_load(silver a, path gfile, gen_file* gf) {
         if (eq((token)toks->origin[i], "func")) at = i;
     if (at < 0) return false;
     num fl   = ((token)toks->origin[at])->line;
+    // an export or expect func's line starts at its keyword
+    if (at > 0 && (eq((token)toks->origin[at - 1], "export") ||
+                   eq((token)toks->origin[at - 1], "expect")) &&
+        ((token)toks->origin[at - 1])->line == fl) at--;
     gf->head = string(alloc, 128);
     gf->body = array(alloc, 256);
     for (num i = at; i < len(toks); i++) {
@@ -8477,8 +8496,10 @@ static array gen_body(silver a, codegen cg, efunc fn, array b, bool is_claude) {
         "extend %o\n"
         "# hash: %o\n"
         "%o\n"
-        "    ...the body...",
-        file, (i32)g.first, gfile, a->name, hex, sig);
+        "    ...the body...\n"
+        "silver, the language: %s/LANGUAGE.md, %s/AGENTS.md, "
+        "%s/features/features.ag",
+        file, (i32)g.first, gfile, a->name, hex, sig, SILVER, SILVER, SILVER);
 
     cstr  tw    = getenv("SILVER_CODEGEN_TIMEOUT");
     int   limit = tw ? atoi(tw) : 600;

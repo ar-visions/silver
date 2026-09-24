@@ -2607,6 +2607,16 @@ func gen_mul [ a: i32, b: i32 ] -> i32 using chatgpt
 expect func t_codegen [] -> bool
     return gen_add[ 2, 3 ] == 5 && gen_mul[ 4, 5 ] == 20
 
+# a test inside a class runs on a new default instance
+class Tallied
+    public n : i32 [ 2 ]
+
+    func twice [] -> i32 using claude
+        { n doubled }
+
+    expect func t_class_test [] -> bool
+        return n == 2 && twice[] == 4
+
 expect func t_mem_last [] -> bool
     Au.auto_free[]
     live : i32 [ Au.alloc_count[ null ] ]

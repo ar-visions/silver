@@ -10037,6 +10037,18 @@ static bool is_expect_test(Au_t mem) {
            mem->rtype == typeid(bool);
 }
 
+// the module's tests in source order, a class's where it is declared
+static array expect_tests(Au_t module_base) {
+    array res = array(alloc, 64);
+    members(module_base, mem) {
+        if (is_expect_test(mem)) push(res, (Au)mem);
+        else if (mem->member_type == AU_MEMBER_TYPE && mem->is_class)
+            members(mem, cm)
+                if (is_expect_test(cm)) push(res, (Au)cm);
+    }
+    return res;
+}
+
 // SILVER_EXPECT is a test run: after module init, report and exit 0
 static void emit_expect_exit(aether a) {
     emit_guard;
@@ -10057,8 +10069,7 @@ static void emit_expect_exit(aether a) {
     // reaching here means every test returned true: a failure halts in
     // e_expect. count them so the run reports what it proved
     int total = 0, skipped = 0;
-    members(a->autype, mem) {
-        if (!is_expect_test(mem)) continue;
+    each(expect_tests(a->autype), Au_t, mem) {
         total++;
         arg_list(mem, arg) {
             etype at = etype_prep(a, au_arg_type((Au)arg));
@@ -10089,10 +10100,8 @@ static void emit_expect_exit(aether a) {
 static void emit_expect_tests(aether a, Au_t module_base, efunc f) {
     emit_guard;
     if (a->strip_expect) return;
-    bool any = false;
-    members(module_base, mem)
-        if (is_expect_test(mem)) any = true;
-    if (!any) return;
+    array tests = expect_tests(module_base);
+    if (!len(tests)) return;
     push_scope(a, (Au)f, 13);
     LLVMTypeRef  i8p       = LLVMPointerTypeInContext(a->module_ctx, 0);
     LLVMTypeRef  getenv_ty = LLVMFunctionType(i8p, &i8p, 1, 0);
@@ -10117,11 +10126,13 @@ static void emit_expect_tests(aether a, Au_t module_base, efunc f) {
     }
     efunc fn_drop = (efunc)u(efunc,
         find_member(etypeid(Au)->autype, "drop", AU_MEMBER_FUNC, 0, false));
-    members(module_base, mem) {
-        if (!is_expect_test(mem)) continue;
+    each(tests, Au_t, mem) {
         efunc tf = (efunc)u(efunc, mem);
         if (!tf) continue;
-        char buf[512];
+        char buf[512], tname[256];
+        bool inner = mem->context && mem->context != module_base;
+        snprintf(tname, sizeof(tname), "%s%s%s", inner ? mem->context->ident : "",
+            inner ? "." : "", mem->ident);
         // args must all be default-constructible classes
         bool constructible = true;
         arg_list(mem, arg) {
@@ -10130,7 +10141,7 @@ static void emit_expect_tests(aether a, Au_t module_base, efunc f) {
         }
         if (!constructible) {
             snprintf(buf, sizeof(buf), "[%s] expect: %s skipped (args not constructible)",
-                module_base->ident, mem->ident);
+                module_base->ident, tname);
             emit_expect_puts(a, buf);
             continue;
         }
@@ -10138,7 +10149,7 @@ static void emit_expect_tests(aether a, Au_t module_base, efunc f) {
         etype_implement((etype)tf, false);
         // the per-test lines are verbose detail; a run reports its tally
         if (a->verbose) {
-            snprintf(buf, sizeof(buf), "[%s] expect: %s", module_base->ident, mem->ident);
+            snprintf(buf, sizeof(buf), "[%s] expect: %s", module_base->ident, tname);
             emit_expect_puts(a, buf);
         }
         array vals = array(alloc, 8);
@@ -10148,11 +10159,11 @@ static void emit_expect_tests(aether a, Au_t module_base, efunc f) {
             push(vals, (Au)inst);
         }
         enode r = e_fn_call(a, tf, len(vals) ? vals : null, false, false);
-        snprintf(buf, sizeof(buf), "[%s] expect: %s failed\n", module_base->ident, mem->ident);
+        snprintf(buf, sizeof(buf), "[%s] expect: %s failed\n", module_base->ident, tname);
         enode msg = e_create(a, etypeid(string), (Au)const_string(chars, buf), false);
         e_expect(a, r, msg);
         if (a->verbose) {
-            snprintf(buf, sizeof(buf), "[%s] expect: %s passed", module_base->ident, mem->ident);
+            snprintf(buf, sizeof(buf), "[%s] expect: %s passed", module_base->ident, tname);
             emit_expect_puts(a, buf);
         }
         if (fn_drop)

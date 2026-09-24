@@ -1569,6 +1569,16 @@ claude` with `{ prompt tokens, {images/x.png} }` under it. A
    agent on rebuild. `model: 'gpt-5'` is refused for Codex on
    a ChatGPT account; features' chatgpt import sets no model.
 5. OPEN gemini still errors "not implemented".
+6. DONE `using` on export funcs (module level only, as export
+   is), on expect funcs, and on methods, including expect
+   methods inside a class. The header carries the keyword
+   (`export func`, `expect func Board.t`); `[]` for no args.
+   The request names LANGUAGE.md, AGENTS.md and
+   features/features.ag; `claude -p` gets `--add-dir <silver>`.
+7. DONE the expect runner now runs tests declared inside a
+   class, on a new default instance, named Class.test, in
+   source order (they were compiled and silently skipped).
+   features: Tallied.t_class_test; 213/213.
 
 ## MEMORY: the reload transition (Sep 22 2026, fixed)
 

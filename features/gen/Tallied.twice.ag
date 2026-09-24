@@ -1,0 +1,4 @@
+extend features
+# hash: 69a0dd0af03827d9
+func Tallied.twice [] -> i32
+    return n * 2
