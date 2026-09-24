@@ -1298,6 +1298,9 @@ debug+quarantine and -O2. Startup 71k -> 55k objects.
 11. OPEN the app element itself (managed 0) outlives its image by design.
 12. OPEN intermittent silver compiler SIGSEGV during the host's rebuild,
     only with the app running; silver now prints its backtrace on SIGSEGV.
+    Caught once (Sep 23, `silver --build orbiter`, no app running): in
+    LLVM EarlyCSE (ConstantFoldLoadFromConstPtr) under optimize_module on
+    a parallel emit_job_run thread; the retry built.
 
 ## Active work: editor embedded pane (Sep 23 2026)
 
@@ -1388,6 +1391,90 @@ debug+quarantine and -O2. Startup 71k -> 55k objects.
 
 ## Compiler coverage (Sep 23 2026)
 
+Live list:
+1. DONE coverage runs reset features first (--uninstall with the
+   instrumented silver): its checkouts (zlib, fribidi), builds and
+   products go, and the run fetches and builds them again.
+   silver.c 65.76% -> 67.78% lines. Only silver.c and aether.c
+   are reported.
+2. DONE silver.c holds only what features exercises: 1,346 lines
+   of devices, ios/android bundles and apk writing, cross
+   toolchain files, device runtimes, platform triples, release
+   version, dylib bundling and deploy_resources moved to
+   src/parts/deploy.c, included once inside the tail
+   `#ifdef BUILD_LIBRARY` of silver.c (same unit, statics kept).
+   It is not in src/ itself: gen.py makes every src/*.c a module.
+   silver.c now 77.78% functions, 75.24% lines, 34.06% branches.
+   Still in silver.c and never run by features: live reload,
+   listen, lldb, the AI codegen classes, verbose printing.
+3. DONE tests from a manual read of silver.c's untaken branches:
+   features 182 -> 199 expects, all pass, live objects 26 at
+   start and end. silver.c 75.83% lines, 34.39% branches.
+   Fixed by them: `pct [ 50.0 ]` (a scalar in brackets) was 0 -
+   parse_object put the value on the scalar's (no) fields; the
+   object header's data_shape was never dropped (Au_dealloc), so
+   each shaped vec leaked its shape. t_mem_last moved to the end:
+   tests after it never ran.
+4. OPEN tests that need features' own files: Launch/Live member
+   meta, member meta B, export forms, import defines via a
+   features/flags.h, several `>` lines, `with A, B`.
+5. OPEN a scalar's own `cast -> string [ '{a}%' ]` recurses
+   forever (a is the scalar); the test writes f32[ a ].
+6. DONE verify/validate/error/fault leave one branch per use:
+   the body is one function (Au au_verify_fail and au_fault,
+   aether_fail, silver_fail) over Au's new vformatter (va_list).
+   silver.c branches 34.39% -> 56.12% (19,643 -> 12,053
+   outcomes), aether.c 49.95% -> 56.22%. The failure side of
+   each use is still counted and never taken in a good build.
+7. DONE support/coverage-branches.py (run by coverage.sh on the
+   llvm-cov JSON export) leaves out those failure sides. clang
+   puts a check's branches in its macro expansion, at the
+   #define: the whole condition on `(cond)` (false = failure) or
+   `!(a)` (true = failure), each &&/|| piece on the bare param
+   (kept: real decisions), message-argument branches elsewhere
+   (dropped: they run only on failure). Counts come from the
+   function records: llvm-cov's own report folds each macro use
+   into per-line outcomes, so its totals differ. silver.c all
+   52.82%, real 54.33% (323 simple checks); aether.c 49.60%,
+   real 50.18% (122).
+8. DONE tests for the untested language features: features
+   199 -> 211 expects, all pass (live 28 at start and end).
+   silver.c lines 75.72% -> 76.86%, real branches 55.70%.
+   New: features/feat.h (with feat_add in features.c) and an
+   import config block (-D, { (define) ?? }, +NAME=value).
+   Fixed by them:
+   - a C typedef of a fixed array (typedef int t[3]) could not
+     be filled from a list or indexed: read_enode and e_offset
+     read elements off the typedef; e_assign stored the temp's
+     address into the array slot (fixed_array_of, array_slot).
+   - `'{m["a\"b"]}'`: single-quoted strings unescaped their
+     {expr} too; unescape_interp leaves braces as written.
+   - C macro bodies were tokenized as silver (cmode off):
+     "a" "b" never joined, ## and # were not C. aclang's
+     c_tokens sets cmode; the join also built the wrong text.
+   - `[ {expr}: v ]` used the name as the key: parse_object
+     ate the { before parse_field looked for it.
+   - `validate(n, ..., next(a, ...))` consumed a token.
+   Unreachable, no test can run them: typed_expr (its caller in
+   read_enode follows a branch that always takes the [), and
+   parse_object's non-field paths after its positional loop
+   (collective/prop_value_at keys, stride check, iarray).
+9. OPEN `@pt2 [ x: 1.0, y: 2.0 ]` (a ref to a new struct) reads
+   x as a declaration; unclear if the form is meant to work.
+10. OPEN left untested: `using <codegen>` (needs an AI
+   backend), calling a cast member by name, tab-indented
+   continuation lines.
+11. OPEN an inline lambda does not capture a name used only
+   inside an interpolation: `lambda [ t: Task ]` with body
+   `log '{mark}: {t.title}'` fails "expected member, found
+   mark"; `word : string [ mark ]` in the body works.
+
+`support/coverage.sh` also exports the compiler's map to
+install/tmp/coverage.lcov (llvm-cov export -format=lcov), so
+orbiter shows it on src/silver.c and aether.c. It deletes the
+module's install/build/*-<m>.product to force the compile: a
+touch let a watcher (orbiter) rebuild first, and the run then
+measured almost nothing (8%).
 `make coverage` builds into install/coverage alone: aether,
 aclang, silver and silver-lib get -fprofile-instr-generate
 -fcoverage-mapping, their libraries stay beside the binary
@@ -1400,6 +1487,88 @@ First run, features 167/167: functions 71%, lines 69%,
 branches 40% (silver.c 32%, aether.c 49%, aclang.cc 71%).
 OPEN: one coverage run reported features failing; the output
 was filtered and three reruns passed, so the test is unknown.
+
+silver's own coverage: `silver --coverage [--test] <module>`
+writes install/tmp/coverage.lcov (SILVER_COVERAGE_LCOV) from
+Au's __coverage_report (end of the expects, exit, SIGINT,
+SIGTERM). One map: the last coverage run's; a run deletes it
+as it starts.
+Each block probe records file, first and last line in a root
+table (coverage_probe_open/close); finalize_coverage_map emits
+it after the cores; __coverage_lines hands it to Au. A line
+takes the count of the smallest block holding it; blank and
+comment lines are left out. `aether_init` no longer resets
+`coverage` (the flag never worked before), and probes in a
+core module declare the root's globals (cov_global).
+Checked: a small if/el module marks the untaken return and an
+uncalled function 0; features 167/167, 1580 of 1636 lines.
+Limits: 4096 probes a module, only the root module is
+instrumented, and `el` counts with its enclosing block.
+Probes go only on blocks inside a function: a class body never
+runs, and its probe marked every declaration line red.
+A block starting past its line's indent (a one-line if body)
+shares the line: it counts as run if its statement ran.
+Probe files come from the function's source_file (a token's
+source is weak: it crashed on a codegen thread).
+orbiter: a `coverage` row under `debug` in the run panel
+(AppView.cov_build, launch bit 1<<16 -> silver-host
+HOST_APP_COVERAGE -> --coverage and SILVER_COVERAGE_LCOV) and
+`clear` (deletes the map). cov_poll (1 s tick) reloads the map
+on a change; each pane shows a green dot per run line, a red
+dot and a faint row tint per missed line. Checked headless:
+dots on features.ag, the live reload, clear. Not driven yet: a
+coverage launch through silver-host (headless has no host).
+
+Coverage-driven tests (Sep 23): features +8 expects (175/175):
+t_expect_plain, t_format_suffix, t_for_index_key, t_for_array,
+t_spaceship_kinds, t_switch_i64_default, t_typeid_of_value,
+t_fixed_array_ops. Compiler lines 69.13% -> 69.72%.
+FIXED aether_e_cmp: integer <=> subtracted and narrowed to i32,
+so it gave the difference (u32 7 <=> 3 was 4) and lost the sign
+for wide values (i64 0 <=> 2^32 was 0, equal). Now signed or
+unsigned compares give -1/0/1, like the float path.
+No callers, so no test can reach them (dead-code candidates):
+aether_e_eq_prev, e_inherits, e_is, e_coalesce_deferred,
+e_meta_ids, e_abs, e_inc, e_memcpy, e_materialize,
+silver_read_bool, parse_expect, etype_infer.
+
+## Codegen through the user's agents (Sep 24 2026)
+
+`import claude` / `import chatgpt` (codegen classes in silver;
+config lines set `model:`), then `func f [ .. ] -> T using
+claude` with `{ prompt tokens, {images/x.png} }` under it. A
+{path} group is one token whose literal is the path.
+1. DONE bodies live in gen/ beside the module source:
+   gen/Class.method.ag or gen/method.ag, written as
+   `extend <module>`, `# hash: <key>`, the func line, the body.
+   The func line must match the declaration (whitespace aside).
+2. DONE the hash is a cache key: the request carries P (agent,
+   signature, prompt, image bytes); the agent writes
+   `# hash: P`; on acceptance the compiler stamps K = key(P,
+   body). A build recomputes K: a match uses the file (commit
+   it; builds need no agent); a mismatch deletes the file and
+   regenerates. Editing gen/ rebuilds; so does removing a file.
+3. DONE generation runs the user's agent once, from the shell,
+   in the repo folder: `claude -p <request> --permission-mode
+   acceptEdits --no-session-persistence [--model m]`, or
+   `codex exec -s workspace-write -C <repo> --ephemeral
+   [-m m] <request>`. No mailbox, no sessions, no API. The
+   request is the source location, the gen path and the three
+   header lines. One at a time; killed past
+   SILVER_CODEGEN_TIMEOUT (600 s); output in
+   install/tmp/codegen-<func>.log. Programs from PATH, else
+   ~/.local/bin, ~/.claude/local, the ChatGPT/Codex bundles.
+4. DONE gen/'s subfolders are resource folders.
+   Stand-in tested (fake claude/codex on PATH): both write and
+   stamp, the app runs, a rebuild is up to date, a body edit
+   or prompt change regenerates.
+   REAL (Sep 24): features t_codegen, gen_add using claude
+   (`claude -p`, model claude-opus-5-5) and gen_mul using
+   chatgpt (`codex exec`); both wrote features/gen/*.ag as
+   asked, were stamped, and features passes 212/212 with no
+   agent on rebuild. `model: 'gpt-5'` is refused for Codex on
+   a ChatGPT account; features' chatgpt import sets no model.
+5. OPEN gemini still errors "not implemented".
 
 ## MEMORY: the reload transition (Sep 22 2026, fixed)
 

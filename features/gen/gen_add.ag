@@ -1,0 +1,4 @@
+extend features
+# hash: 0fb995ff9b2f561c
+func gen_add [ a: i32, b: i32 ] -> i32
+    return a + b

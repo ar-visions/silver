@@ -2661,6 +2661,10 @@ extern AU_LINK_Au const char* silver_listen;
 #define sequencer static int _seq; _seq++; int seq = _seq;
 
 AU_EXPORT none halt(string, token);
+AU_EXPORT Au   vformatter(Au_t, bool, handle, Au, int, symbol, va_list);
+// verify/fault: one call, so their branches exist once
+AU_EXPORT bool au_verify_fail(int, symbol, ...);
+AU_EXPORT none au_fault(symbol, int, symbol, ...);
 
 // name every line a spawned shell command prints; null clears it
 AU_EXPORT void au_exec_prefix(symbol name);

@@ -318,56 +318,49 @@ AU_EXPORT token aether_loc(aether a) {
     return (token)a->tokens->origin[0];
 }
 
-#undef fault
-#define fault(t, ...) ({ \
-    token pk = aether_loc(a); \
-    string s; \
-    if (pk->line == 0) { \
-        s = (string)formatter( \
-            (Au_t)null, false, stderr, (Au) true, seq, \
-            (symbol) \
-            "\n%s:%i :: " t, \
-            __FILE__, __LINE__ \
-            __VA_OPT__(,) __VA_ARGS__); \
-        halt(s, null); \
-    } else { \
-        s = (string)formatter( \
-            (Au_t)null, false, stderr, (Au) true, seq, \
-            (symbol) "\n%o:%i:%i (%s:%i%o) " t, \
-            (pk->source ? (Au)pk->source : (Au)a->module_file), \
-            pk->line, \
-            pk->column, \
-            __FILE__, __LINE__, seq ? f(string, "@%i", seq) : string("") __VA_OPT__(,) __VA_ARGS__); \
-        if (level_err >= fault_level) { \
-            halt(s, pk); \
-        } \
-    } \
-    false; \
-})
-
-#define validate(cond, t, ...) ({ \
-    if (!(cond)) { \
-        fault(t __VA_OPT__(,) __VA_ARGS__); \
-        false; \
-    } else { \
-        true; \
-    } \
-})
-
 // silver sets this to clear its progress line before an error prints
 AU_EXPORT void (*aether_error_prelude)(void) = NULL;
 
+// fault/validate/verify: their branches live here once
+AU_EXPORT bool aether_fail(aether a, symbol file, int line, int seq,
+        bool trap, symbol t, ...) {
+    va_list args;
+    va_start(args, t);
+    string msg = (string)vformatter((Au_t)null, false, null, (Au)false, seq, t, args);
+    va_end(args);
+    if (trap && aether_error_prelude) aether_error_prelude();
+    token pk = aether_loc(a);
+    if (pk->line == 0) {
+        string s = (string)formatter((Au_t)null, false, stderr, (Au)true, seq,
+            "\n%s:%i :: %o", file, line, msg);
+        halt(s, null);
+    }
+    string s = (string)formatter((Au_t)null, false, stderr, (Au)true, seq,
+        "\n%o:%i:%i (%s:%i%o) %o",
+        (pk->source ? (Au)pk->source : (Au)a->module_file),
+        pk->line, pk->column, file, line,
+        seq ? f(string, "@%i", seq) : string(""), msg);
+    if (level_err >= fault_level)
+        halt(s, pk);
+    if (trap) {
+        fflush(stderr);
+        raise(SIGTRAP);
+    }
+    return false;
+}
+
+#undef fault
+#define fault(t, ...) aether_fail((aether)a, __FILE__, __LINE__, seq, \
+    false, (symbol)t __VA_OPT__(,) __VA_ARGS__)
+
+#define validate(cond, t, ...) ((cond) ? true : \
+    aether_fail((aether)a, __FILE__, __LINE__, seq, false, \
+        (symbol)t __VA_OPT__(,) __VA_ARGS__))
+
 #undef verify
-#define verify(cond, t, ...) ({ \
-    if (!(cond)) { \
-        if (aether_error_prelude) aether_error_prelude(); \
-        fault(t __VA_OPT__(,) __VA_ARGS__); \
-        fflush(stderr); \
-        raise(SIGTRAP); \
-        false; \
-    } \
-    true; \
-})
+#define verify(cond, t, ...) ({ if (!(cond)) \
+    aether_fail((aether)a, __FILE__, __LINE__, seq, true, \
+        (symbol)t __VA_OPT__(,) __VA_ARGS__); true; })
 
 
 AU_EXPORT LLVMTypeRef _lltype(etype);
@@ -449,6 +442,10 @@ AU_EXPORT void emit_debug_params              (aether a, efunc fn);
 AU_EXPORT void emit_debug_global              (aether a, Au_t var_au, LLVMValueRef global_val);
 
 AU_EXPORT void aether_emit_block_probe(aether a, u32 probe_id);
+AU_EXPORT u32  coverage_probe_open(aether a, token t);
+AU_EXPORT void coverage_probe_close(aether a, u32 probe_id, u32 end_line);
+AU_EXPORT void finalize_coverage_map(aether a);
+AU_EXPORT LLVMValueRef coverage_seq_ref(aether a);
 AU_EXPORT LLVMValueRef emit_clock_ns(aether a, cstr label);
 AU_EXPORT LLVMValueRef emit_func_timing_start(aether a, u32 func_id);
 AU_EXPORT void emit_func_timing_end(aether a, LLVMValueRef start_ns, u32 func_id);
@@ -844,6 +841,19 @@ static void mark_set(enode n, u64* masks);
 void aether_emit_listen_value(aether a, enode n); // defined below (debug listen trace)
 
 enode e_convert_or_cast(aether a, etype output, enode input);
+// a typedef may name a fixed array: its size is on the target
+static Au_t fixed_array_of(Au_t t) {
+    while (t && t->member_type == AU_MEMBER_VAR) t = t->src;
+    while (t && t->is_alias && t->src && !(t->elements > 0)) t = t->src;
+    return (t && t->elements > 0) ? t : null;
+}
+
+// the slot holds the array itself, not a pointer to one
+static bool array_slot(LLVMValueRef v) {
+    return v && LLVMIsAAllocaInst(v) &&
+        LLVMGetTypeKind(LLVMGetAllocatedType(v)) == LLVMArrayTypeKind;
+}
+
 enode aether_e_assign(aether a, enode L, Au R, OPType op_val) { sequencer
     emit_guard;
     a->is_const_op = false;
@@ -1033,7 +1043,16 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) { sequencer
         // true. without this resolve, `earth.model = m` falls into the
         // lower branch and bottoms out in a plain LLVMBuildStore that
         // writes 8 bytes of the alloca pointer into the destination.
-        if (res->autype && !res->loaded &&
+        // a built fixed array into an array slot: copy its elements
+        Au_t lfx9 = L->autype ? fixed_array_of(L->autype) : null;
+        if (lfx9 && res->autype && !res->loaded && array_slot(_llvalue((enode)L)) &&
+            _llvalue((enode)L) != _llvalue((enode)res) &&
+            LLVMGetInstructionOpcode(_llvalue((enode)res)) == LLVMAlloca &&
+            fixed_array_of(res->autype) == lfx9) {
+            LLVMTypeRef  at9 = LLVMGetAllocatedType(_llvalue((enode)res));
+            LLVMValueRef cp9 = LLVMBuildLoad2(B, at9, _llvalue((enode)res), "array_cp");
+            LLVMBuildStore(B, cp9, _llvalue((enode)L));
+        } else if (res->autype && !res->loaded &&
             LLVMGetInstructionOpcode(_llvalue((enode)res)) == LLVMAlloca &&
             is_struct((Au)res->autype)) {
             if (_llvalue((enode)L) && _llvalue((enode)L) != _llvalue((enode)res)) {
@@ -6504,9 +6523,10 @@ AU_EXPORT void alloc_origin_args(aether a, enode* out_src, Au* out_line, Au* out
     i32   sln  = (tk) ? (i32)tk->line : 0;
     *out_src   = with_value(const_cstr(a, src, (i32)strlen(src)), enode(mod, a, autype, etypeid(symbol)->autype, loaded, true));
     *out_line  = (Au)_i32(sln);
-    if (a->coverage && a->coverage_seq_global && !a->no_build) {
+    LLVMValueRef seq9 = (a->coverage && !a->no_build) ? coverage_seq_ref(a) : null;
+    if (seq9) {
         LLVMTypeRef i64t = LLVMInt64TypeInContext(a->module_ctx);
-        LLVMValueRef v = LLVMBuildLoad2(B, i64t, a->coverage_seq_global, "alloc_seq");
+        LLVMValueRef v = LLVMBuildLoad2(B, i64t, seq9, "alloc_seq");
         *out_seq = (Au)with_value(v, enode(mod, a, autype, etypeid(i64)->autype, loaded, true));
     } else {
         *out_seq = _i64(0);
@@ -6530,9 +6550,11 @@ AU_EXPORT enode aether_e_alloc(aether a, etype mdl, bool no_pool) {
     alloc_origin_args(a, &n_src, &n_line, &n_seq);
     // a sized vec hands its count in so the elements land inline
     Au cnt = a->alloc_count ? (Au)a->alloc_count : (Au)_i32(0);
+    Au shp = a->alloc_shape ? (Au)a->alloc_shape : (Au)e_null(a, etypeid(shape));
     a->alloc_count = null;
+    a->alloc_shape = null;
     array alloc_args = a(
-        e_typeid(a, mdl), cnt, e_null(a, etypeid(shape)),
+        e_typeid(a, mdl), cnt, shp,
         e_meta_a_node(a, mdl->meta_a), e_meta_b_node(a, mdl->meta_b),
         (Au)n_src, n_line, n_seq );
     if (stamped) {
@@ -7670,11 +7692,12 @@ enode aether_e_offset(aether a, enode n, Au offset, bool in_ref) { sequencer
     if (a->no_build) return e_noop(a, is_vec9 ? etype_prep(a, velem9) : (etype)evar_type((evar)n));
 
     enode  i = e_operand(a, offset, null);
+    Au_t fx9 = fixed_array_of(au);
     {
         Au_t deep = n->autype;
         while (deep && deep->member_type == AU_MEMBER_VAR)
             deep = deep->src;
-        verify(is_vec9 || is_ptr(n) || n->autype->elements > 0 || n->autype->is_explicit_ref ||
+        verify(is_vec9 || fx9 || is_ptr(n) || n->autype->elements > 0 || n->autype->is_explicit_ref ||
             (deep && (deep->is_pointer || deep->is_explicit_ref || deep->elements > 0)),
             "offset requires pointer (is_explicit_ref=%d)", n->autype->is_explicit_ref);
     }
@@ -7686,7 +7709,7 @@ enode aether_e_offset(aether a, enode n, Au offset, bool in_ref) { sequencer
         vobj9 = n->loaded ? n : enode_value(n, true);
         enode on9  = etype_access((etype)vobj9, string("origin"));
         base = LLVMBuildLoad2(B, ptr_ty, _llvalue((enode)on9), "origin");
-    } else if (!n->loaded && !(n->autype->elements > 0)) {
+    } else if (!n->loaded && !(n->autype->elements > 0) && !(fx9 && array_slot(base))) {
         // for ref params, n->value may be the raw parameter (already a pointer)
         // only skip load if the value is a function argument (not alloca or GEP)
         if (n->autype->is_explicit_ref && LLVMIsAArgument(base))
@@ -7702,10 +7725,14 @@ enode aether_e_offset(aether a, enode n, Au offset, bool in_ref) { sequencer
     Au_t elem_au = au;
     while (elem_au && elem_au->member_type == AU_MEMBER_VAR)
         elem_au = elem_au->src;
-    if (!var_is_ref && (elem_au->is_pointer || elem_au->is_explicit_ref))
-        elem_au = elem_au->src;
-    if (elem_au->elements > 0 && elem_au->src)
-        elem_au = elem_au->src;
+    if (fx9)
+        elem_au = fx9->src;
+    else {
+        if (!var_is_ref && (elem_au->is_pointer || elem_au->is_explicit_ref))
+            elem_au = elem_au->src;
+        if (elem_au->elements > 0 && elem_au->src)
+            elem_au = elem_au->src;
+    }
     if (is_vec9) elem_au = velem9;
     verify(elem_au, "e_offset: no element type on %s", au->ident ? au->ident : "?");
     LLVMTypeRef elem_ty = lltype(u(etype, elem_au));
@@ -10132,6 +10159,8 @@ static void emit_expect_tests(aether a, Au_t module_base, efunc f) {
             each(vals, Au, v)
                 e_fn_call(a, fn_drop, a((enode)v), false, false);
     }
+    // a test run ends in _exit: no atexit writes the report
+    report_coverage(a);
     LLVMBuildBr(B, bb_skip);
     LLVMPositionBuilderAtEnd(B, bb_skip);
     pop_scope(a);
@@ -10545,7 +10574,9 @@ AU_EXPORT none aether_build_module_initializer(aether a, enode init) {
                 mf->used = true;
                 etype_implement((etype)mf, false);
 
-                enode fptr = value(etypeid(ARef), _llvalue((enode)mf));
+                // an abstract method has no body to point at
+                bool  abs9 = mem->is_abstract || mem->access_type == interface_abstract;
+                enode fptr = abs9 ? e_null(a, etypeid(ARef)) : value(etypeid(ARef), _llvalue((enode)mf));
 
                 enode e_mem = e_fn_call(a, fn_def_func, a(
                     type_id,
@@ -10567,7 +10598,7 @@ AU_EXPORT none aether_build_module_initializer(aether a, enode init) {
                 ), false, false);
 
                 // structs have no vtable — skip function pointer slot assignment
-                if (!is_struct_t) {
+                if (!is_struct_t && !abs9) {
                 LLVMTargetDataRef layout = LLVMGetModuleDataLayout(a->module_ref);
                 i64 ptr = LLVMPointerSize(layout);
                 int idx_adj = -1;
@@ -10854,8 +10885,9 @@ AU_EXPORT none aether_push_scope(aether a, Au arg, int label) {
 
     statements st = u(statements, au);
     token peek = a->statement_origin ? a->statement_origin : aether_peek(a);
-    if (st && a->coverage && peek) {
-        st->probe_id   = a->next_probe_id++;
+    // only a function's blocks run: a class body never does
+    if (st && a->coverage && peek && aether_context_func(a)) {
+        st->probe_id   = coverage_probe_open(a, peek);
         st->probe_line = peek->line;
         debug_emit(a);
         aether_emit_block_probe(a, st->probe_id);
@@ -11446,6 +11478,7 @@ static void* emit_job_run(void* arg) {
 AU_EXPORT bool aether_emit_object(aether a, path obj_path) {
     // every core has emitted: the timing names are complete now
     if (a->timing) finalize_timing_names(a);
+    if (a->coverage) finalize_coverage_map(a);
     // the object writer reads the module's triple, and a module may have been
     // created after set_target — stamp every one right before it emits
     for (int i = 0; i < ll_n(a); i++) {
@@ -11809,8 +11842,6 @@ AU_EXPORT none aether_init(aether a) {
     push(a->lib_paths, (Au)f(path, "%o/lib", a->install));
     //path src_path = a->module;
     //push(a->include_paths, (Au)src_path);
-
-    a->coverage = false; //a->debug;
 }
 
 AU_EXPORT none aether_dealloc(aether a) {
@@ -12213,12 +12244,16 @@ AU_EXPORT enode aether_e_cmp(aether a, enode L, enode R) {
         return value(etypeid(i32), result);
     }
 
-    // Integer comparison via subtraction; the result IS i32, so narrow it
-    LLVMValueRef diff = LLVMBuildSub(B, _llvalue((enode)L), _llvalue((enode)R), "cmp_i");
-    LLVMTypeRef  i32t = LLVMInt32TypeInContext(a->module_ctx);
-    if (LLVMTypeOf(diff) != i32t)
-        diff = LLVMBuildIntCast2(B, diff, i32t, true, "cmp_i32");
-    return value(etypeid(i32), diff);
+    // integers by sign: a narrowed difference loses it for wide values
+    bool sg = is_sign(canonical(L));
+    LLVMValueRef lt = LLVMBuildICmp(B, sg ? LLVMIntSLT : LLVMIntULT, _llvalue((enode)L), _llvalue((enode)R), "cmp_lt");
+    LLVMValueRef gt = LLVMBuildICmp(B, sg ? LLVMIntSGT : LLVMIntUGT, _llvalue((enode)L), _llvalue((enode)R), "cmp_gt");
+    LLVMValueRef neg_one = LLVMConstInt(LLVMInt32TypeInContext(a->module_ctx), -1, true);
+    LLVMValueRef pos_one = LLVMConstInt(LLVMInt32TypeInContext(a->module_ctx),  1, false);
+    LLVMValueRef zero    = LLVMConstInt(LLVMInt32TypeInContext(a->module_ctx),  0, false);
+    LLVMValueRef lt_val  = LLVMBuildSelect(B, lt, neg_one, zero, "lt_val");
+    LLVMValueRef result  = LLVMBuildSelect(B, gt, pos_one, lt_val, "cmp_r");
+    return value(etypeid(i32), result);
 }
 
 AU_EXPORT enode aether_compatible(aether a, etype r, string n, AFlag f, array args) {
@@ -12890,6 +12925,11 @@ AU_EXPORT Au_t aether_pop_scope(aether a) {
 
     if (prev_fn && !a->no_build)
         lldbg_set((enode)prev_fn, LLVMGetCurrentDebugLocation2(B));
+
+    // a block's lines end at the last token it consumed
+    if (st && a->coverage && st->probe_line > 0 && a->tokens && a->cursor > 0)
+        coverage_probe_close(a, st->probe_id,
+            (u32)((token)a->tokens->origin[a->cursor - 1])->line);
 
     pop(a->lexical);
     a->top = (Au_t)last_element(a->lexical);

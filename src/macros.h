@@ -2392,12 +2392,8 @@
     formatter((Au_t)null, false, stdout, (Au)_topic, seq, t, ## __VA_ARGS__); \
 })
 
-#define fault(t, ...) do {\
-    static string _topic = null; \
-    if (!_topic) _topic = (string)hold((Au)_new(string, chars, (cstr)__func__)); \
-     string res = (string)formatter((Au_t)null, false, stderr, (Au)_topic,  seq, (symbol)t, ## __VA_ARGS__); \
-     halt(res, null); \
-    } while(0)
+#define fault(t, ...) \
+    au_fault((symbol)__func__, seq, (symbol)t, ## __VA_ARGS__)
 
 
 #define  file_exists(t, ...)     (resource_exists(formatter((Au_t)null, false, null, (Au)false, seq, (symbol)t, ## __VA_ARGS__)) == Exists_file)
@@ -2407,7 +2403,7 @@
 #else
 #define       assert(a, t, ...) do { } while(0)
 #endif
-#define       verify(a, t, ...) ({ if (!(a)) { string res = (string)formatter((Au_t)null, true, stderr, (Au)true, seq, (symbol)t, ## __VA_ARGS__); if (level_err >= fault_level) { halt(res, null); } false; } else { true; } true; })
+#define       verify(a, t, ...) ({ if (!(a)) au_verify_fail(seq, (symbol)t, ## __VA_ARGS__); true; })
 
 #undef min
 #undef max

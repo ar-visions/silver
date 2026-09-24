@@ -30,10 +30,11 @@ release:
 asan:
 	$(MAKE) BUILD_ROOT=$(SILVER)/install/build CONFIG=debug ASAN=1 build
 
-# aether and silver instrumented, in install/coverage alone
+# instrumented compiler, then its map: tmp/coverage.lcov
 coverage:
 	@"$(SILVER)/bootstrap.sh" --coverage
 	$(AWAKE) $(NINJA) -j8 -C $(SILVER)/install/coverage -f $(PROJECT_NAME).ninja
+	"$(SILVER)/support/coverage.sh" $(MODULE)
 
 # put `silver` on the user's PATH without any env-var/profile edits: symlink it
 # into the first writable directory already on PATH (no sudo). last `make

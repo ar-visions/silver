@@ -712,7 +712,7 @@ Control InstancePanel
             t['launch_panel'] = LaunchPanel [
                 spec: sp9, args: ar9, inst: av9.iid,
                 live_vals: lv9, dbg_row: true,
-                dbg_on: av9.debug_build, pid_val: pd9,
+                dbg_on: av9.debug_build, cov_on: av9.cov_build, pid_val: pd9,
                 area: Region [ 'l0 t{py9}px r0 b{sb9}px' ] ]
         # the pip below the rows, at its aspect; the instrument surface
         # under its chips

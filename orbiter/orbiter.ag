@@ -1867,6 +1867,7 @@ element LaunchPanel
     # the instance's own switch above its properties: a debug build on its next start
     public  dbg_row   : bool
     public  dbg_on    : bool
+    public  cov_on    : bool        # a coverage build on its next start
     public  pid_val   : i32         # the running process, shown read-only; 0 = none
     mutable last_spec : string
     mutable last_inst : i32
@@ -1927,6 +1928,15 @@ element LaunchPanel
             t['lp_debug_lbl'] = LaunchLabel [ label: 'debug', area: Region [ 'l6px t{y}px w{lw - 6.0}px h{rh}px' ] ]
             t['lp_debug'] = LaunchCheck [ label: '', selected: dbg_on,
                 area: Region [ 'l{lw + 1.0}px t{y}px w{rh}px h{rh}px' ] ]
+            y += rh
+            rule_ys.push[ y ]
+        # coverage: its build switch, and clear for the one map
+        if [ dbg_row ]
+            t['lp_coverage_lbl'] = LaunchLabel [ label: 'coverage', area: Region [ 'l6px t{y}px w{lw - 6.0}px h{rh}px' ] ]
+            t['lp_coverage'] = LaunchCheck [ label: '', selected: cov_on,
+                area: Region [ 'l{lw + 1.0}px t{y}px w{rh}px h{rh}px' ] ]
+            t['lp_coverage_clear'] = CompanionButton [ label: 'clear', manual_mode: true,
+                area: Region [ 'l{lw + rh + 8.0}px t{y + 2.0}px w48px h{rh - 4.0}px' ] ]
             y += rh
             rule_ys.push[ y ]
         # the instance's pid: orbiter's row, read-only, given every frame
@@ -2293,6 +2303,7 @@ class inst_state
     public pip   : bool
     public display : i32
     public debug : bool
+    public coverage : bool
     public pane  : i32 [ -1 ]     # the pane showing it, -1 when none
 
 class FileChg
@@ -2602,6 +2613,9 @@ element orbiter : trinity # implements compiler
     public search_external : bool [ true ]
     # finds search docked checkouts only while this is lit
     public search_remotes  : bool
+    # the one coverage map: the last coverage run's lcov text
+    intern cov_text    : string
+    intern cov_mtime   : i64 [ -1 ]
     public find_results  : list string
     intern was_finder    : bool
     intern last_hit_row      : i32 [ -1 ]
@@ -2878,7 +2892,7 @@ element orbiter : trinity # implements compiler
                     e8 : Editor pane_at[ i ]
                     if [ e8 && e8.run_view == av ] pn9 = i
                 ists.push[ inst_state [ src: av.src, args: (av.module_args) ? av.module_args : '', pip: av.pip,
-                    display: av.display, debug: av.debug_build, pane: pn9 ] ]
+                    display: av.display, debug: av.debug_build, coverage: av.cov_build, pane: pn9 ] ]
         inst_states = ists
         scene       = scene_loaded[]
         save-persistent[ a ]
@@ -2922,6 +2936,7 @@ element orbiter : trinity # implements compiler
                 nv.display     = (st.display > 0) ? st.display : ((st.pip) ? 0 : 1)
                 nv.pip         = nv.display == 0
                 nv.debug_build = st.debug
+                nv.cov_build   = st.coverage
                 nv.held        = true
                 add_instance[ nv ]
                 # the one a pane showed comes back into it once that pane is up
@@ -3155,6 +3170,52 @@ element orbiter : trinity # implements compiler
                 if [ live.index_of[ k2 ] < 0 ] stale += k2
         for [ i: i32 0, i < stale.count, i += 1 ]
             fmt_stop[ stale[i] ]
+
+    func cov_file [] -> path
+        return path '{path.path_startup[]}/install/tmp/coverage.lcov'
+
+    # the map follows the file: a run replaces it, clear removes it
+    func cov_poll []
+        cp9 : path cov_file[]
+        mt9 : i64 [ (cp9.exists[]) ? cp9.modified_time[] : 0 ]
+        if [ mt9 != cov_mtime ]
+            cov_mtime = mt9
+            cov_text  = null
+            if [ mt9 > 0 ]
+                cov_text = cp9.load[ typeid[string], null ]
+        for [ i: i32 0, i < editor_slots.count, i += 1 ]
+            ed : Editor pane_at[ i ]
+            if [ !ed ] continue
+            es9 : string [ (ed.src) ? '{ed.src}' : '' ]
+            if [ ed.cov_stamp != cov_mtime || !ed.cov_src || ed.cov_src != es9 ]
+                cov_apply[ ed, es9 ]
+
+    # this file's DA lines from the map, by 0-based line
+    func cov_apply [ ed: Editor, src: string ]
+        ed.cov_stamp = cov_mtime
+        ed.cov_src   = src
+        ed.cov_hits  = null
+        if [ ed.ux ] ed.ux.restyle = true
+        if [ !cov_text || src.count == 0 ] return
+        at9 : i32 [ cov_text.index_of[ 'SF:{src}\n' ] ]
+        if [ at9 < 0 ] return
+        rest9 : string cov_text.mid[ at9, cov_text.count - at9 ]
+        en9 : i32 [ rest9.index_of[ 'end_of_record' ] ]
+        if [ en9 > 0 ] rest9 = rest9.mid[ 0, en9 ]
+        rows9 : rest9.split[ '\n' ]
+        hits9 : vec i64 []
+        for [ r: i32 0, r < rows9.count, r += 1 ]
+            ln9 : string rows9[ r ]
+            if [ !ln9.starts_with[ 'DA:' ] ] continue
+            c9 : i32 [ ln9.index_of[ ',' ] ]
+            if [ c9 < 4 ] continue
+            l9 : i32 [ i32[ ln9.mid[ 3, c9 - 3 ].integer_value[] ] ]
+            h9 : i64 [ ln9.mid[ c9 + 1, ln9.count - c9 - 1 ].integer_value[] ]
+            if [ l9 < 1 ] continue
+            while [ hits9.count < l9 ]
+                hits9.push[ -1 ]
+            hits9[ l9 - 1 ] = h9
+        ed.cov_hits = hits9
 
     func fmt_poll []
         if [ !fmt_watch ] return
@@ -7193,6 +7254,22 @@ element orbiter : trinity # implements compiler
             if [ ev.target ] ev.target.ux.restyle = true
             ev.no_default = true
             return
+        if [ ev.target.id == 'lp_coverage' ]
+            edc : Editor pane_of[ ev.target ]
+            if [ edc && edc.run_view ]
+                edc.run_view.cov_build = !edc.run_view.cov_build
+                session_dirty = true
+            if [ ev.target ] ev.target.ux.restyle = true
+            ev.no_default = true
+            return
+        # clear: no map until the next coverage run writes one
+        if [ ev.target.id == 'lp_coverage_clear' ]
+            cc9 : string '{cov_file[]}'
+            remove[ cc9.chars ]
+            cov_poll[]
+            if [ ev.target ] ev.target.ux.restyle = true
+            ev.no_default = true
+            return
         # launch panel: a control change re-composes the run args next frame
         if [ ev.target.id && ev.target.id.starts_with[ 'lp_' ] ]
             # a path: the nav list picks the file for it
@@ -7832,6 +7909,7 @@ element orbiter : trinity # implements compiler
             fmt_sync[]
             fmt_poll[]
             fmt_borrow[]
+            cov_poll[]
             # refresh policy: nothing on a timer. the watches (FSEvents on
             # macOS) mark the snapshot dirty on a real change, and the scan
             # reruns on its own thread, at most once a second, so the nav
