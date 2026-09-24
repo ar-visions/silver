@@ -608,7 +608,8 @@ HOST_API int agent_shell_start(const char* agent, const char* root,
         // messages arrive on its input for as long as the exchange lasts
         args.insert(args.end(), { "-p", "--input-format", "stream-json",
             "--output-format", "stream-json", "--verbose",
-            "--permission-mode", "acceptEdits", "--no-session-persistence" });
+            "--permission-mode", "acceptEdits", "--no-session-persistence",
+            "--strict-mcp-config" });
         if (model && *model) args.insert(args.end(), { "--model", model });
     } else {
         if (g_codex_thread.empty())

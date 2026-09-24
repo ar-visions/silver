@@ -2834,14 +2834,14 @@ Display Window
                     if [ tb0.selected >= 0 && tb0.selected < nm9.count ] ix9 = tb0.selected
             if [ agent_view ]
                 e[ 'unotes' ] = ShotUser   [ topmost: true, fading: swap_fade, area: Region [ 'l500px t15%+24px r24px b-15%+174px' ] ]
-                e[ 'shot' ]   = ShotPrompt [ topmost: true, fading: swap_fade, area: Region [ 'l512px b-15%+220px r68px b-15%+180px' ], label: 'prompt description' ]
+                e[ 'shot' ]   = ShotPrompt [ topmost: true, fading: swap_fade, area: Region [ 'l512px b-15%+220px r80px b-15%+180px' ], label: 'prompt description' ]
             el
                 e[ 'unotes' ] = ShotUser   [ topmost: true, fading: swap_fade ]
                 e[ 'shot' ]   = ShotPrompt [ topmost: true, fading: swap_fade, label: 'prompt description' ]
             # the mic, inside the field's right end (as a search box has it):
             # only where something can transcribe (a host, or the app itself)
             if [ host_slot[] > 0 || (ae && ae.dictates*[]) ]
-                mic9 : string [ (agent_view) ? 'l100%-60px b-15%+216px w32px h32px' : 'l50%+176px b216px w32px h32px' ]
+                mic9 : string [ (agent_view) ? 'l100%-72px b-15%+216px w32px h32px' : 'l50%+176px b216px w32px h32px' ]
                 e[ 'shot_mic' ] = ShotMic [ topmost: true, fading: swap_fade, icon: 'mic', icon_fit: 0.55, manual_mode: true,
                     selected: dict_on, area: Region [ mic9 ] ]
             e[ 'shot_close' ] = ShotClose [ topmost: true, fading: swap_fade, icon: 'close', icon_fit: 0.6, manual_mode: true ]
