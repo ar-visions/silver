@@ -1,5 +1,4 @@
-# why did the editor orbit? it could not find its center
-# orbiter: 0 gravity, 100% pull requests
+# orbiter: the code and style finder app
 export 1.0.0
 export views ['git': FileType.ascii, 'b16': FileType.agnostic]
 # 32352
@@ -856,10 +855,10 @@ OrbiterAvatar AgentAvatar
     render_scale : f32 [ 4.0 ]
     # a square element: the camera frames the hex at the element's
     # vertical center, so a tall one would put it mid-screen
-    # top center and large until the first send; settled, it moves to the
-    # upper left and shrinks (a cubic), leaving the right to the agent's box
+    # centered in the window's top 70% until the first send; settled, it
+    # moves to the upper left and shrinks, leaving the right to the agent
     style : CSS {
-        area: l50%-195px t0%+86px w390px h390px, 900ms cubic in_out
+        area: l50%-195px t40%-195px w390px h390px, 900ms cubic in_out
         # out at once: the blur behind drops the same frame (Esc), and a
         # fade would leave the avatar alone over the plain screen
         opacity: 0.0
@@ -5418,49 +5417,7 @@ element orbiter : trinity # implements compiler
             entries : d.ls[ null, false ]
             if [ entries ]
                 for [ e: path ] in entries
-                    ax : e.ext[]
-                    if [ !ax || !(ax == 'agi') ] continue
-                    mod   : string e.stem[]
-                    ftext : string e.load[ typeid[string], null ]
-                    if [ !ftext ] continue
-                    n2  : i32 [ i32[ ftext.count ] ]
-                    ls9 : i32 [ 0 ]
-                    for [ i: i32 0, i <= n2, i += 1 ]
-                        c : i32 [ (i < n2) ? ((i32 ftext.chars[i]) & 255) : 10 ]
-                        if [ c != 10 ] continue
-                        line : string ftext.mid[ ls9, i - ls9 ]
-                        ls9 = i + 1
-                        if [ !(line.index_of[ 'views:' ] == 0) ] continue
-                        ln2 : i32 [ i32[ line.count ] ]
-                        j   : i32 [ 0 ]
-                        while [ j < ln2 ]
-                            cq : i32 [ (i32 line.chars[j]) & 255 ]
-                            if [ cq != 39 ]
-                                j += 1
-                                continue
-                            k : i32 [ j + 1 ]
-                            while [ k < ln2 && ((i32 line.chars[k]) & 255) != 39 ] k += 1
-                            nm9 : string line.mid[ j + 1, k - j - 1 ]
-                            j = k + 1
-                            # optional ': member' up to the , or ] delimiter
-                            mem9 : string ''
-                            while [ j < ln2 ]
-                                cm : i32 [ (i32 line.chars[j]) & 255 ]
-                                if [ cm == 44 || cm == 93 || cm == 39 ] break
-                                if [ (cm >= 97 && cm <= 122) || (cm >= 65 && cm <= 90) ]
-                                    ks : i32 [ j ]
-                                    while [ j < ln2 ]
-                                        c2 : i32 [ (i32 line.chars[j]) & 255 ]
-                                        if [ !((c2 >= 97 && c2 <= 122) || (c2 >= 65 && c2 <= 90)) ] break
-                                        j += 1
-                                    mem9 = line.mid[ ks, j - ks ]
-                                    continue
-                                j += 1
-                            if [ nm9.count > 0 ]
-                                if [ mem9 == 'ascii' ]       asc9a.push[ nm9 ]
-                                el [ mem9 == 'binary' ]      bin9a.push[ nm9 ]
-                                el                           any9a.push[ nm9 ]
-                                view_mods[ nm9 ] = mod
+                    views_of_agi[ e, asc9a, bin9a, any9a ]
         for [ s: string ] in asc9a
             view_tools.push[ s ]
         for [ s: string ] in bin9a
@@ -5474,6 +5431,60 @@ element orbiter : trinity # implements compiler
                 view_tools.push[ cn ]
                 view_tools_bin.push[ cn ]
                 view_mods[ cn ] = 'orbiter'
+
+    func views_of_agi [ e: path, asc: vec string, bin: vec string, anyv: vec string ]
+        ax : e.ext[]
+        if [ !ax || !(ax == 'agi') ] return
+        mod   : string e.stem[]
+        ftext : string e.load[ typeid[string], null ]
+        if [ !ftext ] return
+        n2  : i32 [ i32[ ftext.count ] ]
+        ls9 : i32 [ 0 ]
+        for [ i: i32 0, i <= n2, i += 1 ]
+            c : i32 [ (i < n2) ? ((i32 ftext.chars[i]) & 255) : 10 ]
+            if [ c != 10 ] continue
+            line : string ftext.mid[ ls9, i - ls9 ]
+            ls9 = i + 1
+            if [ line.index_of[ 'views:' ] == 0 ]
+                views_line[ line, mod, asc, bin, anyv ]
+
+    func views_line [ vl: string, mod: string, asc: vec string, bin: vec string, anyv: vec string ]
+        ln2 : i32 [ i32[ vl.count ] ]
+        j   : i32 [ 0 ]
+        while [ j < ln2 ]
+            cq : i32 [ (i32 vl.chars[j]) & 255 ]
+            if [ cq != 39 ]
+                j += 1
+                continue
+            k : i32 [ j + 1 ]
+            while [ k < ln2 && ((i32 vl.chars[k]) & 255) != 39 ] k += 1
+            nm9 : string vl.mid[ j + 1, k - j - 1 ]
+            j = k + 1
+            # optional ': member' up to the , or ] delimiter
+            mem9 : string ''
+            while [ j < ln2 ]
+                cm : i32 [ (i32 vl.chars[j]) & 255 ]
+                if [ cm == 44 || cm == 93 || cm == 39 ] break
+                if [ (cm >= 97 && cm <= 122) || (cm >= 65 && cm <= 90) ]
+                    ks : i32 [ j ]
+                    j = alpha_end[ vl, j ]
+                    mem9 = vl.mid[ ks, j - ks ]
+                    continue
+                j += 1
+            if [ nm9.count > 0 ]
+                if [ mem9 == 'ascii' ]       asc.push[ nm9 ]
+                el [ mem9 == 'binary' ]      bin.push[ nm9 ]
+                el                           anyv.push[ nm9 ]
+                view_mods[ nm9 ] = mod
+
+    func alpha_end [ vl: string, j: i32 ] -> i32
+        ln : i32 [ i32[ vl.count ] ]
+        k  : i32 [ j ]
+        while [ k < ln ]
+            c : i32 [ (i32 vl.chars[k]) & 255 ]
+            if [ !((c >= 97 && c <= 122) || (c >= 65 && c <= 90)) ] break
+            k += 1
+        return k
 
     # the views a pane's file can be shown in: its editor first, then the
     # rail views its kind admits (the consoles among them); no file is dir
