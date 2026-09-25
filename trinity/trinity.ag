@@ -3032,8 +3032,8 @@ Display Window
                 ar9 : Region [ (agent_view) ? ux_area[ 'l472px b-15%+272px r120px b-15%+228px', u9 ] :
                     Region [ 'l50%-{18 + fw8 / 2}px b{fc9 + fh8 / 2 + 8 + ah9}px w{fw8}px h{ah9}px' ] ]
                 e[ 'shot_attach' ] = ShotAttach [ topmost: true, fading: swap_fade, shots: attached, area: ar9 ]
-            # the conversations as tabs in the window's top left, + for a new
-            # one: fixed to the window, so the boxes re-centering never moves them
+            # the conversations as tabs centered at the window's top, + for a
+            # new one: fixed to the window, so the boxes re-centering never moves them
             if [ sessions && sessions.count > 0 ]
                 # + first, then the conversations left to right
                 tl9 : vec string []
@@ -3045,7 +3045,7 @@ Display Window
                 e[ 'session_tabs' ] = SessionTabs [ topmost: true, fading: swap_fade, buttons: tl9,
                     selected: session_cur + 1, close_mask: cm9,
                     icons: false, manual: true, seg_radius: 6.0 * u9, label_px: 13.0,
-                    area: ux_area[ 'l16px t16px w{tw9}px h28px', u9 ] ]
+                    area: ux_area[ 'l50%-{tw9 / 2}px t16px w{tw9}px h28px', u9 ] ]
         # the app's exchange avatar is one instance, mounted for the life of
         # the app and invisible between exchanges: it is never torn down.
         # mounted AFTER the blur, or the blur paints over it
