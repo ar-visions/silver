@@ -6001,7 +6001,10 @@ Control Editor
             return
 
         if [ (ev.key.ctrl || ev.key.meta) && (ev.key.unicode == 263 || ev.key.unicode == 262) ]
-            nav_walk[ (ev.key.unicode == 263) ? -1 : 1 ]
+            # the nav view up: its folders, not this file's places
+            ob7 : cast orbiter [ ux.app_object ]
+            if [ ob7 && ob7.nav_showing ] ob7.nav_step[ (ev.key.unicode == 263) ? -1 : 1 ]
+            el                            nav_walk[ (ev.key.unicode == 263) ? -1 : 1 ]
             return
 
         if [ line_count[] <= 0 ] return

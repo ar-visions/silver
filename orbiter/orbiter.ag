@@ -673,6 +673,16 @@ Avatar OrbiterAvatar
     # summon slide: 0 = below the corner, 1 = at rest
     summon_amount : f32 [ 0.14 ]
     mutable summon_t : f32
+    # the undo: the wheel turns a sixth (cubic in_out) while the spin
+    # slows, turns the other way, and slows back to its own way
+    undo_deg    : f32   [ 60.0 ]
+    undo_s      : f32   [ 1.6 ]
+    mutable undo_us   : i64
+    mutable undo_turn : f32
+
+    public func undo []
+        undo_us  = epoch_micros[]
+        pristine = false
 
     # clicking the avatar dismisses it — same as the toggle off
     func on_click [ ev: Event ]
@@ -774,8 +784,15 @@ Avatar OrbiterAvatar
             dt9   : f32 [ (spin_us > 0) ? f32[ nowu9 - spin_us ] / 1000000.0 : 0.0 ]
             if [ dt9 > 0.25 ] dt9 = 0.25
             spin_us    = nowu9
-            spin_phase = spin_phase + spin_rate * dt9
+            # the undo's spin: 1 to 0, the other way, back to 1
+            ut9 : f32 [ (undo_us > 0) ? f32[ nowu9 - undo_us ] / 1000000.0 / undo_s : 2.0 ]
+            if [ undo_us > 0 && ut9 >= 1.0 ]
+                undo_turn = undo_turn + undo_deg
+                undo_us   = 0
+            way9 : f32 [ (ut9 < 1.0) ? cos[ 6.2831853 * ut9 ] : 1.0 ]
+            spin_phase = spin_phase + spin_rate * dt9 * way9
             if [ spin_phase > 6.2831853 ] spin_phase = spin_phase - 6.2831853
+            if [ spin_phase < 0.0 ] spin_phase = spin_phase + 6.2831853
             core_phase = core_phase + spin_rate * dt9 * 0.25
             if [ core_phase > 6.2831853 ] core_phase = core_phase - 6.2831853
             aura.spin  = spin_phase
@@ -796,7 +813,12 @@ Avatar OrbiterAvatar
             rotate = vec Rotation []
             rotate.push[ Rotation [ '0 1 0 30deg' ] ]
             rotate.push[ Rotation [ '1 0 0 0deg' ] ]
-        rotate[0] = Rotation [ '0 1 0 {clock_deg}deg' ]
+        # the undo's turn: cubic in_out, slow to start and to end
+        tn9 : f32 [ (undo_us > 0) ? f32[ epoch_micros[] - undo_us ] / 1000000.0 / undo_s : 1.0 ]
+        if [ tn9 > 1.0 ] tn9 = 1.0
+        ep9 : f32 [ (tn9 < 0.5) ? 4.0 * tn9 * tn9 * tn9 : 1.0 - pow[ -2.0 * tn9 + 2.0, 3.0 ] / 2.0 ]
+        yaw9 : f32 [ clock_deg + undo_turn + ((undo_us > 0) ? undo_deg * ep9 : 0.0) ]
+        rotate[0] = Rotation [ '0 1 0 {yaw9}deg' ]
         rotate[1] = Rotation [ '1 0 0 {tilt_cur}deg' ]
         pristine = false
 
@@ -2618,13 +2640,15 @@ element orbiter : trinity # implements compiler
     # changed-file tabs, the editor's rails, tints and ghost rows), by
     # the repository's root: HEAD until a commit is picked in the git list
     public [ StatePersist ] git_refs     : map string [string]
-    # where checkouts live: ~/src unless set; not where orbiter was started.
-    # ours sit flat there (<src>/<name>); other users' under <src>/<user>/<name>
-    public [ StatePersist ] src_root   : string
     public [ StatePersist ] self_user  : string     # the login our ssh key answers to
     intern self_asked    : bool
     intern side_projects : vec string
     intern side_scan_ms  : i64
+    intern nav_hist        : vec string   # the nav view's folders, in the order it went
+    intern nav_hist_ix     : i32 [ -1 ]
+    public delete_armed    : string    # the nav entry whose [-] is held down
+    public delete_armed_ms : i64       # when the hold began
+    public delete_hold_ms  : i64 [ 2000 ]   # the hold that fills it
     intern side_user     : string          # the selected user: narrows the projects; browsing keeps it
     public search_dirs   : vec path
     public file_index    : list string
@@ -3448,7 +3472,9 @@ element orbiter : trinity # implements compiler
         if [ sp > 0 && st9 == 'description' ]
             ux.agent_description[ rest.mid[ sp + 1, rest.count - sp - 1 ] ]
             return
-        if [ agent_done && st9 != 'sent' ]
+        # the undo turns the avatar; the note follows on the rewind's answer
+        if [ st9 == 'rewind' && agent_av ] agent_av.undo[]
+        if [ agent_done && st9 != 'sent' && st9 != 'rewind' ]
             if [ sp > 0 && st9 == 'note' ]
                 agent_note = rest.mid[ sp + 1, rest.count - sp - 1 ]
                 ux.agent_note[ st9, agent_note ]
@@ -4361,12 +4387,17 @@ element orbiter : trinity # implements compiler
                 area: Region [ 'l0+ t0 w1.8 h0.9' ] ]
         # the left slot closes the finder — Esc's clickable twin, sized
         # exactly like the history arrows so the title never shifts
+        # the finder up: the same arrows walk the nav view's own folders, and
+        # its close moves to the far right
         if [ engaged && !is_resource ]
-            ncls : vec string [] [ 'finder_close' ]
-            nclo : vec string [] [ 'close' ]
-            els['histnav'] = TButtons [ buttons: ncls, icon_ids: nclo, manual: true,
-                disable_mask: 0,
-                icon_scale: 0.585, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0,
+            fnav : vec string [] [ 'finder_back', 'finder_fwd' ]
+            fico : vec string [] [ 'left', 'right' ]
+            fdm : i32 [ 0 ]
+            if [ !nav_can[ -1 ] ] fdm |= 1
+            if [ !nav_can[ 1 ] ]  fdm |= 2
+            els['histnav'] = TButtons [ buttons: fnav, icon_ids: fico, manual: true,
+                disable_mask: fdm,
+                icon_scale: 0.45, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0,
                 area: Region [ 'l0+ t0 w1.8 h0.9' ] ]
         # editing only: cmd+left / cmd+right as clickable history arrows.
         # a close takes their place; the two are never shown together
@@ -4488,6 +4519,14 @@ element orbiter : trinity # implements compiler
                 for [ ve: element, vk: string ] in vel
                     els[vk] = ve
 
+        # the finder's close, furthest right (inserted first into the right flow)
+        if [ engaged && !is_resource ]
+            ncls : vec string [] [ 'finder_close' ]
+            nclo : vec string [] [ 'close' ]
+            els['finder_x'] = TButtons [ buttons: ncls, icon_ids: nclo, manual: true,
+                disable_mask: 0,
+                icon_scale: 0.585, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0,
+                area: Region [ 'r0+ t0 w0.9 h0.9' ] ]
         if [ fb_on ]
             # right-flow: first inserted lands furthest right
             els['remotes'] = RemoteToggle [ label: 'remotes', manual_mode: true, selected: search_remotes ]
@@ -4612,6 +4651,7 @@ element orbiter : trinity # implements compiler
     func index_work [ dirs: vec path :: o: orbiter ] -> none
         stack : vec path []
         repos : vec path []
+        later : vec path []
         cap : i32 [ (o.max_search > 0) ? o.max_search : 400000 ]
         for [ r: path ] in dirs
             g0 : path '{r}/.git'
@@ -4619,10 +4659,28 @@ element orbiter : trinity # implements compiler
                 o.index_repo[ r, cap ]
             el
                 stack.push[ r ]
+            # the checkouts beside the sources (the imports' clones): git
+            # ignores them, so they are listed here, after everything of
+            # ours; a search reaches them only with [remotes] lit
+            ck9 : path '{r}/checkout'
+            ckl9 : ck9.ls[ null, false ]
+            if [ ckl9 ]
+                for [ j: i32 0, j < ckl9.count, j += 1 ]
+                    ce9 : path ckl9[j]
+                    if [ !ce9.is_dir[] || ce9.is_symlink[] ] continue
+                    cg9 : path '{ce9}/.git'
+                    if [ cg9.exists[] ] repos.push[ ce9 ]
+                    el                  later.push[ ce9 ]
         while [ !o.index_cancel ]
             if [ stack.count == 0 ]
-                # main tree exhausted → deferred repositories, by ls-files
-                if [ repos.count == 0 ] break
+                # main tree exhausted → deferred repositories, by ls-files,
+                # then the checkouts that are plain folders
+                if [ repos.count == 0 ]
+                    if [ later.count == 0 ] break
+                    for [ lp: path ] in later
+                        stack.push[ lp ]
+                    later = vec path []
+                    continue
                 for [ rp: path ] in repos
                     if [ !o.index_cancel ] o.index_repo[ rp, cap ]
                 repos = vec path []
@@ -4642,7 +4700,9 @@ element orbiter : trinity # implements compiler
                             continue
                         gp : path '{e}/.git'
                         if [ gp.exists[] ]
-                            if [ o.search_external ]
+                            # a repository inside the checkouts is one of them
+                            es9 : string '{e}'
+                            if [ o.search_external || es9.index_of[ '/checkout/' ] >= 0 ]
                                 repos.push[ e ]
                         el
                             stack.push[ e ]
@@ -4819,9 +4879,12 @@ element orbiter : trinity # implements compiler
         if [ query && query.count > 0 ]
             ql : i32 [ query.count ]
             rp9 : string (search_remotes) ? '' : '{project_root[]}'
+            # the checkouts sit under the root but are not ours: [remotes] only
+            ck9 : string (search_remotes) ? '' : '{project_root[]}/checkout/'
             index_lock.lock[]
             for [ s: string ] in file_index
                 if [ rp9.count > 0 && s.index_of[ rp9 ] != 0 ] continue
+                if [ ck9.count > 0 && s.index_of[ ck9 ] == 0 ] continue
                 ridx : i32 [ s.rindex_of[ query ] ]
                 if [ ridx >= 0 ]
                     d : i32 [ s.count - (ridx + ql) ]
@@ -4883,9 +4946,11 @@ element orbiter : trinity # implements compiler
         find_listed  = false
         if [ file_index && file_index.count > 0 && !index_building ]
             rp9 : string '{root}'
+            ck8 : string '{root}/checkout/'
             index_lock.lock[]
             for [ fs9: string ] in file_index
                 if [ !search_remotes && fs9.index_of[ rp9 ] != 0 ] continue
+                if [ !search_remotes && fs9.index_of[ ck8 ] == 0 ] continue
                 fp9 : path fs9
                 find_seen += 1
                 if [ glob_pass[ fp9 ] ] find_files.push[ fp9 ]
@@ -6214,6 +6279,34 @@ element orbiter : trinity # implements compiler
                 save_session[]
                 return
 
+    # a nav list entry's [-] (shift held) is pressed and held: it fills red
+    # over delete_hold_ms, and a release over it once full deletes the
+    # file, or the folder and all it holds. never the project orbiter was
+    # launched in, nor what holds it
+    public func delete_hold [ p: path ]
+        delete_armed    = (p) ? '{p}' : null
+        delete_armed_ms = epoch_millis[]
+
+    # 0..1: how full the entry's held [-] is (0 when it is not the one held)
+    public func delete_fill [ p: path ] -> f32
+        if [ !p || !delete_armed ] return 0.0
+        ds9 : string '{p}'
+        if [ delete_armed.compare[ ds9 ] != 0 ] return 0.0
+        return clamp[ f32[ epoch_millis[] - delete_armed_ms ] / f32[ delete_hold_ms ], 0.0, 1.0 ]
+
+    public func path_delete [ p: path, is_dir: bool ]
+        if [ !p ] return
+        ds9 : string '{p}'
+        pr9 : path project_root[]
+        ps9 : string '{pr9}'
+        if [ ds9.compare[ ps9 ] == 0 || ps9.starts_with[ '{ds9}/' ] ]
+            log 'delete: {ds9} holds the project orbiter runs in; not deleted'
+            return
+        ok9 : bool [ (is_dir) ? p.remove_dir[] : p.remove[] ]
+        log 'delete: {ds9} removed={ok9}'
+        side_projects = null
+        run_search[]
+
     # a user listed once stays in the navigation column
     func repo_remember [ user: string ]
         if [ !repo_users ] repo_users = vec string []
@@ -6322,12 +6415,10 @@ element orbiter : trinity # implements compiler
             if [ ux ] ux.set_focus[ te9 ]
         run_search[]
 
-    # the source root every checkout lives under: src_root when set, else
-    # ~/src, else beside this project
+    # the source root every checkout lives under: beside the one orbiter was
+    # launched in, never a setting shared between launches. ours sit flat
+    # there (<src>/<name>); other users' under <src>/<user>/<name>
     func src_root_of [] -> path
-        if [ src_root && src_root.count > 0 ] return path '{src_root}'
-        hd9 : cstr getenv[ 'HOME' ]
-        if [ hd9 ] return path '{hd9}/src'
         pr9 : path project_root[]
         return pr9.directory[]
 
@@ -6490,9 +6581,36 @@ element orbiter : trinity # implements compiler
         ed9 : Editor win.focus
         return ed9.show_hits || ed9.finder_list
 
+    # the nav view's own back and forward: every folder it lands in, in
+    # order. the history arrows show it while the view is up; the editor's
+    # places are a separate list
+    func nav_note []
+        if [ !nav_root ] return
+        s9 : string '{nav_root}'
+        if [ !nav_hist ] nav_hist = vec string []
+        if [ nav_hist_ix >= 0 && nav_hist_ix < nav_hist.count ]
+            cur9 : string nav_hist[ nav_hist_ix ]
+            if [ cur9.compare[ s9 ] == 0 ] return
+        while [ nav_hist.count > nav_hist_ix + 1 ]
+            nav_hist.pop[]
+        nav_hist.push[ s9 ]
+        nav_hist_ix = nav_hist.count - 1
+
+    public func nav_can [ d: i32 ] -> bool
+        if [ !nav_hist ] return false
+        n9 : i32 [ nav_hist_ix + d ]
+        return n9 >= 0 && n9 < nav_hist.count
+
+    public func nav_step [ d: i32 ] -> bool
+        if [ !nav_can[ d ] ] return false
+        nav_hist_ix = nav_hist_ix + d
+        nav_go[ path nav_hist[ nav_hist_ix ] ]
+        return true
+
     func run_search []
         win : ux
         ensure_views[]
+        nav_note[]
         sp     : string search_pane[]
         title_focus : bool [ (win && win.focus && win.focus.id == 'title') ? true : false ]
         if [ title_focus || (find_text && find_text.count > 0) ] finder_off = false
@@ -6826,6 +6944,20 @@ element orbiter : trinity # implements compiler
         ed.view_name = nm
         ed.load_file[]
         exit_find_mode[]
+
+    # the navigator into a folder: any search text goes and the folder's
+    # entries show (shift + a path hint's press)
+    public func nav_go [ p: path ]
+        if [ !p ] return
+        nav_root   = p
+        find_text  = ''
+        finder_off = false
+        te9 : element find_el[ a, 'title' ]
+        if [ te9 ]
+            te9.edit = ''
+            te9.pristine = false
+            if [ ux ] ux.set_focus[ te9 ]
+        run_search[]
 
     # the peer module that owns a view, or null when we host it ourselves
     func view_module [ nm: string ] -> string
@@ -7370,6 +7502,12 @@ element orbiter : trinity # implements compiler
             force_update[]
             return
 
+        if [ ev.target.id == 'finder_back' || ev.target.id == 'finder_fwd' ]
+            nav_step[ (ev.target.id == 'finder_back') ? -1 : 1 ]
+            ev.no_default = true
+            if [ ev.target ] ev.target.ux.restyle = true
+            return
+
         if [ ev.target.id == 'nav_back' || ev.target.id == 'nav_fwd' ]
             edn : Editor pane_of[ ev.target ]
             if [ edn ] edn.nav_walk[ (ev.target.id == 'nav_back') ? -1 : 1 ]
@@ -7552,6 +7690,11 @@ element orbiter : trinity # implements compiler
             if [ sd9 != shift_down ]
                 shift_down = sd9
                 if [ ux ] ux.restyle = true
+        # cmd/ctrl + left/right with the nav view up: its own back and forward
+        if [ ev.key.state && (ev.key.ctrl || ev.key.meta) && nav_showing && (ks9 == 263 || ks9 == 262) ]
+            nav_step[ (ks9 == 263) ? -1 : 1 ]
+            ev.no_default = true
+            return
         # global chords need no focus target
         if [ ev.key.state && (ev.key.ctrl || ev.key.meta) ]
             kc : i32 [ i32[ ev.key.unicode ] ]

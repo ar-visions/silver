@@ -403,13 +403,13 @@ static symbol lib_static = ".a";
 static symbol app_ext = "";
 static symbol platform = "darwin";
 static symbol shared   = "-dynamiclib";
+#endif
 
 // build status, one line per step, flushed: a host pipes this into the
 // app's log, and the console shows it while the build runs
 // build status lines belong to the build log: printed with --verbose, or when
 // nothing is drawing the progress line (stderr not a tty); never over it
 #define build_status(a, ...) do { if ((a)->verbose || !isatty(2)) { print(__VA_ARGS__); fflush(stdout); } } while (0)
-#endif
 
 #define next_is(a, ...) silver_next_is_eq(a, __VA_ARGS__, null)
 
@@ -8415,7 +8415,7 @@ static bool gen_load(silver a, path gfile, gen_file* gf) {
     gf->body = array(alloc, 256);
     for (num i = at; i < len(toks); i++) {
         token t = (token)toks->origin[i];
-        t->source = (string)hold(gfile);
+        t->source = (path)hold(gfile);
         if (t->line == fl) {
             if (len(gf->head) && !t->neighbor) append(gf->head, " ");
             concat(gf->head, string(t->chars));
@@ -13695,6 +13695,7 @@ enode statements_builder(silver a, array expr_tokens, Au unused) {
 }
 
 enode exprs_builder(silver a, array expr_tokens, Au unused) {
+    int level = a->expr_level;
     a->expr_level++;
     enode last = null;
     push_tokens(a, (tokens)expr_tokens, 0);
@@ -13706,7 +13707,7 @@ enode exprs_builder(silver a, array expr_tokens, Au unused) {
         first = false;
     }
     pop_tokens(a, false);
-    a->expr_level--;
+    a->expr_level = level;
     return last;
 }
 
@@ -13762,7 +13763,7 @@ enode parse_ifdef_else(silver a, bool negate) {
         }
     }
 
-    verify(a->expr_level == 0, "unexpected expression level after ifdef");
+    validate(a->expr_level == 0, "unexpected expression level after ifdef");
     return statements ? statements : enode(mod, (aether)a, autype, null);
 }
 
@@ -14232,7 +14233,7 @@ etype silver_read_def(silver a, interface access) {
             token ref = element(a, -1);
             each(gen, token, t) {
                 if (ref) {
-                    t->source = (string)hold(ref->source);
+                    t->source = (path)hold(ref->source);
                     t->line  += ref->line;   // keep the block's own line breaks
                 }
                 push((array)mdl->body, (Au)t);

@@ -193,6 +193,18 @@ static void* close_worker(void* arg) {
     return NULL;
 }
 
+// a running close ends before its job is reused: drain for it, then join
+static void close_job_finish(void) {
+    while (!__atomic_load_n(&close_job.destroyed, __ATOMIC_ACQUIRE)) usleep(1000);
+    if (!close_job.drained) {
+        au_auto_free_fn afree = (au_auto_free_fn)dlsym(RTLD_DEFAULT, "auto_free");
+        if (afree) afree();
+        __atomic_store_n(&close_job.drained, 1, __ATOMIC_RELEASE);
+    }
+    pthread_join(close_job.thread, NULL);
+    close_job.state = close_job.done = close_job.destroyed = close_job.drained = 0;
+}
+
 static void* reload_worker(void* arg) {
     reload_job_t* job = (reload_job_t*)arg;
     au_space_begin_fn  sbegin  = (au_space_begin_fn)dlsym(RTLD_DEFAULT, "au_space_begin");
@@ -430,7 +442,7 @@ static void spawn_slot_app(int k, const char* bindir) {
     snprintf(slotenv, sizeof(slotenv), "SILVER_APP_SLOT=%d", k);
     int n = 0;
     while (environ[n]) n++;
-    char** cenv = malloc((n + 8) * sizeof(char*));
+    char** cenv = malloc((n + 9) * sizeof(char*));
     // orbiter's own isolate marker stays here: an app that inherits it
     // skips its own supervision and never reports to us
     int ce = 0;
@@ -1627,6 +1639,8 @@ int main(int argc, char** argv) {
             if (pthread_create(&reload_job.thread, NULL, reload_worker, &reload_job) != 0) {
                 fprintf(stderr, "[%s] reload: no worker thread\n", name);
                 unsetenv("SILVER_RELOAD_PARALLEL");
+                au_persist_fn prelease = (au_persist_fn)dlsym(RTLD_DEFAULT, "au_persist_release");
+                if (prelease) prelease(new_handle);
                 dlclose(new_handle);
                 reload_job.state = 0;
             }
@@ -1674,7 +1688,10 @@ int main(int argc, char** argv) {
             au_space_promote_fn promote = (au_space_promote_fn)dlsym(RTLD_DEFAULT, "au_space_promote");
             if (promote) promote(reload_job.space);
             unsetenv("SILVER_RELOAD_PARALLEL");
+            au_persist_fn prelease = (au_persist_fn)dlsym(RTLD_DEFAULT, "au_persist_release");
+            if (prelease) prelease(handle);
 
+            if (close_job.state == 1) close_job_finish();
             close_job.handle  = handle;
             close_job.destroy = do_destroy;
             close_job.image   = (void*)do_init;
@@ -1689,11 +1706,12 @@ int main(int argc, char** argv) {
             // SILVER_RELOAD_SAVE is set for the reload-path destroy only (the
             // final exit destroy never sees it) — apps use it to flash-save
             setenv("SILVER_RELOAD_SAVE", "1", 1);
-            if (close_job.state == 1) pthread_join(close_job.thread, NULL);
             close_job.state = 1;
             if (pthread_create(&close_job.thread, NULL, close_worker, &close_job) != 0) {
-                close_job.state = 0;
+                // on this thread its own drain is the main pool's
+                close_job.drained = 1;
                 close_worker(&close_job);
+                close_job.state = close_job.done = close_job.destroyed = close_job.drained = 0;
             }
             fprintf(stderr, "[%s] reload complete\n", name);
 
@@ -1710,11 +1728,7 @@ int main(int argc, char** argv) {
         }
         // the old instance is gone: the flash-save flag goes with it
         if (close_job.state == 1 && __atomic_load_n(&close_job.done, __ATOMIC_ACQUIRE)) {
-            pthread_join(close_job.thread, NULL);
-            close_job.state     = 0;
-            close_job.done      = 0;
-            close_job.destroyed = 0;
-            close_job.drained   = 0;
+            close_job_finish();
             unsetenv("SILVER_RELOAD_SAVE");
         }
     }

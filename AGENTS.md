@@ -112,7 +112,14 @@ alone. The run's stream becomes these statuses:
   a recompile when the sources are newer than the product, else
   the swap at once),
   `needs` (waiting on the user), `note` (a line of what the
-  agent says), `diff` (one line of a source diff it applied).
+  agent says), `diff` (one line of a source diff it applied),
+  `rewind` (the user's undo: cmd+left, ctrl+left on linux, in
+  the prompt; `agent_shell_rewind` sends claude a `rewind_files`
+  control request for our last replayed message id, files go
+  back to that point; the avatar turns 60 degrees, cubic in_out
+  over 1.6 s, while its spin slows, reverses and comes back).
+  UNBUILT, UNVERIFIED (Sep 25): the build and a live rewind
+  test both needed approval.
 - Optional `app status description <line>` messages attach to the
   preceding title. Click the title to expand or collapse the description.
   Repeat for multiple lines; omit for a plain message.

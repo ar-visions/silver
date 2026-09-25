@@ -287,7 +287,7 @@ Orbiter PBR
         vec3  rg_L   = normalize(rg_pt - worldPos);
         // wrapped: faces turned partly away still take some
         float rg_lat = clamp(0.35 + 0.65 * dot(N, rg_L), 0.0, 1.0);
-        vec3  rg_lit = metallic * rg_lat * rg_f * rg_f * vec3(0.16, 0.22, 1.4) * core_osc;
+        vec3  rg_lit = metallic * rg_lat * rg_f * rg_f * vec3(0.16, 0.22, 1.7) * core_osc;
 
         // bottom core face: downward-facing surface glows as a warm plasma pool
         // no IOR texture on this material so drive purely from normal, not intensity
@@ -1173,11 +1173,22 @@ ModelViewProject Heat
         vec3  np  = vec3(qc * 3.2, qa * 2.4 - tt * 2.2, tt * 0.35);
         float nx  = vnoise(np) - 0.5;
         float ny  = vnoise(np * 1.7 + vec3(5.2, -tt * 1.4, 1.3)) - 0.5;
-        vec2  off = (acr * nx + up * ny * 0.6) * rad * 0.09 * ubo.heat * wgt;
+        vec2  off = (acr * nx + up * ny * 0.6) * rad * 0.045 * ubo.heat * wgt;
+        vec2  c0  = v_uv + off / asp;
+        // the blur only in pockets of hotter air rising up the jet: about
+        // half the haze is sharp shimmer, one read
+        // broad pockets with finer structure riding them (0.6 + 0.4: spread 0.134)
+        vec3  hq  = vec3(qc * 1.3, qa * 1.1 - tt * 5.4, tt * 1.2);
+        float hn  = 0.6 * vnoise(hq) + 0.4 * vnoise(hq * 2.7 + vec3(5.2, 1.3, 9.1));
+        float hp  = smoothstep(0.5, 0.6, hn);
+        if (true || hp < 0.01) {
+            fragColor = texture(color, c0);
+            fragColor.rgb += gl3;
+            return;
+        }
         // a cheap gaussian over the bent read: 3x3 taps weighted 1-2-1,
         // spread with the heat, so the haze softens as well as shimmers
-        vec2  c0  = v_uv + off / asp;
-        vec2  sp  = (1.0 / tsz) * (0.5 + 7.0 * ubo.heat * wgt);
+        vec2  sp  = (1.0 / tsz) * (0.5 + 7.0 * ubo.heat * wgt * hp);
         vec4  acc = vec4(0.0);
         // two grids, full and half spread: wide without ghosting
         for (int y = -1; y <= 1; y++) {

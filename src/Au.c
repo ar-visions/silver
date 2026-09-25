@@ -1941,7 +1941,17 @@ AU_EXPORT int au_persist_load(void* handle) {
         *slot = au_persists[i].value;   // the save's hold is the slot's
         n++;
     }
-    for (int i = 0; i < au_persist_n; i++) free(au_persists[i].sym);
+    return n;
+}
+
+// the image that gives up its persist slots drops what they own
+AU_EXPORT int au_persist_release(void* handle) {
+    int n = 0;
+    for (int i = 0; i < au_persist_n; i++) {
+        Au* slot = (Au*)dlsym(handle, au_persists[i].sym);
+        if (slot && *slot) { drop(*slot); *slot = null; n++; }
+        free(au_persists[i].sym);
+    }
     free(au_persists); au_persists = null; au_persist_n = 0;
     return n;
 }
@@ -7052,8 +7062,8 @@ AU_EXPORT none vector_init(vector a) {
     // alloc_new may have put the shape in the header: keep it
     if (a->data_shape)
         f->data_shape = hold(a->data_shape);
-    else
-        a->data_shape = f->data_shape;
+    else if (f->data_shape)
+        a->data_shape = hold(f->data_shape);
     verify(f->scalar, "scalar not set");
     if (!a->origin) {
         // alloc() sized f->count elements inline: adopt them, no second alloc
