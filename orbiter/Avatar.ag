@@ -1177,15 +1177,18 @@ ModelViewProject Heat
         // a cheap gaussian over the bent read: 3x3 taps weighted 1-2-1,
         // spread with the heat, so the haze softens as well as shimmers
         vec2  c0  = v_uv + off / asp;
-        vec2  sp  = (1.0 / tsz) * (0.5 + 2.5 * ubo.heat * wgt);
+        vec2  sp  = (1.0 / tsz) * (0.5 + 7.0 * ubo.heat * wgt);
         vec4  acc = vec4(0.0);
+        // two grids, full and half spread: wide without ghosting
         for (int y = -1; y <= 1; y++) {
             for (int x = -1; x <= 1; x++) {
                 float k = (2.0 - abs(float(x))) * (2.0 - abs(float(y)));
-                acc += texture(color, c0 + vec2(float(x), float(y)) * sp) * k;
+                vec2  o = vec2(float(x), float(y)) * sp;
+                acc += texture(color, c0 + o) * k;
+                acc += texture(color, c0 + o * 0.5 + sp * 0.25) * k;
             }
         }
-        fragColor = acc / 16.0;
+        fragColor = acc / 32.0;
         fragColor.rgb += gl3;
     }
 

@@ -2832,24 +2832,51 @@ Display Window
                 if [ pk0 && pk0 inherits TButtons ]
                     tb0 : TButtons pk0
                     if [ tb0.selected >= 0 && tb0.selected < nm9.count ] ix9 = tb0.selected
+            # every size is at rest, scaled by the UX unit
+            u9 : f32 ux_unit[ a ]
+            # at rest the picker and field sit as one group, centered in
+            # the window's bottom 30% (the avatar takes the top 70%)
+            # (a Region's second slot is the TOP edge, from the bottom)
+            gc9 : f32 [ 231.0 ]
+            if [ root && root.bounds ] gc9 = root.bounds.h * 0.22
+            fc9 : i32 [ i32[ round[ gc9 - 31.0 * u9 ] ] ]
+            pc9 : i32 [ i32[ round[ gc9 + 37.0 * u9 ] ] ]
             if [ agent_view ]
-                e[ 'unotes' ] = ShotUser   [ topmost: true, fading: swap_fade, area: Region [ 'l460px t15%+24px r64px b-15%+174px' ] ]
-                e[ 'shot' ]   = ShotPrompt [ topmost: true, fading: swap_fade, area: Region [ 'l472px b-15%+220px r120px b-15%+180px' ], label: 'prompt description' ]
+                e[ 'unotes' ] = ShotUser   [ topmost: true, fading: swap_fade, area: ux_area[ 'l460px t15%+24px r64px b-15%+174px', u9 ] ]
+                e[ 'shot' ]   = ShotPrompt [ topmost: true, fading: swap_fade, area: ux_area[ 'l472px b-15%+220px r120px b-15%+180px', u9 ], label: 'prompt description' ]
             el
-                e[ 'unotes' ] = ShotUser   [ topmost: true, fading: swap_fade ]
-                e[ 'shot' ]   = ShotPrompt [ topmost: true, fading: swap_fade, label: 'prompt description' ]
+                # the box holds the field in its bottom row: the same center
+                bw9 : i32 [ i32[ round[ 440.0 * u9 ] ] ]
+                bh9 : i32 [ i32[ round[ 420.0 * u9 ] ] ]
+                bt9 : i32 [ fc9 + i32[ round[ 394.0 * u9 ] ] ]
+                e[ 'unotes' ] = ShotUser   [ topmost: true, fading: swap_fade,
+                    area: Region [ 'l50%-{bw9 / 2}px b{bt9}px w{bw9}px h{bh9}px' ] ]
+                # centered where it sits at unit 1: a larger unit grows it in place
+                fw9 : i32 [ i32[ round[ 388.0 * u9 ] ] ]
+                fh9 : i32 [ i32[ round[ 40.0 * u9 ] ] ]
+                e[ 'shot' ]   = ShotPrompt [ topmost: true, fading: swap_fade, label: 'prompt description',
+                    area: Region [ 'l50%-{18 + fw9 / 2}px b{fc9 + fh9 / 2}px w{fw9}px h{fh9}px' ] ]
             # the mic, inside the field's right end (as a search box has it):
             # only where something can transcribe (a host, or the app itself)
             if [ host_slot[] > 0 || (ae && ae.dictates*[]) ]
-                mic9 : string [ (agent_view) ? 'l100%-112px b-15%+216px w32px h32px' : 'l50%+176px b216px w32px h32px' ]
+                # at rest it keeps its place in the field's right end
+                ms9 : i32 [ i32[ round[ 32.0 * u9 ] ] ]
+                mx9 : i32 [ i32[ round[ 194.0 * u9 ] ] - 18 ]
+                my9 : i32 [ fc9 + ms9 / 2 ]
+                mr9 : Region [ (agent_view) ? ux_area[ 'l100%-112px b-15%+216px w32px h32px', u9 ] :
+                    Region [ 'l50%+{mx9}px b{my9}px w{ms9}px h{ms9}px' ] ]
                 e[ 'shot_mic' ] = ShotMic [ topmost: true, fading: swap_fade, icon: 'mic', icon_fit: 0.55, manual_mode: true,
-                    selected: dict_on, area: Region [ mic9 ] ]
-            e[ 'shot_close' ] = ShotClose [ topmost: true, fading: swap_fade, icon: 'close', icon_fit: 0.6, manual_mode: true ]
+                    selected: dict_on, area: mr9 ]
+            e[ 'shot_close' ] = ShotClose [ topmost: true, fading: swap_fade, icon: 'close', icon_fit: 0.6, manual_mode: true,
+                area: ux_area[ 'r16px t16px w36px h36px', u9 ] ]
             # the picker last: over the blur and the boxes
             pw9 : i32 [ i32[ nm9.count ] * 96 ]
+            # centered where it sits at unit 1, grown in place
+            pk9w : i32 [ i32[ round[ f32[ pw9 ] * u9 ] ] ]
+            pk9h : i32 [ i32[ round[ 28.0 * u9 ] ] ]
             e[ 'agent_pick' ] = AgentPick [ topmost: true, buttons: nm9, selected: ix9, faded: agent_view, fading: swap_fade,
-                icons: false, manual: false, seg_radius: 6.0, label_px: 13.0, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0,
-                area: Region [ 'l50%-{pw9 / 2}px b282px w{pw9}px h28px' ] ]
+                icons: false, manual: false, seg_radius: 6.0 * u9, label_px: 13.0, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0,
+                area: Region [ 'l50%-{pk9w / 2}px b{pc9 + pk9h / 2}px w{pk9w}px h{pk9h}px' ] ]
         # the app's exchange avatar is one instance, mounted for the life of
         # the app and invisible between exchanges: it is never torn down.
         # mounted AFTER the blur, or the blur paints over it
@@ -6621,6 +6648,26 @@ element ShotBackdrop
         opacity: 0.0, 3000ms cubic outward
     }
 
+# the UX unit: 1.0 at rest, riding the font unit (ctrl +/-)
+func ux_unit [ w: Window ] -> f32
+    return (w && w.vk && w.vk.font_unit > 0) ? f32[ w.vk.font_unit ] / 22.0 : 1.0
+
+# a Region string written at rest: each px number scaled by u
+func ux_area [ s: string, u: f32 ] -> Region
+    out : string [ '' ]
+    for [ p: string ] in s.split[ ' ' ]
+        q : string [ p ]
+        if [ p.count > 2 && p.ends_with[ 'px' ] ]
+            pc : i32 [ p.index_of[ '%' ] ]
+            n0 : i32 [ (pc >= 0) ? pc + 1 : 1 ]
+            if [ p.chars[ 0 ] == '-' || isdigit[ p.chars[ 0 ] ] ] n0 = 0
+            num : string p.mid[ n0, p.count - 2 - n0 ]
+            v   : i32 [ i32[ round[ num.real_value[] * u ] ] ]
+            sg  : string [ (num.count > 0 && num.chars[ 0 ] == '+') ? '+' : '' ]
+            q = '{p.mid[ 0, n0 ]}{sg}{v}px'
+        out = (out.count > 0) ? '{out} {q}' : q
+    return Region [ out ]
+
 # entries in a rounded box: each word-wrapped to the box's width, a
 # floating rule between them, the newest kept in view when they overflow.
 # shine_last lights the final line (the agent's, while it works)
@@ -6692,12 +6739,14 @@ func draw_marked [ cv: Canvas, ln: string, row: rect, base: rgba, lit: rgba, on:
     return lit9
 
 # scroll is px up from the newest; returns the most it can be
-func draw_notes [ cv: Canvas, notes: vec ShotEntry, b: rect, shine_last: bool, t9: f32, scroll: f32 ] -> f32
+func draw_notes [ cv: Canvas, notes: vec ShotEntry, b: rect, shine_last: bool, t9: f32, scroll: f32, u: f32 ] -> f32
     if [ !notes || notes.count == 0 ] return 0.0
-    pad  : f32 [ 12.0 ]
-    lh   : f32 [ 23.0 ]
-    dlh  : f32 [ 19.0 ]     # a diff line
-    gap  : f32 [ 12.0 ]
+    pad  : f32 [ 12.0 * u ]
+    lh   : f32 [ 23.0 * u ]
+    dlh  : f32 [ 19.0 * u ]     # a diff line
+    gap  : f32 [ 12.0 * u ]
+    ind  : f32 [ 8.0 * u ]
+    sp4  : f32 [ 4.0 * u ]
     maxw : f32 [ b.w - pad * 2.0 ]
     cv.font_size[ 18 ]
     # first pass: the wrapped lines and the height they take
@@ -6712,15 +6761,15 @@ func draw_notes [ cv: Canvas, notes: vec ShotEntry, b: rect, shine_last: bool, t
         ds : vec string []
         if [ en.description && en.open ]
             for [ detail: string ] in en.description
-                rows : vec string wrap_note[ cv, expand_tabs[ detail, 4 ], maxw - 8.0 ]
+                rows : vec string wrap_note[ cv, expand_tabs[ detail, 4 ], maxw - ind ]
                 if [ rows.count == 0 ] ds.push[ '' ]
                 for [ row: string ] in rows
                     ds.push[ row ]
         descriptions.push[ ds ]
         if [ n > 0 ] total += gap
         total += f32[ ls.count ] * lh
-        if [ ds.count > 0 ] total += f32[ ds.count ] * lh + 4.0
-        if [ en.diff && en.open ] total += f32[ en.diff.count ] * dlh + 4.0
+        if [ ds.count > 0 ] total += f32[ ds.count ] * lh + sp4
+        if [ en.diff && en.open ] total += f32[ en.diff.count ] * dlh + sp4
         n += 1
     # newest stays in view: overflow scrolls the oldest out the top
     y : f32 [ b.y + pad ]
@@ -6737,7 +6786,7 @@ func draw_notes [ cv: Canvas, notes: vec ShotEntry, b: rect, shine_last: bool, t
         if [ e > 0 ]
             # the rule floats between entries, inset from the sides
             cv.fill_color[ rgba [ '#ffffff22' ] ]
-            cv.rect_to[ b.x + pad + 6.0, y + gap * 0.5 - 0.5, maxw - 12.0, 1.0 ]
+            cv.rect_to[ b.x + pad + 6.0 * u, y + gap * 0.5 - 0.5, maxw - 12.0 * u, 1.0 ]
             cv.paint[]
             y += gap
         en.y0 = y
@@ -6767,22 +6816,22 @@ func draw_notes [ cv: Canvas, notes: vec ShotEntry, b: rect, shine_last: bool, t
         en.title_y1 = y
         ds : vec string descriptions[ e ]
         if [ ds.count > 0 ]
-            y += 4.0
+            y += sp4
             cv.fill_color[ rgba [ '#ffffffbb' ] ]
             for [ detail: string ] in ds
-                cv.draw_text[ detail, rect [ x: b.x + pad + 8.0, y: y, w: maxw - 8.0, h: lh ], vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+                cv.draw_text[ detail, rect [ x: b.x + pad + ind, y: y, w: maxw - ind, h: lh ], vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
                 cv.paint[]
                 y += lh
         if [ en.diff && en.open ]
             # the code: + green, - red, @@ blue, the rest dim; no wrap
             cv.font_size[ 15 ]
-            y += 4.0
+            y += sp4
             for [ dl0: string ] in en.diff
                 dl : string expand_tabs[ dl0, 4 ]
                 c0 : i32 [ (dl.count > 0) ? dl.chars[ 0 ] : 32 ]
                 dc : rgba [ (c0 == 43) ? rgba [ '#9be49b' ] : (c0 == 45) ? rgba [ '#ff9a9a' ] : (c0 == 64) ? rgba [ '#9ad8ff' ] : rgba [ '#ffffffaa' ] ]
                 cv.fill_color[ dc ]
-                cv.draw_text[ dl, rect [ x: b.x + pad + 8.0, y: y, w: maxw - 8.0, h: dlh ], vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+                cv.draw_text[ dl, rect [ x: b.x + pad + ind, y: y, w: maxw - ind, h: dlh ], vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
                 cv.paint[]
                 y += dlh
             cv.font_size[ 18 ]
@@ -6799,10 +6848,11 @@ Layer ShotUserLayer
         if [ !parent ] return
         w : Window parent.ux
         if [ !w ] return
-        pad : f32 [ 12.0 ]
-        lh  : f32 [ 23.0 ]
-        gap : f32 [ 12.0 ]
-        row : f32 [ 40.0 ]     # the editable line
+        u   : f32 ux_unit[ w ]
+        pad : f32 [ 12.0 * u ]
+        lh  : f32 [ 23.0 * u ]
+        gap : f32 [ 12.0 * u ]
+        row : f32 [ 40.0 * u ]     # the editable line
         cv.font_size[ 18 ]
         total : f32 [ 0.0 ]
         n : i32 [ 0 ]
@@ -6825,16 +6875,17 @@ Layer ShotUserLayer
         # the frame is the element's own 'frame' layer (the engine's fill and
         # stroke path); it hugs the bottom row and grows upward with entries
         fl : Layer (parent.layers) ? parent.layers[ 'frame' ] : null
-        if [ fl && (!fl.bounds || fl.bounds.h != bh) ]
-            fl.area = Region [ 'l0 b{i32[bh]}px w{i32[bounds.w]}px h{i32[bh]}px' ]
+        if [ fl && (!fl.bounds || fl.bounds.h != bh || fl.bounds.w != bounds.w) ]
+            fl.area   = Region [ 'l0 b{i32[bh]}px w{i32[bounds.w]}px h{i32[bh]}px' ]
+            fl.radius = Radius [ 12.0 * u ]
             parent.pristine = false
         if [ n > 0 ]
             smax : f32 draw_notes[ cv, w.notes, rect [ x: bounds.x, y: fy0, w: bounds.w, h: eh ],
-                w.agent_busy, f32[ epoch_millis[] % 100000 ] / 1000.0, w.notes_scroll ]
+                w.agent_busy, f32[ epoch_millis[] % 100000 ] / 1000.0, w.notes_scroll, u ]
             w.notes_scroll = clamp[ w.notes_scroll, 0.0, smax ]
             # the rule above the editable line
             cv.fill_color[ rgba [ '#ffffff22' ] ]
-            cv.rect_to[ bounds.x + pad + 6.0, fy0 + eh - 0.5, bounds.w - pad * 2.0 - 12.0, 1.0 ]
+            cv.rect_to[ bounds.x + pad + 6.0 * u, fy0 + eh - 0.5, bounds.w - pad * 2.0 - 12.0 * u, 1.0 ]
             cv.paint[]
         # the field is the frame's bottom row: its place is fixed by its
         # own style (and it moves aside with the box), never set here
@@ -6862,7 +6913,7 @@ element ShotUser
     func on_wheel [ ev: Event ]
         w : Window ux
         if [ !w || !w.notes ] return
-        w.notes_scroll = max[ 0.0, w.notes_scroll + ev.mouse.wheel_delta.y * 69.0 ]
+        w.notes_scroll = max[ 0.0, w.notes_scroll + ev.mouse.wheel_delta.y * 69.0 * ux_unit[ w ] ]
         pristine = false
         w.will_animate = true
         ev.stop[]

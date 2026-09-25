@@ -1295,6 +1295,8 @@ debug+quarantine and -O2. Startup 71k -> 55k objects.
     Caught once (Sep 23, `silver --build orbiter`, no app running): in
     LLVM EarlyCSE (ConstantFoldLoadFromConstPtr) under optimize_module on
     a parallel emit_job_run thread; the retry built.
+    Again Sep 24: `silver --verbose --build orbiter` exit 134
+    (abort), log ends mid-parse in Git.ag, no error; the retry built.
 
 ## Active work: editor embedded pane (Sep 23 2026)
 
@@ -1617,7 +1619,26 @@ claude` with `{ prompt tokens, {images/x.png} }` under it. A
    0.15 above the pool light (level with the fins' tops), reach
    0.10, blue (0.16, 0.22, 1.4) x1, wrapped facing (0.35 floor).
    Scaled by two lobes: the halo's and the same turned 180
-   degrees (max of the two); 1 - pl_pulse was tried and dropped. orbiter32.gltf COLOR_0 is soft (839 values on
+   degrees (max of the two); 1 - pl_pulse was tried and dropped.
+9. APPLIED, built, awaiting Kalen's look: more heat blur at the
+   core. Heat's 3x3 blur spread 0.5 + 2.5*heat*wgt px (about
+   1 px at rest); now 0.5 + 7*heat*wgt, with a second 3x3 at
+   half spread (18 taps, only where wgt > 0.002).
+10. APPLIED, built, awaiting Kalen's run: with a larger font
+   unit the resting prompt field and agent picker rose into the
+   avatar (placed by their bottom edge, scaled by the unit).
+   They keep their unit-1 centers now (field 240 px, picker
+   296 px up) and grow around them; the mic stays in the
+   field's right end. The avatar does not move.
+   The user's box (its frame is the field's) keeps the same
+   center too: top 354 px x unit above it, 420 px x unit tall.
+   Split (Kalen): the avatar centered in the window's top 70%
+   (orbiter CSS t35%-195px), the picker+field group centered in
+   the bottom 30% (15% of root bounds up; 231 px before layout).
+   Then (Kalen): avatar down, form up: avatar center 40% down
+   (t40%-195px), group center 22% of the height up.
+   The first cut read the Region's second slot as a bottom edge
+   (it is the TOP): the controls sat half a height too low. orbiter32.gltf COLOR_0 is soft (839 values on
    Cylinder.001) and 8,000+ triangles span b=0 to b=1, so the
    color blends across them. The two soft reads are now on/off
    at 0.5 (Avatar.ag): the core light (`emit * v_color.r`) and
@@ -1635,6 +1656,11 @@ claude` with `{ prompt tokens, {images/x.png} }` under it. A
 2. APPLIED, not built: the wheel scrolls the box
    (Window.notes_scroll, px up from the newest; a new entry
    brings the newest back into view).
+3. APPLIED, not built (build needs approval): the exchange
+   sizes in UX units (`ux_unit`, font unit / 22, 1.0 at
+   rest). `ux_area` scales each px of a Region string; the
+   boxes, field, mic, close, picker and note spacing follow
+   ctrl +/- as the text does.
 
 ## MEMORY: the reload transition (Sep 22 2026, fixed)
 
