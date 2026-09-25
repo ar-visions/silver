@@ -232,6 +232,10 @@ func agent_shell_start [ agent: cstr, root: cstr, model: cstr, txt: cstr ] -> i3
 func agent_shell_line [ buf: @i8, cap: i32 ] -> i32
 func agent_shell_stop []
 func agent_shell_new []
+func agent_shell_rewind [] -> i32
+func agent_shell_select [ id: i32 ]
+func agent_shell_close [ id: i32 ]
+func host_log_dir [] -> symbol
 
 # the launch/live property spec of any object, read from its type: the
 # running app answers props with it, and a host enumerates a module by
@@ -1632,9 +1636,25 @@ class ReduceBlur
         for [ r: Render ] in renders
             r.update*[] r.draw*[] r.sync_fence[]
 
+# one conversation of the exchange, a tab: its agent runs in trinity.cc
+# under id while another is on screen
+class ExchangeSession
+    public id          : i32
+    public title       : string
+    public shot_ask    : path
+    public shot_file   : bool
+    public shot_line   : i32
+    public shot_text   : string
+    public notes       : vec ShotEntry
+    public agent_pick  : string
+    public attached    : vec path
+
 # the exchange and its avatar as they were when a reload swapped: the
 # next instance takes it up on its first frame (a persist slot in the app)
 class ExchangeState
+    public sessions    : vec ExchangeSession
+    public session_cur : i32
+    public session_ids : i32
     public has         : bool
     public shot_ask    : path
     public shot_file   : bool
@@ -1820,6 +1840,10 @@ Display Window
     mutable agent_min           : bool     # Esc put the exchange away; the status item brings it back
     mutable shot_text           : string   # the lines so far: every send reposts the whole message
     mutable agent_pick          : string   # the agent chosen at the prompt (an `agents` name)
+    mutable sessions            : vec ExchangeSession   # the exchange's conversations, tabs left to right
+    mutable session_cur         : i32 [ -1 ]           # the one on screen; -1 a new prompt
+    mutable session_ids         : i32                  # the last id given out
+    mutable attached            : vec path             # screenshots in the prompt, sent with the next message
     mutable agent_busy          : bool     # the agent said busy: the shine keeps moving
     mutable swap_fade           : bool     # the reload is asked: the exchange fades on alpha
     mutable snap_transitions    : bool     # this frame's transitions land at once (a restore)
@@ -1934,6 +1958,92 @@ Display Window
         agent_min = false
         restyle   = true
 
+    # the conversation on screen into its tab
+    func session_park []
+        if [ !sessions || session_cur < 0 || session_cur >= sessions.count ] return
+        s : ExchangeSession sessions[ session_cur ]
+        s.shot_ask   = shot_ask
+        s.shot_file  = shot_file
+        s.shot_line  = shot_line
+        s.shot_text  = shot_text
+        s.notes      = notes
+        s.agent_pick = agent_pick
+        s.attached   = attached
+
+    # a tab onto the screen: its agent is the one the exchange talks to
+    public func session_show [ i: i32 ]
+        if [ !sessions || i < 0 || i >= sessions.count ] return
+        session_park[]
+        s : ExchangeSession sessions[ i ]
+        session_cur = i
+        agent_shell_select[ s.id ]
+        shot_ask     = s.shot_ask
+        shot_file    = s.shot_file
+        shot_line    = s.shot_line
+        shot_text    = s.shot_text
+        notes        = s.notes
+        agent_pick   = s.agent_pick
+        attached     = s.attached
+        agent_view   = true
+        agent_min    = false
+        restyle      = true
+        will_animate = true
+
+    # the first send of a new prompt makes it a tab, with its own agent
+    public func session_begin [ title: string ]
+        if [ !sessions ] sessions = vec ExchangeSession []
+        session_park[]
+        session_ids += 1
+        t9 : string [ (title) ? title : '' ]
+        nl9 : i32 [ t9.index_of[ '\n' ] ]
+        if [ nl9 >= 0 ] t9 = t9.mid[ 0, nl9 ]
+        s : ExchangeSession [ id: session_ids, title: t9 ]
+        sessions.push[ s ]
+        session_cur = sessions.count - 1
+        agent_shell_select[ s.id ]
+
+    # the first send failed: no tab after all, the prompt as it was
+    public func session_unbegin []
+        if [ !sessions || session_cur < 0 || session_cur >= sessions.count ] return
+        s : ExchangeSession sessions[ session_cur ]
+        agent_shell_close[ s.id ]
+        sessions.remove[ session_cur ]
+        session_cur = -1
+
+    # the + tab: a new prompt; the tabs stay, each agent still running. the
+    # prompt talks to no agent until its first send: the one on screen is
+    # parked, or its answers would land in the new prompt
+    public func session_new []
+        session_park[]
+        session_cur = -1
+        agent_shell_select[ -1 ]
+        shot_file   = false
+        shot_line   = 0
+        agent_view  = false
+        agent_min   = false
+        notes       = null
+        shot_text   = ''
+        attached    = null
+        restyle     = true
+
+    # a tab closed: its agent stops. the next one shows, or the prompt
+    # when it was the last
+    public func session_close [ i: i32 ]
+        if [ !sessions || i < 0 || i >= sessions.count ] return
+        s : ExchangeSession sessions[ i ]
+        agent_shell_close[ s.id ]
+        was9 : bool [ i == session_cur ]
+        sessions.remove[ i ]
+        if [ session_cur > i ] session_cur -= 1
+        if [ !was9 ]
+            restyle = true
+            return
+        session_cur = -1
+        if [ sessions.count > 0 ]
+            session_show[ (i < sessions.count) ? i : sessions.count - 1 ]
+        el
+            shot_close[]
+
 
     # a reload: the exchange's state crosses to the next instance, which
     # recreates it on its first frame exactly as it was
@@ -1949,6 +2059,10 @@ Display Window
         xs.notes       = notes
         xs.agent_pick  = agent_pick
         xs.blur        = screenshot_blur
+        session_park[]
+        xs.sessions    = sessions
+        xs.session_cur = session_cur
+        xs.session_ids = session_ids
 
     public func exchange_restore [ xs: ExchangeState ]
         shot_ask        = xs.shot_ask
@@ -1960,6 +2074,12 @@ Display Window
         notes           = xs.notes
         agent_pick      = xs.agent_pick
         screenshot_blur = xs.blur
+        sessions        = xs.sessions
+        session_cur     = xs.session_cur
+        session_ids     = xs.session_ids
+        if [ session_cur >= 0 && sessions && session_cur < sessions.count ]
+            cs9 : ExchangeSession sessions[ session_cur ]
+            attached = cs9.attached
         # the blur is this window's now: its stages pointed at the last
         # window, which the swap frees under them
         if [ screenshot_blur && screenshot_blur.renders ]
@@ -1991,6 +2111,19 @@ Display Window
                 rb9.build[ ctx9, a, screenshot_texture, 1.0, 2 ]
                 rb9.run[]
                 screenshot_blur = rb9
+        # a crop with a prompt or tabs already up is attached to the prompt,
+        # sent with the next message; only with nothing open is it a new one
+        open9 : bool [ (sessions && sessions.count > 0) || shot_ask ]
+        if [ !is_file && open9 ]
+            if [ !shot_ask && sessions && sessions.count > 0 ]
+                session_show[ (session_cur >= 0) ? session_cur : sessions.count - 1 ]
+            if [ !attached ] attached = vec path []
+            attached.push[ at ]
+            agent_min    = false
+            restyle      = true
+            will_animate = true
+            return
+        if [ open9 ] session_new[]
         shot_ask    = at
         shot_file   = is_file
         shot_line   = ln
@@ -1998,6 +2131,10 @@ Display Window
         agent_min   = false
         notes       = null
         shot_text   = ''
+        attached    = null
+        if [ !is_file ]
+            attached = vec path []
+            attached.push[ at ]
         restyle     = true
         will_animate = true
 
@@ -2024,7 +2161,16 @@ Display Window
             dict_on   = false
             dict_live = false
             dictate_post[ 2 ]
+        # with tabs open nothing is lost: an unsent prompt goes back to the
+        # last tab, and the exchange is put away as Esc puts it
+        if [ sessions && sessions.count > 0 ]
+            if [ session_cur < 0 ] session_show[ sessions.count - 1 ]
+            agent_min = true
+            if [ focus ] release_focus[ focus ]
+            restyle = true
+            return
         shot_ask        = null
+        attached        = null
         agent_view      = false
         agent_min       = false
         shot_text       = ''
@@ -2048,7 +2194,8 @@ Display Window
         if [ x1 <= x0 || y1 <= y0 ] return
         cropped : Image screenshot_image.crop[ x0, y0, x1 - x0, y1 - y0 ]
         stamp : i64 epoch_millis[]
-        screenshot_path = path '/tmp/silver-crop-{stamp}.png'
+        ld9 : symbol [ host_log_dir[] ]
+        screenshot_path = path '{ld9}/silver-crop-{stamp}.png'
         cropped.png[ screenshot_path ]
         log 'screenshot: {screenshot_path}'
 
@@ -2877,6 +3024,28 @@ Display Window
             e[ 'agent_pick' ] = AgentPick [ topmost: true, buttons: nm9, selected: ix9, faded: agent_view, fading: swap_fade,
                 icons: false, manual: false, seg_radius: 6.0 * u9, label_px: 13.0, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0,
                 area: Region [ 'l50%-{pk9w / 2}px b{pc9 + pk9h / 2}px w{pk9w}px h{pk9h}px' ] ]
+            # the screenshots attached to the next message, just above the field
+            if [ attached && attached.count > 0 ]
+                ah9 : i32 [ i32[ round[ 44.0 * u9 ] ] ]
+                fw8 : i32 [ i32[ round[ 388.0 * u9 ] ] ]
+                fh8 : i32 [ i32[ round[ 40.0 * u9 ] ] ]
+                ar9 : Region [ (agent_view) ? ux_area[ 'l472px b-15%+272px r120px b-15%+228px', u9 ] :
+                    Region [ 'l50%-{18 + fw8 / 2}px b{fc9 + fh8 / 2 + 8 + ah9}px w{fw8}px h{ah9}px' ] ]
+                e[ 'shot_attach' ] = ShotAttach [ topmost: true, fading: swap_fade, shots: attached, area: ar9 ]
+            # the conversations as tabs in the window's top left, + for a new
+            # one: fixed to the window, so the boxes re-centering never moves them
+            if [ sessions && sessions.count > 0 ]
+                # + first, then the conversations left to right
+                tl9 : vec string []
+                tl9.push[ '+' ]
+                for [ s9: ExchangeSession ] in sessions
+                    tl9.push[ s9.title ]
+                tw9 : i32 [ i32[ tl9.count ] * 160 ]
+                cm9 : i32 [ ((1 << i32[ tl9.count ]) - 1) & ~1 ]
+                e[ 'session_tabs' ] = SessionTabs [ topmost: true, fading: swap_fade, buttons: tl9,
+                    selected: session_cur + 1, close_mask: cm9,
+                    icons: false, manual: true, seg_radius: 6.0 * u9, label_px: 13.0,
+                    area: ux_area[ 'l16px t16px w{tw9}px h28px', u9 ] ]
         # the app's exchange avatar is one instance, mounted for the life of
         # the app and invisible between exchanges: it is never torn down.
         # mounted AFTER the blur, or the blur paints over it
@@ -5639,6 +5808,9 @@ element TButtons
     public  collapse   : bool
     public  seg_aspect : f32 [ 1.2778 ]
     public  rest_icon  : string [ 'more' ]
+    # holding shift shows a circled x at the right end of each segment in
+    # the mask (same bits as sel_mask); a press on it is a close
+    public  close_mask : i32
 
     func seg_width [] -> f32
         n : i32 [ (buttons) ? buttons.count : 1 ]
@@ -5688,6 +5860,22 @@ element TButtons
             model = SVGModel [ file ]
             svg_cache[ id ] = model
         return model
+
+    # a segment's close mark: its center x and radius
+    func close_x [ i: i32 ] -> f32
+        return roundf[ seg_x[ i ] + seg_width[] ] - bounds.h * 0.5
+    func close_r [] -> f32
+        return bounds.h * 0.3
+
+    # the segment whose close mark is under the pointer (shift held), or -1
+    public func close_at [ ev: Event ] -> i32
+        if [ !ux || !ux.shift ] return -1
+        i : i32 [ seg_at[ ev ] ]
+        if [ i < 0 || (close_mask & (1 << i)) == 0 ] return -1
+        dx : f32 [ ev.mouse.pos.x - close_x[ i ] ]
+        dy : f32 [ ev.mouse.pos.y - bounds.h * 0.5 ]
+        r  : f32 [ close_r[] * 1.4 ]
+        return (dx * dx + dy * dy <= r * r) ? i : -1
 
     # segment index under the cursor, or -1 outside the strip.
     func seg_at [ ev: Event ] -> i32
@@ -5799,8 +5987,24 @@ element TButtons
             el
                 cv.font_size[ (label_px > 0.0) ? label_px : bounds.h * 0.5 ]
                 cv.fill_color[ icol ]
-                cv.draw_text[ buttons[ i ], rect [ x: x, y: 0.0, w: sw9, h: bounds.h ],
-                    vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+                # a close mark takes the right end: the label ends before it
+                cm8 : bool [ (close_mask & (1 << i)) != 0 && w.shift ]
+                cw9 : f32 [ (cm8) ? bounds.h : 0.0 ]
+                cv.draw_text[ buttons[ i ], rect [ x: x + 6.0, y: 0.0, w: sw9 - 12.0 - cw9, h: bounds.h ],
+                    vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null ]
+            if [ (close_mask & (1 << i)) != 0 && w.shift ]
+                cr9 : f32 [ close_r[] ]
+                cx9 : f32 [ close_x[ i ] ]
+                cy9 : f32 [ bounds.h * 0.5 ]
+                cv.fill_color[ rgba [ '#000a' ] ]
+                cv.rounded[ cr9, cr9, cr9, cr9 ]
+                cv.rounded_rect[ cx9 - cr9, cy9 - cr9, cr9 * 2.0, cr9 * 2.0, cr9, cr9, cr9, cr9 ]
+                cv.paint[ ]
+                cv.rounded[ 0.0, 0.0, 0.0, 0.0 ]
+                xs9 : SVGModel seg_svg[ 'close' ]
+                if [ xs9 ]
+                    cv.fill_color[ rgba [ '#fff' ] ]
+                    cv.draw_svg[ xs9, cx9 - cr9 * 0.6, cy9 - cr9 * 0.6, cr9 * 1.2, cr9 * 1.2 ]
             cv.set_opacity[ op0 ]
         # the rest icon sits in the last slot and fades as the set reveals
         if [ collapse && rv9 < 1.0 ]
@@ -6947,6 +7151,55 @@ TButtons AgentPick
         opacity: 0.0, 3000ms cubic outward
     }
 
+# the exchange's conversations left to right, each titled by its first
+# line, and + for a new one; shift shows a close mark on each
+TButtons SessionTabs
+    no_cache : false
+    style : CSS {
+        opacity: 1.0
+    :fading
+        opacity: 0.0, 3000ms cubic outward
+    }
+
+    func on_press [ ev: Event ]
+        w : Window ux
+        if [ !w ] return
+        c9 : i32 [ close_at[ ev ] ]
+        i9 : i32 [ seg_at[ ev ] ]
+        # segment 0 is +; segment k is conversation k - 1
+        if [ c9 >= 1 ]  w.session_close[ c9 - 1 ]
+        el [ i9 == 0 ]  w.session_new[]
+        el [ i9 >= 1 ]  w.session_show[ i9 - 1 ]
+        pristine = false
+        ev.stop[]
+
+# the screenshots attached in the prompt, sent with the next message: a
+# thumbnail each, left to right in the order they were taken
+element ShotAttach
+    focusable : false
+    public shots : vec path
+    intern thumbs : map Texture [string]
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen ] return
+        if [ !shots || !bounds || shots.count == 0 ] return
+        if [ !thumbs ] thumbs = map Texture [string] [ ]
+        cv : Canvas w.screen
+        th : f32 [ bounds.h ]
+        x  : f32 [ 0.0 ]
+        for [ p: path ] in shots
+            k : '{p}'
+            tx : Texture thumbs[ k ]
+            if [ !tx ]
+                im : Image [ uri: p ]
+                if [ !im || im.width <= 0 || im.height <= 0 ] continue
+                tx = Texture [ vk: w.vk, w: w, sampler: im, linear: true ]
+                thumbs[ k ] = tx
+            tw : f32 [ min[ th * f32[ tx.width ] / f32[ tx.height ], th * 2.0 ] ]
+            if [ x + tw > bounds.w ] break
+            cv.draw_image[ tx, rect [ x: x, y: 0.0, w: tw, h: th ] ]
+            x += tw + 6.0
+
 TextInput ShotPrompt
     # 36px short of the box: the mic sits in its right end
     area : Region { l50%-212px b220px w388px h40px }
@@ -6978,18 +7231,39 @@ TextInput ShotPrompt
     func on_key [ ev: Event ]
         if [ !ev.key.state ] return
         k : i32 [ ev.key.unicode ]
-        if [ k != 257 && k != 256 ] return
+        if [ k != 257 && k != 256 && k != 263 ] return
         w : Window ux
         if [ !w ] return
+        # cmd+left (ctrl+left on linux): undo, the agent puts the files
+        # back as they were at the last message
+        if [ k == 263 ]
+            if [ !(ev.key.meta || ev.key.ctrl) || !w.shot_ask || !w.agent_view ] return
+            if [ agent_shell_rewind[] != 0 ]
+                if [ w.app_object ] w.app_object.on_agent*[ 'status rewind undo' ]
+            el
+                w.user_note[ 'Nothing to undo' ]
+            pristine  = false
+            w.restyle = true
+            ev.stop[]
+            return
         if [ k == 257 && w.shot_ask ]
             text : string [ (edit) ? edit : '' ]
-            if [ text.count == 0 && (!w.shot_text || w.shot_text.count == 0) && w.agent_view ] return
+            na9  : i32 [ (w.attached) ? i32[ w.attached.count ] : 0 ]
+            if [ text.count == 0 && na9 == 0 && (!w.shot_text || w.shot_text.count == 0) && w.agent_view ] return
             # the lines accumulate: a user keeps elaborating, and every send
             # reposts the whole message with the crop
             first9 : bool [ !w.shot_text || w.shot_text.count == 0 ]
             all : string [ (!first9) ? ((text.count > 0) ? '{w.shot_text}\n{text}' : w.shot_text) : text ]
-            ref9 : string [ (w.shot_file) ? ((w.shot_line > 0) ? 'File: {w.shot_ask}:{w.shot_line}' : 'File: {w.shot_ask}') : 'Screenshot: {w.shot_ask}' ]
-            msg : string [ (all.count > 0) ? '{all}\n\n{ref9}' : ref9 ]
+            # what goes with the words: the file asked about, then every
+            # screenshot attached in the prompt since the last send
+            ref9 : string [ '' ]
+            if [ first9 && w.shot_file ] ref9 = (w.shot_line > 0) ? 'File: {w.shot_ask}:{w.shot_line}' : 'File: {w.shot_ask}'
+            if [ w.attached ]
+                for [ ap9: path ] in w.attached
+                    ref9 = (ref9.count > 0) ? '{ref9}\nScreenshot: {ap9}' : 'Screenshot: {ap9}'
+            body9 : string [ (first9) ? all : text ]
+            msg : string [ (ref9.count > 0) ? ((body9.count > 0) ? '{body9}\n\n{ref9}' : ref9) : body9 ]
+            if [ msg.count == 0 ] return
             # the picker's choice is the agent, from the first send on
             if [ w.root && w.root.elements ]
                 pk9 : element w.root.elements[ 'agent_pick' ]
@@ -6997,19 +7271,22 @@ TextInput ShotPrompt
                     tb9 : TButtons pk9
                     nm9 : vec string agent_names[ w.app_object ]
                     if [ tb9.selected >= 0 && tb9.selected < nm9.count ] w.agent_pick = nm9[ tb9.selected ]
-            # the exchange's first message starts its agent; each
-            # later one goes to that conversation as the new line alone
-            if [ first9 ] agent_shell_new[]
-            if [ !first9 && text.count > 0 ] msg = text
+            # the exchange's first message makes a tab and starts its agent;
+            # each later one goes to that conversation as the new line alone
+            fn9 : string w.shot_ask.filename[]
+            if [ first9 ]
+                w.session_begin[ (text.count > 0) ? text : fn9 ]
+                agent_shell_new[]
             if [ !w.app_object || !agent_post_as[ w.app_object, w.agent_pick, msg, 'now' ] ]
+                if [ first9 ] w.session_unbegin[]
                 w.user_note[ 'Send failed; press Enter to retry' ]
                 pristine = false
                 w.restyle = true
                 ev.stop[]
                 return
             w.shot_text = all
-            fn9   : string w.shot_ask.filename[]
-            shown : string [ (text.count > 0) ? text : fn9 ]
+            w.attached  = null
+            shown : string [ (text.count > 0) ? text : ((na9 > 0) ? '{na9} screenshot(s)' : fn9) ]
             w.user_note[ shown ]
             # a line from the user means the agent is not done: the app
             # drops its done state (and any reload it was about to apply)

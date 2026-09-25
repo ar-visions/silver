@@ -14,6 +14,15 @@ extern "C" const char* path_share_name();
 // silver cannot store a C handle into a vec slot by index; write it here
 HOST_API void handle_slot_set(void** slot, void* value) { *slot = value; }
 
+// silver-host publishes the directory it writes its own logs into
+// (<install>/tmp), so the two agree by construction; read once
+#include <cstdlib>
+HOST_API const char* host_log_dir() {
+    static const char* dir = nullptr;
+    if (!dir) { dir = getenv("SILVER_LOG_DIR"); if (!dir || !*dir) dir = "/tmp"; }
+    return dir;
+}
+
 // what a module hands the host to hold across its own reload: the process and
 // this library outlive the swap, the module's objects do not. host_kept gives
 // a value back once and forgets it; a key kept twice holds only the newest
@@ -108,6 +117,7 @@ HOST_API int host_pid_stopped(int pid) {
 #include <string>
 #include <dlfcn.h>
 #include <vector>
+#include <map>
 #include <chrono>
 #include <fcntl.h>
 #include <signal.h>
@@ -355,10 +365,16 @@ struct ShellRun {
     bool  done = false;       // a done or needs line was queued
     std::string buf, root;
     std::vector<std::string> lines;
+    std::vector<std::string> users;   // claude's ids for our messages
 };
 static ShellRun g_shell;
 // codex's session for the exchange: later messages resume it
 static std::string g_codex_thread;
+// the other sessions of the exchange, each with its own agent still running;
+// g_shell is the one on screen
+static int g_session = 0;
+static std::map<int, ShellRun>    g_parked;
+static std::map<int, std::string> g_parked_codex;
 
 // a JSON string literal of s
 static std::string json_quote(const std::string& s) {
@@ -492,6 +508,17 @@ static void shell_event(const Json& e) {
         if (type == "system" && e["subtype"].str() == "init") {
             g_shell.lines.push_back("busy working");
         }
+        // our message played back with its id: a rewind names it
+        else if (type == "user" && !e["uuid"].str().empty())
+            g_shell.users.push_back(e["uuid"].str());
+        else if (type == "control_response") {
+            const Json& r = e["response"];
+            if (r["subtype"].str() == "success")
+                g_shell.lines.push_back("note rewound to before the last message");
+            else
+                g_shell.lines.push_back("needs " + (r["error"].str().empty() ?
+                    std::string("the rewind failed") : r["error"].str()).substr(0, 400));
+        }
         else if (type == "assistant") {
             for (auto& c : e["message"]["content"].a) {
                 std::string ct = c["type"].str();
@@ -569,22 +596,47 @@ static std::string shell_tool(const char* name) {
     return "";
 }
 
-HOST_API void agent_shell_stop() {
-    if (g_shell.in >= 0) close(g_shell.in);
-    if (g_shell.pid > 0) {
-        kill(-g_shell.pid, SIGTERM);
+static void shell_stop(ShellRun& s) {
+    if (s.in >= 0) close(s.in);
+    if (s.pid > 0) {
+        kill(-s.pid, SIGTERM);
         int st;
-        waitpid(g_shell.pid, &st, 0);
+        waitpid(s.pid, &st, 0);
     }
-    if (g_shell.out >= 0) close(g_shell.out);
-    if (g_shell.log >= 0) close(g_shell.log);
-    g_shell = ShellRun();
+    if (s.out >= 0) close(s.out);
+    if (s.log >= 0) close(s.log);
+    s = ShellRun();
 }
+
+HOST_API void agent_shell_stop() { shell_stop(g_shell); }
 
 // a new exchange: the last one's agent and session end
 HOST_API void agent_shell_new() {
     agent_shell_stop();
     g_codex_thread.clear();
+}
+
+// the session on screen: the one showing is parked, its agent still
+// running, and the chosen one takes its place
+HOST_API void agent_shell_select(int id) {
+    if (id == g_session) return;
+    g_parked[g_session]       = std::move(g_shell);
+    g_parked_codex[g_session] = std::move(g_codex_thread);
+    g_shell        = ShellRun();
+    g_codex_thread.clear();
+    auto it = g_parked.find(id);
+    if (it != g_parked.end()) { g_shell = std::move(it->second); g_parked.erase(it); }
+    auto ct = g_parked_codex.find(id);
+    if (ct != g_parked_codex.end()) { g_codex_thread = std::move(ct->second); g_parked_codex.erase(ct); }
+    g_session = id;
+}
+
+// a session closed: its agent stops
+HOST_API void agent_shell_close(int id) {
+    if (id == g_session) { agent_shell_new(); return; }
+    auto it = g_parked.find(id);
+    if (it != g_parked.end()) { shell_stop(it->second); g_parked.erase(it); }
+    g_parked_codex.erase(id);
 }
 
 // one message of the exchange. claude: into the open process, started
@@ -607,9 +659,14 @@ HOST_API int agent_shell_start(const char* agent, const char* root,
     if (claude) {
         // messages arrive on its input for as long as the exchange lasts
         args.insert(args.end(), { "-p", "--input-format", "stream-json",
-            "--output-format", "stream-json", "--verbose",
+            "--output-format", "stream-json", "--verbose", "--replay-user-messages",
             "--permission-mode", "acceptEdits", "--no-session-persistence",
             "--strict-mcp-config" });
+        // the silver install: its screenshots and logs
+        std::string ld = host_log_dir();
+        size_t sl = ld.rfind('/');
+        if (sl != std::string::npos && ld.compare(sl, std::string::npos, "/tmp") == 0 && sl > 0)
+            args.insert(args.end(), { "--add-dir", ld.substr(0, sl) });
         if (model && *model) args.insert(args.end(), { "--model", model });
     } else {
         if (g_codex_thread.empty())
@@ -623,9 +680,16 @@ HOST_API int agent_shell_start(const char* agent, const char* root,
     std::vector<char*> argv;
     for (auto& s : args) argv.push_back(const_cast<char*>(s.c_str()));
     argv.push_back(nullptr);
-    // <SILVER_LOG_DIR or /tmp>/agent-shell.log: the last run as it went
-    const char* ld = getenv("SILVER_LOG_DIR");
-    std::string lp = std::string((ld && *ld) ? ld : "/tmp") + "/agent-shell.log";
+    // claude keeps file checkpoints for the rewind only when asked
+    std::vector<std::string> env_s = { "CLAUDE_CODE_ENABLE_FILE_CHECKPOINTING=1" };
+    for (char** ep = environ; *ep; ep++)
+        if (strncmp(*ep, "CLAUDE_CODE_ENABLE_FILE_CHECKPOINTING=", 38) != 0) env_s.push_back(*ep);
+    std::vector<char*> envp;
+    for (auto& s : env_s) envp.push_back(const_cast<char*>(s.c_str()));
+    envp.push_back(nullptr);
+    // <log dir>/agent-shell[.<session>].log: the session's last run as it went
+    std::string lp = std::string(host_log_dir()) + "/agent-shell" +
+        (g_session > 0 ? "." + std::to_string(g_session) : std::string()) + ".log";
     int lfd = open(lp.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
     if (lfd >= 0) {
         std::string head = "run: " + exe + " in " + root + "\n";
@@ -655,7 +719,7 @@ HOST_API int agent_shell_start(const char* agent, const char* root,
     posix_spawnattr_setflags(&at, POSIX_SPAWN_SETPGROUP);
     posix_spawnattr_setpgroup(&at, 0);
     pid_t pid;
-    int err = posix_spawn(&pid, argv[0], &fa, &at, argv.data(), environ);
+    int err = posix_spawn(&pid, argv[0], &fa, &at, argv.data(), envp.data());
     posix_spawn_file_actions_destroy(&fa);
     posix_spawnattr_destroy(&at);
     close(pipes[1]);
@@ -675,9 +739,35 @@ HOST_API int agent_shell_start(const char* agent, const char* root,
     return claude ? (shell_write(text) ? 1 : 0) : 1;
 }
 
+// undo: claude puts the files back as they were at our last message;
+// the next undo goes one message further back. 1 = asked
+HOST_API int agent_shell_rewind() {
+    if (!g_shell.claude || g_shell.in < 0 || g_shell.users.empty()) return 0;
+    std::string id = g_shell.users.back();
+    g_shell.users.pop_back();
+    std::string m = "{\"type\":\"control_request\",\"request_id\":\"rewind-" +
+        std::to_string(g_shell.users.size()) + "\",\"request\":{\"subtype\":\"rewind_files\","
+        "\"user_message_id\":" + json_quote(id) + "}}\n";
+    size_t at = 0;
+    while (at < m.size()) {
+        ssize_t w = write(g_shell.in, m.data() + at, m.size() - at);
+        if (w <= 0) return 0;
+        at += (size_t)w;
+    }
+    return 1;
+}
+
 // the next status line of the run (busy x, note x, diff x, done x,
 // needs x) into out; 0 when there is none yet
 HOST_API int agent_shell_line(char* out, int cap) {
+    // a parked session's agent keeps working: its output waits in its
+    // buffer, read here so a full pipe never stalls it
+    for (auto& kv : g_parked) {
+        if (kv.second.out < 0) continue;
+        char pb[8192];
+        ssize_t pn;
+        while ((pn = read(kv.second.out, pb, sizeof(pb))) > 0) kv.second.buf.append(pb, pn);
+    }
     if (g_shell.lines.empty() && g_shell.out >= 0) {
         char buf[8192];
         ssize_t n;
@@ -725,8 +815,11 @@ HOST_API int  agent_sock_send(const char* nm, const char* ln)    { return 0; }
 HOST_API int  agent_sock_ask(const char* nm, const char* ln, char* o, int c) { return 0; }
 HOST_API void agent_shell_stop() { }
 HOST_API void agent_shell_new() { }
+HOST_API void agent_shell_select(int id) { }
+HOST_API void agent_shell_close(int id) { }
 HOST_API int  agent_shell_start(const char*, const char*, const char*, const char*) { return 0; }
 HOST_API int  agent_shell_line(char* out, int cap) { return 0; }
+HOST_API int  agent_shell_rewind() { return 0; }
 #endif
 
 // ===========================================================================
@@ -792,10 +885,7 @@ HOST_API void host_log_setup(const char* name) {
     const char* app = path_share_name();
     if (app && *app && !(slot_env && *slot_env)) name = app;
 
-    // silver-host publishes the directory it writes its own logs into, so the
-    // two agree by construction rather than by two copies of the same rule
-    const char* dir = getenv("SILVER_LOG_DIR");
-    if (!dir || !*dir) dir = "/tmp";
+    const char* dir = host_log_dir();
 
     // a name taken from the binary carries .exe here; the log is the app's
     char base[128];

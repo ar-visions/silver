@@ -663,6 +663,9 @@ Layer CommitLayer
         if [ per9 < 1 ] per9 = 1
         ci9  : i32 [ 0 ]
         lyc9 : f32 [ ly ]
+        # this pass finds the hint under the pointer afresh
+        cb.hint_cut = null
+        cb.hint_row = -1
         if [ orb.find_hits ]
             for [ hi: i32 0, hi < orb.find_hits.count, hi += 1 ]
                 h : FindHit orb.find_hits[hi]
@@ -737,12 +740,15 @@ Layer CommitLayer
                 if [ nls - 1 == cb.hov_list && h.inst == 0 ]
                     cv.save[ ]
                     cv.rounded[ 8.0, 8.0, 8.0, 8.0 ]
-                    cv.fill_color[ rgba['#ff6a2e2a'] ]
+                    cv.fill_color[ cb.nav_hover_fill ]
                     cv.stroke_width[ 1.0 ]
-                    cv.stroke_color[ rgba['#ff8a3a99'] ]
-                    # mouse over: glow in the same colour as the border
-                    cv.inner_glow[ rgba['#ff8a3a99'], 12.0 ]
-                    cv.rect_to[ x0 + 2.0, ry + 1.0, bounds.x + bounds.w - x0 - 22.0, rh9 - 2.0 ]
+                    cv.stroke_color[ cb.nav_hover_edge ]
+                    # mouse over: the wash and its edge, no glow
+                    # an entry's highlight starts at its icon: the 30px before
+                    # it is the delete mark's, never painted
+                    hl9 : f32 [ 2.0 ]
+                    if [ h.file && h.line <= 0 ] hl9 = 32.0
+                    cv.rect_to[ x0 + hl9, ry + 1.0, bounds.x + bounds.w - x0 - 20.0 - hl9, rh9 - 2.0 ]
                     cv.paint[ ]
                     cv.restore[ ]
                 # an instance: its live frame as a 96px thumbnail, the name and
@@ -824,12 +830,37 @@ Layer CommitLayer
                     if [ !h.is_dir && nm.count > 0 ]
                         mim : SVGModel ed.ficons.icon[ nm, 21 ]
                         if [ mim ] ico = mim
-                tx0 : f32 [ x0 + 8.0 ]
+                # the icon sits 30px in: shift puts the entry's [-] there,
+                # red outlined; held down it fills left to right over 2 s.
+                # only the row under the pointer (or the one held) shows it
+                fl9 : f32 [ orb.delete_fill[ h.file ] ]
+                if [ cb.ux && cb.ux.shift && cb.deletable[ h ] && (nls - 1 == cb.hov_list || fl9 > 0.0) ]
+                    if [ fl9 > 0.0 ]
+                        cv.save[ ]
+                        cv.rounded[ 4.0, 4.0, 4.0, 4.0 ]
+                        cv.fill_color[ rgba['#d94343cc'] ]
+                        cv.stroke_width[ 0.0 ]
+                        cv.rect_to[ x0 + 9.0, round[ ry + 5.5 ], 19.0 * fl9, 19.0 ]
+                        cv.paint[ ]
+                        cv.restore[ ]
+                    cv.save[ ]
+                    cv.rounded[ 4.0, 4.0, 4.0, 4.0 ]
+                    cv.fill_color[ rgba['#0000'] ]
+                    cv.stroke_width[ 1.0 ]
+                    cv.stroke_color[ rgba['#ff6b6bcc'] ]
+                    cv.rect_to[ x0 + 9.0, round[ ry + 5.5 ], 19.0, 19.0 ]
+                    cv.paint[ ]
+                    cv.restore[ ]
+                    cv.fill_color[ (fl9 >= 1.0) ? rgba['#fff'] : rgba['#ff8a8a'] ]
+                    cv.stroke_width[ 0.0 ]
+                    cv.rect_to[ x0 + 13.0, round[ ry + 14.25 ], 11.0, 1.5 ]
+                    cv.paint[ ]
+                tx0 : f32 [ x0 + 38.0 ]
                 if [ ico ]
                     cv.fill_color[ rgba['#ffffff'] ]
                     cv.stroke_color[ rgba['#ffffff'] ]
-                    cv.draw_svg[ ico, x0 + 8.0, round[ ry + 4.5 ], 21.0, 21.0 ]
-                    tx0 = x0 + 37.0
+                    cv.draw_svg[ ico, x0 + 38.0, round[ ry + 4.5 ], 21.0, 21.0 ]
+                    tx0 = x0 + 67.0
                 # a module dir gets a FIXED name column so its extension chips
                 # line up across every row; everything else keeps the full width
                 exl9 : cb.ext_list[ h ]
@@ -917,11 +948,46 @@ Layer CommitLayer
                     col : f32 [ bounds.x + bounds.w * 0.5 ]
                     end : f32 [ tx0 + fnw + ltm.w * 2.0 ]
                     dx  : f32 [ (end > col) ? end : col ]
-                    cv.fill_color[ (h.repo && h.repo.count > 0 && !h.checked) ? rgba['#ffffff2e'] : rgba['#ffffff66'] ]
-                    # a description runs on: it ends in an ellipsis at the edge
-                    cv.draw_text[ h.dir,
-                        rect [ x: dx, y: ry, w: bounds.x + bounds.w - 24.0 - dx, h: 30.0 ],
-                        vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], (h.repo && h.repo.count > 0) ? Overflow.ellipsis : Overflow.clip, null ]
+                    hc9 : rgba [ (h.repo && h.repo.count > 0 && !h.checked) ? rgba['#ffffff2e'] : rgba['#ffffff66'] ]
+                    re9 : f32 [ bounds.x + bounds.w - 24.0 ]
+                    # shift over this row's hint: the path up to the end of the
+                    # segment under the pointer is blue, and a press goes there
+                    cut9 : i32 [ 0 ]
+                    mx9  : f32 [ bounds.x + cb.hov_mx ]
+                    if [ !h.repo && cb.ux && cb.ux.shift && nls - 1 == cb.hov_list && mx9 >= dx && h.dir.count > 1 ]
+                        cut9 = h.dir.count
+                        for [ ci: i32 1, ci <= h.dir.count, ci += 1 ]
+                            if [ dx + cv.measure_text[ h.dir.mid[ 0, ci ] ].w >= mx9 ]
+                                cut9 = ci
+                                break
+                        while [ cut9 < h.dir.count && h.dir.chars[ cut9 ] != 47 ]
+                            cut9 += 1
+                        cb.hint_cut = h.dir.mid[ 0, cut9 ]
+                        cb.hint_row = nls - 1
+                    pw9 : f32 [ 0.0 ]
+                    rest9 : string h.dir
+                    if [ cut9 > 0 ]
+                        pre9 : string h.dir.mid[ 0, cut9 ]
+                        pw9   = cv.measure_text[ pre9 ].w
+                        rest9 = h.dir.mid[ cut9, h.dir.count - cut9 ]
+                        cv.fill_color[ rgba['#6cb6ff'] ]
+                        cv.draw_text[ pre9,
+                            rect [ x: dx, y: ry, w: re9 - dx, h: 30.0 ],
+                            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+                    cv.fill_color[ hc9 ]
+                    # the hint fades out over its last 48px at the right edge, as
+                    # code does at a pane's edge (the ramp's far color must keep a
+                    # trace of alpha: none at all turns the ramp off)
+                    gx9 : f32 [ cv.transform_tx[] ]
+                    cv.text_grad       [ rgba [ r: 1.0, g: 1.0, b: 1.0, a: 0.004 ] ]
+                    cv.text_color_pos  [ gx9 + re9 - 48.0, 0.0 ]
+                    cv.text_grad_pos   [ gx9 + re9, 0.0 ]
+                    cv.text_grad_mirror[ false ]
+                    cv.draw_text[ rest9,
+                        rect [ x: dx + pw9, y: ry, w: re9 - dx - pw9, h: 30.0 ],
+                        vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+                    cv.paint[]
+                    cv.text_grad[ rgba [ r: 0.0, g: 0.0, b: 0.0, a: 0.0 ] ]
         cb.list_st = nls
         # 16px of air after the last row (the create buttons)
         cb.content_h = f32[ band9 ] * lh + (ry9 - ly) + 16.0 + ((band9 > 0) ? 8.0 : 0.0)
@@ -969,6 +1035,16 @@ element CommitView
     # drawn (u:<user>, p:<project>) with their tops, for the hit test
     mutable side_w    : f32 [ 168.0 ]
     mutable side_keys : vec string
+    # the nav list's row under the pointer: a purply pink wash and edge
+    public  nav_hover_fill : rgba [ '#d25cc826' ]
+    public  nav_hover_edge : rgba [ '#e07ad899' ]
+    intern  hov_mx    : f32       # the pointer's x in the layer, for the path hint
+    # shift over a row's path hint: the folder up to the segment under the
+    # pointer (drawn blue); a press goes there
+    intern  hint_cut  : string
+    intern  hint_row  : i32 [ -1 ]
+    intern  del_path  : path      # the entry whose [-] is held down
+    intern  del_dir   : bool
     mutable side_ys   : vec f32
     mutable hov_side  : i32 [ -1 ]
     # the + on the users header opens an editing row: enter adds, esc drops
@@ -1000,6 +1076,33 @@ element CommitView
     # a module dir holds <stem>/<stem>.ag and friends. return the ones that
     # actually exist so the row can offer them as one-click chips. cached by
     # dir: this is asked for every visible module row, every frame
+    # a plain file or folder row: shift gives it a [-] that deletes it
+    func deletable [ h: FindHit ] -> bool
+        # a listing's entries are header rows; their continuation and spacer
+        # rows carry no name
+        if [ !h || !h.file || h.is_spacer || h.is_newfile || h.more || h.inst > 0 || h.line > 0 ] return false
+        if [ !h.text || h.text.count == 0 ] return false
+        # the way up is not an entry of this folder
+        if [ h.text.compare[ '..' ] == 0 || h.text.compare[ '.' ] == 0 ] return false
+        return !(h.repo && h.repo.count > 0)
+
+    # the row whose [-] is under the pointer (shift held), or null: the
+    # press starts the hold on it, the release deletes only over it
+    func delete_hit [ ev: Event ] -> FindHit
+        ly : lay[]
+        o  : orb9[]
+        if [ !ly || !o || !ux || !ux.shift || !o.find_hits ] return null
+        rx : f32 [ ev.mouse.pos.x - ly.bounds.x ]
+        ry : f32 [ ev.mouse.pos.y - ly.bounds.y ]
+        if [ rx < 22.0 + side_w || rx >= 52.0 + side_w ] return null
+        trs : i32 [ (o.pick_field && o.pick_field.count > 0) ? 0 : o.commit_tab_rows[ ly.bounds.w - 14.0 - side_w, reveal_all ] ]
+        r : i32 [ row_at[ ry, rx, trs ] ]
+        if [ r < band_st ] return null
+        hi : i32 [ list_hit[ r - band_st ] ]
+        if [ hi < 0 || hi >= o.find_hits.count ] return null
+        h : FindHit o.find_hits[ hi ]
+        return (deletable[ h ]) ? h : null
+
     func ext_list [ h: FindHit ] -> vec string
         none9 : vec string [ ]
         if [ !h || !h.is_module || !h.file || h.text.count == 0 ] return none9
@@ -1159,6 +1262,9 @@ element CommitView
         if [ !ly || !o ] return
         rx : f32 [ ev.mouse.pos.x - ly.bounds.x ]
         ry : f32 [ ev.mouse.pos.y - ly.bounds.y ]
+        # shift held: the path hint follows the pointer along its segments
+        if [ ux && ux.shift && rx != hov_mx ] pristine = false
+        hov_mx = rx
         if [ sb_drag ]
             sbl : ScrollLayer (layers) ? cast ScrollLayer [ layers['scrollbar'] ] : null
             if [ sbl ]
@@ -1277,6 +1383,20 @@ element CommitView
         return -1
 
     func on_release [ ev: Event ]
+        # a held [-]: released over it once full, the entry goes; anywhere
+        # else, or early, it is a cancel
+        if [ del_path ]
+            o9 : orb9[]
+            h9 : FindHit delete_hit[ ev ]
+            if [ o9 && h9 ]
+                hs9 : string '{h9.file}'
+                ds9 : string '{del_path}'
+                if [ hs9.compare[ ds9 ] == 0 && o9.delete_fill[ del_path ] >= 1.0 ]
+                    o9.path_delete[ del_path, del_dir ]
+            if [ o9 ] o9.delete_hold[ null ]
+            del_path = null
+            animated = false
+            pristine = false
         sb_drag = false
         sbl : ScrollLayer (layers) ? cast ScrollLayer [ layers['scrollbar'] ] : null
         if [ sbl ]
@@ -1389,6 +1509,28 @@ element CommitView
             if [ hi < 0 ] return
             h : FindHit o.find_hits[hi]
             pane : i32 [ (ev9) ? ev9.pane_index : o.active_pane ]
+            # shift: the entry's [-], in the 30px before its icon. the press
+            # starts the hold; the release decides
+            dh9 : FindHit delete_hit[ ev ]
+            # shift over a path hint: to the folder drawn blue, as a folder
+            # row's press goes to its folder
+            if [ ux && ux.shift && hint_cut && hint_cut.count > 0 && hint_row == r - band_st ]
+                scroll.y    = 0.0
+                scroll_goal = 0.0
+                scroll_anim = false
+                hov_list    = -1
+                o.nav_go[ path hint_cut ]
+                pristine = false
+                return
+            if [ dh9 ]
+                del_path = dh9.file
+                del_dir  = dh9.is_dir
+                o.delete_hold[ dh9.file ]
+                # the fill runs on the clock: this view repaints itself
+                # every frame until the release
+                animated = true
+                pristine = false
+                return
             if [ h.is_newfile ]
                 if [ ev9 && rx >= nfx0 && rx <= nfx1 ]
                     ev9.newfile_enter[ (ed) ? ed.src : null ]

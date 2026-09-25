@@ -1305,6 +1305,14 @@ class vk_context
         physical_devices: local VkPhysicalDevice [ device_count ]
         vkEnumeratePhysicalDevices[ instance, @device_count, physical_devices ]
         physical_device = physical_devices[0]
+        # a discrete gpu over the cpu's integrated one: the loader lists the
+        # igpu first, and it runs every frame at a fraction of the speed
+        for [ i: u32 0, i < device_count, i += 1 ]
+            dtprops : VkPhysicalDeviceProperties
+            vkGetPhysicalDeviceProperties[ physical_devices[i], @dtprops ]
+            if [ dtprops.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ]
+                physical_device = physical_devices[i]
+                break
         # SILVER_VK_VENDOR pins the device by vendor (amd/nvidia/intel). a
         # venus consumer must sample on the SAME gpu that replays venus, or a
         # cross-gpu dma-buf imports as tiled garbage.
@@ -4335,10 +4343,10 @@ class Texture
                         ext9 : VkExternalMemoryImageCreateInfo [ ]
                         ext9.sType       = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO
                         ext9.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT
-                        xmo9 : VkExportMetalObjectCreateInfoEXT [ ]
-                        xmo9.sType            = VK_STRUCTURE_TYPE_EXPORT_METAL_OBJECT_CREATE_INFO_EXT
-                        xmo9.exportObjectType = VK_EXPORT_METAL_OBJECT_TYPE_METAL_IOSURFACE_BIT_EXT
                         ifdef [ apple ]
+                            xmo9 : VkExportMetalObjectCreateInfoEXT [ ]
+                            xmo9.sType            = VK_STRUCTURE_TYPE_EXPORT_METAL_OBJECT_CREATE_INFO_EXT
+                            xmo9.exportObjectType = VK_EXPORT_METAL_OBJECT_TYPE_METAL_IOSURFACE_BIT_EXT
                             info.pNext = @xmo9
                         el
                             info.pNext = @ext9
