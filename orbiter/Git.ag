@@ -180,7 +180,7 @@ Layer GitLayer
                     cv.fill_grad[ sel_grad ]
                     cv.fill_color_pos[ x0 + 1.0, y + 1.0 ]
                     cv.fill_grad_pos[ x0 + 1.0, y + lh - 1.0 ]
-                if [ sel_glow ] cv.inner_glow[ sel_glow, 14.0 ]
+                if [ sel_glow ] cv.box_shadow[ sel_glow, 0.0, 0.0, 14.0, 0.0, true ]
                 cv.rect_to[ x0 + 1.0, y + 1.0, bounds.w - 2.0, lh - 2.0 ]
                 cv.paint[]
                 cv.restore[]
@@ -484,7 +484,7 @@ Layer CommitLayer
         cw9 : f32 [ bounds.w - 14.0 - sw9 ]
         cv.set_crop[ wtx + x0, wty + bounds.y, wtx + bounds.x + bounds.w, wty + bounds.y + bounds.h ]
         # picking a path for a launch field: files only, no git tabs or summary
-        picking : bool [ orb.pick_field && orb.pick_field.count > 0 ]
+        picking : bool [ orb.picking[] ]
         files : vec string (orb.git_snap && !picking) ? orb.git_snap.files : null
         nfl : i32 [ (files) ? files.count : 0 ]
         cap : i32 [ orb.commit_cap[ cw9 ] ]
@@ -528,7 +528,7 @@ Layer CommitLayer
             cv.stroke_width[ 1.0 ]
             cv.stroke_color[ (dirty) ? cb.theme_rgba['#ffffff'] : ((thov) ? cb.theme_rgba['#ff7aa4cc'] : cb.theme_rgba['#ff5a8a99']) ]
             # mouse over: glow in the same colour as the border
-            if [ thov ] cv.inner_glow[ cb.theme_rgba['#ff7aa4cc'], 12.0 ]
+            if [ thov ] cv.box_shadow[ cb.theme_rgba['#ff7aa4cc'], 0.0, 0.0, 12.0, 0.0, true ]
             cv.rect_to[ tx, ty + 3.0, 144.0, lh - 6.0 ]
             cv.paint[ ]
             cv.restore[ ]
@@ -672,10 +672,10 @@ Layer CommitLayer
                 if [ !h ] continue
                 # continuation rows of double-height headers: not ours
                 if [ h.is_header && !h.is_spacer && !h.is_newfile && h.text.count == 0 ] continue
-                rh9 : f32 [ (h.inst > 0) ? 148.0 : 30.0 ]
+                rh9 : f32 [ (h.card[]) ? 148.0 : 30.0 ]
                 ry  : f32 [ ry9 ]
                 cx9 : f32 [ x0 + 8.0 ]
-                if [ h.inst > 0 ]
+                if [ h.card[] ]
                     if [ ci9 > 0 && ci9 < per9 ]
                         ry = lyc9
                     el
@@ -737,7 +737,7 @@ Layer CommitLayer
                         vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
                     cv.font_size[ 16 ]
                     continue
-                if [ nls - 1 == cb.hov_list && h.inst == 0 ]
+                if [ nls - 1 == cb.hov_list && !h.card[] ]
                     cv.save[ ]
                     cv.rounded[ 8.0, 8.0, 8.0, 8.0 ]
                     cv.fill_color[ cb.nav_hover_fill ]
@@ -752,20 +752,23 @@ Layer CommitLayer
                     cv.paint[ ]
                     cv.restore[ ]
                 # an instance: its live frame as a 96px thumbnail, the name and
-                # status under it, and the module in blue under that
-                if [ h.inst > 0 ]
+                # status under it, and the module in blue under that; a scene:
+                # its exported picture
+                if [ h.card[] ]
                     if [ nls - 1 == cb.hov_list ]
                         cv.save[ ]
                         cv.rounded[ 8.0, 8.0, 8.0, 8.0 ]
                         cv.fill_color[ rgba['#ff6a2e2a'] ]
                         cv.stroke_width[ 1.0 ]
                         cv.stroke_color[ rgba['#ff8a3a99'] ]
-                        cv.inner_glow[ rgba['#ff8a3a99'], 12.0 ]
+                        cv.box_shadow[ rgba['#ff8a3a99'], 0.0, 0.0, 12.0, 0.0, true ]
                         cv.rect_to[ cx9 - 4.0, ry + 1.0, cdw9 - 8.0, rh9 - 2.0 ]
                         cv.paint[ ]
                         cv.restore[ ]
                     av9 : AppView (orb) ? orb.instance_by[ h.inst ] : null
                     ft9 : Texture (av9 && av9.have_frame) ? av9.front[] : null
+                    sc9 : bool [ h.card[] && h.inst == 0 ]
+                    if [ sc9 ] ft9 = orb.scene_tex[ h ]
                     tw9 : f32 [ cdw9 - 24.0 ]
                     if [ ft9 && ft9.width > 0 && ft9.height > 0 ]
                         tw9 = 96.0 * f32[ ft9.width ] / f32[ ft9.height ]
@@ -792,6 +795,8 @@ Layer CommitLayer
                     # two lines: the instance's name, and its state in blue under it
                     st9 : string (av9) ? av9.status_word[] : ''
                     if [ av9 && (!st9 || st9.count == 0) ] st9 = 'running'
+                    if [ sc9 ]
+                        if [ orb.scene_name[].compare[ h.scene ] == 0 ] st9 = 'current'
                     cv.font_size[ 16 ]
                     cv.fill_color[ rgba['#fff'] ]
                     cv.draw_text[ (av9) ? orb.instance_name[ av9 ] : h.text,
@@ -830,31 +835,54 @@ Layer CommitLayer
                     if [ !h.is_dir && nm.count > 0 ]
                         mim : SVGModel ed.ficons.icon[ nm, 21 ]
                         if [ mim ] ico = mim
-                # the icon sits 30px in: shift puts the entry's [-] there,
-                # red outlined; held down it fills left to right over 2 s.
-                # only the row under the pointer (or the one held) shows it
-                fl9 : f32 [ orb.delete_fill[ h.file ] ]
+                # shift: a red-outlined delete at the row's right end, on the
+                # row under the pointer (or the one held); held down it fills
+                # left to right over 2 s. the 30px before the icon is pin's
+                fl9  : f32 [ orb.delete_fill[ h.file ] ]
+                drs9 : f32 [ 0.0 ]
                 if [ cb.ux && cb.ux.shift && cb.deletable[ h ] && (nls - 1 == cb.hov_list || fl9 > 0.0) ]
+                    drs9 = 72.0
+                    dbx9 : f32 [ bounds.x + bounds.w - 24.0 - 64.0 ]
                     if [ fl9 > 0.0 ]
                         cv.save[ ]
-                        cv.rounded[ 4.0, 4.0, 4.0, 4.0 ]
+                        cv.rounded[ 5.0, 5.0, 5.0, 5.0 ]
                         cv.fill_color[ rgba['#d94343cc'] ]
                         cv.stroke_width[ 0.0 ]
-                        cv.rect_to[ x0 + 9.0, round[ ry + 5.5 ], 19.0 * fl9, 19.0 ]
+                        cv.rect_to[ dbx9, ry + 4.0, 64.0 * fl9, 22.0 ]
                         cv.paint[ ]
                         cv.restore[ ]
+                    cv.save[ ]
+                    cv.rounded[ 5.0, 5.0, 5.0, 5.0 ]
+                    cv.fill_color[ rgba['#0000'] ]
+                    cv.stroke_width[ 1.0 ]
+                    cv.stroke_color[ rgba['#ff6b6bcc'] ]
+                    cv.rect_to[ dbx9, ry + 4.0, 64.0, 22.0 ]
+                    cv.paint[ ]
+                    cv.restore[ ]
+                    cv.font_size[ 13 ]
+                    cv.fill_color[ (fl9 >= 1.0) ? rgba['#fff'] : rgba['#ff8a8a'] ]
+                    cv.draw_text[ 'delete',
+                        rect [ x: dbx9, y: ry, w: 64.0, h: 30.0 ],
+                        vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+                # shift: the left slot's + pins the entry, − unpins it (a pin,
+                # wherever it is listed)
+                if [ drs9 > 0.0 ]
+                    pn9 : bool [ h.pinned || orb.is_pinned[ h.file ] ]
                     cv.save[ ]
                     cv.rounded[ 4.0, 4.0, 4.0, 4.0 ]
                     cv.fill_color[ rgba['#0000'] ]
                     cv.stroke_width[ 1.0 ]
-                    cv.stroke_color[ rgba['#ff6b6bcc'] ]
+                    cv.stroke_color[ rgba['#8fd0ffaa'] ]
                     cv.rect_to[ x0 + 9.0, round[ ry + 5.5 ], 19.0, 19.0 ]
                     cv.paint[ ]
                     cv.restore[ ]
-                    cv.fill_color[ (fl9 >= 1.0) ? rgba['#fff'] : rgba['#ff8a8a'] ]
+                    cv.fill_color[ rgba['#8fd0ff'] ]
                     cv.stroke_width[ 0.0 ]
                     cv.rect_to[ x0 + 13.0, round[ ry + 14.25 ], 11.0, 1.5 ]
                     cv.paint[ ]
+                    if [ !pn9 ]
+                        cv.rect_to[ x0 + 17.75, round[ ry + 9.5 ], 1.5, 11.0 ]
+                        cv.paint[ ]
                 tx0 : f32 [ x0 + 38.0 ]
                 if [ ico ]
                     cv.fill_color[ rgba['#ffffff'] ]
@@ -865,7 +893,7 @@ Layer CommitLayer
                 # line up across every row; everything else keeps the full width
                 exl9 : cb.ext_list[ h ]
                 has9 : bool [ exl9.count > 0 ]
-                nmw9 : f32 [ (has9) ? 240.0 : bounds.x + bounds.w - tx0 - 24.0 ]
+                nmw9 : f32 [ (has9) ? 240.0 : bounds.x + bounds.w - tx0 - 24.0 - drs9 ]
                 cv.font_size[ 16 ]
                 # a repository row: light blue when checked out, faint when
                 # not, amber while it clones
@@ -898,10 +926,19 @@ Layer CommitLayer
                         cv.save[ ]
                         cv.fill_color[ (ehv9) ? rgba['#6cb6ff33'] : rgba['#ffffff10'] ]
                         cv.rounded[ el9, er9, er9, el9 ]
-                        cv.inner_glow_sides[ rgba['#8fd0ff'], gp9, (ei9 == en9 - 1) ? gp9 : 0.0, gp9, (ei9 == 0) ? gp9 : 0.0 ]
+                        cv.no_shadows[]
                         cv.rounded_rect[ cxx9, ry + 4.0, ecw9, 22.0, el9, er9, er9, el9 ]
                         cv.paint[ ]
-                        cv.inner_glow_sides[ rgba['#0000'], 0.0, 0.0, 0.0, 0.0 ]
+                        if [ gp9 > 0.0 ]
+                            # an inset glow whose box runs past the inner sides
+                            gx0 : f32 [ (ei9 == 0) ? cxx9 : cxx9 - gp9 * 3.0 ]
+                            gx1 : f32 [ (ei9 == en9 - 1) ? cxx9 + ecw9 : cxx9 + ecw9 + gp9 * 3.0 ]
+                            cv.clip_rounded_rect[ cxx9, ry + 4.0, ecw9, 22.0, el9, er9, er9, el9 ]
+                            cv.fill_color[ rgba['#0000'] ]
+                            cv.box_shadow[ rgba['#8fd0ff'], 0.0, 0.0, gp9, 0.0, true ]
+                            cv.rounded_rect[ gx0, ry + 4.0, gx1 - gx0, 22.0, el9, er9, er9, el9 ]
+                            cv.paint[ ]
+                            cv.no_shadows[]
                         cv.rounded[ 0.0, 0.0, 0.0, 0.0 ]
                         cv.restore[ ]
                         cv.fill_color[ (ehv9) ? rgba['#ffffff'] : rgba['#b9b2cc'] ]
@@ -949,12 +986,12 @@ Layer CommitLayer
                     end : f32 [ tx0 + fnw + ltm.w * 2.0 ]
                     dx  : f32 [ (end > col) ? end : col ]
                     hc9 : rgba [ (h.repo && h.repo.count > 0 && !h.checked) ? rgba['#ffffff2e'] : rgba['#ffffff66'] ]
-                    re9 : f32 [ bounds.x + bounds.w - 24.0 ]
+                    re9 : f32 [ bounds.x + bounds.w - 24.0 - drs9 ]
                     # shift over this row's hint: the path up to the end of the
                     # segment under the pointer is blue, and a press goes there
                     cut9 : i32 [ 0 ]
                     mx9  : f32 [ bounds.x + cb.hov_mx ]
-                    if [ !h.repo && cb.ux && cb.ux.shift && nls - 1 == cb.hov_list && mx9 >= dx && h.dir.count > 1 ]
+                    if [ !h.repo && cb.ux && cb.ux.shift && nls - 1 == cb.hov_list && mx9 >= dx && mx9 < re9 && h.dir.count > 1 ]
                         cut9 = h.dir.count
                         for [ ci: i32 1, ci <= h.dir.count, ci += 1 ]
                             if [ dx + cv.measure_text[ h.dir.mid[ 0, ci ] ].w >= mx9 ]
@@ -1043,7 +1080,7 @@ element CommitView
     # pointer (drawn blue); a press goes there
     intern  hint_cut  : string
     intern  hint_row  : i32 [ -1 ]
-    intern  del_path  : path      # the entry whose [-] is held down
+    intern  del_path  : path      # the entry whose delete is held down
     intern  del_dir   : bool
     mutable side_ys   : vec f32
     mutable hov_side  : i32 [ -1 ]
@@ -1076,26 +1113,36 @@ element CommitView
     # a module dir holds <stem>/<stem>.ag and friends. return the ones that
     # actually exist so the row can offer them as one-click chips. cached by
     # dir: this is asked for every visible module row, every frame
-    # a plain file or folder row: shift gives it a [-] that deletes it
+    # a plain file or folder row: shift gives it a delete at its right end
     func deletable [ h: FindHit ] -> bool
         # a listing's entries are header rows; their continuation and spacer
         # rows carry no name
-        if [ !h || !h.file || h.is_spacer || h.is_newfile || h.more || h.inst > 0 || h.line > 0 ] return false
+        if [ !h || !h.file || h.is_spacer || h.is_newfile || h.more || h.card[] || h.line > 0 ] return false
         if [ !h.text || h.text.count == 0 ] return false
         # the way up is not an entry of this folder
         if [ h.text.compare[ '..' ] == 0 || h.text.compare[ '.' ] == 0 ] return false
         return !(h.repo && h.repo.count > 0)
 
-    # the row whose [-] is under the pointer (shift held), or null: the
+    # the row whose delete is under the pointer (shift held), or null: the
     # press starts the hold on it, the release deletes only over it
     func delete_hit [ ev: Event ] -> FindHit
+        ly : lay[]
+        if [ !ly ] return null
+        return shift_hit[ ev, ly.bounds.w - 88.0, ly.bounds.w - 24.0 ]
+
+    # the row whose pin mark (the slot before its icon) is under the pointer
+    func pin_hit [ ev: Event ] -> FindHit
+        return shift_hit[ ev, 22.0 + side_w, 52.0 + side_w ]
+
+    # shift held, the pointer between x0 and x1 on an entry row: that entry
+    func shift_hit [ ev: Event, x0: f32, x1: f32 ] -> FindHit
         ly : lay[]
         o  : orb9[]
         if [ !ly || !o || !ux || !ux.shift || !o.find_hits ] return null
         rx : f32 [ ev.mouse.pos.x - ly.bounds.x ]
         ry : f32 [ ev.mouse.pos.y - ly.bounds.y ]
-        if [ rx < 22.0 + side_w || rx >= 52.0 + side_w ] return null
-        trs : i32 [ (o.pick_field && o.pick_field.count > 0) ? 0 : o.commit_tab_rows[ ly.bounds.w - 14.0 - side_w, reveal_all ] ]
+        if [ rx < x0 || rx >= x1 ] return null
+        trs : i32 [ (o.picking[]) ? 0 : o.commit_tab_rows[ ly.bounds.w - 14.0 - side_w, reveal_all ] ]
         r : i32 [ row_at[ ry, rx, trs ] ]
         if [ r < band_st ] return null
         hi : i32 [ list_hit[ r - band_st ] ]
@@ -1204,7 +1251,7 @@ element CommitView
             h : FindHit o.find_hits[hi]
             if [ !h ] continue
             if [ h.is_header && !h.is_spacer && !h.is_newfile && h.text.count == 0 ] continue
-            if [ h.inst > 0 ]
+            if [ h.card[] ]
                 if [ !(ci > 0 && ci < per9) ]
                     ci  = 0
                     ly8 = y8
@@ -1305,7 +1352,7 @@ element CommitView
             nsid = -1
         el
             # picking: files only, no git tabs (as draw lays it out)
-            trs : i32 [ (o.pick_field && o.pick_field.count > 0) ? 0 : o.commit_tab_rows[ ly.bounds.w - 14.0 - side_w, reveal_all ] ]
+            trs : i32 [ (o.picking[]) ? 0 : o.commit_tab_rows[ ly.bounds.w - 14.0 - side_w, reveal_all ] ]
             r : i32 [ row_at[ ry, rx, trs ] ]
             cx0 : f32 [ 14.0 + side_w ]
             if [ r >= 0 && r < trs ]
@@ -1383,7 +1430,7 @@ element CommitView
         return -1
 
     func on_release [ ev: Event ]
-        # a held [-]: released over it once full, the entry goes; anywhere
+        # a held delete: released over it once full, the entry goes; anywhere
         # else, or early, it is a cancel
         if [ del_path ]
             o9 : orb9[]
@@ -1463,7 +1510,7 @@ element CommitView
             return
         # picking: files only, no git tabs (as draw lays it out)
         if [ rx < 14.0 + side_w ] return
-        trs : i32 [ (o.pick_field && o.pick_field.count > 0) ? 0 : o.commit_tab_rows[ ly.bounds.w - 14.0 - side_w, reveal_all ] ]
+        trs : i32 [ (o.picking[]) ? 0 : o.commit_tab_rows[ ly.bounds.w - 14.0 - side_w, reveal_all ] ]
         r : i32 [ row_at[ ry, rx, trs ] ]
         cx0 : f32 [ 14.0 + side_w ]
         if [ r >= 0 && r < trs && o.git_snap && o.git_snap.files ]
@@ -1509,8 +1556,13 @@ element CommitView
             if [ hi < 0 ] return
             h : FindHit o.find_hits[hi]
             pane : i32 [ (ev9) ? ev9.pane_index : o.active_pane ]
-            # shift: the entry's [-], in the 30px before its icon. the press
+            # shift: the entry's delete at the row's right end. the press
             # starts the hold; the release decides
+            ph9 : FindHit pin_hit[ ev ]
+            if [ ph9 ]
+                o.pin_toggle[ ph9.file ]
+                pristine = false
+                return
             dh9 : FindHit delete_hit[ ev ]
             # shift over a path hint: to the folder drawn blue, as a folder
             # row's press goes to its folder
@@ -1553,6 +1605,9 @@ element CommitView
             if [ h.inst > 0 ]
                 o.show_instance[ h.inst, pane ]
                 o.exit_finder[]
+                return
+            if [ h.card[] ]
+                o.scene_choose[ h.scene ]
                 return
             # the listing's last row: the next page
             if [ h.more ]

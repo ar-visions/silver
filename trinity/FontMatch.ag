@@ -1,0 +1,79 @@
+extend trinity
+
+import <strings.h>
+
+ifdef [ linux ]
+    import <fontconfig/fontconfig.h>
+        -lfontconfig
+
+# a system font file found by family, style or character
+class FontMatch
+    public file   : string
+    public index  : i32
+    public family : string
+    public found  : bool
+
+# css generic names fontconfig resolves as aliases
+func font_generic [ family: string ] -> bool
+    if [ !family ] return false
+    names : vec string [] [ 'serif', 'sans-serif', 'monospace', 'cursive', 'fantasy', 'system-ui', 'emoji', 'math' ]
+    for [ i: i32 0, i < names.count, i += 1 ]
+        if [ strcasecmp[ family.chars, names[i].chars ] == 0 ]
+            return true
+    return false
+
+# css width 1..9 as fontconfig's percent
+func font_fc_width [ width: i32 ] -> i32
+    widths : vec i32 [] [ 50, 63, 75, 87, 100, 113, 125, 150, 200 ]
+    w : i32 [ clamp[ width, 1, 9 ] ]
+    return widths[ w - 1 ]
+
+# family may be null when only codepoint picks the font
+func font_match [ family: string, weight: i32, width: i32, slope: i32, codepoint: u32, emoji: bool ] -> FontMatch
+    out : FontMatch [ found: false ]
+    ifdef [ linux ]
+        FcInit[]
+        pat : FcPatternCreate[]
+        if [ family ]
+            FcPatternAddString[ pat, 'family', family.chars ]
+        FcPatternAddInteger[ pat, 'weight', FcWeightFromOpenType[ weight ] ]
+        FcPatternAddInteger[ pat, 'width', font_fc_width[ width ] ]
+        slant : i32 [ 0 ]
+        if [ slope == 1 ]
+            slant = 100
+        if [ slope == 2 ]
+            slant = 110
+        FcPatternAddInteger[ pat, 'slant', slant ]
+        chars : FcCharSetCreate[]
+        if [ codepoint > 0 ]
+            FcCharSetAddChar[ chars, codepoint ]
+            FcPatternAddCharSet[ pat, 'charset', chars ]
+        if [ emoji ]
+            FcPatternAddBool[ pat, 'color', 1 ]
+        FcConfigSubstitute[ null, pat, FcMatchKind.FcMatchPattern ]
+        FcDefaultSubstitute[ pat ]
+        res : FcResult [ FcResult.FcResultMatch ]
+        m   : FcFontMatch[ null, pat, @res ]
+        if [ m ]
+            fs  : cstr [ null ]
+            fam : cstr [ null ]
+            idx : i32 [ 0 ]
+            FcPatternGetString[ m, 'file', 0, @fs ]
+            FcPatternGetString[ m, 'family', 0, @fam ]
+            FcPatternGetInteger[ m, 'index', 0, @idx ]
+            ok : bool [ fs != null && fam != null ]
+            if [ ok && family && !font_generic[ family ] ]
+                ok = strcasecmp[ family.chars, fam ] == 0
+            if [ ok && codepoint > 0 ]
+                have : @FcCharSet [ null ]
+                FcPatternGetCharSet[ m, 'charset', 0, @have ]
+                ok = have != null && FcCharSetHasChar[ have, codepoint ] != 0
+            if [ ok ]
+                out.file   = string [ fs ]
+                out.family = string [ fam ]
+                out.index  = idx
+                out.found  = true
+            FcPatternDestroy[ m ]
+        FcCharSetDestroy[ chars ]
+        FcPatternDestroy[ pat ]
+    return out

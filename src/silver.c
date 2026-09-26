@@ -8992,6 +8992,15 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
     num     version_at  = index_of(label, "/");
     if (version_at >= 0)
         label = mid(label, 0, version_at);
+    // a source archive url unpacks as the checkout: no git
+    cstr    us          = s->chars;
+    size_t  ul          = strlen(us);
+    bool    is_archive  = ul > 7 && (
+        strcmp(us + ul - 7, ".tar.xz") == 0 || strcmp(us + ul - 7, ".tar.gz") == 0 ||
+        (ul > 8 && strcmp(us + ul - 8, ".tar.bz2") == 0) || strcmp(us + ul - 4, ".tgz") == 0);
+    // an archive's file name is not a project name: the import's is
+    if (is_archive)
+        name = label;
     path    project_f   = (owner && len(owner)) ?
           f(path, "%o/checkout/%o/%o", a->root_path, owner, name)
         : f(path, "%o/checkout/%o",    a->root_path, name);
@@ -9034,6 +9043,19 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
                 f(command, "ln -s %o %o", src_path, project_f));
             project_f = src_path;
         } else {
+            if (is_archive) {
+                cstr   sl   = strrchr(us, '/');
+                path   idir = f(path, "%o/imports", install);
+                make_dir(idir);
+                path   arc  = f(path, "%o/%08llx-%s", idir,
+                                (u64)(Au_hash((Au)uri) & 0xffffffff), sl ? sl + 1 : us);
+                if (!file_exists("%o", arc))
+                    checkout_verify(a, label, "fetch", "fetch",
+                        f(command, "curl -fL -o %o.part %o && mv %o.part %o", arc, uri, arc, arc));
+                checkout_verify(a, label, "unpack", "unpack",
+                    f(command, "mkdir -p %o && tar xf %o -C %o --strip-components=1",
+                        project_f, arc, project_f));
+            } else
             // shallow: only the pinned commit comes down, never the history
             if (!commit) {
                 checkout_verify(a, label, "clone", "clone",
@@ -9064,6 +9086,15 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
             if (file_exists("%o", diff_f))
                 checkout_verify(a, label, "patch", "patch",
                     f(command, "git -C %o apply %o", project_f, diff_f));
+            // module-path overlay: <name>/ copies over, <name>.deleted goes
+            path overlay_f = f(path, "%o/%o", a->module_path, name);
+            if (dir_exists("%o", overlay_f))
+                checkout_verify(a, label, "overlay", "overlay",
+                    f(command, "cp -a %o/. %o/", overlay_f, project_f));
+            path deleted_f = f(path, "%o/%o.deleted", a->module_path, name);
+            if (file_exists("%o", deleted_f))
+                checkout_verify(a, label, "overlay", "overlay",
+                    f(command, "cd %o && xargs -r rm -f < %o", project_f, deleted_f));
         }
     }
 
@@ -9497,6 +9528,22 @@ static void silver_collect_tree(map tree, array out, map seen) {
     }
 }
 
+// a library's module ctor runs before the rest of its .so's
+// ctors; this ctor object, linked last, runs its tests after
+static string late_object(silver a, path install) {
+    string sym = ((aether)a)->late_symbol;
+    if (!a->is_library || !sym) return string("");
+    path src = f(path, "%o/%o-late.c", a->build_dir, a->name);
+    path obj = f(path, "%o/%o-late.o", a->build_dir, a->name);
+    save(src, (Au)f(string,
+        "extern void %o(void);\n"
+        "__attribute__((constructor)) static void silver_late(void) { %o(); }\n",
+        sym, sym), null);
+    verify(exec(a->verbose, "%o/bin/clang -c -fPIC %o -o %o", install, src, obj) == 0,
+        "late object failed for %o", a->name);
+    return (string)obj;
+}
+
 none silver_build_product(silver a) {
     path ll = null, bc = null;
     bool emit_ok = emit(a, (ARef)&ll, (ARef)&bc);
@@ -9848,6 +9895,8 @@ none silver_build_product(silver a) {
 #else
     string shared_n = string(a->is_library ? shared : "");
 #endif
+    string late_o = late_object(a, a->base_install ? a->base_install : install);
+    if (len(late_o)) libs = f(string, "%o %o", libs, late_o);
     build_status(a, "[%o] linking %o", a->name, path_filename(link_out));
     // obj_path carries the build tag: a debug link takes its own main object
     verify(exec(a->verbose, "%o/bin/%s %s %s %s %o %s %o%o %o -o %o -L%o/lib -L%o %o %o %o %o %s",

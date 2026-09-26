@@ -183,6 +183,92 @@ it. Replace the qemu element's RFB/VNC with qemu D-Bus display
 the dma transport; it completes guest venus → scanout → element.
 Test hidden only: `silver os-bootstrap --hidden --app colortest`.
 
+## orbiter-os on the drive — live list (Sep 25 2026)
+
+Goal: orbiter-os boots from a folder on Ubuntu's partition
+(nvme0n1p1, UUID 5069068c-…), picked from Ubuntu's GRUB menu.
+SUSE is gone: only its EFI loader is left (its btrfs root
+7659a74b-… is on no partition).
+1. DONE the folder: os-bootstrap writes its file list as
+   orbiter-os/root/ (kernel at boot/vmlinuz), times kept.
+   Checked: 4,525 entries as the cpio, 1.1 GB; the relative
+   install link keeps writes inside; the absolute links are
+   files whose targets are in the tree too.
+2. DONE a small initramfs (root/boot/initramfs, 5 entries):
+   os-bootstrap/init.c, static, finds the ext4 partition by
+   `orbiter.uuid=`, mounts it, enters `orbiter.root=` (default
+   /orbiter-os; the relative link resolves on the drive), tmpfs
+   on /tmp and /run, runs `orbiter.init=` as pid 1 with the
+   command line's name=value words as its environment.
+   Checked in qemu on an ext4 image: pid 1, / is the folder,
+   env passed; a wrong uuid prints why and waits (no panic).
+   /orbiter-os -> src/silver/orbiter-os/root is made (Kalen).
+3. DONE kernel for europa: BLK_DEV_NVME added (Samsung 980
+   Pro); ext4, xHCI, USB HID, evdev, DRM, EFI stub, modules,
+   r8169 (RTL8125) were already in. Wi-Fi (RTL8852CE) is not.
+   The kernel lines skip while install/share/silver-os-
+   bootstrap/bzImage exists: delete it to apply new options.
+4. BUILT, unverified until a real boot: NVIDIA 610.57.04 (the
+   host driver; modules, firmware and libraries must match).
+   os-bootstrap imports the open-module tag, runs the kernel's
+   `modules` stage first (Module.symvers), builds against it
+   into share/silver-os-bootstrap/nvidia. add_nvidia puts the
+   .ko files in lib/modules/orbiter, gsp_ga10x.bin, the ICD
+   json and libGLX_nvidia + the libs it opens in the drive tree
+   only. init loads `orbiter.modules=` after the switch and
+   makes /dev/nvidiactl, nvidia-modeset, nvidia<N> (major 195).
+   On a host driver update: change the tag, `nvidia_version`,
+   and delete share/silver-os-bootstrap/nvidia to rebuild.
+   Secure Boot is off on europa: an unsigned kernel boots.
+5. IN PROGRESS the GRUB entry (awaiting Kalen's sudo + a boot):
+   appended to /etc/grub.d/40_custom, menu shown 5 s (was
+   hidden, timeout 0), update-grub. Kernel command line:
+   console=tty0 orbiter.uuid=<p1> orbiter.init=/src/silver/
+   install/build/orbiter orbiter.modules=nvidia,nvidia-modeset,
+   nvidia-drm:modeset=1 HOME=/root LD_LIBRARY_PATH=/src/silver/
+   install/lib:/src/silver/install/build:/usr/lib/x86_64-linux-
+   gnu VK_DRIVER_FILES=/usr/share/vulkan/icd.d/nvidia_icd.json.
+   /orbiter-os is the link; no copy.
+6. IN PROGRESS first boot (14:31): the menu showed, then a black
+   screen. The tree got a root-owned install/tmp at 14:31:09
+   (silver-host starts by making it), no log inside. So GRUB,
+   kernel, init, mount, switch and exec worked; the launcher
+   stopped before logging. Adding: EFI framebuffer console
+   (simpledrm), and init saving /dev/kmsg to /boot/kmsg.log and
+   pid 1's output to /boot/boot.log, each line synced.
+   Second boot (16:09), from those logs: all three nvidia
+   modules loaded; nvidia-drm is minor 1 (simpledrm minor 0);
+   silver-host held pid 1 (no panic). Two bugs, both fixed:
+   - devices kms took card0 = simpledrm (1024x768): the scan
+     now skips the simpledrm driver (drmGetVersion name).
+   - vkCreateInstance -9: libGLX_nvidia opens more libraries
+     than ldd lists. Found by LD_DEBUG=files on the host:
+     libnvidia-glsi, -rtcore, -allocator.so.1 added.
+   Userns chroot tests are blocked here (AppArmor
+   restrict_unprivileged_userns=1): verify by booting.
+   Third boot (16:16): kms now picks card1 (nvidia) 2560x1440.
+   vkCreateInstance still -9; no NVRM errors in kmsg; every ldd
+   dependency of libvulkan and the nvidia libs is in the tree.
+   Next boot: VK_LOADER_DEBUG=all added once at the GRUB menu
+   ('e'), its output lands in /boot/boot.log.
+   Fourth boot (16:21) loader says: libGLX_nvidia loads, but
+   "Could not get 'vkCreateInstance' via vk_icdGetInstanceProcAddr".
+   On the host the same loader + ICD work with an empty env, and
+   strace shows vulkan opens only nvidiactl, nvidia0,
+   nvidia-modeset and /proc/driver/nvidia/params. The tree's
+   dev/sys/proc are empty (the mounts moved fine).
+   TEMP trace in init.c (remove when solved): open() result of
+   each nvidia node + gpu count. Next boot adds LD_DEBUG=libs.
+   Fifth boot (LD_DEBUG=libs): nodes open ok, 1 gpu. glcore's
+   "undefined symbol __malloc_hook/ErrorF (fatal)" lines show
+   on the host too (harmless). The real miss: vkCreateInstance
+   opens glvnd EGL; libEGL.so.1 was not in the tree. Added
+   libEGL, libGLdispatch, libEGL_nvidia, libnvidia-eglcore,
+   libnvidia-egl-gbm, gbm/nvidia-drm_gbm.so, the EGL vendor
+   json and the gbm platform json. Checked: vulkaninfo run by
+   the tree's ld.so with only the tree's libraries finds the
+   RTX 3060, driver 610.57.04. grub-debug.sh is still on.
+
 ---
 
 silver is a native build language with an LLVM backend. It compiles `.ag` source files into native binaries via LLVM IR. The compiler itself is written in C, built on the **Au** object system.
@@ -1305,6 +1391,112 @@ debug+quarantine and -O2. Startup 71k -> 55k objects.
     Again Sep 24: `silver --verbose --build orbiter` exit 134
     (abort), log ends mid-parse in Git.ag, no error; the retry built.
 
+## Active work: browser identity (Sep 26 2026)
+
+1. DONE sites gave the WPE browser captchas. WPETrinityBrowser
+   (browser/wpewebkit/Tools/TrinityBrowser/main.c) now sends
+   Safari 18.5 on macOS as its agent, and a document-start
+   script makes navigator.platform 'MacIntel'. Checked with a
+   local server: both the header and the page report Mac.
+   The overlay reaches a fresh checkout only: the file was also
+   copied into checkout/wk/wpewebkit-2.54.0 and the helper
+   rebuilt (ninja bin/WPETrinityBrowser + its install).
+   Untested: whether the captchas stop (other signals remain).
+2. OPEN youtube.com stops at its placeholder columns: its main
+   script throws "ReferenceError: Can't find variable:
+   HTMLVideoElement" (console, Sep 26). WPE is configured with
+   ENABLE_VIDEO=OFF, and WPE ties video to GStreamer
+   (GStreamerDependencies.cmake). Kalen's call: a trinity media
+   backend, no GStreamer. Stages, in order:
+   a. DONE ENABLE_VIDEO on without GStreamer: YouTube's app
+      starts (frame checked; no console errors). Overlay
+      files: Source/cmake/GStreamerDependencies.cmake (no
+      VIDEO -> GSTREAMER tie), Source/WebCore/platform/
+      GStreamer.cmake (returns when USE_GSTREAMER is off),
+      Source/WebKit/GPUProcess/media/trinity/
+      RemoteMediaPlayerProxyTrinity.cpp + SourcesWPE.txt.
+   b. MediaPlayerPrivateTrinity: a plain video file plays,
+      frames decoded and drawn through trinity.
+      b1. DONE vulkan h.264 decode in trinity: C front end in
+          trinity.c (h264d_*: sps/pps/slice headers, POC types
+          0-2, 17 reference slots with sliding window + MMCO,
+          display order, the vk begin/decode infos), Decoder in
+          video.ag (session, params, layered DPB that is also the
+          output, decode queue from vk.ag), Demux in demux.ag
+          (progressive mp4). webgfx t_video_decode: 48/48
+          frames of webgfx/media/clip.mp4 (High, B-frames) in
+          display order, each ~48.6 dB PSNR against ffmpeg's
+          frame (rgb rounding only). Frames come back to the
+          CPU for now (host buffer + nv12_rgba).
+      b2. DONE drawn on the GPU: the decoder hands out y, u, v
+          planes (a plane copy on the CPU, no colour math);
+          webgfx_video_new/_advance/_seek/_info/_free and
+          webgfx_canvas_draw_video (the canvas's yuv mode).
+          t_video_draw: frame at 1 s is frame 24, luma 40 dB;
+          t_video_steps: 90 steps at 60 a second, all exact.
+          Edit lists read (elst), else times ran 2 frames late.
+      b4. DONE MediaPlayerPrivateTrinity (engine Trinity, mp4
+          with avc1/mp4a): fetches the file through WebKit's
+          media loader, plays on a 60 Hz timer and a monotonic
+          clock, paints a VideoFrameTrinity that
+          GraphicsContextTrinity::drawVideoFrame draws from the
+          planes. Checked with a local page: 300 frames of a
+          10 s 640x360 clip each shown once, frame at 7.53 s
+          matched the page's clock, ended at 10.00, no error.
+          Overlay files: VideoFrame.h (isTrinity), trinity/
+          VideoFrameTrinity.h, MediaPlayerPrivateTrinity.h/.cpp,
+          GraphicsContextTrinity.h/.cpp, WebGfx.h,
+          MediaPlayer.h/.cpp, MediaPlayerEnums.h,
+          WebCoreArgumentCoders.serialization.in,
+          SourcesTrinity.txt.
+          Limits: whole file downloads before playing; frames
+          cross the CPU once; no audio yet.
+      b3. DONE sound: spectra aac_clip (faad2) decodes a
+          track's AAC packets whole into an AudioClip, played by
+          one AudioMixer voice (voice_seek added) positioned at
+          the video's time; webgfx_video_play/_pause/_volume/
+          _has_audio; the player follows play, pause, seek,
+          volume and mute. t_video_audio: webgfx/media/av.mp4's
+          tone decodes at 48 kHz, 440 cycles a second. In the
+          browser (click to play; unmuted autoplay is blocked
+          as in any browser) WPEWebProcess holds an uncorked
+          stream at 100% while it plays. Not heard by me.
+          Limits: playbackRate other than 1 keeps the sound at
+          1x; the picture follows a monotonic clock, not the
+          audio clock; mac's coreaudio mixer path has no seek.
+   c. NEXT MediaSource (YouTube streams through it).
+3. OPEN silver bug: `v.push[ w[ i ] ]` (w a vec i64) pushes the
+   element's address, not its value (demux ctts gave
+   98715440282664, +16 a sample). A local first works.
+   c. MediaSource (YouTube streams through it).
+
+## Active work: scene picker (Sep 25 2026)
+
+1. DONE the bar's < and > scene arrows are gone. Clicking the
+   scene name opens the pane's nav dialog (the browse list) on
+   scene cards, drawn as the instance cards are (FindHit.scene,
+   .thumb, card[]; Git.ag), with "current" under the loaded
+   one; a card loads its scene and closes the dialog
+   (scene_choose). Checked headless: 14 cards with pictures,
+   a pick closes it and loads the scene.
+   FIXED on the way: scene_module_ensure never had scene_mods
+   (filled by ensure_scenes, which only the old label called):
+   "scene: no class for MilkyWay" every frame.
+3. OPEN silver bug: `if [ s && o ]` with s a string and o an
+   object keeps the value: it casts o to string (IR: cast_string
+   of orb in CommitLayer_draw), which recursed and crashed.
+   Worked around with bool checks (FindHit.card[]).
+2. DONE thumbnails render at export: scenes' `export func
+   scene_thumbs` (last in scenes.ag, after every bake) draws
+   each scene into a 320x200 offscreen Window and writes
+   share/silver-scenes/thumbs/<Name>.png; skipped when present
+   unless SILVER_EXPORT_FORCE. All 13 written and checked by
+   eye. The tiles load those pngs. A scene edit does not
+   redraw its thumbnail: delete the png or force the export.
+   Found on the way: a scene's `draw` needs `draw*[ w ]` from
+   an `element` reference; new_object, the Window and the
+   vk_context must be held (pool-managed: freed mid-render).
+
 ## Active work: editor embedded pane (Sep 23 2026)
 
 1. APPLIED, awaiting Kalen's run: an embedded app whose build
@@ -1668,6 +1860,844 @@ claude` with `{ prompt tokens, {images/x.png} }` under it. A
    rest). `ux_area` scales each px of a Region string; the
    boxes, field, mic, close, picker and note spacing follow
    ctrl +/- as the text does.
+
+## Active work: browser element on Ladybird LibWeb (Sep 25 2026)
+
+Goal: a `browser` module (trinity element; orbiter opens it as a
+pane tab). Ladybird does layout, JS and network; trinity's Canvas
+does ALL drawing. Skia is never built, linked or shipped (Kalen:
+"I WILL NOT use Skia. Skia is a canvas. WE HAVE THAT").
+Decisions (Kalen): own module, static page first, keep Ladybird's
+helper processes (WebContent, RequestServer, ImageDecoder).
+Ladybird checked at 3af7308 (Sep 25): WebContent sends each frame
+to a Compositor process as `update_display_list` (DisplayList +
+visual context tree + resources); DisplayListPlayerSkia replays it.
+The browser element takes the Compositor's place: it serves the
+CompositorWebContentServer/Control endpoints and replays the list
+with a DisplayListPlayer that calls trinity (the glue).
+1. OPEN import Ladybird from its URL (CMake, vcpkg deps, Rust via
+   ~/.cargo) with browser/ladybird.diff: skia and angle out of
+   vcpkg.json and every CMakeLists. Disk: 33 GB free.
+   Every Skia job routes to trinity (Kalen: trinity does all of
+   it; no new stand-in code):
+   - Gfx::PathImpl (virtual): PathSkia -> trinity CanvasPath.
+   - Gfx::Typeface / Font: TypefaceSkia -> trinity CanvasFont
+     (glyph metrics, GlyphAtlas).
+   - Bitmap scale/convert, images, gradients: trinity + img.
+   - PaintingSurface (SVG as image, cursor, screenshot, canvas
+     2D): trinity Canvas.
+   - System font match (Skia's fontconfig manager): trinity
+     CanvasFont gains a family/weight/width/slope lookup.
+   The bridge: Au headers cannot enter Ladybird C++ (Au's
+   get/set/len/push macros break AK). A silver module `webgfx`
+   imports trinity and exports plain C funcs; the diff's
+   TypefaceTrinity/PathTrinity/... .cpp call them. Build order:
+   webgfx, then Ladybird (links -lwebgfx), then browser.
+   webgfx has three groups: font, path, canvas. WebContent also
+   draws (SVG as image, cursors) with the display list player,
+   so DisplayListPlayerTrinity lives in LibCompositing and runs
+   in both processes over webgfx's canvas calls.
+   vcpkg without skia/angle: 61 packages; needs cmake >= 3.30
+   (vcpkg's own), nasm and autoconf-archive (built into the
+   scratch tools dir; move to bootstrap). Building (scratch).
+   DONE trinity CanvasFont: loads from bytes (data, data_size,
+   face_index), units_per_em, glyph_count, ascender/descender/
+   x height in font units, glyph_index, advance_units, outline
+   (glyph into a CanvasPath at a px size, unhinted); the glyph
+   cache and GlyphAtlas are keyed by glyph number. texttest
+   draws right (shot). webgfx t_font_from_bytes printed good
+   values (SpaceMono 'A': 14 points, ascent 22.4 at 20 px).
+   DONE trinity CanvasPath: elliptical_arc_to (svg), bounds,
+   contains (nonzero / even-odd), length, point_at, transform.
+   DONE webgfx font + path calls (webgfx/webgfx.ag); `silver
+   --test webgfx` exit 0: t_font_from_bytes, t_path_geometry
+   (100x50 rect, in/out, length 300; half circle r50 157.04).
+   DONE patch, build files: skia, angle, Ladybird's own vulkan,
+   Compositor, WebDriver and UI/ out; LibGfx, LibCompositing,
+   LibWeb link webgfx (find_library under SILVER_INSTALL).
+   DONE trinity FontMatch.ag: system font lookup (fontconfig on
+   linux; family/weight/width/slope, fallback by codepoint,
+   emoji via color); webgfx_font_match; t_font_match passes
+   (monospace -> DejaVuSansMono.ttf, unknown -> not found,
+   'A' -> Noto Sans, as fc-match says).
+   DONE trinity CanvasFont family_name, weight/width/slope (OS/2
+   table), set_axes (variable fonts); a bad font from bytes
+   leaves the face null (loaded[] false), no fault. webgfx
+   5/5: t_font_variable matches fontTools (Roboto Condensed H
+   1270 units at wght 400, 1257 at 700), t_font_bad_bytes.
+   WRITTEN, not compiled: patch LibGfx PathTrinity (.h/.cpp),
+   Font/TypefaceTrinity (.h/.cpp), WebGfx.h (the C calls),
+   Font.cpp metrics via webgfx, every TypefaceSkia caller
+   renamed. Patch diff comes from `diff -ruN` against a clean
+   download of 3af7308 (a `git rm --cached` of mine touched
+   the scratch clone's index; no more git ops there).
+   DONE webgfx canvas group (new, clear, save/restore,
+   transform, clip, fill rect/rrect/path, stroke, glyphs by
+   glyph number, image, read back rgba8): t_canvas_draw,
+   t_canvas_glyphs ('Hello' checked by eye). trinity Canvas:
+   draw_glyphs (draw_text_pass split into text_begin /
+   glyph_quad / text_end; texttest shot unchanged), fill_rgba,
+   stroke_rgba, set_transform take floats: a vec4f or affine
+   passed by value across modules arrived shifted (the struct
+   by value bug), fill came in as (garbage, 0, 1, 1).
+   DONE patch compiles: LibGfx (PaintingSurface = a webgfx
+   canvas; wrap_bitmap copies back on flush; PainterTrinity;
+   BitmapExport packs by hand; Bitmap scaled via trinity;
+   ColorSpace kept as data; CanvasCommandPlayer resolves
+   fonts, no text blobs), LibCompositing (resource storage
+   without Skia caches; DisplayListPlayerTrinity), all of
+   LibWeb. ANGLE's GL headers (7, text only) download at
+   configure for WebGL's constants; no GL library.
+   Compositor service kept (a helper process), on the trinity
+   player; backing stores are wrap_bitmap over the shared
+   bitmaps; WebGL returns failure; webgfx_gpu_init opens the
+   device where Skia did, before seccomp.
+   UI/Trinity: Ladybird's GUI framework choice "Trinity"
+   (default on linux, no Qt): an empty Application, used
+   headless (--headless=screenshot) to prove the path; the
+   element will drive Application's event loop in orbiter.
+   The player logs "not ported: X" once per missing feature
+   (gradients, shadows, repeated backgrounds, layers/opacity,
+   masks, rounded/path clips, iframes, canvas, video, 3D).
+   clang 22 fix: ComputedValues.cpp lambda needs `-> bool`.
+   DONE (Sep 25 18:1x) FIRST PAGE: all of Ladybird builds on
+   trinity (no Skia, ANGLE or Qt) and `Ladybird
+   --disable-sandbox --headless=screenshot` renders a test
+   page right: heading, paragraph, red box, rounded green box,
+   blue border (scratch/shot.png). Fixed on the way:
+   - TypefaceTrinity copied bytes when no backing, then the
+     caller's set_font_data freed the copy (HarfBuzz SIGSEGV
+     on the font catalog thread): no copy now.
+   - webgfx tables locked (pthread mutex): fonts load on a
+     worker thread; FreeType faces made under the lock.
+   - trinity assets open relative to the cwd (models/uv-
+     quad2.gltf): webgfx cds to its share dir on first GPU
+     use (dladdr of its own library).
+   - Canvas's `load_existing [ true ]` never reaches Render's
+     field (a shadowing member): a pass after text cleared
+     the canvas black. webgfx passes load_existing: true.
+     OPEN (trinity): the shadowing Canvas.load_existing.
+   - PaintingSurface.write_from_bitmap now updates a wrapped
+     bitmap too (the screenshot came back empty).
+   Tests: webgfx 13/13 expects pass.
+   OPEN sandbox: the Compositor's Landlock list lacks
+   trinity's install and cache dirs; WebContent draws (SVG,
+   cursors) and needs the GPU too. Runs use --disable-sandbox.
+   DONE (Sep 25 evening) the browser element, browser/browser.ag.
+   Shape: Ladybird's UI side (LibWebView, its event loop and
+   mimalloc) stays out of orbiter's process. The element forks
+   the Trinity frontend (UI/Trinity/main.cpp, a HeadlessWebView
+   subclass) as one more helper: frames come back as rgba8 in
+   a shared file (TRINITY_BROWSER_SHM: header magic TRBW, seq,
+   w, h, stride; then pixels), input goes down a socketpair
+   as lines: size W H, load URL, mouse down|up|move|wheel x y
+   button held mods [dx dy], key down|up glfw_code mods,
+   text <utf8>. Closing the socket ends the helper.
+   Checked headless (socket press/text/key/wheel + shot):
+   draws the page at device size, click focuses, typing and
+   Backspace edit, a button's JS runs, wheel scrolls 120 px a
+   step, the scrollbar draws; colors exact (#9cf = 153,204,255).
+   Fixed on the way:
+   - silver: string literals given to a C vararg (execl) arrive
+     as objects, not text: '--disable-sandbox' became garbage,
+     the sandbox stayed on, Landlock refused trinity's shader
+     cache. Pass .chars of string locals (as qemu.ag does).
+   - C macros SIG_IGN / MAP_FAILED (casts to pointer) emit bad
+     IR; the element uses send(MSG_NOSIGNAL) on a socketpair and
+     `cast u64 [ m ]` for the mmap check.
+   - `func send` / arg names `line`, `msg` clash with existing
+     C and type names in scope: renamed post / words.
+   - trinity text_event/key_event gave a focused app element
+     each key twice (focus, then app_object): skipped when they
+     are the same element ("hihi" before).
+   - Textures of page pixels are `linear: true` (UNORM): the
+     sRGB default decoded once into a UNORM target, mid-tones
+     came out dark (element and webgfx_canvas_image).
+   - Compositor paints scrollbars between replays with the
+     surface passed in; the player used its replay surface
+     (null there): crash on any scrolling page.
+   - GLFW wheel up is Ladybird's minus (measured).
+   Orbiter: install/export/silver-browser.agi claims .html/.htm;
+   Editor.handler_module_for hosts `browser` on them (as qemu
+   on .img), so .html files now open in the browser view.
+   orbiter builds; NOT run inside orbiter yet (not asked).
+   TEMP: install/ladybird is a symlink to the scratch build
+   (/tmp/claude-1000/...); the import replaces it.
+   OPEN: sandbox (still --disable-sandbox), the import,
+   hidpi scale check, key repeat, cursor shape, page title,
+   navigation (back/forward/url bar), the gaps "not ported".
+   NEXT: the silver import of Ladybird (browser/ladybird.diff
+   from diff -ruN, vcpkg + cmake 4 + nasm + autoconf-archive
+   in bootstrap).
+   DONE (fixed below) separate bug: `silver --test trinity` traps in
+   trinity.ag `expect func test` when CanvasUI.vert must be
+   compiled in the test child: glslang "Unable to parse
+   built-ins". With the .spv cached it passes (exit 0).
+   CAUSE (checked): expects run inside the module's own ctor.
+   libsilver-trinity.so .init_array order: frame_dummy,
+   silver_trinity_initializer, trinity.cc, glslang
+   Initialize.cpp, Scan.cpp, hlslScanContext: the test compiles
+   a shader before glslang's statics exist. Reproduced with a
+   bare dlopen harness (no silver process). Owner: aether's
+   expect emission + silver.c link order (module .o first).
+   The empty static: glslang Scan.cpp:325 `const unordered_map
+   KeywordMap {..}` is filled by Scan.cpp's own ctor; before it
+   every keyword scans as IDENTIFIER. Only libraries hit this
+   (apps and live apps run module init from main).
+   FIX: aether emit_library_late puts a plain library's
+   expects/exports in exported <module>_late (late_symbol on
+   aether); silver.c late_object writes <name>-late.c, a ctor
+   calling it, linked after every lib (native link only; the
+   device link path is not done). trinity .init_array now ends
+   with silver_late. Checked: shader cache deleted, `silver
+   --test trinity` exit 0, no glslang errors, both CanvasUI
+   shaders compiled in the run; img exports run from
+   silver_img_late; webgfx 3/3; texttest (live app) draws.
+   OPEN separate: features t_vec_module fails: vec2f.add
+   returns y as garbage (libvec returns both floats in xmm0,
+   silver reads y from xmm1: the struct-return ABI bug in
+   memory). AGENTS said 213/213 on Sep 24; why it passed
+   then is not known.
+   Stray: my `touch vec/vec.ag` made an empty module that
+   overwrote make's install/build/vec.o; removed it and its
+   products, make rebuilt vec.o and libvec.so from src/vec.c.
+   silver's build made git tags vtmp-1.0.0 (a temp module,
+   deleted) and webgfx-1.0.0; I did not remove tags.
+2. OPEN the trinity player: the 26 draw commands (rects, rounded
+   rects, glyph runs, images, gradients, box shadows, paths,
+   lines, ellipses) plus clip, transform, layer, mask, filters.
+3. OPEN the element: spawn WebContent, serve the compositor
+   endpoints, load a local .html file, draw it (milestone 1).
+4. BUILT, not run: orbiter's title opens an address. A module
+   exports its schemes (`export protocols ['http', 'https']`
+   in browser.ag, read from its .agi); Enter on text with a
+   scheme some module exports hosts that module in the
+   active pane with the address as its argument
+   (Editor.open_url, host_module shared with launch_handler).
+   DONE (Sep 25) selection painted twice (rect and text):
+   - Canvas.sync_all called draw[] before sync_fence: the
+     last paint's shape drew a second time on every read.
+     sync_fence already submits the batch; draw[] removed.
+   - Canvas.set_clip stored clip_x/y/w/h that nothing read:
+     no Ladybird clip applied, so a line with a selection
+     drew its text twice. set_clip narrows `crop` now (what
+     shapes and text honor); an empty clip parks it off the
+     canvas. Checked on example.com: one 80% wash per line,
+     'ations.' ink 43,100 -> 34,268. webgfx and trinity
+     tests exit 0.
+   DONE the Trinity frontend never hands its URL to another
+   running Ladybird (should_coordinate_browser_process false):
+   a second element exited when one was already open.
+   Kalen's next three, in his order (Sep 25 evening):
+   a. PARTLY DONE slow rendering. Wikipedia per frame was
+      images 22-28 ms (a new texture per draw), rects 13-17
+      ms, text 5-7 ms, plus 17 full GPU waits (paint_n 64).
+      - images: one webgfx texture per decoded frame
+        (webgfx_image_new/free/canvas_draw_image), owned by
+        DisplayListStoredImageFrameResource: 25 ms -> 0.06.
+      - text draws in the Canvas's own batch (b below).
+      - Render.paint_n is public; Pipeline rings and uniform
+        buffers follow it (default 64); webgfx canvases use
+        1024 and one GPU wait per frame. The Canvas text
+        vertex ring follows paint_n; sync_all restarts it.
+      - Buffer.update_part: a text run copies only its bytes.
+      Long local text page scrolls at 29.7 frames/s.
+      FIXED (Sep 25 night) orbiter SIGSEGV at startup
+      (map_lookup under Texture_create_gpu, MilkyWay): my
+      bind_resources change made its write arrays `vec
+      VkWriteDescriptorSet [ n ]` etc., which overran the
+      heap. Back to fixed local arrays; rings over 64 slots
+      allocate and write their sets 64 slots at a time.
+      Checked: headless orbiter runs (was exit 139), long
+      page 54-57 frames/s, webgfx and trinity tests exit 0.
+      OPEN silver bug: a runtime-sized `vec <C struct> [ n ]`
+      is too small for n elements (found by elimination;
+      no focused test yet).
+      OPEN: Wikipedia scrolls at 2 frames/s with the GPU and
+      every process near idle: the Compositor is asked for
+      a frame every 0.5 s. Not drawing (a rAF page: 60/s).
+      OPEN: GlyphAtlas.upload_region waits the device idle
+      per new glyph; the Compositor holds ~600 nvidia fds.
+   b. DONE z order: text was its own Render (text_render) with
+      its own batch, sent at its 64-draw drain or read-back,
+      so text landed over shapes drawn after it. Removed:
+      text_pipeline's render is the Canvas; text_end draws
+      via Render.draw_with[ text_models ] in call order.
+      Checked: a red box over earlier text now covers it.
+   c. PARTLY DONE SVG icons. Wikipedia's icons are CSS masks
+      (an SVG mask over a background color).
+      - masks: the player keeps a stack of layer canvases
+        (pooled, surface size); push_mask draws the content
+        into one, pop_mask draws the mask into another and
+        webgfx_canvas_draw_layer puts the content down through
+        it (Canvas modes image_mask_alpha / _luma, 14 / 15).
+        The composite submits at once: a reused layer was
+        cleared before the page's batch had read it.
+      - repeated images, repeated tiles (their records replay
+        per tile, scaled) and tiled images (border-image).
+      - trinity path fill (sdf_walk_edges): a subpath never
+        closed (close ignored, no implicit close) and a
+        dropped short edge left a gap: horizontal streaks.
+      - trinity path fill: every path in a batch shared one
+        edge buffer written at paint time; the GPU read the
+        last path's edges for all (the tagline's second half,
+        trinity's canvas_test blob). Paths append at an offset
+        (CanvasSDFCompute.eo); the buffer restarts after a wait.
+        trinity test average now 16,32,53,80: the full blob
+        (before 2,5,8,12: only the inner shape, wrongly).
+      - even-odd fills (CanvasSDFCompute.even_odd).
+      Checked: masked circle, Wikipedia menu / search / more
+      icons and wordmark, tagline in full, even-odd hole.
+      OPEN: the globe logo needs gradients, layer opacity and
+      blend modes; a few streaks remain on it.
+   RECOVERY (Sep 25 23:00): a reboot emptied /tmp, and the
+   whole patched Ladybird tree and build lived in the session
+   scratch there. Replayed from this session's transcript onto
+   a fresh 3af73088 (checkout/lb/replay/replay.py), now in
+   /src/silver/checkout/lb/ladybird (gitignored), tools in
+   checkout/lb/tools, build script checkout/lb/build.sh.
+   The patch is kept in the repo as an overlay, not a diff:
+   browser/ladybird/ (every changed or new file, laid out as
+   the tree), browser/ladybird.deleted (files to remove),
+   browser/ladybird.commit (the base). install/ladybird ->
+   checkout/lb/ladybird/Build/release.
+   The replay leaked old trace edits into webgfx/webgfx.ag
+   (a doubled webgfx_gpu_init, a doubled import pair, trace
+   lines in webgfx_canvas_read); removed, webgfx tests exit 0.
+   DONE silver's import takes an overlay (Kalen): after the
+   clone and any <name>.diff, the module's <name>/ folder is
+   copied over the checkout and <name>.deleted (one path a
+   line) is removed from it (silver.c checkout). Checked with
+   a throwaway module importing cJSON: an added file, a
+   replaced file and a deleted file all right; removed after.
+   Applies on a fresh checkout only, as the diff does.
+   Rebuild checked: mask, stacking, even-odd, selection as
+   before. The replay had missed one fix (a script edited
+   webgfx and TypefaceTrinity together; its webgfx half
+   failed first): the font byte copy freed under HarfBuzz
+   (SIGSEGV in the font catalog thread). Re-applied.
+   DONE video frames (Kalen: YouTube played audio only). The
+   player drew nothing for DrawVideoFrame. Now each video
+   keeps one webgfx texture (DisplayListStoredVideoSinkResource),
+   a new frame (pool slot + acquisition id) is converted with
+   YUVData::to_bitmap and uploaded in place
+   (webgfx_image_update). Checked: a VP9 test clip plays (its
+   counter 224 at 7.467 s, 32 frames/s shown); YouTube Big
+   Buck Bunny plays after a click (0:12, picture moving).
+   OPEN: YouTube 60 fps shows 12 frames/s: the YUV to RGB
+   convert is on the CPU and each upload waits the GPU idle.
+   Next: upload the three planes, convert in a trinity shader.
+5. OPEN canvas 2D: the Canvas2DCommandStream replays on
+   trinity's Canvas in the element, as the display list does.
+6. LATER network, input, scrolling, canvas 2D, video, WebGL.
+
+## Active work: browser on WPE WebKit, trinity painting (Sep 26 2026)
+
+Decision (Kalen): WebKit is the only accepted browser stack;
+the Ladybird element is superseded. Port: WPE WebKit 2.54.0
+(source in checkout/wk/wpewebkit-2.54.0, gitignored).
+Why the pivot: Ladybird repainted every icon every frame into
+the final buffer; WebKit paints each layer into cached tiles
+once and composites the tiles (only damaged tiles repaint).
+Plan, option 2 (Kalen): trinity replaces Skia's PAINTING side
+(GraphicsContext, paths, gradients, patterns, images, fonts,
+ImageBuffer, tile rasterizing); WebKit's own tile caching and
+compositing logic stay, compositing through trinity. Skia is
+not built. The trinity work done for Ladybird carries over
+(webgfx, CanvasFont/FontMatch, paths, masks, YUV video).
+Survey: Skia is vendored (Source/ThirdParty/skia); WPE sets
+USE_SKIA ON, USE_CAIRO FALSE. 160 WebKit files outside Skia use
+it, 65 in WebCore/platform/graphics/skia; USE(SKIA) appears on
+479 lines. The seam: a USE(TRINITY) backend beside USE(SKIA).
+Disk: 26 GB free before any build; the Ladybird build in
+checkout/lb takes about 15 GB (ask Kalen before removing).
+1. DONE build dependencies, imported by browser/browser.ag
+   into install/: ruby 3.3.6 (generators), unifdef 2.12,
+   libgpg-error 1.51, libgcrypt 1.11.0, libtasn1 4.19.0,
+   libpsl 0.21.5, nghttp2 1.64.0, libsoup 3.6.5. Off to start:
+   XSLT, speech, AVIF, JPEG XL, LCMS, WOFF2, ATK, introspection,
+   docs, journald, sysprof, WebDriver, sandbox, legacy libwpe,
+   Wayland/DRM platforms (headless WPEPlatform stays), video.
+   silver: `name/ver from <url>.tar.{xz,gz,bz2}|.tgz` unpacks
+   the archive as the checkout (checkout/<owner>/<name>), then
+   <name>.diff, the <name>/ overlay and the usual build run.
+   Checked on libtasn1 (overlay file landed, built, installed);
+   features: only the known t_vec_module fails.
+2. DONE (Sep 26) USE(TRINITY) build: all of WPE WebKit builds
+   and links with Skia off (0 Skia symbols or libraries;
+   libWPEWebKit needs libsilver-webgfx.so). Installed into
+   install/ (helpers in install/libexec/wpe-webkit-2.0; they
+   need LD_LIBRARY_PATH=install/build:install/lib for webgfx).
+   FIRST PAGE: a headless test (scratchpad wk/shot.c: headless
+   WPEDisplay, load, webkit_web_view_get_snapshot, PNG out)
+   draws heading, paragraph, red box, rounded green box, blue
+   border right. Fixed on the way: whitespace drew the missing
+   glyph box; the HarfBuzz font is now a sub font whose glyph
+   lookups apply WebKit's space rules (as Skia's did).
+   Every change is kept as the overlay browser/wpewebkit/
+   (88 files, base in browser/wpewebkit.version).
+   Non-composited rendering is Skia-only: trinity pages always
+   use the layer tree.
+3. DONE, first page checked: GraphicsContextTrinity (webgfx canvas;
+   own CTM and device clip stacks; colors, rounded rects,
+   paths, strokes, images, tiled patterns, glyph runs; a CPU
+   backing for shareable bitmaps). Logged once as "not
+   ported": gradients (trinity has 2 stops only; a stop ramp
+   is next), shadows, dashes, clip-out, path clips (bounds),
+   transparency layers, blend modes.
+4. DONE, first page checked: fonts on TrinityTypeface + HarfBuzz
+   (FontPlatformData, Font metrics/bounds/outlines, GlyphPage,
+   FontCache via FontMatch, web fonts with variation axes,
+   FontCascade::drawGlyphs -> webgfx glyphs). Shaping reuses
+   skia/ComplexTextControllerSkia.cpp (pure HarfBuzz).
+5. DONE, first page checked: ImageBufferTrinityBackend (canvas,
+   read back on demand), TrinityPaintingEngine (dirty tiles on
+   one reused canvas, read into the BGRA tile buffer),
+   NativeImage, Pattern, ShareableBitmap, PNG via libpng
+   (TrinityPNG); WPE UI side (snapshot, cursor, favicons,
+   WebKitImage, notifications) off Skia. Compositing is still
+   WebKit's TextureMapper (GL): OPEN, move it to trinity.
+   DONE (Sep 26) gradients: trinity Canvas `fill_ramp` (a
+   256x1 stops image in the mask slot; linear, two-point
+   radial, conic; pad/reflect/repeat; device-to-gradient
+   matrix), webgfx_canvas_set_ramp, GraphicsContextTrinity
+   builds each ramp once (premultiplied blend, cached by hash).
+   webgfx t_canvas_ramp (red 255,0,0 / green 0,252,3 / blue
+   0,0,255 across a rect), webgfx and trinity tests exit 0.
+   Checked in WebKit: linear, hard stops, radial circle and
+   ellipse, conic from the top clockwise, repeating stripes.
+   NEXT: clips to a path's shape (rounded boxes fill square:
+   WebKit clips border-radius then fills; bounds used now).
+   OPEN: the silver import line for WebKit in browser.ag.
+6. DONE (Sep 26) the browser element runs WebKit. browser.ag
+   forks install/libexec/wpe-webkit-2.0/WPETrinityBrowser (the
+   overlay's Tools/TrinityBrowser/main.c, built by WebKit's own
+   CMake when USE_TRINITY): a headless WPE view; each frame
+   (the view's buffer-rendered signal) goes to the same shared
+   file as before (TRBW header, rgba8), DMA-BUF frames read
+   back through EGL + glReadPixels (gbm_bo_map fails on the
+   NVIDIA buffers), SHM frames copied; input lines as before
+   (size, load, mouse down|up|move|wheel, key, text) become
+   WPE events. A GLFW wheel value passes straight through
+   (negative scrolls down). Button-up needs press count 0
+   (else WPE returns no event). WebKit binaries carry RPATH
+   install/lib:install/build (configure.sh; a copy is
+   browser/wpewebkit.configure.sh): no LD_LIBRARY_PATH.
+   Checked: helper alone (202 frames in ~5 s, Wikipedia);
+   element headless over its socket: click focuses, typing,
+   Backspace, a button's script, helper dies with the element;
+   `browser <url>` shows Wikipedia at 1280x800.
+   Launch: `silver browser https://en.wikipedia.org/wiki/WebKit`.
+   OPEN: zero-copy frames (hand the DMA-BUF to a trinity
+   Vulkan texture instead of GPU->CPU->GPU); hidpi scale;
+   path clips.
+   DONE (Sep 26) masked icons (Wikipedia's menu, search,
+   languages...). WebKit paints a CSS mask as a layer with the
+   color, a destination-in layer inside it with the mask, then
+   ends both; transparency layers were not ported, so the mask
+   painted on top and the square was never cut. Now each layer
+   is a pooled canvas (GraphicsContextTrinity pushLayer/
+   popLayer); a destination-in layer becomes the mask of the
+   layer around it, and a layer ends with one trinity call,
+   Canvas.compose [ src, mask, luma, alpha, x y w h ] (one
+   CanvasUI shader: mask modes 14/15, or the image mode).
+   A mask test over file:// never drew: CSS masks load with
+   CORS; test over http. webgfx and trinity tests exit 0.
+   Rounded clips (Sep 26): shape clips, clip-out and image
+   clips became layers kept through a mask; boxes round right
+   (test page) but it broke the icons again: a clip layer
+   hides the content drawn before it from a later
+   destination-in layer. Kalen's direction: CanvasUI conforms
+   to WebKit's W3C primitives (composite ops, shadows, clip as
+   shader state, one gradient path), glow/shadow states move to
+   that interface with no parallel functions. Waiting on his
+   calls: glow_falloff, blend-mode method, style names.
+   Scroll lag (Sep 26), measured with a wheel every 1/60 s:
+   a long plain page scrolls at 62 frames/s, no gap over 25
+   ms (frame path is fine). Wikipedia: 40-170 ms stalls; its
+   content, sidebars and scrollbar tiles repaint every frame
+   (the page's sticky header and contents highlighting), and
+   per second: layer push/pop 2000-6900 (66-274 ms), shape
+   clips 800-3300 (90-224 ms), glyph runs 15-19k (130 ms),
+   tile read back + swizzle 300-450 ms. Fixed: tile read back
+   copies only the tile (Texture.read_region, kept staging
+   buffer, in-band layouts; webgfx_canvas_read_region, test
+   t_canvas_read_region): scrollbar read 73 -> 14 ms/s.
+   NEXT: the W3C shader (removes the clip layers), then glyph
+   runs and GPU tile buffers (no read back).
+   perf and gdb attach are blocked here (perf_event_paranoid
+   4, ptrace_scope 1): profile with timing in the code.
+
+## Active work: CanvasUI on W3C primitives (Sep 26 2026)
+
+Kalen: the uber shader conforms to WebKit's W3C primitives;
+trinity's glow/shadow states move to that interface, no
+parallel functions; Gaussian shadows; styles renamed too.
+Blend modes read a copy of the destination (works on every
+GPU, MoltenVK included).
+1. DONE composite operators: vk.ag `enum Composite` (WebKit's
+   order), Pipeline.composite picks a pipeline built per
+   operator on first use (build_graphics: Porter-Duff factors,
+   composite_source/destination_factor); Canvas.set_composite.
+   plus_darker and difference still blend as source-over.
+2. DONE clip as shader state, CanvasUI and CanvasText:
+   rounded-rect clip computed in the shader (clip_rect,
+   clip_radii; Canvas.clip_rounded_rect when the transform is
+   axis-aligned), else a clip-mask canvas in a 4th texture
+   slot `clip` (clip_to_path, clip_out_path, clip_to_image;
+   masks stack with save/restore, pooled; a pooled mask is
+   reused only after sync_all). Every fragment exit scales by
+   the clip; destination-in keeps the destination outside it.
+   Helper GLSL funcs compile into the vertex stage too: no
+   gl_FragCoord or discard in them. webgfx tests:
+   t_canvas_clip_rounded, t_canvas_clip_path_out,
+   t_canvas_destination_in (all pass, webgfx/trinity exit 0).
+3. DONE Gaussian shadows: 4 slots (shadow_color0-3,
+   shadow_geom0-3 = x y blur spread, shadow_inset), the CSS
+   erf edge from the shape's distance (rect/rrect analytic,
+   paths from the SDF, which is padded by shadow_reach);
+   outer shadows hidden under the box, inset inside the fill;
+   Canvas.shadow / box_shadow / no_shadows. Removed:
+   inner/outer glow and shadow, stroke_shadow, glow_sides,
+   glow_falloff, the lit-side bevel, sdf_rounded_rect_glow.
+   Segmented buttons (trinity, orbiter Git) glow one side by
+   clipping to the segment and drawing a wider box with an
+   inset shadow. WebKit drop shadows map to slot 0 (legacy
+   radius doubled; ignore-transforms scaled). webgfx tests
+   t_canvas_shadow_outer, _inset (erf falloff matches CSS).
+   OPEN: text and image shadows; elliptical border radii.
+4. PARTLY DONE one gradient path: Gradient objects now paint
+   through the ramp (Canvas.gradient_ramp, cached by stops;
+   use_gradient with the inverse transform; conic start angle
+   in ramp_geom.z) - the colour wheel and the scroll-edge fade
+   bands use it. OPEN: the two-stop fill_grad, stroke_grad and
+   text_grad state and the Layer fill_gradient_* props.
+5. DONE Canvas.color_filter [ hue, saturate, brightness ]
+   (the spec's matrices) replaces colorize/HSV; webgfx
+   t_canvas_filter_saturate (red -> 54,54,54). OPEN: WebKit's
+   CSS filter property runs through its FilterEffect code,
+   not GraphicsContext state: not drawn yet.
+6. PARTLY DONE styles: Layer box_shadow and text_shadow
+   (BoxShadow: CSS [inset] x y blur spread color, or none;
+   transitions mix) replace fill_shadow, fill_glow,
+   inner_glow, stroke_shadow, stroke_glow, label_shadow*,
+   label_glow; orbiter (33) and hyperspace (3) styles and
+   orbiter's inner_glow calls moved. orbiter builds;
+   hyperspace fails at ts_load (not from this change).
+   OPEN: gradient props (item 4).
+7. PARTLY DONE GraphicsContextTrinity: clips are canvas state
+   (clipRoundedRect analytic, clipPath/clipOut/image masks),
+   layers compose with their own operator; clip layers gone.
+   Wikipedia icons and rounded boxes both right. Scroll:
+   41 -> 48-54 frames/s, worst stall 172 -> 66-76 ms.
+8. DONE text selection lag (Kalen: "selecting text is also
+   super slow"). Each selection paint clipped out every
+   out-of-flow box (RenderBlock::selectionGaps), and each
+   clipOut(rect) made a new mask canvas (clip_push_mask never
+   pooled the one it replaced). Now: up to 4 clip-out rects
+   are analytic in CanvasUI and CanvasText (clip_out0-3,
+   count in clip_on.w; Canvas.clip_out_rect, a mask past 4 or
+   under rotation), the replaced mask goes back to the pool,
+   webgfx_canvas_clip_out_rect. webgfx t_canvas_clip_out_rects.
+   Drag over Wikipedia 6.7 -> 25.7 frames/s; over solid text
+   42-45 frames/s. Every move that changes the selection
+   paints in 1-7 ms; the frame gaps left are moves where the
+   selection end does not change (WebKit asks for no paint:
+   checked with timestamps in LayerTreeHost and WebPage).
+   Profiling without perf: an LD_PRELOAD SIGPROF sampler and
+   strace -f on the helper (a child, so ptrace is allowed).
+
+## MEMORY: trinity replaced Skia under a real browser (Sep 25 2026)
+
+What was profound: a full web engine (Ladybird: HTML, CSS,
+JS, networking, fonts, SVG) draws every pixel through trinity,
+our own GPU canvas, with no Skia, ANGLE or Qt. Kalen's rule
+held from start to finish: "Skia is a canvas. WE HAVE THAT."
+The only new code is glue; every drawing job lands in trinity.
+It also paid trinity back: the browser found four bugs that
+hurt every trinity app (below), not just the browser.
+
+How the swap works:
+- Ladybird draws through a few narrow seams: Gfx::PathImpl,
+  Gfx::Typeface, PaintingSurface, Painter and the display list
+  player. Each Skia class there got a Trinity twin (PathTrinity,
+  TypefaceTrinity, PainterTrinity, DisplayListPlayerTrinity),
+  and Skia's files are deleted.
+- The bridge is webgfx, a silver module exporting plain C
+  functions (fonts, paths, canvases, images, layers), with
+  objects passed as small integer ids. Au headers cannot enter
+  Ladybird's C++ (Au's get/set/len/push macros break AK), so C
+  is the boundary.
+- Fonts: trinity CanvasFont loads from bytes, measures, and
+  draws by glyph number; FontMatch (fontconfig) picks system
+  fonts. HarfBuzz still shapes in Ladybird.
+- Frames: Ladybird's own processes stay (WebContent, network,
+  Compositor). The Compositor replays each frame's display list
+  onto a trinity canvas; the Trinity frontend hands finished
+  frames to the browser element in shared memory, and input
+  goes back as text lines on a socket.
+- Masks and layers: an offscreen trinity canvas per layer,
+  composited through the mask by a Canvas shader mode.
+
+Bugs the browser exposed in trinity itself:
+- Canvas.sync_all drew the last shape twice on every read.
+- Canvas.set_clip stored a clip nothing read: no clip worked.
+- Text rendered in its own batch, so it could land on top of
+  shapes drawn after it (z order).
+- Path fills: subpaths never closed, and every path in a batch
+  shared one edge buffer, so paths drew with another's shape.
+
+Lessons:
+- Keep work out of /tmp: a reboot wiped the whole patched tree
+  (recovered by replaying the transcript). It lives in
+  checkout/lb now, and the patch as an overlay in browser/.
+- Speed came from reusing GPU work: one texture per image
+  (not per draw), one GPU wait per frame (paint_n 1024).
+- A runtime-sized `vec <C struct> [ n ]` overran the heap in
+  silver: keep fixed local arrays for Vulkan structs (OPEN).
+
+## Active work: YouTube through MediaSource on trinity (Sep 26 2026)
+
+Kalen: YouTube says "can't play this video", or plays one frame
+in 30 s; performance is awful. Reproduced: a page has no
+MediaSource (YouTube needs it), so YouTube gives up. Stage c
+of the media memory below, done as a streaming backend.
+1. OPEN Demux reads fragmented mp4: an init segment (moov +
+   mvex) and media segments (moof: tfhd, tfdt, trun; mdat),
+   appended in pieces as they arrive.
+2. OPEN VideoStream in trinity: samples in decode order,
+   decoded ahead on a worker thread; frames by time.
+3. OPEN streaming AAC: packets decoded as they arrive into a
+   mixer voice; the sound's position is the clock.
+4. OPEN WebKit MediaSource: ENABLE_MEDIA_SOURCE, trinity
+   MediaSourcePrivate / SourceBufferPrivate / MediaSample,
+   the player's MediaSource path; H.264 + AAC in mp4 only, so
+   YouTube serves those.
+5. OPEN video as its own compositing layer: frames stay on
+   the GPU, not repainted into page tiles and read back.
+6. OPEN YouTube checked: plays, seeks, sound, frames/s.
+7. OPEN YouTube page speed (Kalen: "performance is absolutely
+   awful"): measure scrolling and clicks on youtube.com, then
+   fix what the measurement shows.
+
+## MEMORY: media in the browser, played through trinity (Sep 26 2026)
+
+The browser element's engine is now WPE WebKit 2.54.0 (checkout
+checkout/wk/wpewebkit-2.54.0, overlay browser/wpewebkit/, its
+configure line browser/wpewebkit.configure.sh). WebKit lays out
+and runs pages; trinity draws. This entry covers video and
+sound: everything done Sep 25-26, why, and what is left.
+
+### Why it started (Kalen's reports, in order)
+1. Captchas everywhere. WPE sent its own Linux/WPE user agent,
+   which few real visitors send. Fix: the helper
+   (Tools/TrinityBrowser/main.c) sets Safari 18.5 on macOS as
+   the agent (webkit_settings_set_user_agent) and a
+   document-start user script makes navigator.platform
+   'MacIntel', so the two agree. Checked with a local server:
+   header and page both say Mac. Whether captchas stop: not
+   confirmed.
+2. youtube.com stopped at its grey placeholder columns. Found
+   with the helper's console on stdout
+   (enable-write-console-messages-to-stdout, temporary): the
+   main script threw "ReferenceError: Can't find variable:
+   HTMLVideoElement". WPE was configured ENABLE_VIDEO=OFF, and
+   WPE ties video to GStreamer. Kalen chose a trinity media
+   backend, no GStreamer (GStreamer is not installed at all).
+
+### Stage a: video on without GStreamer (DONE)
+- Source/cmake/GStreamerDependencies.cmake: the line
+  WEBKIT_OPTION_DEPEND(ENABLE_VIDEO USE_GSTREAMER) removed.
+- Source/WebCore/platform/GStreamer.cmake: returns at the top
+  when USE_GSTREAMER is off (its sources compiled whenever
+  video was on and failed on Gst types).
+- Source/WebKit/GPUProcess/media/trinity/
+  RemoteMediaPlayerProxyTrinity.cpp (new, listed in
+  Source/WebKit/SourcesWPE.txt): the per-backend
+  RemoteMediaPlayerProxy::mediaPlayerFirstVideoFrameAvailable,
+  else a link error.
+- configure.sh: -DENABLE_VIDEO=ON.
+Result: YouTube's app starts (signed-out "Try searching").
+
+### Stage b: the trinity media player (DONE)
+The chain, from network to screen:
+WebKit fetches the file -> webgfx (silver, C calls) -> trinity
+Demux reads mp4 -> trinity Decoder decodes h.264 on the Vulkan
+video queue -> y, u, v planes -> three webgfx plane textures ->
+the Canvas's yuv mode converts to rgb on the GPU while the page
+tile paints. Sound: spectra decodes AAC with faad2 into one
+AudioClip; an AudioMixer voice plays it from the video's time.
+
+Media runs in the WEB process: the GPU process for media is on
+by default only on Mac (GPU_PROCESS_BY_DEFAULT is Cocoa-only).
+The RTX 3060 offers Vulkan decode for H.264, H.265, VP9, AV1.
+
+trinity/vk.ag
+- Enables VK_KHR_video_decode_queue and _decode_h264 (beside
+  encode; sync2 and video_queue enabled once for both) and a
+  decode queue: vk.decode_family / vk.decode_queue, a video
+  family other than compute and encode. Extension list 16.
+
+trinity/trinity.c + trinity/video.h (C, because the H.264
+standard structs are bitfields silver cannot write, as for the
+encoder's h264_sps helpers already there)
+- h264d_new/free, h264d_config (avcC: nal length size, SPS,
+  PPS), h264d_sample (one length-prefixed sample: returns 1
+  when a picture is ready), h264d_params_dirty / h264d_params
+  (SPS/PPS as session parameters), h264d_vk (fills the Vulkan
+  begin-coding and decode infos, all pointing into the
+  decoder's own storage), h264d_decoded (after the GPU decode:
+  reference marking and display order), h264d_output (next
+  picture in display order: its slot and pts), h264d_flush.
+- Parses SPS (profiles with chroma_format_idc, scaling lists,
+  POC types, cropping, VUI incl. max_num_reorder_frames),
+  PPS (incl. transform_8x8 and scaling lists), and each slice
+  header up to dec_ref_pic_marking (the GPU reads the rest:
+  Vulkan builds the reference lists itself).
+- Picture order count types 0, 1 and 2; 17 slots; sliding
+  window and all MMCO ops (1-6, 5 resets POC and frame_num);
+  IDR and MMCO5 push every waiting picture out first. Frames
+  only: field pictures are refused.
+- A picture in the output queue keeps its slot until taken
+  (queued flag); the new picture's slot is chosen in h264d_vk,
+  after the caller drained the queue. Otherwise a bumped frame
+  could be overwritten before it was copied out.
+- Slices go to the GPU as 00 00 01 + NAL, with slice offsets.
+  In vkCmdBeginVideoCoding the slot being set up is listed
+  with slotIndex -1.
+- nv12_split (coded-size NV12 to display-size y, u, v) and
+  yuv_rgba (limited range, 601 or 709; tests only).
+
+trinity/video.ag
+- class VideoFrame: y, u, v (vec u8) and pts; rgba[] for tests.
+- class Decoder: config[ avcc, n ] makes the session (profile
+  from the SPS, 8-bit 4:2:0 progressive), session memory,
+  parameters (remade when the SPS/PPS set changes), one
+  17-layer NV12 image that is both reference slots and output
+  (needs DPB_AND_OUTPUT_COINCIDE; logs and refuses otherwise),
+  a host-visible bitstream buffer (grows, size aligned to the
+  caps), a host-visible plane buffer. decode[ data, n, pts ]
+  decodes synchronously (fence wait) and puts finished frames
+  in display order into frames. finish[] flushes at the end.
+- Frames come back through the CPU: copy the layer's two planes
+  to the host buffer, split into y/u/v at display size. No
+  per-pixel colour work on the CPU.
+
+trinity/demux.ag (new; `import demux` in trinity.ag)
+- class Demux: read_bytes[ bytes, n ] walks moov/trak/mdia/
+  minf/stbl (+ edts). class DemuxTrack: kind (1 video, 2
+  audio), codec (four bytes as i64), timescale, duration,
+  config (avcC, or AAC AudioSpecificConfig from esds), size or
+  channels/rate, and per sample offsets, sizes, dts, cts, sync.
+  pts[ i ] = dts + cts - shift; shift is the edit list's first
+  media time (elst): without it every frame was 2 frames late.
+- Progressive mp4 only; fragmented mp4 (moof) is stage c.
+
+spectra/spectra.ag
+- aac_clip[ asc, asc_n, data, offsets, sizes, skip ] ->
+  AudioClip: AAC packets from any container, priming frames
+  skipped (the audio track's edit-list shift).
+- AudioMixer.voice_seek[ h, frame ]: software mix only.
+
+webgfx/webgfx.ag (the C boundary WebKit calls; imports spectra)
+- class WebVideo: its own copy of the file bytes, Demux, the
+  first avc1 track, a Decoder, three plane ids (y, u/2, v/2),
+  bt709 (height >= 720), the AAC clip, a voice, a gain.
+- webgfx_video_new(bytes, size) -> id (0 = unplayable),
+  webgfx_video_free, webgfx_video_info(id, &w, &h, &seconds),
+  webgfx_video_has_audio, webgfx_video_advance(id, seconds)
+  (decodes only as far as needed; shows the latest frame at or
+  before the time; a later frame waits unless nothing is on
+  screen yet; 1 when a newer frame went up),
+  webgfx_video_seek (restarts the decoder at the key frame at
+  or before the time), webgfx_video_play(id, seconds) /
+  _pause / _volume (one shared AudioMixer at 48 kHz, started on
+  first sound), webgfx_canvas_draw_video(canvas, id, dst)
+  (limited-range rows for draw_yuv).
+- Tests (silver --test webgfx, all pass): t_video_decode (48/48
+  frames of media/clip.mp4, High profile with B-frames, in
+  display order; written to install/tmp/clip-decoded.rgba and
+  each within ~48.6 dB PSNR of ffmpeg's frame: rgb rounding
+  only), t_video_draw (frame at 1 s drawn on a canvas is frame
+  24; luma 40 dB; chroma edges differ because the GPU smooths
+  chroma), t_video_steps (90 steps at 60 a second, every frame
+  as wanted), t_video_audio (media/av.mp4's AAC tone: 48 kHz,
+  440 cycles a second, ~2 s).
+- ffmpeg on this machine is used ONLY to make test clips and
+  reference frames, never inside the browser.
+
+WebKit (checkout and overlay)
+- VideoFrame.h: virtual isTrinity() under USE(TRINITY).
+- platform/graphics/trinity/VideoFrameTrinity.h (new): a frame
+  that names a webgfx video id; type traits for downcast.
+- GraphicsContextTrinity.h/.cpp: drawVideoFrame draws a
+  VideoFrameTrinity with webgfx_canvas_draw_video, others as
+  the base does. Page tiles paint straight onto this context
+  (TrinityPaintingEngine), so paint() reaches it.
+- platform/graphics/trinity/MediaPlayerPrivateTrinity.h/.cpp
+  (new, in platform/SourcesTrinity.txt): engine Trinity for
+  video/mp4, video/quicktime, video/x-m4v with avc1, avc3,
+  mp4a codecs (refuses MediaSource/stream decoding types).
+  load() fetches the whole file with the element's
+  PlatformMediaResourceLoader (TrinityMediaClient gathers the
+  bytes), then webgfx_video_new; states go HaveMetadata ->
+  HaveEnoughData, Loaded. A 60 Hz RunLoop timer shows the
+  frame for a monotonic clock (m_from + elapsed x rate); ends
+  at the duration. play/pause/seek/volume/mute drive the sound.
+  paint() draws m_frame through drawVideoFrame.
+- MediaPlayer.cpp registers it (USE(TRINITY) && !USE(GSTREAMER)).
+  MediaPlayer.h (MediaPlayerType::Trinity), MediaPlayerEnums.h
+  and Shared/WebCoreArgumentCoders.serialization.in
+  (MediaEngineIdentifier Trinity).
+- WebGfx.h declares the webgfx video calls.
+
+### How it was checked in the browser
+- A local server (python http.server) serves a page with a
+  <video>; the page fetches /report?t=... every 0.5 s so its
+  clock shows in the server log; frames are read from the
+  helper's shared file (TRINITY_BROWSER_SHM: 32-byte header,
+  magic TRBW, seq, w, h, stride; then rgba).
+- 10 s 640x360 clip: 300 frame changes in 582 ticks (every frame
+  once), frame 226 (7.533 s) matched the page clock, ended at
+  10.00, error none.
+- Sound: unmuted autoplay is blocked (as in any browser); a
+  click sent down the helper's input ("mouse down x y 0 1 0")
+  starts it. pactl then lists "ALSA plug-in [WPEWebProcess]",
+  uncorked, 100%. Not heard by me.
+- WebKit rebuild: ninja -C checkout/wk/wpewebkit-2.54.0/build,
+  then `ninja ... install`: the helper loads the INSTALLED
+  libWPEWebKit (its rpath), so a build without install still
+  runs the old code.
+
+### Bugs found and fixed on the way (all mine)
+- Edit lists ignored: all times 2 frames late (1024 ticks).
+- A decoded future frame was shown early when nothing was due:
+  video ran twice as fast at 60 Hz ticks on 30 fps content.
+- free[] on memory from `new f32 [ n ]` (silver-owned): crash.
+- An inline `vk_context []` inside a Window constructor is not
+  owned by anything: freed mid-use ("Invalid device").
+
+### Silver compiler bugs met (OPEN, worked around)
+- `v.push[ w[ i ] ]` (w a vec i64) pushes the element's
+  ADDRESS: ctts offsets came out as 98715440282664, +16 a
+  sample. Read into a local first.
+- `is`, `signed` and `parse` are taken names (keyword, type,
+  Au method): use box_is, neg, read_bytes.
+- Function arguments are read-only: copy to a local to walk.
+- A VkResult cannot interpolate into a string: i32[ res ].
+
+### Limits and what is next
+- Whole file downloads before play; no range requests.
+- Planes cross the CPU once per frame (copy + upload).
+- Rates other than 1 keep sound at 1x; the picture follows a
+  plain clock, not the audio clock (long videos can drift).
+- H.264 + AAC in mp4 only; field video refused; no VP9/AV1 yet
+  (the GPU could decode them).
+- Mac: coreaudio mixer path has no voice seek.
+- NEXT, stage c: MediaSource. YouTube streams through it.
+  Needs ENABLE_MEDIA_SOURCE, fragmented mp4 (moof/traf/trun)
+  in Demux, SourceBuffer append/remove, and advertising only
+  avc1/mp4a so YouTube serves H.264 + AAC.
 
 ## MEMORY: the reload transition (Sep 22 2026, fixed)
 

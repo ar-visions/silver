@@ -178,6 +178,7 @@ forward(evar)
     M(A,U,i, prop,     public,  i32,                      stack_test) \
     M(A,U,i, prop,     public,  enode,                    last_return) \
     M(A,U,i, prop,     public,  efunc,                    fn_init) \
+    M(A,U,i, prop,     public,  string,                   late_symbol) \
     M(A,U,i, prop,     public,  callback,                 prepare_record) \
     M(A,U,i, prop,     public,  callback_extra,           emit_overrides) \
     M(A,U,i, prop,     public,  callback_extra,           parse_f) \

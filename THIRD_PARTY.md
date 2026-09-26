@@ -32,6 +32,12 @@ Keep it in step with the imports.
 | Mesa | 26.2.2 | os-bootstrap | https://gitlab.freedesktop.org/mesa/mesa | MIT (with other permissive parts) | The Mesa 3D project |
 | libuev | v2.4.1 | features | https://github.com/troglobit/libuev | MIT | Flemming Madsen, Joachim Wiberg |
 
+## System libraries (linked from the OS, not fetched)
+
+| dependency | used by | source | license | authors |
+|---|---|---|---|---|
+| Fontconfig | trinity (FontMatch, linux) | https://gitlab.freedesktop.org/fontconfig/fontconfig | MIT-style (HPND, see its COPYING) | Keith Packard and the Fontconfig contributors |
+
 ## Files fetched by url
 
 | file | used by | source | license | authors |

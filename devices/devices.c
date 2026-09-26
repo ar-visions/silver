@@ -1029,6 +1029,11 @@ static void kms_open_drm(void) {
         snprintf(path, sizeof(path), "/dev/dri/card%d", i);
         int fd = open(path, O_RDWR | O_CLOEXEC);
         if (fd < 0) continue;
+        // the boot framebuffer is not the gpu: never scan out there
+        drmVersion* ver = drmGetVersion(fd);
+        bool fw = ver && ver->name && !strcmp(ver->name, "simpledrm");
+        if (ver) drmFreeVersion(ver);
+        if (fw) { close(fd); continue; }
         drmModeRes* res = drmModeGetResources(fd);
         if (!res) { close(fd); continue; }
         for (int c = 0; c < res->count_connectors && g_drm_fd < 0; c++) {
@@ -1736,8 +1741,9 @@ platform_window* platform_window_create(int width, int height, const char* title
         return w;
     }
     w->win = xcb_generate_id(g_conn);
-    uint32_t mask = XCB_CW_BACK_PIXEL | XCB_CW_EVENT_MASK;
-    uint32_t values[2] = { g_screen->black_pixel,
+    // X leaves the old pixels in place until trinity presents
+    uint32_t mask = XCB_CW_BACK_PIXMAP | XCB_CW_BIT_GRAVITY | XCB_CW_EVENT_MASK;
+    uint32_t values[3] = { XCB_BACK_PIXMAP_NONE, XCB_GRAVITY_NORTH_WEST,
         XCB_EVENT_MASK_KEY_PRESS | XCB_EVENT_MASK_KEY_RELEASE | XCB_EVENT_MASK_BUTTON_PRESS |
         XCB_EVENT_MASK_BUTTON_RELEASE | XCB_EVENT_MASK_POINTER_MOTION |
         /* the implicit button grab reports motion by THIS mask */

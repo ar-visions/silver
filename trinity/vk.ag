@@ -156,7 +156,7 @@ class Render
     # a slot is reused only after its submit retired: 3 stalled the fourth
     # batch of a frame on the first; the arrays hold 8
     intern  ring_n                         : i32 [ 8 ]    # frames-in-flight (command-buffer/fence ring)
-    intern  paint_n                        : i32 [ 64 ]   # batch ceiling: paints per command buffer before drain
+    public  paint_n                        : i32 [ 64 ]   # batch ceiling: paints per command buffer before drain
     intern  ring_last                      : i32           # most recently submitted slot (sync_fence target)
     intern  ring_primed                    : vec i32 [8]   # slot has a pending submit to wait on (0/1)
     intern  ring_has                       : vec i32 [8]   # slot holds a fence borrowed from the pool (0/1)
@@ -353,6 +353,40 @@ class Render
             color.transition_in[ vk_command_buffer, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
         recording = true
 
+    # clear inside this render's own batch: no submit, no wait
+    public func clear_recorded [ c: vec4f ]
+        if [ !color || !color.vk_image ] return
+        begin_record[]
+        if [ pass_open ]
+            vkCmdEndRenderPass[ vk_command_buffer ]
+            pass_open = false
+        color.transition_in[ vk_command_buffer, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ]
+        cv : VkClearColorValue
+        cv.float32[0] = c.x
+        cv.float32[1] = c.y
+        cv.float32[2] = c.z
+        cv.float32[3] = c.w
+        rng : VkImageSubresourceRange [
+            aspectMask:     VK_IMAGE_ASPECT_COLOR_BIT,
+            baseMipLevel:   0,
+            levelCount:     1,
+            baseArrayLayer: 0,
+            layerCount:     1
+        ]
+        vkCmdClearColorImage[ vk_command_buffer, color.vk_image,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, @cv, 1, @rng ]
+        color.transition_in[ vk_command_buffer, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
+
+    # end the batch readable by later work, sent without a wait
+    public func seal [ ]
+        if [ !color || !color.vk_image ] return
+        begin_record[]
+        if [ pass_open ]
+            vkCmdEndRenderPass[ vk_command_buffer ]
+            pass_open = false
+        color.transition_in[ vk_command_buffer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
+        flush_submit[]
+
     # close + submit the open batch (once). NO semaphores — batched canvases are never
     # the swapchain blit (that path stays on draw_immediate).
     public func flush_submit [ ]
@@ -384,6 +418,10 @@ class Render
         # UBO clobber on the gutter overlays. draw_slot free-runs; only a real drain rewinds it.
 
     public func draw [ ]
+        draw_with[ models ]
+
+    # record mods into this render's batch, in call order
+    public func draw_with [ mods: vec Model ]
         # width/height may have been assigned since the last frame (avatar
         # settle, pane resize) — rebuild attachments BEFORE the render pass
         # uses the new extent, or it begins against the stale framebuffer
@@ -396,7 +434,7 @@ class Render
         # reduction renders (two-pass) + the swapchain blit (semaphores/present) can't
         # batch — they record+submit in one shot, as before.
         if [ reduce > 0 || bool[ vk_swap_image ] ]
-            draw_immediate[]
+            draw_immediate[ mods ]
             return
         # batched paint: accumulate into the canvas's open command buffer. each paint
         # uses the next descriptor/UBO slot; the submit waits until sync_fence.
@@ -407,14 +445,14 @@ class Render
         # if one is open from prior paints, close it before dispatching.
         has_compute : bool [ false ]
         if [ !compute_skip ]
-            for [ m: Model ] in models
+            for [ m: Model ] in mods
                 for [ p: Pipeline ] in m.pipelines
                     if [ p.vk_compute ] has_compute = true
         if [ has_compute && pass_open ]
             vkCmdEndRenderPass[ frame ]
             pass_open = false
         if [ has_compute ]
-            for [ m: Model ] in models
+            for [ m: Model ] in mods
                 smd9 : i32 [ (m.s) ? i32[ m.s.states ] : 0 ]
                 if [ smd9 != 0 && (state_mask & smd9) != smd9 ] continue
                 for [ p: Pipeline ] in m.pipelines
@@ -451,7 +489,7 @@ class Render
             ]
             vkCmdBeginRenderPass[ frame, render_pass_info, VK_SUBPASS_CONTENTS_INLINE ]
             pass_open = true
-        for [ m: Model ] in models
+        for [ m: Model ] in mods
             smb9 : i32 [ (m.s) ? i32[ m.s.states ] : 0 ]
             if [ smb9 != 0 && (state_mask & smb9) != smb9 ] continue
             for [ p: Pipeline ] in m.pipelines
@@ -464,7 +502,7 @@ class Render
         if [ draw_slot >= paint_n ]
             sync_fence[]
 
-    func draw_immediate [ ]
+    func draw_immediate [ mods: vec Model ]
         s : i32 [ ring_i ]
         if [ ring_primed[s] != 0 ]
             vkWaitForFences[ vk.device, 1, @vk_fences[s], VK_TRUE, UINT64_MAX ]
@@ -528,7 +566,6 @@ class Render
                 extent: VkExtent2D [ fw, fh ]
             ] ]
             clear_values: local VkClearValue [2]
-            mc : i64 [ models->count ]
 
             clear_values[0].color.float32[0] = clear_color.x
             clear_values[0].color.float32[1] = clear_color.y
@@ -541,7 +578,7 @@ class Render
             # Pipeline.dispatch is a no-op for graphics-only pipelines, so this
             # loop is safe to run over every pipeline.
             if [ i == 0 ]
-                for [ m: Model ] in models
+                for [ m: Model ] in mods
                     sm9 : i32 [ (m.s) ? i32[ m.s.states ] : 0 ]
                     if [ sm9 != 0 && (state_mask & sm9) != sm9 ] continue
                     pc : i64 [ m.pipelines.count ]
@@ -566,7 +603,7 @@ class Render
                 frame, render_pass_info, VK_SUBPASS_CONTENTS_INLINE ]
 
             if [ i == 0 ]
-                for [ m: Model ] in models
+                for [ m: Model ] in mods
                     sm9 : i32 [ (m.s) ? i32[ m.s.states ] : 0 ]
                     if [ sm9 != 0 && (state_mask & sm9) != sm9 ] continue
                     if [ m.run_n > 0 ]
@@ -968,6 +1005,9 @@ class vk_context
     # the h.264 encoder's queue; -1 family = no video encode on this device
     intern  encode_queue        : VkQueue
     intern  encode_family       : i32 [ -1 ]
+    # the h.264 decoder's queue; -1 family = no video decode
+    intern  decode_queue        : VkQueue
+    intern  decode_family       : i32 [ -1 ]
     # one queue, any thread: a reload inits its instance beside a live one
     public  qlock               : mutex
     # a command pool is one thread's: the reload's init thread gets its own
@@ -1347,6 +1387,8 @@ class vk_context
         video_queue_supported   : bool false
         video_encode_supported  : bool false
         video_h264_supported    : bool false
+        video_decode_supported  : bool false
+        video_h264d_supported   : bool false
         sync2_supported         : bool false
         swapchain_ext         : symbol VK_KHR_SWAPCHAIN_EXTENSION_NAME
         for [ i: u32 0, i < ext_count, i += 1 ]
@@ -1360,6 +1402,10 @@ class vk_context
                 video_encode_supported = true
             if [ strcmp[ ext, VK_KHR_VIDEO_ENCODE_H264_EXTENSION_NAME ] == 0 ]
                 video_h264_supported = true
+            if [ strcmp[ ext, VK_KHR_VIDEO_DECODE_QUEUE_EXTENSION_NAME ] == 0 ]
+                video_decode_supported = true
+            if [ strcmp[ ext, VK_KHR_VIDEO_DECODE_H264_EXTENSION_NAME ] == 0 ]
+                video_h264d_supported = true
             if [ strcmp[ ext, VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME ] == 0 ]
                 sync2_supported = true
             if [ strcmp[ ext, VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME ] == 0 ]
@@ -1380,7 +1426,7 @@ class vk_context
                 portability_supported = true
         expect swapchain_supported, "VK_KHR_swapchain not supported by physical device"
 
-        enabled_dev_exts  : vec symbol [ 12 ]
+        enabled_dev_exts  : vec symbol [ 16 ]
         enabled_ext_count : u32 0
         enabled_dev_exts[ enabled_ext_count ] = VK_KHR_SWAPCHAIN_EXTENSION_NAME
         enabled_ext_count += 1
@@ -1395,6 +1441,18 @@ class vk_context
             enabled_dev_exts[ enabled_ext_count ] = VK_KHR_VIDEO_ENCODE_QUEUE_EXTENSION_NAME
             enabled_ext_count += 1
             enabled_dev_exts[ enabled_ext_count ] = VK_KHR_VIDEO_ENCODE_H264_EXTENSION_NAME
+            enabled_ext_count += 1
+        # h.264 decode shares the video queue extension and synchronization2
+        video_decode : bool [ video_queue_supported && video_decode_supported && video_h264d_supported && sync2_supported ]
+        if [ video_decode ]
+            if [ !video_encode ]
+                enabled_dev_exts[ enabled_ext_count ] = VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME
+                enabled_ext_count += 1
+                enabled_dev_exts[ enabled_ext_count ] = VK_KHR_VIDEO_QUEUE_EXTENSION_NAME
+                enabled_ext_count += 1
+            enabled_dev_exts[ enabled_ext_count ] = VK_KHR_VIDEO_DECODE_QUEUE_EXTENSION_NAME
+            enabled_ext_count += 1
+            enabled_dev_exts[ enabled_ext_count ] = VK_KHR_VIDEO_DECODE_H264_EXTENSION_NAME
             enabled_ext_count += 1
 
         ifdef [ unix ]
@@ -1469,12 +1527,19 @@ class vk_context
                 if [ (qf_props[qi].queueFlags & VK_QUEUE_VIDEO_ENCODE_BIT_KHR) != 0 && i32[ qi ] != compute_family ]
                     encode_family = i32[ qi ]
                     break
+        decode_family = -1
+        if [ video_decode ]
+            for [ qi: u32 1, qi < qf_count, qi += 1 ]
+                if [ (qf_props[qi].queueFlags & VK_QUEUE_VIDEO_DECODE_BIT_KHR) != 0 && i32[ qi ] != compute_family && i32[ qi ] != encode_family ]
+                    decode_family = i32[ qi ]
+                    break
 
         # create logical device
         pris   : local f32 [2] [ 1.0, 0.0 ]
         pris_c : local f32 [1] [ 0.0 ]
         pris_e : local f32 [1] [ 0.0 ]
-        qinfos : local VkDeviceQueueCreateInfo [3]
+        pris_d : local f32 [1] [ 0.0 ]
+        qinfos : local VkDeviceQueueCreateInfo [4]
         qinfos[0] = VkDeviceQueueCreateInfo [
             sType:               VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
             queueFamilyIndex:    0,
@@ -1496,6 +1561,13 @@ class vk_context
                 queueFamilyIndex:    u32[ encode_family ],
                 queueCount:          1,
                 pQueuePriorities:    pris_e ]
+            qi_count += 1
+        if [ decode_family >= 0 ]
+            qinfos[qi_count] = VkDeviceQueueCreateInfo [
+                sType:               VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+                queueFamilyIndex:    u32[ decode_family ],
+                queueCount:          1,
+                pQueuePriorities:    pris_d ]
             qi_count += 1
         result = vkCreateDevice[ physical_device, VkDeviceCreateInfo [
             sType:                   VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
@@ -2377,6 +2449,8 @@ class vk_context
             # runs compute — never shared with the graphics queue or pool
             if [ encode_family >= 0 ]
                 vkGetDeviceQueue[ device, u32[ encode_family ], 0, @encode_queue ]
+            if [ decode_family >= 0 ]
+                vkGetDeviceQueue[ device, u32[ decode_family ], 0, @decode_queue ]
             if [ compute_family >= 0 ]
                 vkGetDeviceQueue[ device, u32[ compute_family ], u32[ compute_index ], @compute_queue ]
                 cpool_info: VkCommandPoolCreateInfo [
@@ -2560,6 +2634,7 @@ class uniforms
     # the uniform lands in one slot while the dispatch binds another → the
     # shader reads zero dims → writes nothing (the whisper [Music] bug).
     public force_slot : i32 [ -1 ]
+    public ring       : i32 [ 64 ]   # one buffer per draw slot
 
     # write the CURRENT ring slot's uniform buffer only — each draw gets a private
     # copy of the shader state so a later draw can't overwrite an in-flight one.
@@ -2599,7 +2674,7 @@ class uniforms
         # this, so keep it as small as the largest single-canvas batch needs.
         # one UBO per draw-ring slot. sized to the ring capacity (64 = the vk_command_buffers/
         # vk_fences/ring_primed arrays), so u_buffers[vk.cur_ring] is always valid.
-        for [ ri: i32 0, ri < 64, ri += 1 ]
+        for [ ri: i32 0, ri < ring, ri += 1 ]
             uniform_buf: Buffer [ vk: vk, size: total_uniform,
                 u_uniform: true, u_dst: true, m_host_visible: true, m_host_coherent: true,
                 data: @u_memory[0], user: leaf ]
@@ -2628,6 +2703,44 @@ GLSL VertGLSL : RType
         info  : Au.header[ a ]
         body  = t
         rtype = info.meta_a
+
+# W3C / WebKit composite operators, in WebKit's order
+enum Composite
+    clear            : 0
+    copy             : 1
+    source_over      : 2
+    source_in        : 3
+    source_out       : 4
+    source_atop      : 5
+    destination_over : 6
+    destination_in   : 7
+    destination_out  : 8
+    destination_atop : 9
+    xor              : 10
+    plus_darker      : 11
+    plus_lighter     : 12
+    difference       : 13
+
+# Porter-Duff source factor: out = src * fs + dst * fd
+func composite_source_factor [ op: Composite ] -> VkBlendFactor
+    switch [ op ]
+        case clear, destination_over, destination_in, destination_out
+            return (op == Composite.destination_over) ? VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA : VK_BLEND_FACTOR_ZERO
+        case source_in, source_atop
+            return VK_BLEND_FACTOR_DST_ALPHA
+        case source_out, destination_atop, xor
+            return VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA
+    return VK_BLEND_FACTOR_ONE
+
+func composite_destination_factor [ op: Composite ] -> VkBlendFactor
+    switch [ op ]
+        case clear, copy, source_in, source_out
+            return VK_BLEND_FACTOR_ZERO
+        case destination_over, plus_lighter
+            return VK_BLEND_FACTOR_ONE
+        case destination_in, destination_atop
+            return VK_BLEND_FACTOR_SRC_ALPHA
+    return VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA
 
 class Pipeline
     context vk              : vk_context
@@ -2660,6 +2773,9 @@ class Pipeline
     # color blend factors from ONE → SRC_ALPHA so the result composes
     # correctly: rgb*a + dst*(1 - a). default false (premul).
     public straight_alpha   : bool
+    # W3C composite operator of the next draws
+    public composite        : Composite [ Composite.source_over ]
+    intern composite_pipes  : vec u64       # VkPipeline per operator
     public cull_none        : bool
     public cull_front       : bool   # keep back faces only (far-side passes)
     public depth_no_write   : bool
@@ -2677,12 +2793,13 @@ class Pipeline
     # descriptor sets are RINGED: 2 sets (set0=uniform, set1=sampler) per draw-ring
     # slot, laid out interleaved [s0_0,s1_0, s0_1,s1_1, ...]. draw binds the pair at
     # 2*vk.cur_ring so each draw has private descriptors (no in-flight clobber).
-    intern descriptor_sets    : vec VkDescriptorSet       [ 128 ] # 2 * pipe_ring(64); pipe_ring must be >= Render.paint_n
-    intern pipe_ring          : i32 [ 64 ]
+    intern descriptor_sets    : vec VkDescriptorSet       # 2 * pipe_ring, made in init
+    intern pipe_ring          : i32 [ 64 ]                # the render's paint_n
     intern descriptor_pool    : VkDescriptorPool
     intern image_slot         : i32 [ -1 ]
     intern mask_slot          : i32 [ -1 ]
     intern atlas_slot         : i32 [ -1 ]
+    intern clip_slot          : i32 [ -1 ]
     intern bind               : VkDescriptorSet
     intern vk_render          : VkPipeline
     intern vk_compute         : VkPipeline
@@ -2752,6 +2869,9 @@ class Pipeline
 
     public   func rebind_mask [ tx: Texture ]
         rebind_texture[ mask_slot, tx ]
+
+    public   func rebind_clip [ tx: Texture ]
+        rebind_texture[ clip_slot, tx ]
 
     # run-once compute: static subdiv chains record a single time
     public  run_once : bool
@@ -2824,7 +2944,7 @@ class Pipeline
         frame: VkCommandBuffer [ f ]
         shader_uniforms.update[ ]
 
-        vkCmdBindPipeline[ frame, VK_PIPELINE_BIND_POINT_GRAPHICS, vk_render ]
+        vkCmdBindPipeline[ frame, VK_PIPELINE_BIND_POINT_GRAPHICS, graphics_pipeline[] ]
         offsets: local VkDeviceSize[ 1 ] [ 0 ]
         vkCmdBindDescriptorSets[ frame, VK_PIPELINE_BIND_POINT_GRAPHICS,
             layout, 0, 2, @descriptor_sets[ 2 * r.draw_slot ], 0, null ]
@@ -2874,7 +2994,7 @@ class Pipeline
         if [ shader_uniforms ]
             vk.defer_drop[ shader_uniforms ]
             Au.drop[ shader_uniforms ]
-        shader_uniforms = uniforms [ vk: vk, s: s, node_model: default_model ]
+        shader_uniforms = uniforms [ vk: vk, s: s, node_model: default_model, ring: pipe_ring ]
         Au.hold[shader_uniforms]
         s_hdr: Au.header[ s ]
 
@@ -2945,6 +3065,8 @@ class Pipeline
                         mask_slot = set1_binds
                     if [ strcmp[ mem.ident, 'atlas' ] == 0 ]
                         atlas_slot = set1_binds
+                    if [ strcmp[ mem.ident, 'clip' ] == 0 ]
+                        clip_slot = set1_binds
                     
                     #printf[ "DESCW shader=%s member=%s view=%p sampler=%p\n", s.name.chars, mem.ident, res.tx.vk_image_view, res.tx.vk_sampler ]
                     image_infos[set1_binds] = VkDescriptorImageInfo [
@@ -3059,24 +3181,28 @@ class Pipeline
                 desc.poolSizeCount += 1
             vkCreateDescriptorPool[ vk.device, desc, null, @descriptor_pool ]
             # interleaved layouts: [set0, set1] repeated per ring slot
-            set_layouts : local VkDescriptorSetLayout [1024]
-            for [ rs: i32 0, rs < pipe_ring, rs += 1 ]
+            # allocated 64 slots at a time: the layout list is fixed
+            set_layouts : local VkDescriptorSetLayout [128]
+            for [ rs: i32 0, rs < 64, rs += 1 ]
                 set_layouts[ 2 * rs ]     = descriptor_layouts[0]
                 set_layouts[ 2 * rs + 1 ] = descriptor_layouts[1]
-            vkAllocateDescriptorSets[ vk.device, VkDescriptorSetAllocateInfo [
-                sType:              VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-                descriptorPool:     descriptor_pool,
-                descriptorSetCount: u32[ 2 * pipe_ring ],
-                pSetLayouts:        set_layouts
-            ], descriptor_sets ]
+            for [ c0: i32 0, c0 < pipe_ring, c0 += 64 ]
+                cn : i32 [ mini[ 64, pipe_ring - c0 ] ]
+                vkAllocateDescriptorSets[ vk.device, VkDescriptorSetAllocateInfo [
+                    sType:              VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+                    descriptorPool:     descriptor_pool,
+                    descriptorSetCount: u32[ 2 * cn ],
+                    pSetLayouts:        set_layouts
+                ], @descriptor_sets[ 2 * c0 ] ]
         # accumulate writes for EVERY ring slot — set0 (uniform -> the slot's ring
         # buffer) + set1 (samplers; same placeholders for all slots) — then issue ONE
         # vkUpdateDescriptorSets. image_infos/storage_buf_infos are identical per slot
         # so they're shared; only buffer_infos is per-slot (its own u_buffer).
+        # written 64 slots per update: the write arrays are fixed
         wcount : i32 [ 0 ]
         for [ rs: i32 0, rs < pipe_ring, rs += 1 ]
             for [ i: 0, i < uniform_count, i += 1 ]
-                bi : i32 [ rs * uniform_count + i ]
+                bi : i32 [ (rs % 64) * uniform_count + i ]
                 buffer_infos[bi] = VkDescriptorBufferInfo [
                     buffer: shader_uniforms.u_buffers[rs].vk_buffer,
                     offset: 0,
@@ -3116,8 +3242,194 @@ class Pipeline
                         pImageInfo:      @image_infos[i]
                     ]
                 wcount += 1
-        vkUpdateDescriptorSets[ vk.device, wcount, descriptor_writes, 0, null ]
+            if [ rs % 64 == 63 || rs == pipe_ring - 1 ]
+                vkUpdateDescriptorSets[ vk.device, wcount, descriptor_writes, 0, null ]
+                wcount = 0
         vk.bindres_us += epoch_micros[] - br0
+
+    # the graphics pipeline, blending by a W3C composite operator
+    func build_graphics [ op: Composite ] -> VkPipeline
+        binding_description: VkVertexInputBindingDescription [
+            binding:   0,
+            stride:    vbo.vertex_size,
+            inputRate: VK_VERTEX_INPUT_RATE_VERTEX
+        ]
+        attr_count: 0
+        attributes: vec VkVertexInputAttributeDescription [ vbo.member_count ]
+
+        # count VertexInput attribs the shader actually consumes
+        shader_input_count: 0
+        ra_hdr:        Au.header[ s ]
+        shader_schema: ra_hdr.au
+        while [ shader_schema != typeid[ shader ] ]
+            for [ si: 0, si < shader_schema.members.count, si += 1 ]
+                sm: Au_t [ shader_schema.members.origin[si] ]
+                if [ sm.src == typeid[ VertexInput ] ]
+                    shader_input_count += 1
+            shader_schema = shader_schema.context
+
+        for [ i: 0, i < vbo.member_count, i +=1 ]
+            if [ i >= shader_input_count ]
+                break
+            mem: @vbo.members[i]
+            attributes[attr_count].binding  = 0
+            attributes[attr_count].location = attr_count
+            attributes[attr_count].format =
+                ( mem.src == typeid[ vec2f ]  ) ? VK_FORMAT_R32G32_SFLOAT       :
+                ( mem.src == typeid[ vec3f ]  ) ? VK_FORMAT_R32G32B32_SFLOAT    :
+                ( mem.src == typeid[ vec4f ]  ) ? VK_FORMAT_R32G32B32A32_SFLOAT :
+                ( mem.src == typeid[ rgba16 ] ) ? VK_FORMAT_R16G16B16A16_UNORM  :
+                ( mem.src == typeid[ rgba8 ]  ) ? VK_FORMAT_R8G8B8A8_UNORM     :
+                ( mem.src == typeid[ f32 ]    ) ? VK_FORMAT_R32_SFLOAT          :
+                ( mem.src == typeid[ i8 ]     ) ? VK_FORMAT_R8_SINT             :
+                ( mem.src == typeid[ u8 ]     ) ? VK_FORMAT_R8_UINT             :
+                ( mem.src == typeid[ i16 ]    ) ? VK_FORMAT_R16_SINT            :
+                ( mem.src == typeid[ u16 ]    ) ? VK_FORMAT_R16_UINT            :
+                ( mem.src == typeid[ u32 ]    ) ? VK_FORMAT_R32_UINT            :
+                                                VK_FORMAT_UNDEFINED
+            f: attributes[attr_count].format
+            expect f != VK_FORMAT_UNDEFINED, 'undefined vertex attribute for type {mem.src.ident}'
+            attributes[attr_count].offset = mem.offset
+            attr_count += 1
+        
+        vertex_input_info: VkPipelineVertexInputStateCreateInfo [
+            sType: VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+            vertexBindingDescriptionCount: 1,
+            pVertexBindingDescriptions:    @binding_description,
+            vertexAttributeDescriptionCount: attr_count,
+            pVertexAttributeDescriptions:    attributes
+        ]
+        input_assembly_info: VkPipelineInputAssemblyStateCreateInfo [
+            sType:    VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+            topology: VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST
+        ]
+        shader_stages: local VkPipelineShaderStageCreateInfo[4]
+        n_stages: 2
+        shader_stages[0] = VkPipelineShaderStageCreateInfo [
+            sType:  VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            stage:  VK_SHADER_STAGE_VERTEX_BIT,
+            module: s.vk_vert,
+            pName:  "main"
+        ]
+        shader_stages[1] = VkPipelineShaderStageCreateInfo [
+            sType:  VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            stage:  VK_SHADER_STAGE_FRAGMENT_BIT,
+            module: s.vk_frag,
+            pName:  "main"
+        ]
+        viewport_state: VkPipelineViewportStateCreateInfo [
+            sType:         VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+            viewportCount: 1,
+            pViewports:    null,
+            scissorCount:  1,
+            pScissors:     null
+        ]
+        rasterization_state: VkPipelineRasterizationStateCreateInfo [
+            sType:                   VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+            depthClampEnable:        VK_FALSE,
+            rasterizerDiscardEnable: VK_FALSE,
+            polygonMode:             VK_POLYGON_MODE_FILL,
+            lineWidth:               1.0,
+            cullMode:                (cull_none) ? VK_CULL_MODE_NONE : (cull_front) ? VK_CULL_MODE_FRONT_BIT : VK_CULL_MODE_BACK_BIT,
+            frontFace:               VK_FRONT_FACE_CLOCKWISE,
+            depthBiasEnable:         VK_FALSE
+        ]
+        multisample_state: VkPipelineMultisampleStateCreateInfo [
+            sType:                VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+            rasterizationSamples: VK_SAMPLE_COUNT_1_BIT,
+            sampleShadingEnable:  VK_TRUE
+        ]
+        # blend factors depend on the fragment shader's output convention.
+        # default = pre-multiplied alpha (Porter-Duff "over"):
+        #   result.rgb = src.rgb + dst.rgb * (1 - src.a)
+        #   result.a   = src.a   + dst.a   * (1 - src.a)
+        # straight_alpha = true (text uses this) — shader emits rgb
+        # un-pre-multiplied (rgb, a):
+        #   result.rgb = src.rgb*src.a + dst.rgb * (1 - src.a)
+        #   result.a   = src.a       + dst.a   * (1 - src.a)
+        # Porter-Duff: out = src * fs + dst * fd (premultiplied)
+        fs : VkBlendFactor [ composite_source_factor[ op ] ]
+        fd : VkBlendFactor [ composite_destination_factor[ op ] ]
+        src_color_factor : VkBlendFactor [ (straight_alpha && fs == VK_BLEND_FACTOR_ONE) ? VK_BLEND_FACTOR_SRC_ALPHA : fs ]
+        color_blend_attachment: VkPipelineColorBlendAttachmentState [
+            blendEnable:         VK_TRUE,
+            srcColorBlendFactor: src_color_factor,
+            dstColorBlendFactor: fd,
+            colorBlendOp:        VK_BLEND_OP_ADD,
+            srcAlphaBlendFactor: fs,
+            dstAlphaBlendFactor: fd,
+            alphaBlendOp:        VK_BLEND_OP_ADD,
+            colorWriteMask:      VK_COLOR_COMPONENT_R_BIT |
+                                 VK_COLOR_COMPONENT_G_BIT |
+                                 VK_COLOR_COMPONENT_B_BIT |
+                                 VK_COLOR_COMPONENT_A_BIT
+        ]
+        color_blend_state: VkPipelineColorBlendStateCreateInfo [
+            sType:           VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+            logicOpEnable:   VK_FALSE,
+            attachmentCount: 1,
+            pAttachments:    @color_blend_attachment
+        ]
+
+        dynamic_states: local VkDynamicState[2] [
+            VK_DYNAMIC_STATE_VIEWPORT,
+            VK_DYNAMIC_STATE_SCISSOR
+        ]
+
+        dynamic_state: VkPipelineDynamicStateCreateInfo [
+            sType:             VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+            dynamicStateCount: sizeof[ dynamic_states ] / sizeof[ dynamic_states[0] ],
+            pDynamicStates:    dynamic_states
+        ]
+
+        dw: VkBool32 [ VK_TRUE ]
+        if [ depth_no_write || depth_no_test ] dw = VK_FALSE
+        dt: VkBool32 [ VK_TRUE ]
+        if [ depth_no_test ] dt = VK_FALSE
+        depth_stencil: VkPipelineDepthStencilStateCreateInfo [
+            sType:                 VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+            depthTestEnable:       dt,
+            depthWriteEnable:      dw,
+            depthCompareOp:        VK_COMPARE_OP_LESS_OR_EQUAL,
+            depthBoundsTestEnable: VK_FALSE,
+            stencilTestEnable:     VK_FALSE
+        ]
+        pipeline_info: VkGraphicsPipelineCreateInfo [
+            sType:               VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+            stageCount:          n_stages,
+            pStages:             shader_stages,
+            pDepthStencilState:  @depth_stencil,
+            pVertexInputState:   @vertex_input_info,
+            pInputAssemblyState: @input_assembly_info,
+            pViewportState:      @viewport_state,
+            pRasterizationState: @rasterization_state,
+            pMultisampleState:   @multisample_state,
+            pColorBlendState:    @color_blend_state,
+            pDynamicState:       @dynamic_state,
+            layout:              layout,
+            renderPass:          r.vk_render_pass[render_id],
+            subpass:             0,
+            basePipelineHandle:  null
+        ]
+        made : VkPipeline
+        result: vkCreateGraphicsPipelines[
+            vk.device, null, 1, pipeline_info, null, @made ]
+        expect result == VK_SUCCESS, 'pipeline creation fail: {s.name}'
+        return made
+
+    # the bound pipeline for the current composite operator
+    func graphics_pipeline [] -> VkPipeline
+        if [ composite == Composite.source_over || !vbo ]
+            return vk_render
+        if [ !composite_pipes ]
+            composite_pipes = vec u64 []
+            for [ i: i32 0, i < 16, i += 1 ]
+                composite_pipes.push[ 0 ]
+        slot : i32 [ i32 composite ]
+        if [ composite_pipes[ slot ] == 0 ]
+            made : build_graphics[ composite ]
+            composite_pipes[ slot ] = cast u64 [ made ]
+        return cast VkPipeline [ composite_pipes[ slot ] ]
 
     public func reassemble [ ]
         # vbo is OPTIONAL: a compute-only pipeline (no graphics) has no vbo
@@ -3141,168 +3453,7 @@ class Pipeline
         # then fails the validator with "module is VK_NULL_HANDLE".
         is_compute_only: bool [ s && s.vk_comp != null && !s.vk_vert ]
         if [ vbo && !is_compute_only ]
-            binding_description: VkVertexInputBindingDescription [
-                binding:   0,
-                stride:    vbo.vertex_size,
-                inputRate: VK_VERTEX_INPUT_RATE_VERTEX
-            ]
-            attr_count: 0
-            attributes: vec VkVertexInputAttributeDescription [ vbo.member_count ]
-
-            # count VertexInput attribs the shader actually consumes
-            shader_input_count: 0
-            ra_hdr:        Au.header[ s ]
-            shader_schema: ra_hdr.au
-            while [ shader_schema != typeid[ shader ] ]
-                for [ si: 0, si < shader_schema.members.count, si += 1 ]
-                    sm: Au_t [ shader_schema.members.origin[si] ]
-                    if [ sm.src == typeid[ VertexInput ] ]
-                        shader_input_count += 1
-                shader_schema = shader_schema.context
-
-            for [ i: 0, i < vbo.member_count, i +=1 ]
-                if [ i >= shader_input_count ]
-                    break
-                mem: @vbo.members[i]
-                attributes[attr_count].binding  = 0
-                attributes[attr_count].location = attr_count
-                attributes[attr_count].format =
-                    ( mem.src == typeid[ vec2f ]  ) ? VK_FORMAT_R32G32_SFLOAT       :
-                    ( mem.src == typeid[ vec3f ]  ) ? VK_FORMAT_R32G32B32_SFLOAT    :
-                    ( mem.src == typeid[ vec4f ]  ) ? VK_FORMAT_R32G32B32A32_SFLOAT :
-                    ( mem.src == typeid[ rgba16 ] ) ? VK_FORMAT_R16G16B16A16_UNORM  :
-                    ( mem.src == typeid[ rgba8 ]  ) ? VK_FORMAT_R8G8B8A8_UNORM     :
-                    ( mem.src == typeid[ f32 ]    ) ? VK_FORMAT_R32_SFLOAT          :
-                    ( mem.src == typeid[ i8 ]     ) ? VK_FORMAT_R8_SINT             :
-                    ( mem.src == typeid[ u8 ]     ) ? VK_FORMAT_R8_UINT             :
-                    ( mem.src == typeid[ i16 ]    ) ? VK_FORMAT_R16_SINT            :
-                    ( mem.src == typeid[ u16 ]    ) ? VK_FORMAT_R16_UINT            :
-                    ( mem.src == typeid[ u32 ]    ) ? VK_FORMAT_R32_UINT            :
-                                                    VK_FORMAT_UNDEFINED
-                f: attributes[attr_count].format
-                expect f != VK_FORMAT_UNDEFINED, 'undefined vertex attribute for type {mem.src.ident}'
-                attributes[attr_count].offset = mem.offset
-                attr_count += 1
-            
-            vertex_input_info: VkPipelineVertexInputStateCreateInfo [
-                sType: VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-                vertexBindingDescriptionCount: 1,
-                pVertexBindingDescriptions:    @binding_description,
-                vertexAttributeDescriptionCount: attr_count,
-                pVertexAttributeDescriptions:    attributes
-            ]
-            input_assembly_info: VkPipelineInputAssemblyStateCreateInfo [
-                sType:    VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-                topology: VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST
-            ]
-            shader_stages: local VkPipelineShaderStageCreateInfo[4]
-            n_stages: 2
-            shader_stages[0] = VkPipelineShaderStageCreateInfo [
-                sType:  VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                stage:  VK_SHADER_STAGE_VERTEX_BIT,
-                module: s.vk_vert,
-                pName:  "main"
-            ]
-            shader_stages[1] = VkPipelineShaderStageCreateInfo [
-                sType:  VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                stage:  VK_SHADER_STAGE_FRAGMENT_BIT,
-                module: s.vk_frag,
-                pName:  "main"
-            ]
-            viewport_state: VkPipelineViewportStateCreateInfo [
-                sType:         VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
-                viewportCount: 1,
-                pViewports:    null,
-                scissorCount:  1,
-                pScissors:     null
-            ]
-            rasterization_state: VkPipelineRasterizationStateCreateInfo [
-                sType:                   VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-                depthClampEnable:        VK_FALSE,
-                rasterizerDiscardEnable: VK_FALSE,
-                polygonMode:             VK_POLYGON_MODE_FILL,
-                lineWidth:               1.0,
-                cullMode:                (cull_none) ? VK_CULL_MODE_NONE : (cull_front) ? VK_CULL_MODE_FRONT_BIT : VK_CULL_MODE_BACK_BIT,
-                frontFace:               VK_FRONT_FACE_CLOCKWISE,
-                depthBiasEnable:         VK_FALSE
-            ]
-            multisample_state: VkPipelineMultisampleStateCreateInfo [
-                sType:                VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-                rasterizationSamples: VK_SAMPLE_COUNT_1_BIT,
-                sampleShadingEnable:  VK_TRUE
-            ]
-            # blend factors depend on the fragment shader's output convention.
-            # default = pre-multiplied alpha (Porter-Duff "over"):
-            #   result.rgb = src.rgb + dst.rgb * (1 - src.a)
-            #   result.a   = src.a   + dst.a   * (1 - src.a)
-            # straight_alpha = true (text uses this) — shader emits rgb
-            # un-pre-multiplied (rgb, a):
-            #   result.rgb = src.rgb*src.a + dst.rgb * (1 - src.a)
-            #   result.a   = src.a       + dst.a   * (1 - src.a)
-            src_color_factor : VkBlendFactor [ (straight_alpha) ? VK_BLEND_FACTOR_SRC_ALPHA : VK_BLEND_FACTOR_ONE ]
-            color_blend_attachment: VkPipelineColorBlendAttachmentState [
-                blendEnable:         VK_TRUE,
-                srcColorBlendFactor: src_color_factor,
-                dstColorBlendFactor: VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
-                colorBlendOp:        VK_BLEND_OP_ADD,
-                srcAlphaBlendFactor: VK_BLEND_FACTOR_ONE,
-                dstAlphaBlendFactor: VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
-                alphaBlendOp:        VK_BLEND_OP_ADD,
-                colorWriteMask:      VK_COLOR_COMPONENT_R_BIT |
-                                     VK_COLOR_COMPONENT_G_BIT |
-                                     VK_COLOR_COMPONENT_B_BIT |
-                                     VK_COLOR_COMPONENT_A_BIT
-            ]
-            color_blend_state: VkPipelineColorBlendStateCreateInfo [
-                sType:           VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-                logicOpEnable:   VK_FALSE,
-                attachmentCount: 1,
-                pAttachments:    @color_blend_attachment
-            ]
-
-            dynamic_states: local VkDynamicState[2] [
-                VK_DYNAMIC_STATE_VIEWPORT,
-                VK_DYNAMIC_STATE_SCISSOR
-            ]
-
-            dynamic_state: VkPipelineDynamicStateCreateInfo [
-                sType:             VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-                dynamicStateCount: sizeof[ dynamic_states ] / sizeof[ dynamic_states[0] ],
-                pDynamicStates:    dynamic_states
-            ]
-
-            dw: VkBool32 [ VK_TRUE ]
-            if [ depth_no_write || depth_no_test ] dw = VK_FALSE
-            dt: VkBool32 [ VK_TRUE ]
-            if [ depth_no_test ] dt = VK_FALSE
-            depth_stencil: VkPipelineDepthStencilStateCreateInfo [
-                sType:                 VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-                depthTestEnable:       dt,
-                depthWriteEnable:      dw,
-                depthCompareOp:        VK_COMPARE_OP_LESS_OR_EQUAL,
-                depthBoundsTestEnable: VK_FALSE,
-                stencilTestEnable:     VK_FALSE
-            ]
-            pipeline_info: VkGraphicsPipelineCreateInfo [
-                sType:               VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
-                stageCount:          n_stages,
-                pStages:             shader_stages,
-                pDepthStencilState:  @depth_stencil,
-                pVertexInputState:   @vertex_input_info,
-                pInputAssemblyState: @input_assembly_info,
-                pViewportState:      @viewport_state,
-                pRasterizationState: @rasterization_state,
-                pMultisampleState:   @multisample_state,
-                pColorBlendState:    @color_blend_state,
-                pDynamicState:       @dynamic_state,
-                layout:              layout,
-                renderPass:          r.vk_render_pass[render_id],
-                subpass:             0,
-                basePipelineHandle:  null
-            ]
-            result = vkCreateGraphicsPipelines[
-                vk.device, null, 1, pipeline_info, null, @vk_render ]
-            expect result == VK_SUCCESS, 'pipeline creation fail: {s.name}'
+            vk_render = build_graphics[ Composite.source_over ]
             
         el [ s && s.vk_comp != null ]
             comp_info: VkComputePipelineCreateInfo [
@@ -3322,6 +3473,9 @@ class Pipeline
     func init [ ]
         resources        = vec Gpu []
         storage_textures = vec Texture []
+        if [ r ] pipe_ring = r.paint_n
+        nsets : i32 [ pipe_ring * 2 ]
+        descriptor_sets  = vec VkDescriptorSet [ nsets ]
         bind_resources[]
         # serialize pipeline construction against any in-flight Gpu work.
         # the composite chain builds ~10 pipelines back-to-back during
@@ -3338,6 +3492,11 @@ class Pipeline
         vkDestroyPipelineLayout[ vk.device, layout, null ]
         if [ vk_render ]
             vkDestroyPipeline[ vk.device, vk_render, null ]
+        if [ composite_pipes ]
+            for [ i: i32 0, i < i32 composite_pipes.count, i += 1 ]
+                if [ composite_pipes[ i ] != 0 ]
+                    vkDestroyPipeline[ vk.device, cast VkPipeline [ composite_pipes[ i ] ], null ]
+            composite_pipes = null
         if [ vk_compute ]
             vkDestroyPipeline[ vk.device, vk_compute, null ]
         # the sets pin every bound image and buffer until the pool goes
@@ -3890,6 +4049,43 @@ class Buffer
         vkFreeCommandBuffers [ vk.device, vk.pool[], 1, @cmd ]
         tx.transition [ prev ]
 
+    # the region's texels, rows packed; layouts change in band
+    func transfer_region [ tx: Texture, x: i32, y: i32, rw: i32, rh: i32 ]
+        expect tx, "expected Texture"
+        cmd: VkCommandBuffer
+        vkAllocateCommandBuffers [ vk.device, VkCommandBufferAllocateInfo [
+            sType:              VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            commandPool:        vk.pool[],
+            level:              VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+            commandBufferCount: 1 ], @cmd ]
+        vkBeginCommandBuffer [ cmd, VkCommandBufferBeginInfo [
+            sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            flags: VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT ] ]
+        prev: VkImageLayout [ tx.vk_layout ]
+        tx.transition_in [ cmd, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL ]
+        vkCmdCopyImageToBuffer [ cmd, tx.vk_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, vk_buffer, 1,
+            VkBufferImageCopy [
+                bufferOffset:      0,
+                bufferRowLength:   0,
+                bufferImageHeight: 0,
+                imageSubresource:  VkImageSubresourceLayers [
+                    aspectMask:     VK_IMAGE_ASPECT_COLOR_BIT,
+                    mipLevel:       0,
+                    baseArrayLayer: 0,
+                    layerCount:     1 ],
+                imageOffset: VkOffset3D [ x: x, y: y, z: 0 ],
+                imageExtent: VkExtent3D [ width: u32 rw, height: u32 rh, depth: 1 ] ] ]
+        tx.transition_in [ cmd, prev ]
+        vkEndCommandBuffer [ cmd ]
+        vk.qlock.lock[]
+        vkQueueSubmit [ vk.queue, 1, VkSubmitInfo [
+            sType:              VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            commandBufferCount: 1,
+            pCommandBuffers:    @cmd ], null ]
+        vkQueueWaitIdle [ vk.queue ]
+        vk.qlock.unlock[]
+        vkFreeCommandBuffers [ vk.device, vk.pool[], 1, @cmd ]
+
     # readback of a single cube face / mip (validation)
     func transfer_sub [ tx: Texture, mip: i32, layer: i32, w2: i32, h2: i32 ]
         expect tx, "expected Texture"
@@ -3936,6 +4132,13 @@ class Buffer
         src: d || data
         m: mmap[]
         memcpy[ m, src, size ]
+        unmap[]
+
+    # only the first n bytes (a partly filled vertex ring slot)
+    func update_part [ d: ARef, n: i64 ]
+        if [ n <= 0 || n > size ] return
+        m: mmap[]
+        memcpy[ m, d, n ]
         unmap[]
 
     func mmap [ ] -> ARef
@@ -4049,6 +4252,22 @@ class Texture
     intern shared_fd        : i32 [ -1 ]
     # creation-site tag for live sampler accounting (SAMP print)
     public tag              : string
+    # kept for read_region: the staging buffer and its mapping
+    intern read_buf         : Buffer
+    intern read_map         : ARef
+    intern read_size        : i64
+
+    # 4-byte texels of a region into out, rw * 4 bytes a row
+    func read_region [ x: i32, y: i32, rw: i32, rh: i32, out: @u8 ]
+        size : i64 [ i64 rw * i64 rh * 4 ]
+        if [ size <= 0 ] return
+        if [ !read_buf || read_size < size ]
+            read_buf  = Buffer [ vk: vk, size: size,
+                u_dst: true, m_host_visible: true, m_host_coherent: true, m_host_cached: true ]
+            read_map  = read_buf.mmap[]
+            read_size = size
+        read_buf.transfer_region[ a, x, y, rw, rh ]
+        memcpy[ out, read_map, size ]
 
     func resize [ w_new: i32, h_new: i32 ] -> Texture
         if [ w_new == width && h_new == height ]
@@ -4571,6 +4790,8 @@ class Texture
         vk_layout = VK_IMAGE_LAYOUT_UNDEFINED
 
     func dealloc [ ]
+        if [ read_buf ]
+            read_buf.unmap[]
         release_gpu[]
 
 

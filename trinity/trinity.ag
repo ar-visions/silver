@@ -127,7 +127,7 @@ import <host.h>
     -I{project_path}/devices
 
 
-import freetype:freetype/VER-2-13-3 <ft2build.h, freetype/freetype.h>
+import freetype:freetype/VER-2-13-3 <ft2build.h, freetype/freetype.h, freetype/tttables.h, freetype/ftmm.h>
     -I{install}/include/freetype2
     -lfreetype
     -lpng -lz
@@ -168,8 +168,10 @@ import shader
 import Style
 import Canvas
 import Console
+import FontMatch
 import video
 import mux
+import demux
 
 scalar sec : i64
     cast -> ns  [ a * 1000000000 ]
@@ -234,6 +236,7 @@ func agent_shell_stop []
 func agent_shell_new []
 func agent_shell_rewind [] -> i32
 func agent_shell_select [ id: i32 ]
+func agent_shell_error [] -> symbol
 func agent_shell_close [ id: i32 ]
 func host_log_dir [] -> symbol
 
@@ -1844,6 +1847,7 @@ Display Window
     mutable session_cur         : i32 [ -1 ]           # the one on screen; -1 a new prompt
     mutable session_ids         : i32                  # the last id given out
     mutable attached            : vec path             # screenshots in the prompt, sent with the next message
+    mutable shot_error          : string               # the last send's failure, red under the prompt; a send that goes clears it
     mutable agent_busy          : bool     # the agent said busy: the shine keeps moving
     mutable swap_fade           : bool     # the reload is asked: the exchange fades on alpha
     mutable snap_transitions    : bool     # this frame's transitions land at once (a restore)
@@ -1984,6 +1988,7 @@ Display Window
         notes        = s.notes
         agent_pick   = s.agent_pick
         attached     = s.attached
+        shot_error   = null
         agent_view   = true
         agent_min    = false
         restyle      = true
@@ -2017,6 +2022,7 @@ Display Window
         session_park[]
         session_cur = -1
         agent_shell_select[ -1 ]
+        shot_error  = null
         shot_file   = false
         shot_line   = 0
         agent_view  = false
@@ -3032,6 +3038,13 @@ Display Window
                 ar9 : Region [ (agent_view) ? ux_area[ 'l472px b-15%+272px r120px b-15%+228px', u9 ] :
                     Region [ 'l50%-{18 + fw8 / 2}px b{fc9 + fh8 / 2 + 8 + ah9}px w{fw8}px h{ah9}px' ] ]
                 e[ 'shot_attach' ] = ShotAttach [ topmost: true, fading: swap_fade, shots: attached, area: ar9 ]
+            # a failed send, in red just below the prompt's box
+            if [ shot_error && shot_error.count > 0 ]
+                ew9 : i32 [ i32[ round[ 440.0 * u9 ] ] ]
+                eh9 : i32 [ i32[ round[ 24.0 * u9 ] ] ]
+                er9 : Region [ (agent_view) ? ux_area[ 'l472px b-15%+168px r120px b-15%+144px', u9 ] :
+                    Region [ 'l50%-{ew9 / 2}px b{fc9 - i32[ round[ 34.0 * u9 ] ]}px w{ew9}px h{eh9}px' ] ]
+                e[ 'shot_error' ] = ShotError [ topmost: true, fading: swap_fade, label: shot_error, area: er9 ]
             # the conversations as tabs centered at the window's top, + for a
             # new one: fixed to the window, so the boxes re-centering never moves them
             if [ sessions && sessions.count > 0 ]
@@ -3040,12 +3053,12 @@ Display Window
                 tl9.push[ '+' ]
                 for [ s9: ExchangeSession ] in sessions
                     tl9.push[ s9.title ]
-                tw9 : i32 [ i32[ tl9.count ] * 160 ]
+                tw9 : i32 [ i32[ tl9.count ] * 140 ]
                 cm9 : i32 [ ((1 << i32[ tl9.count ]) - 1) & ~1 ]
                 e[ 'session_tabs' ] = SessionTabs [ topmost: true, fading: swap_fade, buttons: tl9,
                     selected: session_cur + 1, close_mask: cm9,
-                    icons: false, manual: true, seg_radius: 6.0 * u9, label_px: 13.0,
-                    area: ux_area[ 'l50%-{tw9 / 2}px t16px w{tw9}px h28px', u9 ] ]
+                    icons: false, manual: true, seg_radius: 9.0 * u9, label_px: 20.0,
+                    area: ux_area[ 'l50%-{tw9 / 2}px t16px w{tw9}px h42px', u9 ] ]
         # the app's exchange avatar is one instance, mounted for the life of
         # the app and invisible between exchanges: it is never torn down.
         # mounted AFTER the blur, or the blur paints over it
@@ -3296,7 +3309,8 @@ Display Window
     public func text_event [ ev: Event ]
         ev.target = focus
         if [ focus && focus.on_char*[ ev ] ] return
-        if [ app_object && app_object.on_char*[ ev ] ] return
+        # a focused app element already had its turn
+        if [ app_object && cast element [ app_object ] != focus && app_object.on_char*[ ev ] ] return
         if [ focus && ev.key.text && ev.key.text.count > 0 ]
             for [ l: Layer, k: string ] in focus.layers
                 if [ l.editable ]
@@ -3453,7 +3467,7 @@ Display Window
                 sh.show_console = false
                 restyle = true
                 return
-        if [ app_object && app_object.on_key*[ ev ] ] return
+        if [ app_object && cast element [ app_object ] != focus && app_object.on_key*[ ev ] ] return
         if [ focus ]
             for [ l: Layer, k: string ] in focus.layers
                 if [ l.editable ]
@@ -5035,7 +5049,7 @@ Display Window
                     draw_cv.translate[ -b.x + pad * 0.5, -b.y + pad * 0.5 ]
                     blur_redraw = true
 
-            if [ (!needs_blur || blur_redraw) && ((layer.fill_color && layer.fill_color.a > 0.0) || (layer.stroke_color && layer.stroke_color.a > 0.0) || layer.inner_glow) ]
+            if [ (!needs_blur || blur_redraw) && ((layer.fill_color && layer.fill_color.a > 0.0) || (layer.stroke_color && layer.stroke_color.a > 0.0) || layer.box_shadow) ]
                 draw_cv.save             [ ]
                 sw_top   : f32 [ (layer.stroke_width) ? layer.stroke_width.top    : 0.0 ]
                 sw_right : f32 [ (layer.stroke_width) ? layer.stroke_width.right  : 0.0 ]
@@ -5107,11 +5121,8 @@ Display Window
                 el
                     draw_cv.stroke_grad_radial [ false ]
                     draw_cv.stroke_grad_mirror [ false ]
-                if [ layer.inner_glow ]
-                    if [ !layer.inner_glow.color ]
-                        log 'DBG glow null-color: element={e.id} layer={lkey}'
-                    el
-                        draw_cv.inner_glow   [ layer.inner_glow.color, layer.inner_glow.blur ]
+                draw_cv.no_shadows[]
+                if [ layer.box_shadow ] layer.box_shadow.apply[ draw_cv, 0 ]
                 draw_cv.paint            [ ]
                 draw_cv.restore          [ ]
 
@@ -5164,14 +5175,10 @@ Display Window
                 draw_cv.text_grad_pos    [ ax + hx, ay + hy ]
                 draw_cv.text_grad_mirror [ layer.label_gradient_mirror ]
 
-                lsh : Shadow [
-                    color:  layer.label_shadow,
-                    offset: layer.label_shadow_offset,
-                    blur:   layer.label_shadow_blur ]
                 tx0 : f32 [ draw_cv.transform_tx[] + b.x ]
                 ty0 : f32 [ draw_cv.transform_ty[] + b.y ]
                 draw_cv.set_crop[ tx0, ty0, tx0 + b.w, ty0 + b.h ]
-                draw_cv.draw_text    [ (label || element_text), b, align, offset, layer.label_overflow, lsh ]
+                draw_cv.draw_text    [ (label || element_text), b, align, offset, layer.label_overflow, layer.text_shadow ]
                 draw_cv.clear_crop[]
                 if [ layer.label_font && layer.label_font.count > 0 ]
                     draw_cv.set_font[ (prev_fs) ? prev_font : null ]
@@ -5250,12 +5257,7 @@ Display Window
                     e.mask_h = eh
                     e.mask_canvas.reset[ vec4f[ 0.0, 0.0, 0.0, 1.0 ] ]
                     e.mask_canvas.save[]
-                    # linear falloff so the fade is a straight ramp on the edges
-                    e.mask_canvas.glow_falloff[ 1.0 ]
                     e.mask_canvas.fill_color[ rgba['#fff'] ]
-                    # mask_glow = (top, right, bottom, left) px
-                    e.mask_canvas.inner_glow_sides[ rgba['#000'],
-                        e.mask_glow.x, e.mask_glow.y, e.mask_glow.z, e.mask_glow.w ]
                     mrx : f32 [ e.mask_inset.w ]
                     mry : f32 [ e.mask_inset.x ]
                     mrw : f32 [ f32 ew - e.mask_inset.w - e.mask_inset.y ]
@@ -5263,10 +5265,14 @@ Display Window
                     e.mask_canvas.rect_to[ mrx, mry, mrw, mrh ]
                     e.mask_canvas.paint[]
                     if [ e.mask_keep_l > 0.0 ]
-                        e.mask_canvas.inner_glow_sides[ rgba['#000'], e.mask_glow.x, 0.0, e.mask_glow.z, 0.0 ]
-                        e.mask_canvas.fill_color[ rgba['#fff'] ]
                         e.mask_canvas.rect_to[ 0.0, mry, e.mask_keep_l, mrh ]
                         e.mask_canvas.paint[]
+                    # mask_glow = (top, right, bottom, left) px of fade
+                    mx0 : f32 [ (e.mask_keep_l > 0.0) ? 0.0 : mrx ]
+                    fade_band[ e.mask_canvas, mx0, mry, mrx + mrw - mx0, mrh, e.mask_glow.x, 0 ]
+                    fade_band[ e.mask_canvas, mrx, mry, mrw, mrh, e.mask_glow.y, 1 ]
+                    fade_band[ e.mask_canvas, mx0, mry, mrx + mrw - mx0, mrh, e.mask_glow.z, 2 ]
+                    fade_band[ e.mask_canvas, mrx, mry, mrw, mrh, e.mask_glow.w, 3 ]
                     e.mask_canvas.restore[]
                     e.mask_bg = e.mask_glow
                 cv.draw_canvas_masked[ e.cache_canvas, e.mask_canvas,
@@ -5959,16 +5965,24 @@ element TButtons
             seg_bg : bool [ !collapse || (rv9 >= 0.999 && gpx > 0.0) ]
             if [ seg_bg ]
                 cv.fill_color[ fcol ]
-                # radius FIRST: the glow follows the corners only if it knows them
                 cv.rounded[ tl, tr, br, bl ]
-                # a segment owning BOTH ends takes the uniform path, the one
-                # the css layers use — sides pin the glow and lose the corners
-                if [ gl > 0.0 && gr > 0.0 ] cv.inner_glow[ gc, gpx ]
-                el                          cv.inner_glow_sides[ gc, gpx, gr, gpx, gl ]
+                cv.no_shadows[]
                 cv.rounded_rect[ x, 0.0, sw9, bounds.h, tl, tr, br, bl ]
                 cv.paint[ ]
-                cv.inner_glow_sides[ rgba [ '#0000' ], 0.0, 0.0, 0.0, 0.0 ]
-                # both are STATE: leaving the radius set clips the icon after it
+                if [ gpx > 0.0 ]
+                    # an inset glow whose box runs past the dark sides
+                    ext : f32 [ gpx * 3.0 ]
+                    gx0 : f32 [ (gl > 0.0) ? x : x - ext ]
+                    gx1 : f32 [ (gr > 0.0) ? x + sw9 : x + sw9 + ext ]
+                    cv.save[]
+                    cv.clip_rounded_rect[ x, 0.0, sw9, bounds.h, tl, tr, br, bl ]
+                    cv.fill_color[ rgba [ '#0000' ] ]
+                    cv.box_shadow[ gc, 0.0, 0.0, gpx, 0.0, true ]
+                    cv.rounded[ (gl > 0.0) ? tl : 0.0, (gr > 0.0) ? tr : 0.0, (gr > 0.0) ? br : 0.0, (gl > 0.0) ? bl : 0.0 ]
+                    cv.rounded_rect[ gx0, 0.0, gx1 - gx0, bounds.h, (gl > 0.0) ? tl : 0.0, (gr > 0.0) ? tr : 0.0, (gr > 0.0) ? br : 0.0, (gl > 0.0) ? bl : 0.0 ]
+                    cv.paint[]
+                    cv.restore[]
+                # the radius is STATE: left set it clips the icon after it
                 cv.rounded[ 0.0, 0.0, 0.0, 0.0 ]
             icon : string [ (icon_ids && i < icon_ids.count) ? icon_ids[i] : buttons[i] ]
             svg  : SVGModel (icons) ? seg_svg[ icon ] : null
@@ -7173,6 +7187,17 @@ TButtons SessionTabs
         pristine = false
         ev.stop[]
 
+# why the last send failed: red, under the prompt, until a send goes
+element ShotError
+    focusable : false
+    face : Layer [ label_color: rgba [ '#ff6b6b' ], label_size: 14,
+        label_align: vec2f [ x: 0.0, y: 0.5 ], label_offset: vec2f [ x: 14.0, y: 0.0 ] ]
+    style : CSS {
+        opacity: 1.0
+    :fading
+        opacity: 0.0, 3000ms cubic outward
+    }
+
 # the screenshots attached in the prompt, sent with the next message: a
 # thumbnail each, left to right in the order they were taken
 element ShotAttach
@@ -7279,11 +7304,15 @@ TextInput ShotPrompt
                 agent_shell_new[]
             if [ !w.app_object || !agent_post_as[ w.app_object, w.agent_pick, msg, 'now' ] ]
                 if [ first9 ] w.session_unbegin[]
-                w.user_note[ 'Send failed; press Enter to retry' ]
+                # the failure is a red line under the prompt, not a note in
+                # the conversation; what was typed stays to retry with Enter
+                why9 : string [ agent_shell_error[] ]
+                w.shot_error = (why9.count > 0) ? 'Send failed: {why9}' : 'Send failed'
                 pristine = false
                 w.restyle = true
                 ev.stop[]
                 return
+            w.shot_error = null
             w.shot_text = all
             w.attached  = null
             shown : string [ (text.count > 0) ? text : ((na9 > 0) ? '{na9} screenshot(s)' : fn9) ]
@@ -7446,3 +7475,28 @@ expect func test [ vk: vk_context ] -> bool
     log 'average color: r={avg_r} g={avg_g} b={avg_b} a={avg_a}'
 
     return avg_a > 10 && (avg_r > 0 || avg_g > 0 || avg_b > 0)
+
+
+# a mask edge of box x y bw bh fading black to clear over px
+# inward; side 0 top, 1 right, 2 bottom, 3 left
+func fade_band [ cv: Canvas, x: f32, y: f32, bw: f32, bh: f32, px: f32, side: i32 ]
+    if [ px <= 0.0 ] return
+    g : Gradient [ null ]
+    switch [ side ]
+        case 0
+            g = linear_gradient[ 0.0, y, 0.0, y + px ]
+            cv.rect_to[ x, y, bw, px ]
+        case 1
+            g = linear_gradient[ x + bw, 0.0, x + bw - px, 0.0 ]
+            cv.rect_to[ x + bw - px, y, px, bh ]
+        case 2
+            g = linear_gradient[ 0.0, y + bh, 0.0, y + bh - px ]
+            cv.rect_to[ x, y + bh - px, bw, px ]
+        default
+            g = linear_gradient[ x, 0.0, x + px, 0.0 ]
+            cv.rect_to[ x, y, px, bh ]
+    g.add_stop[ 0.0, 0xff000000 ]
+    g.add_stop[ 1.0, 0x00000000 ]
+    cv.set_fill_gradient[ g ]
+    cv.paint[]
+    cv.clear_fill_gradient[]

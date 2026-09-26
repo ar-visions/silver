@@ -594,7 +594,7 @@ Control InstancePanel
         cv.fill_color[ (open) ? rgba [ '#312' ] : rgba [ '#212' ] ]
         # the open one glows from its edges, a touch brighter on red and
         # blue
-        if [ open ] cv.inner_glow[ rgba [ '#615' ], 10.0 ]
+        if [ open ] cv.box_shadow[ rgba [ '#615' ], 0.0, 0.0, 10.0, 0.0, true ]
         cv.rect_to[ 0.0, y, bounds.w, rh - 1.0 ]
         cv.paint[]
         cv.restore[]
@@ -920,7 +920,7 @@ Control InstancePanel
                 cv.save[]
                 rb9 : rgba [ (sel9) ? '#2a2340' : '#1a1726' ]
                 cv.fill_color[ rb9 ]
-                if [ sel9 ] cv.inner_glow[ rgba [ '#4f9cffaa' ], 12.0 ]
+                if [ sel9 ] cv.box_shadow[ rgba [ '#4f9cffaa' ], 0.0, 0.0, 12.0, 0.0, true ]
                 cv.rect_to[ 0.0, y8, bounds.w, rh - 1.0 ]
                 cv.paint[]
                 cv.restore[]
