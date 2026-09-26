@@ -889,10 +889,10 @@ class AudioStream
     intern  rd       : f64                  # frames played since a flush
     intern  base     : i64                  # microseconds of frame 0
     intern  based    : bool
-    intern  lock     : pthread_mutex_t
+    intern  lock     : mutex
 
     func init []
-        pthread_mutex_init[ @lock, null ]
+        lock = mutex []
 
     # the AudioSpecificConfig; the ring holds 8 seconds
     public func config [ asc: @u8, n: i32 ] -> bool
@@ -906,7 +906,7 @@ class AudioStream
         if [ NeAACDecInit2[ h, asc, u64[ n ], @sr9, @ch9 ] != 0 ]
             log 'aac stream: faad init failed'
             return false
-        pthread_mutex_lock[ @lock ]
+        lock.lock[]
         if [ !ring || i32[ sr9 ] != rate || i32[ ch9 ] != channels ]
             if [ ring ] free[ ring ]
             rate     = i32[ sr9 ]
@@ -916,20 +916,18 @@ class AudioStream
             wr = 0
             rd = 0.0
             based = false
-        pthread_mutex_unlock[ @lock ]
+        lock.unlock[]
         return true
 
     # one packet whose first frame shows at pts microseconds
     public func push [ data: @u8, n: i64, pts: i64 ]
         if [ !h ] return
         info : NeAACDecFrameInfo
-        TEMPm : @i32 [ cast @i32 [ @lock ] ]
-        fprintf[ stderr, "TEMPPUSH %p lock %d %d %d %d rate %d ch %d wr %ld\n", a, TEMPm[0], TEMPm[1], TEMPm[2], TEMPm[3], rate, channels, wr ]
         smp : @i16 [ NeAACDecDecode[ h, @info, data, u64[ n ] ] ]
         if [ info.error != 0 || !smp || info.samples == 0 ] return
         ch : i64 [ channels ]
         frames : i64 [ i64[ info.samples ] / ch ]
-        pthread_mutex_lock[ @lock ]
+        lock.lock[]
         if [ !based ]
             base  = pts
             based = true
@@ -939,33 +937,33 @@ class AudioStream
                 for [ c: i64 0, c < ch, c += 1 ]
                     ring[ at + c ] = smp[ k * ch + c ]
             wr += frames
-        pthread_mutex_unlock[ @lock ]
+        lock.unlock[]
 
     # every frame goes; the next packet sets the clock
     public func flush []
-        pthread_mutex_lock[ @lock ]
+        lock.lock[]
         wr = 0
         rd = 0.0
         based = false
-        pthread_mutex_unlock[ @lock ]
+        lock.unlock[]
 
     # the time being heard, in microseconds; -1 before any sound
     public func time [] -> i64
-        pthread_mutex_lock[ @lock ]
+        lock.lock[]
         t : i64 [ (based) ? base + i64[ rd * 1000000.0 / f64[ rate ] ] : -1 ]
-        pthread_mutex_unlock[ @lock ]
+        lock.unlock[]
         return t
 
     # microseconds decoded and not yet heard
     public func buffered [] -> i64
-        pthread_mutex_lock[ @lock ]
+        lock.lock[]
         t : i64 [ (rate > 0) ? i64[ (f64[ wr ] - rd) * 1000000.0 / f64[ rate ] ] : 0 ]
-        pthread_mutex_unlock[ @lock ]
+        lock.unlock[]
         return t
 
     # the mixer's pull: n stereo frames at out_rate added into acc
     public func mix_into [ acc: @i32, n: i32, out_rate: i32 ]
-        pthread_mutex_lock[ @lock ]
+        lock.lock[]
         if [ playing && ring && rate > 0 ]
             step : f64 [ f64[ rate ] / f64[ out_rate ] ]
             ch : i64 [ channels ]
@@ -984,12 +982,11 @@ class AudioStream
                 acc[ i * 2 ]     += i32[ ls ]
                 acc[ i * 2 + 1 ] += i32[ rs ]
                 rd += step
-        pthread_mutex_unlock[ @lock ]
+        lock.unlock[]
 
     func dealloc []
         if [ h ] NeAACDecClose[ h ]
         if [ ring ] free[ ring ]
-        pthread_mutex_destroy[ @lock ]
 
 class Voice
     public clip   : AudioClip
@@ -1006,7 +1003,7 @@ class AudioMixer
     intern acc    : @i32
     intern stop   : bool
     intern streams : vec AudioStream
-    intern slock  : pthread_mutex_t
+    intern slock  : mutex
     # apple: coreaudio is mixing; the pthread path below never starts
     intern av     : bool
 
@@ -1023,7 +1020,7 @@ class AudioMixer
         voices.hold[]
         streams = vec AudioStream []
         streams.hold[]
-        pthread_mutex_init[ @slock, null ]
+        slock = mutex []
         # fixed pool: the mix thread iterates this while play_p runs
         for [ i: i32 0, i < 16, i += 1 ]
             voices += Voice [ ]
@@ -1116,16 +1113,16 @@ class AudioMixer
     # a stream mixes in until removed (software mix only)
     public func add_stream [ st: AudioStream ]
         if [ !streams ] return
-        pthread_mutex_lock[ @slock ]
+        slock.lock[]
         streams.push[ st ]
-        pthread_mutex_unlock[ @slock ]
+        slock.unlock[]
 
     public func remove_stream [ st: AudioStream ]
         if [ !streams ] return
-        pthread_mutex_lock[ @slock ]
+        slock.lock[]
         i : i64 [ streams.index_of[ st ] ]
         if [ i >= 0 ] streams.remove[ i ]
-        pthread_mutex_unlock[ @slock ]
+        slock.unlock[]
 
     public func voice_seek [ h: i32, f: f64 ]
         v : voice_at[ h ]
@@ -1198,10 +1195,10 @@ class AudioMixer
                     acc[ i * 2 ] += li
                     acc[ i * 2 + 1 ] += ri
                     v.pos += step
-            pthread_mutex_lock[ @slock ]
+            slock.lock[]
             for [ st: AudioStream ] in streams
                 st.mix_into[ acc, n, sample_rate ]
-            pthread_mutex_unlock[ @slock ]
+            slock.unlock[]
             for [ i: i32 0, i < n2, i += 1 ]
                 s5 : i32 [ acc[ i ] ]
                 if [ s5 > 32767 ] s5 = 32767

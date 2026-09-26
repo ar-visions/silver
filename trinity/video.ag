@@ -1159,8 +1159,7 @@ class VideoStream
     intern  queue     : vec DemuxSample     # track -1: new avcC, -2: end
     intern  ready     : vec VideoFrame
     intern  hidden    : vec i64             # decoded, never shown
-    intern  lock      : pthread_mutex_t
-    intern  wake      : pthread_cond_t
+    intern  lock      : mutex                 # with its wake condition
     intern  gen       : i64                 # a flush starts a new one
     intern  dec_gen   : i64
     intern  stop      : bool
@@ -1172,17 +1171,16 @@ class VideoStream
         ready = vec VideoFrame []
         avcc  = vec u8 []
         hidden = vec i64 []
-        pthread_mutex_init[ @lock, null ]
-        pthread_cond_init[ @wake, null ]
+        lock = mutex [ cond: true ]
 
     func put [ s: DemuxSample ]
-        pthread_mutex_lock[ @lock ]
+        lock.lock[]
         queue.push[ s ]
         if [ !started ]
             started = true
             pthread_create[ @tid, null, @run, a ]
-        pthread_cond_signal[ @wake ]
-        pthread_mutex_unlock[ @lock ]
+        lock.cond_signal[]
+        lock.unlock[]
 
     # the avcC for the samples after it
     public func config [ bytes: @u8, n: i32 ]
@@ -1204,23 +1202,23 @@ class VideoStream
 
     # drop every sample and picture; a key frame comes next
     public func flush []
-        pthread_mutex_lock[ @lock ]
+        lock.lock[]
         queue.clear[]
         ready.clear[]
         hidden.clear[]
         gen += 1
-        pthread_mutex_unlock[ @lock ]
+        lock.unlock[]
 
     # samples waiting plus pictures ready
     public func queued [] -> i32
-        pthread_mutex_lock[ @lock ]
+        lock.lock[]
         n : i32 [ i32[ queue.count + ready.count ] ]
-        pthread_mutex_unlock[ @lock ]
+        lock.unlock[]
         return n
 
     # the latest picture at or before t; first: a later one too
     public func frame_at [ t: i64, first: bool ] -> VideoFrame
-        pthread_mutex_lock[ @lock ]
+        lock.lock[]
         pick : VideoFrame [ null ]
         while [ ready.count > 0 ]
             f : VideoFrame ready[ 0 ]
@@ -1231,30 +1229,30 @@ class VideoStream
                 break
             pick = f
             ready.shift[]
-        pthread_cond_signal[ @wake ]
-        pthread_mutex_unlock[ @lock ]
+        lock.cond_signal[]
+        lock.unlock[]
         return pick
 
     func run [] -> none
-        pthread_mutex_lock[ @lock ]
+        lock.lock[]
         while [ !stop ]
             if [ queue.count == 0 || ready.count >= ahead ]
-                pthread_cond_wait[ @wake, @lock ]
+                lock.cond_wait[]
                 continue
             s : DemuxSample queue.shift[]
             g : i64 [ gen ]
-            pthread_mutex_unlock[ @lock ]
+            lock.unlock[]
             work[ s, g ]
-            pthread_mutex_lock[ @lock ]
+            lock.lock[]
             # a flush while decoding: its pictures are stale
             if [ dec ]
                 for [ f: VideoFrame ] in dec.frames
                     if [ g == gen && !take_hidden[ f.pts ] ] ready.push[ f ]
                 dec.frames.clear[]
-            pthread_mutex_unlock[ @lock ]
+            lock.unlock[]
             Au.auto_free[]
-            pthread_mutex_lock[ @lock ]
-        pthread_mutex_unlock[ @lock ]
+            lock.lock[]
+        lock.unlock[]
 
     # a non-displaying sample's picture: true, once
     func take_hidden [ pts: i64 ] -> bool
@@ -1283,19 +1281,17 @@ class VideoStream
             dec.finish[]
             return
         if [ s.duration == 1 ]
-            pthread_mutex_lock[ @lock ]
+            lock.lock[]
             hidden.push[ s.pts ]
-            pthread_mutex_unlock[ @lock ]
+            lock.unlock[]
         before : i64 [ dec.frames.count ]
         dec.decode[ @s.data[ 0 ], i32[ s.data.count ], s.pts ]
         decoded += dec.frames.count - before
 
     func dealloc []
         if [ started ]
-            pthread_mutex_lock[ @lock ]
+            lock.lock[]
             stop = true
-            pthread_cond_signal[ @wake ]
-            pthread_mutex_unlock[ @lock ]
+            lock.cond_signal[]
+            lock.unlock[]
             pthread_join[ tid, null ]
-        pthread_cond_destroy[ @wake ]
-        pthread_mutex_destroy[ @lock ]
