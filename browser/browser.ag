@@ -1,0 +1,250 @@
+# browser: WebKit lays pages out, trinity draws them
+export 1.0.0
+export extensions ['.html', '.htm']
+export protocols ['http', 'https']
+
+# WPE WebKit's build: ruby runs its generators, unifdef its headers
+import yaml:libyaml/0.2.5
+    -DBUILD_SHARED_LIBS=ON
+    -DBUILD_TESTING=OFF
+import ruby/3.3.6 from https://cache.ruby-lang.org/pub/ruby/3.3/ruby-3.3.6.tar.gz
+    --disable-install-doc
+    --with-libyaml-dir={install}
+import unifdef/2.12 from https://dotat.at/prog/unifdef/unifdef-2.12.tar.gz
+    > make prefix={install} install
+
+# WebKit's crypto
+import libgpg-error/1.51 from https://www.gnupg.org/ftp/gcrypt/libgpg-error/libgpg-error-1.51.tar.bz2
+    --disable-doc
+import libgcrypt/1.11.0 from https://www.gnupg.org/ftp/gcrypt/libgcrypt/libgcrypt-1.11.0.tar.bz2
+    --disable-doc
+    --with-libgpg-error-prefix={install}
+import libtasn1/4.19.0 from https://ftp.gnu.org/gnu/libtasn1/libtasn1-4.19.0.tar.gz
+
+# WebKit's networking: libsoup and what it needs
+import libpsl/0.21.5 from https://github.com/rockdaboot/libpsl/releases/download/0.21.5/libpsl-0.21.5.tar.gz
+    --disable-runtime
+    --disable-builtin
+import nghttp2/1.64.0 from https://github.com/nghttp2/nghttp2/releases/download/v1.64.0/nghttp2-1.64.0.tar.xz
+    -DENABLE_LIB_ONLY=ON
+    -DENABLE_DOC=OFF
+import libsoup/3.6.5 from https://download.gnome.org/sources/libsoup/3.6/libsoup-3.6.5.tar.xz
+    PKG_CONFIG_PATH={install}/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig
+    -Dtests=false
+    -Dintrospection=disabled
+    -Dvapi=disabled
+    -Ddocs=disabled
+    -Dsysprof=disabled
+    -Dtls_check=false
+    -Dgssapi=disabled
+    -Dntlm=disabled
+    -Dautobahn=disabled
+    -Dpkcs11_tests=disabled
+
+import trinity
+import img
+import vec
+import <stdio.h>
+import <stdlib.h>
+import <string.h>
+import <unistd.h>
+    +_DEFAULT_SOURCE
+import <fcntl.h>
+import <signal.h>
+import <sys/mman.h>
+import <sys/prctl.h>
+import <sys/wait.h>
+import <sys/socket.h>
+import <time.h>
+
+element browser : trinity
+    public  width      : i32    [ 1280 ]
+    public  height     : i32    [ 800 ]
+    public  title      : string [ 'browser' ]
+    public  background : string [ 'Background' ]
+    default src        : string              # a url, or a local file
+    mutable pid        : i32
+    mutable ctl        : i32    [ -1 ]       # the helper's stdin
+    mutable shm        : @u8                 # its frames: header, rgba8
+    mutable shm_size   : i64
+    mutable shm_path   : string
+    mutable seq        : u32                 # last frame shown
+    mutable tex        : Texture
+    mutable tex_w      : i32
+    mutable tex_h      : i32
+    mutable view_w     : i32                 # size sent, device px
+    mutable view_h     : i32
+    mutable scale      : f32    [ 1.0 ]      # device px per point
+    mutable held       : i32                 # buttons down, bit per button
+    mutable started    : bool
+
+    func init []
+        animated  = true
+        focusable = true
+        if [ src ] title = src
+
+    # frame header: magic, seq, width, height, stride (u32 each)
+    func header_u32 [ at: i32 ] -> u32
+        p : @u8 [ shm ]
+        return u32 p[at] | (u32 p[at + 1] << 8) | (u32 p[at + 2] << 16) | (u32 p[at + 3] << 24)
+
+    func post [ words: string ]
+        if [ ctl < 0 ] return
+        full : string '{words}\n'
+        # a dead helper returns EPIPE here, never a SIGPIPE
+        send[ ctl, full.chars, full.count, MSG_NOSIGNAL ]
+
+    func launch []
+        started = true
+        pd : i32 [ getpid[] ]
+        ts : i64 [ time[ null ] ]
+        shm_path = '/tmp/silver-browser-{pd}-{ts}.frame'
+        root   : path.path_startup[]
+        engine : path '{root}/install/libexec/wpe-webkit-2.0/WPETrinityBrowser'
+        target : string [ 'about:blank' ]
+        if [ src && (src.index_of[ '://' ] >= 0 || src.index_of[ 'about:' ] == 0) ]
+            target = src
+        el [ src ]
+            f : path [ src ]
+            target = 'file://{f.absolute[]}'
+        # literals reach a C vararg as objects, not text
+        name  : string 'WPETrinityBrowser'
+        fds : local i32 [ 2 ]
+        if [ socketpair[ AF_UNIX, SOCK_STREAM, 0, @fds[0] ] != 0 ]
+            log 'browser: socketpair failed'
+            return
+        setenv[ 'TRINITY_BROWSER_SHM', shm_path.chars, 1 ]
+        pid = fork[]
+        if [ pid == 0 ]
+            # the helper dies with the element's process
+            prctl[ PR_SET_PDEATHSIG, SIGTERM ]
+            dup2[ fds[0], 0 ]
+            close[ fds[0] ]
+            close[ fds[1] ]
+            execl[ engine.chars, name.chars, target.chars, null ]
+            _exit[ 1 ]
+        close[ fds[0] ]
+        if [ pid < 0 ]
+            log 'browser: fork failed'
+            close[ fds[1] ]
+            return
+        ctl = fds[1]
+        log 'browser: {engine} {target}'
+
+    # the helper makes the file; map it once it is sized
+    func map_frames [] -> bool
+        if [ shm ] return true
+        fd : i32 [ open[ shm_path.chars, O_RDONLY ] ]
+        if [ fd < 0 ] return false
+        size : i64 [ lseek[ fd, 0, SEEK_END ] ]
+        if [ size <= 32 ]
+            close[ fd ]
+            return false
+        m : mmap[ null, size, PROT_READ, MAP_SHARED, fd, 0 ]
+        close[ fd ]
+        if [ cast u64 [ m ] == 0xffffffffffffffff ] return false
+        shm      = m
+        shm_size = size
+        # both sides hold their maps; the name is no longer needed
+        unlink[ shm_path.chars ]
+        return true
+
+    func take_frame [ cv: Canvas ]
+        if [ !map_frames[] ] return
+        if [ header_u32[ 0 ] != 0x57425254 ] return
+        sq : u32 [ header_u32[ 4 ] ]
+        if [ sq == seq ] return
+        fw : i32 [ i32 header_u32[ 8 ] ]
+        fh : i32 [ i32 header_u32[ 12 ] ]
+        if [ fw <= 0 || fh <= 0 ] return
+        if [ !tex || tex_w != fw || tex_h != fh ]
+            # the page's bytes are already sRGB: no decode on sampling
+            tex   = Texture [ vk: cv.vk, w: cv.w, width: fw, height: fh, linear: true,
+                pixel_format: Pixel.rgba8, surface: Surface.color, tag: 'browser' ]
+            tex_w = fw
+            tex_h = fh
+        px : @u8 [ shm ]
+        tex.upload[ @px[32], fw * fh * 4 ]
+        seq = sq
+
+    func sync_size []
+        pw : i32 [ i32[ bounds.w * scale ] ]
+        ph : i32 [ i32[ bounds.h * scale ] ]
+        if [ pw <= 0 || ph <= 0 ] return
+        if [ pw == view_w && ph == view_h ] return
+        view_w = pw
+        view_h = ph
+        post[ 'size {pw} {ph}' ]
+
+    func mods [ ev: Event ] -> i32
+        m : i32 [ 0 ]
+        if [ ev.key.shift ] m = m | 1
+        if [ ev.key.ctrl ]  m = m | 2
+        if [ ev.key.alt ]   m = m | 4
+        if [ ev.key.meta ]  m = m | 8
+        return m
+
+    func mouse [ kind: string, ev: Event ]
+        x : i32 [ i32[ ev.mouse.pos.x * scale ] ]
+        y : i32 [ i32[ ev.mouse.pos.y * scale ] ]
+        post[ 'mouse {kind} {x} {y} {ev.mouse.button} {held} {mods[ ev ]}' ]
+
+    public func on_press [ ev: Event ]
+        set_focus[]
+        held = held | (1 << ev.mouse.button)
+        mouse[ 'down', ev ]
+        ev.stop[]
+
+    public func on_release [ ev: Event ]
+        held = held & (~(1 << ev.mouse.button))
+        mouse[ 'up', ev ]
+
+    public func on_move [ ev: Event ]
+        mouse[ 'move', ev ]
+
+    public func on_wheel [ ev: Event ]
+        x : i32 [ i32[ ev.mouse.pos.x * scale ] ]
+        y : i32 [ i32[ ev.mouse.pos.y * scale ] ]
+        post[ 'mouse wheel {x} {y} 0 {held} 0 {ev.mouse.wheel_delta.x} {ev.mouse.wheel_delta.y}' ]
+        ev.stop[]
+
+    # printable keys come as text; the rest as keys
+    public func on_key [ ev: Event ]
+        code : i32 [ i32[ ev.key.unicode ] ]
+        m    : i32 [ mods[ ev ] ]
+        if [ code >= 32 && code <= 126 && (m & 14) == 0 ] return
+        act : string [ (ev.key.state != 0) ? 'down' : 'up' ]
+        post[ 'key {act} {code} {m}' ]
+        ev.stop[]
+
+    public func on_char [ ev: Event ]
+        if [ !ev.key.text || ev.key.text.count == 0 ] return
+        post[ 'text {ev.key.text}' ]
+        ev.stop[]
+
+    public func draw [ w: Window ]
+        if [ !w || w.draw_stage != CanvasType.screen ] return
+        if [ bounds.w <= 0.0 || bounds.h <= 0.0 ] return
+        scale = (w.scale > 0.0) ? w.scale : 1.0
+        if [ !started ] launch[]
+        if [ pid > 0 ]
+            st : i32 [ 0 ]
+            if [ waitpid[ pid, @st, WNOHANG ] == pid ]
+                log 'browser: the engine exited'
+                pid = 0
+        sync_size[]
+        cv : Canvas [ w.screen ]
+        if [ !cv || !cv.vk ] return
+        take_frame[ cv ]
+        if [ !tex ] return
+        # one frame pixel per device pixel
+        dst : rect [ x: 0.0, y: 0.0, w: f32[ tex_w ] / scale, h: f32[ tex_h ] / scale ]
+        cv.draw_image[ tex, dst ]
+
+    func dealloc []
+        if [ !started ] return           # render copies never launched anything
+        if [ ctl >= 0 ] close[ ctl ]     # the helper quits when its stdin ends
+        if [ pid > 0 ]
+            waitpid[ pid, null, 0 ]
+        if [ shm ] munmap[ shm, shm_size ]
+        el [ shm_path ] unlink[ shm_path.chars ]

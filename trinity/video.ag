@@ -724,3 +724,578 @@ class Recorder
 
     func dealloc []
         if [ ready ] vkDestroySemaphore[ vk.device, ready, null ]
+
+
+# a decoded picture in display order: y, u, v at display size
+class VideoFrame
+    public y      : vec u8
+    public u      : vec u8
+    public v      : vec u8
+    public pts    : i64
+    public width  : i32
+    public height : i32
+
+    # limited-range colour to rgba8, for tests and readback
+    public func rgba [ w: i32, h: i32, dst: @u8, bt709: bool ]
+        yuv_rgba[ @y[ 0 ], @u[ 0 ], @v[ 0 ], w, h, dst, (bt709) ? 1 : 0 ]
+
+
+# h.264 on the vulkan video decode queue; the parser in trinity.c
+# keeps the reference slots and the display order
+class Decoder
+    context vk          : vk_context
+    public  width       : i32
+    public  height      : i32
+    public  frames      : vec VideoFrame
+    intern  dec         : handle
+    intern  coded_w     : i32
+    intern  coded_h     : i32
+    intern  h264_profile : VkVideoDecodeH264ProfileInfoKHR
+    intern  profile     : VkVideoProfileInfoKHR
+    intern  profiles    : VkVideoProfileListInfoKHR
+    intern  h264_caps   : VkVideoDecodeH264CapabilitiesKHR
+    intern  decode_caps : VkVideoDecodeCapabilitiesKHR
+    intern  caps        : VkVideoCapabilitiesKHR
+    intern  session     : VkVideoSessionKHR
+    intern  params      : VkVideoSessionParametersKHR
+    intern  session_memory : vec u64
+    # a handle out-param has to be a member: a local comes back null
+    intern  memory_new  : VkDeviceMemory
+    intern  params_new  : VkVideoSessionParametersKHR
+    intern  dpb_image   : VkImage
+    intern  dpb_alloc   : VmaAllocation
+    intern  dpb_view    : VkImageView
+    intern  bits        : VkBuffer
+    intern  bits_alloc  : VmaAllocation
+    intern  bits_map    : handle
+    intern  bits_size   : i64
+    intern  planes      : VkBuffer
+    intern  planes_alloc : VmaAllocation
+    intern  planes_map  : handle
+    intern  pool        : VkCommandPool
+    intern  cmd         : VkCommandBuffer
+    intern  fence       : VkFence
+    intern  started     : bool
+    intern  _vkGetPhysicalDeviceVideoCapabilitiesKHR     : PFN_vkGetPhysicalDeviceVideoCapabilitiesKHR
+    intern  _vkGetPhysicalDeviceVideoFormatPropertiesKHR : PFN_vkGetPhysicalDeviceVideoFormatPropertiesKHR
+    intern  _vkCreateVideoSessionKHR                     : PFN_vkCreateVideoSessionKHR
+    intern  _vkDestroyVideoSessionKHR                    : PFN_vkDestroyVideoSessionKHR
+    intern  _vkGetVideoSessionMemoryRequirementsKHR      : PFN_vkGetVideoSessionMemoryRequirementsKHR
+    intern  _vkBindVideoSessionMemoryKHR                 : PFN_vkBindVideoSessionMemoryKHR
+    intern  _vkCreateVideoSessionParametersKHR           : PFN_vkCreateVideoSessionParametersKHR
+    intern  _vkDestroyVideoSessionParametersKHR          : PFN_vkDestroyVideoSessionParametersKHR
+    intern  _vkCmdBeginVideoCodingKHR                    : PFN_vkCmdBeginVideoCodingKHR
+    intern  _vkCmdEndVideoCodingKHR                      : PFN_vkCmdEndVideoCodingKHR
+    intern  _vkCmdControlVideoCodingKHR                  : PFN_vkCmdControlVideoCodingKHR
+    intern  _vkCmdDecodeVideoKHR                         : PFN_vkCmdDecodeVideoKHR
+
+    func init []
+        dev : VkDevice [ vk.device ]
+        _vkGetPhysicalDeviceVideoCapabilitiesKHR     = vkGetInstanceProcAddr[ vk.instance, "vkGetPhysicalDeviceVideoCapabilitiesKHR" ]
+        _vkGetPhysicalDeviceVideoFormatPropertiesKHR = vkGetInstanceProcAddr[ vk.instance, "vkGetPhysicalDeviceVideoFormatPropertiesKHR" ]
+        _vkCreateVideoSessionKHR                     = vkGetDeviceProcAddr[ dev, "vkCreateVideoSessionKHR" ]
+        _vkDestroyVideoSessionKHR                    = vkGetDeviceProcAddr[ dev, "vkDestroyVideoSessionKHR" ]
+        _vkGetVideoSessionMemoryRequirementsKHR      = vkGetDeviceProcAddr[ dev, "vkGetVideoSessionMemoryRequirementsKHR" ]
+        _vkBindVideoSessionMemoryKHR                 = vkGetDeviceProcAddr[ dev, "vkBindVideoSessionMemoryKHR" ]
+        _vkCreateVideoSessionParametersKHR           = vkGetDeviceProcAddr[ dev, "vkCreateVideoSessionParametersKHR" ]
+        _vkDestroyVideoSessionParametersKHR          = vkGetDeviceProcAddr[ dev, "vkDestroyVideoSessionParametersKHR" ]
+        _vkCmdBeginVideoCodingKHR                    = vkGetDeviceProcAddr[ dev, "vkCmdBeginVideoCodingKHR" ]
+        _vkCmdEndVideoCodingKHR                      = vkGetDeviceProcAddr[ dev, "vkCmdEndVideoCodingKHR" ]
+        _vkCmdControlVideoCodingKHR                  = vkGetDeviceProcAddr[ dev, "vkCmdControlVideoCodingKHR" ]
+        _vkCmdDecodeVideoKHR                         = vkGetDeviceProcAddr[ dev, "vkCmdDecodeVideoKHR" ]
+        expect _vkCmdDecodeVideoKHR, 'decode: vulkan video entry points missing'
+        expect vk.decode_family >= 0, 'decode: this gpu has no vulkan video decoder'
+        dec    = h264d_new[]
+        frames = vec VideoFrame []
+
+    # the avcC record from the container: the session follows it
+    public func config [ avcc: @u8, n: i32 ] -> bool
+        if [ h264d_config[ dec, avcc, n ] == 0 ]
+            log 'decode: bad avcC record'
+            return false
+        return make_session[]
+
+    func picture_format [ use: i32 ] -> VkFormat
+        info : VkPhysicalDeviceVideoFormatInfoKHR [
+            sType:      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VIDEO_FORMAT_INFO_KHR,
+            pNext:      @profiles,
+            imageUsage: use ]
+        n : u32 0
+        _vkGetPhysicalDeviceVideoFormatPropertiesKHR[ vk.physical_device, @info, @n, null ]
+        if [ n == 0 || n > 16 ] return VK_FORMAT_UNDEFINED
+        formats : local VkVideoFormatPropertiesKHR [16]
+        for [ i: u32 0, i < n, i += 1 ]
+            formats[i] = VkVideoFormatPropertiesKHR [ sType: VK_STRUCTURE_TYPE_VIDEO_FORMAT_PROPERTIES_KHR ]
+        _vkGetPhysicalDeviceVideoFormatPropertiesKHR[ vk.physical_device, @info, @n, formats ]
+        for [ i: u32 0, i < n, i += 1 ]
+            if [ formats[i].format == VK_FORMAT_G8_B8R8_2PLANE_420_UNORM ] return formats[i].format
+        return VK_FORMAT_UNDEFINED
+
+    func make_session [] -> bool
+        dev : VkDevice [ vk.device ]
+        width   = h264d_width[ dec ]
+        height  = h264d_height[ dec ]
+        coded_w = h264d_coded_w[ dec ]
+        coded_h = h264d_coded_h[ dec ]
+        pidc : i32 [ h264d_profile[ dec ] ]
+        h264_profile = VkVideoDecodeH264ProfileInfoKHR [
+            sType:         VK_STRUCTURE_TYPE_VIDEO_DECODE_H264_PROFILE_INFO_KHR,
+            stdProfileIdc: (pidc == 66) ? STD_VIDEO_H264_PROFILE_IDC_BASELINE :
+                           (pidc == 77) ? STD_VIDEO_H264_PROFILE_IDC_MAIN : STD_VIDEO_H264_PROFILE_IDC_HIGH,
+            pictureLayout: VK_VIDEO_DECODE_H264_PICTURE_LAYOUT_PROGRESSIVE_KHR ]
+        profile = VkVideoProfileInfoKHR [
+            sType:               VK_STRUCTURE_TYPE_VIDEO_PROFILE_INFO_KHR,
+            pNext:               @h264_profile,
+            videoCodecOperation: VK_VIDEO_CODEC_OPERATION_DECODE_H264_BIT_KHR,
+            chromaSubsampling:   VK_VIDEO_CHROMA_SUBSAMPLING_420_BIT_KHR,
+            lumaBitDepth:        VK_VIDEO_COMPONENT_BIT_DEPTH_8_BIT_KHR,
+            chromaBitDepth:      VK_VIDEO_COMPONENT_BIT_DEPTH_8_BIT_KHR ]
+        profiles = VkVideoProfileListInfoKHR [
+            sType:        VK_STRUCTURE_TYPE_VIDEO_PROFILE_LIST_INFO_KHR,
+            profileCount: 1,
+            pProfiles:    @profile ]
+        h264_caps.sType   = VK_STRUCTURE_TYPE_VIDEO_DECODE_H264_CAPABILITIES_KHR
+        decode_caps.sType = VK_STRUCTURE_TYPE_VIDEO_DECODE_CAPABILITIES_KHR
+        decode_caps.pNext = @h264_caps
+        caps.sType        = VK_STRUCTURE_TYPE_VIDEO_CAPABILITIES_KHR
+        caps.pNext        = @decode_caps
+        res : VkResult [ _vkGetPhysicalDeviceVideoCapabilitiesKHR[ vk.physical_device, @profile, @caps ] ]
+        if [ res != VK_SUCCESS ]
+            log 'decode: h.264 profile {pidc} not supported ({i32[ res ]})'
+            return false
+        if [ coded_w > i32[ caps.maxCodedExtent.width ] || coded_h > i32[ caps.maxCodedExtent.height ] ]
+            log 'decode: {coded_w}x{coded_h} is larger than the decoder allows'
+            return false
+        # decode writes into the reference slot the picture is read from
+        coincide : i32 [ i32[ decode_caps.flags ] & i32[ VK_VIDEO_DECODE_CAPABILITY_DPB_AND_OUTPUT_COINCIDE_BIT_KHR ] ]
+        if [ coincide == 0 ]
+            log 'decode: decoder needs a separate output picture (not written)'
+            return false
+        use : i32 [ VK_IMAGE_USAGE_VIDEO_DECODE_DPB_BIT_KHR | VK_IMAGE_USAGE_VIDEO_DECODE_DST_BIT_KHR | VK_IMAGE_USAGE_TRANSFER_SRC_BIT ]
+        format : VkFormat [ picture_format[ use ] ]
+        if [ format == VK_FORMAT_UNDEFINED ]
+            log 'decode: no nv12 picture format for decode and copy'
+            return false
+
+        session_info : VkVideoSessionCreateInfoKHR [
+            sType:                      VK_STRUCTURE_TYPE_VIDEO_SESSION_CREATE_INFO_KHR,
+            queueFamilyIndex:           u32[ vk.decode_family ],
+            pVideoProfile:              @profile,
+            pictureFormat:              format,
+            maxCodedExtent:             VkExtent2D [ coded_w, coded_h ],
+            referencePictureFormat:     format,
+            maxDpbSlots:                H264D_SLOTS,
+            maxActiveReferencePictures: 16,
+            pStdHeaderVersion:          @caps.stdHeaderVersion ]
+        res = _vkCreateVideoSessionKHR[ dev, @session_info, null, @session ]
+        if [ res != VK_SUCCESS ]
+            log 'decode: vkCreateVideoSessionKHR failed ({i32[ res ]})'
+            return false
+        nreq : u32 0
+        _vkGetVideoSessionMemoryRequirementsKHR[ dev, session, @nreq, null ]
+        expect nreq <= 8, 'decode: too many session memory bindings'
+        reqs  : local VkVideoSessionMemoryRequirementsKHR [8]
+        binds : local VkBindVideoSessionMemoryInfoKHR [8]
+        for [ i: u32 0, i < nreq, i += 1 ]
+            reqs[i] = VkVideoSessionMemoryRequirementsKHR [ sType: VK_STRUCTURE_TYPE_VIDEO_SESSION_MEMORY_REQUIREMENTS_KHR ]
+        _vkGetVideoSessionMemoryRequirementsKHR[ dev, session, @nreq, reqs ]
+        session_memory = vec u64 []
+        for [ i: u32 0, i < nreq, i += 1 ]
+            types : u32 [ reqs[i].memoryRequirements.memoryTypeBits ]
+            size  : i64 [ reqs[i].memoryRequirements.size ]
+            memory_info : VkMemoryAllocateInfo [
+                sType:           VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                allocationSize:  size,
+                memoryTypeIndex: vk.find_memory_type[ types, 0 ] ]
+            res = vkAllocateMemory[ dev, @memory_info, null, @memory_new ]
+            expect res == VK_SUCCESS, 'decode: session memory'
+            session_memory.push[ cast u64 [ memory_new ] ]
+            binds[i] = VkBindVideoSessionMemoryInfoKHR [
+                sType:           VK_STRUCTURE_TYPE_BIND_VIDEO_SESSION_MEMORY_INFO_KHR,
+                memoryBindIndex: reqs[i].memoryBindIndex,
+                memory:          memory_new,
+                memoryOffset:    0,
+                memorySize:      size ]
+        res = _vkBindVideoSessionMemoryKHR[ dev, session, nreq, binds ]
+        expect res == VK_SUCCESS, 'decode: vkBindVideoSessionMemoryKHR failed'
+        if [ !make_params[] ] return false
+
+        # every reference slot is one layer of one picture
+        dpb_info : VkImageCreateInfo [
+            sType:         VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            pNext:         @profiles,
+            imageType:     VK_IMAGE_TYPE_2D,
+            format:        format,
+            extent:        VkExtent3D [ coded_w, coded_h, 1 ],
+            mipLevels:     1,
+            arrayLayers:   H264D_SLOTS,
+            samples:       VK_SAMPLE_COUNT_1_BIT,
+            tiling:        VK_IMAGE_TILING_OPTIMAL,
+            usage:         use,
+            sharingMode:   VK_SHARING_MODE_EXCLUSIVE,
+            initialLayout: VK_IMAGE_LAYOUT_UNDEFINED ]
+        device_memory : VmaAllocationCreateInfo [ usage: VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE ]
+        res = vmaCreateImage[ vk.allocator, @dpb_info, @device_memory, @dpb_image, @dpb_alloc, null ]
+        expect res == VK_SUCCESS, 'decode: reference pictures'
+        view_info : VkImageViewCreateInfo [
+            sType:            VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            image:            dpb_image,
+            viewType:         VK_IMAGE_VIEW_TYPE_2D_ARRAY,
+            format:           format,
+            subresourceRange: VkImageSubresourceRange [
+                aspectMask: VK_IMAGE_ASPECT_COLOR_BIT, baseMipLevel: 0, levelCount: 1, baseArrayLayer: 0, layerCount: H264D_SLOTS ] ]
+        res = vkCreateImageView[ dev, @view_info, null, @dpb_view ]
+        expect res == VK_SUCCESS, 'decode: reference view'
+
+        make_bits[ i64[ 4 * 1024 * 1024 ] ]
+        # both planes come back here, luma then interleaved chroma
+        planes_info : VkBufferCreateInfo [
+            sType:       VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            size:        i64[ coded_w ] * coded_h * 3 / 2,
+            usage:       VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            sharingMode: VK_SHARING_MODE_EXCLUSIVE ]
+        host_memory : VmaAllocationCreateInfo [
+            usage:         VMA_MEMORY_USAGE_AUTO,
+            flags:         VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT,
+            requiredFlags: VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT ]
+        mapped : VmaAllocationInfo
+        res = vmaCreateBuffer[ vk.allocator, @planes_info, @host_memory, @planes, @planes_alloc, @mapped ]
+        expect res == VK_SUCCESS, 'decode: plane readback buffer'
+        planes_map = mapped.pMappedData
+
+        pool_info : VkCommandPoolCreateInfo [
+            sType:            VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+            queueFamilyIndex: u32[ vk.decode_family ],
+            flags:            VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT ]
+        res = vkCreateCommandPool[ dev, @pool_info, null, @pool ]
+        expect res == VK_SUCCESS, 'decode: command pool'
+        vkAllocateCommandBuffers[ dev, VkCommandBufferAllocateInfo [
+            sType:              VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            commandPool:        pool,
+            level:              VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+            commandBufferCount: 1 ], @cmd ]
+        fence = vk.fence_acquire[]
+        log 'decode: h.264 {width}x{height} (coded {coded_w}x{coded_h}, profile {pidc}) on the video queue'
+        return true
+
+    # the sps and pps the parser holds, as session parameters
+    func make_params [] -> bool
+        add : VkVideoDecodeH264SessionParametersAddInfoKHR
+        h264d_params[ dec, @add ]
+        h264_params : VkVideoDecodeH264SessionParametersCreateInfoKHR [
+            sType:              VK_STRUCTURE_TYPE_VIDEO_DECODE_H264_SESSION_PARAMETERS_CREATE_INFO_KHR,
+            maxStdSPSCount:     32,
+            maxStdPPSCount:     32,
+            pParametersAddInfo: @add ]
+        params_info : VkVideoSessionParametersCreateInfoKHR [
+            sType:        VK_STRUCTURE_TYPE_VIDEO_SESSION_PARAMETERS_CREATE_INFO_KHR,
+            pNext:        @h264_params,
+            videoSession: session ]
+        res : VkResult [ _vkCreateVideoSessionParametersKHR[ vk.device, @params_info, null, @params_new ] ]
+        if [ res != VK_SUCCESS ]
+            log 'decode: vkCreateVideoSessionParametersKHR failed ({i32[ res ]})'
+            return false
+        if [ params ] _vkDestroyVideoSessionParametersKHR[ vk.device, params, null ]
+        params = params_new
+        return true
+
+    func make_bits [ need: i64 ]
+        if [ bits && need <= bits_size ] return
+        if [ bits ] vmaDestroyBuffer[ vk.allocator, bits, bits_alloc ]
+        bits_size = need * 2
+        bits_info : VkBufferCreateInfo [
+            sType:       VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            pNext:       @profiles,
+            size:        bits_size,
+            usage:       VK_BUFFER_USAGE_VIDEO_DECODE_SRC_BIT_KHR,
+            sharingMode: VK_SHARING_MODE_EXCLUSIVE ]
+        host_memory : VmaAllocationCreateInfo [
+            usage:         VMA_MEMORY_USAGE_AUTO,
+            flags:         VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
+            requiredFlags: VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT ]
+        mapped : VmaAllocationInfo
+        res : VkResult [ vmaCreateBuffer[ vk.allocator, @bits_info, @host_memory, @bits, @bits_alloc, @mapped ] ]
+        expect res == VK_SUCCESS, 'decode: bitstream buffer'
+        bits_map = mapped.pMappedData
+
+    func barrier [ f: VkCommandBuffer, layer: i32, from: VkImageLayout, to: VkImageLayout ]
+        b9 : VkImageMemoryBarrier [
+            sType:               VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            srcAccessMask:       VK_ACCESS_MEMORY_WRITE_BIT,
+            dstAccessMask:       VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+            oldLayout:           from,
+            newLayout:           to,
+            srcQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED,
+            dstQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED,
+            image:               dpb_image,
+            subresourceRange:    VkImageSubresourceRange [
+                aspectMask:     VK_IMAGE_ASPECT_COLOR_BIT,
+                baseMipLevel:   0,
+                levelCount:     1,
+                baseArrayLayer: (layer < 0) ? 0 : layer,
+                layerCount:     (layer < 0) ? H264D_SLOTS : 1 ] ]
+        vkCmdPipelineBarrier[ f, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+            0, 0, null, 0, null, 1, @b9 ]
+
+    func submit []
+        vkEndCommandBuffer[ cmd ]
+        info : VkSubmitInfo [
+            sType:              VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            commandBufferCount: 1,
+            pCommandBuffers:    @cmd ]
+        vkResetFences[ vk.device, 1, @fence ]
+        res : VkResult [ vkQueueSubmit[ vk.decode_queue, 1, @info, fence ] ]
+        expect res == VK_SUCCESS, 'decode: submit'
+        vkWaitForFences[ vk.device, 1, @fence, VK_TRUE, UINT64_MAX ]
+
+    func begin []
+        vkResetCommandBuffer[ cmd, 0 ]
+        vkBeginCommandBuffer[ cmd, VkCommandBufferBeginInfo [
+            sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            flags: VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT ] ]
+
+    # one slot's picture back to the cpu as rgba
+    func take [ slot: i32, pts: i64 ]
+        begin[]
+        barrier[ cmd, slot, VK_IMAGE_LAYOUT_VIDEO_DECODE_DPB_KHR, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL ]
+        regions : local VkBufferImageCopy [2]
+        regions[0] = VkBufferImageCopy [
+            bufferOffset:      0,
+            bufferRowLength:   0,
+            bufferImageHeight: 0,
+            imageSubresource:  VkImageSubresourceLayers [
+                aspectMask: VK_IMAGE_ASPECT_PLANE_0_BIT, mipLevel: 0, baseArrayLayer: slot, layerCount: 1 ],
+            imageOffset: VkOffset3D [ x: 0, y: 0, z: 0 ],
+            imageExtent: VkExtent3D [ width: coded_w, height: coded_h, depth: 1 ] ]
+        regions[1] = VkBufferImageCopy [
+            bufferOffset:      i64[ coded_w ] * coded_h,
+            bufferRowLength:   0,
+            bufferImageHeight: 0,
+            imageSubresource:  VkImageSubresourceLayers [
+                aspectMask: VK_IMAGE_ASPECT_PLANE_1_BIT, mipLevel: 0, baseArrayLayer: slot, layerCount: 1 ],
+            imageOffset: VkOffset3D [ x: 0, y: 0, z: 0 ],
+            imageExtent: VkExtent3D [ width: coded_w / 2, height: coded_h / 2, depth: 1 ] ]
+        vkCmdCopyImageToBuffer[ cmd, dpb_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, planes, 2, regions ]
+        barrier[ cmd, slot, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_VIDEO_DECODE_DPB_KHR ]
+        submit[]
+        vmaInvalidateAllocation[ vk.allocator, planes_alloc, 0, VK_WHOLE_SIZE ]
+        f : VideoFrame [ pts: pts, width: width, height: height ]
+        f.y = vec u8 [ width * height ]
+        f.u = vec u8 [ (width / 2) * (height / 2) ]
+        f.v = vec u8 [ (width / 2) * (height / 2) ]
+        nv12_split[ @u8 [ planes_map ], coded_w, coded_h, width, height, @f.y[ 0 ], @f.u[ 0 ], @f.v[ 0 ] ]
+        frames.push[ f ]
+
+    func take_all []
+        pts : i64 [ 0 ]
+        for [ slot: i32 h264d_output[ dec, @pts ], slot >= 0, slot = h264d_output[ dec, @pts ] ]
+            take[ slot, pts ]
+
+    # one length-prefixed sample; frames ready in display order land in frames
+    public func decode [ data: @u8, n: i32, pts: i64 ] -> bool
+        if [ !session ] return false
+        if [ h264d_sample[ dec, data, n, pts ] == 0 ] return true
+        take_all[]
+        if [ h264d_params_dirty[ dec ] != 0 && !make_params[] ] return false
+        size  : i64 [ h264d_bits_size[ dec ] ]
+        align : i64 [ caps.minBitstreamBufferSizeAlignment ]
+        if [ align < 1 ] align = 1
+        range : i64 [ (size + align - 1) / align * align ]
+        make_bits[ range ]
+        h264d_bits_write[ dec, @u8 [ bits_map ] ]
+        if [ range > size ] memset[ @u8 [ bits_map ] + size, 0, range - size ]
+        vmaFlushAllocation[ vk.allocator, bits_alloc, 0, VK_WHOLE_SIZE ]
+        bi : VkVideoBeginCodingInfoKHR
+        di : VkVideoDecodeInfoKHR
+        h264d_vk[ dec, dpb_view, bits, u64[ range ], session, params, @bi, @di ]
+        begin[]
+        if [ !started ]
+            barrier[ cmd, -1, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_VIDEO_DECODE_DPB_KHR ]
+        _vkCmdBeginVideoCodingKHR[ cmd, @bi ]
+        if [ !started ]
+            control : VkVideoCodingControlInfoKHR [
+                sType: VK_STRUCTURE_TYPE_VIDEO_CODING_CONTROL_INFO_KHR,
+                flags: VK_VIDEO_CODING_CONTROL_RESET_BIT_KHR ]
+            _vkCmdControlVideoCodingKHR[ cmd, @control ]
+            started = true
+        _vkCmdDecodeVideoKHR[ cmd, @di ]
+        end : VkVideoEndCodingInfoKHR [ sType: VK_STRUCTURE_TYPE_VIDEO_END_CODING_INFO_KHR ]
+        _vkCmdEndVideoCodingKHR[ cmd, @end ]
+        submit[]
+        h264d_decoded[ dec ]
+        take_all[]
+        return true
+
+    # end of stream: the waiting pictures go out
+    public func finish []
+        if [ !session ] return
+        h264d_flush[ dec ]
+        take_all[]
+
+    func dealloc []
+        dev : VkDevice [ vk.device ]
+        if [ fence ]     vk.fence_release[ fence ]
+        if [ pool ]      vkDestroyCommandPool[ dev, pool, null ]
+        if [ bits ]      vmaDestroyBuffer[ vk.allocator, bits, bits_alloc ]
+        if [ planes ]    vmaDestroyBuffer[ vk.allocator, planes, planes_alloc ]
+        if [ dpb_view ]  vkDestroyImageView[ dev, dpb_view, null ]
+        if [ dpb_image ] vmaDestroyImage[ vk.allocator, dpb_image, dpb_alloc ]
+        if [ params ]    _vkDestroyVideoSessionParametersKHR[ dev, params, null ]
+        if [ session ]   _vkDestroyVideoSessionKHR[ dev, session, null ]
+        if [ session_memory ]
+            for [ m: u64 ] in session_memory
+                vkFreeMemory[ dev, cast VkDeviceMemory [ m ], null ]
+        if [ dec ] h264d_free[ dec ]
+
+# h.264 samples decoded ahead on a worker thread
+class VideoStream
+    context vk        : vk_context
+    public  ahead     : i32 [ 6 ]           # pictures decoded ahead
+    public  width     : i32
+    public  height    : i32
+    public  decoded   : i64                 # pictures decoded in all
+    intern  dec       : Decoder
+    intern  avcc      : vec u8
+    intern  queue     : vec DemuxSample     # track -1: new avcC, -2: end
+    intern  ready     : vec VideoFrame
+    intern  hidden    : vec i64             # decoded, never shown
+    intern  lock      : pthread_mutex_t
+    intern  wake      : pthread_cond_t
+    intern  gen       : i64                 # a flush starts a new one
+    intern  dec_gen   : i64
+    intern  stop      : bool
+    intern  started   : bool
+    intern  tid       : u64
+
+    func init []
+        queue = vec DemuxSample []
+        ready = vec VideoFrame []
+        avcc  = vec u8 []
+        hidden = vec i64 []
+        pthread_mutex_init[ @lock, null ]
+        pthread_cond_init[ @wake, null ]
+
+    func put [ s: DemuxSample ]
+        pthread_mutex_lock[ @lock ]
+        queue.push[ s ]
+        if [ !started ]
+            started = true
+            pthread_create[ @tid, null, @run, a ]
+        pthread_cond_signal[ @wake ]
+        pthread_mutex_unlock[ @lock ]
+
+    # the avcC for the samples after it
+    public func config [ bytes: @u8, n: i32 ]
+        s : DemuxSample [ track: -1 ]
+        s.data = vec u8 [ n ]
+        memcpy[ @s.data[ 0 ], bytes, n ]
+        put[ s ]
+
+    # one length-prefixed sample; pts in microseconds
+    public func push [ bytes: @u8, n: i64, pts: i64, sync: bool, show: bool ]
+        s : DemuxSample [ pts: pts, sync: sync, duration: (show) ? 0 : 1 ]
+        s.data = vec u8 [ n ]
+        memcpy[ @s.data[ 0 ], bytes, n ]
+        put[ s ]
+
+    # no more samples: the waiting pictures come out
+    public func finish []
+        put[ DemuxSample [ track: -2 ] ]
+
+    # drop every sample and picture; a key frame comes next
+    public func flush []
+        pthread_mutex_lock[ @lock ]
+        queue.clear[]
+        ready.clear[]
+        hidden.clear[]
+        gen += 1
+        pthread_mutex_unlock[ @lock ]
+
+    # samples waiting plus pictures ready
+    public func queued [] -> i32
+        pthread_mutex_lock[ @lock ]
+        n : i32 [ i32[ queue.count + ready.count ] ]
+        pthread_mutex_unlock[ @lock ]
+        return n
+
+    # the latest picture at or before t; first: a later one too
+    public func frame_at [ t: i64, first: bool ] -> VideoFrame
+        pthread_mutex_lock[ @lock ]
+        pick : VideoFrame [ null ]
+        while [ ready.count > 0 ]
+            f : VideoFrame ready[ 0 ]
+            if [ f.pts > t ]
+                if [ !pick && first ]
+                    pick = f
+                    ready.shift[]
+                break
+            pick = f
+            ready.shift[]
+        pthread_cond_signal[ @wake ]
+        pthread_mutex_unlock[ @lock ]
+        return pick
+
+    func run [] -> none
+        pthread_mutex_lock[ @lock ]
+        while [ !stop ]
+            if [ queue.count == 0 || ready.count >= ahead ]
+                pthread_cond_wait[ @wake, @lock ]
+                continue
+            s : DemuxSample queue.shift[]
+            g : i64 [ gen ]
+            pthread_mutex_unlock[ @lock ]
+            work[ s, g ]
+            pthread_mutex_lock[ @lock ]
+            # a flush while decoding: its pictures are stale
+            if [ dec ]
+                for [ f: VideoFrame ] in dec.frames
+                    if [ g == gen && !take_hidden[ f.pts ] ] ready.push[ f ]
+                dec.frames.clear[]
+            pthread_mutex_unlock[ @lock ]
+            Au.auto_free[]
+            pthread_mutex_lock[ @lock ]
+        pthread_mutex_unlock[ @lock ]
+
+    # a non-displaying sample's picture: true, once
+    func take_hidden [ pts: i64 ] -> bool
+        for [ i: i64 0, i < hidden.count, i += 1 ]
+            if [ hidden[ i ] == pts ]
+                hidden.remove[ i ]
+                return true
+        return false
+
+    # on the worker: one queued item through the decoder
+    func work [ s: DemuxSample, g: i64 ]
+        if [ s.track == -1 ]
+            avcc = s.data
+            dec_gen = -1
+        if [ !dec || dec_gen != g ]
+            if [ avcc.count == 0 ] return
+            dec = Decoder [ vk: vk ]
+            if [ !dec.config[ @avcc[ 0 ], i32[ avcc.count ] ] ]
+                log 'video stream: the decoder refused the avcC'
+                return
+            width   = dec.width
+            height  = dec.height
+            dec_gen = g
+        if [ s.track == -1 ] return
+        if [ s.track == -2 ]
+            dec.finish[]
+            return
+        if [ s.duration == 1 ]
+            pthread_mutex_lock[ @lock ]
+            hidden.push[ s.pts ]
+            pthread_mutex_unlock[ @lock ]
+        before : i64 [ dec.frames.count ]
+        dec.decode[ @s.data[ 0 ], i32[ s.data.count ], s.pts ]
+        decoded += dec.frames.count - before
+
+    func dealloc []
+        if [ started ]
+            pthread_mutex_lock[ @lock ]
+            stop = true
+            pthread_cond_signal[ @wake ]
+            pthread_mutex_unlock[ @lock ]
+            pthread_join[ tid, null ]
+        pthread_cond_destroy[ @wake ]
+        pthread_mutex_destroy[ @lock ]

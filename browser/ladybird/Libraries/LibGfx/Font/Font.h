@@ -1,0 +1,126 @@
+/*
+ * Copyright (c) 2020, Stephan Unverwerth <s.unverwerth@serenityos.org>
+ * Copyright (c) 2023, MacDue <macdue@dueutil.tech>
+ * Copyright (c) 2023-2025, Andreas Kling <andreas@ladybird.org>
+ * Copyright (c) 2025, Aliaksandr Kalenik <kalenik.aliaksandr@gmail.com>
+ *
+ * SPDX-License-Identifier: BSD-2-Clause
+ */
+
+#pragma once
+
+#include <AK/AtomicRefCounted.h>
+#include <AK/FlyString.h>
+#include <AK/Optional.h>
+#include <AK/RefPtr.h>
+#include <AK/Utf16String.h>
+#include <LibGfx/Font/Font.h>
+#include <LibGfx/Font/Typeface.h>
+#include <LibGfx/ShapeFeature.h>
+
+struct hb_font_t;
+struct hb_buffer_t;
+
+namespace Gfx {
+
+struct FontPixelMetrics {
+    float x_height { 0 };
+    float advance_of_ascii_zero { 0 };
+
+    // Number of pixels the font extends above the baseline.
+    float ascent { 0 };
+
+    // Number of pixels the font descends below the baseline.
+    float descent { 0 };
+};
+
+// https://learn.microsoft.com/en-us/typography/opentype/spec/os2#uswidthclass
+enum FontWidth {
+    UltraCondensed = 1,
+    ExtraCondensed = 2,
+    Condensed = 3,
+    SemiCondensed = 4,
+    Normal = 5,
+    SemiExpanded = 6,
+    Expanded = 7,
+    ExtraExpanded = 8,
+    UltraExpanded = 9
+};
+
+constexpr float text_shaping_resolution = 64;
+
+enum class FontHintingStyle {
+    None,
+    Slight,
+    Normal,
+    Full,
+};
+
+struct FontHintingOptions {
+    FontHintingStyle style { FontHintingStyle::Normal };
+    bool force_autohinting { false };
+};
+
+void force_hinting_for_testing(Optional<FontHintingStyle>);
+
+class Font : public AtomicRefCounted<Font> {
+public:
+    Font(NonnullRefPtr<Typeface const>, float point_width, float point_height, FontVariationSettings const variations, ShapeFeatures const& features);
+    ~Font();
+
+    u64 id() const { return m_id; }
+    float point_size() const;
+    float pixel_size() const;
+    FontPixelMetrics const& pixel_metrics() const { return m_pixel_metrics; }
+    u8 slope() const { return m_typeface->slope(); }
+    u16 weight() const { return m_typeface->weight(); }
+    bool contains_glyph(u32 code_point) const { return m_typeface->glyph_id_for_code_point(code_point) > 0; }
+    u32 glyph_id_for_code_point(u32 code_point) const { return m_typeface->glyph_id_for_code_point(code_point); }
+    int x_height() const { return m_point_height; } // FIXME: Read from font
+    float width(Utf16View const&) const;
+    FlyString const& family() const { return m_typeface->family(); }
+
+    NonnullRefPtr<Font> with_size(float point_size) const;
+    NonnullRefPtr<Font> invisible_variant() const;
+    bool is_invisible() const { return m_is_invisible; }
+
+    Typeface const& typeface() const { return m_typeface; }
+
+
+    Font const& bold_variant() const;
+    hb_font_t* harfbuzz_font() const;
+    FontVariationSettings const& variation_settings() const { return m_font_variation_settings; }
+    ShapeFeatures const& features() const { return m_shape_features; }
+
+    bool is_emoji_font() const;
+
+private:
+    bool m_is_invisible { false };
+    u64 m_id { 0 };
+
+#if defined(USE_FONTCONFIG)
+    FontHintingOptions hinting_options(float scale) const;
+
+    struct ScaledFontHintingOptions {
+        float scale;
+        FontHintingOptions options;
+    };
+    mutable Optional<ScaledFontHintingOptions> m_hinting_options;
+#endif
+
+    mutable RefPtr<Font const> m_bold_variant;
+    mutable hb_font_t* m_harfbuzz_font { nullptr };
+
+    mutable TriState m_is_emoji_font { TriState::Unknown };
+
+    NonnullRefPtr<Typeface const> m_typeface;
+    float m_point_width { 0.0f };
+    float m_point_height { 0.0f };
+    FontVariationSettings const m_font_variation_settings;
+    ShapeFeatures m_shape_features;
+    FontPixelMetrics m_pixel_metrics;
+
+    float m_pixel_size { 0.0f };
+};
+
+}

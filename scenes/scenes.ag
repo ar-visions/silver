@@ -10,6 +10,9 @@ import tls
 
 import <stdio.h>
 import <stdlib.h>
+import <unistd.h>
+    +_DEFAULT_SOURCE
+    +_XOPEN_SOURCE=500
 
 enum PurpleSurface
     color        : 0
@@ -13003,3 +13006,67 @@ element Pluto
         gsky.time  = ux.time * 60000.0
         sky_render.draw[]
         sky_render.sync_fence[]
+
+# one picture per scene, for orbiter's scene picker
+export func scene_thumbs []
+    force : getenv[ 'SILVER_EXPORT_FORCE' ]
+    # the same names as the export's scenes list
+    names : vec string [] [ 'Earth', 'Moon', 'Mars', 'Terra', 'MilkyWay',
+        'Titan', 'Europa', 'Enceladus', 'Uranus', 'Neptune', 'Pluto',
+        'Synthwave', 'Clouds' ]
+    todo : vec string []
+    for [ nm: string ] in names
+        out : path '../{share_name}/thumbs/{nm}.png'
+        if [ force || !out.exists[] ] todo += nm
+    if [ todo.count == 0 ]
+        log 'scenes: thumbnails current'
+        return
+    td : path '../{share_name}/thumbs'
+    td.make_dir[]
+    # no screen window: the scenes draw into offscreen targets
+    vk9 : vk_context []
+    vk9.hold[]
+    w9  : Window [ vk: vk9, format: Pixel.rgba8, backbuffer: true,
+        width: 320, height: 200 ]
+    w9.hold[]
+    if [ !w9.element_targets ] w9.element_targets = map Render [string] []
+    for [ nm: string ] in todo
+        scene_thumb[ w9, nm, path '../{share_name}/thumbs/{nm}.png' ]
+
+# draws one scene until loaded and settled, then saves it
+func scene_thumb [ w: Window, nm: string, out: path ]
+    st : Au.find_type[ nm.chars, null ]
+    if [ !st ]
+        log 'scenes: no class for {nm}'
+        return
+    e : element [ Au.new_object[ st, null, null, true,
+        __FILE__, __LINE__, __SEQUENCE__ ] ]
+    # new_object is pool-managed: hold it for the render
+    e.hold[]
+    e.id = nm
+    e.ux = w
+    e.vk = w.vk
+    # textures load on a worker: wait up to 60 s
+    r : Render [ null ]
+    for [ i: i32 0, i < 6000, i += 1 ]
+        e.draw*[ w ]
+        if [ w.element_targets.contains[ nm ] ]
+            r = w.element_targets[ nm ]
+            # a models-free target is the plain color while loading
+            if [ r && r.models && r.models.count > 0 ] break
+            r = null
+        usleep[ 10000 ]
+    if [ !r ]
+        log 'scenes: {nm} never loaded, no thumbnail'
+        e.drop[]
+        return
+    # eased cameras and temporal passes settle over frames
+    for [ f: i32 0, f < 60, f += 1 ]
+        e.draw*[ w ]
+        r.draw[]
+        r.sync_fence[]
+    im : Image [ r.color ]
+    im.png[ out ]
+    w.element_targets.rm[ nm ]
+    e.drop[]
+    log 'scenes: thumbnail {nm} -> {out}'

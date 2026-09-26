@@ -4693,15 +4693,15 @@ Button HsButton
         layers.body:
             fill_color: #2a2440
             radius: 6
-            inner_glow: #8af2 12
+            box_shadow: inset 0 0 12px #8af2
         :hovered
             layers.body:
                 fill_color: #3a3458
-                inner_glow: #acf4 16
+                box_shadow: inset 0 0 16px #acf4
         :pressed
             layers.body:
                 fill_color: #438
-                inner_glow: #ccf8 18
+                box_shadow: inset 0 0 18px #ccf8
     }
 
 # validation stations: wider pill, same look

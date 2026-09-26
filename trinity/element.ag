@@ -548,9 +548,8 @@ class Layer
     public fill_gradient_radius_y   : f32
     public fill_gradient_angle      : f32
     public fill_offset         : f32
-    public fill_shadow         : Shadow
-    public fill_glow           : Glow
-    public inner_glow          : Glow
+    # CSS box-shadow: [inset] x y blur spread color
+    public box_shadow          : BoxShadow
 
     public stroke_gradient          : GradientType
     public stroke_gradient_color    : rgba
@@ -561,8 +560,6 @@ class Layer
     public stroke_color_pos         : vec2f
     public stroke_width             : Sides
     public stroke_offset            : f32
-    public stroke_shadow            : Shadow
-    public stroke_glow              : Glow
     public stroke_cap               : Cap
     public stroke_join              : Join
     public stroke_miter             : f32
@@ -576,10 +573,8 @@ class Layer
     public label_gradient_radius   : f32
     public label_gradient_degrees  : f32
     public label_gradient_mirror   : bool
-    public label_shadow        : rgba
-    public label_shadow_offset : vec2f
-    public label_shadow_blur   : f32
-    public label_glow          : Glow
+    # CSS text-shadow: x y blur color
+    public text_shadow         : BoxShadow
     public label_size          : f32   [ 22.0 ]
     public label_height        : f32 [ 1.0 ]
     public label_align         : vec2f [ x: 0.5, y: 0.5 ]

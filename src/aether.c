@@ -8151,6 +8151,31 @@ static void set_global_construct(aether a, efunc fn) {
 static void emit_expect_exit(aether a);
 static void emit_export_exit(aether a);
 static void emit_export_funcs(aether a, Au_t module_base, efunc f);
+static void emit_expect_tests(aether a, Au_t module_base, efunc f);
+
+// a library's ctor runs before the rest of its .so's ctors;
+// its tests run from <module>_late, linked last (silver.c)
+static void emit_library_late(aether a, Au_t module_base) {
+    string name = f(string, "%o_late", symbol_name((Au)module_identity(a)));
+    Au_t  au_late = def_member(a->autype, name->chars, typeid(none), AU_MEMBER_FUNC, 0);
+    efunc late    = efunc(mod, a, autype, au_late,
+        loaded, true, used, true, has_code, true);
+    etype_implement((etype)late, false);
+    LLVMSetValueName2(_llvalue((enode)late), name->chars, len(name));
+    LLVMSetLinkage  (_llvalue((enode)late), LLVMExternalLinkage);
+    LLVMSetVisibility(_llvalue((enode)late), LLVMDefaultVisibility);
+#ifdef _WIN32
+    LLVMSetDLLStorageClass(_llvalue((enode)late), LLVMDLLExportStorageClass);
+#endif
+    a->late_symbol = hold(name);
+    // held open: re-entering would move the builder to entry
+    push_scope(a, (Au)late, 13);
+    emit_expect_tests(a, module_base, late);
+    emit_export_funcs(a, module_base, late);
+    if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(B)))
+        LLVMBuildRetVoid(B);
+    pop_scope(a);
+}
 
 static void build_entrypoint(aether a, efunc module_init_fn) {
     emit_guard;
@@ -8181,6 +8206,8 @@ static void build_entrypoint(aether a, efunc module_init_fn) {
         if (live_class) {
             a->is_library = true;
             a->is_live    = true;
+            emit_expect_tests(a, module_base, module_init_fn);
+            emit_export_funcs(a, module_base, module_init_fn);
 
             LLVMTypeRef ptr_ty  = LLVMPointerTypeInContext(a->module_ctx, 0);
             LLVMTypeRef void_ty = LLVMVoidTypeInContext(a->module_ctx);
@@ -8456,6 +8483,7 @@ static void build_entrypoint(aether a, efunc module_init_fn) {
             }
         }
 
+        emit_library_late(a, module_base);
         if (!cov_classes) {
             set_global_construct(a, module_init_fn);
             a->is_library = true;
@@ -8489,6 +8517,11 @@ static void build_entrypoint(aether a, efunc module_init_fn) {
         e_fn_return(a, (Au)e_operand(a, _i32(0), etypeid(i32)));
         pop_scope(a);
         return;
+    }
+
+    if (main_class) {
+        emit_expect_tests(a, module_base, module_init_fn);
+        emit_export_funcs(a, module_base, module_init_fn);
     }
 
     // for apps, build int main(argc, argv)
@@ -10773,8 +10806,6 @@ AU_EXPORT none aether_build_module_initializer(aether a, enode init) {
         }
     }
     pop_scope(a);
-    emit_expect_tests(a, module_base, f);
-    emit_export_funcs(a, module_base, f);
     build_entrypoint(a, f);
 }
 

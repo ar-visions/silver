@@ -86,12 +86,23 @@ class FindHit
     # directory holds <stem>/<stem>.ag: a silver module
     public is_module  : bool
     public inst       : i32
+    # a scene card: picking it loads the scene
+    public scene      : string
+    # the scene's exported picture
+    public thumb      : path
     # owner/name of a remote repository row: picking it checks the repo out
     public repo       : string
     # the repository is already checked out beside this one
     public checked    : bool
     # the trailing row of a listing: picking it fetches the next page
     public more       : bool
+    # one of the user's pins, listed above the folder's own entries
+    public pinned     : bool
+
+    # a card row: an instance or a scene
+    public func card [] -> bool
+        if [ inst > 0 ] return true
+        return scene && scene.count > 0
 
 class VRow
     public src   : i32 [ -1 ]
@@ -1246,7 +1257,7 @@ Layer EditorLayer
             cv.fill_grad[ hl_grad ]
             cv.fill_color_pos[ rx, ry ]
             cv.fill_grad_pos[ rx, ry + rh ]
-        if [ hl_glow ] cv.inner_glow[ hl_glow, 14.0 ]
+        if [ hl_glow ] cv.box_shadow[ hl_glow, 0.0, 0.0, 14.0, 0.0, true ]
         cv.rect_to[ rx, ry, rw, rh ]
         cv.paint[ ]
         cv.restore[ ]
@@ -2271,7 +2282,7 @@ Layer EditorLayer
                     cv.rounded[ 5.0, 5.0, 5.0, 5.0 ]
                     cv.stroke_width[ 0.0 ]
                     cv.fill_color[ rgba['#2f7a4a44'] ]
-                    cv.inner_glow[ rgba['#5fd08abb'], 10.0 ]
+                    cv.box_shadow[ rgba['#5fd08abb'], 0.0, 0.0, 10.0, 0.0, true ]
                     cv.rect_to[ ax - cw_tm.w, ya + 2.0, bounds.x + bounds.w - rin - ax + 4.0, lh - 4.0 ]
                     cv.paint[ ]
                     cv.restore[ ]
@@ -2400,7 +2411,7 @@ Layer EditorLayer
                 cv.save[ ]
                 cv.rounded[ 4.0, 4.0, 4.0, 4.0 ]
                 # selection reads as a glow, not a bordered box
-                cv.inner_glow[ sel_brd_val, 14.0 ]
+                cv.box_shadow[ sel_brd_val, 0.0, 0.0, 14.0, 0.0, true ]
                 pad : 2
                 for [ li: i32 start_line, li <= end_line, li += 1 ]
                     y_row  : f32 [ round[ y0 + f32[li] * lh - editor.scroll.y ] ]
@@ -2764,6 +2775,8 @@ Control Editor
     intern static export_ftype    : map string[string]
     # ext -> the <owner>-<module> export stem, which names its lib
     intern static export_lib      : map string[string]
+    # scheme (https) -> the module that exported it
+    intern static export_protocol : map string[string]
     intern static bin_view_cached : string
     mutable lines         : list string
     mutable close_icon    : SVGModel
@@ -4210,6 +4223,7 @@ Control Editor
         export_registry = map string[string] []
         export_ftype    = map string[string] []
         export_lib      = map string[string] []
+        export_protocol = map string[string] []
         root : path.path_startup[]
         if [ !root ] return
         d : path '{root}/install/export'
@@ -4223,6 +4237,8 @@ Control Editor
             mod   : module_of_export[ root, e.stem[] ]
             ftext : string e.load[ typeid[string], null ]
             if [ !ftext ] continue
+            for [ pr: string ] in export_names[ ftext, 'protocols:' ]
+                export_protocol[ pr ] = mod
             ix : ftext.index_of[ 'extensions:' ]
             if [ ix < 0 ] continue
             # the line: 'ext' [: filetype], 'ext' ... to its end
@@ -4244,6 +4260,26 @@ Control Editor
                 q0 = 0 - 1
                 ft3 : string export_ftype_at[ ftext, i, n2 ]
                 if [ ft3 ] export_ftype[ ex3 ] = ft3
+
+    # the quoted names on an export's line (protocols: ['http'])
+    func export_names [ ftext: string, key: string ] -> vec string
+        names : vec string []
+        ix : ftext.index_of[ key ]
+        if [ ix < 0 ] return names
+        i  : i32 [ i32[ ix ] ]
+        n2 : i32 [ i32[ ftext.count ] ]
+        q0 : i32 [ 0 - 1 ]
+        while [ i < n2 ]
+            c : i32 [ (i32 ftext.chars[i]) & 255 ]
+            if [ c == 10 ] break
+            i += 1
+            if [ c != 39 ] continue
+            if [ q0 < 0 ]
+                q0 = i
+                continue
+            names.push[ ftext.mid[ q0, i - 1 - q0 ] ]
+            q0 = 0 - 1
+        return names
 
     # the optional ': filetype' a module declares after a quoted extension,
     # read from i (just past the closing quote); null when there is none
@@ -4341,22 +4377,38 @@ Control Editor
 
     # vw names the rail view the module should open with; '' = its default
     func launch_handler [ mod: string, p: path, vw: string ]
+        log 'launch_handler: {mod} for {p} view={vw}'
+        args : string [ null ]
+        orb9 : cast orbiter [ ux.app_object ]
+        if [ orb9 ]
+            fa9 : string orb9.file_args[ p ]
+            args = (fa9 && fa9.count > 0) ? fa9 : orb9.module_args
+        if [ vw && vw.count > 0 ]
+            args = (args && args.count > 0) ? '{args} --view {vw}' : '--view {vw}'
+        host_module[ mod, p, args ]
+
+    # an address whose scheme a module exports: it hosts the address
+    public func open_url [ url: string ] -> bool
+        ix : url.index_of[ '://' ]
+        if [ ix <= 0 ] return false
+        ensure_export_registry[]
+        mod : string export_protocol[ url.mid[ 0, ix ] ]
+        if [ !mod ] return false
+        host_module[ mod, null, url ]
+        return true
+
+    # host a module's app in this pane, on a file or with args alone
+    func host_module [ mod: string, p: path, args: string ]
         root : path.path_startup[]
         if [ !root ] return
-        log 'launch_handler: {mod} for {p} view={vw}'
         nv : AppView [ ]
         nv.src = path '{root}/{mod}/{mod}.ag'
         nv.doc = p
         nv.viewer = true
-        orb9 : cast orbiter [ ux.app_object ]
-        if [ orb9 ]
-            fa9 : string orb9.file_args[ p ]
-            nv.module_args = (fa9 && fa9.count > 0) ? fa9 : orb9.module_args
-        if [ vw && vw.count > 0 ]
-            nv.module_args = (nv.module_args && nv.module_args.count > 0)
-                ? '{nv.module_args} --view {vw}' : '--view {vw}'
+        nv.module_args = args
         nv.host_hz = (ux) ? ux.refresh_hz[] : 60
         nv.start[]
+        orb9 : cast orbiter [ ux.app_object ]
         if [ orb9 ] orb9.add_instance[ nv ]
         run_view  = nv
         app_view  = true

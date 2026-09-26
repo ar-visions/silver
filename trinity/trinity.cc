@@ -591,7 +591,9 @@ static std::string shell_tool(const char* name) {
     for (std::string p : { home + "/.local/bin/" + name, home + "/.claude/local/" + name,
                            std::string("/Applications/ChatGPT.app/Contents/Resources/") + name,
                            std::string("/Applications/Codex.app/Contents/Resources/") + name,
-                           home + "/Applications/Codex.app/Contents/Resources/" + name })
+                           home + "/Applications/Codex.app/Contents/Resources/" + name,
+                           // the chatgpt deb carries codex as the mac app does
+                           std::string("/usr/lib/chatgpt/resources/") + name })
         if (access(p.c_str(), X_OK) == 0) return p;
     return "";
 }
@@ -642,15 +644,25 @@ HOST_API void agent_shell_close(int id) {
 // one message of the exchange. claude: into the open process, started
 // on the first; codex: a run, resuming the exchange's session after
 // the first. 1 = sent
+// why the last start or send failed, for the prompt's error line
+static std::string g_shell_err;
+HOST_API const char* agent_shell_error() { return g_shell_err.c_str(); }
+
+static int shell_fail(const std::string& why) {
+    g_shell_err = why;
+    return 0;
+}
+
 HOST_API int agent_shell_start(const char* agent, const char* root,
                                const char* model, const char* text) {
-    if (!agent || !root || !text) return 0;
+    g_shell_err.clear();
+    if (!agent || !root || !text) return shell_fail("nothing to send");
     bool claude = strcmp(agent, "codex") != 0;
     if (claude && g_shell.claude && g_shell.in >= 0 && g_shell.pid > 0)
-        return shell_write(text) ? 1 : 0;
+        return shell_write(text) ? 1 : shell_fail("claude stopped taking messages");
     agent_shell_stop();
     std::string exe = shell_tool(claude ? "claude" : "codex");
-    if (exe.empty()) return 0;
+    if (exe.empty()) return shell_fail(std::string(claude ? "claude" : "codex") + " is not installed here");
     // a screenshot rides along as an image for codex; claude opens the path
     std::string image;
     const char* sc = strstr(text, "Screenshot: ");
@@ -696,10 +708,10 @@ HOST_API int agent_shell_start(const char* agent, const char* root,
         (void)!write(lfd, head.data(), head.size());
     }
     int pipes[2], inp[2] = { -1, -1 };
-    if (pipe(pipes) != 0) return 0;
+    if (pipe(pipes) != 0) return shell_fail("no pipe for the agent");
     fcntl(pipes[0], F_SETFD, FD_CLOEXEC);
     fcntl(pipes[0], F_SETFL, O_NONBLOCK);
-    if (claude && pipe(inp) != 0) { close(pipes[0]); close(pipes[1]); return 0; }
+    if (claude && pipe(inp) != 0) { close(pipes[0]); close(pipes[1]); return shell_fail("no pipe for the agent"); }
     if (claude) fcntl(inp[1], F_SETFD, FD_CLOEXEC);
     posix_spawn_file_actions_t fa;
     posix_spawn_file_actions_init(&fa);
@@ -728,7 +740,7 @@ HOST_API int agent_shell_start(const char* agent, const char* root,
         close(pipes[0]);
         if (claude) close(inp[1]);
         if (lfd >= 0) close(lfd);
-        return 0;
+        return shell_fail(exe + ": " + strerror(err));
     }
     g_shell.in     = claude ? inp[1] : -1;
     g_shell.log    = lfd;
@@ -736,7 +748,7 @@ HOST_API int agent_shell_start(const char* agent, const char* root,
     g_shell.out    = pipes[0];
     g_shell.claude = claude;
     g_shell.root   = root;
-    return claude ? (shell_write(text) ? 1 : 0) : 1;
+    return claude ? (shell_write(text) ? 1 : shell_fail("claude did not take the message")) : 1;
 }
 
 // undo: claude puts the files back as they were at our last message;
@@ -820,6 +832,7 @@ HOST_API void agent_shell_close(int id) { }
 HOST_API int  agent_shell_start(const char*, const char*, const char*, const char*) { return 0; }
 HOST_API int  agent_shell_line(char* out, int cap) { return 0; }
 HOST_API int  agent_shell_rewind() { return 0; }
+HOST_API const char* agent_shell_error() { return "agents run on linux and mac only"; }
 #endif
 
 // ===========================================================================

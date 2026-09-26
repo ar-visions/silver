@@ -21,6 +21,11 @@ enum DrawMode
     image_explosion : 12
     # image with a linear edge ramp computed here: no mask texture
     image_ramp  : 13
+    # image_masked keyed on the mask's alpha, or its luminance
+    image_mask_alpha : 14
+    image_mask_luma  : 15
+    # video planes: image = y, mask = u, atlas = v
+    image_yuv        : 16
 
 # ---- path command tags ----
 enum path_cmd
@@ -43,6 +48,7 @@ enum CanvasUISurface
     atlas: 0
     image: 1
     mask:  2
+    clip:  3
 
 
 enum CanvasSDFSurface
@@ -65,6 +71,8 @@ shader CanvasSDFCompute
     mutable th     : i32
     mutable ne     : i32
     mutable spread : f32
+    mutable eo     : i32     # this path's first edge in the buffer
+    mutable even_odd : i32   # 1: inside where the winding is odd
 
     # storage buffer for edges (vec4 each: x0, y0, x1, y1)
     attrib  edges    : StorageBuffer [
@@ -90,7 +98,7 @@ shader CanvasSDFCompute
         // out of the hot loop — one sqrt at the very end instead of one length() per edge.
         float md2 = 999999.0 * 999999.0;
         int   wn  = 0;
-        for (int i = 0; i < ubo.ne; i++) {{
+        for (int i = ubo.eo; i < ubo.eo + ubo.ne; i++) {{
             vec2 a = edges[i].xy;
             vec2 b = edges[i].zw;
             vec2 ab = b - a;
@@ -114,7 +122,8 @@ shader CanvasSDFCompute
 
         // clamp in squared space, then the single sqrt for the whole pixel.
         float md  = sqrt(min(md2, ubo.spread * ubo.spread));
-        float sdf = (wn != 0) ? -md : md;
+        bool  inside = (ubo.even_odd != 0) ? (wn & 1) != 0 : wn != 0;
+        float sdf = inside ? -md : md;
 
         imageStore(sdf_out, gid, vec4(sdf, 0.0, 0.0, 0.0));
     }
@@ -133,26 +142,53 @@ shader CanvasUI
     mutable stroke_opts : vec4f
     mutable xform_row0 : vec4f
     mutable xform_row1 : vec4f
-    mutable inner_glow_color   : vec4f
-    mutable inner_shadow_color : vec4f
-    mutable stroke_shadow_color: vec4f
-    mutable outer_glow_color   : vec4f
-    mutable outer_shadow_color : vec4f
-    mutable glow_params   : vec4f
-    mutable glow_params2  : vec4f
-    # inner_ofs.xy, outer_shadow_ofs.zw — pixel offsets
-    mutable glow_ofs      : vec4f
+    # CSS box-shadows, first on top: color; x y offset, blur, spread
+    mutable shadow_color0 : vec4f
+    mutable shadow_color1 : vec4f
+    mutable shadow_color2 : vec4f
+    mutable shadow_color3 : vec4f
+    mutable shadow_geom0  : vec4f
+    mutable shadow_geom1  : vec4f
+    mutable shadow_geom2  : vec4f
+    mutable shadow_geom3  : vec4f
+    # 1 where that shadow is inset
+    mutable shadow_inset  : vec4f
+    # CSS filter: hue-rotate degrees, saturate, brightness, on
+    mutable color_filter  : vec4f
     mutable fill_grad_pts   : vec4f
     mutable stroke_grad_pts : vec4f
     mutable stroke_grad_c1  : vec4f
     mutable crop_rect       : vec4f
-    mutable glow_sides      : vec4f
     mutable viewport        : vec2f
     mutable fill_offset   : f32
     mutable stroke_offset : f32
     mutable stroke_sides  : vec4f
     # multiplies sampled texels in the image modes; 1,1,1,1 = off
     mutable image_tint    : vec4f
+    # yuv to rgb rows: rgb.c = dot(row.xyz, yuv) + row.w
+    mutable yuv_r         : vec4f
+    mutable yuv_g         : vec4f
+    mutable yuv_b         : vec4f
+    # gradient ramp: on, kind, spread, alpha; mask = the stops
+    mutable ramp          : vec4f
+    # device pixels to gradient space: a c e, b d f
+    mutable ramp_m0       : vec4f
+    mutable ramp_m1       : vec4f
+    # linear p0 p1 | radial c0 c1 | conic center
+    mutable ramp_pts      : vec4f
+    # radial r0 r1
+    mutable ramp_geom     : vec4f
+    # x: the clip texture's alpha limits every draw
+    # y: the rounded clip rect limits every draw
+    mutable clip_on       : vec4f
+    # device pixels x0 y0 x1 y1, and corner radii tl tr br bl
+    mutable clip_rect     : vec4f
+    mutable clip_radii    : vec4f
+    # up to 4 clipped-out rects, device x0 y0 x1 y1 (clip_on.w)
+    mutable clip_out0     : vec4f
+    mutable clip_out1     : vec4f
+    mutable clip_out2     : vec4f
+    mutable clip_out3     : vec4f
     attrib  atlas      : LayoutBinding [
         type:typeid[ CanvasUISurface ], id: CanvasUISurface.atlas, count:1, format:typeid[ u8 ]
     ]
@@ -162,26 +198,13 @@ shader CanvasUI
     attrib  mask       : LayoutBinding [
         type:typeid[ CanvasUISurface ], id: CanvasUISurface.mask, count:1, format:typeid[ rgba8 ]
     ]
+    attrib  clip       : LayoutBinding [
+        type:typeid[ CanvasUISurface ], id: CanvasUISurface.clip, count:1, format:typeid[ rgba8 ]
+    ]
 
     attrib  a_pos      : VertexInput    [ type:typeid[ vec2f ] ]
     attrib  v_pos      : VertexOutput   [ type:typeid[ vec2f ] ]
     attrib  o_color    : FragmentOutput [ type:typeid[ vec4f ] ]
-
-    # ---- HSV helpers (for colorize) ----
-    func rgb2hsv [ c: @vec3f ] -> GLSL vec3f {
-        vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
-        vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
-        vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
-        float d = q.x - min(q.w, q.y);
-        float e = 1.0e-10;
-        return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
-    }
-
-    func hsv2rgb [ c: @vec3f ] -> GLSL vec3f {
-        vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
-        vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
-        return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
-    }
 
     # ---- per-corner rounded rect SDF ----
     func sdf_rounded_rect [ p: @vec2f, center: @vec2f, half_size: @vec2f, r: @vec4f ] -> GLSL float {
@@ -194,31 +217,95 @@ shader CanvasUI
         return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - cr;
     }
 
-    func smax [ a: @f32, b: @f32, k: @f32 ] -> GLSL float {
-        float h = clamp(0.5 + 0.5*(b-a)/k, 0.0, 1.0);
-        return mix(a, b, h) + k*h*(1.0-h);
+    # ---- CSS shadows and filters ----
+    func erf_approx [ x: @f32 ] -> GLSL float {
+        float a = abs(x);
+        float t = 1.0 / (1.0 + 0.3275911 * a);
+        float y = 1.0 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * exp(-a * a);
+        return sign(x) * y;
     }
 
-    func sdf_rounded_rect_glow [ p: @vec2f, center: @vec2f, half_size: @vec2f, r: @vec4f, soften: @f32 ] -> GLSL float {
-        vec2 q = p - center;
-        float cr = (q.x >= 0.0)
-            ? ((q.y >= 0.0) ? r.z : r.y)
-            : ((q.y >= 0.0) ? r.w : r.x);
-        cr = min(cr, min(half_size.x, half_size.y));
-        vec2 d = abs(q) - half_size + vec2(cr);
-        // a SQUARE corner (cr ~ 0) must stay sharp — use the hard max there. only a
-        // genuinely rounded corner gets the soft-max that smooths the 45° gradient
-        // kink. (a uniform soft-max rounded square corners too, bleeding rounded glow
-        // onto every flat-cornered element.) soft-max scales with radius + glow width.
-        float corner;
-        if (cr > 0.01) {{
-            float k = max(cr * 0.5, soften * 0.5);
-            k = max(k, 1.0);
-            corner = smax(d.x, d.y, k);
+    # coverage of a Gaussian-blurred edge at signed distance d
+    func shadow_edge [ d: @f32, blur: @f32 ] -> GLSL float {
+        float sigma = max(blur * 0.5, 0.35);
+        return 0.5 - 0.5 * erf_approx(d / (sigma * 1.41421356));
+    }
+
+    func shadow_color_at [ i: @i32 ] -> GLSL vec4f {
+        return (i == 0) ? ubo.shadow_color0 : (i == 1) ? ubo.shadow_color1 : (i == 2) ? ubo.shadow_color2 : ubo.shadow_color3;
+    }
+
+    func shadow_geom_at [ i: @i32 ] -> GLSL vec4f {
+        return (i == 0) ? ubo.shadow_geom0 : (i == 1) ? ubo.shadow_geom1 : (i == 2) ? ubo.shadow_geom2 : ubo.shadow_geom3;
+    }
+
+    # the spec's hue-rotate, saturate and brightness, premultiplied
+    func apply_color_filter [ c: @vec4f ] -> GLSL vec4f {
+        if (ubo.color_filter.w < 0.5 || c.a <= 0.0) return c;
+        vec3  rgb = c.rgb / c.a;
+        float h = radians(ubo.color_filter.x);
+        float cs = cos(h), sn = sin(h);
+        mat3  hue = mat3(
+            0.213 + cs * 0.787 - sn * 0.213, 0.213 - cs * 0.213 + sn * 0.143, 0.213 - cs * 0.213 - sn * 0.787,
+            0.715 - cs * 0.715 - sn * 0.715, 0.715 + cs * 0.285 + sn * 0.140, 0.715 - cs * 0.715 + sn * 0.715,
+            0.072 - cs * 0.072 + sn * 0.928, 0.072 - cs * 0.072 - sn * 0.283, 0.072 + cs * 0.928 + sn * 0.072);
+        float s = ubo.color_filter.y;
+        mat3  sat = mat3(
+            0.213 + 0.787 * s, 0.213 - 0.213 * s, 0.213 - 0.213 * s,
+            0.715 - 0.715 * s, 0.715 + 0.285 * s, 0.715 - 0.715 * s,
+            0.072 - 0.072 * s, 0.072 - 0.072 * s, 0.072 + 0.928 * s);
+        rgb = clamp(sat * (hue * rgb), 0.0, 1.0) * ubo.color_filter.z;
+        return vec4(clamp(rgb, 0.0, 1.0) * c.a, c.a);
+    }
+
+    # the path's distance at a local point; far outside its field
+    func path_distance [ lp: @vec2f ] -> GLSL float {
+        vec2 uv = mix(ubo.grad0.xy, ubo.grad0.zw, (lp - ubo.rect.xy) / ubo.rect.zw);
+        if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return 1.0e4;
+        return texture(image, uv).r;
+    }
+
+    # ---- many-stop gradient: ramp texel at a device pixel ----
+    func ramp_color [ p: @vec2f ] -> GLSL vec4f {
+        vec2 g = vec2(dot(ubo.ramp_m0.xy, p) + ubo.ramp_m0.z,
+                      dot(ubo.ramp_m1.xy, p) + ubo.ramp_m1.z);
+        vec2 p0 = ubo.ramp_pts.xy;
+        vec2 p1 = ubo.ramp_pts.zw;
+        float t = 0.0;
+        if (ubo.ramp.y < 1.5) {{
+            vec2 d = p1 - p0;
+            float l2 = dot(d, d);
+            t = (l2 > 1e-8) ? dot(g - p0, d) / l2 : 0.0;
+        }} else if (ubo.ramp.y < 2.5) {{
+            // two-point conical: circle c(t) = mix(c0, c1, t), r(t)
+            float r0 = ubo.ramp_geom.x;
+            float dr = ubo.ramp_geom.y - r0;
+            vec2  cd = p1 - p0;
+            vec2  pd = g - p0;
+            float a  = dot(cd, cd) - dr * dr;
+            float b  = dot(pd, cd) + r0 * dr;
+            float c  = dot(pd, pd) - r0 * r0;
+            if (abs(a) < 1e-6) {{
+                if (abs(b) < 1e-6) return vec4(0.0);
+                t = c / (2.0 * b);
+            }} else {{
+                float disc = b * b - a * c;
+                if (disc < 0.0) return vec4(0.0);
+                float s = sqrt(disc);
+                t = (b + s) / a;
+                if (r0 + t * dr < 0.0) t = (b - s) / a;
+            }}
+            if (r0 + t * dr < 0.0) return vec4(0.0);
         }} else {{
-            corner = max(d.x, d.y);
+            vec2 d = g - p0;
+            t = (atan(d.y, d.x) - ubo.ramp_geom.z) / 6.2831853;
+            t = t - floor(t);
         }}
-        return min(corner, 0.0) + length(max(d, 0.0)) - cr;
+        if (ubo.ramp.z < 0.5) t = clamp(t, 0.0, 1.0);
+        else if (ubo.ramp.z < 1.5) t = 1.0 - abs(fract(t * 0.5) * 2.0 - 1.0);
+        else t = fract(t);
+        vec4 c4 = texture(mask, vec2(t * (255.0 / 256.0) + 0.5 / 256.0, 0.5));
+        return vec4(c4.rgb, c4.a * ubo.ramp.w);
     }
 
     # ---- gradient evaluation ----
@@ -257,10 +344,13 @@ shader CanvasUI
         float pad      = 1.0 + max(ubo.params.z, 0.0) + ubo.params.x * 0.5
                              + max(ubo.fill_offset,   0.0)
                              + max(ubo.stroke_offset, 0.0);
-        // extra pad for outer effects: radial glow reach + shadow reach + shadow offset magnitude.
-        float ext_pad  = max(ubo.glow_params.y,
-                             ubo.glow_params2.x + max(abs(ubo.glow_ofs.z),
-                                                      abs(ubo.glow_ofs.w)));
+        // extra pad for the outer shadows' reach
+        float ext_pad  = 0.0;
+        for (int i = 0; i < 4; i++) {{
+            vec4 sg = shadow_geom_at(i);
+            if (shadow_color_at(i).a > 0.0 && ubo.shadow_inset[i] < 0.5)
+                ext_pad = max(ext_pad, max(abs(sg.x), abs(sg.y)) + sg.z * 1.5 + max(sg.w, 0.0));
+        }}
         vec2  lo_local = ubo.rect.xy - vec2(pad + ext_pad);
         vec2  hi_local = ubo.rect.xy + ubo.rect.zw + vec2(pad + ext_pad);
 
@@ -360,6 +450,26 @@ shader CanvasUI
     }
 
     # ---- fragment shader ----
+    # the clip's share of this pixel: rounded rect, then mask
+    func clip_coverage [ p: @vec2f ] -> GLSL float {
+        float c = 1.0;
+        if (ubo.clip_on.y > 0.5) {{
+            vec2 lo = ubo.clip_rect.xy;
+            vec2 hi = ubo.clip_rect.zw;
+            float d = sdf_rounded_rect(p, (lo + hi) * 0.5, (hi - lo) * 0.5, ubo.clip_radii);
+            c *= clamp(0.5 - d, 0.0, 1.0);
+        }}
+        if (ubo.clip_on.x > 0.5)
+            c *= texture(clip, p / vec2(textureSize(clip, 0))).a;
+        for (int i = 0; i < int(ubo.clip_on.w); i++) {{
+            vec4 r  = (i == 0) ? ubo.clip_out0 : (i == 1) ? ubo.clip_out1 : (i == 2) ? ubo.clip_out2 : ubo.clip_out3;
+            vec2 ov = max(min(p + vec2(0.5), r.zw) - max(p - vec2(0.5), r.xy), vec2(0.0));
+            c *= 1.0 - ov.x * ov.y;
+        }}
+        return c;
+    }
+
+    # each exit applies the clip: helpers cannot discard
     func fragment [] -> GLSL none {
 
         // crop rect clip (same test/data as CanvasText): x1>x0 = active.
@@ -436,7 +546,7 @@ shader CanvasUI
             vec4  fc = ubo.fill_color;
             float ca = fc.a * cov * opacity;
             o_color  = vec4(fc.rgb * ca, ca);
-            return;
+            {{ float cc = clip_coverage(gl_FragCoord.xy); o_color = (ubo.clip_on.z == 7.0) ? vec4(o_color.rgb * cc, 1.0 - cc * (1.0 - o_color.a)) : o_color * cc; return; }}
         }}
 
         if (mode == 4.0) {{
@@ -448,7 +558,7 @@ shader CanvasUI
             float aa = (max_rr <= 0.0) ? step(0.5, rect_cov)
                                        : 1.0 - smoothstep(-0.5, 0.5, dist);
             o_color  = vec4(ubo.fill_color.rgb, ubo.fill_color.a * a) * aa * opacity;
-            return;
+            {{ float cc = clip_coverage(gl_FragCoord.xy); o_color = (ubo.clip_on.z == 7.0) ? vec4(o_color.rgb * cc, 1.0 - cc * (1.0 - o_color.a)) : o_color * cc; return; }}
         }}
 
         // image: sample texture, clip to rounded rect
@@ -459,7 +569,7 @@ shader CanvasUI
             float aa   = (max_rr <= 0.0) ? step(0.5, rect_cov)
                                          : 1.0 - smoothstep(-0.5, 0.5, dist);
             o_color    = texel * aa * opacity;
-            return;
+            {{ float cc = clip_coverage(gl_FragCoord.xy); o_color = (ubo.clip_on.z == 7.0) ? vec4(o_color.rgb * cc, 1.0 - cc * (1.0 - o_color.a)) : o_color * cc; return; }}
         }}
 
         if (mode == 12.0) {{
@@ -473,7 +583,7 @@ shader CanvasUI
             vec3 rgb = texel.rgb * ubo.image_tint.rgb +
                 ubo.image_tint.rgb;
             o_color = vec4(rgb * a,a);
-            return;
+            {{ float cc = clip_coverage(gl_FragCoord.xy); o_color = (ubo.clip_on.z == 7.0) ? vec4(o_color.rgb * cc, 1.0 - cc * (1.0 - o_color.a)) : o_color * cc; return; }}
         }}
 
         // image_vec: the filter runs here, at the destination pixel, with
@@ -487,7 +597,7 @@ shader CanvasUI
             float aa   = (max_rr <= 0.0) ? step(0.5, rect_cov)
                                          : 1.0 - smoothstep(-0.5, 0.5, dist);
             o_color    = vec4(texel.rgb * texel.a, texel.a) * aa * opacity;
-            return;
+            {{ float cc = clip_coverage(gl_FragCoord.xy); o_color = (ubo.clip_on.z == 7.0) ? vec4(o_color.rgb * cc, 1.0 - cc * (1.0 - o_color.a)) : o_color * cc; return; }}
         }}
 
         // image_min: shrinking. average every source texel under this pixel
@@ -500,22 +610,38 @@ shader CanvasUI
             float aa   = (max_rr <= 0.0) ? step(0.5, rect_cov)
                                          : 1.0 - smoothstep(-0.5, 0.5, dist);
             o_color    = texel * aa * opacity;
-            return;
+            {{ float cc = clip_coverage(gl_FragCoord.xy); o_color = (ubo.clip_on.z == 7.0) ? vec4(o_color.rgb * cc, 1.0 - cc * (1.0 - o_color.a)) : o_color * cc; return; }}
         }}
 
         // image_masked: content texture (image) modulated by a grayscale
         // mask texture. mask.r = keep factor (white = full, black = fade out).
         // both sampled with the same uv so the mask aligns 1:1 with content.
-        if (mode == 8.0) {{
+        if (mode == 16.0) {{
+            vec2 uv_rect = (lpos - ubo.rect.xy) / ubo.rect.zw;
+            vec2 uv   = mix(ubo.grad0.xy, ubo.grad0.zw, uv_rect);
+            vec3 yuv  = vec3(texture(image, uv).r, texture(mask, uv).r, texture(atlas, uv).r);
+            vec3 rgb  = clamp(vec3(dot(ubo.yuv_r.xyz, yuv) + ubo.yuv_r.w,
+                                   dot(ubo.yuv_g.xyz, yuv) + ubo.yuv_g.w,
+                                   dot(ubo.yuv_b.xyz, yuv) + ubo.yuv_b.w), 0.0, 1.0);
+            float aa  = (max_rr <= 0.0) ? step(0.5, rect_cov)
+                                        : 1.0 - smoothstep(-0.5, 0.5, dist);
+            o_color   = vec4(rgb, 1.0) * aa * opacity;
+            {{ float cc = clip_coverage(gl_FragCoord.xy); o_color = (ubo.clip_on.z == 7.0) ? vec4(o_color.rgb * cc, 1.0 - cc * (1.0 - o_color.a)) : o_color * cc; return; }}
+        }}
+
+        if (mode == 8.0 || mode == 14.0 || mode == 15.0) {{
             vec2 uv_rect = (lpos - ubo.rect.xy) / ubo.rect.zw;
             vec2 uv    = mix(ubo.grad0.xy,   ubo.grad0.zw,   uv_rect);
             vec2 uv_m  = mix(ubo.mask_uv.xy, ubo.mask_uv.zw, uv_rect);
             vec4 texel = texture(image, uv);
-            float m    = texture(mask, uv_m).r;
+            vec4 mt    = texture(mask, uv_m);
+            float m    = (mode == 14.0) ? mt.a
+                       : (mode == 15.0) ? dot(mt.rgb, vec3(0.2126, 0.7152, 0.0722)) * mt.a
+                       : mt.r;
             float aa   = (max_rr <= 0.0) ? step(0.5, rect_cov)
                                          : 1.0 - smoothstep(-0.5, 0.5, dist);
             o_color    = texel * m * aa * opacity;
-            return;
+            {{ float cc = clip_coverage(gl_FragCoord.xy); o_color = (ubo.clip_on.z == 7.0) ? vec4(o_color.rgb * cc, 1.0 - cc * (1.0 - o_color.a)) : o_color * cc; return; }}
         }}
 
         // image_ramp: content texture faded on its edges by a linear
@@ -541,7 +667,7 @@ shader CanvasUI
             float aa   = (max_rr <= 0.0) ? step(0.5, rect_cov)
                                          : 1.0 - smoothstep(-0.5, 0.5, dist);
             o_color    = texel * keep * aa * opacity;
-            return;
+            {{ float cc = clip_coverage(gl_FragCoord.xy); o_color = (ubo.clip_on.z == 7.0) ? vec4(o_color.rgb * cc, 1.0 - cc * (1.0 - o_color.a)) : o_color * cc; return; }}
         }}
 
         // image_r: sample R8 texture as grayscale (broadcast .r)
@@ -553,7 +679,7 @@ shader CanvasUI
             float aa = (max_rr <= 0.0) ? step(0.5, rect_cov)
                                        : 1.0 - smoothstep(-0.5, 0.5, dist);
             o_color  = vec4(l, l, l, 1.0) * aa * opacity;
-            return;
+            {{ float cc = clip_coverage(gl_FragCoord.xy); o_color = (ubo.clip_on.z == 7.0) ? vec4(o_color.rgb * cc, 1.0 - cc * (1.0 - o_color.a)) : o_color * cc; return; }}
         }}
 
         // SDF path: sample R32F distance field. raw signed distance in
@@ -564,7 +690,7 @@ shader CanvasUI
             uv           = mix(ubo.grad0.xy, ubo.grad0.zw, uv);
             if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {{
                 o_color = vec4(0.0);
-                return;
+                {{ float cc = clip_coverage(gl_FragCoord.xy); o_color = (ubo.clip_on.z == 7.0) ? vec4(o_color.rgb * cc, 1.0 - cc * (1.0 - o_color.a)) : o_color * cc; return; }}
             }}
             float dist_p = texture(image, uv).r;
 
@@ -632,6 +758,7 @@ shader CanvasUI
                 }}
                 fill_c = mix(ubo.grad_c0, ubo.grad_c1, gt);
             }}
+            if (ubo.ramp.x > 0.5) fill_c = ramp_color(v_pos);
             vec4 fill_p   = vec4(fill_c.rgb * fill_c.a * fill_cov,
                                  fill_c.a   * fill_cov);
             vec4 stroke_c6 = ubo.stroke_color;
@@ -657,40 +784,31 @@ shader CanvasUI
             }}
             vec4 stroke_p = vec4(stroke_c6.rgb * stroke_c6.a * stroke_cov,
                                  stroke_c6.a   * stroke_cov);
-            float inner_px = ubo.glow_params.x;
-            float outer_px = ubo.glow_params.y;
-            float K        = ubo.glow_params.z;
-            vec4 outer_p = vec4(0.0);
-            if (outer_px > 0.0 && dist_p > 0.0) {{
-                float t = clamp(dist_p / outer_px, 0.0, 1.0);
-                float a = pow(1.0 - t, K) * ubo.outer_glow_color.a;
-                outer_p = vec4(ubo.outer_glow_color.rgb * a, a);
-            }}
-            float shadow_px = ubo.glow_params.w;
-            float glow_px   = max(inner_px, shadow_px);
-            vec4  glow_p    = vec4(0.0);
-            if (glow_px > 0.0) {{
-                float t = clamp(-dist_p / glow_px, 0.0, 1.0);
-                float a = pow(1.0 - t, K) * ubo.inner_glow_color.a * fill_cov;
-                glow_p = vec4(ubo.inner_glow_color.rgb * a, a);
+            // CSS box-shadows of the path, last listed at the bottom
+            float box_cov = 1.0 - smoothstep(-wp, wp, dist_p);
+            vec4  outer_p = vec4(0.0);
+            vec4  inset_p = vec4(0.0);
+            for (int i = 3; i >= 0; i--) {{
+                vec4 sc = shadow_color_at(i);
+                if (sc.a <= 0.0) continue;
+                vec4 sg = shadow_geom_at(i);
+                float ds = path_distance(lpos - sg.xy);
+                if (ubo.shadow_inset[i] > 0.5) {{
+                    float sa = (1.0 - shadow_edge(ds + sg.w, sg.z)) * sc.a * fill_cov;
+                    inset_p = vec4(sc.rgb * sa, sa) + inset_p * (1.0 - sa);
+                }} else {{
+                    float sa = shadow_edge(ds - sg.w, sg.z) * sc.a * (1.0 - box_cov);
+                    outer_p = vec4(sc.rgb * sa, sa) + outer_p * (1.0 - sa);
+                }}
             }}
             vec4 c = outer_p;
-            c = fill_p   + c      * (1.0 - fill_p.a);
-            c = glow_p   + c      * (1.0 - glow_p.a);
-            c = stroke_p + c      * (1.0 - stroke_p.a);
-            o_color = c * opacity;
-            if (o_color.a > 0.0 &&
-                (ubo.glow_params2.y != 0.0 || ubo.glow_params2.z != 1.0 || ubo.glow_params2.w != 1.0)) {{
-                vec3 _rgb = o_color.rgb / max(o_color.a, 1.0e-6);
-                vec3 _hsv = rgb2hsv(_rgb);
-                _hsv.x = fract(_hsv.x + ubo.glow_params2.y / 360.0);
-                _hsv.y = clamp(_hsv.y * ubo.glow_params2.z, 0.0, 1.0);
-                _hsv.z = _hsv.z * ubo.glow_params2.w;
-                o_color.rgb = hsv2rgb(_hsv) * o_color.a;
-            }}
+            c = fill_p   + c * (1.0 - fill_p.a);
+            c = inset_p  + c * (1.0 - inset_p.a);
+            c = stroke_p + c * (1.0 - stroke_p.a);
+            o_color = apply_color_filter(c * opacity);
             //float _d = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) * 4.0;
             //o_color.rgb += vec3((_d - 0.5) / 255.0);
-            return;
+            {{ float cc = clip_coverage(gl_FragCoord.xy); o_color = (ubo.clip_on.z == 7.0) ? vec4(o_color.rgb * cc, 1.0 - cc * (1.0 - o_color.a)) : o_color * cc; return; }}
         }}
 
         // fill: solid or two-color gradient — same model as mode 6 (world-space
@@ -717,6 +835,7 @@ shader CanvasUI
             }}
             fill = mix(ubo.grad_c0, ubo.grad_c1, gt);
         }}
+        if (ubo.ramp.x > 0.5) fill = ramp_color(v_pos);
 
         // screen-space AA: fwidth(dist) is how much dist changes between
         // adjacent screen fragments, so the smoothstep range stays ~1
@@ -773,29 +892,9 @@ shader CanvasUI
                 : 0.0;
         }}
 
-        // PRE-MULTIPLIED ALPHA: rgb pre-multiplied by coverage. composing
-        // through multiple stages stays correct (no double-darkening).
-        // stroke renders OVER fill via Porter-Duff "over": stroke + fill * (1 - stroke.a).
-        // power-curve decay: I(t) = (1-t)^K. K=1 linear, K=4 steep drop.
-        // zero at t=1, and near zero long before that — e.g. K=4 → 90% point = 0.0001.
-        float inner_px  = ubo.glow_params.x;
-        float outer_px  = ubo.glow_params.y;
-        float K         = ubo.glow_params.z;
-        float shadow_px = ubo.glow_params.w;
-        // bevel side classification (top+left = lit, bottom+right = dark),
-        // with a smoothstep band across the 45° diagonal so corners fade.
-        vec2  q_rel   = abs(spos - center) - half_size;
-        float dy_r    = spos.y - center.y;
-        float dx_r    = spos.x - center.x;
-        float band    = max(max(inner_px, shadow_px) * 0.5, 1.0);
-        float horiz_w = smoothstep(-band, band, q_rel.y - q_rel.x);
-        float h_lit   = (dy_r < 0.0) ? 1.0 : 0.0;
-        float v_lit   = (dx_r < 0.0) ? 1.0 : 0.0;
-        float lit_side = mix(v_lit, h_lit, horiz_w);
-
+        // PRE-MULTIPLIED ALPHA: stroke over inset shadows over fill
+        // over outer shadows (CSS box-shadow, first listed on top)
         vec4 fill_p   = vec4(fill.rgb * fill.a * fill_cov, fill.a * fill_cov);
-        // stroke color is beveled: lit edges use stroke_color, dark edges use
-        // stroke_shadow_color. falls back to stroke_color if shadow not set.
         vec4 stroke_c_base = ubo.stroke_color;
         if (ubo.stroke_grad_c1.a > 0.0) {{
             vec2  sgp0 = ubo.stroke_grad_pts.xy;
@@ -817,81 +916,39 @@ shader CanvasUI
             }}
             stroke_c_base = mix(ubo.stroke_color, ubo.stroke_grad_c1, sgt);
         }}
-        vec4 stroke_c = stroke_c_base;
-        if (ubo.stroke_shadow_color.a > 0.001) {{
-            stroke_c = mix(ubo.stroke_shadow_color, stroke_c_base, lit_side);
-        }}
-        vec4 stroke_p = vec4(stroke_c.rgb * stroke_c.a * stroke_cov,
-                             stroke_c.a   * stroke_cov);
-        // unified outer bevel: top+left = outer_glow, bottom+right = outer_shadow.
-        // same lit_side classification as inner, applied outside the shape.
-        // color + fade radius both interpolate smoothly across the 45° diagonal.
-        float oshadow_px = ubo.glow_params2.x;
-        vec4  outer_p    = vec4(0.0);
-        if ((outer_px > 0.0 || oshadow_px > 0.0) && dist > 0.0) {{
-            float effective_px = mix(oshadow_px, outer_px, lit_side);
-            if (effective_px > 0.0) {{
-                float t     = clamp(dist / effective_px, 0.0, 1.0);
-                float a     = pow(1.0 - t, K);
-                vec4  tint  = mix(ubo.outer_shadow_color, ubo.outer_glow_color, lit_side);
-                float alpha = a * tint.a;
-                outer_p     = vec4(tint.rgb * alpha, alpha);
+        vec4 stroke_p = vec4(stroke_c_base.rgb * stroke_c_base.a * stroke_cov,
+                             stroke_c_base.a   * stroke_cov);
+        float box_cov = 1.0 - smoothstep(-w, w, dist);
+        vec4  outer_p = vec4(0.0);
+        vec4  inset_p = vec4(0.0);
+        for (int i = 3; i >= 0; i--) {{
+            vec4 sc = shadow_color_at(i);
+            if (sc.a <= 0.0) continue;
+            vec4 sg = shadow_geom_at(i);
+            vec2 sp = spos - sg.xy;
+            if (ubo.shadow_inset[i] > 0.5) {{
+                float di = sdf_rounded_rect(sp, center, max(half_size - vec2(sg.w), vec2(0.0)), max(ubo.radii - vec4(sg.w), vec4(0.0)));
+                float sa = (1.0 - shadow_edge(di, sg.z)) * sc.a * fill_cov;
+                inset_p = vec4(sc.rgb * sa, sa) + inset_p * (1.0 - sa);
+            }} else {{
+                float d0 = sdf_rounded_rect(sp, center, half_size + vec2(sg.w), max(ubo.radii + vec4(sg.w), vec4(0.0)));
+                float sa = shadow_edge(d0, sg.z) * sc.a * (1.0 - box_cov);
+                outer_p = vec4(sc.rgb * sa, sa) + outer_p * (1.0 - sa);
             }}
         }}
-        // unified inner bevel pass: blend tint + fade-radius by lit_side.
-        vec4 bevel_p = vec4(0.0);
-        float gs_sum = ubo.glow_sides.x + ubo.glow_sides.y + ubo.glow_sides.z + ubo.glow_sides.w;
-        if (gs_sum > 0.0 && fill_cov > 0.0) {{
-            // per-edge fade: each side's factor depends ONLY on the
-            // perpendicular distance to that edge, so the fade runs parallel to
-            // the edge (no rounded-rect SDF, no corner curvature). combine with
-            // min → clean square corners, white center, black at the edges.
-            vec2  rel = spos - center;
-            float dt  =  rel.y + half_size.y;   // dist from top edge
-            float db  = -rel.y + half_size.y;   // dist from bottom edge
-            float dr  = -rel.x + half_size.x;   // dist from right edge
-            float dl  =  rel.x + half_size.x;   // dist from left edge
-            float ft  = (ubo.glow_sides.x > 0.0) ? clamp(dt / ubo.glow_sides.x, 0.0, 1.0) : 1.0;
-            float fr  = (ubo.glow_sides.y > 0.0) ? clamp(dr / ubo.glow_sides.y, 0.0, 1.0) : 1.0;
-            float fb  = (ubo.glow_sides.z > 0.0) ? clamp(db / ubo.glow_sides.z, 0.0, 1.0) : 1.0;
-            float fl  = (ubo.glow_sides.w > 0.0) ? clamp(dl / ubo.glow_sides.w, 0.0, 1.0) : 1.0;
-            float keep = min(min(ft, fr), min(fb, fl));   // 1 center → 0 edges
-            float a    = pow(1.0 - keep, K);              // K=1 → linear ramp
-            vec4  tint = ubo.inner_glow_color;
-            float alpha = a * tint.a * fill_cov;
-            bevel_p     = vec4(tint.rgb * alpha, alpha);
-        }} else if ((inner_px > 0.0 || shadow_px > 0.0) && fill_cov > 0.0) {{
-            float smooth_px    = max(inner_px, shadow_px);
-            float dist_g       = sdf_rounded_rect_glow(spos, center, half_size, ubo.radii, smooth_px);
-            float effective_px = mix(shadow_px, inner_px, lit_side);
-            if (effective_px > 0.0) {{
-                float t     = clamp(-dist_g / effective_px, 0.0, 1.0);
-                float a     = pow(1.0 - t, K);
-                vec4  tint  = mix(ubo.inner_shadow_color, ubo.inner_glow_color, lit_side);
-                float alpha = a * tint.a * fill_cov;
-                bevel_p     = vec4(tint.rgb * alpha, alpha);
-            }}
-        }}
-        // compose (back to front): outer bevel → fill → inner bevel → stroke
         vec4 c = outer_p;
         c = fill_p   + c * (1.0 - fill_p.a);
-        c = bevel_p  + c * (1.0 - bevel_p.a);
+        c = inset_p  + c * (1.0 - inset_p.a);
         c = stroke_p + c * (1.0 - stroke_p.a);
-        o_color = c * opacity;
-        if (o_color.a > 0.0 &&
-            (ubo.glow_params2.y != 0.0 || ubo.glow_params2.z != 1.0 || ubo.glow_params2.w != 1.0)) {{
-            vec3 _rgb = o_color.rgb / max(o_color.a, 1.0e-6);
-            vec3 _hsv = rgb2hsv(_rgb);
-            _hsv.x = fract(_hsv.x + ubo.glow_params2.y / 360.0);
-            _hsv.y = clamp(_hsv.y * ubo.glow_params2.z, 0.0, 1.0);
-            _hsv.z = _hsv.z * ubo.glow_params2.w;
-            o_color.rgb = hsv2rgb(_hsv) * o_color.a;
-        }}
+        o_color = apply_color_filter(c * opacity);
         // 8-bit quantization dither — was ±4 levels of per-pixel hash noise on
         // EVERY fragment, not the ±0.5 a quantization dither needs. off.
         // float _d = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) * 8.0;
         // o_color.rgb += vec3((_d - 0.5) / 255.0) * c.xyz;
         //o_color = vec4(0.0, 1.0, 0.0, 1.0);
+        float cc = clip_coverage(gl_FragCoord.xy);
+        // destination-in keeps the destination where clipped away
+        o_color = (ubo.clip_on.z == 7.0) ? vec4(o_color.rgb * cc, 1.0 - cc * (1.0 - o_color.a)) : o_color * cc;
     }
 
 
@@ -903,10 +960,21 @@ shader CanvasText
     mutable text_color_pos : vec2f
     mutable text_grad_pos  : vec2f
     mutable viewport       : vec2f
+    # x: clip texture on, y: rounded clip rect on, w: clip-outs
+    mutable clip_on        : vec4f
+    mutable clip_rect      : vec4f
+    mutable clip_radii     : vec4f
+    mutable clip_out0      : vec4f
+    mutable clip_out1      : vec4f
+    mutable clip_out2      : vec4f
+    mutable clip_out3      : vec4f
 
 
     attrib  atlas    : LayoutBinding [
         type:typeid[ CanvasUISurface ], id: CanvasUISurface.atlas, count:1, format: typeid[ u8 ]
+    ]
+    attrib  clip     : LayoutBinding [
+        type:typeid[ CanvasUISurface ], id: CanvasUISurface.clip, count:1, format: typeid[ rgba8 ]
     ]
     attrib  a_pos    : VertexInput    [ type:typeid[ vec2f ] ]
     attrib  a_uv     : VertexInput    [ type:typeid[ vec2f ] ]
@@ -956,6 +1024,26 @@ shader CanvasText
             }}
             rgb   = mix(ubo.text_color.rgb, ubo.text_grad.rgb, t);
             alpha = mix(ubo.text_color.a,   ubo.text_grad.a,   t);
+        }}
+        if (ubo.clip_on.y > 0.5) {{
+            vec2  lo = ubo.clip_rect.xy;
+            vec2  hi = ubo.clip_rect.zw;
+            vec2  q  = gl_FragCoord.xy - (lo + hi) * 0.5;
+            vec2  hs = (hi - lo) * 0.5;
+            vec4  r  = ubo.clip_radii;
+            float cr = (q.x >= 0.0) ? ((q.y >= 0.0) ? r.z : r.y) : ((q.y >= 0.0) ? r.w : r.x);
+            cr = min(cr, min(hs.x, hs.y));
+            vec2  e  = abs(q) - hs + vec2(cr);
+            float d  = min(max(e.x, e.y), 0.0) + length(max(e, 0.0)) - cr;
+            a *= clamp(0.5 - d, 0.0, 1.0);
+        }}
+        if (ubo.clip_on.x > 0.5)
+            a *= texture(clip, gl_FragCoord.xy / vec2(textureSize(clip, 0))).a;
+        for (int i = 0; i < int(ubo.clip_on.w); i++) {{
+            vec4 r  = (i == 0) ? ubo.clip_out0 : (i == 1) ? ubo.clip_out1 : (i == 2) ? ubo.clip_out2 : ubo.clip_out3;
+            vec2 fp = gl_FragCoord.xy;
+            vec2 ov = max(min(fp + vec2(0.5), r.zw) - max(fp - vec2(0.5), r.xy), vec2(0.0));
+            a *= 1.0 - ov.x * ov.y;
         }}
         o_color = vec4(rgb, alpha * a);
     }
@@ -1131,6 +1219,201 @@ class CanvasPath
             line_to [ start_x, start_y ]
             is_closed = true
 
+    # svg arc from the cursor to x, y; rot in radians
+    func elliptical_arc_to [ x: f32, y: f32, radius_x: f32, radius_y: f32, rot: f32, large: bool, sweep: bool ]
+        x0 : f32 [ cursor_x ]
+        y0 : f32 [ cursor_y ]
+        if [ x0 == x && y0 == y ]
+            return
+        rx : f32 [ abs[ radius_x ] ]
+        ry : f32 [ abs[ radius_y ] ]
+        if [ rx < 0.0001 || ry < 0.0001 ]
+            line_to [ x, y ]
+            return
+        cs  : f32 [ cos[ rot ] ]
+        sn  : f32 [ sin[ rot ] ]
+        dx  : f32 [ (x0 - x) * 0.5 ]
+        dy  : f32 [ (y0 - y) * 0.5 ]
+        x1p : f32 [ cs * dx + sn * dy ]
+        y1p : f32 [ cs * dy - sn * dx ]
+        lam : f32 [ (x1p * x1p) / (rx * rx) + (y1p * y1p) / (ry * ry) ]
+        if [ lam > 1.0 ]
+            sl : f32 [ sqrt[ lam ] ]
+            rx = rx * sl
+            ry = ry * sl
+        num : f32 [ rx * rx * ry * ry - rx * rx * y1p * y1p - ry * ry * x1p * x1p ]
+        den : f32 [ rx * rx * y1p * y1p + ry * ry * x1p * x1p ]
+        co  : f32 [ 0.0 ]
+        if [ den > 0.0 && num > 0.0 ]
+            co = sqrt[ num / den ]
+        if [ large == sweep ]
+            co = -co
+        cxp : f32 [ co * rx * y1p / ry ]
+        cyp : f32 [ -co * ry * x1p / rx ]
+        ccx : f32 [ cs * cxp - sn * cyp + (x0 + x) * 0.5 ]
+        ccy : f32 [ sn * cxp + cs * cyp + (y0 + y) * 0.5 ]
+        t1  : f32 [ atan2[ (y1p - cyp) / ry, (x1p - cxp) / rx ] ]
+        t2  : f32 [ atan2[ (-y1p - cyp) / ry, (-x1p - cxp) / rx ] ]
+        dt  : f32 [ t2 - t1 ]
+        if [ sweep && dt < 0.0 ]
+            dt += 6.2831853
+        if [ !sweep && dt > 0.0 ]
+            dt -= 6.2831853
+        n : i32 [ i32 ceil[ abs[ dt ] / 1.5707964 ] ]
+        if [ n < 1 ]
+            n = 1
+        step : f32 [ dt / f32 n ]
+        k    : f32 [ 4.0 / 3.0 * tan[ step * 0.25 ] ]
+        for [ i: i32 0, i < n, i += 1 ]
+            a0  : f32 [ t1 + step * f32 i ]
+            a1  : f32 [ a0 + step ]
+            c0  : f32 [ cos[ a0 ] ]
+            s0  : f32 [ sin[ a0 ] ]
+            c1  : f32 [ cos[ a1 ] ]
+            s1  : f32 [ sin[ a1 ] ]
+            u1  : f32 [ (c0 - k * s0) * rx ]
+            v1  : f32 [ (s0 + k * c0) * ry ]
+            u2  : f32 [ (c1 + k * s1) * rx ]
+            v2  : f32 [ (s1 - k * c1) * ry ]
+            ex  : f32 [ ccx + cs * c1 * rx - sn * s1 * ry ]
+            ey  : f32 [ ccy + sn * c1 * rx + cs * s1 * ry ]
+            if [ i == n - 1 ]
+                ex = x
+                ey = y
+            cubic_to [ ccx + cs * u1 - sn * v1, ccy + sn * u1 + cs * v1,
+                       ccx + cs * u2 - sn * v2, ccy + sn * u2 + cs * v2, ex, ey ]
+
+    # point on segment i at t; the segment starts at point i - 1
+    func seg_at [ i: i32, t: f32 ] -> vec2f
+        p  : PathPt [ points[i] ]
+        q  : PathPt [ points[i - 1] ]
+        u  : f32 [ 1.0 - t ]
+        if [ p.cmd == path_cmd.quad ]
+            return vec2f [ u * u * q.x + 2.0 * u * t * p.cx1 + t * t * p.x,
+                           u * u * q.y + 2.0 * u * t * p.cy1 + t * t * p.y ]
+        if [ p.cmd == path_cmd.cubic ]
+            return vec2f [ u * u * u * q.x + 3.0 * u * u * t * p.cx1 + 3.0 * u * t * t * p.cx2 + t * t * t * p.x,
+                           u * u * u * q.y + 3.0 * u * u * t * p.cy1 + 3.0 * u * t * t * p.cy2 + t * t * t * p.y ]
+        return vec2f [ q.x + (p.x - q.x) * t, q.y + (p.y - q.y) * t ]
+
+    func seg_steps [ i: i32 ] -> i32
+        c : path_cmd [ points[i].cmd ]
+        if [ c == path_cmd.quad || c == path_cmd.cubic ]
+            return 16
+        return 1
+
+    # x, y, w, h over every point and control point
+    func bounds [] -> vec4f
+        if [ pcount == 0 ]
+            return vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+        x0 : f32 [ points[0].x ]
+        y0 : f32 [ points[0].y ]
+        x1 : f32 [ x0 ]
+        y1 : f32 [ y0 ]
+        for [ i: i32 0, i < pcount, i += 1 ]
+            p : PathPt [ points[i] ]
+            x0 = minf[ x0, p.x ]
+            y0 = minf[ y0, p.y ]
+            x1 = maxf[ x1, p.x ]
+            y1 = maxf[ y1, p.y ]
+            if [ p.cmd == path_cmd.quad || p.cmd == path_cmd.cubic ]
+                x0 = minf[ x0, p.cx1 ]
+                y0 = minf[ y0, p.cy1 ]
+                x1 = maxf[ x1, p.cx1 ]
+                y1 = maxf[ y1, p.cy1 ]
+            if [ p.cmd == path_cmd.cubic ]
+                x0 = minf[ x0, p.cx2 ]
+                y0 = minf[ y0, p.cy2 ]
+                x1 = maxf[ x1, p.cx2 ]
+                y1 = maxf[ y1, p.cy2 ]
+        return vec4f [ x0, y0, x1 - x0, y1 - y0 ]
+
+    # signed crossings of the ray from x, y toward +x
+    func edge_winding [ ax: f32, ay: f32, bx: f32, by: f32, x: f32, y: f32 ] -> i32
+        if [ (ay <= y) == (by <= y) ]
+            return 0
+        cx : f32 [ ax + (y - ay) * (bx - ax) / (by - ay) ]
+        if [ cx <= x ]
+            return 0
+        return (by > ay) ? 1 : -1
+
+    # fill test; every subpath counts as closed
+    func contains [ x: f32, y: f32, even_odd: bool ] -> bool
+        wind : i32 [ 0 ]
+        sx   : f32 [ 0.0 ]
+        sy   : f32 [ 0.0 ]
+        px   : f32 [ 0.0 ]
+        py   : f32 [ 0.0 ]
+        for [ i: i32 0, i < pcount, i += 1 ]
+            if [ points[i].cmd == path_cmd.move ]
+                wind += edge_winding[ px, py, sx, sy, x, y ]
+                sx = points[i].x
+                sy = points[i].y
+                px = sx
+                py = sy
+                continue
+            n : i32 [ seg_steps[ i ] ]
+            for [ s: i32 1, s <= n, s += 1 ]
+                q : vec2f [ seg_at[ i, f32 s / f32 n ] ]
+                wind += edge_winding[ px, py, q.x, q.y, x, y ]
+                px = q.x
+                py = q.y
+        wind += edge_winding[ px, py, sx, sy, x, y ]
+        if [ even_odd ]
+            return (wind & 1) != 0
+        return wind != 0
+
+    func length [] -> f32
+        total : f32 [ 0.0 ]
+        for [ i: i32 1, i < pcount, i += 1 ]
+            if [ points[i].cmd == path_cmd.move ]
+                continue
+            n  : i32 [ seg_steps[ i ] ]
+            pv : vec2f [ seg_at[ i, 0.0 ] ]
+            for [ s: i32 1, s <= n, s += 1 ]
+                q : vec2f [ seg_at[ i, f32 s / f32 n ] ]
+                total += sqrt[ (q.x - pv.x) * (q.x - pv.x) + (q.y - pv.y) * (q.y - pv.y) ]
+                pv = q
+        return total
+
+    # x, y, tangent angle, 1 when dist lies on the path
+    func point_at [ dist: f32 ] -> vec4f
+        walked : f32 [ 0.0 ]
+        for [ i: i32 1, i < pcount, i += 1 ]
+            if [ points[i].cmd == path_cmd.move ]
+                continue
+            n  : i32 [ seg_steps[ i ] ]
+            pv : vec2f [ seg_at[ i, 0.0 ] ]
+            for [ s: i32 1, s <= n, s += 1 ]
+                q  : vec2f [ seg_at[ i, f32 s / f32 n ] ]
+                dl : f32 [ sqrt[ (q.x - pv.x) * (q.x - pv.x) + (q.y - pv.y) * (q.y - pv.y) ] ]
+                if [ dl > 0.0 && walked + dl >= dist ]
+                    t : f32 [ (dist - walked) / dl ]
+                    return vec4f [ pv.x + (q.x - pv.x) * t, pv.y + (q.y - pv.y) * t,
+                                   atan2[ q.y - pv.y, q.x - pv.x ], 1.0 ]
+                walked += dl
+                pv = q
+        return vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+
+    # x' = a x + c y + e, y' = b x + d y + f
+    func transform [ ta: f32, tb: f32, tc: f32, td: f32, te: f32, tf: f32 ]
+        for [ i: i32 0, i < pcount, i += 1 ]
+            p : PathPt [ points[i] ]
+            points[i].x   = ta * p.x   + tc * p.y   + te
+            points[i].y   = tb * p.x   + td * p.y   + tf
+            points[i].cx1 = ta * p.cx1 + tc * p.cy1 + te
+            points[i].cy1 = tb * p.cx1 + td * p.cy1 + tf
+            points[i].cx2 = ta * p.cx2 + tc * p.cy2 + te
+            points[i].cy2 = tb * p.cx2 + td * p.cy2 + tf
+        sx : f32 [ start_x ]
+        cx : f32 [ cursor_x ]
+        start_x  = ta * sx + tc * start_y + te
+        start_y  = tb * sx + td * start_y + tf
+        cursor_x = ta * cx + tc * cursor_y + te
+        cursor_y = tb * cx + td * cursor_y + tf
+        is_rect  = false
+        cached_valid = false
+
     func clear[]
         pcount  = 0
         start_x = 0.0
@@ -1246,10 +1529,6 @@ struct CanvasState
     stroke_join       : Join
     opacity           : f32
     transform         : affine
-    clip_x            : i32
-    clip_y            : i32
-    clip_w            : i32
-    clip_h            : i32
     blur_rad          : f32
     fill_offset       : f32
     stroke_offset     : f32
@@ -1260,21 +1539,18 @@ struct CanvasState
     font      	      : CanvasFont
     font_size         : i32
     line_height       : f32
-    inner_glow_color   : vec4f
-    inner_glow_px      : f32
-    inner_glow_ofs     : vec2f
-    inner_shadow_color : vec4f
-    inner_shadow_px    : f32
-    stroke_shadow_color: vec4f
-    outer_glow_color   : vec4f
-    outer_glow_px      : f32
-    outer_shadow_color : vec4f
-    outer_shadow_px    : f32
-    outer_shadow_ofs   : vec2f
-    glow_falloff      : f32
-    hue_shift         : f32
-    sat_mul           : f32
-    val_mul           : f32
+    # CSS box-shadows: color; x y, blur, spread; inset flags
+    shadow_color0     : vec4f
+    shadow_color1     : vec4f
+    shadow_color2     : vec4f
+    shadow_color3     : vec4f
+    shadow_geom0      : vec4f
+    shadow_geom1      : vec4f
+    shadow_geom2      : vec4f
+    shadow_geom3      : vec4f
+    shadow_inset      : vec4f
+    # CSS filter: hue-rotate degrees, saturate, brightness, on
+    color_filter      : vec4f
     text_grad         : vec4f
     text_color_pos    : vec2f
     text_grad_pos     : vec2f
@@ -1290,7 +1566,17 @@ struct CanvasState
     stroke_grad_mirror : bool
     stroke_grad_radial : bool
     crop          : vec4f
-    glow_sides    : vec4f
+    composite     : Composite
+    # a rounded clip in device pixels, when clip_round is set
+    clip_round    : bool
+    clip_rect     : vec4f
+    clip_radii    : vec4f
+    # rects clipped away, device pixels; clip_outs of them used
+    clip_outs     : i32
+    clip_out0     : vec4f
+    clip_out1     : vec4f
+    clip_out2     : vec4f
+    clip_out3     : vec4f
 
 
 func sk_color [ clr: rgba ] -> vec4f
@@ -1327,6 +1613,13 @@ Render Canvas
     intern sdf_tex       : Texture
     intern image_override : Texture
     intern mask_override  : Texture
+    intern mask_mode      : DrawMode [ DrawMode.image_masked ]
+    intern yuv_v          : Texture    # set only inside draw_yuv
+    intern ramp_tex       : Texture    # gradient stops, see fill_ramp
+    intern clip_masks     : vec Canvas # clip mask per saved state
+    intern clip_pool      : vec Canvas # masks no state holds
+    intern ramp_cache     : map Texture[string] # stops ramps by stops
+    intern ramp_own       : bool       # this paint set the ramp itself
     intern ramp_on        : bool       # image_ramp draw in flight
     intern ramp_sides     : vec4f      # its fade widths, source px
     intern ramp_rect      : vec4f      # gutter, band, source w, h
@@ -1348,11 +1641,13 @@ Render Canvas
     intern  sdf_compute      : CanvasSDFCompute
     intern  edge_buf         : Buffer       # storage buffer holding flattened edge list
     intern  edge_buf_capacity : i32         # max edges the buffer can hold
+    intern  edge_used        : i32          # edges written by this batch
+    public  even_odd         : bool         # the next path fill's rule
     intern  text_shader      : CanvasText
     intern  text_vbo         : Gpu          # current ring slot (vec2 pos, vec2 uv) layout
     intern  text_pipeline    : Pipeline     # bound to text_shader + text_vbo
-    intern  text_model       : Model        # holds text_pipeline; lives in text_render.models
-    intern  text_render      : Render       # own Render targeting canvas color
+    intern  text_model       : Model        # holds text_pipeline
+    intern  text_models      : vec Model    # drawn in the canvas's own batch
     intern  text_max_verts   : i32 [ 4096 ]
     intern  text_vbo_ring    : vec Gpu
     intern  text_vbo_idx     : i32 [ 0 ]
@@ -1373,7 +1668,6 @@ Render Canvas
     func teardown_gpu []
         if [ sdf_tex ]     sdf_tex.release_gpu[]
         release_render_gpu[ a ]
-        release_render_gpu[ text_render ]
         if [ blur_stages ]
             for [ r: Render ] in blur_stages
                 release_render_gpu[ r ]
@@ -1395,6 +1689,7 @@ Render Canvas
         height      = i32[ height * cs ]
         image_uv    = vec4f [ 0.0, 0.0, 1.0, 1.0 ]
         mask_uv     = vec4f [ 0.0, 0.0, 1.0, 1.0 ]
+        text_ring_n = paint_n
         VK : vk
         ui_shader = CanvasUI [ vk: vk ]
         if [ width <= 0 || height <= 0 ]
@@ -1406,7 +1701,7 @@ Render Canvas
         sdf_tex = Texture [ vk: vk, w: w, width: sdf_w, height: sdf_h,
             pixel_format: Pixel.f32, surface: Surface.color, is_storage: true, tag: stag ]
         ft_lib   = ft_init[]
-        canvas_samplers : map Au[string] [ 'image': sdf_tex, 'atlas': sdf_tex, 'mask': sdf_tex ]
+        canvas_samplers : map Au[string] [ 'image': sdf_tex, 'atlas': sdf_tex, 'mask': sdf_tex, 'clip': sdf_tex ]
         graphics_model : Model [ vk: vk, w: w, s: ui_shader, samplers: canvas_samplers ]
 
         # GPU SDF compute model
@@ -1428,26 +1723,45 @@ Render Canvas
         # one slot now; the rest of the ring is made as text is drawn
         text_ring_add[]
         text_vbo = text_vbo_ring[ 0 ]
-        text_render = Render [ vk: vk, w: w,
-            color: a.color,
-            width: width, height: height, load_existing: true ]
-
         text_pipeline = Pipeline [ vk: vk, w: w, name: string 'text',
-            r: text_render, s: text_shader, vbo: text_vbo,
-            samplers: map Au[string] [ 'atlas': sdf_tex ],
+            r: a, s: text_shader, vbo: text_vbo,
+            samplers: map Au[string] [ 'atlas': sdf_tex, 'clip': sdf_tex ],
             straight_alpha: true ]
         text_model = Model [ vk: vk, w: w, s: text_shader,
-            samplers: map Au[string] [ 'atlas': sdf_tex ] ]
+            samplers: map Au[string] [ 'atlas': sdf_tex, 'clip': sdf_tex ] ]
 
         text_model.pipelines = vec Pipeline []
         text_model.pipelines.push[ text_pipeline ]
-        text_model.r = text_render
-        text_render.models = vec Model [] [ text_model ]
+        text_model.r = a
+        text_models = vec Model [] [ text_model ]
         text_vbo.vertex_count = 0
 
         path   = CanvasPath []
+        clip_masks = vec Canvas []
+        clip_pool  = vec Canvas []
+        ramp_cache = map Texture[string] []
         states = vec CanvasState []
         state_depth  = 0
+        save[]
+        defaults : states[state_depth - 1]
+        defaults.font_size = 22
+        defaults.fill_color   = vec4f [ 1.0, 1.0, 1.0, 1.0 ]
+        defaults.stroke_color = vec4f [ 1.0, 1.0, 1.0, 1.0 ]
+
+    # the state a new canvas has, for reuse; pixels are kept
+    public func restart []
+        while [ state_depth > 1 ]
+            restore[]
+        if [ clip_masks.count > 0 && clip_masks[ 0 ] ] clip_pool.push[ clip_masks[ 0 ] ]
+        states      = vec CanvasState []
+        clip_masks  = vec Canvas []
+        xform_stack = vec affine []
+        cur_xform   = affine [ ma: 1.0, mb: 0.0, mc: 0.0, md: 1.0, tx: 0.0, ty: 0.0 ]
+        state_depth = 0
+        path.reset[]
+        fill_ramp_off[]
+        set_font[ null ]
+        svg_override_off[]
         save[]
         defaults : states[state_depth - 1]
         defaults.font_size = 22
@@ -1458,13 +1772,10 @@ Render Canvas
         #update[]
         draw[]
 
-    # submit and WAIT for both passes. text is its own Render layered on
-    # our color and it is never fenced, so anyone reading the texture
-    # straight after a paint gets the shapes without the text
     func sync_all []
-        draw[]
         sync_fence[]
-        if [ text_render ] text_render.sync_fence[]
+        # every text slot is free after the wait
+        text_vbo_idx = 0
 
     func reset [ c: vec4f ]
         if [ !color || !color.vk_image ]
@@ -1519,17 +1830,11 @@ Render Canvas
         update[]                                     # Render: color/depth + framebuffers
         if [ sdf_tex ]
             sdf_tex.resize[ max[ width / 2, 1 ], max[ height / 2, 1 ] ]
-        if [ text_render ]
-            text_render.width  = width
-            text_render.height = height
-            text_render.update[]                     # text framebuffer over the shared color
 
         if [ models ]
             for [ m: Model ] in models
                 m.rebind_model[]
-        if [ text_render && text_render.models ]
-            for [ m: Model ] in text_render.models
-                m.rebind_model[]
+        if [ text_model ] text_model.rebind_model[]
         blur_stages = null
         blur_v_arr  = null
         blur_h_arr  = null
@@ -1623,8 +1928,6 @@ Render Canvas
                 stroke_width:  0.0,
                 opacity:       1.0,
                 transform:     affine.identity [],
-                clip_x: 0, clip_y: 0,
-                clip_w: width, clip_h: height,
                 blur_rad:      0.0,
                 fill_offset:   0.0,
                 stroke_offset: 0.0,
@@ -1643,12 +1946,16 @@ Render Canvas
                 stroke_color_pos:   vec2f [ 0.0, 0.0 ],
                 stroke_grad_pos:    vec2f [ 0.0, 0.0 ],
                 stroke_grad_mirror: false,
-                stroke_grad_radial: false
+                stroke_grad_radial: false,
+                composite:          Composite.source_over,
+                color_filter:       vec4f [ 0.0, 1.0, 1.0, 0.0 ]
             ]
             states.push[ st ]
+            clip_masks.push[ null ]
         el
             prev : states[state_depth - 1]
             states.push[ prev ]
+            clip_masks.push[ clip_masks[ clip_masks.count - 1 ] ]
         xform_stack.push[ cur_xform ]
         state_depth += 1
 
@@ -1656,6 +1963,10 @@ Render Canvas
         if [ state_depth > 1 ]
             states.pop[]
             state_depth -= 1
+            gone : clip_masks[ clip_masks.count - 1 ]
+            clip_masks.pop[]
+            if [ gone && gone != clip_masks[ clip_masks.count - 1 ] ]
+                clip_pool.push[ gone ]
         if [ xform_stack.count > 0 ]
             cur_xform = xform_stack[ xform_stack.count - 1 ]
             xform_stack.pop[]
@@ -1729,9 +2040,7 @@ Render Canvas
         states[state_depth - 1].fill_color = sk_color[ color ]
 
     func stroke_color [ color: rgba ]
-        c : vec4f [ sk_color[ color ] ]
-        states[state_depth - 1].stroke_color        = c
-        states[state_depth - 1].stroke_shadow_color = c
+        states[state_depth - 1].stroke_color = sk_color[ color ]
 
     func stroke_width [ sw: f32 ]
         states[state_depth - 1].stroke_width = sw
@@ -1809,55 +2118,66 @@ Render Canvas
             if [ c.w < ny1 ] ny1 = c.w
         states[state_depth - 1].crop = vec4f [ nx0, ny0, nx1, ny1 ]
 
-    # both of these must write EVERY field in the glow family. paint
-    # state is sticky, so a field one sets and the other leaves alone
-    # carries over from whatever painted last
-    func inner_glow [ color: rgba, px: f32 ]
+    # CSS box-shadow slot i (0 on top, 4 slots); alpha 0 clears
+    func shadow [ i: i32, color: rgba, x: f32, y: f32, blur: f32, spread: f32, inset: bool ]
         c : vec4f [ sk_color[ color ] ]
-        states[state_depth - 1].inner_glow_color   = c
-        states[state_depth - 1].inner_glow_px      = px
-        states[state_depth - 1].inner_shadow_color = c
-        states[state_depth - 1].inner_shadow_px    = px
-        # zero sides = the uniform path; a stale set would pin the glow
-        # to whichever edges the last inner_glow_sides asked for
-        states[state_depth - 1].glow_sides         = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+        g : vec4f [ vec4f [ x, y, blur, spread ] ]
+        k : i32 [ state_depth - 1 ]
+        switch [ i ]
+            case 0
+                states[k].shadow_color0 = c
+                states[k].shadow_geom0  = g
+                states[k].shadow_inset.x = (inset) ? 1.0 : 0.0
+            case 1
+                states[k].shadow_color1 = c
+                states[k].shadow_geom1  = g
+                states[k].shadow_inset.y = (inset) ? 1.0 : 0.0
+            case 2
+                states[k].shadow_color2 = c
+                states[k].shadow_geom2  = g
+                states[k].shadow_inset.z = (inset) ? 1.0 : 0.0
+            case 3
+                states[k].shadow_color3 = c
+                states[k].shadow_geom3  = g
+                states[k].shadow_inset.w = (inset) ? 1.0 : 0.0
 
-    func inner_glow_sides [ color: rgba, top: f32, right: f32, bottom: f32, left: f32 ]
-        c : vec4f [ sk_color[ color ] ]
-        states[state_depth - 1].inner_glow_color   = c
-        states[state_depth - 1].inner_glow_px      = maxf[ maxf[ top, right ], maxf[ bottom, left ] ]
-        states[state_depth - 1].glow_sides         = vec4f [ top, right, bottom, left ]
-        states[state_depth - 1].inner_shadow_color = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
-        states[state_depth - 1].inner_shadow_px    = 0.0
+    # one CSS box-shadow for the next draws, no others
+    func box_shadow [ color: rgba, x: f32, y: f32, blur: f32, spread: f32, inset: bool ]
+        no_shadows[]
+        shadow[ 0, color, x, y, blur, spread, inset ]
 
-    func inner_glow_offset [ x: f32, y: f32 ]
-        states[state_depth - 1].inner_glow_ofs = vec2f [ x, y ]
+    func no_shadows []
+        k : i32 [ state_depth - 1 ]
+        states[k].shadow_color0 = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+        states[k].shadow_color1 = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+        states[k].shadow_color2 = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+        states[k].shadow_color3 = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
 
-    func inner_shadow [ color: rgba, px: f32 ]
-        states[state_depth - 1].inner_shadow_color = sk_color[ color ]
-        states[state_depth - 1].inner_shadow_px    = px
+    func has_shadows [] -> bool
+        st : states[state_depth - 1]
+        return st.shadow_color0.w > 0.0 || st.shadow_color1.w > 0.0 || st.shadow_color2.w > 0.0 || st.shadow_color3.w > 0.0
 
-    func stroke_shadow [ color: rgba ]
-        states[state_depth - 1].stroke_shadow_color = sk_color[ color ]
+    # farthest an outer shadow reaches past its shape, px
+    func shadow_reach [] -> f32
+        st : states[state_depth - 1]
+        r  : f32 [ 0.0 ]
+        r = maxf[ r, shadow_reach_of[ st.shadow_color0, st.shadow_geom0, st.shadow_inset.x ] ]
+        r = maxf[ r, shadow_reach_of[ st.shadow_color1, st.shadow_geom1, st.shadow_inset.y ] ]
+        r = maxf[ r, shadow_reach_of[ st.shadow_color2, st.shadow_geom2, st.shadow_inset.z ] ]
+        r = maxf[ r, shadow_reach_of[ st.shadow_color3, st.shadow_geom3, st.shadow_inset.w ] ]
+        return r
 
-    func outer_glow [ color: rgba, px: f32 ]
-        states[state_depth - 1].outer_glow_color = sk_color[ color ]
-        states[state_depth - 1].outer_glow_px    = px
+    # an inset shadow stays inside its shape
+    func shadow_reach_of [ c: vec4f, g: vec4f, inset: f32 ] -> f32
+        if [ c.w <= 0.0 || inset > 0.5 ] return 0.0
+        ox : f32 [ (g.x < 0.0) ? -g.x : g.x ]
+        oy : f32 [ (g.y < 0.0) ? -g.y : g.y ]
+        return maxf[ ox, oy ] + g.z * 1.5 + maxf[ g.w, 0.0 ]
 
-    func outer_shadow [ color: rgba, px: f32 ]
-        states[state_depth - 1].outer_shadow_color = sk_color[ color ]
-        states[state_depth - 1].outer_shadow_px    = px
-
-    func outer_shadow_offset [ x: f32, y: f32 ]
-        states[state_depth - 1].outer_shadow_ofs = vec2f [ x, y ]
-
-    func glow_falloff [ k: f32 ]
-        states[state_depth - 1].glow_falloff = k
-
-    func colorize [ hue: f32, sat: f32, val: f32 ]
-        states[state_depth - 1].hue_shift = hue
-        states[state_depth - 1].sat_mul   = sat
-        states[state_depth - 1].val_mul   = val
+    # CSS filter: hue-rotate(deg) saturate(s) brightness(b)
+    func color_filter [ hue: f32, saturate: f32, brightness: f32 ]
+        on : f32 [ (hue != 0.0 || saturate != 1.0 || brightness != 1.0) ? 1.0 : 0.0 ]
+        states[state_depth - 1].color_filter = vec4f [ hue, saturate, brightness, on ]
 
     func set_stroke_size [ sw: f32 ]
         states[state_depth - 1].stroke_width = sw
@@ -1894,16 +2214,11 @@ Render Canvas
         states[state_depth - 1].stroke_gradient = null
 
     func set_clip [ x: i32, y: i32, cw: i32, ch: i32 ]
-        # intersect with parent clip
-        st : CanvasState states[state_depth - 1]
-        nx0 : i32 [ maxi [ x, st.clip_x ] ]
-        ny0 : i32 [ maxi [ y, st.clip_y ] ]
-        nx1 : i32 [ mini [ x + cw, st.clip_x + st.clip_w ] ]
-        ny1 : i32 [ mini [ y + ch, st.clip_y + st.clip_h ] ]
-        states[state_depth - 1].clip_x = nx0
-        states[state_depth - 1].clip_y = ny0
-        states[state_depth - 1].clip_w = maxi [ nx1 - nx0, 0 ]
-        states[state_depth - 1].clip_h = maxi [ ny1 - ny0, 0 ]
+        crop_within[ f32 x, f32 y, f32 (x + cw), f32 (y + ch) ]
+        c : vec4f [ states[state_depth - 1].crop ]
+        # an empty crop reads as none: park it off the canvas
+        if [ c.z <= c.x || c.w <= c.y ]
+            states[state_depth - 1].crop = vec4f [ -2.0, -2.0, -1.0, -1.0 ]
 
     # ---- transform ----
 
@@ -1979,21 +2294,71 @@ Render Canvas
         g.sync[ w ]
         text_vbo_ring.push[ g ]
 
-    func draw_text_pass [ display: string, metrics: TextMetrics, pen_x_in: f32, pen_y_in: f32 ]
-        if [ !font.atlas ]
-            font.atlas = GlyphAtlas [ vk: vk, w: w, size: 1024 ]
-        glyph_atlas = font.atlas
-        atlas_size : f32 [ f32 glyph_atlas.size ]
-        inv : f32 [ (w.scale > 0) ? 1.0 / w.scale : 1.0 ]
+    # a text vertex batch for fnt: ring slot, atlas, crop
+    func text_begin [ fnt: CanvasFont ] -> @f32
+        if [ !fnt.atlas ]
+            fnt.atlas = GlyphAtlas [ vk: vk, w: w, size: 1024 ]
+        glyph_atlas = fnt.atlas
         if [ text_vbo_idx % text_ring_n == 0 && text_vbo_idx > 0 ]
-            text_render.sync_fence[]
+            sync_fence[]
         # a canvas that draws no text keeps one slot, never all 64
         while [ i32[ text_vbo_ring.count ] <= text_vbo_idx % text_ring_n ]
             text_ring_add[]
         text_vbo = text_vbo_ring[ text_vbo_idx % text_ring_n ]
         text_pipeline.vbo = text_vbo
         text_vbo_idx += 1
-        verts : @f32 [ text_vbo.vertex_data ]
+        return text_vbo.vertex_data
+
+    # six vertices (pos, uv) for slot with its pen at x, y
+    func glyph_quad [ verts: @f32, vi: i32, slot: GlyphAtlasSlot, x: f32, y: f32 ]
+        inv : f32 [ (w.scale > 0) ? 1.0 / w.scale : 1.0 ]
+        atlas_size : f32 [ f32 glyph_atlas.size ]
+        x0 : f32 [ x + f32 slot.bearing_x * inv ]
+        x1 : f32 [ x0 + f32 slot.atlas_w * inv ]
+        y0 : f32 [ y - f32 slot.bearing_y * inv ]
+        y1 : f32 [ y0 + f32 slot.atlas_h * inv ]
+        u0 : f32 [ f32 slot.atlas_x                  / atlas_size ]
+        v0 : f32 [ f32 slot.atlas_y                  / atlas_size ]
+        u1 : f32 [ f32 (slot.atlas_x + slot.atlas_w) / atlas_size ]
+        v1 : f32 [ f32 (slot.atlas_y + slot.atlas_h) / atlas_size ]
+        base : i32 [ vi * 4 ]
+        verts[ base +  0 ] = x0
+        verts[ base +  1 ] = y0
+        verts[ base +  2 ] = u0
+        verts[ base +  3 ] = v0
+        verts[ base +  4 ] = x1
+        verts[ base +  5 ] = y0
+        verts[ base +  6 ] = u1
+        verts[ base +  7 ] = v0
+        verts[ base +  8 ] = x0
+        verts[ base +  9 ] = y1
+        verts[ base + 10 ] = u0
+        verts[ base + 11 ] = v1
+        verts[ base + 12 ] = x1
+        verts[ base + 13 ] = y0
+        verts[ base + 14 ] = u1
+        verts[ base + 15 ] = v0
+        verts[ base + 16 ] = x1
+        verts[ base + 17 ] = y1
+        verts[ base + 18 ] = u1
+        verts[ base + 19 ] = v1
+        verts[ base + 20 ] = x0
+        verts[ base + 21 ] = y1
+        verts[ base + 22 ] = u0
+        verts[ base + 23 ] = v1
+
+    func text_end [ fnt: CanvasFont, vi: i32 ]
+        text_vbo.vertex_count = vi
+        if [ text_vbo.vertex && vi > 0 ]
+            text_vbo.vertex.update_part[ text_vbo.vertex_data, i64[ vi ] * 16 ]
+            text_pipeline.ensure_bound[]
+            text_pipeline.rebind_atlas[ fnt.atlas.texture ]
+            apply_draw_state[]
+            draw_with[ text_models ]
+
+    func draw_text_pass [ display: string, metrics: TextMetrics, pen_x_in: f32, pen_y_in: f32 ]
+        verts : text_begin[ font ]
+        inv   : f32 [ (w.scale > 0) ? 1.0 / w.scale : 1.0 ]
         vi    : i32 [ 0 ]
         pen_x : f32 [ pen_x_in ]
         pen_y : f32 [ pen_y_in ]
@@ -2031,49 +2396,50 @@ Render Canvas
                 if [ crop_active && x1 < crop_x0 ]
                     pen_x += f32 slot.advance * inv
                     continue
-                y0 : f32 [ pen_y - f32 slot.bearing_y * inv ]
-                y1 : f32 [ y0 + f32 slot.atlas_h * inv ]
-                u0 : f32 [ f32 slot.atlas_x                   / atlas_size ]
-                v0 : f32 [ f32 slot.atlas_y                   / atlas_size ]
-                u1 : f32 [ f32 (slot.atlas_x + slot.atlas_w)  / atlas_size ]
-                v1 : f32 [ f32 (slot.atlas_y + slot.atlas_h)  / atlas_size ]
-                base : i32 [ vi * 4 ]
-                verts[ base +  0 ] = x0
-                verts[ base +  1 ] = y0
-                verts[ base +  2 ] = u0
-                verts[ base +  3 ] = v0
-                verts[ base +  4 ] = x1
-                verts[ base +  5 ] = y0
-                verts[ base +  6 ] = u1
-                verts[ base +  7 ] = v0
-                verts[ base +  8 ] = x0
-                verts[ base +  9 ] = y1
-                verts[ base + 10 ] = u0
-                verts[ base + 11 ] = v1
-                verts[ base + 12 ] = x1
-                verts[ base + 13 ] = y0
-                verts[ base + 14 ] = u1
-                verts[ base + 15 ] = v0
-                verts[ base + 16 ] = x1
-                verts[ base + 17 ] = y1
-                verts[ base + 18 ] = u1
-                verts[ base + 19 ] = v1
-                verts[ base + 20 ] = x0
-                verts[ base + 21 ] = y1
-                verts[ base + 22 ] = u0
-                verts[ base + 23 ] = v1
+                glyph_quad[ verts, vi, slot, pen_x, pen_y ]
                 vi += 6
             pen_x += f32 slot.advance * inv
-        text_vbo.vertex_count = vi
-        if [ text_vbo.vertex && vi > 0 ]
-            text_vbo.vertex.update[ text_vbo.vertex_data ]
-            text_pipeline.ensure_bound[]
-            text_pipeline.rebind_atlas[ font.atlas.texture ]
-            flush_submit[]
-            text_render.update[]
-            text_render.draw[]
+        text_end[ font, vi ]
 
-    func draw_text [ text: string, bounds: rect, align: vec2f, offset: vec2f, overflow: Overflow, shadow: Shadow ] -> rect
+    # shaped text: glyph numbers with baseline pens, canvas px
+    func draw_glyphs [ fnt: CanvasFont, ids: @u32, xs: @f32, ys: @f32, n: i32 ]
+        st : CanvasState states[state_depth - 1]
+        tcs : f32 [ (w.scale > 0) ? w.scale : 1.0 ]
+        text_shader.viewport       = vec2f [ f32 width / tcs, f32 height / tcs ]
+        text_shader.crop_rect      = st.crop
+        text_shader.text_color     = st.fill_color
+        text_shader.text_grad      = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+        text_shader.text_color_pos = vec2f [ 0.0, 0.0 ]
+        text_shader.text_grad_pos  = vec2f [ 0.0, 0.0 ]
+        text_shader.grad_params    = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+        verts : text_begin[ fnt ]
+        vi    : i32 [ 0 ]
+        for [ g: i32 0, g < n, g += 1 ]
+            slot : glyph_atlas.get_id[ fnt, ids[g] ]
+            if [ !slot.cached || slot.atlas_w == 0 || slot.atlas_h == 0 ]
+                continue
+            if [ vi + 6 > text_max_verts ]
+                text_end[ fnt, vi ]
+                verts = text_begin[ fnt ]
+                vi    = 0
+            px : f32 [ roundf[ st.transform.apply_x[ xs[g], ys[g] ] ] ]
+            py : f32 [ roundf[ st.transform.apply_y[ xs[g], ys[g] ] ] ]
+            glyph_quad[ verts, vi, slot, px, py ]
+            vi += 6
+        text_end[ fnt, vi ]
+
+    # floats, not a vec4f: small float structs by value break
+    func fill_rgba [ r: f32, g: f32, b: f32, al: f32 ]
+        states[state_depth - 1].fill_color = vec4f [ r, g, b, al ]
+
+    func stroke_rgba [ r: f32, g: f32, b: f32, al: f32 ]
+        states[state_depth - 1].stroke_color = vec4f [ r, g, b, al ]
+
+    # x' = ma x + mb y + tx, y' = mc x + md y + ty
+    func set_transform [ ma: f32, mb: f32, mc: f32, md: f32, tx: f32, ty: f32 ]
+        states[state_depth - 1].transform = affine [ ma: ma, mb: mb, mc: mc, md: md, tx: tx, ty: ty ]
+
+    func draw_text [ text: string, bounds: rect, align: vec2f, offset: vec2f, overflow: Overflow, shadow: BoxShadow ] -> rect
         if [ !text ] return bounds
         ensure_font[]
         if [ !font ] return bounds
@@ -2098,8 +2464,8 @@ Render Canvas
             text_shader.text_color_pos = vec2f [ 0.0, 0.0 ]
             text_shader.text_grad_pos  = vec2f [ 0.0, 0.0 ]
             text_shader.grad_params    = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
-            sx : f32 [ shadow.offset->x ]
-            sy : f32 [ shadow.offset->y ]
+            sx : f32 [ shadow.offset.x ]
+            sy : f32 [ shadow.offset.y ]
             draw_text_pass[ display, metrics, pen_x + sx, pen_y + sy ]
 
         # main pass: full text_color + optional gradient.
@@ -2143,19 +2509,16 @@ Render Canvas
                                        st.transform.mc, st.transform.md ]
         ui_shader.xform_row1 = vec4f [ st.transform.tx, st.transform.ty, 0.0, 0.0 ]
         ui_shader.image_tint = img_tint
-        ui_shader.glow_sides          = st.glow_sides
-        ui_shader.inner_glow_color    = st.inner_glow_color
-        ui_shader.inner_shadow_color  = st.inner_shadow_color
-        ui_shader.stroke_shadow_color = st.stroke_shadow_color
-        ui_shader.outer_glow_color    = st.outer_glow_color
-        ui_shader.outer_shadow_color  = st.outer_shadow_color
-        k : f32 [ (st.glow_falloff > 0.0) ? st.glow_falloff : 6.0 ]
-        ui_shader.glow_params  = vec4f [ st.inner_glow_px, st.outer_glow_px, k, st.inner_shadow_px ]
-        sat : f32 [ (st.sat_mul != 0.0) ? st.sat_mul : 1.0 ]
-        val : f32 [ (st.val_mul != 0.0) ? st.val_mul : 1.0 ]
-        ui_shader.glow_params2 = vec4f [ st.outer_shadow_px, st.hue_shift, sat, val ]
-        ui_shader.glow_ofs     = vec4f [ st.inner_glow_ofs.x, st.inner_glow_ofs.y,
-                                         st.outer_shadow_ofs.x, st.outer_shadow_ofs.y ]
+        ui_shader.shadow_color0 = st.shadow_color0
+        ui_shader.shadow_color1 = st.shadow_color1
+        ui_shader.shadow_color2 = st.shadow_color2
+        ui_shader.shadow_color3 = st.shadow_color3
+        ui_shader.shadow_geom0  = st.shadow_geom0
+        ui_shader.shadow_geom1  = st.shadow_geom1
+        ui_shader.shadow_geom2  = st.shadow_geom2
+        ui_shader.shadow_geom3  = st.shadow_geom3
+        ui_shader.shadow_inset  = st.shadow_inset
+        ui_shader.color_filter  = st.color_filter
         ##
         printf[ "setup_shader ubo:\n" ]
         printf[ "  rect       = (%f, %f, %f, %f)\n", rx, ry, rw, rh ]
@@ -2240,18 +2603,8 @@ Render Canvas
         states[i].opacity             = 1.0
         states[i].fill_offset         = 0.0
         states[i].stroke_offset       = 0.0
-        states[i].inner_glow_color    = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
-        states[i].inner_glow_px       = 0.0
-        states[i].inner_glow_ofs      = vec2f [ 0.0, 0.0 ]
-        states[i].glow_sides          = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
-        states[i].inner_shadow_color  = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
-        states[i].inner_shadow_px     = 0.0
-        states[i].stroke_shadow_color = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
-        states[i].outer_glow_color    = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
-        states[i].outer_glow_px       = 0.0
-        states[i].outer_shadow_color  = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
-        states[i].outer_shadow_px     = 0.0
-        states[i].outer_shadow_ofs    = vec2f [ 0.0, 0.0 ]
+        no_shadows[]
+        states[i].color_filter        = vec4f [ 0.0, 1.0, 1.0, 0.0 ]
         states[i].fill_grad           = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
         states[i].stroke_grad         = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
 
@@ -2359,8 +2712,7 @@ Render Canvas
         draw_canvas[ mdl.cache, ox, oy, rw, rh ]
 
     public func flush_text []
-        if [ text_render ]
-            text_render.flush_submit[]
+        flush_submit[]
 
     func draw_canvas [ src: Canvas, x: f32, y: f32, rw: f32, rh: f32 ]
         if [ src ]
@@ -2421,6 +2773,71 @@ Render Canvas
                     p.rebind_image[ sdf_tex ]
                     p.rebind_mask[ sdf_tex ]
 
+    # planes y, u, v; rows: 12 floats, 3 of (ky, ku, kv, add)
+    func draw_yuv [ y: Texture, u: Texture, v: Texture, x: f32, y0: f32, rw: f32, rh: f32, rows: @f32 ]
+        y.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
+        u.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
+        v.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
+        image_override = y
+        mask_override  = u
+        yuv_v          = v
+        ui_shader.yuv_r = vec4f [ rows[0], rows[1], rows[2],  rows[3] ]
+        ui_shader.yuv_g = vec4f [ rows[4], rows[5], rows[6],  rows[7] ]
+        ui_shader.yuv_b = vec4f [ rows[8], rows[9], rows[10], rows[11] ]
+        image_uv = vec4f [ 0.0, 0.0, 1.0, 1.0 ]
+        mask_uv  = vec4f [ 0.0, 0.0, 1.0, 1.0 ]
+        path.clear[]
+        path.add_rect[ x, y0, rw, rh ]
+        paint[]
+        image_override = null
+        mask_override  = null
+        yuv_v          = null
+        if [ models ]
+            for [ mi: i32 0, mi < models.count, mi += 1 ]
+                cmod : Model models[mi]
+                if [ cmod.pipelines && cmod.pipelines.count > 0 ]
+                    p : Pipeline cmod.pipelines[0]
+                    p.rebind_image[ sdf_tex ]
+                    p.rebind_mask[ sdf_tex ]
+                    p.rebind_atlas[ sdf_tex ]
+
+    # layer src at alpha, kept where mask has alpha (or luma):
+    # its top-left w x h, pixel for pixel, at x, y
+    func compose [ src: Canvas, mask: Canvas, luma: bool, alpha: f32, x: f32, y: f32, rw: f32, rh: f32 ]
+        sw : i32 [ src.content_w ]
+        sh : i32 [ src.content_h ]
+        src.content_w = i32 rw
+        src.content_h = i32 rh
+        mw : i32 [ (mask) ? mask.content_w : 0 ]
+        mh : i32 [ (mask) ? mask.content_h : 0 ]
+        if [ mask ]
+            mask.content_w = i32 rw
+            mask.content_h = i32 rh
+        save[]
+        set_transform[ 1.0, 0.0, 0.0, 1.0, 0.0, 0.0 ]
+        set_opacity[ alpha ]
+        if [ mask ]
+            draw_canvas_through[ src, mask, luma, x, y, rw, rh ]
+        el
+            src.seal[]
+            draw_canvas[ src, x, y, rw, rh ]
+        restore[]
+        src.content_w = sw
+        src.content_h = sh
+        if [ mask ]
+            mask.content_w = mw
+            mask.content_h = mh
+        # the layers are cleared and reused after this
+        flush_submit[]
+
+    # src kept where mask_src has alpha (luma: its luminance)
+    func draw_canvas_through [ src: Canvas, mask_src: Canvas, luma: bool, x: f32, y: f32, rw: f32, rh: f32 ]
+        src.seal[]
+        mask_src.seal[]
+        mask_mode = (luma) ? DrawMode.image_mask_luma : DrawMode.image_mask_alpha
+        draw_canvas_masked[ src, mask_src, x, y, rw, rh ]
+        mask_mode = DrawMode.image_masked
+
     # src faded on its edges: linear ramps of ft/fr/fb/fl px inward
     # from the rect at (kl, pt) to its far corner; the band above pt
     # and the gutter left of kl are shown whole and hidden respectively
@@ -2470,6 +2887,261 @@ Render Canvas
         img_tint = vec4f[1.0,1.0,1.0,1.0]
 
     # dst shows only the u0,v0..u1,v1 sub-rect of tex
+    # composite operator, clip and clip mask for the next draw
+    func apply_draw_state []
+        st   : states[state_depth - 1]
+        if [ !ramp_tex && st.fill_gradient && st.fill_gradient.kind != GradientType.none ]
+            use_gradient[ st.fill_gradient, st.transform ]
+            ramp_own = true
+        mask : clip_masks[ clip_masks.count - 1 ]
+        on   : vec4f [ vec4f [ (mask) ? 1.0 : 0.0, (st.clip_round) ? 1.0 : 0.0, f32 i32 st.composite, f32 st.clip_outs ] ]
+        ui_shader.clip_on     = on
+        ui_shader.clip_rect   = st.clip_rect
+        ui_shader.clip_radii  = st.clip_radii
+        ui_shader.clip_out0   = st.clip_out0
+        ui_shader.clip_out1   = st.clip_out1
+        ui_shader.clip_out2   = st.clip_out2
+        ui_shader.clip_out3   = st.clip_out3
+        text_shader.clip_on    = on
+        text_shader.clip_rect  = st.clip_rect
+        text_shader.clip_radii = st.clip_radii
+        text_shader.clip_out0  = st.clip_out0
+        text_shader.clip_out1  = st.clip_out1
+        text_shader.clip_out2  = st.clip_out2
+        text_shader.clip_out3  = st.clip_out3
+        for [ m: Model ] in models
+            for [ p: Pipeline ] in m.pipelines
+                p.composite = st.composite
+                if [ mask ]
+                    p.ensure_bound[]
+                    p.rebind_clip[ mask.color ]
+        text_pipeline.composite = st.composite
+        if [ mask ]
+            text_pipeline.ensure_bound[]
+            text_pipeline.rebind_clip[ mask.color ]
+
+    # W3C globalCompositeOperation for the next draws
+    func set_composite [ op: Composite ]
+        states[state_depth - 1].composite = op
+
+    # clip to a rounded rect in user space; an axis-aligned
+    # transform keeps it analytic, anything else takes a mask
+    func clip_rounded_rect [ x: f32, y: f32, rw: f32, rh: f32, r0: f32, r1: f32, r2: f32, r3: f32 ]
+        st : states[state_depth - 1]
+        t  : affine [ st.transform ]
+        if [ t.mb != 0.0 || t.mc != 0.0 || st.clip_round ]
+            path.clear[]
+            rounded_rect[ x, y, rw, rh, r0, r1, r2, r3 ]
+            clip_to_path[ false ]
+            return
+        x0 : f32 [ t.ma * x + t.tx ]
+        y0 : f32 [ t.md * y + t.ty ]
+        x1 : f32 [ t.ma * (x + rw) + t.tx ]
+        y1 : f32 [ t.md * (y + rh) + t.ty ]
+        k  : f32 [ (t.ma < 0.0) ? -t.ma : t.ma ]
+        states[state_depth - 1].clip_round = true
+        states[state_depth - 1].clip_rect  = vec4f [ minf[ x0, x1 ], minf[ y0, y1 ], maxf[ x0, x1 ], maxf[ y0, y1 ] ]
+        states[state_depth - 1].clip_radii = vec4f [ r0 * k, r1 * k, r2 * k, r3 * k ]
+
+    # a mask canvas the size of this one, cleared
+    func clip_mask_canvas [ opaque: bool ] -> Canvas
+        m : Canvas [ null ]
+        if [ clip_pool.count > 0 ]
+            # an earlier draw may still read it: finish them first
+            sync_all[]
+            m = clip_pool[ clip_pool.count - 1 ]
+            clip_pool.pop[]
+        el
+            m = Canvas [ vk: vk, w: w, width: content_w, height: content_h,
+                load_existing: true, paint_n: 64, tag: 'clip' ]
+        m.clear_recorded[ vec4f [ 1.0, 1.0, 1.0, (opaque) ? 1.0 : 0.0 ] ]
+        return m
+
+    # clip away a rect in user space: 4 analytic, then a mask
+    func clip_out_rect [ x: f32, y: f32, rw: f32, rh: f32 ]
+        st : states[state_depth - 1]
+        t  : affine [ st.transform ]
+        if [ t.mb != 0.0 || t.mc != 0.0 || st.clip_outs >= 4 ]
+            path.clear[]
+            rect_to[ x, y, rw, rh ]
+            clip_out_path[]
+            return
+        x0 : f32 [ t.ma * x + t.tx ]
+        y0 : f32 [ t.md * y + t.ty ]
+        x1 : f32 [ t.ma * (x + rw) + t.tx ]
+        y1 : f32 [ t.md * (y + rh) + t.ty ]
+        r  : vec4f [ vec4f [ minf[ x0, x1 ], minf[ y0, y1 ], maxf[ x0, x1 ], maxf[ y0, y1 ] ] ]
+        k  : i32 [ state_depth - 1 ]
+        switch [ st.clip_outs ]
+            case 0
+                states[k].clip_out0 = r
+            case 1
+                states[k].clip_out1 = r
+            case 2
+                states[k].clip_out2 = r
+            default
+                states[k].clip_out3 = r
+        states[k].clip_outs = st.clip_outs + 1
+
+    # the new mask, kept only where the current one is
+    func clip_push_mask [ m: Canvas ]
+        prev : clip_masks[ clip_masks.count - 1 ]
+        if [ prev ]
+            m.save[]
+            m.set_transform[ 1.0, 0.0, 0.0, 1.0, 0.0, 0.0 ]
+            m.set_composite[ Composite.destination_in ]
+            m.draw_canvas[ prev, 0.0, 0.0, f32 content_w, f32 content_h ]
+            m.restore[]
+        m.seal[]
+        # a mask only this level held goes back to the pool
+        below : Canvas [ (clip_masks.count > 1) ? clip_masks[ clip_masks.count - 2 ] : null ]
+        if [ prev && prev != below ]
+            clip_pool.push[ prev ]
+        clip_masks[ clip_masks.count - 1 ] = m
+
+    # clip to the current path
+    func clip_to_path [ eo: bool ]
+        st : states[state_depth - 1]
+        m  : clip_mask_canvas[ false ]
+        m.save[]
+        m.set_transform[ st.transform.ma, st.transform.mb, st.transform.mc, st.transform.md, st.transform.tx, st.transform.ty ]
+        m.path.clear[]
+        for [ i: i32 0, i < path.pcount, i += 1 ]
+            m.path.append[ path.points[i] ]
+        m.stroke_width[ 0.0 ]
+        m.fill_rgba[ 1.0, 1.0, 1.0, 1.0 ]
+        m.even_odd = eo
+        m.paint[]
+        m.even_odd = false
+        m.restore[]
+        path.clear[]
+        clip_push_mask[ m ]
+
+    # clip away the current path
+    func clip_out_path []
+        st : states[state_depth - 1]
+        m  : clip_mask_canvas[ true ]
+        m.save[]
+        m.set_transform[ st.transform.ma, st.transform.mb, st.transform.mc, st.transform.md, st.transform.tx, st.transform.ty ]
+        m.set_composite[ Composite.destination_out ]
+        m.path.clear[]
+        for [ i: i32 0, i < path.pcount, i += 1 ]
+            m.path.append[ path.points[i] ]
+        m.stroke_width[ 0.0 ]
+        m.fill_rgba[ 1.0, 1.0, 1.0, 1.0 ]
+        m.paint[]
+        m.restore[]
+        path.clear[]
+        clip_push_mask[ m ]
+
+    # clip to an image's alpha over dst, in user space
+    func clip_to_image [ tx: Texture, dst: rect ]
+        st : states[state_depth - 1]
+        m  : clip_mask_canvas[ false ]
+        m.save[]
+        m.set_transform[ st.transform.ma, st.transform.mb, st.transform.mc, st.transform.md, st.transform.tx, st.transform.ty ]
+        m.draw_image[ tx, dst ]
+        m.restore[]
+        clip_push_mask[ m ]
+
+    # 256 texels of a Gradient's stops, blended premultiplied
+    func gradient_ramp [ g: Gradient ] -> Texture
+        key : string [ '' ]
+        for [ st: GradientStop ] in g.stops
+            key = '{key}{st.pos}:{st.color};'
+        hit : ramp_cache[ key ]
+        if [ hit ] return hit
+        px : new u8 [ 256 * 4 ]
+        n  : i32 [ i32 g.stops.count ]
+        for [ i: i32 0, i < 256, i += 1 ]
+            t  : f32 [ f32 i / 255.0 ]
+            c  : vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+            if [ n > 0 ]
+                c = premul_stop[ g.stops[0].color ]
+            for [ k: i32 1, k < n, k += 1 ]
+                a0 : GradientStop [ g.stops[k - 1] ]
+                a1 : GradientStop [ g.stops[k] ]
+                if [ t >= a1.pos ]
+                    c = premul_stop[ a1.color ]
+                el [ t > a0.pos ]
+                    f  : f32 [ (t - a0.pos) / maxf[ a1.pos - a0.pos, 0.00001 ] ]
+                    c0 : vec4f [ premul_stop[ a0.color ] ]
+                    c1 : vec4f [ premul_stop[ a1.color ] ]
+                    c = vec4f [ c0.x + (c1.x - c0.x) * f, c0.y + (c1.y - c0.y) * f,
+                                c0.z + (c1.z - c0.z) * f, c0.w + (c1.w - c0.w) * f ]
+            al : f32 [ c.w ]
+            px[ i * 4 + 0 ] = u8 [ ((al > 0.0) ? c.x / al : 0.0) * 255.0 + 0.5 ]
+            px[ i * 4 + 1 ] = u8 [ ((al > 0.0) ? c.y / al : 0.0) * 255.0 + 0.5 ]
+            px[ i * 4 + 2 ] = u8 [ ((al > 0.0) ? c.z / al : 0.0) * 255.0 + 0.5 ]
+            px[ i * 4 + 3 ] = u8 [ al * 255.0 + 0.5 ]
+        tx : Texture [ vk: vk, w: w, width: 256, height: 1, linear: true,
+            pixel_format: Pixel.rgba8, surface: Surface.color, tag: 'ramp' ]
+        tx.upload_region[ 0, 0, 256, 1, px, 256 * 4 ]
+        ramp_cache[ key ] = tx
+        return tx
+
+    func premul_stop [ c: u32 ] -> vec4f
+        v : vec4f [ color_to_vec4[ c ] ]
+        return vec4f [ v.x * v.w, v.y * v.w, v.z * v.w, v.w ]
+
+    # a Gradient in local units, drawn through the stops ramp
+    func use_gradient [ g: Gradient, t: affine ]
+        det : f32 [ t.ma * t.md - t.mb * t.mc ]
+        if [ det == 0.0 ] return
+        ia  : f32 [ t.md / det ]
+        ib  : f32 [ 0.0 - t.mb / det ]
+        ic  : f32 [ 0.0 - t.mc / det ]
+        idd : f32 [ t.ma / det ]
+        m   : new f32 [ 6 ]
+        m[0] = ia
+        m[1] = ib
+        m[2] = 0.0 - (ia * t.tx + ib * t.ty)
+        m[3] = ic
+        m[4] = idd
+        m[5] = 0.0 - (ic * t.tx + idd * t.ty)
+        pts : new f32 [ 4 ]
+        kind : i32 [ 1 ]
+        r0   : f32 [ 0.0 ]
+        r1   : f32 [ 0.0 ]
+        switch [ g.kind ]
+            case radial
+                kind   = 2
+                pts[0] = g.x0
+                pts[1] = g.y0
+                pts[2] = g.x0
+                pts[3] = g.y0
+                r0     = g.x1
+                r1     = g.y1
+            case conic
+                kind   = 3
+                pts[0] = g.x0
+                pts[1] = g.y0
+                r0     = g.x1
+            default
+                pts[0] = g.x0
+                pts[1] = g.y0
+                pts[2] = g.x1
+                pts[3] = g.y1
+        fill_ramp[ gradient_ramp[ g ], kind, (g.mirror) ? 1 : 0, 1.0, m, pts, r0, r1 ]
+        # a conic's start angle rides in ramp_geom.z
+        if [ kind == 3 ] ui_shader.ramp_geom = vec4f [ 0.0, 0.0, r0, 0.0 ]
+
+    # fills take colors from a stops ramp (256x1) until off
+    # kind 1 linear, 2 radial, 3 conic; spread 0 pad, 1 reflect, 2 repeat
+    # m: device pixels to gradient space (a c e b d f)
+    func fill_ramp [ tex: Texture, kind: i32, spread: i32, alpha: f32, m: @f32, pts: @f32, r0: f32, r1: f32 ]
+        tex.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
+        ramp_tex = tex
+        ui_shader.ramp      = vec4f [ 1.0, f32 kind, f32 spread, alpha ]
+        ui_shader.ramp_m0   = vec4f [ m[0], m[1], m[2], 0.0 ]
+        ui_shader.ramp_m1   = vec4f [ m[3], m[4], m[5], 0.0 ]
+        ui_shader.ramp_pts  = vec4f [ pts[0], pts[1], pts[2], pts[3] ]
+        ui_shader.ramp_geom = vec4f [ r0, r1, 0.0, 0.0 ]
+
+    func fill_ramp_off []
+        ramp_tex = null
+        ui_shader.ramp = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+
     func draw_image_crop [ tex: Texture, dst: rect, u0: f32, v0: f32, u1: f32, v1: f32 ]
         image_uv = vec4f [ u0, v0, u1, v1 ]
         draw_image[ tex, dst ]
@@ -2656,11 +3328,12 @@ Render Canvas
             sgrad_mode : f32 [ (st.stroke_grad_radial) ? 2.0 : (st.stroke_grad_mirror) ? 1.0 : 0.0 ]
             ui_shader.stroke_opts = vec4f [ f32 i32 st.stroke_join, f32 i32 st.stroke_cap, fgrad_mode, sgrad_mode ]
             is_r8    : bool [ image_override && image_override.pixel_format == Pixel.u8 ]
-            img_mode : f32  [ (vec_override)  ? DrawMode.image_vec
+            img_mode : f32  [ (yuv_v)         ? DrawMode.image_yuv
+                            : (vec_override)  ? DrawMode.image_vec
                             : (min_override)  ? DrawMode.image_min
                             : (explosion_override) ?
                                 DrawMode.image_explosion
-                            : (mask_override) ? DrawMode.image_masked
+                            : (mask_override) ? mask_mode
                             : (ramp_on)       ? DrawMode.image_ramp
                             : ((is_r8) ? DrawMode.image_r : DrawMode.image) ]
             mode     : f32  [ (image_override) ? img_mode : DrawMode.solid ]
@@ -2673,12 +3346,7 @@ Render Canvas
                             && st.fill_grad.w <= 0.0 && st.stroke_grad.w <= 0.0
                             && st.stroke_width <= 0.0
                             && st.blur_rad <= 0.0 && st.fill_offset == 0.0
-                            && st.inner_glow_color.w <= 0.0 && st.inner_shadow_color.w <= 0.0
-                            && st.outer_glow_color.w <= 0.0 && st.outer_shadow_color.w <= 0.0
-                            && st.stroke_shadow_color.w <= 0.0
-                            && st.inner_glow_px <= 0.0 && st.inner_shadow_px <= 0.0
-                            && st.outer_glow_px <= 0.0 && st.outer_shadow_px <= 0.0
-                            && st.hue_shift == 0.0 ]
+                            && !has_shadows[] && st.color_filter.w < 0.5 && !ramp_tex ]
                 if [ flat9 ] mode = DrawMode.rect
             ui_shader.params = vec4f [ st.stroke_width, st.opacity, st.blur_rad, mode ]
             if [ image_override && models ]
@@ -2690,20 +3358,28 @@ Render Canvas
                         p.rebind_image[ image_override ]
                         if [ mask_override ]
                             p.rebind_mask[ mask_override ]
+                        if [ yuv_v ]
+                            p.rebind_atlas[ yuv_v ]
                 if [ draw_slot >= 0 && draw_slot < 64 ]
                     image_dirty[ draw_slot ] = true
         el
             compute_skip = false
             sdf_w  : i32 [ width / 2 ]
             sdf_h  : i32 [ height / 2 ]
-            pad    : f32 [ maxf [ 4.0, st.stroke_width * 0.5 + 4.0 ] ]
-            spread : f32 [ maxf [ 8.0, st.stroke_width * 0.5 + 4.0 ] ]
+            reach  : f32 [ shadow_reach[] ]
+            pad    : f32 [ maxf [ 4.0, st.stroke_width * 0.5 + 4.0 ] + reach ]
+            spread : f32 [ maxf [ 8.0, st.stroke_width * 0.5 + 4.0 ] + reach ]
             pbx : f32 [ bx0 - pad ]
             pby : f32 [ by0 - pad ]
             pbw : f32 [ bw  + pad * 2.0 ]
             pbh : f32 [ bh  + pad * 2.0 ]
 
             ne : i32 [ n ]
+            # a batch's paths each keep their edges until the GPU runs
+            if [ draw_slot == 0 ] edge_used = 0
+            if [ edge_used + ne > edge_buf_capacity && edge_used > 0 ]
+                sync_fence[]
+                edge_used = 0
             if [ ne > edge_buf_capacity ]
                 while [ ne > edge_buf_capacity ]
                     edge_buf_capacity *= 2
@@ -2715,16 +3391,17 @@ Render Canvas
                 cmod_grow.samplers = map Au[string] [ 'edges': edge_buf, 'sdf_out': sdf_tex ]
                 cmod_grow.rebind_model[]
                 path.cached_valid = false
-            # a hit means OUR edges are still the ones in the shared
-            # buffer — the cache only hits on the immediately prior shape
-            if [ !cache_hit ]
-                edge_data : @f32 [ edge_buf.data ]
-                for [ ei: i32 0, ei < ne, ei += 1 ]
-                    e : SDFEdge edges[ei]
-                    edge_data[ei * 4 + 0] = e.x0
-                    edge_data[ei * 4 + 1] = e.y0
-                    edge_data[ei * 4 + 2] = e.x1
-                    edge_data[ei * 4 + 3] = e.y1
+            edge_data : @f32 [ edge_buf.data ]
+            for [ ei: i32 0, ei < ne, ei += 1 ]
+                e  : SDFEdge edges[ei]
+                at : i32 [ (edge_used + ei) * 4 ]
+                edge_data[at + 0] = e.x0
+                edge_data[at + 1] = e.y0
+                edge_data[at + 2] = e.x1
+                edge_data[at + 3] = e.y1
+            sdf_compute.eo     = edge_used
+            sdf_compute.even_odd = (even_odd) ? 1 : 0
+            edge_used += ne
             # compute shader UBO params
             sdf_compute.wx     = pbx
             sdf_compute.wy     = pby
@@ -2777,8 +3454,22 @@ Render Canvas
                         p.rebind_mask[ sdf_tex ]
                 image_dirty[ draw_slot ] = false
 
+        apply_draw_state[]
+        # the gradient's stops ride in the mask slot
+        if [ ramp_tex && models && draw_slot >= 0 && draw_slot < 64 ]
+            for [ mi: i32 0, mi < models.count, mi += 1 ]
+                cmod : Model models[mi]
+                if [ cmod.pipelines && cmod.pipelines.count > 0 ]
+                    p : Pipeline cmod.pipelines[0]
+                    p.ensure_bound[]
+                    p.rebind_mask[ ramp_tex ]
+            image_dirty[ draw_slot ] = true
+
         flush[]
         path.clear[]
+        if [ ramp_own ]
+            fill_ramp_off[]
+            ramp_own = false
 
 
 # ---- text rendering with FreeType ----
@@ -2802,6 +3493,7 @@ struct TextMetrics
 
 struct GlyphEntry
     codepoint  : u32
+    glyph      : u32
     size_px    : i32
     bitmap     : @u8
     bmp_w      : i32
@@ -2815,21 +3507,65 @@ struct GlyphEntry
 # font face wrapper around FreeType
 class CanvasFont
     expect ft_lib     : handle
-    expect uri        : string
+    public uri        : string
+    public data       : @u8         # font file bytes, when no uri
+    public data_size  : i64
+    public face_index : i32
     expect size_px    : i32
     intern ft_face    : FT_Face
     public ascent     : f32
     public descent    : f32
     public line_height : f32
     public cap_height : f32
+    public x_height   : f32
+    public units_per_em : i32
+    public glyph_count  : i32
+    public ascender_units  : i32
+    public descender_units : i32
+    public x_height_units  : i32
+    public family_name  : string
+    public weight_class : i32 [ 400 ]
+    public width_class  : i32 [ 5 ]
+    public slope_code   : i32       # 0 upright, 1 italic, 2 oblique
     public cache      : vec GlyphEntry
     public cache_size : i32
     public atlas      : GlyphAtlas
 
+    func loaded [] -> bool
+        return ft_face != null
+
     func init []
-        err  : i32 FT_New_Face [ ft_lib, uri.chars, 0, @ft_face ]
-        expect err == 0, 'failed to load font: {uri}'
+        err : i32 [ 0 ]
+        if [ data ]
+            # bad bytes are the caller's to report: face stays null
+            err = FT_New_Memory_Face [ ft_lib, data, data_size, face_index, @ft_face ]
+            if [ err != 0 ]
+                return
+        el
+            err = FT_New_Face [ ft_lib, uri.chars, face_index, @ft_face ]
+            expect err == 0, 'failed to load font: {uri}'
         FT_Set_Pixel_Sizes [ ft_face, 0, size_px ]
+        units_per_em    = i32 ft_face.units_per_EM
+        glyph_count     = i32 ft_face.num_glyphs
+        ascender_units  = i32 ft_face.ascender
+        descender_units = i32 ft_face.descender
+        fam : cstr [ ft_face.family_name ]
+        if [ fam ]
+            family_name = string [ fam ]
+        os2 : @TT_OS2 [ FT_Get_Sfnt_Table [ ft_face, FT_Sfnt_Tag.FT_SFNT_OS2 ] ]
+        if [ os2 ]
+            weight_class = i32 os2.usWeightClass
+            width_class  = i32 os2.usWidthClass
+            if [ (os2.fsSelection & 512) != 0 ]
+                slope_code = 2
+        if [ (ft_face.style_flags & 1) != 0 ]
+            slope_code = 1
+        xi : FT_Get_Char_Index [ ft_face, 120 ]
+        if [ xi > 0 ]
+            FT_Load_Glyph [ ft_face, xi, 1 ]
+            x_height_units = i32 ft_face.glyph.metrics.horiBearingY
+            if [ units_per_em > 0 ]
+                x_height = f32 x_height_units * f32 size_px / f32 units_per_em
 
         # extract metrics from face
         xscale      : i64 ft_face.size.metrics.x_scale
@@ -2851,6 +3587,8 @@ class CanvasFont
         cache = vec GlyphEntry []
 
     func dealloc []
+        if [ !ft_face ]
+            return
         # free cached bitmaps
         n : cache.count
         for [ i: i32 0, i < n, i += 1 ]
@@ -2875,16 +3613,104 @@ class CanvasFont
                     free [ g.bitmap ]
             cache.clear[]
 
+    # variable font axes by tag, values in the axis' own units
+    func set_axes [ tags: @u32, values: @f32, count: i32 ]
+        mm : @FT_MM_Var [ null ]
+        if [ FT_Get_MM_Var [ ft_face, @mm ] != 0 ]
+            return
+        n      : i32 [ i32 mm.num_axis ]
+        coords : new i64 [ n ]
+        for [ ax: i32 0, ax < n, ax += 1 ]
+            coords[ax] = i64 mm.axis[ax].def
+            for [ k: i32 0, k < count, k += 1 ]
+                if [ u32 mm.axis[ax].tag == tags[k] ]
+                    coords[ax] = i64 (values[k] * 65536.0)
+        FT_Set_Var_Design_Coordinates [ ft_face, u32 n, coords ]
+        FT_Done_MM_Var [ ft_lib, mm ]
+        nc : cache.count
+        for [ i: i32 0, i < nc, i += 1 ]
+            g : GlyphEntry cache[i]
+            if [ g.cached && g.bitmap ]
+                free [ g.bitmap ]
+        cache.clear[]
+
+    func glyph_index [ codepoint: u32 ] -> u32
+        return u32 FT_Get_Char_Index [ ft_face, codepoint ]
+
+    # unscaled advance in font units
+    func advance_units [ gi: u32 ] -> i32
+        if [ FT_Load_Glyph [ ft_face, gi, 1 ] != 0 ] return 0
+        return i32 ft_face.glyph.metrics.horiAdvance
+
     # render and cache a glyph, return its entry
     func get_glyph [ codepoint: u32 ] -> GlyphEntry
+        return get_glyph_id [ glyph_index [ codepoint ] ]
+
+    # glyph outline into pth at px; x, y is the pen on the baseline
+    func outline [ gi: u32, pth: CanvasPath, x: f32, y: f32, px: f32 ]
+        if [ units_per_em == 0 || FT_Load_Glyph [ ft_face, gi, 1 ] != 0 ] return
+        s     : f32 [ px / f32 units_per_em ]
+        ol    : ft_face.glyph.outline
+        first : i32 [ 0 ]
+        for [ c: i32 0, c < i32 ol.n_contours, c += 1 ]
+            last : i32 [ i32 ol.contours[c] ]
+            sx   : f32 [ x + f32 ol.points[first].x * s ]
+            sy   : f32 [ y - f32 ol.points[first].y * s ]
+            k    : i32 [ first + 1 ]
+            if [ (ol.tags[first] & 3) == 0 ]
+                ex : f32 [ x + f32 ol.points[last].x * s ]
+                ey : f32 [ y - f32 ol.points[last].y * s ]
+                if [ (ol.tags[last] & 3) == 1 ]
+                    last -= 1
+                el
+                    ex = (sx + ex) * 0.5
+                    ey = (sy + ey) * 0.5
+                k  = first
+                sx = ex
+                sy = ey
+            pth.move_to [ sx, sy ]
+            has_c : bool [ false ]
+            cx    : f32 [ 0.0 ]
+            cy    : f32 [ 0.0 ]
+            while [ k <= last ]
+                px  : f32 [ x + f32 ol.points[k].x * s ]
+                py  : f32 [ y - f32 ol.points[k].y * s ]
+                tag : i32 [ i32 ol.tags[k] & 3 ]
+                if [ tag == 1 ]
+                    if [ has_c ] pth.quad_to [ cx, cy, px, py ]
+                    el pth.line_to [ px, py ]
+                    has_c = false
+                    k += 1
+                el [ tag == 0 ]
+                    if [ has_c ]
+                        pth.quad_to [ cx, cy, (cx + px) * 0.5, (cy + py) * 0.5 ]
+                    cx    = px
+                    cy    = py
+                    has_c = true
+                    k += 1
+                el
+                    ax : f32 [ x + f32 ol.points[k + 1].x * s ]
+                    ay : f32 [ y - f32 ol.points[k + 1].y * s ]
+                    bx : f32 [ sx ]
+                    by : f32 [ sy ]
+                    if [ k + 2 <= last ]
+                        bx = x + f32 ol.points[k + 2].x * s
+                        by = y - f32 ol.points[k + 2].y * s
+                    pth.cubic_to [ px, py, ax, ay, bx, by ]
+                    k += 3
+            if [ has_c ] pth.quad_to [ cx, cy, sx, sy ]
+            pth.close_path []
+            first = i32 ol.contours[c] + 1
+
+    # the same, by glyph number (text already shaped)
+    func get_glyph_id [ gi: u32 ] -> GlyphEntry
         # search cache
         n : cache.count
         for [ i: i32 0, i < n, i += 1 ]
             g : cache[i]
-            if [ g.cached && g.codepoint == codepoint && g.size_px == size_px ]
+            if [ g.cached && g.glyph == gi && g.size_px == size_px ]
                 return g
 
-        gi  : u32 FT_Get_Char_Index [ ft_face, codepoint ]
         err : i32 FT_Load_Glyph [ ft_face, gi, 0 ]
         if [ err != 0 ]
             return GlyphEntry [ cached: false ]
@@ -2907,7 +3733,7 @@ class CanvasFont
                 memcpy [ @bmp[ dst_off ], @slot.bitmap.buffer[ src_off ], bw ]
 
         entry : GlyphEntry [
-            codepoint: codepoint,
+            glyph:     gi,
             size_px:   size_px,
             bitmap:    bmp,
             bmp_w:     bw,
@@ -2922,7 +3748,7 @@ class CanvasFont
 
 
 struct GlyphAtlasSlot
-    codepoint  : u32
+    glyph      : u32
     size_px    : i32
     atlas_x    : i32
     atlas_y    : i32
@@ -2958,21 +3784,24 @@ class GlyphAtlas
         shelf_y = 0
         shelf_h = 0
 
-    func find [ codepoint: u32, size_px: i32 ] -> GlyphAtlasSlot
+    func find [ glyph: u32, size_px: i32 ] -> GlyphAtlasSlot
         n : slots.count
         for [ i: i32 0, i < n, i += 1 ]
             s : GlyphAtlasSlot slots[i]
-            if [ s.cached && s.codepoint == codepoint && s.size_px == size_px ]
+            if [ s.cached && s.glyph == glyph && s.size_px == size_px ]
                 return s
         return GlyphAtlasSlot [ cached: false ]
 
     func get [ font: CanvasFont, codepoint: u32 ] -> GlyphAtlasSlot
-        existing : GlyphAtlasSlot find [ codepoint, font.size_px ]
+        return get_id [ font, font.glyph_index [ codepoint ] ]
+
+    func get_id [ font: CanvasFont, glyph: u32 ] -> GlyphAtlasSlot
+        existing : GlyphAtlasSlot find [ glyph, font.size_px ]
         if [ existing.cached ]
             return existing
 
         vk.glyph_miss += 1
-        g : GlyphEntry font.get_glyph [ codepoint ]
+        g : GlyphEntry font.get_glyph_id [ glyph ]
         if [ !g.cached ]
             return GlyphAtlasSlot [ cached: false ]
 
@@ -2981,7 +3810,7 @@ class GlyphAtlas
 
         if [ gw == 0 || gh == 0 ]
             slot : GlyphAtlasSlot [
-                codepoint: codepoint, size_px: font.size_px,
+                glyph: glyph, size_px: font.size_px,
                 atlas_x: 0, atlas_y: 0, atlas_w: 0, atlas_h: 0,
                 bearing_x: g.bearing_x, bearing_y: g.bearing_y,
                 advance: g.advance, cached: true ]
@@ -3006,7 +3835,7 @@ class GlyphAtlas
 
         texture.upload_region[ ax, ay, gw, gh, g.bitmap, gw * gh ]
         slot : GlyphAtlasSlot [
-            codepoint: codepoint, size_px: font.size_px,
+            glyph: glyph, size_px: font.size_px,
             atlas_x: ax, atlas_y: ay, atlas_w: gw, atlas_h: gh,
             bearing_x: g.bearing_x, bearing_y: g.bearing_y,
             advance: g.advance, cached: true ]
@@ -3217,55 +4046,55 @@ func conic_gradient[ cx: f32, cy: f32, start_angle: f32 ] -> Gradient
 
 
 func sdf_extract_edges [ flat: PathPoints, count_out: @i32 ] -> vec SDFEdge
-    n     : flat.count
-    cnt   : i32 [ 0 ]
-    px    : f32 [ 0.0 ]
-    py    : f32 [ 0.0 ]
-    have_cursor : bool [ false ]
-    for [ i: i32 0, i < n, i += 1 ]
-        pt : PathPt flat.pts[i]
-        if [ pt.cmd == path_cmd.move ]
-            px = pt.x
-            py = pt.y
-            have_cursor = true
-        el [ pt.cmd == path_cmd.line ]
-            if [ have_cursor ]
-                edx : f32 pt.x - px
-                edy : f32 pt.y - py
-                if [ edx * edx + edy * edy > 0.01 ]
-                    cnt += 1
-            px = pt.x
-            py = pt.y
-            have_cursor = true
+    cnt : i32 [ sdf_walk_edges[ flat, null ] ]
     count_out[0] = cnt
     if [ cnt == 0 ]
         return null
     edges : vec SDFEdge []
     edges.resize[ cnt ]
-    ei    : i32 [ 0 ]
-    px = 0.0
-    py = 0.0
-    have_cursor = false
-    for [ i: i32 0, i < n, i += 1 ]
-        pt : PathPt flat.pts[i]
-        if [ pt.cmd == path_cmd.move ]
-            px = pt.x
-            py = pt.y
-            have_cursor = true
-        el [ pt.cmd == path_cmd.line ]
-            if [ have_cursor ]
-                edx : f32 pt.x - px
-                edy : f32 pt.y - py
-                if [ edx * edx + edy * edy > 0.01 ]
-                    edges[ei].x0 = px
-                    edges[ei].y0 = py
-                    edges[ei].x1 = pt.x
-                    edges[ei].y1 = pt.y
-                    ei += 1
-            px = pt.x
-            py = pt.y
-            have_cursor = true
+    sdf_walk_edges[ flat, edges ]
     return edges
+
+# an edge under 0.1 px is dropped; true when kept
+func sdf_put_edge [ edges: vec SDFEdge, at: i32, x0: f32, y0: f32, x1: f32, y1: f32 ] -> bool
+    dx : f32 [ x1 - x0 ]
+    dy : f32 [ y1 - y0 ]
+    if [ dx * dx + dy * dy <= 0.01 ] return false
+    if [ edges ]
+        edges[at].x0 = x0
+        edges[at].y0 = y0
+        edges[at].x1 = x1
+        edges[at].y1 = y1
+    return true
+
+# flat's outline as edges, counted (edges null) or written. a
+# fill closes every subpath; a dropped edge keeps the cursor
+func sdf_walk_edges [ flat: PathPoints, edges: vec SDFEdge ] -> i32
+    cnt : i32 [ 0 ]
+    cx  : f32 [ 0.0 ]
+    cy  : f32 [ 0.0 ]
+    sx  : f32 [ 0.0 ]
+    sy  : f32 [ 0.0 ]
+    for [ i: i32 0, i <= flat.count, i += 1 ]
+        # one step past the end closes the last subpath
+        last : bool [ i == flat.count ]
+        pt   : PathPt [ (last) ? PathPt [ cmd: path_cmd.close ] : flat.pts[i] ]
+        if [ pt.cmd == path_cmd.line ]
+            if [ sdf_put_edge[ edges, cnt, cx, cy, pt.x, pt.y ] ]
+                cnt += 1
+                cx = pt.x
+                cy = pt.y
+            continue
+        if [ sdf_put_edge[ edges, cnt, cx, cy, sx, sy ] ]
+            cnt += 1
+        cx = sx
+        cy = sy
+        if [ pt.cmd == path_cmd.move ]
+            sx = pt.x
+            sy = pt.y
+            cx = sx
+            cy = sy
+    return cnt
 
 
 # distance from point to line segment

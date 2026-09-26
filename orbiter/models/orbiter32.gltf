@@ -126,7 +126,7 @@
 	],
 	"meshes":[
 		{
-			"name":"Cylinder",
+			"name":"Mesh",
 			"primitives":[
 				{
 					"attributes":{
@@ -196,7 +196,7 @@
 			]
 		},
 		{
-			"name":"Torus.003",
+			"name":"Mesh",
 			"primitives":[
 				{
 					"attributes":{
@@ -344,7 +344,7 @@
 			"count":8064,
 			"max":[
 				0.7646029591560364,
-				-0.03631790354847908,
+				-0.030079463496804237,
 				0.8580135107040405
 			],
 			"min":[

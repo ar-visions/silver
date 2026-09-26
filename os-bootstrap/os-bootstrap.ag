@@ -5,11 +5,20 @@ import https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.tar.xz
     > test -f {install}/share/silver-os-bootstrap/bzImage || mkdir -p {install}/build/linux
     > test -f {install}/share/silver-os-bootstrap/bzImage || tar xf {import_file} -C {install}/build/linux --strip-components=1
     > test -f {install}/share/silver-os-bootstrap/bzImage || make -C {install}/build/linux -j16 defconfig
-    > test -f {install}/share/silver-os-bootstrap/bzImage || {install}/build/linux/scripts/config --file {install}/build/linux/.config -e VIRTIO_PCI -e VIRTIO_BLK -e VIRTIO_INPUT -e VIRTIO_CONSOLE -e HW_RANDOM_VIRTIO -e DRM -e DRM_VIRTIO_GPU -e DRM_FBDEV_EMULATION -e INPUT_EVDEV -e DEVTMPFS -e DEVTMPFS_MOUNT -e BLK_DEV_INITRD -e TMPFS -e KVM_GUEST -e PARAVIRT -e VIRTIO_NET -e NET_9P -e NET_9P_VIRTIO -e 9P_FS
+    > test -f {install}/share/silver-os-bootstrap/bzImage || {install}/build/linux/scripts/config --file {install}/build/linux/.config -e VIRTIO_PCI -e VIRTIO_BLK -e VIRTIO_INPUT -e VIRTIO_CONSOLE -e HW_RANDOM_VIRTIO -e DRM -e DRM_VIRTIO_GPU -e DRM_FBDEV_EMULATION -e INPUT_EVDEV -e DEVTMPFS -e DEVTMPFS_MOUNT -e BLK_DEV_INITRD -e BLK_DEV_NVME -e SYSFB_SIMPLEFB -e DRM_SIMPLEDRM -e TMPFS -e KVM_GUEST -e PARAVIRT -e VIRTIO_NET -e NET_9P -e NET_9P_VIRTIO -e 9P_FS
     > test -f {install}/share/silver-os-bootstrap/bzImage || make -C {install}/build/linux -j16 olddefconfig
     > test -f {install}/share/silver-os-bootstrap/bzImage || make -C {install}/build/linux -j16 bzImage
     > mkdir -p {install}/share/silver-os-bootstrap
     > cp -n {install}/build/linux/arch/x86/boot/bzImage {install}/share/silver-os-bootstrap/bzImage
+
+# the drive's gpu modules: the release of the host's driver
+import https://github.com/NVIDIA/open-gpu-kernel-modules/archive/refs/tags/610.57.04.tar.gz
+    > test -f {install}/share/silver-os-bootstrap/nvidia/nvidia-drm.ko || make -C {install}/build/linux -j16 modules
+    > test -f {install}/share/silver-os-bootstrap/nvidia/nvidia-drm.ko || mkdir -p {install}/build/nvidia-open
+    > test -f {install}/share/silver-os-bootstrap/nvidia/nvidia-drm.ko || tar xf {import_file} -C {install}/build/nvidia-open --strip-components=1
+    > test -f {install}/share/silver-os-bootstrap/nvidia/nvidia-drm.ko || make -C {install}/build/nvidia-open -j16 modules SYSSRC={install}/build/linux SYSOUT={install}/build/linux
+    > mkdir -p {install}/share/silver-os-bootstrap/nvidia
+    > test -f {install}/share/silver-os-bootstrap/nvidia/nvidia-drm.ko || cp {install}/build/nvidia-open/kernel-open/nvidia.ko {install}/build/nvidia-open/kernel-open/nvidia-modeset.ko {install}/build/nvidia-open/kernel-open/nvidia-drm.ko {install}/share/silver-os-bootstrap/nvidia/
 
 # the guest's venus vulkan driver, built newer than the host's system
 # mesa: the system libvulkan_virtio.so crashes on dma-buf export
@@ -35,6 +44,7 @@ import <string.h>
 import <unistd.h>
 import <time.h>
 import <sys/stat.h>
+import <utime.h>
 
 # one entry of the guest file system
 class OsFile
@@ -52,6 +62,8 @@ element main : trinity
     public  memory     : i32    [ 4096 ]
     public  app        : string [ 'orbiter' ]          # the guest's init
     public  share_max  : i64    [ 32 * 1024 * 1024 ]   # skip share dirs larger than this
+    # the host's nvidia driver; the modules import must match it
+    public  nvidia_version : string [ '610.57.04' ]
     mutable install    : path
     mutable root       : path
     mutable out_dir    : path
@@ -200,7 +212,95 @@ element main : trinity
             if [ j.filename[].starts_with[ 'virtio_icd' ] ] add_file[ '{j}' ]
         add_file[ '{install}/lib/libvulkan.so.1' ]
         add_deps[ '{install}/lib/libvulkan.so.1' ]
-        write_cpio[]
+        write_cpio[ files, initrd ]
+        add_nvidia[]
+        write_tree[]
+        write_boot[]
+
+    # the drive's gpu: modules, firmware, the host's vulkan driver
+    func add_nvidia []
+        md : '{install}/share/silver-os-bootstrap/nvidia'
+        add_dir[ 'lib/modules/orbiter' ]
+        mods : vec string [] [ 'nvidia', 'nvidia-modeset', 'nvidia-drm' ]
+        for [ m: string ] in mods
+            files.push[ OsFile [ src: '{md}/{m}.ko', dst: 'lib/modules/orbiter/{m}.ko' ] ]
+        add_file[ '/lib/firmware/nvidia/{nvidia_version}/gsp_ga10x.bin' ]
+        lib : '/usr/lib/x86_64-linux-gnu'
+        add_file[ '/usr/share/vulkan/icd.d/nvidia_icd.json' ]
+        # vkCreateInstance opens glvnd's EGL and nvidia's vendor
+        add_file[ '/usr/share/glvnd/egl_vendor.d/10_nvidia.json' ]
+        add_file[ '/usr/share/egl/egl_external_platform.d/15_nvidia_gbm.json' ]
+        add_file[ '{lib}/gbm/nvidia-drm_gbm.so' ]
+        # the icd and the libraries it opens at run time
+        v : nvidia_version
+        libs : vec string [] [ 'libGLX_nvidia.so.0', 'libnvidia-glcore.so.{v}',
+            'libnvidia-glvkspirv.so.{v}', 'libnvidia-gpucomp.so.{v}', 'libnvidia-tls.so.{v}',
+            'libnvidia-glsi.so.{v}', 'libnvidia-rtcore.so.{v}', 'libnvidia-allocator.so.1',
+            'libEGL.so.1', 'libGLdispatch.so.0', 'libEGL_nvidia.so.0',
+            'libnvidia-eglcore.so.{v}', 'libnvidia-egl-gbm.so.1' ]
+        for [ l: string ] in libs
+            add_file[ '{lib}/{l}' ]
+            add_deps[ '{lib}/{l}' ]
+
+    # the drive's initramfs: only /init, which enters /orbiter-os
+    func write_boot []
+        bin : '{out_dir}/init'
+        cmd : '{install}/bin/clang -static -Os -o "{bin}" "{root}/os-bootstrap/init.c"'
+        if [ system[ cmd.chars ] != 0 ]
+            log 'os-bootstrap: init.c did not build'
+            return
+        boot : vec OsFile []
+        boot.push[ OsFile [ dst: 'dev', dir: true ] ]
+        boot.push[ OsFile [ dst: 'dev/console', dev: true ] ]
+        boot.push[ OsFile [ dst: 'proc', dir: true ] ]
+        boot.push[ OsFile [ dst: 'sys', dir: true ] ]
+        boot.push[ OsFile [ src: bin, dst: 'init' ] ]
+        write_cpio[ boot, path '{out_dir}/root/boot/initramfs' ]
+
+    # a host file into the tree: mode 0755, source time kept
+    func copy_file [ src: string, dst: string ]
+        sp : path [ src ]
+        dp : path [ dst ]
+        st9 : i64 [ sp.modified_time[] / 1000 ]
+        if [ dp.exists[] && dp.modified_time[] / 1000 == st9 ] return
+        fi : handle fopen[ src.chars, 'rb' ]
+        if [ !fi ] return
+        fo : handle fopen[ dst.chars, 'wb' ]
+        if [ !fo ]
+            fclose[ fi ]
+            return
+        buf : @u8 [ malloc[ 1 << 20 ] ]
+        while [ true ]
+            n : i64 [ fread[ buf, 1, 1 << 20, fi ] ]
+            if [ n <= 0 ] break
+            fwrite[ buf, 1, n, fo ]
+        free[ buf ]
+        fclose[ fi ]
+        fclose[ fo ]
+        chmod[ dst.chars, 0x1ED ]
+        # the launcher compares product and source times
+        ub : utimbuf [ actime: st9, modtime: st9 ]
+        utime[ dst.chars, @ub ]
+
+    # the guest as a folder, copied to /orbiter-os to boot
+    func write_tree []
+        base : '{out_dir}/root'
+        for [ e: OsFile ] in files
+            # devtmpfs makes /dev/console on the drive
+            if [ e.dev ] continue
+            t : '{base}/{e.dst}'
+            if [ e.dir ]
+                tp : path [ t ]
+                tp.make_dir[]
+            el [ e.link ]
+                unlink[ t.chars ]
+                symlink[ e.link.chars, t.chars ]
+            el
+                copy_file[ e.src, t ]
+        bd : path '{base}/boot'
+        bd.make_dir[]
+        copy_file[ '{kernel}', '{base}/boot/vmlinuz' ]
+        log 'os-bootstrap: {files.count} entries -> {base}'
 
     func cpio_pad [ f: @FILE, n: i64 ]
         k : i64 [ n ]
@@ -216,10 +316,10 @@ element main : trinity
         fwrite[ name.chars, 1, nlen, f ]
         cpio_pad[ f, 110 + nlen ]
 
-    func write_cpio []
-        f : @FILE [ fopen[ initrd.chars, 'wb' ] ]
+    func write_cpio [ items: vec OsFile, out: path ]
+        f : @FILE [ fopen[ out.chars, 'wb' ] ]
         if [ !f ]
-            log 'os-bootstrap: cannot write {initrd}'
+            log 'os-bootstrap: cannot write {out}'
             return
         ino : i32 [ 1 ]
         # cpio mode words: file type then permissions (octal 040755 …)
@@ -229,7 +329,7 @@ element main : trinity
         mode_con  : u32 [ 0x2180 ]
         buf : @u8 [ malloc[ 1 << 20 ] ]
         now : i64 [ time[ null ] ]
-        for [ e: OsFile ] in files
+        for [ e: OsFile ] in items
             ino += 1
             if [ e.dir ]
                 cpio_header[ f, e.dst, mode_dir, 0, ino, now, 0, 0 ]
@@ -257,7 +357,7 @@ element main : trinity
         free[ buf ]
         cpio_header[ f, 'TRAILER!!!', 0, 0, 0, 0, 0, 0 ]
         fclose[ f ]
-        log 'os-bootstrap: {files.count} entries -> {initrd}'
+        log 'os-bootstrap: {items.count} entries -> {out}'
 
     public func render [] -> Elements
         # unknown name=value words reach init as its environment; the

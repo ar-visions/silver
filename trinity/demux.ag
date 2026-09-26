@@ -1,0 +1,453 @@
+extend trinity
+
+import <string.h>
+
+# one track of an mp4: its codec setup and every sample's place and time
+class DemuxTrack
+    public  id        : i64
+    public  kind      : i32                 # 1 video, 2 audio
+    public  codec     : i64                 # sample entry four bytes, big-endian
+    public  timescale : i64
+    public  duration  : i64
+    public  config    : vec u8              # avcC, or the aac AudioSpecificConfig
+    public  width     : i32
+    public  height    : i32
+    public  channels  : i32
+    public  rate      : i32
+    public  offsets   : vec i64
+    public  sizes     : vec i64
+    public  dts       : vec i64
+    public  cts       : vec i64             # composition offset from dts
+    public  sync      : vec u8
+    public  shift     : i64                 # edit list: media time shown first
+    public  def_duration : i64              # trex defaults for fragments
+    public  def_size  : i64
+    public  def_flags : i64
+    public  next_dts  : i64                 # a fragment without tfdt starts here
+    intern  chunk_offsets : vec i64
+    intern  stsc      : vec i64             # first chunk, samples per chunk
+    intern  stts      : vec i64             # count, delta
+    intern  ctts      : vec i64             # count, offset
+    intern  stss      : vec i64
+    intern  fixed     : i64                 # stsz sample size when all match
+
+    func init []
+        config        = vec u8 []
+        offsets       = vec i64 []
+        sizes         = vec i64 []
+        dts           = vec i64 []
+        cts           = vec i64 []
+        sync          = vec u8 []
+        chunk_offsets = vec i64 []
+        stsc          = vec i64 []
+        stts          = vec i64 []
+        ctts          = vec i64 []
+        stss          = vec i64 []
+
+    public func samples [] -> i64
+        return sizes.count
+
+    # presentation time of sample i, in timescale units
+    public func pts [ i: i64 ] -> i64
+        return dts[ i ] + cts[ i ] - shift
+
+    # presentation time of sample i, in seconds
+    public func time [ i: i64 ] -> f64
+        return f64[ pts[ i ] ] / f64[ timescale ]
+
+    # the tables into one row per sample
+    func build []
+        n : i64 [ sizes.count ]
+        if [ n == 0 ] return
+        # offsets: chunks hold runs of samples
+        si : i64 [ 0 ]
+        nruns : i64 [ stsc.count / 2 ]
+        for [ c: i64 0, c < chunk_offsets.count && si < n, c += 1 ]
+            per : i64 [ 0 ]
+            for [ r: i64 0, r < nruns, r += 1 ]
+                if [ stsc[ r * 2 ] - 1 <= c ] per = stsc[ r * 2 + 1 ]
+            at : i64 [ chunk_offsets[ c ] ]
+            for [ k: i64 0, k < per && si < n, k += 1 ]
+                offsets.push[ at ]
+                at += sizes[ si ]
+                si += 1
+        t : i64 [ 0 ]
+        for [ r: i64 0, r < stts.count / 2, r += 1 ]
+            for [ k: i64 0, k < stts[ r * 2 ], k += 1 ]
+                dts.push[ t ]
+                t += stts[ r * 2 + 1 ]
+        while [ dts.count < n ]
+            dts.push[ t ]
+        for [ r: i64 0, r < ctts.count / 2, r += 1 ]
+            off : i64 [ ctts[ r * 2 + 1 ] ]
+            for [ k: i64 0, k < ctts[ r * 2 ], k += 1 ]
+                cts.push[ off ]
+        while [ cts.count < n ]
+            cts.push[ 0 ]
+        for [ i: i64 0, i < n, i += 1 ]
+            sync.push[ (stss.count == 0) ? u8[ 1 ] : u8[ 0 ] ]
+        for [ s: i64 ] in stss
+            if [ s >= 1 && s <= n ] sync[ s - 1 ] = 1
+
+# one sample of a fragment, times in its track's timescale
+class DemuxSample
+    public  track     : i64
+    public  dts       : i64
+    public  pts       : i64
+    public  duration  : i64
+    public  timescale : i64
+    public  sync      : bool
+    public  data      : vec u8
+
+# an mp4 from memory, or fragments streamed through append
+class Demux
+    public  tracks : vec DemuxTrack
+    public  ready  : vec DemuxSample        # fragment samples, in order
+    public  inits  : i32                    # init segments read
+    intern  data   : @u8
+    intern  size   : i64
+    intern  pending : vec u8                # bytes of boxes not yet whole
+
+    func init []
+        tracks  = vec DemuxTrack []
+        ready   = vec DemuxSample []
+        pending = vec u8 []
+
+    func track_of [ id: i64 ] -> DemuxTrack
+        for [ t: DemuxTrack ] in tracks
+            if [ t.id == id ] return t
+        return null
+
+    # a whole box at at, or -1 while its bytes are still coming
+    func whole_end [ at: i64 ] -> i64
+        if [ at + 8 > size ] return -1
+        n : i64 [ be32[ at ] ]
+        if [ n == 1 ]
+            if [ at + 16 > size ] return -1
+            n = be64[ at + 8 ]
+        if [ n < 8 || at + n > size ] return -1
+        return at + n
+
+    # bytes not yet parsed and samples not taken go
+    public func reset []
+        pending = vec u8 []
+        ready.clear[]
+
+    # bytes as they arrive; false when they are not mp4
+    public func append [ bytes: @u8, n: i64 ] -> bool
+        kept : i64 [ pending.count ]
+        grown : vec u8 [ kept + n ]
+        if [ kept > 0 ] memcpy[ @grown[ 0 ], @pending[ 0 ], kept ]
+        if [ n > 0 ] memcpy[ @grown[ kept ], bytes, n ]
+        pending = grown
+        data = @pending[ 0 ]
+        size = pending.count
+        at : i64 [ 0 ]
+        ok : bool [ true ]
+        while [ at + 8 <= size ]
+            e : i64 [ whole_end[ at ] ]
+            if [ e < 0 ]
+                if [ be32[ at ] > 0 && be32[ at ] < 8 && be32[ at ] != 1 ] ok = false
+                break
+            if [ box_is[ at + 4, 'moov' ] ]
+                tracks = vec DemuxTrack []
+                moov[ box_body[ at ], e ]
+                inits += 1
+            el [ box_is[ at + 4, 'moof' ] ]
+                # its samples sit in the mdat after it
+                me : i64 [ whole_end[ e ] ]
+                if [ me < 0 ] break
+                moof[ at, box_body[ at ], e, me ]
+                e = me
+            at = e
+        rest : i64 [ size - at ]
+        left : vec u8 [ rest ]
+        if [ rest > 0 ] memcpy[ @left[ 0 ], @pending[ at ], rest ]
+        pending = left
+        data = null
+        size = 0
+        return ok
+
+    func moof [ start: i64, from: i64, lim: i64, data_end: i64 ]
+        at : i64 [ from ]
+        while [ at + 8 <= lim ]
+            e : i64 [ box_end[ at, lim ] ]
+            if [ box_is[ at + 4, 'traf' ] ] traf[ start, box_body[ at ], e, data_end ]
+            at = e
+
+    # tfhd: the track, tfdt: its clock, trun: the samples
+    func traf [ start: i64, from: i64, lim: i64, data_end: i64 ]
+        t      : DemuxTrack [ null ]
+        base   : i64 [ start ]
+        dur    : i64 [ 0 ]
+        each     : i64 [ 0 ]
+        flg    : i64 [ 0 ]
+        pos    : i64 [ -1 ]
+        at     : i64 [ from ]
+        while [ at + 8 <= lim ]
+            e : i64 [ box_end[ at, lim ] ]
+            b : i64 [ box_body[ at ] ]
+            if [ box_is[ at + 4, 'tfhd' ] ]
+                f : i64 [ be32[ b ] & 16777215 ]
+                t = track_of[ be32[ b + 4 ] ]
+                if [ !t ] return
+                dur = t.def_duration
+                each  = t.def_size
+                flg = t.def_flags
+                c : i64 [ b + 8 ]
+                if [ (f & 1) != 0 ] c += 8
+                if [ (f & 2) != 0 ] c += 4
+                if [ (f & 8) != 0 ]
+                    dur = be32[ c ]
+                    c += 4
+                if [ (f & 16) != 0 ]
+                    each = be32[ c ]
+                    c += 4
+                if [ (f & 32) != 0 ] flg = be32[ c ]
+            el [ box_is[ at + 4, 'tfdt' ] && t ]
+                t.next_dts = (u8at[ b ] == 1) ? be64[ b + 4 ] : be32[ b + 4 ]
+            el [ box_is[ at + 4, 'trun' ] && t ]
+                pos = trun[ t, b, base, pos, dur, each, flg, data_end ]
+            at = e
+
+    # one run of samples; returns where the next run starts
+    func trun [ t: DemuxTrack, b: i64, base: i64, prev: i64, dur: i64, each: i64, flg: i64, data_end: i64 ] -> i64
+        v1 : bool [ u8at[ b ] == 1 ]
+        f  : i64 [ be32[ b ] & 16777215 ]
+        n  : i64 [ be32[ b + 4 ] ]
+        c  : i64 [ b + 8 ]
+        pos : i64 [ (prev < 0) ? base : prev ]
+        if [ (f & 1) != 0 ]
+            off : i64 [ be32[ c ] ]
+            if [ off >= 2147483648 ] off -= 4294967296
+            pos = base + off
+            c += 4
+        first : i64 [ -1 ]
+        if [ (f & 4) != 0 ]
+            first = be32[ c ]
+            c += 4
+        for [ i: i64 0, i < n, i += 1 ]
+            d9 : i64 [ dur ]
+            s9 : i64 [ each ]
+            f9 : i64 [ (i == 0 && first >= 0) ? first : flg ]
+            o9 : i64 [ 0 ]
+            if [ (f & 256) != 0 ]
+                d9 = be32[ c ]
+                c += 4
+            if [ (f & 512) != 0 ]
+                s9 = be32[ c ]
+                c += 4
+            if [ (f & 1024) != 0 ]
+                f9 = be32[ c ]
+                c += 4
+            if [ (f & 2048) != 0 ]
+                o9 = be32[ c ]
+                if [ v1 && o9 >= 2147483648 ] o9 -= 4294967296
+                c += 4
+            if [ pos + s9 > data_end ] return pos
+            s : DemuxSample [ track: t.id, dts: t.next_dts, pts: t.next_dts + o9 - t.shift,
+                duration: d9, timescale: t.timescale, sync: (f9 & 65536) == 0 ]
+            s.data = vec u8 [ s9 ]
+            if [ s9 > 0 ] memcpy[ @s.data[ 0 ], @data[ pos ], s9 ]
+            ready.push[ s ]
+            t.next_dts += d9
+            pos += s9
+        return pos
+
+    func u8at [ at: i64 ] -> i64
+        return i64[ data[ at ] ]
+
+    func be16 [ at: i64 ] -> i64
+        return (u8at[ at ] << 8) | u8at[ at + 1 ]
+
+    func be32 [ at: i64 ] -> i64
+        return (u8at[ at ] << 24) | (u8at[ at + 1 ] << 16) | (u8at[ at + 2 ] << 8) | u8at[ at + 3 ]
+
+    func be64 [ at: i64 ] -> i64
+        return (be32[ at ] << 32) | be32[ at + 4 ]
+
+    # the four bytes at at are the box type t
+    func box_is [ at: i64, t: symbol ] -> bool
+        return memcmp[ @data[ at ], t, 4 ] == 0
+
+    # box header at: its end, and where its content starts
+    func box_end [ at: i64, lim: i64 ] -> i64
+        n : i64 [ be32[ at ] ]
+        if [ n == 1 ] n = be64[ at + 8 ]
+        if [ n == 0 ] n = lim - at
+        if [ n < 8 || at + n > lim ] return lim
+        return at + n
+
+    func box_body [ at: i64 ] -> i64
+        return (be32[ at ] == 1) ? at + 16 : at + 8
+
+    public func read_bytes [ bytes: @u8, n: i64 ] -> bool
+        data = bytes
+        size = n
+        at : i64 [ 0 ]
+        while [ at + 8 <= size ]
+            e : i64 [ box_end[ at, size ] ]
+            if [ box_is[ at + 4, 'moov' ] ] moov[ box_body[ at ], e ]
+            at = e
+        for [ t: DemuxTrack ] in tracks
+            t.build[]
+        return tracks.count > 0
+
+    func moov [ from: i64, lim: i64 ]
+        at : i64 [ from ]
+        while [ at + 8 <= lim ]
+            e : i64 [ box_end[ at, lim ] ]
+            if [ box_is[ at + 4, 'trak' ] ]
+                t : DemuxTrack []
+                trak[ t, box_body[ at ], e ]
+                if [ t.kind > 0 ] tracks.push[ t ]
+            el [ box_is[ at + 4, 'mvex' ] ] mvex[ box_body[ at ], e ]
+            at = e
+
+    # trex: each track's sample defaults for its fragments
+    func mvex [ from: i64, lim: i64 ]
+        at : i64 [ from ]
+        while [ at + 8 <= lim ]
+            e : i64 [ box_end[ at, lim ] ]
+            b : i64 [ box_body[ at ] ]
+            if [ box_is[ at + 4, 'trex' ] ]
+                t : track_of[ be32[ b + 4 ] ]
+                if [ t ]
+                    t.def_duration = be32[ b + 12 ]
+                    t.def_size     = be32[ b + 16 ]
+                    t.def_flags    = be32[ b + 20 ]
+            at = e
+
+    # trak, mdia, minf and stbl only nest what matters
+    func trak [ t: DemuxTrack, from: i64, lim: i64 ]
+        at : i64 [ from ]
+        while [ at + 8 <= lim ]
+            e  : i64 [ box_end[ at, lim ] ]
+            b  : i64 [ box_body[ at ] ]
+            tg : i64 [ at + 4 ]
+            if [ box_is[ tg, 'mdia' ] || box_is[ tg, 'minf' ] || box_is[ tg, 'stbl' ] || box_is[ tg, 'edts' ] ] trak[ t, b, e ]
+            el [ box_is[ tg, 'elst' ] ] elst[ t, b ]
+            el [ box_is[ tg, 'tkhd' ] ]
+                t.id = (u8at[ b ] == 1) ? be32[ b + 20 ] : be32[ b + 12 ]
+            el [ box_is[ tg, 'mdhd' ] ]
+                if [ u8at[ b ] == 1 ]
+                    t.timescale = be32[ b + 20 ]
+                    t.duration  = be64[ b + 24 ]
+                el
+                    t.timescale = be32[ b + 12 ]
+                    t.duration  = be32[ b + 16 ]
+            el [ box_is[ tg, 'hdlr' ] ]
+                if [ box_is[ b + 8, 'vide' ] ] t.kind = 1
+                if [ box_is[ b + 8, 'soun' ] ] t.kind = 2
+            el [ box_is[ tg, 'stsd' ] ] stsd[ t, b + 8, e ]
+            el [ box_is[ tg, 'stts' ] ] pairs[ t.stts, b, e ]
+            el [ box_is[ tg, 'ctts' ] ] pairs[ t.ctts, b, e ]
+            el [ box_is[ tg, 'stsc' ] ] stsc[ t, b ]
+            el [ box_is[ tg, 'stsz' ] ]
+                t.fixed = be32[ b + 4 ]
+                n : i64 [ be32[ b + 8 ] ]
+                for [ i: i64 0, i < n, i += 1 ]
+                    t.sizes.push[ (t.fixed > 0) ? t.fixed : be32[ b + 12 + i * 4 ] ]
+            el [ box_is[ tg, 'stco' ] ]
+                n : i64 [ be32[ b + 4 ] ]
+                for [ i: i64 0, i < n, i += 1 ]
+                    t.chunk_offsets.push[ be32[ b + 8 + i * 4 ] ]
+            el [ box_is[ tg, 'co64' ] ]
+                n : i64 [ be32[ b + 4 ] ]
+                for [ i: i64 0, i < n, i += 1 ]
+                    t.chunk_offsets.push[ be64[ b + 8 + i * 8 ] ]
+            el [ box_is[ tg, 'stss' ] ]
+                n : i64 [ be32[ b + 4 ] ]
+                for [ i: i64 0, i < n, i += 1 ]
+                    t.stss.push[ be32[ b + 8 + i * 4 ] ]
+            at = e
+
+    # stts and ctts: count then a value; ctts v1 values are signed
+    func pairs [ out: vec i64, b: i64, e: i64 ]
+        neg : bool [ u8at[ b ] == 1 ]
+        n : i64 [ be32[ b + 4 ] ]
+        for [ i: i64 0, i < n && b + 16 + i * 8 <= e, i += 1 ]
+            out.push[ be32[ b + 8 + i * 8 ] ]
+            v : i64 [ be32[ b + 12 + i * 8 ] ]
+            if [ neg && v >= 2147483648 ] v -= 4294967296
+            out.push[ v ]
+
+    # the first edit that shows media sets where the track starts
+    func elst [ t: DemuxTrack, b: i64 ]
+        v1 : bool [ u8at[ b ] == 1 ]
+        n  : i64 [ be32[ b + 4 ] ]
+        at : i64 [ b + 8 ]
+        for [ i: i64 0, i < n, i += 1 ]
+            mt : i64 [ (v1) ? be64[ at + 8 ] : be32[ at + 4 ] ]
+            if [ !v1 && mt >= 2147483648 ] mt -= 4294967296
+            if [ mt >= 0 ]
+                t.shift = mt
+                return
+            at += (v1) ? 20 : 12
+
+    func stsc [ t: DemuxTrack, b: i64 ]
+        n : i64 [ be32[ b + 4 ] ]
+        for [ i: i64 0, i < n, i += 1 ]
+            t.stsc.push[ be32[ b + 8 + i * 12 ] ]
+            t.stsc.push[ be32[ b + 12 + i * 12 ] ]
+
+    # the first sample entry: its size and codec setup
+    func stsd [ t: DemuxTrack, at: i64, lim: i64 ]
+        if [ at + 8 > lim ] return
+        e : i64 [ box_end[ at, lim ] ]
+        t.codec = be32[ at + 4 ]
+        b : i64 [ at + 8 ]
+        if [ t.kind == 1 ]
+            t.width  = i32[ be16[ b + 24 ] ]
+            t.height = i32[ be16[ b + 26 ] ]
+            children[ t, b + 78, e ]
+        el [ t.kind == 2 ]
+            t.channels = i32[ be16[ b + 16 ] ]
+            t.rate     = i32[ be32[ b + 24 ] >> 16 ]
+            children[ t, b + 28, e ]
+
+    func children [ t: DemuxTrack, from: i64, lim: i64 ]
+        at : i64 [ from ]
+        while [ at + 8 <= lim ]
+            e  : i64 [ box_end[ at, lim ] ]
+            b  : i64 [ box_body[ at ] ]
+            if [ box_is[ at + 4, 'avcC' ] ] copy_config[ t, b, e - b ]
+            el [ box_is[ at + 4, 'esds' ] ] esds[ t, b + 4, e ]
+            at = e
+
+    func copy_config [ t: DemuxTrack, b: i64, n: i64 ]
+        t.config = vec u8 [ n ]
+        memcpy[ @t.config[ 0 ], @data[ b ], n ]
+
+    # mpeg-4 descriptor length: seven bits a byte
+    func desc_len [ at: i64, len: @i64 ] -> i64
+        v : i64 [ 0 ]
+        for [ i: i64 0, i < 4, i += 1 ]
+            c : i64 [ u8at[ at + i ] ]
+            v = (v << 7) | (c & 127)
+            if [ (c & 128) == 0 ]
+                len[ 0 ] = v
+                return at + i + 1
+        len[ 0 ] = v
+        return at + 4
+
+    # es descriptor, decoder config, then the decoder specific info
+    func esds [ t: DemuxTrack, from: i64, lim: i64 ]
+        at : i64 [ from ]
+        n : i64 [ 0 ]
+        while [ at + 2 <= lim ]
+            k : i64 [ u8at[ at ] ]
+            b : i64 [ desc_len[ at + 1, @n ] ]
+            if [ k == 3 ]
+                flags : i64 [ u8at[ b + 2 ] ]
+                at = b + 3
+                if [ (flags & 128) != 0 ] at += 2
+                if [ (flags & 64) != 0 ] at += 1 + u8at[ at ]
+                if [ (flags & 32) != 0 ] at += 2
+            el [ k == 4 ]
+                at = b + 13
+            el [ k == 5 ]
+                copy_config[ t, b, n ]
+                return
+            el
+                at = b + n

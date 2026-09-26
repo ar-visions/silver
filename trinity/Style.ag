@@ -1235,44 +1235,53 @@ class Mixable
         return Mixable[]
 
 
-Mixable Shadow
-    public blur     : f32
+# CSS box-shadow / text-shadow: [inset] x y [blur [spread]] color,
+# or none; x y blur spread in px
+Mixable BoxShadow
     public color    : rgba
     public offset   : vec2f
-
-    construct [ s: string ]
-        aa : s.split[ ' ' ]
-        if [ aa.count >= 1 ]
-            color = rgba[ aa[0] ]
-        if [ aa.count >= 3 ]
-            offset = vec2f [ aa[1].real_value[], aa[2].real_value[] ]
-        if [ aa.count >= 4 ]
-            blur = f32 aa[3].real_value[]
-
-Mixable Glow
     public blur     : f32
-    public color    : rgba
+    public spread   : f32
+    public inset    : bool
 
     construct [ s: string ]
-        aa : s.split[ ' ' ]
-        if [ aa.count >= 1 ]
-            color = rgba[ aa[0] ]
-        if [ aa.count >= 2 ]
-            blur = f32 aa[1].real_value[]
+        lengths : vec f32 []
+        for [ word: string ] in s.trim[].split[ ' ' ]
+            if [ word.count == 0 || word == 'none' ] continue
+            if [ word == 'inset' ]
+                inset = true
+                continue
+            # a length starts with a digit, a sign or a point
+            ch : i32 [ i32 word.chars[0] ]
+            if [ !((ch >= 48 && ch <= 57) || ch == 45 || ch == 46) ]
+                color = rgba[ word ]
+                continue
+            lengths.push[ parse_css_px[ word ] ]
+        if [ lengths.count >= 2 ] offset = vec2f [ lengths[0], lengths[1] ]
+        if [ lengths.count >= 3 ] blur   = lengths[2]
+        if [ lengths.count >= 4 ] spread = lengths[3]
 
-    # a transition calls mix[] on the Mixable. without this override the base
-    # returns an empty Mixable, so a glow SNAPS instead of animating — which
-    # is why `inner_glow: ..., 200ms cubic` did nothing
+    # the shadow into canvas shadow slot i
+    public func apply [ cv: Canvas, i: i32 ]
+        if [ color ]
+            cv.shadow[ i, color, offset.x, offset.y, blur, spread, inset ]
+
+    # a transition calls mix[]: without it the shadow snaps
     public func mix [ b: Mixable, f: f64 ] -> Mixable
-        o : Glow [ b ]
+        o : BoxShadow [ b ]
         if [ !o ] return a
-        t : f32 [ f32[ f ] ]
-        return Glow [
-            blur:  blur + (o.blur - blur) * t,
-            color: rgba [ r: color.r + (o.color.r - color.r) * t,
-                          g: color.g + (o.color.g - color.g) * t,
-                          b: color.b + (o.color.b - color.b) * t,
-                          a: color.a + (o.color.a - color.a) * t ] ]
+        t  : f32 [ f32[ f ] ]
+        c0 : rgba [ (color)   ? color   : rgba [ '#0000' ] ]
+        c1 : rgba [ (o.color) ? o.color : rgba [ '#0000' ] ]
+        return BoxShadow [
+            offset: vec2f [ offset.x + (o.offset.x - offset.x) * t, offset.y + (o.offset.y - offset.y) * t ],
+            blur:   blur + (o.blur - blur) * t,
+            spread: spread + (o.spread - spread) * t,
+            inset:  (t < 0.5) ? inset : o.inset,
+            color:  rgba [ r: c0.r + (c1.r - c0.r) * t,
+                           g: c0.g + (c1.g - c0.g) * t,
+                           b: c0.b + (c1.b - c0.b) * t,
+                           a: c0.a + (c1.a - c0.a) * t ] ]
 
 # only for background elements
 Mixable Transform
