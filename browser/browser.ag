@@ -12,6 +12,11 @@ import ruby/3.3.6 from https://cache.ruby-lang.org/pub/ruby/3.3/ruby-3.3.6.tar.g
     --with-libyaml-dir={install}
 import unifdef/2.12 from https://dotat.at/prog/unifdef/unifdef-2.12.tar.gz
     > make prefix={install} install
+# meson and cmake find every library below through pkg-config
+import pkgconf/2.3.0 from https://distfiles.ariadne.space/pkgconf/pkgconf-2.3.0.tar.xz
+    --with-system-includedir=/usr/include
+    --with-system-libdir=/usr/lib
+    >> ln -sf pkgconf {install}/bin/pkg-config
 
 # WebKit's crypto
 import libgpg-error/1.51 from https://www.gnupg.org/ftp/gcrypt/libgpg-error/libgpg-error-1.51.tar.bz2
@@ -28,6 +33,12 @@ import libpsl/0.21.5 from https://github.com/rockdaboot/libpsl/releases/download
 import nghttp2/1.64.0 from https://github.com/nghttp2/nghttp2/releases/download/v1.64.0/nghttp2-1.64.0.tar.xz
     -DENABLE_LIB_ONLY=ON
     -DENABLE_DOC=OFF
+import glib/2.84.4 from https://download.gnome.org/sources/glib/2.84/glib-2.84.4.tar.xz
+    -Dtests=false
+    -Dintrospection=disabled
+    -Dman-pages=disabled
+    -Ddocumentation=false
+    -Dnls=disabled
 import libsoup/3.6.5 from https://download.gnome.org/sources/libsoup/3.6/libsoup-3.6.5.tar.xz
     PKG_CONFIG_PATH={install}/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig
     -Dtests=false
@@ -40,6 +51,50 @@ import libsoup/3.6.5 from https://download.gnome.org/sources/libsoup/3.6/libsoup
     -Dntlm=disabled
     -Dautobahn=disabled
     -Dpkcs11_tests=disabled
+
+# WPE WebKit paints through webgfx: build that first
+import webgfx
+import wpewebkit/2.54.0 from https://wpewebkit.org/releases/wpewebkit-2.54.0.tar.xz
+    PATH={install}/bin:$PATH
+    PKG_CONFIG_PATH={install}/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig
+    -G Ninja
+    -DPORT=WPE
+    -DCMAKE_C_COMPILER={install}/bin/clang
+    -DCMAKE_CXX_COMPILER={install}/bin/clang++
+    -DCMAKE_PREFIX_PATH={install}
+    "-DCMAKE_INSTALL_RPATH={install}/lib;{install}/build"
+    -DSILVER_INSTALL={install}
+    -DENABLE_XSLT=OFF
+    -DENABLE_SPEECH_SYNTHESIS=OFF
+    -DUSE_AVIF=OFF
+    -DUSE_LCMS=OFF
+    -DUSE_JPEGXL=OFF
+    -DUSE_WOFF2=OFF
+    -DUSE_ATK=OFF
+    -DENABLE_INTROSPECTION=OFF
+    -DENABLE_DOCUMENTATION=OFF
+    -DENABLE_JOURNALD_LOG=OFF
+    -DENABLE_WEBDRIVER=OFF
+    -DENABLE_BUBBLEWRAP_SANDBOX=OFF
+    -DENABLE_WPE_LEGACY_API=OFF
+    -DENABLE_WPE_PLATFORM_WAYLAND=OFF
+    -DENABLE_WPE_PLATFORM_DRM=OFF
+    -DENABLE_VIDEO=ON
+    -DENABLE_WEB_AUDIO=OFF
+    -DUSE_LIBBACKTRACE=OFF
+    -DENABLE_GAMEPAD=OFF
+    -DUSE_LIBHYPHEN=OFF
+    -DENABLE_WEB_CODECS=OFF
+    -DENABLE_MEDIA_STREAM=OFF
+    -DENABLE_WEB_RTC=OFF
+    -DENABLE_SPELLCHECK=OFF
+    -DUSE_GSTREAMER=OFF
+    -DUSE_GSTREAMER_WEBRTC=OFF
+    -DENABLE_ENCRYPTED_MEDIA=OFF
+    -DENABLE_MEDIA_SOURCE=ON
+    -DUSE_SYSTEM_SYSPROF_CAPTURE=NO
+    -DUSE_SYSPROF_CAPTURE=OFF
+    -DUSE_SKIA_OPENTYPE_SVG=OFF
 
 import trinity
 import img
