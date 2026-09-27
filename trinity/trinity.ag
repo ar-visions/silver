@@ -40,6 +40,9 @@ ifndef [ windows ]
 ifndef [ windows ]
     import <unistd.h>
         +_DEFAULT_SOURCE
+
+ifndef [ windows ]
+    import <sys/resource.h>
         +_XOPEN_SOURCE=500
 
 import KhronosGroup:Vulkan-Headers/29184b98984f6169a5e83e97557a77cff1e5b0ca
@@ -663,6 +666,9 @@ abstract live_app media_app
             # so its requests go out at the display's rate, not the loop's
             if [ win.backdrop_bypass ]
                 frame_hz = win.refresh_hz[]
+                pace_frame[]
+            # headless presents nothing, so nothing else paces it
+            el [ headless && !pane9 ]
                 pace_frame[]
         if [ screenshot ]
             shot_frames += 1
@@ -5057,6 +5063,8 @@ Display Window
                 sw_left  : f32 [ (layer.stroke_width) ? layer.stroke_width.left   : 0.0 ]
                 sw_max   : f32 [ maxf[ maxf[ sw_top, sw_right ], maxf[ sw_bot, sw_left ] ] ]
                 draw_cv.set_stroke_size  [ sw_max ]
+                # a layer's border sits inside its box
+                draw_cv.stroke_offset    [ 0.0 - sw_max * 0.5 ]
                 draw_cv.set_stroke_cap   [ layer.stroke_cap  ]
                 draw_cv.set_stroke_join  [ layer.stroke_join ]
                 draw_cv.rounded          [ r_tl, r_tr, r_br, r_bl ]
@@ -5747,9 +5755,11 @@ Layer ScrollLayer
             cv.fill_color  [ rgba['#0000'] ]
             cv.stroke_color[ rgba[ r:1.0, g:1.0, b:1.0, a: 0.133 * prox ] ]
             cv.stroke_width[ 1.0 ]
+            cv.stroke_offset[ -0.5 ]
             cv.rect_to     [ thumb_x, top, eff_w, vis_h ]
             cv.paint       [ ]
             cv.stroke_width[ 0.0 ]
+            cv.stroke_offset[ 0.0 ]
         cv.fill_color[ thumb_color ]
         cv.rounded_rect[ thumb_x, thumb_y, eff_w, thumb_h, r, r, r, r ]
         cv.paint[]
@@ -6037,11 +6047,13 @@ element TButtons
         cv.fill_color[ rgba [ '#0000' ] ]
         cv.set_stroke_size[ 0.5 ]
         cv.stroke_sides[ 0.5, 0.5, 0.5, 0.5 ]
+        cv.stroke_offset[ -0.25 ]
         cv.stroke_color[ rgba [ '#ffffff33' ] ]
         cv.rounded_rect[ 0.0, 0.0, dw9, dh9, seg_radius, seg_radius, seg_radius, seg_radius ]
         cv.paint[ ]
         cv.set_stroke_size[ 0.0 ]
         cv.stroke_sides[ 0.0, 0.0, 0.0, 0.0 ]
+        cv.stroke_offset[ 0.0 ]
         cv.restore[ ]
 
     func on_press [ ev: Event ]

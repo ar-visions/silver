@@ -312,17 +312,32 @@ int main(int argc, char** argv)
         return 1;
     int width = 1280, height = 800;
     const char* url = "about:blank";
+    const char* appDir = NULL;
     for (int i = 1; i < argc; ++i) {
         if (!strcmp(argv[i], "--size") && i + 2 < argc) {
             width = atoi(argv[++i]);
             height = atoi(argv[++i]);
-        } else
+        } else if (!strcmp(argv[i], "--data") && i + 1 < argc)
+            appDir = argv[++i];
+        else
             url = argv[i];
     }
     loop = g_main_loop_new(NULL, FALSE);
     pending = g_string_new(NULL);
     WPEDisplay* display = wpe_display_headless_new();
-    webView = g_object_new(WEBKIT_TYPE_WEB_VIEW, "display", display, NULL);
+    // the browser app's silver cache: site data, cache, cookies
+    char* home = appDir ? g_strdup(appDir) : g_build_filename(g_get_user_cache_dir(), "browser", NULL);
+    char* dataDir = g_build_filename(home, "data", NULL);
+    char* cacheDir = g_build_filename(home, "cache", NULL);
+    char* cookieFile = g_build_filename(dataDir, "cookies.sqlite", NULL);
+    g_mkdir_with_parents(dataDir, 0700);
+    g_free(home);
+    WebKitNetworkSession* session = webkit_network_session_new(dataDir, cacheDir);
+    webkit_cookie_manager_set_persistent_storage(webkit_network_session_get_cookie_manager(session), cookieFile, WEBKIT_COOKIE_PERSISTENT_STORAGE_SQLITE);
+    g_free(cookieFile);
+    g_free(cacheDir);
+    g_free(dataDir);
+    webView = g_object_new(WEBKIT_TYPE_WEB_VIEW, "display", display, "network-session", session, NULL);
     webkit_settings_set_user_agent(webkit_web_view_get_settings(webView), SAFARI_AGENT);
     // the agent says Mac: navigator.platform must agree
     WebKitUserScript* platform = webkit_user_script_new(MAC_PLATFORM_SCRIPT,

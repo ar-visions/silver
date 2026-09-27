@@ -482,7 +482,8 @@ el
         func open [] -> bool
             buffer = calloc[ 1, buffer_size * channels * 2 ]
             pb  : i32 [ SND_PCM_STREAM_PLAYBACK ]
-            dev : symbol [ (device && device.count) ? device.chars : 'pulse' ]
+            # the system's selected output; never the pulse plugin
+            dev : symbol [ (device && device.count) ? device.chars : 'default' ]
             err : i32 [ snd_pcm_open[ @pcm_handle, dev, pb, 0 ] ]
             if [ err < 0 ] return false
             psz    : snd_pcm_hw_params_sizeof[]
@@ -1024,8 +1025,8 @@ class AudioMixer
         # fixed pool: the mix thread iterates this while play_p runs
         for [ i: i32 0, i < 16, i += 1 ]
             voices += Voice [ ]
-        nacc : i32 [ out.buffer_size * 2 ]
-        acc = new i32 [ nacc ]
+        # C memory: a pool array here is freed by the next drain
+        acc = calloc[ out.buffer_size * 2, 4 ]
         tid : local u64 [ 1 ]
         pthread_create[ tid, null, @mix_entry, a ]
         return true

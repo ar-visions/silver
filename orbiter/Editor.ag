@@ -1523,6 +1523,7 @@ Layer EditorLayer
             cv.rounded[ 3.0, 3.0, 3.0, 3.0 ]
             cv.fill_color[ rgba['#3b6fe022'] ]
             cv.stroke_width[ 1.0 ]
+            cv.stroke_offset[ -0.5 ]
             cv.stroke_color[ rgba['#8cf9'] ]
             cv.rect_to[ x0 + tx9 - 1.0, y + 1.0, ww9 + 2.0, lh - 2.0 ]
             cv.paint[ ]
@@ -1781,9 +1782,11 @@ Layer EditorLayer
                     cv.fill_color  [ rgba['#6cb6ff22'] ]
                     cv.stroke_color[ rgba['#6cb6ffcc'] ]
                     cv.stroke_width[ 1.0 ]
+                    cv.stroke_offset[ -0.5 ]
                     cv.rounded_rect[ cx + gm * 0.5, cy + gm * 0.5, grid_cw - gm, grid_ch - gm, 8.0, 8.0, 8.0, 8.0 ]
                     cv.paint       [ ]
                     cv.stroke_width[ 0.0 ]
+                    cv.stroke_offset[ 0.0 ]
                 ix : f32 [ cx + gm ]
                 iy : f32 [ cy + gm ]
                 tex : editor.thumb_for[ h.file, cv ]
@@ -1931,9 +1934,11 @@ Layer EditorLayer
                 cv.fill_color[ rgba['#00000000'] ]
                 cv.stroke_color[ rgba['#ff44'] ]
                 cv.stroke_width[ 1.0 ]
+                cv.stroke_offset[ -0.5 ]
                 cv.rect_to[ bounds.x + 1.0, yg + 1.0, bounds.w - rin - 2.0, lh - 2.0 ]
                 cv.paint[ ]
                 cv.stroke_width[ 0.0 ]
+                cv.stroke_offset[ 0.0 ]
                 cv.rounded[ 0.0, 0.0, 0.0, 0.0 ]
                 cv.fill_color[ rgba['#ffffff'] ]
                 gtip : f32 [ bounds.x + gut_w + 12.0 ]
@@ -2154,6 +2159,7 @@ Layer EditorLayer
                     cv.rounded[ 8.0, 8.0, 8.0, 8.0 ]
                     cv.fill_color[ rgba['#0000'] ]
                     cv.stroke_width[ 1.0 ]
+                    cv.stroke_offset[ -0.5 ]
                     cv.stroke_color[ rgba['#fff3'] ]
                     cv.rect_to[ bounds.x + lin + 2.0, y + 2.0, bounds.w - lin - rin - 4.0, rh - 4.0 ]
                     cv.paint[ ]
@@ -2602,17 +2608,6 @@ Layer EditorLayer
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null ]
             cv.flush_text[ ]
             cv.restore[ ]
-        if [ !editor.ice_cream ]
-            editor.ice_cream = SVGModel [ path 'images/ice_cream.svg' ]
-        icz : f32 [ 64.0 ]
-        cv.clear_crop[ ]
-        cv.fill_color[ rgba['#ffffff'] ]
-        cv.stroke_color[ rgba['#ffffff'] ]
-        cv.draw_svg[ editor.ice_cream,
-            round[ bounds.x + bounds.w - rin - icz - 36.0 ],
-            round[ bounds.y + bounds.h - eb0 - icz - 12.0 ], icz, icz ]
-        cv.paint[ ]
-
 
 # left tool rail: vertical buttons, icon over title, 64px wide
 # the extension's handler module leads as the default action
@@ -2790,7 +2785,6 @@ Control Editor
     intern static bin_view_cached : string
     mutable lines         : list string
     mutable close_icon    : SVGModel
-    mutable ice_cream     : SVGModel
     mutable pin_icon      : SVGModel
     mutable file_icon     : SVGModel
     mutable module_icon   : SVGModel
@@ -2841,6 +2835,7 @@ Control Editor
     mutable stop_col      : i32 [ -1 ]
     mutable stop_pending  : i32          # a debugger stop line waiting for its file to load
     mutable goto_pending  : i32          # a navigation's 1-based line waiting for its file to load
+    mutable arrive_pending : bool        # a navigation opened this file: its arrival is a nav point
     mutable stop_pending_col : i32
     public  debug_running : bool
     public  debugger      : dbg
@@ -4949,7 +4944,12 @@ Control Editor
         # a navigation that opened this file lands now: the load reset the caret
         if [ goto_pending > 0 ]
             land_on[ goto_pending ]
-            goto_pending = 0
+            goto_pending   = 0
+            arrive_pending = false
+        el [ arrive_pending ]
+            arrive_pending = false
+            if [ nav && src ]
+                nav.record[ pane_index, '{src.absolute[]}', (sel_line < 0) ? 0 : sel_line, sel_col, scroll.y ]
 
     # the hunks are recomputed when the file, its saved state or the git
     # snapshot changed; git diff -U0 against HEAD, over the checkout the

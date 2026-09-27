@@ -2344,6 +2344,7 @@ static int silver_spawn_product(silver a, path bin, bool lib, path cwd,
 #else
     pid_t pid = fork();
     if (pid == 0) {
+        auto_forget();
         setenv(env, "1", 1);
         if (env_force) setenv(env_force, "1", 1);
         // as the host does: tests and exports resolve assets against the

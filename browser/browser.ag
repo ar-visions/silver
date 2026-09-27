@@ -76,7 +76,11 @@ element browser : trinity
     mutable view_h     : i32
     mutable scale      : f32    [ 1.0 ]      # device px per point
     mutable held       : i32                 # buttons down, bit per button
+    mutable move_line  : string              # latest move, sent once a frame
     mutable started    : bool
+    public  stats      : bool                # --stats: page frames shown each second
+    mutable shown      : i32                 # page frames taken this second
+    mutable shown_at   : i64
 
     func init []
         animated  = true
@@ -109,6 +113,9 @@ element browser : trinity
             target = 'file://{f.absolute[]}'
         # literals reach a C vararg as objects, not text
         name  : string 'WPETrinityBrowser'
+        flag  : string '--data'
+        app   : string 'browser'
+        home  : string '{path.path_cache[ app.chars ]}'
         fds : local i32 [ 2 ]
         if [ socketpair[ AF_UNIX, SOCK_STREAM, 0, @fds[0] ] != 0 ]
             log 'browser: socketpair failed'
@@ -121,7 +128,7 @@ element browser : trinity
             dup2[ fds[0], 0 ]
             close[ fds[0] ]
             close[ fds[1] ]
-            execl[ engine.chars, name.chars, target.chars, null ]
+            execl[ engine.chars, name.chars, flag.chars, home.chars, target.chars, null ]
             _exit[ 1 ]
         close[ fds[0] ]
         if [ pid < 0 ]
@@ -166,6 +173,7 @@ element browser : trinity
         px : @u8 [ shm ]
         tex.upload[ @px[32], fw * fh * 4 ]
         seq = sq
+        shown += 1
 
     func sync_size []
         pw : i32 [ i32[ bounds.w * scale ] ]
@@ -187,7 +195,18 @@ element browser : trinity
     func mouse [ kind: string, ev: Event ]
         x : i32 [ i32[ ev.mouse.pos.x * scale ] ]
         y : i32 [ i32[ ev.mouse.pos.y * scale ] ]
-        post[ 'mouse {kind} {x} {y} {ev.mouse.button} {held} {mods[ ev ]}' ]
+        line : 'mouse {kind} {x} {y} {ev.mouse.button} {held} {mods[ ev ]}'
+        if [ kind == 'move' ]
+            move_line = line
+            return
+        send_move[]
+        post[ line ]
+
+    # the page's handlers run per move: at most one a frame
+    func send_move []
+        if [ !move_line ] return
+        post[ move_line ]
+        move_line = null
 
     public func on_press [ ev: Event ]
         set_focus[]
@@ -203,9 +222,13 @@ element browser : trinity
         mouse[ 'move', ev ]
 
     public func on_wheel [ ev: Event ]
+        send_move[]
         x : i32 [ i32[ ev.mouse.pos.x * scale ] ]
         y : i32 [ i32[ ev.mouse.pos.y * scale ] ]
-        post[ 'mouse wheel {x} {y} 0 {held} 0 {ev.mouse.wheel_delta.x} {ev.mouse.wheel_delta.y}' ]
+        # half a notch per wheel step
+        dx : f32 [ ev.mouse.wheel_delta.x * 0.5 ]
+        dy : f32 [ ev.mouse.wheel_delta.y * 0.5 ]
+        post[ 'mouse wheel {x} {y} 0 {held} 0 {dx} {dy}' ]
         ev.stop[]
 
     # printable keys come as text; the rest as keys
@@ -233,9 +256,17 @@ element browser : trinity
                 log 'browser: the engine exited'
                 pid = 0
         sync_size[]
+        send_move[]
         cv : Canvas [ w.screen ]
         if [ !cv || !cv.vk ] return
         take_frame[ cv ]
+        if [ stats ]
+            w.stats = true
+            now : i64 [ Au.epoch_millis[] ]
+            if [ now - shown_at >= 1000 ]
+                if [ shown_at > 0 ] log 'browser frames {shown}'
+                shown    = 0
+                shown_at = now
         if [ !tex ] return
         # one frame pixel per device pixel
         dst : rect [ x: 0.0, y: 0.0, w: f32[ tex_w ] / scale, h: f32[ tex_h ] / scale ]

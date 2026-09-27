@@ -2078,6 +2078,29 @@ expect func t_bare_method_call [] -> bool
     c.inc
     return c.count == 3
 
+class StructHolder
+    public v : vec4f
+
+class StructUser
+    public h : StructHolder
+
+    func put [ t: vec4f ]
+        h.v = t
+
+    func put_local [ t: vec4f ]
+        c : vec4f [ t ]
+        h.v = c
+
+# a struct argument stored into another object's member
+expect func t_struct_arg_to_member [] -> bool
+    u : StructUser [ h: StructHolder [] ]
+    u.put[ vec4f [ 1.0, 2.0, 3.0, 4.0 ] ]
+    a : f32 [ u.h.v.w ]
+    u.put_local[ vec4f [ 5.0, 6.0, 7.0, 8.0 ] ]
+    b : f32 [ u.h.v.w ]
+    log 'struct arg into a member: direct w {a} (want 4), via a local w {b} (want 8)'
+    return a == 4.0 && b == 8.0
+
 expect func t_vec_module [] -> bool
     a: vec2f [ 1.0, 2.0 ]           # an Au struct: fields from its record, returned by value in the C ABI
     b: vec2f [ 3.0, 4.0 ]

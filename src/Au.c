@@ -3706,6 +3706,11 @@ AU_EXPORT none auto_free(void) {
     af_count = 2;
 }
 
+// a forked child: the parent's pool is not ours to free
+AU_EXPORT void auto_forget(void) {
+    af_count = 2;
+}
+
 AU_EXPORT Au alloc_dbg(Au_t type, num count, symbol source, i32 line, i32 sequence) {
     sz map_sz = sizeof(map);
     sz _sz   = sizeof(struct _Au);

@@ -1026,6 +1026,7 @@ element Moon
         return map string [string] [
             '#140a2acc':  '#1c1c20cc',
             '#140a2a80':  '#1c1c2080',
+            '#14121c80':  '#1c1c2080',   # instance panel background
             '#4258':      '#8a8a8a22',
             '#ff6a2e55':  '#9a9a9a55',
             '#220022aa':  '#20202aaa',
@@ -1436,6 +1437,7 @@ element MilkyWay
         return map string [string] [
             '#140a2acc':  '#0a0a1288',   # editor pane background
             '#140a2a80':  '#418a',       # console pane background
+            '#14121c80':  '#44118880',   # instance panel background
             '#ff6a2e55':  '#8a8aa455',   # search highlight fill
             '#220022aa':  '#1e0e28aa',   # run console base fill
             '#614':       '#524a',       # TButtons / nav rest fill
@@ -1810,6 +1812,7 @@ element Titan
         return map string [string] [
             '#140a2acc':  '#432a',       # editor pane background
             '#140a2a80':  '#148a',       # console pane background
+            '#14121c80':  '#11448880',   # instance panel background
             '#ff6a2e55':  '#ffb04a55',   # search highlight fill
             '#220022aa':  '#1e1206aa',   # run console base fill
             '#614':       '#4c3210',     # TButtons / nav rest fill
@@ -2495,6 +2498,7 @@ element Enceladus
         return map string [string] [
             '#140a2acc':  '#000a',   # editor pane background
             '#140a2a80':  '#0e141a80',   # console pane background
+            '#14121c80':  '#0e141a80',   # instance panel background
             '#ff6a2e55':  '#7ac8e855',   # search highlight fill
             '#220022aa':  '#0c1216aa',   # run console base fill
             '#614':       '#28343e',     # TButtons / nav rest fill
@@ -4042,6 +4046,7 @@ element Europa
         return map string [string] [
             '#140a2acc':  '#000a',       # editor pane background
             '#140a2a80':  '#0e141a80',   # console pane background
+            '#14121c80':  '#0e141a80',   # instance panel background
             '#ff6a2e55':  '#7ac8e855',   # search highlight fill
             '#220022aa':  '#0c1216aa',   # run console base fill
             '#614':       '#28343e',     # TButtons / nav rest fill
@@ -7898,6 +7903,7 @@ element Mars
         return map string [string] [
             '#140a2acc':  '#4108',   # editor pane background
             '#140a2a80':  '#429a',   # console pane background
+            '#14121c80':  '#44229980',   # instance panel background
             '#4258':      '#8a5a4a58',   # unused (line_color moved to #44225588)
             '#ff6a2e55':  '#ff8a4a55',   # search highlight fill
             '#220022aa':  '#2a1a16aa',   # run console base fill
@@ -8476,6 +8482,7 @@ element Uranus
         return map string [string] [
             '#140a2acc':  '#08161acc',   # editor pane background
             '#140a2a80':  '#0a1a1e88',   # console pane background
+            '#14121c80':  '#0a1a1e80',   # instance panel background
             '#ff6a2e55':  '#7fd6cc55',   # search highlight fill
             '#220022aa':  '#0a1a1caa',   # run console base fill
             '#614':       '#2a4a4a',     # TButtons / nav rest fill
@@ -9068,6 +9075,7 @@ element Earth
         return map string [string] [
             '#140a2acc':  '#0a180ecc',   # editor pane background
             '#140a2a80':  '#0e221280',   # console pane background
+            '#14121c80':  '#0e221280',   # instance panel background
             '#4258':      '#2a4a3258',   # unused (line_color moved)
             '#ff6a2e55':  '#5ab24a55',   # search highlight fill
             '#220022aa':  '#0a1c12aa',   # run console base fill
@@ -9905,6 +9913,7 @@ element Synthwave
         return map string [string] [
             '#140a2acc':  '#12061ecc',   # editor pane background
             '#140a2a80':  '#160a2280',   # console pane background
+            '#14121c80':  '#160a2280',   # instance panel background
             '#ff6a2e55':  '#e04ae855',   # search highlight fill
             '#220022aa':  '#180826aa',   # run console base fill
             '#614':       '#3a2050',     # TButtons / nav rest fill
@@ -11732,6 +11741,7 @@ element Clouds
         return map string [string] [
             '#140a2acc':  '#080a1a4a',   # editor pane background
             '#140a2a80':  '#0e1c2e80',   # console pane background
+            '#14121c80':  '#0e1c2e80',   # instance panel background
             '#ff6a2e55':  '#4aa0e855',   # search highlight fill
             '#220022aa':  '#0a1826aa',   # run console base fill
             '#614':       '#1f3a52',     # TButtons / nav rest fill
@@ -12878,6 +12888,7 @@ element Pluto
         return map string [string] [
             '#140a2acc':  '#0e1420cc',
             '#140a2a80':  '#0e142080',
+            '#14121c80':  '#0e142080',   # instance panel background
             '#220022aa':  '#101a26aa',
             '#614':       '#2c3a4c',
             '#413':       '#22303e',

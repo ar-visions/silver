@@ -1470,6 +1470,39 @@ debug+quarantine and -O2. Startup 71k -> 55k objects.
    98715440282664, +16 a sample). A local first works.
    c. MediaSource (YouTube streams through it).
 
+## Active work: strokes (Sep 27 2026)
+
+1. DONE svg/canvas strokes were wrong (lucide.dev icons: thin,
+   open paths closed into triangles, no caps, lines gone).
+   Cause: trinity drew every stroke INSIDE the outline (a CSS
+   border), closed every subpath, dropped zero-area boxes, and
+   a path's band took its width from stroke_sides, which only
+   ui layers set. Kalen's rule: one stroke model, no parallel
+   mode; our ui adjusts with offsets. Now (trinity/Canvas.ag):
+   - both branches (box and path) draw one band centred on the
+     outline, moved by stroke_offset (positive outward);
+     -width/2 is the ui's inside border, the same formula as
+     before for even sides.
+   - stroke_width[] / set_stroke_size[] set all four sides;
+     stroke_sides[] after narrows a box's sides.
+   - edges carry flags: free start, free end, implied (the
+     closing edge a fill adds). An open path stroked with no
+     fill skips implied edges, caps its free ends (butt,
+     round, square) and writes unsigned distance.
+   - a line (no area) is kept when it has a stroke width.
+   - ui sites set stroke_offset -width/2: the layer loop, the
+     button group outline (trinity.ag), 13 in orbiter/Git.ag,
+     4 in orbiter/Editor.ag, the scrollbar outline.
+   - webgfx_canvas_stroke_path takes the cap and sets offset 0;
+     GraphicsContextTrinity passes lineCap().
+   Checked: webgfx t_stroke_caps and t_stroke_inside pass,
+   trinity tests pass (average colour unchanged 16,32,53,80),
+   the lucide test page (x, check, plus, chevron, circle, an
+   8px line) draws as lucide does. Not checked by eye: orbiter
+   itself (sides of different widths now centre each side on
+   the inside offset of the widest), and trinity's own svg
+   icons, whose strokes are now centred as svg says.
+
 ## Active work: scene picker (Sep 25 2026)
 
 1. DONE the bar's < and > scene arrows are gone. Clicking the
@@ -2479,23 +2512,60 @@ Kalen: YouTube says "can't play this video", or plays one frame
 in 30 s; performance is awful. Reproduced: a page has no
 MediaSource (YouTube needs it), so YouTube gives up. Stage c
 of the media memory below, done as a streaming backend.
-1. OPEN Demux reads fragmented mp4: an init segment (moov +
-   mvex) and media segments (moof: tfhd, tfdt, trun; mdat),
-   appended in pieces as they arrive.
-2. OPEN VideoStream in trinity: samples in decode order,
-   decoded ahead on a worker thread; frames by time.
-3. OPEN streaming AAC: packets decoded as they arrive into a
-   mixer voice; the sound's position is the clock.
-4. OPEN WebKit MediaSource: ENABLE_MEDIA_SOURCE, trinity
-   MediaSourcePrivate / SourceBufferPrivate / MediaSample,
-   the player's MediaSource path; H.264 + AAC in mp4 only, so
-   YouTube serves those.
-5. OPEN video as its own compositing layer: frames stay on
-   the GPU, not repainted into page tiles and read back.
-6. OPEN YouTube checked: plays, seeks, sound, frames/s.
+1. DONE Demux reads fragmented mp4 (trinity/demux.ag append:
+   moov + mvex/trex, moof tfhd/tfdt/trun + mdat, whole boxes
+   only; DemuxSample owns its bytes; reset). webgfx
+   t_demux_fragments: media/clip.frag.mp4 in 997-byte pieces,
+   48/48 samples match the plain file (bytes, dts, pts, sync).
+2. DONE VideoStream (trinity/video.ag): samples queued in
+   decode order, a worker decodes 6 ahead, frame_at by time,
+   flush (generation), hidden (non-displaying) samples.
+   t_video_stream: 48/48 once each on a 60 Hz clock; a seek
+   to 1 s shows the 1.000 s picture.
+3. DONE AudioStream (spectra): aac packets decoded as pushed
+   into an 8 s ring; the mixer pulls it (add/remove_stream);
+   time[] is the clock. t_audio_stream: 440 Hz, 1 s pulled
+   moves the clock 1,000,000 us.
+4. DONE WebKit MediaSource (ENABLE_MEDIA_SOURCE=ON in the
+   configure line): MediaSourcePrivateTrinity,
+   SourceBufferPrivateTrinity, MediaSampleTrinity, the
+   player's source path (enqueue, readyForMore, flush, seek
+   via waitForTarget + reenqueue, sound clock); webgfx
+   webgfx_demux_* and webgfx_stream_*; MediaPlatformType
+   Trinity. isTypeSupported: avc1 true, mp4a true, vp9 false.
+   Checked in the browser: local 20 s MSE page plays 0 -> 20 s
+   in real time, 640x360, picture right; YouTube Big Buck
+   Bunny plays (picture moving), 3 runs with no crash.
+   Fixed on the way: an empty type (a source attaching) looked
+   up a null String in a HashSet (web process SIGSEGV); silver
+   classes are PACKED structs, so a pthread_mutex_t member sat
+   at byte 102 and futex failed under contention: use Au's
+   `mutex` class in silver classes, never raw pthread types.
+5. OPEN video as its own compositing layer: written, not in
+   the build (trinity/CoordinatedPlatformLayerBufferTrinity,
+   webgfx_stream_next/_planes, buffer Type::Trinity).
+6. PARTLY DONE YouTube plays, but the picture changes only
+   1-7 times a second headless; Kalen sees 1 frame every 3-4
+   seconds (Sep 26). The web process main thread is busy.
 7. OPEN YouTube page speed (Kalen: "performance is absolutely
-   awful"): measure scrolling and clicks on youtube.com, then
-   fix what the measurement shows.
+   awful"). Sampled during playback: ~90% of the web process
+   is CSS filters (drop-shadow) making temporary ImageBuffers,
+   each a new trinity Canvas whose 1024-slot ring creates
+   ~1024 uniform Buffers (Canvas_init -> uniforms_init ->
+   vmaCreateBuffer). Tried and REMOVED (lost the GPU device,
+   VK_ERROR_DEVICE_LOST, cause not found): a webgfx canvas
+   pool, and a 64-slot ring for small canvases (a mid-batch
+   ring wrap on a webgfx canvas faults; 1024 never wraps).
+   Next: uniform buffers made on first use, then the wrap
+   fault; filters on the GPU.
+8. DONE logins kept, in silver's app cache (Kalen): browser.ag
+   passes --data path_cache['browser'] (~/.cache/browser); the
+   helper keeps site data in <it>/data (cookies.sqlite there)
+   and cache in <it>/cache. Cookies were memory only before
+   (signed out on every start). Checked: a cookie set by a
+   local server came back from a new browser process and is in
+   ~/.cache/browser/data/cookies.sqlite.
+   Saved passwords: WebKit has no password manager (not done).
 
 ## MEMORY: media in the browser, played through trinity (Sep 26 2026)
 

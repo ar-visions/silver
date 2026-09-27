@@ -413,7 +413,7 @@ class Render
         ring_i         = (s + 1) % ring_n
         recording      = false
         # do NOT reset draw_slot here — flush_submit submits WITHOUT a wait, so the batch we
-        # just submitted is still in flight reading u_buffers[..draw_slot] / descriptor_sets.
+        # just submitted is still in flight reading u_ring[..draw_slot] / descriptor_sets.
         # resetting to 0 makes the next paints reuse those in-flight slots = the christmas-light
         # UBO clobber on the gutter overlays. draw_slot free-runs; only a real drain rewinds it.
 
@@ -673,6 +673,7 @@ class Render
         if [ result != VK_SUCCESS ]
             rc9 : i32 [ cast i32 [ result ] ]
             log 'fence wait failed: id {id} {width}x{height} result {rc9} slot {ring_last}'
+            vk.report_fault[]
          expect result == VK_SUCCESS, "fence wait failed"
         # the wait drained every in-flight submit (command buffers run in submit order, so
         # ring_last done ⟹ all prior done): every slot is free now, rewind the ring to 0.
@@ -1072,6 +1073,7 @@ class vk_context
     # waits issued, and total microseconds spent blocked in those waits.
     public  submit_calls        : i32
     public  sync_calls          : i32
+    public  idle_waits          : i64
     public  sync_us             : i64
     public  update_us           : i64
     public  draw_us             : i64
@@ -1105,7 +1107,10 @@ class vk_context
     intern  defer_drops         : vec DropDefer
     intern  frame_no            : i64
     intern  fence_pool          : vec u64
+    intern  fence_cap           : i64 [ 4096 ]        # fences kept for reuse
     public  fence_new           : VkFence
+    intern  _vkGetDeviceFaultInfoEXT : PFN_vkGetDeviceFaultInfoEXT
+    intern  fault_reported      : bool
     public  copy_cmd_last       : VkCommandBuffer   # the buffer copy_image_async just submitted
     public  pending_cmds        : vec Command
     public  bindres_calls       : i32
@@ -1290,6 +1295,14 @@ class vk_context
         hold[]
         qlock = mutex [ ]
         main_thread = cast u64 [ pthread_self[] ]
+        # a fence is an fd on nvidia: a quarter of the fd limit
+        ifndef [ windows ]
+            lim : rlimit
+            if [ getrlimit[ RLIMIT_NOFILE, @lim ] == 0 ]
+                lim.rlim_cur = lim.rlim_max
+                setrlimit[ RLIMIT_NOFILE, @lim ]
+                getrlimit[ RLIMIT_NOFILE, @lim ]
+                if [ lim.rlim_cur != RLIM_INFINITY ] fence_cap = i64[ lim.rlim_cur ] / 4
         get_required_extensions[ a ]
         # validation layer adds 10-100x overhead PER vulkan call (every draw, descriptor
         # bind, image transition). on in debug builds, off in release.
@@ -1390,12 +1403,15 @@ class vk_context
         video_decode_supported  : bool false
         video_h264d_supported   : bool false
         sync2_supported         : bool false
+        fault_supported         : bool false
         swapchain_ext         : symbol VK_KHR_SWAPCHAIN_EXTENSION_NAME
         for [ i: u32 0, i < ext_count, i += 1 ]
             ext : extensions[i].extensionName
             device_exts.push[ ext ]
             if [ strcmp[ ext, VK_KHR_SWAPCHAIN_EXTENSION_NAME ] == 0 ]
                 swapchain_supported = true
+            if [ strcmp[ ext, "VK_EXT_device_fault" ] == 0 ]
+                fault_supported = true
             if [ strcmp[ ext, VK_KHR_VIDEO_QUEUE_EXTENSION_NAME ] == 0 ]
                 video_queue_supported = true
             if [ strcmp[ ext, VK_KHR_VIDEO_ENCODE_QUEUE_EXTENSION_NAME ] == 0 ]
@@ -1483,6 +1499,10 @@ class vk_context
             if [ metal_objects_supported ]
                 enabled_dev_exts[ enabled_ext_count ] = VK_EXT_METAL_OBJECTS_EXTENSION_NAME
                 enabled_ext_count += 1
+        # a lost device can then say what faulted (report_fault)
+        if [ fault_supported ]
+            enabled_dev_exts[ enabled_ext_count ] = "VK_EXT_device_fault"
+            enabled_ext_count += 1
 
         # query device features
         sync2_features: VkPhysicalDeviceSynchronization2Features [
@@ -1494,9 +1514,14 @@ class vk_context
             pNext:               (video_encode) ? @sync2_features : null,
             bufferDeviceAddress: VK_TRUE
         ]
+        fault_features: VkPhysicalDeviceFaultFeaturesEXT [
+            sType:       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT,
+            pNext:       @buffer_addr_features,
+            deviceFault: VK_TRUE
+        ]
         features2: VkPhysicalDeviceFeatures2 [
             sType: VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
-            pNext: @buffer_addr_features
+            pNext: (fault_supported) ? @fault_features : @buffer_addr_features
         ]
         vkGetPhysicalDeviceFeatures2[ physical_device, @features2 ]
 
@@ -1579,6 +1604,7 @@ class vk_context
         ], null, @device ]
         
         expect result == VK_SUCCESS, "cannot create logical device"
+        if [ fault_supported ] _vkGetDeviceFaultInfoEXT = vkGetDeviceProcAddr[ device, "vkGetDeviceFaultInfoEXT" ]
         queue_family_index = -1
 
         ifdef [ unix ]
@@ -1645,10 +1671,17 @@ class vk_context
         reduce_s = q
         return q
 
+    # bytes allocated from the GPU allocator
+    public func gpu_bytes [ ] -> i64
+        st : VmaTotalStatistics
+        vmaCalculateStatistics[ allocator, @st ]
+        return i64[ st.total.statistics.allocationBytes ]
+
     # settle the whole device — one-time creation/teardown windows only
     func wait_idle [ ]
         # the queue is externally synchronized: never wait under a submit
         qlock.lock[]
+        idle_waits += 1
         vkDeviceWaitIdle[ device ]
         qlock.unlock[]
 
@@ -1693,6 +1726,29 @@ class vk_context
 
     # the pool is one per device and two instances share it on a reload:
     # the lock spans the take, and the fence comes back as the value
+    # after a lost device: what the driver says faulted, once
+    public func report_fault []
+        if [ fault_reported || !_vkGetDeviceFaultInfoEXT ] return
+        fault_reported = true
+        counts : VkDeviceFaultCountsEXT [ sType: VK_STRUCTURE_TYPE_DEVICE_FAULT_COUNTS_EXT ]
+        _vkGetDeviceFaultInfoEXT[ device, @counts, null ]
+        if [ counts.addressInfoCount > 16 ] counts.addressInfoCount = 16
+        if [ counts.vendorInfoCount > 16 ]  counts.vendorInfoCount = 16
+        counts.vendorBinarySize = 0
+        addrs : local VkDeviceFaultAddressInfoEXT [16]
+        vends : local VkDeviceFaultVendorInfoEXT [16]
+        info  : VkDeviceFaultInfoEXT [ sType: VK_STRUCTURE_TYPE_DEVICE_FAULT_INFO_EXT,
+            pAddressInfos: addrs, pVendorInfos: vends ]
+        rc : i32 [ i32[ _vkGetDeviceFaultInfoEXT[ device, @counts, @info ] ] ]
+        fprintf[ stderr, "device fault (%d): %s; %u addresses, %u vendor entries\n", rc,
+            @info.description[0], counts.addressInfoCount, counts.vendorInfoCount ]
+        for [ i: u32 0, i < counts.addressInfoCount, i += 1 ]
+            fprintf[ stderr, "device fault address: type %d at 0x%llx (within 0x%llx)\n",
+                i32[ addrs[i].addressType ], addrs[i].reportedAddress, addrs[i].addressPrecision ]
+        for [ i: u32 0, i < counts.vendorInfoCount, i += 1 ]
+            fprintf[ stderr, "device fault vendor: %s code 0x%llx data 0x%llx\n",
+                @vends[i].description[0], vends[i].vendorFaultCode, vends[i].vendorFaultData ]
+
     func fence_acquire [ ] -> VkFence
         qlock.lock[]
         if [ !fence_pool ] fence_pool = vec u64 []
@@ -1717,8 +1773,7 @@ class vk_context
         qlock.lock[]
         if [ !fence_pool ] fence_pool = vec u64 []
         fence_new = fence
-        # a startup burst would otherwise park hundreds of fds in the pool for good
-        if [ fence_pool.count >= 16 ]
+        if [ fence_pool.count >= fence_cap ]
             vkDestroyFence[ device, fence_new, null ]
             qlock.unlock[]
             return
@@ -2622,7 +2677,10 @@ class uniforms
     context vk       : vk_context
     expect s         : shader
     public u_memory  : vec u8
-    public u_buffers : vec Buffer []
+    public u_ring    : Buffer            # every slot's copy, stride bytes apart
+    public stride    : i64               # one slot, aligned for a uniform offset
+    public unit      : i64               # the uniform block's own size
+    intern leaf      : Au_t
     # this pipeline's gltf NODE transform (Pipeline.default_model). composed
     # under the shader's model each update so file placement survives — it was
     # previously stored and never consumed (every node rendered untransformed).
@@ -2640,16 +2698,17 @@ class uniforms
     # copy of the shader state so a later draw can't overwrite an in-flight one.
     public func update [ ]
         sl : i32 [ (force_slot >= 0) ? force_slot : vk.cur_ring ]
-        b : u_buffers[ sl ]
-        s.uniform_transfer[ b.data, b.user ]
+        s.uniform_transfer[ @u_memory[0], leaf ]
         if [ node_model.m[15] != 0.0 ]
             mvp : (s inherits ModelViewProject)
             if [ mvp ]
                 # `model` is the FIRST ubo member for every ModelViewProject
                 # (base-class members serialize first) -> offset 0, 64 bytes
                 mm : mat4f [ mvp.model.mul[ node_model ] ]
-                memcpy[ b.data, @mm, 64 ]
-        b.update[ null ]
+                memcpy[ @u_memory[0], @mm, 64 ]
+        # the ring stays mapped: the slot's copy is written in place
+        dst : @u8 [ u_ring.data ]
+        memcpy[ @dst[ i64[ sl ] * stride ], @u_memory[0], unit ]
 
     func init [ ]
         type_list:  vec Au_t []
@@ -2665,20 +2724,22 @@ class uniforms
 
         type_list = type_list.reverse[]
         hdr2:   Au.header[ s ]
-        leaf:   hdr2.au
+        leaf  = hdr2.au
         total_uniform: i32 [ uniform_size[ leaf ] ]
         u_memory = vec u8 [ total_uniform ]
-        # one uniform buffer per draw-ring slot (all share the CPU-side u_memory; each
-        # update[] snapshots it into the current slot's GPU buffer). MUST match pipe_ring
-        # / ring_n — the descriptor write count (and thus resize re-bind cost) scales with
-        # this, so keep it as small as the largest single-canvas batch needs.
-        # one UBO per draw-ring slot. sized to the ring capacity (64 = the vk_command_buffers/
-        # vk_fences/ring_primed arrays), so u_buffers[vk.cur_ring] is always valid.
-        for [ ri: i32 0, ri < ring, ri += 1 ]
-            uniform_buf: Buffer [ vk: vk, size: total_uniform,
-                u_uniform: true, u_dst: true, m_host_visible: true, m_host_coherent: true,
-                data: @u_memory[0], user: leaf ]
-            u_buffers.push [ uniform_buf ]
+        # one buffer for all slots: a buffer each cost ring allocs
+        props : VkPhysicalDeviceProperties
+        vkGetPhysicalDeviceProperties[ vk.physical_device, @props ]
+        al : i64 [ i64[ props.limits.minUniformBufferOffsetAlignment ] ]
+        if [ al < 1 ] al = 1
+        unit   = i64[ total_uniform ]
+        stride = (unit + al - 1) / al * al
+        u_ring = Buffer [ vk: vk, size: stride * i64[ ring ],
+            u_uniform: true, u_dst: true, m_host_visible: true, m_host_coherent: true ]
+
+    # Buffer.dealloc frees nothing: the GPU lets go frames later
+    func dealloc []
+        if [ u_ring ] vk.defer_buffer[ u_ring ]
 
 # lets declare something about how we want to use this meta-A type slot
 alias RType : Au
@@ -2888,7 +2949,7 @@ class Pipeline
         for [ t: Texture ] in storage_textures
             t.transition_in[ f, VK_IMAGE_LAYOUT_GENERAL ]
         # standalone compute runs off-thread from the paint ring. this
-        # pipeline's u_buffers are private (the main thread paints with OTHER
+        # pipeline's u_ring slots are private (the main thread paints with OTHER
         # pipelines), so slot 0 is exclusively ours — pin it so the uniform we
         # write and the descriptor we bind are the SAME slot. without this the
         # worker wrote slot cur_ring (advanced by paints) while binding slot 0
@@ -2998,10 +3059,10 @@ class Pipeline
         Au.hold[shader_uniforms]
         s_hdr: Au.header[ s ]
 
-        # u_buffers is now a ring (pipe_ring copies of the shader's single UBO), so the
+        # u_ring holds the ring (pipe_ring copies of the shader's single UBO), so the
         # LAYOUT has exactly one uniform binding — the per-slot buffers are wired to the
         # per-slot set-0 copies in the descriptor-write loop below, not as extra bindings.
-        ubo_count : i32 [ shader_uniforms.u_buffers.count / pipe_ring ]
+        ubo_count : i32 [ 1 ]
         for [ ub: i32 0, ub < ubo_count, ub += 1 ]
             uniform_bindings[uniform_count] = VkDescriptorSetLayoutBinding [
                 binding:         uniform_count,
@@ -3010,9 +3071,9 @@ class Pipeline
                 stageFlags:      stage_flags
             ]
             buffer_infos[uniform_count] = VkDescriptorBufferInfo [
-                buffer: shader_uniforms.u_buffers[ub].vk_buffer,
+                buffer: shader_uniforms.u_ring.vk_buffer,
                 offset: 0,
-                range:  shader_uniforms.u_buffers[ub].size
+                range:  shader_uniforms.unit
             ]
             uniform_count += 1
 
@@ -3204,9 +3265,9 @@ class Pipeline
             for [ i: 0, i < uniform_count, i += 1 ]
                 bi : i32 [ (rs % 64) * uniform_count + i ]
                 buffer_infos[bi] = VkDescriptorBufferInfo [
-                    buffer: shader_uniforms.u_buffers[rs].vk_buffer,
-                    offset: 0,
-                    range:  shader_uniforms.u_buffers[rs].size
+                    buffer: shader_uniforms.u_ring.vk_buffer,
+                    offset: i64[ rs ] * shader_uniforms.stride,
+                    range:  shader_uniforms.unit
                 ]
                 descriptor_writes[wcount] = VkWriteDescriptorSet [
                     sType:           VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
@@ -3477,14 +3538,7 @@ class Pipeline
         nsets : i32 [ pipe_ring * 2 ]
         descriptor_sets  = vec VkDescriptorSet [ nsets ]
         bind_resources[]
-        # serialize pipeline construction against any in-flight Gpu work.
-        # the composite chain builds ~10 pipelines back-to-back during
-        # Window.update, and without this fence the validator occasionally
-        # caught modules / descriptor sets in a half-built state when the
-        # process wasn't being paced by gdb.
-        vk.wait_idle[]
         reassemble[]
-        vk.wait_idle[]
 
     func dealloc [ ]
         release[]
@@ -5895,10 +5949,14 @@ func get_required_extensions [ vk: vk_context ]
             count += 1
         result[count] = "VK_KHR_get_physical_device_properties2"
         count += 1
+    # validation reports through debug_utils: on with it in any build
+    wants_debug : bool [ getenv[ "VK_VALIDATION" ] != null ]
     ifdef [ debug ]
-        # the android emulator's driver has no instance debug_utils, and one
-        # missing instance extension fails vkCreateInstance outright
-        ifndef [ android ]
+        wants_debug = true
+    # the android emulator's driver has no instance debug_utils, and one
+    # missing instance extension fails vkCreateInstance outright
+    ifndef [ android ]
+        if [ wants_debug ]
             result[count] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME
             count += 1
     verbose: getenv[ "VERBOSE" ] != null
