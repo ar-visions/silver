@@ -1115,10 +1115,10 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) { sequencer
             //       the pointer into the first 8 bytes of the struct
             //       alloca, corrupting the local — every field read then
             //       returns garbage from the pointer bit pattern.
+            // a member (GEP) target needs the same copy as a local
             bool dst_is_struct = L->autype && is_struct((Au)L) && !L->autype->is_pointer;
             bool val_is_ptr    = LLVMGetTypeKind(LLVMTypeOf(store_val)) == LLVMPointerTypeKind;
-            bool dst_is_alloca = LLVMGetInstructionOpcode(store_target) == LLVMAlloca;
-            if (dst_is_struct && val_is_ptr && dst_is_alloca) {
+            if (dst_is_struct && val_is_ptr) {
                 etype st = u(etype, L->autype->src ? L->autype->src : L->autype);
                 if (!st || !_lltype_slot(st)) st = etype_prep(a, au_arg_type((Au)L->autype));
                 if (st && _lltype_slot(st)) {

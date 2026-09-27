@@ -46,7 +46,8 @@ struct GfxState
     fonts    : vec CanvasFont
     paths    : vec CanvasPath
     canvases : vec Canvas
-    spare    : vec Canvas                # freed canvases kept for reuse
+    retired  : vec Canvas               # freed this frame; GPU may still read
+    spare    : vec Canvas               # freed canvases ready for reuse
     images   : vec Texture
     videos   : vec WebVideo
     demuxes  : vec Demux
@@ -311,6 +312,10 @@ func gfx_display [] -> Display
         gfx.disp.hold[]
         gfx.canvases = vec Canvas []
         gfx.canvases.hold[]
+        gfx.retired = vec Canvas []
+        gfx.retired.hold[]
+        gfx.spare = vec Canvas []
+        gfx.spare.hold[]
     return gfx.disp
 
 # opens the GPU now, before a sandbox closes the device files
@@ -321,31 +326,21 @@ func canvas_of [ id: i32 ] -> Canvas
     if [ !gfx.canvases || id < 1 || id > i32 gfx.canvases.count ] return null
     return gfx.canvases[ id - 1 ]
 
-# a freed canvas of this size if one is kept, else a new one
-func webgfx_canvas_new [ width: i32, height: i32 ] -> i32
-    d  : gfx_display[]
-    cv : Canvas [ null ]
-    if [ gfx.spare ]
-        for [ i: i64 0, i < gfx.spare.count, i += 1 ]
-            c : Canvas gfx.spare[ i ]
-            if [ c.content_w == width && c.content_h == height ]
-                # rotate it to the front; remove would free it
-                for [ k: i64 0, k < i, k += 1 ]
-                    gfx.spare.push[ gfx.spare.shift[] ]
-                cv = gfx.spare.shift[]
-                break
-    if [ cv ]
-        # draws that read its old pixels go to the GPU first
-        for [ c: Canvas ] in gfx.canvases
-            if [ c ] c.flush_submit[]
-        cv.flush_submit[]
-        cv.restart[]
-    el
-        # each new pass must keep what earlier passes drew
-        # a page is one batch: 1024 draws before a GPU wait
-        cv = Canvas [ vk: gfx.vk, w: d, width: width, height: height, load_existing: true, paint_n: 1024 ]
-        cv.update[]
-    cv.reset[ vec4f [ 0.0, 0.0, 0.0, 0.0 ] ]
+# the smallest spare this fits in, up to 4x its area; -1 if none
+func spare_index [ width: i32, height: i32 ] -> i32
+    s : gfx.spare
+    best : i32 [ -1 ]
+    best_area : i64 [ i64[ width ] * i64[ height ] * 4 + 1 ]
+    for [ i: i32 0, i < i32 s.count, i += 1 ]
+        if [ s[i].width < width || s[i].height < height ] continue
+        area : i64 [ i64[ s[i].width ] * i64[ s[i].height ] ]
+        if [ area < best_area ]
+            best = i
+            best_area = area
+    return best
+
+# the id table holds it before the spare list lets go
+func canvas_id [ cv: Canvas ] -> i32
     t : gfx.canvases
     for [ i: i32 0, i < i32 t.count, i += 1 ]
         if [ !t[i] ]
@@ -354,18 +349,45 @@ func webgfx_canvas_new [ width: i32, height: i32 ] -> i32
     t.push[ cv ]
     return i32 t.count
 
-# kept for reuse: up to 32 canvases of 4 megapixels or less
+func webgfx_canvas_new [ width: i32, height: i32 ] -> i32
+    d  : gfx_display[]
+    si : spare_index[ width, height ]
+    if [ si >= 0 ]
+        id : canvas_id[ gfx.spare[ si ] ]
+        gfx.spare.remove[ si ]
+        cv : canvas_of[ id ]
+        cv.resize[ width, height ]
+        cv.fresh_state[]
+        cv.clear_recorded[ vec4f [ 0.0, 0.0, 0.0, 0.0 ] ]
+        return id
+    # each new pass must keep what earlier passes drew
+    # a page is one batch: 1024 draws before a GPU wait
+    # room to 64 px: a near size reuses it later
+    fresh : Canvas [ vk: gfx.vk, w: d, width: (width + 63) / 64 * 64, height: (height + 63) / 64 * 64,
+        load_existing: true, paint_n: 1024, quantize: true ]
+    fresh.update[]
+    fresh.reset[ vec4f [ 0.0, 0.0, 0.0, 0.0 ] ]
+    fresh.resize[ width, height ]
+    return canvas_id[ fresh ]
+
 func webgfx_canvas_free [ id: i32 ]
     cv : canvas_of[ id ]
     if [ !cv ] return
-    # kept before its slot goes: the slot held the last reference
-    if [ i64[ cv.content_w ] * i64[ cv.content_h ] <= 4194304 ]
-        if [ !gfx.spare ]
-            gfx.spare = vec Canvas []
-            gfx.spare.hold[]
-        if [ gfx.spare.count >= 32 ] gfx.spare.shift[]
-        gfx.spare.push[ cv ]
+    gfx.retired.push[ cv ]
     gfx.canvases[ id - 1 ] = null
+
+# a frame ends: freed objects and finished GPU work go
+func webgfx_drain []
+    if [ gfx.vk ] gfx.vk.defer_tick[]
+    if [ gfx.retired && gfx.retired.count > 0 ]
+        for [ cv: Canvas ] in gfx.retired
+            cv.sync_all[]
+            gfx.spare.push[ cv ]
+        gfx.retired.clear[]
+        # the oldest go past this many
+        while [ gfx.spare.count > 32 ]
+            gfx.spare.remove[ 0 ]
+    Au.auto_free[]
 
 func webgfx_canvas_clear [ id: i32, c: @f32 ]
     cv : canvas_of[ id ]
@@ -419,12 +441,15 @@ func webgfx_canvas_fill_path [ id: i32, pid: i32, c: @f32, even_odd: bool ]
     cv.paint[]
     cv.even_odd = false
 
-func webgfx_canvas_stroke_path [ id: i32, pid: i32, c: @f32, width: f32 ]
+# centred on the path; cap: 0 butt, 1 round, 2 square
+func webgfx_canvas_stroke_path [ id: i32, pid: i32, c: @f32, width: f32, cap: i32 ]
     cv : canvas_of[ id ]
     if [ !cv || !canvas_take_path[ cv, pid ] ] return
     cv.fill_rgba[ 0.0, 0.0, 0.0, 0.0 ]
     cv.stroke_rgba[ c[0], c[1], c[2], c[3] ]
     cv.stroke_width[ width ]
+    cv.stroke_offset[ 0.0 ]
+    cv.set_stroke_cap[ Cap[ cap ] ]
     cv.paint[]
     cv.stroke_width[ 0.0 ]
 
@@ -585,6 +610,44 @@ func webgfx_canvas_set_ramp [ id: i32, img: i32, kind: i32, spread: i32, alpha: 
 func webgfx_canvas_draw_layer [ id: i32, src: i32, mask: i32, luma: bool, x: i32, y: i32, lw: i32, lh: i32 ]
     webgfx_canvas_compose[ id, src, mask, luma, 1.0, x, y, lw, lh ]
 
+# src blurred into id at x, y (pixels); tint: its alpha in a color
+func webgfx_canvas_filter_blur [ id: i32, src: i32, x: f32, y: f32, sx: f32, sy: f32, tint: @f32 ]
+    cv : canvas_of[ id ]
+    sc : canvas_of[ src ]
+    if [ !cv || !sc ] return
+    ta : f32 [ (tint) ? tint[3] : 0.0 ]
+    cv.save[]
+    cv.set_transform[ 1.0, 0.0, 0.0, 1.0, 0.0, 0.0 ]
+    if [ tint ] cv.filter_blur[ sc, sx, sy, x, y, tint[0], tint[1], tint[2], ta ]
+    el          cv.filter_blur[ sc, sx, sy, x, y, 0.0, 0.0, 0.0, 0.0 ]
+    cv.restore[]
+
+# src through a 4x5 color matrix (20 floats, row by row)
+func webgfx_canvas_filter_matrix [ id: i32, src: i32, x: f32, y: f32, m: @f32 ]
+    cv : canvas_of[ id ]
+    sc : canvas_of[ src ]
+    if [ !cv || !sc ] return
+    cv.save[]
+    cv.set_transform[ 1.0, 0.0, 0.0, 1.0, 0.0, 0.0 ]
+    cv.filter_matrix[ sc, m, x, y ]
+    cv.restore[]
+
+# src through tables: 256 rgba entries, one table per channel
+func webgfx_canvas_filter_lut [ id: i32, src: i32, x: f32, y: f32, table: @u8 ]
+    cv : canvas_of[ id ]
+    sc : canvas_of[ src ]
+    if [ !cv || !sc ] return
+    d  : gfx_display[]
+    lut : Texture [ vk: gfx.vk, w: d, width: 256, height: 1, linear: true,
+        pixel_format: Pixel.rgba8, surface: Surface.color, tag: 'webgfx-lut' ]
+    lut.upload_region[ 0, 0, 256, 1, table, 1024 ]
+    cv.save[]
+    cv.set_transform[ 1.0, 0.0, 0.0, 1.0, 0.0, 0.0 ]
+    cv.filter_lut[ sc, lut, x, y ]
+    cv.restore[]
+    # the table is freed on return: its read finishes first
+    cv.sync_fence[]
+
 # draw_layer at an opacity
 func webgfx_canvas_compose [ id: i32, src: i32, mask: i32, luma: bool, alpha: f32, x: i32, y: i32, lw: i32, lh: i32 ]
     cv : canvas_of[ id ]
@@ -597,8 +660,7 @@ func webgfx_canvas_read [ id: i32, out: @u8 ]
     cv : canvas_of[ id ]
     if [ !cv ] return
     cv.sync_all[]
-    img : Image [ cv.color ]
-    memcpy[ out, img.vdata[], cv.width * cv.height * 4 ]
+    cv.color.read_region[ 0, 0, cv.content_w, cv.content_h, out ]
 
 # rgba8 pixels of a region, rw * 4 bytes a row
 func webgfx_canvas_read_region [ id: i32, x: i32, y: i32, rw: i32, rh: i32, out: @u8 ]
@@ -727,6 +789,222 @@ expect func t_canvas_draw [] -> bool
     webgfx_canvas_free[ id ]
     return ok
 
+expect func t_canvas_drain [] -> bool
+    webgfx_drain[]
+    cmds : i32 [ Au.alloc_count[ typeid[ Command ] ] ]
+    midway : i32 [ 0 ]
+    for [ i: i32 0, i < 8, i += 1 ]
+        src : webgfx_canvas_new[ 64, 32 ]
+        dst : webgfx_canvas_new[ 64, 32 ]
+        webgfx_canvas_filter_blur[ dst, src, 0.0, 0.0, 20.0, 20.0, null ]
+        webgfx_canvas_free[ src ]
+        webgfx_canvas_free[ dst ]
+        webgfx_drain[]
+        if [ i == 3 ] midway = i32[ Au.alloc_count[ typeid[ Canvas ] ] ]
+    after : i32 [ Au.alloc_count[ typeid[ Canvas ] ] ]
+    cmds_after : i32 [ Au.alloc_count[ typeid[ Command ] ] ]
+    log 'canvases live: {midway} after 4 frames, {after} after 8 frames'
+    log 'commands live: {cmds} before, {cmds_after} after 8 frames'
+    return after == midway && cmds_after == cmds
+
+expect func t_canvas_reuse [] -> bool
+    red : new f32 [ 4 ]
+    red[0] = 1.0
+    red[1] = 0.0
+    red[2] = 0.0
+    red[3] = 1.0
+    moved : new f32 [ 6 ]
+    moved[0] = 1.0
+    moved[1] = 0.0
+    moved[2] = 0.0
+    moved[3] = 1.0
+    moved[4] = 30.0
+    moved[5] = 0.0
+    old : webgfx_canvas_new[ 64, 32 ]
+    webgfx_canvas_fill_rect[ old, 0.0, 0.0, 64.0, 32.0, red, null ]
+    webgfx_canvas_save[ old ]
+    webgfx_canvas_transform[ old, moved ]
+    webgfx_canvas_clip[ old, 40, 0, 8, 8 ]
+    webgfx_canvas_free[ old ]
+    webgfx_drain[]
+    # the drain frees this function's own pool arrays too
+    blue : new f32 [ 4 ]
+    blue[0] = 0.0
+    blue[1] = 0.0
+    blue[2] = 1.0
+    blue[3] = 1.0
+    pipes : i32 [ Au.alloc_count[ typeid[ Pipeline ] ] ]
+    id    : webgfx_canvas_new[ 64, 32 ]
+    built : i32 [ Au.alloc_count[ typeid[ Pipeline ] ] - pipes ]
+    webgfx_canvas_fill_rect[ id, 0.0, 0.0, 16.0, 32.0, blue, null ]
+    px : new u8 [ 64 * 32 * 4 ]
+    webgfx_canvas_read[ id, px ]
+    at_fill : i32 [ (16 * 64 + 8) * 4 ]
+    at_rest : i32 [ (16 * 64 + 48) * 4 ]
+    log 'reuse: {built} pipelines built; fill {px[at_fill]} {px[at_fill + 1]} {px[at_fill + 2]} {px[at_fill + 3]}; rest {px[at_rest]} {px[at_rest + 1]} {px[at_rest + 2]} {px[at_rest + 3]}'
+    ok : bool [ built == 0 && px[at_fill + 2] > 200 && px[at_fill] < 40 && px[at_fill + 3] > 200 ]
+    ok = ok && px[at_rest] == 0 && px[at_rest + 3] == 0
+    webgfx_canvas_free[ id ]
+    return ok
+
+expect func t_mixer_survives_drain [] -> bool
+    m : gfx_mixer[]
+    if [ !m ] return true
+    webgfx_drain[]
+    # memory the drain freed comes back here if the mixer lost it
+    probe : new i32 [ 2048 ]
+    for [ i: i32 0, i < 2048, i += 1 ]
+        probe[ i ] = 7
+    usleep[ 200000 ]
+    changed : i32 [ 0 ]
+    for [ i: i32 0, i < 2048, i += 1 ]
+        if [ probe[ i ] != 7 ] changed += 1
+    log 'mixer wrote into freed memory: {changed} values'
+    return changed == 0
+
+expect func t_canvas_memory_returns [] -> bool
+    webgfx_drain[]
+    before : i64 [ gfx.vk.gpu_bytes[] ]
+    # a new size each frame, as a fading blur makes
+    for [ i: i32 0, i < 12, i += 1 ]
+        id : webgfx_canvas_new[ 100 + i, 60 + i ]
+        webgfx_canvas_free[ id ]
+        webgfx_drain[]
+    # spares go and the GPU frees what they held
+    while [ gfx.spare.count > 0 ]
+        gfx.spare.remove[ 0 ]
+    for [ i: i32 0, i < 10, i += 1 ]
+        webgfx_drain[]
+    after : i64 [ gfx.vk.gpu_bytes[] ]
+    log 'gpu memory in use: {before / 1024} KB before, {after / 1024} KB after'
+    return after <= before
+
+expect func t_blur_reuses [] -> bool
+    src : webgfx_canvas_new[ 64, 32 ]
+    dst : webgfx_canvas_new[ 64, 32 ]
+    webgfx_canvas_filter_blur[ dst, src, 0.0, 0.0, 20.0, 20.0, null ]
+    pipes : i32 [ Au.alloc_count[ typeid[ Pipeline ] ] ]
+    webgfx_canvas_filter_blur[ dst, src, 0.0, 0.0, 20.0, 20.0, null ]
+    built : i32 [ Au.alloc_count[ typeid[ Pipeline ] ] - pipes ]
+    log 'pipelines built by a second blur: {built}'
+    webgfx_canvas_free[ src ]
+    webgfx_canvas_free[ dst ]
+    return built == 0
+
+expect func t_canvas_read_reuses [] -> bool
+    id : webgfx_canvas_new[ 64, 32 ]
+    px : new u8 [ 64 * 32 * 4 ]
+    webgfx_canvas_read[ id, px ]
+    before : i32 [ Au.alloc_count[ typeid[ Buffer ] ] ]
+    for [ i: i32 0, i < 3, i += 1 ]
+        webgfx_canvas_read[ id, px ]
+    made : i32 [ Au.alloc_count[ typeid[ Buffer ] ] - before ]
+    log 'buffers made by 3 more reads: {made}'
+    webgfx_canvas_free[ id ]
+    return made == 0
+
+expect func t_canvas_reuse_near [] -> bool
+    old : webgfx_canvas_new[ 100, 60 ]
+    webgfx_canvas_free[ old ]
+    webgfx_drain[]
+    blue : new f32 [ 4 ]
+    blue[0] = 0.0
+    blue[1] = 0.0
+    blue[2] = 1.0
+    blue[3] = 1.0
+    pipes : i32 [ Au.alloc_count[ typeid[ Pipeline ] ] ]
+    id    : webgfx_canvas_new[ 90, 50 ]
+    built : i32 [ Au.alloc_count[ typeid[ Pipeline ] ] - pipes ]
+    webgfx_canvas_fill_rect[ id, 0.0, 0.0, 45.0, 50.0, blue, null ]
+    px : new u8 [ 90 * 50 * 4 ]
+    webgfx_canvas_read[ id, px ]
+    low  : i32 [ (40 * 90 + 20) * 4 ]
+    rest : i32 [ (40 * 90 + 70) * 4 ]
+    log 'near reuse: {built} pipelines built; fill {px[low + 2]} {px[low + 3]}; rest {px[rest + 2]} {px[rest + 3]}'
+    webgfx_canvas_free[ id ]
+    return built == 0 && px[low + 2] > 200 && px[low + 3] > 200 && px[rest + 3] == 0
+
+expect func t_path_after_64_images [] -> bool
+    id  : webgfx_canvas_new[ 2800, 40 ]
+    pix : new u8 [ 4 * 4 * 4 ]
+    for [ i: i32 0, i < 64, i += 1 ]
+        pix[ i ] = 255
+    img : webgfx_image_new[ pix, 4, 4 ]
+    dst : new f32 [ 4 ]
+    dst[0] = 0.0
+    dst[1] = 0.0
+    dst[2] = 4.0
+    dst[3] = 4.0
+    uv : new f32 [ 4 ]
+    uv[0] = 0.0
+    uv[1] = 0.0
+    uv[2] = 1.0
+    uv[3] = 1.0
+    # a batch past 64 draws, all images
+    for [ i: i32 0, i < 80, i += 1 ]
+        webgfx_canvas_draw_image[ id, img, dst, uv ]
+    px : new u8 [ 2800 * 40 * 4 ]
+    webgfx_canvas_read[ id, px ]
+    clear : new f32 [ 4 ]
+    clear[0] = 0.0
+    clear[1] = 0.0
+    clear[2] = 0.0
+    clear[3] = 0.0
+    webgfx_canvas_clear[ id, clear ]
+    red : new f32 [ 4 ]
+    red[0] = 1.0
+    red[1] = 0.0
+    red[2] = 0.0
+    red[3] = 1.0
+    # the same slots draw triangles now; 70 is past slot 64
+    for [ i: i32 0, i < 70, i += 1 ]
+        p : webgfx_path_new[]
+        x : f32 [ f32[ i * 40 ] ]
+        webgfx_path_move_to[ p, x + 2.0, 38.0 ]
+        webgfx_path_line_to[ p, x + 20.0, 2.0 ]
+        webgfx_path_line_to[ p, x + 38.0, 38.0 ]
+        webgfx_path_close[ p ]
+        webgfx_canvas_fill_path[ id, p, red, false ]
+        webgfx_path_free[ p ]
+    webgfx_canvas_read[ id, px ]
+    # a triangle's top corners stay clear; a box fills them
+    corner : i32 [ (4 * 2800 + 66 * 40 + 4) * 4 ]
+    middle : i32 [ (30 * 2800 + 66 * 40 + 20) * 4 ]
+    log 'path past slot 64: corner alpha {px[corner + 3]}, middle red {px[middle]}'
+    webgfx_canvas_free[ id ]
+    return px[corner + 3] < 20 && px[middle] > 200
+
+expect func t_stroke_dot [] -> bool
+    id : webgfx_canvas_new[ 40, 40 ]
+    p  : webgfx_path_new[]
+    # an svg dot: M20 20h.01, round caps, 4 px wide
+    webgfx_path_move_to[ p, 20.0, 20.0 ]
+    webgfx_path_line_to[ p, 20.01, 20.0 ]
+    black : new f32 [ 4 ]
+    black[0] = 0.0
+    black[1] = 0.0
+    black[2] = 0.0
+    black[3] = 1.0
+    webgfx_canvas_stroke_path[ id, p, black, 4.0, 1 ]
+    webgfx_path_free[ p ]
+    px : new u8 [ 40 * 40 * 4 ]
+    webgfx_canvas_read[ id, px ]
+    centre : i32 [ (20 * 40 + 20) * 4 ]
+    beyond : i32 [ (20 * 40 + 26) * 4 ]
+    log 'stroked dot: centre alpha {px[centre + 3]}, 6 px away {px[beyond + 3]}'
+    webgfx_canvas_free[ id ]
+    return px[centre + 3] > 200 && px[beyond + 3] < 20
+
+expect func t_canvas_new_no_idle [] -> bool
+    first : webgfx_canvas_new[ 64, 32 ]
+    before : i64 [ gfx.vk.idle_waits ]
+    id : webgfx_canvas_new[ 64, 32 ]
+    waits : i64 [ gfx.vk.idle_waits - before ]
+    log 'device idle waits for one new canvas: {waits}'
+    webgfx_canvas_free[ id ]
+    webgfx_canvas_free[ first ]
+    return waits == 0
+
 expect func t_canvas_glyphs [] -> bool
     n     : i64 [ 0 ]
     bytes : read_file[ 'fonts/SpaceMono-Combined.ttf', @n ]
@@ -845,45 +1123,103 @@ expect func t_canvas_save_transform [] -> bool
     webgfx_canvas_free[ id ]
     return px[a] > 200
 
-# a reused canvas starts clean; earlier reads keep its old pixels
-expect func t_canvas_reuse [] -> bool
-    red  : new f32 [ 4 ]
-    blue : new f32 [ 4 ]
-    green : new f32 [ 4 ]
+func filter_square [ n: i32, lo: f32, hi: f32 ] -> i32
+    id : webgfx_canvas_new[ n, n ]
+    white : new f32 [ 4 ]
     for [ i: i32 0, i < 4, i += 1 ]
-        red[i]   = (i == 0 || i == 3) ? 1.0 : 0.0
-        blue[i]  = (i == 2 || i == 3) ? 1.0 : 0.0
-        green[i] = (i == 1 || i == 3) ? 1.0 : 0.0
-    moved : new f32 [ 6 ]
-    moved[0] = 1.0
-    moved[1] = 0.0
-    moved[2] = 0.0
-    moved[3] = 1.0
-    moved[4] = 20.0
-    moved[5] = 20.0
-    a9 : webgfx_canvas_new[ 40, 40 ]
-    webgfx_canvas_fill_rect[ a9, 0.0, 0.0, 40.0, 40.0, red, null ]
-    # c reads a, recorded and not yet sent to the gpu
-    c9 : webgfx_canvas_new[ 50, 50 ]
-    webgfx_canvas_compose[ c9, a9, 0, false, 1.0, 0, 0, 40, 40 ]
-    webgfx_canvas_transform[ a9, moved ]
-    webgfx_canvas_clip_out_rect[ a9, 0.0, 0.0, 5.0, 5.0 ]
-    webgfx_canvas_free[ a9 ]
-    b9 : webgfx_canvas_new[ 40, 40 ]
+        white[i] = 1.0
+    webgfx_canvas_fill_rect[ id, lo, lo, hi - lo, hi - lo, white, null ]
+    return id
+
+# a 20 px square, sigma 3: half at its edge, 84% and 16% a sigma off
+expect func t_filter_blur [] -> bool
+    src : filter_square[ 40, 10.0, 30.0 ]
+    dst : webgfx_canvas_new[ 40, 40 ]
+    webgfx_canvas_filter_blur[ dst, src, 0.0, 0.0, 3.0, 3.0, null ]
     px : new u8 [ 40 * 40 * 4 ]
-    webgfx_canvas_read[ b9, px ]
-    stale : i32 [ px[ (5 * 40 + 5) * 4 + 3 ] ]
-    webgfx_canvas_fill_rect[ b9, 0.0, 0.0, 10.0, 10.0, green, null ]
-    webgfx_canvas_read[ b9, px ]
-    g5 : i32 [ px[ (5 * 40 + 5) * 4 + 1 ] ]
-    cp : new u8 [ 50 * 50 * 4 ]
-    webgfx_canvas_read[ c9, cp ]
-    r5 : i32 [ cp[ (5 * 50 + 5) * 4 ] ]
-    c5 : i32 [ cp[ (5 * 50 + 5) * 4 + 1 ] ]
-    log 'canvas reuse: fresh alpha {stale}, green at 5,5 {g5}; earlier read red {r5} green {c5}'
-    webgfx_canvas_free[ b9 ]
-    webgfx_canvas_free[ c9 ]
-    return stale == 0 && g5 > 250 && r5 > 250 && c5 < 5
+    webgfx_canvas_read[ dst, px ]
+    mid  : alpha_at[ px, 40, 20, 20 ]
+    edge : alpha_at[ px, 40, 10, 20 ]
+    inn  : alpha_at[ px, 40, 13, 20 ]
+    out  : alpha_at[ px, 40, 7, 20 ]
+    far  : alpha_at[ px, 40, 1, 1 ]
+    log 'filter blur: middle {mid} edge {edge} inside {inn} outside {out} far {far}'
+    webgfx_canvas_free[ src ]
+    webgfx_canvas_free[ dst ]
+    return mid > 245 && edge > 100 && edge < 170 && inn > 190 && inn < 235 && out > 20 && out < 65 && far < 3
+
+# sigma 12 shrinks first: an even falloff on both sides
+expect func t_filter_blur_wide [] -> bool
+    src : filter_square[ 100, 30.0, 70.0 ]
+    dst : webgfx_canvas_new[ 100, 100 ]
+    webgfx_canvas_filter_blur[ dst, src, 0.0, 0.0, 12.0, 12.0, null ]
+    px : new u8 [ 100 * 100 * 4 ]
+    webgfx_canvas_read[ dst, px ]
+    mid : alpha_at[ px, 100, 50, 50 ]
+    le  : alpha_at[ px, 100, 30, 50 ]
+    re  : alpha_at[ px, 100, 69, 50 ]
+    far : alpha_at[ px, 100, 2, 2 ]
+    log 'filter blur wide: middle {mid} left edge {le} right edge {re} far {far}'
+    webgfx_canvas_free[ src ]
+    webgfx_canvas_free[ dst ]
+    d9 : i32 [ i32[ le ] - i32[ re ] ]
+    return mid > 180 && mid < 235 && le > 70 && le < 160 && d9 < 20 && d9 > -20 && far < 3
+
+# the drop shadow's tint: red wherever the blurred alpha is
+expect func t_filter_shadow_tint [] -> bool
+    src : filter_square[ 40, 10.0, 30.0 ]
+    dst : webgfx_canvas_new[ 40, 40 ]
+    red : new f32 [ 4 ]
+    red[0] = 1.0
+    red[1] = 0.0
+    red[2] = 0.0
+    red[3] = 1.0
+    webgfx_canvas_filter_blur[ dst, src, 0.0, 0.0, 2.0, 2.0, red ]
+    px : new u8 [ 40 * 40 * 4 ]
+    webgfx_canvas_read[ dst, px ]
+    at : i32 [ (20 * 40 + 20) * 4 ]
+    log 'filter shadow tint: {px[at]} {px[at + 1]} {px[at + 2]} {px[at + 3]}'
+    webgfx_canvas_free[ src ]
+    webgfx_canvas_free[ dst ]
+    return px[at] > 245 && px[at + 1] < 5 && px[at + 2] < 5 && px[at + 3] > 245
+
+# saturate 0 turns red to its luminance grey; a table inverts it
+expect func t_filter_matrix_lut [] -> bool
+    src : webgfx_canvas_new[ 20, 20 ]
+    red : new f32 [ 4 ]
+    red[0] = 1.0
+    red[1] = 0.0
+    red[2] = 0.0
+    red[3] = 1.0
+    webgfx_canvas_fill_rect[ src, 0.0, 0.0, 20.0, 20.0, red, null ]
+    m : new f32 [ 20 ]
+    for [ r: i32 0, r < 3, r += 1 ]
+        m[r * 5]     = 0.2126
+        m[r * 5 + 1] = 0.7152
+        m[r * 5 + 2] = 0.0722
+    m[18] = 1.0
+    gray : webgfx_canvas_new[ 20, 20 ]
+    webgfx_canvas_filter_matrix[ gray, src, 0.0, 0.0, m ]
+    table : new u8 [ 1024 ]
+    for [ i: i32 0, i < 256, i += 1 ]
+        table[i * 4]     = u8[ 255 - i ]
+        table[i * 4 + 1] = u8[ 255 - i ]
+        table[i * 4 + 2] = u8[ 255 - i ]
+        table[i * 4 + 3] = u8[ i ]
+    inv : webgfx_canvas_new[ 20, 20 ]
+    webgfx_canvas_filter_lut[ inv, src, 0.0, 0.0, table ]
+    px : new u8 [ 20 * 20 * 4 ]
+    webgfx_canvas_read[ gray, px ]
+    g0 : i32 [ px[ (10 * 20 + 10) * 4 ] ]
+    g1 : i32 [ px[ (10 * 20 + 10) * 4 + 1 ] ]
+    webgfx_canvas_read[ inv, px ]
+    i0 : i32 [ px[ (10 * 20 + 10) * 4 ] ]
+    i1 : i32 [ px[ (10 * 20 + 10) * 4 + 1 ] ]
+    log 'filter matrix grey {g0},{g1}; table inverted {i0},{i1}'
+    webgfx_canvas_free[ src ]
+    webgfx_canvas_free[ gray ]
+    webgfx_canvas_free[ inv ]
+    return g0 > 48 && g0 < 60 && g1 == g0 && i0 < 5 && i1 > 250
 
 expect func t_canvas_two_alive [] -> bool
     one : webgfx_canvas_new[ 64, 32 ]
@@ -1498,7 +1834,6 @@ func video_put [ v: WebVideo ] -> i32
     return id
 
 func webgfx_video_free [ id: i32 ]
-    fprintf[ stderr, "TRACE video_free %d\n", id ]
     v : video_of[ id ]
     if [ !v ] return
     webgfx_video_pause[ id ]
@@ -1706,7 +2041,6 @@ func webgfx_demux_clear [ id: i32 ]
 
 # a media source player: samples pushed, the clock from its sound
 func webgfx_stream_new [] -> i32
-    fprintf[ stderr, "TRACE stream_new\n" ]
     d9 : gfx_display[]
     v : WebVideo []
     v.planes = vec i32 []
@@ -1715,13 +2049,11 @@ func webgfx_stream_new [] -> i32
     return video_put[ v ]
 
 func webgfx_stream_video_config [ id: i32, avcc: @u8, n: i32 ]
-    fprintf[ stderr, "TRACE video_config %d\n", id ]
     v : video_of[ id ]
     if [ v && v.stream ] v.stream.config[ avcc, n ]
 
 # pts in microseconds; show false: decoded for later pictures only
 func webgfx_stream_video_sample [ id: i32, bytes: @u8, n: i64, pts: i64, sync: i32, show: i32 ]
-    fprintf[ stderr, "TRACE vsample %d n %ld\n", id, n ]
     v : video_of[ id ]
     if [ v && v.stream ] v.stream.push[ bytes, n, pts, sync != 0, show != 0 ]
 
@@ -1730,23 +2062,21 @@ func webgfx_stream_video_end [ id: i32 ]
     if [ v && v.stream ] v.stream.finish[]
 
 func webgfx_stream_audio_config [ id: i32, asc: @u8, n: i32 ] -> i32
-    fprintf[ stderr, "TRACE audio_config %d\n", id ]
     v : video_of[ id ]
     if [ !v || !v.sound || !v.sound.config[ asc, n ] ] return 0
+    # no sound device: 0, so the player keeps its own clock
     m : gfx_mixer[]
-    if [ m ]
-        m.remove_stream[ v.sound ]
-        m.add_stream[ v.sound ]
+    if [ !m ] return 0
+    m.remove_stream[ v.sound ]
+    m.add_stream[ v.sound ]
     return 1
 
 func webgfx_stream_audio_sample [ id: i32, bytes: @u8, n: i64, pts: i64 ]
-    fprintf[ stderr, "TRACE asample %d n %ld\n", id, n ]
     v : video_of[ id ]
     if [ v && v.sound ] v.sound.push[ bytes, n, pts ]
 
 # kind 1 video, 2 sound: everything queued goes (a seek)
 func webgfx_stream_flush [ id: i32, kind: i32 ]
-    fprintf[ stderr, "TRACE flush %d kind %d\n", id, kind ]
     v : video_of[ id ]
     if [ !v ] return
     if [ kind == 1 && v.stream ]
@@ -1765,7 +2095,6 @@ func webgfx_stream_audio_buffered [ id: i32 ] -> i64
     return (v && v.sound) ? v.sound.buffered[] : 0
 
 func webgfx_stream_playing [ id: i32, on: i32 ]
-    fprintf[ stderr, "TRACE playing %d on %d\n", id, on ]
     v : video_of[ id ]
     if [ v && v.sound ] v.sound.playing = on != 0
 
@@ -1775,8 +2104,6 @@ func webgfx_stream_gain [ id: i32, gain: f32 ]
 
 # the time being heard, microseconds; -1 with no sound yet
 func webgfx_stream_time [ id: i32 ] -> i64
-    TRACEv : video_of[ id ]
-    if [ TRACEv && TRACEv.sound ] fprintf[ stderr, "TRACE time %d t %ld buffered %ld playing %d mixer %d\n", id, TRACEv.sound.time[], TRACEv.sound.buffered[], i32[ TRACEv.sound.playing ], i32[ gfx.mixer != null ] ]
     v : video_of[ id ]
     return (v && v.sound) ? v.sound.time[] : -1
 
@@ -1945,3 +2272,63 @@ expect func t_video_audio [] -> bool
     log 'video audio: {c.rate} Hz, {c.channels} ch, {c.frames} frames, {crossings} cycles a second, peak {peak}'
     webgfx_video_free[ vid ]
     return c.rate == 48000 && c.frames > 90000 && crossings > 430 && crossings < 450 && peak > 1000
+
+# one pixel's alpha after a stroke of the path on a clear canvas
+func stroke_alpha [ pid: i32, width: f32, cap: i32, x: i32, y: i32 ] -> i32
+    id : webgfx_canvas_new[ 64, 32 ]
+    bg : new f32 [ 4 ]
+    webgfx_canvas_clear[ id, bg ]
+    ink : new f32 [ 4 ]
+    ink[0] = 1.0
+    ink[3] = 1.0
+    copy : webgfx_path_clone[ pid ]
+    webgfx_canvas_stroke_path[ id, copy, ink, width, cap ]
+    px : new u8 [ 64 * 32 * 4 ]
+    webgfx_canvas_read[ id, px ]
+    webgfx_canvas_free[ id ]
+    webgfx_path_free[ copy ]
+    return i32[ px[ (y * 64 + x) * 4 + 3 ] ]
+
+# strokes are centred on the path; open ends take the cap
+expect func t_stroke_caps [] -> bool
+    ln : webgfx_path_new[]
+    webgfx_path_move_to[ ln, 16.0, 16.0 ]
+    webgfx_path_line_to[ ln, 48.0, 16.0 ]
+    on9    : i32 [ stroke_alpha[ ln, 4.0, 0, 32, 16 ] ]
+    off9   : i32 [ stroke_alpha[ ln, 4.0, 0, 32, 19 ] ]
+    butt9  : i32 [ stroke_alpha[ ln, 4.0, 0, 14, 16 ] ]
+    round9 : i32 [ stroke_alpha[ ln, 4.0, 1, 14, 16 ] ]
+    sq9    : i32 [ stroke_alpha[ ln, 4.0, 2, 14, 17 ] ]
+    # an open v: nothing across its top where a fill would close it
+    vee : webgfx_path_new[]
+    webgfx_path_move_to[ vee, 8.0, 4.0 ]
+    webgfx_path_line_to[ vee, 32.0, 28.0 ]
+    webgfx_path_line_to[ vee, 56.0, 4.0 ]
+    top9  : i32 [ stroke_alpha[ vee, 2.0, 1, 32, 4 ] ]
+    side9 : i32 [ stroke_alpha[ vee, 2.0, 1, 20, 16 ] ]
+    log 'stroke: on {on9} off {off9}; past the end butt {butt9} round {round9} square {sq9}; v top {top9} side {side9}'
+    webgfx_path_free[ ln ]
+    webgfx_path_free[ vee ]
+    return on9 > 200 && off9 < 30 && butt9 < 30 && round9 > 100 && sq9 > 100 && top9 < 30 && side9 > 100
+
+# the ui's inside border: offset in by half the width
+expect func t_stroke_inside [] -> bool
+    cv : Canvas canvas_of[ webgfx_canvas_new[ 64, 32 ] ]
+    cv.reset[ vec4f [ 0.0, 0.0, 0.0, 0.0 ] ]
+    cv.fill_color[ rgba [ '#0000' ] ]
+    cv.stroke_color[ rgba [ '#fff' ] ]
+    cv.stroke_width[ 2.0 ]
+    cv.stroke_offset[ -1.0 ]
+    cv.rect_to[ 10.0, 8.0, 40.0, 16.0 ]
+    cv.paint[]
+    cv.stroke_width[ 0.0 ]
+    cv.stroke_offset[ 0.0 ]
+    cv.sync_all[]
+    im : Image [ cv.color ]
+    px : @u8 [ im.vdata[] ]
+    inner : i32 [ i32[ px[ (16 * 64 + 10) * 4 + 3 ] ] ]
+    edge  : i32 [ i32[ px[ (16 * 64 + 9) * 4 + 3 ] ] ]
+    outer : i32 [ i32[ px[ (16 * 64 + 8) * 4 + 3 ] ] ]
+    # the pixel outside the box carries only edge smoothing
+    log 'stroke inside: border column {inner}, next out {edge}, two out {outer}'
+    return inner > 200 && edge < 60 && outer < 10

@@ -1867,7 +1867,7 @@ element LaunchLabel
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
 element LaunchPanel
-    body : Layer [ fill_color: rgba [ '#0f1220ee' ], stroke_width: 0.5, stroke_color: rgba [ '#fff2' ] ]
+    body : Layer [ fill_color: rgba [ '#0f122088' ], stroke_width: 0.5, stroke_color: rgba [ '#fff2' ] ]
     # the standard scrollbar: the rows scroll when the section is shorter than they are
     scrollbar : ScrollLayer [ overlay: true, area: Region { l0 t0 r0 b0 },
         thumb_color: '#fff3', thumb_w: 6.0, thumb_min_h: 32.0, thumb_radius: 4.0 ]
@@ -6885,6 +6885,14 @@ element orbiter : trinity # implements compiler
             if [ cur && cur.src ]
                 nav_panes[ pi ].record[ pi, '{cur.src.absolute[]}', cur.sel_line, cur.sel_col, cur.scroll.y ]
         bind_pane[ p, pi ]
+        # the arrival is a point too, or back overwrites the departure
+        ed : Editor pane_at[ pi ]
+        if [ ed && ed.nav ]
+            same : bool [ ed.loaded_src && '{ed.loaded_src.absolute[]}' == '{p.absolute[]}' ]
+            if [ same ]
+                ed.nav.record[ pi, '{p.absolute[]}', (ed.sel_line < 0) ? 0 : ed.sel_line, ed.sel_col, ed.scroll.y ]
+            el
+                ed.arrive_pending = true
 
     public func open_at [ fp: path, lno: i32, col: i32 ] -> bool
         open_in_pane[ fp, 0 ]

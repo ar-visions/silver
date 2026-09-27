@@ -399,7 +399,7 @@ Control InstancePanel
     style : CSS {
         area: l0 t0 r0 b0
         layers.ibase:
-            fill_color: #14121c
+            fill_color: #14121c80
             area: l0 t0 r0 b0
     }
     mutable chip_x   : f32

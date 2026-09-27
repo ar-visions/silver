@@ -555,7 +555,9 @@ class Encoder
             commandBufferCount: 1,
             pCommandBuffers:    @cmd ]
         vkResetFences[ vk.device, 1, @fence ]
+        vk.qlock.lock[]
         res : VkResult [ vkQueueSubmit[ vk.encode_queue, 1, @submit, fence ] ]
+        vk.qlock.unlock[]
         expect res == VK_SUCCESS, 'encode: submit'
         pending        = true
         prev_frame_num = frame_num
@@ -1044,7 +1046,11 @@ class Decoder
             commandBufferCount: 1,
             pCommandBuffers:    @cmd ]
         vkResetFences[ vk.device, 1, @fence ]
+        # any queue use and a device wait exclude each other: qlock
+        vk.qlock.lock[]
         res : VkResult [ vkQueueSubmit[ vk.decode_queue, 1, @info, fence ] ]
+        vk.qlock.unlock[]
+        if [ res != VK_SUCCESS ] vk.report_fault[]
         expect res == VK_SUCCESS, 'decode: submit'
         vkWaitForFences[ vk.device, 1, @fence, VK_TRUE, UINT64_MAX ]
 
@@ -1165,6 +1171,7 @@ class VideoStream
     intern  stop      : bool
     intern  started   : bool
     intern  tid       : pthread_t
+
 
     func init []
         queue = vec DemuxSample []
