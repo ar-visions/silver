@@ -439,7 +439,7 @@ ResourceView ImageView
     mutable iw  : f32
     mutable ih  : f32
     func extensions [] -> vec string
-        return vec string [] [ '.png', '.exr' ]
+        return vec string [] [ '.png', '.jpg', '.jpeg', '.exr' ]
     func thumbnail [ cv: Canvas ] -> Texture
         if [ !src ] return null
         im : Image [ '{src}' ]
@@ -2602,6 +2602,16 @@ Layer EditorLayer
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null ]
             cv.flush_text[ ]
             cv.restore[ ]
+        if [ !editor.ice_cream ]
+            editor.ice_cream = SVGModel [ path 'images/ice_cream.svg' ]
+        icz : f32 [ 64.0 ]
+        cv.clear_crop[ ]
+        cv.fill_color[ rgba['#ffffff'] ]
+        cv.stroke_color[ rgba['#ffffff'] ]
+        cv.draw_svg[ editor.ice_cream,
+            round[ bounds.x + bounds.w - rin - icz - 36.0 ],
+            round[ bounds.y + bounds.h - eb0 - icz - 12.0 ], icz, icz ]
+        cv.paint[ ]
 
 
 # left tool rail: vertical buttons, icon over title, 64px wide
@@ -2780,6 +2790,7 @@ Control Editor
     intern static bin_view_cached : string
     mutable lines         : list string
     mutable close_icon    : SVGModel
+    mutable ice_cream     : SVGModel
     mutable pin_icon      : SVGModel
     mutable file_icon     : SVGModel
     mutable module_icon   : SVGModel

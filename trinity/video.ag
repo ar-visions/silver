@@ -1164,7 +1164,7 @@ class VideoStream
     intern  dec_gen   : i64
     intern  stop      : bool
     intern  started   : bool
-    intern  tid       : u64
+    intern  tid       : pthread_t
 
     func init []
         queue = vec DemuxSample []

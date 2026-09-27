@@ -1844,6 +1844,23 @@ claude` with `{ prompt tokens, {images/x.png} }` under it. A
    the groove glow mask (`v_color.b * (1 - v_color.r)` with its
    gamma and smoothstep). The other reads were already on/off.
 
+11. DONE orbiter crashed at startup in path_ls (index_work).
+   79f791b queued checkout/'s plain folders on `later` for the
+   stack walk; stack/repos/later were pool-owned locals and
+   index_work drains its pool per directory, so the first drain
+   freed the stack. They are held for the walk (cleared, not
+   replaced). The pull dropped this fix once; it is back.
+12. DONE trinity did not build on macOS after ef72fa5:
+   video.ag `tid : u64` (Linux's pthread_t) is `pthread_t` now.
+13. DONE startup SIGSEGV freeing env.gltf's GltfBuffer (every
+   debug launch, 3-4 s). Display.resize did `cast Window [ a ]`
+   (unchecked) and set rebind_frost on environment's plain
+   Display: a write 95 bytes past its 577-byte object, into the
+   next block (found with malloc_history + a watchpoint). The
+   pull's three Texture members pushed it past malloc's slack.
+   resize and draw check `a inherits Window` now. Debug and
+   regular: 5/5 headless launches alive at 30 s.
+
 ## Active work: one exchange box (Sep 24 2026)
 
 1. APPLIED, not built (build needs approval): one box for the

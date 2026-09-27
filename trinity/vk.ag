@@ -5054,8 +5054,9 @@ Texture Display
         # on OBJECT identity (swap blit, frost chain head) never notice.
         # raise their rebind flags so the next frame rebinds live textures
         rebind_swap = true
-        rwin9 : cast Window [ a ]
-        if [ rwin9 ] rwin9.rebind_frost = true
+        if [ a inherits Window ]
+            rwin9 : Window a
+            rwin9.rebind_frost = true
 
         resized = true
         if [ !backbuffer && !defer_swap ]
@@ -5124,7 +5125,9 @@ Texture Display
         return list.last[]
 
     func draw [ ]
-        win : cast Window [ a ]
+        # a plain Display (environment's cube pass) has no Window fields
+        win : Window null
+        if [ a inherits Window ] win = a
         if [ pending_w > 0 && pending_h > 0 ]
             now: f64 [ platform_time[] ]
             if [ now - last_resize_t >= resize_debounce_s ]
