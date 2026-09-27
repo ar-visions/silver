@@ -9015,6 +9015,10 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
     string  cenv        = (a->sysroot && platform_is_windows(a))
                         ? f(string, "CPATH=%o/include %o ", a->sysroot, env)
                         : env;
+    // our clang finds the macOS sdk only through SDKROOT
+    bool native_host = !a->platform || !len(a->platform) || cmp(a->platform, "native") == 0;
+    if (a->isysroot && native_host)
+        cenv = f(string, "SDKROOT=%o %o", a->isysroot, cenv);
 
     validate(command_exists("git"), "git required for import feature");
 
@@ -9335,8 +9339,10 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
                 checkout_verify(a, label, "configure", "libtoolize",
                     f(command, "libtoolize --install --copy --force"));
 
+            // a release archive ships configure ready; autogen is git's
+            bool shipped = is_archive && file_exists("%o/configure", project_f);
             // common preference on these repos
-            if (file_exists("%o/autogen.sh", project_f))
+            if (!shipped && file_exists("%o/autogen.sh", project_f))
                 checkout_verify(a, label, "configure", "autogen",
                     f(command, "(cd %o && bash autogen.sh)", project_f));
 
@@ -9376,8 +9382,9 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
         // `>` lines are the whole build when given (linux: no make install)
         if (file_exists("%o", Makefile) && !(prebuild && len(prebuild)))
             checkout_verify(a, label, "build", "make",
-                f(command, "(cd %o && %o make PREFIX=%o -j16 install)",
-                  project_f, cenv, install));
+                // in-tree objects from an older configure are stale
+                f(command, "(cd %o && %o make clean >/dev/null; %o make PREFIX=%o -j16 install)",
+                  project_f, cenv, cenv, install));
     }
 
     run_import_commands(a, label, postbuild,

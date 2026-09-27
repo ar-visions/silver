@@ -2318,7 +2318,10 @@ checkout/lb takes about 15 GB (ask Kalen before removing).
    ellipse, conic from the top clockwise, repeating stripes.
    NEXT: clips to a path's shape (rounded boxes fill square:
    WebKit clips border-radius then fills; bounds used now).
-   OPEN: the silver import line for WebKit in browser.ag.
+   WRITTEN, not built: browser.ag imports webgfx, then
+   wpewebkit/2.54.0 from wpewebkit.org's tarball (checkout/
+   releases/wpewebkit, overlay browser/wpewebkit/, the flags
+   of wpewebkit.configure.sh as import lines).
 6. DONE (Sep 26) the browser element runs WebKit. browser.ag
    forks install/libexec/wpe-webkit-2.0/WPETrinityBrowser (the
    overlay's Tools/TrinityBrowser/main.c, built by WebKit's own
@@ -2456,6 +2459,34 @@ GPU, MoltenVK included).
    checked with timestamps in LayerTreeHost and WebPage).
    Profiling without perf: an LD_PRELOAD SIGPROF sampler and
    strace -f on the helper (a child, so ptrace is allowed).
+
+## Active work: SQLite out of WebKit (Sep 27 2026)
+
+Kalen: no SQLite in the browser; site storage is plain files in
+the browser's cache folder (the helper's --data dir). All of it
+in the overlay browser/wpewebkit/. In order:
+1. WRITTEN, not compiled: localStorage is FileStorageArea, a
+   readable localStorage.txt per site (key TAB value per line,
+   \t \n \r \\ \uXXXX escapes), saved 500 ms after a change and
+   on sync/close. SQLiteStorageArea deleted (wpewebkit.deleted).
+1b. WRITTEN, not compiled (Kalen: nothing hidden from the
+   user): site folders are named by the site (databaseIdentifier,
+   https_www.youtube.com_0), not a salted SHA-256; the salt file
+   is gone (NetworkStorageManager).
+1c. OPEN: the page Cache API (CacheStorageDiskStore) and the
+   HTTP disk cache still name files by salted SHA-1.
+2. IndexedDB: WebKit's non-SQL MemoryIDBBackingStore for every
+   database, written to a file per database on each commit and
+   read back on open (replaces SQLiteIDBBackingStore and
+   SQLiteMemoryIDBBackingStore).
+3. Cookies: libsoup's text jar in the helper (cookies.txt).
+4. Service worker registrations in memory; Web SQL, web push,
+   click measurement, tracking statistics, content blockers,
+   enhanced-security sites and the favicon database off.
+5. WebCore platform/sql and find_package(SQLite3) removed.
+Checking needs WebKit configured: on this Mac harfbuzz, icu,
+libjpeg, libepoxy, libxkbcommon, libxml2 and libwebp are still
+missing imports.
 
 ## MEMORY: trinity replaced Skia under a real browser (Sep 25 2026)
 
