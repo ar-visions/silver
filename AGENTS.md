@@ -2475,18 +2475,79 @@ in the overlay browser/wpewebkit/. In order:
    is gone (NetworkStorageManager).
 1c. OPEN: the page Cache API (CacheStorageDiskStore) and the
    HTTP disk cache still name files by salted SHA-1.
-2. IndexedDB: WebKit's non-SQL MemoryIDBBackingStore for every
-   database, written to a file per database on each commit and
-   read back on open (replaces SQLiteIDBBackingStore and
-   SQLiteMemoryIDBBackingStore).
-3. Cookies: libsoup's text jar in the helper (cookies.txt).
+2. WRITTEN, not compiled: IndexedDB is WebKit's non-SQL
+   MemoryIDBBackingStore with a file path: loaded on open,
+   rewritten after each writing commit, deleted with the
+   database (IDBStorageManager). File <name>.indexeddb.txt in
+   the site's IDB folder (MemoryIDBBackingStoreFile.cpp), tab
+   fields, one line each:
+     database name version
+     store id name keypath autoincrement keygenerator
+     index store id name keypath unique multientry
+     record store key value(base64 of the engine's encoding)
+     entry store index indexkey primarykey
+   keys n:number d:ms s:"text" b:base64 a:[k,k]; keypaths
+   - s:"p" a:[s:"p",s:"q"]. Max index id is recomputed from
+   the file. Whole file rewritten per commit (big databases:
+   slow; not measured). SQLiteIDBBackingStore still compiled
+   (IDBServer.cpp); goes in item 5.
+3. IN PROGRESS cookies and HSTS as folders (Kalen: "dirs with
+   simple files", cookies are key/value like the rest).
+   DONE, tested on this Mac: libsoup overlay browser/libsoup/
+   (+ libsoup.deleted): SoupCookieJarFolder and
+   SoupHSTSEnforcerFolder replace the SQLite jar/enforcer; the
+   sqlite dependency is gone (libsoup links no sqlite).
+   <dir>/<site>/cookies.txt: name TAB value TAB attributes
+   (domain=; path=; expires=unix; secure; httponly;
+   samesite=Lax). <dir>/<site>/hsts.txt: max-age, expires,
+   subdomains as key TAB value lines. Session cookies and
+   session HSTS policies are not saved. The jar keeps its own
+   copy per site (libsoup fires `changed` under its lock).
+   Test: scratchpad jar_test.c against a --destdir stage of
+   the libsoup build: 3 cookies set, 2 persistent reloaded,
+   tab in a value kept, HSTS policy reloaded.
+   NOT DONE, WebKit side (checked where, nothing edited yet):
+   - SoupCookiePersistentStorageType {Text, SQLite} ->
+     {Text, Folder}: Shared/soup/SoupCookiePersistentStorage
+     Type.h, WebsiteDataStore.h:650 default, NetworkSession
+     Soup.cpp:87 (soup_cookie_jar_folder_new),
+     WebKitCookieManager.cpp:112, WebKitCookieManager.h.in
+     (WEBKIT_COOKIE_PERSISTENT_STORAGE_SQLITE -> _FOLDER),
+     Tools/MiniBrowser/wpe/main.cpp:512,554, TestCookieManager
+     .cpp:94,705,727,865.
+   - WebCore/platform/network/soup/SoupNetworkSession.cpp:190
+     hsts-storage.sqlite -> soup_hsts_enforcer_folder_new(
+     <dir>/hsts).
+   - helper Tools/TrinityBrowser/main.c:332-336: FOLDER with
+     <data>/cookies.
+   Then copy each file into browser/wpewebkit/.
+3b. OPEN libsoup warns "soup-tld: There is no public-suffix
+   data available": browser.ag builds libpsl with
+   --disable-runtime --disable-builtin, so no suffix list.
 4. Service worker registrations in memory; Web SQL, web push,
    click measurement, tracking statistics, content blockers,
    enhanced-security sites and the favicon database off.
 5. WebCore platform/sql and find_package(SQLite3) removed.
 Checking needs WebKit configured: on this Mac harfbuzz, icu,
 libjpeg, libepoxy, libxkbcommon, libxml2 and libwebp are still
-missing imports.
+missing imports (not added: Kalen questioned webp; SQLite is
+being removed instead of imported).
+Where the Mac build stands (Sep 27): every browser.ag import
+up to libsoup builds; WebKit's configure stops at HarfBuzz.
+silver.c fixes made for it (in src/silver.c, rebuilt by
+Kalen): SDKROOT in the import build env on native macOS (our
+clang finds no SDK otherwise), release archives skip
+autogen.sh when configure ships, configure imports run `make
+clean` before make (stale in-tree objects). browser.ag gained
+pkgconf (system dirs /usr/include, /usr/lib) and glib imports;
+Au.g no longer imports libffi (glib's bundled copy is the one
+in install/). WebKitXcodeSDK.cmake: WPE on a Mac builds for
+the host arch (overlay). The downloaded WebKit checkout is
+checkout/releases/wpewebkit (owner taken from the URL path).
+OPEN: our clang should know the macOS SDK itself (a
+clang.cfg beside install/bin/clang), then the SDKROOT lines
+in checkout() go; checkouts from archive URLs land under the
+URL's parent folder name (checkout/3.3/ruby).
 
 ## MEMORY: trinity replaced Skia under a real browser (Sep 25 2026)
 

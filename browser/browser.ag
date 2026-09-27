@@ -12,7 +12,7 @@ import ruby/3.3.6 from https://cache.ruby-lang.org/pub/ruby/3.3/ruby-3.3.6.tar.g
     --with-libyaml-dir={install}
 import unifdef/2.12 from https://dotat.at/prog/unifdef/unifdef-2.12.tar.gz
     > make prefix={install} install
-# meson and cmake find every library below through pkg-config
+# meson and cmake find the libraries below via pkg-config
 import pkgconf/2.3.0 from https://distfiles.ariadne.space/pkgconf/pkgconf-2.3.0.tar.xz
     --with-system-includedir=/usr/include
     --with-system-libdir=/usr/lib
