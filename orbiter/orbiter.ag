@@ -4629,6 +4629,10 @@ element orbiter : trinity # implements compiler
         stack : vec path []
         repos : vec path []
         later : vec path []
+        # auto_free drains this thread's pool per directory: hold them
+        hold[ stack ]
+        hold[ repos ]
+        hold[ later ]
         cap : i32 [ (o.max_search > 0) ? o.max_search : 400000 ]
         for [ r: path ] in dirs
             g0 : path '{r}/.git'
@@ -4656,11 +4660,11 @@ element orbiter : trinity # implements compiler
                     if [ later.count == 0 ] break
                     for [ lp: path ] in later
                         stack.push[ lp ]
-                    later = vec path []
+                    later.clear[]
                     continue
                 for [ rp: path ] in repos
                     if [ !o.index_cancel ] o.index_repo[ rp, cap ]
-                repos = vec path []
+                repos.clear[]
                 continue
             n : i32 [ stack.count - 1 ]
             d : path hold[ stack[n] ]
@@ -4694,6 +4698,9 @@ element orbiter : trinity # implements compiler
                     if [ over ] break
             # this thread's pool: the walk's temporaries, per directory
             Au.auto_free[]
+        drop[ stack ]
+        drop[ repos ]
+        drop[ later ]
         o.tok_warm[]
         Au.auto_free[]
         o.index_lock.lock[]

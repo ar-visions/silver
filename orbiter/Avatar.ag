@@ -352,7 +352,7 @@ Orbiter PBR
         // canvas alpha 1.0 = the gold PBR material comes through untouched;
         // only low-alpha areas take the spoke tint (24 divisions paint there)
         vec4  sp_s = texture(spokes, vec2(sp_u, sp_v));
-              base = mix(base, vec4(sp_s.rgb, 1.0), step(0.5, v_color.b) * (1.0 - sp_s.a));
+              //base = mix(base, vec4(sp_s.rgb, 1.0), step(0.5, v_color.b) * (1.0 - sp_s.a));
 
         fragColor = base;
     }
@@ -1664,7 +1664,7 @@ element Avatar
             spoke_cv.update[]
             spoke_cv.save[]
             spoke_cv.rounded_rect[ 0.0, 0.0, 128.0, 128.0, 0.0, 0.0, 0.0, 0.0 ]
-            spoke_cv.fill_color[ rgba [ r: 1.0, g: 1.0, b: 1.0, a: 0.0 ] ]
+            spoke_cv.fill_color[ rgba [ r: 1.0, g: 1.0, b: 1.0, a: 1.0 ] ]
             spoke_cv.paint[]
             spoke_cv.restore[]
             spoke_cv.sync_fence[]
