@@ -24,7 +24,7 @@
 
 namespace WebKit {
 
-// localStorage kept as a readable text file: key, tab, value per line
+// localStorage as text: key TAB value per line
 class FileStorageArea final : public StorageAreaBase, public RefCounted<FileStorageArea> {
     WTF_MAKE_TZONE_ALLOCATED(FileStorageArea);
 public:
