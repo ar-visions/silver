@@ -2495,6 +2495,25 @@ checkout/lb takes about 15 GB (ask Kalen before removing).
    fresh and cached. The icon avatar takes the app's resting
    yaw of 30 degrees (on_state's, which needs the app object):
    flat top and bottom, as orbiter shows it.
+   DONE (Sep 28, Kalen) title bar boxes: the "..." tab chip
+   (NavTabs), the history arrows and the close buttons
+   (BarClose class, the finder's TButtons close) are the bar's
+   full height (b0), no spacing (use_spacing false: the title
+   bar's 0.2 em child spacing was the padding), square corners
+   (seg_radius 0, radius 0). Strokes 0.5 -> 1 everywhere in
+   orbiter's styles with the alpha halved; the TButtons outline
+   is #ffffff0d. The dots hint draws only while the strip is
+   small (gone a quarter into the reveal), in the rest slot,
+   twice the icon size capped to the slot; the close glyphs
+   fill their box height.
+   Since then (Kalen): the arrows and the dialog close are
+   1.8 units wide, arrow glyphs at 0.30; every close button is
+   the chip's size (1.66 units, X at 0.55); the file icon sits
+   0.2 units further right; the title's icon, name, hint and
+   companions lead from the arrow box (EditorTitle.lead). A
+   side toolbar (right edge, instances + orbiter at the top,
+   console at the bottom) was built and REMOVED at Kalen's
+   word; the gutter rule is the original (five digits + 16 px).
    DONE (Sep 28) ctrl/cmd+left and right in any trinity app go
    to Window.navigate (the focused element's history) before
    the key reaches the focus; the browser goes back/forward.

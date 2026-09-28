@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: BSD-2-Clause
+
+#if USE(TRINITY)
+
+header: <WebCore/FontPlatformData.h>
+[CustomHeader] struct WebCore::CustomFontCreationData {
+    Vector<uint8_t> fontFaceData;
+    String itemInCollection;
+};
+
+header: <WebCore/FontPlatformData.h>
+[CustomHeader] struct WebCore::FontPlatformSerializedData {
+    Vector<uint8_t> typefaceData;
+    unsigned index;
+    Vector<float> axisValues;
+    Vector<uint32_t> axisTags;
+};
+
+#endif

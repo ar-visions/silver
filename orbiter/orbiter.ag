@@ -305,7 +305,7 @@ element EditorView
         if [ newfile ]
             # create mode has its own cancel: never two close buttons
             t.rm[ 'histnav' ]
-            t['newfile_cancel'] = LButton [ icon: 'close', manual_mode: true ]
+            t['newfile_cancel'] = BarClose [ icon: 'close', manual_mode: true ]
         return t
  
     func text_els [] -> Elements
@@ -464,6 +464,7 @@ element EditorView
         t : Elements [ ]
         t['title'] = EditorTitle [
             area: Region { l0 t0 r0 h1.3 }
+            lead: 1.8 * ((ux && ux.vk && ux.vk.font_unit > 0) ? f32[ ux.vk.font_unit ] : 22.0)
             selected: !file[]
             focusable: true
             spacing_x: 0.2
@@ -509,6 +510,8 @@ element EditorTitle
     public conflict : bool
     # painted after the name, never part of the editable label
     public hint     : string
+    # the arrows' box width: the icon and name start after it
+    public lead     : f32   [ 40.0 ]
     mutable ficons  : FileIcons
     style : CSS {
         area: l0 t0 r0 h1.3
@@ -539,16 +542,19 @@ element EditorTitle
         # the gaps ride the font unit, as the name's size does
         fu  : f32 [ (w.vk && w.vk.font_unit > 0) ? f32[ w.vk.font_unit ] / 22.0 : 1.0 ]
         mdl : SVGModel ficons.icon[ label, 20 ]
+        # the label's offset is in font units: the lead plus the gaps
+        tf9 : Layer layers[ 'tface' ]
+        if [ tf9 ] tf9.label_offset = vec2f [ lead / fu + 54.0, 0.0 ]
         if [ mdl ]
             isz : f32 [ 20.0 * fu ]
             cv.fill_color[ '#ffffff' ]
             cv.stroke_color[ '#ffffff' ]
-            cv.draw_svg[ mdl, 70.0 * fu, (bounds.h - isz) * 0.5, isz, isz ]
+            cv.draw_svg[ mdl, lead + 30.4 * fu, (bounds.h - isz) * 0.5, isz, isz ]
         # the view we are in, trailing the name. painted, so the label
         # stays the editable field and this can never be selected
         cv.font_size[ 17 ]
         name_m : cv.measure_text[ label ]
-        trail  : f32 [ (98.0 + 16.0) * fu + name_m.w ]
+        trail  : f32 [ lead + (54.0 + 16.0) * fu + name_m.w ]
         if [ hint && hint.count > 0 ]
             cv.font_size[ 13 ]
             cv.fill_color[ '#ffffff66' ]
@@ -1490,50 +1496,50 @@ element SceneName
 TButtons NavTabs
     collapse : true
     style : CSS {
-        area: r0+ t0 w1.15 h0.9, 222ms cubic outward
+        area: r0+ t0 w1.66 b0, 222ms cubic outward
     }
 
 
 NavTabs NavTabs2
     style : CSS {
-        area: r0+ t0 w1.15 h0.9, 222ms cubic outward
+        area: r0+ t0 w1.66 b0, 222ms cubic outward
         :near
-            area: r0+ t0 w2.3 h0.9, 222ms cubic outward
+            area: r0+ t0 w3.32 b0, 222ms cubic outward
     }
 
 NavTabs NavTabs3
     style : CSS {
-        area: r0+ t0 w1.15 h0.9, 222ms cubic outward
+        area: r0+ t0 w1.66 b0, 222ms cubic outward
         :near
-            area: r0+ t0 w3.45 h0.9, 222ms cubic outward
+            area: r0+ t0 w4.98 b0, 222ms cubic outward
     }
 
 NavTabs NavTabs4
     style : CSS {
-        area: r0+ t0 w1.15 h0.9, 222ms cubic outward
+        area: r0+ t0 w1.66 b0, 222ms cubic outward
         :near
-            area: r0+ t0 w4.6 h0.9, 222ms cubic outward
+            area: r0+ t0 w6.64 b0, 222ms cubic outward
     }
 
 NavTabs NavTabs5
     style : CSS {
-        area: r0+ t0 w1.15 h0.9, 222ms cubic outward
+        area: r0+ t0 w1.66 b0, 222ms cubic outward
         :near
-            area: r0+ t0 w5.75 h0.9, 222ms cubic outward
+            area: r0+ t0 w8.30 b0, 222ms cubic outward
     }
 
 NavTabs NavTabs6
     style : CSS {
-        area: r0+ t0 w1.15 h0.9, 222ms cubic outward
+        area: r0+ t0 w1.66 b0, 222ms cubic outward
         :near
-            area: r0+ t0 w6.9 h0.9, 222ms cubic outward
+            area: r0+ t0 w9.96 b0, 222ms cubic outward
     }
 
 NavTabs NavTabs7
     style : CSS {
-        area: r0+ t0 w1.15 h0.9, 222ms cubic outward
+        area: r0+ t0 w1.66 b0, 222ms cubic outward
         :near
-            area: r0+ t0 w8.05 h0.9, 222ms cubic outward
+            area: r0+ t0 w11.62 b0, 222ms cubic outward
     }
 
 NavButton RButton
@@ -1549,6 +1555,17 @@ Option GitButton
 
 NavButton LButton
     area : Region { l0+ t0 w1.15 h0.9 }
+
+# a title bar's close: the bar's full height, no gap, square corners
+LButton BarClose
+    area : Region { l0+ t0 w1.66 b0 }
+    use_spacing : false
+    # the X at the dots chip's glyph share of the box
+    icon_fit : f32 [ 0.55 ]
+    style : CSS {
+        layers.body:
+            radius: 0
+    }
 
 NavButton OrbiterButton
     area : Region { r0.6 b1.6 w1.2 h1.2 }
@@ -4365,10 +4382,11 @@ element orbiter : trinity # implements compiler
                       && edp9.view_name != edp9.fallback_view_for[ edp9.src ]
                       && !console_of[ edp9.view_name ] ]
         dc9  : bool [ edp9 && edp9.diff_commit && edp9.diff_commit.count > 0 ]
+        # the arrows' box: 1.8 font units square to the bar
+        gw9 : f32 [ 1.8 * ((win && win.vk && win.vk.font_unit > 0) ? f32[ win.vk.font_unit ] : 22.0) ]
         if [ dc9 || hx9 ]
             # in the history arrows' slot, sized like them: the title never shifts
-            els['panel_close'] = LButton [ icon: 'close', manual_mode: true,
-                area: Region [ 'l0+ t0 w1.8 h0.9' ] ]
+            els['panel_close'] = BarClose [ icon: 'close', manual_mode: true ]
         # the left slot closes the finder — Esc's clickable twin, sized
         # exactly like the history arrows so the title never shifts
         # the finder up: the same arrows walk the nav view's own folders, and
@@ -4381,8 +4399,8 @@ element orbiter : trinity # implements compiler
             if [ !nav_can[ 1 ] ]  fdm |= 2
             els['histnav'] = TButtons [ buttons: fnav, icon_ids: fico, manual: true,
                 disable_mask: fdm,
-                icon_scale: 0.45, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0,
-                area: Region [ 'l0+ t0 w1.8 h0.9' ] ]
+                icon_scale: 0.30, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0,
+                seg_radius: 0.0, use_spacing: false, area: Region [ 'l0+ t0 w1.8 b0' ] ]
         # editing only: cmd+left / cmd+right as clickable history arrows.
         # a close takes their place; the two are never shown together
         if [ !engaged && !is_resource && !(dc9 || hx9) ]
@@ -4398,8 +4416,8 @@ element orbiter : trinity # implements compiler
                 if [ !edp9 || !edp9.nav || !edp9.nav.can_forward[] ] ndm |= 2
             els['histnav'] = TButtons [ buttons: nnav, icon_ids: nico, manual: true,
                 disable_mask: ndm,
-                icon_scale: 0.45, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0,
-                area: Region [ 'l0+ t0 w1.8 h0.9' ] ]
+                icon_scale: 0.30, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0,
+                seg_radius: 0.0, use_spacing: false, area: Region [ 'l0+ t0 w1.8 b0' ] ]
 
         # a silver module's companions: <name>.ag and whatever sits beside it
         # under the same name. the open one is lit; a press opens its sibling.
@@ -4414,7 +4432,7 @@ element orbiter : trinity # implements compiler
                 fu9  : f32 [ (win && win.vk && win.vk.font_unit > 0) ? f32[ win.vk.font_unit ] / 22.0 : 1.0 ]
                 cvt9.font_size[ 19 ]
                 nmw9 : f32 [ cvt9.measure_text[ p.filename[] ].w ]
-                cxa9 : f32 [ (98.0 + 16.0) * fu9 + nmw9 ]
+                cxa9 : f32 [ gw9 + (54.0 + 16.0) * fu9 + nmw9 ]
                 hnt9 : string [ (edp9) ? edp9.view_name : null ]
                 if [ hnt9 && hnt9.count > 0 && hnt9 != 'editor' && !console_of[ hnt9 ] ]
                     cvt9.font_size[ 13 ]
@@ -4500,13 +4518,13 @@ element orbiter : trinity # implements compiler
         # count carries the width to grow to
         if [ tnav.count > 0 && !(engaged && !fb_on) ]
             nt9 : i32 [ i32[ tnav.count ] ]
-            if [ nt9 >= 7 ]     els['tabnav'] = NavTabs7 [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, danger_mask: dmask9, go_mask: tgo9, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0 ]
-            el [ nt9 == 6 ]     els['tabnav'] = NavTabs6 [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, danger_mask: dmask9, go_mask: tgo9, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0 ]
-            el [ nt9 == 5 ]     els['tabnav'] = NavTabs5 [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, danger_mask: dmask9, go_mask: tgo9, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0 ]
-            el [ nt9 == 4 ]     els['tabnav'] = NavTabs4 [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, danger_mask: dmask9, go_mask: tgo9, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0 ]
-            el [ nt9 == 3 ]     els['tabnav'] = NavTabs3 [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, danger_mask: dmask9, go_mask: tgo9, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0 ]
-            el [ nt9 == 2 ]     els['tabnav'] = NavTabs2 [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, danger_mask: dmask9, go_mask: tgo9, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0 ]
-            el                  els['tabnav'] = NavTabs  [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, danger_mask: dmask9, go_mask: tgo9, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0 ]
+            if [ nt9 >= 7 ]     els['tabnav'] = NavTabs7 [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, danger_mask: dmask9, go_mask: tgo9, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0, seg_radius: 0.0, use_spacing: false ]
+            el [ nt9 == 6 ]     els['tabnav'] = NavTabs6 [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, danger_mask: dmask9, go_mask: tgo9, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0, seg_radius: 0.0, use_spacing: false ]
+            el [ nt9 == 5 ]     els['tabnav'] = NavTabs5 [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, danger_mask: dmask9, go_mask: tgo9, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0, seg_radius: 0.0, use_spacing: false ]
+            el [ nt9 == 4 ]     els['tabnav'] = NavTabs4 [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, danger_mask: dmask9, go_mask: tgo9, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0, seg_radius: 0.0, use_spacing: false ]
+            el [ nt9 == 3 ]     els['tabnav'] = NavTabs3 [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, danger_mask: dmask9, go_mask: tgo9, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0, seg_radius: 0.0, use_spacing: false ]
+            el [ nt9 == 2 ]     els['tabnav'] = NavTabs2 [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, danger_mask: dmask9, go_mask: tgo9, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0, seg_radius: 0.0, use_spacing: false ]
+            el                  els['tabnav'] = NavTabs  [ buttons: tnav, icon_ids: tico, manual: true, sel_mask: tmask, danger_mask: dmask9, go_mask: tgo9, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0, seg_radius: 0.0, use_spacing: false ]
 
         if [ rv ]
             vel : Elements rv.title_elements*[]
@@ -4520,8 +4538,8 @@ element orbiter : trinity # implements compiler
             nclo : vec string [] [ 'close' ]
             els['finder_x'] = TButtons [ buttons: ncls, icon_ids: nclo, manual: true,
                 disable_mask: 0,
-                icon_scale: 0.585, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0,
-                area: Region [ 'r0+ t0 w0.9 h0.9' ] ]
+                icon_scale: 0.55, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0,
+                seg_radius: 0.0, use_spacing: false, area: Region [ 'r0+ t0 w1.66 b0' ] ]
         if [ fb_on ]
             # right-flow: first inserted lands furthest right
             els['remotes'] = RemoteToggle [ label: 'remotes', manual_mode: true, selected: search_remotes ]

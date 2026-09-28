@@ -6081,13 +6081,21 @@ element TButtons
                     cv.draw_svg[ xs9, cx9 - cr9 * 0.6, cy9 - cr9 * 0.6, cr9 * 1.2, cr9 * 1.2 ]
             cv.set_opacity[ op0 ]
         # the rest icon sits in the last slot and fades as the set reveals
-        if [ collapse && rv9 < 1.0 ]
+        # the hint shows only while the strip is small: gone a quarter in
+        hint9 : f32 [ clamp[ 1.0 - rv9 * 4.0, 0.0, 1.0 ] ]
+        if [ collapse && hint9 > 0.0 ]
             rsvg : SVGModel seg_svg[ rest_icon ]
             if [ rsvg ]
+                # the icon size, a quarter wider than tall, never past the
+                # slot: centred in the rest slot (the right end)
                 rsz : f32 [ bounds.h * ((icon_scale > 0.0) ? icon_scale : 0.55) ]
-                cv.set_opacity[ op0 * (1.0 - rv9) ]
+                rw9 : f32 [ rsz * 1.25 ]
+                if [ rw9 > seg_w ]
+                    rw9 = seg_w
+                    rsz = rw9 / 1.25
+                cv.set_opacity[ op0 * hint9 ]
                 cv.fill_color[ rgba [ '#fff' ] ]
-                cv.draw_svg[ rsvg, bounds.w - seg_w + (seg_w - rsz) * 0.5, (bounds.h - rsz) * 0.5, rsz, rsz ]
+                cv.draw_svg[ rsvg, bounds.w - seg_w + (seg_w - rw9) * 0.5, (bounds.h - rsz) * 0.5, rw9, rsz ]
                 cv.set_opacity[ op0 ]
         # one semi-clear 1px outline around the whole group; no segment
         # notches. origin is grid-snapped above; round the size too so both
@@ -6098,7 +6106,7 @@ element TButtons
         cv.set_stroke_size[ 1.0 ]
         cv.stroke_sides[ 1.0, 1.0, 1.0, 1.0 ]
         cv.stroke_offset[ -0.5 ]
-        cv.stroke_color[ rgba [ '#ffffff1a' ] ]
+        cv.stroke_color[ rgba [ '#ffffff0d' ] ]
         cv.rounded_rect[ 0.0, 0.0, dw9, dh9, seg_radius, seg_radius, seg_radius, seg_radius ]
         cv.paint[ ]
         cv.set_stroke_size[ 0.0 ]
