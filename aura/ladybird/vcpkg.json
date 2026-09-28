@@ -1,0 +1,347 @@
+{
+  "builtin-baseline": "7f3781e19cc7d4e4882a4caec01668c6f7b5c163",
+  "dependencies": [
+    "brotli",
+    {
+      "name": "cpptrace",
+      "platform": "linux | windows | osx"
+    },
+    {
+      "name": "curl",
+      "default-features": false,
+      "features": [
+        "brotli",
+        "non-http",
+        "http2",
+        "http3",
+        "openssl",
+        "websockets",
+        "zstd"
+      ]
+    },
+    {
+      "name": "dbus",
+      "default-features": false,
+      "platform": "linux | freebsd"
+    },
+    {
+      "name": "dirent",
+      "platform": "windows"
+    },
+    "fast-float",
+    {
+      "name": "ffmpeg",
+      "default-features": false,
+      "features": [
+        "avcodec",
+        "avformat",
+        "swresample",
+        "dav1d",
+        "zlib",
+        "ladybird-components"
+      ]
+    },
+    "fmt",
+    {
+      "name": "fontconfig",
+      "platform": "linux | bsd | osx"
+    },
+    {
+      "name": "harfbuzz",
+      "platform": "linux | bsd | windows",
+      "features": [
+        "freetype",
+        "icu"
+      ]
+    },
+    {
+      "name": "harfbuzz",
+      "platform": "osx",
+      "features": [
+        "coretext",
+        "icu"
+      ]
+    },
+    "icu",
+    {
+      "name": "libavif",
+      "features": [
+        "dav1d"
+      ]
+    },
+    {
+      "name": "libdwarf",
+      "platform": "linux | windows | osx"
+    },
+    "libjpeg-turbo",
+    {
+      "name": "libpng",
+      "features": [
+        "apng"
+      ]
+    },
+    {
+      "name": "libproxy",
+      "platform": "!(android | bsd)"
+    },
+    "libpsl",
+    {
+      "name": "libedit",
+      "platform": "!windows & !android"
+    },
+    "libtommath",
+    {
+      "name": "libwebp",
+      "features": [
+        "anim",
+        "libwebpmux",
+        "simd"
+      ]
+    },
+    "libxml2",
+    {
+      "name": "mman",
+      "platform": "windows"
+    },
+    {
+      "name": "mimalloc",
+      "features": [
+        "secure"
+      ]
+    },
+    "openssl",
+    "pdfjs",
+    {
+      "name": "pthread",
+      "platform": "windows"
+    },
+    {
+      "name": "qtbase",
+      "platform": "freebsd",
+      "default-features": false,
+      "features": [
+        "dbus",
+        "doubleconversion",
+        "fontconfig",
+        "freetype",
+        "gui",
+        "icu",
+        "jpeg",
+        "network",
+        "opengl",
+        "pcre2",
+        "png",
+        "thread",
+        "vulkan",
+        "widgets",
+        "xcb",
+        "xcb-xlib",
+        "xlib",
+        "xrender",
+        "zstd"
+      ]
+    },
+    {
+      "name": "qtbase",
+      "platform": "windows",
+      "default-features": false,
+      "features": [
+        "doubleconversion",
+        "freetype",
+        "gui",
+        "icu",
+        "jpeg",
+        "network",
+        "opengl",
+        "pcre2",
+        "png",
+        "thread",
+        "widgets",
+        "zstd"
+      ]
+    },
+    {
+      "name": "qtpositioning",
+      "platform": "windows | freebsd",
+      "default-features": false
+    },
+    {
+      "name": "sdl3",
+      "default-features": false
+    },
+    "simdjson",
+    "simdutf",
+    "sqlite3",
+    {
+      "name": "tiff",
+      "features": [
+        "zstd"
+      ]
+    },
+    "woff2",
+    "wuffs",
+    "zlib"
+  ],
+  "overrides": [
+    {
+      "name": "brotli",
+      "version": "1.2.0#0"
+    },
+    {
+      "name": "cpptrace",
+      "version": "1.0.2#0"
+    },
+    {
+      "name": "curl",
+      "version": "8.21.0#1"
+    },
+    {
+      "name": "dav1d",
+      "version": "1.5.3#0"
+    },
+    {
+      "name": "dbus",
+      "version": "1.16.2#2"
+    },
+    {
+      "name": "dirent",
+      "version": "1.26#0"
+    },
+    {
+      "name": "fast-float",
+      "version": "8.2.10#1"
+    },
+    {
+      "name": "ffmpeg",
+      "version": "7.1.1#5"
+    },
+    {
+      "name": "fmt",
+      "version": "12.2.0#1"
+    },
+    {
+      "name": "fontconfig",
+      "version": "2.17.1#1"
+    },
+    {
+      "name": "freetype",
+      "version": "2.13.3#0"
+    },
+    {
+      "name": "harfbuzz",
+      "version": "10.2.0#0"
+    },
+    {
+      "name": "icu",
+      "version": "78.3#1"
+    },
+    {
+      "name": "libavif",
+      "version": "1.4.2#1"
+    },
+    {
+      "name": "libdwarf",
+      "version": "2.3.1#0"
+    },
+    {
+      "name": "libedit",
+      "version": "2024-08-08#0"
+    },
+    {
+      "name": "libjpeg-turbo",
+      "version": "3.2.0#0"
+    },
+    {
+      "name": "libpng",
+      "version": "1.6.58#0"
+    },
+    {
+      "name": "libproxy",
+      "version": "0.4.18#3"
+    },
+    {
+      "name": "libpsl",
+      "version": "0.21.5#1"
+    },
+    {
+      "name": "libtommath",
+      "version": "1.3.0#2"
+    },
+    {
+      "name": "libwebp",
+      "version": "1.6.0#1"
+    },
+    {
+      "name": "libxml2",
+      "version": "2.15.3#0"
+    },
+    {
+      "name": "mimalloc",
+      "version": "2.2.7#0"
+    },
+    {
+      "name": "mman",
+      "version": "git-f5ff813#5"
+    },
+    {
+      "name": "nghttp2",
+      "version": "1.69.0#0"
+    },
+    {
+      "name": "openssl",
+      "version": "3.6.3#0"
+    },
+    {
+      "name": "pdfjs",
+      "version": "5.6.205#0"
+    },
+    {
+      "name": "pthread",
+      "version": "3.0.0#2"
+    },
+    {
+      "name": "qtbase",
+      "version": "6.10.0#1"
+    },
+    {
+      "name": "qtpositioning",
+      "version": "6.10.0#0"
+    },
+    {
+      "name": "qtserialport",
+      "version": "6.10.0#0"
+    },
+    {
+      "name": "sdl3",
+      "version": "3.2.28#0"
+    },
+    {
+      "name": "simdjson",
+      "version": "4.6.4#0"
+    },
+    {
+      "name": "simdutf",
+      "version": "9.1.0#0"
+    },
+    {
+      "name": "sqlite3",
+      "version": "3.53.3#1"
+    },
+    {
+      "name": "tiff",
+      "version": "4.7.2#0"
+    },
+    {
+      "name": "woff2",
+      "version": "1.0.2#5"
+    },
+    {
+      "name": "wuffs",
+      "version": "0.3.4#0"
+    },
+    {
+      "name": "zlib",
+      "version": "1.3.1#0"
+    }
+  ]
+}

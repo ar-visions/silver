@@ -1,0 +1,443 @@
+# aura: WebKit lays pages out, trinity draws them
+export 1.0.0
+export extensions ['.html', '.htm']
+export protocols ['http', 'https']
+
+# WPE WebKit's build: ruby runs its generators, unifdef its headers
+import yaml:libyaml/0.2.5
+    -DBUILD_SHARED_LIBS=ON
+    -DBUILD_TESTING=OFF
+import ruby/3.3.6 from https://cache.ruby-lang.org/pub/ruby/3.3/ruby-3.3.6.tar.gz
+    --disable-install-doc
+    --with-libyaml-dir={install}
+import unifdef/2.12 from https://dotat.at/prog/unifdef/unifdef-2.12.tar.gz
+    > rm -f {install}/share/man/man1/unifdefall.1
+    > make prefix={install} install
+# meson and cmake find the libraries below via pkg-config
+import pkgconf/2.3.0 from https://distfiles.ariadne.space/pkgconf/pkgconf-2.3.0.tar.xz
+    --with-system-includedir=/usr/include
+    --with-system-libdir=/usr/lib
+    >> ln -sf pkgconf {install}/bin/pkg-config
+
+# WebKit's crypto
+import libgpg-error/1.51 from https://www.gnupg.org/ftp/gcrypt/libgpg-error/libgpg-error-1.51.tar.bz2
+    --disable-doc
+import libgcrypt/1.11.0 from https://www.gnupg.org/ftp/gcrypt/libgcrypt/libgcrypt-1.11.0.tar.bz2
+    --disable-doc
+    --with-libgpg-error-prefix={install}
+import libtasn1/4.19.0 from https://ftp.gnu.org/gnu/libtasn1/libtasn1-4.19.0.tar.gz
+
+# WebKit's networking: libsoup and what it needs
+import libpsl/0.21.5 from https://github.com/rockdaboot/libpsl/releases/download/0.21.5/libpsl-0.21.5.tar.gz
+    --disable-runtime
+import nghttp2/1.64.0 from https://github.com/nghttp2/nghttp2/releases/download/v1.64.0/nghttp2-1.64.0.tar.xz
+    -DENABLE_LIB_ONLY=ON
+    -DENABLE_DOC=OFF
+# glib 2.84 needs meson 1.4 or later; one runnable file
+import meson/1.8.3 from https://github.com/mesonbuild/meson/releases/download/1.8.3/meson-1.8.3.tar.gz
+    > python3 packaging/create_zipapp.py --outfile {install}/bin/meson .
+import glib/2.84.4 from https://download.gnome.org/sources/glib/2.84/glib-2.84.4.tar.xz
+    PATH={install}/bin:$PATH
+    LDFLAGS=-Wl,-rpath,{install}/lib
+    -Dtests=false
+    -Dintrospection=disabled
+    -Dman-pages=disabled
+    -Ddocumentation=false
+    -Dnls=disabled
+import libsoup/3.6.5 from https://download.gnome.org/sources/libsoup/3.6/libsoup-3.6.5.tar.xz
+    PATH={install}/bin:$PATH
+    LDFLAGS=-Wl,-rpath,{install}/lib
+    PKG_CONFIG_PATH={install}/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig
+    -Dtests=false
+    -Dintrospection=disabled
+    -Dvapi=disabled
+    -Ddocs=disabled
+    -Dsysprof=disabled
+    -Dtls_check=false
+    -Dgssapi=disabled
+    -Dntlm=disabled
+    -Dautobahn=disabled
+    -Dpkcs11_tests=disabled
+
+# https: glib's TLS plugin, on silver's own mbedtls
+import tls
+import glib-networking/2.80.1 from https://download.gnome.org/sources/glib-networking/2.80/glib-networking-2.80.1.tar.xz
+    PATH={install}/bin:$PATH
+    LDFLAGS=-Wl,-rpath,{install}/lib
+    PKG_CONFIG_PATH={install}/lib/pkgconfig
+    -Dgnutls=disabled
+    -Dopenssl=disabled
+    -Dlibproxy=disabled
+    -Dgnome_proxy=disabled
+    -Denvironment_proxy=enabled
+    -Dmbedtls=enabled
+    -Dmbedtls_prefix={install}
+
+# WPE WebKit paints through webgfx: build that first
+import webgfx
+import wpewebkit/2.54.0 from https://wpewebkit.org/releases/wpewebkit-2.54.0.tar.xz
+    PATH={install}/bin:$PATH
+    PKG_CONFIG_PATH={install}/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig
+    -G Ninja
+    -DPORT=WPE
+    -DCMAKE_C_COMPILER={install}/bin/clang
+    -DCMAKE_CXX_COMPILER={install}/bin/clang++
+    -DCMAKE_PREFIX_PATH={install}
+    "-DCMAKE_INSTALL_RPATH={install}/lib;{install}/build"
+    -DSILVER_INSTALL={install}
+    -DENABLE_XSLT=OFF
+    -DENABLE_SPEECH_SYNTHESIS=OFF
+    -DUSE_AVIF=OFF
+    -DUSE_LCMS=OFF
+    -DUSE_JPEGXL=OFF
+    -DUSE_WOFF2=OFF
+    -DUSE_ATK=OFF
+    -DENABLE_INTROSPECTION=OFF
+    -DENABLE_DOCUMENTATION=OFF
+    -DENABLE_JOURNALD_LOG=OFF
+    -DENABLE_WEBDRIVER=OFF
+    -DENABLE_BUBBLEWRAP_SANDBOX=OFF
+    -DENABLE_WPE_LEGACY_API=OFF
+    -DENABLE_WPE_PLATFORM_WAYLAND=OFF
+    -DENABLE_WPE_PLATFORM_DRM=OFF
+    -DENABLE_VIDEO=ON
+    -DENABLE_WEB_AUDIO=OFF
+    -DENABLE_WEBGL=OFF
+    -DUSE_LIBBACKTRACE=OFF
+    -DENABLE_GAMEPAD=OFF
+    -DUSE_LIBHYPHEN=OFF
+    -DENABLE_WEB_CODECS=OFF
+    -DENABLE_MEDIA_STREAM=OFF
+    -DENABLE_WEB_RTC=OFF
+    -DENABLE_SPELLCHECK=OFF
+    -DUSE_GSTREAMER=OFF
+    -DUSE_GSTREAMER_WEBRTC=OFF
+    -DENABLE_ENCRYPTED_MEDIA=OFF
+    -DENABLE_MEDIA_SOURCE=ON
+    -DUSE_SYSTEM_SYSPROF_CAPTURE=NO
+    -DUSE_SYSPROF_CAPTURE=OFF
+    -DUSE_SKIA_OPENTYPE_SVG=OFF
+
+import trinity
+import img
+import vec
+import <stdio.h>
+import <stdlib.h>
+import <string.h>
+import <unistd.h>
+    +_DEFAULT_SOURCE
+import <fcntl.h>
+import <signal.h>
+import <sys/mman.h>
+import <sys/prctl.h>
+import <sys/wait.h>
+import <sys/socket.h>
+import <time.h>
+
+# aura.c: the helper's records off the socket: 1 a GPU frame,
+# 2 its history (w = can go back, h = can go forward), 3 its title
+# (text, w bytes), 0 none
+func aura_recv_frame [ sock: i32, id: @u64, w: @i32, h: @i32, format: @u32,
+    modifier: @u64, stride: @u32, offset: @u32, fd: @i32, text: @i8, cap: i32 ] -> i32
+
+element aura : trinity
+    public  width      : i32    [ 1280 ]
+    public  height     : i32    [ 800 ]
+    public  title      : string [ 'aura' ]
+    public  background : string [ 'Background' ]
+    default src        : string              # a url, or a local file
+    mutable pid        : i32
+    mutable ctl        : i32    [ -1 ]       # the helper's stdin
+    mutable shm        : @u8                 # its frames: header, rgba8
+    mutable shm_size   : i64
+    mutable shm_path   : string
+    mutable seq        : u32                 # last frame shown
+    mutable frames     : map Texture [string] # the helper's GPU buffers by id
+    mutable dma        : bool                # GPU frames arrive: the file is idle
+    mutable tex        : Texture
+    mutable tex_w      : i32
+    mutable tex_h      : i32
+    mutable view_w     : i32                 # size sent, device px
+    mutable view_h     : i32
+    mutable scale      : f32    [ 1.0 ]      # device px per point
+    mutable held       : i32                 # buttons down, bit per button
+    mutable started    : bool
+    persist engine     : vec i64             # the running helper: pid, ctl
+    persist engine_shm : string              # its frame file
+    # where it was last: the start page when no src is given
+    intern [ StatePersist ] last_src : string
+    public  stats      : bool                # --stats: page frames shown each second
+    mutable shown      : i32                 # page frames taken this second
+    mutable shown_at   : i64
+
+    func init []
+        animated  = true
+        focusable = true
+        if [ !src ]
+            load-persistent[ a ]
+            if [ last_src ] src = last_src
+        if [ src ] title = src
+
+    # frame header: magic, seq, width, height, stride (u32 each)
+    func header_u32 [ at: i32 ] -> u32
+        p : @u8 [ shm ]
+        return u32 p[at] | (u32 p[at + 1] << 8) | (u32 p[at + 2] << 16) | (u32 p[at + 3] << 24)
+
+    func post [ words: string ]
+        if [ ctl < 0 ] return
+        full : string '{words}\n'
+        # a dead helper returns EPIPE here, never a SIGPIPE
+        send[ ctl, full.chars, full.count, MSG_NOSIGNAL ]
+
+    func launch []
+        started = true
+        pd : i32 [ getpid[] ]
+        ts : i64 [ time[ null ] ]
+        shm_path = '/tmp/silver-aura-{pd}-{ts}.frame'
+        root   : path.path_startup[]
+        engine_path : path '{root}/install/libexec/wpe-webkit-2.0/WPETrinityBrowser'
+        target : string [ 'about:blank' ]
+        if [ src && (src.index_of[ '://' ] >= 0 || src.index_of[ 'about:' ] == 0) ]
+            target = src
+        el [ src ]
+            f : path [ src ]
+            target = 'file://{f.absolute[]}'
+        # literals reach a C vararg as objects, not text
+        name  : string 'WPETrinityBrowser'
+        flag  : string '--data'
+        app   : string 'aura'
+        home  : string '{path.path_cache[ app.chars ]}'
+        fds : local i32 [ 2 ]
+        if [ socketpair[ AF_UNIX, SOCK_STREAM, 0, @fds[0] ] != 0 ]
+            log 'aura: socketpair failed'
+            return
+        setenv[ 'TRINITY_BROWSER_SHM', shm_path.chars, 1 ]
+        # no death signal: a reload forks on a thread that soon ends.
+        # the helper quits when its stdin closes, as it does if we die
+        pid = fork[]
+        if [ pid == 0 ]
+            dup2[ fds[0], 0 ]
+            close[ fds[0] ]
+            close[ fds[1] ]
+            execl[ engine_path.chars, name.chars, flag.chars, home.chars, target.chars, null ]
+            _exit[ 1 ]
+        close[ fds[0] ]
+        if [ pid < 0 ]
+            log 'aura: fork failed'
+            close[ fds[1] ]
+            return
+        ctl = fds[1]
+        engine = vec i64 []
+        engine.push[ i64 pid ]
+        engine.push[ i64 ctl ]
+        engine_shm = shm_path
+        log 'aura: {engine_path} {target}'
+
+    # after a live reload the page stays: the helper is the one running
+    func adopt [] -> bool
+        if [ !engine || engine.count < 2 ] return false
+        p9 : i32 [ i32 engine[0] ]
+        if [ kill[ p9, 0 ] != 0 ] return false
+        pid      = p9
+        ctl      = i32 engine[1]
+        shm_path = engine_shm
+        started  = true
+        log 'aura: kept the engine (pid {pid})'
+        return true
+
+    # the helper makes the file; map it once it is sized
+    func map_frames [] -> bool
+        if [ shm ] return true
+        fd : i32 [ open[ shm_path.chars, O_RDONLY ] ]
+        if [ fd < 0 ] return false
+        size : i64 [ lseek[ fd, 0, SEEK_END ] ]
+        if [ size <= 32 ]
+            close[ fd ]
+            return false
+        m : mmap[ null, size, PROT_READ, MAP_SHARED, fd, 0 ]
+        close[ fd ]
+        if [ cast u64 [ m ] == 0xffffffffffffffff ] return false
+        shm      = m
+        shm_size = size
+        # both sides hold their maps; the name is no longer needed
+        unlink[ shm_path.chars ]
+        return true
+
+    # a GPU frame is the helper's own buffer, imported once per buffer
+    func take_dma [ cv: Canvas ] -> bool
+        got : bool [ false ]
+        bid : u64
+        fw  : i32
+        fh  : i32
+        fmt : u32
+        mod : u64
+        st  : u32
+        off : u32
+        fd  : i32
+        tt  : local i8 [ 256 ]
+        kind : i32 [ aura_recv_frame[ ctl, @bid, @fw, @fh, @fmt, @mod, @st, @off, @fd, @tt[0], 256 ] ]
+        while [ kind > 0 ]
+            if [ kind == 2 ]
+                log 'aura: history back {fw != 0} forward {fh != 0}'
+                nav_state[ fw != 0, fh != 0 ]
+                kind = aura_recv_frame[ ctl, @bid, @fw, @fh, @fmt, @mod, @st, @off, @fd, @tt[0], 256 ]
+                continue
+            if [ kind == 3 ]
+                t9 : string[ @tt[0] ]
+                log 'aura: title {t9}'
+                set_title[ t9 ]
+                kind = aura_recv_frame[ ctl, @bid, @fw, @fh, @fmt, @mod, @st, @off, @fd, @tt[0], 256 ]
+                continue
+            if [ kind == 4 ]
+                a9 : string[ @tt[0] ]
+                if [ a9 && a9 != 'about:blank' ]
+                    last_src = a9
+                    save-persistent[ a ]
+                kind = aura_recv_frame[ ctl, @bid, @fw, @fh, @fmt, @mod, @st, @off, @fd, @tt[0], 256 ]
+                continue
+            key : string '{bid}'
+            # a new size, or a pool long since replaced: start over
+            if [ !frames || tex_w != fw || tex_h != fh || frames.count > 12 ]
+                frames = map Texture [string] []
+                tex_w  = fw
+                tex_h  = fh
+            if [ frames.contains[ key ] ]
+                close[ fd ]
+            el
+                t : Texture cv.vk.import_dmabuf_image[ fd, fw, fh, fmt, mod, st, off, cv.w ]
+                if [ !t ]
+                    # this GPU takes no such buffer: the helper copies instead
+                    log 'aura: GPU frame import failed, reading frames back'
+                    post[ 'gpuframes 0' ]
+                    frames = null
+                    dma    = false
+                    return false
+                if [ !dma ] log 'aura: GPU frames {fw}x{fh} fourcc {fmt} modifier {mod}'
+                frames[ key ] = t
+            tex = frames[ key ]
+            got = true
+            kind = aura_recv_frame[ ctl, @bid, @fw, @fh, @fmt, @mod, @st, @off, @fd, @tt[0], 256 ]
+        if [ got ]
+            dma    = true
+            shown += 1
+        return got
+
+    func take_frame [ cv: Canvas ]
+        # GPU frames first; the file still counts: a page after a process
+        # swap may come copied
+        if [ take_dma[ cv ] ] return
+        if [ !map_frames[] ] return
+        if [ header_u32[ 0 ] != 0x57425254 ] return
+        sq : u32 [ header_u32[ 4 ] ]
+        if [ sq == seq ] return
+        fw : i32 [ i32 header_u32[ 8 ] ]
+        fh : i32 [ i32 header_u32[ 12 ] ]
+        if [ fw <= 0 || fh <= 0 ] return
+        if [ !tex || tex_w != fw || tex_h != fh ]
+            # the page's bytes are already sRGB: no decode on sampling
+            tex   = Texture [ vk: cv.vk, w: cv.w, width: fw, height: fh, linear: true,
+                pixel_format: Pixel.rgba8, surface: Surface.color, tag: 'aura' ]
+            tex_w = fw
+            tex_h = fh
+        px : @u8 [ shm ]
+        tex.upload[ @px[32], fw * fh * 4 ]
+        seq = sq
+        shown += 1
+
+    func sync_size []
+        pw : i32 [ i32[ bounds.w * scale ] ]
+        ph : i32 [ i32[ bounds.h * scale ] ]
+        if [ pw <= 0 || ph <= 0 ] return
+        if [ pw == view_w && ph == view_h ] return
+        view_w = pw
+        view_h = ph
+        post[ 'size {pw} {ph}' ]
+
+    func mods [ ev: Event ] -> i32
+        m : i32 [ 0 ]
+        if [ ev.key.shift ] m = m | 1
+        if [ ev.key.ctrl ]  m = m | 2
+        if [ ev.key.alt ]   m = m | 4
+        if [ ev.key.meta ]  m = m | 8
+        return m
+
+    func mouse [ kind: string, ev: Event ]
+        x : i32 [ i32[ ev.mouse.pos.x * scale ] ]
+        y : i32 [ i32[ ev.mouse.pos.y * scale ] ]
+        # moves go at once; WebKit coalesces them while the page is busy
+        post[ 'mouse {kind} {x} {y} {ev.mouse.button} {held} {mods[ ev ]}' ]
+
+    # the host's history arrows walk the page's history
+    public func navigate [ dir: i32 ] -> bool
+        post[ (dir < 0) ? 'nav back' : 'nav forward' ]
+        return true
+
+    public func on_press [ ev: Event ]
+        set_focus[]
+        held = held | (1 << ev.mouse.button)
+        mouse[ 'down', ev ]
+        ev.stop[]
+
+    public func on_release [ ev: Event ]
+        held = held & (~(1 << ev.mouse.button))
+        mouse[ 'up', ev ]
+
+    public func on_move [ ev: Event ]
+        mouse[ 'move', ev ]
+
+    public func on_wheel [ ev: Event ]
+        x : i32 [ i32[ ev.mouse.pos.x * scale ] ]
+        y : i32 [ i32[ ev.mouse.pos.y * scale ] ]
+        # 0.325 of a notch per wheel step
+        dx : f32 [ ev.mouse.wheel_delta.x * 0.325 ]
+        dy : f32 [ ev.mouse.wheel_delta.y * 0.325 ]
+        post[ 'mouse wheel {x} {y} 0 {held} 0 {dx} {dy}' ]
+        ev.stop[]
+
+    # printable keys come as text; the rest as keys
+    public func on_key [ ev: Event ]
+        code : i32 [ i32[ ev.key.unicode ] ]
+        m    : i32 [ mods[ ev ] ]
+        if [ code >= 32 && code <= 126 && (m & 14) == 0 ] return
+        act : string [ (ev.key.state != 0) ? 'down' : 'up' ]
+        post[ 'key {act} {code} {m}' ]
+        ev.stop[]
+
+    public func on_char [ ev: Event ]
+        if [ !ev.key.text || ev.key.text.count == 0 ] return
+        post[ 'text {ev.key.text}' ]
+        ev.stop[]
+
+    public func draw [ w: Window ]
+        if [ !w || w.draw_stage != CanvasType.screen ] return
+        if [ bounds.w <= 0.0 || bounds.h <= 0.0 ] return
+        scale = (w.scale > 0.0) ? w.scale : 1.0
+        if [ !started && !adopt[] ] launch[]
+        if [ pid > 0 ]
+            st : i32 [ 0 ]
+            if [ waitpid[ pid, @st, WNOHANG ] == pid ]
+                log 'aura: the engine exited'
+                pid = 0
+        sync_size[]
+        cv : Canvas [ w.screen ]
+        if [ !cv || !cv.vk ] return
+        take_frame[ cv ]
+        if [ stats ]
+            w.stats = true
+            now : i64 [ Au.epoch_millis[] ]
+            if [ now - shown_at >= 1000 ]
+                if [ shown_at > 0 ] log 'aura frames {shown}'
+                shown    = 0
+                shown_at = now
+        if [ !tex ] return
+        # one frame pixel per device pixel
+        dst : rect [ x: 0.0, y: 0.0, w: f32[ tex_w ] / scale, h: f32[ tex_h ] / scale ]
+        cv.draw_image[ tex, dst ]
+
+    func dealloc []
+        if [ !started ] return           # render copies never launched anything
+        if [ ctl >= 0 ] close[ ctl ]     # the helper quits when its stdin ends
+        if [ pid > 0 ]
+            waitpid[ pid, null, 0 ]
+        if [ shm ] munmap[ shm, shm_size ]
+        el [ shm_path ] unlink[ shm_path.chars ]
