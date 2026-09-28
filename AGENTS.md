@@ -1393,7 +1393,7 @@ debug+quarantine and -O2. Startup 71k -> 55k objects.
 ## Active work: browser identity (Sep 26 2026)
 
 1. DONE sites gave the WPE browser captchas. WPETrinityBrowser
-   (browser/wpewebkit/Tools/TrinityBrowser/main.c) now sends
+   (aura/wpewebkit/Tools/TrinityBrowser/main.c) now sends
    Safari 18.5 on macOS as its agent, and a document-start
    script makes navigator.platform 'MacIntel'. Checked with a
    local server: both the header and the page report Mac.
@@ -1925,7 +1925,7 @@ The browser element takes the Compositor's place: it serves the
 CompositorWebContentServer/Control endpoints and replays the list
 with a DisplayListPlayer that calls trinity (the glue).
 1. OPEN import Ladybird from its URL (CMake, vcpkg deps, Rust via
-   ~/.cargo) with browser/ladybird.diff: skia and angle out of
+   ~/.cargo) with aura/ladybird.diff: skia and angle out of
    vcpkg.json and every CMakeLists. Disk: 33 GB free.
    Every Skia job routes to trinity (Kalen: trinity does all of
    it; no new stand-in code):
@@ -2032,7 +2032,7 @@ with a DisplayListPlayer that calls trinity (the glue).
    OPEN sandbox: the Compositor's Landlock list lacks
    trinity's install and cache dirs; WebContent draws (SVG,
    cursors) and needs the GPU too. Runs use --disable-sandbox.
-   DONE (Sep 25 evening) the browser element, browser/browser.ag.
+   DONE (Sep 25 evening) the browser element, aura/aura.ag.
    Shape: Ladybird's UI side (LibWebView, its event loop and
    mimalloc) stays out of orbiter's process. The element forks
    the Trinity frontend (UI/Trinity/main.cpp, a HeadlessWebView
@@ -2066,7 +2066,7 @@ with a DisplayListPlayer that calls trinity (the glue).
      surface passed in; the player used its replay surface
      (null there): crash on any scrolling page.
    - GLFW wheel up is Ladybird's minus (measured).
-   Orbiter: install/export/silver-browser.agi claims .html/.htm;
+   Orbiter: install/export/silver-aura.agi claims .html/.htm;
    Editor.handler_module_for hosts `browser` on them (as qemu
    on .img), so .html files now open in the browser view.
    orbiter builds; NOT run inside orbiter yet (not asked).
@@ -2075,7 +2075,7 @@ with a DisplayListPlayer that calls trinity (the glue).
    OPEN: sandbox (still --disable-sandbox), the import,
    hidpi scale check, key repeat, cursor shape, page title,
    navigation (back/forward/url bar), the gaps "not ported".
-   NEXT: the silver import of Ladybird (browser/ladybird.diff
+   NEXT: the silver import of Ladybird (aura/ladybird.diff
    from diff -ruN, vcpkg + cmake 4 + nasm + autoconf-archive
    in bootstrap).
    DONE (fixed below) separate bug: `silver --test trinity` traps in
@@ -2119,7 +2119,7 @@ with a DisplayListPlayer that calls trinity (the glue).
    endpoints, load a local .html file, draw it (milestone 1).
 4. BUILT, not run: orbiter's title opens an address. A module
    exports its schemes (`export protocols ['http', 'https']`
-   in browser.ag, read from its .agi); Enter on text with a
+   in aura.ag, read from its .agi); Enter on text with a
    scheme some module exports hosts that module in the
    active pane with the address as its argument
    (Editor.open_url, host_module shared with launch_handler).
@@ -2206,9 +2206,9 @@ with a DisplayListPlayer that calls trinity (the glue).
    /src/silver/checkout/lb/ladybird (gitignored), tools in
    checkout/lb/tools, build script checkout/lb/build.sh.
    The patch is kept in the repo as an overlay, not a diff:
-   browser/ladybird/ (every changed or new file, laid out as
-   the tree), browser/ladybird.deleted (files to remove),
-   browser/ladybird.commit (the base). install/ladybird ->
+   aura/ladybird/ (every changed or new file, laid out as
+   the tree), aura/ladybird.deleted (files to remove),
+   aura/ladybird.commit (the base). install/ladybird ->
    checkout/lb/ladybird/Build/release.
    The replay leaked old trace edits into webgfx/webgfx.ag
    (a doubled webgfx_gpu_init, a doubled import pair, trace
@@ -2260,7 +2260,7 @@ it, 65 in WebCore/platform/graphics/skia; USE(SKIA) appears on
 479 lines. The seam: a USE(TRINITY) backend beside USE(SKIA).
 Disk: 26 GB free before any build; the Ladybird build in
 checkout/lb takes about 15 GB (ask Kalen before removing).
-1. DONE build dependencies, imported by browser/browser.ag
+1. DONE build dependencies, imported by aura/aura.ag
    into install/: ruby 3.3.6 (generators), unifdef 2.12,
    libgpg-error 1.51, libgcrypt 1.11.0, libtasn1 4.19.0,
    libpsl 0.21.5, nghttp2 1.64.0, libsoup 3.6.5. Off to start:
@@ -2283,8 +2283,8 @@ checkout/lb takes about 15 GB (ask Kalen before removing).
    border right. Fixed on the way: whitespace drew the missing
    glyph box; the HarfBuzz font is now a sub font whose glyph
    lookups apply WebKit's space rules (as Skia's did).
-   Every change is kept as the overlay browser/wpewebkit/
-   (88 files, base in browser/wpewebkit.version).
+   Every change is kept as the overlay aura/wpewebkit/
+   (88 files, base in aura/wpewebkit.version).
    Non-composited rendering is Skia-only: trinity pages always
    use the layer tree.
 3. DONE, first page checked: GraphicsContextTrinity (webgfx canvas;
@@ -2317,11 +2317,11 @@ checkout/lb takes about 15 GB (ask Kalen before removing).
    ellipse, conic from the top clockwise, repeating stripes.
    NEXT: clips to a path's shape (rounded boxes fill square:
    WebKit clips border-radius then fills; bounds used now).
-   WRITTEN, not built: browser.ag imports webgfx, then
+   WRITTEN, not built: aura.ag imports webgfx, then
    wpewebkit/2.54.0 from wpewebkit.org's tarball (checkout/
-   releases/wpewebkit, overlay browser/wpewebkit/, the flags
+   releases/wpewebkit, overlay aura/wpewebkit/, the flags
    of wpewebkit.configure.sh as import lines).
-6. DONE (Sep 26) the browser element runs WebKit. browser.ag
+6. DONE (Sep 26) the browser element runs WebKit. aura.ag
    forks install/libexec/wpe-webkit-2.0/WPETrinityBrowser (the
    overlay's Tools/TrinityBrowser/main.c, built by WebKit's own
    CMake when USE_TRINITY): a headless WPE view; each frame
@@ -2334,18 +2334,18 @@ checkout/lb takes about 15 GB (ask Kalen before removing).
    (negative scrolls down). Button-up needs press count 0
    (else WPE returns no event). WebKit binaries carry RPATH
    install/lib:install/build (configure.sh; a copy is
-   browser/wpewebkit.configure.sh): no LD_LIBRARY_PATH.
+   aura/wpewebkit.configure.sh): no LD_LIBRARY_PATH.
    Checked: helper alone (202 frames in ~5 s, Wikipedia);
    element headless over its socket: click focuses, typing,
    Backspace, a button's script, helper dies with the element;
    `browser <url>` shows Wikipedia at 1280x800.
-   Launch: `silver browser https://en.wikipedia.org/wiki/WebKit`.
+   Launch: `silver aura https://en.wikipedia.org/wiki/WebKit`.
    DONE (Sep 28) zero-copy frames: the helper sends each GPU
    frame's dma-buf (one plane, fd over the stdin socket with
    a 48-byte record: id, size, fourcc, modifier, stride,
    offset; it polls the buffer's rendering fence first) and
    the element imports each buffer once (import_dmabuf_image,
-   keyed by the helper's buffer id; browser.c receives the
+   keyed by the helper's buffer id; aura.c receives the
    fd). A failed import posts `gpuframes 0` and the helper
    reads frames back into the shared file as before (also
    the path when stdin is a pipe, and for SHM buffers).
@@ -2368,7 +2368,7 @@ checkout/lb takes about 15 GB (ask Kalen before removing).
    `engine_shm`, and a new instance adopts the running helper
    (adopt[], "kept the engine") instead of launching: the
    page and its video continue. Checked headless under the
-   host: a browser.ag touch and a trinity/Canvas.ag touch
+   host: a aura.ag touch and a trinity/Canvas.ag touch
    both keep the page, 58 page frames/s after the switch.
    DONE (Sep 28) page images get a mip chain (webgfx_image_new,
    Texture.upload_region refills it): a logo drawn smaller
@@ -2396,7 +2396,7 @@ checkout/lb takes about 15 GB (ask Kalen before removing).
    pane title shows app_title (title_text). browser: the helper
    sends 'NAVS' (back-forward list changed) and 'TITL' (title,
    else the address; notify::title / notify::uri) records on
-   the frame socket; browser.c returns the record kind (1 frame,
+   the frame socket; aura.c returns the record kind (1 frame,
    2 history, 3 title); navigate posts `nav back|forward`, the
    helper calls webkit_web_view_go_back/forward. Checked: the
    helper alone goes back and forward between two pages; on
@@ -2443,6 +2443,58 @@ checkout/lb takes about 15 GB (ask Kalen before removing).
    24 and 48 px against Inkscape (column through the tip 37,
    59, 103, 174, 248 vs 44, 65, 110, 180, 251), the wordmark
    clean at 1x and 4x, webgfx and trinity tests exit 0.
+   DONE (Sep 28, Kalen) standalone, the page title is the window
+   title (Window.element_title calls Display.set_title when not
+   hosted), and the browser opens where it was last unless a
+   src is given: `intern [ StatePersist ] last_src` saved on
+   every address change (~/.local/state/aura/persist.agi;
+   the helper's 'ADDR' record on notify::uri, kind 4 in
+   aura.c), loaded in init when src is empty. Checked
+   headless: a Wikipedia run saves it, a run with no address
+   opens it and logs its title.
+   DONE (Sep 28, Kalen: text blurry half the time after a
+   scroll) the scroll position straddled the pixel grid. WPE's
+   wheel line step is the view height to the 2/3 (86 px at
+   800), the element sends 0.325 of a notch: 27.95 px a step,
+   and WPE's coordinated scrolling delegate overrode the
+   threaded delegate's rounding with the raw float, so the
+   scrolled layer sat at a fraction and its tiles resampled
+   (strokes lightened step by step: 29 -> 40 -> 74). Overlay
+   Source/WebCore/page/scrolling/coordinated/
+   ScrollingTreeScrollingNodeDelegateCoordinated.cpp:
+   adjustedScrollPosition rounds to whole device pixels (the
+   scrolled layer's contentsScale). Checked headless on a long
+   text page: four wheel steps are four exact 28 px shifts
+   (mean pixel difference 0.0), a word's pixels identical
+   before and after.
+   DONE (Sep 28, Kalen) orbiter exports its own icon: `export
+   func orbiter_icon` (Avatar.ag) renders OrbiterAvatar alone
+   at 512x512 with a transparent background into orbiter/
+   images/icon.png (the module folder from install/build/
+   silver-orbiter.source), once: skipped while the file exists
+   (delete it, or `silver --export --build orbiter`, to remake).
+   The release's icon export scales it to the sizes. An element
+   outside a window is mounted as the window does it: ux and vk
+   first, then initialize (the member defaults, so shaders get
+   their device), bind_members, hold_members; the window needs a
+   screen canvas (draw composes onto it); every pass is drawn
+   and fenced (batched passes submit only at sync_fence). The
+   old placeholder icon.png is in the session scratchpad.
+   Every orbiter build now runs the export step (module init,
+   then "icon current").
+   DONE (Sep 28, Kalen: "link is fine to couple") `--link` is
+   the user's own install, the package's layout under HOME:
+   ~/.local/bin/<name> -> the binary, the hicolor icon set in
+   ~/.local/share/icons/hicolor/<n>x<n>/apps/<name>.png (img's
+   icons export) and ~/.local/share/applications/<name>.desktop
+   (Exec the link, Icon=<name>). silver.c: silver_module_icon,
+   silver_icon_set, silver_desktop_entry, shared with --release.
+   No icon: the link alone, and a note. It runs on a cached
+   build too (silver_user_link, called in both branches).
+   Checked: `silver --link --build orbiter` wrote all three,
+   fresh and cached. The icon avatar takes the app's resting
+   yaw of 30 degrees (on_state's, which needs the app object):
+   flat top and bottom, as orbiter shows it.
    DONE (Sep 28) ctrl/cmd+left and right in any trinity app go
    to Window.navigate (the focused element's history) before
    the key reaches the focus; the browser goes back/forward.
@@ -2457,11 +2509,8 @@ checkout/lb takes about 15 GB (ask Kalen before removing).
    worker-controlled origin; the worker does not handle it and
    the navigation preloader's soup request never completes
    (the server gets the GET, the client closes the socket).
-   Reproducer: scratchpad swsite_cached.py case 3. TEMP traces
-   are still in five overlay network files (NetworkResource
-   Loader, ServiceWorkerFetchTask, ServiceWorkerNavigation
-   Preloader, NetworkLoad, soup/NetworkDataTaskSoup): remove
-   them when the cause is found.
+   Reproducer: scratchpad swsite_cached.py case 3. The traces
+   used for it are removed (Kalen).
 
    DONE (Sep 26) masked icons (Wikipedia's menu, search,
    languages...). WebKit paints a CSS mask as a layer with the
@@ -2583,7 +2632,7 @@ GPU, MoltenVK included).
 
 Kalen: no SQLite in the browser; site storage is plain files in
 the browser's cache folder (the helper's --data dir). All of it
-in the overlay browser/wpewebkit/. In order:
+in the overlay aura/wpewebkit/. In order:
 1. WRITTEN, not compiled: localStorage is FileStorageArea, a
    readable localStorage.txt per site (key TAB value per line,
    \t \n \r \\ \uXXXX escapes), saved 500 ms after a change and
@@ -2612,7 +2661,7 @@ in the overlay browser/wpewebkit/. In order:
    (IDBServer.cpp); goes in item 5.
 3. IN PROGRESS cookies and HSTS as folders (Kalen: "dirs with
    simple files", cookies are key/value like the rest).
-   DONE, tested on this Mac: libsoup overlay browser/libsoup/
+   DONE, tested on this Mac: libsoup overlay aura/libsoup/
    (+ libsoup.deleted): SoupCookieJarFolder and
    SoupHSTSEnforcerFolder replace the SQLite jar/enforcer; the
    sqlite dependency is gone (libsoup links no sqlite).
@@ -2639,10 +2688,14 @@ in the overlay browser/wpewebkit/. In order:
      <dir>/hsts).
    - helper Tools/TrinityBrowser/main.c:332-336: FOLDER with
      <data>/cookies.
-   Then copy each file into browser/wpewebkit/.
-3b. OPEN libsoup warns "soup-tld: There is no public-suffix
-   data available": browser.ag builds libpsl with
-   --disable-runtime --disable-builtin, so no suffix list.
+   Then copy each file into aura/wpewebkit/.
+3b. DONE (Sep 28) libsoup warned "soup-tld: There is no
+   public-suffix data available" on every request: aura.ag
+   built libpsl with --disable-builtin. The line is gone; the
+   tarball's list/public_suffix_list.dat is compiled in (its
+   psl-make-dafsa runs on install/bin/python3). --disable-
+   runtime stays (no libidn2). Checked: a YouTube run logs no
+   soup-tld line.
 4. Service worker registrations in memory; Web SQL, web push,
    click measurement, tracking statistics, content blockers,
    enhanced-security sites and the favicon database off.
@@ -2651,13 +2704,13 @@ Checking needs WebKit configured: on this Mac harfbuzz, icu,
 libjpeg, libepoxy, libxkbcommon, libxml2 and libwebp are still
 missing imports (not added: Kalen questioned webp; SQLite is
 being removed instead of imported).
-Where the Mac build stands (Sep 27): every browser.ag import
+Where the Mac build stands (Sep 27): every aura.ag import
 up to libsoup builds; WebKit's configure stops at HarfBuzz.
 silver.c fixes made for it (in src/silver.c, rebuilt by
 Kalen): SDKROOT in the import build env on native macOS (our
 clang finds no SDK otherwise), release archives skip
 autogen.sh when configure ships, configure imports run `make
-clean` before make (stale in-tree objects). browser.ag gained
+clean` before make (stale in-tree objects). aura.ag gained
 pkgconf (system dirs /usr/include, /usr/lib) and glib imports;
 Au.g no longer imports libffi (glib's bundled copy is the one
 in install/). WebKitXcodeSDK.cmake: WPE on a Mac builds for
@@ -2711,7 +2764,7 @@ Bugs the browser exposed in trinity itself:
 Lessons:
 - Keep work out of /tmp: a reboot wiped the whole patched tree
   (recovered by replaying the transcript). It lives in
-  checkout/lb now, and the patch as an overlay in browser/.
+  checkout/lb now, and the patch as an overlay in aura/.
 - Speed came from reusing GPU work: one texture per image
   (not per draw), one GPU wait per frame (paint_n 1024).
 - A runtime-sized `vec <C struct> [ n ]` overran the heap in
@@ -2790,19 +2843,22 @@ of the media memory below, done as a streaming backend.
    token is rewritten. OPEN: a module whose .ag is unchanged is
    "up to date" and never reaches the import step: use
    `silver --clean --build browser` after an overlay edit.
-8. DONE logins kept, in silver's app cache (Kalen): browser.ag
-   passes --data path_cache['browser'] (~/.cache/browser); the
+8. DONE logins kept, in silver's app cache (Kalen): aura.ag
+   passes --data path_cache['aura'] (~/.cache/aura); the
    helper keeps site data in <it>/data (cookies.sqlite there)
    and cache in <it>/cache. Cookies were memory only before
    (signed out on every start). Checked: a cookie set by a
    local server came back from a new browser process and is in
-   ~/.cache/browser/data/cookies.sqlite.
+   ~/.cache/aura/data/cookies.sqlite.
    Saved passwords: WebKit has no password manager (not done).
 
 ## Active work: browser built by silver, no SQLite, TLS (Sep 27 2026)
 
-WebKit is built ONLY by `silver browser` (import in browser.ag,
-overlay browser/wpewebkit/). Never ninja by hand in a checkout.
+The browser module is `aura` (renamed from `browser`, Sep 28:
+aura/, aura.ag, aura.c, ~/.cache/aura, trinity-aura.sock; the
+WebKit helper keeps its name WPETrinityBrowser).
+WebKit is built ONLY by `silver aura` (import in aura.ag,
+overlay aura/wpewebkit/). Never ninja by hand in a checkout.
 1. DONE overlay applies on every build (silver.c checkout), not
    only a fresh checkout; env lines are in the import cache key.
 2. DONE meson 1.8.3 import (glib 2.84 needs >= 1.4); glib and
@@ -2812,7 +2868,7 @@ overlay browser/wpewebkit/). Never ninja by hand in a checkout.
    stores on libsoup's folder types, FileStorageArea and
    MemoryIDBBackingStoreFile listed; GSTREAMER_GL needs GStreamer.
 5. WRITTEN, not built: https. glib-networking import with a new
-   mbedtls 4 backend (overlay browser/glib-networking/tls/mbedtls,
+   mbedtls 4 backend (overlay aura/glib-networking/tls/mbedtls,
    8 files, shaped like its gnutls backend over tls/base). Clean
    -fsyntax-only -Wall -Wextra. The base verifies the peer after
    mbedtls_ssl_handshake, before data. No DTLS, no resumption.
@@ -2829,7 +2885,7 @@ shows (a slow orbiter/browser close takes about 10 s).
 - support/zap.sh: first a line `time | message | file` onto
   install/tmp/zap/inbox; then `stats` from each trinity app
   socket (1 s limit, a stuck app shows as no answer); then every
-  thread of each orbiter, browser and WPE* process (name, state,
+  thread of each orbiter, aura and WPE* process (name, state,
   kernel wait `wchan`, cpu time) every 0.2 s until they have all
   exited (30 s at most) into install/tmp/zap/zap.<HHMMSS>.txt;
   last a `done after Ns` inbox line. Arguments are the message
@@ -2850,8 +2906,8 @@ shows (a slow orbiter/browser close takes about 10 s).
 ## MEMORY: media in the browser, played through trinity (Sep 26 2026)
 
 The browser element's engine is now WPE WebKit 2.54.0 (checkout
-checkout/wk/wpewebkit-2.54.0, overlay browser/wpewebkit/, its
-configure line browser/wpewebkit.configure.sh). WebKit lays out
+checkout/wk/wpewebkit-2.54.0, overlay aura/wpewebkit/, its
+configure line aura/wpewebkit.configure.sh). WebKit lays out
 and runs pages; trinity draws. This entry covers video and
 sound: everything done Sep 25-26, why, and what is left.
 

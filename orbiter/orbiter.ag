@@ -515,8 +515,8 @@ element EditorTitle
         layers.tbar:
             fill_color: #2480
             box_shadow: inset 0 0 26px #8af2
-            stroke_width: 0.5
-            stroke_color: #fff2
+            stroke_width: 1
+            stroke_color: #fff1
         layers.tface:
             label_color: #fff
             label_size: 17
@@ -564,8 +564,8 @@ Option NavButton
         layers.body:
             fill_color: #ffffff0c
             radius: 8
-            stroke_width: 0.5
-            stroke_color: #ffffff33
+            stroke_width: 1
+            stroke_color: #ffffff1a
             box_shadow: none
         :hovered
             layers.body:
@@ -1176,8 +1176,8 @@ Option RemoteToggle
         layers.body:
             fill_color: #0000
             radius: 8
-            stroke_width: 0.5
-            stroke_color: #fff2
+            stroke_width: 1
+            stroke_color: #fff1
         layers.face:
             label_color: #fff6
             label_size: 13
@@ -1262,8 +1262,8 @@ element AgentNote
         layers.body:
             fill_color: #ffffff10, 400ms cubic outward
             radius: 6
-            stroke_width: 0.5
-            stroke_color: #fff4
+            stroke_width: 1
+            stroke_color: #fff2
             box_shadow: none
         layers.shine: ShineLayer
             shine_color: #cfe6ff
@@ -1447,8 +1447,8 @@ Group StatusBar
         layers.sbar:
             fill_color: #625a, 400ms cubic outward
             box_shadow: inset 0 0 26px #8af2
-            stroke_width: 0.5
-            stroke_color: #fff2
+            stroke_width: 1
+            stroke_color: #fff1
         layers.sdiv:
             fill_color: #fff2
             area: l0 t0px r0 h1px
@@ -1557,8 +1557,8 @@ NavButton OrbiterButton
             fill_color: #0000
             radius: 8
             box_shadow: none
-            stroke_width: 0.5
-            stroke_color: #fff4
+            stroke_width: 1
+            stroke_color: #fff2
         layers.iconl:
             image_scale: 1.1
         :hovered
@@ -1583,8 +1583,8 @@ LButton RunButton
         layers.body:
             fill_color: #ffffff0c
             radius: 8
-            stroke_width: 0.5
-            stroke_color: #ffffff33
+            stroke_width: 1
+            stroke_color: #ffffff1a
             box_shadow: none
         :hovered
             layers.body:
@@ -1623,8 +1623,8 @@ element PatternField
         layers.body:
             fill_color: #0000
             radius: 8
-            stroke_width: 0.5
-            stroke_color: #fff2
+            stroke_width: 1
+            stroke_color: #fff1
         layers.face:
             label_color: #fff6
             label_size: 16
@@ -1669,8 +1669,8 @@ element ArgsField
         layers.body:
             fill_color: #0000
             radius: 8
-            stroke_width: 0.5
-            stroke_color: #fff2
+            stroke_width: 1
+            stroke_color: #fff1
         layers.face:
             label_color: #fff6
             label_size: 15
@@ -1705,8 +1705,8 @@ element ReplaceField
         layers.body:
             fill_color: #0000
             radius: 8
-            stroke_width: 0.5
-            stroke_color: #fff2
+            stroke_width: 1
+            stroke_color: #fff1
         layers.face:
             label_color: #fff6
             label_size: 16
@@ -1737,8 +1737,8 @@ Button PillButton
             fill_gradient_angle: 90.0
             box_shadow: inset 0 0 16px #ccf2
             radius: 8
-            stroke_width: 0.5
-            stroke_color: #fff2
+            stroke_width: 1
+            stroke_color: #fff1
         layers.face:
             label_color: #fff
             label_size: 14
@@ -1870,7 +1870,7 @@ element LaunchLabel
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
 element LaunchPanel
-    body : Layer [ fill_color: rgba [ '#0f122088' ], stroke_width: 0.5, stroke_color: rgba [ '#fff2' ] ]
+    body : Layer [ fill_color: rgba [ '#0f122088' ], stroke_width: 1.0, stroke_color: rgba [ '#fff1' ] ]
     # the standard scrollbar: the rows scroll when the section is shorter than they are
     scrollbar : ScrollLayer [ overlay: true, area: Region { l0 t0 r0 b0 },
         thumb_color: '#fff3', thumb_w: 6.0, thumb_min_h: 32.0, thumb_radius: 4.0 ]
@@ -2284,8 +2284,8 @@ Group ToolsHeader
         layers.hbar:
             fill_color: #2480
             box_shadow: inset 0 0 26px #8af2
-            stroke_width: 0.5
-            stroke_color: #fff2
+            stroke_width: 1
+            stroke_color: #fff1
         layers.hdiv:
             fill_color: #fff2
             area: l0 b0px r0 h1px

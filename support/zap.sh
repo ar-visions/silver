@@ -25,7 +25,7 @@ for n in $(seq 1 150); do
   live=0
   for p in /proc/[0-9]*; do
     c=$(cat $p/comm 2>/dev/null) || continue
-    case "$c" in orbiter*|browser*|WPE*) ;; *) continue;; esac
+    case "$c" in orbiter*|aura*|WPE*) ;; *) continue;; esac
     live=1
     echo "$(basename $p) $c" >> $out
     for t in $p/task/*; do

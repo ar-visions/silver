@@ -1739,3 +1739,71 @@ element Avatar
         if [ vol_target ]
             w.screen.draw_image[ vol_target.color, b ]
         needs_frame = true
+
+    # the avatar alone on a clear canvas: the app's icon
+    func icon_image [ w: Window, size: i32 ] -> Image
+        for [ f: i32 0, f < 60, f += 1 ]
+            # draw composes onto the window's screen: clear it first
+            w.screen.clear[ rgba [ r: 0.0, g: 0.0, b: 0.0, a: 0.0 ] ]
+            draw[ w ]
+            # each pass as the window's target pass runs it: draw, fence
+            if [ target ]
+                target.draw[]
+                target.sync_fence[]
+            if [ mask_target ]
+                mask_target.draw[]
+                mask_target.sync_fence[]
+            if [ heat_target ]
+                heat_target.draw[]
+                heat_target.sync_fence[]
+            if [ vol_target ]
+                vol_target.draw[]
+                vol_target.sync_fence[]
+        w.screen.sync_fence[]
+        return Image [ w.screen.color ]
+
+
+# the app's icon: the avatar at 512, made once (delete it to remake)
+export func orbiter_icon []
+    inst : path.path_install[]
+    if [ !inst ] return
+    # the module folder: the first source the install lists for it
+    srcs : path '{inst}/build/silver-orbiter.source'
+    if [ !srcs.exists[] ] return
+    txt  : string [ srcs.load[ typeid[string], null ] ]
+    if [ !txt ] return
+    lines : txt.split[ '\n' ]
+    first : path [ lines[ 0 ] ]
+    out   : path '{first.parent_dir[]}/images/icon.png'
+    force : getenv[ 'SILVER_EXPORT_FORCE' ]
+    if [ force || !out.exists[] ]
+        vk9 : vk_context []
+        vk9.hold[]
+        w9 : Window [ vk: vk9, format: Pixel.rgba8, backbuffer: true,
+            width: 512, height: 512 ]
+        w9.hold[]
+        if [ !w9.element_targets ] w9.element_targets = map Render [string] []
+        # the screen canvas a running window makes in its update
+        w9.screen = Canvas [ w: w9, vk: vk9, format: Pixel.rgba8, load_existing: true,
+            width: 512, height: 512 ]
+        w9.screen.resize[ 512, 512 ]
+        w9.screen.update[]
+        # mounted as the window mounts an element: context first, then
+        # initialize (the member defaults), then bind and hold members
+        av : OrbiterAvatar [ id: 'icon' ]
+        av.hold[]
+        av.ux = w9
+        av.vk = w9.vk
+        av.initialize[]
+        bind_members[ av ]
+        av.hold_members[]
+        av.bounds = rect [ x: 0.0, y: 0.0, w: 512.0, h: 512.0 ]
+        # the app's resting yaw (on_state sets it there): flat top and bottom
+        av.rotate = vec Rotation []
+        av.rotate.push[ Rotation [ '0 1 0 30deg' ] ]
+        av.rotate.push[ Rotation [ '1 0 0 0deg' ] ]
+        im : av.icon_image[ w9, 512 ]
+        im.png[ out ]
+        log 'orbiter: icon written {out}'
+    el
+        log 'orbiter: icon current'
