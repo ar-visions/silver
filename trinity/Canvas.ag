@@ -82,7 +82,7 @@ shader CanvasSDFCompute
     mutable cap    : i32     # 0 butt, 1 round, 2 square
 
     # storage buffer for edges, two vec4 each: x0, y0, x1, y1; then
-    # free start, free end, implied (a fill's closing edge), unused
+    # free start, free end, implied (a fill's closing edge), inner
     attrib  edges    : StorageBuffer [
         type:typeid[ CanvasSDFSurface ], id: CanvasSDFSurface.edges,   count:1, format:typeid[ vec4f ]
     ]
@@ -131,6 +131,8 @@ shader CanvasSDFCompute
                     d2 = sq * sq;
                 }}
             }}
+            // an inner edge (fill both sides) is no boundary
+            if (f.w > 0.5) d2 = 999999.0 * 999999.0;
             md2 = min(md2, d2);                      // squared — no sqrt here
             // winding (same edge, same iteration)
             if (a.y <= py) {{
@@ -784,14 +786,31 @@ shader CanvasUI
             }}
             float dist_p = texture(image, uv).r;
 
-            // screen-space AA — fwidth gives ~1 pixel either side of the
-            // edge regardless of transform / zoom. blur extends it.
-            float wp     = fwidth(dist_p) + blur;
+            // AA half a pixel each side of the edge: exact coverage
+            float wp     = 0.5 * length(vec2(dFdx(dist_p), dFdy(dist_p))) + blur;
             float half_w = stroke_width * 0.5;
 
             // fill: 1 wherever dist_p is negative (inside the shape).
             // offset biases the SDF: positive = expand outward.
-            float fill_cov   = 1.0 - smoothstep(-wp, wp, dist_p - ubo.fill_offset);
+            // 4x4 cells near the outline: thin tips get true coverage
+            vec2  ppx      = fwidth(lpos);
+            float pw       = 0.5 * (ppx.x + ppx.y);
+            float dcen     = dist_p - ubo.fill_offset;
+            float fill_cov = (dcen < 0.0) ? 1.0 : 0.0;
+            if (abs(dcen) < 1.25 * pw + blur) {{
+                float cell = 0.25 * pw + blur;
+                fill_cov = 0.0;
+                for (int sy = 0; sy < 4; sy++) {{
+                    for (int sx = 0; sx < 4; sx++) {{
+                        vec2  o  = (vec2(float(sx), float(sy)) - 1.5) * 0.25 * ppx;
+                        vec2  su = (lpos + o - ubo.rect.xy) / ubo.rect.zw;
+                        su       = mix(ubo.grad0.xy, ubo.grad0.zw, su);
+                        float ds = textureLod(image, su, 0.0).r - ubo.fill_offset;
+                        fill_cov += clamp(0.5 - ds / cell, 0.0, 1.0);
+                    }}
+                }}
+                fill_cov *= 1.0 / 16.0;
+            }}
             // per-side stroke: SDF depth, nearest-edge side selection.
             // Transition only within ~wp of the corner equidistant diagonal.
             float pad_p  = max(4.0, ubo.params.x * 0.5 + 4.0);
@@ -930,14 +949,14 @@ shader CanvasUI
         }}
         if (ubo.ramp.x > 0.5) fill = ramp_color(v_pos);
 
-        // screen-space AA: fwidth(dist) is how much dist changes between
-        // adjacent screen fragments, so the smoothstep range stays ~1
-        // pixel on each side of the edge regardless of any transform
+        // screen-space AA: the distance's gradient is how much dist changes
+        // between adjacent screen fragments, so the smoothstep range stays
+        // half a pixel each side of the edge regardless of any transform
         // (rotation/scale/zoom). blur extends the softening beyond that
         // base width for shadow/halo effects.
         // a negative blur cancels the feather: hairlines need a hard edge,
         // because a 1px shape is narrower than the 2px AA transition
-        float w = max(fwidth(dist) + blur, 0.0001);
+        float w = max(0.5 * length(vec2(dFdx(dist), dFdy(dist))) + blur, 0.0001);
 
         // combined fill + stroke in one pass:
         //   fill_cov   = 1 inside the shape shrunk inward by half-stroke
@@ -3139,6 +3158,8 @@ Render Canvas
         el
             m = Canvas [ vk: vk, w: w, width: content_w, height: content_h,
                 load_existing: true, paint_n: 64, tag: 'clip' ]
+        # a pooled mask keeps the size this canvas had then
+        m.resize[ content_w, content_h ]
         m.clear_recorded[ vec4f [ 1.0, 1.0, 1.0, (opaque) ? 1.0 : 0.0 ] ]
         return m
 
@@ -3580,6 +3601,7 @@ Render Canvas
                 path.cached_valid = false
             edge_data : @f32 [ edge_buf.data ]
             open9 : bool [ false ]
+            fill_only : bool [ st.stroke_width <= 0.0 ]
             for [ ei: i32 0, ei < ne, ei += 1 ]
                 e  : SDFEdge edges[ei]
                 at : i32 [ (edge_used + ei) * 8 ]
@@ -3590,7 +3612,7 @@ Render Canvas
                 edge_data[at + 4] = e.open0
                 edge_data[at + 5] = e.open1
                 edge_data[at + 6] = e.implied
-                edge_data[at + 7] = 0.0
+                edge_data[at + 7] = (fill_only && sdf_inner_edge[ edges, e, even_odd ]) ? 1.0 : 0.0
                 if [ e.implied > 0.5 ] open9 = true
             sdf_compute.eo     = edge_used
             sdf_compute.even_odd = (even_odd) ? 1 : 0
@@ -4354,6 +4376,24 @@ func sdf_winding [ edges: vec SDFEdge, px: f32, py: f32 ] -> i32
                 if [ cross < 0.0 ]
                     wn -= 1
     return wn
+
+
+# an edge with fill on both sides bounds nothing
+func sdf_inner_edge [ edges: vec SDFEdge, e: SDFEdge, even_odd: bool ] -> bool
+    dx  : f32 [ e.x1 - e.x0 ]
+    dy  : f32 [ e.y1 - e.y0 ]
+    len : f32 [ sqrt[ dx * dx + dy * dy ] ]
+    if [ len < 0.001 ]
+        return false
+    mx  : f32 [ (e.x0 + e.x1) * 0.5 ]
+    my  : f32 [ (e.y0 + e.y1) * 0.5 ]
+    nx  : f32 [ -dy / len * 0.05 ]
+    ny  : f32 [ dx / len * 0.05 ]
+    wa  : i32 [ sdf_winding[ edges, mx + nx, my + ny ] ]
+    wb  : i32 [ sdf_winding[ edges, mx - nx, my - ny ] ]
+    if [ even_odd ]
+        return (wa & 1) != 0 && (wb & 1) != 0
+    return wa != 0 && wb != 0
 
 
 func sdf_generate [ flat: PathPoints, bx: f32, by: f32, bw: f32, bh: f32, tw: i32, th: i32, pad: f32 ] -> @f32

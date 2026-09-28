@@ -26,7 +26,8 @@ Keep it in step with the imports.
 | OpenSubdiv | v3_7_0 | trinity | https://github.com/PixarAnimationStudios/OpenSubdiv | Apache-2.0 (Pixar modified) | Pixar Animation Studios |
 | sherpa-onnx | v1.13.4 | speech | https://github.com/k2-fsa/sherpa-onnx | Apache-2.0 | Next-gen Kaldi (k2-fsa) |
 | FAAD2 | 2.11.2 | spectra, speech | https://github.com/knik0/faad2 | GPL-2.0-or-later (commercial license available) | Nero AG, Fabian Greffrath, Krzysztof Nikiel and contributors |
-| Mbed TLS | ec4044008d2d069da38288bc76b0fee34ec78646 | tls | https://github.com/Mbed-TLS/mbedtls | Apache-2.0 OR GPL-2.0-or-later | Arm Limited and contributors |
+| Mbed TLS | ec4044008d2d069da38288bc76b0fee34ec78646 | tls, browser (https) | https://github.com/Mbed-TLS/mbedtls | Apache-2.0 OR GPL-2.0-or-later | Arm Limited and contributors |
+| libyaml | 0.2.5 | browser (Ruby's build) | https://github.com/yaml/libyaml | MIT | Kirill Simonov, Ingy döt Net and contributors |
 | QEMU | e47e2d0 | qemu | https://github.com/qemu/qemu | GPL-2.0-only (mixed, see its LICENSE) | Fabrice Bellard and the QEMU project |
 | virglrenderer | main | qemu | https://gitlab.freedesktop.org/virgl/virglrenderer | MIT | Dave Airlie, Collabora and contributors |
 | Mesa | 26.2.2 | os-bootstrap | https://gitlab.freedesktop.org/mesa/mesa | MIT (with other permissive parts) | The Mesa 3D project |
@@ -45,6 +46,19 @@ Keep it in step with the imports.
 | Linux kernel 6.18 source | os-bootstrap | https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.tar.xz | GPL-2.0-only WITH Linux-syscall-note | Linus Torvalds and the kernel community |
 | Kokoro English TTS model (kokoro-en-v0_19) | speech | https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-en-v0_19.tar.bz2 | Apache-2.0 | hexgrad (Kokoro-82M), packaged by k2-fsa |
 | silver LICENSE | features (an import test) | https://raw.githubusercontent.com/ar-visions/silver/master/LICENSE | this repository's own | ar-visions |
+| WPE WebKit 2.54.0 | browser | https://wpewebkit.org/releases/wpewebkit-2.54.0.tar.xz | LGPL-2.1-or-later and BSD-2-Clause (per file) | Apple, Igalia and the WebKit contributors |
+| Ruby 3.3.6 (build tool) | browser | https://cache.ruby-lang.org/pub/ruby/3.3/ruby-3.3.6.tar.gz | Ruby License or BSD-2-Clause | Yukihiro Matsumoto and the Ruby contributors |
+| unifdef 2.12 (build tool) | browser | https://dotat.at/prog/unifdef/unifdef-2.12.tar.gz | BSD-2-Clause | Tony Finch and contributors |
+| pkgconf 2.3.0 (build tool) | browser | https://distfiles.ariadne.space/pkgconf/pkgconf-2.3.0.tar.xz | ISC | Ariadne Conill and contributors |
+| Meson 1.8.3 (build tool) | browser | https://github.com/mesonbuild/meson/releases/download/1.8.3/meson-1.8.3.tar.gz | Apache-2.0 | The Meson development team |
+| libgpg-error 1.51 | browser | https://www.gnupg.org/ftp/gcrypt/libgpg-error/libgpg-error-1.51.tar.bz2 | LGPL-2.1-or-later | g10 Code GmbH |
+| libgcrypt 1.11.0 | browser | https://www.gnupg.org/ftp/gcrypt/libgcrypt/libgcrypt-1.11.0.tar.bz2 | LGPL-2.1-or-later | g10 Code GmbH and the Free Software Foundation |
+| libtasn1 4.19.0 | browser | https://ftp.gnu.org/gnu/libtasn1/libtasn1-4.19.0.tar.gz | LGPL-2.1-or-later | Free Software Foundation |
+| libpsl 0.21.5 | browser | https://github.com/rockdaboot/libpsl/releases/download/0.21.5/libpsl-0.21.5.tar.gz | MIT | Tim Rühsen and contributors |
+| nghttp2 1.64.0 | browser | https://github.com/nghttp2/nghttp2/releases/download/v1.64.0/nghttp2-1.64.0.tar.xz | MIT | Tatsuhiro Tsujikawa and contributors |
+| GLib 2.84.4 | browser | https://download.gnome.org/sources/glib/2.84/glib-2.84.4.tar.xz | LGPL-2.1-or-later | The GLib developers (GNOME) |
+| libsoup 3.6.5 | browser | https://download.gnome.org/sources/libsoup/3.6/libsoup-3.6.5.tar.xz | LGPL-2.0-or-later | The libsoup developers (GNOME) |
+| glib-networking 2.80.1 | browser | https://download.gnome.org/sources/glib-networking/2.80/glib-networking-2.80.1.tar.xz | LGPL-2.1-or-later | The glib-networking developers (GNOME) |
 
 ## Scene assets (fetched at `silver --export scenes`, never committed)
 
@@ -63,3 +77,8 @@ is subject to the GPL unless a commercial FAAD2 license is obtained or the decod
 is swapped. QEMU and the Linux kernel run as separate programs in orbiter-os, which
 does not put silver under their license. Mbed TLS and Vulkan-Headers are dual
 licensed and are used under Apache-2.0.
+
+WebKit, GLib, libsoup, glib-networking and the gcrypt libraries are LGPL and
+linked dynamically by the browser module. browser/ holds our changes to them as
+overlays (wpewebkit/, libsoup/, glib-networking/ with its mbedtls backend); those
+changes are under the same LGPL terms as the files they change.

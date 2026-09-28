@@ -2000,6 +2000,8 @@ class vk_context
             fmt : i32 [ VK_FORMAT_B8G8R8A8_UNORM ]
             # 'AB24' / 'XB24' are abgr in memory: rgba as vulkan reads it
             if [ fourcc == 0x34324241 || fourcc == 0x34324258 ] fmt = VK_FORMAT_R8G8B8A8_UNORM
+            # 'XR24' / 'XB24': the fourth byte is nothing, not alpha
+            opq : bool [ fourcc == 0x34325258 || fourcc == 0x34324258 ]
             plane : VkSubresourceLayout [ ]
             plane.offset   = offset
             plane.rowPitch = stride
@@ -2061,7 +2063,7 @@ class vk_context
             expect err == 0, 'dmabuf: vkAllocateMemory (import) failed'
             err = vkBindImageMemory[ device, img, mem, 0 ]
             expect err == 0, 'dmabuf: vkBindImageMemory failed'
-            t : Texture [ vk: a, w: disp, width: w2, height: h2,
+            t : Texture [ vk: a, w: disp, width: w2, height: h2, opaque: opq,
                 vk_format: fmt, vk_image: img, vk_memory: mem ]
             t.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
             return t
@@ -4525,7 +4527,12 @@ class Texture
         vk.wait_idle[]
         staging.destroy_now[ ]
         staging.drop[]
-        transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
+        # a mipped texture refills its chain from the new level 0
+        if [ mip_levels > 1 ]
+            vk.create_mipmaps[ vk_image, width, height, 1, mip_levels, layer_count ]
+            vk_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+        el
+            transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
 
     # a method, not init: resize re-runs it on an owned object
     func init [ ]

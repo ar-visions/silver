@@ -8610,7 +8610,15 @@ string import_config(array input) {
 
 string import_env(array input) {
     string env = string(alloc, 128);
-    each(input, string, t) {
+    int token_line = -1;
+    each(input, token, t) {
+        // words on a > line are its command, never the build's env
+        if (starts_with(t, ">"))
+            token_line = t->line;
+        else if (token_line >= 0 && t->line != token_line)
+            token_line = -1;
+        if (token_line >= 0)
+            continue;
         if (isalpha(t->chars[0]) && index_of(t, "=") >= 0) {
             if (len(env))
                 append(env, " ");
@@ -8974,6 +8982,21 @@ static none run_import_commands(silver a, string label,
     cd(cw);
 }
 
+// the build and install steps of a configured import, in its build tree
+static none import_build(silver a, string label, string cenv, path build_f, bool is_cmake, bool is_meson) {
+    if (is_cmake) {
+        checkout_verify(a, label, "build", "build",
+            f(command, "%o cmake --build %o --config Release -j16", cenv, build_f));
+        checkout_verify(a, label, "install", "install",
+            f(command, "%o cmake --install %o --config Release", cenv, build_f));
+    } else if (is_meson) {
+        checkout_verify(a, label, "build", "compile",
+            f(command, "%o meson compile -C %o", cenv, build_f));
+        checkout_verify(a, label, "install", "install",
+            f(command, "%o meson install -C %o", cenv, build_f));
+    }
+}
+
 static none checkout(silver a, path uri, string commit, array prebuild, array postbuild, string conf, string env, string mod_sel, string import_name) {
     // a dependency built for a device belongs to THAT platform: sharing the
     // native prefix would install a windows glfw over the linux one. the
@@ -9091,16 +9114,25 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
             if (file_exists("%o", diff_f))
                 checkout_verify(a, label, "patch", "patch",
                     f(command, "git -C %o apply %o", project_f, diff_f));
-            // module-path overlay: <name>/ copies over, <name>.deleted goes
-            path overlay_f = f(path, "%o/%o", a->module_path, name);
-            if (dir_exists("%o", overlay_f))
-                checkout_verify(a, label, "overlay", "overlay",
-                    f(command, "cp -a %o/. %o/", overlay_f, project_f));
-            path deleted_f = f(path, "%o/%o.deleted", a->module_path, name);
-            if (file_exists("%o", deleted_f))
-                checkout_verify(a, label, "overlay", "overlay",
-                    f(command, "cd %o && xargs -r rm -f < %o", project_f, deleted_f));
         }
+    }
+
+    // module-path overlay: <name>/ copies over, <name>.deleted goes.
+    // every build: an overlay edit reaches a checkout made earlier
+    struct stat link_st;
+    bool linked_src = lstat(project_f->chars, &link_st) == 0 && S_ISLNK(link_st.st_mode);
+    path local_src  = a->src_loc ? f(path, "%o/%o", a->src_loc, name) : null;
+    bool own_tree   = !linked_src && !(local_src && strcmp(project_f->chars, local_src->chars) == 0);
+    path overlay_f  = f(path, "%o/%o", a->module_path, name);
+    bool has_overlay = own_tree && dir_exists("%o", overlay_f);
+    if (own_tree) {
+        if (has_overlay)
+            checkout_verify(a, label, "overlay", "overlay",
+                f(command, "cp -a %o/. %o/", overlay_f, project_f));
+        path deleted_f = f(path, "%o/%o.deleted", a->module_path, name);
+        if (file_exists("%o", deleted_f))
+            checkout_verify(a, label, "overlay", "overlay",
+                f(command, "cd %o && xargs -r rm -f < %o", project_f, deleted_f));
     }
 
     // we build to another folder, not inside the source, or checkout.
@@ -9175,6 +9207,8 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
     // selector is part of the cache identity, not the checkout's
     if (mod_sel)
         config = f(string, "%o mod:%o", config, mod_sel);
+    // env lines change the build too (LDFLAGS, PATH): part of the key
+    string cache_key = (env && len(env)) ? f(string, "%o env:%o", config, env) : config;
     path token = is_silver
         ? f(path, "%o/build/.%o-%o.silver-token", install,
             owner ? owner : string("git"), name)
@@ -9192,10 +9226,23 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
         (file_exists("%o", product_token) &&
          modified_time(product_token) > modified_time(compiler_token));
 
+    // an overlay file newer than the token: build in place, no wipe
+    bool overlay_fresh = false;
+    if (has_overlay && file_exists("%o", token)) {
+        i64   built = modified_time(token);
+        array files = ls(overlay_f, null, true);
+        each(files, path, p9)
+            if (modified_time(p9) > built) { overlay_fresh = true; break; }
+    }
+
     if (file_exists("%o", token) &&
         product_current) {
         string s = (string)load(token, typeid(string), null);
-        if (s && eq(s, config->chars)) {
+        if (s && eq(s, cache_key->chars)) {
+            if (overlay_fresh) {
+                import_build(a, label, cenv, build_f, is_cmake, is_meson);
+                save(token, (Au)cache_key, null);
+            }
             run_import_commands(a, label, postbuild,
                 is_silver ? install : build_f);
             if (is_silver && mod_sel) {
@@ -9259,12 +9306,7 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
               "%o cmake -B %o -S %o %o%o -DCMAKE_INSTALL_PREFIX=%o -DCMAKE_BUILD_TYPE=%s %o",
               cenv, build_f, cmake_src, x_cmake, opt, install, build, config));
 
-        checkout_verify(a, label, "build", "build",
-            f(command, "%o cmake --build %o --config %s -j16",
-              cenv, build_f, build));
-        checkout_verify(a, label, "install", "install",
-            f(command, "%o cmake --install %o --config %s",
-              cenv, build_f, build));
+        import_build(a, label, cenv, build_f, true, false);
     } else if (is_meson) { // build for meson
         // externals always build release — debug is for OUR code
         cstr build = "release";
@@ -9274,10 +9316,7 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
             f(command, "%o meson setup %o %o --prefix=%o --libdir=lib --buildtype=%s %o%o",
               cenv, build_f, project_f, install, build, x_meson, config));
 
-        checkout_verify(a, label, "build", "compile",
-            f(command, "%o meson compile -C %o", cenv, build_f));
-        checkout_verify(a, label, "install", "install",
-            f(command, "%o meson install -C %o", cenv, build_f));
+        import_build(a, label, cenv, build_f, false, true);
     } else if (is_gn) {
         cstr is_debug = "false";
         checkout_verify(a, label, "configure", "gen",
@@ -9392,7 +9431,7 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
 
     // a failed silver child must not cache as built
     if (!is_silver || child_ok)
-        save(token, (Au)config, null);
+        save(token, (Au)cache_key, null);
     if (lock_fd >= 0) { flock(lock_fd, LOCK_UN); (close)(lock_fd); }
 }
 

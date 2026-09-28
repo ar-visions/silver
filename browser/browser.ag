@@ -11,6 +11,7 @@ import ruby/3.3.6 from https://cache.ruby-lang.org/pub/ruby/3.3/ruby-3.3.6.tar.g
     --disable-install-doc
     --with-libyaml-dir={install}
 import unifdef/2.12 from https://dotat.at/prog/unifdef/unifdef-2.12.tar.gz
+    > rm -f {install}/share/man/man1/unifdefall.1
     > make prefix={install} install
 # meson and cmake find the libraries below via pkg-config
 import pkgconf/2.3.0 from https://distfiles.ariadne.space/pkgconf/pkgconf-2.3.0.tar.xz
@@ -33,13 +34,20 @@ import libpsl/0.21.5 from https://github.com/rockdaboot/libpsl/releases/download
 import nghttp2/1.64.0 from https://github.com/nghttp2/nghttp2/releases/download/v1.64.0/nghttp2-1.64.0.tar.xz
     -DENABLE_LIB_ONLY=ON
     -DENABLE_DOC=OFF
+# glib 2.84 needs meson 1.4 or later; one runnable file
+import meson/1.8.3 from https://github.com/mesonbuild/meson/releases/download/1.8.3/meson-1.8.3.tar.gz
+    > python3 packaging/create_zipapp.py --outfile {install}/bin/meson .
 import glib/2.84.4 from https://download.gnome.org/sources/glib/2.84/glib-2.84.4.tar.xz
+    PATH={install}/bin:$PATH
+    LDFLAGS=-Wl,-rpath,{install}/lib
     -Dtests=false
     -Dintrospection=disabled
     -Dman-pages=disabled
     -Ddocumentation=false
     -Dnls=disabled
 import libsoup/3.6.5 from https://download.gnome.org/sources/libsoup/3.6/libsoup-3.6.5.tar.xz
+    PATH={install}/bin:$PATH
+    LDFLAGS=-Wl,-rpath,{install}/lib
     PKG_CONFIG_PATH={install}/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig
     -Dtests=false
     -Dintrospection=disabled
@@ -51,6 +59,20 @@ import libsoup/3.6.5 from https://download.gnome.org/sources/libsoup/3.6/libsoup
     -Dntlm=disabled
     -Dautobahn=disabled
     -Dpkcs11_tests=disabled
+
+# https: glib's TLS plugin, on silver's own mbedtls
+import tls
+import glib-networking/2.80.1 from https://download.gnome.org/sources/glib-networking/2.80/glib-networking-2.80.1.tar.xz
+    PATH={install}/bin:$PATH
+    LDFLAGS=-Wl,-rpath,{install}/lib
+    PKG_CONFIG_PATH={install}/lib/pkgconfig
+    -Dgnutls=disabled
+    -Dopenssl=disabled
+    -Dlibproxy=disabled
+    -Dgnome_proxy=disabled
+    -Denvironment_proxy=enabled
+    -Dmbedtls=enabled
+    -Dmbedtls_prefix={install}
 
 # WPE WebKit paints through webgfx: build that first
 import webgfx
@@ -81,6 +103,7 @@ import wpewebkit/2.54.0 from https://wpewebkit.org/releases/wpewebkit-2.54.0.tar
     -DENABLE_WPE_PLATFORM_DRM=OFF
     -DENABLE_VIDEO=ON
     -DENABLE_WEB_AUDIO=OFF
+    -DENABLE_WEBGL=OFF
     -DUSE_LIBBACKTRACE=OFF
     -DENABLE_GAMEPAD=OFF
     -DUSE_LIBHYPHEN=OFF
@@ -112,6 +135,12 @@ import <sys/wait.h>
 import <sys/socket.h>
 import <time.h>
 
+# browser.c: the helper's records off the socket: 1 a GPU frame,
+# 2 its history (w = can go back, h = can go forward), 3 its title
+# (text, w bytes), 0 none
+func browser_recv_frame [ sock: i32, id: @u64, w: @i32, h: @i32, format: @u32,
+    modifier: @u64, stride: @u32, offset: @u32, fd: @i32, text: @i8, cap: i32 ] -> i32
+
 element browser : trinity
     public  width      : i32    [ 1280 ]
     public  height     : i32    [ 800 ]
@@ -124,6 +153,8 @@ element browser : trinity
     mutable shm_size   : i64
     mutable shm_path   : string
     mutable seq        : u32                 # last frame shown
+    mutable frames     : map Texture [string] # the helper's GPU buffers by id
+    mutable dma        : bool                # GPU frames arrive: the file is idle
     mutable tex        : Texture
     mutable tex_w      : i32
     mutable tex_h      : i32
@@ -131,8 +162,9 @@ element browser : trinity
     mutable view_h     : i32
     mutable scale      : f32    [ 1.0 ]      # device px per point
     mutable held       : i32                 # buttons down, bit per button
-    mutable move_line  : string              # latest move, sent once a frame
     mutable started    : bool
+    persist engine     : vec i64             # the running helper: pid, ctl
+    persist engine_shm : string              # its frame file
     public  stats      : bool                # --stats: page frames shown each second
     mutable shown      : i32                 # page frames taken this second
     mutable shown_at   : i64
@@ -159,7 +191,7 @@ element browser : trinity
         ts : i64 [ time[ null ] ]
         shm_path = '/tmp/silver-browser-{pd}-{ts}.frame'
         root   : path.path_startup[]
-        engine : path '{root}/install/libexec/wpe-webkit-2.0/WPETrinityBrowser'
+        engine_path : path '{root}/install/libexec/wpe-webkit-2.0/WPETrinityBrowser'
         target : string [ 'about:blank' ]
         if [ src && (src.index_of[ '://' ] >= 0 || src.index_of[ 'about:' ] == 0) ]
             target = src
@@ -176,14 +208,14 @@ element browser : trinity
             log 'browser: socketpair failed'
             return
         setenv[ 'TRINITY_BROWSER_SHM', shm_path.chars, 1 ]
+        # no death signal: a reload forks on a thread that soon ends.
+        # the helper quits when its stdin closes, as it does if we die
         pid = fork[]
         if [ pid == 0 ]
-            # the helper dies with the element's process
-            prctl[ PR_SET_PDEATHSIG, SIGTERM ]
             dup2[ fds[0], 0 ]
             close[ fds[0] ]
             close[ fds[1] ]
-            execl[ engine.chars, name.chars, flag.chars, home.chars, target.chars, null ]
+            execl[ engine_path.chars, name.chars, flag.chars, home.chars, target.chars, null ]
             _exit[ 1 ]
         close[ fds[0] ]
         if [ pid < 0 ]
@@ -191,7 +223,23 @@ element browser : trinity
             close[ fds[1] ]
             return
         ctl = fds[1]
-        log 'browser: {engine} {target}'
+        engine = vec i64 []
+        engine.push[ i64 pid ]
+        engine.push[ i64 ctl ]
+        engine_shm = shm_path
+        log 'browser: {engine_path} {target}'
+
+    # after a live reload the page stays: the helper is the one running
+    func adopt [] -> bool
+        if [ !engine || engine.count < 2 ] return false
+        p9 : i32 [ i32 engine[0] ]
+        if [ kill[ p9, 0 ] != 0 ] return false
+        pid      = p9
+        ctl      = i32 engine[1]
+        shm_path = engine_shm
+        started  = true
+        log 'browser: kept the engine (pid {pid})'
+        return true
 
     # the helper makes the file; map it once it is sized
     func map_frames [] -> bool
@@ -211,7 +259,62 @@ element browser : trinity
         unlink[ shm_path.chars ]
         return true
 
+    # a GPU frame is the helper's own buffer, imported once per buffer
+    func take_dma [ cv: Canvas ] -> bool
+        got : bool [ false ]
+        bid : u64
+        fw  : i32
+        fh  : i32
+        fmt : u32
+        mod : u64
+        st  : u32
+        off : u32
+        fd  : i32
+        tt  : local i8 [ 256 ]
+        kind : i32 [ browser_recv_frame[ ctl, @bid, @fw, @fh, @fmt, @mod, @st, @off, @fd, @tt[0], 256 ] ]
+        while [ kind > 0 ]
+            if [ kind == 2 ]
+                log 'browser: history back {fw != 0} forward {fh != 0}'
+                nav_state[ fw != 0, fh != 0 ]
+                kind = browser_recv_frame[ ctl, @bid, @fw, @fh, @fmt, @mod, @st, @off, @fd, @tt[0], 256 ]
+                continue
+            if [ kind == 3 ]
+                t9 : string[ @tt[0] ]
+                log 'browser: title {t9}'
+                set_title[ t9 ]
+                kind = browser_recv_frame[ ctl, @bid, @fw, @fh, @fmt, @mod, @st, @off, @fd, @tt[0], 256 ]
+                continue
+            key : string '{bid}'
+            # a new size, or a pool long since replaced: start over
+            if [ !frames || tex_w != fw || tex_h != fh || frames.count > 12 ]
+                frames = map Texture [string] []
+                tex_w  = fw
+                tex_h  = fh
+            if [ frames.contains[ key ] ]
+                close[ fd ]
+            el
+                t : Texture cv.vk.import_dmabuf_image[ fd, fw, fh, fmt, mod, st, off, cv.w ]
+                if [ !t ]
+                    # this GPU takes no such buffer: the helper copies instead
+                    log 'browser: GPU frame import failed, reading frames back'
+                    post[ 'gpuframes 0' ]
+                    frames = null
+                    dma    = false
+                    return false
+                if [ !dma ] log 'browser: GPU frames {fw}x{fh} fourcc {fmt} modifier {mod}'
+                frames[ key ] = t
+            tex = frames[ key ]
+            got = true
+            kind = browser_recv_frame[ ctl, @bid, @fw, @fh, @fmt, @mod, @st, @off, @fd, @tt[0], 256 ]
+        if [ got ]
+            dma    = true
+            shown += 1
+        return got
+
     func take_frame [ cv: Canvas ]
+        # GPU frames first; the file still counts: a page after a process
+        # swap may come copied
+        if [ take_dma[ cv ] ] return
         if [ !map_frames[] ] return
         if [ header_u32[ 0 ] != 0x57425254 ] return
         sq : u32 [ header_u32[ 4 ] ]
@@ -250,18 +353,13 @@ element browser : trinity
     func mouse [ kind: string, ev: Event ]
         x : i32 [ i32[ ev.mouse.pos.x * scale ] ]
         y : i32 [ i32[ ev.mouse.pos.y * scale ] ]
-        line : 'mouse {kind} {x} {y} {ev.mouse.button} {held} {mods[ ev ]}'
-        if [ kind == 'move' ]
-            move_line = line
-            return
-        send_move[]
-        post[ line ]
+        # moves go at once; WebKit coalesces them while the page is busy
+        post[ 'mouse {kind} {x} {y} {ev.mouse.button} {held} {mods[ ev ]}' ]
 
-    # the page's handlers run per move: at most one a frame
-    func send_move []
-        if [ !move_line ] return
-        post[ move_line ]
-        move_line = null
+    # the host's history arrows walk the page's history
+    public func navigate [ dir: i32 ] -> bool
+        post[ (dir < 0) ? 'nav back' : 'nav forward' ]
+        return true
 
     public func on_press [ ev: Event ]
         set_focus[]
@@ -277,12 +375,11 @@ element browser : trinity
         mouse[ 'move', ev ]
 
     public func on_wheel [ ev: Event ]
-        send_move[]
         x : i32 [ i32[ ev.mouse.pos.x * scale ] ]
         y : i32 [ i32[ ev.mouse.pos.y * scale ] ]
-        # half a notch per wheel step
-        dx : f32 [ ev.mouse.wheel_delta.x * 0.5 ]
-        dy : f32 [ ev.mouse.wheel_delta.y * 0.5 ]
+        # 0.325 of a notch per wheel step
+        dx : f32 [ ev.mouse.wheel_delta.x * 0.325 ]
+        dy : f32 [ ev.mouse.wheel_delta.y * 0.325 ]
         post[ 'mouse wheel {x} {y} 0 {held} 0 {dx} {dy}' ]
         ev.stop[]
 
@@ -304,14 +401,13 @@ element browser : trinity
         if [ !w || w.draw_stage != CanvasType.screen ] return
         if [ bounds.w <= 0.0 || bounds.h <= 0.0 ] return
         scale = (w.scale > 0.0) ? w.scale : 1.0
-        if [ !started ] launch[]
+        if [ !started && !adopt[] ] launch[]
         if [ pid > 0 ]
             st : i32 [ 0 ]
             if [ waitpid[ pid, @st, WNOHANG ] == pid ]
                 log 'browser: the engine exited'
                 pid = 0
         sync_size[]
-        send_move[]
         cv : Canvas [ w.screen ]
         if [ !cv || !cv.vk ] return
         take_frame[ cv ]

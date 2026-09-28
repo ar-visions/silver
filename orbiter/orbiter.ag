@@ -275,6 +275,9 @@ element EditorView
         e : Editor text_of[]
         o : orb[]
         if [ e && o && e.view_name && o.console_of[ e.view_name ] ] return e.view_name
+        # a hosted app names itself
+        if [ e && e.app_view && e.run_view && e.run_view.app_title && e.run_view.app_title.count > 0 ]
+            return e.run_view.app_title
         p : file[]
         return (p) ? p.filename[] : 'Open'
 
@@ -4331,7 +4334,11 @@ element orbiter : trinity # implements compiler
     # a file's companions sit BESIDE it, never in a subfolder: same folder,
     # same stem, one of the source extensions
     func companion_exts [ p: path ] -> vec string
-        return (p) ? module_exts[ p.parent_dir[], p.stem[] ] : vec string []
+        if [ !p ] return vec string []
+        # an address (a hosted page) has no source beside it
+        s9 : string '{p}'
+        if [ s9.index_of[ '://' ] >= 0 ] return vec string []
+        return module_exts[ p.parent_dir[], p.stem[] ]
 
     # the companion of p carrying this extension, or null
     func companion_path [ p: path, ex: string ] -> path
@@ -4382,8 +4389,13 @@ element orbiter : trinity # implements compiler
             nnav : vec string [] [ 'nav_back', 'nav_fwd' ]
             nico : vec string [] [ 'left', 'right' ]
             ndm : i32 [ 0 ]
-            if [ !edp9 || !edp9.nav || !edp9.nav.can_back[] ]    ndm |= 1
-            if [ !edp9 || !edp9.nav || !edp9.nav.can_forward[] ] ndm |= 2
+            # a hosted app's history is its own word
+            if [ edp9 && edp9.app_view && edp9.run_view ]
+                if [ !edp9.run_view.nav_back_on ] ndm |= 1
+                if [ !edp9.run_view.nav_fwd_on ]  ndm |= 2
+            el
+                if [ !edp9 || !edp9.nav || !edp9.nav.can_back[] ]    ndm |= 1
+                if [ !edp9 || !edp9.nav || !edp9.nav.can_forward[] ] ndm |= 2
             els['histnav'] = TButtons [ buttons: nnav, icon_ids: nico, manual: true,
                 disable_mask: ndm,
                 icon_scale: 0.45, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0,
@@ -4407,13 +4419,19 @@ element orbiter : trinity # implements compiler
                 if [ hnt9 && hnt9.count > 0 && hnt9 != 'editor' && !console_of[ hnt9 ] ]
                     cvt9.font_size[ 13 ]
                     cxa9 += cvt9.measure_text[ hnt9 ].w + 10.0 * fu9
-                cw9 : f32 [ 36.0 * fu9 ]
+                # one strip: ids cmp_<ext> (the press handler's key), labelled
+                # by the extension; the open one is lit
+                cids9 : vec string []
+                csel9 : i32 [ 0 ]
                 for [ ci9: i32 0, ci9 < cel9.count, ci9 += 1 ]
                     ex9 : string cel9[ ci9 ]
-                    bx9 : f32 [ cxa9 + f32[ ci9 ] * 40.0 * fu9 ]
-                    els['cmp_{ex9}'] = CompanionButton [ label: ex9, manual_mode: true,
-                        selected: ex9 == cx9,
-                        area: Region [ 'l{bx9}px t0.065 w{cw9}px h0.81' ] ]
+                    cids9.push[ 'cmp_{ex9}' ]
+                    if [ ex9 == cx9 ] csel9 |= (1 << ci9)
+                cw9 : f32 [ 40.0 * fu9 * f32[ cel9.count ] ]
+                els['companions'] = TButtons [ buttons: cids9, labels: cel9, icons: false,
+                    manual: true, sel_mask: csel9, label_px: 12.0 * fu9,
+                    rest_glow: rgba [ '#ccf2' ], rest_px: 16.0,
+                    area: Region [ 'l{cxa9}px t0.065 w{cw9}px h0.81' ] ]
 
         psess9 : string (agent_open && pane_ix == editor_slots.count) ? orbit_sid :
             ((pane_ix < pane_console.count) ? pane_console[pane_ix] : '')

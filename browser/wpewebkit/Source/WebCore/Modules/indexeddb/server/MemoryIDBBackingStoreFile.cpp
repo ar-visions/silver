@@ -413,7 +413,7 @@ void MemoryIDBBackingStore::saveFile()
 
     FileSystem::makeAllDirectories(FileSystem::parentPath(m_filePath));
     auto utf8 = out.toString().utf8();
-    FileSystem::overwriteEntireFile(m_filePath, utf8.span());
+    FileSystem::overwriteEntireFile(m_filePath, byteCast<uint8_t>(utf8.span()));
 }
 
 void MemoryIDBBackingStore::loadFile()
