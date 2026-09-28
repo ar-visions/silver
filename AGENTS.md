@@ -287,7 +287,7 @@ make clean              # cleans generated headers
 # silver [flags] <module> [app-args…] — silver's flags come BEFORE the
 # module name; everything AFTER the module passes verbatim to the app
 silver --watch trinity      # file watcher mode
-silver --clean trinity      # force rebuild all imports
+silver --clean trinity      # rebuild the module (not imports)
 silver --release trinity    # release build
 silver --build orbiter      # compile only, no launch
 silver --test expectest     # run the module's expect tests, exit
@@ -777,7 +777,6 @@ search, compare, copy from, or modify `/src/orion`.
 - Debug binary → `platform/native/debug/silver`. Release → `platform/native/bin/silver`.
 - `gen.py` updated: app output uses `$builddir/` not `bin/`.
 - Build caching: `update_product` checks `.product` symlink timestamp vs module file. Empty `.artifacts` file no longer triggers rebuild (`!newest` = product is valid).
-- `--clean` flag propagates to all external imports.
 - `--watch` flag replaces old `--build` (watch is opt-in, one-shot is default).
 - `-I` paths stripped of prefix when added to include_paths (was storing `-I/path` instead of `/path`).
 - Module search: if module not found locally, searches `SILVER/name/name.ag`.
@@ -2341,9 +2340,129 @@ checkout/lb takes about 15 GB (ask Kalen before removing).
    Backspace, a button's script, helper dies with the element;
    `browser <url>` shows Wikipedia at 1280x800.
    Launch: `silver browser https://en.wikipedia.org/wiki/WebKit`.
-   OPEN: zero-copy frames (hand the DMA-BUF to a trinity
-   Vulkan texture instead of GPU->CPU->GPU); hidpi scale;
-   path clips.
+   DONE (Sep 28) zero-copy frames: the helper sends each GPU
+   frame's dma-buf (one plane, fd over the stdin socket with
+   a 48-byte record: id, size, fourcc, modifier, stride,
+   offset; it polls the buffer's rendering fence first) and
+   the element imports each buffer once (import_dmabuf_image,
+   keyed by the helper's buffer id; browser.c receives the
+   fd). A failed import posts `gpuframes 0` and the helper
+   reads frames back into the shared file as before (also
+   the path when stdin is a pipe, and for SHM buffers).
+   Checked headless at 2560x1440: "GPU frames ... modifier
+   216172782128496660", picture right, 60 page frames/s
+   while the knob drags, helper 2% of a core.
+   Pointer moves go to the helper at once (was once per app
+   frame): WebKit coalesces them itself. Latency measured
+   before: WebKit + helper alone 23 ms from an input line to
+   the frame in the file; the app added 8 + 8 + up to 16 ms.
+   OPEN: hidpi scale; path clips.
+   DONE (Sep 28) a live reload left the browser blank. The
+   helper was forked with PR_SET_PDEATHSIG, and a reload's
+   first draw runs on the load worker thread: when that thread
+   ended, the new helper got SIGTERM ("the engine exited"),
+   while the old one lived on with the process-owned app
+   element. Now: no death signal (the helper quits when its
+   stdin socket closes, which our death does); the element
+   keeps `persist engine : vec i64` (pid, ctl) and
+   `engine_shm`, and a new instance adopts the running helper
+   (adopt[], "kept the engine") instead of launching: the
+   page and its video continue. Checked headless under the
+   host: a browser.ag touch and a trinity/Canvas.ag touch
+   both keep the page, 58 page frames/s after the switch.
+   DONE (Sep 28) page images get a mip chain (webgfx_image_new,
+   Texture.upload_region refills it): a logo drawn smaller
+   than its file no longer stair-steps. Ramps (256x1) stay
+   flat.
+   DONE (Sep 28) YouTube came up white in orbiter's pane: the
+   helper's GPU buffers are XR24 (fourcc 875713112), and the
+   dma-buf import read the X byte as alpha. Standalone composes
+   the screen without alpha, so it looked right; orbiter draws
+   the hosted app's screen with it, and the pane fell through.
+   import_dmabuf_image now imports XR24/XB24 as opaque (the
+   Texture's alpha-as-one swizzle). The "GPU frames" log line
+   names the fourcc. Hosted case not driven here.
+   DONE (Sep 28) elements route into the host's navigation and
+   title, decentrally (Kalen). trinity: element.navigate[ dir ]
+   (a hook, false by default), element.nav_state[ back, fwd ]
+   and element.set_title[ t ] emit to the Window (nav_back_on,
+   nav_fwd_on, nav_title); a hosted app posts them on ring 0 as
+   HM.nav_state (a, b) and HM.title (three bytes a message, a
+   0 byte last); the host's HM.nav (a = -1/+1) on ring 1 goes to
+   Window.navigate: the focused element, its parents, then the
+   app object. orbiter: AppView keeps nav_back_on/nav_fwd_on/
+   app_title from its slot's ring; a hosted pane's arrows post
+   HM.nav (Editor.nav_walk) and light from the app's word; the
+   pane title shows app_title (title_text). browser: the helper
+   sends 'NAVS' (back-forward list changed) and 'TITL' (title,
+   else the address; notify::title / notify::uri) records on
+   the frame socket; browser.c returns the record kind (1 frame,
+   2 history, 3 title); navigate posts `nav back|forward`, the
+   helper calls webkit_web_view_go_back/forward. Checked: the
+   helper alone goes back and forward between two pages; on
+   YouTube a related-video click logs "history back true" and
+   the new page's title. Orbiter builds; its arrows and title on
+   a hosted browser pane are not driven headless (session state).
+   DONE (Sep 28) the title's companion extension buttons are one
+   TButtons strip (ids cmp_<ext>, new TButtons.labels for the
+   text), and companion_exts is empty for an address.
+   DONE (Sep 28) player icons with a drop-shadow filter drew
+   bold with a light border ("over drawn"). The canvas blends
+   premultiplied and samples image textures as premultiplied,
+   but WebKit's images are straight: a filter result's edge
+   pixels (white at partial alpha) came back over-bright and
+   read as a hard border. webgfx image_upload premultiplies
+   (image_new, image_update). webgfx tests: t_blur_kernel (the
+   sigma-1 gaussian), t_compose_keeps_aa, t_result_image_keeps_aa
+   (the round trip equals a direct fill), t_cc_drop_shadow,
+   t_cc_icon_small_canvas (YouTube's CC path). Checked: the
+   pill page with the real icons, and the YouTube bar.
+   OPEN (trinity, Kalen's call): every straight-alpha texture
+   drawn by Canvas.draw_image (PNG icons in orbiter, any img
+   load) has the same over-bright edge; the canvas's rule is
+   premultiplied, so loaders should premultiply too.
+   DONE (Sep 28, Kalen) the SDF feather was half a pixel each
+   side (0.5 * gradient length); it is one pixel each side
+   again (the gradient length), both CanvasUI fills and the
+   path pass.
+   DONE (Sep 28, Kalen: "that works so keep it") the Ask star
+   icon lost its tips at 24 px. The tips are thinner than a
+   pixel and one distance sample at the pixel centre misses
+   them (the field itself is fine: shifting the icon half a
+   pixel changed nothing). CanvasUI mode 6 fill: within 1.25 px
+   of the outline, 16 taps (4x4 cells of the pixel, a linear
+   ramp per cell) give the true coverage; elsewhere 0 or 1.
+   The field is written and read as before. The feather is
+   0.5 * gradient length in the source again (exact coverage;
+   1.0 made 24 px icons soft and fat against the reference).
+   Tried and removed (Kalen: too much pixel alignment, it
+   changes the SDF): a field over the padded shape only, a
+   guard texel, clamped taps: a batch shares one dispatch, so
+   the stale texels drew hairlines in the YouTube wordmark.
+   Finer flattening (0.1) changed nothing. Checked: the star at
+   24 and 48 px against Inkscape (column through the tip 37,
+   59, 103, 174, 248 vs 44, 65, 110, 180, 251), the wordmark
+   clean at 1x and 4x, webgfx and trinity tests exit 0.
+   DONE (Sep 28) ctrl/cmd+left and right in any trinity app go
+   to Window.navigate (the focused element's history) before
+   the key reaches the focus; the browser goes back/forward.
+   DONE (Sep 28) a page that worked once then came up white:
+   WPE recycles buffer ids, so the element keyed its imported
+   textures by the helper's id; the cache resets on a size
+   change or past 12 buffers.
+   Helper lines (Tools/TrinityBrowser/main.c): `js <script>`
+   (answer logged "trinity browser: js: ..."), --console,
+   load-changed lines, the frame path line.
+   OPEN youtube.com (not www): a cached 301 into a service-
+   worker-controlled origin; the worker does not handle it and
+   the navigation preloader's soup request never completes
+   (the server gets the GET, the client closes the socket).
+   Reproducer: scratchpad swsite_cached.py case 3. TEMP traces
+   are still in five overlay network files (NetworkResource
+   Loader, ServiceWorkerFetchTask, ServiceWorkerNavigation
+   Preloader, NetworkLoad, soup/NetworkDataTaskSoup): remove
+   them when the cause is found.
+
    DONE (Sep 26) masked icons (Wikipedia's menu, search,
    languages...). WebKit paints a CSS mask as a layer with the
    color, a destination-in layer inside it with the mask, then
@@ -2650,6 +2769,27 @@ of the media memory below, done as a streaming backend.
    ring wrap on a webgfx canvas faults; 1024 never wraps).
    Next: uniform buffers made on first use, then the wrap
    fault; filters on the GPU.
+9. DONE (Sep 27 night) the volume knob did not repaint while
+   dragged; only a sliver at the slider's left changed. The knob
+   (.ytp-volume-slider-handle, 12 px, filter: drop-shadow, with
+   64 px ::before/::after bars) paints its filter in software
+   (WPE never composites for a filter alone), so it is its own
+   repaint container: a move left old and new rects equal and
+   nothing was invalidated; the sliver was the volume icon's
+   own repaint re-rendering the knob's filter clipped to it.
+   Fix (overlay RenderLayer.cpp, updateLayerPositions): such a
+   layer's repaint rects track in its enclosingFilterRepaintLayer
+   as calculateLayerBounds (children + filter outsets). Checked:
+   a local page (timer-moved knob) and YouTube headless, knob
+   and bar follow the pointer with the video playing.
+   OPEN: the page paints 30 frames/s while the knob drags (60
+   idle): the software drop-shadow re-render per move.
+10. DONE silver.c checkout(): an overlay file newer than the
+   import's silver-token runs the import's build and install in
+   its build tree (import_build) instead of skipping it; the
+   token is rewritten. OPEN: a module whose .ag is unchanged is
+   "up to date" and never reaches the import step: use
+   `silver --clean --build browser` after an overlay edit.
 8. DONE logins kept, in silver's app cache (Kalen): browser.ag
    passes --data path_cache['browser'] (~/.cache/browser); the
    helper keeps site data in <it>/data (cookies.sqlite there)
@@ -2658,6 +2798,54 @@ of the media memory below, done as a streaming backend.
    local server came back from a new browser process and is in
    ~/.cache/browser/data/cookies.sqlite.
    Saved passwords: WebKit has no password manager (not done).
+
+## Active work: browser built by silver, no SQLite, TLS (Sep 27 2026)
+
+WebKit is built ONLY by `silver browser` (import in browser.ag,
+overlay browser/wpewebkit/). Never ninja by hand in a checkout.
+1. DONE overlay applies on every build (silver.c checkout), not
+   only a fresh checkout; env lines are in the import cache key.
+2. DONE meson 1.8.3 import (glib 2.84 needs >= 1.4); glib and
+   libsoup get an rpath to {install}/lib.
+3. DONE ENABLE_WEBGL=OFF: no ANGLE.
+4. DONE no SQLite storage: Sources.txt lists, HSTS and cookie
+   stores on libsoup's folder types, FileStorageArea and
+   MemoryIDBBackingStoreFile listed; GSTREAMER_GL needs GStreamer.
+5. WRITTEN, not built: https. glib-networking import with a new
+   mbedtls 4 backend (overlay browser/glib-networking/tls/mbedtls,
+   8 files, shaped like its gnutls backend over tls/base). Clean
+   -fsyntax-only -Wall -Wextra. The base verifies the peer after
+   mbedtls_ssl_handshake, before data. No DTLS, no resumption.
+   CA roots from the system bundle (mac keychain not done).
+6. OPEN SQLite still in WebKit: IndexedDB SQLite files, service
+   workers, tracking prevention, website data, find_package.
+
+## MEMORY: zap, Super+Shift+A (Sep 28 2026)
+
+Kalen presses Super+Shift+A (Cmd+Shift+A) the moment a symptom
+shows (a slow orbiter/browser close takes about 10 s).
+- A zap means: Kalen is seeing the issue right now. Read the
+  file as it fills and look at the live app at once.
+- support/zap.sh: first a line `time | message | file` onto
+  install/tmp/zap/inbox; then `stats` from each trinity app
+  socket (1 s limit, a stuck app shows as no answer); then every
+  thread of each orbiter, browser and WPE* process (name, state,
+  kernel wait `wchan`, cpu time) every 0.2 s until they have all
+  exited (30 s at most) into install/tmp/zap/zap.<HHMMSS>.txt;
+  last a `done after Ns` inbox line. Arguments are the message
+  (default "slow close").
+- Registered as a GNOME custom shortcut "zap to Claude" beside
+  Kalen's custom0/custom1 (Alt+Down/Up volume). Write GNOME
+  settings with /usr/bin/gsettings: install/bin/gsettings comes
+  first on PATH, has no dconf module and silently drops writes.
+- It reaches an agent only through a live session: that session
+  runs a Monitor on `tail -n 0 -F install/tmp/zap/inbox`
+  (re-armed every 30 min). Without one the files still land.
+- OPEN, proposed: zap.sh runs the user's own agent itself
+  (`claude -p` on the snapshot, answer saved beside it,
+  notify-send), so no session is needed.
+- Limit: kernel waits only; user-space stacks need ptrace,
+  blocked here (ptrace_scope 1).
 
 ## MEMORY: media in the browser, played through trinity (Sep 26 2026)
 
@@ -3053,8 +3241,7 @@ the largest object. Startup footprint measured headless.
    3 at 2402x2402, editor text canvases per pane (23 MB each
    at 2x plus a 4-byte SDF at half size), avatar 3120x3120
    colour+depth (74 MB), backdrop 4096x2048 (32 MB).
-9. OPEN 11,840 uniform Buffers: 64 per `uniforms` (vk.ag:2411),
-   all baked into descriptor sets at bind; needs one buffer
-   with 64 offsets to fix.
+9. DONE uniform Buffers: one buffer per pipeline (`u_ring`, vk.ag
+   uniforms.init), a slot every `stride` bytes; was 64 per `uniforms`.
 10. OPEN small heap 216 MB not yet attributed; ~5,000 pool
    temporaries per idle frame.

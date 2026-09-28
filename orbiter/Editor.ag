@@ -479,6 +479,10 @@ ResourceView ImageView
 ResourceView AppView
     mutable slot       : i32 [ -1 ]  # our channel slot at silver-host
     mutable app_mod    : string      # module name (orbiter resolves its binary to attach)
+    public  nav_back_on : bool       # the app's history, as it last said
+    public  nav_fwd_on  : bool
+    public  app_title   : string     # the app's own title, shown on the pane
+    mutable title_buf   : vec u8     # its bytes as they arrive
     mutable module_args : string     # orbiter's tail args, forwarded to the module
     public  attached   : bool        # orbiter has attached lldb to this app's pid
     public  attaching  : bool        # lldb attach is running on a worker
@@ -596,6 +600,29 @@ ResourceView AppView
             # request from here), and types the take back
             el [ t == i32[ HM.dictate ] ]
                 dict_req = host_pa[]
+            # the app's history moved: the title's arrows follow
+            el [ t == i32[ HM.nav_state ] ]
+                nav_back_on = host_pa[] != 0
+                nav_fwd_on  = host_pb[] != 0
+                wn9 : cast Window [ cv.w ]
+                if [ wn9 ] wn9.restyle = true
+            # the app's title, three bytes a message; a 0 byte ends it
+            el [ t == i32[ HM.title ] ]
+                if [ !title_buf ] title_buf = vec u8 []
+                bs9 : local i32 [ 3 ]
+                bs9[0] = host_pa[]
+                bs9[1] = host_pb[]
+                bs9[2] = host_pc[]
+                for [ k9: i32 0, k9 < 3, k9 += 1 ]
+                    if [ bs9[k9] != 0 ]
+                        title_buf.push[ u8 bs9[k9] ]
+                        continue
+                    title_buf.push[ u8 0 ]
+                    app_title = string[ @title_buf[0] ]
+                    title_buf = vec u8 []
+                    wt9 : cast Window [ cv.w ]
+                    if [ wt9 ] wt9.restyle = true
+                    break
         st : i32 [ host_app_state[ slot ] ]
         if [ st == 4 && !paused ]
             paused = true
@@ -5950,6 +5977,10 @@ Control Editor
         return true
 
     func nav_walk [ dir: i32 ]
+        # a hosted app walks its own history
+        if [ app_view && run_view && run_view.slot >= 0 ]
+            host_post2[ run_view.slot, 1, i32[ HM.nav ], dir, 0, 0 ]
+            return
         if [ !nav || !src ] return
         nav.save_top[ pane_index, '{src.absolute[]}', sel_line, sel_col, scroll.y ]
         np : NavPoint

@@ -144,7 +144,7 @@ void FileStorageArea::save()
     }
     FileSystem::makeAllDirectories(FileSystem::parentPath(m_path));
     auto utf8 = out.toString().utf8();
-    FileSystem::overwriteEntireFile(m_path, utf8.span());
+    FileSystem::overwriteEntireFile(m_path, byteCast<uint8_t>(utf8.span()));
 }
 
 void FileStorageArea::scheduleSave()

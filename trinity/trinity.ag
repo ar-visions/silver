@@ -206,6 +206,12 @@ enum HM
     lock    : 12
     # ide -> app: draw one frame; a paned app renders in step with the host
     frame   : 13
+    # ide -> app: a = -1 back, +1 forward, for the app's own history
+    nav     : 14
+    # app -> ide: a = can go back, b = can go forward
+    nav_state : 15
+    # app -> ide: three bytes of the element's title; a 0 byte ends it
+    title   : 16
 
 ifdef [ apple ]
     # an IOSurface's global id is its cross-process name, as a dma-buf fd is
@@ -1028,6 +1034,8 @@ abstract live_app media_app
                     wn.restyle   = true
                 el [ t == i32[ HM.frame ] ]
                     frame_req = true
+                el [ t == i32[ HM.nav ] ]
+                    wn.navigate[ host_pa[] ]
                 el [ t == i32[ HM.key ] ]
                     wn.ev.clear[]
                     wn.ev.key.unicode = host_pa[]
@@ -1761,6 +1769,9 @@ Display Window
     mutable mic                 : AudioRing
     manual capture              : element
     manual focus                : element
+    mutable nav_back_on         : bool         # an element's history, as it last said
+    mutable nav_fwd_on          : bool
+    mutable nav_title           : string       # an element's own title, as it last said
     manual hovered              : element
     manual locked               : element      # mouse lock owner: cursor hidden at its centre, moves arrive as deltas
     manual action_pressed       : element
@@ -3131,6 +3142,35 @@ Display Window
             if [ found ] return found
         return null
 
+    # the host's back or forward: the focused element, its parents, then
+    # the app object; the first to take it wins
+    public func navigate [ dir: i32 ] -> bool
+        for [ e: element* focus, e, e = e.parent ]
+            if [ e.navigate*[ dir ] ] return true
+        if [ app_object && app_object != focus ] return app_object.navigate*[ dir ]
+        return false
+
+    # an element's word on its history: kept here, and told to the host
+    public func nav_state [ back: bool, forward: bool ]
+        nav_back_on = back
+        nav_fwd_on  = forward
+        restyle     = true
+        if [ host_slot[] > 0 ] host_post[ 0, i32[ HM.nav_state ], (back) ? 1 : 0, (forward) ? 1 : 0, 0 ]
+
+    # an element's own title: kept here, and told to the host three
+    # bytes a message, a 0 byte last
+    public func element_title [ t: string ]
+        nav_title = t
+        restyle   = true
+        if [ host_slot[] <= 0 ] return
+        n  : i32 [ (t) ? i32 t.count : 0 ]
+        for [ i: i32 0, i < n, i += 3 ]
+            b0 : i32 [ (i32 t.chars[ i ]) & 255 ]
+            b1 : i32 [ (i + 1 < n) ? (i32 t.chars[ i + 1 ]) & 255 : 0 ]
+            b2 : i32 [ (i + 2 < n) ? (i32 t.chars[ i + 2 ]) & 255 : 0 ]
+            host_post[ 0, i32[ HM.title ], b0, b1, b2 ]
+        if [ n % 3 == 0 ] host_post[ 0, i32[ HM.title ], 0, 0, 0 ]
+
     public func set_focus [ e: element ]
         if [ focus != e ]
             if [ focus ]
@@ -3458,6 +3498,9 @@ Display Window
             ae9 : element [ cast element [ app_object ] ]
             if [ ae9 ] ae9.display = DisplayMode.Window
             el set_fullscreen[ false ]
+        # ctrl/cmd with left or right: the focused element's own history
+        if [ ev.key.state && (ev.key.ctrl || ev.key.meta) && (ev.key.unicode == 263 || ev.key.unicode == 262) ]
+            if [ navigate[ (ev.key.unicode == 263) ? -1 : 1 ] ] return
         ev.target = focus
         if [ focus && focus.on_key*[ ev ] ] return
         # esc while dictating CANCELS the take — nothing submits
@@ -5797,6 +5840,8 @@ element TButtons
     public  icons     : bool [ true ] # ids resolve to images/<id>.svg
     # per-segment icon name when the id is not the file name
     public  icon_ids  : vec string
+    # per-segment text when the id is not the label (text segments)
+    public  labels    : vec string
     public  manual    : bool          # actions, not toggles — no latched selection
     public  selected  : i32 [ -1 ]
     public  sel_mask  : i32
@@ -6014,7 +6059,8 @@ element TButtons
                 # a close mark takes the right end: the label ends before it
                 cm8 : bool [ (close_mask & (1 << i)) != 0 && w.shift ]
                 cw9 : f32 [ (cm8) ? bounds.h : 0.0 ]
-                cv.draw_text[ buttons[ i ], rect [ x: x + 6.0, y: 0.0, w: sw9 - 12.0 - cw9, h: bounds.h ],
+                lbl9 : string [ (labels && i < labels.count) ? labels[ i ] : buttons[ i ] ]
+                cv.draw_text[ lbl9, rect [ x: x + 6.0, y: 0.0, w: sw9 - 12.0 - cw9, h: bounds.h ],
                     vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null ]
             if [ (close_mask & (1 << i)) != 0 && w.shift ]
                 cr9 : f32 [ close_r[] ]

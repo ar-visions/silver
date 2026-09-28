@@ -1,0 +1,24 @@
+set(WPETrinityBrowser_SOURCES
+    main.c
+)
+
+set(WPETrinityBrowser_PRIVATE_INCLUDE_DIRECTORIES
+    ${CMAKE_BINARY_DIR}
+    ${DERIVED_SOURCES_WPE_API_DIR}
+    ${FORWARDING_HEADERS_WPE_DIR}
+    ${JavaScriptCoreGLib_DERIVED_SOURCES_DIR}
+    ${JavaScriptCoreGLib_FRAMEWORK_HEADERS_DIR}
+    ${WPEPlatform_DERIVED_SOURCES_DIR}
+    ${WEBKIT_DIR}/WPEPlatform
+)
+
+set(WPETrinityBrowser_PRIVATE_LIBRARIES
+    ${JavaScriptCore_LIBRARY_NAME}
+    WebKit::WebKit
+    Epoxy::Epoxy
+)
+
+WEBKIT_EXECUTABLE_DECLARE(WPETrinityBrowser)
+WEBKIT_EXECUTABLE(WPETrinityBrowser)
+
+install(TARGETS WPETrinityBrowser DESTINATION "${LIBEXEC_INSTALL_DIR}")

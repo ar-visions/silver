@@ -1,18 +1,21 @@
 // SPDX-License-Identifier: BSD-2-Clause
 
-// WebKit for silver's browser element: rgba8 frames out through
-// shared memory (TRINITY_BROWSER_SHM), input in as lines on stdin.
+// WebKit for silver's browser element: a GPU frame's dma-buf goes out on
+// the stdin socket, other frames as rgba8 through shared memory
+// (TRINITY_BROWSER_SHM); input comes in as lines on stdin.
 
 #include <epoxy/egl.h>
 #include <epoxy/gl.h>
 #include <fcntl.h>
 #include <gio/gio.h>
+#include <poll.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/socket.h>
 #include <unistd.h>
 #include <wpe/headless/wpe-headless.h>
 #include <wpe/webkit.h>
@@ -35,7 +38,15 @@ typedef struct {
     uint32_t reserved[3];
 } FrameHeader;
 
+// a GPU frame as the element imports it: one plane, one fd along
+typedef struct {
+    uint32_t magic, seq, width, height, format, stride, offset, pad;
+    uint64_t id, modifier;
+} FrameRecord;
+
 static uint8_t* frames;
+static gboolean frameSocket;
+static uint32_t frameSeq;
 static WebKitWebView* webView;
 static WPEView* view;
 static GMainLoop* loop;
@@ -89,6 +100,79 @@ static gboolean readDMABuf(WPEBuffer* buffer, int width, int height, uint8_t* to
     return TRUE;
 }
 
+// the frame's dma-buf to the element, once the GPU has finished it
+static gboolean sendDMABuf(WPEBufferDMABuf* buffer, int width, int height)
+{
+    if (wpe_buffer_dma_buf_get_n_planes(buffer) != 1)
+        return FALSE;
+    int fence = wpe_buffer_get_rendering_fence(WPE_BUFFER(buffer));
+    if (fence >= 0) {
+        struct pollfd wait = { fence, POLLIN, 0 };
+        poll(&wait, 1, 100);
+    }
+    // a buffer's id lives and dies with it: an address comes back, an id never
+    static unsigned bufferIds;
+    unsigned id = GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(buffer), "trinity-id"));
+    if (!id) {
+        id = ++bufferIds;
+        g_object_set_data(G_OBJECT(buffer), "trinity-id", GUINT_TO_POINTER(id));
+    }
+    FrameRecord rec = { 0x4d415246u, ++frameSeq, width, height,
+        wpe_buffer_dma_buf_get_format(buffer), wpe_buffer_dma_buf_get_stride(buffer, 0),
+        wpe_buffer_dma_buf_get_offset(buffer, 0), 0,
+        id, wpe_buffer_dma_buf_get_modifier(buffer) };
+    int fd = wpe_buffer_dma_buf_get_fd(buffer, 0);
+    struct iovec iov = { &rec, sizeof rec };
+    union { struct cmsghdr h; char b[CMSG_SPACE(sizeof(int))]; } ctl = { 0 };
+    struct msghdr msg = { 0 };
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = &ctl;
+    msg.msg_controllen = sizeof ctl;
+    struct cmsghdr* c = CMSG_FIRSTHDR(&msg);
+    c->cmsg_level = SOL_SOCKET;
+    c->cmsg_type = SCM_RIGHTS;
+    c->cmsg_len = CMSG_LEN(sizeof(int));
+    memcpy(CMSG_DATA(c), &fd, sizeof(int));
+    return sendmsg(STDIN_FILENO, &msg, MSG_NOSIGNAL) == (ssize_t)sizeof rec;
+}
+
+// each step of a load, on the helper's log: what a blank page was doing
+static void logLoad(WebKitWebView* view, WebKitLoadEvent event, gpointer data)
+{
+    const char* names[] = { "started", "redirected", "committed", "finished" };
+    fprintf(stderr, "trinity browser: load %s %s\n", event <= WEBKIT_LOAD_FINISHED ? names[event] : "?", webkit_web_view_get_uri(view));
+}
+
+// the page's history moved: the element lights its host's arrows
+static void publishNav(WebKitBackForwardList* list, WebKitBackForwardListItem* added, gpointer removed, gpointer data)
+{
+    if (!frameSocket)
+        return;
+    FrameRecord rec = { 0x5356414eu, ++frameSeq,
+        webkit_web_view_can_go_back(webView) ? 1u : 0u, webkit_web_view_can_go_forward(webView) ? 1u : 0u,
+        0, 0, 0, 0, 0, 0 };
+    (void)!send(STDIN_FILENO, &rec, sizeof rec, MSG_NOSIGNAL);
+}
+
+// the page's title, else its address: the element's own title
+static void publishTitle(GObject* object, GParamSpec* spec, gpointer data)
+{
+    if (!frameSocket)
+        return;
+    const char* title = webkit_web_view_get_title(webView);
+    if (!title || !*title)
+        title = webkit_web_view_get_uri(webView);
+    if (!title)
+        title = "";
+    size_t len = strlen(title);
+    if (len > 200)
+        len = 200;
+    FrameRecord rec = { 0x4c544954u, ++frameSeq, (uint32_t)len, 0, 0, 0, 0, 0, 0, 0 };
+    if (send(STDIN_FILENO, &rec, sizeof rec, MSG_NOSIGNAL) == (ssize_t)sizeof rec && len)
+        (void)!send(STDIN_FILENO, title, len, MSG_NOSIGNAL);
+}
+
 static void publishFrame(WPEView* source, WPEBuffer* buffer, gpointer data)
 {
     int width = wpe_buffer_get_width(buffer);
@@ -97,7 +181,16 @@ static void publishFrame(WPEView* source, WPEBuffer* buffer, gpointer data)
         return;
     FrameHeader* header = (FrameHeader*)frames;
     size_t stride = (size_t)width * 4;
+    // the path a frame takes, said once each time it changes
+    static int framePath = -1;
+    int path = WPE_IS_BUFFER_DMA_BUF(buffer) ? (frameSocket ? 0 : 1) : 2;
+    if (path != framePath) {
+        framePath = path;
+        fprintf(stderr, "trinity browser: frames %s\n", path == 0 ? "as dma-bufs" : path == 1 ? "read back from dma-bufs" : "copied from shm");
+    }
     if (WPE_IS_BUFFER_DMA_BUF(buffer)) {
+        if (frameSocket && sendDMABuf(WPE_BUFFER_DMA_BUF(buffer), width, height))
+            return;
         if (!eglDisplay || !readDMABuf(buffer, width, height, frames + sizeof(FrameHeader)))
             return;
         header->width = width;
@@ -210,6 +303,22 @@ static void sendKey(guint keyval, WPEModifiers modifiers, gboolean down)
         view, WPE_INPUT_SOURCE_KEYBOARD, g_get_monotonic_time() / 1000, modifiers, 0, keyval));
 }
 
+static void jsDone(GObject* object, GAsyncResult* result, gpointer data)
+{
+    GError* error = NULL;
+    JSCValue* value = webkit_web_view_evaluate_javascript_finish(webView, result, &error);
+    if (!value) {
+        fprintf(stderr, "trinity browser: js error: %s\n", error ? error->message : "?");
+        if (error)
+            g_error_free(error);
+        return;
+    }
+    char* text = jsc_value_to_string(value);
+    fprintf(stderr, "trinity browser: js: %s\n", text ? text : "");
+    g_free(text);
+    g_object_unref(value);
+}
+
 static void handleLine(char* line)
 {
     char command[16] = { 0 };
@@ -219,6 +328,24 @@ static void handleLine(char* line)
 
     if (!strcmp(command, "load") && strlen(line) > 5) {
         webkit_web_view_load_uri(webView, line + 5);
+        return;
+    }
+    // js <script>: run it in the page; the result goes to the helper's log
+    if (!strcmp(command, "js") && strlen(line) > 3) {
+        webkit_web_view_evaluate_javascript(webView, line + 3, -1, NULL, NULL, NULL, jsDone, NULL);
+        return;
+    }
+    // nav back|forward: the host's history arrows
+    if (!strcmp(command, "nav")) {
+        if (!strcmp(line, "nav back"))
+            webkit_web_view_go_back(webView);
+        else if (!strcmp(line, "nav forward"))
+            webkit_web_view_go_forward(webView);
+        return;
+    }
+    // gpuframes 0: the element could not import a buffer; copy frames
+    if (!strcmp(command, "gpuframes")) {
+        frameSocket = strcmp(line, "gpuframes 0") != 0;
         return;
     }
     if (!strcmp(command, "size")) {
@@ -310,15 +437,23 @@ int main(int argc, char** argv)
     frames = mapFrames();
     if (!frames)
         return 1;
+    // the element's socket carries frames back; a pipe cannot
+    int sockType = 0;
+    socklen_t sockLen = sizeof sockType;
+    frameSocket = getsockopt(STDIN_FILENO, SOL_SOCKET, SO_TYPE, &sockType, &sockLen) == 0;
     int width = 1280, height = 800;
     const char* url = "about:blank";
     const char* appDir = NULL;
+    // --console: the pages' console messages on the helper's stdout
+    gboolean consoleOut = FALSE;
     for (int i = 1; i < argc; ++i) {
         if (!strcmp(argv[i], "--size") && i + 2 < argc) {
             width = atoi(argv[++i]);
             height = atoi(argv[++i]);
         } else if (!strcmp(argv[i], "--data") && i + 1 < argc)
             appDir = argv[++i];
+        else if (!strcmp(argv[i], "--console"))
+            consoleOut = TRUE;
         else
             url = argv[i];
     }
@@ -329,16 +464,19 @@ int main(int argc, char** argv)
     char* home = appDir ? g_strdup(appDir) : g_build_filename(g_get_user_cache_dir(), "browser", NULL);
     char* dataDir = g_build_filename(home, "data", NULL);
     char* cacheDir = g_build_filename(home, "cache", NULL);
-    char* cookieFile = g_build_filename(dataDir, "cookies.sqlite", NULL);
-    g_mkdir_with_parents(dataDir, 0700);
+    // cookies are files in a folder (libsoup's folder jar)
+    char* cookieDir = g_build_filename(dataDir, "cookies", NULL);
+    g_mkdir_with_parents(cookieDir, 0700);
     g_free(home);
     WebKitNetworkSession* session = webkit_network_session_new(dataDir, cacheDir);
-    webkit_cookie_manager_set_persistent_storage(webkit_network_session_get_cookie_manager(session), cookieFile, WEBKIT_COOKIE_PERSISTENT_STORAGE_SQLITE);
-    g_free(cookieFile);
+    webkit_cookie_manager_set_persistent_storage(webkit_network_session_get_cookie_manager(session), cookieDir, WEBKIT_COOKIE_PERSISTENT_STORAGE_SQLITE);
+    g_free(cookieDir);
     g_free(cacheDir);
     g_free(dataDir);
     webView = g_object_new(WEBKIT_TYPE_WEB_VIEW, "display", display, "network-session", session, NULL);
     webkit_settings_set_user_agent(webkit_web_view_get_settings(webView), SAFARI_AGENT);
+    if (consoleOut)
+        webkit_settings_set_enable_write_console_messages_to_stdout(webkit_web_view_get_settings(webView), TRUE);
     // the agent says Mac: navigator.platform must agree
     WebKitUserScript* platform = webkit_user_script_new(MAC_PLATFORM_SCRIPT,
         WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES, WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START, NULL, NULL);
@@ -347,6 +485,10 @@ int main(int argc, char** argv)
     view = webkit_web_view_get_wpe_view(webView);
     initReadBack(display);
     g_signal_connect(view, "buffer-rendered", G_CALLBACK(publishFrame), NULL);
+    g_signal_connect(webkit_web_view_get_back_forward_list(webView), "changed", G_CALLBACK(publishNav), NULL);
+    g_signal_connect(webView, "notify::title", G_CALLBACK(publishTitle), NULL);
+    g_signal_connect(webView, "load-changed", G_CALLBACK(logLoad), NULL);
+    g_signal_connect(webView, "notify::uri", G_CALLBACK(publishTitle), NULL);
     wpe_view_resized(view, width, height);
     wpe_view_focus_in(view);
     webkit_web_view_load_uri(webView, url);

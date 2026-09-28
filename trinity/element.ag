@@ -336,6 +336,15 @@ ielement element
     public func on_agent   [ s: string ] return
     # the app's word each frame, before the window composes its tree
     public func on_frame   [ w: Window ] return
+    # the host's back (-1) or forward (+1) in the element's own history;
+    # true when it took it. the focused element hears it first
+    public func navigate   [ dir: i32 ] -> bool return false
+    # the element's word on its history: the host lights its arrows
+    func nav_state [ back: bool, forward: bool ]
+        if [ ux ] ux.nav_state[ back, forward ]
+    # the element's own title: the host shows it on the pane
+    func set_title [ t: string ]
+        if [ ux ] ux.element_title[ t ]
     # the app's avatar for the exchange under a screenshot prompt, or null
     public func agent_avatar [] -> element return null
     # the exchange's debug button: an app with an avatar steps it through
