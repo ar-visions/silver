@@ -3162,7 +3162,11 @@ Display Window
     public func element_title [ t: string ]
         nav_title = t
         restyle   = true
-        if [ host_slot[] <= 0 ] return
+        # standalone: the element's title is the window's
+        if [ host_slot[] <= 0 ]
+            if [ glfw ]
+                set_title[ (t) ? t : title ]
+            return
         n  : i32 [ (t) ? i32 t.count : 0 ]
         for [ i: i32 0, i < n, i += 3 ]
             b0 : i32 [ (i32 t.chars[ i ]) & 255 ]
@@ -6091,10 +6095,10 @@ element TButtons
         dw9  : f32 [ round[ bounds.w * sc9 ] / sc9 ]
         dh9  : f32 [ round[ bounds.h * sc9 ] / sc9 ]
         cv.fill_color[ rgba [ '#0000' ] ]
-        cv.set_stroke_size[ 0.5 ]
-        cv.stroke_sides[ 0.5, 0.5, 0.5, 0.5 ]
-        cv.stroke_offset[ -0.25 ]
-        cv.stroke_color[ rgba [ '#ffffff33' ] ]
+        cv.set_stroke_size[ 1.0 ]
+        cv.stroke_sides[ 1.0, 1.0, 1.0, 1.0 ]
+        cv.stroke_offset[ -0.5 ]
+        cv.stroke_color[ rgba [ '#ffffff1a' ] ]
         cv.rounded_rect[ 0.0, 0.0, dw9, dh9, seg_radius, seg_radius, seg_radius, seg_radius ]
         cv.paint[ ]
         cv.set_stroke_size[ 0.0 ]

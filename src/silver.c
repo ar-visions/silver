@@ -2381,6 +2381,71 @@ static int silver_spawn_product(silver a, path bin, bool lib, path cwd,
 }
 
 
+// the module's icon: images/icon.png, icons/icon.png or icon.png
+static path silver_module_icon(silver a) {
+    path icon = f(path, "%o/images/icon.png", a->module_path);
+    if (!file_exists("%o", icon)) icon = f(path, "%o/icons/icon.png", a->module_path);
+    if (!file_exists("%o", icon)) icon = f(path, "%o/icon.png", a->module_path);
+    return file_exists("%o", icon) ? icon : null;
+}
+
+// the hicolor icon set under <icons>/<n>x<n>/apps/<name>.png: img's
+// icons export scales the module's icon; SILVER_ICONS tells it what
+static void silver_icon_set(silver a, path icons) {
+    path icon = silver_module_icon(a);
+    if (!icon) return;
+    path img_so = f(path, "%o/libsilver-img.so", a->build_dir);
+    verify(file_exists("%o", img_so), "icons need img built (silver --build img)");
+    path img_share = f(path, "%o/share/silver-img", a->install);
+    make_dir(img_share);
+    make_dir(icons);
+    string icon_spec = f(string, "%o;%o;%o", icon, icons, a->name);
+    setenv("SILVER_ICONS", icon_spec->chars, 1);
+    int ist = silver_spawn_product(a, img_so, true, img_share, "SILVER_EXPORT", "SILVER_EXPORT_FORCE");
+    unsetenv("SILVER_ICONS");
+    verify(WIFEXITED(ist) && WEXITSTATUS(ist) == 0, "icons failed for %o", a->name);
+}
+
+// <apps>/<name>.desktop running exec, with the icon by name
+static void silver_desktop_entry(silver a, path apps, path exec) {
+    make_dir(apps);
+    string desktop = f(string,
+        "[Desktop Entry]\nType=Application\nName=%o\nExec=%o\n"
+        "Icon=%o\nCategories=Utility;\nTerminal=false\n", a->name, exec, a->name);
+    path_save(f(path, "%o/%o.desktop", apps, a->name), (Au)desktop, null);
+}
+
+// --link: the user's own install of this app, as a package would do it
+// system-wide: ~/.local/bin/<name> -> the binary, the hicolor icon set
+// in ~/.local/share/icons and a .desktop in ~/.local/share/applications
+static void silver_user_link(silver a) {
+    if (!a->link) return;
+    path bin  = a->live_binary ? a->live_binary : a->product;
+    cstr home = getenv("HOME");
+    if (!bin || !home || !*home) {
+        print("--link: no binary or no HOME");
+        return;
+    }
+    path ubin = f(path, "%s/.local/bin", home);
+    make_dir(ubin);
+    path lnk = f(path, "%o/%o", ubin, a->name);
+    unlink(lnk->chars);
+    if (symlink(bin->chars, lnk->chars) == 0)
+        print("linked %o -> %o", lnk, bin);
+    else
+        print("--link: could not symlink into %o", ubin);
+    cstr pathenv = getenv("PATH");
+    if (!pathenv || !strstr(pathenv, ubin->chars))
+        print("--link: %o is not on PATH", ubin);
+    if (!silver_module_icon(a)) {
+        print("--link: %o has no icon (images/icon.png): no desktop entry", a->name);
+        return;
+    }
+    silver_icon_set(a, f(path, "%s/.local/share/icons/hicolor", home));
+    silver_desktop_entry(a, f(path, "%s/.local/share/applications", home), lnk);
+    print("linked %o.desktop with its icon", a->name);
+}
+
 #ifdef __APPLE__
 
 // --release on an app: stage <Name>.app (MacOS/, lib/, share/<name>/ —
@@ -3000,26 +3065,9 @@ static void silver_package(silver a) {
     if (dir_exists("%o", share_src))
         vexec(a->verbose, "package", "cp -RL %o %o/%o", share_src, shd, name);
 
-    // icon: <module>/images/icon.png, icons/icon.png or icon.png; a release needs one
-    path icon = f(path, "%o/images/icon.png", a->module_path);
-    if (!file_exists("%o", icon)) icon = f(path, "%o/icons/icon.png", a->module_path);
-    if (!file_exists("%o", icon)) icon = f(path, "%o/icon.png", a->module_path);
-    verify(file_exists("%o", icon), "--release: %o has no icon (images/icon.png)", name);
-    // img's icons export writes the hicolor set; SILVER_ICONS tells it what
-    path img_so = f(path, "%o/libsilver-img.so", a->build_dir);
-    verify(file_exists("%o", img_so), "--release: icons need img built (silver --build img)");
-    path img_share = f(path, "%o/share/silver-img", a->install);
-    make_dir(img_share);
-    string icon_spec = f(string, "%o;%o;%o", icon, icons, name);
-    setenv("SILVER_ICONS", icon_spec->chars, 1);
-    int ist = silver_spawn_product(a, img_so, true, img_share, "SILVER_EXPORT", "SILVER_EXPORT_FORCE");
-    unsetenv("SILVER_ICONS");
-    verify(WIFEXITED(ist) && WEXITSTATUS(ist) == 0, "package: icons failed for %o", name);
-
-    string desktop = f(string,
-        "[Desktop Entry]\nType=Application\nName=%o\nExec=/usr/bin/%o\n"
-        "Icon=%o\nCategories=Utility;\nTerminal=false\n", name, name, name);
-    path_save(f(path, "%o/%o.desktop", apps, name), (Au)desktop, null);
+    verify(silver_module_icon(a), "--release: %o has no icon (images/icon.png)", name);
+    silver_icon_set(a, icons);
+    silver_desktop_entry(a, apps, f(path, "/usr/bin/%o", name));
 
     string who_n = trim(command_run((command)string("git config user.name"),  false));
     string who_e = trim(command_run((command)string("git config user.email"), false));
@@ -3710,6 +3758,8 @@ AU_EXPORT void silver_init(silver a) {
             if (file_exists("%o", host_dst) && !target_is_mobile(a))
                 build_silver_host(a);
         }
+        // the user link and icon refresh on a cached build too
+        silver_user_link(a);
         // --export: run export funcs even on a cached build, no launch
         if (a->export) { silver_run_exports(a); return; }
         silver_run_tests(a);
@@ -9993,30 +10043,7 @@ none silver_build_product(silver a) {
         create_symlink(host_dst, bin_link);
     }
 
-    // --link: symlink this app's binary into the first writable PATH dir, so it
-    // runs by name with no env-var/profile edits (the binary self-locates its
-    // libs/tree from its own path).
-    if (a->link) {
-        path bin = a->live_binary ? a->live_binary : a->product;
-        cstr pathenv = bin ? getenv("PATH") : null;
-        char dir[1024]; dir[0] = 0;
-        if (pathenv) {
-            char buf[8192];
-            strncpy(buf, pathenv, sizeof(buf) - 1); buf[sizeof(buf) - 1] = 0;
-            for (char* d = strtok(buf, ":"); d; d = strtok(null, ":"))
-                if (d[0] && (access)(d, W_OK) == 0) { strncpy(dir, d, sizeof(dir) - 1); break; }
-        }
-        if (dir[0]) {
-            path lnk = f(path, "%s/%o", dir, a->name);
-            unlink(lnk->chars);
-            if (symlink(bin->chars, lnk->chars) == 0)
-                print("linked %o -> %o", lnk, bin);
-            else
-                print("--link: could not symlink into %s", dir);
-        } else {
-            print("--link: no writable directory on PATH");
-        }
-    }
+    silver_user_link(a);
 
     // deploy resource files into share/{app-name}/ — ALWAYS symlink, both
     // configs. copying froze a snapshot that could desync from source (a
