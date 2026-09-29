@@ -211,6 +211,16 @@ expect func t_forward_types [] -> bool
     b: Before [ after: After [ value: 7 ] ]
     return p.x == 9 && b.after.value == 7
 
+# a pointer member's null default stores null: never a struct copy
+class PtrDefault
+    mutable m : @mat4f null
+    mutable n : i32
+
+expect func t_null_ptr_default [] -> bool
+    p : PtrDefault [ ]
+    q : @mat4f [ p.m ]
+    return !q && p.n == 0
+
 expect func t_null [] -> bool
     z: @i32                      # typed null pointer
     fallback: 'world'

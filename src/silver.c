@@ -9586,7 +9586,13 @@ static string late_object(silver a, path install) {
         "extern void %o(void);\n"
         "__attribute__((constructor)) static void silver_late(void) { %o(); }\n",
         sym, sym), null);
-    verify(exec(a->verbose, "%o/bin/clang -c -fPIC %o -o %o", install, src, obj) == 0,
+#ifdef __APPLE__
+    // without the sdk the object names the running os and ld warns
+    cstr sdk = "-isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk";
+#else
+    cstr sdk = "";
+#endif
+    verify(exec(a->verbose, "%o/bin/clang %s -c -fPIC %o -o %o", install, sdk, src, obj) == 0,
         "late object failed for %o", a->name);
     return (string)obj;
 }
