@@ -180,7 +180,7 @@ Layer GitLayer
                     cv.fill_grad[ sel_grad ]
                     cv.fill_color_pos[ x0 + 1.0, y + 1.0 ]
                     cv.fill_grad_pos[ x0 + 1.0, y + lh - 1.0 ]
-                if [ sel_glow ] cv.box_shadow[ sel_glow, 0.0, 0.0, 14.0, 0.0, true ]
+                if [ sel_glow ] cv.box_shadow[ sel_glow, 0.0, 0.0, 7.0, 0.0, true ]
                 cv.rect_to[ x0 + 1.0, y + 1.0, bounds.w - 2.0, lh - 2.0 ]
                 cv.paint[]
                 cv.restore[]
@@ -324,6 +324,67 @@ ResourceView GitView
 
 # the nav surface: rail chips, changed-file tabs, totals, the
 # message form, and the browse list — ONE element, ONE scroll
+# a card: an instance's live frame, or a scene's picture, 96px
+# tall, with the name and a blue status line under it; cx is the
+# content's left, the card box starts 4px left of it
+func draw_card [ cv: Canvas, oa: Au, h: FindHit, cx9: f32, ry: f32, cdw9: f32, rh9: f32, hov: bool ]
+    # the orbiter class is declared after this signature: cast here
+    orb : cast orbiter [ oa ]
+    if [ hov ]
+        cv.save[ ]
+        cv.rounded[ 8.0, 8.0, 8.0, 8.0 ]
+        cv.fill_color[ rgba['#ff6a2e2a'] ]
+        cv.stroke_width[ 1.0 ]
+        cv.stroke_offset[ -0.5 ]
+        cv.stroke_color[ rgba['#ff8a3a99'] ]
+        cv.box_shadow[ rgba['#ff8a3a99'], 0.0, 0.0, 6.0, 0.0, true ]
+        cv.rect_to[ cx9 - 4.0, ry + 1.0, cdw9 - 8.0, rh9 - 2.0 ]
+        cv.paint[ ]
+        cv.restore[ ]
+    av9 : AppView (orb) ? orb.instance_by[ h.inst ] : null
+    ft9 : Texture (av9 && av9.have_frame) ? av9.front[] : null
+    sc9 : bool [ h.card[] && h.inst == 0 ]
+    if [ sc9 ] ft9 = orb.scene_tex[ h ]
+    tw9 : f32 [ cdw9 - 24.0 ]
+    if [ ft9 && ft9.width > 0 && ft9.height > 0 ]
+        tw9 = 96.0 * f32[ ft9.width ] / f32[ ft9.height ]
+        if [ tw9 > cdw9 - 24.0 ] tw9 = cdw9 - 24.0
+    # the picture sits centered in the card box, which starts 4px
+    # left of the content and is 8px narrower than the cell
+    tx9 : f32 [ round[ cx9 - 4.0 + (cdw9 - 8.0 - tw9) * 0.5 ] ]
+    # the picture with 6px corners and a thin border around it
+    cv.save[ ]
+    cv.rounded[ 6.0, 6.0, 6.0, 6.0 ]
+    cv.stroke_width[ 0.0 ]
+    if [ ft9 && ft9.width > 0 && ft9.height > 0 ]
+        cv.draw_image[ ft9, rect [ x: tx9, y: round[ ry + 6.0 ], w: round[ tw9 ], h: 96.0 ] ]
+    el
+        cv.fill_color[ rgba['#000000'] ]
+        cv.rect_to[ tx9, round[ ry + 6.0 ], tw9, 96.0 ]
+        cv.paint[ ]
+    cv.fill_color[ rgba['#0000'] ]
+    cv.stroke_width[ 1.0 ]
+    cv.stroke_offset[ -0.5 ]
+    cv.stroke_color[ rgba['#ffffff40'] ]
+    cv.rect_to[ tx9, round[ ry + 6.0 ], round[ tw9 ], 96.0 ]
+    cv.paint[ ]
+    cv.restore[ ]
+    # two lines: the instance's name, and its state in blue under it
+    st9 : string (av9) ? av9.status_word[] : ''
+    if [ av9 && (!st9 || st9.count == 0) ] st9 = 'running'
+    if [ sc9 ]
+        if [ orb.scene_name[].compare[ h.scene ] == 0 ] st9 = 'current'
+    cv.font_size[ 16 ]
+    cv.fill_color[ rgba['#fff'] ]
+    cv.draw_text[ (av9) ? orb.instance_name[ av9 ] : h.text,
+        rect [ x: cx9 - 4.0, y: ry + 104.0, w: cdw9 - 8.0, h: 20.0 ],
+        vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null ]
+    cv.fill_color[ rgba['#6cb6ff'] ]
+    cv.draw_text[ st9,
+        rect [ x: cx9 - 4.0, y: ry + 124.0, w: cdw9 - 8.0, h: 20.0 ],
+        vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null ]
+
+
 Layer CommitLayer
     func draw [ cv: Canvas ]
         cb : CommitView [ parent ]
@@ -526,12 +587,13 @@ Layer CommitLayer
             # the row-highlight look, pinkish red — theme-bound
             cv.save[ ]
             cv.rounded[ 8.0, 8.0, 8.0, 8.0 ]
-            cv.fill_color[ cb.theme_rgba['#220022aa'] ]
+            # every tab at half alpha: fill, border and glow alike
+            cv.fill_color[ cb.theme_rgba['#22002280'] ]
             cv.stroke_width[ 1.0 ]
             cv.stroke_offset[ -0.5 ]
-            cv.stroke_color[ (dirty) ? cb.theme_rgba['#ffffff'] : ((thov) ? cb.theme_rgba['#ff7aa4cc'] : cb.theme_rgba['#ff5a8a99']) ]
+            cv.stroke_color[ (dirty) ? cb.theme_rgba['#ffffff80'] : ((thov) ? cb.theme_rgba['#ff7aa480'] : cb.theme_rgba['#ff5a8a80']) ]
             # mouse over: glow in the same colour as the border
-            if [ thov ] cv.box_shadow[ cb.theme_rgba['#ff7aa4cc'], 0.0, 0.0, 12.0, 0.0, true ]
+            if [ thov ] cv.box_shadow[ cb.theme_rgba['#ff7aa480'], 0.0, 0.0, 6.0, 0.0, true ]
             cv.rect_to[ tx, ty + 3.0, 144.0, lh - 6.0 ]
             cv.paint[ ]
             cv.restore[ ]
@@ -763,59 +825,7 @@ Layer CommitLayer
                 # status under it, and the module in blue under that; a scene:
                 # its exported picture
                 if [ h.card[] ]
-                    if [ nls - 1 == cb.hov_list ]
-                        cv.save[ ]
-                        cv.rounded[ 8.0, 8.0, 8.0, 8.0 ]
-                        cv.fill_color[ rgba['#ff6a2e2a'] ]
-                        cv.stroke_width[ 1.0 ]
-                        cv.stroke_offset[ -0.5 ]
-                        cv.stroke_color[ rgba['#ff8a3a99'] ]
-                        cv.box_shadow[ rgba['#ff8a3a99'], 0.0, 0.0, 12.0, 0.0, true ]
-                        cv.rect_to[ cx9 - 4.0, ry + 1.0, cdw9 - 8.0, rh9 - 2.0 ]
-                        cv.paint[ ]
-                        cv.restore[ ]
-                    av9 : AppView (orb) ? orb.instance_by[ h.inst ] : null
-                    ft9 : Texture (av9 && av9.have_frame) ? av9.front[] : null
-                    sc9 : bool [ h.card[] && h.inst == 0 ]
-                    if [ sc9 ] ft9 = orb.scene_tex[ h ]
-                    tw9 : f32 [ cdw9 - 24.0 ]
-                    if [ ft9 && ft9.width > 0 && ft9.height > 0 ]
-                        tw9 = 96.0 * f32[ ft9.width ] / f32[ ft9.height ]
-                        if [ tw9 > cdw9 - 24.0 ] tw9 = cdw9 - 24.0
-                    # the picture sits centered in the card box, which starts 4px
-                    # left of the content and is 8px narrower than the cell
-                    tx9 : f32 [ round[ cx9 - 4.0 + (cdw9 - 8.0 - tw9) * 0.5 ] ]
-                    # the picture with 6px corners and a thin border around it
-                    cv.save[ ]
-                    cv.rounded[ 6.0, 6.0, 6.0, 6.0 ]
-                    cv.stroke_width[ 0.0 ]
-                    if [ ft9 && ft9.width > 0 && ft9.height > 0 ]
-                        cv.draw_image[ ft9, rect [ x: tx9, y: round[ ry + 6.0 ], w: round[ tw9 ], h: 96.0 ] ]
-                    el
-                        cv.fill_color[ rgba['#000000'] ]
-                        cv.rect_to[ tx9, round[ ry + 6.0 ], tw9, 96.0 ]
-                        cv.paint[ ]
-                    cv.fill_color[ rgba['#0000'] ]
-                    cv.stroke_width[ 1.0 ]
-                    cv.stroke_offset[ -0.5 ]
-                    cv.stroke_color[ rgba['#ffffff40'] ]
-                    cv.rect_to[ tx9, round[ ry + 6.0 ], round[ tw9 ], 96.0 ]
-                    cv.paint[ ]
-                    cv.restore[ ]
-                    # two lines: the instance's name, and its state in blue under it
-                    st9 : string (av9) ? av9.status_word[] : ''
-                    if [ av9 && (!st9 || st9.count == 0) ] st9 = 'running'
-                    if [ sc9 ]
-                        if [ orb.scene_name[].compare[ h.scene ] == 0 ] st9 = 'current'
-                    cv.font_size[ 16 ]
-                    cv.fill_color[ rgba['#fff'] ]
-                    cv.draw_text[ (av9) ? orb.instance_name[ av9 ] : h.text,
-                        rect [ x: cx9 - 4.0, y: ry + 104.0, w: cdw9 - 8.0, h: 20.0 ],
-                        vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null ]
-                    cv.fill_color[ rgba['#6cb6ff'] ]
-                    cv.draw_text[ st9,
-                        rect [ x: cx9 - 4.0, y: ry + 124.0, w: cdw9 - 8.0, h: 20.0 ],
-                        vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null ]
+                    draw_card[ cv, orb, h, cx9, ry, cdw9, rh9, nls - 1 == cb.hov_list ]
                     continue
                 # find-result line: the matching source text, indented
                 if [ !h.is_header && h.line > 0 ]
@@ -934,7 +944,7 @@ Layer CommitLayer
                         ehv9 : bool [ nls - 1 == cb.hov_list && ei9 == cb.hov_ext ]
                         el9  : f32 [ (ei9 == 0) ? erd9 : 0.0 ]
                         er9  : f32 [ (ei9 == en9 - 1) ? erd9 : 0.0 ]
-                        gp9  : f32 [ (ehv9) ? 10.0 : 0.0 ]
+                        gp9  : f32 [ (ehv9) ? 5.0 : 0.0 ]
                         cv.save[ ]
                         cv.fill_color[ (ehv9) ? rgba['#6cb6ff33'] : rgba['#ffffff10'] ]
                         cv.rounded[ el9, er9, er9, el9 ]
@@ -959,8 +969,9 @@ Layer CommitLayer
                             vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
                     cv.save[ ]
                     cv.fill_color[ rgba['#0000'] ]
-                    cv.set_stroke_size[ 0.5 ]
-                    cv.stroke_sides[ 0.5, 0.5, 0.5, 0.5 ]
+                    cv.set_stroke_size[ 1.0 ]
+                    cv.stroke_sides[ 1.0, 1.0, 1.0, 1.0 ]
+                    cv.stroke_offset[ -0.5 ]
                     cv.stroke_color[ rgba['#ffffff33'] ]
                     cv.rounded_rect[ ex9, ry + 4.0, ecw9 * f32[ en9 ], 22.0, erd9, erd9, erd9, erd9 ]
                     cv.paint[ ]
@@ -1651,7 +1662,8 @@ element CommitView
                 o.exit_finder[]
                 return
             if [ h.file ]
-                o.open_in_pane[ h.file, pane ]
+                # shift opens it in a new editor tab
+                if [ !(o.shift_down && o.open_new_tab[ h.file ]) ] o.open_in_pane[ h.file, pane ]
                 o.exit_finder[]
 
     func on_char [ ev: Event ]

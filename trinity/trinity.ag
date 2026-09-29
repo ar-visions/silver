@@ -212,6 +212,8 @@ enum HM
     nav_state : 15
     # app -> ide: three bytes of the element's title; a 0 byte ends it
     title   : 16
+    # app -> ide: a b = its picture's width and height (its shape)
+    aspect  : 17
 
 ifdef [ apple ]
     # an IOSurface's global id is its cross-process name, as a dma-buf fd is
@@ -239,6 +241,7 @@ func au_live_switch   [ to: cstr ] -> none
 func host_kept        [ key: cstr ] -> handle
 func agent_sock_send  [ nm: cstr, txt: cstr ] -> i32
 func agent_sock_ask   [ nm: cstr, txt: cstr, out: @i8, cap: i32 ] -> i32
+func agent_sock_ask_block [ nm: cstr, txt: cstr, out: @i8, cap: i32 ] -> i32
 func agent_shell_start [ agent: cstr, root: cstr, model: cstr, txt: cstr ] -> i32
 func agent_shell_line [ buf: @i8, cap: i32 ] -> i32
 func agent_shell_stop []
@@ -249,88 +252,152 @@ func agent_shell_error [] -> symbol
 func agent_shell_close [ id: i32 ]
 func host_log_dir [] -> symbol
 
-# the launch/live property spec of any object, read from its type: the
-# running app answers props with it, and a host enumerates a module by
-# building a default instance of its app type and asking the same
+# a Launch member as it is declared, by reflection (props_of): what a
+# host shows as a control and sets back by name
+class Prop
+    public ident   : string
+    public module  : string             # the module declaring it: its flag namespace
+    public type    : string             # the member's type; func for an Action
+    public access  : string             # public, or default: the bare argument
+    public meta    : vec string         # the meta list as written
+    public value   : string             # the value now; an enum by its name
+    public control : Au                 # the meta's control with its values
+    public stops   : vec string         # an enum type's values, in order
 
-func props_of [ target: Au, acc: string ] -> string
-    out : string acc
-    if [ !target ] return out
-    for [ ty : typeid[ target ], ty && ty != typeid[ Au ], ty = ty.context ]
+# an app's props, answered to `props` as agi
+class LaunchProps
+    public module : string              # the app's own module: bare flags
+    public props  : vec Prop
+
+# a module's plain name: silver-trinity is trinity, the flag namespace
+func module_name [ m: Au_t ] -> string
+    nm : string [ m.ident ]
+    d  : i32 [ i32[ nm.rindex_of[ '-' ] ] ]
+    return (d >= 0) ? nm.mid[ d + 1, nm.count - d - 1 ] : nm
+
+# every Launch member of an object as it is declared, by reflection: the
+# running app answers props with these, and a host shows them as controls
+func props_of [ ty0: Au_t, target: Au, acc: LaunchProps ] -> none
+    if [ !ty0 || !acc ] return
+    if [ !acc.props ] acc.props = vec Prop []
+    if [ !acc.module && ty0.module ] acc.module = module_name[ ty0.module ]
+    for [ ty : Au_t ty0, ty && ty != typeid[ Au ], ty = ty.context ]
         for [ i: i32 0, i < ty.members.count, i += 1 ]
             mem : Au_t ty.members.origin[i]
             if [ !mem ] continue
-            # an Action is a method: it has no value, the host calls it
-            if [ mem.member_type == AU_MEMBER_FUNC ]
-                fmt : Au_t mem.meta.m
-                if [ !fmt || !Au.inherits[ fmt, typeid[ Action ] ] ] continue
-                fnm : string [ mem.ident ]
-                if [ out && out.count > 0 ]
-                    fkey  : string ';{fnm}='
-                    fhead : string '{fnm}='
-                    if [ out.starts_with[ fhead ] || out.index_of[ fkey ] >= 0 ] continue
-                fent : string '{fnm}=action==Action=live'
-                out = (out && out.count > 0) ? '{out};{fent}' : fent
-                continue
-            if [ mem.member_type != AU_MEMBER_VAR ] continue
             mt : Au_t mem.meta.m
             if [ !mt || !Au.inherits[ mt, typeid[ Launch ] ] ] continue
-            # an empty literal has no chars: nothing empty is ever interpolated here
-            # the enum's stops first: they also say how to print the value
-            en : string [ null ]
+            if [ mem.member_type != AU_MEMBER_VAR && mem.member_type != AU_MEMBER_FUNC ] continue
+            nm : string [ mem.ident ]
+            # the app's own member of a name wins over the base's: the app is walked first
+            dup : bool [ false ]
+            for [ qi: i32 0, qi < acc.props.count, qi += 1 ]
+                q : Prop acc.props[ qi ]
+                if [ q.ident == nm ] dup = true
+            if [ dup ] continue
+            p : Prop [ ident: nm ]
+            if [ ty.module ] p.module = module_name[ ty.module ]
+            p.meta = vec string []
+            p.meta.push[ string [ mt.ident ] ]
+            mb : Au_t mem.meta.member_b
+            if [ mb ] p.meta.push[ string [ mb.ident ] ]
+            # an Action is a method: it has no value, the host calls it
+            if [ mem.member_type == AU_MEMBER_FUNC ]
+                if [ !Au.inherits[ mt, typeid[ Action ] ] ] continue
+                p.type = 'func'
+                acc.props.push[ p ]
+                continue
+            p.type   = (mem.src) ? string [ mem.src.ident ] : ''
+            # bit 50 of traits: AU_TRAIT_IS_DEFAULT, the bare argument
+            p.access = (((mem.traits >> 50) & 1) != 0) ? 'default' : 'public'
+            # an enum's values, in order; its value goes by name
+            en : bool [ false ]
             if [ mem.src && mem.src.members.count > 0 ]
                 for [ k: i32 0, k < mem.src.members.count, k += 1 ]
                     ev : Au_t mem.src.members.origin[k]
                     if [ !ev || ev.member_type != AU_MEMBER_ENUMV ] continue
-                    pv : cast @i32 [ ev.value ]
-                    iv : i32 [ pv[0] ]
-                    evn : string [ ev.ident ]
-                    en = (en) ? '{en},{evn}:{iv}' : '{evn}:{iv}'
-            v  : target.member_object[ mem ]
-            ent : string [ mem.ident ]
-            # the app's own member of a name wins over the base's: the app is walked first
-            if [ out && out.count > 0 ]
-                key  : string ';{ent}='
-                head : string '{ent}='
-                if [ out.starts_with[ head ] || out.index_of[ key ] >= 0 ] continue
-            ent = '{ent}='
-            # a cstr must never be truth-tested: the compiler reads it as an object
-            if [ mem.src ]
-                tn : string [ mem.src.ident ]
-                ent = '{ent}{tn}'
-            ent = '{ent}='
+                    if [ !p.stops ] p.stops = vec string []
+                    p.stops.push[ string [ ev.ident ] ]
+                    en = true
+            # a type alone has no values: the running instance's answer has them
+            v  : Au [ (target) ? target.member_object[ mem ] : null ]
+            whole : bool [ en || mem.src == typeid[ i32 ] || mem.src == typeid[ i64 ] ||
+                           mem.src == typeid[ u32 ] || mem.src == typeid[ u64 ] || mem.src == typeid[ bool ] ]
             # a boxed primitive has no text of its own: print it by its type.
             # a null box IS zero: say 0 (or false), never nothing
-            if [ !v && mem.src && (en || mem.src == typeid[ i32 ] || mem.src == typeid[ i64 ] ||
-                 mem.src == typeid[ u32 ] || mem.src == typeid[ u64 ] || mem.src == typeid[ bool ]) ]
-                ent = (mem.src == typeid[ bool ]) ? '{ent}false' : '{ent}0'
+            if [ !v && target && mem.src && whole ]
+                p.value = (mem.src == typeid[ bool ]) ? 'false' : '0'
             el [ v && mem.src ]
-                if [ en || mem.src == typeid[ i32 ] || mem.src == typeid[ i64 ] ||
-                     mem.src == typeid[ u32 ] || mem.src == typeid[ u64 ] || mem.src == typeid[ bool ] ]
+                if [ whole ]
                     iv : i32 [ i32[ v ] ]
-                    if [ mem.src == typeid[ bool ] ] ent = (iv != 0) ? '{ent}true' : '{ent}false'
-                    el ent = '{ent}{iv}'
+                    if [ mem.src == typeid[ bool ] ]
+                        p.value = (iv != 0) ? 'true' : 'false'
+                    el [ en ]
+                        p.value = '{iv}'
+                        for [ k: i32 0, k < mem.src.members.count, k += 1 ]
+                            ev : Au_t mem.src.members.origin[k]
+                            if [ !ev || ev.member_type != AU_MEMBER_ENUMV ] continue
+                            pv : cast @i32 [ ev.value ]
+                            if [ pv[0] == iv ] p.value = string [ ev.ident ]
+                    el
+                        p.value = '{iv}'
                 el [ mem.src == typeid[ f32 ] || mem.src == typeid[ f64 ] ]
                     fv : f32 [ f32[ v ] ]
-                    ent = '{ent}{fv}'
+                    p.value = '{fv}'
                 el [ mem.src == typeid[ string ] || Au.inherits[ mem.src, typeid[ path ] ] ]
-                    ent = '{ent}{v}'
-            mb : Au_t mem.meta.member_b
+                    p.value = '{v}'
+            # the control the meta names, as its trinity base with the values set
             if [ mb && Au.inherits[ mb, typeid[ Range ] ] ]
                 rg : Range [ Au.new_object[ mb, null, null, true, __FILE__, __LINE__, __SEQUENCE__ ] ]
-                if [ rg ] ent = '{ent}=Range[{rg.min},{rg.max}]'
-            el [ mb && Au.inherits[ mb, typeid[ KeyBind ] ] ] ent = '{ent}=Key'
+                if [ rg ] p.control = Range [ min: rg.min, max: rg.max ]
             el [ mb && Au.inherits[ mb, typeid[ Stepper ] ] ]
                 sp : Stepper [ Au.new_object[ mb, null, null, true, __FILE__, __LINE__, __SEQUENCE__ ] ]
-                if [ sp ] ent = '{ent}=Stepper[{sp.min},{sp.max},{sp.step}]'
-            el [ mb && Au.inherits[ mb, typeid[ Color ] ] ]     ent = '{ent}=Color'
-            el [ mb && Au.inherits[ mb, typeid[ PadBind ] ] ]   ent = '{ent}=Pad'
-            el [ mb && Au.inherits[ mb, typeid[ Directory ] ] ] ent = '{ent}=Dir'
-            el [ mb && Au.inherits[ mb, typeid[ Multiline ] ] ] ent = '{ent}=Text'
-            el [ en ] ent = '{ent}=Enum[{en}]'
-            if [ Au.inherits[ mt, typeid[ Live ] ] ] ent = '{ent}=live'
-            out = (out && out.count > 0) ? '{out};{ent}' : ent
-    return out
+                if [ sp ] p.control = Stepper [ min: sp.min, max: sp.max, step: sp.step ]
+            el [ mb && Au.inherits[ mb, typeid[ KeyBind ] ] ]   p.control = KeyBind []
+            el [ mb && Au.inherits[ mb, typeid[ Color ] ] ]     p.control = Color []
+            el [ mb && Au.inherits[ mb, typeid[ PadBind ] ] ]   p.control = PadBind []
+            el [ mb && Au.inherits[ mb, typeid[ Directory ] ] ] p.control = Directory []
+            el [ mb && Au.inherits[ mb, typeid[ Multiline ] ] ] p.control = Multiline []
+            acc.props.push[ p ]
+
+# at build (SILVER_EXPORT, cwd install/share/<owner>-<module>): the app
+# type's Launch members, as declared, into the module's export agi as
+# `props:`. a host reads them before the app ever runs. trinity's exports
+# run when its library loads, before the app module registers its types:
+# the write waits for the process's exit, after everything has
+export func launch_props []
+    atexit[ @launch_props_write ]
+
+func launch_props_write [] -> none
+    inst : path.path_install[]
+    cwd  : path.path_cwd[]
+    if [ !inst || !cwd ] return
+    name : string cwd.stem[]
+    dash : i32 [ i32[ name.index_of[ '-' ] ] ]
+    if [ dash <= 0 ] return
+    mod  : string name.mid[ dash + 1, name.count - dash - 1 ]
+    ty   : Au_t Au.find_type[ mod.chars, null ]
+    # a library's own export run: no app here
+    if [ !ty || !Au.inherits[ ty, typeid[ element ] ] ] return
+    lp : LaunchProps []
+    props_of[ ty, null, lp ]
+    if [ !lp.props || lp.props.count == 0 ] return
+    agi : path '{inst}/export/{name}.agi'
+    txt : string [ (agi.exists[]) ? agi.load[ typeid[string], null ] : '' ]
+    if [ !txt ] txt = ''
+    # an older props block goes: from its line to the next top-level key
+    out : string ''
+    skip : bool [ false ]
+    lines : txt.split[ '\n' ]
+    for [ ln: string ] in lines
+        if [ ln.starts_with[ 'props:' ] ]
+            skip = true
+        el
+            if [ skip && ln.count > 0 && ln.chars[0] != 9 ] skip = false
+            if [ !skip && ln.count > 0 ] out = '{out}{ln}\n'
+    out = '{out}{Au.string_agi[ lp ]}'
+    agi.save[ out, null ]
+    log '{name}: launch props {lp.props.count}'
 
 
 abstract live_app media_app
@@ -343,7 +410,6 @@ abstract live_app media_app
     public  height      : i32
     public  lock_aspect : bool
     # playback gain 0..1, driven by the shell's slider over the socket
-    public [ Live, VolumeRange ] volume : f32 [ 1.0 ]
     public  live_reload : bool [ true ]
     public  text_mode   : bool [ false ]
     intern  paned       : bool         # a windowed app showing in orbiter's pane or pip
@@ -776,10 +842,9 @@ abstract live_app media_app
         func props_spec [] -> string
             wn : Window [ w ]
             ao : element [ cast element [ wn.app_object ] ]
-            out : string [ null ]
-            if [ ao ] out = props_of[ ao, out ]
-            out = props_of[ a, out ]
-            return out
+            ps : LaunchProps []
+            if [ ao ] props_of[ typeid[ ao ], ao, ps ]
+            return Au.string_agi[ ps ]
 
         func instr_state [] -> string
             rs : string [ '' ]
@@ -1316,8 +1381,9 @@ abstract live_app media_app
                     agent_sock_reply[ '{pr9}\n' ]
                     continue
                 el [ cmd == 'props' ]
+                    # many lines: an empty line ends the answer (ask_block)
                     ps9 : string props_spec[]
-                    agent_sock_reply[ (ps9 && ps9.count > 0) ? '{ps9}\n' : '\n' ]
+                    agent_sock_reply[ (ps9 && ps9.count > 0) ? '{ps9}\n' : '\n\n' ]
                     continue
                 # stats: the last second's frame and gpu counters
                 el [ cmd == 'stats' ]
@@ -1326,6 +1392,11 @@ abstract live_app media_app
                 # leaks: the --leaks report now, into the app log
                 el [ cmd == 'leaks' ]
                     Au.leak_report[]
+                    agent_sock_reply[ 'ok\n' ]
+                    continue
+                # quit: the orderly close, as the window's close button
+                el [ cmd == 'quit' ]
+                    Au.quit_request[]
                     agent_sock_reply[ 'ok\n' ]
                     continue
                 # types [min]: live objects per type into the app log
@@ -1347,24 +1418,19 @@ abstract live_app media_app
                 el [ cmd == 'set' && parts.count >= 3 ]
                     member : Au_t [ (aa) ? find_member[ typeid[ aa ], parts[1].chars,
                         AU_MEMBER_VAR, 0, true ] : null ]
-                    isvol : bool [ parts[1].compare[ 'volume' ] == 0 ]
                     if [ member ]
                         val : Au.convert[ member.src, parts[2] ]
                         if [ val ] aa.set_property[ parts[1], val ]
-                    if [ isvol ] volume = f32[ parts[2].real_value[] ]
-                    agent_sock_reply[ (member || isvol) ? 'ok\n' : 'unknown\n' ]
+                    agent_sock_reply[ (member) ? 'ok\n' : 'unknown\n' ]
                     continue
-                # the shell's slider. an app with its own volume gets it too
+                # the shell's slider: the root element's volume
                 el [ cmd == 'volume' ]
                     member : Au_t [ (aa) ? find_member[ typeid[ aa ], 'volume',
                         AU_MEMBER_VAR, 0, true ] : null ]
-                    if [ parts.count >= 2 ]
-                        volume = f32[ parts[1].real_value[] ]
-                        if [ member ]
-                            val : Au.convert[ member.src, parts[1] ]
-                            if [ val ] aa.set_property[ 'volume', val ]
-                    # reply with what the APP holds when it owns one
-                    level : f32 [ volume ]
+                    if [ parts.count >= 2 && member ]
+                        val : Au.convert[ member.src, parts[1] ]
+                        if [ val ] aa.set_property[ 'volume', val ]
+                    level : f32 [ 1.0 ]
                     if [ member ] level = f32[ aa.member_object[ member ] ]
                     agent_sock_reply[ '{level}\n' ]
                     continue
@@ -1653,6 +1719,16 @@ class ReduceBlur
         for [ r: Render ] in renders
             r.update*[] r.draw*[] r.sync_fence[]
 
+# an agent the user runs (adapter name) and the models it offers; the
+# first model is the default. agi: `agents: [ claude, codex ]`, or a
+# block per agent with `models: [ opus, sonnet ]`
+class Agent
+    public name   : string
+    public models : vec string
+
+    construct [ s: string ]
+        name = s
+
 # one conversation of the exchange, a tab: its agent runs in trinity.cc
 # under id while another is on screen
 class ExchangeSession
@@ -1664,6 +1740,7 @@ class ExchangeSession
     public shot_text   : string
     public notes       : vec ShotEntry
     public agent_pick  : string
+    public model_pick  : string
     public attached    : vec path
 
 # the exchange and its avatar as they were when a reload swapped: the
@@ -1681,6 +1758,7 @@ class ExchangeState
     public agent_min   : bool
     public notes       : vec ShotEntry
     public agent_pick  : string
+    public model_pick  : string
     public blur        : ReduceBlur
     public av_halo     : f32
     public av_flame    : f32
@@ -1780,6 +1858,13 @@ Display Window
     mutable will_animate        : bool
     mutable draw_stage          : CanvasType
     mutable mouse               : vec2f
+    # how far the pointer's light reaches borders, px
+    intern  near_reach          : f32 [ 160.0 ]
+    # the light's weight with the pointer inside, or outside
+    intern  near_in_weight      : f32 [ 1.0 ]
+    intern  near_out_weight     : f32 [ 0.5 ]
+    # the light fades this many times faster up and down
+    public  near_y_fade         : f32 [ 2.0 ]
     mutable last_move           : vec2f
     mutable last_click_us       : i64
     mutable last_click_pos      : vec2f
@@ -1860,6 +1945,7 @@ Display Window
     mutable agent_min           : bool     # Esc put the exchange away; the status item brings it back
     mutable shot_text           : string   # the lines so far: every send reposts the whole message
     mutable agent_pick          : string   # the agent chosen at the prompt (an `agents` name)
+    mutable model_pick          : string   # the model chosen for it (one of the agent's models)
     mutable sessions            : vec ExchangeSession   # the exchange's conversations, tabs left to right
     mutable session_cur         : i32 [ -1 ]           # the one on screen; -1 a new prompt
     mutable session_ids         : i32                  # the last id given out
@@ -1989,6 +2075,7 @@ Display Window
         s.shot_text  = shot_text
         s.notes      = notes
         s.agent_pick = agent_pick
+        s.model_pick = model_pick
         s.attached   = attached
 
     # a tab onto the screen: its agent is the one the exchange talks to
@@ -2004,6 +2091,7 @@ Display Window
         shot_text    = s.shot_text
         notes        = s.notes
         agent_pick   = s.agent_pick
+        model_pick   = s.model_pick
         attached     = s.attached
         shot_error   = null
         agent_view   = true
@@ -2081,6 +2169,7 @@ Display Window
         xs.agent_min   = agent_min
         xs.notes       = notes
         xs.agent_pick  = agent_pick
+        xs.model_pick  = model_pick
         xs.blur        = screenshot_blur
         session_park[]
         xs.sessions    = sessions
@@ -2096,6 +2185,7 @@ Display Window
         agent_min       = xs.agent_min
         notes           = xs.notes
         agent_pick      = xs.agent_pick
+        model_pick      = xs.model_pick
         screenshot_blur = xs.blur
         sessions        = xs.sessions
         session_cur     = xs.session_cur
@@ -3040,13 +3130,31 @@ Display Window
             e[ 'shot_close' ] = ShotClose [ topmost: true, fading: swap_fade, icon: 'close', icon_fit: 0.6, manual_mode: true,
                 area: ux_area[ 'r16px t16px w36px h36px', u9 ] ]
             # the picker last: over the blur and the boxes
-            pw9 : i32 [ i32[ nm9.count ] * 96 ]
-            # centered where it sits at unit 1, grown in place
-            pk9w : i32 [ i32[ round[ f32[ pw9 ] * u9 ] ] ]
+            ag9 : string [ (ix9 < nm9.count) ? nm9[ ix9 ] : 'claude' ]
+            md9 : vec string agent_models[ app_object, ag9 ]
+            # both rows one width, centered where they sit at unit 1
+            pk9w : i32 [ i32[ round[ 360.0 * u9 ] ] ]
             pk9h : i32 [ i32[ round[ 28.0 * u9 ] ] ]
+            # the agents sit over their models; with no models, in their place
+            pc8 : i32 [ (md9.count > 0) ? pc9 + i32[ round[ 34.0 * u9 ] ] : pc9 ]
             e[ 'agent_pick' ] = AgentPick [ topmost: true, buttons: nm9, selected: ix9, faded: agent_view, fading: swap_fade,
                 icons: false, manual: false, seg_radius: 6.0 * u9, label_px: 13.0, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0,
-                area: Region [ 'l50%-{pk9w / 2}px b{pc9 + pk9h / 2}px w{pk9w}px h{pk9h}px' ] ]
+                area: Region [ 'l50%-{pk9w / 2}px b{pc8 + pk9h / 2}px w{pk9w}px h{pk9h}px' ] ]
+            # the lit agent's models, the row under it; the first is lit
+            # unless the user picked another for this agent
+            if [ md9.count > 0 ]
+                mx9 : i32 [ 0 ]
+                for [ k9: i32 0, k9 < md9.count, k9 += 1 ]
+                    if [ model_pick && model_pick == md9[ k9 ] ] mx9 = k9
+                # the mounted row owns its selection while its agent stays
+                if [ root && root.elements ]
+                    mp0 : element root.elements[ 'model_pick' ]
+                    if [ mp0 && mp0 inherits AgentPick ]
+                        ap0 : AgentPick mp0
+                        if [ ap0.agent == ag9 && ap0.selected >= 0 && ap0.selected < md9.count ] mx9 = ap0.selected
+                e[ 'model_pick' ] = AgentPick [ topmost: true, buttons: md9, selected: mx9, agent: ag9, faded: agent_view, fading: swap_fade,
+                    icons: false, manual: false, seg_radius: 6.0 * u9, label_px: 12.0, rest_glow: rgba [ '#ccf2' ], rest_px: 16.0,
+                    area: Region [ 'l50%-{pk9w / 2}px b{pc9 + pk9h / 2}px w{pk9w}px h{pk9h}px' ] ]
             # the screenshots attached to the next message, just above the field
             if [ attached && attached.count > 0 ]
                 ah9 : i32 [ i32[ round[ 44.0 * u9 ] ] ]
@@ -3306,7 +3414,44 @@ Display Window
                     c.near = nr
                     for [ p: element* c, p, p = p.parent ] p.pristine = false
                     restyle = true
+                # borders in reach repaint as the light moves
+                c.win_pos = vec2f [ cx, cy ]
+                lit : bool [ mx >= cx - near_reach && mx < cx + c.bounds.w + near_reach &&
+                             my >= cy - near_reach && my < cy + c.bounds.h + near_reach ]
+                if [ c.near_used && (lit || c.near_lit) ]
+                    for [ p: element* c, p, p = p.parent ] p.pristine = false
+                    will_animate = true
+                c.near_lit = lit
+                c.near_in  = mx >= cx && mx < cx + c.bounds.w && my >= cy && my < cy + c.bounds.h
             near_walk[ c, cx, cy ]
+
+    # the border light's weight, filtered: 0.9 kept, 0.1 new
+    # (at 60 Hz), so it rises and falls as an animation
+    func near_filter [ e: element ]
+        if [ !e.near_used && e.near_glow == 0.0 ] return
+        goal : f32 [ 0.0 ]
+        if [ e.near_in ] goal = near_in_weight
+        el [ e.near_lit ] goal = near_out_weight
+        d : f32 [ goal - e.near_glow ]
+        if [ d < 0.002 && d > -0.002 ]
+            if [ e.near_glow == goal ] return
+            e.near_glow = goal
+        el
+            e.near_glow = filter_n[ e.near_glow, goal, 0.1, frame_factor ]
+            will_animate = true
+        for [ p: element* e, p, p = p.parent ] p.pristine = false
+
+    # the pointer's light on e's borders, in cv's space; ox oy
+    # is e's top-left in the coordinates being drawn
+    public func near_light_on [ cv: Canvas, e: element, ox: f32, oy: f32 ]
+        e.near_used = true
+        if [ e.near_glow <= 0.0 ] return
+        sc : f32 [ cv.transform_scale[] ]
+        if [ sc <= 0.0 ] sc = 1.0
+        x : f32 [ cv.transform_tx[] + (mouse.x - e.win_pos.x + ox) * sc ]
+        y : f32 [ cv.transform_ty[] + (mouse.y - e.win_pos.y + oy) * sc ]
+        cv.near_light[ x, y, near_reach * sc, e.near_glow ]
+        cv.near_style[ 1.0, 0.0, null, near_y_fade ]
 
     public func find_target [ e: element, ev: Event, must: element ] -> element
         if [ !e || !e.bounds || e.disable || e.ghost || e.hide || e.opacity <= 0.0 ]
@@ -3743,7 +3888,8 @@ Display Window
                     break
         if [ ev.mouse.button == 0 && f && (f.focusable || edit_l) && !ev.no_default ]
             set_focus[ f ]
-        if [ edit_l && ev.mouse.button == 0 ]
+        # the text field's caret and focus are the default too
+        if [ edit_l && ev.mouse.button == 0 && !ev.no_default ]
             ev.mouse.pos = element_pos
             edit_l.on_press[ ev ]
         if [ !capture ]
@@ -5011,6 +5157,7 @@ Display Window
                 cv.scale_xy[ sx, sy ]
             cv.translate[ -pivot_x, -pivot_y ]
 
+        if [ stage == CanvasType.screen ] near_filter[ e ]
         if [ stage == CanvasType.screen ] e.tick*[ a ]
         # an uncached element paints whenever it is reached: onto a cached
         # parent's canvas as that canvas repaints, else onto the screen
@@ -5026,6 +5173,8 @@ Display Window
                 target_cv.translate[ f32 e.cache_ox, f32 e.cache_oy ]
 
         e.needs_frame = false
+        # the paint below says again whether it lights a border
+        if [ redraw && stage == CanvasType.screen ] e.near_used = false
 
         defer_scroll : bool [ e.cache_canvas && !e.animated && !nc && stage == CanvasType.screen ]
 
@@ -5178,6 +5327,11 @@ Display Window
                     draw_cv.stroke_grad_mirror [ false ]
                 draw_cv.no_shadows[]
                 if [ layer.box_shadow ] layer.box_shadow.apply[ draw_cv, 0 ]
+                nb9 : bool [ layer.near_border && sw_max > 0.0 ]
+                ni9 : bool [ layer.near_inset > 0.0 && layer.box_shadow ]
+                if [ nb9 || ni9 ]
+                    near_light_on[ draw_cv, e, 0.0, 0.0 ]
+                    draw_cv.near_style[ (nb9) ? 1.0 : 0.0, layer.near_inset, layer.near_inset_color, near_y_fade ]
                 draw_cv.paint            [ ]
                 draw_cv.restore          [ ]
 
@@ -5552,9 +5706,10 @@ abstract media_app trinity
     public hidden       : bool
     public startup_path : path
     public agent : string
-    # the agents the user runs, by adapter name ('claude', 'codex', ...):
-    # the exchange's prompt offers the pick; `agent` alone is one of them
-    public agents : vec string
+    # the agents the user runs, by adapter name ('claude', 'codex', ...),
+    # each with its models: the exchange's prompt offers the picks;
+    # `agent` alone is one of them
+    public agents : vec Agent
     intern msaa_samples : i64
     intern istroke      : f32 0
     intern ifill        : f32 0
@@ -5702,37 +5857,50 @@ abstract media_app trinity
 
 
 func agent_post [ obj: Au, text: string, priority: string ] -> bool
-    return agent_post_as[ obj, null, text, priority ]
+    return agent_post_as[ obj, null, null, text, priority ]
 
 # the names the exchange offers: the app's `agents` list, else its `agent`,
 # else claude
 func agent_names [ obj: Au ] -> vec string
     out : vec string []
     if [ obj ]
-        # agents is media_app's own member (no app redeclares it), so the
-        # base view of the app reads it at the base's offset
         # by name: an app declares `agents` on its own type (the abstract's
         # member is not in its layout), so the property is the one to read
         av9 : Au obj.get_property[ 'agents' ]
         if [ av9 ]
             vv9 : cast vector [ av9 ]
             for [ i: i32 0, i < vv9.count, i += 1 ]
-                n : string [ cast string [ vv9[ i ] ] ]
-                if [ n && n.count > 0 ] out.push[ n ]
+                ag9 : Agent [ cast Agent [ vv9[ i ] ] ]
+                if [ ag9 && ag9.name && ag9.name.count > 0 ] out.push[ ag9.name ]
         if [ out.count == 0 ]
             one : cast string [ obj.get_property[ 'agent' ] ]
             if [ one && one.count > 0 ] out.push[ one ]
     if [ out.count == 0 ] out.push[ 'claude' ]
     return out
 
+# the models an agent offers, in the agi's order (the first is the
+# default); empty leaves the model to the agent's own default
+func agent_models [ obj: Au, name: string ] -> vec string
+    out : vec string []
+    if [ !obj || !name ] return out
+    av9 : Au obj.get_property[ 'agents' ]
+    if [ !av9 ] return out
+    vv9 : cast vector [ av9 ]
+    for [ i: i32 0, i < vv9.count, i += 1 ]
+        ag9 : Agent [ cast Agent [ vv9[ i ] ] ]
+        if [ !ag9 || !ag9.name || ag9.name != name || !ag9.models ] continue
+        for [ m9: string ] in ag9.models
+            if [ m9 && m9.count > 0 ] out.push[ m9 ]
+    return out
+
 # the exchange's agent CLI in the app's folder, its output streamed
-func agent_post_as [ obj: Au, pick: string, text: string, priority: string ] -> bool
+func agent_post_as [ obj: Au, pick: string, model: string, text: string, priority: string ] -> bool
     if [ !obj ] return false
     an9 : string [ (pick && pick.count > 0) ? pick : cast string [ obj.get_property[ 'agent' ] ] ]
     nm9 : string [ (an9 && an9.count > 0) ? an9 : 'claude' ]
     sp  : path [ cast path [ obj.get_property[ 'startup_path' ] ] ]
     rt  : path [ (sp) ? sp : path.path_startup[] ]
-    md  : string [ '' ]
+    md  : string [ (model && model.count > 0) ? model : '' ]
     ok  : bool [ agent_shell_start[ nm9.chars, rt.chars, md.chars, text.chars ] != 0 ]
     if [ !ok ] log 'agent: {nm9} did not start'
     return ok
@@ -5859,6 +6027,11 @@ element TButtons
     public  label_px  : f32
     # rest-state edge, off by default; set to match neighboring buttons
     public  rest_glow  : rgba
+    public  rest_fill  : rgba         # the unlit segments' fill, else near-clear
+    public  lit_fill   : rgba         # the lit segment's fill, else the theme's
+    # the hover look is the rest look: hover a touch brighter, the lit
+    # one softer, and a faint pointer light in the glow
+    public  rest_hover : bool
     public  rest_px    : f32
     intern  svg_cache : map SVGModel [string]
     intern  svg_miss  : map i32      [string]
@@ -6002,21 +6175,25 @@ element TButtons
             br : f32 [ (i == n - 1) ? seg_radius : 0.0 ]
             # near-clear at rest, NO glow — only hover/lit draw a glow, so
             # nothing lingers when the cursor leaves
-            fcol : rgba [ '#ffffff0c' ]
+            fcol : rgba [ (rest_fill) ? rest_fill : rgba [ '#ffffff0c' ] ]
             gc   : rgba [ '#0000' ]
             gpx  : f32  [ 0.0 ]
             off  : bool [ disable || ((disable_mask & (1 << i)) != 0) ]
+            if [ rest_hover && !off ]
+                fcol = (rest_fill) ? rest_fill : rgba [ '#ff7a7a1c' ]
+                gc   = rgba [ '#fcc1' ]
+                gpx  = 13.0
             # hover brightens first, at half strength...
             if [ i == hover_ix && !off ]
-                fcol = rgba [ '#ffffff1c' ]
+                fcol = rgba [ (rest_hover) ? '#ff7a7a30' : '#ffffff1c' ]
                 gc   = rgba [ '#fcc3' ]
                 gpx  = 18.0
             # ...then the toggled state always brightens over it
             lit : bool [ (sel_mask != 0) ? ((sel_mask & (1 << i)) != 0) : (i == selected) ]
             if [ lit && !off ]
-                fcol = theme_rgba[ '#826' ]
-                gc   = rgba [ '#fcc6' ]
-                gpx  = 18.0
+                fcol = (lit_fill) ? lit_fill : ((rest_hover) ? rgba [ '#8826668c' ] : theme_rgba[ '#826' ])
+                gc   = rgba [ (rest_hover) ? '#fcc2' : '#fcc6' ]
+                gpx  = (rest_hover) ? 13.0 : 18.0
             gl : f32 [ (i == 0)     ? gpx : 0.0 ]
             gr : f32 [ (i == n - 1) ? gpx : 0.0 ]
             # a collapsing strip has its ground already: a segment paints
@@ -6037,6 +6214,11 @@ element TButtons
                     cv.clip_rounded_rect[ x, 0.0, sw9, bounds.h, tl, tr, br, bl ]
                     cv.fill_color[ rgba [ '#0000' ] ]
                     cv.box_shadow[ gc, 0.0, 0.0, gpx, 0.0, true ]
+                    # the lit segment: the instance row's blue pointer
+                    # light; the others a faint 20% of it
+                    if [ rest_hover ]
+                        w.near_light_on[ cv, a, 0.0, 0.0 ]
+                        cv.near_style[ 0.0, (lit) ? 3.0 : 0.2, rgba [ '#c890ffff' ], w.near_y_fade ]
                     cv.rounded[ (gl > 0.0) ? tl : 0.0, (gr > 0.0) ? tr : 0.0, (gr > 0.0) ? br : 0.0, (gl > 0.0) ? bl : 0.0 ]
                     cv.rounded_rect[ gx0, 0.0, gx1 - gx0, bounds.h, (gl > 0.0) ? tl : 0.0, (gr > 0.0) ? tr : 0.0, (gr > 0.0) ? br : 0.0, (gl > 0.0) ? bl : 0.0 ]
                     cv.paint[]
@@ -7224,6 +7406,8 @@ element ShotUser
 # exchange is a conversation (the pick is made at the first send)
 TButtons AgentPick
     public faded : bool
+    # the model row: the agent whose models it lists
+    public agent : string
     # cached, unlike a TButtons strip: an uncached child paints into root's
     # cache and the cached backdrop is blitted over it afterward
     no_cache : false
@@ -7366,13 +7550,19 @@ TextInput ShotPrompt
                     tb9 : TButtons pk9
                     nm9 : vec string agent_names[ w.app_object ]
                     if [ tb9.selected >= 0 && tb9.selected < nm9.count ] w.agent_pick = nm9[ tb9.selected ]
+                # and the model row's, for that agent
+                mp9 : element w.root.elements[ 'model_pick' ]
+                if [ mp9 && w.agent_pick && mp9 inherits AgentPick ]
+                    ap9 : AgentPick mp9
+                    md9 : vec string agent_models[ w.app_object, w.agent_pick ]
+                    if [ ap9.agent == w.agent_pick && ap9.selected >= 0 && ap9.selected < md9.count ] w.model_pick = md9[ ap9.selected ]
             # the exchange's first message makes a tab and starts its agent;
             # each later one goes to that conversation as the new line alone
             fn9 : string w.shot_ask.filename[]
             if [ first9 ]
                 w.session_begin[ (text.count > 0) ? text : fn9 ]
                 agent_shell_new[]
-            if [ !w.app_object || !agent_post_as[ w.app_object, w.agent_pick, msg, 'now' ] ]
+            if [ !w.app_object || !agent_post_as[ w.app_object, w.agent_pick, w.model_pick, msg, 'now' ] ]
                 if [ first9 ] w.session_unbegin[]
                 # the failure is a red line under the prompt, not a note in
                 # the conversation; what was typed stays to retry with Enter
@@ -7545,6 +7735,93 @@ expect func test [ vk: vk_context ] -> bool
     log 'average color: r={avg_r} g={avg_g} b={avg_b} a={avg_a}'
 
     return avg_a > 10 && (avg_r > 0 || avg_g > 0 || avg_b > 0)
+
+
+# a border near the pointer's light reads brighter than far
+expect func t_near_border [ vk: vk_context ] -> bool
+    w: Display [ vk: vk, format: Pixel.rgba8, backbuffer: true, width: 400, height: 200 ]
+    c: Canvas [ vk: vk, w: w, width: 400, height: 200 ]
+    c.update[]
+    c.save[]
+    c.fill_color[ '#0000' ]
+    c.stroke_color[ rgba [ '#ffffff33' ] ]
+    c.stroke_width[ 2.0 ]
+    c.near_light[ 20.0, 20.0, 160.0, 1.0 ]
+    c.near_style[ 1.0, 0.0, null, 1.0 ]
+    c.rect_to[ 20.0, 20.0, 360.0, 160.0 ]
+    c.paint[]
+    c.restore[]
+    c.sync_fence[]
+    img: Image[ c.color ]
+    data: @u8 img.vdata[]
+    near_r : i32 [ data[ (20 * img.width + 40) * 4 ] ]
+    far_r  : i32 [ data[ (20 * img.width + 360) * 4 ] ]
+    log 'near-border red: near {near_r}, far {far_r}'
+    return near_r > far_r && far_r > 0
+
+# y distance doubled: 80px up is out of reach, 80px aside is not
+expect func t_near_fade [ vk: vk_context ] -> bool
+    w: Display [ vk: vk, format: Pixel.rgba8, backbuffer: true, width: 400, height: 200 ]
+    c: Canvas [ vk: vk, w: w, width: 400, height: 200 ]
+    c.update[]
+    c.save[]
+    c.fill_color[ '#0000' ]
+    c.stroke_color[ rgba [ '#ffffff33' ] ]
+    c.stroke_width[ 2.0 ]
+    c.near_light[ 100.0, 100.0, 160.0, 1.0 ]
+    c.near_style[ 1.0, 0.0, null, 2.0 ]
+    c.rect_to[ 20.0, 20.0, 360.0, 160.0 ]
+    c.paint[]
+    c.restore[]
+    c.sync_fence[]
+    img: Image[ c.color ]
+    data: @u8 img.vdata[]
+    side_r : i32 [ data[ (100 * img.width + 20) * 4 ] ]
+    up_r   : i32 [ data[ (20 * img.width + 100) * 4 ] ]
+    log 'near-fade red: 80px aside {side_r}, 80px up {up_r}'
+    return side_r > up_r && up_r <= 52
+
+# an inner glow near the light blends to its near colour
+expect func t_near_inset [ vk: vk_context ] -> bool
+    w: Display [ vk: vk, format: Pixel.rgba8, backbuffer: true, width: 400, height: 200 ]
+    c: Canvas [ vk: vk, w: w, width: 400, height: 200 ]
+    c.update[]
+    c.save[]
+    c.fill_color[ '#000f' ]
+    c.box_shadow[ rgba [ '#00f' ], 0.0, 0.0, 13.0, 0.0, true ]
+    c.near_light[ 30.0, 100.0, 160.0, 1.0 ]
+    c.near_style[ 0.0, 1.0, rgba [ '#f00' ], 1.0 ]
+    c.rect_to[ 20.0, 20.0, 360.0, 160.0 ]
+    c.paint[]
+    c.restore[]
+    c.sync_fence[]
+    img: Image[ c.color ]
+    data: @u8 img.vdata[]
+    ni : i32 [ (100 * img.width + 22) * 4 ]
+    fi : i32 [ (100 * img.width + 377) * 4 ]
+    log 'near-inset near r {data[ ni ]} b {data[ ni + 2 ]}, far r {data[ fi ]} b {data[ fi + 2 ]}'
+    return data[ ni ] > data[ ni + 2 ] && data[ fi + 2 ] > data[ fi ]
+
+# half the glow lights the border between unlit and full
+expect func t_near_border_glow [ vk: vk_context ] -> bool
+    w: Display [ vk: vk, format: Pixel.rgba8, backbuffer: true, width: 400, height: 200 ]
+    c: Canvas [ vk: vk, w: w, width: 400, height: 200 ]
+    c.update[]
+    c.save[]
+    c.fill_color[ '#0000' ]
+    c.stroke_color[ rgba [ '#ffffff33' ] ]
+    c.stroke_width[ 2.0 ]
+    c.near_light[ 20.0, 20.0, 160.0, 0.5 ]
+    c.near_style[ 1.0, 0.0, null, 1.0 ]
+    c.rect_to[ 20.0, 20.0, 360.0, 160.0 ]
+    c.paint[]
+    c.restore[]
+    c.sync_fence[]
+    img: Image[ c.color ]
+    data: @u8 img.vdata[]
+    half_r : i32 [ data[ (20 * img.width + 40) * 4 ] ]
+    log 'near-border red at half glow: {half_r}'
+    return half_r > 51 && half_r < 128
 
 
 # a mask edge of box x y bw bh fading black to clear over px

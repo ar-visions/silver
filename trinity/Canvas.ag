@@ -186,6 +186,13 @@ shader CanvasUI
     mutable fill_grad_pts   : vec4f
     mutable stroke_grad_pts : vec4f
     mutable stroke_grad_c1  : vec4f
+    # pointer light on borders: x y (device px), reach, glow
+    mutable near_light      : vec4f
+    # x the border's share of it, y the inner glows', z how
+    # many times over the y distance counts
+    mutable near_opts       : vec4f
+    # the colour inner glows blend toward near the pointer
+    mutable near_inset      : vec4f
     mutable crop_rect       : vec4f
     mutable viewport        : vec2f
     mutable fill_offset   : f32
@@ -272,6 +279,30 @@ shader CanvasUI
 
     func shadow_geom_at [ i: @i32 ] -> GLSL vec4f {
         return (i == 0) ? ubo.shadow_geom0 : (i == 1) ? ubo.shadow_geom1 : (i == 2) ? ubo.shadow_geom2 : ubo.shadow_geom3;
+    }
+
+    # the pointer's light at p: its nearness, times the glow
+    func near_weight [ p: @vec2f ] -> GLSL float {
+        if (ubo.near_light.w <= 0.0) return 0.0;
+        // the y distance counts near_opts.z times over (0 = once)
+        vec2  dd = p - ubo.near_light.xy;
+        dd.y *= (ubo.near_opts.z > 0.0) ? ubo.near_opts.z : 1.0;
+        float d = length(dd);
+        float w = 1.0 - clamp(d / ubo.near_light.z, 0.0, 1.0);
+        return w * w * ubo.near_light.w;
+    }
+
+    # a border takes the pointer's light by its nearness
+    func near_border [ c: @vec4f, p: @vec2f ] -> GLSL vec4f {
+        if (c.a <= 0.0) return c;
+        float w = near_weight(p) * ubo.near_opts.x;
+        return vec4(mix(c.rgb, vec3(1.0), w * 0.5), c.a + (1.0 - c.a) * w * 0.5);
+    }
+
+    # an inner glow blends toward its near colour by nearness
+    func near_inset_mix [ c: @vec4f, p: @vec2f ] -> GLSL vec4f {
+        float w = clamp(near_weight(p) * ubo.near_opts.y, 0.0, 1.0);
+        return mix(c, ubo.near_inset, w);
     }
 
     # the spec's hue-rotate, saturate and brightness, premultiplied
@@ -894,6 +925,7 @@ shader CanvasUI
                 }}
                 stroke_c6 = mix(ubo.stroke_color, ubo.stroke_grad_c1, sgt);
             }}
+            stroke_c6 = near_border(stroke_c6, v_pos);
             vec4 stroke_p = vec4(stroke_c6.rgb * stroke_c6.a * stroke_cov,
                                  stroke_c6.a   * stroke_cov);
             // CSS box-shadows of the path, last listed at the bottom
@@ -906,6 +938,7 @@ shader CanvasUI
                 vec4 sg = shadow_geom_at(i);
                 float ds = path_distance(lpos - sg.xy);
                 if (ubo.shadow_inset[i] > 0.5) {{
+                    sc = near_inset_mix(sc, v_pos);
                     float sa = (1.0 - shadow_edge(ds + sg.w, sg.z)) * sc.a * fill_cov;
                     inset_p = vec4(sc.rgb * sa, sa) + inset_p * (1.0 - sa);
                 }} else {{
@@ -1030,6 +1063,7 @@ shader CanvasUI
             }}
             stroke_c_base = mix(ubo.stroke_color, ubo.stroke_grad_c1, sgt);
         }}
+        stroke_c_base = near_border(stroke_c_base, v_pos);
         vec4 stroke_p = vec4(stroke_c_base.rgb * stroke_c_base.a * stroke_cov,
                              stroke_c_base.a   * stroke_cov);
         float box_cov = 1.0 - smoothstep(-w, w, dist);
@@ -1042,6 +1076,7 @@ shader CanvasUI
             vec2 sp = spos - sg.xy;
             if (ubo.shadow_inset[i] > 0.5) {{
                 float di = sdf_rounded_rect(sp, center, max(half_size - vec2(sg.w), vec2(0.0)), max(ubo.radii - vec4(sg.w), vec4(0.0)));
+                sc = near_inset_mix(sc, v_pos);
                 float sa = (1.0 - shadow_edge(di, sg.z)) * sc.a * fill_cov;
                 inset_p = vec4(sc.rgb * sa, sa) + inset_p * (1.0 - sa);
             }} else {{
@@ -1682,6 +1717,9 @@ struct CanvasState
     stroke_grad_pos    : vec2f
     stroke_grad_mirror : bool
     stroke_grad_radial : bool
+    near_light         : vec4f
+    near_opts          : vec4f
+    near_inset         : vec4f
     crop          : vec4f
     composite     : Composite
     # a rounded clip in device pixels, when clip_round is set
@@ -2207,6 +2245,17 @@ Render Canvas
     func stroke_grad_mirror [ m: bool ]
         states[state_depth - 1].stroke_grad_mirror = m
 
+    # the pointer's light on borders, device px; glow 0 = off
+    func near_light [ x: f32, y: f32, reach: f32, glow: f32 ]
+        states[state_depth - 1].near_light = vec4f [ x, y, reach, glow ]
+
+    # how much of the light reaches the border, and the inner
+    # glows, which blend toward inset_color; y_fade: how many
+    # times over the y distance counts
+    func near_style [ border: f32, inset: f32, inset_color: rgba, y_fade: f32 ]
+        states[state_depth - 1].near_opts  = vec4f [ border, inset, y_fade, 0.0 ]
+        states[state_depth - 1].near_inset = (inset_color) ? sk_color[ inset_color ] : vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+
     func stroke_grad_radial [ r: bool ]
         states[state_depth - 1].stroke_grad_radial = r
 
@@ -2629,6 +2678,9 @@ Render Canvas
         ui_shader.grad_c1         = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
         ui_shader.stroke_grad_pts = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
         ui_shader.stroke_grad_c1  = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+        ui_shader.near_light      = st.near_light
+        ui_shader.near_opts       = st.near_opts
+        ui_shader.near_inset      = st.near_inset
         ui_shader.stroke_opts = vec4f [ f32 i32 st.stroke_join, f32 i32 st.stroke_cap, 0.0, 0.0 ]
         ui_shader.xform_row0 = vec4f [ st.transform.ma, st.transform.mb,
                                        st.transform.mc, st.transform.md ]
@@ -2745,9 +2797,14 @@ Render Canvas
     func stroke_sides [ top: f32, right: f32, bottom: f32, left: f32 ]
         states[state_depth - 1].stroke_sides = vec4f [ top, right, bottom, left ]
 
-    func draw_svg [ mdl: SVGModel, ox: f32, oy: f32, rw: f32, rh: f32 ]
+    func draw_svg [ mdl: SVGModel, ox0: f32, oy0: f32, rw0: f32, rh0: f32 ]
         if [ !mdl || !mdl.shapes || mdl.shapes.count == 0 ]
             return
+        # whole pixels: the cache's reduction then draws 1:1, no resample
+        ox : f32 [ round[ ox0 ] ]
+        oy : f32 [ round[ oy0 ] ]
+        rw : f32 [ round[ rw0 ] ]
+        rh : f32 [ round[ rh0 ] ]
         if [ rw < 1.0 || rh < 1.0 ]
             return
         tf : vec4f [ states[state_depth - 1].fill_color ]
@@ -2767,7 +2824,8 @@ Render Canvas
             if [ ch4 < 1 ] ch4 = 1
             if [ need_alloc ]
                 # the store owns the canvas: it drops the old, holds the new
-                mdl.cache = Canvas [ vk: vk, w: w, format: Pixel.rgba8, width: cw4, height: ch4, reduce: false, load_existing: true, tag: 'svg' ]
+                # drawn back at 1/ps: the reduce pass averages 4x4 texels
+                mdl.cache = Canvas [ vk: vk, w: w, format: Pixel.rgba8, width: cw4, height: ch4, reduce: ps >= 4, load_existing: true, tag: 'svg' ]
                 mdl.cache.update[]
             mdl.cache.reset[ vec4f [ 0.0, 0.0, 0.0, 0.0 ] ]
             mdl.cache_rw     = rw
@@ -3355,6 +3413,18 @@ Render Canvas
         image_uv = vec4f [ u0, v0, u1, v1 ]
         draw_image[ tex, dst ]
         image_uv = vec4f [ 0.0, 0.0, 1.0, 1.0 ]
+
+    # another canvas as the image; uv over its content, not its capacity
+    func draw_canvas_crop [ src: Canvas, dst: rect, u0: f32, v0: f32, u1: f32, v1: f32 ]
+        if [ !src ] return
+        src.flush_submit[]
+        src.flush_text[]
+        tex : Texture [ (src.reduction) ? src.reduction : src.color ]
+        tex.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
+        ss  : f32 [ (src.w.scale > 0) ? src.w.scale : 1.0 ]
+        uvx : f32 [ (src.width  > 0) ? f32[ src.content_w ] * ss / f32[ src.width  ] : 1.0 ]
+        uvy : f32 [ (src.height > 0) ? f32[ src.content_h ] * ss / f32[ src.height ] : 1.0 ]
+        draw_image_crop[ tex, dst, u0 * uvx, v0 * uvy, u1 * uvx, v1 * uvy ]
 
     func draw_image [ tex: Texture, dst: rect ]
         image_override = tex

@@ -567,10 +567,12 @@ class Render
             ] ]
             clear_values: local VkClearValue [2]
 
-            clear_values[0].color.float32[0] = clear_color.x
-            clear_values[0].color.float32[1] = clear_color.y
-            clear_values[0].color.float32[2] = clear_color.z
-            clear_values[0].color.float32[3] = clear_color.w
+            # the reduce pass clears to nothing: its quad rewrites it all
+            cc9 : f32 [ (i == 0) ? 1.0 : 0.0 ]
+            clear_values[0].color.float32[0] = clear_color.x * cc9
+            clear_values[0].color.float32[1] = clear_color.y * cc9
+            clear_values[0].color.float32[2] = clear_color.z * cc9
+            clear_values[0].color.float32[3] = clear_color.w * cc9
             clear_values[1].depthStencil.depth   = 1.0
             clear_values[1].depthStencil.stencil = 0
 
@@ -845,6 +847,9 @@ class Render
                 render_pass_info.attachmentCount = 1
                 subpass.pDepthStencilAttachment  = null
                 attachments[0].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                # the reduce rewrites every pixel: never blend over the last
+                attachments[0].loadOp        = VK_ATTACHMENT_LOAD_OP_CLEAR
+                attachments[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED
             result = vkCreateRenderPass[ vk.device, @render_pass_info, null, @vk_render_pass[i] ]
             expect result == VK_SUCCESS, "failed to create render pass"
 

@@ -3618,6 +3618,7 @@ static void (*leak_prev_term)(int);
 static volatile sig_atomic_t quit_flag = 0;
 
 AU_EXPORT bool quit_requested() { return quit_flag != 0; }
+AU_EXPORT none quit_request()   { quit_flag = 1; }
 
 AU_EXPORT none leak_report() { au_leak_report(); fflush(stdout); }
 
@@ -4672,8 +4673,20 @@ AU_EXPORT Au Au_with_cstrs(Au a, cstrs argv) {
             bool single = arg[1] != '-';
             Au_t mem    = null;
             Au_t type   = isa(a);
+            // --module.name: the member of the type that module declares
+            cstr flag   = &arg[2];
+            cstr dot    = single ? null : strchr(flag, '.');
+            num  modlen = dot ? (num)(dot - flag) : 0;
+            if (dot) flag = dot + 1;
             while (type != typeid(Au)) {
-                for (num i = 0; i < type->members.count; i++) {
+                // the module's plain name: silver-trinity is trinity
+                cstr mid = type->module ? type->module->ident : null;
+                cstr mnm = mid ? strrchr(mid, '-') : null;
+                mnm = mnm ? mnm + 1 : mid;
+                bool in_mod = !dot || (mnm &&
+                    strlen(mnm) == (size_t)modlen &&
+                    strncmp(mnm, &arg[2], modlen) == 0);
+                for (num i = 0; in_mod && i < type->members.count; i++) {
                     Au_t m = (Au_t)type->members.origin[i];
                     // state is not a flag: intern and mutable never match
                     if (m->access_type == interface_intern ||
@@ -4682,7 +4695,7 @@ AU_EXPORT Au Au_with_cstrs(Au a, cstrs argv) {
                     // require a VAR member (a method must never match a flag)
                     if ((m->member_type == AU_MEMBER_VAR) &&
                         (( single &&        m->ident[0] == arg[1]) ||
-                         (!single && strcmp(m->ident,     &arg[2]) == 0))) {
+                         (!single && strcmp(m->ident,     flag) == 0))) {
                         mem = m;
                         break;
                     }

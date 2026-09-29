@@ -2,7 +2,12 @@
 browse_single: 	true
 max_search: 	4000000
 code_font_size: 20
-agents: 	[ claude, codex ]
+# each agent's models, first is the default
+agents:
+	claude:
+		models: [ fable, opus ]
+	codex:
+		models: [ gpt-5-codex, gpt-5 ]
 
 projects:
 	orbiter: Project

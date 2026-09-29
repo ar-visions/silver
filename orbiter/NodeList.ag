@@ -299,7 +299,22 @@ element PipView
         if [ !av ] return
         av.vsx = 0.0
         av.vsy = 0.0
-        av.draw_pip_in[ Canvas w.screen, rect [ x: 0.0, y: 0.0, w: bounds.w, h: bounds.h ] ]
+        cv : Canvas w.screen
+        # the band is letterboxed: a dark tint, the picture centred at
+        # its shape
+        cv.fill_color[ rgba [ '#000a' ] ]
+        cv.rect_to[ 0.0, 0.0, bounds.w, bounds.h ]
+        cv.paint[]
+        ar9 : f32 [ av.pic_aspect[] ]
+        if [ ar9 <= 0.0 ] return
+        fw9 : f32 [ bounds.w ]
+        fh9 : f32 [ fw9 / ar9 ]
+        if [ fh9 > bounds.h ]
+            fh9 = bounds.h
+            fw9 = fh9 * ar9
+        fw9 = round[ fw9 ]
+        fh9 = round[ fh9 ]
+        av.draw_pip_in[ cv, rect [ x: round[ (bounds.w - fw9) * 0.5 ], y: round[ (bounds.h - fh9) * 0.5 ], w: fw9, h: fh9 ] ]
     # the pip is the app: its presses go to the instance, as in the editor
     func on_press [ ev: Event ]
         av : AppView pv[]
@@ -395,12 +410,133 @@ element InstrView
 # stack at the top selects which one shows; only that one is drawn.
 # the panel itself is cached: tick dirties it when what it shows changes,
 # and the pip and the instrument surface animate in canvases of their own
+# the one context panel: the selected view's file, module and
+# instances, in tabs; the context bar's < folds it away
+element SidePanel
+    style : CSS {
+        area: l0 t0 r0 b0
+        # the context bar's ground and tint
+        layers.sbase:
+            fill_color: #140a2acc
+            area: l0 t0 r0 b0
+        layers.stint:
+            fill_color: #3a1c8a40
+            area: l0 t0 r0 b0
+    }
+    func render [] -> Elements
+        t : Elements []
+        orb : cast orbiter [ ux.app_object ]
+        if [ orb && orb.side_tab == 'scenes' ]
+            # the controls row level with the editor's title, the
+            # cards under it
+            t['scene_bar'] = element [ area: Region { l0 t0 r0 h1.3 }, elements: orb.scene_els[] ]
+            grid : Elements []
+            grid['scene_grid'] = SceneGrid [ ]
+            t['scene_body'] = element [ area: Region { l0 t1.3 r0 b0 }, elements: grid ]
+        el
+            # the first instance sits level with the editor's title
+            t['instance_panel'] = InstancePanel [ ]
+        return t
+
+# the right edge, always: the selected editor's context
+# buttons, the panel's menu on top, the console at the bottom
+element ContextBar
+    style : CSS {
+        area: r0 t0 w1.66 b0
+        # the selected title's tint, over the pane's ground as there
+        layers.cbase:
+            fill_color: #140a2acc
+            area: l0 t0 r0 b0
+        layers.ctint:
+            fill_color: #3a1c8a40
+            area: l0 t0 r0 b0
+    }
+    func render [] -> Elements
+        orb : cast orbiter [ ux.app_object ]
+        return (orb) ? orb.context_els[] : null
+
+# the scene cards as a grid in the side panel: a click loads
+# that scene; the cards are the nav view's (draw_card)
+Control SceneGrid
+    style : CSS {
+        area: l0 t0 r0 b0
+    }
+    mutable hov    : i32 [ -1 ]
+    mutable sy     : f32
+    mutable cards  : vec FindHit
+
+    func cell_w [] -> f32
+        return 152.0
+
+    func cell_h [] -> f32
+        return 148.0
+
+    func per_row [] -> i32
+        n : i32 [ i32[ bounds.w / cell_w[] ] ]
+        return (n < 1) ? 1 : n
+
+    # the row of cells sits centred in the panel
+    func left_x [] -> f32
+        return round[ (bounds.w - f32[ per_row[] ] * cell_w[]) * 0.5 ]
+
+    # the card under x y (the grid's own space), or -1
+    func card_at [ x: f32, y: f32 ] -> i32
+        if [ !cards || !bounds ] return -1
+        pr : i32 [ per_row[] ]
+        x0 : f32 [ left_x[] ]
+        if [ x < x0 || y + sy < 0.0 ] return -1
+        col : i32 [ i32[ (x - x0) / cell_w[] ] ]
+        row : i32 [ i32[ (y + sy) / cell_h[] ] ]
+        if [ col >= pr ] return -1
+        i : i32 [ row * pr + col ]
+        return (i < cards.count) ? i : -1
+
+    func on_move [ ev: Event ]
+        h9 : i32 [ card_at[ ev.mouse.pos.x, ev.mouse.pos.y ] ]
+        if [ h9 != hov ]
+            hov      = h9
+            pristine = false
+
+    func on_leave [ ev: Event ]
+        if [ hov >= 0 ]
+            hov      = -1
+            pristine = false
+
+    func on_press [ ev: Event ]
+        orb : cast orbiter [ ux.app_object ]
+        i : i32 [ card_at[ ev.mouse.pos.x, ev.mouse.pos.y ] ]
+        if [ orb && i >= 0 ]
+            orb.scene_choose[ cards[ i ].scene ]
+            pristine = false
+        ev.no_default = true
+
+    func on_wheel [ ev: Event ]
+        if [ !cards || !bounds ] return
+        rows : i32 [ (cards.count + per_row[] - 1) / per_row[] ]
+        smax : f32 [ f32[ rows ] * cell_h[] - bounds.h ]
+        sy += f32[ ev.mouse.wheel_delta.y ] * 26.0 * -1.0
+        if [ sy > smax ] sy = smax
+        if [ sy < 0.0 ] sy = 0.0
+        pristine = false
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        orb : cast orbiter [ ux.app_object ]
+        if [ !orb ] return
+        if [ !cards ] cards = orb.scene_cards[]
+        cv : Canvas w.screen
+        pr : i32 [ per_row[] ]
+        x0 : f32 [ left_x[] ]
+        for [ i: i32 0, i < cards.count, i += 1 ]
+            ry : f32 [ f32[ i / pr ] * cell_h[] - sy ]
+            if [ ry + cell_h[] < 0.0 || ry > bounds.h ] continue
+            # draw_card's x is the content's left: the box starts 4px before it
+            cx : f32 [ x0 + f32[ i % pr ] * cell_w[] + 4.0 ]
+            draw_card[ cv, orb, cards[ i ], cx, ry, cell_w[], cell_h[], i == hov ]
+
 Control InstancePanel
     style : CSS {
         area: l0 t0 r0 b0
-        layers.ibase:
-            fill_color: #14121c80
-            area: l0 t0 r0 b0
     }
     mutable chip_x   : f32
     mutable chip_y   : f32
@@ -408,6 +544,7 @@ Control InstancePanel
     mutable icons    : map SVGModel [string]
     # what the rows showed last frame; a change repaints
     mutable row_sig  : string
+    mutable last_pane : i32 [ -1 ]
 
     # the rows change on the instances' own clocks (a start, a crash, a
     # stop): compare what they would show and repaint only on a change.
@@ -430,11 +567,15 @@ Control InstancePanel
         p9 : i32 [ (pv9) ? 1 : 0 ]
         h9 : i32 [ (orb && orb.shift_down) ? 1 : 0 ]
         sig = '{sig}|pip{p9}:{h9}'
-        if [ !row_sig || row_sig != sig ]
+        pn9 : i32 [ (orb) ? orb.active_pane : -1 ]
+        if [ !row_sig || row_sig != sig || pn9 != last_pane ]
             had : bool [ row_sig && row_sig.index_of[ '|pip1' ] >= 0 ]
             row_sig = sig
             row_sig.hold[]
             pristine = false
+            # another editor selected: its instances, rebuilt
+            if [ pn9 != last_pane && ux ] ux.restyle = true
+            last_pane = pn9
             if [ had != (pv9 != null) && ux ] ux.restyle = true
 
     func icon [ nm: string ] -> SVGModel
@@ -472,28 +613,31 @@ Control InstancePanel
     func row_h [] -> f32
         return 26.0
 
+    # an instance row: the editor title's height, the first one
+    # level with it
+    func inst_h [] -> f32
+        orb : cast orbiter [ ux.app_object ]
+        tt9 : element (orb) ? orb.title_at[ orb.active_pane ] : null
+        return (tt9 && tt9.bounds && tt9.bounds.h > 0.0) ? round[ tt9.bounds.h ] : 26.0
+
     # found at draw time, never passed in: taking it as a prop would
     # make the pane's shape depend on what is read back out of the pane
     func app [] -> AppView
+        ed9 : Editor editor[]
+        if [ !ed9 || !ed9.run_view ] return null
+        return AppView ed9.run_view
+
+    # the selected editor's view: the panel is its context
+    func view [] -> EditorView
         orb : cast orbiter [ ux.app_object ]
         if [ !orb ] return null
-        for [ e: element* a, e, e = e.parent ]
-            if [ e inherits EditorView ]
-                ev9 : EditorView e
-                ed9 : Editor orb.pane_at[ ev9.pane_index ]
-                if [ !ed9 || !ed9.run_view ] return null
-                return AppView ed9.run_view
-        return null
-
-    func view [] -> EditorView
-        for [ e: element* a, e, e = e.parent ]
-            if [ e inherits EditorView ] return EditorView e
-        return null
+        pv9 : element orb.pane_view[ orb.active_pane ]
+        if [ !pv9 || !(pv9 inherits EditorView) ] return null
+        return EditorView pv9
 
     func editor [] -> Editor
         orb : cast orbiter [ ux.app_object ]
-        ev9 : EditorView view[]
-        return (orb && ev9) ? orb.pane_at[ ev9.pane_index ] : null
+        return (orb) ? orb.pane_at[ orb.active_pane ] : null
 
     func inst_list [] -> vec AppView
         ed9 : Editor editor[]
@@ -501,7 +645,7 @@ Control InstancePanel
 
     func inst_px [] -> f32
         li : vec AppView inst_list[]
-        return f32[ (li) ? li.count : 0 ] * row_h[]
+        return f32[ (li) ? li.count : 0 ] * inst_h[]
 
     # the selected instance's group sits at the panel's bottom
     func foot_px [] -> f32
@@ -509,7 +653,8 @@ Control InstancePanel
         if [ s < 0 ] return 0.0
         li : vec AppView inst_list[]
         ac : vec string action_chips[ li[ s ] ]
-        return (ac.count > 0) ? row_h[] + 8.0 : 0.0
+        # the status bar's height: the two sit edge to edge
+        return (ac.count > 0) ? 35.0 : 0.0
 
 
     # the selected instance while it is in pip: the one pip the panel
@@ -530,9 +675,11 @@ Control InstancePanel
     func pip_px [] -> f32
         av : AppView pip_av[]
         if [ !av || !bounds ] return 0.0
-        h : f32 [ bounds.w * f32[ av.ah ] / f32[ av.aw ] ]
+        ar9 : f32 [ av.pic_aspect[] ]
+        if [ ar9 <= 0.0 ] return 0.0
+        h : f32 [ bounds.w / ar9 ]
         if [ h > 260.0 ] h = 260.0
-        room : f32 [ panel_h[] - inst_px[] - row_h[] * 4.0 - foot_px[] ]
+        room : f32 [ panel_h[] - inst_px[] - row_h[] * 5.0 - foot_px[] ]
         if [ h > room ] h = room
         if [ h < 60.0 ] return 0.0
         return h
@@ -572,8 +719,9 @@ Control InstancePanel
         return head_px[]
 
     # the pip sits under the sections, just above the debug bar
+    # the sections end over the display bar, which sits on the pip
     func sect_bottom [] -> f32
-        return panel_h[] - foot_px[] - pip_px[]
+        return panel_h[] - foot_px[] - pip_px[] - ((app[]) ? row_h[] : 0.0)
 
     # a click on a header opens that section, closing the others; on the
     # open one it folds, leaving none
@@ -594,7 +742,7 @@ Control InstancePanel
         cv.fill_color[ (open) ? rgba [ '#312' ] : rgba [ '#212' ] ]
         # the open one glows from its edges, a touch brighter on red and
         # blue
-        if [ open ] cv.box_shadow[ rgba [ '#615' ], 0.0, 0.0, 10.0, 0.0, true ]
+        if [ open ] cv.box_shadow[ rgba [ '#615' ], 0.0, 0.0, 5.0, 0.0, true ]
         cv.rect_to[ 0.0, y, bounds.w, rh - 1.0 ]
         cv.paint[]
         cv.restore[]
@@ -621,30 +769,6 @@ Control InstancePanel
     # the export lists the module's properties; a props answer (live or
     # the last one kept) gives their current values, and anything it
     # adds goes after
-    func merge_spec [ base: string, vals: string ] -> string
-        if [ !base || base.count == 0 ] return vals
-        if [ !vals || vals.count == 0 ] return base
-        out : string ''
-        be : base.split[ ';' ]
-        ve : vals.split[ ';' ]
-        for [ e: string ] in be
-            pick : string e
-            f : e.split[ '=' ]
-            for [ v: string ] in ve
-                g : v.split[ '=' ]
-                if [ f.count == 0 || g.count == 0 ] continue
-                if [ g[ 0 ].compare[ f[ 0 ] ] == 0 ] pick = v
-            out = (out.count > 0) ? '{out};{pick}' : pick
-        for [ v: string ] in ve
-            g : v.split[ '=' ]
-            found : bool [ false ]
-            for [ e: string ] in be
-                f : e.split[ '=' ]
-                if [ f.count == 0 || g.count == 0 ] continue
-                if [ f[ 0 ].compare[ g[ 0 ] ] == 0 ] found = true
-            if [ !found ] out = (out.count > 0) ? '{out};{v}' : v
-        return out
-
     func render [] -> Elements
         ev9 : EditorView view[]
         orb : cast orbiter [ ux.app_object ]
@@ -661,30 +785,19 @@ Control InstancePanel
         if [ av9 ]
             am9 : string av9.app_mod
             mod9 = (am9 && am9.count > 0) ? am9 : av9.src.stem[]
-        pv9 : string (lv9) ? av9.props : orb.module_spec[ mod9 ]
-        sp9 : string merge_spec[ ev9.launch_spec_of[ mod9 ], pv9 ]
-        # Attach is gone; a list cached while it existed still names it
-        ak9 : i32 [ (sp9) ? i32[ sp9.index_of[ ',Attach:4' ] ] : -1 ]
-        if [ ak9 >= 0 ]
-            tl9 : i32 [ sp9.count - ak9 - 9 ]
-            sp9 = sp9.mid[ 0, ak9 ] + sp9.mid[ ak9 + 9, tl9 ]
-        # a spec cached before the rename still says Full for the pane
-        fu9 : i32 [ (sp9) ? i32[ sp9.index_of[ 'Full:1' ] ] : -1 ]
-        if [ fu9 >= 0 ]
-            tf9 : i32 [ sp9.count - fu9 - 6 ]
-            hd9 : string sp9.mid[ 0, fu9 ] + 'Embed:1'
-            sp9 = hd9 + sp9.mid[ fu9 + 6, tf9 ]
+        sp9 : string (lv9) ? av9.props : orb.module_spec[ mod9 ]
         # trinity's display is a live prop of the running app; before it
         # runs the row still has to exist, holding what the instance
         # will launch as
-        has9 : bool [ sp9 && (sp9.starts_with[ 'display=' ]
-                          || sp9.index_of[ ';display=' ] >= 0) ]
-        if [ av9 && !has9 ]
-            dv9 : i32 [ av9.display ]
-            dn9 : string '{dv9}'
-            en9 : string 'Enum[PIP:0,Embed:1,Window:2,Screen:3]'
-            de9 : string 'display=DisplayMode={dn9}={en9}=live'
-            sp9 = (sp9 && sp9.count > 0) ? de9 + ';' + sp9 : de9
+        if [ av9 && !(sp9 && sp9.count > 0) ]
+            dp9 : Prop [ ident: 'display', module: 'trinity', type: 'DisplayMode', access: 'public' ]
+            dp9.meta  = vec string [] [ 'Live' ]
+            dp9.stops = vec string [] [ 'PIP', 'Embed', 'Window', 'Screen' ]
+            dp9.value = (av9.display >= 0 && av9.display < 4) ? dp9.stops[ av9.display ] : 'PIP'
+            ps9 : LaunchProps [ module: mod9 ]
+            ps9.props = vec Prop []
+            ps9.props.push[ dp9 ]
+            sp9 = Au.string_agi[ ps9 ]
         # the open section runs from under its header to the folded
         # headers below
         fp : f32 [ foot_px[] ]
@@ -694,9 +807,22 @@ Control InstancePanel
         # callstack: the lit one is open and its content fills the panel
         # beneath
         if [ av9 ]
+            # the display, a bar across the panel as the tabs are, under
+            # the section and over the pip
+            dsp9 : i32 [ (av9.display >= 0 && av9.display <= 3) ? av9.display : 0 ]
+            dm9  : i32 [ 1 << dsp9 ]
+            t['display_bar'] = TButtons [
+                icons: false, seg_radius: 0.0, manual: true, rest_hover: true,
+                rest_fill: rgba [ '#5a1a4a22' ], lit_fill: rgba [ '#5a1a4a55' ],
+                buttons: vec string [] [ 'disp_PIP', 'disp_Embed', 'disp_Window', 'disp_Screen' ],
+                labels: vec string [] [ 'PIP', 'Embed', 'Window', 'Screen' ],
+                sel_mask: dm9,
+                label_px: row_h[] * 0.5 - 2.0,
+                area: Region [ 'l0 t{sect_bottom[]}px r0 h{row_h[]}px' ] ]
             ok9 : i32 [ open_ix[] ]
             t['sections'] = TButtons [
-                icons: false, seg_radius: 0.0, manual: true,
+                icons: false, seg_radius: 0.0, manual: true, rest_hover: true,
+                rest_fill: rgba [ '#5a1a4a22' ], lit_fill: rgba [ '#5a1a4a55' ],
                 buttons: vec string [] [
                     'properties', 'instruments', 'callstack' ],
                 sel_mask: (ok9 >= 0) ? (1 << ok9) : 0,
@@ -718,13 +844,11 @@ Control InstancePanel
         # under its chips
         pip9 : AppView pip_av[]
         if [ pip9 && bounds && pip_px[] > 0.0 ]
+            # the band spans the panel; the picture sits in it
             ph9 : f32 [ pip_px[] ]
-            pw9 : f32 [ ph9 * f32[ pip9.aw ] / f32[ pip9.ah ] ]
-            if [ pw9 > bounds.w ] pw9 = bounds.w
-            px9 : f32 [ round[ (bounds.w - pw9) * 0.5 ] ]
-            pt9 : f32 [ sect_bottom[] ]
+            pt9 : f32 [ sect_bottom[] + row_h[] ]
             t['pip'] = PipView [ area: Region [
-                'l{px9}px t{pt9}px w{pw9}px h{ph9}px' ] ]
+                'l0 t{pt9}px r0 h{ph9}px' ] ]
         in9 : bool [ av9 && orb.instr_open && av9.instr_names ]
         if [ in9 && av9.instr_active[] && bounds ]
             iy9 : f32 [ tab_y[] + row_h[] + chips_h[ av9.instr_names ] ]
@@ -849,7 +973,7 @@ Control InstancePanel
         if [ ev.key.meta || ev.key.ctrl ] return
         li : vec AppView inst_list[]
         if [ ev.mouse.pos.y < inst_px[] ]
-            rh  : f32 [ row_h[] ]
+            rh  : f32 [ inst_h[] ]
             ed9 : Editor editor[]
             orb : cast orbiter [ ux.app_object ]
             ev9 : EditorView view[]
@@ -860,7 +984,7 @@ Control InstancePanel
                     for [ i: i32 0, i < li.count, i += 1 ]
                         av9 : AppView li[ i ]
                         if [ my >= y8 && my < y8 + rh ]
-                            if [ ev.mouse.pos.x < 24.0 ]
+                            if [ ev.mouse.pos.x < rh ]
                                 off8 : bool [ av9.ended || av9.held ]
                                 ac8 : string (off8) ? 'play' : 'stop'
                                 if [ ev.key.shift ]
@@ -904,7 +1028,7 @@ Control InstancePanel
     public func draw [ w: Window ]
         if [ w.draw_stage != CanvasType.screen || !bounds ] return
         cv : Canvas w.screen
-        rh : f32 [ row_h[] ]
+        rh : f32 [ inst_h[] ]
         cv.stroke_width[ 0.0 ]
         li  : vec AppView inst_list[]
         ed9 : Editor editor[]
@@ -916,13 +1040,24 @@ Control InstancePanel
             for [ i: i32 0, i < li.count, i += 1 ]
                 av9 : AppView li[ i ]
                 sel9 : bool [ ed9 && ed9.run_view == av9 ]
-                # the selected row glows blue from its edges inward
+                # the selected row is the purple with the blue pointer
+                # light; the others fainter. border and glow take the
+                # pointer's light, as the title's
                 cv.save[]
-                rb9 : rgba [ (sel9) ? '#2a2340' : '#1a1726' ]
+                rb9 : rgba [ (sel9) ? '#5a1a4a55' : '#5a1a4a22' ]
                 cv.fill_color[ rb9 ]
-                if [ sel9 ] cv.box_shadow[ rgba [ '#4f9cffaa' ], 0.0, 0.0, 12.0, 0.0, true ]
+                if [ sel9 ] cv.box_shadow[ rgba [ '#fcc2' ], 0.0, 0.0, 13.0, 0.0, true ]
+                el          cv.box_shadow[ rgba [ '#fcc1' ], 0.0, 0.0, 13.0, 0.0, true ]
+                cv.stroke_width[ 1.0 ]
+                cv.stroke_offset[ -0.5 ]
+                cv.stroke_color[ rgba [ '#fff1' ] ]
+                w.near_light_on[ cv, a, 0.0, 0.0 ]
+                cv.near_style[ 1.0, 3.0, rgba [ '#c890ffff' ], w.near_y_fade ]
                 cv.rect_to[ 0.0, y8, bounds.w, rh - 1.0 ]
                 cv.paint[]
+                cv.no_shadows[]
+                cv.stroke_width[ 0.0 ]
+                cv.stroke_offset[ 0.0 ]
                 cv.restore[]
                 # the one icon on the row: the state's color, and it IS
                 # the pause/resume toggle. shift held turns it into the
@@ -938,7 +1073,10 @@ Control InstancePanel
                                        : inst_color[ av9 ] ]
                     cv.fill_color[ ik9 ]
                     cv.stroke_color[ ik9 ]
-                    cv.draw_svg[ ic9, 6.0, y8 + 6.0, 14.0, 14.0 ]
+                    # half the row, centred in a square the row's height
+                    is9 : f32 [ round[ rh * 0.5 ] ]
+                    im9 : f32 [ round[ (rh - is9) * 0.5 ] ]
+                    cv.draw_svg[ ic9, im9, y8 + im9, is9, is9 ]
                 # the name at the left; the status right-aligned and
                 # padded, running carries the pid
                 nm9 : string orb.instance_name[ av9 ]
@@ -947,13 +1085,13 @@ Control InstancePanel
                     sw9 = (av9.ended) ? 'stopped' : 'running'
                 cv.font_size[ 13 ]
                 cv.fill_color[ rgba [ '#e8e2f5' ] ]
-                nr9 : rect [ x: 24.0, y: y8,
-                    w: bounds.w - 100.0, h: rh ]
+                nr9 : rect [ x: rh, y: y8,
+                    w: bounds.w - rh - 76.0, h: rh ]
                 cv.draw_text[ nm9, nr9, vec2f [ 0.0, 0.5 ],
                     vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
                 cv.fill_color[ inst_color[ av9 ] ]
-                sr9 : rect [ x: 24.0, y: y8,
-                    w: bounds.w - 34.0, h: rh ]
+                sr9 : rect [ x: rh, y: y8,
+                    w: bounds.w - rh - 10.0, h: rh ]
                 cv.draw_text[ sw9, sr9, vec2f [ 1.0, 0.5 ],
                     vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
                 y8 += rh

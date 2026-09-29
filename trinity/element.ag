@@ -148,6 +148,14 @@ ielement element
     # the pointer within half the element's size of its edges, in window
     # space (no parent's bounds confine it): the :near style state
     mutable near            : bool
+    # window-space origin, and in the pointer's border light
+    mutable win_pos         : vec2f
+    mutable near_lit        : bool
+    # the pointer inside it; the light's filtered weight
+    mutable near_in         : bool
+    mutable near_glow       : f32
+    # its last paint drew a lit border: moves repaint it
+    mutable near_used       : bool
     mutable pressed         : bool
     mutable focused         : bool
     mutable first           : bool
@@ -178,6 +186,8 @@ ielement element
     # host reads it live and follows PIP, Full and Window on its side
     public [ Live ] display : DisplayMode
         if [ ux ] ux.set_fullscreen[ display == DisplayMode.Screen ]
+    # the app's sound level, 0..1: a slider on the host, --volume on the line
+    public [ Live, VolumeRange ] volume : f32 [ 1.0 ]
 
     public func on_click   [ ev: Event ] return
     public func on_hover   [ ev: Event ] return
@@ -574,6 +584,12 @@ class Layer
     public stroke_miter             : f32
     public stroke_dash              : vec f32
     public stroke_dash_offset       : f32
+    # the border takes the pointer's light (near-border)
+    public near_border              : bool
+    # inner glows near the pointer blend toward this colour,
+    # by this factor of the light (0 = off)
+    public near_inset               : f32
+    public near_inset_color         : rgba
 
     public label               : string
     public label_color         : rgba
