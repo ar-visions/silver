@@ -790,9 +790,9 @@ ResourceView AppView
                     nw, nh, aw, ah, req_w, req_h, pend_w, pend_h, (ready) ? 1 : 0, slot,
                     gen, host_tex_gen[ slot, 0 ] ]
                 fclose[ fz9 ]
-        # embed gives the app the editor's whole area: the one mode that
-        # resizes it. pip, window and screen leave it its own size
-        if [ ready && nw > 0 && nh > 0 && display == 1 ]
+        # embed (and a file viewer, which always fills its pane) gives the
+        # app the editor's whole area: pip, window and screen never resize
+        if [ ready && nw > 0 && nh > 0 && (display == 1 || viewer) ]
             if [ nw != pend_w || nh != pend_h ]
                 pend_w  = nw
                 pend_h  = nh
@@ -1713,6 +1713,11 @@ Layer EditorLayer
             ndigits += 1
         if [ ndigits < 5 ] ndigits = 5
         gut_w   : f32 [ f32[ ndigits ] * cw_tm.w + 16.0 ]
+        # the title's back and forward arrows sit above it: one width
+        orbg : cast orbiter [ editor.ux.app_object ]
+        ttg  : element (orbg) ? orbg.title_at[ editor.pane_index ] : null
+        hng  : element (ttg && ttg.elements) ? ttg.elements[ 'histnav' ] : null
+        if [ hng && hng.bounds && hng.bounds.w > 0.0 ] gut_w = hng.bounds.w
         # browse nav shows no line numbers and no pin gutter: rows
         # start where the zone pills do
         if [ showing && hits && editor.nav_list ] gut_w = 12.0

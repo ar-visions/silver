@@ -6183,17 +6183,19 @@ element TButtons
                 fcol = (rest_fill) ? rest_fill : rgba [ '#ff7a7a1c' ]
                 gc   = rgba [ '#fcc1' ]
                 gpx  = 13.0
-            # hover brightens first, at half strength...
-            if [ i == hover_ix && !off ]
-                fcol = rgba [ (rest_hover) ? '#ff7a7a30' : '#ffffff1c' ]
-                gc   = rgba [ '#fcc3' ]
+            # hover brightens first, at half strength (rest_hover: no
+            # lift of its own, its hover is the pointer's light)...
+            # a row with its own fill keeps it: hover is the pointer's light alone
+            if [ i == hover_ix && !off && !rest_hover ]
+                fcol = (rest_fill) ? rest_fill : rgba [ '#ffffff1c' ]
+                gc   = (rest_fill) ? rgba [ '#0000' ] : rgba [ '#fcc3' ]
                 gpx  = 18.0
             # ...then the toggled state always brightens over it
             lit : bool [ (sel_mask != 0) ? ((sel_mask & (1 << i)) != 0) : (i == selected) ]
             if [ lit && !off ]
                 fcol = (lit_fill) ? lit_fill : ((rest_hover) ? rgba [ '#8826668c' ] : theme_rgba[ '#826' ])
-                gc   = rgba [ (rest_hover) ? '#fcc2' : '#fcc6' ]
-                gpx  = (rest_hover) ? 13.0 : 18.0
+                gc   = rgba [ '#fcc6' ]
+                gpx  = 18.0
             gl : f32 [ (i == 0)     ? gpx : 0.0 ]
             gr : f32 [ (i == n - 1) ? gpx : 0.0 ]
             # a collapsing strip has its ground already: a segment paints
@@ -6215,10 +6217,14 @@ element TButtons
                     cv.fill_color[ rgba [ '#0000' ] ]
                     cv.box_shadow[ gc, 0.0, 0.0, gpx, 0.0, true ]
                     # the lit segment: the instance row's blue pointer
-                    # light; the others a faint 20% of it
-                    if [ rest_hover ]
+                    # light; a hovered one grey at full; the rest faint
+                    if [ rest_hover || rest_fill ]
+                        hv9 : bool [ i == hover_ix && !lit ]
                         w.near_light_on[ cv, a, 0.0, 0.0 ]
-                        cv.near_style[ 0.0, (lit) ? 3.0 : 0.2, rgba [ '#c890ffff' ], w.near_y_fade ]
+                        # an own-fill row: a faint grey near light on hover, none lit
+                        lt9 : f32 [ (rest_fill) ? 0.2 : 3.0 ]
+                        cv.near_style[ 0.0, (hv9) ? ((rest_fill) ? 3.0 : 5.0) : ((lit) ? lt9 : 0.2),
+                            (hv9) ? rgba [ (rest_fill) ? '#fff6' : '#fff9' ] : rgba [ '#c890ffff' ], w.near_y_fade ]
                     cv.rounded[ (gl > 0.0) ? tl : 0.0, (gr > 0.0) ? tr : 0.0, (gr > 0.0) ? br : 0.0, (gl > 0.0) ? bl : 0.0 ]
                     cv.rounded_rect[ gx0, 0.0, gx1 - gx0, bounds.h, (gl > 0.0) ? tl : 0.0, (gr > 0.0) ? tr : 0.0, (gr > 0.0) ? br : 0.0, (gl > 0.0) ? bl : 0.0 ]
                     cv.paint[]

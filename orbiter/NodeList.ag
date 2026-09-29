@@ -438,23 +438,6 @@ element SidePanel
             t['instance_panel'] = InstancePanel [ ]
         return t
 
-# the right edge, always: the selected editor's context
-# buttons, the panel's menu on top, the console at the bottom
-element ContextBar
-    style : CSS {
-        area: r0 t0 w1.66 b0
-        # the selected title's tint, over the pane's ground as there
-        layers.cbase:
-            fill_color: #140a2acc
-            area: l0 t0 r0 b0
-        layers.ctint:
-            fill_color: #3a1c8a40
-            area: l0 t0 r0 b0
-    }
-    func render [] -> Elements
-        orb : cast orbiter [ ux.app_object ]
-        return (orb) ? orb.context_els[] : null
-
 # the scene cards as a grid in the side panel: a click loads
 # that scene; the cards are the nav view's (draw_card)
 Control SceneGrid
