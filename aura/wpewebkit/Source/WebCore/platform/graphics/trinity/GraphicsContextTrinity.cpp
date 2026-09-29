@@ -753,6 +753,46 @@ void GraphicsContextTrinity::drawNativeImage(const NativeImage& nativeImage, con
         restore();
 }
 
+// an image buffer on a trinity canvas draws from that canvas
+void GraphicsContextTrinity::drawImageBuffer(ImageBuffer& image, const FloatRect& destRect, const FloatRect& srcRect, ImagePaintingOptions options)
+{
+    auto* source = static_cast<GraphicsContextTrinity*>(image.context().platformContext());
+    int canvas = source ? source->canvas() : 0;
+    if (!canvas || canvas == m_canvas) {
+        GraphicsContext::drawImageBuffer(image, destRect, srcRect, options);
+        return;
+    }
+    if (alpha() < 1)
+        trinityNotPorted("image alpha"_s);
+    if (options.compositeOperator() != CompositeOperator::SourceOver || options.blendMode() != BlendMode::Normal)
+        trinityNotPorted("image blend modes"_s);
+    auto size = FloatSize(image.backendSize());
+    auto src = normalizeRect(srcRect);
+    src.scale(image.resolutionScale());
+    auto dest = normalizeRect(destRect);
+    bool turned = options.orientation() != ImageOrientation::Orientation::None;
+    if (turned) {
+        save();
+        translate(dest.x(), dest.y());
+        dest.setLocation({ });
+        concatCTM(options.orientation().transformFromDefault(dest.size()));
+        if (options.orientation().usesWidthAsHeight())
+            dest.setSize(dest.size().transposedSize());
+    }
+    float const dst[4] = { dest.x(), dest.y(), dest.width(), dest.height() };
+    float const uv[4] = { src.x() / size.width(), src.y() / size.height(), src.maxX() / size.width(), src.maxY() / size.height() };
+    webgfx_canvas_draw_canvas(m_canvas, canvas, dst, uv);
+    if (turned)
+        restore();
+}
+
+void GraphicsContextTrinity::drawConsumingImageBuffer(RefPtr<ImageBuffer> image, const FloatRect& destRect, const FloatRect& srcRect, ImagePaintingOptions options)
+{
+    if (!image)
+        return;
+    drawImageBuffer(*image, destRect, srcRect, options);
+}
+
 #if ENABLE(VIDEO)
 // a trinity frame draws from its gpu planes; others as images
 void GraphicsContextTrinity::drawVideoFrame(const VideoFrame& frame, const FloatRect& destination, ImageOrientation orientation, bool shouldDiscardAlpha)

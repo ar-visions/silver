@@ -953,6 +953,7 @@ int platform_peer_poll(void* out, int max) { return 0; }
 #else
 // ================================================================ linux / xcb
 #include <xcb/xcb.h>
+#include <xcb/randr.h>
 #include <X11/keysym.h>
 #include <alsa/asoundlib.h>
 #include <fcntl.h>
@@ -1776,7 +1777,32 @@ void platform_window_destroy(platform_window* w) {
 
 void platform_window_show(platform_window* w) { if (g_kms) return; xcb_map_window(g_conn, w->win); xcb_flush(g_conn); }
 void platform_window_hide(platform_window* w) { if (g_kms) return; xcb_unmap_window(g_conn, w->win); xcb_flush(g_conn); }
-int  platform_window_refresh_hz(platform_window* w) { return 60; }
+// the fastest active output's refresh rate (dot clock / total pixels)
+int  platform_window_refresh_hz(platform_window* w) {
+    if (g_kms) return g_drm_mode.vrefresh > 0 ? (int)g_drm_mode.vrefresh : 60;
+    xcb_randr_get_screen_resources_current_reply_t* res =
+        xcb_randr_get_screen_resources_current_reply(g_conn,
+            xcb_randr_get_screen_resources_current(g_conn, g_screen->root), NULL);
+    if (!res) return 60;
+    int best = 0;
+    xcb_randr_crtc_t*      crtcs  = xcb_randr_get_screen_resources_current_crtcs(res);
+    int                    ncrtc  = xcb_randr_get_screen_resources_current_crtcs_length(res);
+    xcb_randr_mode_info_t* modes  = xcb_randr_get_screen_resources_current_modes(res);
+    int                    nmodes = xcb_randr_get_screen_resources_current_modes_length(res);
+    for (int i = 0; i < ncrtc; i++) {
+        xcb_randr_get_crtc_info_reply_t* ci = xcb_randr_get_crtc_info_reply(g_conn,
+            xcb_randr_get_crtc_info(g_conn, crtcs[i], res->config_timestamp), NULL);
+        if (!ci) continue;
+        for (int m = 0; ci->mode && m < nmodes; m++) {
+            if (modes[m].id != ci->mode || !modes[m].htotal || !modes[m].vtotal) continue;
+            int hz = (int)((double)modes[m].dot_clock / ((double)modes[m].htotal * modes[m].vtotal) + 0.5);
+            if (hz > best) best = hz;
+        }
+        free(ci);
+    }
+    free(res);
+    return best > 0 ? best : 60;
+}
 
 void platform_window_set_title(platform_window* w, const char* t) {
     if (g_kms) return;

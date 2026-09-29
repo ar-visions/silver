@@ -91,9 +91,13 @@ in any trinity app: the blurred capture behind, the user's box
 most four rows, the rest scrolling out the top), the app's
 avatar, and after the first send the agent's box on the right.
 The app's `.agi` lists the agents the user runs (`agents: [ claude,
-codex ]`, adapter names, the agi's bracket list; `agent:` alone is a list of one); the prompt
-shows them as a TButtons row (`AgentPick`), the lit one takes the
-first send (`agent_post_as` with the pick), and the row fades out
+codex ]`, adapter names, the agi's bracket list; `agent:` alone is a list of one), or a
+block per agent with its models, first the default (`claude:` then
+`models: [ opus, sonnet ]` indented under it; trinity `Agent`); the prompt
+shows them as a TButtons row (`AgentPick`) with the lit agent's
+models in a row above it (`model_pick`), the lit ones take the
+first send (`agent_post_as` with the pick and model: claude
+`--model`, codex `-m`), and both rows fade out
 as the exchange becomes a conversation.
 The exchange also opens about a file: the orbiter tab in a pane's
 tab strip (icon orbiter4) opens it at the caret's line, with
@@ -1893,6 +1897,24 @@ claude` with `{ prompt tokens, {images/x.png} }` under it. A
    resize and draw check `a inherits Window` now. Debug and
    regular: 5/5 headless launches alive at 30 s.
 
+## Active work: model picker (Sep 28 2026)
+
+1. APPLIED, not built (build needs approval): each agent lists its
+   models in the agi (trinity `class Agent`: name, models; the
+   bracket form `agents: [ claude, codex ]` still reads through
+   its string construct), orbiter.agi has claude opus/sonnet/haiku
+   and codex gpt-5-codex/gpt-5. The prompt shows the lit agent's
+   models as a second AgentPick row (`model_pick`) 34 px UNDER the
+   agent row (Sep 28, Kalen: agents on top); both rows are one
+   width, 360 px at unit 1; the first model lit; a mounted row keeps its
+   selection while its agent stays (AgentPick.agent). The send
+   takes it (Window.model_pick, in ExchangeSession/ExchangeState
+   too) into agent_post_as's new model argument, which the shell
+   already passed on (claude --model, codex -m). orbiter.ag's
+   `agents` is `vec Agent`. To verify: build trinity and orbiter,
+   open the exchange, check the two rows and the model on the
+   agent's command line (install/tmp/agent-shell.log).
+
 ## Active work: one exchange box (Sep 24 2026)
 
 1. APPLIED, not built (build needs approval): one box for the
@@ -2514,6 +2536,45 @@ checkout/lb takes about 15 GB (ask Kalen before removing).
    side toolbar (right edge, instances + orbiter at the top,
    console at the bottom) was built and REMOVED at Kalen's
    word; the gutter rule is the original (five digits + 16 px).
+   DONE (Sep 28, Kalen: "some svgs have super hard edges") svg
+   icons (Canvas.draw_svg) rasterize into a cache 4x their size
+   (SVGModel.pixel_scale 4) and were drawn back at a quarter
+   with the plain bilinear sampler, which reads 2 of every 4
+   texels: edges quantized to stairs (a 15.7 px hexagon's edge
+   was one pixel at 33 then 255). Now the cache Canvas has
+   `reduce: true` for pixel_scale 4 (the render's reduce pass
+   averages 4x4 texels, as the avatar's does) and draw_canvas
+   draws the reduction; the draw is snapped to whole pixels
+   (origin and size), so the reduction lands 1:1 (a 15 px
+   reduction drawn at 15.7 blurred it). Measured in a temporary
+   webgfx test: the drawn row equals the reduction row, edges
+   93 255 ... 93 21 instead of 33 255 ... 15 0. Thin lines (the
+   console icon) read as their true sub-pixel coverage now
+   (~140 of 255), which is right, not a bug.
+   DONE (Sep 28, Kalen: "state corruption ... worse when you go
+   back") the reduce pass reused pass 0's attachment
+   description: a load_existing canvas LOADed the old
+   reduction and every pipeline blends over, so each reduce
+   composited onto the last (edges thickened per shape, a
+   re-tint kept the old picture under it; the avatar's 4x
+   reduce accumulated frames the same way). vk.ag: pass 1
+   clears (loadOp CLEAR, initialLayout UNDEFINED) to
+   transparent black (the canvas's clear colour is opaque
+   black: the first try gave a black square). shader.ag
+   UVReduce: output is the plain premultiplied average (was
+   (rgb + rgb*a)/2, halving edges) and the +-2/255 dither is
+   scaled by alpha (it lit clear pixels: the faint box round
+   some icons). Checked: a white then red hexagon reads red
+   with green 0-1 and alpha equal to red; suites exit 0.
+   DONE (Sep 28, Kalen: "adhere to w3c, not two brains") the
+   shader keeps the CSS blur meaning; orbiter's glow sizes are
+   halved in its own sources: 17 box_shadow styles, 8
+   cv.box_shadow calls, the chip hover glow, rest_px 16 -> 8.
+   Also: the git changed-file tabs at half alpha (fill, border,
+   glow: sources #22002280, #ff5a8a80, #ff7aa480, white 80),
+   mapped in every scene theme (scenes.ag) at the same alpha;
+   the finder's extension chip strips got the last half-pixel
+   stroke in the tree (now 1 px inside).
    DONE (Sep 28) ctrl/cmd+left and right in any trinity app go
    to Window.navigate (the focused element's history) before
    the key reaches the focus; the browser goes back/forward.
@@ -3320,3 +3381,295 @@ the largest object. Startup footprint measured headless.
    uniforms.init), a slot every `stride` bytes; was 64 per `uniforms`.
 10. OPEN small heap 216 MB not yet attributed; ~5,000 pool
    temporaries per idle frame.
+
+## Active work: features docs page (Sep 28 2026)
+
+1. DONE features.ag is sorted into 14 categories, each opened by
+   `# ==== Label: Headline` and an intro comment. `export func
+   docs_page` writes features/docs/features.html in the site's
+   layout (head, CSS, hero and footer copied into
+   features/docs/page.html from /src/ar-visions.github.io).
+   Order matters: a free func signature needs its types above
+   it; a load-time static (`attrib egg : Chirper`) needs its
+   class above it.
+2. OPEN t_launch_specs: the .agi has no launch specs any more
+   (only trinity's launch_props writes them); the test fails.
+3. OPEN t_mem_last: 33 objects alive at the end, 28 at the start,
+   with the original order too. Hidden until now: the runner
+   stops at the first failure, t_vec_module.
+4. OPEN the page is not yet compared with index.html by eye.
+
+## Active work: near-border (Sep 29 2026)
+
+1. BUILT, tested: the pointer lights every border by its
+   nearness. No style property (Kalen: never different between
+   controls). Window.near_walk records each element's window
+   origin (win_pos) and marks it for repaint while the pointer
+   is within near_reach (160 px) of its box, and once after it
+   leaves. The layer draw passes the pointer and reach into the
+   canvas (near_light); CanvasUI's near_border weights the
+   stroke: w = (1 - distance / reach)^2, the border's colour
+   mixed toward white by w/2, its alpha raised by w/2.
+   trinity t_near_border: red 128 at 20 px from the light, 51
+   (the border's own) at 340 px.
+   The light's strength is a filtered state per element
+   (near_glow): its goal is near_in_weight (1.0) with the pointer
+   inside the element, near_out_weight (0.5) outside it within
+   reach, else 0; each frame glow = filter_n[ glow, goal, 0.1 ]
+   (0.9 kept, 0.1 new at 60 Hz). t_near_border_glow: red 90 at
+   half glow.
+   Opt-in (Kalen, Sep 29): a Layer's `near_border: true`, or a
+   draw's Window.near_light_on[ cv, e, ox, oy ]. Only an element
+   whose last paint lit a border (near_used) repaints on moves.
+   orbiter: title bar (tbar), status bar (sbar), and the editor's
+   ctrl/cmd jump outlines (outline_jumps).
+   Inner glows (Sep 29): Layer near_inset (factor) and
+   near_inset_color: an inset shadow blends toward the colour
+   by nearness x glow x factor. The y distance counts
+   Window.near_y_fade (2.0) times over. t_near_inset, t_near_fade.
+1b. OPEN silver compiler bug: adding a Canvas method
+   (near_fade) made trinity's initializer write Canvas's method
+   pointers past Canvas_i into GlyphMetrics_i ("MODULE OVERWRITE
+   [def]: (null)", export exit 1). The store offset is
+   Au_t size + (member_index - 1) * 8 (aether.c ~10650); member_index
+   comes from next_function_index (silver.c:7604, counts the whole
+   context chain, skips statics and overrides); the table
+   (__Canvas_f ft, 175 slots) comes from etype_class_list
+   (aether.c ~8800). The two counts disagree. Canvas_paint went to
+   byte 1816 of a 1672-byte table. Not fixed; near_fade folded into
+   near_style's y_fade argument instead.
+2. OPEN element gained win_pos and near_lit: every module built
+   before it (orbiter, scenes, clouds, markdown, aura, ...)
+   needs a rebuild before it is hosted again.
+3. OPEN not seen in a real app yet (buttontest has no borders).
+
+## Active work: orbiter side panel (Sep 29 2026)
+
+1. BUILT, not run: one context panel for the whole window, the
+   selected editor's (active_pane) file, module and instances.
+   The window is a split: panes left, SidePanel right (drag the
+   divider; 360 px to start). Its toolbar row: < folds it, then
+   the tabs (instances). Folded, SideStrip keeps a menu button
+   at the top of the right edge (inst_hidden). The per-pane
+   InstancePanel and each title bar's menu toggle are gone.
+2. BUILT, not run: the status bar is 35 px tall (was 22 px);
+   the instance panel's bottom toolbar is 35 px, flush on it.
+3. OPEN the conversation tab: waits on what it shows.
+
+## Active work: YouTube smoothness in aura (Sep 28 2026)
+
+Kalen: the player's fullscreen transition ran at 15-20 fps, its
+menus at 10-30, the video at 30 at most. Measured headless with
+the WebKit helper alone (scratchpad ytprobe/ytlong) and through
+the element (drive.py, `--width 2560 --height 1440`), traces
+since removed. Found and fixed, in order:
+1. DONE frame interpolation (Kalen's spec: only a time-weighted
+   mix of the two authored pictures, one picture behind, no
+   motion compensation). trinity/video.ag `FrameBlend` (a
+   PlaneBlend compute over the y, u, v planes), `VideoStream.
+   smooth` (default true), `next_pts`; `frame_at` returns the
+   mix when t sits between two ready pictures. webgfx
+   t_video_blend: the mid mix equals (a+b+1)/2 on every byte.
+2. DONE the picture ticks at the screen's rate: devices
+   `platform_window_refresh_hz` (RandR on X11, the KMS mode
+   otherwise; DP-0 = 165 Hz), aura sets TRINITY_VIDEO_HZ for
+   the helper; the player's timer (videoHz) and the headless
+   view's frame pacing (WPEViewHeadless.cpp, overlay) follow
+   it. Checked: 165 ticks a second, a mixed picture each tick.
+3. DONE the transition's real cost was CSS drop-shadow filters
+   on the player's icons: each frame made new image buffers,
+   and each buffer a new trinity Canvas (Canvas_init builds
+   pipelines and a 1024-slot ring, 1.5 ms each; 369 made in
+   one run). webgfx's spare pool never matched: it measured
+   the fit against the raw request, and canvases are 64 px
+   multiples, so a 64x64 spare failed the 4x-area limit of a
+   30x30 ask. spare_index now quantizes the request first:
+   369 -> 60 canvases a run, none during playback.
+4. DONE drawing a filter result read the canvas back to the
+   CPU and uploaded it again as an image with a mip chain
+   (54% of the paint). GraphicsContextTrinity::drawImageBuffer
+   draws a trinity-backed image buffer canvas to canvas on the
+   GPU (Canvas.draw_canvas_crop, webgfx_canvas_draw_canvas).
+   The transition second's paint: 367 -> 209 -> 56 ms; the
+   48 tiny time-label paints: 296 -> 37 ms. Picture checked.
+   Element at 2560x1440 with audio: the video plays through
+   both toggles, 51-60 page frames a second, one second at
+   26-47 at each toggle (the app is capped at 60 headless).
+   webgfx and trinity expects exit 0.
+5. DONE (Kalen's test: "4K video test tv motion",
+   youtube.com/watch?v=pcSv22DTDUI, fullscreen, headless with
+   SILVER_HZ=165 so the app is not capped at 60) fullscreen ran
+   at 47 page frames a second, 100-117 before it, with every
+   thread idle. Traced through the two processes: after each
+   frame's done the web compositor waited ~18 ms for the next
+   picture. The player's clock is the audio stream's time, and
+   that moved only when the mixer pulled a block (1024 frames,
+   21.3 ms at 48 kHz): every tick in between saw the same time,
+   the same mix, and pushed nothing. spectra AudioStream.time
+   now adds the wall clock since the last pull (clamped to the
+   block). Fullscreen 47 -> 150-164, before it 100 -> 150-160
+   (YouTube serves hd1080 H.264 both ways). Decode itself is
+   2.3 ms a picture with 4-5 pictures ready ahead. webgfx and
+   trinity expects exit 0; no traces left.
+Findings, not bugs of ours:
+- With no audio device the video counts as silent, YouTube
+  autoplays it at load, and a later click PAUSES it (a script
+  pause at ~9.7 s looked like a freeze). drive.py now passes
+  PULSE_SERVER=unix:/run/user/1000/pulse/native and
+  PIPEWIRE_RUNTIME_DIR so the helper has sound (its
+  XDG_RUNTIME_DIR is the test's socket dir).
+- The overlay scrollbar repaints its 21x800 tile ~60 times a
+  second only while its fade animates (ScrollbarsController
+  Generic), not forever.
+- Deleting an overlay file does not restore the checkout's
+  copy, and a checkout-only edit does not trigger the import
+  build: touch an overlay file to rebuild. silver reported
+  `--build aura` exit 0 once while ninja failed inside the
+  import (a trace compile error): check the log.
+6. DONE (see 9) `silver orbiter aura <url>` opened aura.ag with
+   a HELD instance (start_instance holds every new instance
+   until its row is clicked). The startup run plays it at once
+   in the pane (display Full, the 'play' action); the argv tail
+   becomes aura.ag's saved args, over any earlier ones.
+7. DONE (Kalen: "we have a schema format, it's called .agi";
+   "dont reinvent one field"): the launch spec string
+   (name=type=default=Control=live, written by the compiler
+   into the export, answered by trinity to `props`, split by
+   position in orbiter) is gone from all three. A module's
+   Launch members are enumerated by reflection as they are
+   declared (trinity `Prop`: ident, type, access, meta as
+   written, value, the meta's control with its values, an
+   enum's stops) in a `LaunchProps`, answered to `props` as
+   agi (Au.string_agi) and parsed back with Au.parse_agi.
+   orbiter's panel reads Prop objects (LaunchPanel.fields);
+   its args, compose and set-by-name paths are unchanged.
+   The panel has no source before an instance runs: the
+   module's last answer (module_props) is its cache, and a
+   never-run trinity app gets a display row built the same
+   way. aura's `src` is `default [ Launch ]` so it shows.
+   Checked: headless aura answers
+     props:
+       display: Prop  (type DisplayMode, meta [ Live ],
+                       value PIP, stops [ PIP, Embed, Window, Screen ])
+       volume: Prop   (type f32, meta [ Live, VolumeRange ],
+                       value '1', control: Range min 0 max 1)
+   trinity expects exit 0; orbiter builds. Not driven: the
+   panel itself (needs silver-host).
+   Then (Kalen: "it comes from module enumeration, then stored
+   in .agi"): the module's build enumerates its app type. trinity
+   `export func launch_props` runs in the app's export process
+   (silver.c: an app product runs its imports' exports; the
+   registry is written before them) and, at the process's exit
+   (trinity's ctor runs before the app module registers its
+   types, so the write waits for atexit), walks the app type and
+   media_app with props_of and appends `props:` to
+   install/export/<owner>-<module>.agi. Declared shape only, no
+   values; the running instance's `props` answer (many lines,
+   ended by an empty line: agent_sock_ask_block) carries them.
+   orbiter's module_spec: the instance's last answer, else that
+   file; a cached line from before the agi form is ignored.
+   silver-aura.agi now lists src (default, Launch), display
+   (Live, stops PIP Embed Window Screen) and volume (Live,
+   VolumeRange, control Range 0..1).
+8. DONE (Kalen: `aura --volume 0.48 <url>` printed usage; "put
+   the volume property on element"): volume was the trinity
+   controller's, and the element is the command line's surface.
+   `public [ Live, VolumeRange ] volume` is on element
+   (trinity/element.ag, beside display); the controller's is
+   gone, its socket `set`/`volume` read the root element's.
+   Checked headless: `aura --volume 0.48` answers volume 0.48
+   and props shows value '0.48'.
+   A member added to element moves every subclass's slots: a
+   module compiled before it reads garbage (orbiter SIGSEGV in
+   Style.integrate_instance on a scene's style member). silver
+   does not rebuild a runtime-loaded module for a base change:
+   clouds, scenes and markdown were rebuilt by hand; any other
+   trinity app (knes, asnes, n64, hyperspace ...) needs its
+   build before it is hosted again.
+9. DONE `silver orbiter aura <url>` never started the instance:
+   /src/silver/aura is a folder, so the startup took the
+   folder branch, which set no pending_run and dropped the
+   argv tail; the module branch below it was never reached
+   for a root module. The folder branch now saves the tail as
+   the file's args and sets pending_run (unless START_HELD).
+   Checked hidden under the host: the pane's instance starts
+   ("start: aura https://www.google.com -> slot 1"), aura
+   loads Google; then orbiter SIGSEGVed in Canvas_measure_text
+   from Layer_draw (Kalen's report, reproduced). AU_QUARANTINE=1
+   named it: a DOUBLE-DROP in AppView.service on the app's
+   title. `app_title = string[ @title_buf[0] ]` (title_buf a
+   vec u8) compiled to a POINTER CAST: the vec's data pointer
+   was stored as the string object, held, and the old title
+   dropped a bogus header; the pane title's label then read it.
+   Fixed: the bytes are copied to a `local i8 [ 1024 ]` and the
+   string made from that (the pattern trinity uses). Silver
+   bug, OPEN: `string[ @v[0] ]` on a vec is a cast, not a
+   construction (see cast-cstr-vec). Checked: the hosted run
+   stays up 60 s with Google in the pane, no report.
+10. DONE (Kalen: "you never do any arguments after the default";
+   "trinity.view ... otherwise they could clash") the launch
+   line is flags first, the default (positional) last and
+   nothing after it: a string default takes the whole
+   remainder (Au_with_cstrs). launch_handler put `--view` after
+   the saved args; it leads now. The start log no longer prints
+   "flags N" after the line. A prop of another module is flagged
+   with its module: `--trinity.display Embed`, `--trinity.volume
+   0.5` (Au_with_cstrs: `--module.name` matches the member of
+   the type that module declares, by the module's plain name:
+   silver-trinity is trinity); the app's own props stay bare,
+   so names never clash. Prop.module and LaunchProps.module
+   (the app's) come from props_of (trinity module_name);
+   orbiter's LaunchPanel.flag_name composes and seeds with it.
+   Checked headless: `aura --trinity.volume 0.48
+   --trinity.display Embed https://www.google.com` runs and
+   answers props with module aura / trinity, volume '0.48',
+   display Embed. `--view` stays bare: it is asnes's own prop.
+11. DONE (Kalen: orbiter "locks hard before closing", ~10 s).
+   Reproduced hidden under the host with aura in the pane, an
+   orderly quit over the socket (new trinity socket command
+   `quit`: Au.quit_request sets the flag the close button
+   sets), every thread's kernel wait sampled at 4/s and an
+   LD_PRELOAD CPU sampler (scratchpad sampler.so, report.py)
+   in orbiter. Measured, no --leaks, 30 s in: 2.7 s from the
+   quit to the process gone. The main thread: 1.3 s asleep in
+   on_unload's `while [ index_building ] usleep` waiting for
+   the index worker, 0.5 s freeing the old file_index list,
+   0.8 s the tree teardown (drop_members, map_clear). The
+   worker ran at 100% of a core for the whole session (82% in
+   tok_warm hashing every indexed text file; 400k-file cap over
+   the 42 GB of checkouts) and after the cancel spent its time
+   in index_work's final Au.auto_free: tok_warm never drained
+   its pool, so every hashed file's text (up to 300 KB each) and
+   its temporaries stayed pooled until the end of the whole
+   pass. That pool is what the close waited on (and what grew
+   the footprint; 1.5 GB rss at 30 s). Fix: tok_warm drains its
+   pool per file (todo held, dropped after). After: 1.0 s from
+   the quit to gone, the worker stops 40 ms after the cancel.
+   The rest is the teardown itself. --leaks makes every free
+   slow (leak_remove 59% of the close): measure closes without it.
+12. DONE (Kalen, Sep 29: in Embed the page stayed at aura's launch
+   size, 1280x800, inside a 1523x965 pane; "the second time you
+   launch the app it doesn't get the resize; it should start at
+   the embedded size"). Cause, reproduced by stopping and
+   starting the instance from its row icon: a paned app launched
+   at its own default size and relied on the pane's HM.resize,
+   and that request is sent only when the pane's size differs
+   from the LAST request (req_w/req_h), which a stop and start
+   kept: the second process was never told. Now AppView.start
+   puts the pane's content size on the launch line (`--width W
+   --height H` before the user's args, so their own --width
+   wins) and clears the request state per start; Editor.tick
+   gives a not-yet-drawn instance the content layer's size.
+   Checked hosted hidden: the second launch line is `aura
+   --width 1607 --height 819 <url>`, the app's display opens at
+   1607x819 and the page fills the pane (shot). The very first
+   launch at startup still opens at the default and takes the
+   pane's resize within a frame: the pane has no layout yet.
+   /tmp/orbiter-resz.log is appended by EVERY orbiter process
+   (two were running): its lines interleave.
+OPEN:
+- the FrameBlend runs on the web process main thread with a
+  fence wait per tick: 12-17% of the thread at 165 Hz.
+- headless the app ticks at 60, so page frames cap at 60; on
+  Kalen's 165 Hz screen the real rate is unmeasured.
+- the per-tile paint still reads every tile back to the CPU.

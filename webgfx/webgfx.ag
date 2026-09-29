@@ -330,7 +330,10 @@ func canvas_of [ id: i32 ] -> Canvas
 func spare_index [ width: i32, height: i32 ] -> i32
     s : gfx.spare
     best : i32 [ -1 ]
-    best_area : i64 [ i64[ width ] * i64[ height ] * 4 + 1 ]
+    # capacities are 64 px multiples: measure the fit against that
+    qw : i32 [ (width  + 63) / 64 * 64 ]
+    qh : i32 [ (height + 63) / 64 * 64 ]
+    best_area : i64 [ i64[ qw ] * i64[ qh ] * 4 + 1 ]
     for [ i: i32 0, i < i32 s.count, i += 1 ]
         if [ s[i].width < width || s[i].height < height ] continue
         area : i64 [ i64[ s[i].width ] * i64[ s[i].height ] ]
@@ -565,6 +568,13 @@ func webgfx_canvas_draw_image [ id: i32, img: i32, dst: @f32, uv: @f32 ]
     tx : image_of[ img ]
     if [ !cv || !tx ] return
     cv.draw_image_crop[ tx, rect [ x: dst[0], y: dst[1], w: dst[2], h: dst[3] ], uv[0], uv[1], uv[2], uv[3] ]
+
+# a canvas drawn as an image on another; uv over its content
+func webgfx_canvas_draw_canvas [ id: i32, src: i32, dst: @f32, uv: @f32 ]
+    cv : canvas_of[ id ]
+    sc : canvas_of[ src ]
+    if [ !cv || !sc || cv == sc ] return
+    cv.draw_canvas_crop[ sc, rect [ x: dst[0], y: dst[1], w: dst[2], h: dst[3] ], uv[0], uv[1], uv[2], uv[3] ]
 
 # CSS shadow slot i (4): rgba; x y offset, blur, spread; inset
 func webgfx_canvas_set_shadow [ id: i32, i: i32, c: @f32, x: f32, y: f32, blur: f32, spread: f32, inset: bool ]
@@ -1790,6 +1800,65 @@ expect func t_demux_fragments [] -> bool
     return mp.inits == 1 && mp.ready.count == vt.samples[] && same == vt.samples[] && t0.width == 320
 
 # fragments decoded ahead, shown on a 60 Hz clock, then a seek
+# a time between two pictures gives their byte mix, on the gpu
+expect func t_video_blend [] -> bool
+    d9   : gfx_display[]
+    root : path.path_startup[]
+    frag : path '{root}/webgfx/media/clip.frag.mp4'
+    fn : i64 [ 0 ]
+    fb : @u8 [ read_file[ frag.chars, @fn ] ]
+    if [ !fb ] return false
+    mp : Demux []
+    mp.append[ fb, fn ]
+    free[ fb ]
+    tr : DemuxTrack mp.tracks[ 0 ]
+    st : VideoStream [ vk: gfx.vk, w: d9 ]
+    st.config[ @tr.config[ 0 ], i32[ tr.config.count ] ]
+    for [ s: DemuxSample ] in mp.ready
+        st.push[ @s.data[ 0 ], s.data.count, s.pts * 1000000 / s.timescale, s.sync, true ]
+    st.finish[]
+    # the first picture, then the one after it
+    f0 : VideoFrame [ null ]
+    for [ w: i32 0, w < 300 && !f0, w += 1 ]
+        f0 = st.frame_at[ 0, true ]
+        if [ !f0 ] usleep[ 10000 ]
+    if [ !f0 ]
+        log 'video blend: no first picture'
+        return false
+    # a picked picture leaves the stream's vector: keep it
+    f0.hold[]
+    p1 : i64 [ -1 ]
+    for [ w: i32 0, w < 300 && p1 < 0, w += 1 ]
+        p1 = st.next_pts[]
+        if [ p1 < 0 ] usleep[ 10000 ]
+    if [ p1 <= f0.pts ]
+        log 'video blend: no next picture after {f0.pts}'
+        f0.drop[]
+        return false
+    tm  : i64 [ (f0.pts + p1) / 2 ]
+    mid : VideoFrame st.frame_at[ tm, false ]
+    if [ !mid || mid.pts != tm ]
+        log 'video blend: no mix at {tm} (f0 {f0.pts}, next {p1}): {(mid) ? mid.pts : -1}'
+        f0.drop[]
+        return false
+    ym : vec u8 [ mid.y.count ]
+    memcpy[ @ym[ 0 ], @mid.y[ 0 ], mid.y.count ]
+    f1 : VideoFrame st.frame_at[ p1, false ]
+    if [ !f1 || f1.pts != p1 ]
+        log 'video blend: no picture at {p1}: {(f1) ? f1.pts : -1}'
+        f0.drop[]
+        return false
+    f1.hold[]
+    off : i32 [ 0 ]
+    for [ i: i32 0, i < i32 f0.y.count, i += 1 ]
+        want : i32 [ (i32 f0.y[ i ] + i32 f1.y[ i ] + 1) / 2 ]
+        got  : i32 [ i32 ym[ i ] ]
+        if [ got < want - 1 || got > want + 1 ] off += 1
+    log 'video blend: {f0.pts} to {p1}, mix at {tm}: {f0.y.count} bytes, {off} off by more than one'
+    f0.drop[]
+    f1.drop[]
+    return off == 0
+
 expect func t_video_stream [] -> bool
     d9   : gfx_display[]
     root : path.path_startup[]
@@ -1801,7 +1870,7 @@ expect func t_video_stream [] -> bool
     mp.append[ fb, fn ]
     free[ fb ]
     tr : DemuxTrack mp.tracks[ 0 ]
-    st : VideoStream [ vk: gfx.vk ]
+    st : VideoStream [ vk: gfx.vk, w: d9, smooth: false ]
     st.config[ @tr.config[ 0 ], i32[ tr.config.count ] ]
     for [ s: DemuxSample ] in mp.ready
         st.push[ @s.data[ 0 ], s.data.count, s.pts * 1000000 / s.timescale, s.sync, true ]
@@ -2132,7 +2201,7 @@ func webgfx_stream_new [] -> i32
     d9 : gfx_display[]
     v : WebVideo []
     v.planes = vec i32 []
-    v.stream = VideoStream [ vk: gfx.vk ]
+    v.stream = VideoStream [ vk: gfx.vk, w: d9 ]
     v.sound  = AudioStream []
     return video_put[ v ]
 

@@ -523,6 +523,9 @@ ResourceView AppView
     mutable note       : string
     mutable aw         : i32
     mutable ah         : i32
+    # the picture's shape as the app told it (HM.aspect); 0 = unknown
+    mutable pic_w      : i32
+    mutable pic_h      : i32
     # the frame the app showed as its window switched to orbiter: the pip
     # until the instance runs and its own frames arrive
     mutable still      : Texture
@@ -600,6 +603,10 @@ ResourceView AppView
             # request from here), and types the take back
             el [ t == i32[ HM.dictate ] ]
                 dict_req = host_pa[]
+            # the app's picture shape: a pip is sized to it
+            el [ t == i32[ HM.aspect ] ]
+                pic_w = host_pa[]
+                pic_h = host_pb[]
             # the app's history moved: the title's arrows follow
             el [ t == i32[ HM.nav_state ] ]
                 nav_back_on = host_pa[] != 0
@@ -617,8 +624,13 @@ ResourceView AppView
                     if [ bs9[k9] != 0 ]
                         title_buf.push[ u8 bs9[k9] ]
                         continue
-                    title_buf.push[ u8 0 ]
-                    app_title = string[ @title_buf[0] ]
+                    # string[ @vec[0] ] is a pointer cast: copy to a local
+                    tb9 : local i8 [ 1024 ]
+                    tn9 : i32 [ (title_buf.count < 1023) ? i32[ title_buf.count ] : 1023 ]
+                    for [ j9: i32 0, j9 < tn9, j9 += 1 ]
+                        tb9[ j9 ] = i8[ title_buf[ j9 ] ]
+                    tb9[ tn9 ] = 0
+                    app_title = string[ @tb9[0] ]
                     title_buf = vec u8 []
                     wt9 : cast Window [ cv.w ]
                     if [ wt9 ] wt9.restyle = true
@@ -705,8 +717,8 @@ ResourceView AppView
                             la8 : string [ @vb8[0] ]
                             locked = la8.trim[] == '1'
                         # the app enumerates its own Launch/Live members
-                        pb8 : local i8 [ 4096 ]
-                        if [ agent_sock_ask[ sock_name[].chars, 'props\n', @pb8[0], 4096 ] > 0 ]
+                        pb8 : local i8 [ 16384 ]
+                        if [ agent_sock_ask_block[ sock_name[].chars, 'props\n', @pb8[0], 16384 ] > 0 ]
                             ps8 : string [ @pb8[0] ]
                             props = ps8.trim[]
                         # the app's own gain seeds the slider, once
@@ -743,19 +755,21 @@ ResourceView AppView
             pk9 : i64 [ epoch_millis[] ]
             if [ props_ak == 0 || pk9 - props_ak > 500 ]
                 props_ak = pk9
-                pb9 : local i8 [ 4096 ]
-                if [ agent_sock_ask[ sock_name[].chars, 'props\n', @pb9[0], 4096 ] > 0 ]
+                pb9 : local i8 [ 16384 ]
+                if [ agent_sock_ask_block[ sock_name[].chars, 'props\n', @pb9[0], 16384 ] > 0 ]
                     ps9 : string [ @pb9[0] ]
                     pt9 : string ps9.trim[]
                     if [ pt9 && pt9.count > 0 ] props = pt9
                     # the app's display is the truth: a change it made (esc, its
                     # own code) is followed here, unless the user's pick is in flight
                     if [ props && pk9 - disp_ms > 1500 ]
-                        for [ ent9: string ] in props.split[ ';' ]
-                            f9 : ent9.split[ '=' ]
-                            if [ f9.count > 2 && f9[ 0 ] == 'display' ]
-                                dv9 : i32 [ (f9[ 2 ].count > 0) ? i32[ f9[ 2 ].integer_value[] ] : 0 ]
-                                if [ dv9 >= 0 && dv9 <= 3 && dv9 != display ] disp_pending = dv9
+                        ps8 : LaunchProps []
+                        Au.parse_agi[ null, props.chars, ps8 ]
+                        if [ ps8.props ]
+                            for [ p8: Prop ] in ps8.props
+                                if [ p8.ident != 'display' || !p8.stops || !p8.value ] continue
+                                for [ i8: i32 0, i8 < p8.stops.count && i8 <= 3, i8 += 1 ]
+                                    if [ p8.stops[ i8 ] == p8.value && i8 != display ] disp_pending = i8
         instr_service[ cv ]
         # the window's pixels per point (a cached canvas carries no device
         # scale in its transform, which read 1 here and drew the app 2x)
@@ -776,7 +790,9 @@ ResourceView AppView
                     nw, nh, aw, ah, req_w, req_h, pend_w, pend_h, (ready) ? 1 : 0, slot,
                     gen, host_tex_gen[ slot, 0 ] ]
                 fclose[ fz9 ]
-        if [ ready && nw > 0 && nh > 0 ]
+        # embed gives the app the editor's whole area: the one mode that
+        # resizes it. pip, window and screen leave it its own size
+        if [ ready && nw > 0 && nh > 0 && display == 1 ]
             if [ nw != pend_w || nh != pend_h ]
                 pend_w  = nw
                 pend_h  = nh
@@ -974,12 +990,19 @@ ResourceView AppView
         service[ cv ]
         draw_frame[ cv, bounds ]
 
+    # the pane's pip: 30% of its width at the picture's shape
     func draw_pip [ cv: Canvas, bounds: rect ]
-        if [ ah <= 0 ] return
-        ar : f32 [ f32[ aw ] / f32[ ah ] ]
-        pw : f32 [ bounds.w * 0.30 ]
-        ph : f32 [ pw / ar ]
+        ar : f32 [ pic_aspect[] ]
+        if [ ar <= 0.0 ] return
+        pw : f32 [ round[ bounds.w * 0.30 ] ]
+        ph : f32 [ round[ pw / ar ] ]
         draw_pip_in[ cv, rect [ x: bounds.x + bounds.w - pw - 16.0, y: bounds.y + bounds.h - ph - 16.0, w: pw, h: ph ] ]
+
+    # width over height of the picture: the app's word, else its frame
+    func pic_aspect [] -> f32
+        if [ pic_w > 0 && pic_h > 0 ] return f32[ pic_w ] / f32[ pic_h ]
+        if [ aw > 0 && ah > 0 ] return f32[ aw ] / f32[ ah ]
+        return 0.0
 
     # the pip at a given rect: the instance panel holds it when it is open
     func draw_pip_in [ cv: Canvas, r: rect ]
@@ -1081,11 +1104,17 @@ ResourceView AppView
                     ((display & 3) << 3) | ((hz9 & 255) << 8) | ((cov_build) ? (1 << 16) : 0) ]
         # flags BEFORE the doc: Au_with_cstrs stops parsing at the first
         # positional, so a trailing flag would never reach the app's schema
-        ma9 : string [ (module_args && module_args.count > 0) ? '{module_args} ' : '' ]
-        req : string [ (doc) ? '{mod} {ma9}{doc}' : '{mod} {ma9}' ]
+        ma9 : string [ (module_args && module_args.count > 0) ? ' {module_args}' : '' ]
+        # no size of ours: the app starts at its own, the shape it keeps
+        req : string [ (doc) ? '{mod}{ma9} {doc}' : '{mod}{ma9}' ]
+        # a fresh process knows nothing of the last one's resize
+        req_w  = 0
+        req_h  = 0
+        pend_w = 0
+        pend_h = 0
         app_mod = mod
         slot = host_app_request[ req.chars, fl9 ]
-        log 'start: {req} flags {fl9} -> slot {slot}'
+        log 'start: {req} -> slot {slot} (host bits {fl9})'
         if [ slot < 0 ]
             ended = true
             note = 'no silver-host supervisor'
@@ -1284,7 +1313,7 @@ Layer EditorLayer
             cv.fill_grad[ hl_grad ]
             cv.fill_color_pos[ rx, ry ]
             cv.fill_grad_pos[ rx, ry + rh ]
-        if [ hl_glow ] cv.box_shadow[ hl_glow, 0.0, 0.0, 14.0, 0.0, true ]
+        if [ hl_glow ] cv.box_shadow[ hl_glow, 0.0, 0.0, 7.0, 0.0, true ]
         cv.rect_to[ rx, ry, rw, rh ]
         cv.paint[ ]
         cv.restore[ ]
@@ -1548,10 +1577,15 @@ Layer EditorLayer
             ww9 : f32 [ f32[ editor.display_of[ w9 ].count ] * cw ]
             cv.save[ ]
             cv.rounded[ 3.0, 3.0, 3.0, 3.0 ]
-            cv.fill_color[ rgba['#3b6fe022'] ]
+            # faint at rest; the pointer's light brings the border and
+            # an inner glow up
+            cv.fill_color[ rgba['#3b6fe00b'] ]
             cv.stroke_width[ 1.0 ]
             cv.stroke_offset[ -0.5 ]
-            cv.stroke_color[ rgba['#8cf9'] ]
+            cv.stroke_color[ rgba['#8cf3'] ]
+            cv.box_shadow[ rgba['#8cf2'], 0.0, 0.0, 6.0, 0.0, true ]
+            editor.ux.near_light_on[ cv, editor, 0.0, 0.0 ]
+            cv.near_style[ 1.0, 3.0, rgba['#8cf'], editor.ux.near_y_fade ]
             cv.rect_to[ x0 + tx9 - 1.0, y + 1.0, ww9 + 2.0, lh - 2.0 ]
             cv.paint[ ]
             cv.restore[ ]
@@ -2315,7 +2349,7 @@ Layer EditorLayer
                     cv.rounded[ 5.0, 5.0, 5.0, 5.0 ]
                     cv.stroke_width[ 0.0 ]
                     cv.fill_color[ rgba['#2f7a4a44'] ]
-                    cv.box_shadow[ rgba['#5fd08abb'], 0.0, 0.0, 10.0, 0.0, true ]
+                    cv.box_shadow[ rgba['#5fd08abb'], 0.0, 0.0, 5.0, 0.0, true ]
                     cv.rect_to[ ax - cw_tm.w, ya + 2.0, bounds.x + bounds.w - rin - ax + 4.0, lh - 4.0 ]
                     cv.paint[ ]
                     cv.restore[ ]
@@ -2444,7 +2478,7 @@ Layer EditorLayer
                 cv.save[ ]
                 cv.rounded[ 4.0, 4.0, 4.0, 4.0 ]
                 # selection reads as a glow, not a bordered box
-                cv.box_shadow[ sel_brd_val, 0.0, 0.0, 14.0, 0.0, true ]
+                cv.box_shadow[ sel_brd_val, 0.0, 0.0, 7.0, 0.0, true ]
                 pad : 2
                 for [ li: i32 start_line, li <= end_line, li += 1 ]
                     y_row  : f32 [ round[ y0 + f32[li] * lh - editor.scroll.y ] ]
@@ -2545,9 +2579,10 @@ Layer EditorLayer
             cv.restore[ ]
 
         orbp : cast orbiter [ editor.ux.app_object ]
-        # the instance panel holds the pip while it is up, which is whenever the module has instances
+        # the side panel holds the selected editor's pip while open
         li8 : vec AppView editor.instances[]
-        if [ editor.run_view && !editor.app_view && !editor.show_hits && !editor.stopped[] && !(li8 && li8.count > 0) ]
+        held8 : bool [ orbp && !orbp.inst_hidden && orbp.active_pane == editor.pane_index && li8 && li8.count > 0 ]
+        if [ editor.run_view && !editor.app_view && !editor.show_hits && !editor.stopped[] && !held8 ]
             editor.run_view.draw_pip[ cv, bounds ]
 
         cv.clear_crop[ ]
@@ -2793,8 +2828,6 @@ Control Editor
     mutable nav_default   : string
     mutable tool_hover    : i32 [ -1 ]
     # the view picker under the title's chip: open, and the cell under the mouse
-    mutable view_pick     : bool [ false ]
-    mutable pick_hover    : i32 [ -1 ]
     mutable view_thumbs   : map Canvas[string]
     mutable run_view      : AppView          # the selected instance: shown and debugged
     mutable app_view      : bool
@@ -4416,8 +4449,9 @@ Control Editor
         if [ orb9 ]
             fa9 : string orb9.file_args[ p ]
             args = (fa9 && fa9.count > 0) ? fa9 : orb9.module_args
+        # flags lead; the saved args may end in the app's default (positional)
         if [ vw && vw.count > 0 ]
-            args = (args && args.count > 0) ? '{args} --view {vw}' : '--view {vw}'
+            args = (args && args.count > 0) ? '--view {vw} {args}' : '--view {vw}'
         host_module[ mod, p, args ]
 
     # an address whose scheme a module exports: it hosts the address
@@ -4687,6 +4721,15 @@ Control Editor
     public func tick [ w: Window ]
         if [ run_view ]
             run_view.stopped = stopped[]
+            # not drawn yet: the launch takes the pane's content area as its size
+            cl9 : Layer (layers) ? layers[ 'content' ] : null
+            if [ run_view.vw <= 0.0 && cl9 && cl9.bounds && cl9.bounds.w > 0.0 ]
+                run_view.vw = cl9.bounds.w
+                run_view.vh = cl9.bounds.h
+                bot9 : element (elements) ? elements[ 'bottom' ] : null
+                if [ bot9 && bot9.bounds && bot9.bounds.h > 0.0 ]
+                    lim9 : f32 [ bot9.bounds.y - cl9.bounds.y ]
+                    if [ lim9 > 0.0 && lim9 < cl9.bounds.h ] run_view.vh = lim9
             run_view.service[ w.screen ]
             if [ run_view.lock_req != 0 ]
                 if [ run_view.lock_req == 1 ] ux.mouse_lock[ a ]
@@ -5229,7 +5272,6 @@ Control Editor
         if [ hm9 ]
             launch_handler[ hm9, src, '' ]
             return
-        log 'start_instance: starting {src}'
         nv : AppView [ ]
         nv.src   = src
         nv.clean_build = clean

@@ -202,6 +202,31 @@ HOST_API int agent_sock_ask(const char* name, const char* line,
     return got;
 }
 
+// client: a many-line answer, ended by an empty line (agent_sock_reply
+// with a trailing blank line); reads until it or the 250 ms wait
+HOST_API int agent_sock_ask_block(const char* name, const char* line,
+                                  char* out, int cap) {
+    if (!name || !*name || !line || !out || cap < 3) return 0;
+    int fd = agent_connect(name);
+    if (fd < 0) return 0;
+    size_t n = strlen(line);
+    if (write(fd, line, n) != (ssize_t)n) { close(fd); return 0; }
+    struct timeval tv;
+    tv.tv_sec  = 0;
+    tv.tv_usec = 250000;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    int got = 0;
+    while (got < cap - 1) {
+        int r = (int)recv(fd, out + got, cap - 1 - got, 0);
+        if (r <= 0) break;
+        got += r;
+        if (got >= 2 && out[got - 1] == '\n' && out[got - 2] == '\n') break;
+    }
+    close(fd);
+    out[got] = 0;
+    return got;
+}
+
 // client: hand one line to an app that is already running. 0 = nobody home
 HOST_API int agent_sock_send(const char* name, const char* line) {
     if (!name || !*name || !line || !*line) return 0;
@@ -825,6 +850,7 @@ HOST_API int  agent_sock_line(char* out, int cap)                { return 0; }
 HOST_API void agent_sock_reply(const char* s)                    { }
 HOST_API int  agent_sock_send(const char* nm, const char* ln)    { return 0; }
 HOST_API int  agent_sock_ask(const char* nm, const char* ln, char* o, int c) { return 0; }
+HOST_API int  agent_sock_ask_block(const char* nm, const char* ln, char* o, int c) { return 0; }
 HOST_API void agent_shell_stop() { }
 HOST_API void agent_shell_new() { }
 HOST_API void agent_shell_select(int id) { }

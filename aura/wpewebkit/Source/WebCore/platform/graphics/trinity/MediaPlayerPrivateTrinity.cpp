@@ -61,6 +61,17 @@ private:
     WeakPtr<MediaPlayerPrivateTrinity> m_player;
 };
 
+// the picture ticks at the screen's refresh (TRINITY_VIDEO_HZ from the element), else 60
+static double videoHz()
+{
+    static double hz = [] {
+        const char* e = getenv("TRINITY_VIDEO_HZ");
+        double v = e ? atof(e) : 0;
+        return v >= 24 && v <= 480 ? v : 60.0;
+    }();
+    return hz;
+}
+
 MediaPlayerPrivateTrinity::MediaPlayerPrivateTrinity(MediaPlayer& player)
     : m_player(player)
     , m_timer(RunLoop::mainSingleton(), "MediaPlayerPrivateTrinity::Timer"_s, this, &MediaPlayerPrivateTrinity::tick)
@@ -206,7 +217,7 @@ void MediaPlayerPrivateTrinity::load(const URL&, const LoadOptions&, MediaSource
     m_video = webgfx_stream_new();
     applyVolume();
     setNetworkState(MediaPlayer::NetworkState::Loading);
-    m_timer.startRepeating(1_s / 60);
+    m_timer.startRepeating(1_s / videoHz());
 }
 
 void MediaPlayerPrivateTrinity::readyStateFromMediaSourceChanged()
@@ -502,7 +513,7 @@ void MediaPlayerPrivateTrinity::play()
 #endif
     m_paused = false;
     m_started = MonotonicTime::now();
-    m_timer.startRepeating(1_s / 60);
+    m_timer.startRepeating(1_s / videoHz());
     if (m_video)
         webgfx_video_play(m_video, m_from);
     if (RefPtr player = m_player.get())

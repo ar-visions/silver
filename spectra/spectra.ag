@@ -890,6 +890,8 @@ class AudioStream
     intern  rd       : f64                  # frames played since a flush
     intern  base     : i64                  # microseconds of frame 0
     intern  based    : bool
+    intern  pulled_at : i64                 # wall clock of the last pull
+    intern  pull_us  : i64                  # microseconds that pull covered
     intern  lock     : mutex
 
     func init []
@@ -949,9 +951,15 @@ class AudioStream
         lock.unlock[]
 
     # the time being heard, in microseconds; -1 before any sound
+    # the mixer pulls in blocks: the wall clock fills in between
     public func time [] -> i64
         lock.lock[]
         t : i64 [ (based) ? base + i64[ rd * 1000000.0 / f64[ rate ] ] : -1 ]
+        if [ based && pulled_at > 0 ]
+            since : i64 [ Au.epoch_micros[] - pulled_at ]
+            if [ since < 0 ] since = 0
+            if [ since > pull_us ] since = pull_us
+            t += since
         lock.unlock[]
         return t
 
@@ -983,6 +991,8 @@ class AudioStream
                 acc[ i * 2 ]     += i32[ ls ]
                 acc[ i * 2 + 1 ] += i32[ rs ]
                 rd += step
+            pulled_at = Au.epoch_micros[]
+            pull_us   = i64[ n ] * 1000000 / i64[ out_rate ]
         lock.unlock[]
 
     func dealloc []

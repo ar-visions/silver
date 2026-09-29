@@ -94,6 +94,7 @@ void webgfx_stream_size(int video, int* width, int* height);
 int webgfx_stream_next(int video, int64_t microseconds, int* width, int* height);
 void webgfx_stream_planes(int video, uint8_t* y, uint8_t* u, uint8_t* v);
 void webgfx_canvas_draw_image(int canvas, int image, float const* dst, float const* uv);
+void webgfx_canvas_draw_canvas(int canvas, int source, float const* dst, float const* uv);
 void webgfx_canvas_set_ramp(int canvas, int image, int kind, int spread, float alpha, float const* matrix, float const* points, float r0, float r1);
 void webgfx_canvas_compose(int canvas, int layer, int mask, bool luminance, float alpha, int x, int y, int width, int height);
 // css filters in pixels: blur (tint), color matrix, tables

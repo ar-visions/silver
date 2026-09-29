@@ -44,6 +44,8 @@ public:
     void clearRect(const FloatRect&) final;
 
     void drawNativeImage(const NativeImage&, const FloatRect&, const FloatRect&, ImagePaintingOptions) final;
+    void drawImageBuffer(ImageBuffer&, const FloatRect&, const FloatRect&, ImagePaintingOptions) final;
+    void drawConsumingImageBuffer(RefPtr<ImageBuffer>, const FloatRect&, const FloatRect&, ImagePaintingOptions) final;
 #if ENABLE(VIDEO)
     void drawVideoFrame(const VideoFrame&, const FloatRect&, ImageOrientation, bool shouldDiscardAlpha) final;
 #endif

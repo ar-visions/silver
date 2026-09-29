@@ -145,7 +145,7 @@ element aura : trinity
     public  height     : i32    [ 800 ]
     public  title      : string [ 'aura' ]
     public  background : string [ 'Background' ]
-    default src        : string              # a url, or a local file
+    default [ Launch ] src : string          # a url, or a local file
     mutable pid        : i32
     mutable ctl        : i32    [ -1 ]       # the helper's stdin
     mutable shm        : @u8                 # its frames: header, rgba8
@@ -212,6 +212,9 @@ element aura : trinity
             log 'aura: socketpair failed'
             return
         setenv[ 'TRINITY_BROWSER_SHM', shm_path.chars, 1 ]
+        # the screen's refresh: the page's video ticks at it
+        hz9 : string '{(ux) ? ux.refresh_hz[] : 60}'
+        setenv[ 'TRINITY_VIDEO_HZ', hz9.chars, 1 ]
         # no death signal: a reload forks on a thread that soon ends.
         # the helper quits when its stdin closes, as it does if we die
         pid = fork[]
@@ -231,7 +234,7 @@ element aura : trinity
         engine.push[ i64 pid ]
         engine.push[ i64 ctl ]
         engine_shm = shm_path
-        log 'aura: {engine_path} {target}'
+        log 'aura: {engine_path} {target}, video at {hz9} Hz'
 
     # after a live reload the page stays: the helper is the one running
     func adopt [] -> bool

@@ -1030,6 +1030,7 @@ element Moon
             '#4258':      '#8a8a8a22',
             '#ff6a2e55':  '#9a9a9a55',
             '#220022aa':  '#20202aaa',
+            '#22002280':  '#20202a80',   # commit tab fill, half alpha
             '#614':       '#3c3c42',
             '#413':       '#2e2e34',
             '#826':       '#565660',
@@ -1040,8 +1041,8 @@ element Moon
             '#44225588':  '#8a8a8a66',
             '#ff3a6a22':  '#8a8a8a22',   # commit tab fill
             '#ff3a6a44':  '#8a8a8a44',   # commit tab hover fill
-            '#ff5a8a99':  '#9a9a9a99',   # commit tab border
-            '#ff7aa4cc':  '#b4b4b4cc'    # commit tab hover border
+            '#ff5a8a80':  '#9a9a9a80',   # commit tab border
+            '#ff7aa480':  '#b4b4b480'    # commit tab hover border
         ]
 
     func load_bg [ arg: object :: t: Moon ]
@@ -1440,6 +1441,7 @@ element MilkyWay
             '#14121c80':  '#44118880',   # instance panel background
             '#ff6a2e55':  '#8a8aa455',   # search highlight fill
             '#220022aa':  '#1e0e28aa',   # run console base fill
+            '#22002280':  '#1e0e2880',   # commit tab fill, half alpha
             '#614':       '#524a',       # TButtons / nav rest fill
             '#413':       '#524e',       # TButtons hover fill
             '#826':       '#635e',       # TButtons lit / nav selected
@@ -1450,8 +1452,8 @@ element MilkyWay
             '#44225588':  '#8a8aaa11',   # editor line highlight
             '#ff3a6a22':  '#8a8ad422',   # commit tab fill
             '#ff3a6a44':  '#8a8ad444',   # commit tab hover fill
-            '#ff5a8a99':  '#8a9ade99',   # commit tab border
-            '#ff7aa4cc':  '#a8b6ffcc'    # commit tab hover border
+            '#ff5a8a80':  '#8a9ade80',   # commit tab border
+            '#ff7aa480':  '#a8b6ff80'    # commit tab hover border
         ]
 
 
@@ -1815,6 +1817,7 @@ element Titan
             '#14121c80':  '#11448880',   # instance panel background
             '#ff6a2e55':  '#ffb04a55',   # search highlight fill
             '#220022aa':  '#1e1206aa',   # run console base fill
+            '#22002280':  '#1e120680',   # commit tab fill, half alpha
             '#614':       '#4c3210',     # TButtons / nav rest fill
             '#413':       '#38240c',     # TButtons hover fill
             '#826':       '#6e4a18',     # TButtons lit / nav selected
@@ -1825,8 +1828,8 @@ element Titan
             '#44225588':  '#18a4',    # editor line highlight
             '#ff3a6a22':  '#ffb04a22',   # commit tab fill
             '#ff3a6a44':  '#ffb04a44',   # commit tab hover fill
-            '#ff5a8a99':  '#ffb85a99',   # commit tab border
-            '#ff7aa4cc':  '#ffd08acc'    # commit tab hover border
+            '#ff5a8a80':  '#ffb85a80',   # commit tab border
+            '#ff7aa480':  '#ffd08a80'    # commit tab hover border
         ]
 
     func load_bg [ arg: object :: t: Titan ]
@@ -2501,6 +2504,7 @@ element Enceladus
             '#14121c80':  '#0e141a80',   # instance panel background
             '#ff6a2e55':  '#7ac8e855',   # search highlight fill
             '#220022aa':  '#0c1216aa',   # run console base fill
+            '#22002280':  '#0c121680',   # commit tab fill, half alpha
             '#614':       '#28343e',     # TButtons / nav rest fill
             '#413':       '#1e2830',     # TButtons hover fill
             '#826':       '#3e5060',     # TButtons lit / nav selected
@@ -2511,8 +2515,8 @@ element Enceladus
             '#44225588':  '#16a4',    # editor line highlight
             '#ff3a6a22':  '#7ac8e822',   # commit tab fill
             '#ff3a6a44':  '#7ac8e844',   # commit tab hover fill
-            '#ff5a8a99':  '#7ac8e899',   # commit tab border
-            '#ff7aa4cc':  '#a8e0f4cc'    # commit tab hover border
+            '#ff5a8a80':  '#7ac8e880',   # commit tab border
+            '#ff7aa480':  '#a8e0f480'    # commit tab hover border
         ]
 
     func load_bg [ arg: object :: t: Enceladus ]
@@ -4049,6 +4053,7 @@ element Europa
             '#14121c80':  '#0e141a80',   # instance panel background
             '#ff6a2e55':  '#7ac8e855',   # search highlight fill
             '#220022aa':  '#0c1216aa',   # run console base fill
+            '#22002280':  '#0c121680',   # commit tab fill, half alpha
             '#614':       '#28343e',     # TButtons / nav rest fill
             '#413':       '#1e2830',     # TButtons hover fill
             '#826':       '#3e5060',     # TButtons lit / nav selected
@@ -4059,8 +4064,8 @@ element Europa
             '#44225588':  '#16a4',       # editor line highlight
             '#ff3a6a22':  '#7ac8e822',   # commit tab fill
             '#ff3a6a44':  '#7ac8e844',   # commit tab hover fill
-            '#ff5a8a99':  '#7ac8e899',   # commit tab border
-            '#ff7aa4cc':  '#a8e0f4cc'    # commit tab hover border
+            '#ff5a8a80':  '#7ac8e880',   # commit tab border
+            '#ff7aa480':  '#a8e0f480'    # commit tab hover border
         ]
 
     func load_bg [ arg: object :: t: Europa ]
@@ -7907,6 +7912,7 @@ element Mars
             '#4258':      '#8a5a4a58',   # unused (line_color moved to #44225588)
             '#ff6a2e55':  '#ff8a4a55',   # search highlight fill
             '#220022aa':  '#2a1a16aa',   # run console base fill
+            '#22002280':  '#2a1a1680',   # commit tab fill, half alpha
             '#614':       '#54281a',     # TButtons / nav rest fill
             '#413':       '#3c1c10',     # TButtons hover fill
             '#826':       '#7c3c22',     # TButtons lit / nav selected
@@ -7917,8 +7923,8 @@ element Mars
             '#44225588':  '#5a3a2e33',   # editor line highlight
             '#ff3a6a22':  '#ff8a4a22',   # commit tab fill
             '#ff3a6a44':  '#ff8a4a44',   # commit tab hover fill
-            '#ff5a8a99':  '#e0784299',   # commit tab border
-            '#ff7aa4cc':  '#ffa068cc'    # commit tab hover border
+            '#ff5a8a80':  '#e0784280',   # commit tab border
+            '#ff7aa480':  '#ffa06880'    # commit tab hover border
         ]
 
     func load_bg [ arg: object :: t: Mars ]
@@ -8485,6 +8491,7 @@ element Uranus
             '#14121c80':  '#0a1a1e80',   # instance panel background
             '#ff6a2e55':  '#7fd6cc55',   # search highlight fill
             '#220022aa':  '#0a1a1caa',   # run console base fill
+            '#22002280':  '#0a1a1c80',   # commit tab fill, half alpha
             '#614':       '#2a4a4a',     # TButtons / nav rest fill
             '#413':       '#22403f',     # TButtons hover fill
             '#826':       '#3f6f6a',     # TButtons lit / nav selected
@@ -8495,8 +8502,8 @@ element Uranus
             '#44225588':  '#8ad0cc11',   # editor line highlight
             '#ff3a6a22':  '#7fd6cc22',   # commit tab fill
             '#ff3a6a44':  '#7fd6cc44',   # commit tab hover fill
-            '#ff5a8a99':  '#7fd6cc99',   # commit tab border
-            '#ff7aa4cc':  '#a8ece4cc'    # commit tab hover border
+            '#ff5a8a80':  '#7fd6cc80',   # commit tab border
+            '#ff7aa480':  '#a8ece480'    # commit tab hover border
         ]
 
 element Neptune
@@ -9079,6 +9086,7 @@ element Earth
             '#4258':      '#2a4a3258',   # unused (line_color moved)
             '#ff6a2e55':  '#5ab24a55',   # search highlight fill
             '#220022aa':  '#0a1c12aa',   # run console base fill
+            '#22002280':  '#0a1c1280',   # commit tab fill, half alpha
             '#614':       '#1a3822',     # TButtons / nav rest fill
             '#413':       '#12281a',     # TButtons hover fill
             '#826':       '#2a5434',     # TButtons lit / nav selected
@@ -9089,8 +9097,8 @@ element Earth
             '#44225588':  '#3a5a3a33',   # editor line highlight
             '#ff3a6a22':  '#5ab24a22',   # commit tab fill
             '#ff3a6a44':  '#5ab24a44',   # commit tab hover fill
-            '#ff5a8a99':  '#6ac25a99',   # commit tab border
-            '#ff7aa4cc':  '#8ade7acc'    # commit tab hover border
+            '#ff5a8a80':  '#6ac25a80',   # commit tab border
+            '#ff7aa480':  '#8ade7a80'    # commit tab hover border
         ]
 
     # worker decodes files only; every vk object is built on main
@@ -9916,6 +9924,7 @@ element Synthwave
             '#14121c80':  '#160a2280',   # instance panel background
             '#ff6a2e55':  '#e04ae855',   # search highlight fill
             '#220022aa':  '#180826aa',   # run console base fill
+            '#22002280':  '#18082680',   # commit tab fill, half alpha
             '#614':       '#3a2050',     # TButtons / nav rest fill
             '#413':       '#2a1638',     # TButtons hover fill
             '#826':       '#5c3078',     # TButtons lit / nav selected
@@ -9926,8 +9935,8 @@ element Synthwave
             '#44225588':  '#301a4888',   # editor line highlight
             '#ff3a6a22':  '#e04ae822',   # commit tab fill
             '#ff3a6a44':  '#e04ae844',   # commit tab hover fill
-            '#ff5a8a99':  '#e06af299',   # commit tab border
-            '#ff7aa4cc':  '#f09affcc'    # commit tab hover border
+            '#ff5a8a80':  '#e06af280',   # commit tab border
+            '#ff7aa480':  '#f09aff80'    # commit tab hover border
         ]
 
 # ===============================================================
@@ -11744,6 +11753,7 @@ element Clouds
             '#14121c80':  '#0e1c2e80',   # instance panel background
             '#ff6a2e55':  '#4aa0e855',   # search highlight fill
             '#220022aa':  '#0a1826aa',   # run console base fill
+            '#22002280':  '#0a182680',   # commit tab fill, half alpha
             '#614':       '#1f3a52',     # TButtons / nav rest fill
             '#413':       '#16283a',     # TButtons hover fill
             '#826':       '#2f5a80',     # TButtons lit / nav selected
@@ -11754,8 +11764,8 @@ element Clouds
             '#44225588':  '#1c3a5288',   # editor line highlight
             '#ff3a6a22':  '#4aa0e822',   # commit tab fill
             '#ff3a6a44':  '#4aa0e844',   # commit tab hover fill
-            '#ff5a8a99':  '#6ab4f299',   # commit tab border
-            '#ff7aa4cc':  '#9ad0ffcc'    # commit tab hover border
+            '#ff5a8a80':  '#6ab4f280',   # commit tab border
+            '#ff7aa480':  '#9ad0ff80'    # commit tab hover border
         ]
 
 
@@ -12890,6 +12900,7 @@ element Pluto
             '#140a2a80':  '#0e142080',
             '#14121c80':  '#0e142080',   # instance panel background
             '#220022aa':  '#101a26aa',
+            '#22002280':  '#101a2680',   # commit tab fill, half alpha
             '#614':       '#2c3a4c',
             '#413':       '#22303e',
             '#826':       '#4a6280',
@@ -12900,8 +12911,8 @@ element Pluto
             '#44225588':  '#3a4c6433',
             '#ff3a6a22':  '#7ab0ff22',
             '#ff3a6a44':  '#7ab0ff44',
-            '#ff5a8a99':  '#8ab8ff99',
-            '#ff7aa4cc':  '#a8ccffcc'
+            '#ff5a8a80':  '#8ab8ff80',
+            '#ff7aa480':  '#a8ccff80'
         ]
 
     func load_bg [ arg: object :: t: Pluto ]

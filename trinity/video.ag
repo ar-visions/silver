@@ -45,6 +45,105 @@ shader NV12Convert
     }
 
 
+enum BlendSurface
+    pa: 0
+    pb: 1
+    po: 2
+
+# the mix of two pictures' bytes, four a word, t toward b
+shader PlaneBlend
+    mutable n : i32          # words; a row of invocations is 1024
+    mutable t : f32
+    attrib pa : StorageBuffer [ type:typeid[ BlendSurface ], id: BlendSurface.pa, count:1, format: typeid[ u32 ] ]
+    attrib pb : StorageBuffer [ type:typeid[ BlendSurface ], id: BlendSurface.pb, count:1, format: typeid[ u32 ] ]
+    attrib po : StorageBuffer [ type:typeid[ BlendSurface ], id: BlendSurface.po, count:1, format: typeid[ u32 ], writable: true ]
+
+    func compute [] -> GLSL none {
+        ivec2 gid = ivec2(gl_GlobalInvocationID.xy);
+        int   i   = gid.y * 1024 + gid.x;
+        if (gid.x >= 1024 || i >= ubo.n) return;
+        uint wa = pa[i];
+        uint wb = pb[i];
+        uint r  = 0u;
+        for (int k = 0; k < 4; k++) {{
+            float va = float((wa >> (8 * k)) & 255u);
+            float vb = float((wb >> (8 * k)) & 255u);
+            r |= uint(clamp(mix(va, vb, ubo.t) + 0.5, 0.0, 255.0)) << (8 * k);
+        }}
+        po[i] = r;
+    }
+
+# the picture between two decoded ones: their bytes mixed on the gpu.
+# a and b hold the pair (loaded once each), o comes back to the cpu
+class FrameBlend
+    context vk     : vk_context
+    context w      : Display
+    intern  bytes  : i64
+    intern  words  : i32
+    intern  buf_a  : Buffer
+    intern  buf_b  : Buffer
+    intern  buf_o  : Buffer
+    intern  a_pts  : i64 [ -1 ]
+    intern  b_pts  : i64 [ -1 ]
+    intern  shader : PlaneBlend
+    intern  pipe   : Pipeline
+    intern  cmd    : Command
+
+    func setup [ f: VideoFrame ]
+        bytes = f.y.count + f.u.count + f.v.count
+        words = i32[ (bytes + 3) / 4 ]
+        sz : i64 [ i64[ words ] * 4 ]
+        buf_a = Buffer [ vk: vk, size: sz, u_storage: true, m_host_visible: true, m_host_coherent: true ]
+        buf_b = Buffer [ vk: vk, size: sz, u_storage: true, m_host_visible: true, m_host_coherent: true ]
+        buf_o = Buffer [ vk: vk, size: sz, u_storage: true, m_host_visible: true, m_host_coherent: true, m_host_cached: true ]
+        shader   = PlaneBlend [ vk: vk ]
+        shader.n = words
+        pipe = Pipeline [ vk: vk, w: w, name: 'blend', s: shader, default_model: mat4f.identity[],
+            samplers: map Au[string] [ 'pa': buf_a, 'pb': buf_b, 'po': buf_o ] ]
+        pipe.dispatch_x = 64
+        pipe.dispatch_y = ((words + 1023) / 1024 + 15) / 16
+        cmd   = Command [ vk: vk ]
+        a_pts = -1
+        b_pts = -1
+
+    func load [ dst: Buffer, f: VideoFrame ]
+        p : @u8 [ dst.data ]
+        memcpy[ @p[ 0 ], @f.y[ 0 ], f.y.count ]
+        memcpy[ @p[ f.y.count ], @f.u[ 0 ], f.u.count ]
+        memcpy[ @p[ f.y.count + f.u.count ], @f.v[ 0 ], f.v.count ]
+
+    # out = fa mixed toward fb by t (0..1)
+    public func between [ fa: VideoFrame, fb: VideoFrame, t: f32, out: VideoFrame ]
+        n9 : i64 [ fa.y.count + fa.u.count + fa.v.count ]
+        if [ !pipe || bytes != n9 ] setup[ fa ]
+        if [ a_pts != fa.pts ]
+            load[ buf_a, fa ]
+            a_pts = fa.pts
+        if [ b_pts != fb.pts ]
+            load[ buf_b, fb ]
+            b_pts = fb.pts
+        shader.t = t
+        cmd.begin
+        pipe.dispatch[ cmd.cmd ]
+        vkCmdPipelineBarrier[ cmd.cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0,
+            1, VkMemoryBarrier [
+                sType:         VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+                srcAccessMask: VK_ACCESS_SHADER_WRITE_BIT,
+                dstAccessMask: VK_ACCESS_HOST_READ_BIT ],
+            0, null, 0, null ]
+        cmd.submit
+        cmd.finish[]
+        if [ !out.y || out.y.count != fa.y.count ] out.y = vec u8 [ fa.y.count ]
+        if [ !out.u || out.u.count != fa.u.count ] out.u = vec u8 [ fa.u.count ]
+        if [ !out.v || out.v.count != fa.v.count ] out.v = vec u8 [ fa.v.count ]
+        p : @u8 [ buf_o.data ]
+        memcpy[ @out.y[ 0 ], @p[ 0 ], fa.y.count ]
+        memcpy[ @out.u[ 0 ], @p[ fa.y.count ], fa.u.count ]
+        memcpy[ @out.v[ 0 ], @p[ fa.y.count + fa.u.count ], fa.v.count ]
+        out.width  = fa.width
+        out.height = fa.height
+
+
 # h.264 on the vulkan video queue: the picture never leaves the gpu, only
 # the bitstream comes back
 class Encoder
@@ -1156,7 +1255,15 @@ class Decoder
 # h.264 samples decoded ahead on a worker thread
 class VideoStream
     context vk        : vk_context
+    context w         : Display
     public  ahead     : i32 [ 6 ]           # pictures decoded ahead
+    # a time between two pictures gets their mix (the display's rate
+    # above the clip's); the pair must both be decoded, so the picture
+    # runs one frame behind the newest decoded
+    public  smooth    : bool [ true ]
+    intern  last      : VideoFrame          # the picture last handed out
+    intern  blend     : FrameBlend
+    intern  mixed     : VideoFrame          # the scratch mix
     public  width     : i32
     public  height    : i32
     public  decoded   : i64                 # pictures decoded in all
@@ -1223,6 +1330,13 @@ class VideoStream
         lock.unlock[]
         return n
 
+    # the next picture's time, else -1
+    public func next_pts [] -> i64
+        lock.lock[]
+        p : i64 [ (ready.count > 0) ? ready[ 0 ].pts : -1 ]
+        lock.unlock[]
+        return p
+
     # the latest picture at or before t; first: a later one too
     public func frame_at [ t: i64, first: bool ] -> VideoFrame
         lock.lock[]
@@ -1236,8 +1350,19 @@ class VideoStream
                 break
             pick = f
             ready.shift[]
+        if [ pick ] last = pick
+        cur : VideoFrame [ last ]
+        nxt : VideoFrame [ (ready.count > 0) ? ready[ 0 ] : null ]
         lock.cond_signal[]
         lock.unlock[]
+        # between two pictures: their mix for t, pts t
+        if [ smooth && cur && nxt && nxt.pts > cur.pts && t > cur.pts && t < nxt.pts ]
+            if [ !blend ] blend = FrameBlend [ vk: vk, w: w ]
+            if [ !mixed ] mixed = VideoFrame []
+            fr : f32 [ f32[ t - cur.pts ] / f32[ nxt.pts - cur.pts ] ]
+            blend.between[ cur, nxt, fr, mixed ]
+            mixed.pts = t
+            return mixed
         return pick
 
     func run [] -> none

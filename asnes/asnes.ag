@@ -9,6 +9,7 @@ export extensions [
 ]
 
 import trinity
+import devices
 import img
 import vec
 import spectra
@@ -269,6 +270,7 @@ element asnes : trinity
 	public  width          	: i32    [ 1024 ]
 	public  height         	: i32    [ 896 ]
 	public  lock_aspect    	: bool   [ true ]
+	mutable aspect_sent    	: bool
 	public  background     	: string [ 'Background' ]
 	public  spc_rom        	: path
 	# a new rom at runtime: stop the machine thread, drop the machine, and the
@@ -4232,6 +4234,10 @@ element asnes : trinity
 
 	public func draw [ w: Window ]
 		if [ w.draw_stage != CanvasType.screen ] return
+		# the host sizes a pip to the picture: tell it once
+		if [ !aspect_sent && host_slot[] > 0 ]
+			host_post[ 0, i32[ HM.aspect ], 256, 224, 0 ]
+			aspect_sent = true
 		ux.will_animate = true
 		paint[ w.screen, rect [ x: 0.0, y: 0.0, w: bounds.w, h: bounds.h ] ]
 

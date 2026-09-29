@@ -1720,11 +1720,8 @@ static void exporter(silver a) {
                 char line[1024];
                 int  off = snprintf(line, sizeof(line), "%s: [", ((string)j->key)->chars);
                 bool first = true;
-                // a launch spec is one string, colons and all (Enum[a:0,b:1]);
-                // the other areas (extensions) are key: value pairs
-                bool launch = strcmp(((string)j->key)->chars, "launch") == 0;
                 each(vals, string, v) {
-                    char* col = launch ? NULL : strchr(v->chars, ':');
+                    char* col = strchr(v->chars, ':');
                     if (col)
                         off += snprintf(line + off, sizeof(line) - off, "%s'%.*s': %s",
                                         first ? "" : ", ", (int)(col - v->chars), v->chars, col + 1);
@@ -3115,14 +3112,16 @@ static void silver_run_exports(silver a) {
     members(a->autype, mem)
         if (mem->member_type == AU_MEMBER_FUNC &&
             mem->access_type == interface_export) any = true;
-    // a cached build has no parsed members; --export launches regardless
-    // (every product exits 0 under SILVER_EXPORT after module init)
-    if (!any && !a->export) return;
     path bin = a->live_binary ? a->live_binary : a->product;
     if (!bin || !file_exists("%o", bin)) return;
     // a cached build never learns is_library: the product's ext says it
     string ex  = ext(bin);
     bool   lib = eq(ex, "dylib") || eq(ex, "so") || eq(ex, "dll");
+    // an app runs its imports' exports too (trinity enumerates the app's
+    // launch members into the export); a library only its own. a cached
+    // build has no parsed members; --export launches regardless
+    // (every product exits 0 under SILVER_EXPORT after module init)
+    if (!any && lib && !a->export) return;
     // exports write into the module's own share bundle
     path share = f(path, "%o/share/%o", a->install,
         silver_install_name(a));
@@ -3894,13 +3893,14 @@ AU_EXPORT void silver_init(silver a) {
             // actually-changed module rebuilds (which the host would rebuild anyway).
             build_product(a);
 
+            // the export registry first: an export func may add to it
+            exporter(a);
+
             silver_run_exports(a);
 
             silver_run_tests(a);
 
             silver_package(a);
-
-            exporter(a);
 
         }
         on_error() {
@@ -7454,56 +7454,6 @@ enode parse_statement(silver a)
             e = (enode)mem;
             etype_register((aether)a, (Au)au, (Au)mem, true);
 
-            // a `[ Launch ]` member is a launch parameter: serialize its meta
-            // (name=type=default[=Enum[n:v,...]]) into the module's export so a
-            // host offers it without dlopening the whole module
-            if (member_meta && member_meta->autype->ident && rtype->autype->ident &&
-                (strcmp(member_meta->autype->ident, "Launch") == 0 ||
-                 strcmp(member_meta->autype->ident, "Live")   == 0)) {
-                silver  og = a->is_external ? a->is_external : a;
-                exports ex = (exports)get(og->exports, (Au)string(a->name->chars));
-                if (!ex) {
-                    ex = exports(module_path, a->module_path, module_file, a->module_file,
-                                 project_path, a->project_path,
-                                 install_name, silver_install_name(a));
-                    set(og->exports, (Au)string(a->name->chars), (Au)ex);
-                }
-                if (!ex->areas) ex->areas = map(hsize, 8);
-                array lvals = (array)get(ex->areas, (Au)string("launch"));
-                if (!lvals) { lvals = array(8); set(ex->areas, (Au)string("launch"), (Au)lvals); }
-                string spec = f(string, "%s=%s=", au->ident, rtype->autype->ident);
-                if (expr) each(expr, token, t) {
-                    if (eq(t, "[") || eq(t, "]")) continue;
-                    concat(spec, string(t->chars));
-                }
-                // an enum with no default starts at its first value: say so,
-                // or a host reads the empty default as "changed" on every pick
-                if (!expr && rtype->autype->is_enum) {
-                    Au_t et = rtype->autype;
-                    for (int ei = 0; ei < et->members.count; ei++) {
-                        Au_t ev = (Au_t)et->members.origin[ei];
-                        if (!ev || ev->member_type != AU_MEMBER_ENUMV) continue;
-                        concat(spec, f(string, "%i", ev->value ? *(i32*)ev->value : 0));
-                        break;
-                    }
-                }
-                if (rtype->autype->is_enum) {
-                    concat(spec, string("=Enum["));
-                    Au_t et = rtype->autype; bool first_e = true;
-                    for (int ei = 0; ei < et->members.count; ei++) {
-                        Au_t ev = (Au_t)et->members.origin[ei];
-                        if (!ev || ev->member_type != AU_MEMBER_ENUMV) continue;
-                        i32 iv = ev->value ? *(i32*)ev->value : 0;
-                        concat(spec, f(string, "%s%s:%i", first_e ? "" : ",", ev->ident, iv));
-                        first_e = false;
-                    }
-                    concat(spec, string("]"));
-                }
-                // a Range meta (VolumeRange) is a slider: the bare form is 0..1
-                // to the host; the running instance answers props with its bounds
-                if (strcmp(member_meta->autype->ident, "Live") == 0) concat(spec, string("=live"));
-                push(lvals, (Au)spec);
-            }
 
             efunc fn = (efunc)get(a->registry, (Au)e->autype);
             verify(fn && fn == e && fn->autype == mem->autype, "unexpected registration state");
