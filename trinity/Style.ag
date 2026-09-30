@@ -106,7 +106,8 @@ class StyleBlock
             el [ sc[0] == ';' ]
                 cur : cstr [ start ]
                 expect scan_to[ @cur, ':' ] && cur < sc, 'expected [member:]value;'
-                member : string [ chars: start, ref_length: distance[ start, cur ] ]
+                member : string [ chars: start,
+                                  ref_length: distance[ start, cur ] ]
                 for [ i: i32 0, i < member.count, i += 1 ]
                     if [ member.chars[i] == '-' ]
                         member.chars[i] = '_'
@@ -143,17 +144,22 @@ class StyleBlock
                         v9.push[ raw.trim[] ]
                     value = v9
                 el
-                    param = (ci >= 0) ? cb_value.mid[ ci + 1, cb_value.count - (ci + 1) ].trim[] : null
-                    value = (ci >= 0) ? cb_value.mid[ 0, ci ].trim[] : cb_value
+                    param = (ci >= 0) ? cb_value.mid[ ci + 1,
+                            cb_value.count - (ci + 1) ].trim[] : null
+                    value = (ci >= 0) ? cb_value.mid[ 0,
+                            ci ].trim[] : cb_value
                 filter_val : f32 [ 0.0 ]
-                if [ param && param.count >= 7 && param.mid[ 0, 7 ] == 'filter ' ]
-                    filter_val = f32[ param.mid[ 7, param.count - 7 ].trim[] ]
+                if [ param && param.count >= 7
+                     && param.mid[ 0, 7 ] == 'filter ' ]
+                    filter_val = f32[ param.mid[ 7,
+                            param.count - 7 ].trim[] ]
                     param = null
                 trans : StyleTransition [ (param) ? StyleTransition[ param ] : null ]
                 expect member, 'member cannot be blank'
                 expect value,  'value cannot be blank'
-                # split a registered unit off the number while the string
-                # is still here. arrays and quoted values are left alone
+                # split a registered unit off the number while the
+                # string is still here. arrays and quoted values are
+                # left alone
                 entries[ member ] = StyleEntry [ member: member, value: value, trans: trans, bl: a, filter: filter_val ]
                 sc += 1
                 ws[ @sc ]
@@ -193,7 +199,8 @@ class StyleBlock
                         state_match = state_val && Au.cast_bool [ state_val ]
                     el [ use_app ]
                         state_match = false
-                    el [ walk.oper || !walk.states || walk.states.count <= 1 ]
+                    el [ walk.oper || !walk.states
+                         || walk.states.count <= 1 ]
                         current : Au cur.get_property[ walk.state ]
                         state_match = current && current.cast_bool[ ]
                     el
@@ -207,7 +214,8 @@ class StyleBlock
                                 break
                         state_match = all_match
 
-                state_reject : bool [ score_state && walk.state && !state_match ]
+                state_reject : bool [ score_state && walk.state
+                                      && !state_match ]
                 if [ id_reject || type_reject || state_reject ]
                     return 0.0
                 sc : i64[ id_match ] << 1 | i64[ type_match ] | i64[ state_match ] << 2
@@ -290,12 +298,15 @@ class Style
                 if [ !cache ]
                     cache = vec StyleBlock []
                     members[s.property] = cache
-                cache.push[ s ] # we merely associate the 'layers' property for example
+                # we merely associate the 'layers' property for example
+                cache.push[ s ]
             el
                 expect depth == 0, "incompatible css depth"
-                cache_block [ s, depth + 1 ] # we want to enforce just 1 depth from root
+                # we want to enforce just 1 depth from root
+                cache_block [ s, depth + 1 ]
 
-    func applicable [ n: element, prop_name: string, result: StyleEntries ] -> bool
+    func applicable [ n: element, prop_name: string,
+                      result: StyleEntries ] -> bool
         blocks : members[ prop_name ]
         ty     : typeid[ n ]
         ret    : false
@@ -315,7 +326,8 @@ class Style
             if [ type_ok ]
                 if [ block.key && block.property ]
                     if [ block.score[ n, false ] > 0 ]
-                        for [ f:StyleEntry, name:string ] in block.entries
+                        for [ f:StyleEntry, name:string ]
+                            in block.entries
                             result.push[ f ]
                         ret = true
                 el
@@ -379,10 +391,12 @@ class Style
                 out.push[ r.trim[] ]
         return out
 
-    func layer_use [ defs: map LayerDef[string], lc: string ] -> vec string
+    func layer_use [ defs: map LayerDef[string],
+                     lc: string ] -> vec string
         if [ lc.count == 0 ] return null
         c0 : i8 [ lc.chars[0] ]
-        alpha : bool [ (c0 >= 'a' && c0 <= 'z') || (c0 >= 'A' && c0 <= 'Z') || c0 == '_' ]
+        alpha : bool [ (c0 >= 'a' && c0 <= 'z')
+                       || (c0 >= 'A' && c0 <= 'Z') || c0 == '_' ]
         if [ !alpha ] return null
         ci : num [ lc.index_of[ ':' ] ]
         bi : num [ lc.index_of[ '[' ] ]
@@ -391,29 +405,36 @@ class Style
         if [ !defs[ call[0] ] ] return null
         return call
 
-    func layer_subst [ d: LayerDef, call: vec string, txt: string ] -> string
+    func layer_subst [ d: LayerDef, call: vec string,
+                       txt: string ] -> string
         res : txt
         for [ pi: i32 0, pi < d.params.count, pi += 1 ]
             v : string [ (pi + 1 < call.count) ? call[pi + 1] : '' ]
             res = css_replace[ res, '$' + d.params[pi], v ]
         return res
 
-    func layer_splice [ hdr: string, d: LayerDef, call: vec string, at: i32, out: vec CSSLine, states: vec CSSLine ]
+    func layer_splice [ hdr: string, d: LayerDef, call: vec string,
+                        at: i32, out: vec CSSLine, states: vec CSSLine ]
         in_st : bool [ false ]
         for [ bl: CSSLine ] in d.body
             txt : layer_subst[ d, call, bl.content ]
-            is_hdr : bool [ bl.indent == 0 && txt.count > 0 && txt.chars[0] == ':' ]
+            is_hdr : bool [ bl.indent == 0 && txt.count > 0
+                            && txt.chars[0] == ':' ]
             if [ is_hdr ]
                 in_st = true
                 if [ states != null ]
-                    states.push[ CSSLine [ indent: 0, content: txt, line: bl.line ] ]
-                    states.push[ CSSLine [ indent: 1, content: hdr, line: bl.line ] ]
+                    states.push[ CSSLine [ indent: 0, content: txt,
+                            line: bl.line ] ]
+                    states.push[ CSSLine [ indent: 1, content: hdr,
+                            line: bl.line ] ]
                 continue
             if [ in_st ]
                 if [ states != null ]
-                    states.push[ CSSLine [ indent: bl.indent + 2, content: txt, line: bl.line ] ]
+                    states.push[ CSSLine [ indent: bl.indent + 2,
+                            content: txt, line: bl.line ] ]
                 continue
-            out.push[ CSSLine [ indent: at + bl.indent, content: txt, line: bl.line ] ]
+            out.push[ CSSLine [ indent: at + bl.indent, content: txt,
+                                line: bl.line ] ]
 
     func expand_layers [ lines: vec CSSLine, src: path ] -> vec CSSLine
         if [ !layer_defs ] layer_defs = map LayerDef [ string ] [ ]
@@ -423,15 +444,18 @@ class Style
             lc : string [ lines[i].content ]
             cls : string
             hdr : vec string
-            if [ lines[i].indent == 0 && lc.index_of[ '[' ] > 0 && lc.count > 0 && lc.last[] != '{' ]
+            if [ lines[i].indent == 0 && lc.index_of[ '[' ] > 0
+                 && lc.count > 0 && lc.last[] != '{' ]
                 sp0 : num [ lc.index_of[ ' ' ] ]
                 if [ sp0 > 0 ]
                     t0 : lc.mid[ 0, sp0 ]
                     c00 : i8 [ t0.chars[0] ]
-                    ok0 : bool [ c00 >= 'A' && c00 <= 'Z' && t0.index_of[ '.' ] < 0 &&
+                    ok0 : bool [ c00 >= 'A' && c00 <= 'Z'
+                                 && t0.index_of[ '.' ] < 0 &&
                                  t0.index_of[ ':' ] < 0 && t0.index_of[ '/' ] < 0 ]
                     if [ ok0 ]
-                        rest0 : lc.mid[ sp0 + 1, lc.count - sp0 - 1 ].trim[]
+                        rest0 : lc.mid[ sp0 + 1,
+                                        lc.count - sp0 - 1 ].trim[]
                         c01 : i8 [ 0 ]
                         if [ rest0.count > 0 ] c01 = rest0.chars[0]
                         alpha1 : bool [ (c01 >= 'a' && c01 <= 'z') || (c01 >= 'A' && c01 <= 'Z') || c01 == '_' ]
@@ -455,7 +479,8 @@ class Style
                     rel : i32    [ (base_in < 0) ? 0 : lines[j].indent - base_in ]
                     if [ rel < 0 ] rel = 0
                     blc : string [ lines[j].content ]
-                    if [ blc.count >= 7 && blc.mid[ 0, 7 ] == 'layers.' ]
+                    if [ blc.count >= 7
+                         && blc.mid[ 0, 7 ] == 'layers.' ]
                         errors.push[ '{src}:{lines[j].line}: layers inside a Layer are not allowed' ]
                     cuse : layer_use[ layer_defs, blc ]
                     if [ cuse ]
@@ -464,7 +489,8 @@ class Style
                             d.body.push[ CSSLine [ indent: rel + cl2.indent,
                                 content: layer_subst[ du, cuse, cl2.content ], line: cl2.line ] ]
                     el
-                        d.body.push[ CSSLine [ indent: rel, content: blc, line: lines[j].line ] ]
+                        d.body.push[ CSSLine [ indent: rel,
+                                content: blc, line: lines[j].line ] ]
                     j += 1
                 layer_defs[ nm ] = d
                 i = j
@@ -493,7 +519,8 @@ class Style
                 ci2 : num [ rest.index_of[ ':' ] ]
                 bi2 : num [ rest.index_of[ '[' ] ]
                 if [ bi2 < 0 ]
-                    # literal layers.<id>: block — properties on child lines
+                    # literal layers.<id>: block — properties on child
+                    # lines
                     out.push[ cl ]
                     k2 += 1
                     continue
@@ -506,22 +533,27 @@ class Style
                         k2 += 1
                         continue
                     hdr2 : (d2.cls == 'Layer') ? ('layers.' + call2[0] + ':') : ('layers.' + call2[0] + ': ' + d2.cls)
-                    out.push[ CSSLine [ indent: cl.indent, content: hdr2, line: cl.line ] ]
+                    out.push[ CSSLine [ indent: cl.indent,
+                                        content: hdr2, line: cl.line ] ]
                     if [ in_state ]
-                        layer_splice[ hdr2, d2, call2, cl.indent + 1, out, null ]
+                        layer_splice[ hdr2, d2, call2, cl.indent + 1,
+                                      out, null ]
                     el
-                        layer_splice[ hdr2, d2, call2, cl.indent + 1, out, pending ]
+                        layer_splice[ hdr2, d2, call2, cl.indent + 1,
+                                      out, pending ]
                     k2 += 1
                     continue
                 typed : bool [ false ]
                 if [ ci2 > 0 ]
                     nm2 : rest.mid[ 0, ci2 ].trim[]
-                    rc  : rest.mid[ ci2 + 1, rest.count - ci2 - 1 ].trim[]
+                    rc  : rest.mid[ ci2 + 1,
+                                    rest.count - ci2 - 1 ].trim[]
                     cA  : i8 [ 0 ]
                     if [ rc.count > 0 ] cA = rc.chars[0]
                     alphaA : bool [ (cA >= 'a' && cA <= 'z') || (cA >= 'A' && cA <= 'Z') || cA == '_' ]
                     if [ alphaA && rc.index_of[ '[' ] > 0 ]
-                        # layers.<id>: <def> [ args ] — bind any def to the id
+                        # layers.<id>: <def> [ args ] — bind any def to
+                        # the id
                         callc : call_parse[ rc ]
                         d3 : layer_defs[ callc[0] ]
                         if [ !d3 ]
@@ -533,11 +565,14 @@ class Style
                         for [ ka: i32 1, ka < callc.count, ka += 1 ]
                             call3.push[ callc[ka] ]
                         hdr3 : (d3.cls == 'Layer') ? ('layers.' + nm2 + ':') : ('layers.' + nm2 + ': ' + d3.cls)
-                        out.push[ CSSLine [ indent: cl.indent, content: hdr3, line: cl.line ] ]
+                        out.push[ CSSLine [ indent: cl.indent,
+                                content: hdr3, line: cl.line ] ]
                         if [ in_state ]
-                            layer_splice[ hdr3, d3, call3, cl.indent + 1, out, null ]
+                            layer_splice[ hdr3, d3, call3,
+                                    cl.indent + 1, out, null ]
                         el
-                            layer_splice[ hdr3, d3, call3, cl.indent + 1, out, pending ]
+                            layer_splice[ hdr3, d3, call3,
+                                    cl.indent + 1, out, pending ]
                         typed = true
                 if [ !typed ]
                     errors.push[ '{src}:{cl.line}: instantiate layers with `layers.<id> [ args ]` or `layers.<id>: <def> [ args ]`' ]
@@ -559,7 +594,8 @@ class Style
             if [ content == '}' ]
                 i += 1
                 continue
-            if [ content.count >= 7 && content.mid[ 0, 7 ] == '@import' ]
+            if [ content.count >= 7
+                 && content.mid[ 0, 7 ] == '@import' ]
                 rest : content.mid[ 7, content.count - 7 ].trim[]
                 expect rest.count >= 2, '@import expects quoted path'
                 qt : i8 [ rest.chars[0] ]
@@ -589,21 +625,25 @@ class Style
             bl.src_line = lines[i].line
             validate_block[ bl, errors ]
             base.push[ bl ]
-            while [ end_idx < lines.count && lines[end_idx].indent == 0 ]
+            while [ end_idx < lines.count
+                    && lines[end_idx].indent == 0 ]
                 state_line : string [ lines[end_idx].content ]
                 if [ !state_line.count || state_line.chars[0] != ':' ]
                     break
                 if [ state_line.last[] == '{' ]
-                    state_line = state_line.mid[ 0, state_line.count - 1 ].trim[]
+                    state_line = state_line.mid[ 0,
+                            state_line.count - 1 ].trim[]
                 state_sel  : content + state_line
                 body_start : i32 [ end_idx + 1 ]
                 body_end   : i32 [ body_start ]
-                while [ body_end < lines.count && lines[body_end].indent > 0 ]
+                while [ body_end < lines.count
+                        && lines[body_end].indent > 0 ]
                     body_end += 1
                 sbl : StyleBlock [ ]
                 ssc : cstr [ state_sel.chars ]
                 sbl.quals = parse_qualifiers[ sbl, @ssc ]
-                parse_block_body[ sbl, lines, body_start, body_end - 1, 0 ]
+                parse_block_body[ sbl, lines, body_start, body_end - 1,
+                                  0 ]
                 sbl.src_file = src
                 sbl.src_line = lines[end_idx].line
                 validate_block[ sbl, errors ]
@@ -622,7 +662,8 @@ class Style
             cache_block[ b, 0 ]
 
     # the best match is the first match
-    func best_match [ n: element, prop_name: string, entries: vec StyleEntry ] -> StyleEntry
+    func best_match [ n: element, prop_name: string,
+                      entries: vec StyleEntry ] -> StyleEntry
         match      : StyleEntry [ null ]
         for [ e: StyleEntry ] in entries
             bl : StyleBlock [ e.bl ]
@@ -637,7 +678,8 @@ class Style
     # pull an instance's embedded style member into base, once per type.
     # null style is not memoized: defaults may not be applied yet
     func integrate_instance [ n: element ] -> bool
-        sm : Au.find_member[ typeid[ n ], "style", AU_MEMBER_VAR, 0, true ]
+        sm : Au.find_member[ typeid[ n ], "style", AU_MEMBER_VAR, 0,
+                             true ]
         if [ !sm ] return false
         v : Au n.member_object[ sm ]
         css : (v inherits CSS)
@@ -679,7 +721,9 @@ class Style
             all : vec StyleEntry []
             for [ m: i32 0, m < ty.members.count, m += 1 ]
                 mem : ty.members.origin[m]
-                if [ mem.member_type != AU_MEMBER_VAR || mem.access_type == 1 ] # 1 == intern!
+                # 1 == intern!
+                if [ mem.member_type != AU_MEMBER_VAR
+                     || mem.access_type == 1 ]
                     continue
                 name : string [ mem.ident ]
                 if [ applicable[ n, name, all ] ]
@@ -722,7 +766,8 @@ class Style
         loaded   = true
         reloaded = true
 
-    # app style: embedded per-class css only; a .css file is opt-in via path
+    # app style: embedded per-class css only; a .css file is opt-in via
+    # path
     construct [ app_instance: element ]
         base     = vec StyleBlock []
         members  = map StyleEntries[string] []
@@ -753,7 +798,8 @@ struct XCoord
             x_type    = XAlign[ f ]
             sx_offset : sx.mid[ 1, sx.count - 1 ]
             # `wc` — content width (a 'c' after the width marker)
-            if [ x_type == XAlign.width && sx_offset.count > 0 && sx_offset.chars[0] == 'c' ]
+            if [ x_type == XAlign.width && sx_offset.count > 0
+                 && sx_offset.chars[0] == 'c' ]
                 content   = true
                 sx_offset = sx_offset.mid[ 1, sx_offset.count - 1 ]
             if [ sx_offset.last[] == 'x' && sx_offset.count >= 2 ]
@@ -763,8 +809,10 @@ struct XCoord
             pct_at : i32 [ sx_offset.index_of[ '%' ] ]
             if [ pct_at >= 0 ]
                 percent = true
-                offset  = sx_offset.mid[ 0, pct_at ].real_value[] / 100.0
-                off_str : sx_offset.mid[ pct_at + 1, sx_offset.count - pct_at - 1 ]
+                offset  = sx_offset.mid[ 0,
+                        pct_at ].real_value[] / 100.0
+                off_str : sx_offset.mid[ pct_at + 1,
+                        sx_offset.count - pct_at - 1 ]
                 if [ off_str.count > 0 && off_str.chars[0] == '+' ]
                     off_str = off_str.mid[ 1, off_str.count - 1 ]
                 if [ off_str.count > 0 ]
@@ -776,13 +824,15 @@ struct XCoord
                     relative  = true
                 offset = sx_offset.real_value[]
 
-    func plot [ from: f32, vto: f32, left: @XCoord, left_val: f32, rel: rect, last: rect, fc: f32, console: bool ] -> f32
+    func plot [ from: f32, vto: f32, left: @XCoord, left_val: f32,
+                rel: rect, last: rect, fc: f32, console: bool ] -> f32
         fc_m : f32 [ (fc > 0.0 && !pixel) ? fc : 1.0 ]
         off  : f32 [ offset ]
         if [ console && pixel ]
             off  = (offset > 16.0) ? 1.0 : 0.0
             fc_m = fc
-        val  : f32 [ mix[ off * fc_m, offset * (vto - from), f32[percent] ] ]
+        val  : f32 [ mix[ off * fc_m, offset * (vto - from),
+                          f32[percent] ] ]
         if [ percent && pct_off != 0.0 ]
             val += pct_off * ((pct_off_pixel) ? 1.0 : ((fc > 0.0) ? fc : 1.0))
         if [ x_type > XAlign.right ]
@@ -800,9 +850,12 @@ struct XCoord
 
     func mix [ other: XCoord, f: f32 ] -> XCoord
         return XCoord [
-            x_type:  XAlign[mix[ f32[x_type],   f32[other.x_type],   f ]],
-            offset:         mix[     offset,        other.offset,    f ],
-            percent: bool[  mix[ f32[percent],  f32[other.percent],  f ]],
+            x_type:  XAlign[mix[ f32[x_type],   f32[other.x_type],
+                                 f ]],
+            offset:         mix[     offset,        other.offset,
+                                 f ],
+            percent: bool[  mix[ f32[percent],  f32[other.percent],
+                                 f ]],
             relative:bool[mix[ f32[relative], f32[other.relative], f ]],
             pixel:   other.pixel,
             content: other.content,
@@ -834,7 +887,8 @@ struct YCoord
             y_type    = YAlign[ f ]
             sy_offset : sy.mid[ 1, sy.count - 1 ]
             # `hc` — content height (a 'c' after the height marker)
-            if [ y_type == YAlign.height && sy_offset.count > 0 && sy_offset.chars[0] == 'c' ]
+            if [ y_type == YAlign.height && sy_offset.count > 0
+                 && sy_offset.chars[0] == 'c' ]
                 content   = true
                 sy_offset = sy_offset.mid[ 1, sy_offset.count - 1 ]
             if [ sy_offset.last[] == 'x' && sy_offset.count >= 2 ]
@@ -844,8 +898,10 @@ struct YCoord
             pct_at : i32 [ sy_offset.index_of[ '%' ] ]
             if [ pct_at >= 0 ]
                 percent = true
-                offset  = sy_offset.mid[ 0, pct_at ].real_value[] / 100.0
-                off_str : sy_offset.mid[ pct_at + 1, sy_offset.count - pct_at - 1 ]
+                offset  = sy_offset.mid[ 0,
+                        pct_at ].real_value[] / 100.0
+                off_str : sy_offset.mid[ pct_at + 1,
+                        sy_offset.count - pct_at - 1 ]
                 if [ off_str.count > 0 && off_str.chars[0] == '+' ]
                     off_str = off_str.mid[ 1, off_str.count - 1 ]
                 if [ off_str.count > 0 ]
@@ -857,7 +913,8 @@ struct YCoord
                     relative  = true
                 offset = sy_offset.real_value[]
 
-    func plot [ from: f32, vto: f32, top: @YCoord, top_val: f32, rel: rect, last: rect, fc: f32, console: bool ] -> f32
+    func plot [ from: f32, vto: f32, top: @YCoord, top_val: f32,
+                rel: rect, last: rect, fc: f32, console: bool ] -> f32
         fc_m : f32 [ (fc > 0.0 && !pixel) ? fc : 1.0 ]
         off  : f32 [ offset ]
         if [ console && pixel ]
@@ -881,13 +938,18 @@ struct YCoord
 
     func mix [ other: YCoord, f: f32 ] -> YCoord
         return YCoord [
-            y_type:   YAlign[ mix[ f32[y_type],   f32[other.y_type],   f ] ],
-            offset:           mix[ offset,         other.offset,        f ],
-            percent:  bool[   mix[ f32[percent],   f32[other.percent],  f ] ],
-            relative: bool[   mix[ f32[relative],  f32[other.relative], f ] ],
+            y_type:   YAlign[ mix[ f32[y_type],   f32[other.y_type],
+                                   f ] ],
+            offset:           mix[ offset,         other.offset,
+                                   f ],
+            percent:  bool[   mix[ f32[percent],   f32[other.percent],
+                                   f ] ],
+            relative: bool[   mix[ f32[relative],  f32[other.relative],
+                                   f ] ],
             pixel:    other.pixel,
             content:  other.content,
-            pct_off:          mix[ pct_off,        other.pct_off,       f ],
+            pct_off:          mix[ pct_off,        other.pct_off,
+                                   f ],
             pct_off_pixel: other.pct_off_pixel
         ]
 
@@ -938,7 +1000,8 @@ class Region
         s : string[cs]
         construct [ s ]
 
-    func rectangle [ win: rect, rel: rect, last: rect, fc: f32, console: bool, sx: f32, sy: f32 ] -> rect
+    func rectangle [ win: rect, rel: rect, last: rect, fc: f32,
+                     console: bool, sx: f32, sy: f32 ] -> rect
         # unset region (no coords parsed) covers the full rect
         if [ !set ]
             return rect [ x: win.x, y: win.y, w: win.w, h: win.h ]
@@ -948,14 +1011,20 @@ class Region
             wfc : f32 [ (fc > 0.0 && !r.pixel) ? fc : 1.0 ]
             wv  : f32 [ r.offset * ((r.pixel) ? 1.0 : wfc) ]
             cur : f32 [ (l.relative && last) ? (last.x - sx) : (win.x + win.w - sx) ]
-            tv2 : f32 [ t.plot[ win.y, win.y + win.h, null, 0.0, rel, last, fc, console ] ]
+            tv2 : f32 [ t.plot[ win.y, win.y + win.h, null, 0.0, rel,
+                                last, fc, console ] ]
             if [ t.y_type == YAlign.top ] tv2 += sy
-            bv2 : b.plot[ win.y, win.y + win.h, @t, tv2, rel, last, fc, console ]
+            bv2 : b.plot[ win.y, win.y + win.h, @t, tv2, rel, last, fc,
+                          console ]
             rx2 : f32 [ round[ cur - gap - wv ] ]
-            return rect [ x: rx2, y: round[ tv2 ], w: round[ wv ], h: round[ bv2 ] - round[ tv2 ] ]
-        lv : f32 [ l.plot[ win.x, win.x + win.w, null,  0.0, rel, last, fc, console ] ]
-        rv : f32 [ r.plot[ win.x, win.x + win.w, @l, lv,  rel, last, fc, console ] ]
-        tv : f32 [ t.plot[ win.y, win.y + win.h, null,  0.0, rel, last, fc, console ] ]
+            return rect [ x: rx2, y: round[ tv2 ], w: round[ wv ],
+                          h: round[ bv2 ] - round[ tv2 ] ]
+        lv : f32 [ l.plot[ win.x, win.x + win.w, null,  0.0, rel, last,
+                           fc, console ] ]
+        rv : f32 [ r.plot[ win.x, win.x + win.w, @l, lv,  rel, last,
+                           fc, console ] ]
+        tv : f32 [ t.plot[ win.y, win.y + win.h, null,  0.0, rel, last,
+                           fc, console ] ]
         if [ l.x_type == XAlign.left  ] lv += sx
         if [ r.x_type == XAlign.right ] rv -= sx
         if [ t.y_type == YAlign.top   ] tv += sy
@@ -965,7 +1034,8 @@ class Region
         # square: height = computed width
         if [ square ]
             return rect [ x: rx, y: ry, w: ww, h: ww ]
-        bv : f32 [ b.plot[ win.y, win.y + win.h, @t, tv,  rel, last, fc, console ] ]
+        bv : f32 [ b.plot[ win.y, win.y + win.h, @t, tv,  rel, last,
+                           fc, console ] ]
         if [ b.y_type == YAlign.bottom ] bv -= sy
         return rect [ x: rx, y: ry, w: ww, h: round[ bv ] - ry ]
 
@@ -1150,9 +1220,11 @@ class StyleTransition
             case expo
                 switch [ dir ]
                     case inward
-                        return (x == 0.0) ? 0.0 : pow[ 2.0, 10.0 * x - 10.0 ]
+                        return (x == 0.0) ? 0.0 : pow[ 2.0,
+                                10.0 * x - 10.0 ]
                     case outward
-                        return (x == 1.0) ? 1.0 : 1.0 - pow[ 2.0, -10.0 * x ]
+                        return (x == 1.0) ? 1.0 : 1.0 - pow[ 2.0,
+                                -10.0 * x ]
                     case in_out
                         return (x == 0.0) ? 0.0 : (x == 1.0) ? 1.0 : (x < 0.5) ? pow[ 2.0, 20.0 * x - 10.0 ] / 2.0 : (2.0 - pow[ 2.0, -20.0 * x + 10.0 ]) / 2.0
             case circ
@@ -1171,7 +1243,8 @@ class StyleTransition
                     case inward
                         return c3 * x * x * x - c1 * x * x
                     case outward
-                        return 1.0 + c3 * pow[ x - 1.0, 3.0 ] + c1 * pow[ x - 1.0, 2.0 ]
+                        return 1.0 + c3 * pow[ x - 1.0,
+                                3.0 ] + c1 * pow[ x - 1.0, 2.0 ]
                     case in_out
                         return (x < 0.5) ? (pow[ 2.0 * x, 2.0 ] * ((c2 + 1.0) * 2.0 * x - c2)) / 2.0 : (pow[ 2.0 * x - 2.0, 2.0 ] * ((c2 + 1.0) * (x * 2.0 - 2.0) + c2) + 2.0) / 2.0
             case elastic
@@ -1207,8 +1280,10 @@ class StyleQualifier
     manual  bl       : StyleBlock
     mutable type     : string
     mutable id       : string
-    mutable state    : string             # first state (kept for op path: state OP value)
-    mutable states   : vec string         # all states when no op, e.g. :hovered:pressed
+    # first state (kept for op path: state OP value)
+    mutable state    : string
+    # all states when no op, e.g. :hovered:pressed
+    mutable states   : vec string
     mutable oper     : string
     mutable value    : string
     mutable parent   : StyleQualifier
@@ -1257,14 +1332,16 @@ Mixable BoxShadow
                 color = rgba[ word ]
                 continue
             lengths.push[ parse_css_px[ word ] ]
-        if [ lengths.count >= 2 ] offset = vec2f [ lengths[0], lengths[1] ]
+        if [ lengths.count >= 2 ]
+            offset = vec2f [ lengths[0], lengths[1] ]
         if [ lengths.count >= 3 ] blur   = lengths[2]
         if [ lengths.count >= 4 ] spread = lengths[3]
 
     # the shadow into canvas shadow slot i
     public func apply [ cv: Canvas, i: i32 ]
         if [ color ]
-            cv.shadow[ i, color, offset.x, offset.y, blur, spread, inset ]
+            cv.shadow[ i, color, offset.x, offset.y, blur, spread,
+                       inset ]
 
     # a transition calls mix[]: without it the shadow snaps
     public func mix [ b: Mixable, f: f64 ] -> Mixable
@@ -1274,7 +1351,8 @@ Mixable BoxShadow
         c0 : rgba [ (color)   ? color   : rgba [ '#0000' ] ]
         c1 : rgba [ (o.color) ? o.color : rgba [ '#0000' ] ]
         return BoxShadow [
-            offset: vec2f [ offset.x + (o.offset.x - offset.x) * t, offset.y + (o.offset.y - offset.y) * t ],
+            offset: vec2f [ offset.x + (o.offset.x - offset.x) * t,
+                            offset.y + (o.offset.y - offset.y) * t ],
             blur:   blur + (o.blur - blur) * t,
             spread: spread + (o.spread - spread) * t,
             inset:  (t < 0.5) ? inset : o.inset,
@@ -1442,11 +1520,13 @@ func parse_qualifiers [ bl:StyleBlock, p: @cstr ] -> vec StyleQualifier
                 sp2     : sp[ (no_type) ? 0 : 1 ].split[ ':' ]
                 v.id    = sp2[0]
                 if [ icol >= 0 ]
-                    tail = q.mid[ icol + 1, q.count - (icol + 1) ].trim[]
+                    tail = q.mid[ icol + 1,
+                                  q.count - (icol + 1) ].trim[]
             el
                 if [ icol >= 0 ]
                     v.type = q.mid[ 0, icol ].trim[]
-                    tail   = q.mid[ icol + 1, q.count - (icol + 1) ].trim[]
+                    tail   = q.mid[ icol + 1,
+                                    q.count - (icol + 1) ].trim[]
                 el
                     v.type = q.trim[]
             if [ v.type ]
@@ -1454,7 +1534,8 @@ func parse_qualifiers [ bl:StyleBlock, p: @cstr ] -> vec StyleQualifier
                 if [ !v.ty ]
                     log 'style: unknown type {v.type} — block disabled'
                     bl.invalid = true
-                if [ v.ty && !processed && bl.types.index_of[ v.ty ] == -1 ]
+                if [ v.ty && !processed
+                     && bl.types.index_of[ v.ty ] == -1 ]
                     bl.types.push[ v.ty ]
             if [ tail ]
                 is_op : false
@@ -1466,7 +1547,8 @@ func parse_qualifiers [ bl:StyleBlock, p: @cstr ] -> vec StyleQualifier
                         v.state = f.trim[]
                         v.oper  = op_name
                         istart : i32 [ f.count + op_name.count ]
-                        v.value = tail.mid[ istart, tail.count - istart ].trim[]
+                        v.value = tail.mid[ istart,
+                                tail.count - istart ].trim[]
                         break
                 if [ !is_op ]
                     sps9 : tail.split[ '&' ]
@@ -1490,7 +1572,8 @@ func split_css [ code: string ] -> vec CSSLine
     ln     : i32 [ 1 ]
     while [ i < n ]
         ind : i32 [ 0 ]
-        while [ i < n && (code.chars[i] == ' ' || code.chars[i] == '\t') ]
+        while [ i < n
+                && (code.chars[i] == ' ' || code.chars[i] == '\t') ]
             if [ code.chars[i] == '\t' ]
                 ind += 4
             el
@@ -1506,11 +1589,13 @@ func split_css [ code: string ] -> vec CSSLine
             while [ i < n && code.chars[i] != '\n' ]
                 i += 1
             continue
-        if [ i + 1 < n && code.chars[i] == '/' && code.chars[i + 1] == '/' ]
+        if [ i + 1 < n && code.chars[i] == '/'
+             && code.chars[i + 1] == '/' ]
             while [ i < n && code.chars[i] != '\n' ]
                 i += 1
             continue
-        if [ i + 1 < n && code.chars[i] == '/' && code.chars[i + 1] == '*' ]
+        if [ i + 1 < n && code.chars[i] == '/'
+             && code.chars[i + 1] == '*' ]
             i += 2
             while [ i + 1 < n && !(code.chars[i] == '*' && code.chars[i + 1] == '/') ]
                 if [ code.chars[i] == '\n' ]
@@ -1526,11 +1611,13 @@ func split_css [ code: string ] -> vec CSSLine
         line_len : num [ i - line_start ]
         c : code.mid[ line_start, line_len ].trim[]
         if [ c.count ]
-            result.push[ CSSLine [ indent: ind, content: c, line: cur_line ] ]
+            result.push[ CSSLine [ indent: ind, content: c,
+                                   line: cur_line ] ]
     return result
 
 
-func validate_entries [ entries: StyleEntryMap, ty: Au_t, errors: vec string ]
+func validate_entries [ entries: StyleEntryMap, ty: Au_t,
+                        errors: vec string ]
     for [ se: StyleEntry, prop: string ] in entries
         dot  : prop.index_of[ '.' ]
         name : (dot > 0) ? prop.mid[ 0, dot ].trim[] : prop
@@ -1549,7 +1636,8 @@ func validate_block [ bl: StyleBlock, errors: vec string ]
         validate_entries[ bl.entries, ty, errors ]
 
 
-func parse_block_body [ bl: StyleBlock, lines: vec CSSLine, first: i32, last: i32, base_indent: i32 ]
+func parse_block_body [ bl: StyleBlock, lines: vec CSSLine, first: i32,
+                        last: i32, base_indent: i32 ]
     j : i32 [ first ]
     while [ j <= last ]
         ind : i32    [ lines[j].indent  ]
@@ -1575,14 +1663,16 @@ func parse_block_body [ bl: StyleBlock, lines: vec CSSLine, first: i32, last: i3
             if [ sub_end > j ]
                 parse_block_body[ inner, lines, j + 1, sub_end, ind ]
             if [ dot_pos > 0 ]
-                inner.key      = member.mid[ dot_pos + 1, member.count - dot_pos - 1 ]
+                inner.key      = member.mid[ dot_pos + 1,
+                        member.count - dot_pos - 1 ]
                 inner.property = member.mid[ 0, dot_pos ]
                 inner.parent = bl
                 if [ is_type ]
                     inner.type_name = val_str
                 bl.blocks.push[ inner ]
             el
-                bl.entries[ member ] = StyleEntry [ member: member, value: inner, bl: bl, line: lines[j].line ]
+                bl.entries[ member ] = StyleEntry [ member: member,
+                        value: inner, bl: bl, line: lines[j].line ]
             j = sub_end + 1
             continue
         bi      : num    [ val_str.index_of[ '[' ] ]
@@ -1612,7 +1702,8 @@ func parse_block_body [ bl: StyleBlock, lines: vec CSSLine, first: i32, last: i3
                 v9.push[ s ]
             value = v9
         el
-            param   = (cm >= 0) ? val_str.mid[ cm + 1, val_str.count - (cm + 1) ].trim[] : null
+            param   = (cm >= 0) ? val_str.mid[ cm + 1,
+                    val_str.count - (cm + 1) ].trim[] : null
             value_s = (cm >= 0) ? val_str.mid[ 0, cm ].trim[] : val_str
             if [ value_s && value_s.count >= 2 ]
                 q0 : value_s.mid[  0, 1 ]
@@ -1621,16 +1712,19 @@ func parse_block_body [ bl: StyleBlock, lines: vec CSSLine, first: i32, last: i3
                     value_s = value_s.mid[ 1, value_s.count - 2 ]
             value   = value_s
         filter_val : f32 [ 0.0 ]
-        if [ param && param.count >= 7 && param.mid[ 0, 7 ] == 'filter ' ]
+        if [ param && param.count >= 7
+             && param.mid[ 0, 7 ] == 'filter ' ]
             filter_val = f32[ param.mid[ 7, param.count - 7 ].trim[] ]
             param = null
         trans : (param) ? StyleTransition[ param ] : null
         is_bind : bool [ value_s && value_s.count >= 2 && value_s.chars[0] == '{' && value_s.chars[value_s.count - 1] == '}' ]
-        bname   : string [ (is_bind) ? value_s.mid[ 1, value_s.count - 2 ].trim[] : null ]
+        bname   : string [ (is_bind) ? value_s.mid[ 1,
+                value_s.count - 2 ].trim[] : null ]
         # NOTE the unit, never strip it. 'area: 8px' is a Region built
         # from this very string -- rewriting it to '8' fed a bare float
-        # to Region's f32 construct and moved the scrollbar off its edge.
-        # only a genuinely scalar member reads the unit, at apply time
+        # to Region's f32 construct and moved the scrollbar off its
+        # edge. only a genuinely scalar member reads the unit, at apply
+        # time
         unit_val : string [ null ]
         if [ value_s && !is_bind ] unit_val = css_unit_of[ value_s ]
         se : StyleEntry [ member: member, value: value, unit: unit_val, trans: trans, bl: bl, line: lines[j].line, binding: bname, filter: filter_val ]

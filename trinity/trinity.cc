@@ -672,6 +672,9 @@ HOST_API void agent_shell_close(int id) {
 // why the last start or send failed, for the prompt's error line
 static std::string g_shell_err;
 HOST_API const char* agent_shell_error() { return g_shell_err.c_str(); }
+// tools the next claude run may use without asking (WebSearch ...)
+static std::string g_shell_allow;
+HOST_API void agent_shell_allow(const char* tools) { g_shell_allow = tools ? tools : ""; }
 
 static int shell_fail(const std::string& why) {
     g_shell_err = why;
@@ -705,6 +708,7 @@ HOST_API int agent_shell_start(const char* agent, const char* root,
         if (sl != std::string::npos && ld.compare(sl, std::string::npos, "/tmp") == 0 && sl > 0)
             args.insert(args.end(), { "--add-dir", ld.substr(0, sl) });
         if (model && *model) args.insert(args.end(), { "--model", model });
+        if (!g_shell_allow.empty()) args.insert(args.end(), { "--allowedTools", g_shell_allow });
     } else {
         if (g_codex_thread.empty())
             args.insert(args.end(), { "exec", "--json", "-s", "workspace-write", "-C", root });
@@ -858,6 +862,7 @@ HOST_API void agent_shell_close(int id) { }
 HOST_API int  agent_shell_start(const char*, const char*, const char*, const char*) { return 0; }
 HOST_API int  agent_shell_line(char* out, int cap) { return 0; }
 HOST_API int  agent_shell_rewind() { return 0; }
+HOST_API void agent_shell_allow(const char*) { }
 HOST_API const char* agent_shell_error() { return "agents run on linux and mac only"; }
 #endif
 

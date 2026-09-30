@@ -29,14 +29,16 @@ func font_fc_width [ width: i32 ] -> i32
     return widths[ w - 1 ]
 
 # family may be null when only codepoint picks the font
-func font_match [ family: string, weight: i32, width: i32, slope: i32, codepoint: u32, emoji: bool ] -> FontMatch
+func font_match [ family: string, weight: i32, width: i32, slope: i32,
+                  codepoint: u32, emoji: bool ] -> FontMatch
     out : FontMatch [ found: false ]
     ifdef [ linux ]
         FcInit[]
         pat : FcPatternCreate[]
         if [ family ]
             FcPatternAddString[ pat, 'family', family.chars ]
-        FcPatternAddInteger[ pat, 'weight', FcWeightFromOpenType[ weight ] ]
+        FcPatternAddInteger[ pat, 'weight',
+                             FcWeightFromOpenType[ weight ] ]
         FcPatternAddInteger[ pat, 'width', font_fc_width[ width ] ]
         slant : i32 [ 0 ]
         if [ slope == 1 ]
@@ -67,7 +69,8 @@ func font_match [ family: string, weight: i32, width: i32, slope: i32, codepoint
             if [ ok && codepoint > 0 ]
                 have : @FcCharSet [ null ]
                 FcPatternGetCharSet[ m, 'charset', 0, @have ]
-                ok = have != null && FcCharSetHasChar[ have, codepoint ] != 0
+                ok = have != null && FcCharSetHasChar[ have,
+                        codepoint ] != 0
             if [ ok ]
                 out.file   = string [ fs ]
                 out.family = string [ fam ]

@@ -108,7 +108,8 @@ class ConsoleSession
             if [ launch_cmd && launch_cmd.count > 0 ]
                 dashc : string '-c'
                 ec    : string 'exec {launch_cmd}'
-                execl[ '/bin/bash', 'bash', dashc.chars, ec.chars, null ]
+                execl[ '/bin/bash', 'bash', dashc.chars, ec.chars,
+                       null ]
             el
                 lbl : string (name && name.count > 0) ? name : 'sh'
                 if [ lbl.count > 3 && lbl.mid[ 0, 3 ] == 'ed:' ]
@@ -194,7 +195,8 @@ class ConsoleSession
         l : i32 [ (n - 232) * 10 + 8 ]
         return (l << 16) | (l << 8) | l
 
-    func cells_text [ cells: @TermCell, off: i32, c0: i32, c1: i32 ] -> string
+    func cells_text [ cells: @TermCell, off: i32, c0: i32,
+                      c1: i32 ] -> string
         buf : local i8 [ (c1 - c0) * 4 + 1 ]
         bi  : i32 [ 0 ]
         for [ c: i32 c0, c < c1, c += 1 ]
@@ -250,7 +252,8 @@ class ConsoleSession
         base : i32 [ r * cols ]
         for [ c: i32 cols - 1, c >= 0, c -= 1 ]
             i : i32 [ base + c ]
-            if [ !(screen[i].ch == 32 && screen[i].fg == -1 && screen[i].bg == -1 && screen[i].attr == 0) ]
+            if [ !(screen[i].ch == 32 && screen[i].fg == -1
+                   && screen[i].bg == -1 && screen[i].attr == 0) ]
                 return c + 1
         return 0
 
@@ -308,15 +311,18 @@ class ConsoleSession
         out : string ''
         for [ li: i32 sl, li <= el2, li += 1 ]
             row : string line_get[ li ]
-            a : i32 [ clamp[ (li == sl) ? sc : 0,         0, row.count ] ]
-            b : i32 [ clamp[ (li == el2) ? ec : row.count, 0, row.count ] ]
+            a : i32 [ clamp[ (li == sl) ? sc : 0,         0,
+                             row.count ] ]
+            b : i32 [ clamp[ (li == el2) ? ec : row.count, 0,
+                             row.count ] ]
             if [ b > a ] out = out + row.mid[ a, b - a ]
             if [ li < el2 ] out = out + '\n'
         return out
 
     func scroll_up []
         quiet : bool [ (epoch_micros[] - last_resize_us) > 200000 ]
-        if [ !in_alt && scroll_top == 0 && scroll_bot == rows - 1 && quiet ]
+        if [ !in_alt && scroll_top == 0 && scroll_bot == rows - 1
+             && quiet ]
             scrollback.push[ row_to_string[ scroll_top ] ]
             sb_off.push[ sb_cells.count ]
             dl   : i32 [ row_drawable[ scroll_top ] ]
@@ -661,8 +667,8 @@ class ConsoleSession
                 el
                     esc_pi = 15
                 return
-            # private markers ? > ! < = : the kitty keyboard pop (CSI < u) was
-            # falling through and printing its final byte
+            # private markers ? > ! < = : the kitty keyboard pop (CSI <
+            # u) was falling through and printing its final byte
             if [ c == 63 || c == 62 || c == 33 || c == 60 || c == 61 ]
                 esc_priv = c
                 return
@@ -811,7 +817,8 @@ Layer TermLayer
         if [ !con ] return
         s : ConsoleSession con.session[]
         if [ !s ] return
-        ch : f32 [ paint_term[ cv, con, s, bounds, con.filter[], con.feed, label_size, label_height ] ]
+        ch : f32 [ paint_term[ cv, con, s, bounds, con.filter[],
+                               con.feed, label_size, label_height ] ]
         con.content_h = ch
         con.scroll.y  = s.scroll
 
@@ -840,7 +847,8 @@ func paint_term [ cv: Canvas, con_el: object, s: ConsoleSession, bounds: rect, f
                 cv.fill_color[ '#ccc' ]
                 cv.draw_text[ ln,
                     rect [ x: x0, y: y, w: bounds.w, h: lh ],
-                    vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+                    vec2f [ 0.0, 0.5 ], vec2f [ 0.0,
+                            0.0 ], Overflow.visible, null ]
             cv.paint[]
             return f32[n] * lh
 
@@ -850,7 +858,8 @@ func paint_term [ cv: Canvas, con_el: object, s: ConsoleSession, bounds: rect, f
         if [ cw > 0.0 && lh > 0.0 ]
             dcols : i32 [ i32[ bounds.w / cw ] ]
             drows : i32 [ i32[ bounds.h / lh ] ]
-            if [ dcols >= 2 && drows >= 2 && (dcols != s.cols || drows != s.rows) ]
+            if [ dcols >= 2 && drows >= 2
+                 && (dcols != s.cols || drows != s.rows) ]
                 s.resize[ drows, dcols ]
 
         if [ has_flt ]
@@ -864,8 +873,10 @@ func paint_term [ cv: Canvas, con_el: object, s: ConsoleSession, bounds: rect, f
                 if [ y > bounds.y + bounds.h ] break
                 mk : i32 [ con.line_mark*[ ln ] ]
                 cv.fill_color[ (mk == 2) ? '#ffffff55' : '#fff' ]
-                cv.draw_text[ ln, rect [ x: x0, y: y, w: bounds.w, h: lh ],
-                    vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+                cv.draw_text[ ln,
+                              rect [ x: x0, y: y, w: bounds.w, h: lh ],
+                    vec2f [ 0.0, 0.5 ], vec2f [ 0.0,
+                            0.0 ], Overflow.visible, null ]
             for [ r: i32 0, r < s.rows, r += 1 ]
                 ln : string s.row_to_string[ r ]
                 if [ ln.index_of[ flt ] < 0 ] continue
@@ -875,8 +886,10 @@ func paint_term [ cv: Canvas, con_el: object, s: ConsoleSession, bounds: rect, f
                 if [ y > bounds.y + bounds.h ] break
                 mk : i32 [ con.line_mark*[ ln ] ]
                 cv.fill_color[ (mk == 2) ? '#ffffff55' : '#fff' ]
-                cv.draw_text[ ln, rect [ x: x0, y: y, w: bounds.w, h: lh ],
-                    vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+                cv.draw_text[ ln,
+                              rect [ x: x0, y: y, w: bounds.w, h: lh ],
+                    vec2f [ 0.0, 0.5 ], vec2f [ 0.0,
+                            0.0 ], Overflow.visible, null ]
             cv.paint[]
             return f32[dr] * lh
 
@@ -911,7 +924,8 @@ func paint_term [ cv: Canvas, con_el: object, s: ConsoleSession, bounds: rect, f
         wty : f32 [ cv.transform_ty[] ]
         cv.set_crop[ wtx + bounds.x, wty + bounds.y, wtx + bounds.x + bounds.w, wty + bounds.y + bounds.h ]
 
-        cv.draw_selection[ x0, y0, lh, cw, s.scroll, bounds.y, bounds.w, bounds.h,
+        cv.draw_selection[ x0, y0, lh, cw, s.scroll, bounds.y,
+                           bounds.w, bounds.h,
             s.anchor_line, s.anchor_col, s.sel_line, s.sel_col, rgba['#264f78'] ]
 
         fs : i32 [ (label_size > 0.0) ? i32[label_size] : 0 ]
@@ -930,12 +944,15 @@ func paint_term [ cv: Canvas, con_el: object, s: ConsoleSession, bounds: rect, f
         pm : i32 [ 0 ]
         if [ !s.in_alt && sc_count > 0 ]
             last_li : i32 [ sc_count - 1 ]
-            vlo : i32 [ clamp[ i32[ (s.scroll - lh) / lh ], 0, last_li ] ]
-            vhi : i32 [ clamp[ i32[ (s.scroll + bounds.h) / lh ] + 1, 0, last_li ] ]
+            vlo : i32 [ clamp[ i32[ (s.scroll - lh) / lh ], 0,
+                               last_li ] ]
+            vhi : i32 [ clamp[ i32[ (s.scroll + bounds.h) / lh ] + 1,
+                               0, last_li ] ]
             for [ slc: TermLineCache ] in s.sb_lines
                 if [ slc.li >= 0 && (slc.li < vlo || slc.li > vhi) ]
                     slc.li = -1
-            # a wrapped line tags only its first row: the mark carries to the rest
+            # a wrapped line tags only its first row: the mark carries
+            # to the rest
             for [ bi: i32 vlo - 1, bi >= 0 && bi > vlo - 200, bi -= 1 ]
                 bm : i32 [ con.line_mark*[ s.scrollback.value_by_index[ bi ] ] ]
                 if [ bm != 0 ]
@@ -951,7 +968,8 @@ func paint_term [ cv: Canvas, con_el: object, s: ConsoleSession, bounds: rect, f
                 slc : sb_slot[ cv, s, li, fs, lh, cw ]
                 if [ slc && slc.canvas ]
                     mark_line[ cv, mk, x0, y, bounds.w, lh ]
-                    cv.draw_canvas[ slc.canvas, x0, round[ y ], f32[ slc.canvas.content_w ], lh ]
+                    cv.draw_canvas[ slc.canvas, x0, round[ y ],
+                                    f32[ slc.canvas.content_w ], lh ]
                     if [ mk == 2 ] cv.set_opacity[ 1.0 ]
 
         for [ r: i32 0, r < s.rows, r += 1 ]
@@ -964,7 +982,8 @@ func paint_term [ cv: Canvas, con_el: object, s: ConsoleSession, bounds: rect, f
             lvc : live_slot[ cv, s, r, fs, lh, cw ]
             if [ lvc && lvc.canvas ]
                 mark_line[ cv, mk, x0, y, bounds.w, lh ]
-                cv.draw_canvas[ lvc.canvas, x0, round[ y ], f32[ lvc.canvas.content_w ], lh ]
+                cv.draw_canvas[ lvc.canvas, x0, round[ y ],
+                                f32[ lvc.canvas.content_w ], lh ]
                 if [ mk == 2 ] cv.set_opacity[ 1.0 ]
 
         if [ s.hover_link_line >= 0 ]
@@ -987,11 +1006,13 @@ func paint_term [ cv: Canvas, con_el: object, s: ConsoleSession, bounds: rect, f
         cv.clear_crop[]
         return total_h
 
-# 2 = another instance's line: faded. the selected one's lines stay plain
+# 2 = another instance's line: faded. the selected one's lines stay
+# plain
 func mark_line [ cv: Canvas, mk: i32, x0: f32, y: f32, w: f32, lh: f32 ]
     if [ mk == 2 ] cv.set_opacity[ 0.35 ]
 
-# block elements (U+2580..U+259F) as quadrant bits: UL=1 UR=2 LL=4 LR=8; -1 = not a quadrant glyph
+# block elements (U+2580..U+259F) as quadrant bits: UL=1 UR=2 LL=4 LR=8;
+# -1 = not a quadrant glyph
 func block_quads [ ch: i32 ] -> i32
     if [ ch == 0x2588 ] return 15
     if [ ch == 0x2580 ] return 3
@@ -1010,8 +1031,10 @@ func block_quads [ ch: i32 ] -> i32
     if [ ch == 0x259F ] return 14
     return -1
 
-# the font has no block elements: a cell's blocks are painted as rectangles
-func draw_block [ cv: Canvas, ch: i32, x: f32, y: f32, cw: f32, lh: f32, packed: i32 ]
+# the font has no block elements: a cell's blocks are painted as
+# rectangles
+func draw_block [ cv: Canvas, ch: i32, x: f32, y: f32, cw: f32,
+                  lh: f32, packed: i32 ]
     cv.stroke_width[ 0.0 ]
     cv.fill_color[ col_of[ packed ] ]
     q : i32 [ block_quads[ ch ] ]
@@ -1057,7 +1080,8 @@ func draw_block [ cv: Canvas, ch: i32, x: f32, y: f32, cw: f32, lh: f32, packed:
 func is_block [ ch: i32 ] -> bool
     return ch >= 0x2580 && ch <= 0x259F
 
-func draw_cells [ cv: Canvas, s: ConsoleSession, cells: @TermCell, off: i32, n: i32, x0: f32, y: f32, lh: f32, cw: f32 ]
+func draw_cells [ cv: Canvas, s: ConsoleSession, cells: @TermCell,
+                  off: i32, n: i32, x0: f32, y: f32, lh: f32, cw: f32 ]
     if [ n <= 0 ] return
     c : i32 [ 0 ]
     while [ c < n ]
@@ -1091,15 +1115,20 @@ func draw_cells [ cv: Canvas, s: ConsoleSession, cells: @TermCell, off: i32, n: 
                     if [ ci > seg ]
                         txt : string s.cells_text[ cells, off, seg, ci ]
                         cv.draw_text[ txt, rect [ x: x0 + f32[seg] * cw, y: y, w: f32[ci - seg] * cw + cw, h: lh ],
-                            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
-                    if [ blk ] draw_block[ cv, ch9, x0 + f32[ci] * cw, y, cw, lh, rfg ]
+                            vec2f [ 0.0, 0.5 ], vec2f [ 0.0,
+                                    0.0 ], Overflow.visible, null ]
+                    if [ blk ]
+                        draw_block[ cv, ch9, x0 + f32[ci] * cw, y, cw,
+                                    lh, rfg ]
                     seg = ci + 1
         c = c2
 
-func draw_row [ cv: Canvas, s: ConsoleSession, r: i32, x0: f32, y: f32, lh: f32, cw: f32 ]
+func draw_row [ cv: Canvas, s: ConsoleSession, r: i32, x0: f32, y: f32,
+                lh: f32, cw: f32 ]
     draw_cells[ cv, s, s.screen, r * s.cols, s.cols, x0, y, lh, cw ]
 
-func sb_slot [ cv: Canvas, s: ConsoleSession, li: i32, fs: i32, lh: f32, cw: f32 ] -> TermLineCache
+func sb_slot [ cv: Canvas, s: ConsoleSession, li: i32, fs: i32,
+               lh: f32, cw: f32 ] -> TermLineCache
     if [ s.sb_line_len[ li ] <= 0 ] return null
     for [ slc: TermLineCache ] in s.sb_lines
         if [ slc.li == li ] return slc
@@ -1122,7 +1151,8 @@ func sb_slot [ cv: Canvas, s: ConsoleSession, li: i32, fs: i32, lh: f32, cw: f32
         use.canvas.resize[ cw_i, lh_i ]
     use.canvas.reset[ vec4f [ 0.0, 0.0, 0.0, 0.0 ] ]
     if [ fs > 0 ] use.canvas.font_size[ fs ]
-    draw_cells[ use.canvas, s, s.sb_line_buf[ li ], 0, len, 0.0, 0.0, lh, cw ]
+    draw_cells[ use.canvas, s, s.sb_line_buf[ li ], 0, len, 0.0, 0.0,
+                lh, cw ]
     use.canvas.paint[]
     use.li = li
     return use
@@ -1138,7 +1168,8 @@ func row_hash [ s: ConsoleSession, r: i32, n: i32 ] -> i64
         h = h * 131 + i64[ s.screen[ idx ].attr ]
     return h
 
-func live_slot [ cv: Canvas, s: ConsoleSession, r: i32, fs: i32, lh: f32, cw: f32 ] -> TermLineCache
+func live_slot [ cv: Canvas, s: ConsoleSession, r: i32, fs: i32,
+                 lh: f32, cw: f32 ] -> TermLineCache
     dl : i32 [ s.row_drawable[ r ] ]
     if [ dl <= 0 ] return null
     h : i64 [ row_hash[ s, r, dl ] ]
@@ -1164,7 +1195,8 @@ func live_slot [ cv: Canvas, s: ConsoleSession, r: i32, fs: i32, lh: f32, cw: f3
         use.canvas.resize[ cw_i, lh_i ]
     use.canvas.reset[ vec4f [ 0.0, 0.0, 0.0, 0.0 ] ]
     if [ fs > 0 ] use.canvas.font_size[ fs ]
-    draw_cells[ use.canvas, s, s.screen, r * s.cols, dl, 0.0, 0.0, lh, cw ]
+    draw_cells[ use.canvas, s, s.screen, r * s.cols, dl, 0.0, 0.0, lh,
+                cw ]
     use.canvas.paint[]
     use.hash  = h
     use.frame = s.frame_id
@@ -1237,14 +1269,16 @@ func term_key [ s: ConsoleSession, ev: Event, vh: f32 ] -> bool
         return true
     if [ k == 257 ]                       # Enter
         s.write_input[ '\r' ]
-    el [ k == 258 ]                       # Tab / Shift-Tab (back-tab = CSI Z)
+    # Tab / Shift-Tab (back-tab = CSI Z)
+    el [ k == 258 ]
         if [ ev.key.shift ]
             s.send_esc[ '[Z' ]
         el
             s.write_input[ '\t' ]
     el [ k == 256 ]                       # Escape
         s.send_esc[ '' ]
-    el [ k == 259 ]                       # Backspace (Ctrl → ^H, else DEL)
+    # Backspace (Ctrl → ^H, else DEL)
+    el [ k == 259 ]
         s.write_input[ (ev.key.ctrl) ? '\x08' : '\x7f' ]
     el [ k == 265 ]                       # Up
         send_cursor[ s, ev, 'A' ]
@@ -1262,7 +1296,8 @@ func term_key [ s: ConsoleSession, ev: Event, vh: f32 ] -> bool
         send_tilde[ s, ev, 2 ]
     el [ k == 261 ]                       # Delete
         send_tilde[ s, ev, 3 ]
-    el [ k == 266 ]                       # PageUp  (alt screen / modified)
+    # PageUp (alt screen / modified)
+    el [ k == 266 ]
         send_tilde[ s, ev, 5 ]
     el [ k == 267 ]                       # PageDown
         send_tilde[ s, ev, 6 ]
@@ -1277,7 +1312,8 @@ func term_key [ s: ConsoleSession, ev: Event, vh: f32 ] -> bool
 element Console
     focusable  : true
     cbase     : Layer [ fill_color: rgba [ '#202a' ] ]
-    content   : TermLayer [ area: Region { l8px t44px r8px b8px }, label_height: 1.0, label_size: 16 ]
+    content   : TermLayer [ area: Region { l8px t44px r8px b8px },
+                            label_height: 1.0, label_size: 16 ]
     scrollbar : ScrollLayer [ overlay: true, area: Region { l8px t44px r8px b8px }, thumb_color: '#fff4',
         thumb_w: 6.0, thumb_min_h: 32.0, thumb_radius: 4.0 ]
     public  session_id : string
@@ -1303,7 +1339,8 @@ element Console
             pristine = false
         return s
 
-    # 0 = plain, 1 = the selected instance's line, 2 = another instance's line
+    # 0 = plain, 1 = the selected instance's line, 2 = another
+    # instance's line
     func line_mark [ ln: string ] -> i32
         return 0
 
@@ -1380,7 +1417,8 @@ element Console
     func on_key [ ev: Event ]
         s : ConsoleSession session[]
         if [ !s ] return
-        if [ ev.key.state && (ev.key.ctrl || ev.key.meta) && i32[ev.key.unicode] == 67 ]
+        if [ ev.key.state && (ev.key.ctrl || ev.key.meta)
+             && i32[ev.key.unicode] == 67 ]
             if [ s.sel_line >= 0 ]
                 txt : string s.selection_text[]
                 if [ txt.count > 0 && ux ] ux.set_clipboard[ txt ]
@@ -1390,8 +1428,9 @@ element Console
         ele : Layer (layers) ? layers[ 'content' ] : null
         vh  : f32 [ (ele && ele.bounds) ? ele.bounds.h : 0.0 ]
         term_key[ s, ev, vh ]
-        # a key the app answers (enter, backspace) echoes back through the
-        # pty: repaint as a press would, whatever term_key made of it
+        # a key the app answers (enter, backspace) echoes back through
+        # the pty: repaint as a press would, whatever term_key made of
+        # it
         pristine = false
         if [ ux ] ux.restyle = true
 
@@ -1408,7 +1447,8 @@ element Console
         rel_y : f32 [ ev.mouse.pos.y - ele.bounds.y ]
         rel_x : f32 [ ev.mouse.pos.x - ele.bounds.x ]
         ln : i32 [ clamp[ rel_y / lh, 0, s.line_count[] - 1 ] ]
-        cl : i32 [ clamp[ i32[ round[ rel_x / cw ] ], 0, s.line_get[ ln ].count ] ]
+        cl : i32 [ clamp[ i32[ round[ rel_x / cw ] ], 0,
+                          s.line_get[ ln ].count ] ]
         s.sel_line = ln
         s.sel_col  = cl
 
@@ -1435,7 +1475,8 @@ element Console
         if [ parts.count < 2 ] return false
         fp : string parts[ 0 ]
         if [ fp.count == 0 || !parts[ 1 ].is_numeric[] ] return false
-        if [ fp.index_of[ '/' ] < 0 && fp.index_of[ '.' ] < 0 ] return false
+        if [ fp.index_of[ '/' ] < 0 && fp.index_of[ '.' ] < 0 ]
+            return false
         s.link_c0 = a
         s.link_c1 = b
         return true
@@ -1511,7 +1552,8 @@ element Console
         rel_y : f32 [ ev.mouse.pos.y - ele.bounds.y ]
         rel_x : f32 [ ev.mouse.pos.x - ele.bounds.x ]
         hln : i32 [ clamp[ rel_y / lh, 0, s.line_count[] - 1 ] ]
-        hcl : i32 [ clamp[ i32[ round[ rel_x / cw ] ], 0, s.line_get[ hln ].count ] ]
+        hcl : i32 [ clamp[ i32[ round[ rel_x / cw ] ], 0,
+                           s.line_get[ hln ].count ] ]
         prev_line : i32 [ s.hover_link_line ]
         prev_c0   : i32 [ s.link_c0 ]
         hit : bool [ detect_link[ hln, hcl ] ]
@@ -1582,7 +1624,8 @@ Layer CompileLayer
             cv.fill_color[ '#ccc' ]
             cv.draw_text[ con.log.value_by_index[i],
                 rect [ x:x0, y:y, w:bounds.w, h:lh ],
-                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+                vec2f [ 0.0, 0.5 ], vec2f [ 0.0,
+                        0.0 ], Overflow.visible, null ]
         cv.paint[]
 
 

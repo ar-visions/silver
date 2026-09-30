@@ -120,7 +120,8 @@ class SVGModel
         el             shapes.clear[]
         svg_walk[ shapes, svg_node.children, xf0, st0 ]
 
-    public func render [ cv: Canvas, ox: f32, oy: f32, rw_in: f32, rh_in: f32 ]
+    public func render [ cv: Canvas, ox: f32, oy: f32, rw_in: f32,
+                         rh_in: f32 ]
         if [ !shapes || shapes.count == 0 ]
             return
         sx      : f32 (w > 0.0) ? rw_in / w : 1.0
@@ -300,7 +301,8 @@ class SVGParser
             if [ pos < src.count ] pos += 1
             return null
         skip_ws[]
-        node : SVGNode [ tag: tag, attrs: parse_attrs[], children: vec SVGNode [] ]
+        node : SVGNode [ tag: tag, attrs: parse_attrs[],
+                         children: vec SVGNode [] ]
         skip_ws[]
         if [ at[] == '/' ]
             pos += 1
@@ -354,7 +356,8 @@ class SVGPathBuilder
     func skip_sep []
         while [ pos < n ]
             c : i32 d.chars[pos]
-            if [ c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == ',' ]
+            if [ c == ' ' || c == '\t' || c == '\n' || c == '\r'
+                 || c == ',' ]
                 pos += 1
             el
                 break
@@ -374,7 +377,8 @@ class SVGPathBuilder
                 pos += 1
             el [ (c == 'e' || c == 'E') && pos > s ]
                 pos += 1
-                if [ pos < n && (d.chars[pos] == '-' || d.chars[pos] == '+') ]
+                if [ pos < n
+                     && (d.chars[pos] == '-' || d.chars[pos] == '+') ]
                     pos += 1
                 has_dot = true
             el
@@ -382,7 +386,8 @@ class SVGPathBuilder
 
         return (pos > s) ? f32 d.mid[ s, pos - s ].real_value[] : 0.0
 
-    # arc flags are single 0/1 chars; minified paths merge them with the next number
+    # arc flags are single 0/1 chars; minified paths merge them with the
+    # next number
     func read_flag [] -> i32
         skip_sep[]
         if [ pos >= n ] return 0
@@ -395,7 +400,8 @@ class SVGPathBuilder
     func cmd_move [ xf: affine, x: f32, y: f32 ]
         tx : f32 xf.apply_x[ x, y ]
         ty : f32 xf.apply_y[ x, y ]
-        cmds.push[ SVGCmd [ op: SVGOp.move, x: tx, y: ty, x1: 0.0, y1: 0.0, x2: 0.0, y2: 0.0 ] ]
+        cmds.push[ SVGCmd [ op: SVGOp.move, x: tx, y: ty, x1: 0.0,
+                            y1: 0.0, x2: 0.0, y2: 0.0 ] ]
         cx = x
         cy = y
         sx = x
@@ -406,18 +412,21 @@ class SVGPathBuilder
     func cmd_line [ xf: affine, x: f32, y: f32 ]
         tx : f32 xf.apply_x[ x, y ]
         ty : f32 xf.apply_y[ x, y ]
-        cmds.push[ SVGCmd [ op: SVGOp.line, x: tx, y: ty, x1: 0.0, y1: 0.0, x2: 0.0, y2: 0.0 ] ]
+        cmds.push[ SVGCmd [ op: SVGOp.line, x: tx, y: ty, x1: 0.0,
+                            y1: 0.0, x2: 0.0, y2: 0.0 ] ]
         cx = x
         cy = y
         lx = cx
         ly = cy
 
-    func cmd_cubic [ xf: affine, c1x: f32, c1y: f32, c2x: f32, c2y: f32, x: f32, y: f32 ]
+    func cmd_cubic [ xf: affine, c1x: f32, c1y: f32, c2x: f32,
+                     c2y: f32, x: f32, y: f32 ]
         dc1x : f32 c1x - cx
         dc1y : f32 c1y - cy
         dc2x : f32 c2x - x
         dc2y : f32 c2y - y
-        if [ dc1x * dc1x + dc1y * dc1y < 0.0001 && dc2x * dc2x + dc2y * dc2y < 0.0001 ]
+        if [ dc1x * dc1x + dc1y * dc1y < 0.0001
+             && dc2x * dc2x + dc2y * dc2y < 0.0001 ]
             cmd_line[ xf, x, y ]
             lx = c2x
             ly = c2y
@@ -449,13 +458,15 @@ class SVGPathBuilder
         cy = y
 
     func cmd_close []
-        cmds.push[ SVGCmd [ op: SVGOp.close, x: 0.0, y: 0.0, x1: 0.0, y1: 0.0, x2: 0.0, y2: 0.0 ] ]
+        cmds.push[ SVGCmd [ op: SVGOp.close, x: 0.0, y: 0.0, x1: 0.0,
+                            y1: 0.0, x2: 0.0, y2: 0.0 ] ]
         cx = sx
         cy = sy
         lx = cx
         ly = cy
 
-    func arc_seg [ xf: affine, ecx: f32, ecy: f32, rx: f32, ry: f32, cph: f32, sph: f32, t1: f32, t2: f32 ]
+    func arc_seg [ xf: affine, ecx: f32, ecy: f32, rx: f32, ry: f32,
+                   cph: f32, sph: f32, t1: f32, t2: f32 ]
         cs1 : f32 cos[ t1 ]
         sn1 : f32 sin[ t1 ]
         cs2 : f32 cos[ t2 ]
@@ -472,9 +483,11 @@ class SVGPathBuilder
         dy1 : f32 rx * (-sn1) * sph + ry * cs1 * cph
         dx2 : f32 rx * (-sn2) * cph - ry * cs2 * sph
         dy2 : f32 rx * (-sn2) * sph + ry * cs2 * cph
-        cmd_cubic[ xf, p1x + alp*dx1, p1y + alp*dy1, p2x - alp*dx2, p2y - alp*dy2, p2x, p2y ]
+        cmd_cubic[ xf, p1x + alp*dx1, p1y + alp*dy1, p2x - alp*dx2,
+                   p2y - alp*dy2, p2x, p2y ]
 
-    func do_arc [ xf: affine, x2: f32, y2: f32, rx_: f32, ry_: f32, phi_deg: f32, la: i32, sw_: i32 ]
+    func do_arc [ xf: affine, x2: f32, y2: f32, rx_: f32, ry_: f32,
+                  phi_deg: f32, la: i32, sw_: i32 ]
         x1 : f32 cx
         y1 : f32 cy
         if [ x1 == x2 && y1 == y2 ] return
@@ -679,7 +692,8 @@ struct affine
 
 
     static func identity [] -> affine
-        return affine [ ma: 1.0, mb: 0.0, mc: 0.0, md: 1.0, tx: 0.0, ty: 0.0 ]
+        return affine [ ma: 1.0, mb: 0.0, mc: 0.0, md: 1.0, tx: 0.0,
+                        ty: 0.0 ]
 
 
     func translate [ dx: f32, dy: f32 ] -> affine
@@ -743,10 +757,14 @@ func svg_color [ s: string ] -> rgba
             gg : f32 0.0
             bb : f32 0.0
             aa : f32 1.0
-            if [ parts.count >= 1 ] rr = f32 parts[0].trim[].real_value[]
-            if [ parts.count >= 2 ] gg = f32 parts[1].trim[].real_value[]
-            if [ parts.count >= 3 ] bb = f32 parts[2].trim[].real_value[]
-            if [ parts.count >= 4 ] aa = f32 parts[3].trim[].real_value[]
+            if [ parts.count >= 1 ]
+                rr = f32 parts[0].trim[].real_value[]
+            if [ parts.count >= 2 ]
+                gg = f32 parts[1].trim[].real_value[]
+            if [ parts.count >= 3 ]
+                bb = f32 parts[2].trim[].real_value[]
+            if [ parts.count >= 4 ]
+                aa = f32 parts[3].trim[].real_value[]
             c : rgba rgba[ '#000000' ]
             c.r = rr / 255.0
             c.g = gg / 255.0
@@ -801,11 +819,14 @@ func svg_parse_transform [ s: string ] -> affine
         el [ fname == 'rotate' ]
             rad : f32 f32 radians[ f0 ]
             if [ v.count > 2 ]
-                tf = tf.translate[ f1, f2 ].rotate[ rad ].translate[ -f1, -f2 ]
+                tf = tf.translate[ f1,
+                                   f2 ].rotate[ rad ].translate[ -f1,
+                                           -f2 ]
             el
                 tf = tf.rotate[ rad ]
         el [ fname == 'matrix' ]
-            tf = affine [ ma: f0, mb: f2, mc: f1, md: f3, tx: f4, ty: f5 ]
+            tf = affine [ ma: f0, mb: f2, mc: f1, md: f3, tx: f4,
+                          ty: f5 ]
         el [ fname == 'skewX' ]
             tf = affine [ ma: 1.0, mb: f32 tan[ f32 radians[ f0 ] ], mc: 0.0, md: 1.0, tx: 0.0, ty: 0.0 ]
         el [ fname == 'skewY' ]
@@ -884,7 +905,8 @@ func svg_make_shape [ cmds: vec SVGCmd, st: SVGState ] -> SVGShape
 
 # ---- SVG tree walker ----
 
-func svg_kappa_rect [ xf: affine, x: f32, y: f32, w: f32, h: f32, rx: f32, ry: f32 ] -> vec SVGCmd
+func svg_kappa_rect [ xf: affine, x: f32, y: f32, w: f32, h: f32,
+                      rx: f32, ry: f32 ] -> vec SVGCmd
     pb : SVGPathBuilder []
     pb.cmds = vec SVGCmd []
     pb.cx = 0.0
@@ -907,18 +929,23 @@ func svg_kappa_rect [ xf: affine, x: f32, y: f32, w: f32, h: f32, rx: f32, ry: f
         ky  : f32 ryi * k
         pb.cmd_move [ xf, x + rxi,        y               ]
         pb.cmd_line [ xf, x + w - rxi,    y               ]
-        pb.cmd_cubic[ xf, x + w - rxi + kx, y,            x + w, y + ryi - ky,   x + w,       y + ryi   ]
+        pb.cmd_cubic[ xf, x + w - rxi + kx, y,            x + w,
+                      y + ryi - ky,   x + w,       y + ryi   ]
         pb.cmd_line [ xf, x + w,          y + h - ryi     ]
-        pb.cmd_cubic[ xf, x + w,          y + h - ryi + ky, x + w - rxi + kx, y + h, x + w - rxi, y + h ]
+        pb.cmd_cubic[ xf, x + w,          y + h - ryi + ky,
+                      x + w - rxi + kx, y + h, x + w - rxi, y + h ]
         pb.cmd_line [ xf, x + rxi,        y + h           ]
-        pb.cmd_cubic[ xf, x + rxi - kx,   y + h,          x, y + h - ryi + ky,   x,           y + h - ryi ]
+        pb.cmd_cubic[ xf, x + rxi - kx,   y + h,          x,
+                      y + h - ryi + ky,   x,           y + h - ryi ]
         pb.cmd_line [ xf, x,              y + ryi         ]
-        pb.cmd_cubic[ xf, x,              y + ryi - ky,   x + rxi - kx, y,       x + rxi,     y           ]
+        pb.cmd_cubic[ xf, x,              y + ryi - ky,   x + rxi - kx,
+                      y,       x + rxi,     y           ]
         pb.cmd_close[]
     return pb.cmds
 
 
-func svg_kappa_ellipse [ xf: affine, ccx: f32, ccy: f32, rx: f32, ry: f32 ] -> vec SVGCmd
+func svg_kappa_ellipse [ xf: affine, ccx: f32, ccy: f32, rx: f32,
+                         ry: f32 ] -> vec SVGCmd
     pb : SVGPathBuilder []
     pb.cmds = vec SVGCmd []
     pb.cx = 0.0
@@ -931,10 +958,14 @@ func svg_kappa_ellipse [ xf: affine, ccx: f32, ccy: f32, rx: f32, ry: f32 ] -> v
     kx : f32 rx * k
     ky : f32 ry * k
     pb.cmd_move [ xf, ccx + rx, ccy       ]
-    pb.cmd_cubic[ xf, ccx + rx, ccy + ky,   ccx + kx, ccy + ry,   ccx,        ccy + ry ]
-    pb.cmd_cubic[ xf, ccx - kx, ccy + ry,   ccx - rx, ccy + ky,   ccx - rx,   ccy      ]
-    pb.cmd_cubic[ xf, ccx - rx, ccy - ky,   ccx - kx, ccy - ry,   ccx,        ccy - ry ]
-    pb.cmd_cubic[ xf, ccx + kx, ccy - ry,   ccx + rx, ccy - ky,   ccx + rx,   ccy      ]
+    pb.cmd_cubic[ xf, ccx + rx, ccy + ky,   ccx + kx, ccy + ry,   ccx,
+                  ccy + ry ]
+    pb.cmd_cubic[ xf, ccx - kx, ccy + ry,   ccx - rx, ccy + ky,
+                  ccx - rx,   ccy      ]
+    pb.cmd_cubic[ xf, ccx - rx, ccy - ky,   ccx - kx, ccy - ry,   ccx,
+                  ccy - ry ]
+    pb.cmd_cubic[ xf, ccx + kx, ccy - ry,   ccx + rx, ccy - ky,
+                  ccx + rx,   ccy      ]
     pb.cmd_close[]
     return pb.cmds
 
@@ -972,7 +1003,8 @@ func svg_tag [ shapes: vec SVGShape, node: SVGNode ]
     sh.id    = node.attr[ 'id' ]
     sh.attrs = node.attrs
 
-func svg_walk [ shapes: vec SVGShape, nodes: vec SVGNode, xf: affine, state: SVGState ]
+func svg_walk [ shapes: vec SVGShape, nodes: vec SVGNode, xf: affine,
+                state: SVGState ]
     for [ node: SVGNode ] in nodes
         disp : string node.attr[ 'display' ]
         if [ disp && disp == 'none' ]
@@ -997,13 +1029,15 @@ func svg_walk [ shapes: vec SVGShape, nodes: vec SVGNode, xf: affine, state: SVG
             if [ ry_ == 0.0 ] ry_ = rx_
             cmds : svg_kappa_rect[ lxf,
                 node.attr_f[ 'x', 0.0 ], node.attr_f[ 'y', 0.0 ],
-                node.attr_f[ 'width', 0.0 ], node.attr_f[ 'height', 0.0 ],
+                node.attr_f[ 'width', 0.0 ], node.attr_f[ 'height',
+                        0.0 ],
                 rx_, ry_ ]
             shapes.push[ svg_make_shape[ cmds, st ] ]
             svg_tag[ shapes, node ]
         el [ tag == 'circle' ]
             r : f32 node.attr_f[ 'r', 0.0 ]
-            cmds : svg_kappa_ellipse[ lxf, node.attr_f[ 'cx', 0.0 ], node.attr_f[ 'cy', 0.0 ], r, r ]
+            cmds : svg_kappa_ellipse[ lxf, node.attr_f[ 'cx', 0.0 ],
+                                      node.attr_f[ 'cy', 0.0 ], r, r ]
             shapes.push[ svg_make_shape[ cmds, st ] ]
             svg_tag[ shapes, node ]
         el [ tag == 'ellipse' ]
@@ -1021,8 +1055,10 @@ func svg_walk [ shapes: vec SVGShape, nodes: vec SVGNode, xf: affine, state: SVG
             pb.sy = 0.0
             pb.lx = 0.0
             pb.ly = 0.0
-            pb.cmd_move[ lxf, node.attr_f[ 'x1', 0.0 ], node.attr_f[ 'y1', 0.0 ] ]
-            pb.cmd_line[ lxf, node.attr_f[ 'x2', 0.0 ], node.attr_f[ 'y2', 0.0 ] ]
+            pb.cmd_move[ lxf, node.attr_f[ 'x1', 0.0 ],
+                         node.attr_f[ 'y1', 0.0 ] ]
+            pb.cmd_line[ lxf, node.attr_f[ 'x2', 0.0 ],
+                         node.attr_f[ 'y2', 0.0 ] ]
             shapes.push[ svg_make_shape[ pb.cmds, st ] ]
             svg_tag[ shapes, node ]
         el [ tag == 'polyline' || tag == 'polygon' ]

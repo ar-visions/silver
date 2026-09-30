@@ -64,7 +64,8 @@ class shader
 
     func compute  [] -> GLSL none {}
 
-    func set_frame [ model_mat: mat4f, view_mat: mat4f, proj_mat: mat4f, ep: vec4f, t: f32 ]
+    func set_frame [ model_mat: mat4f, view_mat: mat4f,
+                     proj_mat: mat4f, ep: vec4f, t: f32 ]
         return
 
     func glsl_type_name [ t: Au_t ] -> cstr
@@ -94,9 +95,9 @@ class shader
             return "sampler3D"
         if [ t == typeid[ samplerCube ] ]
             return "samplerCube"
-        # every shader param is declared @T. for a class that resolves to
-        # the class itself, but for a primitive it stops on the ref, so
-        # follow src to the type it actually names
+        # every shader param is declared @T. for a class that resolves
+        # to the class itself, but for a primitive it stops on the ref,
+        # so follow src to the type it actually names
         if [ t && t.src && t.src != t ]
             return glsl_type_name[ t.src ]
         return null
@@ -180,41 +181,47 @@ class shader
                     result = '{result}layout(std430, set = 1, binding = {binding}) {sb_qual}buffer {mem.ident}_t {{ {sb_elem} {mem.ident}[]; }};\n'
                     binding += 1
 
-                el [ val inherits SharedArray && stage == ShaderStage.compute ]
+                el [ val inherits SharedArray
+                     && stage == ShaderStage.compute ]
                     sa: SharedArray[val]
                     sa_elem: (sa.format == typeid[ i32 ]) ? "int" :
                              (sa.format == typeid[ u32 ]) ? "uint" : "float"
                     result = '{result}shared {sa_elem} {mem.ident}[{sa.count}];\n'
 
-                el [ val inherits VertexInput && stage == ShaderStage.vertex ]
+                el [ val inherits VertexInput
+                     && stage == ShaderStage.vertex ]
                     vi: cast VertexInput [ val ]
                     gtype: glsl_type_name[ vi.type ]
                     if [ gtype ]
                         result = '{result}layout(location = {vert_loc_in}) in {gtype} {mem.ident};\n'
                     vert_loc_in += 1
 
-                el [ val inherits VertexOutput && stage == ShaderStage.vertex ]
+                el [ val inherits VertexOutput
+                     && stage == ShaderStage.vertex ]
                     vo: cast VertexOutput [ val ]
                     gtype: glsl_type_name[ vo.type ]
                     if [ gtype ]
                         result = '{result}layout(location = {vert_loc_out}) {(vo.flat) ? "flat " : ""}out {gtype} {mem.ident};\n'
                     vert_loc_out += 1
 
-                el [ val inherits VertexOutput && stage == ShaderStage.fragment ]
+                el [ val inherits VertexOutput
+                     && stage == ShaderStage.fragment ]
                     vo: cast VertexOutput [ val ]
                     gtype: glsl_type_name[ vo.type ]
                     if [ gtype ]
                         result = '{result}layout(location = {frag_loc_in}) {(vo.flat) ? "flat " : ""}in {gtype} {mem.ident};\n'
                     frag_loc_in += 1
 
-                el [ val inherits FragmentInput && stage == ShaderStage.fragment ]
+                el [ val inherits FragmentInput
+                     && stage == ShaderStage.fragment ]
                     fi: cast FragmentInput [ val ]
                     gtype: glsl_type_name[ fi.type ]
                     if [ gtype ]
                         result = '{result}layout(location = {frag_loc_in}) in {gtype} {mem.ident};\n'
                     frag_loc_in += 1
 
-                el [ val inherits FragmentOutput && stage == ShaderStage.fragment ]
+                el [ val inherits FragmentOutput
+                     && stage == ShaderStage.fragment ]
                     fo: cast FragmentOutput [ val ]
                     gtype: glsl_type_name[ fo.type ]
                     if [ gtype ]
@@ -248,9 +255,11 @@ class shader
                     arg_str = '{arg_str}{atype} {arg.ident}'
 
                 glsl: GLSL Au.method_call[ method, null ]
-                if [ stage == ShaderStage.vertex && glsl inherits FragGLSL ]
+                if [ stage == ShaderStage.vertex
+                     && glsl inherits FragGLSL ]
                     continue
-                if [ stage == ShaderStage.fragment && glsl inherits VertGLSL ]
+                if [ stage == ShaderStage.fragment
+                     && glsl inherits VertGLSL ]
                     continue
 
                 #l : strlen[ glsl.body ]
@@ -305,9 +314,10 @@ class shader
             cwd : path.path_cwd[]
             p.parent_dir[].make_dir[]
             # "wb": text mode expands newlines, so the file on disk is
-            # longer than strlen(src) and the content compare above can never
-            # match -- the source was rewritten every run, which made every
-            # .spv look stale and forced a full recompile each start
+            # longer than strlen(src) and the content compare above can
+            # never match -- the source was rewritten every run, which
+            # made every .spv look stale and forced a full recompile
+            # each start
             fp: fopen[ p, "wb" ]
             if [ !fp ]
                 log 'failed to write shader: {p}'
@@ -337,8 +347,10 @@ class shader
                     # std140: vec3/vec4/mat4 align 16, scalars pad to 4
                     al: num [ (type_size >= 12) ? 16 : ((type_size < 4) ? 4 : type_size) ]
                     index = (index + al - 1) / al * al
-                    if [ (mem.src.traits & (1 << 8)) || (mem.src.traits & (1 << 0)) ]
-                        memcpy[ @data2[index], @src[mem.offset], type_size ]
+                    if [ (mem.src.traits & (1 << 8))
+                         || (mem.src.traits & (1 << 0)) ]
+                        memcpy[ @data2[index], @src[mem.offset],
+                                type_size ]
                     el
                         dst_ptr: cast @handle [ @src[mem.offset] ]
                         memcpy[ @data2[index], dst_ptr, type_size ]
@@ -366,11 +378,11 @@ class shader
             # layouts and which one stat() fills depends on macros, so
             # st_mtime was read at the wrong offset and a stale .spv was
             # kept forever -- the black screen only --clean could clear
-            # a timestamp cannot tell a GOOD .spv from a truncated one, and
-            # an interrupted run leaves the bad file NEWER than its source --
-            # so no mtime check ever recompiles it. read the header instead:
-            # spir-v starts with magic 0x07230203 and is a whole number of
-            # 32-bit words
+            # a timestamp cannot tell a GOOD .spv from a truncated one,
+            # and an interrupted run leaves the bad file NEWER than its
+            # source -- so no mtime check ever recompiles it. read the
+            # header instead: spir-v starts with magic 0x07230203 and is
+            # a whole number of 32-bit words
             spv_ok : bool false
             if [ spv_file.exists[] ]
                 sfp : fopen[ spv_file.chars, "rb" ]
@@ -383,12 +395,14 @@ class shader
                     spv_ok = rd == 4 && magic == 0x07230203 && slen >= 20 && (slen % 4) == 0
             make_spv : !spv_ok ||
                 input.modified_time[] > spv_file.modified_time[]
-            if [ make_spv ] log 'hader: {spv_file.filename[]} stale (valid={spv_ok}) — compiling'
+            if [ make_spv ]
+                log 'hader: {spv_file.filename[]} stale (valid={spv_ok}) — compiling'
 
             if [ make_spv ]
                 log 'ompiling shader: {shader_file}'
                 # in process through glslang: no tool on disk, no shell
-                result: i32 [ trinity_glsl_to_spv[ shader_file.chars, spv_file.chars ] ]
+                result: i32 [ trinity_glsl_to_spv[ shader_file.chars,
+                        spv_file.chars ] ]
                 if [ result != 0 ]
                     log 'hader compilation failed for: {shader_file}'
                     exit[ 1 ]
@@ -416,7 +430,8 @@ class shader
                 pCode:    spirv
             ]
             mod: VkShaderModule
-            vkResult: vkCreateShaderModule[ vk.device, createInfo, null, @mod ]
+            vkResult: vkCreateShaderModule[ vk.device, createInfo,
+                    null, @mod ]
             if [ vkResult != VK_SUCCESS ]
                 log 'ailed to create vulkan shader module: {spv_file} length={length} result={i32[ vkResult ]}'
                 free[ spirv ]
@@ -484,8 +499,9 @@ ModelViewProject UVQuad
     attrib v_uv      : VertexOutput   [ type:typeid[ vec2f ] ]
     attrib fragColor : FragmentOutput [ type:typeid[ vec4f ] ]
     # the frame's rect on the surface as a scale about the centre (a
-    # letterboxed frame is smaller than the surface); its own uniform, since
-    # ubo.model also carries the quad mesh's node matrix, which flips it
+    # letterboxed frame is smaller than the surface); its own uniform,
+    # since ubo.model also carries the quad mesh's node matrix, which
+    # flips it
     mutable fit      : vec4f
 
     func init [ ]
@@ -499,7 +515,8 @@ ModelViewProject UVQuad
 
     func vertex [] -> GLSL none {
         v_uv        = uv;
-        gl_Position = vec4(pos.x * ubo.fit.x, pos.y * ubo.fit.y, 0.0, 1.0);
+        gl_Position = vec4(pos.x * ubo.fit.x, pos.y * ubo.fit.y, 0.0,
+                           1.0);
     }
 
     func fragment [] -> GLSL none {
@@ -578,7 +595,8 @@ ModelViewProject SuperEagle
         return dot(c, vec4(65536.0, 255.0, 1.0, 16777216.0));
     }
 
-    func se_result [ a: @f32, b: @f32, c: @f32, d: @f32 ] -> GLSL float {
+    func se_result [ a: @f32, b: @f32, c: @f32,
+                     d: @f32 ] -> GLSL float {
         float x = 0.0; float y = 0.0; float r = 0.0;
         if (a == c) x += 1.0; else if (b == c) y += 1.0;
         if (a == d) x += 1.0; else if (b == d) y += 1.0;
@@ -593,13 +611,23 @@ ModelViewProject SuperEagle
         vec2  fp = fract(v_uv * vec2(ts));
 
         vec4 Cc = texelFetch(color, clamp(P, ivec2(0), ts - 1), 0);
-        vec4 t5 = texelFetch(color, clamp(P + ivec2( 1, 0), ivec2(0), ts - 1), 0);
-        vec4 t7 = texelFetch(color, clamp(P + ivec2( 0, 1), ivec2(0), ts - 1), 0);
-        vec4 t8 = texelFetch(color, clamp(P + ivec2( 1, 1), ivec2(0), ts - 1), 0);
-        // a transparent texel carries no color: borrow rgb from the nearest opaque
-        // neighbor so the pattern blends never pull black fringes over the Mode-7
-        // plane beneath; the alpha channel keeps the true coverage and is shaped
-        // by the same pattern selection as the color (diagonal-smoothed edge mask)
+        vec4 t5 = texelFetch(color,
+                             clamp(P + ivec2( 1, 0), ivec2(0),
+                                   ts - 1), 0);
+        vec4 t7 = texelFetch(color,
+                             clamp(P + ivec2( 0, 1), ivec2(0),
+                                   ts - 1), 0);
+        vec4 t8 = texelFetch(color,
+                             clamp(P + ivec2( 1, 1), ivec2(0),
+                                   ts - 1), 0);
+        // a transparent texel carries no color: borrow rgb from the
+        // nearest opaque
+        // neighbor so the pattern blends never pull black fringes over
+        // the Mode-7
+        // plane beneath; the alpha channel keeps the true coverage and
+        // is shaped
+        // by the same pattern selection as the color (diagonal-smoothed
+        // edge mask)
         vec3 rgb4 = Cc.rgb;
         if (Cc.a < 0.5) rgb4 = t5.a >= 0.5 ? t5.rgb : (t7.a >= 0.5 ? t7.rgb : (t8.a >= 0.5 ? t8.rgb : Cc.rgb));
         vec4 C4 = vec4(rgb4, Cc.a);
@@ -651,7 +679,9 @@ ModelViewProject SuperEagle
         }
 
         vec4 outc = (fp.x < 0.5) ? (fp.y < 0.5 ? p00 : p10) : (fp.y < 0.5 ? p01 : p11);
-        fragColor = vec4(outc.rgb * outc.a, outc.a);   // pass composites premultiplied (ONE / ONE_MINUS_SRC_ALPHA): partial-coverage edges must not add unweighted color
+        // pass composites premultiplied (ONE / ONE_MINUS_SRC_ALPHA):
+        // partial-coverage edges must not add unweighted color
+        fragColor = vec4(outc.rgb * outc.a, outc.a);
     }
 
 
@@ -685,7 +715,8 @@ ModelViewProject PixelSharp
         vec2 f  = clamp((fp - 0.5) / w + 0.5, 0.0, 1.0);
         vec2 suv = (ip + 0.5 + f) / ts;
         vec4 c = texture(color, suv);
-        fragColor = vec4(c.rgb * c.a, c.a);   // premultiplied like the SE pass
+        // premultiplied like the SE pass
+        fragColor = vec4(c.rgb * c.a, c.a);
     }
 
 
@@ -747,14 +778,16 @@ ModelViewProject HumanPBR
         return alpha_sq / (3.14159265359 * pow2(denom));
     }
 
-    func G_Smith [ roughness: @float, NdotV: @float, NdotL: @float ] -> GLSL float {
+    func G_Smith [ roughness: @float, NdotV: @float,
+                   NdotL: @float ] -> GLSL float {
         float k    = pow2(roughness + 1.0) / 8.0;
         float G1_V = NdotV / max((NdotV * (1.0 - k) + k), 0.0001);
         float G1_L = NdotL / max((NdotL * (1.0 - k) + k), 0.0001);
         return G1_V * G1_L;
     }
 
-    func BRDF [ L: @vec3f, V: @vec3f, N: @vec3f, albedo: @vec3f, metallic: @float, roughness: @float ] -> GLSL vec3f {
+    func BRDF [ L: @vec3f, V: @vec3f, N: @vec3f, albedo: @vec3f,
+                metallic: @float, roughness: @float ] -> GLSL vec3f {
         roughness = max(roughness, 0.05);
         vec3  H     = normalize(L + V);
         float NdotL = max(dot(N, L), 0.0);
@@ -771,7 +804,8 @@ ModelViewProject HumanPBR
         return (diffuse + specular) * NdotL;
     }
 
-    func perturbNormal [ N: @vec3f, texcoord: @vec2f ] -> FragGLSL vec3f {
+    func perturbNormal [ N: @vec3f,
+                         texcoord: @vec2f ] -> FragGLSL vec3f {
         vec3  map = texture(normal, texcoord).rgb * 2.0 - 1.0;
         if (dot(map.xy, map.xy) < 0.001) return N;
         vec3  q1  = dFdx(v_world_pos);
@@ -822,13 +856,18 @@ ModelViewProject HumanPBR
         vec3  N      = perturbNormal(normalize(v_normal), uv_n);
         vec3  L1     = normalize(vec3( 0.45, 0.85,  0.55));
         vec3  L2     = normalize(vec3(-0.55, 0.15, -0.65));
-        vec3  col    = BRDF(L1, V, N, albedo, metal, rgh) * vec3(1.00, 0.98, 0.95) * 2.4
-                     + BRDF(L2, V, N, albedo, metal, rgh) * vec3(0.55, 0.65, 0.85) * 0.7;
-        // subsurface: wrap the key light past the terminator and add a warm
-        // back-transmission — reads as skin, fades with metalness so cloth
+        vec3  col    = BRDF(L1, V, N, albedo, metal, rgh) * vec3(1.00,
+                0.98, 0.95) * 2.4
+                     + BRDF(L2, V, N, albedo, metal, rgh) * vec3(0.55,
+                             0.65, 0.85) * 0.7;
+        // subsurface: wrap the key light past the terminator and add a
+        // warm
+        // back-transmission — reads as skin, fades with metalness so
+        // cloth
         // and props stay plain PBR
         float ndl  = dot(N, L1);
-        float wrap = clamp((ndl + 0.55) / 1.55, 0.0, 1.0) * clamp(1.0 - ndl, 0.0, 1.0);
+        float wrap = clamp((ndl + 0.55) / 1.55, 0.0,
+                           1.0) * clamp(1.0 - ndl, 0.0, 1.0);
         float back = pow(clamp(1.0 - ndl, 0.0, 1.0), 2.2)
                    * pow(clamp(dot(V, -L1) * 0.5 + 0.5, 0.0, 1.0), 1.5);
         vec3  sssc = albedo * vec3(1.00, 0.36, 0.24);
@@ -872,18 +911,24 @@ ModelViewProject VectorScale
         ivec2 ip = ivec2(floor(pt));
         vec2 fp = fract(pt);
         ivec2 mx = ts - 1;
-        vec4 E = texelFetch(color, clamp(ip,                ivec2(0), mx), 0);
-        vec4 U = texelFetch(color, clamp(ip + ivec2( 0,-1), ivec2(0), mx), 0);
-        vec4 D = texelFetch(color, clamp(ip + ivec2( 0, 1), ivec2(0), mx), 0);
-        vec4 L = texelFetch(color, clamp(ip + ivec2(-1, 0), ivec2(0), mx), 0);
-        vec4 R = texelFetch(color, clamp(ip + ivec2( 1, 0), ivec2(0), mx), 0);
+        vec4 E = texelFetch(color,
+                            clamp(ip,                ivec2(0), mx), 0);
+        vec4 U = texelFetch(color,
+                            clamp(ip + ivec2( 0,-1), ivec2(0), mx), 0);
+        vec4 D = texelFetch(color,
+                            clamp(ip + ivec2( 0, 1), ivec2(0), mx), 0);
+        vec4 L = texelFetch(color,
+                            clamp(ip + ivec2(-1, 0), ivec2(0), mx), 0);
+        vec4 R = texelFetch(color,
+                            clamp(ip + ivec2( 1, 0), ivec2(0), mx), 0);
         float ud = vs_eq(U, D);
         float lr = vs_eq(L, R);
         vec4 c = E;
         // one-destination-pixel AA width in texel units
         float w = max(fwidth(pt.x + pt.y), 1e-5);
         // each corner: neighbors agree, opposing sides differ, and the
-        // corner color differs from the center -> cut at the 45-degree line
+        // corner color differs from the center -> cut at the 45-degree
+        // line
         if (vs_eq(L, U) > 0.5 && lr < 0.5 && ud < 0.5 && vs_eq(L, E) < 0.5) {
             float d = fp.x + fp.y;                     // line x+y = 0.5
             c = mix(L, c, clamp((d - 0.5) / w + 0.5, 0.0, 1.0));
@@ -900,15 +945,17 @@ ModelViewProject VectorScale
             float d = (1.0 - fp.x) + (1.0 - fp.y);
             c = mix(R, c, clamp((d - 0.5) / w + 0.5, 0.0, 1.0));
         }
-        fragColor = vec4(c.rgb * c.a, c.a);   // premultiplied compositing
+        // premultiplied compositing
+        fragColor = vec4(c.rgb * c.a, c.a);
     }
 
 
 # up to four emulator planes VectorScaled and composed in ONE pass, in
-# index order, premultiplied. each plane has its rect in output uv (x, y,
-# w, h; w 0 = plane off), so planes glide on their own scroll offsets.
-# four straight-line plane calls is the fast shape: six copies of the plane
-# body, or one body in a loop choosing its texture, both compile 3x slower
+# index order, premultiplied. each plane has its rect in output uv (x,
+# y, w, h; w 0 = plane off), so planes glide on their own scroll
+# offsets. four straight-line plane calls is the fast shape: six copies
+# of the plane body, or one body in a loop choosing its texture, both
+# compile 3x slower
 ModelViewProject VectorLayers
     mutable r0 : vec4f
     mutable r1 : vec4f
@@ -939,33 +986,43 @@ ModelViewProject VectorLayers
         gl_Position = vec4(pos.x, pos.y, 0.0, 1.0);
     }
 
-    # same coverage and (near) the same color = one shape; a mask, no branch
+    # same coverage and (near) the same color = one shape; a mask, no
+    # branch
     func vs_eq [ a: @vec4f, b: @vec4f ] -> GLSL float {
         vec4 d = a - b;
         return (abs(d.a) <= 0.5 && dot(d, d) < 0.0004) ? 1.0 : 0.0;
     }
 
-    # one plane at output uv st through its rect r, premultiplied; transparent
-    # off the plane or off its texture. w = one destination pixel in texel
-    # units (fwidth is fragment-only and helpers land in both stages, so the
-    # caller passes it). BRANCHLESS past the plane gate: the corner cuts are
-    # masks, so a busy plane (a level full of tile edges) costs the same as a
-    # flat one; as branches, dense edges ran every path and tripled the pass
-    func vs_layer [ tex: @sampler2D, r: @vec4f, st: @vec2f, w: @f32 ] -> GLSL vec4f {
+    # one plane at output uv st through its rect r, premultiplied;
+    # transparent off the plane or off its texture. w = one destination
+    # pixel in texel units (fwidth is fragment-only and helpers land in
+    # both stages, so the caller passes it). BRANCHLESS past the plane
+    # gate: the corner cuts are masks, so a busy plane (a level full of
+    # tile edges) costs the same as a flat one; as branches, dense edges
+    # ran every path and tripled the pass
+    func vs_layer [ tex: @sampler2D, r: @vec4f, st: @vec2f,
+                    w: @f32 ] -> GLSL vec4f {
         if (r.z <= 0.0 || r.w <= 0.0) return vec4(0.0);
         vec2 lu = (st - r.xy) / r.zw;
-        float inside = (lu.x >= 0.0 && lu.y >= 0.0 && lu.x < 1.0 && lu.y < 1.0) ? 1.0 : 0.0;
+        float inside = (lu.x >= 0.0 && lu.y >= 0.0 && lu.x < 1.0
+                        && lu.y < 1.0) ? 1.0 : 0.0;
         ivec2 ts = textureSize(tex, 0);
         vec2 pt = lu * vec2(ts);
         ivec2 ip = ivec2(floor(pt));
         vec2 fp = fract(pt);
         ivec2 mx = ts - 1;
-        vec4 E = texelFetch(tex, clamp(ip,                ivec2(0), mx), 0);
-        vec4 U = texelFetch(tex, clamp(ip + ivec2( 0,-1), ivec2(0), mx), 0);
-        vec4 D = texelFetch(tex, clamp(ip + ivec2( 0, 1), ivec2(0), mx), 0);
-        vec4 L = texelFetch(tex, clamp(ip + ivec2(-1, 0), ivec2(0), mx), 0);
-        vec4 R = texelFetch(tex, clamp(ip + ivec2( 1, 0), ivec2(0), mx), 0);
-        // a corner cuts when its two neighbors agree, the opposing sides
+        vec4 E = texelFetch(tex,
+                            clamp(ip,                ivec2(0), mx), 0);
+        vec4 U = texelFetch(tex,
+                            clamp(ip + ivec2( 0,-1), ivec2(0), mx), 0);
+        vec4 D = texelFetch(tex,
+                            clamp(ip + ivec2( 0, 1), ivec2(0), mx), 0);
+        vec4 L = texelFetch(tex,
+                            clamp(ip + ivec2(-1, 0), ivec2(0), mx), 0);
+        vec4 R = texelFetch(tex,
+                            clamp(ip + ivec2( 1, 0), ivec2(0), mx), 0);
+        // a corner cuts when its two neighbors agree, the opposing
+        // sides
         // differ, and the corner color is not the center's
         float open = (1.0 - vs_eq(U, D)) * (1.0 - vs_eq(L, R));
         float cL = open * (1.0 - vs_eq(L, E));
@@ -975,16 +1032,27 @@ ModelViewProject VectorLayers
         float mLD = cL * vs_eq(L, D);
         float mRD = cR * vs_eq(R, D);
         vec4 c = E;
-        c = mix(c, mix(L, c, clamp((fp.x + fp.y - 0.5) / w + 0.5, 0.0, 1.0)),                 mLU);
-        c = mix(c, mix(R, c, clamp(((1.0 - fp.x) + fp.y - 0.5) / w + 0.5, 0.0, 1.0)),         mRU);
-        c = mix(c, mix(L, c, clamp((fp.x + (1.0 - fp.y) - 0.5) / w + 0.5, 0.0, 1.0)),         mLD);
+        c = mix(c,
+                mix(L, c,
+                    clamp((fp.x + fp.y - 0.5) / w + 0.5, 0.0,
+                          1.0)),                 mLU);
+        c = mix(c,
+                mix(R, c,
+                    clamp(((1.0 - fp.x) + fp.y - 0.5) / w + 0.5, 0.0,
+                          1.0)),         mRU);
+        c = mix(c,
+                mix(L, c,
+                    clamp((fp.x + (1.0 - fp.y) - 0.5) / w + 0.5, 0.0,
+                          1.0)),         mLD);
         c = mix(c, mix(R, c, clamp(((1.0 - fp.x) + (1.0 - fp.y) - 0.5) / w + 0.5, 0.0, 1.0)), mRD);
         return vec4(c.rgb * c.a, c.a) * inside;
     }
 
     func fragment [] -> GLSL none {
-        // one destination pixel in texel units, from the base plane: every
-        // plane maps its texels at the same density (fwidth stays here, in
+        // one destination pixel in texel units, from the base plane:
+        // every
+        // plane maps its texels at the same density (fwidth stays here,
+        // in
         // the fragment body and uniform control flow)
         vec2 pt = (v_uv / ubo.r0.zw) * vec2(textureSize(l0, 0));
         float w = max(fwidth(pt.x + pt.y), 1e-5);
@@ -1013,7 +1081,8 @@ shader SubdivCompute
     mutable n_edge     : i32
     mutable n_face     : i32
     mutable in_stride  : i32                   # floats per input vertex
-    mutable out_stride : i32                   # floats per output vertex
+    # floats per output vertex
+    mutable out_stride : i32
 
     attrib in_pos      : StorageBuffer [ type:typeid[ SubdivSurface ], id:SubdivSurface.in_pos,      count:1, format:typeid[ f32 ] ]
     attrib face_corner : StorageBuffer [ type:typeid[ SubdivSurface ], id:SubdivSurface.face_corner, count:1, format:typeid[ i32 ] ]
@@ -1047,8 +1116,10 @@ shader SubdivCompute
             int v = int(gid);
             vec3 P = read_pos(v);
             int e0 = veo[v]; int e1 = veo[v+1];
-            // boundary verts (mouth rim, lip contact) use the crease rule;
-            // the interior formula would drag them toward the surface hole
+            // boundary verts (mouth rim, lip contact) use the crease
+            // rule;
+            // the interior formula would drag them toward the surface
+            // hole
             int nb = 0;
             vec3 bsum = vec3(0.0);
             for (int i = e0; i < e1; i++) {{
@@ -1103,8 +1174,10 @@ enum SubdivNrm
 
 shader SubdivNormals
     mutable n_verts : i32
-    mutable stride  : i32                      # floats per vertex in the VBO
-    mutable nrm_off : i32                      # float offset of the normal
+    # floats per vertex in the VBO
+    mutable stride  : i32
+    # float offset of the normal
+    mutable nrm_off : i32
 
     attrib v_buf : StorageBuffer [ type:typeid[ SubdivNrm ], id:SubdivNrm.v_buf, count:1, format:typeid[ f32 ], writable:true ]
     attrib n_fc  : StorageBuffer [ type:typeid[ SubdivNrm ], id:SubdivNrm.n_fc,  count:1, format:typeid[ i32 ] ]
@@ -1195,7 +1268,8 @@ shader Convolve
         return vec2(float(i) * invNumSamples, radicalInverse_VdC(i));
     }
 
-    func sampleGGX [ u1: @float, u2: @float, roughness: @float ] -> GLSL vec3f {
+    func sampleGGX [ u1: @float, u2: @float,
+                     roughness: @float ] -> GLSL vec3f {
         float alpha = roughness * roughness;
         float cosTheta = sqrt((1.0 - u2) / (1.0 + (alpha*alpha - 1.0) * u2));
         float sinTheta = sqrt(1.0 - cosTheta*cosTheta);
@@ -1210,10 +1284,13 @@ shader Convolve
         return alphaSq / (3.14159265359 * denom * denom);
     }
 
-    func prefilterEnvMap [ R: @vec3f, roughness: @float, numSamples: @i32 ] -> GLSL vec3f {
+    func prefilterEnvMap [ R: @vec3f, roughness: @float,
+                           numSamples: @i32 ] -> GLSL vec3f {
         vec3  N  = R;
         vec3  Lo = N;
-        vec3  T  = normalize(cross(N, abs(N.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0)));
+        vec3  T  = normalize(cross(N,
+                                   abs(N.y) < 0.999 ? vec3(0.0, 1.0,
+                                           0.0) : vec3(1.0, 0.0, 0.0)));
         vec3  S  = normalize(cross(N, T));
         vec3  color  = vec3(0.0);
         float weight = 0.0;
@@ -1230,7 +1307,8 @@ shader Convolve
                 float pdf = ndfGGX(cosLh, roughness) * cosLh / max(4.0 * dot(Lh, Lo), 0.001);
                 float ws = 1.0 / (float(numSamples) * pdf);
                 float mipLevel = clamp(0.5 * log2(ws / wt), 0.0, 7);
-                color += textureLod(environment, Li, mipLevel).rgb * cosLi;
+                color += textureLod(environment, Li,
+                                    mipLevel).rgb * cosLi;
                 weight += cosLi;
             }}
         }}
@@ -1328,7 +1406,8 @@ ModelViewProject Blur
         const float sigma = 3.0;
         vec2  uv_coord   = v_uv;
         int   w          = textureSize(color, 0).x;
-        vec2  offset     = vec2(1.0 / float(w) * ubo.reduction_scale, 0.0);
+        vec2  offset     = vec2(1.0 / float(w) * ubo.reduction_scale,
+                                0.0);
         float weight_sum = gaussian(0.0, sigma);
         vec4  result     = texture(color, uv_coord) * weight_sum;
         for (int i = 1; i <= kernel_size / 2; ++i) {{
@@ -1406,7 +1485,8 @@ ModelViewProject CanvasBlurH
         return exp(-(x * x) / (2.0 * sigma * sigma)) / (sqrt(2.0 * PI) * sigma);
     }
 
-    func blur_sample [ s: @sampler2D, st: @vec2f, off: @vec2f, sigma: @f32 ] -> GLSL vec4f {
+    func blur_sample [ s: @sampler2D, st: @vec2f, off: @vec2f,
+                       sigma: @f32 ] -> GLSL vec4f {
         const int kernel_size = 9;
         float weight_sum = gaussian(0.0, sigma);
         vec4  result     = texture(s, st) * weight_sum;
@@ -1430,7 +1510,8 @@ ModelViewProject CanvasBlurH
     }
 
 
-func mat_tex [ m: Model, mdl: GltfModel, ti: TextureInfo, name: string, out: map Au[string] ]
+func mat_tex [ m: Model, mdl: GltfModel, ti: TextureInfo, name: string,
+               out: map Au[string] ]
     if [ !ti ] return
     p0 : mdl.texture_uri[ ti ]
     if [ !p0 ] return
@@ -1446,11 +1527,13 @@ func mat_tex [ m: Model, mdl: GltfModel, ti: TextureInfo, name: string, out: map
         ml : i32 [ 1 ]
         for [ q: i32 mx, q > 1, q = q / 2 ]
             ml += 1
-        tx = Texture [ w: m.w, vk: m.vk, linear: true, mip_levels: ml, sampler: im ]
+        tx = Texture [ w: m.w, vk: m.vk, linear: true, mip_levels: ml,
+                       sampler: im ]
         m.tex_cache[ key ] = tx
     out[ name ] = tx
 
-func subdiv_topo_from_quads [ nv: i32, nf: i32, qcorn: @i32, with_edges: bool ] -> SubdivTopo
+func subdiv_topo_from_quads [ nv: i32, nf: i32, qcorn: @i32,
+                              with_edges: bool ] -> SubdivTopo
     t : SubdivTopo [ ]
     t.nv = nv
     t.nf = nf
@@ -1463,7 +1546,8 @@ func subdiv_topo_from_quads [ nv: i32, nf: i32, qcorn: @i32, with_edges: bool ] 
     t.vf  = vec i32 [ nf4 ]
     for [ i: i32 0, i < nv1, i += 1 ] t.vfo[ i ] = 0
     for [ f: i32 0, f < nf, f += 1 ]
-        for [ c: i32 0, c < 4, c += 1 ] t.vfo[ qcorn[ f*4 + c ] + 1 ] += 1
+        for [ c: i32 0, c < 4, c += 1 ]
+            t.vfo[ qcorn[ f*4 + c ] + 1 ] += 1
     for [ i: i32 0, i < nv, i += 1 ] t.vfo[ i+1 ] += t.vfo[ i ]
     vf_cur : vec i32 [ nv ]
     for [ i: i32 0, i < nv, i += 1 ] vf_cur[ i ] = t.vfo[ i ]
@@ -1587,13 +1671,15 @@ func subdiv_next_topo [ t: SubdivTopo, with_edges: bool ] -> SubdivTopo
 # host-visible i32 storage buffer filled from a CPU array
 func subdiv_i32_buf [ vkc: vk_context, src: @i32, count: i32 ] -> Buffer
     bts : i32 [ count * 4 ]
-    b : Buffer [ vk: vkc, size: bts, u_storage: true, m_host_visible: true, m_host_coherent: true ]
+    b : Buffer [ vk: vkc, size: bts, u_storage: true,
+                 m_host_visible: true, m_host_coherent: true ]
     d : @i8 [ b.data ]
     s0 : cast @i8 [ @src[ 0 ] ]
     memcpy[ d, s0, bts ]
     return b
 
-func subdiv_merge_jw [ cur_j: @i32, cur_w: @f32, cont: @i32, ncont: i32, dst_j: @i32, dst_w: @f32, dv: i32 ]
+func subdiv_merge_jw [ cur_j: @i32, cur_w: @f32, cont: @i32,
+                       ncont: i32, dst_j: @i32, dst_w: @f32, dv: i32 ]
     mj : local i32 [ 16 ]
     mw : local f32 [ 16 ]
     cnt : i32 [ 0 ]
@@ -1638,9 +1724,11 @@ func subdiv_merge_jw [ cur_j: @i32, cur_w: @f32, cont: @i32, ncont: i32, dst_j: 
             dst_w[ dv*4 + s ] = 0.0
     tw : f32 [ dst_w[ dv*4 ] + dst_w[ dv*4 + 1 ] + dst_w[ dv*4 + 2 ] + dst_w[ dv*4 + 3 ] ]
     if [ tw > 0.0 ]
-        for [ s: i32 0, s < 4, s += 1 ] dst_w[ dv*4 + s ] = dst_w[ dv*4 + s ] / tw
+        for [ s: i32 0, s < 4, s += 1 ]
+            dst_w[ dv*4 + s ] = dst_w[ dv*4 + s ] / tw
 
-func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32, name: string, crease: vec f32 ] -> Gpu
+func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32,
+                    name: string, crease: vec f32 ] -> Gpu
     levels : i32 [ m.subdiv ]
     vsz : i32 [ base.vertex_size ]
     vc  : i32 [ base.vertex_count ]
@@ -1657,10 +1745,12 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32, name: st
     idxbuf : vec i32 [ ic ]
     if [ base.index_size == 2 ]
         i16p : cast @u16 [ @idata[ 0 ] ]
-        for [ ii: i32 0, ii < ic, ii += 1 ] idxbuf[ ii ] = i32[ i16p[ ii ] ]
+        for [ ii: i32 0, ii < ic, ii += 1 ]
+            idxbuf[ ii ] = i32[ i16p[ ii ] ]
     el
         i32p : cast @u32 [ @idata[ 0 ] ]
-        for [ ii: i32 0, ii < ic, ii += 1 ] idxbuf[ ii ] = i32[ i32p[ ii ] ]
+        for [ ii: i32 0, ii < ic, ii += 1 ]
+            idxbuf[ ii ] = i32[ i32p[ ii ] ]
     n_off : i32 [ -1 ]
     mems0 : @vertex_member_t [ base.members ]
     for [ k: i32 0, k < base.member_count, k += 1 ]
@@ -1776,11 +1866,13 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32, name: st
             na2 : i32 [ 0 ]
             nb2 : i32 [ 0 ]
             for [ wv: i32 0, wv < tv, wv += 1 ]
-                if [ q6[wv*6] == ax3 && q6[wv*6+1] == ay3 && q6[wv*6+2] == az3 ]
+                if [ q6[wv*6] == ax3 && q6[wv*6+1] == ay3
+                     && q6[wv*6+2] == az3 ]
                     if [ na2 < 8 ]
                         sa[ na2 ] = wv
                         na2 += 1
-                if [ q6[wv*6] == bx3 && q6[wv*6+1] == by3 && q6[wv*6+2] == bz3 ]
+                if [ q6[wv*6] == bx3 && q6[wv*6+1] == by3
+                     && q6[wv*6+2] == bz3 ]
                     if [ nb2 < 8 ]
                         sb[ nb2 ] = wv
                         nb2 += 1
@@ -1819,7 +1911,8 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32, name: st
         c1 : i32 [ t0.qcorn[ f*4 + 1 ] ]
         c2 : i32 [ t0.qcorn[ f*4 + 2 ] ]
         c3 : i32 [ t0.qcorn[ f*4 + 3 ] ]
-        bad : bool [ (c0 == c1) || (c0 == c2) || (c0 == c3) || (c1 == c2) || (c1 == c3) || (c2 == c3) ]
+        bad : bool [ (c0 == c1) || (c0 == c2) || (c0 == c3)
+                     || (c1 == c2) || (c1 == c3) || (c2 == c3) ]
         if [ bad ] ndegen += 1
     out_bytes : i32 [ nout * vsz ]
     obuf : Buffer [ vk: m.vk, size: out_bytes, u_storage: true, u_vertex: true, m_host_visible: true, m_host_coherent: true ]
@@ -1841,8 +1934,10 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32, name: st
     for [ v: i32 0, v < tv, v += 1 ] srcv[ v ] = rep[ v ]
     for [ lv: i32 0, lv < levels, lv += 1 ]
         t : topos[ lv ]
-        for [ e: i32 0, e < t.ne, e += 1 ] srcv[ t.nv + e ] = srcv[ t.edata[ e*4 ] ]
-        for [ f: i32 0, f < t.nf, f += 1 ] srcv[ t.nv + t.ne + f ] = srcv[ t.qcorn[ f*4 ] ]
+        for [ e: i32 0, e < t.ne, e += 1 ]
+            srcv[ t.nv + e ] = srcv[ t.edata[ e*4 ] ]
+        for [ f: i32 0, f < t.nf, f += 1 ]
+            srcv[ t.nv + t.ne + f ] = srcv[ t.qcorn[ f*4 ] ]
     # joints + weights pair (merged, not averaged)
     jk : i32 [ -1 ]
     wk : i32 [ -1 ]
@@ -1880,13 +1975,15 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32, name: st
             for [ e: i32 0, e < t.ne, e += 1 ]
                 cont[ 0 ] = t.edata[ e*4 + 0 ]
                 cont[ 1 ] = t.edata[ e*4 + 1 ]
-                subdiv_merge_jw[ cur_j, cur_w, cont, 2, cur_j, cur_w, t.nv + e ]
+                subdiv_merge_jw[ cur_j, cur_w, cont, 2, cur_j, cur_w,
+                                 t.nv + e ]
             for [ f: i32 0, f < t.nf, f += 1 ]
                 cont[ 0 ] = t.qcorn[ f*4 + 0 ]
                 cont[ 1 ] = t.qcorn[ f*4 + 1 ]
                 cont[ 2 ] = t.qcorn[ f*4 + 2 ]
                 cont[ 3 ] = t.qcorn[ f*4 + 3 ]
-                subdiv_merge_jw[ cur_j, cur_w, cont, 4, cur_j, cur_w, t.nv + t.ne + f ]
+                subdiv_merge_jw[ cur_j, cur_w, cont, 4, cur_j, cur_w,
+                                 t.nv + t.ne + f ]
         for [ v: i32 0, v < nout, v += 1 ]
             dw : cast @f32 [ @odata[ v * vsz + woff ] ]
             dj8  : cast @u8 [ @odata[ v * vsz + joff ] ]
@@ -1917,26 +2014,31 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32, name: st
         for [ v: i32 0, v < tv, v += 1 ]
             rv : i32 [ rep[ v ] ]
             sp : cast @f32 [ @vdata[ rv * vsz + moff ] ]
-            for [ c: i32 0, c < ncf, c += 1 ] cur[ v * ncf + c ] = sp[ c ]
+            for [ c: i32 0, c < ncf, c += 1 ]
+                cur[ v * ncf + c ] = sp[ c ]
         for [ lv: i32 0, lv < levels, lv += 1 ]
             t : topos[ lv ]
             for [ e: i32 0, e < t.ne, e += 1 ]
                 v0 : i32 [ t.edata[ e*4 + 0 ] ]
                 v1 : i32 [ t.edata[ e*4 + 1 ] ]
                 dv : i32 [ t.nv + e ]
-                for [ c: i32 0, c < ncf, c += 1 ] cur[ dv * ncf + c ] = 0.5 * (cur[ v0 * ncf + c ] + cur[ v1 * ncf + c ])
+                for [ c: i32 0, c < ncf, c += 1 ]
+                    cur[ dv * ncf + c ] = 0.5 * (cur[ v0 * ncf + c ] + cur[ v1 * ncf + c ])
             for [ f: i32 0, f < t.nf, f += 1 ]
                 c0 : i32 [ t.qcorn[ f*4 + 0 ] ]
                 c1 : i32 [ t.qcorn[ f*4 + 1 ] ]
                 c2 : i32 [ t.qcorn[ f*4 + 2 ] ]
                 c3 : i32 [ t.qcorn[ f*4 + 3 ] ]
                 dv : i32 [ t.nv + t.ne + f ]
-                for [ c: i32 0, c < ncf, c += 1 ] cur[ dv * ncf + c ] = 0.25 * (cur[ c0 * ncf + c ] + cur[ c1 * ncf + c ] + cur[ c2 * ncf + c ] + cur[ c3 * ncf + c ])
+                for [ c: i32 0, c < ncf, c += 1 ]
+                    cur[ dv * ncf + c ] = 0.25 * (cur[ c0 * ncf + c ] + cur[ c1 * ncf + c ] + cur[ c2 * ncf + c ] + cur[ c3 * ncf + c ])
         for [ v: i32 0, v < nout, v += 1 ]
             dp : cast @f32 [ @odata[ v * vsz + moff ] ]
-            for [ c: i32 0, c < ncf, c += 1 ] dp[ c ] = cur[ v * ncf + c ]
+            for [ c: i32 0, c < ncf, c += 1 ]
+                dp[ c ] = cur[ v * ncf + c ]
     in0sz : i32 [ tv * 3 * 4 ]
-    in0 : Buffer [ vk: m.vk, size: in0sz, u_storage: true, m_host_visible: true, m_host_coherent: true ]
+    in0 : Buffer [ vk: m.vk, size: in0sz, u_storage: true,
+                   m_host_visible: true, m_host_coherent: true ]
     ip : @f32 [ in0.data ]
     for [ v: i32 0, v < tv, v += 1 ]
         rv : i32 [ rep[ v ] ]
@@ -1986,7 +2088,8 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32, name: st
         ob = obuf
         if [ !is_final ]
             ob_bytes : i32 [ outv * 12 ]
-            ob = Buffer [ vk: m.vk, size: ob_bytes, u_storage: true, m_host_visible: true, m_host_coherent: true ]
+            ob = Buffer [ vk: m.vk, size: ob_bytes, u_storage: true,
+                          m_host_visible: true, m_host_coherent: true ]
         nf4 : i32 [ t.nf * 4 ]
         ne4 : i32 [ t.ne * 4 ]
         nv1 : i32 [ t.nv + 1 ]
@@ -2024,7 +2127,8 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32, name: st
         ns.n_verts = nout
         ns.stride = vsz / 4
         ns.nrm_off = i32[ mems[ nrm_k ].offset ] / 4
-        nmap : map Au[string] [ 'v_buf': obuf, 'n_fc': nfc_b, 'n_vfo': nvfo_b, 'n_vf': nvf_b ]
+        nmap : map Au[string] [ 'v_buf': obuf, 'n_fc': nfc_b,
+                                'n_vfo': nvfo_b, 'n_vf': nvf_b ]
         npipe : Pipeline [ vk: m.vk, w: m.w, name: '{name}_sdnrm', r: m.r, s: ns, render_id: render_id, default_model: mat4f.identity[], samplers: nmap ]
         npipe.dispatch_x = (nout + 15) / 16
         npipe.dispatch_y = 1
@@ -2120,7 +2224,8 @@ func model_init_pipeline [ m: Model, n: Node, prim: Primitive, msh: Mesh, s: sha
                 dst:  @i8[data_dst]
                 data_src: @src[j * stride]
                 src0: @i8[data_src]
-                memcpy[ dst, src0, mem.size ] # highlight these in the variables list
+                # highlight these in the variables list
+                memcpy[ dst, src0, mem.size ]
 
         view:  @i8[ibuffer.data]
         i_src: @view [ iview.byteOffset + ai.byteOffset ]
@@ -2130,7 +2235,8 @@ func model_init_pipeline [ m: Model, n: Node, prim: Primitive, msh: Mesh, s: sha
         if [ m.subdiv > 0 ]
             crs : vec f32
             if [ msh && msh.extras ] crs = msh.extras.crease
-            sd_vbo : subdiv_build[ m, vbo, sems_of, render_id, name, crs ]
+            sd_vbo : subdiv_build[ m, vbo, sems_of, render_id, name,
+                                   crs ]
             if [ sd_vbo ] vbo = sd_vbo
 
         if [ n.world.m[15] != 0.0 ]
@@ -2142,16 +2248,20 @@ func model_init_pipeline [ m: Model, n: Node, prim: Primitive, msh: Mesh, s: sha
     info : Au.header [ vbo ]
     sa: bool [ transparent || m.straight_alpha ]
     if [ s.texture && s.texture.count && !m.samplers['color'] ]
-        m.samplers[ 'color' ] = Texture [ w:m.w, vk: vk, mip_levels: s.mip_levels, sampler: Image [ s.texture ] ]
+        m.samplers[ 'color' ] = Texture [ w:m.w, vk: vk,
+                mip_levels: s.mip_levels, sampler: Image [ s.texture ] ]
     use_samplers : map Au[string] [ ]
     use_samplers.unmanaged = true
     for [ sv: Au, sk: string ] in m.samplers
         use_samplers[ sk ] = sv
     if [ material && mdl ]
         pmr : material.pbrMetallicRoughness
-        mat_tex[ m, mdl, pmr->baseColorTexture,         'color',  use_samplers ]
-        mat_tex[ m, mdl, pmr->metallicRoughnessTexture, 'rough',  use_samplers ]
-        mat_tex[ m, mdl, material.normalTexture,                      'normal', use_samplers ]
+        mat_tex[ m, mdl, pmr->baseColorTexture,         'color',
+                 use_samplers ]
+        mat_tex[ m, mdl, pmr->metallicRoughnessTexture, 'rough',
+                 use_samplers ]
+        mat_tex[ m, mdl, material.normalTexture,
+                 'normal', use_samplers ]
     pipe: Pipeline [ vk: vk, w: m.w, name: n->name,
         r: m.r, s: s, vbo: vbo, default_model: mdl_mat, src_node: n, render_id: render_id,
         material: material, samplers: use_samplers,

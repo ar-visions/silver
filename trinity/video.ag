@@ -6,8 +6,8 @@ enum EncodeSurface
     src:  0
     nv12: 1
 
-# rgba to nv12: each invocation packs four pixels of luma, and on even rows
-# two chroma pairs, into the plane buffer the encoder reads
+# rgba to nv12: each invocation packs four pixels of luma, and on even
+# rows two chroma pairs, into the plane buffer the encoder reads
 shader NV12Convert
     mutable cw : i32
     mutable ch : i32
@@ -21,8 +21,11 @@ shader NV12Convert
         ivec2 lim  = textureSize(src, 0) - ivec2(1, 1);
         uint  luma = 0u;
         for (int i = 0; i < 4; i++) {{
-            vec3  c = texelFetch(src, min(ivec2(gid.x * 4 + i, gid.y), lim), 0).rgb;
-            float y = 16.0 + 65.481 * c.r + 128.553 * c.g + 24.966 * c.b;
+            vec3  c = texelFetch(src,
+                                 min(ivec2(gid.x * 4 + i, gid.y),
+                                     lim), 0).rgb;
+            // bt.709 limited range, as the sps says (matrix 1)
+            float y = 16.0 + 46.559 * c.r + 156.629 * c.g + 15.812 * c.b;
             luma |= uint(clamp(y, 0.0, 255.0) + 0.5) << (8 * i);
         }}
         nv12[gid.y * quads + gid.x] = luma;
@@ -31,17 +34,57 @@ shader NV12Convert
             for (int i = 0; i < 2; i++) {{
                 ivec2 p = ivec2(gid.x * 4 + i * 2, gid.y);
                 vec3  c = texelFetch(src, min(p, lim), 0).rgb
-                        + texelFetch(src, min(p + ivec2(1, 0), lim), 0).rgb
-                        + texelFetch(src, min(p + ivec2(0, 1), lim), 0).rgb
-                        + texelFetch(src, min(p + ivec2(1, 1), lim), 0).rgb;
+                        + texelFetch(src, min(p + ivec2(1, 0), lim),
+                                     0).rgb
+                        + texelFetch(src, min(p + ivec2(0, 1), lim),
+                                     0).rgb
+                        + texelFetch(src, min(p + ivec2(1, 1), lim),
+                                     0).rgb;
                 c *= 0.25;
-                float u = 128.0 - 37.797 * c.r - 74.203 * c.g + 112.0  * c.b;
-                float v = 128.0 + 112.0  * c.r - 93.786 * c.g - 18.214 * c.b;
+                float u = 128.0 - 25.664 * c.r - 86.336 * c.g + 112.0 * c.b;
+                float v = 128.0 + 112.0 * c.r - 101.730 * c.g - 10.270 * c.b;
                 chroma |= uint(clamp(u, 0.0, 255.0) + 0.5) << (16 * i);
-                chroma |= uint(clamp(v, 0.0, 255.0) + 0.5) << (16 * i + 8);
+                chroma |= uint(clamp(v, 0.0,
+                                     255.0) + 0.5) << (16 * i + 8);
             }}
             nv12[(ubo.cw * ubo.ch) / 4 + (gid.y / 2) * quads + gid.x] = chroma;
         }}
+    }
+
+
+# the same rows at full colour: every pixel keeps its own cb, cr
+# (G8_B8R8_2PLANE_444: luma, then interleaved cb/cr at full size)
+shader NV24Convert
+    mutable cw : i32
+    mutable ch : i32
+    attrib src  : LayoutBinding [ type:typeid[ EncodeSurface ], id: EncodeSurface.src,  count:1, format: typeid[ rgba8 ] ]
+    attrib nv12 : StorageBuffer [ type:typeid[ EncodeSurface ], id: EncodeSurface.nv12, count:1, format: typeid[ u32 ], writable: true ]
+
+    func compute [] -> GLSL none {
+        ivec2 gid   = ivec2(gl_GlobalInvocationID.xy);
+        int   quads = ubo.cw / 4;
+        if (gid.x >= quads || gid.y >= ubo.ch) return;
+        ivec2 lim   = textureSize(src, 0) - ivec2(1, 1);
+        uint  luma  = 0u;
+        uint  cc0   = 0u;
+        uint  cc1   = 0u;
+        for (int i = 0; i < 4; i++) {{
+            vec3 c = texelFetch(src, min(ivec2(gid.x * 4 + i, gid.y),
+                                         lim), 0).rgb;
+            // bt.709 limited range, as the sps says (matrix 1)
+            float y = 16.0 + 46.559 * c.r + 156.629 * c.g + 15.812 * c.b;
+            float u = 128.0 - 25.664 * c.r - 86.336 * c.g + 112.0 * c.b;
+            float v = 128.0 + 112.0 * c.r - 101.730 * c.g - 10.270 * c.b;
+            luma |= uint(clamp(y, 0.0, 255.0) + 0.5) << (8 * i);
+            uint uv = uint(clamp(u, 0.0, 255.0) + 0.5)
+                    | (uint(clamp(v, 0.0, 255.0) + 0.5) << 8);
+            if (i < 2) cc0 |= uv << (16 * i);
+            else       cc1 |= uv << (16 * (i - 2));
+        }}
+        nv12[gid.y * quads + gid.x] = luma;
+        int cbase = (ubo.cw * ubo.ch) / 4 + gid.y * (ubo.cw / 2) + gid.x * 2;
+        nv12[cbase]     = cc0;
+        nv12[cbase + 1] = cc1;
     }
 
 
@@ -68,7 +111,8 @@ shader PlaneBlend
         for (int k = 0; k < 4; k++) {{
             float va = float((wa >> (8 * k)) & 255u);
             float vb = float((wb >> (8 * k)) & 255u);
-            r |= uint(clamp(mix(va, vb, ubo.t) + 0.5, 0.0, 255.0)) << (8 * k);
+            r |= uint(clamp(mix(va, vb, ubo.t) + 0.5, 0.0,
+                            255.0)) << (8 * k);
         }}
         po[i] = r;
     }
@@ -93,13 +137,17 @@ class FrameBlend
         bytes = f.y.count + f.u.count + f.v.count
         words = i32[ (bytes + 3) / 4 ]
         sz : i64 [ i64[ words ] * 4 ]
-        buf_a = Buffer [ vk: vk, size: sz, u_storage: true, m_host_visible: true, m_host_coherent: true ]
-        buf_b = Buffer [ vk: vk, size: sz, u_storage: true, m_host_visible: true, m_host_coherent: true ]
+        buf_a = Buffer [ vk: vk, size: sz, u_storage: true,
+                         m_host_visible: true, m_host_coherent: true ]
+        buf_b = Buffer [ vk: vk, size: sz, u_storage: true,
+                         m_host_visible: true, m_host_coherent: true ]
         buf_o = Buffer [ vk: vk, size: sz, u_storage: true, m_host_visible: true, m_host_coherent: true, m_host_cached: true ]
         shader   = PlaneBlend [ vk: vk ]
         shader.n = words
-        pipe = Pipeline [ vk: vk, w: w, name: 'blend', s: shader, default_model: mat4f.identity[],
-            samplers: map Au[string] [ 'pa': buf_a, 'pb': buf_b, 'po': buf_o ] ]
+        pipe = Pipeline [ vk: vk, w: w, name: 'blend', s: shader,
+                          default_model: mat4f.identity[],
+            samplers: map Au[string] [ 'pa': buf_a, 'pb': buf_b,
+                                       'po': buf_o ] ]
         pipe.dispatch_x = 64
         pipe.dispatch_y = ((words + 1023) / 1024 + 15) / 16
         cmd   = Command [ vk: vk ]
@@ -113,7 +161,8 @@ class FrameBlend
         memcpy[ @p[ f.y.count + f.u.count ], @f.v[ 0 ], f.v.count ]
 
     # out = fa mixed toward fb by t (0..1)
-    public func between [ fa: VideoFrame, fb: VideoFrame, t: f32, out: VideoFrame ]
+    public func between [ fa: VideoFrame, fb: VideoFrame, t: f32,
+                          out: VideoFrame ]
         n9 : i64 [ fa.y.count + fa.u.count + fa.v.count ]
         if [ !pipe || bytes != n9 ] setup[ fa ]
         if [ a_pts != fa.pts ]
@@ -133,9 +182,12 @@ class FrameBlend
             0, null, 0, null ]
         cmd.submit
         cmd.finish[]
-        if [ !out.y || out.y.count != fa.y.count ] out.y = vec u8 [ fa.y.count ]
-        if [ !out.u || out.u.count != fa.u.count ] out.u = vec u8 [ fa.u.count ]
-        if [ !out.v || out.v.count != fa.v.count ] out.v = vec u8 [ fa.v.count ]
+        if [ !out.y || out.y.count != fa.y.count ]
+            out.y = vec u8 [ fa.y.count ]
+        if [ !out.u || out.u.count != fa.u.count ]
+            out.u = vec u8 [ fa.u.count ]
+        if [ !out.v || out.v.count != fa.v.count ]
+            out.v = vec u8 [ fa.v.count ]
         p : @u8 [ buf_o.data ]
         memcpy[ @out.y[ 0 ], @p[ 0 ], fa.y.count ]
         memcpy[ @out.u[ 0 ], @p[ fa.y.count ], fa.u.count ]
@@ -144,19 +196,27 @@ class FrameBlend
         out.height = fa.height
 
 
-# h.264 on the vulkan video queue: the picture never leaves the gpu, only
-# the bitstream comes back
+# h.264 on the vulkan video queue: the picture never leaves the gpu,
+# only the bitstream comes back
 class Encoder
     context vk          : vk_context
     public  width       : i32
     public  height      : i32
     public  fps         : i32
     public  qp          : i32 [ 20 ]
+    public  chroma444   : bool          # full colour: High 4:4:4
+    public  lossless    : bool          # qp 0, transform bypass
+    # h.265 in place of h.264: the gpu decodes it back at 4:4:4
+    public  hevc        : bool
     public  fd          : i32
     intern  coded_w     : i32
     intern  coded_h     : i32
     intern  gop         : i32
     intern  h264_profile : VkVideoEncodeH264ProfileInfoKHR
+    intern  h265_profile : VkVideoEncodeH265ProfileInfoKHR
+    intern  h265_caps   : VkVideoEncodeH265CapabilitiesKHR
+    intern  h265        : handle
+    intern  h265_pic    : handle
     intern  usage       : VkVideoEncodeUsageInfoKHR
     intern  profile     : VkVideoProfileInfoKHR
     intern  profiles    : VkVideoProfileListInfoKHR
@@ -177,7 +237,8 @@ class Encoder
     intern  pps         : StdVideoH264PictureParameterSet
     intern  header      : vec u8
     intern  header_sent : bool
-    public  mux         : Muxer             # takes the frames instead of the raw fd
+    # takes the frames instead of the raw fd
+    public  mux         : Muxer
     intern  pending_idr : bool
     intern  src_image   : VkImage
     intern  src_alloc   : VmaAllocation
@@ -215,7 +276,8 @@ class Encoder
     intern  _vkCmdEncodeVideoKHR                         : PFN_vkCmdEncodeVideoKHR
 
     # a plain layout change; the semaphore already ordered the memory
-    func layout [ f: VkCommandBuffer, image: VkImage, from: VkImageLayout, to: VkImageLayout, layers: i32 ]
+    func layout [ f: VkCommandBuffer, image: VkImage,
+                  from: VkImageLayout, to: VkImageLayout, layers: i32 ]
         barrier : VkImageMemoryBarrier [
             sType:               VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
             srcAccessMask:       VK_ACCESS_MEMORY_WRITE_BIT,
@@ -231,7 +293,8 @@ class Encoder
                 levelCount:     1,
                 baseArrayLayer: 0,
                 layerCount:     layers ] ]
-        vkCmdPipelineBarrier[ f, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+        vkCmdPipelineBarrier[ f, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                              VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
             0, 0, null, 0, null, 1, @barrier ]
 
     func picture_format [ use: i32 ] -> VkFormat
@@ -246,8 +309,11 @@ class Encoder
         for [ i: u32 0, i < n, i += 1 ]
             formats[i] = VkVideoFormatPropertiesKHR [ sType: VK_STRUCTURE_TYPE_VIDEO_FORMAT_PROPERTIES_KHR ]
         _vkGetPhysicalDeviceVideoFormatPropertiesKHR[ vk.physical_device, @info, @n, formats ]
+        want : VkFormat [ (chroma444) ? VK_FORMAT_G8_B8R8_2PLANE_444_UNORM
+                                      : VK_FORMAT_G8_B8R8_2PLANE_420_UNORM ]
         for [ i: u32 0, i < n, i += 1 ]
-            if [ formats[i].format == VK_FORMAT_G8_B8R8_2PLANE_420_UNORM ] return formats[i].format
+            if [ formats[i].format == want ]
+                return formats[i].format
         return formats[0].format
 
     func init []
@@ -273,18 +339,26 @@ class Encoder
 
         h264_profile = VkVideoEncodeH264ProfileInfoKHR [
             sType:         VK_STRUCTURE_TYPE_VIDEO_ENCODE_H264_PROFILE_INFO_KHR,
-            stdProfileIdc: STD_VIDEO_H264_PROFILE_IDC_HIGH ]
+            stdProfileIdc: (chroma444) ? STD_VIDEO_H264_PROFILE_IDC_HIGH_444_PREDICTIVE
+                                       : STD_VIDEO_H264_PROFILE_IDC_HIGH ]
+        h265_profile = VkVideoEncodeH265ProfileInfoKHR [
+            sType:         VK_STRUCTURE_TYPE_VIDEO_ENCODE_H265_PROFILE_INFO_KHR,
+            stdProfileIdc: (chroma444) ? STD_VIDEO_H265_PROFILE_IDC_FORMAT_RANGE_EXTENSIONS
+                                       : STD_VIDEO_H265_PROFILE_IDC_MAIN ]
         usage = VkVideoEncodeUsageInfoKHR [
             sType:             VK_STRUCTURE_TYPE_VIDEO_ENCODE_USAGE_INFO_KHR,
             pNext:             @h264_profile,
             videoUsageHints:   VK_VIDEO_ENCODE_USAGE_STREAMING_BIT_KHR,
             videoContentHints: VK_VIDEO_ENCODE_CONTENT_RENDERED_BIT_KHR,
             tuningMode:        VK_VIDEO_ENCODE_TUNING_MODE_LOW_LATENCY_KHR ]
+        if [ hevc ] usage.pNext = @h265_profile
         profile = VkVideoProfileInfoKHR [
             sType:               VK_STRUCTURE_TYPE_VIDEO_PROFILE_INFO_KHR,
             pNext:               @usage,
-            videoCodecOperation: VK_VIDEO_CODEC_OPERATION_ENCODE_H264_BIT_KHR,
-            chromaSubsampling:   VK_VIDEO_CHROMA_SUBSAMPLING_420_BIT_KHR,
+            videoCodecOperation: (hevc) ? VK_VIDEO_CODEC_OPERATION_ENCODE_H265_BIT_KHR
+                                        : VK_VIDEO_CODEC_OPERATION_ENCODE_H264_BIT_KHR,
+            chromaSubsampling:   (chroma444) ? VK_VIDEO_CHROMA_SUBSAMPLING_444_BIT_KHR
+                                             : VK_VIDEO_CHROMA_SUBSAMPLING_420_BIT_KHR,
             lumaBitDepth:        VK_VIDEO_COMPONENT_BIT_DEPTH_8_BIT_KHR,
             chromaBitDepth:      VK_VIDEO_COMPONENT_BIT_DEPTH_8_BIT_KHR ]
         profiles = VkVideoProfileListInfoKHR [
@@ -293,12 +367,14 @@ class Encoder
             pProfiles:    @profile ]
 
         h264_caps.sType   = VK_STRUCTURE_TYPE_VIDEO_ENCODE_H264_CAPABILITIES_KHR
+        h265_caps.sType   = VK_STRUCTURE_TYPE_VIDEO_ENCODE_H265_CAPABILITIES_KHR
         encode_caps.sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_CAPABILITIES_KHR
         encode_caps.pNext = @h264_caps
+        if [ hevc ] encode_caps.pNext = @h265_caps
         caps.sType        = VK_STRUCTURE_TYPE_VIDEO_CAPABILITIES_KHR
         caps.pNext        = @encode_caps
         res : VkResult [ _vkGetPhysicalDeviceVideoCapabilitiesKHR[ vk.physical_device, @profile, @caps ] ]
-        expect res == VK_SUCCESS, 'encode: h.264 encode profile not supported'
+        expect res == VK_SUCCESS, 'encode: {(hevc) ? "h.265" : "h.264"} encode profile not supported'
         max_w : i32 [ caps.maxCodedExtent.width ]
         max_h : i32 [ caps.maxCodedExtent.height ]
         expect coded_w <= max_w && coded_h <= max_h, 'encode: frame larger than the encoder allows'
@@ -309,7 +385,9 @@ class Encoder
 
         src_format : VkFormat [ picture_format[ VK_IMAGE_USAGE_VIDEO_ENCODE_SRC_BIT_KHR ] ]
         dpb_format : VkFormat [ picture_format[ VK_IMAGE_USAGE_VIDEO_ENCODE_DPB_BIT_KHR ] ]
-        expect src_format == VK_FORMAT_G8_B8R8_2PLANE_420_UNORM, 'encode: encoder does not take nv12'
+        want : VkFormat [ (chroma444) ? VK_FORMAT_G8_B8R8_2PLANE_444_UNORM
+                                      : VK_FORMAT_G8_B8R8_2PLANE_420_UNORM ]
+        expect src_format == want, 'encode: encoder does not take the picture format'
 
         session_info : VkVideoSessionCreateInfoKHR [
             sType:                      VK_STRUCTURE_TYPE_VIDEO_SESSION_CREATE_INFO_KHR,
@@ -321,17 +399,20 @@ class Encoder
             maxDpbSlots:                2,
             maxActiveReferencePictures: 1,
             pStdHeaderVersion:          @caps.stdHeaderVersion ]
-        res = _vkCreateVideoSessionKHR[ dev, @session_info, null, @session ]
+        res = _vkCreateVideoSessionKHR[ dev, @session_info, null,
+                                        @session ]
         expect res == VK_SUCCESS, 'encode: vkCreateVideoSessionKHR failed'
 
         nreq : u32 0
-        _vkGetVideoSessionMemoryRequirementsKHR[ dev, session, @nreq, null ]
+        _vkGetVideoSessionMemoryRequirementsKHR[ dev, session, @nreq,
+                null ]
         expect nreq <= 8, 'encode: too many session memory bindings'
         reqs  : local VkVideoSessionMemoryRequirementsKHR [8]
         binds : local VkBindVideoSessionMemoryInfoKHR [8]
         for [ i: u32 0, i < nreq, i += 1 ]
             reqs[i] = VkVideoSessionMemoryRequirementsKHR [ sType: VK_STRUCTURE_TYPE_VIDEO_SESSION_MEMORY_REQUIREMENTS_KHR ]
-        _vkGetVideoSessionMemoryRequirementsKHR[ dev, session, @nreq, reqs ]
+        _vkGetVideoSessionMemoryRequirementsKHR[ dev, session, @nreq,
+                reqs ]
         session_memory = vec u64 []
         for [ i: u32 0, i < nreq, i += 1 ]
             types : u32 [ reqs[i].memoryRequirements.memoryTypeBits ]
@@ -340,7 +421,8 @@ class Encoder
                 sType:           VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                 allocationSize:  size,
                 memoryTypeIndex: vk.find_memory_type[ types, 0 ] ]
-            res = vkAllocateMemory[ dev, @memory_info, null, @memory_new ]
+            res = vkAllocateMemory[ dev, @memory_info, null,
+                                    @memory_new ]
             expect res == VK_SUCCESS, 'encode: session memory'
             session_memory.push[ cast u64 [ memory_new ] ]
             binds[i] = VkBindVideoSessionMemoryInfoKHR [
@@ -352,8 +434,9 @@ class Encoder
         res = _vkBindVideoSessionMemoryKHR[ dev, session, nreq, binds ]
         expect res == VK_SUCCESS, 'encode: vkBindVideoSessionMemoryKHR failed'
 
-        h264_sps[ @sps, @vui, coded_w, coded_h, width, height, fps ]
-        h264_pps[ @pps ]
+        h264_sps[ @sps, @vui, coded_w, coded_h, width, height, fps,
+                  (chroma444) ? 1 : 0, (lossless) ? 1 : 0 ]
+        h264_pps[ @pps, (chroma444) ? 1 : 0 ]
         add : VkVideoEncodeH264SessionParametersAddInfoKHR [
             sType:       VK_STRUCTURE_TYPE_VIDEO_ENCODE_H264_SESSION_PARAMETERS_ADD_INFO_KHR,
             stdSPSCount: 1,
@@ -366,11 +449,40 @@ class Encoder
             maxStdSPSCount:     1,
             maxStdPPSCount:     1,
             pParametersAddInfo: @add ]
+        # the largest ctb and the transform sizes the encoder offers
+        ctb9 : i32 [ 4 ]
+        if [ (h265_caps.ctbSizes & 2) != 0 ] ctb9 = 5
+        if [ ctb9 == 4 && (h265_caps.ctbSizes & 4) != 0 ] ctb9 = 6
+        tmin9 : i32 [ 0 ]
+        tmax9 : i32 [ 2 ]
+        for [ tb9: i32 0, tb9 < 4, tb9 += 1 ]
+            if [ (h265_caps.transformBlockSizes & (1 << tb9)) != 0 ]
+                if [ tmin9 == 0 ] tmin9 = tb9 + 2
+                tmax9 = tb9 + 2
+        if [ tmin9 == 0 ] tmin9 = 2
+        if [ tmax9 > ctb9 ] tmax9 = ctb9
+        add5 : VkVideoEncodeH265SessionParametersAddInfoKHR [
+            sType: VK_STRUCTURE_TYPE_VIDEO_ENCODE_H265_SESSION_PARAMETERS_ADD_INFO_KHR ]
+        if [ hevc ]
+            h265 = h265_params[ coded_w, coded_h, width, height, fps,
+                (chroma444) ? 1 : 0, (lossless) ? 1 : 0,
+                i32[ h265_caps.maxLevelIdc ], ctb9, tmin9, tmax9 ]
+            h265_pic = h265_picture_new[]
+            h265_add_info[ h265, @add5 ]
+        h265_params_info : VkVideoEncodeH265SessionParametersCreateInfoKHR [
+            sType:              VK_STRUCTURE_TYPE_VIDEO_ENCODE_H265_SESSION_PARAMETERS_CREATE_INFO_KHR,
+            pNext:              @quality,
+            maxStdVPSCount:     1,
+            maxStdSPSCount:     1,
+            maxStdPPSCount:     1,
+            pParametersAddInfo: @add5 ]
         params_info : VkVideoSessionParametersCreateInfoKHR [
             sType:        VK_STRUCTURE_TYPE_VIDEO_SESSION_PARAMETERS_CREATE_INFO_KHR,
             pNext:        @h264_params,
             videoSession: session ]
-        res = _vkCreateVideoSessionParametersKHR[ dev, @params_info, null, @params ]
+        if [ hevc ] params_info.pNext = @h265_params_info
+        res = _vkCreateVideoSessionParametersKHR[ dev, @params_info,
+                null, @params ]
         expect res == VK_SUCCESS, 'encode: vkCreateVideoSessionParametersKHR failed'
 
         # the encoded sps and pps go out ahead of the first frame
@@ -380,16 +492,24 @@ class Encoder
             writeStdPPS: VK_TRUE,
             stdSPSId:    0,
             stdPPSId:    0 ]
+        h265_get : VkVideoEncodeH265SessionParametersGetInfoKHR [
+            sType:       VK_STRUCTURE_TYPE_VIDEO_ENCODE_H265_SESSION_PARAMETERS_GET_INFO_KHR,
+            writeStdVPS: VK_TRUE,
+            writeStdSPS: VK_TRUE,
+            writeStdPPS: VK_TRUE ]
         get : VkVideoEncodeSessionParametersGetInfoKHR [
             sType:                  VK_STRUCTURE_TYPE_VIDEO_ENCODE_SESSION_PARAMETERS_GET_INFO_KHR,
             pNext:                  @h264_get,
             videoSessionParameters: params ]
+        if [ hevc ] get.pNext = @h265_get
         header_size : u64 0
-        _vkGetEncodedVideoSessionParametersKHR[ dev, @get, null, @header_size, null ]
+        _vkGetEncodedVideoSessionParametersKHR[ dev, @get, null,
+                @header_size, null ]
         header = vec u8 [ header_size ]
-        res = _vkGetEncodedVideoSessionParametersKHR[ dev, @get, null, @header_size, header ]
-        expect res == VK_SUCCESS, 'encode: could not read the sps and pps'
-        log 'encode: h.264 {width}x{height} (coded {coded_w}x{coded_h}) on the video queue'
+        res = _vkGetEncodedVideoSessionParametersKHR[ dev, @get, null,
+                @header_size, header ]
+        expect res == VK_SUCCESS, 'encode: could not read the parameter sets'
+        log 'encode: {(hevc) ? "h.265" : "h.264"} {width}x{height} (coded {coded_w}x{coded_h}) on the video queue'
 
         families : local u32 [2]
         families[0] = vk.queue_family_index
@@ -410,7 +530,8 @@ class Encoder
             pQueueFamilyIndices:   families,
             initialLayout:         VK_IMAGE_LAYOUT_UNDEFINED ]
         device_memory : VmaAllocationCreateInfo [ usage: VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE ]
-        res = vmaCreateImage[ vk.allocator, @src_info, @device_memory, @src_image, @src_alloc, null ]
+        res = vmaCreateImage[ vk.allocator, @src_info, @device_memory,
+                              @src_image, @src_alloc, null ]
         expect res == VK_SUCCESS, 'encode: input picture'
         src_layout = VK_IMAGE_LAYOUT_UNDEFINED
         src_view_info : VkImageViewCreateInfo [
@@ -436,7 +557,8 @@ class Encoder
             usage:         VK_IMAGE_USAGE_VIDEO_ENCODE_DPB_BIT_KHR,
             sharingMode:   VK_SHARING_MODE_EXCLUSIVE,
             initialLayout: VK_IMAGE_LAYOUT_UNDEFINED ]
-        res = vmaCreateImage[ vk.allocator, @dpb_info, @device_memory, @dpb_image, @dpb_alloc, null ]
+        res = vmaCreateImage[ vk.allocator, @dpb_info, @device_memory,
+                              @dpb_image, @dpb_alloc, null ]
         expect res == VK_SUCCESS, 'encode: reference pictures'
         dpb_view_info : VkImageViewCreateInfo [
             sType:            VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
@@ -451,9 +573,11 @@ class Encoder
         res = vkCreateImageView[ dev, @dpb_view_info, null, @dpb_view1 ]
         expect res == VK_SUCCESS, 'encode: reference view 1'
 
-        # room for an idr frame at any bitrate; the size alignment comes from the caps
+        # room for an idr frame at any bitrate; the size alignment comes
+        # from the caps
         align : i64 [ caps.minBitstreamBufferSizeAlignment ]
-        bits_size = (i64[ coded_w ] * coded_h * 2 + align - 1) / align * align
+        per9  : i64 [ (chroma444) ? 4 : 2 ]
+        bits_size = (i64[ coded_w ] * coded_h * per9 + align - 1) / align * align
         bits_info : VkBufferCreateInfo [
             sType:       VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
             pNext:       @profiles,
@@ -465,7 +589,8 @@ class Encoder
             flags:         VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT,
             requiredFlags: VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT ]
         mapped : VmaAllocationInfo
-        res = vmaCreateBuffer[ vk.allocator, @bits_info, @host_memory, @bits, @bits_alloc, @mapped ]
+        res = vmaCreateBuffer[ vk.allocator, @bits_info, @host_memory,
+                               @bits, @bits_alloc, @mapped ]
         expect res == VK_SUCCESS, 'encode: bitstream buffer'
         bits_map = mapped.pMappedData
 
@@ -494,12 +619,16 @@ class Encoder
             commandBufferCount: 1 ], @cmd ]
         fence = vk.fence_acquire[]
 
-        # constant quality: rate control OFF, a fixed QP per frame. CBR on this
-        # driver starved the stream to ~2 Mbps and pumped QP sky-high (blocky,
-        # only clearing at each IDR). a flat low QP keeps every frame crisp.
-        # GOP/IDR placement is driven by us via IdrPicFlag, not by rate control.
-        min_qp : i32 [ h264_caps.minQp ]
-        max_qp : i32 [ h264_caps.maxQp ]
+        # constant quality: rate control OFF, a fixed QP per frame. CBR
+        # on this driver starved the stream to ~2 Mbps and pumped QP
+        # sky-high (blocky, only clearing at each IDR). a flat low QP
+        # keeps every frame crisp. GOP/IDR placement is driven by us via
+        # IdrPicFlag, not by rate control.
+        min_qp : i32 [ (hevc) ? h265_caps.minQp : h264_caps.minQp ]
+        max_qp : i32 [ (hevc) ? h265_caps.maxQp : h264_caps.maxQp ]
+        if [ lossless ] qp = 0
+        if [ lossless && min_qp > 0 ]
+            log 'encode: lossless needs QP 0; this encoder stops at {min_qp}'
         if [ qp < min_qp ] qp = min_qp
         if [ qp > max_qp ] qp = max_qp
         log 'encode: constant QP {qp} (range {min_qp}..{max_qp})'
@@ -510,7 +639,8 @@ class Encoder
 
     # graphics queue: the converted planes land in the input picture
     func upload [ f: VkCommandBuffer, planes: Buffer ]
-        layout[ f, src_image, src_layout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1 ]
+        layout[ f, src_image, src_layout,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1 ]
         src_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
         regions : local VkBufferImageCopy [2]
         regions[0] = VkBufferImageCopy [
@@ -520,7 +650,8 @@ class Encoder
             imageSubresource:  VkImageSubresourceLayers [
                 aspectMask: VK_IMAGE_ASPECT_PLANE_0_BIT, mipLevel: 0, baseArrayLayer: 0, layerCount: 1 ],
             imageOffset: VkOffset3D [ x: 0, y: 0, z: 0 ],
-            imageExtent: VkExtent3D [ width: coded_w, height: coded_h, depth: 1 ] ]
+            imageExtent: VkExtent3D [ width: coded_w, height: coded_h,
+                                      depth: 1 ] ]
         regions[1] = VkBufferImageCopy [
             bufferOffset:      i64[ coded_w ] * coded_h,
             bufferRowLength:   0,
@@ -528,10 +659,13 @@ class Encoder
             imageSubresource:  VkImageSubresourceLayers [
                 aspectMask: VK_IMAGE_ASPECT_PLANE_1_BIT, mipLevel: 0, baseArrayLayer: 0, layerCount: 1 ],
             imageOffset: VkOffset3D [ x: 0, y: 0, z: 0 ],
-            imageExtent: VkExtent3D [ width: coded_w / 2, height: coded_h / 2, depth: 1 ] ]
+            imageExtent: VkExtent3D [ width: (chroma444) ? coded_w : coded_w / 2,
+                                      height: (chroma444) ? coded_h : coded_h / 2,
+                                      depth: 1 ] ]
         vkCmdCopyBufferToImage[ f, planes.vk_buffer, src_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 2, regions ]
 
-    # encode queue: one frame; wait is the graphics work that filled the picture
+    # encode queue: one frame; wait is the graphics work that filled the
+    # picture
     func encode [ wait: VkSemaphore ]
         if [ pending ] drain[]
         idr       : bool [ frames % gop == 0 ]
@@ -544,10 +678,12 @@ class Encoder
         vkBeginCommandBuffer[ cmd, VkCommandBufferBeginInfo [
             sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
             flags: VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT ] ]
-        layout[ cmd, src_image, src_layout, VK_IMAGE_LAYOUT_VIDEO_ENCODE_SRC_KHR, 1 ]
+        layout[ cmd, src_image, src_layout,
+                VK_IMAGE_LAYOUT_VIDEO_ENCODE_SRC_KHR, 1 ]
         src_layout = VK_IMAGE_LAYOUT_VIDEO_ENCODE_SRC_KHR
         if [ frames == 0 ]
-            layout[ cmd, dpb_image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_VIDEO_ENCODE_DPB_KHR, 2 ]
+            layout[ cmd, dpb_image, VK_IMAGE_LAYOUT_UNDEFINED,
+                    VK_IMAGE_LAYOUT_VIDEO_ENCODE_DPB_KHR, 2 ]
         vkCmdResetQueryPool[ cmd, queries, 0, 1 ]
 
         pic      : StdVideoEncodeH264PictureInfo
@@ -565,6 +701,11 @@ class Encoder
         dpb_prev : VkVideoEncodeH264DpbSlotInfoKHR [
             sType:             VK_STRUCTURE_TYPE_VIDEO_ENCODE_H264_DPB_SLOT_INFO_KHR,
             pStdReferenceInfo: @ref_prev ]
+        # h.265: poc counts frames from the idr
+        dpb_cur5 : VkVideoEncodeH265DpbSlotInfoKHR [
+            sType: VK_STRUCTURE_TYPE_VIDEO_ENCODE_H265_DPB_SLOT_INFO_KHR ]
+        dpb_prev5 : VkVideoEncodeH265DpbSlotInfoKHR [
+            sType: VK_STRUCTURE_TYPE_VIDEO_ENCODE_H265_DPB_SLOT_INFO_KHR ]
         res_cur : VkVideoPictureResourceInfoKHR [
             sType:            VK_STRUCTURE_TYPE_VIDEO_PICTURE_RESOURCE_INFO_KHR,
             codedOffset:      VkOffset2D [ 0, 0 ],
@@ -577,7 +718,8 @@ class Encoder
             codedExtent:      VkExtent2D [ coded_w, coded_h ],
             baseArrayLayer:   0,
             imageViewBinding: (prev == 0) ? dpb_view0 : dpb_view1 ]
-        # a slot that was never set up is bound without an index; an active one keeps its index
+        # a slot that was never set up is bound without an index; an
+        # active one keeps its index
         slots : local VkVideoReferenceSlotInfoKHR [2]
         slots[0] = VkVideoReferenceSlotInfoKHR [
             sType:            VK_STRUCTURE_TYPE_VIDEO_REFERENCE_SLOT_INFO_KHR,
@@ -589,6 +731,9 @@ class Encoder
             pNext:            @dpb_prev,
             slotIndex:        prev,
             pPictureResource: @res_prev ]
+        if [ hevc ]
+            slots[0].pNext = @dpb_cur5
+            slots[1].pNext = @dpb_prev5
         begin : VkVideoBeginCodingInfoKHR [
             sType:                  VK_STRUCTURE_TYPE_VIDEO_BEGIN_CODING_INFO_KHR,
             pNext:                  @rc,
@@ -617,11 +762,22 @@ class Encoder
             pNaluSliceEntries:   @nalu,
             pStdPictureInfo:     @pic,
             generatePrefixNalu:  VK_FALSE ]
+        nalu5 : VkVideoEncodeH265NaluSliceSegmentInfoKHR [
+            sType:      VK_STRUCTURE_TYPE_VIDEO_ENCODE_H265_NALU_SLICE_SEGMENT_INFO_KHR,
+            constantQp: qp ]
+        pic5 : VkVideoEncodeH265PictureInfoKHR [
+            sType:                      VK_STRUCTURE_TYPE_VIDEO_ENCODE_H265_PICTURE_INFO_KHR,
+            naluSliceSegmentEntryCount: 1,
+            pNaluSliceSegmentEntries:   @nalu5 ]
+        if [ hevc ]
+            h265_picture[ h265_pic, (idr) ? 1 : 0, frame_num, prev_poc, prev ]
+            h265_picture_vk[ h265_pic, @dpb_cur5, @dpb_prev5, @nalu5, @pic5 ]
         setup : VkVideoReferenceSlotInfoKHR [
             sType:            VK_STRUCTURE_TYPE_VIDEO_REFERENCE_SLOT_INFO_KHR,
             pNext:            @dpb_cur,
             slotIndex:        cur,
             pPictureResource: @res_cur ]
+        if [ hevc ] setup.pNext = @dpb_cur5
         info : VkVideoEncodeInfoKHR [
             sType:               VK_STRUCTURE_TYPE_VIDEO_ENCODE_INFO_KHR,
             pNext:               @h264_pic,
@@ -637,6 +793,7 @@ class Encoder
             pSetupReferenceSlot: @setup,
             referenceSlotCount:  (idr) ? 0 : 1,
             pReferenceSlots:     @slots[1] ]
+        if [ hevc ] info.pNext = @pic5
         vkCmdBeginQuery[ cmd, queries, 0, 0 ]
         _vkCmdEncodeVideoKHR[ cmd, @info ]
         vkCmdEndQuery[ cmd, queries, 0 ]
@@ -655,12 +812,13 @@ class Encoder
             pCommandBuffers:    @cmd ]
         vkResetFences[ vk.device, 1, @fence ]
         vk.qlock.lock[]
-        res : VkResult [ vkQueueSubmit[ vk.encode_queue, 1, @submit, fence ] ]
+        res : VkResult [ vkQueueSubmit[ vk.encode_queue, 1, @submit,
+                                        fence ] ]
         vk.qlock.unlock[]
         expect res == VK_SUCCESS, 'encode: submit'
         pending        = true
         prev_frame_num = frame_num
-        prev_poc       = poc
+        prev_poc       = (hevc) ? frame_num : poc
         if [ idr ] idr_id = (idr_id + 1) % 65536
         frames += 1
 
@@ -670,7 +828,8 @@ class Encoder
         vkWaitForFences[ vk.device, 1, @fence, VK_TRUE, UINT64_MAX ]
         pending = false
         result : vec u32 [ 3 ]
-        qr : VkResult [ vkGetQueryPoolResults[ vk.device, queries, 0, 1, 12, @result[0], 12,
+        qr : VkResult [ vkGetQueryPoolResults[ vk.device, queries, 0,
+                1, 12, @result[0], 12,
             VK_QUERY_RESULT_WITH_STATUS_BIT_KHR ] ]
         if [ qr != VK_SUCCESS || i32[ result[2] ] <= 0 ]
             log 'encode: frame dropped (status {result[2]})'
@@ -678,7 +837,8 @@ class Encoder
         if [ !header_sent ]
             if [ !mux ] write[ fd, @header[0], header.count ]
             header_sent = true
-        vmaInvalidateAllocation[ vk.allocator, bits_alloc, 0, VK_WHOLE_SIZE ]
+        vmaInvalidateAllocation[ vk.allocator, bits_alloc, 0,
+                                 VK_WHOLE_SIZE ]
         bytes  : @u8 [ bits_map ]
         offset : i64 [ result[0] ]
         count  : i64 [ result[1] ]
@@ -688,18 +848,25 @@ class Encoder
             write[ fd, @bytes[ offset ], count ]
 
     func dealloc []
-        if [ pending ] vkWaitForFences[ vk.device, 1, @fence, VK_TRUE, UINT64_MAX ]
+        if [ pending ]
+            vkWaitForFences[ vk.device, 1, @fence, VK_TRUE, UINT64_MAX ]
+        if [ h265 ]     h265_free[ h265 ]
+        if [ h265_pic ] h265_free[ h265_pic ]
         dev : VkDevice [ vk.device ]
         if [ fence ]     vk.fence_release[ fence ]
         if [ pool ]      vkDestroyCommandPool[ dev, pool, null ]
         if [ queries ]   vkDestroyQueryPool[ dev, queries, null ]
-        if [ bits ]      vmaDestroyBuffer[ vk.allocator, bits, bits_alloc ]
+        if [ bits ]
+            vmaDestroyBuffer[ vk.allocator, bits, bits_alloc ]
         if [ dpb_view0 ] vkDestroyImageView[ dev, dpb_view0, null ]
         if [ dpb_view1 ] vkDestroyImageView[ dev, dpb_view1, null ]
-        if [ dpb_image ] vmaDestroyImage[ vk.allocator, dpb_image, dpb_alloc ]
+        if [ dpb_image ]
+            vmaDestroyImage[ vk.allocator, dpb_image, dpb_alloc ]
         if [ src_view ]  vkDestroyImageView[ dev, src_view, null ]
-        if [ src_image ] vmaDestroyImage[ vk.allocator, src_image, src_alloc ]
-        if [ params ]    _vkDestroyVideoSessionParametersKHR[ dev, params, null ]
+        if [ src_image ]
+            vmaDestroyImage[ vk.allocator, src_image, src_alloc ]
+        if [ params ]
+            _vkDestroyVideoSessionParametersKHR[ dev, params, null ]
         if [ session ]   _vkDestroyVideoSessionKHR[ dev, session, null ]
         if [ session_memory ]
             for [ m: u64 ] in session_memory
@@ -708,6 +875,19 @@ class Encoder
 
 # streams the screen to the encoder at the recording rate: a slow app
 # repeats its last frame, a fast one skips, so the clock stays real
+# a dictation take pinned to the recording's clock, in seconds
+class RecMark
+    public at   : f64
+    public dur  : f64
+    public text : string
+    public file : string
+
+# the .agi beside the take: what the take is for (the composer's
+# hints, written by hand), then every mark in order
+class RecNotes
+    public context : string
+    public marks   : vec RecMark
+
 class Recorder
     context vk      : vk_context
     context w       : Display
@@ -716,12 +896,22 @@ class Recorder
     public  height  : i32
     public  fps     : i32
     public  qp      : i32 [ 20 ]
-    public  format  : string                # 'mp4', 'ts', 'hls' carry an aac track; 'h264' is the raw stream
+    public  chroma444 : bool
+    public  lossless  : bool
+    # 'mp4', 'ts', 'hls' carry an aac track; 'h264' is the raw stream
+    public  format  : string
     public  target  : string                # the ingest url for 'hls'
-    public  asc     : vec u8                # the aac track's AudioSpecificConfig, empty for none
+    # the aac track's AudioSpecificConfig, empty for none
+    public  asc     : vec u8
     public  mux     : Muxer
+    # the marks file (<stem>.agi), null for a stream
+    public  notes   : string
+    intern  rnotes  : RecNotes
+    # microseconds the take held before this instance (a reload)
+    intern  t_base  : i64
     intern  scaled  : Texture
     intern  convert : NV12Convert
+    intern  convert24 : NV24Convert
     intern  pipe    : Pipeline
     intern  planes  : Buffer
     intern  cmd     : Command
@@ -729,6 +919,8 @@ class Recorder
     intern  encoder : Encoder
     intern  start   : i64
     intern  sent    : i64
+    # false: every capture is the next frame (an offline render)
+    public  paced   : bool [ true ]
 
     func init []
         cmd = Command [ vk: vk ]
@@ -736,12 +928,26 @@ class Recorder
         vkCreateSemaphore[ vk.device, @semaphore_info, null, @ready ]
 
     func setup [ tx: Texture ]
-        encoder = Encoder [ vk: vk, width: width, height: height, fps: fps, qp: qp, fd: fd ]
-        # a reload continues the take: the file already holds the header and
-        # the fragment sequence carries on from where the last module left it
+        # full colour is h.265: the gpu decodes it back at 4:4:4
+        encoder = Encoder [ vk: vk, width: width, height: height,
+                            fps: fps, qp: qp, fd: fd,
+                            chroma444: chroma444, lossless: lossless,
+                            hevc: chroma444 ]
+        # a reload continues the take: the file already holds the header
+        # and the fragment sequence carries on from where the last
+        # module left it
         seq : i64 [ Au.live_record_seq[] ]
+        if [ seq > 0 ] t_base = Au.live_record_vtime[] * 1000000 / i64[ fps ]
+        # a reload continues the notes; a new take starts them fresh
+        if [ seq > 0 ] notes_load[]
+        # the notes exist from the first frame: the context is the user's
+        if [ notes && !rnotes ]
+            rnotes = RecNotes [ context: '', marks: vec RecMark [] ]
+            notes_save[]
         if [ format == 'mp4' ]
-            mux = Mp4 [ fd: fd, fps: fps, width: width, height: height, started: seq > 0,
+            mux = Mp4 [ fd: fd, fps: fps, width: width, height: height,
+                        started: seq > 0, hevc: chroma444,
+                        chroma: (chroma444) ? 3 : 1,
                 seq: (seq > 0) ? seq : 1, vtime: Au.live_record_vtime[], atime: Au.live_record_atime[] ]
         if [ format == 'ts' || format == 'hls' ]
             ts : Ts [ fd: fd, fps: fps, width: width, height: height,
@@ -753,15 +959,28 @@ class Recorder
         if [ mux ]
             mux.begin*[ encoder.header, asc ]
             encoder.mux = mux
-        scaled  = Texture [ vk: vk, w: w, width: encoder.coded_w, height: encoder.coded_h,
+        scaled  = Texture [ vk: vk, w: w, width: encoder.coded_w,
+                            height: encoder.coded_h,
             vk_format: tx.vk_format, tag: 'record' ]
-        planes  = Buffer [ vk: vk, size: i64[ encoder.coded_w ] * encoder.coded_h * 3 / 2,
+        # 4:2:0 is 1.5 bytes a pixel, 4:4:4 is 3
+        px9 : i64 [ i64[ encoder.coded_w ] * encoder.coded_h ]
+        planes  = Buffer [ vk: vk, size: (chroma444) ? px9 * 3 : px9 * 3 / 2,
             u_storage: true, u_src: true, m_device_local: true ]
-        convert    = NV12Convert [ vk: vk ]
-        convert.cw = encoder.coded_w
-        convert.ch = encoder.coded_h
-        pipe = Pipeline [ vk: vk, w: w, name: 'nv12', s: convert, default_model: mat4f.identity[],
-            samplers: map Au[string] [ 'src': scaled, 'nv12': planes ] ]
+        maps9 : map Au[string] [ 'src': scaled, 'nv12': planes ]
+        if [ chroma444 ]
+            convert24    = NV24Convert [ vk: vk ]
+            convert24.cw = encoder.coded_w
+            convert24.ch = encoder.coded_h
+            pipe = Pipeline [ vk: vk, w: w, name: 'nv24', s: convert24,
+                              default_model: mat4f.identity[],
+                              samplers: maps9 ]
+        el
+            convert    = NV12Convert [ vk: vk ]
+            convert.cw = encoder.coded_w
+            convert.ch = encoder.coded_h
+            pipe = Pipeline [ vk: vk, w: w, name: 'nv12', s: convert,
+                              default_model: mat4f.identity[],
+                              samplers: maps9 ]
         pipe.dispatch_x = (encoder.coded_w / 4 + 15) / 16
         pipe.dispatch_y = (encoder.coded_h + 15) / 16
         start = epoch_micros[]
@@ -769,25 +988,31 @@ class Recorder
     func capture [ tx: Texture ]
         if [ !tx || !tx.vk_image ] return
         if [ !encoder ] setup[ tx ]
-        due : i64 [ (epoch_micros[] - start) * fps / 1000000 ]
+        due : i64 [ (paced) ? (epoch_micros[] - start) * fps / 1000000 : sent + 1 ]
         if [ due <= sent ] return
         cmd.begin
         encoder.drain[]
         prev : VkImageLayout [ tx.vk_layout ]
-        tx.transition_in    [ cmd.cmd, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL ]
-        scaled.transition_in[ cmd.cmd, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ]
-        vkCmdBlitImage[ cmd.cmd, tx.vk_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        tx.transition_in    [ cmd.cmd,
+                              VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL ]
+        scaled.transition_in[ cmd.cmd,
+                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ]
+        vkCmdBlitImage[ cmd.cmd, tx.vk_image,
+                        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
             scaled.vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
             VkImageBlit [
                 srcSubresource: VkImageSubresourceLayers [
                     aspectMask: VK_IMAGE_ASPECT_COLOR_BIT, mipLevel: 0, baseArrayLayer: 0, layerCount: 1 ],
-                srcOffsets: [ VkOffset3D [ 0, 0, 0 ], VkOffset3D [ tx.width, tx.height, 1 ] ],
+                srcOffsets: [ VkOffset3D [ 0, 0, 0 ],
+                              VkOffset3D [ tx.width, tx.height, 1 ] ],
                 dstSubresource: VkImageSubresourceLayers [
                     aspectMask: VK_IMAGE_ASPECT_COLOR_BIT, mipLevel: 0, baseArrayLayer: 0, layerCount: 1 ],
-                dstOffsets: [ VkOffset3D [ 0, 0, 0 ], VkOffset3D [ width, height, 1 ] ] ],
+                dstOffsets: [ VkOffset3D [ 0, 0, 0 ],
+                              VkOffset3D [ width, height, 1 ] ] ],
             VK_FILTER_LINEAR ]
         tx.transition_in    [ cmd.cmd, prev ]
-        scaled.transition_in[ cmd.cmd, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
+        scaled.transition_in[ cmd.cmd,
+                              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
         # the layout's wait covers fragment reads; this one is compute
         vkCmdPipelineBarrier[ cmd.cmd, VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
@@ -818,10 +1043,39 @@ class Recorder
                 encoder.encode[ null ]
             sent += 1
 
+    # microseconds into the take; -1 before the first frame
+    public func time_us [] -> i64
+        if [ !encoder ] return -1
+        return t_base + epoch_micros[] - start
+
+    # a take's words at their time, into the notes beside the mp4
+    public func mark [ at_us: i64, dur_us: i64, text: string, file: string ]
+        if [ !text || text.count == 0 || at_us < 0 ] return
+        if [ !rnotes ] rnotes = RecNotes [ context: '', marks: vec RecMark [] ]
+        rnotes.marks.push[ RecMark [ at: f64[ at_us ] / 1000000.0,
+            dur: f64[ dur_us ] / 1000000.0, text: text, file: file ] ]
+        notes_save[]
+
+    # a reload continues the notes as it does the take
+    func notes_load []
+        if [ !notes ] return
+        np : path notes
+        if [ !np.exists[] ] return
+        txt : string [ np.load[ typeid[ string ], null ] ]
+        if [ !txt || txt.count == 0 ] return
+        rnotes = RecNotes [ marks: vec RecMark [] ]
+        Au.parse_agi[ null, txt.chars, rnotes ]
+
+    func notes_save []
+        if [ !notes || !rnotes ] return
+        np : path notes
+        np.save[ Au.string_agi[ rnotes ], null ]
+
     # the last frame out of the gpu and the open fragment onto the disk
     func close []
         if [ encoder ] encoder.drain[]
         if [ mux ] mux.close*[]
+        notes_save[]
 
     func dealloc []
         if [ ready ] vkDestroySemaphore[ vk.device, ready, null ]
@@ -835,10 +1089,16 @@ class VideoFrame
     public pts    : i64
     public width  : i32
     public height : i32
+    # u and v at full size (4:4:4), else half each way
+    public full   : bool
 
     # limited-range colour to rgba8, for tests and readback
     public func rgba [ w: i32, h: i32, dst: @u8, bt709: bool ]
-        yuv_rgba[ @y[ 0 ], @u[ 0 ], @v[ 0 ], w, h, dst, (bt709) ? 1 : 0 ]
+        if [ full ]
+            yuv444_rgba[ @y[ 0 ], @u[ 0 ], @v[ 0 ], w, h, dst, (bt709) ? 1 : 0 ]
+            return
+        yuv_rgba[ @y[ 0 ], @u[ 0 ], @v[ 0 ], w, h, dst,
+                  (bt709) ? 1 : 0 ]
 
 
 # h.264 on the vulkan video decode queue; the parser in trinity.c
@@ -848,7 +1108,14 @@ class Decoder
     public  width       : i32
     public  height      : i32
     public  frames      : vec VideoFrame
+    # the stream is h.265 (config_hevc), else h.264
+    public  hevc        : bool
+    # 4:4:4: the picture's chroma is full size
+    public  full        : bool
     intern  dec         : handle
+    intern  dec5        : handle
+    intern  h265_profile : VkVideoDecodeH265ProfileInfoKHR
+    intern  h265_caps   : VkVideoDecodeH265CapabilitiesKHR
     intern  coded_w     : i32
     intern  coded_h     : i32
     intern  h264_profile : VkVideoDecodeH264ProfileInfoKHR
@@ -907,6 +1174,7 @@ class Decoder
         expect _vkCmdDecodeVideoKHR, 'decode: vulkan video entry points missing'
         expect vk.decode_family >= 0, 'decode: this gpu has no vulkan video decoder'
         dec    = h264d_new[]
+        dec5   = h265d_new[]
         frames = vec VideoFrame []
 
     # the avcC record from the container: the session follows it
@@ -914,6 +1182,15 @@ class Decoder
         if [ h264d_config[ dec, avcc, n ] == 0 ]
             log 'decode: bad avcC record'
             return false
+        return make_session[]
+
+    # the hvcC record of an h.265 track
+    public func config_hevc [ hvcc: @u8, n: i32 ] -> bool
+        hevc = true
+        if [ h265d_config[ dec5, hvcc, n ] == 0 ]
+            log 'decode: bad hvcC record'
+            return false
+        full = h265d_chroma[ dec5 ] == 3
         return make_session[]
 
     func picture_format [ use: i32 ] -> VkFormat
@@ -928,17 +1205,26 @@ class Decoder
         for [ i: u32 0, i < n, i += 1 ]
             formats[i] = VkVideoFormatPropertiesKHR [ sType: VK_STRUCTURE_TYPE_VIDEO_FORMAT_PROPERTIES_KHR ]
         _vkGetPhysicalDeviceVideoFormatPropertiesKHR[ vk.physical_device, @info, @n, formats ]
+        want : VkFormat [ (full) ? VK_FORMAT_G8_B8R8_2PLANE_444_UNORM
+                                 : VK_FORMAT_G8_B8R8_2PLANE_420_UNORM ]
         for [ i: u32 0, i < n, i += 1 ]
-            if [ formats[i].format == VK_FORMAT_G8_B8R8_2PLANE_420_UNORM ] return formats[i].format
+            if [ formats[i].format == want ]
+                return formats[i].format
         return VK_FORMAT_UNDEFINED
 
     func make_session [] -> bool
         dev : VkDevice [ vk.device ]
-        width   = h264d_width[ dec ]
-        height  = h264d_height[ dec ]
-        coded_w = h264d_coded_w[ dec ]
-        coded_h = h264d_coded_h[ dec ]
-        pidc : i32 [ h264d_profile[ dec ] ]
+        width   = (hevc) ? h265d_width[ dec5 ]   : h264d_width[ dec ]
+        height  = (hevc) ? h265d_height[ dec5 ]  : h264d_height[ dec ]
+        coded_w = (hevc) ? h265d_coded_w[ dec5 ] : h264d_coded_w[ dec ]
+        coded_h = (hevc) ? h265d_coded_h[ dec5 ] : h264d_coded_h[ dec ]
+        pidc : i32 [ (hevc) ? h265d_profile[ dec5 ] : h264d_profile[ dec ] ]
+        if [ hevc && !vk.h265_decode ]
+            log 'decode: no h.265 decoder on this gpu'
+            return false
+        h265_profile = VkVideoDecodeH265ProfileInfoKHR [
+            sType:         VK_STRUCTURE_TYPE_VIDEO_DECODE_H265_PROFILE_INFO_KHR,
+            stdProfileIdc: pidc ]
         h264_profile = VkVideoDecodeH264ProfileInfoKHR [
             sType:         VK_STRUCTURE_TYPE_VIDEO_DECODE_H264_PROFILE_INFO_KHR,
             stdProfileIdc: (pidc == 66) ? STD_VIDEO_H264_PROFILE_IDC_BASELINE :
@@ -947,24 +1233,30 @@ class Decoder
         profile = VkVideoProfileInfoKHR [
             sType:               VK_STRUCTURE_TYPE_VIDEO_PROFILE_INFO_KHR,
             pNext:               @h264_profile,
-            videoCodecOperation: VK_VIDEO_CODEC_OPERATION_DECODE_H264_BIT_KHR,
-            chromaSubsampling:   VK_VIDEO_CHROMA_SUBSAMPLING_420_BIT_KHR,
+            videoCodecOperation: (hevc) ? VK_VIDEO_CODEC_OPERATION_DECODE_H265_BIT_KHR
+                                        : VK_VIDEO_CODEC_OPERATION_DECODE_H264_BIT_KHR,
+            chromaSubsampling:   (full) ? VK_VIDEO_CHROMA_SUBSAMPLING_444_BIT_KHR
+                                        : VK_VIDEO_CHROMA_SUBSAMPLING_420_BIT_KHR,
             lumaBitDepth:        VK_VIDEO_COMPONENT_BIT_DEPTH_8_BIT_KHR,
             chromaBitDepth:      VK_VIDEO_COMPONENT_BIT_DEPTH_8_BIT_KHR ]
         profiles = VkVideoProfileListInfoKHR [
             sType:        VK_STRUCTURE_TYPE_VIDEO_PROFILE_LIST_INFO_KHR,
             profileCount: 1,
             pProfiles:    @profile ]
+        if [ hevc ] profile.pNext = @h265_profile
         h264_caps.sType   = VK_STRUCTURE_TYPE_VIDEO_DECODE_H264_CAPABILITIES_KHR
+        h265_caps.sType   = VK_STRUCTURE_TYPE_VIDEO_DECODE_H265_CAPABILITIES_KHR
         decode_caps.sType = VK_STRUCTURE_TYPE_VIDEO_DECODE_CAPABILITIES_KHR
         decode_caps.pNext = @h264_caps
+        if [ hevc ] decode_caps.pNext = @h265_caps
         caps.sType        = VK_STRUCTURE_TYPE_VIDEO_CAPABILITIES_KHR
         caps.pNext        = @decode_caps
         res : VkResult [ _vkGetPhysicalDeviceVideoCapabilitiesKHR[ vk.physical_device, @profile, @caps ] ]
         if [ res != VK_SUCCESS ]
-            log 'decode: h.264 profile {pidc} not supported ({i32[ res ]})'
+            log 'decode: {(hevc) ? "h.265" : "h.264"} profile {pidc} not supported ({i32[ res ]})'
             return false
-        if [ coded_w > i32[ caps.maxCodedExtent.width ] || coded_h > i32[ caps.maxCodedExtent.height ] ]
+        if [ coded_w > i32[ caps.maxCodedExtent.width ]
+             || coded_h > i32[ caps.maxCodedExtent.height ] ]
             log 'decode: {coded_w}x{coded_h} is larger than the decoder allows'
             return false
         # decode writes into the reference slot the picture is read from
@@ -975,7 +1267,7 @@ class Decoder
         use : i32 [ VK_IMAGE_USAGE_VIDEO_DECODE_DPB_BIT_KHR | VK_IMAGE_USAGE_VIDEO_DECODE_DST_BIT_KHR | VK_IMAGE_USAGE_TRANSFER_SRC_BIT ]
         format : VkFormat [ picture_format[ use ] ]
         if [ format == VK_FORMAT_UNDEFINED ]
-            log 'decode: no nv12 picture format for decode and copy'
+            log 'decode: no {(full) ? "4:4:4" : "nv12"} picture format for decode and copy'
             return false
 
         session_info : VkVideoSessionCreateInfoKHR [
@@ -988,18 +1280,24 @@ class Decoder
             maxDpbSlots:                H264D_SLOTS,
             maxActiveReferencePictures: 16,
             pStdHeaderVersion:          @caps.stdHeaderVersion ]
-        res = _vkCreateVideoSessionKHR[ dev, @session_info, null, @session ]
+        if [ caps.maxDpbSlots < session_info.maxDpbSlots ] session_info.maxDpbSlots = caps.maxDpbSlots
+        if [ caps.maxActiveReferencePictures < session_info.maxActiveReferencePictures ]
+            session_info.maxActiveReferencePictures = caps.maxActiveReferencePictures
+        res = _vkCreateVideoSessionKHR[ dev, @session_info, null,
+                                        @session ]
         if [ res != VK_SUCCESS ]
-            log 'decode: vkCreateVideoSessionKHR failed ({i32[ res ]})'
+            log 'decode: vkCreateVideoSessionKHR failed ({i32[ res ]}; slots {caps.maxDpbSlots}, refs {caps.maxActiveReferencePictures}, max {caps.maxCodedExtent.width}x{caps.maxCodedExtent.height}, min {caps.minCodedExtent.width}x{caps.minCodedExtent.height}, header version {caps.stdHeaderVersion.specVersion})'
             return false
         nreq : u32 0
-        _vkGetVideoSessionMemoryRequirementsKHR[ dev, session, @nreq, null ]
+        _vkGetVideoSessionMemoryRequirementsKHR[ dev, session, @nreq,
+                null ]
         expect nreq <= 8, 'decode: too many session memory bindings'
         reqs  : local VkVideoSessionMemoryRequirementsKHR [8]
         binds : local VkBindVideoSessionMemoryInfoKHR [8]
         for [ i: u32 0, i < nreq, i += 1 ]
             reqs[i] = VkVideoSessionMemoryRequirementsKHR [ sType: VK_STRUCTURE_TYPE_VIDEO_SESSION_MEMORY_REQUIREMENTS_KHR ]
-        _vkGetVideoSessionMemoryRequirementsKHR[ dev, session, @nreq, reqs ]
+        _vkGetVideoSessionMemoryRequirementsKHR[ dev, session, @nreq,
+                reqs ]
         session_memory = vec u64 []
         for [ i: u32 0, i < nreq, i += 1 ]
             types : u32 [ reqs[i].memoryRequirements.memoryTypeBits ]
@@ -1008,7 +1306,8 @@ class Decoder
                 sType:           VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                 allocationSize:  size,
                 memoryTypeIndex: vk.find_memory_type[ types, 0 ] ]
-            res = vkAllocateMemory[ dev, @memory_info, null, @memory_new ]
+            res = vkAllocateMemory[ dev, @memory_info, null,
+                                    @memory_new ]
             expect res == VK_SUCCESS, 'decode: session memory'
             session_memory.push[ cast u64 [ memory_new ] ]
             binds[i] = VkBindVideoSessionMemoryInfoKHR [
@@ -1036,7 +1335,8 @@ class Decoder
             sharingMode:   VK_SHARING_MODE_EXCLUSIVE,
             initialLayout: VK_IMAGE_LAYOUT_UNDEFINED ]
         device_memory : VmaAllocationCreateInfo [ usage: VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE ]
-        res = vmaCreateImage[ vk.allocator, @dpb_info, @device_memory, @dpb_image, @dpb_alloc, null ]
+        res = vmaCreateImage[ vk.allocator, @dpb_info, @device_memory,
+                              @dpb_image, @dpb_alloc, null ]
         expect res == VK_SUCCESS, 'decode: reference pictures'
         view_info : VkImageViewCreateInfo [
             sType:            VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
@@ -1052,7 +1352,7 @@ class Decoder
         # both planes come back here, luma then interleaved chroma
         planes_info : VkBufferCreateInfo [
             sType:       VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-            size:        i64[ coded_w ] * coded_h * 3 / 2,
+            size:        (full) ? i64[ coded_w ] * coded_h * 3 : i64[ coded_w ] * coded_h * 3 / 2,
             usage:       VK_BUFFER_USAGE_TRANSFER_DST_BIT,
             sharingMode: VK_SHARING_MODE_EXCLUSIVE ]
         host_memory : VmaAllocationCreateInfo [
@@ -1076,27 +1376,41 @@ class Decoder
             level:              VK_COMMAND_BUFFER_LEVEL_PRIMARY,
             commandBufferCount: 1 ], @cmd ]
         fence = vk.fence_acquire[]
-        log 'decode: h.264 {width}x{height} (coded {coded_w}x{coded_h}, profile {pidc}) on the video queue'
+        log 'decode: {(hevc) ? "h.265" : "h.264"} {width}x{height} (coded {coded_w}x{coded_h}, profile {pidc}{(full) ? ", 4:4:4" : ""}) on the video queue'
         return true
 
     # the sps and pps the parser holds, as session parameters
     func make_params [] -> bool
         add : VkVideoDecodeH264SessionParametersAddInfoKHR
-        h264d_params[ dec, @add ]
+        add5 : VkVideoDecodeH265SessionParametersAddInfoKHR
+        if [ hevc ]
+            h265d_params[ dec5, @add5 ]
+        el
+            h264d_params[ dec, @add ]
         h264_params : VkVideoDecodeH264SessionParametersCreateInfoKHR [
             sType:              VK_STRUCTURE_TYPE_VIDEO_DECODE_H264_SESSION_PARAMETERS_CREATE_INFO_KHR,
             maxStdSPSCount:     32,
             maxStdPPSCount:     32,
             pParametersAddInfo: @add ]
+        h265_params : VkVideoDecodeH265SessionParametersCreateInfoKHR [
+            sType:              VK_STRUCTURE_TYPE_VIDEO_DECODE_H265_SESSION_PARAMETERS_CREATE_INFO_KHR,
+            maxStdVPSCount:     16,
+            maxStdSPSCount:     16,
+            maxStdPPSCount:     64,
+            pParametersAddInfo: @add5 ]
         params_info : VkVideoSessionParametersCreateInfoKHR [
             sType:        VK_STRUCTURE_TYPE_VIDEO_SESSION_PARAMETERS_CREATE_INFO_KHR,
             pNext:        @h264_params,
             videoSession: session ]
-        res : VkResult [ _vkCreateVideoSessionParametersKHR[ vk.device, @params_info, null, @params_new ] ]
+        if [ hevc ] params_info.pNext = @h265_params
+        res : VkResult [ _vkCreateVideoSessionParametersKHR[ vk.device,
+                @params_info, null, @params_new ] ]
         if [ res != VK_SUCCESS ]
             log 'decode: vkCreateVideoSessionParametersKHR failed ({i32[ res ]})'
             return false
-        if [ params ] _vkDestroyVideoSessionParametersKHR[ vk.device, params, null ]
+        if [ params ]
+            _vkDestroyVideoSessionParametersKHR[ vk.device, params,
+                    null ]
         params = params_new
         return true
 
@@ -1115,11 +1429,13 @@ class Decoder
             flags:         VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
             requiredFlags: VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT ]
         mapped : VmaAllocationInfo
-        res : VkResult [ vmaCreateBuffer[ vk.allocator, @bits_info, @host_memory, @bits, @bits_alloc, @mapped ] ]
+        res : VkResult [ vmaCreateBuffer[ vk.allocator, @bits_info,
+                @host_memory, @bits, @bits_alloc, @mapped ] ]
         expect res == VK_SUCCESS, 'decode: bitstream buffer'
         bits_map = mapped.pMappedData
 
-    func barrier [ f: VkCommandBuffer, layer: i32, from: VkImageLayout, to: VkImageLayout ]
+    func barrier [ f: VkCommandBuffer, layer: i32, from: VkImageLayout,
+                   to: VkImageLayout ]
         b9 : VkImageMemoryBarrier [
             sType:               VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
             srcAccessMask:       VK_ACCESS_MEMORY_WRITE_BIT,
@@ -1135,7 +1451,8 @@ class Decoder
                 levelCount:     1,
                 baseArrayLayer: (layer < 0) ? 0 : layer,
                 layerCount:     (layer < 0) ? H264D_SLOTS : 1 ] ]
-        vkCmdPipelineBarrier[ f, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+        vkCmdPipelineBarrier[ f, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                              VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
             0, 0, null, 0, null, 1, @b9 ]
 
     func submit []
@@ -1147,7 +1464,8 @@ class Decoder
         vkResetFences[ vk.device, 1, @fence ]
         # any queue use and a device wait exclude each other: qlock
         vk.qlock.lock[]
-        res : VkResult [ vkQueueSubmit[ vk.decode_queue, 1, @info, fence ] ]
+        res : VkResult [ vkQueueSubmit[ vk.decode_queue, 1, @info,
+                                        fence ] ]
         vk.qlock.unlock[]
         if [ res != VK_SUCCESS ] vk.report_fault[]
         expect res == VK_SUCCESS, 'decode: submit'
@@ -1162,7 +1480,8 @@ class Decoder
     # one slot's picture back to the cpu as rgba
     func take [ slot: i32, pts: i64 ]
         begin[]
-        barrier[ cmd, slot, VK_IMAGE_LAYOUT_VIDEO_DECODE_DPB_KHR, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL ]
+        barrier[ cmd, slot, VK_IMAGE_LAYOUT_VIDEO_DECODE_DPB_KHR,
+                 VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL ]
         regions : local VkBufferImageCopy [2]
         regions[0] = VkBufferImageCopy [
             bufferOffset:      0,
@@ -1171,7 +1490,8 @@ class Decoder
             imageSubresource:  VkImageSubresourceLayers [
                 aspectMask: VK_IMAGE_ASPECT_PLANE_0_BIT, mipLevel: 0, baseArrayLayer: slot, layerCount: 1 ],
             imageOffset: VkOffset3D [ x: 0, y: 0, z: 0 ],
-            imageExtent: VkExtent3D [ width: coded_w, height: coded_h, depth: 1 ] ]
+            imageExtent: VkExtent3D [ width: coded_w, height: coded_h,
+                                      depth: 1 ] ]
         regions[1] = VkBufferImageCopy [
             bufferOffset:      i64[ coded_w ] * coded_h,
             bufferRowLength:   0,
@@ -1179,43 +1499,70 @@ class Decoder
             imageSubresource:  VkImageSubresourceLayers [
                 aspectMask: VK_IMAGE_ASPECT_PLANE_1_BIT, mipLevel: 0, baseArrayLayer: slot, layerCount: 1 ],
             imageOffset: VkOffset3D [ x: 0, y: 0, z: 0 ],
-            imageExtent: VkExtent3D [ width: coded_w / 2, height: coded_h / 2, depth: 1 ] ]
+            imageExtent: VkExtent3D [ width: (full) ? coded_w : coded_w / 2,
+                                      height: (full) ? coded_h : coded_h / 2, depth: 1 ] ]
         vkCmdCopyImageToBuffer[ cmd, dpb_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, planes, 2, regions ]
-        barrier[ cmd, slot, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_VIDEO_DECODE_DPB_KHR ]
+        barrier[ cmd, slot, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                 VK_IMAGE_LAYOUT_VIDEO_DECODE_DPB_KHR ]
         submit[]
-        vmaInvalidateAllocation[ vk.allocator, planes_alloc, 0, VK_WHOLE_SIZE ]
-        f : VideoFrame [ pts: pts, width: width, height: height ]
+        vmaInvalidateAllocation[ vk.allocator, planes_alloc, 0,
+                                 VK_WHOLE_SIZE ]
+        f : VideoFrame [ pts: pts, width: width, height: height, full: full ]
         f.y = vec u8 [ width * height ]
-        f.u = vec u8 [ (width / 2) * (height / 2) ]
-        f.v = vec u8 [ (width / 2) * (height / 2) ]
-        nv12_split[ @u8 [ planes_map ], coded_w, coded_h, width, height, @f.y[ 0 ], @f.u[ 0 ], @f.v[ 0 ] ]
+        cn : i32 [ (full) ? width * height : (width / 2) * (height / 2) ]
+        f.u = vec u8 [ cn ]
+        f.v = vec u8 [ cn ]
+        if [ full ]
+            nv24_split[ @u8 [ planes_map ], coded_w, coded_h, width,
+                        height, @f.y[ 0 ], @f.u[ 0 ], @f.v[ 0 ] ]
+        el
+            nv12_split[ @u8 [ planes_map ], coded_w, coded_h, width,
+                        height, @f.y[ 0 ], @f.u[ 0 ], @f.v[ 0 ] ]
         frames.push[ f ]
+
+    # the next picture in display order: its slot, or -1
+    func next_out [ pts: @i64 ] -> i32
+        return (hevc) ? h265d_output[ dec5, pts ] : h264d_output[ dec, pts ]
 
     func take_all []
         pts : i64 [ 0 ]
-        for [ slot: i32 h264d_output[ dec, @pts ], slot >= 0, slot = h264d_output[ dec, @pts ] ]
+        for [ slot: i32 next_out[ @pts ], slot >= 0, slot = next_out[ @pts ] ]
             take[ slot, pts ]
 
-    # one length-prefixed sample; frames ready in display order land in frames
+    # one length-prefixed sample; frames ready in display order land in
+    # frames
     public func decode [ data: @u8, n: i32, pts: i64 ] -> bool
         if [ !session ] return false
-        if [ h264d_sample[ dec, data, n, pts ] == 0 ] return true
+        got : i32 [ (hevc) ? h265d_sample[ dec5, data, n, pts ] : h264d_sample[ dec, data, n, pts ] ]
+        if [ got == 0 ] return true
         take_all[]
-        if [ h264d_params_dirty[ dec ] != 0 && !make_params[] ] return false
-        size  : i64 [ h264d_bits_size[ dec ] ]
+        dirty : i32 [ (hevc) ? h265d_params_dirty[ dec5 ] : h264d_params_dirty[ dec ] ]
+        if [ dirty != 0 && !make_params[] ]
+            return false
+        size  : i64 [ (hevc) ? h265d_bits_size[ dec5 ] : h264d_bits_size[ dec ] ]
         align : i64 [ caps.minBitstreamBufferSizeAlignment ]
         if [ align < 1 ] align = 1
         range : i64 [ (size + align - 1) / align * align ]
         make_bits[ range ]
-        h264d_bits_write[ dec, @u8 [ bits_map ] ]
-        if [ range > size ] memset[ @u8 [ bits_map ] + size, 0, range - size ]
+        if [ hevc ]
+            h265d_bits_write[ dec5, @u8 [ bits_map ] ]
+        el
+            h264d_bits_write[ dec, @u8 [ bits_map ] ]
+        if [ range > size ]
+            memset[ @u8 [ bits_map ] + size, 0, range - size ]
         vmaFlushAllocation[ vk.allocator, bits_alloc, 0, VK_WHOLE_SIZE ]
         bi : VkVideoBeginCodingInfoKHR
         di : VkVideoDecodeInfoKHR
-        h264d_vk[ dec, dpb_view, bits, u64[ range ], session, params, @bi, @di ]
+        if [ hevc ]
+            h265d_vk[ dec5, dpb_view, bits, u64[ range ], session, params,
+                      @bi, @di ]
+        el
+            h264d_vk[ dec, dpb_view, bits, u64[ range ], session, params,
+                      @bi, @di ]
         begin[]
         if [ !started ]
-            barrier[ cmd, -1, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_VIDEO_DECODE_DPB_KHR ]
+            barrier[ cmd, -1, VK_IMAGE_LAYOUT_UNDEFINED,
+                     VK_IMAGE_LAYOUT_VIDEO_DECODE_DPB_KHR ]
         _vkCmdBeginVideoCodingKHR[ cmd, @bi ]
         if [ !started ]
             control : VkVideoCodingControlInfoKHR [
@@ -1227,30 +1574,41 @@ class Decoder
         end : VkVideoEndCodingInfoKHR [ sType: VK_STRUCTURE_TYPE_VIDEO_END_CODING_INFO_KHR ]
         _vkCmdEndVideoCodingKHR[ cmd, @end ]
         submit[]
-        h264d_decoded[ dec ]
+        if [ hevc ]
+            h265d_decoded[ dec5 ]
+        el
+            h264d_decoded[ dec ]
         take_all[]
         return true
 
     # end of stream: the waiting pictures go out
     public func finish []
         if [ !session ] return
-        h264d_flush[ dec ]
+        if [ hevc ]
+            h265d_flush[ dec5 ]
+        el
+            h264d_flush[ dec ]
         take_all[]
 
     func dealloc []
         dev : VkDevice [ vk.device ]
         if [ fence ]     vk.fence_release[ fence ]
         if [ pool ]      vkDestroyCommandPool[ dev, pool, null ]
-        if [ bits ]      vmaDestroyBuffer[ vk.allocator, bits, bits_alloc ]
-        if [ planes ]    vmaDestroyBuffer[ vk.allocator, planes, planes_alloc ]
+        if [ bits ]
+            vmaDestroyBuffer[ vk.allocator, bits, bits_alloc ]
+        if [ planes ]
+            vmaDestroyBuffer[ vk.allocator, planes, planes_alloc ]
         if [ dpb_view ]  vkDestroyImageView[ dev, dpb_view, null ]
-        if [ dpb_image ] vmaDestroyImage[ vk.allocator, dpb_image, dpb_alloc ]
-        if [ params ]    _vkDestroyVideoSessionParametersKHR[ dev, params, null ]
+        if [ dpb_image ]
+            vmaDestroyImage[ vk.allocator, dpb_image, dpb_alloc ]
+        if [ params ]
+            _vkDestroyVideoSessionParametersKHR[ dev, params, null ]
         if [ session ]   _vkDestroyVideoSessionKHR[ dev, session, null ]
         if [ session_memory ]
             for [ m: u64 ] in session_memory
                 vkFreeMemory[ dev, cast VkDeviceMemory [ m ], null ]
         if [ dec ] h264d_free[ dec ]
+        if [ dec5 ] h265d_free[ dec5 ]
 
 # h.264 samples decoded ahead on a worker thread
 class VideoStream
@@ -1261,7 +1619,8 @@ class VideoStream
     # above the clip's); the pair must both be decoded, so the picture
     # runs one frame behind the newest decoded
     public  smooth    : bool [ true ]
-    intern  last      : VideoFrame          # the picture last handed out
+    # the picture last handed out
+    intern  last      : VideoFrame
     intern  blend     : FrameBlend
     intern  mixed     : VideoFrame          # the scratch mix
     public  width     : i32
@@ -1269,7 +1628,8 @@ class VideoStream
     public  decoded   : i64                 # pictures decoded in all
     intern  dec       : Decoder
     intern  avcc      : vec u8
-    intern  queue     : vec DemuxSample     # track -1: new avcC, -2: end
+    # track -1: new avcC, -2: end
+    intern  queue     : vec DemuxSample
     intern  ready     : vec VideoFrame
     intern  hidden    : vec i64             # decoded, never shown
     intern  lock      : mutex                 # with its wake condition
@@ -1304,8 +1664,10 @@ class VideoStream
         put[ s ]
 
     # one length-prefixed sample; pts in microseconds
-    public func push [ bytes: @u8, n: i64, pts: i64, sync: bool, show: bool ]
-        s : DemuxSample [ pts: pts, sync: sync, duration: (show) ? 0 : 1 ]
+    public func push [ bytes: @u8, n: i64, pts: i64, sync: bool,
+                       show: bool ]
+        s : DemuxSample [ pts: pts, sync: sync,
+                          duration: (show) ? 0 : 1 ]
         s.data = vec u8 [ n ]
         memcpy[ @s.data[ 0 ], bytes, n ]
         put[ s ]
@@ -1356,7 +1718,8 @@ class VideoStream
         lock.cond_signal[]
         lock.unlock[]
         # between two pictures: their mix for t, pts t
-        if [ smooth && cur && nxt && nxt.pts > cur.pts && t > cur.pts && t < nxt.pts ]
+        if [ smooth && cur && nxt && nxt.pts > cur.pts && t > cur.pts
+             && t < nxt.pts ]
             if [ !blend ] blend = FrameBlend [ vk: vk, w: w ]
             if [ !mixed ] mixed = VideoFrame []
             fr : f32 [ f32[ t - cur.pts ] / f32[ nxt.pts - cur.pts ] ]
@@ -1379,7 +1742,8 @@ class VideoStream
             # a flush while decoding: its pictures are stale
             if [ dec ]
                 for [ f: VideoFrame ] in dec.frames
-                    if [ g == gen && !take_hidden[ f.pts ] ] ready.push[ f ]
+                    if [ g == gen && !take_hidden[ f.pts ] ]
+                        ready.push[ f ]
                 dec.frames.clear[]
             lock.unlock[]
             Au.auto_free[]

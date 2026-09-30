@@ -1,0 +1,375 @@
+extend composer
+
+import <math.h>
+
+# Seed-VC's content-to-mel model: the length regulator and the DiT
+# (a 13-layer transformer, a WaveNet head) that flow matching steps
+
+# a linear layer: w [out, in], b [out] or empty
+class Lin
+    public w    : vec f32
+    public b    : vec f32
+    public nin  : i32
+    public nout : i32
+
+# x [t, in] frame-major to [t, out]
+func lin_apply [ l: Lin, x: vec f32, t: i32 ] -> vec f32
+    y : vec f32 [ i64[ t ] * l.nout ]
+    bp : @f32 [ (l.b.count > 0) ? @l.b[ 0 ] : null ]
+    gemm_nt[ @x[ 0 ], @l.w[ 0 ], bp, @y[ 0 ], t, l.nout, l.nin ]
+    return y
+
+func silu [ v: f32 ] -> f32
+    return v / (1.0 + expf[ 0.0 - v ])
+
+# [c, t] and [t, c] turned over
+func flip [ x: vec f32, rows: i32, cols: i32 ] -> vec f32
+    y : vec f32 [ i64[ rows ] * cols ]
+    for [ r: i32 0, r < rows, r += 1 ]
+        for [ c: i32 0, c < cols, c += 1 ]
+            ix9 : i64 [ i64[ c ] * rows + r ]
+            y[ ix9 ] = x[ i64[ r ] * cols + c ]
+    return y
+
+class DiT
+    public  src   : path
+    public  valid : bool
+    intern  ck    : pth
+    intern  e     : string [ 'net.cfm.module.estimator' ]
+    intern  lr    : string [ 'net.length_regulator.module' ]
+    # layers read once, by name
+    intern  lins  : map Lin [ string ]
+    intern  rope_cos : vec f32
+    intern  rope_sin : vec f32
+
+    func init []
+        ck = pth [ src: src ]
+        valid = ck.valid
+        lins = map Lin [ string ] []
+
+    # a small vector (a norm's weight): its own Lin slot keeps it
+    func floats [ name: string ] -> vec f32
+        have : Lin lins[ name ]
+        if [ have ] return have.w
+        l : Lin [ w: read_floats[ name ] ]
+        lins[ name ] = l
+        return l.w
+
+    func read_floats [ name: string ] -> vec f32
+        t : tensor ck.tensor_named[ name ]
+        if [ !t ] return vec f32 []
+        n : i64 [ t.tensor_shape.total[] ]
+        out : vec f32 [ n ]
+        memcpy[ @out[ 0 ], t.floats, n * 4 ]
+        return out
+
+    func lin [ name: string, nin: i32, nout: i32 ] -> Lin
+        have : Lin lins[ name ]
+        if [ have ] return have
+        l : Lin [ w: read_floats[ '{name}.weight' ], b: read_floats[ '{name}.bias' ], nin: nin, nout: nout ]
+        lins[ name ] = l
+        return l
+
+    # weight norm folded over everything but dim 0
+    func lin_wn [ name: string, nin: i32, nout: i32 ] -> Lin
+        have : Lin lins[ name ]
+        if [ have ] return have
+        v : vec f32 read_floats[ '{name}.weight_v' ]
+        g : vec f32 read_floats[ '{name}.weight_g' ]
+        per : i64 [ v.count / i64[ nout ] ]
+        for [ r: i64 0, r < i64[ nout ], r += 1 ]
+            ss : f64 [ 0.0 ]
+            for [ q: i64 0, q < per, q += 1 ]
+                ss += f64[ v[ r * per + q ] ] * f64[ v[ r * per + q ] ]
+            sc : f32 [ f32[ f64[ g[ r ] ] / sqrt[ ss ] ] ]
+            for [ q: i64 0, q < per, q += 1 ]
+                ix9 : i64 [ r * per + q ]
+                v[ ix9 ] = v[ ix9 ] * sc
+        l : Lin [ w: v, b: read_floats[ '{name}.bias' ], nin: nin, nout: nout ]
+        lins[ name ] = l
+        return l
+
+    # the sinusoid of t (256) through a two-layer mlp
+    func t_embed [ base: string, t: f32 ] -> vec f32
+        fq : vec f32 [ 256 ]
+        for [ i: i32 0, i < 128, i += 1 ]
+            f : f64 [ exp[ 0.0 - log[ 10000.0 ] * f64[ i ] / 128.0 ] ]
+            a9 : f64 [ 1000.0 * f64[ t ] * f ]
+            fq[ i ]       = f32[ cos[ a9 ] ]
+            fq[ 128 + i ] = f32[ sin[ a9 ] ]
+        h : vec f32 lin_apply[ lin[ '{base}.mlp.0', 256, 512 ], fq, 1 ]
+        for [ i: i64 0, i < h.count, i += 1 ]
+            h[ i ] = silu[ h[ i ] ]
+        return lin_apply[ lin[ '{base}.mlp.2', 512, 512 ], h, 1 ]
+
+    # adaptive rms norm: (w * rms(x) + b) with w, b from the condition
+    func ada_rms [ base: string, x: vec f32, t: i32, c: vec f32 ] -> vec f32
+        wb : vec f32 lin_apply[ lin[ '{base}.project_layer', 512, 1024 ], c, 1 ]
+        nw : vec f32 floats[ '{base}.norm.weight' ]
+        y : vec f32 [ i64[ t ] * 512 ]
+        for [ q: i32 0, q < t, q += 1 ]
+            ss : f64 [ 0.0 ]
+            for [ i: i32 0, i < 512, i += 1 ]
+                v : f64 [ f64[ x[ i64[ q ] * 512 + i ] ] ]
+                ss += v * v
+            r : f32 [ f32[ 1.0 / sqrt[ ss / 512.0 + 0.00001 ] ] ]
+            for [ i: i32 0, i < 512, i += 1 ]
+                ix9 : i64 [ i64[ q ] * 512 + i ]
+                y[ ix9 ] = wb[ i ] * (x[ ix9 ] * r * nw[ i ]) + wb[ 512 + i ]
+        return y
+
+    # cos and sin of each position's 32 rotation angles
+    func rope_table [ t: i32 ]
+        if [ rope_cos && rope_cos.count >= i64[ t ] * 32 ] return
+        rope_cos = vec f32 [ i64[ t ] * 32 ]
+        rope_sin = vec f32 [ i64[ t ] * 32 ]
+        for [ q: i32 0, q < t, q += 1 ]
+            for [ i: i32 0, i < 32, i += 1 ]
+                th : f64 [ f64[ q ] * exp[ 0.0 - log[ 10000.0 ] * f64[ 2 * i ] / 64.0 ] ]
+                ix9 : i64 [ i64[ q ] * 32 + i ]
+                rope_cos[ ix9 ] = f32[ cos[ th ] ]
+                rope_sin[ ix9 ] = f32[ sin[ th ] ]
+
+    # full self attention, 8 heads of 64, rotary positions
+    func attention [ base: string, x: vec f32, t: i32 ] -> vec f32
+        qkv : vec f32 lin_apply[ lin[ '{base}.wqkv', 512, 1536 ], x, t ]
+        rope_table[ t ]
+        # rotate q and k in place: pairs (2i, 2i+1) of each head
+        for [ q: i32 0, q < t, q += 1 ]
+            for [ part: i32 0, part < 2, part += 1 ]
+                for [ h: i32 0, h < 8, h += 1 ]
+                    for [ i: i32 0, i < 32, i += 1 ]
+                        cs : f32 [ rope_cos[ q * 32 + i ] ]
+                        sn : f32 [ rope_sin[ q * 32 + i ] ]
+                        o0 : i64 [ i64[ q ] * 1536 + part * 512 + h * 64 + 2 * i ]
+                        x0 : f32 [ qkv[ o0 ] ]
+                        x1 : f32 [ qkv[ o0 + 1 ] ]
+                        qkv[ o0 ]     = x0 * cs - x1 * sn
+                        qkv[ o0 + 1 ] = x1 * cs + x0 * sn
+        att : vec f32 [ i64[ t ] * 512 ]
+        qh : vec f32 [ i64[ t ] * 64 ]
+        kh : vec f32 [ i64[ t ] * 64 ]
+        vt : vec f32 [ i64[ t ] * 64 ]
+        sc : vec f32 [ i64[ t ] * t ]
+        oh : vec f32 [ i64[ t ] * 64 ]
+        for [ h: i32 0, h < 8, h += 1 ]
+            # this head's q and k rows (scaled q), and v turned over
+            for [ i: i32 0, i < t, i += 1 ]
+                for [ d: i32 0, d < 64, d += 1 ]
+                    r9 : i64 [ i64[ i ] * 1536 + h * 64 + d ]
+                    ix9 : i64 [ i64[ i ] * 64 + d ]
+                    qh[ ix9 ] = qkv[ r9 ] * 0.125
+                    kh[ ix9 ] = qkv[ r9 + 512 ]
+                    ix8 : i64 [ i64[ d ] * t + i ]
+                    vt[ ix8 ] = qkv[ r9 + 1024 ]
+            gemm_nt[ @qh[ 0 ], @kh[ 0 ], null, @sc[ 0 ], t, t, 64 ]
+            for [ i: i32 0, i < t, i += 1 ]
+                row : @f32 [ @sc[ i64[ i ] * t ] ]
+                mx : f32 [ -1.0e30 ]
+                for [ j: i32 0, j < t, j += 1 ]
+                    if [ row[ j ] > mx ] mx = row[ j ]
+                tot : f32 [ 0.0 ]
+                for [ j: i32 0, j < t, j += 1 ]
+                    ev : f32 [ expf[ row[ j ] - mx ] ]
+                    row[ j ] = ev
+                    tot += ev
+                inv : f32 [ 1.0 / tot ]
+                for [ j: i32 0, j < t, j += 1 ]
+                    row[ j ] = row[ j ] * inv
+            gemm_nt[ @sc[ 0 ], @vt[ 0 ], null, @oh[ 0 ], t, 64, t ]
+            for [ i: i32 0, i < t, i += 1 ]
+                memcpy[ @att[ i64[ i ] * 512 + h * 64 ], @oh[ i64[ i ] * 64 ], 256 ]
+        return lin_apply[ lin[ '{base}.wo', 512, 512 ], att, t ]
+
+    func feed_forward [ base: string, x: vec f32, t: i32 ] -> vec f32
+        a1 : vec f32 lin_apply[ lin[ '{base}.w1', 512, 1536 ], x, t ]
+        a3 : vec f32 lin_apply[ lin[ '{base}.w3', 512, 1536 ], x, t ]
+        for [ i: i64 0, i < a1.count, i += 1 ]
+            a1[ i ] = silu[ a1[ i ] ] * a3[ i ]
+        return lin_apply[ lin[ '{base}.w2', 1536, 512 ], a1, t ]
+
+    func add_into [ dst: vec f32, src9: vec f32 ]
+        for [ i: i64 0, i < dst.count, i += 1 ]
+            dst[ i ] = dst[ i ] + src9[ i ]
+
+    # [t, 512] and [t, 512] side by side, [t, 1024]
+    func pair [ x: vec f32, y: vec f32, t: i32, nx: i32, ny: i32 ] -> vec f32
+        z : vec f32 [ i64[ t ] * (nx + ny) ]
+        for [ q: i32 0, q < t, q += 1 ]
+            memcpy[ @z[ i64[ q ] * (nx + ny) ], @x[ i64[ q ] * nx ], i64[ nx ] * 4 ]
+            memcpy[ @z[ i64[ q ] * (nx + ny) + nx ], @y[ i64[ q ] * ny ], i64[ ny ] * 4 ]
+        return z
+
+    # the WaveNet head: 8 gated layers, k 5, reflect-padded, t2 as
+    # the global condition; x [512, t] channel-major
+    func wavenet [ x: vec f32, t: i32, t2: vec f32 ] -> vec f32
+        wb : string '{e}.wavenet'
+        g : vec f32 lin_apply[ lin_wn[ '{wb}.cond_layer.conv.conv', 512, 8192 ], t2, 1 ]
+        out : vec f32 [ i64[ 512 ] * t ]
+        memset[ @out[ 0 ], 0, i64[ 512 ] * t * 4 ]
+        h : vec f32 [ i64[ 512 ] * t ]
+        memcpy[ @h[ 0 ], @x[ 0 ], i64[ 512 ] * t * 4 ]
+        for [ l: i32 0, l < 8, l += 1 ]
+            il : Lin lin_wn[ '{wb}.in_layers.{l}.conv.conv', 2560, 1024 ]
+            # a 5-tap conv over reflect padding, as rows of (c, j) taps
+            cols : vec f32 [ i64[ t ] * 2560 ]
+            for [ q: i32 0, q < t, q += 1 ]
+                for [ c: i32 0, c < 512, c += 1 ]
+                    for [ j: i32 0, j < 5, j += 1 ]
+                        ix : i32 [ q + j - 2 ]
+                        if [ ix < 0 ] ix = 0 - ix
+                        if [ ix >= t ] ix = 2 * t - 2 - ix
+                        ix9 : i64 [ i64[ q ] * 2560 + c * 5 + j ]
+                        cols[ ix9 ] = h[ i64[ c ] * t + ix ]
+            bg : vec f32 [ 1024 ]
+            for [ o: i32 0, o < 1024, o += 1 ]
+                bg[ o ] = il.b[ o ] + g[ l * 1024 + o ]
+            xf : vec f32 [ i64[ t ] * 1024 ]
+            gemm_nt[ @cols[ 0 ], @il.w[ 0 ], @bg[ 0 ], @xf[ 0 ], t, 1024, 2560 ]
+            xi : vec f32 flip[ xf, t, 1024 ]
+            acts : vec f32 [ i64[ 512 ] * t ]
+            for [ i: i64 0, i < i64[ 512 ] * t, i += 1 ]
+                ta : f32 [ tanhf[ xi[ i ] ] ]
+                sg : f32 [ 1.0 / (1.0 + expf[ 0.0 - xi[ i64[ 512 ] * t + i ] ]) ]
+                acts[ i ] = ta * sg
+            nres : i32 [ (l < 7) ? 1024 : 512 ]
+            rl : Lin lin_wn[ '{wb}.res_skip_layers.{l}.conv.conv', 512, nres ]
+            rs : vec f32 flip[ lin_apply[ rl, flip[ acts, 512, t ], t ], t, nres ]
+            if [ l < 7 ]
+                for [ i: i64 0, i < i64[ 512 ] * t, i += 1 ]
+                    h[ i ] = h[ i ] + rs[ i ]
+                    out[ i ] = out[ i ] + rs[ i64[ 512 ] * t + i ]
+            el
+                for [ i: i64 0, i < i64[ 512 ] * t, i += 1 ]
+                    out[ i ] = out[ i ] + rs[ i ]
+        return out
+
+    # whisper's content [n, 768] to [ylen, 512] frames: projected,
+    # stretched (nearest), 4 x (conv 3, group norm, mish), conv 1
+    public func regulate [ sw: vec f32, n: i32, ylen: i32 ] -> vec f32
+        p : vec f32 lin_apply[ lin[ '{lr}.content_in_proj', 768, 512 ], sw, n ]
+        x : vec f32 [ i64[ ylen ] * 512 ]
+        sc9 : f32 [ f32[ n ] / f32[ ylen ] ]
+        for [ q: i32 0, q < ylen, q += 1 ]
+            si : i32 [ i32[ floorf[ f32[ q ] * sc9 ] ] ]
+            if [ si > n - 1 ] si = n - 1
+            memcpy[ @x[ i64[ q ] * 512 ], @p[ i64[ si ] * 512 ], 2048 ]
+        for [ b: i32 0, b < 4, b += 1 ]
+            cv : Lin lin[ '{lr}.model.{b * 3}', 1536, 512 ]
+            cols : vec f32 [ i64[ ylen ] * 1536 ]
+            for [ q: i32 0, q < ylen, q += 1 ]
+                for [ c: i32 0, c < 512, c += 1 ]
+                    for [ j: i32 0, j < 3, j += 1 ]
+                        ix : i32 [ q + j - 1 ]
+                        ix9 : i64 [ i64[ q ] * 1536 + c * 3 + j ]
+                        cols[ ix9 ] = (ix >= 0 && ix < ylen) ? x[ i64[ ix ] * 512 + c ] : 0.0
+            x = lin_apply[ cv, cols, ylen ]
+            # one group: the mean and variance over everything
+            mu : f64 [ 0.0 ]
+            for [ i: i64 0, i < x.count, i += 1 ]
+                mu += f64[ x[ i ] ]
+            mu = mu / f64[ x.count ]
+            va : f64 [ 0.0 ]
+            for [ i: i64 0, i < x.count, i += 1 ]
+                d : f64 [ f64[ x[ i ] ] - mu ]
+                va += d * d
+            rs : f64 [ 1.0 / sqrt[ va / f64[ x.count ] + 0.00001 ] ]
+            gw : vec f32 floats[ '{lr}.model.{b * 3 + 1}.weight' ]
+            gb : vec f32 floats[ '{lr}.model.{b * 3 + 1}.bias' ]
+            for [ q: i32 0, q < ylen, q += 1 ]
+                for [ c: i32 0, c < 512, c += 1 ]
+                    ix9 : i64 [ i64[ q ] * 512 + c ]
+                    v : f32 [ f32[ (f64[ x[ ix9 ] ] - mu) * rs ] * gw[ c ] + gb[ c ] ]
+                    sp : f32 [ (v > 20.0) ? v : log1pf[ expf[ v ] ] ]
+                    x[ ix9 ] = v * tanhf[ sp ]
+        return lin_apply[ lin[ '{lr}.model.12', 512, 512 ], x, ylen ]
+
+    # the flow from noise to mel: euler steps with classifier-free
+    # guidance. prompt mel [80, p], cond [t, 512] (prompt's first),
+    # noise [80, t]; returns the new frames [80, t - p]
+    public func flow [ prompt: vec f32, p: i32, cond: vec f32, style: vec f32, noise: vec f32, t: i32, steps: i32, cfg: f32 ] -> vec f32
+        x : vec f32 [ i64[ 80 ] * t ]
+        pr : vec f32 [ i64[ 80 ] * t ]
+        for [ m: i32 0, m < 80, m += 1 ]
+            for [ q: i32 0, q < t, q += 1 ]
+                ix9 : i64 [ i64[ m ] * t + q ]
+                x[ ix9 ]  = (q < p) ? 0.0 : noise[ ix9 ]
+                pr[ ix9 ] = (q < p) ? prompt[ i64[ m ] * p + q ] : 0.0
+        zp : vec f32 [ i64[ 80 ] * t ]
+        zc : vec f32 [ i64[ t ] * 512 ]
+        zs : vec f32 [ 192 ]
+        memset[ @zp[ 0 ], 0, zp.count * 4 ]
+        memset[ @zc[ 0 ], 0, zc.count * 4 ]
+        memset[ @zs[ 0 ], 0, 768 ]
+        dt : f32 [ 1.0 / f32[ steps ] ]
+        tt : f32 [ 0.0 ]
+        for [ s9: i32 0, s9 < steps, s9 += 1 ]
+            v1 : vec f32 estimate[ x, pr, cond, style, tt, t ]
+            v0 : vec f32 estimate[ x, zp, zc, zs, tt, t ]
+            for [ m: i32 0, m < 80, m += 1 ]
+                for [ q: i32 p, q < t, q += 1 ]
+                    ix9 : i64 [ i64[ m ] * t + q ]
+                    x[ ix9 ] = x[ ix9 ] + dt * ((1.0 + cfg) * v1[ ix9 ] - cfg * v0[ ix9 ])
+            tt += dt
+        out : vec f32 [ i64[ 80 ] * (t - p) ]
+        for [ m: i32 0, m < 80, m += 1 ]
+            memcpy[ @out[ i64[ m ] * (t - p) ], @x[ i64[ m ] * t + p ], i64[ t - p ] * 4 ]
+        return out
+
+    # the estimator: the flow's velocity at t. x, prompt [80, t];
+    # cond [t, 512]; style [192]
+    public func estimate [ x: vec f32, prompt: vec f32, cond: vec f32, style: vec f32, tt: f32, t: i32 ] -> vec f32
+        t1 : vec f32 t_embed[ '{e}.t_embedder', tt ]
+        cp : vec f32 lin_apply[ lin[ '{e}.cond_projection', 512, 512 ], cond, t ]
+        xt : vec f32 flip[ x, 80, t ]
+        pt : vec f32 flip[ prompt, 80, t ]
+        xin : vec f32 [ i64[ t ] * 864 ]
+        for [ q: i32 0, q < t, q += 1 ]
+            memcpy[ @xin[ i64[ q ] * 864 ], @xt[ i64[ q ] * 80 ], 320 ]
+            memcpy[ @xin[ i64[ q ] * 864 + 80 ], @pt[ i64[ q ] * 80 ], 320 ]
+            memcpy[ @xin[ i64[ q ] * 864 + 160 ], @cp[ i64[ q ] * 512 ], 2048 ]
+            memcpy[ @xin[ i64[ q ] * 864 + 672 ], @style[ 0 ], 768 ]
+        h : vec f32 lin_apply[ lin[ '{e}.cond_x_merge_linear', 864, 512 ], xin, t ]
+        # u-vit: layers 0..5 hand their output to 12..7
+        skips : vec f32 [ i64[ 6 ] * t * 512 ]
+        for [ l: i32 0, l < 13, l += 1 ]
+            lb : string '{e}.transformer.layers.{l}'
+            if [ l > 6 ]
+                k9 : i32 [ 12 - l ]
+                sk : vec f32 [ i64[ t ] * 512 ]
+                memcpy[ @sk[ 0 ], @skips[ i64[ k9 ] * t * 512 ], i64[ t ] * 2048 ]
+                h = lin_apply[ lin[ '{lb}.skip_in_linear', 1024, 512 ], pair[ h, sk, t, 512, 512 ], t ]
+            a9 : vec f32 attention[ '{lb}.attention', ada_rms[ '{lb}.attention_norm', h, t, t1 ], t ]
+            add_into[ h, a9 ]
+            f9 : vec f32 feed_forward[ '{lb}.feed_forward', ada_rms[ '{lb}.ffn_norm', h, t, t1 ], t ]
+            add_into[ h, f9 ]
+            if [ l < 6 ]
+                memcpy[ @skips[ i64[ l ] * t * 512 ], @h[ 0 ], i64[ t ] * 2048 ]
+        h = ada_rms[ '{e}.transformer.norm', h, t, t1 ]
+        xr : vec f32 lin_apply[ lin[ '{e}.skip_linear', 592, 512 ], pair[ h, xt, t, 512, 80 ], t ]
+        w1 : vec f32 lin_apply[ lin[ '{e}.conv1', 512, 512 ], xr, t ]
+        t2 : vec f32 t_embed[ '{e}.t_embedder2', tt ]
+        wn : vec f32 flip[ wavenet[ flip[ w1, t, 512 ], t, t2 ], 512, t ]
+        add_into[ wn, lin_apply[ lin[ '{e}.res_projection', 512, 512 ], xr, t ] ]
+        # final layer: layer norm, shift and scale from t1, linear
+        st : vec f32 [ 512 ]
+        for [ i: i32 0, i < 512, i += 1 ]
+            st[ i ] = silu[ t1[ i ] ]
+        ss : vec f32 lin_apply[ lin[ '{e}.final_layer.adaLN_modulation.1', 512, 1024 ], st, 1 ]
+        for [ q: i32 0, q < t, q += 1 ]
+            mu : f64 [ 0.0 ]
+            for [ i: i32 0, i < 512, i += 1 ]
+                mu += f64[ wn[ i64[ q ] * 512 + i ] ]
+            mu = mu / 512.0
+            va : f64 [ 0.0 ]
+            for [ i: i32 0, i < 512, i += 1 ]
+                d : f64 [ f64[ wn[ i64[ q ] * 512 + i ] ] - mu ]
+                va += d * d
+            rs : f64 [ 1.0 / sqrt[ va / 512.0 + 0.000001 ] ]
+            for [ i: i32 0, i < 512, i += 1 ]
+                ix9 : i64 [ i64[ q ] * 512 + i ]
+                nv : f32 [ f32[ (f64[ wn[ ix9 ] ] - mu) * rs ] ]
+                wn[ ix9 ] = nv * (1.0 + ss[ 512 + i ]) + ss[ i ]
+        fl : vec f32 lin_apply[ lin_wn[ '{e}.final_layer.linear', 512, 512 ], wn, t ]
+        o2 : vec f32 lin_apply[ lin[ '{e}.conv2', 512, 80 ], fl, t ]
+        return flip[ o2, t, 80 ]

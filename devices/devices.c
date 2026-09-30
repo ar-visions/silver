@@ -2201,7 +2201,7 @@ typedef struct {
     volatile int32_t state;     // 0 free, 1 spawn requested, 2 live, 3 exited
     volatile int32_t verdict;   // 0 unset, >0 exit code+1, <0 -signal, -1000 build failed
     volatile int32_t flags;     // launch flags (silver-host's HOST_APP_*); never in the name
-    char name[192];             // "module [default-arg]" silver-host spawns
+    char name[1024];            // "module [flags] [default-arg]" silver-host spawns
 } HostApp;
 typedef struct {
     volatile int32_t host_pid;  // supervising silver-host; spawn asks signal it

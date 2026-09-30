@@ -3456,6 +3456,196 @@ the largest object. Startup footprint measured headless.
    the instance panel's bottom toolbar is 35 px, flush on it.
 3. OPEN the conversation tab: waits on what it shows.
 
+## Active work: dictation marks on a recording (Sep 30 2026)
+
+Kalen: dictate while recording; each take is a mark on the
+recording's clock (start, duration, words), and the marks are
+the composer's instructions ("I want a bugs bunny right after I
+played the fzero game"): the span where an instruction was
+spoken is cropped out of the finished video, and the composer
+(a new app, `composer`) feeds the .agi with a VIDEO.md (the
+video operations it may emit at times) into the user's agent
+shell, gets video operations at times back, and renders a new
+compressed mp4.
+1. DONE marks. trinity/video.ag: RecMark (at, dur seconds;
+   text; file: the pane's file or the listen file), RecNotes
+   (context: a hand-written hint for the composer; marks),
+   Recorder.time_us / mark / notes_load / notes_save; the file
+   is `<take stem>.agi` beside the mp4 (record_notes; a live
+   stream keeps none), rewritten at every mark and at close,
+   read back at a reload so the marks continue. Module funcs
+   record_time / record_mark (trinity.ag, over rec_live): the
+   app element is not the media_app, so it cannot call its
+   methods. orbiter mic_frame: mark_at at the press, mark_end
+   at the release, the mark once the words arrive.
+2. DONE (Kalen) the mp4 holds video and audio only, never
+   text: the marks live in the .agi alone, and the user edits
+   that file directly. The text track and --retitle were built
+   and removed. Checked headless: a take with a spoken test
+   wav gives an mp4 of h264 + aac (decodes clean) and a .agi
+   with the mark at 1.60 s for 1.36 s, words exact.
+3. DONE the composer protocol (composer/VIDEO.md, composer/
+   composer.ag). The agent writes <stem>.composition.agi: a
+   Composition of ops, each one serialized call on Composer
+   (Op subclasses: Fetch name url, Crop from to, Insert at
+   media ...). Composer.plan runs every Fetch, then every Crop
+   (they set the output's clock: Kept spans), then every Insert
+   (mapped to output time as an Overlay); problems collects
+   what cannot be done. Resources live in <stem>/ named by the
+   reference the user said (bugs-bunny); a file already there
+   is used, else Fetch downloads it (tls Http.download).
+   Virtual calls on an Op need *[] (o.invoke*[ a ]): a plain
+   [] binds to Op's own method; `x inherits T` on a vec element
+   was false for its real class. `silver --test composer`:
+   t_composition_plan passes (a crop 10..13 moves an insert
+   at 20 to 17 on the output).
+4. DONE the agent request. `composer [--agent codex] [--model m]
+   <take.mp4>` (composer.ag, element composer): the take's
+   length from its fragments (take_length: moof/traf tfdt +
+   trun count x tfhd duration, video at 90 kHz; 18.0 s, as
+   ffprobe says), then Composer.ask runs the user's agent
+   through trinity's agent shell in the take's folder with
+   VIDEO.md (read from beside the module source) and the take's
+   paths in the request; it writes <stem>.composition.agi; then
+   load and plan. Checked with the real claude on a test take
+   (an instruction mark, a logo the user put in take/): it
+   cropped the mark (1.6-3.8 s), put take/orbiter-logo.png top
+   right for 3 s at 3.8 s, downloaded nothing, left the
+   narration mark alone; the plan: 2 spans kept, 1 insert.
+5. DONE full-colour takes are H.265 4:4:4 (Kalen's pick): the
+   RTX 3060 encodes H.264 4:4:4 but decodes H.264 at 4:2:0 only;
+   it encodes and decodes H.265 4:4:4 8-bit. `--rec_qp stage` /
+   `lossless` (the default) now record H.265 Rext 4:4:4 into
+   the mp4 (hvc1 + hvcC), or a raw .h265; streams (ts, hls)
+   stay 4:2:0 H.264. Encoder.hevc: VPS/SPS/PPS and per-picture
+   info from C (trinity.c h265_params, h265_picture: C owns the
+   memory and every pointer into it; pointers into a C struct
+   taken from silver (@x.member) crashed the driver). Lossless:
+   qp 0 + transquant bypass. vk.ag enables encode_h265 and
+   decode_h265 (vk_context.h265_encode / h265_decode; the device
+   extension list is 32 long now).
+   Decoder.config_hevc + C front end h265d_* (VPS, SPS with VUI,
+   HRD, scaling lists, range extensions, PPS, slice header up to
+   the RPS, short-term sets incl. inter prediction, long-term by
+   poc lsb, POC msb, reference marking, bumping output). 4:4:4
+   pictures come back as full-size u and v (VideoFrame.full).
+   Checked (composer t_hevc_decode, COMPOSER_HEVC=<mp4>
+   COMPOSER_HEVC_OUT=<yuv>): a 320x240 x265 4:2:0 clip, 60/60
+   frames, and a 640x200 lossless 4:4:4 take recorded from
+   texttest, 480/480 frames: both byte-identical to ffmpeg's
+   decode. The take's decoded picture vs the app's own shot:
+   max 2/255 (rgb<->yuv rounding only). webgfx and trinity
+   tests pass; orbiter and aura rebuilt.
+   The video queues exist only once a Display attaches: a test
+   needs a headless Display before decoding.
+   Older takes (H.264 4:4:4, like Desktop/video.mp4) still
+   cannot be read back on this GPU.
+6. DONE the render (composer.ag Composer.render, Renderer,
+   Source, Media, Planes, Seg). Pass 1 reads the take for its
+   size, frame rate and all its sound (spectra aac_clip); the
+   kept spans are split at every held cut (pause inserts) into
+   pieces in output order, and every insert gets its output
+   time from them. Pass 2 streams the take through the GPU
+   decoder; each output frame: the take's planes drawn with
+   draw_yuv (bt.709), the active inserts (pip at a third, full,
+   region; fade in and out) with their own decoder or picture,
+   then Canvas.sync_all and Recorder.capture (paced false: one
+   frame per call) into H.264 4:2:0 QP 23 + AAC. The sound:
+   the take's pcm for each kept piece, silence for a cut, an
+   insert's own sound where `sound: media`.
+   `composer --again true <take>` renders the composition as it
+   stands. Checked headless: a lossless H.265 4:4:4 take, crop
+   1-2 s, logo pip at 3 s, a 1.5 s held cut to av.mp4 with its
+   tone: 8.5 s out (8 - 1 + 1.5), 510 frames, the four frames
+   right by eye, the tone exactly in the cut (-21 dB there,
+   silent elsewhere). 1080p60, 10 s take: rendered in 6.3 s.
+   Found on the way: a VideoFrame read out of a vec and then
+   removed is freed at once (use it before removing); a png
+   drawn straight showed its transparent area (noise): pictures
+   are premultiplied at load.
+7. DONE a take is a module (Kalen): `--record video` makes
+   video/ if it is not there and records video/video.mp4 beside
+   video/video.agi (trinity record_path; relative to the launch
+   folder; a stream url or a name with a video extension is
+   used as it is). The composer takes the folder
+   (`silver composer ~/Desktop/video`); the resources live in
+   that folder, named `video/<file>` in a composition (resolved
+   from the folder's parent); the composition and the render
+   land in it too. Checked headless: --record demo gave
+   demo/demo.mp4 + demo/demo.agi; composer on the folder wrote
+   demo/demo.final.mp4 with demo/bugs-bunny.gif in it.
+   Also: GIF inserts (composer/composer.c, animated, looping),
+   region is the text 'x y w h' (the media keeps its shape), an
+   H.264 4:4:4 take is refused up front, and a new take starts
+   its notes fresh (a reload continues them).
+8. OPEN orbiter's row for the composer, progressive JPEG in
+   img (it aborts on them), and the frames still cross the CPU
+   (decode readback, plane upload).
+9. PLANNED (Kalen, Sep 30) voice conversion on the take's sound,
+   offline in the render: a `Voice` op (from, to, voice) whose
+   voice is a reference .wav in the take's folder, named in the
+   context or a dictation like any other media ("video/vader.wav
+   is Darth Vader"). Model: Seed-VC ported to silver as whisper
+   was (whisper-small encoder already in speech; CAMPPlus,
+   the DiT with its flow-matching steps, BigVGAN to port), its
+   .pth checkpoints read by a new zip+pickle reader.
+   Seeding: each reference .wav is encoded once (the CAMPPlus
+   speaker embedding and its prompt mel), cached by file, and
+   reused by every Voice op that names it. Each op's span is
+   converted in chunks that overlap and are crossfaded, and the
+   span's edges crossfade into the original sound, so the voice
+   comes in and out without a click.
+   DONE (Sep 30) the weights: composer.ag imports the Seed-VC DiT
+   (whisper-small wavenet variant, its config confirms stock
+   openai/whisper-small, speech's file is reused), CAM++ and
+   BigVGAN v2 22k into install/models/seed-vc/ (918 MB). ai's
+   `pth` class reads PyTorch zip checkpoints (ai/ai.c: zip with
+   zip64, the pickle opcodes torch.save writes, strided tensors,
+   f32/f16/bf16/int read as f32). composer t_seed_vc_weights: 302
+   / 937 / 783 tensors; ups.2.0.weight_v is 384x192x4, first
+   value -0.026324, the same as Python's own pickle reads it.
+   The C functions are pthf_*: a silver class's methods compile
+   to <Class>_<method>, and `pth_count` collided with class pth.
+   DONE BigVGAN (composer/vocoder.ag): weight norm folded at
+   load; conv_pre, 6 transposed upsamples, 18 AMP blocks with the
+   anti-aliased snakebeta (2x up, 12-tap kaiser filters from the
+   checkpoint, 2x down), conv_post, clamp. t_bigvgan against
+   PyTorch on a real 2 s mel (COMPOSER_VOC_MEL/WAV): 44032
+   samples, SNR 98.4 dB. CPU, one thread: 10 s for 2 s of audio.
+   DONE CAM++ (composer/campplus.ag) with Kaldi's fbank (povey
+   window, pre-emphasis, htk mel, 512-point power, mean off):
+   t_campplus (COMPOSER_CAM_DIR): fbank max error 5e-4, the
+   192-number style max error 1.8e-5, 0.66 s for 2.6 s of audio.
+   Golden files come from the original Python (scratchpad
+   bigvgan/ref.py, seedvc/cam_ref.py; torch is on this machine,
+   torchaudio is not: its kaldi.py runs standalone).
+   Silver found on the way: `v[ i64[ a ] * n + b ] = x` fails
+   ("no indexing available for model i64") when the index starts
+   with a cast: compute it into a local first; a vec returned
+   from a call and aliased by another local was clobbered on the
+   next loop pass (sum into a fresh buffer instead); `pre`,
+   `post`, `ref` are reserved; pointer + n is not element
+   arithmetic (take @v[ n ] instead); a param named `a` shadows
+   the object itself.
+   DONE the DiT (composer/dit.ag: length regulator, 13 layers,
+   RoPE, AdaLN-RMS, U-ViT skips, wavenet head; Euler flow, 10
+   steps, CFG 0.7; matrix work through ai's gemm_nt, 32 threads)
+   and the front end (composer/seedvc.ag: sinc resample, whisper
+   log-mel and content, the 22 kHz mel). Against PyTorch: one
+   DiT call 3e-5, the flow 3.4e-5, content 1.3e-4, the whole
+   voice 52 dB SNR.
+   DONE the op, named `Revoice` (spectra has a Voice class):
+   from, to, voice. In VIDEO.md. A speech take rendered: the
+   pitch moved 301 -> 203 Hz, the output does not correlate
+   with the input (-0.02). Speed: 31 s for 2.5 s of sound, on
+   the CPU; Kalen accepts it. OPEN: the GPU path (below).
+   GPU (Kalen asked, Sep 30): ai's whisper_vk has compute
+   shaders for gemm, attention, layer norm and conv; Seed-VC's
+   whisper already runs there. The DiT and BigVGAN are not on it.
+10. DONE the render's frame rate is the shortest gap between
+   decode times over 60 pictures (ffmpeg's first frame is
+   longer: an average read 26, then 59; now 60).
+
 ## Active work: YouTube smoothness in aura (Sep 28 2026)
 
 Kalen: the player's fullscreen transition ran at 15-20 fps, its
@@ -3817,3 +4007,72 @@ OPEN:
 - headless the app ticks at 60, so page frames cap at 60; on
   Kalen's 165 Hz screen the real rate is unmeasured.
 - the per-tile paint still reads every tile back to the CPU.
+
+## Active work: .ag cleanup to 72 columns (Sep 30 2026)
+
+Kalen: every .ag module to 72 columns, trinity first. Comments
+re-flowed to 72 (all words kept); code broken inside [ ] only.
+1. DONE trinity (Sep 30): 3,654 lines over 72 -> 1,323. The
+   wrap tool (session scratchpad wrap72.py; to keep, move it to
+   support/) re-flows # and // comments, moves a trailing
+   comment above its line, puts a one-line `if [ c ] stmt`
+   body on its own line, and breaks code after a comma or
+   before && / || inside [ ], or ( ) within [ ].
+   Checked by IR: the --verbose build's .ll before and after,
+   compared function by function (locals renamed, string
+   constants by text): identical but for __LINE__ values, GLSL
+   whitespace/comments, and the initializer's C-type order,
+   which also differs between two builds of the same source.
+   trinity builds; `silver --test trinity` exit 0.
+   Line breaks are NOT neutral in silver: a bracketless cast
+   (`f32 i`, `f32 width / tcs`) reads by line; broken, the call
+   failed ("arc_seg: expected 10 args, got 10"). The tool
+   leaves any line with one unbroken.
+   Left over 72 (1,323): 1,217 code lines with no safe break
+   (long Vulkan names, aligned assignments, bracketless casts,
+   `expect x, 'msg'`, ternaries), 88 GLSL lines holding a
+   silver { } value, 14 import settings, 4 commented-out code.
+2. DONE the exchange-test comments at the top of trinity.ag:
+   four removed; "trinity: the window, the elements, and the
+   light behind both" kept (a real header).
+3. NEXT the other modules, one at a time, each built after,
+   the same IR check per module.
+
+## Active work: rec_qp (Sep 30 2026)
+
+Kalen: recording at near-lossless for staging (overlays added at
+moments later, then a final encode). The RTX 3060 on driver
+610.57.04 encodes through Vulkan: H.264 High 4:2:0 and High
+4:4:4 (4096 max), HEVC Main 4:2:0 and RExt 4:4:4 (8192 max).
+1. DONE, built (trinity, buttontest) `--rec_qp` enum
+   RecQuality (element.ag, beside DisplayMode; a member of
+   element like record, adopted by media_app): stream (4:2:0,
+   qp 10), high (4:2:0, qp 4), stage (4:4:4, qp 2), lossless
+   (4:4:4, qp 0 + qpprime_y_zero_transform_bypass; the default,
+   Kalen). The path@qp suffix is gone; a live url uses stream.
+   Pieces: trinity.c h264_sps/h264_pps (profile 244, chroma 3,
+   1 px crop units, the bypass flag; CAVLC for 4:4:4), video.ag
+   Encoder chroma444/lossless (profile, G8_B8R8_2PLANE_444
+   picture, full-size chroma copy, 4 bytes/px bitstream room),
+   NV24Convert (full-size cb/cr), mux.ag avcC's high-profile
+   chroma/bit-depth bytes, vk.ag VK_EXT_ycbcr_2plane_444_formats
+   (the format is core only in 1.3; trinity asks for 1.2).
+   Found on the way: nvidia's vulkan encoder refuses 4:4:4
+   parameter sets with CABAC (vkGetEncodedVideoSession
+   ParametersKHR -1, size 0); CAVLC works (NVENC itself does
+   CABAC 4:4:4). Checked, buttontest headless at 2560x1440
+   against its own shot: stage max 3 levels off, lossless max
+   1 (the rgb to 8-bit ycbcr rounding): lossless is lossless.
+   OPEN: at 480 px wide (480x560, 480x576) the Cb channel of
+   the last ~16k pixels encodes wrong (Cr and Y right, stream
+   decodes clean); 496, 640, 1024, 2560 wide are clean. Looks
+   like the driver; not chased.
+   element gained rec_qp: every trinity app built before
+   needs a rebuild before it is hosted again (orbiter too).
+   Mac: MoltenVK's encoder is 4:2:0; stage/lossless fall back
+   to 4:2:0 there with a log line. VideoToolbox can do 4:4:4
+   H.264 on Apple silicon: add it to our MoltenVK branch.
+2. DONE, built, not confirmed on colourful footage: the NV12
+   convert used BT.601 coefficients while the SPS says BT.709
+   (matrix 1): hues shifted. Now BT.709 limited range.
+
