@@ -6484,7 +6484,8 @@ element n64 : trinity
 		if [ down && code == 80 ] save_req = true    # P: save gameplay state
 		if [ down && code == 76 ] load_req = true    # L: load gameplay state
 
-	# mouse: motion drives the analog stick, left button is Z; a click locks the mouse (esc releases)
+	# mouse: motion drives the analog stick, left button is Z; with mouse
+	# look on a click locks the mouse (esc releases); off, the mouse is free
 	public func on_move [ ev: Event ]
 		mouse_ax += ev.mouse.delta.x
 		mouse_ay += ev.mouse.delta.y
@@ -6492,7 +6493,7 @@ element n64 : trinity
 	public func on_press [ ev: Event ]
 		if [ ev.mouse.button == 0 ]
 			pad_st = pad_st | 0x2000
-			if [ !ux.locked ] ux.mouse_lock[ a ]
+			if [ mouse_look && !ux.locked ] ux.mouse_lock[ a ]
 		if [ ev.mouse.button == 1 ] pad_st = pad_st | 0x10          # right button = R: aim
 
 	public func on_release [ ev: Event ]

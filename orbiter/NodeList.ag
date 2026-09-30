@@ -970,7 +970,10 @@ Control InstancePanel
                             if [ ev.mouse.pos.x < rh ]
                                 off8 : bool [ av9.ended || av9.held ]
                                 ac8 : string (off8) ? 'play' : 'stop'
-                                if [ ev.key.shift ]
+                                # the first one stays: shift copies it
+                                if [ ev.key.shift && i == 0 ]
+                                    ed9.copy_instance[ av9 ]
+                                el [ ev.key.shift ]
                                     ed9.close_instance[ i ]
                                 el
                                     orb.instance_action[ ed9, av9, ac8 ]
@@ -1036,7 +1039,7 @@ Control InstancePanel
                 cv.stroke_color[ rgba [ '#fff1' ] ]
                 w.near_light_on[ cv, a, 0.0, 0.0 ]
                 cv.near_style[ 1.0, 3.0, rgba [ '#c890ffff' ], w.near_y_fade ]
-                cv.rect_to[ 0.0, y8, bounds.w, rh - 1.0 ]
+                cv.rect_to[ 0.0, y8, bounds.w, rh ]
                 cv.paint[]
                 cv.no_shadows[]
                 cv.stroke_width[ 0.0 ]
@@ -1050,9 +1053,11 @@ Control InstancePanel
                 # lives in the step group
                 off9 : bool [ av9.ended || av9.held ]
                 in9  : string (off9) ? 'play' : 'stop'
-                ic9  : SVGModel icon[ (sh9) ? 'close' : in9 ]
+                # shift: the first one's is a green + (a copy), the rest close
+                sc9  : string [ (i == 0) ? 'add_instance' : 'close' ]
+                ic9  : SVGModel icon[ (sh9) ? sc9 : in9 ]
                 if [ ic9 ]
-                    ik9 : rgba [ (sh9) ? rgba [ '#ef5350' ]
+                    ik9 : rgba [ (sh9) ? ((i == 0) ? rgba [ '#6fdc8c' ] : rgba [ '#ef5350' ])
                                        : inst_color[ av9 ] ]
                     cv.fill_color[ ik9 ]
                     cv.stroke_color[ ik9 ]

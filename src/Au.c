@@ -1363,6 +1363,12 @@ AU_EXPORT Au_t def_prop(Au_t context, symbol ident, Au_t type, u64 traits, u32 o
     return prop;
 }
 
+// a prop's declared default, the initializer's literal as written
+AU_EXPORT Au_t def_prop_default(Au_t prop, symbol dflt) {
+    if (prop && dflt) prop->dflt = cstr_copy((cstr)dflt);
+    return prop;
+}
+
 AU_EXPORT Au_t alloc_arg(Au_t context, symbol ident, Au_t arg) {
     Au_t var = _push_arg(context, false);
     var->src = arg;
@@ -2352,6 +2358,9 @@ AU_EXPORT none push_type(Au_t type, Au_t to_mod) {
 
         def_member(au_t, "meta", typeid(meta_t), AU_MEMBER_VAR, AU_TRAIT_INLAY)
             ->offset = offsetof(struct _Au_f, meta);
+        // a prop's declared default (the initializer literal), read by props_of
+        def_member(au_t, "dflt", typeid(cstr), AU_MEMBER_VAR, 0)
+            ->offset = offsetof(struct _Au_f, dflt);
 
         // register meta_t members
         Au_t mt = typeid(meta_t);
@@ -2520,7 +2529,7 @@ AU_EXPORT Au_t find_module(symbol name) {
 
 // a registry slot whose module reads as nonsense is a stale pointer: say
 // which slot, and what sits either side of it, rather than fault on it
-static bool module_sane(Au_t mod, micro_* list, int i, symbol which) {
+static bool module_sane(Au_t mod, micro* list, int i, symbol which) {
     if (mod->members.count >= 0 && mod->members.count < 65536 && mod->ident) return true;
     Au_t before = (i > 0) ? (Au_t)list->origin[i - 1] : null;
     Au_t after  = (i + 1 < list->count) ? (Au_t)list->origin[i + 1] : null;
@@ -8827,8 +8836,13 @@ static Au parse_object(cstr input, Au_t schema, Au_t meta_type, cstr* remainder,
         res = null;
     }
     else if (sym && ((is_true = eq(sym, "true")) || eq(sym, "false"))) {
-        verify(!schema || schema == typeid(bool), "type mismatch");
-        res = _bool(is_true); 
+        // a string field takes the word as text (a prop's value: 'false')
+        if (schema == typeid(string))
+            res = (Au)hold(sym);
+        else {
+            verify(!schema || schema == typeid(bool), "type mismatch");
+            res = _bool(is_true);
+        }
     }
     else if (*scan == '[') {
         if (sym) {
@@ -9306,6 +9320,11 @@ static bool agi_symbol_safe(cstr s) {
     return true;
 }
 
+// a word the reader takes as a value of its own: written quoted as text
+static bool agi_keyword(cstr s) {
+    return !strcmp(s, "true") || !strcmp(s, "false") || !strcmp(s, "null");
+}
+
 static none agi_indent(string res, int n) {
     for (int i = 0; i < n; i++)
         push(res, '\t');
@@ -9337,7 +9356,7 @@ static bool agi_leaf(string res, Au v, int depth) {
     Au_t t = isa(v);
     if (instanceof(v, string)) {
         string s = (string)v;
-        if (agi_symbol_safe(s->chars))
+        if (agi_symbol_safe(s->chars) && !agi_keyword(s->chars))
             concat(res, s);
         else {
             push(res, '\'');
@@ -9402,7 +9421,7 @@ static bool agi_leaf(string res, Au v, int depth) {
                 else if (!agi_leaf(res, e, depth + 1)) concat(res, json(e));
             } else if (et == typeid(f32)) concat(res, f(string, "%g", (f64)*(f32*)(d + i * stride)));
             else   if (et == typeid(f64)) concat(res, f(string, "%g", *(f64*)(d + i * stride)));
-            else   serialize(et, res, (ARef)(d + i * stride));
+            else   serialize(et, res, (Au)(d + i * stride));
             first = false;
         }
         append(res, " ]");

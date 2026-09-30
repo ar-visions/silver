@@ -544,6 +544,10 @@ struct DictState
     # the model loads on its own thread (the take records meanwhile)
     ltid     : pthread_t
     loading  : bool
+    # the capture device opens on its own thread too: a press never waits
+    otid     : pthread_t
+    opening  : bool
+    open_fail : bool
     net_fail : bool
     polls : i32
     drop    : bool
@@ -554,21 +558,16 @@ struct DictState
 intern dict : DictState
 
 func dictation_start [] -> i32
-    if [ !dict.cap ]
-        dict.cap = spectra [ size: 2048, sample_rate: 48000, device: 'default' ]
-        dict.cap.hold[]
-    if [ !dict.ok ]
-        dict.ok = dict.cap.open[]
-    if [ !dict.ok ]
+    # the device opens on its thread (since the exchange opened, most
+    # times); a take pressed before it is ready records once it is
+    dictation_preload[]
+    if [ !dict.ok && !dict.opening ]
         log 'dictation: no capture device'
         return 1
-    # the take records at once: the model loads on its own thread meanwhile
-    # (already loaded, or loading since the exchange opened, most times)
-    dictation_preload[]
     if [ !dict.raw ]
         dict.raw_v = new i16 [ 1536000 ]
         dict.raw   = dict.raw_v
-    dict.cap.drain[]
+    if [ dict.ok ] dict.cap.drain[]
     dict.job     = null
     dict.wr      = 0
     dict.state   = 0
@@ -619,9 +618,25 @@ func dict_load_thread [ arg: handle ] -> handle
     dict.loading = false
     return null
 
-# start loading the model, once, off the caller's thread: the exchange calls
-# this when it opens, so the mic rarely waits
+# the capture device, opened off the caller's thread: ok is set last
+func dict_open_thread [ arg: handle ] -> handle
+    if [ !dict.cap ]
+        dict.cap = spectra [ size: 2048, sample_rate: 48000, device: 'default' ]
+        dict.cap.hold[]
+    dict.ok = dict.cap.open[]
+    if [ !dict.ok ]
+        log 'dictation: no capture device'
+        dict.open_fail = true
+    dict.opening = false
+    return null
+
+# start loading the model and opening the device, once, off the caller's
+# thread: the exchange calls this when it opens, so the mic never waits
 func dictation_preload [] -> none
+    if [ !dict.ok && !dict.opening && !dict.open_fail ]
+        dict.opening = true
+        pthread_create[ @dict.otid, null, @dict_open_thread, null ]
+        pthread_detach[ dict.otid ]
     if [ dict.net || dict.loading || dict.net_fail ] return
     dict.loading = true
     pthread_create[ @dict.ltid, null, @dict_load_thread, null ]

@@ -591,9 +591,16 @@ Layer CommitLayer
             cv.fill_color[ cb.theme_rgba['#22002280'] ]
             cv.stroke_width[ 1.0 ]
             cv.stroke_offset[ -0.5 ]
-            cv.stroke_color[ (dirty) ? cb.theme_rgba['#ffffff80'] : ((thov) ? cb.theme_rgba['#ff7aa480'] : cb.theme_rgba['#ff5a8a80']) ]
-            # mouse over: glow in the same colour as the border
-            if [ thov ] cv.box_shadow[ cb.theme_rgba['#ff7aa480'], 0.0, 0.0, 6.0, 0.0, true ]
+            # the border rests at a quarter; the pointer's near light brings
+            # it and the inner glow up, 30% past the tabs' amount
+            # theme colours are shared objects: copies, never edits
+            bt9 : (dirty) ? cb.theme_rgba['#ffffff80'] : ((thov) ? cb.theme_rgba['#ff7aa480'] : cb.theme_rgba['#ff5a8a80'])
+            cv.stroke_color[ rgba [ r: bt9.r, g: bt9.g, b: bt9.b, a: (dirty) ? bt9.a : bt9.a * 0.5 ] ]
+            ht9 : cb.theme_rgba['#ff7aa480']
+            cv.box_shadow[ rgba [ r: ht9.r, g: ht9.g, b: ht9.b, a: (thov) ? ht9.a : ht9.a * 0.25 ], 0.0, 0.0, 9.0, 0.0, true ]
+            nc9 : rgba [ r: ht9.r, g: ht9.g, b: ht9.b, a: 1.0 ]
+            cb.ux.near_light_on[ cv, cb, 0.0, 0.0 ]
+            cv.near_style[ 1.3, 3.9, nc9, cb.ux.near_y_fade ]
             cv.rect_to[ tx, ty + 3.0, 144.0, lh - 6.0 ]
             cv.paint[ ]
             cv.restore[ ]
@@ -813,7 +820,12 @@ Layer CommitLayer
                     cv.stroke_width[ 1.0 ]
                     cv.stroke_offset[ -0.5 ]
                     cv.stroke_color[ cb.nav_hover_edge ]
-                    # mouse over: the wash and its edge, no glow
+                    # mouse over: the wash and its edge; the pointer's near
+                    # light brings the edge and an inner glow up
+                    he9 : cb.nav_hover_edge
+                    cv.box_shadow[ rgba [ r: he9.r, g: he9.g, b: he9.b, a: he9.a * 0.25 ], 0.0, 0.0, 6.0, 0.0, true ]
+                    cb.ux.near_light_on[ cv, cb, 0.0, 0.0 ]
+                    cv.near_style[ 1.3, 3.9, rgba [ r: he9.r, g: he9.g, b: he9.b, a: 1.0 ], cb.ux.near_y_fade ]
                     # an entry's highlight starts at its icon: the 30px before
                     # it is the delete mark's, never painted
                     hl9 : f32 [ 2.0 ]

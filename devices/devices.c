@@ -2446,6 +2446,12 @@ HOST_API void host_app_stop(int slot) {
     HostShared* hs = host_shared();
     if (!hs || slot <= 0 || slot >= HOST_APPS) return;
     int pid = hs->app[slot].app_pid;
+    // HM.close was just posted: the app closes itself (its sound stops
+    // cleanly). a SIGTERM only for one that has not, 300ms on
+    for (int i = 0; i < 30 && pid > 0; i++) {
+        if (hs->app[slot].state == 3 || kill((pid_t)pid, 0) != 0) return;
+        usleep(10000);
+    }
     if (pid > 0 && kill((pid_t)pid, 0) == 0) kill((pid_t)pid, SIGTERM);
 }
 

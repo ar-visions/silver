@@ -1085,7 +1085,7 @@ Option ReloadButton
     # the label after the body: a hover fill never covers it; the
     # hover is mostly an orange glow
     style : CSS {
-        area: l50%-48px t8px w96px h18px
+        area: l50%-48px t4px w96px h22px
         layers.body:
             fill_color: #0000
             radius: 4
@@ -1132,21 +1132,6 @@ Option RemoteToggle
     }
 
 # non-clickable chip in the same spot: what the reload is doing right now
-element ReloadStatus
-    no_cache : true
-    style : CSS {
-        area: l0+ t8px w110px h18px
-        layers.body:
-            fill_color: #6b4a14
-            radius: 4
-            box_shadow: inset 0 0 5px #ffae5e52
-        layers.face:
-            label_color: #ffda
-            label_size: 14
-            label_align: 0.5 0.5
-            label_offset: 0.0 -1.0
-    }
-
 # the editor's tooltip: the class and function the caret sits in, and at a
 # debugger stop the clicked name's type and value, so it reads here instead of
 # scrolling up to its # annotation. a plain label from the bar's left edge,
@@ -1357,6 +1342,9 @@ Group StatusBar
 
 # the title's search button: the bar's height, square
 TButtons BarTab
+    # a slight backing; the hover is the pointer's light in its glow
+    rest_hover : true
+    rest_fill  : rgba [ '#ffffff08' ]
     style : CSS {
         area: r0+ t0 w1.66 b0
     }
@@ -1975,7 +1963,10 @@ element LaunchPanel
                     fr : f32 [ (rg.y > rg.x) ? (cv - rg.x) / (rg.y - rg.x) : 0.0 ]
                     t['lp_{nm}'] = LaunchSlider [ label: '', value: fr, area: ar9 ]
             el
-                if [ ex9 ]
+                # a mounted field keeps its text, unless it is empty and the
+                # value has arrived since (the export lists no defaults)
+                fe9 : element (ex9) ? elements[ 'lp_{nm}' ] : null
+                if [ ex9 && !(cur.count > 0 && (!fe9.edit || fe9.edit.count == 0)) ]
                     t['lp_{nm}'] = LaunchField [ label: '', focusable: true, area: ar9 ]
                 el
                     t['lp_{nm}'] = LaunchField [ label: '', edit: cur, sel_col: cur.count, anchor_col: cur.count,
@@ -2059,7 +2050,8 @@ element LaunchPanel
             nm : string p.ident
             df : string (p.value) ? p.value : ''
             v : string value_of[ p ]
-            if [ !v ] continue
+            # an empty field writes no flag: `--mouse_sens ` took the rom as its value
+            if [ !v || v.count == 0 ] continue
             ck : string ctl[ p ]
             # a binding at 0 was never set here: the app keeps its own
             if [ (ck == 'KeyBind' || ck == 'PadBind') && v == '0' ] continue
@@ -4126,6 +4118,12 @@ element orbiter : trinity # implements compiler
                 av.held = false
                 # a restored instance keeps its display: the pane shows it one way, never both
                 if [ ed ] ed.app_view = av.display == 1
+                # the nav list closes: the pane shows the app, not the list over it
+                if [ nav_showing || find_showing ]
+                    exit_finder[]
+                    nav_showing  = false
+                    find_showing = false
+                    if [ ux ] ux.will_animate = true
                 return
             if [ av.ended ] av.restart[ false ]
             return
@@ -4233,6 +4231,7 @@ element orbiter : trinity # implements compiler
             if [ !nav_can[ -1 ] ] fdm |= 1
             if [ !nav_can[ 1 ] ]  fdm |= 2
             els['histnav'] = TButtons [ buttons: fnav, icon_ids: fico, manual: true,
+                rest_hover: true, rest_fill: rgba [ '#ffffff08' ],
                 disable_mask: fdm,
                 icon_scale: 0.30, rest_glow: rgba [ '#ccf2' ], rest_px: 8.0,
                 seg_radius: 0.0, use_spacing: false, area: Region [ 'l0+ t0 w1.8 b0' ] ]
@@ -4250,6 +4249,7 @@ element orbiter : trinity # implements compiler
                 if [ !edp9 || !edp9.nav || !edp9.nav.can_back[] ]    ndm |= 1
                 if [ !edp9 || !edp9.nav || !edp9.nav.can_forward[] ] ndm |= 2
             els['histnav'] = TButtons [ buttons: nnav, icon_ids: nico, manual: true,
+                rest_hover: true, rest_fill: rgba [ '#ffffff08' ],
                 disable_mask: ndm,
                 icon_scale: 0.30, rest_glow: rgba [ '#ccf2' ], rest_px: 8.0,
                 seg_radius: 0.0, use_spacing: false, area: Region [ 'l0+ t0 w1.8 b0' ] ]
@@ -4258,7 +4258,7 @@ element orbiter : trinity # implements compiler
         # bar; not while the nav list is up on a title focus. lit while
         # the bar is open. with shift held it is the red minus that
         # closes this tab, in place, and git and the views show beside it
-        if [ shift_down && pane_ix < editor_slots.count ]
+        if [ shift_down && pane_ix < editor_slots.count && hasfile ]
             els['tabnav'] = BarTab [ buttons: vec string [] [ 'dock' ],
                 icon_ids: vec string [] [ 'close' ], manual: true, danger_mask: 1,
                 rest_glow: rgba [ '#ccf2' ], rest_px: 8.0,
@@ -4301,6 +4301,7 @@ element orbiter : trinity # implements compiler
                     if [ ex9 == cx9 ] csel9 |= (1 << ci9)
                 cw9 : f32 [ 40.0 * fu9 * f32[ cel9.count ] ]
                 els['companions'] = TButtons [ buttons: cids9, labels: cel9, icons: false,
+                    rest_hover: true, rest_fill: rgba [ '#ffffff08' ],
                     manual: true, sel_mask: csel9, label_px: 12.0 * fu9,
                     rest_glow: rgba [ '#ccf2' ], rest_px: 8.0,
                     area: Region [ 'r0+ t0.065 w{cw9}px h0.81' ] ]
@@ -8027,10 +8028,12 @@ element orbiter : trinity # implements compiler
                             # no breakpoints here: let it run, never trace it
                             kill[ apid, SIGCONT ]
                             av8.attached = true
+                # a hidden pane (the nav list over it) never ticks: its
+                # instance is serviced here until it shows again
                 shown8 : bool [ false ]
                 for [ pi8: i32 0, pi8 < editor_slots.count, pi8 += 1 ]
                     e8 : Editor pane_at[ pi8 ]
-                    if [ e8 && e8.run_view == av8 ] shown8 = true
+                    if [ e8 && e8.run_view == av8 && !e8.hide ] shown8 = true
                 if [ !shown8 ]
                     av8.stopped = (av8.debugger && av8.debugger.active && !av8.debugger.running) ? true : false
                     # the pace of an app shown in the pane: this display's refresh
@@ -8303,8 +8306,7 @@ element orbiter : trinity # implements compiler
             ev9 : EditorView pv9
             run9 = ev9.run_ok[]
         note9 : bool [ agent_note && agent_note.count > 0 ]
-        # the right end, from the edge: console, the panel's two tabs,
-        # and with shift an added instance
+        # the right end, from the edge: console, the panel's two tabs
         k9  : i32 [ 35 ]
         scn9 : bool [ side_tab == 'scenes' ]
         tipk9 : string '{active_pane}|{(edv9) ? 1 : 0}|{(edv9 && edv9.debug_vars) ? 1 : 0}|{(active_debugger[]) ? 1 : 0}|{tip9}'
@@ -8328,12 +8330,11 @@ element orbiter : trinity # implements compiler
             # the reload chips flow after the button (l0+: after the sibling
             # before them here), so nothing stacks at the bar's left
             'reload_busy' : (au_live_get_pending[] == 2)
-                ? ReloadStatus [ label: 'compiling...' ] : null,
+                ? ReloadButton [ label: 'compiling...', manual_mode: true, disable: true ] : null,
             'reload_ready': (au_live_get_pending[] == 1)
                 ? ReloadButton [ label: 'reload', manual_mode: true ] : null,
             'side_menu'   : stat_tab[ 'side_menu', 'menu', !inst_hidden && !scn9, false, k9 + 35 ],
             'side_scenes' : stat_tab[ 'side_scenes', 'saturn', !inst_hidden && scn9, false, k9 ],
-            'new_instance': (run9 && shift_down) ? stat_tab[ 'new_instance', 'add_instance', false, true, k9 + 70 ] : null,
             # the console toggle at the right: a square the bar's height
             # always: the console is global, whatever the selected file is
             'console_tab' : TButtons [ buttons: vec string [] [ 'console_tab' ],

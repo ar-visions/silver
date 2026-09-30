@@ -587,6 +587,19 @@ func webgfx_canvas_clear_shadows [ id: i32 ]
     cv : canvas_of[ id ]
     if [ cv ] cv.no_shadows[]
 
+# the pointer's light on the next draws, in canvas px; glow 0 turns it off
+func webgfx_canvas_near_light [ id: i32, x: f32, y: f32, reach: f32, glow: f32 ]
+    cv : canvas_of[ id ]
+    if [ !cv ] return
+    cv.near_light[ x, y, reach, glow ]
+
+# where the light lands: the border, an inset shadow (its colour), the y scale
+func webgfx_canvas_near_style [ id: i32, border: f32, inset: f32, c: @f32, y_fade: f32 ]
+    cv : canvas_of[ id ]
+    if [ !cv ] return
+    col : rgba [ r: c[0], g: c[1], b: c[2], a: c[3] ]
+    cv.near_style[ border, inset, col, y_fade ]
+
 # CSS filter: hue-rotate degrees, saturate, brightness
 func webgfx_canvas_set_filter [ id: i32, hue: f32, saturate: f32, brightness: f32 ]
     cv : canvas_of[ id ]

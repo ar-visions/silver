@@ -197,11 +197,12 @@ element aura : trinity
         root   : path.path_startup[]
         engine_path : path '{root}/install/libexec/wpe-webkit-2.0/WPETrinityBrowser'
         target : string [ 'about:blank' ]
+        # a scheme as given; a file on disk by path; anything else is a site
         if [ src && (src.index_of[ '://' ] >= 0 || src.index_of[ 'about:' ] == 0) ]
             target = src
         el [ src ]
             f : path [ src ]
-            target = 'file://{f.absolute[]}'
+            target = (f.exists[]) ? 'file://{f.absolute[]}' : 'https://{src}'
         # literals reach a C vararg as objects, not text
         name  : string 'WPETrinityBrowser'
         flag  : string '--data'

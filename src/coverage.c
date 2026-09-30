@@ -190,7 +190,7 @@ AU_EXPORT void finalize_coverage_map(aether a) {
 // a core's function names the root's global by declaring it
 static LLVMValueRef cov_global(aether a, LLVMValueRef g, LLVMTypeRef t) {
     LLVMModuleRef m = LLVMGetGlobalParent(LLVMGetBasicBlockParent(LLVMGetInsertBlock(B)));
-    cstr name = LLVMGetValueName(g);
+    symbol name = LLVMGetValueName(g);
     LLVMValueRef mg = LLVMGetNamedGlobal(m, name);
     return mg ? mg : LLVMAddGlobal(m, t, name);
 }
@@ -366,7 +366,7 @@ void emit_func_timing_end(aether a, LLVMValueRef start_ns, u32 func_id) {
     LLVMTypeRef    i64t = LLVMInt64TypeInContext(c);
     LLVMTypeRef    i32t = LLVMInt32TypeInContext(c);
     LLVMTypeRef    tarr = LLVMArrayType(i64t, MAX_FUNCS);
-    cstr           name = LLVMGetValueName(a->func_timings_global);
+    symbol         name = LLVMGetValueName(a->func_timings_global);
     LLVMValueRef   tg   = LLVMGetNamedGlobal(m, name);
     if (!tg) tg = LLVMAddGlobal(m, tarr, name);
     LLVMValueRef gep = LLVMBuildGEP2(B, tarr, tg,

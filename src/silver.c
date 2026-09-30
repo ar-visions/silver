@@ -6338,7 +6338,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
         } else
             total = e_create(a, etypeid(i64), (Au)esize, false);
         // the count rides into alloc_new: elements sit inline, one allocation
-        if (!a->no_build) ((aether)a)->alloc_count = total;
+        if (!a->no_build) ((aether)a)->alloc_count = (Au)total;
         // the shape rides too: multi-index reads it from the header
         if (!a->no_build && canonical(esize) && canonical(esize)->autype == typeid(shape))
             ((aether)a)->alloc_shape = esize;
@@ -7372,6 +7372,14 @@ enode parse_statement(silver a)
             mem->autype->access_type = (u8)access;
             mem->autype->member_type = AU_MEMBER_VAR;
             mem->autype->src         = canonical(rtype)->autype;
+            // a one-token literal initializer is the member's declared default
+            if (rtype && instanceof(expr, array) && len((array)expr) == 1) {
+                token dt = (token)((array)expr)->origin[0];
+                if (dt && dt->chars && (dt->literal || eq(dt, "true") || eq(dt, "false"))) {
+                    if (!a->prop_defaults) a->prop_defaults = map(hsize, 32);
+                    set(a->prop_defaults, (Au)mem->autype, (Au)string(dt->chars));
+                }
+            }
             // a persist slot is static; the keyword must not clear it
             mem->autype->is_static   = is_static || !!(traits & AU_TRAIT_IS_PERSIST);
             // its value outlives this module's image on a reload

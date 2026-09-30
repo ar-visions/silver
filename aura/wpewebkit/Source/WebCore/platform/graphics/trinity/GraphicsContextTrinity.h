@@ -20,6 +20,10 @@ public:
     virtual ~GraphicsContextTrinity();
 
     int canvas() const { return m_canvas; }
+    // the pointer's light on the control drawn next: user-space point and
+    // reach; how much lands on the border and on the inner glow
+    void setNearLight(const FloatPoint&, float reach, float glow, float border, float inset, const Color& glowColor, float yFade);
+    void clearNearLight();
     // only a trinity context answers: filters find its canvas
     PlatformGraphicsContext* platformContext() const final { return const_cast<GraphicsContextTrinity*>(this); }
 
@@ -130,6 +134,9 @@ private:
     RenderingPurpose m_renderingPurpose { RenderingPurpose::Unspecified };
     AffineTransform m_ctm;
     IntRect m_clip;
+    // the near light's inner glow: an inset shadow in slot 1 while it is on
+    float m_nearGlow[4] { 0, 0, 0, 0 };
+    float m_nearGlowBlur { 0 };
     Stroke m_stroke;
     Vector<Frame> m_frames;
     Vector<Layer> m_layers;

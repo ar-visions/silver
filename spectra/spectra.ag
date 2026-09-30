@@ -440,6 +440,15 @@ el
             return true
 
         func capture [] -> bool
+            # a block only when one is there: a read short of one blocks
+            # the caller's thread until the mic fills it (43 ms a block)
+            if [ snd_pcm_state [ pcm ] == SND_PCM_STATE_PREPARED ] snd_pcm_start [ pcm ]
+            avail : i64 [ snd_pcm_avail_update [ pcm ] ]
+            if [ avail < 0 ]
+                snd_pcm_prepare [ pcm ]
+                snd_pcm_start   [ pcm ]
+                return false
+            if [ avail < i64[ size ] ] return false
             frames: i32 [ snd_pcm_readi [ pcm, buf, size ] ]
 
             if [ frames < 0 ]
@@ -538,7 +547,8 @@ el
 
         func close []
             if [ pcm_handle ]
-                snd_pcm_drain[ pcm_handle ]
+                # drop, never drain: the queued tail played out is a buzz
+                snd_pcm_drop[ pcm_handle ]
                 snd_pcm_close[ pcm_handle ]
             pcm_handle = null
             active = false

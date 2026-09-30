@@ -301,7 +301,7 @@ silver orbiter --width 1920 # --width goes to orbiter, not silver
 silver --clean orbiter
 ```
 
-- `make` defaults to debug. Debug binary goes to `platform/native/debug/silver`. Release binary goes to `platform/native/bin/silver`.
+- `make` is `make release` (Sep 29, Kalen); `make debug` for -O0 -g. Both build into install/build and link install/bin/silver: the last one built wins.
 - Bootstrap runs `gen.py` then `ninja`. The ninja file is generated per build type.
 - Build caching: modules with unchanged source skip recompilation (checks `.product` timestamp vs `.ag` timestamp).
 - Release builds: LLVM emits .o directly in-memory via `LLVMTargetMachineEmitToFile` — no .ll file, no llc process. Uses `LLVMCodeGenLevelAggressive` with `+avx2,+fma` on x86-64.
@@ -777,7 +777,7 @@ search, compare, copy from, or modify `/src/orion`.
 - Keywords registered in parser, dispatched through `e_math`/`e_math2`.
 
 ### Build System
-- `make` defaults to debug (`BUILD_ROOT` = `platform/native/debug`).
+- `make` is `make release` (Sep 29); `make debug` builds the same tree at -O0 -g.
 - Debug binary → `platform/native/debug/silver`. Release → `platform/native/bin/silver`.
 - `gen.py` updated: app output uses `$builddir/` not `bin/`.
 - Build caching: `update_product` checks `.product` symlink timestamp vs module file. Empty `.artifacts` file no longer triggers rebuild (`!newest` = product is valid).
@@ -3667,6 +3667,150 @@ Findings, not bugs of ours:
    pane's resize within a frame: the pane has no layout yet.
    /tmp/orbiter-resz.log is appended by EVERY orbiter process
    (two were running): its lines interleave.
+13. DONE (Kalen: "that cool effect can be applied in our aura
+   webkit around standard buttons ... and form elements like
+   check / input / text area") the pointer's near light on every
+   native control WebKit paints. The chain: webgfx
+   webgfx_canvas_near_light / _near_style (WebGfx.h) ->
+   GraphicsContextTrinity::setNearLight/clearNearLight (the
+   point mapped through the CTM, reach scaled; an inset shadow
+   in slot 1 re-applied per draw by setShadowForDraw, the
+   inner glow the light fills) -> RenderBox::paintBoxDecorations
+   (overlay copy) wraps a box with a used appearance in a
+   TrinityNearLightScope: the pointer from the frame's
+   EventHandler (window -> contents -> the box's paint space),
+   reach 160, border 1.3, inset 3.9, the theme's focus colour
+   (white vanished on Adwaita's light controls; Adwaita FILLS
+   its borders, so only the inset glow shows). RenderTheme
+   (overlay copies of .h/.cpp) keeps the painted boxes weakly
+   (nearLightPainted) and EventHandler::handleMouseMoveEvent
+   (overlay copy) calls nearLightMoved: a box within reach of
+   the pointer repaints, and once more as it leaves. A trinity
+   context is known by platformContext() != null.
+   Checked headless on a local page (scratchpad near/): the
+   push button, the text input and the checkbox take a soft
+   blue inner light that follows the pointer; the rest stay
+   as Adwaita draws them. Then (Kalen: nothing on google.com's
+   search buttons, which Google styles itself, so WebKit paints
+   them as plain CSS boxes): the scope also takes any box whose
+   element is an HTMLFormControlElement (input, button, select,
+   textarea, fieldset), styled or not; the light lands through
+   the CSS border and background fills. Checked headless on
+   google.com: "Google Search" glows blue at its edges under the
+   pointer, "I'm Feeling Lucky" faintly at 150 px. Cost: one
+   repaint per move per control within 160 px.
+14. DONE (Kalen: dragging a split rendered the two panes at
+   different sizes, the panes lagging the seam on a fast move;
+   "easing is a feature, that ease state is the current
+   position"). Traced per frame (a temporary split/draw log,
+   removed): the frame the main splitter laid its seam out at
+   the new place, the right child drew at its new width and
+   pane0 still at its old one, one frame late. Cause: bounds
+   were computed only in the draw pass (layout_element), so a
+   nested container's render() read LAST frame's bounds: each
+   nesting level (main -> left -> stack -> panes -> pane0)
+   added a frame of lag, and the two sides of one seam came
+   from different frames. Fix (trinity update_element): each
+   instance is laid out from its parent's current bounds
+   (layout_self, the per-element half of layout_element,
+   with the relative-sibling chain kept in the pass) before
+   its render() is called, top down; the draw pass's layout
+   stays authoritative. The splitter's easing is untouched.
+   Checked hidden: on a fast drag every shot has one seam and
+   both panes meet at it, on the title, the text and the
+   bottom rows.
+15. DONE (Kalen: an instance started with the nav list open did
+   not start until the list closed). The pane's editor mounts
+   with `hide: browse_active[]`, and draw_element returns on a
+   hidden element before its tick, so nothing serviced the
+   instance (Editor.tick -> service -> start). orbiter's frame
+   loop already services instances no pane shows; it now counts
+   a hidden pane as not showing (`!e8.hide`). Checked hidden:
+   with the list open (a letter typed in the title) the row's
+   play starts aura at once ("start: aura ... -> slot 1").
+   Then (Kalen: the app flashed and the list stayed in front):
+   the play action closes the nav list (exit_finder, nav_showing
+   and find_showing off). Checked hidden: the list's element is
+   gone after the play and the page shows in the pane.
+16. DONE (Kalen: the exchange's ground blur once, wanted per
+   frame). Window.exchange_blur_frame (trinity): when the
+   exchange's ground draws, the screen as drawn so far is
+   submitted and fenced (flush_text, draw, sync_fence), copied
+   into a screen-sized snapshot texture (vk.copy_image) and run
+   through its own ReduceBlur (two reductions, the two blur
+   passes) that frame; screenshot_blur points at it, so the
+   carry and the veil keep working; a crop capture keeps its
+   still. ShotBackdrop is `animated: true` (drawn to the screen
+   every frame); `no_cache: true` painted nothing at all for it.
+   The two new Window members (live_blur, live_snap) are the
+   LAST members of Window: modules built before them keep
+   their offsets (an insert mid-class broke orbiter until it
+   was rebuilt). Checked hidden over a playing YouTube video:
+   shots 1.2 s apart show different blurred frames.
+17. WRITTEN, not built (Kalen: "stop compiling while I use it";
+   the mic took 4-5 s to engage and disengage, freezing the
+   ui). Profiled hidden (LD_PRELOAD wall sampler, the pulse and
+   pipewire sockets linked into the test runtime dir so the
+   capture opens): while engaged 95% of the main thread sat in
+   dictation_poll -> spectra.capture -> snd_pcm_readi, a
+   BLOCKING read of a 2048-frame block (43 ms at 48 kHz), and
+   orbiter's mic_frame reads up to 64 blocks a frame: one frame
+   took seconds, and the press-off waited for it. Not the
+   device open (3 ms, from any thread) and not the GPU.
+   Fix, spectra.ag (linux capture): snd_pcm_avail_update first;
+   a block is read only when a whole one is there, else false
+   at once (the loop then ends); the stream is started from
+   PREPARED and recovered on a negative avail. Also speech.ag:
+   the capture device opens on its own thread at exchange open
+   (dict_open_thread; open_fail stops retries), and
+   dictation_start no longer opens anything. Still to check
+   after a build (spectra, speech, orbiter): the on and off
+   press answer at once, the take's words arrive.
+   Findings on the way: ALSA `default` fails with "Host is
+   down" when XDG_RUNTIME_DIR does not hold the pulse and
+   pipewire sockets (hidden runs with a scratch runtime dir:
+   link pulse/native, pipewire-0, pipewire-0-manager into it);
+   a hidden orbiter run overwrites install/tmp/silver-orbiter
+   .log, the same file Kalen's run writes.
+18. WRITTEN, not built (Kalen: n64 crashes from orbiter, not
+   from the command line). It is orbiter that dies: its log has
+   "type mismatch" then SIGTRAP right after "release: n64 slot
+   1", while parsing n64's `props` answer (the freed strings
+   name its props). n64's mouse_look is a bool whose Prop.value
+   is the text 'false'; string_agi wrote it bare (`value:
+   false`), parse_agi read the word as a bool for a string
+   field and its verify trapped. aura and the others never
+   showed it: no bool Launch prop. Fix in Au.c: the writer
+   quotes a string that is a keyword (true, false, null), and
+   the reader gives a string field the word as text instead of
+   trapping. Needs `make` (Au), then orbiter's next launch.
+   Check: `silver orbiter n64 <rom>` with mouse_look off, and
+   the panel shows the bool.
+19. WRITTEN, not built (Kalen: mouse_sens showed BLANK in the
+   panel, "it's an f32", "blank means it's not even getting the
+   value"). Two causes. (a) the export .agi carried no defaults
+   (declared shape only), so a field mounted before the first
+   run had nothing; and once the running instance's answer had
+   the value, the mounted field kept its empty text (a mounted
+   LaunchField is re-rendered without `edit`). (b) an empty
+   field composed as an empty flag: `--mouse_sens ` took the
+   rom as its value.
+   Fixes: the declared default now rides the member descriptor:
+   Au_t gains `dflt` (last in Au_f_members: offsets kept),
+   `def_prop_default(prop, symbol)` (Au.c, src/Au schema); the
+   parser records a one-token literal initializer (a number, a
+   quoted string, true/false: token literal set) in
+   aether.prop_defaults keyed by the member (silver.c member
+   parse); the codegen emits def_prop_default after def_prop
+   (aether.c, old modules simply never call it); props_of
+   (trinity) puts it in Prop.value (quotes stripped) when no
+   instance answers, so the export .agi and the panel have the
+   defaults before any run. orbiter: an empty mounted field is
+   re-seeded once a value is known; compose skips an empty
+   field. Needs: make (Au, aether, silver), then trinity, then
+   every app's export (a build of each), then orbiter.
+   Check: install/export/silver-n64.agi lists mouse_sens with
+   value '0.015'; the panel shows it before the first run.
 OPEN:
 - the FrameBlend runs on the web process main thread with a
   fence wait per tick: 12-17% of the thread at 165 Hz.
