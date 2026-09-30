@@ -819,10 +819,11 @@ Layer CommitLayer
                     cv.fill_color[ cb.nav_hover_fill ]
                     cv.stroke_width[ 1.0 ]
                     cv.stroke_offset[ -0.5 ]
-                    cv.stroke_color[ cb.nav_hover_edge ]
                     # mouse over: the wash and its edge; the pointer's near
                     # light brings the edge and an inner glow up
                     he9 : cb.nav_hover_edge
+                    # the edge at half alpha, every theme: the glow reads
+                    cv.stroke_color[ rgba [ r: he9.r, g: he9.g, b: he9.b, a: he9.a * 0.5 ] ]
                     cv.box_shadow[ rgba [ r: he9.r, g: he9.g, b: he9.b, a: he9.a * 0.25 ], 0.0, 0.0, 6.0, 0.0, true ]
                     cb.ux.near_light_on[ cv, cb, 0.0, 0.0 ]
                     cv.near_style[ 1.3, 3.9, rgba [ r: he9.r, g: he9.g, b: he9.b, a: 1.0 ], cb.ux.near_y_fade ]
@@ -1636,7 +1637,8 @@ element CommitView
             if [ exp9.count > 0 && rx >= ext_x0 ]
                 cp9  : i32 [ i32[ (rx - ext_x0) / 34.0 ] ]
                 if [ cp9 >= 0 && cp9 < exp9.count ]
-                    o.open_in_pane[ path '{h.file}/{h.text}.{exp9[ cp9 ]}', pane ]
+                    xp9 : path '{h.file}/{h.text}.{exp9[ cp9 ]}'
+                    if [ !(o.shift_down && o.open_new_tab[ xp9 ]) ] o.open_in_pane[ xp9, pane ]
                     o.exit_finder[]
                     return
             if [ h.inst > 0 ]
@@ -1657,6 +1659,10 @@ element CommitView
                 o.repo_checkout[ h.repo, pane ]
                 pristine = false
                 return
+            if [ h.is_dir && h.file && o.shift_down && exp9.count > 0 ]
+                if [ o.open_new_tab[ path '{h.file}/{h.text}.{exp9[0]}' ] ]
+                    o.exit_finder[]
+                    return
             if [ h.is_dir && h.file ]
                 o.nav_root = h.file
                 scroll.y    = 0.0

@@ -62,6 +62,12 @@ import knik0:faac/3aa4c6d3b0d99223dfb8cab922f2db3ff9ce66b8 <faac.h>
     -Dfrontend=false
     -lfaac
 
+# the mic's fan and breath noise out of a recording (BSD-3-Clause)
+import rnnoise/0.2 from https://github.com/xiph/rnnoise/releases/download/v0.2/rnnoise-0.2.tar.gz
+    --disable-examples
+    --disable-doc
+    -lrnnoise
+
 import KhronosGroup:SPIRV-Headers/vulkan-sdk-1.4.341.0
 
 import KhronosGroup:SPIRV-Tools/vulkan-sdk-1.4.341.0
@@ -509,6 +515,8 @@ abstract live_app media_app
                 Au.live_record_set[ fd, tx.width, tx.height ]
             recorder = Recorder [ vk: vk, w: w, fd: fd, fps: record_fps, qp: rqp, format: fmt,
                 target: record_target[ rpath ], width: Au.live_record_width[], height: Au.live_record_height[] ]
+            # the take is one size: the window holds it while recording
+            wn.set_resizable[ false ]
             if [ fmt != 'h264' ]
                 aac = Aac [ ]
                 recorder.asc = aac.asc
@@ -3415,6 +3423,7 @@ Display Window
             mpos   : f64 [ 0.0 ]
             mono   : local i16 [ 1024 ]
             stereo : local i16 [ 4096 ]
+            dn     : Denoise [ ]
             while [ mic_on ]
                 got : i32 [ platform_mic_read[ @mono[ 0 ], 480 ] ]
                 if [ got < 0 ] break
@@ -3423,10 +3432,8 @@ Display Window
                     continue
                 n : i32 [ resample[ @mono[ 0 ], got, 1, rate[ 0 ], @stereo[ 0 ], 2048, @mpos ] ]
                 # the app's sound owns the track once it starts; until then the mic feeds it alone
-                if [ record_rate == 0 ]
-                    if [ rec ] rec.put[ @stereo[ 0 ], n ]
-                el
-                    mic.put[ @stereo[ 0 ], n ]
+                to9 : AudioRing [ (record_rate == 0) ? rec : mic ]
+                if [ to9 ] dn.run[ @stereo[ 0 ], n, to9 ]
             platform_mic_close[]
 
     public func mouse_unlock []

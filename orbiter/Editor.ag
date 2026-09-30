@@ -2845,6 +2845,8 @@ Control Editor
     mutable rview         : ResourceView
     # the user's chosen view for this file; '' = default (first cell)
     mutable view_name     : string
+    mutable view_hist     : vec string
+    mutable view_ix       : i32 [ -1 ]
     # '<view>|<file>' currently mounted; the only staleness check
     mutable mounted       : string
     mutable nav_tools     : vec string
@@ -6056,10 +6058,43 @@ Control Editor
         pristine = false
         return true
 
+    # the view a history point keeps; the plain editor is ''
+    func view_key [] -> string
+        return (view_name) ? view_name : ''
+
+    # the dialog level: the views walked from the editor, the
+    # editor ('') first; the code level is nav
+    func view_note [ nm: string ]
+        if [ !nm || nm.count == 0 ]
+            view_hist = null
+            return
+        if [ !view_hist || view_key[].count == 0 ]
+            view_hist = vec string [] [ '' ]
+            view_ix   = 0
+        while [ view_hist.count > view_ix + 1 ]
+            view_hist.pop[]
+        view_hist.push[ nm ]
+        view_ix = view_hist.count - 1
+
+    func view_can [ dir: i32 ] -> bool
+        if [ !view_hist || view_key[].count == 0 ] return false
+        n9 : i32 [ view_ix + dir ]
+        return n9 >= 0 && n9 < view_hist.count
+
     func nav_walk [ dir: i32 ]
         # a hosted app walks its own history
         if [ app_view && run_view && run_view.slot >= 0 ]
             host_post2[ run_view.slot, 1, i32[ HM.nav ], dir, 0, 0 ]
+            return
+        # in a view the arrows walk the views; the editor ends it
+        if [ view_key[].count > 0 ]
+            if [ view_can[ dir ] ]
+                view_ix   = view_ix + dir
+                view_name = view_hist[ view_ix ]
+                if [ view_name.count > 0 ] git_on = view_name == 'git'
+                if [ view_name.count == 0 ] view_hist = null
+                load_file[]
+                pristine = false
             return
         if [ !nav || !src ] return
         nav.save_top[ pane_index, '{src.absolute[]}', sel_line, sel_col, scroll.y ]

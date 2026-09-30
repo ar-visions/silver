@@ -308,6 +308,14 @@ void platform_window_set_title(platform_window* w, const char* t) {
     WCHAR* wt = to_wide(t); SetWindowTextW(w->hwnd, wt); free(wt);
 }
 
+void platform_window_set_resizable(platform_window* w, bool on) {
+    LONG_PTR st = GetWindowLongPtrW(w->hwnd, GWL_STYLE);
+    LONG_PTR fl = WS_THICKFRAME | WS_MAXIMIZEBOX;
+    SetWindowLongPtrW(w->hwnd, GWL_STYLE, on ? (st | fl) : (st & ~fl));
+    SetWindowPos(w->hwnd, NULL, 0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+}
+
 void platform_window_set_size(platform_window* w, int width, int height) {
     RECT r = { 0, 0, width, height };
     AdjustWindowRect(&r, GetWindowLongW(w->hwnd, GWL_STYLE), FALSE);
@@ -892,6 +900,7 @@ void platform_window_show(platform_window* w) {}
 void platform_window_hide(platform_window* w) {}
 int  platform_window_refresh_hz(platform_window* w) { return 60; }
 void platform_window_set_title(platform_window* w, const char* t) {}
+void platform_window_set_resizable(platform_window* w, bool on) {}
 void platform_window_set_size(platform_window* w, int width, int height) {}
 void platform_window_get_size(platform_window* w, int* width, int* height) {
     if (width)  *width  = g_anw ? (int)(ANativeWindow_getWidth(g_anw)  / w->scale) : 0;
@@ -1809,6 +1818,20 @@ void platform_window_set_title(platform_window* w, const char* t) {
     if (!t) t = "";
     xcb_change_property(g_conn, XCB_PROP_MODE_REPLACE, w->win, XCB_ATOM_WM_NAME, A_UTF8_STRING, 8, strlen(t), t);
     xcb_change_property(g_conn, XCB_PROP_MODE_REPLACE, w->win, atom("_NET_WM_NAME"), A_UTF8_STRING, 8, strlen(t), t);
+    xcb_flush(g_conn);
+}
+
+// WM_NORMAL_HINTS: min = max = the current size, or no limits
+void platform_window_set_resizable(platform_window* w, bool on) {
+    if (g_kms) return;
+    uint32_t h[18] = { 0 };
+    if (!on) {
+        h[0] = (1 << 4) | (1 << 5); // PMinSize | PMaxSize
+        h[5] = h[7] = (uint32_t)w->width;
+        h[6] = h[8] = (uint32_t)w->height;
+    }
+    xcb_change_property(g_conn, XCB_PROP_MODE_REPLACE, w->win, XCB_ATOM_WM_NORMAL_HINTS,
+        XCB_ATOM_WM_SIZE_HINTS, 32, 18, h);
     xcb_flush(g_conn);
 }
 

@@ -1041,6 +1041,7 @@ element Moon
             '#44225588':  '#8a8a8a66',
             '#ff3a6a22':  '#8a8a8a22',   # commit tab fill
             '#ff3a6a44':  '#8a8a8a44',   # commit tab hover fill
+            '#3a1c8a40':  '#8a8a8a40',   # selected title tint
             '#ff5a8a80':  '#9a9a9a80',   # commit tab border
             '#ff7aa480':  '#b4b4b480'    # commit tab hover border
         ]
@@ -1452,6 +1453,7 @@ element MilkyWay
             '#44225588':  '#8a8aaa11',   # editor line highlight
             '#ff3a6a22':  '#8a8ad422',   # commit tab fill
             '#ff3a6a44':  '#8a8ad444',   # commit tab hover fill
+            '#3a1c8a40':  '#56608a40',   # selected title tint
             '#ff5a8a80':  '#8a9ade80',   # commit tab border
             '#ff7aa480':  '#a8b6ff80'    # commit tab hover border
         ]
@@ -1828,6 +1830,7 @@ element Titan
             '#44225588':  '#18a4',    # editor line highlight
             '#ff3a6a22':  '#ffb04a22',   # commit tab fill
             '#ff3a6a44':  '#ffb04a44',   # commit tab hover fill
+            '#3a1c8a40':  '#8a643140',   # selected title tint
             '#ff5a8a80':  '#ffb85a80',   # commit tab border
             '#ff7aa480':  '#ffd08a80'    # commit tab hover border
         ]
@@ -2515,6 +2518,7 @@ element Enceladus
             '#44225588':  '#16a4',    # editor line highlight
             '#ff3a6a22':  '#7ac8e822',   # commit tab fill
             '#ff3a6a44':  '#7ac8e844',   # commit tab hover fill
+            '#3a1c8a40':  '#49778a40',   # selected title tint
             '#ff5a8a80':  '#7ac8e880',   # commit tab border
             '#ff7aa480':  '#a8e0f480'    # commit tab hover border
         ]
@@ -4064,6 +4068,7 @@ element Europa
             '#44225588':  '#16a4',       # editor line highlight
             '#ff3a6a22':  '#7ac8e822',   # commit tab fill
             '#ff3a6a44':  '#7ac8e844',   # commit tab hover fill
+            '#3a1c8a40':  '#49778a40',   # selected title tint
             '#ff5a8a80':  '#7ac8e880',   # commit tab border
             '#ff7aa480':  '#a8e0f480'    # commit tab hover border
         ]
@@ -7923,6 +7928,7 @@ element Mars
             '#44225588':  '#5a3a2e33',   # editor line highlight
             '#ff3a6a22':  '#ff8a4a22',   # commit tab fill
             '#ff3a6a44':  '#ff8a4a44',   # commit tab hover fill
+            '#3a1c8a40':  '#8a4a2940',   # selected title tint
             '#ff5a8a80':  '#e0784280',   # commit tab border
             '#ff7aa480':  '#ffa06880'    # commit tab hover border
         ]
@@ -8502,6 +8508,7 @@ element Uranus
             '#44225588':  '#8ad0cc11',   # editor line highlight
             '#ff3a6a22':  '#7fd6cc22',   # commit tab fill
             '#ff3a6a44':  '#7fd6cc44',   # commit tab hover fill
+            '#3a1c8a40':  '#528a8440',   # selected title tint
             '#ff5a8a80':  '#7fd6cc80',   # commit tab border
             '#ff7aa480':  '#a8ece480'    # commit tab hover border
         ]
@@ -9097,6 +9104,7 @@ element Earth
             '#44225588':  '#3a5a3a33',   # editor line highlight
             '#ff3a6a22':  '#5ab24a22',   # commit tab fill
             '#ff3a6a44':  '#5ab24a44',   # commit tab hover fill
+            '#3a1c8a40':  '#4b8a4040',   # selected title tint
             '#ff5a8a80':  '#6ac25a80',   # commit tab border
             '#ff7aa480':  '#8ade7a80'    # commit tab hover border
         ]
@@ -9935,6 +9943,7 @@ element Synthwave
             '#44225588':  '#301a4888',   # editor line highlight
             '#ff3a6a22':  '#e04ae822',   # commit tab fill
             '#ff3a6a44':  '#e04ae844',   # commit tab hover fill
+            '#3a1c8a40':  '#803c8a40',   # selected title tint
             '#ff5a8a80':  '#e06af280',   # commit tab border
             '#ff7aa480':  '#f09aff80'    # commit tab hover border
         ]
@@ -11764,6 +11773,7 @@ element Clouds
             '#44225588':  '#1c3a5288',   # editor line highlight
             '#ff3a6a22':  '#4aa0e822',   # commit tab fill
             '#ff3a6a44':  '#4aa0e844',   # commit tab hover fill
+            '#3a1c8a40':  '#3c678a40',   # selected title tint
             '#ff5a8a80':  '#6ab4f280',   # commit tab border
             '#ff7aa480':  '#9ad0ff80'    # commit tab hover border
         ]
@@ -12911,6 +12921,7 @@ element Pluto
             '#44225588':  '#3a4c6433',
             '#ff3a6a22':  '#7ab0ff22',
             '#ff3a6a44':  '#7ab0ff44',
+            '#3a1c8a40':  '#4b648a40',   # selected title tint
             '#ff5a8a80':  '#8ab8ff80',
             '#ff7aa480':  '#a8ccff80'
         ]

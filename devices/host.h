@@ -140,6 +140,7 @@ void  platform_window_hide              (platform_window* w);
 int   platform_window_refresh_hz        (platform_window* w);
 bool  platform_window_should_close      (platform_window* w);
 void  platform_window_set_title         (platform_window* w, const char* title);
+void  platform_window_set_resizable     (platform_window* w, bool on);
 void  platform_window_set_size          (platform_window* w, int width, int height);
 void  platform_window_get_size          (platform_window* w, int* width, int* height);
 void  platform_window_get_framebuffer   (platform_window* w, int* width, int* height);
