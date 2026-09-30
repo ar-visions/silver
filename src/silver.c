@@ -2080,8 +2080,6 @@ static path build_silver_host(silver a) {
 // external sub-module / no host binary). windows cannot replace a process, so there
 // it runs the app as a child and exits with its code — and the child is held in a
 // kill-on-close job, so quitting silver quits the app with it.
-// build-session lock (install/build/.silver.lock); held from init to run
-static int build_lock_fd = -1;
 
 #ifdef _WIN32
 // the app cannot print to a console: it is linked /SUBSYSTEM:WINDOWS and its
@@ -2273,12 +2271,6 @@ static void silver_live_run(silver a) {
 #endif
         // --test: the app runs its expect tests, reports, and exits
         if (a->test) setenv("SILVER_EXPECT", "1", 1);
-        // release the build lock: the app must not hold it while running
-        if (build_lock_fd >= 0) {
-            flock(build_lock_fd, LOCK_UN);
-            (close)(build_lock_fd);
-            build_lock_fd = -1;
-        }
         execvp(argv[0], argv);
         fprintf(stderr, "execvp failed for %s: %s\n", argv[0], strerror(errno));
         _exit(1);
@@ -3155,19 +3147,6 @@ static void silver_run_tests(silver a) {
 AU_EXPORT void silver_init(silver a) {
     aether_error_prelude = progress_clear_line;   // an error never prints on the tail of the progress line
     hold(a);
-
-    // one build at a time: the root instance holds a lock for the session
-    if (!a->is_external) {
-        path lk = f(path, "%s/install/build/.silver.lock", SILVER);
-        build_lock_fd = open(cstring(lk), O_CREAT | O_RDWR | O_CLOEXEC, 0644);
-        if (build_lock_fd >= 0) {
-            if (flock(build_lock_fd, LOCK_EX | LOCK_NB) != 0) {
-                printf("silver: currently building in separate process, waiting for finish...\n");
-                fflush(stdout);
-                flock(build_lock_fd, LOCK_EX);
-            }
-        }
-    }
 
     // silver [flags] module [app-args…] — the module name is the separator;
     // Au stopped parsing there and the rest rides to the launched app as-is
@@ -9065,7 +9044,8 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
     path lock_path = (owner && len(owner)) ?
           f(path, "%o/%o-%o.checkout-lock", install, owner, name)
         : f(path, "%o/%o.checkout-lock",    install, name);
-    int  lock_fd   = open(lock_path->chars, O_CREAT | O_RDWR, 0644);
+    // cloexec: an orphaned child must not keep the import locked
+    int  lock_fd   = open(lock_path->chars, O_CREAT | O_RDWR | O_CLOEXEC, 0644);
     if (lock_fd >= 0) flock(lock_fd, LOCK_EX);
 
     // checkout or symlink to src
