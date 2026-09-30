@@ -80,7 +80,7 @@ typedef struct {
     volatile int32_t state;     // 0 free, 1 spawn requested, 2 live, 3 exited
     volatile int32_t verdict;   // 0 unset, >0 exit code+1, <0 -signal, -1000 build failed
     volatile int32_t flags;     // HOST_APP_* launch flags; never in the name
-    char name[192];             // "module [default-arg]" to spawn
+    char name[1024];            // "module [flags] [default-arg]" to spawn
 } HostApp;
 #define HOST_APP_DEBUG       1  // the app stops before init so orbiter can attach lldb
 #define HOST_APP_CLEAN       2  // a full --clean rebuild before the spawn
@@ -370,7 +370,7 @@ static pid_t isolate_spawn(void) {
 // stale build recompiles on its own at startup.
 static void spawn_slot_app(int k, const char* bindir) {
     HostApp* ap = &g_shm->app[k];
-    char name[192];
+    char name[1024];
     strncpy(name, (const char*)ap->name, sizeof(name) - 1);
     name[sizeof(name) - 1] = 0;
     if (!name[0]) { ap->state = 3; return; }
@@ -378,7 +378,7 @@ static void spawn_slot_app(int k, const char* bindir) {
     char* arg = strchr(name, ' ');
     if (arg) { *arg = 0; arg++; }
     // split the tail on spaces — an app may take several args, not just a doc
-    #define MAX_APP_ARGS 32
+    #define MAX_APP_ARGS 64
     char* app_args[MAX_APP_ARGS];
     int   n_app_args = 0;
     for (char* p = arg; p && *p && n_app_args < MAX_APP_ARGS; ) {

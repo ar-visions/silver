@@ -6,10 +6,12 @@ import <string.h>
 class DemuxTrack
     public  id        : i64
     public  kind      : i32                 # 1 video, 2 audio
-    public  codec     : i64                 # sample entry four bytes, big-endian
+    # sample entry four bytes, big-endian
+    public  codec     : i64
     public  timescale : i64
     public  duration  : i64
-    public  config    : vec u8              # avcC, or the aac AudioSpecificConfig
+    # avcC, or the aac AudioSpecificConfig
+    public  config    : vec u8
     public  width     : i32
     public  height    : i32
     public  channels  : i32
@@ -17,19 +19,25 @@ class DemuxTrack
     public  offsets   : vec i64
     public  sizes     : vec i64
     public  dts       : vec i64
-    public  cts       : vec i64             # composition offset from dts
+    # composition offset from dts
+    public  cts       : vec i64
     public  sync      : vec u8
-    public  shift     : i64                 # edit list: media time shown first
-    public  def_duration : i64              # trex defaults for fragments
+    # edit list: media time shown first
+    public  shift     : i64
+    # trex defaults for fragments
+    public  def_duration : i64
     public  def_size  : i64
     public  def_flags : i64
-    public  next_dts  : i64                 # a fragment without tfdt starts here
+    # a fragment without tfdt starts here
+    public  next_dts  : i64
     intern  chunk_offsets : vec i64
-    intern  stsc      : vec i64             # first chunk, samples per chunk
+    # first chunk, samples per chunk
+    intern  stsc      : vec i64
     intern  stts      : vec i64             # count, delta
     intern  ctts      : vec i64             # count, offset
     intern  stss      : vec i64
-    intern  fixed     : i64                 # stsz sample size when all match
+    # stsz sample size when all match
+    intern  fixed     : i64
 
     func init []
         config        = vec u8 []
@@ -106,7 +114,8 @@ class Demux
     public  inits  : i32                    # init segments read
     intern  data   : @u8
     intern  size   : i64
-    intern  pending : vec u8                # bytes of boxes not yet whole
+    # bytes of boxes not yet whole
+    intern  pending : vec u8
 
     func init []
         tracks  = vec DemuxTrack []
@@ -147,7 +156,9 @@ class Demux
         while [ at + 8 <= size ]
             e : i64 [ whole_end[ at ] ]
             if [ e < 0 ]
-                if [ be32[ at ] > 0 && be32[ at ] < 8 && be32[ at ] != 1 ] ok = false
+                if [ be32[ at ] > 0 && be32[ at ] < 8
+                     && be32[ at ] != 1 ]
+                    ok = false
                 break
             if [ box_is[ at + 4, 'moov' ] ]
                 tracks = vec DemuxTrack []
@@ -172,7 +183,8 @@ class Demux
         at : i64 [ from ]
         while [ at + 8 <= lim ]
             e : i64 [ box_end[ at, lim ] ]
-            if [ box_is[ at + 4, 'traf' ] ] traf[ start, box_body[ at ], e, data_end ]
+            if [ box_is[ at + 4, 'traf' ] ]
+                traf[ start, box_body[ at ], e, data_end ]
             at = e
 
     # tfhd: the track, tfdt: its clock, trun: the samples
@@ -211,7 +223,8 @@ class Demux
             at = e
 
     # one run of samples; returns where the next run starts
-    func trun [ t: DemuxTrack, b: i64, base: i64, prev: i64, dur: i64, each: i64, flg: i64, data_end: i64 ] -> i64
+    func trun [ t: DemuxTrack, b: i64, base: i64, prev: i64, dur: i64,
+                each: i64, flg: i64, data_end: i64 ] -> i64
         v1 : bool [ u8at[ b ] == 1 ]
         f  : i64 [ be32[ b ] & 16777215 ]
         n  : i64 [ be32[ b + 4 ] ]
@@ -245,7 +258,8 @@ class Demux
                 if [ v1 && o9 >= 2147483648 ] o9 -= 4294967296
                 c += 4
             if [ pos + s9 > data_end ] return pos
-            s : DemuxSample [ track: t.id, dts: t.next_dts, pts: t.next_dts + o9 - t.shift,
+            s : DemuxSample [ track: t.id, dts: t.next_dts,
+                              pts: t.next_dts + o9 - t.shift,
                 duration: d9, timescale: t.timescale, sync: (f9 & 65536) == 0 ]
             s.data = vec u8 [ s9 ]
             if [ s9 > 0 ] memcpy[ @s.data[ 0 ], @data[ pos ], s9 ]
@@ -325,7 +339,9 @@ class Demux
             e  : i64 [ box_end[ at, lim ] ]
             b  : i64 [ box_body[ at ] ]
             tg : i64 [ at + 4 ]
-            if [ box_is[ tg, 'mdia' ] || box_is[ tg, 'minf' ] || box_is[ tg, 'stbl' ] || box_is[ tg, 'edts' ] ] trak[ t, b, e ]
+            if [ box_is[ tg, 'mdia' ] || box_is[ tg, 'minf' ]
+                 || box_is[ tg, 'stbl' ] || box_is[ tg, 'edts' ] ]
+                trak[ t, b, e ]
             el [ box_is[ tg, 'elst' ] ] elst[ t, b ]
             el [ box_is[ tg, 'tkhd' ] ]
                 t.id = (u8at[ b ] == 1) ? be32[ b + 20 ] : be32[ b + 12 ]
@@ -411,7 +427,7 @@ class Demux
         while [ at + 8 <= lim ]
             e  : i64 [ box_end[ at, lim ] ]
             b  : i64 [ box_body[ at ] ]
-            if [ box_is[ at + 4, 'avcC' ] ] copy_config[ t, b, e - b ]
+            if [ box_is[ at + 4, 'avcC' ] || box_is[ at + 4, 'hvcC' ] ] copy_config[ t, b, e - b ]
             el [ box_is[ at + 4, 'esds' ] ] esds[ t, b + 4, e ]
             at = e
 

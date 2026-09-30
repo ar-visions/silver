@@ -8,25 +8,35 @@ class Camera
     public  width         : i32    340
     public  height        : i32    340
     public  buffer_count  : i32    3
-    public  cpu_upload    : bool   true   # CPU memcpy → staging → image (reliable).
+    # CPU memcpy → staging → image (reliable).
+    public  cpu_upload    : bool   true
 
     intern  backend       : handle
     intern  fd            : i32    -1
-    intern  cam_bufs      : vec VkBuffer     # ring of dmabuf-imported buffers (cpu_upload=false)
-    intern  cam_mem       : vec VkDeviceMemory  # imported memory per buffer (cpu_upload=false)
-    intern  staging_buf   : VkBuffer            # single persistent staging buffer (cpu_upload=true)
+    # ring of dmabuf-imported buffers (cpu_upload=false)
+    intern  cam_bufs      : vec VkBuffer
+    # imported memory per buffer (cpu_upload=false)
+    intern  cam_mem       : vec VkDeviceMemory
+    # single persistent staging buffer (cpu_upload=true)
+    intern  staging_buf   : VkBuffer
     intern  staging_mem   : VkDeviceMemory
-    intern  staging_ptr   : @u8              # mapped pointer into staging
-    intern  mm_ptrs       : vec handle       # mmap'd CPU pointer per buffer (brightness sampling)
+    # mapped pointer into staging
+    intern  staging_ptr   : @u8
+    # mmap'd CPU pointer per buffer (brightness sampling)
+    intern  mm_ptrs       : vec handle
     intern  mm_sizes      : vec u32
-    intern  cam_image     : VkImage             # GPU-aligned image target (NVIDIA demands row pad)
+    # GPU-aligned image target (NVIDIA demands row pad)
+    intern  cam_image     : VkImage
     intern  cam_image_mem : VkDeviceMemory
     intern  current_idx   : i32    0
     intern  prev_idx      : i32   -1
     intern  prev_bright   : u64    0
-    intern  row_pitch     : u32    0         # bytesperline from v4l2_pix_format
-    intern  dump_count    : i32    0         # frames seen, for warmup delay before test dump
-    intern  best_sum      : u64    0         # peak brightness seen so far
+    # bytesperline from v4l2_pix_format
+    intern  row_pitch     : u32    0
+    # frames seen, for warmup delay before test dump
+    intern  dump_count    : i32    0
+    # peak brightness seen so far
+    intern  best_sum      : u64    0
     intern  best_bytes    : @u8           # copy of brightest frame seen
 
     public  image         : Texture
@@ -37,7 +47,8 @@ class Camera
             ow : i32 0
             oh : i32 0
             op : u32 0
-            backend = trinity_camera_open[ device.chars, width, height, @ow, @oh, @op ]
+            backend = trinity_camera_open[ device.chars, width, height,
+                    @ow, @oh, @op ]
             if [ backend ]
                 width     = ow
                 height    = oh
@@ -66,7 +77,8 @@ class Camera
             sharingMode:   VK_SHARING_MODE_EXCLUSIVE,
             initialLayout: VK_IMAGE_LAYOUT_UNDEFINED
         ]
-        err : i32 [ vkCreateImage[ vk.device, @img_info, null, @cam_image ] ]
+        err : i32 [ vkCreateImage[ vk.device, @img_info, null,
+                                   @cam_image ] ]
         expect err == 0, 'camera: vkCreateImage (cam_image) failed'
         expect cam_image, 'camera: cam_image is null after vkCreateImage'
 
@@ -82,9 +94,11 @@ class Camera
             if [ img_req.memoryTypeBits & (u32[1] << k) ]
                 img_alloc.memoryTypeIndex = k
                 break
-        err = vkAllocateMemory[ vk.device, @img_alloc, null, @cam_image_mem ]
+        err = vkAllocateMemory[ vk.device, @img_alloc, null,
+                                @cam_image_mem ]
         expect err == 0, 'camera: vkAllocateMemory (cam_image) failed'
-        err = vkBindImageMemory[ vk.device, cam_image, cam_image_mem, 0 ]
+        err = vkBindImageMemory[ vk.device, cam_image, cam_image_mem,
+                                 0 ]
         expect err == 0, 'camera: vkBindImageMemory (cam_image) failed'
 
         if [ cpu_upload ]
@@ -99,7 +113,8 @@ class Camera
             expect err == 0, 'camera: vkCreateBuffer (staging) failed'
 
             sreq : VkMemoryRequirements [ ]
-            vkGetBufferMemoryRequirements[ vk.device, staging_buf, @sreq ]
+            vkGetBufferMemoryRequirements[ vk.device, staging_buf,
+                    @sreq ]
             needed : u32 [ VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT ]
             s_type_idx : u32 [ vk.find_memory_type[ sreq.memoryTypeBits, needed ] ]
             smai : VkMemoryAllocateInfo [
@@ -107,11 +122,14 @@ class Camera
                 allocationSize:  sreq.size,
                 memoryTypeIndex: s_type_idx
             ]
-            err = vkAllocateMemory[ vk.device, @smai, null, @staging_mem ]
+            err = vkAllocateMemory[ vk.device, @smai, null,
+                                    @staging_mem ]
             expect err == 0, 'camera: vkAllocateMemory (staging) failed'
-            err = vkBindBufferMemory[ vk.device, staging_buf, staging_mem, 0 ]
+            err = vkBindBufferMemory[ vk.device, staging_buf,
+                                      staging_mem, 0 ]
             expect err == 0, 'camera: vkBindBufferMemory (staging) failed'
-            err = vkMapMemory[ vk.device, staging_mem, 0, sreq.size, 0, @staging_ptr ]
+            err = vkMapMemory[ vk.device, staging_mem, 0, sreq.size, 0,
+                               @staging_ptr ]
             expect err == 0, 'camera: vkMapMemory (staging) failed'
 
         image = Texture [ vk: vk, w: w, width: width, height: height,
@@ -176,7 +194,8 @@ class Camera
             VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
             0, 0, null, 0, null, 1, @cam_barrier ]
 
-        image.transition_in[ cmd.cmd, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ]
+        image.transition_in[ cmd.cmd,
+                             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ]
 
         sx0 : i32 [ i32 [ src_rect.x ] ]
         sy0 : i32 [ i32 [ src_rect.y ] ]
@@ -199,7 +218,8 @@ class Camera
             image.vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
             1, @blit, VK_FILTER_LINEAR ]
 
-        image.transition_in[ cmd.cmd, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
+        image.transition_in[ cmd.cmd,
+                             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
         cmd.submit[]
 
     intern func release_gpu []
@@ -298,7 +318,8 @@ class Camera
         init_gpu[]
 
     ifdef [ linux ]
-        intern func import_dmabuf [ idx: i32, dma_fd: i32, byte_size: u32 ]
+        intern func import_dmabuf [ idx: i32, dma_fd: i32,
+                                    byte_size: u32 ]
             ext : VkExternalMemoryBufferCreateInfo [ ]
             ext.sType       = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO
             ext.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT
@@ -377,7 +398,8 @@ class Camera
             if [ cpu_upload ]
                 if [ !staging_ptr ] return
             if [ !src_rect ]
-                src_rect = rect [ x: 0.0, y: 0.0, w: f32[ width ], h: f32[ height ] ]
+                src_rect = rect [ x: 0.0, y: 0.0, w: f32[ width ],
+                                  h: f32[ height ] ]
             deq : v4l2_buffer [ ]
             deq.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE
             deq.memory = V4L2_MEMORY_MMAP
@@ -387,7 +409,8 @@ class Camera
             current_idx = deq.index
 
             cur_bright : u64  [ brightness_of[ current_idx ] ]
-            use_prev   : bool [ prev_idx >= 0 && prev_bright > cur_bright ]
+            use_prev   : bool [ prev_idx >= 0
+                                && prev_bright > cur_bright ]
             blit_idx   : i32  [ (use_prev) ? prev_idx : current_idx ]
 
             if [ cpu_upload ]
@@ -437,7 +460,8 @@ ifdef [ apple ]
     func trinity_camera_count  []                                              -> i32
     func trinity_camera_name   [ index: i32 ]                                  -> cstr
     func trinity_camera_open   [ device: cstr, req_w: i32, req_h: i32, out_w: @i32, out_h: @i32, out_pitch: @u32 ] -> handle
-    func trinity_camera_copy   [ backend: handle, dst: @u8, dst_bytes: u32 ] -> i32
+    func trinity_camera_copy   [ backend: handle, dst: @u8,
+                                 dst_bytes: u32 ] -> i32
     func trinity_camera_close  [ backend: handle ]
 
     func camera_devices [] -> vec string
@@ -458,7 +482,8 @@ element CameraView
 
     func init []
         if [ !camera && device ]
-            camera = Camera [ vk: vk, w: ux, device: device, width: cam_size, height: cam_size ]
+            camera = Camera [ vk: vk, w: ux, device: device,
+                              width: cam_size, height: cam_size ]
 
     # write the latest CPU frame (staging) as a grayscale png
     public func save_frame [ p: path ] -> bool
@@ -469,7 +494,8 @@ element CameraView
 
     public func frame_image [] -> Image
         if [ !camera || !camera.staging_ptr ] return null
-        img : Image [ width: camera.width, height: camera.height, format: Pixel.u8 ]
+        img : Image [ width: camera.width, height: camera.height,
+                      format: Pixel.u8 ]
         sz : i32 [ camera.width * camera.height ]
         memcpy[ img.vdata[], camera.staging_ptr, sz ]
         return img
@@ -478,14 +504,17 @@ element CameraView
         if [ !camera ] return
         if [ !once ]
             camera.src_rect = (src_rect) ? src_rect :
-                rect [ x: 0.0, y: 0.0, w: f32[ camera.width ], h: f32[ camera.height ] ]
+                rect [ x: 0.0, y: 0.0, w: f32[ camera.width ],
+                       h: f32[ camera.height ] ]
             camera.update[]
             once = true
         if [ paint_off ]
             once = false
             return
         cv : Canvas w.screen
-        cv.draw_image[ camera.image, rect [ x: 0, y: 0, w: a.bounds.w, h: a.bounds.h ] ]
+        cv.draw_image[ camera.image,
+                       rect [ x: 0, y: 0, w: a.bounds.w,
+                              h: a.bounds.h ] ]
         cv.paint[]
         cv.sync_fence[]
         once = false

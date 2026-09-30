@@ -1,0 +1,1389 @@
+# composer: a take and its composition into a new video
+export 0.1.0
+
+import vec
+import img
+import trinity
+import tls
+import spectra
+import ai
+import <unistd.h>
+    +_DEFAULT_SOURCE
+import <fcntl.h>
+import <stdlib.h>
+import <stdio.h>
+import <composer.h>
+import vocoder
+import campplus
+import dit
+import seedvc
+
+# Seed-VC (voice conversion for the Voice op): its DiT, and the
+# speaker encoder and vocoder it was trained with; whisper-small
+# comes from speech's import
+import https://huggingface.co/Plachta/Seed-VC/resolve/main/DiT_seed_v2_uvit_whisper_small_wavenet_bigvgan_pruned.pth
+    > mkdir -p {install}/models/seed-vc
+    > cp {import_file} {install}/models/seed-vc/dit.pth
+
+import https://huggingface.co/Plachta/Seed-VC/resolve/main/config_dit_mel_seed_uvit_whisper_small_wavenet.yml
+    > mkdir -p {install}/models/seed-vc
+    > cp {import_file} {install}/models/seed-vc/dit.yml
+
+import https://huggingface.co/funasr/campplus/resolve/main/campplus_cn_common.bin
+    > mkdir -p {install}/models/seed-vc
+    > cp {import_file} {install}/models/seed-vc/campplus.pth
+
+import https://huggingface.co/nvidia/bigvgan_v2_22khz_80band_256x/resolve/main/bigvgan_generator.pt
+    > mkdir -p {install}/models/seed-vc
+    > cp {import_file} {install}/models/seed-vc/bigvgan.pth
+
+import https://huggingface.co/nvidia/bigvgan_v2_22khz_80band_256x/resolve/main/config.json
+    > mkdir -p {install}/models/seed-vc
+    > cp {import_file} {install}/models/seed-vc/bigvgan.json
+
+# one serialized call; it invokes a Composer method
+class Op
+    public why : string
+    func invoke [ c: Composer ] -> bool
+        return false
+    # the pass it runs in: fetches, then crops, then inserts
+    func stage [] -> i32
+        return -1
+
+# take/<name>.<ext>: kept if present, else downloaded
+Op Fetch
+    public name : string
+    public url  : string
+    func invoke [ c: Composer ] -> bool
+        return c.fetch[ name, url ]
+    func stage [] -> i32
+        return 0
+
+# removes the take's span from..to, picture and sound
+Op Crop
+    public from : f64
+    public to   : f64
+    func invoke [ c: Composer ] -> bool
+        return c.crop[ from, to ]
+    func stage [] -> i32
+        return 1
+
+# a resource from the take's folder over the take at `at`
+Op Insert
+    public at     : f64
+    public media  : string
+    public from   : f64
+    public to     : f64
+    public dur    : f64
+    public place  : string [ 'pip' ]
+    public corner : string [ 'br' ]
+    # pip width as a share of the frame's: a third by default
+    public size   : f64 [ 0.33 ]
+    # 'x y w h', each a share of the frame
+    public region : string
+    public volume : f64
+    public fade   : f64 [ 0.25 ]
+    # 'take' keeps the take's sound under it; 'media' uses the insert's
+    public sound  : string [ 'take' ]
+    # the take holds while it plays: a cut to it, the output grows
+    public pause  : bool
+    func invoke [ c: Composer ] -> bool
+        return c.insert[ a ]
+    func stage [] -> i32
+        return 2
+
+# a big-endian u32 out of a box
+func box32 [ b: vec u8, at: i64 ] -> i64
+    return (i64[ b[ at ] ] << 24) | (i64[ b[ at + 1 ] ] << 16) | (i64[ b[ at + 2 ] ] << 8) | i64[ b[ at + 3 ] ]
+
+func box64 [ b: vec u8, at: i64 ] -> i64
+    return (box32[ b, at ] << 32) | box32[ b, at + 4 ]
+
+# a take's length in seconds from its fragments (video, 90 kHz)
+func take_length [ p: path ] -> f64
+    fd : i32 [ open[ p.chars, O_RDONLY, 0 ] ]
+    if [ fd < 0 ] return 0.0
+    hd : local u8 [ 8 ]
+    last : i64 [ 0 ]
+    for [ true ]
+        if [ read[ fd, @hd[ 0 ], 8 ] < 8 ] break
+        size : i64 [ (i64[ hd[ 0 ] ] << 24) | (i64[ hd[ 1 ] ] << 16) | (i64[ hd[ 2 ] ] << 8) | i64[ hd[ 3 ] ] ]
+        tag  : i64 [ (i64[ hd[ 4 ] ] << 24) | (i64[ hd[ 5 ] ] << 16) | (i64[ hd[ 6 ] ] << 8) | i64[ hd[ 7 ] ] ]
+        if [ size < 8 ] break
+        if [ tag != 0x6D6F6F66 ]
+            lseek[ fd, size - 8, SEEK_CUR ]
+            continue
+        b : vec u8 [ size - 8 ]
+        if [ read[ fd, @b[ 0 ], size - 8 ] < size - 8 ] break
+        at : i64 [ 0 ]
+        while [ at + 8 <= size - 8 ]
+            bs : i64 [ box32[ b, at ] ]
+            if [ bs < 8 ] break
+            if [ box32[ b, at + 4 ] == 0x74726166 ]
+                track : i64 [ 0 ]
+                dur   : i64 [ 0 ]
+                base  : i64 [ 0 ]
+                count : i64 [ 0 ]
+                c : i64 [ at + 8 ]
+                while [ c + 8 <= at + bs ]
+                    cs : i64 [ box32[ b, c ] ]
+                    ct : i64 [ box32[ b, c + 4 ] ]
+                    if [ cs < 8 ] break
+                    if [ ct == 0x74666864 ]
+                        fl : i64 [ box32[ b, c + 8 ] & 0xFFFFFF ]
+                        track = box32[ b, c + 12 ]
+                        o : i64 [ c + 16 ]
+                        if [ (fl & 1) != 0 ] o += 8
+                        if [ (fl & 2) != 0 ] o += 4
+                        if [ (fl & 8) != 0 ] dur = box32[ b, o ]
+                    if [ ct == 0x74666474 ]
+                        base = (b[ c + 8 ] == 1) ? box64[ b, c + 12 ] : box32[ b, c + 12 ]
+                    if [ ct == 0x7472756E ] count = box32[ b, c + 12 ]
+                    c += cs
+                if [ track == 1 && base + count * dur > last ] last = base + count * dur
+            at += bs
+    close[ fd ]
+    return f64[ last ] / 90000.0
+
+
+# 12 floats: limited-range yuv to rgb, three rows of (y, u, v, add)
+func yuv_rows [ bt709: bool ] -> @f32
+    ky : f32 [ 255.0 / 219.0 ]
+    kc : f32 [ 255.0 / 224.0 ]
+    rv : f32 [ (bt709) ? 1.5748 : 1.402 ]
+    gu : f32 [ (bt709) ? 0.1873 : 0.3441 ]
+    gv : f32 [ (bt709) ? 0.4681 : 0.7141 ]
+    bu : f32 [ (bt709) ? 1.8556 : 1.772 ]
+    y0 : f32 [ 16.0 / 255.0 * ky ]
+    c0 : f32 [ 128.0 / 255.0 * kc ]
+    r : new f32 [ 12 ]
+    r[0]  = ky
+    r[1]  = 0.0
+    r[2]  = rv * kc
+    r[3]  = 0.0 - y0 - rv * c0
+    r[4]  = ky
+    r[5]  = 0.0 - gu * kc
+    r[6]  = 0.0 - gv * kc
+    r[7]  = 0.0 - y0 + (gu + gv) * c0
+    r[8]  = ky
+    r[9]  = bu * kc
+    r[10] = 0.0
+    r[11] = 0.0 - y0 - bu * c0
+    return r
+
+# a video picture's three planes on the gpu
+class Planes
+    context vk   : vk_context
+    context w    : Display
+    public  y    : Texture
+    public  u    : Texture
+    public  v    : Texture
+    public  width  : i32
+    public  height : i32
+    public  bt709  : bool
+
+    func put [ f: VideoFrame ]
+        cw : i32 [ (f.full) ? f.width : f.width / 2 ]
+        ch : i32 [ (f.full) ? f.height : f.height / 2 ]
+        if [ !y || width != f.width || height != f.height || u.width != cw ]
+            y = Texture [ vk: vk, w: w, width: f.width, height: f.height, linear: true,
+                pixel_format: Pixel.u8, surface: Surface.color, tag: 'composer' ]
+            u = Texture [ vk: vk, w: w, width: cw, height: ch, linear: true,
+                pixel_format: Pixel.u8, surface: Surface.color, tag: 'composer' ]
+            v = Texture [ vk: vk, w: w, width: cw, height: ch, linear: true,
+                pixel_format: Pixel.u8, surface: Surface.color, tag: 'composer' ]
+            width  = f.width
+            height = f.height
+        y.upload[ @f.y[ 0 ], i64[ f.width ] * f.height ]
+        u.upload[ @f.u[ 0 ], i64[ cw ] * ch ]
+        v.upload[ @f.v[ 0 ], i64[ cw ] * ch ]
+
+    func draw [ cv: Canvas, r: rect ]
+        if [ !y ] return
+        cv.draw_yuv[ y, u, v, r.x, r.y, r.w, r.h, yuv_rows[ bt709 ] ]
+
+# the bytes of a file
+# a reference voice: a .wav, or the AAC sound of an mp4/m4a/mov
+func voice_clip [ p: path ] -> AudioClip
+    s9 : string '{p}'
+    low : string s9.lcase[]
+    if [ low.ends_with[ '.wav' ] ] return wav_load[ p ]
+    bytes : vec u8 file_bytes[ p ]
+    if [ !bytes || bytes.count == 0 ] return null
+    dm : Demux []
+    if [ dm.read_bytes[ @bytes[ 0 ], bytes.count ] ]
+        for [ t: DemuxTrack ] in dm.tracks
+            if [ t.kind == 2 && t.samples[] > 0 ]
+                return aac_clip[ @t.config[ 0 ], i32[ t.config.count ], @bytes[ 0 ],
+                    t.offsets, t.sizes, t.shift ]
+        return null
+    fm : Demux []
+    fm.append[ @bytes[ 0 ], bytes.count ]
+    at : DemuxTrack [ null ]
+    for [ t: DemuxTrack ] in fm.tracks
+        if [ t.kind == 2 && !at ] at = t
+    if [ !at ] return null
+    # fragments: gather the sound's packets into one buffer
+    total : i64 [ 0 ]
+    for [ ds: DemuxSample ] in fm.ready
+        if [ ds.track == at.id ] total += ds.data.count
+    if [ total == 0 ] return null
+    data : vec u8 [ total ]
+    offs : vec i64 []
+    szs  : vec i64 []
+    at9  : i64 [ 0 ]
+    for [ ds: DemuxSample ] in fm.ready
+        if [ ds.track == at.id ]
+            n9 : i64 [ ds.data.count ]
+            memcpy[ @data[ at9 ], @ds.data[ 0 ], n9 ]
+            offs.push[ at9 ]
+            szs.push[ n9 ]
+            at9 += n9
+    return aac_clip[ @at.config[ 0 ], i32[ at.config.count ], @data[ 0 ], offs, szs, at.shift ]
+
+func file_bytes [ p: path ] -> vec u8
+    fd : i32 [ open[ p.chars, O_RDONLY, 0 ] ]
+    if [ fd < 0 ] return null
+    n : i64 [ lseek[ fd, 0, SEEK_END ] ]
+    lseek[ fd, 0, SEEK_SET ]
+    b : vec u8 [ n ]
+    got : i64 [ 0 ]
+    while [ got < n ]
+        k : i64 [ read[ fd, @b[ got ], n - got ] ]
+        if [ k <= 0 ] break
+        got += k
+    close[ fd ]
+    return b
+
+# 'avc1' / 'hvc1' / 'hev1' as the sample entry's four bytes
+func is_hevc [ codec: i64 ] -> bool
+    return codec == 0x68766331 || codec == 0x68657631
+
+# an insert's media: a picture, or a video (and its sound)
+class Media
+    context vk    : vk_context
+    context w     : Display
+    public  file  : path
+    public  pic   : Texture
+    public  video : bool
+    # an animated gif: its frames, shown in turn on pic
+    intern  gif   : handle
+    intern  gif_shown : i32 [ -1 ]
+    intern  gif_total : i64
+    public  width : i32
+    public  height : i32
+    # the video's samples in decode order, its decoder and picture
+    intern  samples : vec DemuxSample
+    intern  next    : i64
+    intern  dec     : Decoder
+    intern  scale   : i64
+    public  planes  : Planes
+    # its sound at 48 kHz stereo, when it has one
+    public  sound   : AudioClip
+
+    func load [] -> bool
+        s : string '{file}'
+        low : string s.lcase[]
+        if [ low.ends_with[ '.gif' ] ]
+            gif = gif_open[ s.chars ]
+            if [ !gif ] return false
+            width  = gif_width[ gif ]
+            height = gif_height[ gif ]
+            for [ i: i32 0, i < gif_count[ gif ], i += 1 ]
+                gif_total += i64[ gif_delay[ gif, i ] ]
+            pic = Texture [ vk: vk, w: w, width: width, height: height, linear: true,
+                pixel_format: Pixel.rgba8, surface: Surface.color, tag: 'composer' ]
+            gif_show[ 0.0 ]
+            return true
+        if [ !(low.ends_with[ '.mp4' ] || low.ends_with[ '.mov' ] || low.ends_with[ '.m4v' ]) ]
+            im : Image [ uri: file ]
+            if [ !im || im.width <= 0 ] return false
+            # the canvas blends premultiplied; a png is straight
+            if [ im.channels == 4 && im.pixels ]
+                px : @u8 [ im.pixels ]
+                n4 : i64 [ i64[ im.width ] * im.height * 4 ]
+                for [ i: i64 0, i < n4, i += 4 ]
+                    al : i32 [ i32[ px[ i + 3 ] ] ]
+                    px[ i ]     = u8[ i32[ px[ i ] ] * al / 255 ]
+                    px[ i + 1 ] = u8[ i32[ px[ i + 1 ] ] * al / 255 ]
+                    px[ i + 2 ] = u8[ i32[ px[ i + 2 ] ] * al / 255 ]
+            pic    = Texture [ vk: vk, w: w, sampler: im, linear: true ]
+            width  = im.width
+            height = im.height
+            return true
+        video = true
+        bytes : vec u8 file_bytes[ file ]
+        if [ !bytes || bytes.count == 0 ] return false
+        dm : Demux []
+        # a plain file is read whole; a fragmented one by its fragments
+        if [ !dm.read_bytes[ @bytes[ 0 ], bytes.count ] ]
+            dm = Demux []
+            dm.append[ @bytes[ 0 ], bytes.count ]
+        vt : DemuxTrack [ null ]
+        at : DemuxTrack [ null ]
+        for [ t: DemuxTrack ] in dm.tracks
+            if [ t.kind == 1 && !vt ] vt = t
+            if [ t.kind == 2 && !at ] at = t
+        if [ !vt ] return false
+        samples = vec DemuxSample []
+        scale = vt.timescale
+        if [ vt.samples[] > 0 ]
+            for [ i: i64 0, i < vt.samples[], i += 1 ]
+                ds : DemuxSample [ track: vt.id, pts: vt.pts[ i ], timescale: vt.timescale ]
+                ds.data = vec u8 [ vt.sizes[ i ] ]
+                memcpy[ @ds.data[ 0 ], @bytes[ vt.offsets[ i ] ], vt.sizes[ i ] ]
+                samples.push[ ds ]
+        el
+            fm : Demux []
+            fm.append[ @bytes[ 0 ], bytes.count ]
+            for [ ds: DemuxSample ] in fm.ready
+                if [ ds.track == vt.id ] samples.push[ ds ]
+        dec = Decoder [ vk: vk ]
+        ok : bool [ (is_hevc[ vt.codec ]) ? dec.config_hevc[ @vt.config[ 0 ], i32[ vt.config.count ] ]
+                                         : dec.config[ @vt.config[ 0 ], i32[ vt.config.count ] ] ]
+        if [ !ok ] return false
+        width  = dec.width
+        height = dec.height
+        planes = Planes [ vk: vk, w: w, bt709: height >= 720 ]
+        if [ at && vt.samples[] > 0 && at.samples[] > 0 ]
+            sound = aac_clip[ @at.config[ 0 ], i32[ at.config.count ], @bytes[ 0 ],
+                at.offsets, at.sizes, at.shift ]
+        return true
+
+    # a gif's frame at t seconds, looping, premultiplied on upload
+    func gif_show [ t: f64 ]
+        if [ !gif || gif_total <= 0 ] return
+        ms : i64 [ i64[ t * 1000.0 ] % gif_total ]
+        k : i32 [ 0 ]
+        for [ i: i32 0, i < gif_count[ gif ], i += 1 ]
+            k = i
+            ms -= i64[ gif_delay[ gif, i ] ]
+            if [ ms < 0 ] break
+        if [ k == gif_shown ] return
+        gif_shown = k
+        n : i32 [ width * height * 4 ]
+        src : @u8 [ gif_frame[ gif, k ] ]
+        pm : new u8 [ n ]
+        for [ i: i32 0, i < n, i += 4 ]
+            al : i32 [ i32[ src[ i + 3 ] ] ]
+            pm[ i ]     = u8[ i32[ src[ i ] ] * al / 255 ]
+            pm[ i + 1 ] = u8[ i32[ src[ i + 1 ] ] * al / 255 ]
+            pm[ i + 2 ] = u8[ i32[ src[ i + 2 ] ] * al / 255 ]
+            pm[ i + 3 ] = u8[ al ]
+        pic.upload_region[ 0, 0, width, height, pm, n ]
+
+    func dealloc []
+        if [ gif ] gif_free[ gif ]
+
+    # the picture shown at t seconds into the video; a frame is
+    # uploaded before the vector lets it go
+    func show [ t: f64 ]
+        target : i64 [ i64[ t * f64[ scale ] ] ]
+        shown : bool [ false ]
+        for [ true ]
+            if [ dec.frames.count > 0 ]
+                f0 : VideoFrame dec.frames[ 0 ]
+                if [ f0.pts > target && (shown || next < samples.count || planes.y) ] break
+                planes.put[ f0 ]
+                shown = true
+                dec.frames.remove[ 0 ]
+                continue
+            if [ next >= samples.count ]
+                dec.finish[]
+                if [ dec.frames.count == 0 ] break
+                continue
+            ds : DemuxSample samples[ next ]
+            next += 1
+            dec.decode[ @ds.data[ 0 ], i32[ ds.data.count ], ds.pts ]
+
+# one piece of the output in order: a span of the take, or a cut
+# to an insert while the take holds
+class Seg
+    public from  : f64
+    public to    : f64
+    public pause : Overlay
+
+# the take's video read ahead in display order
+class Source
+    context vk     : vk_context
+    public  fd     : i32
+    public  dm     : Demux
+    public  dec    : Decoder
+    public  track  : i64
+    public  scale  : i64
+    intern  chunk  : new u8 [ 1048576 ]
+    intern  ended  : bool
+    intern  taken  : i64
+
+    # the frames stay in the decoder's vector until all are taken:
+    # the one returned lives until the next call
+    func next_frame [] -> VideoFrame
+        if [ taken >= dec.frames.count ]
+            dec.frames.clear[]
+            taken = 0
+        for [ dec.frames.count == 0 ]
+            if [ ended ] return null
+            n : i64 [ read[ fd, chunk, 1048576 ] ]
+            if [ n <= 0 ]
+                ended = true
+                dec.finish[]
+                continue
+            dm.append[ chunk, n ]
+            for [ ds: DemuxSample ] in dm.ready
+                if [ ds.track == track ] dec.decode[ @ds.data[ 0 ], i32[ ds.data.count ], ds.pts ]
+            dm.ready.clear[]
+        f : VideoFrame dec.frames[ taken ]
+        taken += 1
+        return f
+
+class Renderer
+    context vk     : vk_context
+    context w      : Display
+    public  comp   : Composer
+    public  cv     : Canvas
+    public  src    : Planes
+    public  rec    : Recorder
+    public  aac    : Aac
+    public  media  : map Media [ string ]
+    public  fps    : i32
+    public  width  : i32
+    public  height : i32
+    # the output's pcm, 48 kHz stereo, and how much of it is encoded
+    intern  pcm    : vec i16
+    intern  fed    : i64
+    public  frames : i64
+    intern  aout   : new u8 [ 8192 ]
+
+    func media_of [ ins: Insert ] -> Media
+        m : Media media[ ins.media ]
+        if [ m ] return m
+        m = Media [ vk: vk, w: w, file: path '{comp.folder[]}/{ins.media}' ]
+        if [ !m.load[] ]
+            comp.problems.push[ 'render: cannot read {ins.media}' ]
+            return null
+        media[ ins.media ] = m
+        return m
+
+    # where an insert sits on the frame
+    func place [ ins: Insert, m: Media ] -> rect
+        fw : f32 [ f32[ width ] ]
+        fh : f32 [ f32[ height ] ]
+        asp : f32 [ f32[ m.width ] / f32[ m.height ] ]
+        if [ ins.place == 'full' ]
+            rw : f32 [ fw ]
+            rh : f32 [ fw / asp ]
+            if [ rh > fh ]
+                rh = fh
+                rw = fh * asp
+            return rect [ x: (fw - rw) / 2.0, y: (fh - rh) / 2.0, w: rw, h: rh ]
+        if [ ins.place == 'region' && ins.region ]
+            parts : ins.region.split[ ' ' ]
+            nums : vec f32 []
+            for [ pt: string ] in parts
+                if [ pt.count > 0 ] nums.push[ f32[ pt.real_value[] ] ]
+            if [ nums.count == 4 ]
+                # the picture keeps its shape, centred in the region
+                rw : f32 [ nums[ 2 ] * fw ]
+                rh : f32 [ nums[ 3 ] * fh ]
+                bw : f32 [ rw ]
+                bh : f32 [ rw / asp ]
+                if [ bh > rh ]
+                    bh = rh
+                    bw = rh * asp
+                return rect [ x: nums[ 0 ] * fw + (rw - bw) / 2.0, y: nums[ 1 ] * fh + (rh - bh) / 2.0, w: bw, h: bh ]
+        pw : f32 [ f32[ ins.size ] * fw ]
+        ph : f32 [ pw / asp ]
+        mg : f32 [ fw * 0.02 ]
+        cn : string [ (ins.corner) ? ins.corner : 'br' ]
+        px : f32 [ (cn == 'tl' || cn == 'bl') ? mg : fw - pw - mg ]
+        py : f32 [ (cn == 'tl' || cn == 'tr') ? mg : fh - ph - mg ]
+        return rect [ x: px, y: py, w: pw, h: ph ]
+
+    # fade in and out over the insert's own length
+    func fade_at [ ov: Overlay, t: f64 ] -> f32
+        fd : f64 [ ov.insert.fade ]
+        if [ fd <= 0.0 ] return 1.0
+        a : f64 [ (t - ov.out_at) / fd ]
+        b : f64 [ (ov.out_at + ov.length - t) / fd ]
+        v : f64 [ (a < b) ? a : b ]
+        if [ v > 1.0 ] v = 1.0
+        if [ v < 0.0 ] v = 0.0
+        return f32[ v ]
+
+    func draw_insert [ ov: Overlay, t: f64 ]
+        m : Media media_of[ ov.insert ]
+        if [ !m ] return
+        r : rect place[ ov.insert, m ]
+        cv.set_opacity[ fade_at[ ov, t ] ]
+        if [ m.video ]
+            m.show[ ov.insert.from + (t - ov.out_at) ]
+            m.planes.draw[ cv, r ]
+        el
+            m.gif_show[ t - ov.out_at ]
+            cv.draw_image[ m.pic, r ]
+        cv.set_opacity[ 1.0 ]
+
+    # one output frame: the take (unless covered), then the inserts
+    func emit [ show_take: bool ]
+        t : f64 [ f64[ frames ] / f64[ fps ] ]
+        cv.clear_recorded[ vec4f [ 0.0, 0.0, 0.0, 1.0 ] ]
+        if [ show_take ] src.draw[ cv, rect [ x: 0.0, y: 0.0, w: f32[ width ], h: f32[ height ] ] ]
+        for [ ov: Overlay ] in comp.overlays
+            if [ t >= ov.out_at && t < ov.out_at + ov.length ] draw_insert[ ov, t ]
+        cv.sync_all[]
+        rec.capture[ cv.color ]
+        frames += 1
+        audio_to[ frames * 48000 / i64[ fps ] ]
+
+    func audio_to [ upto: i64 ]
+        if [ !rec.mux ] return
+        while [ fed + 1024 <= upto && (fed + 1024) * 2 <= pcm.count ]
+            n : i32 [ aac.encode[ @pcm[ fed * 2 ], aout, 8192 ] ]
+            fed += 1024
+            if [ n > 0 ] rec.mux.audio*[ aout, i64[ n ] ]
+
+    func run [ fd: i32, take_sound: AudioClip, segs: vec Seg ] -> bool
+        rec = Recorder [ vk: vk, w: w, fd: fd, fps: fps, qp: 23, format: 'mp4',
+            chroma444: false, lossless: false, width: width, height: height, paced: false ]
+        aac = Aac [ ]
+        rec.asc = aac.asc
+        media = map Media [ string ] []
+        # the output's sound: the take's kept pieces, the cuts' sound
+        total : i64 [ 0 ]
+        for [ k: Seg ] in segs
+            total += i64[ (k.to - k.from) * f64[ fps ] + 0.5 ] * 48000 / i64[ fps ]
+        pcm = vec i16 [ total * 2 + 4096 ]
+        memset[ @pcm[ 0 ], 0, pcm.count * 2 ]
+        at : i64 [ 0 ]
+        for [ k: Seg ] in segs
+            nf : i64 [ i64[ (k.to - k.from) * f64[ fps ] + 0.5 ] * 48000 / i64[ fps ] ]
+            if [ !k.pause && take_sound && take_sound.rate == 48000 && take_sound.channels == 2 ]
+                s0 : i64 [ i64[ k.from * 48000.0 ] ]
+                n2 : i64 [ nf ]
+                if [ s0 + n2 > take_sound.frames ] n2 = take_sound.frames - s0
+                if [ n2 > 0 ] memcpy[ @pcm[ at * 2 ], @take_sound.pcm[ s0 * 2 ], n2 * 4 ]
+            at += nf
+        # an insert's own sound replaces the take's while it plays
+        for [ ov: Overlay ] in comp.overlays
+            if [ ov.insert.sound != 'media' ] continue
+            m : Media media_of[ ov.insert ]
+            if [ !m || !m.sound || m.sound.rate != 48000 || m.sound.channels != 2 ] continue
+            vol : f64 [ (ov.insert.volume > 0.0) ? ov.insert.volume : 1.0 ]
+            o0 : i64 [ i64[ ov.out_at * 48000.0 ] ]
+            m0 : i64 [ i64[ ov.insert.from * 48000.0 ] ]
+            n3 : i64 [ i64[ ov.length * 48000.0 ] ]
+            for [ i: i64 0, i < n3 * 2, i += 1 ]
+                oi : i64 [ o0 * 2 + i ]
+                mi : i64 [ m0 * 2 + i ]
+                if [ oi >= pcm.count || mi >= m.sound.frames * 2 ] break
+                pcm[ oi ] = i16[ f64[ m.sound.pcm[ mi ] ] * vol ]
+        return true
+
+    # the frames of the output, piece by piece, the take read once
+    func frames_of [ sr: Source, segs: vec Seg ] -> bool
+        ahead  : VideoFrame sr.next_frame[]
+        for [ k: Seg ] in segs
+            nout : i64 [ i64[ (k.to - k.from) * f64[ fps ] + 0.5 ] ]
+            if [ k.pause ]
+                cover : bool [ k.pause.insert.place == 'full' ]
+                for [ i: i64 0, i < nout, i += 1 ]
+                    emit[ !cover ]
+                continue
+            for [ i: i64 0, i < nout, i += 1 ]
+                ts : f64 [ k.from + f64[ i ] / f64[ fps ] ]
+                while [ ahead && f64[ ahead.pts ] / f64[ sr.scale ] <= ts + 0.0005 ]
+                    src.put[ ahead ]
+                    ahead = sr.next_frame[]
+                emit[ true ]
+        rec.close[]
+        return true
+
+# the take's own sound from..to in another voice: `voice` is a
+# reference .wav in the take's folder (Seed-VC, offline)
+Op Revoice
+    public from  : f64
+    public to    : f64
+    public voice : string
+    func invoke [ c: Composer ] -> bool
+        return c.add_voice[ a ]
+    func stage [] -> i32
+        return 2
+
+# <stem>.composition.agi: what the agent writes
+class Composition
+    public source : string
+    public output : string
+    public ops    : vec Op
+
+# a kept span of the take and its place in the output
+class Kept
+    public from   : f64
+    public to     : f64
+    public out_at : f64
+
+# an insert on the output's clock
+class Overlay
+    public insert : Insert
+    public at     : f64
+    public out_at : f64
+    public length : f64
+
+class Composer
+    # its stem names the .agi, composition and folder
+    public take     : path
+    # the take's length in seconds
+    public length   : f64
+    public comp     : Composition
+    public kept     : vec Kept
+    public overlays : vec Overlay
+    public voices   : vec Revoice
+    # each thing asked for that cannot be done
+    public problems : vec string
+
+    func stem [] -> string
+        s : string '{take}'
+        dot : i32 [ i32[ s.rindex_of[ '.' ] ] ]
+        return (dot > 0) ? s.mid[ 0, dot ] : s
+
+    # the take's module: the folder holding it, its notes and media
+    func module_dir [] -> string
+        s : string '{take}'
+        sl : i32 [ i32[ s.rindex_of[ '/' ] ] ]
+        return (sl > 0) ? s.mid[ 0, sl ] : '.'
+
+    # where media names start: the module's parent, so a name reads
+    # '<module>/bugs-bunny.gif'
+    func folder [] -> string
+        s : string module_dir[]
+        sl : i32 [ i32[ s.rindex_of[ '/' ] ] ]
+        return (sl > 0) ? s.mid[ 0, sl ] : '.'
+
+    # the user's agent reads the protocol and the take's notes,
+    # gathers the resources and writes the composition
+    func ask [ agent: string, model: string ] -> bool
+        vp : path '{source_dir[]}/VIDEO.md'
+        proto : string [ vp.load[ typeid[ string ], null ] ]
+        if [ !proto || proto.count == 0 ]
+            problems.push[ 'no protocol at {vp}' ]
+            return false
+        req : string 'You compose a video from a recording (a take). The protocol, VIDEO.md:\n\n{proto}\n\nThe take: {take} ({length} seconds). Its notes: {stem[]}.agi. Its folder, which holds its resources too: {module_dir[]}/ (media names start with that folder\'s name). Read the notes and look in the folder: files already there are the user\'s, use them. For anything else a mark needs, search the web (WebSearch, WebFetch) for a direct link to the image or video file and write a Fetch op for it (name: the reference name, url: that link); do not download files yourself, the composer downloads every Fetch. Then write {stem[]}.composition.agi as the protocol says. Answer with one short line.'
+        dir : string folder[]
+        nm : string [ (agent && agent.count > 0) ? agent : 'claude' ]
+        md : string [ (model) ? model : '' ]
+        agent_shell_allow[ 'WebSearch WebFetch' ]
+        if [ agent_shell_start[ nm.chars, dir.chars, md.chars, req.chars ] == 0 ]
+            problems.push[ 'agent: {string [ agent_shell_error[] ]}' ]
+            return false
+        log 'composer: {nm} is composing {take}'
+        buf : local i8 [ 8192 ]
+        t0 : i64 [ Au.epoch_millis[] ]
+        fin : bool [ false ]
+        for [ !fin ]
+            if [ agent_shell_line[ @buf[ 0 ], 8192 ] == 0 ]
+                if [ Au.epoch_millis[] - t0 > 900000 ]
+                    problems.push[ 'agent: no answer in 15 minutes' ]
+                    break
+                usleep[ 50000 ]
+                continue
+            ln : string [ @buf[ 0 ] ]
+            if [ !ln.starts_with[ 'diff' ] ] log 'composer: {ln}'
+            if [ ln.starts_with[ 'done' ] ] fin = true
+            if [ ln.starts_with[ 'needs' ] ]
+                problems.push[ 'agent: {ln}' ]
+                break
+        agent_shell_stop[]
+        agent_shell_allow[ '' ]
+        return fin
+
+    # the composer's own folder: VIDEO.md sits beside the source
+    func source_dir [] -> string
+        f : string '{__FILE__}'
+        sl : i32 [ i32[ f.rindex_of[ '/' ] ] ]
+        return (sl > 0) ? f.mid[ 0, sl ] : '.'
+
+    # the composition as it stands (the user may have edited it)
+    func again [] -> bool
+        if [ !readable[] ] return false
+        length = take_length[ take ]
+        if [ !load[] ] return false
+        return plan[]
+
+    # an h.264 4:4:4 take cannot be decoded on the gpu: say so first
+    func readable [] -> bool
+        fd : i32 [ open[ take.chars, O_RDONLY, 0 ] ]
+        if [ fd < 0 ] return false
+        head : new u8 [ 65536 ]
+        n : i64 [ read[ fd, head, 65536 ] ]
+        close[ fd ]
+        dm : Demux []
+        dm.append[ head, n ]
+        for [ t: DemuxTrack ] in dm.tracks
+            if [ t.kind == 1 && !is_hevc[ t.codec ] && t.config.count > 1 && t.config[ 1 ] == 244 ]
+                problems.push[ '{take} is H.264 4:4:4 (recorded before the H.265 change); this GPU cannot decode it. Record it again.' ]
+                return false
+        return true
+
+    # the whole run: the take's length, the agent, then the plan
+    func compose [ agent: string, model: string ] -> bool
+        if [ !readable[] ] return false
+        length = take_length[ take ]
+        if [ length <= 0.0 ]
+            problems.push[ 'no video in {take}' ]
+            return false
+        if [ !ask[ agent, model ] ] return false
+        if [ !load[] ] return false
+        return plan[]
+
+    # the new video: the kept spans, the cuts and the inserts
+    func render [ disp: Display ] -> bool
+        vk9 : vk_context disp.vk
+        # pass 1: the take's picture size, rate and all its sound
+        fd : i32 [ open[ take.chars, O_RDONLY, 0 ] ]
+        if [ fd < 0 ] return false
+        dm : Demux []
+        chunk : new u8 [ 1048576 ]
+        vt : DemuxTrack [ null ]
+        at : DemuxTrack [ null ]
+        audio : vec DemuxSample []
+        fps : i32 [ 0 ]
+        last_dts : i64 [ -1 ]
+        gap : i64 [ 0 ]
+        seen : i64 [ 0 ]
+        for [ true ]
+            n : i64 [ read[ fd, chunk, 1048576 ] ]
+            if [ n <= 0 ] break
+            dm.append[ chunk, n ]
+            for [ t: DemuxTrack ] in dm.tracks
+                if [ t.kind == 1 && !vt ] vt = t
+                if [ t.kind == 2 && !at ] at = t
+            for [ ds: DemuxSample ] in dm.ready
+                if [ at && ds.track == at.id ] audio.push[ ds ]
+                # the shortest frame gap over 60 pictures is the rate
+                if [ vt && ds.track == vt.id && seen < 60 ]
+                    d : i64 [ ds.dts - last_dts ]
+                    if [ last_dts >= 0 && d > 0 && (gap == 0 || d < gap) ] gap = d
+                    last_dts = ds.dts
+                    seen += 1
+            dm.ready.clear[]
+        close[ fd ]
+        if [ vt && gap > 0 ] fps = i32[ f64[ vt.timescale ] / f64[ gap ] + 0.5 ]
+        if [ !vt ]
+            problems.push[ 'render: no video in {take}' ]
+            return false
+        if [ fps <= 0 ] fps = 60
+        sound : AudioClip [ null ]
+        if [ at && audio.count > 0 ]
+            total : i64 [ 0 ]
+            for [ ds: DemuxSample ] in audio
+                total += ds.data.count
+            data : vec u8 [ total ]
+            offs : vec i64 []
+            szs  : vec i64 []
+            o : i64 [ 0 ]
+            for [ ds: DemuxSample ] in audio
+                memcpy[ @data[ o ], @ds.data[ 0 ], ds.data.count ]
+                offs.push[ o ]
+                szs.push[ i64[ ds.data.count ] ]
+                o += ds.data.count
+            sound = aac_clip[ @at.config[ 0 ], i32[ at.config.count ], @data[ 0 ], offs, szs, at.shift ]
+        if [ !apply_voices[ sound, disp ] ] return false
+        # the pieces in output order; a cut splits the span it lands in
+        segs : vec Seg []
+        for [ k: Kept ] in kept
+            a : f64 [ k.from ]
+            for [ true ]
+                cut : Overlay [ null ]
+                for [ ov: Overlay ] in overlays
+                    if [ ov.insert.pause && ov.at >= a && ov.at < k.to && (!cut || ov.at < cut.at) ] cut = ov
+                if [ !cut ] break
+                if [ cut.at > a ] segs.push[ Seg [ from: a, to: cut.at ] ]
+                segs.push[ Seg [ from: 0.0, to: cut.length, pause: cut ] ]
+                a = cut.at
+                # a later cut at the same moment still comes after this one
+                cut.insert.pause = false
+            if [ k.to > a ] segs.push[ Seg [ from: a, to: k.to ] ]
+        # every insert's place on the output clock, from the pieces
+        run9 : f64 [ 0.0 ]
+        for [ sg: Seg ] in segs
+            if [ sg.pause ]
+                sg.pause.out_at = run9
+                sg.pause.insert.pause = true
+            el
+                for [ ov: Overlay ] in overlays
+                    if [ !ov.insert.pause && ov.at >= sg.from && ov.at < sg.to ]
+                        ov.out_at = run9 + ov.at - sg.from
+            run9 += f64[ i64[ (sg.to - sg.from) * f64[ fps ] + 0.5 ] ] / f64[ fps ]
+        out : path [ (comp.output && comp.output.count > 0) ? path '{module_dir[]}/{comp.output}' : path '{stem[]}.final.mp4' ]
+        ofd : i32 [ open[ out.chars, O_WRONLY | O_CREAT | O_TRUNC, 0x1A4 ] ]
+        if [ ofd < 0 ]
+            problems.push[ 'render: cannot write {out}' ]
+            return false
+        cv : Canvas [ vk: vk9, w: disp, width: vt.width, height: vt.height,
+            load_existing: true, paint_n: 1024 ]
+        cv.update[]
+        cv.reset[ vec4f [ 0.0, 0.0, 0.0, 1.0 ] ]
+        r : Renderer [ vk: vk9, w: disp, comp: a, cv: cv, fps: fps,
+            width: vt.width, height: vt.height,
+            src: Planes [ vk: vk9, w: disp, bt709: true ] ]
+        r.run[ ofd, sound, segs ]
+        # pass 2: the take's pictures, in order
+        sfd : i32 [ open[ take.chars, O_RDONLY, 0 ] ]
+        sr : Source [ vk: vk9, fd: sfd, dm: Demux [], track: vt.id, scale: vt.timescale,
+            dec: Decoder [ vk: vk9 ] ]
+        ok9 : bool [ (is_hevc[ vt.codec ]) ? sr.dec.config_hevc[ @vt.config[ 0 ], i32[ vt.config.count ] ]
+                                          : sr.dec.config[ @vt.config[ 0 ], i32[ vt.config.count ] ] ]
+        if [ !ok9 ]
+            problems.push[ 'render: the take cannot be decoded here' ]
+            close[ sfd ]
+            close[ ofd ]
+            return false
+        r.frames_of[ sr, segs ]
+        close[ sfd ]
+        close[ ofd ]
+        log 'composer: wrote {out}: {r.frames} frames at {fps} a second'
+        return true
+
+    func load [] -> bool
+        cp : path '{stem[]}.composition.agi'
+        if [ !cp.exists[] ]
+            problems.push[ 'no composition at {cp}' ]
+            return false
+        txt : string [ cp.load[ typeid[ string ], null ] ]
+        comp = Composition [ ops: vec Op [] ]
+        Au.parse_agi[ null, txt.chars, comp ]
+        return true
+
+    # fetches, then crops (the output clock), then inserts
+    func plan [] -> bool
+        kept     = vec Kept [] [ Kept [ from: 0.0, to: length, out_at: 0.0 ] ]
+        overlays = vec Overlay []
+        voices   = vec Revoice []
+        if [ !comp ] return false
+        # *[] dispatches to the subclass; [] binds to Op's own
+        for [ st: i32 0, st < 3, st += 1 ]
+            for [ o: Op ] in comp.ops
+                if [ o.stage*[] == st ] o.invoke*[ a ]
+        # a paused insert pushes everything after it down the output
+        for [ ov: Overlay ] in overlays
+            for [ pv: Overlay ] in overlays
+                if [ pv.insert.pause && pv.at < ov.at ] ov.out_at += pv.length
+        return problems.count == 0
+
+    # the folder's file called name, any extension
+    func resource [ name: string ] -> path
+        for [ x: string ] in vec string [] [ 'jpg', 'jpeg', 'png', 'webp', 'gif', 'mp4', 'mov', 'webm' ]
+            p : path '{module_dir[]}/{name}.{x}'
+            if [ p.exists[] ] return p
+        return null
+
+    func fetch [ name: string, url: string ] -> bool
+        if [ resource[ name ] ] return true
+        if [ !url || url.count == 0 ]
+            problems.push[ 'fetch {name}: not in the folder and no url' ]
+            return false
+        q : i32 [ i32[ url.index_of[ '?' ] ] ]
+        bare : string [ (q > 0) ? url.mid[ 0, q ] : url ]
+        dot : i32 [ i32[ bare.rindex_of[ '.' ] ] ]
+        ext : string [ (dot > 0 && bare.count - dot <= 5) ? bare.mid[ dot + 1, bare.count - dot - 1 ] : 'jpg' ]
+        dest : path '{module_dir[]}/{name}.{ext}'
+        Http.download[ url, dest ]
+        if [ !dest.exists[] ]
+            problems.push[ 'fetch {name}: download of {url} failed' ]
+            return false
+        log 'composer: fetched {name} -> {dest}'
+        return true
+
+    func crop [ from: f64, to: f64 ] -> bool
+        if [ to <= from || from < 0.0 || to > length ]
+            problems.push[ 'crop {from}..{to} is outside the take (0..{length})' ]
+            return false
+        next : vec Kept []
+        for [ k: Kept ] in kept
+            if [ to <= k.from || from >= k.to ]
+                next.push[ k ]
+            el
+                if [ from > k.from ] next.push[ Kept [ from: k.from, to: from ] ]
+                if [ to < k.to ]     next.push[ Kept [ from: to, to: k.to ] ]
+        run : f64 [ 0.0 ]
+        for [ k: Kept ] in next
+            k.out_at = run
+            run += k.to - k.from
+        kept = next
+        return true
+
+    # the output time of take time t; -1 inside a crop
+    func out_time [ t: f64 ] -> f64
+        for [ k: Kept ] in kept
+            if [ t >= k.from && t < k.to ] return k.out_at + (t - k.from)
+        return -1.0
+
+    func add_voice [ v: Revoice ] -> bool
+        if [ !v.voice || v.voice.count == 0 ]
+            problems.push[ 'voice at {v.from}: no reference voice' ]
+            return false
+        vp : path '{folder[]}/{v.voice}'
+        if [ !vp.exists[] ]
+            problems.push[ 'voice at {v.from}: {v.voice} is not in the take folder' ]
+            return false
+        if [ v.to <= v.from || v.from < 0.0 || v.to > length ]
+            problems.push[ 'voice {v.from}..{v.to} is outside the take (0..{length})' ]
+            return false
+        voices.push[ v ]
+        return true
+
+    # every Voice op on the take's sound (48 kHz stereo) in place:
+    # seeded once per reference, converted in overlapping 15 s
+    # chunks, faded in and out over 50 ms
+    func apply_voices [ snd: AudioClip, disp: Display ] -> bool
+        if [ voices.count == 0 || !snd ] return true
+        if [ snd.rate != 48000 || snd.channels != 2 ]
+            problems.push[ 'voice: the take sound is not 48 kHz stereo' ]
+            return false
+        vc : SeedVC [ vk: disp.vk, w: disp ]
+        if [ !vc.valid ]
+            problems.push[ 'voice: the Seed-VC models are not installed' ]
+            return false
+        seeds : map VoiceSeed [ string ] []
+        for [ v: Revoice ] in voices
+            sd : VoiceSeed seeds[ v.voice ]
+            if [ !sd ]
+                rc : AudioClip voice_clip[ path '{folder[]}/{v.voice}' ]
+                if [ !rc || rc.frames <= 0 ]
+                    problems.push[ 'voice: cannot read {v.voice}' ]
+                    return false
+                rm : vec f32 [ rc.frames ]
+                for [ i: i64 0, i < rc.frames, i += 1 ]
+                    s9 : f64 [ 0.0 ]
+                    for [ ch: i32 0, ch < rc.channels, ch += 1 ]
+                        s9 += f64[ rc.pcm[ i * rc.channels + ch ] ]
+                    rm[ i ] = f32[ s9 / f64[ rc.channels ] / 32768.0 ]
+                sd = vc.seed[ resample_sinc[ rm, rc.rate, 22050 ], 10.0 ]
+                seeds[ v.voice ] = sd
+            a0 : i64 [ i64[ v.from * 48000.0 ] ]
+            a1 : i64 [ i64[ v.to * 48000.0 ] ]
+            if [ a1 > snd.frames ] a1 = snd.frames
+            n48 : i64 [ a1 - a0 ]
+            if [ n48 < 4800 ] continue
+            mono : vec f32 [ n48 ]
+            for [ i: i64 0, i < n48, i += 1 ]
+                l9 : f64 [ f64[ snd.pcm[ (a0 + i) * 2 ] ] ]
+                r9 : f64 [ f64[ snd.pcm[ (a0 + i) * 2 + 1 ] ] ]
+                mono[ i ] = f32[ (l9 + r9) / 65536.0 ]
+            s22 : vec f32 resample_sinc[ mono, 48000, 22050 ]
+            # chunks of 15 s overlapping 0.5 s, crossfaded
+            chunk : i64 [ 22050 * 15 ]
+            lap   : i64 [ 11025 ]
+            out22 : vec f32 [ s22.count ]
+            memset[ @out22[ 0 ], 0, s22.count * 4 ]
+            at : i64 [ 0 ]
+            for [ at < s22.count ]
+                e9 : i64 [ (at + chunk < s22.count) ? at + chunk : s22.count ]
+                piece : vec f32 [ e9 - at ]
+                memcpy[ @piece[ 0 ], @s22[ at ], (e9 - at) * 4 ]
+                y : vec f32 vc.voice_with[ sd, piece, 10, 0.7, null ]
+                for [ i: i64 0, i < y.count && at + i < out22.count, i += 1 ]
+                    w9 : f32 [ 1.0 ]
+                    if [ at > 0 && i < lap ] w9 = f32[ i ] / f32[ lap ]
+                    ix9 : i64 [ at + i ]
+                    out22[ ix9 ] = out22[ ix9 ] * (1.0 - w9) + y[ i ] * w9
+                if [ e9 >= s22.count ] break
+                at = e9 - lap
+            back : vec f32 resample_sinc[ out22, 22050, 48000 ]
+            fade : i64 [ 2400 ]
+            for [ i: i64 0, i < n48 && i < back.count, i += 1 ]
+                g9 : f32 [ 1.0 ]
+                if [ i < fade ] g9 = f32[ i ] / f32[ fade ]
+                if [ n48 - i < fade ] g9 = f32[ n48 - i ] / f32[ fade ]
+                for [ ch: i32 0, ch < 2, ch += 1 ]
+                    ix9 : i64 [ (a0 + i) * 2 + ch ]
+                    orig : f32 [ f32[ snd.pcm[ ix9 ] ] ]
+                    nv : f32 [ orig * (1.0 - g9) + back[ i ] * 32767.0 * g9 ]
+                    if [ nv > 32767.0 ] nv = 32767.0
+                    if [ nv < -32768.0 ] nv = -32768.0
+                    snd.pcm[ ix9 ] = i16[ nv ]
+            log 'composer: voice {v.voice} over {v.from}..{v.to} s'
+        return true
+
+    func insert [ ins: Insert ] -> bool
+        if [ !ins.media || ins.media.count == 0 ]
+            problems.push[ 'insert at {ins.at}: no media' ]
+            return false
+        mp : path '{folder[]}/{ins.media}'
+        if [ !mp.exists[] ]
+            problems.push[ 'insert at {ins.at}: {ins.media} is not in the take folder' ]
+            return false
+        at : f64 [ out_time[ ins.at ] ]
+        if [ at < 0.0 ]
+            problems.push[ 'insert at {ins.at}: that moment is cropped out' ]
+            return false
+        ln : f64 [ (ins.to > ins.from) ? ins.to - ins.from : ins.dur ]
+        if [ ln <= 0.0 ]
+            problems.push[ 'insert at {ins.at}: no length (from/to or dur)' ]
+            return false
+        overlays.push[ Overlay [ insert: ins, at: ins.at, out_at: at, length: ln ] ]
+        return true
+
+# composer <take.mp4>: the agent composes, the plan is checked
+element composer : trinity
+    default take  : path
+    public  agent : string [ 'claude' ]
+    public  model : string
+    # render the composition already written, no agent
+    public  again : bool
+    func init []
+        # a take's module folder names its mp4: <folder>/<folder>.mp4
+        if [ take && take.is_dir[] ] take = path '{take}/{take.filename[]}.mp4'
+        if [ !take || !take.exists[] ]
+            log 'composer: no take at {take}'
+            exit[ 1 ]
+        c : Composer [ take: take, kept: vec Kept [], overlays: vec Overlay [],
+            problems: vec string [] ]
+        ok : bool [ (again) ? c.again[] : c.compose[ agent, model ] ]
+        if [ ok ]
+            log 'composer: {c.kept.count} spans kept, {c.overlays.count} inserts'
+            v9 : vk_context []
+            Au.hold[ v9 ]
+            d9 : Display [ vk: v9, format: Pixel.rgba8, backbuffer: true, width: 64, height: 64 ]
+            Au.hold[ d9 ]
+            ok = c.render[ d9 ]
+        for [ p: string ] in c.problems
+            log 'composer: {p}'
+        exit[ (ok) ? 0 : 1 ]
+
+# BigVGAN against pytorch's output on the same mel (both f32 files:
+# COMPOSER_VOC_MEL [80, frames], COMPOSER_VOC_WAV the samples)
+expect func t_bigvgan [] -> bool
+    me : cstr [ getenv[ 'COMPOSER_VOC_MEL' ] ]
+    we : cstr [ getenv[ 'COMPOSER_VOC_WAV' ] ]
+    if [ !me || !we ] return true
+    mel : vec f32 floats_of[ path [ me ] ]
+    gold : vec f32 floats_of[ path [ we ] ]
+    frames : i32 [ i32[ mel.count / 80 ] ]
+    voc : BigVGAN [ src: path '{path.path_install[]}/models/seed-vc/bigvgan.pth' ]
+    if [ !voc.valid ] return false
+    t0 : i64 [ Au.epoch_millis[] ]
+    y : vec f32 voc.run[ mel, frames ]
+    ms : i64 [ Au.epoch_millis[] - t0 ]
+    n : i64 [ (y.count < gold.count) ? y.count : gold.count ]
+    err : f64 [ 0.0 ]
+    sig : f64 [ 0.0 ]
+    mx  : f64 [ 0.0 ]
+    for [ i: i64 0, i < n, i += 1 ]
+        d : f64 [ f64[ y[ i ] ] - f64[ gold[ i ] ] ]
+        err += d * d
+        sig += f64[ gold[ i ] ] * f64[ gold[ i ] ]
+        if [ d > mx ] mx = d
+        if [ 0.0 - d > mx ] mx = 0.0 - d
+    snr : f64 [ 10.0 * log10[ sig / (err + 0.000000000001) ] ]
+    log 'bigvgan: {y.count} samples (gold {gold.count}) in {ms} ms; max error {mx}, snr {snr} dB'
+    return y.count == gold.count && snr > 60.0
+
+# CAM++ against pytorch: the fbank and the style of the same 16 kHz
+# samples (COMPOSER_CAM_DIR holds wav16k, fbank and style .f32)
+expect func t_campplus [] -> bool
+    de : cstr [ getenv[ 'COMPOSER_CAM_DIR' ] ]
+    if [ !de ] return true
+    dir : string [ de ]
+    pcm   : vec f32 floats_of[ path '{dir}/wav16k.f32' ]
+    fgold : vec f32 floats_of[ path '{dir}/fbank.f32' ]
+    sgold : vec f32 floats_of[ path '{dir}/style.f32' ]
+    nf : local i32 [ 1 ]
+    fb : vec f32 kaldi_fbank[ pcm, @nf[ 0 ] ]
+    fmx : f64 [ 0.0 ]
+    for [ i: i64 0, i < fb.count && i < fgold.count, i += 1 ]
+        d : f64 [ f64[ fb[ i ] ] - f64[ fgold[ i ] ] ]
+        if [ d < 0.0 ] d = 0.0 - d
+        if [ d > fmx ] fmx = d
+    cam : CAMPPlus [ src: path '{path.path_install[]}/models/seed-vc/campplus.pth' ]
+    t0 : i64 [ Au.epoch_millis[] ]
+    st : vec f32 cam.embed[ pcm ]
+    ms : i64 [ Au.epoch_millis[] - t0 ]
+    smx : f64 [ 0.0 ]
+    for [ i: i64 0, i < st.count && i < sgold.count, i += 1 ]
+        d : f64 [ f64[ st[ i ] ] - f64[ sgold[ i ] ] ]
+        if [ d < 0.0 ] d = 0.0 - d
+        if [ d > smx ] smx = d
+    log 'campplus: fbank {fb.count} (gold {fgold.count}) max err {fmx}; style {st.count} in {ms} ms, max err {smx}, first {st[ 0 ]} vs {sgold[ 0 ]}'
+    return fb.count == fgold.count && fmx < 0.01 && st.count == 192 && smx < 0.01
+
+# the DiT's velocity against pytorch's first euler step, with and
+# without the conditions (COMPOSER_DIT_DIR: the vc_ref.py dumps)
+expect func t_dit_step [] -> bool
+    de : cstr [ getenv[ 'COMPOSER_DIT_DIR' ] ]
+    if [ !de ] return true
+    dir : string [ de ]
+    noise : vec f32 floats_of[ path '{dir}/noise.f32' ]
+    mel2  : vec f32 floats_of[ path '{dir}/mel2.f32' ]
+    pc    : vec f32 floats_of[ path '{dir}/prompt_cond.f32' ]
+    cd    : vec f32 floats_of[ path '{dir}/cond.f32' ]
+    sty   : vec f32 floats_of[ path '{dir}/style2.f32' ]
+    g1    : vec f32 floats_of[ path '{dir}/est0_cond.f32' ]
+    g0    : vec f32 floats_of[ path '{dir}/est0_uncond.f32' ]
+    p9 : i32 [ i32[ mel2.count / 80 ] ]
+    t : i32 [ p9 + i32[ cd.count / 512 ] ]
+    x : vec f32 [ i64[ 80 ] * t ]
+    pr : vec f32 [ i64[ 80 ] * t ]
+    for [ m: i32 0, m < 80, m += 1 ]
+        for [ q: i32 0, q < t, q += 1 ]
+            ix9 : i64 [ i64[ m ] * t + q ]
+            x[ ix9 ]  = (q < p9) ? 0.0 : noise[ ix9 ]
+            pr[ ix9 ] = (q < p9) ? mel2[ i64[ m ] * p9 + q ] : 0.0
+    cat : vec f32 [ i64[ t ] * 512 ]
+    memcpy[ @cat[ 0 ], @pc[ 0 ], pc.count * 4 ]
+    memcpy[ @cat[ pc.count ], @cd[ 0 ], cd.count * 4 ]
+    d : DiT [ src: path '{path.path_install[]}/models/seed-vc/dit.pth' ]
+    t0 : i64 [ Au.epoch_millis[] ]
+    v1 : vec f32 d.estimate[ x, pr, cat, sty, 0.0, t ]
+    ms : i64 [ Au.epoch_millis[] - t0 ]
+    zp : vec f32 [ i64[ 80 ] * t ]
+    zc : vec f32 [ i64[ t ] * 512 ]
+    zs : vec f32 [ 192 ]
+    memset[ @zp[ 0 ], 0, zp.count * 4 ]
+    memset[ @zc[ 0 ], 0, zc.count * 4 ]
+    memset[ @zs[ 0 ], 0, 768 ]
+    t8 : i64 [ Au.epoch_millis[] ]
+    v0 : vec f32 d.estimate[ x, zp, zc, zs, 0.0, t ]
+    ms2 : i64 [ Au.epoch_millis[] - t8 ]
+    e1 : f64 [ 0.0 ]
+    e0 : f64 [ 0.0 ]
+    for [ i: i64 0, i < v1.count && i < g1.count, i += 1 ]
+        a1 : f64 [ f64[ v1[ i ] ] - f64[ g1[ i ] ] ]
+        a0 : f64 [ f64[ v0[ i ] ] - f64[ g0[ i ] ] ]
+        if [ a1 < 0.0 ] a1 = 0.0 - a1
+        if [ a0 < 0.0 ] a0 = 0.0 - a0
+        if [ a1 > e1 ] e1 = a1
+        if [ a0 > e0 ] e0 = a0
+    log 'dit: t {t} (prompt {p9}), first call {ms} ms, second {ms2} ms; max error cond {e1}, uncond {e0}; first {v1[ 0 ]} vs {g1[ 0 ]}'
+    return v1.count == g1.count && e1 < 0.01 && e0 < 0.01
+
+# the length regulator and the whole flow (10 steps, cfg 0.7) from
+# pytorch's whisper content and noise
+expect func t_dit_flow [] -> bool
+    de : cstr [ getenv[ 'COMPOSER_DIT_DIR' ] ]
+    if [ !de ] return true
+    dir : string [ de ]
+    sa : vec f32 floats_of[ path '{dir}/S_alt.f32' ]
+    so : vec f32 floats_of[ path '{dir}/S_ori.f32' ]
+    mel  : vec f32 floats_of[ path '{dir}/mel.f32' ]
+    mel2 : vec f32 floats_of[ path '{dir}/mel2.f32' ]
+    sty  : vec f32 floats_of[ path '{dir}/style2.f32' ]
+    noise : vec f32 floats_of[ path '{dir}/noise.f32' ]
+    gc  : vec f32 floats_of[ path '{dir}/cond.f32' ]
+    gv  : vec f32 floats_of[ path '{dir}/vc_mel.f32' ]
+    d : DiT [ src: path '{path.path_install[]}/models/seed-vc/dit.pth' ]
+    n1 : i32 [ i32[ mel.count / 80 ] ]
+    p9 : i32 [ i32[ mel2.count / 80 ] ]
+    c1 : vec f32 d.regulate[ sa, i32[ sa.count / 768 ], n1 ]
+    c0 : vec f32 d.regulate[ so, i32[ so.count / 768 ], p9 ]
+    ec : f64 [ 0.0 ]
+    for [ i: i64 0, i < c1.count && i < gc.count, i += 1 ]
+        a1 : f64 [ f64[ c1[ i ] ] - f64[ gc[ i ] ] ]
+        if [ a1 < 0.0 ] a1 = 0.0 - a1
+        if [ a1 > ec ] ec = a1
+    t : i32 [ p9 + n1 ]
+    cat : vec f32 [ i64[ t ] * 512 ]
+    memcpy[ @cat[ 0 ], @c0[ 0 ], c0.count * 4 ]
+    memcpy[ @cat[ c0.count ], @c1[ 0 ], c1.count * 4 ]
+    t0 : i64 [ Au.epoch_millis[] ]
+    vm : vec f32 d.flow[ mel2, p9, cat, sty, noise, t, 10, 0.7 ]
+    ms : i64 [ Au.epoch_millis[] - t0 ]
+    ev : f64 [ 0.0 ]
+    for [ i: i64 0, i < vm.count && i < gv.count, i += 1 ]
+        a1 : f64 [ f64[ vm[ i ] ] - f64[ gv[ i ] ] ]
+        if [ a1 < 0.0 ] a1 = 0.0 - a1
+        if [ a1 > ev ] ev = a1
+    log 'dit flow: cond max error {ec}; mel {vm.count} (gold {gv.count}) in {ms} ms, max error {ev}'
+    return c1.count == gc.count && ec < 0.01 && vm.count == gv.count && ev < 0.05
+
+# the front of Seed-VC against pytorch: resampling, whisper's log
+# mel and content, the vocoder's mel (COMPOSER_DIT_DIR)
+expect func t_seedvc_front [] -> bool
+    de : cstr [ getenv[ 'COMPOSER_DIT_DIR' ] ]
+    if [ !de ] return true
+    dir : string [ de ]
+    vk : vk_context []
+    Au.hold[ vk ]
+    disp : Display [ vk: vk, format: Pixel.rgba8, backbuffer: true, width: 64, height: 64 ]
+    Au.hold[ disp ]
+    src22 : vec f32 floats_of[ path '{dir}/src22k.f32' ]
+    g16   : vec f32 floats_of[ path '{dir}/src16k.f32' ]
+    gfe   : vec f32 floats_of[ path '{dir}/whisper_feats_src.f32' ]
+    gsa   : vec f32 floats_of[ path '{dir}/S_alt.f32' ]
+    gmel  : vec f32 floats_of[ path '{dir}/mel.f32' ]
+    s16 : vec f32 resample_sinc[ src22, 22050, 16000 ]
+    e16 : f64 max_error[ s16, g16 ]
+    lm : vec f32 whisper_logmel[ g16 ]
+    efe : f64 [ 0.0 ]
+    for [ t: i32 0, t < 3000, t += 1 ]
+        for [ m: i32 0, m < 80, m += 1 ]
+            d : f64 [ f64[ lm[ i64[ t ] * 80 + m ] ] - f64[ gfe[ i64[ m ] * 3000 + t ] ] ]
+            if [ d < 0.0 ] d = 0.0 - d
+            if [ d > efe ] efe = d
+    vc : SeedVC [ vk: vk, w: disp ]
+    ns : local i32 [ 1 ]
+    t0 : i64 [ Au.epoch_millis[] ]
+    sa : vec f32 vc.content[ g16, @ns[ 0 ] ]
+    ms : i64 [ Au.epoch_millis[] - t0 ]
+    esa : f64 max_error[ sa, gsa ]
+    nf : local i32 [ 1 ]
+    mel : vec f32 mel22k[ src22, @nf[ 0 ] ]
+    emel : f64 max_error[ mel, gmel ]
+    log 'seedvc front: 16k {s16.count} (gold {g16.count}) err {e16}; log mel err {efe}; content {sa.count} (gold {gsa.count}) in {ms} ms err {esa}; mel {mel.count} (gold {gmel.count}) err {emel}'
+    return s16.count == g16.count && e16 < 0.001 && efe < 0.01 && sa.count == gsa.count && esa < 0.05 && mel.count == gmel.count && emel < 0.01
+
+# the whole conversion against pytorch's, from the same noise
+expect func t_seedvc_voice [] -> bool
+    de : cstr [ getenv[ 'COMPOSER_DIT_DIR' ] ]
+    if [ !de ] return true
+    dir : string [ de ]
+    vk : vk_context []
+    Au.hold[ vk ]
+    disp : Display [ vk: vk, format: Pixel.rgba8, backbuffer: true, width: 64, height: 64 ]
+    Au.hold[ disp ]
+    src22 : vec f32 floats_of[ path '{dir}/src22k.f32' ]
+    ref22 : vec f32 floats_of[ path '{dir}/ref22k.f32' ]
+    noise : vec f32 floats_of[ path '{dir}/noise.f32' ]
+    gold  : vec f32 floats_of[ path '{dir}/vc_wav.f32' ]
+    vc : SeedVC [ vk: vk, w: disp ]
+    t0 : i64 [ Au.epoch_millis[] ]
+    y : vec f32 vc.voice[ src22, ref22, 10, 0.7, noise ]
+    ms : i64 [ Au.epoch_millis[] - t0 ]
+    err : f64 [ 0.0 ]
+    sig : f64 [ 0.0 ]
+    for [ i: i64 0, i < y.count && i < gold.count, i += 1 ]
+        d : f64 [ f64[ y[ i ] ] - f64[ gold[ i ] ] ]
+        err += d * d
+        sig += f64[ gold[ i ] ] * f64[ gold[ i ] ]
+    snr : f64 [ 10.0 * log10[ sig / (err + 0.000000000001) ] ]
+    log 'seedvc voice: {y.count} samples (gold {gold.count}) in {ms} ms for {f64[ src22.count ] / 22050.0} s; snr {snr} dB'
+    return y.count == gold.count && snr > 40.0
+
+func max_error [ x: vec f32, y: vec f32 ] -> f64
+    mx : f64 [ 0.0 ]
+    for [ i: i64 0, i < x.count && i < y.count, i += 1 ]
+        d : f64 [ f64[ x[ i ] ] - f64[ y[ i ] ] ]
+        if [ d < 0.0 ] d = 0.0 - d
+        if [ d > mx ] mx = d
+    return mx
+
+# a file of f32 values
+func floats_of [ p: path ] -> vec f32
+    b : vec u8 file_bytes[ p ]
+    if [ !b ] return vec f32 []
+    out : vec f32 [ b.count / 4 ]
+    memcpy[ @out[ 0 ], @b[ 0 ], b.count ]
+    return out
+
+# the Seed-VC checkpoints read through ai's pth reader
+expect func t_seed_vc_weights [] -> bool
+    m : path '{path.path_install[]}/models/seed-vc'
+    if [ !m.exists[] ] return true
+    dit : pth [ src: path '{m}/dit.pth' ]
+    cam : pth [ src: path '{m}/campplus.pth' ]
+    voc : pth [ src: path '{m}/bigvgan.pth' ]
+    if [ !dit.valid || !cam.valid || !voc.valid ] return false
+    emb : tensor dit.tensor_named[ 'net.length_regulator.module.content_in_proj.weight' ]
+    up  : tensor voc.tensor_named[ 'generator.ups.2.0.weight_v' ]
+    log 'seed-vc: dit {dit.count[]}, campplus {cam.count[]}, bigvgan {voc.count[]} tensors; content_in_proj {emb.tensor_shape}, ups.2 {up.tensor_shape}'
+    counts : bool [ dit.count[] == 302 && cam.count[] == 937 && voc.count[] == 783 ]
+    en : i64 [ emb.tensor_shape.total[] ]
+    un : i64 [ up.tensor_shape.total[] ]
+    sizes  : bool [ en == 393216 && un == 294912 ]
+    log 'seed-vc: counts {counts}, sizes {sizes} ({en}, {un}), first bigvgan value {up.floats[ 0 ]}'
+    return counts && sizes
+
+# decodes an h.265 take (COMPOSER_HEVC) to planar yuv at
+# COMPOSER_HEVC_OUT, for a byte comparison with a reference decode
+expect func t_hevc_decode [] -> bool
+    he : cstr [ getenv[ 'COMPOSER_HEVC' ] ]
+    ho : cstr [ getenv[ 'COMPOSER_HEVC_OUT' ] ]
+    if [ !he || !ho ] return true
+    vk : vk_context []
+    Au.hold[ vk ]
+    # the queues come up with a display
+    disp : Display [ vk: vk, format: Pixel.rgba8, backbuffer: true, width: 64, height: 64 ]
+    Au.hold[ disp ]
+    fd : i32 [ open[ he, O_RDONLY, 0 ] ]
+    if [ fd < 0 ] return false
+    dm : Demux []
+    dec : Decoder [ vk: vk ]
+    chunk : new u8 [ 1048576 ]
+    configured : bool [ false ]
+    samples : i64 [ 0 ]
+    for [ true ]
+        n : i64 [ read[ fd, chunk, 1048576 ] ]
+        if [ n <= 0 ] break
+        dm.append[ chunk, n ]
+        if [ !configured && dm.tracks.count > 0 ]
+            t0 : DemuxTrack dm.tracks[ 0 ]
+            if [ !dec.config_hevc[ @t0.config[ 0 ], i32[ t0.config.count ] ] ] return false
+            configured = true
+        for [ s: DemuxSample ] in dm.ready
+            if [ s.track == 1 ]
+                dec.decode[ @s.data[ 0 ], i32[ s.data.count ], s.pts ]
+                samples += 1
+        dm.ready.clear[]
+    close[ fd ]
+    dec.finish[]
+    out : handle [ fopen[ ho, 'wb' ] ]
+    for [ f: VideoFrame ] in dec.frames
+        fwrite[ @f.y[ 0 ], 1, u64[ f.y.count ], out ]
+        fwrite[ @f.u[ 0 ], 1, u64[ f.u.count ], out ]
+        fwrite[ @f.v[ 0 ], 1, u64[ f.v.count ], out ]
+    fclose[ out ]
+    log 'hevc decode: {dec.frames.count} of {samples} frames, {dec.width}x{dec.height}, full {dec.full}'
+    return dec.frames.count == samples && samples > 0
+
+expect func t_take_length [] -> bool
+    te : cstr [ getenv[ 'COMPOSER_TAKE' ] ]
+    if [ !te ] return true
+    tp : path [ te ]
+    if [ !tp.exists[] ] return true
+    ln : f64 [ take_length[ tp ] ]
+    log 'take length {ln} s'
+    return ln > 0.0
+
+expect func t_composition_plan [] -> bool
+    dir : path '/tmp/composer-test'
+    dir.make_dir[]
+    res : path '{dir}/take'
+    res.make_dir[]
+    pic : path '{res}/bunny.jpg'
+    pic.save[ 'x', null ]
+    cp : path '{res}/take.composition.agi'
+    cp.save[ 'source: \'take.mp4\'\noutput: \'take.final.mp4\'\nops:\n\tf0: Fetch\n\t\tname: \'bunny\'\n\te0: Crop\n\t\tfrom: 10.0\n\t\tto: 13.0\n\t\twhy: \'instruction\'\n\te1: Insert\n\t\tat: 20.0\n\t\tmedia: \'take/bunny.jpg\'\n\t\tdur: 4.0\n\t\tplace: \'pip\'\n\t\twhy: \'after the race\'\n', null ]
+    c : Composer [ take: path '{res}/take.mp4', length: 60.0,
+        kept: vec Kept [], overlays: vec Overlay [], problems: vec string [] ]
+    if [ !c.load[] ] return false
+    if [ c.comp.ops.count != 3 ] return false
+    o1 : Op c.comp.ops[ 1 ]
+    if [ o1.stage*[] != 1 ] return false
+    if [ !c.plan[] ]
+        for [ p: string ] in c.problems
+            log 'problem: {p}'
+        return false
+    # two spans kept; the insert at 20 lands at 17 on the output
+    if [ c.kept.count != 2 || c.overlays.count != 1 ] return false
+    ov : Overlay c.overlays[ 0 ]
+    log 'insert lands at {ov.out_at} for {ov.length}'
+    return ov.out_at == 17.0 && ov.length == 4.0
+
+expect func t_composition_cut [] -> bool
+    dir : path '/tmp/composer-cut'
+    dir.make_dir[]
+    res : path '{dir}/take'
+    res.make_dir[]
+    clip : path '{res}/bunny.mp4'
+    clip.save[ 'x', null ]
+    pic : path '{res}/logo.png'
+    pic.save[ 'x', null ]
+    cp : path '{res}/take.composition.agi'
+    cp.save[ 'ops:\n\te0: Insert\n\t\tat: 10.0\n\t\tmedia: \'take/bunny.mp4\'\n\t\tfrom: 2.0\n\t\tto: 8.0\n\t\tplace: \'full\'\n\t\tsound: \'media\'\n\t\tpause: true\n\te1: Insert\n\t\tat: 30.0\n\t\tmedia: \'take/logo.png\'\n\t\tdur: 3.0\n', null ]
+    c : Composer [ take: path '{res}/take.mp4', length: 60.0,
+        kept: vec Kept [], overlays: vec Overlay [], problems: vec string [] ]
+    if [ !c.load[] || !c.plan[] ] return false
+    cut : Overlay c.overlays[ 0 ]
+    pip : Overlay c.overlays[ 1 ]
+    log 'cut at {cut.out_at} for {cut.length}; pip at {pip.out_at}, size {pip.insert.size}'
+    # the 6 s cut holds the take: the pip at 30 lands at 36
+    return cut.out_at == 10.0 && pip.out_at == 36.0 && pip.insert.size == 0.33

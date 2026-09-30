@@ -2206,6 +2206,9 @@ element orbiter : trinity # implements compiler
     # mic capture running / final transcription winding down
     intern orbit_cap_on   : bool
     intern orbit_flushing : bool
+    # the take's start and end on the recording's clock (us), -1 = none
+    intern mark_at        : i64 [ -1 ]
+    intern mark_end       : i64 [ -1 ]
     # last dictate command (edge-detect) via on_host
     intern orbit_dstate   : i32 [ -1 ]
     # where the take goes: -1 the agent (the listen button), 0 this window's
@@ -3381,18 +3384,44 @@ element orbiter : trinity # implements compiler
     func mic_frame []
         # the exchange open: the dictation model loads now, so the mic starts at once
         if [ ux && ux.shot_ask ] dictation_preload[]
+        # a recording dictates the whole take: no button
+        rt9 : i64 [ record_time[] ]
+        if [ rt9 >= 0 && !orbit_cap_on && !orbit_flushing && !dictation_streaming[] ]
+            dictation_preload[]
+            dictation_stream_start[]
+        if [ dictation_streaming[] ]
+            for [ ps9: i32 0, ps9 < 64, ps9 += 1 ]
+                if [ !dictation_poll[] ] break
+            st9 : string dictation_stream_take[]
+            if [ st9 && st9.count > 0 ]
+                at9 : i64 [ dictation_stream_at[] + rt9 - Au.epoch_micros[] ]
+                if [ at9 < 0 ] at9 = 0
+                ed9 : Editor pane_at[ active_pane ]
+                mf9 : string [ (ed9 && ed9.src) ? '{ed9.src}' : null ]
+                log 'orbiter: recording mark at {at9} us "{st9}"'
+                record_mark[ at9, dictation_stream_dur[], st9, mf9 ]
+            return
         dict_test_step[]
         # every block that came in since the last frame (orbiter's frames
         # slow at rest, and one poll takes one block)
         if [ orbit_cap_on ]
+            if [ mark_at < 0 ] mark_at = record_time[]
             for [ pk9: i32 0, pk9 < 64, pk9 += 1 ]
                 if [ !dictation_poll[] ] break
         if [ !orbit_flushing ] return
+        if [ mark_end < 0 ] mark_end = record_time[]
         if [ !dictation_flush[] ] return
         orbit_flushing = false
         dt : dictation_take[]
         ds9 : i32 [ dict_slot ]
         dict_slot = -1
+        # the take goes on the recording at the span it was spoken
+        if [ dt && dt.count > 0 && mark_at >= 0 ]
+            ed9 : Editor pane_at[ active_pane ]
+            mf9 : string [ (listen_file) ? '{listen_file}' : (ed9 && ed9.src) ? '{ed9.src}' : null ]
+            record_mark[ mark_at, mark_end - mark_at, dt, mf9 ]
+        mark_at  = -1
+        mark_end = -1
         if [ !dt || dt.count == 0 ] return
         # an exchange's mic: the words are typed into its field, to review
         # and send with enter
@@ -3880,8 +3909,8 @@ element orbiter : trinity # implements compiler
             # window still sits in its host's slot table, and adopting that
             # slot attached our debugger to our own process, freezing it
             if [ pid == i32[ getpid[] ] ] continue
-            nb : local i8 [ 192 ]
-            if [ host_app_name[ s, @nb[0], 192 ] <= 0 ] continue
+            nb : local i8 [ 1024 ]
+            if [ host_app_name[ s, @nb[0], 1024 ] <= 0 ] continue
             req : string [ @nb[0] ]
             fl9  : i32  [ host_app_flags[ s ] ]
             dbg9 : bool [ (fl9 & 1) != 0 ]

@@ -1,13 +1,19 @@
 #include "video.h"
 #include <string.h>
+#include <stdlib.h>
 
 void h264_sps(StdVideoH264SequenceParameterSet* sps, StdVideoH264SequenceParameterSetVui* vui,
-              int coded_w, int coded_h, int width, int height, int fps) {
+              int coded_w, int coded_h, int width, int height, int fps,
+              int chroma444, int lossless) {
     memset(sps, 0, sizeof(*sps));
     memset(vui, 0, sizeof(*vui));
-    sps->profile_idc                       = STD_VIDEO_H264_PROFILE_IDC_HIGH;
-    sps->level_idc                         = STD_VIDEO_H264_LEVEL_IDC_5_1;
-    sps->chroma_format_idc                 = STD_VIDEO_H264_CHROMA_FORMAT_IDC_420;
+    sps->profile_idc       = chroma444 ? STD_VIDEO_H264_PROFILE_IDC_HIGH_444_PREDICTIVE
+                                       : STD_VIDEO_H264_PROFILE_IDC_HIGH;
+    sps->level_idc         = STD_VIDEO_H264_LEVEL_IDC_5_1;
+    sps->chroma_format_idc = chroma444 ? STD_VIDEO_H264_CHROMA_FORMAT_IDC_444
+                                       : STD_VIDEO_H264_CHROMA_FORMAT_IDC_420;
+    // qp 0 codes the residual untransformed: lossless
+    sps->flags.qpprime_y_zero_transform_bypass_flag = lossless ? 1 : 0;
     sps->log2_max_frame_num_minus4         = 4;
     sps->pic_order_cnt_type                = STD_VIDEO_H264_POC_TYPE_0;
     sps->log2_max_pic_order_cnt_lsb_minus4 = 4;
@@ -17,11 +23,12 @@ void h264_sps(StdVideoH264SequenceParameterSet* sps, StdVideoH264SequenceParamet
     sps->flags.frame_mbs_only_flag         = 1;
     sps->flags.direct_8x8_inference_flag   = 1;
     sps->flags.vui_parameters_present_flag = 1;
-    // the coded size is a whole number of macroblocks; crop units are 2 px for 4:2:0
+    // crop units: 2 px for 4:2:0, 1 px for 4:4:4
+    int unit = chroma444 ? 1 : 2;
     if (coded_w != width || coded_h != height) {
         sps->flags.frame_cropping_flag = 1;
-        sps->frame_crop_right_offset   = (coded_w - width)  / 2;
-        sps->frame_crop_bottom_offset  = (coded_h - height) / 2;
+        sps->frame_crop_right_offset   = (coded_w - width)  / unit;
+        sps->frame_crop_bottom_offset  = (coded_h - height) / unit;
     }
     vui->flags.timing_info_present_flag           = 1;
     vui->flags.fixed_frame_rate_flag              = 1;
@@ -36,9 +43,10 @@ void h264_sps(StdVideoH264SequenceParameterSet* sps, StdVideoH264SequenceParamet
     sps->pSequenceParameterSetVui                 = vui;
 }
 
-void h264_pps(StdVideoH264PictureParameterSet* pps) {
+void h264_pps(StdVideoH264PictureParameterSet* pps, int chroma444) {
     memset(pps, 0, sizeof(*pps));
-    pps->flags.entropy_coding_mode_flag               = 1;
+    // nvidia's vulkan encoder takes 4:4:4 with cavlc only
+    pps->flags.entropy_coding_mode_flag               = chroma444 ? 0 : 1;
     pps->flags.deblocking_filter_control_present_flag = 1;
     pps->flags.transform_8x8_mode_flag                = 1;
 }
@@ -71,6 +79,123 @@ void h264_reference(StdVideoEncodeH264ReferenceInfo* ref, int idr, unsigned fram
     ref->primary_pic_type = idr ? STD_VIDEO_H264_PICTURE_TYPE_IDR : STD_VIDEO_H264_PICTURE_TYPE_P;
     ref->FrameNum         = frame_num;
     ref->PicOrderCnt      = poc;
+}
+
+// ---- h.265 encode ----
+void h265_free(void* p) { free(p); }
+
+H265Picture* h265_picture_new(void) { return (H265Picture*)calloc(1, sizeof(H265Picture)); }
+
+void h265_add_info(H265Params* p, VkVideoEncodeH265SessionParametersAddInfoKHR* add) {
+    add->stdVPSCount = 1;
+    add->pStdVPSs    = &p->vps;
+    add->stdSPSCount = 1;
+    add->pStdSPSs    = &p->sps;
+    add->stdPPSCount = 1;
+    add->pStdPPSs    = &p->pps;
+}
+
+void h265_picture_vk(H265Picture* h, VkVideoEncodeH265DpbSlotInfoKHR* cur,
+                     VkVideoEncodeH265DpbSlotInfoKHR* prev,
+                     VkVideoEncodeH265NaluSliceSegmentInfoKHR* nalu,
+                     VkVideoEncodeH265PictureInfoKHR* pic) {
+    cur->pStdReferenceInfo       = &h->ref_cur;
+    prev->pStdReferenceInfo      = &h->ref_prev;
+    nalu->pStdSliceSegmentHeader = &h->slice;
+    pic->pStdPictureInfo         = &h->pic;
+}
+
+H265Params* h265_params(int coded_w, int coded_h, int width, int height,
+                        int fps, int chroma444, int lossless, int level,
+                        int log2_ctb, int log2_min_tb, int log2_max_tb) {
+    H265Params* p = (H265Params*)calloc(1, sizeof(H265Params));
+    p->ptl.flags.general_progressive_source_flag    = 1;
+    p->ptl.flags.general_frame_only_constraint_flag = 1;
+    p->ptl.general_profile_idc = chroma444 ? STD_VIDEO_H265_PROFILE_IDC_FORMAT_RANGE_EXTENSIONS
+                                           : STD_VIDEO_H265_PROFILE_IDC_MAIN;
+    p->ptl.general_level_idc   = (StdVideoH265LevelIdc)level;
+    p->dpbm.max_dec_pic_buffering_minus1[0] = 1;
+
+    p->vps.flags.vps_temporal_id_nesting_flag             = 1;
+    p->vps.flags.vps_sub_layer_ordering_info_present_flag = 1;
+    p->vps.pDecPicBufMgr     = &p->dpbm;
+    p->vps.pProfileTierLevel = &p->ptl;
+
+    p->vui.flags.video_signal_type_present_flag  = 1;
+    p->vui.flags.colour_description_present_flag = 1;
+    p->vui.flags.vui_timing_info_present_flag    = 1;
+    p->vui.video_format             = 5;
+    p->vui.colour_primaries         = 1;
+    p->vui.transfer_characteristics = 1;
+    p->vui.matrix_coeffs            = 1;
+    p->vui.vui_num_units_in_tick    = 1;
+    p->vui.vui_time_scale           = (uint32_t)fps;
+
+    StdVideoH265SequenceParameterSet* s = &p->sps;
+    s->flags.sps_temporal_id_nesting_flag             = 1;
+    s->flags.sps_sub_layer_ordering_info_present_flag = 1;
+    s->flags.vui_parameters_present_flag              = 1;
+    s->flags.amp_enabled_flag                         = 1;
+    s->flags.sample_adaptive_offset_enabled_flag      = lossless ? 0 : 1;
+    s->flags.sps_temporal_mvp_enabled_flag            = 0;
+    s->chroma_format_idc = chroma444 ? STD_VIDEO_H265_CHROMA_FORMAT_IDC_444
+                                     : STD_VIDEO_H265_CHROMA_FORMAT_IDC_420;
+    s->pic_width_in_luma_samples  = (uint32_t)coded_w;
+    s->pic_height_in_luma_samples = (uint32_t)coded_h;
+    s->log2_max_pic_order_cnt_lsb_minus4          = 4;
+    s->log2_min_luma_coding_block_size_minus3     = 0;
+    s->log2_diff_max_min_luma_coding_block_size   = (uint8_t)(log2_ctb - 3);
+    s->log2_min_luma_transform_block_size_minus2  = (uint8_t)(log2_min_tb - 2);
+    s->log2_diff_max_min_luma_transform_block_size = (uint8_t)(log2_max_tb - log2_min_tb);
+    s->max_transform_hierarchy_depth_inter = 3;
+    s->max_transform_hierarchy_depth_intra = 3;
+    // conformance window units: 2 px for 4:2:0, 1 px for 4:4:4
+    int unit = chroma444 ? 1 : 2;
+    if (coded_w != width || coded_h != height) {
+        s->flags.conformance_window_flag = 1;
+        s->conf_win_right_offset  = (uint32_t)((coded_w - width)  / unit);
+        s->conf_win_bottom_offset = (uint32_t)((coded_h - height) / unit);
+    }
+    s->pProfileTierLevel        = &p->ptl;
+    s->pDecPicBufMgr            = &p->dpbm;
+    s->pSequenceParameterSetVui = &p->vui;
+
+    StdVideoH265PictureParameterSet* q = &p->pps;
+    q->flags.transquant_bypass_enabled_flag             = lossless ? 1 : 0;
+    q->flags.cu_qp_delta_enabled_flag                   = lossless ? 0 : 1;
+    q->flags.pps_loop_filter_across_slices_enabled_flag = 1;
+    q->flags.deblocking_filter_control_present_flag     = 1;
+    q->flags.pps_deblocking_filter_disabled_flag        = lossless ? 1 : 0;
+    return p;
+}
+
+void h265_picture(H265Picture* h, int idr, int poc, int prev_poc, int ref_slot) {
+    memset(h, 0, sizeof(*h));
+    memset(h->refs.RefPicList0, STD_VIDEO_H265_NO_REFERENCE_PICTURE, sizeof(h->refs.RefPicList0));
+    memset(h->refs.RefPicList1, STD_VIDEO_H265_NO_REFERENCE_PICTURE, sizeof(h->refs.RefPicList1));
+    h->pic.flags.is_reference    = 1;
+    h->pic.flags.IrapPicFlag     = idr ? 1 : 0;
+    h->pic.flags.pic_output_flag = 1;
+    h->pic.pic_type       = idr ? STD_VIDEO_H265_PICTURE_TYPE_IDR : STD_VIDEO_H265_PICTURE_TYPE_P;
+    h->pic.PicOrderCntVal = poc;
+    if (!idr) {
+        // one earlier picture, used by this one
+        h->rps.num_negative_pics      = 1;
+        h->rps.delta_poc_s0_minus1[0] = (uint16_t)(poc - prev_poc - 1);
+        h->rps.used_by_curr_pic_s0_flag = 1;
+        h->refs.RefPicList0[0] = (uint8_t)ref_slot;
+    }
+    h->pic.pRefLists           = &h->refs;
+    h->pic.pShortTermRefPicSet = &h->rps;
+    h->slice.flags.first_slice_segment_in_pic_flag = 1;
+    h->slice.flags.slice_sao_luma_flag   = 0;
+    h->slice.flags.slice_sao_chroma_flag = 0;
+    h->slice.slice_type      = idr ? STD_VIDEO_H265_SLICE_TYPE_I : STD_VIDEO_H265_SLICE_TYPE_P;
+    h->slice.MaxNumMergeCand = 5;
+    h->ref_cur.pic_type       = h->pic.pic_type;
+    h->ref_cur.PicOrderCntVal = poc;
+    h->ref_prev.pic_type       = STD_VIDEO_H265_PICTURE_TYPE_P;
+    h->ref_prev.PicOrderCntVal = prev_poc;
 }
 
 // ---- h.264 decode ----
@@ -1121,5 +1246,1012 @@ void yuv_rgba(const uint8_t* yp, const uint8_t* up, const uint8_t* vp, int w, in
             out[x * 4 + 2] = clamp8((l + bu * u + 32768) >> 16);
             out[x * 4 + 3] = 255;
         }
+    }
+}
+
+// ---- h.265 decode ----
+#include <vk_video/vulkan_video_codec_h265std_decode.h>
+
+#define H265D_PS 16
+#define H265D_SLICES 600
+
+typedef struct {
+    int valid;
+    StdVideoH265VideoParameterSet std;
+    StdVideoH265ProfileTierLevel ptl;
+    StdVideoH265DecPicBufMgr dpbm;
+} Vps5;
+
+typedef struct {
+    int valid;
+    StdVideoH265SequenceParameterSet std;
+    StdVideoH265ProfileTierLevel ptl;
+    StdVideoH265DecPicBufMgr dpbm;
+    StdVideoH265ScalingLists lists;
+    StdVideoH265ShortTermRefPicSet rps[STD_VIDEO_H265_MAX_SHORT_TERM_REF_PIC_SETS];
+    StdVideoH265LongTermRefPicsSps lt;
+    StdVideoH265SequenceParameterSetVui vui;
+    // each set's pictures as poc deltas and used flags
+    int rn[STD_VIDEO_H265_MAX_SHORT_TERM_REF_PIC_SETS + 1];
+    int rneg[STD_VIDEO_H265_MAX_SHORT_TERM_REF_PIC_SETS + 1];
+    int rdelta[STD_VIDEO_H265_MAX_SHORT_TERM_REF_PIC_SETS + 1][32];
+    int rused[STD_VIDEO_H265_MAX_SHORT_TERM_REF_PIC_SETS + 1][32];
+} Sps5;
+
+typedef struct {
+    int valid;
+    StdVideoH265PictureParameterSet std;
+    StdVideoH265ScalingLists lists;
+} Pps5;
+
+typedef struct {
+    int in_use, ref, long_ref, output, queued;
+    int poc;
+    int64_t pts;
+} Slot5;
+
+struct H265Dec {
+    int nal_len;
+    Vps5 vps[H265D_PS];
+    Sps5 sps[H265D_PS];
+    Pps5 pps[64];
+    int dirty, active_sps;
+    StdVideoH265VideoParameterSet add_vps[H265D_PS];
+    StdVideoH265SequenceParameterSet add_sps[H265D_PS];
+    StdVideoH265PictureParameterSet add_pps[64];
+    Slot5 slot[H264D_SLOTS];
+    int prev_tid0_poc, no_rasl, first;
+    // the ready picture
+    int ready, cur, idr, irap, is_ref, pps_id, poc, output_flag;
+    int rps_sps_flag, rps_bits, rps_idx_deltas;
+    int n_before, n_after, n_lt, n_foll;
+    int before[16], after[16], lt[16], foll[32];
+    int64_t pts;
+    uint8_t* bits;
+    int bits_n, bits_cap;
+    uint32_t offsets[H265D_SLICES];
+    int slices;
+    int queue[64];
+    int64_t queue_pts[64];
+    int q_head, q_n;
+    StdVideoDecodeH265PictureInfo pic;
+    VkVideoDecodeH265PictureInfoKHR pic_vk;
+    StdVideoDecodeH265ReferenceInfo refs[H264D_SLOTS];
+    VkVideoDecodeH265DpbSlotInfoKHR dpb[H264D_SLOTS];
+    VkVideoPictureResourceInfoKHR res[H264D_SLOTS];
+    VkVideoReferenceSlotInfoKHR slots_vk[H264D_SLOTS];
+    VkVideoReferenceSlotInfoKHR begin_slots[H264D_SLOTS];
+    StdVideoDecodeH265ReferenceInfo setup_ref;
+    VkVideoDecodeH265DpbSlotInfoKHR setup_dpb;
+    VkVideoPictureResourceInfoKHR setup_res;
+    VkVideoReferenceSlotInfoKHR setup_slot;
+    uint8_t scratch[8192];
+};
+
+H265Dec* h265d_new(void) {
+    H265Dec* d = (H265Dec*)calloc(1, sizeof(H265Dec));
+    d->active_sps = -1;
+    d->first = 1;
+    return d;
+}
+
+void h265d_free(H265Dec* d) {
+    if (!d) return;
+    free(d->bits);
+    free(d);
+}
+
+static void ptl5(Bits* b, StdVideoH265ProfileTierLevel* p, int max_sub) {
+    memset(p, 0, sizeof(*p));
+    bits_u(b, 2);
+    p->flags.general_tier_flag = bits_u(b, 1);
+    p->general_profile_idc = (StdVideoH265ProfileIdc)bits_u(b, 5);
+    uint32_t compat = bits_u(b, 32);
+    // a stream may name its profile only in the compatibility flags
+    if (p->general_profile_idc == 0)
+        for (int j = 1; j < 32; j++)
+            if (compat & (1u << (31 - j))) { p->general_profile_idc = (StdVideoH265ProfileIdc)j; break; }
+    p->flags.general_progressive_source_flag = bits_u(b, 1);
+    p->flags.general_interlaced_source_flag = bits_u(b, 1);
+    p->flags.general_non_packed_constraint_flag = bits_u(b, 1);
+    p->flags.general_frame_only_constraint_flag = bits_u(b, 1);
+    // 43 constraint bits and one more before the level
+    bits_u(b, 32);
+    bits_u(b, 12);
+    int lvl = (int)bits_u(b, 8);
+    // level_idc is 30 x the level; the std enum counts the levels
+    static const int levels[] = { 30, 60, 63, 90, 93, 120, 123, 150, 153, 156, 180, 183, 186 };
+    p->general_level_idc = STD_VIDEO_H265_LEVEL_IDC_6_2;
+    for (int i = 0; i < 13; i++)
+        if (levels[i] >= lvl) { p->general_level_idc = (StdVideoH265LevelIdc)i; break; }
+    int prof[8] = {0}, lev[8] = {0};
+    for (int i = 0; i < max_sub; i++) {
+        prof[i] = bits_u(b, 1);
+        lev[i] = bits_u(b, 1);
+    }
+    if (max_sub > 0)
+        for (int i = max_sub; i < 8; i++) bits_u(b, 2);
+    for (int i = 0; i < max_sub; i++) {
+        if (prof[i]) { bits_u(b, 32); bits_u(b, 32); bits_u(b, 24); }
+        if (lev[i]) bits_u(b, 8);
+    }
+}
+
+static void dpbm5(Bits* b, StdVideoH265DecPicBufMgr* m, int max_sub, int all) {
+    for (int i = all ? 0 : max_sub; i <= max_sub; i++) {
+        m->max_dec_pic_buffering_minus1[i] = (uint8_t)bits_ue(b);
+        m->max_num_reorder_pics[i] = (uint8_t)bits_ue(b);
+        m->max_latency_increase_plus1[i] = bits_ue(b);
+    }
+    for (int i = 0; !all && i < max_sub; i++) {
+        m->max_dec_pic_buffering_minus1[i] = m->max_dec_pic_buffering_minus1[max_sub];
+        m->max_num_reorder_pics[i] = m->max_num_reorder_pics[max_sub];
+        m->max_latency_increase_plus1[i] = m->max_latency_increase_plus1[max_sub];
+    }
+}
+
+static const uint8_t sl_default_intra[64] = {
+    16,16,16,16,16,16,16,16,16,16,17,16,17,16,17,18,17,18,18,17,18,21,19,20,
+    21,20,19,21,24,22,22,24,24,22,22,24,25,25,27,30,27,25,25,29,31,35,35,31,
+    29,36,41,44,41,36,47,54,54,47,65,70,65,88,88,115 };
+static const uint8_t sl_default_inter[64] = {
+    16,16,16,16,16,16,16,16,16,16,17,17,17,17,17,18,18,18,18,18,18,20,20,20,
+    20,20,20,20,24,24,24,24,24,24,24,24,25,25,25,25,25,25,25,28,28,28,28,28,
+    28,33,33,33,33,33,41,41,41,41,54,54,54,71,71,91 };
+
+static void sl_defaults(StdVideoH265ScalingLists* s) {
+    memset(s, 0, sizeof(*s));
+    for (int m = 0; m < 6; m++)
+        for (int i = 0; i < 16; i++) s->ScalingList4x4[m][i] = 16;
+    for (int m = 0; m < 6; m++)
+        for (int i = 0; i < 64; i++) {
+            const uint8_t* t = m < 3 ? sl_default_intra : sl_default_inter;
+            s->ScalingList8x8[m][i] = t[i];
+            s->ScalingList16x16[m][i] = t[i];
+        }
+    for (int m = 0; m < 2; m++)
+        for (int i = 0; i < 64; i++)
+            s->ScalingList32x32[m][i] = (m == 0 ? sl_default_intra : sl_default_inter)[i];
+    for (int m = 0; m < 6; m++) s->ScalingListDCCoef16x16[m] = 16;
+    for (int m = 0; m < 2; m++) s->ScalingListDCCoef32x32[m] = 16;
+}
+
+static uint8_t* sl_list(StdVideoH265ScalingLists* s, int size, int m) {
+    if (size == 0) return s->ScalingList4x4[m];
+    if (size == 1) return s->ScalingList8x8[m];
+    if (size == 2) return s->ScalingList16x16[m];
+    return s->ScalingList32x32[m];
+}
+
+static void sl_parse(Bits* b, StdVideoH265ScalingLists* s) {
+    sl_defaults(s);
+    for (int size = 0; size < 4; size++) {
+        int step = size == 3 ? 3 : 1;
+        for (int m = 0; m < 6; m += step) {
+            int mi = size == 3 ? m / 3 : m;
+            int n = size == 0 ? 16 : 64;
+            uint8_t* dst = sl_list(s, size, mi);
+            if (!bits_u(b, 1)) {
+                int delta = (int)bits_ue(b) * (size == 3 ? 3 : 1);
+                if (delta) {
+                    int ref = size == 3 ? (m - delta) / 3 : m - delta;
+                    memcpy(dst, sl_list(s, size, ref), (size_t)n);
+                    if (size == 2) s->ScalingListDCCoef16x16[mi] = s->ScalingListDCCoef16x16[ref];
+                    if (size == 3) s->ScalingListDCCoef32x32[mi] = s->ScalingListDCCoef32x32[ref];
+                } else {
+                    // the default for this list, as sl_defaults set it
+                    StdVideoH265ScalingLists def;
+                    sl_defaults(&def);
+                    memcpy(dst, sl_list(&def, size, mi), (size_t)n);
+                    if (size == 2) s->ScalingListDCCoef16x16[mi] = 16;
+                    if (size == 3) s->ScalingListDCCoef32x32[mi] = 16;
+                }
+            } else {
+                int next = 8;
+                if (size > 1) {
+                    int dc = bits_se(b) + 8;
+                    next = dc;
+                    if (size == 2) s->ScalingListDCCoef16x16[mi] = (uint8_t)dc;
+                    else s->ScalingListDCCoef32x32[mi] = (uint8_t)dc;
+                }
+                for (int i = 0; i < n; i++) {
+                    next = (next + bits_se(b) + 256) % 256;
+                    dst[i] = (uint8_t)next;
+                }
+            }
+        }
+    }
+}
+
+// st_ref_pic_set(idx): fills the std struct (in the sps) and the
+// poc deltas; in a slice idx == num sets
+static void rps_parse(Bits* b, Sps5* sp, int idx, int num, StdVideoH265ShortTermRefPicSet* out,
+                      int* idx_deltas) {
+    memset(out, 0, sizeof(*out));
+    int n = 0, neg = 0;
+    int* dl = sp->rdelta[idx];
+    int* us = sp->rused[idx];
+    int inter = idx != 0 ? (int)bits_u(b, 1) : 0;
+    out->flags.inter_ref_pic_set_prediction_flag = inter;
+    if (inter) {
+        int delta_idx = idx == num ? (int)bits_ue(b) + 1 : 1;
+        out->delta_idx_minus1 = (uint32_t)(delta_idx - 1);
+        int sign = (int)bits_u(b, 1);
+        int absd = (int)bits_ue(b) + 1;
+        out->flags.delta_rps_sign = sign;
+        out->abs_delta_rps_minus1 = (uint16_t)(absd - 1);
+        int drps = (1 - 2 * sign) * absd;
+        int r = idx - delta_idx;
+        if (idx_deltas) *idx_deltas = sp->rn[r];
+        int used[33], use_delta[33];
+        for (int j = 0; j <= sp->rn[r]; j++) {
+            used[j] = (int)bits_u(b, 1);
+            use_delta[j] = 1;
+            if (!used[j]) use_delta[j] = (int)bits_u(b, 1);
+            if (used[j]) out->used_by_curr_pic_flag |= (uint16_t)(1u << j);
+            if (use_delta[j]) out->use_delta_flag |= (uint16_t)(1u << j);
+        }
+        // (7-61, 7-62): the new set's negatives then positives
+        int rneg = sp->rneg[r], rpos = sp->rn[r] - rneg;
+        int* rd = sp->rdelta[r];
+        for (int j = rpos - 1; j >= 0; j--) {
+            int dp = rd[rneg + j] + drps;
+            if (dp < 0 && use_delta[rneg + j]) { dl[n] = dp; us[n] = used[rneg + j]; n++; }
+        }
+        if (drps < 0 && use_delta[sp->rn[r]]) { dl[n] = drps; us[n] = used[sp->rn[r]]; n++; }
+        for (int j = 0; j < rneg; j++) {
+            int dp = rd[j] + drps;
+            if (dp < 0 && use_delta[j]) { dl[n] = dp; us[n] = used[j]; n++; }
+        }
+        neg = n;
+        for (int j = rneg - 1; j >= 0; j--) {
+            int dp = rd[j] + drps;
+            if (dp > 0 && use_delta[j]) { dl[n] = dp; us[n] = used[j]; n++; }
+        }
+        if (drps > 0 && use_delta[sp->rn[r]]) { dl[n] = drps; us[n] = used[sp->rn[r]]; n++; }
+        for (int j = 0; j < rpos; j++) {
+            int dp = rd[rneg + j] + drps;
+            if (dp > 0 && use_delta[rneg + j]) { dl[n] = dp; us[n] = used[rneg + j]; n++; }
+        }
+    } else {
+        int nn = (int)bits_ue(b), np = (int)bits_ue(b);
+        if (nn > 16) nn = 16;
+        if (np > 16) np = 16;
+        out->num_negative_pics = (uint8_t)nn;
+        out->num_positive_pics = (uint8_t)np;
+        int poc = 0;
+        for (int i = 0; i < nn; i++) {
+            int d1 = (int)bits_ue(b);
+            out->delta_poc_s0_minus1[i] = (uint16_t)d1;
+            poc -= d1 + 1;
+            int u = (int)bits_u(b, 1);
+            if (u) out->used_by_curr_pic_s0_flag |= (uint16_t)(1u << i);
+            dl[n] = poc; us[n] = u; n++;
+        }
+        neg = nn;
+        poc = 0;
+        for (int i = 0; i < np; i++) {
+            int d1 = (int)bits_ue(b);
+            out->delta_poc_s1_minus1[i] = (uint16_t)d1;
+            poc += d1 + 1;
+            int u = (int)bits_u(b, 1);
+            if (u) out->used_by_curr_pic_s1_flag |= (uint16_t)(1u << i);
+            dl[n] = poc; us[n] = u; n++;
+        }
+    }
+    if (inter) {
+        out->num_negative_pics = (uint8_t)neg;
+        out->num_positive_pics = (uint8_t)(n - neg);
+    }
+    sp->rn[idx] = n;
+    sp->rneg[idx] = neg;
+}
+
+static void hrd5(Bits* b, int common, int max_sub) {
+    int nal = 0, vcl = 0, sub_pic = 0;
+    if (common) {
+        nal = (int)bits_u(b, 1);
+        vcl = (int)bits_u(b, 1);
+        if (nal || vcl) {
+            sub_pic = (int)bits_u(b, 1);
+            if (sub_pic) { bits_u(b, 8); bits_u(b, 5); bits_u(b, 1); bits_u(b, 5); }
+            bits_u(b, 4); bits_u(b, 4);
+            if (sub_pic) bits_u(b, 4);
+            bits_u(b, 5); bits_u(b, 5); bits_u(b, 5);
+        }
+    }
+    for (int i = 0; i <= max_sub; i++) {
+        int fixed = (int)bits_u(b, 1), within = 1, low = 0, cnt = 1;
+        if (!fixed) within = (int)bits_u(b, 1);
+        if (within) bits_ue(b);
+        else low = (int)bits_u(b, 1);
+        if (!low) cnt = (int)bits_ue(b) + 1;
+        for (int k = 0; k < nal + vcl; k++)
+            for (int j = 0; j < cnt; j++) {
+                bits_ue(b); bits_ue(b);
+                if (sub_pic) { bits_ue(b); bits_ue(b); }
+                bits_u(b, 1);
+            }
+    }
+}
+
+static void parse_vps5(H265Dec* d, const uint8_t* nal, int len) {
+    int n = rbsp(nal + 2, len - 2, d->scratch, sizeof(d->scratch));
+    Bits b = { d->scratch, n, 0 };
+    int id = (int)bits_u(&b, 4);
+    Vps5* v = &d->vps[id];
+    memset(v, 0, sizeof(*v));
+    bits_u(&b, 2);
+    bits_u(&b, 6);
+    int max_sub = (int)bits_u(&b, 3);
+    v->std.flags.vps_temporal_id_nesting_flag = bits_u(&b, 1);
+    bits_u(&b, 16);
+    ptl5(&b, &v->ptl, max_sub);
+    int ordering = (int)bits_u(&b, 1);
+    v->std.flags.vps_sub_layer_ordering_info_present_flag = ordering;
+    dpbm5(&b, &v->dpbm, max_sub, ordering);
+    v->std.vps_video_parameter_set_id = (uint8_t)id;
+    v->std.vps_max_sub_layers_minus1 = (uint8_t)max_sub;
+    v->std.pDecPicBufMgr = &v->dpbm;
+    v->std.pProfileTierLevel = &v->ptl;
+    v->valid = 1;
+    d->dirty = 1;
+}
+
+static void parse_vui5(Bits* b, Sps5* s) {
+    StdVideoH265SequenceParameterSetVui* v = &s->vui;
+    memset(v, 0, sizeof(*v));
+    if ((v->flags.aspect_ratio_info_present_flag = bits_u(b, 1))) {
+        v->aspect_ratio_idc = (StdVideoH265AspectRatioIdc)bits_u(b, 8);
+        if (v->aspect_ratio_idc == 255) { v->sar_width = (uint16_t)bits_u(b, 16); v->sar_height = (uint16_t)bits_u(b, 16); }
+    }
+    if ((v->flags.overscan_info_present_flag = bits_u(b, 1)))
+        v->flags.overscan_appropriate_flag = bits_u(b, 1);
+    if ((v->flags.video_signal_type_present_flag = bits_u(b, 1))) {
+        v->video_format = (uint8_t)bits_u(b, 3);
+        v->flags.video_full_range_flag = bits_u(b, 1);
+        if ((v->flags.colour_description_present_flag = bits_u(b, 1))) {
+            v->colour_primaries = (uint8_t)bits_u(b, 8);
+            v->transfer_characteristics = (uint8_t)bits_u(b, 8);
+            v->matrix_coeffs = (uint8_t)bits_u(b, 8);
+        }
+    }
+    if ((v->flags.chroma_loc_info_present_flag = bits_u(b, 1))) {
+        v->chroma_sample_loc_type_top_field = (uint8_t)bits_ue(b);
+        v->chroma_sample_loc_type_bottom_field = (uint8_t)bits_ue(b);
+    }
+    v->flags.neutral_chroma_indication_flag = bits_u(b, 1);
+    v->flags.field_seq_flag = bits_u(b, 1);
+    v->flags.frame_field_info_present_flag = bits_u(b, 1);
+    if ((v->flags.default_display_window_flag = bits_u(b, 1))) {
+        v->def_disp_win_left_offset = (uint16_t)bits_ue(b);
+        v->def_disp_win_right_offset = (uint16_t)bits_ue(b);
+        v->def_disp_win_top_offset = (uint16_t)bits_ue(b);
+        v->def_disp_win_bottom_offset = (uint16_t)bits_ue(b);
+    }
+    if ((v->flags.vui_timing_info_present_flag = bits_u(b, 1))) {
+        v->vui_num_units_in_tick = bits_u(b, 32);
+        v->vui_time_scale = bits_u(b, 32);
+        if ((v->flags.vui_poc_proportional_to_timing_flag = bits_u(b, 1)))
+            v->vui_num_ticks_poc_diff_one_minus1 = bits_ue(b);
+        if ((v->flags.vui_hrd_parameters_present_flag = bits_u(b, 1)))
+            hrd5(b, 1, s->std.sps_max_sub_layers_minus1);
+        v->flags.vui_hrd_parameters_present_flag = 0;
+    }
+    if ((v->flags.bitstream_restriction_flag = bits_u(b, 1))) {
+        v->flags.tiles_fixed_structure_flag = bits_u(b, 1);
+        v->flags.motion_vectors_over_pic_boundaries_flag = bits_u(b, 1);
+        v->flags.restricted_ref_pic_lists_flag = bits_u(b, 1);
+        v->min_spatial_segmentation_idc = (uint16_t)bits_ue(b);
+        v->max_bytes_per_pic_denom = (uint8_t)bits_ue(b);
+        v->max_bits_per_min_cu_denom = (uint8_t)bits_ue(b);
+        v->log2_max_mv_length_horizontal = (uint8_t)bits_ue(b);
+        v->log2_max_mv_length_vertical = (uint8_t)bits_ue(b);
+    }
+}
+
+static void parse_sps5(H265Dec* d, const uint8_t* nal, int len) {
+    int n = rbsp(nal + 2, len - 2, d->scratch, sizeof(d->scratch));
+    Bits b = { d->scratch, n, 0 };
+    int vps_id = (int)bits_u(&b, 4);
+    int max_sub = (int)bits_u(&b, 3);
+    int nesting = (int)bits_u(&b, 1);
+    StdVideoH265ProfileTierLevel ptl;
+    ptl5(&b, &ptl, max_sub);
+    int id = (int)bits_ue(&b);
+    if (id >= H265D_PS) return;
+    Sps5* sp = &d->sps[id];
+    memset(sp, 0, sizeof(*sp));
+    sp->ptl = ptl;
+    StdVideoH265SequenceParameterSet* s = &sp->std;
+    s->sps_video_parameter_set_id = (uint8_t)vps_id;
+    s->sps_max_sub_layers_minus1 = (uint8_t)max_sub;
+    s->flags.sps_temporal_id_nesting_flag = nesting;
+    s->sps_seq_parameter_set_id = (uint8_t)id;
+    s->chroma_format_idc = (StdVideoH265ChromaFormatIdc)bits_ue(&b);
+    if (s->chroma_format_idc == 3) s->flags.separate_colour_plane_flag = bits_u(&b, 1);
+    s->pic_width_in_luma_samples = bits_ue(&b);
+    s->pic_height_in_luma_samples = bits_ue(&b);
+    if ((s->flags.conformance_window_flag = bits_u(&b, 1))) {
+        s->conf_win_left_offset = bits_ue(&b);
+        s->conf_win_right_offset = bits_ue(&b);
+        s->conf_win_top_offset = bits_ue(&b);
+        s->conf_win_bottom_offset = bits_ue(&b);
+    }
+    s->bit_depth_luma_minus8 = (uint8_t)bits_ue(&b);
+    s->bit_depth_chroma_minus8 = (uint8_t)bits_ue(&b);
+    s->log2_max_pic_order_cnt_lsb_minus4 = (uint8_t)bits_ue(&b);
+    int ordering = (int)bits_u(&b, 1);
+    s->flags.sps_sub_layer_ordering_info_present_flag = ordering;
+    dpbm5(&b, &sp->dpbm, max_sub, ordering);
+    s->log2_min_luma_coding_block_size_minus3 = (uint8_t)bits_ue(&b);
+    s->log2_diff_max_min_luma_coding_block_size = (uint8_t)bits_ue(&b);
+    s->log2_min_luma_transform_block_size_minus2 = (uint8_t)bits_ue(&b);
+    s->log2_diff_max_min_luma_transform_block_size = (uint8_t)bits_ue(&b);
+    s->max_transform_hierarchy_depth_inter = (uint8_t)bits_ue(&b);
+    s->max_transform_hierarchy_depth_intra = (uint8_t)bits_ue(&b);
+    if ((s->flags.scaling_list_enabled_flag = bits_u(&b, 1))) {
+        if ((s->flags.sps_scaling_list_data_present_flag = bits_u(&b, 1)))
+            sl_parse(&b, &sp->lists);
+        else
+            sl_defaults(&sp->lists);
+    }
+    s->flags.amp_enabled_flag = bits_u(&b, 1);
+    s->flags.sample_adaptive_offset_enabled_flag = bits_u(&b, 1);
+    if ((s->flags.pcm_enabled_flag = bits_u(&b, 1))) {
+        s->pcm_sample_bit_depth_luma_minus1 = (uint8_t)bits_u(&b, 4);
+        s->pcm_sample_bit_depth_chroma_minus1 = (uint8_t)bits_u(&b, 4);
+        s->log2_min_pcm_luma_coding_block_size_minus3 = (uint8_t)bits_ue(&b);
+        s->log2_diff_max_min_pcm_luma_coding_block_size = (uint8_t)bits_ue(&b);
+        s->flags.pcm_loop_filter_disabled_flag = bits_u(&b, 1);
+    }
+    int num = (int)bits_ue(&b);
+    if (num > STD_VIDEO_H265_MAX_SHORT_TERM_REF_PIC_SETS) num = STD_VIDEO_H265_MAX_SHORT_TERM_REF_PIC_SETS;
+    s->num_short_term_ref_pic_sets = (uint8_t)num;
+    for (int i = 0; i < num; i++)
+        rps_parse(&b, sp, i, num, &sp->rps[i], NULL);
+    if ((s->flags.long_term_ref_pics_present_flag = bits_u(&b, 1))) {
+        int lt = (int)bits_ue(&b);
+        s->num_long_term_ref_pics_sps = (uint8_t)lt;
+        for (int i = 0; i < lt && i < 32; i++) {
+            sp->lt.lt_ref_pic_poc_lsb_sps[i] = bits_u(&b, s->log2_max_pic_order_cnt_lsb_minus4 + 4);
+            if (bits_u(&b, 1)) sp->lt.used_by_curr_pic_lt_sps_flag |= 1u << i;
+        }
+    }
+    s->flags.sps_temporal_mvp_enabled_flag = bits_u(&b, 1);
+    s->flags.strong_intra_smoothing_enabled_flag = bits_u(&b, 1);
+    if ((s->flags.vui_parameters_present_flag = bits_u(&b, 1)))
+        parse_vui5(&b, sp);
+    if ((s->flags.sps_extension_present_flag = bits_u(&b, 1))) {
+        s->flags.sps_range_extension_flag = bits_u(&b, 1);
+        bits_u(&b, 1);
+        bits_u(&b, 1);
+        s->flags.sps_scc_extension_flag = bits_u(&b, 1);
+        bits_u(&b, 4);
+        if (s->flags.sps_range_extension_flag) {
+            s->flags.transform_skip_rotation_enabled_flag = bits_u(&b, 1);
+            s->flags.transform_skip_context_enabled_flag = bits_u(&b, 1);
+            s->flags.implicit_rdpcm_enabled_flag = bits_u(&b, 1);
+            s->flags.explicit_rdpcm_enabled_flag = bits_u(&b, 1);
+            s->flags.extended_precision_processing_flag = bits_u(&b, 1);
+            s->flags.intra_smoothing_disabled_flag = bits_u(&b, 1);
+            s->flags.high_precision_offsets_enabled_flag = bits_u(&b, 1);
+            s->flags.persistent_rice_adaptation_enabled_flag = bits_u(&b, 1);
+            s->flags.cabac_bypass_alignment_enabled_flag = bits_u(&b, 1);
+        }
+    }
+    s->pProfileTierLevel = &sp->ptl;
+    s->pDecPicBufMgr = &sp->dpbm;
+    s->pScalingLists = s->flags.scaling_list_enabled_flag ? &sp->lists : NULL;
+    s->pShortTermRefPicSet = num ? sp->rps : NULL;
+    s->pLongTermRefPicsSps = s->flags.long_term_ref_pics_present_flag ? &sp->lt : NULL;
+    s->pSequenceParameterSetVui = s->flags.vui_parameters_present_flag ? &sp->vui : NULL;
+    sp->valid = 1;
+    d->dirty = 1;
+}
+
+static void parse_pps5(H265Dec* d, const uint8_t* nal, int len) {
+    int n = rbsp(nal + 2, len - 2, d->scratch, sizeof(d->scratch));
+    Bits b = { d->scratch, n, 0 };
+    int id = (int)bits_ue(&b);
+    if (id >= 64) return;
+    Pps5* pp = &d->pps[id];
+    memset(pp, 0, sizeof(*pp));
+    StdVideoH265PictureParameterSet* p = &pp->std;
+    p->pps_pic_parameter_set_id = (uint8_t)id;
+    p->pps_seq_parameter_set_id = (uint8_t)bits_ue(&b);
+    if (p->pps_seq_parameter_set_id < H265D_PS)
+        p->sps_video_parameter_set_id = d->sps[p->pps_seq_parameter_set_id].std.sps_video_parameter_set_id;
+    p->flags.dependent_slice_segments_enabled_flag = bits_u(&b, 1);
+    p->flags.output_flag_present_flag = bits_u(&b, 1);
+    p->num_extra_slice_header_bits = (uint8_t)bits_u(&b, 3);
+    p->flags.sign_data_hiding_enabled_flag = bits_u(&b, 1);
+    p->flags.cabac_init_present_flag = bits_u(&b, 1);
+    p->num_ref_idx_l0_default_active_minus1 = (uint8_t)bits_ue(&b);
+    p->num_ref_idx_l1_default_active_minus1 = (uint8_t)bits_ue(&b);
+    p->init_qp_minus26 = (int8_t)bits_se(&b);
+    p->flags.constrained_intra_pred_flag = bits_u(&b, 1);
+    p->flags.transform_skip_enabled_flag = bits_u(&b, 1);
+    if ((p->flags.cu_qp_delta_enabled_flag = bits_u(&b, 1)))
+        p->diff_cu_qp_delta_depth = (uint8_t)bits_ue(&b);
+    p->pps_cb_qp_offset = (int8_t)bits_se(&b);
+    p->pps_cr_qp_offset = (int8_t)bits_se(&b);
+    p->flags.pps_slice_chroma_qp_offsets_present_flag = bits_u(&b, 1);
+    p->flags.weighted_pred_flag = bits_u(&b, 1);
+    p->flags.weighted_bipred_flag = bits_u(&b, 1);
+    p->flags.transquant_bypass_enabled_flag = bits_u(&b, 1);
+    p->flags.tiles_enabled_flag = bits_u(&b, 1);
+    p->flags.entropy_coding_sync_enabled_flag = bits_u(&b, 1);
+    if (p->flags.tiles_enabled_flag) {
+        p->num_tile_columns_minus1 = (uint8_t)bits_ue(&b);
+        p->num_tile_rows_minus1 = (uint8_t)bits_ue(&b);
+        if (!(p->flags.uniform_spacing_flag = bits_u(&b, 1))) {
+            for (int i = 0; i < p->num_tile_columns_minus1 && i < 19; i++)
+                p->column_width_minus1[i] = (uint16_t)bits_ue(&b);
+            for (int i = 0; i < p->num_tile_rows_minus1 && i < 21; i++)
+                p->row_height_minus1[i] = (uint16_t)bits_ue(&b);
+        }
+        p->flags.loop_filter_across_tiles_enabled_flag = bits_u(&b, 1);
+    }
+    p->flags.pps_loop_filter_across_slices_enabled_flag = bits_u(&b, 1);
+    if ((p->flags.deblocking_filter_control_present_flag = bits_u(&b, 1))) {
+        p->flags.deblocking_filter_override_enabled_flag = bits_u(&b, 1);
+        if (!(p->flags.pps_deblocking_filter_disabled_flag = bits_u(&b, 1))) {
+            p->pps_beta_offset_div2 = (int8_t)bits_se(&b);
+            p->pps_tc_offset_div2 = (int8_t)bits_se(&b);
+        }
+    }
+    if ((p->flags.pps_scaling_list_data_present_flag = bits_u(&b, 1)))
+        sl_parse(&b, &pp->lists);
+    p->flags.lists_modification_present_flag = bits_u(&b, 1);
+    p->log2_parallel_merge_level_minus2 = (uint8_t)bits_ue(&b);
+    p->flags.slice_segment_header_extension_present_flag = bits_u(&b, 1);
+    if ((p->flags.pps_extension_present_flag = bits_u(&b, 1))) {
+        p->flags.pps_range_extension_flag = bits_u(&b, 1);
+        bits_u(&b, 1);
+        bits_u(&b, 1);
+        bits_u(&b, 1);
+        bits_u(&b, 4);
+        if (p->flags.pps_range_extension_flag) {
+            if (p->flags.transform_skip_enabled_flag)
+                p->log2_max_transform_skip_block_size_minus2 = (uint8_t)bits_ue(&b);
+            p->flags.cross_component_prediction_enabled_flag = bits_u(&b, 1);
+            if ((p->flags.chroma_qp_offset_list_enabled_flag = bits_u(&b, 1))) {
+                p->diff_cu_chroma_qp_offset_depth = (uint8_t)bits_ue(&b);
+                p->chroma_qp_offset_list_len_minus1 = (uint8_t)bits_ue(&b);
+                for (int i = 0; i <= p->chroma_qp_offset_list_len_minus1 && i < 6; i++) {
+                    p->cb_qp_offset_list[i] = (int8_t)bits_se(&b);
+                    p->cr_qp_offset_list[i] = (int8_t)bits_se(&b);
+                }
+            }
+            p->log2_sao_offset_scale_luma = (uint8_t)bits_ue(&b);
+            p->log2_sao_offset_scale_chroma = (uint8_t)bits_ue(&b);
+        }
+    }
+    p->pScalingLists = p->flags.pps_scaling_list_data_present_flag ? &pp->lists : NULL;
+    pp->valid = 1;
+    d->dirty = 1;
+}
+
+static int ceil_log2(int v) {
+    int r = 0;
+    while ((1 << r) < v) r++;
+    return r;
+}
+
+static void add_bits5(H265Dec* d, const uint8_t* nal, int n) {
+    if (d->bits_n + n + 3 > d->bits_cap) {
+        d->bits_cap = (d->bits_n + n + 3) * 2;
+        d->bits = realloc(d->bits, (size_t)d->bits_cap);
+    }
+    if (d->slices < H265D_SLICES)
+        d->offsets[d->slices++] = (uint32_t)d->bits_n;
+    d->bits[d->bits_n++] = 0;
+    d->bits[d->bits_n++] = 0;
+    d->bits[d->bits_n++] = 1;
+    memcpy(d->bits + d->bits_n, nal, (size_t)n);
+    d->bits_n += n;
+}
+
+// the first slice segment's header: pps, poc lsb and the rps
+static int slice_head5(H265Dec* d, const uint8_t* nal, int len, int type, int* lsb) {
+    int n = rbsp(nal + 2, len - 2, d->scratch, sizeof(d->scratch));
+    Bits b = { d->scratch, n, 0 };
+    if (!bits_u(&b, 1)) return 0;
+    if (type >= 16 && type <= 23) bits_u(&b, 1);
+    int pps_id = (int)bits_ue(&b);
+    if (pps_id >= 64 || !d->pps[pps_id].valid) return 0;
+    StdVideoH265PictureParameterSet* p = &d->pps[pps_id].std;
+    int sps_id = p->pps_seq_parameter_set_id;
+    if (sps_id >= H265D_PS || !d->sps[sps_id].valid) return 0;
+    Sps5* sp = &d->sps[sps_id];
+    StdVideoH265SequenceParameterSet* s = &sp->std;
+    d->pps_id = pps_id;
+    d->active_sps = sps_id;
+    bits_u(&b, p->num_extra_slice_header_bits);
+    bits_ue(&b);
+    d->output_flag = 1;
+    if (p->flags.output_flag_present_flag) d->output_flag = (int)bits_u(&b, 1);
+    if (s->flags.separate_colour_plane_flag) bits_u(&b, 2);
+    d->rps_sps_flag = 0;
+    d->rps_bits = 0;
+    d->rps_idx_deltas = 0;
+    d->n_before = d->n_after = d->n_lt = d->n_foll = 0;
+    *lsb = 0;
+    if (type == 19 || type == 20) return 1;
+    int bits_poc = s->log2_max_pic_order_cnt_lsb_minus4 + 4;
+    *lsb = (int)bits_u(&b, bits_poc);
+    int num = s->num_short_term_ref_pic_sets;
+    int idx;
+    d->rps_sps_flag = (int)bits_u(&b, 1);
+    if (!d->rps_sps_flag) {
+        int at = b.bit;
+        StdVideoH265ShortTermRefPicSet tmp;
+        rps_parse(&b, sp, num, num, &tmp, &d->rps_idx_deltas);
+        d->rps_bits = b.bit - at;
+        idx = num;
+    } else {
+        idx = num > 1 ? (int)bits_u(&b, ceil_log2(num)) : 0;
+    }
+    // the set's pictures relative to this one's poc; poc known later
+    for (int i = 0; i < sp->rn[idx]; i++) {
+        int dp = sp->rdelta[idx][i];
+        if (!sp->rused[idx][i]) { if (d->n_foll < 32) d->foll[d->n_foll++] = dp; }
+        else if (dp < 0) { if (d->n_before < 16) d->before[d->n_before++] = dp; }
+        else if (d->n_after < 16) d->after[d->n_after++] = dp;
+    }
+    if (s->flags.long_term_ref_pics_present_flag) {
+        int nsps = s->num_long_term_ref_pics_sps ? (int)bits_ue(&b) : 0;
+        int npics = (int)bits_ue(&b);
+        for (int i = 0; i < nsps + npics && i < 16; i++) {
+            int lsb_lt, used;
+            if (i < nsps) {
+                int k = s->num_long_term_ref_pics_sps > 1 ? (int)bits_u(&b, ceil_log2(s->num_long_term_ref_pics_sps)) : 0;
+                lsb_lt = (int)sp->lt.lt_ref_pic_poc_lsb_sps[k];
+                used = (sp->lt.used_by_curr_pic_lt_sps_flag >> k) & 1;
+            } else {
+                lsb_lt = (int)bits_u(&b, bits_poc);
+                used = (int)bits_u(&b, 1);
+            }
+            if (bits_u(&b, 1)) bits_ue(&b);
+            // long-term by poc lsb (the msb cycle is not followed)
+            if (used) d->lt[d->n_lt++] = lsb_lt;
+            else if (d->n_foll < 32) d->foll[d->n_foll++] = 1 << 20 | lsb_lt;
+        }
+    }
+    return 1;
+}
+
+int h265d_config(H265Dec* d, const uint8_t* c, int n) {
+    if (n < 23) return 0;
+    d->nal_len = (c[21] & 3) + 1;
+    int arrays = c[22], at = 23;
+    for (int a = 0; a < arrays && at + 3 <= n; a++) {
+        int type = c[at] & 63;
+        int count = (c[at + 1] << 8) | c[at + 2];
+        at += 3;
+        for (int k = 0; k < count && at + 2 <= n; k++) {
+            int len = (c[at] << 8) | c[at + 1];
+            at += 2;
+            if (at + len > n) return 0;
+            if (type == 32) parse_vps5(d, c + at, len);
+            else if (type == 33) parse_sps5(d, c + at, len);
+            else if (type == 34) parse_pps5(d, c + at, len);
+            at += len;
+        }
+    }
+    for (int i = 0; i < H265D_PS; i++)
+        if (d->sps[i].valid) { d->active_sps = i; break; }
+    return d->active_sps >= 0;
+}
+
+static void refresh_use5(H265Dec* d) {
+    for (int i = 0; i < H264D_SLOTS; i++) {
+        Slot5* s = &d->slot[i];
+        s->in_use = s->ref || s->long_ref || s->output || s->queued;
+    }
+}
+
+static int bump5(H265Dec* d) {
+    int best = -1;
+    for (int i = 0; i < H264D_SLOTS; i++)
+        if (d->slot[i].output && (best < 0 || d->slot[i].poc < d->slot[best].poc))
+            best = i;
+    if (best < 0 || d->q_n >= 64) return 0;
+    d->slot[best].output = 0;
+    d->slot[best].queued = 1;
+    int tail = (d->q_head + d->q_n) % 64;
+    d->queue[tail] = best;
+    d->queue_pts[tail] = d->slot[best].pts;
+    d->q_n++;
+    return 1;
+}
+
+int h265d_sample(H265Dec* d, const uint8_t* data, int n, int64_t pts) {
+    d->ready = 0;
+    d->bits_n = 0;
+    d->slices = 0;
+    int have = 0, type0 = 0, lsb = 0, tid = 0;
+    for (int at = 0; at + d->nal_len <= n;) {
+        int len = 0;
+        for (int i = 0; i < d->nal_len; i++) len = (len << 8) | data[at + i];
+        at += d->nal_len;
+        if (len < 2 || at + len > n) break;
+        const uint8_t* nal = data + at;
+        at += len;
+        int type = (nal[0] >> 1) & 63;
+        if (type == 32) parse_vps5(d, nal, len);
+        else if (type == 33) parse_sps5(d, nal, len);
+        else if (type == 34) parse_pps5(d, nal, len);
+        else if (type <= 21 && !(type >= 10 && type <= 15)) {
+            if (!have) {
+                if (!slice_head5(d, nal, len, type, &lsb)) continue;
+                type0 = type;
+                tid = (nal[1] & 7) - 1;
+                have = 1;
+            }
+            add_bits5(d, nal, len);
+        }
+    }
+    if (!have) return 0;
+    d->irap = type0 >= 16 && type0 <= 23;
+    d->idr = type0 == 19 || type0 == 20;
+    // leading pictures of a random access point we started at
+    if (d->irap) d->no_rasl = d->idr || type0 == 21 || d->first;
+    if ((type0 == 8 || type0 == 9) && d->no_rasl) return 0;
+    d->first = 0;
+    StdVideoH265SequenceParameterSet* s = &d->sps[d->active_sps].std;
+    int max_lsb = 1 << (s->log2_max_pic_order_cnt_lsb_minus4 + 4);
+    int msb;
+    if (d->irap && d->no_rasl) msb = 0;
+    else {
+        int plsb = d->prev_tid0_poc & (max_lsb - 1), pmsb = d->prev_tid0_poc - plsb;
+        if (lsb < plsb && plsb - lsb >= max_lsb / 2) msb = pmsb + max_lsb;
+        else if (lsb > plsb && lsb - plsb > max_lsb / 2) msb = pmsb - max_lsb;
+        else msb = pmsb;
+    }
+    d->poc = msb + lsb;
+    // a sub-layer non-reference picture is 0..14 even; radl/rasl 6..9
+    int slnr = type0 <= 14 && (type0 % 2) == 0;
+    d->is_ref = !slnr;
+    if (tid == 0 && !(type0 >= 6 && type0 <= 9) && !slnr) d->prev_tid0_poc = d->poc;
+    d->pts = pts;
+    // the rps: only its pictures stay references
+    if (d->irap && d->no_rasl) {
+        for (int i = 0; i < H264D_SLOTS; i++) d->slot[i].ref = d->slot[i].long_ref = 0;
+        while (bump5(d)) ;
+    } else {
+        for (int i = 0; i < H264D_SLOTS; i++) {
+            Slot5* t = &d->slot[i];
+            if (!t->ref && !t->long_ref) continue;
+            int keep = 0;
+            for (int k = 0; k < d->n_before; k++) keep |= t->poc == d->poc + d->before[k];
+            for (int k = 0; k < d->n_after; k++)  keep |= t->poc == d->poc + d->after[k];
+            for (int k = 0; k < d->n_foll; k++)
+                keep |= (d->foll[k] & (1 << 20)) ? (t->poc & (max_lsb - 1)) == (d->foll[k] & 0xfffff)
+                                                  : t->poc == d->poc + d->foll[k];
+            for (int k = 0; k < d->n_lt; k++) keep |= (t->poc & (max_lsb - 1)) == d->lt[k];
+            if (!keep) t->ref = t->long_ref = 0;
+        }
+    }
+    refresh_use5(d);
+    // room for this picture: output the earliest waiting ones
+    int reorder = d->sps[d->active_sps].dpbm.max_num_reorder_pics[s->sps_max_sub_layers_minus1];
+    int size = d->sps[d->active_sps].dpbm.max_dec_pic_buffering_minus1[s->sps_max_sub_layers_minus1] + 1;
+    for (;;) {
+        int waiting = 0, used = 0;
+        for (int i = 0; i < H264D_SLOTS; i++) {
+            waiting += d->slot[i].output;
+            used += d->slot[i].in_use;
+        }
+        if ((waiting > reorder || used >= size || used >= H264D_SLOTS) && bump5(d)) { refresh_use5(d); continue; }
+        break;
+    }
+    d->cur = -1;
+    d->ready = 1;
+    return 1;
+}
+
+int h265d_params_dirty(H265Dec* d) { return d->dirty; }
+
+void h265d_params(H265Dec* d, VkVideoDecodeH265SessionParametersAddInfoKHR* add) {
+    int nv = 0, ns = 0, np = 0;
+    for (int i = 0; i < H265D_PS; i++) if (d->vps[i].valid) d->add_vps[nv++] = d->vps[i].std;
+    for (int i = 0; i < H265D_PS; i++) if (d->sps[i].valid) d->add_sps[ns++] = d->sps[i].std;
+    for (int i = 0; i < 64; i++) if (d->pps[i].valid) d->add_pps[np++] = d->pps[i].std;
+    memset(add, 0, sizeof(*add));
+    add->sType = VK_STRUCTURE_TYPE_VIDEO_DECODE_H265_SESSION_PARAMETERS_ADD_INFO_KHR;
+    add->stdVPSCount = (uint32_t)nv;
+    add->pStdVPSs = d->add_vps;
+    add->stdSPSCount = (uint32_t)ns;
+    add->pStdSPSs = d->add_sps;
+    add->stdPPSCount = (uint32_t)np;
+    add->pStdPPSs = d->add_pps;
+    d->dirty = 0;
+}
+
+static StdVideoH265SequenceParameterSet* active5(H265Dec* d) {
+    return d->active_sps >= 0 ? &d->sps[d->active_sps].std : NULL;
+}
+
+int h265d_profile(H265Dec* d) {
+    return d->active_sps >= 0 ? (int)d->sps[d->active_sps].ptl.general_profile_idc : 0;
+}
+int h265d_chroma(H265Dec* d) {
+    StdVideoH265SequenceParameterSet* s = active5(d);
+    return s ? (int)s->chroma_format_idc : 0;
+}
+int h265d_coded_w(H265Dec* d) {
+    StdVideoH265SequenceParameterSet* s = active5(d);
+    return s ? (int)s->pic_width_in_luma_samples : 0;
+}
+int h265d_coded_h(H265Dec* d) {
+    StdVideoH265SequenceParameterSet* s = active5(d);
+    return s ? (int)s->pic_height_in_luma_samples : 0;
+}
+int h265d_width(H265Dec* d) {
+    StdVideoH265SequenceParameterSet* s = active5(d);
+    if (!s) return 0;
+    int sub = s->chroma_format_idc == 1 || s->chroma_format_idc == 2 ? 2 : 1;
+    return h265d_coded_w(d) - sub * (int)(s->conf_win_left_offset + s->conf_win_right_offset);
+}
+int h265d_height(H265Dec* d) {
+    StdVideoH265SequenceParameterSet* s = active5(d);
+    if (!s) return 0;
+    int sub = s->chroma_format_idc == 1 ? 2 : 1;
+    return h265d_coded_h(d) - sub * (int)(s->conf_win_top_offset + s->conf_win_bottom_offset);
+}
+int h265d_bits_size(H265Dec* d) { return d->ready ? d->bits_n : 0; }
+void h265d_bits_write(H265Dec* d, uint8_t* dst) { memcpy(dst, d->bits, (size_t)d->bits_n); }
+
+static int slot_of_poc(H265Dec* d, int poc, int lsb_only) {
+    StdVideoH265SequenceParameterSet* s = active5(d);
+    int mask = (1 << (s->log2_max_pic_order_cnt_lsb_minus4 + 4)) - 1;
+    for (int i = 0; i < H264D_SLOTS; i++) {
+        Slot5* t = &d->slot[i];
+        if (!(t->ref || t->long_ref)) continue;
+        if (lsb_only ? (t->poc & mask) == poc : t->poc == poc) return i;
+    }
+    return 0xff;
+}
+
+void h265d_vk(H265Dec* d, VkImageView dpb, VkBuffer bits, uint64_t range,
+              VkVideoSessionKHR session, VkVideoSessionParametersKHR params,
+              VkVideoBeginCodingInfoKHR* begin, VkVideoDecodeInfoKHR* info) {
+    int w = h265d_coded_w(d), h = h265d_coded_h(d);
+    refresh_use5(d);
+    d->cur = 0;
+    for (int i = 0; i < H264D_SLOTS; i++)
+        if (!d->slot[i].in_use) { d->cur = i; break; }
+    StdVideoH265PictureParameterSet* p = &d->pps[d->pps_id].std;
+    memset(&d->pic, 0, sizeof(d->pic));
+    d->pic.flags.IrapPicFlag = d->irap;
+    d->pic.flags.IdrPicFlag = d->idr;
+    d->pic.flags.IsReference = d->is_ref;
+    d->pic.flags.short_term_ref_pic_set_sps_flag = d->rps_sps_flag;
+    d->pic.sps_video_parameter_set_id = p->sps_video_parameter_set_id;
+    d->pic.pps_seq_parameter_set_id = p->pps_seq_parameter_set_id;
+    d->pic.pps_pic_parameter_set_id = (uint8_t)d->pps_id;
+    d->pic.NumDeltaPocsOfRefRpsIdx = (uint8_t)d->rps_idx_deltas;
+    d->pic.PicOrderCntVal = d->poc;
+    d->pic.NumBitsForSTRefPicSetInSlice = (uint16_t)d->rps_bits;
+    memset(d->pic.RefPicSetStCurrBefore, 0xff, sizeof(d->pic.RefPicSetStCurrBefore));
+    memset(d->pic.RefPicSetStCurrAfter, 0xff, sizeof(d->pic.RefPicSetStCurrAfter));
+    memset(d->pic.RefPicSetLtCurr, 0xff, sizeof(d->pic.RefPicSetLtCurr));
+    for (int k = 0; k < d->n_before && k < 8; k++) d->pic.RefPicSetStCurrBefore[k] = (uint8_t)slot_of_poc(d, d->poc + d->before[k], 0);
+    for (int k = 0; k < d->n_after && k < 8; k++)  d->pic.RefPicSetStCurrAfter[k] = (uint8_t)slot_of_poc(d, d->poc + d->after[k], 0);
+    for (int k = 0; k < d->n_lt && k < 8; k++)     d->pic.RefPicSetLtCurr[k] = (uint8_t)slot_of_poc(d, d->lt[k], 1);
+    memset(&d->pic_vk, 0, sizeof(d->pic_vk));
+    d->pic_vk.sType = VK_STRUCTURE_TYPE_VIDEO_DECODE_H265_PICTURE_INFO_KHR;
+    d->pic_vk.pStdPictureInfo = &d->pic;
+    d->pic_vk.sliceSegmentCount = (uint32_t)d->slices;
+    d->pic_vk.pSliceSegmentOffsets = d->offsets;
+
+    int nref = 0;
+    for (int i = 0; i < H264D_SLOTS; i++) {
+        if (i == d->cur || !(d->slot[i].ref || d->slot[i].long_ref)) continue;
+        memset(&d->refs[nref], 0, sizeof(d->refs[nref]));
+        d->refs[nref].flags.used_for_long_term_reference = d->slot[i].long_ref;
+        d->refs[nref].PicOrderCntVal = d->slot[i].poc;
+        memset(&d->dpb[nref], 0, sizeof(d->dpb[nref]));
+        d->dpb[nref].sType = VK_STRUCTURE_TYPE_VIDEO_DECODE_H265_DPB_SLOT_INFO_KHR;
+        d->dpb[nref].pStdReferenceInfo = &d->refs[nref];
+        resource(&d->res[nref], dpb, i, w, h);
+        memset(&d->slots_vk[nref], 0, sizeof(d->slots_vk[nref]));
+        d->slots_vk[nref].sType = VK_STRUCTURE_TYPE_VIDEO_REFERENCE_SLOT_INFO_KHR;
+        d->slots_vk[nref].pNext = &d->dpb[nref];
+        d->slots_vk[nref].slotIndex = i;
+        d->slots_vk[nref].pPictureResource = &d->res[nref];
+        d->begin_slots[nref] = d->slots_vk[nref];
+        nref++;
+    }
+    memset(&d->setup_ref, 0, sizeof(d->setup_ref));
+    d->setup_ref.PicOrderCntVal = d->poc;
+    memset(&d->setup_dpb, 0, sizeof(d->setup_dpb));
+    d->setup_dpb.sType = VK_STRUCTURE_TYPE_VIDEO_DECODE_H265_DPB_SLOT_INFO_KHR;
+    d->setup_dpb.pStdReferenceInfo = &d->setup_ref;
+    resource(&d->setup_res, dpb, d->cur, w, h);
+    memset(&d->setup_slot, 0, sizeof(d->setup_slot));
+    d->setup_slot.sType = VK_STRUCTURE_TYPE_VIDEO_REFERENCE_SLOT_INFO_KHR;
+    d->setup_slot.pNext = &d->setup_dpb;
+    d->setup_slot.slotIndex = d->cur;
+    d->setup_slot.pPictureResource = &d->setup_res;
+    d->begin_slots[nref] = d->setup_slot;
+    d->begin_slots[nref].slotIndex = -1;
+
+    memset(begin, 0, sizeof(*begin));
+    begin->sType = VK_STRUCTURE_TYPE_VIDEO_BEGIN_CODING_INFO_KHR;
+    begin->videoSession = session;
+    begin->videoSessionParameters = params;
+    begin->referenceSlotCount = (uint32_t)nref + 1;
+    begin->pReferenceSlots = d->begin_slots;
+
+    memset(info, 0, sizeof(*info));
+    info->sType = VK_STRUCTURE_TYPE_VIDEO_DECODE_INFO_KHR;
+    info->pNext = &d->pic_vk;
+    info->srcBuffer = bits;
+    info->srcBufferRange = range;
+    info->dstPictureResource = d->setup_res;
+    info->pSetupReferenceSlot = &d->setup_slot;
+    info->referenceSlotCount = (uint32_t)nref;
+    info->pReferenceSlots = d->slots_vk;
+}
+
+void h265d_decoded(H265Dec* d) {
+    if (!d->ready) return;
+    Slot5* cur = &d->slot[d->cur];
+    cur->poc = d->poc;
+    cur->pts = d->pts;
+    cur->ref = d->is_ref;
+    cur->long_ref = 0;
+    cur->output = d->output_flag;
+    refresh_use5(d);
+    StdVideoH265SequenceParameterSet* s = active5(d);
+    int reorder = d->sps[d->active_sps].dpbm.max_num_reorder_pics[s->sps_max_sub_layers_minus1];
+    int waiting = 0;
+    for (int i = 0; i < H264D_SLOTS; i++) waiting += d->slot[i].output;
+    while (waiting > reorder && bump5(d)) waiting--;
+    d->ready = 0;
+}
+
+int h265d_output(H265Dec* d, int64_t* pts) {
+    if (d->q_n == 0) return -1;
+    int slot = d->queue[d->q_head];
+    if (pts) *pts = d->queue_pts[d->q_head];
+    d->q_head = (d->q_head + 1) % 64;
+    d->q_n--;
+    d->slot[slot].queued = 0;
+    refresh_use5(d);
+    return slot;
+}
+
+void h265d_flush(H265Dec* d) {
+    while (bump5(d)) ;
+}
+
+void nv24_split(const uint8_t* src, int coded_w, int coded_h, int w, int h,
+                uint8_t* y, uint8_t* u, uint8_t* v) {
+    const uint8_t* uv = src + (size_t)coded_w * coded_h;
+    for (int r = 0; r < h; r++) {
+        memcpy(y + (size_t)r * w, src + (size_t)r * coded_w, (size_t)w);
+        const uint8_t* row = uv + (size_t)r * coded_w * 2;
+        for (int x = 0; x < w; x++) {
+            u[(size_t)r * w + x] = row[x * 2];
+            v[(size_t)r * w + x] = row[x * 2 + 1];
+        }
+    }
+}
+
+void yuv444_rgba(const uint8_t* yp, const uint8_t* up, const uint8_t* vp, int w, int h,
+                 uint8_t* dst, int bt709) {
+    int ky = 76309;
+    int rv = bt709 ? 117489 : 104597, gu = bt709 ? 13975 : 25675;
+    int gv = bt709 ? 34925 : 53279, bu = bt709 ? 138438 : 132201;
+    for (size_t i = 0; i < (size_t)w * h; i++) {
+        int l = (yp[i] - 16) * ky, u = up[i] - 128, v = vp[i] - 128;
+        dst[i * 4 + 0] = clamp8((l + rv * v + 32768) >> 16);
+        dst[i * 4 + 1] = clamp8((l - gu * u - gv * v + 32768) >> 16);
+        dst[i * 4 + 2] = clamp8((l + bu * u + 32768) >> 16);
+        dst[i * 4 + 3] = 255;
     }
 }

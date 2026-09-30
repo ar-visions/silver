@@ -657,6 +657,7 @@ element knes : trinity
 				ppu.latch = false
 				return v
 			if [ r == 4 ] return ppu.oam[ ppu.oam_addr ]
+			# the PPU answers the question you asked last time
 			if [ r == 7 ]                          # $2007 buffered data
 				ppu.t_dirty = true
 				pv : u8 [ ppu.rbuf ]

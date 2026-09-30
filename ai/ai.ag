@@ -12,6 +12,7 @@ import random
 import vec
 import trinity
 import <vulkan/vulkan.h>
+import <ai.h>
     -lvulkan
 
 intern func fnv1a_hash [ @u8, size_t, u64 ] -> u64
@@ -211,6 +212,51 @@ class safetensors
             log 'safetensors: short read on {name}'
             return null
         return t
+
+# c[m, n] = a[m, k] . b[n, k] + bias[n], every core (ai.c)
+func gemm_nt [ a: @f32, b: @f32, bias: @f32, c: @f32, m: i32, n: i32, k: i32 ]
+    ai_gemm_nt[ a, b, bias, c, m, n, k ]
+
+# a pytorch checkpoint (the zip format): tensors by their dotted
+# path, read out as f32 whatever they were stored as
+class pth
+    public src   : path
+    public valid : bool
+    intern pf    : handle
+
+    func init []
+        pf = pthf_open[ src.chars ]
+        valid = pf != null
+        if [ !valid ] log 'pth: cannot read {src}'
+
+    func count [] -> i32
+        return (valid) ? pthf_count[ pf ] : 0
+
+    func name_at [ i: i32 ] -> string
+        return string [ pthf_name[ pf, i ] ]
+
+    func tensor_named [ name: string ] -> tensor
+        if [ !valid ] return null
+        i : i32 [ pthf_find[ pf, name.chars ] ]
+        if [ i < 0 ]
+            log 'pth: no tensor {name}'
+            return null
+        nd : i32 [ pthf_ndim[ pf, i ] ]
+        dv : new i64 [ 4 ]
+        # a 0-d value is one number; past 4 dims the tail folds in
+        n9 : i32 [ (nd < 1) ? 1 : ((nd > 4) ? 4 : nd) ]
+        for [ k: i32 0, k < n9, k += 1 ]
+            dv[ k ] = (nd < 1) ? 1 : pthf_dim[ pf, i, k ]
+        for [ k: i32 4, k < nd, k += 1 ]
+            dv[ 3 ] = dv[ 3 ] * pthf_dim[ pf, i, k ]
+        t : tensor [ tensor_shape: shape.shape_from[ n9, dv ] ]
+        if [ pthf_read_f32[ pf, i, t.floats ] == 0 ]
+            log 'pth: cannot read {name}'
+            return null
+        return t
+
+    func dealloc []
+        if [ pf ] pthf_close[ pf ]
 
 class op
     expect input:      tensor

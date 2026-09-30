@@ -21,6 +21,14 @@ enum DisplayMode
     Window : 2
     Screen : 3
 
+# how much a recording keeps: stream and high are 4:2:0 for upload;
+# stage and lossless keep every pixel's colour (4:4:4)
+enum RecQuality
+    stream:   0
+    high:     1
+    stage:    2
+    lossless: 3
+
 enum Direction
     inward  : 0
     outward : 1
@@ -130,7 +138,8 @@ ielement element
     mutable content_h       : f32
     public  scroll_speed    : f32
     # any element with a content height scrolls, and shows this bar
-    scrollbar : ScrollLayer [ overlay: true, area: Region { l8px t8px r8px b8px },
+    scrollbar : ScrollLayer [ overlay: true,
+                              area: Region { l8px t8px r8px b8px },
         thumb_color: '#fff4', thumb_w: 6.0, thumb_min_h: 32.0, thumb_radius: 4.0 ]
     mutable sb_drag         : bool
     mutable scaling         : vec2f
@@ -177,16 +186,21 @@ ielement element
     mutable sel_col         : i32 [ -1 ]
     mutable anchor_col      : i32 [ 0 ]
     mutable text_dragging   : bool
-    # --record <file[@mbps]>: gpu h.264 of the screen to a raw .h264 file; an
-    # optional @N sets the bitrate ceiling in Mbps (e.g. out.h264@80)
+    # --record <file or url>: gpu h.264 of the screen, .mp4, .ts,
+    # .h264 or a live url
     public  record          : string
-    # --record_mic: the microphone goes into the recording, mixed with the app's sound
+    # --record_mic: the microphone goes into the recording, mixed with
+    # the app's sound
     public  record_mic      : bool
+    # --rec_qp: stream, high, stage (full colour, near lossless) or
+    # lossless (the default)
+    public  rec_qp          : RecQuality [ RecQuality.lossless ]
     # --display: where the app shows. Screen goes to the window here; a
     # host reads it live and follows PIP, Full and Window on its side
     public [ Live ] display : DisplayMode
         if [ ux ] ux.set_fullscreen[ display == DisplayMode.Screen ]
-    # the app's sound level, 0..1: a slider on the host, --volume on the line
+    # the app's sound level, 0..1: a slider on the host, --volume on the
+    # line
     public [ Live, VolumeRange ] volume : f32 [ 1.0 ]
 
     public func on_click   [ ev: Event ] return
@@ -259,8 +273,9 @@ ielement element
 
     public  animated     : bool
     public  selected     : bool
-    # a mode: no cache canvas of its own, and none for anything under it.
-    # a pane of many small controls paints them straight onto its parent
+    # a mode: no cache canvas of its own, and none for anything under
+    # it. a pane of many small controls paints them straight onto its
+    # parent
     public  no_cache     : bool
     intern cache_canvas  : Canvas
     intern cache_w       : i32
@@ -279,15 +294,18 @@ ielement element
     public mask_inset    : vec4f
     mutable pristine     : bool [ false ]
     mutable needs_frame  : bool
-    intern  paint_us     : i64      # --stats: this second's own paint time
+    # --stats: this second's own paint time
+    intern  paint_us     : i64
     mutable fc           : f32
     public  opacity      : f32 [ 1.0 ]
-    # :fading in a style: the element goes on alpha (the exchange at a swap)
+    # :fading in a style: the element goes on alpha (the exchange at a
+    # swap)
     public  fading       : bool
     # own layout extent; the parent arranger reads and writes
     public  extent       : f32
     mutable extent_shown : f32
-    # declares this element the backdrop: its target feeds the frost chain
+    # declares this element the backdrop: its target feeds the frost
+    # chain
     public  frost        : bool
     # frost from the quarter-size blur, not the 1/16 reduction
     public  frost_sharp  : bool
@@ -309,8 +327,8 @@ ielement element
     public func draw [ w: Window ]
         return
 
-    # per-frame state work, once per element, never a paint: set pristine
-    # false (or animated) when what it found needs one
+    # per-frame state work, once per element, never a paint: set
+    # pristine false (or animated) when what it found needs one
     public func tick [ w: Window ]
         return
 
@@ -355,13 +373,15 @@ ielement element
     # the element's own title: the host shows it on the pane
     func set_title [ t: string ]
         if [ ux ] ux.element_title[ t ]
-    # the app's avatar for the exchange under a screenshot prompt, or null
+    # the app's avatar for the exchange under a screenshot prompt, or
+    # null
     public func agent_avatar [] -> element return null
-    # the exchange's debug button: an app with an avatar steps it through
-    # its states (face on, tilted, working, done with the flame)
+    # the exchange's debug button: an app with an avatar steps it
+    # through its states (face on, tilted, working, done with the flame)
     public func avatar_debug [] -> none
         return
-    # the instruments this instance can show. the shell asks, never guesses
+    # the instruments this instance can show. the shell asks, never
+    # guesses
     public func instruments [] -> vec string
         return null
     # an instrument IS this enumeration: the entries it reads right now.
@@ -371,12 +391,13 @@ ielement element
     # the shell dictates the width; the height is OURS to say
     public func instrument_height [ nm: string, iw: i32 ] -> i32
         return 0
-    # a view is only an option on top of the enumeration. false = no view,
-    # so the instrument shows its entries alone
-    public func paint_instrument [ cv: Canvas, nm: string, r: rect ] -> bool
+    # a view is only an option on top of the enumeration. false = no
+    # view, so the instrument shows its entries alone
+    public func paint_instrument [ cv: Canvas, nm: string,
+                                   r: rect ] -> bool
         return false
-    # this app transcribes speech itself (orbiter): the exchange's mic works
-    # without a host. a hosted app asks its host instead
+    # this app transcribes speech itself (orbiter): the exchange's mic
+    # works without a host. a hosted app asks its host instead
     public func dictates [] -> bool
         return false
 
@@ -447,7 +468,8 @@ ielement element
 
     intern func animate_within [ ]
         if [ scroll_anim ]
-            scroll.y = filter_n[ scroll.y, scroll_goal, 0.14, ux.frame_factor ]
+            scroll.y = filter_n[ scroll.y, scroll_goal, 0.14,
+                                 ux.frame_factor ]
             d9 : f32 [ scroll_goal - scroll.y ]
             if [ d9 < 0.5 && d9 > -0.5 ]
                 scroll.y = scroll_goal
@@ -465,9 +487,10 @@ ielement element
                 if [ ms < dur ]
                     pristine = false
                     # an uncached element paints onto a cached parent's
-                    # canvas: that canvas must repaint too, or the frames
-                    # the transition asks for show nothing new
-                    for [ p: element* parent, p, p = p.parent ] p.pristine = false
+                    # canvas: that canvas must repaint too, or the
+                    # frames the transition asks for show nothing new
+                    for [ p: element* parent, p, p = p.parent ]
+                        p.pristine = false
                     if [ ux ] ux.will_animate = true
                 if [ ct.type && ct.from && ct.to ]
                     from_t : typeid[ ct.from ]
@@ -518,7 +541,9 @@ alias StyleTransitions : map StyleTransition[string]
 
 struct MouseState
     wheel_delta : vec2f
-    delta       : vec2f      # motion since the last move; from the lock centre while the mouse is locked
+    # motion since the last move; from the lock centre while the mouse
+    # is locked
+    delta       : vec2f
     pos         : vec2f
     button      : i32
     state       : i32
@@ -635,15 +660,18 @@ class Layer
     public blur_y           : f32
     intern blur_canvas      : Canvas
     intern blur_dirty       : bool
-    intern blur_ms          : i64    # when the blur last rendered; background_hz paces it
+    # when the blur last rendered; background_hz paces it
+    intern blur_ms          : i64
     intern blur_bw          : i32
     intern blur_bh          : i32
 
     public  editable    : bool
     mutable lh_cache    : f32  [ 0.0 ]
     mutable cw_cache    : f32  [ 0.0 ]
-    mutable text_x      : f32  [ 0.0 ]   # where column 0 was drawn, scrolled
-    mutable text_shift  : f32  [ 0.0 ]   # the scroll, kept while the caret shows
+    # where column 0 was drawn, scrolled
+    mutable text_x      : f32  [ 0.0 ]
+    # the scroll, kept while the caret shows
+    mutable text_shift  : f32  [ 0.0 ]
 
     # a press lands on the text as drawn: after its alignment and scroll
     func hit_col [ ev: Event ] -> i32
@@ -678,7 +706,8 @@ class Layer
         sc : i32 [ (parent.sel_col < parent.anchor_col) ? parent.sel_col : parent.anchor_col ]
         ec : i32 [ (parent.sel_col < parent.anchor_col) ? parent.anchor_col : parent.sel_col ]
         if [ sc == ec ] return false
-        parent.edit    = text.mid[ 0, sc ] + text.mid[ ec, text.count - ec ]
+        parent.edit    = text.mid[ 0, sc ] + text.mid[ ec,
+                text.count - ec ]
         parent.sel_col    = sc
         parent.anchor_col = sc
         return true
@@ -689,7 +718,8 @@ class Layer
         delete_selection[ text ]
         text = (parent.edit) ? parent.edit : ''
         col  : i32 [ parent.sel_col ]
-        parent.edit = text.mid[ 0, col ] + ev.key.text + text.mid[ col, text.count - col ]
+        parent.edit = text.mid[ 0, col ] + ev.key.text + text.mid[ col,
+                text.count - col ]
         parent.sel_col += ev.key.text.count
         parent.anchor_col = parent.sel_col
         parent.pristine = false
@@ -703,7 +733,9 @@ class Layer
         if [ key == 259 ]
             if [ !delete_selection[ text ] ]
                 if [ col > 0 ]
-                    parent.edit = text.mid[ 0, col - 1 ] + text.mid[ col, text.count - col ]
+                    parent.edit = text.mid[ 0,
+                            col - 1 ] + text.mid[ col,
+                                    text.count - col ]
                     parent.sel_col -= 1
             parent.anchor_col = parent.sel_col
         el [ key == 263 ]
@@ -734,7 +766,8 @@ class Layer
         cv.font_size[ i32[label_size] ]
         if [ label_font && label_font.count > 0 ]
             if [ !label_font_cache ]
-                label_font_cache = CanvasFont [ ft_lib: cv.ft_lib, uri: label_font, size_px: i32[label_size] ]
+                label_font_cache = CanvasFont [ ft_lib: cv.ft_lib,
+                        uri: label_font, size_px: i32[label_size] ]
             cv.set_font[ label_font_cache ]
         el
             cv.ensure_font[]
@@ -772,23 +805,27 @@ class Layer
         cx0    : f32 [ x0 + pm.w - text_shift ]
         if [ cx0 > right ]      text_shift += cx0 - right
         el [ cx0 < left ]       text_shift -= left - cx0
-        # no scroll past the text's own end, and none at all when it fits
+        # no scroll past the text's own end, and none at all when it
+        # fits
         over : f32 [ x0 + metrics.w - right ]
         if [ text_shift > over ] text_shift = (over > 0.0) ? over : 0.0
         if [ text_shift < 0.0 ]  text_shift = 0.0
         shift : f32 [ text_shift ]
         x0 -= shift
         text_x = x0
-        cv.set_crop[ bounds.x, bounds.y, bounds.x + bounds.w, bounds.y + bounds.h ]
+        cv.set_crop[ bounds.x, bounds.y, bounds.x + bounds.w,
+                     bounds.y + bounds.h ]
 
         if [ has_edit && sc != ec ]
             cv.fill_color[ '#264f78' ]
             cv.stroke_width[ 0.0 ]
-            cv.rect_to[ x0 + f32[sc] * cw, y0 - metrics.ascent + 2.0, f32[ec - sc] * cw, fh - 4.0 ]
+            cv.rect_to[ x0 + f32[sc] * cw, y0 - metrics.ascent + 2.0,
+                        f32[ec - sc] * cw, fh - 4.0 ]
             cv.paint[]
 
         cv.fill_color[ label_color ]
-        cv.draw_text[ disp, bounds, vec2f [ ax, ay ], vec2f [ ox - shift, oy ], Overflow.visible, null ]
+        cv.draw_text[ disp, bounds, vec2f [ ax, ay ],
+                      vec2f [ ox - shift, oy ], Overflow.visible, null ]
         cv.paint[]
 
         if [ parent.focused && parent.sel_col >= 0 ]
@@ -801,7 +838,8 @@ class Layer
 
 
 class Event
-    manual target          : element   # points at an element, never owns it
+    # points at an element, never owns it
+    manual target          : element
     mutable origin         : element
     mutable mouse          : MouseState
     mutable key            : KeyboardState

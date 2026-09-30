@@ -1,0 +1,243 @@
+extend composer
+
+import <math.h>
+
+# Seed-VC: a source voice to a reference voice, offline. whisper's
+# content of the source, the reference's style and mel as the prompt,
+# the DiT's flow to a new mel, BigVGAN to samples at 22050 a second
+
+# torchaudio's resample (sinc, hann window, 6 zero crossings, 0.99
+# rolloff): from one rate to another
+func resample_sinc [ pcm: vec f32, from: i32, to: i32 ] -> vec f32
+    g : i32 [ from ]
+    h : i32 [ to ]
+    while [ h != 0 ]
+        r : i32 [ g % h ]
+        g = h
+        h = r
+    orig : i32 [ from / g ]
+    nw   : i32 [ to / g ]
+    if [ orig == nw ] return pcm
+    base : f64 [ f64[ (orig < nw) ? orig : nw ] * 0.99 ]
+    width : i32 [ i32[ ceil[ 6.0 * f64[ orig ] / base ] ] ]
+    kn : i32 [ 2 * width + orig ]
+    ker : vec f32 [ i64[ nw ] * kn ]
+    for [ j: i32 0, j < nw, j += 1 ]
+        for [ k: i32 0, k < kn, k += 1 ]
+            tv : f64 [ (0.0 - f64[ j ]) / f64[ nw ] + f64[ k - width ] / f64[ orig ] ]
+            tv = tv * base
+            if [ tv < -6.0 ] tv = -6.0
+            if [ tv > 6.0 ] tv = 6.0
+            wv : f64 [ cos[ tv * 3.14159265358979323846 / 12.0 ] ]
+            wv = wv * wv
+            tv = tv * 3.14159265358979323846
+            sv : f64 [ (tv == 0.0) ? 1.0 : sin[ tv ] / tv ]
+            ix9 : i64 [ i64[ j ] * kn + k ]
+            ker[ ix9 ] = f32[ sv * wv * base / f64[ orig ] ]
+    n : i64 [ pcm.count ]
+    target : i64 [ (i64[ nw ] * n + i64[ orig ] - 1) / i64[ orig ] ]
+    frames : i64 [ (n + i64[ 2 * width + orig ] - i64[ kn ]) / i64[ orig ] + 1 ]
+    out : vec f32 [ target ]
+    for [ i: i64 0, i < frames, i += 1 ]
+        for [ j: i32 0, j < nw, j += 1 ]
+            o : i64 [ i * nw + j ]
+            if [ o >= target ] break
+            s : f32 [ 0.0 ]
+            for [ k: i32 0, k < kn, k += 1 ]
+                src9 : i64 [ i * orig + k - width ]
+                if [ src9 >= 0 && src9 < n ] s += ker[ i64[ j ] * kn + k ] * pcm[ src9 ]
+            out[ o ] = s
+    return out
+
+# slaney mel triangles (librosa's), [mels, n_fft / 2 + 1]
+func mel_bank [ sr: i32, n_fft: i32, mels: i32, fmax: f64 ] -> vec f32
+    nb : i32 [ n_fft / 2 + 1 ]
+    fb : vec f32 [ i64[ mels ] * nb ]
+    pts : vec f64 [ i64[ mels + 2 ] ]
+    lo : f64 [ hz_mel[ 0.0 ] ]
+    hi : f64 [ hz_mel[ fmax ] ]
+    for [ i: i32 0, i < mels + 2, i += 1 ]
+        pts[ i ] = mel_hz[ lo + (hi - lo) * f64[ i ] / f64[ mels + 1 ] ]
+    for [ m: i32 0, m < mels, m += 1 ]
+        en : f64 [ 2.0 / (pts[ m + 2 ] - pts[ m ]) ]
+        for [ k: i32 0, k < nb, k += 1 ]
+            fq : f64 [ f64[ k ] * f64[ sr ] / f64[ n_fft ] ]
+            lw : f64 [ (fq - pts[ m ]) / (pts[ m + 1 ] - pts[ m ]) ]
+            up : f64 [ (pts[ m + 2 ] - fq) / (pts[ m + 2 ] - pts[ m + 1 ]) ]
+            v : f64 [ (lw < up) ? lw : up ]
+            ix9 : i64 [ i64[ m ] * nb + k ]
+            fb[ ix9 ] = (v > 0.0) ? f32[ v * en ] : 0.0
+    return fb
+
+func hz_mel [ f: f64 ] -> f64
+    if [ f < 1000.0 ] return f * 3.0 / 200.0
+    return 15.0 + log[ f / 1000.0 ] / (log[ 6.4 ] / 27.0)
+
+func mel_hz [ m: f64 ] -> f64
+    if [ m < 15.0 ] return m * 200.0 / 3.0
+    return 1000.0 * exp[ (log[ 6.4 ] / 27.0) * (m - 15.0) ]
+
+# power (or magnitude) spectra of hann-windowed, reflect-padded frames:
+# [frames, n_fft / 2 + 1]
+func stft_power [ pcm: vec f32, n_fft: i32, hop: i32, pad: i32, frames: i32 ] -> vec f64
+    nb : i32 [ n_fft / 2 + 1 ]
+    n : i64 [ pcm.count ]
+    win : vec f64 [ i64[ n_fft ] ]
+    for [ i: i32 0, i < n_fft, i += 1 ]
+        win[ i ] = 0.5 - 0.5 * cos[ 2.0 * 3.14159265358979323846 * f64[ i ] / f64[ n_fft ] ]
+    cs : vec f64 [ i64[ n_fft ] ]
+    sn : vec f64 [ i64[ n_fft ] ]
+    for [ i: i32 0, i < n_fft, i += 1 ]
+        cs[ i ] = cos[ 2.0 * 3.14159265358979323846 * f64[ i ] / f64[ n_fft ] ]
+        sn[ i ] = sin[ 2.0 * 3.14159265358979323846 * f64[ i ] / f64[ n_fft ] ]
+    fr : vec f64 [ i64[ n_fft ] ]
+    out : vec f64 [ i64[ frames ] * nb ]
+    for [ t: i32 0, t < frames, t += 1 ]
+        for [ i: i32 0, i < n_fft, i += 1 ]
+            ix : i64 [ i64[ t ] * hop + i - pad ]
+            if [ ix < 0 ] ix = 0 - ix
+            if [ ix >= n ] ix = 2 * n - 2 - ix
+            fr[ i ] = f64[ pcm[ ix ] ] * win[ i ]
+        for [ k: i32 0, k < nb, k += 1 ]
+            re : f64 [ 0.0 ]
+            im : f64 [ 0.0 ]
+            for [ i: i32 0, i < n_fft, i += 1 ]
+                a9 : i32 [ (k * i) % n_fft ]
+                re += fr[ i ] * cs[ a9 ]
+                im -= fr[ i ] * sn[ a9 ]
+            ix9 : i64 [ i64[ t ] * nb + k ]
+            out[ ix9 ] = re * re + im * im
+    return out
+
+# whisper's log mel over a 30 s window (zeros past the audio):
+# [3000, 80] rows, the encoder's input
+func whisper_logmel [ pcm16: vec f32 ] -> vec f32
+    w : vec f32 [ 480000 ]
+    memset[ @w[ 0 ], 0, 1920000 ]
+    n : i64 [ (pcm16.count < 480000) ? pcm16.count : 480000 ]
+    if [ n > 0 ] memcpy[ @w[ 0 ], @pcm16[ 0 ], n * 4 ]
+    pw : vec f64 stft_power[ w, 400, 160, 200, 3000 ]
+    fb : vec f32 mel_bank[ 16000, 400, 80, 8000.0 ]
+    out : vec f32 [ 240000 ]
+    mx : f32 [ -1.0e30 ]
+    for [ t: i32 0, t < 3000, t += 1 ]
+        for [ m: i32 0, m < 80, m += 1 ]
+            e : f64 [ 0.0 ]
+            for [ k: i32 0, k < 201, k += 1 ]
+                e += f64[ fb[ m * 201 + k ] ] * pw[ i64[ t ] * 201 + k ]
+            if [ e < 0.0000000001 ] e = 0.0000000001
+            v : f32 [ f32[ log10[ e ] ] ]
+            ix9 : i64 [ i64[ t ] * 80 + m ]
+            out[ ix9 ] = v
+            if [ v > mx ] mx = v
+    for [ i: i64 0, i < 240000, i += 1 ]
+        v : f32 [ out[ i ] ]
+        if [ v < mx - 8.0 ] v = mx - 8.0
+        out[ i ] = (v + 4.0) / 4.0
+    return out
+
+# the vocoder's log mel at 22050 a second: [80, frames]
+func mel22k [ pcm: vec f32, frames_out: @i32 ] -> vec f32
+    frames : i32 [ i32[ (pcm.count + 768 - 1024) / 256 + 1 ] ]
+    frames_out[ 0 ] = frames
+    pw : vec f64 stft_power[ pcm, 1024, 256, 384, frames ]
+    fb : vec f32 mel_bank[ 22050, 1024, 80, 11025.0 ]
+    out : vec f32 [ i64[ 80 ] * frames ]
+    for [ m: i32 0, m < 80, m += 1 ]
+        for [ t: i32 0, t < frames, t += 1 ]
+            e : f64 [ 0.0 ]
+            for [ k: i32 0, k < 513, k += 1 ]
+                e += f64[ fb[ m * 513 + k ] ] * sqrt[ pw[ i64[ t ] * 513 + k ] + 0.000000001 ]
+            if [ e < 0.00001 ] e = 0.00001
+            ix9 : i64 [ i64[ m ] * frames + t ]
+            out[ ix9 ] = f32[ log[ e ] ]
+    return out
+
+# a reference voice, prepared once: its mel, content and style
+class VoiceSeed
+    public mel    : vec f32
+    public frames : i32
+    public cond   : vec f32
+    public style  : vec f32
+
+class SeedVC
+    context vk    : vk_context
+    context w     : Display
+    public  valid : bool
+    intern  wnet  : whisper
+    intern  wgpu  : whisper_vk
+    intern  cam   : CAMPPlus
+    intern  dit   : DiT
+    intern  voc   : BigVGAN
+
+    func init []
+        m : path '{path.path_install[]}/models'
+        wnet = whisper [ src: path '{m}/whisper-small.safetensors' ]
+        if [ wnet.valid ] wgpu = whisper_vk [ model: wnet, vk: vk, win: w ]
+        cam = CAMPPlus [ src: path '{m}/seed-vc/campplus.pth' ]
+        dit = DiT [ src: path '{m}/seed-vc/dit.pth' ]
+        voc = BigVGAN [ src: path '{m}/seed-vc/bigvgan.pth' ]
+        valid = wnet.valid && cam.valid && dit.valid && voc.valid
+
+    # whisper's content of 16 kHz samples: one row every 20 ms
+    public func content [ pcm16: vec f32, rows_out: @i32 ] -> vec f32
+        lm : vec f32 whisper_logmel[ pcm16 ]
+        dv : new i64 [ 2 ]
+        dv[ 0 ] = 3000
+        dv[ 1 ] = 80
+        mt : tensor [ tensor_shape: shape.shape_from[ 2, dv ] ]
+        memcpy[ mt.floats, @lm[ 0 ], 960000 ]
+        enc : tensor [ (wgpu && wgpu.valid) ? wgpu.encode[ mt ] : wnet.encode[ mt ] ]
+        rows : i32 [ i32[ pcm16.count / 320 ] + 1 ]
+        if [ rows > 1500 ] rows = 1500
+        rows_out[ 0 ] = rows
+        out : vec f32 [ i64[ rows ] * 768 ]
+        memcpy[ @out[ 0 ], enc.floats, i64[ rows ] * 768 * 4 ]
+        return out
+
+    # a reference voice at 22050 a second (its first `most` seconds)
+    public func seed [ ref22: vec f32, most: f32 ] -> VoiceSeed
+        ref9 : vec f32 ref22
+        cap : i64 [ i64[ 22050.0 * most ] ]
+        if [ ref9.count > cap ]
+            ref9 = vec f32 [ cap ]
+            memcpy[ @ref9[ 0 ], @ref22[ 0 ], cap * 4 ]
+        r16 : vec f32 resample_sinc[ ref9, 22050, 16000 ]
+        nr : local i32 [ 1 ]
+        so : vec f32 content[ r16, @nr[ 0 ] ]
+        f2 : local i32 [ 1 ]
+        mel2 : vec f32 mel22k[ ref9, @f2[ 0 ] ]
+        return VoiceSeed [ mel: mel2, frames: f2[ 0 ], style: cam.embed[ r16 ],
+            cond: dit.regulate[ so, nr[ 0 ], f2[ 0 ] ] ]
+
+    # source speech to the reference's voice, both at 22050 a second;
+    # the noise is drawn here unless a test hands one in
+    public func voice [ src22: vec f32, ref22: vec f32, steps: i32, cfg: f32, noise: vec f32 ] -> vec f32
+        return voice_with[ seed[ ref22, 25.0 ], src22, steps, cfg, noise ]
+
+    public func voice_with [ sd: VoiceSeed, src22: vec f32, steps: i32, cfg: f32, noise: vec f32 ] -> vec f32
+        s16 : vec f32 resample_sinc[ src22, 22050, 16000 ]
+        ns : local i32 [ 1 ]
+        sa : vec f32 content[ s16, @ns[ 0 ] ]
+        f1 : local i32 [ 1 ]
+        mel  : vec f32 mel22k[ src22, @f1[ 0 ] ]
+        mel2 : vec f32 sd.mel
+        sty : vec f32 sd.style
+        c1 : vec f32 dit.regulate[ sa, ns[ 0 ], f1[ 0 ] ]
+        c0 : vec f32 sd.cond
+        f2 : local i32 [ 1 ]
+        f2[ 0 ] = sd.frames
+        t : i32 [ f1[ 0 ] + f2[ 0 ] ]
+        cat : vec f32 [ i64[ t ] * 512 ]
+        memcpy[ @cat[ 0 ], @c0[ 0 ], c0.count * 4 ]
+        memcpy[ @cat[ c0.count ], @c1[ 0 ], c1.count * 4 ]
+        nz : vec f32 noise
+        if [ !nz || nz.count != i64[ 80 ] * t ]
+            nz = vec f32 [ i64[ 80 ] * t ]
+            # standard normal by box-muller
+            for [ i: i64 0, i < nz.count, i += 1 ]
+                u1 : f64 [ (f64[ rand[] ] + 1.0) / (f64[ RAND_MAX ] + 2.0) ]
+                u2 : f64 [ f64[ rand[] ] / f64[ RAND_MAX ] ]
+                nz[ i ] = f32[ sqrt[ -2.0 * log[ u1 ] ] * cos[ 6.283185307179586 * u2 ] ]
+        vm : vec f32 dit.flow[ mel2, f2[ 0 ], cat, sty, nz, t, steps, cfg ]
+        return voc.run[ vm, f1[ 0 ] ]

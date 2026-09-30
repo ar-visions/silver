@@ -554,6 +554,19 @@ struct DictState
     flushed : bool
     # rolling index for the per-utterance .wav dumps
     wavn    : i32
+    # a recording's dictation: runs the whole take, one take per pause
+    stream   : bool
+    origin   : i64
+    speaking : bool
+    sp_start : i64
+    sp_act   : i64
+    sp_quiet : i32
+    seg_a    : i64
+    seg_b    : i64
+    job_a    : i64
+    job_b    : i64
+    out_a    : i64
+    out_b    : i64
 
 intern dict : DictState
 
@@ -575,6 +588,7 @@ func dictation_start [] -> i32
     dict.drop    = false
     dict.flushed = false
     dict.txt     = ''
+    dict.stream  = false
     log 'dictation: capturing (fresh, backlog dropped)'
     # a test take: the wav's mono samples, copied now (a clip's pcm is not
     # held past this frame)
@@ -685,7 +699,14 @@ func dictation_poll [] -> bool
         dict.lvl = dict.lvl * 0.6 + en9 * 0.4
     el
         dict.lvl = dict.lvl * 0.88 + en9 * 0.12
-    if [ dict.raw ]
+    if [ dict.raw && dict.stream ]
+        ns6 : i64 [ dict.cap.size ]
+        if [ dict.wr == 0 ] dict.origin = Au.epoch_micros[] - ns6 * 1000000 / 48000
+        for [ i6: i64 0, i6 < ns6, i6 += 1 ]
+            dict.raw[ (dict.wr + i6) % 1536000 ] = dict.cap.buf[i6]
+        dict.wr += ns6
+        stream_cut[ en9 ]
+    el [ dict.raw ]
         ns5 : i64 [ dict.cap.size ]
         for [ i5: i64 0, i5 < ns5, i5 += 1 ]
             w2 : i64 [ dict.wr + i5 ]
@@ -693,6 +714,66 @@ func dictation_poll [] -> bool
         dict.wr += ns5
         if [ dict.wr > 1440000 ] dict.wr = 1440000
     return true
+
+# speech starts above the on level and ends after ~0.7 s under
+# the off level (or at 25 s); each span waits its turn for whisper
+func stream_cut [ en: f32 ]
+    if [ !dict.speaking ]
+        if [ en > 0.12 ]
+            dict.speaking = true
+            dict.sp_start = dict.wr - 38400
+            if [ dict.sp_start < 0 ] dict.sp_start = 0
+            dict.sp_act   = dict.wr
+            dict.sp_quiet = 0
+    el
+        if [ en > 0.10 ] dict.sp_act = dict.wr
+        dict.sp_quiet = (en < 0.08) ? dict.sp_quiet + 1 : 0
+        if [ dict.sp_quiet >= 16 || dict.wr - dict.sp_start > 1200000 ]
+            dict.speaking = false
+            e9 : i64 [ dict.sp_act + 16800 ]
+            if [ e9 > dict.wr ] e9 = dict.wr
+            if [ dict.seg_b < 0 ] dict.seg_a = dict.sp_start
+            dict.seg_b = e9
+    if [ !dict.job && dict.seg_b >= 0 && dict.net ]
+        dict.job_a = dict.seg_a
+        dict.job_b = dict.seg_b
+        dict.seg_b = -1
+        dict_spawn[ dict.job_a, dict.job_b ]
+
+# a recording's dictation: listens until the next start or stop
+func dictation_stream_start [] -> i32
+    rc : i32 [ dictation_start[] ]
+    if [ rc != 0 ] return rc
+    dict.stream   = true
+    dict.speaking = false
+    dict.seg_b    = -1
+    dict.job_b    = -1
+    log 'dictation: listening for the recording'
+    return 0
+
+func dictation_streaming [] -> bool
+    return dict.stream
+
+# a finished take's words; its span in dictation_stream_at / _dur
+func dictation_stream_take [] -> string
+    if [ !dict.stream ] return null
+    if [ dict.job && dict.job.done ]
+        dict.out_a = dict.job_a
+        dict.out_b = dict.job_b
+        dictation_harvest[]
+        if [ !dict.job && dict.seg_b >= 0 && dict.net ]
+            dict.job_a = dict.seg_a
+            dict.job_b = dict.seg_b
+            dict.seg_b = -1
+            dict_spawn[ dict.job_a, dict.job_b ]
+    return dictation_take[]
+
+# the last take's start, epoch microseconds, and its length
+func dictation_stream_at [] -> i64
+    return dict.origin + dict.out_a * 1000000 / 48000
+
+func dictation_stream_dur [] -> i64
+    return (dict.out_b - dict.out_a) * 1000000 / 48000
 
 func dict_spawn [ a: i64, b: i64 ]
     e5 : i64 [ b ]
