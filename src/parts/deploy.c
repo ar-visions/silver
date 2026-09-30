@@ -804,7 +804,6 @@ static void device_run(silver a) {
     if (!dev) return;
     // adb finds the phone itself; host is a serial only when several are on
     if (target_is_android(a)) {
-        if (build_lock_fd >= 0) { flock(build_lock_fd, LOCK_UN); close(build_lock_fd); build_lock_fd = -1; }
         path   apk = f(path, "%o/%o.apk", a->build_dir, a->name);
         path   sdk = f(path, "%s/platform/%o/sdk", SILVER, target_dir(a));
         string adb = f(string, "%o/platform-tools/adb%s%o", sdk,
@@ -878,8 +877,6 @@ static void device_run(silver a) {
         return;
     }
     if (!dev->host || !len(dev->host)) return;
-    // the app runs for as long as it likes: the build lock goes first
-    if (build_lock_fd >= 0) { flock(build_lock_fd, LOCK_UN); close(build_lock_fd); build_lock_fd = -1; }
     // an iphone installs and launches through devicectl; host is its udid
     if (a->platform && strstr(a->platform->chars, "ios")) {
         path app = f(path, "%o/%o.app", a->build_dir, a->name);

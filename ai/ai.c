@@ -464,9 +464,11 @@ int pthf_read_f32(PthFile* p, int i, float* out) {
 // ---- c[m, n] = a[m, k] . b[n, k] (+ bias[n]): every row of a
 // against every row of b, on every core, avx2 + fma ----
 #include <pthread.h>
-#include <immintrin.h>
 
 typedef struct { const float *a, *b, *bias; float* c; int m, n, k, n0, n1; } GemmJob;
+
+#if defined(__x86_64__) || defined(__i386__)
+#include <immintrin.h>
 
 __attribute__((target("avx2,fma")))
 static float hsum8(__m256 v) {
@@ -513,6 +515,47 @@ static void* gemm_part(void* arg) {
     }
     return NULL;
 }
+#elif defined(__aarch64__)
+#include <arm_neon.h>
+
+// the avx2 kernel's 4x4 tiling, 4 floats a step
+static void* gemm_part(void* arg) {
+    GemmJob* j = arg;
+    int k = j->k, k4 = k & ~3;
+    for (int i = 0; i < j->m; i += 4) {
+        int ri = j->m - i < 4 ? j->m - i : 4;
+        for (int o = j->n0; o < j->n1; o += 4) {
+            int ro = j->n1 - o < 4 ? j->n1 - o : 4;
+            float32x4_t acc[4][4];
+            for (int x = 0; x < 4; x++) for (int y = 0; y < 4; y++) acc[x][y] = vdupq_n_f32(0.0f);
+            const float* ar[4]; const float* br[4];
+            for (int x = 0; x < 4; x++) ar[x] = j->a + (size_t)(i + (x < ri ? x : 0)) * k;
+            for (int y = 0; y < 4; y++) br[y] = j->b + (size_t)(o + (y < ro ? y : 0)) * k;
+            for (int q = 0; q < k4; q += 4) {
+                float32x4_t bv0 = vld1q_f32(br[0] + q), bv1 = vld1q_f32(br[1] + q);
+                float32x4_t bv2 = vld1q_f32(br[2] + q), bv3 = vld1q_f32(br[3] + q);
+                for (int x = 0; x < 4; x++) {
+                    float32x4_t av = vld1q_f32(ar[x] + q);
+                    acc[x][0] = vfmaq_f32(acc[x][0], av, bv0);
+                    acc[x][1] = vfmaq_f32(acc[x][1], av, bv1);
+                    acc[x][2] = vfmaq_f32(acc[x][2], av, bv2);
+                    acc[x][3] = vfmaq_f32(acc[x][3], av, bv3);
+                }
+            }
+            for (int x = 0; x < ri; x++)
+                for (int y = 0; y < ro; y++) {
+                    float s = vaddvq_f32(acc[x][y]);
+                    for (int q = k4; q < k; q++) s += ar[x][q] * br[y][q];
+                    if (j->bias) s += j->bias[o + y];
+                    j->c[(size_t)(i + x) * j->n + o + y] = s;
+                }
+        }
+    }
+    return NULL;
+}
+#else
+#error "ai_gemm_nt: no kernel for this architecture"
+#endif
 
 void ai_gemm_nt(const float* a, const float* b, const float* bias, float* c, int m, int n, int k) {
     long work = (long)m * n * k;
