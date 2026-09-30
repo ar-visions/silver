@@ -443,6 +443,11 @@ void platform_window_set_title(platform_window* w, const char* t) {
     w->window.title = [NSString stringWithUTF8String:t ? t : ""];
 }
 
+void platform_window_set_resizable(platform_window* w, bool on) {
+    NSWindowStyleMask m = w->window.styleMask;
+    w->window.styleMask = on ? (m | NSWindowStyleMaskResizable) : (m & ~NSWindowStyleMaskResizable);
+}
+
 void platform_window_set_size(platform_window* w, int width, int height) {
     [w->window setContentSize:NSMakeSize(width, height)];
 }
@@ -918,6 +923,7 @@ void platform_window_show(platform_window* w) { [w->window makeKeyAndVisible]; }
 void platform_window_hide(platform_window* w) {}
 int  platform_window_refresh_hz(platform_window* w) { return 60; }
 void platform_window_set_title(platform_window* w, const char* t) {}
+void platform_window_set_resizable(platform_window* w, bool on) {}
 void platform_window_set_size(platform_window* w, int width, int height) {}
 void platform_window_get_size(platform_window* w, int* width, int* height) {
     CGRect b = w->view.bounds;

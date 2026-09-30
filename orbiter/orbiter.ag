@@ -1205,88 +1205,6 @@ Option ErrorButton
                 fill_color: #ad3852
     }
 
-# the alternate views of the pane's file, filling the view when the
-# title's view chip is pressed: one cell per view, a small render of the
-# view where it paints itself, its icon otherwise. a press on a cell
-# shows that view in the pane
-# a pane's views as icons in its title while shift is held (git
-# has its own button), as toggles: the one on is lit; with none on
-# the pane edits
-element ViewBar
-    no_cache : true
-    # the pane whose views these are
-    public  pane : i32
-    mutable hov : i32 [ -1 ]
-    func editor [] -> Editor
-        orbt : cast orbiter [ ux.app_object ]
-        return (orbt) ? orbt.pane_at[ pane ] : null
-    func names [] -> vec string
-        orbt : cast orbiter [ ux.app_object ]
-        ed   : Editor editor[]
-        if [ !orbt || !ed ] return null
-        res : vec string []
-        for [ v: string ] in orbt.views_for[ ed ]
-            if [ v != 'git' ] res.push[ v ]
-        return res
-    # the width shared evenly, one cell a view, left to right
-    func cell_w [] -> f32
-        nm9 : vec string names[]
-        return (nm9 && nm9.count > 0 && bounds) ? bounds.w / f32[ nm9.count ] : 0.0
-    func cell_at [ mx: f32 ] -> i32
-        nm9 : vec string names[]
-        cw9 : f32 [ cell_w[] ]
-        if [ !nm9 || cw9 <= 0.0 || mx < 0.0 ] return -1
-        i : i32 [ i32[ mx / cw9 ] ]
-        return (i < nm9.count) ? i : -1
-    public func draw [ w: Window ]
-        if [ w.draw_stage != CanvasType.screen || !bounds ] return
-        cv   : Canvas w.screen
-        ed   : Editor editor[]
-        orbt : cast orbiter [ ux.app_object ]
-        nm9  : vec string names[]
-        if [ !ed || !orbt || !nm9 ] return
-        if [ !ed.ficons ] ed.ficons = FileIcons []
-        cur : string ed.resolve_view[]
-        cw9 : f32 [ cell_w[] ]
-        is9 : f32 [ round[ min[ cw9, bounds.h ] * 0.55 ] ]
-        for [ i: i32 0, i < nm9.count, i += 1 ]
-            nm  : string nm9[ i ]
-            x9  : f32 [ f32[ i ] * cw9 ]
-            act : bool [ nm == cur ]
-            if [ act || i == hov ]
-                cv.fill_color[ (act) ? rgba['#6cb6ff33'] : rgba['#fff1'] ]
-                cv.rect_to[ x9, 0.0, cw9, bounds.h ]
-                cv.paint[]
-            inm  : string nm
-            cico : string orbt.console_icon[ nm ]
-            if [ cico ] inm = cico
-            tico : SVGModel ed.ficons.named[ inm, 48 ]
-            if [ tico ]
-                cv.svg_override[ (act) ? rgba['#ffe6d2'] : ((i == hov) ? rgba['#ffffff'] : rgba['#cfc6e8']) ]
-                cv.draw_svg[ tico, x9 + round[ (cw9 - is9) * 0.5 ], round[ (bounds.h - is9) * 0.5 ], is9, is9 ]
-                cv.svg_override_off[]
-    public func on_move [ ev: Event ]
-        h9 : i32 [ cell_at[ ev.mouse.pos.x ] ]
-        if [ h9 != hov ]
-            hov      = h9
-            pristine = false
-    public func on_leave [ ev: Event ]
-        if [ hov != -1 ]
-            hov      = -1
-            pristine = false
-    public func on_press [ ev: Event ]
-        orbt : cast orbiter [ ux.app_object ]
-        ed   : Editor editor[]
-        h9   : i32 [ cell_at[ ev.mouse.pos.x ] ]
-        nm9  : vec string names[]
-        if [ orbt && ed && nm9 && h9 >= 0 ]
-            # the lit one toggles off, back to editing
-            on9 : bool [ nm9[ h9 ] == ed.resolve_view[] ]
-            orbt.set_pane_view[ ed, (on9) ? '' : nm9[ h9 ] ]
-            orbt.force_update[]
-        ev.no_default = true
-        ev.no_propagation = true
-
 # the same error, centered on the run band. l50% is an ABSOLUTE anchor,
 # so it holds the middle whatever the l0+/r0+ runs either side of it do
 Option AppError
@@ -4217,9 +4135,11 @@ element orbiter : trinity # implements compiler
         dc9  : bool [ edp9 && edp9.diff_commit && edp9.diff_commit.count > 0 ]
         # the arrows' box: 1.8 font units square to the bar
         gw9 : f32 [ 1.8 * ((win && win.vk && win.vk.font_unit > 0) ? f32[ win.vk.font_unit ] : 22.0) ]
-        if [ dc9 || hx9 ]
-            # in the history arrows' slot, sized like them: the title never shifts
-            els['panel_close'] = BarClose [ icon: 'close', manual_mode: true ]
+        # a picked view is closed by its own lit button, not this
+        if [ dc9 ]
+            # the dialog's own close, furthest right: the arrows keep the left
+            els['panel_close'] = BarClose [ icon: 'close', manual_mode: true,
+                area: Region [ 'r0+ t0 w1.66 b0' ] ]
         # the left slot closes the finder — Esc's clickable twin, sized
         # exactly like the history arrows so the title never shifts
         # the finder up: the same arrows walk the nav view's own folders, and
@@ -4235,9 +4155,9 @@ element orbiter : trinity # implements compiler
                 disable_mask: fdm,
                 icon_scale: 0.30, rest_glow: rgba [ '#ccf2' ], rest_px: 8.0,
                 seg_radius: 0.0, use_spacing: false, area: Region [ 'l0+ t0 w1.8 b0' ] ]
-        # editing only: cmd+left / cmd+right as clickable history arrows.
-        # a close takes their place; the two are never shown together
-        if [ !engaged && !is_resource && !(dc9 || hx9) ]
+        # cmd+left / cmd+right as clickable history arrows: always the
+        # left slot, a picked view, a resource view or a diff included
+        if [ !engaged ]
             nnav : vec string [] [ 'nav_back', 'nav_fwd' ]
             nico : vec string [] [ 'left', 'right' ]
             ndm : i32 [ 0 ]
@@ -4245,6 +4165,9 @@ element orbiter : trinity # implements compiler
             if [ edp9 && edp9.app_view && edp9.run_view ]
                 if [ !edp9.run_view.nav_back_on ] ndm |= 1
                 if [ !edp9.run_view.nav_fwd_on ]  ndm |= 2
+            el [ edp9 && edp9.view_key[].count > 0 ]
+                if [ !edp9.view_can[ -1 ] ] ndm |= 1
+                if [ !edp9.view_can[ 1 ] ]  ndm |= 2
             el
                 if [ !edp9 || !edp9.nav || !edp9.nav.can_back[] ]    ndm |= 1
                 if [ !edp9 || !edp9.nav || !edp9.nav.can_forward[] ] ndm |= 2
@@ -4258,25 +4181,18 @@ element orbiter : trinity # implements compiler
         # bar; not while the nav list is up on a title focus. lit while
         # the bar is open. with shift held it is the red minus that
         # closes this tab, in place, and git and the views show beside it
-        if [ shift_down && pane_ix < editor_slots.count && hasfile ]
+        sh9 : bool [ shift_down && pane_ix < editor_slots.count && hasfile && !engaged ]
+        if [ sh9 ]
             els['tabnav'] = BarTab [ buttons: vec string [] [ 'dock' ],
                 icon_ids: vec string [] [ 'close' ], manual: true, danger_mask: 1,
                 rest_glow: rgba [ '#ccf2' ], rest_px: 8.0,
                 seg_radius: 0.0, use_spacing: false ]
-            # the file's other ways to see it, beside the close while
-            # shift is held: git's diff, then the registered views
-            if [ hasfile && edp9 && !engaged ]
-                if [ checkout_root[ p.directory[] ] ]
-                    els['git'] = BarTab [ buttons: vec string [] [ 'git' ],
-                        icon_ids: vec string [] [ 'git' ], manual: true,
-                        sel_mask: (edp9.git_on) ? 1 : 0, rest_glow: rgba [ '#ccf2' ], rest_px: 8.0,
-                        seg_radius: 0.0, use_spacing: false ]
-                nv9 : i32 [ 0 ]
-                for [ v9: string ] in views_for[ edp9 ]
-                    if [ v9 != 'git' ] nv9 += 1
-                if [ nv9 > 0 ]
-                    els['views'] = ViewBar [ pane: pane_ix,
-                        area: Region [ 'r0+ t0 w{f32[ nv9 ] * 1.66} b0' ] ]
+        el [ hx9 && !engaged ]
+            # white: it closes only the view, back to the editor
+            els['tabnav'] = BarTab [ buttons: vec string [] [ 'view_close' ],
+                icon_ids: vec string [] [ 'close' ], manual: true, danger_mask: 0,
+                rest_glow: rgba [ '#ccf2' ], rest_px: 8.0,
+                seg_radius: 0.0, use_spacing: false ]
         el [ !is_resource && (!engaged || fb_on) ]
             tmask : i32 [ (fb_on) ? 1 : 0 ]
             # icon and red set again: the same element was the minus
@@ -4284,6 +4200,33 @@ element orbiter : trinity # implements compiler
                 icon_ids: vec string [] [ 'magnify' ], danger_mask: 0, manual: true,
                 sel_mask: tmask, rest_glow: rgba [ '#ccf2' ], rest_px: 8.0,
                 seg_radius: 0.0, use_spacing: false ]
+        # git's diff, then the registered views: with shift, and while
+        # a picked view shows (lit, so a press ends it); same places
+        vw9 : bool [ sh9 || (hx9 && !engaged) ]
+        # git toggled on in the editor keeps its lit button: a press ends it
+        gt9 : bool [ vw9 || (edp9 && edp9.git_on && !engaged) ]
+        if [ gt9 && hasfile && edp9 ]
+            if [ checkout_root[ p.directory[] ] ]
+                els['git'] = BarTab [ buttons: vec string [] [ 'git' ],
+                    icon_ids: vec string [] [ 'git' ], manual: true,
+                    sel_mask: (edp9.git_on) ? 1 : 0, rest_glow: rgba [ '#ccf2' ], rest_px: 8.0,
+                    seg_radius: 0.0, use_spacing: false ]
+            vids9 : vec string []
+            vico9 : vec string []
+            vsel9 : i32 [ 0 ]
+            cur9  : string edp9.resolve_view[]
+            for [ v9: string ] in views_for[ edp9 ]
+                if [ v9 == 'git' ] continue
+                vi9 : i32 [ i32[ vids9.count ] ]
+                if [ v9 == cur9 ] vsel9 |= (1 << vi9)
+                vids9.push[ 'view_{v9}' ]
+                ci9 : string console_icon[ v9 ]
+                vico9.push[ (ci9) ? ci9 : v9 ]
+            if [ vids9.count > 0 && vw9 ]
+                els['views'] = BarTab [ buttons: vids9, icon_ids: vico9, manual: true,
+                    sel_mask: vsel9, rest_glow: rgba [ '#ccf2' ], rest_px: 8.0,
+                    seg_radius: 0.0, use_spacing: false,
+                    area: Region [ 'r0+ t0 w{f32[ vids9.count ] * 1.66} b0' ] ]
         # a silver module's companions: <name>.ag and whatever sits
         # beside it under the same name, one strip at the title's right
         # (left of find); ids cmp_<ext>, the open one lit
@@ -5698,12 +5641,21 @@ element orbiter : trinity # implements compiler
         if [ pe && pe.rview ]
             pe.rview.release*[]
             pe.rview = null
-        # the last tab closes to an empty one on the nav list, as a
-        # new tab opens
+        # a view closes with its tab
+        if [ pe ] pe.view_name = ''
+        # the last tab closes to an empty one, the nav list shut
         if [ editor_slots.count == 1 ]
+            # its instances leave the panel with it; they keep running
+            if [ pe && pe.run_view && pe.run_view.viewer ] pe.close_app[]
+            if [ pe ]
+                pe.run_view = null
+                pe.app_view = false
             pane_drop_file[ pi ]
-            active_pane    = pi
-            pending_finder = pi
+            # the text goes now, not on the pane's next load
+            if [ pe ]
+                pe.load_file[]
+                pe.pristine = false
+            active_pane = pi
             return
         editor_slots.remove[ pi ]
         if [ pi < pane_console.count ] pane_console.remove[ pi ]
@@ -6450,7 +6402,11 @@ element orbiter : trinity # implements compiler
     func nav_note []
         if [ !nav_root ] return
         s9 : string '{nav_root}'
-        if [ !nav_hist ] nav_hist = vec string []
+        # a fresh context each time the list opens: the editor ('')
+        # is its first point, so back leaves the list
+        if [ !nav_hist ]
+            nav_hist    = vec string [] [ '' ]
+            nav_hist_ix = 0
         if [ nav_hist_ix >= 0 && nav_hist_ix < nav_hist.count ]
             cur9 : string nav_hist[ nav_hist_ix ]
             if [ cur9.compare[ s9 ] == 0 ] return
@@ -6467,6 +6423,16 @@ element orbiter : trinity # implements compiler
     public func nav_step [ d: i32 ] -> bool
         if [ !nav_can[ d ] ] return false
         nav_hist_ix = nav_hist_ix + d
+        # the editor's point: the list closes, the arrows walk code again
+        if [ nav_hist[ nav_hist_ix ].count == 0 ]
+            nav_hist = null
+            exit_finder[]
+            nav_showing  = false
+            find_showing = false
+            if [ ux ]
+                ux.will_animate = true
+                ux.restyle      = true
+            return true
         nav_go[ path nav_hist[ nav_hist_ix ] ]
         return true
 
@@ -6626,6 +6592,8 @@ element orbiter : trinity # implements compiler
             find_results = combined
         # empty results keep the view up: it says so instead of vanishing
         nav_showing = active
+        # the list closed: its dialog history ends with it
+        if [ !active ] nav_hist = null
         for [ i: i32 0, i < editor_slots.count, i += 1 ]
             pid : 'pane{i}'
             ed  : Editor pane_at[ i ]
@@ -6842,6 +6810,9 @@ element orbiter : trinity # implements compiler
     # show a named view in a pane; '' returns it to the default
     func set_pane_view [ ed: Editor, nm: string ]
         if [ !ed ] return
+        ed.view_note[ nm ]
+        # one view at a time: another view ends git's diff
+        if [ nm && nm.count > 0 && nm != 'git' ] ed.git_on = false
         ed.view_name = nm
         ed.load_file[]
         exit_find_mode[]
@@ -7233,6 +7204,25 @@ element orbiter : trinity # implements compiler
                 sync_tabs[]
                 return
         
+        if [ ev.target.id == 'view_close' ]
+            edc : Editor pane_of[ ev.target ]
+            if [ !edc ] edc = pane_at[ active_pane ]
+            if [ edc ]
+                if [ edc.view_name == 'git' ] edc.git_on = false
+                set_pane_view[ edc, '' ]
+                force_update[]
+            return
+
+        if [ ev.target.id.starts_with[ 'view_' ] ]
+            edv : Editor pane_of[ ev.target ]
+            if [ !edv ] edv = pane_at[ active_pane ]
+            if [ edv ]
+                vn9 : string ev.target.id.mid[ 5, ev.target.id.count - 5 ]
+                # the lit one toggles off, back to editing
+                set_pane_view[ edv, (vn9 == edv.resolve_view[]) ? '' : vn9 ]
+                force_update[]
+            return
+
         if [ ev.target.id == 'git' ]
             edg : Editor pane_of[ ev.target ]
             if [ !edg ] edg = pane_at[ active_pane ]

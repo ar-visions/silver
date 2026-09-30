@@ -1,6 +1,7 @@
 extend trinity
 
 import <faac.h>
+import <rnnoise.h>
 import <string.h>
 import <unistd.h>
 import <fcntl.h>
@@ -65,6 +66,42 @@ class AudioRing
             out[ i * 2 ]     = i16[ (l > 32767) ? 32767 : ((l < -32768) ? -32768 : l) ]
             out[ i * 2 + 1 ] = i16[ (g > 32767) ? 32767 : ((g < -32768) ? -32768 : g) ]
             r += 1
+
+# the mic cleaned of steady noise and breath: rnnoise takes 480
+# mono frames at 48 kHz (10 ms); both channels get the result
+class Denoise
+    intern  st   : @DenoiseState
+    intern  fin  : new f32 [ 480 ]
+    intern  fout : new f32 [ 480 ]
+    intern  frm  : new i16 [ 960 ]
+    intern  fill : i32
+    intern  live : bool
+
+    func init []
+        st   = rnnoise_create[ null ]
+        live = true
+
+    func dealloc []
+        if [ live ] rnnoise_destroy[ st ]
+
+    # n stereo frames in; each full 10 ms goes to the ring cleaned
+    func run [ pcm: @i16, n: i32, out: AudioRing ]
+        for [ i: i32 0, i < n, i += 1 ]
+            fin[ fill ] = f32[ pcm[ i * 2 ] ]
+            fill += 1
+            if [ fill < 480 ] continue
+            fill = 0
+            if [ !live ]
+                for [ k: i32 0, k < 480, k += 1 ]
+                    fout[ k ] = fin[ k ]
+            el
+                rnnoise_process_frame[ st, @fout[ 0 ], @fin[ 0 ] ]
+            for [ k: i32 0, k < 480, k += 1 ]
+                v : f32 [ fout[ k ] ]
+                s : i16 [ i16[ (v > 32767.0) ? 32767.0 : ((v < -32768.0) ? -32768.0 : v) ] ]
+                frm[ k * 2 ]     = s
+                frm[ k * 2 + 1 ] = s
+            out.put[ @frm[ 0 ], 480 ]
 
 # aac-lc, 48 kHz stereo: 1024 frames per channel in, one raw aac block out.
 # the muxers wrap the blocks (an mp4 sample, an adts frame in a transport stream)

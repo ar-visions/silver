@@ -24,6 +24,7 @@ Keep it in step with the imports.
 | glslang | 715c8500e7cd67f2eba9e60e98852a1ed49d2f15 | trinity | https://github.com/KhronosGroup/glslang | BSD-3-Clause with Apache-2.0 and MIT parts (see its LICENSE.txt) | The Khronos Group, Google, LunarG, John Kessenich |
 | MoltenVK | db445ff | trinity (macOS) | https://github.com/KhronosGroup/MoltenVK | Apache-2.0 | The Brenwill Workshop, The Khronos Group |
 | OpenSubdiv | v3_7_0 | trinity | https://github.com/PixarAnimationStudios/OpenSubdiv | Apache-2.0 (Pixar modified) | Pixar Animation Studios |
+| RNNoise | 0.2 | trinity (recording mic) | https://github.com/xiph/rnnoise | BSD-3-Clause | Xiph.Org Foundation, Mozilla, Jean-Marc Valin |
 | sherpa-onnx | v1.13.4 | speech | https://github.com/k2-fsa/sherpa-onnx | Apache-2.0 | Next-gen Kaldi (k2-fsa) |
 | FAAD2 | 2.11.2 | spectra, speech | https://github.com/knik0/faad2 | GPL-2.0-or-later (commercial license available) | Nero AG, Fabian Greffrath, Krzysztof Nikiel and contributors |
 | Mbed TLS | ec4044008d2d069da38288bc76b0fee34ec78646 | tls, aura (https) | https://github.com/Mbed-TLS/mbedtls | Apache-2.0 OR GPL-2.0-or-later | Arm Limited and contributors |

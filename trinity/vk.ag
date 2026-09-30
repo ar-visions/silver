@@ -5619,6 +5619,9 @@ Texture Display
     public func set_title [ t: string ]
         platform_window_set_title[ glfw, t.chars ]
 
+    public func set_resizable [ on: bool ]
+        if [ glfw ] platform_window_set_resizable[ glfw, on ]
+
 
     func dealloc [ ]
         info : Au.header[ a ]
