@@ -293,6 +293,7 @@ typedef struct _Au_t {
     void*           member_map;
     micro_          args;
     meta_t_         meta;
+    cstr            dflt;
     union {
         u64             required_bits[4];
         struct _Au_t_f* fn;

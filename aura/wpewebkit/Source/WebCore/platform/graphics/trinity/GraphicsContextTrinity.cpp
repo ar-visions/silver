@@ -395,8 +395,12 @@ void GraphicsContextTrinity::setShadowForDraw()
     auto shadow = dropShadow();
     if (!shadow || !shadow->isVisible()) {
         webgfx_canvas_clear_shadows(m_canvas);
+        if (m_nearGlow[3] > 0)
+            webgfx_canvas_set_shadow(m_canvas, 1, m_nearGlow, 0, 0, m_nearGlowBlur, 0, true);
         return;
     }
+    if (m_nearGlow[3] > 0)
+        webgfx_canvas_set_shadow(m_canvas, 1, m_nearGlow, 0, 0, m_nearGlowBlur, 0, true);
     float blur = shadow->radiusMode == ShadowRadiusMode::Legacy ? shadow->radius * 2 : shadow->radius;
     FloatSize offset = shadow->offset;
     if (shadowsIgnoreTransforms()) {
@@ -409,6 +413,30 @@ void GraphicsContextTrinity::setShadowForDraw()
     float rgba[4];
     toRGBA(shadow->color.colorWithAlphaMultipliedBy(shadow->opacity), rgba);
     webgfx_canvas_set_shadow(m_canvas, 0, rgba, offset.width(), offset.height(), blur, 0, false);
+}
+
+void GraphicsContextTrinity::setNearLight(const FloatPoint& point, float reach, float glow, float border, float inset, const Color& glowColor, float yFade)
+{
+    auto device = m_ctm.mapPoint(point);
+    float scale = std::max(static_cast<float>(m_ctm.xScale()), 0.0001f);
+    webgfx_canvas_near_light(m_canvas, device.x(), device.y(), reach * scale, glow);
+    float rgba[4];
+    toRGBA(glowColor, rgba);
+    webgfx_canvas_near_style(m_canvas, border, inset, rgba, yFade);
+    // the inner glow at rest: faint, the light brings it up
+    m_nearGlow[0] = rgba[0];
+    m_nearGlow[1] = rgba[1];
+    m_nearGlow[2] = rgba[2];
+    m_nearGlow[3] = rgba[3] * 0.10f;
+    m_nearGlowBlur = 6;
+}
+
+void GraphicsContextTrinity::clearNearLight()
+{
+    float none[4] = { 0, 0, 0, 0 };
+    webgfx_canvas_near_light(m_canvas, 0, 0, 0, 0);
+    webgfx_canvas_near_style(m_canvas, 0, 0, none, 1);
+    m_nearGlow[3] = 0;
 }
 
 void GraphicsContextTrinity::fillColorRect(const FloatRect& rect, const Color& color)

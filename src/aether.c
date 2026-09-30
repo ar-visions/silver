@@ -40,6 +40,7 @@ AU_EXPORT aether au_active(aether from) {
 // its own, or a second minting thread would deadlock against it.
 static pthread_mutex_t _ctx_mtx[AU_CORES];
 static pthread_mutex_t _type_mtx = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t timing_id_mtx = PTHREAD_MUTEX_INITIALIZER;
 static __thread int _ctx_depth  = 0;
 static __thread int _ctx_core   = 0;
 static __thread int _type_depth = 0;
@@ -5956,7 +5957,7 @@ enode aether_e_create(aether a, etype mdl, Au args, bool no_pool) { sequencer
         if (!ctx_bytes)
             ctx_alloc = e_alloc(a, ctx_type, false);
         else {
-            a->alloc_count = (Au)_i32((i32)LLVMABISizeOfType(ll_td(a), _lltype_slot(ctx_type)));
+            a->alloc_count = _i32((i32)LLVMABISizeOfType(ll_td(a), _lltype_slot(ctx_type)));
             ctx_alloc = e_alloc(a, etypeid(u8), false);
             ctx_alloc->autype = pointer(a, (Au)ctx_type)->autype;
         }
@@ -6551,7 +6552,7 @@ AU_EXPORT enode aether_e_alloc(aether a, etype mdl, bool no_pool) {
     enode n_src; Au n_line, n_seq;
     alloc_origin_args(a, &n_src, &n_line, &n_seq);
     // a sized vec hands its count in so the elements land inline
-    Au cnt = a->alloc_count ? (Au)a->alloc_count : (Au)_i32(0);
+    Au cnt = a->alloc_count ? a->alloc_count : _i32(0);
     Au shp = a->alloc_shape ? (Au)a->alloc_shape : (Au)e_null(a, etypeid(shape));
     a->alloc_count = null;
     a->alloc_shape = null;
@@ -9995,8 +9996,9 @@ enode aether_e_asm(aether a, array body, array input_nodes, etype out_type, stri
     // x86 notion, and stamping it on a cross build to arm emits a
     // .intel_syntax directive the arm assembler rejects
     bool x86_target = a->target_triple ?
-        (strstr(a->target_triple, "x86_64") || strstr(a->target_triple, "i686") ||
-         strstr(a->target_triple, "i386")) != NULL :
+        (strstr(a->target_triple, "x86_64") != NULL ||
+         strstr(a->target_triple, "i686")   != NULL ||
+         strstr(a->target_triple, "i386")   != NULL) :
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
         true;
 #else
@@ -10337,6 +10339,7 @@ AU_EXPORT none aether_build_module_initializer(aether a, enode init) {
     efunc fn_emplace       = efind(efunc, etypeid(Au), emplace_type);
     efunc fn_def_func      = efind(efunc, etypeid(Au), def_func);
     efunc fn_def_prop      = efind(efunc, etypeid(Au), def_prop);
+    efunc fn_def_dflt      = efind(efunc, etypeid(Au), def_prop_default);
     efunc fn_def_enum      = efind(efunc, etypeid(Au), def_enum_value);
     efunc fn_def_arg       = efind(efunc, etypeid(Au), def_arg);
     efunc fn_def_meta      = efind(efunc, etypeid(Au), def_meta);
@@ -10484,7 +10487,7 @@ AU_EXPORT none aether_build_module_initializer(aether a, enode init) {
                     e_meta_b = eshape_from_indices(a, indices);
                 }
             }
-            e_fn_call(a, fn_def_prop, a(
+            enode prop_reg = e_fn_call(a, fn_def_prop, a(
                 module_type_id,
                 const_string(chars, mem->ident),
                 e_typeid(a, u(etype, mem->rtype)), // this is the source.
@@ -10501,6 +10504,10 @@ AU_EXPORT none aether_build_module_initializer(aether a, enode init) {
                 mem->meta.m ? e_typeid(a, u(etype, mem->meta.m)) : e_null(a, etypeid(Au_t)),
                 mem->meta.member_b ? e_typeid(a, u(etype, mem->meta.member_b)) : e_null(a, etypeid(Au_t))
             ), false, false);
+            // the declared default rides the descriptor: reflection reads it
+            string dflt = a->prop_defaults ? (string)get(a->prop_defaults, (Au)mem) : null;
+            if (dflt)
+                e_fn_call(a, fn_def_dflt, a(prop_reg, const_string(chars, dflt->chars)), false, false);
         }
     }
 
@@ -10995,7 +11002,9 @@ AU_EXPORT none aether_push_scope(aether a, Au arg, int label) {
         if (a->timing && !fn->timing_start_value) {
             // one id space for every core: the counter lives on the root
             aether r = a->root ? a->root : a;
-            fn->timing_func_id = __atomic_fetch_add(&r->next_func_id, 1, __ATOMIC_SEQ_CST);
+            pthread_mutex_lock(&timing_id_mtx);
+            fn->timing_func_id = r->next_func_id++;
+            pthread_mutex_unlock(&timing_id_mtx);
             fn->timing_start_value = emit_func_timing_start(a, fn->timing_func_id);
             if (a->coverage || a->timing)
                 coverage_set_func_name(a, fn->timing_func_id, fn->autype->alt ? fn->autype->alt : fn->autype->ident);

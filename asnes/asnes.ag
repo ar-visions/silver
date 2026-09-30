@@ -5681,6 +5681,8 @@ element asnes : trinity
 			emu_stop = true
 			while [ emu_running ]
 				usleep[ 2000 ]
+		# the sound stops with the emulator, nothing left to play out
+		if [ audio ] audio.close[]
 		if [ cpu ]
 			free[ cpu.memory ]
 		if [ spc ]

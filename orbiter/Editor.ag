@@ -1272,11 +1272,22 @@ ResourceView AppView
 
     intern func cleanup []
         instr_clear[]
+        # a debugger-held app is let run so it closes itself (its sound
+        # stops cleanly). never a SIGTERM there: the debugger stops on it
+        # and the frozen app loops its sound. it ends it only if still there
+        dbg9 : bool [ debugger && debugger.active ]
+        if [ dbg9 && !debugger.running ] debugger.cont[]
         if [ slot >= 0 ]
             if [ paused ] host_app_resume[ slot ]
             if [ slot > 0 ] host_post2[ slot, 1, i32[ HM.close ], 0, 0, 0 ]
-            host_app_stop[ slot ]
+            if [ dbg9 && slot > 0 ]
+                pd9 : i32 [ host_app_pid[ slot ] ]
+                for [ i9: i32 0, i9 < 100 && pd9 > 0 && host_pid_alive[ pd9 ] != 0, i9 += 1 ]
+                    usleep[ 10000 ]
+            el
+                host_app_stop[ slot ]
             slot = 0 - 1
+        if [ dbg9 ] debugger.stop[]
         if [ tex0 ]
             tex0.drop[]
             tex1.drop[]
@@ -2153,10 +2164,17 @@ Layer EditorLayer
                 pr : i32 [ pins[ pi ] ]
                 pn : i32 [ editor.row_src[ pr ] + 1 ]
                 py : f32 [ round[ bounds.y + f32[ pi ] * lh ] ]
-                cv.fill_color[ (pi == editor.hover_pin) ? rgba['#534'] : rgba['#312'] ]
+                # hover lifts it half the way it did; an inner glow takes
+                # the pointer's light, as the instance rows do
+                cv.save[ ]
+                cv.fill_color[ (pi == editor.hover_pin) ? rgba['#423'] : rgba['#312'] ]
                 cv.stroke_width[ 0.0 ]
+                cv.box_shadow[ rgba['#fcc2'], 0.0, 0.0, 13.0, 0.0, true ]
+                editor.ux.near_light_on[ cv, editor, 0.0, 0.0 ]
+                cv.near_style[ 0.0, 3.0, rgba['#c890ffff'], editor.ux.near_y_fade ]
                 cv.rect_to[ bounds.x, py, bounds.w, lh ]
                 cv.paint[ ]
+                cv.restore[ ]
                 cv.fill_color[ rgba['#ffffff80'] ]
                 cv.draw_text[ '{pn}',
                     rect [ x: bounds.x, y: py, w: gut_w - 6.0, h: lh ],
@@ -5296,6 +5314,21 @@ Control Editor
         app_view = false
         pristine = false
         no_scroll = true
+        if [ ux ] ux.restyle = true
+
+    # another instance like av: its source, args and display, held
+    # until its row starts it, as a new one is
+    func copy_instance [ av: AppView ]
+        if [ !av || !av.src ] return
+        nv : AppView [ ]
+        nv.src         = av.src
+        nv.module_args = av.module_args
+        nv.display     = av.display
+        nv.pip         = av.display == 0
+        nv.held        = true
+        orb8 : cast orbiter [ ux.app_object ]
+        if [ orb8 ] orb8.add_instance[ nv ]
+        pristine = false
         if [ ux ] ux.restyle = true
 
     func select_instance [ i: i32 ]

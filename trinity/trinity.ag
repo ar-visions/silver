@@ -319,7 +319,12 @@ func props_of [ ty0: Au_t, target: Au, acc: LaunchProps ] -> none
                     if [ !p.stops ] p.stops = vec string []
                     p.stops.push[ string [ ev.ident ] ]
                     en = true
-            # a type alone has no values: the running instance's answer has them
+            # no instance: the declared default, as written in the module
+            if [ !target && mem.dflt ]
+                dv : string [ mem.dflt ]
+                q0 : i32 [ (dv.count >= 2) ? i32[ dv.chars[ 0 ] ] : 0 ]
+                if [ q0 == 39 || q0 == 34 ] dv = dv.mid[ 1, dv.count - 2 ]
+                p.value = dv
             v  : Au [ (target) ? target.member_object[ mem ] : null ]
             whole : bool [ en || mem.src == typeid[ i32 ] || mem.src == typeid[ i64 ] ||
                            mem.src == typeid[ u32 ] || mem.src == typeid[ u64 ] || mem.src == typeid[ bool ] ]
@@ -1093,7 +1098,14 @@ abstract live_app media_app
             for [ i: i32 0, i < 64, i += 1 ]
                 t : i32 [ host_poll[ 1 ] ]
                 if [ t == 0 ] break
-                if [ t == i32[ HM.close ] ] return false
+                if [ t == i32[ HM.close ] ]
+                    # silent at once: the teardown after writes nothing audible
+                    ca9 : cast element [ wn.app_object ]
+                    vm9 : Au_t [ (ca9) ? find_member[ typeid[ ca9 ], 'volume', AU_MEMBER_VAR, 0, true ] : null ]
+                    if [ vm9 ]
+                        v09 : Au.convert[ vm9.src, '0' ]
+                        if [ v09 ] ca9.set_property[ 'volume', v09 ]
+                    return false
                 if [ t == i32[ HM.live ] ]
                     wn.dict_live = host_pa[] != 0
                     wn.restyle   = true
@@ -1967,6 +1979,23 @@ Display Window
         if [ y > f32[ height ] ] y = f32[ height ]
         return vec2f [ x, y ]
 
+    # the exchange's ground each frame: the screen as drawn under it,
+    # copied and blurred now; a crop capture keeps its still
+    func exchange_blur_frame [] -> bool
+        if [ screenshot_active || !screen || !screen.color || !screen.color.vk_image ] return false
+        tx : Texture screen.color
+        if [ !live_snap || live_snap.width != tx.width || live_snap.height != tx.height ]
+            live_snap = Texture [ vk: vk, w: a, width: tx.width, height: tx.height, vk_format: tx.vk_format ]
+            live_blur = ReduceBlur []
+            live_blur.build[ vk_context[ a.vk ], a, live_snap, 1.0, 2 ]
+        screen.flush_text[]
+        screen.draw[]
+        screen.sync_fence[]
+        vk.copy_image[ tx, live_snap ]
+        live_blur.run[]
+        screenshot_blur = live_blur
+        return true
+
     func screenshot_begin []
         lr : Render last_render[]
         if [ !lr || !lr.color ] return
@@ -2818,6 +2847,10 @@ Display Window
         for [ e:element, id:string ] in rendered
             if [ e ] total_rendered += 1
 
+        # the siblings a relative area (l0+) follows, in this pass
+        ul_last : element
+        ul_l    : element
+        ul_r    : element
         # iterate through rendered elements
         child_pos : i32 [ 0 ]
         for [ e:element, id:string ] in rendered
@@ -2941,6 +2974,17 @@ Display Window
                         avail2 : st.compute[ instance ]
                         apply_style[ instance, avail2, home_object ]
             inst    : typeid[ instance ]
+            # a container renders from this frame's bounds, not the last
+            # draw's: a nested splitter laid its panes out a frame late
+            if [ screen && parent.bounds ]
+                layout_self[ instance, ul_last, ul_l, ul_r, screen ]
+                if [ !instance.topmost ]
+                    ul_last = instance
+                    if [ instance.area && instance.area.l.relative ]
+                        if [ instance.area.l.x_type == XAlign.right ]
+                            ul_r = instance
+                        el [ instance.area.l.x_type == XAlign.left ]
+                            ul_l = instance
             tr0 : i64 [ epoch_micros[] ]
             rendered_map : Elements instance.render*[]
             a.t_render += epoch_micros[] - tr0
@@ -4164,6 +4208,9 @@ Display Window
         return a
 
     mutable blur_anim : f32
+    # appended last: the modules built before them keep their offsets
+    mutable live_blur           : ReduceBlur   # the exchange's ground: the frame behind it, every frame
+    mutable live_snap           : Texture      # the screen as drawn so far, the live blur's source
 
 
     func on_compose []
@@ -4925,7 +4972,8 @@ Display Window
         update_all[ app_render[] ]
         return res
 
-    func layout_element [ e: element*, last: element, last_l: element, last_r: element, cv: Canvas ]
+    # one element's bounds from its area and its parent's bounds
+    func layout_self [ e: element*, last: element, last_l: element, last_r: element, cv: Canvas ]
         expect e inherits element, 'e is not an element'
         rel : rect [ (e.parent) ?
             rect [ x: 0, y: 0, w: e.parent.bounds.w, h: e.parent.bounds.h ] :
@@ -5028,7 +5076,8 @@ Display Window
         e.bounds.w = bounds.w
         e.bounds.h = bounds.h
 
-
+    func layout_element [ e: element*, last: element, last_l: element, last_r: element, cv: Canvas ]
+        layout_self[ e, last, last_l, last_r, cv ]
         if [ e.bounds.w <= 0.0 || e.bounds.h <= 0.0 ] return
         if [ e.opacity <= 0.0 ] return
         last_2 : element
@@ -5966,6 +6015,10 @@ Layer ScrollLayer
         track_vis  = vis_h
         scroll_max = max_sc
         grab_w     = base_w * 2.0 + 6.0
+        # the edges take the pointer's grey near light, as the tabs do
+        wn9 : cast Window [ cv.w ]
+        cv.save[]
+        if [ wn9 && prox > 0.0 ] wn9.near_light_on[ cv, e, 0.0, 0.0 ]
         if [ prox > 0.0 ]
             cv.fill_color  [ rgba['#0000'] ]
             cv.stroke_color[ rgba[ r:1.0, g:1.0, b:1.0, a: 0.133 * prox ] ]
@@ -5975,9 +6028,14 @@ Layer ScrollLayer
             cv.paint       [ ]
             cv.stroke_width[ 0.0 ]
             cv.stroke_offset[ 0.0 ]
+        # the thumb: a faint inset glow the pointer's grey near light fills
         cv.fill_color[ thumb_color ]
+        if [ prox > 0.0 ]
+            cv.box_shadow[ rgba[ '#fff1' ], 0.0, 0.0, 4.0, 0.0, true ]
+            cv.near_style[ 1.0, 3.0, rgba[ '#fff6' ], (wn9) ? wn9.near_y_fade : 2.0 ]
         cv.rounded_rect[ thumb_x, thumb_y, eff_w, thumb_h, r, r, r, r ]
         cv.paint[]
+        cv.restore[]
 
     public func drag_to [ my: f32 ] -> f32
         travel : f32 [ track_vis - thumb_h_px ]
@@ -6809,10 +6867,11 @@ Option UXMenuButton
     public live_state : bool
     outline : Layer [ radius: Radius [ '8' ], stroke_width: 0.0,
         stroke_color: rgba [ '#0000' ], fill_color: rgba [ '#0000' ] ]
+    # whole-pixel strokes: a half-pixel band read as a broken faint line
     hover   : Layer [ states: State.hovered, radius: Radius [ '8' ],
-        stroke_width: 0.5, stroke_color: rgba [ '#ffff' ], fill_color: rgba [ '#ffffff14' ] ]
+        stroke_width: 1.0, stroke_color: rgba [ '#ffffff80' ], fill_color: rgba [ '#ffffff14' ] ]
     active  : Layer [ states: State.selected, radius: Radius [ '8' ],
-        stroke_width: 0.5, stroke_color: rgba [ '#ffff' ], fill_color: rgba [ '#0000' ] ]
+        stroke_width: 1.0, stroke_color: rgba [ '#ffffff80' ], fill_color: rgba [ '#0000' ] ]
 
     func render [] -> Elements
         sync_icon[]
@@ -7109,14 +7168,19 @@ Layer ShotGround
     func draw [ cv: Canvas ]
         if [ !parent ] return
         w : Window parent.ux
-        if [ !w || !w.screenshot_blur ] return
+        if [ !w ] return
+        w.exchange_blur_frame[]
+        if [ !w.screenshot_blur ] return
         cv.draw_image[ w.screenshot_blur.color[],
             rect [ x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h ] ]
-        cv.fill_color[ '#00000040' ]
+        # half black over the blur: a bright page stays behind the dialog
+        cv.fill_color[ '#00000080' ]
         cv.rect_to[ bounds.x, bounds.y, bounds.w, bounds.h ]
         cv.paint[]
 
 element ShotBackdrop
+    # painted on the screen every frame: its ground is the live blur
+    animated : true
     area   : Region { l0 t0 r0 b0 }
     ground : ShotGround []
     style : CSS {

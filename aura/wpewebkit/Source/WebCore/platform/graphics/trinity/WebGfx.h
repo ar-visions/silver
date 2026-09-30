@@ -104,6 +104,8 @@ void webgfx_canvas_filter_lut(int canvas, int source, float x, float y, uint8_t 
 void webgfx_canvas_set_composite(int canvas, int op);
 void webgfx_canvas_set_shadow(int canvas, int slot, float const* rgba, float x, float y, float blur, float spread, bool inset);
 void webgfx_canvas_clear_shadows(int canvas);
+void webgfx_canvas_near_light(int canvas, float x, float y, float reach, float glow);
+void webgfx_canvas_near_style(int canvas, float border, float inset, float const* rgba, float yFade);
 void webgfx_canvas_set_filter(int canvas, float hue, float saturate, float brightness);
 void webgfx_canvas_clip_rounded_rect(int canvas, float x, float y, float width, float height, float const* radii);
 void webgfx_canvas_clip_path(int canvas, int path, bool even_odd);
