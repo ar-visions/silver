@@ -2242,6 +2242,103 @@ expect func t_computed_key [] -> bool
     m : map i64 [ string ] [ 'a': 1, {nm}: 2 ]
     return m[ 'b' ] == 2 && m[ 'a' ] == 1
 
+# vec and indexing forms: each one broke in a real module once
+
+class DimsHolder
+    public dims : vec i64
+
+func vec_of_three [ k: i64 ] -> vec f32
+    o : vec f32 [ 3 ]
+    o[ 0 ] = f32[ k ]
+    o[ 1 ] = f32[ k + 1 ]
+    o[ 2 ] = f32[ k + 2 ]
+    return o
+
+# a vec literal reads an element's value, not its address
+expect func t_vec_lit_elem [] -> bool
+    src : vec i64 [ 3 ]
+    src[ 0 ] = 7
+    src[ 1 ] = 8
+    src[ 2 ] = 9
+    v : vec i64 [] [ src[ 0 ], src[ 2 ] ]
+    return v.count == 2 && v[ 0 ] == 7 && v[ 1 ] == 9
+
+# the same through a member: h.dims[ 0 ]
+expect func t_vec_lit_member_elem [] -> bool
+    h : DimsHolder [ dims: vec i64 [ 2 ] ]
+    h.dims[ 0 ] = 4
+    h.dims[ 1 ] = 6
+    v : vec i64 [] [ h.dims[ 0 ], h.dims[ 1 ], 5 ]
+    return v[ 0 ] == 4 && v[ 1 ] == 6 && v[ 2 ] == 5
+
+# push takes an element's value
+expect func t_vec_push_elem [] -> bool
+    w : vec i64 [ 2 ]
+    w[ 0 ] = 11
+    w[ 1 ] = 12
+    v : vec i64 []
+    for [ i: i64 0, i < 2, i += 1 ]
+        v.push[ w[ i ] ]
+    return v.count == 2 && v[ 0 ] == 11 && v[ 1 ] == 12
+
+# float constants in a vec literal keep their values
+expect func t_vec_lit_f32 [] -> bool
+    v : vec f32 [] [ 3.0, 7.5 ]
+    d : vec f64 [] [ 0.25, -2.0 ]
+    return v[ 0 ] == 3.0 && v[ 1 ] == 7.5 && d[ 0 ] == 0.25 && d[ 1 ] == -2.0
+
+# an index that starts with a cast
+expect func t_index_cast_lead [] -> bool
+    v : vec f32 [ 12 ]
+    a : f32 [ 2.0 ]
+    v[ 9 ] = 3.0
+    r : f32 [ v[ i64[ a ] * 4 + 1 ] ]
+    v[ i64[ a ] * 4 + 1 ] = 5.0
+    return r == 3.0 && v[ 9 ] == 5.0
+
+# indexing a call's result directly
+expect func t_index_call_result [] -> bool
+    x : f32 [ vec_of_three[ 4 ][ 1 ] ]
+    return x == 5.0
+
+# a returned vec aliased by a local survives the next pass
+expect func t_vec_return_alias [] -> bool
+    sum : f32 [ 0.0 ]
+    keep : vec f32 vec_of_three[ 0 ]
+    for [ i: i64 0, i < 3, i += 1 ]
+        a : vec f32 vec_of_three[ i * 10 ]
+        b : vec f32 a
+        sum += b[ 0 ] + b[ 2 ]
+    return sum == 66.0 && keep[ 2 ] == 2.0
+
+# a string made from a vec's bytes is a copy of them
+expect func t_string_from_vec_bytes [] -> bool
+    b : vec u8 [ 3 ]
+    b[ 0 ] = 104
+    b[ 1 ] = 105
+    b[ 2 ] = 0
+    s : string string[ @b[ 0 ] ]
+    b[ 0 ] = 120
+    return s == 'hi' && s.count == 2
+
+# a runtime-sized vec of a C struct holds all n elements
+expect func t_vec_c_struct_n [] -> bool
+    n : i64 [ 40 ]
+    v : vec feat_rec [ n ]
+    after : vec i64 [ 8 ]
+    for [ i: i64 0, i < 8, i += 1 ]
+        after[ i ] = 77
+    for [ i: i64 0, i < n, i += 1 ]
+        v[ i ].kind = i32[ i ]
+        v[ i ].w = f64[ i ] * 0.5
+    ok : bool [ v.count == n ]
+    for [ i: i64 0, i < n, i += 1 ]
+        if [ v[ i ].kind != i32[ i ] || v[ i ].w != f64[ i ] * 0.5 ] ok = false
+    for [ i: i64 0, i < 8, i += 1 ]
+        if [ after[ i ] != 77 ] ok = false
+    span : i64 [ i64[ cast u64 [ @v[ n - 1 ] ] - cast u64 [ @v[ 0 ] ] ] ]
+    return ok && span == (n - 1) * 24
+
 # ==== References and memory: Counted, with the cost visible.
 # Objects are reference counted; ref, @ and lambda contexts show
 # where a hold is taken and where it is given back.

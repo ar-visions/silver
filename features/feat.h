@@ -21,3 +21,5 @@ int feat_add(int a, int b);
 #ifndef FEAT_LEVEL
 #define FEAT_LEVEL 0
 #endif
+/* a C struct with a pointer, an int and a double */
+typedef struct feat_rec { const void* next; int kind; double w; } feat_rec;

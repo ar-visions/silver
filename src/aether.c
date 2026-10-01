@@ -6064,6 +6064,10 @@ enode aether_e_create(aether a, etype mdl, Au args, bool no_pool) { sequencer
             if (LLVMIsAConstantPointerNull(_llvalue((enode)input)))
                 return value(mdl, LLVMConstPointerNull(lltype(mdl)));
 
+            // an element read is its address until loaded: box the value
+            if (!input->loaded && !is_struct(input) && !input_estr)
+                input = enode_value(input, true);
+
             // a loaded POINTER value typed as a prim is a ref-member
             // read: pass it through — boxing would store 8 bytes into
             // a prim-sized alloc and hand the callee the box
@@ -6110,6 +6114,18 @@ enode aether_e_create(aether a, etype mdl, Au args, bool no_pool) { sequencer
             Au_t tm9 = canonical(mdl) ? canonical(mdl)->autype : null;
             if (iv9 && tm9 && au_is_vector(iv9) && tm9->is_class &&
                     !au_is_vector(tm9) && !inherits(iv9, tm9) &&
+                    (constructs_with(tm9, typeid(cstr)) || constructs_with(tm9, typeid(symbol)))) {
+                enode cs9 = e_convert_or_cast(a, etypeid(cstr), input);
+                return e_create(a, mdl, (Au)cs9, false);
+            }
+            // a byte pointer (@u8, ref i8) is text here, never an object
+            Au_t ip9 = canonical(input) ? canonical(input)->autype : null;
+            Au_t pe9 = (ip9 && (ip9->is_pointer || ip9->is_explicit_ref) && ip9->src) ?
+                au_arg_type((Au)ip9->src) : null;
+            bool tx9 = canonical(input) == etypeid(cstr) || canonical(input) == etypeid(symbol) ||
+                (_llvalue((enode)input) && LLVMIsAConstantPointerNull(_llvalue((enode)input)));
+            if (pe9 && !tx9 && (pe9 == typeid(u8) || pe9 == typeid(i8)) && tm9 && tm9->is_class &&
+                    tm9 != typeid(Au) && !au_is_vector(tm9) &&
                     (constructs_with(tm9, typeid(cstr)) || constructs_with(tm9, typeid(symbol)))) {
                 enode cs9 = e_convert_or_cast(a, etypeid(cstr), input);
                 return e_create(a, mdl, (Au)cs9, false);
@@ -8158,6 +8174,45 @@ static void emit_expect_tests(aether a, Au_t module_base, efunc f);
 
 // a library's ctor runs before the rest of its .so's ctors;
 // its tests run from <module>_late, linked last (silver.c)
+static LLVMValueRef expect_failed_global(aether a);
+static array expect_tests(Au_t module_base);
+
+// a library has no report: any failed test exits 1 here
+static void emit_expect_failures(aether a, Au_t module_base) {
+    emit_guard;
+    if (a->strip_expect || !len(expect_tests(module_base))) return;
+    int total = 0;
+    each(expect_tests(module_base), Au_t, mem) total++;
+    LLVMTypeRef  i32_t = LLVMInt32TypeInContext(a->module_ctx);
+    LLVMTypeRef  i8p_t = LLVMPointerTypeInContext(a->module_ctx, 0);
+    LLVMValueRef nfail = LLVMBuildLoad2(B, i32_t, expect_failed_global(a), "expect_failed");
+    LLVMValueRef anyf  = LLVMBuildICmp(B, LLVMIntNE, nfail, LLVMConstInt(i32_t, 0, 0), "");
+    LLVMValueRef fnv   = LLVMGetBasicBlockParent(LLVMGetInsertBlock(B));
+    LLVMBasicBlockRef bb_bad = LLVMAppendBasicBlockInContext(a->module_ctx, fnv, "expect.bad");
+    LLVMBasicBlockRef bb_ok  = LLVMAppendBasicBlockInContext(a->module_ctx, fnv, "expect.ok");
+    LLVMBuildCondBr(B, anyf, bb_bad, bb_ok);
+    LLVMPositionBuilderAtEnd(B, bb_bad);
+    char buf[256];
+    snprintf(buf, sizeof(buf), "[%s] expect: %%d of %d failed\n", module_base->ident, total);
+    LLVMTypeRef  pf_ty = LLVMFunctionType(i32_t, &i8p_t, 1, 1);
+    LLVMValueRef pf_fn = LLVMGetNamedFunction(a->module_ref, "printf");
+    if (!pf_fn) pf_fn = LLVMAddFunction(a->module_ref, "printf", pf_ty);
+    LLVMValueRef pargs[] = { LLVMBuildGlobalStringPtr(B, buf, ""), nfail };
+    LLVMBuildCall2(B, pf_ty, pf_fn, pargs, 2, "");
+    LLVMTypeRef  ff_ty = LLVMFunctionType(i32_t, &i8p_t, 1, 0);
+    LLVMValueRef ff_fn = LLVMGetNamedFunction(a->module_ref, "fflush");
+    if (!ff_fn) ff_fn = LLVMAddFunction(a->module_ref, "fflush", ff_ty);
+    LLVMValueRef nullp = LLVMConstNull(i8p_t);
+    LLVMBuildCall2(B, ff_ty, ff_fn, &nullp, 1, "");
+    LLVMTypeRef  ex_ty = LLVMFunctionType(LLVMVoidTypeInContext(a->module_ctx), &i32_t, 1, 0);
+    LLVMValueRef ex_fn = LLVMGetNamedFunction(a->module_ref, "exit");
+    if (!ex_fn) ex_fn = LLVMAddFunction(a->module_ref, "exit", ex_ty);
+    LLVMValueRef one = LLVMConstInt(i32_t, 1, 0);
+    LLVMBuildCall2(B, ex_ty, ex_fn, &one, 1, "");
+    LLVMBuildUnreachable(B);
+    LLVMPositionBuilderAtEnd(B, bb_ok);
+}
+
 static void emit_library_late(aether a, Au_t module_base) {
     string name = f(string, "%o_late", symbol_name((Au)module_identity(a)));
     Au_t  au_late = def_member(a->autype, name->chars, typeid(none), AU_MEMBER_FUNC, 0);
@@ -8174,6 +8229,7 @@ static void emit_library_late(aether a, Au_t module_base) {
     // held open: re-entering would move the builder to entry
     push_scope(a, (Au)late, 13);
     emit_expect_tests(a, module_base, late);
+    emit_expect_failures(a, module_base);
     emit_export_funcs(a, module_base, late);
     if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(B)))
         LLVMBuildRetVoid(B);
@@ -10068,6 +10124,18 @@ static void emit_expect_puts(aether a, const char* msg) {
     LLVMBuildCall2(B, fflush_ty, fflush_fn, &nullp, 1, "");
 }
 
+// the module's count of failed tests, read by the report
+static LLVMValueRef expect_failed_global(aether a) {
+    LLVMTypeRef  i32_ty = LLVMInt32TypeInContext(a->module_ctx);
+    LLVMValueRef g = LLVMGetNamedGlobal(a->module_ref, "silver_expect_failed");
+    if (!g) {
+        g = LLVMAddGlobal(a->module_ref, i32_ty, "silver_expect_failed");
+        LLVMSetInitializer(g, LLVMConstInt(i32_ty, 0, 0));
+        LLVMSetLinkage(g, LLVMInternalLinkage);
+    }
+    return g;
+}
+
 static bool is_expect_test(Au_t mem) {
     return mem->member_type == AU_MEMBER_FUNC &&
            mem->access_type == interface_expect &&
@@ -10103,8 +10171,7 @@ static void emit_expect_exit(aether a) {
     LLVMBasicBlockRef bb_go   = LLVMAppendBasicBlockInContext(a->module_ctx, fnv, "expect.go");
     LLVMBuildCondBr(B, isset, bb_exit, bb_go);
     LLVMPositionBuilderAtEnd(B, bb_exit);
-    // reaching here means every test returned true: a failure halts in
-    // e_expect. count them so the run reports what it proved
+    // a failed test was counted and the run went on
     int total = 0, skipped = 0;
     each(expect_tests(a->autype), Au_t, mem) {
         total++;
@@ -10115,6 +10182,37 @@ static void emit_expect_exit(aether a) {
     }
     int ran = total - skipped;
     char buf[256];
+    LLVMTypeRef  i32_t  = LLVMInt32TypeInContext(a->module_ctx);
+    LLVMValueRef nfail  = LLVMBuildLoad2(B, i32_t, expect_failed_global(a), "expect_failed");
+    LLVMValueRef anyf   = LLVMBuildICmp(B, LLVMIntNE, nfail, LLVMConstInt(i32_t, 0, 0), "expect_anyfail");
+    LLVMBasicBlockRef bb_bad  = LLVMAppendBasicBlockInContext(a->module_ctx, fnv, "expect.bad");
+    LLVMBasicBlockRef bb_good = LLVMAppendBasicBlockInContext(a->module_ctx, fnv, "expect.good");
+    LLVMBuildCondBr(B, anyf, bb_bad, bb_good);
+    LLVMPositionBuilderAtEnd(B, bb_bad);
+    {
+        LLVMTypeRef  i8p_t   = LLVMPointerTypeInContext(a->module_ctx, 0);
+        LLVMTypeRef  pf_ty   = LLVMFunctionType(i32_t, &i8p_t, 1, 1);
+        LLVMValueRef pf_fn   = LLVMGetNamedFunction(a->module_ref, "printf");
+        if (!pf_fn) pf_fn = LLVMAddFunction(a->module_ref, "printf", pf_ty);
+        snprintf(buf, sizeof(buf), "[%s] expect: %%d/%d passed, %%d failed\n",
+            a->autype->ident, ran);
+        LLVMValueRef fmt   = LLVMBuildGlobalStringPtr(B, buf, "");
+        LLVMValueRef npass = LLVMBuildSub(B, LLVMConstInt(i32_t, ran, 0), nfail, "");
+        LLVMValueRef pargs[] = { fmt, npass, nfail };
+        LLVMBuildCall2(B, pf_ty, pf_fn, pargs, 3, "");
+        LLVMTypeRef  ff_ty = LLVMFunctionType(i32_t, &i8p_t, 1, 0);
+        LLVMValueRef ff_fn = LLVMGetNamedFunction(a->module_ref, "fflush");
+        if (!ff_fn) ff_fn = LLVMAddFunction(a->module_ref, "fflush", ff_ty);
+        LLVMValueRef nullp = LLVMConstNull(i8p_t);
+        LLVMBuildCall2(B, ff_ty, ff_fn, &nullp, 1, "");
+        LLVMTypeRef  ex_ty = LLVMFunctionType(LLVMVoidTypeInContext(a->module_ctx), &i32_t, 1, 0);
+        LLVMValueRef ex_fn = LLVMGetNamedFunction(a->module_ref, "exit");
+        if (!ex_fn) ex_fn = LLVMAddFunction(a->module_ref, "exit", ex_ty);
+        LLVMValueRef one = LLVMConstInt(i32_t, 1, 0);
+        LLVMBuildCall2(B, ex_ty, ex_fn, &one, 1, "");
+        LLVMBuildUnreachable(B);
+    }
+    LLVMPositionBuilderAtEnd(B, bb_good);
     if (skipped)
         snprintf(buf, sizeof(buf), "[%s] expect: %d/%d passed (%d%%), %d skipped",
             a->autype->ident, ran, total, total ? (ran * 100) / total : 100, skipped);
@@ -10196,9 +10294,21 @@ static void emit_expect_tests(aether a, Au_t module_base, efunc f) {
             push(vals, (Au)inst);
         }
         enode r = e_fn_call(a, tf, len(vals) ? vals : null, false, false);
-        snprintf(buf, sizeof(buf), "[%s] expect: %s failed\n", module_base->ident, tname);
-        enode msg = e_create(a, etypeid(string), (Au)const_string(chars, buf), false);
-        e_expect(a, r, msg);
+        // a failure is counted; the tests after it still run
+        LLVMValueRef ok = _llvalue((enode)e_create(a, etypeid(bool), (Au)r, false));
+        LLVMValueRef fnv = LLVMGetBasicBlockParent(LLVMGetInsertBlock(B));
+        LLVMBasicBlockRef bb_f = LLVMAppendBasicBlockInContext(a->module_ctx, fnv, "expect.failed");
+        LLVMBasicBlockRef bb_c = LLVMAppendBasicBlockInContext(a->module_ctx, fnv, "expect.next");
+        LLVMBuildCondBr(B, ok, bb_c, bb_f);
+        LLVMPositionBuilderAtEnd(B, bb_f);
+        snprintf(buf, sizeof(buf), "[%s] expect: %s failed", module_base->ident, tname);
+        emit_expect_puts(a, buf);
+        LLVMTypeRef  i32_t = LLVMInt32TypeInContext(a->module_ctx);
+        LLVMValueRef gfail = expect_failed_global(a);
+        LLVMValueRef cur   = LLVMBuildLoad2(B, i32_t, gfail, "");
+        LLVMBuildStore(B, LLVMBuildAdd(B, cur, LLVMConstInt(i32_t, 1, 0), ""), gfail);
+        LLVMBuildBr(B, bb_c);
+        LLVMPositionBuilderAtEnd(B, bb_c);
         if (a->verbose) {
             snprintf(buf, sizeof(buf), "[%s] expect: %s passed", module_base->ident, tname);
             emit_expect_puts(a, buf);

@@ -6272,7 +6272,9 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
             if (made && read_if(a, "[")) {
                 seeds = array(32);
                 while (peek(a) && !next_is(a, "]")) {
-                    push(seeds, (Au)parse_expression(a, null, false, true));
+                    // a seed takes the element type (3.0 into vec f32)
+                    enode sd = parse_expression(a, mdl, false, true);
+                    push(seeds, (Au)e_create(a, mdl, (Au)sd, false));
                     read_if(a, ",");
                 }
                 validate(read_if(a, "]"), "expected ] after vec seed data");
@@ -13273,6 +13275,8 @@ enode silver_parse_member_expr(silver a, enode mem, bool in_ref) { sequencer
         if (r && mem->target)
             push(args, (Au)mem->target);
         enode first_index = null;
+        // an index is an expression, even on a statement's left side
+        a->expr_level++;
         while (!next_is(a, "]")) {
             // if 2 args, the 1 is an indicator of index type 
             // (map types; collective reserves first for value)
@@ -13288,6 +13292,7 @@ enode silver_parse_member_expr(silver a, enode mem, bool in_ref) { sequencer
             if (next_is(a, ","))
                 consume(a, Syntax__none);
         }
+        a->expr_level--;
         validate(next_is(a, "]"), "expected ] after index expression");
         consume(a, Syntax__none);
 
@@ -13475,6 +13480,12 @@ enode silver_parse_member_expr(silver a, enode mem, bool in_ref) { sequencer
             else {
                 mem = parse_func_call(a, (efunc)mem, is_poly);
             }
+            // f[ args ][ i ]: index what the call returned (same line)
+            token close9 = element(a, -1);
+            token open9  = peek(a);
+            if (mem && !is_cmode(a) && open9 && close9 && open9->line == close9->line &&
+                    eq(open9, "[") && !is_func((Au)mem) && !is_func_ptr((Au)mem))
+                mem = parse_member_expr(a, mem, in_ref);
 
         } else if (is_type((Au)mem)) {
             array expr = read_within(a);

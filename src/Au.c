@@ -3716,6 +3716,24 @@ AU_EXPORT none auto_free(void) {
     af_count = 2;
 }
 
+// the pool's current end, for auto_free_to
+AU_EXPORT i32 auto_mark(void) {
+    return af_count;
+}
+
+// drain only what entered the pool after the mark
+AU_EXPORT none auto_free_to(i32 mark) {
+    if (mark < 2) mark = 2;
+    for (num i = mark; i < af_count; i++) {
+        Au a = af[i];
+        if (a && a->refs == 0)
+            Au_free(&a[1]);
+        else if (a)
+            a->managed = 1;
+    }
+    if (af_count > mark) af_count = mark;
+}
+
 // a forked child: the parent's pool is not ours to free
 AU_EXPORT void auto_forget(void) {
     af_count = 2;

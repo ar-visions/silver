@@ -3553,8 +3553,8 @@ compressed mp4.
    frame per call) into H.264 4:2:0 QP 23 + AAC. The sound:
    the take's pcm for each kept piece, silence for a cut, an
    insert's own sound where `sound: media`.
-   `composer --again true <take>` renders the composition as it
-   stands. Checked headless: a lossless H.265 4:4:4 take, crop
+   A composition newer than the notes renders as it stands, with
+   no agent (Sep 30: --again removed). Checked headless: a lossless H.265 4:4:4 take, crop
    1-2 s, logo pip at 3 s, a 1.5 s held cut to av.mp4 with its
    tone: 8.5 s out (8 - 1 + 1.5), 510 frames, the four frames
    right by eye, the tone exactly in the cut (-21 dB there,
@@ -3645,6 +3645,330 @@ compressed mp4.
 10. DONE the render's frame rate is the shortest gap between
    decode times over 60 pictures (ffmpeg's first frame is
    longer: an average read 26, then 59; now 60).
+
+## MEMORY: the composer (Sep 30 2026)
+
+What it is: a trinity app (`composer/`) that turns a raw screen
+recording into a finished, compressed video. The user records an
+app and talks while doing it; the talk is the edit. The agent (the
+user's own claude or codex) reads what was said and writes the
+edit; the composer carries it out. Kalen: "record an app, talk to
+your ai and have a product come out on the other end";
+"the ai can alter trash in, treasure out".
+
+Why: to help media creators, and Kalen himself, make good videos
+without editing by hand. It belongs in the stack: trinity records,
+speech hears, the agent decides, composer renders. No outside
+editor and no ffmpeg anywhere in the path.
+
+The flow:
+1. `--record video` (any trinity app, orbiter too) makes the take
+   folder video/: video/video.mp4 (H.265 4:4:4 lossless by
+   default, AAC sound) and video/video.agi. Dictation runs from
+   the first frame, with no button: each spoken take becomes a
+   mark (at, dur, words) on the recording's clock in the .agi.
+   The mp4 holds video and audio only, never text.
+2. The .agi has a `context` field: the user's hints for the
+   agent. The user can edit the marks and context by hand.
+3. `silver composer video` sends the agent VIDEO.md (the
+   protocol), the marks and the folder. It writes
+   video/video.composition.agi: a list of ops. A spoken
+   instruction ("put a bugs bunny after the fzero bit") is cropped
+   out of the result.
+4. The render reads the composition and writes
+   video/video.final.mp4 (H.264 4:2:0 + AAC, the shareable form).
+   A composition newer than the notes renders again without asking
+   the agent (--again removed Sep 30).
+
+The folder is the module: resources sit beside the take, named by
+the reference the user said (video/bugs-bunny.gif). A file that is
+already there is used; otherwise a Fetch op downloads it. The user
+starts the folder and the agent adds to it.
+
+Ops today:
+- Fetch: name, url.
+- Crop: from, to.
+- Insert: picture, gif or video; picture in picture at a third of
+  the frame, full frame, or a region; fades; a held cut (pause)
+  with the insert's own sound.
+- Revoice: the take's own sound in another voice, from a short
+  reference clip (.wav .m4a .mp4 .mov) in the folder. It is
+  Seed-VC ported to silver (whisper-small content, CAM++ style,
+  DiT flow matching, BigVGAN). There is no training step: any
+  voice works from a few seconds of clean speech. It runs on the
+  CPU at about 12 s of work per second of sound (Kalen: fine).
+
+Where it might go (ideas, none started unless listed elsewhere):
+- Seed-VC on the GPU: ai's compute shaders (gemm, attention, norm,
+  conv) already run its whisper; the DiT and BigVGAN are next.
+- Frames on the GPU end to end (no decode readback or upload).
+- A composer row in orbiter: see the marks, the composition and
+  the result beside the take; render from there.
+- More ops: zoom and pan to what matters on screen, speed ramps
+  over dull parts, music beds under narration, captions burned
+  into the picture (pixels, not a text track), a thumbnail, an
+  intro and outro.
+- A voice library: shared reference clips named once and used in
+  any take. Seed-VC's singing model (44 kHz, with pitch) for
+  songs.
+- Publishing: trinity already streams to youtube:// (HLS); an
+  upload of the final render would close the loop.
+- The same flow for any recording, not only app captures: talk
+  over a camera take or a game session and get an edited cut.
+
+## Active work: RVC in composer (Sep 30 2026)
+
+Kalen: RVC instead of Seed-VC ("the performance is better"), a
+voice trained from a clip (train from a clip, not downloaded
+models), Seed-VC replaced. Seed-VC stays until RVC works end to
+end, then goes with its 918 MB of models in the same step.
+Each stage is checked against the original PyTorch code
+(RVC-Project/Retrieval-based-Voice-Conversion-WebUI, MIT), as
+the Seed-VC port was. Order:
+1. DONE weights into install/models/rvc (composer imports):
+   hubert.pth + hubert.json (the transformers form of RVC's
+   hubert_base, not the fairseq .pt), rmvpe.pt, f0G40k.pth,
+   f0D40k.pth; THIRD_PARTY.md rows. t_rvc_weights: 213 / 741 /
+   560 / 165 tensors and first values as PyTorch reads them (all
+   stored f16). Reference source (RVC main, uses transformers'
+   HubertModel) in the session scratchpad rvc/.
+1b. IN PROGRESS the GPU engine, ai/grad.ag (`import grad` in
+   ai): kernels are GLSL with buffer device addresses and sizes in
+   push constants (6 addresses, 12 ints, 4 floats), so one
+   pipeline serves every shape and a whole step is one chain of
+   dispatches (GRun, a barrier after each). Tensors live in two
+   arenas (GArena over one trinity Buffer each: `keep` for weights
+   and optimizer state, `work` reset every step); Buffer gained
+   address[] and buffer_handle[] (trinity vk.ag). Autograd: a tape
+   of GOp records (kind number; Grad.back_op switches on it).
+   Kernels are written as trinity writes shaders (Kalen): a
+   subclass of GKern with `func compute [] -> GLSL none { .. }`
+   (main's body) and `decl` (shared arrays) token methods, braces
+   doubled; only the push-constant header is a string (its
+   #version/#extension lines are comments to the tokenizer).
+   Checked against pytorch (GRAD_GOLD, generator scripts in the
+   scratchpad gold/): strided batched gemm 5e-7; conv1d (stride,
+   pad, dilation, groups) and conv_transpose1d, outputs and every
+   gradient, under 4e-6; leaky/tanh/sigmoid/exp/scale, add/mul
+   with broadcast, wavenet gate, channel slice/join, layer norm
+   under 1.2e-6; rvc's relative-position attention with padding
+   mask under 6e-7 (a masked score passes no gradient, as
+   masked_fill).
+2a. DONE the synthesizer (composer/rvc.ag, RvcNet on the engine):
+   text encoder, reverse flow, NSF HiFi-GAN with rvc's sine source
+   (rvc_sine, on the cpu). t_rvc_infer (COMPOSER_RVC_GOLD): the
+   f0G40k base generator on 40 frames of random features, a pitch
+   track with an unvoiced gap and pytorch's own noise draws:
+   16,000 samples, 97.3 dB SNR against SynthesizerTrnMs768NSFsid
+   .infer, 148 ms on the RTX 3060.
+2b. DONE HuBERT (RvcHubert: transformers' HubertModel, last layer,
+   positional conv weight norm folded on the cpu at load): 2 s of
+   speech, 99 frames, worst 9e-6, 113.8 dB, 38 ms. t_rvc_hubert.
+2c. DONE RMVPE (RvcPitch: batch norms folded into the convs at
+   load; stft as a conv with a windowed cos/sin basis; librosa's
+   htk mel filters with slaney norm; the u-net on conv2d/convt2d/
+   avg_pool2; a gpu gru, one workgroup per direction): mel worst
+   1.7e-4, salience 1.7e-6, pitch 0.0005 cents worst, voicing
+   identical on 113 voiced frames, 76 ms for 2 s. t_rvc_pitch.
+   Engine gained gelu, tslice (with backward), time_norm, conv2d,
+   convt2d, avg_pool2, gru256, magnitude, log_clamp, view.
+   FIXED (Sep 30, see "silver vec and indexing bugs"): a vec literal
+   holding an element access, `v.push[ w[ i ] ]`, and float
+   constants in a vec f32 literal. grad.ag/rvc.ag still use the
+   workarounds (locals, fill by index).
+2d. DONE training ops (t_grad_training against pytorch, all within
+   4e-7): per-item time slice (rand_slice_segments), reflect pad
+   (backward gathers per source: taps mirror onto one sample),
+   magnitude and log clamp with backward, period fold (a
+   DiscriminatorP 2-d conv as a 1-d conv over batch x period),
+   least-squares and l1 means, vits' kl with a [b, 1, t] mask,
+   backward_all (several losses, each seeded with its weight),
+   AdamW (pytorch's: decoupled decay 0.01, bias-corrected).
+2e. DONE one rvc training step (composer/rvc.ag RvcTrain, RvcDisc,
+   RvcOpt, RvcBatch): posterior encoder, forward flow, a random
+   32-frame slice per item, the nsf decoder, v2's nine
+   discriminators (scale + periods 2..37), least-squares gan, feature
+   matching x2, mel l1 x45 (librosa slaney mel, 2048/400 stft), kl,
+   adamw on both nets. t_rvc_train_grads (lr 0, COMPOSER_RVC_TRAIN0):
+   every loss within 1e-5 of pytorch; gradients within 0.5%;
+   t_rvc_disc_grads: all 165 discriminator gradients within 0.13% on
+   pytorch's own generated wave. The residue is one leaky relu whose
+   pre-activation sits within 1e-6 of zero landing on the other side
+   (counted: 1 sign flip at the layer where the error enters); pytorch
+   f32 vs f64 is 1e-6 there. t_rvc_train_step (lr 1e-4, two steps):
+   losses to 4-5 digits; adam's first step moves every weight by
+   +-lr, so near-zero gradients flip and step 2 drifts by design.
+   ~1.5 s a step at batch 2 on the RTX 3060.
+   Memory: conv columns live in a per-op scratch arena and are
+   rebuilt in backward (kept, they overran 6 GB at batch 2).
+   The gemm sums each 16-term tile, then joins tiles with kahan
+   compensation. The tape cannot be swapped for the discriminator
+   step (the old vec was the only holder of the generator's
+   outputs): tape_cut/backward_from over a mark instead.
+2. OPEN inference: HuBERT features (768, layer 12), RMVPE pitch,
+   the synthesizer (text encoder with relative attention, flow,
+   NSF HiFi-GAN generator), on the GPU. Checked on the base
+   generator against PyTorch.
+3. DONE training data (composer/rvc.ag RvcPrep, its own Grad with
+   hubert and rmvpe, released after): 40 kHz, scipy's 48 Hz 5th
+   order butterworth high-pass (rvc_highpass, 2e-6 vs scipy),
+   slicer2 ported (rvc_slices, boundaries identical to rvc's on a
+   three-utterance clip), 3.7 s pieces overlapping 0.3 s, peak
+   normalized (rvc's quirk kept: only the last slice's short tail
+   is written), hubert rows repeated to 100 frames, rmvpe pitch with
+   unvoiced frames interpolated, coarse bins, the spectrogram on
+   the gpu. t_rvc_prepare: 22 s clip, 6 items (5 x 368 frames, 72),
+   0.8 s. Resampling is our sinc (rvc uses librosa's soxr).
+4. DONE the training loop (RvcTrain.train): items sorted by length,
+   batches cropped to their shortest (rvc pads instead), batch order
+   shuffled each epoch, lr 1e-4 x 0.999875^epoch, speaker 0, the
+   generator saved as safetensors every n epochs (RvcNet.save; a
+   voice file loads over f0G40k by name, RvcNet.overlay).
+   t_rvc_train_loop: 2 epochs on the 22 s clip (mel 0.71 -> 0.60,
+   kl 8.2 -> 3.8), saved and reloaded bit for bit, converted.
+   ~1.5 s a step at batch 2: 15 min of speech is ~3 min an epoch.
+5. DONE retrieval (RvcIndex): the training pieces' 50 fps hubert rows
+   saved beside the voice (<voice>.index, raw f32 [n, 768]); exact
+   search on the gpu (gemm distances, a top-8 kernel), rvc's 1/d^2
+   blend at rate 0.75. t_rvc_index: vs exact numpy, 5e-7. rvc uses
+   faiss ivf (approximate); this is exact.
+6. DONE Revoice on rvc: RvcVoice.speak is rvc's Pipeline.pipeline
+   (filtfilt high-pass at 16 kHz with zero start states, cuts at the
+   quietest point within 3 s of every 8 s (rvc: 6 s / 38 s; our
+   decoder columns cap the chunk), 1 s reflect pads, rmvpe once over
+   the whole padded audio in 20 s windows past 25 s, per chunk:
+   hubert, index blend, repeat to 100 fps, protect 0.33, synthesis,
+   trims), then to 48 kHz. t_rvc_pipeline: 22.2 s in 2.8 s. The
+   decoder compacts its arena per block at inference (Grad.compact):
+   8 s uses 318 MB. Revoice gains pitch (semitones) and epochs
+   (100); its voice is a clip of the target speaker, trained on first
+   use into <clip stem>.rvc.safetensors (+ .index) beside the clip.
+   VIDEO.md updated. Seed-VC removed: dit/seedvc/campplus/vocoder.ag
+   (tracked in git; copies in the session scratch), its 876 MB of
+   models, its tests and THIRD_PARTY rows; resample_sinc moved to
+   rvc.ag. composer 17/17 with every rvc reference set.
+   Tests must release their grads: arenas left from earlier tests
+   oversubscribed the gpu and tripled the step time.
+7. DONE training speed, first pass: an epoch of the 22 s test clip
+   4.6 s -> 1.6 s (batch 2). Measured with GRun.prof (gpu timestamps
+   per dispatch; Grad.prof_report). Fixed: weight norm ran one thread
+   per channel over its whole row (now a 256-thread group per
+   channel); a full-shape dz used one 256-thread group per element
+   (now the elementwise dx kernel); weight-gradient gemms with few
+   output tiles over a long sum (32x352 over 25,600) ran 6 groups
+   (now split into pieces in scratch, summed in order: KSplitSum;
+   t_grad_gemm_split). Inference 8 s: 2.3 s -> 0.56 s; synthesis
+   vs pytorch 98 -> 109 dB. gemm is ~2 TFLOPS on a 2048 cube (the
+   3060 peaks near 12): a bigger-tile gemm is the next speedup.
+8. IN PROGRESS train picard-full (Kalen's video2 folder): `silver
+   composer video2`, Revoice ops on picard-full.wav;
+   247 pieces, ~70 s an epoch at batch 2. librosa and scipy install
+   with composer (pip into install/pylib, as os-bootstrap does,
+   skipped once there); --train was removed (a Revoice trains its
+   voice on first use and logs each epoch). First run: killed by
+   the kernel's oom killer at epoch 47, 124 GB resident (below).
+9. DONE a full arena crashed (tensor_in returned null; batch 4
+   needed more than 6 GB): tensor_in throws, train_voice and
+   apply_voices catch it as a composer problem; batch is 2.
+   ai t_grad_arena_full.
+10. DONE the training leaked ~2.6 GB of cpu memory an epoch: train
+   runs inside init and nothing drained the object pool. Au gained
+   auto_mark / auto_free_to (drain only what entered the pool after
+   a mark; the caller's objects stay); train drains after each step
+   and each epoch. Small run: +95,053 pages an epoch -> flat.
+   ai t_grad_pool_mark.
+11. DONE checkpoints go to <model>.part, renamed at the last epoch:
+   a stopped run no longer leaves a model that looks finished.
+   composer t_rvc_train_voice (18/18). The killed run's epoch-40
+   file was renamed to .part.
+13. WRITTEN, not built (the video2 run's host would reload on a
+   build): resume. A checkpoint is the generator at <model>.part
+   and the rest at <model>.part.state (discriminator weights, both
+   optimizers' moments named by parameter, epoch and steps), each
+   written to .tmp and renamed. train_voice resumes from them when
+   both load whole; RvcTrain.done skips the finished epochs. Test:
+   composer t_rvc_train_resume (2 epochs, resume, equal to the
+   bit, then a third). The killed run's .part has no state file:
+   this run started over.
+14. DONE speed, second pass (measured on the 22 s clip, batch 2):
+   an epoch 1.6 s -> 1.35-1.5 s. Kept: losses sum over up to 256
+   groups, then KLossSum adds the partials in order (kl too);
+   AdamW's dispatches run without barriers between them, one fence
+   after (GRun.nofence); the discriminator's weight norms are made
+   once per pair of passes (RvcDisc.wcache, cleared in set_need);
+   both gemm kernels load along the contiguous dimension (2048 cube
+   2.1 -> 2.6 TFLOPS); KGemm2 (128 x 64 tiles, 8 x 4 a thread) for
+   m and n >= 512 only (cube 3.0 TFLOPS; on rvc's tall shapes it was
+   slower). Tests: t_grad_gemm_layouts, t_grad_gemm_split.
+   Tried and REMOVED (slower on a real epoch): implicit conv (x read
+   as conv columns inside the gemm: +300 ms an epoch) and the
+   implicit input gradient (+900 ms). conv1d keeps im2col/col2im.
+   Found on the way: a flag read from the 64-bit push constant a4
+   came out true while a4 was 0 (kernel-side, cause not found);
+   flags ride in float bits (f2/f3) instead.
+   composer: au_live_set_reload[ 0 ] at init (built): a build never
+   reloads a training run now.
+16. DONE shared voice store (Kalen: training by named alias): a
+   trained voice lives in install/models/voices/ by the clip's name
+   (picard-full.wav -> picard-full.rvc.safetensors, .index, .fp);
+   the .fp is the clip's size and FNV-1a hash, written last, and a
+   mismatch retrains. Composer.voice_dir overrides the folder (tests
+   use a scratch one). t_rvc_train_voice checks the second call
+   reuses the model. video2's Picard voice was copied in, with its
+   fingerprint (video4's picard-full.wav is the same file).
+15. DONE the video2 render (Sep 30, 21:59): picard-full trained 100
+   epochs (mel 0.503 -> 0.426, memory flat at 6 GB), the three
+   Revoice spans converted, video2.final.mp4 written: 1080p60,
+   2 min 25 s, h264 + aac 48 kHz.
+12. OPEN silver bug: an interpolated literal with a member as a C
+   call argument, `rename[ '{a}'.chars, '{b}'.chars ]` or
+   `unlink[ '{a}'.chars ]`, fails "expected 1 args, got 1"; a
+   local string first works.
+
+## Active work: silver vec and indexing bugs (Sep 30 2026)
+
+Kalen: go over the vec and indexing errors met in grad.ag and rvc.ag,
+validate them in features.ag, fix silver. Each has a focused test in
+features (Collections section). features: 222/225; the 3 failures
+are the old t_vec_module, t_launch_specs, t_mem_last.
+1. DONE the expect runner ran until the first failure, hiding every
+   test after it (t_mem_last was hidden behind t_vec_module). A
+   failed test now prints its line and counts (silver_expect_failed,
+   aether emit_expect_tests); the report says "N/M passed, K failed"
+   and exits 1 (emit_expect_exit).
+2. DONE `v[ i64[ a ] * 4 + 1 ] = x` ("no indexing available for
+   model i64"): a statement's left side parses at expr_level 0, where
+   read_enode does not read `Type[ x ]` as a cast; the index args now
+   parse at expr_level + 1 (silver_parse_member_expr). t_index_cast_lead.
+3. DONE `f[ x ][ i ]` (a call's result indexed): parse_member_expr
+   indexes a call's result when [ follows on the same line.
+   t_index_call_result.
+4. DONE `vec i64 [] [ src[ 0 ] ]`, `[ h.dims[ 0 ] ]` and
+   `v.push[ w[ i ] ]` stored the element's address: e_create's boxing
+   (prim -> Au) stored an unloaded element enode; it loads it first
+   (enode_value force). t_vec_lit_elem, t_vec_lit_member_elem,
+   t_vec_push_elem.
+5. DONE `vec f32 [] [ 3.0, 7.5 ]` stored garbage: the f64 literal was
+   boxed as f64 and the vector copied 4 of its bytes; seeds now parse
+   with, and convert to, the element type. t_vec_lit_f32.
+6. DONE `string[ @b[ 0 ] ]` (a byte pointer) reinterpreted the pointer
+   as a string object: e_create builds the text type from it as cstr
+   (u8/i8 pointers; not cstr/symbol themselves, not null).
+   t_string_from_vec_bytes.
+7. CHECKED, no bug found: a runtime-sized `vec <C struct> [ n ]`
+   (t_vec_c_struct_n, feat_rec in feat.h: pointer, int, double; n 40,
+   stride 24, no overrun) and a returned vec aliased by a local in a
+   loop (t_vec_return_alias). The original failures may have had
+   another cause; the tests stay as guards.
+8. OPEN not vec/index but met on the way: `'{a}'.chars` as a C call
+   argument fails ("expected 1 args, got 1"); `--verbose` builds
+   sometimes abort with "double free or corruption" (twice in five).
+9. DONE ai, composer, trinity and orbiter build with this compiler;
+   ai and composer tests all pass. The runner change missed library
+   modules (their tests run in <mod>_late with no report): a failed
+   library test now prints "K of N failed" and exits 1
+   (emit_expect_failures). OPEN: the workarounds in grad.ag/rvc.ag
+   (locals, fill by index) can go back to the plain forms.
 
 ## Active work: YouTube smoothness in aura (Sep 28 2026)
 

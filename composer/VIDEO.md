@@ -78,9 +78,10 @@ before rendering.
 
 ## Rendering
 
-`composer <take.mp4>` asks the agent for the composition, then
-renders it; `composer --again true <take.mp4>` renders the
-composition as it stands (after the user edits it), no agent.
+`composer <take>` asks the agent for the composition, then
+renders it. When the composition is newer than the notes (the user
+edited it, or nothing new was said), it renders as it stands with
+no agent; new notes ask the agent again.
 The output is H.264 4:2:0 at a constant QP of 23 with AAC sound
 at 48 kHz: small, and it plays everywhere. The take is read on
 the GPU (H.265 4:4:4 takes included); the take's sound follows
@@ -149,20 +150,30 @@ instead, use `place: full`:
 The take's own sound from `from` to `to`, spoken in another voice.
 It is voice conversion, not text to speech: the words, timing and
 delivery stay the user's, only the voice changes, so it stays in
-sync with the picture. `voice` is a reference recording in the
-take's folder (.wav, or the sound of an .m4a/.mp4/.mov), a few
-seconds of the target voice; the user names it in the context or
-a dictation ("video/vader.wav is Darth Vader"). The span fades in
-and out of the original voice.
+sync with the picture. `voice` is a recording of the target voice
+in the take's folder (.wav, or the sound of an .m4a/.mp4/.mov):
+minutes of clean speech from that one speaker, the more the better
+(10 to 30 minutes is typical). The user names it in the context or
+a dictation ("video/picard.wav is Picard"). The span fades in and
+out of the original voice; with the mic on its own track only the
+voice changes and the app's sound stays as it was.
+
+The first time a voice is used, the composer trains a model of it
+(RVC); that takes about an hour or more. Trained voices are kept
+by the clip's name in one shared store, so any take that names a
+clip of the same name and content reuses it at once, from any
+folder; a changed recording trains again.
 
 | field | meaning |
 |---|---|
 | from | take time the new voice starts, seconds |
 | to | take time it ends, seconds |
-| voice | `take/<file>`: the reference voice (.wav .m4a .mp4 .mov) |
+| voice | `take/<file>`: the target voice's recording |
+| pitch | semitones to shift the voice (e.g. -12 an octave down) |
+| epochs | training length on first use (default 100) |
 
-It is slow (about 12 s of work per second of sound): use it only
-on the spans the user asks for.
+Use a pitch shift when the target's voice sits far from the
+user's (a man's voice into a woman's: about +12).
 
 ## Rules for the agent
 

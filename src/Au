@@ -1062,6 +1062,8 @@ forward(any)
     M(AA,BB, s, method, public, none,   mix_structs,    Au_t, Au, Au, Au, f64) \
     M(AA,BB, i, method, public, Au,     member_ref,     Au_t) \
     M(AA,BB, s, method, public, none,   auto_free) \
+    M(AA,BB, s, method, public, i32,    auto_mark) \
+    M(AA,BB, s, method, public, none,   auto_free_to,   i32) \
     M(AA,BB, s, method, public, bool,   quit_requested) \
     M(AA,BB, s, method, public, none,   quit_request) \
     M(AA,BB, s, method, public, none,   leak_report) \

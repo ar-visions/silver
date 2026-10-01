@@ -921,6 +921,12 @@ class Recorder
     intern  sent    : i64
     # false: every capture is the next frame (an offline render)
     public  paced   : bool [ true ]
+    # the app's sound and the mic as tracks of their own (mp4)
+    public  stems   : bool
+    intern  aac_app : Aac
+    intern  aac_mic : Aac
+    intern  spcm    : new i16 [ 2048 ]
+    intern  sout    : new u8  [ 8192 ]
 
     func init []
         cmd = Command [ vk: vk ]
@@ -946,7 +952,7 @@ class Recorder
             notes_save[]
         if [ format == 'mp4' ]
             mux = Mp4 [ fd: fd, fps: fps, width: width, height: height,
-                        started: seq > 0, hevc: chroma444,
+                        started: seq > 0, hevc: chroma444, stems: stems,
                         chroma: (chroma444) ? 3 : 1,
                 seq: (seq > 0) ? seq : 1, vtime: Au.live_record_vtime[], atime: Au.live_record_atime[] ]
         if [ format == 'ts' || format == 'hls' ]
@@ -1072,6 +1078,20 @@ class Recorder
         np.save[ Au.string_agi[ rnotes ], null ]
 
     # the last frame out of the gpu and the open fragment onto the disk
+    # a block of each stem; short rings give silence
+    func stem_block [ app_ring: AudioRing, mic_ring: AudioRing ]
+        if [ !stems || !mux ] return
+        if [ !aac_app ] aac_app = Aac [ ]
+        if [ !aac_mic ] aac_mic = Aac [ ]
+        for [ k: i32 0, k < 2, k += 1 ]
+            rg : AudioRing [ (k == 0) ? app_ring : mic_ring ]
+            if [ rg && rg.frames[] > 48000 ] rg.r = rg.w - 4096
+            if [ !rg || !rg.take[ @spcm[ 0 ], 1024 ] ]
+                memset[ @spcm[ 0 ], 0, 4096 ]
+            enc : Aac [ (k == 0) ? aac_app : aac_mic ]
+            n : i32 [ enc.encode[ @spcm[ 0 ], @sout[ 0 ], 8192 ] ]
+            if [ n > 0 ] mux.audio_stem*[ k, @sout[ 0 ], i64[ n ] ]
+
     func close []
         if [ encoder ] encoder.drain[]
         if [ mux ] mux.close*[]
