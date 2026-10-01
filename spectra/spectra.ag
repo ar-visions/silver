@@ -756,15 +756,19 @@ func wav_load [ p: path ] -> AudioClip
     o : i32 [ 12 ]
     for [ o + 8 <= fsz ]
         cid : i64 [ be32[ buf, o ] ]
-        csz : i32 [ i32[ le32[ buf, o + 4 ] ] ]
-        if [ cid == 1718449184 ]
+        # sizes are unsigned; a streamed file writes all ones
+        csz : i64 [ i64[ le32[ buf, o + 4 ] ] & 4294967295 ]
+        room : i64 [ i64[ fsz - o - 8 ] ]
+        if [ cid == 1718449184 && csz >= 16 && room >= 16 ]
             ch   = le16[ buf, o + 10 ]
             rate = i32[ le32[ buf, o + 12 ] ]
             bits = le16[ buf, o + 22 ]
         if [ cid == 1684108385 ]
             doff = o + 8
-            dsz = csz
-        o += 8 + csz + (csz % 2)
+            dsz = i32[ (csz < room) ? csz : room ]
+            break
+        if [ csz > room ] break
+        o += 8 + i32[ csz ] + i32[ csz % 2 ]
     if [ rate < 1 || ch < 1 || bits != 16 || dsz < 2 ]
         log 'wav: unsupported format in {p} (need PCM S16)'
         return null
@@ -777,6 +781,37 @@ func wav_load [ p: path ] -> AudioClip
     clip.pcm = pcm
     return clip
 
+
+# a wav written to a stream: its sizes read all ones
+expect func t_wav_open_length [] -> bool
+    p : path '/tmp/silver-wav-open-length.wav'
+    n : i32 [ 44 + 400 ]
+    b : new u8 [ n ]
+    memset[ b, 0, n ]
+    hdr : string 'RIFF____WAVEfmt '
+    memcpy[ b, hdr.chars, 16 ]
+    for [ i: i32 4, i < 8, i += 1 ]
+        b[ i ] = 255
+    b[ 16 ] = 16
+    b[ 20 ] = 1
+    b[ 22 ] = 2
+    b[ 24 ] = 128
+    b[ 25 ] = 187
+    b[ 32 ] = 4
+    b[ 34 ] = 16
+    dat : string 'data'
+    memcpy[ @b[ 36 ], dat.chars, 4 ]
+    for [ i: i32 40, i < 44, i += 1 ]
+        b[ i ] = 255
+    for [ i: i32 44, i < n, i += 1 ]
+        b[ i ] = u8[ i & 255 ]
+    fp : @FILE [ fopen[ '{p}', 'wb' ] ]
+    fwrite[ b, 1, n, fp ]
+    fclose[ fp ]
+    c : AudioClip wav_load[ p ]
+    if [ !c ] return false
+    log 'wav open length: {c.rate} Hz, {c.channels} ch, {c.frames} frames'
+    return c.rate == 48000 && c.channels == 2 && c.frames == 100 && c.pcm[ 0 ] == 11564
 
 # AAC in a CAF or M4A container via faad2; RIFF falls through to wav
 func caf_load [ p: path ] -> AudioClip

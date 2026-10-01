@@ -592,6 +592,7 @@ abstract live_app media_app
                                   fps: record_fps, qp: rqp, format: fmt,
                                   chroma444: full,
                                   lossless: rq == RecQuality.lossless,
+                                  stems: record_mic && fmt == 'mp4',
                 target: record_target[ rpath ], width: Au.live_record_width[], height: Au.live_record_height[],
                 notes: record_notes[ rpath, fmt ] ]
             rec_live = recorder
@@ -601,6 +602,9 @@ abstract live_app media_app
                 aac = Aac [ ]
                 recorder.asc = aac.asc
                 wn.rec = AudioRing [ ]
+                if [ recorder.stems ]
+                    wn.rec_app = AudioRing [ ]
+                    wn.rec_mic = AudioRing [ ]
         recorder.capture[ tx ]
         if [ recorder.mux ]
             # this process's own sound (its AudioOut tees into its
@@ -629,6 +633,7 @@ abstract live_app media_app
             n : i32 [ aac.encode[ @apcm[ 0 ], @aout[ 0 ], 8192 ] ]
             afed += 1024
             if [ n > 0 ] mux.audio*[ @aout[ 0 ], i64[ n ] ]
+            recorder.stem_block[ wn.rec_app, wn.rec_mic ]
 
     func record_close []
         if [ recorder ] recorder.close[]
@@ -3738,6 +3743,7 @@ Display Window
         record_last = Au.epoch_millis[]
         n : i32 [ resample[ pcm, nfr, 2, rate, @rec_out[ 0 ], 32768,
                             @rec_pos ] ]
+        if [ rec_app ] rec_app.put[ @rec_out[ 0 ], n ]
         if [ mic ] mic.add_into[ @rec_out[ 0 ], n ]
         rec.put[ @rec_out[ 0 ], n ]
 
@@ -3775,6 +3781,7 @@ Display Window
                 # the app's sound owns the track once it starts; until
                 # then the mic feeds it alone
                 to9 : AudioRing [ (record_rate == 0) ? rec : mic ]
+                dn.tee = rec_mic
                 if [ to9 ] dn.run[ @stereo[ 0 ], n, to9 ]
             platform_mic_close[]
 
@@ -4620,6 +4627,9 @@ Display Window
     mutable live_snap           : Texture
     # when the app's sound last reached the recording
     mutable record_last         : i64
+    # the app's sound and the mic kept apart for their own tracks
+    mutable rec_app             : AudioRing
+    mutable rec_mic             : AudioRing
 
 
     func on_compose []

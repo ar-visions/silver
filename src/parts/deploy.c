@@ -796,6 +796,104 @@ static void silver_mobile_bundle(silver a) {
     if (target_is_android(a)) silver_android_bundle(a); else silver_ios_bundle(a);
 }
 
+// a package's stable archive url for this host
+static string sdk_archive(string xml, cstr pkg) {
+#ifdef __APPLE__
+    cstr os = "macosx";
+#elif defined(_WIN32)
+    cstr os = "windows";
+#else
+    cstr os = "linux";
+#endif
+#if defined(__aarch64__) || defined(__arm64__)
+    cstr arch = "aarch64";
+#else
+    cstr arch = "x64";
+#endif
+    char key[256];
+    snprintf(key, sizeof(key), "<remotePackage path=\"%s\">", pkg);
+    cstr at = xml->chars;
+    while ((at = strstr(at, key))) {
+        cstr end = strstr(at, "</remotePackage>");
+        if (!end) break;
+        cstr ch = strstr(at, "<channelRef ref=\"channel-0\"/>");
+        if (ch && ch < end) {
+            cstr ar = at;
+            while ((ar = strstr(ar, "<archive>")) && ar < end) {
+                cstr ae = strstr(ar, "</archive>");
+                cstr u  = strstr(ar, "<url>");
+                cstr ho = strstr(ar, "<host-os>");
+                cstr ha = strstr(ar, "<host-arch>");
+                bool os_ok   = !ho || ho > ae || strncmp(ho + 9, os, strlen(os)) == 0;
+                bool arch_ok = !ha || ha > ae || strncmp(ha + 11, arch, strlen(arch)) == 0;
+                if (u && u < ae && os_ok && arch_ok) {
+                    cstr ue = strstr(u, "</url>");
+                    return f(string, "%.*s", (int)(ue - u - 5), u + 5);
+                }
+                ar = ae;
+            }
+        }
+        at = end;
+    }
+    return null;
+}
+
+// fetch a zip and unpack it under dir
+static bool sdk_unzip(silver a, string url, path dir) {
+    path zip = f(path, "%o/fetch.zip", dir);
+    make_dir(dir);
+    print("[%o] android: fetching %o", a->name, url);
+    bool ok = exec(false, "curl -fL -o %o %o", zip, url) == 0 &&
+              exec(false, "unzip -q -o %o -d %o", zip, dir) == 0;
+    exec(false, "rm -f %o", zip);
+    return ok;
+}
+
+// adb, plus the emulator and its image for a sim
+static bool android_sdk_ensure(silver a, path sdk, bool sim) {
+    cstr repo = "https://dl.google.com/android/repository";
+    make_dir(sdk);
+    if (!file_exists("%o/platform-tools/adb", sdk)) {
+#ifdef __APPLE__
+        cstr os = "darwin";
+#elif defined(_WIN32)
+        cstr os = "windows";
+#else
+        cstr os = "linux";
+#endif
+        if (!sdk_unzip(a, f(string, "%s/platform-tools-latest-%s.zip", repo, os), sdk))
+            return false;
+    }
+    if (!sim) return true;
+    cstr abi = android_abi(a);
+    path img = f(path, "%o/system-images/android-34/google_apis/%s", sdk, abi);
+    bool need_emu = !file_exists("%o/emulator/emulator", sdk);
+    bool need_img = !file_exists("%o/system.img", img);
+    if (!need_emu && !need_img) return true;
+    path lists = f(path, "%o/lists", sdk);
+    make_dir(lists);
+    if (need_emu) {
+        path xp = f(path, "%o/repository2-3.xml", lists);
+        if (exec(false, "curl -fsL -o %o %s/repository2-3.xml", xp, repo) != 0) return false;
+        string url = sdk_archive((string)load(xp, typeid(string), null), "emulator");
+        if (!url) { print("[%o] android: no emulator for this host", a->name); return false; }
+        if (!sdk_unzip(a, f(string, "%s/%o", repo, url), sdk)) return false;
+    }
+    if (need_img) {
+        path xp = f(path, "%o/sys-img2-3.xml", lists);
+        if (exec(false, "curl -fsL -o %o %s/sys-img/google_apis/sys-img2-3.xml", xp, repo) != 0)
+            return false;
+        char pkg[128];
+        snprintf(pkg, sizeof(pkg), "system-images;android-34;google_apis;%s", abi);
+        string url = sdk_archive((string)load(xp, typeid(string), null), pkg);
+        if (!url) { print("[%o] android: no system image for %s", a->name, abi); return false; }
+        path parent = f(path, "%o/system-images/android-34/google_apis", sdk);
+        if (!sdk_unzip(a, f(string, "%s/sys-img/google_apis/%o", repo, url), parent))
+            return false;
+    }
+    return file_exists("%o/emulator/emulator", sdk) && file_exists("%o/system.img", img);
+}
+
 // push to the device and start it there. ssh owns the credentials — the
 // device names a host ALIAS (~/.ssh/config), never a user or a password.
 // a device with no host is a build target only
@@ -809,6 +907,11 @@ static void device_run(silver a) {
         string adb = f(string, "%o/platform-tools/adb%s%o", sdk,
             dev->host && len(dev->host) ? " -s " : "", dev->host && len(dev->host) ? dev->host : string(""));
         if (!file_exists("%o", apk)) { print("[%o] android: no package at %o", a->name, apk); a->error = true; return; }
+        if (!android_sdk_ensure(a, sdk, strstr(a->platform->chars, "sim") != null)) {
+            print("[%o] android: the sdk could not be fetched into %o", a->name, sdk);
+            a->error = true;
+            return;
+        }
         // the emulator: its avd is written here the first time, then it is
         // started when none is running, and waited for until android is up
         if (strstr(a->platform->chars, "sim")) {

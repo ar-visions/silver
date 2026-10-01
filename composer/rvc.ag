@@ -1,0 +1,1680 @@
+extend composer
+
+import <math.h>
+
+# rvc v2 40 kHz synthesizer on the gpu engine
+
+# torchaudio's sinc resample: hann, 6 zero crossings
+func resample_sinc [ pcm: vec f32, from: i32, to: i32 ] -> vec f32
+    g : i32 [ from ]
+    h : i32 [ to ]
+    while [ h != 0 ]
+        r : i32 [ g % h ]
+        g = h
+        h = r
+    orig : i32 [ from / g ]
+    nw   : i32 [ to / g ]
+    if [ orig == nw ] return pcm
+    base : f64 [ f64[ (orig < nw) ? orig : nw ] * 0.99 ]
+    width : i32 [ i32[ ceil[ 6.0 * f64[ orig ] / base ] ] ]
+    kn : i32 [ 2 * width + orig ]
+    ker : vec f32 [ i64[ nw ] * kn ]
+    for [ j: i32 0, j < nw, j += 1 ]
+        for [ k: i32 0, k < kn, k += 1 ]
+            tv : f64 [ (0.0 - f64[ j ]) / f64[ nw ] + f64[ k - width ] / f64[ orig ] ]
+            tv = tv * base
+            if [ tv < -6.0 ] tv = -6.0
+            if [ tv > 6.0 ] tv = 6.0
+            wv : f64 [ cos[ tv * 3.14159265358979323846 / 12.0 ] ]
+            wv = wv * wv
+            tv = tv * 3.14159265358979323846
+            sv : f64 [ (tv == 0.0) ? 1.0 : sin[ tv ] / tv ]
+            ix9 : i64 [ i64[ j ] * kn + k ]
+            ker[ ix9 ] = f32[ sv * wv * base / f64[ orig ] ]
+    n : i64 [ pcm.count ]
+    target : i64 [ (i64[ nw ] * n + i64[ orig ] - 1) / i64[ orig ] ]
+    frames : i64 [ (n + i64[ 2 * width + orig ] - i64[ kn ]) / i64[ orig ] + 1 ]
+    out : vec f32 [ target ]
+    for [ i: i64 0, i < frames, i += 1 ]
+        for [ j: i32 0, j < nw, j += 1 ]
+            o : i64 [ i * nw + j ]
+            if [ o >= target ] break
+            s : f32 [ 0.0 ]
+            for [ k: i32 0, k < kn, k += 1 ]
+                src9 : i64 [ i * orig + k - width ]
+                if [ src9 >= 0 && src9 < n ] s += ker[ i64[ j ] * kn + k ] * pcm[ src9 ]
+            out[ o ] = s
+    return out
+
+# tensors as one f32 safetensors file, swapped in whole
+func rvc_save_tensors [ gd: Grad, keys: vec string, ts: vec GTensor, to: path ] -> bool
+    hdr : string '{{'
+    off : i64 [ 0 ]
+    for [ i: i64 0, i < keys.count, i += 1 ]
+        t : GTensor ts[ i ]
+        k : string keys[ i ]
+        dm : string ''
+        for [ j: i64 0, j < t.dims.count, j += 1 ]
+            d9 : i64 [ t.dims[ j ] ]
+            dm = (j == 0) ? '{d9}' : '{dm},{d9}'
+        e9 : i64 [ off + t.count * 4 ]
+        hdr = (i == 0) ? '{hdr}"{k}":{{"dtype":"F32","shape":[{dm}],"data_offsets":[{off},{e9}]}}' : '{hdr},"{k}":{{"dtype":"F32","shape":[{dm}],"data_offsets":[{off},{e9}]}}'
+        off = e9
+    hdr = '{hdr}}}'
+    # the data starts 8-aligned: spaces pad the header
+    while [ hdr.count % 8 != 0 ]
+        hdr = '{hdr} '
+    tmp : string '{to}.tmp'
+    fp : @FILE [ fopen[ tmp.chars, 'wb' ] ]
+    if [ !fp ] return false
+    hl : local i64 [ 1 ]
+    hl[ 0 ] = i64[ hdr.count ]
+    fwrite[ @hl[ 0 ], 8, 1, fp ]
+    fwrite[ hdr.chars, 1, hdr.count, fp ]
+    gd.rn.finish[]
+    for [ t: GTensor ] in ts
+        v : vec f32 gd.download[ t ]
+        fwrite[ @v[ 0 ], 4, v.count, fp ]
+    fclose[ fp ]
+    dst : string '{to}'
+    return rename[ tmp.chars, dst.chars ] == 0
+
+# rvc's SineGen at 40 kHz, 400 samples a frame
+func rvc_sine [ f0: vec f32, noise: vec f32 ] -> vec f32
+    upp : i64 [ 400 ]
+    nt : i64 [ f0.count ]
+    out : vec f32 [ nt * upp ]
+    # each frame's phase continues the last, as rvc's
+    acc : f32 [ 0.0 ]
+    for [ t: i64 0, t < nt, t += 1 ]
+        step : f32 [ f0[ t ] / 40000.0 ]
+        for [ j: i64 0, j < upp, j += 1 ]
+            rad : f32 [ step * f32[ j + 1 ] + acc ]
+            uv : bool [ f0[ t ] > 0.0 ]
+            s9 : f32 [ sinf[ 6.283185307179586 * rad ] * 0.1 ]
+            amp : f32 [ (uv) ? 0.003 : 0.1 / 3.0 ]
+            nz : f32 [ (noise) ? noise[ t * upp + j ] * amp : 0.0 ]
+            out[ t * upp + j ] = ((uv) ? s9 : 0.0) + nz
+        last : f32 [ step * f32[ upp ] ]
+        r2 : f32 [ fmodf[ last + 0.5, 1.0 ] - 0.5 ]
+        # fmod keeps the sign of its argument, as torch.fmod
+        acc = fmodf[ acc + r2, 1.0 ]
+    return out
+
+class RvcNet
+    context vk    : vk_context
+    public  src   : path
+    public  valid : bool
+    public  gd    : Grad
+    intern  ps    : map GTensor [ string ]
+    # training keeps both nets and their moments
+    public  keep_mb : i64 [ 512 ]
+    public  work_mb : i64 [ 3072 ]
+    # a trained voice (safetensors) over the base generator
+    public  voice   : path
+
+    func init []
+        if [ !gd ] gd = Grad [ vk: vk, keep_mb: keep_mb, work_mb: work_mb ]
+        ps = map GTensor [ string ] []
+        ck : pth [ src: src ]
+        if [ !ck.valid || !gd.valid ] return
+        for [ i: i32 0, i < ck.count[], i += 1 ]
+            nm : string ck.name_at[ i ]
+            key : string [ (nm.starts_with[ 'model.' ]) ? nm.mid[ 6, nm.count - 6 ] : nm ]
+            ps[ key ] = gd.param_of[ ck.tensor_named[ nm ] ]
+        valid = ps[ 'enc_p.emb_phone.weight' ] != null && ps[ 'dec.conv_post.weight' ] != null
+        if [ valid && voice && voice.exists[] ] valid = overlay[ voice ]
+
+    # every tensor a voice file holds replaces the base's
+    func overlay [ vp: path ] -> bool
+        st : safetensors [ src: vp ]
+        if [ !st.valid ] return false
+        n : i32 [ 0 ]
+        for [ t: GTensor, k: string ] in ps
+            if [ !t ] continue
+            v : tensor st.tensor_named[ k ]
+            if [ !v ] continue
+            if [ v.tensor_shape.total[] != t.count ] return false
+            gd.upload_raw[ t, v.floats, t.count ]
+            n += 1
+        return n > 0
+
+    # the generator's weights as safetensors (f32, names as rvc's)
+    func save [ to: path ] -> bool
+        return rvc_save_tensors[ gd, train_names[], train_params[], to ]
+
+    func pm [ name: string ] -> GTensor
+        return ps[ name ]
+
+    # a layer's weight: plain, or weight norm's g and v
+    func weight [ base: string ] -> GTensor
+        w : GTensor ps[ '{base}.weight' ]
+        if [ w ] return w
+        return gd.wnorm[ ps[ '{base}.weight_v' ], ps[ '{base}.weight_g' ] ]
+
+    func conv [ base: string, x: GTensor, st: i32, pd: i32, dl: i32 ] -> GTensor
+        return gd.conv1d[ x, weight[ base ], ps[ '{base}.bias' ], st, pd, dl, 1 ]
+
+    # the text encoder: m and logs [b, 192, t]
+    func enc_p [ phone: GTensor, pitch: GTensor, mask: GTensor ] -> vec GTensor
+        x : GTensor gd.add[ gd.linear[ phone, pm[ 'enc_p.emb_phone.weight' ], pm[ 'enc_p.emb_phone.bias' ] ],
+                            gd.lookup[ pitch, pm[ 'enc_p.emb_pitch.weight' ] ] ]
+        x = gd.leaky[ gd.scale[ x, f32[ sqrt[ 192.0 ] ] ], 0.1 ]
+        x = gd.mul[ gd.swap12[ x ], mask ]
+        for [ l: i32 0, l < 6, l += 1 ]
+            ab : string 'enc_p.encoder.attn_layers.{l}'
+            q : GTensor conv[ '{ab}.conv_q', x, 1, 0, 1 ]
+            k : GTensor conv[ '{ab}.conv_k', x, 1, 0, 1 ]
+            v : GTensor conv[ '{ab}.conv_v', x, 1, 0, 1 ]
+            y : GTensor gd.attention[ q, k, v, pm[ '{ab}.emb_rel_k' ], pm[ '{ab}.emb_rel_v' ], mask, 2, 10 ]
+            y = conv[ '{ab}.conv_o', y, 1, 0, 1 ]
+            x = gd.layer_norm[ gd.add[ x, y ], pm[ 'enc_p.encoder.norm_layers_1.{l}.gamma' ], pm[ 'enc_p.encoder.norm_layers_1.{l}.beta' ] ]
+            fb : string 'enc_p.encoder.ffn_layers.{l}'
+            h : GTensor gd.leaky[ conv[ '{fb}.conv_1', gd.mul[ x, mask ], 1, 1, 1 ], 0.0 ]
+            h = gd.mul[ conv[ '{fb}.conv_2', gd.mul[ h, mask ], 1, 1, 1 ], mask ]
+            x = gd.layer_norm[ gd.add[ x, h ], pm[ 'enc_p.encoder.norm_layers_2.{l}.gamma' ], pm[ 'enc_p.encoder.norm_layers_2.{l}.beta' ] ]
+        x = gd.mul[ x, mask ]
+        st : GTensor gd.mul[ conv[ 'enc_p.proj', x, 1, 0, 1 ], mask ]
+        return vec GTensor [] [ gd.slice[ st, 0, 192 ], gd.slice[ st, 192, 192 ] ]
+
+    # wavenet: nl layers, kernel kw, dilation rate^i, cond g
+    func wn [ base: string, x0: GTensor, mask: GTensor, g: GTensor, nl: i32, kw: i32, rate: i32 ] -> GTensor
+        gc : GTensor conv[ '{base}.cond_layer', g, 1, 0, 1 ]
+        x : GTensor x0
+        out : GTensor [ null ]
+        dl : i32 [ 1 ]
+        for [ i: i32 0, i < nl, i += 1 ]
+            xi : GTensor conv[ '{base}.in_layers.{i}', x, 1, (kw * dl - dl) / 2, dl ]
+            acts : GTensor gd.gate[ xi, gd.slice[ gc, i64[ i ] * 384, 384 ] ]
+            rs : GTensor conv[ '{base}.res_skip_layers.{i}', acts, 1, 0, 1 ]
+            if [ i < nl - 1 ]
+                x = gd.mul[ gd.add[ x, gd.slice[ rs, 0, 192 ] ], mask ]
+                sk : GTensor gd.slice[ rs, 192, 192 ]
+                out = (out) ? gd.add[ out, sk ] : sk
+            el
+                out = (out) ? gd.add[ out, rs ] : rs
+            dl = dl * rate
+        return gd.mul[ out, mask ]
+
+    # one coupling layer run backwards (mean only)
+    func coupling_back [ i: i32, z: GTensor, mask: GTensor, g: GTensor ] -> GTensor
+        fb : string 'flow.flows.{i * 2}'
+        x0 : GTensor gd.slice[ z, 0, 96 ]
+        x1 : GTensor gd.slice[ z, 96, 96 ]
+        h : GTensor gd.mul[ conv[ '{fb}.pre', x0, 1, 0, 1 ], mask ]
+        h = wn[ '{fb}.enc', h, mask, g, 3, 5, 1 ]
+        m : GTensor gd.mul[ conv[ '{fb}.post', h, 1, 0, 1 ], mask ]
+        x1 = gd.mul[ gd.add[ x1, gd.scale[ m, -1.0 ] ], mask ]
+        return gd.join[ x0, x1 ]
+
+    func flow_back [ z0: GTensor, mask: GTensor, g: GTensor ] -> GTensor
+        z : GTensor z0
+        for [ i: i32 3, i >= 0, i -= 1 ]
+            z = coupling_back[ i, gd.flip[ z ], mask, g ]
+        return z
+
+    func resblock [ n: i64, x0: GTensor ] -> GTensor
+        ks : vec i32 [] [ 3, 7, 11 ]
+        ds : vec i32 [] [ 1, 3, 5 ]
+        kw : i32 [ ks[ n % 3 ] ]
+        x : GTensor x0
+        for [ m: i32 0, m < 3, m += 1 ]
+            d : i32 [ ds[ m ] ]
+            xt : GTensor conv[ 'dec.resblocks.{n}.convs1.{m}', gd.leaky[ x, 0.1 ], 1, (kw * d - d) / 2, d ]
+            xt = conv[ 'dec.resblocks.{n}.convs2.{m}', gd.leaky[ xt, 0.1 ], 1, (kw - 1) / 2, 1 ]
+            x = gd.add[ xt, x ]
+        return x
+
+    # z [b, 192, t] and the sine source [b, 1, t*400] to samples
+    func dec [ z: GTensor, sine: GTensor, g: GTensor ] -> GTensor
+        # the source's one-weight linear, then tanh
+        lw : GTensor gd.reshape[ pm[ 'dec.m_source.l_linear.weight' ], vec i64 [] [ 1 ] ]
+        har : GTensor gd.tanh_of[ gd.add[ gd.mul[ sine, lw ], pm[ 'dec.m_source.l_linear.bias' ] ] ]
+        x : GTensor conv[ 'dec.conv_pre', z, 1, 3, 1 ]
+        x = gd.add[ x, conv[ 'dec.cond', g, 1, 0, 1 ] ]
+        rates : vec i32 [] [ 10, 10, 2, 2 ]
+        kws : vec i32 [] [ 16, 16, 4, 4 ]
+        strides : vec i32 [] [ 40, 4, 2, 1 ]
+        # inference frees each block's temporaries as it goes
+        lean : bool [ !gd.record ]
+        base : i64 [ gd.work.top ]
+        for [ i: i32 0, i < 4, i += 1 ]
+            x = gd.leaky[ x, 0.1 ]
+            u : i32 [ rates[ i ] ]
+            x = gd.convt1d[ x, weight[ 'dec.ups.{i}' ], pm[ 'dec.ups.{i}.bias' ], u, (kws[ i ] - u) / 2 ]
+            sf : i32 [ strides[ i ] ]
+            x = gd.add[ x, conv[ 'dec.noise_convs.{i}', har, sf, sf / 2, 1 ] ]
+            if [ lean ]
+                kp : vec GTensor gd.compact[ base, vec GTensor [] [ x, har ] ]
+                x = kp[ 0 ]
+                har = kp[ 1 ]
+            xs : GTensor resblock[ i64[ i ] * 3, x ]
+            for [ j: i64 1, j < 3, j += 1 ]
+                if [ lean ]
+                    kq : vec GTensor gd.compact[ base, vec GTensor [] [ x, har, xs ] ]
+                    x = kq[ 0 ]
+                    har = kq[ 1 ]
+                    xs = kq[ 2 ]
+                xs = gd.add[ xs, resblock[ i64[ i ] * 3 + j, x ] ]
+            x = gd.scale[ xs, f32[ 1.0 / 3.0 ] ]
+            if [ lean ]
+                kr : vec GTensor gd.compact[ base, vec GTensor [] [ x, har ] ]
+                x = kr[ 0 ]
+                har = kr[ 1 ]
+        x = gd.leaky[ x, 0.01 ]
+        x = gd.conv1d[ x, pm[ 'dec.conv_post.weight' ], null, 1, 3, 1, 1 ]
+        return gd.tanh_of[ x ]
+
+    # the posterior: spec to z, m, logs; eps the draw
+    func enc_q [ spec: GTensor, mask: GTensor, g: GTensor, eps: GTensor ] -> vec GTensor
+        x : GTensor gd.mul[ conv[ 'enc_q.pre', spec, 1, 0, 1 ], mask ]
+        x = wn[ 'enc_q.enc', x, mask, g, 16, 5, 1 ]
+        st : GTensor gd.mul[ conv[ 'enc_q.proj', x, 1, 0, 1 ], mask ]
+        m : GTensor gd.slice[ st, 0, 192 ]
+        lg : GTensor gd.slice[ st, 192, 192 ]
+        z : GTensor gd.mul[ gd.add[ m, gd.mul[ eps, gd.exp_of[ lg ] ] ], mask ]
+        return vec GTensor [] [ z, m, lg ]
+
+    # one coupling layer forward (mean only)
+    func coupling_fwd [ i: i32, z: GTensor, mask: GTensor, g: GTensor ] -> GTensor
+        fb : string 'flow.flows.{i * 2}'
+        x0 : GTensor gd.slice[ z, 0, 96 ]
+        x1 : GTensor gd.slice[ z, 96, 96 ]
+        h : GTensor gd.mul[ conv[ '{fb}.pre', x0, 1, 0, 1 ], mask ]
+        h = wn[ '{fb}.enc', h, mask, g, 3, 5, 1 ]
+        m : GTensor gd.mul[ conv[ '{fb}.post', h, 1, 0, 1 ], mask ]
+        return gd.join[ x0, gd.add[ m, gd.mul[ x1, mask ] ] ]
+
+    func flow_fwd [ z0: GTensor, mask: GTensor, g: GTensor ] -> GTensor
+        z : GTensor z0
+        for [ i: i32 0, i < 4, i += 1 ]
+            z = gd.flip[ coupling_fwd[ i, z, mask, g ] ]
+        return z
+
+    # every weight, now trained
+    func train_params [] -> vec GTensor
+        out : vec GTensor []
+        for [ t: GTensor, k: string ] in ps
+            if [ !t ] continue
+            t.need = true
+            out.push[ t ]
+        return out
+
+    # the names of train_params, in the same order
+    func train_names [] -> vec string
+        out : vec string []
+        for [ t: GTensor, k: string ] in ps
+            if [ t ] out.push[ k ]
+        return out
+
+    # rvc's infer; zn, sn the draws (null: drawn here)
+    func infer [ phone: vec f32, pitch: vec f32, f0: vec f32, sid: i32, zn: vec f32, sn: vec f32 ] -> vec f32
+        nt : i64 [ f0.count ]
+        gd.reset_work[]
+        ph : GTensor gd.temp[ vec i64 [] [ 1, nt, 768 ] ]
+        gd.upload[ ph, phone ]
+        pt : GTensor gd.temp[ vec i64 [] [ 1, nt ] ]
+        gd.upload[ pt, pitch ]
+        mask : GTensor gd.temp[ vec i64 [] [ 1, 1, nt ] ]
+        gd.fill[ mask, 1.0 ]
+        sd : GTensor gd.temp[ vec i64 [] [ 1 ] ]
+        sv : vec f32 [ 1 ]
+        sv[ 0 ] = f32[ sid ]
+        gd.upload[ sd, sv ]
+        g : GTensor gd.swap12[ gd.lookup[ gd.reshape[ sd, vec i64 [] [ 1, 1 ] ], pm[ 'emb_g.weight' ] ] ]
+        st : vec GTensor enc_p[ ph, pt, mask ]
+        zv : vec f32 zn
+        if [ !zv ]
+            zv = vec f32 [ nt * 192 ]
+            for [ i: i64 0, i < zv.count, i += 1 ]
+                u1 : f64 [ (f64[ rand[] ] + 1.0) / (f64[ RAND_MAX ] + 2.0) ]
+                u2 : f64 [ f64[ rand[] ] / f64[ RAND_MAX ] ]
+                zv[ i ] = f32[ sqrt[ -2.0 * log[ u1 ] ] * cos[ 6.283185307179586 * u2 ] ]
+        eps : GTensor gd.temp[ vec i64 [] [ 1, 192, nt ] ]
+        gd.upload[ eps, zv ]
+        zp : GTensor gd.mul[ gd.add[ st[ 0 ], gd.mul[ gd.exp_of[ st[ 1 ] ], gd.scale[ eps, 0.66666 ] ] ], mask ]
+        z : GTensor flow_back[ zp, mask, g ]
+        snv : vec f32 sn
+        if [ !snv ]
+            snv = vec f32 [ nt * 400 ]
+            for [ i: i64 0, i < snv.count, i += 1 ]
+                u1 : f64 [ (f64[ rand[] ] + 1.0) / (f64[ RAND_MAX ] + 2.0) ]
+                u2 : f64 [ f64[ rand[] ] / f64[ RAND_MAX ] ]
+                snv[ i ] = f32[ sqrt[ -2.0 * log[ u1 ] ] * cos[ 6.283185307179586 * u2 ] ]
+        sine : GTensor gd.temp[ vec i64 [] [ 1, 1, nt * 400 ] ]
+        gd.upload[ sine, rvc_sine[ f0, snv ] ]
+        o : GTensor dec[ gd.mul[ z, mask ], sine, g ]
+        gd.rn.finish[]
+        return gd.download[ o ]
+
+# rvc v2's hubert: last layer, 768 channels; frozen
+class RvcHubert
+    public  gd    : Grad
+    public  src   : path
+    public  valid : bool
+    intern  ps    : map GTensor [ string ]
+    intern  zt    : GTensor
+
+    func init []
+        ps = map GTensor [ string ] []
+        ck : pth [ src: src ]
+        if [ !ck.valid || !gd || !gd.valid ] return
+        for [ i: i32 0, i < ck.count[], i += 1 ]
+            nm : string ck.name_at[ i ]
+            t : tensor ck.tensor_named[ nm ]
+            if [ !t ] continue
+            if [ t.tensor_shape.count == 2 ]
+                d0 : i64 [ i64[ t.tensor_shape[ 0 ] ] ]
+                d1 : i64 [ i64[ t.tensor_shape[ 1 ] ] ]
+                w : GTensor gd.param[ vec i64 [] [ d0, d1, 1 ] ]
+                gd.upload_raw[ w, t.floats, w.count ]
+                ps[ nm ] = w
+            el
+                ps[ nm ] = gd.param_of[ t ]
+        # the positional conv's weight norm is per kernel tap
+        pg : tensor ck.tensor_named[ 'encoder.pos_conv_embed.conv.parametrizations.weight.original0' ]
+        pv : tensor ck.tensor_named[ 'encoder.pos_conv_embed.conv.parametrizations.weight.original1' ]
+        if [ !pg || !pv ] return
+        per : i64 [ 768 * 48 ]
+        wv : vec f32 [ per * 128 ]
+        for [ k: i64 0, k < 128, k += 1 ]
+            ss : f64 [ 0.0 ]
+            for [ j: i64 0, j < per, j += 1 ]
+                e : f64 [ f64[ pv.floats[ j * 128 + k ] ] ]
+                ss += e * e
+            sc : f32 [ f32[ f64[ pg.floats[ k ] ] / sqrt[ ss ] ] ]
+            for [ j: i64 0, j < per, j += 1 ]
+                wv[ j * 128 + k ] = pv.floats[ j * 128 + k ] * sc
+        pw : GTensor gd.param[ vec i64 [] [ 768, 48, 128 ] ]
+        gd.upload[ pw, wv ]
+        ps[ 'pos.weight' ] = pw
+        zt = gd.param[ vec i64 [] [ 1, 64 ] ]
+        gd.fill[ zt, 0.0 ]
+        valid = ps[ 'encoder.layers.11.final_layer_norm.weight' ] != null
+
+    func pm [ name: string ] -> GTensor
+        return ps[ name ]
+
+    func lin [ base: string, x: GTensor ] -> GTensor
+        return gd.conv1d[ x, ps[ '{base}.weight' ], ps[ '{base}.bias' ], 1, 0, 1, 1 ]
+
+    # 16 kHz samples to [1, 768, frames]
+    func features [ wav: vec f32 ] -> GTensor
+        n : i64 [ wav.count ]
+        x : GTensor gd.temp[ vec i64 [] [ 1, 1, n ] ]
+        gd.upload[ x, wav ]
+        x = gd.conv1d[ x, pm[ 'feature_extractor.conv_layers.0.conv.weight' ], null, 5, 0, 1, 1 ]
+        x = gd.gelu[ gd.time_norm[ x, pm[ 'feature_extractor.conv_layers.0.layer_norm.weight' ], pm[ 'feature_extractor.conv_layers.0.layer_norm.bias' ] ] ]
+        for [ i: i32 1, i < 7, i += 1 ]
+            x = gd.gelu[ gd.conv1d[ x, pm[ 'feature_extractor.conv_layers.{i}.conv.weight' ], null, 2, 0, 1, 1 ] ]
+        x = gd.layer_norm[ x, pm[ 'feature_projection.layer_norm.weight' ], pm[ 'feature_projection.layer_norm.bias' ] ]
+        x = lin[ 'feature_projection.projection', x ]
+        nt : i64 [ x.dims[ 2 ] ]
+        pos : GTensor gd.conv1d[ x, pm[ 'pos.weight' ], pm[ 'encoder.pos_conv_embed.conv.bias' ], 1, 64, 1, 16 ]
+        x = gd.add[ x, gd.gelu[ gd.tslice[ pos, 0, nt ] ] ]
+        x = gd.layer_norm[ x, pm[ 'encoder.layer_norm.weight' ], pm[ 'encoder.layer_norm.bias' ] ]
+        for [ l: i32 0, l < 12, l += 1 ]
+            lb : string 'encoder.layers.{l}'
+            q : GTensor lin[ '{lb}.attention.q_proj', x ]
+            k : GTensor lin[ '{lb}.attention.k_proj', x ]
+            v : GTensor lin[ '{lb}.attention.v_proj', x ]
+            a : GTensor lin[ '{lb}.attention.out_proj', gd.attention[ q, k, v, zt, zt, null, 12, 0 ] ]
+            x = gd.layer_norm[ gd.add[ x, a ], pm[ '{lb}.layer_norm.weight' ], pm[ '{lb}.layer_norm.bias' ] ]
+            f : GTensor lin[ '{lb}.feed_forward.output_dense', gd.gelu[ lin[ '{lb}.feed_forward.intermediate_dense', x ] ] ]
+            x = gd.layer_norm[ gd.add[ x, f ], pm[ '{lb}.final_layer_norm.weight' ], pm[ '{lb}.final_layer_norm.bias' ] ]
+        return x
+
+# rmvpe pitch: mel, u-net, gru, 360 bins; frozen
+class RvcPitch
+    public  gd    : Grad
+    public  src   : path
+    public  valid : bool
+    intern  ps    : map GTensor [ string ]
+    intern  in_a  : f32
+    intern  in_b  : f32
+    intern  basis : GTensor
+    intern  melw  : GTensor
+
+    func load [ ck: pth, name: string ] -> GTensor
+        return gd.param_of[ ck.tensor_named[ name ] ]
+
+    # conv then batch norm folded into one conv
+    func fold [ ck: pth, cname: string, bn: string, tr: bool ]
+        w : tensor ck.tensor_named[ '{cname}.weight' ]
+        ga : tensor ck.tensor_named[ '{bn}.weight' ]
+        be : tensor ck.tensor_named[ '{bn}.bias' ]
+        mu : tensor ck.tensor_named[ '{bn}.running_mean' ]
+        va : tensor ck.tensor_named[ '{bn}.running_var' ]
+        if [ !w || !ga ] return
+        d0 : i64 [ i64[ w.tensor_shape[ 0 ] ] ]
+        d1 : i64 [ i64[ w.tensor_shape[ 1 ] ] ]
+        kk : i64 [ i64[ w.tensor_shape[ 2 ] ] * i64[ w.tensor_shape[ 3 ] ] ]
+        nco : i64 [ (tr) ? d1 : d0 ]
+        sc : vec f32 [ nco ]
+        bias : vec f32 [ nco ]
+        for [ c: i64 0, c < nco, c += 1 ]
+            sc[ c ] = ga.floats[ c ] / sqrtf[ va.floats[ c ] + 0.00001 ]
+            bias[ c ] = be.floats[ c ] - mu.floats[ c ] * sc[ c ]
+        n : i64 [ d0 * d1 * kk ]
+        wv : vec f32 [ n ]
+        for [ i: i64 0, i < n, i += 1 ]
+            c9 : i64 [ (tr) ? (i / kk) % d1 : i / (d1 * kk) ]
+            wv[ i ] = w.floats[ i ] * sc[ c9 ]
+        k0 : i64 [ i64[ w.tensor_shape[ 2 ] ] ]
+        k1 : i64 [ i64[ w.tensor_shape[ 3 ] ] ]
+        gw : GTensor gd.param[ vec i64 [] [ d0, d1, k0, k1 ] ]
+        gd.upload[ gw, wv ]
+        gb : GTensor gd.param[ vec i64 [] [ nco ] ]
+        gd.upload[ gb, bias ]
+        ps[ 'W:{cname}' ] = gw
+        ps[ 'B:{cname}' ] = gb
+
+    func fold_block [ ck: pth, b: string ]
+        fold[ ck, '{b}.conv.0', '{b}.conv.1', false ]
+        fold[ ck, '{b}.conv.3', '{b}.conv.4', false ]
+        sw : tensor ck.tensor_named[ '{b}.shortcut.weight' ]
+        if [ sw ]
+            ps[ 'W:{b}.shortcut' ] = gd.param_of[ sw ]
+            ps[ 'B:{b}.shortcut' ] = load[ ck, '{b}.shortcut.bias' ]
+
+    func init []
+        ps = map GTensor [ string ] []
+        ck : pth [ src: src ]
+        if [ !ck.valid || !gd || !gd.valid ] return
+        for [ i: i32 0, i < 5, i += 1 ]
+            for [ j: i32 0, j < 4, j += 1 ]
+                fold_block[ ck, 'unet.encoder.layers.{i}.conv.{j}' ]
+            fold[ ck, 'unet.decoder.layers.{i}.conv1.0', 'unet.decoder.layers.{i}.conv1.1', true ]
+            for [ j: i32 0, j < 4, j += 1 ]
+                fold_block[ ck, 'unet.decoder.layers.{i}.conv2.{j}' ]
+        for [ i: i32 0, i < 4, i += 1 ]
+            for [ j: i32 0, j < 4, j += 1 ]
+                fold_block[ ck, 'unet.intermediate.layers.{i}.conv.{j}' ]
+        g0 : tensor ck.tensor_named[ 'unet.encoder.bn.weight' ]
+        b0 : tensor ck.tensor_named[ 'unet.encoder.bn.bias' ]
+        m0 : tensor ck.tensor_named[ 'unet.encoder.bn.running_mean' ]
+        v0 : tensor ck.tensor_named[ 'unet.encoder.bn.running_var' ]
+        in_a = g0.floats[ 0 ] / sqrtf[ v0.floats[ 0 ] + 0.00001 ]
+        in_b = b0.floats[ 0 ] - m0.floats[ 0 ] * in_a
+        names : vec string [] [ 'cnn.weight', 'cnn.bias', 'fc.0.gru.weight_ih_l0', 'fc.0.gru.weight_hh_l0',
+                                'fc.0.gru.bias_ih_l0', 'fc.0.gru.bias_hh_l0', 'fc.0.gru.weight_ih_l0_reverse',
+                                'fc.0.gru.weight_hh_l0_reverse', 'fc.0.gru.bias_ih_l0_reverse',
+                                'fc.0.gru.bias_hh_l0_reverse', 'fc.1.weight', 'fc.1.bias' ]
+        for [ nm: string ] in names
+            ps[ nm ] = load[ ck, nm ]
+        basis = stft_basis[]
+        melw = mel_weights[]
+        valid = ps[ 'fc.1.weight' ] != null && ps[ 'W:unet.decoder.layers.4.conv2.3.conv.3' ] != null
+
+    # hann-windowed cos and -sin rows [1026, 1, 1024]
+    func stft_basis [] -> GTensor
+        v : vec f32 [ 1026 * 1024 ]
+        for [ k: i64 0, k < 513, k += 1 ]
+            for [ n: i64 0, n < 1024, n += 1 ]
+                w9 : f64 [ 0.5 - 0.5 * cos[ 6.283185307179586 * f64[ n ] / 1024.0 ] ]
+                an : f64 [ 6.283185307179586 * f64[ k * n % 1024 ] / 1024.0 ]
+                v[ k * 1024 + n ] = f32[ w9 * cos[ an ] ]
+                v[ (513 + k) * 1024 + n ] = f32[ 0.0 - w9 * sin[ an ] ]
+        t : GTensor gd.param[ vec i64 [] [ 1026, 1, 1024 ] ]
+        gd.upload[ t, v ]
+        return t
+
+    func hz_mel_htk [ f: f64 ] -> f64
+        return 2595.0 * log10[ 1.0 + f / 700.0 ]
+
+    func mel_hz_htk [ m: f64 ] -> f64
+        return 700.0 * (pow[ 10.0, m / 2595.0 ] - 1.0)
+
+    # librosa's htk mel filters, 30 to 8000 Hz
+    func mel_weights [] -> GTensor
+        lo : f64 hz_mel_htk[ 30.0 ]
+        hi : f64 hz_mel_htk[ 8000.0 ]
+        mf : vec f64 [ 130 ]
+        for [ i: i64 0, i < 130, i += 1 ]
+            mf[ i ] = mel_hz_htk[ lo + (hi - lo) * f64[ i ] / 129.0 ]
+        v : vec f32 [ 128 * 513 ]
+        for [ m: i64 0, m < 128, m += 1 ]
+            en : f64 [ 2.0 / (mf[ m + 2 ] - mf[ m ]) ]
+            for [ k: i64 0, k < 513, k += 1 ]
+                fk : f64 [ f64[ k ] * 16000.0 / 1024.0 ]
+                lw9 : f64 [ (fk - mf[ m ]) / (mf[ m + 1 ] - mf[ m ]) ]
+                up9 : f64 [ (mf[ m + 2 ] - fk) / (mf[ m + 2 ] - mf[ m + 1 ]) ]
+                w9 : f64 [ (lw9 < up9) ? lw9 : up9 ]
+                v[ m * 513 + k ] = f32[ ((w9 > 0.0) ? w9 : 0.0) * en ]
+        t : GTensor gd.param[ vec i64 [] [ 128, 513, 1 ] ]
+        gd.upload[ t, v ]
+        return t
+
+    # rmvpe's log mel of 16 kHz samples: [1, 128, t]
+    func mel [ wav: vec f32 ] -> GTensor
+        n : i64 [ wav.count ]
+        pd : vec f32 [ n + 1024 ]
+        for [ i: i64 0, i < n + 1024, i += 1 ]
+            j : i64 [ i - 512 ]
+            if [ j < 0 ] j = 0 - j
+            if [ j >= n ] j = 2 * n - 2 - j
+            pd[ i ] = wav[ j ]
+        x : GTensor gd.temp[ vec i64 [] [ 1, 1, n + 1024 ] ]
+        gd.upload[ x, pd ]
+        sp : GTensor gd.conv1d[ x, basis, null, 160, 0, 1, 1 ]
+        return gd.log_clamp[ gd.conv1d[ gd.magnitude[ sp, 0.0 ], melw, null, 1, 0, 1, 1 ], 0.00001 ]
+
+    func block [ b: string, x: GTensor ] -> GTensor
+        h : GTensor gd.leaky[ gd.conv2d[ x, ps[ 'W:{b}.conv.0' ], ps[ 'B:{b}.conv.0' ], 1, 1 ], 0.0 ]
+        h = gd.leaky[ gd.conv2d[ h, ps[ 'W:{b}.conv.3' ], ps[ 'B:{b}.conv.3' ], 1, 1 ], 0.0 ]
+        sw : GTensor ps[ 'W:{b}.shortcut' ]
+        sc : GTensor [ (sw) ? gd.conv2d[ x, sw, ps[ 'B:{b}.shortcut' ], 0, 0 ] : x ]
+        gd.axpby[ sc, h, 1.0, 1.0 ]
+        return h
+
+    # the salience of every frame: [t, 360]
+    func salience [ wav: vec f32 ] -> vec f32
+        ml : GTensor mel[ wav ]
+        gd.rn.finish[]
+        mv : vec f32 gd.download[ ml ]
+        nt : i64 [ ml.dims[ 2 ] ]
+        # past 25 s: 20 s windows with 2.5 s of context each side
+        if [ nt <= 2560 ] return salience_mel[ mv, nt ]
+        out : vec f32 [ nt * 360 ]
+        win : i64 [ 2000 ]
+        ctx : i64 [ 256 ]
+        for [ s0: i64 0, s0 < nt, s0 += win ]
+            a9 : i64 [ (s0 > ctx) ? s0 - ctx : 0 ]
+            e9 : i64 [ (s0 + win + ctx < nt) ? s0 + win + ctx : nt ]
+            n9 : i64 [ e9 - a9 ]
+            part : vec f32 [ 128 * n9 ]
+            for [ m: i64 0, m < 128, m += 1 ]
+                memcpy[ @part[ m * n9 ], @mv[ m * nt + a9 ], n9 * 4 ]
+            sp : vec f32 salience_mel[ part, n9 ]
+            k9 : i64 [ (s0 + win < nt) ? win : nt - s0 ]
+            memcpy[ @out[ s0 * 360 ], @sp[ (s0 - a9) * 360 ], k9 * 1440 ]
+        return out
+
+    # the salience of mel frames [128][nt]: [nt, 360]
+    func salience_mel [ mv: vec f32, nt: i64 ] -> vec f32
+        gd.reset_work[]
+        ml : GTensor gd.temp[ vec i64 [] [ 1, 128, nt ] ]
+        gd.upload[ ml, mv ]
+        tp : i64 [ ((nt - 1) / 32 + 1) * 32 ]
+        # zero frames up to a multiple of 32, then frames by bands
+        mp : GTensor gd.temp[ vec i64 [] [ 1, 128, tp ] ]
+        gd.fill[ mp, 0.0 ]
+        gd.tslice_run[ ml, mp, 1, 128, nt, tp, 0, 1 ]
+        x : GTensor gd.view[ gd.swap12[ mp ], vec i64 [] [ 1, 1, tp, 128 ] ]
+        x = gd.scale[ x, in_a ]
+        ib : GTensor gd.temp[ x.dims ]
+        gd.fill[ ib, in_b ]
+        gd.axpby[ ib, x, 1.0, 1.0 ]
+        skips : vec GTensor []
+        for [ i: i32 0, i < 5, i += 1 ]
+            for [ j: i32 0, j < 4, j += 1 ]
+                x = block[ 'unet.encoder.layers.{i}.conv.{j}', x ]
+            skips.push[ x ]
+            x = gd.avg_pool2[ x ]
+        for [ i: i32 0, i < 4, i += 1 ]
+            for [ j: i32 0, j < 4, j += 1 ]
+                x = block[ 'unet.intermediate.layers.{i}.conv.{j}', x ]
+        for [ i: i32 0, i < 5, i += 1 ]
+            d : string 'unet.decoder.layers.{i}'
+            u : GTensor gd.convt2d[ x, ps[ 'W:{d}.conv1.0' ], 2, 1 ]
+            co : i64 [ u.dims[ 1 ] ]
+            hw : i64 [ u.dims[ 2 ] * u.dims[ 3 ] ]
+            u3 : GTensor gd.leaky[ gd.add[ gd.view[ u, gd.dims3[ 1, co, hw ] ], ps[ 'B:{d}.conv1.0' ] ], 0.0 ]
+            sk : GTensor skips[ 4 - i ]
+            j3 : GTensor gd.join[ u3, gd.view[ sk, gd.dims3[ 1, co, hw ] ] ]
+            uh : i64 [ u.dims[ 2 ] ]
+            uw : i64 [ u.dims[ 3 ] ]
+            x = gd.view[ j3, vec i64 [] [ 1, co * 2, uh, uw ] ]
+            for [ j: i32 0, j < 4, j += 1 ]
+                x = block[ '{d}.conv2.{j}', x ]
+        c3 : GTensor gd.conv2d[ x, ps[ 'cnn.weight' ], ps[ 'cnn.bias' ], 1, 1 ]
+        # [1, 3, t, 128] to rows [t, 3 * 128]: channel then band
+        rows : GTensor gd.temp[ vec i64 [] [ tp, 384 ] ]
+        gd.regroup[ c3, rows, null, 3, tp, 128, 0, 0.0 ]
+        xf : GTensor gd.linear[ rows, ps[ 'fc.0.gru.weight_ih_l0' ], ps[ 'fc.0.gru.bias_ih_l0' ] ]
+        xr : GTensor gd.linear[ rows, ps[ 'fc.0.gru.weight_ih_l0_reverse' ], ps[ 'fc.0.gru.bias_ih_l0_reverse' ] ]
+        h : GTensor gd.gru256[ xf, xr, ps[ 'fc.0.gru.weight_hh_l0' ], ps[ 'fc.0.gru.weight_hh_l0_reverse' ],
+                               ps[ 'fc.0.gru.bias_hh_l0' ], ps[ 'fc.0.gru.bias_hh_l0_reverse' ], tp ]
+        sal : GTensor gd.sigmoid[ gd.linear[ h, ps[ 'fc.1.weight' ], ps[ 'fc.1.bias' ] ] ]
+        gd.rn.finish[]
+        all : vec f32 gd.download[ sal ]
+        out : vec f32 [ nt * 360 ]
+        memcpy[ @out[ 0 ], @all[ 0 ], nt * 360 * 4 ]
+        return out
+
+    # hz per 10 ms frame, 0 where unvoiced
+    func f0 [ wav: vec f32, thred: f32 ] -> vec f32
+        sal : vec f32 salience[ wav ]
+        nt : i64 [ sal.count / 360 ]
+        out : vec f32 [ nt ]
+        for [ t: i64 0, t < nt, t += 1 ]
+            c : i64 [ 0 ]
+            mx : f32 [ sal[ t * 360 ] ]
+            for [ k: i64 1, k < 360, k += 1 ]
+                if [ sal[ t * 360 + k ] > mx ]
+                    mx = sal[ t * 360 + k ]
+                    c = k
+            ps9 : f64 [ 0.0 ]
+            ws9 : f64 [ 0.0 ]
+            for [ k: i64 c - 4, k <= c + 4, k += 1 ]
+                if [ k < 0 || k >= 360 ] continue
+                s9 : f64 [ f64[ sal[ t * 360 + k ] ] ]
+                ps9 += s9 * (20.0 * f64[ k ] + 1997.3794084376191)
+                ws9 += s9
+            cents : f64 [ (mx > thred) ? ps9 / ws9 : 0.0 ]
+            hz : f64 [ 10.0 * pow[ 2.0, cents / 1200.0 ] ]
+            out[ t ] = f32[ (hz == 10.0) ? 0.0 : hz ]
+        return out
+
+# unvoiced frames take the line between their voiced neighbours
+# (np.interp); false when no frame is voiced
+func rvc_fill_unvoiced [ f0: vec f32 ] -> bool
+    n : i64 [ f0.count ]
+    first : i64 [ -1 ]
+    for [ i: i64 0, i < n, i += 1 ]
+        if [ f0[ i ] > 0.0 && first < 0 ] first = i
+    if [ first < 0 ] return false
+    prev : i64 [ -1 ]
+    for [ i: i64 0, i < n, i += 1 ]
+        if [ f0[ i ] <= 0.0 ] continue
+        if [ prev < 0 ]
+            for [ j: i64 0, j < i, j += 1 ]
+                f0[ j ] = f0[ i ]
+        el [ i - prev > 1 ]
+            for [ j: i64 prev + 1, j < i, j += 1 ]
+                f9 : f32 [ f32[ j - prev ] / f32[ i - prev ] ]
+                f0[ j ] = f0[ prev ] + (f0[ i ] - f0[ prev ]) * f9
+        prev = i
+    for [ j: i64 prev + 1, j < n, j += 1 ]
+        f0[ j ] = f0[ prev ]
+    return true
+
+# rvc v2's discriminators: scale and 8 periods
+class RvcDisc
+    public  gd    : Grad
+    public  src   : path
+    public  valid : bool
+    intern  ps    : map GTensor [ string ]
+    # weight norms shared by the passes of one update
+    intern  wcache : map GTensor [ string ]
+    public  periods : vec i64 [] [ 2, 3, 5, 7, 11, 17, 23, 37 ]
+    # every layer's output, both passes, in the order made
+    public  fmaps : vec GTensor
+    public  logits : vec GTensor
+
+    func init []
+        ps = map GTensor [ string ] []
+        wcache = map GTensor [ string ] []
+        ck : pth [ src: src ]
+        if [ !ck.valid || !gd || !gd.valid ] return
+        for [ i: i32 0, i < ck.count[], i += 1 ]
+            nm : string ck.name_at[ i ]
+            key : string [ (nm.starts_with[ 'model.' ]) ? nm.mid[ 6, nm.count - 6 ] : nm ]
+            ps[ key ] = gd.param_of[ ck.tensor_named[ nm ] ]
+        valid = ps[ 'discriminators.8.conv_post.weight_v' ] != null
+
+    func weight [ base: string ] -> GTensor
+        w : GTensor wcache[ base ]
+        if [ w ] return w
+        w = gd.wnorm[ ps[ '{base}.weight_v' ], ps[ '{base}.weight_g' ] ]
+        wcache[ base ] = w
+        return w
+
+    func pm [ name: string ] -> GTensor
+        return ps[ name ]
+
+    func set_need [ on: bool ]
+        # called where the weights or the work arena change
+        wcache = map GTensor [ string ] []
+        for [ t: GTensor, k: string ] in ps
+            if [ t ] t.need = on
+
+    func params [] -> vec GTensor
+        out : vec GTensor []
+        for [ t: GTensor, k: string ] in ps
+            if [ t ] out.push[ t ]
+        return out
+
+    func names [] -> vec string
+        out : vec string []
+        for [ t: GTensor, k: string ] in ps
+            if [ t ] out.push[ k ]
+        return out
+
+    func layer [ base: string, x: GTensor, st: i32, pd: i32, gp: i32 ] -> GTensor
+        return gd.conv1d[ x, weight[ base ], ps[ '{base}.bias' ], st, pd, 1, gp ]
+
+    func disc_s [ x0: GTensor ]
+        b : string 'discriminators.0'
+        sts : vec i32 [] [ 1, 4, 4, 4, 4, 1 ]
+        pds : vec i32 [] [ 7, 20, 20, 20, 20, 2 ]
+        gps : vec i32 [] [ 1, 4, 16, 64, 256, 1 ]
+        x : GTensor x0
+        for [ j: i32 0, j < 6, j += 1 ]
+            x = gd.leaky[ layer[ '{b}.convs.{j}', x, sts[ j ], pds[ j ], gps[ j ] ], 0.1 ]
+            fmaps.push[ x ]
+        x = layer[ '{b}.conv_post', x, 1, 1, 1 ]
+        fmaps.push[ x ]
+        logits.push[ x ]
+
+    func disc_p [ i: i32, per: i64, x0: GTensor ]
+        b : string 'discriminators.{i}'
+        nt : i64 [ x0.dims[ 2 ] ]
+        x : GTensor x0
+        if [ nt % per != 0 ] x = gd.pad_reflect[ x, 0, per - nt % per ]
+        x = gd.period_fold[ x, per ]
+        for [ j: i32 0, j < 5, j += 1 ]
+            x = gd.leaky[ layer[ '{b}.convs.{j}', x, (j < 4) ? 3 : 1, 2, 1 ], 0.1 ]
+            fmaps.push[ x ]
+        x = layer[ '{b}.conv_post', x, 1, 1, 1 ]
+        fmaps.push[ x ]
+        logits.push[ x ]
+
+    # every discriminator on y; logits, fmaps appended
+    func run [ y: GTensor ]
+        disc_s[ y ]
+        for [ i: i32 0, i < 8, i += 1 ]
+            disc_p[ i + 1, periods[ i ], y ]
+
+# a net's parameters with their adamw moments
+class RvcOpt
+    public gd   : Grad
+    public ps   : vec GTensor
+    public names : vec string
+    public ms   : vec GTensor
+    public vs   : vec GTensor
+    public step : i64
+
+    func init []
+        ms = vec GTensor []
+        vs = vec GTensor []
+        for [ t: GTensor ] in ps
+            m : GTensor gd.param[ t.dims ]
+            v : GTensor gd.param[ t.dims ]
+            gd.fill[ m, 0.0 ]
+            gd.fill[ v, 0.0 ]
+            ms.push[ m ]
+            vs.push[ v ]
+
+    func clear []
+        for [ t: GTensor ] in ps
+            t.gr = null
+
+    # rvc's AdamW: betas 0.8 0.99, eps 1e-9, decay 0.01
+    func update [ lr: f32 ]
+        step += 1
+        # each parameter its own buffers: one fence for all
+        gd.rn.nofence = true
+        for [ i: i64 0, i < ps.count, i += 1 ]
+            gd.adamw[ ps[ i ], ms[ i ], vs[ i ], lr, 0.8, 0.99, 0.000000001, 0.01, step ]
+        gd.rn.nofence = false
+        gd.rn.fence_mem[]
+
+# an optimizer's moments named by its parameters
+func rvc_opt_tensors [ o: RvcOpt, tag: string, names: vec string, ts: vec GTensor ]
+    for [ i: i64 0, i < o.ps.count, i += 1 ]
+        nm : string o.names[ i ]
+        names.push[ '{tag}.m.{nm}' ]
+        ts.push[ o.ms[ i ] ]
+        names.push[ '{tag}.v.{nm}' ]
+        ts.push[ o.vs[ i ] ]
+
+# a batch of equal-length items, 100 frames a second
+class RvcBatch
+    public nb     : i64
+    public nt     : i64
+    public phone  : vec f32
+    public pitch  : vec f32
+    public pitchf : vec f32
+    public spec   : vec f32
+    public wave   : vec f32
+    public sid    : vec f32
+    # draws and slice starts; null draws them here
+    public ids    : vec f32
+    public eps_q  : vec f32
+    public eps_s  : vec f32
+
+# one prepared piece, t frames: hubert rows, pitch bins, hz,
+# the spectrogram [1025][t] and the 40 kHz wave
+class RvcItem
+    public nt     : i64
+    public phone  : vec f32
+    public pitch  : vec f32
+    public pitchf : vec f32
+    public spec   : vec f32
+    public wave   : vec f32
+
+# the gaussian draws a step needs
+func rvc_randn [ n: i64 ] -> vec f32
+    v : vec f32 [ n ]
+    for [ i: i64 0, i < n, i += 1 ]
+        u1 : f64 [ (f64[ rand[] ] + 1.0) / (f64[ RAND_MAX ] + 2.0) ]
+        u2 : f64 [ f64[ rand[] ] / f64[ RAND_MAX ] ]
+        v[ i ] = f32[ sqrt[ -2.0 * log[ u1 ] ] * cos[ 6.283185307179586 * u2 ] ]
+    return v
+
+# librosa's slaney mel scale
+func slaney_mel [ f: f64 ] -> f64
+    if [ f < 1000.0 ] return f * 3.0 / 200.0
+    return 15.0 + log[ f / 1000.0 ] / (log[ 6.4 ] / 27.0)
+
+func slaney_hz [ m: f64 ] -> f64
+    if [ m < 15.0 ] return m * 200.0 / 3.0
+    return 1000.0 * exp[ (log[ 6.4 ] / 27.0) * (m - 15.0) ]
+
+# hann-windowed cos and -sin rows [2050, 1, 2048]
+func rvc_stft_basis [ gd: Grad ] -> GTensor
+    v : vec f32 [ 2050 * 2048 ]
+    for [ k: i64 0, k < 1025, k += 1 ]
+        for [ n: i64 0, n < 2048, n += 1 ]
+            w9 : f64 [ 0.5 - 0.5 * cos[ 6.283185307179586 * f64[ n ] / 2048.0 ] ]
+            an : f64 [ 6.283185307179586 * f64[ k * n % 2048 ] / 2048.0 ]
+            v[ k * 2048 + n ] = f32[ w9 * cos[ an ] ]
+            v[ (1025 + k) * 2048 + n ] = f32[ 0.0 - w9 * sin[ an ] ]
+    t : GTensor gd.param[ vec i64 [] [ 2050, 1, 2048 ] ]
+    gd.upload[ t, v ]
+    return t
+
+# librosa's slaney mel filters, 40 kHz, 125 bands
+func rvc_mel_weights [ gd: Grad ] -> GTensor
+    lo : f64 slaney_mel[ 0.0 ]
+    hi : f64 slaney_mel[ 20000.0 ]
+    mf : vec f64 [ 127 ]
+    for [ i: i64 0, i < 127, i += 1 ]
+        mf[ i ] = slaney_hz[ lo + (hi - lo) * f64[ i ] / 126.0 ]
+    v : vec f32 [ 125 * 1025 ]
+    for [ m: i64 0, m < 125, m += 1 ]
+        en : f64 [ 2.0 / (mf[ m + 2 ] - mf[ m ]) ]
+        for [ k: i64 0, k < 1025, k += 1 ]
+            fk : f64 [ f64[ k ] * 40000.0 / 2048.0 ]
+            lw9 : f64 [ (fk - mf[ m ]) / (mf[ m + 1 ] - mf[ m ]) ]
+            up9 : f64 [ (mf[ m + 2 ] - fk) / (mf[ m + 2 ] - mf[ m + 1 ]) ]
+            w9 : f64 [ (lw9 < up9) ? lw9 : up9 ]
+            v[ m * 1025 + k ] = f32[ ((w9 > 0.0) ? w9 : 0.0) * en ]
+    t : GTensor gd.param[ vec i64 [] [ 125, 1025, 1 ] ]
+    gd.upload[ t, v ]
+    return t
+
+# rvc's training data from a clip; its grad holds hubert and
+# rmvpe, released once the items are made
+class RvcPrep
+    context vk    : vk_context
+    public  valid : bool
+    # every piece's hubert frames [n, 768]: the voice's index
+    public  feats : vec f32
+    public  gd    : Grad
+    intern  hb    : RvcHubert
+    intern  pn    : RvcPitch
+    intern  basis : GTensor
+
+    func init []
+        m : path '{path.path_install[]}/models/rvc'
+        gd = Grad [ vk: vk, keep_mb: 1024, work_mb: 1536, scratch_mb: 1024 ]
+        hb = RvcHubert [ gd: gd, src: path '{m}/hubert.pth' ]
+        pn = RvcPitch [ gd: gd, src: path '{m}/rmvpe.pt' ]
+        basis = rvc_stft_basis[ gd ]
+        valid = hb.valid && pn.valid
+
+    func release []
+        if [ gd ] gd.release[]
+        valid = false
+
+    # rvc's spectrogram_torch of a 40 kHz piece: [1025][t]
+    func spec_of [ wv: vec f32 ] -> vec f32
+        n : i64 [ wv.count ]
+        x : GTensor gd.temp[ vec i64 [] [ 1, 1, n ] ]
+        gd.upload[ x, wv ]
+        sp : GTensor gd.conv1d[ gd.pad_reflect[ x, 824, 824 ], basis, null, 400, 0, 1, 1 ]
+        mg : GTensor gd.magnitude[ sp, 0.0000002 ]
+        gd.rn.finish[]
+        return gd.download[ mg ]
+
+    # rvc's preprocess: 40 kHz, high-pass, sliced at silences, 3.7 s
+    # pieces overlapping 0.3 s, peaks normalized; its quirk kept:
+    # only the last slice's short tail is written
+    func pieces [ clip: path ] -> vec RvcItem
+        out : vec RvcItem []
+        ac : AudioClip voice_clip[ clip ]
+        if [ !ac || ac.frames <= 0 ] return out
+        mono : vec f32 [ ac.frames ]
+        for [ i: i64 0, i < ac.frames, i += 1 ]
+            s9 : f64 [ 0.0 ]
+            for [ c: i32 0, c < ac.channels, c += 1 ]
+                s9 += f64[ ac.pcm[ i * ac.channels + c ] ]
+            mono[ i ] = f32[ s9 / f64[ ac.channels ] / 32768.0 ]
+        a40 : vec f32 rvc_highpass[ resample_sinc[ mono, ac.rate, 40000 ] ]
+        sl : vec i64 rvc_slices[ a40 ]
+        per : i64 [ 148000 ]
+        stepn : i64 [ 136000 ]
+        tail : i64 [ 160000 ]
+        last : vec f32 [ null ]
+        for [ k: i64 0, k < sl.count / 2, k += 1 ]
+            b0 : i64 [ sl[ k * 2 ] ]
+            b1 : i64 [ sl[ k * 2 + 1 ] ]
+            i : i64 [ 0 ]
+            for [ true ]
+                st : i64 [ b0 + stepn * i ]
+                i += 1
+                if [ b1 - st > tail ]
+                    pc : vec f32 [ per ]
+                    memcpy[ @pc[ 0 ], @a40[ st ], per * 4 ]
+                    norm_piece[ pc, out ]
+                el
+                    ln : i64 [ (b1 > st) ? b1 - st : 0 ]
+                    last = vec f32 [ ln ]
+                    if [ ln > 0 ] memcpy[ @last[ 0 ], @a40[ st ], ln * 4 ]
+                    break
+        if [ last && last.count > 0 ] norm_piece[ last, out ]
+        return out
+
+    # the peak to 0.9 mixed 3:1 with the original; a bad peak skips
+    func norm_piece [ pc: vec f32, out: vec RvcItem ]
+        mx : f32 [ 0.0 ]
+        for [ i: i64 0, i < pc.count, i += 1 ]
+            a9 : f32 [ fabsf[ pc[ i ] ] ]
+            if [ a9 > mx ] mx = a9
+        if [ mx <= 0.0 || mx > 2.5 ] return
+        for [ i: i64 0, i < pc.count, i += 1 ]
+            pc[ i ] = pc[ i ] / mx * 0.675 + 0.25 * pc[ i ]
+        out.push[ RvcItem [ wave: pc ] ]
+
+    # every piece of a clip as a training item: hubert rows at 100
+    # frames, rmvpe pitch (gaps filled between voiced frames), bins
+    func prepare [ clip: path ] -> vec RvcItem
+        items : vec RvcItem []
+        ps9 : vec RvcItem pieces[ clip ]
+        if [ !valid ] return items
+        pg : Grad gd
+        mel_min : f64 [ 1127.0 * log[ 1.0 + 50.0 / 700.0 ] ]
+        mel_max : f64 [ 1127.0 * log[ 1.0 + 1100.0 / 700.0 ] ]
+        for [ pi9: RvcItem ] in ps9
+            pc : vec f32 pi9.wave
+            w16 : vec f32 resample_sinc[ pc, 40000, 16000 ]
+            pg.reset_work[]
+            ht : GTensor hb.features[ w16 ]
+            pg.rn.finish[]
+            hv : vec f32 pg.download[ ht ]
+            t50 : i64 [ ht.dims[ 2 ] ]
+            rows9 : vec f32 [ t50 * 768 ]
+            for [ t: i64 0, t < t50, t += 1 ]
+                for [ c: i64 0, c < 768, c += 1 ]
+                    rows9[ t * 768 + c ] = hv[ c * t50 + t ]
+            if [ !feats ] feats = vec f32 [ 0 ]
+            grown : vec f32 [ feats.count + rows9.count ]
+            if [ feats.count > 0 ] memcpy[ @grown[ 0 ], @feats[ 0 ], feats.count * 4 ]
+            memcpy[ @grown[ feats.count ], @rows9[ 0 ], rows9.count * 4 ]
+            feats = grown
+            pg.reset_work[]
+            f0 : vec f32 pn.f0[ w16, 0.03 ]
+            if [ !rvc_fill_unvoiced[ f0 ] ] continue
+            pg.reset_work[]
+            sp : vec f32 spec_of[ pc ]
+            nsp : i64 [ sp.count / 1025 ]
+            nt : i64 [ t50 * 2 ]
+            if [ nt > 900 ] nt = 900
+            if [ nsp < nt ] nt = nsp
+            if [ f0.count < nt ] nt = f0.count
+            if [ nt < 32 ] continue
+            it : RvcItem [ nt: nt, phone: vec f32 [ nt * 768 ], pitch: vec f32 [ nt ],
+                           pitchf: vec f32 [ nt ], spec: vec f32 [ 1025 * nt ], wave: vec f32 [ nt * 400 ] ]
+            for [ t: i64 0, t < nt, t += 1 ]
+                for [ c: i64 0, c < 768, c += 1 ]
+                    it.phone[ t * 768 + c ] = hv[ c * t50 + t / 2 ]
+                it.pitchf[ t ] = f0[ t ]
+                fm : f64 [ 1127.0 * log[ 1.0 + f64[ f0[ t ] ] / 700.0 ] ]
+                if [ fm > 0.0 ] fm = (fm - mel_min) * 254.0 / (mel_max - mel_min) + 1.0
+                if [ fm <= 1.0 ] fm = 1.0
+                if [ fm > 255.0 ] fm = 255.0
+                it.pitch[ t ] = f32[ rint[ fm ] ]
+            for [ c: i64 0, c < 1025, c += 1 ]
+                memcpy[ @it.spec[ c * nt ], @sp[ c * nsp ], nt * 4 ]
+            memcpy[ @it.wave[ 0 ], @pc[ 0 ], nt * 1600 ]
+            items.push[ it ]
+        return items
+
+
+# rvc training: a discriminator then generator step
+class RvcTrain
+    context vk    : vk_context
+    public  net   : RvcNet
+    public  dsc   : RvcDisc
+    public  og    : RvcOpt
+    public  od    : RvcOpt
+    public  valid : bool
+    intern  basis : GTensor
+    intern  melw  : GTensor
+    # the last step's losses: disc, gen, fm, mel, kl
+    public  losses : vec f32
+    # epochs already trained (a resumed checkpoint's)
+    public  done   : i32
+    # a test reads the discriminator's gradients after the step
+    public  keep_dgrad : bool
+
+    func init []
+        if [ !net || !net.valid ] return
+        gd : Grad net.gd
+        dsc = RvcDisc [ gd: gd, src: path '{path.path_install[]}/models/rvc/f0D40k.pth' ]
+        if [ !dsc.valid ] return
+        og = RvcOpt [ gd: gd, ps: net.train_params[], names: net.train_names[] ]
+        od = RvcOpt [ gd: gd, ps: dsc.params[], names: dsc.names[] ]
+        basis = rvc_stft_basis[ gd ]
+        melw = rvc_mel_weights[ gd ]
+        valid = true
+
+    # the generator at to; the rest of the run at to.state
+    func checkpoint [ to: path, ep: i32 ]
+        gd : Grad net.gd
+        names : vec string []
+        ts : vec GTensor []
+        dn : vec string dsc.names[]
+        dp : vec GTensor dsc.params[]
+        for [ i: i64 0, i < dp.count, i += 1 ]
+            names.push[ 'd.{dn[ i ]}' ]
+            ts.push[ dp[ i ] ]
+        rvc_opt_tensors[ og, 'og', names, ts ]
+        rvc_opt_tensors[ od, 'od', names, ts ]
+        st : GTensor gd.temp[ vec i64 [] [ 3 ] ]
+        sv : vec f32 [ 3 ]
+        sv[ 0 ] = f32[ ep ]
+        sv[ 1 ] = f32[ og.step ]
+        sv[ 2 ] = f32[ od.step ]
+        gd.upload[ st, sv ]
+        names.push[ 'state' ]
+        ts.push[ st ]
+        net.save[ to ]
+        rvc_save_tensors[ gd, names, ts, path '{to}.state' ]
+
+    # the run saved at from, if whole: its epoch, else 0
+    func resume [ from: path ] -> i32
+        sp : path '{from}.state'
+        if [ !from.exists[] || !sp.exists[] ] return 0
+        st : safetensors [ src: sp ]
+        if [ !st.valid ] return 0
+        names : vec string []
+        ts : vec GTensor []
+        dn : vec string dsc.names[]
+        dp : vec GTensor dsc.params[]
+        for [ i: i64 0, i < dp.count, i += 1 ]
+            names.push[ 'd.{dn[ i ]}' ]
+            ts.push[ dp[ i ] ]
+        rvc_opt_tensors[ og, 'og', names, ts ]
+        rvc_opt_tensors[ od, 'od', names, ts ]
+        # every tensor checked before any is loaded
+        for [ i: i64 0, i < names.count, i += 1 ]
+            v : tensor st.tensor_named[ names[ i ] ]
+            if [ !v || v.tensor_shape.total[] != ts[ i ].count ] return 0
+        sv : tensor st.tensor_named[ 'state' ]
+        if [ !sv ] return 0
+        if [ !net.overlay[ from ] ] return 0
+        gd : Grad net.gd
+        for [ i: i64 0, i < names.count, i += 1 ]
+            v : tensor st.tensor_named[ names[ i ] ]
+            gd.upload_raw[ ts[ i ], v.floats, ts[ i ].count ]
+        og.step = i64[ sv.floats[ 1 ] ]
+        od.step = i64[ sv.floats[ 2 ] ]
+        done = i32[ sv.floats[ 0 ] ]
+        return done
+
+    # rvc's mel_spectrogram_torch of y [b, 1, n]
+    func wave_mel [ y: GTensor ] -> GTensor
+        gd : Grad net.gd
+        sp : GTensor gd.conv1d[ gd.pad_reflect[ y, 824, 824 ], basis, null, 400, 0, 1, 1 ]
+        return gd.log_clamp[ gd.conv1d[ gd.magnitude[ sp, 0.0000002 ], melw, null, 1, 0, 1, 1 ], 0.000002 ]
+
+    func up [ v: vec f32, dims: vec i64 ] -> GTensor
+        gd : Grad net.gd
+        t : GTensor gd.temp[ dims ]
+        gd.upload[ t, v ]
+        return t
+
+    # rvc's training over prepared items: similar lengths batched
+    # and cropped to the shortest; lr decays per epoch
+    func train [ items: vec RvcItem, epochs: i32, batch: i32, save_to: path, every: i32 ] -> bool
+        n : i64 [ items.count ]
+        if [ n == 0 ] return false
+        order : vec i64 [ n ]
+        for [ i: i64 0, i < n, i += 1 ]
+            order[ i ] = i
+        for [ i: i64 1, i < n, i += 1 ]
+            j : i64 [ i ]
+            while [ j > 0 && items[ order[ j - 1 ] ].nt > items[ order[ j ] ].nt ]
+                tv : i64 [ order[ j ] ]
+                order[ j ] = order[ j - 1 ]
+                order[ j - 1 ] = tv
+                j -= 1
+        nbk : i64 [ (n + i64[ batch ] - 1) / i64[ batch ] ]
+        for [ ep: i32 done + 1, ep <= epochs, ep += 1 ]
+            # train runs inside init: no frame drains the pool
+            epm : i32 [ Au.auto_mark[] ]
+            lr : f32 [ f32[ 0.0001 * pow[ 0.999875, f64[ ep - 1 ] ] ] ]
+            bo : vec i64 [ nbk ]
+            for [ i: i64 0, i < nbk, i += 1 ]
+                bo[ i ] = i
+            for [ i: i64 nbk - 1, i > 0, i -= 1 ]
+                r9 : i64 [ i64[ rand[] ] % (i + 1) ]
+                tv : i64 [ bo[ i ] ]
+                bo[ i ] = bo[ r9 ]
+                bo[ r9 ] = tv
+            sums : vec f64 [ 5 ]
+            t0 : i64 [ Au.epoch_millis[] ]
+            for [ q: i64 0, q < nbk, q += 1 ]
+                a9 : i64 [ bo[ q ] * i64[ batch ] ]
+                e9 : i64 [ (a9 + i64[ batch ] < n) ? a9 + i64[ batch ] : n ]
+                stm : i32 [ Au.auto_mark[] ]
+                ls : vec f32 step[ batch_of[ items, order, a9, e9 ], lr ]
+                for [ k: i64 0, k < 5, k += 1 ]
+                    sums[ k ] = sums[ k ] + f64[ ls[ k ] ]
+                Au.auto_free_to[ stm ]
+            ms : i64 [ Au.epoch_millis[] - t0 ]
+            d9 : f64 [ f64[ nbk ] ]
+            log 'rvc train: epoch {ep}/{epochs} ({ms} ms): disc {sums[ 0 ] / d9} gen {sums[ 1 ] / d9} fm {sums[ 2 ] / d9} mel {sums[ 3 ] / d9} kl {sums[ 4 ] / d9}'
+            if [ ep % every == 0 || ep == epochs ] checkpoint[ save_to, ep ]
+            done = ep
+            Au.auto_free_to[ epm ]
+        return true
+
+    # items order[a .. e) as one batch, cropped to the shortest
+    func batch_of [ items: vec RvcItem, order: vec i64, a9: i64, e9: i64 ] -> RvcBatch
+        nb : i64 [ e9 - a9 ]
+        nt : i64 [ items[ order[ a9 ] ].nt ]
+        for [ i: i64 a9, i < e9, i += 1 ]
+            if [ items[ order[ i ] ].nt < nt ] nt = items[ order[ i ] ].nt
+        bt : RvcBatch [ nb: nb, nt: nt, phone: vec f32 [ nb * nt * 768 ], pitch: vec f32 [ nb * nt ],
+                        pitchf: vec f32 [ nb * nt ], spec: vec f32 [ nb * 1025 * nt ],
+                        wave: vec f32 [ nb * nt * 400 ], sid: vec f32 [ nb ] ]
+        for [ b: i64 0, b < nb, b += 1 ]
+            it : RvcItem items[ order[ a9 + b ] ]
+            memcpy[ @bt.phone[ b * nt * 768 ], @it.phone[ 0 ], nt * 768 * 4 ]
+            memcpy[ @bt.pitch[ b * nt ], @it.pitch[ 0 ], nt * 4 ]
+            memcpy[ @bt.pitchf[ b * nt ], @it.pitchf[ 0 ], nt * 4 ]
+            memcpy[ @bt.wave[ b * nt * 400 ], @it.wave[ 0 ], nt * 1600 ]
+            for [ c: i64 0, c < 1025, c += 1 ]
+                memcpy[ @bt.spec[ (b * 1025 + c) * nt ], @it.spec[ c * it.nt ], nt * 4 ]
+        return bt
+
+    func step [ bt: RvcBatch, lr: f32 ] -> vec f32
+        gd : Grad net.gd
+        nb : i64 [ bt.nb ]
+        nt : i64 [ bt.nt ]
+        seg : i64 [ 32 ]
+        gd.reset_work[]
+        og.clear[]
+        od.clear[]
+        gd.tape = vec GOp []
+        gd.record = true
+        dsc.set_need[ true ]
+        phone : GTensor up[ bt.phone, vec i64 [] [ nb, nt, 768 ] ]
+        pitch : GTensor up[ bt.pitch, vec i64 [] [ nb, nt ] ]
+        spec : GTensor up[ bt.spec, vec i64 [] [ nb, 1025, nt ] ]
+        sid : GTensor up[ bt.sid, vec i64 [] [ nb, 1 ] ]
+        mask : GTensor gd.temp[ vec i64 [] [ nb, 1, nt ] ]
+        gd.fill[ mask, 1.0 ]
+        idv : vec f32 bt.ids
+        if [ !idv ]
+            idv = vec f32 [ nb ]
+            for [ b: i64 0, b < nb, b += 1 ]
+                idv[ b ] = f32[ rand[] % i32[ nt - seg + 1 ] ]
+        ids : GTensor up[ idv, vec i64 [] [ nb ] ]
+        eq : vec f32 bt.eps_q
+        if [ !eq ] eq = rvc_randn[ nb * 192 * nt ]
+        eps : GTensor up[ eq, vec i64 [] [ nb, 192, nt ] ]
+        g : GTensor gd.swap12[ gd.lookup[ sid, net.pm[ 'emb_g.weight' ] ] ]
+        pr : vec GTensor net.enc_p[ phone, pitch, mask ]
+        po : vec GTensor net.enc_q[ spec, mask, g, eps ]
+        zp : GTensor net.flow_fwd[ po[ 0 ], mask, g ]
+        zs : GTensor gd.tslice_ids[ po[ 0 ], ids, seg, 1 ]
+        # each slice's sine source and real wave, on the cpu
+        es : vec f32 bt.eps_s
+        if [ !es ] es = rvc_randn[ nb * seg * 400 ]
+        sines : vec f32 [ nb * seg * 400 ]
+        wv : vec f32 [ nb * seg * 400 ]
+        for [ b: i64 0, b < nb, b += 1 ]
+            s0 : i64 [ i64[ idv[ b ] ] ]
+            f0s : vec f32 [ seg ]
+            memcpy[ @f0s[ 0 ], @bt.pitchf[ b * nt + s0 ], seg * 4 ]
+            nz : vec f32 [ seg * 400 ]
+            memcpy[ @nz[ 0 ], @es[ b * seg * 400 ], seg * 1600 ]
+            sn : vec f32 rvc_sine[ f0s, nz ]
+            memcpy[ @sines[ b * seg * 400 ], @sn[ 0 ], seg * 1600 ]
+            memcpy[ @wv[ b * seg * 400 ], @bt.wave[ b * nt * 400 + s0 * 400 ], seg * 1600 ]
+        sine : GTensor up[ sines, vec i64 [] [ nb, 1, seg * 400 ] ]
+        wave : GTensor up[ wv, vec i64 [] [ nb, 1, seg * 400 ] ]
+        o : GTensor net.dec[ zs, sine, g ]
+        ymel : GTensor gd.log_clamp[ gd.conv1d[ gd.tslice_ids[ spec, ids, seg, 1 ], melw, null, 1, 0, 1, 1 ], 0.000002 ]
+        # the discriminator on the real wave and a detached copy
+        gmark : i64 [ gd.tape.count ]
+        od9 : GTensor gd.detached[ o ]
+        dsc.logits = vec GTensor []
+        dsc.fmaps = vec GTensor []
+        dsc.run[ wave ]
+        dsc.run[ od9 ]
+        nd : i64 [ 9 ]
+        w1 : f32 [ 1.0 ]
+        w2 : f32 [ 2.0 ]
+        w45 : f32 [ 45.0 ]
+        dls : vec GTensor []
+        dws : vec f32 []
+        for [ i: i64 0, i < nd, i += 1 ]
+            dls.push[ gd.lsq[ dsc.logits[ i ], 1.0 ] ]
+            dws.push[ w1 ]
+            dls.push[ gd.lsq[ dsc.logits[ nd + i ], 0.0 ] ]
+            dws.push[ w1 ]
+        gd.backward_from[ dls, dws, gmark ]
+        od.update[ lr ]
+        # the generator: discriminator weights take no gradient
+        if [ !keep_dgrad ] od.clear[]
+        dsc.set_need[ false ]
+        gd.tape_cut[ gmark ]
+        dsc.logits = vec GTensor []
+        dsc.fmaps = vec GTensor []
+        dsc.run[ wave ]
+        nf : i64 [ dsc.fmaps.count ]
+        dsc.run[ o ]
+        gls : vec GTensor []
+        gws : vec f32 []
+        for [ i: i64 0, i < nd, i += 1 ]
+            gls.push[ gd.lsq[ dsc.logits[ nd + i ], 1.0 ] ]
+            gws.push[ w1 ]
+        for [ i: i64 0, i < nf, i += 1 ]
+            gls.push[ gd.l1[ dsc.fmaps[ nf + i ], dsc.fmaps[ i ] ] ]
+            gws.push[ w2 ]
+        mel : GTensor gd.l1[ wave_mel[ o ], ymel ]
+        gls.push[ mel ]
+        gws.push[ w45 ]
+        klv : GTensor gd.kl[ zp, po[ 2 ], pr[ 0 ], pr[ 1 ], mask, f64[ nb * nt ] ]
+        gls.push[ klv ]
+        gws.push[ w1 ]
+        gd.backward_all[ gls, gws ]
+        og.update[ lr ]
+        gd.rn.finish[]
+        gd.record = false
+        # the losses as rvc logs them: disc, gen, fm, mel, kl
+        out : vec f32 [ 5 ]
+        for [ i: i64 0, i < dls.count, i += 1 ]
+            v9 : vec f32 gd.download[ dls[ i ] ]
+            out[ 0 ] = out[ 0 ] + v9[ 0 ]
+        for [ i: i64 0, i < nd, i += 1 ]
+            v9 : vec f32 gd.download[ gls[ i ] ]
+            out[ 1 ] = out[ 1 ] + v9[ 0 ]
+        for [ i: i64 0, i < nf, i += 1 ]
+            v9 : vec f32 gd.download[ gls[ nd + i ] ]
+            out[ 2 ] = out[ 2 ] + 2.0 * v9[ 0 ]
+        mv : vec f32 gd.download[ mel ]
+        out[ 3 ] = mv[ 0 ]
+        kv : vec f32 gd.download[ klv ]
+        out[ 4 ] = kv[ 0 ]
+        losses = out
+        return out
+
+# rvc's preprocess high-pass: scipy butter(5, 48 Hz) at 40 kHz
+func rvc_highpass [ x: vec f32 ] -> vec f32
+    return rvc_highpass_fs[ x, 40000.0 ]
+
+# the same butterworth at any sample rate
+func rvc_highpass_fs [ x: vec f32, fs: f64 ] -> vec f32
+    wc : f64 [ 2.0 * fs * tan[ 3.141592653589793 * 48.0 / fs ] ]
+    # the poles' z positions (re, im): two pairs and one real
+    zr : vec f64 [ 3 ]
+    zi : vec f64 [ 3 ]
+    for [ s9: i64 0, s9 < 3, s9 += 1 ]
+        an : f64 [ 3.141592653589793 * f64[ 2 * s9 + 6 ] / 10.0 ]
+        pr : f64 [ cos[ an ] ]
+        pim : f64 [ sin[ an ] ]
+        # the high-pass pole wc / p
+        mag : f64 [ pr * pr + pim * pim ]
+        hr : f64 [ wc * pr / mag ]
+        hi : f64 [ 0.0 - wc * pim / mag ]
+        # bilinear: z = (2fs + s) / (2fs - s)
+        nr : f64 [ 2.0 * fs + hr ]
+        dr : f64 [ 2.0 * fs - hr ]
+        di : f64 [ 0.0 - hi ]
+        dd : f64 [ dr * dr + di * di ]
+        zr[ s9 ] = (nr * dr + hi * di) / dd
+        zi[ s9 ] = (hi * dr - nr * di) / dd
+    # unit gain at nyquist (z = -1)
+    gain : f64 [ 1.0 ]
+    for [ s9: i64 0, s9 < 2, s9 += 1 ]
+        gain = gain * (1.0 + 2.0 * zr[ s9 ] + zr[ s9 ] * zr[ s9 ] + zi[ s9 ] * zi[ s9 ]) / 4.0
+    gain = gain * (1.0 + zr[ 2 ]) / 2.0
+    n : i64 [ x.count ]
+    y : vec f64 [ n ]
+    for [ i: i64 0, i < n, i += 1 ]
+        y[ i ] = f64[ x[ i ] ]
+    for [ s9: i64 0, s9 < 3, s9 += 1 ]
+        a1 : f64 [ (s9 < 2) ? -2.0 * zr[ s9 ] : 0.0 - zr[ s9 ] ]
+        a2 : f64 [ (s9 < 2) ? zr[ s9 ] * zr[ s9 ] + zi[ s9 ] * zi[ s9 ] : 0.0 ]
+        x1 : f64 [ 0.0 ]
+        x2 : f64 [ 0.0 ]
+        y1 : f64 [ 0.0 ]
+        y2 : f64 [ 0.0 ]
+        for [ i: i64 0, i < n, i += 1 ]
+            xi : f64 [ y[ i ] ]
+            yo : f64 [ 0.0 ]
+            if [ s9 < 2 ]
+                yo = xi - 2.0 * x1 + x2 - a1 * y1 - a2 * y2
+            el
+                yo = xi - x1 - a1 * y1
+            x2 = x1
+            x1 = xi
+            y2 = y1
+            y1 = yo
+            y[ i ] = yo
+    out : vec f32 [ n ]
+    for [ i: i64 0, i < n, i += 1 ]
+        out[ i ] = f32[ y[ i ] * gain ]
+    return out
+
+# the index of the least value in v[a .. b]
+func rvc_argmin [ v: vec f64, a: i64, b: i64 ] -> i64
+    at : i64 [ a ]
+    for [ i: i64 a + 1, i <= b && i < v.count, i += 1 ]
+        if [ v[ i ] < v[ at ] ] at = i
+    return at
+
+# a and b onto v
+func rvc_pair [ v: vec i64, a: i64, b: i64 ]
+    v.push[ a ]
+    v.push[ b ]
+
+# rvc's slicer2 at 40 kHz (-42 dB, 1500 ms, 400 ms, 15 ms hop,
+# 500 ms kept): [begin, end) sample pairs
+func rvc_slices [ x: vec f32 ] -> vec i64
+    hop : i64 [ 600 ]
+    win : i64 [ 2400 ]
+    min_len : i64 [ 100 ]
+    min_iv : i64 [ 27 ]
+    max_sil : i64 [ 33 ]
+    thr : f64 [ pow[ 10.0, -42.0 / 20.0 ] ]
+    n : i64 [ x.count ]
+    out : vec i64 []
+    if [ n <= min_len ]
+        rvc_pair[ out, 0, n ]
+        return out
+    # rms over zero-padded frames of win every hop
+    nf : i64 [ 1 + n / hop ]
+    rms : vec f64 [ nf ]
+    for [ f: i64 0, f < nf, f += 1 ]
+        s9 : f64 [ 0.0 ]
+        for [ j: i64 0, j < win, j += 1 ]
+            t : i64 [ f * hop + j - win / 2 ]
+            if [ t >= 0 && t < n ]
+                v : f64 [ f64[ x[ t ] ] ]
+                s9 += v * v
+        rms[ f ] = sqrt[ s9 / f64[ win ] ]
+    tags : vec i64 []
+    sil : i64 [ -1 ]
+    cst : i64 [ 0 ]
+    for [ i: i64 0, i < nf, i += 1 ]
+        if [ rms[ i ] < thr ]
+            if [ sil < 0 ] sil = i
+            continue
+        if [ sil < 0 ] continue
+        lead : bool [ sil == 0 && i > max_sil ]
+        mid : bool [ i - sil >= min_iv && i - cst >= min_len ]
+        if [ !lead && !mid ]
+            sil = -1
+            continue
+        if [ i - sil <= max_sil ]
+            pos : i64 rvc_argmin[ rms, sil, i ]
+            rvc_pair[ tags, (sil == 0) ? 0 : pos, pos ]
+            cst = pos
+        el [ i - sil <= max_sil * 2 ]
+            pos : i64 rvc_argmin[ rms, i - max_sil, sil + max_sil ]
+            pl : i64 rvc_argmin[ rms, sil, sil + max_sil ]
+            pr : i64 rvc_argmin[ rms, i - max_sil, i ]
+            if [ sil == 0 ]
+                rvc_pair[ tags, 0, pr ]
+                cst = pr
+            el
+                rvc_pair[ tags, (pl < pos) ? pl : pos, (pr > pos) ? pr : pos ]
+                cst = (pr > pos) ? pr : pos
+        el
+            pl : i64 rvc_argmin[ rms, sil, sil + max_sil ]
+            pr : i64 rvc_argmin[ rms, i - max_sil, i ]
+            rvc_pair[ tags, (sil == 0) ? 0 : pl, pr ]
+            cst = pr
+        sil = -1
+    if [ sil >= 0 && nf - sil >= min_iv ]
+        se : i64 [ (nf < sil + max_sil) ? nf : sil + max_sil ]
+        pos : i64 rvc_argmin[ rms, sil, se ]
+        rvc_pair[ tags, pos, nf + 1 ]
+    if [ tags.count == 0 ]
+        rvc_pair[ out, 0, n ]
+        return out
+    nt : i64 [ tags.count / 2 ]
+    t0 : i64 [ tags[ 0 ] ]
+    if [ t0 > 0 ]
+        rvc_pair[ out, 0, t0 * hop ]
+    for [ i: i64 0, i < nt - 1, i += 1 ]
+        a9 : i64 [ tags[ i * 2 + 1 ] * hop ]
+        b9 : i64 [ tags[ i * 2 + 2 ] * hop ]
+        rvc_pair[ out, a9, (b9 < n) ? b9 : n ]
+    tl : i64 [ tags[ nt * 2 - 1 ] ]
+    if [ tl < nf ]
+        rvc_pair[ out, tl * hop, n ]
+    return out
+
+# a voice's retrieval index: its training frames' hubert rows
+class RvcIndex
+    public  gd    : Grad
+    public  valid : bool
+    public  rows  : GTensor
+    intern  norms : GTensor
+    intern  host  : vec f32
+    public  n     : i64
+
+    # rows [n, 768] (frame-major)
+    func load [ v: vec f32 ] -> bool
+        n = v.count / 768
+        if [ n <= 0 ] return false
+        rows = gd.param[ vec i64 [] [ n, 768 ] ]
+        gd.upload[ rows, v ]
+        host = v
+        nv : vec f32 [ n ]
+        for [ i: i64 0, i < n, i += 1 ]
+            s9 : f64 [ 0.0 ]
+            for [ c: i64 0, c < 768, c += 1 ]
+                e : f64 [ f64[ v[ i * 768 + c ] ] ]
+                s9 += e * e
+            nv[ i ] = f32[ s9 ]
+        norms = gd.param[ vec i64 [] [ n ] ]
+        gd.upload[ norms, nv ]
+        valid = true
+        return true
+
+    # rvc's index blend: each row q [t, 768] moves toward the mean of
+    # its 8 nearest training rows (weights 1/d^2), rate of the way
+    func blend [ q: vec f32, rate: f32 ] -> vec f32
+        if [ !valid || rate <= 0.0 ] return q
+        t : i64 [ q.count / 768 ]
+        gd.reset_work[]
+        qt : GTensor gd.temp[ vec i64 [] [ t, 768 ] ]
+        gd.upload[ qt, q ]
+        # d = |x|^2 - 2 q.x (|q|^2 does not change the order)
+        dd : GTensor gd.temp[ vec i64 [] [ t, n ] ]
+        gd.gemm[ GView [ t: qt, rs: 768, cs: 1, bs: 0 ], GView [ t: rows, rs: 1, cs: 768, bs: 0 ],
+                 GView [ t: dd, rs: n, cs: 1, bs: 0 ], t, n, 768, 1, -2.0, 0.0 ]
+        gd.bin_rows[ dd, norms, t, n ]
+        od : GTensor gd.temp[ vec i64 [] [ t, 8 ] ]
+        oi : GTensor gd.temp[ vec i64 [] [ t, 8 ] ]
+        gd.top8[ dd, t, n, od, oi ]
+        gd.rn.finish[]
+        dv : vec f32 gd.download[ od ]
+        iv : vec f32 gd.download[ oi ]
+        rv : vec f32 host
+        out : vec f32 [ t * 768 ]
+        for [ r: i64 0, r < t, r += 1 ]
+            q2 : f64 [ 0.0 ]
+            for [ c: i64 0, c < 768, c += 1 ]
+                e : f64 [ f64[ q[ r * 768 + c ] ] ]
+                q2 += e * e
+            ws : vec f64 [ 8 ]
+            wsum : f64 [ 0.0 ]
+            for [ j: i64 0, j < 8, j += 1 ]
+                sc : f64 [ f64[ dv[ r * 8 + j ] ] + q2 ]
+                if [ sc < 1.0e-12 ] sc = 1.0e-12
+                ws[ j ] = 1.0 / (sc * sc)
+                wsum += ws[ j ]
+            for [ c: i64 0, c < 768, c += 1 ]
+                a9 : f64 [ 0.0 ]
+                for [ j: i64 0, j < 8, j += 1 ]
+                    ix : i64 [ i64[ iv[ r * 8 + j ] ] ]
+                    a9 += ws[ j ] / wsum * f64[ rv[ ix * 768 + c ] ]
+                out[ r * 768 + c ] = f32[ a9 * f64[ rate ] + f64[ q[ r * 768 + c ] ] * (1.0 - f64[ rate ]) ]
+        return out
+
+# scipy's filtfilt of rvc's 48 Hz high-pass at fs: forward and
+# back over an odd reflection of 18 samples each side
+func rvc_filtfilt [ x: vec f32, fs: f64 ] -> vec f32
+    n : i64 [ x.count ]
+    pl : i64 [ (n > 18) ? 18 : n - 1 ]
+    ext : vec f32 [ n + 2 * pl ]
+    for [ i: i64 0, i < pl, i += 1 ]
+        ext[ i ] = 2.0 * x[ 0 ] - x[ pl - i ]
+        ext[ n + pl + i ] = 2.0 * x[ n - 1 ] - x[ n - 2 - i ]
+    memcpy[ @ext[ pl ], @x[ 0 ], n * 4 ]
+    fw : vec f32 rvc_highpass_fs[ ext, fs ]
+    rv : vec f32 [ fw.count ]
+    for [ i: i64 0, i < fw.count, i += 1 ]
+        rv[ i ] = fw[ fw.count - 1 - i ]
+    bk : vec f32 rvc_highpass_fs[ rv, fs ]
+    out : vec f32 [ n ]
+    for [ i: i64 0, i < n, i += 1 ]
+        out[ i ] = bk[ bk.count - 1 - pl - i ]
+    return out
+
+# a trained voice ready to convert: the generator, hubert, rmvpe
+# and the voice's index on one grad
+class RvcVoice
+    context vk    : vk_context
+    public  model : path
+    public  valid : bool
+    public  gd    : Grad
+    public  net   : RvcNet
+    intern  hb    : RvcHubert
+    intern  pn    : RvcPitch
+    intern  ix    : RvcIndex
+    # rvc's defaults: index 0.75, protect 0.33, semitones 0
+    public  index_rate : f32 [ 0.75 ]
+    public  protect    : f32 [ 0.33 ]
+    public  semitones  : i32
+
+    func init []
+        m : path '{path.path_install[]}/models/rvc'
+        gd = Grad [ vk: vk, keep_mb: 1536, work_mb: 3072, scratch_mb: 1536 ]
+        net = RvcNet [ vk: vk, gd: gd, src: path '{m}/f0G40k.pth', voice: model ]
+        hb = RvcHubert [ gd: gd, src: path '{m}/hubert.pth' ]
+        pn = RvcPitch [ gd: gd, src: path '{m}/rmvpe.pt' ]
+        ix = RvcIndex [ gd: gd ]
+        ip : path '{model}.index'
+        if [ ip.exists[] ] ix.load[ floats_of[ ip ] ]
+        valid = net.valid && hb.valid && pn.valid
+
+    func release []
+        if [ gd ] gd.release[]
+        valid = false
+
+    # rvc's Pipeline.vc on one padded chunk of 16 kHz samples
+    func vc [ seg: vec f32, pitch: vec f32, pitchf: vec f32 ] -> vec f32
+        gd.reset_work[]
+        ht : GTensor hb.features[ seg ]
+        gd.rn.finish[]
+        hv : vec f32 gd.download[ ht ]
+        t50 : i64 [ ht.dims[ 2 ] ]
+        f0r : vec f32 [ t50 * 768 ]
+        for [ t: i64 0, t < t50, t += 1 ]
+            for [ c: i64 0, c < 768, c += 1 ]
+                f0r[ t * 768 + c ] = hv[ c * t50 + t ]
+        fb : vec f32 ix.blend[ f0r, index_rate ]
+        pl : i64 [ seg.count / 160 ]
+        if [ t50 * 2 < pl ] pl = t50 * 2
+        if [ pitch.count < pl ] pl = pitch.count
+        ph : vec f32 [ pl * 768 ]
+        for [ t: i64 0, t < pl, t += 1 ]
+            k9 : f32 [ (pitchf[ t ] < 1.0) ? protect : 1.0 ]
+            for [ c: i64 0, c < 768, c += 1 ]
+                a9 : i64 [ (t / 2) * 768 + c ]
+                ph[ t * 768 + c ] = fb[ a9 ] * k9 + f0r[ a9 ] * (1.0 - k9)
+        pt : vec f32 [ pl ]
+        pf : vec f32 [ pl ]
+        memcpy[ @pt[ 0 ], @pitch[ 0 ], pl * 4 ]
+        memcpy[ @pf[ 0 ], @pitchf[ 0 ], pl * 4 ]
+        return net.infer[ ph, pt, pf, 0, null, null ]
+
+    # rvc's Pipeline.pipeline: 16 kHz mono in, the voice at rate out;
+    # chunks of 8 s cut at the quietest point within 3 s of each mark
+    func speak [ audio0: vec f32, rate: i32 ] -> vec f32
+        win : i64 [ 160 ]
+        tpad : i64 [ 16000 ]
+        tq : i64 [ 48000 ]
+        tc : i64 [ 128000 ]
+        tmax : i64 [ 160000 ]
+        audio : vec f32 rvc_filtfilt[ audio0, 16000.0 ]
+        n : i64 [ audio.count ]
+        cuts : vec i64 []
+        if [ n + win > tmax ]
+            ap : vec f32 rvc_reflect[ audio, win / 2 ]
+            sm : vec f64 [ n ]
+            acc : f64 [ 0.0 ]
+            for [ i: i64 0, i < win, i += 1 ]
+                acc += fabs[ f64[ ap[ i ] ] ]
+            for [ i: i64 0, i < n, i += 1 ]
+                sm[ i ] = acc
+                acc += fabs[ f64[ ap[ i + win ] ] ] - fabs[ f64[ ap[ i ] ] ]
+            for [ t: i64 tc, t < n, t += tc ]
+                a9 : i64 [ t - tq ]
+                e9 : i64 [ (t + tq < n) ? t + tq : n ]
+                cuts.push[ rvc_argmin[ sm, a9, e9 - 1 ] ]
+        ap2 : vec f32 rvc_reflect[ audio, tpad ]
+        plen : i64 [ ap2.count / win ]
+        f0 : vec f32 pn.f0[ ap2, 0.03 ]
+        rvc_fill_unvoiced[ f0 ]
+        mul : f32 [ f32[ pow[ 2.0, f64[ semitones ] / 12.0 ] ] ]
+        mel_min : f64 [ 1127.0 * log[ 1.0 + 50.0 / 700.0 ] ]
+        mel_max : f64 [ 1127.0 * log[ 1.0 + 1100.0 / 700.0 ] ]
+        np9 : i64 [ (f0.count < plen) ? f0.count : plen ]
+        pitchf : vec f32 [ np9 ]
+        pitch : vec f32 [ np9 ]
+        for [ t: i64 0, t < np9, t += 1 ]
+            pitchf[ t ] = f0[ t ] * mul
+            fm : f64 [ 1127.0 * log[ 1.0 + f64[ pitchf[ t ] ] / 700.0 ] ]
+            if [ fm > 0.0 ] fm = (fm - mel_min) * 254.0 / (mel_max - mel_min) + 1.0
+            if [ fm <= 1.0 ] fm = 1.0
+            if [ fm > 255.0 ] fm = 255.0
+            pitch[ t ] = f32[ rint[ fm ] ]
+        out : vec f32 [ 0 ]
+        trim : i64 [ 40000 ]
+        s0 : i64 [ 0 ]
+        for [ q: i64 0, q <= cuts.count, q += 1 ]
+            last : bool [ q == cuts.count ]
+            tq9 : i64 [ (last) ? 0 : cuts[ q ] / win * win ]
+            e9 : i64 [ (last) ? ap2.count : tq9 + tpad * 2 + win ]
+            f9 : i64 [ s0 / win ]
+            g9 : i64 [ (last) ? np9 : (tq9 + tpad * 2) / win ]
+            if [ g9 > np9 ] g9 = np9
+            seg : vec f32 [ e9 - s0 ]
+            memcpy[ @seg[ 0 ], @ap2[ s0 ], (e9 - s0) * 4 ]
+            pt : vec f32 [ g9 - f9 ]
+            pf : vec f32 [ g9 - f9 ]
+            memcpy[ @pt[ 0 ], @pitch[ f9 ], (g9 - f9) * 4 ]
+            memcpy[ @pf[ 0 ], @pitchf[ f9 ], (g9 - f9) * 4 ]
+            y : vec f32 vc[ seg, pt, pf ]
+            keep9 : i64 [ y.count - 2 * trim ]
+            if [ keep9 > 0 ]
+                grown : vec f32 [ out.count + keep9 ]
+                if [ out.count > 0 ] memcpy[ @grown[ 0 ], @out[ 0 ], out.count * 4 ]
+                memcpy[ @grown[ out.count ], @y[ trim ], keep9 * 4 ]
+                out = grown
+            if [ !last ] s0 = tq9
+        return (rate == 40000) ? out : resample_sinc[ out, 40000, rate ]
+
+# x with n samples reflected onto each end (numpy's reflect)
+func rvc_reflect [ x: vec f32, n: i64 ] -> vec f32
+    m : i64 [ x.count ]
+    out : vec f32 [ m + 2 * n ]
+    for [ i: i64 0, i < m + 2 * n, i += 1 ]
+        j : i64 [ i - n ]
+        if [ j < 0 ] j = 0 - j
+        if [ j >= m ] j = 2 * m - 2 - j
+        out[ i ] = x[ j ]
+    return out

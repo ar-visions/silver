@@ -34,6 +34,13 @@ Keep it in step with the imports.
 | Mesa | 26.2.2 | os-bootstrap | https://gitlab.freedesktop.org/mesa/mesa | MIT (with other permissive parts) | The Mesa 3D project |
 | libuev | v2.4.1 | features | https://github.com/troglobit/libuev | MIT | Flemming Madsen, Joachim Wiberg |
 
+## Python packages (pip into install/pylib, for the reference tests)
+
+| package | used by | source | license | authors |
+|---|---|---|---|---|
+| librosa | composer (rvc mel references) | https://pypi.org/project/librosa/ | ISC | Brian McFee and the librosa contributors |
+| SciPy | composer (rvc high-pass references) | https://pypi.org/project/scipy/ | BSD-3-Clause | The SciPy developers |
+
 ## System libraries (linked from the OS, not fetched)
 
 | dependency | used by | source | license | authors |
@@ -45,9 +52,9 @@ Keep it in step with the imports.
 | file | used by | source | license | authors |
 |---|---|---|---|---|
 | Linux kernel 6.18 source | os-bootstrap | https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.tar.xz | GPL-2.0-only WITH Linux-syscall-note | Linus Torvalds and the kernel community |
-| Seed-VC DiT, whisper-small wavenet (DiT_seed_v2_uvit_whisper_small_wavenet_bigvgan_pruned.pth + its config) | composer | https://huggingface.co/Plachta/Seed-VC | GPL-3.0 | Plachta (Songting Liu) |
-| CAM++ speaker encoder (campplus_cn_common.bin) | composer | https://huggingface.co/funasr/campplus | Apache-2.0 | Alibaba DAMO Academy (FunASR) |
-| BigVGAN v2 22 kHz 80-band 256x (bigvgan_generator.pt + config.json) | composer | https://huggingface.co/nvidia/bigvgan_v2_22khz_80band_256x | MIT | NVIDIA |
+| RVC v2 base generator and discriminator, 40 kHz with pitch (f0G40k.pth, f0D40k.pth) | composer | https://huggingface.co/lj1995/VoiceConversionWebUI | MIT | RVC-Project |
+| RMVPE pitch model (rmvpe.pt) | composer | https://huggingface.co/lj1995/VoiceConversionWebUI | MIT | RVC-Project |
+| HuBERT base content encoder (hubert_base/pytorch_model.bin + config.json) | composer | https://huggingface.co/lj1995/VoiceConversionWebUI | MIT | Meta AI (fairseq), as shipped by RVC-Project |
 | Kokoro English TTS model (kokoro-en-v0_19) | speech | https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-en-v0_19.tar.bz2 | Apache-2.0 | hexgrad (Kokoro-82M), packaged by k2-fsa |
 | silver LICENSE | features (an import test) | https://raw.githubusercontent.com/ar-visions/silver/master/LICENSE | this repository's own | ar-visions |
 | WPE WebKit 2.54.0 | aura | https://wpewebkit.org/releases/wpewebkit-2.54.0.tar.xz | LGPL-2.1-or-later and BSD-2-Clause (per file) | Apple, Igalia and the WebKit contributors |
@@ -75,10 +82,6 @@ Keep it in step with the imports.
 | MOLA MEGDR 128 ppd tiles (MGS-M-MOLA-5-MEGDR-L3-V1.0) | read from checkout/mola by the Mars scene | https://pds-geosciences.wustl.edu/mgs/mgs-m-mola-5-megdr-l3-v1/mgsl_300x/meg128/ | NASA/JPL/GSFC, MOLA Science Team, PDS Geosciences Node | NASA PDS, public domain |
 
 ## Notes on the copyleft entries
-
-The Seed-VC weights are GPL-3.0. They are data the composer
-loads, not code linked into it; a product that ships them ships
-them under the GPL.
 
 FAAD2 is GPL. spectra and speech link it, so a distributed build of those modules
 is subject to the GPL unless a commercial FAAD2 license is obtained or the decoder

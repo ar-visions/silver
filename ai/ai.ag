@@ -13,6 +13,7 @@ import vec
 import trinity
 import <vulkan/vulkan.h>
 import <ai.h>
+import grad
     -lvulkan
 
 intern func fnv1a_hash [ @u8, size_t, u64 ] -> u64
@@ -238,9 +239,8 @@ class pth
     func tensor_named [ name: string ] -> tensor
         if [ !valid ] return null
         i : i32 [ pthf_find[ pf, name.chars ] ]
-        if [ i < 0 ]
-            log 'pth: no tensor {name}'
-            return null
+        # absent is normal: layers trained without a bias
+        if [ i < 0 ] return null
         nd : i32 [ pthf_ndim[ pf, i ] ]
         dv : new i64 [ 4 ]
         # a 0-d value is one number; past 4 dims the tail folds in

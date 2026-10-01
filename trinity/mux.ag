@@ -77,6 +77,8 @@ class Denoise
     intern  frm  : new i16 [ 960 ]
     intern  fill : i32
     intern  live : bool
+    # a second ring that gets every cleaned frame too
+    public  tee  : AudioRing
 
     func init []
         st   = rnnoise_create[ null ]
@@ -103,6 +105,7 @@ class Denoise
                 frm[ k * 2 ]     = s
                 frm[ k * 2 + 1 ] = s
             out.put[ @frm[ 0 ], 480 ]
+            if [ tee ] tee.put[ @frm[ 0 ], 480 ]
 
 # aac-lc, 48 kHz stereo: 1024 frames per channel in, one raw aac block
 # out. the muxers wrap the blocks (an mp4 sample, an adts frame in a
@@ -181,10 +184,14 @@ class Muxer
     # video samples in the open fragment
     intern  vcount   : i32
     intern  acount   : i32
+    # two more sound tracks: the app alone (3), the mic alone (4)
+    public  stems    : bool
 
     func begin [ header: vec u8, audio_asc: vec u8 ] return
     func video [ data: @u8, n: i64, key: bool ] return
     func audio [ data: @u8, n: i64 ] return
+    # one aac block for stem k: 0 the app, 1 the mic
+    func audio_stem [ k: i32, data: @u8, n: i64 ] return
     func close [] return
 
     # where the video stands, in 48 kHz audio frames, so the sound track
@@ -249,6 +256,12 @@ Muxer Mp4
     intern  adata    : new u8  [ 2097152 ]
     intern  an       : i64
     intern  asize    : new i32 [ 4096 ]
+    # the stems: 2 MB and 4096 sizes each
+    intern  sdata    : new u8  [ 4194304 ]
+    intern  sn       : new i64 [ 2 ]
+    intern  ssize    : new i32 [ 8192 ]
+    intern  scount   : new i32 [ 2 ]
+    intern  stime    : new i64 [ 2 ]
 
     func w8  [ v: i64 ]
         hdr[ hn ] = u8[ v & 255 ]
@@ -301,6 +314,8 @@ Muxer Mp4
         tick = 90000 / i64[ fps ]
         parameter_sets[ header ]
         asc = audio_asc
+        stime[ 0 ] = atime
+        stime[ 1 ] = atime
         if [ started ] return
         started = true
         hn = 0
@@ -339,13 +354,18 @@ Muxer Mp4
         wzero[ 10 ]
         matrix[]
         wzero[ 24 ]
-        w32[ 3 ]                       # next track id
+        w32[ (stems) ? 5 : 3 ]         # next track id
         end_box[ b ]
         trak_video[]
-        if [ asc.count > 0 ] trak_audio[]
+        stems9 : bool [ stems && asc.count > 0 ]
+        if [ asc.count > 0 ] trak_audio[ 2, true, 'SoundHandler' ]
+        if [ stems9 ] trak_audio[ 3, false, 'AppSound' ]
+        if [ stems9 ] trak_audio[ 4, false, 'Microphone' ]
         x : i64 [ begin_box[ 'mvex' ] ]
         trex[ 1 ]
         if [ asc.count > 0 ] trex[ 2 ]
+        if [ stems9 ] trex[ 3 ]
+        if [ stems9 ] trex[ 4 ]
         end_box[ x ]
         end_box[ m ]
 
@@ -358,8 +378,9 @@ Muxer Mp4
         w32[ 0 ]
         end_box[ b ]
 
-    func tkhd [ track: i64, audio: bool ]
-        b : i64 [ begin_full[ 'tkhd', 0, 3 ] ]
+    # a track players skip is in the movie but not enabled
+    func tkhd [ track: i64, audio: bool, enabled: bool ]
+        b : i64 [ begin_full[ 'tkhd', 0, (enabled) ? 3 : 2 ] ]
         w32[ 0 ]
         w32[ 0 ]
         w32[ track ]
@@ -367,7 +388,7 @@ Muxer Mp4
         w32[ 0 ]                       # duration
         wzero[ 8 ]
         w16[ 0 ]                       # layer
-        w16[ 0 ]                       # alternate group
+        w16[ (audio && stems) ? 1 : 0 ] # alternate group
         w16[ (audio) ? 256 : 0 ]       # volume
         w16[ 0 ]
         matrix[]
@@ -420,7 +441,7 @@ Muxer Mp4
 
     func trak_video []
         t : i64 [ begin_box[ 'trak' ] ]
-        tkhd[ 1, false ]
+        tkhd[ 1, false, true ]
         md : i64 [ begin_box[ 'mdia' ] ]
         mdhd[ 90000 ]
         hdlr[ 'vide', 'VideoHandler' ]
@@ -525,12 +546,12 @@ Muxer Mp4
         w16[ ps.count ]
         wbytes[ @ps[ 0 ], ps.count ]
 
-    func trak_audio []
+    func trak_audio [ track: i64, enabled: bool, name: string ]
         t : i64 [ begin_box[ 'trak' ] ]
-        tkhd[ 2, true ]
+        tkhd[ track, true, enabled ]
         md : i64 [ begin_box[ 'mdia' ] ]
         mdhd[ 48000 ]
-        hdlr[ 'soun', 'SoundHandler' ]
+        hdlr[ 'soun', name ]
         mi : i64 [ begin_box[ 'minf' ] ]
         s : i64 [ begin_full[ 'smhd', 0, 0 ] ]
         w32[ 0 ]
@@ -613,10 +634,20 @@ Muxer Mp4
         asize[ acount ] = i32[ n ]
         acount += 1
 
+    func audio_stem [ k: i32, data: @u8, n: i64 ]
+        if [ !stems || k < 0 || k > 1 ] return
+        if [ scount[ k ] == 4096 || sn[ k ] + n > 2097152 ] fragment[]
+        base : i64 [ i64[ k ] * 2097152 ]
+        memcpy[ @sdata[ base + sn[ k ] ], data, n ]
+        sn[ k ] += n
+        at9 : i64 [ i64[ k ] * 4096 + i64[ scount[ k ] ] ]
+        ssize[ at9 ] = i32[ n ]
+        scount[ k ] += 1
+
     # moof + mdat for everything collected; the decode times continue
     # from the last
     func fragment []
-        if [ vcount == 0 && acount == 0 ] return
+        if [ vcount == 0 && acount == 0 && scount[ 0 ] == 0 && scount[ 1 ] == 0 ] return
         hn = 0
         m : i64 [ begin_box[ 'moof' ] ]
         b : i64 [ begin_full[ 'mfhd', 0, 0 ] ]
@@ -661,15 +692,38 @@ Muxer Mp4
                 w32[ i64[ asize[ i ] ] ]
             end_box[ b ]
             end_box[ t ]
+        srun : local i64 [ 2 ] [ 0, 0 ]
+        for [ k: i32 0, k < 2, k += 1 ]
+            if [ scount[ k ] == 0 ] continue
+            t : i64 [ begin_box[ 'traf' ] ]
+            b = begin_full[ 'tfhd', 0, 0x020008 ]
+            w32[ 3 + i64[ k ] ]
+            w32[ 1024 ]
+            end_box[ b ]
+            b = begin_full[ 'tfdt', 1, 0 ]
+            w64[ stime[ k ] ]
+            end_box[ b ]
+            b = begin_full[ 'trun', 0, 0x201 ]
+            w32[ i64[ scount[ k ] ] ]
+            srun[ k ] = hn
+            w32[ 0 ]
+            for [ i: i32 0, i < scount[ k ], i += 1 ]
+                w32[ i64[ ssize[ i64[ k ] * 4096 + i64[ i ] ] ] ]
+            end_box[ b ]
+            end_box[ t ]
         end_box[ m ]
         moof_size : i64 [ hn ]
         if [ vcount > 0 ] patch32[ vrun, moof_size + 8 ]
         if [ acount > 0 ] patch32[ arun, moof_size + 8 + vn ]
-        w32[ 8 + vn + an ]
+        if [ scount[ 0 ] > 0 ] patch32[ srun[ 0 ], moof_size + 8 + vn + an ]
+        if [ scount[ 1 ] > 0 ] patch32[ srun[ 1 ], moof_size + 8 + vn + an + sn[ 0 ] ]
+        w32[ 8 + vn + an + sn[ 0 ] + sn[ 1 ] ]
         wtag[ 'mdat' ]
         flush_hdr[]
         if [ vn > 0 ] write[ fd, @vdata[ 0 ], vn ]
         if [ an > 0 ] write[ fd, @adata[ 0 ], an ]
+        if [ sn[ 0 ] > 0 ] write[ fd, @sdata[ 0 ], sn[ 0 ] ]
+        if [ sn[ 1 ] > 0 ] write[ fd, @sdata[ 2097152 ], sn[ 1 ] ]
         seq   += 1
         vtime += i64[ vcount ]
         atime += i64[ acount ] * 1024
@@ -677,6 +731,10 @@ Muxer Mp4
         an     = 0
         vcount = 0
         acount = 0
+        for [ k: i32 0, k < 2, k += 1 ]
+            stime[ k ] += i64[ scount[ k ] ] * 1024
+            sn[ k ] = 0
+            scount[ k ] = 0
 
     func close []
         fragment[]
@@ -1242,6 +1300,46 @@ expect func t_mp4_fragment [] -> bool
 
 # a take resumed after a reload: no header again, the sequence and times
 # carry on
+# the app and mic stems: tracks 3 and 4, off by default
+expect func t_mp4_stems [] -> bool
+    fd : i32 [ mux_temp_open[ 'stems' ] ]
+    m  : Mp4 [ fd: fd, fps: 60, width: 320, height: 240, seq: 1, stems: true ]
+    a  : Aac [ ]
+    m.begin[ mux_test_header[], a.asc ]
+    f1 : local u8 [ 9 ] [ 0, 0, 0, 1, 0x65, 0x11, 0x22, 0x33, 0x44 ]
+    mx : local u8 [ 3 ] [ 0xA1, 0xA2, 0xA3 ]
+    ap : local u8 [ 4 ] [ 0xB1, 0xB2, 0xB3, 0xB4 ]
+    mc : local u8 [ 5 ] [ 0xC1, 0xC2, 0xC3, 0xC4, 0xC5 ]
+    for [ f: i32 0, f < 2, f += 1 ]
+        m.video[ @f1[ 0 ], 9, true ]
+        for [ j: i32 0, j < 3, j += 1 ]
+            m.audio[ @mx[ 0 ], 3 ]
+            m.audio_stem[ 0, @ap[ 0 ], 4 ]
+            m.audio_stem[ 1, @mc[ 0 ], 5 ]
+    m.close[]
+    n : i64 [ mux_temp_size[ fd ] ]
+    b : vec u8 [ n ]
+    mux_temp_read[ fd, @b[ 0 ], n ]
+    close[ fd ]
+    dm : Demux []
+    dm.append[ @b[ 0 ], n ]
+    kinds : i32 [ 0 ]
+    for [ t: DemuxTrack ] in dm.tracks
+        if [ t.kind == 2 ] kinds += 1
+    if [ kinds != 3 ] return false
+    ok : bool [ true ]
+    got : local i32 [ 5 ] [ 0, 0, 0, 0, 0 ]
+    for [ ds: DemuxSample ] in dm.ready
+        if [ ds.track < 2 || ds.track > 4 ] continue
+        want : i64 [ ds.track + 1 ]
+        if [ ds.data.count != want ] ok = false
+        k : i32 [ i32[ ds.track ] ]
+        # every track's i-th block sits at i x 1024
+        if [ ds.pts != i64[ got[ k ] ] * 1024 ] ok = false
+        got[ k ] += 1
+    log 'mp4 stems: blocks {got[ 2 ]} {got[ 3 ]} {got[ 4 ]}'
+    return ok && got[ 2 ] == 6 && got[ 3 ] == 6 && got[ 4 ] == 6
+
 expect func t_mp4_continue [] -> bool
     fd : i32 [ mux_temp_open[ 'continue' ] ]
     m  : Mp4 [ fd: fd, fps: 60, width: 320, height: 240, started: true,

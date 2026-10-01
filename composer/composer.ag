@@ -13,33 +13,29 @@ import <fcntl.h>
 import <stdlib.h>
 import <stdio.h>
 import <composer.h>
-import vocoder
-import campplus
-import dit
-import seedvc
+import rvc
 
-# Seed-VC (voice conversion for the Voice op): its DiT, and the
-# speaker encoder and vocoder it was trained with; whisper-small
-# comes from speech's import
-import https://huggingface.co/Plachta/Seed-VC/resolve/main/DiT_seed_v2_uvit_whisper_small_wavenet_bigvgan_pruned.pth
-    > mkdir -p {install}/models/seed-vc
-    > cp {import_file} {install}/models/seed-vc/dit.pth
+# RVC: hubert, rmvpe, and the base nets a voice starts from
+import https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/hubert_base/pytorch_model.bin
+    > mkdir -p {install}/models/rvc
+    > cp {import_file} {install}/models/rvc/hubert.pth
 
-import https://huggingface.co/Plachta/Seed-VC/resolve/main/config_dit_mel_seed_uvit_whisper_small_wavenet.yml
-    > mkdir -p {install}/models/seed-vc
-    > cp {import_file} {install}/models/seed-vc/dit.yml
+import https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/hubert_base/config.json
+    > mkdir -p {install}/models/rvc
+    > cp {import_file} {install}/models/rvc/hubert.json
+    > test -d {install}/pylib/librosa || {install}/bin/python3 -m pip install --quiet --target {install}/pylib librosa scipy
 
-import https://huggingface.co/funasr/campplus/resolve/main/campplus_cn_common.bin
-    > mkdir -p {install}/models/seed-vc
-    > cp {import_file} {install}/models/seed-vc/campplus.pth
+import https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/rmvpe.pt
+    > mkdir -p {install}/models/rvc
+    > cp {import_file} {install}/models/rvc/rmvpe.pt
 
-import https://huggingface.co/nvidia/bigvgan_v2_22khz_80band_256x/resolve/main/bigvgan_generator.pt
-    > mkdir -p {install}/models/seed-vc
-    > cp {import_file} {install}/models/seed-vc/bigvgan.pth
+import https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/pretrained_v2/f0G40k.pth
+    > mkdir -p {install}/models/rvc
+    > cp {import_file} {install}/models/rvc/f0G40k.pth
 
-import https://huggingface.co/nvidia/bigvgan_v2_22khz_80band_256x/resolve/main/config.json
-    > mkdir -p {install}/models/seed-vc
-    > cp {import_file} {install}/models/seed-vc/bigvgan.json
+import https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/pretrained_v2/f0D40k.pth
+    > mkdir -p {install}/models/rvc
+    > cp {import_file} {install}/models/rvc/f0D40k.pth
 
 # one serialized call; it invokes a Composer method
 class Op
@@ -105,11 +101,22 @@ func take_length [ p: path ] -> f64
     if [ fd < 0 ] return 0.0
     hd : local u8 [ 8 ]
     last : i64 [ 0 ]
+    # the first track's clock; our own takes run at 90 kHz
+    scale : i64 [ 90000 ]
     for [ true ]
         if [ read[ fd, @hd[ 0 ], 8 ] < 8 ] break
         size : i64 [ (i64[ hd[ 0 ] ] << 24) | (i64[ hd[ 1 ] ] << 16) | (i64[ hd[ 2 ] ] << 8) | i64[ hd[ 3 ] ] ]
         tag  : i64 [ (i64[ hd[ 4 ] ] << 24) | (i64[ hd[ 5 ] ] << 16) | (i64[ hd[ 6 ] ] << 8) | i64[ hd[ 7 ] ] ]
         if [ size < 8 ] break
+        if [ tag == 0x6D6F6F76 ]
+            mv : vec u8 [ size - 8 ]
+            if [ read[ fd, @mv[ 0 ], size - 8 ] < size - 8 ] break
+            for [ i: i64 0, i + 24 < mv.count, i += 1 ]
+                if [ box32[ mv, i ] == 0x6D646864 ]
+                    ts9 : i64 [ (mv[ i + 4 ] == 1) ? box32[ mv, i + 24 ] : box32[ mv, i + 16 ] ]
+                    if [ ts9 > 0 ] scale = ts9
+                    break
+            continue
         if [ tag != 0x6D6F6F66 ]
             lseek[ fd, size - 8, SEEK_CUR ]
             continue
@@ -143,7 +150,7 @@ func take_length [ p: path ] -> f64
                 if [ track == 1 && base + count * dur > last ] last = base + count * dur
             at += bs
     close[ fd ]
-    return f64[ last ] / 90000.0
+    return f64[ last ] / f64[ scale ]
 
 
 # 12 floats: limited-range yuv to rgb, three rows of (y, u, v, add)
@@ -203,6 +210,25 @@ class Planes
         cv.draw_yuv[ y, u, v, r.x, r.y, r.w, r.h, yuv_rows[ bt709 ] ]
 
 # the bytes of a file
+# one track's aac samples, gathered into one buffer, as pcm
+func clip_of [ t: DemuxTrack, got: vec DemuxSample ] -> AudioClip
+    total : i64 [ 0 ]
+    for [ ds: DemuxSample ] in got
+        if [ ds.track == t.id ] total += ds.data.count
+    if [ total == 0 ] return null
+    data : vec u8 [ total ]
+    offs : vec i64 []
+    szs  : vec i64 []
+    o : i64 [ 0 ]
+    for [ ds: DemuxSample ] in got
+        if [ ds.track == t.id ]
+            n9 : i64 [ ds.data.count ]
+            memcpy[ @data[ o ], @ds.data[ 0 ], n9 ]
+            offs.push[ o ]
+            szs.push[ n9 ]
+            o += n9
+    return aac_clip[ @t.config[ 0 ], i32[ t.config.count ], @data[ 0 ], offs, szs, t.shift ]
+
 # a reference voice: a .wav, or the AAC sound of an mp4/m4a/mov
 func voice_clip [ p: path ] -> AudioClip
     s9 : string '{p}'
@@ -223,23 +249,16 @@ func voice_clip [ p: path ] -> AudioClip
     for [ t: DemuxTrack ] in fm.tracks
         if [ t.kind == 2 && !at ] at = t
     if [ !at ] return null
-    # fragments: gather the sound's packets into one buffer
-    total : i64 [ 0 ]
-    for [ ds: DemuxSample ] in fm.ready
-        if [ ds.track == at.id ] total += ds.data.count
-    if [ total == 0 ] return null
-    data : vec u8 [ total ]
-    offs : vec i64 []
-    szs  : vec i64 []
-    at9  : i64 [ 0 ]
-    for [ ds: DemuxSample ] in fm.ready
-        if [ ds.track == at.id ]
-            n9 : i64 [ ds.data.count ]
-            memcpy[ @data[ at9 ], @ds.data[ 0 ], n9 ]
-            offs.push[ at9 ]
-            szs.push[ n9 ]
-            at9 += n9
-    return aac_clip[ @at.config[ 0 ], i32[ at.config.count ], @data[ 0 ], offs, szs, at.shift ]
+    return clip_of[ at, fm.ready ]
+
+intern func fnv1a_hash [ @u8, size_t, u64 ] -> u64
+
+# a clip's size and a hash of its bytes: a changed one retrains
+func voice_fingerprint [ p: path ] -> string
+    b : vec u8 file_bytes[ p ]
+    if [ !b || b.count == 0 ] return string [ '' ]
+    h : u64 [ fnv1a_hash[ @b[ 0 ], b.count, 1469598103934665603 ] ]
+    return string '{b.count} {h}'
 
 func file_bytes [ p: path ] -> vec u8
     fd : i32 [ open[ p.chars, O_RDONLY, 0 ] ]
@@ -598,12 +617,14 @@ class Renderer
         rec.close[]
         return true
 
-# the take's own sound from..to in another voice: `voice` is a
-# reference .wav in the take's folder (Seed-VC, offline)
+# take time from .. to in another voice (rvc, trained on first use)
 Op Revoice
     public from  : f64
     public to    : f64
     public voice : string
+    # semitones up (negative: down), as rvc's f0_up_key
+    public pitch  : i32
+    public epochs : i32 [ 100 ]
     func invoke [ c: Composer ] -> bool
         return c.add_voice[ a ]
     func stage [] -> i32
@@ -639,6 +660,8 @@ class Composer
     public voices   : vec Revoice
     # each thing asked for that cannot be done
     public problems : vec string
+    # trained voices by clip name, shared by every take
+    public voice_dir : path
 
     func stem [] -> string
         s : string '{take}'
@@ -702,12 +725,6 @@ class Composer
         return (sl > 0) ? f.mid[ 0, sl ] : '.'
 
     # the composition as it stands (the user may have edited it)
-    func again [] -> bool
-        if [ !readable[] ] return false
-        length = take_length[ take ]
-        if [ !load[] ] return false
-        return plan[]
-
     # an h.264 4:4:4 take cannot be decoded on the gpu: say so first
     func readable [] -> bool
         fd : i32 [ open[ take.chars, O_RDONLY, 0 ] ]
@@ -730,7 +747,13 @@ class Composer
         if [ length <= 0.0 ]
             problems.push[ 'no video in {take}' ]
             return false
-        if [ !ask[ agent, model ] ] return false
+        # a composition newer than the notes is the user's latest
+        notes : path '{stem[]}.agi'
+        cp : path '{stem[]}.composition.agi'
+        if [ cp.exists[] && (!notes.exists[] || cp.modified_time[] >= notes.modified_time[]) ]
+            log 'composer: {cp} is newer than the notes: rendering it as it is'
+        el [ !ask[ agent, model ] ]
+            return false
         if [ !load[] ] return false
         return plan[]
 
@@ -744,6 +767,9 @@ class Composer
         chunk : new u8 [ 1048576 ]
         vt : DemuxTrack [ null ]
         at : DemuxTrack [ null ]
+        # a take with --record_mic: the app's sound and the mic too
+        ap : DemuxTrack [ null ]
+        mc : DemuxTrack [ null ]
         audio : vec DemuxSample []
         fps : i32 [ 0 ]
         last_dts : i64 [ -1 ]
@@ -755,9 +781,11 @@ class Composer
             dm.append[ chunk, n ]
             for [ t: DemuxTrack ] in dm.tracks
                 if [ t.kind == 1 && !vt ] vt = t
+                if [ t.kind == 2 && at && t.id != at.id && !ap ] ap = t
+                if [ t.kind == 2 && at && ap && t.id != at.id && t.id != ap.id && !mc ] mc = t
                 if [ t.kind == 2 && !at ] at = t
             for [ ds: DemuxSample ] in dm.ready
-                if [ at && ds.track == at.id ] audio.push[ ds ]
+                if [ vt && ds.track != vt.id ] audio.push[ ds ]
                 # the shortest frame gap over 60 pictures is the rate
                 if [ vt && ds.track == vt.id && seen < 60 ]
                     d : i64 [ ds.dts - last_dts ]
@@ -772,21 +800,14 @@ class Composer
             return false
         if [ fps <= 0 ] fps = 60
         sound : AudioClip [ null ]
-        if [ at && audio.count > 0 ]
-            total : i64 [ 0 ]
-            for [ ds: DemuxSample ] in audio
-                total += ds.data.count
-            data : vec u8 [ total ]
-            offs : vec i64 []
-            szs  : vec i64 []
-            o : i64 [ 0 ]
-            for [ ds: DemuxSample ] in audio
-                memcpy[ @data[ o ], @ds.data[ 0 ], ds.data.count ]
-                offs.push[ o ]
-                szs.push[ i64[ ds.data.count ] ]
-                o += ds.data.count
-            sound = aac_clip[ @at.config[ 0 ], i32[ at.config.count ], @data[ 0 ], offs, szs, at.shift ]
-        if [ !apply_voices[ sound, disp ] ] return false
+        if [ at ] sound = clip_of[ at, audio ]
+        # the stems matter only to a voice change
+        app9 : AudioClip [ null ]
+        mic9 : AudioClip [ null ]
+        if [ voices.count > 0 && ap && mc ]
+            app9 = clip_of[ ap, audio ]
+            mic9 = clip_of[ mc, audio ]
+        if [ !apply_voices[ sound, app9, mic9, disp ] ] return false
         # the pieces in output order; a cut splits the span it lands in
         segs : vec Seg []
         for [ k: Kept ] in kept
@@ -934,61 +955,45 @@ class Composer
     # every Voice op on the take's sound (48 kHz stereo) in place:
     # seeded once per reference, converted in overlapping 15 s
     # chunks, faded in and out over 50 ms
-    func apply_voices [ snd: AudioClip, disp: Display ] -> bool
+    # with stems: the mic converted, the app's sound added back
+    func apply_voices [ snd: AudioClip, app9: AudioClip, mic9: AudioClip, disp: Display ] -> bool
         if [ voices.count == 0 || !snd ] return true
+        split : bool [ app9 && mic9 && app9.frames >= snd.frames && mic9.frames >= snd.frames ]
+        if [ split ] log 'composer: voice on the mic track alone'
         if [ snd.rate != 48000 || snd.channels != 2 ]
             problems.push[ 'voice: the take sound is not 48 kHz stereo' ]
             return false
-        vc : SeedVC [ vk: disp.vk, w: disp ]
-        if [ !vc.valid ]
-            problems.push[ 'voice: the Seed-VC models are not installed' ]
-            return false
-        seeds : map VoiceSeed [ string ] []
+        rv : RvcVoice [ null ]
+        rname : string [ '' ]
         for [ v: Revoice ] in voices
-            sd : VoiceSeed seeds[ v.voice ]
-            if [ !sd ]
-                rc : AudioClip voice_clip[ path '{folder[]}/{v.voice}' ]
-                if [ !rc || rc.frames <= 0 ]
-                    problems.push[ 'voice: cannot read {v.voice}' ]
+            if [ !rv || rname != v.voice ]
+                if [ rv ] rv.release[]
+                mp : path voice_model[ v, disp ]
+                if [ !mp ] return false
+                rv = RvcVoice [ vk: disp.vk, model: mp, semitones: v.pitch ]
+                rname = v.voice
+                if [ !rv.valid ]
+                    problems.push[ 'voice: cannot load {mp}' ]
                     return false
-                rm : vec f32 [ rc.frames ]
-                for [ i: i64 0, i < rc.frames, i += 1 ]
-                    s9 : f64 [ 0.0 ]
-                    for [ ch: i32 0, ch < rc.channels, ch += 1 ]
-                        s9 += f64[ rc.pcm[ i * rc.channels + ch ] ]
-                    rm[ i ] = f32[ s9 / f64[ rc.channels ] / 32768.0 ]
-                sd = vc.seed[ resample_sinc[ rm, rc.rate, 22050 ], 10.0 ]
-                seeds[ v.voice ] = sd
             a0 : i64 [ i64[ v.from * 48000.0 ] ]
             a1 : i64 [ i64[ v.to * 48000.0 ] ]
             if [ a1 > snd.frames ] a1 = snd.frames
             n48 : i64 [ a1 - a0 ]
             if [ n48 < 4800 ] continue
+            src9 : AudioClip [ (split) ? mic9 : snd ]
             mono : vec f32 [ n48 ]
             for [ i: i64 0, i < n48, i += 1 ]
-                l9 : f64 [ f64[ snd.pcm[ (a0 + i) * 2 ] ] ]
-                r9 : f64 [ f64[ snd.pcm[ (a0 + i) * 2 + 1 ] ] ]
+                l9 : f64 [ f64[ src9.pcm[ (a0 + i) * 2 ] ] ]
+                r9 : f64 [ f64[ src9.pcm[ (a0 + i) * 2 + 1 ] ] ]
                 mono[ i ] = f32[ (l9 + r9) / 65536.0 ]
-            s22 : vec f32 resample_sinc[ mono, 48000, 22050 ]
-            # chunks of 15 s overlapping 0.5 s, crossfaded
-            chunk : i64 [ 22050 * 15 ]
-            lap   : i64 [ 11025 ]
-            out22 : vec f32 [ s22.count ]
-            memset[ @out22[ 0 ], 0, s22.count * 4 ]
-            at : i64 [ 0 ]
-            for [ at < s22.count ]
-                e9 : i64 [ (at + chunk < s22.count) ? at + chunk : s22.count ]
-                piece : vec f32 [ e9 - at ]
-                memcpy[ @piece[ 0 ], @s22[ at ], (e9 - at) * 4 ]
-                y : vec f32 vc.voice_with[ sd, piece, 10, 0.7, null ]
-                for [ i: i64 0, i < y.count && at + i < out22.count, i += 1 ]
-                    w9 : f32 [ 1.0 ]
-                    if [ at > 0 && i < lap ] w9 = f32[ i ] / f32[ lap ]
-                    ix9 : i64 [ at + i ]
-                    out22[ ix9 ] = out22[ ix9 ] * (1.0 - w9) + y[ i ] * w9
-                if [ e9 >= s22.count ] break
-                at = e9 - lap
-            back : vec f32 resample_sinc[ out22, 22050, 48000 ]
+            back : vec f32 [ null ]
+            try
+                back = rv.speak[ resample_sinc[ mono, 48000, 16000 ], 48000 ]
+            catch [ message: string ]
+                problems.push[ 'voice {v.from}..{v.to}: {message}' ]
+            if [ !back ]
+                rv.release[]
+                return false
             fade : i64 [ 2400 ]
             for [ i: i64 0, i < n48 && i < back.count, i += 1 ]
                 g9 : f32 [ 1.0 ]
@@ -998,11 +1003,79 @@ class Composer
                     ix9 : i64 [ (a0 + i) * 2 + ch ]
                     orig : f32 [ f32[ snd.pcm[ ix9 ] ] ]
                     nv : f32 [ orig * (1.0 - g9) + back[ i ] * 32767.0 * g9 ]
+                    if [ split ]
+                        mv : f32 [ f32[ mic9.pcm[ ix9 ] ] ]
+                        nv = f32[ app9.pcm[ ix9 ] ] + mv * (1.0 - g9) + back[ i ] * 32767.0 * g9
                     if [ nv > 32767.0 ] nv = 32767.0
                     if [ nv < -32768.0 ] nv = -32768.0
                     snd.pcm[ ix9 ] = i16[ nv ]
             log 'composer: voice {v.voice} over {v.from}..{v.to} s'
+        if [ rv ] rv.release[]
         return true
+
+    # the voice's rvc model beside its clip, trained on first use
+    func voice_model [ v: Revoice, disp: Display ] -> path
+        return train_voice[ path '{folder[]}/{v.voice}', v.epochs, disp ]
+
+    # <clip>.rvc.safetensors and its .index, trained if older
+    func train_voice [ clip: path, epochs: i32, disp: Display ] -> path
+        vd : path [ (voice_dir) ? voice_dir : path '{path.path_install[]}/models/voices' ]
+        vd.make_dir[]
+        # named by the clip's own name: picard-full.wav is picard-full
+        nm : string clip.stem[]
+        mp : path '{vd}/{nm}.rvc.safetensors'
+        fpp : path '{vd}/{nm}.fp'
+        fp9 : string voice_fingerprint[ clip ]
+        if [ mp.exists[] && fpp.exists[] ]
+            have : cast string [ fpp.load[ typeid[ string ], null ] ]
+            if [ have == fp9 ]
+                log 'composer: voice {nm} already trained ({mp})'
+                return mp
+        log 'composer: training {nm} from {clip} ({epochs} epochs); this takes a while'
+        pp : RvcPrep [ vk: disp.vk ]
+        if [ !pp.valid ]
+            problems.push[ 'voice: the rvc models are not installed' ]
+            return null
+        items : vec RvcItem [ null ]
+        try
+            items = pp.prepare[ clip ]
+        catch [ message: string ]
+            problems.push[ 'voice: preparing {clip}: {message}' ]
+        feats : vec f32 pp.feats
+        pp.release[]
+        if [ !items ] return null
+        if [ items.count == 0 ]
+            problems.push[ 'voice: no speech found in {clip}' ]
+            return null
+        log 'composer: {clip}: {items.count} pieces'
+        m : path '{path.path_install[]}/models/rvc'
+        net : RvcNet [ vk: disp.vk, src: path '{m}/f0G40k.pth', keep_mb: 2048, work_mb: 6144 ]
+        tr : RvcTrain [ vk: disp.vk, net: net ]
+        # checkpoints only; the model's name means it finished
+        part : path '{mp}.part'
+        ok : bool [ false ]
+        if [ tr.valid && tr.resume[ part ] > 0 ]
+            log 'composer: resuming {clip} after epoch {tr.done}'
+        try
+            ok = tr.valid && tr.train[ items, epochs, 2, part, 10 ]
+        catch [ message: string ]
+            problems.push[ 'voice: training {clip}: {message}' ]
+        net.gd.release[]
+        if [ !ok ]
+            problems.push[ 'voice: training {clip} failed' ]
+            return null
+        from9 : string '{part}'
+        to9 : string '{mp}'
+        rename[ from9.chars, to9.chars ]
+        state9 : string '{part}.state'
+        unlink[ state9.chars ]
+        fp : @FILE [ fopen[ '{mp}.index', 'wb' ] ]
+        if [ fp ]
+            fwrite[ @feats[ 0 ], 4, feats.count, fp ]
+            fclose[ fp ]
+        # written last: a voice counts as trained only once complete
+        fpp.save[ fp9, null ]
+        return mp
 
     func insert [ ins: Insert ] -> bool
         if [ !ins.media || ins.media.count == 0 ]
@@ -1028,9 +1101,9 @@ element composer : trinity
     default take  : path
     public  agent : string [ 'claude' ]
     public  model : string
-    # render the composition already written, no agent
-    public  again : bool
     func init []
+        # a build mid-run must not swap out a training run
+        au_live_set_reload[ 0 ]
         # a take's module folder names its mp4: <folder>/<folder>.mp4
         if [ take && take.is_dir[] ] take = path '{take}/{take.filename[]}.mp4'
         if [ !take || !take.exists[] ]
@@ -1038,7 +1111,7 @@ element composer : trinity
             exit[ 1 ]
         c : Composer [ take: take, kept: vec Kept [], overlays: vec Overlay [],
             problems: vec string [] ]
-        ok : bool [ (again) ? c.again[] : c.compose[ agent, model ] ]
+        ok : bool c.compose[ agent, model ]
         if [ ok ]
             log 'composer: {c.kept.count} spans kept, {c.overlays.count} inserts'
             v9 : vk_context []
@@ -1050,222 +1123,6 @@ element composer : trinity
             log 'composer: {p}'
         exit[ (ok) ? 0 : 1 ]
 
-# BigVGAN against pytorch's output on the same mel (both f32 files:
-# COMPOSER_VOC_MEL [80, frames], COMPOSER_VOC_WAV the samples)
-expect func t_bigvgan [] -> bool
-    me : cstr [ getenv[ 'COMPOSER_VOC_MEL' ] ]
-    we : cstr [ getenv[ 'COMPOSER_VOC_WAV' ] ]
-    if [ !me || !we ] return true
-    mel : vec f32 floats_of[ path [ me ] ]
-    gold : vec f32 floats_of[ path [ we ] ]
-    frames : i32 [ i32[ mel.count / 80 ] ]
-    voc : BigVGAN [ src: path '{path.path_install[]}/models/seed-vc/bigvgan.pth' ]
-    if [ !voc.valid ] return false
-    t0 : i64 [ Au.epoch_millis[] ]
-    y : vec f32 voc.run[ mel, frames ]
-    ms : i64 [ Au.epoch_millis[] - t0 ]
-    n : i64 [ (y.count < gold.count) ? y.count : gold.count ]
-    err : f64 [ 0.0 ]
-    sig : f64 [ 0.0 ]
-    mx  : f64 [ 0.0 ]
-    for [ i: i64 0, i < n, i += 1 ]
-        d : f64 [ f64[ y[ i ] ] - f64[ gold[ i ] ] ]
-        err += d * d
-        sig += f64[ gold[ i ] ] * f64[ gold[ i ] ]
-        if [ d > mx ] mx = d
-        if [ 0.0 - d > mx ] mx = 0.0 - d
-    snr : f64 [ 10.0 * log10[ sig / (err + 0.000000000001) ] ]
-    log 'bigvgan: {y.count} samples (gold {gold.count}) in {ms} ms; max error {mx}, snr {snr} dB'
-    return y.count == gold.count && snr > 60.0
-
-# CAM++ against pytorch: the fbank and the style of the same 16 kHz
-# samples (COMPOSER_CAM_DIR holds wav16k, fbank and style .f32)
-expect func t_campplus [] -> bool
-    de : cstr [ getenv[ 'COMPOSER_CAM_DIR' ] ]
-    if [ !de ] return true
-    dir : string [ de ]
-    pcm   : vec f32 floats_of[ path '{dir}/wav16k.f32' ]
-    fgold : vec f32 floats_of[ path '{dir}/fbank.f32' ]
-    sgold : vec f32 floats_of[ path '{dir}/style.f32' ]
-    nf : local i32 [ 1 ]
-    fb : vec f32 kaldi_fbank[ pcm, @nf[ 0 ] ]
-    fmx : f64 [ 0.0 ]
-    for [ i: i64 0, i < fb.count && i < fgold.count, i += 1 ]
-        d : f64 [ f64[ fb[ i ] ] - f64[ fgold[ i ] ] ]
-        if [ d < 0.0 ] d = 0.0 - d
-        if [ d > fmx ] fmx = d
-    cam : CAMPPlus [ src: path '{path.path_install[]}/models/seed-vc/campplus.pth' ]
-    t0 : i64 [ Au.epoch_millis[] ]
-    st : vec f32 cam.embed[ pcm ]
-    ms : i64 [ Au.epoch_millis[] - t0 ]
-    smx : f64 [ 0.0 ]
-    for [ i: i64 0, i < st.count && i < sgold.count, i += 1 ]
-        d : f64 [ f64[ st[ i ] ] - f64[ sgold[ i ] ] ]
-        if [ d < 0.0 ] d = 0.0 - d
-        if [ d > smx ] smx = d
-    log 'campplus: fbank {fb.count} (gold {fgold.count}) max err {fmx}; style {st.count} in {ms} ms, max err {smx}, first {st[ 0 ]} vs {sgold[ 0 ]}'
-    return fb.count == fgold.count && fmx < 0.01 && st.count == 192 && smx < 0.01
-
-# the DiT's velocity against pytorch's first euler step, with and
-# without the conditions (COMPOSER_DIT_DIR: the vc_ref.py dumps)
-expect func t_dit_step [] -> bool
-    de : cstr [ getenv[ 'COMPOSER_DIT_DIR' ] ]
-    if [ !de ] return true
-    dir : string [ de ]
-    noise : vec f32 floats_of[ path '{dir}/noise.f32' ]
-    mel2  : vec f32 floats_of[ path '{dir}/mel2.f32' ]
-    pc    : vec f32 floats_of[ path '{dir}/prompt_cond.f32' ]
-    cd    : vec f32 floats_of[ path '{dir}/cond.f32' ]
-    sty   : vec f32 floats_of[ path '{dir}/style2.f32' ]
-    g1    : vec f32 floats_of[ path '{dir}/est0_cond.f32' ]
-    g0    : vec f32 floats_of[ path '{dir}/est0_uncond.f32' ]
-    p9 : i32 [ i32[ mel2.count / 80 ] ]
-    t : i32 [ p9 + i32[ cd.count / 512 ] ]
-    x : vec f32 [ i64[ 80 ] * t ]
-    pr : vec f32 [ i64[ 80 ] * t ]
-    for [ m: i32 0, m < 80, m += 1 ]
-        for [ q: i32 0, q < t, q += 1 ]
-            ix9 : i64 [ i64[ m ] * t + q ]
-            x[ ix9 ]  = (q < p9) ? 0.0 : noise[ ix9 ]
-            pr[ ix9 ] = (q < p9) ? mel2[ i64[ m ] * p9 + q ] : 0.0
-    cat : vec f32 [ i64[ t ] * 512 ]
-    memcpy[ @cat[ 0 ], @pc[ 0 ], pc.count * 4 ]
-    memcpy[ @cat[ pc.count ], @cd[ 0 ], cd.count * 4 ]
-    d : DiT [ src: path '{path.path_install[]}/models/seed-vc/dit.pth' ]
-    t0 : i64 [ Au.epoch_millis[] ]
-    v1 : vec f32 d.estimate[ x, pr, cat, sty, 0.0, t ]
-    ms : i64 [ Au.epoch_millis[] - t0 ]
-    zp : vec f32 [ i64[ 80 ] * t ]
-    zc : vec f32 [ i64[ t ] * 512 ]
-    zs : vec f32 [ 192 ]
-    memset[ @zp[ 0 ], 0, zp.count * 4 ]
-    memset[ @zc[ 0 ], 0, zc.count * 4 ]
-    memset[ @zs[ 0 ], 0, 768 ]
-    t8 : i64 [ Au.epoch_millis[] ]
-    v0 : vec f32 d.estimate[ x, zp, zc, zs, 0.0, t ]
-    ms2 : i64 [ Au.epoch_millis[] - t8 ]
-    e1 : f64 [ 0.0 ]
-    e0 : f64 [ 0.0 ]
-    for [ i: i64 0, i < v1.count && i < g1.count, i += 1 ]
-        a1 : f64 [ f64[ v1[ i ] ] - f64[ g1[ i ] ] ]
-        a0 : f64 [ f64[ v0[ i ] ] - f64[ g0[ i ] ] ]
-        if [ a1 < 0.0 ] a1 = 0.0 - a1
-        if [ a0 < 0.0 ] a0 = 0.0 - a0
-        if [ a1 > e1 ] e1 = a1
-        if [ a0 > e0 ] e0 = a0
-    log 'dit: t {t} (prompt {p9}), first call {ms} ms, second {ms2} ms; max error cond {e1}, uncond {e0}; first {v1[ 0 ]} vs {g1[ 0 ]}'
-    return v1.count == g1.count && e1 < 0.01 && e0 < 0.01
-
-# the length regulator and the whole flow (10 steps, cfg 0.7) from
-# pytorch's whisper content and noise
-expect func t_dit_flow [] -> bool
-    de : cstr [ getenv[ 'COMPOSER_DIT_DIR' ] ]
-    if [ !de ] return true
-    dir : string [ de ]
-    sa : vec f32 floats_of[ path '{dir}/S_alt.f32' ]
-    so : vec f32 floats_of[ path '{dir}/S_ori.f32' ]
-    mel  : vec f32 floats_of[ path '{dir}/mel.f32' ]
-    mel2 : vec f32 floats_of[ path '{dir}/mel2.f32' ]
-    sty  : vec f32 floats_of[ path '{dir}/style2.f32' ]
-    noise : vec f32 floats_of[ path '{dir}/noise.f32' ]
-    gc  : vec f32 floats_of[ path '{dir}/cond.f32' ]
-    gv  : vec f32 floats_of[ path '{dir}/vc_mel.f32' ]
-    d : DiT [ src: path '{path.path_install[]}/models/seed-vc/dit.pth' ]
-    n1 : i32 [ i32[ mel.count / 80 ] ]
-    p9 : i32 [ i32[ mel2.count / 80 ] ]
-    c1 : vec f32 d.regulate[ sa, i32[ sa.count / 768 ], n1 ]
-    c0 : vec f32 d.regulate[ so, i32[ so.count / 768 ], p9 ]
-    ec : f64 [ 0.0 ]
-    for [ i: i64 0, i < c1.count && i < gc.count, i += 1 ]
-        a1 : f64 [ f64[ c1[ i ] ] - f64[ gc[ i ] ] ]
-        if [ a1 < 0.0 ] a1 = 0.0 - a1
-        if [ a1 > ec ] ec = a1
-    t : i32 [ p9 + n1 ]
-    cat : vec f32 [ i64[ t ] * 512 ]
-    memcpy[ @cat[ 0 ], @c0[ 0 ], c0.count * 4 ]
-    memcpy[ @cat[ c0.count ], @c1[ 0 ], c1.count * 4 ]
-    t0 : i64 [ Au.epoch_millis[] ]
-    vm : vec f32 d.flow[ mel2, p9, cat, sty, noise, t, 10, 0.7 ]
-    ms : i64 [ Au.epoch_millis[] - t0 ]
-    ev : f64 [ 0.0 ]
-    for [ i: i64 0, i < vm.count && i < gv.count, i += 1 ]
-        a1 : f64 [ f64[ vm[ i ] ] - f64[ gv[ i ] ] ]
-        if [ a1 < 0.0 ] a1 = 0.0 - a1
-        if [ a1 > ev ] ev = a1
-    log 'dit flow: cond max error {ec}; mel {vm.count} (gold {gv.count}) in {ms} ms, max error {ev}'
-    return c1.count == gc.count && ec < 0.01 && vm.count == gv.count && ev < 0.05
-
-# the front of Seed-VC against pytorch: resampling, whisper's log
-# mel and content, the vocoder's mel (COMPOSER_DIT_DIR)
-expect func t_seedvc_front [] -> bool
-    de : cstr [ getenv[ 'COMPOSER_DIT_DIR' ] ]
-    if [ !de ] return true
-    dir : string [ de ]
-    vk : vk_context []
-    Au.hold[ vk ]
-    disp : Display [ vk: vk, format: Pixel.rgba8, backbuffer: true, width: 64, height: 64 ]
-    Au.hold[ disp ]
-    src22 : vec f32 floats_of[ path '{dir}/src22k.f32' ]
-    g16   : vec f32 floats_of[ path '{dir}/src16k.f32' ]
-    gfe   : vec f32 floats_of[ path '{dir}/whisper_feats_src.f32' ]
-    gsa   : vec f32 floats_of[ path '{dir}/S_alt.f32' ]
-    gmel  : vec f32 floats_of[ path '{dir}/mel.f32' ]
-    s16 : vec f32 resample_sinc[ src22, 22050, 16000 ]
-    e16 : f64 max_error[ s16, g16 ]
-    lm : vec f32 whisper_logmel[ g16 ]
-    efe : f64 [ 0.0 ]
-    for [ t: i32 0, t < 3000, t += 1 ]
-        for [ m: i32 0, m < 80, m += 1 ]
-            d : f64 [ f64[ lm[ i64[ t ] * 80 + m ] ] - f64[ gfe[ i64[ m ] * 3000 + t ] ] ]
-            if [ d < 0.0 ] d = 0.0 - d
-            if [ d > efe ] efe = d
-    vc : SeedVC [ vk: vk, w: disp ]
-    ns : local i32 [ 1 ]
-    t0 : i64 [ Au.epoch_millis[] ]
-    sa : vec f32 vc.content[ g16, @ns[ 0 ] ]
-    ms : i64 [ Au.epoch_millis[] - t0 ]
-    esa : f64 max_error[ sa, gsa ]
-    nf : local i32 [ 1 ]
-    mel : vec f32 mel22k[ src22, @nf[ 0 ] ]
-    emel : f64 max_error[ mel, gmel ]
-    log 'seedvc front: 16k {s16.count} (gold {g16.count}) err {e16}; log mel err {efe}; content {sa.count} (gold {gsa.count}) in {ms} ms err {esa}; mel {mel.count} (gold {gmel.count}) err {emel}'
-    return s16.count == g16.count && e16 < 0.001 && efe < 0.01 && sa.count == gsa.count && esa < 0.05 && mel.count == gmel.count && emel < 0.01
-
-# the whole conversion against pytorch's, from the same noise
-expect func t_seedvc_voice [] -> bool
-    de : cstr [ getenv[ 'COMPOSER_DIT_DIR' ] ]
-    if [ !de ] return true
-    dir : string [ de ]
-    vk : vk_context []
-    Au.hold[ vk ]
-    disp : Display [ vk: vk, format: Pixel.rgba8, backbuffer: true, width: 64, height: 64 ]
-    Au.hold[ disp ]
-    src22 : vec f32 floats_of[ path '{dir}/src22k.f32' ]
-    ref22 : vec f32 floats_of[ path '{dir}/ref22k.f32' ]
-    noise : vec f32 floats_of[ path '{dir}/noise.f32' ]
-    gold  : vec f32 floats_of[ path '{dir}/vc_wav.f32' ]
-    vc : SeedVC [ vk: vk, w: disp ]
-    t0 : i64 [ Au.epoch_millis[] ]
-    y : vec f32 vc.voice[ src22, ref22, 10, 0.7, noise ]
-    ms : i64 [ Au.epoch_millis[] - t0 ]
-    err : f64 [ 0.0 ]
-    sig : f64 [ 0.0 ]
-    for [ i: i64 0, i < y.count && i < gold.count, i += 1 ]
-        d : f64 [ f64[ y[ i ] ] - f64[ gold[ i ] ] ]
-        err += d * d
-        sig += f64[ gold[ i ] ] * f64[ gold[ i ] ]
-    snr : f64 [ 10.0 * log10[ sig / (err + 0.000000000001) ] ]
-    log 'seedvc voice: {y.count} samples (gold {gold.count}) in {ms} ms for {f64[ src22.count ] / 22050.0} s; snr {snr} dB'
-    return y.count == gold.count && snr > 40.0
-
-func max_error [ x: vec f32, y: vec f32 ] -> f64
-    mx : f64 [ 0.0 ]
-    for [ i: i64 0, i < x.count && i < y.count, i += 1 ]
-        d : f64 [ f64[ x[ i ] ] - f64[ y[ i ] ] ]
-        if [ d < 0.0 ] d = 0.0 - d
-        if [ d > mx ] mx = d
-    return mx
-
 # a file of f32 values
 func floats_of [ p: path ] -> vec f32
     b : vec u8 file_bytes[ p ]
@@ -1274,23 +1131,543 @@ func floats_of [ p: path ] -> vec f32
     memcpy[ @out[ 0 ], @b[ 0 ], b.count ]
     return out
 
-# the Seed-VC checkpoints read through ai's pth reader
-expect func t_seed_vc_weights [] -> bool
-    m : path '{path.path_install[]}/models/seed-vc'
+# the rvc files read as pytorch reads them
+expect func t_rvc_weights [] -> bool
+    m : path '{path.path_install[]}/models/rvc'
     if [ !m.exists[] ] return true
-    dit : pth [ src: path '{m}/dit.pth' ]
-    cam : pth [ src: path '{m}/campplus.pth' ]
-    voc : pth [ src: path '{m}/bigvgan.pth' ]
-    if [ !dit.valid || !cam.valid || !voc.valid ] return false
-    emb : tensor dit.tensor_named[ 'net.length_regulator.module.content_in_proj.weight' ]
-    up  : tensor voc.tensor_named[ 'generator.ups.2.0.weight_v' ]
-    log 'seed-vc: dit {dit.count[]}, campplus {cam.count[]}, bigvgan {voc.count[]} tensors; content_in_proj {emb.tensor_shape}, ups.2 {up.tensor_shape}'
-    counts : bool [ dit.count[] == 302 && cam.count[] == 937 && voc.count[] == 783 ]
-    en : i64 [ emb.tensor_shape.total[] ]
-    un : i64 [ up.tensor_shape.total[] ]
-    sizes  : bool [ en == 393216 && un == 294912 ]
-    log 'seed-vc: counts {counts}, sizes {sizes} ({en}, {un}), first bigvgan value {up.floats[ 0 ]}'
-    return counts && sizes
+    hb : pth [ src: path '{m}/hubert.pth' ]
+    rm : pth [ src: path '{m}/rmvpe.pt' ]
+    gn : pth [ src: path '{m}/f0G40k.pth' ]
+    ds : pth [ src: path '{m}/f0D40k.pth' ]
+    if [ !hb.valid || !rm.valid || !gn.valid || !ds.valid ] return false
+    log 'rvc: hubert {hb.count[]}, rmvpe {rm.count[]}, generator {gn.count[]}, discriminator {ds.count[]} tensors'
+    counts : bool [ hb.count[] == 213 && rm.count[] == 741 && gn.count[] == 560 && ds.count[] == 165 ]
+    a : tensor hb.tensor_named[ 'feature_extractor.conv_layers.2.conv.weight' ]
+    b : tensor rm.tensor_named[ 'unet.encoder.layers.0.conv.0.conv.0.weight' ]
+    c : tensor gn.tensor_named[ 'model.enc_p.encoder.attn_layers.0.conv_q.weight' ]
+    d : tensor ds.tensor_named[ 'model.discriminators.0.convs.1.weight_v' ]
+    if [ !a || !b || !c || !d ] return false
+    log 'rvc: first values {a.floats[ 0 ]} {b.floats[ 0 ]} {c.floats[ 0 ]} {d.floats[ 0 ]}'
+    sizes : bool [ a.tensor_shape.total[] == 786432 && b.tensor_shape.total[] == 144 && c.tensor_shape.total[] == 36864 && d.tensor_shape.total[] == 10496 ]
+    vals : bool [ a.floats[ 0 ] == -0.0482177734375 && b.floats[ 0 ] == 0.056396484375 && c.floats[ 0 ] == 0.05670166015625 && d.floats[ 0 ] == -0.046905517578125 ]
+    return counts && sizes && vals
+
+# rvc's synthesizer vs pytorch (COMPOSER_RVC_GOLD)
+expect func t_rvc_infer [] -> bool
+    ge : cstr [ getenv[ 'COMPOSER_RVC_GOLD' ] ]
+    if [ !ge ] return true
+    dir : string [ ge ]
+    vk : vk_context []
+    Au.hold[ vk ]
+    disp : Display [ vk: vk, format: Pixel.rgba8, backbuffer: true, width: 64, height: 64 ]
+    Au.hold[ disp ]
+    net : RvcNet [ vk: vk, src: path '{path.path_install[]}/models/rvc/f0G40k.pth' ]
+    if [ !net.valid ] return false
+    t0 : i64 [ Au.epoch_millis[] ]
+    ph : vec f32 floats_of[ path '{dir}/phone.f32' ]
+    pt : vec f32 floats_of[ path '{dir}/pitch.f32' ]
+    f0 : vec f32 floats_of[ path '{dir}/f0.f32' ]
+    zn : vec f32 floats_of[ path '{dir}/zn.f32' ]
+    sn : vec f32 floats_of[ path '{dir}/sn.f32' ]
+    y : vec f32 net.infer[ ph, pt, f0, 0, zn, sn ]
+    ms : i64 [ Au.epoch_millis[] - t0 ]
+    gold : vec f32 floats_of[ path '{dir}/out.f32' ]
+    if [ y.count != gold.count ]
+        log 'rvc infer: {y.count} samples, pytorch {gold.count}'
+        return false
+    sig : f64 [ 0.0 ]
+    err : f64 [ 0.0 ]
+    for [ i: i64 0, i < y.count, i += 1 ]
+        d : f64 [ f64[ y[ i ] ] - f64[ gold[ i ] ] ]
+        sig += f64[ gold[ i ] ] * f64[ gold[ i ] ]
+        err += d * d
+    snr : f64 [ 10.0 * log10[ sig / (err + 1.0e-30) ] ]
+    log 'rvc infer: {y.count} samples in {ms} ms, SNR {snr} dB against pytorch'
+    ok9 : bool [ snr > 40.0 ]
+    net.gd.release[]
+    return ok9
+
+# hubert on 2 s of speech vs transformers' HubertModel
+expect func t_rvc_hubert [] -> bool
+    ge : cstr [ getenv[ 'COMPOSER_RVC_GOLD' ] ]
+    if [ !ge ] return true
+    dir : string [ ge ]
+    vk : vk_context []
+    Au.hold[ vk ]
+    disp : Display [ vk: vk, format: Pixel.rgba8, backbuffer: true, width: 64, height: 64 ]
+    Au.hold[ disp ]
+    gd : Grad [ vk: vk, keep_mb: 512, work_mb: 1024 ]
+    hb : RvcHubert [ gd: gd, src: path '{path.path_install[]}/models/rvc/hubert.pth' ]
+    if [ !hb.valid ] return false
+    wav : vec f32 floats_of[ path '{dir}/wav16.f32' ]
+    t0 : i64 [ Au.epoch_millis[] ]
+    h : GTensor hb.features[ wav ]
+    gd.rn.finish[]
+    ms : i64 [ Au.epoch_millis[] - t0 ]
+    got : vec f32 gd.download[ h ]
+    gold : vec f32 floats_of[ path '{dir}/hubert.f32' ]
+    if [ got.count != gold.count ]
+        log 'rvc hubert: {got.count} values, transformers {gold.count}'
+        return false
+    worst : f64 grad_worst[ got, gold ]
+    sig : f64 [ 0.0 ]
+    err : f64 [ 0.0 ]
+    for [ i: i64 0, i < got.count, i += 1 ]
+        d : f64 [ f64[ got[ i ] ] - f64[ gold[ i ] ] ]
+        sig += f64[ gold[ i ] ] * f64[ gold[ i ] ]
+        err += d * d
+    log 'rvc hubert: {h.dims[ 2 ]} frames in {ms} ms, worst {worst}, SNR {10.0 * log10[ sig / (err + 1.0e-30) ]} dB'
+    ok9 : bool [ worst < 0.001 ]
+    gd.release[]
+    return ok9
+
+# rmvpe's mel, salience and pitch vs rvc's own
+expect func t_rvc_pitch [] -> bool
+    ge : cstr [ getenv[ 'COMPOSER_RVC_GOLD' ] ]
+    if [ !ge ] return true
+    dir : string [ ge ]
+    vk : vk_context []
+    Au.hold[ vk ]
+    disp : Display [ vk: vk, format: Pixel.rgba8, backbuffer: true, width: 64, height: 64 ]
+    Au.hold[ disp ]
+    gd : Grad [ vk: vk, keep_mb: 1024, work_mb: 2048 ]
+    pn : RvcPitch [ gd: gd, src: path '{path.path_install[]}/models/rvc/rmvpe.pt' ]
+    if [ !pn.valid ] return false
+    wav : vec f32 floats_of[ path '{dir}/wav16.f32' ]
+    ml : GTensor pn.mel[ wav ]
+    gd.rn.finish[]
+    me : f64 grad_worst[ gd.download[ ml ], floats_of[ path '{dir}/rm_mel.f32' ] ]
+    gd.reset_work[]
+    t0 : i64 [ Au.epoch_millis[] ]
+    sal : vec f32 pn.salience[ wav ]
+    ms : i64 [ Au.epoch_millis[] - t0 ]
+    se : f64 grad_worst[ sal, floats_of[ path '{dir}/rm_sal.f32' ] ]
+    gd.reset_work[]
+    f0 : vec f32 pn.f0[ wav, 0.03 ]
+    gold : vec f32 floats_of[ path '{dir}/rm_f0.f32' ]
+    vo : i64 [ 0 ]
+    miss : i64 [ 0 ]
+    worst : f64 [ 0.0 ]
+    for [ i: i64 0, i < gold.count && i < f0.count, i += 1 ]
+        if [ (gold[ i ] > 0.0) != (f0[ i ] > 0.0) ] miss += 1
+        if [ gold[ i ] > 0.0 && f0[ i ] > 0.0 ]
+            vo += 1
+            c9 : f64 [ fabs[ 1200.0 * log2[ f64[ f0[ i ] ] / f64[ gold[ i ] ] ] ] ]
+            if [ c9 > worst ] worst = c9
+    log 'rvc pitch: mel worst {me}, salience worst {se} ({ms} ms), {vo} voiced frames, {miss} voicing differences, pitch worst {worst} cents'
+    ok9 : bool [ f0.count == gold.count && miss == 0 && worst < 1.0 && se < 0.001 ]
+    gd.release[]
+    return ok9
+
+# two rvc training steps vs pytorch (COMPOSER_RVC_TRAIN)
+expect func t_rvc_train_step [] -> bool
+    ge : cstr [ getenv[ 'COMPOSER_RVC_TRAIN' ] ]
+    if [ !ge ] return true
+    dir : string [ ge ]
+    vk : vk_context []
+    Au.hold[ vk ]
+    disp : Display [ vk: vk, format: Pixel.rgba8, backbuffer: true, width: 64, height: 64 ]
+    Au.hold[ disp ]
+    net : RvcNet [ vk: vk, src: path '{path.path_install[]}/models/rvc/f0G40k.pth', keep_mb: 2048, work_mb: 6144 ]
+    if [ !net.valid ] return false
+    tr : RvcTrain [ vk: vk, net: net ]
+    if [ !tr.valid ] return false
+    sd : vec f32 [ 2 ]
+    ph : vec f32 floats_of[ path '{dir}/phone.f32' ]
+    pt9 : vec f32 floats_of[ path '{dir}/pitch.f32' ]
+    pf : vec f32 floats_of[ path '{dir}/pitchf.f32' ]
+    sp : vec f32 floats_of[ path '{dir}/spec.f32' ]
+    wv : vec f32 floats_of[ path '{dir}/wave.f32' ]
+    bt : RvcBatch [ nb: 2, nt: 48, phone: ph, pitch: pt9, pitchf: pf, spec: sp, wave: wv, sid: sd ]
+    names : vec string [] [ 'dec.conv_post.weight', 'enc_p.emb_phone.weight', 'flow.flows.0.post.weight', 'enc_q.pre.weight', 'dec.ups.0.weight_v', 'emb_g.weight' ]
+    ok : bool [ true ]
+    for [ st: i32 0, st < 2, st += 1 ]
+        iv : vec f32 floats_of[ path '{dir}/s{st}_ids.f32' ]
+        qv : vec f32 floats_of[ path '{dir}/s{st}_epsq.f32' ]
+        sv : vec f32 floats_of[ path '{dir}/s{st}_epss.f32' ]
+        bt.ids = iv
+        bt.eps_q = qv
+        bt.eps_s = sv
+        t0 : i64 [ Au.epoch_millis[] ]
+        ls : vec f32 tr.step[ bt, 0.0001 ]
+        ms : i64 [ Au.epoch_millis[] - t0 ]
+        gl : vec f32 floats_of[ path '{dir}/s{st}_losses.f32' ]
+        log 'rvc train step {st} ({ms} ms): disc {ls[ 0 ]}/{gl[ 0 ]} gen {ls[ 1 ]}/{gl[ 1 ]} fm {ls[ 2 ]}/{gl[ 2 ]} mel {ls[ 3 ]}/{gl[ 3 ]} kl {ls[ 4 ]}/{gl[ 4 ]}'
+        for [ i: i64 0, i < 5, i += 1 ]
+            r9 : f64 [ fabs[ f64[ ls[ i ] ] - f64[ gl[ i ] ] ] / (fabs[ f64[ gl[ i ] ] ] + 0.000001) ]
+            if [ r9 > 0.001 ] ok = false
+        for [ i: i64 0, i < names.count, i += 1 ]
+            pt : GTensor net.pm[ names[ i ] ]
+            got : vec f32 net.gd.download[ pt.gr ]
+            want : vec f32 floats_of[ path '{dir}/s{st}_g{i}.f32' ]
+            mx : f64 [ 0.0 ]
+            for [ j: i64 0, j < want.count, j += 1 ]
+                a9 : f64 [ fabs[ f64[ want[ j ] ] ] ]
+                if [ a9 > mx ] mx = a9
+            e9 : f64 grad_worst[ got, want ]
+            log 'rvc train step {st} grad {names[ i ]}: worst {e9} of max {mx}'
+            if [ e9 > 0.01 * mx ] ok = false
+    ok9 : bool [ ok ]
+    net.gd.release[]
+    return ok9
+
+# one step at lr 0: every gradient vs pytorch's
+expect func t_rvc_train_grads [] -> bool
+    ge : cstr [ getenv[ 'COMPOSER_RVC_TRAIN0' ] ]
+    if [ !ge ] return true
+    dir : string [ ge ]
+    vk : vk_context []
+    Au.hold[ vk ]
+    disp : Display [ vk: vk, format: Pixel.rgba8, backbuffer: true, width: 64, height: 64 ]
+    Au.hold[ disp ]
+    net : RvcNet [ vk: vk, src: path '{path.path_install[]}/models/rvc/f0G40k.pth', keep_mb: 2048, work_mb: 6144 ]
+    if [ !net.valid ] return false
+    tr : RvcTrain [ vk: vk, net: net, keep_dgrad: true ]
+    if [ !tr.valid ] return false
+    sd : vec f32 [ 2 ]
+    ph : vec f32 floats_of[ path '{dir}/phone.f32' ]
+    pt9 : vec f32 floats_of[ path '{dir}/pitch.f32' ]
+    pf : vec f32 floats_of[ path '{dir}/pitchf.f32' ]
+    sp : vec f32 floats_of[ path '{dir}/spec.f32' ]
+    wv : vec f32 floats_of[ path '{dir}/wave.f32' ]
+    iv : vec f32 floats_of[ path '{dir}/s0_ids.f32' ]
+    qv : vec f32 floats_of[ path '{dir}/s0_epsq.f32' ]
+    sv : vec f32 floats_of[ path '{dir}/s0_epss.f32' ]
+    bt : RvcBatch [ nb: 2, nt: 48, phone: ph, pitch: pt9, pitchf: pf, spec: sp, wave: wv, sid: sd, ids: iv, eps_q: qv, eps_s: sv ]
+    ls : vec f32 tr.step[ bt, 0.0 ]
+    gl : vec f32 floats_of[ path '{dir}/s0_losses.f32' ]
+    log 'rvc grads: disc {ls[ 0 ]}/{gl[ 0 ]} gen {ls[ 1 ]}/{gl[ 1 ]} fm {ls[ 2 ]}/{gl[ 2 ]} mel {ls[ 3 ]}/{gl[ 3 ]} kl {ls[ 4 ]}/{gl[ 4 ]}'
+    ok : bool [ true ]
+    for [ i: i64 0, i < 5, i += 1 ]
+        r9 : f64 [ fabs[ f64[ ls[ i ] ] - f64[ gl[ i ] ] ] / (fabs[ f64[ gl[ i ] ] ] + 0.000001) ]
+        if [ r9 > 0.0001 ] ok = false
+    gn : vec string [] [ 'dec.conv_post.weight', 'enc_p.emb_phone.weight', 'flow.flows.0.post.weight', 'enc_q.pre.weight', 'dec.ups.0.weight_v', 'emb_g.weight' ]
+    dn : vec string [] [ 'discriminators.0.convs.1.weight_v', 'discriminators.3.convs.2.weight_g', 'discriminators.8.conv_post.bias', 'discriminators.0.convs.5.bias' ]
+    for [ i: i64 0, i < gn.count + dn.count, i += 1 ]
+        isg : bool [ i < gn.count ]
+        nm : string [ (isg) ? gn[ i ] : dn[ i - gn.count ] ]
+        pt : GTensor [ (isg) ? net.pm[ nm ] : tr.dsc.pm[ nm ] ]
+        got : vec f32 net.gd.download[ pt.gr ]
+        fl : string [ (isg) ? '{dir}/s0_g{i}.f32' : '{dir}/s0_d{i - gn.count}.f32' ]
+        want : vec f32 floats_of[ path fl ]
+        mx : f64 [ 0.0 ]
+        for [ j: i64 0, j < want.count, j += 1 ]
+            a9 : f64 [ fabs[ f64[ want[ j ] ] ] ]
+            if [ a9 > mx ] mx = a9
+        e9 : f64 grad_worst[ got, want ]
+        dn2 : f64 [ 0.0 ]
+        wn2 : f64 [ 0.0 ]
+        for [ j: i64 0, j < want.count, j += 1 ]
+            d9 : f64 [ f64[ got[ j ] ] - f64[ want[ j ] ] ]
+            dn2 += d9 * d9
+            wn2 += f64[ want[ j ] ] * f64[ want[ j ] ]
+        rel : f64 [ sqrt[ dn2 / (wn2 + 1.0e-30) ] ]
+        log 'rvc grads {nm}: worst {e9} of max {mx}, relative {rel}'
+        # one relu flipped at zero moves a gradient ~0.3%
+        if [ rel > 0.005 ] ok = false
+    ok9 : bool [ ok ]
+    net.gd.release[]
+    return ok9
+
+# every discriminator gradient on pytorch's generated wave
+expect func t_rvc_disc_grads [] -> bool
+    ge : cstr [ getenv[ 'COMPOSER_RVC_DALL' ] ]
+    if [ !ge ] return true
+    dir : string [ ge ]
+    vk : vk_context []
+    Au.hold[ vk ]
+    disp : Display [ vk: vk, format: Pixel.rgba8, backbuffer: true, width: 64, height: 64 ]
+    Au.hold[ disp ]
+    gd : Grad [ vk: vk, keep_mb: 1024, work_mb: 4096 ]
+    dsc : RvcDisc [ gd: gd, src: path '{path.path_install[]}/models/rvc/f0D40k.pth' ]
+    if [ !dsc.valid ] return false
+    wall : vec f32 floats_of[ path '{dir}/wave.f32' ]
+    wv : vec f32 [ 25600 ]
+    memcpy[ @wv[ 0 ], @wall[ 1200 ], 12800 * 4 ]
+    memcpy[ @wv[ 12800 ], @wall[ 19200 + 4000 ], 12800 * 4 ]
+    yh : vec f32 floats_of[ path '{dir}/dall/yhat.f32' ]
+    gd.record = true
+    dsc.set_need[ true ]
+    real : GTensor gd.temp[ vec i64 [] [ 2, 1, 12800 ] ]
+    gd.upload[ real, wv ]
+    fake : GTensor gd.temp[ vec i64 [] [ 2, 1, 12800 ] ]
+    gd.upload[ fake, yh ]
+    dsc.logits = vec GTensor []
+    dsc.fmaps = vec GTensor []
+    dsc.run[ real ]
+    dsc.run[ fake ]
+    dls : vec GTensor []
+    dws : vec f32 []
+    w1 : f32 [ 1.0 ]
+    for [ i: i64 0, i < 9, i += 1 ]
+        dls.push[ gd.lsq[ dsc.logits[ i ], 1.0 ] ]
+        dws.push[ w1 ]
+        dls.push[ gd.lsq[ dsc.logits[ 9 + i ], 0.0 ] ]
+        dws.push[ w1 ]
+    gd.backward_all[ dls, dws ]
+    gd.rn.finish[]
+    worst : f64 [ 0.0 ]
+    wname : string [ '' ]
+    nm9 : vec string dsc.names[]
+    for [ nm: string ] in nm9
+        pt : GTensor dsc.pm[ nm ]
+        want : vec f32 floats_of[ path '{dir}/dall/{nm}.f32' ]
+        if [ !pt.gr ] continue
+        got : vec f32 gd.download[ pt.gr ]
+        dn2 : f64 [ 0.0 ]
+        wn2 : f64 [ 0.0 ]
+        for [ j: i64 0, j < want.count, j += 1 ]
+            d9 : f64 [ f64[ got[ j ] ] - f64[ want[ j ] ] ]
+            dn2 += d9 * d9
+            wn2 += f64[ want[ j ] ] * f64[ want[ j ] ]
+        rel : f64 [ sqrt[ dn2 / (wn2 + 1.0e-30) ] ]
+        if [ rel > 0.001 ] log 'rvc disc grad {nm}: relative {rel}'
+        if [ rel > worst ]
+            worst = rel
+            wname = nm
+    log 'rvc disc grads: {nm9.count} gradients, worst relative {worst} ({wname})'
+    # one relu flipped at zero moves a gradient ~0.3%
+    ok9 : bool [ worst < 0.005 ]
+    gd.release[]
+    return ok9
+
+# rvc's high-pass and slicer vs scipy and slicer2 (COMPOSER_RVC_PREP)
+expect func t_rvc_slices [] -> bool
+    ge : cstr [ getenv[ 'COMPOSER_RVC_PREP' ] ]
+    if [ !ge ] return true
+    dir : string [ ge ]
+    a : vec f32 floats_of[ path '{dir}/clip40.f32' ]
+    hp : vec f32 rvc_highpass[ a ]
+    gh : vec f32 floats_of[ path '{dir}/hp40.f32' ]
+    he : f64 grad_worst[ hp, gh ]
+    sl : vec i64 rvc_slices[ gh ]
+    gs : vec f32 floats_of[ path '{dir}/slices.f32' ]
+    same : bool [ sl.count == gs.count ]
+    for [ i: i64 0, same && i < sl.count, i += 1 ]
+        if [ f32[ sl[ i ] ] != gs[ i ] ] same = false
+    log 'rvc slices: high-pass worst {he}; {sl.count / 2} slices, pytorch-side {gs.count / 2}, same {same}'
+    return he < 0.0001 && same
+
+# a clip to rvc training items (COMPOSER_RVC_PREP: clip.wav)
+expect func t_rvc_prepare [] -> bool
+    ge : cstr [ getenv[ 'COMPOSER_RVC_PREP' ] ]
+    if [ !ge ] return true
+    dir : string [ ge ]
+    vk : vk_context []
+    Au.hold[ vk ]
+    disp : Display [ vk: vk, format: Pixel.rgba8, backbuffer: true, width: 64, height: 64 ]
+    Au.hold[ disp ]
+    pp : RvcPrep [ vk: vk ]
+    if [ !pp.valid ] return false
+    t0 : i64 [ Au.epoch_millis[] ]
+    items : vec RvcItem pp.prepare[ path '{dir}/clip.wav' ]
+    ms : i64 [ Au.epoch_millis[] - t0 ]
+    pp.release[]
+    ok : bool [ items.count == 6 ]
+    for [ it: RvcItem ] in items
+        bad : i64 [ 0 ]
+        for [ t: i64 0, t < it.nt, t += 1 ]
+            if [ it.pitch[ t ] < 1.0 || it.pitch[ t ] > 255.0 || it.pitchf[ t ] <= 0.0 ] bad += 1
+        fin : bool [ true ]
+        for [ i: i64 0, i < it.phone.count, i += 1 ]
+            v9 : f32 [ it.phone[ i ] ]
+            if [ v9 != v9 || v9 > 1.0e30 || v9 < -1.0e30 ] fin = false
+        log 'rvc prepare: {it.nt} frames, pitch {it.pitchf[ it.nt / 2 ]} Hz bin {it.pitch[ it.nt / 2 ]}, {bad} bad, finite {fin}'
+        if [ bad > 0 || !fin ] ok = false
+    log 'rvc prepare: {items.count} items in {ms} ms'
+    return ok
+
+# train a voice on a clip, save it, load it back and convert
+# (COMPOSER_RVC_PREP: clip.wav; the voice goes beside it)
+expect func t_rvc_train_loop [] -> bool
+    ge : cstr [ getenv[ 'COMPOSER_RVC_PREP' ] ]
+    if [ !ge ] return true
+    dir : string [ ge ]
+    vk : vk_context []
+    Au.hold[ vk ]
+    disp : Display [ vk: vk, format: Pixel.rgba8, backbuffer: true, width: 64, height: 64 ]
+    Au.hold[ disp ]
+    pp : RvcPrep [ vk: vk ]
+    items : vec RvcItem pp.prepare[ path '{dir}/clip.wav' ]
+    pp.release[]
+    if [ items.count == 0 ] return false
+    m : path '{path.path_install[]}/models/rvc'
+    net : RvcNet [ vk: vk, src: path '{m}/f0G40k.pth', keep_mb: 2048, work_mb: 6144 ]
+    tr : RvcTrain [ vk: vk, net: net ]
+    if [ !tr.valid ] return false
+    vp : path '{dir}/voice.safetensors'
+    if [ !tr.train[ items, 2, 2, vp, 1 ] ] return false
+    want : vec f32 net.gd.download[ net.pm[ 'dec.conv_post.weight' ] ]
+    net.gd.release[]
+    v2 : RvcNet [ vk: vk, src: path '{m}/f0G40k.pth', voice: vp ]
+    if [ !v2.valid ] return false
+    got : vec f32 v2.gd.download[ v2.pm[ 'dec.conv_post.weight' ] ]
+    same : f64 grad_worst[ got, want ]
+    it : RvcItem items[ 0 ]
+    nt : i64 [ 100 ]
+    ph : vec f32 [ nt * 768 ]
+    memcpy[ @ph[ 0 ], @it.phone[ 0 ], nt * 768 * 4 ]
+    pt : vec f32 [ nt ]
+    memcpy[ @pt[ 0 ], @it.pitch[ 0 ], nt * 4 ]
+    pf : vec f32 [ nt ]
+    memcpy[ @pf[ 0 ], @it.pitchf[ 0 ], nt * 4 ]
+    y : vec f32 v2.infer[ ph, pt, pf, 0, null, null ]
+    peak : f32 [ 0.0 ]
+    bad : bool [ false ]
+    for [ i: i64 0, i < y.count, i += 1 ]
+        if [ y[ i ] != y[ i ] ] bad = true
+        if [ fabsf[ y[ i ] ] > peak ] peak = fabsf[ y[ i ] ]
+    log 'rvc train loop: saved and reloaded (weight difference {same}); converted {y.count} samples, peak {peak}, nan {bad}'
+    ok9 : bool [ same == 0.0 && !bad && y.count == nt * 400 ]
+    v2.gd.release[]
+    return ok9
+
+# a stopped run picks up where its last checkpoint left it
+expect func t_rvc_train_resume [] -> bool
+    ge : cstr [ getenv[ 'COMPOSER_RVC_PREP' ] ]
+    if [ !ge ] return true
+    dir : string [ ge ]
+    vk : vk_context []
+    Au.hold[ vk ]
+    disp : Display [ vk: vk, format: Pixel.rgba8, backbuffer: true, width: 64, height: 64 ]
+    Au.hold[ disp ]
+    pp : RvcPrep [ vk: vk ]
+    items : vec RvcItem pp.prepare[ path '{dir}/clip.wav' ]
+    pp.release[]
+    if [ items.count == 0 ] return false
+    m : path '{path.path_install[]}/models/rvc'
+    cp : path '{dir}/resume.safetensors'
+    na : RvcNet [ vk: vk, src: path '{m}/f0G40k.pth', keep_mb: 2048, work_mb: 6144 ]
+    ta : RvcTrain [ vk: vk, net: na ]
+    if [ !ta.valid || !ta.train[ items, 2, 2, cp, 1 ] ] return false
+    ga : vec f32 na.gd.download[ na.pm[ 'dec.conv_post.weight' ] ]
+    da : vec f32 na.gd.download[ ta.dsc.pm[ 'discriminators.3.convs.2.weight_v' ] ]
+    ma : vec f32 na.gd.download[ ta.og.ms[ 5 ] ]
+    va : vec f32 na.gd.download[ ta.od.vs[ 7 ] ]
+    sa : i64 [ ta.og.step ]
+    na.gd.release[]
+    nb : RvcNet [ vk: vk, src: path '{m}/f0G40k.pth', keep_mb: 2048, work_mb: 6144 ]
+    tb : RvcTrain [ vk: vk, net: nb ]
+    if [ !tb.valid ] return false
+    at : i32 tb.resume[ cp ]
+    gb : vec f32 nb.gd.download[ nb.pm[ 'dec.conv_post.weight' ] ]
+    db : vec f32 nb.gd.download[ tb.dsc.pm[ 'discriminators.3.convs.2.weight_v' ] ]
+    mb : vec f32 nb.gd.download[ tb.og.ms[ 5 ] ]
+    vb : vec f32 nb.gd.download[ tb.od.vs[ 7 ] ]
+    diff : f64 [ grad_worst[ ga, gb ] + grad_worst[ da, db ] + grad_worst[ ma, mb ] + grad_worst[ va, vb ] ]
+    more : bool tb.train[ items, 3, 2, cp, 1 ]
+    log 'rvc train resume: after epoch {at}, steps {sa}/{tb.og.step}, difference {diff}, then to epoch {tb.done}'
+    nb.gd.release[]
+    return at == 2 && diff == 0.0 && more && tb.done == 3
+
+# 8 s through the synthesizer in the default arenas (lean decoder)
+expect func t_rvc_infer_long [] -> bool
+    ge : cstr [ getenv[ 'COMPOSER_RVC_GOLD' ] ]
+    if [ !ge ] return true
+    vk : vk_context []
+    Au.hold[ vk ]
+    disp : Display [ vk: vk, format: Pixel.rgba8, backbuffer: true, width: 64, height: 64 ]
+    Au.hold[ disp ]
+    net : RvcNet [ vk: vk, src: path '{path.path_install[]}/models/rvc/f0G40k.pth' ]
+    if [ !net.valid ] return false
+    nt : i64 [ 800 ]
+    ph : vec f32 rvc_randn[ nt * 768 ]
+    pt : vec f32 [ nt ]
+    pf : vec f32 [ nt ]
+    for [ t: i64 0, t < nt, t += 1 ]
+        pf[ t ] = f32[ 120.0 + 40.0 * sin[ f64[ t ] * 0.02 ] ]
+        pt[ t ] = 40.0
+    t0 : i64 [ Au.epoch_millis[] ]
+    y : vec f32 net.infer[ ph, pt, pf, 0, null, null ]
+    ms : i64 [ Au.epoch_millis[] - t0 ]
+    log 'rvc infer long: {y.count} samples ({y.count / 40000} s) in {ms} ms, arena top {net.gd.work.top / 1048576} MB'
+    ok9 : bool [ y.count == nt * 400 ]
+    net.gd.release[]
+    return ok9
+
+# the retrieval index's blend vs an exact numpy search
+expect func t_rvc_index [] -> bool
+    ge : cstr [ getenv[ 'COMPOSER_RVC_INDEX' ] ]
+    if [ !ge ] return true
+    dir : string [ ge ]
+    vk : vk_context []
+    Au.hold[ vk ]
+    disp : Display [ vk: vk, format: Pixel.rgba8, backbuffer: true, width: 64, height: 64 ]
+    Au.hold[ disp ]
+    gd : Grad [ vk: vk, keep_mb: 64, work_mb: 256 ]
+    ix : RvcIndex [ gd: gd ]
+    rows : vec f32 floats_of[ path '{dir}/rows.f32' ]
+    if [ !ix.load[ rows ] ] return false
+    q : vec f32 floats_of[ path '{dir}/q.f32' ]
+    got : vec f32 ix.blend[ q, 0.75 ]
+    want : vec f32 floats_of[ path '{dir}/blend.f32' ]
+    w9 : f64 grad_worst[ got, want ]
+    log 'rvc index: 50 queries over 5000 rows, worst {w9}'
+    ok9 : bool [ w9 < 0.001 ]
+    gd.release[]
+    return ok9
+
+# train_voice keeps checkpoints in .part until the last epoch
+expect func t_rvc_train_voice [] -> bool
+    ge : cstr [ getenv[ 'COMPOSER_RVC_PREP' ] ]
+    if [ !ge ] return true
+    dir : string [ ge ]
+    clip : path '{dir}/clip.wav'
+    mp : path '{dir}/voices/clip.rvc.safetensors'
+    part : path '{dir}/voices/clip.rvc.safetensors.part'
+    fp0 : string '{dir}/voices/clip.fp'
+    unlink[ fp0.chars ]
+    vk : vk_context []
+    Au.hold[ vk ]
+    disp : Display [ vk: vk, format: Pixel.rgba8, backbuffer: true, width: 64, height: 64 ]
+    Au.hold[ disp ]
+    c : Composer [ take: clip, kept: vec Kept [], overlays: vec Overlay [],
+        problems: vec string [], voice_dir: path '{dir}/voices' ]
+    got : path c.train_voice[ clip, 1, disp ]
+    for [ p: string ] in c.problems
+        log 'rvc train voice: {p}'
+    ix : path '{mp}.index'
+    fpp : path '{dir}/voices/clip.fp'
+    t1 : i64 [ mp.modified_time[] ]
+    # the same clip by name again: no training, the same file
+    again : path c.train_voice[ clip, 1, disp ]
+    same : bool [ again && mp.modified_time[] == t1 ]
+    log 'rvc train voice: model {mp.exists[]}, part {part.exists[]}, index {ix.exists[]}, fingerprint {fpp.exists[]}, reused {same}'
+    return got && mp.exists[] && !part.exists[] && ix.exists[] && fpp.exists[] && same
+
+# rvc's whole pipeline on a 22 s clip with a trained voice
+# (COMPOSER_RVC_PREP: clip.wav and the voice the loop test saved)
+expect func t_rvc_pipeline [] -> bool
+    ge : cstr [ getenv[ 'COMPOSER_RVC_PREP' ] ]
+    if [ !ge ] return true
+    dir : string [ ge ]
+    vp : path '{dir}/voice.safetensors'
+    if [ !vp.exists[] ] return true
+    vk : vk_context []
+    Au.hold[ vk ]
+    disp : Display [ vk: vk, format: Pixel.rgba8, backbuffer: true, width: 64, height: 64 ]
+    Au.hold[ disp ]
+    rv : RvcVoice [ vk: vk, model: vp ]
+    if [ !rv.valid ] return false
+    ac : AudioClip voice_clip[ path '{dir}/clip.wav' ]
+    mono : vec f32 [ ac.frames ]
+    for [ i: i64 0, i < ac.frames, i += 1 ]
+        mono[ i ] = f32[ ac.pcm[ i ] ] / 32768.0
+    a16 : vec f32 resample_sinc[ mono, ac.rate, 16000 ]
+    t0 : i64 [ Au.epoch_millis[] ]
+    y : vec f32 rv.speak[ a16, 48000 ]
+    ms : i64 [ Au.epoch_millis[] - t0 ]
+    peak : f32 [ 0.0 ]
+    bad : bool [ false ]
+    for [ i: i64 0, i < y.count, i += 1 ]
+        if [ y[ i ] != y[ i ] ] bad = true
+        if [ fabsf[ y[ i ] ] > peak ] peak = fabsf[ y[ i ] ]
+    want : f64 [ f64[ a16.count ] / 16000.0 ]
+    got : f64 [ f64[ y.count ] / 48000.0 ]
+    log 'rvc pipeline: {want} s in, {got} s out at 48 kHz, {ms} ms, peak {peak}, nan {bad}'
+    ok9 : bool [ !bad && fabs[ got - want ] < 0.05 && peak < 1.0 ]
+    rv.gd.release[]
+    return ok9
 
 # decodes an h.265 take (COMPOSER_HEVC) to planar yuv at
 # COMPOSER_HEVC_OUT, for a byte comparison with a reference decode

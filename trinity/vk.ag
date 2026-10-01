@@ -1116,6 +1116,11 @@ class vk_context
         return cast handle [ command_pool ]
     public func compute_queue_handle [] -> handle
         return cast handle [ compute_queue ]
+    # nanoseconds per gpu timestamp tick
+    public func timestamp_ns [] -> f32
+        dp : VkPhysicalDeviceProperties
+        vkGetPhysicalDeviceProperties[ physical_device, @dp ]
+        return dp.limits.timestampPeriod
     public func compute_pool_handle [] -> handle
         return cast handle [ compute_pool ]
     # one reused command buffer for immediate (out-of-band) layout
@@ -4584,6 +4589,17 @@ class Buffer
             vmaDestroyBuffer[ vk.allocator, vk_buffer, vma_alloc ]
             vk_buffer = null
             vma_alloc = null
+
+    # the gpu address of the first byte; the buffer needs u_shader
+    func address [] -> u64
+        info : VkBufferDeviceAddressInfo [
+            sType:  VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
+            buffer: vk_buffer ]
+        return u64[ vkGetBufferDeviceAddress[ vk.device, info ] ]
+
+    # the vulkan buffer, for copies recorded outside trinity
+    func buffer_handle [] -> handle
+        return cast handle [ vk_buffer ]
 
 
 class Texture
