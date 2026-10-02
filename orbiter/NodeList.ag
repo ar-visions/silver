@@ -1173,14 +1173,24 @@ Control TaskBar
             if [ e9 && e9.run_view == av ] return e9
         return null
 
-    # only instances whose app has named itself
+    # the instances started here: never a held one or a viewer
     func tasks [] -> vec AppView
         li : vec AppView inst_list[]
         r  : vec AppView []
         if [ !li ] return r
         for [ av9: AppView ] in li
-            if [ av9.app_title && av9.app_title.count > 0 ] r.push[ av9 ]
+            if [ !av9.viewer && !av9.held && av9.started ] r.push[ av9 ]
         return r
+
+    # the app's own title, else its module and its argument's stem
+    func task_label [ av: AppView ] -> string
+        if [ av.app_title && av.app_title.count > 0 ] return av.app_title
+        orb : cast orbiter [ ux.app_object ]
+        md9 : string (av.app_mod && av.app_mod.count > 0) ? av.app_mod : ((av.src) ? av.src.stem[] : '')
+        da9 : string (orb) ? orb.default_arg_of[ av.module_args ] : ''
+        if [ da9.count == 0 ] return md9
+        dp9 : path da9
+        return '{md9}  {dp9.stem[]}'
 
     # six bar heights a task
     func task_w [] -> f32
@@ -1331,7 +1341,7 @@ Control TaskBar
             cv.font_size[ 13 ]
             cv.fill_color[ rgba [ '#e8e2f5' ] ]
             nr9 : rect [ x: x8 + rh, y: 0.0, w: tw - rh * 2.0, h: rh ]
-            cv.draw_text[ av9.app_title, nr9, vec2f [ 0.0, 0.5 ],
+            cv.draw_text[ task_label[ av9 ], nr9, vec2f [ 0.0, 0.5 ],
                 vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null ]
             # the close: a 16px ring the pointer lights, an x inside
             cx9 : f32 [ x8 + tw - round[ rh * 0.5 ] ]
