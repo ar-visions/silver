@@ -141,6 +141,8 @@ class ColorRegion
     # where the name's type is declared, from the same map
     public tsrc  : string
     public tline : i32 [ 0 ]
+    # the type's name: a loaded type lists its members from the runtime
+    public tname : string
 
 class EdLineCache
     mutable canvas : Canvas
@@ -3615,7 +3617,7 @@ Control Editor
         if [ !cur_buf || !cur_buf.line_regs ] return 0
         if [ ml < 0 || ml >= cur_buf.line_regs.count ] return 0
         regs : vec i32 cur_buf.line_regs[ ml ]
-        return (regs) ? regs.count / 7 : 0
+        return (regs) ? regs.count / 8 : 0
 
     # one scratch region, filled from the packed ints: read it before
     # the next call, never keep it
@@ -3623,7 +3625,7 @@ Control Editor
         regs : vec i32 cur_buf.line_regs[ ml ]
         if [ !reg_scratch ] reg_scratch = ColorRegion []
         cr : ColorRegion reg_scratch
-        b  : i32 [ k * 7 ]
+        b  : i32 [ k * 8 ]
         cr.col   = i32[ regs[ b ] ]
         cr.len   = i32[ regs[ b + 1 ] ]
         cr.kind  = i32[ regs[ b + 2 ] ]
@@ -3633,6 +3635,8 @@ Control Editor
         ti : i32 [ i32[ regs[ b + 5 ] ] ]
         cr.tsrc  = (ti > 0 && cur_buf.decl_files && ti <= cur_buf.decl_files.count) ? cur_buf.decl_files[ ti - 1 ] : null
         cr.tline = i32[ regs[ b + 6 ] ]
+        ni : i32 [ i32[ regs[ b + 7 ] ] ]
+        cr.tname = (ni > 0 && cur_buf.decl_files && ni <= cur_buf.decl_files.count) ? cur_buf.decl_files[ ni - 1 ] : null
         cr.color = fmt_theme[ cr.kind ]
         return cr
 
@@ -3655,7 +3659,7 @@ Control Editor
         d : i32 [ after.count - before.count ]
         e : i32 [ before.count - s ]
         kept : vec i32 []
-        for [ ri: i32 0, ri < regs.count, ri += 7 ]
+        for [ ri: i32 0, ri < regs.count, ri += 8 ]
             c0 : i32 [ i32[ regs[ ri ] ] ]
             l0 : i32 [ i32[ regs[ ri + 1 ] ] ]
             if [ l0 < 0 || c0 < 0 || c0 + l0 > before.count ] continue
@@ -3673,6 +3677,7 @@ Control Editor
             dl : i32 [ i32[ regs[ ri + 4 ] ] ]
             tf : i32 [ i32[ regs[ ri + 5 ] ] ]
             tl : i32 [ i32[ regs[ ri + 6 ] ] ]
+            tn : i32 [ i32[ regs[ ri + 7 ] ] ]
             kept.push[ nc ]
             kept.push[ l0 ]
             kept.push[ kd ]
@@ -3680,6 +3685,7 @@ Control Editor
             kept.push[ dl ]
             kept.push[ tf ]
             kept.push[ tl ]
+            kept.push[ tn ]
         cur_buf.line_regs[ i ] = regs_by_column[ kept ]
 
     # a copy of a line's tokens at or after column `from`
@@ -3688,10 +3694,10 @@ Control Editor
         if [ !cur_buf || !cur_buf.line_regs || i < 0 || i >= cur_buf.line_regs.count ] return out
         regs : vec i32 cur_buf.line_regs[ i ]
         if [ !regs ] return out
-        for [ ri: i32 0, ri < regs.count, ri += 7 ]
+        for [ ri: i32 0, ri < regs.count, ri += 8 ]
             c0 : i32 [ i32[ regs[ ri ] ] ]
             if [ c0 < from ] continue
-            for [ f: i32 0, f < 7, f += 1 ]
+            for [ f: i32 0, f < 8, f += 1 ]
                 v : i32 [ i32[ regs[ ri + f ] ] ]
                 out.push[ v ]
         return out
@@ -3701,10 +3707,10 @@ Control Editor
         if [ !cur_buf || !cur_buf.line_regs || i < 0 || i >= cur_buf.line_regs.count ] return
         if [ moved.count == 0 ] return
         out : vec i32 []
-        for [ ri: i32 0, ri < moved.count, ri += 7 ]
+        for [ ri: i32 0, ri < moved.count, ri += 8 ]
             c0 : i32 [ i32[ moved[ ri ] ] + shift ]
             out.push[ c0 ]
-            for [ f: i32 1, f < 7, f += 1 ]
+            for [ f: i32 1, f < 8, f += 1 ]
                 v : i32 [ i32[ moved[ ri + f ] ] ]
                 out.push[ v ]
         cur_buf.line_regs[ i ] = out
@@ -3717,7 +3723,7 @@ Control Editor
             if [ ln[ c ] != name[ 0 ] ] continue
             if [ ln.mid[ c, nl ] != name ] continue
             free : bool [ true ]
-            for [ ki: i32 0, ki < kept.count, ki += 7 ]
+            for [ ki: i32 0, ki < kept.count, ki += 8 ]
                 k0 : i32 [ i32[ kept[ ki ] ] ]
                 k1 : i32 [ k0 + i32[ kept[ ki + 1 ] ] ]
                 if [ c < k1 && c + nl > k0 ] free = false
@@ -3729,7 +3735,7 @@ Control Editor
 
     # regions in column order (the found ones can land out of order)
     func regs_by_column [ r: vec i32 ] -> vec i32
-        n : i32 [ r.count / 7 ]
+        n : i32 [ r.count / 8 ]
         out : vec i32 []
         used : vec i32 [ n ]
         for [ u: i32 0, u < n, u += 1 ] used.push[ 0 ]
@@ -3739,13 +3745,13 @@ Control Editor
             for [ q: i32 0, q < n, q += 1 ]
                 uq : i32 [ i32[ used[ q ] ] ]
                 if [ uq != 0 ] continue
-                cq : i32 [ i32[ r[ q * 7 ] ] ]
+                cq : i32 [ i32[ r[ q * 8 ] ] ]
                 if [ pick < 0 || cq < pc ]
                     pick = q
                     pc   = cq
             used[ pick ] = 1
-            for [ f: i32 0, f < 7, f += 1 ]
-                vf : i32 [ i32[ r[ pick * 7 + f ] ] ]
+            for [ f: i32 0, f < 8, f += 1 ]
+                vf : i32 [ i32[ r[ pick * 8 + f ] ] ]
                 out.push[ vf ]
         return out
 
@@ -3795,12 +3801,13 @@ Control Editor
         for [ li: i32 0, li < nl, li += 1 ]
             ltk  : vec fmt_token lns[ li ]
             nt   : i32 [ ltk.count ]
-            n7   : i32 [ nt * 7 ]
-            regs : vec i32 [ n7 ]
+            n8   : i32 [ nt * 8 ]
+            regs : vec i32 [ n8 ]
             for [ ti: i32 0, ti < nt, ti += 1 ]
                 tk : fmt_token ltk[ ti ]
                 di : i32 [ decl_file_ix[ buf, dix, tk.decl_source ] ]
                 ty : i32 [ decl_file_ix[ buf, dix, tk.type_source ] ]
+                tn : i32 [ decl_file_ix[ buf, dix, tk.type_name ] ]
                 regs.push[ i32 tk.column ]
                 regs.push[ i32 tk.length ]
                 regs.push[ i32 tk.syntax ]
@@ -3808,6 +3815,7 @@ Control Editor
                 regs.push[ i32 tk.decl_line ]
                 regs.push[ ty ]
                 regs.push[ i32 tk.type_line ]
+                regs.push[ tn ]
             buf.line_regs.push[ regs ]
 
     # nesting by indentation, for any file: each line's parent is the
