@@ -2206,7 +2206,7 @@ declare_class_4(const_tokens, tokens, array, collective)
 // the .f wire format. ONE definition: the writer lives in silver.c and the
 // reader in Au.c, and a version that moved on only one side would either
 // reject every map or silently misparse it
-#define SILVER_FMT_VERSION  4u            // v4: line-major records
+#define SILVER_FMT_VERSION  5u            // v5: each token's type location
 #define SILVER_FMT_MAGIC    0x53464D54u   // 'SFMT'
 #define SILVER_FMT_SECTION  0xC0DEFACEu
 #define SILVER_FMT_END      0x00000000u
@@ -2216,7 +2216,9 @@ declare_class_4(const_tokens, tokens, array, collective)
     M(AA,BB, i, prop, public, num,    length) \
     M(AA,BB, i, prop, public, Syntax, syntax) \
     M(AA,BB, i, prop, public, string, decl_source) \
-    M(AA,BB, i, prop, public, num,    decl_line)
+    M(AA,BB, i, prop, public, num,    decl_line) \
+    M(AA,BB, i, prop, public, string, type_source) \
+    M(AA,BB, i, prop, public, num,    type_line)
 declare_class(fmt_token)
 
 // one file's section of the map: canonical source path, its mtime, and its

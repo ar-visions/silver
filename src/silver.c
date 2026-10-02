@@ -1794,6 +1794,32 @@ static void prepare_record_cb(Au a_au, Au t_au) {
 
 static void fmt_u32(FILE* f, u32 v) { fwrite(&v, 4, 1, f); }
 
+// the declared type of a name (a variable's or member's type, or a
+// type itself), walked through pointers to one with a source line
+static Au_t fmt_type_of(Au_t d) {
+    if (!d) return null;
+    Au_t t = d;
+    if (d->member_type == AU_MEMBER_VAR) {
+        // a collection's members are its element's: vec T, map T [K]
+        if (d->meta.a && d->meta.a->source) t = d->meta.a;
+        else t = d->src;
+    }
+    for (int i = 0; t && i < 8; i++) {
+        if (!t->is_pointer && t->source && t->src_line > 0 &&
+            (t->member_type == AU_MEMBER_TYPE || t->member_type == AU_MEMBER_NONE))
+            return t;
+        if (t->meta.a && t->meta.a != t) { t = t->meta.a; continue; }
+        t = t->src;
+    }
+    return null;
+}
+
+// a declaring file's 1-based index in the section's table
+static u32 fmt_path_ix(cstr* dp, u32 np, cstr p) {
+    for (u32 i = 0; i < np; i++) if (strcmp(dp[i], p) == 0) return i + 1;
+    return 0;
+}
+
 typedef struct fmt_sec { char* path; unsigned char* buf; unsigned len; i64 mtime; } fmt_sec;
 static fmt_sec* fmt_secs = null;
 static int      fmt_nsec = 0;
@@ -1840,23 +1866,23 @@ static unsigned char* fmt_serialize(fmt_file ff, u32* out_total) {
     vector* lns    = lv ? (vector*)lv->origin : null;
     u32  n = 0;
     for (u32 L = 0; L < nlines; L++) n += (u32)lns[L]->count;
-    cstr* dp = calloc(n ? n : 1, sizeof(cstr));
+    cstr* dp = calloc(n ? n * 2 : 1, sizeof(cstr));
     u32   np = 0;
     for (u32 L = 0; L < nlines; L++) {
         u32        nt  = (u32)lns[L]->count;
         fmt_token* tks = (fmt_token*)lns[L]->origin;
         for (u32 t = 0; t < nt; t++) {
             fmt_token tk = tks[t];
-            if (!tk->decl_source) continue;
-            bool have = false;
-            for (u32 i = 0; i < np; i++) if (strcmp(dp[i], tk->decl_source->chars) == 0) { have = true; break; }
-            if (!have) dp[np++] = tk->decl_source->chars;
+            if (tk->decl_source && !fmt_path_ix(dp, np, tk->decl_source->chars))
+                dp[np++] = tk->decl_source->chars;
+            if (tk->type_source && !fmt_path_ix(dp, np, tk->type_source->chars))
+                dp[np++] = tk->type_source->chars;
         }
     }
     u32 ptotal = 4;
     for (u32 i = 0; i < np; i++) ptotal += 4 + (u32)strlen(dp[i]);
 
-    u32  total = 4 + 4 + cl + 8 + ptotal + 4 + nlines * 4 + n * 20;
+    u32  total = 4 + 4 + cl + 8 + ptotal + 4 + nlines * 4 + n * 28;
     unsigned char* b = malloc(total);
     u32 o = 0;
     #define SP(v) do { u32 _v = (u32)(v); memcpy(b + o, &_v, 4); o += 4; } while (0)
@@ -1877,12 +1903,10 @@ static unsigned char* fmt_serialize(fmt_file ff, u32* out_total) {
         SP(nt);
         for (u32 t = 0; t < nt; t++) {
             fmt_token tk = tks[t];
-            i32 px = 0;
-            if (tk->decl_source)
-                for (u32 i = 0; i < np; i++)
-                    if (strcmp(dp[i], tk->decl_source->chars) == 0) { px = (i32)i + 1; break; }
+            u32 px = tk->decl_source ? fmt_path_ix(dp, np, tk->decl_source->chars) : 0;
+            u32 tx = tk->type_source ? fmt_path_ix(dp, np, tk->type_source->chars) : 0;
             SP(tk->column); SP(tk->length); SP(tk->syntax);
-            SP(px); SP(tk->decl_line);
+            SP(px); SP(tk->decl_line); SP(tx); SP(tk->type_line);
         }
     }
     #undef SP
@@ -1955,14 +1979,15 @@ void silver_write_fmt(silver a, array toks) {
     // ever offers a candidate -- the editor is free to find nothing
     // declaring files interned once; each token names one by index. the
     // Au_t was stamped on the token as it parsed -- nothing resolves here
-    cstr* dp = calloc(n ? n : 1, sizeof(cstr));
+    cstr* dp = calloc(n ? n * 2 : 1, sizeof(cstr));
     u32   np = 0;
     each(toks, token, t) {
         Au_t d = t->decl;
-        if (!d || !d->source || d->src_line <= 0) continue;
-        bool have = false;
-        for (u32 i = 0; i < np; i++) if (strcmp(dp[i], d->source) == 0) { have = true; break; }
-        if (!have) dp[np++] = d->source;
+        if (!d) continue;
+        if (d->source && d->src_line > 0 && !fmt_path_ix(dp, np, d->source))
+            dp[np++] = d->source;
+        Au_t ty = fmt_type_of(d);
+        if (ty && !fmt_path_ix(dp, np, ty->source)) dp[np++] = ty->source;
     }
     u32 ptotal = 4;
     for (u32 i = 0; i < np; i++) ptotal += 4 + (u32)strlen(dp[i]);
@@ -1974,7 +1999,7 @@ void silver_write_fmt(silver a, array toks) {
     u32  nv = 0;
     each(toks, token, t) if (t->line >= 1) { lcount[t->line - 1]++; nv++; }
 
-    u32  total = 4 + 4 + cl + 8 + ptotal + 4 + nlines * 4 + nv * 20;
+    u32  total = 4 + 4 + cl + 8 + ptotal + 4 + nlines * 4 + nv * 28;
     unsigned char* b = malloc(total);
     u32 o = 0;
     #define FMT_PUT(v) do { u32 _v = (u32)(v); memcpy(b + o, &_v, 4); o += 4; } while (0)
@@ -1995,7 +2020,7 @@ void silver_write_fmt(silver a, array toks) {
     for (u32 L = 0; L < nlines; L++) {
         memcpy(b + o, &lcount[L], 4);
         tpos[L] = o + 4;
-        o += 4 + lcount[L] * 20;
+        o += 4 + lcount[L] * 28;
     }
     each(toks, token, t) {
         if (t->line < 1) continue;
@@ -2006,9 +2031,12 @@ void silver_write_fmt(silver a, array toks) {
                 if (strcmp(dp[i], d->source) == 0) { px = i + 1; break; }
             dln = (u32)d->src_line;
         }
-        u32 rec[5] = { (u32)t->column, (u32)len(t), (u32)t->syntax, px, dln };
-        memcpy(b + tpos[t->line - 1], rec, 20);
-        tpos[t->line - 1] += 20;
+        Au_t ty = fmt_type_of(d);
+        u32  tx = ty ? fmt_path_ix(dp, np, ty->source) : 0;
+        u32  tln = ty ? (u32)ty->src_line : 0;
+        u32 rec[7] = { (u32)t->column, (u32)len(t), (u32)t->syntax, px, dln, tx, tln };
+        memcpy(b + tpos[t->line - 1], rec, 28);
+        tpos[t->line - 1] += 28;
     }
     #undef FMT_PUT
     free(tpos);
@@ -12883,7 +12911,12 @@ static array read_expression(silver a, etype *mdl_res, bool *is_const) {
     a->no_build = true;
     a->is_const_op = true; // set this, and it can only &= to true with const ops; any build op sets to false
     bool use_hint = mdl_res && *mdl_res;
+    // read as the builders replay it: the expression starts its own
+    // statement, so a line-bound form (a bracketless cast) reads alike
+    token prev_origin = a->statement_origin;
+    a->statement_origin = peek(a);
     enode n = parse_expression(a, use_hint ? *mdl_res : null, use_hint, true);
+    a->statement_origin = prev_origin;
     if (mdl_res)
         *mdl_res = (etype)n;
     a->no_build = prev_no_build;

@@ -1,6 +1,7 @@
 # fcfg — a module whose members are configuration inputs.
 # module-scope members are set by the IMPORTER and read-only within
 export 1.0.0
+export icon ['tune']
 
 public greeting : string 'default-greeting'
 public scale    : i32 [ 2 ]

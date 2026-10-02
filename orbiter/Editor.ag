@@ -138,6 +138,9 @@ class ColorRegion
     # function is not a type, so no registry lookup can find it
     public dsrc  : string
     public dline : i32 [ 0 ]
+    # where the name's type is declared, from the same map
+    public tsrc  : string
+    public tline : i32 [ 0 ]
 
 class EdLineCache
     mutable canvas : Canvas
@@ -479,6 +482,7 @@ ResourceView ImageView
 ResourceView AppView
     mutable slot       : i32 [ -1 ]  # our channel slot at silver-host
     mutable app_mod    : string      # module name (orbiter resolves its binary to attach)
+    mutable arg_text   : string      # its live argument, as last sent
     public  nav_back_on : bool       # the app's history, as it last said
     public  nav_fwd_on  : bool
     public  app_title   : string     # the app's own title, shown on the pane
@@ -534,7 +538,6 @@ ResourceView AppView
     # the display's pixels per point: the app's texture is in device pixels,
     # the pane and the app's own events are in points
     mutable ascale     : f32 [ 1.0 ]
-    mutable via_pip    : bool        # the event came through the pip element
     mutable have_frame : bool
     mutable fade_us    : i64
     mutable seen_us    : i64
@@ -571,10 +574,6 @@ ResourceView AppView
     mutable dbg_nh     : i32
     mutable dbg_aw     : i32
     mutable dbg_ah     : i32
-    mutable pipx       : f32
-    mutable pipy       : f32
-    mutable pipw       : f32
-    mutable piph       : f32
 
     func extensions [] -> vec string
         return vec string []
@@ -966,8 +965,6 @@ ResourceView AppView
                 fity = bounds.y + (bounds.h - fh) * 0.5
                 fitw = fw
                 fith = fh
-                pipw = 0.0
-                piph = 0.0
                 cv.draw_image[ ft, rect [ x: fitx, y: fity, w: fitw, h: fith ] ]
             el
                 # the app at its own size (points, not device pixels), cropped
@@ -978,8 +975,6 @@ ResourceView AppView
                 fith = ahp[]
                 cw : f32 [ (bounds.w < fitw) ? bounds.w : fitw ]
                 ch : f32 [ (bounds.h < fith) ? bounds.h : fith ]
-                pipw = 0.0
-                piph = 0.0
                 cv.draw_image_crop[ ft, rect [ x: fitx, y: fity, w: cw, h: ch ],
                     0.0, 0.0, cw / fitw, ch / fith ]
         # no frame yet: say what it is doing instead of drawing nothing
@@ -990,37 +985,11 @@ ResourceView AppView
         service[ cv ]
         draw_frame[ cv, bounds ]
 
-    # the pane's pip: 30% of its width at the picture's shape
-    func draw_pip [ cv: Canvas, bounds: rect ]
-        ar : f32 [ pic_aspect[] ]
-        if [ ar <= 0.0 ] return
-        pw : f32 [ round[ bounds.w * 0.30 ] ]
-        ph : f32 [ round[ pw / ar ] ]
-        draw_pip_in[ cv, rect [ x: bounds.x + bounds.w - pw - 16.0, y: bounds.y + bounds.h - ph - 16.0, w: pw, h: ph ] ]
-
     # width over height of the picture: the app's word, else its frame
     func pic_aspect [] -> f32
         if [ pic_w > 0 && pic_h > 0 ] return f32[ pic_w ] / f32[ pic_h ]
         if [ aw > 0 && ah > 0 ] return f32[ aw ] / f32[ ah ]
         return 0.0
-
-    # the pip at a given rect: the instance panel holds it when it is open
-    func draw_pip_in [ cv: Canvas, r: rect ]
-        ft : Texture front[]
-        # not running yet: the app's last frame from before the switch
-        if [ !ft || !have_frame ] ft = still
-        if [ !ft ] return
-        # the pip keeps its own rect: the embedded view's fit rect stays, since
-        # the pip now shows beside it (input picks the rect under the mouse)
-        pipx = r.x
-        pipy = r.y
-        pipw = r.w
-        piph = r.h
-        cv.draw_image_min[ ft, rect [ x: pipx, y: pipy, w: pipw, h: piph ] ]
-
-    func hit_pip [ x: f32, y: f32 ] -> bool
-        if [ pipw <= 0.0 ] return false
-        return x >= pipx && y >= pipy && x <= pipx + pipw && y <= pipy + piph
 
     # what the shell should SAY about this app right now. null once it is
     # up and drawing — waiting blind is the thing this exists to stop
@@ -1119,6 +1088,8 @@ ResourceView AppView
             ended = true
             note = 'no silver-host supervisor'
             return
+        # orbiter plays its sound: a debugger's pause is silence
+        host_audio_player_start[ slot ]
         root9 : path.path_startup[]
         cmd = 'tail -n +1 -F {root9}/install/tmp/{mod}.{slot}.log'
 
@@ -1146,19 +1117,12 @@ ResourceView AppView
         act : i32 [ (ev.key.state) ? 1 : 0 ]
         host_post2[ slot, 1, i32[ HM.key ], i32[ ev.key.unicode ], act, mods ]
 
-    # where the app is on screen right now: maximised draws through the
-    # fit rect, small through the pip. one of them is live, never both
+    # where the app is on screen right now
     func view_rect [] -> rect
-        if [ fitw > 0.0 ] return rect [ x: fitx, y: fity, w: fitw, h: fith ]
-        return rect [ x: pipx, y: pipy, w: pipw, h: piph ]
+        return rect [ x: fitx, y: fity, w: fitw, h: fith ]
 
-    # the pip's rect when the pip element forwarded this event, else the
-    # embedded view's (the two are in different elements' spaces, so a
-    # position test cannot tell them apart)
     func view_rect_at [ x: f32, y: f32 ] -> rect
-        if [ via_pip ] return rect [ x: pipx, y: pipy, w: pipw, h: piph ]
-        if [ fitw > 0.0 ] return rect [ x: fitx, y: fity, w: fitw, h: fith ]
-        return rect [ x: pipx, y: pipy, w: pipw, h: piph ]
+        return rect [ x: fitx, y: fity, w: fitw, h: fith ]
 
     func view_press [ ev: Event ] -> bool
         if [ ended ]
@@ -1277,6 +1241,7 @@ ResourceView AppView
         # and the frozen app loops its sound. it ends it only if still there
         dbg9 : bool [ debugger && debugger.active ]
         if [ dbg9 && !debugger.running ] debugger.cont[]
+        if [ slot > 0 ] host_audio_player_stop[ slot ]
         if [ slot >= 0 ]
             if [ paused ] host_app_resume[ slot ]
             if [ slot > 0 ] host_post2[ slot, 1, i32[ HM.close ], 0, 0, 0 ]
@@ -1615,6 +1580,13 @@ Layer EditorLayer
                 editor.diff_rebuild[ true ]
             el
                 editor.ux.will_animate = true
+        # an app on its way to this pane (its module loading first)
+        # keeps the pane blank too
+        orbw : cast orbiter [ editor.ux.app_object ]
+        coming : bool [ orbw && orbw.pending_show > 0 && orbw.pending_show_pane == editor.pane_index ]
+        if [ editor.app_view || (editor.run_view && editor.run_view.ended) || (!editor.run_view && !coming) ]
+            editor.wait_app = false
+        if [ editor.wait_app ] return
         if [ editor.run_view ]
             # an ended or held app has no live frame: the source shows
             if [ editor.app_view && !editor.show_hits && !editor.stopped[] && !editor.run_view.ended && !editor.run_view.held ]
@@ -1637,6 +1609,8 @@ Layer EditorLayer
                         editor.no_scroll = true
                         editor.run_view.draw_frame[ cv, b2 ]
                         return
+                # the picture fades in over a blank pane, never the code
+                return
         if [ editor.rview && !editor.show_hits ]
             if [ !editor.rview.view_text*[ editor.rview.view_sel ] ]
                 hfs : i32 [ (editor.code_font_size > 0) ? editor.code_font_size : 15 ]
@@ -1962,16 +1936,18 @@ Layer EditorLayer
                     # 1px rules just outside the band, top and bottom
                     if [ !showing && (li == lo || li == hi) ]
                         cv.save[ ]
-                        cv.plain[ ]
-                        cv.hard_edge[ ]
-                        cv.stroke_width[ 0.0 ]
-                        cv.fill_color[ (line_edge) ? line_edge : rgba['#ffffff22'] ]
+                        # stroked, so they take the pointer's near light
+                        editor.ux.near_light_on[ cv, editor, 0.0, 0.0 ]
+                        cv.fill_color[ rgba['#0000'] ]
+                        cv.stroke_color[ (line_edge) ? line_edge : rgba['#ffffff22'] ]
+                        cv.stroke_width[ 1.0 ]
+                        cv.stroke_offset[ 0.0 ]
                         bw9 : f32 [ bounds.w - rin - 1.0 ]
                         if [ li == lo ]
-                            cv.rect_to[ bounds.x, yg - 1.0, bw9, 1.0 ]
+                            cv.rect_to[ bounds.x, yg - 0.5, bw9, 0.0 ]
                             cv.paint[ ]
                         if [ li == hi ]
-                            cv.rect_to[ bounds.x, yg + lh, bw9, 1.0 ]
+                            cv.rect_to[ bounds.x, yg + lh + 0.5, bw9, 0.0 ]
                             cv.paint[ ]
                         cv.restore[ ]
             cv.fill_color[ (line_gutter) ? line_gutter : rgba['#ffffff08'] ]
@@ -2601,13 +2577,6 @@ Layer EditorLayer
 
             cv.restore[ ]
 
-        orbp : cast orbiter [ editor.ux.app_object ]
-        # the side panel holds the selected editor's pip while open
-        li8 : vec AppView editor.instances[]
-        held8 : bool [ orbp && !orbp.inst_hidden && orbp.active_pane == editor.pane_index && li8 && li8.count > 0 ]
-        if [ editor.run_view && !editor.app_view && !editor.show_hits && !editor.stopped[] && !held8 ]
-            editor.run_view.draw_pip[ cv, bounds ]
-
         cv.clear_crop[ ]
         # the file's git state laid inside the scrollbar's track as rails:
         # where the added (green), changed (blue) and removed (red) runs sit
@@ -2856,6 +2825,8 @@ Control Editor
     mutable view_thumbs   : map Canvas[string]
     mutable run_view      : AppView          # the selected instance: shown and debugged
     mutable app_view      : bool
+    # the dock asked for the app: blank, no code, until it shows
+    mutable wait_app      : bool
     mutable session_view  : string
     mutable saved_scroll  : f32
     intern static view_registry : map Au_t[string]
@@ -2917,9 +2888,12 @@ Control Editor
     mutable edit_cl       : i32 [ -1 ]
     mutable edit_cc       : i32 [ -1 ]
     mutable stop_line     : i32 [ -1 ]
+    # where the stopped line sits on screen, px from the top
+    mutable stop_y        : f32 [ -1.0 ]
     mutable stop_col      : i32 [ -1 ]
     mutable stop_pending  : i32          # a debugger stop line waiting for its file to load
     mutable goto_pending  : i32          # a navigation's 1-based line waiting for its file to load
+    mutable caret_touch   : i64          # the user's own presses and keys here, counted
     mutable arrive_pending : bool        # a navigation opened this file: its arrival is a nav point
     mutable stop_pending_col : i32
     public  debug_running : bool
@@ -3641,7 +3615,7 @@ Control Editor
         if [ !cur_buf || !cur_buf.line_regs ] return 0
         if [ ml < 0 || ml >= cur_buf.line_regs.count ] return 0
         regs : vec i32 cur_buf.line_regs[ ml ]
-        return (regs) ? regs.count / 5 : 0
+        return (regs) ? regs.count / 7 : 0
 
     # one scratch region, filled from the packed ints: read it before
     # the next call, never keep it
@@ -3649,13 +3623,16 @@ Control Editor
         regs : vec i32 cur_buf.line_regs[ ml ]
         if [ !reg_scratch ] reg_scratch = ColorRegion []
         cr : ColorRegion reg_scratch
-        b  : i32 [ k * 5 ]
+        b  : i32 [ k * 7 ]
         cr.col   = i32[ regs[ b ] ]
         cr.len   = i32[ regs[ b + 1 ] ]
         cr.kind  = i32[ regs[ b + 2 ] ]
         di : i32 [ i32[ regs[ b + 3 ] ] ]
         cr.dsrc  = (di > 0 && cur_buf.decl_files && di <= cur_buf.decl_files.count) ? cur_buf.decl_files[ di - 1 ] : null
         cr.dline = i32[ regs[ b + 4 ] ]
+        ti : i32 [ i32[ regs[ b + 5 ] ] ]
+        cr.tsrc  = (ti > 0 && cur_buf.decl_files && ti <= cur_buf.decl_files.count) ? cur_buf.decl_files[ ti - 1 ] : null
+        cr.tline = i32[ regs[ b + 6 ] ]
         cr.color = fmt_theme[ cr.kind ]
         return cr
 
@@ -3678,7 +3655,7 @@ Control Editor
         d : i32 [ after.count - before.count ]
         e : i32 [ before.count - s ]
         kept : vec i32 []
-        for [ ri: i32 0, ri < regs.count, ri += 5 ]
+        for [ ri: i32 0, ri < regs.count, ri += 7 ]
             c0 : i32 [ i32[ regs[ ri ] ] ]
             l0 : i32 [ i32[ regs[ ri + 1 ] ] ]
             if [ l0 < 0 || c0 < 0 || c0 + l0 > before.count ] continue
@@ -3694,11 +3671,15 @@ Control Editor
             kd : i32 [ i32[ regs[ ri + 2 ] ] ]
             df : i32 [ i32[ regs[ ri + 3 ] ] ]
             dl : i32 [ i32[ regs[ ri + 4 ] ] ]
+            tf : i32 [ i32[ regs[ ri + 5 ] ] ]
+            tl : i32 [ i32[ regs[ ri + 6 ] ] ]
             kept.push[ nc ]
             kept.push[ l0 ]
             kept.push[ kd ]
             kept.push[ df ]
             kept.push[ dl ]
+            kept.push[ tf ]
+            kept.push[ tl ]
         cur_buf.line_regs[ i ] = regs_by_column[ kept ]
 
     # a copy of a line's tokens at or after column `from`
@@ -3707,10 +3688,10 @@ Control Editor
         if [ !cur_buf || !cur_buf.line_regs || i < 0 || i >= cur_buf.line_regs.count ] return out
         regs : vec i32 cur_buf.line_regs[ i ]
         if [ !regs ] return out
-        for [ ri: i32 0, ri < regs.count, ri += 5 ]
+        for [ ri: i32 0, ri < regs.count, ri += 7 ]
             c0 : i32 [ i32[ regs[ ri ] ] ]
             if [ c0 < from ] continue
-            for [ f: i32 0, f < 5, f += 1 ]
+            for [ f: i32 0, f < 7, f += 1 ]
                 v : i32 [ i32[ regs[ ri + f ] ] ]
                 out.push[ v ]
         return out
@@ -3720,10 +3701,10 @@ Control Editor
         if [ !cur_buf || !cur_buf.line_regs || i < 0 || i >= cur_buf.line_regs.count ] return
         if [ moved.count == 0 ] return
         out : vec i32 []
-        for [ ri: i32 0, ri < moved.count, ri += 5 ]
+        for [ ri: i32 0, ri < moved.count, ri += 7 ]
             c0 : i32 [ i32[ moved[ ri ] ] + shift ]
             out.push[ c0 ]
-            for [ f: i32 1, f < 5, f += 1 ]
+            for [ f: i32 1, f < 7, f += 1 ]
                 v : i32 [ i32[ moved[ ri + f ] ] ]
                 out.push[ v ]
         cur_buf.line_regs[ i ] = out
@@ -3736,7 +3717,7 @@ Control Editor
             if [ ln[ c ] != name[ 0 ] ] continue
             if [ ln.mid[ c, nl ] != name ] continue
             free : bool [ true ]
-            for [ ki: i32 0, ki < kept.count, ki += 5 ]
+            for [ ki: i32 0, ki < kept.count, ki += 7 ]
                 k0 : i32 [ i32[ kept[ ki ] ] ]
                 k1 : i32 [ k0 + i32[ kept[ ki + 1 ] ] ]
                 if [ c < k1 && c + nl > k0 ] free = false
@@ -3748,7 +3729,7 @@ Control Editor
 
     # regions in column order (the found ones can land out of order)
     func regs_by_column [ r: vec i32 ] -> vec i32
-        n : i32 [ r.count / 5 ]
+        n : i32 [ r.count / 7 ]
         out : vec i32 []
         used : vec i32 [ n ]
         for [ u: i32 0, u < n, u += 1 ] used.push[ 0 ]
@@ -3758,13 +3739,13 @@ Control Editor
             for [ q: i32 0, q < n, q += 1 ]
                 uq : i32 [ i32[ used[ q ] ] ]
                 if [ uq != 0 ] continue
-                cq : i32 [ i32[ r[ q * 5 ] ] ]
+                cq : i32 [ i32[ r[ q * 7 ] ] ]
                 if [ pick < 0 || cq < pc ]
                     pick = q
                     pc   = cq
             used[ pick ] = 1
-            for [ f: i32 0, f < 5, f += 1 ]
-                vf : i32 [ i32[ r[ pick * 5 + f ] ] ]
+            for [ f: i32 0, f < 7, f += 1 ]
+                vf : i32 [ i32[ r[ pick * 7 + f ] ] ]
                 out.push[ vf ]
         return out
 
@@ -3786,6 +3767,15 @@ Control Editor
         buf : FileBuf (fcm) ? fcm[ '{p.absolute[]}' ] : null
         return (buf && buf.lines) ? true : false
 
+    # a declaring file's 1-based index in the buffer's table, else 0
+    func decl_file_ix [ buf: FileBuf, dix: map i32 [string], ds: string ] -> i32
+        if [ !ds ] return 0
+        if [ dix.contains[ ds ] ] return dix[ ds ]
+        buf.decl_files.push[ ds ]
+        di : i32 [ buf.decl_files.count ]
+        dix[ ds ] = di
+        return di
+
     # one file's map, from the .f or straight from its handler module
     public func apply_format [ ff: fmt_file ]
         if [ !ff || !ff.source ] return
@@ -3805,24 +3795,19 @@ Control Editor
         for [ li: i32 0, li < nl, li += 1 ]
             ltk  : vec fmt_token lns[ li ]
             nt   : i32 [ ltk.count ]
-            n5   : i32 [ nt * 5 ]
-            regs : vec i32 [ n5 ]
+            n7   : i32 [ nt * 7 ]
+            regs : vec i32 [ n7 ]
             for [ ti: i32 0, ti < nt, ti += 1 ]
                 tk : fmt_token ltk[ ti ]
-                di : i32 [ 0 ]
-                if [ tk.decl_source ]
-                    ds : string tk.decl_source
-                    if [ dix.contains[ ds ] ]
-                        di = dix[ ds ]
-                    el
-                        buf.decl_files.push[ ds ]
-                        di = buf.decl_files.count
-                        dix[ ds ] = di
+                di : i32 [ decl_file_ix[ buf, dix, tk.decl_source ] ]
+                ty : i32 [ decl_file_ix[ buf, dix, tk.type_source ] ]
                 regs.push[ i32 tk.column ]
                 regs.push[ i32 tk.length ]
                 regs.push[ i32 tk.syntax ]
                 regs.push[ di ]
                 regs.push[ i32 tk.decl_line ]
+                regs.push[ ty ]
+                regs.push[ i32 tk.type_line ]
             buf.line_regs.push[ regs ]
 
     # nesting by indentation, for any file: each line's parent is the
@@ -3948,20 +3933,25 @@ Control Editor
     # a debugger stop: the arrow, the scroll, and a navigation entry for it
     public func apply_stop [ lno: i32, col: i32 ]
         sl : i32 [ (lno > 0) ? lno - 1 : 0 ]
-        stop_line = sl
-        stop_col  = col
         lh  : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
         vh  : f32 [ (bounds) ? bounds.h : 600.0 ]
+        # the previous stop's place on screen: the new one lands there
+        if [ stop_line >= 0 ] stop_y = f32[ vis_row[ stop_line ] ] * lh - scroll.y
+        stop_line = sl
+        stop_col  = col
         top : f32 [ f32[ vis_row[ sl ] ] * lh ]
         # the pinned band covers the top rows: a line under it is not in view
         band : f32 [ f32[ pinned_rows[].count ] * lh ]
         foot : f32 [ (err_band_text[]) ? lh : 0.0 ]
-        if [ top < scroll.y + band || top + lh > scroll.y + vh - foot ]
-            scroll.y = top - vh * 0.4
-            if [ scroll.y < 0.0 ] scroll.y = 0.0
-            scroll_target = scroll.y
+        # off screen, or none before: the middle
+        if [ stop_y < band || stop_y + lh > vh - foot ] stop_y = round[ (vh - lh) * 0.5 ]
+        scroll.y = top - stop_y
+        if [ scroll.y < 0.0 ] scroll.y = 0.0
+        scroll_target = scroll.y
         if [ nav && src ] nav.record[ pane_index, '{src.absolute[]}', sl, col, scroll.y ]
         pristine = false
+        # the step buttons ride the stopped line
+        if [ ux ] ux.restyle = true
 
     func line_get [ vr: i32 ] -> string
         if [ show_hits && hits ]
@@ -5015,6 +5005,11 @@ Control Editor
             # an instance stopped in the debugger stays: walking its frames opens other modules
             el [ run_view && src && stop_pending == 0 && !stopped[] && (!run_view.src || '{run_view.src.absolute[]}' != '{src.absolute[]}') ]
                 run_view = null
+            # back on a module: its instance again, the code in view
+            orb7 : cast orbiter [ ux.app_object ]
+            if [ !run_view && src && orb7 ]
+                for [ v7: AppView ] in orb7.instances_of[ src ]
+                    if [ !v7.viewer ] run_view = v7
             app_view    = false
             sel_line    = -1
             anchor_line = -1
@@ -5509,6 +5504,7 @@ Control Editor
         if [ ux ] ux.restyle = true
 
     func on_press [ ev: Event ]
+        caret_touch += 1
         # the error band along the foot: a press goes to its line, nothing else
         ebl : (layers) ? cast EditorLayer [ layers['content'] ] : null
         if [ ebl && ebl.bounds && err_band_text[] ]
@@ -5606,36 +5602,11 @@ Control Editor
             press_tool[ rail9 ]
             ev.no_default = true
             return
-        if [ run_view && !stopped[] ]
-            if [ app_view ]
-                # the pip toggle is a button on the app bar, not a chip
-                # in the corner: every press here belongs to the app
-                if [ run_view.view_press*[ ev ] ]
-                    if [ ux ] ux.set_focus[ a ]
-                    ev.no_default = true
-                    return
-            el
-                # SIDE-PANEL mode draws through draw_frame, so its fit
-                # rect is live and the app is fully visible -- but this
-                # branch only ever tested the pip, so every click on a
-                # side-hosted app went nowhere. view_press bounds-checks
-                # itself against fitw, so the pip case still falls past
-                # double click on the small view maximises it; single
-                # clicks and drags belong to the app itself
-                if [ ev.mouse.double_click ]
-                    if [ run_view.hit_pip[ ev.mouse.pos.x - run_view.vsx, ev.mouse.pos.y - run_view.vsy ] ]
-                        toggle_app_view[]
-                        ev.no_default = true
-                        return
-                if [ run_view.view_press*[ ev ] ]
-                    if [ ux ] ux.set_focus[ a ]
-                    ev.no_default = true
-                    return
-                if [ run_view.hit_pip[ ev.mouse.pos.x - run_view.vsx, ev.mouse.pos.y - run_view.vsy ] ]
-                    toggle_app_view[]
-                    if [ ux ] ux.set_focus[ a ]
-                    ev.no_default = true
-                    return
+        if [ run_view && !stopped[] && app_view ]
+            if [ run_view.view_press*[ ev ] ]
+                if [ ux ] ux.set_focus[ a ]
+                ev.no_default = true
+                return
         if [ rview && !rview.view_text*[ rview.view_sel ] ]
             if [ rview.view_press*[ ev ] ]
                 ev.no_default = true
@@ -6060,7 +6031,9 @@ Control Editor
 
     # the view a history point keeps; the plain editor is ''
     func view_key [] -> string
-        return (view_name) ? view_name : ''
+        # the file's own view (the editor, say) is no view: code level
+        if [ !view_name || view_name == fallback_view_for[ src ] ] return ''
+        return view_name
 
     # the dialog level: the views walked from the editor, the
     # editor ('') first; the code level is nav
@@ -6124,6 +6097,7 @@ Control Editor
 
     func on_key [ ev: Event ]
         note_mod[ ev ]
+        if [ ev.key.state ] caret_touch += 1
         # the finder owns the keyboard while it is up: forwarding to the app
         # ate escape, so the list could not be closed
         ui_keys : bool [ nav_list || show_hits ]

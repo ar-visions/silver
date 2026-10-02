@@ -2647,14 +2647,7 @@ Render Canvas
         path.cubic_to [ c1x, c1y, c2x, c2y, x, y ]
 
     func arc_to [ x1: f32, y1: f32, x2: f32, y2: f32, radius: f32 ]
-        st : CanvasState states[state_depth - 1]
-        path.arc_to [
-            st.transform.apply_x [ x1, y1 ],
-            st.transform.apply_y [ x1, y1 ],
-            st.transform.apply_x [ x2, y2 ],
-            st.transform.apply_y [ x2, y2 ],
-            radius * st.transform.ma
-        ]
+        path.arc_to [ x1, y1, x2, y2, radius ]
 
     func rect_to [ x: f32, y: f32, rw: f32, rh: f32 ]
         path.add_rect [ x, y, rw, rh ]
@@ -2670,17 +2663,14 @@ Render Canvas
 
     func arc [ cx: f32, cy: f32, radius: f32, start_angle: f32,
                end_angle: f32 ]
-        st : states[state_depth - 1]
-        tx : st.transform.apply_x [ cx, cy ]
-        ty : st.transform.apply_y [ cx, cy ]
-        tr : radius * st.transform.ma
         # full circle on an empty path: the analytic rounded-rect SDF
         # (radius = half size), never the polyline edge list
         if [ path.pcount == 0 && end_angle - start_angle >= 6.28 ]
-            path.add_rounded_rect [ tx - tr, ty - tr, tr * 2.0,
-                                    tr * 2.0, tr, tr, tr, tr ]
+            path.add_rounded_rect [ cx - radius, cy - radius,
+                radius * 2.0, radius * 2.0, radius, radius, radius,
+                radius ]
             return
-        path.add_arc [ tx, ty, tr, start_angle, end_angle ]
+        path.add_arc [ cx, cy, radius, start_angle, end_angle ]
 
     # one ring slot: text_max_verts of vec2 pos and vec2 uv
     func text_ring_add []

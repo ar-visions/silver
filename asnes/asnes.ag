@@ -7,6 +7,7 @@ export extensions [
 	'.sfc': FileType.binary,
 	'.spc': FileType.binary
 ]
+export icon ['asnes']
 
 import trinity
 import devices
@@ -646,6 +647,7 @@ element asnes : trinity
 	mutable env_vrw        	: bool              # cached ASNES_VRW_LOG
 	mutable env_dma        	: bool              # cached ASNES_DMA_LOG
 	mutable dbg_t          	: i32               # capped: submodule-3 handler trace
+	mutable titled       : string            # the game the title names
 	intern  echo_out_l     	: f32
 	intern  echo_out_r     	: f32
 	intern  gauss          	: vec i16 [512] [
@@ -4234,6 +4236,10 @@ element asnes : trinity
 
 	public func draw [ w: Window ]
 		if [ w.draw_stage != CanvasType.screen ] return
+		game9 : string (rom) ? rom.stem[] : null
+		if [ game9 && titled != game9 ]
+			titled = game9
+			set_title[ game9 ]
 		# the host sizes a pip to the picture: tell it once
 		if [ !aspect_sent && host_slot[] > 0 ]
 			host_post[ 0, i32[ HM.aspect ], 256, 224, 0 ]

@@ -67,8 +67,9 @@ Option NodeList
         if [ ev.key.meta || ev.key.ctrl ] return
         ev.stop[]
         rel_y : f32 [ ev.mouse.pos.y - content_y ]
-        if [ rel_y < 0.0 ] return
-        idx   : i32 [ visible_index[ i32[ rel_y / row_height ], flt[] ] ]
+        # only the rows' own area: a press below it is no row's
+        if [ rel_y < 0.0 || (view_h > 0.0 && rel_y >= view_h) ] return
+        idx   : i32 [ visible_index[ i32[ (rel_y + scroll.y) / row_height ], flt[] ] ]
         if [ idx < 0 || !row_enabled*[ idx ] ] return
         select[ idx ]
 
@@ -249,6 +250,211 @@ NodeList Callstack
     func render [] -> Elements
         return null
 
+# the members list's header: the type's name and where it lives
+element TypeHead
+    style : CSS {
+        layers.hbar:
+            fill_color: #ffffff0a
+        layers.hdiv:
+            fill_color: #fff2
+            area: l0 b0 r0 h1px
+        layers.face:
+            label_color: #fff
+            label_size: 15
+            label_align: 0.0 0.5
+            label_offset: 8.0 0.0
+    }
+
+# the members list's filter, in a bar the status bar's height
+element FilterField
+    style : CSS {
+        layers.body:
+            fill_color: #0006
+            radius: 6
+            stroke_width: 1
+            stroke_color: #fff1
+        layers.face:
+            label_color: #fff6
+            label_size: 14
+            editable: true
+            label_align: 0.0 0.5
+            label_offset: 8.0 0.0
+        :focused
+            layers.body:
+                stroke_color: #fff3
+            layers.face:
+                label_color: #ffff
+    }
+
+# the clicked name's type: a header, a row per member (a row goes
+# to its line), a filter at the bottom
+NodeList TypeMembers
+    style : CSS {
+        area: l0 t0 r0 b0
+        layers.cbase:
+            fill_color: #202
+            area: l0 t0 r0 b0
+        layers.tdiv:
+            fill_color: #fff2
+            area: l0 t0 r0 h1px
+        layers.content: NodeLayer
+            area: l4px t30px r4px b35px
+            label_size: 15
+            row_spacing: 1.2
+            text_color: #cfe
+            col_w: 120
+    }
+    public file  : path
+    # the type's name and its file:line, for the header
+    public title : string
+    public names : vec string
+    public types : vec string
+    public lines : vec i32
+    # the filter's text as last typed: a remount keeps it
+    mutable filter_text : string
+
+    # a new filter: the rows narrow from the top
+    public func tick [ w: Window ]
+        f9 : string flt[]
+        if [ !f9 ] f9 = ''
+        if [ !filter_text || filter_text != f9 ]
+            filter_text = f9
+            scroll.y = 0.0
+            pristine = false
+
+    func row_count [] -> i32
+        return (names) ? names.count : 0
+
+    func row_col0 [ i: i32 ] -> string
+        return (names && i < names.count) ? names[ i ] : ''
+
+    func row_col1 [ i: i32 ] -> string
+        return (types && i < types.count) ? types[ i ] : ''
+
+    func row_label [ i: i32 ] -> string
+        return '{row_col0[ i ]} {row_col1[ i ]}'
+
+    func activate [ idx: i32 ]
+        orb : cast orbiter [ ux.app_object ]
+        if [ !orb || !file || !lines || idx < 0 || idx >= lines.count ] return
+        orb.open_at_line[ file, orb.active_pane, i32[ lines[ idx ] ] ]
+
+    func render [] -> Elements
+        t : Elements []
+        t['type_head'] = TypeHead [ label: title, area: Region { l0 t0 r0 h30px } ]
+        # focused, the field holds its own text: no edit overwrites it
+        fe9 : element (elements) ? elements[ 'list_filter' ] : null
+        if [ fe9 && ux && ux.focus == fe9 ]
+            t['list_filter'] = FilterField [ label: 'filter', focusable: true,
+                area: Region { l4px b31px r4px h27px } ]
+        el
+            t['list_filter'] = FilterField [ label: 'filter', focusable: true,
+                edit: (filter_text) ? filter_text : '',
+                area: Region { l4px b31px r4px h27px } ]
+        return t
+
+# a type's members read from its declaration: a silver type's
+# lines one indent in, or a C struct's fields between its braces
+class TypeInfo
+    public file  : path
+    # the type's own name, for the list's header
+    public name  : string
+    public names : vec string
+    public types : vec string
+    public lines : vec i32
+
+    # the indent of a line, in columns (a tab is 4)
+    func indent_of [ ln: string ] -> i32
+        n : i32 [ 0 ]
+        for [ k: i32 0, k < ln.count, k += 1 ]
+            if [ ln[ k ] == 32 ] n += 1
+            el [ ln[ k ] == 9 ] n += 4
+            el break
+        return n
+
+    # the last word of a text: a name before its type
+    func last_word [ t: string ] -> string
+        e : i32 [ t.count - 1 ]
+        while [ e >= 0 && !word_char[ i32[ t[ e ] ] ] ] e -= 1
+        b : i32 [ e ]
+        while [ b > 0 && word_char[ i32[ t[ b - 1 ] ] ] ] b -= 1
+        return (e >= 0) ? t.mid[ b, e - b + 1 ] : ''
+
+    func word_char [ c: i32 ] -> bool
+        return (c >= 48 && c <= 57) || (c >= 65 && c <= 90) ||
+               (c >= 97 && c <= 122) || c == 95
+
+    func add [ nm: string, ty: string, ln: i32 ]
+        names.push[ nm ]
+        types.push[ ty ]
+        lines.push[ ln ]
+
+    # ln: the declaration's 1-based line
+    func load [ ln: i32 ]
+        names = vec string []
+        types = vec string []
+        lines = vec i32 []
+        if [ !file || !file.exists[] || ln <= 0 ] return
+        tx : string file.load[ typeid[string], null ]
+        if [ !tx ] return
+        all : vec string tx.split[ '\n' ]
+        if [ ln > all.count ] return
+        hd : string all[ ln - 1 ].trim[]
+        # the name ends at a bracket, a brace or a colon
+        pre : i32 [ -1 ]
+        for [ k: i32 0, k < hd.count && pre < 0, k += 1 ]
+            if [ hd[ k ] == 91 || hd[ k ] == 123 || hd[ k ] == 58 ] pre = k
+        name = last_word[ (pre > 0) ? hd.mid[ 0, pre ] : hd ]
+        ext : string file.ext[]
+        if [ ext && ext == 'ag' ]
+            load_silver[ all, ln ]
+        el
+            load_c[ all, ln ]
+
+    # one indent in from the header; comments and style blocks left out
+    func load_silver [ all: vec string, ln: i32 ]
+        base : i32 [ indent_of[ all[ ln - 1 ] ] ]
+        kid  : i32 [ -1 ]
+        for [ i: i32 ln, i < all.count, i += 1 ]
+            raw : string all[ i ]
+            t   : string raw.trim[]
+            if [ t.count == 0 ] continue
+            ind : i32 [ indent_of[ raw ] ]
+            if [ ind <= base ] break
+            if [ kid < 0 ] kid = ind
+            if [ ind != kid || t[ 0 ] == 35 ] continue
+            if [ t.index_of[ 'style' ] == 0 ] continue
+            cx : i32 [ t.index_of[ ':' ] ]
+            # a [ before any colon: a func, construct or cast
+            bx : i32 [ t.index_of[ '[' ] ]
+            if [ bx > 0 && (cx < 0 || bx < cx) ]
+                add[ last_word[ t.mid[ 0, bx ] ], t.mid[ bx, t.count - bx ], i + 1 ]
+                continue
+            if [ cx <= 0 ] continue
+            ty2 : string t.mid[ cx + 1, t.count - cx - 1 ].trim[]
+            hx : i32 [ ty2.index_of[ ' #' ] ]
+            if [ hx >= 0 ] ty2 = ty2.mid[ 0, hx ].trim[]
+            add[ last_word[ t.mid[ 0, cx ] ], ty2, i + 1 ]
+
+    # the fields at the struct's first brace depth: type then name
+    func load_c [ all: vec string, ln: i32 ]
+        depth : i32 [ 0 ]
+        for [ i: i32 ln - 1, i < all.count, i += 1 ]
+            t : string all[ i ].trim[]
+            d0 : i32 [ depth ]
+            for [ k: i32 0, k < t.count, k += 1 ]
+                if [ t[ k ] == 123 ] depth += 1
+                el [ t[ k ] == 125 ] depth -= 1
+            if [ d0 > 0 && depth <= 0 ] break
+            if [ d0 != 1 || t.count == 0 || t[ t.count - 1 ] != 59 ] continue
+            f : string t.mid[ 0, t.count - 1 ]
+            bx : i32 [ f.index_of[ '[' ] ]
+            if [ bx > 0 ] f = f.mid[ 0, bx ]
+            nm : string last_word[ f ]
+            if [ nm.count == 0 ] continue
+            ty : string f.mid[ 0, f.count - nm.count ].trim[]
+            add[ nm, ty, i + 1 ]
+
 NodeList Fields
     style : CSS {
         area: l0 t0 r0 b0
@@ -276,75 +482,6 @@ NodeList Fields
 
     func render [] -> Elements
         return null
-
-# the pip: the selected instance's frames on the app's clock, in a canvas
-# of its own, so the panel around it repaints only when something changes
-element PipView
-    animated : true
-    style : CSS {
-        layers.pbase:
-            fill_color: #0000
-            area: l0 t0 r0 b0
-    }
-    mutable pip_drag : bool          # a press went to the app: moves and the release follow it
-    func pv [] -> AppView
-        for [ e: element* a, e, e = e.parent ]
-            if [ e inherits InstancePanel ]
-                ip : InstancePanel e
-                return ip.pip_av[]
-        return null
-    public func draw [ w: Window ]
-        if [ w.draw_stage != CanvasType.screen || !bounds ] return
-        av : AppView pv[]
-        if [ !av ] return
-        av.vsx = 0.0
-        av.vsy = 0.0
-        cv : Canvas w.screen
-        # the band is letterboxed: a dark tint, the picture centred at
-        # its shape
-        cv.fill_color[ rgba [ '#000a' ] ]
-        cv.rect_to[ 0.0, 0.0, bounds.w, bounds.h ]
-        cv.paint[]
-        ar9 : f32 [ av.pic_aspect[] ]
-        if [ ar9 <= 0.0 ] return
-        fw9 : f32 [ bounds.w ]
-        fh9 : f32 [ fw9 / ar9 ]
-        if [ fh9 > bounds.h ]
-            fh9 = bounds.h
-            fw9 = fh9 * ar9
-        fw9 = round[ fw9 ]
-        fh9 = round[ fh9 ]
-        av.draw_pip_in[ cv, rect [ x: round[ (bounds.w - fw9) * 0.5 ], y: round[ (bounds.h - fh9) * 0.5 ], w: fw9, h: fh9 ] ]
-    # the pip is the app: its presses go to the instance, as in the editor
-    func on_press [ ev: Event ]
-        av : AppView pv[]
-        if [ !av ] return
-        av.vsx = 0.0
-        av.vsy = 0.0
-        av.via_pip = true
-        if [ av.view_press[ ev ] ]
-            pip_drag = true
-            if [ ux ] ux.set_capture[ a ]
-        av.via_pip = false
-        ev.no_default = true
-    func on_move [ ev: Event ]
-        av : AppView pv[]
-        if [ !av ] return
-        av.vsx = 0.0
-        av.vsy = 0.0
-        av.via_pip = true
-        av.view_move[ ev ]
-        av.via_pip = false
-    func on_release [ ev: Event ]
-        if [ !pip_drag ] return
-        pip_drag = false
-        av : AppView pv[]
-        if [ !av ] return
-        av.vsx = 0.0
-        av.vsy = 0.0
-        av.via_pip = true
-        av.view_release[ ev ]
-        av.via_pip = false
 
 # the one instrument on: its entries re-asked twice a second and its
 # surface on the app's clock, in a canvas of its own for the same reason
@@ -409,9 +546,8 @@ element InstrView
 # ONE column, right of the editor, holding every live instrument. the
 # stack at the top selects which one shows; only that one is drawn.
 # the panel itself is cached: tick dirties it when what it shows changes,
-# and the pip and the instrument surface animate in canvases of their own
-# the one context panel: the selected view's file, module and
-# instances, in tabs; the context bar's < folds it away
+# and the instrument surface animates in a canvas of its own
+# the one context panel: the selected instance's properties; the context bar's < folds it away
 element SidePanel
     style : CSS {
         area: l0 t0 r0 b0
@@ -434,7 +570,6 @@ element SidePanel
             grid['scene_grid'] = SceneGrid [ ]
             t['scene_body'] = element [ area: Region { l0 t1.3 r0 b0 }, elements: grid ]
         el
-            # the first instance sits level with the editor's title
             t['instance_panel'] = InstancePanel [ ]
         return t
 
@@ -528,11 +663,16 @@ Control InstancePanel
     # what the rows showed last frame; a change repaints
     mutable row_sig  : string
     mutable last_pane : i32 [ -1 ]
+    # the clicked name's type, read once per type
+    mutable type_key : string
+    mutable type_info : TypeInfo
+    # the editor's touch count the type was last read at, and what
+    # it found there
+    mutable seen_touch : i64 [ -1 ]
+    mutable caret_key  : string
 
     # the rows change on the instances' own clocks (a start, a crash, a
-    # stop): compare what they would show and repaint only on a change.
-    # the pip coming or going needs the element tree rebuilt, not just a
-    # repaint
+    # stop): compare what they would show and repaint only on a change
     public func tick [ w: Window ]
         li  : vec AppView inst_list[]
         ed9 : Editor editor[]
@@ -546,20 +686,19 @@ Control InstancePanel
                 s9 : i32 [ (sel9) ? 1 : 0 ]
                 o9 : i32 [ (off9) ? 1 : 0 ]
                 sig = '{sig}|{av9.iid}:{sw9}:{s9}:{o9}'
-        pv9 : AppView pip_av[]
-        p9 : i32 [ (pv9) ? 1 : 0 ]
         h9 : i32 [ (orb && orb.shift_down) ? 1 : 0 ]
-        sig = '{sig}|pip{p9}:{h9}'
+        ct9 : string caret_type[]
+        sig = '{sig}|{h9}|{ct9}'
         pn9 : i32 [ (orb) ? orb.active_pane : -1 ]
         if [ !row_sig || row_sig != sig || pn9 != last_pane ]
-            had : bool [ row_sig && row_sig.index_of[ '|pip1' ] >= 0 ]
+            # a new type at the caret: its list mounts on a restyle
+            if [ ux && (!type_key || type_key != ct9) ] ux.restyle = true
             row_sig = sig
             row_sig.hold[]
             pristine = false
             # another editor selected: its instances, rebuilt
             if [ pn9 != last_pane && ux ] ux.restyle = true
             last_pane = pn9
-            if [ had != (pv9 != null) && ux ] ux.restyle = true
 
     func icon [ nm: string ] -> SVGModel
         if [ !icons ] icons = map SVGModel [string] []
@@ -568,40 +707,8 @@ Control InstancePanel
         icons[ nm ] = m
         return m
 
-    # the selected instance's group: at a debugger stop continue and the
-    # steps. closing is uncommon: shift shows an [x] on every row
-    # instead
-    func action_chips [ av: AppView ] -> vec string
-        b : vec string [] [
-            'pause', 'continue', 'step_next', 'step_in', 'step_out' ]
-        return b
-
-    # always the same six: pip and pause on a running instance, the four
-    # steps only at a debugger stop
-    func action_disabled [ av: AppView ] -> i32
-        m : i32 [ 0 ]
-        if [ av.ended || av.held ] m = m | 1
-        dbg9 : dbg av.debugger
-        if [ !(dbg9 && dbg9.active && !dbg9.running) ] m = m | 30
-        return m
-
-    func sel_index [] -> i32
-        li  : vec AppView inst_list[]
-        ed9 : Editor editor[]
-        if [ !li || !ed9 || !ed9.run_view ] return -1
-        for [ i: i32 0, i < li.count, i += 1 ]
-            if [ li[ i ] == ed9.run_view ] return i
-        return -1
-
     func row_h [] -> f32
         return 26.0
-
-    # an instance row: the editor title's height, the first one
-    # level with it
-    func inst_h [] -> f32
-        orb : cast orbiter [ ux.app_object ]
-        tt9 : element (orb) ? orb.title_at[ orb.active_pane ] : null
-        return (tt9 && tt9.bounds && tt9.bounds.h > 0.0) ? round[ tt9.bounds.h ] : 26.0
 
     # found at draw time, never passed in: taking it as a prop would
     # make the pane's shape depend on what is read back out of the pane
@@ -626,49 +733,41 @@ Control InstancePanel
         ed9 : Editor editor[]
         return (ed9) ? ed9.instances[] : null
 
-    func inst_px [] -> f32
-        li : vec AppView inst_list[]
-        return f32[ (li) ? li.count : 0 ] * inst_h[]
+    # where the type of the name at the caret is declared, file:line
+    # only the user's own press or key moves it; a name with no
+    # type, or a jump, keeps the last one
+    func caret_type [] -> string
+        e9 : Editor editor[]
+        if [ !caret_key ] caret_key = ''
+        if [ !e9 || e9.caret_touch == seen_touch ] return caret_key
+        seen_touch = e9.caret_touch
+        if [ e9.sel_line < 0 || e9.sel_line >= e9.line_count[] ] return caret_key
+        ml : i32 [ e9.row_src[ e9.sel_line ] ]
+        # the caret sits after the word as often as in it
+        for [ c9: i32 e9.sel_col, c9 >= e9.sel_col - 1 && c9 >= 0, c9 -= 1 ]
+            cr : ColorRegion e9.region_at[ ml, c9 ]
+            if [ cr && cr.tsrc && cr.tline > 0 ]
+                caret_key = '{cr.tsrc}:{cr.tline}'
+                break
+        return caret_key
 
-    # the selected instance's group sits at the panel's bottom
-    func foot_px [] -> f32
-        s : i32 [ sel_index[] ]
-        if [ s < 0 ] return 0.0
-        li : vec AppView inst_list[]
-        ac : vec string action_chips[ li[ s ] ]
-        # the status bar's height: the two sit edge to edge
-        return (ac.count > 0) ? 35.0 : 0.0
+    # the line of the caret type's declaration
+    func type_line [] -> i32
+        if [ !type_key ] return 0
+        cx9 : i32 [ type_key.rindex_of[ ':' ] ]
+        return i32[ type_key.mid[ cx9 + 1, type_key.count - cx9 - 1 ] ]
 
-
-    # the selected instance while it is in pip: the one pip the panel
-    # holds (a held instance shows the app's last picture there until it
-    # runs)
-    func pip_av [] -> AppView
-        ed9 : Editor editor[]
-        if [ !ed9 || !ed9.run_view ] return null
-        av : AppView ed9.run_view
-        shown : bool [ av.have_frame || av.still ]
-        sized : bool [ av.ah > 0 && av.aw > 0 ]
-        return (av.pip && shown && sized) ? av : null
-
-    # the pip gives way to the properties: whatever the instance rows,
-    # the section tabs, three property rows and the debug bar leave. it
-    # shrinks with the room, and goes when it would be too small to read
-    # (60px)
-    func pip_px [] -> f32
-        av : AppView pip_av[]
-        if [ !av || !bounds ] return 0.0
-        ar9 : f32 [ av.pic_aspect[] ]
-        if [ ar9 <= 0.0 ] return 0.0
-        h : f32 [ bounds.w / ar9 ]
-        if [ h > 260.0 ] h = 260.0
-        room : f32 [ panel_h[] - inst_px[] - row_h[] * 5.0 - foot_px[] ]
-        if [ h > room ] h = room
-        if [ h < 60.0 ] return 0.0
-        return h
-
-    func head_px [] -> f32
-        return inst_px[]
+    # the members of the caret's type, read once per type
+    func caret_info [] -> TypeInfo
+        k9 : string caret_type[]
+        if [ k9.count == 0 ] return null
+        if [ type_key && type_key == k9 ] return type_info
+        cx9 : i32 [ k9.rindex_of[ ':' ] ]
+        ti9 : TypeInfo [ file: path k9.mid[ 0, cx9 ] ]
+        ti9.load[ i32[ k9.mid[ cx9 + 1, k9.count - cx9 - 1 ] ] ]
+        type_key  = k9
+        type_info = ti9
+        return ti9
 
     # the frames of the selected instance at a stop, none otherwise
     func stack_rows [] -> i32
@@ -699,12 +798,14 @@ Control InstancePanel
     # runs from under it to the footer, so nothing folds above or below
     # any more
     func tab_y [] -> f32
-        return head_px[]
+        return 0.0
 
-    # the pip sits under the sections, just above the debug bar
-    # the sections end over the display bar, which sits on the pip
-    func sect_bottom [] -> f32
-        return panel_h[] - foot_px[] - pip_px[] - ((app[]) ? row_h[] : 0.0)
+    # the tabs' row as laid out (h1.3, the title bar's height)
+    func tabs_h [] -> f32
+        se9 : element (elements) ? elements[ 'sections' ] : null
+        if [ se9 && se9.bounds && se9.bounds.h > 0.0 ] return se9.bounds.h
+        fu9 : f32 [ (ux && ux.vk && ux.vk.font_unit > 0) ? f32[ ux.vk.font_unit ] : 22.0 ]
+        return round[ 1.3 * fu9 ]
 
     # a click on a header opens that section, closing the others; on the
     # open one it folds, leaving none
@@ -781,64 +882,61 @@ Control InstancePanel
             ps9.props = vec Prop []
             ps9.props.push[ dp9 ]
             sp9 = Au.string_agi[ ps9 ]
-        # the open section runs from under its header to the folded
-        # headers below
-        fp : f32 [ foot_px[] ]
-        sb9 : f32 [ panel_h[] - sect_bottom[] ]
         # the selected instance edits ITS args; with none selected there
         # is no list one row of tabs for properties, instruments and
         # callstack: the lit one is open and its content fills the panel
         # beneath
-        if [ av9 ]
-            # the display, a bar across the panel as the tabs are, under
-            # the section and over the pip
-            dsp9 : i32 [ (av9.display >= 0 && av9.display <= 3) ? av9.display : 0 ]
-            dm9  : i32 [ 1 << dsp9 ]
-            t['display_bar'] = TButtons [
-                icons: false, seg_radius: 0.0, manual: true, rest_hover: true,
-                rest_fill: rgba [ '#5a1a4a22' ], lit_fill: rgba [ '#5a1a4a55' ],
-                buttons: vec string [] [ 'disp_PIP', 'disp_Embed', 'disp_Window', 'disp_Screen' ],
-                labels: vec string [] [ 'PIP', 'Embed', 'Window', 'Screen' ],
-                sel_mask: dm9,
-                label_px: row_h[] * 0.5 - 2.0,
-                area: Region [ 'l0 t{sect_bottom[]}px r0 h{row_h[]}px' ] ]
+        # a module with no instance yet shows its properties too
+        pm9 : bool [ av9 || orb.module_src_of[ editor[] ] ]
+        # the tabs stay for any file: a section may simply be empty
+        if [ editor[] ]
             ok9 : i32 [ open_ix[] ]
-            t['sections'] = TButtons [
+            t['sections'] = SectionTabs [
                 icons: false, seg_radius: 0.0, manual: true, rest_hover: true,
                 rest_fill: rgba [ '#5a1a4a22' ], lit_fill: rgba [ '#5a1a4a55' ],
                 buttons: vec string [] [
                     'properties', 'instruments', 'callstack' ],
                 sel_mask: (ok9 >= 0) ? (1 << ok9) : 0,
                 label_px: row_h[] * 0.5 - 2.0,
-                area: Region [ 'l0 t{tab_y[]}px r0 h{row_h[]}px' ] ]
-        if [ av9 && orb.props_open ]
-            ar9 : string (av9.module_args) ? av9.module_args : ''
-            py9 : f32 [ tab_y[] + row_h[] ]
+                area: Region [ 'l0 t{tab_y[]}px r0 h1.3' ] ]
+        if [ orb.props_open ]
+            # no instance: the args its next start takes
+            fs9 : file_state (av9) ? null : orb.args_state_of[ editor[] ]
+            ar9 : string (av9) ? av9.module_args : ((fs9) ? fs9.args : null)
+            if [ !ar9 ] ar9 = ''
+            py9 : f32 [ tab_y[] + tabs_h[] ]
             # cached like any container: a control repaints only when it
-            # changes, not every frame with the pip
-            up9 : bool [ av9.slot >= 0 && !av9.ended && !av9.held ]
+            # changes
+            up9 : bool [ av9 && av9.slot >= 0 && !av9.ended && !av9.held ]
             pd9 : i32 [ (up9) ? host_app_pid[ av9.slot ] : 0 ]
-            t['launch_panel'] = LaunchPanel [
-                spec: sp9, args: ar9, inst: av9.iid,
-                live_vals: lv9, dbg_row: true,
-                dbg_on: av9.debug_build, cov_on: av9.cov_build, pid_val: pd9,
-                area: Region [ 'l0 t{py9}px r0 b{sb9}px' ] ]
-        # the pip below the rows, at its aspect; the instrument surface
-        # under its chips
-        pip9 : AppView pip_av[]
-        if [ pip9 && bounds && pip_px[] > 0.0 ]
-            # the band spans the panel; the picture sits in it
-            ph9 : f32 [ pip_px[] ]
-            pt9 : f32 [ sect_bottom[] + row_h[] ]
-            t['pip'] = PipView [ area: Region [
-                'l0 t{pt9}px r0 h{ph9}px' ] ]
+            # the clicked name's type, docked under the fields
+            ti9 : TypeInfo caret_info[]
+            mh9 : f32 [ 0.0 ]
+            if [ ti9 && ti9.names && ti9.names.count > 0 ]
+                # the row the list last drew, else a 15px line at 1.2
+                me9 : NodeList (elements) ? elements[ 'members' ] : null
+                rw9 : f32 [ (me9 && me9.row_height > 20.0) ? me9.row_height : 26.0 ]
+                # the rows are capped; the header (30px) and the filter
+                # bar (35px) always fit
+                mh9 = min[ f32[ ti9.names.count ] * rw9, panel_h[] * 0.45 ] + 30.0 + 35.0
+                t['members'] = TypeMembers [ file: ti9.file, names: ti9.names,
+                    title: '{ti9.name}   {ti9.file.filename[]}:{type_line[]}',
+                    types: ti9.types, lines: ti9.lines,
+                    area: Region [ 'l0 b{mh9}px r0 h{mh9}px' ] ]
+            # the fields only for a module or an instance
+            if [ pm9 ]
+                t['launch_panel'] = LaunchPanel [
+                    spec: sp9, args: ar9, inst: (av9) ? av9.iid : -1,
+                    live_vals: lv9, dbg_row: av9 != null,
+                    dbg_on: av9 && av9.debug_build, cov_on: av9 && av9.cov_build, pid_val: pd9,
+                    area: Region [ 'l0 t{py9}px r0 b{mh9}px' ] ]
         in9 : bool [ av9 && orb.instr_open && av9.instr_names ]
         if [ in9 && av9.instr_active[] && bounds ]
-            iy9 : f32 [ tab_y[] + row_h[] + chips_h[ av9.instr_names ] ]
+            iy9 : f32 [ tab_y[] + tabs_h[] + chips_h[ av9.instr_names ] ]
             t['instr'] = InstrView [
-                area: Region [ 'l0 t{iy9}px r0 b{sb9}px' ] ]
+                area: Region [ 'l0 t{iy9}px r0 b0' ] ]
         if [ av9 && orb.stack_open && stack_rows[] > 0 ]
-            cy9 : f32 [ tab_y[] + row_h[] ]
+            cy9 : f32 [ tab_y[] + tabs_h[] ]
             # one toggle over the list: frames with no known source,
             # listed or not
             t['stack_unknown'] = TButtons [
@@ -850,20 +948,7 @@ Control InstancePanel
             ly9 : f32 [ cy9 + row_h[] ]
             t['callstack'] = Callstack [
                 frames: orb.stack_frames[],
-                area: Region [ 'l0 t{ly9}px r0 b{sb9}px' ] ]
-        # the selected instance's group: square segments edge to edge at
-        # the bottom
-        if [ fp > 0.0 ]
-            li : vec AppView inst_list[]
-            sv9 : AppView li[ sel_index[] ]
-            ac : vec string action_chips[ sv9 ]
-            ed9 : Editor editor[]
-            sm : i32 [ (sv9.paused) ? 1 : 0 ]
-            t['steps'] = TButtons [
-                buttons: ac, manual: true,
-                seg_radius: 0.0, sel_mask: sm,
-                disable_mask: action_disabled[ sv9 ],
-                area: Region [ 'l0 b{fp}px r0 h{fp}px' ] ]
+                area: Region [ 'l0 t{ly9}px r0 b0' ] ]
         return t
 
     func inst_color [ av: AppView ] -> rgba
@@ -954,50 +1039,11 @@ Control InstancePanel
         # a modifier click belongs to the inspector: claiming it here
         # (the no_default below) is what kept it from the source
         if [ ev.key.meta || ev.key.ctrl ] return
-        li : vec AppView inst_list[]
-        if [ ev.mouse.pos.y < inst_px[] ]
-            rh  : f32 [ inst_h[] ]
-            ed9 : Editor editor[]
-            orb : cast orbiter [ ux.app_object ]
-            ev9 : EditorView view[]
-            my  : f32 [ ev.mouse.pos.y ]
-            if [ ed9 && orb && ev9 ]
-                if [ li ]
-                    y8 : f32 [ 0.0 ]
-                    for [ i: i32 0, i < li.count, i += 1 ]
-                        av9 : AppView li[ i ]
-                        if [ my >= y8 && my < y8 + rh ]
-                            if [ ev.mouse.pos.x < rh ]
-                                off8 : bool [ av9.ended || av9.held ]
-                                ac8 : string (off8) ? 'play' : 'stop'
-                                # the first one stays: shift copies it
-                                if [ ev.key.shift && i == 0 ]
-                                    ed9.copy_instance[ av9 ]
-                                el [ ev.key.shift ]
-                                    ed9.close_instance[ i ]
-                                el
-                                    orb.instance_action[ ed9, av9, ac8 ]
-                            el [ i == sel_index[] ]
-                                # the selected one again: unselect, the
-                                # pane goes back to its file
-                                ed9.run_view = null
-                                ed9.app_view = false
-                                ed9.load_file[]
-                                orb.session_dirty = true
-                            el
-                                orb.show_instance[ av9.iid,
-                                    ev9.pane_index ]
-                            break
-                        y8 += rh
-            pristine = false
-            ev.no_default = true
-            if [ ux ] ux.restyle = true
-            return
         av : app[]
         if [ !av ] return
         orb7 : cast orbiter [ ux.app_object ]
         if [ !av.instr_names || (orb7 && !orb7.instr_open) ] return
-        top : f32 [ tab_y[] + row_h[] ]
+        top : f32 [ tab_y[] + tabs_h[] ]
         for [ i: i32 0, i < av.instr_names.count, i += 1 ]
             if [ !chip_pos[ av.instr_names, i ] ] continue
             cy : f32 [ top + chip_y ]
@@ -1014,75 +1060,7 @@ Control InstancePanel
     public func draw [ w: Window ]
         if [ w.draw_stage != CanvasType.screen || !bounds ] return
         cv : Canvas w.screen
-        rh : f32 [ inst_h[] ]
-        cv.stroke_width[ 0.0 ]
-        li  : vec AppView inst_list[]
-        ed9 : Editor editor[]
         orb : cast orbiter [ ux.app_object ]
-        # the rows begin at the top: adding an instance is the tab bar's
-        # button
-        if [ li && orb ]
-            y8 : f32 [ 0.0 ]
-            for [ i: i32 0, i < li.count, i += 1 ]
-                av9 : AppView li[ i ]
-                sel9 : bool [ ed9 && ed9.run_view == av9 ]
-                # the selected row is the purple with the blue pointer
-                # light; the others fainter. border and glow take the
-                # pointer's light, as the title's
-                cv.save[]
-                rb9 : rgba [ (sel9) ? '#5a1a4a55' : '#5a1a4a22' ]
-                cv.fill_color[ rb9 ]
-                if [ sel9 ] cv.box_shadow[ rgba [ '#fcc2' ], 0.0, 0.0, 13.0, 0.0, true ]
-                el          cv.box_shadow[ rgba [ '#fcc1' ], 0.0, 0.0, 13.0, 0.0, true ]
-                cv.stroke_width[ 1.0 ]
-                cv.stroke_offset[ -0.5 ]
-                cv.stroke_color[ rgba [ '#fff1' ] ]
-                w.near_light_on[ cv, a, 0.0, 0.0 ]
-                cv.near_style[ 1.0, 3.0, rgba [ '#c890ffff' ], w.near_y_fade ]
-                cv.rect_to[ 0.0, y8, bounds.w, rh ]
-                cv.paint[]
-                cv.no_shadows[]
-                cv.stroke_width[ 0.0 ]
-                cv.stroke_offset[ 0.0 ]
-                cv.restore[]
-                # the one icon on the row: the state's color, and it IS
-                # the pause/resume toggle. shift held turns it into the
-                # [x] that closes the instance
-                sh9 : bool [ orb.shift_down ]
-                # the row's one icon starts or stops the instance; pause
-                # lives in the step group
-                off9 : bool [ av9.ended || av9.held ]
-                in9  : string (off9) ? 'play' : 'stop'
-                # shift: the first one's is a green + (a copy), the rest close
-                sc9  : string [ (i == 0) ? 'add_instance' : 'close' ]
-                ic9  : SVGModel icon[ (sh9) ? sc9 : in9 ]
-                if [ ic9 ]
-                    ik9 : rgba [ (sh9) ? ((i == 0) ? rgba [ '#6fdc8c' ] : rgba [ '#ef5350' ])
-                                       : inst_color[ av9 ] ]
-                    cv.fill_color[ ik9 ]
-                    cv.stroke_color[ ik9 ]
-                    # half the row, centred in a square the row's height
-                    is9 : f32 [ round[ rh * 0.5 ] ]
-                    im9 : f32 [ round[ (rh - is9) * 0.5 ] ]
-                    cv.draw_svg[ ic9, im9, y8 + im9, is9, is9 ]
-                # the name at the left; the status right-aligned and
-                # padded, running carries the pid
-                nm9 : string orb.instance_name[ av9 ]
-                sw9 : string av9.status_word[]
-                if [ !sw9 || sw9.count == 0 ]
-                    sw9 = (av9.ended) ? 'stopped' : 'running'
-                cv.font_size[ 13 ]
-                cv.fill_color[ rgba [ '#e8e2f5' ] ]
-                nr9 : rect [ x: rh, y: y8,
-                    w: bounds.w - rh - 76.0, h: rh ]
-                cv.draw_text[ nm9, nr9, vec2f [ 0.0, 0.5 ],
-                    vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
-                cv.fill_color[ inst_color[ av9 ] ]
-                sr9 : rect [ x: rh, y: y8,
-                    w: bounds.w - rh - 10.0, h: rh ]
-                cv.draw_text[ sw9, sr9, vec2f [ 1.0, 0.5 ],
-                    vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
-                y8 += rh
         av : app[]
         if [ !av || !orb ] return
         # the sections are a tab row built in render; the chips once the
@@ -1090,9 +1068,243 @@ Control InstancePanel
         if [ !orb.instr_open || !av.instr_names ] return
         # one flow of chips; the lit one is the single instrument on: it
         # logs and shows
-        top : f32 [ tab_y[] + row_h[] ]
+        top : f32 [ tab_y[] + tabs_h[] ]
         act : string av.instr_active[]
         chip_row[ cv, av.instr_names, top, act, 0.0, 0.0 ]
+
+# every running app as a task, centred in the status bar. a task's
+# name is the app's own title
+Control TaskBar
+    # one per module folder, as the dock loads them
+    mutable app_icons : map AppIcon [string]
+    mutable task_sig : string
+    # the task whose close the pointer is over, and the one pressed
+    mutable close_hov  : i32 [ -1 ]
+    mutable close_down : i32 [ -1 ]
+
+    # a start, a stop, a new title: repaint on a change only
+    public func tick [ w: Window ]
+        li  : vec AppView inst_list[]
+        ed9 : Editor editor[]
+        orb : cast orbiter [ ux.app_object ]
+        sig : string ''
+        if [ li ]
+            for [ av9: AppView ] in li
+                s9 : i32 [ (ed9 && ed9.run_view == av9) ? 1 : 0 ]
+                o9 : i32 [ (av9.ended || av9.held) ? 1 : ((av9.paused) ? 2 : 0) ]
+                sig = '{sig}|{av9.iid}:{av9.app_title}:{s9}:{o9}'
+        p9 : i32 [ (orb) ? orb.active_pane : -1 ]
+        sig = '{sig}|{p9}'
+        if [ !task_sig || task_sig != sig ]
+            task_sig = sig
+            task_sig.hold[]
+            pristine = false
+
+    func editor [] -> Editor
+        orb : cast orbiter [ ux.app_object ]
+        return (orb) ? orb.pane_at[ orb.active_pane ] : null
+
+    func inst_list [] -> vec AppView
+        orb : cast orbiter [ ux.app_object ]
+        return (orb) ? orb.instances : null
+
+    # the pane showing it, or null
+    func shown_in [ av: AppView ] -> Editor
+        orb : cast orbiter [ ux.app_object ]
+        if [ !orb ] return null
+        for [ i: i32 0, i < orb.editor_slots.count, i += 1 ]
+            e9 : Editor orb.pane_at[ i ]
+            if [ e9 && e9.run_view == av ] return e9
+        return null
+
+    # only instances whose app has named itself
+    func tasks [] -> vec AppView
+        li : vec AppView inst_list[]
+        r  : vec AppView []
+        if [ !li ] return r
+        for [ av9: AppView ] in li
+            if [ av9.app_title && av9.app_title.count > 0 ] r.push[ av9 ]
+        return r
+
+    # six bar heights a task
+    func task_w [] -> f32
+        return round[ bounds.h * 6.0 ]
+
+    # a task and the dark line after it
+    func task_step [] -> f32
+        return task_w[] + 1.0
+
+    # the tasks sit centred: the first one's left
+    func task_x [] -> f32
+        n : i32 [ tasks[].count ]
+        return round[ (bounds.w - f32[ n ] * task_step[]) * 0.5 ]
+
+    # the task whose close ring holds this point, else -1
+    func close_at [ p: vec2f ] -> i32
+        if [ !bounds ] return -1
+        mx : f32 [ p.x - task_x[] ]
+        if [ mx < 0.0 ] return -1
+        i : i32 [ i32[ mx / task_step[] ] ]
+        if [ i >= tasks[].count ] return -1
+        dx : f32 [ mx - f32[ i ] * task_step[] - (task_w[] - bounds.h * 0.5) ]
+        dy : f32 [ p.y - bounds.h * 0.5 ]
+        # a little past the 8px ring
+        return (dx * dx + dy * dy <= 100.0) ? i : -1
+
+    func on_move [ ev: Event ]
+        h9 : i32 [ close_at[ ev.mouse.pos ] ]
+        if [ h9 != close_hov ]
+            close_hov = h9
+            pristine  = false
+
+    func on_leave [ ev: Event ]
+        if [ close_hov >= 0 ]
+            close_hov = -1
+            pristine  = false
+
+    # the close acts on release, still over the ring it went down on
+    func on_release [ ev: Event ]
+        d9 : i32 [ close_down ]
+        if [ d9 < 0 ] return
+        close_down = -1
+        pristine   = false
+        tk  : vec AppView tasks[]
+        orb : cast orbiter [ ux.app_object ]
+        if [ !orb || close_at[ ev.mouse.pos ] != d9 || d9 >= tk.count ] return
+        av9 : AppView tk[ d9 ]
+        sp9 : Editor shown_in[ av9 ]
+        if [ sp9 ]
+            sp9.toggle_app_run[ false ]
+        el
+            av9.release*[]
+            orb.remove_instance[ av9 ]
+        if [ ux ] ux.restyle = true
+
+    # shift makes a new instance in this tab; the close ring at the
+    # right stops and closes it; the rest of the task selects it, or
+    # unselects it
+    func on_press [ ev: Event ]
+        if [ ev.key.meta || ev.key.ctrl ] return
+        tk  : vec AppView tasks[]
+        li  : vec AppView inst_list[]
+        ed9 : Editor editor[]
+        orb : cast orbiter [ ux.app_object ]
+        if [ !li || !ed9 || !orb || !bounds ] return
+        mx : f32 [ ev.mouse.pos.x - task_x[] ]
+        if [ mx < 0.0 ] return
+        i : i32 [ i32[ mx / task_step[] ] ]
+        if [ i >= tk.count ] return
+        av9 : AppView tk[ i ]
+        tx9 : f32 [ mx - f32[ i ] * task_step[] ]
+        if [ ev.key.shift ]
+            orb.show_app[ ed9, av9.src, true ]
+        el [ close_at[ ev.mouse.pos ] == i ]
+            close_down = i
+        el [ ed9.run_view == av9 ]
+            ed9.run_view = null
+            ed9.app_view = false
+            ed9.load_file[]
+            orb.session_dirty = true
+        el
+            orb.embed_app[ ed9, av9 ]
+        pristine = false
+        ev.no_default = true
+        if [ ux ] ux.restyle = true
+
+    # the x: pressed, under the pointer, at rest
+    func x_color [ i: i32 ] -> rgba
+        if [ close_down == i ] return rgba [ '#ff7aa4' ]
+        if [ close_hov == i ]  return rgba [ '#ffffff' ]
+        return rgba [ '#a89fc4' ]
+
+    # two strokes, 4.5px out from the centre, 1.6px thick
+    func draw_x [ cv: Canvas, cx: f32, cy: f32, col: rgba ]
+        d9 : f32 [ 4.5 * 0.7071 ]
+        cv.save[]
+        cv.fill_color[ rgba [ '#0000' ] ]
+        cv.stroke_color[ col ]
+        cv.stroke_width[ 1.6 ]
+        cv.stroke_offset[ 0.0 ]
+        cv.set_stroke_cap[ Cap.round ]
+        cv.move_to[ cx - d9, cy - d9 ]
+        cv.line_to[ cx + d9, cy + d9 ]
+        cv.move_to[ cx + d9, cy - d9 ]
+        cv.line_to[ cx - d9, cy + d9 ]
+        cv.paint[]
+        cv.restore[]
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        li  : vec AppView tasks[]
+        ed9 : Editor editor[]
+        orb : cast orbiter [ ux.app_object ]
+        if [ !orb ] return
+        cv : Canvas w.screen
+        rh : f32 [ bounds.h ]
+        tw : f32 [ task_w[] ]
+        for [ i: i32 0, i < li.count, i += 1 ]
+            av9 : AppView li[ i ]
+            x8  : f32 [ task_x[] + f32[ i ] * task_step[] ]
+            sel9 : bool [ ed9 && ed9.run_view == av9 ]
+            cv.save[]
+            cv.fill_color[ (sel9) ? rgba [ '#8826668c' ] : rgba [ '#0000' ] ]
+            cv.box_shadow[ rgba [ '#c890ff04' ], 0.0, 0.0, 13.0, 0.0, true ]
+            cv.stroke_width[ 1.0 ]
+            cv.stroke_offset[ -0.5 ]
+            cv.stroke_color[ rgba [ '#fff1' ] ]
+            w.near_light_on[ cv, a, 0.0, 0.0 ]
+            cv.near_style[ 2.0, 3.0, rgba [ '#c890ffaa' ], w.near_y_fade ]
+            cv.rect_to[ x8, 0.0, tw, rh ]
+            cv.paint[]
+            cv.no_shadows[]
+            cv.stroke_width[ 0.0 ]
+            cv.stroke_offset[ 0.0 ]
+            cv.restore[]
+            # its module's app icon, as the dock shows it
+            md9 : path (av9.src) ? av9.src.parent_dir[] : null
+            if [ md9 ]
+                if [ !app_icons ] app_icons = map AppIcon [string] []
+                mk9 : string '{md9}'
+                if [ !app_icons.contains[ mk9 ] ]
+                    app_icons[ mk9 ] = AppIcon [ file: md9, module: true,
+                        agi: path '{path.path_startup[]}/install/export/{orb.install_name_of[ md9.filename[] ]}.agi' ]
+                is9 : f32 [ round[ rh * 0.5 ] ]
+                im9 : f32 [ round[ (rh - is9) * 0.5 ] ]
+                ai9 : AppIcon app_icons[ mk9 ]
+                ai9.paint[ cv, x8 + im9, im9, is9 ]
+            cv.font_size[ 13 ]
+            cv.fill_color[ rgba [ '#e8e2f5' ] ]
+            nr9 : rect [ x: x8 + rh, y: 0.0, w: tw - rh * 2.0, h: rh ]
+            cv.draw_text[ av9.app_title, nr9, vec2f [ 0.0, 0.5 ],
+                vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null ]
+            # the close: a 16px ring the pointer lights, an x inside
+            cx9 : f32 [ x8 + tw - round[ rh * 0.5 ] ]
+            cy9 : f32 [ round[ rh * 0.5 ] ]
+            cv.save[]
+            w.near_light_on[ cv, a, 0.0, 0.0 ]
+            # the ring's own reach: 32px, round, so no y fade
+            if [ near_glow > 0.0 ]
+                sc9 : f32 [ cv.transform_scale[] ]
+                if [ sc9 <= 0.0 ] sc9 = 1.0
+                lx9 : f32 [ cv.transform_tx[] + (w.mouse.x - win_pos.x) * sc9 ]
+                ly9 : f32 [ cv.transform_ty[] + (w.mouse.y - win_pos.y) * sc9 ]
+                cv.near_light[ lx9, ly9, 32.0 * sc9, near_glow ]
+            cv.near_style[ 1.3, 0.0, rgba [ '#c890ffff' ], 1.0 ]
+            # black inside while the pointer is on it, or it is held
+            hb9 : bool [ close_hov == i || close_down == i ]
+            cv.fill_color[ (hb9) ? rgba [ '#00000080' ] : rgba [ '#0000' ] ]
+            cv.stroke_color[ rgba [ '#fff2' ] ]
+            cv.stroke_width[ 1.0 ]
+            cv.stroke_offset[ 0.0 ]
+            cv.rounded_rect[ cx9 - 8.0, cy9 - 8.0, 16.0, 16.0, 8.0, 8.0, 8.0, 8.0 ]
+            cv.paint[]
+            cv.restore[]
+            draw_x[ cv, cx9, cy9, x_color[ i ] ]
+        # a dark line just past each white right edge
+        cv.fill_color[ rgba [ '#00000040' ] ]
+        for [ i: i32 0, i < li.count, i += 1 ]
+            cv.rect_to[ task_x[] + f32[ i ] * task_step[] + tw, 0.0, 1.0, rh ]
+            cv.paint[]
 
 NodeList Toolbox
     style : CSS {

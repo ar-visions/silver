@@ -588,19 +588,21 @@ Layer CommitLayer
             cv.save[ ]
             cv.rounded[ 8.0, 8.0, 8.0, 8.0 ]
             # every tab at half alpha: fill, border and glow alike
-            cv.fill_color[ cb.theme_rgba['#22002280'] ]
+            ft9 : cb.theme_rgba['#22002280']
+            # the hovered tab stands apart: twice the fill
+            cv.fill_color[ rgba [ r: ft9.r, g: ft9.g, b: ft9.b, a: (thov) ? min[ ft9.a * 2.0, 1.0 ] : ft9.a ] ]
             cv.stroke_width[ 1.0 ]
             cv.stroke_offset[ -0.5 ]
             # the border rests at a quarter; the pointer's near light brings
             # it and the inner glow up, 30% past the tabs' amount
             # theme colours are shared objects: copies, never edits
             bt9 : (dirty) ? cb.theme_rgba['#ffffff80'] : ((thov) ? cb.theme_rgba['#ff7aa480'] : cb.theme_rgba['#ff5a8a80'])
-            cv.stroke_color[ rgba [ r: bt9.r, g: bt9.g, b: bt9.b, a: (dirty) ? bt9.a : bt9.a * 0.5 ] ]
+            cv.stroke_color[ rgba [ r: bt9.r, g: bt9.g, b: bt9.b, a: (dirty || thov) ? min[ bt9.a * 2.0, 1.0 ] : bt9.a * 0.5 ] ]
             ht9 : cb.theme_rgba['#ff7aa480']
-            cv.box_shadow[ rgba [ r: ht9.r, g: ht9.g, b: ht9.b, a: (thov) ? ht9.a : ht9.a * 0.25 ], 0.0, 0.0, 9.0, 0.0, true ]
+            cv.box_shadow[ rgba [ r: ht9.r, g: ht9.g, b: ht9.b, a: (thov) ? min[ ht9.a * 2.0, 1.0 ] : ht9.a * 0.25 ], 0.0, 0.0, (thov) ? 14.0 : 9.0, 0.0, true ]
             nc9 : rgba [ r: ht9.r, g: ht9.g, b: ht9.b, a: 1.0 ]
             cb.ux.near_light_on[ cv, cb, 0.0, 0.0 ]
-            cv.near_style[ 1.3, 3.9, nc9, cb.ux.near_y_fade ]
+            cv.near_style[ 1.3, (thov) ? 3.9 : 1.95, nc9, cb.ux.near_y_fade ]
             cv.rect_to[ tx, ty + 3.0, 144.0, lh - 6.0 ]
             cv.paint[ ]
             cv.restore[ ]
@@ -851,7 +853,7 @@ Layer CommitLayer
                         rect [ x: x0 + 76.0, y: ry, w: bounds.x + bounds.w - x0 - 100.0, h: 30.0 ],
                         vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
                     continue
-                nm : string [ (h.is_dir && h.text.count > 0) ? '{h.text}/' : h.text ]
+                nm : string [ h.text ]
                 ico : SVGModel [ null ]
                 if [ ed && h.file ]
                     if [ !ed.file_icon ]
@@ -924,11 +926,7 @@ Layer CommitLayer
                     cv.stroke_color[ rgba['#ffffff'] ]
                     cv.draw_svg[ ico, x0 + 38.0, round[ ry + 4.5 ], 21.0, 21.0 ]
                     tx0 = x0 + 67.0
-                # a module dir gets a FIXED name column so its extension chips
-                # line up across every row; everything else keeps the full width
-                exl9 : cb.ext_list[ h ]
-                has9 : bool [ exl9.count > 0 ]
-                nmw9 : f32 [ (has9) ? 240.0 : bounds.x + bounds.w - tx0 - 24.0 - drs9 ]
+                nmw9 : f32 [ bounds.x + bounds.w - tx0 - 24.0 - drs9 ]
                 cv.font_size[ 16 ]
                 # a repository row: light blue when checked out, faint when
                 # not, amber while it clones
@@ -941,57 +939,6 @@ Layer CommitLayer
                 cv.draw_text[ nm,
                     rect [ x: tx0, y: ry, w: nmw9, h: 30.0 ],
                     vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null ]
-                # one-click chips for the module's own sources, sitting inside
-                # the row's full-width selection; each highlights on its own
-                if [ has9 ]
-                    ecw9 : f32 [ 34.0 ]
-                    erd9 : f32 [ 5.0 ]
-                    ex9  : f32 [ round[ tx0 + nmw9 + 8.0 ] ]
-                    en9  : i32 [ exl9.count ]
-                    cb.ext_x0 = ex9 - bounds.x
-                    # chips read as a small tag, not a second filename
-                    cv.font_size[ 12 ]
-                    # one segmented strip, drawn as TButtons draws
-                    for [ ei9: i32 0, ei9 < en9, ei9 += 1 ]
-                        cxx9 : f32 [ ex9 + f32[ ei9 ] * ecw9 ]
-                        ehv9 : bool [ nls - 1 == cb.hov_list && ei9 == cb.hov_ext ]
-                        el9  : f32 [ (ei9 == 0) ? erd9 : 0.0 ]
-                        er9  : f32 [ (ei9 == en9 - 1) ? erd9 : 0.0 ]
-                        gp9  : f32 [ (ehv9) ? 5.0 : 0.0 ]
-                        cv.save[ ]
-                        cv.fill_color[ (ehv9) ? rgba['#6cb6ff33'] : rgba['#ffffff10'] ]
-                        cv.rounded[ el9, er9, er9, el9 ]
-                        cv.no_shadows[]
-                        cv.rounded_rect[ cxx9, ry + 4.0, ecw9, 22.0, el9, er9, er9, el9 ]
-                        cv.paint[ ]
-                        if [ gp9 > 0.0 ]
-                            # an inset glow whose box runs past the inner sides
-                            gx0 : f32 [ (ei9 == 0) ? cxx9 : cxx9 - gp9 * 3.0 ]
-                            gx1 : f32 [ (ei9 == en9 - 1) ? cxx9 + ecw9 : cxx9 + ecw9 + gp9 * 3.0 ]
-                            cv.clip_rounded_rect[ cxx9, ry + 4.0, ecw9, 22.0, el9, er9, er9, el9 ]
-                            cv.fill_color[ rgba['#0000'] ]
-                            cv.box_shadow[ rgba['#8fd0ff'], 0.0, 0.0, gp9, 0.0, true ]
-                            cv.rounded_rect[ gx0, ry + 4.0, gx1 - gx0, 22.0, el9, er9, er9, el9 ]
-                            cv.paint[ ]
-                            cv.no_shadows[]
-                        cv.rounded[ 0.0, 0.0, 0.0, 0.0 ]
-                        cv.restore[ ]
-                        cv.fill_color[ (ehv9) ? rgba['#ffffff'] : rgba['#b9b2cc'] ]
-                        cv.draw_text[ exl9[ ei9 ],
-                            rect [ x: cxx9, y: ry, w: ecw9, h: 30.0 ],
-                            vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
-                    cv.save[ ]
-                    cv.fill_color[ rgba['#0000'] ]
-                    cv.set_stroke_size[ 1.0 ]
-                    cv.stroke_sides[ 1.0, 1.0, 1.0, 1.0 ]
-                    cv.stroke_offset[ -0.5 ]
-                    cv.stroke_color[ rgba['#ffffff33'] ]
-                    cv.rounded_rect[ ex9, ry + 4.0, ecw9 * f32[ en9 ], 22.0, erd9, erd9, erd9, erd9 ]
-                    cv.paint[ ]
-                    cv.set_stroke_size[ 0.0 ]
-                    cv.stroke_sides[ 0.0, 0.0, 0.0, 0.0 ]
-                    cv.restore[ ]
-                    cv.font_size[ 16 ]
                 if [ rcl9 ]
                     # the clone's bar in the description column: a 2px white
                     # outline and an offset white fill inside it, then the phase
@@ -1076,12 +1023,6 @@ element CommitView
     # hovered browse-list display row
     mutable hov_list : i32 [ -1 ]
     mutable chip_hov : i32 [ -1 ]
-    # module row: hovered extension chip (.ag/.cc/.rs/.c), -1 = none.
-    # ext_x0 is where the chips start, relative to bounds.x (draw sets it)
-    mutable hov_ext  : i32 [ -1 ]
-    mutable ext_x0   : f32 [ 0.0 ]
-    # dir -> space-joined extensions that exist; a stat per frame is not free
-    mutable ext_c    : map string [string]
     # THIS view's commit form: no tab ever sees another's state
     mutable commit_open : bool
     mutable commit_text : vec string
@@ -1187,22 +1128,6 @@ element CommitView
         if [ hi < 0 || hi >= o.find_hits.count ] return null
         h : FindHit o.find_hits[ hi ]
         return (deletable[ h ]) ? h : null
-
-    func ext_list [ h: FindHit ] -> vec string
-        none9 : vec string [ ]
-        if [ !h || !h.is_module || !h.file || h.text.count == 0 ] return none9
-        if [ !ext_c ] ext_c = map string [string] [ ]
-        k9 : '{h.file}'
-        if [ !ext_c.contains[ k9 ] ]
-            s9 : string ''
-            ob9 : orbiter orb9[]
-            if [ ob9 ]
-                for [ x9: string ] in ob9.module_exts[ h.file, h.text ]
-                    s9 = (s9.count > 0) ? '{s9} {x9}' : '{x9}'
-            ext_c[ k9 ] = s9
-        v9 : ext_c[ k9 ]
-        if [ !v9 || v9.count == 0 ] return none9
-        return v9.split[ ' ' ]
 
     func lay [] -> CommitLayer
         return (layers) ? cast CommitLayer [ layers['content'] ] : null
@@ -1337,7 +1262,6 @@ element CommitView
             hov_tab  = -1
             hov_ctl  = -1
             hov_list = -1
-            hov_ext  = -1
             chip_hov = -1
             pristine = false
 
@@ -1365,7 +1289,6 @@ element CommitView
         nctl : i32 [ -1 ]
         nlst : i32 [ -1 ]
         nchp : i32 [ -1 ]
-        next9 : i32 [ -1 ]
         nsid : i32 [ (rx < 6.0 + side_w) ? side_row_at[ ry - scroll.y ] : -1 ]
         ryp9 : f32 [ ry - scroll.y ]
         nplus : bool [ rx >= 6.0 + side_w - 30.0 && rx < 6.0 + side_w - 10.0 && ryp9 >= plus_y && ryp9 < plus_y + 24.0 ]
@@ -1412,12 +1335,6 @@ element CommitView
                     el [ rx >= ndx0 && rx <= ndx1 ] nctl = 4
                 el
                     nlst = r - band_st
-                    # module row: which extension chip is under the cursor
-                    exm9 : ext_list[ hf9 ]
-                    if [ exm9.count > 0 && rx >= ext_x0 ]
-                        ci9  : i32 [ i32[ (rx - ext_x0) / 34.0 ] ]
-                        if [ ci9 >= 0 && ci9 < exm9.count ]
-                            next9 = ci9
         # the tip: the full name of the column row or repository row hovered
         tip9 : string ''
         if [ nsid >= 0 && side_keys && nsid < side_keys.count ]
@@ -1433,13 +1350,12 @@ element CommitView
                     rs9 : i32 [ hh9.repo.index_of[ '/' ] ]
                     tip9 = (rs9 > 0) ? hh9.repo.mid[ 0, rs9 ] + ':' + hh9.repo.mid[ rs9 + 1, hh9.repo.count - rs9 - 1 ] : hh9.repo
         if [ !side_tip || side_tip.compare[ tip9 ] != 0 ] side_tip = tip9
-        if [ nrow != hov_row || ntab != hov_tab || nctl != hov_ctl || nlst != hov_list || nchp != chip_hov || next9 != hov_ext || nsid != hov_side ]
+        if [ nrow != hov_row || ntab != hov_tab || nctl != hov_ctl || nlst != hov_list || nchp != chip_hov || nsid != hov_side ]
             hov_row  = nrow
             hov_tab  = ntab
             hov_ctl  = nctl
             hov_list = nlst
             chip_hov = nchp
-            hov_ext  = next9
             hov_side = nsid
             pristine = false
             ux.will_animate = true
@@ -1631,18 +1547,8 @@ element CommitView
                     o.pending_finder = pane
                     if [ ux ] ux.restyle = true
                 return
-            # an extension chip opens that source directly — the whole point
-            # is not having to walk into the module folder to reach its .ag
-            exp9 : ext_list[ h ]
-            if [ exp9.count > 0 && rx >= ext_x0 ]
-                cp9  : i32 [ i32[ (rx - ext_x0) / 34.0 ] ]
-                if [ cp9 >= 0 && cp9 < exp9.count ]
-                    xp9 : path '{h.file}/{h.text}.{exp9[ cp9 ]}'
-                    if [ !(o.shift_down && o.open_new_tab[ xp9 ]) ] o.open_in_pane[ xp9, pane ]
-                    o.exit_finder[]
-                    return
             if [ h.inst > 0 ]
-                o.show_instance[ h.inst, pane ]
+                o.pick_instance[ h.inst, pane ]
                 o.exit_finder[]
                 return
             if [ h.card[] ]
@@ -1659,10 +1565,13 @@ element CommitView
                 o.repo_checkout[ h.repo, pane ]
                 pristine = false
                 return
-            if [ h.is_dir && h.file && o.shift_down && exp9.count > 0 ]
-                if [ o.open_new_tab[ path '{h.file}/{h.text}.{exp9[0]}' ] ]
-                    o.exit_finder[]
-                    return
+            # a module opens its source, as its .ag tab did; shift, in a
+            # new tab
+            if [ h.is_dir && h.file && h.is_module && h.text.count > 0 && h.text != '..' ]
+                mp9 : path '{h.file}/{h.text}.ag'
+                if [ !(o.shift_down && o.open_new_tab[ mp9 ]) ] o.open_in_pane[ mp9, pane ]
+                o.exit_finder[]
+                return
             if [ h.is_dir && h.file ]
                 o.nav_root = h.file
                 scroll.y    = 0.0

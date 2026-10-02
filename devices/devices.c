@@ -2116,6 +2116,12 @@ HOST_API int  host_pc(void)                                      { return 0; }
 HOST_API void host_audio_put(int s, const int16_t* p, int f, int r, int c) { }
 HOST_API int  host_audio_take(int s, int16_t* o, int m)          { return 0; }
 HOST_API int  host_audio_rate(int s)                             { return 0; }
+HOST_API int  host_audio_played(int s)                           { return 0; }
+HOST_API void host_audio_pace(int s, int l)                      { }
+HOST_API void host_audio_play_set(int s, int on)                 { }
+HOST_API int  host_audio_play_take(int s, int16_t* o, int m)     { return 0; }
+HOST_API void host_audio_player_start(int s)                     { }
+HOST_API void host_audio_player_stop(int s)                      { }
 HOST_API void host_tex_publish(int s, int sd, int f0, int f1, int w, int h, int f) { }
 HOST_API int  host_tex_gen(int s, int sd)                        { return 0; }
 HOST_API void host_tex_clear(int s, int sd)                      { }
@@ -2196,6 +2202,9 @@ typedef struct {
     // SPSC; the producer never waits, a lagging reader skips to the newest
     volatile int32_t  audio_rate;
     volatile uint32_t audio_w, audio_r;
+    // orbiter plays the ring: its read index, and 1 while it plays
+    volatile uint32_t audio_p;
+    volatile int32_t  audio_play;
     int16_t  audio[HOST_AUDIO * 2];
     volatile int32_t app_pid;   // process bound to this slot
     volatile int32_t state;     // 0 free, 1 spawn requested, 2 live, 3 exited
@@ -2314,6 +2323,122 @@ HOST_API int host_audio_rate(int slot) {
     AudioAt a;
     return audio_at(slot, &a) ? *a.rate : 0;
 }
+
+// a hosted slot whose sound orbiter plays from the ring
+static HostApp* audio_played_at(int slot) {
+    HostShared* h = host_shared();
+    if (!h || slot <= 0 || slot >= HOST_APPS) return 0;
+    return h->app[slot].audio_play ? &h->app[slot] : 0;
+}
+HOST_API int host_audio_played(int slot) { return audio_played_at(slot) != 0; }
+
+// the app side: wait while the player is more than lag frames behind
+HOST_API void host_audio_pace(int slot, int lag) {
+    HostApp* ap;
+    while ((ap = audio_played_at(slot)) && ap->audio_w - ap->audio_p > (uint32_t)lag)
+        usleep(1000);
+}
+
+// orbiter side: start (from the newest frame) or stop playing a slot
+HOST_API void host_audio_play_set(int slot, int on) {
+    HostShared* h = host_shared();
+    if (!h || slot <= 0 || slot >= HOST_APPS) return;
+    HostApp* ap = &h->app[slot];
+    ap->audio_p = ap->audio_w;
+    __sync_synchronize();
+    ap->audio_play = on;
+}
+
+// orbiter side: up to max stereo frames from the play index
+HOST_API int host_audio_play_take(int slot, int16_t* out, int max_frames) {
+    HostApp* ap = audio_played_at(slot);
+    if (!ap || !out || max_frames <= 0) return 0;
+    uint32_t w = ap->audio_w, p = ap->audio_p;
+    if (w - p > HOST_AUDIO) p = w - HOST_AUDIO;
+    int n = (int)(w - p);
+    if (n > max_frames) n = max_frames;
+    for (int i = 0; i < n; i++) {
+        uint32_t k = (p % HOST_AUDIO) * 2;
+        out[i * 2] = ap->audio[k]; out[i * 2 + 1] = ap->audio[k + 1];
+        p++;
+    }
+    __sync_synchronize();
+    ap->audio_p = p;
+    return n;
+}
+
+#if defined(__linux__) && !defined(__ANDROID__)
+#include <pthread.h>
+// orbiter plays a slot's ring on plain alsa, on its own thread:
+// a frozen app holds no stream, and its gap plays as silence
+#define PLAYER_CHUNK 512
+typedef struct { int slot; volatile int stop; pthread_t tid; } SlotPlayer;
+static SlotPlayer* g_players[HOST_APPS];
+
+static void* slot_player_run(void* arg) {
+    SlotPlayer* sp = arg;
+    snd_pcm_t* pcm = 0;
+    int rate = 0;
+    int16_t buf[PLAYER_CHUNK * 2];
+    while (!sp->stop) {
+        int rt = host_audio_rate(sp->slot);
+        if (rt != rate && rt > 0) {
+            if (pcm) snd_pcm_close(pcm);
+            pcm = 0;
+            rate = rt;
+            // 32 ms of buffer, as the app's own stream had
+            if (snd_pcm_open(&pcm, "default", SND_PCM_STREAM_PLAYBACK, 0) < 0 ||
+                snd_pcm_set_params(pcm, SND_PCM_FORMAT_S16_LE,
+                    SND_PCM_ACCESS_RW_INTERLEAVED, 2, rt, 1, 32000) < 0) {
+                fprintf(stderr, "slot %d: no audio device\n", sp->slot);
+                if (pcm) snd_pcm_close(pcm);
+                pcm = 0;
+            }
+        }
+        if (!pcm) { usleep(5000); continue; }
+        // wait half a chunk for the app; then silence fills it
+        int got = 0, waited = 0, half_ms = PLAYER_CHUNK * 500 / rate;
+        while (!sp->stop && got < PLAYER_CHUNK) {
+            got += host_audio_play_take(sp->slot, buf + got * 2, PLAYER_CHUNK - got);
+            if (got >= PLAYER_CHUNK || waited >= half_ms) break;
+            usleep(1000);
+            waited++;
+        }
+        memset(buf + got * 2, 0, (size_t)(PLAYER_CHUNK - got) * 4);
+        snd_pcm_sframes_t wr = snd_pcm_writei(pcm, buf, PLAYER_CHUNK);
+        if (wr < 0) snd_pcm_recover(pcm, (int)wr, 1);
+    }
+    if (pcm) { snd_pcm_drop(pcm); snd_pcm_close(pcm); }
+    return 0;
+}
+
+HOST_API void host_audio_player_start(int slot) {
+    if (slot <= 0 || slot >= HOST_APPS || g_players[slot] || !host_shared()) return;
+    SlotPlayer* sp = calloc(1, sizeof(SlotPlayer));
+    sp->slot = slot;
+    host_audio_play_set(slot, 1);
+    if (pthread_create(&sp->tid, 0, slot_player_run, sp) != 0) {
+        host_audio_play_set(slot, 0);
+        free(sp);
+        return;
+    }
+    g_players[slot] = sp;
+}
+
+HOST_API void host_audio_player_stop(int slot) {
+    if (slot <= 0 || slot >= HOST_APPS || !g_players[slot]) return;
+    SlotPlayer* sp = g_players[slot];
+    g_players[slot] = 0;
+    host_audio_play_set(slot, 0);
+    sp->stop = 1;
+    pthread_join(sp->tid, 0);
+    free(sp);
+}
+#else
+// other platforms: the app keeps its own output
+HOST_API void host_audio_player_start(int slot) { }
+HOST_API void host_audio_player_stop(int slot)  { }
+#endif
 
 // own-slot conveniences (the common case for an app or a summoned orbiter)
 HOST_API void host_post(int ring, int type, int a, int b, int c) {
