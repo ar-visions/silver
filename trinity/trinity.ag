@@ -574,10 +574,6 @@ abstract live_app media_app
                           (rq == RecQuality.high)   ? 4  :
                           (rq == RecQuality.stage)  ? 2  : 0 ]
             full  : bool [ rq == RecQuality.stage || rq == RecQuality.lossless ]
-            ifdef [ apple ]
-                # videotoolbox encodes 4:2:0 only
-                if [ full ] log 'record: 4:4:4 needs linux; 4:2:0 here'
-                full = false
             # a stream is 4:2:0 h.264; full colour is h.265 in mp4
             if [ full && fmt != 'mp4' && fmt != 'h265' ] full = false
             if [ full && !vk.h265_encode ]

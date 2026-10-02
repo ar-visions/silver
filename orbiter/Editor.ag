@@ -104,6 +104,13 @@ class FindHit
         if [ inst > 0 ] return true
         return scene && scene.count > 0
 
+    # a message row: a header with text that points at nothing
+    public func note [] -> bool
+        if [ !is_header || is_spacer || is_newfile || more || is_dir ] return false
+        if [ file || inst > 0 ] return false
+        if [ (scene && scene.count > 0) || (repo && repo.count > 0) ] return false
+        return text && text.count > 0
+
 class VRow
     public src   : i32 [ -1 ]
     public var   : variable
@@ -516,6 +523,7 @@ ResourceView AppView
     mutable req_h      : i32
     mutable pend_us    : i64
     mutable started    : bool
+    mutable asking     : bool        # its bare argument is being picked
     mutable ready      : bool
     # mouse lock asked by the app (HM.lock): 1 lock, 2 release; centre in app px; carried fractions
     mutable lock_req   : i32
@@ -588,7 +596,12 @@ ResourceView AppView
 
     func service [ cv: Canvas ]
         if [ held ] return
-        if [ !started ] start[]
+        if [ !started ]
+            if [ asking ] return
+            wa9 : cast Window [ cv.w ]
+            oa9 : cast orbiter [ (wa9) ? wa9.app_object : null ]
+            if [ oa9 && oa9.ask_default[ a ] ] return
+            start[]
         if [ slot < 0 ] return
         for [ i: i32 0, i < 16, i += 1 ]
             t : i32 [ host_poll2[ slot, 0 ] ]
@@ -1061,11 +1074,14 @@ ResourceView AppView
                         y9 += lh9
                     cv.paint[]
 
+    func module_name [] -> string
+        fn : src.filename[]
+        di : i32 [ fn.index_of[ '.' ] ]
+        return (di > 0) ? fn.mid[ 0, di ] : fn
+
     func start []
         started = true
-        fn  : src.filename[]
-        di  : i32 [ fn.index_of[ '.' ] ]
-        mod : (di > 0) ? fn.mid[ 0, di ] : fn
+        mod : string module_name[]
         # the host's launch flags (silver-host HOST_APP_*): 1 stops the app for
         # the debugger, which a viewer never asks; 2 builds clean; 4 builds -O0 -g
         # bits 8-15: this display's refresh, the pace of an app shown in the pane

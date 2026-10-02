@@ -1,3 +1,4 @@
+# orbiter stays in orbit: it keeps missing the ground
 # Kiff, I have made it with a woman. Inform the men.
 # orbiter: the code and style finder app
 # test comment
@@ -910,6 +911,21 @@ NavButton LaunchPath
     tlabel : Layer [ label_color: rgba [ '#fff6' ], label_size: 14,
         label_align: vec2f [ x: 0.0, y: 0.5 ], label_offset: vec2f [ x: 8.0, y: 0.0 ] ]
     # inside the grid: no border, no rounding, a flat fill that lifts on hover
+    body : Layer [ fill_color: rgba [ '#0000' ], radius: Radius [ '0' ], stroke_width: 0.0 ]
+    style : CSS {
+        layers.body:
+            fill_color: #0000
+            radius: 0
+            stroke_width: 0
+        :hovered
+            layers.body:
+                fill_color: #ffffff10
+    }
+
+# a field's clear: flush right in its cell, the cell's height
+LabelButton LaunchClear
+    tlabel : Layer [ label_color: rgba [ '#fffa' ], label_size: 12,
+        label_align: vec2f [ x: 0.5, y: 0.5 ] ]
     body : Layer [ fill_color: rgba [ '#0000' ], radius: Radius [ '0' ], stroke_width: 0.0 ]
     style : CSS {
         layers.body:
@@ -2095,8 +2111,8 @@ element LaunchPanel
             t['lp_coverage_lbl'] = LaunchLabel [ label: 'coverage', area: Region [ 'l6px t{y}px w{lw - 6.0}px h{rh}px' ] ]
             t['lp_coverage'] = LaunchCheck [ label: '', selected: cov_on,
                 area: Region [ 'l{lw + 1.0}px t{y}px w{rh}px h{rh}px' ] ]
-            t['lp_coverage_clear'] = CompanionButton [ label: 'clear', manual_mode: true,
-                area: Region [ 'l{lw + rh + 8.0}px t{y + 2.0}px w48px h{rh - 4.0}px' ] ]
+            t['lp_coverage_clear'] = LaunchClear [ label: 'clear', manual_mode: true,
+                area: Region [ 'r0 t{y}px w48px h{rh}px' ] ]
             y += rh
             rule_ys.push[ y ]
         # the instance's pid: orbiter's row, read-only, given every frame
@@ -2156,8 +2172,11 @@ element LaunchPanel
                 if [ pv9.count > 0 ]
                     pp9 : path pv9
                     dsp = pp9.filename[]
+                ap9 : Region [ 'l{cx}px t{y}px r48px h{rhx}px' ]
                 t['lp_{nm}'] = LaunchPath [ label: dsp, edit: pv9, path_value: pv9, manual_mode: true,
-                    is_resource: ty == 'resource', is_dir: ck == 'Directory', area: ar9 ]
+                    is_resource: ty == 'resource', is_dir: ck == 'Directory', area: ap9 ]
+                t['lp_{nm}_clear'] = LaunchClear [ label: 'clear', manual_mode: true,
+                    area: Region [ 'r0 t{y}px w48px h{rhx}px' ] ]
             el [ ck == 'KeyBind' ]
                 # the mounted field sets its own label; the rebuild echoes it back
                 # unchanged, since a changed or missing label drops the focus
@@ -2631,6 +2650,7 @@ element orbiter : trinity # implements compiler
     mutable pick_exts    : vec string           # a resource pick lists only these extensions
     mutable pick_cache   : vec path             # files found once for the current pick; keystrokes filter it
     mutable pick_editor  : Editor
+    mutable pick_launch  : AppView              # the pick starts this instance
     intern find_last_query : string
     intern find_last_scope : string
     intern find_scan_mt  : i64
@@ -4307,18 +4327,60 @@ element orbiter : trinity # implements compiler
             out = (out.count > 0) ? '{out} {ws[ j ]}' : ws[ j ]
         return out
 
-    func live_default [ mod: string ] -> Prop
+    # the module's bare argument: a resource or default member
+    func default_prop [ mod: string ] -> Prop
         sp9 : string module_spec[ mod ]
         if [ !sp9 ] return null
         lp9 : LaunchProps []
         Au.parse_agi[ null, sp9.chars, lp9 ]
         if [ !lp9.props ] return null
         for [ p: Prop ] in lp9.props
-            if [ p.type != 'resource' && p.access != 'default' ] continue
-            if [ !p.meta ] continue
-            for [ q: string ] in p.meta
-                if [ q == 'Live' ] return p
+            if [ p.type == 'resource' || p.access == 'default' ] return p
         return null
+
+    func live_default [ mod: string ] -> Prop
+        p : Prop default_prop[ mod ]
+        if [ !p || !p.meta ] return null
+        for [ q: string ] in p.meta
+            if [ q == 'Live' ] return p
+        return null
+
+    # an instance whose app takes a bare argument and has none:
+    # the pick asks for it, and a cancel leaves it held
+    func ask_default [ av: AppView ] -> bool
+        if [ av.doc ] return false
+        if [ default_arg_of[ av.module_args ].count > 0 ] return false
+        mod : string av.module_name[]
+        dp9 : Prop default_prop[ mod ]
+        if [ !dp9 || (dp9.value && dp9.value.count > 0) ] return false
+        ed : Editor null
+        for [ i: i32 0, i < editor_slots.count, i += 1 ]
+            e8 : Editor pane_at[ i ]
+            if [ e8 && e8.run_view == av ] ed = e8
+        if [ !ed ] ed = pane_at[ active_pane ]
+        av.asking = true
+        pick_default[ ed, av, mod, '' ]
+        return true
+
+    # the resource pick for an app's bare argument; with launch,
+    # the chosen file starts that instance
+    func pick_default [ pe9: Editor, launch: AppView, mod: string, cur: string ]
+        pick_field  = 'arg_edit'
+        pick_dir    = false
+        pick_editor = pe9
+        pick_launch = launch
+        pick_exts   = vec string []
+        pick_cache  = null
+        if [ pe9 ]
+            active_pane = pe9.pane_index
+            pe9.ensure_export_registry[]
+            if [ pe9.export_registry ]
+                for [ mod9: string, ex9: string ] in pe9.export_registry
+                    if [ mod9 == mod ] pick_exts.push[ ex9 ]
+        cp9 : path (cur && cur.count > 0) ? path cur : null
+        if [ cp9 && cp9.exists[] ] nav_root = cp9.parent_dir[]
+        focus_finder[]
+        run_search[]
 
     func module_spec [ mod: string ] -> string
         if [ !mod || mod.count == 0 ] return null
@@ -6864,6 +6926,12 @@ element orbiter : trinity # implements compiler
                     if [ find_text && find_text.count > 0 && p9.filename[].index_of[ find_text ] < 0 ] continue
                     push_file_hit[ p9, true ]
                     combined.push[ '{p9}' ]
+                if [ combined.count == 0 ]
+                    xs9 : string ''
+                    for [ x9: string ] in pick_exts
+                        xs9 = (xs9.count > 0) ? '{xs9} {x9}' : x9
+                    nf9 : string (find_text && find_text.count > 0) ? 'no {xs9} files matching {find_text}' : 'no {xs9} files found'
+                    find_hits.push[ FindHit [ is_header: true, text: nf9, dir: '', file: null ] ]
             el [ repo_user_of[ find_text ] ]
                 # user:name lists the host user's repositories, filtered by name
                 ru9 : string repo_user_of[ find_text ]
@@ -7032,7 +7100,16 @@ element orbiter : trinity # implements compiler
         p : path (pick_dir && p0 && !p0.is_dir[]) ? p0.parent_dir[] : p0
         fe9 : element (pick_field == 'arg_edit') ? null : find_el[ a, pick_field ]
         # the title's argument: the running app takes it live
-        if [ pick_field == 'arg_edit' ]
+        # a waiting instance takes it as its argument and starts
+        if [ pick_field == 'arg_edit' && pick_launch ]
+            pl9 : AppView pick_launch
+            ma9 : string (pl9.module_args) ? pl9.module_args : ''
+            pl9.module_args = (ma9.count > 0) ? '{ma9} {p}' : '{p}'
+            pl9.arg_text    = '{p}'
+            pl9.asking      = false
+            pick_launch     = null
+            session_dirty   = true
+        el [ pick_field == 'arg_edit' ]
             ra9 : AppView (pick_editor) ? pick_editor.run_view : null
             pa9 : Prop (ra9 && ra9.app_mod) ? live_default[ ra9.app_mod ] : null
             if [ pa9 && !ra9.ended ]
@@ -7231,6 +7308,15 @@ element orbiter : trinity # implements compiler
         return m9
 
     func exit_find_mode []
+        # closed with no pick: the instance waits, held
+        if [ pick_launch ]
+            pick_launch.asking = false
+            pick_launch.held   = true
+            pick_launch.note   = 'no file chosen'
+            pick_launch = null
+            pick_field  = null
+            pick_exts   = null
+            pick_cache  = null
         sp9 : string search_pane[]
         findbar_open = false
         find_showing = false
@@ -7418,22 +7504,8 @@ element orbiter : trinity # implements compiler
             ab9 : ArgButton ev.target
             if [ ab9.resource ]
                 pe9 : Editor pane_of[ ev.target ]
-                pick_field  = 'arg_edit'
-                pick_dir    = false
-                pick_editor = pe9
-                pick_exts   = vec string []
-                pick_cache  = null
-                if [ pe9 ]
-                    active_pane = pe9.pane_index
-                    pe9.ensure_export_registry[]
-                    bm9 : string band_mod_of[ pe9 ]
-                    if [ pe9.export_registry ]
-                        for [ mod9: string, ex9: string ] in pe9.export_registry
-                            if [ mod9 == bm9 ] pick_exts.push[ ex9 ]
-                cp9 : path (ab9.value && ab9.value.count > 0) ? path ab9.value : null
-                if [ cp9 && cp9.exists[] ] nav_root = cp9.parent_dir[]
-                focus_finder[]
-                run_search[]
+                bm9 : string (pe9) ? band_mod_of[ pe9 ] : ''
+                pick_default[ pe9, null, bm9, ab9.value ]
                 ev.no_default     = true
                 ev.no_propagation = true
                 return
@@ -7757,6 +7829,22 @@ element orbiter : trinity # implements compiler
             cov_poll[]
             if [ ev.target ] ev.target.ux.restyle = true
             ev.no_default = true
+            return
+        # a path's clear: its field goes empty, the args recompose
+        if [ ev.target inherits LaunchClear ]
+            fid9 : string ev.target.id.mid[ 0, ev.target.id.count - 6 ]
+            fe9 : element find_el[ a, fid9 ]
+            if [ fe9 && fe9 inherits LaunchPath ]
+                lc9 : LaunchPath fe9
+                lc9.path_value = ''
+                lc9.edit       = ''
+                lc9.label      = ''
+                args_field  = fe9
+                args_editor = pane_of[ ev.target ]
+                args_sync   = true
+            if [ ev.target ] ev.target.ux.restyle = true
+            ev.no_default     = true
+            ev.no_propagation = true
             return
         # launch panel: a control change re-composes the run args next frame
         if [ ev.target.id && ev.target.id.starts_with[ 'lp_' ] ]
