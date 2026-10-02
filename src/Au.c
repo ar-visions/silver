@@ -7926,7 +7926,7 @@ AU_EXPORT i64 path_modified_time(path a) {
 // layout (LE): u32 magic('SFMT') u32 ver(=4);  section: u32 0xC0DEFACE u32 path_len,
 //   path bytes, i64 mtime, u32 decl_count, decl_count*{u32 len, bytes}, u32 line_count,
 //   line_count*{u32 ntok, ntok*{u32 col,len,syntax,decl_idx,decl_line,
-//   type_idx,type_line}};  end: u32 0.
+//   type_idx,type_line,type_name_idx}};  end: u32 0.
 // wanted: only sections whose source path is a key of it are built
 static Au read_format_sections(path a, map wanted) {
     Au out = (Au)vector_of(typeid(Au));
@@ -7957,7 +7957,7 @@ static Au read_format_sections(path a, map wanted) {
             if (sk && fread(&nl, 4, 1, f) != 1) sk = false;
             for (u32 L = 0; sk && L < nl; L++) {
                 u32 nt = 0;
-                if (fread(&nt, 4, 1, f) != 1 || fseek(f, (long)nt * 28, SEEK_CUR) != 0) sk = false;
+                if (fread(&nt, 4, 1, f) != 1 || fseek(f, (long)nt * 32, SEEK_CUR) != 0) sk = false;
             }
             free(p);
             if (!sk) break;
@@ -7988,14 +7988,16 @@ static Au read_format_sections(path a, map wanted) {
             if (fread(&ntok, 4, 1, f) != 1) { ok = false; break; }
             vector ltk = vector_of(typeid(fmt_token));
             for (u32 t = 0; t < ntok; t++) {
-                u32 rec[7];
-                if (fread(rec, 4, 7, f) != 7) { ok = false; break; }
+                u32 rec[8];
+                if (fread(rec, 4, 8, f) != 8) { ok = false; break; }
                 cstr ds = (dp && rec[3] > 0 && rec[3] <= np) ? dp[rec[3] - 1] : null;
                 cstr ts = (dp && rec[5] > 0 && rec[5] <= np) ? dp[rec[5] - 1] : null;
+                cstr tn = (dp && rec[7] > 0 && rec[7] <= np) ? dp[rec[7] - 1] : null;
                 vector_push(ltk, (Au)fmt_token(
                     column, (num)rec[0], length, (num)rec[1], syntax, (Syntax)rec[2],
                     decl_source, ds ? string(ds) : null, decl_line, (num)rec[4],
-                    type_source, ts ? string(ts) : null, type_line, (num)rec[6]));
+                    type_source, ts ? string(ts) : null, type_line, (num)rec[6],
+                    type_name, tn ? string(tn) : null));
             }
             vector_push((vector)ff->lines, (Au)ltk);
         }

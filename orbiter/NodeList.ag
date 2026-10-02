@@ -286,9 +286,9 @@ element FilterField
                 label_color: #ffff
     }
 
-# the clicked name's type: a header, a row per member (a row goes
-# to its line), a filter at the bottom
-NodeList TypeMembers
+# the clicked name's type: a header, its rows, and a footer with
+# the filter; only the rows scroll
+element TypeMembers
     style : CSS {
         area: l0 t0 r0 b0
         layers.cbase:
@@ -297,12 +297,6 @@ NodeList TypeMembers
         layers.tdiv:
             fill_color: #fff2
             area: l0 t0 r0 h1px
-        layers.content: NodeLayer
-            area: l4px t30px r4px b35px
-            label_size: 15
-            row_spacing: 1.2
-            text_color: #cfe
-            col_w: 120
     }
     public file  : path
     # the type's name and its file:line, for the header
@@ -313,14 +307,56 @@ NodeList TypeMembers
     # the filter's text as last typed: a remount keeps it
     mutable filter_text : string
 
+    func filter_field [] -> element
+        ft9 : element (elements) ? elements[ 'footer' ] : null
+        return (ft9 && ft9.elements) ? ft9.elements[ 'list_filter' ] : null
+
     # a new filter: the rows narrow from the top
     public func tick [ w: Window ]
-        f9 : string flt[]
-        if [ !f9 ] f9 = ''
+        fe9 : element filter_field[]
+        f9 : string (fe9 && fe9.edit) ? fe9.edit : ''
         if [ !filter_text || filter_text != f9 ]
             filter_text = f9
-            scroll.y = 0.0
-            pristine = false
+            rw9 : element (elements) ? elements[ 'rows' ] : null
+            if [ rw9 ]
+                rw9.scroll.y = 0.0
+                rw9.pristine = false
+
+    func render [] -> Elements
+        t : Elements []
+        t['type_head'] = TypeHead [ label: title, area: Region { l0 t0 r0 h30px } ]
+        t['rows'] = TypeRows [ file: file, names: names, types: types,
+            lines: lines, area: Region { l0 t30px r0 b35px } ]
+        # focused, the field holds its own text: no edit overwrites it
+        fe9 : element filter_field[]
+        ff9 : FilterField [ label: 'filter', focusable: true,
+            area: Region { l4px t4px r4px b4px } ]
+        if [ !(fe9 && ux && ux.focus == fe9) ]
+            ff9.edit = (filter_text) ? filter_text : ''
+        t['footer'] = element [ area: Region { l0 b35px r0 h35px },
+            elements: Elements [ 'list_filter': ff9 ] ]
+        return t
+
+# the member rows; a row goes to its line
+NodeList TypeRows
+    style : CSS {
+        area: l0 t0 r0 b0
+        layers.content: NodeLayer
+            area: l4px t2px r4px b2px
+            label_size: 15
+            row_spacing: 1.2
+            text_color: #cfe
+            col_w: 120
+    }
+    public file  : path
+    public names : vec string
+    public types : vec string
+    public lines : vec i32
+
+    # the filter is the footer's, beside the rows
+    func flt [] -> string
+        tm9 : TypeMembers (parent && parent inherits TypeMembers) ? TypeMembers[ parent ] : null
+        return (tm9) ? tm9.filter_text : null
 
     func row_count [] -> i32
         return (names) ? names.count : 0
@@ -340,18 +376,7 @@ NodeList TypeMembers
         orb.open_at_line[ file, orb.active_pane, i32[ lines[ idx ] ] ]
 
     func render [] -> Elements
-        t : Elements []
-        t['type_head'] = TypeHead [ label: title, area: Region { l0 t0 r0 h30px } ]
-        # focused, the field holds its own text: no edit overwrites it
-        fe9 : element (elements) ? elements[ 'list_filter' ] : null
-        if [ fe9 && ux && ux.focus == fe9 ]
-            t['list_filter'] = FilterField [ label: 'filter', focusable: true,
-                area: Region { l4px b31px r4px h27px } ]
-        el
-            t['list_filter'] = FilterField [ label: 'filter', focusable: true,
-                edit: (filter_text) ? filter_text : '',
-                area: Region { l4px b31px r4px h27px } ]
-        return t
+        return null
 
 # a type's members read from its declaration: a silver type's
 # lines one indent in, or a C struct's fields between its braces
@@ -389,11 +414,30 @@ class TypeInfo
         types.push[ ty ]
         lines.push[ ln ]
 
+    # a type loaded here: its members (bases' too) from the runtime
+    func load_runtime [ ln: i32 ] -> bool
+        if [ !name || name.count == 0 ] return false
+        ty0 : Au.find_type[ name.chars, null ]
+        if [ !ty0 ] return false
+        # the fields first, then the methods
+        for [ pass: i32 0, pass < 2, pass += 1 ]
+            want : i32 [ (pass == 0) ? AU_MEMBER_VAR : AU_MEMBER_FUNC ]
+            for [ ty : Au_t ty0, ty && ty != typeid[ Au ], ty = ty.context ]
+                for [ i: i32 0, i < ty.members.count, i += 1 ]
+                    mem : Au_t ty.members.origin[i]
+                    if [ mem.member_type != want ] continue
+                    nm : string [ mem.ident ]
+                    tn : string (mem.src) ? string [ mem.src.ident ] : ''
+                    if [ pass == 1 ] tn = '[] -> {tn}'
+                    add[ nm, tn, (mem.src_line > 0) ? mem.src_line : ln ]
+        return names.count > 0
+
     # ln: the declaration's 1-based line
     func load [ ln: i32 ]
         names = vec string []
         types = vec string []
         lines = vec i32 []
+        if [ load_runtime[ ln ] ] return
         if [ !file || !file.exists[] || ln <= 0 ] return
         tx : string file.load[ typeid[string], null ]
         if [ !tx ] return
@@ -404,7 +448,7 @@ class TypeInfo
         pre : i32 [ -1 ]
         for [ k: i32 0, k < hd.count && pre < 0, k += 1 ]
             if [ hd[ k ] == 91 || hd[ k ] == 123 || hd[ k ] == 58 ] pre = k
-        name = last_word[ (pre > 0) ? hd.mid[ 0, pre ] : hd ]
+        if [ !name || name.count == 0 ] name = last_word[ (pre > 0) ? hd.mid[ 0, pre ] : hd ]
         ext : string file.ext[]
         if [ ext && ext == 'ag' ]
             load_silver[ all, ln ]
@@ -733,8 +777,8 @@ Control InstancePanel
         ed9 : Editor editor[]
         return (ed9) ? ed9.instances[] : null
 
-    # where the type of the name at the caret is declared, file:line
-    # only the user's own press or key moves it; a name with no
+    # the type of the name at the caret: name|file|line (no file for
+    # Au's own); only the user's own press or key moves it; a name with no
     # type, or a jump, keeps the last one
     func caret_type [] -> string
         e9 : Editor editor[]
@@ -743,18 +787,26 @@ Control InstancePanel
         seen_touch = e9.caret_touch
         if [ e9.sel_line < 0 || e9.sel_line >= e9.line_count[] ] return caret_key
         ml : i32 [ e9.row_src[ e9.sel_line ] ]
-        # the caret sits after the word as often as in it
-        for [ c9: i32 e9.sel_col, c9 >= e9.sel_col - 1 && c9 >= 0, c9 -= 1 ]
+        ln9 : string e9.line_get[ e9.sel_line ]
+        sc9 : i32 [ e9.sel_col ]
+        # the word the caret ends, then the one it starts; just past a
+        # dot (rv9.|) it is the name before the dot
+        dot9 : bool [ sc9 > 0 && ln9 && sc9 - 1 < ln9.count && ln9[ sc9 - 1 ] == 46 ]
+        c0 : i32 [ (dot9) ? sc9 - 2 : sc9 - 1 ]
+        c1 : i32 [ (dot9) ? sc9 - 2 : sc9 ]
+        for [ c9: i32 c0, c9 <= c1, c9 += 1 ]
+            if [ c9 < 0 ] continue
             cr : ColorRegion e9.region_at[ ml, c9 ]
-            if [ cr && cr.tsrc && cr.tline > 0 ]
-                caret_key = '{cr.tsrc}:{cr.tline}'
+            if [ cr && cr.tname ]
+                ts9 : string (cr.tsrc) ? cr.tsrc : ''
+                caret_key = '{cr.tname}|{ts9}|{cr.tline}'
                 break
         return caret_key
 
     # the line of the caret type's declaration
     func type_line [] -> i32
         if [ !type_key ] return 0
-        cx9 : i32 [ type_key.rindex_of[ ':' ] ]
+        cx9 : i32 [ type_key.rindex_of[ '|' ] ]
         return i32[ type_key.mid[ cx9 + 1, type_key.count - cx9 - 1 ] ]
 
     # the members of the caret's type, read once per type
@@ -762,9 +814,11 @@ Control InstancePanel
         k9 : string caret_type[]
         if [ k9.count == 0 ] return null
         if [ type_key && type_key == k9 ] return type_info
-        cx9 : i32 [ k9.rindex_of[ ':' ] ]
-        ti9 : TypeInfo [ file: path k9.mid[ 0, cx9 ] ]
-        ti9.load[ i32[ k9.mid[ cx9 + 1, k9.count - cx9 - 1 ] ] ]
+        pt9 : vec string k9.split[ '|' ]
+        fl9 : string (pt9.count > 1) ? pt9[ 1 ] : ''
+        ti9 : TypeInfo [ name: pt9[ 0 ] ]
+        if [ fl9.count > 0 ] ti9.file = path fl9
+        ti9.load[ (pt9.count > 2) ? i32[ pt9[ 2 ] ] : 0 ]
         type_key  = k9
         type_info = ti9
         return ti9
@@ -914,13 +968,15 @@ Control InstancePanel
             mh9 : f32 [ 0.0 ]
             if [ ti9 && ti9.names && ti9.names.count > 0 ]
                 # the row the list last drew, else a 15px line at 1.2
-                me9 : NodeList (elements) ? elements[ 'members' ] : null
-                rw9 : f32 [ (me9 && me9.row_height > 20.0) ? me9.row_height : 26.0 ]
+                me9 : element (elements) ? elements[ 'members' ] : null
+                mr9 : NodeList (me9 && me9.elements) ? me9.elements[ 'rows' ] : null
+                rw9 : f32 [ (mr9 && mr9.row_height > 20.0) ? mr9.row_height : 26.0 ]
                 # the rows are capped; the header (30px) and the filter
                 # bar (35px) always fit
                 mh9 = min[ f32[ ti9.names.count ] * rw9, panel_h[] * 0.45 ] + 30.0 + 35.0
+                where9 : string (ti9.file) ? '   {ti9.file.filename[]}:{type_line[]}' : ''
                 t['members'] = TypeMembers [ file: ti9.file, names: ti9.names,
-                    title: '{ti9.name}   {ti9.file.filename[]}:{type_line[]}',
+                    title: '{ti9.name}{where9}',
                     types: ti9.types, lines: ti9.lines,
                     area: Region [ 'l0 b{mh9}px r0 h{mh9}px' ] ]
             # the fields only for a module or an instance
