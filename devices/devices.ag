@@ -56,6 +56,12 @@ func host_tex_pull    [ slot: i32, side: i32, which: i32, w2: @i32, h2: @i32, fm
 func host_audio_put   [ slot: i32, pcm: @i16, frames: i32, rate: i32, channels: i32 ]
 func host_audio_take  [ slot: i32, out: @i16, max_frames: i32 ] -> i32
 func host_audio_rate  [ slot: i32 ] -> i32
+func host_audio_played    [ slot: i32 ] -> i32
+func host_audio_pace      [ slot: i32, lag: i32 ]
+func host_audio_play_set  [ slot: i32, on: i32 ]
+func host_audio_play_take [ slot: i32, out: @i16, max_frames: i32 ] -> i32
+func host_audio_player_start [ slot: i32 ]
+func host_audio_player_stop  [ slot: i32 ]
 func host_app_request [ nm: cstr, flags: i32 ] -> i32
 func host_app_flags   [ slot: i32 ] -> i32
 func host_app_state   [ slot: i32 ] -> i32

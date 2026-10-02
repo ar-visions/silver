@@ -1,5 +1,6 @@
 export 0.8.8
 export extensions ['.z64', '.n64', '.v64']
+export icon ['3d']
 
 import vec
 import img
@@ -869,6 +870,7 @@ element n64 : trinity
 	mutable pub_run      : new i32 [ 12288 ]
 	mutable pub_run_n    : i32
 	mutable r_runs       : new i32 [ 12288 ]   # paint thread's copy, handed to the Model
+	mutable titled       : string            # the game the title names
 
 	func init []
 		animated  = true
@@ -6503,6 +6505,10 @@ element n64 : trinity
 	# ---------------- paint ----------------
 	public func draw [ w: Window ]
 		if [ w.draw_stage != CanvasType.screen ] return
+		game9 : string (rom) ? rom.stem[] : null
+		if [ game9 && titled != game9 ]
+			titled = game9
+			set_title[ game9 ]
 		ux.will_animate = true
 		paint[ w.screen, rect [ x: 0.0, y: 0.0, w: bounds.w, h: bounds.h ] ]
 

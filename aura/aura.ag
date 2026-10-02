@@ -2,6 +2,7 @@
 export 1.0.0
 export extensions ['.html', '.htm']
 export protocols ['http', 'https']
+export icon ['http']
 
 # WPE WebKit's build: ruby runs its generators, unifdef its headers
 import yaml:libyaml/0.2.5
@@ -145,7 +146,9 @@ element aura : trinity
     public  height     : i32    [ 800 ]
     public  title      : string [ 'aura' ]
     public  background : string [ 'Background' ]
-    default [ Launch ] src : string          # a url, or a local file
+    # a url, or a local file; a new one loads in the running page
+    default [ Launch, Live ] src : string
+        if [ started ] post[ 'load {target_of[]}' ]
     mutable pid        : i32
     mutable ctl        : i32    [ -1 ]       # the helper's stdin
     mutable shm        : @u8                 # its frames: header, rgba8
@@ -189,6 +192,13 @@ element aura : trinity
         # a dead helper returns EPIPE here, never a SIGPIPE
         send[ ctl, full.chars, full.count, MSG_NOSIGNAL ]
 
+    # a scheme as given; a file on disk by path; anything else is a site
+    func target_of [] -> string
+        if [ !src ] return 'about:blank'
+        if [ src.index_of[ '://' ] >= 0 || src.index_of[ 'about:' ] == 0 ] return src
+        f : path [ src ]
+        return (f.exists[]) ? 'file://{f.absolute[]}' : 'https://{src}'
+
     func launch []
         started = true
         pd : i32 [ getpid[] ]
@@ -196,13 +206,7 @@ element aura : trinity
         shm_path = '/tmp/silver-aura-{pd}-{ts}.frame'
         root   : path.path_startup[]
         engine_path : path '{root}/install/libexec/wpe-webkit-2.0/WPETrinityBrowser'
-        target : string [ 'about:blank' ]
-        # a scheme as given; a file on disk by path; anything else is a site
-        if [ src && (src.index_of[ '://' ] >= 0 || src.index_of[ 'about:' ] == 0) ]
-            target = src
-        el [ src ]
-            f : path [ src ]
-            target = (f.exists[]) ? 'file://{f.absolute[]}' : 'https://{src}'
+        target : string target_of[]
         # literals reach a C vararg as objects, not text
         name  : string 'WPETrinityBrowser'
         flag  : string '--data'

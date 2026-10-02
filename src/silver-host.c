@@ -75,6 +75,9 @@ typedef struct {
     // audio_rate, so a recording on the ide side carries the pane's audio
     volatile int32_t  audio_rate;
     volatile uint32_t audio_w, audio_r;
+    // orbiter plays the ring: its read index, and 1 while it plays
+    volatile uint32_t audio_p;
+    volatile int32_t  audio_play;
     int16_t  audio[HOST_AUDIO * 2];
     volatile int32_t app_pid;   // process bound to this slot
     volatile int32_t state;     // 0 free, 1 spawn requested, 2 live, 3 exited

@@ -2003,6 +2003,15 @@ expect func t_vec_ternary [] -> bool
     n : vec string (!h) ? h.tags : null
     return t && t.count == 2 && t[ 1 ] == 'rs' && !n
 
+# a ternary's false side on the next line, a bracketless cast
+expect func t_ternary_next_line [] -> bool
+    on : bool [ false ]
+    p : path (on) ? path 'a.svg'
+        : path 'b.svg'
+    q : path (!on) ? path 'c.svg'
+        : path 'd.svg'
+    return p && '{p}' == 'b.svg' && q && '{q}' == 'c.svg'
+
 # intern vec defaults must run through the inheritance chain
 expect func t_vec_sub [] -> bool
     h: VecSub [ ]

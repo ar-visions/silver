@@ -1,3 +1,5 @@
+export icon ['cpp']
+
 import vec
 import img
 import trinity

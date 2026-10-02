@@ -273,6 +273,34 @@ SUSE is gone: only its EFI loader is left (its btrfs root
    the tree's ld.so with only the tree's libraries finds the
    RTX 3060, driver 610.57.04. grub-debug.sh is still on.
 
+## orbiter-os shell design — live list (Oct 1 2026)
+
+Goal: orbiter as an OS shell. No free-floating windows. The
+interface stays as it is: every pane keeps its title bar and
+nav list. Changes: a dock on the left side, and the bottom
+bar 50% taller.
+1. OPEN the bottom bar (StatusBar, orbiter.ag) 50% taller:
+   35 px -> 52.5 px (its area and the stack's b35px above it).
+   It keeps the status portion: tool tips and orbiter's state.
+2. OPEN the dock, a strip on the window's left side: one
+   button per element (its module's images/icon.png), a
+   launch and status button. Pressing it launches the
+   element or switches the view to it. Orbiter's own button
+   sits at the dock's bottom, larger than the others.
+3. OPEN the status light on the side of each dock button:
+   none (not running), busy, needs (waiting on the user),
+   done (something new), failed. The words are the exchange's
+   (busy / idle / done / needs) plus failed. A hosted app
+   sends it over its ring, as HM.title and HM.nav_state do.
+4. OPEN switching hides, never quits (macOS style): leaving an
+   element hides its view; its instance keeps running and its
+   light keeps reporting. close_pane (orbiter.ag) already keeps
+   instances running when a tab closes.
+5. OPEN the editor is an app in the dock, not the shell's
+   default. It declares itself by export: the file types it
+   claims (.ag .c .h ...), as aura's .agi claims .html, and a
+   dock flag so it is in the dock from the start.
+
 ---
 
 silver is a native build language with an LLVM backend. It compiles `.ag` source files into native binaries via LLVM IR. The compiler itself is written in C, built on the **Au** object system.

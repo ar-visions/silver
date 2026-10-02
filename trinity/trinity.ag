@@ -7013,6 +7013,8 @@ element Splitter
     intern cursor_on  : bool
     # count-change debug frames left
     intern dbgf       : i32
+    # a border on each seam, lit only by the pointer's near light
+    public near_seam  : bool
 
     func order [] -> vec string
         ids : vec string []
@@ -7143,6 +7145,27 @@ element Splitter
     # onto whatever sits behind them, the backdrop scene included. a
     # line here covered it, and a stale one left the seam reading two px
     # wide
+
+    # near_seam: a clear line the pointer's light alone brings up
+    public func draw [ w: Window ]
+        if [ !near_seam || w.draw_stage != CanvasType.screen ] return
+        if [ !bounds || !dseam ] return
+        cv : Canvas [ w.screen ]
+        cv.save[ ]
+        w.near_light_on[ cv, a, 0.0, 0.0 ]
+        cv.near_style[ 1.3, 0.0, rgba [ '#c890ffff' ], w.near_y_fade ]
+        cv.fill_color[ rgba [ '#0000' ] ]
+        # near_border leaves alpha 0 alone: 1/255 is unseen, yet lit
+        cv.stroke_color[ rgba [ '#ffffff01' ] ]
+        cv.stroke_width[ 1.0 ]
+        cv.stroke_offset[ 0.0 ]
+        for [ d: f32 ] in dseam
+            if [ vertical ]
+                cv.rect_to[ 0.0, d, bounds.w, 0.0 ]
+            el
+                cv.rect_to[ d, 0.0, 0.0, bounds.h ]
+            cv.paint[ ]
+        cv.restore[ ]
 
     func on_press [ ev: Event ]
         if [ !bounds || !dseam ] return
@@ -8539,6 +8562,26 @@ expect func t_near_border [ vk: vk_context ] -> bool
     far_r  : i32 [ data[ (20 * img.width + 360) * 4 ] ]
     log 'near-border red: near {near_r}, far {far_r}'
     return near_r > far_r && far_r > 0
+
+# arc takes the canvas transform once, as rect_to does
+expect func t_arc_translate [ vk: vk_context ] -> bool
+    w: Display [ vk: vk, format: Pixel.rgba8, backbuffer: true,
+                 width: 400, height: 200 ]
+    c: Canvas [ vk: vk, w: w, width: 400, height: 200 ]
+    c.update[]
+    c.save[]
+    c.translate[ 100.0, 50.0 ]
+    c.fill_color[ rgba [ '#ffffff' ] ]
+    c.arc[ 20.0, 20.0, 6.0, 0.0, 6.2832 ]
+    c.paint[]
+    c.restore[]
+    c.sync_fence[]
+    img: Image[ c.color ]
+    data: @u8 img.vdata[]
+    at_r   : i32 [ data[ (70 * img.width + 120) * 4 ] ]
+    twice_r : i32 [ data[ (120 * img.width + 220) * 4 ] ]
+    log 'arc translate red: at {at_r}, twice {twice_r}'
+    return at_r > 200 && twice_r < 50
 
 # y distance doubled: 80px up is out of reach, 80px aside is not
 expect func t_near_fade [ vk: vk_context ] -> bool

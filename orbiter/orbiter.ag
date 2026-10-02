@@ -207,9 +207,9 @@ element EditorView
         e : Editor text_of[]
         o : orb[]
         if [ e && o && e.view_name && o.console_of[ e.view_name ] ] return e.view_name
-        # a hosted app names itself
-        if [ e && e.app_view && e.run_view && e.run_view.app_title && e.run_view.app_title.count > 0 ]
-            return e.run_view.app_title
+        # a module: its name; its argument is a button beside it
+        m : path (e && o) ? o.module_src_of[ e ] : null
+        if [ m ] return m.stem[]
         p : file[]
         return (p) ? p.filename[] : 'Open'
 
@@ -234,6 +234,35 @@ element EditorView
         if [ psess[].count > 0 ]
             t['ctx_copy'] = LabelButton [ label: 'context', manual_mode: true ]
             t['ctx_shot'] = LabelButton [ label: 'screen',  manual_mode: true ]
+        # the running app's live argument: a field after the name
+        rv9 : AppView (e) ? e.run_view : null
+        dp9 : Prop (rv9 && !rv9.ended && rv9.app_mod && !tfoc && !newfile) ? o.live_default[ rv9.app_mod ] : null
+        if [ dp9 && w && w.screen ]
+            cv9 : Canvas w.screen
+            fu9 : f32 [ (w.vk && w.vk.font_unit > 0) ? f32[ w.vk.font_unit ] / 22.0 : 1.0 ]
+            cv9.font_size[ 17 ]
+            nm9 : cv9.measure_text[ title_text[] ]
+            ax9 : f32 [ 62.7 * fu9 + nm9.w + 12.0 * fu9 ]
+            av9 : string (rv9.arg_text) ? rv9.arg_text : ((dp9.value) ? dp9.value : '')
+            rs9 : bool [ dp9.type == 'resource' || dp9.type == 'path' ]
+            ap9 : path (rs9 && av9.count > 0) ? path av9 : null
+            # the app's own title shows; the argument when it has none
+            at9 : string (rv9.app_title && rv9.app_title.count > 0) ? rv9.app_title : null
+            sh9 : string (at9) ? at9 : ((ap9) ? ap9.filename[] : av9)
+            cv9.font_size[ 15 ]
+            vw9 : cv9.measure_text[ sh9 ]
+            bw9 : f32 [ min[ vw9.w + 30.6 * fu9, 480.0 * fu9 ] ]
+            ar9 : Region [ 'l{ax9}px t0 w{bw9}px h0.9' ]
+            te9 : element (elements) ? elements[ 'title' ] : null
+            fa9 : element (te9 && te9.elements) ? te9.elements[ 'arg_edit' ] : null
+            if [ rs9 ]
+                t['arg_edit'] = ArgButton [ label: sh9, resource: true, value: av9, area: ar9 ]
+            el [ fa9 && w.focus == fa9 ]
+                t['arg_edit'] = ArgButton [ label: sh9, focusable: true, area: ar9 ]
+            el
+                # idle: the title; a press fills in the argument
+                t['arg_edit'] = ArgButton [ label: sh9, edit: '', value: av9,
+                    focusable: true, area: ar9 ]
         if [ newfile ]
             # create mode has its own cancel: never two close buttons
             t.rm[ 'histnav' ]
@@ -389,9 +418,12 @@ element EditorView
     public func render [] -> Elements
         if [ !orb[] ] return null
         t : Elements [ ]
+        # every file has its icon at the left: the name moves past it
+        to9 : Editor text_of[]
+        sw9 : bool [ to9 && to9.src && !browse_active[] ]
         t['title'] = EditorTitle [
             area: Region { l0 t0 r0 h1.3 }
-            lead: 1.8 * ((ux && ux.vk && ux.vk.font_unit > 0) ? f32[ ux.vk.font_unit ] : 22.0)
+            switched: sw9
             selected: !file[]
             current: pane_index == orb[].active_pane
             focusable: true
@@ -435,9 +467,8 @@ element EditorTitle
     public conflict : bool
     # painted after the name, never part of the editable label
     public hint     : string
-    # the arrows' box width: the icon and name start after it
-    public lead     : f32   [ 40.0 ]
-    mutable ficons  : FileIcons
+    # the toggle sits at the left: the name moves past it
+    public switched : bool
     style : CSS {
         area: l0 t0 r0 h1.3
         layers.tbar:
@@ -453,7 +484,10 @@ element EditorTitle
             label_size: 17
             editable: true
             label_align: 0.0 0.5
-            label_offset: 98.0 0.0
+            label_offset: 22.0 0.0
+        :switched
+            layers.tface:
+                label_offset: 62.7 0.0
         :conflict
             layers.tface:
                 label_color: #e05e5e
@@ -468,22 +502,16 @@ element EditorTitle
     public func draw [ w: Window ]
         if [ w.draw_stage != CanvasType.screen ] return
         if [ !label || label.count == 0 ] return
-        if [ !ficons ] ficons = FileIcons []
         cv  : Canvas [ w.screen ]
         # the gaps ride the font unit, as the name's size does
         fu  : f32 [ (w.vk && w.vk.font_unit > 0) ? f32[ w.vk.font_unit ] / 22.0 : 1.0 ]
-        mdl : SVGModel ficons.icon[ label, 20 ]
-        if [ mdl ]
-            isz : f32 [ 20.0 * fu ]
-            cv.fill_color[ '#ffffff' ]
-            cv.stroke_color[ '#ffffff' ]
-            cv.draw_svg[ mdl, lead + 30.4 * fu, (bounds.h - isz) * 0.5, isz, isz ]
         # the view we are in, trailing the name. painted, so the label
         # stays the editable field and this can never be selected
         cv.font_size[ 17 ]
         name_m : cv.measure_text[ label ]
-        # the name starts at the label's offset (98 font units)
-        trail  : f32 [ (98.0 + 16.0) * fu + name_m.w ]
+        # the name starts at the label's offset
+        off9   : f32 [ (switched) ? 62.7 : 22.0 ]
+        trail  : f32 [ (off9 + 16.0) * fu + name_m.w ]
         if [ hint && hint.count > 0 ]
             cv.font_size[ 13 ]
             cv.fill_color[ '#ffffff66' ]
@@ -1117,6 +1145,9 @@ Option RemoteToggle
             radius: 8
             stroke_width: 1
             stroke_color: #fff1
+            near_border: true
+            near_inset: 2.0
+            near_inset_color: #c890ffaa
         layers.face:
             label_color: #fff6
             label_size: 13
@@ -1129,7 +1160,7 @@ Option RemoteToggle
                 label_color: #ffff
         :hovered
             layers.body:
-                fill_color: #fff2
+                near_inset: 4.0
     }
 
 # non-clickable chip in the same spot: what the reload is doing right now
@@ -1141,8 +1172,9 @@ Option RemoteToggle
 element DebugValue
     no_cache : true
     style : CSS {
-        # the bar's height, centred in it, clear of the buttons at each end
-        area: l140px t0 r140px b0
+        # the bar's height, between the steps and the tasks
+        # 0.5 units in from the bar's left
+        area: l0.5 t0 w5.5 b0
         layers.body:
             fill_color: #0000
             radius: 0
@@ -1150,7 +1182,7 @@ element DebugValue
         layers.face:
             label_color: #cfe6ff
             label_size: 14
-            label_align: 0.5 0.5
+            label_align: 0.0 0.5
             label_offset: 0.0 -1.0
     }
 
@@ -1164,7 +1196,7 @@ element AgentNote
     public needs : bool
     public done  : bool
     style : CSS {
-        area: l35px t8px w300px h18px
+        area: l8px t8px w300px h18px
         layers.body:
             fill_color: #ffffff10, 400ms cubic outward
             radius: 6
@@ -1257,6 +1289,205 @@ Group StatusBar
         layers.sdiv:
             fill_color: #fff2
             area: l0 t0px r0 h1px
+    }
+
+# the dock: left side, 2.25x the status bar's height
+Group Dock
+    style : CSS {
+        area: l0 t0 w78.75px b0
+        layers.dock:
+            fill_color: #625a, 400ms cubic outward
+            box_shadow: inset 0 0 13px #8af2
+            stroke_width: 1
+            stroke_color: #fff1
+            near_border: true
+            near_inset: 1.0
+            near_inset_color: #c890ffaa
+        layers.ddiv:
+            fill_color: #fff2
+            area: r0 t0 w1px b0
+    }
+
+# a dock icon: no ground, the pointer's near border and glow
+TButtons DockButton
+    style : CSS {
+        layers.edge:
+            fill_color: #0000
+            box_shadow: inset 0 0 13px #c890ff04
+            stroke_width: 1
+            stroke_color: #fff1
+            near_border: true
+            near_inset: 2.0
+            near_inset_color: #c890ffaa
+        layers.lite:
+            fill_color: #fff2
+            area: l0 b2px r0 h1px
+        layers.foot:
+            fill_color: #00000099
+            area: l0 b1px r0 h1px
+    }
+
+# the side panel's section tabs: a 1px border the pointer lights
+TButtons SectionTabs
+    style : CSS {
+        layers.edge:
+            fill_color: #0000
+            stroke_width: 1
+            stroke_color: #fff1
+            near_border: true
+            near_inset: 1.0
+            near_inset_color: #c890ffaa
+    }
+
+# the dock's history arrows: a light line at their bottom; the
+# dark one is DockLine, the row under them
+TButtons DockNav
+    style : CSS {
+        layers.lite:
+            fill_color: #fff2
+            area: l0 b1px r0 h1px
+    }
+
+# the dark line under the dock's arrows
+element DockLine
+    style : CSS {
+        layers.line:
+            fill_color: #00000099
+    }
+
+# a module's icon: icon.png, its export's icon, else a cube
+class AppIcon
+    public  file   : path
+    public  module : bool
+    # the module's export, where its icon name is
+    public  agi    : path
+    mutable tex    : Texture
+    mutable svg    : SVGModel
+    mutable loaded : bool
+
+    # the name on the export's icon line: icon: ['tune']
+    func export_icon [] -> string
+        if [ !agi || !agi.exists[] ] return null
+        tx : string agi.load[ typeid[string], null ]
+        if [ !tx ] return null
+        ix : tx.index_of[ 'icon: [' ]
+        if [ ix < 0 ] return null
+        i  : i32 [ i32[ ix ] ]
+        n  : i32 [ i32[ tx.count ] ]
+        q0 : i32 [ 0 - 1 ]
+        while [ i < n ]
+            c : i32 [ (i32 tx.chars[i]) & 255 ]
+            if [ c == 10 ] break
+            i += 1
+            if [ c != 39 ] continue
+            if [ q0 < 0 ]
+                q0 = i
+                continue
+            return tx.mid[ q0, i - 1 - q0 ]
+        return null
+
+    func paint [ cv: Canvas, x: f32, y: f32, side: f32 ]
+        if [ !loaded ]
+            loaded = true
+            png : path '{file}/images/icon.png'
+            if [ png.exists[] ]
+                im : Image [ '{png}' ]
+                if [ im.width > 0 && im.height > 0 ]
+                    tex = Texture [ vk: cv.vk, w: cv.w, sampler: im,
+                        width: im.width, height: im.height, linear: true ]
+            nm : string export_icon[]
+            if [ !tex && nm ]
+                mp : path 'images/material/{nm}.svg'
+                if [ !mp.exists[] ] mp = path 'images/{nm}.svg'
+                if [ mp.exists[] ] svg = SVGModel [ mp ]
+            if [ !tex && !svg ]
+                sp : path (module) ? path 'images/material/3d.svg'
+                    : path 'images/material/folder.svg'
+                if [ sp.exists[] ] svg = SVGModel [ sp ]
+            # a file: its type's icon, as the nav list draws it
+            if [ !tex && !module && !file.is_dir[] ]
+                fi9 : FileIcons []
+                svg = fi9.icon[ file.filename[], 64 ]
+        if [ tex ]
+            cv.draw_image[ tex, rect [ x: x, y: y, w: side, h: side ] ]
+        el [ svg ]
+            cv.fill_color[ rgba [ '#fff' ] ]
+            cv.draw_svg[ svg, x, y, side, side ]
+
+# a pin in the dock: its app icon, else the nav list's icon
+element DockIcon
+    no_cache : true
+    public  file   : path
+    public  module : bool
+    # its running instances: a dot each under the icon
+    public  count  : i32
+    # the module's export, where its icon name is
+    public  agi    : path
+    # remade when a reused pin points at another folder
+    mutable icon   : AppIcon
+    style : CSS {
+        layers.edge:
+            fill_color: #0000
+            box_shadow: inset 0 0 13px #c890ff04
+            stroke_width: 1
+            stroke_color: #fff1
+            near_border: true
+            near_inset: 4.0
+            near_inset_color: #c890ffff
+        layers.lite:
+            fill_color: #fff2
+            area: l0 b2px r0 h1px
+        layers.foot:
+            fill_color: #00000099
+            area: l0 b1px r0 h1px
+        :selected
+            layers.edge:
+                fill_color: #4a1538
+                stroke_color: #fff3
+                box_shadow: inset 0 0 8px #c890ff77
+    }
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen ] return
+        if [ !bounds || !file ] return
+        cv : Canvas w.screen
+        if [ !icon || '{icon.file}' != '{file}' ]
+            icon = AppIcon [ file: file, module: module, agi: agi ]
+        isz : f32 [ round[ bounds.w * 0.55 ] ]
+        ix  : f32 [ round[ (bounds.w - isz) * 0.5 ] ]
+        iy  : f32 [ round[ (bounds.h - isz) * 0.5 ] ]
+        icon.paint[ cv, ix, iy, isz ]
+        if [ count > 0 ]
+            # the dots' group: 2px round them, a near-lit border
+            gw9 : f32 [ f32[ count * 8 - 4 ] + 4.0 ]
+            gx9 : f32 [ round[ (bounds.w - gw9) * 0.5 ] ]
+            gy9 : f32 [ round[ iy + isz + (bounds.h - iy - isz) * 0.5 ] - 6.0 ]
+            cv.save[ ]
+            w.near_light_on[ cv, a, 0.0, 0.0 ]
+            cv.fill_color[ rgba [ '#00000066' ] ]
+            cv.stroke_color[ rgba [ '#fff3' ] ]
+            cv.stroke_width[ 1.0 ]
+            cv.stroke_offset[ 0.5 ]
+            cv.rounded_rect[ gx9, gy9, gw9, 8.0, 4.0, 4.0, 4.0, 4.0 ]
+            cv.paint[ ]
+            cv.restore[ ]
+            cv.fill_color[ rgba [ '#ffffffcc' ] ]
+            for [ d9: i32 0, d9 < count, d9 += 1 ]
+                cv.arc[ gx9 + 4.0 + f32[ d9 * 8 ], gy9 + 4.0, 2.0, 0.0, 6.2832 ]
+                cv.paint[ ]
+
+# the title's icon: a module's app icon, else the file's type icon
+DockIcon TitleIcon
+    style : CSS {
+        layers.edge:
+            fill_color: #0000
+            stroke_width: 0
+            box_shadow: none
+            near_border: false
+            near_inset: 0.0
+        layers.lite:
+            fill_color: #0000
+        layers.foot:
+            fill_color: #0000
     }
 
 # the title's search button: the bar's height, square
@@ -1425,6 +1656,36 @@ element ArgsField
                 fill_color: #2f6b4a40
             layers.face:
                 label_color: #ffff
+    }
+
+# a running app's live argument in the title: press to edit
+element ArgButton
+    # a file: the nav list picks it; else the text is typed
+    public resource : bool
+    public value    : string
+    style : CSS {
+        layers.body:
+            fill_color: #ffffff0c
+            radius: 8
+            stroke_width: 1
+            stroke_color: #ffffff1a
+        layers.face:
+            label_color: #fffa
+            label_size: 15
+            editable: true
+            label_align: 0.0 0.5
+            label_offset: 12.0 0.0
+        :hovered
+            layers.body:
+                fill_color: #ffffff1c
+        :focused
+            layers.body:
+                fill_color: #2f6b4a40
+            layers.face:
+                label_color: #ffff
+        :resource
+            layers.face:
+                editable: false
     }
 
 element FindField
@@ -2071,8 +2332,7 @@ class pane_state
     public selection : vec2i
     public scroll    : f32
 
-# an instance as the session keeps it: the module it is of, its args, its pip.
-# it comes back not running; a click on its row starts it again
+# an instance as old sessions kept it; read, never restored
 class inst_state
     public src   : path
     public args  : string
@@ -2438,7 +2698,6 @@ element orbiter : trinity # implements compiler
     mutable props_open    : bool [ true ]
     mutable stack_open    : bool
     mutable stack_unknown : bool         # the callstack lists frames with no known source too
-    mutable last_tip      : string       # diagnostic: the tooltip state last logged
     mutable instr_open    : bool
     # module whose build set err_file; only it may clear
     intern err_mod       : string
@@ -2674,18 +2933,8 @@ element orbiter : trinity # implements compiler
                     file: open_files[slot], selection: sel9,
                     scroll: (e9) ? e9.scroll.y : 0.0 ] ]
         pane_states = panes
-        # the instances, by module: viewers are file handlers, not the user's
-        ists : vec inst_state []
-        if [ instances ]
-            for [ av: AppView ] in instances
-                if [ av.viewer || !av.src ] continue
-                pn9 : i32 [ -1 ]
-                for [ i: i32 0, i < editor_slots.count, i += 1 ]
-                    e8 : Editor pane_at[ i ]
-                    if [ e8 && e8.run_view == av ] pn9 = i
-                ists.push[ inst_state [ src: av.src, args: (av.module_args) ? av.module_args : '', pip: av.pip,
-                    display: av.display, debug: av.debug_build, coverage: av.cov_build, pane: pn9 ] ]
-        inst_states = ists
+        # instances do not persist: a session starts with none
+        inst_states = vec inst_state []
         scene       = scene_loaded[]
         save-persistent[ a ]
 
@@ -2713,25 +2962,6 @@ element orbiter : trinity # implements compiler
         # sessions saved when there were four stages can hold a 3, which
         # now wraps past clear and reads as frost
         frost_ix = frost_ix % 4
-        # the instances come back held, with their args; adopt_live_slots then
-        # takes over any of them still running under the host
-        if [ inst_states ]
-            for [ st: inst_state ] in inst_states
-                if [ !st || !st.src ] continue
-                nv : AppView [ ]
-                nv.src         = st.src
-                nv.module_args = st.args
-                # a session from before display: pip false meant full
-                nv.display     = (st.display > 0) ? st.display : ((st.pip) ? 0 : 1)
-                nv.pip         = nv.display == 0
-                nv.debug_build = st.debug
-                nv.cov_build   = st.coverage
-                nv.held        = true
-                add_instance[ nv ]
-                # the one a pane showed comes back into it once that pane is up
-                if [ st.pane >= 0 ]
-                    pending_show      = nv.iid
-                    pending_show_pane = st.pane
 
     func load_settings []
         sp  : agi_path[]
@@ -3732,9 +3962,13 @@ element orbiter : trinity # implements compiler
         for [ i: i32 0, i < editor_slots.count, i += 1 ]
             ed : Editor pane_at[ i ]
             if [ ed ]
+                # its place on screen: the next stop lands there
+                if [ ed.stop_line >= 0 && ed.lh_cache > 0.0 ]
+                    ed.stop_y = f32[ ed.vis_row[ ed.stop_line ] ] * ed.lh_cache - ed.scroll.y
                 ed.stop_line  = -1
                 ed.stop_col   = -1
                 ed.pristine   = false
+        if [ ux ] ux.restyle = true
         # no live frame anymore → drop the inspected variables.
         debug_vars  = null
         frame_cache = null
@@ -3991,6 +4225,20 @@ element orbiter : trinity # implements compiler
 
     # a module's props: what its last instance answered, else what its
     # build enumerated into its export (`props:` in install/export)
+    # the module's bare argument, when the app takes it live
+    func live_default [ mod: string ] -> Prop
+        sp9 : string module_spec[ mod ]
+        if [ !sp9 ] return null
+        lp9 : LaunchProps []
+        Au.parse_agi[ null, sp9.chars, lp9 ]
+        if [ !lp9.props ] return null
+        for [ p: Prop ] in lp9.props
+            if [ p.type != 'resource' && p.access != 'default' ] continue
+            if [ !p.meta ] continue
+            for [ q: string ] in p.meta
+                if [ q == 'Live' ] return p
+        return null
+
     func module_spec [ mod: string ] -> string
         if [ !mod || mod.count == 0 ] return null
         if [ module_props && module_props.contains[ mod ] ]
@@ -4016,6 +4264,16 @@ element orbiter : trinity # implements compiler
         sw : string av.status_word[]
         return (sw.count > 0) ? '{instance_name[ av ]}  {sw}' : instance_name[ av ]
 
+    # a picked instance takes the pane's mode: the toggle owns it
+    func pick_instance [ iid: i32, pi: i32 ]
+        av : AppView instance_by[ iid ]
+        ed : Editor pane_at[ pi ]
+        if [ av && ed && av.display <= 1 ]
+            av.display = (ed.app_view) ? 1 : 0
+            av.pip     = !ed.app_view
+            tell_display[ av ]
+        show_instance[ iid, pi ]
+
     func show_instance [ iid: i32, pi: i32 ]
         av : AppView instance_by[ iid ]
         ed : Editor pane_at[ pi ]
@@ -4023,7 +4281,7 @@ element orbiter : trinity # implements compiler
         # the instance's own source comes into the pane first; the show waits a
         # frame for the load, which would otherwise clear the app view again
         if [ av.src && !av.viewer ]
-            bs9 : path ed.band_src[]
+            bs9 : path ed.src
             if [ !bs9 || '{bs9.absolute[]}' != '{av.src.absolute[]}' ]
                 open_in_pane[ av.src, pi ]
                 pending_show      = iid
@@ -4043,6 +4301,13 @@ element orbiter : trinity # implements compiler
     # continues and steps
     # the instance's display: every change is live in the process (its
     # frames come to the pane, or its own window shows); nothing relaunches
+    # a running app holds its own display: it is told every change
+    func tell_display [ av: AppView ]
+        if [ !av || !av.started || av.ended || av.display < 0 || av.display > 3 ] return
+        dn9 : vec string [] [ 'PIP', 'Embed', 'Window', 'Screen' ]
+        av.disp_ms = epoch_millis[]
+        agent_sock_send[ av.sock_name[].chars, 'set display {dn9[ av.display ]}\n' ]
+
     func set_display [ ed: Editor, av: AppView, d: i32 ]
         old : i32 [ av.display ]
         if [ old == d ] return
@@ -4054,6 +4319,7 @@ element orbiter : trinity # implements compiler
             want : bool [ d == 1 ]
             if [ ed.app_view != want ] ed.toggle_app_view[]
             av.pip = d == 0
+        tell_display[ av ]
 
     func instance_action [ ed: Editor, av: AppView, act: string ]
         if [ !av ] return
@@ -4113,6 +4379,13 @@ element orbiter : trinity # implements compiler
                 apply_break[ sp, i32[ df.line ], 0 ]
                 return
 
+    # the debugger sitting at a stop, whichever target is active
+    func stopped_debugger [] -> dbg
+        if [ !debuggers ] return null
+        for [ d9: dbg, k9: string ] in debuggers
+            if [ d9 && d9.active && !d9.running ] return d9
+        return null
+
     func active_debugger [] -> dbg
         if [ !debuggers ] return null
         d : dbg debuggers[ active_target ]
@@ -4144,6 +4417,39 @@ element orbiter : trinity # implements compiler
         c9 : path '{p.parent_dir[]}/{p.stem[]}.{ex}'
         return (c9.exists[]) ? c9 : null
 
+    # the pane's module: its app's source, else <m>/<m>.ag
+    func module_src_of [ ed: Editor ] -> path
+        if [ !ed ] return null
+        if [ ed.app_view && ed.run_view && ed.run_view.src ] return ed.run_view.src
+        if [ !ed.src || ed.src.ext[] != 'ag' ] return null
+        if [ ed.src.stem[] != ed.src.parent_dir[].filename[] ] return null
+        return ed.src
+
+    # a module's app in a pane: its instance; new_tab, a new one
+    func show_app [ ed: Editor, src: path, fresh: bool ]
+        if [ !ed || !src ] return
+        av9 : AppView [ null ]
+        if [ !fresh ]
+            for [ v9: AppView ] in instances_of[ src ]
+                if [ !v9.viewer ] av9 = v9
+        if [ !av9 ]
+            av9 = AppView [ ]
+            av9.src = src
+            fa9 : string file_args[ src ]
+            av9.module_args = (fa9 && fa9.count > 0) ? fa9 : module_args
+            add_instance[ av9 ]
+        embed_app[ ed, av9 ]
+
+    # an instance shown in the pane, embedded and running
+    func embed_app [ ed: Editor, av: AppView ]
+        av.display = 1
+        av.pip     = false
+        av.held    = false
+        tell_display[ av ]
+        if [ av.ended ] av.restart[ false ]
+        ed.wait_app = true
+        show_instance[ av.iid, ed.pane_index ]
+
     func title_nav [ p: path, grp: vec path, has_diff: bool, win: Window, dbg_locked: bool, dbg_open: bool, menu_open: bool, is_resource: bool, rv: ResourceView, fb_on: bool, tfoc: bool, pane_ix: i32 ] -> Elements
         hasfile  : bool [ p && p.exists[] ]
         els : Elements []
@@ -4170,42 +4476,17 @@ element orbiter : trinity # implements compiler
             # the dialog's own close, furthest right: the arrows keep the left
             els['panel_close'] = BarClose [ icon: 'close', manual_mode: true,
                 area: Region [ 'r0+ t0 w1.66 b0' ] ]
-        # the left slot closes the finder — Esc's clickable twin, sized
-        # exactly like the history arrows so the title never shifts
-        # the finder up: the same arrows walk the nav view's own folders, and
-        # its close moves to the far right
-        if [ engaged && !is_resource ]
-            fnav : vec string [] [ 'finder_back', 'finder_fwd' ]
-            fico : vec string [] [ 'left', 'right' ]
-            fdm : i32 [ 0 ]
-            if [ !nav_can[ -1 ] ] fdm |= 1
-            if [ !nav_can[ 1 ] ]  fdm |= 2
-            els['histnav'] = TButtons [ buttons: fnav, icon_ids: fico, manual: true,
-                rest_hover: true, rest_fill: rgba [ '#ffffff08' ],
-                disable_mask: fdm,
-                icon_scale: 0.30, rest_glow: rgba [ '#ccf2' ], rest_px: 8.0,
-                seg_radius: 0.0, use_spacing: false, area: Region [ 'l0+ t0 w1.8 b0' ] ]
-        # cmd+left / cmd+right as clickable history arrows: always the
-        # left slot, a picked view, a resource view or a diff included
-        if [ !engaged ]
-            nnav : vec string [] [ 'nav_back', 'nav_fwd' ]
-            nico : vec string [] [ 'left', 'right' ]
-            ndm : i32 [ 0 ]
-            # a hosted app's history is its own word
-            if [ edp9 && edp9.app_view && edp9.run_view ]
-                if [ !edp9.run_view.nav_back_on ] ndm |= 1
-                if [ !edp9.run_view.nav_fwd_on ]  ndm |= 2
-            el [ edp9 && edp9.view_key[].count > 0 ]
-                if [ !edp9.view_can[ -1 ] ] ndm |= 1
-                if [ !edp9.view_can[ 1 ] ]  ndm |= 2
-            el
-                if [ !edp9 || !edp9.nav || !edp9.nav.can_back[] ]    ndm |= 1
-                if [ !edp9 || !edp9.nav || !edp9.nav.can_forward[] ] ndm |= 2
-            els['histnav'] = TButtons [ buttons: nnav, icon_ids: nico, manual: true,
-                rest_hover: true, rest_fill: rgba [ '#ffffff08' ],
-                disable_mask: ndm,
-                icon_scale: 0.30, rest_glow: rgba [ '#ccf2' ], rest_px: 8.0,
-                seg_radius: 0.0, use_spacing: false, area: Region [ 'l0+ t0 w1.8 b0' ] ]
+        # a module: its icon, as the dock shows it; any other file:
+        # its type's icon
+        mi9 : path (!engaged) ? module_src_of[ edp9 ] : null
+        if [ mi9 ]
+            md9 : path mi9.parent_dir[]
+            els['modicon'] = TitleIcon [ file: md9, module: true,
+                agi: path '{path.path_startup[]}/install/export/{install_name_of[ md9.filename[] ]}.agi',
+                area: Region [ 'l0+ t0 w1.35 b0' ] ]
+        el [ !engaged && edp9 && edp9.src ]
+            els['modicon'] = TitleIcon [ file: edp9.src, module: false,
+                area: Region [ 'l0+ t0 w1.35 b0' ] ]
 
         # the title's one button: find, from the editor and from its own
         # bar; not while the nav list is up on a title focus. lit while
@@ -4277,7 +4558,7 @@ element orbiter : trinity # implements compiler
                     rest_hover: true, rest_fill: rgba [ '#ffffff08' ],
                     manual: true, sel_mask: csel9, label_px: 12.0 * fu9,
                     rest_glow: rgba [ '#ccf2' ], rest_px: 8.0,
-                    area: Region [ 'r0+ t0.065 w{cw9}px h0.81' ] ]
+                    area: Region [ 'r0.1+ t0.065 w{cw9}px h0.81' ] ]
 
         if [ rv ]
             vel : Elements rv.title_elements*[]
@@ -6574,24 +6855,6 @@ element orbiter : trinity # implements compiler
                     if [ browse_single ]
                         find_hits.push[ FindHit [ is_header: true, is_spacer: true, text: '' ] ]
                 if [ !nav_root ] nav_root = target_roots[0]
-                # the user's pins first, a gap after them; a search never
-                # shows them (this is the browse listing only)
-                if [ pins && pins.count > 0 && !picking ]
-                    np9 : i32 [ 0 ]
-                    for [ ps9: string ] in pins
-                        pp9 : path ps9
-                        if [ !pp9.exists[] ] continue
-                        dr9 : string '{pp9.directory[]}'
-                        nm9 : string pp9.filename[]
-                        dir9 : bool [ pp9.is_dir[] ]
-                        mm9 : path '{pp9}/{nm9}.ag'
-                        ism9 : bool [ dir9 && mm9.exists[] ]
-                        find_hits.push[ FindHit [ is_header: true, is_dir: dir9, is_module: ism9, text: nm9, dir: dr9, file: pp9, pinned: true ] ]
-                        if [ !browse_single ]
-                            find_hits.push[ FindHit [ is_header: true, is_dir: dir9, is_module: ism9, text: '', file: pp9, pinned: true ] ]
-                        combined.push[ ps9 ]
-                        np9 += 1
-                    if [ np9 > 0 ] find_hits.push[ FindHit [ is_header: true, is_spacer: true, text: '' ] ]
                 if [ nav_root ]
                     pr  : path   project_root[]
                     nrs : string '{nav_root}'
@@ -6603,12 +6866,16 @@ element orbiter : trinity # implements compiler
                             combined.push[ '{up}' ]
                     entries : nav_root.ls[ null, false ]
                     if [ entries ]
-                        for [ i: i32 0, i < entries.count, i += 1 ]
-                            e : path entries[i]
-                            if [ e.is_dir[] ]
+                        # folders first, silver modules leading them
+                        for [ pass9: i32 0, pass9 < 2, pass9 += 1 ]
+                            for [ i: i32 0, i < entries.count, i += 1 ]
+                                e : path entries[i]
+                                if [ !e.is_dir[] ] continue
                                 dn : string e.filename[]
                                 if [ dn == '.git' || dn == 'checkout' ] continue
-                                push_dir_hit[ e, e.filename[] ]
+                                em9 : path '{e}/{dn}.ag'
+                                if [ em9.exists[] != (pass9 == 0) ] continue
+                                push_dir_hit[ e, dn ]
                                 combined.push[ '{e}' ]
                         for [ i: i32 0, i < entries.count, i += 1 ]
                             e : path entries[i]
@@ -6681,7 +6948,14 @@ element orbiter : trinity # implements compiler
         if [ !pick_field || pick_field.count == 0 ] return false
         # a folder field given a file takes the file's folder
         p : path (pick_dir && p0 && !p0.is_dir[]) ? p0.parent_dir[] : p0
-        fe9 : element find_el[ a, pick_field ]
+        fe9 : element (pick_field == 'arg_edit') ? null : find_el[ a, pick_field ]
+        # the title's argument: the running app takes it live
+        if [ pick_field == 'arg_edit' ]
+            ra9 : AppView (pick_editor) ? pick_editor.run_view : null
+            pa9 : Prop (ra9 && ra9.app_mod) ? live_default[ ra9.app_mod ] : null
+            if [ pa9 && !ra9.ended ]
+                ra9.arg_text = '{p}'
+                agent_sock_send[ ra9.sock_name[].chars, 'set {pa9.ident} {ra9.arg_text}\n' ]
         if [ fe9 ]
             fe9.edit    = '{p}'
             if [ fe9 inherits LaunchPath ]
@@ -6822,6 +7096,10 @@ element orbiter : trinity # implements compiler
         if [ pick_deliver[ p ] ] return
         findbar_open = false
         find_showing = false
+        # where we leave from is a point too, or back has nowhere to go
+        fr9 : Editor pane_at[ pi ]
+        if [ fr9 && fr9.nav && fr9.src ]
+            fr9.nav.record[ pi, '{fr9.src.absolute[]}', (fr9.sel_line < 0) ? 0 : fr9.sel_line, fr9.sel_col, fr9.scroll.y ]
         open_in_pane[ p, pi ]
         ed : Editor pane_at[ pi ]
         if [ !ed ] return
@@ -6978,7 +7256,7 @@ element orbiter : trinity # implements compiler
         h : FindHit find_hits[ row ]
         if [ !h || h.is_spacer ] return true
         if [ h.inst > 0 ]
-            show_instance[ h.inst, ed.pane_index ]
+            pick_instance[ h.inst, ed.pane_index ]
             exit_find_mode[]
             return true
         if [ h.card[] ]
@@ -7053,6 +7331,35 @@ element orbiter : trinity # implements compiler
                 ev.no_default = true
                 if [ ux ] ux.restyle = true
                 return
+        # a resource argument: the nav list picks the next one
+        if [ ev.target.id == 'arg_edit' && ev.target inherits ArgButton ]
+            ab9 : ArgButton ev.target
+            if [ ab9.resource ]
+                pe9 : Editor pane_of[ ev.target ]
+                pick_field  = 'arg_edit'
+                pick_dir    = false
+                pick_editor = pe9
+                pick_exts   = vec string []
+                pick_cache  = null
+                if [ pe9 ]
+                    active_pane = pe9.pane_index
+                    pe9.ensure_export_registry[]
+                    bm9 : string band_mod_of[ pe9 ]
+                    if [ pe9.export_registry ]
+                        for [ mod9: string, ex9: string ] in pe9.export_registry
+                            if [ mod9 == bm9 ] pick_exts.push[ ex9 ]
+                cp9 : path (ab9.value && ab9.value.count > 0) ? path ab9.value : null
+                if [ cp9 && cp9.exists[] ] nav_root = cp9.parent_dir[]
+                focus_finder[]
+                run_search[]
+                ev.no_default     = true
+                ev.no_propagation = true
+                return
+            if [ !ab9.edit || ab9.edit.count == 0 ]
+                v9 : string (ab9.value) ? ab9.value : ''
+                ab9.edit       = v9
+                ab9.sel_col    = v9.count
+                ab9.anchor_col = v9.count
         # working in a pane makes it active: keys act where you are
         epv : Editor pane_of[ ev.target ]
         if [ epv && epv.pane_index >= 0 && epv.pane_index < editor_slots.count ]
@@ -7116,8 +7423,22 @@ element orbiter : trinity # implements compiler
         # the instance panel's group renames itself to the pressed segment
         if [ ev.target.id == 'continue' || ev.target.id == 'step_next' || ev.target.id == 'pause' ||
              ev.target.id == 'step_in'  || ev.target.id == 'step_out' ]
+            # the status bar is in no pane: the active one
             eds : Editor pane_of[ ev.target ]
-            if [ eds && eds.run_view ] instance_action[ eds, eds.run_view, ev.target.id ]
+            if [ !eds ] eds = pane_at[ active_pane ]
+            rvp : AppView (eds) ? eds.run_view : null
+            msp : path (eds) ? module_src_of[ eds ] : null
+            ds9 : dbg stopped_debugger[]
+            if [ ev.target.id == 'pause' && msp
+                    && !(rvp && !rvp.ended && !rvp.held) ]
+                show_app[ eds, msp, false ]
+            el [ ev.target.id != 'pause' && ds9 ]
+                if [ ev.target.id == 'continue' ]       ds9.cont[]
+                el [ ev.target.id == 'step_next' ] ds9.step_over[]
+                el [ ev.target.id == 'step_in' ]   ds9.step_into[]
+                el                                  ds9.step_out[]
+            el [ eds && eds.run_view ]
+                instance_action[ eds, eds.run_view, ev.target.id ]
             if [ ev.target ] ev.target.ux.restyle = true
             ev.no_default = true
             return
@@ -7127,6 +7448,7 @@ element orbiter : trinity # implements compiler
             if [ eda9 && eda9.src && ux ] ux.exchange_open[ eda9.src, eda9.sel_line + 1, true ]
             ev.no_default = true
             return
+        # the title's toggle: the pane's app in Embed, else PIP
         # the pinned app: away from it, back to its source; on its source,
         # back to the app itself in this window
         if [ ev.target.id == 'home_mod' ]
@@ -7162,6 +7484,21 @@ element orbiter : trinity # implements compiler
             edn : Editor pane_of[ ev.target ]
             if [ edn ] edn.start_instance[ shift_down ]
             if [ ev.target ] ev.target.ux.restyle = true
+            ev.no_default = true
+            return
+        # a dock pin: a module runs as an app, else the path opens
+        if [ ev.target inherits DockIcon ]
+            di9 : DockIcon ev.target
+            edd : Editor pane_at[ active_pane ]
+            md9 : path (di9.module) ? path '{di9.file}/{di9.file.filename[]}.ag' : di9.file
+            # shift: a new instance; a click: the module's source
+            if [ di9.module && edd && shift_down ]
+                show_app[ edd, md9, true ]
+            el [ edd && edd.app_view && edd.run_view && edd.run_view.src
+                 && '{edd.run_view.src.absolute[]}' == '{md9.absolute[]}' ]
+                set_display[ edd, edd.run_view, 0 ]
+            el
+                open_in_pane[ md9, active_pane ]
             ev.no_default = true
             return
         # pip shrinks the app into the editor; its instruments stay open
@@ -7314,21 +7651,6 @@ element orbiter : trinity # implements compiler
                 save_session[]
             if [ ev.target ] ev.target.ux.restyle = true
             return
-        # the instance panel's display bar: the pane view, and the running
-        # app's own display (trinity's live enum) told at once
-        if [ ev.target.id.starts_with[ 'disp_' ] ]
-            edp : Editor pane_of[ ev.target ]
-            dn9 : vec string [] [ 'PIP', 'Embed', 'Window', 'Screen' ]
-            di9 : i32 [ -1 ]
-            for [ i9: i32 0, i9 < 4, i9 += 1 ]
-                if [ ev.target.id == 'disp_{dn9[ i9 ]}' ] di9 = i9
-            if [ edp && edp.run_view && di9 >= 0 ]
-                rv9 : AppView edp.run_view
-                set_display[ edp, rv9, di9 ]
-                if [ rv9.started && !rv9.ended ] agent_sock_send[ rv9.sock_name[].chars, 'set display {dn9[ di9 ]}\n' ]
-            if [ ev.target ] ev.target.ux.restyle = true
-            ev.no_default = true
-            return
         # the instance's build switch: flips on the instance, takes effect on its next start
         if [ ev.target.id == 'lp_debug' ]
             edd : Editor pane_of[ ev.target ]
@@ -7434,7 +7756,7 @@ element orbiter : trinity # implements compiler
             return
 
         if [ ev.target.id == 'nav_back' || ev.target.id == 'nav_fwd' ]
-            edn : Editor pane_of[ ev.target ]
+            edn : Editor pane_at[ active_pane ]
             if [ edn ] edn.nav_walk[ (ev.target.id == 'nav_back') ? -1 : 1 ]
             ev.no_default = true
             if [ ev.target ] ev.target.ux.restyle = true
@@ -7742,6 +8064,21 @@ element orbiter : trinity # implements compiler
             uxw : Window ev.target.ux
             if [ uxw ] uxw.will_animate = true
 
+        # the title's argument: enter sends it live, escape drops it
+        if [ ev.target.id == 'arg_edit' && ev.key.state ]
+            ka9 : i32 [ i32 ev.key.unicode ]
+            if [ ka9 == 257 || ka9 == 256 ]
+                ea9 : Editor pane_of[ ev.target ]
+                ra9 : AppView (ea9) ? ea9.run_view : null
+                pa9 : Prop (ra9 && ra9.app_mod) ? live_default[ ra9.app_mod ] : null
+                if [ ka9 == 257 && pa9 && !ra9.ended ]
+                    ra9.arg_text = (ev.target.edit) ? ev.target.edit : ''
+                    agent_sock_send[ ra9.sock_name[].chars, 'set {pa9.ident} {ra9.arg_text}\n' ]
+                if [ ux ] ux.release_focus[ ev.target ]
+                force_update[]
+                ev.no_default = true
+                return
+
         # finder title: backspace trims, enter opens the typed file
         if [ ev.target.id == 'title' ]
             if [ !ev.key.state ] return
@@ -7988,6 +8325,9 @@ element orbiter : trinity # implements compiler
         fin_now : bool   [ (w.focus && w.focus.id == 'title') || (find_text && find_text.count > 0) || list_focused[] ]
         sp_now  : string search_pane[]
         if [ fin_now != was_finder || sp_now != was_search_pane ]
+            # opened from a module: list its own folder
+            ms8 : path (fin_now && !was_finder) ? module_src_of[ pane_at[ active_pane ] ] : null
+            if [ ms8 ] nav_root = ms8.parent_dir[]
             run_search[]
         was_finder      = fin_now
         was_search_pane = sp_now
@@ -8286,7 +8626,6 @@ element orbiter : trinity # implements compiler
         return t
 
     # right-flow: first inserted sits furthest right.
-    # reload_busy/ready: staged reload button, or live compile status.
     # ui_hide sits dead center: scene-only toggle
     # the tooltip's hover value: what the button under the pointer is. a group
     # of segments names the one hovered; any other button its label, else its id
@@ -8304,6 +8643,65 @@ element orbiter : trinity # implements compiler
             return (e.id) ? e.id : ''
         return ''
  
+    # the selected view's history arrows, the pins under them,
+    # orbiter's button at the bottom
+    func dock_els [] -> Elements
+        t : Elements []
+        edp9 : Editor pane_at[ active_pane ]
+        fd9 : bool [ search_pane[] == 'pane{active_pane}' && (nav_showing || picking[]) ]
+        ndm : i32 [ 0 ]
+        # the finder walks its folders; a hosted app has its own word
+        if [ fd9 ]
+            if [ !nav_can[ -1 ] ] ndm |= 1
+            if [ !nav_can[ 1 ] ]  ndm |= 2
+        el [ edp9 && edp9.app_view && edp9.run_view ]
+            if [ !edp9.run_view.nav_back_on ] ndm |= 1
+            if [ !edp9.run_view.nav_fwd_on ]  ndm |= 2
+        el [ edp9 && edp9.view_key[].count > 0 ]
+            if [ !edp9.view_can[ -1 ] ] ndm |= 1
+            if [ !edp9.view_can[ 1 ] ]  ndm |= 2
+        el
+            if [ !edp9 || !edp9.nav || !edp9.nav.can_back[] ]    ndm |= 1
+            if [ !edp9 || !edp9.nav || !edp9.nav.can_forward[] ] ndm |= 2
+        nb9 : vec string (fd9) ? vec string [] [ 'finder_back', 'finder_fwd' ]
+            : vec string [] [ 'nav_back', 'nav_fwd' ]
+        t['histnav'] = DockNav [ buttons: nb9,
+            icon_ids: vec string [] [ 'left', 'right' ], manual: true,
+            rest_hover: true, rest_fill: rgba [ '#ffffff08' ],
+            disable_mask: ndm,
+            icon_scale: 0.30, rest_glow: rgba [ '#ccf2' ], rest_px: 8.0,
+            seg_radius: 0.0, use_spacing: false, area: Region { l0 t0 r0 h1.3 } ]
+        # the pins start under the arrows, in the arrows' unit
+        pins9 : Elements []
+        pins9['navline'] = DockLine [ area: Region { l0 t0 r0 h1px } ]
+        y9 : f32 [ 1.0 ]
+        if [ pins ]
+            for [ ps9: string ] in pins
+                pp9 : path ps9
+                if [ !pp9.exists[] ] continue
+                mm9 : path '{pp9}/{pp9.filename[]}.ag'
+                ism9 : bool [ pp9.is_dir[] && mm9.exists[] ]
+                ag9 : path (ism9) ? path '{path.path_startup[]}/install/export/{install_name_of[ pp9.filename[] ]}.agi' : null
+                n9 : i32 [ 0 ]
+                if [ ism9 ]
+                    for [ v9: AppView ] in instances_of[ mm9 ]
+                        if [ !v9.viewer && !v9.held && !v9.ended ] n9 += 1
+                lt9 : bool [ false ]
+                if [ ism9 ]
+                    ms9 : path module_src_of[ edp9 ]
+                    if [ ms9 ]
+                        lt9 = '{ms9.absolute[]}' == '{mm9.absolute[]}'
+                pins9[ 'dock_{ps9}' ] = DockIcon [ file: pp9,
+                    module: ism9, agi: ag9, selected: lt9, count: n9,
+                    area: Region [ 'l0 t{y9}px w78.75px h78.75px' ] ]
+                y9 += 78.75
+        t['pins'] = element [ area: Region { l0 t1.3 r0 b0 }, elements: pins9 ]
+        t['dock_orbiter'] = DockButton [ buttons: vec string [] [ 'agent_note' ],
+                icon_ids: vec string [] [ 'orbiter4' ], manual: true,
+                rest_fill: rgba [ '#0000' ], seg_radius: 0.0, use_spacing: false,
+                area: Region { l0 b78.75px w78.75px h78.75px } ]
+        return t
+
     # a square button at the status bar's right, r px from its edge
     func stat_tab [ id: string, icon: string, lit: bool, go: bool, r: i32 ] -> TButtons
         return TButtons [ buttons: vec string [] [ id ], icon_ids: vec string [] [ icon ],
@@ -8312,47 +8710,43 @@ element orbiter : trinity # implements compiler
             area: Region [ 'r{r}px t0 w35px b0' ] ]
 
     func status_els [] -> Elements
-        # the tooltip: where the caret sits, and at a stop the clicked name's type and value
-        edv9 : Editor pane_at[ active_pane ]
-        tip9 : string (edv9) ? edv9.tip_text[ (edv9.debug_vars && active_debugger[]) ? true : false ] : ''
-        # two layers: the set value (the click's tip, which hovering never
-        # clears) and the hover value of the button under the pointer. the
-        # hover shows while it lasts; leaving the button shows the set value
-        htip9  : string hover_tip[ (ux) ? ux.hovered : null ]
-        shown9 : string (htip9.count > 0) ? htip9 : ((tip9) ? tip9 : '')
         run9 : bool [ false ]
         pv9  : element pane_view[ active_pane ]
         if [ pv9 && pv9 inherits EditorView ]
             ev9 : EditorView pv9
             run9 = ev9.run_ok[]
-        note9 : bool [ agent_note && agent_note.count > 0 ]
         # the right end, from the edge: console, the panel's two tabs
         k9  : i32 [ 35 ]
         scn9 : bool [ side_tab == 'scenes' ]
-        tipk9 : string '{active_pane}|{(edv9) ? 1 : 0}|{(edv9 && edv9.debug_vars) ? 1 : 0}|{(active_debugger[]) ? 1 : 0}|{tip9}'
-        if [ !last_tip || last_tip != tipk9 ]
-            last_tip = tipk9
-            log 'TIPBAR pane={active_pane} ed={(edv9) ? 1 : 0} vars={(edv9 && edv9.debug_vars) ? edv9.debug_vars.count : -1} dbg={(active_debugger[]) ? 1 : 0} tip={tip9}'
+        edv9 : Editor pane_at[ active_pane ]
+        rv9  : AppView (edv9) ? edv9.run_view : null
+        lp9  : i32 [ au_live_get_pending[] ]
+        # play starts the pane's module; pause on a running instance
+        lv9  : bool [ rv9 && !rv9.ended && !rv9.held ]
+        ms9  : path (edv9) ? module_src_of[ edv9 ] : null
+        ps9  : i32 [ (lv9 || ms9) ? 0 : 1 ]
+        dg9  : dbg (rv9) ? rv9.debugger : null
+        st9  : i32 [ (dg9 && dg9.active && !dg9.running) ? 0 : 15 ]
         return Elements [
-            # the agent's button takes the left of the bar: the tooltip flows after it
-            # the orbiter mark at the left edge, a square as the right's
-            # are; the agent's line after it when it has one. both are
-            # the one agent_note control
-            'agent_mark'  : TButtons [ buttons: vec string [] [ 'agent_note' ],
-                icon_ids: vec string [] [ 'orbiter4' ], manual: true,
-                rest_glow: rgba [ '#ccf2' ], rest_px: 8.0, seg_radius: 0.0, use_spacing: false,
-                area: Region { l0 t0 w35px b0 } ],
-            'agent_note'  : (note9) ? AgentNote [ label: agent_note,
-                agent: true,
-                needs: agent_state && agent_state == 'needs',
-                done:  agent_done ] : null,
-            'debug_value' : (shown9.count > 0 && au_live_get_pending[] == 0) ? DebugValue [ label: shown9 ] : null,
+            'pause'       : TButtons [ buttons: vec string [] [ 'pause' ],
+                icon_ids: vec string [] [ (lv9) ? 'pause' : 'play' ], manual: true, seg_radius: 0.0, use_spacing: false,
+                sel_mask: (rv9 && rv9.paused) ? 1 : 0, disable_mask: ps9,
+                area: Region { l0 t0 w0.8 b0 } ],
+            # the steps' icons 25% under pause's
+            'steps'       : TButtons [ buttons: vec string [] [
+                    'continue', 'step_next', 'step_in', 'step_out' ],
+                manual: true, seg_radius: 0.0, use_spacing: false,
+                icon_scale: 0.4125, disable_mask: st9,
+                area: Region { l0.8 t0 w3.2 b0 } ],
+            'tasks'       : TaskBar [ use_spacing: false,
+                area: Region { l4 t0 r140px b0 } ],
+            # the reload, while one is pending; dim while it compiles
+            'reload_ready': (lp9 > 0) ? TButtons [ buttons: vec string [] [ 'reload_ready' ],
+                icon_ids: vec string [] [ 'recycle' ], manual: true,
+                disable_mask: (lp9 == 1) ? 0 : 1, rest_glow: rgba [ '#ccf2' ], rest_px: 8.0,
+                seg_radius: 0.0, use_spacing: false, area: Region { r105px t0 w35px b0 } ] : null,
             # the reload chips flow after the button (l0+: after the sibling
             # before them here), so nothing stacks at the bar's left
-            'reload_busy' : (au_live_get_pending[] == 2)
-                ? ReloadButton [ label: 'compiling...', manual_mode: true, disable: true ] : null,
-            'reload_ready': (au_live_get_pending[] == 1)
-                ? ReloadButton [ label: 'reload', manual_mode: true ] : null,
             'side_menu'   : stat_tab[ 'side_menu', 'menu', !inst_hidden && !scn9, false, k9 + 35 ],
             'side_scenes' : stat_tab[ 'side_scenes', 'saturn', !inst_hidden && scn9, false, k9 ],
             # the console toggle at the right: a square the bar's height
@@ -8415,8 +8809,9 @@ element orbiter : trinity # implements compiler
     public func render [] -> Elements
         return (!ux) ? null : Elements [
             'scene'  : scene_element[],
-            'main'   : Splitter [ area: Region { l0 t0 r0 b0 }, inner: main_els[],
-                deflt: 360.0, min_size: 200.0 ],
+            'dock'   : Dock [ elements: dock_els[] ],
+            'main'   : Splitter [ area: Region { l78.75px t0 r0 b0 }, inner: main_els[],
+                deflt: 360.0, min_size: 200.0, near_seam: true ],
             'avatar' : CornerAvatar [ topmost: true, summoned: show_orbiter ],
             'error'  : (!hide_ui && err_file && err_line > 0 && err_is_own[])
                 ? ErrorButton [ label: 'error {err_file.filename[]}:{err_line}',
