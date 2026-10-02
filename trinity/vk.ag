@@ -1710,6 +1710,10 @@ class vk_context
                 if [ (qf_props[qi].queueFlags & VK_QUEUE_VIDEO_DECODE_BIT_KHR) != 0 && i32[ qi ] != compute_family && i32[ qi ] != encode_family ]
                     decode_family = i32[ qi ]
                     break
+            # one video family for both (MoltenVK): share its queue
+            if [ decode_family < 0 && encode_family >= 0 &&
+                 (qf_props[ encode_family ].queueFlags & VK_QUEUE_VIDEO_DECODE_BIT_KHR) != 0 ]
+                decode_family = encode_family
 
         # create logical device
         pris   : local f32 [2] [ 1.0, 0.0 ]
@@ -1739,7 +1743,7 @@ class vk_context
                 queueCount:          1,
                 pQueuePriorities:    pris_e ]
             qi_count += 1
-        if [ decode_family >= 0 ]
+        if [ decode_family >= 0 && decode_family != encode_family ]
             qinfos[qi_count] = VkDeviceQueueCreateInfo [
                 sType:               VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
                 queueFamilyIndex:    u32[ decode_family ],

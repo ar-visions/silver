@@ -1641,6 +1641,22 @@ debug+quarantine and -O2. Startup 71k -> 55k objects.
    project root while it is off, as find-in-files already did.
    Verified headless: finder "orion.ag" and find-in-files
    "class Race" list ~/src/orion only with remotes lit.
+4. DONE (Oct 2) H.265 encode and decode in our MoltenVK
+   (VK_KHR_video_encode_h265, _decode_h265; Main 4:2:0 and
+   Range Extensions 4:4:4 over VideoToolbox's HEVC, its
+   'HEVC_Main444_AutoLevel' profile; VPS/SPS/PPS rewritten for
+   decode). trinity/MoltenVK.diff regenerated (applies to
+   db445ff). The Apple 4:2:0 fallback in trinity.ag is gone.
+   trinity vk.ag: decode shares the encode family when the
+   driver has one video family (MoltenVK). trinity.c h265d: a
+   mid-stream CRA keeps its RASL pictures (was dropped).
+   Checked against AVFoundation byte for byte: a lossless
+   4:4:4 recording (89/89), Apple's H.265 Main with B-frames
+   and a CRA (89/89), H.264 High (89/89).
+   PR KhronosGroup/MoltenVK#2836: H.265 applied in
+   ~/src/MoltenVK-pr (docs too; upstream already has
+   VK_EXT_ycbcr_2plane_444_formats), Xcode build passes; NOT
+   committed or pushed (Rule #1): Kalen's step.
 3. DONE recorder magenta blobs and torn text (trinity/video.ag
    Recorder.capture). The nv12 compute read the scaled copy before
    the copy finished: Layout's SHADER_READ wait is fragment only, so

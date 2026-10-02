@@ -1747,6 +1747,36 @@ expect func t_canvas_triangle_not_box [] -> bool
     return px[inside] > 200 && px[outside] < 40
 
 # the clip's h.264 through the vulkan decoder, in display order
+# an h.265 mp4 (WEBGFX_HEVC), every frame's planes to WEBGFX_HEVC_OUT
+expect func t_hevc_decode [] -> bool
+    he : cstr [ getenv[ 'WEBGFX_HEVC' ] ]
+    ho : cstr [ getenv[ 'WEBGFX_HEVC_OUT' ] ]
+    if [ !he || !ho ] return true
+    d9 : gfx_display[]
+    n : i64 [ 0 ]
+    bytes : @u8 [ read_file[ he, @n ] ]
+    if [ !bytes ] return false
+    dm : Demux []
+    dm.append[ bytes, n ]
+    if [ dm.tracks.count == 0 ] return false
+    t0 : DemuxTrack dm.tracks[ 0 ]
+    dec : Decoder [ vk: gfx.vk ]
+    if [ !dec.config_hevc[ @t0.config[ 0 ], i32[ t0.config.count ] ] ] return false
+    samples : i64 [ 0 ]
+    for [ s: DemuxSample ] in dm.ready
+        if [ s.track == t0.id ]
+            dec.decode[ @s.data[ 0 ], i32[ s.data.count ], s.pts ]
+            samples += 1
+    dec.finish[]
+    out : handle [ fopen[ ho, 'wb' ] ]
+    for [ f: VideoFrame ] in dec.frames
+        fwrite[ @f.y[ 0 ], 1, u64[ f.y.count ], out ]
+        fwrite[ @f.u[ 0 ], 1, u64[ f.u.count ], out ]
+        fwrite[ @f.v[ 0 ], 1, u64[ f.v.count ], out ]
+    fclose[ out ]
+    log 'hevc decode: {dec.frames.count} of {samples} frames, {dec.width}x{dec.height}, full {dec.full}'
+    return dec.frames.count == samples && samples > 0
+
 expect func t_video_decode [] -> bool
     d9   : gfx_display[]
     root : path.path_startup[]

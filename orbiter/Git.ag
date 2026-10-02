@@ -1226,7 +1226,7 @@ element CommitView
             el
                 ci = 0
                 if [ ly9 < y8 ] return -1
-                if [ ly9 < y8 + 30.0 ] return band9 + dr
+                if [ ly9 < y8 + 30.0 ] return (h.note[]) ? -1 : band9 + dr
                 y8 += 30.0
             dr += 1
         return -1

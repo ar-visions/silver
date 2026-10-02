@@ -2848,13 +2848,18 @@ Render Canvas
         tx     : f32 [ bounds.x + (bounds.w - metrics.w) * align.x + offset.x ]
         font_h : f32 [ metrics.ascent - metrics.descent ]
         ty     : f32 [ bounds.y + metrics.ascent + (bounds.h - font_h) * align.y + offset.y ]
+        # centred text centres its capitals, not the line box
+        cw     : f32 [ 1.0 - abs[ align.y * 2.0 - 1.0 ] ]
+        if [ cw > 0.0 && metrics.cap_height > 0.0 ]
+            ty -= cw * (metrics.ascent + metrics.descent - metrics.cap_height) * 0.5
 
         st : CanvasState states[state_depth - 1]
         tcs : f32 [ (w.scale > 0) ? w.scale : 1.0 ]
         text_shader.viewport   = vec2f [ f32 width / tcs, f32 height / tcs ]
         text_shader.crop_rect  = st.crop
-        pen_x : roundf[ tx + st.transform.tx ]
-        pen_y : roundf[ ty + st.transform.ty ]
+        # snap to device pixels: whole points are 2 px on retina
+        pen_x : f32 [ roundf[ (tx + st.transform.tx) * tcs ] / tcs ]
+        pen_y : f32 [ roundf[ (ty + st.transform.ty) * tcs ] / tcs ]
 
         has_shadow : bool [ shadow && shadow.color
                             && shadow.color.a > 0.0 ]

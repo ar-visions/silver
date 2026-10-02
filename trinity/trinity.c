@@ -1996,8 +1996,8 @@ int h265d_sample(H265Dec* d, const uint8_t* data, int n, int64_t pts) {
     if (!have) return 0;
     d->irap = type0 >= 16 && type0 <= 23;
     d->idr = type0 == 19 || type0 == 20;
-    // leading pictures of a random access point we started at
-    if (d->irap) d->no_rasl = d->idr || type0 == 21 || d->first;
+    // a mid-stream cra keeps its rasl pictures; bla and idr do not
+    if (d->irap) d->no_rasl = d->idr || (type0 >= 16 && type0 <= 18) || d->first;
     if ((type0 == 8 || type0 == 9) && d->no_rasl) return 0;
     d->first = 0;
     StdVideoH265SequenceParameterSet* s = &d->sps[d->active_sps].std;
