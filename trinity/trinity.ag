@@ -1634,6 +1634,7 @@ abstract live_app media_app
                     if [ member ]
                         val : Au.convert[ member.src, parts[2] ]
                         if [ val ] aa.set_property[ parts[1], val ]
+                        wn.title_refresh[]
                     agent_sock_reply[ (member) ? 'ok\n' : 'unknown\n' ]
                     continue
                 # the shell's slider: the root element's volume
@@ -1690,6 +1691,7 @@ abstract live_app media_app
                         val : Au.convert[ member.src, parts[2] ]
                         if [ val ]
                             aa.set_property[ parts[1].chars, val ]
+                            wn.title_refresh[]
                         el ok = false
                     el ok = false
                 el [ cmd == 'state-store' ]
@@ -3657,7 +3659,32 @@ Display Window
 
     # an element's own title: kept here, and told to the host three
     # bytes a message, a 0 byte last
-    public func element_title [ t: string ]
+    # no title of its own: its default argument's stem, else module
+    func app_name [] -> string
+        ae9 : element [ cast element [ app_object ] ]
+        if [ !ae9 ] return null
+        ty9 : typeid[ ae9 ]
+        for [ ty : Au_t ty9, ty && ty != typeid[ Au ], ty = ty.context ]
+            for [ i: i32 0, i < ty.members.count, i += 1 ]
+                mem : Au_t ty.members.origin[i]
+                if [ !mem || mem.member_type != AU_MEMBER_VAR ] continue
+                # bit 50 of traits: AU_TRAIT_IS_DEFAULT
+                if [ ((mem.traits >> 50) & 1) == 0 ] continue
+                v : ae9.member_object[ mem ]
+                if [ v && Au.inherits[ typeid[ v ], typeid[ path ] ] ]
+                    p9 : path [ cast path [ v ] ]
+                    return p9.stem[]
+        return (ty9 && ty9.module) ? module_name[ ty9.module ] : null
+
+    # an app that never named itself: title from its argument
+    public func title_refresh []
+        if [ !nav_title || nav_title == title_auto ]
+            element_title[ null ]
+
+    public func element_title [ t0: string ]
+        own : bool [ t0 && t0.count > 0 && t0 != title_auto ]
+        if [ !own ] title_auto = app_name[]
+        t : string (own) ? t0 : title_auto
         nav_title = t
         restyle   = true
         # standalone: the element's title is the window's
@@ -4630,6 +4657,8 @@ Display Window
     # the app's sound and the mic kept apart for their own tracks
     mutable rec_app             : AudioRing
     mutable rec_mic             : AudioRing
+    # the title trinity made: the app has not named itself
+    mutable title_auto          : string
 
 
     func on_compose []
@@ -6410,6 +6439,7 @@ abstract media_app trinity
         render   *[]
         w.resize[w.width, w.height]
         window.restyle = true
+        window.title_refresh[]
 
     func render[]
         if [ text_mode ]
@@ -6453,6 +6483,7 @@ abstract media_app trinity
             render   *[]
             w.resize[ aw, ah ]
             awin.restyle = true
+            awin.title_refresh[]
             log 'attach: hosted {aw}x{ah} (slot {host_slot[]})'
 
 

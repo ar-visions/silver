@@ -244,11 +244,13 @@ element EditorView
             nm9 : cv9.measure_text[ title_text[] ]
             ax9 : f32 [ 62.7 * fu9 + nm9.w + 12.0 * fu9 ]
             av9 : string (rv9.arg_text) ? rv9.arg_text : ((dp9.value) ? dp9.value : '')
+            # else the launch line's own: the default comes last
+            if [ av9.count == 0 ] av9 = o.default_arg_of[ rv9.module_args ]
             rs9 : bool [ dp9.type == 'resource' || dp9.type == 'path' ]
             ap9 : path (rs9 && av9.count > 0) ? path av9 : null
             # the app's own title shows; the argument when it has none
             at9 : string (rv9.app_title && rv9.app_title.count > 0) ? rv9.app_title : null
-            sh9 : string (at9) ? at9 : ((ap9) ? ap9.filename[] : av9)
+            sh9 : string (at9) ? at9 : ((ap9) ? ap9.stem[] : av9)
             cv9.font_size[ 15 ]
             vw9 : cv9.measure_text[ sh9 ]
             bw9 : f32 [ min[ vw9.w + 30.6 * fu9, 480.0 * fu9 ] ]
@@ -1364,6 +1366,42 @@ class AppIcon
     mutable tex    : Texture
     mutable svg    : SVGModel
     mutable loaded : bool
+    # the png, colour scaled by alpha; tex is it shrunk to tex_side px
+    mutable src    : Image
+    mutable tex_side : i32
+
+    # each drawn pixel the mean of the source pixels it covers
+    func shrink [ ps: i32 ] -> Image
+        sw : i32 [ src.width ]
+        sh : i32 [ src.height ]
+        # the picture's shape kept inside the ps square
+        dw : i32 [ (sw >= sh) ? ps : max[ 1, ps * sw / sh ] ]
+        dh : i32 [ (sh >= sw) ? ps : max[ 1, ps * sh / sw ] ]
+        out : Image [ width: dw, height: dh, format: Pixel.rgba8, channels: 4 ]
+        sp9 : @u8 src.vdata[]
+        dp9 : @u8 out.vdata[]
+        fx : f32 [ f32[ sw ] / f32[ dw ] ]
+        fy : f32 [ f32[ sh ] / f32[ dh ] ]
+        for [ dy: i32 0, dy < dh, dy += 1 ]
+            y0 : f32 [ f32[ dy ] * fy ]
+            y1 : f32 [ y0 + fy ]
+            for [ dx: i32 0, dx < dw, dx += 1 ]
+                x0 : f32 [ f32[ dx ] * fx ]
+                x1 : f32 [ x0 + fx ]
+                acc : local f32 [ 4 ] [ 0.0, 0.0, 0.0, 0.0 ]
+                wt  : f32 [ 0.0 ]
+                for [ sy: i32 i32[ y0 ], f32[ sy ] < y1 && sy < sh, sy += 1 ]
+                    wy : f32 [ min[ f32[ sy + 1 ], y1 ] - max[ f32[ sy ], y0 ] ]
+                    for [ sx: i32 i32[ x0 ], f32[ sx ] < x1 && sx < sw, sx += 1 ]
+                        w9 : f32 [ wy * (min[ f32[ sx + 1 ], x1 ] - max[ f32[ sx ], x0 ]) ]
+                        o9 : i64 [ (i64[ sy ] * i64[ sw ] + i64[ sx ]) * 4 ]
+                        for [ c: i32 0, c < 4, c += 1 ]
+                            acc[ c ] += f32[ sp9[ o9 + c ] ] * w9
+                        wt += w9
+                d9 : i64 [ (i64[ dy ] * i64[ dw ] + i64[ dx ]) * 4 ]
+                for [ c: i32 0, c < 4, c += 1 ]
+                    dp9[ d9 + c ] = u8[ min[ acc[ c ] / wt + 0.5, 255.0 ] ]
+        return out
 
     # the name on the export's icon line: icon: ['tune']
     func export_icon [] -> string
@@ -1392,24 +1430,41 @@ class AppIcon
             png : path '{file}/images/icon.png'
             if [ png.exists[] ]
                 im : Image [ '{png}' ]
-                if [ im.width > 0 && im.height > 0 ]
-                    tex = Texture [ vk: cv.vk, w: cv.w, sampler: im,
-                        width: im.width, height: im.height, linear: true ]
+                # the canvas adds colour unscaled: scale it by alpha
+                if [ im.width > 0 && im.height > 0 && im.format == Pixel.rgba8 ]
+                    px9 : @u8 im.vdata[]
+                    n9  : i64 [ i64[ im.width ] * i64[ im.height ] * 4 ]
+                    for [ k: i64 0, k < n9, k += 4 ]
+                        al9 : u32 [ u32[ px9[ k + 3 ] ] ]
+                        px9[ k ]     = u8[ (u32[ px9[ k ] ] * al9 + 127) / 255 ]
+                        px9[ k + 1 ] = u8[ (u32[ px9[ k + 1 ] ] * al9 + 127) / 255 ]
+                        px9[ k + 2 ] = u8[ (u32[ px9[ k + 2 ] ] * al9 + 127) / 255 ]
+                    src = im
             nm : string export_icon[]
-            if [ !tex && nm ]
+            if [ !src && nm ]
                 mp : path 'images/material/{nm}.svg'
                 if [ !mp.exists[] ] mp = path 'images/{nm}.svg'
                 if [ mp.exists[] ] svg = SVGModel [ mp ]
-            if [ !tex && !svg ]
+            if [ !src && !svg ]
                 sp : path (module) ? path 'images/material/3d.svg'
                     : path 'images/material/folder.svg'
                 if [ sp.exists[] ] svg = SVGModel [ sp ]
             # a file: its type's icon, as the nav list draws it
-            if [ !tex && !module && !file.is_dir[] ]
+            if [ !src && !module && !file.is_dir[] ]
                 fi9 : FileIcons []
                 svg = fi9.icon[ file.filename[], 64 ]
+        # drawn one texel a pixel: made at the size it is drawn
+        ps9 : i32 [ i32[ round[ side ] ] ]
+        if [ src && ps9 > 0 && (!tex || tex_side != ps9) ]
+            sm9 : Image shrink[ ps9 ]
+            tex = Texture [ vk: cv.vk, w: cv.w, sampler: sm9,
+                width: sm9.width, height: sm9.height, linear: true ]
+            tex_side = ps9
         if [ tex ]
-            cv.draw_image[ tex, rect [ x: x, y: y, w: side, h: side ] ]
+            tw9 : f32 [ f32[ tex.width ] ]
+            th9 : f32 [ f32[ tex.height ] ]
+            cv.draw_image[ tex, rect [ x: round[ x + (side - tw9) * 0.5 ],
+                y: round[ y + (side - th9) * 0.5 ], w: tw9, h: th9 ] ]
         el [ svg ]
             cv.fill_color[ rgba [ '#fff' ] ]
             cv.draw_svg[ svg, x, y, side, side ]
@@ -1664,20 +1719,23 @@ element ArgButton
     public resource : bool
     public value    : string
     style : CSS {
+        # no border of its own: the pointer's light brings one up
         layers.body:
-            fill_color: #ffffff0c
-            radius: 8
+            fill_color: #0000004d
+            radius: 10
+            # a faint inner shadow: the near light brightens it
+            box_shadow: inset 0 0 8px #c890ff04
             stroke_width: 1
-            stroke_color: #ffffff1a
+            stroke_color: #ffffff01
+            near_border: true
+            near_inset: 2.0
+            near_inset_color: #c890ffaa
         layers.face:
             label_color: #fffa
             label_size: 15
             editable: true
             label_align: 0.0 0.5
             label_offset: 12.0 0.0
-        :hovered
-            layers.body:
-                fill_color: #ffffff1c
         :focused
             layers.body:
                 fill_color: #2f6b4a40
@@ -2021,16 +2079,19 @@ element LaunchPanel
         last_inst = inst
         last_spec = spec
         rule_ys   = vec f32 []
+        # no export: not compiling, so none of our rows either
+        parse_fields[]
+        runs : bool [ dbg_row && fields.props.count > 0 ]
         # the build switch is the instance's, not the module's: orbiter owns its state,
         # so its value is given every frame
-        if [ dbg_row ]
+        if [ runs ]
             t['lp_debug_lbl'] = LaunchLabel [ label: 'debug', area: Region [ 'l6px t{y}px w{lw - 6.0}px h{rh}px' ] ]
             t['lp_debug'] = LaunchCheck [ label: '', selected: dbg_on,
                 area: Region [ 'l{lw + 1.0}px t{y}px w{rh}px h{rh}px' ] ]
             y += rh
             rule_ys.push[ y ]
         # coverage: its build switch, and clear for the one map
-        if [ dbg_row ]
+        if [ runs ]
             t['lp_coverage_lbl'] = LaunchLabel [ label: 'coverage', area: Region [ 'l6px t{y}px w{lw - 6.0}px h{rh}px' ] ]
             t['lp_coverage'] = LaunchCheck [ label: '', selected: cov_on,
                 area: Region [ 'l{lw + 1.0}px t{y}px w{rh}px h{rh}px' ] ]
@@ -2039,19 +2100,20 @@ element LaunchPanel
             y += rh
             rule_ys.push[ y ]
         # the instance's pid: orbiter's row, read-only, given every frame
-        if [ dbg_row ]
+        if [ runs ]
             t['lp_pid_lbl'] = LaunchLabel [ label: 'pid', area: Region [ 'l6px t{y}px w{lw - 6.0}px h{rh}px' ] ]
             t['lp_pid_val'] = LaunchLabel [ label: (pid_val > 0) ? '{pid_val}' : '-',
                 area: Region [ 'l{lw + 7.0}px t{y}px r0 h{rh}px' ] ]
             y += rh
             rule_ys.push[ y ]
-        parse_fields[]
         if [ fields.props.count == 0 ]
-            t['lp_none'] = LaunchLabel [ label: 'no launch parameters', area: Region [ 'l6px t{y}px r0 h{rh}px' ] ]
+            # no export: the module has not compiled; rule stops here
+            rows_h = y + scroll.y
+            t['lp_none'] = LaunchLabel [ label: 'no properties available', area: Region [ 'l6px t{y}px r0 h{rh}px' ] ]
             y += rh
             content_h = y + scroll.y
-            rows_h    = content_h
             col_x     = lw
+            body.area = Region [ 'l0 t0 r0 h{i32[ y ]}px' ]
             return t
         for [ p: Prop ] in fields.props
             nm : string p.ident
@@ -4227,6 +4289,24 @@ element orbiter : trinity # implements compiler
     # a module's props: what its last instance answered, else what its
     # build enumerated into its export (`props:` in install/export)
     # the module's bare argument, when the app takes it live
+    # a launch line's default argument: what follows its flags
+    # (--name value pairs), the default always last
+    func default_arg_of [ args: string ] -> string
+        if [ !args ] return ''
+        ws : vec string args.trim[].split[ ' ' ]
+        i  : i32 [ 0 ]
+        while [ i < ws.count ]
+            w9 : string ws[ i ]
+            if [ w9.count > 2 && w9[ 0 ] == 45 && w9[ 1 ] == 45 ]
+                i += 2
+                continue
+            if [ w9.count > 0 ] break
+            i += 1
+        out : string ''
+        for [ j: i32 i, j < ws.count, j += 1 ]
+            out = (out.count > 0) ? '{out} {ws[ j ]}' : ws[ j ]
+        return out
+
     func live_default [ mod: string ] -> Prop
         sp9 : string module_spec[ mod ]
         if [ !sp9 ] return null
