@@ -9066,6 +9066,12 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
     // an archive's file name is not a project name: the import's is
     if (is_archive)
         name = label;
+    // a repo's owner is its whole path after the host (subgroups)
+    cstr    scheme      = strstr(us, "://");
+    cstr    host_end    = scheme ? strchr(scheme + 3, '/') : null;
+    if (!is_archive && host_end && host_end - us < sl)
+        owner = mid(s, (num)(host_end - us) + 1,
+                    sl - (num)(host_end - us) - 1);
     path    project_f   = (owner && len(owner)) ?
           f(path, "%o/checkout/%o/%o", a->root_path, owner, name)
         : f(path, "%o/checkout/%o",    a->root_path, name);
@@ -9095,8 +9101,13 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
     // then read the fresh token and return cached. lock lives beside (not inside) the
     // build dir so remove_dir(build_f) can't delete it.
     make_dir(install);
+    // a subgroup owner has slashes: the lock is one file
+    string lock_owner = owner ? string(owner->chars) : null;
+    if (lock_owner)
+        for (char* c = (char*)lock_owner->chars; *c; c++)
+            if (*c == '/') *c = '-';
     path lock_path = (owner && len(owner)) ?
-          f(path, "%o/%o-%o.checkout-lock", install, owner, name)
+          f(path, "%o/%o-%o.checkout-lock", install, lock_owner, name)
         : f(path, "%o/%o.checkout-lock",    install, name);
     // cloexec: an orphaned child must not keep the import locked
     int  lock_fd   = open(lock_path->chars, O_CREAT | O_RDWR | O_CLOEXEC, 0644);
@@ -10878,6 +10889,20 @@ silver silver_with_path(silver a, path module_path) {
     return a;
 }
 
+// a remote by short name, or a host as written
+static string remote_host(cstr name) {
+    if (strchr(name, '.')) return string(name);
+    static cstr names[][2] = {
+        { "github",    "github.com"    },
+        { "gitlab",    "gitlab.com"    },
+        { "codeberg",  "codeberg.org"  },
+        { "bitbucket", "bitbucket.org" },
+    };
+    for (int i = 0; i < 4; i++)
+        if (strcmp(name, names[i][0]) == 0) return string(names[i][1]);
+    return null;
+}
+
 token read_compacted(silver a) {
     token  f = next(a, Syntax__none);
     if (!f) return null;
@@ -11167,6 +11192,20 @@ enode parse_import(silver a) {
         // editor keys navigation off this kind
         token aa_tok = element(a, -1);
         if (aa_tok) aa_tok->syntax = Syntax__namespace;
+        // a gitlab subgroup path as the owner: gnome/libs:glib. a /
+        // is the version unless a : follows the next name
+        for (;;) {
+            token sl = element(a, 0), part = element(a, 1);
+            token col = element(a, 2);
+            if (!sl || !part || !col || !eq(sl, "/") || !eq(col, ":") ||
+                !isalpha(part->chars[0]))
+                break;
+            consume(a, Syntax__punctuation);
+            string sub = expect_alpha(a);
+            token st = element(a, -1);
+            if (st) st->syntax = Syntax__namespace;
+            aa = f(string, "%o/%o", aa, sub);
+        }
         bb       = read_if(a, ":") ? expect_alpha(a) : null;
         cc       = bb && read_if(a, ":") ? expect_alpha(a) : null;
 
@@ -11272,10 +11311,21 @@ enode parse_import(silver a) {
 
     // `from <url>` names the repo; it must be read before the body
     // read below swallows the rest of the line as config
+    // `from <host>` (no scheme) is a change of remote: the names
+    // resolve on that host, never on our own
+    string from_host = null;
     if (read_if(a, "from")) {
         token ut = read_compacted(a); // the lexer split https://host/owner/project
         validate(ut, "expected uri");
-        uri = hold(string(ut->chars));
+        if (strstr(ut->chars, "://"))
+            uri = hold(string(ut->chars));
+        else {
+            from_host = remote_host(ut->chars);
+            validate(from_host, "from %s: unknown remote (a url, a host "
+                "like gitlab.com, or github / gitlab / codeberg / "
+                "bitbucket)", ut->chars);
+            ut->syntax = Syntax__namespace;
+        }
     }
 
     map define_map = null;
@@ -11367,7 +11417,7 @@ enode parse_import(silver a) {
     }
 
     if (is_framework_import) {
-    } else if (!is_codegen && aa && !bb && !commit) {
+    } else if (!is_codegen && aa && !bb && !commit && !from_host) {
         path m = module_exists(a, mpath, true, &is_binary); // useful to resolve in either case
 
         if (!is_binary && m) {
@@ -11458,7 +11508,8 @@ enode parse_import(silver a) {
             path_str = len(str_mpath) ? f(string, "blob/%o/%o", commit, str_mpath) : string("");
         }
         if (!uri) // `from` named the repo already
-            uri = f(string, "https://%o/%o/%o%s%o", service, user, project,
+            uri = f(string, "https://%o/%o/%o%s%o",
+                    from_host ? from_host : service, user, project,
                     cast(bool, path_str) ? "/" : "", path_str);
     }
 
