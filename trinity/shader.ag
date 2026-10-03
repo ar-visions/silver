@@ -109,13 +109,13 @@ class shader
         # emit void main() from the stage entry point
         main_name: (stage == ShaderStage.vertex) ? "vertex" : (stage == ShaderStage.fragment) ? "fragment" : "compute"
         main_member: Au_t [ null ]
-        sc9 : Au_t [ type ]
-        while [ sc9 && sc9 != typeid[ shader ] ]
-            m9 : find_member[ sc9, main_name, 5, 0, false ]
-            if [ m9 ]
-                main_member = m9
+        scope : Au_t [ type ]
+        while [ scope && scope != typeid[ shader ] ]
+            entry_fn : find_member[ scope, main_name, 5, 0, false ]
+            if [ entry_fn ]
+                main_member = entry_fn
                 break
-            sc9 = sc9.context
+            scope = scope.context
         if [ !main_member || main_member.context == typeid[shader] ]
             return null
 
@@ -237,7 +237,9 @@ class shader
                     continue
                 if [ !method.src || !method.meta.a ]
                     continue
-                if [ strcmp[ method.ident, "fragment" ] == 0 || strcmp[ method.ident, "vertex" ] == 0 || strcmp[ method.ident, "compute" ] == 0 ]
+                if [ strcmp[ method.ident, "fragment" ] == 0
+                     || strcmp[ method.ident, "vertex" ] == 0
+                     || strcmp[ method.ident, "compute" ] == 0 ]
                     continue
                 rtype : Au_t [ method.meta.a ]
                 ret_name: glsl_type_name[ rtype ]
@@ -325,35 +327,37 @@ class shader
             fputs[ src, fp ]
             fclose[ fp ]
 
-    func uniform_transfer [ data2: @u8, type: Au_t ] -> i64
+    func uniform_transfer [ data: @u8, type: Au_t ] -> i64
         instance:a
         expect instance inherits shader, "shader instance not provided"
         src: @u8 [ instance ]
 ##
         if [strcmp[type.ident, "Earth"] == 0]
-            fdata: @f32 [ @data2[0] ]
+            fdata: @f32 [ @data[0] ]
             memcpy[ fdata, @src[84], 64 ]
             m4 : @mat4f [ fdata ] 
             return 192
 ##
         index: num [ 0 ]
-        ty2: Au_t [ type ]
+        ty: Au_t [ type ]
         classes : context_chain[]
-        for [ ty2: Au_t ] in classes
-            for [ m: 0, m < ty2.members.count, m += 1 ]
-                mem: Au_t [ ty2.members.origin[m] ]
+        for [ cls: Au_t ] in classes
+            for [ m: 0, m < cls.members.count, m += 1 ]
+                mem: Au_t [ cls.members.origin[m] ]
                 if [ is_uniform_field[ mem ] ]
                     type_size: mem.src.typesize
                     # std140: vec3/vec4/mat4 align 16, scalars pad to 4
-                    al: num [ (type_size >= 12) ? 16 : ((type_size < 4) ? 4 : type_size) ]
+                    al: num [
+                        (type_size >= 12) ? 16
+                        : ((type_size < 4) ? 4 : type_size) ]
                     index = (index + al - 1) / al * al
                     if [ (mem.src.traits & (1 << 8))
                          || (mem.src.traits & (1 << 0)) ]
-                        memcpy[ @data2[index], @src[mem.offset],
+                        memcpy[ @data[index], @src[mem.offset],
                                 type_size ]
                     el
                         dst_ptr: cast @handle [ @src[mem.offset] ]
-                        memcpy[ @data2[index], dst_ptr, type_size ]
+                        memcpy[ @data[index], dst_ptr, type_size ]
                     index += (type_size < 4) ? 4 : type_size
 
         return index
@@ -392,7 +396,8 @@ class shader
                     fseek[ sfp, 0, SEEK_END ]
                     slen  : i64 [ ftell[ sfp ] ]
                     fclose[ sfp ]
-                    spv_ok = rd == 4 && magic == 0x07230203 && slen >= 20 && (slen % 4) == 0
+                    spv_ok = rd == 4 && magic == 0x07230203 &&
+                        slen >= 20 && (slen % 4) == 0
             make_spv : !spv_ok ||
                 input.modified_time[] > spv_file.modified_time[]
             if [ make_spv ]
@@ -464,8 +469,8 @@ class shader
             vk.shader_cache = store[]
             vk.shader_cache.hold[]
             
-        rty9: typeid[ a ]
-        cached: shader [ vk.shader_cache.get[ rty9 ] ]
+        rty: typeid[ a ]
+        cached: shader [ vk.shader_cache.get[ rty ] ]
         if [ cached ]
             mod_src = cached
             vk_vert = cached.vk_vert
@@ -475,7 +480,7 @@ class shader
         generate_shaders[ ]
         reload[ ]
         owns_modules = true
-        vk.shader_cache.set[ rty9, a ]
+        vk.shader_cache.set[ rty, a ]
 
     func dealloc [ ]
         if [ !vk || !owns_modules ] return
@@ -491,7 +496,9 @@ shader ModelViewProject
     mutable time    : f32
 
 ModelViewProject UVQuad
-    attrib color : LayoutBinding [ type:typeid[ Surface ], id:Surface.color, count:1, format: typeid[ rgba8 ] ]
+    attrib color : LayoutBinding [ type:typeid[ Surface ],
+                                   id:Surface.color, count:1,
+                                   format: typeid[ rgba8 ] ]
     #attrib Surface [ color ] : 1, rgba8
 
     attrib pos       : VertexInput    [ type:typeid[ vec3f ] ]
@@ -525,7 +532,9 @@ ModelViewProject UVQuad
 
 
 ModelViewProject UVReduce
-    attrib  color : LayoutBinding [ type:typeid[ Surface ], id:Surface.color, count:1, format: typeid[ rgba8 ] ]
+    attrib  color : LayoutBinding [ type:typeid[ Surface ],
+                                    id:Surface.color, count:1,
+                                    format: typeid[ rgba8 ] ]
 
     attrib pos       : VertexInput    [ type:typeid[ vec3f ] ]
     attrib uv        : VertexInput    [ type:typeid[ vec2f ] ]
@@ -571,7 +580,9 @@ ModelViewProject UVReduce
 
 
 ModelViewProject SuperEagle
-    attrib color : LayoutBinding [ type:typeid[ Surface ], id:Surface.color, count:1, format: typeid[ rgba8 ] ]
+    attrib color : LayoutBinding [ type:typeid[ Surface ],
+                                   id:Surface.color, count:1,
+                                   format: typeid[ rgba8 ] ]
 
     attrib pos       : VertexInput    [ type:typeid[ vec3f ] ]
     attrib uv        : VertexInput    [ type:typeid[ vec2f ] ]
@@ -686,7 +697,9 @@ ModelViewProject SuperEagle
 
 
 ModelViewProject PixelSharp
-    attrib color : LayoutBinding [ type:typeid[ Surface ], id:Surface.color, count:1, format: typeid[ rgba8 ] ]
+    attrib color : LayoutBinding [ type:typeid[ Surface ],
+                                   id:Surface.color, count:1,
+                                   format: typeid[ rgba8 ] ]
 
     attrib pos       : VertexInput    [ type:typeid[ vec3f ] ]
     attrib uv        : VertexInput    [ type:typeid[ vec2f ] ]
@@ -725,9 +738,15 @@ ModelViewProject HumanPBR
     mutable uv_map : vec4f
     mutable sss    : f32
 
-    attrib color  : LayoutBinding [ type:typeid[ Surface ], id:Surface.color,  count:1, format: typeid[ rgba8 ] ]
-    attrib normal : LayoutBinding [ type:typeid[ Surface ], id:Surface.normal, count:1, format: typeid[ rgba8 ] ]
-    attrib rough  : LayoutBinding [ type:typeid[ Surface ], id:Surface.rough,  count:1, format: typeid[ rgba8 ] ]
+    attrib color  : LayoutBinding [ type:typeid[ Surface ],
+                                    id:Surface.color,  count:1,
+                                    format: typeid[ rgba8 ] ]
+    attrib normal : LayoutBinding [ type:typeid[ Surface ],
+                                    id:Surface.normal, count:1,
+                                    format: typeid[ rgba8 ] ]
+    attrib rough  : LayoutBinding [ type:typeid[ Surface ],
+                                    id:Surface.rough,  count:1,
+                                    format: typeid[ rgba8 ] ]
 
     attrib a_pos     : VertexInput [ type:typeid[ vec3f ] ]
     attrib a_normal  : VertexInput [ type:typeid[ vec3f ] ]
@@ -879,7 +898,9 @@ ModelViewProject HumanPBR
 
 
 ModelViewProject VectorScale
-    attrib color : LayoutBinding [ type:typeid[ Surface ], id:Surface.color, count:1, format: typeid[ rgba8 ] ]
+    attrib color : LayoutBinding [ type:typeid[ Surface ],
+                                   id:Surface.color, count:1,
+                                   format: typeid[ rgba8 ] ]
 
     attrib pos       : VertexInput    [ type:typeid[ vec3f ] ]
     attrib uv        : VertexInput    [ type:typeid[ vec2f ] ]
@@ -962,10 +983,18 @@ ModelViewProject VectorLayers
     mutable r2 : vec4f
     mutable r3 : vec4f
 
-    attrib l0 : LayoutBinding [ type:typeid[ Surface ], id:Surface.color,    count:1, format: typeid[ rgba8 ] ]
-    attrib l1 : LayoutBinding [ type:typeid[ Surface ], id:Surface.normal,   count:1, format: typeid[ rgba8 ] ]
-    attrib l2 : LayoutBinding [ type:typeid[ Surface ], id:Surface.emission, count:1, format: typeid[ rgba8 ] ]
-    attrib l3 : LayoutBinding [ type:typeid[ Surface ], id:Surface.rough,    count:1, format: typeid[ rgba8 ] ]
+    attrib l0 : LayoutBinding [ type:typeid[ Surface ],
+                                id:Surface.color,
+                                count:1, format: typeid[ rgba8 ] ]
+    attrib l1 : LayoutBinding [ type:typeid[ Surface ],
+                                id:Surface.normal,   count:1,
+                                format: typeid[ rgba8 ] ]
+    attrib l2 : LayoutBinding [ type:typeid[ Surface ],
+                                id:Surface.emission, count:1,
+                                format: typeid[ rgba8 ] ]
+    attrib l3 : LayoutBinding [ type:typeid[ Surface ],
+                                id:Surface.rough,
+                                count:1, format: typeid[ rgba8 ] ]
 
     attrib pos       : VertexInput    [ type:typeid[ vec3f ] ]
     attrib uv        : VertexInput    [ type:typeid[ vec2f ] ]
@@ -1084,14 +1113,31 @@ shader SubdivCompute
     # floats per output vertex
     mutable out_stride : i32
 
-    attrib in_pos      : StorageBuffer [ type:typeid[ SubdivSurface ], id:SubdivSurface.in_pos,      count:1, format:typeid[ f32 ] ]
-    attrib face_corner : StorageBuffer [ type:typeid[ SubdivSurface ], id:SubdivSurface.face_corner, count:1, format:typeid[ i32 ] ]
-    attrib edge_data   : StorageBuffer [ type:typeid[ SubdivSurface ], id:SubdivSurface.edge_data,   count:1, format:typeid[ i32 ] ]
-    attrib vfo         : StorageBuffer [ type:typeid[ SubdivSurface ], id:SubdivSurface.vfo,          count:1, format:typeid[ i32 ] ]
-    attrib vf          : StorageBuffer [ type:typeid[ SubdivSurface ], id:SubdivSurface.vf,           count:1, format:typeid[ i32 ] ]
-    attrib veo         : StorageBuffer [ type:typeid[ SubdivSurface ], id:SubdivSurface.veo,          count:1, format:typeid[ i32 ] ]
-    attrib ve          : StorageBuffer [ type:typeid[ SubdivSurface ], id:SubdivSurface.ve,           count:1, format:typeid[ i32 ] ]
-    attrib out_pos     : StorageBuffer [ type:typeid[ SubdivSurface ], id:SubdivSurface.out_pos,      count:1, format:typeid[ f32 ], writable:true ]
+    attrib in_pos      : StorageBuffer [ type:typeid[ SubdivSurface ],
+                                         id:SubdivSurface.in_pos,
+                                         count:1, format:typeid[ f32 ] ]
+    attrib face_corner : StorageBuffer [ type:typeid[ SubdivSurface ],
+                                         id:SubdivSurface.face_corner,
+                                         count:1, format:typeid[ i32 ] ]
+    attrib edge_data   : StorageBuffer [ type:typeid[ SubdivSurface ],
+                                         id:SubdivSurface.edge_data,
+                                         count:1, format:typeid[ i32 ] ]
+    attrib vfo         : StorageBuffer [ type:typeid[ SubdivSurface ],
+                                         id:SubdivSurface.vfo,
+                                         count:1, format:typeid[ i32 ] ]
+    attrib vf          : StorageBuffer [ type:typeid[ SubdivSurface ],
+                                         id:SubdivSurface.vf,
+                                         count:1, format:typeid[ i32 ] ]
+    attrib veo         : StorageBuffer [ type:typeid[ SubdivSurface ],
+                                         id:SubdivSurface.veo,
+                                         count:1, format:typeid[ i32 ] ]
+    attrib ve          : StorageBuffer [ type:typeid[ SubdivSurface ],
+                                         id:SubdivSurface.ve,
+                                         count:1, format:typeid[ i32 ] ]
+    attrib out_pos     : StorageBuffer [ type:typeid[ SubdivSurface ],
+                                         id:SubdivSurface.out_pos,
+                                         count:1, format:typeid[ f32 ],
+                                         writable:true ]
 
     # strided position read from the input float buffer
     func read_pos [ v: @i32 ] -> GLSL vec3f {
@@ -1179,10 +1225,18 @@ shader SubdivNormals
     # float offset of the normal
     mutable nrm_off : i32
 
-    attrib v_buf : StorageBuffer [ type:typeid[ SubdivNrm ], id:SubdivNrm.v_buf, count:1, format:typeid[ f32 ], writable:true ]
-    attrib n_fc  : StorageBuffer [ type:typeid[ SubdivNrm ], id:SubdivNrm.n_fc,  count:1, format:typeid[ i32 ] ]
-    attrib n_vfo : StorageBuffer [ type:typeid[ SubdivNrm ], id:SubdivNrm.n_vfo, count:1, format:typeid[ i32 ] ]
-    attrib n_vf  : StorageBuffer [ type:typeid[ SubdivNrm ], id:SubdivNrm.n_vf,  count:1, format:typeid[ i32 ] ]
+    attrib v_buf : StorageBuffer [ type:typeid[ SubdivNrm ],
+                                   id:SubdivNrm.v_buf, count:1,
+                                   format:typeid[ f32 ], writable:true ]
+    attrib n_fc  : StorageBuffer [ type:typeid[ SubdivNrm ],
+                                   id:SubdivNrm.n_fc,  count:1,
+                                   format:typeid[ i32 ] ]
+    attrib n_vfo : StorageBuffer [ type:typeid[ SubdivNrm ],
+                                   id:SubdivNrm.n_vfo, count:1,
+                                   format:typeid[ i32 ] ]
+    attrib n_vf  : StorageBuffer [ type:typeid[ SubdivNrm ],
+                                   id:SubdivNrm.n_vf,  count:1,
+                                   format:typeid[ i32 ] ]
 
     func vpos [ v: @i32 ] -> GLSL vec3f {
         int b = v * ubo.stride;
@@ -1213,7 +1267,9 @@ shader Env
     mutable view : mat4f.identity[]
     mutable proj : mat4f.identity[]
     mutable roughness_samples : vec2f
-    attrib color: LayoutBinding [ type:typeid[ Surface ], id:Surface.color, count:1, format:typeid[ rgbaf ] ]
+    attrib color: LayoutBinding [ type:typeid[ Surface ],
+                                  id:Surface.color, count:1,
+                                  format:typeid[ rgbaf ] ]
 
     attrib in_pos   : VertexInput    [ type:typeid[ vec3f ] ]
     attrib in_uv    : VertexInput    [ type:typeid[ vec2f ] ]
@@ -1241,7 +1297,9 @@ shader Convolve
     mutable view : mat4f
     mutable proj : mat4f
     mutable roughness_samples : vec2f
-    attrib environment: LayoutBinding [ type:typeid[ Surface ], id:Surface.environment, count:1, format:typeid[ rgbaf ] ]
+    attrib environment: LayoutBinding [ type:typeid[ Surface ],
+                                        id:Surface.environment, count:1,
+                                        format:typeid[ rgbaf ] ]
 
     attrib in_pos   : VertexInput    [ type:typeid[ vec3f ] ]
     attrib in_uv    : VertexInput    [ type:typeid[ vec2f ] ]
@@ -1330,7 +1388,9 @@ ModelViewProject Basic
     public proj  : mat4f
     public model : mat4f
     public view  : mat4f
-    attrib color : LayoutBinding [ type:typeid[ Surface ], id:Surface.color, count:1, format: typeid[ rgbaf ] ]
+    attrib color : LayoutBinding [ type:typeid[ Surface ],
+                                   id:Surface.color, count:1,
+                                   format: typeid[ rgbaf ] ]
 
 
 class IBL
@@ -1339,7 +1399,9 @@ class IBL
 
 ModelViewProject BlurV
     mutable reduction_scale : f32
-    attrib color : LayoutBinding [ type:typeid[ Surface ], id:Surface.color,        count:1, format: typeid[ rgba8 ] ]
+    attrib color : LayoutBinding [ type:typeid[ Surface ],
+                                   id:Surface.color,        count:1,
+                                   format: typeid[ rgba8 ] ]
 
     attrib pos       : VertexInput    [ type:typeid[ vec3f ] ]
     attrib uv        : VertexInput    [ type:typeid[ vec2f ] ]
@@ -1384,7 +1446,9 @@ ModelViewProject BlurV
 
 ModelViewProject Blur
     mutable reduction_scale : f32
-    attrib color : LayoutBinding [ type:typeid[ Surface ], id:Surface.color,        count:1, format: typeid[ rgba8 ] ]
+    attrib color : LayoutBinding [ type:typeid[ Surface ],
+                                   id:Surface.color,        count:1,
+                                   format: typeid[ rgba8 ] ]
 
     attrib pos       : VertexInput    [ type:typeid[ vec3f ] ]
     attrib uv        : VertexInput    [ type:typeid[ vec2f ] ]
@@ -1430,7 +1494,9 @@ ModelViewProject Blur
 
 ModelViewProject CanvasBlurV
     mutable radius_uv : f32
-    attrib color : LayoutBinding [ type:typeid[ Surface ], id:Surface.color, count:1, format: typeid[ rgba8 ] ]
+    attrib color : LayoutBinding [ type:typeid[ Surface ],
+                                   id:Surface.color, count:1,
+                                   format: typeid[ rgba8 ] ]
 
     attrib pos       : VertexInput    [ type:typeid[ vec3f ] ]
     attrib uv        : VertexInput    [ type:typeid[ vec2f ] ]
@@ -1467,8 +1533,12 @@ ModelViewProject CanvasBlurV
 ModelViewProject CanvasBlurH
     mutable radius_uv  : f32
     mutable mix_factor : f32
-    attrib low  : LayoutBinding [ type:typeid[ BlurPair ], id:BlurPair.low,  count:1, format: typeid[ rgba8 ] ]
-    attrib high : LayoutBinding [ type:typeid[ BlurPair ], id:BlurPair.high, count:1, format: typeid[ rgba8 ] ]
+    attrib low  : LayoutBinding [ type:typeid[ BlurPair ],
+                                  id:BlurPair.low,  count:1,
+                                  format: typeid[ rgba8 ] ]
+    attrib high : LayoutBinding [ type:typeid[ BlurPair ],
+                                  id:BlurPair.high, count:1,
+                                  format: typeid[ rgba8 ] ]
 
     attrib pos       : VertexInput    [ type:typeid[ vec3f ] ]
     attrib uv        : VertexInput    [ type:typeid[ vec2f ] ]
@@ -1513,9 +1583,9 @@ ModelViewProject CanvasBlurH
 func mat_tex [ m: Model, mdl: GltfModel, ti: TextureInfo, name: string,
                out: map Au[string] ]
     if [ !ti ] return
-    p0 : mdl.texture_uri[ ti ]
-    if [ !p0 ] return
-    p : Res.res_path[ p0 ]
+    rel_uri : mdl.texture_uri[ ti ]
+    if [ !rel_uri ] return
+    p : Res.res_path[ rel_uri ]
     key : '{p}'
     tx : Texture m.tex_cache[ key ]
     if [ !tx ]
@@ -1537,14 +1607,14 @@ func subdiv_topo_from_quads [ nv: i32, nf: i32, qcorn: @i32,
     t : SubdivTopo [ ]
     t.nv = nv
     t.nf = nf
-    nf4 : i32 [ nf * 4 ]
-    t.qcorn = vec i32 [ nf4 ]
-    for [ i: i32 0, i < nf4, i += 1 ] t.qcorn[ i ] = qcorn[ i ]
+    corner_count : i32 [ nf * 4 ]
+    t.qcorn = vec i32 [ corner_count ]
+    for [ i: i32 0, i < corner_count, i += 1 ] t.qcorn[ i ] = qcorn[ i ]
     # vert->face CSR (count, prefix-sum, fill)
-    nv1 : i32 [ nv + 1 ]
-    t.vfo = vec i32 [ nv1 ]
-    t.vf  = vec i32 [ nf4 ]
-    for [ i: i32 0, i < nv1, i += 1 ] t.vfo[ i ] = 0
+    vert_slots : i32 [ nv + 1 ]
+    t.vfo = vec i32 [ vert_slots ]
+    t.vf  = vec i32 [ corner_count ]
+    for [ i: i32 0, i < vert_slots, i += 1 ] t.vfo[ i ] = 0
     for [ f: i32 0, f < nf, f += 1 ]
         for [ c: i32 0, c < 4, c += 1 ]
             t.vfo[ qcorn[ f*4 + c ] + 1 ] += 1
@@ -1558,49 +1628,50 @@ func subdiv_topo_from_quads [ nv: i32, nf: i32, qcorn: @i32,
             t.vf[ pf ] = f
             vf_cur[ vv ] += 1
     if [ !with_edges ] return t
-    side_lo : vec i32 [ nf4 ]
-    side_hi : vec i32 [ nf4 ]
+    side_lo : vec i32 [ corner_count ]
+    side_hi : vec i32 [ corner_count ]
     for [ f: i32 0, f < nf, f += 1 ]
         for [ e: i32 0, e < 4, e += 1 ]
             en : i32 [ e + 1 ]
             if [ en >= 4 ] en = 0
             u  : i32 [ qcorn[ f*4 + e ] ]
-            w2 : i32 [ qcorn[ f*4 + en ] ]
+            next_vert : i32 [ qcorn[ f*4 + en ] ]
             lo : i32 [ u ]
-            hi : i32 [ w2 ]
-            if [ u > w2 ]
-                lo = w2
+            hi : i32 [ next_vert ]
+            if [ u > next_vert ]
+                lo = next_vert
                 hi = u
             side_lo[ f*4 + e ] = lo
             side_hi[ f*4 + e ] = hi
-    boff : vec i32 [ nv1 ]
-    for [ i: i32 0, i < nv1, i += 1 ] boff[ i ] = 0
-    for [ s: i32 0, s < nf4, s += 1 ] boff[ side_lo[ s ] + 1 ] += 1
+    boff : vec i32 [ vert_slots ]
+    for [ i: i32 0, i < vert_slots, i += 1 ] boff[ i ] = 0
+    for [ s: i32 0, s < corner_count,
+          s += 1 ] boff[ side_lo[ s ] + 1 ] += 1
     for [ i: i32 0, i < nv, i += 1 ] boff[ i+1 ] += boff[ i ]
     bcur : vec i32 [ nv ]
     for [ i: i32 0, i < nv, i += 1 ] bcur[ i ] = boff[ i ]
-    bside : vec i32 [ nf4 ]
-    for [ s: i32 0, s < nf4, s += 1 ]
+    bside : vec i32 [ corner_count ]
+    for [ s: i32 0, s < corner_count, s += 1 ]
         pos : i32 [ bcur[ side_lo[ s ] ] ]
         bside[ pos ] = s
         bcur[ side_lo[ s ] ] += 1
-    fe_u  : vec i32 [ nf4 ]
-    fe_v  : vec i32 [ nf4 ]
-    fe_f0 : vec i32 [ nf4 ]
-    fe_f1 : vec i32 [ nf4 ]
-    fe_fn : vec i32 [ nf4 ]
-    beid  : vec i32 [ nf4 ]
-    t.face_e = vec i32 [ nf4 ]
+    fe_u  : vec i32 [ corner_count ]
+    fe_v  : vec i32 [ corner_count ]
+    fe_face : vec i32 [ corner_count ]
+    fe_other : vec i32 [ corner_count ]
+    fe_fn : vec i32 [ corner_count ]
+    beid  : vec i32 [ corner_count ]
+    t.face_e = vec i32 [ corner_count ]
     nedge : i32 [ 0 ]
     for [ v: i32 0, v < nv, v += 1 ]
-        b0 : i32 [ boff[ v ] ]
-        b1 : i32 [ boff[ v + 1 ] ]
-        for [ i: i32 b0, i < b1, i += 1 ]
+        bucket_start : i32 [ boff[ v ] ]
+        bucket_end : i32 [ boff[ v + 1 ] ]
+        for [ i: i32 bucket_start, i < bucket_end, i += 1 ]
             si  : i32 [ bside[ i ] ]
             shi : i32 [ side_hi[ si ] ]
             sf  : i32 [ si / 4 ]
             eid : i32 [ -1 ]
-            for [ j: i32 b0, j < i, j += 1 ]
+            for [ j: i32 bucket_start, j < i, j += 1 ]
                 if [ side_hi[ bside[ j ] ] == shi ]
                     eid = beid[ j ]
                     break
@@ -1608,32 +1679,33 @@ func subdiv_topo_from_quads [ nv: i32, nf: i32, qcorn: @i32,
                 eid = nedge
                 fe_u[ eid ] = v
                 fe_v[ eid ] = shi
-                fe_f0[ eid ] = sf
-                fe_f1[ eid ] = sf
+                fe_face[ eid ] = sf
+                fe_other[ eid ] = sf
                 fe_fn[ eid ] = 1
                 nedge += 1
             el
-                fe_f1[ eid ] = sf
+                fe_other[ eid ] = sf
                 fe_fn[ eid ] += 1
             beid[ i ] = eid
             t.face_e[ si ] = eid
     t.ne = nedge
-    ne4 : i32 [ nedge * 4 ]
-    t.edata = vec i32 [ ne4 ]
+    edge_words : i32 [ nedge * 4 ]
+    t.edata = vec i32 [ edge_words ]
     t.n_bound = 0
     t.n_nonman = 0
     for [ eid: i32 0, eid < nedge, eid += 1 ]
         t.edata[ eid*4 + 0 ] = fe_u[ eid ]
         t.edata[ eid*4 + 1 ] = fe_v[ eid ]
-        t.edata[ eid*4 + 2 ] = fe_f0[ eid ]
-        t.edata[ eid*4 + 3 ] = (fe_fn[ eid ] >= 2) ? fe_f1[ eid ] : -1
+        t.edata[ eid*4 + 2 ] = fe_face[ eid ]
+        t.edata[ eid*4 + 3 ] = (fe_fn[ eid ] >= 2) ? fe_other[
+            eid ] : -1
         if [ fe_fn[ eid ] == 1 ] t.n_bound += 1
         if [ fe_fn[ eid ] >= 3 ] t.n_nonman += 1
     # vert->edge CSR
-    ne2 : i32 [ nedge * 2 ]
-    t.veo = vec i32 [ nv1 ]
-    t.ve  = vec i32 [ ne2 ]
-    for [ i: i32 0, i < nv1, i += 1 ] t.veo[ i ] = 0
+    edge_ends : i32 [ nedge * 2 ]
+    t.veo = vec i32 [ vert_slots ]
+    t.ve  = vec i32 [ edge_ends ]
+    for [ i: i32 0, i < vert_slots, i += 1 ] t.veo[ i ] = 0
     for [ eid: i32 0, eid < nedge, eid += 1 ]
         t.veo[ fe_u[ eid ] + 1 ] += 1
         t.veo[ fe_v[ eid ] + 1 ] += 1
@@ -1652,21 +1724,22 @@ func subdiv_topo_from_quads [ nv: i32, nf: i32, qcorn: @i32,
     return t
 
 func subdiv_next_topo [ t: SubdivTopo, with_edges: bool ] -> SubdivTopo
-    nv2 : i32 [ t.nv + t.ne + t.nf ]
-    nf2 : i32 [ t.nf * 4 ]
-    q2sz : i32 [ nf2 * 4 ]
-    q2 : vec i32 [ q2sz ]
+    next_nv : i32 [ t.nv + t.ne + t.nf ]
+    next_nf : i32 [ t.nf * 4 ]
+    next_size : i32 [ next_nf * 4 ]
+    next_quads : vec i32 [ next_size ]
     for [ f: i32 0, f < t.nf, f += 1 ]
         fp : i32 [ t.nv + t.ne + f ]
         for [ i: i32 0, i < 4, i += 1 ]
             ip : i32 [ i - 1 ]
             if [ ip < 0 ] ip = 3
             qi : i32 [ (f*4 + i) * 4 ]
-            q2[ qi + 0 ] = t.qcorn[ f*4 + i ]
-            q2[ qi + 1 ] = t.nv + t.face_e[ f*4 + i ]
-            q2[ qi + 2 ] = fp
-            q2[ qi + 3 ] = t.nv + t.face_e[ f*4 + ip ]
-    return subdiv_topo_from_quads[ nv2, nf2, q2, with_edges ]
+            next_quads[ qi + 0 ] = t.qcorn[ f*4 + i ]
+            next_quads[ qi + 1 ] = t.nv + t.face_e[ f*4 + i ]
+            next_quads[ qi + 2 ] = fp
+            next_quads[ qi + 3 ] = t.nv + t.face_e[ f*4 + ip ]
+    return subdiv_topo_from_quads[ next_nv, next_nf, next_quads,
+                                   with_edges ]
 
 # host-visible i32 storage buffer filled from a CPU array
 func subdiv_i32_buf [ vkc: vk_context, src: @i32, count: i32 ] -> Buffer
@@ -1674,8 +1747,8 @@ func subdiv_i32_buf [ vkc: vk_context, src: @i32, count: i32 ] -> Buffer
     b : Buffer [ vk: vkc, size: bts, u_storage: true,
                  m_host_visible: true, m_host_coherent: true ]
     d : @i8 [ b.data ]
-    s0 : cast @i8 [ @src[ 0 ] ]
-    memcpy[ d, s0, bts ]
+    src_bytes : cast @i8 [ @src[ 0 ] ]
+    memcpy[ d, src_bytes, bts ]
     return b
 
 func subdiv_merge_jw [ cur_j: @i32, cur_w: @f32, cont: @i32,
@@ -1703,10 +1776,10 @@ func subdiv_merge_jw [ cur_j: @i32, cur_w: @f32, cont: @i32,
                     mw[ cnt ] = ww
                     cnt += 1
     if [ cnt == 0 ]
-        cv0 : i32 [ cont[ 0 ] ]
+        first_cv : i32 [ cont[ 0 ] ]
         for [ s: i32 0, s < 4, s += 1 ]
-            dst_j[ dv*4 + s ] = cur_j[ cv0*4 + s ]
-            dst_w[ dv*4 + s ] = cur_w[ cv0*4 + s ]
+            dst_j[ dv*4 + s ] = cur_j[ first_cv*4 + s ]
+            dst_w[ dv*4 + s ] = cur_w[ first_cv*4 + s ]
         return
     for [ s: i32 0, s < 4, s += 1 ]
         bi : i32 [ -1 ]
@@ -1722,7 +1795,9 @@ func subdiv_merge_jw [ cur_j: @i32, cur_w: @f32, cont: @i32,
         el
             dst_j[ dv*4 + s ] = 0
             dst_w[ dv*4 + s ] = 0.0
-    tw : f32 [ dst_w[ dv*4 ] + dst_w[ dv*4 + 1 ] + dst_w[ dv*4 + 2 ] + dst_w[ dv*4 + 3 ] ]
+    tw : f32 [
+        dst_w[ dv*4 ] + dst_w[ dv*4 + 1 ] + dst_w[ dv*4 + 2 ]
+        + dst_w[ dv*4 + 3 ] ]
     if [ tw > 0.0 ]
         for [ s: i32 0, s < 4, s += 1 ]
             dst_w[ dv*4 + s ] = dst_w[ dv*4 + s ] / tw
@@ -1737,24 +1812,24 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32,
     if [ sems_of[ 0 ] != 0 ] return null
     tc : i32 [ ic / 3 ]
     if [ tc * 3 != ic ] return null
-    nf0 : i32 [ tc / 2 ]
-    if [ nf0 * 2 != tc ] return null
+    quad_count : i32 [ tc / 2 ]
+    if [ quad_count * 2 != tc ] return null
     vdata : @i8 [ base.vertex_data ]
     idata : @i8 [ base.index_data ]
     # indices at their real width
     idxbuf : vec i32 [ ic ]
     if [ base.index_size == 2 ]
-        i16p : cast @u16 [ @idata[ 0 ] ]
+        idx_short : cast @u16 [ @idata[ 0 ] ]
         for [ ii: i32 0, ii < ic, ii += 1 ]
-            idxbuf[ ii ] = i32[ i16p[ ii ] ]
+            idxbuf[ ii ] = i32[ idx_short[ ii ] ]
     el
-        i32p : cast @u32 [ @idata[ 0 ] ]
+        idx_word : cast @u32 [ @idata[ 0 ] ]
         for [ ii: i32 0, ii < ic, ii += 1 ]
-            idxbuf[ ii ] = i32[ i32p[ ii ] ]
+            idxbuf[ ii ] = i32[ idx_word[ ii ] ]
     n_off : i32 [ -1 ]
-    mems0 : @vertex_member_t [ base.members ]
+    base_mems : @vertex_member_t [ base.members ]
     for [ k: i32 0, k < base.member_count, k += 1 ]
-        if [ sems_of[ k ] == 1 ] n_off = i32[ mems0[ k ].offset ]
+        if [ sems_of[ k ] == 1 ] n_off = i32[ base_mems[ k ].offset ]
     topo : vec i32 [ vc ]
     rep  : vec i32 [ vc ]
     hcap : i32 [ 64 ]
@@ -1762,14 +1837,14 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32,
     while [ hcap < hneed ] hcap = hcap * 2
     htab : vec i32 [ hcap ]
     for [ i: i32 0, i < hcap, i += 1 ] htab[ i ] = -1
-    q6sz : i32 [ vc * 6 ]
-    q6 : vec i64 [ q6sz ]
+    weld_keys_size : i32 [ vc * 6 ]
+    weld_keys : vec i64 [ weld_keys_size ]
     tv : i32 [ 0 ]
     for [ v: i32 0, v < vc, v += 1 ]
         p : cast @f32 [ @vdata[ v * vsz ] ]
-        qx : i64 [ i64[ round[ p[0] * 100000.0 ] ] ]
-        qy : i64 [ i64[ round[ p[1] * 100000.0 ] ] ]
-        qz : i64 [ i64[ round[ p[2] * 100000.0 ] ] ]
+        qx : i64 [ round[ p[0] * 100000.0 ] ]
+        qy : i64 [ round[ p[1] * 100000.0 ] ]
+        qz : i64 [ round[ p[2] * 100000.0 ] ]
         nx : i64 [ 0 ]
         ny : i64 [ 0 ]
         nz : i64 [ 0 ]
@@ -1786,12 +1861,17 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32,
         h = h * 1000003 + nz
         hs : i64 [ h % i64[ hcap ] ]
         if [ hs < 0 ] hs += i64[ hcap ]
-        slot : i32 [ i32[ hs ] ]
+        slot : i32 [ hs ]
         wid : i32 [ -1 ]
         while [ true ]
             ex : i32 [ htab[ slot ] ]
             if [ ex < 0 ] break
-            same : bool [ q6[ex*6] == qx && q6[ex*6+1] == qy && q6[ex*6+2] == qz && q6[ex*6+3] == nx && q6[ex*6+4] == ny && q6[ex*6+5] == nz ]
+            same : bool [ weld_keys[ex*6] == qx
+                          && weld_keys[ex*6+1] == qy
+                          && weld_keys[ex*6+2] == qz
+                          && weld_keys[ex*6+3] == nx
+                          && weld_keys[ex*6+4] == ny
+                          && weld_keys[ex*6+5] == nz ]
             if [ same ]
                 wid = ex
                 break
@@ -1802,100 +1882,106 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32,
         el
             topo[ v ] = tv
             rep[ tv ] = v
-            q6[ tv*6 + 0 ] = qx
-            q6[ tv*6 + 1 ] = qy
-            q6[ tv*6 + 2 ] = qz
-            q6[ tv*6 + 3 ] = nx
-            q6[ tv*6 + 4 ] = ny
-            q6[ tv*6 + 5 ] = nz
+            weld_keys[ tv*6 + 0 ] = qx
+            weld_keys[ tv*6 + 1 ] = qy
+            weld_keys[ tv*6 + 2 ] = qz
+            weld_keys[ tv*6 + 3 ] = nx
+            weld_keys[ tv*6 + 4 ] = ny
+            weld_keys[ tv*6 + 5 ] = nz
             htab[ slot ] = tv
             tv += 1
-    q0sz : i32 [ nf0 * 4 ]
-    qcorn0 : vec i32 [ q0sz ]
-    for [ pp: i32 0, pp < nf0, pp += 1 ]
-        ia0 : i32 [ idxbuf[ pp*6 + 0 ] ]
-        ia1 : i32 [ idxbuf[ pp*6 + 1 ] ]
-        ia2 : i32 [ idxbuf[ pp*6 + 2 ] ]
-        ib0 : i32 [ idxbuf[ pp*6 + 3 ] ]
-        ib1 : i32 [ idxbuf[ pp*6 + 4 ] ]
-        ib2 : i32 [ idxbuf[ pp*6 + 5 ] ]
-        a0in : bool [ (ia0 == ib0) || (ia0 == ib1) || (ia0 == ib2) ]
-        a1in : bool [ (ia1 == ib0) || (ia1 == ib1) || (ia1 == ib2) ]
-        a2in : bool [ (ia2 == ib0) || (ia2 == ib1) || (ia2 == ib2) ]
+    corners_size : i32 [ quad_count * 4 ]
+    base_corners : vec i32 [ corners_size ]
+    for [ pp: i32 0, pp < quad_count, pp += 1 ]
+        a_first : i32 [ idxbuf[ pp*6 + 0 ] ]
+        a_mid : i32 [ idxbuf[ pp*6 + 1 ] ]
+        a_last : i32 [ idxbuf[ pp*6 + 2 ] ]
+        b_first : i32 [ idxbuf[ pp*6 + 3 ] ]
+        b_mid : i32 [ idxbuf[ pp*6 + 4 ] ]
+        b_last : i32 [ idxbuf[ pp*6 + 5 ] ]
+        a_first_in : bool [ (a_first == b_first) || (a_first == b_mid)
+                            || (a_first == b_last) ]
+        a_mid_in : bool [ (a_mid == b_first) || (a_mid == b_mid)
+                          || (a_mid == b_last) ]
+        a_last_in : bool [ (a_last == b_first) || (a_last == b_mid)
+                           || (a_last == b_last) ]
         shared : i32 [ 0 ]
-        if [ a0in ] shared += 1
-        if [ a1in ] shared += 1
-        if [ a2in ] shared += 1
+        if [ a_first_in ] shared += 1
+        if [ a_mid_in ] shared += 1
+        if [ a_last_in ] shared += 1
         if [ shared != 2 ] return null
-        ra : i32 [ ia2 ]
-        rp : i32 [ ia0 ]
-        rq : i32 [ ia1 ]
-        if [ !a0in ]
-            ra = ia0
-            rp = ia1
-            rq = ia2
-        if [ !a1in ]
-            ra = ia1
-            rp = ia2
-            rq = ia0
-        b1in : bool [ (ib1 == ia0) || (ib1 == ia1) || (ib1 == ia2) ]
-        b2in : bool [ (ib2 == ia0) || (ib2 == ia1) || (ib2 == ia2) ]
-        sv : i32 [ ib0 ]
-        if [ !b1in ] sv = ib1
-        if [ !b2in ] sv = ib2
-        qcorn0[ pp*4 + 0 ] = topo[ ra ]
-        qcorn0[ pp*4 + 1 ] = topo[ rp ]
-        qcorn0[ pp*4 + 2 ] = topo[ sv ]
-        qcorn0[ pp*4 + 3 ] = topo[ rq ]
+        ra : i32 [ a_last ]
+        rp : i32 [ a_first ]
+        rq : i32 [ a_mid ]
+        if [ !a_first_in ]
+            ra = a_first
+            rp = a_mid
+            rq = a_last
+        if [ !a_mid_in ]
+            ra = a_mid
+            rp = a_last
+            rq = a_first
+        b_mid_in : bool [ (b_mid == a_first) || (b_mid == a_mid)
+                          || (b_mid == a_last) ]
+        b_last_in : bool [ (b_last == a_first) || (b_last == a_mid)
+                           || (b_last == a_last) ]
+        sv : i32 [ b_first ]
+        if [ !b_mid_in ] sv = b_mid
+        if [ !b_last_in ] sv = b_last
+        base_corners[ pp*4 + 0 ] = topo[ ra ]
+        base_corners[ pp*4 + 1 ] = topo[ rp ]
+        base_corners[ pp*4 + 2 ] = topo[ sv ]
+        base_corners[ pp*4 + 3 ] = topo[ rq ]
     topos : vec SubdivTopo []
-    topos += subdiv_topo_from_quads[ tv, nf0, qcorn0, true ]
+    topos += subdiv_topo_from_quads[ tv, quad_count, base_corners,
+                                     true ]
     if [ crease && crease.count >= 6 ]
-        tc0 : topos[ 0 ]
+        crease_topo : topos[ 0 ]
         ncr : i32 [ i32[ crease.count ] / 6 ]
         nmark : i32 [ 0 ]
         for [ ci: i32 0, ci < ncr, ci += 1 ]
-            ax3 : i64 [ i64[ round[ crease[ ci*6 + 0 ] * 100000.0 ] ] ]
-            ay3 : i64 [ i64[ round[ crease[ ci*6 + 1 ] * 100000.0 ] ] ]
-            az3 : i64 [ i64[ round[ crease[ ci*6 + 2 ] * 100000.0 ] ] ]
-            bx3 : i64 [ i64[ round[ crease[ ci*6 + 3 ] * 100000.0 ] ] ]
-            by3 : i64 [ i64[ round[ crease[ ci*6 + 4 ] * 100000.0 ] ] ]
-            bz3 : i64 [ i64[ round[ crease[ ci*6 + 5 ] * 100000.0 ] ] ]
+            ax : i64 [ round[ crease[ ci*6 + 0 ] * 100000.0 ] ]
+            ay : i64 [ round[ crease[ ci*6 + 1 ] * 100000.0 ] ]
+            az : i64 [ round[ crease[ ci*6 + 2 ] * 100000.0 ] ]
+            bx : i64 [ round[ crease[ ci*6 + 3 ] * 100000.0 ] ]
+            by : i64 [ round[ crease[ ci*6 + 4 ] * 100000.0 ] ]
+            bz : i64 [ round[ crease[ ci*6 + 5 ] * 100000.0 ] ]
             # all welded ids at each endpoint (normals split welds)
             sa : local i32 [ 8 ]
             sb : local i32 [ 8 ]
-            na2 : i32 [ 0 ]
-            nb2 : i32 [ 0 ]
+            na : i32 [ 0 ]
+            nb : i32 [ 0 ]
             for [ wv: i32 0, wv < tv, wv += 1 ]
-                if [ q6[wv*6] == ax3 && q6[wv*6+1] == ay3
-                     && q6[wv*6+2] == az3 ]
-                    if [ na2 < 8 ]
-                        sa[ na2 ] = wv
-                        na2 += 1
-                if [ q6[wv*6] == bx3 && q6[wv*6+1] == by3
-                     && q6[wv*6+2] == bz3 ]
-                    if [ nb2 < 8 ]
-                        sb[ nb2 ] = wv
-                        nb2 += 1
-            if [ na2 == 0 || nb2 == 0 ] continue
-            for [ ei: i32 0, ei < tc0.ne, ei += 1 ]
-                if [ tc0.edata[ ei*4 + 3 ] < 0 ] continue
-                e0 : i32 [ tc0.edata[ ei*4 + 0 ] ]
-                e1 : i32 [ tc0.edata[ ei*4 + 1 ] ]
-                m0a : bool [ false ]
-                m1b : bool [ false ]
-                m0b : bool [ false ]
-                m1a : bool [ false ]
-                for [ k2: i32 0, k2 < na2, k2 += 1 ]
-                    if [ sa[ k2 ] == e0 ] m0a = true
-                    if [ sa[ k2 ] == e1 ] m1a = true
-                for [ k2: i32 0, k2 < nb2, k2 += 1 ]
-                    if [ sb[ k2 ] == e0 ] m0b = true
-                    if [ sb[ k2 ] == e1 ] m1b = true
+                if [ weld_keys[wv*6] == ax && weld_keys[wv*6+1] == ay
+                     && weld_keys[wv*6+2] == az ]
+                    if [ na < 8 ]
+                        sa[ na ] = wv
+                        na += 1
+                if [ weld_keys[wv*6] == bx && weld_keys[wv*6+1] == by
+                     && weld_keys[wv*6+2] == bz ]
+                    if [ nb < 8 ]
+                        sb[ nb ] = wv
+                        nb += 1
+            if [ na == 0 || nb == 0 ] continue
+            for [ ei: i32 0, ei < crease_topo.ne, ei += 1 ]
+                if [ crease_topo.edata[ ei*4 + 3 ] < 0 ] continue
+                edge_from : i32 [ crease_topo.edata[ ei*4 + 0 ] ]
+                edge_to : i32 [ crease_topo.edata[ ei*4 + 1 ] ]
+                from_in_a : bool [ false ]
+                to_in_b : bool [ false ]
+                from_in_b : bool [ false ]
+                to_in_a : bool [ false ]
+                for [ pick: i32 0, pick < na, pick += 1 ]
+                    if [ sa[ pick ] == edge_from ] from_in_a = true
+                    if [ sa[ pick ] == edge_to ] to_in_a = true
+                for [ pick: i32 0, pick < nb, pick += 1 ]
+                    if [ sb[ pick ] == edge_from ] from_in_b = true
+                    if [ sb[ pick ] == edge_to ] to_in_b = true
                 mtch : bool [ false ]
-                if [ m0a && m1b ] mtch = true
-                if [ m0b && m1a ] mtch = true
+                if [ from_in_a && to_in_b ] mtch = true
+                if [ from_in_b && to_in_a ] mtch = true
                 if [ mtch ]
-                    tc0.edata[ ei*4 + 3 ] = -1
+                    crease_topo.edata[ ei*4 + 3 ] = -1
                     nmark += 1
     for [ lv: i32 1, lv < levels, lv += 1 ]
         prev : topos[ lv - 1 ]
@@ -1904,22 +1990,29 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32,
     nout : i32 [ fin.nv + fin.ne + fin.nf ]
     nt : subdiv_next_topo[ fin, false ]
     oic : i32 [ nt.nf * 6 ]
-    t0 : topos[ 0 ]
+    base_topo : topos[ 0 ]
     ndegen : i32 [ 0 ]
-    for [ f: i32 0, f < t0.nf, f += 1 ]
-        c0 : i32 [ t0.qcorn[ f*4 + 0 ] ]
-        c1 : i32 [ t0.qcorn[ f*4 + 1 ] ]
-        c2 : i32 [ t0.qcorn[ f*4 + 2 ] ]
-        c3 : i32 [ t0.qcorn[ f*4 + 3 ] ]
-        bad : bool [ (c0 == c1) || (c0 == c2) || (c0 == c3)
-                     || (c1 == c2) || (c1 == c3) || (c2 == c3) ]
+    for [ f: i32 0, f < base_topo.nf, f += 1 ]
+        corner_a : i32 [ base_topo.qcorn[ f*4 + 0 ] ]
+        corner_b : i32 [ base_topo.qcorn[ f*4 + 1 ] ]
+        corner_c : i32 [ base_topo.qcorn[ f*4 + 2 ] ]
+        corner_d : i32 [ base_topo.qcorn[ f*4 + 3 ] ]
+        bad : bool [ (corner_a == corner_b) || (corner_a == corner_c)
+                     || (corner_a == corner_d)
+                     || (corner_b == corner_c) || (corner_b == corner_d)
+                     || (corner_c == corner_d) ]
         if [ bad ] ndegen += 1
     out_bytes : i32 [ nout * vsz ]
-    obuf : Buffer [ vk: m.vk, size: out_bytes, u_storage: true, u_vertex: true, m_host_visible: true, m_host_coherent: true ]
+    obuf : Buffer [ vk: m.vk, size: out_bytes, u_storage: true,
+                    u_vertex: true, m_host_visible: true,
+                    m_host_coherent: true ]
     odata : @i8 [ obuf.data ]
     # index buffer: 2 triangles per output quad
     oi_bytes : i32 [ oic * 4 ]
-    xbuf : Buffer [ vk: m.vk, size: oi_bytes, u_index: true, u_dst: true, u_shader: true, m_host_visible: true, m_host_coherent: true ]
+    xbuf : Buffer [ vk: m.vk, size: oi_bytes, u_index: true,
+                    u_dst: true,
+                    u_shader: true, m_host_visible: true,
+                    m_host_coherent: true ]
     ixd : @i32 [ xbuf.data ]
     for [ q: i32 0, q < nt.nf, q += 1 ]
         ixd[ q*6 + 0 ] = nt.qcorn[ q*4 + 0 ]
@@ -1950,24 +2043,24 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32,
         jm : @mems[ jk ]
         wm : @mems[ wk ]
         jsz = i32[ jm.size ]
-        wsz : i32 [ i32[ wm.size ] ]
+        wsz : i32 [ wm.size ]
         if [ !((jsz == 4 || jsz == 8) && wsz == 16) ] jw_ok = false
     if [ jw_ok ]
-        joff : i32 [ i32[ mems[ jk ].offset ] ]
-        woff : i32 [ i32[ mems[ wk ].offset ] ]
+        joff : i32 [ mems[ jk ].offset ]
+        woff : i32 [ mems[ wk ].offset ]
         jw_cap : i32 [ nout * 4 ]
         cur_j : vec i32 [ jw_cap ]
         cur_w : vec f32 [ jw_cap ]
         for [ v: i32 0, v < tv, v += 1 ]
             rv : i32 [ rep[ v ] ]
             wp : cast @f32 [ @vdata[ rv * vsz + woff ] ]
-            jp8  : cast @u8 [ @vdata[ rv * vsz + joff ] ]
-            jp16 : cast @u16 [ @vdata[ rv * vsz + joff ] ]
+            joints_byte  : cast @u8 [ @vdata[ rv * vsz + joff ] ]
+            joints_short : cast @u16 [ @vdata[ rv * vsz + joff ] ]
             for [ s: i32 0, s < 4, s += 1 ]
                 if [ jsz == 4 ]
-                    cur_j[ v*4 + s ] = i32[ jp8[ s ] ]
+                    cur_j[ v*4 + s ] = i32[ joints_byte[ s ] ]
                 el
-                    cur_j[ v*4 + s ] = i32[ jp16[ s ] ]
+                    cur_j[ v*4 + s ] = i32[ joints_short[ s ] ]
                 cur_w[ v*4 + s ] = wp[ s ]
         cont : local i32 [ 4 ]
         for [ lv: i32 0, lv < levels, lv += 1 ]
@@ -1986,26 +2079,29 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32,
                                  t.nv + t.ne + f ]
         for [ v: i32 0, v < nout, v += 1 ]
             dw : cast @f32 [ @odata[ v * vsz + woff ] ]
-            dj8  : cast @u8 [ @odata[ v * vsz + joff ] ]
-            dj16 : cast @u16 [ @odata[ v * vsz + joff ] ]
+            out_joints_byte  : cast @u8 [ @odata[ v * vsz + joff ] ]
+            out_joints_short : cast @u16 [ @odata[ v * vsz + joff ] ]
             for [ s: i32 0, s < 4, s += 1 ]
                 if [ jsz == 4 ]
-                    dj8[ s ] = u8[ cur_j[ v*4 + s ] ]
+                    out_joints_byte[ s ] = u8[ cur_j[ v*4 + s ] ]
                 el
-                    dj16[ s ] = u16[ cur_j[ v*4 + s ] ]
+                    out_joints_short[ s ] = u16[ cur_j[ v*4 + s ] ]
                 dw[ s ] = cur_w[ v*4 + s ]
     for [ k: i32 0, k < mc, k += 1 ]
         if [ sems_of[ k ] == 0 || sems_of[ k ] == 1 ] continue
         if [ jw_ok && (k == jk || k == wk) ] continue
         mem : @mems[ k ]
-        moff : i32 [ i32[ mem.offset ] ]
-        msz  : i32 [ i32[ mem.size ] ]
-        is_f : bool [ mem.src == typeid[ f32 ] || mem.src == typeid[ vec2f ] || mem.src == typeid[ vec3f ] || mem.src == typeid[ vec4f ] ]
+        moff : i32 [ mem.offset ]
+        msz  : i32 [ mem.size ]
+        is_f : bool [ mem.src == typeid[ f32 ]
+                      || mem.src == typeid[ vec2f ]
+                      || mem.src == typeid[ vec3f ]
+                      || mem.src == typeid[ vec4f ] ]
         if [ !is_f ]
             for [ v: i32 0, v < nout, v += 1 ]
-                sv2 : i32 [ srcv[ v ] ]
+                src_vert : i32 [ srcv[ v ] ]
                 dstp : @i8 [ @odata[ v * vsz + moff ] ]
-                srcp : @i8 [ @vdata[ sv2 * vsz + moff ] ]
+                srcp : @i8 [ @vdata[ src_vert * vsz + moff ] ]
                 memcpy[ dstp, srcp, msz ]
             continue
         ncf : i32 [ msz / 4 ]
@@ -2019,67 +2115,72 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32,
         for [ lv: i32 0, lv < levels, lv += 1 ]
             t : topos[ lv ]
             for [ e: i32 0, e < t.ne, e += 1 ]
-                v0 : i32 [ t.edata[ e*4 + 0 ] ]
-                v1 : i32 [ t.edata[ e*4 + 1 ] ]
+                end_a : i32 [ t.edata[ e*4 + 0 ] ]
+                end_b : i32 [ t.edata[ e*4 + 1 ] ]
                 dv : i32 [ t.nv + e ]
                 for [ c: i32 0, c < ncf, c += 1 ]
-                    cur[ dv * ncf + c ] = 0.5 * (cur[ v0 * ncf + c ] + cur[ v1 * ncf + c ])
+                    cur[
+                        dv * ncf
+                        + c ] = 0.5 * (cur[ end_a * ncf + c ] + cur[ end_b * ncf + c ])
             for [ f: i32 0, f < t.nf, f += 1 ]
-                c0 : i32 [ t.qcorn[ f*4 + 0 ] ]
-                c1 : i32 [ t.qcorn[ f*4 + 1 ] ]
-                c2 : i32 [ t.qcorn[ f*4 + 2 ] ]
-                c3 : i32 [ t.qcorn[ f*4 + 3 ] ]
+                corner_a : i32 [ t.qcorn[ f*4 + 0 ] ]
+                corner_b : i32 [ t.qcorn[ f*4 + 1 ] ]
+                corner_c : i32 [ t.qcorn[ f*4 + 2 ] ]
+                corner_d : i32 [ t.qcorn[ f*4 + 3 ] ]
                 dv : i32 [ t.nv + t.ne + f ]
                 for [ c: i32 0, c < ncf, c += 1 ]
-                    cur[ dv * ncf + c ] = 0.25 * (cur[ c0 * ncf + c ] + cur[ c1 * ncf + c ] + cur[ c2 * ncf + c ] + cur[ c3 * ncf + c ])
+                    cur[
+                        dv * ncf
+                        + c ] = 0.25 * (cur[ corner_a * ncf + c ] + cur[ corner_b * ncf + c ] + cur[ corner_c * ncf + c ] + cur[ corner_d * ncf + c ])
         for [ v: i32 0, v < nout, v += 1 ]
             dp : cast @f32 [ @odata[ v * vsz + moff ] ]
             for [ c: i32 0, c < ncf, c += 1 ]
                 dp[ c ] = cur[ v * ncf + c ]
-    in0sz : i32 [ tv * 3 * 4 ]
-    in0 : Buffer [ vk: m.vk, size: in0sz, u_storage: true,
+    cage_in_size : i32 [ tv * 3 * 4 ]
+    cage_in : Buffer [ vk: m.vk, size: cage_in_size, u_storage: true,
                    m_host_visible: true, m_host_coherent: true ]
-    ip : @f32 [ in0.data ]
+    ip : @f32 [ cage_in.data ]
     for [ v: i32 0, v < tv, v += 1 ]
         rv : i32 [ rep[ v ] ]
         p : cast @f32 [ @vdata[ rv * vsz ] ]
         ip[ v*3 + 0 ] = p[ 0 ]
         ip[ v*3 + 1 ] = p[ 1 ]
         ip[ v*3 + 2 ] = p[ 2 ]
-    t0.cage_buf = in0
-    tv3b : i32 [ tv * 3 ]
-    t0.base = vec f32 [ tv3b ]
-    for [ i: i32 0, i < tv3b, i += 1 ] t0.base[ i ] = ip[ i ]
-    t0.rep = vec i32 [ tv ]
-    for [ i: i32 0, i < tv, i += 1 ] t0.rep[ i ] = rep[ i ]
+    base_topo.cage_buf = cage_in
+    base_floats : i32 [ tv * 3 ]
+    base_topo.base = vec f32 [ base_floats ]
+    for [ i: i32 0, i < base_floats,
+          i += 1 ] base_topo.base[ i ] = ip[ i ]
+    base_topo.rep = vec i32 [ tv ]
+    for [ i: i32 0, i < tv, i += 1 ] base_topo.rep[ i ] = rep[ i ]
     if [ tv <= 8192 ]
-        bp : @f32 [ t0.base ]
-        t0.mirror = vec i32 [ tv ]
+        bp : @f32 [ base_topo.base ]
+        base_topo.mirror = vec i32 [ tv ]
         bmn : f32 [  1e30 ]
         bmx : f32 [ -1e30 ]
-        for [ i: i32 0, i < tv3b, i += 1 ]
+        for [ i: i32 0, i < base_floats, i += 1 ]
             if [ bp[ i ] < bmn ] bmn = bp[ i ]
             if [ bp[ i ] > bmx ] bmx = bp[ i ]
         tol : f32 [ (bmx - bmn) * 0.02 ]
-        tol2 : f32 [ tol * tol ]
+        tol_sq : f32 [ tol * tol ]
         for [ v: i32 0, v < tv, v += 1 ]
             tx : f32 [ 0.0 - bp[ v*3 + 0 ] ]
             ty : f32 [ bp[ v*3 + 1 ] ]
             tz : f32 [ bp[ v*3 + 2 ] ]
             bd : f32 [ 1e30 ]
             bi : i32 [ -1 ]
-            for [ u2: i32 0, u2 < tv, u2 += 1 ]
-                ddx : f32 [ bp[ u2*3 + 0 ] - tx ]
-                ddy : f32 [ bp[ u2*3 + 1 ] - ty ]
-                ddz : f32 [ bp[ u2*3 + 2 ] - tz ]
-                dd2 : f32 [ ddx*ddx + ddy*ddy + ddz*ddz ]
-                if [ dd2 < bd ]
-                    bd = dd2
-                    bi = u2
-            t0.mirror[ v ] = (bd <= tol2) ? bi : -1
-    m.cages.push[ t0 ]
+            for [ other: i32 0, other < tv, other += 1 ]
+                ddx : f32 [ bp[ other*3 + 0 ] - tx ]
+                ddy : f32 [ bp[ other*3 + 1 ] - ty ]
+                ddz : f32 [ bp[ other*3 + 2 ] - tz ]
+                dd : f32 [ ddx*ddx + ddy*ddy + ddz*ddz ]
+                if [ dd < bd ]
+                    bd = dd
+                    bi = other
+            base_topo.mirror[ v ] = (bd <= tol_sq) ? bi : -1
+    m.cages.push[ base_topo ]
     in_cur : Buffer [ null ]
-    in_cur = in0
+    in_cur = cage_in
     for [ lv: i32 0, lv < levels, lv += 1 ]
         t : topos[ lv ]
         outv : i32 [ t.nv + t.ne + t.nf ]
@@ -2090,24 +2191,30 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32,
             ob_bytes : i32 [ outv * 12 ]
             ob = Buffer [ vk: m.vk, size: ob_bytes, u_storage: true,
                           m_host_visible: true, m_host_coherent: true ]
-        nf4 : i32 [ t.nf * 4 ]
-        ne4 : i32 [ t.ne * 4 ]
-        nv1 : i32 [ t.nv + 1 ]
-        ne2 : i32 [ t.ne * 2 ]
-        fc_b  : subdiv_i32_buf[ m.vk, t.qcorn, nf4 ]
-        ed_b  : subdiv_i32_buf[ m.vk, t.edata, ne4 ]
-        vfo_b : subdiv_i32_buf[ m.vk, t.vfo, nv1 ]
-        vf_b  : subdiv_i32_buf[ m.vk, t.vf, nf4 ]
-        veo_b : subdiv_i32_buf[ m.vk, t.veo, nv1 ]
-        ve_b  : subdiv_i32_buf[ m.vk, t.ve, ne2 ]
+        corner_count : i32 [ t.nf * 4 ]
+        edge_words : i32 [ t.ne * 4 ]
+        vert_slots : i32 [ t.nv + 1 ]
+        edge_ends : i32 [ t.ne * 2 ]
+        fc_b  : subdiv_i32_buf[ m.vk, t.qcorn, corner_count ]
+        ed_b  : subdiv_i32_buf[ m.vk, t.edata, edge_words ]
+        vfo_b : subdiv_i32_buf[ m.vk, t.vfo, vert_slots ]
+        vf_b  : subdiv_i32_buf[ m.vk, t.vf, corner_count ]
+        veo_b : subdiv_i32_buf[ m.vk, t.veo, vert_slots ]
+        ve_b  : subdiv_i32_buf[ m.vk, t.ve, edge_ends ]
         cs : SubdivCompute [ vk: m.vk ]
         cs.n_base = t.nv
         cs.n_edge = t.ne
         cs.n_face = t.nf
         cs.in_stride = 3
         cs.out_stride = (is_final) ? vsz / 4 : 3
-        smap : map Au[string] [ 'in_pos': in_cur, 'face_corner': fc_b, 'edge_data': ed_b, 'vfo': vfo_b, 'vf': vf_b, 'veo': veo_b, 've': ve_b, 'out_pos': ob ]
-        cpipe : Pipeline [ vk: m.vk, w: m.w, name: '{name}_sd{lv}', r: m.r, s: cs, render_id: render_id, default_model: mat4f.identity[], samplers: smap ]
+        smap : map Au[string] [ 'in_pos': in_cur, 'face_corner': fc_b,
+                                'edge_data': ed_b, 'vfo': vfo_b,
+                                'vf': vf_b, 'veo': veo_b, 've': ve_b,
+                                'out_pos': ob ]
+        cpipe : Pipeline [ vk: m.vk, w: m.w, name: '{name}_sd{lv}',
+                           r: m.r, s: cs, render_id: render_id,
+                           default_model: mat4f.identity[],
+                           samplers: smap ]
         cpipe.dispatch_x = (outv + 15) / 16
         cpipe.dispatch_y = 1
         cpipe.dispatch_z = 1
@@ -2118,18 +2225,21 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32,
     for [ k: i32 0, k < mc, k += 1 ]
         if [ sems_of[ k ] == 1 ] nrm_k = k
     if [ nrm_k >= 0 ]
-        ntf4 : i32 [ nt.nf * 4 ]
-        ntv1 : i32 [ nt.nv + 1 ]
-        nfc_b  : subdiv_i32_buf[ m.vk, nt.qcorn, ntf4 ]
-        nvfo_b : subdiv_i32_buf[ m.vk, nt.vfo, ntv1 ]
-        nvf_b  : subdiv_i32_buf[ m.vk, nt.vf, ntf4 ]
+        ntf : i32 [ nt.nf * 4 ]
+        ntv : i32 [ nt.nv + 1 ]
+        nfc_b  : subdiv_i32_buf[ m.vk, nt.qcorn, ntf ]
+        nvfo_b : subdiv_i32_buf[ m.vk, nt.vfo, ntv ]
+        nvf_b  : subdiv_i32_buf[ m.vk, nt.vf, ntf ]
         ns : SubdivNormals [ vk: m.vk ]
         ns.n_verts = nout
         ns.stride = vsz / 4
         ns.nrm_off = i32[ mems[ nrm_k ].offset ] / 4
         nmap : map Au[string] [ 'v_buf': obuf, 'n_fc': nfc_b,
                                 'n_vfo': nvfo_b, 'n_vf': nvf_b ]
-        npipe : Pipeline [ vk: m.vk, w: m.w, name: '{name}_sdnrm', r: m.r, s: ns, render_id: render_id, default_model: mat4f.identity[], samplers: nmap ]
+        npipe : Pipeline [ vk: m.vk, w: m.w, name: '{name}_sdnrm',
+                           r: m.r, s: ns, render_id: render_id,
+                           default_model: mat4f.identity[],
+                           samplers: nmap ]
         npipe.dispatch_x = (nout + 15) / 16
         npipe.dispatch_y = 1
         npipe.dispatch_z = 1
@@ -2142,7 +2252,10 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32,
         ext_vertex: obuf, ext_index: xbuf ]
     return g
 
-func model_init_pipeline [ m: Model, n: Node, prim: Primitive, msh: Mesh, s: shader, render_id: i32, transparent: bool ]
+func model_init_pipeline [ m: Model, n: Node, prim: Primitive,
+                           msh: Mesh,
+                           s: shader, render_id: i32,
+                           transparent: bool ]
     mdl:      m.id
     vk:       m.vk
     r:        m.r
@@ -2162,7 +2275,8 @@ func model_init_pipeline [ m: Model, n: Node, prim: Primitive, msh: Mesh, s: sha
         ibuffer: mdl.buffers[ iview.buffer ]
         material = (mdl.materials && mdl.materials.count > mat_id) ?
             mdl.materials[ mat_id ] :
-            (mdl.materials && mdl.materials.count > 0) ? mdl.materials[ 0 ] : null
+            (mdl.materials && mdl.materials.count > 0) ? mdl.materials[
+                0 ] : null
         index:        0
         vertex_size:  0
         vertex_count: 0
@@ -2170,7 +2284,10 @@ func model_init_pipeline [ m: Model, n: Node, prim: Primitive, msh: Mesh, s: sha
         index_size:   itype.typesize
         index_count:  i32[ ai.count ]
 
-        sems : vec string [] [ 'POSITION', 'NORMAL', 'TEXCOORD_0', 'TANGENT', 'TEXCOORD_1', 'TEXCOORD_2', 'TEXCOORD_3', 'COLOR_0', 'JOINTS_0', 'WEIGHTS_0' ]
+        sems : vec string [] [ 'POSITION', 'NORMAL', 'TEXCOORD_0',
+                               'TANGENT', 'TEXCOORD_1', 'TEXCOORD_2',
+                               'TEXCOORD_3', 'COLOR_0', 'JOINTS_0',
+                               'WEIGHTS_0' ]
         want_color : bool [ false ]
         sems_of : vec i32 [ 16 ]
         csh : Au_t [ Au.header[ s ].au ]
@@ -2196,7 +2313,8 @@ func model_init_pipeline [ m: Model, n: Node, prim: Primitive, msh: Mesh, s: sha
                 members[member_count].offset = vertex_size
                 vertex_size += members[member_count].src.typesize
                 expect ac.count, "count not set on accessor"
-                expect !vertex_count || ac.count == vertex_count, "invalid vbo data"
+                expect !vertex_count ||
+                    ac.count == vertex_count, "invalid vbo data"
                 vertex_count = ac.count
                 sems_of[ member_count ] = w
                 member_count += 1
@@ -2223,9 +2341,9 @@ func model_init_pipeline [ m: Model, n: Node, prim: Primitive, msh: Mesh, s: sha
                 data_dst: @vdata[j * vertex_size + mem.offset]
                 dst:  @i8[data_dst]
                 data_src: @src[j * stride]
-                src0: @i8[data_src]
+                src_bytes: @i8[data_src]
                 # highlight these in the variables list
-                memcpy[ dst, src0, mem.size ]
+                memcpy[ dst, src_bytes, mem.size ]
 
         view:  @i8[ibuffer.data]
         i_src: @view [ iview.byteOffset + ai.byteOffset ]
@@ -2263,8 +2381,10 @@ func model_init_pipeline [ m: Model, n: Node, prim: Primitive, msh: Mesh, s: sha
         mat_tex[ m, mdl, material.normalTexture,
                  'normal', use_samplers ]
     pipe: Pipeline [ vk: vk, w: m.w, name: n->name,
-        r: m.r, s: s, vbo: vbo, default_model: mdl_mat, src_node: n, render_id: render_id,
+        r: m.r, s: s, vbo: vbo, default_model: mdl_mat, src_node: n,
+        render_id: render_id,
         material: material, samplers: use_samplers,
-        straight_alpha: sa, depth_no_write: transparent, cull_none: m.cull_none,
+        straight_alpha: sa, depth_no_write: transparent,
+        cull_none: m.cull_none,
         cull_front: m.cull_front, depth_no_test: m.depth_no_test ]
     m.pipelines.push[ pipe ]

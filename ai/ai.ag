@@ -58,10 +58,10 @@ class tensor
     public offset:       i32
     public scale:        f32
     intern count:        u64
-    # the arrays init allocates: these vec members hold them, and floats /
-    # quants / grad point at their elements. a raw @ member holds nothing:
-    # the vector was freed with the frame's temporaries under a tensor that
-    # outlived that frame (the dictation model's weights)
+    # the arrays init allocates: these vec members hold them, and floats
+    # / quants / grad point at their elements. a raw @ member holds
+    # nothing: the vector was freed with the frame's temporaries under a
+    # tensor that outlived that frame (the dictation model's weights)
     intern f_vec:        vec f32
     intern q_vec:        vec i8
     intern g_vec:        vec f32
@@ -69,7 +69,7 @@ class tensor
     func init [] 
         # it should error when we do not give const to printf
 
-        has_f32: bool [ floats ]
+        has_f: bool [ floats ]
         count   = tensor_shape.total[]
         if [ !floats ]
             f_vec  = new f32[tensor_shape]
@@ -95,7 +95,7 @@ class tensor
             for [ i: i32 0, i < count, i += 1 ]
                 floats[i] = (randf[] * 2.0f - 1.0f) * std
 
-        if [ initializer || has_f32 ]
+        if [ initializer || has_f ]
             quantize
         el
             scale  = 1.0f
@@ -114,7 +114,7 @@ class tensor
         offset = 0
         inv: f32 [ 1.0 / scale ]
         for [ i: i32 0, i < count, i += 1 ]
-            q: i32 [ i32[roundf[floats[i] * inv]] ]
+            q: i32 [ roundf[floats[i] * inv] ]
             if [ q > 127 ]
                 q = 127
             el [ q < -128 ]
@@ -153,15 +153,16 @@ class safetensors
         doff = 8 + hlen
         valid = true
 
-    intern func bracket_list [ key: string, at: i32, span: i32 ] -> string
+    intern func bracket_list [ key: string, at: i32,
+                               span: i32 ] -> string
         seg : hdr.mid[ at, span ]
         ik : i32 [ seg.index_of[ key ] ]
         if [ ik < 0 ] return null
         vs : i32 [ ik + key.count ]
-        rest2 : seg.mid[ vs, seg.count - vs ]
-        ve : i32 [ rest2.index_of[ ']' ] ]
+        rest : seg.mid[ vs, seg.count - vs ]
+        ve : i32 [ rest.index_of[ ']' ] ]
         if [ ve < 0 ] return null
-        return rest2.mid[ 0, ve ]
+        return rest.mid[ 0, ve ]
 
     func tensor_named [ name: string ] -> tensor
         if [ !valid ] return null
@@ -171,8 +172,8 @@ class safetensors
             log 'safetensors: no tensor {name}'
             return null
         at : i32 [ ik + key.count ]
-        seg0 : hdr.mid[ at, hdr.count - at ]
-        oe : i32 [ seg0.index_of[ '}' ] ]
+        seg : hdr.mid[ at, hdr.count - at ]
+        oe : i32 [ seg.index_of[ '}' ] ]
         if [ oe < 0 ] return null
         span : i32 [ oe + 1 ]
         dts : bracket_list[ '"dtype":"', at, span ]
@@ -202,7 +203,8 @@ class safetensors
         s : shape.shape_from[ nd, dv ]
         return load_tensor[ s, o0, o1, name ]
 
-    intern func load_tensor [ s: shape, o0: i64, o1: i64, name: string ] -> tensor
+    intern func load_tensor [ s: shape, o0: i64, o1: i64,
+                              name: string ] -> tensor
         t : tensor [ tensor_shape: s ]
         nb : i64 [ o1 - o0 ]
         if [ nb != t.count * 4 ]
@@ -215,7 +217,8 @@ class safetensors
         return t
 
 # c[m, n] = a[m, k] . b[n, k] + bias[n], every core (ai.c)
-func gemm_nt [ a: @f32, b: @f32, bias: @f32, c: @f32, m: i32, n: i32, k: i32 ]
+func gemm_nt [ a: @f32, b: @f32, bias: @f32, c: @f32, m: i32, n: i32,
+               k: i32 ]
     ai_gemm_nt[ a, b, bias, c, m, n, k ]
 
 # a pytorch checkpoint (the zip format): tensors by their dotted
@@ -282,12 +285,16 @@ class op
     func set_optimizer [opt:Optimizer] 
         if [ opt == adam ]
             if [ weights ]
-                w_m = tensor [ initializer: zeros, tensor_shape: weights.tensor_shape ]
-                w_v = tensor [ initializer: zeros, tensor_shape: weights.tensor_shape ]
+                w_m = tensor [ initializer: zeros,
+                               tensor_shape: weights.tensor_shape ]
+                w_v = tensor [ initializer: zeros,
+                               tensor_shape: weights.tensor_shape ]
             
             if [ bias ]
-                b_m = tensor [ initializer: zeros, tensor_shape: bias.tensor_shape ]
-                b_v = tensor [ initializer: zeros, tensor_shape: bias.tensor_shape ]
+                b_m = tensor [ initializer: zeros,
+                               tensor_shape: bias.tensor_shape ]
+                b_v = tensor [ initializer: zeros,
+                               tensor_shape: bias.tensor_shape ]
 
     func finalize [] 
         no-op
@@ -315,7 +322,8 @@ class op
             el [ activation == Activation.tanh ]
                 t: input.count
                 for [ i: i32 0, i < t, i += 1 ]
-                    x: f32 [ (input.floats[i] - input.offset) * input.scale ]
+                    x: f32 [
+                        (input.floats[i] - input.offset) * input.scale ]
                     y: tanhf[x]
                     result.floats[i] = y / result.scale + result.offset
             el [ activation == Activation.gelu ]
@@ -453,22 +461,26 @@ op concatenate
                         dst_idx: (o * cat_size + c) * inner
                         src_idx: (o * out_cat + cat_offset + c) * inner
                         for [ k: i32 0, k < inner, k += 1 ]
-                            dep.d_result.floats[dst_idx + k] += d_out_f[src_idx + k]
+                            dep.d_result.floats[dst_idx
+                                                 + k] += d_out_f[src_idx
+                                                                  + k]
             el
                 for [ o: i32 0, o < outer, o += 1 ]
                     for [ c: i32 0, c < cat_size, c += 1 ]
                         dst_idx: (o * cat_size + c) * inner
                         src_idx: (o * out_cat + cat_offset + c) * inner
                         for [ k: i32 0, k < inner, k += 1 ]
-                            src.grad[dst_idx + k] += d_out_f[src_idx + k]
+                            src.grad[dst_idx + k] += d_out_f[src_idx
+                                                              + k]
             cat_offset += cat_size
         return null
 
 
-# decoder rows run across cores: dispatch_apply_f on apple (gcd's pool, no
-# thread made per call); elsewhere the parts run in turn
+# decoder rows run across cores: dispatch_apply_f on apple (gcd's pool,
+# no thread made per call); elsewhere the parts run in turn
 
-# what a parallel part reads: a dense row's operands, or the vocab scan's
+# what a parallel part reads: a dense row's operands, or the vocab
+# scan's
 class par_job
     public a      : @f32
     public w      : @f32
@@ -483,7 +495,8 @@ class par_job
 
 # a dense forward over columns c0..c1 of every row: the bias, then the
 # multiply-adds (8 columns per vector block, the rest scalar)
-func dense_cols [ a_f: @f32, other_f: @f32, bias_f: @f32, dest_f: @f32, m: i32, k: i32, n: i32, c0: i32, c1: i32 ]
+func dense_cols [ a_f: @f32, other_f: @f32, bias_f: @f32, dest_f: @f32,
+                  m: i32, k: i32, n: i32, c0: i32, c1: i32 ]
     c8 : i32 [ c0 + ((c1 - c0) / 8) * 8 ]
     # the vector blocks are x86_64 (avx2) and arm64 (neon) asm: any
     # other target runs the scalar tail on every column
@@ -528,12 +541,15 @@ func dense_cols [ a_f: @f32, other_f: @f32, bias_f: @f32, dest_f: @f32, m: i32, 
                     fmla v5.4s, v3.4s, v1.s[0]
                     stp q4, q5, [x10]
             for [ j: i32 c8, j < c1, j += 1 ]
-                dest_f[i * n + j] += a_f[i * k + ki] * other_f[ki * n + j]
+                dest_f[i * n + j] += a_f[i * k + ki] * other_f[ki * n
+                                                                + j]
 
 
-# the decoder's vocab scan over rows row0..row1: the best row's index and
-# score. (no v0 / v1 names here: the asm reads them as the vector registers)
-func vocab_scan [ ef: @f32, hf: @f32, dim: i32, row0: i64, row1: i64, out_best: @i32, out_v: @f32 ]
+# the decoder's vocab scan over rows row0..row1: the best row's index
+# and score. (no v0 / v1 names here: the asm reads them as the vector
+# registers)
+func vocab_scan [ ef: @f32, hf: @f32, dim: i32, row0: i64, row1: i64,
+                  out_best: @i32, out_v: @f32 ]
     best   : i32 [ 0 ]
     best_v : f32 [ -1.0e30f ]
     acc8 : local f32 [ 8 ]
@@ -566,7 +582,9 @@ func vocab_scan [ ef: @f32, hf: @f32, dim: i32, row0: i64, row1: i64, out_best: 
                 fmla v0.4s, v2.4s, v4.4s
                 fmla v1.4s, v3.4s, v5.4s
                 stp q0, q1, [a_ptr]
-        acc : f32 [ acc8[0] + acc8[1] + acc8[2] + acc8[3] + acc8[4] + acc8[5] + acc8[6] + acc8[7] ]
+        acc : f32 [
+            acc8[0] + acc8[1] + acc8[2] + acc8[3] + acc8[4] + acc8[5]
+            + acc8[6] + acc8[7] ]
         for [ c2: i32 d8, c2 < dim, c2 += 1 ]
             acc += ef[erow + c2] * hf[c2]
         if [ acc > best_v ]
@@ -578,11 +596,11 @@ func vocab_scan [ ef: @f32, hf: @f32, dim: i32, row0: i64, row1: i64, out_best: 
 # one part of the parallel vocab scan: its share of the rows
 func vocab_part [ pctx: handle, it: u64 ] -> none
     j : cast par_job [ pctx ]
-    nv : i64 [ i64[ j.n ] ]
+    nv : i64 [ j.n ]
     ch : i64 [ (nv + i64[ j.parts ] - 1) / i64[ j.parts ] ]
     v0 : i64 [ i64[ it ] * ch ]
     v1 : i64 [ (v0 + ch < nv) ? v0 + ch : nv ]
-    ix : i32 [ i32[ it ] ]
+    ix : i32 [ it ]
     j.v_best[ ix ] = 0
     j.v_val[ ix ]  = -1.0e30f
     if [ v0 >= nv ] return
@@ -653,8 +671,9 @@ op dense
         dest_f:  result.floats
         bias_f:  bias.floats
 
-        # one pass over every column. (split across cores for the decoder's
-        # single row it measured slower: 768x768 is too little per part)
+        # one pass over every column. (split across cores for the
+        # decoder's single row it measured slower: 768x768 is too little
+        # per part)
         dense_cols[ a_f, other_f, bias_f, dest_f, m, k, n, 0, n ]
 
         for [ i: i32 0, i < m, i += 1 ]
@@ -669,7 +688,8 @@ op dense
             el [ activation == Activation.gelu ]
                 for [ j: i32 0, j < n, j += 1 ]
                     xg: f32 [ dest_f[i * n + j] ]
-                    dest_f[i * n + j] = 0.5f * xg * (1.0f + erff[ xg * 0.70710678f ])
+                    dest_f[i * n
+                            + j] = 0.5f * xg * (1.0f + erff[ xg * 0.70710678f ])
 
     func back [d_out: tensor] -> tensor
         return back_avx2[d_out]
@@ -831,9 +851,9 @@ op conv
         fh:    kernel_size[0]
         fw:    kernel_size[1]
         sv:    stride_shape[0]
-        pad2:  (padding == Padding.same) ? (fh - 1) / 2 : 0
-        out_hv: (in_h - fh + 2 * pad2) / sv + 1
-        out_wv: (in_w - fw + 2 * pad2) / sv + 1
+        pad:  (padding == Padding.same) ? (fh - 1) / 2 : 0
+        out_hv: (in_h - fh + 2 * pad) / sv + 1
+        out_wv: (in_w - fw + 2 * pad) / sv + 1
         if [ result ]
             if [ result.count != out_hv * out_wv * out_channels ]
                 log '{name}: result {result.count} != {out_hv}x{out_wv}x{out_channels}'
@@ -888,8 +908,11 @@ op conv
                         for [ kw: i32 0, kw < filter_w, kw += 1 ]
                             ih: oh * stride_v - pad + kh
                             iw: ow * stride_v - pad + kw
-                            if [ ih >= 0 && iw >= 0 && ih < in_h && iw < in_w ]
-                                col[row * col_k + k_idx] = inp[(ih * in_w + iw) * in_c + ic]
+                            if [
+                                ih >= 0 && iw >= 0 && ih < in_h
+                                && iw < in_w ]
+                                col[row * col_k
+                                     + k_idx] = inp[(ih * in_w + iw) * in_c + ic]
                             el
                                 col[row * col_k + k_idx] = i8[0]
                             k_idx += 1
@@ -899,7 +922,8 @@ op conv
             for [ oc: i32 0, oc < out_c, oc += 1 ]
                 acc: i32 [ 0 ]
                 for [ ki: i32 0, ki < col_k, ki += 1 ]
-                    acc += i32[col[i * col_k + ki]] * i32[w_q[ki * out_c + oc]]
+                    acc += i32[col[i * col_k + ki]] * i32[w_q[ki * out_c
+                                                               + oc]]
                 v: f32 [ f32[acc] * s_i * s_w + b_f[oc] ]
                 if [ activation == Activation.relu ]
                     out[i * out_c + oc] = (v > 0.0) ? v : 0.0
@@ -953,8 +977,11 @@ op conv
                         for [ kw: i32 0, kw < filter_w, kw += 1 ]
                             ih: oh * stride_v - pad + kh
                             iw: ow * stride_v - pad + kw
-                            if [ ih >= 0 && iw >= 0 && ih < in_h && iw < in_w ]
-                                col[row * col_k + k_idx] = inp[(ih * in_w + iw) * in_c + ic]
+                            if [
+                                ih >= 0 && iw >= 0 && ih < in_h
+                                && iw < in_w ]
+                                col[row * col_k
+                                     + k_idx] = inp[(ih * in_w + iw) * in_c + ic]
                             el
                                 col[row * col_k + k_idx] = i8[0]
                             k_idx += 1
@@ -1028,15 +1055,18 @@ op conv
                         add w12, w12, w11
                         str w12, [acc_mem]
 
-                acc: i32 [ i32[acc_mem] ]
+                acc: i32 [ acc_mem ]
                 # scalar remainder
                 for [ ki: i32 k32, ki < col_k, ki += 1 ]
                     # use u8 bias + compensation for consistency
                     u_val: i32 [ i32[col[i * col_k + ki]] + 128 ]
                     acc += u_val * i32[w_pk[oc * col_k + ki]]
 
-                # compensate for the +128 bias: subtract 128 * sum(weights)
-                v: f32 [ (f32[acc] - 128.0 * w_sum[oc]) * s_i * s_w + b_f[oc] ]
+                # compensate for the +128 bias: subtract 128 *
+                # sum(weights)
+                v: f32 [
+                    (f32[acc] - 128.0 * w_sum[oc]) * s_i * s_w
+                    + b_f[oc] ]
                 if [ activation == Activation.relu ]
                     out[i * out_c + oc] = (v > 0.0) ? v : 0.0
                 el [ activation == Activation.tanh ]
@@ -1070,12 +1100,15 @@ op conv
                             for [ kw: i32 0, kw < filter_w, kw += 1 ]
                                 ih: oh * stride - pad + kh
                                 iw: ow * stride - pad + kw
-                                if [ ih >= 0 && iw >= 0 && ih < in_h && iw < in_w ]
+                                if [
+                                    ih >= 0 && iw >= 0 && ih < in_h
+                                    && iw < in_w ]
                                     input_idx:  (ih * in_w + iw) * in_c + ic
                                     weight_idx: ((kh * filter_w + kw) * in_c + ic) * out_c + oc
                                     s += inp[input_idx] * w[weight_idx]
                     if [ activation == Activation.relu ]
-                        out[(oh * out_w + ow) * out_c + oc] = (s > 0.0) ? s : 0.0
+                        out[(oh * out_w + ow) * out_c
+                             + oc] = (s > 0.0) ? s : 0.0
                     el [ activation == Activation.tanh ]
                         out[(oh * out_w + ow) * out_c + oc] = tanhf[s]
                     el
@@ -1124,11 +1157,15 @@ op conv
                             for [ kw: i32 0, kw < filter_w, kw += 1 ]
                                 iw: ow * stride - pad + kw
                                 if [ iw >= 0 && iw < in_w ]
-                                    inp_off: i64 [ ((ih * in_w + iw) * in_c + ic) * 4 ]
-                                    w_base:  i64 [ ((kh * filter_w + kw) * in_c + ic) * out_c ]
+                                    inp_off: i64 [
+                                        ((ih * in_w + iw) * in_c + ic)
+                                        * 4 ]
+                                    w_base:  i64 [
+                                        ((kh * filter_w + kw) * in_c + ic) * out_c ]
                                     for [ oc: i32 0, oc < oc8, oc += 8 ]
                                         w_off: i64 [ (w_base + oc) * 4 ]
-                                        o_off: i64 [ (out_base + oc) * 4 ]
+                                        o_off: i64 [
+                                            (out_base + oc) * 4 ]
                                         asm x86_64
                                             vbroadcastss ymm1, dword ptr [inp + inp_off]
                                             vmovups ymm2, ymmword ptr [w + w_off]
@@ -1147,7 +1184,8 @@ op conv
                                             stp q4, q5, [x10]
                                     for [ oc: i32 oc8, oc < out_c, oc += 1 ]
                                         weight_idx: w_base + oc
-                                        out[out_base + oc] += inp[(ih * in_w + iw) * in_c + ic] * w[weight_idx]
+                                        out[out_base
+                                             + oc] += inp[(ih * in_w + iw) * in_c + ic] * w[weight_idx]
 
                 # --- activation ---
                 if [ activation == Activation.relu ]
@@ -1191,8 +1229,11 @@ op conv
                         for [ kw: i32 0, kw < filter_w, kw += 1 ]
                             ih: oh * stride_v - pad + kh
                             iw: ow * stride_v - pad + kw
-                            if [ ih >= 0 && iw >= 0 && ih < in_h && iw < in_w ]
-                                col[row * col_k + k_idx] = inp[(ih * in_w + iw) * in_c + ic]
+                            if [
+                                ih >= 0 && iw >= 0 && ih < in_h
+                                && iw < in_w ]
+                                col[row * col_k
+                                     + k_idx] = inp[(ih * in_w + iw) * in_c + ic]
                             el
                                 col[row * col_k + k_idx] = 0.0
                             k_idx += 1
@@ -1236,7 +1277,9 @@ op conv
                         fmla v5.4s, v3.4s, v1.s[0]
                         stp q4, q5, [x10]
                 for [ oc: i32 oc8, oc < out_c, oc += 1 ]
-                    res[i * out_c + oc] += col[i * col_k + ki] * w[ki * out_c + oc]
+                    res[i * out_c + oc] += col[i * col_k
+                                                + ki] * w[ki * out_c
+                                                           + oc]
 
         # --- activation ---
         if [ activation == Activation.relu ]
@@ -1317,7 +1360,8 @@ op conv
                             if [ ih < 0 || ih >= in_h ]
                                 no-op
                             el
-                                for [ kw: i32 0, kw < filter_w, kw += 1 ]
+                                for [ kw: i32 0, kw < filter_w,
+                                      kw += 1 ]
                                     iw: ow * stride - pad + kw
                                     if [ iw >= 0 && iw < in_w ]
                                         input_idx:  (ih * in_w + iw) * in_c + ic
@@ -1396,12 +1440,15 @@ op conv
                                 if [ iw >= 0 && iw < in_w ]
                                     input_idx: (ih * in_w + iw) * in_c + ic
                                     inp_off:   i64 [ input_idx * 4 ]
-                                    w_base:    i64 [ ((kh * filter_w + kw) * in_c + ic) * out_c ]
+                                    w_base:    i64 [
+                                        ((kh * filter_w + kw) * in_c + ic) * out_c ]
                                     do_off:    i64 [ oi_base * 4 ]
 
                                     for [ oc: i32 0, oc < oc8, oc += 8 ]
-                                        dw_off: i64 [ (w_base + oc) * 4 ]
-                                        oi_off: i64 [ (oi_base + oc) * 4 ]
+                                        dw_off: i64 [
+                                            (w_base + oc) * 4 ]
+                                        oi_off: i64 [
+                                            (oi_base + oc) * 4 ]
                                         asm x86_64
                                             vbroadcastss ymm1, dword ptr [inp + inp_off]
                                             vmovups ymm2, ymmword ptr [d_out_f + oi_off]
@@ -1420,8 +1467,10 @@ op conv
                                             stp q4, q5, [x10]
 
                                     for [ oc: i32 0, oc < oc8, oc += 8 ]
-                                        w_off:  i64 [ (w_base + oc) * 4 ]
-                                        oi_off: i64 [ (oi_base + oc) * 4 ]
+                                        w_off:  i64 [
+                                            (w_base + oc) * 4 ]
+                                        oi_off: i64 [
+                                            (oi_base + oc) * 4 ]
                                         asm x86_64
                                             vmovups ymm0, ymmword ptr [w + w_off]
                                             vmovups ymm1, ymmword ptr [d_out_f + oi_off]
@@ -1449,7 +1498,8 @@ op conv
                                     # scalar remainder for both
                                     for [ oc: i32 oc8, oc < out_c, oc += 1 ]
                                         weight_idx: w_base + oc
-                                        grad_out:   d_out_f[oi_base + oc]
+                                        grad_out:   d_out_f[oi_base
+                                                             + oc]
                                         d_w[weight_idx] += inp[input_idx] * grad_out
                                         d_in_f[input_idx] += w[weight_idx] * grad_out
 
@@ -1505,14 +1555,18 @@ op depthwise_conv
                             for [ kw: i32 0, kw < filter_w, kw += 1 ]
                                 ih: oh * stride - pad + kh
                                 iw: ow * stride - pad + kw
-                                if [ ih >= 0 && iw >= 0 && ih < in_h && iw < in_w ]
+                                if [
+                                    ih >= 0 && iw >= 0 && ih < in_h
+                                    && iw < in_w ]
                                     input_idx:  (ih * in_w + iw) * in_c + ic
                                     weight_idx: (kh * filter_w + kw) * out_c + oc
                                     s += inp[input_idx] * w[weight_idx]
                         if [ activation == Activation.relu ]
-                            out[(oh * out_w + ow) * out_c + oc] = (s > 0.0) ? s : 0.0
+                            out[(oh * out_w + ow) * out_c
+                                 + oc] = (s > 0.0) ? s : 0.0
                         el [ activation == Activation.tanh ]
-                            out[(oh * out_w + ow) * out_c + oc] = tanhf[s]
+                            out[(oh * out_w + ow) * out_c
+                                 + oc] = tanhf[s]
                         el
                             out[(oh * out_w + ow) * out_c + oc] = s
 
@@ -1560,7 +1614,9 @@ op depthwise_conv
                             for [ kw: i32 0, kw < filter_w, kw += 1 ]
                                 ih: oh * stride - pad + kh
                                 iw: ow * stride - pad + kw
-                                if [ ih >= 0 && iw >= 0 && ih < in_h && iw < in_w ]
+                                if [
+                                    ih >= 0 && iw >= 0 && ih < in_h
+                                    && iw < in_w ]
                                     input_idx:  (ih * in_w + iw) * in_c + ic
                                     weight_idx: (kh * filter_w + kw) * out_c + oc
                                     d_w[weight_idx] += inp[input_idx] * grad_out
@@ -1676,7 +1732,8 @@ op pool
                             ih: oh * stride_h + kh
                             iw: ow * stride_w + kw
                             if [ ih < in_h && iw < in_w ]
-                                i_off: i64 [ ((ih * in_w + iw) * in_c + c) * 4 ]
+                                i_off: i64 [
+                                    ((ih * in_w + iw) * in_c + c) * 4 ]
                                 asm x86_64
                                     vmovups ymm0, ymmword ptr [out + o_off]
                                     vmovups ymm1, ymmword ptr [inp + i_off]
@@ -1750,8 +1807,8 @@ op layer_norm
         g:    weights.floats
         b:    bias.floats
         dst:  result.floats
-        acc8 : local f32 [ 8 ]
-        a_ptr : @f32 [ @acc8[0] ]
+        acc : local f32 [ 8 ]
+        a_ptr : @f32 [ @acc[0] ]
         mi : local f32 [ 2 ]
         mi_ptr : @f32 [ @mi[0] ]
         d8 : i32 [ (dim / 8) * 8 ]
@@ -1764,7 +1821,7 @@ op layer_norm
         for [ r: i32 0, r < rows, r += 1 ]
             base: i32 [ r * dim ]
             for [ z2: i32 0, z2 < 8, z2 += 1 ]
-                acc8[z2] = 0.0f
+                acc[z2] = 0.0f
             for [ c8: i32 0, c8 < d8, c8 += 8 ]
                 x_off : i64 [ (base + c8) * 4 ]
                 asm x86_64
@@ -1779,13 +1836,15 @@ op layer_norm
                     fadd v0.4s, v0.4s, v2.4s
                     fadd v1.4s, v1.4s, v3.4s
                     stp q0, q1, [a_ptr]
-            mean: f32 [ acc8[0] + acc8[1] + acc8[2] + acc8[3] + acc8[4] + acc8[5] + acc8[6] + acc8[7] ]
+            mean: f32 [
+                acc[0] + acc[1] + acc[2] + acc[3] + acc[4] + acc[5]
+                + acc[6] + acc[7] ]
             for [ i: i32 d8, i < dim, i += 1 ]
                 mean += x[base + i]
             mean /= f32[dim]
             mi[0] = mean
             for [ z2: i32 0, z2 < 8, z2 += 1 ]
-                acc8[z2] = 0.0f
+                acc[z2] = 0.0f
             for [ c8: i32 0, c8 < d8, c8 += 8 ]
                 x_off : i64 [ (base + c8) * 4 ]
                 asm x86_64
@@ -1806,7 +1865,9 @@ op layer_norm
                     fmla v0.4s, v2.4s, v2.4s
                     fmla v1.4s, v3.4s, v3.4s
                     stp q0, q1, [a_ptr]
-            vsum: f32 [ acc8[0] + acc8[1] + acc8[2] + acc8[3] + acc8[4] + acc8[5] + acc8[6] + acc8[7] ]
+            vsum: f32 [
+                acc[0] + acc[1] + acc[2] + acc[3] + acc[4] + acc[5]
+                + acc[6] + acc[7] ]
             for [ i: i32 d8, i < dim, i += 1 ]
                 dv: f32 [ x[base + i] - mean ]
                 vsum += dv * dv
@@ -1917,7 +1978,8 @@ op conv1d
             if [ activation == Activation.gelu ]
                 for [ j: i32 0, j < out_ch, j += 1 ]
                     xg: f32 [ dst[drow + j] ]
-                    dst[drow + j] = 0.5f * xg * (1.0f + erff[ xg * 0.70710678f ])
+                    dst[drow
+                         + j] = 0.5f * xg * (1.0f + erff[ xg * 0.70710678f ])
 
 op attention
     public heads  : i32
@@ -1933,7 +1995,8 @@ op attention
     public bo : tensor
 
     # dst[rows x dim] = src[rows x dim] @ wmat + bvec (AVX2 FMA)
-    intern func proj [ src: @f32, rows: i32, wmat: tensor, bvec: tensor, dst: @f32 ]
+    intern func proj [ src: @f32, rows: i32, wmat: tensor, bvec: tensor,
+                       dst: @f32 ]
         wf: wmat.floats
         n8: i32 [ (dim / 8) * 8 ]
         # the vector blocks are x86_64 (avx2) and arm64 (neon) asm: any
@@ -1998,9 +2061,9 @@ op attention
         v:   new f32 [ sk ]
         ctx: new f32 [ sq ]
         prow: new f32 [ tkv ]
-        acc8: local f32 [ 8 ]
-        # the asm blocks address the elements: a vec operand is the vector
-        # object itself, and the stores landed on its fields
+        acc: local f32 [ 8 ]
+        # the asm blocks address the elements: a vec operand is the
+        # vector object itself, and the stores landed on its fields
         qp:   @f32 [ @q[0] ]
         kp:   @f32 [ @k[0] ]
         vp:   @f32 [ @v[0] ]
@@ -2026,9 +2089,9 @@ op attention
                 mx: f32 [ -1.0e30f ]
                 for [ j: i32 0, j < jmax, j += 1 ]
                     krow: i32 [ j * dim + ho ]
-                    a_ptr: @f32 [ @acc8[0] ]
+                    a_ptr: @f32 [ @acc[0] ]
                     for [ z2: i32 0, z2 < 8, z2 += 1 ]
-                        acc8[z2] = 0.0f
+                        acc[z2] = 0.0f
                     for [ c8: i32 0, c8 < h8, c8 += 8 ]
                         qc_off: i64 [ (qrow + c8) * 4 ]
                         kc_off: i64 [ (krow + c8) * 4 ]
@@ -2047,7 +2110,9 @@ op attention
                             fmla v0.4s, v2.4s, v4.4s
                             fmla v1.4s, v3.4s, v5.4s
                             stp q0, q1, [a_ptr]
-                    dot: f32 [ acc8[0] + acc8[1] + acc8[2] + acc8[3] + acc8[4] + acc8[5] + acc8[6] + acc8[7] ]
+                    dot: f32 [
+                        acc[0] + acc[1] + acc[2] + acc[3] + acc[4]
+                        + acc[5] + acc[6] + acc[7] ]
                     for [ c: i32 h8, c < hd, c += 1 ]
                         dot += q[qrow + c] * k[krow + c]
                     prow[j] = dot
@@ -2148,7 +2213,8 @@ class keras
             if [ !o.result ] o.result = find_result[ o ]
             for [ dep: op ] in o.op_inputs
                 if [ dep is input_op ]
-                    if [ o.input.tensor_shape == dep.input.tensor_shape ]
+                    if [
+                        o.input.tensor_shape == dep.input.tensor_shape ]
                         o.input = dep.input
 
             o.finalize*[]
@@ -2168,7 +2234,9 @@ class keras
                     pad_w:    (c.padding == Padding.same) ? (filter_w - 1) / 2 : 0
                     out_h:    (in_h - filter_h + 2 * pad_h) / stride_h + 1
                     out_w:    (in_w - filter_w + 2 * pad_w) / stride_w + 1
-                    o.result = tensor [ tensor_shape: c.input.tensor_shape * c.out_channels ]
+                    o.result = tensor [
+                        tensor_shape: c.input.tensor_shape
+                        * c.out_channels ]
 
         for [ o: op ] in ops
             if [ o.op_inputs.count == 1 ]
@@ -2204,15 +2272,16 @@ class keras
             if [ current is input_op ]
                 inp: input_op [ current ]
                 if [ inp.source ]
-                    memcpy[inp.input.floats, inp.source.floats, inp.input.count * 4]
+                    memcpy[inp.input.floats, inp.source.floats,
+                            inp.input.count * 4]
                 el
                     memcpy[inp.input.floats, src.floats, src.count * 4]
                 if [ trace ]
                     has_src: bool [ inp.source ]
-                    sc2:  src.count
-                    sf0:  src.floats[0]
+                    sc:  src.count
+                    sf:  src.floats[0]
                     if0:  inp.input.floats[0]
-                    log '  [input {current.name}] src? {has_src} count {sc2} src0 {sf0} in0 {if0}'
+                    log '  [input {current.name}] src? {has_src} count {sc} src0 {sf} in0 {if0}'
                 if [ current.quantized ]
                     inp.input.quantize[]
             current.forward
@@ -2262,7 +2331,7 @@ class keras
                 errs.floats[i] += (diff > 0.0) ? diff : -diff
             loss  /= k
             total += loss
-        n : f64 [ f64[ samples.count ] ]
+        n : f64 [ samples.count ]
         for [ i: i32 0, i < k, i += 1 ]
             errs.floats[i] /= f32[ n ]
         return total / n
@@ -2282,7 +2351,7 @@ class keras
                 errs.floats[i] += (diff > 0.0) ? diff : -diff
             loss  /= k
             total += loss
-        n : f64 [ f64[ samples.count ] ]
+        n : f64 [ samples.count ]
         for [ i: i32 0, i < k, i += 1 ]
             errs.floats[i] /= f32[ n ]
         return total / n
@@ -2308,7 +2377,8 @@ class keras
             h = string '{h}{lp}'
         puts h
 
-    func metrics_line [ epoch: i32, total: i32, lavg: f64, ev: f64, errs: tensor ]
+    func metrics_line [ epoch: i32, total: i32, lavg: f64, ev: f64,
+                        errs: tensor ]
         ep : pad[ string '{epoch}/{total}', 10 ]
         tr : pad[ string '{lavg}', 13 ]
         vv : pad[ string '{ev}', 13 ]
@@ -2381,20 +2451,26 @@ class keras
             res: tensor [ d_out ]
             for [ i: i32 n - 1, i >= 0, i -= 1 ]
                 o: order[i]
-                if [ o.weights ] memset o.weights.grad, 0, o.weights.count * 4
-                if [ o.bias    ] memset o.bias.grad,    0, o.bias.count    * 4
+                if [ o.weights ]
+                    memset o.weights.grad, 0, o.weights.count * 4
+                if [ o.bias    ]
+                    memset o.bias.grad,    0, o.bias.count    * 4
                 res = o.back*[res]
             return res
 
         # DAG: accumulate gradients
         for [ o: op ] in order
             if [ o.result ]
-                o.d_result = tensor [ tensor_shape: o.result.tensor_shape, initializer: zeros ]
+                o.d_result = tensor [
+                    tensor_shape: o.result.tensor_shape,
+                    initializer: zeros ]
 
         for [ i: i32 n - 1, i >= 0, i -= 1 ]
             o: order[i]
-            if [ o.weights ] memset o.weights.grad, 0, o.weights.count * 4
-            if [ o.bias    ] memset o.bias.grad,    0, o.bias.count    * 4
+            if [ o.weights ]
+                memset o.weights.grad, 0, o.weights.count * 4
+            if [ o.bias    ]
+                memset o.bias.grad,    0, o.bias.count    * 4
 
             grad_in: tensor
             if [ o.d_result ]
@@ -2417,7 +2493,9 @@ class keras
         return d_out
     
 
-    func train [epochs: i32, samples: map tensor[tensor], eval_samples: map tensor[tensor], learning_rate: f32, optimizer: Optimizer] 
+    func train [epochs: i32, samples: map tensor[tensor],
+                 eval_samples: map tensor[tensor], learning_rate: f32,
+                 optimizer: Optimizer] 
         for [ layer: op ] in ops
             layer.set_optimizer optimizer
         
@@ -2499,7 +2577,9 @@ class keras
                 log 'saved final weights -> {checkpoint} (no eval set)'
         log 'training complete'
 
-    func train_s [epochs: i32, samples: vec sample, eval_samples: vec sample, learning_rate: f32, optimizer: Optimizer]
+    func train_s [epochs: i32, samples: vec sample,
+                   eval_samples: vec sample, learning_rate: f32,
+                   optimizer: Optimizer]
         for [ layer: op ] in ops
             layer.set_optimizer optimizer
         inputs2 : vec op [ ]
@@ -2588,8 +2668,12 @@ class keras
         f : fopen [ p, 'wb' ]
         if [ !f ] return false
         for [ layer: op ] in ops
-            if [ layer.weights ] fwrite[ layer.weights.floats, 4, layer.weights.count, f ]
-            if [ layer.bias    ] fwrite[ layer.bias.floats,    4, layer.bias.count,    f ]
+            if [ layer.weights ]
+                fwrite[ layer.weights.floats, 4, layer.weights.count,
+                        f ]
+            if [ layer.bias    ]
+                fwrite[ layer.bias.floats,    4, layer.bias.count,
+                        f ]
         fclose[ f ]
         return true
 
@@ -2597,8 +2681,10 @@ class keras
         f : fopen [ p, 'rb' ]
         if [ !f ] return false
         for [ layer: op ] in ops
-            if [ layer.weights ] fread[ layer.weights.floats, 4, layer.weights.count, f ]
-            if [ layer.bias    ] fread[ layer.bias.floats,    4, layer.bias.count,    f ]
+            if [ layer.weights ]
+                fread[ layer.weights.floats, 4, layer.weights.count, f ]
+            if [ layer.bias    ]
+                fread[ layer.bias.floats,    4, layer.bias.count,    f ]
         fclose[ f ]
         return true
 
@@ -2631,9 +2717,10 @@ class gpt2_vocab
     public valid : bool
     intern arena : @u8
     intern offs  : @i32
-    # the vectors arena / offs / inv point into: a vocab loaded after startup
-    # (dictation's, on the first mic press) has its new arrays freed by the
-    # next frame's auto_free unless something holds them
+    # the vectors arena / offs / inv point into: a vocab loaded after
+    # startup
+    # (dictation's, on the first mic press) has its new arrays freed by
+    # the next frame's auto_free unless something holds them
     intern arena_v : vec u8
     intern offs_v  : vec i32
     intern inv_v   : vec i32
@@ -2654,7 +2741,9 @@ class gpt2_vocab
             inv[i] = -1
         nshift : i32 [ 0 ]
         for [ b: i32 0, b < 256, b += 1 ]
-            keep : bool [ (b >= 33 && b <= 126) || (b >= 161 && b <= 172) || (b >= 174 && b <= 255) ]
+            keep : bool [
+                (b >= 33 && b <= 126) || (b >= 161 && b <= 172)
+                || (b >= 174 && b <= 255) ]
             if [ keep ]
                 inv[b] = b
             el
@@ -2689,13 +2778,16 @@ class gpt2_vocab
             p += 1
             koff : i64 [ ap ]
             for [ p < fl && js[p] != 34 ]
-                ch : i32 [ i32[ js[p] ] ]
+                ch : i32 [ js[p] ]
                 cp : i32 [ 0 ]
                 if [ ch == 92 ]
                     p += 1
-                    e : i32 [ i32[ js[p] ] ]
+                    e : i32 [ js[p] ]
                     if [ e == 117 ]
-                        cp = hexv[ i32[ js[p + 1] ] ] * 4096 + hexv[ i32[ js[p + 2] ] ] * 256 + hexv[ i32[ js[p + 3] ] ] * 16 + hexv[ i32[ js[p + 4] ] ]
+                        cp = hexv[ i32[ js[p + 1] ] ] * 4096 + hexv[
+                            i32[ js[p + 2] ] ] * 256 + hexv[
+                                i32[ js[p + 3] ] ] * 16 + hexv[
+                                    i32[ js[p + 4] ] ]
                         p += 5
                     el
                         if [ e == 110 ] cp = 10
@@ -2797,9 +2889,9 @@ class whisper
     intern xwq      : vec tensor
     intern xbq      : vec tensor
     intern xwk      : vec tensor
-    # the cross-attention keys / values per layer, when the caller has them
-    # already (the gpu encoder's cross_kv): prepare takes them instead of
-    # projecting on the cpu, then lets them go
+    # the cross-attention keys / values per layer, when the caller has
+    # them already (the gpu encoder's cross_kv): prepare takes them
+    # instead of projecting on the cpu, then lets them go
     public pre_kx   : vec tensor
     public pre_vx   : vec tensor
     intern xwv      : vec tensor
@@ -2848,7 +2940,8 @@ class whisper
         for [ a2: i64 0, a2 < co, a2 += 1 ]
             for [ b2: i64 0, b2 < ci, b2 += 1 ]
                 for [ c2: i64 0, c2 < kk, c2 += 1 ]
-                    o.floats[(c2 * ci + b2) * co + a2] = t.floats[(a2 * ci + b2) * kk + c2]
+                    o.floats[(c2 * ci + b2) * co
+                              + a2] = t.floats[(a2 * ci + b2) * kk + c2]
         return o
 
     intern func lin [ nm: string ] -> tensor
@@ -2859,11 +2952,14 @@ class whisper
     func init []
         st = safetensors [ src: src ]
         if [ !st.valid ] return
-        conv1_w = conv_repack[ st.tensor_named[ 'model.encoder.conv1.weight' ] ]
+        conv1_w = conv_repack[
+            st.tensor_named[ 'model.encoder.conv1.weight' ] ]
         conv1_b = st.tensor_named[ 'model.encoder.conv1.bias' ]
-        conv2_w = conv_repack[ st.tensor_named[ 'model.encoder.conv2.weight' ] ]
+        conv2_w = conv_repack[
+            st.tensor_named[ 'model.encoder.conv2.weight' ] ]
         conv2_b = st.tensor_named[ 'model.encoder.conv2.bias' ]
-        pos     = st.tensor_named[ 'model.encoder.embed_positions.weight' ]
+        pos     = st.tensor_named[
+            'model.encoder.embed_positions.weight' ]
         lnf_w   = st.tensor_named[ 'model.encoder.layer_norm.weight' ]
         lnf_b   = st.tensor_named[ 'model.encoder.layer_norm.bias' ]
         ln1_w = vec tensor [ ]
@@ -2883,23 +2979,32 @@ class whisper
         fc2_b = vec tensor [ ]
         for [ i: i32 0, i < layers, i += 1 ]
             base : string 'model.encoder.layers.{i}'
-            ln1_w.push[ st.tensor_named[ '{base}.self_attn_layer_norm.weight' ] ]
-            ln1_b.push[ st.tensor_named[ '{base}.self_attn_layer_norm.bias' ] ]
+            ln1_w.push[
+                st.tensor_named[
+                    '{base}.self_attn_layer_norm.weight' ] ]
+            ln1_b.push[
+                st.tensor_named[ '{base}.self_attn_layer_norm.bias' ] ]
             wq.push   [ lin[ '{base}.self_attn.q_proj.weight' ] ]
-            bq.push   [ st.tensor_named[ '{base}.self_attn.q_proj.bias' ] ]
+            bq.push   [
+                st.tensor_named[ '{base}.self_attn.q_proj.bias' ] ]
             wk.push   [ lin[ '{base}.self_attn.k_proj.weight' ] ]
             wv.push   [ lin[ '{base}.self_attn.v_proj.weight' ] ]
-            bv.push   [ st.tensor_named[ '{base}.self_attn.v_proj.bias' ] ]
+            bv.push   [
+                st.tensor_named[ '{base}.self_attn.v_proj.bias' ] ]
             wo.push   [ lin[ '{base}.self_attn.out_proj.weight' ] ]
-            bo.push   [ st.tensor_named[ '{base}.self_attn.out_proj.bias' ] ]
-            ln2_w.push[ st.tensor_named[ '{base}.final_layer_norm.weight' ] ]
-            ln2_b.push[ st.tensor_named[ '{base}.final_layer_norm.bias' ] ]
+            bo.push   [
+                st.tensor_named[ '{base}.self_attn.out_proj.bias' ] ]
+            ln2_w.push[
+                st.tensor_named[ '{base}.final_layer_norm.weight' ] ]
+            ln2_b.push[
+                st.tensor_named[ '{base}.final_layer_norm.bias' ] ]
             fc1_w.push[ lin[ '{base}.fc1.weight' ] ]
             fc1_b.push[ st.tensor_named[ '{base}.fc1.bias' ] ]
             fc2_w.push[ lin[ '{base}.fc2.weight' ] ]
             fc2_b.push[ st.tensor_named[ '{base}.fc2.bias' ] ]
         dec_emb = st.tensor_named[ 'model.decoder.embed_tokens.weight' ]
-        dec_pos = st.tensor_named[ 'model.decoder.embed_positions.weight' ]
+        dec_pos = st.tensor_named[
+            'model.decoder.embed_positions.weight' ]
         dlnf_w  = st.tensor_named[ 'model.decoder.layer_norm.weight' ]
         dlnf_b  = st.tensor_named[ 'model.decoder.layer_norm.bias' ]
         dln1_w = vec tensor [ ]
@@ -2928,26 +3033,41 @@ class whisper
         dfc2_b = vec tensor [ ]
         for [ i: i32 0, i < layers, i += 1 ]
             base : string 'model.decoder.layers.{i}'
-            dln1_w.push[ st.tensor_named[ '{base}.self_attn_layer_norm.weight' ] ]
-            dln1_b.push[ st.tensor_named[ '{base}.self_attn_layer_norm.bias' ] ]
+            dln1_w.push[
+                st.tensor_named[
+                    '{base}.self_attn_layer_norm.weight' ] ]
+            dln1_b.push[
+                st.tensor_named[ '{base}.self_attn_layer_norm.bias' ] ]
             dwq.push  [ lin[ '{base}.self_attn.q_proj.weight' ] ]
-            dbq.push  [ st.tensor_named[ '{base}.self_attn.q_proj.bias' ] ]
+            dbq.push  [
+                st.tensor_named[ '{base}.self_attn.q_proj.bias' ] ]
             dwk.push  [ lin[ '{base}.self_attn.k_proj.weight' ] ]
             dwv.push  [ lin[ '{base}.self_attn.v_proj.weight' ] ]
-            dbv.push  [ st.tensor_named[ '{base}.self_attn.v_proj.bias' ] ]
+            dbv.push  [
+                st.tensor_named[ '{base}.self_attn.v_proj.bias' ] ]
             dwo.push  [ lin[ '{base}.self_attn.out_proj.weight' ] ]
-            dbo.push  [ st.tensor_named[ '{base}.self_attn.out_proj.bias' ] ]
-            xln_w.push[ st.tensor_named[ '{base}.encoder_attn_layer_norm.weight' ] ]
-            xln_b.push[ st.tensor_named[ '{base}.encoder_attn_layer_norm.bias' ] ]
+            dbo.push  [
+                st.tensor_named[ '{base}.self_attn.out_proj.bias' ] ]
+            xln_w.push[
+                st.tensor_named[
+                    '{base}.encoder_attn_layer_norm.weight' ] ]
+            xln_b.push[
+                st.tensor_named[
+                    '{base}.encoder_attn_layer_norm.bias' ] ]
             xwq.push  [ lin[ '{base}.encoder_attn.q_proj.weight' ] ]
-            xbq.push  [ st.tensor_named[ '{base}.encoder_attn.q_proj.bias' ] ]
+            xbq.push  [
+                st.tensor_named[ '{base}.encoder_attn.q_proj.bias' ] ]
             xwk.push  [ lin[ '{base}.encoder_attn.k_proj.weight' ] ]
             xwv.push  [ lin[ '{base}.encoder_attn.v_proj.weight' ] ]
-            xbv.push  [ st.tensor_named[ '{base}.encoder_attn.v_proj.bias' ] ]
+            xbv.push  [
+                st.tensor_named[ '{base}.encoder_attn.v_proj.bias' ] ]
             xwo.push  [ lin[ '{base}.encoder_attn.out_proj.weight' ] ]
-            xbo.push  [ st.tensor_named[ '{base}.encoder_attn.out_proj.bias' ] ]
-            dln2_w.push[ st.tensor_named[ '{base}.final_layer_norm.weight' ] ]
-            dln2_b.push[ st.tensor_named[ '{base}.final_layer_norm.bias' ] ]
+            xbo.push  [
+                st.tensor_named[ '{base}.encoder_attn.out_proj.bias' ] ]
+            dln2_w.push[
+                st.tensor_named[ '{base}.final_layer_norm.weight' ] ]
+            dln2_b.push[
+                st.tensor_named[ '{base}.final_layer_norm.bias' ] ]
             dfc1_w.push[ lin[ '{base}.fc1.weight' ] ]
             dfc1_b.push[ st.tensor_named[ '{base}.fc1.bias' ] ]
             dfc2_w.push[ lin[ '{base}.fc2.weight' ] ]
@@ -2970,10 +3090,16 @@ class whisper
         t_in : i64 [ mel.tensor_shape[0] ]
         t_h  : i64 [ (t_in + 1) / 2 ]
         c1r : rows2[ t_in, dim ]
-        c1 : conv1d [ name: 'conv1', input: mel, result: c1r, weights: conv1_w, bias: conv1_b, in_ch: 80, out_ch: dim, ksize: 3, stride: 1, activation: Activation.gelu ]
+        c1 : conv1d [ name: 'conv1', input: mel, result: c1r,
+                      weights: conv1_w, bias: conv1_b, in_ch: 80,
+                      out_ch: dim, ksize: 3, stride: 1,
+                      activation: Activation.gelu ]
         c1.forward[]
         c2r : rows2[ t_h, dim ]
-        c2 : conv1d [ name: 'conv2', input: c1r, result: c2r, weights: conv2_w, bias: conv2_b, in_ch: dim, out_ch: dim, ksize: 3, stride: 2, activation: Activation.gelu ]
+        c2 : conv1d [ name: 'conv2', input: c1r, result: c2r,
+                      weights: conv2_w, bias: conv2_b, in_ch: dim,
+                      out_ch: dim, ksize: 3, stride: 2,
+                      activation: Activation.gelu ]
         c2.forward[]
         # + sinusoidal positions (stored table, first t_h rows)
         x : c2r
@@ -2985,21 +3111,35 @@ class whisper
         f1 : rows2[ t_h, 3072 ]
         f2 : rows2[ t_h, dim ]
         for [ li: i32 0, li < layers, li += 1 ]
-            n1 : layer_norm [ name: 'ln1', input: x, result: h, weights: ln1_w[li], bias: ln1_b[li], dim: dim ]
+            n1 : layer_norm [ name: 'ln1', input: x, result: h,
+                              weights: ln1_w[li], bias: ln1_b[li],
+                              dim: dim ]
             n1.forward[]
-            at : attention [ name: 'attn', input: h, result: a1, kv: h, heads: heads, dim: dim, causal: false, wq: wq[li], bq: bq[li], wk: wk[li], wv: wv[li], bv: bv[li], wo: wo[li], bo: bo[li] ]
+            at : attention [ name: 'attn', input: h, result: a1, kv: h,
+                             heads: heads, dim: dim, causal: false,
+                             wq: wq[li], bq: bq[li], wk: wk[li],
+                             wv: wv[li], bv: bv[li], wo: wo[li],
+                             bo: bo[li] ]
             at.forward[]
             for [ i: i64 0, i < n2, i += 1 ]
                 x.floats[i] += a1.floats[i]
-            n3 : layer_norm [ name: 'ln2', input: x, result: h, weights: ln2_w[li], bias: ln2_b[li], dim: dim ]
+            n3 : layer_norm [ name: 'ln2', input: x, result: h,
+                              weights: ln2_w[li], bias: ln2_b[li],
+                              dim: dim ]
             n3.forward[]
-            d1 : dense [ name: 'fc1', input: h, result: f1, weights: fc1_w[li], bias: fc1_b[li], in_dim: dim, out_dim: 3072, activation: Activation.gelu ]
+            d1 : dense [ name: 'fc1', input: h, result: f1,
+                         weights: fc1_w[li], bias: fc1_b[li],
+                         in_dim: dim, out_dim: 3072,
+                         activation: Activation.gelu ]
             d1.forward[]
-            d2 : dense [ name: 'fc2', input: f1, result: f2, weights: fc2_w[li], bias: fc2_b[li], in_dim: 3072, out_dim: dim ]
+            d2 : dense [ name: 'fc2', input: f1, result: f2,
+                         weights: fc2_w[li], bias: fc2_b[li],
+                         in_dim: 3072, out_dim: dim ]
             d2.forward[]
             for [ i: i64 0, i < n2, i += 1 ]
                 x.floats[i] += f2.floats[i]
-        nf : layer_norm [ name: 'lnf', input: x, result: h, weights: lnf_w, bias: lnf_b, dim: dim ]
+        nf : layer_norm [ name: 'lnf', input: x, result: h,
+                          weights: lnf_w, bias: lnf_b, dim: dim ]
         nf.forward[]
         return h
 
@@ -3010,33 +3150,54 @@ class whisper
         for [ t: i32 0, t < n, t += 1 ]
             tk : i32 [ toks[t] ]
             for [ c: i32 0, c < dim, c += 1 ]
-                x.floats[t * dim + c] = dec_emb.floats[tk * dim + c] + dec_pos.floats[t * dim + c]
+                x.floats[t * dim + c] = dec_emb.floats[tk * dim
+                                                        + c] + dec_pos.floats[t * dim + c]
         h  : rows2[ n, dim ]
         a1 : rows2[ n, dim ]
         f1 : rows2[ n, 3072 ]
         f2 : rows2[ n, dim ]
         for [ li: i32 0, li < layers, li += 1 ]
-            n1 : layer_norm [ name: 'dln1', input: x, result: h, weights: dln1_w[li], bias: dln1_b[li], dim: dim ]
+            n1 : layer_norm [ name: 'dln1', input: x, result: h,
+                              weights: dln1_w[li], bias: dln1_b[li],
+                              dim: dim ]
             n1.forward[]
-            sa : attention [ name: 'dattn', input: h, result: a1, kv: h, heads: heads, dim: dim, causal: true, wq: dwq[li], bq: dbq[li], wk: dwk[li], wv: dwv[li], bv: dbv[li], wo: dwo[li], bo: dbo[li] ]
+            sa : attention [ name: 'dattn', input: h, result: a1, kv: h,
+                             heads: heads, dim: dim, causal: true,
+                             wq: dwq[li], bq: dbq[li], wk: dwk[li],
+                             wv: dwv[li], bv: dbv[li], wo: dwo[li],
+                             bo: dbo[li] ]
             sa.forward[]
             for [ i: i64 0, i < nd, i += 1 ]
                 x.floats[i] += a1.floats[i]
-            n2 : layer_norm [ name: 'xln', input: x, result: h, weights: xln_w[li], bias: xln_b[li], dim: dim ]
+            n2 : layer_norm [ name: 'xln', input: x, result: h,
+                              weights: xln_w[li], bias: xln_b[li],
+                              dim: dim ]
             n2.forward[]
-            xa : attention [ name: 'xattn', input: h, result: a1, kv: enc, heads: heads, dim: dim, causal: false, wq: xwq[li], bq: xbq[li], wk: xwk[li], wv: xwv[li], bv: xbv[li], wo: xwo[li], bo: xbo[li] ]
+            xa : attention [ name: 'xattn', input: h, result: a1,
+                             kv: enc, heads: heads, dim: dim,
+                             causal: false, wq: xwq[li], bq: xbq[li],
+                             wk: xwk[li], wv: xwv[li], bv: xbv[li],
+                             wo: xwo[li], bo: xbo[li] ]
             xa.forward[]
             for [ i: i64 0, i < nd, i += 1 ]
                 x.floats[i] += a1.floats[i]
-            n3 : layer_norm [ name: 'dln2', input: x, result: h, weights: dln2_w[li], bias: dln2_b[li], dim: dim ]
+            n3 : layer_norm [ name: 'dln2', input: x, result: h,
+                              weights: dln2_w[li], bias: dln2_b[li],
+                              dim: dim ]
             n3.forward[]
-            d1 : dense [ name: 'dfc1', input: h, result: f1, weights: dfc1_w[li], bias: dfc1_b[li], in_dim: dim, out_dim: 3072, activation: Activation.gelu ]
+            d1 : dense [ name: 'dfc1', input: h, result: f1,
+                         weights: dfc1_w[li], bias: dfc1_b[li],
+                         in_dim: dim, out_dim: 3072,
+                         activation: Activation.gelu ]
             d1.forward[]
-            d2 : dense [ name: 'dfc2', input: f1, result: f2, weights: dfc2_w[li], bias: dfc2_b[li], in_dim: 3072, out_dim: dim ]
+            d2 : dense [ name: 'dfc2', input: f1, result: f2,
+                         weights: dfc2_w[li], bias: dfc2_b[li],
+                         in_dim: 3072, out_dim: dim ]
             d2.forward[]
             for [ i: i64 0, i < nd, i += 1 ]
                 x.floats[i] += f2.floats[i]
-        nf : layer_norm [ name: 'dlnf', input: x, result: h, weights: dlnf_w, bias: dlnf_b, dim: dim ]
+        nf : layer_norm [ name: 'dlnf', input: x, result: h,
+                          weights: dlnf_w, bias: dlnf_b, dim: dim ]
         nf.forward[]
         # argmax over the vocab rows of emb @ h_last
         nvr   : i64 [ dec_emb.tensor_shape[0] ]
@@ -3068,14 +3229,15 @@ class whisper
             p_hit : i32 [ 0 ]
             for [ p9: i32 1, p9 <= 8, p9 += 1 ]
                 if [ p_hit > 0 || rc < p9 * 2 ] continue
-                eq9 : bool [ true ]
+                eq : bool [ true ]
                 for [ g: i32 1, g <= p9, g += 1 ]
-                    if [ res[rc - g] != res[rc - g - p9] ] eq9 = false
-                if [ eq9 ] p_hit = p9
+                    if [ res[rc - g] != res[rc - g - p9] ] eq = false
+                if [ eq ] p_hit = p9
             if [ p_hit > 0 ]
                 trimmed : vec i32 [ ]
                 for [ ti: i32 0, ti < rc - p_hit, ti += 1 ]
-                    # the value, not the element: push[ res[ti] ] pushed its address
+                    # the value, not the element: push[ res[ti] ] pushed
+                    # its address
                     tv : i32 [ res[ti] ]
                     trimmed.push[ tv ]
                 return trimmed
@@ -3091,7 +3253,9 @@ class whisper
         vx_c = vec tensor [ ]
         ks_c = vec tensor [ ]
         vs_c = vec tensor [ ]
-        use_pre : bool [ pre_kx && pre_vx && pre_kx.count == layers && pre_vx.count == layers ]
+        use_pre : bool [
+            pre_kx && pre_vx && pre_kx.count == layers
+            && pre_vx.count == layers ]
         for [ li: i32 0, li < layers, li += 1 ]
             if [ use_pre ]
                 kx_c.push[ pre_kx[li] ]
@@ -3100,25 +3264,30 @@ class whisper
                 vs_c.push[ rows2[ 448, dim ] ]
                 continue
             kxt : rows2[ th, dim ]
-            dk : dense [ name: 'kx', input: enc, result: kxt, weights: xwk[li], bias: zb768, in_dim: dim, out_dim: dim ]
+            dk : dense [ name: 'kx', input: enc, result: kxt,
+                         weights: xwk[li], bias: zb768, in_dim: dim,
+                         out_dim: dim ]
             dk.forward[]
             kx_c.push[ kxt ]
             vxt : rows2[ th, dim ]
-            dv3 : dense [ name: 'vx', input: enc, result: vxt, weights: xwv[li], bias: xbv[li], in_dim: dim, out_dim: dim ]
-            dv3.forward[]
+            dv : dense [ name: 'vx', input: enc, result: vxt,
+                         weights: xwv[li], bias: xbv[li], in_dim: dim,
+                         out_dim: dim ]
+            dv.forward[]
             vx_c.push[ vxt ]
             ks_c.push[ rows2[ 448, dim ] ]
             vs_c.push[ rows2[ 448, dim ] ]
         pre_kx = null
         pre_vx = null
 
-    intern func attend_row [ q: @f32, kc: tensor, vc: tensor, nrows: i64, cxo: @f32, prow: @f32 ]
+    intern func attend_row [ q: @f32, kc: tensor, vc: tensor, nrows: i64,
+                             cxo: @f32, prow: @f32 ]
         hd : i32 [ dim / heads ]
         kf : kc.floats
         vf : vc.floats
         qs : f32 [ 1.0f / sqrtf[ f32[ hd ] ] ]
-        acc8 : local f32 [ 8 ]
-        a_ptr : @f32 [ @acc8[0] ]
+        acc : local f32 [ 8 ]
+        a_ptr : @f32 [ @acc[0] ]
         h8 : i32 [ (hd / 8) * 8 ]
         # the vector blocks are x86_64 (avx2) and arm64 (neon) asm: any
         # other target runs the scalar tail below on every element
@@ -3131,7 +3300,7 @@ class whisper
             for [ j: i64 0, j < nrows, j += 1 ]
                 krow : i64 [ j * dim + ho ]
                 for [ z2: i32 0, z2 < 8, z2 += 1 ]
-                    acc8[z2] = 0.0f
+                    acc[z2] = 0.0f
                 for [ c8: i32 0, c8 < h8, c8 += 8 ]
                     q_off : i64 [ (ho + c8) * 4 ]
                     k_off : i64 [ (krow + c8) * 4 ]
@@ -3150,7 +3319,9 @@ class whisper
                         fmla v0.4s, v2.4s, v4.4s
                         fmla v1.4s, v3.4s, v5.4s
                         stp q0, q1, [a_ptr]
-                dot : f32 [ acc8[0] + acc8[1] + acc8[2] + acc8[3] + acc8[4] + acc8[5] + acc8[6] + acc8[7] ]
+                dot : f32 [
+                    acc[0] + acc[1] + acc[2] + acc[3] + acc[4] + acc[5]
+                    + acc[6] + acc[7] ]
                 for [ c2: i32 h8, c2 < hd, c2 += 1 ]
                     dot += q[ho + c2] * kf[krow + c2]
                 dot *= qs
@@ -3195,7 +3366,8 @@ class whisper
         th : i64 [ kv_enc.tensor_shape[0] ]
         x  : rows2[ 1, dim ]
         for [ c2: i32 0, c2 < dim, c2 += 1 ]
-            x.floats[c2] = dec_emb.floats[tok * dim + c2] + dec_pos.floats[pidx * dim + c2]
+            x.floats[c2] = dec_emb.floats[tok * dim
+                                           + c2] + dec_pos.floats[pidx * dim + c2]
         h  : rows2[ 1, dim ]
         q  : rows2[ 1, dim ]
         kn : rows2[ 1, dim ]
@@ -3205,60 +3377,89 @@ class whisper
         f2 : rows2[ 1, dim ]
         prow : new f32 [ 1600 ]
         for [ li: i32 0, li < layers, li += 1 ]
-            n1 : layer_norm [ name: 'kln1', input: x, result: h, weights: dln1_w[li], bias: dln1_b[li], dim: dim ]
+            n1 : layer_norm [ name: 'kln1', input: x, result: h,
+                              weights: dln1_w[li], bias: dln1_b[li],
+                              dim: dim ]
             n1.forward[]
-            dq : dense [ name: 'kq', input: h, result: q, weights: dwq[li], bias: dbq[li], in_dim: dim, out_dim: dim ]
+            dq : dense [ name: 'kq', input: h, result: q,
+                         weights: dwq[li], bias: dbq[li], in_dim: dim,
+                         out_dim: dim ]
             dq.forward[]
-            dk2 : dense [ name: 'kk', input: h, result: kn, weights: dwk[li], bias: zb768, in_dim: dim, out_dim: dim ]
-            dk2.forward[]
-            dv2 : dense [ name: 'kv', input: h, result: vn, weights: dwv[li], bias: dbv[li], in_dim: dim, out_dim: dim ]
-            dv2.forward[]
+            dk : dense [ name: 'kk', input: h, result: kn,
+                         weights: dwk[li], bias: zb768, in_dim: dim,
+                         out_dim: dim ]
+            dk.forward[]
+            dv : dense [ name: 'kv', input: h, result: vn,
+                         weights: dwv[li], bias: dbv[li], in_dim: dim,
+                         out_dim: dim ]
+            dv.forward[]
             ksl : ks_c[li]
             vsl : vs_c[li]
             for [ c2: i32 0, c2 < dim, c2 += 1 ]
                 ksl.floats[pidx * dim + c2] = kn.floats[c2]
                 vsl.floats[pidx * dim + c2] = vn.floats[c2]
             attend_row[ q.floats, ksl, vsl, pidx + 1, a1.floats, prow ]
-            do2 : dense [ name: 'ko', input: a1, result: h, weights: dwo[li], bias: dbo[li], in_dim: dim, out_dim: dim ]
+            do2 : dense [ name: 'ko', input: a1, result: h,
+                          weights: dwo[li], bias: dbo[li], in_dim: dim,
+                          out_dim: dim ]
             do2.forward[]
             for [ c2: i32 0, c2 < dim, c2 += 1 ]
                 x.floats[c2] += h.floats[c2]
-            n2 : layer_norm [ name: 'kxln', input: x, result: h, weights: xln_w[li], bias: xln_b[li], dim: dim ]
+            n2 : layer_norm [ name: 'kxln', input: x, result: h,
+                              weights: xln_w[li], bias: xln_b[li],
+                              dim: dim ]
             n2.forward[]
-            dq2 : dense [ name: 'kxq', input: h, result: q, weights: xwq[li], bias: xbq[li], in_dim: dim, out_dim: dim ]
+            dq2 : dense [ name: 'kxq', input: h, result: q,
+                          weights: xwq[li], bias: xbq[li], in_dim: dim,
+                          out_dim: dim ]
             dq2.forward[]
-            attend_row[ q.floats, kx_c[li], vx_c[li], th, a1.floats, prow ]
-            do3 : dense [ name: 'kxo', input: a1, result: h, weights: xwo[li], bias: xbo[li], in_dim: dim, out_dim: dim ]
+            attend_row[ q.floats, kx_c[li], vx_c[li], th, a1.floats,
+                        prow ]
+            do3 : dense [ name: 'kxo', input: a1, result: h,
+                          weights: xwo[li], bias: xbo[li], in_dim: dim,
+                          out_dim: dim ]
             do3.forward[]
             for [ c2: i32 0, c2 < dim, c2 += 1 ]
                 x.floats[c2] += h.floats[c2]
-            n3 : layer_norm [ name: 'kln2', input: x, result: h, weights: dln2_w[li], bias: dln2_b[li], dim: dim ]
+            n3 : layer_norm [ name: 'kln2', input: x, result: h,
+                              weights: dln2_w[li], bias: dln2_b[li],
+                              dim: dim ]
             n3.forward[]
-            d1 : dense [ name: 'kf1', input: h, result: f1, weights: dfc1_w[li], bias: dfc1_b[li], in_dim: dim, out_dim: 3072, activation: Activation.gelu ]
+            d1 : dense [ name: 'kf1', input: h, result: f1,
+                         weights: dfc1_w[li], bias: dfc1_b[li],
+                         in_dim: dim, out_dim: 3072,
+                         activation: Activation.gelu ]
             d1.forward[]
-            d2 : dense [ name: 'kf2', input: f1, result: f2, weights: dfc2_w[li], bias: dfc2_b[li], in_dim: 3072, out_dim: dim ]
+            d2 : dense [ name: 'kf2', input: f1, result: f2,
+                         weights: dfc2_w[li], bias: dfc2_b[li],
+                         in_dim: 3072, out_dim: dim ]
             d2.forward[]
             for [ c2: i32 0, c2 < dim, c2 += 1 ]
                 x.floats[c2] += f2.floats[c2]
         n_kv = pidx + 1
-        nf : layer_norm [ name: 'klnf', input: x, result: h, weights: dlnf_w, bias: dlnf_b, dim: dim ]
+        nf : layer_norm [ name: 'klnf', input: x, result: h,
+                          weights: dlnf_w, bias: dlnf_b, dim: dim ]
         nf.forward[]
         nvr : i64 [ dec_emb.tensor_shape[0] ]
-        # the vocab rows across cores: each part keeps its best, then the best of those
-        vb9 : local i32 [ 8 ]
-        vv9 : local f32 [ 8 ]
-        vj : par_job [ a: dec_emb.floats, w: h.floats, k: dim, n: i32[ nvr ], parts: 8, v_best: @vb9[0], v_val: @vv9[0] ]
+        # the vocab rows across cores: each part keeps its best, then
+        # the best of those
+        vb : local i32 [ 8 ]
+        vv : local f32 [ 8 ]
+        vj : par_job [ a: dec_emb.floats, w: h.floats, k: dim,
+                       n: i32[ nvr ], parts: 8, v_best: @vb[0],
+                       v_val: @vv[0] ]
         ifdef [ apple ]
-            dispatch_apply_f[ 8, dispatch_get_global_queue[ 33, 0 ], cast handle [ vj ], @vocab_part ]
+            dispatch_apply_f[ 8, dispatch_get_global_queue[ 33, 0 ],
+                              cast handle [ vj ], @vocab_part ]
         el
             for [ it: i32 0, it < 8, it += 1 ]
                 vocab_part[ cast handle [ vj ], u64[ it ] ]
-        best   : i32 [ vb9[0] ]
-        best_v : f32 [ vv9[0] ]
+        best   : i32 [ vb[0] ]
+        best_v : f32 [ vv[0] ]
         for [ it: i32 1, it < 8, it += 1 ]
-            if [ vv9[it] > best_v ]
-                best_v = vv9[it]
-                best   = vb9[it]
+            if [ vv[it] > best_v ]
+                best_v = vv[it]
+                best   = vb[it]
         return best
 
     # token ids -> text via the loaded vocab (null when absent)
@@ -3269,7 +3470,8 @@ class whisper
         tmp : new i32 [ n ]
         for [ i: i32 0, i < n, i += 1 ]
             tmp[i] = ids[i]
-        # the elements: a cast of the vec itself hands over the vector object
+        # the elements: a cast of the vec itself hands over the vector
+        # object
         return vocab.decode[ cast handle [ @tmp[0] ], n ]
 
 enum WgGemmS
@@ -3283,10 +3485,18 @@ shader WgGemm
     mutable n_cols : i32
     mutable k_deep : i32
     mutable act    : i32
-    attrib a_in  : StorageBuffer [ type:typeid[ WgGemmS ], id:WgGemmS.a_in,  count:1, format:typeid[ f32 ] ]
-    attrib w_in  : StorageBuffer [ type:typeid[ WgGemmS ], id:WgGemmS.w_in,  count:1, format:typeid[ f32 ] ]
-    attrib b_in  : StorageBuffer [ type:typeid[ WgGemmS ], id:WgGemmS.b_in,  count:1, format:typeid[ f32 ] ]
-    attrib c_out : StorageBuffer [ type:typeid[ WgGemmS ], id:WgGemmS.c_out, count:1, format:typeid[ f32 ], writable:true ]
+    attrib a_in  : StorageBuffer [ type:typeid[ WgGemmS ],
+                                   id:WgGemmS.a_in,  count:1,
+                                   format:typeid[ f32 ] ]
+    attrib w_in  : StorageBuffer [ type:typeid[ WgGemmS ],
+                                   id:WgGemmS.w_in,  count:1,
+                                   format:typeid[ f32 ] ]
+    attrib b_in  : StorageBuffer [ type:typeid[ WgGemmS ],
+                                   id:WgGemmS.b_in,  count:1,
+                                   format:typeid[ f32 ] ]
+    attrib c_out : StorageBuffer [ type:typeid[ WgGemmS ],
+                                   id:WgGemmS.c_out, count:1,
+                                   format:typeid[ f32 ], writable:true ]
     # 16x16 tiles of a and w, staged per workgroup: each value read from
     # global memory once per tile instead of once per output
     attrib tile_a : SharedArray [ count: 256, format: typeid[ f32 ] ]
@@ -3336,10 +3546,18 @@ enum WgLNormS
 shader WgLNorm
     mutable rows : i32
     mutable dim  : i32
-    attrib x_in  : StorageBuffer [ type:typeid[ WgLNormS ], id:WgLNormS.x_in,  count:1, format:typeid[ f32 ] ]
-    attrib g_in  : StorageBuffer [ type:typeid[ WgLNormS ], id:WgLNormS.g_in,  count:1, format:typeid[ f32 ] ]
-    attrib b_in  : StorageBuffer [ type:typeid[ WgLNormS ], id:WgLNormS.b_in,  count:1, format:typeid[ f32 ] ]
-    attrib y_out : StorageBuffer [ type:typeid[ WgLNormS ], id:WgLNormS.y_out, count:1, format:typeid[ f32 ], writable:true ]
+    attrib x_in  : StorageBuffer [ type:typeid[ WgLNormS ],
+                                   id:WgLNormS.x_in,  count:1,
+                                   format:typeid[ f32 ] ]
+    attrib g_in  : StorageBuffer [ type:typeid[ WgLNormS ],
+                                   id:WgLNormS.g_in,  count:1,
+                                   format:typeid[ f32 ] ]
+    attrib b_in  : StorageBuffer [ type:typeid[ WgLNormS ],
+                                   id:WgLNormS.b_in,  count:1,
+                                   format:typeid[ f32 ] ]
+    attrib y_out : StorageBuffer [ type:typeid[ WgLNormS ],
+                                   id:WgLNormS.y_out, count:1,
+                                   format:typeid[ f32 ], writable:true ]
 
     func compute [] -> GLSL none {
         uint row = gl_GlobalInvocationID.x;
@@ -3371,15 +3589,24 @@ shader WgAttn
     mutable heads  : i32
     mutable dim    : i32
     mutable causal : i32
-    attrib q_in  : StorageBuffer [ type:typeid[ WgAttnS ], id:WgAttnS.q_in,  count:1, format:typeid[ f32 ] ]
-    attrib k_in  : StorageBuffer [ type:typeid[ WgAttnS ], id:WgAttnS.k_in,  count:1, format:typeid[ f32 ] ]
-    attrib v_in  : StorageBuffer [ type:typeid[ WgAttnS ], id:WgAttnS.v_in,  count:1, format:typeid[ f32 ] ]
-    attrib o_out : StorageBuffer [ type:typeid[ WgAttnS ], id:WgAttnS.o_out, count:1, format:typeid[ f32 ], writable:true ]
+    attrib q_in  : StorageBuffer [ type:typeid[ WgAttnS ],
+                                   id:WgAttnS.q_in,  count:1,
+                                   format:typeid[ f32 ] ]
+    attrib k_in  : StorageBuffer [ type:typeid[ WgAttnS ],
+                                   id:WgAttnS.k_in,  count:1,
+                                   format:typeid[ f32 ] ]
+    attrib v_in  : StorageBuffer [ type:typeid[ WgAttnS ],
+                                   id:WgAttnS.v_in,  count:1,
+                                   format:typeid[ f32 ] ]
+    attrib o_out : StorageBuffer [ type:typeid[ WgAttnS ],
+                                   id:WgAttnS.o_out, count:1,
+                                   format:typeid[ f32 ], writable:true ]
 
-    # one workgroup per (head, 256 queries), one query per invocation. keys and
-    # values stream through shared memory 32 at a time; each query keeps its
-    # row and accumulator in registers (head dim 64: whisper's, every size).
-    # online softmax: one pass over the keys, each dot computed once
+    # one workgroup per (head, 256 queries), one query per invocation.
+    # keys and values stream through shared memory 32 at a time; each
+    # query keeps its row and accumulator in registers (head dim 64:
+    # whisper's, every size). online softmax: one pass over the keys,
+    # each dot computed once
     attrib tk : SharedArray [ count: 2048, format: typeid[ f32 ] ]
     attrib tv : SharedArray [ count: 2048, format: typeid[ f32 ] ]
 
@@ -3443,8 +3670,11 @@ enum WgAddS
 # y += x, elementwise
 shader WgAdd
     mutable n_el : i32
-    attrib x_in : StorageBuffer [ type:typeid[ WgAddS ], id:WgAddS.x_in, count:1, format:typeid[ f32 ] ]
-    attrib y_io : StorageBuffer [ type:typeid[ WgAddS ], id:WgAddS.y_io, count:1, format:typeid[ f32 ], writable:true ]
+    attrib x_in : StorageBuffer [ type:typeid[ WgAddS ], id:WgAddS.x_in,
+                                  count:1, format:typeid[ f32 ] ]
+    attrib y_io : StorageBuffer [ type:typeid[ WgAddS ], id:WgAddS.y_io,
+                                  count:1, format:typeid[ f32 ],
+                                  writable:true ]
 
     func compute [] -> GLSL none {
         uint i = gl_GlobalInvocationID.y * 16384u + gl_GlobalInvocationID.x;
@@ -3464,10 +3694,18 @@ shader WgConv
     mutable cin    : i32
     mutable cout   : i32
     mutable stride : i32
-    attrib x_in  : StorageBuffer [ type:typeid[ WgConvS ], id:WgConvS.x_in,  count:1, format:typeid[ f32 ] ]
-    attrib w_in  : StorageBuffer [ type:typeid[ WgConvS ], id:WgConvS.w_in,  count:1, format:typeid[ f32 ] ]
-    attrib b_in  : StorageBuffer [ type:typeid[ WgConvS ], id:WgConvS.b_in,  count:1, format:typeid[ f32 ] ]
-    attrib y_out : StorageBuffer [ type:typeid[ WgConvS ], id:WgConvS.y_out, count:1, format:typeid[ f32 ], writable:true ]
+    attrib x_in  : StorageBuffer [ type:typeid[ WgConvS ],
+                                   id:WgConvS.x_in,  count:1,
+                                   format:typeid[ f32 ] ]
+    attrib w_in  : StorageBuffer [ type:typeid[ WgConvS ],
+                                   id:WgConvS.w_in,  count:1,
+                                   format:typeid[ f32 ] ]
+    attrib b_in  : StorageBuffer [ type:typeid[ WgConvS ],
+                                   id:WgConvS.b_in,  count:1,
+                                   format:typeid[ f32 ] ]
+    attrib y_out : StorageBuffer [ type:typeid[ WgConvS ],
+                                   id:WgConvS.y_out, count:1,
+                                   format:typeid[ f32 ], writable:true ]
 
     func compute [] -> GLSL none {
         uint oc = gl_GlobalInvocationID.x;
@@ -3540,8 +3778,8 @@ class whisper_vk
     intern p_g1  : vec Pipeline
     intern p_g2  : vec Pipeline
     intern p_a2  : vec Pipeline
-    # the decoder's cross-attention keys / values, projected from the encoder
-    # output here instead of on the cpu (cross_kv)
+    # the decoder's cross-attention keys / values, projected from the
+    # encoder output here instead of on the cpu (cross_kv)
     intern b_xk  : Buffer
     intern b_xv  : Buffer
     intern s_xk  : vec WgGemm
@@ -3553,19 +3791,26 @@ class whisper_vk
 
     intern func upbuf [ t: tensor ] -> Buffer
         nb : i64 [ t.tensor_shape.total[] * 4 ]
-        b : Buffer [ vk: vk, size: nb, u_storage: true, m_host_visible: true, m_host_coherent: true ]
+        b : Buffer [ vk: vk, size: nb, u_storage: true,
+                     m_host_visible: true, m_host_coherent: true ]
         memcpy[ b.data, t.floats, nb ]
         b.hold[]
         return b
 
     intern func work_buf [ nb: i64, cached: bool ] -> Buffer
-        b : Buffer [ vk: vk, size: nb, u_storage: true, m_host_visible: true, m_host_coherent: true, m_host_cached: cached ]
+        b : Buffer [ vk: vk, size: nb, u_storage: true,
+                     m_host_visible: true, m_host_coherent: true,
+                     m_host_cached: cached ]
         b.hold[]
         return b
 
-    intern func gemm_pipe [ nm: string, sh: WgGemm, a2: Buffer, w2: Buffer, b2: Buffer, c2: Buffer, mx: i32, nx: i32 ] -> Pipeline
-        smap : map Au[string] [ 'a_in': a2, 'w_in': w2, 'b_in': b2, 'c_out': c2 ]
-        p : Pipeline [ vk: vk, w: win, name: nm, s: sh, default_model: mat4f.identity[], samplers: smap ]
+    intern func gemm_pipe [ nm: string, sh: WgGemm, a2: Buffer,
+                            w2: Buffer, b2: Buffer, c2: Buffer, mx: i32,
+                            nx: i32 ] -> Pipeline
+        smap : map Au[string] [ 'a_in': a2, 'w_in': w2, 'b_in': b2,
+                                'c_out': c2 ]
+        p : Pipeline [ vk: vk, w: win, name: nm, s: sh,
+                       default_model: mat4f.identity[], samplers: smap ]
         p.dispatch_x = (nx + 15) / 16
         p.dispatch_y = (mx + 15) / 16
         p.hold[]
@@ -3597,22 +3842,30 @@ class whisper_vk
         cb2 : upbuf[ model.conv2_b ]
         s_conv1 = WgConv [ vk: vk ]
         s_conv1.hold[]
-        sm1 : map Au[string] [ 'x_in': b_mel, 'w_in': cw1, 'b_in': cb1, 'y_out': b_c1 ]
-        p_conv1 = Pipeline [ vk: vk, w: win, name: 'wg_c1', s: s_conv1, default_model: mat4f.identity[], samplers: sm1 ]
+        sm1 : map Au[string] [ 'x_in': b_mel, 'w_in': cw1, 'b_in': cb1,
+                               'y_out': b_c1 ]
+        p_conv1 = Pipeline [ vk: vk, w: win, name: 'wg_c1', s: s_conv1,
+                             default_model: mat4f.identity[],
+                             samplers: sm1 ]
         p_conv1.dispatch_x = (dim + 15) / 16
         p_conv1.dispatch_y = (tmax + 15) / 16
         p_conv1.hold[]
         s_conv2 = WgConv [ vk: vk ]
         s_conv2.hold[]
-        sm2 : map Au[string] [ 'x_in': b_c1, 'w_in': cw2, 'b_in': cb2, 'y_out': b_x ]
-        p_conv2 = Pipeline [ vk: vk, w: win, name: 'wg_c2', s: s_conv2, default_model: mat4f.identity[], samplers: sm2 ]
+        sm2 : map Au[string] [ 'x_in': b_c1, 'w_in': cw2, 'b_in': cb2,
+                               'y_out': b_x ]
+        p_conv2 = Pipeline [ vk: vk, w: win, name: 'wg_c2', s: s_conv2,
+                             default_model: mat4f.identity[],
+                             samplers: sm2 ]
         p_conv2.dispatch_x = (dim + 15) / 16
         p_conv2.dispatch_y = (hmax + 15) / 16
         p_conv2.hold[]
         s_pos = WgAdd [ vk: vk ]
         s_pos.hold[]
         smp : map Au[string] [ 'x_in': b_pos, 'y_io': b_x ]
-        p_pos = Pipeline [ vk: vk, w: win, name: 'wg_pos', s: s_pos, default_model: mat4f.identity[], samplers: smp ]
+        p_pos = Pipeline [ vk: vk, w: win, name: 'wg_pos', s: s_pos,
+                           default_model: mat4f.identity[],
+                           samplers: smp ]
         p_pos.dispatch_x = 1024
         p_pos.dispatch_y = (hmax * dim + 16383) / 16384 / 16 + 1
         p_pos.hold[]
@@ -3644,8 +3897,11 @@ class whisper_vk
             n1 : WgLNorm [ vk: vk ]
             n1.hold[]
             s_ln1.push[ n1 ]
-            smn : map Au[string] [ 'x_in': b_x, 'g_in': l1g, 'b_in': l1b, 'y_out': b_h ]
-            pn : Pipeline [ vk: vk, w: win, name: 'wg_l{li}_ln1', s: n1, default_model: mat4f.identity[], samplers: smn ]
+            smn : map Au[string] [ 'x_in': b_x, 'g_in': l1g, 'b_in': l1b,
+                                   'y_out': b_h ]
+            pn : Pipeline [ vk: vk, w: win, name: 'wg_l{li}_ln1', s: n1,
+                            default_model: mat4f.identity[],
+                            samplers: smn ]
             pn.dispatch_x = (hmax + 15) / 16
             pn.dispatch_y = 1
             pn.hold[]
@@ -3653,20 +3909,29 @@ class whisper_vk
             gq : WgGemm [ vk: vk ]
             gq.hold[]
             s_gq.push[ gq ]
-            p_gq.push[ gemm_pipe[ 'wg_l{li}_q', gq, b_h, upbuf[ model.wq[li] ], upbuf[ model.bq[li] ], b_q, hmax, dim ] ]
+            p_gq.push[
+                gemm_pipe[ 'wg_l{li}_q', gq, b_h, upbuf[ model.wq[li] ],
+                           upbuf[ model.bq[li] ], b_q, hmax, dim ] ]
             gk : WgGemm [ vk: vk ]
             gk.hold[]
             s_gk.push[ gk ]
-            p_gk.push[ gemm_pipe[ 'wg_l{li}_k', gk, b_h, upbuf[ model.wk[li] ], b_zb, b_k, hmax, dim ] ]
+            p_gk.push[
+                gemm_pipe[ 'wg_l{li}_k', gk, b_h, upbuf[ model.wk[li] ],
+                           b_zb, b_k, hmax, dim ] ]
             gv : WgGemm [ vk: vk ]
             gv.hold[]
             s_gv.push[ gv ]
-            p_gv.push[ gemm_pipe[ 'wg_l{li}_v', gv, b_h, upbuf[ model.wv[li] ], upbuf[ model.bv[li] ], b_v, hmax, dim ] ]
+            p_gv.push[
+                gemm_pipe[ 'wg_l{li}_v', gv, b_h, upbuf[ model.wv[li] ],
+                           upbuf[ model.bv[li] ], b_v, hmax, dim ] ]
             at : WgAttn [ vk: vk ]
             at.hold[]
             s_at.push[ at ]
-            sma : map Au[string] [ 'q_in': b_q, 'k_in': b_k, 'v_in': b_v, 'o_out': b_a ]
-            pa : Pipeline [ vk: vk, w: win, name: 'wg_l{li}_at', s: at, default_model: mat4f.identity[], samplers: sma ]
+            sma : map Au[string] [ 'q_in': b_q, 'k_in': b_k, 'v_in': b_v,
+                                   'o_out': b_a ]
+            pa : Pipeline [ vk: vk, w: win, name: 'wg_l{li}_at', s: at,
+                            default_model: mat4f.identity[],
+                            samplers: sma ]
             # a workgroup per (256 queries, head): see WgAttn
             pa.dispatch_x = (hmax + 255) / 256
             pa.dispatch_y = model.heads
@@ -3675,12 +3940,16 @@ class whisper_vk
             go : WgGemm [ vk: vk ]
             go.hold[]
             s_go.push[ go ]
-            p_go.push[ gemm_pipe[ 'wg_l{li}_o', go, b_a, upbuf[ model.wo[li] ], upbuf[ model.bo[li] ], b_h, hmax, dim ] ]
+            p_go.push[
+                gemm_pipe[ 'wg_l{li}_o', go, b_a, upbuf[ model.wo[li] ],
+                           upbuf[ model.bo[li] ], b_h, hmax, dim ] ]
             a1 : WgAdd [ vk: vk ]
             a1.hold[]
             s_a1.push[ a1 ]
             sm3 : map Au[string] [ 'x_in': b_h, 'y_io': b_x ]
-            pa1 : Pipeline [ vk: vk, w: win, name: 'wg_l{li}_a1', s: a1, default_model: mat4f.identity[], samplers: sm3 ]
+            pa1 : Pipeline [ vk: vk, w: win, name: 'wg_l{li}_a1', s: a1,
+                             default_model: mat4f.identity[],
+                             samplers: sm3 ]
             pa1.dispatch_x = 1024
             pa1.dispatch_y = (hmax * dim + 16383) / 16384 / 16 + 1
             pa1.hold[]
@@ -3690,8 +3959,11 @@ class whisper_vk
             n2 : WgLNorm [ vk: vk ]
             n2.hold[]
             s_ln2.push[ n2 ]
-            smn2 : map Au[string] [ 'x_in': b_x, 'g_in': l2g, 'b_in': l2b, 'y_out': b_h ]
-            pn2 : Pipeline [ vk: vk, w: win, name: 'wg_l{li}_ln2', s: n2, default_model: mat4f.identity[], samplers: smn2 ]
+            smn2 : map Au[string] [ 'x_in': b_x, 'g_in': l2g,
+                                    'b_in': l2b, 'y_out': b_h ]
+            pn2 : Pipeline [ vk: vk, w: win, name: 'wg_l{li}_ln2', s: n2,
+                             default_model: mat4f.identity[],
+                             samplers: smn2 ]
             pn2.dispatch_x = (hmax + 15) / 16
             pn2.dispatch_y = 1
             pn2.hold[]
@@ -3699,15 +3971,24 @@ class whisper_vk
             g1 : WgGemm [ vk: vk ]
             g1.hold[]
             s_g1.push[ g1 ]
-            p_g1.push[ gemm_pipe[ 'wg_l{li}_f1', g1, b_h, upbuf[ model.fc1_w[li] ], upbuf[ model.fc1_b[li] ], b_f1, hmax, 3072 ] ]
+            p_g1.push[
+                gemm_pipe[ 'wg_l{li}_f1', g1, b_h,
+                           upbuf[ model.fc1_w[li] ],
+                           upbuf[ model.fc1_b[li] ], b_f1, hmax,
+                           3072 ] ]
             g2 : WgGemm [ vk: vk ]
             g2.hold[]
             s_g2.push[ g2 ]
-            p_g2.push[ gemm_pipe[ 'wg_l{li}_f2', g2, b_f1, upbuf[ model.fc2_w[li] ], upbuf[ model.fc2_b[li] ], b_h, hmax, dim ] ]
+            p_g2.push[
+                gemm_pipe[ 'wg_l{li}_f2', g2, b_f1,
+                           upbuf[ model.fc2_w[li] ],
+                           upbuf[ model.fc2_b[li] ], b_h, hmax, dim ] ]
             a2 : WgAdd [ vk: vk ]
             a2.hold[]
             s_a2.push[ a2 ]
-            pa2 : Pipeline [ vk: vk, w: win, name: 'wg_l{li}_a2', s: a2, default_model: mat4f.identity[], samplers: sm3 ]
+            pa2 : Pipeline [ vk: vk, w: win, name: 'wg_l{li}_a2', s: a2,
+                             default_model: mat4f.identity[],
+                             samplers: sm3 ]
             pa2.dispatch_x = 1024
             pa2.dispatch_y = (hmax * dim + 16383) / 16384 / 16 + 1
             pa2.hold[]
@@ -3716,13 +3997,17 @@ class whisper_vk
         fb : upbuf[ model.lnf_b ]
         s_lnf = WgLNorm [ vk: vk ]
         s_lnf.hold[]
-        smf : map Au[string] [ 'x_in': b_x, 'g_in': fg, 'b_in': fb, 'y_out': b_out ]
-        p_lnf = Pipeline [ vk: vk, w: win, name: 'wg_lnf', s: s_lnf, default_model: mat4f.identity[], samplers: smf ]
+        smf : map Au[string] [ 'x_in': b_x, 'g_in': fg, 'b_in': fb,
+                               'y_out': b_out ]
+        p_lnf = Pipeline [ vk: vk, w: win, name: 'wg_lnf', s: s_lnf,
+                           default_model: mat4f.identity[],
+                           samplers: smf ]
         p_lnf.dispatch_x = (hmax + 15) / 16
         p_lnf.dispatch_y = 1
         p_lnf.hold[]
-        # cross-attention K / V per layer: the encoder output through the
-        # decoder's cross weights (K has no bias). read back on the cpu, so cached
+        # cross-attention K / V per layer: the encoder output through
+        # the decoder's cross weights (K has no bias). read back on the
+        # cpu, so cached
         b_xk = work_buf[ i64[ hmax ] * dim * 4, true ]
         b_xv = work_buf[ i64[ hmax ] * dim * 4, true ]
         s_xk = vec WgGemm [ ]
@@ -3733,26 +4018,33 @@ class whisper_vk
             xk : WgGemm [ vk: vk ]
             xk.hold[]
             s_xk.push[ xk ]
-            p_xk.push[ gemm_pipe[ 'wg_l{li}_xk', xk, b_out, upbuf[ model.xwk[li] ], b_zb, b_xk, hmax, dim ] ]
+            p_xk.push[
+                gemm_pipe[ 'wg_l{li}_xk', xk, b_out,
+                           upbuf[ model.xwk[li] ], b_zb, b_xk, hmax,
+                           dim ] ]
             xv : WgGemm [ vk: vk ]
             xv.hold[]
             s_xv.push[ xv ]
-            p_xv.push[ gemm_pipe[ 'wg_l{li}_xv', xv, b_out, upbuf[ model.xwv[li] ], upbuf[ model.xbv[li] ], b_xv, hmax, dim ] ]
+            p_xv.push[
+                gemm_pipe[ 'wg_l{li}_xv', xv, b_out,
+                           upbuf[ model.xwv[li] ],
+                           upbuf[ model.xbv[li] ], b_xv, hmax, dim ] ]
         valid = true
 
-    # the decoder's cross-attention keys / values for the last encode (th
-    # rows): kx_out / vx_out, one tensor per layer. main thread, as encode
+    # the decoder's cross-attention keys / values for the last encode
+    # (th rows): kx_out / vx_out, one tensor per layer. main thread, as
+    # encode
     func cross_kv [ th: i32 ]
         kx_out = vec tensor [ ]
         vx_out = vec tensor [ ]
         tx : i32 [ (th + 15) / 16 ]
         nel : i64 [ i64[ th ] * dim ]
-        dv9 : cast VkDevice [ vk.dev_handle[] ]
-        qq9 : cast VkQueue [ vk.compute_queue_handle[] ]
-        cp9 : cast VkCommandPool [ vk.compute_pool_handle[] ]
-        if [ !qq9 ]
-            qq9 = cast VkQueue [ vk.queue_handle[] ]
-            cp9 = cast VkCommandPool [ vk.pool_handle[] ]
+        dv : cast VkDevice [ vk.dev_handle[] ]
+        qq : cast VkQueue [ vk.compute_queue_handle[] ]
+        cp : cast VkCommandPool [ vk.compute_pool_handle[] ]
+        if [ !qq ]
+            qq = cast VkQueue [ vk.queue_handle[] ]
+            cp = cast VkCommandPool [ vk.pool_handle[] ]
         for [ li: i32 0, li < model.layers, li += 1 ]
             gk : WgGemm s_xk[li]
             gk.m_rows = th
@@ -3766,10 +4058,10 @@ class whisper_vk
             pv : Pipeline p_xv[li]
             pk.dispatch_y = tx
             pv.dispatch_y = tx
-            cmd : chunk_begin[ dv9, cp9 ]
+            cmd : chunk_begin[ dv, cp ]
             pk.dispatch[ cast handle [ cmd ] ]
             pv.dispatch[ cast handle [ cmd ] ]
-            chunk_end[ dv9, cp9, qq9, cmd ]
+            chunk_end[ dv, cp, qq, cmd ]
             kt : model.rows2[ th, dim ]
             memcpy[ kt.floats, b_xk.data, nel * 4 ]
             kx_out.push[ kt ]
@@ -3781,7 +4073,8 @@ class whisper_vk
         cq : cast VkQueue [ vk.compute_queue_handle[] ]
         return cq != null
 
-    intern func chunk_begin [ dv: VkDevice, cp: VkCommandPool ] -> VkCommandBuffer
+    intern func chunk_begin [ dv: VkDevice,
+                              cp: VkCommandPool ] -> VkCommandBuffer
         cmd : VkCommandBuffer
         vkAllocateCommandBuffers[ dv, VkCommandBufferAllocateInfo [
             sType:              VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
@@ -3793,7 +4086,8 @@ class whisper_vk
             flags: VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT ] ]
         return cmd
 
-    intern func chunk_end [ dv: VkDevice, cp: VkCommandPool, qq: VkQueue, cmd: VkCommandBuffer ]
+    intern func chunk_end [ dv: VkDevice, cp: VkCommandPool, qq: VkQueue,
+                            cmd: VkCommandBuffer ]
         cb : cmd
         vkEndCommandBuffer[ cb ]
         vkQueueSubmit[ qq, 1, VkSubmitInfo [
@@ -3804,7 +4098,7 @@ class whisper_vk
         vkFreeCommandBuffers[ dv, cp, 1, @cb ]
 
     func encode [ mel: tensor ] -> tensor
-        t_in : i32 [ i32[ mel.tensor_shape[0] ] ]
+        t_in : i32 [ mel.tensor_shape[0] ]
         th   : i32 [ (t_in + 1) / 2 ]
         nel  : i32 [ th * dim ]
         memcpy[ b_mel.data, mel.floats, i64[ t_in ] * 80 * 4 ]
@@ -3871,20 +4165,20 @@ class whisper_vk
             p_g2[li].dispatch_y  = tx
             p_a2[li].dispatch_y  = ex
         p_lnf.dispatch_x = tx
-        dv9 : cast VkDevice [ vk.dev_handle[] ]
-        qq9 : cast VkQueue [ vk.compute_queue_handle[] ]
-        cp9 : cast VkCommandPool [ vk.compute_pool_handle[] ]
-        if [ !qq9 ]
-            qq9 = cast VkQueue [ vk.queue_handle[] ]
-            cp9 = cast VkCommandPool [ vk.pool_handle[] ]
-        cmd : chunk_begin[ dv9, cp9 ]
+        dv : cast VkDevice [ vk.dev_handle[] ]
+        qq : cast VkQueue [ vk.compute_queue_handle[] ]
+        cp : cast VkCommandPool [ vk.compute_pool_handle[] ]
+        if [ !qq ]
+            qq = cast VkQueue [ vk.queue_handle[] ]
+            cp = cast VkCommandPool [ vk.pool_handle[] ]
+        cmd : chunk_begin[ dv, cp ]
         ch  : cast handle [ cmd ]
         p_conv1.dispatch[ ch ]
         p_conv2.dispatch[ ch ]
         p_pos.dispatch[ ch ]
-        chunk_end[ dv9, cp9, qq9, cmd ]
+        chunk_end[ dv, cp, qq, cmd ]
         for [ li: i32 0, li < model.layers, li += 1 ]
-            cmd2 : chunk_begin[ dv9, cp9 ]
+            cmd2 : chunk_begin[ dv, cp ]
             ch2  : cast handle [ cmd2 ]
             p_ln1[li].dispatch[ ch2 ]
             p_gq[li].dispatch[ ch2 ]
@@ -3897,11 +4191,11 @@ class whisper_vk
             p_g1[li].dispatch[ ch2 ]
             p_g2[li].dispatch[ ch2 ]
             p_a2[li].dispatch[ ch2 ]
-            chunk_end[ dv9, cp9, qq9, cmd2 ]
-        cmd3 : chunk_begin[ dv9, cp9 ]
+            chunk_end[ dv, cp, qq, cmd2 ]
+        cmd3 : chunk_begin[ dv, cp ]
         ch3  : cast handle [ cmd3 ]
         p_lnf.dispatch[ ch3 ]
-        chunk_end[ dv9, cp9, qq9, cmd3 ]
+        chunk_end[ dv, cp, qq, cmd3 ]
         res : model.rows2[ th, dim ]
         memcpy[ res.floats, b_out.data, i64[ nel ] * 4 ]
         return res

@@ -1,0 +1,261 @@
+# silver: a slight introduction, in a window
+export 1.0.0
+
+import vec
+import img
+import trinity
+import <stdio.h>                    # a C header, read by libclang
+import <intro.hpp>                  # a C++ header: templates too
+
+# ==== the language, as each topic shows it
+
+scalar px : f32                     # a unit is a type: 8px
+scalar ms : i64
+
+func spacing [ gap: px, wait: ms ] -> string
+    return '{gap} apart, every {wait}'
+
+class Shape                         # heap, reference counted
+    public sides : i32
+
+    func describe [] -> string
+        return 'a shape'
+
+Shape Square                        # Square inherits Shape
+    func init []
+        sides = 4
+
+    func describe [] -> string
+        return 'a square'
+
+class Job
+    public x   : i64
+    public out : i64
+
+intern func fill [ @i32, i32, i32 ] -> none     # intro.c
+intern func total [ @i32, i32 ] -> i32          # intro.cc
+
+persist runs : i64                  # kept across a live reload
+
+# ==== the window
+
+Button RunButton
+    style : CSS {
+        layers.body:
+            fill_color: #6a3cffcc
+            radius: 8
+        layers.face:
+            label_color: #fff
+            label_size: 15
+            label_align: 0.5 0.5
+    :hovered
+        layers.body:
+            fill_color: #8a64ff
+            radius: 8
+    }
+
+element intro : trinity
+    public width  : i32    [ 1100 ]
+    public height : i32    [ 640 ]
+    public title  : string [ 'silver' ]
+    intern topic  : i32
+    intern result : vec string
+
+    func topics [] -> vec string
+        return vec string [] [ 'units', 'classes', 'lambdas',
+            'threads', 'vectors', 'C', 'C++', 'Rust', 'reload' ]
+
+    # the source each topic runs, as it reads above
+    func code [ i: i32 ] -> vec string
+        switch [ i ]
+            case 0
+                return vec string [] [ 'scalar px : f32',
+                    'scalar ms : i64', '',
+                    'func spacing [ gap: px, wait: ms ]', '',
+                    '# no commas: matched by type',
+                    'spacing[ 16ms 8.0px ]' ]
+            case 1
+                return vec string [] [ 'Shape Square',
+                    '    func describe [] -> string', '',
+                    's : Shape [ sq ]',
+                    's.describe[]     # direct: Shape',
+                    's.describe*[]    # dynamic: Square' ]
+            case 2
+                return vec string [] [ 'base : i64 [ 100 ]',
+                    'f : lambda [ n: i64 ]',
+                    '    return n * 2 + base',
+                    'base = 0         # f copied 100', 'f[ 4 ]' ]
+            case 3
+                return vec string [] [ 'f : lambda [ arg: object ]',
+                    '    j : Job [ arg ]',
+                    '    j.out = j.x * j.x',
+                    't : async [ work_fn: f, work: jobs ]',
+                    't.sync[ null ]   # wait for all' ]
+            case 4
+                return vec string [] [
+                    'm : vec f32 [ 2x2 ] [ 1.0 2.0, 3.0 4.0 ]',
+                    'm * m            # every element',
+                    'm * 2.0          # a scalar too' ]
+            case 5
+                return vec string [] [ 'import <stdio.h>', '',
+                    'snprintf[ @buf[ 0 ], 32, "%s %d", ... ]',
+                    'fill[ @v[ 0 ], 4, 10 ]   # intro.c' ]
+            case 6
+                return vec string [] [ 'import <intro.hpp>', '',
+                    'p : pair2<i32> [ a: 40, b: 2 ]',
+                    'p.sum[]          # a template method',
+                    'total[ @v[ 0 ], 4 ]   # intro.cc' ]
+            case 7
+                return vec string [] [ '# intro.rs, header by cbindgen',
+                    'triple[ 14 ]',
+                    'tally[ @v[ 0 ], 4 ]   # same memory' ]
+            default
+                return vec string [] [ 'persist runs : i64', '',
+                    '# edit this file and save:',
+                    '# the window reloads, runs stays' ]
+        return null
+
+    func run [ i: i32 ] -> vec string
+        out : vec string []
+        runs += 1
+        switch [ i ]
+            case 0
+                out.push[ spacing[ 16ms 8.0px ] ]
+            case 1
+                sq : Square [ ]
+                s : Shape [ sq ]
+                out.push[ 'direct:  {s.describe[]}' ]
+                out.push[ 'dynamic: {s.describe*[]}' ]
+            case 2
+                base : i64 [ 100 ]
+                f : lambda [ n: i64 ]
+                    return n * 2 + base
+                base = 0
+                r : f[ 4 ]
+                out.push[ 'f[ 4 ] = {r}' ]
+            case 3
+                jobs : vec Au []
+                for [ k: i64 1, k <= 6, k += 1 ]
+                    j : Job [ x: k ]
+                    jobs.push[ j ]
+                f : lambda [ arg: object ]
+                    j : Job [ arg ]
+                    j.out = j.x * j.x
+                t : async [ work_fn: f, work: jobs ]
+                t.sync[ null ]
+                for [ it: Au ] in jobs
+                    j : Job [ it ]
+                    out.push[ '{j.x} squared on a thread: {j.out}' ]
+            case 4
+                m : vec f32 [ 2x2 ] [ 1.0 2.0, 3.0 4.0 ]
+                p : m * m
+                s : m * 2.0
+                out.push[ 'm * m   = {p[ 0 ]} {p[ 1 ]} {p[ 2 ]} {p[ 3 ]}' ]
+                out.push[ 'm * 2.0 = {s[ 0 ]} {s[ 1 ]} {s[ 2 ]} {s[ 3 ]}' ]
+            case 5
+                buf : local i8 [ 32 ]
+                n : snprintf[ @buf[ 0 ], 32, "%s %d", "printf says", 42 ]
+                out.push[ string [ @buf[ 0 ] ] ]
+                v : local i32 [ 4 ]
+                fill[ @v[ 0 ], 4, 10 ]
+                out.push[ 'C filled {v[ 0 ]} {v[ 1 ]} {v[ 2 ]} {v[ 3 ]}' ]
+            case 6
+                p : pair2<i32> [ a: 40, b: 2 ]
+                out.push[ 'pair2<i32>.sum[] = {p.sum[]}' ]
+                v : local i32 [ 4 ]
+                fill[ @v[ 0 ], 4, 10 ]
+                out.push[ 'std::accumulate = {total[ @v[ 0 ], 4 ]}' ]
+            case 7
+                out.push[ 'triple[ 14 ] = {triple[ 14 ]}' ]
+                v : local i32 [ 4 ]
+                fill[ @v[ 0 ], 4, 10 ]
+                out.push[ 'Rust summed C: {tally[ @v[ 0 ], 4 ]}' ]
+            default
+                out.push[ 'run {runs} since the app started' ]
+        return out
+
+    func on_press [ ev: Event ]
+        e : ev.target
+        if [ !e || !e.id ] return
+        names : topics[]
+        for [ i: i32 0, i < names.count, i += 1 ]
+            if [ names[ i ] == e.id ]
+                topic  = i
+                result = null
+                if [ ux ] ux.restyle = true
+                return
+        if [ e.id == 'run' ]
+            result = run[ topic ]
+            if [ ux ] ux.restyle = true
+
+    func panel_w [] -> f32
+        return round[ (bounds.w - 64.0) * 0.56 ]
+
+    public func on_canvas [ cv: Canvas ]
+        if [ !cv || !bounds ] return
+        w9 : f32 [ bounds.w ]
+        h9 : f32 [ bounds.h ]
+        cv.stroke_width[ 0.0 ]
+        cv.fill_color[ rgba [ '#0d0b16' ] ]
+        cv.rect_to[ 0.0, 0.0, w9, h9 ]
+        cv.paint[]
+        cv.fill_color[ rgba [ '#f2ecff' ] ]
+        cv.font_size[ 34 ]
+        cv.draw_text[ 'silver', rect [ x: 24.0, y: 18.0, w: 400.0,
+            h: 44.0 ], vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
+            Overflow.clip, null ]
+        cv.fill_color[ rgba [ '#9a90b8' ] ]
+        cv.font_size[ 15 ]
+        cv.draw_text[ 'native code, one object model from C to the GPU',
+            rect [ x: 150.0, y: 26.0, w: 700.0, h: 32.0 ],
+            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+        pw : f32 [ panel_w[] ]
+        top : f32 [ 152.0 ]
+        ph : f32 [ h9 - top - 24.0 ]
+        rx : f32 [ 40.0 + pw ]
+        rw : f32 [ w9 - rx - 24.0 ]
+        cv.fill_color[ rgba [ '#ffffff0a' ] ]
+        cv.rounded_rect[ 24.0, top, pw, ph, 12.0, 12.0, 12.0, 12.0 ]
+        cv.paint[]
+        cv.rounded_rect[ rx, top, rw, ph, 12.0, 12.0, 12.0, 12.0 ]
+        cv.paint[]
+        cv.font_size[ 16 ]
+        lines : code[ topic ]
+        for [ i: i32 0, i < lines.count, i += 1 ]
+            cl : string lines[ i ]
+            cv.fill_color[ (cl.starts_with[ '#' ]) ?
+                rgba [ '#6f8a6a' ] : rgba [ '#cdbcff' ] ]
+            cv.draw_text[ cl, rect [ x: 44.0, y: top + 20.0 + f32[ i ] * 30.0,
+                w: pw - 40.0, h: 28.0 ], vec2f [ 0.0, 0.5 ],
+                vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+        cv.fill_color[ rgba [ '#9a90b8' ] ]
+        cv.draw_text[ (result) ? 'result' : 'press run',
+            rect [ x: rx + 20.0, y: top + 20.0, w: rw - 140.0, h: 36.0 ],
+            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+        if [ result ]
+            cv.fill_color[ rgba [ '#8fe3b0' ] ]
+            for [ i: i32 0, i < result.count, i += 1 ]
+                cv.draw_text[ result[ i ], rect [ x: rx + 20.0,
+                    y: top + 76.0 + f32[ i ] * 30.0, w: rw - 40.0,
+                    h: 28.0 ], vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
+                    Overflow.clip, null ]
+        cv.paint[]
+
+    public func render [] -> Elements
+        pw : f32 [ (bounds) ? panel_w[] : 600.0 ]
+        return Elements [
+            "topics": TButtons [ icons: false, manual: true,
+                buttons: topics[], sel_mask: 1 << topic,
+                label_px: 15.0, seg_radius: 10.0,
+                area: Region [ 'l24px t84px r24px h44px' ] ],
+            "run": RunButton [ label: 'run',
+                area: Region [ 'r44px t172px w96px h36px' ] ]
+        ]
+
+expect func works [] -> bool
+    v : local i32 [ 4 ]
+    fill[ @v[ 0 ], 4, 10 ]
+    p : pair2<i32> [ a: 40, b: 2 ]
+    return spacing[ 16ms 8.0px ] == '8px apart, every 16ms'
+        && total[ @v[ 0 ], 4 ] == 46 && tally[ @v[ 0 ], 4 ] == 46
+        && p.sum[] == 42 && triple[ 14 ] == 42

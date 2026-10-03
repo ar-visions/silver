@@ -1110,7 +1110,7 @@ element asnes : trinity
 		ppu.vram_addr = (ppu.vram_addr + amt) & 0xFFFF
 
 	func ppu_vram_map [] -> u32
-		a : u32 [ u32[ppu.vram_addr] ]
+		a : u32 [ ppu.vram_addr ]
 		m : u8  [ (ppu.vmain >> 2) & 3 ]
 		if [ m == 1 ] return (a & 0x7F00) | ((a << 3) & 0x00F8) | ((a >> 5) & 7)
 		if [ m == 2 ] return (a & 0x7E00) | ((a << 3) & 0x01F8) | ((a >> 6) & 7)
@@ -1255,14 +1255,14 @@ element asnes : trinity
 			ppu.oamadd = (ppu.oamadd + 1) & 0x3FF
 			return v
 		el [ r == 0x39 ]                                  # VMDATALREAD
-			v : u8 [ u8[ppu.vram_pre & 0xFF] ]
+			v : u8 [ ppu.vram_pre & 0xFF ]
 			if [ (ppu.vmain & 0x80) == 0 ]
 				wa : u32 [ ppu_vram_map[] * 2 ]
 				ppu.vram_pre = u16[ppu.vram[wa]] | (u16[ppu.vram[wa + 1]] << 8)
 				ppu_vram_inc[]
 			return v
 		el [ r == 0x3A ]                                  # VMDATAHREAD
-			v : u8 [ u8[ppu.vram_pre >> 8] ]
+			v : u8 [ ppu.vram_pre >> 8 ]
 			if [ ppu.vmain & 0x80 ]
 				wa : u32 [ ppu_vram_map[] * 2 ]
 				ppu.vram_pre = u16[ppu.vram[wa]] | (u16[ppu.vram[wa + 1]] << 8)
@@ -1291,12 +1291,12 @@ element asnes : trinity
 			ppu.hv_latched = true
 			return 0x00
 		el [ r == 0x3C ]                                  # OPHCT: latched H, low byte then bit8
-			v : u8 [ u8[ppu.ophct & 0xFF] ]
+			v : u8 [ ppu.ophct & 0xFF ]
 			if [ ppu.ophct_tog ] v = u8[ (ppu.ophct >> 8) & 1 ]
 			ppu.ophct_tog = !ppu.ophct_tog
 			return v
 		el [ r == 0x3D ]                                  # OPVCT: latched V, low byte then bit8
-			v : u8 [ u8[ppu.opvct & 0xFF] ]
+			v : u8 [ ppu.opvct & 0xFF ]
 			if [ ppu.opvct_tog ] v = u8[ (ppu.opvct >> 8) & 1 ]
 			ppu.opvct_tog = !ppu.opvct_tog
 			return v
@@ -1316,8 +1316,8 @@ element asnes : trinity
 		ci : u32 [ idx * 2 ]
 		if [ use_shot ]
 			return u16[ppu.cgram_shot[ci]] | (u16[ppu.cgram_shot[ci + 1]] << 8)
-		lo : u16 [ u16[ppu.cgram[ci]] ]
-		hi : u16 [ u16[ppu.cgram[ci + 1]] ]
+		lo : u16 [ ppu.cgram[ci] ]
+		hi : u16 [ ppu.cgram[ci + 1] ]
 		return lo | (hi << 8)
 
 	func ppu_color [ w: u16, bright: u32 ] -> u32
@@ -1539,15 +1539,15 @@ element asnes : trinity
 			hbyte : u8  [ ppu_ob[512 + (n >> 2)] ]
 			hbits : u32 [ (u32[hbyte] >> ((n & 3) * 2)) & 3 ]
 			big   : u32 [ (hbits >> 1) & 1 ]
-			sw    : i32 [ i32[ws[ big * 8 + bsize ]] ]
-			sh    : i32 [ i32[hs[ big * 8 + bsize ]] ]
+			sw    : i32 [ ws[ big * 8 + bsize ] ]
+			sh    : i32 [ hs[ big * 8 + bsize ] ]
 			fx    : i32 [ i32[b0] | (i32[hbits & 1] << 8) ]
 			if [ fx >= 256 ] fx -= 512
 			pal   : u32 [ (u32[b3] >> 1) & 7 ]
 			oprio : u32 [ (u32[b3] >> 4) & 3 ]
 			hflip : u32 [ (u32[b3] >> 6) & 1 ]
 			vflip : u32 [ (u32[b3] >> 7) & 1 ]
-			nlo   : u32 [ u32[b2] ]
+			nlo   : u32 [ b2 ]
 			taddr : u32 [ tbase ]
 			if [ b3 & 1 ] taddr = tbase + ((1 + nsel) << 12)
 			cgb   : u32 [ 128 + pal * 16 ]
@@ -1568,7 +1568,7 @@ element asnes : trinity
 					addr : u32 [ taddr + (cy * 16 + cx) * 16 + u32[syp & 7] ]
 					w01  : u32 [ ppu_vw[ addr ] ]
 					w23  : u32 [ ppu_vw[ addr + 8 ] ]
-					bit  : u32 [ u32[7 - (sxp & 7)] ]
+					bit  : u32 [ 7 - (sxp & 7) ]
 					col  : u32 [ ((w01 >> bit) & 1) | (((w01 >> (bit + 8)) & 1) << 1) | (((w23 >> bit) & 1) << 2) | (((w23 >> (bit + 8)) & 1) << 3) ]
 					if [ !col ] continue
 					di : i32 [ scy * 256 + scx ]
@@ -1594,7 +1594,7 @@ element asnes : trinity
 			i : i32 [ base + x ]
 			if [ ppu.obj_color[i] != 0 ]
 				if [ ppu.px_src[i] == 5 ]
-					oi : i32 [ i32[ ppu.obj_idx[i] ] ]
+					oi : i32 [ ppu.obj_idx[i] ]
 					if [ spr_world[ oi ] != 0 ] lay_sw[i] = ppu.framebuf[i]
 					el lay_ss[i] = ppu.framebuf[i]
 
@@ -1740,13 +1740,13 @@ element asnes : trinity
 			for [ x: i32 0, x < 256, x += 1 ]
 				i : i32 [ base + x ]
 				if [ ppu.obj_color[i] == 0 ] continue
-				oa : i32 [ i32[ ppu.obj_idx[i] ] ]
+				oa : i32 [ ppu.obj_idx[i] ]
 				cnt[oa] += 1
 				if [ x + 1 < 256 && ppu.obj_color[i + 1] != 0 ]
-					ob : i32 [ i32[ ppu.obj_idx[i + 1] ] ]
+					ob : i32 [ ppu.obj_idx[i + 1] ]
 					if [ oa != ob ] sprite_union[ @par[0], oa, ob ]
 				if [ y + 1 < 224 && ppu.obj_color[i + 256] != 0 ]
-					oc : i32 [ i32[ ppu.obj_idx[i + 256] ] ]
+					oc : i32 [ ppu.obj_idx[i + 256] ]
 					if [ oa != oc ] sprite_union[ @par[0], oa, oc ]
 		for [ n: i32 0, n < 128, n += 1 ]
 			if [ cnt[n] == 0 ] continue
@@ -1944,10 +1944,10 @@ element asnes : trinity
 		return s
 
 	func ppu_m7_line [ y: i32, bright: u32 ]
-		a  : i32 [ i32[line_m7a[y]] ]
-		b  : i32 [ i32[line_m7b[y]] ]
-		c  : i32 [ i32[line_m7c[y]] ]
-		d  : i32 [ i32[line_m7d[y]] ]
+		a  : i32 [ line_m7a[y] ]
+		b  : i32 [ line_m7b[y] ]
+		c  : i32 [ line_m7c[y] ]
+		d  : i32 [ line_m7d[y] ]
 		hc : i32 [ sx13[ i32[frame_m7x] ] ]
 		vc : i32 [ sx13[ i32[frame_m7y] ] ]
 		ho : i32 [ sx13[ i32[ppu.m7hofs] ] ]
@@ -1991,11 +1991,11 @@ element asnes : trinity
 	func m7_unpack [ bright: u32 ]
 		for [ tY: i32 0, tY < 128, tY += 1 ]
 			for [ tX: i32 0, tX < 128, tX += 1 ]
-				tile : u32 [ u32[pub_vram[ (tY * 128 + tX) * 2 ]] ]
+				tile : u32 [ pub_vram[ (tY * 128 + tX) * 2 ] ]
 				for [ py: i32 0, py < 8, py += 1 ]
 					for [ px: i32 0, px < 8, px += 1 ]
 						ci  : u32 [ (tile << 6) | u32[(py << 3) | px] ]
-						pix : u32 [ u32[pub_vram[ ci * 2 + 1 ]] ]
+						pix : u32 [ pub_vram[ ci * 2 + 1 ] ]
 						col : u32 [ 0 ]
 						if [ pix != 0 ]
 							cw : u16 [ u16[pub_cgram[pix * 2]] | (u16[pub_cgram[pix * 2 + 1]] << 8) ]
@@ -2051,16 +2051,16 @@ element asnes : trinity
 		g_eased   : i32 [ 0 ]
 		g_snapped : i32 [ 0 ]
 		for [ y: i32 0, y < 224, y += 1 ]
-			a : i32 [ i32[pub_m7a[y]] ]
-			b : i32 [ i32[pub_m7b[y]] ]
-			c : i32 [ i32[pub_m7c[y]] ]
-			d : i32 [ i32[pub_m7d[y]] ]
+			a : i32 [ pub_m7a[y] ]
+			b : i32 [ pub_m7b[y] ]
+			c : i32 [ pub_m7c[y] ]
+			d : i32 [ pub_m7d[y] ]
 			yy : i32 [ y ]
 			if [ vflip ] yy = 255 - y
-			af : f32 [ f32[ a ] ]
-			bf : f32 [ f32[ b ] ]
-			cf : f32 [ f32[ c ] ]
-			df : f32 [ f32[ d ] ]
+			af : f32 [ a ]
+			bf : f32 [ b ]
+			cf : f32 [ c ]
+			df : f32 [ d ]
 			eased : bool [ false ]
 			if [ ease ]
 				pa : f32 [ m7f_a[y] ]
@@ -2354,7 +2354,7 @@ element asnes : trinity
 					dbg_jl += 1
 				if [ joy_strobe & 1 ] return u8[(pad1 >> 15) & 1]
 				if [ joy_index >= 16 ] return 0x01
-				rb : u8 [ u8[(pad1 >> (15 - joy_index)) & 1] ]
+				rb : u8 [ (pad1 >> (15 - joy_index)) & 1 ]
 				joy_index += 1
 				return rb
 			if [ addr == 0x4017 ] return 0x00
@@ -2549,7 +2549,7 @@ element asnes : trinity
 
 	func cpu_long_r [ la: u32 ] -> u8
 		bank : u32 [ la >> 16 ]
-		addr : u16 [ u16[ la & 0xFFFF ] ]
+		addr : u16 [ la & 0xFFFF ]
 		if [ (bank & 0x40) == 0 && addr < 0x2000 ]           # banks 00-3F/80-BF, $0000-1FFF = WRAM mirror — flat memory[la] there is JUNK (zelda's story parser reads its command list through a bank-00 long pointer)
 			cpu_tick[ bank, addr ]
 			wa : u32 [ 0x7E0000 + u32[addr] ]
@@ -2561,7 +2561,7 @@ element asnes : trinity
 
 	func cpu_long_w [ la: u32, val: u8 ]
 		bank : u32 [ la >> 16 ]
-		addr : u16 [ u16[ la & 0xFFFF ] ]
+		addr : u16 [ la & 0xFFFF ]
 		if [ (bank & 0x40) == 0 && addr < 0x2000 ]           # WRAM mirror (see cpu_long_r)
 			cpu_tick[ bank, addr ]
 			wa : u32 [ 0x7E0000 + u32[addr] ]
@@ -2654,7 +2654,7 @@ element asnes : trinity
 			cpu.p = (cpu.p & ~0x82) | ((v == 0) ? 0x02 : 0) | (((v & 0x8000) != 0) ? 0x80 : 0)
 
 	func cpu_bank_r [ bank: u32, addr: u16 ] -> u8
-		a32  : u32 [ u32[addr] ]
+		a32  : u32 [ addr ]
 		if [ is_hirom && ((bank >= 0x40 && bank <= 0x7D) || bank >= 0xC0) ]
 			cpu_tick[ bank, addr ]
 			return cpu.memory[ (bank << 16) | a32 ]
@@ -2673,7 +2673,7 @@ element asnes : trinity
 		return cpu.memory[ fa ]
 
 	func cpu_bank_w [ bank: u32, addr: u16, val: u8 ]
-		a32  : u32 [ u32[addr] ]
+		a32  : u32 [ addr ]
 		if [ is_hirom && ((bank >= 0x40 && bank <= 0x7D) || bank >= 0xC0) ]
 			cpu_tick[ bank, addr ]
 			cpu.memory[ (bank << 16) | a32 ] = val
@@ -3233,7 +3233,7 @@ element asnes : trinity
 		if [ ! audio || ! audio.active ] return
 		to_write : sz [ audio_slice_size[] ]
 		if [ to_write <= 0 ] return
-		samples   : i32  [ i32[to_write] ]
+		samples   : i32  [ to_write ]
 		spc.audio_done = 0
 		spc.audio_sub  = 0
 		nmi_cyc   : i32  [ 225 * 1364 / 6 ]
@@ -3363,7 +3363,7 @@ element asnes : trinity
 		if [ ! audio || ! audio.active ] return
 		to_write : sz [ audio_slice_size[] ]
 		if [ to_write <= 0 ] return
-		samples   : i32  [ i32[to_write] ]
+		samples   : i32  [ to_write ]
 		spc.audio_done = 0
 		spc.audio_sub  = 0
 		nmi_cyc   : i32  [ 225 * 1364 / 6 ]
@@ -3814,7 +3814,7 @@ element asnes : trinity
 			return
 		bit : i32 [ bind_pad_bit[ ev.pad.button ] ]
 		if [ bit >= 0 ]
-			m : u16 [ u16[1 << bit] ]
+			m : u16 [ 1 << bit ]
 			if [ ev.pad.state ] pad1 = pad1 | m
 			el pad1 = pad1 & (~m)
 
@@ -3841,7 +3841,7 @@ element asnes : trinity
 			el [ code == key_l ]      bit = 5
 			el [ code == key_r ]      bit = 4
 		if [ bit >= 0 ]
-			m : u16 [ u16[1 << bit] ]
+			m : u16 [ 1 << bit ]
 			if [ down ] pad1 = pad1 | m
 			el pad1 = pad1 & (~m)
 		if [ down ]
@@ -3914,18 +3914,18 @@ element asnes : trinity
 		return '{hex2[ (v >> 8) & 255 ]}{hex2[ v & 255 ]}'
 
 	func cg_rgba [ ix: i32 ] -> u32
-		lo : i32 [ i32[ pub_cgram[ (ix * 2) & 511 ] ] ]
-		hi : i32 [ i32[ pub_cgram[ (ix * 2 + 1) & 511 ] ] ]
+		lo : i32 [ pub_cgram[ (ix * 2) & 511 ] ]
+		hi : i32 [ pub_cgram[ (ix * 2 + 1) & 511 ] ]
 		v  : i32 [ lo | (hi << 8) ]
-		r  : u32 [ u32[ ((v      ) & 31) * 255 / 31 ] ]
-		g  : u32 [ u32[ ((v >>  5) & 31) * 255 / 31 ] ]
-		b  : u32 [ u32[ ((v >> 10) & 31) * 255 / 31 ] ]
+		r  : u32 [ ((v      ) & 31) * 255 / 31 ]
+		g  : u32 [ ((v >>  5) & 31) * 255 / 31 ]
+		b  : u32 [ ((v >> 10) & 31) * 255 / 31 ]
 		return 0xFF000000 | (b << 16) | (g << 8) | r
 
 	# the same entry as a canvas colour string
 	func cg_hex [ ix: i32 ] -> string
-		lo : i32 [ i32[ pub_cgram[ (ix * 2) & 511 ] ] ]
-		hi : i32 [ i32[ pub_cgram[ (ix * 2 + 1) & 511 ] ] ]
+		lo : i32 [ pub_cgram[ (ix * 2) & 511 ] ]
+		hi : i32 [ pub_cgram[ (ix * 2 + 1) & 511 ] ]
 		v  : i32 [ lo | (hi << 8) ]
 		return '#{hex2[ ((v) & 31) * 255 / 31 ]}{hex2[ ((v >> 5) & 31) * 255 / 31 ]}{hex2[ ((v >> 10) & 31) * 255 / 31 ]}'
 
@@ -3982,8 +3982,8 @@ element asnes : trinity
 			ty : i32 [ (t >> 5) * 8 ]
 			if [ ty + 8 > 1024 ] break
 			for [ y: i32 0, y < 8, y += 1 ]
-				b0 : i32 [ i32[ pub_vram[ ta + y * 2 ] ] ]
-				b1 : i32 [ i32[ pub_vram[ ta + y * 2 + 1 ] ] ]
+				b0 : i32 [ pub_vram[ ta + y * 2 ] ]
+				b1 : i32 [ pub_vram[ ta + y * 2 + 1 ] ]
 				b2 : i32 [ 0 ]
 				b3 : i32 [ 0 ]
 				if [ chr_bpp >= 4 ]
@@ -4020,11 +4020,11 @@ element asnes : trinity
 			n : i32 [ obj_off + i ]
 			if [ n >= 128 ] break
 			o  : i32 [ n * 4 ]
-			xl : i32 [ i32[ pub_oam[ o ] ] ]
-			yv : i32 [ i32[ pub_oam[ o + 1 ] ] ]
-			t0 : i32 [ i32[ pub_oam[ o + 2 ] ] ]
-			at : i32 [ i32[ pub_oam[ o + 3 ] ] ]
-			hb : i32 [ i32[ pub_oam[ 512 + (n >> 2) ] ] ]
+			xl : i32 [ pub_oam[ o ] ]
+			yv : i32 [ pub_oam[ o + 1 ] ]
+			t0 : i32 [ pub_oam[ o + 2 ] ]
+			at : i32 [ pub_oam[ o + 3 ] ]
+			hb : i32 [ pub_oam[ 512 + (n >> 2) ] ]
 			sh : i32 [ (hb >> ((n & 3) * 2)) & 3 ]
 			xf : i32 [ xl | ((sh & 1) << 8) ]
 			big : (sh & 2) ? 'lg' : 'sm'
@@ -4043,7 +4043,7 @@ element asnes : trinity
 			ln : '{hex2[ (base >> 16) & 255 ]}{hex4[ base & 0xFFFF ]}  '
 			as : ''
 			for [ c: i32 0, c < 16, c += 1 ]
-				b : i32 [ i32[ pub_wram[ base + c ] ] ]
+				b : i32 [ pub_wram[ base + c ] ]
 				ln = '{ln}{hex2[b]} '
 				cb[0] = (b >= 32 && b < 127) ? i8[b] : i8[46]
 				cb[1] = 0
@@ -4075,13 +4075,13 @@ element asnes : trinity
 		nm   : ''
 		nb   : local i8 [ 2 ]
 		for [ i: i32 0, i < 21, i += 1 ]
-			c : i32 [ i32[ rom_at[ base + i ] ] ]
+			c : i32 [ rom_at[ base + i ] ]
 			if [ c >= 32 && c < 127 ]
 				nb[0] = i8[c]
 				nb[1] = 0
 				nm = '{nm}{string[ @nb[0] ]}'
-		rs : i32 [ i32[ rom_at[ base + 0x17 ] ] ]
-		sr : i32 [ i32[ rom_at[ base + 0x18 ] ] ]
+		rs : i32 [ rom_at[ base + 0x17 ] ]
+		sr : i32 [ rom_at[ base + 0x18 ] ]
 		vrows.push[ 'title      {nm}' ]
 		vrows.push[ 'mapping    {(is_hirom) ? "HiROM" : "LoROM"}' ]
 		vrows.push[ 'rom size   {1 << rs} KB' ]
@@ -4096,7 +4096,7 @@ element asnes : trinity
 	# per-line PPU state the frame was actually drawn with
 	func build_regs []
 		vhead = 'registers — PPU state at line 180   [ R: refresh ]'
-		md : i32 [ i32[ pub_mode[ 180 ] ] ]
+		md : i32 [ pub_mode[ 180 ] ]
 		vrows.push[ 'BGMODE     {md & 7}   (BG3 priority {(md & 8) ? 1 : 0})' ]
 		vrows.push[ 'INIDISP    ${hex2[ i32[ pub_inidisp ] ]}   brightness {i32[ pub_inidisp ] & 15}' ]
 		vrows.push[ 'M7SEL      ${hex2[ i32[ pub_m7sel ] ]}' ]
@@ -4278,7 +4278,7 @@ element asnes : trinity
 				for [ x: i32 0, x < 256, x += 1 ]
 					rr : u32 [ u32[x] & 0xFF ]
 					gg : u32 [ u32[y] & 0xFF ]
-					bb : u32 [ u32[(x + y + test_t) & 0xFF] ]
+					bb : u32 [ (x + y + test_t) & 0xFF ]
 					test_buf[ y * 256 + x ] = 0xFF000000 | (bb << 16) | (gg << 8) | rr
 			test_t += 1
 			screen_tex.upload[ test_buf, 256 * 224 * 4 ]
@@ -4866,7 +4866,7 @@ element asnes : trinity
 				w01 : u32 [ ppu_vw[ tb + u32[row] ] ]
 				w23 : u32 [ ppu_vw[ tb + 8 + u32[row] ] ]
 				for [ col: i32 0, col < 8, col += 1 ]
-					bit : u32 [ u32[7 - col] ]
+					bit : u32 [ 7 - col ]
 					idx : u32 [ ((w01 >> bit) & 1) | (((w01 >> (bit + 8)) & 1) << 1) | (((w23 >> bit) & 1) << 2) | (((w23 >> (bit + 8)) & 1) << 3) ]
 					g   : u32 [ idx * 17 ]
 					ppu.framebuf[ (ty + row) * 256 + (tx + col) ] = 0xFF000000 | (g << 16) | (g << 8) | g
@@ -4884,7 +4884,7 @@ element asnes : trinity
 		pb : vec u8 [ 1024 ]
 		memset[ pb, 0, 1024 ]
 		rp : symbol [ rom.chars ]
-		rl : i32 [ i32[ strlen[ rp ] ] ]
+		rl : i32 [ strlen[ rp ] ]
 		if [ rl > 1023 ] rl = 1023
 		memcpy[ pb, rp, rl ]
 		fwrite[ pb, 1, 1024, wf ]
@@ -5564,10 +5564,10 @@ element asnes : trinity
 		g_vo : i32 [ sx13[ i32[ pub_m7vofs ] ] ]
 		g_ch : i32 [ m7_clip[ g_ho - g_hc ] ]
 		g_cv : i32 [ m7_clip[ g_vo - g_vc ] ]
-		g_a : i32 [ i32[ pub_m7a[ 180 ] ] ]
-		g_b : i32 [ i32[ pub_m7b[ 180 ] ] ]
-		g_c : i32 [ i32[ pub_m7c[ 180 ] ] ]
-		g_d : i32 [ i32[ pub_m7d[ 180 ] ] ]
+		g_a : i32 [ pub_m7a[ 180 ] ]
+		g_b : i32 [ pub_m7b[ 180 ] ]
+		g_c : i32 [ pub_m7c[ 180 ] ]
+		g_d : i32 [ pub_m7d[ 180 ] ]
 		g_ox : f64 [ f64[ ((g_a * g_ch) & (~63)) + ((g_b * g_cv) & (~63)) + ((g_b * 180) & (~63)) + (g_hc << 8) ] / 256.0 ]
 		g_oy : f64 [ f64[ ((g_c * g_ch) & (~63)) + ((g_d * g_cv) & (~63)) + ((g_d * 180) & (~63)) + (g_vc << 8) ] / 256.0 ]
 		g_af : f64 [ f64[ g_a ] / 256.0 ]
@@ -6659,37 +6659,37 @@ element asnes : trinity
 
 			case 0x0A  # OR1 C, mem.bit
 				raw    : u16 [ spc_rw[] ]
-				bit    : u8  [ u8[(raw >> 13) & 7] ]
+				bit    : u8  [ (raw >> 13) & 7 ]
 				maddr  : u16 [ raw & 0x1FFF ]
 				if [ spc_r[maddr] & (1 << bit) ] spc.psw |= 0x01
 
 			case 0x2A  # OR1 C, /mem.bit
 				raw    : u16 [ spc_rw[] ]
-				bit    : u8  [ u8[(raw >> 13) & 7] ]
+				bit    : u8  [ (raw >> 13) & 7 ]
 				maddr  : u16 [ raw & 0x1FFF ]
 				if [ !(spc_r[maddr] & (1 << bit)) ] spc.psw |= 0x01
 
 			case 0x4A  # AND1 C, mem.bit
 				raw    : u16 [ spc_rw[] ]
-				bit    : u8  [ u8[(raw >> 13) & 7] ]
+				bit    : u8  [ (raw >> 13) & 7 ]
 				maddr  : u16 [ raw & 0x1FFF ]
 				if [ !(spc_r[maddr] & (1 << bit)) ] spc.psw &= ~0x01
 
 			case 0x6A  # AND1 C, /mem.bit
 				raw    : u16 [ spc_rw[] ]
-				bit    : u8  [ u8[(raw >> 13) & 7] ]
+				bit    : u8  [ (raw >> 13) & 7 ]
 				maddr  : u16 [ raw & 0x1FFF ]
 				if [ spc_r[maddr] & (1 << bit) ] spc.psw &= ~0x01
 
 			case 0x8A  # EOR1 C, mem.bit
 				raw    : u16 [ spc_rw[] ]
-				bit    : u8  [ u8[(raw >> 13) & 7] ]
+				bit    : u8  [ (raw >> 13) & 7 ]
 				maddr  : u16 [ raw & 0x1FFF ]
 				if [ spc_r[maddr] & (1 << bit) ] spc.psw ^= 0x01
 
 			case 0xAA  # MOV1 C, mem.bit
 				raw    : u16 [ spc_rw[] ]
-				bit    : u8  [ u8[(raw >> 13) & 7] ]
+				bit    : u8  [ (raw >> 13) & 7 ]
 				maddr  : u16 [ raw & 0x1FFF ]
 				if [ spc_r[maddr] & (1 << bit) ]
 					spc.psw |= 0x01
@@ -6698,7 +6698,7 @@ element asnes : trinity
 
 			case 0xCA  # MOV1 mem.bit, C
 				raw    : u16 [ spc_rw[] ]
-				bit    : u8  [ u8[(raw >> 13) & 7] ]
+				bit    : u8  [ (raw >> 13) & 7 ]
 				maddr  : u16 [ raw & 0x1FFF ]
 				r      : u8  [ spc_r[maddr] ]
 				if [ spc.psw & 0x01 ]
@@ -6708,7 +6708,7 @@ element asnes : trinity
 
 			case 0xEA  # NOT1 mem.bit
 				raw    : u16 [ spc_rw[] ]
-				bit    : u8  [ u8[(raw >> 13) & 7] ]
+				bit    : u8  [ (raw >> 13) & 7 ]
 				maddr  : u16 [ raw & 0x1FFF ]
 				r      : u8  [ spc_r[maddr] ]
 				spc_w[ maddr, r ^ u8[1 << bit] ]
@@ -7257,10 +7257,10 @@ element asnes : trinity
 	func cpu_adc_a [ val8: u16 ]
 		a16 : u16 [ cpu_get_A[] ]
 		dfl : bool [ (cpu.p & 0x08) != 0 ]
-		cin : i32 [ i32[cpu.p & 0x01] ]
+		cin : i32 [ cpu.p & 0x01 ]
 		if [ cpu.p & 0x20 ]
-			av8 : i32 [ i32[a16 & 0xFF] ]
-			dv8 : i32 [ i32[val8 & 0xFF] ]
+			av8 : i32 [ a16 & 0xFF ]
+			dv8 : i32 [ val8 & 0xFF ]
 			r8  : i32 [ 0 ]
 			if [ !dfl ]
 				r8 = av8 + dv8 + cin
@@ -7277,8 +7277,8 @@ element asnes : trinity
 			cpu.p = (cpu.p & ~0xC3) | c8 | z8 | n8 | ov8
 			cpu_set_A[ u16[r8 & 0xFF] ]
 		el
-			avw : i32 [ i32[a16] ]
-			dvw : i32 [ i32[val8] ]
+			avw : i32 [ a16 ]
+			dvw : i32 [ val8 ]
 			rw  : i32 [ 0 ]
 			if [ !dfl ]
 				rw = avw + dvw + cin
@@ -7304,9 +7304,9 @@ element asnes : trinity
 	func cpu_sbc_a [ val8: u16 ]
 		a16 : u16 [ cpu_get_A[] ]
 		dfl : bool [ (cpu.p & 0x08) != 0 ]
-		cin : i32 [ i32[cpu.p & 0x01] ]
+		cin : i32 [ cpu.p & 0x01 ]
 		if [ cpu.p & 0x20 ]
-			av8 : i32 [ i32[a16 & 0xFF] ]
+			av8 : i32 [ a16 & 0xFF ]
 			dv8 : i32 [ (~i32[val8]) & 0xFF ]
 			r8  : i32 [ 0 ]
 			if [ !dfl ]
@@ -7324,7 +7324,7 @@ element asnes : trinity
 			cpu.p = (cpu.p & ~0xC3) | c8 | z8 | n8 | ov8
 			cpu_set_A[ u16[r8 & 0xFF] ]
 		el
-			avw : i32 [ i32[a16] ]
+			avw : i32 [ a16 ]
 			dvw : i32 [ (~i32[val8]) & 0xFFFF ]
 			rw  : i32 [ 0 ]
 			if [ !dfl ]
@@ -7394,7 +7394,7 @@ element asnes : trinity
 
 	func cpu_long_leaf [ la: u32 ] -> u8
 		bank : u32 [ la >> 16 ]
-		addr : u16 [ u16[ la & 0xFFFF ] ]
+		addr : u16 [ la & 0xFFFF ]
 		if [ (bank & 0x40) == 0 && addr < 0x2000 ]    # WRAM mirror (banks 00-3F/80-BF): ff3 reads its event script via LDA [dp] with bank 00 — the flat map returned 0s instead of $7E xxxx
 			cpu_tick[ bank, addr ]
 			return cpu.memory[ 0x7E0000 + u32[addr] ]
@@ -7541,7 +7541,7 @@ element asnes : trinity
 		count_cpu   = true                   # count memory-access master cycles for this instruction
 		opcode   : u8   [ cpu_rb[] ]
 		if [ dma_pending != 0 ]                # deferred GP-DMA: reference hardware runs it during the instr AFTER $420B, post opcode-fetch
-			m : u8 [ u8[ dma_pending ] ]
+			m : u8 [ dma_pending ]
 			dma_pending = 0
 			ck : i32 [ (op2_internal[ opcode ]) ? 6 : cpu_speed[ cpu.pbr, cpu.pc ] ]
 			do_dma[ m, ck ]
@@ -7906,7 +7906,7 @@ element asnes : trinity
 			case 0x90  # BCC
 				off : i8 [ cpu_rb[] ]
 				if [ !(cpu.p & 0x01) ]
-					tgt      : u16 [ u16[ i32[cpu.pc] + off ] ]
+					tgt      : u16 [ i32[cpu.pc] + off ]
 					cross_pc : bool [ cpu.e && ((cpu.pc & 0xFF00) != (tgt & 0xFF00)) ]
 					cpu.pc   = tgt
 					cycles   = 3 + ((cross_pc) ? 1 : 0)
@@ -7916,7 +7916,7 @@ element asnes : trinity
 			case 0xB0  # BCS
 				off : i8 [ cpu_rb[] ]
 				if [ cpu.p & 0x01 ]
-					tgt      : u16 [ u16[ i32[cpu.pc] + off ] ]
+					tgt      : u16 [ i32[cpu.pc] + off ]
 					cross_pc : bool [ cpu.e && ((cpu.pc & 0xFF00) != (tgt & 0xFF00)) ]
 					cpu.pc   = tgt
 					cycles   = 3 + ((cross_pc) ? 1 : 0)
@@ -7926,7 +7926,7 @@ element asnes : trinity
 			case 0xF0  # BEQ
 				off : i8 [ cpu_rb[] ]
 				if [ cpu.p & 0x02 ]
-					tgt      : u16 [ u16[ i32[cpu.pc] + off ] ]
+					tgt      : u16 [ i32[cpu.pc] + off ]
 					cross_pc : bool [ cpu.e && ((cpu.pc & 0xFF00) != (tgt & 0xFF00)) ]
 					cpu.pc   = tgt
 					cycles   = 3 + ((cross_pc) ? 1 : 0)
@@ -7936,7 +7936,7 @@ element asnes : trinity
 			case 0xD0  # BNE
 				off : i8 [ cpu_rb[] ]
 				if [ !(cpu.p & 0x02) ]
-					tgt      : u16 [ u16[ i32[cpu.pc] + off ] ]
+					tgt      : u16 [ i32[cpu.pc] + off ]
 					cross_pc : bool [ cpu.e && ((cpu.pc & 0xFF00) != (tgt & 0xFF00)) ]
 					cpu.pc   = tgt
 					cycles   = 3 + ((cross_pc) ? 1 : 0)
@@ -7946,7 +7946,7 @@ element asnes : trinity
 			case 0x10  # BPL
 				off : i8 [ cpu_rb[] ]
 				if [ !(cpu.p & 0x80) ]
-					tgt      : u16 [ u16[ i32[cpu.pc] + off ] ]
+					tgt      : u16 [ i32[cpu.pc] + off ]
 					cross_pc : bool [ cpu.e && ((cpu.pc & 0xFF00) != (tgt & 0xFF00)) ]
 					cpu.pc   = tgt
 					cycles   = 3 + ((cross_pc) ? 1 : 0)
@@ -7956,7 +7956,7 @@ element asnes : trinity
 			case 0x30  # BMI
 				off : i8 [ cpu_rb[] ]
 				if [ cpu.p & 0x80 ]
-					tgt      : u16 [ u16[ i32[cpu.pc] + off ] ]
+					tgt      : u16 [ i32[cpu.pc] + off ]
 					cross_pc : bool [ cpu.e && ((cpu.pc & 0xFF00) != (tgt & 0xFF00)) ]
 					cpu.pc   = tgt
 					cycles   = 3 + ((cross_pc) ? 1 : 0)
@@ -7966,7 +7966,7 @@ element asnes : trinity
 			case 0x50  # BVC
 				off : i8 [ cpu_rb[] ]
 				if [ !(cpu.p & 0x40) ]
-					tgt      : u16 [ u16[ i32[cpu.pc] + off ] ]
+					tgt      : u16 [ i32[cpu.pc] + off ]
 					cross_pc : bool [ cpu.e && ((cpu.pc & 0xFF00) != (tgt & 0xFF00)) ]
 					cpu.pc   = tgt
 					cycles   = 3 + ((cross_pc) ? 1 : 0)
@@ -7976,7 +7976,7 @@ element asnes : trinity
 			case 0x70  # BVS
 				off : i8 [ cpu_rb[] ]
 				if [ cpu.p & 0x40 ]
-					tgt      : u16 [ u16[ i32[cpu.pc] + off ] ]
+					tgt      : u16 [ i32[cpu.pc] + off ]
 					cross_pc : bool [ cpu.e && ((cpu.pc & 0xFF00) != (tgt & 0xFF00)) ]
 					cpu.pc   = tgt
 					cycles   = 3 + ((cross_pc) ? 1 : 0)
@@ -7985,7 +7985,7 @@ element asnes : trinity
 
 			case 0x80  # BRA
 				off    : i8 [ cpu_rb[] ]
-				tgtb   : u16 [ u16[ i32[cpu.pc] + off ] ]
+				tgtb   : u16 [ i32[cpu.pc] + off ]
 				cycles = 3 + ((cpu.e && ((cpu.pc & 0xFF00) != (tgtb & 0xFF00))) ? 1 : 0)
 				cpu.pc  = tgtb
 

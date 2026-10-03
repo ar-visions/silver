@@ -1,5 +1,6 @@
 # Why did the thread nap? It was waiting for a callback.
-# The thread never got the callback: it was a weak reference, and nobody held it.
+# The thread never got the callback: it was a weak reference, and nobody
+# held it.
 import <time.h>
 import <stdio.h>
 import <stdlib.h>
@@ -34,10 +35,12 @@ ifdef [ apple ]
         -framework AudioToolbox
         -framework AVFoundation
 
-    # spectra.mm: AVAudioEngine owns the voices, the sample-rate conversion and
-    # the pitch shift, so none of it runs in mix_entry below on this platform
+    # spectra.mm: AVAudioEngine owns the voices, the sample-rate
+    # conversion and the pitch shift, so none of it runs in mix_entry
+    # below on this platform
     intern func sp_av_open     [ i32 ] -> bool
-    intern func sp_av_play     [ @i16, i64, i32, i32, bool, f32, f32 ] -> i32
+    intern func sp_av_play     [ @i16, i64, i32, i32, bool, f32,
+                                 f32 ] -> i32
     intern func sp_av_voice_pitch [ i32, f32 ] -> none
     intern func sp_av_voice_gain  [ i32, f32 ] -> none
     intern func sp_av_voice_stop  [ i32 ] -> none
@@ -46,18 +49,21 @@ ifdef [ apple ]
     intern func sp_av_stop     [ @i16 ] -> none
     intern func sp_av_close    [ ] -> none
 
-    # devices' microphone (devices.mm): the default input, mono, into a ring
+    # devices' microphone (devices.mm): the default input, mono, into a
+    # ring
     intern func platform_mic_open  [ rate: @i32 ] -> bool
     intern func platform_mic_read  [ out: @i16, frames: i32 ] -> i32
     intern func platform_mic_close [ ] -> none
 
-    func aq_output_done [ user: handle, q: AudioQueueRef, b: AudioQueueBufferRef ] -> none
+    func aq_output_done [ user: handle, q: AudioQueueRef,
+                          b: AudioQueueBufferRef ] -> none
         c : @u64 [ user ]
         c[0] += 1
 
-    # capture on apple: the system's default input through the platform's
-    # mic (an audio queue into a ring, mono). a block is ready once size
-    # frames have come in: capture fills buf across calls and says true then
+    # capture on apple: the system's default input through the
+    # platform's mic (an audio queue into a ring, mono). a block is
+    # ready once size frames have come in: capture fills buf across
+    # calls and says true then
     class spectra
         public size:        i32
         public sample_rate: i32
@@ -67,9 +73,10 @@ ifdef [ apple ]
         public im:          @f32
         public buf:         @i16
         public bins:        @f32
-        # the vectors re / im / buf / bins point into: a spectra made after
-        # startup (dictation's, on the first mic press) has its new arrays
-        # freed by the next frame's auto_free unless something holds them
+        # the vectors re / im / buf / bins point into: a spectra made
+        # after startup (dictation's, on the first mic press) has its
+        # new arrays freed by the next frame's auto_free unless
+        # something holds them
         intern re_v:        vec f32
         intern im_v:        vec f32
         intern buf_v:       vec i16
@@ -112,8 +119,8 @@ ifdef [ apple ]
                 im[i] = 0.0
 
             fft [ re, im, size ]
-            half2: i32 [ size / 2 ]
-            for [ i: i32 0, i < half2, i += 1 ]
+            half: i32 [ size / 2 ]
+            for [ i: i32 0, i < half, i += 1 ]
                 bins[i] = sqrt [ re[i] * re[i] + im[i] * im[i] ]
             return true
 
@@ -122,7 +129,8 @@ ifdef [ apple ]
             if [ !opened ] return
             sink : local i16 [ 1024 ]
             for [ k: i32 0, k < 256, k += 1 ]
-                if [ platform_mic_read[ @sink[ 0 ], 1024 ] < 1024 ] break
+                if [ platform_mic_read[ @sink[ 0 ], 1024 ] < 1024 ]
+                    break
             fill = 0
 
         func close []
@@ -141,7 +149,8 @@ ifdef [ apple ]
         intern aq_bufs     : @AudioQueueBufferRef
         intern freed       : @u64           # callback-owned counter
         intern used        : u64               # write-side counter
-        intern next        : i32               # round-robin buffer index
+        # round-robin buffer index
+        intern next        : i32
 
         func open [] -> bool
             bytes  : i32 [ buffer_size * channels * 2 ]
@@ -158,7 +167,9 @@ ifdef [ apple ]
             fmt.mBytesPerFrame    = channels * 2
             fmt.mChannelsPerFrame = channels
             fmt.mBitsPerChannel   = 16
-            err : i32 [ AudioQueueNewOutput[ @fmt, @aq_output_done, freed, null, null, 0, @queue ] ]
+            err : i32 [
+                AudioQueueNewOutput[ @fmt, @aq_output_done, freed, null,
+                                     null, 0, @queue ] ]
             if [ err != 0 ] return false
             for [ i: i32 0, i < 4, i += 1 ]
                 b : AudioQueueBufferRef
@@ -184,7 +195,8 @@ ifdef [ apple ]
             AudioQueueEnqueueBuffer[ queue, b, 0, null ]
             used += 1
             next  = ( next + 1 ) % 4
-            host_audio_put[ host_slot[], buffer, frames, sample_rate, channels ]
+            host_audio_put[ host_slot[], buffer, frames, sample_rate,
+                            channels ]
 
         func close []
             if [ ! active ] return
@@ -211,9 +223,10 @@ el [ windows ]
         public im:          @f32
         public buf:         @i16
         public bins:        @f32
-        # the vectors re / im / buf / bins point into: a spectra made after
-        # startup (dictation's, on the first mic press) has its new arrays
-        # freed by the next frame's auto_free unless something holds them
+        # the vectors re / im / buf / bins point into: a spectra made
+        # after startup (dictation's, on the first mic press) has its
+        # new arrays freed by the next frame's auto_free unless
+        # something holds them
         intern re_v:        vec f32
         intern im_v:        vec f32
         intern buf_v:       vec i16
@@ -231,7 +244,8 @@ el [ windows ]
             bins   = bins_v
 
         func open [] -> bool
-            pcm = wasapi_cap_open [ device, sample_rate, channels, size ]
+            pcm = wasapi_cap_open [ device, sample_rate, channels,
+                                    size ]
             if [ !pcm ]
                 log 'spectra: no capture endpoint'
                 return false
@@ -246,8 +260,8 @@ el [ windows ]
                 im[i] = 0.0
 
             fft [ re, im, size ]
-            half2: i32 [ size / 2 ]
-            for [ i: i32 0, i < half2, i += 1 ]
+            half: i32 [ size / 2 ]
+            for [ i: i32 0, i < half, i += 1 ]
                 bins[i] = sqrt [ re[i] * re[i] + im[i] * im[i] ]
             return true
 
@@ -273,15 +287,18 @@ el [ windows ]
 
         func open [] -> bool
             buffer = calloc[ 1, buffer_size * channels * 2 ]
-            pcm_handle = wasapi_out_open[ null, sample_rate, channels, i32[ buffer_size ] ]
+            pcm_handle = wasapi_out_open[ null, sample_rate, channels,
+                                          i32[ buffer_size ] ]
             active = pcm_handle != null
             return active
 
         func write [ frames: i32 ] -> none
             if [ ! pcm_handle ] return
             wr : i32 [ wasapi_out_write[ pcm_handle, buffer, frames ] ]
-            host_audio_put[ host_slot[], buffer, frames, sample_rate, channels ]
-            # a short write drops the remainder; count it like the alsa path
+            host_audio_put[ host_slot[], buffer, frames, sample_rate,
+                            channels ]
+            # a short write drops the remainder; count it like the alsa
+            # path
             if [ wr < frames ]
                 shorts += 1
             writes += 1
@@ -305,9 +322,10 @@ el [ android ]
         public im:          @f32
         public buf:         @i16
         public bins:        @f32
-        # the vectors re / im / buf / bins point into: a spectra made after
-        # startup (dictation's, on the first mic press) has its new arrays
-        # freed by the next frame's auto_free unless something holds them
+        # the vectors re / im / buf / bins point into: a spectra made
+        # after startup (dictation's, on the first mic press) has its
+        # new arrays freed by the next frame's auto_free unless
+        # something holds them
         intern re_v:        vec f32
         intern im_v:        vec f32
         intern buf_v:       vec i16
@@ -349,17 +367,24 @@ el [ android ]
         func open [] -> bool
             buffer = calloc[ 1, buffer_size * channels * 2 ]
             b : @AAudioStreamBuilder [ null ]
-            if [ AAudio_createStreamBuilder[ @b ] != AAUDIO_OK ] return false
-            AAudioStreamBuilder_setDirection      [ b, AAUDIO_DIRECTION_OUTPUT ]
+            if [ AAudio_createStreamBuilder[ @b ] != AAUDIO_OK ]
+                return false
+            AAudioStreamBuilder_setDirection      [ b,
+                                                    AAUDIO_DIRECTION_OUTPUT ]
             AAudioStreamBuilder_setSampleRate     [ b, sample_rate ]
             AAudioStreamBuilder_setChannelCount   [ b, channels ]
-            AAudioStreamBuilder_setFormat         [ b, AAUDIO_FORMAT_PCM_I16 ]
-            AAudioStreamBuilder_setPerformanceMode[ b, AAUDIO_PERFORMANCE_MODE_LOW_LATENCY ]
-            ok : bool [ AAudioStreamBuilder_openStream[ b, @stream ] == AAUDIO_OK ]
+            AAudioStreamBuilder_setFormat         [ b,
+                                                    AAUDIO_FORMAT_PCM_I16 ]
+            AAudioStreamBuilder_setPerformanceMode[ b,
+                                                    AAUDIO_PERFORMANCE_MODE_LOW_LATENCY ]
+            ok : bool [
+                AAudioStreamBuilder_openStream[ b,
+                                                @stream ] == AAUDIO_OK ]
             AAudioStreamBuilder_delete[ b ]
             if [ !ok ] return false
             got : i32 [ AAudioStream_getSampleRate[ stream ] ]
-            printf[ "AudioOut: asked %d Hz -> got %d Hz (aaudio)\n", sample_rate, got ]
+            printf[ "AudioOut: asked %d Hz -> got %d Hz (aaudio)\n",
+                    sample_rate, got ]
             if [ AAudioStream_requestStart[ stream ] != AAUDIO_OK ]
                 AAudioStream_close[ stream ]
                 stream = null
@@ -370,7 +395,8 @@ el [ android ]
         func write [ frames: i32 ] -> none
             if [ !stream ] return
             AAudioStream_write[ stream, buffer, frames, 1000000000 ]
-            host_audio_put[ host_slot[], buffer, frames, sample_rate, channels ]
+            host_audio_put[ host_slot[], buffer, frames, sample_rate,
+                            channels ]
             writes += 1
 
         func close []
@@ -394,9 +420,10 @@ el
         public im:          @f32
         public buf:         @i16
         public bins:        @f32
-        # the vectors re / im / buf / bins point into: a spectra made after
-        # startup (dictation's, on the first mic press) has its new arrays
-        # freed by the next frame's auto_free unless something holds them
+        # the vectors re / im / buf / bins point into: a spectra made
+        # after startup (dictation's, on the first mic press) has its
+        # new arrays freed by the next frame's auto_free unless
+        # something holds them
         intern re_v:        vec f32
         intern im_v:        vec f32
         intern buf_v:       vec i16
@@ -421,17 +448,22 @@ el
             params2: @snd_pcm_hw_params_t
             snd_pcm_hw_params_malloc       [ @params2 ]
             snd_pcm_hw_params_any          [ pcm, params2 ]
-            snd_pcm_hw_params_set_access   [ pcm, params2, SND_PCM_ACCESS_RW_INTERLEAVED ]
-            snd_pcm_hw_params_set_format   [ pcm, params2, SND_PCM_FORMAT_S16_LE ]
+            snd_pcm_hw_params_set_access   [ pcm, params2,
+                                             SND_PCM_ACCESS_RW_INTERLEAVED ]
+            snd_pcm_hw_params_set_format   [ pcm, params2,
+                                             SND_PCM_FORMAT_S16_LE ]
             snd_pcm_hw_params_set_channels [ pcm, params2, channels ]
 
             rate:           u32 [ sample_rate ]
-            dir2:           i32 [ 0 ]
-            snd_pcm_hw_params_set_rate_near        [ pcm, params2, @rate, @dir2 ]
+            dir:           i32 [ 0 ]
+            snd_pcm_hw_params_set_rate_near        [ pcm, params2, @rate,
+                                                     @dir ]
 
             period_size:    i32 size
             dir_period:     i32 0
-            snd_pcm_hw_params_set_period_size_near [ pcm, params2, @period_size, @dir_period ]
+            snd_pcm_hw_params_set_period_size_near [ pcm, params2,
+                                                     @period_size,
+                                                     @dir_period ]
             rc = snd_pcm_hw_params [ pcm, params2 ]
             snd_pcm_hw_params_free [ params2 ]
             if [ rc < 0 ]
@@ -442,7 +474,8 @@ el
         func capture [] -> bool
             # a block only when one is there: a read short of one blocks
             # the caller's thread until the mic fills it (43 ms a block)
-            if [ snd_pcm_state [ pcm ] == SND_PCM_STATE_PREPARED ] snd_pcm_start [ pcm ]
+            if [ snd_pcm_state [ pcm ] == SND_PCM_STATE_PREPARED ]
+                snd_pcm_start [ pcm ]
             avail : i64 [ snd_pcm_avail_update [ pcm ] ]
             if [ avail < 0 ]
                 snd_pcm_prepare [ pcm ]
@@ -460,8 +493,8 @@ el
                 im[i] = 0.0
 
             fft [ re, im, size ]
-            half2: i32 [ size / 2 ]
-            for [ i: i32 0, i < half2, i += 1 ]
+            half: i32 [ size / 2 ]
+            for [ i: i32 0, i < half, i += 1 ]
                 bins[i] = sqrt [ re[i] * re[i] + im[i] * im[i] ]
             return true
 
@@ -497,7 +530,8 @@ el
         func pcm_open [] -> bool
             pb  : i32 [ SND_PCM_STREAM_PLAYBACK ]
             # the system's selected output; never the pulse plugin
-            dev : symbol [ (device && device.count) ? device.chars : 'default' ]
+            dev : symbol [
+                (device && device.count) ? device.chars : 'default' ]
             err : i32 [ snd_pcm_open[ @pcm_handle, dev, pb, 0 ] ]
             if [ err < 0 ] return false
             psz    : snd_pcm_hw_params_sizeof[]
@@ -507,12 +541,16 @@ el
             fmt : i32 [ SND_PCM_FORMAT_S16_LE ]
             snd_pcm_hw_params_set_access  [ pcm_handle, params, rw ]
             snd_pcm_hw_params_set_format  [ pcm_handle, params, fmt ]
-            snd_pcm_hw_params_set_channels[ pcm_handle, params, channels ]
-            snd_pcm_hw_params_set_rate    [ pcm_handle, params, sample_rate, 0 ]
+            snd_pcm_hw_params_set_channels[ pcm_handle, params,
+                                            channels ]
+            snd_pcm_hw_params_set_rate    [ pcm_handle, params,
+                                            sample_rate, 0 ]
             bufsz : sz [ buffer_size * 2 ]
             persz : sz [ buffer_size / 4 ]
-            snd_pcm_hw_params_set_buffer_size_near[ pcm_handle, params, @bufsz ]
-            snd_pcm_hw_params_set_period_size_near[ pcm_handle, params, @persz, null ]
+            snd_pcm_hw_params_set_buffer_size_near[ pcm_handle, params,
+                                                    @bufsz ]
+            snd_pcm_hw_params_set_period_size_near[ pcm_handle, params,
+                                                    @persz, null ]
             ok : bool [ snd_pcm_hw_params[ pcm_handle, params ] >= 0 ]
             # what we ASKED for is not what we got. all three of these
             # are in/out and were being discarded, so a device that
@@ -520,8 +558,10 @@ el
             arate : i32 [ 0 ]
             adir  : i32 [ 0 ]
             snd_pcm_hw_params_get_rate[ params, @arate, @adir ]
-            printf[ "AudioOut: asked %d Hz buf %ld per %ld -> got %d Hz buf %ld per %ld\n",
-                sample_rate, i64[ buffer_size * 2 ], i64[ buffer_size / 4 ],
+            printf[
+                "AudioOut: asked %d Hz buf %ld per %ld -> got %d Hz buf %ld per %ld\n",
+                sample_rate, i64[ buffer_size * 2 ],
+                i64[ buffer_size / 4 ],
                 arate, i64[ bufsz ], i64[ persz ] ]
             free[ params ]
             if [ ok ]
@@ -533,7 +573,8 @@ el
 
         func write [ frames: i32 ] -> none
             if [ ! active ] return
-            host_audio_put[ host_slot[], buffer, frames, sample_rate, channels ]
+            host_audio_put[ host_slot[], buffer, frames, sample_rate,
+                            channels ]
             if [ host_audio_played[ host_slot[] ] != 0 ]
                 # a frozen app's open stream stalls the system's sound
                 if [ pcm_handle ]
@@ -546,7 +587,8 @@ el
             if [ !pcm_handle && !pcm_open[] ] return
             wr : i64 [ snd_pcm_writei[ pcm_handle, buffer, frames ] ]
             if [ wr < 0 ]
-                # every recover is an xrun, and an xrun is an audible click
+                # every recover is an xrun, and an xrun is an audible
+                # click
                 xruns += 1
                 printf[ "AudioOut: xrun %ld (%s) after %ld writes\n",
                     xruns, snd_strerror[ i32[ wr ] ], writes ]
@@ -556,12 +598,14 @@ el
                 # a SHORT write drops the remainder on the floor: the
                 # positive return was being ignored entirely
                 shorts += 1
-                printf[ "AudioOut: short write %ld of %d (count %ld)\n", wr, frames, shorts ]
+                printf[ "AudioOut: short write %ld of %d (count %ld)\n",
+                        wr, frames, shorts ]
             writes += 1
 
         func close []
             if [ pcm_handle ]
-                # drop, never drain: the queued tail played out is a buzz
+                # drop, never drain: the queued tail played out is a
+                # buzz
                 snd_pcm_drop[ pcm_handle ]
                 snd_pcm_close[ pcm_handle ]
             pcm_handle = null
@@ -576,10 +620,12 @@ class AudioClip
     public pcm      : @i16
 
 func be32 [ b: @u8, o: i32 ] -> i64
-    return i64[ b[o] ] * 16777216 + i64[ b[o+1] ] * 65536 + i64[ b[o+2] ] * 256 + i64[ b[o+3] ]
+    return i64[ b[o] ] * 16777216 + i64[ b[o+1] ] * 65536 + i64[
+        b[o+2] ] * 256 + i64[ b[o+3] ]
 
 func le32 [ b: @u8, o: i32 ] -> i64
-    return i64[ b[o] ] + i64[ b[o+1] ] * 256 + i64[ b[o+2] ] * 65536 + i64[ b[o+3] ] * 16777216
+    return i64[ b[o] ] + i64[ b[o+1] ] * 256 + i64[
+        b[o+2] ] * 65536 + i64[ b[o+3] ] * 16777216
 
 func le16 [ b: @u8, o: i32 ] -> i32
     return i32[ b[o] ] + i32[ b[o+1] ] * 256
@@ -606,18 +652,18 @@ func box_find [ b: @u8, s: i32, e: i32, cc: i64 ] -> i32
         bt : i64 [ be32[ b, o + 4 ] ]
         if [ bt == cc ] return o
         if [ bs < 8 ] return -1
-        adv : i32 [ i32[ bs ] ]
+        adv : i32 [ bs ]
         o += adv
     return -1
 
 func esds_asc [ b: @u8, s: i32, e: i32 ] -> i64
     q : i32 [ s ]
     while [ q < e ]
-        tag : i32 [ i32[ b[ q ] ] ]
+        tag : i32 [ b[ q ] ]
         q += 1
         ln : i32 [ 0 ]
         while [ true ]
-            b9 : i32 [ i32[ b[ q ] ] ]
+            b9 : i32 [ b[ q ] ]
             q += 1
             ln = ln * 128 + (b9 & 127)
             if [ (b9 & 128) == 0 ] break
@@ -650,7 +696,7 @@ func caf_parse [ buf: @u8, fsz: i32 ] -> AacStream
         el [ ct == 1684108385 ]
             data_o = o + 4
         if [ cs < 0 ] break
-        adv : i32 [ i32[ cs ] ]
+        adv : i32 [ cs ]
         o += adv
     if [ kuki_o < 0 || pakt_o < 0 || data_o < 0 ] return null
     st : AacStream [ asc_o: kuki_o, asc_n: kuki_n ]
@@ -662,7 +708,7 @@ func caf_parse [ buf: @u8, fsz: i32 ] -> AacStream
     st.npkts   = be64[ buf, pakt_o ]
     st.nvalid  = be64[ buf, pakt_o + 8 ]
     st.priming = i32[ be32[ buf, pakt_o + 16 ] ]
-    np : i32 [ i32[ st.npkts ] ]
+    np : i32 [ st.npkts ]
     st.sizes = new i32 [ np ]
     st.offs  = new i32 [ np ]
     po : i32 [ pakt_o + 24 ]
@@ -670,7 +716,7 @@ func caf_parse [ buf: @u8, fsz: i32 ] -> AacStream
     for [ k: i32 0, k < np, k += 1 ]
         psz : i32 [ 0 ]
         while [ true ]
-            b9 : i32 [ i32[ buf[ po ] ] ]
+            b9 : i32 [ buf[ po ] ]
             po += 1
             psz = psz * 128 + (b9 & 127)
             if [ (b9 & 128) == 0 ] break
@@ -693,9 +739,9 @@ func m4a_parse [ buf: @u8, fsz: i32 ] -> AacStream
         ee   : i32 [ edts + i32[ be32[ buf, edts ] ] ]
         elst : i32 [ box_find[ buf, edts + 8, ee, 1701606260 ] ]
         if [ elst >= 0 ]
-            nent : i32 [ i32[ be32[ buf, elst + 12 ] ] ]
+            nent : i32 [ be32[ buf, elst + 12 ] ]
             if [ nent > 0 ]
-                mt : i32 [ i32[ be32[ buf, elst + 20 ] ] ]
+                mt : i32 [ be32[ buf, elst + 20 ] ]
                 if [ mt > 0 ] priming = mt
     mdia : i32 [ box_find[ buf, trak + 8, te, 1835297121 ] ]
     if [ mdia < 0 ] return null
@@ -718,28 +764,30 @@ func m4a_parse [ buf: @u8, fsz: i32 ] -> AacStream
     ese : i32 [ esds + i32[ be32[ buf, esds ] ] ]
     pk : i64 [ esds_asc[ buf, esds + 12, ese ] ]
     if [ pk < 0 ] return null
-    st : AacStream [ asc_o: i32[ pk / 65536 ], asc_n: i32[ pk % 65536 ], priming: priming ]
-    np : i32 [ i32[ be32[ buf, stsz + 16 ] ] ]
-    fixed : i32 [ i32[ be32[ buf, stsz + 12 ] ] ]
+    st : AacStream [ asc_o: i32[ pk / 65536 ], asc_n: i32[ pk % 65536 ],
+                     priming: priming ]
+    np : i32 [ be32[ buf, stsz + 16 ] ]
+    fixed : i32 [ be32[ buf, stsz + 12 ] ]
     st.npkts = np
     st.sizes = new i32 [ np ]
     st.offs  = new i32 [ np ]
     for [ k: i32 0, k < np, k += 1 ]
-        st.sizes[ k ] = (fixed > 0) ? fixed : i32[ be32[ buf, stsz + 20 + k * 4 ] ]
-    nchunk : i32 [ i32[ be32[ buf, stco + 12 ] ] ]
-    nsc    : i32 [ i32[ be32[ buf, stsc + 12 ] ] ]
+        st.sizes[ k ] = (fixed > 0) ? fixed : i32[
+            be32[ buf, stsz + 20 + k * 4 ] ]
+    nchunk : i32 [ be32[ buf, stco + 12 ] ]
+    nsc    : i32 [ be32[ buf, stsc + 12 ] ]
     k2 : i32 [ 0 ]
     sci : i32 [ 0 ]
     for [ ci: i32 0, ci < nchunk, ci += 1 ]
         # advance the stsc run whose first_chunk covers this chunk
         while [ sci + 1 < nsc ]
-            nfc : i32 [ i32[ be32[ buf, stsc + 16 + (sci + 1) * 12 ] ] ]
+            nfc : i32 [ be32[ buf, stsc + 16 + (sci + 1) * 12 ] ]
             if [ ci + 1 >= nfc ]
                 sci += 1
             el
                 break
-        spc : i32 [ i32[ be32[ buf, stsc + 16 + sci * 12 + 4 ] ] ]
-        coff : i32 [ i32[ be32[ buf, stco + 16 + ci * 4 ] ] ]
+        spc : i32 [ be32[ buf, stsc + 16 + sci * 12 + 4 ] ]
+        coff : i32 [ be32[ buf, stco + 16 + ci * 4 ] ]
         for [ j: i32 0, j < spc, j += 1 ]
             if [ k2 >= np ] break
             st.offs[ k2 ] = coff
@@ -754,12 +802,14 @@ func wav_load [ p: path ] -> AudioClip
         log 'wav: cannot open {p}'
         return null
     fseek[ fp, 0, SEEK_END ]
-    fsz : i32 [ i32[ ftell[ fp ] ] ]
+    fsz : i32 [ ftell[ fp ] ]
     fseek[ fp, 0, SEEK_SET ]
     buf : new u8 [ fsz ]
     fread[ buf, 1, fsz, fp ]
     fclose[ fp ]
-    if [ fsz < 44 || be32[ buf, 0 ] != 1380533830 || be32[ buf, 8 ] != 1463899717 ]
+    if [
+        fsz < 44 || be32[ buf, 0 ] != 1380533830
+        || be32[ buf, 8 ] != 1463899717 ]
         log 'wav: not RIFF/WAVE: {p}'
         return null
     rate : i32 [ 0 ]
@@ -772,7 +822,7 @@ func wav_load [ p: path ] -> AudioClip
         cid : i64 [ be32[ buf, o ] ]
         # sizes are unsigned; a streamed file writes all ones
         csz : i64 [ i64[ le32[ buf, o + 4 ] ] & 4294967295 ]
-        room : i64 [ i64[ fsz - o - 8 ] ]
+        room : i64 [ fsz - o - 8 ]
         if [ cid == 1718449184 && csz >= 16 && room >= 16 ]
             ch   = le16[ buf, o + 10 ]
             rate = i32[ le32[ buf, o + 12 ] ]
@@ -825,7 +875,8 @@ expect func t_wav_open_length [] -> bool
     c : AudioClip wav_load[ p ]
     if [ !c ] return false
     log 'wav open length: {c.rate} Hz, {c.channels} ch, {c.frames} frames'
-    return c.rate == 48000 && c.channels == 2 && c.frames == 100 && c.pcm[ 0 ] == 11564
+    return c.rate == 48000 && c.channels == 2 && c.frames == 100 &&
+        c.pcm[ 0 ] == 11564
 
 # AAC in a CAF or M4A container via faad2; RIFF falls through to wav
 func caf_load [ p: path ] -> AudioClip
@@ -853,15 +904,17 @@ func caf_load [ p: path ] -> AudioClip
     conf : NeAACDecGetCurrentConfiguration[ h ]
     conf.outputFormat = FAAD_FMT_16BIT
     NeAACDecSetConfiguration[ h, conf ]
-    sr9 : u64 [ 0 ]
+    sr : u64 [ 0 ]
     ch9 : u8 [ 0 ]
-    ir : i64 [ NeAACDecInit2[ h, @buf[ st.asc_o ], u64[ st.asc_n ], @sr9, @ch9 ] ]
+    ir : i64 [
+        NeAACDecInit2[ h, @buf[ st.asc_o ], u64[ st.asc_n ], @sr,
+                       @ch9 ] ]
     if [ ir != 0 ]
         log 'caf: faad init failed on {p}'
         NeAACDecClose[ h ]
         return null
     ch : i32 [ ch9 ]
-    rate : i32 [ sr9 ]
+    rate : i32 [ sr ]
     cap : i64 [ (st.npkts + 2) * 2048 * ch ]
     pcm : new i16 [ cap ]
     wr : i64 [ 0 ]
@@ -898,28 +951,30 @@ func caf_load [ p: path ] -> AudioClip
 
 # AAC packets from any container: the AudioSpecificConfig, the
 # packets' offsets and sizes in data, and the priming frames to skip
-func aac_clip [ asc: @u8, asc_n: i32, data: @u8, offsets: vec i64, sizes: vec i64, skip: i64 ] -> AudioClip
+func aac_clip [ asc: @u8, asc_n: i32, data: @u8, offsets: vec i64,
+                sizes: vec i64, skip: i64 ] -> AudioClip
     h : NeAACDecOpen[]
     conf : NeAACDecGetCurrentConfiguration[ h ]
     conf.outputFormat = FAAD_FMT_16BIT
     NeAACDecSetConfiguration[ h, conf ]
-    sr9 : u64 [ 0 ]
+    sr : u64 [ 0 ]
     ch9 : u8 [ 0 ]
-    if [ NeAACDecInit2[ h, asc, u64[ asc_n ], @sr9, @ch9 ] != 0 ]
+    if [ NeAACDecInit2[ h, asc, u64[ asc_n ], @sr, @ch9 ] != 0 ]
         log 'aac: faad init failed'
         NeAACDecClose[ h ]
         return null
     ch   : i32 [ ch9 ]
-    rate : i32 [ sr9 ]
+    rate : i32 [ sr ]
     np   : i64 [ sizes.count ]
     cap  : i64 [ (np + 2) * 2048 * ch ]
     pcm  : new i16 [ cap ]
     wr   : i64 [ 0 ]
     for [ k: i64 0, k < np, k += 1 ]
         info : NeAACDecFrameInfo
-        off9 : i64 [ offsets[ k ] ]
-        sz9  : i64 [ sizes[ k ] ]
-        smp : @i16 [ NeAACDecDecode[ h, @info, @data[ off9 ], u64[ sz9 ] ] ]
+        off : i64 [ offsets[ k ] ]
+        sz  : i64 [ sizes[ k ] ]
+        smp : @i16 [
+            NeAACDecDecode[ h, @info, @data[ off ], u64[ sz ] ] ]
         if [ info.error != 0 || !smp ] continue
         if [ info.channels > 0 ] ch = info.channels
         ns : i64 [ info.samples ]
@@ -930,7 +985,8 @@ func aac_clip [ asc: @u8, asc_n: i32, data: @u8, offsets: vec i64, sizes: vec i6
     start : i64 [ skip * ch ]
     if [ start > wr ] start = wr
     total : i64 [ wr - start ]
-    if [ start > 0 && total > 0 ] memmove[ pcm, @pcm[ start ], total * 2 ]
+    if [ start > 0 && total > 0 ]
+        memmove[ pcm, @pcm[ start ], total * 2 ]
     clip : AudioClip [ rate: rate, channels: ch, frames: total / ch ]
     pcm.hold[]
     clip.pcm = pcm
@@ -945,12 +1001,16 @@ class AudioStream
     intern  h        : NeAACDecHandle
     intern  ring     : @i16
     intern  cap      : i64                  # frames the ring holds
-    intern  wr       : i64                  # frames written since a flush
-    intern  rd       : f64                  # frames played since a flush
+    # frames written since a flush
+    intern  wr       : i64
+    # frames played since a flush
+    intern  rd       : f64
     intern  base     : i64                  # microseconds of frame 0
     intern  based    : bool
-    intern  pulled_at : i64                 # wall clock of the last pull
-    intern  pull_us  : i64                  # microseconds that pull covered
+    # wall clock of the last pull
+    intern  pulled_at : i64
+    # microseconds that pull covered
+    intern  pull_us  : i64
     intern  lock     : mutex
 
     func init []
@@ -963,16 +1023,16 @@ class AudioStream
         conf : NeAACDecGetCurrentConfiguration[ h ]
         conf.outputFormat = FAAD_FMT_16BIT
         NeAACDecSetConfiguration[ h, conf ]
-        sr9 : u64 [ 0 ]
-        ch9 : u8 [ 0 ]
-        if [ NeAACDecInit2[ h, asc, u64[ n ], @sr9, @ch9 ] != 0 ]
+        sr : u64 [ 0 ]
+        ch : u8 [ 0 ]
+        if [ NeAACDecInit2[ h, asc, u64[ n ], @sr, @ch ] != 0 ]
             log 'aac stream: faad init failed'
             return false
         lock.lock[]
-        if [ !ring || i32[ sr9 ] != rate || i32[ ch9 ] != channels ]
+        if [ !ring || i32[ sr ] != rate || i32[ ch ] != channels ]
             if [ ring ] free[ ring ]
-            rate     = i32[ sr9 ]
-            channels = i32[ ch9 ]
+            rate     = i32[ sr ]
+            channels = i32[ ch ]
             cap      = i64[ rate ] * 8
             ring     = calloc[ cap * channels, 2 ]
             wr = 0
@@ -1013,7 +1073,8 @@ class AudioStream
     # the mixer pulls in blocks: the wall clock fills in between
     public func time [] -> i64
         lock.lock[]
-        t : i64 [ (based) ? base + i64[ rd * 1000000.0 / f64[ rate ] ] : -1 ]
+        t : i64 [
+            (based) ? base + i64[ rd * 1000000.0 / f64[ rate ] ] : -1 ]
         if [ based && pulled_at > 0 ]
             since : i64 [ Au.epoch_micros[] - pulled_at ]
             if [ since < 0 ] since = 0
@@ -1025,7 +1086,9 @@ class AudioStream
     # microseconds decoded and not yet heard
     public func buffered [] -> i64
         lock.lock[]
-        t : i64 [ (rate > 0) ? i64[ (f64[ wr ] - rd) * 1000000.0 / f64[ rate ] ] : 0 ]
+        t : i64 [
+            (rate > 0)
+            ? i64[ (f64[ wr ] - rd) * 1000000.0 / f64[ rate ] ] : 0 ]
         lock.unlock[]
         return t
 
@@ -1036,16 +1099,16 @@ class AudioStream
             step : f64 [ f64[ rate ] / f64[ out_rate ] ]
             ch : i64 [ channels ]
             for [ i: i32 0, i < n, i += 1 ]
-                i0 : i64 [ i64[ rd ] ]
+                i0 : i64 [ rd ]
                 if [ i0 + 1 >= wr ] break
-                fr : f32 [ f32[ rd - f64[ i0 ] ] ]
+                fr : f32 [ rd - f64[ i0 ] ]
                 b0 : i64 [ (i0 % cap) * ch ]
                 b1 : i64 [ ((i0 + 1) % cap) * ch ]
-                l0 : f32 [ f32[ ring[ b0 ] ] ]
+                l0 : f32 [ ring[ b0 ] ]
                 ls : f32 [ (l0 + (f32[ ring[ b1 ] ] - l0) * fr) * gain ]
                 rs : f32 [ ls ]
                 if [ ch > 1 ]
-                    r0 : f32 [ f32[ ring[ b0 + 1 ] ] ]
+                    r0 : f32 [ ring[ b0 + 1 ] ]
                     rs = (r0 + (f32[ ring[ b1 + 1 ] ] - r0) * fr) * gain
                 acc[ i * 2 ]     += i32[ ls ]
                 acc[ i * 2 + 1 ] += i32[ rs ]
@@ -1082,7 +1145,8 @@ class AudioMixer
             av = sp_av_open[ sample_rate ]
             if [ av ] return true
             log 'mixer: coreaudio engine unavailable, using the software mix'
-        out = AudioOut [ sample_rate: sample_rate, channels: 2, buffer_size: 1024 ]
+        out = AudioOut [ sample_rate: sample_rate, channels: 2,
+                         buffer_size: 1024 ]
         if [ !out.open[] ]
             log 'mixer: audio device unavailable'
             return false
@@ -1114,7 +1178,8 @@ class AudioMixer
         if [ !c ] return
         ifdef [ apple ]
             if [ av ]
-                sp_av_play[ c.pcm, c.frames, c.rate, c.channels, loop2, gain2, pitch2 ]
+                sp_av_play[ c.pcm, c.frames, c.rate, c.channels, loop2,
+                            gain2, pitch2 ]
                 return
         if [ !out || !out.active ] return
         for [ v: Voice ] in voices
@@ -1127,16 +1192,19 @@ class AudioMixer
                 v.active = true
                 return
 
-    func play [ c: AudioClip, loop2: bool, gain2: f32 ]
-        play_p[ c, loop2, gain2, 1.0 ]
+    func play [ c: AudioClip, loop: bool, gain: f32 ]
+        play_p[ c, loop, gain, 1.0 ]
 
-    # play and keep a handle on THAT voice. several cars share one engine clip,
-    # so clip-keyed set_gain/set_pitch would move all of them together
-    public func play_voice [ c: AudioClip, loop2: bool, gain2: f32, pitch2: f32 ] -> i32
+    # play and keep a handle on THAT voice. several cars share one
+    # engine clip, so clip-keyed set_gain/set_pitch would move all of
+    # them together
+    public func play_voice [ c: AudioClip, loop2: bool, gain2: f32,
+                             pitch2: f32 ] -> i32
         if [ !c ] return 0
         ifdef [ apple ]
             if [ av ]
-                return sp_av_play[ c.pcm, c.frames, c.rate, c.channels, loop2, gain2, pitch2 ]
+                return sp_av_play[ c.pcm, c.frames, c.rate, c.channels,
+                                   loop2, gain2, pitch2 ]
         if [ !out || !out.active ] return 0
         idx : i32 [ 1 ]
         for [ v: Voice ] in voices
@@ -1208,7 +1276,8 @@ class AudioMixer
         for [ v: Voice ] in voices
             if [ v.active && v.clip == c ] v.gain = gain2
 
-    # pitch on a clip that is already playing: a looping voice tracking rpm
+    # pitch on a clip that is already playing: a looping voice tracking
+    # rpm
     func set_pitch [ c: AudioClip, pitch2: f32 ]
         if [ !c ] return
         ifdef [ apple ]
@@ -1238,30 +1307,32 @@ class AudioMixer
                 if [ !v.active ] continue
                 c : v.clip
                 if [ !c || !c.pcm || c.frames < 2 ] continue
-                step : f64 [ f64[ c.rate ] / f64[ sample_rate ] * f64[ v.pitch ] ]
+                step : f64 [
+                    f64[ c.rate ] / f64[ sample_rate ]
+                    * f64[ v.pitch ] ]
                 ch : i32 [ c.channels ]
                 for [ i: i32 0, i < n, i += 1 ]
-                    lim : f64 [ f64[ c.frames - 1 ] ]
+                    lim : f64 [ c.frames - 1 ]
                     if [ v.pos >= lim ]
                         if [ v.loop ]
                             v.pos = 0.0
                         el
                             v.active = false
                             break
-                    i0 : i64 [ i64[ v.pos ] ]
-                    fr : f32 [ f32[ v.pos - f64[ i0 ] ] ]
+                    i0 : i64 [ v.pos ]
+                    fr : f32 [ v.pos - f64[ i0 ] ]
                     b0 : i64 [ i0 * ch ]
                     b1 : i64 [ (i0 + 1) * ch ]
-                    l0 : f32 [ f32[ c.pcm[ b0 ] ] ]
-                    l1 : f32 [ f32[ c.pcm[ b1 ] ] ]
+                    l0 : f32 [ c.pcm[ b0 ] ]
+                    l1 : f32 [ c.pcm[ b1 ] ]
                     ls : f32 [ (l0 + (l1 - l0) * fr) * v.gain ]
                     rs : f32 [ ls ]
                     if [ ch > 1 ]
-                        r0 : f32 [ f32[ c.pcm[ b0 + 1 ] ] ]
-                        r1 : f32 [ f32[ c.pcm[ b1 + 1 ] ] ]
+                        r0 : f32 [ c.pcm[ b0 + 1 ] ]
+                        r1 : f32 [ c.pcm[ b1 + 1 ] ]
                         rs = (r0 + (r1 - r0) * fr) * v.gain
-                    li : i32 [ i32[ ls ] ]
-                    ri : i32 [ i32[ rs ] ]
+                    li : i32 [ ls ]
+                    ri : i32 [ rs ]
                     acc[ i * 2 ] += li
                     acc[ i * 2 + 1 ] += ri
                     v.pos += step
@@ -1297,9 +1368,9 @@ func fft [ re: @f32, im: @f32, n: i32 ]
     ln : i32 [ 2 ]
     for [ ln <= n ]
         ha : i32 [ ln / 2 ]
-        ang0 : f32 [ -6.28318530718 / f32[ ln ] ]
-        wr0 : f32 [ cos[ ang0 ] ]
-        wi0 : f32 [ sin[ ang0 ] ]
+        ang : f32 [ -6.28318530718 / f32[ ln ] ]
+        wr0 : f32 [ cos[ ang ] ]
+        wi0 : f32 [ sin[ ang ] ]
         for [ s: i32 0, s < n, s += ln ]
             wr : f32 [ 1.0 ]
             wi : f32 [ 0.0 ]
@@ -1357,15 +1428,16 @@ func heat [ t0: f32 ] -> i32
         g1 = 244.0
         b1 = 210.0
         f = (t - 0.75) * 4.0
-    r : i32 [ i32[ r0 + (r1 - r0) * f ] ]
-    g : i32 [ i32[ g0 + (g1 - g0) * f ] ]
-    b : i32 [ i32[ b0 + (b1 - b0) * f ] ]
+    r : i32 [ r0 + (r1 - r0) * f ]
+    g : i32 [ g0 + (g1 - g0) * f ]
+    b : i32 [ b0 + (b1 - b0) * f ]
     return r * 65536 + g * 256 + b
 
-func spectrograph [ c: AudioClip, out2: path, w2: i32, h2: i32, fmin: f32, fmax: f32, gray: bool, act: @f32 ] -> bool
+func spectrograph [ c: AudioClip, out: path, w2: i32, h2: i32, fmin: f32,
+                    fmax: f32, gray: bool, act: @f32 ] -> bool
     if [ !c || c.frames < 4096 ] return false
     n : i32 [ 2048 ]
-    wn : i32 [ i32[ i64[ c.rate ] * 2048 / 48000 ] ]
+    wn : i32 [ i64[ c.rate ] * 2048 / 48000 ]
     if [ wn > n ] wn = n
     if [ wn < 64 ] wn = 64
     mscale : f32 [ f32[ n ] / f32[ wn ] ]
@@ -1375,10 +1447,10 @@ func spectrograph [ c: AudioClip, out2: path, w2: i32, h2: i32, fmin: f32, fmax:
     for [ i: i32 0, i < wn, i += 1 ]
         ang : f32 [ 6.28318530718 * f32[ i ] / f32[ wn ] ]
         win[ i ] = 0.5 - 0.5 * cos[ ang ]
-    nch5 : i32 [ (gray) ? 1 : 4 ]
+    nch : i32 [ (gray) ? 1 : 4 ]
     pfmt : Pixel [ (gray) ? Pixel.u8 : Pixel.rgba8 ]
-    img2 : Image [ width: w2, height: h2, format: pfmt, channels: nch5 ]
-    pd : @u8 [ img2.vdata[] ]
+    img : Image [ width: w2, height: h2, format: pfmt, channels: nch ]
+    pd : @u8 [ img.vdata[] ]
     ch : i32 [ c.channels ]
     gap : i32 [ (ch > 1) ? 2 : 0 ]
     band : i32 [ (h2 - gap * (ch - 1)) / ch ]
@@ -1386,8 +1458,8 @@ func spectrograph [ c: AudioClip, out2: path, w2: i32, h2: i32, fmin: f32, fmax:
     hop : i64 [ span / i64[ w2 ] ]
     if [ hop < 1 ] hop = 1
     nyq : f32 [ f32[ c.rate ] * 0.5 ]
-    fx2 : f32 [ (fmax > nyq) ? nyq : fmax ]
-    lr : f32 [ log[ fx2 / fmin ] ]
+    fx : f32 [ (fmax > nyq) ? nyq : fmax ]
+    lr : f32 [ log[ fx / fmin ] ]
     # divider rows between channel bands
     for [ y: i32 0, y < h2, y += 1 ]
         for [ x: i32 0, x < w2, x += 1 ]
@@ -1417,10 +1489,14 @@ func spectrograph [ c: AudioClip, out2: path, w2: i32, h2: i32, fmin: f32, fmax:
                 t : f32 [ f32[ band - 1 - y ] / f32[ band - 1 ] ]
                 fq : f32 [ fmin * exp[ t * lr ] ]
                 fb : f32 [ fq * f32[ n ] / f32[ c.rate ] ]
-                bi : i32 [ i32[ fb ] ]
+                bi : i32 [ fb ]
                 fr : f32 [ fb - f32[ bi ] ]
-                m0 : f32 [ sqrt[ re[ bi ] * re[ bi ] + im[ bi ] * im[ bi ] ] ]
-                m1 : f32 [ sqrt[ re[ bi + 1 ] * re[ bi + 1 ] + im[ bi + 1 ] * im[ bi + 1 ] ] ]
+                m0 : f32 [
+                    sqrt[ re[ bi ] * re[ bi ] + im[ bi ] * im[ bi ] ] ]
+                m1 : f32 [
+                    sqrt[
+                        re[ bi + 1 ] * re[ bi + 1 ]
+                        + im[ bi + 1 ] * im[ bi + 1 ] ] ]
                 mag : f32 [ m0 + (m1 - m0) * fr ]
                 amp : f32 [ mag * mscale / 512.0 ]
                 db : f32 [ 8.6858896 * log[ amp + 0.0000000001 ] ]
@@ -1439,5 +1515,5 @@ func spectrograph [ c: AudioClip, out2: path, w2: i32, h2: i32, fmin: f32, fmax:
                     pd[ di + 1 ] = u8[ (rgb / 256) % 256 ]
                     pd[ di + 2 ] = u8[ rgb % 256 ]
                     pd[ di + 3 ] = 255
-    img2.png[ out2 ]
+    img.png[ out ]
     return true

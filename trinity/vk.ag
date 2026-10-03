@@ -219,7 +219,8 @@ class Render
         if [ !width || !height ]
             fault "width / height or wscale not set on render Render"
             exit[ 0 ]
-        expect width <= 16384 && height <= 16384, 'Render.update: corrupt dimensions {width}x{height}'
+        expect width <= 16384 &&
+            height <= 16384, 'Render.update: corrupt dimensions {width}x{height}'
 
         # same dims is not enough: if the color view was replaced
         # (canvas retarget, swap rebuild) the framebuffer holds a
@@ -261,35 +262,41 @@ class Render
             if [ reduce && reduction ]
                 reduction.resize[ width / 4, height / 4 ]
             if [ reduce && reduce_model ]
-                reduce_model.samplers = map Au[string] [ "color": color ]
+                reduce_model.samplers = map Au[string] [
+                    "color": color ]
                 reduce_model.rebind_model[]
         el
             ctag : string [ (tag) ? tag : 'rcolor' ]
             color = Texture [ vk: vk, w: w, width: width,
                               height: height,
                 vk_format: w.surface_format.format, swap: !backbuffer,
-                surface: Surface.color, vk_image: vk_swap_image, tag: ctag,
+                surface: Surface.color, vk_image: vk_swap_image,
+                tag: ctag,
                 nearest: nearest, mip_levels: (mips > 1) ? mips : 1,
                 anisotropy: aniso ]
             if [ use_depth ]
                 depth = Texture [ vk: vk, w: w, width: width,
                                   height: height,
-                    vk_format: VK_FORMAT_D32_SFLOAT, swap: !backbuffer, tag: 'rdepth' ]
+                    vk_format: VK_FORMAT_D32_SFLOAT, swap: !backbuffer,
+                    tag: 'rdepth' ]
             if [ reduce ]
                 reduction = Texture [ vk: vk, w: w, width: width / 4,
                                       height: height / 4,
-                    vk_format: w.surface_format.format, swap: !backbuffer, tag: 'rreduce' ]
+                    vk_format: w.surface_format.format,
+                    swap: !backbuffer, tag: 'rreduce' ]
         
         if [ !backbuffer ]
             color.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
             # the reduce pass writes it too; it is attachment 0 of pass
             # 1
             if [ reduce ]
-                reduction.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
+                reduction.transition[
+                    VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
         el
             color.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
             if [ reduce ]
-                reduction.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
+                reduction.transition[
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
         
         if [ !color.vk_image_view ]
             return
@@ -312,7 +319,7 @@ class Render
             n_att : i32 [ (i == 0) ? ((has_depth) ? 2 : 1) : 1 ]
             result: vkCreateFramebuffer[ vk.device,
                     VkFramebufferCreateInfo [
-                sType:           VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+                sType:        VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
                 renderPass:      vk_render_pass[i],
                 attachmentCount: n_att,
                 pAttachments:    vk_view_attachments,
@@ -339,7 +346,9 @@ class Render
             return
         if [ ring_primed[s] == 0 ] return
         ts : vec u64 [ 2 ]
-        qr : vkGetQueryPoolResults[ vk.device, query_pool, u32[ s * 2 ], 2, 16, @ts[0], 8, VK_QUERY_RESULT_64_BIT ]
+        qr : vkGetQueryPoolResults[ vk.device, query_pool, u32[ s * 2 ],
+                                    2, 16, @ts[0], 8,
+                                    VK_QUERY_RESULT_64_BIT ]
         if [ qr == VK_SUCCESS ]
             gpu_us = f32[ ts[1] - ts[0] ] * ts_period / 1000.0
 
@@ -371,8 +380,8 @@ class Render
         ts_read[ s ]
         vk_command_buffer = vk_command_buffers[s]
         if [ ring_has[s] == 0 ]
-            fa9 : VkFence [ vk.fence_acquire[] ]
-            handle_slot_set[ @vk_fences[s], cast handle [ fa9 ] ]
+            fa : VkFence [ vk.fence_acquire[] ]
+            handle_slot_set[ @vk_fences[s], cast handle [ fa ] ]
             ring_has[s] = 1
         vk_fence          = vk_fences[s]
         vkResetCommandBuffer[ vk_command_buffer, 0 ]
@@ -382,8 +391,10 @@ class Render
             flags: VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
         ] ]
         ts_begin[ vk_command_buffer, s ]
-        if [ bool[ color ] && color.vk_layout != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
-            color.transition_in[ vk_command_buffer, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
+        if [ bool[ color ]
+            && color.vk_layout != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
+            color.transition_in[ vk_command_buffer,
+                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
         recording = true
 
     # clear inside this render's own batch: no submit, no wait
@@ -499,8 +510,8 @@ class Render
             pass_open = false
         if [ has_compute ]
             for [ m: Model ] in mods
-                smd9 : i32 [ (m.s) ? i32[ m.s.states ] : 0 ]
-                if [ smd9 != 0 && (state_mask & smd9) != smd9 ] continue
+                smd : i32 [ (m.s) ? i32[ m.s.states ] : 0 ]
+                if [ smd != 0 && (state_mask & smd) != smd ] continue
                 for [ p: Pipeline ] in m.pipelines
                     p.dispatch[ frame ]
         # open ONE render pass for the whole recording and keep it OPEN
@@ -524,7 +535,7 @@ class Render
             clear_values[1].depthStencil.depth   = 1.0
             clear_values[1].depthStencil.stencil = 0
             render_pass_info : VkRenderPassBeginInfo [
-                sType:           VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+                sType:         VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
                 renderPass:      vk_render_pass[0],
                 framebuffer:     vk_framebuffer[0],
                 renderArea:      VkRect2D [
@@ -538,8 +549,8 @@ class Render
                                   VK_SUBPASS_CONTENTS_INLINE ]
             pass_open = true
         for [ m: Model ] in mods
-            smb9 : i32 [ (m.s) ? i32[ m.s.states ] : 0 ]
-            if [ smb9 != 0 && (state_mask & smb9) != smb9 ] continue
+            smb : i32 [ (m.s) ? i32[ m.s.states ] : 0 ]
+            if [ smb != 0 && (state_mask & smb) != smb ] continue
             for [ p: Pipeline ] in m.pipelines
                 p.draw[ frame ]
                 vk.pipe_draws += 1
@@ -564,8 +575,8 @@ class Render
         ts_read[ s ]
         vk_command_buffer = vk_command_buffers[s]
         if [ ring_has[s] == 0 ]
-            fa9 : VkFence [ vk.fence_acquire[] ]
-            handle_slot_set[ @vk_fences[s], cast handle [ fa9 ] ]
+            fa : VkFence [ vk.fence_acquire[] ]
+            handle_slot_set[ @vk_fences[s], cast handle [ fa ] ]
             ring_has[s] = 1
         vk_fence          = vk_fences[s]
         vk.cur_ring       = s
@@ -586,11 +597,14 @@ class Render
                 flags: VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
             ] ]
             if [ i == 0 ] ts_begin[ frame, s ]
-            if [ i == 0 && bool[ color ] && color.vk_layout != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
-                color.transition_in[ frame, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
+            if [ i == 0 && bool[ color ]
+                && color.vk_layout != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
+                color.transition_in[ frame,
+                    VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
             # pass 1 writes reduction: order the barrier with the pass,
             # not the queue
-            if [ i == 1 && bool[ reduction ] && reduction.vk_layout != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
+            if [ i == 1 && bool[ reduction ]
+                && reduction.vk_layout != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
                 reduction.transition_in[ frame,
                         VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
 
@@ -624,11 +638,11 @@ class Render
 
             # the reduce pass clears to nothing: its quad rewrites it
             # all
-            cc9 : f32 [ (i == 0) ? 1.0 : 0.0 ]
-            clear_values[0].color.float32[0] = clear_color.x * cc9
-            clear_values[0].color.float32[1] = clear_color.y * cc9
-            clear_values[0].color.float32[2] = clear_color.z * cc9
-            clear_values[0].color.float32[3] = clear_color.w * cc9
+            cc : f32 [ (i == 0) ? 1.0 : 0.0 ]
+            clear_values[0].color.float32[0] = clear_color.x * cc
+            clear_values[0].color.float32[1] = clear_color.y * cc
+            clear_values[0].color.float32[2] = clear_color.z * cc
+            clear_values[0].color.float32[3] = clear_color.w * cc
             clear_values[1].depthStencil.depth   = 1.0
             clear_values[1].depthStencil.stencil = 0
 
@@ -638,8 +652,8 @@ class Render
             # pipeline.
             if [ i == 0 ]
                 for [ m: Model ] in mods
-                    sm9 : i32 [ (m.s) ? i32[ m.s.states ] : 0 ]
-                    if [ sm9 != 0 && (state_mask & sm9) != sm9 ]
+                    sm : i32 [ (m.s) ? i32[ m.s.states ] : 0 ]
+                    if [ sm != 0 && (state_mask & sm) != sm ]
                         continue
                     pc : i64 [ m.pipelines.count ]
                     for [ p: Pipeline ] in m.pipelines
@@ -649,7 +663,7 @@ class Render
                     p.dispatch[ frame ]
 
             render_pass_info : VkRenderPassBeginInfo [
-                sType:           VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+                sType:         VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
                 renderPass:      vk_render_pass[i],
                 framebuffer:     vk_framebuffer[i],
                 renderArea:      VkRect2D [
@@ -664,16 +678,16 @@ class Render
 
             if [ i == 0 ]
                 for [ m: Model ] in mods
-                    sm9 : i32 [ (m.s) ? i32[ m.s.states ] : 0 ]
-                    if [ sm9 != 0 && (state_mask & sm9) != sm9 ]
+                    sm : i32 [ (m.s) ? i32[ m.s.states ] : 0 ]
+                    if [ sm != 0 && (state_mask & sm) != sm ]
                         continue
                     if [ m.run_n > 0 ]
                         for [ k: i32 0, k < m.run_n * 3, k += 3 ]
-                            pi9 : i32 [ m.runs[ k ] ]
-                            v0  : i32 [ m.runs[ k + 1 ] ]
+                            pi : i32 [ m.runs[ k ] ]
+                            vert_start  : i32 [ m.runs[ k + 1 ] ]
                             vn  : i32 [ m.runs[ k + 2 ] ]
-                            p9  : m.pipelines[ pi9 ]
-                            p9.draw_range[ frame, v0, vn ]
+                            pipe  : m.pipelines[ pi ]
+                            pipe.draw_range[ frame, vert_start, vn ]
                             vk.pipe_draws += 1
                         continue
                     for [ p: Pipeline ] in m.pipelines
@@ -686,16 +700,20 @@ class Render
             vkCmdEndRenderPass[ frame ]
             if [ i == 0 ] ts_end[ frame, s ]
             vkEndCommandBuffer[ frame ]
-            s_flags: VkPipelineStageFlags [ VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT ]
+            s_flags: VkPipelineStageFlags [
+                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT ]
             submitInfo: VkSubmitInfo [
                 sType:                VK_STRUCTURE_TYPE_SUBMIT_INFO,
                 commandBufferCount:   1,
                 pCommandBuffers:      @frame,
                 waitSemaphoreCount:   (vk_swap_image) ? 1 : 0,
-                pWaitSemaphores:      (vk_swap_image) ? @w.semaphore_frame.vk_image_available_semaphore : null,
+                pWaitSemaphores:      (vk_swap_image)
+                ? @w.semaphore_frame.vk_image_available_semaphore
+                : null,
                 pWaitDstStageMask:    (vk_swap_image) ? @s_flags : null,
                 signalSemaphoreCount: (vk_swap_image) ? 1 : 0,
-                pSignalSemaphores:    (vk_swap_image) ? @w.semaphore_frame.vk_render_finished_semaphore : null
+                pSignalSemaphores:    (vk_swap_image)
+                ? @w.semaphore_frame.vk_render_finished_semaphore : null
             ]
             vk.qlock.lock[]
             vkQueueSubmit[ vk.queue, 1, @submitInfo, vk_fence ]
@@ -731,14 +749,14 @@ class Render
         if [ ring_has[ring_last] == 0 ]
             log 'sync_fence on TORN-DOWN render tag={tag} {width}x{height} — zombie registration'
             return
-        t0: i64 [ epoch_micros[] ]
+        started_us: i64 [ epoch_micros[] ]
         result: vkWaitForFences[ vk.device, 1, @vk_fences[ring_last],
                                  VK_TRUE, UINT64_MAX ]
-        vk.sync_us    += epoch_micros[] - t0
+        vk.sync_us    += epoch_micros[] - started_us
         vk.sync_calls += 1
         if [ result != VK_SUCCESS ]
-            rc9 : i32 [ cast i32 [ result ] ]
-            log 'fence wait failed: id {id} {width}x{height} result {rc9} slot {ring_last}'
+            rc : i32 [ cast i32 [ result ] ]
+            log 'fence wait failed: id {id} {width}x{height} result {rc} slot {ring_last}'
             vk.report_fault[]
          expect result == VK_SUCCESS, "fence wait failed"
         # the wait drained every in-flight submit (command buffers run
@@ -804,11 +822,12 @@ class Render
         # a dead render must never stay registered: the display
         # drives element_targets every frame
         if [ w && w.element_targets ]
-            dead9 : vec string []
-            for [ r9: Render, k9: string ] in w.element_targets
-                if [ r9 == a ] dead9 += k9
-            for [ k9: string ] in dead9
-                w.element_targets[ k9 ] = null
+            dead_keys : vec string []
+            for [ target: Render,
+                  target_key: string ] in w.element_targets
+                if [ target == a ] dead_keys += target_key
+            for [ target_key: string ] in dead_keys
+                w.element_targets[ target_key ] = null
         destroy_ring[]
 
 
@@ -819,7 +838,7 @@ class Render
         # allocate the command-buffer ring (one per ring slot)
         ring_pool = vk.own_pool[]
         cmdAllocInfo : VkCommandBufferAllocateInfo [
-            sType:              VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            sType:       VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
             commandPool:        ring_pool,
             level:              VK_COMMAND_BUFFER_LEVEL_PRIMARY,
             commandBufferCount: u32[ ring_n ]
@@ -831,8 +850,12 @@ class Render
 
         if [ getenv[ 'TRIN_UBOLOG' ] ]
             log 'PASSLOG tag={tag} load_existing={load_existing}'
-        color_load_op  : VkAttachmentLoadOp [ (load_existing) ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR ]
-        color_init_lay : VkImageLayout      [ (load_existing) ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED ]
+        color_load_op  : VkAttachmentLoadOp [
+            (load_existing) ? VK_ATTACHMENT_LOAD_OP_LOAD
+            : VK_ATTACHMENT_LOAD_OP_CLEAR ]
+        color_init_lay : VkImageLayout      [
+            (load_existing) ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+            : VK_IMAGE_LAYOUT_UNDEFINED ]
         has_depth_init : bool [ use_depth ]
         attachments : local VkAttachmentDescription [2] [
             [
@@ -871,7 +894,8 @@ class Render
             pipelineBindPoint:       VK_PIPELINE_BIND_POINT_GRAPHICS,
             colorAttachmentCount:    1,
             pColorAttachments:       @color_attachment_ref,
-            pDepthStencilAttachment: (has_depth_init) ? @depth_attachment_ref : null,
+            pDepthStencilAttachment: (has_depth_init)
+            ? @depth_attachment_ref : null,
             pResolveAttachments:     null
         ]
 
@@ -922,7 +946,7 @@ class Render
                 attachments[0].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
                 # the reduce rewrites every pixel: never blend over the
                 # last
-                attachments[0].loadOp        = VK_ATTACHMENT_LOAD_OP_CLEAR
+                attachments[0].loadOp      = VK_ATTACHMENT_LOAD_OP_CLEAR
                 attachments[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED
             result = vkCreateRenderPass[ vk.device, @render_pass_info,
                     null, @vk_render_pass[i] ]
@@ -932,9 +956,13 @@ class Render
             semaphore_info : VkSemaphoreCreateInfo [
                 sType: VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO
             ]
-            result = vkCreateSemaphore[ vk.device, @semaphore_info, null, @vk_image_available_semaphore ]
+            result = vkCreateSemaphore[ vk.device, @semaphore_info,
+                                        null,
+                                        @vk_image_available_semaphore ]
             expect result == VK_SUCCESS, "failed to create image available semaphore"
-            result = vkCreateSemaphore[ vk.device, @semaphore_info, null, @vk_render_finished_semaphore ]
+            result = vkCreateSemaphore[ vk.device, @semaphore_info,
+                                        null,
+                                        @vk_render_finished_semaphore ]
             expect result == VK_SUCCESS, "failed to create render finished semaphore"
 
         if [ reduce ]
@@ -942,30 +970,33 @@ class Render
                                    s: vk.reduce_shader[ ] ]
 
         if [ width > 2000 ]
-            test2 :  2
-            test2 += 2
+            test :  2
+            test += 2
         # the targets are made here, not in update: a store in that
         # delegate holds, and hold_members after init would hold again
-        s9 : f32 [ (w->scale > 0) ? w->scale : 1.0 ]
+        win_scale : f32 [ (w->scale > 0) ? w->scale : 1.0 ]
         if [ wscale > 0 ]
-            width  = i32[ w.width  * wscale * s9 ]
-            height = i32[ w.height * wscale * s9 ]
+            width  = i32[ w.width  * wscale * win_scale ]
+            height = i32[ w.height * wscale * win_scale ]
         if [ !color && width > 0 && height > 0 ]
             ctag : string [ (tag) ? tag : 'rcolor' ]
             color = Texture [ vk: vk, w: w, width: width,
                               height: height,
                 vk_format: w.surface_format.format, swap: !backbuffer,
-                surface: Surface.color, vk_image: vk_swap_image, tag: ctag,
+                surface: Surface.color, vk_image: vk_swap_image,
+                tag: ctag,
                 nearest: nearest, mip_levels: (mips > 1) ? mips : 1,
                 anisotropy: aniso ]
             if [ use_depth ]
                 depth = Texture [ vk: vk, w: w, width: width,
                                   height: height,
-                    vk_format: VK_FORMAT_D32_SFLOAT, swap: !backbuffer, tag: 'rdepth' ]
+                    vk_format: VK_FORMAT_D32_SFLOAT, swap: !backbuffer,
+                    tag: 'rdepth' ]
             if [ reduce ]
                 reduction = Texture [ vk: vk, w: w, width: width / 4,
                                       height: height / 4,
-                    vk_format: w.surface_format.format, swap: !backbuffer, tag: 'rreduce' ]
+                    vk_format: w.surface_format.format,
+                    swap: !backbuffer, tag: 'rreduce' ]
         # create or resize color/depth textures and framebuffer
         update[]
 
@@ -1048,7 +1079,8 @@ class Layout
             dstQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED,
             image:               img,
             subresourceRange:    VkImageSubresourceRange [
-                aspectMask:       (r.is_depth) ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT,
+            aspectMask:       (r.is_depth) ? VK_IMAGE_ASPECT_DEPTH_BIT
+            : VK_IMAGE_ASPECT_COLOR_BIT,
                 baseMipLevel:     r.base_mip,
                 levelCount:       r.levels,
                 baseArrayLayer:   r.base_layer,
@@ -1141,11 +1173,11 @@ class vk_context
     intern  props               : VkPhysicalDeviceMemoryProperties
     public  allocator           : VmaAllocator
     intern  _vkCreateDebugUtilsMessengerEXT : PFN_vkCreateDebugUtilsMessengerEXT
-    intern  _vkGetMemoryFdPropertiesKHR     : PFN_vkGetMemoryFdPropertiesKHR
+    intern  _vkGetMemoryFdPropertiesKHR : PFN_vkGetMemoryFdPropertiesKHR
     intern  _vkGetMemoryFdKHR               : PFN_vkGetMemoryFdKHR
     ifdef [ apple ]
         # metal names shared memory with an IOSurface, not a dma-buf fd
-        intern _vkExportMetalObjectsEXT         : PFN_vkExportMetalObjectsEXT
+        intern _vkExportMetalObjectsEXT    : PFN_vkExportMetalObjectsEXT
     ifdef [ windows ]
         # windows names shared memory with a HANDLE, not a dma-buf fd
         intern _vkGetMemoryWin32HandleKHR           : PFN_vkGetMemoryWin32HandleKHR
@@ -1264,7 +1296,8 @@ class vk_context
 
     # anything queued for later release
     func defer_pending [] -> bool
-        return (defer_list && defer_list.count > 0) || (defer_texs && defer_texs.count > 0) ||
+        return (defer_list && defer_list.count > 0) ||
+            (defer_texs && defer_texs.count > 0) ||
                (defer_drops && defer_drops.count > 0)
 
     func defer_flush [ mod: Au_t ] -> none
@@ -1427,7 +1460,8 @@ class vk_context
             enable_validation = false
         ifdef [ android ]
             enable_validation = false
-        validation_layer: symbol [ (enable_validation) ? "VK_LAYER_KHRONOS_validation" : null ]
+        validation_layer: symbol [
+            (enable_validation) ? "VK_LAYER_KHRONOS_validation" : null ]
         app_info: VkApplicationInfo [
             sType:              VK_STRUCTURE_TYPE_APPLICATION_INFO,
             pApplicationName:   "trinity",
@@ -1446,7 +1480,7 @@ class vk_context
                 inst_flags = VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR
 
         result: vkCreateInstance[ VkInstanceCreateInfo [
-            sType:                   VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+            sType:               VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
             flags:                   inst_flags,
             pApplicationInfo:        @app_info,
             enabledExtensionCount:   instance_exts.count,
@@ -1461,7 +1495,8 @@ class vk_context
         expect result == VK_SUCCESS, "failed to create Vulkan instance"
 
         if [ enable_validation ]
-            _vkCreateDebugUtilsMessengerEXT = vkGetInstanceProcAddr[ instance, "vkCreateDebugUtilsMessengerEXT" ]
+            _vkCreateDebugUtilsMessengerEXT = vkGetInstanceProcAddr[
+                instance, "vkCreateDebugUtilsMessengerEXT" ]
             expect _vkCreateDebugUtilsMessengerEXT, "cannot find vk debug function"
 
         # enumerate physical devices
@@ -1479,7 +1514,8 @@ class vk_context
             dtprops : VkPhysicalDeviceProperties
             vkGetPhysicalDeviceProperties[ physical_devices[i],
                     @dtprops ]
-            if [ dtprops.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ]
+            if [
+                dtprops.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ]
                 physical_device = physical_devices[i]
                 break
         # SILVER_VK_VENDOR pins the device by vendor (amd/nvidia/intel).
@@ -1488,7 +1524,9 @@ class vk_context
         vendor_env : cstr [ getenv[ 'SILVER_VK_VENDOR' ] ]
         if [ vendor_env ]
             vsel : string [ vendor_env ]
-            want : u32 [ (vsel == 'amd') ? u32[ 0x1002 ] : (vsel == 'nvidia') ? u32[ 0x10de ] : u32[ 0x8086 ] ]
+            want : u32 [
+                (vsel == 'amd') ? u32[ 0x1002 ] : (vsel == 'nvidia')
+                ? u32[ 0x10de ] : u32[ 0x8086 ] ]
             for [ i: u32 0, i < device_count, i += 1 ]
                 pdprops : VkPhysicalDeviceProperties
                 vkGetPhysicalDeviceProperties[ physical_devices[i],
@@ -1503,10 +1541,11 @@ class vk_context
                 @ext_count, null ]
         expect ext_count > 0, "failed to find device extensions"
         extensions: local VkExtensionProperties [ ext_count ]
-        res2 : VkResult vkEnumerateDeviceExtensionProperties[ physical_device, null, @ext_count, extensions ]
+        res : VkResult vkEnumerateDeviceExtensionProperties[
+            physical_device, null, @ext_count, extensions ]
         
 
-        ext2 : symbol extensions[0].extensionName
+        ext_name : symbol extensions[0].extensionName
         swapchain_supported   : bool false
         portability_supported : bool false
         ext_mem_supported     : bool false
@@ -1535,36 +1574,48 @@ class vk_context
                 fault_supported = true
             if [ strcmp[ ext, VK_KHR_VIDEO_QUEUE_EXTENSION_NAME ] == 0 ]
                 video_queue_supported = true
-            if [ strcmp[ ext, VK_KHR_VIDEO_ENCODE_QUEUE_EXTENSION_NAME ] == 0 ]
+            if [ strcmp[ ext,
+                VK_KHR_VIDEO_ENCODE_QUEUE_EXTENSION_NAME ] == 0 ]
                 video_encode_supported = true
-            if [ strcmp[ ext, VK_KHR_VIDEO_ENCODE_H264_EXTENSION_NAME ] == 0 ]
+            if [ strcmp[ ext,
+                VK_KHR_VIDEO_ENCODE_H264_EXTENSION_NAME ] == 0 ]
                 video_h264_supported = true
-            if [ strcmp[ ext, VK_KHR_VIDEO_DECODE_QUEUE_EXTENSION_NAME ] == 0 ]
+            if [ strcmp[ ext,
+                VK_KHR_VIDEO_DECODE_QUEUE_EXTENSION_NAME ] == 0 ]
                 video_decode_supported = true
-            if [ strcmp[ ext, VK_KHR_VIDEO_DECODE_H264_EXTENSION_NAME ] == 0 ]
+            if [ strcmp[ ext,
+                VK_KHR_VIDEO_DECODE_H264_EXTENSION_NAME ] == 0 ]
                 video_h264d_supported = true
-            if [ strcmp[ ext, VK_KHR_VIDEO_ENCODE_H265_EXTENSION_NAME ] == 0 ]
+            if [ strcmp[ ext,
+                VK_KHR_VIDEO_ENCODE_H265_EXTENSION_NAME ] == 0 ]
                 video_h265_supported = true
-            if [ strcmp[ ext, VK_KHR_VIDEO_DECODE_H265_EXTENSION_NAME ] == 0 ]
+            if [ strcmp[ ext,
+                VK_KHR_VIDEO_DECODE_H265_EXTENSION_NAME ] == 0 ]
                 video_h265d_supported = true
-            if [ strcmp[ ext, VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME ] == 0 ]
+            if [ strcmp[ ext,
+                VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME ] == 0 ]
                 sync2_supported = true
             if [ strcmp[ ext, "VK_EXT_ycbcr_2plane_444_formats" ] == 0 ]
                 ycbcr444_supported = true
             if [ strcmp[ ext,
                          VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME ] == 0 ]
                 ext_mem_supported = true
-            if [ strcmp[ ext, VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME ] == 0 ]
+            if [ strcmp[ ext,
+                VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME ] == 0 ]
                 ext_mem_fd_supported = true
-            if [ strcmp[ ext, VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME ] == 0 ]
+            if [ strcmp[ ext,
+                VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME ] == 0 ]
                 dmabuf_supported = true
             ifdef [ windows ]
-                if [ strcmp[ ext, VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME ] == 0 ]
+                if [ strcmp[ ext,
+                    VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME ] == 0 ]
                     ext_mem_win32_supported = true
             ifdef [ apple ]
-                if [ strcmp[ ext, VK_EXT_METAL_OBJECTS_EXTENSION_NAME ] == 0 ]
+                if [ strcmp[ ext,
+                    VK_EXT_METAL_OBJECTS_EXTENSION_NAME ] == 0 ]
                     metal_objects_supported = true
-            if [ strcmp[ ext, VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME ] == 0 ]
+            if [ strcmp[ ext,
+                VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME ] == 0 ]
                 drm_mod_supported = true
             if [ strcmp[ ext, "VK_KHR_portability_subset" ] == 0 ]
                 portability_supported = true
@@ -1572,80 +1623,107 @@ class vk_context
 
         enabled_dev_exts  : vec symbol [ 32 ]
         enabled_ext_count : u32 0
-        enabled_dev_exts[ enabled_ext_count ] = VK_KHR_SWAPCHAIN_EXTENSION_NAME
+        enabled_dev_exts[
+            enabled_ext_count ] = VK_KHR_SWAPCHAIN_EXTENSION_NAME
         enabled_ext_count += 1
 
         # h.264 encode on the video queue; the video extensions require
         # synchronization2
-        video_encode : bool [ video_queue_supported && video_encode_supported && video_h264_supported && sync2_supported ]
+        video_encode : bool [ video_queue_supported
+                              && video_encode_supported
+                              && video_h264_supported
+                              && sync2_supported ]
         if [ video_encode ]
-            enabled_dev_exts[ enabled_ext_count ] = VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME
+            enabled_dev_exts[
+                enabled_ext_count ] = VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME
             enabled_ext_count += 1
-            enabled_dev_exts[ enabled_ext_count ] = VK_KHR_VIDEO_QUEUE_EXTENSION_NAME
+            enabled_dev_exts[
+                enabled_ext_count ] = VK_KHR_VIDEO_QUEUE_EXTENSION_NAME
             enabled_ext_count += 1
-            enabled_dev_exts[ enabled_ext_count ] = VK_KHR_VIDEO_ENCODE_QUEUE_EXTENSION_NAME
+            enabled_dev_exts[
+                enabled_ext_count ] = VK_KHR_VIDEO_ENCODE_QUEUE_EXTENSION_NAME
             enabled_ext_count += 1
-            enabled_dev_exts[ enabled_ext_count ] = VK_KHR_VIDEO_ENCODE_H264_EXTENSION_NAME
+            enabled_dev_exts[
+                enabled_ext_count ] = VK_KHR_VIDEO_ENCODE_H264_EXTENSION_NAME
             enabled_ext_count += 1
             if [ video_h265_supported ]
-                enabled_dev_exts[ enabled_ext_count ] = VK_KHR_VIDEO_ENCODE_H265_EXTENSION_NAME
+                enabled_dev_exts[
+                    enabled_ext_count ] = VK_KHR_VIDEO_ENCODE_H265_EXTENSION_NAME
                 enabled_ext_count += 1
                 h265_encode = true
             # 4:4:4 recording's picture format (core only in 1.3)
             if [ ycbcr444_supported ]
-                enabled_dev_exts[ enabled_ext_count ] = "VK_EXT_ycbcr_2plane_444_formats"
+                enabled_dev_exts[
+                    enabled_ext_count ] = "VK_EXT_ycbcr_2plane_444_formats"
                 enabled_ext_count += 1
         # h.264 decode shares the video queue extension and
         # synchronization2
-        video_decode : bool [ video_queue_supported && video_decode_supported && video_h264d_supported && sync2_supported ]
+        video_decode : bool [ video_queue_supported
+                              && video_decode_supported
+                              && video_h264d_supported
+                              && sync2_supported ]
         if [ video_decode ]
             if [ !video_encode ]
-                enabled_dev_exts[ enabled_ext_count ] = VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME
+                enabled_dev_exts[
+                    enabled_ext_count ] = VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME
                 enabled_ext_count += 1
-                enabled_dev_exts[ enabled_ext_count ] = VK_KHR_VIDEO_QUEUE_EXTENSION_NAME
+                enabled_dev_exts[
+                    enabled_ext_count ] = VK_KHR_VIDEO_QUEUE_EXTENSION_NAME
                 enabled_ext_count += 1
-            enabled_dev_exts[ enabled_ext_count ] = VK_KHR_VIDEO_DECODE_QUEUE_EXTENSION_NAME
+            enabled_dev_exts[
+                enabled_ext_count ] = VK_KHR_VIDEO_DECODE_QUEUE_EXTENSION_NAME
             enabled_ext_count += 1
-            enabled_dev_exts[ enabled_ext_count ] = VK_KHR_VIDEO_DECODE_H264_EXTENSION_NAME
+            enabled_dev_exts[
+                enabled_ext_count ] = VK_KHR_VIDEO_DECODE_H264_EXTENSION_NAME
             enabled_ext_count += 1
             if [ video_h265d_supported ]
-                enabled_dev_exts[ enabled_ext_count ] = VK_KHR_VIDEO_DECODE_H265_EXTENSION_NAME
+                enabled_dev_exts[
+                    enabled_ext_count ] = VK_KHR_VIDEO_DECODE_H265_EXTENSION_NAME
                 enabled_ext_count += 1
                 h265_decode = true
 
         ifdef [ unix ]
             if [ ext_mem_supported && ext_mem_fd_supported
                  && dmabuf_supported ]
-                enabled_dev_exts[ enabled_ext_count ] = VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME
+                enabled_dev_exts[
+                    enabled_ext_count ] = VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME
                 enabled_ext_count += 1
-                enabled_dev_exts[ enabled_ext_count ] = VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME
+                enabled_dev_exts[
+                    enabled_ext_count ] = VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME
                 enabled_ext_count += 1
-                enabled_dev_exts[ enabled_ext_count ] = VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME
+                enabled_dev_exts[
+                    enabled_ext_count ] = VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME
                 enabled_ext_count += 1
                 if [ drm_mod_supported ]
-                    enabled_dev_exts[ enabled_ext_count ] = VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME
+                    enabled_dev_exts[
+                        enabled_ext_count ] = VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME
                     enabled_ext_count += 1
 
         ifdef [ windows ]
             if [ ext_mem_supported && ext_mem_win32_supported ]
-                enabled_dev_exts[ enabled_ext_count ] = VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME
+                enabled_dev_exts[
+                    enabled_ext_count ] = VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME
                 enabled_ext_count += 1
-                enabled_dev_exts[ enabled_ext_count ] = VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME
+                enabled_dev_exts[
+                    enabled_ext_count ] = VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME
                 enabled_ext_count += 1
 
         ifdef [ apple ]
             if [ portability_supported ]
-                enabled_dev_exts[ enabled_ext_count ] = "VK_KHR_portability_subset"
+                enabled_dev_exts[
+                    enabled_ext_count ] = "VK_KHR_portability_subset"
                 enabled_ext_count += 1
             # the share path's handle type here: an IOSurface names the
             # same GPU memory across processes, exactly as a dma-buf fd
             # does
             if [ metal_objects_supported ]
-                enabled_dev_exts[ enabled_ext_count ] = VK_EXT_METAL_OBJECTS_EXTENSION_NAME
+                enabled_dev_exts[
+                    enabled_ext_count ] = VK_EXT_METAL_OBJECTS_EXTENSION_NAME
                 enabled_ext_count += 1
         # a lost device can then say what faulted (report_fault)
         if [ fault_supported ]
-            enabled_dev_exts[ enabled_ext_count ] = "VK_EXT_device_fault"
+            enabled_dev_exts[
+                enabled_ext_count ] = "VK_EXT_device_fault"
             enabled_ext_count += 1
 
         # query device features
@@ -1655,24 +1733,27 @@ class vk_context
         ]
         sync2_features: VkPhysicalDeviceSynchronization2Features [
             sType:            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES,
-            pNext:            (ycbcr444_supported) ? @ycbcr444_features : null,
+            pNext:            (ycbcr444_supported) ? @ycbcr444_features
+            : null,
             synchronization2: VK_TRUE
         ]
         buffer_addr_features: VkPhysicalDeviceBufferDeviceAddressFeatures [
             sType:               VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES,
-            pNext:               (video_encode) ? @sync2_features : null,
+            pNext:               (video_encode) ? @sync2_features
+            : null,
             bufferDeviceAddress: VK_TRUE
         ]
         fault_features: VkPhysicalDeviceFaultFeaturesEXT [
-            sType:       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT,
+            sType: VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT,
             pNext:       @buffer_addr_features,
             deviceFault: VK_TRUE
         ]
-        features2: VkPhysicalDeviceFeatures2 [
+        all_features: VkPhysicalDeviceFeatures2 [
             sType: VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
-            pNext: (fault_supported) ? @fault_features : @buffer_addr_features
+            pNext: (fault_supported) ? @fault_features
+            : @buffer_addr_features
         ]
-        vkGetPhysicalDeviceFeatures2[ physical_device, @features2 ]
+        vkGetPhysicalDeviceFeatures2[ physical_device, @all_features ]
 
         # pick a compute home: prefer a dedicated compute-only family,
         # else a second queue on family 0. compute runs at LOW priority
@@ -1687,8 +1768,10 @@ class vk_context
         compute_family = -1
         compute_index  = 0
         for [ qi: u32 1, qi < qf_count, qi += 1 ]
-            has_c : bool [ (qf_props[qi].queueFlags & VK_QUEUE_COMPUTE_BIT) != 0 ]
-            has_g : bool [ (qf_props[qi].queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0 ]
+            has_c : bool [
+                (qf_props[qi].queueFlags & VK_QUEUE_COMPUTE_BIT) != 0 ]
+            has_g : bool [
+                (qf_props[qi].queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0 ]
             if [ has_c && !has_g ]
                 compute_family = i32[ qi ]
                 break
@@ -1701,18 +1784,20 @@ class vk_context
         encode_family = -1
         if [ video_encode ]
             for [ qi: u32 1, qi < qf_count, qi += 1 ]
-                if [ (qf_props[qi].queueFlags & VK_QUEUE_VIDEO_ENCODE_BIT_KHR) != 0 && i32[ qi ] != compute_family ]
+                if [
+                    (qf_props[qi].queueFlags & VK_QUEUE_VIDEO_ENCODE_BIT_KHR) != 0 && i32[ qi ] != compute_family ]
                     encode_family = i32[ qi ]
                     break
         decode_family = -1
         if [ video_decode ]
             for [ qi: u32 1, qi < qf_count, qi += 1 ]
-                if [ (qf_props[qi].queueFlags & VK_QUEUE_VIDEO_DECODE_BIT_KHR) != 0 && i32[ qi ] != compute_family && i32[ qi ] != encode_family ]
+                if [
+                    (qf_props[qi].queueFlags & VK_QUEUE_VIDEO_DECODE_BIT_KHR) != 0 && i32[ qi ] != compute_family && i32[ qi ] != encode_family ]
                     decode_family = i32[ qi ]
                     break
             # one video family for both (MoltenVK): share its queue
             if [ decode_family < 0 && encode_family >= 0 &&
-                 (qf_props[ encode_family ].queueFlags & VK_QUEUE_VIDEO_DECODE_BIT_KHR) != 0 ]
+                (qf_props[ encode_family ].queueFlags & VK_QUEUE_VIDEO_DECODE_BIT_KHR) != 0 ]
                 decode_family = encode_family
 
         # create logical device
@@ -1722,7 +1807,7 @@ class vk_context
         pris_d : local f32 [1] [ 0.0 ]
         qinfos : local VkDeviceQueueCreateInfo [4]
         qinfos[0] = VkDeviceQueueCreateInfo [
-            sType:               VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+            sType:           VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
             queueFamilyIndex:    0,
             queueCount:          1,
             pQueuePriorities:    pris ]
@@ -1732,27 +1817,27 @@ class vk_context
         el [ compute_family > 0 ]
             qi_count = 2
             qinfos[1] = VkDeviceQueueCreateInfo [
-                sType:               VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+                sType:       VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
                 queueFamilyIndex:    u32[ compute_family ],
                 queueCount:          1,
                 pQueuePriorities:    pris_c ]
         if [ encode_family >= 0 ]
             qinfos[qi_count] = VkDeviceQueueCreateInfo [
-                sType:               VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+                sType:       VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
                 queueFamilyIndex:    u32[ encode_family ],
                 queueCount:          1,
                 pQueuePriorities:    pris_e ]
             qi_count += 1
         if [ decode_family >= 0 && decode_family != encode_family ]
             qinfos[qi_count] = VkDeviceQueueCreateInfo [
-                sType:               VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+                sType:       VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
                 queueFamilyIndex:    u32[ decode_family ],
                 queueCount:          1,
                 pQueuePriorities:    pris_d ]
             qi_count += 1
         result = vkCreateDevice[ physical_device, VkDeviceCreateInfo [
-            sType:                   VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-            pNext:                   @features2,
+            sType:                 VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+            pNext:                   @all_features,
             queueCreateInfoCount:    qi_count,
             pQueueCreateInfos:       qinfos,
             enabledExtensionCount:   enabled_ext_count,
@@ -1768,8 +1853,10 @@ class vk_context
         ifdef [ unix ]
             if [ ext_mem_supported && ext_mem_fd_supported
                  && dmabuf_supported ]
-                _vkGetMemoryFdPropertiesKHR = vkGetDeviceProcAddr[ device, "vkGetMemoryFdPropertiesKHR" ]
-                _vkGetMemoryFdKHR           = vkGetDeviceProcAddr[ device, "vkGetMemoryFdKHR" ]
+                _vkGetMemoryFdPropertiesKHR = vkGetDeviceProcAddr[
+                    device, "vkGetMemoryFdPropertiesKHR" ]
+                _vkGetMemoryFdKHR           = vkGetDeviceProcAddr[
+                    device, "vkGetMemoryFdKHR" ]
 
         ifdef [ apple ]
             if [ metal_objects_supported ]
@@ -1778,7 +1865,9 @@ class vk_context
 
         ifdef [ windows ]
             if [ ext_mem_supported && ext_mem_win32_supported ]
-                _vkGetMemoryWin32HandleKHR = vkGetDeviceProcAddr[ device, "vkGetMemoryWin32HandleKHR" ]
+                _vkGetMemoryWin32HandleKHR = vkGetDeviceProcAddr[
+                    device,
+                    "vkGetMemoryWin32HandleKHR" ]
                 _vkGetMemoryWin32HandlePropertiesKHR =
                     vkGetDeviceProcAddr[ device,
                             "vkGetMemoryWin32HandlePropertiesKHR" ]
@@ -1795,12 +1884,12 @@ class vk_context
             vulkanApiVersion:  VK_API_VERSION_1_2,
             pVulkanFunctions:  null,
             preferredLargeHeapBlockSize: 8388608,
-            flags:             VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT
+            flags:        VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT
         ], @allocator ]
         expect result == VK_SUCCESS, "cannot create vma allocator"
 
-        gltf_quad2: path [ 'models/uv-quad2.gltf' ]
-        quad_m = gltf_quad2.load[ typeid[ GltfModel ], null ]
+        gltf_quad: path [ 'models/uv-quad2.gltf' ]
+        quad_m = gltf_quad.load[ typeid[ GltfModel ], null ]
 
 
 
@@ -1857,28 +1946,28 @@ class vk_context
             qlock.lock[]
             if [ !command_pool2 ]
                 pool_info: VkCommandPoolCreateInfo [
-                    sType:            VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                    sType:   VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
                     queueFamilyIndex: queue_family_index,
                     flags:            VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT
                 ]
-                r9 : vkCreateCommandPool[ device, pool_info, null,
+                result : vkCreateCommandPool[ device, pool_info, null,
                         @command_pool2 ]
-                expect r9 == VK_SUCCESS, "failed to create command pool"
+                expect result == VK_SUCCESS, "failed to create command pool"
             qlock.unlock[]
         return command_pool2
 
     # a pool of one owner's own: freeing it touches no other thread's
     # pool
     func own_pool [ ] -> VkCommandPool
-        p9 : VkCommandPool [ null ]
-        info9 : VkCommandPoolCreateInfo [
-            sType:            VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+        cmd_pool : VkCommandPool [ null ]
+        info : VkCommandPoolCreateInfo [
+            sType:           VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
             queueFamilyIndex: queue_family_index,
-            flags:            VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT
+            flags:       VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT
         ]
-        r9 : vkCreateCommandPool[ device, info9, null, @p9 ]
-        expect r9 == VK_SUCCESS, "failed to create command pool"
-        return p9
+        result : vkCreateCommandPool[ device, info, null, @cmd_pool ]
+        expect result == VK_SUCCESS, "failed to create command pool"
+        return cmd_pool
 
     # the transfer command is one thread's too
     func xfer [ ] -> Command
@@ -1895,25 +1984,34 @@ class vk_context
     public func report_fault []
         if [ fault_reported || !_vkGetDeviceFaultInfoEXT ] return
         fault_reported = true
-        counts : VkDeviceFaultCountsEXT [ sType: VK_STRUCTURE_TYPE_DEVICE_FAULT_COUNTS_EXT ]
+        counts : VkDeviceFaultCountsEXT [
+            sType: VK_STRUCTURE_TYPE_DEVICE_FAULT_COUNTS_EXT ]
         _vkGetDeviceFaultInfoEXT[ device, @counts, null ]
         if [ counts.addressInfoCount > 16 ] counts.addressInfoCount = 16
         if [ counts.vendorInfoCount > 16 ]  counts.vendorInfoCount = 16
         counts.vendorBinarySize = 0
         addrs : local VkDeviceFaultAddressInfoEXT [16]
         vends : local VkDeviceFaultVendorInfoEXT [16]
-        info  : VkDeviceFaultInfoEXT [ sType: VK_STRUCTURE_TYPE_DEVICE_FAULT_INFO_EXT,
+        info  : VkDeviceFaultInfoEXT [
+            sType: VK_STRUCTURE_TYPE_DEVICE_FAULT_INFO_EXT,
             pAddressInfos: addrs, pVendorInfos: vends ]
         rc : i32 [ i32[ _vkGetDeviceFaultInfoEXT[ device, @counts,
                 @info ] ] ]
-        fprintf[ stderr, "device fault (%d): %s; %u addresses, %u vendor entries\n", rc,
-            @info.description[0], counts.addressInfoCount, counts.vendorInfoCount ]
+        fprintf[ stderr,
+            "device fault (%d): %s; %u addresses, %u vendor entries\n",
+            rc,
+            @info.description[0], counts.addressInfoCount,
+            counts.vendorInfoCount ]
         for [ i: u32 0, i < counts.addressInfoCount, i += 1 ]
-            fprintf[ stderr, "device fault address: type %d at 0x%llx (within 0x%llx)\n",
-                i32[ addrs[i].addressType ], addrs[i].reportedAddress, addrs[i].addressPrecision ]
+            fprintf[ stderr,
+                "device fault address: type %d at 0x%llx (within 0x%llx)\n",
+                i32[ addrs[i].addressType ], addrs[i].reportedAddress,
+                addrs[i].addressPrecision ]
         for [ i: u32 0, i < counts.vendorInfoCount, i += 1 ]
-            fprintf[ stderr, "device fault vendor: %s code 0x%llx data 0x%llx\n",
-                @vends[i].description[0], vends[i].vendorFaultCode, vends[i].vendorFaultData ]
+            fprintf[ stderr,
+                "device fault vendor: %s code 0x%llx data 0x%llx\n",
+                @vends[i].description[0], vends[i].vendorFaultCode,
+                vends[i].vendorFaultData ]
 
     func fence_acquire [ ] -> VkFence
         qlock.lock[]
@@ -1922,17 +2020,18 @@ class vk_context
         if [ pooled > 0 ]
             fence_new = cast VkFence [ fence_pool[ pooled - 1 ] ]
             fence_pool.remove[ pooled - 1 ]
-            f9 : VkFence [ fence_new ]
+            pooled_fence : VkFence [ fence_new ]
             qlock.unlock[]
-            return f9
-        fence_info : VkFenceCreateInfo [ sType: VK_STRUCTURE_TYPE_FENCE_CREATE_INFO ]
+            return pooled_fence
+        fence_info : VkFenceCreateInfo [
+            sType: VK_STRUCTURE_TYPE_FENCE_CREATE_INFO ]
         fence_new = null
         create_result : i32 [ vkCreateFence[ device, @fence_info, null,
                 @fence_new ] ]
         expect create_result == VK_SUCCESS, 'failed to create fence'
-        f8 : VkFence [ fence_new ]
+        made_fence : VkFence [ fence_new ]
         qlock.unlock[]
-        return f8
+        return made_fence
 
     # the pool keeps handle bits, not objects: a vec of handles would
     # hold them
@@ -1964,7 +2063,9 @@ class vk_context
         vkGetPhysicalDeviceQueueFamilyProperties[
             physical_device, @queue_family_count, null ]
         #expect queue_family_count > 0, "failed to find queue families"
-        queue_families: vec VkQueueFamilyProperties [ queue_family_count ] # auto freeing data from /src/silver/trinity/trinity.ag:784
+        # auto freeing data from /src/silver/trinity/trinity.ag:784
+        queue_families: vec VkQueueFamilyProperties [
+            queue_family_count ]
         vkGetPhysicalDeviceQueueFamilyProperties[ physical_device,
                 @queue_family_count, queue_families ]
         
@@ -1977,7 +2078,9 @@ class vk_context
                 present_support: VkBool32 [ VK_FALSE ]
                 vkGetPhysicalDeviceSurfaceSupportKHR[ physical_device,
                         i, vk_surface, @present_support ]
-                if [ queue_families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT && present_support ]
+                if [
+                    queue_families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT
+                    && present_support ]
                     queue_family_index = i
                     found = true
                     break
@@ -1987,7 +2090,8 @@ class vk_context
     intern func find_memory_type [ type_filter: u32,
                                    flags: VkMemoryPropertyFlags ] -> u32
         for [ i: u32 0, i < props.memoryTypeCount, i += 1 ]
-            if [ (type_filter & (1 << i)) && (props.memoryTypes[i].propertyFlags & flags) == flags ]
+            if [ (type_filter & (1 << i))
+                && (props.memoryTypes[i].propertyFlags & flags) == flags ]
                 return i
         fault "could not find memory type"
         return 0
@@ -2008,27 +2112,29 @@ class vk_context
                 if [ !_vkExportMetalObjectsEXT ] return 0 - 1
                 mrq : VkMemoryRequirements [ ]
                 vkGetImageMemoryRequirements[ device, img, @mrq ]
-                mai9 : VkMemoryAllocateInfo [ ]
-                mai9.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO
-                mai9.allocationSize  = mrq.size
-                mai9.memoryTypeIndex = find_memory_type[ mrq.memoryTypeBits,
+                alloc_info : VkMemoryAllocateInfo [ ]
+                alloc_info.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO
+                alloc_info.allocationSize  = mrq.size
+                alloc_info.memoryTypeIndex = find_memory_type[
+                    mrq.memoryTypeBits,
                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT ]
-                mem9 : VkDeviceMemory [ null ]
-                if [ vkAllocateMemory[ device, @mai9, null,
-                                       @mem9 ] != 0 ]
+                image_mem : VkDeviceMemory [ null ]
+                if [ vkAllocateMemory[ device, @alloc_info, null,
+                                       @image_mem ] != 0 ]
                     return 0 - 1
-                if [ vkBindImageMemory[ device, img, mem9, 0 ] != 0 ]
+                if [ vkBindImageMemory[ device, img, image_mem,
+                                        0 ] != 0 ]
                     return 0 - 1
-                ios9 : VkExportMetalIOSurfaceInfoEXT [ ]
-                ios9.sType = VK_STRUCTURE_TYPE_EXPORT_METAL_IO_SURFACE_INFO_EXT
-                ios9.image = img
-                xo9 : VkExportMetalObjectsInfoEXT [ ]
-                xo9.sType = VK_STRUCTURE_TYPE_EXPORT_METAL_OBJECTS_INFO_EXT
-                xo9.pNext = @ios9
-                _vkExportMetalObjectsEXT[ device, @xo9 ]
-                if [ !ios9.ioSurface ] return 0 - 1
-                out_mem = mem9
-                return i32[ IOSurfaceGetID[ handle[ ios9.ioSurface ] ] ]
+                ios : VkExportMetalIOSurfaceInfoEXT [ ]
+                ios.sType = VK_STRUCTURE_TYPE_EXPORT_METAL_IO_SURFACE_INFO_EXT
+                ios.image = img
+                xo : VkExportMetalObjectsInfoEXT [ ]
+                xo.sType = VK_STRUCTURE_TYPE_EXPORT_METAL_OBJECTS_INFO_EXT
+                xo.pNext = @ios
+                _vkExportMetalObjectsEXT[ device, @xo ]
+                if [ !ios.ioSurface ] return 0 - 1
+                out_mem = image_mem
+                return i32[ IOSurfaceGetID[ handle[ ios.ioSurface ] ] ]
 
             el
                 # the driver offers no fd export: the caller falls back
@@ -2045,7 +2151,7 @@ class vk_context
                 ded.image  = img
                 ded.pNext  = @exp
                 mai : VkMemoryAllocateInfo [ ]
-                mai.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO
+                mai.sType       = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO
                 mai.pNext           = @ded
                 mai.allocationSize  = mreq.size
                 mai.memoryTypeIndex = mti
@@ -2069,52 +2175,56 @@ class vk_context
         # the same GPU memory the publisher renders into — sampling it
         # shows the publisher's live frame. the fd is consumed by the
         # import.
-        func import_shared_tex [ dma_fd: i32, w2: i32, h2: i32,
+        func import_shared_tex [ dma_fd: i32, img_w: i32, img_h: i32,
                                  fmt: i32, disp: Display ] -> Texture
             ifdef [ apple ]
                 # the handle is an IOSurface id: the surface it names is
                 # the publisher's own, so the image made from it is its
                 # live frame
-                sf9 : handle [ IOSurfaceLookup[ u32[ dma_fd ] ] ]
-                if [ !sf9 ] return null
-                im9 : VkImportMetalIOSurfaceInfoEXT [ ]
-                im9.sType     = VK_STRUCTURE_TYPE_IMPORT_METAL_IO_SURFACE_INFO_EXT
-                im9.ioSurface = sf9
-                ci9 : VkImageCreateInfo [ ]
-                ci9.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO
-                ci9.pNext         = @im9
-                ci9.imageType     = VK_IMAGE_TYPE_2D
-                ci9.format        = fmt
-                ci9.extent        = VkExtent3D [ w2, h2, 1 ]
-                ci9.mipLevels     = 1
-                ci9.arrayLayers   = 1
-                ci9.samples       = VK_SAMPLE_COUNT_1_BIT
-                ci9.tiling        = VK_IMAGE_TILING_OPTIMAL
-                ci9.usage         = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-                                    VK_IMAGE_USAGE_TRANSFER_DST_BIT     |
-                                    VK_IMAGE_USAGE_TRANSFER_SRC_BIT     |
+                sf : handle [ IOSurfaceLookup[ u32[ dma_fd ] ] ]
+                if [ !sf ] return null
+                im : VkImportMetalIOSurfaceInfoEXT [ ]
+                im.sType     = VK_STRUCTURE_TYPE_IMPORT_METAL_IO_SURFACE_INFO_EXT
+                im.ioSurface = sf
+                ci : VkImageCreateInfo [ ]
+                ci.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO
+                ci.pNext         = @im
+                ci.imageType     = VK_IMAGE_TYPE_2D
+                ci.format        = fmt
+                ci.extent        = VkExtent3D [ img_w, img_h, 1 ]
+                ci.mipLevels     = 1
+                ci.arrayLayers   = 1
+                ci.samples       = VK_SAMPLE_COUNT_1_BIT
+                ci.tiling        = VK_IMAGE_TILING_OPTIMAL
+                ci.usage         = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                                    VK_IMAGE_USAGE_TRANSFER_DST_BIT    |
+                                    VK_IMAGE_USAGE_TRANSFER_SRC_BIT    |
                                     VK_IMAGE_USAGE_SAMPLED_BIT
-                ci9.sharingMode   = VK_SHARING_MODE_EXCLUSIVE
-                ci9.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED
-                ig9 : VkImage [ null ]
-                if [ vkCreateImage[ device, @ci9, null, @ig9 ] != 0 ]
+                ci.sharingMode   = VK_SHARING_MODE_EXCLUSIVE
+                ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED
+                ig : VkImage [ null ]
+                if [ vkCreateImage[ device, @ci, null, @ig ] != 0 ]
                     return null
-                mq9 : VkMemoryRequirements [ ]
-                vkGetImageMemoryRequirements[ device, ig9, @mq9 ]
-                ma9 : VkMemoryAllocateInfo [ ]
-                ma9.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO
-                ma9.allocationSize  = mq9.size
-                ma9.memoryTypeIndex = find_memory_type[ mq9.memoryTypeBits,
+                mq : VkMemoryRequirements [ ]
+                vkGetImageMemoryRequirements[ device, ig, @mq ]
+                ma : VkMemoryAllocateInfo [ ]
+                ma.sType        = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO
+                ma.allocationSize  = mq.size
+                ma.memoryTypeIndex = find_memory_type[
+                    mq.memoryTypeBits,
                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT ]
-                mm9 : VkDeviceMemory [ null ]
-                if [ vkAllocateMemory[ device, @ma9, null, @mm9 ] != 0 ]
+                mm : VkDeviceMemory [ null ]
+                if [ vkAllocateMemory[ device, @ma, null, @mm ] != 0 ]
                     return null
-                if [ vkBindImageMemory[ device, ig9, mm9, 0 ] != 0 ]
+                if [ vkBindImageMemory[ device, ig, mm, 0 ] != 0 ]
                     return null
-                t9 : Texture [ vk: a, w: disp, width: w2, height: h2,
-                    vk_format: fmt, vk_image: ig9, vk_memory: mm9, shared_fd: 0 - 1 ]
-                t9.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
-                return t9
+                tex : Texture [ vk: a, w: disp, width: img_w,
+                                height: img_h,
+                    vk_format: fmt, vk_image: ig, vk_memory: mm,
+                    shared_fd: 0 - 1 ]
+                tex.transition[
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
+                return tex
 
             el
                 if [ !_vkGetMemoryFdPropertiesKHR ] return null
@@ -2126,14 +2236,14 @@ class vk_context
                 info.pNext         = @ext
                 info.imageType     = VK_IMAGE_TYPE_2D
                 info.format        = fmt
-                info.extent        = VkExtent3D [ w2, h2, 1 ]
+                info.extent        = VkExtent3D [ img_w, img_h, 1 ]
                 info.mipLevels     = 1
                 info.arrayLayers   = 1
                 info.samples       = VK_SAMPLE_COUNT_1_BIT
                 info.tiling        = VK_IMAGE_TILING_OPTIMAL
-                info.usage         = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-                                     VK_IMAGE_USAGE_TRANSFER_DST_BIT     |
-                                     VK_IMAGE_USAGE_TRANSFER_SRC_BIT     |
+                info.usage       = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                                     VK_IMAGE_USAGE_TRANSFER_DST_BIT   |
+                                     VK_IMAGE_USAGE_TRANSFER_SRC_BIT   |
                                      VK_IMAGE_USAGE_SAMPLED_BIT
                 info.sharingMode   = VK_SHARING_MODE_EXCLUSIVE
                 info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED
@@ -2145,9 +2255,11 @@ class vk_context
                 fd_props : VkMemoryFdPropertiesKHR [ ]
                 fd_props.sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR
                 err = _vkGetMemoryFdPropertiesKHR[ device,
-                    VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, dma_fd, @fd_props ]
+                    VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
+                    dma_fd, @fd_props ]
                 expect err == 0, 'share: vkGetMemoryFdPropertiesKHR failed'
-                allowed : u32 [ mreq.memoryTypeBits & fd_props.memoryTypeBits ]
+                allowed : u32 [
+                    mreq.memoryTypeBits & fd_props.memoryTypeBits ]
                 expect allowed != 0, 'share: no memory type for dmabuf fd'
                 mti : u32 [ 0 ]
                 for [ k: u32 0, k < 32, k += 1 ]
@@ -2158,12 +2270,12 @@ class vk_context
                 ded.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO
                 ded.image = img
                 imp : VkImportMemoryFdInfoKHR [ ]
-                imp.sType      = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR
+                imp.sType  = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR
                 imp.pNext      = @ded
                 imp.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT
                 imp.fd         = dma_fd
                 mai : VkMemoryAllocateInfo [ ]
-                mai.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO
+                mai.sType       = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO
                 mai.pNext           = @imp
                 mai.allocationSize  = mreq.size
                 mai.memoryTypeIndex = mti
@@ -2172,7 +2284,8 @@ class vk_context
                 expect err == 0, 'share: vkAllocateMemory (import) failed'
                 err = vkBindImageMemory[ device, img, mem, 0 ]
                 expect err == 0, 'share: vkBindImageMemory (import) failed'
-                t : Texture [ vk: a, w: disp, width: w2, height: h2,
+                t : Texture [ vk: a, w: disp, width: img_w,
+                              height: img_h,
                     vk_format: fmt, vk_image: img, vk_memory: mem ]
                 t.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
                 return t
@@ -2181,9 +2294,10 @@ class vk_context
             # an explicit DRM format modifier with the plane laid out as
             # the producer says. the fd is consumed. fourcc is the DRM
             # code: ARGB/XRGB8888 = bgra here
-        func import_dmabuf_image [ dma_fd: i32, w2: i32, h2: i32,
+        func import_dmabuf_image [ dma_fd: i32, img_w: i32, img_h: i32,
                                    fourcc: u32, modifier: u64,
-                                   stride: u32, offset: u32, disp: Display ] -> Texture
+                                   stride: u32, offset: u32,
+                                   disp: Display ] -> Texture
             fmt : i32 [ VK_FORMAT_B8G8R8A8_UNORM ]
             # 'AB24' / 'XB24' are abgr in memory: rgba as vulkan reads
             # it
@@ -2209,7 +2323,7 @@ class vk_context
             info.pNext         = @ext
             info.imageType     = VK_IMAGE_TYPE_2D
             info.format        = fmt
-            info.extent        = VkExtent3D [ w2, h2, 1 ]
+            info.extent        = VkExtent3D [ img_w, img_h, 1 ]
             info.mipLevels     = 1
             info.arrayLayers   = 1
             info.samples       = VK_SAMPLE_COUNT_1_BIT
@@ -2225,9 +2339,11 @@ class vk_context
             fd_props : VkMemoryFdPropertiesKHR [ ]
             fd_props.sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR
             err = _vkGetMemoryFdPropertiesKHR[ device,
-                VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, dma_fd, @fd_props ]
+                VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, dma_fd,
+                @fd_props ]
             expect err == 0, 'dmabuf: vkGetMemoryFdPropertiesKHR failed'
-            allowed : u32 [ mreq.memoryTypeBits & fd_props.memoryTypeBits ]
+            allowed : u32 [
+                mreq.memoryTypeBits & fd_props.memoryTypeBits ]
             expect allowed != 0, 'dmabuf: no memory type for the fd'
             mti : u32 [ 0 ]
             for [ k: u32 0, k < 32, k += 1 ]
@@ -2252,7 +2368,7 @@ class vk_context
             expect err == 0, 'dmabuf: vkAllocateMemory (import) failed'
             err = vkBindImageMemory[ device, img, mem, 0 ]
             expect err == 0, 'dmabuf: vkBindImageMemory failed'
-            t : Texture [ vk: a, w: disp, width: w2, height: h2,
+            t : Texture [ vk: a, w: disp, width: img_w, height: img_h,
                           opaque: opq,
                 vk_format: fmt, vk_image: img, vk_memory: mem ]
             t.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
@@ -2262,7 +2378,10 @@ class vk_context
         # display's own framebuffer) so venus renders straight into the
         # scanned-out memory. optimal tiling would mismatch the dumb
         # buffer's layout.
-        public func import_scanout_tex [ dma_fd: i32, w2: i32, h2: i32, fmt: i32, stride: i32, modifier: u64, disp: Display ] -> Texture
+        public func import_scanout_tex [ dma_fd: i32, img_w: i32,
+                                         img_h: i32, fmt: i32,
+                                         stride: i32, modifier: u64,
+                                         disp: Display ] -> Texture
             ext : VkExternalMemoryImageCreateInfo [ ]
             ext.sType       = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO
             ext.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT
@@ -2291,7 +2410,7 @@ class vk_context
             info.pNext         = (is_linear || is_unknown) ? cast handle [ @ext ] : cast handle [ @drm ]
             info.imageType     = VK_IMAGE_TYPE_2D
             info.format        = fmt
-            info.extent        = VkExtent3D [ w2, h2, 1 ]
+            info.extent        = VkExtent3D [ img_w, img_h, 1 ]
             info.mipLevels     = 1
             info.arrayLayers   = 1
             info.samples       = VK_SAMPLE_COUNT_1_BIT
@@ -2309,11 +2428,13 @@ class vk_context
             fd_props : VkMemoryFdPropertiesKHR [ ]
             fd_props.sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR
             err = _vkGetMemoryFdPropertiesKHR[ device,
-                VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, dma_fd, @fd_props ]
+                VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, dma_fd,
+                @fd_props ]
             if [ err != 0 ]
                 log 'scanout import: fd props failed {err}'
                 return null
-            allowed : u32 [ mreq.memoryTypeBits & fd_props.memoryTypeBits ]
+            allowed : u32 [
+                mreq.memoryTypeBits & fd_props.memoryTypeBits ]
             if [ allowed == 0 ]
                 log 'scanout import: no memory type'
                 return null
@@ -2344,15 +2465,19 @@ class vk_context
             if [ err != 0 ]
                 log 'scanout import: bind failed {err}'
                 return null
-            log 'scanout import: ok {w2}x{h2}'
+            log 'scanout import: ok {img_w}x{img_h}'
             # the driver owns dma_fd now; shared_fd must not name it (or
             # fd 0)
-            return Texture [ vk: a, w: disp, width: w2, height: h2,
-                vk_format: fmt, vk_image: img, vk_memory: mem, opaque: true, shared_fd: 0 - 1 ]
+            return Texture [ vk: a, w: disp, width: img_w,
+                             height: img_h,
+                vk_format: fmt, vk_image: img, vk_memory: mem,
+                opaque: true, shared_fd: 0 - 1 ]
 
         # consumer: import a dma-buf fd as a TRANSFER_SRC buffer (Camera
         # recipe)
-        func import_dmabuf [ dma_fd: i32, byte_size: i32, out_buf: @VkBuffer, out_mem: @VkDeviceMemory ] -> bool
+        func import_dmabuf [ dma_fd: i32, byte_size: i32,
+                             out_buf: @VkBuffer,
+                             out_mem: @VkDeviceMemory ] -> bool
             ext : VkExternalMemoryBufferCreateInfo [ ]
             ext.sType       = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO
             ext.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT
@@ -2371,9 +2496,11 @@ class vk_context
             fd_props.sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR
             expect _vkGetMemoryFdPropertiesKHR, 'appshare: vkGetMemoryFdPropertiesKHR not loaded'
             err = _vkGetMemoryFdPropertiesKHR[ device,
-                VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, dma_fd, @fd_props ]
+                VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, dma_fd,
+                @fd_props ]
             expect err == 0, 'appshare: vkGetMemoryFdPropertiesKHR failed'
-            allowed : u32 [ mreq.memoryTypeBits & fd_props.memoryTypeBits ]
+            allowed : u32 [
+                mreq.memoryTypeBits & fd_props.memoryTypeBits ]
             expect allowed != 0, 'appshare: no memory type for dmabuf fd'
             mti : u32 [ 0 ]
             for [ k: u32 0, k < 32, k += 1 ]
@@ -2381,7 +2508,7 @@ class vk_context
                     mti = k
                     break
             ded : VkMemoryDedicatedAllocateInfo [ ]
-            ded.sType  = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO
+            ded.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO
             ded.buffer = buf
             imp : VkImportMemoryFdInfoKHR [ ]
             imp.sType      = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR
@@ -2422,10 +2549,10 @@ class vk_context
             mti : u32 [ find_memory_type[ mreq.memoryTypeBits,
                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT ] ]
             exp : VkExportMemoryAllocateInfo [ ]
-            exp.sType       = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO
+            exp.sType    = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO
             exp.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT
             ded : VkMemoryDedicatedAllocateInfo [ ]
-            ded.sType  = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO
+            ded.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO
             ded.image  = img
             ded.pNext  = @exp
             mai : VkMemoryAllocateInfo [ ]
@@ -2452,7 +2579,7 @@ class vk_context
         # the same GPU memory the publisher renders into, so sampling it
         # shows the publisher's live frame. the handle is consumed by
         # the import.
-        func import_shared_tex [ dma_fd: i32, w2: i32, h2: i32,
+        func import_shared_tex [ dma_fd: i32, img_w: i32, img_h: i32,
                                  fmt: i32, disp: Display ] -> Texture
             expect _vkGetMemoryWin32HandlePropertiesKHR, 'share: vkGetMemoryWin32HandlePropertiesKHR not loaded'
             hv : handle [ i64[ dma_fd ] ]
@@ -2464,7 +2591,7 @@ class vk_context
             info.pNext         = @ext
             info.imageType     = VK_IMAGE_TYPE_2D
             info.format        = fmt
-            info.extent        = VkExtent3D [ w2, h2, 1 ]
+            info.extent        = VkExtent3D [ img_w, img_h, 1 ]
             info.mipLevels     = 1
             info.arrayLayers   = 1
             info.samples       = VK_SAMPLE_COUNT_1_BIT
@@ -2483,7 +2610,8 @@ class vk_context
             hp : VkMemoryWin32HandlePropertiesKHR [ ]
             hp.sType = VK_STRUCTURE_TYPE_MEMORY_WIN32_HANDLE_PROPERTIES_KHR
             err = _vkGetMemoryWin32HandlePropertiesKHR[ device,
-                VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT, hv, @hp ]
+                VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT, hv,
+                @hp ]
             expect err == 0, 'share: vkGetMemoryWin32HandlePropertiesKHR failed'
             allowed : u32 [ mreq.memoryTypeBits & hp.memoryTypeBits ]
             expect allowed != 0, 'share: no memory type for shared handle'
@@ -2510,13 +2638,15 @@ class vk_context
             expect err == 0, 'share: vkAllocateMemory (import) failed'
             err = vkBindImageMemory[ device, img, mem, 0 ]
             expect err == 0, 'share: vkBindImageMemory (import) failed'
-            t : Texture [ vk: a, w: disp, width: w2, height: h2,
+            t : Texture [ vk: a, w: disp, width: img_w, height: img_h,
                 vk_format: fmt, vk_image: img, vk_memory: mem ]
             t.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
             return t
 
         # consumer: import a shared handle as a TRANSFER_SRC buffer
-        func import_dmabuf [ dma_fd: i32, byte_size: i32, out_buf: @VkBuffer, out_mem: @VkDeviceMemory ] -> bool
+        func import_dmabuf [ dma_fd: i32, byte_size: i32,
+                             out_buf: @VkBuffer,
+                             out_mem: @VkDeviceMemory ] -> bool
             expect _vkGetMemoryWin32HandlePropertiesKHR, 'appshare: vkGetMemoryWin32HandlePropertiesKHR not loaded'
             hv : handle [ i64[ dma_fd ] ]
             ext : VkExternalMemoryBufferCreateInfo [ ]
@@ -2536,7 +2666,8 @@ class vk_context
             hp : VkMemoryWin32HandlePropertiesKHR [ ]
             hp.sType = VK_STRUCTURE_TYPE_MEMORY_WIN32_HANDLE_PROPERTIES_KHR
             err = _vkGetMemoryWin32HandlePropertiesKHR[ device,
-                VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT, hv, @hp ]
+                VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT, hv,
+                @hp ]
             expect err == 0, 'appshare: vkGetMemoryWin32HandlePropertiesKHR failed'
             allowed : u32 [ mreq.memoryTypeBits & hp.memoryTypeBits ]
             expect allowed != 0, 'appshare: no memory type for shared handle'
@@ -2546,7 +2677,7 @@ class vk_context
                     mti = k
                     break
             ded : VkMemoryDedicatedAllocateInfo [ ]
-            ded.sType  = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO
+            ded.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO
             ded.buffer = buf
             imp : VkImportMemoryWin32HandleInfoKHR [ ]
             imp.sType      = VK_STRUCTURE_TYPE_IMPORT_MEMORY_WIN32_HANDLE_INFO_KHR
@@ -2576,7 +2707,7 @@ class vk_context
         if [ !src || !dst || !src.vk_image || !dst.vk_image ] return
         cmd : VkCommandBuffer
         vkAllocateCommandBuffers[ device, VkCommandBufferAllocateInfo [
-            sType:              VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            sType:       VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
             commandPool:        pool[],
             level:              VK_COMMAND_BUFFER_LEVEL_PRIMARY,
             commandBufferCount: 1 ], @cmd ]
@@ -2602,7 +2733,9 @@ class vk_context
                     baseArrayLayer: 0,
                     layerCount:     1 ],
                 dstOffset: VkOffset3D [ x: 0, y: 0, z: 0 ],
-                extent: VkExtent3D [ width: u32[ src.width ], height: u32[ src.height ], depth: 1 ] ] ]
+                extent: VkExtent3D [ width: u32[ src.width ],
+                                     height: u32[ src.height ],
+                                     depth: 1 ] ] ]
         vkEndCommandBuffer[ cmd ]
         qlock.lock[]
         vkQueueSubmit[ queue, 1, VkSubmitInfo [
@@ -2625,7 +2758,7 @@ class vk_context
             return null
         cmd : VkCommandBuffer
         vkAllocateCommandBuffers[ device, VkCommandBufferAllocateInfo [
-            sType:              VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            sType:       VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
             commandPool:        pool[],
             level:              VK_COMMAND_BUFFER_LEVEL_PRIMARY,
             commandBufferCount: 1 ], @cmd ]
@@ -2653,31 +2786,34 @@ class vk_context
                     baseArrayLayer: 0,
                     layerCount:     1 ],
                 dstOffset: VkOffset3D [ x: 0, y: 0, z: 0 ],
-                extent: VkExtent3D [ width: u32[ src.width ], height: u32[ src.height ], depth: 1 ] ] ]
+                extent: VkExtent3D [ width: u32[ src.width ],
+                                     height: u32[ src.height ],
+                                     depth: 1 ] ] ]
         src.transition_in[ cmd, prev ]
         src.vk_layout = prev
         dst.transition_in[ cmd,
                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
         dst.vk_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
         vkEndCommandBuffer[ cmd ]
-        f9 : VkFence [ fence_acquire[] ]
+        copy_fence : VkFence [ fence_acquire[] ]
         qlock.lock[]
         vkQueueSubmit[ queue, 1, VkSubmitInfo [
             sType:              VK_STRUCTURE_TYPE_SUBMIT_INFO,
             commandBufferCount: 1,
-            pCommandBuffers:    @cmd ], f9 ]
+            pCommandBuffers:    @cmd ], copy_fence ]
         qlock.unlock[]
         copy_cmd_last = cmd
-        return f9
+        return copy_fence
 
     # has an async copy finished? when it has, its buffer and fence go
     # back
-    func copy_done [ f9: VkFence, cmd: VkCommandBuffer ] -> bool
-        if [ !f9 ] return true
-        if [ vkGetFenceStatus[ device, f9 ] != VK_SUCCESS ] return false
-        cb9 : VkCommandBuffer [ cmd ]
-        if [ cb9 ] vkFreeCommandBuffers[ device, pool[], 1, @cb9 ]
-        fence_release[ f9 ]
+    func copy_done [ fence: VkFence, cmd: VkCommandBuffer ] -> bool
+        if [ !fence ] return true
+        if [ vkGetFenceStatus[ device, fence ] != VK_SUCCESS ]
+            return false
+        cb : VkCommandBuffer [ cmd ]
+        if [ cb ] vkFreeCommandBuffers[ device, pool[], 1, @cb ]
+        fence_release[ fence ]
         return true
 
     func attach [ vk_surface:handle ]
@@ -2687,26 +2823,26 @@ class vk_context
             expect queue, "Failed to retrieve graphics queue"
             vk: handle[ a ]
             if [ _vkCreateDebugUtilsMessengerEXT ]
-                result2: _vkCreateDebugUtilsMessengerEXT[
+                messenger_result: _vkCreateDebugUtilsMessengerEXT[
                     instance, # at base...
                     VkDebugUtilsMessengerCreateInfoEXT[
-                        sType: VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
-                        messageSeverity: VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
-                            VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
-                        messageType: VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
-                            VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
+                    sType: VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
+                    messageSeverity: VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
+                    VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
+                    messageType: VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+                    VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
                         pfnUserCallback: @trinity_log, pUserData: vk
                     ],
                     null, @debug
                 ]
                 # at base... one above has 1 extra space, and the error
                 # shows... i am not sure where to look
-                expect result2 == VK_SUCCESS, "debug messenger"
+                expect messenger_result == VK_SUCCESS, "debug messenger"
                 
             pool_info: VkCommandPoolCreateInfo [
-                sType:            VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                sType:       VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
                 queueFamilyIndex: queue_family_index,
-                flags:            VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT
+                flags:   VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT
             ]
             result: vkCreateCommandPool[ device, pool_info, null,
                     @command_pool ]
@@ -2724,7 +2860,7 @@ class vk_context
                 vkGetDeviceQueue[ device, u32[ compute_family ],
                                   u32[ compute_index ], @compute_queue ]
                 cpool_info: VkCommandPoolCreateInfo [
-                    sType:            VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                    sType:   VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
                     queueFamilyIndex: u32[ compute_family ],
                     flags:            VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT
                 ]
@@ -2752,17 +2888,23 @@ class vk_context
                     cmd: Command [ vk: a ]
                     cmd.begin
                     vkCmdBlitImage[
-                        cmd.cmd, vk_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                        vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                        cmd.cmd, vk_image,
+                        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                        vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                        1,
                         VkImageBlit [
                             srcSubresource: VkImageSubresourceLayers [
-                                aspectMask: VK_IMAGE_ASPECT_COLOR_BIT, mipLevel: i - 1, baseArrayLayer: f, layerCount: 1 ],
+                                aspectMask: VK_IMAGE_ASPECT_COLOR_BIT,
+                                mipLevel: i - 1, baseArrayLayer: f,
+                                layerCount: 1 ],
                             srcOffsets: [
                                 VkOffset3D [ 0, 0,
                                         0 ], VkOffset3D [ mipWidth,
                                                 mipHeight, mipDepth ] ],
                             dstSubresource: VkImageSubresourceLayers [
-                                aspectMask: VK_IMAGE_ASPECT_COLOR_BIT, mipLevel: i, baseArrayLayer: f, layerCount: 1 ],
+                                aspectMask: VK_IMAGE_ASPECT_COLOR_BIT,
+                                mipLevel: i, baseArrayLayer: f,
+                                layerCount: 1 ],
                             dstOffsets: [ VkOffset3D [ 0, 0, 0 ],
                                     VkOffset3D [
                                 max[ 1, mipWidth / 2 ], max[ 1,
@@ -2772,29 +2914,37 @@ class vk_context
                     cmd.submit
                     transition_image_layout[ vk_image,
                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, i, 1, f, 1, false ]
+                        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, i, 1, f,
+                        1,
+                        false ]
                 mipWidth  = max[ 1, mipWidth / 2 ]
                 mipHeight = max[ 1, mipHeight / 2 ]
                 mipDepth  = max[ 1, mipDepth / 2 ]
             for [ f: 0, f < layers, f += 1 ]
                 transition_image_layout[ vk_image,
                     VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, mips, f, 1, false ]
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, mips,
+                    f,
+                    1, false ]
         el
             transition_image_layout[ vk_image,
                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1, 0, 1, false ]
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1, 0, 1,
+                false ]
 
 
     # compatibility wrapper for old call sites
     intern func transition_image_layout [
-            img: VkImage, old_layout: VkImageLayout, new_layout: VkImageLayout,
+            img: VkImage, old_layout: VkImageLayout,
+            new_layout: VkImageLayout,
             baseMipLevel: i32, level_count: i32, base_array_layer: i32,
             layer_count: i32, is_depth: bool ] 
         src: Layout.find[ old_layout ]
         dst: Layout.find[ new_layout ]
         expect src && dst, "layout not found"
-        r: ImageRange [ base_mip: baseMipLevel, levels: level_count, base_layer: base_array_layer, layers: layer_count, is_depth: is_depth ]
+        r: ImageRange [ base_mip: baseMipLevel, levels: level_count,
+                        base_layer: base_array_layer,
+                        layers: layer_count, is_depth: is_depth ]
         src.transition[ a, img, dst, r ]
 
 
@@ -2838,7 +2988,8 @@ class Gpu
             comp: compute
             i : Au.header[ vertex_data ]
             vertex = Buffer [ vk: vk, size: vertex_size * vertex_count,
-                u_storage: comp, u_vertex: !comp, u_dst: !comp, u_shader: !comp,
+                u_storage: comp, u_vertex: !comp, u_dst: !comp,
+                u_shader: !comp,
                 m_host_visible: true, m_host_coherent: true,
                 data: vertex_data ]
             if [ index_size ]
@@ -2864,14 +3015,16 @@ class Gpu
             el
                 # full mip chain: minification filters and the sampler's
                 # anisotropy only engage when mip_levels > 1
-                mips9 : i32 [ 1 ]
+                mips : i32 [ 1 ]
                 if [ img ]
-                    mx9 : i32 [ (img.width > img.height) ? img.width : img.height ]
-                    while [ mx9 > 1 ]
-                        mx9   = mx9 / 2
-                        mips9 += 1
+                    mx : i32 [
+                        (img.width > img.height) ? img.width
+                        : img.height ]
+                    while [ mx > 1 ]
+                        mx   = mx / 2
+                        mips += 1
                 tx = Texture [ vk: vk, sampler: sampler,
-                    mip_levels: mips9,
+                    mip_levels: mips,
                     surface: (img) ? img.surface : Surface.color,
                     linear:  (img) ? img.linear  : false,
                     wrap_u:  (img) ? img.wrap_u  : false,
@@ -2956,19 +3109,20 @@ class uniforms
             ty = ty.context
 
         type_list = type_list.reverse[]
-        hdr2:   Au.header[ s ]
-        leaf  = hdr2.au
+        leaf_hdr:   Au.header[ s ]
+        leaf  = leaf_hdr.au
         total_uniform: i32 [ uniform_size[ leaf ] ]
         u_memory = vec u8 [ total_uniform ]
         # one buffer for all slots: a buffer each cost ring allocs
         props : VkPhysicalDeviceProperties
         vkGetPhysicalDeviceProperties[ vk.physical_device, @props ]
-        al : i64 [ i64[ props.limits.minUniformBufferOffsetAlignment ] ]
+        al : i64 [ props.limits.minUniformBufferOffsetAlignment ]
         if [ al < 1 ] al = 1
         unit   = i64[ total_uniform ]
         stride = (unit + al - 1) / al * al
         u_ring = Buffer [ vk: vk, size: stride * i64[ ring ],
-            u_uniform: true, u_dst: true, m_host_visible: true, m_host_coherent: true ]
+            u_uniform: true, u_dst: true, m_host_visible: true,
+            m_host_coherent: true ]
 
     # Buffer.dealloc frees nothing: the GPU lets go frames later
     func dealloc []
@@ -3214,13 +3368,15 @@ class Pipeline
         # sampler/storage). the original code only bound set 0 because
         # the compute-on-vbo pattern didn't have any storage bindings;
         # the SDF compute does.
-        ds2 : i32 [ (r) ? r.draw_slot : cslot ]
+        ds : i32 [ (r) ? r.draw_slot : cslot ]
         vkCmdBindDescriptorSets[ frame, VK_PIPELINE_BIND_POINT_COMPUTE,
-            layout, 0, 2, @descriptor_sets[ 2 * ds2 ], 0, null ]
+            layout, 0, 2, @descriptor_sets[ 2 * ds ], 0, null ]
         # explicit dispatch counts override the default
         # vertex-buffer-driven workgroup count from the C foundation's
         # compute-on-vbo pattern.
-        dx: i32 [ (dispatch_x > 0) ? dispatch_x : ((memory) ? memory.vertex_count : 1) ]
+        dx: i32 [
+            (dispatch_x > 0) ? dispatch_x
+            : ((memory) ? memory.vertex_count : 1) ]
         dy: i32 [ (dispatch_y > 0) ? dispatch_y : 1 ]
         dz: i32 [ (dispatch_z > 0) ? dispatch_z : 1 ]
         vkCmdDispatch[ frame, dx, dy, dz ]
@@ -3260,7 +3416,8 @@ class Pipeline
         for [ g: Gpu ] in resources
             if [ g.tx ]
                 au_dead_check[ g.tx, 'draw' ]
-                g.tx.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
+                g.tx.transition[
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
         frame: VkCommandBuffer [ f ]
         shader_uniforms.update[ ]
 
@@ -3282,7 +3439,7 @@ class Pipeline
 
     public   func bind_resources [ ]
         vk.bindres_calls += 1
-        br0 : i64 [ epoch_micros[] ]
+        br : i64 [ epoch_micros[] ]
         # for COMBINED_IMAGE_SAMPLER pool sizing
         sampler_count:         0
         set1_binds:            0 # binding count for set 1 (mixed types)
@@ -3320,7 +3477,9 @@ class Pipeline
         if [ shader_uniforms ]
             vk.defer_drop[ shader_uniforms ]
             Au.drop[ shader_uniforms ]
-        shader_uniforms = uniforms [ vk: vk, s: s, node_model: default_model, ring: pipe_ring ]
+        shader_uniforms = uniforms [ vk: vk, s: s,
+                                     node_model: default_model,
+                                     ring: pipe_ring ]
         Au.hold[shader_uniforms]
         s_hdr: Au.header[ s ]
 
@@ -3346,7 +3505,7 @@ class Pipeline
         # walk shader schema — typeid[s] gives the static `shader` type;
         # read the runtime subclass from the Au object header instead.
         sh_hdr:        Au.header[ s ]
-        sch0 : i64 [ epoch_micros[] ]
+        sch : i64 [ epoch_micros[] ]
         # BASE FIRST. shader.ag emits `layout(binding = N)` walking the
         # chain base-first (context_chain reverses it), so binding N is
         # counted from the base class down. walking derived-first here
@@ -3379,8 +3538,8 @@ class Pipeline
                             meta_type, a ]
                     if [ all.count != 1 ]
                         log 'BINDCHK {mem.ident} value={enum_value} count={all.count} nsamplers={samplers.count}'
-                        for [ img2: Image, nm2: string ] in samplers
-                            log 'BINDCHK   sampler key {nm2} -> {Au.evalue[ enum_type, nm2.chars ]}'
+                        for [ samp_img: Image, nm: string ] in samplers
+                            log 'BINDCHK   sampler key {nm} -> {Au.evalue[ enum_type, nm.chars ]}'
                         log 'BINDCHK enum {enum_type.ident}: 0={Au.estring[ enum_type, 0 ]} 1={Au.estring[ enum_type, 1 ]}'
                     expect all.count == 1, "binding arrays (count > 1) not supported in this code path"
                     res: all[0]
@@ -3396,7 +3555,9 @@ class Pipeline
                     if [ strcmp[ mem.ident, 'clip' ] == 0 ]
                         clip_slot = set1_binds
                     
-                    #printf[ "DESCW shader=%s member=%s view=%p sampler=%p\n", s.name.chars, mem.ident, res.tx.vk_image_view, res.tx.vk_sampler ]
+                    # printf[ "DESCW shader=%s member=%s view=%p
+                    # sampler=%p\n", s.name.chars, mem.ident,
+                    # res.tx.vk_image_view, res.tx.vk_sampler ]
                     image_infos[set1_binds] = VkDescriptorImageInfo [
                         sampler:     res.tx.vk_sampler,
                         imageView:   res.tx.vk_image_view,
@@ -3469,7 +3630,7 @@ class Pipeline
                     set1_binds            += 1
                     storage_buffer_count  += 1
 
-        vk.br_schema_us += epoch_micros[] - sch0
+        vk.br_schema_us += epoch_micros[] - sch
 
         # the pool / layouts / 128 descriptor sets are allocated ONCE
         # per pipeline (~20ms on MoltenVK). a resize re-runs
@@ -3492,7 +3653,7 @@ class Pipeline
             # pool/alloc are RINGED: 2 sets per slot, sized x pipe_ring.
             sizes: local VkDescriptorPoolSize[4]
             desc: VkDescriptorPoolCreateInfo [
-                sType:         VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+                sType:    VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
                 poolSizeCount: 0,
                 pPoolSizes:    sizes,
                 maxSets:       u32[ 2 * pipe_ring ]
@@ -3521,15 +3682,15 @@ class Pipeline
             for [ rs: i32 0, rs < 64, rs += 1 ]
                 set_layouts[ 2 * rs ]     = descriptor_layouts[0]
                 set_layouts[ 2 * rs + 1 ] = descriptor_layouts[1]
-            for [ c0: i32 0, c0 < pipe_ring, c0 += 64 ]
-                cn : i32 [ mini[ 64, pipe_ring - c0 ] ]
+            for [ chunk: i32 0, chunk < pipe_ring, chunk += 64 ]
+                cn : i32 [ mini[ 64, pipe_ring - chunk ] ]
                 vkAllocateDescriptorSets[ vk.device,
                         VkDescriptorSetAllocateInfo [
                     sType:              VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
                     descriptorPool:     descriptor_pool,
                     descriptorSetCount: u32[ 2 * cn ],
                     pSetLayouts:        set_layouts
-                ], @descriptor_sets[ 2 * c0 ] ]
+                ], @descriptor_sets[ 2 * chunk ] ]
         # accumulate writes for EVERY ring slot — set0 (uniform -> the
         # slot's ring buffer) + set1 (samplers; same placeholders for
         # all slots) — then issue ONE vkUpdateDescriptorSets.
@@ -3547,7 +3708,7 @@ class Pipeline
                     range:  shader_uniforms.unit
                 ]
                 descriptor_writes[wcount] = VkWriteDescriptorSet [
-                    sType:           VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                    sType:       VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                     dstSet:          descriptor_sets[ 2 * rs ],
                     dstBinding:      i,
                     descriptorType:  VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
@@ -3556,10 +3717,11 @@ class Pipeline
                 ]
                 wcount += 1
             for [ i: 0, i < set1_binds, i += 1 ]
-                dtype: VkDescriptorType [ sampler_bindings[i].descriptorType ]
+                dtype: VkDescriptorType [
+                    sampler_bindings[i].descriptorType ]
                 if [ dtype == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER ]
                     descriptor_writes[wcount] = VkWriteDescriptorSet [
-                        sType:           VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                        sType:   VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                         pNext:           null,
                         dstSet:          descriptor_sets[ 2 * rs + 1 ],
                         dstBinding:      i,
@@ -3570,7 +3732,7 @@ class Pipeline
                     ]
                 el
                     descriptor_writes[wcount] = VkWriteDescriptorSet [
-                        sType:           VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                        sType:   VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                         pNext:           null,
                         dstSet:          descriptor_sets[ 2 * rs + 1 ],
                         dstBinding:      i,
@@ -3584,7 +3746,7 @@ class Pipeline
                 vkUpdateDescriptorSets[ vk.device, wcount,
                                         descriptor_writes, 0, null ]
                 wcount = 0
-        vk.bindres_us += epoch_micros[] - br0
+        vk.bindres_us += epoch_micros[] - br
 
     # the graphics pipeline, blending by a W3C composite operator
     func build_graphics [ op: Composite ] -> VkPipeline
@@ -3594,7 +3756,8 @@ class Pipeline
             inputRate: VK_VERTEX_INPUT_RATE_VERTEX
         ]
         attr_count: 0
-        attributes: vec VkVertexInputAttributeDescription [ vbo.member_count ]
+        attributes: vec VkVertexInputAttributeDescription [
+            vbo.member_count ]
 
         # count VertexInput attribs the shader actually consumes
         shader_input_count: 0
@@ -3619,12 +3782,12 @@ class Pipeline
                 ( mem.src == typeid[ vec4f ]  ) ? VK_FORMAT_R32G32B32A32_SFLOAT :
                 ( mem.src == typeid[ rgba16 ] ) ? VK_FORMAT_R16G16B16A16_UNORM  :
                 ( mem.src == typeid[ rgba8 ]  ) ? VK_FORMAT_R8G8B8A8_UNORM     :
-                ( mem.src == typeid[ f32 ]    ) ? VK_FORMAT_R32_SFLOAT          :
-                ( mem.src == typeid[ i8 ]     ) ? VK_FORMAT_R8_SINT             :
-                ( mem.src == typeid[ u8 ]     ) ? VK_FORMAT_R8_UINT             :
-                ( mem.src == typeid[ i16 ]    ) ? VK_FORMAT_R16_SINT            :
-                ( mem.src == typeid[ u16 ]    ) ? VK_FORMAT_R16_UINT            :
-                ( mem.src == typeid[ u32 ]    ) ? VK_FORMAT_R32_UINT            :
+                ( mem.src == typeid[ f32 ]    ) ? VK_FORMAT_R32_SFLOAT :
+                ( mem.src == typeid[ i8 ]     ) ? VK_FORMAT_R8_SINT    :
+                ( mem.src == typeid[ u8 ]     ) ? VK_FORMAT_R8_UINT    :
+                ( mem.src == typeid[ i16 ]    ) ? VK_FORMAT_R16_SINT   :
+                ( mem.src == typeid[ u16 ]    ) ? VK_FORMAT_R16_UINT   :
+                ( mem.src == typeid[ u32 ]    ) ? VK_FORMAT_R32_UINT   :
                                                 VK_FORMAT_UNDEFINED
             f: attributes[attr_count].format
             expect f != VK_FORMAT_UNDEFINED, 'undefined vertex attribute for type {mem.src.ident}'
@@ -3669,7 +3832,9 @@ class Pipeline
             rasterizerDiscardEnable: VK_FALSE,
             polygonMode:             VK_POLYGON_MODE_FILL,
             lineWidth:               1.0,
-            cullMode:                (cull_none) ? VK_CULL_MODE_NONE : (cull_front) ? VK_CULL_MODE_FRONT_BIT : VK_CULL_MODE_BACK_BIT,
+            cullMode:                (cull_none) ? VK_CULL_MODE_NONE
+            : (cull_front) ? VK_CULL_MODE_FRONT_BIT
+            : VK_CULL_MODE_BACK_BIT,
             frontFace:               VK_FRONT_FACE_CLOCKWISE,
             depthBiasEnable:         VK_FALSE
         ]
@@ -3688,7 +3853,8 @@ class Pipeline
         # * fd (premultiplied)
         fs : VkBlendFactor [ composite_source_factor[ op ] ]
         fd : VkBlendFactor [ composite_destination_factor[ op ] ]
-        src_color_factor : VkBlendFactor [ (straight_alpha && fs == VK_BLEND_FACTOR_ONE) ? VK_BLEND_FACTOR_SRC_ALPHA : fs ]
+        src_color_factor : VkBlendFactor [ (straight_alpha
+            && fs == VK_BLEND_FACTOR_ONE) ? VK_BLEND_FACTOR_SRC_ALPHA : fs ]
         color_blend_attachment: VkPipelineColorBlendAttachmentState [
             blendEnable:         VK_TRUE,
             srcColorBlendFactor: src_color_factor,
@@ -3715,8 +3881,9 @@ class Pipeline
         ]
 
         dynamic_state: VkPipelineDynamicStateCreateInfo [
-            sType:             VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-            dynamicStateCount: sizeof[ dynamic_states ] / sizeof[ dynamic_states[0] ],
+            sType: VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+            dynamicStateCount: sizeof[ dynamic_states ]
+            / sizeof[ dynamic_states[0] ],
             pDynamicStates:    dynamic_states
         ]
 
@@ -3733,7 +3900,7 @@ class Pipeline
             stencilTestEnable:     VK_FALSE
         ]
         pipeline_info: VkGraphicsPipelineCreateInfo [
-            sType:               VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+            sType:      VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
             stageCount:          n_stages,
             pStages:             shader_stages,
             pDepthStencilState:  @depth_stencil,
@@ -3775,12 +3942,13 @@ class Pipeline
         # still needs the pipeline layout (set 0 = uniforms, set 1 =
         # sampler/storage) so descriptor sets bind correctly.
         pipeline_layout_info: VkPipelineLayoutCreateInfo [
-            sType:                  VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+            sType:        VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
             setLayoutCount:         2,
             pSetLayouts:            descriptor_layouts,
             pushConstantRangeCount: 0
         ]
-        result: vkCreatePipelineLayout[ vk.device, pipeline_layout_info, null, @layout ]
+        result: vkCreatePipelineLayout[ vk.device, pipeline_layout_info,
+                                        null, @layout ]
         expect result == VK_SUCCESS, "Failed to create pipeline layout"
         # If the shader is compute-only (has vk_comp but no
         # vk_vert/vk_frag), always create a compute pipeline regardless
@@ -3799,7 +3967,7 @@ class Pipeline
                 sType:  VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
                 layout: layout,
                 stage:  VkPipelineShaderStageCreateInfo [
-                    sType:  VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                sType:  VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                     stage:  VK_SHADER_STAGE_COMPUTE_BIT,
                     module: s.vk_comp,
                     pName:  "main"
@@ -3827,7 +3995,8 @@ class Pipeline
         if [ composite_pipes ]
             for [ i: i32 0, i < i32 composite_pipes.count, i += 1 ]
                 if [ composite_pipes[ i ] != 0 ]
-                    vkDestroyPipeline[ vk.device, cast VkPipeline [ composite_pipes[ i ] ], null ]
+                    vkDestroyPipeline[ vk.device,
+                        cast VkPipeline [ composite_pipes[ i ] ], null ]
             composite_pipes = null
         if [ vk_compute ]
             vkDestroyPipeline[ vk.device, vk_compute, null ]
@@ -3947,7 +4116,9 @@ class Model
     # scatter or merges an accepted variant back
     public func cage_copy_from [ src: Model ]
         if [ !cages || !src.cages ] return
-        nc : i32 [ (cages.count < src.cages.count) ? cages.count : src.cages.count ]
+        nc : i32 [
+            (cages.count < src.cages.count) ? cages.count
+            : src.cages.count ]
         for [ ci: i32 0, ci < nc, ci += 1 ]
             dt : cages[ ci ]
             st : src.cages[ ci ]
@@ -3972,14 +4143,14 @@ class Model
             for [ i: i32 0, i < t.nv, i += 1 ] t.pin[ i ] = 0.0
         pos : @f32 [ t.cage_buf.data ]
         rs : f32 [ (r_soft > r_hard) ? r_soft : r_hard ]
-        rs2 : f32 [ rs * rs ]
+        radius_sq : f32 [ rs * rs ]
         for [ v: i32 0, v < t.nv, v += 1 ]
             dx : f32 [ pos[ v*3 + 0 ] - px ]
             dy : f32 [ pos[ v*3 + 1 ] - py ]
             dz : f32 [ pos[ v*3 + 2 ] - pz ]
-            d2 : f32 [ dx*dx + dy*dy + dz*dz ]
-            if [ d2 > rs2 ] continue
-            dd : f32 [ sqrt[ d2 ] ]
+            dist_sq : f32 [ dx*dx + dy*dy + dz*dz ]
+            if [ dist_sq > radius_sq ] continue
+            dd : f32 [ sqrt[ dist_sq ] ]
             wt : f32 [ 1.0 ]
             if [ dd > r_hard && rs > r_hard ]
                 wt = 1.0 - (dd - r_hard) / (rs - r_hard)
@@ -4038,16 +4209,16 @@ class Model
             dx : f32 [ pos[ v*3 + 0 ] - px ]
             dy : f32 [ pos[ v*3 + 1 ] - py ]
             dz : f32 [ pos[ v*3 + 2 ] - pz ]
-            d2 : f32 [ dx*dx + dy*dy + dz*dz ]
-            mx2 : f32 [ pos[ v*3 + 0 ] - mpx ]
-            m2 : f32 [ mx2*mx2 + dy*dy + dz*dz ]
+            dist_sq : f32 [ dx*dx + dy*dy + dz*dz ]
+            mx : f32 [ pos[ v*3 + 0 ] - mpx ]
+            mirror_sq : f32 [ mx*mx + dy*dy + dz*dz ]
             ox : f32 [ dx ]
             ux : f32 [ nax ]
             uy : f32 [ nay ]
             uz : f32 [ naz ]
             bx : f32 [ px ]
-            if [ m2 < d2 ]
-                ox = mx2
+            if [ mirror_sq < dist_sq ]
+                ox = mx
                 uy = 0.0 - nay
                 uz = 0.0 - naz
                 bx = mpx
@@ -4058,10 +4229,10 @@ class Model
             crx : f32 [ uy*dz - uz*dy ]
             cry : f32 [ uz*ox - ux*dz ]
             crz : f32 [ ux*dy - uy*ox ]
-            dt2 : f32 [ ux*ox + uy*dy + uz*dz ]
-            pos[ v*3 + 0 ] = bx + ox*ca + crx*sa + ux*dt2*(1.0 - ca)
-            pos[ v*3 + 1 ] = py + dy*ca + cry*sa + uy*dt2*(1.0 - ca)
-            pos[ v*3 + 2 ] = pz + dz*ca + crz*sa + uz*dt2*(1.0 - ca)
+            dt : f32 [ ux*ox + uy*dy + uz*dz ]
+            pos[ v*3 + 0 ] = bx + ox*ca + crx*sa + ux*dt*(1.0 - ca)
+            pos[ v*3 + 1 ] = py + dy*ca + cry*sa + uy*dt*(1.0 - ca)
+            pos[ v*3 + 2 ] = pz + dz*ca + crz*sa + uz*dt*(1.0 - ca)
 
     # scale control verts toward/away from a pivot — or its x-mirror,
     # whichever is nearer — scaled by the painted wmap weights. the
@@ -4080,13 +4251,13 @@ class Model
             dx : f32 [ pos[ v*3 + 0 ] - px ]
             dy : f32 [ pos[ v*3 + 1 ] - py ]
             dz : f32 [ pos[ v*3 + 2 ] - pz ]
-            d2 : f32 [ dx*dx + dy*dy + dz*dz ]
-            mx2 : f32 [ pos[ v*3 + 0 ] - mpx ]
-            m2 : f32 [ mx2*mx2 + dy*dy + dz*dz ]
+            dist_sq : f32 [ dx*dx + dy*dy + dz*dz ]
+            mx : f32 [ pos[ v*3 + 0 ] - mpx ]
+            mirror_sq : f32 [ mx*mx + dy*dy + dz*dz ]
             ox : f32 [ dx ]
             bx : f32 [ px ]
-            if [ m2 < d2 ]
-                ox = mx2
+            if [ mirror_sq < dist_sq ]
+                ox = mx
                 bx = mpx
             sc : f32 [ 1.0 + d * wt ]
             pos[ v*3 + 0 ] = bx + ox * sc
@@ -4118,37 +4289,37 @@ class Model
         mx : f32 [ pos[ mc*3 + 0 ] ]
         my : f32 [ pos[ mc*3 + 1 ] ]
         mz : f32 [ pos[ mc*3 + 2 ] ]
-        r2 : f32 [ radius * radius ]
+        radius_sq : f32 [ radius * radius ]
         for [ v: i32 0, v < t.nv, v += 1 ]
             dx : f32 [ pos[ v*3 + 0 ] - cx ]
             dy : f32 [ pos[ v*3 + 1 ] - cy ]
             dz : f32 [ pos[ v*3 + 2 ] - cz ]
-            d2 : f32 [ dx*dx + dy*dy + dz*dz ]
-            ex2 : f32 [ pos[ v*3 + 0 ] - mx ]
-            ey2 : f32 [ pos[ v*3 + 1 ] - my ]
-            ez2 : f32 [ pos[ v*3 + 2 ] - mz ]
-            m2 : f32 [ ex2*ex2 + ey2*ey2 + ez2*ez2 ]
-            if [ m2 < d2 ] d2 = m2
-            if [ d2 > r2 ] continue
-            infl : f32 [ 1.0 - sqrt[ d2 ] / radius ]
+            dist_sq : f32 [ dx*dx + dy*dy + dz*dz ]
+            mdx : f32 [ pos[ v*3 + 0 ] - mx ]
+            mdy : f32 [ pos[ v*3 + 1 ] - my ]
+            mdz : f32 [ pos[ v*3 + 2 ] - mz ]
+            mirror_sq : f32 [ mdx*mdx + mdy*mdy + mdz*mdz ]
+            if [ mirror_sq < dist_sq ] dist_sq = mirror_sq
+            if [ dist_sq > radius_sq ] continue
+            infl : f32 [ 1.0 - sqrt[ dist_sq ] / radius ]
             # mirrored pairs share one random draw (keyed on the lower
             # vert id); the higher-id side flips x, midline verts keep x
             # at zero
             pid : i32 [ v ]
-            mv2 : i32 [ -1 ]
-            if [ t.mirror ] mv2 = t.mirror[ v ]
+            mv : i32 [ -1 ]
+            if [ t.mirror ] mv = t.mirror[ v ]
             flip : bool [ false ]
-            if [ mv2 >= 0 && mv2 < v ]
-                pid = mv2
+            if [ mv >= 0 && mv < v ]
+                pid = mv
                 flip = true
             h : i64 [ seed + i64[ pid ] * 40503 ]
             h = h * 6364136223846793005 + 1442695040888963407
-            rx : f32 [ f32[ h % 1000 ] ]
+            rx : f32 [ h % 1000 ]
             h = h * 6364136223846793005 + 1442695040888963407
-            ry : f32 [ f32[ h % 1000 ] ]
+            ry : f32 [ h % 1000 ]
             h = h * 6364136223846793005 + 1442695040888963407
-            rz : f32 [ f32[ h % 1000 ] ]
-            if [ mv2 == v ] rx = 0.0
+            rz : f32 [ h % 1000 ]
+            if [ mv == v ] rx = 0.0
             if [ flip ] rx = 0.0 - rx
             rl : f32 [ sqrt[ rx*rx + ry*ry + rz*rz ] ]
             if [ rl < 1.0 ]
@@ -4158,19 +4329,19 @@ class Model
                 rl = 1.0
             step : f32 [ amount * infl ]
             # shortest incident edge caps the step
-            e0 : i32 [ t.veo[ v ] ]
-            e1 : i32 [ t.veo[ v + 1 ] ]
+            edge_start : i32 [ t.veo[ v ] ]
+            edge_end : i32 [ t.veo[ v + 1 ] ]
             emin : f32 [ 1e30 ]
-            for [ i: i32 e0, i < e1, i += 1 ]
+            for [ i: i32 edge_start, i < edge_end, i += 1 ]
                 eid : i32 [ t.ve[ i ] ]
-                u0 : i32 [ t.edata[ eid*4 + 0 ] ]
-                u1 : i32 [ t.edata[ eid*4 + 1 ] ]
-                ov : i32 [ (u0 == v) ? u1 : u0 ]
+                from_vert : i32 [ t.edata[ eid*4 + 0 ] ]
+                to_vert : i32 [ t.edata[ eid*4 + 1 ] ]
+                ov : i32 [ (from_vert == v) ? to_vert : from_vert ]
                 ex : f32 [ pos[ ov*3 + 0 ] - pos[ v*3 + 0 ] ]
                 ey : f32 [ pos[ ov*3 + 1 ] - pos[ v*3 + 1 ] ]
                 ez : f32 [ pos[ ov*3 + 2 ] - pos[ v*3 + 2 ] ]
-                el2 : f32 [ ex*ex + ey*ey + ez*ez ]
-                if [ el2 < emin ] emin = el2
+                edge_sq : f32 [ ex*ex + ey*ey + ez*ez ]
+                if [ edge_sq < emin ] emin = edge_sq
             if [ emin < 1e29 ]
                 emax : f32 [ sqrt[ emin ] * 0.3 ]
                 if [ step > emax ] step = emax
@@ -4236,7 +4407,8 @@ class Model
                             if [ a_name == 'JOINTS_0' ] skinned = true
                         es: shader [ (!skinned
                                       && rigid_s) ? rigid_s : s ]
-                        is_alpha: (base_a > 0.0 && base_a < 1.0) || es.transparent
+                        is_alpha: (base_a > 0.0 && base_a < 1.0) ||
+                            es.transparent
                         if [ !is_alpha ]
                             model_init_pipeline[ a, n, prim, mesh, es,
                                     render_id, false ]
@@ -4251,10 +4423,10 @@ class Model
         # transparent draws LAST so alpha blends against a finished
         # opaque scene; stable partition keeps relative order
         resort : vec Pipeline []
-        for [ p2: Pipeline ] in pipelines
-            if [ !p2.depth_no_write ] resort.push[ p2 ]
-        for [ p2: Pipeline ] in pipelines
-            if [ p2.depth_no_write ] resort.push[ p2 ]
+        for [ pipe: Pipeline ] in pipelines
+            if [ !pipe.depth_no_write ] resort.push[ pipe ]
+        for [ pipe: Pipeline ] in pipelines
+            if [ pipe.depth_no_write ] resort.push[ pipe ]
         pipelines = resort
 
     construct [ p: string ]
@@ -4336,7 +4508,7 @@ class Command
         lk   = mutex [ ]
         pool = vk.own_pool[]
         alloc_info: VkCommandBufferAllocateInfo [
-            sType:              VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            sType:       VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
             commandPool:        pool,
             level:              VK_COMMAND_BUFFER_LEVEL_PRIMARY,
             commandBufferCount: 1
@@ -4386,7 +4558,7 @@ class Buffer
         cmd:    VkCommandBuffer
         vkAllocateCommandBuffers [ vk.device,
                                    VkCommandBufferAllocateInfo [
-            sType:              VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            sType:       VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
             commandPool:        vk.pool[],
             level:              VK_COMMAND_BUFFER_LEVEL_PRIMARY,
             commandBufferCount: 1 ], @cmd ]
@@ -4395,7 +4567,9 @@ class Buffer
             flags: VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT ] ]
         prev: VkImageLayout [ tx.vk_layout ]
         tx.transition [ VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL ]
-        vkCmdCopyImageToBuffer [ cmd, tx.vk_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, 1,
+        vkCmdCopyImageToBuffer [ cmd, tx.vk_image,
+                                 VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                 buf, 1,
             VkBufferImageCopy [
                 bufferOffset:      0,
                 bufferRowLength:   0,
@@ -4428,7 +4602,7 @@ class Buffer
         cmd: VkCommandBuffer
         vkAllocateCommandBuffers [ vk.device,
                                    VkCommandBufferAllocateInfo [
-            sType:              VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            sType:       VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
             commandPool:        vk.pool[],
             level:              VK_COMMAND_BUFFER_LEVEL_PRIMARY,
             commandBufferCount: 1 ], @cmd ]
@@ -4437,7 +4611,9 @@ class Buffer
             flags: VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT ] ]
         prev: VkImageLayout [ tx.vk_layout ]
         tx.transition_in [ cmd, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL ]
-        vkCmdCopyImageToBuffer [ cmd, tx.vk_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, vk_buffer, 1,
+        vkCmdCopyImageToBuffer [ cmd, tx.vk_image,
+                                 VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                 vk_buffer, 1,
             VkBufferImageCopy [
                 bufferOffset:      0,
                 bufferRowLength:   0,
@@ -4461,14 +4637,14 @@ class Buffer
         vkFreeCommandBuffers [ vk.device, vk.pool[], 1, @cmd ]
 
     # readback of a single cube face / mip (validation)
-    func transfer_sub [ tx: Texture, mip: i32, layer: i32, w2: i32,
-                        h2: i32 ]
+    func transfer_sub [ tx: Texture, mip: i32, layer: i32, sub_w: i32,
+                        sub_h: i32 ]
         expect tx, "expected Texture"
         buf: vk_buffer
         cmd: VkCommandBuffer
         vkAllocateCommandBuffers [ vk.device,
                                    VkCommandBufferAllocateInfo [
-            sType:              VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            sType:       VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
             commandPool:        vk.pool[],
             level:              VK_COMMAND_BUFFER_LEVEL_PRIMARY,
             commandBufferCount: 1 ], @cmd ]
@@ -4477,7 +4653,9 @@ class Buffer
             flags: VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT ] ]
         prev: VkImageLayout [ tx.vk_layout ]
         tx.transition [ VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL ]
-        vkCmdCopyImageToBuffer [ cmd, tx.vk_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, 1,
+        vkCmdCopyImageToBuffer [ cmd, tx.vk_image,
+                                 VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                 buf, 1,
             VkBufferImageCopy [
                 bufferOffset:      0,
                 bufferRowLength:   0,
@@ -4488,7 +4666,7 @@ class Buffer
                     baseArrayLayer: layer,
                     layerCount:     1 ],
                 imageOffset: VkOffset3D [ x: 0, y: 0, z: 0 ],
-                imageExtent: VkExtent3D [ width: w2, height: h2,
+                imageExtent: VkExtent3D [ width: sub_w, height: sub_h,
                         depth: 1 ] ] ]
         vkEndCommandBuffer [ cmd ]
         vk.qlock.lock[]
@@ -4667,7 +4845,9 @@ class Texture
         if [ size <= 0 ] return
         if [ !read_buf || read_size < size ]
             read_buf  = Buffer [ vk: vk, size: size,
-                u_dst: true, m_host_visible: true, m_host_coherent: true, m_host_cached: true ]
+                u_dst: true, m_host_visible: true,
+                m_host_coherent: true,
+                m_host_cached: true ]
             read_map  = read_buf.mmap[]
             read_size = size
         read_buf.transfer_region[ a, x, y, rw, rh ]
@@ -4693,24 +4873,25 @@ class Texture
         bpp: i32 [ (pixel == Pixel.rgbaf32
                     || pixel == Pixel.f32) ? channels * 4 : channels ]
         b: Buffer [ vk: vk, size: width * height * bpp,
-            u_dst: true, m_host_visible: true, m_host_coherent: true, m_host_cached: true ]
+            u_dst: true, m_host_visible: true, m_host_coherent: true,
+            m_host_cached: true ]
         b.transfer a
-        m2: b.mmap[]
+        mapped: b.mmap[]
         # BGRA targets map to Pixel.rgba8; swap R/B so the bytes match
         if [ vk_format == VK_FORMAT_B8G8R8A8_UNORM
              || vk_format == VK_FORMAT_B8G8R8A8_SRGB ]
-            pd: @u8 [ m2 ]
-            n2: i32 [ width * height ]
-            for [ i: i32 0, i < n2, i += 1 ]
-                b4: i32 [ i * 4 ]
-                t2: u8 [ pd[ b4 ] ]
-                pd[ b4 ]     = pd[ b4 + 2 ]
-                pd[ b4 + 2 ] = t2
+            pd: @u8 [ mapped ]
+            pixel_count: i32 [ width * height ]
+            for [ i: i32 0, i < pixel_count, i += 1 ]
+                byte_at: i32 [ i * 4 ]
+                swap_byte: u8 [ pd[ byte_at ] ]
+                pd[ byte_at ]     = pd[ byte_at + 2 ]
+                pd[ byte_at + 2 ] = swap_byte
         res: Image [
             width:    width,
             height:   height,
             format:   pixel,
-            res_bits: m2,
+            res_bits: mapped,
             res2:     b.hold[],
             res_dealloc: @image_release_buffer
         ]
@@ -4719,9 +4900,10 @@ class Texture
 
     func transition [ new_layout: i32 ]
         if [ vk_layout != new_layout ]
-            is_d32 : bool [ vk_format == VK_FORMAT_D32_SFLOAT ]
+            is_d : bool [ vk_format == VK_FORMAT_D32_SFLOAT ]
             vk.transition_image_layout[ vk_image, vk_layout, new_layout,
-                0, mip_levels, 0, layer_count, vk_format == VK_FORMAT_D32_SFLOAT ]
+                0, mip_levels, 0, layer_count,
+                vk_format == VK_FORMAT_D32_SFLOAT ]
             vk_layout = new_layout
 
     # in-band variant: records vkCmdPipelineBarrier into the given
@@ -4745,7 +4927,8 @@ class Texture
             dstQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED,
             image:               vk_image,
             subresourceRange:    VkImageSubresourceRange [
-                aspectMask:     (is_depth) ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT,
+            aspectMask:     (is_depth) ? VK_IMAGE_ASPECT_DEPTH_BIT
+            : VK_IMAGE_ASPECT_COLOR_BIT,
                 baseMipLevel:   0,
                 levelCount:     mip_levels,
                 baseArrayLayer: 0,
@@ -4763,7 +4946,8 @@ class Texture
         # each other and only the last paint's shape survived. covering
         # fragment+compute+color-output serializes compute-write vs
         # prior-draw-read.
-        src_stage : i32 [ src.stage | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT ]
+        src_stage : i32 [
+            src.stage | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT ]
         vkCmdPipelineBarrier[ cmd, src_stage, dst.stage, 0, 0, null, 0,
                               null, 1, @barrier ]
         vk_layout = new_layout
@@ -4772,17 +4956,20 @@ class Texture
     func test_vma [ ]                                                   
         allocator: VmaAllocator                                         
         result: vmaCreateAllocator[ VmaAllocatorCreateInfo [            
-            physicalDevice:    vk.physical_device,                         
-            device:            vk.device,                                  
-            instance:          vk.instance,                                
+            physicalDevice:    vk.physical_device,
+            
+            device:            vk.device,
+            
+            instance:          vk.instance,
+            
             vulkanApiVersion:  VK_API_VERSION_1_2,                      
             pVulkanFunctions:  null,                                    
             flags: VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT                      
         ], @allocator ]
 
         if [ result == VK_SUCCESS ]                                 
-            vk_image0:  VkImage                                          
-            vma_alloc0: VmaAllocation                                    
+            test_image:  VkImage                                          
+            test_alloc: VmaAllocation                                    
             result = vmaCreateImage[ allocator, VkImageCreateInfo [   
                 sType:         VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,     
                 imageType:     VK_IMAGE_TYPE_2D,                      
@@ -4797,7 +4984,7 @@ class Texture
                 initialLayout: VK_IMAGE_LAYOUT_UNDEFINED                
             ], VmaAllocationCreateInfo [
                 usage: VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE              
-            ], @vk_image0, @vma_alloc0, null ]                  
+            ], @test_image, @test_alloc, null ]                  
             if [ result == VK_SUCCESS ]                                 
                 vmaDestroyImage[ allocator, vk_image, vma_alloc ]
             vmaDestroyAllocator[ allocator ]
@@ -4845,7 +5032,9 @@ class Texture
             # copy done
             up_cmd.submit[ ]
             vk.wait_idle[]
-            vk.create_mipmaps[ vk_image, width, height, (depth > 1) ? depth : 1, mip_levels, layer_count ]
+            vk.create_mipmaps[ vk_image, width, height,
+                               (depth > 1) ? depth : 1, mip_levels,
+                               layer_count ]
             vk_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
         el
             transition_in[ up_cmd.cmd,
@@ -4924,7 +5113,7 @@ class Texture
             if [ width > 0 || img ]
                 pixel_format = (img) ? img.format : pixel_format
                 sampler_size = (img) ? img.byte_count[] : 0
-                ansio        = (anisotropy > 0) ? anisotropy : ((img) ? 4 : 0)
+                ansio  = (anisotropy > 0) ? anisotropy : ((img) ? 4 : 0)
                 if [ img ]
                     expect img.width > 0, 'texture: {img.uri} did not load'
                     width  = img.width
@@ -4959,22 +5148,27 @@ class Texture
                 vk_format = vk_format_fn[ pixel_format, linear ]
 
             if [ !(width  > 0 && width  <= 32768) ]
-                test2 :  2
-                test2 += 2
+                test :  2
+                test += 2
             if [ !vk_image ]
-                expect width  > 0 && width  <= 16384, 'Texture.init: corrupt width {width}'
-                expect height > 0 && height <= 16384, 'Texture.init: corrupt height {height}'
+                expect width  > 0 &&
+                    width  <= 16384, 'Texture.init: corrupt width {width}'
+                expect height > 0 &&
+                    height <= 16384, 'Texture.init: corrupt height {height}'
             info : VkImageCreateInfo [
                 sType:         VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-                imageType:     (depth > 1) ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D,
+                imageType:     (depth > 1) ? VK_IMAGE_TYPE_3D
+                : VK_IMAGE_TYPE_2D,
                 format:        vk_format,
-                flags:         (layer_count >= 6) ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0,
+                flags:         (layer_count >= 6)
+                ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0,
                 extent:        VkExtent3D [ width, height,
                         (depth > 1) ? depth : 1 ],
                 mipLevels:     mip_levels,
                 arrayLayers:   layer_count,
                 samples:       VK_SAMPLE_COUNT_1_BIT,
-                tiling:        (host_linear) ? VK_IMAGE_TILING_LINEAR : VK_IMAGE_TILING_OPTIMAL,
+                tiling:        (host_linear) ? VK_IMAGE_TILING_LINEAR
+                : VK_IMAGE_TILING_OPTIMAL,
                 usage:         usage,
                 sharingMode:   VK_SHARING_MODE_EXCLUSIVE,
                 initialLayout: VK_IMAGE_LAYOUT_UNDEFINED
@@ -4983,33 +5177,37 @@ class Texture
             if [ !vk_image && vk_format ]
                 ifdef [ unix ]
                     if [ shareable ]
-                        ext9 : VkExternalMemoryImageCreateInfo [ ]
-                        ext9.sType       = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO
-                        ext9.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT
+                        ext : VkExternalMemoryImageCreateInfo [ ]
+                        ext.sType       = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO
+                        ext.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT
                         ifdef [ apple ]
-                            xmo9 : VkExportMetalObjectCreateInfoEXT [ ]
-                            xmo9.sType            = VK_STRUCTURE_TYPE_EXPORT_METAL_OBJECT_CREATE_INFO_EXT
-                            xmo9.exportObjectType = VK_EXPORT_METAL_OBJECT_TYPE_METAL_IOSURFACE_BIT_EXT
-                            info.pNext = @xmo9
+                            xmo : VkExportMetalObjectCreateInfoEXT [ ]
+                            xmo.sType            = VK_STRUCTURE_TYPE_EXPORT_METAL_OBJECT_CREATE_INFO_EXT
+                            xmo.exportObjectType = VK_EXPORT_METAL_OBJECT_TYPE_METAL_IOSURFACE_BIT_EXT
+                            info.pNext = @xmo
                         el
-                            info.pNext = @ext9
-                        r9 : i32 [ vkCreateImage[ vk.device, @info,
+                            info.pNext = @ext
+                        create_res : i32 [ vkCreateImage[ vk.device,
+                                                          @info,
                                 null, @vk_image ] ]
                         # a driver that does not take this handle type
                         # shares nothing: the texture is still made, the
                         # normal way
-                        if [ r9 != VK_SUCCESS ]
+                        if [ create_res != VK_SUCCESS ]
                             vk_image = null
                             info.pNext = null
                         el
-                            shared_fd = vk.export_image_memory[ vk_image, @vk_memory ]
+                            shared_fd = vk.export_image_memory[
+                                vk_image,
+                                @vk_memory ]
                             if [ shared_fd < 0 ]
                                 vkDestroyImage[ vk.device, vk_image,
                                         null ]
                                 vk_image = null
                                 info.pNext = null
                         if [ host_linear ]
-                            sub : VkImageSubresource [ aspectMask: VK_IMAGE_ASPECT_COLOR_BIT ]
+                            sub : VkImageSubresource [
+                                aspectMask: VK_IMAGE_ASPECT_COLOR_BIT ]
                             sl  : VkSubresourceLayout [ ]
                             vkGetImageSubresourceLayout[ vk.device,
                                     vk_image, @sub, @sl ]
@@ -5034,12 +5232,15 @@ class Texture
                     data: (img) ? img.pixels : fill ]
                 vkCmdCopyBufferToImage[ cmd.cmd, staging.vk_buffer,
                                         vk_image,
-                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, VkBufferImageCopy [
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                    VkBufferImageCopy [
                         bufferOffset:      0,
                         bufferRowLength:   0,
                         bufferImageHeight: 0,
                         imageSubresource:  VkImageSubresourceLayers [
-                            aspectMask:     (is_depth) ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT,
+                        aspectMask:     (is_depth)
+                        ? VK_IMAGE_ASPECT_DEPTH_BIT
+                        : VK_IMAGE_ASPECT_COLOR_BIT,
                             mipLevel:       0,
                             baseArrayLayer: 0,
                             layerCount:     layer_count
@@ -5050,7 +5251,9 @@ class Texture
                     ]]
                 cmd.submit[ ]
                 vkDeviceWaitIdle[ vk.device ]
-                vk.create_mipmaps[ vk_image, width, height, (depth > 1) ? depth : 1, mip_levels, layer_count ]
+                vk.create_mipmaps[ vk_image, width, height,
+                                   (depth > 1) ? depth : 1, mip_levels,
+                                   layer_count ]
                 vk_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 
             if [ !vk_image_view ]
@@ -5066,10 +5269,13 @@ class Texture
                         r: VK_COMPONENT_SWIZZLE_IDENTITY,
                         g: VK_COMPONENT_SWIZZLE_IDENTITY,
                         b: VK_COMPONENT_SWIZZLE_IDENTITY,
-                        a: (opaque) ? VK_COMPONENT_SWIZZLE_ONE : VK_COMPONENT_SWIZZLE_IDENTITY
+                        a: (opaque) ? VK_COMPONENT_SWIZZLE_ONE
+                        : VK_COMPONENT_SWIZZLE_IDENTITY
                     ],
                     subresourceRange: VkImageSubresourceRange [
-                        aspectMask:     (is_depth) ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT,
+                    aspectMask:     (is_depth)
+                    ? VK_IMAGE_ASPECT_DEPTH_BIT
+                    : VK_IMAGE_ASPECT_COLOR_BIT,
                         baseMipLevel:   0,
                         levelCount:     mip_levels,
                         baseArrayLayer: 0,
@@ -5091,13 +5297,16 @@ class Texture
                 mode_w: VkSamplerAddressMode [ (wrap_u && wrap_v) ?
                     VK_SAMPLER_ADDRESS_MODE_REPEAT : address_mode ]
                 samplerInfo: VkSamplerCreateInfo [
-                    sType:                   VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
-                    magFilter:               (nearest) ? VK_FILTER_NEAREST : VK_FILTER_LINEAR,
-                    minFilter:               (nearest) ? VK_FILTER_NEAREST : VK_FILTER_LINEAR,
+                    sType:        VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+                    magFilter:               (nearest)
+                    ? VK_FILTER_NEAREST : VK_FILTER_LINEAR,
+                    minFilter:               (nearest)
+                    ? VK_FILTER_NEAREST : VK_FILTER_LINEAR,
                     addressModeU:            mode_u,
                     addressModeV:            mode_v,
                     addressModeW:            mode_w,
-                    anisotropyEnable:        (ansio > 0) ? VK_TRUE : VK_FALSE,
+                    anisotropyEnable:        (ansio > 0) ? VK_TRUE
+                    : VK_FALSE,
                     maxAnisotropy:           ansio,
                     minLod:                  0.0,
                     # levels are 0 .. mip_levels-1. passing the COUNT
@@ -5106,11 +5315,11 @@ class Texture
                     # that is any minified fetch reading a level that
                     # was never rendered
                     maxLod:                  f32[ mip_levels - 1 ],
-                    borderColor:             VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE,
+                    borderColor:     VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE,
                     unnormalizedCoordinates: VK_FALSE,
                     compareEnable:           VK_FALSE,
                     compareOp:               VK_COMPARE_OP_ALWAYS,
-                    mipmapMode:              VK_SAMPLER_MIPMAP_MODE_LINEAR
+                    mipmapMode:            VK_SAMPLER_MIPMAP_MODE_LINEAR
                 ]
                 r: vkCreateSampler[ vk.device, samplerInfo, null,
                                     @vk_sampler ]
@@ -5121,11 +5330,11 @@ class Texture
                 vk.sampler_count += 1
                 if [ !vk.samp_tags ] vk.samp_tags = map i32 [string] []
                 if [ !vk.samp_keys ] vk.samp_keys = vec string []
-                k9 : samp_key[]
-                if [ !vk.samp_tags.contains[ k9 ] ]
-                    vk.samp_keys += k9
-                    vk.samp_tags[ k9 ] = 0
-                vk.samp_tags[ k9 ] = vk.samp_tags[ k9 ] + 1
+                samp_tag : samp_key[]
+                if [ !vk.samp_tags.contains[ samp_tag ] ]
+                    vk.samp_keys += samp_tag
+                    vk.samp_tags[ samp_tag ] = 0
+                vk.samp_tags[ samp_tag ] = vk.samp_tags[ samp_tag ] + 1
                 if [ !tag ]
                     vk.samp_other += 1
                 el [ tag == 'rcolor' ]
@@ -5160,22 +5369,23 @@ class Texture
     # else where it was made
     func samp_key [] -> string
         if [ tag ] return tag
-        h9 : Au.header[ a ]
-        if [ !h9.source ] return '?:{h9.line}'
-        src9 : string [ h9.source ]
-        n9 : i32 [ src9.count ]
-        s9 : i32 [ 0 ]
-        for [ i: i32 0, i < n9, i += 1 ]
-            if [ src9[ i ] == 47 ] s9 = i + 1
-        base9 : src9.mid[ s9, n9 - s9 ]
-        return '{base9}:{h9.line}'
+        hdr : Au.header[ a ]
+        if [ !hdr.source ] return '?:{hdr.line}'
+        src : string [ hdr.source ]
+        src_len : i32 [ src.count ]
+        name_start : i32 [ 0 ]
+        for [ i: i32 0, i < src_len, i += 1 ]
+            if [ src[ i ] == 47 ] name_start = i + 1
+        base : src.mid[ name_start, src_len - name_start ]
+        return '{base}:{hdr.line}'
 
     func release_gpu [ ]
         if [ vk_sampler || vk_image_view || (!swap && vk_image) ]
-            #printf[ "TEXREL tag=%s %dx%d view=%p sampler=%p\n", (tag) ? tag.chars : '-', width, height, vk_image_view, vk_sampler ]
-            # hand the handles to the deferred queue — an in-flight
-            # submit may still sample them (immediate destroy =
-            # fast-close SIGTRAP)
+            # printf[ "TEXREL tag=%s %dx%d view=%p sampler=%p\n", (tag)
+            # ? tag.chars : '-', width, height, vk_image_view,
+            # vk_sampler ] hand the handles to the deferred queue — an
+            # in-flight submit may still sample them (immediate destroy
+            # = fast-close SIGTRAP)
             td : TexDefer [ ]
             td.vk_sampler    = vk_sampler
             td.vk_image_view = vk_image_view
@@ -5192,9 +5402,9 @@ class Texture
         if [ vk_sampler ]
             vk.qlock.lock[]
             vk.sampler_count -= 1
-            k9 : samp_key[]
-            if [ vk.samp_tags && vk.samp_tags.contains[ k9 ] ]
-                vk.samp_tags[ k9 ] = vk.samp_tags[ k9 ] - 1
+            samp_tag : samp_key[]
+            if [ vk.samp_tags && vk.samp_tags.contains[ samp_tag ] ]
+                vk.samp_tags[ samp_tag ] = vk.samp_tags[ samp_tag ] - 1
             if [ !tag ]
                 vk.samp_other -= 1
             el [ tag == 'rcolor' ]
@@ -5414,9 +5624,9 @@ Texture Display
             swap_rot = 270
         if [ (swap_rot == 90 || swap_rot == 270)
              && extent.width > extent.height ]
-            t9 : u32 [ extent.width ]
+            old_width : u32 [ extent.width ]
             extent.width  = extent.height
-            extent.height = t9
+            extent.height = old_width
         swap_transform[]
 
     # the final quad: rotated for the surface (model), scaled into the
@@ -5425,9 +5635,9 @@ Texture Display
         if [ !swap_shader ] return
         m : mat4f.identity[]
         if [ swap_rot != 0 ]
-            h9 : f32 [ 0.0 - radians[ f32[ swap_rot ] ] * 0.5 ]
-            m = m.rotate[ quatf [ x: 0.0, y: 0.0, z: sin[ h9 ],
-                                  w: cos[ h9 ] ] ]
+            half_angle : f32 [ 0.0 - radians[ f32[ swap_rot ] ] * 0.5 ]
+            m = m.rotate[ quatf [ x: 0.0, y: 0.0, z: sin[ half_angle ],
+                                  w: cos[ half_angle ] ] ]
         swap_shader.model = m
         swap_shader.fit   = vec4f [ fit_sx, fit_sy, 0.0, 0.0 ]
 
@@ -5443,8 +5653,8 @@ Texture Display
         if [ lock_aspect && aspect_w > 0 && aspect_h > 0
              && logical_width <= 0 && swap_rot == 0
              && extent.width > 0 && extent.height > 0 ]
-            ew : f32 [ f32[ extent.width ] ]
-            eh : f32 [ f32[ extent.height ] ]
+            ew : f32 [ extent.width ]
+            eh : f32 [ extent.height ]
             ar : f32 [ f32[ aspect_w ] / f32[ aspect_h ] ]
             fw : f32 [ ew ]
             fh : f32 [ fw / ar ]
@@ -5475,7 +5685,8 @@ Texture Display
             # device-pixel drawable. scale = pixels/points. determine
             # both up front so the r.update[] loop sizes render targets
             # (width*scale) correctly.
-            vkGetPhysicalDeviceSurfaceCapabilitiesKHR[ vk.physical_device, vk_surface, @caps ]
+            vkGetPhysicalDeviceSurfaceCapabilitiesKHR[
+                vk.physical_device, vk_surface, @caps ]
             ww_i: i32
             wh_i: i32
             platform_window_get_size[ glfw, @ww_i, @wh_i ]
@@ -5490,9 +5701,11 @@ Texture Display
             scale = platform_window_scale[ glfw ]
             surface_rotation[ caps.currentTransform ]
             if [ logical_width > 0 && width > 0 ]
-                scale  = f32[ (swap_rot == 90 || swap_rot == 270) ? extent.height : extent.width ] / logical_width
+                scale  = f32[ (swap_rot == 90
+                    || swap_rot == 270) ? extent.height : extent.width ] / logical_width
                 width  = logical_width
-                height = i32[ ((swap_rot == 90 || swap_rot == 270) ? extent.width : extent.height) / scale ]
+                height = i32[ ((swap_rot == 90
+                    || swap_rot == 270) ? extent.width : extent.height) / scale ]
             fit_aspect[]
         el
             width  = w_new
@@ -5526,15 +5739,15 @@ Texture Display
         # live textures
         rebind_swap = true
         if [ a inherits Window ]
-            rwin9 : Window a
-            rwin9.rebind_frost = true
+            rwin : Window a
+            rwin.rebind_frost = true
 
         resized = true
         if [ !backbuffer && !defer_swap ]
             old_swapchain : VkSwapchainKHR [ Au.live_swapchain_get[] ]
             result: vkCreateSwapchainKHR[ vk.device,
                     VkSwapchainCreateInfoKHR [
-                sType:                 VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+                sType:      VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
                 pNext:                 null,
                 surface:               vk_surface,
                 minImageCount:         caps.minImageCount,
@@ -5546,7 +5759,7 @@ Texture Display
                 imageUsage:            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                 imageSharingMode:      VK_SHARING_MODE_EXCLUSIVE,
                 preTransform:          caps.currentTransform,
-                compositeAlpha:        VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+                compositeAlpha:       VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
                 presentMode:           present_mode,
                 clipped:               VK_TRUE,
                 oldSwapchain:          old_swapchain
@@ -5624,58 +5837,58 @@ Texture Display
             resize*[ width, height ]
 
         now_ms : i64 [ epoch_millis[] ]
-        tp0 : i64 [ epoch_micros[] ]
+        at_start : i64 [ epoch_micros[] ]
         # a covered backdrop holds its frame, except the one repaint a
         # resize or a mode change asks for (rate gates step aside for
         # that one)
-        bp9  : bool [ win && win.backdrop_bypass ]
-        once9 : bool [ bp9 && backdrop_once ]
-        hold9 : bool [ bp9 && !backdrop_once ]
-        drew9 : bool [ false ]
+        bp  : bool [ win && win.backdrop_bypass ]
+        repaint_once : bool [ bp && backdrop_once ]
+        hold : bool [ bp && !backdrop_once ]
+        drew : bool [ false ]
         for [ r: Render, id: string ] in element_targets
             if [ !r || r.skip || r == skip_target ] continue
-            if [ hold9 && win.backdrop == r ] continue
+            if [ hold && win.backdrop == r ] continue
             if [ r.owner && (r.owner.hide || r.owner.opacity <= 0.0) ]
                 continue
-            if [ !r.due[ now_ms ] && !once9 ] continue
+            if [ !r.due[ now_ms ] && !repaint_once ] continue
             r.draw*[]
             r.sync_fence*[]
             r.has_drawn    = true
             r.last_draw_ms = now_ms
-            if [ win && win.backdrop == r ] drew9 = true
+            if [ win && win.backdrop == r ] drew = true
 
-        tp1 : i64 [ epoch_micros[] ]
+        at_targets : i64 [ epoch_micros[] ]
         on_compose*[]
-        tp2 : i64 [ epoch_micros[] ]
+        at_compose : i64 [ epoch_micros[] ]
 
         prof_frames += 1
         prof_report : bool [ prof_log && prof_frames % 120 == 0 ]
         if [ prof_report ] log 'frame: {list.count} targets'
-        bd9 : Render [ (win) ? win.backdrop : null ]
+        bd : Render [ (win) ? win.backdrop : null ]
         for [ r: Render ] in list
-            if [ !r.due[ now_ms ] && !once9 ] continue
+            if [ !r.due[ now_ms ] && !repaint_once ] continue
             # covered by a pane: only the screen compose (last) draws
-            if [ hold9 && r != list.last[] ] continue
+            if [ hold && r != list.last[] ] continue
             # a chain stage reads the backdrop: unchanged since its last
             # pass, skip
-            if [ !once9 && bd9 && r != list.last[] && r.has_drawn
-                 && bd9.last_draw_ms <= r.last_draw_ms ]
+            if [ !repaint_once && bd && r != list.last[] && r.has_drawn
+                 && bd.last_draw_ms <= r.last_draw_ms ]
                 continue
             r.timing = true
-            td0 : i64 [ epoch_micros[] ]
+            draw_start : i64 [ epoch_micros[] ]
             r.draw*[]
-            td1 : i64 [ epoch_micros[] ]
+            draw_end : i64 [ epoch_micros[] ]
             r.sync_fence*[]
-            td2 : i64 [ epoch_micros[] ]
+            wait_end : i64 [ epoch_micros[] ]
             if [ prof_report ]
-                log '  target {r.tag} {r.width}x{r.height} draw_us={td1 - td0} wait_us={td2 - td1} gpu_us={r.gpu_us}'
+                log '  target {r.tag} {r.width}x{r.height} draw_us={draw_end - draw_start} wait_us={wait_end - draw_end} gpu_us={r.gpu_us}'
             r.has_drawn    = true
             r.last_draw_ms = now_ms
 
-        if [ once9 && (drew9 || !bd9) ] backdrop_once = false
-        tp3 : i64 [ epoch_micros[] ]
+        if [ repaint_once && (drew || !bd) ] backdrop_once = false
+        at_list : i64 [ epoch_micros[] ]
         on_screen*[]
-        tp4 : i64 [ epoch_micros[] ]
+        at_screen : i64 [ epoch_micros[] ]
 
         # a hidden window presents nothing: its drawable acquire would
         # stall every frame while the app shows in orbiter's pane
@@ -5683,7 +5896,8 @@ Texture Display
         if [ swap_renders && !hidden ]
             result: vkAcquireNextImageKHR[ vk.device, vk_swapchain,
                     UINT64_MAX,
-                semaphore_frame.vk_image_available_semaphore, null, @swap_image_current ]
+                semaphore_frame.vk_image_available_semaphore, null,
+                @swap_image_current ]
             # SUBOPTIMAL too: on MoltenVK it means the extent no longer
             # matches the layer's drawable, and that presents nothing
             # (gray on resize)
@@ -5693,33 +5907,40 @@ Texture Display
             el
                 expect result == VK_SUCCESS, "failed to acquire swapchain image"
                 swap_render_current = swap_renders[swap_image_current]
-                last_render[].color.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
-                swap_render_current.color.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
+                last_render[].color.transition[
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
+                swap_render_current.color.transition[
+                    VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
 
                 # shell presentation switch: sample orbiter's imported
                 # frame instead of the app's final render while the
                 # shell is up
-                shell9 : Au [ (shell_tex && shell_tex.vk_image) ? Au[ shell_tex ] : Au[ last_render[] ] ]
-                if [ shell9 != shell_bound || rebind_swap ]
+                shell_src : Au [ (shell_tex
+                    && shell_tex.vk_image) ? Au[ shell_tex ] : Au[ last_render[] ] ]
+                if [ shell_src != shell_bound || rebind_swap ]
                     rebind_swap = false
-                    swap_model.samplers = map Au[string] [ "color": shell9 ]
+                    swap_model.samplers = map Au[string] [
+                        "color": shell_src ]
                     swap_model.rebind_model[]
-                    shell_bound = shell9
+                    shell_bound = shell_src
                 if [ shell_tex && shell_tex.vk_image ]
-                    shell_tex.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
+                    shell_tex.transition[
+                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
 
                 info : Au.header[swap_render_current]
                 swap_render_current.draw[]
-                last_render[].color.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
+                last_render[].color.transition[
+                    VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
                 presentInfo: VkPresentInfoKHR [
-                    sType:              VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+                    sType:           VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
                     swapchainCount:     1,
                     pSwapchains:        @vk_swapchain,
                     pImageIndices:      @swap_image_current,
                     waitSemaphoreCount: 1,
                     pWaitSemaphores:    @semaphore_frame.vk_render_finished_semaphore
                 ]
-                swap_render_current.color.transition[ VK_IMAGE_LAYOUT_PRESENT_SRC_KHR ]
+                swap_render_current.color.transition[
+                    VK_IMAGE_LAYOUT_PRESENT_SRC_KHR ]
                 # kms flips the image at once and the host scans it out
                 # with no fence: the frame must be finished before it is
                 # presented
@@ -5729,15 +5950,19 @@ Texture Display
                 vk.qlock.lock[]
                 result = vkQueuePresentKHR[ vk.queue, presentInfo ]
                 vk.qlock.unlock[]
-                swap_render_current.color.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
+                swap_render_current.color.transition[
+                    VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
                 # rotate over EVERY swapchain image, not just two. this
                 # used a bool index (first[] ? 1 : 0), which is correct
                 # only when the driver hands back 2 images -- a real
                 # iphone backs the surface with CAMetalLayer's 3
                 # drawables, and the third acquire then re-signalled a
                 # semaphore belonging to another in-flight frame
-                semaphore_frame = swap_renders[ (swap_image_current + 1) % swap_image_count ]
-                expect result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR || result == VK_ERROR_OUT_OF_DATE_KHR, "present"
+                semaphore_frame = swap_renders[
+                    (swap_image_current + 1) % swap_image_count ]
+                expect result == VK_SUCCESS ||
+                    result == VK_SUBOPTIMAL_KHR ||
+                        result == VK_ERROR_OUT_OF_DATE_KHR, "present"
                 if [ result == VK_ERROR_OUT_OF_DATE_KHR
                      || result == VK_SUBOPTIMAL_KHR ]
                     swap_needs_recreate = true
@@ -5751,12 +5976,12 @@ Texture Display
                         shown = true
                         platform_window_show[ glfw ]
                         if [ prof_log ] log 'SHOWN t={epoch_millis[]}'
-        tp5 : i64 [ epoch_micros[] ]
-        vk.ph_targets += tp1 - tp0
-        vk.ph_compose += tp2 - tp1
-        vk.ph_list    += tp3 - tp2
-        vk.ph_screen  += tp4 - tp3
-        vk.ph_swap    += tp5 - tp4
+        at_swap : i64 [ epoch_micros[] ]
+        vk.ph_targets += at_targets - at_start
+        vk.ph_compose += at_compose - at_targets
+        vk.ph_list    += at_list - at_compose
+        vk.ph_screen  += at_screen - at_list
+        vk.ph_swap    += at_swap - at_screen
 
 
     cast -> Image
@@ -5785,11 +6010,13 @@ Texture Display
             # holds the virtio-gpu drm master), then present through its
             # own scanout
             nd : u32 0
-            vkGetPhysicalDeviceDisplayPropertiesKHR[ vk.physical_device, @nd, null ]
+            vkGetPhysicalDeviceDisplayPropertiesKHR[ vk.physical_device,
+                                                     @nd, null ]
             log 'display: venus reports {nd} displays'
             expect nd > 0, "venus enumerates no display"
             dprops : local VkDisplayPropertiesKHR [ nd ]
-            vkGetPhysicalDeviceDisplayPropertiesKHR[ vk.physical_device, @nd, dprops ]
+            vkGetPhysicalDeviceDisplayPropertiesKHR[ vk.physical_device,
+                                                     @nd, dprops ]
             disp : VkDisplayKHR [ dprops[0].display ]
             m : u32 0
             vkGetDisplayModePropertiesKHR[ vk.physical_device, disp,
@@ -5803,20 +6030,27 @@ Texture Display
             # host drops it
             best : u32 0
             for [ i: u32 0, i < m, i += 1 ]
-                if [ modes[i].parameters.visibleRegion.width == u32[ width ] && modes[i].parameters.visibleRegion.height == u32[ height ] ]
+                if [
+                    modes[i].parameters.visibleRegion.width == u32[
+                        width ]
+                        && modes[i].parameters.visibleRegion.height == u32[ height ] ]
                     best = i
             ext : VkExtent2D modes[best].parameters.visibleRegion
             pc : u32 0
-            vkGetPhysicalDeviceDisplayPlanePropertiesKHR[ vk.physical_device, @pc, null ]
+            vkGetPhysicalDeviceDisplayPlanePropertiesKHR[
+                vk.physical_device, @pc, null ]
             expect pc > 0, "no display plane"
             planes : local VkDisplayPlanePropertiesKHR [ pc ]
-            vkGetPhysicalDeviceDisplayPlanePropertiesKHR[ vk.physical_device, @pc, planes ]
+            vkGetPhysicalDeviceDisplayPlanePropertiesKHR[
+                vk.physical_device, @pc, planes ]
             plane : u32 0
             for [ i: u32 0, i < pc, i += 1 ]
                 dc : u32 0
-                vkGetDisplayPlaneSupportedDisplaysKHR[ vk.physical_device, i, @dc, null ]
+                vkGetDisplayPlaneSupportedDisplaysKHR[
+                    vk.physical_device, i, @dc, null ]
                 sup : local VkDisplayKHR [ dc + 1 ]
-                vkGetDisplayPlaneSupportedDisplaysKHR[ vk.physical_device, i, @dc, sup ]
+                vkGetDisplayPlaneSupportedDisplaysKHR[
+                    vk.physical_device, i, @dc, sup ]
                 ok : bool false
                 for [ j: u32 0, j < dc, j += 1 ]
                     if [ sup[j] == disp ] ok = true
@@ -5957,7 +6191,8 @@ Texture Display
         # surface capabilities + formats
         if [ !backbuffer ]
             surface_caps = vec VkSurfaceCapabilitiesKHR [ 1 ]
-            result: vkGetPhysicalDeviceSurfaceCapabilitiesKHR[ vk.physical_device, vk_surface, surface_caps ]
+            result: vkGetPhysicalDeviceSurfaceCapabilitiesKHR[
+                vk.physical_device, vk_surface, surface_caps ]
             expect result == VK_SUCCESS, "Failed to query surface capabilities"
 
             # surface format
@@ -5989,17 +6224,20 @@ Texture Display
                 test_srgb: bool true
                 if [ test_srgb ]
                     for [ i: u32 0, i < format_count, i += 1 ]
-                        if [ formats[i].format == VK_FORMAT_B8G8R8A8_UNORM && formats[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR ]
+                        if [
+                            formats[i].format == VK_FORMAT_B8G8R8A8_UNORM && formats[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR ]
                             surface_format = formats[i]
 
             # present mode
             present_mode_count: u32 [ 0 ]
             vkGetPhysicalDeviceSurfacePresentModesKHR[
-                vk.physical_device, vk_surface, @present_mode_count, null ]
+                vk.physical_device, vk_surface, @present_mode_count,
+                null ]
             expect present_mode_count > 0, "No present modes found"
             present_modes: vec VkPresentModeKHR [ present_mode_count ]
             vkGetPhysicalDeviceSurfacePresentModesKHR[
-                vk.physical_device, vk_surface, @present_mode_count, present_modes ]
+                vk.physical_device, vk_surface, @present_mode_count,
+                present_modes ]
             # vsync, always: MAILBOX presents the newest finished frame
             # on the refresh and never tears, FIFO queues them.
             # IMMEDIATE is not a third option here -- it only tears, and
@@ -6010,8 +6248,8 @@ Texture Display
                 if [ present_modes[i] == VK_PRESENT_MODE_MAILBOX_KHR ]
                     present_mode = VK_PRESENT_MODE_MAILBOX_KHR
                     break
-            pm9 : i32 [ present_mode ]
-            log 'swap: present mode {pm9} ({present_mode_count} offered)'
+            pm : i32 [ present_mode ]
+            log 'swap: present mode {pm} ({present_mode_count} offered)'
 
             # width/height are LOGICAL (window points) so layout/CSS
             # coords match every OS. scale = device pixels / points (2.0
@@ -6035,9 +6273,10 @@ Texture Display
                 height = i32[ ph_i / scale ]
             extent.width  = u32[ pw_i ]
             extent.height = u32[ ph_i ]
-            caps0 : VkSurfaceCapabilitiesKHR
-            vkGetPhysicalDeviceSurfaceCapabilitiesKHR[ vk.physical_device, vk_surface, @caps0 ]
-            surface_rotation[ caps0.currentTransform ]
+            caps : VkSurfaceCapabilitiesKHR
+            vkGetPhysicalDeviceSurfaceCapabilitiesKHR[
+                vk.physical_device, vk_surface, @caps ]
+            surface_rotation[ caps.currentTransform ]
             fit_aspect[]
             log 'display: {width}x{height} points, {extent.width}x{extent.height} px, scale {scale}'
         el
@@ -6094,18 +6333,24 @@ intern func vk_format_fn [ f: Pixel, linear: bool ] -> VkFormat
         (f == Pixel.f32    ) ? VK_FORMAT_R32_SFLOAT :
         (f == Pixel.rgbaf32) ? VK_FORMAT_R32G32B32A32_SFLOAT :
         (f == Pixel.rgbf32 ) ? VK_FORMAT_R32G32B32_SFLOAT :
-        (f == Pixel.rgba8  ) ? (linear) ? VK_FORMAT_R8G8B8A8_UNORM : VK_FORMAT_R8G8B8A8_SRGB :
-        (f == Pixel.rgb8   ) ? (linear) ? VK_FORMAT_R8G8B8_UNORM   : VK_FORMAT_R8G8B8_SRGB :
+        (f == Pixel.rgba8  ) ? (linear) ? VK_FORMAT_R8G8B8A8_UNORM
+        : VK_FORMAT_R8G8B8A8_SRGB :
+        (f == Pixel.rgb8   ) ? (linear) ? VK_FORMAT_R8G8B8_UNORM
+        : VK_FORMAT_R8G8B8_SRGB :
         (f == Pixel.u8     ) ? VK_FORMAT_R8_UNORM : 0 ]
     expect result, "incompatible image format"
     return result
 
 intern func pixel_from_format [ f: VkFormat, channels: @i32 ] -> Pixel
     pixel: Pixel [
-        (f == VK_FORMAT_R8G8B8A8_UNORM || f == VK_FORMAT_B8G8R8A8_UNORM ||
-         f == VK_FORMAT_R8G8B8A8_SRGB  || f == VK_FORMAT_B8G8R8A8_SRGB)  ? Pixel.rgba8 :
-        (f == VK_FORMAT_R8G8B8_UNORM   || f == VK_FORMAT_B8G8R8_UNORM   ||
-         f == VK_FORMAT_R8G8B8_SRGB    || f == VK_FORMAT_B8G8R8_SRGB)    ? Pixel.rgb8 :
+        (f == VK_FORMAT_R8G8B8A8_UNORM || f == VK_FORMAT_B8G8R8A8_UNORM
+        ||
+         f == VK_FORMAT_R8G8B8A8_SRGB
+         || f == VK_FORMAT_B8G8R8A8_SRGB)  ? Pixel.rgba8 :
+        (f == VK_FORMAT_R8G8B8_UNORM   || f == VK_FORMAT_B8G8R8_UNORM
+        ||
+         f == VK_FORMAT_R8G8B8_SRGB
+         || f == VK_FORMAT_B8G8R8_SRGB)    ? Pixel.rgb8 :
         (f == VK_FORMAT_R8_UNORM)            ? Pixel.u8 :
         (f == VK_FORMAT_R32_SFLOAT)          ? Pixel.f32 :
         (f == VK_FORMAT_R32G32B32A32_SFLOAT) ? Pixel.rgbaf32 : 0 ]
@@ -6131,7 +6376,9 @@ intern func pixel_from_format [ f: VkFormat, channels: @i32 ] -> Pixel
 # orbiter passes only ints and draws through draw[] — no VkBuffer
 # crosses the module edge (opaque handles have no stable cross-module
 # type identity).
-func Surface_resources [ surface_enum_type: Au_t, surface_value: Surface, meta_type: Au_t, p: Pipeline ] -> vec Gpu
+func Surface_resources [ surface_enum_type: Au_t,
+                         surface_value: Surface,
+                         meta_type: Au_t, p: Pipeline ] -> vec Gpu
     res: Gpu
     result: vec Gpu []
 
@@ -6152,7 +6399,8 @@ func Surface_resources [ surface_enum_type: Au_t, surface_value: Surface, meta_t
         if [ re ]
             tx = re.color
         if [ ia == surface_value ]
-            expect tx || (img inherits Image), "expected Texture or Image"
+            expect tx ||
+                (img inherits Image), "expected Texture or Image"
             res = Gpu [ vk: p.vk,
                         name: Au.estring[ surface_enum_type,
                                 surface_value ],
@@ -6160,12 +6408,15 @@ func Surface_resources [ surface_enum_type: Au_t, surface_value: Surface, meta_t
             result.push[ res ]
     
     pbr_default: pbr_defaults[]
-    pbr:         PbrMetallicRoughness [ (p.material) ? p.material.pbrMetallicRoughness : pbr_default ]
+    pbr:         PbrMetallicRoughness [
+        (p.material) ? p.material.pbrMetallicRoughness : pbr_default ]
     s:           shader [ p.s ]
 ##
-    printf[ "Surface_resources: material=%p pbr=%p baseColor=(%f,%f,%f,%f) metallic=%f\n",
+    printf[
+        "Surface_resources: material=%p pbr=%p baseColor=(%f,%f,%f,%f) metallic=%f\n",
         p.material, pbr,
-        pbr.baseColorFactor.x, pbr.baseColorFactor.y, pbr.baseColorFactor.z, pbr.baseColorFactor.w,
+        pbr.baseColorFactor.x, pbr.baseColorFactor.y,
+        pbr.baseColorFactor.z, pbr.baseColorFactor.w,
         pbr.metallicFactor ]
 ##
     if [ !result.count ]
@@ -6204,9 +6455,9 @@ func Surface_resources [ surface_enum_type: Au_t, surface_value: Surface, meta_t
                 res = Gpu [ vk: p.vk, name: "dummy_u8",
                     sampler: new u8 [ 1 ] [ u8 255 ] ]
             el [ meta_type == typeid[ rgba8 ] ]
-                white_rgba8: rgba8 [ 255, 255, 255, 255 ]
+                white_rgba: rgba8 [ 255, 255, 255, 255 ]
                 res = Gpu [ vk: p.vk, name: "dummy_rgba8",
-                    sampler: new rgba8 [ 1 ] [ white_rgba8 ] ]
+                    sampler: new rgba8 [ 1 ] [ white_rgba ] ]
             el [ meta_type == typeid[ f32 ] ]
                 res = Gpu [ vk: p.vk, name: "dummy_f32",
                     sampler: new f32 [ 1 ] [ 1.0 ] ]
@@ -6219,9 +6470,11 @@ func Surface_resources [ surface_enum_type: Au_t, surface_value: Surface, meta_t
                 res = Gpu [ vk: p.vk, name: "normal",
                             sampler: new rgbaf [ 1 ] [ f_normal ] ]
             case Surface.metal
-                res = Gpu [ vk: p.vk, name: "metal",    sampler:  new f32 [ 1 ] [ pbr.metallicFactor ] ]
+                res = Gpu [ vk: p.vk, name: "metal",
+                    sampler:  new f32 [ 1 ] [ pbr.metallicFactor ] ]
             case Surface.rough
-                res = Gpu [ vk: p.vk, name: "rough",    sampler: new f32 [ 1 ] [ pbr.roughnessFactor ] ]
+                res = Gpu [ vk: p.vk, name: "rough",
+                    sampler: new f32 [ 1 ] [ pbr.roughnessFactor ] ]
             case Surface.emission
                 f_emit: rgbaf [
                     pbr.emissiveFactor.x,
@@ -6324,7 +6577,8 @@ intern func handle_scroll [ win: @platform_window, x: f64, y: f64 ]
     # carry shift so handlers can map shift+wheel to horizontal scroll
     lshift                   : i32 [ platform_get_key[ win, 340 ] ]
     rshift                   : i32 [ platform_get_key[ win, 344 ] ]
-    w.ev.key.shift           = lshift == PLATFORM_PRESS || rshift == PLATFORM_PRESS
+    w.ev.key.shift           = lshift == PLATFORM_PRESS ||
+        rshift == PLATFORM_PRESS
     w.wheel_event[ w.ev ]
 
 
@@ -6338,7 +6592,8 @@ intern func handle_mouse [ win: @platform_window, id: i32, action: i32,
     w.ev.mouse.state  = action == PLATFORM_PRESS
     lshift            : i32 [ platform_get_key[ win, 340 ] ]
     rshift            : i32 [ platform_get_key[ win, 344 ] ]
-    w.ev.key.shift    = lshift == PLATFORM_PRESS || rshift == PLATFORM_PRESS
+    w.ev.key.shift    = lshift == PLATFORM_PRESS ||
+        rshift == PLATFORM_PRESS
     w.ev.key.meta     = (mods & PLATFORM_MOD_SUPER)   != 0
     w.ev.key.ctrl     = (mods & PLATFORM_MOD_CONTROL) != 0
     w.ev.key.alt      = (mods & PLATFORM_MOD_ALT)     != 0
@@ -6415,7 +6670,8 @@ intern func handle_cursor [ win: @platform_window, x: f64, y: f64 ]
     # otherwise
     lshift : i32 [ platform_get_key[ win, 340 ] ]
     rshift : i32 [ platform_get_key[ win, 344 ] ]
-    w.ev.key.shift = lshift == PLATFORM_PRESS || rshift == PLATFORM_PRESS
+    w.ev.key.shift = lshift == PLATFORM_PRESS ||
+        rshift == PLATFORM_PRESS
     lctrl : i32 [ platform_get_key[ win, 341 ] ]
     rctrl : i32 [ platform_get_key[ win, 345 ] ]
     w.ev.key.ctrl = lctrl == PLATFORM_PRESS || rctrl == PLATFORM_PRESS
@@ -6460,14 +6716,15 @@ func get_required_extensions [ vk: vk_context ]
 
 
 # write every face x mip to /tmp for visual validation
-func environment_dump [ vk: vk_context, tx: Texture, size9: i32,
+func environment_dump [ vk: vk_context, tx: Texture, face_size: i32,
                         mips: i32, tag: string ]
     for [ f: 0, f < 6, f += 1 ]
         for [ m: 0, m < mips, m += 1 ]
-            ms  : i32 max[ 1, size9 >> m ]
+            ms  : i32 max[ 1, face_size >> m ]
             bsz : i32 [ ms * ms * 16 ]
             b : Buffer [ vk: vk, size: bsz, u_dst: true,
-                m_host_visible: true, m_host_coherent: true, m_host_cached: true ]
+                m_host_visible: true, m_host_coherent: true,
+                m_host_cached: true ]
             b.transfer_sub[ tx, m, f, ms, ms ]
             im  : Image [ width: ms, height: ms, format: Pixel.rgba8 ]
             src : @f32 b.mmap[]
@@ -6493,13 +6750,13 @@ func environment [ vk: vk_context, img: Image, r_axis: vec3f,
     w: Display [ vk: vk, format: Pixel.rgbaf32, backbuffer: true,
                  width: size, height: size ]
     w.resize[ w.extent.width, w.extent.height ]
-    clone2: Image [
+    clone: Image [
         source: img.vdata[], width: img.width, height: img.height,
         format: img.format, surface: Surface.color ]
     gltf_path: path 'models/env.gltf'
     mdl_data:  GltfModel [ gltf_path.load[ typeid[ GltfModel ], null ] ]
     e:         Env [ vk: vk, name: 'env' ]
-    samplers:  map Image[string] [ 'color': clone2 ]
+    samplers:  map Image[string] [ 'color': clone ]
     m_env:     Model [ vk: vk, w: w, id: mdl_data, s: e,
                        samplers: samplers ]
     r_env:     Render [ vk: vk, w: w, width: size, height: size,
@@ -6534,7 +6791,8 @@ func environment [ vk: vk_context, img: Image, r_axis: vec3f,
         flags:         VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT,
         initialLayout: VK_IMAGE_LAYOUT_UNDEFINED
     ]
-    alloc_info: VmaAllocationCreateInfo [ usage: VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE ]
+    alloc_info: VmaAllocationCreateInfo [
+        usage: VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE ]
     image_info.arrayLayers = 6
     for [ i: 0, i < 2, i += 1 ]
         res: vmaCreateImage[ vk.allocator, image_info, alloc_info,
@@ -6552,8 +6810,12 @@ func environment [ vk: vk_context, img: Image, r_axis: vec3f,
         vki : vk_image[0]
         vk.transition_image_layout vki, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, 1, f, 1, false
         region: VkImageCopy [
-            srcSubresource: VkImageSubresourceLayers [ aspectMask: VK_IMAGE_ASPECT_COLOR_BIT, mipLevel: 0, baseArrayLayer: 0, layerCount: 1 ],
-            dstSubresource: VkImageSubresourceLayers [ aspectMask: VK_IMAGE_ASPECT_COLOR_BIT, mipLevel: 0, baseArrayLayer: f, layerCount: 1 ],
+            srcSubresource: VkImageSubresourceLayers [
+                aspectMask: VK_IMAGE_ASPECT_COLOR_BIT, mipLevel: 0,
+                baseArrayLayer: 0, layerCount: 1 ],
+            dstSubresource: VkImageSubresourceLayers [
+                aspectMask: VK_IMAGE_ASPECT_COLOR_BIT, mipLevel: 0,
+                baseArrayLayer: f, layerCount: 1 ],
             extent:         VkExtent3D [ size, size, 1 ]]
         cmd.begin[ ]
         vkCmdCopyImage[ cmd.cmd,
@@ -6561,12 +6823,14 @@ func environment [ vk: vk_context, img: Image, r_axis: vec3f,
             vk_image[0], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
             1, @region ]
         cmd.submit[ ]
-        final.color.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
+        final.color.transition[
+            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
 
     vk.create_mipmaps vk_image[0], size, size, 1, mip_levels, 6
     cube: Texture [ vk: vk, vk_image: vk_image[0],
                     surface: Surface.environment,
-        vk_format: w.surface_format.format, mip_levels: mip_levels, layer_count: 6 ]
+        vk_format: w.surface_format.format, mip_levels: mip_levels,
+        layer_count: 6 ]
     conv_shader: Convolve [ vk: vk, name: 'conv', proj: e.proj ]
     # Texture, or Render? -- its going to convert
     conv_samplers: map Au[string] [ 'environment': cube ]
@@ -6588,26 +6852,35 @@ func environment [ vk: vk_context, img: Image, r_axis: vec3f,
             conv_shader.view = mat4f.look_at[ eye, dirs[f], ups[f] ]
             final: w.last_render[]
             w.draw[]
-            final.color.transition[ VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL ]
+            final.color.transition[
+                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL ]
             vk.transition_image_layout vk_image[1],
                 VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 a_i, 1, f, 1, false
             cmd.begin[]
             vkCmdBlitImage[ cmd.cmd,
-                final.color.vk_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                vk_image[1],          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                final.color.vk_image,
+                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                vk_image[1],
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 1, VkImageBlit [
-                    srcSubresource: VkImageSubresourceLayers [ aspectMask: VK_IMAGE_ASPECT_COLOR_BIT, mipLevel: 0,    baseArrayLayer: 0, layerCount: 1 ],
+                srcSubresource: VkImageSubresourceLayers [
+                    aspectMask: VK_IMAGE_ASPECT_COLOR_BIT, mipLevel: 0,
+                    baseArrayLayer: 0, layerCount: 1 ],
                     srcOffsets:     [ VkOffset3D [ 0, 0, 0 ],
                                       VkOffset3D [ size,     size,
                                               1 ] ],
-                    dstSubresource: VkImageSubresourceLayers [ aspectMask: VK_IMAGE_ASPECT_COLOR_BIT, mipLevel: a_i, baseArrayLayer: f, layerCount: 1 ],
+                    dstSubresource: VkImageSubresourceLayers [
+                        aspectMask: VK_IMAGE_ASPECT_COLOR_BIT,
+                        mipLevel: a_i, baseArrayLayer: f,
+                        layerCount: 1 ],
                     dstOffsets:     [ VkOffset3D [ 0, 0, 0 ],
                                       VkOffset3D [ mip_size, mip_size,
                                               1 ] ]
                 ], VK_FILTER_LINEAR ]
             cmd.submit[]
-            final.color.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
+            final.color.transition[
+                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
     for [ f: 0, f < 6, f += 1 ]
         for [ mi: 0, mi < cube_count, mi += 1 ]
             vk.transition_image_layout vk_image[1],
@@ -6616,7 +6889,8 @@ func environment [ vk: vk_context, img: Image, r_axis: vec3f,
                 mi, 1, f, 1, false
     convolve: Texture [ vk: vk, vk_image: vk_image[1],
                         vma_alloc: vma_alloc[1],
-        surface: Surface.environment, vk_format: w.surface_format.format,
+        surface: Surface.environment,
+        vk_format: w.surface_format.format,
         mip_levels: cube_count, layer_count: 6 ]
     #cmd.drop[  ]
     #w.drop[ ]
@@ -6629,7 +6903,8 @@ func environment [ vk: vk_context, img: Image, r_axis: vec3f,
 
 
 func is_uniform_field [ mem: Au_t ] -> bool
-    return mem.member_type == 4 && mem.access_type == (0,2,3,4) && bool[mem.src] && !(mem.traits & (1 << 56))
+    return mem.member_type == 4 && mem.access_type == (0,2,3,4) &&
+        bool[mem.src] && !(mem.traits & (1 << 56))
 
 func uniform_size [ type: Au_t ] -> num
     chain: vec Au_t []
@@ -6641,9 +6916,9 @@ func uniform_size [ type: Au_t ] -> num
             break
     chain = chain.reverse[]
     total: num [ 0 ]
-    for [ ty2: Au_t ] in chain
-        for [ m: 0, m < ty2.members.count, m += 1 ]
-            mem: Au_t [ ty2.members.origin[m] ]
+    for [ link: Au_t ] in chain
+        for [ m: 0, m < link.members.count, m += 1 ]
+            mem: Au_t [ link.members.origin[m] ]
             if [ is_uniform_field[ mem ] ]
                 ts: num [ mem.src.typesize ]
                 # std140: vec3/vec4/mat4 align 16, scalars pad to 4
@@ -6666,18 +6941,18 @@ func placeholder_image [ sampler: object, size: i32, fill: @u8,
     s: i32 [ size * size ]
 
     if [ cl == typeid[f32] ]
-        data_f32: @f32 [ vs ]
+        data_f: @f32 [ vs ]
         f32_fill: @f32 [ @fill ]
         for [ i: 0, i < s, i += 1 ]
-            f32_fill[i] = data_f32[0]
+            f32_fill[i] = data_f[0]
         format = Pixel.f32
         sampler_size = s * sizeof[ f32 ]
     el [ cl == (typeid[i8], typeid[u8]) ]
-        data_i8:    @i8    [ vs ]
-        data_u8:    @u8    [ vs ]
+        data_i:    @i8    [ vs ]
+        data_u:    @u8    [ vs ]
         u8_fill: @u8 [ @fill ]
         for [ i: 0, i < s, i += 1 ]
-            u8_fill[i] = data_i8[0]
+            u8_fill[i] = data_i[0]
         format = Pixel.u8
         sampler_size = s * sizeof[ i8 ]
     el [ cl == typeid[rgbf] ]
@@ -6688,10 +6963,10 @@ func placeholder_image [ sampler: object, size: i32, fill: @u8,
         format = Pixel.rgbf32
         sampler_size = s * sizeof[ rgbf ]
     el [ cl == typeid[rgb8] ]
-        data_rgb8:  @rgb8 [ vs ]
+        data_rgb:  @rgb8 [ vs ]
         v3_fill: @rgb8 [ @fill ]
         for [ i: 0, i < s, i += 1 ]
-            v3_fill[i] = data_rgb8[0]
+            v3_fill[i] = data_rgb[0]
         format = Pixel.rgb8
         sampler_size = s * sizeof[ rgb8 ]
     el [ cl == typeid[rgbaf] ]
@@ -6702,10 +6977,10 @@ func placeholder_image [ sampler: object, size: i32, fill: @u8,
         format = Pixel.rgbaf32
         sampler_size = s * sizeof[ rgbaf ]
     el [ cl == typeid[rgba8] ]
-        data_rgba8:  @rgba8  [ vs ]
+        data_rgba:  @rgba8  [ vs ]
         v4_fill: @rgba8 [ @fill ]
         for [ i: 0, i < s, i += 1 ]
-            v4_fill[i] = data_rgba8[0]
+            v4_fill[i] = data_rgba[0]
         format = Pixel.rgba8
         sampler_size = s * sizeof[ rgba8 ]
     el

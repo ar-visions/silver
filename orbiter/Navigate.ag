@@ -30,7 +30,8 @@ class Navigate
         if [ !stack || idx < 0 || idx >= stack.count ] return null
         return stack[ idx ]
 
-    public func record [ editor: i32, p: string, ln: i32, col: i32, scroll_y: f32 ]
+    public func record [ editor: i32, p: string, ln: i32, col: i32,
+                         scroll_y: f32 ]
         if [ !stack ] stack = vec NavPoint []
         cur : current[]
         if [ cur && cur.editor == editor && cur.path == p ]
@@ -40,19 +41,23 @@ class Navigate
                 cur.line     = ln
                 cur.col      = col
                 cur.scroll_y = scroll_y
-                truncate_after[ idx ]   # re-landing here is the new tip; drop forward
+                # re-landing here is the new tip; drop forward
+                truncate_after[ idx ]
                 return
         truncate_after[ idx ]
-        np : NavPoint [ editor: editor, path: p, line: ln, col: col, scroll_y: scroll_y ]
+        np : NavPoint [ editor: editor, path: p, line: ln, col: col,
+                        scroll_y: scroll_y ]
         stack.push[ np ]
         idx = stack.count - 1
 
-    public func note_caret [ editor: i32, p: string, ln: i32, col: i32, scroll_y: f32 ]
+    public func note_caret [ editor: i32, p: string, ln: i32, col: i32,
+                             scroll_y: f32 ]
         cur : current[]
         if [ cur && cur.editor == editor && cur.path == p ]
             d : i32 [ cur.line - ln ]
             if [ d < 0 ] d = 0 - d
-            if [ d < significance_lines ] return   # not a meaningful move — ignore
+            # not a meaningful move — ignore
+            if [ d < significance_lines ] return
         record[ editor, p, ln, col, scroll_y ]
 
     intern func truncate_after [ at: i32 ]
@@ -70,7 +75,8 @@ class Navigate
         idx += 1
         return stack[ idx ]
 
-    public func save_top [ editor: i32, p: string, ln: i32, col: i32, scroll_y: f32 ]
+    public func save_top [ editor: i32, p: string, ln: i32, col: i32,
+                           scroll_y: f32 ]
         cur : current[]
         if [ !cur ]
             record[ editor, p, ln, col, scroll_y ]

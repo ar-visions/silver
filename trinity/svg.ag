@@ -81,14 +81,14 @@ class SVGModel
         if [ vb ]
             vp : vb.split[ ' ' ]
             if [ vp.count >= 4 ]
-                vp0 : vp[0]
-                vp1 : vp[1]
-                vp2 : vp[2]
-                vp3 : vp[3]
-                vb_x = f32 vp0.real_value[]
-                vb_y = f32 vp1.real_value[]
-                vb_w = f32 vp2.real_value[]
-                vb_h = f32 vp3.real_value[]
+                vp_x : vp[0]
+                vp_y : vp[1]
+                vp_w : vp[2]
+                vp_h : vp[3]
+                vb_x = f32 vp_x.real_value[]
+                vb_y = f32 vp_y.real_value[]
+                vb_w = f32 vp_w.real_value[]
+                vb_h = f32 vp_h.real_value[]
         pw : f32 svg_node.attr_f[ 'width',  0.0 ]
         ph : f32 svg_node.attr_f[ 'height', 0.0 ]
         if [ pw > 0.0 ] w = pw
@@ -105,8 +105,8 @@ class SVGModel
         vb_sy : f32 (vb_h > 0.0) ? h / vb_h : 1.0
         id : affine.identity[]
         tr : id.translate[ -vb_x, -vb_y ]
-        xf0 : affine tr.scale_xy[ vb_sx, vb_sy ]
-        st0 : SVGState [
+        xf : affine tr.scale_xy[ vb_sx, vb_sy ]
+        st : SVGState [
             fill:          vec4f [ 0.0, 0.0, 0.0, 1.0 ],
             stroke:        vec4f [ 0.0, 0.0, 0.0, 0.0 ],
             sw:            1.0,
@@ -118,7 +118,7 @@ class SVGModel
         ]
         if [ !shapes ] shapes = vec SVGShape []
         el             shapes.clear[]
-        svg_walk[ shapes, svg_node.children, xf0, st0 ]
+        svg_walk[ shapes, svg_node.children, xf, st ]
 
     public func render [ cv: Canvas, ox: f32, oy: f32, rw_in: f32,
                          rh_in: f32 ]
@@ -228,7 +228,8 @@ class SVGParser
 
     func is_name_ch [ c: i32 ] -> bool
         return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-               (c >= '0' && c <= '9') || c == '_' || c == '-' || c == ':' || c == '.'
+               (c >= '0' && c <= '9') || c == '_' || c == '-' ||
+                   c == ':' || c == '.'
 
     func read_name [] -> string
         s : num pos
@@ -277,7 +278,9 @@ class SVGParser
             if [ at[] == '-' && next[1] == '-' ]
                 pos += 2
                 while [ pos + 2 < src.count ]
-                    if [ src.chars[pos] == '-' && src.chars[pos+1] == '-' && src.chars[pos+2] == '>' ]
+                    if [ src.chars[pos] == '-'
+                         && src.chars[pos+1] == '-'
+                         && src.chars[pos+2] == '>' ]
                         pos += 3
                         return null
                     pos += 1
@@ -466,69 +469,72 @@ class SVGPathBuilder
         ly = cy
 
     func arc_seg [ xf: affine, ecx: f32, ecy: f32, rx: f32, ry: f32,
-                   cph: f32, sph: f32, t1: f32, t2: f32 ]
-        cs1 : f32 cos[ t1 ]
-        sn1 : f32 sin[ t1 ]
-        cs2 : f32 cos[ t2 ]
-        sn2 : f32 sin[ t2 ]
-        dt  : f32 t2 - t1
+                   cph: f32, sph: f32, start_angle: f32,
+                   end_angle: f32 ]
+        cos_start : f32 cos[ start_angle ]
+        sin_start : f32 sin[ start_angle ]
+        cos_end : f32 cos[ end_angle ]
+        sin_end : f32 sin[ end_angle ]
+        dt  : f32 end_angle - start_angle
         ht  : f32 dt * 0.5
         tht : f32 tan[ ht ]
         alp : f32 sin[ dt ] * (f32 sqrt[ 4.0 + 3.0 * tht * tht ] - 1.0) / 3.0
-        p1x : f32 ecx + rx * cs1 * cph - ry * sn1 * sph
-        p1y : f32 ecy + rx * cs1 * sph + ry * sn1 * cph
-        p2x : f32 ecx + rx * cs2 * cph - ry * sn2 * sph
-        p2y : f32 ecy + rx * cs2 * sph + ry * sn2 * cph
-        dx1 : f32 rx * (-sn1) * cph - ry * cs1 * sph
-        dy1 : f32 rx * (-sn1) * sph + ry * cs1 * cph
-        dx2 : f32 rx * (-sn2) * cph - ry * cs2 * sph
-        dy2 : f32 rx * (-sn2) * sph + ry * cs2 * cph
-        cmd_cubic[ xf, p1x + alp*dx1, p1y + alp*dy1, p2x - alp*dx2,
-                   p2y - alp*dy2, p2x, p2y ]
+        start_x : f32 ecx + rx * cos_start * cph - ry * sin_start * sph
+        start_y : f32 ecy + rx * cos_start * sph + ry * sin_start * cph
+        end_x : f32 ecx + rx * cos_end * cph - ry * sin_end * sph
+        end_y : f32 ecy + rx * cos_end * sph + ry * sin_end * cph
+        tan_start_x : f32 rx * (-sin_start) * cph - ry * cos_start * sph
+        tan_start_y : f32 rx * (-sin_start) * sph + ry * cos_start * cph
+        tan_end_x : f32 rx * (-sin_end) * cph - ry * cos_end * sph
+        tan_end_y : f32 rx * (-sin_end) * sph + ry * cos_end * cph
+        cmd_cubic[ xf, start_x + alp*tan_start_x,
+                   start_y + alp*tan_start_y, end_x - alp*tan_end_x,
+                   end_y - alp*tan_end_y, end_x, end_y ]
 
-    func do_arc [ xf: affine, x2: f32, y2: f32, rx_: f32, ry_: f32,
+    func do_arc [ xf: affine, end_x: f32, end_y: f32, rx_: f32,
+                  ry_: f32,
                   phi_deg: f32, la: i32, sw_: i32 ]
-        x1 : f32 cx
-        y1 : f32 cy
-        if [ x1 == x2 && y1 == y2 ] return
+        start_x : f32 cx
+        start_y : f32 cy
+        if [ start_x == end_x && start_y == end_y ] return
         if [ rx_ == 0.0 || ry_ == 0.0 ]
-            cmd_line[ xf, x2, y2 ]
+            cmd_line[ xf, end_x, end_y ]
             return
         rx  : f32 abs[ rx_ ]
         ry  : f32 abs[ ry_ ]
         phi : f32 radians[ phi_deg ]
         cph : f32 cos[ phi ]
         sph : f32 sin[ phi ]
-        dx  : f32 (x1 - x2) * 0.5
-        dy  : f32 (y1 - y2) * 0.5
-        x1p : f32  cph * dx + sph * dy
-        y1p : f32 -sph * dx + cph * dy
-        lam : f32 (x1p*x1p)/(rx*rx) + (y1p*y1p)/(ry*ry)
+        dx  : f32 (start_x - end_x) * 0.5
+        dy  : f32 (start_y - end_y) * 0.5
+        rot_x : f32  cph * dx + sph * dy
+        rot_y : f32 -sph * dx + cph * dy
+        lam : f32 (rot_x*rot_x)/(rx*rx) + (rot_y*rot_y)/(ry*ry)
         if [ lam > 1.0 ]
             sl : f32 sqrt[ lam ]
             rx *= sl
             ry *= sl
-        num_ : f32 rx*rx*ry*ry - rx*rx*y1p*y1p - ry*ry*x1p*x1p
-        den_ : f32 rx*rx*y1p*y1p + ry*ry*x1p*x1p
+        num_ : f32 rx*rx*ry*ry - rx*rx*rot_y*rot_y - ry*ry*rot_x*rot_x
+        den_ : f32 rx*rx*rot_y*rot_y + ry*ry*rot_x*rot_x
         sq   : f32 (num_ > 0.0 && den_ > 0.0) ? f32 sqrt[ num_ / den_ ] : 0.0
         if [ la == sw_ ] sq = -sq
-        cxp  : f32  sq * rx * y1p / ry
-        cyp  : f32 -sq * ry * x1p / rx
-        ecx  : f32 cph*cxp - sph*cyp + (x1+x2)*0.5
-        ecy  : f32 sph*cxp + cph*cyp + (y1+y2)*0.5
-        ux   : f32 (x1p - cxp) / rx
-        uy   : f32 (y1p - cyp) / ry
-        vx   : f32 (-x1p - cxp) / rx
-        vy   : f32 (-y1p - cyp) / ry
-        th1  : f32 atan2[ uy, ux ]
-        dth  : f32 atan2[ vy, vx ] - th1
+        cxp  : f32  sq * rx * rot_y / ry
+        cyp  : f32 -sq * ry * rot_x / rx
+        ecx  : f32 cph*cxp - sph*cyp + (start_x+end_x)*0.5
+        ecy  : f32 sph*cxp + cph*cyp + (start_y+end_y)*0.5
+        ux   : f32 (rot_x - cxp) / rx
+        uy   : f32 (rot_y - cyp) / ry
+        vx   : f32 (-rot_x - cxp) / rx
+        vy   : f32 (-rot_y - cyp) / ry
+        th  : f32 atan2[ uy, ux ]
+        dth  : f32 atan2[ vy, vx ] - th
         if [ sw_ == 0 && dth > 0.0 ]  dth -= 6.28318530
         el [ sw_ != 0 && dth < 0.0 ] dth += 6.28318530
         nc_  : i32 ceil[ abs[ dth ] / 1.5707963 ]
         ns   : i32 (nc_ > 1) ? nc_ : 1
         dt   : f32 dth / f32 ns
         for [ i: i32 0, i < ns, i += 1 ]
-            arc_seg[ xf, ecx, ecy, rx, ry, cph, sph, th1 + dt * f32 i, th1 + dt * f32 (i+1) ]
+            arc_seg[ xf, ecx, ecy, rx, ry, cph, sph, th + dt * f32 i, th + dt * f32 (i+1) ]
 
     func build [ d_str: string, xf: affine ] -> vec SVGCmd
         d = d_str
@@ -748,10 +754,10 @@ func svg_color [ s: string ] -> rgba
     if [ !s || s == 'none' || s == 'transparent' ]
         return rgba[ '#00000000' ]
     if [ s.starts_with[ 'rgb' ] ]
-        i0 : num s.index_of[ '(' ]
-        i1 : num s.index_of[ ')' ]
-        if [ i0 >= 0 && i1 > i0 ]
-            inner  : string s.mid[ i0 + 1, i1 - i0 - 1 ]
+        open_at : num s.index_of[ '(' ]
+        close_at : num s.index_of[ ')' ]
+        if [ open_at >= 0 && close_at > open_at ]
+            inner  : string s.mid[ open_at + 1, close_at - open_at - 1 ]
             parts  : inner.split[ ',' ]
             rr : f32 0.0
             gg : f32 0.0
@@ -785,7 +791,8 @@ func svg_parse_transform [ s: string ] -> affine
     pos : num 0
     n   : num s.count
     while [ pos < n ]
-        while [ pos < n && (s.chars[pos] == ' ' || s.chars[pos] == '\t' || s.chars[pos] == ',') ]
+        while [ pos < n && (s.chars[pos] == ' ' || s.chars[pos] == '\t'
+                || s.chars[pos] == ',') ]
             pos += 1
         if [ pos >= n ]
             break
@@ -805,32 +812,35 @@ func svg_parse_transform [ s: string ] -> affine
         for [ p: string ] in raw
             t : string p.trim[]
             if [ t.count > 0 ] v.push[ t ]
-        f0 : f32 (v.count > 0) ? v[0].real_value[] : 0.0
-        f1 : f32 (v.count > 1) ? v[1].real_value[] : 0.0
-        f2 : f32 (v.count > 2) ? f32 v[2].real_value[] : 0.0
-        f3 : f32 (v.count > 3) ? v[3].real_value[] : 0.0
-        f4 : f32 (v.count > 4) ? v[4].real_value[] : 0.0
-        f5 : f32 (v.count > 5) ? v[5].real_value[] : 0.0
+        first : f32 (v.count > 0) ? v[0].real_value[] : 0.0
+        second : f32 (v.count > 1) ? v[1].real_value[] : 0.0
+        third : f32 (v.count > 2) ? f32 v[2].real_value[] : 0.0
+        fourth : f32 (v.count > 3) ? v[3].real_value[] : 0.0
+        fifth : f32 (v.count > 4) ? v[4].real_value[] : 0.0
+        sixth : f32 (v.count > 5) ? v[5].real_value[] : 0.0
         tf : affine affine.identity[]
         if [ fname == 'translate' ]
-            tf = tf.translate[ f0, f1 ]
+            tf = tf.translate[ first, second ]
         el [ fname == 'scale' ]
-            tf = (v.count == 1) ? tf.scale[ f0 ] : tf.scale_xy[ f0, f1 ]
+            tf = (v.count == 1) ? tf.scale[ first ] : tf.scale_xy[
+                first,
+                second ]
         el [ fname == 'rotate' ]
-            rad : f32 f32 radians[ f0 ]
+            rad : f32 f32 radians[ first ]
             if [ v.count > 2 ]
-                tf = tf.translate[ f1,
-                                   f2 ].rotate[ rad ].translate[ -f1,
-                                           -f2 ]
+                tf = tf.translate[ second,
+                    third ].rotate[ rad ].translate[ -second,
+                                           -third ]
             el
                 tf = tf.rotate[ rad ]
         el [ fname == 'matrix' ]
-            tf = affine [ ma: f0, mb: f2, mc: f1, md: f3, tx: f4,
-                          ty: f5 ]
+            tf = affine [ ma: first, mb: third, mc: second, md: fourth,
+                          tx: fifth,
+                          ty: sixth ]
         el [ fname == 'skewX' ]
-            tf = affine [ ma: 1.0, mb: f32 tan[ f32 radians[ f0 ] ], mc: 0.0, md: 1.0, tx: 0.0, ty: 0.0 ]
+            tf = affine [ ma: 1.0, mb: f32 tan[ f32 radians[ first ] ], mc: 0.0, md: 1.0, tx: 0.0, ty: 0.0 ]
         el [ fname == 'skewY' ]
-            tf = affine [ ma: 1.0, mb: 0.0, mc: f32 tan[ f32 radians[ f0 ] ], md: 1.0, tx: 0.0, ty: 0.0 ]
+            tf = affine [ ma: 1.0, mb: 0.0, mc: f32 tan[ f32 radians[ first ] ], md: 1.0, tx: 0.0, ty: 0.0 ]
         result = result.multiply[ tf ]
     return result
 
@@ -1011,7 +1021,8 @@ func svg_walk [ shapes: vec SVGShape, nodes: vec SVGNode, xf: affine,
             continue
         st  : SVGState svg_resolve_state[ node, state ]
         tfa : string node.attr[ 'transform' ]
-        lxf : affine (tfa) ? xf.multiply[ svg_parse_transform[ tfa ] ] : xf
+        lxf : affine (tfa) ? xf.multiply[
+            svg_parse_transform[ tfa ] ] : xf
         tag : string node.tag
 
         if [ tag == 'g' || tag == 'svg' ]
@@ -1066,6 +1077,8 @@ func svg_walk [ shapes: vec SVGShape, nodes: vec SVGNode, xf: affine,
             if [ pts && pts.count > 0 ]
                 cmds : svg_parse_pts[ lxf, pts ]
                 if [ tag == 'polygon' ]
-                    cmds.push[ SVGCmd [ op: SVGOp.close, x: 0.0, y: 0.0, x1: 0.0, y1: 0.0, x2: 0.0, y2: 0.0 ] ]
+                    cmds.push[ SVGCmd [ op: SVGOp.close, x: 0.0, y: 0.0,
+                                        x1: 0.0, y1: 0.0, x2: 0.0,
+                                        y2: 0.0 ] ]
                 shapes.push[ svg_make_shape[ cmds, st ] ]
                 svg_tag[ shapes, node ]

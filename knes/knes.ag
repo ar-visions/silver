@@ -27,10 +27,12 @@ class cpu6502_state
 	ram            : new u8 [ 0x800 ]  # 2 KB, mirrored to $1FFF
 
 class nes_ppu
-	vram           : new u8 [ 0x800 ]  # 2 KB nametable RAM (mirrored via cart)
+	# 2 KB nametable RAM (mirrored via cart)
+	vram           : new u8 [ 0x800 ]
 	palette        : new u8 [ 32 ]
 	oam            : new u8 [ 256 ]
-	chr_ram        : new u8 [ 0x2000 ] # used when the cart has no CHR ROM
+	# used when the cart has no CHR ROM
+	chr_ram        : new u8 [ 0x2000 ]
 	ctrl           : u8                # $2000
 	mask           : u8                # $2001
 	status         : u8                # $2002
@@ -42,12 +44,17 @@ class nes_ppu
 	fine_x         : u8                # fine X scroll (3 bits)
 	latch          : bool              # $2005/$2006 shared write toggle
 	rbuf           : u8                # $2007 buffered read
-	t_dirty        : bool              # t/v holds a VRAM address, not scroll intent
-	eff_sy         : u8                # EFFECTIVE vertical scroll: loads from t only
-	eff_nty        : u8                # at frame start or on $2006 completion —
-	                                   # mid-frame $2005 Y-writes defer (hardware)
+	# t/v holds a VRAM address, not scroll intent
+	t_dirty        : bool
+	# EFFECTIVE vertical scroll: loads from t only
+	eff_sy         : u8
+	# at frame start or on $2006 completion —
+	eff_nty        : u8
+	                                   # mid-frame $2005 Y-writes defer
+	                                   # (hardware)
 	in_vblank      : bool
-	s0_line        : i32               # sprite-0 hit line this frame (-1 none)
+	# sprite-0 hit line this frame (-1 none)
+	s0_line        : i32
 	framebuf       : new u32 [ 256 * 240 ]
 
 class nes_apu
@@ -85,7 +92,8 @@ class nes_apu
 
 element knes : trinity
 	public  width        : i32    [ 1024 ]   # 256 x4
-	public  height       : i32    [ 896 ]    # 224 x4 (top/bottom 8 cropped)
+	# 224 x4 (top/bottom 8 cropped)
+	public  height       : i32    [ 896 ]
 	public  lock_aspect  : bool   [ true ]
 	public  background   : string [ 'Background' ]
 	default [ Live ] rom : resource
@@ -95,19 +103,26 @@ element knes : trinity
 			while [ emu_running ] usleep[ 1000 ]
 			emu_stop    = false
 			emu_started = false
-		# the next draw boots again: load_cart sets prg, and the thread follows
+		# the next draw boots again: load_cart sets prg, and the thread
+		# follows
 		prg    = null
 		booted = false
 	public  frames_exit  : i32
 	public  resume       : bool
 	public  save_at      : i32
-	public  autowalk     : i32               # hold Up for N frames from frame 5 (repro rig)
-	public [ Live, VolumeRange ] volume : f32 [ 0.04 ]   # playback volume 0..1, a slider on the host
-	public  seq_from     : i32               # dump composited frames [from,to) as PPMs
+	# hold Up for N frames from frame 5 (repro rig)
+	public  autowalk     : i32
+	# playback volume 0..1, a slider on the host
+	public [ Live, VolumeRange ] volume : f32 [ 0.04 ]
+	# dump composited frames [from,to) as PPMs
+	public  seq_from     : i32
 	public  seq_to       : i32
-	public  vscale       : bool [ true ]     # VectorScale: continuous edges, any zoom
-	public  se_2d        : bool              # Super Eagle 2x basis + sharp lift
-	public  blocky       : bool              # sharp-bilinear hard squares
+	# VectorScale: continuous edges, any zoom
+	public  vscale       : bool [ true ]
+	# Super Eagle 2x basis + sharp lift
+	public  se_2d        : bool
+	# sharp-bilinear hard squares
+	public  blocky       : bool
 	mutable cpu          : cpu6502_state
 	mutable ppu          : nes_ppu
 	mutable apu          : nes_apu
@@ -119,45 +134,67 @@ element knes : trinity
 	mutable chr_size     : sz
 	mutable mapper       : i32
 	mutable mirror_v     : bool              # true = vertical mirroring
-	mutable mir_mode     : i32               # 0/1 one-screen A/B, 2 vertical, 3 horizontal
-	mutable prg_ram      : new u8 [ 0x2000 ] # $6000-7FFF (MMC1 battery RAM)
-	mutable m1_shift     : u32               # MMC1 serial shift register
+	# 0/1 one-screen A/B, 2 vertical, 3 horizontal
+	mutable mir_mode     : i32
+	# $6000-7FFF (MMC1 battery RAM)
+	mutable prg_ram      : new u8 [ 0x2000 ]
+	# MMC1 serial shift register
+	mutable m1_shift     : u32
 	mutable m1_count     : i32
-	mutable m1_ctrl      : u32               # control: mirroring + PRG/CHR modes
+	# control: mirroring + PRG/CHR modes
+	mutable m1_ctrl      : u32
 	mutable m1_chr0      : u32
 	mutable m1_chr1      : u32
-	mutable line_mask    : new u8 [ 240 ]    # per-line PPUMASK snapshot (cave loads blank rendering mid-frame)
-	mutable pal_shot     : new u8 [ 32 ]     # palette latched at end of active display: vblank rewrites
-	                                         # (cave enter/exit) must not recolor the frame already drawn
-	mutable dis_ready    : bool              # assembly view: 6502 tables decoded from the literals below
+	# per-line PPUMASK snapshot (cave loads blank rendering mid-frame)
+	mutable line_mask    : new u8 [ 240 ]
+	# palette latched at end of active display: vblank rewrites
+	mutable pal_shot     : new u8 [ 32 ]
+	                                         # (cave enter/exit) must
+	                                         # not recolor the frame
+	                                         # already drawn
+	# assembly view: 6502 tables decoded from the literals below
+	mutable dis_ready    : bool
 	mutable dis_mn       : string            # 256 x 3-char mnemonics
-	mutable dis_md       : new u8 [ 256 ]    # 256 addressing modes (0..11)
-	mutable dis_len      : new u8 [ 12 ]     # instruction length per mode
-	mutable dis_last_len : i32               # length of the last dis_text decode
-	mutable chr_tex      : Texture           # tiles view: pattern-table sheet (unloaded on tab switch)
-	mutable chr_buf      : new u32 [ 32768 ] # 256x128 ABGR staging for chr_tex
-	mutable tile_rx      : f32               # tiles view: sheet draw rect (click -> pixel mapping)
+	# 256 addressing modes (0..11)
+	mutable dis_md       : new u8 [ 256 ]
+	# instruction length per mode
+	mutable dis_len      : new u8 [ 12 ]
+	# length of the last dis_text decode
+	mutable dis_last_len : i32
+	# tiles view: pattern-table sheet (unloaded on tab switch)
+	mutable chr_tex      : Texture
+	# 256x128 ABGR staging for chr_tex
+	mutable chr_buf      : new u32 [ 32768 ]
+	# tiles view: sheet draw rect (click -> pixel mapping)
+	mutable tile_rx      : f32
 	mutable tile_ry      : f32
 	mutable tile_rw      : f32
 	mutable tile_rh      : f32
-	mutable tu_addr      : new u32 [ 256 ]   # tile-edit undo ring: CHR plane address
+	# tile-edit undo ring: CHR plane address
+	mutable tu_addr      : new u32 [ 256 ]
 	mutable tu_old       : new u32 [ 256 ]   # (b0 | b1<<8) before
 	mutable tu_new       : new u32 [ 256 ]   # (b0 | b1<<8) after
 	mutable tu_n         : i32               # entries in the ring
-	mutable tu_pos       : i32               # undo cursor (== tu_n when fully applied)
-	mutable line_chr0    : new u32 [ 240 ]   # per-line CHR bank snapshots (Zelda II
-	mutable line_chr1    : new u32 [ 240 ]   # switches tile banks mid-frame)
-	mutable cur_chr0     : u32               # banks for the scanline being rendered
+	# undo cursor (== tu_n when fully applied)
+	mutable tu_pos       : i32
+	# per-line CHR bank snapshots (Zelda II
+	mutable line_chr0    : new u32 [ 240 ]
+	# switches tile banks mid-frame)
+	mutable line_chr1    : new u32 [ 240 ]
+	# banks for the scanline being rendered
+	mutable cur_chr0     : u32
 	mutable cur_chr1     : u32
 	mutable m1_prg       : u32
-	mutable pad_st       : u32               # A B Sel St U D L R (bits 0-7)
+	# A B Sel St U D L R (bits 0-7)
+	mutable pad_st       : u32
 	mutable pad_shift    : u32
 	mutable pad_strobe   : u8
 	# --record name / --playback name: one pad byte per emulated frame,
 	# so a session can be replayed without a hand on the keys
 	public  record       : path
 	public  playback     : path
-	mutable rec_f        : handle             # @FILE; silver cannot null-test a @FILE member yet
+	# @FILE; silver cannot null-test a @FILE member yet
+	mutable rec_f        : handle
 	mutable play_f       : handle
 	mutable screen_tex   : Texture
 	mutable booted       : bool
@@ -166,7 +203,8 @@ element knes : trinity
 	mutable icount       : i64
 	mutable mclk_carry   : i64
 	mutable sample_frac  : i64
-	mutable xtra         : i32               # page-cross penalty from addr helpers
+	# page-cross penalty from addr helpers
+	mutable xtra         : i32
 	mutable save_req     : bool
 	mutable load_req     : bool
 	mutable st_hdr       : new u32 [ 16 ]
@@ -174,14 +212,19 @@ element knes : trinity
 	mutable emu_started  : bool
 	mutable emu_stop     : bool
 	mutable emu_running  : bool
-	mutable paused       : bool              # space toggles; emu thread idles while set
-	mutable context_req  : bool              # host asks for a machine-state dump
-	mutable context_out  : string            # dump published by the emu thread
-	mutable context_seq  : i32               # bumped per publish (host drains one-shot)
+	# space toggles; emu thread idles while set
+	mutable paused       : bool
+	# host asks for a machine-state dump
+	mutable context_req  : bool
+	# dump published by the emu thread
+	mutable context_out  : string
+	# bumped per publish (host drains one-shot)
+	mutable context_seq  : i32
 	mutable pub_lock     : mutex
 	mutable pub_framebuf : new u32 [ 256 * 240 ]
 	mutable len_tab      : new i32 [ 32 ]    # APU length counter table
-	mutable noise_tab    : new i32 [ 16 ]    # noise periods (CPU cycles)
+	# noise periods (CPU cycles)
+	mutable noise_tab    : new i32 [ 16 ]
 	mutable se_shader    : SuperEagle
 	mutable se_model     : Model
 	mutable se_render    : Render
@@ -200,49 +243,69 @@ element knes : trinity
 	mutable pss_shader   : PixelSharp
 	mutable pss_model    : Model
 	mutable pss_render   : Render
-	mutable vs_shader    : VectorLayers      # all four layers in one pass
-	mutable line_sx      : new u8 [ 240 ]    # per-line scroll snapshots (SMB
-	mutable line_sy      : new u8 [ 240 ]    # status-bar split: scroll only
-	mutable line_nt      : new u8 [ 240 ]    # exists between s0 hit and vblank)
+	# all four layers in one pass
+	mutable vs_shader    : VectorLayers
+	# per-line scroll snapshots (SMB
+	mutable line_sx      : new u8 [ 240 ]
+	# status-bar split: scroll only
+	mutable line_sy      : new u8 [ 240 ]
+	# exists between s0 hit and vblank)
+	mutable line_nt      : new u8 [ 240 ]
 	public  smooth       : bool [ true ]
-	mutable cam_prev     : i32               # previous camera x (nt<<8 | sx, 9-bit)
-	mutable cam_prev_y   : i32               # previous camera y (0..479)
-	mutable pub_dx       : i32               # published camera delta + per-axis
-	mutable pub_dy       : i32               # replay windows (cadence-measured)
+	# previous camera x (nt<<8 | sx, 9-bit)
+	mutable cam_prev     : i32
+	# previous camera y (0..479)
+	mutable cam_prev_y   : i32
+	# published camera delta + per-axis
+	mutable pub_dx       : i32
+	# replay windows (cadence-measured)
+	mutable pub_dy       : i32
 	mutable pub_tx       : i64
 	mutable pub_ty       : i64
 	mutable pub_px       : i64               # replay period us per axis
 	mutable pub_py       : i64
-	mutable gapx         : i32               # frames since last nonzero delta
+	# frames since last nonzero delta
+	mutable gapx         : i32
 	mutable gapy         : i32
-	mutable p3x          : i32               # previous frame's camera tuple (rows
-	mutable p3y          : i32               # matching it are transitional, not HUD)
+	# previous frame's camera tuple (rows
+	mutable p3x          : i32
+	# matching it are transitional, not HUD)
+	mutable p3y          : i32
 	mutable p3n          : i32
 	mutable dbg_split    : i32               # change-probe state
 	mutable dbg_bsplit   : i32
 	mutable dbg_mask     : u32
-	mutable ticks        : i64               # session ticks (savestate-independent)
+	# session ticks (savestate-independent)
+	mutable ticks        : i64
 	mutable pub_time     : i64               # wall us at publish
-	mutable pub_model    : i64               # phase-locked publish clock (jitter-free)
-	mutable fb_spr       : new u32 [ 256 * 240 ]   # sprite layer, alpha 0 = empty
-	mutable line_spr     : new i32 [ 64 ]          # sprites on the current scanline
+	# phase-locked publish clock (jitter-free)
+	mutable pub_model    : i64
+	# sprite layer, alpha 0 = empty
+	mutable fb_spr       : new u32 [ 256 * 240 ]
+	# sprites on the current scanline
+	mutable line_spr     : new i32 [ 64 ]
 	mutable pub_spr      : new u32 [ 256 * 240 ]
 	mutable spr_tex      : Texture
-	mutable pub_hud      : new u32 [ 256 * 240 ]   # HUD rows (scroll != camera), anchored
+	# HUD rows (scroll != camera), anchored
+	mutable pub_hud      : new u32 [ 256 * 240 ]
 	mutable hud_tex      : Texture
 	mutable fb_sprw      : new u32 [ 256 * 240 ]
 	mutable pub_sprw     : new u32 [ 256 * 240 ]
 	mutable sprw_tex     : Texture
 	mutable prev_oam     : new u8 [ 256 ]
-	mutable spr_world    : new u8 [ 64 ]     # per-slot world-locked flag (sticky)
+	# per-slot world-locked flag (sticky)
+	mutable spr_world    : new u8 [ 64 ]
 	mutable cur_dx       : i32
 	mutable cur_dy       : i32
 
 	func init []
-		animated   = true                    # emulator: repaint every frame, never cache-skip (NOT style-owned `volatile`)
+		# emulator: repaint every frame, never cache-skip (NOT
+		# style-owned `volatile`)
+		animated   = true
 		focusable  = true
 		if [ volume == 0.0 ] volume = 0.04
-		smooth = true                        # [ true ] initializer doesn't apply on element publics
+		# [ true ] initializer doesn't apply on element publics
+		smooth = true
 
 	public func on_key [ ev: Event ]
 		code : i32  [ ev.key.unicode ]
@@ -256,9 +319,12 @@ element knes : trinity
 		el [ code == 83 ]  bit = 5     # S  Down
 		el [ code == 65 ]  bit = 6     # A  Left
 		el [ code == 68 ]  bit = 7     # D  Right
-		el [ code == 265 ] bit = 4     # Up arrow    (alt d-pad: arrows sit on
-		el [ code == 264 ] bit = 5     # Down arrow   separate matrix lines and
-		el [ code == 263 ] bit = 6     # Left arrow   dodge WASD+button keyboard
+		# Up arrow (alt d-pad: arrows sit on
+		el [ code == 265 ] bit = 4
+		# Down arrow separate matrix lines and
+		el [ code == 264 ] bit = 5
+		# Left arrow dodge WASD+button keyboard
+		el [ code == 263 ] bit = 6
 		el [ code == 262 ] bit = 7     # Right arrow  ghosting)
 		if [ bit >= 0 ]
 			m : u32 [ u32[ 1 ] << bit ]
@@ -304,13 +370,13 @@ element knes : trinity
 		regs : 'PC={hex4[ u32[ cpu.pc ] ]}  A={hex2[ u32[ cpu.a ] ]} X={hex2[ u32[ cpu.x ] ]} Y={hex2[ u32[ cpu.y ] ]} SP={hex2[ u32[ cpu.sp ] ]} P={hex2[ u32[ cpu.p ] ]}'
 		cv.draw_text[ regs, rect [ x: vp.x + 10.0, y: y, w: vp.w - 20.0, h: lh ], vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
 		y = y + lh * 1.4
-		addr : u32 [ u32[ cpu.pc ] ]
-		n : i32 [ i32[ (vp.y + vp.h - y) / lh ] ]
+		addr : u32 [ cpu.pc ]
+		n : i32 [ (vp.y + vp.h - y) / lh ]
 		for [ li: i32 0, li < n, li += 1 ]
 			if [ addr < 0x8000 || addr > 0xFFFF ] return
-			op : u32 [ u32[ bus_rd[ addr ] ] ]
-			md2 : i32 [ i32[ dis_md[ i32[ op ] ] ] ]
-			il : i32 [ i32[ dis_len[ md2 ] ] ]
+			op : u32 [ bus_rd[ addr ] ]
+			md2 : i32 [ dis_md[ i32[ op ] ] ]
+			il : i32 [ dis_len[ md2 ] ]
 			o1 : u32 [ 0 ]
 			o2 : u32 [ 0 ]
 			if [ il > 1 ] o1 = u32[ bus_rd[ addr + 1 ] ]
@@ -355,10 +421,10 @@ element knes : trinity
 			ox : i32 [ (ti & 15) * 8 + tb * 128 ]
 			oy : i32 [ (ti >> 4) * 8 ]
 			for [ ry: i32 0, ry < 8, ry += 1 ]
-				b0 : u32 [ u32[ ppu_rd[ u32[ tb * 0x1000 + ti * 16 + ry ] ] ] ]
-				b1 : u32 [ u32[ ppu_rd[ u32[ tb * 0x1000 + ti * 16 + ry + 8 ] ] ] ]
+				b0 : u32 [ ppu_rd[ u32[ tb * 0x1000 + ti * 16 + ry ] ] ]
+				b1 : u32 [ ppu_rd[ u32[ tb * 0x1000 + ti * 16 + ry + 8 ] ] ]
 				for [ rx: i32 0, rx < 8, rx += 1 ]
-					fx : u32 [ u32[ 7 - rx ] ]
+					fx : u32 [ 7 - rx ]
 					px : u32 [ ((b0 >> fx) & 1) | (((b1 >> fx) & 1) << 1) ]
 					chr_buf[ (oy + ry) * 256 + ox + rx ] = gr[ tb * 4 + i32[ px ] ]
 		if [ !chr_tex ]
@@ -381,7 +447,7 @@ element knes : trinity
 		v : i32 [ 0 ]
 		hp : cast @u8 [ hs.chars ]
 		for [ i: i32 0, i < i32[ hs.count ], i += 1 ]
-			c : i32 [ i32[ hp[ i ] ] ]
+			c : i32 [ hp[ i ] ]
 			d : i32 [ -1 ]
 			if [ c >= 48 && c <= 57 ] d = c - 48
 			el [ c >= 65 && c <= 70 ] d = c - 55
@@ -391,9 +457,9 @@ element knes : trinity
 		return v
 
 	func dis_text [ addr: u32 ] -> string
-		op : u32 [ u32[ bus_rd[ addr ] ] ]
-		md2 : i32 [ i32[ dis_md[ i32[ op ] ] ] ]
-		il : i32 [ i32[ dis_len[ md2 ] ] ]
+		op : u32 [ bus_rd[ addr ] ]
+		md2 : i32 [ dis_md[ i32[ op ] ] ]
+		il : i32 [ dis_len[ md2 ] ]
 		o1 : u32 [ 0 ]
 		o2 : u32 [ 0 ]
 		if [ il > 1 ] o1 = u32[ bus_rd[ addr + 1 ] ]
@@ -433,16 +499,18 @@ element knes : trinity
 		if [ !cpu ] return false
 		if [ text.count < 10 ] return false
 		tp : cast @u8 [ text.chars ]
-		if [ tp[ 4 ] != 58 ] return false          # 'HHHH:' shape required
-		addr : u32 [ u32[ unhex[ text.mid[ 0, 4 ] ] ] ]
+		# 'HHHH:' shape required
+		if [ tp[ 4 ] != 58 ] return false
+		addr : u32 [ unhex[ text.mid[ 0, 4 ] ] ]
 		if [ addr < 0x8000 ] return false
 		mne : text.mid[ 7, 3 ]
 		rest : string [ '' ]
-		if [ text.count > 10 ] rest = text.mid[ 11, i32[ text.count ] - 11 ]
+		if [ text.count > 10 ]
+			rest = text.mid[ 11, i32[ text.count ] - 11 ]
 		md2 : i32 [ 0 ]
 		v : i32 [ 0 ]
 		rp : cast @u8 [ rest.chars ]
-		rc : i32 [ i32[ rest.count ] ]
+		rc : i32 [ rest.count ]
 		if [ rc == 0 ] md2 = 0
 		el [ rp[ 0 ] == 35 ]                        # #$xx
 			md2 = 1
@@ -459,16 +527,17 @@ element knes : trinity
 				v = unhex[ rest.mid[ 2, 2 ] ]
 		el [ rp[ 0 ] == 36 ]                        # $...
 			hx : i32 [ 0 ]
-			hp2 : i32 [ 1 ]
-			while [ hp2 < rc && ((rp[hp2] >= 48 && rp[hp2] <= 57) || (rp[hp2] >= 65 && rp[hp2] <= 70)) ]
-				hp2 += 1
-			hx = hp2 - 1                             # hex digit count
+			hp : i32 [ 1 ]
+			while [ hp < rc && ((rp[hp] >= 48 && rp[hp] <= 57) || (rp[hp] >= 65 && rp[hp] <= 70)) ]
+				hp += 1
+			hx = hp - 1                             # hex digit count
 			v = unhex[ rest.mid[ 1, hx ] ]
 			tail : string [ '' ]
-			if [ hp2 < rc ] tail = rest.mid[ hp2, rc - hp2 ]
+			if [ hp < rc ] tail = rest.mid[ hp, rc - hp ]
 			mb : cast @u8 [ mne.chars ]
 			if [ mb[ 0 ] == 66 && mne.compare[ 'BIT' ] != 0 && mne.compare[ 'BRK' ] != 0 ]
-				md2 = 11                             # B__ branch: operand is the target
+				# B__ branch: operand is the target
+				md2 = 11
 				v = (v - (i32[ addr ] + 2)) & 0xFF
 			el [ hx <= 2 ]
 				if [ tail.compare[ ',X' ] == 0 ] md2 = 3
@@ -486,9 +555,10 @@ element knes : trinity
 					opc = i
 					break
 		if [ opc < 0 ] return false
-		il : i32 [ i32[ dis_len[ md2 ] ] ]
-		cl : i32 [ i32[ dis_len[ i32[ dis_md[ i32[ bus_rd[ addr ] ] ] ] ] ] ]
-		if [ il != cl ] return false                # in-place only: keep lengths equal
+		il : i32 [ dis_len[ md2 ] ]
+		cl : i32 [ dis_len[ i32[ dis_md[ i32[ bus_rd[ addr ] ] ] ] ] ]
+		# in-place only: keep lengths equal
+		if [ il != cl ] return false
 		po : u32 [ prg_index[ addr ] ]
 		if [ sz[ po ] + u32[ il ] > prg_size ] return false
 		prg[ po ] = u8[ opc ]
@@ -511,11 +581,11 @@ element knes : trinity
 		tb : i32 [ (sx >= 128) ? 1 : 0 ]
 		lx : i32 [ sx - tb * 128 ]
 		ti : i32 [ (sy >> 3) * 16 + (lx >> 3) ]
-		pa : u32 [ u32[ tb * 0x1000 + ti * 16 + (sy & 7) ] ]
-		fx : u32 [ u32[ 7 - (lx & 7) ] ]
-		old2 : u32 [ chr_row[ pa ] ]
-		b0 : u32 [ old2 & 0xFF ]
-		b1 : u32 [ (old2 >> 8) & 0xFF ]
+		pa : u32 [ tb * 0x1000 + ti * 16 + (sy & 7) ]
+		fx : u32 [ 7 - (lx & 7) ]
+		old : u32 [ chr_row[ pa ] ]
+		b0 : u32 [ old & 0xFF ]
+		b1 : u32 [ (old >> 8) & 0xFF ]
 		px : u32 [ ((b0 >> fx) & 1) | (((b1 >> fx) & 1) << 1) ]
 		np : u32 [ (px + 1) & 3 ]
 		b0 = (b0 & (~(u32[1] << fx))) | ((np & 1) << fx)
@@ -530,7 +600,7 @@ element knes : trinity
 				tu_new[ i - 1 ] = tu_new[ i ]
 			tu_n = 255
 		tu_addr[ tu_n ] = pa
-		tu_old[ tu_n ] = old2
+		tu_old[ tu_n ] = old
 		tu_new[ tu_n ] = b0 | (b1 << 8)
 		tu_n += 1
 		tu_pos = tu_n
@@ -575,7 +645,8 @@ element knes : trinity
 		chr_size = sz[ hdr[5] ] * 0x2000
 		mirror_v = (hdr[6] & 1) != 0
 		mapper   = i32[ (hdr[6] >> 4) | (hdr[7] & 0xF0) ]
-		if [ (hdr[6] & 4) != 0 ] fseek[ f, 512, SEEK_CUR ]   # trainer skip
+		# trainer skip
+		if [ (hdr[6] & 4) != 0 ] fseek[ f, 512, SEEK_CUR ]
 		prg = calloc[ 1, prg_size ]
 		fread[ prg, 1, prg_size, f ]
 		if [ chr_size > 0 ]
@@ -587,8 +658,10 @@ element knes : trinity
 			chr_is_ram = true
 		fclose[ f ]
 		mir_mode = (mirror_v) ? 2 : 3
-		if [ mapper == 1 ] m1_ctrl = 0x0C            # PRG mode 3 at power-on
-		el [ mapper != 0 ] log 'knes: mapper {mapper} not yet supported (NROM/MMC1)'
+		# PRG mode 3 at power-on
+		if [ mapper == 1 ] m1_ctrl = 0x0C
+		el [ mapper != 0 ]
+			log 'knes: mapper {mapper} not yet supported (NROM/MMC1)'
 		log 'knes: prg={prg_size} chr={chr_size} mapper={mapper} vmirror={(mirror_v) ? 1 : 0}'
 
 	func nt_index [ a2: u32 ] -> u32
@@ -644,7 +717,8 @@ element knes : trinity
 				el bk = (m1_prg & 0xE) | 1
 			o = (bk % nb) * 0x4000 + (a2 & 0x3FFF)
 		el
-			if [ prg_size == 0x4000 ] o = o & 0x3FFF   # 16K NROM mirrors
+			# 16K NROM mirrors
+			if [ prg_size == 0x4000 ] o = o & 0x3FFF
 		return o
 
 	func bus_rd [ addr: u32 ] -> u8
@@ -663,7 +737,8 @@ element knes : trinity
 				ppu.t_dirty = true
 				pv : u8 [ ppu.rbuf ]
 				ppu.rbuf = ppu_rd[ u32[ ppu.addr ] ]
-				if [ (u32[ ppu.addr ] & 0x3F00) == 0x3F00 ] pv = ppu.rbuf
+				if [ (u32[ ppu.addr ] & 0x3F00) == 0x3F00 ]
+					pv = ppu.rbuf
 				vinc : u16 [ 1 ]
 				if [ (ppu.ctrl & 4) != 0 ] vinc = 32
 				ppu.addr = ppu.addr + vinc
@@ -673,14 +748,16 @@ element knes : trinity
 			b : u32 [ (pad_shift & 1) ]
 			pad_shift = (pad_shift >> 1) | 0x80000000
 			return u8[ 0x40 | b ]
-		if [ a2 == 0x4015 ]                        # APU status: length > 0 bits
+		# APU status: length > 0 bits
+		if [ a2 == 0x4015 ]
 			s : u32 [ 0 ]
 			if [ apu.p_len[ 0 ] > 0 ] s |= 1
 			if [ apu.p_len[ 1 ] > 0 ] s |= 2
 			if [ apu.t_len > 0 ] s |= 4
 			if [ apu.n_len > 0 ] s |= 8
 			return u8[ s ]
-		if [ a2 >= 0x6000 && a2 <= 0x7FFF ] return prg_ram[ a2 & 0x1FFF ]
+		if [ a2 >= 0x6000 && a2 <= 0x7FFF ]
+			return prg_ram[ a2 & 0x1FFF ]
 		if [ a2 >= 0x8000 ]
 			o : u32 [ prg_index[ a2 ] ]
 			if [ prg && sz[ o ] < prg_size ] return prg[ o ]
@@ -694,7 +771,8 @@ element knes : trinity
 			return
 		if [ a2 < 0x4000 ]
 			r : u32 [ a2 & 7 ]
-			if [ r == 0 ]                          # nt select lives in loopy t
+			# nt select lives in loopy t
+			if [ r == 0 ]
 				ppu.ctrl = v
 				ppu.t_reg = (ppu.t_reg & 0xF3FF) | (u16[ v & 3 ] << 10)
 				ppu.t_dirty = false
@@ -711,23 +789,26 @@ element knes : trinity
 					ppu.t_reg = (ppu.t_reg & 0x8C1F) | (u16[ v & 0xF8 ] << 2) | (u16[ v & 7 ] << 12)
 				ppu.t_dirty = false
 				ppu.latch = ! ppu.latch
-			el [ r == 6 ]                          # address writes share t; second sets v
+			# address writes share t; second sets v
+			el [ r == 6 ]
 				if [ ! ppu.latch ]
 					ppu.t_reg = (ppu.t_reg & 0x00FF) | (u16[ v & 0x3F ] << 8)
 				el
 					ppu.t_reg = (ppu.t_reg & 0xFF00) | u16[ v ]
 					ppu.addr = ppu.t_reg
-					ppu.t_dirty = true         # address until proven scroll ($2005/$2000 clean it)
+					# address until proven scroll ($2005/$2000 clean it)
+					ppu.t_dirty = true
 					ppu.eff_sy  = u8[ ((ppu.t_reg >> 2) & 0xF8) | ((ppu.t_reg >> 12) & 7) ]
 					ppu.eff_nty = u8[ (ppu.t_reg >> 11) & 1 ]
 				ppu.latch = ! ppu.latch
 			el [ r == 7 ]
 				ppu_wr[ u32[ ppu.addr ], v ]
-				vinc2 : u16 [ 1 ]
-				if [ (ppu.ctrl & 4) != 0 ] vinc2 = 32
-				ppu.addr = ppu.addr + vinc2
+				vinc : u16 [ 1 ]
+				if [ (ppu.ctrl & 4) != 0 ] vinc = 32
+				ppu.addr = ppu.addr + vinc
 			return
-		if [ a2 == 0x4014 ]                        # OAM DMA: 256 bytes, 513 cyc
+		# OAM DMA: 256 bytes, 513 cyc
+		if [ a2 == 0x4014 ]
 			base : u32 [ u32[ v ] << 8 ]
 			for [ i: i32 0, i < 256, i += 1 ]
 				oa : u32 [ (u32[ ppu.oam_addr ] + u32[ i ]) & 0xFF ]
@@ -788,7 +869,7 @@ element knes : trinity
 		cpu.p = p
 
 	func fetch8 [] -> u32
-		v : u32 [ u32[ bus_rd[ u32[ cpu.pc ] ] ] ]
+		v : u32 [ bus_rd[ u32[ cpu.pc ] ] ]
 		cpu.pc = cpu.pc + 1
 		return v
 
@@ -826,7 +907,7 @@ element knes : trinity
 		return r
 
 	func op_adc [ v: u32 ] -> none
-		aa : u32 [ u32[ cpu.a ] ]
+		aa : u32 [ cpu.a ]
 		c : u32 [ u32[ cpu.p ] & 1 ]
 		r : u32 [ aa + v + c ]
 		p : u8 [ cpu.p & 0x3C ]
@@ -846,7 +927,7 @@ element knes : trinity
 		cpu.p = p
 
 	func op_branch [ cond: bool ] -> i32
-		d : i32 [ i32[ i8[ u8[ fetch8[] ] ] ] ]
+		d : i32 [ i8[ u8[ fetch8[] ] ] ]
 		if [ ! cond ] return 2
 		np : u32 [ (u32[ cpu.pc ] + u32[ d ]) & 0xFFFF ]
 		c : i32 [ ((np & 0xFF00) != (u32[ cpu.pc ] & 0xFF00)) ? 4 : 3 ]
@@ -879,10 +960,11 @@ element knes : trinity
 		if [ op == 0x4C ]                          # JMP abs
 			cpu.pc = u16[ fetch16[] ]
 			return 3
-		if [ op == 0x6C ]                          # JMP (ind) — 6502 page bug
+		# JMP (ind) — 6502 page bug
+		if [ op == 0x6C ]
 			pa : u32 [ fetch16[] ]
-			lo : u32 [ u32[ bus_rd[ pa ] ] ]
-			hi : u32 [ u32[ bus_rd[ (pa & 0xFF00) | ((pa + 1) & 0xFF) ] ] ]
+			lo : u32 [ bus_rd[ pa ] ]
+			hi : u32 [ bus_rd[ (pa & 0xFF00) | ((pa + 1) & 0xFF) ] ]
 			cpu.pc = u16[ lo | (hi << 8) ]
 			return 5
 		if [ op == 0x20 ]                          # JSR
@@ -893,14 +975,14 @@ element knes : trinity
 			cpu.pc = u16[ t ]
 			return 6
 		if [ op == 0x60 ]                          # RTS
-			lo2 : u32 [ u32[ pull8[] ] ]
-			hi2 : u32 [ u32[ pull8[] ] ]
+			lo2 : u32 [ pull8[] ]
+			hi2 : u32 [ pull8[] ]
 			cpu.pc = u16[ ((lo2 | (hi2 << 8)) + 1) & 0xFFFF ]
 			return 6
 		if [ op == 0x40 ]                          # RTI
 			cpu.p = (pull8[] & 0xEF) | 0x20
-			lo3 : u32 [ u32[ pull8[] ] ]
-			hi3 : u32 [ u32[ pull8[] ] ]
+			lo3 : u32 [ pull8[] ]
+			hi3 : u32 [ pull8[] ]
 			cpu.pc = u16[ lo3 | (hi3 << 8) ]
 			return 6
 		if [ op == 0x00 ]                          # BRK
@@ -984,17 +1066,25 @@ element knes : trinity
 			cpu.y = cpu.y - 1
 			set_zn[ u32[ cpu.y ] ]
 			return 2                               # DEY
-		if [ op == 0x10 ] return op_branch[ (cpu.p & 0x80) == 0 ]   # BPL
-		if [ op == 0x30 ] return op_branch[ (cpu.p & 0x80) != 0 ]   # BMI
-		if [ op == 0x50 ] return op_branch[ (cpu.p & 0x40) == 0 ]   # BVC
-		if [ op == 0x70 ] return op_branch[ (cpu.p & 0x40) != 0 ]   # BVS
-		if [ op == 0x90 ] return op_branch[ (cpu.p & 0x01) == 0 ]   # BCC
-		if [ op == 0xB0 ] return op_branch[ (cpu.p & 0x01) != 0 ]   # BCS
-		if [ op == 0xD0 ] return op_branch[ (cpu.p & 0x02) == 0 ]   # BNE
-		if [ op == 0xF0 ] return op_branch[ (cpu.p & 0x02) != 0 ]   # BEQ
+		# BPL
+		if [ op == 0x10 ] return op_branch[ (cpu.p & 0x80) == 0 ]
+		# BMI
+		if [ op == 0x30 ] return op_branch[ (cpu.p & 0x80) != 0 ]
+		# BVC
+		if [ op == 0x50 ] return op_branch[ (cpu.p & 0x40) == 0 ]
+		# BVS
+		if [ op == 0x70 ] return op_branch[ (cpu.p & 0x40) != 0 ]
+		# BCC
+		if [ op == 0x90 ] return op_branch[ (cpu.p & 0x01) == 0 ]
+		# BCS
+		if [ op == 0xB0 ] return op_branch[ (cpu.p & 0x01) != 0 ]
+		# BNE
+		if [ op == 0xD0 ] return op_branch[ (cpu.p & 0x02) == 0 ]
+		# BEQ
+		if [ op == 0xF0 ] return op_branch[ (cpu.p & 0x02) != 0 ]
 		if [ op == 0x24 || op == 0x2C ]            # BIT zp/abs
 			ba : u32 [ (op == 0x24) ? a_zp[] : a_abs[] ]
-			bv : u32 [ u32[ bus_rd[ ba ] ] ]
+			bv : u32 [ bus_rd[ ba ] ]
 			p2 : u8 [ cpu.p & 0x3D ]
 			if [ (bv & u32[ cpu.a ]) == 0 ] p2 = p2 | 0x02
 			p2 = p2 | u8[ bv & 0xC0 ]
@@ -1088,7 +1178,8 @@ element knes : trinity
 			el
 				ea = a_abx[]
 				cyc = 4 + xtra
-			if [ aaa == 4 ]                        # STA (no page-cross bonus)
+			# STA (no page-cross bonus)
+			if [ aaa == 4 ]
 				if [ bbb == 4 ] cyc = 6
 				if [ bbb == 6 || bbb == 7 ] cyc = 5
 				bus_wr[ ea, cpu.a ]
@@ -1191,7 +1282,7 @@ element knes : trinity
 	func apu_wr [ a2: u32, v: u8 ] -> none
 		r : u32 [ a2 & 0x1F ]
 		if [ r <= 7 ]                              # pulse 1/2
-			ch : i32 [ i32[ r >> 2 ] ]
+			ch : i32 [ r >> 2 ]
 			s : u32 [ r & 3 ]
 			if [ s == 0 ]
 				apu.p_vol[ ch ] = v
@@ -1218,7 +1309,8 @@ element knes : trinity
 			return
 		if [ r == 0xB ]
 			apu.t_timer = (apu.t_timer & 0xFF) | (u16[ v & 7 ] << 8)
-			if [ (apu.enable & 4) != 0 ] apu.t_len = len_tab[ i32[ (v >> 3) & 0x1F ] ]
+			if [ (apu.enable & 4) != 0 ]
+				apu.t_len = len_tab[ i32[ (v >> 3) & 0x1F ] ]
 			apu.t_start = 1
 			return
 		if [ r == 0xC ]
@@ -1229,7 +1321,8 @@ element knes : trinity
 			apu.n_mode = (v >> 7) & 1
 			return
 		if [ r == 0xF ]
-			if [ (apu.enable & 8) != 0 ] apu.n_len = len_tab[ i32[ (v >> 3) & 0x1F ] ]
+			if [ (apu.enable & 8) != 0 ]
+				apu.n_len = len_tab[ i32[ (v >> 3) & 0x1F ] ]
 			apu.n_start = 1
 			return
 		if [ r == 0x15 ]
@@ -1254,7 +1347,8 @@ element knes : trinity
 				if [ apu.p_envctr[ ch ] < 0 ]
 					apu.p_envctr[ ch ] = i32[ apu.p_vol[ ch ] & 0xF ]
 					if [ apu.p_env[ ch ] > 0 ] apu.p_env[ ch ] -= 1
-					el [ (apu.p_vol[ ch ] & 0x20) != 0 ] apu.p_env[ ch ] = 15
+					el [ (apu.p_vol[ ch ] & 0x20) != 0 ]
+						apu.p_env[ ch ] = 15
 		if [ apu.n_start != 0 ]
 			apu.n_start = 0
 			apu.n_env = 15
@@ -1271,19 +1365,23 @@ element knes : trinity
 		# half: length counters + sweep (steps 1 and 3)
 		if [ (apu.fc_step & 1) != 0 ] return
 		for [ ch2: i32 0, ch2 < 2, ch2 += 1 ]
-			if [ apu.p_len[ ch2 ] > 0 && (apu.p_vol[ ch2 ] & 0x20) == 0 ] apu.p_len[ ch2 ] -= 1
+			if [ apu.p_len[ ch2 ] > 0 && (apu.p_vol[ ch2 ] & 0x20) == 0 ]
+				apu.p_len[ ch2 ] -= 1
 			sw : u8 [ apu.p_sweep[ ch2 ] ]
 			if [ (sw & 0x80) != 0 ]
 				apu.p_sweepctr[ ch2 ] -= 1
 				if [ apu.p_sweepctr[ ch2 ] < 0 ]
 					apu.p_sweepctr[ ch2 ] = i32[ (sw >> 4) & 7 ]
-					sh : i32 [ i32[ sw & 7 ] ]
+					sh : i32 [ sw & 7 ]
 					if [ sh > 0 && apu.p_timer[ ch2 ] >= 8 ]
 						d : i32 [ i32[ apu.p_timer[ ch2 ] ] >> sh ]
-						if [ (sw & 8) != 0 ] d = 0 - d - ((ch2 == 0) ? 1 : 0)
+						if [ (sw & 8) != 0 ]
+							d = 0 - d - ((ch2 == 0) ? 1 : 0)
 						nt : i32 [ i32[ apu.p_timer[ ch2 ] ] + d ]
-						if [ nt >= 0 && nt < 0x800 ] apu.p_timer[ ch2 ] = u16[ nt ]
-		if [ apu.t_len > 0 && (apu.t_linload & 0x80) == 0 ] apu.t_len -= 1
+						if [ nt >= 0 && nt < 0x800 ]
+							apu.p_timer[ ch2 ] = u16[ nt ]
+		if [ apu.t_len > 0 && (apu.t_linload & 0x80) == 0 ]
+			apu.t_len -= 1
 		if [ apu.n_len > 0 && (apu.n_vol & 0x20) == 0 ] apu.n_len -= 1
 
 	# one output sample at 53267 Hz
@@ -1296,20 +1394,22 @@ element knes : trinity
 		n : i32 [ 33 ]
 		s : i32 [ 0 ]
 		for [ ch: i32 0, ch < 2, ch += 1 ]
-			t : i32 [ i32[ apu.p_timer[ ch ] ] ]
+			t : i32 [ apu.p_timer[ ch ] ]
 			if [ apu.p_len[ ch ] > 0 && t >= 8 ]
 				apu.p_ctr[ ch ] -= n
 				while [ apu.p_ctr[ ch ] <= 0 ]
 					apu.p_ctr[ ch ] += (t + 1) * 2
 					apu.p_seq[ ch ] = (apu.p_seq[ ch ] + 1) & 7
 				dm : u32 [ 0x02 ]                  # 12.5%
-				dt : u32 [ u32[ apu.p_duty[ ch ] ] ]
+				dt : u32 [ apu.p_duty[ ch ] ]
 				if [ dt == 1 ] dm = 0x06
 				el [ dt == 2 ] dm = 0x1E
 				el [ dt == 3 ] dm = 0xF9
 				vol : i32 [ apu.p_env[ ch ] ]
-				if [ (apu.p_vol[ ch ] & 0x10) != 0 ] vol = i32[ apu.p_vol[ ch ] & 0xF ]
-				if [ (dm & (u32[ 1 ] << apu.p_seq[ ch ])) != 0 ] s += vol * 492
+				if [ (apu.p_vol[ ch ] & 0x10) != 0 ]
+					vol = i32[ apu.p_vol[ ch ] & 0xF ]
+				if [ (dm & (u32[ 1 ] << apu.p_seq[ ch ])) != 0 ]
+					s += vol * 492
 		if [ apu.t_len > 0 && apu.t_lin > 0 && apu.t_timer >= 2 ]
 			apu.t_ctr -= n
 			while [ apu.t_ctr <= 0 ]
@@ -1325,13 +1425,15 @@ element knes : trinity
 				apu.n_lfsr = u16[ (u32[ apu.n_lfsr ] >> 1) | (fb << 14) ]
 			if [ (apu.n_lfsr & 1) == 0 ]
 				nv : i32 [ apu.n_env ]
-				if [ (apu.n_vol & 0x10) != 0 ] nv = i32[ apu.n_vol & 0xF ]
+				if [ (apu.n_vol & 0x10) != 0 ]
+					nv = i32[ apu.n_vol & 0xF ]
 				s += nv * 323
 		return s
 
 	func ppu_render [] -> none
 		ppu.s0_line = -1
-		memset[ fb_spr, 0, 256 * 240 * 4 ]        # sprite layers start empty
+		# sprite layers start empty
+		memset[ fb_spr, 0, 256 * 240 * 4 ]
 		memset[ fb_sprw, 0, 256 * 240 * 4 ]
 		bg_pat : u32 [ ((ppu.ctrl & 0x10) != 0) ? u32[ 0x1000 ] : u32[ 0 ] ]
 		sp_pat : u32 [ ((ppu.ctrl & 0x08) != 0) ? u32[ 0x1000 ] : u32[ 0 ] ]
@@ -1341,11 +1443,12 @@ element knes : trinity
 		ub : u32 [ nes_pal[ i32[ pal_shot[ 0 ] ] & 63 ] ]
 		vanch : i32 [ 0 ]
 		for [ y: i32 0, y < 240, y += 1 ]
-			base_nt : u32 [ u32[ line_nt[ y ] ] ]
+			base_nt : u32 [ line_nt[ y ] ]
 			cur_chr0 = line_chr0[ y ]
 			cur_chr1 = line_chr1[ y ]
 			if [ y > 0 ]
-				if [ line_sy[ y ] != line_sy[ y - 1 ] || ((line_nt[ y ] ^ line_nt[ y - 1 ]) & 2) != 0 ] vanch = y
+				if [ line_sy[ y ] != line_sy[ y - 1 ] || ((line_nt[ y ] ^ line_nt[ y - 1 ]) & 2) != 0 ]
+					vanch = y
 			bg_on = (line_mask[ y ] & 0x08) != 0
 			sp_on = (line_mask[ y ] & 0x10) != 0
 			sh : i32 [ (big) ? 16 : 8 ]
@@ -1369,15 +1472,15 @@ element knes : trinity
 					if [ wy >= 240 ] nt += 0x800
 					cx : u32 [ (wx % 256) >> 3 ]
 					cy : u32 [ (wy % 240) >> 3 ]
-					tile : u32 [ u32[ ppu_rd[ nt + cy * 32 + cx ] ] ]
+					tile : u32 [ ppu_rd[ nt + cy * 32 + cx ] ]
 					fy : u32 [ (wy % 240) & 7 ]
 					pl : u32 [ bg_pat + tile * 16 + fy ]
-					b0 : u32 [ u32[ ppu_rd[ pl ] ] ]
-					b1 : u32 [ u32[ ppu_rd[ pl + 8 ] ] ]
+					b0 : u32 [ ppu_rd[ pl ] ]
+					b1 : u32 [ ppu_rd[ pl + 8 ] ]
 					fx : u32 [ 7 - ((wx % 256) & 7) ]
 					bpx = ((b0 >> fx) & 1) | (((b1 >> fx) & 1) << 1)
 					if [ bpx != 0 ]
-						at : u32 [ u32[ ppu_rd[ nt + 0x3C0 + (cy >> 2) * 8 + (cx >> 2) ] ] ]
+						at : u32 [ ppu_rd[ nt + 0x3C0 + (cy >> 2) * 8 + (cx >> 2) ] ]
 						qs : u32 [ ((cy & 2) << 1) | (cx & 2) ]
 						pal : u32 [ (at >> qs) & 3 ]
 						o = nes_pal[ i32[ pal_shot[ pal * 4 + bpx ] ] & 63 ]
@@ -1385,10 +1488,10 @@ element knes : trinity
 					for [ k: i32 0, k < nsl, k += 1 ]
 						si : i32 [ line_spr[ k ] ]
 						sy : i32 [ i32[ ppu.oam[ si * 4 ] ] + 1 ]
-						sx : i32 [ i32[ ppu.oam[ si * 4 + 3 ] ] ]
+						sx : i32 [ ppu.oam[ si * 4 + 3 ] ]
 						if [ x < sx || x >= sx + 8 ] continue
-						tl : u32 [ u32[ ppu.oam[ si * 4 + 1 ] ] ]
-						at2 : u32 [ u32[ ppu.oam[ si * 4 + 2 ] ] ]
+						tl : u32 [ ppu.oam[ si * 4 + 1 ] ]
+						at2 : u32 [ ppu.oam[ si * 4 + 2 ] ]
 						ry : i32 [ y - sy ]
 						if [ (at2 & 0x80) != 0 ] ry = sh - 1 - ry
 						rx : i32 [ x - sx ]
@@ -1399,15 +1502,18 @@ element knes : trinity
 							tl = (tl & 0xFE) + u32[ ry >> 3 ]
 							ry = ry & 7
 						pl2 : u32 [ pb + tl * 16 + u32[ ry ] ]
-						s0 : u32 [ u32[ ppu_rd[ pl2 ] ] ]
-						s1 : u32 [ u32[ ppu_rd[ pl2 + 8 ] ] ]
-						fx2 : u32 [ u32[ 7 - rx ] ]
+						s0 : u32 [ ppu_rd[ pl2 ] ]
+						s1 : u32 [ ppu_rd[ pl2 + 8 ] ]
+						fx2 : u32 [ 7 - rx ]
 						spx : u32 [ ((s0 >> fx2) & 1) | (((s1 >> fx2) & 1) << 1) ]
 						if [ spx == 0 ] continue
-						if [ si == 0 && bpx != 0 && ppu.s0_line < 0 ] ppu.s0_line = y
-						if [ (at2 & 0x20) != 0 && bpx != 0 ] break   # behind bg
+						if [ si == 0 && bpx != 0 && ppu.s0_line < 0 ]
+							ppu.s0_line = y
+						# behind bg
+						if [ (at2 & 0x20) != 0 && bpx != 0 ] break
 						spc2 : u32 [ nes_pal[ i32[ pal_shot[ 16 + i32[ (at2 & 3) ] * 4 + i32[ spx ] ] ] & 63 ] ]
-						if [ spr_world[ si ] != 0 ] fb_sprw[ y * 256 + x ] = spc2
+						if [ spr_world[ si ] != 0 ]
+							fb_sprw[ y * 256 + x ] = spc2
 						el fb_spr[ y * 256 + x ] = spc2
 						break
 				ppu.framebuf[ y * 256 + x ] = o
@@ -1425,14 +1531,16 @@ element knes : trinity
 			if [ !rec_f ] rec_f = handle[ fopen[ record, 'wb' ] ]
 			if [ rec_f ]
 				rf : @FILE [ cast @FILE [ rec_f ] ]
-				b  : u8 [ u8[ pad_st ] ]
+				b  : u8 [ pad_st ]
 				fwrite[ @b, 1, 1, rf ]
 				fflush[ rf ]
 		for [ line: i32 0, line < 262, line += 1 ]
-			if [ line == 0 ]                      # pre-render v reload: vertical from t
+			# pre-render v reload: vertical from t
+			if [ line == 0 ]
 				ppu.eff_sy  = u8[ ((ppu.t_reg >> 2) & 0xF8) | ((ppu.t_reg >> 12) & 7) ]
 				ppu.eff_nty = u8[ (ppu.t_reg >> 11) & 1 ]
-			if [ line < 240 ]                     # snapshot loopy t + CHR banks per line
+			# snapshot loopy t + CHR banks per line
+			if [ line < 240 ]
 				if [ ! ppu.t_dirty ]
 					line_sx[ line ] = u8[ ((ppu.t_reg & 0x1F) << 3) | u16[ ppu.fine_x ] ]
 					line_nt[ line ] = u8[ ((ppu.t_reg >> 10) & 1) | (u16[ ppu.eff_nty ] << 1) ]
@@ -1449,7 +1557,8 @@ element knes : trinity
 				ppu.in_vblank = true
 				if [ (ppu.ctrl & 0x80) != 0 ] cpu.nmi_pending = true
 			if [ line == 261 ]
-				ppu.status = ppu.status & 0x3F     # clear vblank + sprite0
+				# clear vblank + sprite0
+				ppu.status = ppu.status & 0x3F
 				ppu.in_vblank = false
 			if [ ppu.s0_line >= 0 && line == ppu.s0_line ]
 				ppu.status = ppu.status | 0x40     # sprite-0 hit
@@ -1459,20 +1568,21 @@ element knes : trinity
 				cyc : i32 [ cpu_step[] ]
 				spent += i64[ cyc * 12 ]
 			mclk_carry = budget - spent
-		ppu_render[]                              # render from this frame's snapshots
+		# render from this frame's snapshots
+		ppu_render[]
 
 	func generate_audio [] -> none
 		if [ ! audio || ! audio.active ]
 			usleep[ 15000 ]
 			return
 		sample_frac += i64[ 53267 ] * 357368
-		n : i32 [ i32[ sample_frac / 21477272 ] ]
+		n : i32 [ sample_frac / 21477272 ]
 		sample_frac -= i64[ n ] * 21477272
 		while [ n > 0 ]
 			c : i32 [ (n > 1024) ? 1024 : n ]
 			for [ i: i32 0, i < c, i += 1 ]
 				s : i32 [ apu_sample[] ]
-				sv : i32 [ i32[ f32[ s ] * volume ] ]
+				sv : i32 [ f32[ s ] * volume ]
 				if [ sv > 32767 ] sv = 32767
 				if [ sv < -32768 ] sv = -32768
 				audio.buffer[ i * 2 ]     = i16[ sv ]
@@ -1569,7 +1679,8 @@ element knes : trinity
 			load_req = false
 		ticks += 1
 		if [ autowalk > 0 ]
-			if [ ticks >= 5 && ticks < i64[ 5 + autowalk ] ] pad_st = pad_st | 0x10
+			if [ ticks >= 5 && ticks < i64[ 5 + autowalk ] ]
+				pad_st = pad_st | 0x10
 			el pad_st = pad_st & 0xFFFFFFEF
 		run_frame[]
 		if [ seq_to > 0 && ticks >= i64[ seq_from ] && ticks < i64[ seq_to ] ]
@@ -1604,8 +1715,8 @@ element knes : trinity
 		cur_dy = dy
 		if [ dx != 0 || dy != 0 ]
 			for [ si: i32 0, si < 64, si += 1 ]
-				syv : i32 [ i32[ ppu.oam[ si * 4 ] ] ]
-				sxv : i32 [ i32[ ppu.oam[ si * 4 + 3 ] ] ]
+				syv : i32 [ ppu.oam[ si * 4 ] ]
+				sxv : i32 [ ppu.oam[ si * 4 + 3 ] ]
 				sdyv : i32 [ syv - i32[ prev_oam[ si * 4 ] ] ]
 				sdxv : i32 [ sxv - i32[ prev_oam[ si * 4 + 3 ] ] ]
 				wok : bool [ syv < 0xEF ]
@@ -1616,23 +1727,24 @@ element knes : trinity
 			for [ si2: i32 0, si2 < 64, si2 += 1 ]
 				spr_world[ si2 ] = 0
 		memcpy[ prev_oam, ppu.oam, 256 ]
-		c3x : i32 [ i32[ line_sx[ 200 ] ] ]
-		c3y : i32 [ i32[ line_sy[ 200 ] ] ]
-		c3n : i32 [ i32[ line_nt[ 200 ] ] ]
+		c3x : i32 [ line_sx[ 200 ] ]
+		c3y : i32 [ line_sy[ 200 ] ]
+		c3n : i32 [ line_nt[ 200 ] ]
 		split : i32 [ 0 ]
 		while [ split < 240 ]
-			rx : i32 [ i32[ line_sx[ split ] ] ]
-			ry : i32 [ i32[ line_sy[ split ] ] ]
-			rn : i32 [ i32[ line_nt[ split ] ] ]
+			rx : i32 [ line_sx[ split ] ]
+			ry : i32 [ line_sy[ split ] ]
+			rn : i32 [ line_nt[ split ] ]
 			if [ rx == c3x && ry == c3y && rn == c3n ] break
-			if [ rx == p3x && ry == p3y && rn == p3n ] break   # transitional, not HUD
+			# transitional, not HUD
+			if [ rx == p3x && ry == p3y && rn == p3n ] break
 			split += 1
 		if [ split >= 240 ] split = 0
 		bsplit : i32 [ 240 ]
 		while [ bsplit > split ]
-			bx : i32 [ i32[ line_sx[ bsplit - 1 ] ] ]
-			by : i32 [ i32[ line_sy[ bsplit - 1 ] ] ]
-			bn : i32 [ i32[ line_nt[ bsplit - 1 ] ] ]
+			bx : i32 [ line_sx[ bsplit - 1 ] ]
+			by : i32 [ line_sy[ bsplit - 1 ] ]
+			bn : i32 [ line_nt[ bsplit - 1 ] ]
 			if [ bx == c3x && by == c3y && bn == c3n ] break
 			if [ bx == p3x && by == p3y && bn == p3n ] break
 			bsplit -= 1
@@ -1730,14 +1842,15 @@ element knes : trinity
 		emu_running = false
 
 	func context_text [] -> string
-		if [ !cpu ] return 'knes paused: no machine state (rom not loaded)'
+		if [ !cpu ]
+			return 'knes paused: no machine state (rom not loaded)'
 		dis_prepare[]
 		s : string 'NES emulator paused ({rom}) — machine context\n'
 		s = s + 'frame {frames}, cpu cycles {cpu.cycles}\n'
 		s = s + '6502: PC=${hex4[ u32[ cpu.pc ] ]} A=${hex2[ u32[ cpu.a ] ]} X=${hex2[ u32[ cpu.x ] ]} Y=${hex2[ u32[ cpu.y ] ]} SP=${hex2[ u32[ cpu.sp ] ]} P=${hex2[ u32[ cpu.p ] ]} (NV-BDIZC)\n'
 		s = s + 'PPU: ctrl=${hex2[ u32[ ppu.ctrl ] ]} mask=${hex2[ u32[ ppu.mask ] ]} status=${hex2[ u32[ ppu.status ] ]}  pad=${hex2[ pad_st ]}\n'
 		s = s + 'disassembly from PC:\n'
-		daddr : u32 [ u32[ cpu.pc ] ]
+		daddr : u32 [ cpu.pc ]
 		for [ li: i32 0, li < 24, li += 1 ]
 			if [ daddr >= 0x8000 && daddr <= 0xFFFF ]
 				s = s + '  ' + dis_text[ daddr ] + '\n'
@@ -1828,12 +1941,12 @@ element knes : trinity
 
 	public func paint [ cv: Canvas, vp: rect ]
 		ar9 : f32 [ 8.0 / 7.0 ]
-		fw9 : f32 [ vp.w ]
-		fh9 : f32 [ fw9 / ar9 ]
+		fw : f32 [ vp.w ]
+		fh9 : f32 [ fw / ar9 ]
 		if [ fh9 > vp.h ]
 			fh9 = vp.h
-			fw9 = fh9 * ar9
-		vp = rect [ x: vp.x + (vp.w - fw9) * 0.5, y: vp.y + (vp.h - fh9) * 0.5, w: fw9, h: fh9 ]
+			fw = fh9 * ar9
+		vp = rect [ x: vp.x + (vp.w - fw) * 0.5, y: vp.y + (vp.h - fh9) * 0.5, w: fw, h: fh9 ]
 		bounds = vp
 		if [ ! booted ] boot[]
 		if [ ! screen_tex ]
@@ -1865,18 +1978,18 @@ element knes : trinity
 			sdy : i32 [ pub_dy ]
 			stx : i64 [ pub_tx ]
 			sty : i64 [ pub_ty ]
-			spx2 : i64 [ pub_px ]
-			spy2 : i64 [ pub_py ]
+			spx : i64 [ pub_px ]
+			spy : i64 [ pub_py ]
 			pub_lock.unlock[]
 			if [ smooth && (sdx != 0 || sdy != 0) ]
 				noww : i64 [ wall_us[] ]
-				if [ sdx != 0 && spx2 > 0 ]
-					ax : f32 [ f32[ noww - stx ] / f32[ spx2 ] ]
+				if [ sdx != 0 && spx > 0 ]
+					ax : f32 [ f32[ noww - stx ] / f32[ spx ] ]
 					if [ ax > 1.0 ] ax = 1.0
 					if [ ax < 0.0 ] ax = 0.0
 					ox = f32[ sdx ] * (1.0 - ax) * (ow / 256.0)
-				if [ sdy != 0 && spy2 > 0 ]
-					ay : f32 [ f32[ noww - sty ] / f32[ spy2 ] ]
+				if [ sdy != 0 && spy > 0 ]
+					ay : f32 [ f32[ noww - sty ] / f32[ spy ] ]
 					if [ ay > 1.0 ] ay = 1.0
 					if [ ay < 0.0 ] ay = 0.0
 					oy = f32[ sdy ] * (1.0 - ay) * (oh / 240.0)
@@ -1901,8 +2014,9 @@ element knes : trinity
 					ses_model  = Model [ w: cv.w, s: ses_shader, samplers: map Texture[string] [ 'color': spr_tex ] ]
 					ses_render = Render [ vk: cv.vk, w: cv.w, wscale: 0.5, models: [ses_model ] ]
 				if [ vscale ]
-					# continuous edge reconstruction straight to window res
-					# one pass samples all four layers (keys are Surface slots)
+					# continuous edge reconstruction straight to window
+					# res one pass samples all four layers (keys are
+					# Surface slots)
 					vs_shader = VectorLayers [ vk: cv.vk, name: 'vectorlayers' ]
 					ps_model  = Model [ w: cv.w, s: vs_shader, samplers: map Texture[string] [
 						'color': screen_tex, 'normal': sprw_tex, 'emission': hud_tex, 'rough': spr_tex ] ]
@@ -1928,10 +2042,11 @@ element knes : trinity
 					ses_render.update[]
 					ses_render.draw[]
 					ses_render.flush_submit[]
-				# no fence per layer: the queue runs the layer submits before the
-				# canvas paints that sample them
+				# no fence per layer: the queue runs the layer submits
+				# before the canvas paints that sample them
 				if [ vscale ]
-					# bg + world sprites glide on the scroll offset, hud + sprites stay
+					# bg + world sprites glide on the scroll offset, hud
+					# + sprites stay
 					vs_shader.r0 = vec4f [ ox / ow, oy / oh, 1.0, 1.0 ]
 					vs_shader.r1 = vs_shader.r0
 					vs_shader.r2 = vec4f [ 0.0, 0.0, 1.0, 1.0 ]

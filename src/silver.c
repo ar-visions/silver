@@ -6031,7 +6031,11 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
 
     // handle typed operations, converting to our expected model (if no difference, it passes through)
     if (a->expr_level > 0 && peek && (is_alpha(peek) || eq(peek, "struct"))) {
-        etype mdl_found = read_etype(a, null);
+        // a variable named like a type reads as the variable
+        Au_t  var       = is_alpha(peek) ?
+            lexical(a->lexical, peek->chars) : null;
+        bool  shadowed  = var && var->member_type == AU_MEMBER_VAR;
+        etype mdl_found = shadowed ? null : read_etype(a, null);
         // we need to address definition of ordered members within collections of all sort
         validate (!type_given || !mdl_found || (mdl_found != mdl_expect),
             "redundant type expression");
@@ -7733,8 +7737,16 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
         }
         validate(skip || first || read_if(a, ","), "expected comma separator between arguments %i", seq);
         
-        bool    is_inlay  = read_if(a, "inlay") != null;    push_current(a);
-        etype   t         = read_etype(a, null);            pop_tokens(a, t != null);
+        bool    is_inlay  = read_if(a, "inlay") != null;
+        // a word then : is a name, even when a type has that name
+        token   nt        = element(a, 1);
+        bool    named     = peek_alpha(a) && nt && eq(nt, ":");
+        etype   t         = null;
+        if (!named) {
+            push_current(a);
+            t = read_etype(a, null);
+            pop_tokens(a, t != null);
+        }
         string  n         = t ? null : read_alpha(a); // optional
         micro*  ar        = in_context ? (micro*)&au->members : (micro*)&au->args;
 
@@ -13656,13 +13668,7 @@ enode silver_parse_assignment(silver a, enode mem, OPType op_val, bool is_const)
 
     // Handle Promotion and Inference for AU_MEMBER_DECL
     if (mem->autype->member_type == AU_MEMBER_DECL) {
-        // verify name is not a type alias
-        array name_tokens = a(token(mem->autype->ident));
-        push_tokens(a, (tokens)name_tokens, 0);
-        etype name_type = read_etype(a, null);
-        pop_tokens(a, false);
-        validate(!name_type, "%s is a defined type", mem->autype->ident);
-
+        // a name may shadow a type: name then : declared it
         // Promote the member to a variable
         Au_t ctx = top_scope(a);
         mem->autype->context = ctx;

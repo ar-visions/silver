@@ -49,7 +49,7 @@ class CloudBake
         perm = vec i32 [ 512 ]
         for [ i: i32 0, i < 256, i += 1 ] perm[ i ] = i
         for [ i: i32 255, i > 0, i = i - 1 ]
-            j : i32 [ i32[ rnd[] * f32[ i + 1 ] ] ]
+            j : i32 [ rnd[] * f32[ i + 1 ] ]
             if [ j > i ] j = i
             t : i32 [ perm[ i ] ]
             perm[ i ] = perm[ j ]
@@ -73,9 +73,9 @@ class CloudBake
         fx : f32 [ floor[ x ] ]
         fy : f32 [ floor[ y ] ]
         fz : f32 [ floor[ z ] ]
-        xi : i32 [ i32[ fx ] ]
-        yi : i32 [ i32[ fy ] ]
-        zi : i32 [ i32[ fz ] ]
+        xi : i32 [ fx ]
+        yi : i32 [ fy ]
+        zi : i32 [ fz ]
         xf : f32 [ x - fx ]
         yf : f32 [ y - fy ]
         zf : f32 [ z - fz ]
@@ -89,14 +89,22 @@ class CloudBake
         u : f32 [ fade[ xf ] ]
         v : f32 [ fade[ yf ] ]
         w : f32 [ fade[ zf ] ]
-        n000 : f32 [ grad3[ hash3[ x0, y0, z0 ], xf,       yf,       zf ] ]
-        n100 : f32 [ grad3[ hash3[ x1, y0, z0 ], xf - 1.0, yf,       zf ] ]
-        n010 : f32 [ grad3[ hash3[ x0, y1, z0 ], xf,       yf - 1.0, zf ] ]
-        n110 : f32 [ grad3[ hash3[ x1, y1, z0 ], xf - 1.0, yf - 1.0, zf ] ]
-        n001 : f32 [ grad3[ hash3[ x0, y0, z1 ], xf,       yf,       zf - 1.0 ] ]
-        n101 : f32 [ grad3[ hash3[ x1, y0, z1 ], xf - 1.0, yf,       zf - 1.0 ] ]
-        n011 : f32 [ grad3[ hash3[ x0, y1, z1 ], xf,       yf - 1.0, zf - 1.0 ] ]
-        n111 : f32 [ grad3[ hash3[ x1, y1, z1 ], xf - 1.0, yf - 1.0, zf - 1.0 ] ]
+        n000 : f32 [
+            grad3[ hash3[ x0, y0, z0 ], xf,       yf,       zf ] ]
+        n100 : f32 [
+            grad3[ hash3[ x1, y0, z0 ], xf - 1.0, yf,       zf ] ]
+        n010 : f32 [
+            grad3[ hash3[ x0, y1, z0 ], xf,       yf - 1.0, zf ] ]
+        n110 : f32 [
+            grad3[ hash3[ x1, y1, z0 ], xf - 1.0, yf - 1.0, zf ] ]
+        n001 : f32 [
+            grad3[ hash3[ x0, y0, z1 ], xf,       yf,       zf - 1.0 ] ]
+        n101 : f32 [
+            grad3[ hash3[ x1, y0, z1 ], xf - 1.0, yf,       zf - 1.0 ] ]
+        n011 : f32 [
+            grad3[ hash3[ x0, y1, z1 ], xf,       yf - 1.0, zf - 1.0 ] ]
+        n111 : f32 [
+            grad3[ hash3[ x1, y1, z1 ], xf - 1.0, yf - 1.0, zf - 1.0 ] ]
         a0 : f32 [ n000 + (n100 - n000) * u ]
         a1 : f32 [ n010 + (n110 - n010) * u ]
         b0 : f32 [ n001 + (n101 - n001) * u ]
@@ -106,13 +114,14 @@ class CloudBake
         return c0 + (c1 - c0) * w
 
     # tileable perlin fbm in 0..1; x,y,z in 0..1; base period P
-    func perlin_fbm3 [ x: f32, y: f32, z: f32, P: i32, octaves: i32 ] -> f32
+    func perlin_fbm3 [ x: f32, y: f32, z: f32, P: i32,
+                       octaves: i32 ] -> f32
         sum : f32 [ 0.0 ]
         amp : f32 [ 1.0 ]
         norm : f32 [ 0.0 ]
         p : i32 [ P ]
         for [ o: i32 0, o < octaves, o += 1 ]
-            f : f32 [ f32[ p ] ]
+            f : f32 [ p ]
             sum += perlin3[ x * f, y * f, z * f, p ] * amp
             norm += amp
             amp *= 0.5
@@ -134,9 +143,9 @@ class CloudBake
         px : f32 [ x * f32[ F ] ]
         py : f32 [ y * f32[ F ] ]
         pz : f32 [ z * f32[ F ] ]
-        cx : i32 [ i32[ floor[ px ] ] ]
-        cy : i32 [ i32[ floor[ py ] ] ]
-        cz : i32 [ i32[ floor[ pz ] ] ]
+        cx : i32 [ floor[ px ] ]
+        cy : i32 [ floor[ py ] ]
+        cz : i32 [ floor[ pz ] ]
         md : f32 [ 1e9 ]
         for [ dz: i32 -1, dz <= 1, dz += 1 ]
             zz : i32 [ cz + dz ]
@@ -160,8 +169,8 @@ class CloudBake
     func worley2 [ x: f32, y: f32, F: i32, pts: vec f32 ] -> f32
         px : f32 [ x * f32[ F ] ]
         py : f32 [ y * f32[ F ] ]
-        cx : i32 [ i32[ floor[ px ] ] ]
-        cy : i32 [ i32[ floor[ py ] ] ]
+        cx : i32 [ floor[ px ] ]
+        cy : i32 [ floor[ py ] ]
         md : f32 [ 1e9 ]
         for [ dy: i32 -1, dy <= 1, dy += 1 ]
             yy : i32 [ cy + dy ]
@@ -203,7 +212,8 @@ class CloudBake
     # shape 128^3: R perlin-worley, G/B/A worley fbm at rising freq
     func bake_shape [ out: path ]
         N : i32 [ 128 ]
-        img : Image [ width: N, height: N * N, format: Pixel.rgba8, linear: true, wrap_u: true, wrap_v: true ]
+        img : Image [ width: N, height: N * N, format: Pixel.rgba8,
+                      linear: true, wrap_u: true, wrap_v: true ]
         d : @u8 [ img.vdata[] ]
         w4  : worley_points[ 4 ]
         w8  : worley_points[ 8 ]
@@ -224,19 +234,23 @@ class CloudBake
                     a32 : f32 [ worley3[ fx, fy, fz, 32, w32 ] ]
                     a64 : f32 [ worley3[ fx, fy, fz, 64, w64 ] ]
                     wlow : f32 [ a4 * 0.625 + a8 * 0.25 + a16 * 0.125 ]
-                    # perlin dilated by worley: billows in the low perlin
+                    # perlin dilated by worley: billows in the low
+                    # perlin
                     pw : f32 [ sat[ remap[ p, 0.0, 1.0, wlow, 1.0 ] ] ]
                     i : i32 [ ((z * N + y) * N + x) * 4 ]
                     d[ i ]     = to_byte[ pw ]
-                    d[ i + 1 ] = to_byte[ a8 * 0.625 + a16 * 0.25 + a32 * 0.125 ]
-                    d[ i + 2 ] = to_byte[ a16 * 0.625 + a32 * 0.25 + a64 * 0.125 ]
+                    d[ i + 1 ] = to_byte[
+                        a8 * 0.625 + a16 * 0.25 + a32 * 0.125 ]
+                    d[ i + 2 ] = to_byte[
+                        a16 * 0.625 + a32 * 0.25 + a64 * 0.125 ]
                     d[ i + 3 ] = to_byte[ a32 * 0.75 + a64 * 0.25 ]
         img.png[ out ]
 
     # detail 32^3: worley fbm, three rising frequencies
     func bake_detail [ out: path ]
         N : i32 [ 32 ]
-        img : Image [ width: N, height: N * N, format: Pixel.rgba8, linear: true, wrap_u: true, wrap_v: true ]
+        img : Image [ width: N, height: N * N, format: Pixel.rgba8,
+                      linear: true, wrap_u: true, wrap_v: true ]
         d : @u8 [ img.vdata[] ]
         w2  : worley_points[ 2 ]
         w4  : worley_points[ 4 ]
@@ -254,8 +268,10 @@ class CloudBake
                     a8  : f32 [ worley3[ fx, fy, fz, 8,  w8 ] ]
                     a16 : f32 [ worley3[ fx, fy, fz, 16, w16 ] ]
                     i : i32 [ ((z * N + y) * N + x) * 4 ]
-                    d[ i ]     = to_byte[ a2 * 0.625 + a4 * 0.25 + a8 * 0.125 ]
-                    d[ i + 1 ] = to_byte[ a4 * 0.625 + a8 * 0.25 + a16 * 0.125 ]
+                    d[ i ]     = to_byte[
+                        a2 * 0.625 + a4 * 0.25 + a8 * 0.125 ]
+                    d[ i + 1 ] = to_byte[
+                        a4 * 0.625 + a8 * 0.25 + a16 * 0.125 ]
                     d[ i + 2 ] = to_byte[ a8 * 0.75 + a16 * 0.25 ]
                     d[ i + 3 ] = to_byte[ 1.0 ]
         img.png[ out ]
@@ -263,7 +279,8 @@ class CloudBake
     # curl 128^2: rotated gradient of a perlin field (divergence free)
     func bake_curl [ out: path ]
         N : i32 [ 128 ]
-        img : Image [ width: N, height: N, format: Pixel.rgba8, linear: true, wrap_u: true, wrap_v: true ]
+        img : Image [ width: N, height: N, format: Pixel.rgba8,
+                      linear: true, wrap_u: true, wrap_v: true ]
         d : @u8 [ img.vdata[] ]
         inv : f32 [ 1.0 / f32[ N ] ]
         e : f32 [ inv ]
@@ -291,18 +308,23 @@ class CloudBake
     # coverage, so a cloud's top is half to one and a half times nominal
     func bake_tops [ out: path ]
         N : i32 [ 256 ]
-        img : Image [ width: N, height: N, format: Pixel.rgba8, linear: true, wrap_u: true, wrap_v: true ]
+        img : Image [ width: N, height: N, format: Pixel.rgba8,
+                      linear: true, wrap_u: true, wrap_v: true ]
         d : @u8 [ img.vdata[] ]
         inv : f32 [ 1.0 / f32[ N ] ]
         for [ y: i32 0, y < N, y += 1 ]
             fy : f32 [ (f32[ y ] + 0.5) * inv ]
             for [ x: i32 0, x < N, x += 1 ]
                 fx : f32 [ (f32[ x ] + 0.5) * inv ]
-                hv : f32 [ perlin_fbm3[ fx + 0.17, fy + 0.83, 0.41, 3, 3 ] ]
-                bv : f32 [ perlin_fbm3[ fx + 0.71, fy + 0.29, 0.62, 5, 2 ] ]
+                hv : f32 [
+                    perlin_fbm3[ fx + 0.17, fy + 0.83, 0.41, 3, 3 ] ]
+                bv : f32 [
+                    perlin_fbm3[ fx + 0.71, fy + 0.29, 0.62, 5, 2 ] ]
                 i : i32 [ (y * N + x) * 4 ]
-                d[ i ]     = to_byte[ sat[ remap[ hv, 0.3, 0.7, 0.0, 1.0 ] ] ]
-                d[ i + 1 ] = to_byte[ sat[ remap[ bv, 0.35, 0.65, 0.0, 1.0 ] ] ]
+                d[ i ]     = to_byte[
+                    sat[ remap[ hv, 0.3, 0.7, 0.0, 1.0 ] ] ]
+                d[ i + 1 ] = to_byte[
+                    sat[ remap[ bv, 0.35, 0.65, 0.0, 1.0 ] ] ]
                 d[ i + 2 ] = to_byte[ 0.5 ]
                 d[ i + 3 ] = to_byte[ 1.0 ]
         img.png[ out ]
@@ -311,7 +333,8 @@ class CloudBake
     # B cloud type field, A unused
     func bake_weather [ out: path ]
         N : i32 [ 512 ]
-        img : Image [ width: N, height: N, format: Pixel.rgba8, linear: true, wrap_u: true, wrap_v: true ]
+        img : Image [ width: N, height: N, format: Pixel.rgba8,
+                      linear: true, wrap_u: true, wrap_v: true ]
         d : @u8 [ img.vdata[] ]
         w3 : worley_points[ 3 ]
         inv : f32 [ 1.0 / f32[ N ] ]
@@ -319,19 +342,26 @@ class CloudBake
             fy : f32 [ (f32[ y ] + 0.5) * inv ]
             for [ x: i32 0, x < N, x += 1 ]
                 fx : f32 [ (f32[ x ] + 0.5) * inv ]
-                # large air masses times the cloud footprints inside them
+                # large air masses times the cloud footprints inside
+                # them
                 big : f32 [ perlin_fbm3[ fx, fy, 0.11, 2, 2 ] ]
                 pf  : f32 [ perlin_fbm3[ fx, fy, 0.53, 4, 5 ] ]
                 wf  : f32 [ worley2[ fx, fy, 3, w3 ] ]
-                cov : f32 [ sat[ remap[ pf, 0.0, 1.0, big * 0.5 - 0.25, 1.0 ] ] ]
-                isl : f32 [ sat[ remap[ pf, 1.0 - wf * 0.9, 1.0, 0.0, 1.0 ] ] ]
-                typ : f32 [ perlin_fbm3[ fx + 0.3, fy + 0.7, 0.29, 2, 3 ] ]
-                stm : f32 [ perlin_fbm3[ fx + 0.6, fy + 0.2, 0.83, 6, 3 ] ]
+                cov : f32 [
+                    sat[
+                        remap[ pf, 0.0, 1.0, big * 0.5 - 0.25, 1.0 ] ] ]
+                isl : f32 [
+                    sat[ remap[ pf, 1.0 - wf * 0.9, 1.0, 0.0, 1.0 ] ] ]
+                typ : f32 [
+                    perlin_fbm3[ fx + 0.3, fy + 0.7, 0.29, 2, 3 ] ]
+                stm : f32 [
+                    perlin_fbm3[ fx + 0.6, fy + 0.2, 0.83, 6, 3 ] ]
                 i : i32 [ (y * N + x) * 4 ]
                 d[ i ]     = to_byte[ cov ]
                 d[ i + 1 ] = to_byte[ isl ]
                 d[ i + 2 ] = to_byte[ typ ]
-                d[ i + 3 ] = to_byte[ sat[ remap[ stm, 0.40, 0.88, 0.0, 1.0 ] ] ]
+                d[ i + 3 ] = to_byte[
+                    sat[ remap[ stm, 0.40, 0.88, 0.0, 1.0 ] ] ]
         img.png[ out ]
 
 func clouds_bake []
@@ -354,7 +384,9 @@ export func clouds_export []
     p3 : path '../clouds/baked/curl.png'
     p4 : path '../clouds/baked/weather.png'
     force : getenv[ 'SILVER_EXPORT_FORCE' ]
-    if [ !force && sp.exists[] && p1.exists[] && p2.exists[] && p3.exists[] && p4.exists[] ]
+    if [
+        !force && sp.exists[] && p1.exists[] && p2.exists[]
+        && p3.exists[] && p4.exists[] ]
         old : string [ sp.load[ typeid[string], null ] ]
         if [ old && old == stamp ]
             log 'clouds: noise set current'
@@ -372,16 +404,25 @@ ModelViewProject NubisSky
     mutable cam_fwd   : vec4f     # w: exposure
     mutable sun_dir   : vec4f     # w: sun intensity
     mutable wind      : vec4f     # xyz m/s, w: seconds
-    mutable layer     : vec4f     # x cloud bottom, y cloud top, z planet radius, w atmosphere radius
-    mutable weather_a : vec4f     # x coverage, y type, z unused, w island mix
-    mutable weather_b : vec4f     # x anvil, y skew m, z density, w detail strength
-    mutable light_a   : vec4f     # x g forward, y silver intensity, z silver spread, w ambient
-    mutable light_b   : vec4f     # x ms scatter, y ms extinction, z ms phase, w extinction / m
-    mutable scales    : vec4f     # x shape tile m, y detail tile m, z curl tile m, w weather tile m
-    mutable march     : vec4f     # x quality, y curl strength, z max distance, w fog
-    mutable tops      : vec4f     # type tops above the base, m: stratus, stratocumulus, cumulus
+    # x cloud bottom, y cloud top, z planet radius, w atmosphere radius
+    mutable layer     : vec4f
+    # x coverage, y type, z unused, w island mix
+    mutable weather_a : vec4f
+    # x anvil, y skew m, z density, w detail strength
+    mutable weather_b : vec4f
+    # x g forward, y silver intensity, z silver spread, w ambient
+    mutable light_a   : vec4f
+    # x ms scatter, y ms extinction, z ms phase, w extinction / m
+    mutable light_b   : vec4f
+    # x shape tile m, y detail tile m, z curl tile m, w weather tile m
+    mutable scales    : vec4f
+    # x quality, y curl strength, z max distance, w fog
+    mutable march     : vec4f
+    # type tops above the base, m: stratus, stratocumulus, cumulus
+    mutable tops      : vec4f
     mutable world     : vec4f     # xy: how far we have flown, in metres
-    mutable key_tint  : vec4f     # rgb: the key light's colour, w: night
+    # rgb: the key light's colour, w: night
+    mutable key_tint  : vec4f
     # a strike is a short chain of points inside the cloud: xyz and the
     # power of each. bolt_col carries its colour and how bright it is
     # right now, which is zero for all but a fraction of a second
@@ -390,26 +431,51 @@ ModelViewProject NubisSky
     mutable bolt_c    : vec4f
     mutable bolt_d    : vec4f
     mutable bolt_col  : vec4f
-    mutable sea       : vec4f     # x wave count, y choppiness, z foam start, w detail fade m
-    mutable sea_b     : vec4f     # x wind m/s, y reflect quality, z swell, w unused
-    mutable jitter    : vec4f     # xy: sub-pixel uv offset of this frame's samples
+    # x wave count, y choppiness, z foam start, w detail fade m
+    mutable sea       : vec4f
+    # x wind m/s, y reflect quality, z swell, w unused
+    mutable sea_b     : vec4f
+    # xy: sub-pixel uv offset of this frame's samples
+    mutable jitter    : vec4f
     # x: render an equirect environment instead of the camera view
     mutable env       : vec4f
     mutable view_mode : i32
     mutable frame     : i32
 
-    attrib shape   : LayoutBinding [ type:typeid[ CloudSurface ], id: CloudSurface.shape,   count:1, format: typeid[ rgba8 ], volume: true ]
-    attrib detail  : LayoutBinding [ type:typeid[ CloudSurface ], id: CloudSurface.detail,  count:1, format: typeid[ rgba8 ], volume: true ]
-    attrib curl    : LayoutBinding [ type:typeid[ CloudSurface ], id: CloudSurface.curl,    count:1, format: typeid[ rgba8 ] ]
-    attrib weather : LayoutBinding [ type:typeid[ CloudSurface ], id: CloudSurface.weather, count:1, format: typeid[ rgba8 ] ]
-    # distance (in cells of the weather tile / 256) to the nearest cloud island
-    attrib island  : LayoutBinding [ type:typeid[ CloudSurface ], id: CloudSurface.island,  count:1, format: typeid[ rgba8 ] ]
-    # one Gerstner component per record: xy wave vector, z amplitude, w phase
-    attrib envmap  : LayoutBinding [ type:typeid[ CloudSurface ], id: CloudSurface.envmap,  count:1, format: typeid[ rgba8 ] ]
-    attrib stars   : LayoutBinding [ type:typeid[ CloudSurface ], id: CloudSurface.stars,   count:1, format: typeid[ rgba8 ] ]
-    attrib waves   : StorageBuffer [ type:typeid[ CloudSurface ], id: CloudSurface.waves,   count:1, format: typeid[ vec4f ] ]
+    attrib shape   : LayoutBinding [ type:typeid[ CloudSurface ],
+                                     id: CloudSurface.shape,   count:1,
+                                     format: typeid[ rgba8 ],
+                                     volume: true ]
+    attrib detail  : LayoutBinding [ type:typeid[ CloudSurface ],
+                                     id: CloudSurface.detail,  count:1,
+                                     format: typeid[ rgba8 ],
+                                     volume: true ]
+    attrib curl    : LayoutBinding [ type:typeid[ CloudSurface ],
+                                     id: CloudSurface.curl,    count:1,
+                                     format: typeid[ rgba8 ] ]
+    attrib weather : LayoutBinding [ type:typeid[ CloudSurface ],
+                                     id: CloudSurface.weather, count:1,
+                                     format: typeid[ rgba8 ] ]
+    # distance (in cells of the weather tile / 256) to the nearest cloud
+    # island
+    attrib island  : LayoutBinding [ type:typeid[ CloudSurface ],
+                                     id: CloudSurface.island,  count:1,
+                                     format: typeid[ rgba8 ] ]
+    # one Gerstner component per record: xy wave vector, z amplitude, w
+    # phase
+    attrib envmap  : LayoutBinding [ type:typeid[ CloudSurface ],
+                                     id: CloudSurface.envmap,  count:1,
+                                     format: typeid[ rgba8 ] ]
+    attrib stars   : LayoutBinding [ type:typeid[ CloudSurface ],
+                                     id: CloudSurface.stars,   count:1,
+                                     format: typeid[ rgba8 ] ]
+    attrib waves   : StorageBuffer [ type:typeid[ CloudSurface ],
+                                     id: CloudSurface.waves,   count:1,
+                                     format: typeid[ vec4f ] ]
     # R: cloud top height scale, G: base height offset
-    attrib tvar    : LayoutBinding [ type:typeid[ CloudSurface ], id: CloudSurface.tvar,    count:1, format: typeid[ rgba8 ] ]
+    attrib tvar    : LayoutBinding [ type:typeid[ CloudSurface ],
+                                     id: CloudSurface.tvar,    count:1,
+                                     format: typeid[ rgba8 ] ]
 
     attrib pos       : VertexInput    [ type:typeid[ vec3f ] ]
     attrib uv        : VertexInput    [ type:typeid[ vec2f ] ]
@@ -1075,13 +1141,18 @@ ModelViewProject TemporalCompose
     mutable prev_right : vec4f
     mutable prev_up    : vec4f
     mutable prev_fwd   : vec4f
-    mutable jitter     : vec4f    # xy: uv offset the fresh pass used, zw: fresh texel size
+    # xy: uv offset the fresh pass used, zw: fresh texel size
+    mutable jitter     : vec4f
     mutable blend      : vec4f    # x: history weight, y: history valid
     mutable cam_pos    : vec4f
     mutable prev_pos   : vec4f
 
-    attrib fresh   : LayoutBinding [ type:typeid[ TemporalSurface ], id: TemporalSurface.fresh,   count:1, format: typeid[ rgba8 ] ]
-    attrib history : LayoutBinding [ type:typeid[ TemporalSurface ], id: TemporalSurface.history, count:1, format: typeid[ rgba8 ] ]
+    attrib fresh   : LayoutBinding [ type:typeid[ TemporalSurface ],
+                                     id: TemporalSurface.fresh,
+                                     count:1, format: typeid[ rgba8 ] ]
+    attrib history : LayoutBinding [ type:typeid[ TemporalSurface ],
+                                     id: TemporalSurface.history,
+                                     count:1, format: typeid[ rgba8 ] ]
 
     attrib pos       : VertexInput    [ type:typeid[ vec3f ] ]
     attrib uv        : VertexInput    [ type:typeid[ vec2f ] ]
@@ -1237,11 +1308,11 @@ element SkyView
         edt_z[ 0 ] = -1e20
         edt_z[ 1 ] = 1e20
         for [ q: i32 1, q < n, q += 1 ]
-            fq : f32 [ f32[ q ] ]
+            fq : f32 [ q ]
             s : f32 [ 0.0 ]
             while [ true ]
                 vi : i32 [ edt_v[ k ] ]
-                fv : f32 [ f32[ vi ] ]
+                fv : f32 [ vi ]
                 s = ((edt_f[ q ] + fq * fq) - (edt_f[ vi ] + fv * fv)) / (2.0 * fq - 2.0 * fv)
                 if [ s <= edt_z[ k ] && k > 0 ]
                     k = k - 1
@@ -1253,10 +1324,10 @@ element SkyView
             edt_z[ k + 1 ] = 1e20
         k = 0
         for [ q: i32 0, q < n, q += 1 ]
-            fq : f32 [ f32[ q ] ]
+            fq : f32 [ q ]
             while [ edt_z[ k + 1 ] < fq ] k += 1
             vi : i32 [ edt_v[ k ] ]
-            fv : f32 [ f32[ vi ] ]
+            fv : f32 [ vi ]
             edt_d[ q ] = (fq - fv) * (fq - fv) + edt_f[ vi ]
 
     # the island map: where the weather field, thresholded by the
@@ -1283,23 +1354,33 @@ element SkyView
                         i : i32 [ (py * ww + px) * 4 ]
                         r : f32 [ f32[ wd[ i ] ] / 255.0 ]
                         g : f32 [ f32[ wd[ i + 1 ] ] / 255.0 ]
-                        fr : f32 [ sat[ remap[ r, 0.30, 0.72, 0.0, 1.0 ] ] ]
-                        fg : f32 [ sat[ remap[ g, 0.0, 0.5, 0.0, 1.0 ] ] ]
+                        fr : f32 [
+                            sat[ remap[ r, 0.30, 0.72, 0.0, 1.0 ] ] ]
+                        fg : f32 [
+                            sat[ remap[ g, 0.0, 0.5, 0.0, 1.0 ] ] ]
                         field : f32 [ fr + (fg - fr) * cur.island ]
-                        cov : f32 [ sat[ remap[ field, 1.0 - c, 1.0 - c + 0.35, 0.0, 1.0 ] ] ]
+                        cov : f32 [
+                            sat[
+                                remap[ field, 1.0 - c, 1.0 - c + 0.35,
+                                       0.0, 1.0 ] ] ]
                         if [ cov > 0.002 ] inside = true
                 mask[ y * N + x ] = (inside) ? 0.0 : 1e10
         # rows, tripled for the wrap
         for [ y: i32 0, y < N, y += 1 ]
-            for [ x: i32 0, x < N * 3, x += 1 ] edt_f[ x ] = mask[ y * N + (x % N) ]
+            for [ x: i32 0, x < N * 3, x += 1 ]
+                edt_f[ x ] = mask[ y * N + (x % N) ]
             edt1d[ N * 3 ]
-            for [ x: i32 0, x < N, x += 1 ] mask[ y * N + x ] = edt_d[ N + x ]
+            for [ x: i32 0, x < N, x += 1 ]
+                mask[ y * N + x ] = edt_d[ N + x ]
         # columns
         for [ x: i32 0, x < N, x += 1 ]
-            for [ y: i32 0, y < N * 3, y += 1 ] edt_f[ y ] = mask[ (y % N) * N + x ]
+            for [ y: i32 0, y < N * 3, y += 1 ]
+                edt_f[ y ] = mask[ (y % N) * N + x ]
             edt1d[ N * 3 ]
-            for [ y: i32 0, y < N, y += 1 ] mask[ y * N + x ] = edt_d[ N + y ]
-        im : Image [ width: N, height: N, format: Pixel.rgba8, linear: true, wrap_u: true, wrap_v: true ]
+            for [ y: i32 0, y < N, y += 1 ]
+                mask[ y * N + x ] = edt_d[ N + y ]
+        im : Image [ width: N, height: N, format: Pixel.rgba8,
+                     linear: true, wrap_u: true, wrap_v: true ]
         im.hold[]
         d : @u8 [ im.vdata[] ]
         for [ i: i32 0, i < N * N, i += 1 ]
@@ -1312,7 +1393,9 @@ element SkyView
         if [ tx_island ]
             if [ !old_islands ] old_islands = vec Texture []
             old_islands += tx_island
-        tx_island = Texture [ vk: vkc, w: win, sampler: im, mip_levels: 1, linear: true, wrap_u: true, wrap_v: true ]
+        tx_island = Texture [ vk: vkc, w: win, sampler: im,
+                              mip_levels: 1, linear: true, wrap_u: true,
+                              wrap_v: true ]
         tx_island.hold[]
         isl_cov   = c
         isl_mix   = cur.island
@@ -1335,7 +1418,8 @@ element SkyView
         sg : f32 [ (om <= omp) ? 0.07 : 0.09 ]
         dd : f32 [ om - omp ]
         r : f32 [ exp[ 0.0 - dd * dd / (2.0 * sg * sg * omp * omp) ] ]
-        return al * 9.81 * 9.81 / pow[ om, 5.0 ] * exp[ 0.0 - 1.25 * pow[ omp / om, 4.0 ] ] * pow[ 3.3, r ]
+        return al * 9.81 * 9.81 / pow[ om, 5.0 ] * exp[
+            0.0 - 1.25 * pow[ omp / om, 4.0 ] ] * pow[ 3.3, r ]
 
     # Donelan-Banner directional spreading: how tightly the waves of a
     # given frequency hold the wind's direction
@@ -1365,7 +1449,8 @@ element SkyView
         n : i32 [ NK * ND ]
         if [ !wave_buf ]
             wave_buf = Buffer [ vk: vkc, size: i64[ n ] * 16,
-                u_storage: true, m_host_visible: true, m_host_coherent: true ]
+                u_storage: true, m_host_visible: true,
+                m_host_coherent: true ]
             wave_buf.hold[]
         wd : @f32 [ wave_buf.data ]
         th0 : f32 [ atan2[ 0.6, 0.8 ] ]
@@ -1417,15 +1502,17 @@ element SkyView
         ww : i32 [ wimg.width ]
         u : f32 [ (x + cam_x) / 60000.0 + 0.5 ]
         v : f32 [ (z + cam_z) / 60000.0 + 0.5 ]
-        px : i32 [ i32[ (u - floor[ u ]) * f32[ ww ] ] ]
-        py : i32 [ i32[ (v - floor[ v ]) * f32[ ww ] ] ]
+        px : i32 [ (u - floor[ u ]) * f32[ ww ] ]
+        py : i32 [ (v - floor[ v ]) * f32[ ww ] ]
         i : i32 [ (py * ww + px) * 4 ]
         r : f32 [ f32[ wd[ i ] ] / 255.0 ]
         g : f32 [ f32[ wd[ i + 1 ] ] / 255.0 ]
         fr : f32 [ sat[ remap[ r, 0.30, 0.72, 0.0, 1.0 ] ] ]
         fg : f32 [ sat[ remap[ g, 0.0, 0.5, 0.0, 1.0 ] ] ]
         field : f32 [ fr + (fg - fr) * cur.island ]
-        return sat[ remap[ field, 1.0 - cur.coverage, 1.0 - cur.coverage + 0.35, 0.0, 1.0 ] ]
+        return sat[
+            remap[ field, 1.0 - cur.coverage, 1.0 - cur.coverage + 0.35,
+                   0.0, 1.0 ] ]
 
     # how tall this particular cloud stands, the same figure the shader
     # builds from the type field and the per-cloud height map
@@ -1434,10 +1521,13 @@ element SkyView
         ww : i32 [ wimg.width ]
         u : f32 [ (x + cam_x) / 60000.0 + 0.5 ]
         v : f32 [ (z + cam_z) / 60000.0 + 0.5 ]
-        px : i32 [ i32[ (u - floor[ u ]) * f32[ ww ] ] ]
-        py : i32 [ i32[ (v - floor[ v ]) * f32[ ww ] ] ]
+        px : i32 [ (u - floor[ u ]) * f32[ ww ] ]
+        py : i32 [ (v - floor[ v ]) * f32[ ww ] ]
         bch : f32 [ f32[ wd[ (py * ww + px) * 4 + 2 ] ] / 255.0 ]
-        t : f32 [ sat[ remap[ bch, 0.35, 0.72, 0.0, 1.0 ] * 0.5 + cur.ctype - 0.25 ] ]
+        t : f32 [
+            sat[
+                remap[ bch, 0.35, 0.72, 0.0, 1.0 ] * 0.5 + cur.ctype
+                - 0.25 ] ]
         a : f32 [ 1100.0 + (1800.0 - 1100.0) * sat[ t * 2.0 ] ]
         cu : f32 [ a + (3000.0 - a) * sat[ t * 2.0 - 1.0 ] ]
         hs : f32 [ 0.5 ]
@@ -1446,9 +1536,9 @@ element SkyView
             tw : i32 [ timg.width ]
             tu : f32 [ (x + cam_x) / 60000.0 * 3.0 + 0.5 ]
             tv : f32 [ (z + cam_z) / 60000.0 * 3.0 + 0.5 ]
-            tx2 : i32 [ i32[ (tu - floor[ tu ]) * f32[ tw ] ] ]
-            ty2 : i32 [ i32[ (tv - floor[ tv ]) * f32[ tw ] ] ]
-            hs = f32[ td[ (ty2 * tw + tx2) * 4 ] ] / 255.0
+            tx : i32 [ (tu - floor[ tu ]) * f32[ tw ] ]
+            ty : i32 [ (tv - floor[ tv ]) * f32[ tw ] ]
+            hs = f32[ td[ (ty * tw + tx) * 4 ] ] / 255.0
         return cu * (0.5 + hs)
 
     # a strike belongs in the BODY of a heavy cloud: pick the spot whose
@@ -1480,17 +1570,20 @@ element SkyView
         if [ best < 0.55 ] return
         # halfway up that cloud's own column, never at its base or top
         top : f32 [ top_at[ bx, bz ] ]
-        y0 : f32 [ 1500.0 + top * (0.38 + wrnd[] * 0.22) ]
+        y : f32 [ 1500.0 + top * (0.38 + wrnd[] * 0.22) ]
         pw : f32 [ 7.5e5 * (0.6 + wrnd[] * 0.8) ]
         bolt[ 0 ] = bx
-        bolt[ 1 ] = y0
+        bolt[ 1 ] = y
         bolt[ 2 ] = bz
         bolt[ 3 ] = pw
         # the channel stays inside the cloud: short steps, small kicks
         for [ k: i32 1, k < 4, k += 1 ]
-            bolt[ k * 4 ]     = bolt[ (k - 1) * 4 ] + (wrnd[] - 0.5) * 170.0
-            bolt[ k * 4 + 1 ] = bolt[ (k - 1) * 4 + 1 ] - (60.0 + wrnd[] * 120.0)
-            bolt[ k * 4 + 2 ] = bolt[ (k - 1) * 4 + 2 ] + (wrnd[] - 0.5) * 170.0
+            bolt[ k * 4 ]     = bolt[
+                (k - 1) * 4 ] + (wrnd[] - 0.5) * 170.0
+            bolt[ k * 4 + 1 ] = bolt[
+                (k - 1) * 4 + 1 ] - (60.0 + wrnd[] * 120.0)
+            bolt[ k * 4 + 2 ] = bolt[
+                (k - 1) * 4 + 2 ] + (wrnd[] - 0.5) * 170.0
             bolt[ k * 4 + 3 ] = pw * (0.75 - 0.15 * f32[ k ])
         bolt_t = 0.55
         bolt_dur = 0.55
@@ -1507,7 +1600,8 @@ element SkyView
         if [ bolt_wait > 0.0 ] return
         # storms only show their lightning once the light has gone: by
         # day the flash is lost in the sun anyway
-        lam : f32 [ (cur.coverage - 0.6) * cur.density * 0.35 * bolt_dark ]
+        lam : f32 [
+            (cur.coverage - 0.6) * cur.density * 0.35 * bolt_dark ]
         if [ lam < 0.0 ] lam = 0.0
         lam = lam * bolts
         if [ lam < 0.001 ]
@@ -1517,11 +1611,14 @@ element SkyView
         bolt_wait = 0.0 - log[ u ] / lam
         bolt_strike[]
 
-    func load_texture [ vk: vk_context, w: Window, p: path, depth: i32 ] -> Texture
+    func load_texture [ vk: vk_context, w: Window, p: path,
+                        depth: i32 ] -> Texture
         expect p.exists[], 'baked noise missing: {p}'
         im : Image [ uri: p, linear: true, wrap_u: true, wrap_v: true ]
         im.hold[]
-        tx : Texture [ vk: vk, w: w, sampler: im, depth: depth, mip_levels: 1, linear: true, wrap_u: true, wrap_v: true ]
+        tx : Texture [ vk: vk, w: w, sampler: im, depth: depth,
+                       mip_levels: 1, linear: true, wrap_u: true,
+                       wrap_v: true ]
         tx.hold[]
         return tx
 
@@ -1548,27 +1645,44 @@ element SkyView
             build_waves[ cv.vk, cur.wind ]
             sky = NubisSky [ vk: cv.vk, name: 'nubis-sky' ]
             sky.hold[]
-            smp : map Au[string] [ 'shape': tx_shape, 'detail': tx_detail, 'curl': tx_curl, 'weather': tx_weather, 'island': tx_island, 'tvar': tx_tvar, 'waves': wave_buf, 'stars': tx_stars ]
-            # the environment pass: the SAME shader instance, told to draw
-            # the whole sky into a small mipped map the sea reflects. each
-            # draw snapshots the uniforms, so the flag can differ per pass
+            smp : map Au[string] [ 'shape': tx_shape,
+                                   'detail': tx_detail, 'curl': tx_curl,
+                                   'weather': tx_weather,
+                                   'island': tx_island, 'tvar': tx_tvar,
+                                   'waves': wave_buf,
+                                   'stars': tx_stars ]
+            # the environment pass: the SAME shader instance, told to
+            # draw the whole sky into a small mipped map the sea
+            # reflects. each draw snapshots the uniforms, so the flag
+            # can differ per pass
             env_model = Model [ vk: cv.vk, w: w, s: sky, samplers: smp ]
             env_model.hold[]
-            env_render = Render [ vk: cv.vk, w: w, width: 512, height: 256, wscale: 0.0,
+            env_render = Render [ vk: cv.vk, w: w, width: 512,
+                                  height: 256, wscale: 0.0,
                 tag: 'nubis-env', mips: 6, aniso: 8,
-                clear_color: vec4f [ 0.0, 0.0, 0.0, 1.0 ], models: [ env_model ] ]
+                clear_color: vec4f [ 0.0, 0.0, 0.0, 1.0 ],
+                models: [ env_model ] ]
             env_render.hold[]
             smp[ 'envmap' ] = env_render.color
             vmodel = Model [ vk: cv.vk, w: w, s: sky, samplers: smp ]
             vmodel.hold[]
-            vrender = Render [ vk: cv.vk, w: w, wscale: wscale * 0.5, tag: 'clouds',
-                clear_color: vec4f [ 0.0, 0.0, 0.0, 1.0 ], models: [ vmodel ] ]
+            vrender = Render [ vk: cv.vk, w: w, wscale: wscale * 0.5,
+                               tag: 'clouds',
+                clear_color: vec4f [ 0.0, 0.0, 0.0, 1.0 ],
+                models: [ vmodel ] ]
             vrender.hold[]
             vrender.timing = true
             w.element_targets[ 'sky_{id}' ] = vrender
-            # history ping-pong: each compose reads the other's last frame
-            hist_a = Render [ vk: cv.vk, w: w, wscale: wscale, tag: 'clouds-ha', clear_color: vec4f [ 0.0, 0.0, 0.0, 1.0 ] ]
-            hist_b = Render [ vk: cv.vk, w: w, wscale: wscale, tag: 'clouds-hb', clear_color: vec4f [ 0.0, 0.0, 0.0, 1.0 ] ]
+            # history ping-pong: each compose reads the other's last
+            # frame
+            hist_a = Render [ vk: cv.vk, w: w, wscale: wscale,
+                              tag: 'clouds-ha',
+                              clear_color: vec4f [ 0.0, 0.0, 0.0,
+                                                   1.0 ] ]
+            hist_b = Render [ vk: cv.vk, w: w, wscale: wscale,
+                              tag: 'clouds-hb',
+                              clear_color: vec4f [ 0.0, 0.0, 0.0,
+                                                   1.0 ] ]
             hist_a.hold[]
             hist_b.hold[]
             hist_a.timing = true
@@ -1577,8 +1691,10 @@ element SkyView
             comp_b = TemporalCompose [ vk: cv.vk, name: 'temporal-b' ]
             comp_a.hold[]
             comp_b.hold[]
-            sa : map Au[string] [ 'fresh': vrender.color, 'history': hist_b.color ]
-            sb : map Au[string] [ 'fresh': vrender.color, 'history': hist_a.color ]
+            sa : map Au[string] [ 'fresh': vrender.color,
+                                  'history': hist_b.color ]
+            sb : map Au[string] [ 'fresh': vrender.color,
+                                  'history': hist_a.color ]
             model_a = Model [ vk: cv.vk, w: w, s: comp_a, samplers: sa ]
             model_b = Model [ vk: cv.vk, w: w, s: comp_b, samplers: sb ]
             model_a.hold[]
@@ -1616,20 +1732,25 @@ element SkyView
         rx = rx / rl
         rz = rz / rl
         ux2 : f32 [ 0.0 - rz * fy ]
-        uy2 : f32 [ rz * fx - rx * fz ]
-        uz2 : f32 [ rx * fy ]
+        uy : f32 [ rz * fx - rx * fz ]
+        uz : f32 [ rx * fy ]
         th : f32 [ 0.577 ]
         aspect : f32 [ bounds.w / bounds.h ]
         sky.cam_pos   = vec4f [ 0.0, cam_h, 0.0, 0.0 ]
         sky.cam_right = vec4f [ rx, 0.0, rz, th * aspect ]
-        sky.cam_up    = vec4f [ ux2, uy2, uz2, th ]
+        sky.cam_up    = vec4f [ ux2, uy, uz, th ]
         sky.cam_fwd   = vec4f [ fx, fy, fz, exposure ]
         se : f32 [ cos[ cur.sun_el ] ]
-        sky.sun_dir   = vec4f [ se * sin[ cur.sun_az ], sin[ cur.sun_el ], se * cos[ cur.sun_az ], 22.0 * (1.0 - night) + 1.3 * night ]
-        sky.wind      = vec4f [ cur.wind * 0.8, 0.0, cur.wind * 0.6, seconds ]
+        sky.sun_dir   = vec4f [ se * sin[ cur.sun_az ],
+                                sin[ cur.sun_el ],
+                                se * cos[ cur.sun_az ],
+                                22.0 * (1.0 - night) + 1.3 * night ]
+        sky.wind      = vec4f [ cur.wind * 0.8, 0.0, cur.wind * 0.6,
+                                seconds ]
         sky.layer     = vec4f [ 1500.0, 6000.0, 6371000.0, 6471000.0 ]
         sky.tops      = vec4f [ 1100.0, 1800.0, 3000.0, 0.0 ]
-        sky.weather_a = vec4f [ cur.coverage, cur.ctype, 0.0, cur.island ]
+        sky.weather_a = vec4f [ cur.coverage, cur.ctype, 0.0,
+                                cur.island ]
         sky.weather_b = vec4f [ 0.6, cur.skew, cur.density, cur.detail ]
         sky.light_a   = vec4f [ 0.6, 1.4, 0.18, 1.0 ]
         sky.light_b   = vec4f [ 0.4, 0.75, 0.5, 0.016 ]
@@ -1642,7 +1763,8 @@ element SkyView
         bolt_dark = sat[ (0.16 - cur.sun_el) / 0.16 ]
         if [ night > 0.5 ] bolt_dark = 1.0
         bolt_tick[ last_dt ]
-        be : f32 [ (bolt_t > 0.0) ? bolt_env[ 1.0 - bolt_t / bolt_dur ] : 0.0 ]
+        be : f32 [
+            (bolt_t > 0.0) ? bolt_env[ 1.0 - bolt_t / bolt_dur ] : 0.0 ]
         # each element is read into its own value first: a vec4f built
         # straight out of vector reads arrives at the shader as zeros
         for [ bi: i32 0, bi < 4, bi += 1 ]
@@ -1657,24 +1779,28 @@ element SkyView
             if [ bi == 3 ] sky.bolt_d = bv
         sky.bolt_col = vec4f [ 0.82, 0.88, 1.0, be ]
         sky.world     = vec4f [ cam_x, cam_z, 0.0, 0.0 ]
-        sky.key_tint  = vec4f [ 1.0 - 0.30 * night, 1.0 - 0.16 * night, 1.0, night ]
+        sky.key_tint  = vec4f [ 1.0 - 0.30 * night, 1.0 - 0.16 * night,
+                                1.0, night ]
         sky.sea       = vec4f [ f32[ wave_n ], 1.15, 0.55, 12000.0 ]
         sky.view_mode = view_mode
         sky.frame     = frame
         sky.time      = seconds
-        # 2x2 sub-pixel cycle: every full-res pixel is sampled once per 4 frames
+        # 2x2 sub-pixel cycle: every full-res pixel is sampled once per
+        # 4 frames
         ph : i32 [ frame % 4 ]
         ox : f32 [ ((ph & 1) == 0) ? -0.25 : 0.25 ]
         oy : f32 [ ((ph & 2) == 0) ? -0.25 : 0.25 ]
         vrender.wscale = (temporal) ? wscale * 0.5 : wscale
         vrender.update[]
-        lw : f32 [ f32[ vrender.width ] ]
-        lh : f32 [ f32[ vrender.height ] ]
+        lw : f32 [ vrender.width ]
+        lh : f32 [ vrender.height ]
         jx : f32 [ (temporal) ? ox / lw : 0.0 ]
         jy : f32 [ (temporal) ? oy / lh : 0.0 ]
         sky.jitter = vec4f [ jx, jy, (temporal) ? 0.0 : 1.0, 0.0 ]
-        # sea_b.z = the angle one pixel covers: the wave LOD works off it
-        sky.sea_b  = vec4f [ cur.wind, 1.0, 2.0 * th / lh, seconds * 0.0008 ]
+        # sea_b.z = the angle one pixel covers: the wave LOD works off
+        # it
+        sky.sea_b  = vec4f [ cur.wind, 1.0, 2.0 * th / lh,
+                             seconds * 0.0008 ]
         # the sky into the environment map first, then its mip chain, so
         # the sea's reflection has something filtered to read
         sky.env    = vec4f [ 1.0, 0.0, 0.0, 0.0 ]
@@ -1690,7 +1816,9 @@ element SkyView
             hist_a.skip = true
             hist_b.skip = true
             hist_valid = false
-            cv.draw_image[ vrender.color, rect [ x: 0.0, y: 0.0, w: bounds.w, h: bounds.h ] ]
+            cv.draw_image[ vrender.color,
+                           rect [ x: 0.0, y: 0.0, w: bounds.w,
+                                  h: bounds.h ] ]
             return
         use_a : bool [ (frame & 1) == 0 ]
         hist_a.skip = !use_a
@@ -1698,12 +1826,16 @@ element SkyView
         hist_a.update[]
         hist_b.update[]
         # attachments are rebuilt on resize: keep the samplers current
-        if [ model_a.samplers[ 'fresh' ] != vrender.color || model_a.samplers[ 'history' ] != hist_b.color ]
+        if [
+            model_a.samplers[ 'fresh' ] != vrender.color
+            || model_a.samplers[ 'history' ] != hist_b.color ]
             model_a.samplers[ 'fresh' ] = vrender.color
             model_a.samplers[ 'history' ] = hist_b.color
             model_a.rebind_model[]
             hist_valid = false
-        if [ model_b.samplers[ 'fresh' ] != vrender.color || model_b.samplers[ 'history' ] != hist_a.color ]
+        if [
+            model_b.samplers[ 'fresh' ] != vrender.color
+            || model_b.samplers[ 'history' ] != hist_a.color ]
             model_b.samplers[ 'fresh' ] = vrender.color
             model_b.samplers[ 'history' ] = hist_a.color
             model_b.rebind_model[]
@@ -1729,7 +1861,9 @@ element SkyView
         prev_pos   = sky.cam_pos
         hist_valid = true
         out : Render [ (use_a) ? hist_a : hist_b ]
-        cv.draw_image[ out.color, rect [ x: 0.0, y: 0.0, w: bounds.w, h: bounds.h ] ]
+        cv.draw_image[ out.color,
+                       rect [ x: 0.0, y: 0.0, w: bounds.w,
+                              h: bounds.h ] ]
 
 element clouds : trinity
     public width      : i32    [ 1280 ]
@@ -1765,16 +1899,43 @@ element clouds : trinity
 
     func make_states []
         states = vec WeatherState []
-        states += WeatherState [ name: 'clear, a few cumulus', coverage: 0.4, ctype: 0.85, island: 0.8, anvil: 0.0, skew: 300.0, density: 1.0, detail: 0.3, wind: 6.0, sun_el: 0.9, sun_az: 1.2 ]
-        states += WeatherState [ name: 'fair weather cumulus',  coverage: 0.62, ctype: 0.8, island: 0.5, anvil: 0.1, skew: 500.0, density: 1.0, detail: 0.32, wind: 8.0, sun_el: 0.75, sun_az: 5.9 ]
-        states += WeatherState [ name: 'stratocumulus sheet',   coverage: 0.85, ctype: 0.45, island: 0.2, anvil: 0.0, skew: 400.0, density: 1.1, detail: 0.28, wind: 10.0, sun_el: 0.6, sun_az: 0.0 ]
-        states += WeatherState [ name: 'overcast stratus',      coverage: 0.97, ctype: 0.08, island: 0.0, anvil: 0.0, skew: 200.0, density: 1.4, detail: 0.22, wind: 5.0, sun_el: 0.7, sun_az: 2.0 ]
-        states += WeatherState [ name: 'heavy cumulus',         coverage: 0.62, ctype: 0.9, island: 0.4, anvil: 1.0, skew: 900.0, density: 1.3, detail: 0.3, wind: 18.0, sun_el: 0.45, sun_az: 5.6 ]
-        states += WeatherState [ name: 'sunset towers',         coverage: 0.45, ctype: 0.95, island: 0.7, anvil: 0.4, skew: 600.0, density: 1.0, detail: 0.3, wind: 7.0, sun_el: 0.07, sun_az: 6.0 ]
+        states += WeatherState [ name: 'clear, a few cumulus',
+                                 coverage: 0.4, ctype: 0.85, island: 0.8,
+                                 anvil: 0.0, skew: 300.0, density: 1.0,
+                                 detail: 0.3, wind: 6.0, sun_el: 0.9,
+                                 sun_az: 1.2 ]
+        states += WeatherState [ name: 'fair weather cumulus',
+                                 coverage: 0.62, ctype: 0.8, island: 0.5,
+                                 anvil: 0.1, skew: 500.0, density: 1.0,
+                                 detail: 0.32, wind: 8.0, sun_el: 0.75,
+                                 sun_az: 5.9 ]
+        states += WeatherState [ name: 'stratocumulus sheet',
+                                 coverage: 0.85, ctype: 0.45,
+                                 island: 0.2, anvil: 0.0, skew: 400.0,
+                                 density: 1.1, detail: 0.28, wind: 10.0,
+                                 sun_el: 0.6, sun_az: 0.0 ]
+        states += WeatherState [ name: 'overcast stratus',
+                                 coverage: 0.97, ctype: 0.08,
+                                 island: 0.0, anvil: 0.0, skew: 200.0,
+                                 density: 1.4, detail: 0.22, wind: 5.0,
+                                 sun_el: 0.7, sun_az: 2.0 ]
+        states += WeatherState [ name: 'heavy cumulus',
+                                 coverage: 0.62, ctype: 0.9, island: 0.4,
+                                 anvil: 1.0, skew: 900.0, density: 1.3,
+                                 detail: 0.3, wind: 18.0, sun_el: 0.45,
+                                 sun_az: 5.6 ]
+        states += WeatherState [ name: 'sunset towers',
+                                 coverage: 0.45, ctype: 0.95,
+                                 island: 0.7, anvil: 0.4, skew: 600.0,
+                                 density: 1.0, detail: 0.3, wind: 7.0,
+                                 sun_el: 0.07, sun_az: 6.0 ]
 
     func copy_state [ s: WeatherState ] -> WeatherState
-        return WeatherState [ name: s.name, coverage: s.coverage, ctype: s.ctype, island: s.island,
-            anvil: s.anvil, skew: s.skew, density: s.density, detail: s.detail, wind: s.wind, sun_el: s.sun_el, sun_az: s.sun_az ]
+        return WeatherState [ name: s.name, coverage: s.coverage,
+                              ctype: s.ctype, island: s.island,
+            anvil: s.anvil, skew: s.skew, density: s.density,
+            detail: s.detail, wind: s.wind, sun_el: s.sun_el,
+            sun_az: s.sun_az ]
 
     func set_preset [ i: i32 ]
         if [ i < 0 || i >= states.count ] return
@@ -1814,7 +1975,8 @@ element clouds : trinity
         if [ k == 81 ] quality = (quality >= 2.0) ? 0.5 : quality * 2.0
         if [ k == 86 ] view_mode = (view_mode + 1) % 5
         if [ k == 70 ] fly_speed = (fly_speed > 0.0) ? 0.0 : 80.0
-        if [ k == 61 || k == 334 ] fly_speed = (fly_speed > 0.0) ? fly_speed * 1.5 : 20.0
+        if [ k == 61 || k == 334 ]
+            fly_speed = (fly_speed > 0.0) ? fly_speed * 1.5 : 20.0
         if [ k == 45 || k == 333 ] fly_speed = fly_speed / 1.5
         if [ k == 266 ] cam_h += 150.0
         if [ k == 267 ] cam_h = (cam_h > 152.0) ? cam_h - 150.0 : 2.0
@@ -1828,18 +1990,20 @@ element clouds : trinity
             prev.sun_el = cur.sun_el
 
     public func on_overlay [ cv: Canvas ]
-        fps : i32 [ i32[ 1000.0 / ((frame_ms > 0.1) ? frame_ms : 0.1) ] ]
-        ms1 : i32 [ i32[ frame_ms * 10.0 ] ]
+        fps : i32 [ 1000.0 / ((frame_ms > 0.1) ? frame_ms : 0.1) ]
+        ms1 : i32 [ frame_ms * 10.0 ]
         ms_i : i32 [ ms1 / 10 ]
         ms_f : i32 [ ms1 % 10 ]
-        sel : i32 [ i32[ cur.sun_el * 57.3 ] ]
-        cv9 : i32 [ i32[ cur.coverage * 100.0 ] ]
-        wnd : i32 [ i32[ cur.wind ] ]
+        sel : i32 [ cur.sun_el * 57.3 ]
+        cv9 : i32 [ cur.coverage * 100.0 ]
+        wnd : i32 [ cur.wind ]
         pn : i32 [ preset + 1 ]
         nm : string [ cur.name ]
-        vm : string [ (view_mode == 0) ? 'lit' : (view_mode == 1) ? 'alpha' : 'steps' ]
-        alt : i32 [ i32[ cam_h ] ]
-        spd : i32 [ i32[ fly_speed ] ]
+        vm : string [
+            (view_mode == 0) ? 'lit' : (view_mode == 1) ? 'alpha'
+            : 'steps' ]
+        alt : i32 [ cam_h ]
+        spd : i32 [ fly_speed ]
         v : cast SkyView [ elements[ 'sky' ] ]
         g10 : i32 [ (v) ? i32[ v.gpu_ms * 100.0 ] : 0 ]
         g_i : i32 [ g10 / 100 ]
@@ -1854,7 +2018,8 @@ element clouds : trinity
             cv.paint[]
             cv.fill_color[ '#e8eef4' ]
             cv.draw_text[ s, rect [ x: 14.0, y: y, w: 900.0, h: 18.0 ],
-                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible,
+                null ]
             cv.paint[]
             y += 22.0
 
@@ -1890,6 +2055,10 @@ element clouds : trinity
             cur.sun_az   = lerp_f[ prev.sun_az,   goal.sun_az,   t ]
             cur.name     = goal.name
         e : Elements [ ]
-        e['sky'] = SkyView [ yaw: yaw, pitch: pitch, cam_h: cam_h, cam_x: cam_x, cam_z: cam_z, exposure: exposure, quality: quality,
-            view_mode: view_mode, wscale: wscale, seconds: seconds, cur: cur, temporal: temporal, night: night, bolts: bolts, speed: fly_speed, animated: true ]
+        e['sky'] = SkyView [ yaw: yaw, pitch: pitch, cam_h: cam_h,
+                             cam_x: cam_x, cam_z: cam_z,
+                             exposure: exposure, quality: quality,
+            view_mode: view_mode, wscale: wscale, seconds: seconds,
+            cur: cur, temporal: temporal, night: night, bolts: bolts,
+            speed: fly_speed, animated: true ]
         return e

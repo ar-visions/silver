@@ -140,7 +140,8 @@ ielement element
     # any element with a content height scrolls, and shows this bar
     scrollbar : ScrollLayer [ overlay: true,
                               area: Region { l8px t8px r8px b8px },
-        thumb_color: '#fff4', thumb_w: 6.0, thumb_min_h: 32.0, thumb_radius: 4.0 ]
+        thumb_color: '#fff4', thumb_w: 6.0, thumb_min_h: 32.0,
+        thumb_radius: 4.0 ]
     mutable sb_drag         : bool
     mutable scaling         : vec2f
     mutable rotation        : f32
@@ -209,9 +210,11 @@ ielement element
 
     # the scrollbar is generic: any element with content_h drags it
     func scroll_grab [ ev: Event ] -> bool
-        sbl : ScrollLayer (layers) ? cast ScrollLayer [ layers['scrollbar'] ] : null
+        sbl : ScrollLayer (layers) ? cast ScrollLayer [
+            layers['scrollbar'] ] : null
         if [ !sbl || sbl.scroll_max <= 0.0 ] return false
-        grab : f32 [ (sbl.thumb_w > 0.0) ? sbl.thumb_w * 2.0 + 8.0 : 16.0 ]
+        grab : f32 [
+            (sbl.thumb_w > 0.0) ? sbl.thumb_w * 2.0 + 8.0 : 16.0 ]
         if [ ev.mouse.pos.x < bounds.w - grab ] return false
         my : f32 [ ev.mouse.pos.y - scroll.y ]
         sbl.grab_at[ my ]
@@ -234,14 +237,16 @@ ielement element
     public func on_release [ ev: Event ]
         if [ !sb_drag ] return
         sb_drag = false
-        sbl : ScrollLayer (layers) ? cast ScrollLayer [ layers['scrollbar'] ] : null
+        sbl : ScrollLayer (layers) ? cast ScrollLayer [
+            layers['scrollbar'] ] : null
         if [ sbl ]
             sbl.active = false
             if [ ux ] ux.will_animate = true
 
     public func on_move    [ ev: Event ]
         if [ !sb_drag ] return
-        sbl : ScrollLayer (layers) ? cast ScrollLayer [ layers['scrollbar'] ] : null
+        sbl : ScrollLayer (layers) ? cast ScrollLayer [
+            layers['scrollbar'] ] : null
         if [ sbl ] scroll_to[ sbl.drag_to[ ev.mouse.pos.y - scroll.y ] ]
     public func on_wheel [ ev: Event ]
         if [ content_h <= 0.0 ] return
@@ -470,8 +475,8 @@ ielement element
         if [ scroll_anim ]
             scroll.y = filter_n[ scroll.y, scroll_goal, 0.14,
                                  ux.frame_factor ]
-            d9 : f32 [ scroll_goal - scroll.y ]
-            if [ d9 < 0.5 && d9 > -0.5 ]
+            gap : f32 [ scroll_goal - scroll.y ]
+            if [ gap < 0.5 && gap > -0.5 ]
                 scroll.y = scroll_goal
                 scroll_anim = false
             pristine = false
@@ -496,7 +501,8 @@ ielement element
                     from_t : typeid[ ct.from ]
                     if [ (from_t.traits & (1 << 8)) != 0 ]
                         dst : ct.container.member_ref[ ct.member ]
-                        #Au.mix_structs[ from_t, dst, ct.from, ct.to, p ]
+                        # Au.mix_structs[ from_t, dst, ct.from, ct.to, p
+                        # ]
                     el [ from_t == typeid[ string ] ]
                         # strings do not interpolate: snap to target
                         ct.container.member_set[ ct.member, ct.to ]
@@ -504,7 +510,9 @@ ielement element
                         fa  : vec Rotation ct.from
                         ta  : vec Rotation ct.to
                         if [ fa && ta ]
-                            n   : i32 [ (fa.count < ta.count) ? fa.count : ta.count ]
+                            n   : i32 [
+                                (fa.count < ta.count) ? fa.count
+                                : ta.count ]
                             res : vec Rotation []
                             for [ i: i32 0, i < n, i += 1 ]
                                 r : fa[i]
@@ -703,8 +711,12 @@ class Layer
         parent.release_capture[]
 
     func delete_selection [ text: string ] -> bool
-        sc : i32 [ (parent.sel_col < parent.anchor_col) ? parent.sel_col : parent.anchor_col ]
-        ec : i32 [ (parent.sel_col < parent.anchor_col) ? parent.anchor_col : parent.sel_col ]
+        sc : i32 [
+            (parent.sel_col < parent.anchor_col) ? parent.sel_col
+            : parent.anchor_col ]
+        ec : i32 [
+            (parent.sel_col < parent.anchor_col) ? parent.anchor_col
+            : parent.sel_col ]
         if [ sc == ec ] return false
         parent.edit    = text.mid[ 0, sc ] + text.mid[ ec,
                 text.count - ec ]
@@ -740,7 +752,9 @@ class Layer
             parent.anchor_col = parent.sel_col
         el [ key == 263 ]
             if [ parent.sel_col != parent.anchor_col && !ev.key.shift ]
-                sc : i32 [ (parent.sel_col < parent.anchor_col) ? parent.sel_col : parent.anchor_col ]
+                sc : i32 [
+                    (parent.sel_col < parent.anchor_col)
+                    ? parent.sel_col : parent.anchor_col ]
                 parent.sel_col    = sc
                 parent.anchor_col = sc
             el [ col > 0 ]
@@ -748,7 +762,9 @@ class Layer
                 if [ !ev.key.shift ] parent.anchor_col = parent.sel_col
         el [ key == 262 ]
             if [ parent.sel_col != parent.anchor_col && !ev.key.shift ]
-                ec : i32 [ (parent.sel_col > parent.anchor_col) ? parent.sel_col : parent.anchor_col ]
+                ec : i32 [
+                    (parent.sel_col > parent.anchor_col)
+                    ? parent.sel_col : parent.anchor_col ]
                 parent.sel_col    = ec
                 parent.anchor_col = ec
             el [ col < text.count ]
@@ -774,7 +790,8 @@ class Layer
         if [ !cv.font ] return
         etext    : string [ (parent.edit) ? parent.edit : '' ]
         has_edit : bool   [ etext.count > 0 ]
-        disp     : string [ (has_edit) ? etext : ((parent.label) ? parent.label : '') ]
+        disp     : string [
+            (has_edit) ? etext : ((parent.label) ? parent.label : '') ]
         metrics    : cv.measure_text[ disp ]
         cw_tm : cv.measure_text[ 'x' ]
         lh_cache = cv.get_line_height[]
@@ -783,12 +800,16 @@ class Layer
         ax    : f32 [ label_align.x ]
         ay    : f32 [ label_align.y ]
         # offsets ride the font unit, as the label's size does
-        lfu   : f32 [ (cv.vk && cv.vk.font_unit > 0) ? f32[ cv.vk.font_unit ] / 22.0 : 1.0 ]
+        lfu   : f32 [ (cv.vk
+            && cv.vk.font_unit > 0) ? f32[ cv.vk.font_unit ] / 22.0
+            : 1.0 ]
         ox    : f32 [ label_offset.x * lfu ]
         oy    : f32 [ label_offset.y * lfu ]
         fh    : f32 [ metrics.ascent - metrics.descent ]
-        x0    : f32 [ bounds.x + (bounds.w - metrics.w) * ax + ox ]
-        y0    : f32 [ bounds.y + metrics.ascent + (bounds.h - fh) * ay + oy ]
+        text_left    : f32 [
+            bounds.x + (bounds.w - metrics.w) * ax + ox ]
+        baseline    : f32 [
+            bounds.y + metrics.ascent + (bounds.h - fh) * ay + oy ]
         cw    : f32 [ cw_tm.w ]
 
         col : i32 [ (parent.sel_col >= 0) ? parent.sel_col : 0 ]
@@ -802,24 +823,25 @@ class Layer
         pm     : cv.measure_text[ prefix ]
         right  : f32 [ bounds.x + bounds.w - ox - 4.0 ]
         left   : f32 [ bounds.x + ox ]
-        cx0    : f32 [ x0 + pm.w - text_shift ]
-        if [ cx0 > right ]      text_shift += cx0 - right
-        el [ cx0 < left ]       text_shift -= left - cx0
+        caret_x    : f32 [ text_left + pm.w - text_shift ]
+        if [ caret_x > right ]      text_shift += caret_x - right
+        el [ caret_x < left ]       text_shift -= left - caret_x
         # no scroll past the text's own end, and none at all when it
         # fits
-        over : f32 [ x0 + metrics.w - right ]
+        over : f32 [ text_left + metrics.w - right ]
         if [ text_shift > over ] text_shift = (over > 0.0) ? over : 0.0
         if [ text_shift < 0.0 ]  text_shift = 0.0
         shift : f32 [ text_shift ]
-        x0 -= shift
-        text_x = x0
+        text_left -= shift
+        text_x = text_left
         cv.set_crop[ bounds.x, bounds.y, bounds.x + bounds.w,
                      bounds.y + bounds.h ]
 
         if [ has_edit && sc != ec ]
             cv.fill_color[ '#264f78' ]
             cv.stroke_width[ 0.0 ]
-            cv.rect_to[ x0 + f32[sc] * cw, y0 - metrics.ascent + 2.0,
+            cv.rect_to[ text_left + f32[sc] * cw,
+                        baseline - metrics.ascent + 2.0,
                         f32[ec - sc] * cw, fh - 4.0 ]
             cv.paint[]
 
@@ -829,10 +851,11 @@ class Layer
         cv.paint[]
 
         if [ parent.focused && parent.sel_col >= 0 ]
-            cx : f32 [ x0 + pm.w ]
+            cx : f32 [ text_left + pm.w ]
             cv.fill_color[ '#fff' ]
             cv.stroke_width[ 0.0 ]
-            cv.rect_to[ cx, y0 - metrics.ascent + 2.0, 2.0, fh - 4.0 ]
+            cv.rect_to[ cx, baseline - metrics.ascent + 2.0, 2.0,
+                        fh - 4.0 ]
             cv.paint[]
         cv.clear_crop[]
 
