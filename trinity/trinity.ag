@@ -6153,7 +6153,14 @@ Display Window
                 f_rad : f32 [ layer.fill_gradient_radius ]
                 f_ax  : f32 [ draw_cv.transform_tx[] + fp_x ]
                 f_ay  : f32 [ draw_cv.transform_ty[] + fp_y ]
-                draw_cv.fill_grad        [ layer.fill_gradient_color ]
+                # the shader skips a stop with no alpha: a fade to clear
+                # keeps a trace of it, unseen
+                gc : rgba [ layer.fill_gradient_color ]
+                if [ gc && gc.a <= 0.0
+                     && (layer.fill_gradient == GradientType.linear
+                         || layer.fill_gradient == GradientType.radial) ]
+                    gc = rgba [ r: gc.r, g: gc.g, b: gc.b, a: 0.004 ]
+                draw_cv.fill_grad        [ gc ]
                 if [ layer.fill_gradient == GradientType.radial ]
                     f_ry : f32 [
                         (layer.fill_gradient_radius_y > 0.0)
@@ -7082,6 +7089,14 @@ element TButtons
     public  seg_line : rgba
     # the group's own 1px outline
     public  outline  : rgba [ '#ffffff0d' ]
+    # an icon's opacity: not selected, and not available
+    public  rest_alpha : f32 [ 1.0 ]
+    public  off_alpha  : f32 [ 0.35 ]
+    # each enabled segment's own border, lit by the pointer: its
+    # colour at rest, the glow's colour, and the light's reach
+    public  seg_near   : rgba
+    public  seg_glow   : rgba [ '#c890ffff' ]
+    public  seg_reach  : f32 [ 1.0 ]
 
     func seg_width [] -> f32
         n : i32 [ (buttons) ? buttons.count : 1 ]
@@ -7316,8 +7331,9 @@ element TButtons
                 && i < icon_ids.count) ? icon_ids[i] : buttons[i] ]
             svg  : SVGModel (icons) ? seg_svg[ icon ] : null
             # the icons fade in with the reveal; a disabled one stays
-            # dim
-            cv.set_opacity[ op * ((off) ? 0.35 : 1.0) * rv ]
+            # dim, one not selected a little
+            ia : f32 [ (off) ? off_alpha : ((lit) ? 1.0 : rest_alpha) ]
+            cv.set_opacity[ op * ia * rv ]
             # a segment flagged in danger_mask draws its icon or label
             # red
             dang : bool [ (danger_mask & (1 << i)) != 0 ]
@@ -7378,6 +7394,26 @@ element TButtons
                 cv.move_to[ lx, 0.0 ]
                 cv.line_to[ lx, bounds.h ]
                 cv.paint[ ]
+                cv.restore[]
+        # a disabled segment takes no light; neighbours share one line
+        if [ seg_near && !collapse ]
+            for [ i: i32 0, i < n, i += 1 ]
+                if [ disable || (disable_mask & (1 << i)) != 0 ] continue
+                sx : f32 [ roundf[ seg_x[ i ] ] ]
+                ex : f32 [ (i < n - 1) ? 1.0 : 0.0 ]
+                sw : f32 [ roundf[ seg_x[ i ] + seg_span[ i ] ] - sx + ex ]
+                cv.save[]
+                w.near_light_reach[ cv, a, 0.0, 0.0, seg_reach ]
+                cv.near_style[ 1.0, 2.0, seg_glow, w.near_y_fade ]
+                cv.box_shadow[ rgba [ '#8af0' ], 0.0, 0.0, 13.0, 0.0,
+                               true ]
+                cv.fill_color[ rgba [ '#0000' ] ]
+                cv.stroke_color[ seg_near ]
+                cv.stroke_width[ 1.0 ]
+                cv.stroke_offset[ -0.5 ]
+                cv.rect_to[ sx, 0.0, sw, bounds.h ]
+                cv.paint[ ]
+                cv.no_shadows[ ]
                 cv.restore[]
         # the rest icon sits in the last slot and fades as the set
         # reveals the hint shows only while the strip is small: gone a

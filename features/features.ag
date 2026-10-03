@@ -2374,6 +2374,13 @@ expect func t_vec_lit_f32 [] -> bool
     d : vec f64 [] [ 0.25, -2.0 ]
     return v[ 0 ] == 3.0 && v[ 1 ] == 7.5 && d[ 0 ] == 0.25 && d[ 1 ] == -2.0
 
+# max and min of vec elements take their values, not addresses
+expect func t_minmax_vec_elem [] -> bool
+    v : vec f32 [] [ 0.25, 0.75 ]
+    hi : f32 [ max[ v[ 0 ], v[ 1 ] ] ]
+    lo : f32 [ min[ v[ 0 ], v[ 1 ] ] ]
+    return hi == 0.75 && lo == 0.25
+
 # an index that starts with a cast
 expect func t_index_cast_lead [] -> bool
     v : vec f32 [ 12 ]

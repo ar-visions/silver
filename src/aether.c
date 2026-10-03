@@ -12666,6 +12666,11 @@ static enode vector_binary_op(aether a, enode L, enode R, scalar_op_fn op, cstr 
     etype common = determine_rtype(a, OPType__add, L_ety, R_ety);
 
     if (!L_arr && !R_arr) {
+        // an element of a vec arrives as its address: load it first
+        if (!L->loaded && !is_ptr(L) && !is_class(L) && !is_func_ptr((Au)L))
+            L = enode_value(L, true);
+        if (!R->loaded && !is_ptr(R) && !is_class(R) && !is_func_ptr((Au)R))
+            R = enode_value(R, true);
         L = e_create(a, common, (Au)L, false);
         R = e_create(a, common, (Au)R, false);
         if (a->no_build) return e_noop(a, common);

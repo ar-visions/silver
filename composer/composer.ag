@@ -500,6 +500,12 @@ class Renderer
     # the output's pcm, 48 kHz stereo, and how much of it is encoded
     intern  pcm    : vec i16
     intern  fed    : i64
+    # the take time this frame shows: a focus is on the take's clock
+    public  take_t : f64
+    # the zoom as it stands: its box's left, top and size (shares)
+    intern  zx     : f32
+    intern  zy     : f32
+    intern  zs     : f32 [ 1.0 ]
     public  frames : i64
     intern  aout   : new u8 [ 8192 ]
 
@@ -575,14 +581,37 @@ class Renderer
             cv.draw_image[ m.pic, r ]
         cv.set_opacity[ 1.0 ]
 
+    # where the take is drawn: the zoom box (the whole frame, or a
+    # focus's) filling the frame; each frame it moves toward the box
+    # wanted now by filter_n, a step per 60 Hz frame
+    func take_rect [] -> rect
+        gx : f32 [ 0.0 ]
+        gy : f32 [ 0.0 ]
+        gs : f32 [ 1.0 ]
+        amt : f32 [ 0.08 ]
+        for [ f: Focus ] in comp.focuses
+            if [ take_t < f.from || take_t > f.to ] continue
+            b : rect comp.focus_box[ f ]
+            if [ b.w <= 0.0 ] continue
+            gx = b.x
+            gy = b.y
+            gs = b.w
+            if [ f.speed > 0.0 ] amt = f32[ f.speed ]
+            break
+        rt : f32 [ 60.0 / f32[ fps ] ]
+        zx = filter_n[ zx, gx, amt, rt ]
+        zy = filter_n[ zy, gy, amt, rt ]
+        zs = filter_n[ zs, gs, amt, rt ]
+        fw : f32 [ width ]
+        fh : f32 [ height ]
+        return rect [ x: 0.0 - zx / zs * fw, y: 0.0 - zy / zs * fh,
+                      w: fw / zs, h: fh / zs ]
+
     # one output frame: the take (unless covered), then the inserts
     func emit [ show_take: bool ]
         t : f64 [ f64[ frames ] / f64[ fps ] ]
         cv.clear_recorded[ vec4f [ 0.0, 0.0, 0.0, 1.0 ] ]
-        if [ show_take ]
-            src.draw[ cv,
-                      rect [ x: 0.0, y: 0.0, w: f32[ width ],
-                             h: f32[ height ] ] ]
+        if [ show_take ] src.draw[ cv, take_rect[] ]
         for [ ov: Overlay ] in comp.overlays
             if [ t >= ov.out_at && t < ov.out_at + ov.length ]
                 draw_insert[ ov, t ]
@@ -655,11 +684,14 @@ class Renderer
             nout : i64 [ (k.to - k.from) * f64[ fps ] + 0.5 ]
             if [ k.pause ]
                 cover : bool [ k.pause.insert.place == 'full' ]
+                # the take holds at the cut: its focus holds too
+                take_t = k.pause.at
                 for [ i: i64 0, i < nout, i += 1 ]
                     emit[ !cover ]
                 continue
             for [ i: i64 0, i < nout, i += 1 ]
                 ts : f64 [ k.from + f64[ i ] / f64[ fps ] ]
+                take_t = ts
                 while [
                     ahead
                     && f64[ ahead.pts ] / f64[ sr.scale ] <= ts + 0.0005 ]
@@ -679,6 +711,20 @@ Op Revoice
     public epochs : i32 [ 100 ]
     func invoke [ c: Composer ] -> bool
         return c.add_voice[ a ]
+    func stage [] -> i32
+        return 2
+
+# zooms the picture onto a region of it from .. to (take time); the
+# zoom goes there and back by a decay; the take's sound is untouched
+Op Focus
+    public from   : f64
+    public to     : f64
+    # 'x y w h', each a share of the frame (0..1, top left origin)
+    public region : string
+    # the share of the way it moves each frame, at 60 a second
+    public speed  : f64 [ 0.08 ]
+    func invoke [ c: Composer ] -> bool
+        return c.add_focus[ a ]
     func stage [] -> i32
         return 2
 
@@ -710,6 +756,7 @@ class Composer
     public kept     : vec Kept
     public overlays : vec Overlay
     public voices   : vec Revoice
+    public focuses  : vec Focus
     # each thing asked for that cannot be done
     public problems : vec string
     # trained voices by clip name, shared by every take
@@ -735,13 +782,19 @@ class Composer
 
     # the user's agent reads the protocol and the take's notes,
     # gathers the resources and writes the composition
-    func ask [ agent: string, model: string ] -> bool
+    func ask [ agent: string, model: string, shots: vec string ] -> bool
         vp : path '{source_dir[]}/VIDEO.md'
         proto : string [ vp.load[ typeid[ string ], null ] ]
         if [ !proto || proto.count == 0 ]
             problems.push[ 'no protocol at {vp}' ]
             return false
         req : string 'You compose a video from a recording (a take). The protocol, VIDEO.md:\n\n{proto}\n\nThe take: {take} ({length} seconds). Its notes: {stem[]}.agi. Its folder, which holds its resources too: {module_dir[]}/ (media names start with that folder\'s name). Read the notes and look in the folder: files already there are the user\'s, use them. For anything else a mark needs, search the web (WebSearch, WebFetch) for a direct link to the image or video file and write a Fetch op for it (name: the reference name, url: that link); do not download files yourself, the composer downloads every Fetch. Then write {stem[]}.composition.agi as the protocol says. Answer with one short line.'
+        # the stills: open them to see what each mark is about
+        if [ shots && shots.count > 0 ]
+            sl : string ''
+            for [ s9: string ] in shots
+                sl = '{sl}\n{s9}'
+            req = '{req}\n\nA still of the take at the middle of each mark (take time: file); open them to see what was on screen as it was said, and to place a Focus region:{sl}'
         dir : string folder[]
         nm : string [ (agent && agent.count > 0) ? agent : 'claude' ]
         md : string [ (model) ? model : '' ]
@@ -772,6 +825,72 @@ class Composer
         agent_shell_allow[ '' ]
         return fin
 
+    # a still of the take at each mark (its middle): what was on the
+    # screen as it was said, for the agent to see; in <stem>.stills/
+    func stills [ disp: Display ] -> vec string
+        out : vec string []
+        np : path '{stem[]}.agi'
+        if [ !disp || !np.exists[] ] return out
+        txt : string [ np.load[ typeid[ string ], null ] ]
+        notes : RecNotes [ marks: vec RecMark [] ]
+        Au.parse_agi[ null, txt.chars, notes ]
+        if [ !notes.marks || notes.marks.count == 0 ] return out
+        # the video track, from the head of the file
+        fd : i32 [ open[ take.chars, O_RDONLY, 0 ] ]
+        if [ fd < 0 ] return out
+        head : new u8 [ 1048576 ]
+        n : i64 [ read[ fd, head, 1048576 ] ]
+        close[ fd ]
+        dm : Demux []
+        dm.append[ head, n ]
+        vt : DemuxTrack [ null ]
+        for [ t: DemuxTrack ] in dm.tracks
+            if [ t.kind == 1 && !vt ] vt = t
+        if [ !vt ] return out
+        vk9 : vk_context disp.vk
+        sfd : i32 [ open[ take.chars, O_RDONLY, 0 ] ]
+        sr : Source [ vk: vk9, fd: sfd, dm: Demux [], track: vt.id,
+                      scale: vt.timescale,
+            dec: Decoder [ vk: vk9 ] ]
+        cn : i32 [ i32[ vt.config.count ] ]
+        ok : bool [
+            (is_hevc[ vt.codec ])
+            ? sr.dec.config_hevc[ @vt.config[ 0 ], cn ]
+            : sr.dec.config[ @vt.config[ 0 ], cn ] ]
+        if [ !ok ]
+            close[ sfd ]
+            return out
+        cv : Canvas [ vk: vk9, w: disp, width: vt.width,
+                      height: vt.height, load_existing: true ]
+        cv.update[]
+        pl : Planes [ vk: vk9, w: disp, bt709: true ]
+        dir : path '{stem[]}.stills'
+        dir.make_dir[]
+        full : rect [ x: 0.0, y: 0.0, w: f32[ vt.width ],
+                      h: f32[ vt.height ] ]
+        # one pass: each mark takes the first picture at or past it
+        mi : i32 [ 0 ]
+        f : VideoFrame sr.next_frame[]
+        for [ f && mi < notes.marks.count ]
+            mk : RecMark notes.marks[ mi ]
+            t : f64 [ mk.at + mk.dur * 0.5 ]
+            if [ f64[ f.pts ] / f64[ sr.scale ] < t ]
+                f = sr.next_frame[]
+                continue
+            pl.put[ f ]
+            cv.reset[ vec4f [ 0.0, 0.0, 0.0, 1.0 ] ]
+            pl.draw[ cv, full ]
+            cv.sync_all[]
+            ms : i64 [ t * 1000.0 ]
+            p : path '{dir}/at_{ms}ms.png'
+            im : Image [ cv.color ]
+            im.png[ p ]
+            out.push[ '{t} s: {p}' ]
+            mi += 1
+        close[ sfd ]
+        log 'composer: {out.count} stills in {dir}'
+        return out
+
     # the composer's own folder: VIDEO.md sits beside the source
     func source_dir [] -> string
         f : string '{__FILE__}'
@@ -798,7 +917,7 @@ class Composer
         return true
 
     # the whole run: the take's length, the agent, then the plan
-    func compose [ agent: string, model: string ] -> bool
+    func compose [ agent: string, model: string, disp: Display ] -> bool
         if [ !readable[] ] return false
         length = take_length[ take ]
         if [ length <= 0.0 ]
@@ -811,7 +930,7 @@ class Composer
             cp.exists[]
             && (!notes.exists[] || cp.modified_time[] >= notes.modified_time[]) ]
             log 'composer: {cp} is newer than the notes: rendering it as it is'
-        el [ !ask[ agent, model ] ]
+        el [ !ask[ agent, model, stills[ disp ] ] ]
             return false
         if [ !load[] ] return false
         return plan[]
@@ -955,6 +1074,7 @@ class Composer
             Kept [ from: 0.0, to: length, out_at: 0.0 ] ]
         overlays = vec Overlay []
         voices   = vec Revoice []
+        focuses  = vec Focus []
         if [ !comp ] return false
         # *[] dispatches to the subclass; [] binds to Op's own
         for [ st: i32 0, st < 3, st += 1 ]
@@ -1023,6 +1143,35 @@ class Composer
             if [ t >= k.from && t < k.to ]
                 return k.out_at + (t - k.from)
         return -1.0
+
+    func add_focus [ f: Focus ] -> bool
+        if [ f.to <= f.from || f.from < 0.0 || f.to > length ]
+            problems.push[
+                'focus {f.from}..{f.to} is outside the take (0..{length})' ]
+            return false
+        if [ focus_box[ f ].w <= 0.0 ]
+            problems.push[
+                'focus at {f.from}: region is not \'x y w h\' in 0..1' ]
+            return false
+        focuses.push[ f ]
+        return true
+
+    # a focus's square of the frame (shares, keeping the frame's
+    # shape): its region's larger side round its centre, inside the
+    # frame; w 0 when the region does not read
+    func focus_box [ f: Focus ] -> rect
+        nums : vec f32 []
+        if [ f.region ]
+            for [ pt: string ] in f.region.split[ ' ' ]
+                if [ pt.count > 0 ] nums.push[ f32[ pt.real_value[] ] ]
+        if [ nums.count != 4 || nums[ 2 ] <= 0.0 || nums[ 3 ] <= 0.0 ]
+            return rect [ x: 0.0, y: 0.0, w: 0.0, h: 0.0 ]
+        s : f32 [ clamp[ max[ nums[ 2 ], nums[ 3 ] ], 0.05, 1.0 ] ]
+        cx : f32 [ clamp[ nums[ 0 ] + nums[ 2 ] * 0.5, s * 0.5,
+                          1.0 - s * 0.5 ] ]
+        cy : f32 [ clamp[ nums[ 1 ] + nums[ 3 ] * 0.5, s * 0.5,
+                          1.0 - s * 0.5 ] ]
+        return rect [ x: cx - s * 0.5, y: cy - s * 0.5, w: s, h: s ]
 
     func add_voice [ v: Revoice ] -> bool
         if [ !v.voice || v.voice.count == 0 ]
@@ -1215,14 +1364,15 @@ element composer : trinity
         c : Composer [ take: take, kept: vec Kept [],
                        overlays: vec Overlay [],
             problems: vec string [] ]
-        ok : bool c.compose[ agent, model ]
+        # the gpu first: the stills for the agent need it too
+        v9 : vk_context []
+        Au.hold[ v9 ]
+        d9 : Display [ vk: v9, format: Pixel.rgba8, backbuffer: true,
+                       width: 64, height: 64 ]
+        Au.hold[ d9 ]
+        ok : bool c.compose[ agent, model, d9 ]
         if [ ok ]
             log 'composer: {c.kept.count} spans kept, {c.overlays.count} inserts'
-            v9 : vk_context []
-            Au.hold[ v9 ]
-            d9 : Display [ vk: v9, format: Pixel.rgba8, backbuffer: true,
-                           width: 64, height: 64 ]
-            Au.hold[ d9 ]
             ok = c.render[ d9 ]
         for [ p: string ] in c.problems
             log 'composer: {p}'
