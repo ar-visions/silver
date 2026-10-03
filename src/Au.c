@@ -1860,6 +1860,26 @@ AU_EXPORT void live_record_mux_set(num seq, num vt, num at) {
     au_live_record_at  = at;
 }
 
+// the reload's switch: a library writes out what the live instance holds
+typedef void (*au_handoff_fn)(void);
+static au_handoff_fn au_handoff = NULL;
+AU_EXPORT void au_live_handoff_hook(au_handoff_fn fn) { au_handoff = fn; }
+AU_EXPORT void au_live_handoff(void) { if (au_handoff) au_handoff(); }
+
+// the recording's mic: the host owns the capture, apps read its ring
+typedef int (*au_mic_start_fn)(void);
+typedef int (*au_mic_read_fn)(int16_t*, int, int64_t*);
+static au_mic_start_fn au_mic_start = NULL;
+static au_mic_read_fn  au_mic_read  = NULL;
+AU_EXPORT void au_live_mic_hooks(au_mic_start_fn s, au_mic_read_fn r) {
+    au_mic_start = s;
+    au_mic_read  = r;
+}
+AU_EXPORT int au_live_mic_start(void) { return au_mic_start ? au_mic_start() : -1; }
+AU_EXPORT int au_live_mic_read(int16_t* out, int max, int64_t* cursor) {
+    return au_mic_read ? au_mic_read(out, max, cursor) : 0;
+}
+
 // a library's caches keyed by a module's types let go of them here
 typedef void (*au_erase_hook_fn)(Au_t);
 static au_erase_hook_fn au_erase_hooks[8];
@@ -7107,8 +7127,11 @@ AU_EXPORT none vector_init(vector a) {
     // alloc_new may have put the shape in the header: keep it
     if (a->data_shape)
         f->data_shape = hold(a->data_shape);
-    else if (f->data_shape)
-        a->data_shape = hold(f->data_shape);
+    else if (f->data_shape) {
+        // raw before hold_members, owned after it (deferred init)
+        a->data_shape = f->data_shape;
+        Au_slot_replace((Au)a, (Au)a->data_shape, null);
+    }
     verify(f->scalar, "scalar not set");
     if (!a->origin) {
         // alloc() sized f->count elements inline: adopt them, no second alloc

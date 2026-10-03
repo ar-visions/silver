@@ -4447,6 +4447,114 @@ Start (Oct 2): 43 modules, 122,101 lines, 11,162 over 72,
    hyperspace, n64, composer, rgen, webgfx, features, knes,
    clouds, speech, spectra, flightsim, img, then the small ones.
 
+## Active work: eden scene (Oct 2 2026)
+
+Kalen: a jungle seen from high up, the forest under the chip in
+silver-icon.png (no chip, no stars). scenes/eden.ag (`extend
+scenes`), trees and impostors built at export. Trees are real 3D
+foliage; never a canopy height map. Clouds: not ours (we have
+them). Kalen's brief, in order:
+1. BUILT, awaiting Kalen's notes: terrain. A height map built
+   large forms first, then drainage valleys, then small detail;
+   river and clearing masks.
+   Kalen: the land meets a sea; shoreline, rivers that run to it,
+   and shallow water (turquoise over the shelf) that deepens to
+   open sea, by the water's depth over the ground.
+   eden_bake (export): 1024 cells of 8 m (8.2 km). Coast (warped
+   noise, west side), shelf falling fast at the shore then gently,
+   islands on the shelf, ridged uplands; synth_erode on a map 64
+   rows taller (its rows wrap); the sea floor keeps its smooth
+   shape below 1 m. One flood from the map's edge (heap) with a
+   step cost of length x an uneven cost map, so streams meander
+   across flats; hollows silt up into river plains (no lakes);
+   each cell drains down its steepest slope; streams from 3000
+   cells of catchment cut beds 1.2 m+ deep, up to 6 cells wide.
+   baked/eden-height.png (r/a metres -256..768, g cells to the
+   sea), eden-water.png (r/a water level, g river size, b wet),
+   eden-grid.gltf. Element Eden: EdenGround (beach by sea
+   distance, rock by slope, dark earth), EdenWater (light to the
+   bottom and back: turquoise over sand, deep blue, muddy rivers;
+   sky by Fresnel, sun glint, a break at the edge). In the
+   picker; thumbs/Eden.png. Test: `silver --test scenes`
+   (t_eden_view writes /tmp/eden-view.png at 1280x720).
+   Data images must be `linear: true`: sRGB bent the height's
+   high byte (4 m steps on the sea floor).
+   OPEN: the far map edge shows against the sky (item 7); no
+   clearing mask yet (item 2).
+   OPEN silver: scene_thumb's last log prints its `nm` as garbage
+   when called with a literal from an expect (freed with e.id).
+2. OPEN control maps: tree density, height, moisture, family,
+   clearing, exposure; patches that vary together.
+3. OPEN tree families (5): trunk, branches, leaf clusters placed
+   in irregular crown lobes, with gaps; a reusable 3D cluster
+   library.
+4. OPEN one crown under one sun, drawn gray first: crowns shade
+   each other, gaps open, outline irregular.
+5. OPEN a small patch: seeded per tile, spacing rules, three
+   canopy layers, cascaded sun shadows, leaves that pass light.
+6. OPEN detail by screen size: full, simple clusters,
+   depth-aware impostors, voxel clumps, far forest; hysteresis.
+7. OPEN atmosphere and valley mist.
+8. OPEN tiles, GPU culling, indirect draws; tested in motion.
+
+## Active work: Earth as a canopy planet (Oct 2 2026)
+
+Kalen: Earth is a sphere whose surface is the canopy, seen from
+orbit to the treetops, with real tree textures. Sources (CC0 /
+public domain, cite in THIRD_PARTY.md): NASA Blue Marble Next
+Generation (colour from orbit, and where forest grows), Poly
+Haven trees fir_tree_01, island_tree_01, island_tree_02 (glTF
+1k, ~570 MB, fetched once into ~/.local/state/scenes, never the
+repo). Template: Pluto/Mars (carpet mesh around the camera,
+wrapped onto the sphere, lifted by baked height).
+1. DONE fetch (Oct 2): Blue Marble July, 21600x10800 baseline
+   jpeg, 2 km a pixel (assets.science.nasa.gov .../bmng-base/july/
+   world.200407.3x21600x10800.jpg); the three trees' glTF 1k with
+   jpg textures (fir 18.8 m, 9.0M vertices; island 5.0 m and
+   3.4 m). Leaves are alphaMode BLEND over a jpg: the cut-out is a
+   separate <tree>_<twig|leaves>_alpha_1k.png Poly Haven lists
+   but the glTF does not reference (fetched beside it).
+2. DONE GltfModel.open reads all three (meshes, materials,
+   images). Not yet drawn. A throwaway module made git tag
+   treetest-1.0.0 (left for Kalen).
+3. DONE (top view) scenes/earth.ag (extend scenes, imported after
+   pluto): export earth_trees_export draws each tree from straight
+   above (orthographic, 1024 px, crown's widest span) into
+   baked/earth-<tree>-{color,height,normal}.png; height is 0..1 of
+   the tree's top. tree_prepare joins the leaf jpg and its alpha
+   png into <tree>_<leaf>_rgba.png and writes <tree>_bake.gltf
+   naming it. Checked by eye: real leaf and bark colour.
+   Fixed on the way: gltf texture uris resolved against a global
+   base that open[] had cleared, so a model outside share loaded
+   no textures (white); GltfModel.src_dir (intern, last member)
+   now keeps its folder, used when the file is there (an archive
+   still finds the bare uri). A shader drawing glTF materials
+   needs color, rough and normal in its surface enum.
+   OPEN: side views; KHR_texture_transform is not applied (only
+   bark/branch uvs use it); the export reads the cache but does
+   not download the trees itself yet.
+4. DONE (Oct 2) Earth reworked, game scale (Kalen's reference:
+   autumn hills of round crowns, seen from a bit higher up).
+   scenes/earth.ag: element Earth (the old JungleShader Earth is
+   gone from scenes.ag). The carpet (build_carpet) wraps onto
+   the sphere around the craft; EarthCanopy lifts it by rolling
+   hills (0.034 radii) and crowns: 3D cells, 520 a radius, the
+   tallest crown wins, domes with shared worley lumps, firs as
+   cones toward the poles. Each crown takes an autumn colour
+   (tropics green) over baked/earth-foliage.png: island_tree_01's
+   leaves scattered into a 512 tile (alpha = pile height).
+   baked/earth-land.png (Blue Marble at 4096, read raw) sets
+   sea, ice, desert and forest. EarthAir: sky, clouds, sun and
+   the limb; haze counts only the sight line inside the air.
+   The craft flies a great circle from 35.6 N 83.5 W heading
+   50 degrees, 0.6 radians each kilosecond.
+   Found on the way: a fract(sin()) hash rounds differently for
+   one grid corner reached from two cells; the noise tore into
+   walls. EarthCanopy hashes with pcg3d (integers).
+   OPEN: the baked crown pictures (earth_trees_export) are no
+   longer drawn; a mid-distance coast can still show a short
+   steep bank; not yet seen in orbiter itself.
+
 ## Active work: rec_qp (Sep 30 2026)
 
 Kalen: recording at near-lossless for staging (overlays added at

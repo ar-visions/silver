@@ -9729,7 +9729,8 @@ none etype_implement(etype t, bool w) { sequencer
                         m->member_index = au->is_union ? 0 : index;
                         index++;
                         // af_index = af-bit slot; only accessible (non-union, non-intern) members.
-                        if (!(au->is_union || is_intern))
+                        // a struct has no af bits: an index there writes past it
+                        if (!(au->is_union || is_intern || au->is_struct))
                             m->af_index = af_idx++;
                     }
                 }

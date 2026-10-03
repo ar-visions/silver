@@ -215,8 +215,8 @@ ielement element
         if [ !sbl || sbl.scroll_max <= 0.0 ] return false
         grab : f32 [
             (sbl.thumb_w > 0.0) ? sbl.thumb_w * 2.0 + 8.0 : 16.0 ]
-        if [ ev.mouse.pos.x < bounds.w - grab ] return false
-        my : f32 [ ev.mouse.pos.y - scroll.y ]
+        if [ cursor_pos.x * bounds.w < bounds.w - grab ] return false
+        my : f32 [ cursor_pos.y * bounds.h ]
         sbl.grab_at[ my ]
         sb_drag    = true
         sbl.active = true
@@ -247,7 +247,8 @@ ielement element
         if [ !sb_drag ] return
         sbl : ScrollLayer (layers) ? cast ScrollLayer [
             layers['scrollbar'] ] : null
-        if [ sbl ] scroll_to[ sbl.drag_to[ ev.mouse.pos.y - scroll.y ] ]
+        # the app element's events come in its parent's space
+        if [ sbl ] scroll_to[ sbl.drag_to[ cursor_pos.y * bounds.h ] ]
     public func on_wheel [ ev: Event ]
         if [ content_h <= 0.0 ] return
         speed  : f32 [ (scroll_speed > 0.0) ? scroll_speed : 26.0 ]

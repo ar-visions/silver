@@ -1,0 +1,750 @@
+extend scenes
+
+# EDEN. a jungle coast seen from high up: land, rivers and a sea
+# whose shallows run turquoise over the shelf. the forest stands on
+# this ground as real trees, never as a displaced canopy surface
+
+# map cells a side, and metres a cell
+func eden_n [] -> i32
+    return 1024
+
+func eden_cell [] -> f32
+    return 8.0
+
+# the 16-bit height range, metres: -256 to +768
+func eden_hlo [] -> f32
+    return 0.0 - 256.0
+
+func eden_hspan [] -> f32
+    return 1024.0
+
+func eden_sstep [ a: f32, b: f32, x: f32 ] -> f32
+    t : f32 [ (x - a) / (b - a) ]
+    if [ t < 0.0 ] t = 0.0
+    if [ t > 1.0 ] t = 1.0
+    return t * t * (3.0 - 2.0 * t)
+
+# where land meets sea: above 0 is land. the coast runs north to
+# south on the west side, bent into bays and headlands
+func eden_coast [ u: f32, v: f32 ] -> f32
+    wu : f32 [ u + (eu_gnoise[ u * 2.1 + 3.0, v * 2.1 + 7.0, 0.3 ]
+                    - 0.5) * 0.35 ]
+    wv : f32 [ v + (eu_gnoise[ u * 2.1 + 9.0, v * 2.1 + 1.0, 0.7 ]
+                    - 0.5) * 0.35 ]
+    c : f32 [ (wu - 0.30) * 2.4 ]
+    c += (eu_gnoise[ wu * 4.0 + 1.3, wv * 4.0 + 5.1, 0.1 ] - 0.5) * 0.9
+    c += (eu_gnoise[ wu * 11.0 + 4.2, wv * 11.0 + 2.6, 0.5 ] - 0.5)
+         * 0.35
+    # islands and reefs on the shelf, none past it
+    if [ c < 0.0 && c > 0.0 - 0.6 ]
+        isl : f32 [ eden_sstep[ 0.60, 0.78,
+            eu_gnoise[ wu * 9.0 + 6.1, wv * 9.0 + 3.3, 0.4 ] ] ]
+        c += isl * 0.75 * (1.0 + c / 0.6)
+    return c
+
+# ridges inland: folded noise, each octave weighted by the last
+func eden_ridges [ u: f32, v: f32 ] -> f32
+    qx : f32 [ u * 7.0 + 5.2 ]
+    qz : f32 [ v * 7.0 + 1.7 ]
+    a : f32 [ 1.0 ]
+    h : f32 [ 0.0 ]
+    w : f32 [ 1.0 ]
+    for [ i: i32 0, i < 6, i += 1 ]
+        n : f32 [ 1.0 - abs[ eu_gnoise[ qx, qz, 0.37 ] * 2.0 - 1.0 ] ]
+        n = n * n * (3.0 - 2.0 * n)
+        h += n * a * w
+        w = n * 1.1
+        if [ w > 1.0 ] w = 1.0
+        a *= 0.5
+        rx : f32 [ (qx * 0.8 + qz * 0.6) * 2.05 ]
+        rz : f32 [ (qz * 0.8 - qx * 0.6) * 2.05 ]
+        qx = rx
+        qz = rz
+    return h
+
+# the ground before erosion, metres. land rises from a coastal plain
+# to ridged uplands; the sea floor is a shallow shelf, then a drop
+func eden_base [ u: f32, v: f32 ] -> f32
+    c : f32 [ eden_coast[ u, v ] ]
+    if [ c < 0.0 ]
+        # the floor falls away fast at the shore, then gently over
+        # the shelf
+        shelf : f32 [ 0.0 - 1.5 + c * 14.0 - sqrt[ 0.0 - c ] * 5.0 ]
+        drop  : f32 [ eden_sstep[ 0.45, 0.90, 0.0 - c ] ]
+        return shelf * (1.0 - drop) + (0.0 - 180.0) * drop
+    up : f32 [ eden_sstep[ 0.0, 1.4, c ] ]
+    hills : f32 [ eu_gnoise[ u * 3.0 + 8.0, v * 3.0 + 2.0, 0.9 ] ]
+    h : f32 [ 1.0 + c * 18.0 + up * (260.0 + hills * 140.0) ]
+    h += eden_ridges[ u, v ] * 170.0 * eden_sstep[ 0.15, 0.9, c ]
+    return h
+
+# a binary heap of cells, lowest key first; size in sz[0]
+func eden_heap_push [ hi: @i32, hk: @f32, sz: vec i32, i: i32,
+                      k: f32 ]
+    p : i32 [ sz[0] ]
+    sz[0] = p + 1
+    while [ p > 0 ]
+        q : i32 [ (p - 1) / 2 ]
+        if [ hk[ q ] <= k ] break
+        hi[ p ] = hi[ q ]
+        hk[ p ] = hk[ q ]
+        p = q
+    hi[ p ] = i
+    hk[ p ] = k
+
+func eden_heap_pop [ hi: @i32, hk: @f32, sz: vec i32 ] -> i32
+    top : i32 [ hi[ 0 ] ]
+    n : i32 [ sz[0] - 1 ]
+    sz[0] = n
+    li : i32 [ hi[ n ] ]
+    lk : f32 [ hk[ n ] ]
+    p : i32 [ 0 ]
+    while [ true ]
+        c : i32 [ p * 2 + 1 ]
+        if [ c >= n ] break
+        if [ c + 1 < n && hk[ c + 1 ] < hk[ c ] ] c += 1
+        if [ hk[ c ] >= lk ] break
+        hi[ p ] = hi[ c ]
+        hk[ p ] = hk[ c ]
+        p = c
+    hi[ p ] = li
+    hk[ p ] = lk
+    return top
+
+# flood from the map's edge, lowest first: every cell learns the
+# level water would stand at (F), the cell it drains to (R), and its
+# place in the flood (O). returns the cells flooded
+func eden_flood [ H: @f32, F: @f32, C: @f32, R: @i32, O: @i32,
+                  hi: @i32, hk: @f32, seen: @u8, n: i32 ] -> i32
+    nn : i32 [ n * n ]
+    sz : vec i32 [] [ 0 ]
+    for [ i: i32 0, i < nn, i += 1 ]
+        seen[ i ] = u8[ 0 ]
+        R[ i ] = 0 - 1
+    for [ y: i32 0, y < n, y += 1 ]
+        for [ x: i32 0, x < n, x += 1 ]
+            if [ x == 0 || y == 0 || x == n - 1 || y == n - 1 ]
+                i : i32 [ y * n + x ]
+                seen[ i ] = u8[ 1 ]
+                F[ i ] = H[ i ]
+                eden_heap_push[ hi, hk, sz, i, H[ i ] ]
+    on : i32 [ 0 ]
+    while [ sz[0] > 0 ]
+        i : i32 [ eden_heap_pop[ hi, hk, sz ] ]
+        O[ on ] = i
+        on += 1
+        cx : i32 [ i % n ]
+        cy : i32 [ i / n ]
+        for [ oy: i32 -1, oy <= 1, oy += 1 ]
+            for [ ox: i32 -1, ox <= 1, ox += 1 ]
+                x : i32 [ cx + ox ]
+                y : i32 [ cy + oy ]
+                if [ x < 0 || y < 0 || x >= n || y >= n ] continue
+                j : i32 [ y * n + x ]
+                if [ seen[ j ] != u8[ 0 ] ] continue
+                seen[ j ] = u8[ 1 ]
+                # a step's rise follows its length, or the flood
+                # fronts (and the streams) run in straight lines
+                ds : f32 [ (ox != 0 && oy != 0) ? 1.4142 : 1.0 ]
+                f : f32 [ H[ j ] ]
+                fl : f32 [ F[ i ] + C[ j ] * ds ]
+                if [ f < fl ] f = fl
+                F[ j ] = f
+                R[ j ] = i
+                eden_heap_push[ hi, hk, sz, j, f ]
+    return on
+
+# 16-bit metres into r (high) and a (low), as the other scenes pack
+func eden_pack [ pd: @u8, i: i32, h: f32 ]
+    hv : f32 [ (h - eden_hlo[]) / eden_hspan[] ]
+    if [ hv < 0.0 ] hv = 0.0
+    if [ hv > 1.0 ] hv = 1.0
+    hq : i32 [ hv * 65535.0 ]
+    pd[ i * 4 ]     = u8[ hq / 256 ]
+    pd[ i * 4 + 3 ] = u8[ hq % 256 ]
+
+# the ground and its water. heights: eden-height.png (r high, a low;
+# g cells to the sea, to 255).
+# water: eden-water.png (r high, a low: the water surface; g the
+# river's size; b 255 where water stands)
+func eden_bake [] -> bool
+    n : i32 [ eden_n[] ]
+    nn : i32 [ n * n ]
+    cell : f32 [ eden_cell[] ]
+    # synth's erosion wraps its rows: erode 32 more rows each side
+    # and keep the middle, so the wrap falls off the map
+    pad : i32 [ 32 ]
+    ne : i32 [ n + pad * 2 ]
+    ee : i32 [ n * ne ]
+    E : new f32 [ ee ]
+    # it runs on 0.6-unit cells: metres are scaled to that
+    es : f32 [ 0.6 / cell ]
+    for [ y: i32 0, y < ne, y += 1 ]
+        v : f32 [ (f32[ y - pad ] + 0.5) / f32[ n ] ]
+        for [ x: i32 0, x < n, x += 1 ]
+            u : f32 [ (f32[ x ] + 0.5) / f32[ n ] ]
+            E[ y * n + x ] = eden_base[ u, v ] * es
+    synth_erode[ E, n, ne, 760000 ]
+    synth_talus[ E, n, ne, 8 ]
+    # erosion leaves ridges of silt on the sea floor: below the shore
+    # the floor keeps its own smooth shape
+    H : new f32 [ nn ]
+    for [ y: i32 0, y < n, y += 1 ]
+        v : f32 [ (f32[ y ] + 0.5) / f32[ n ] ]
+        for [ x: i32 0, x < n, x += 1 ]
+            u : f32 [ (f32[ x ] + 0.5) / f32[ n ] ]
+            i : i32 [ y * n + x ]
+            he : f32 [ E[ i + pad * n ] / es ]
+            hb : f32 [ eden_base[ u, v ] ]
+            k : f32 [ eden_sstep[ 0.0 - 1.0, 0.5, hb ] ]
+            H[ i ] = hb * (1.0 - k) + he * k
+    F  : new f32 [ nn ]
+    R  : new i32 [ nn ]
+    O  : new i32 [ nn ]
+    hi : new i32 [ nn ]
+    hk : new f32 [ nn ]
+    seen : new u8 [ nn ]
+    # the rise a flood step makes across a flat, metres a cell:
+    # uneven, so a stream bends where crossing costs more
+    C : new f32 [ nn ]
+    for [ y: i32 0, y < n, y += 1 ]
+        for [ x: i32 0, x < n, x += 1 ]
+            cs : f32 [ eu_gnoise[ f32[ x ] * 0.04, f32[ y ] * 0.04,
+                                  0.6 ] ]
+            cf : f32 [ eu_hash2[ f32[ x ], f32[ y ], 5.0 ] ]
+            C[ y * n + x ] = 0.002 + cs * cs * cs * 0.25 + cf * 0.01
+    on : i32 [ eden_flood[ H, F, C, R, O, hi, hk, seen, n ] ]
+    # each cell drains down its steepest slope; the flood's own
+    # link is kept only where the ground is level
+    for [ y: i32 1, y < n - 1, y += 1 ]
+        for [ x: i32 1, x < n - 1, x += 1 ]
+            i : i32 [ y * n + x ]
+            best : f32 [ 0.0 ]
+            for [ oy: i32 -1, oy <= 1, oy += 1 ]
+                for [ ox: i32 -1, ox <= 1, ox += 1 ]
+                    j : i32 [ (y + oy) * n + x + ox ]
+                    ds : f32 [ (ox != 0 && oy != 0) ? 1.4142 : 1.0 ]
+                    dr : f32 [ (F[ j ] - F[ i ]) / ds ]
+                    if [ dr < best ]
+                        best = dr
+                        R[ i ] = j
+    # rain on every land cell, passed down to the cell it drains to:
+    # the highest cells are last in the flood, so walk it backwards
+    A : new f32 [ nn ]
+    for [ i: i32 0, i < nn, i += 1 ]
+        A[ i ] = 1.0
+    for [ k: i32 on - 1, k >= 0, k -= 1 ]
+        i : i32 [ O[ k ] ]
+        if [ R[ i ] >= 0 && F[ i ] > 0.0 ] A[ R[ i ] ] += A[ i ]
+    # water: the sea stands at 0
+    W : new f32 [ nn ]
+    G : new f32 [ nn ]
+    for [ i: i32 0, i < nn, i += 1 ]
+        W[ i ] = eden_hlo[]
+        G[ i ] = 0.0
+        # a hollow on land silts up: a gently sloping river plain
+        if [ F[ i ] <= 0.0 ] W[ i ] = 0.0
+        el [ F[ i ] > H[ i ] ] H[ i ] = F[ i ]
+    # a stream from 3000 cells of catchment (0.2 square km); it cuts
+    # its bed and widens as its catchment grows
+    a0 : f32 [ 3000.0 ]
+    for [ i: i32 0, i < nn, i += 1 ]
+        if [ A[ i ] < a0 || F[ i ] <= 0.0 ] continue
+        g : f32 [ log[ A[ i ] / a0 ] * 1.4427 ]
+        wd : f32 [ 0.7 + sqrt[ A[ i ] / a0 ] * 0.45 ]
+        if [ wd > 6.0 ] wd = 6.0
+        dp : f32 [ 1.2 + g * 0.9 ]
+        lv : f32 [ F[ i ] ]
+        cx : i32 [ i % n ]
+        cy : i32 [ i / n ]
+        r : i32 [ ceil[ wd ] ]
+        for [ oy: i32 0 - r, oy <= r, oy += 1 ]
+            for [ ox: i32 0 - r, ox <= r, ox += 1 ]
+                x : i32 [ cx + ox ]
+                y : i32 [ cy + oy ]
+                if [ x < 0 || y < 0 || x >= n || y >= n ] continue
+                d : f32 [ sqrt[ f32[ ox * ox + oy * oy ] ] / wd ]
+                if [ d > 1.0 ] continue
+                j : i32 [ y * n + x ]
+                bed : f32 [ lv - dp * (1.0 - d * d) ]
+                if [ bed < H[ j ] ] H[ j ] = bed
+                if [ W[ j ] < lv && H[ j ] < lv ] W[ j ] = lv
+                gs : f32 [ g + 1.0 ]
+                if [ G[ j ] < gs ] G[ j ] = gs
+    # small ground: banks and broken rock on dry land only
+    for [ y: i32 0, y < n, y += 1 ]
+        for [ x: i32 0, x < n, x += 1 ]
+            i : i32 [ y * n + x ]
+            if [ W[ i ] > H[ i ] ] continue
+            u : f32 [ f32[ x ] / f32[ n ] ]
+            v : f32 [ f32[ y ] / f32[ n ] ]
+            sn : f32 [ eu_gnoise[ u * 90.0, v * 90.0, 0.2 ] - 0.5 ]
+            H[ i ] += sn * 3.0 * eden_sstep[ 0.5, 6.0, H[ i ] ]
+    # cells to the nearest sea, two chamfer passes (straight 1,
+    # diagonal 1.41); the ground's beach reads it
+    D : new f32 [ nn ]
+    for [ i: i32 0, i < nn, i += 1 ]
+        D[ i ] = (W[ i ] == 0.0 && H[ i ] < 0.0) ? 0.0 : 255.0
+    for [ y: i32 1, y < n, y += 1 ]
+        for [ x: i32 1, x < n - 1, x += 1 ]
+            i : i32 [ y * n + x ]
+            m : f32 [ D[ i ] ]
+            m = min[ m, D[ i - 1 ] + 1.0 ]
+            m = min[ m, D[ i - n ] + 1.0 ]
+            m = min[ m, D[ i - n - 1 ] + 1.4142 ]
+            m = min[ m, D[ i - n + 1 ] + 1.4142 ]
+            D[ i ] = m
+    for [ y: i32 n - 2, y >= 0, y -= 1 ]
+        for [ x: i32 n - 2, x >= 1, x -= 1 ]
+            i : i32 [ y * n + x ]
+            m : f32 [ D[ i ] ]
+            m = min[ m, D[ i + 1 ] + 1.0 ]
+            m = min[ m, D[ i + n ] + 1.0 ]
+            m = min[ m, D[ i + n + 1 ] + 1.4142 ]
+            m = min[ m, D[ i + n - 1 ] + 1.4142 ]
+            D[ i ] = m
+    hm : Image [ width: n, height: n, format: Pixel.rgba8,
+                 linear: true ]
+    hd : @u8 [ hm.vdata[] ]
+    wm : Image [ width: n, height: n, format: Pixel.rgba8,
+                 linear: true ]
+    wd8 : @u8 [ wm.vdata[] ]
+    for [ i: i32 0, i < nn, i += 1 ]
+        hd[ i * 4 + 1 ] = u8[ D[ i ] ]
+        hd[ i * 4 + 2 ] = u8[ 0 ]
+        eden_pack[ hd, i, H[ i ] ]
+        wet : bool [ W[ i ] > H[ i ] ]
+        eden_pack[ wd8, i, (wet) ? W[ i ] : eden_hlo[] ]
+        gv : f32 [ G[ i ] * 32.0 ]
+        if [ gv > 255.0 ] gv = 255.0
+        wd8[ i * 4 + 1 ] = u8[ gv ]
+        wd8[ i * 4 + 2 ] = (wet) ? u8[ 255 ] : u8[ 0 ]
+    bd : path '../{share_name}/baked'
+    bd.make_dir[]
+    hm.png[ path '../{share_name}/baked/eden-height.png' ]
+    wm.png[ path '../{share_name}/baked/eden-water.png' ]
+    log 'eden: ground baked'
+    return true
+
+# the ground's grid: one vertex at the centre of each map texel, so
+# a vertex reads its height exactly. the shaders place it
+func eden_grid [] -> bool
+    gn : i32 [ eden_n[] ]
+    nv : i32 [ gn * gn ]
+    ni : i32 [ (gn - 1) * (gn - 1) * 6 ]
+    n3 : i32 [ nv * 3 ]
+    n2 : i32 [ nv * 2 ]
+    P  : new f32 [ n3 ]
+    N  : new f32 [ n3 ]
+    T  : new f32 [ n2 ]
+    I  : new u32 [ ni ]
+    for [ y: i32 0, y < gn, y += 1 ]
+        for [ x: i32 0, x < gn, x += 1 ]
+            k : i32 [ y * gn + x ]
+            u : f32 [ (f32[ x ] + 0.5) / f32[ gn ] ]
+            v : f32 [ (f32[ y ] + 0.5) / f32[ gn ] ]
+            P[ k * 3 ]     = u - 0.5
+            P[ k * 3 + 1 ] = 0.0
+            P[ k * 3 + 2 ] = v - 0.5
+            N[ k * 3 ]     = 0.0
+            N[ k * 3 + 1 ] = 1.0
+            N[ k * 3 + 2 ] = 0.0
+            T[ k * 2 ]     = u
+            T[ k * 2 + 1 ] = v
+    q : i32 [ 0 ]
+    for [ y: i32 0, y < gn - 1, y += 1 ]
+        for [ x: i32 0, x < gn - 1, x += 1 ]
+            k : i32 [ y * gn + x ]
+            I[ q ]     = u32[ k ]
+            I[ q + 1 ] = u32[ k + gn ]
+            I[ q + 2 ] = u32[ k + 1 ]
+            I[ q + 3 ] = u32[ k + 1 ]
+            I[ q + 4 ] = u32[ k + gn ]
+            I[ q + 5 ] = u32[ k + gn + 1 ]
+            q += 6
+    fb : fopen[ path '../{share_name}/baked/eden-grid.bin', "wb" ]
+    if [ !fb ] return false
+    fwrite[ @P[ 0 ], 4, n3, fb ]
+    fwrite[ @N[ 0 ], 4, n3, fb ]
+    fwrite[ @T[ 0 ], 4, n2, fb ]
+    fwrite[ @I[ 0 ], 4, ni, fb ]
+    fclose[ fb ]
+    b3 : i32 [ n3 * 4 ]
+    b2 : i32 [ n2 * 4 ]
+    bi : i32 [ ni * 4 ]
+    fg : fopen[ path '../{share_name}/baked/eden-grid.gltf', "wb" ]
+    if [ !fg ] return false
+    fputs[
+        '{{"asset":{{"version":"2.0"}},"scene":0,"scenes":[{{"nodes":[0]}}],"nodes":[{{"mesh":0}}],', fg ]
+    fputs[
+        '"meshes":[{{"primitives":[{{"attributes":{{"POSITION":0,"NORMAL":1,"TEXCOORD_0":2}},"indices":3}}]}}],', fg ]
+    fputs[
+        '"accessors":[{{"bufferView":0,"componentType":5126,"count":{nv},"type":"VEC3","min":[-0.5,0,-0.5],"max":[0.5,0,0.5]}},', fg ]
+    fputs[
+        '{{"bufferView":1,"componentType":5126,"count":{nv},"type":"VEC3"}},', fg ]
+    fputs[
+        '{{"bufferView":2,"componentType":5126,"count":{nv},"type":"VEC2"}},', fg ]
+    fputs[
+        '{{"bufferView":3,"componentType":5125,"count":{ni},"type":"SCALAR"}}],', fg ]
+    fputs[
+        '"bufferViews":[{{"buffer":0,"byteLength":{b3},"byteOffset":0,"target":34962}},', fg ]
+    fputs[
+        '{{"buffer":0,"byteLength":{b3},"byteOffset":{b3},"target":34962}},', fg ]
+    fputs[
+        '{{"buffer":0,"byteLength":{b2},"byteOffset":{b3 * 2},"target":34962}},', fg ]
+    fputs[
+        '{{"buffer":0,"byteLength":{bi},"byteOffset":{b3 * 2 + b2},"target":34963}}],', fg ]
+    fputs[
+        '"buffers":[{{"byteLength":{b3 * 2 + b2 + bi},"uri":"eden-grid.bin"}}]}}', fg ]
+    fclose[ fg ]
+    return true
+
+func eden_maps []
+    # every function the maps depend on, or a moved constant ships stale
+    h1 : u64 [ @eden_bake ]
+    h2 : u64 [ @eden_base ]
+    h3 : u64 [ @eden_coast ]
+    h4 : u64 [ @eden_ridges ]
+    h5 : u64 [ @synth_erode ]
+    h6 : u64 [ @eden_grid ]
+    stamp : string '{h1}-{h2}-{h3}-{h4}-{h5}-{h6}'
+    sp : path '../{share_name}/baked/eden.hash'
+    hp : path '../{share_name}/baked/eden-height.png'
+    wp : path '../{share_name}/baked/eden-water.png'
+    gp : path '../{share_name}/baked/eden-grid.gltf'
+    if [ sp.exists[] && hp.exists[] && wp.exists[] && gp.exists[] ]
+        old : string [ sp.load[ typeid[string], null ] ]
+        if [ old && old == stamp ]
+            log 'eden: ground current ({stamp})'
+            return
+    if [ eden_bake[] && eden_grid[] ] sp.save[ stamp, null ]
+
+export func eden_export []
+    eden_maps[]
+
+enum EdenSurface
+    height : 0
+    water  : 1
+
+# THE GROUND: the grid lifted by the baked map. sand at the water's
+# edge, rock where it is steep, dark earth where the forest stands
+ModelViewProject EdenGround
+    mutable sun_dir : vec4f
+    mutable cam_pos : vec4f
+    # x the map's width in metres, y the drop a metre squared away
+    # from the camera (1 / 2R; 0 is flat)
+    mutable shape   : vec4f
+
+    attrib height : LayoutBinding [ type:typeid[ EdenSurface ],
+                                    id:EdenSurface.height, count:1,
+                                    format: typeid[ rgba8 ] ]
+    attrib water  : LayoutBinding [ type:typeid[ EdenSurface ],
+                                    id:EdenSurface.water, count:1,
+                                    format: typeid[ rgba8 ] ]
+
+    attrib a_pos    : VertexInput [ type:typeid[ vec3f ] ]
+    attrib a_normal : VertexInput [ type:typeid[ vec3f ] ]
+    attrib a_uv     : VertexInput [ type:typeid[ vec2f ] ]
+
+    attrib v_uv      : VertexOutput   [ type:typeid[ vec2f ] ]
+    attrib v_wpos    : VertexOutput   [ type:typeid[ vec3f ] ]
+    attrib fragColor : FragmentOutput [ type:typeid[ vec4f ] ]
+
+    func init [ ]
+        model = mat4f.identity[]
+        view  = mat4f.identity[]
+        proj  = mat4f.identity[]
+
+    # metres at one texel: the two bytes are never filtered apart
+    func e_texel [ tx: i32, ty: i32 ] -> GLSL f32 {
+        ivec2 ts = textureSize(height, 0);
+        vec4  hp = texelFetch(height, clamp(ivec2(tx, ty), ivec2(0), ts - 1), 0);
+        return (hp.r * 65280.0 + hp.a * 255.0) / 65535.0 * 1024.0 - 256.0;
+    }
+
+    func e_height [ q: vec2f ] -> GLSL f32 {
+        vec2  ts = vec2(textureSize(height, 0));
+        vec2  p  = q * ts - 0.5;
+        vec2  f  = fract(p);
+        ivec2 i  = ivec2(floor(p));
+        float a  = e_texel(i.x,     i.y);
+        float b  = e_texel(i.x + 1, i.y);
+        float c  = e_texel(i.x,     i.y + 1);
+        float d  = e_texel(i.x + 1, i.y + 1);
+        return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+    }
+
+    # the ground's drop below the camera's horizon plane
+    func e_curve [ p: vec3f ] -> GLSL vec3f {
+        vec2 d = p.xz - ubo.cam_pos.xz;
+        return vec3(p.x, p.y - dot(d, d) * ubo.shape.y, p.z);
+    }
+
+    func vertex [] -> GLSL none {
+        float h = e_height(a_uv);
+        vec3  p = vec3(a_pos.x * ubo.shape.x, h, a_pos.z * ubo.shape.x);
+        v_uv   = a_uv;
+        v_wpos = p;
+        gl_Position = ubo.proj * ubo.view * ubo.model * vec4(e_curve(p), 1.0);
+    }
+
+    func fragment [] -> GLSL none {
+        vec2  ts = vec2(textureSize(height, 0));
+        float cm = ubo.shape.x / ts.x;
+        float hl = e_height(v_uv - vec2(1.0 / ts.x, 0.0));
+        float hr = e_height(v_uv + vec2(1.0 / ts.x, 0.0));
+        float hu = e_height(v_uv - vec2(0.0, 1.0 / ts.y));
+        float hd = e_height(v_uv + vec2(0.0, 1.0 / ts.y));
+        vec3  n  = normalize(vec3(hl - hr, 2.0 * cm, hu - hd));
+        float h  = v_wpos.y;
+        float sl = 1.0 - n.y;
+        vec3  earth = vec3(0.10, 0.12, 0.06);
+        vec3  sand  = vec3(0.62, 0.56, 0.42);
+        vec3  rock  = vec3(0.30, 0.28, 0.25);
+        float sea = textureLod(height, v_uv, 0.0).g * 255.0;
+        float sd = (1.0 - smoothstep(2.0, 4.5, sea)) * (1.0 - smoothstep(2.0, 5.0, h))
+                 * (1.0 - smoothstep(0.05, 0.25, sl));
+        vec3  alb = mix(earth, sand, sd);
+        alb = mix(alb, rock, smoothstep(0.25, 0.55, sl));
+        vec3  sun = normalize(ubo.sun_dir.xyz);
+        float nl  = max(dot(n, sun), 0.0);
+        vec3  sky = vec3(0.35, 0.48, 0.70) * (0.55 + 0.45 * n.y);
+        vec3  c   = alb * (vec3(1.0, 0.95, 0.85) * nl * 2.0 + sky * 0.6);
+        c = 1.0 - exp(-c * 1.0);
+        // half a step of noise: a smooth sea bands in 8 bits
+        float dz = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
+        fragColor = vec4(pow(c, vec3(1.0 / 2.2)) + (dz - 0.5) / 255.0, 1.0);
+    }
+
+# THE WATER: the sea at 0, rivers at their own level. the colour is
+# the light that crosses the water to the bottom and back: turquoise
+# over the sand of the shelf, deep blue past it, tea-brown in the
+# rivers; the sky and the sun on top by the Fresnel term
+ModelViewProject EdenWater
+    mutable sun_dir : vec4f
+    mutable cam_pos : vec4f
+    mutable shape   : vec4f
+    # x seconds, for the waves
+    mutable clock   : vec4f
+
+    attrib height : LayoutBinding [ type:typeid[ EdenSurface ],
+                                    id:EdenSurface.height, count:1,
+                                    format: typeid[ rgba8 ] ]
+    attrib water  : LayoutBinding [ type:typeid[ EdenSurface ],
+                                    id:EdenSurface.water, count:1,
+                                    format: typeid[ rgba8 ] ]
+
+    attrib a_pos    : VertexInput [ type:typeid[ vec3f ] ]
+    attrib a_normal : VertexInput [ type:typeid[ vec3f ] ]
+    attrib a_uv     : VertexInput [ type:typeid[ vec2f ] ]
+
+    attrib v_uv      : VertexOutput   [ type:typeid[ vec2f ] ]
+    attrib v_wpos    : VertexOutput   [ type:typeid[ vec3f ] ]
+    attrib v_river   : VertexOutput   [ type:typeid[ f32 ] ]
+    attrib fragColor : FragmentOutput [ type:typeid[ vec4f ] ]
+
+    func init [ ]
+        model = mat4f.identity[]
+        view  = mat4f.identity[]
+        proj  = mat4f.identity[]
+
+    func e_texel [ tx: i32, ty: i32 ] -> GLSL f32 {
+        ivec2 ts = textureSize(height, 0);
+        vec4  hp = texelFetch(height, clamp(ivec2(tx, ty), ivec2(0), ts - 1), 0);
+        return (hp.r * 65280.0 + hp.a * 255.0) / 65535.0 * 1024.0 - 256.0;
+    }
+
+    func e_height [ q: vec2f ] -> GLSL f32 {
+        vec2  ts = vec2(textureSize(height, 0));
+        vec2  p  = q * ts - 0.5;
+        vec2  f  = fract(p);
+        ivec2 i  = ivec2(floor(p));
+        float a  = e_texel(i.x,     i.y);
+        float b  = e_texel(i.x + 1, i.y);
+        float c  = e_texel(i.x,     i.y + 1);
+        float d  = e_texel(i.x + 1, i.y + 1);
+        return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+    }
+
+    # the water surface at a texel, metres; -1000 where it is dry
+    func e_level [ cx: i32, cy: i32 ] -> GLSL f32 {
+        ivec2 ts = textureSize(water, 0);
+        vec4  w  = texelFetch(water, clamp(ivec2(cx, cy), ivec2(0), ts - 1), 0);
+        if (w.b < 0.5) return -1000.0;
+        return (w.r * 65280.0 + w.a * 255.0) / 65535.0 * 1024.0 - 256.0;
+    }
+
+    func e_curve [ p: vec3f ] -> GLSL vec3f {
+        vec2 d = p.xz - ubo.cam_pos.xz;
+        return vec3(p.x, p.y - dot(d, d) * ubo.shape.y, p.z);
+    }
+
+    func vertex [] -> GLSL none {
+        ivec2 ts = textureSize(water, 0);
+        ivec2 c  = ivec2(a_uv * vec2(ts));
+        float g  = e_texel(c.x, c.y);
+        float lv = e_level(c.x, c.y);
+        // a dry vertex beside water holds the water's level just
+        // under its own ground, so the shore line is flat
+        if (lv < -999.0) {
+            float nb = max(max(e_level(c.x + 1, c.y), e_level(c.x - 1, c.y)),
+                           max(e_level(c.x, c.y + 1), e_level(c.x, c.y - 1)));
+            lv = nb > -999.0 ? min(nb, g - 0.05) : g - 3.0;
+        }
+        vec3 p  = vec3(a_pos.x * ubo.shape.x, lv, a_pos.z * ubo.shape.x);
+        v_uv    = a_uv;
+        v_wpos  = p;
+        v_river = texelFetch(water, clamp(c, ivec2(0), ts - 1), 0).g;
+        gl_Position = ubo.proj * ubo.view * ubo.model * vec4(e_curve(p), 1.0);
+    }
+
+    func w_hash [ p: vec2f ] -> GLSL f32 {
+        vec2 q = fract(p * vec2(123.34, 456.21));
+        q += dot(q, q + 45.32);
+        return fract(q.x * q.y);
+    }
+
+    func w_noise [ p: vec2f ] -> GLSL f32 {
+        vec2 i = floor(p);
+        vec2 f = fract(p);
+        vec2 u = f * f * (3.0 - 2.0 * f);
+        return mix(mix(w_hash(i), w_hash(i + vec2(1.0, 0.0)), u.x),
+                   mix(w_hash(i + vec2(0.0, 1.0)), w_hash(i + vec2(1.0, 1.0)), u.x), u.y);
+    }
+
+    # the surface: two wave trains, metres
+    func w_wave [ p: vec2f ] -> GLSL f32 {
+        float t = ubo.clock.x;
+        return w_noise(p * 0.08 + vec2(t * 0.05, t * 0.02)) * 0.6
+             + w_noise(p * 0.31 - vec2(t * 0.09, -t * 0.07)) * 0.25;
+    }
+
+    func fragment [] -> GLSL none {
+        float g = e_height(v_uv);
+        float d = v_wpos.y - g;
+        if (d <= 0.0) discard;
+        vec3  vd = normalize(ubo.cam_pos.xyz - v_wpos);
+        // the waves calm with distance, or they shimmer
+        float fw = clamp(length(fwidth(v_wpos.xz)) * 0.1, 0.0, 1.0);
+        float e  = 0.5;
+        float w0 = w_wave(v_wpos.xz);
+        float wx = w_wave(v_wpos.xz + vec2(e, 0.0)) - w0;
+        float wz = w_wave(v_wpos.xz + vec2(0.0, e)) - w0;
+        vec3  n  = normalize(vec3(-wx, e * (1.0 + fw * 8.0), -wz));
+        vec3  sun = normalize(ubo.sun_dir.xyz);
+        // light down to the bottom and back up: the path is longer
+        // when the view is low
+        float cv = max(vd.y, 0.08);
+        float pathl = d * (1.0 + 1.0 / cv);
+        float rv = smoothstep(0.0, 64.0, v_river * 255.0);
+        vec3  ka = mix(vec3(0.45, 0.075, 0.05), vec3(0.6, 0.45, 0.5), rv);
+        vec3  tr = exp(-ka * pathl);
+        vec3  sand = vec3(0.62, 0.56, 0.42) * (0.3 + 2.0 * max(sun.y, 0.0));
+        vec3  deep = mix(vec3(0.004, 0.035, 0.09), vec3(0.16, 0.15, 0.08), rv);
+        vec3  body = sand * tr + deep * (1.0 - tr);
+        vec3  rf  = reflect(-vd, n);
+        vec3  sky = mix(vec3(0.70, 0.80, 0.90), vec3(0.30, 0.50, 0.85), clamp(rf.y, 0.0, 1.0));
+        float fr  = 0.02 + 0.98 * pow(1.0 - max(dot(n, vd), 0.0), 5.0);
+        vec3  hv  = normalize(sun + vd);
+        float gl  = pow(max(dot(n, hv), 0.0), 300.0) * 40.0;
+        vec3  c   = mix(body, sky, fr) + vec3(1.0, 0.95, 0.85) * gl * fr;
+        // the break at the sea's edge
+        float fm = (1.0 - smoothstep(0.05, 0.5, d)) * (1.0 - rv)
+                 * step(0.55, w_noise(v_wpos.xz * 0.2 + ubo.clock.x * 0.1));
+        c = mix(c, vec3(0.9), fm * 0.6);
+        c = 1.0 - exp(-c * 1.0);
+        // half a step of noise: a smooth sea bands in 8 bits
+        float dz = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
+        fragColor = vec4(pow(c, vec3(1.0 / 2.2)) + (dz - 0.5) / 255.0, 1.0);
+    }
+
+element Eden
+    frost : true
+    public func bg_color [ ] -> rgba
+        return color
+    frost_sharp : true
+    intern ground   : EdenGround
+    intern water    : EdenWater
+    intern g_model  : Model
+    intern w_model  : Model
+    intern target   : Render
+    public color    : rgba [ r:0.45, g:0.60, b:0.80, a:1.0 ]
+
+    func create_target[]
+        if [ target ] return
+        hp : path '../{share_name}/baked/eden-height.png'
+        wp : path '../{share_name}/baked/eden-water.png'
+        gp : path '../{share_name}/baked/eden-grid.gltf'
+        if [ !hp.exists[] || !wp.exists[] || !gp.exists[] ]
+            log 'eden: no baked ground; build scenes to bake it'
+            return
+        geom : GltfModel.open[ gp ]
+        ground = EdenGround [ vk: vk ]
+        water  = EdenWater  [ vk: vk ]
+        g_model = Model [ vk: vk, w: ux, id: geom, s: ground,
+                          cull_none: true,
+            samplers: map Au[string] [
+                'height': Image [ uri: hp, surface: EdenSurface.height,
+                                  linear: true ],
+                'water':  Image [ uri: wp, surface: EdenSurface.water,
+                                  linear: true ] ] ]
+        w_model = Model [ vk: vk, w: ux, id: geom, s: water,
+                          cull_none: true,
+            samplers: map Au[string] [
+                'height': Image [ uri: hp, surface: EdenSurface.height,
+                                  linear: true ],
+                'water':  Image [ uri: wp, surface: EdenSurface.water,
+                                  linear: true ] ] ]
+        target = Render [ vk: vk, w: ux, wscale: 1.0, use_depth: true,
+            clear_color: vec4f [ color.r, color.g, color.b, 1.0 ],
+            models: [ g_model, w_model ] ]
+        target.owner = a
+        ux.element_targets[ id ] = target
+
+    public func on_unload [ ]
+        if [ ux && ux.element_targets ] ux.element_targets.rm[ id ]
+
+    func draw [ w: Window ]
+        animated = true
+        create_target[]
+        if [ !target ] return
+        aspect : f32 [
+            (ux.height > 0) ? f32[ ux.width ] / f32[ ux.height ]
+            : 1.7778 ]
+        # high over the south shore, looking north across the coast:
+        # the sea on the left, the land climbing to the right
+        _eye : vec3f [ 0.0 - 900.0, 2400.0, 4700.0 ]
+        _tgt : vec3f [ 0.0 - 400.0, 0.0, 300.0 ]
+        _up  : vec3f [ 0.0, 1.0, 0.0 ]
+        _proj : mat4f.perspective[ radians[ 50.0 ], aspect, 10.0,
+                                   40000.0 ]
+        _proj.m[5] = 0.0 - _proj.m[5]
+        _view : mat4f.look_at[ _eye, _tgt, _up ]
+        # the sun high in the west of south, behind the left shoulder
+        sun : vec4f [ 0.0 - 0.45, 0.62, 0.40, 0.0 ]
+        cam : vec4f [ _eye.x, _eye.y, _eye.z, 1.0 ]
+        shp : vec4f [ f32[ eden_n[] ] * eden_cell[], 0.0, 0.0, 0.0 ]
+        ground.view    = _view
+        ground.proj    = _proj
+        ground.sun_dir = sun
+        ground.cam_pos = cam
+        ground.shape   = shp
+        water.view     = _view
+        water.proj     = _proj
+        water.sun_dir  = sun
+        water.cam_pos  = cam
+        water.shape    = shp
+        water.clock    = vec4f [ ux.time * 1000.0, 0.0, 0.0, 0.0 ]
+
+# the scene at 1280x720, drawn offscreen into /tmp/eden-view.png
+expect func t_eden_view [] -> bool
+    vk9 : vk_context []
+    vk9.hold[]
+    w9  : Window [ vk: vk9, format: Pixel.rgba8, backbuffer: true,
+        width: 1280, height: 720 ]
+    w9.hold[]
+    if [ !w9.element_targets ]
+        w9.element_targets = map Render [string] []
+    out : path '/tmp/eden-view.png'
+    scene_thumb[ w9, 'Eden', out ]
+    return out.exists[]

@@ -464,6 +464,14 @@ func record_time [] -> i64
 func record_mark [ at_us: i64, dur_us: i64, text: string, file: string ]
     if [ rec_live ] rec_live.mark[ at_us, dur_us, text, file ]
 
+func au_live_handoff_hook [ fn: handle ] -> none
+func au_live_mic_start [] -> i32
+func au_live_mic_read [ out: @i16, max: i32, cursor: @i64 ] -> i32
+
+# the host's reload switch: the take's held frames go out first
+func record_handoff [] -> none
+    if [ rec_live ] rec_live.handoff[]
+
 abstract live_app media_app
     context w           : Display*
     context vk          : vk_context
@@ -589,8 +597,8 @@ abstract live_app media_app
                 log 'record: no h.265 encoder here; 4:2:0 h.264'
                 full = false
             fd : i32 [ Au.live_record_get[] ]
+            if [ record_mic ] wn.mic_start[]
             if [ !fd ]
-                if [ record_mic ] wn.mic_start[]
                 fd = record_spawn[ rpath, fmt ]
                 Au.live_record_set[ fd, tx.width, tx.height ]
             recorder = Recorder [ vk: vk, w: w, fd: fd,
@@ -603,6 +611,9 @@ abstract live_app media_app
                 height: Au.live_record_height[],
                 notes: record_notes[ rpath, fmt ] ]
             rec_live = recorder
+            au_live_handoff_hook[ @record_handoff ]
+            # the sound continues where the last instance left it
+            afed = Au.live_record_atime[]
             # the take is one size: the window holds it while recording
             wn.set_resizable[ false ]
             if [ fmt != 'h264' && fmt != 'h265' ]
@@ -622,6 +633,7 @@ abstract live_app media_app
             if [ wn.record_rate > 0
                  && Au.epoch_millis[] - wn.record_last > 250 ]
                 wn.record_rate = 0
+            wn.mic_pump[]
             record_audio_pump[ wn ]
             Au.live_record_mux_set[ recorder.mux.seq,
                                     recorder.mux.vtime,
@@ -3925,43 +3937,42 @@ Display Window
         if [ mic ] mic.add_into[ @rec_out[ 0 ], n ]
         rec.put[ @rec_out[ 0 ], n ]
 
-    # open the system's recording input and read it on its own thread
+    # the host captures; a reload keeps its thread and its device
     public func mic_start []
-        ifndef [ windows ]
-            if [ mic_on ] return
-            mic    = AudioRing [ ]
-            mic_on = true
-            tid : local u64 [ 1 ]
-            pthread_create[ tid, null, @mic_entry, a ]
+        if [ mic_on ] return
+        if [ au_live_mic_start[] < 0 ]
+            log 'record: no microphone'
+            return
+        mic     = AudioRing [ ]
+        mic_dn  = Denoise [ ]
+        mic_on  = true
+        mic_cur = -1
 
-    func mic_entry [] -> none
-        ifndef [ windows ]
-            rate : local i32 [ 1 ] [ 0 ]
-            if [ !platform_mic_open[ @rate[ 0 ] ] ]
+    # the mic since the last frame, resampled to 48 kHz and cleaned
+    public func mic_pump []
+        if [ !mic_on ] return
+        if [ mic_rate <= 0 ]
+            mic_rate = au_live_mic_start[]
+            if [ mic_rate < 0 ]
                 log 'record: no microphone'
                 mic_on = false
-                return
-            log 'record: microphone on at {rate[ 0 ]} Hz'
-            # the device runs at whatever rate it has; the track is 48
-            # kHz, so resample
-            mpos   : f64 [ 0.0 ]
-            mono   : local i16 [ 1024 ]
-            stereo : local i16 [ 4096 ]
-            dn     : Denoise [ ]
-            while [ mic_on ]
-                got : i32 [ platform_mic_read[ @mono[ 0 ], 480 ] ]
-                if [ got < 0 ] break
-                if [ got == 0 ]
-                    usleep[ 2000 ]
-                    continue
-                n : i32 [ resample[ @mono[ 0 ], got, 1, rate[ 0 ],
-                                    @stereo[ 0 ], 2048, @mpos ] ]
-                # the app's sound owns the track once it starts; until
-                # then the mic feeds it alone
-                out_ring : AudioRing [ (record_rate == 0) ? rec : mic ]
-                dn.tee = rec_mic
-                if [ out_ring ] dn.run[ @stereo[ 0 ], n, out_ring ]
-            platform_mic_close[]
+            if [ mic_rate <= 0 ] return
+            log 'record: microphone on at {mic_rate} Hz'
+        mono   : local i16 [ 480 ]
+        stereo : local i16 [ 4096 ]
+        cur    : local i64 [ 1 ] [ mic_cur ]
+        pos    : local f64 [ 1 ] [ mic_pos ]
+        for [ true ]
+            got : i32 [ au_live_mic_read[ @mono[ 0 ], 480, @cur[ 0 ] ] ]
+            if [ got <= 0 ] break
+            n : i32 [ resample[ @mono[ 0 ], got, 1, mic_rate,
+                                @stereo[ 0 ], 2048, @pos[ 0 ] ] ]
+            # the app's sound owns the track once it starts
+            out_ring : AudioRing [ (record_rate == 0) ? rec : mic ]
+            mic_dn.tee = rec_mic
+            if [ out_ring ] mic_dn.run[ @stereo[ 0 ], n, out_ring ]
+        mic_cur = cur[ 0 ]
+        mic_pos = pos[ 0 ]
 
     public func mouse_unlock []
         if [ !locked ] return
@@ -4250,6 +4261,13 @@ Display Window
         if [ shift != shift_down ]
             shift = shift_down
             if [ root ] dirty_tree[ root ]
+            will_animate = true
+        ck : i32 [ ev.key.unicode ]
+        cmd_down : bool [ ev.key.ctrl || ev.key.meta ]
+        if [ ck == 341 || ck == 345 || ck == 343 || ck == 347 ]
+            cmd_down = (ev.key.state) ? true : false
+        if [ cmd != cmd_down ]
+            cmd = cmd_down
             will_animate = true
         # esc releases a mouse lock; the key still travels so a hosted
         # app releases its side too
@@ -4825,6 +4843,13 @@ Display Window
     mutable rec_mic             : AudioRing
     # the title trinity made: the app has not named itself
     mutable title_auto          : string
+    # the host's mic ring: this instance's place in it, -1 none
+    mutable mic_cur             : i64 [ -1 ]
+    mutable mic_rate            : i32
+    mutable mic_pos             : f64
+    mutable mic_dn              : Denoise
+    # ctrl or cmd held, as shift is
+    mutable cmd                 : bool
 
 
     func on_compose []
@@ -5801,6 +5826,13 @@ Display Window
                 bounds.x = last_l.bounds.x + last_l.bounds.w + e.area.l.offset * ((e.area.l.pixel) ? 1.0 : e.fc) + spx
             el
                 bounds.x = e.area.l.offset * ((e.area.l.pixel) ? 1.0 : e.fc) + spx
+        # a right edge r0+ ends at the last right-flowed sibling
+        if [ e.area.r.x_type == XAlign.right && e.area.r.relative ]
+            edge : f32 [ (last_r && last_r.bounds)
+                ? last_r.bounds.x : rel.w ]
+            gap : f32 [ e.area.r.offset
+                * ((e.area.r.pixel) ? 1.0 : e.fc) ]
+            bounds.w = edge - gap - spx - bounds.x
 
         e.bounds.x = bounds.x
         e.bounds.y = bounds.y
@@ -7035,6 +7067,12 @@ element TButtons
     # holding shift shows a circled x at the right end of each segment
     # in the mask (same bits as sel_mask); a press on it is a close
     public  close_mask : i32
+    # a segment's own icon scale, else icon_scale
+    public  icon_scales : vec f32
+    # a segment's share of the width, else 1 (not when collapsed)
+    public  seg_weights : vec f32
+    # a 1px line between segments, lit by the pointer when near
+    public  seg_line : rgba
 
     func seg_width [] -> f32
         n : i32 [ (buttons) ? buttons.count : 1 ]
@@ -7055,12 +7093,26 @@ element TButtons
             return 1.0
         return clamp[ (bounds.w - sw) / (full - sw), 0.0, 1.0 ]
 
-    # a segment's left edge: shared width from the left, or its own
-    # width from the right when the strip collapses
+    func seg_weight [ i: i32 ] -> f32
+        if [ !seg_weights || i >= seg_weights.count ] return 1.0
+        return seg_weights[ i ]
+
+    # a segment's own width: its weighted share of the strip
+    func seg_span [ i: i32 ] -> f32
+        if [ collapse || !seg_weights || !buttons ] return seg_width[]
+        total : f32 [ 0.0 ]
+        for [ k: i32 0, k < buttons.count, k += 1 ]
+            total += seg_weight[ k ]
+        return bounds.w * seg_weight[ i ] / total
+
+    # a segment's left edge: the spans before it from the left, or its
+    # own width from the right when the strip collapses
     func seg_x [ i: i32 ] -> f32
-        sw : f32 [ seg_width[] ]
-        if [ !collapse ] return f32[ i ] * sw
-        return bounds.w - f32[ buttons.count - i ] * sw
+        if [ !collapse ]
+            x : f32 [ 0.0 ]
+            for [ k: i32 0, k < i, k += 1 ] x += seg_span[ k ]
+            return x
+        return bounds.w - f32[ buttons.count - i ] * seg_width[]
 
     # the segment under the pointer, by its id; '' when none is
     func hover_name [] -> string
@@ -7092,7 +7144,7 @@ element TButtons
 
     # a segment's close mark: its center x and radius
     func close_x [ i: i32 ] -> f32
-        return roundf[ seg_x[ i ] + seg_width[] ] - bounds.h * 0.5
+        return roundf[ seg_x[ i ] + seg_span[ i ] ] - bounds.h * 0.5
     func close_r [] -> f32
         return bounds.h * 0.3
 
@@ -7120,7 +7172,9 @@ element TButtons
             k : i32 [ (bounds.w - rel) / seg_width[] ]
             i : i32 [ n - 1 - k ]
             return (i >= 0) ? i : -1
-        return i32 [ rel / (bounds.w / f32[ n ]) ]
+        for [ k: i32 0, k < n, k += 1 ]
+            if [ rel < seg_x[ k ] + seg_span[ k ] ] return k
+        return n - 1
 
     public func draw [ w: Window ]
         if [ w.draw_stage != CanvasType.screen ] return
@@ -7164,7 +7218,7 @@ element TButtons
             # a seam beside the lit one. each segment ends where the
             # next begins
             x  : f32 [ roundf[ seg_x[ i ] ] ]
-            xr : f32 [ roundf[ seg_x[ i ] + seg_w ] ]
+            xr : f32 [ roundf[ seg_x[ i ] + seg_span[ i ] ] ]
             sw : f32 [ xr - x ]
             if [ xr <= 0.0 ] continue
             tl : f32 [ (i == 0)     ? seg_radius : 0.0 ]
@@ -7263,9 +7317,10 @@ element TButtons
                 (dang) ? rgba [ '#ff5c5c' ]
                 : ((go) ? rgba [ '#6fdc8c' ] : rgba [ '#fff' ]) ]
             if [ svg ]
-                isz : f32 [
-                    bounds.h
-                    * ((icon_scale > 0.0) ? icon_scale : 0.55) ]
+                sc : f32 [ (icon_scale > 0.0) ? icon_scale : 0.55 ]
+                if [ icon_scales && i < icon_scales.count ]
+                    sc = icon_scales[ i ]
+                isz : f32 [ bounds.h * sc ]
                 ix  : f32 [ x + (sw - isz) * 0.5 ]
                 iy  : f32 [ (bounds.h - isz) * 0.5 ]
                 cv.fill_color[ icol ]
@@ -7301,6 +7356,20 @@ element TButtons
                     cv.draw_svg[ xs, cx - cr * 0.6, cy - cr * 0.6,
                                  cr * 1.2, cr * 1.2 ]
             cv.set_opacity[ op ]
+        if [ seg_line && !collapse ]
+            for [ i: i32 1, i < n, i += 1 ]
+                lx : f32 [ roundf[ seg_x[ i ] ] + 0.5 ]
+                cv.save[]
+                w.near_light_on[ cv, a, 0.0, 0.0 ]
+                cv.near_style[ 1.0, 0.0, null, w.near_y_fade ]
+                cv.fill_color[ rgba [ '#0000' ] ]
+                cv.stroke_color[ seg_line ]
+                cv.stroke_width[ 1.0 ]
+                cv.stroke_offset[ 0.0 ]
+                cv.move_to[ lx, 0.0 ]
+                cv.line_to[ lx, bounds.h ]
+                cv.paint[ ]
+                cv.restore[]
         # the rest icon sits in the last slot and fades as the set
         # reveals the hint shows only while the strip is small: gone a
         # quarter in

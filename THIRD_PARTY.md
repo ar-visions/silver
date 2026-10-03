@@ -80,6 +80,10 @@ Keep it in step with the imports.
 | Saturn colour map | scenes/textures/saturn-color.png 4096x2048 | https://www.solarsystemscope.com/textures/ | Solar System Scope | CC BY 4.0 |
 | Titan Mosaic: The Surface Under the Haze (PIA22770) | scenes/textures/titan-color.png 5760x2880 | https://www.jpl.nasa.gov/images/pia22770-titan-mosaic-the-surface-under-the-haze/ | NASA/JPL-Caltech/Space Science Institute | NASA image use policy (public domain with credit) |
 | MOLA MEGDR 128 ppd tiles (MGS-M-MOLA-5-MEGDR-L3-V1.0) | read from checkout/mola by the Mars scene | https://pds-geosciences.wustl.edu/mgs/mgs-m-mola-5-megdr-l3-v1/mgsl_300x/meg128/ | NASA/JPL/GSFC, MOLA Science Team, PDS Geosciences Node | NASA PDS, public domain |
+| Blue Marble Next Generation, July 2004 (world.200407), 21600x10800 | scenes/baked/earth-land.png: where Earth's sea, ice, desert and forest are (fetched into ~/.local/state/scenes) | https://assets.science.nasa.gov/content/dam/science/esd/eo/images/bmng/bmng-base/july/world.200407.3x21600x10800.jpg | NASA Earth Observatory, Reto Stöckli (NASA GSFC), MODIS | NASA image use policy (public domain) |
+| Fir Tree 01 (fir_tree_01), glTF 1k + twig alpha | scenes/baked/earth-fir_tree_01-{color,height,normal}.png | https://polyhaven.com/a/fir_tree_01 | Poly Haven | CC0 1.0 |
+| Island Tree 01 (island_tree_01), glTF 1k + leaves alpha | scenes/baked/earth-island_tree_01-{color,height,normal}.png; its leaves scattered into scenes/baked/earth-foliage.png | https://polyhaven.com/a/island_tree_01 | Poly Haven | CC0 1.0 |
+| Island Tree 02 (island_tree_02), glTF 1k + leaves alpha | scenes/baked/earth-island_tree_02-{color,height,normal}.png | https://polyhaven.com/a/island_tree_02 | Poly Haven | CC0 1.0 |
 
 ## Notes on the copyleft entries
 

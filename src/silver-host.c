@@ -31,6 +31,7 @@
 #include <time.h>    // time() — the future-mtime clamp in sources_newer
 #include <errno.h>
 #include <stdint.h>
+#include <stdbool.h>
 
 extern void path_set_share_name(const char* name);
 
@@ -226,6 +227,73 @@ static void* reload_worker(void* arg) {
 }
 
 #define MAX_SOURCES 128
+
+// ---- the recording's microphone -----------------------------------------
+// the capture thread is the host's: a reload swaps the app, never the mic.
+// the device's mono samples go round a ring; each instance reads it with
+// its own cursor (au_live_mic_read), so the take hears no gap.
+typedef bool (*mic_open_fn)(int*);
+typedef int  (*mic_read_fn)(int16_t*, int);
+typedef void (*mic_close_fn)(void);
+#define MIC_RING (1 << 18)   // frames: 5.4 s at 48 kHz
+static int16_t   g_mic_ring[MIC_RING];
+static int64_t   g_mic_written = 0;   // frames ever written
+static int       g_mic_rate    = 0;   // 0 opening, -1 none, else Hz
+static int       g_mic_started = 0;
+static pthread_t g_mic_thread;
+
+static void* mic_loop(void* arg) {
+    (void)arg;
+    mic_open_fn  mopen  = (mic_open_fn) dlsym(RTLD_DEFAULT, "platform_mic_open");
+    mic_read_fn  mread  = (mic_read_fn) dlsym(RTLD_DEFAULT, "platform_mic_read");
+    mic_close_fn mclose = (mic_close_fn)dlsym(RTLD_DEFAULT, "platform_mic_close");
+    int rate = 0;
+    if (!mopen || !mread || !mopen(&rate) || rate <= 0) {
+        fprintf(stderr, "silver-host: record: no microphone\n");
+        __atomic_store_n(&g_mic_rate, -1, __ATOMIC_RELEASE);
+        return NULL;
+    }
+    fprintf(stderr, "silver-host: record: microphone on at %d Hz\n", rate);
+    __atomic_store_n(&g_mic_rate, rate, __ATOMIC_RELEASE);
+    int16_t buf[480];
+    for (;;) {
+        int got = mread(buf, 480);
+        if (got < 0) break;
+        if (got == 0) { usleep(2000); continue; }
+        int64_t w = __atomic_load_n(&g_mic_written, __ATOMIC_RELAXED);
+        for (int i = 0; i < got; i++) g_mic_ring[(w + i) & (MIC_RING - 1)] = buf[i];
+        __atomic_store_n(&g_mic_written, w + got, __ATOMIC_RELEASE);
+    }
+    if (mclose) mclose();
+    __atomic_store_n(&g_mic_rate, -1, __ATOMIC_RELEASE);
+    return NULL;
+}
+
+// the rate once open: 0 while it opens, -1 with no mic
+static int host_mic_start(void) {
+    if (!g_mic_started) {
+        g_mic_started = 1;
+        if (pthread_create(&g_mic_thread, NULL, mic_loop, NULL) != 0) {
+            g_mic_rate = -1;
+            return -1;
+        }
+        pthread_detach(g_mic_thread);
+    }
+    return __atomic_load_n(&g_mic_rate, __ATOMIC_ACQUIRE);
+}
+
+// frames since *cursor (-1: from now); a reader that fell a ring behind
+// skips ahead to the oldest frame still held
+static int host_mic_read(int16_t* out, int max, int64_t* cursor) {
+    int64_t w = __atomic_load_n(&g_mic_written, __ATOMIC_ACQUIRE);
+    if (*cursor < 0 || *cursor > w) *cursor = w;
+    if (w - *cursor > MIC_RING) *cursor = w - MIC_RING;
+    int n = (int)((w - *cursor < max) ? w - *cursor : max);
+    for (int i = 0; i < n; i++) out[i] = g_mic_ring[(*cursor + i) & (MIC_RING - 1)];
+    *cursor += n;
+    return n;
+}
+typedef void (*au_live_mic_hooks_fn)(int (*)(void), int (*)(int16_t*, int, int64_t*));
 
 static const char* g_app_name = "app";
 static int         g_log_slot = -1;   // hosted slot > 0 logs to <app>.<slot>.log
@@ -1388,6 +1456,10 @@ int main(int argc, char** argv) {
 #endif
     if (!handle) { fprintf(stderr, "%s: dlopen %s: %s\n", name, lib, dlerror()); return 1; }
 
+    // the recording's mic is the host's, so a reload keeps it
+    au_live_mic_hooks_fn mic_hooks = (au_live_mic_hooks_fn)dlsym(RTLD_DEFAULT, "au_live_mic_hooks");
+    if (mic_hooks) mic_hooks(host_mic_start, host_mic_read);
+
     // initial startup: call silver_live_init explicitly (not a global constructor)
     init_fn    do_init    = dlsym(handle, INIT_SYM);
     frame_fn   do_frame   = dlsym(handle, FRAME_SYM);
@@ -1672,6 +1744,9 @@ int main(int argc, char** argv) {
             pthread_join(reload_job.thread, NULL);
             void* new_handle = reload_job.handle;
             long t0 = now_ms();
+            // the live instance's last frame is done: a take it holds goes out
+            void (*handoff)(void) = (void (*)(void))dlsym(RTLD_DEFAULT, "au_live_handoff");
+            if (handoff) handoff();
             // a watch still running in the old image calls freed code on its
             // next event: stop those before the registry purge and the close
             watch_pause_image_fn wpause = (watch_pause_image_fn)dlsym(handle, "watch_pause_image");

@@ -55,8 +55,10 @@ class MdTile
 element markdown : trinity
     public width   : i32 [ 980 ]
     public height  : i32 [ 1180 ]
-    public title   : string [ 'markdown' ]
-    default src    : path
+    # a new file at runtime: watch its folder, the draw reparses
+    default [ Live ] src : resource
+        watch_src[]
+        blocks = null
     mutable blocks    : vec MdBlock
     mutable rows       : vec MdRow
     mutable tiles      : vec MdTile
@@ -71,14 +73,18 @@ element markdown : trinity
         t.pristine = false
         if [ t.ux ] t.ux.will_animate = true
 
-    func init []
-        if [ src ] title = '{src.filename[]}'
+    func watch_src []
+        if [ src_watch ] src_watch.pause[]
+        src_watch = null
         if [ src && src.exists[] ]
             # watch the DIRECTORY: editors replace files by rename,
             # which silently ends a watch held on the file's inode
             src_watch = watch [ res: src.parent_dir[],
                                 callback: lambda on_src_change[ a ] ]
             src_watch.start[]
+
+    func init []
+        watch_src[]
 
     # ---- block parse: one pass over the lines ----
 

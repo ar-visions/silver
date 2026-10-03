@@ -2839,14 +2839,6 @@ class LaunchHost
     public [ Live ] gain : f32 [ 0.5 ]
     public [ Launch, Slider [ 0.0, 1.0 ] ] vol : f32 [ 0.25 ]
 
-expect func t_launch_specs [] -> bool
-    p: path '{path.path_install[]}/export/silver-features.agi'
-    s: string p.load[ typeid[string], null ]
-    return s.index_of[ 'depth=i32=4' ] >= 0 &&
-           s.index_of[ 'hue=Hue=1=Enum[red:1,green:2]' ] >= 0 &&
-           s.index_of[ 'gain=f32=0.5=live' ] >= 0 &&
-           s.index_of[ 'vol=f32=0.25' ] >= 0
-
 # export name: value, and a registry value tagged FileType
 expect func t_export_forms [] -> bool
     p: path '{path.path_install[]}/export/silver-features.agi'

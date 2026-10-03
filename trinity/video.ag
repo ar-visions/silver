@@ -1190,6 +1190,14 @@ class Recorder
         if [ mux ] mux.close*[]
         notes_save[]
 
+    # a reload: the next instance's recorder carries on from here
+    func handoff []
+        if [ encoder ] encoder.drain[]
+        if [ mux ]
+            mux.flush*[]
+            Au.live_record_mux_set[ mux.seq, mux.vtime, mux.atime ]
+        notes_save[]
+
     func dealloc []
         if [ ready ] vkDestroySemaphore[ vk.device, ready, null ]
 
