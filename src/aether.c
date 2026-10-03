@@ -1563,6 +1563,97 @@ AU_EXPORT LLVMTypeRef ll_same(aether a, etype t, etype src) {
     return _lltype_slot(t);
 }
 
+// a struct's bytes by System V class: 1 float, 2 double, 3 integer
+static bool abi_classify(LLVMTargetDataRef td, LLVMTypeRef t, u64 at,
+                         int* cls) {
+    LLVMTypeKind k = LLVMGetTypeKind(t);
+    if (k == LLVMStructTypeKind) {
+        unsigned n = LLVMCountStructElementTypes(t);
+        for (unsigned i = 0; i < n; i++)
+            if (!abi_classify(td, LLVMStructGetTypeAtIndex(t, i),
+                    at + LLVMOffsetOfElement(td, t, i), cls))
+                return false;
+        return true;
+    }
+    if (k == LLVMArrayTypeKind) {
+        LLVMTypeRef e  = LLVMGetElementType(t);
+        u64         sz = LLVMABISizeOfType(td, e);
+        for (unsigned i = 0; i < LLVMGetArrayLength(t); i++)
+            if (!abi_classify(td, e, at + i * sz, cls)) return false;
+        return true;
+    }
+    u64 sz = LLVMStoreSizeOfType(td, t);
+    // a field across an eightbyte is memory class: left as declared
+    if (sz == 0 || (at % 8) + sz > 8) return false;
+    LLVMTypeKind ek = k == LLVMVectorTypeKind ?
+        LLVMGetTypeKind(LLVMGetElementType(t)) : k;
+    int c = ek == LLVMFloatTypeKind ? 1 : ek == LLVMDoubleTypeKind ? 2 : 3;
+    int* e = &cls[at / 8];
+    *e = (*e == 0 || *e == c) ? c : 3;
+    return true;
+}
+
+// the same classes from silver's own fields, before the llvm body
+// exists: silver structs are packed, a field follows the last
+static bool abi_classify_au(Au_t t, u64* at, int* cls) {
+    Au_t b = au_arg_type((Au)t);
+    if (!b) return false;
+    if (b->is_struct && !b->is_pointer) {
+        for (int i = 0; i < b->members.count; i++) {
+            Au_t m = (Au_t)b->members.origin[i];
+            if (!m || m->member_type != AU_MEMBER_VAR || m->is_static)
+                continue;
+            int n = m->elements > 0 ? m->elements : 1;
+            for (int e = 0; e < n; e++)
+                if (!abi_classify_au(m->src, at, cls)) return false;
+        }
+        return true;
+    }
+    u64 sz = (b->is_pointer || b->is_class) ? 8 : (u64)b->typesize;
+    if (sz == 0 || sz > 8 || (*at % 8) + sz > 8 || *at >= 16) return false;
+    int c = b->is_realistic ? (sz == 8 ? 2 : 1) : 3;
+    int* e = &cls[*at / 8];
+    *e = (*e == 0 || *e == c) ? c : 3;
+    *at += sz;
+    return true;
+}
+
+// the register shape clang returns a small struct in on x86_64
+static LLVMTypeRef abi_ret(aether a, LLVMContextRef ctx, LLVMTypeRef st,
+                           etype rt) {
+    if (!st || LLVMGetTypeKind(st) != LLVMStructTypeKind) return st;
+    if (!a->target_triple || !strstr(a->target_triple, "x86_64") ||
+            strstr(a->target_triple, "windows") ||
+            strstr(a->target_triple, "mingw"))
+        return st;
+    int cls[2] = { 0, 0 };
+    u64 size   = 0;
+    // a body not built yet is never measured: llvm keeps the size
+    if (LLVMIsOpaqueStruct(st)) {
+        if (!rt || !abi_classify_au(rt->autype, &size, cls)) return st;
+    } else {
+        LLVMTargetDataRef td = ll_td(a);
+        size = LLVMABISizeOfType(td, st);
+        if (size == 0 || size > 16) return st;
+        if (!abi_classify(td, st, 0, cls)) return st;
+    }
+    if (size == 0 || size > 16) return st;
+    LLVMTypeRef parts[2];
+    int         n = (int)((size + 7) / 8);
+    for (int i = 0; i < n; i++) {
+        u64 bytes = size - i * 8 < 8 ? size - i * 8 : 8;
+        if (cls[i] == 2)
+            parts[i] = LLVMDoubleTypeInContext(ctx);
+        else if (cls[i] == 1)
+            parts[i] = bytes > 4
+                ? LLVMVectorType(LLVMFloatTypeInContext(ctx), 2)
+                : LLVMFloatTypeInContext(ctx);
+        else
+            parts[i] = LLVMIntTypeInContext(ctx, (unsigned)(bytes * 8));
+    }
+    return n == 1 ? parts[0] : LLVMStructTypeInContext(ctx, parts, 2, 0);
+}
+
 AU_EXPORT LLVMTypeRef ll_fn(aether a, etype t, etype rtype, etype* args, int n_args, bool va) {
     type_guard;
     if (ll_share_owner(a, t)) return _lltype_slot(t);
@@ -1572,7 +1663,8 @@ AU_EXPORT LLVMTypeRef ll_fn(aether a, etype t, etype rtype, etype* args, int n_a
         for (int j = 0; j < n_args; j++)
             at[j] = _lltype_core(args[j], i);
         t->lltypes[i] = (ARef)LLVMFunctionType(
-            rtype ? _lltype_core(rtype, i) : LLVMVoidTypeInContext(ll_ctx(a, i)),
+            rtype ? abi_ret(a, ll_ctx(a, i), _lltype_core(rtype, i), rtype)
+                  : LLVMVoidTypeInContext(ll_ctx(a, i)),
             at, n_args, va);
     }
     free(at);
@@ -1697,6 +1789,27 @@ AU_EXPORT void ll_const_null(aether a, enode n, etype t) {
     emit_guard;
     for (int i = 0; i < ll_n(a); i++)
         n->values[i] = (ARef)LLVMConstNull(_lltype_core(t, i));
+}
+
+// a type made while its return struct had no body gets the struct's
+// C register shape now, before the function exists
+static void ll_fn_retype(aether a, etype ft, etype rt) {
+    for (int i = 0; i < ll_n(a); i++) {
+        LLVMTypeRef f  = (LLVMTypeRef)ft->lltypes[i];
+        LLVMTypeRef r  = f ? LLVMGetReturnType(f) : null;
+        // only a named struct is still undecided; a shape is final
+        if (!r || LLVMGetTypeKind(r) != LLVMStructTypeKind ||
+                !LLVMGetStructName(r))
+            continue;
+        LLVMTypeRef sh = abi_ret(a, ll_ctx(a, i), r, rt);
+        if (!sh || sh == r) continue;
+        unsigned     n  = LLVMCountParamTypes(f);
+        LLVMTypeRef* pt = calloc(n + 1, sizeof(LLVMTypeRef));
+        LLVMGetParamTypes(f, pt);
+        ft->lltypes[i] = (ARef)LLVMFunctionType(sh, pt, n,
+            LLVMIsFunctionVarArg(f));
+        free(pt);
+    }
 }
 
 // function declaration, one per module; fn's own lltype is the signature
@@ -3573,11 +3686,21 @@ AU_EXPORT bool aether_e_fn_return(aether a, Au o) {
             enode conv = e_create(a, (etype)u(etype, f->autype->rtype), o, false);
             enode ret_val = enode_value(conv, true);
             etype rtype = (etype)u(etype, f->autype->rtype);
-            if (rtype && rtype->autype->is_struct &&
-                LLVMGetTypeKind(LLVMTypeOf(_llvalue((enode)ret_val))) == LLVMPointerTypeKind) {
-                LLVMBuildRet(B, LLVMBuildLoad2(B, lltype(rtype), _llvalue((enode)ret_val), "struct_ret"));
+            LLVMValueRef rv = _llvalue((enode)ret_val);
+            // the function returns the struct's register shape: read the
+            // struct's memory as that shape
+            LLVMTypeRef  rs = LLVMGetReturnType(_lltype_slot((etype)f));
+            bool as_ptr = LLVMGetTypeKind(LLVMTypeOf(rv)) == LLVMPointerTypeKind;
+            if (rtype && rtype->autype->is_struct && (as_ptr ||
+                    rs != LLVMTypeOf(rv))) {
+                if (!as_ptr) {
+                    LLVMValueRef tmp = entry_alloca(a, LLVMTypeOf(rv), "ret_spill");
+                    LLVMBuildStore(B, rv, tmp);
+                    rv = tmp;
+                }
+                LLVMBuildRet(B, LLVMBuildLoad2(B, rs, rv, "struct_ret"));
             } else
-                LLVMBuildRet(B, _llvalue((enode)ret_val));
+                LLVMBuildRet(B, rv);
         }
         return false;
     }
@@ -4229,7 +4352,9 @@ enode aether_e_fn_call(aether a, efunc fn, array args, bool is_super, bool is_po
         rtype = etype(mod, a, autype, rtype->autype,
             meta_a, (Au)fn->autype->meta.a);
 
-    if (funcptr) F = LLVMFunctionType(lltype(rtype), arg_types, n_args, false);
+    if (funcptr) F = LLVMFunctionType(
+        abi_ret(a, a->module_ctx, lltype(rtype), rtype), arg_types,
+        n_args, false);
 
     // C++ virtual: word 0 of the object is the vtable; index the slot
     if (fn->autype->is_cpp_virtual && index > 0 && arg_values[0]) {
@@ -9817,6 +9942,14 @@ none etype_implement(etype t, bool w) { sequencer
             }
         }
 
+        // the return struct's body first: its C shape needs it
+        etype rt9 = (au->rtype && !au->is_sret_thunk) ?
+            u(etype, au->rtype) : null;
+        if (rt9 && rt9->autype && rt9->autype->is_struct &&
+                !rt9->autype->is_pointer) {
+            etype_implement(rt9, false);
+            ll_fn_retype(a, t, rt9);
+        }
         ll_func(a, (enode)fn, t, n);
 
         // fill out enode values for our args type pointer

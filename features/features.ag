@@ -2259,6 +2259,34 @@ expect func t_vec_module [] -> bool
     c: vec2f [ a.add[ b ] ]         # a struct method from the record; the result comes back by value
     return c.x == 4.0 && c.y == 6.0 && a.dot[ b ] == 11.0
 
+# small structs come back in C's registers, silver to silver too
+struct pair_i
+    a: i32
+    b: i32
+
+struct one_d
+    v: f64
+
+func ret_v2 [ x: f32 ] -> vec2f
+    return vec2f [ x, x * 2.0 ]
+
+func ret_v4 [ x: f32 ] -> vec4f
+    return vec4f [ x, x + 1.0, x + 2.0, x + 3.0 ]
+
+func ret_pair [ x: i32 ] -> pair_i
+    return pair_i [ a: x, b: x * 3 ]
+
+func ret_d [ x: f64 ] -> one_d
+    return one_d [ v: x * 0.5 ]
+
+expect func t_struct_return_abi [] -> bool
+    p : ret_v2[ 1.5 ]
+    q : ret_v4[ 2.0 ]
+    r : ret_pair[ 7 ]
+    d : ret_d[ 9.0 ]
+    return p.x == 1.5 && p.y == 3.0 && q.x == 2.0 && q.w == 5.0 &&
+           r.a == 7 && r.b == 21 && d.v == 4.5
+
 # element-wise ops on fixed-size local arrays
 expect func t_fixed_array_ops [] -> bool
     a : local i32 [ 3 ] [ 1, 2, 3 ]
