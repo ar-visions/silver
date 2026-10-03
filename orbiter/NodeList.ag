@@ -645,10 +645,32 @@ element SidePanel
                                        elements: orb.scene_els[] ]
             grid : Elements []
             grid['scene_grid'] = SceneGrid [ ]
-            t['scene_body'] = element [ area: Region { l0 t1.3 r0 b0 },
-                                        elements: grid ]
+            t['scene_body'] = element [
+                area: Region { l0 t1.3 r0 b35px }, elements: grid ]
         el
-            t['instance_panel'] = InstancePanel [ ]
+            t['instance_panel'] = InstancePanel [
+                area: Region { l0 t0 r0 b35px } ]
+        # the toolbar: the props and scenes tabs, the reload at right
+        scn : bool [ orb && orb.side_tab == 'scenes' ]
+        ready : bool [ au_live_get_pending[] == 1 ]
+        t['side_bar'] = StatusBar [ elements: Elements [
+            'side_tabs' : StatusTab [ buttons: vec string [] [
+                    'side_menu', 'side_scenes' ],
+                icon_ids: vec string [] [ 'menu', 'saturn' ],
+                icon_scale: 0.5, seg_line: rgba [ '#fff1' ],
+                manual: true, seg_radius: 0.0, use_spacing: false,
+                rest_fill: rgba [ '#0000' ],
+                sel_mask: (scn) ? 2 : 1,
+                # each the view bar's width: 1.66 font units
+                area: Region { l0 t0 w3.32 b0 } ],
+            # always here: lit up only when a reload is ready
+            'reload_ready' : StatusTab [
+                buttons: vec string [] [ 'reload_ready' ],
+                icon_ids: vec string [] [ 'recycle' ],
+                icon_scale: 0.5, manual: true, seg_radius: 0.0,
+                use_spacing: false, rest_fill: rgba [ '#0000' ],
+                disable_mask: (ready) ? 0 : 1,
+                area: Region { r0 t0 w35px b0 } ] ] ]
         return t
 
 # the scene cards as a grid in the side panel: a click loads

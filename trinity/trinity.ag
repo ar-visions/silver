@@ -4046,6 +4046,11 @@ Display Window
     # is e's top-left in the coordinates being drawn
     public func near_light_on [ cv: Canvas, e: element, ox: f32,
                                 oy: f32 ]
+        near_light_reach[ cv, e, ox, oy, 1.0 ]
+
+    # the same, its reach scaled
+    public func near_light_reach [ cv: Canvas, e: element, ox: f32,
+                                   oy: f32, scale: f32 ]
         e.near_used = true
         if [ e.near_glow <= 0.0 ] return
         sc : f32 [ cv.transform_scale[] ]
@@ -4054,7 +4059,7 @@ Display Window
             cv.transform_tx[] + (mouse.x - e.win_pos.x + ox) * sc ]
         y : f32 [
             cv.transform_ty[] + (mouse.y - e.win_pos.y + oy) * sc ]
-        cv.near_light[ x, y, near_reach * sc, e.near_glow ]
+        cv.near_light[ x, y, near_reach * scale * sc, e.near_glow ]
         cv.near_style[ 1.0, 0.0, null, near_y_fade ]
 
     public func find_target [ e: element, ev: Event,
@@ -6214,7 +6219,9 @@ Display Window
                 ni : bool [ layer.near_inset > 0.0
                              && layer.box_shadow ]
                 if [ nb || ni ]
-                    near_light_on[ draw_cv, e, 0.0, 0.0 ]
+                    near_light_reach[ draw_cv, e, 0.0, 0.0,
+                        (layer.near_reach > 0.0) ? layer.near_reach
+                        : 1.0 ]
                     draw_cv.near_style[ (nb) ? 1.0 : 0.0,
                                         layer.near_inset,
                                         layer.near_inset_color,
@@ -7073,6 +7080,8 @@ element TButtons
     public  seg_weights : vec f32
     # a 1px line between segments, lit by the pointer when near
     public  seg_line : rgba
+    # the group's own 1px outline
+    public  outline  : rgba [ '#ffffff0d' ]
 
     func seg_width [] -> f32
         n : i32 [ (buttons) ? buttons.count : 1 ]
@@ -7402,7 +7411,7 @@ element TButtons
         cv.set_stroke_size[ 1.0 ]
         cv.stroke_sides[ 1.0, 1.0, 1.0, 1.0 ]
         cv.stroke_offset[ -0.5 ]
-        cv.stroke_color[ rgba [ '#ffffff0d' ] ]
+        cv.stroke_color[ outline ]
         cv.rounded_rect[ 0.0, 0.0, dw, dh, seg_radius, seg_radius,
                          seg_radius, seg_radius ]
         cv.paint[ ]
@@ -7455,6 +7464,8 @@ element Splitter
     public min_size   : f32 [ 40.0 ]
     public snap_close : bool
     intern drag_ix    : i32
+    # the dragged pane's width when the drag began
+    intern drag_from  : f32
     intern last_n     : i32
     # divider px positions, hit-test + draw
     intern dseam      : vec f32
@@ -7486,7 +7497,8 @@ element Splitter
         if [ !inner ] return null
         return inner[ id ]
 
-    # extent > 0 sized, == 0 unset, < 0 snapped closed
+    # extent > 0 sized, == 0 unset, < 0 snapped closed (its negative is
+    # the width it had when the drag that closed it began)
     func target_of [ ch: element, span: f32, n: i32 ] -> f32
         if [ ch ]
             v : f32 [ ch.extent ]
@@ -7496,8 +7508,10 @@ element Splitter
         if [ share > 0.0 ] return span * share
         return (span - f32[ n - 1 ] * gap) / f32[ n ]
 
+    # shown < 0: closed by a snap, so an open grows from 0
     func shown_of [ ch: element, span: f32, n: i32 ] -> f32
         if [ ch && ch.extent_shown > 0.0 ] return ch.extent_shown
+        if [ ch && ch.extent_shown < 0.0 ] return 0.0
         t : f32 [ target_of[ ch, span, n ] ]
         if [ ch ] ch.extent_shown = t
         return t
@@ -7589,13 +7603,15 @@ element Splitter
             t : f32 [ target_of[ ch, span, n ] ]
             v : f32 [ shown_of[ ch, span, n ] ]
             d : f32 [ t - v ]
+            # a snapping split moves with a decay, dragged or not
             if [ d != 0.0 ]
-                if [ i != drag_ix || (d < 0.5 && d > -0.5) ]
+                if [ (i != drag_ix && !snap_close)
+                     || (d < 0.5 && d > -0.5) ]
                     v = t
                 el
                     v = filter_n[ v, t, 0.28, ux.frame_factor ]
                     moving = true
-                ch.extent_shown = v
+                ch.extent_shown = (v <= 0.0 && t == 0.0) ? -1.0 : v
         if [ moving ]
             pristine        = false
             ux.will_animate = true
@@ -7633,7 +7649,10 @@ element Splitter
         for [ di: i32 0, di < dseam.count, di += 1 ]
             d : f32 [ dseam[ di ] ]
             if [ at >= d - bar && at <= d + bar ]
-                if [ di + 1 < ids.count ] drag_ix = di + 1
+                if [ di + 1 < ids.count ]
+                    drag_ix = di + 1
+                    dk : element kid[ ids[ drag_ix ] ]
+                    drag_from = (dk) ? dk.extent_shown : 0.0
                 ux.set_capture[ a ]
                 ev.no_default   = true
                 ev.no_propagation = true
@@ -7668,12 +7687,15 @@ element Splitter
         trail : f32 [ span - after - gaps ]
         sz    : f32 [ trail - at ]
         closed : bool [ false ]
+        # it holds at its floor; dragged past half of it, it lets go
         if [ sz < min_size ]
-            closed = snap_close && sz < 20.0
+            closed = snap_close && sz < min_size * 0.5
             sz = (closed) ? 0.0 : min_size
         if [ sz > span - 60.0 ] sz = span - 60.0
         dch : element kid[ ids[ drag_ix ] ]
-        if [ dch ] dch.extent = (closed) ? -1.0 : sz
+        if [ dch ]
+            dch.extent = (closed)
+                ? -((drag_from > 0.0) ? drag_from : 1.0) : sz
         pristine        = false
         ux.will_animate = true
         ev.no_default   = true
