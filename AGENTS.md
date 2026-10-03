@@ -25,6 +25,21 @@ A comment states the one constraint the code can't show. Never more than one lin
 
 ---
 
+## Rule #3b — Lines: 72 columns max; names, never numbers
+
+Every line of a .ag module fits in 72 columns (tabs count 4).
+Break code inside [ ] after a comma, or before && / ||. A line
+break is not neutral in silver: a bracketless cast (`f32 i`)
+reads by line, so never break inside one.
+Allowed over 72, and only these: a line whose single name, URL
+or path is longer than the space left (Vulkan's own names), and
+a log / expect / fault message string.
+A variable is a name (a word or a short word like cv), or
+i / x / y. Never a numbered name (wx9, lp9, a9): pick a real
+name instead of a digit to dodge a clash.
+
+---
+
 ## Rule #4 — Isolate and validate every fix and feature
 
 Fix one component at a time. Reproduce the exact failure with the smallest focused test before editing. Change the component that owns the bug; do not add a workaround in another parser, model, build, or runtime layer. Run the focused test after the edit, then validate the affected module, then validate the requested integration target. Report each result separately. Do not call a fix complete unless its focused test and affected module both pass. If integration exposes another failure, treat it as a separate bug. Remove all temporary tracing before reporting results.
@@ -4405,6 +4420,32 @@ re-flowed to 72 (all words kept); code broken inside [ ] only.
    light behind both" kept (a real header).
 3. NEXT the other modules, one at a time, each built after,
    the same IR check per module.
+
+## Active work: public cleanup (Oct 2 2026)
+
+Kalen, before going public: every module to 72 columns, and no
+numbered names (wx9, lp9, a9): a name, or i/x/y. Short words
+like cv are fine. Locals and parameters only; members and
+method names keep theirs. Order: trinity first, then each
+module, built and tested before the next.
+Start (Oct 2): 43 modules, 122,101 lines, 11,162 over 72,
+3,311 distinct numbered names.
+1. IN PROGRESS trinity: 1,424 over 72, 483 numbered names.
+   Tools: support/cleanup.py names|wrap <file> [--apply],
+   support/ircmp.py <ll-dir-before> <ll-dir-after> [--nolines]
+   (each step: --verbose build, .ll copied, compared; a rename
+   or wrap must leave every function the same).
+   Done: numbered names renamed (member keys, GLSL params and
+   h264/win32/sync2/ycbcr444 kept); auto wrap 1,424 -> 768.
+   IR the same, `silver --test trinity` exit 0.
+   Left: 6 numbered locals (Canvas curve math, pk9w/pk9h,
+   set1_binds, b2_au); hand wraps: ternaries outside [ ],
+   bare casts -> f32[ x ], long arithmetic, GLSL in { }.
+   Crashes: 4, all from a renamed Vulkan struct key (fixed).
+2. OPEN orbiter: 2,574 over 72, 586 numbered names.
+3. OPEN the rest, largest first: scenes, asnes, ai,
+   hyperspace, n64, composer, rgen, webgfx, features, knes,
+   clouds, speech, spectra, flightsim, img, then the small ones.
 
 ## Active work: rec_qp (Sep 30 2026)
 

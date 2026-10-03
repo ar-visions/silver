@@ -14,13 +14,13 @@ class FileIcons
         if [ !jp.exists[] ] return
         mm : map jp.load[ typeid[ map ], null ]
         if [ !mm ] return
-        fe9 : map mm[ 'fileExtensions' ]
+        fe : map mm[ 'fileExtensions' ]
         fn9 : map mm[ 'fileNames' ]
-        # own copies: the parsed json is freed later, and a child map went
-        # with it while the nav list was still drawing icons
-        if [ fe9 ]
+        # own copies: the parsed json is freed later, and a child map
+        # went with it while the nav list was still drawing icons
+        if [ fe ]
             mi_exts = map string [string] []
-            for [ v9: string, k9: string ] in fe9
+            for [ v9: string, k9: string ] in fe
                 mi_exts[ k9 ] = v9
         if [ fn9 ]
             mi_names = map string [string] []
@@ -28,34 +28,38 @@ class FileIcons
                 mi_names[ k8 ] = v8
         mi_models = map SVGModel [string] []
 
-    # one model per (icon, size): draw_svg caches a single raster per model
-    func icon [ fname: string, sz9: i32 ] -> SVGModel
+    # one model per (icon, size): draw_svg caches a single raster per
+    # model
+    func icon [ fname: string, sz: i32 ] -> SVGModel
         if [ !mi_loaded ] load[]
         if [ !mi_exts ] return null
         nm : string
         if [ !fname ] return null
-        if [ mi_names && mi_names.contains[ fname ] ] nm = mi_names[ fname ]
+        if [ mi_names && mi_names.contains[ fname ] ]
+            nm = mi_names[ fname ]
         if [ !nm ]
             n : i32 [ fname.count ]
             for [ i: i32 0, i < n, i += 1 ]
                 if [ fname[i] == 46 && i + 1 < n ]
-                    ex9 : string fname.mid[ i + 1, n - i - 1 ]
-                    # typed search text carries any dot: an unknown key faults
-                    if [ mi_exts.contains[ ex9 ] ]
-                        nm = mi_exts[ ex9 ]
+                    ex : string fname.mid[ i + 1, n - i - 1 ]
+                    # typed search text carries any dot: an unknown key
+                    # faults
+                    if [ mi_exts.contains[ ex ] ]
+                        nm = mi_exts[ ex ]
                         break
         if [ !nm ] nm = string [ 'file' ]
-        return named[ nm, sz9 ]
+        return named[ nm, sz ]
 
     # direct icon by svg stem — tool rows name their icon
-    func named [ nm: string, sz9: i32 ] -> SVGModel
+    func named [ nm: string, sz: i32 ] -> SVGModel
         if [ !mi_loaded ] load[]
         if [ !mi_models ] mi_models = map SVGModel [string] []
-        key : '{nm}|{sz9}'
+        key : '{nm}|{sz}'
         mdl : SVGModel mi_models[ key ]
         if [ !mdl ]
-            # the editor view wears orbiter's own mark (the path-only svg).
-            # a fresh local: assigning over nm drops the caller's reference
+            # the editor view wears orbiter's own mark (the path-only
+            # svg). a fresh local: assigning over nm drops the caller's
+            # reference
             fn : string (nm == 'editor') ? 'orbiter4' : nm
             ip : path 'images/material/{fn}.svg'
             if [ !ip.exists[] ] ip = path 'images/{fn}.svg'

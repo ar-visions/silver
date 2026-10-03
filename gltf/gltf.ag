@@ -413,7 +413,8 @@ class Res
         return string[ buf ]
 
     # pack files (relative names under base) into dest .res
-    static func pack [ base: path, names: vec string, dest: path, pw: string, obscure: bool ] -> bool
+    static func pack [ base: path, names: vec string, dest: path,
+                       pw: string, obscure: bool ] -> bool
         n     : i32 [ names.count ]
         sizes : new u64 [ n ]
         nhash : new u64 [ n ]
@@ -426,7 +427,7 @@ class Res
                 log 'res: cannot open {base}/{nm}'
                 return false
             fseek[ fp, 0, SEEK_END ]
-            sz : u64 [ u64[ ftell[ fp ] ] ]
+            sz : u64 [ ftell[ fp ] ]
             fclose[ fp ]
             sizes[ i ] = sz
             nhash[ i ] = res_hname[ nm ]
@@ -438,7 +439,7 @@ class Res
         m  : u32 [ magic ]
         v  : u32 [ 2 ]
         ob : u32 [ (obscure) ? 1 : 0 ]
-        c  : u32 [ u32[ n ] ]
+        c  : u32 [ n ]
         fwrite[ @m,  4, 1, out ]
         fwrite[ @v,  4, 1, out ]
         fwrite[ @ob, 4, 1, out ]
@@ -473,7 +474,8 @@ class Res
         log 'res: packed {n} files -> {dest.chars} ({total} bytes, obscured={ob})'
         return true
 
-    func load [ res_path: path, base_dir: path, cache_dir: path, password: string ] -> bool
+    func load [ res_path: path, base_dir: path, cache_dir: path,
+                password: string ] -> bool
         isrc   = res_path
         ibase  = base_dir
         icache = cache_dir
@@ -583,9 +585,11 @@ class Res
 
     intern static mounts : vec Res
 
-    static func mount [ res_path: path, base_dir: path, cache_dir: path, password: string ] -> Res
+    static func mount [ res_path: path, base_dir: path, cache_dir: path,
+                        password: string ] -> Res
         arc : Res [ ]
-        if [ !arc.load[ res_path, base_dir, cache_dir, password ] ] return null
+        if [ !arc.load[ res_path, base_dir, cache_dir, password ] ]
+            return null
         if [ !mounts ] mounts = vec Res []
         mounts += arc
         return arc
@@ -722,7 +726,9 @@ class GltfModel
         if [ n.matrix.m[15] != 0.0 ] return n.matrix
         m : mat4f.identity[]
         m = m.translate[ n.translation ]
-        if [ n.rotation.x != 0 || n.rotation.y != 0 || n.rotation.z != 0 || n.rotation.w != 0 ]
+        if [
+            n.rotation.x != 0 || n.rotation.y != 0 || n.rotation.z != 0
+            || n.rotation.w != 0 ]
             m = m.rotate[ n.rotation ]
         if [ n.scale.x != 0 || n.scale.y != 0 || n.scale.z != 0 ]
             m = m.scale[ n.scale ]
@@ -758,18 +764,21 @@ class GltfModel
     func index [n: string] -> Node
         return find [n]
 
-    func node_transform [joints: JData, parent_mat: mat4f, node_index: i32, parent: GltfTransform] -> GltfTransform
+    func node_transform [joints: JData, parent_mat: mat4f,
+                          node_index: i32,
+                          parent: GltfTransform] -> GltfTransform
         node: nodes[node_index]
         node.processed = true
         transform: GltfTransform
 
         if [ node.joint_index >= 0 ]
             transform.jdata = joints
-            rotation_m4: mat4f [node.rotation]
+            rotation_m: mat4f [node.rotation]
             transform.local_mat = mat4f []
             transform.local_mat = transform.local_mat.translate [node.translation]
-            transform.local_mat = transform.local_mat.mul[ rotation_m4 ]
-            transform.local_mat = transform.local_mat.scale[ node.scale ]
+            transform.local_mat = transform.local_mat.mul[ rotation_m ]
+            transform.local_mat = transform.local_mat.scale[
+                node.scale ]
             transform.local_default = transform.local_mat
             transform.iparent = parent.istate
             transform.istate  = node.joint_index
@@ -777,7 +786,8 @@ class GltfModel
             joints.states[transform.istate] = state_mat
 
             for [ child_idx: i64 ] in node.children
-                ch: node_transform[ joints, state_mat, child_idx, transform]
+                ch: node_transform[ joints, state_mat, child_idx,
+                                    transform]
                 if [ch]
                     transform.ichildren += ch.istate
             

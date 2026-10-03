@@ -85,11 +85,13 @@ shader CanvasSDFCompute
     # storage buffer for edges, two vec4 each: x0, y0, x1, y1; then
     # free start, free end, implied (a fill's closing edge), inner
     attrib  edges    : StorageBuffer [
-        type:typeid[ CanvasSDFSurface ], id: CanvasSDFSurface.edges,   count:1, format:typeid[ vec4f ]
+        type:typeid[ CanvasSDFSurface ], id: CanvasSDFSurface.edges,
+        count:1, format:typeid[ vec4f ]
     ]
     # storage image for SDF output (R32F)
     attrib  sdf_out  : StorageImage  [
-        type:typeid[ CanvasSDFSurface ], id: CanvasSDFSurface.sdf_out, count:1, format:typeid[ f32 ]
+        type:typeid[ CanvasSDFSurface ], id: CanvasSDFSurface.sdf_out,
+        count:1, format:typeid[ f32 ]
     ]
 
     func compute [] -> GLSL none {
@@ -240,16 +242,20 @@ shader CanvasUI
     mutable clip_out2     : vec4f
     mutable clip_out3     : vec4f
     attrib  atlas      : LayoutBinding [
-        type:typeid[ CanvasUISurface ], id: CanvasUISurface.atlas, count:1, format:typeid[ u8 ]
+        type:typeid[ CanvasUISurface ], id: CanvasUISurface.atlas,
+        count:1, format:typeid[ u8 ]
     ]
     attrib  image      : LayoutBinding [
-        type:typeid[ CanvasUISurface ], id: CanvasUISurface.image, count:1, format:typeid[ rgba8 ]
+        type:typeid[ CanvasUISurface ], id: CanvasUISurface.image,
+        count:1, format:typeid[ rgba8 ]
     ]
     attrib  mask       : LayoutBinding [
-        type:typeid[ CanvasUISurface ], id: CanvasUISurface.mask, count:1, format:typeid[ rgba8 ]
+        type:typeid[ CanvasUISurface ], id: CanvasUISurface.mask,
+        count:1, format:typeid[ rgba8 ]
     ]
     attrib  clip       : LayoutBinding [
-        type:typeid[ CanvasUISurface ], id: CanvasUISurface.clip, count:1, format:typeid[ rgba8 ]
+        type:typeid[ CanvasUISurface ], id: CanvasUISurface.clip,
+        count:1, format:typeid[ rgba8 ]
     ]
 
     attrib  a_pos      : VertexInput    [ type:typeid[ vec2f ] ]
@@ -1280,10 +1286,12 @@ shader CanvasText
 
 
     attrib  atlas    : LayoutBinding [
-        type:typeid[ CanvasUISurface ], id: CanvasUISurface.atlas, count:1, format: typeid[ u8 ]
+        type:typeid[ CanvasUISurface ], id: CanvasUISurface.atlas,
+        count:1, format: typeid[ u8 ]
     ]
     attrib  clip     : LayoutBinding [
-        type:typeid[ CanvasUISurface ], id: CanvasUISurface.clip, count:1, format: typeid[ rgba8 ]
+        type:typeid[ CanvasUISurface ], id: CanvasUISurface.clip,
+        count:1, format: typeid[ rgba8 ]
     ]
     attrib  a_pos    : VertexInput    [ type:typeid[ vec2f ] ]
     attrib  a_uv     : VertexInput    [ type:typeid[ vec2f ] ]
@@ -1466,49 +1474,51 @@ class CanvasPath
         cursor_x = x
         cursor_y = y
 
-    func arc_to [ x1: f32, y1: f32, x2: f32, y2: f32, radius: f32 ]
-        dx0 : cursor_x - x1
-        dy0 : cursor_y - y1
-        dx1 : x2 - x1
-        dy1 : y2 - y1
-        len0 : sqrt[ dx0 * dx0 + dy0 * dy0 ]
-        len1 : sqrt[ dx1 * dx1 + dy1 * dy1 ]
-        if [ len0 < 0.001 || len1 < 0.001 ]
-            line_to [ x1, y1 ]
+    func arc_to [ corner_x: f32, corner_y: f32, to_x: f32, to_y: f32,
+                  radius: f32 ]
+        in_dx : cursor_x - corner_x
+        in_dy : cursor_y - corner_y
+        out_dx : to_x - corner_x
+        out_dy : to_y - corner_y
+        in_len : sqrt[ in_dx * in_dx + in_dy * in_dy ]
+        out_len : sqrt[ out_dx * out_dx + out_dy * out_dy ]
+        if [ in_len < 0.001 || out_len < 0.001 ]
+            line_to [ corner_x, corner_y ]
             return
 
-        dx0 = dx0 / len0
-        dy0 = dy0 / len0
-        dx1 = dx1 / len1
-        dy1 = dy1 / len1
+        in_dx = in_dx / in_len
+        in_dy = in_dy / in_len
+        out_dx = out_dx / out_len
+        out_dy = out_dy / out_len
 
-        cross : dx0 * dy1 - dy0 * dx1
+        cross : in_dx * out_dy - in_dy * out_dx
         if [ abs[ cross ] < 0.001 ]
-            line_to [ x1, y1 ]
+            line_to [ corner_x, corner_y ]
             return
 
         # tangent length
-        tl : radius / tan[acos[clamp[ dx0 * dx1 + dy0 * dy1, -1.0,
+        tl : radius / tan[acos[clamp[ in_dx * out_dx + in_dy * out_dy,
+                                      -1.0,
                                       1.0]] * 0.5]
 
         # tangent points
-        t0x : x1 + dx0 * tl
-        t0y : y1 + dy0 * tl
-        t1x : x1 + dx1 * tl
-        t1y : y1 + dy1 * tl
+        t0x : corner_x + in_dx * tl
+        t0y : corner_y + in_dy * tl
+        t1x : corner_x + out_dx * tl
+        t1y : corner_y + out_dy * tl
 
         # center
         sign : f32 [ 1.0 ]
         if [ cross < 0.0 ]
             sign = -1.0
-        ncx : x1 + dx0 * tl - dy0 * radius * sign
-        ncy : y1 + dy0 * tl + dx0 * radius * sign
+        ncx : corner_x + in_dx * tl - in_dy * radius * sign
+        ncy : corner_y + in_dy * tl + in_dx * radius * sign
 
-        a0 : atan2[ t0y - ncy, t0x - ncx ]
-        a1 : atan2[ t1y - ncy, t1x - ncx ]
+        from_angle : atan2[ t0y - ncy, t0x - ncx ]
+        to_angle : atan2[ t1y - ncy, t1x - ncx ]
 
         line_to [ t0x, t0y ]
-        flatten_arc [ a, ncx, ncy, radius, a0, a1 ]
+        flatten_arc [ a, ncx, ncy, radius, from_angle, to_angle ]
         cursor_x = t1x
         cursor_y = t1y
 
@@ -1533,9 +1543,9 @@ class CanvasPath
 
     func add_rounded_rect [ x: f32, y: f32, w: f32, h: f32, tl: f32,
                             tr: f32, br: f32, bl: f32 ]
-        half2 : f32 [ minf[ w, h ] * 0.5 ]
-        corner_radii = vec4f [ minf[ tl, half2 ], minf[ tr, half2 ],
-                               minf[ br, half2 ], minf[ bl, half2 ] ]
+        half : f32 [ minf[ w, h ] * 0.5 ]
+        corner_radii = vec4f [ minf[ tl, half ], minf[ tr, half ],
+                               minf[ br, half ], minf[ bl, half ] ]
         move_to [ x,     y     ]
         line_to [ x + w, y     ]
         line_to [ x + w, y + h ]
@@ -1549,10 +1559,12 @@ class CanvasPath
             is_closed = true
 
     # svg arc from the cursor to x, y; rot in radians
-    func elliptical_arc_to [ x: f32, y: f32, radius_x: f32, radius_y: f32, rot: f32, large: bool, sweep: bool ]
-        x0 : f32 [ cursor_x ]
-        y0 : f32 [ cursor_y ]
-        if [ x0 == x && y0 == y ]
+    func elliptical_arc_to [ x: f32, y: f32, radius_x: f32,
+                             radius_y: f32, rot: f32, large: bool,
+                             sweep: bool ]
+        from_x : f32 [ cursor_x ]
+        from_y : f32 [ cursor_y ]
+        if [ from_x == x && from_y == y ]
             return
         rx : f32 [ abs[ radius_x ] ]
         ry : f32 [ abs[ radius_y ] ]
@@ -1561,8 +1573,8 @@ class CanvasPath
             return
         cs  : f32 [ cos[ rot ] ]
         sn  : f32 [ sin[ rot ] ]
-        dx  : f32 [ (x0 - x) * 0.5 ]
-        dy  : f32 [ (y0 - y) * 0.5 ]
+        dx  : f32 [ (from_x - x) * 0.5 ]
+        dy  : f32 [ (from_y - y) * 0.5 ]
         x1p : f32 [ cs * dx + sn * dy ]
         y1p : f32 [ cs * dy - sn * dx ]
         lam : f32 [ (x1p * x1p) / (rx * rx) + (y1p * y1p) / (ry * ry) ]
@@ -1570,7 +1582,9 @@ class CanvasPath
             sl : f32 [ sqrt[ lam ] ]
             rx = rx * sl
             ry = ry * sl
-        num : f32 [ rx * rx * ry * ry - rx * rx * y1p * y1p - ry * ry * x1p * x1p ]
+        num : f32 [
+            rx * rx * ry * ry - rx * rx * y1p * y1p
+            - ry * ry * x1p * x1p ]
         den : f32 [ rx * rx * y1p * y1p + ry * ry * x1p * x1p ]
         co  : f32 [ 0.0 ]
         if [ den > 0.0 && num > 0.0 ]
@@ -1579,11 +1593,13 @@ class CanvasPath
             co = -co
         cxp : f32 [ co * rx * y1p / ry ]
         cyp : f32 [ -co * ry * x1p / rx ]
-        ccx : f32 [ cs * cxp - sn * cyp + (x0 + x) * 0.5 ]
-        ccy : f32 [ sn * cxp + cs * cyp + (y0 + y) * 0.5 ]
-        t1  : f32 [ atan2[ (y1p - cyp) / ry, (x1p - cxp) / rx ] ]
-        t2  : f32 [ atan2[ (-y1p - cyp) / ry, (-x1p - cxp) / rx ] ]
-        dt  : f32 [ t2 - t1 ]
+        ccx : f32 [ cs * cxp - sn * cyp + (from_x + x) * 0.5 ]
+        ccy : f32 [ sn * cxp + cs * cyp + (from_y + y) * 0.5 ]
+        start_angle  : f32 [ atan2[ (y1p - cyp) / ry,
+                                    (x1p - cxp) / rx ] ]
+        end_angle  : f32 [ atan2[ (-y1p - cyp) / ry,
+                                  (-x1p - cxp) / rx ] ]
+        dt  : f32 [ end_angle - start_angle ]
         if [ sweep && dt < 0.0 ]
             dt += 6.2831853
         if [ !sweep && dt > 0.0 ]
@@ -1594,23 +1610,25 @@ class CanvasPath
         step : f32 [ dt / f32 n ]
         k    : f32 [ 4.0 / 3.0 * tan[ step * 0.25 ] ]
         for [ i: i32 0, i < n, i += 1 ]
-            a0  : f32 [ t1 + step * f32 i ]
-            a1  : f32 [ a0 + step ]
-            c0  : f32 [ cos[ a0 ] ]
-            s0  : f32 [ sin[ a0 ] ]
-            c1  : f32 [ cos[ a1 ] ]
-            s1  : f32 [ sin[ a1 ] ]
-            u1  : f32 [ (c0 - k * s0) * rx ]
-            v1  : f32 [ (s0 + k * c0) * ry ]
-            u2  : f32 [ (c1 + k * s1) * rx ]
-            v2  : f32 [ (s1 - k * c1) * ry ]
-            ex  : f32 [ ccx + cs * c1 * rx - sn * s1 * ry ]
-            ey  : f32 [ ccy + sn * c1 * rx + cs * s1 * ry ]
+            seg_from  : f32 [ start_angle + step * f32 i ]
+            seg_to  : f32 [ seg_from + step ]
+            cos_from  : f32 [ cos[ seg_from ] ]
+            sin_from  : f32 [ sin[ seg_from ] ]
+            cos_to  : f32 [ cos[ seg_to ] ]
+            sin_to  : f32 [ sin[ seg_to ] ]
+            ctl_from_x  : f32 [ (cos_from - k * sin_from) * rx ]
+            ctl_from_y  : f32 [ (sin_from + k * cos_from) * ry ]
+            ctl_to_x  : f32 [ (cos_to + k * sin_to) * rx ]
+            ctl_to_y  : f32 [ (sin_to - k * cos_to) * ry ]
+            ex  : f32 [ ccx + cs * cos_to * rx - sn * sin_to * ry ]
+            ey  : f32 [ ccy + sn * cos_to * rx + cs * sin_to * ry ]
             if [ i == n - 1 ]
                 ex = x
                 ey = y
-            cubic_to [ ccx + cs * u1 - sn * v1, ccy + sn * u1 + cs * v1,
-                       ccx + cs * u2 - sn * v2, ccy + sn * u2 + cs * v2, ex, ey ]
+            cubic_to [ ccx + cs * ctl_from_x - sn * ctl_from_y,
+                       ccy + sn * ctl_from_x + cs * ctl_from_y,
+                       ccx + cs * ctl_to_x - sn * ctl_to_y,
+                       ccy + sn * ctl_to_x + cs * ctl_to_y, ex, ey ]
 
     # point on segment i at t; the segment starts at point i - 1
     func seg_at [ i: i32, t: f32 ] -> vec2f
@@ -1618,11 +1636,15 @@ class CanvasPath
         q  : PathPt [ points[i - 1] ]
         u  : f32 [ 1.0 - t ]
         if [ p.cmd == path_cmd.quad ]
-            return vec2f [ u * u * q.x + 2.0 * u * t * p.cx1 + t * t * p.x,
-                           u * u * q.y + 2.0 * u * t * p.cy1 + t * t * p.y ]
+            return vec2f [
+                u * u * q.x + 2.0 * u * t * p.cx1 + t * t * p.x,
+                u * u * q.y + 2.0 * u * t * p.cy1 + t * t * p.y ]
         if [ p.cmd == path_cmd.cubic ]
-            return vec2f [ u * u * u * q.x + 3.0 * u * u * t * p.cx1 + 3.0 * u * t * t * p.cx2 + t * t * t * p.x,
-                           u * u * u * q.y + 3.0 * u * u * t * p.cy1 + 3.0 * u * t * t * p.cy2 + t * t * t * p.y ]
+            return vec2f [
+                u * u * u * q.x + 3.0 * u * u * t * p.cx1
+                + 3.0 * u * t * t * p.cx2 + t * t * t * p.x,
+                u * u * u * q.y + 3.0 * u * u * t * p.cy1
+                + 3.0 * u * t * t * p.cy2 + t * t * t * p.y ]
         return vec2f [ q.x + (p.x - q.x) * t, q.y + (p.y - q.y) * t ]
 
     func seg_steps [ i: i32 ] -> i32
@@ -1635,27 +1657,27 @@ class CanvasPath
     func bounds [] -> vec4f
         if [ pcount == 0 ]
             return vec4f [ 0.0, 0.0, 0.0, 0.0 ]
-        x0 : f32 [ points[0].x ]
-        y0 : f32 [ points[0].y ]
-        x1 : f32 [ x0 ]
-        y1 : f32 [ y0 ]
+        left : f32 [ points[0].x ]
+        top : f32 [ points[0].y ]
+        right : f32 [ left ]
+        bottom : f32 [ top ]
         for [ i: i32 0, i < pcount, i += 1 ]
             p : PathPt [ points[i] ]
-            x0 = minf[ x0, p.x ]
-            y0 = minf[ y0, p.y ]
-            x1 = maxf[ x1, p.x ]
-            y1 = maxf[ y1, p.y ]
+            left = minf[ left, p.x ]
+            top = minf[ top, p.y ]
+            right = maxf[ right, p.x ]
+            bottom = maxf[ bottom, p.y ]
             if [ p.cmd == path_cmd.quad || p.cmd == path_cmd.cubic ]
-                x0 = minf[ x0, p.cx1 ]
-                y0 = minf[ y0, p.cy1 ]
-                x1 = maxf[ x1, p.cx1 ]
-                y1 = maxf[ y1, p.cy1 ]
+                left = minf[ left, p.cx1 ]
+                top = minf[ top, p.cy1 ]
+                right = maxf[ right, p.cx1 ]
+                bottom = maxf[ bottom, p.cy1 ]
             if [ p.cmd == path_cmd.cubic ]
-                x0 = minf[ x0, p.cx2 ]
-                y0 = minf[ y0, p.cy2 ]
-                x1 = maxf[ x1, p.cx2 ]
-                y1 = maxf[ y1, p.cy2 ]
-        return vec4f [ x0, y0, x1 - x0, y1 - y0 ]
+                left = minf[ left, p.cx2 ]
+                top = minf[ top, p.cy2 ]
+                right = maxf[ right, p.cx2 ]
+                bottom = maxf[ bottom, p.cy2 ]
+        return vec4f [ left, top, right - left, bottom - top ]
 
     # signed crossings of the ray from x, y toward +x
     func edge_winding [ ax: f32, ay: f32, bx: f32, by: f32, x: f32,
@@ -1702,7 +1724,9 @@ class CanvasPath
             pv : vec2f [ seg_at[ i, 0.0 ] ]
             for [ s: i32 1, s <= n, s += 1 ]
                 q : vec2f [ seg_at[ i, f32 s / f32 n ] ]
-                total += sqrt[ (q.x - pv.x) * (q.x - pv.x) + (q.y - pv.y) * (q.y - pv.y) ]
+                total += sqrt[
+                    (q.x - pv.x) * (q.x - pv.x)
+                    + (q.y - pv.y) * (q.y - pv.y) ]
                 pv = q
         return total
 
@@ -1716,7 +1740,10 @@ class CanvasPath
             pv : vec2f [ seg_at[ i, 0.0 ] ]
             for [ s: i32 1, s <= n, s += 1 ]
                 q  : vec2f [ seg_at[ i, f32 s / f32 n ] ]
-                dl : f32 [ sqrt[ (q.x - pv.x) * (q.x - pv.x) + (q.y - pv.y) * (q.y - pv.y) ] ]
+                dl : f32 [
+                    sqrt[
+                        (q.x - pv.x) * (q.x - pv.x)
+                        + (q.y - pv.y) * (q.y - pv.y) ] ]
                 if [ dl > 0.0 && walked + dl >= dist ]
                     t : f32 [ (dist - walked) / dl ]
                     return vec4f [ pv.x + (q.x - pv.x) * t,
@@ -1797,14 +1824,15 @@ class Gradient
 
         for [ i: i32 1, i < n, i += 1 ]
             if [ tc <= stops[i].pos ]
-                s0 : GradientStop stops[i - 1]
-                s1 : GradientStop stops[i]
+                prev_stop : GradientStop stops[i - 1]
+                next_stop : GradientStop stops[i]
                 # lerp factor between stops
-                span : f32 [ s1.pos - s0.pos ]
+                span : f32 [ next_stop.pos - prev_stop.pos ]
                 if [ span < 0.0001 ]
-                    return s1.color
-                frac : f32 [ tc - s0.pos / span ]
-                return color_lerp [ s0.color, s1.color, frac ]
+                    return next_stop.color
+                frac : f32 [ tc - prev_stop.pos / span ]
+                return color_lerp [ prev_stop.color, next_stop.color,
+                                    frac ]
 
         return stops[n - 1].color
 
@@ -1832,11 +1860,11 @@ class Gradient
             dx : px - x0
             dy : py - y0
             angle : atan2[ dy, dx ] - x1
-            PI2 : f32 [ 6.2831853 ]
+            PI : f32 [ 6.2831853 ]
             # normalize to [0..1]
             if [ angle < 0.0 ]
-                angle += PI2
-            return clamp[ angle / PI2, 0.0, 1.0 ]
+                angle += PI
+            return clamp[ angle / PI, 0.0, 1.0 ]
         default
             return 0.0
 
@@ -2047,13 +2075,14 @@ Render Canvas
         VK : vk
         ui_shader = CanvasUI [ vk: vk ]
         if [ width <= 0 || height <= 0 ]
-            test2 :  2
-            test2 += 2
+            test :  2
+            test += 2
         sdf_w : i32 [ max[ width  / 2, 1 ] ]
         sdf_h : i32 [ max[ height / 2, 1 ] ]
         stag : string [ (tag) ? tag : 'sdf' ]
         sdf_tex = Texture [ vk: vk, w: w, width: sdf_w, height: sdf_h,
-            pixel_format: Pixel.f32, surface: Surface.color, is_storage: true, tag: stag ]
+            pixel_format: Pixel.f32, surface: Surface.color,
+            is_storage: true, tag: stag ]
         ft_lib   = ft_init[]
         canvas_samplers : map Au[string] [ 'image': sdf_tex,
                 'atlas': sdf_tex, 'mask': sdf_tex, 'clip': sdf_tex ]
@@ -2065,7 +2094,8 @@ Render Canvas
         edge_buf_capacity = 1024
         edge_bytes : i32 [ edge_buf_capacity * 32 ]
         edge_buf = Buffer [ vk: vk, size: edge_bytes,
-            u_storage: true, m_host_visible: true, m_host_coherent: true ]
+            u_storage: true, m_host_visible: true,
+            m_host_coherent: true ]
         compute_samplers : map Au[string] [ 'edges': edge_buf,
                 'sdf_out': sdf_tex ]
         compute_model : Model [ vk: vk, w: w, s: sdf_compute,
@@ -2151,8 +2181,8 @@ Render Canvas
         content_w = rw
         content_h = rh
         s  : f32 [ (w.scale > 0) ? w.scale : 1.0 ]
-        pw : i32 [ i32[ rw * s ] ]
-        ph : i32 [ i32[ rh * s ] ]
+        pw : i32 [ rw * s ]
+        ph : i32 [ rh * s ]
         qw : i32 [ pw ]
         qh : i32 [ ph ]
         if [ quantize ]
@@ -2164,7 +2194,7 @@ Render Canvas
             if [ qh < height ] qh = height
         # capacity unchanged — no realloc
         if [ qw == width && qh == height ] return a
-        rz0 : i64 [ epoch_micros[] ]
+        rz : i64 [ epoch_micros[] ]
         vk.resize_calls += 1
         # no global stall: update[] below fences THIS render's own frame
         # before it tears down attachments, which is all we are racing
@@ -2182,7 +2212,7 @@ Render Canvas
         blur_stages = null
         blur_v_arr  = null
         blur_h_arr  = null
-        vk.resize_us += epoch_micros[] - rz0
+        vk.resize_us += epoch_micros[] - rz
         return a
 
 
@@ -2201,10 +2231,12 @@ Render Canvas
                 cp = u32[ b ]
                 i += 1
             el [ b >= 240 && i + 3 < n ]
-                cp = u32[ ((b & 7) << 18) | ((text[i + 1] & 63) << 12) | ((text[i + 2] & 63) << 6) | (text[i + 3] & 63) ]
+                cp = u32[
+                    ((b & 7) << 18) | ((text[i + 1] & 63) << 12) | ((text[i + 2] & 63) << 6) | (text[i + 3] & 63) ]
                 i += 4
             el [ b >= 224 && i + 2 < n ]
-                cp = u32[ ((b & 15) << 12) | ((text[i + 1] & 63) << 6) | (text[i + 2] & 63) ]
+                cp = u32[
+                    ((b & 15) << 12) | ((text[i + 1] & 63) << 6) | (text[i + 2] & 63) ]
                 i += 3
             el [ b >= 192 && i + 1 < n ]
                 cp = u32[ ((b & 31) << 6) | (text[i + 1] & 63) ]
@@ -2362,7 +2394,10 @@ Render Canvas
             return font.line_height / cs
         return states[state_depth - 1].line_height
 
-    public func draw_selection [ x0: f32, y0: f32, lh: f32, cw: f32, scroll: f32, by: f32, bw: f32, bh: f32, a_line: i32, a_col: i32, s_line: i32, s_col: i32, color: rgba ]
+    public func draw_selection [ x: f32, top: f32, lh: f32, cw: f32,
+                                 scroll: f32, by: f32, bw: f32, bh: f32,
+                                 a_line: i32, a_col: i32, s_line: i32,
+                                 s_col: i32, color: rgba ]
         if [ s_line < 0 ] return
         before     : bool [ a_line < s_line
                             || (a_line == s_line && a_col <= s_col) ]
@@ -2375,11 +2410,14 @@ Render Canvas
         stroke_width[ 0.0 ]
         fill_color[ color ]
         for [ li: i32 start_line, li <= end_line, li += 1 ]
-            y : f32 [ y0 + f32[li] * lh - scroll ]
+            y : f32 [ top + f32[li] * lh - scroll ]
             if [ y + lh < by || y > by + bh ] continue
-            cx0 : f32 [ (li == start_line) ? f32[start_col] * cw : 0.0 ]
-            cx1 : f32 [ (li == end_line)   ? f32[end_col]   * cw : bw ]
-            rounded_rect[ x0 + cx0, y + 1.0, cx1 - cx0, lh - 2.0, 4.0,
+            sel_left : f32 [
+                (li == start_line) ? f32[start_col] * cw : 0.0 ]
+            sel_right : f32 [
+                (li == end_line)   ? f32[end_col]   * cw : bw ]
+            rounded_rect[ x + sel_left, y + 1.0, sel_right - sel_left,
+                          lh - 2.0, 4.0,
                           4.0, 4.0, 4.0 ]
             paint[]
         restore[]
@@ -2389,15 +2427,18 @@ Render Canvas
         sz : i32 [ states[state_depth - 1].font_size ]
         if [ sz <= 0 ] sz = 22
         # every size rides the font unit: 22 is unit 1.0 at rest
-        fu  : f32 [ (vk.font_unit > 0) ? f32[ vk.font_unit ] / 22.0 : 1.0 ]
+        fu  : f32 [
+            (vk.font_unit > 0) ? f32[ vk.font_unit ] / 22.0 : 1.0 ]
         ds  : f32 [ ((w.scale > 0) ? w.scale : 1.0) * fu ]
-        dsz : i32 [ i32[ sz * ds ] ]
+        dsz : i32 [ sz * ds ]
         if [ dsz <= 0 ] dsz = sz
         if [ !vk.font_cache ] vk.font_cache = map Au [ string ] []
         key : string 'SpaceMono-Combined@{dsz}'
         cf  : CanvasFont vk.font_cache[ key ]
         if [ !cf ]
-            cf = CanvasFont [ ft_lib: ft_lib, uri: 'fonts/SpaceMono-Combined.ttf', size_px: dsz ]
+            cf = CanvasFont [ ft_lib: ft_lib,
+                              uri: 'fonts/SpaceMono-Combined.ttf',
+                              size_px: dsz ]
             vk.font_cache[ key ] = cf
         font = cf
 
@@ -2464,7 +2505,8 @@ Render Canvas
                       y_fade: f32 ]
         states[state_depth - 1].near_opts  = vec4f [ border, inset,
                 y_fade, 0.0 ]
-        states[state_depth - 1].near_inset = (inset_color) ? sk_color[ inset_color ] : vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+        states[state_depth - 1].near_inset = (inset_color) ? sk_color[
+            inset_color ] : vec4f [ 0.0, 0.0, 0.0, 0.0 ]
 
     func stroke_grad_radial [ r: bool ]
         states[state_depth - 1].stroke_grad_radial = r
@@ -2480,26 +2522,28 @@ Render Canvas
     func transform_scale [] -> f32
         return states[state_depth - 1].transform.ma
 
-    func set_crop [ x0: f32, y0: f32, x1: f32, y1: f32 ]
-        states[state_depth - 1].crop = vec4f [ x0, y0, x1, y1 ]
+    func set_crop [ left: f32, top: f32, right: f32, bottom: f32 ]
+        states[state_depth - 1].crop = vec4f [ left, top, right,
+                                               bottom ]
 
     func clear_crop []
         states[state_depth - 1].crop = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
 
     # crop to a rect inside whatever crop is already set: an inner
     # scroller within an outer one keeps the outer's edges
-    func crop_within [ x0: f32, y0: f32, x1: f32, y1: f32 ]
+    func crop_within [ left: f32, top: f32, right: f32, bottom: f32 ]
         c : vec4f [ states[state_depth - 1].crop ]
-        nx0 : f32 [ x0 ]
-        ny0 : f32 [ y0 ]
-        nx1 : f32 [ x1 ]
-        ny1 : f32 [ y1 ]
+        new_left : f32 [ left ]
+        new_top : f32 [ top ]
+        new_right : f32 [ right ]
+        new_bottom : f32 [ bottom ]
         if [ c.z > c.x ]
-            if [ c.x > nx0 ] nx0 = c.x
-            if [ c.y > ny0 ] ny0 = c.y
-            if [ c.z < nx1 ] nx1 = c.z
-            if [ c.w < ny1 ] ny1 = c.w
-        states[state_depth - 1].crop = vec4f [ nx0, ny0, nx1, ny1 ]
+            if [ c.x > new_left ] new_left = c.x
+            if [ c.y > new_top ] new_top = c.y
+            if [ c.z < new_right ] new_right = c.z
+            if [ c.w < new_bottom ] new_bottom = c.w
+        states[state_depth - 1].crop = vec4f [ new_left, new_top,
+                                               new_right, new_bottom ]
 
     # CSS box-shadow slot i (0 on top, 4 slots); alpha 0 clears
     func shadow [ i: i32, color: rgba, x: f32, y: f32, blur: f32,
@@ -2540,7 +2584,8 @@ Render Canvas
 
     func has_shadows [] -> bool
         st : states[state_depth - 1]
-        return st.shadow_color0.w > 0.0 || st.shadow_color1.w > 0.0 || st.shadow_color2.w > 0.0 || st.shadow_color3.w > 0.0
+        return st.shadow_color0.w > 0.0 || st.shadow_color1.w > 0.0 ||
+            st.shadow_color2.w > 0.0 || st.shadow_color3.w > 0.0
 
     # farthest an outer shadow reaches past its shape, px
     func shadow_reach [] -> f32
@@ -2592,8 +2637,8 @@ Render Canvas
         if [ state_depth == 0 ] return 1.0
         return states[state_depth - 1].opacity
 
-    func set_image_tint [ r: f32, g: f32, b: f32, a2: f32 ]
-        img_tint = vec4f [ r, g, b, a2 ]
+    func set_image_tint [ r: f32, g: f32, b: f32, alpha: f32 ]
+        img_tint = vec4f [ r, g, b, alpha ]
 
     func set_blur_radius [ br: f32 ]
         states[state_depth - 1].blur_rad = br
@@ -2621,16 +2666,20 @@ Render Canvas
     # ---- transform ----
 
     func translate [ tx: f32, ty: f32 ]
-        states[state_depth - 1].transform = states[state_depth - 1].transform.translate [ tx, ty ]
+        states[state_depth - 1].transform = states[state_depth
+            - 1].transform.translate [ tx, ty ]
 
     func scale [ s: f32 ]
-        states[state_depth - 1].transform = states[state_depth - 1].transform.scale [ s ]
+        states[state_depth - 1].transform = states[state_depth
+            - 1].transform.scale [ s ]
 
     func scale_xy [ sx: f32, sy: f32 ]
-        states[state_depth - 1].transform = states[state_depth - 1].transform.scale_xy [ sx, sy ]
+        states[state_depth - 1].transform = states[state_depth
+            - 1].transform.scale_xy [ sx, sy ]
 
     func rotate [ radians: f32 ]
-        states[state_depth - 1].transform = states[state_depth - 1].transform.rotate [ radians ]
+        states[state_depth - 1].transform = states[state_depth
+            - 1].transform.rotate [ radians ]
 
 
     func move_to [ x: f32, y: f32 ]
@@ -2646,8 +2695,9 @@ Render Canvas
                     y: f32 ]
         path.cubic_to [ c1x, c1y, c2x, c2y, x, y ]
 
-    func arc_to [ x1: f32, y1: f32, x2: f32, y2: f32, radius: f32 ]
-        path.arc_to [ x1, y1, x2, y2, radius ]
+    func arc_to [ corner_x: f32, corner_y: f32, to_x: f32, to_y: f32,
+                  radius: f32 ]
+        path.arc_to [ corner_x, corner_y, to_x, to_y, radius ]
 
     func rect_to [ x: f32, y: f32, rw: f32, rh: f32 ]
         path.add_rect [ x, y, rw, rh ]
@@ -2694,7 +2744,8 @@ Render Canvas
         if [ text_vbo_idx % text_ring_n == 0 && text_vbo_idx > 0 ]
             sync_fence[]
         # a canvas that draws no text keeps one slot, never all 64
-        while [ i32[ text_vbo_ring.count ] <= text_vbo_idx % text_ring_n ]
+        while [
+            i32[ text_vbo_ring.count ] <= text_vbo_idx % text_ring_n ]
             text_ring_add[]
         text_vbo = text_vbo_ring[ text_vbo_idx % text_ring_n ]
         text_pipeline.vbo = text_vbo
@@ -2706,39 +2757,39 @@ Render Canvas
                       x: f32, y: f32 ]
         inv : f32 [ (w.scale > 0) ? 1.0 / w.scale : 1.0 ]
         atlas_size : f32 [ f32 glyph_atlas.size ]
-        x0 : f32 [ x + f32 slot.bearing_x * inv ]
-        x1 : f32 [ x0 + f32 slot.atlas_w * inv ]
-        y0 : f32 [ y - f32 slot.bearing_y * inv ]
-        y1 : f32 [ y0 + f32 slot.atlas_h * inv ]
-        u0 : f32 [ f32 slot.atlas_x                  / atlas_size ]
-        v0 : f32 [ f32 slot.atlas_y                  / atlas_size ]
-        u1 : f32 [ f32 (slot.atlas_x + slot.atlas_w) / atlas_size ]
-        v1 : f32 [ f32 (slot.atlas_y + slot.atlas_h) / atlas_size ]
+        left : f32 [ x + f32 slot.bearing_x * inv ]
+        right : f32 [ left + f32 slot.atlas_w * inv ]
+        top : f32 [ y - f32 slot.bearing_y * inv ]
+        bottom : f32 [ top + f32 slot.atlas_h * inv ]
+        u_left : f32 [ f32 slot.atlas_x                  / atlas_size ]
+        v_top : f32 [ f32 slot.atlas_y                  / atlas_size ]
+        u_right : f32 [ f32 (slot.atlas_x + slot.atlas_w) / atlas_size ]
+        v_bottom : f32 [ f32 (slot.atlas_y + slot.atlas_h) / atlas_size ]
         base : i32 [ vi * 4 ]
-        verts[ base +  0 ] = x0
-        verts[ base +  1 ] = y0
-        verts[ base +  2 ] = u0
-        verts[ base +  3 ] = v0
-        verts[ base +  4 ] = x1
-        verts[ base +  5 ] = y0
-        verts[ base +  6 ] = u1
-        verts[ base +  7 ] = v0
-        verts[ base +  8 ] = x0
-        verts[ base +  9 ] = y1
-        verts[ base + 10 ] = u0
-        verts[ base + 11 ] = v1
-        verts[ base + 12 ] = x1
-        verts[ base + 13 ] = y0
-        verts[ base + 14 ] = u1
-        verts[ base + 15 ] = v0
-        verts[ base + 16 ] = x1
-        verts[ base + 17 ] = y1
-        verts[ base + 18 ] = u1
-        verts[ base + 19 ] = v1
-        verts[ base + 20 ] = x0
-        verts[ base + 21 ] = y1
-        verts[ base + 22 ] = u0
-        verts[ base + 23 ] = v1
+        verts[ base +  0 ] = left
+        verts[ base +  1 ] = top
+        verts[ base +  2 ] = u_left
+        verts[ base +  3 ] = v_top
+        verts[ base +  4 ] = right
+        verts[ base +  5 ] = top
+        verts[ base +  6 ] = u_right
+        verts[ base +  7 ] = v_top
+        verts[ base +  8 ] = left
+        verts[ base +  9 ] = bottom
+        verts[ base + 10 ] = u_left
+        verts[ base + 11 ] = v_bottom
+        verts[ base + 12 ] = right
+        verts[ base + 13 ] = top
+        verts[ base + 14 ] = u_right
+        verts[ base + 15 ] = v_top
+        verts[ base + 16 ] = right
+        verts[ base + 17 ] = bottom
+        verts[ base + 18 ] = u_right
+        verts[ base + 19 ] = v_bottom
+        verts[ base + 20 ] = left
+        verts[ base + 21 ] = bottom
+        verts[ base + 22 ] = u_left
+        verts[ base + 23 ] = v_bottom
 
     func text_end [ fnt: CanvasFont, vi: i32 ]
         text_vbo.vertex_count = vi
@@ -2759,8 +2810,8 @@ Render Canvas
         pen_y : f32 [ pen_y_in ]
         st    : states[state_depth - 1]
         crop_active : bool [ st.crop.z > st.crop.x ]
-        crop_x0 : f32 [ st.crop.x ]
-        crop_x1 : f32 [ st.crop.z ]
+        crop_left : f32 [ st.crop.x ]
+        crop_right : f32 [ st.crop.z ]
 
         i : i32 [ 0 ]
         while [ i < display.count ]
@@ -2770,10 +2821,12 @@ Render Canvas
                 cp = u32[ b ]
                 i += 1
             el [ b >= 240 && i + 3 < display.count ]
-                cp = u32[ ((b & 7) << 18) | ((display[i + 1] & 63) << 12) | ((display[i + 2] & 63) << 6) | (display[i + 3] & 63) ]
+                cp = u32[
+                    ((b & 7) << 18) | ((display[i + 1] & 63) << 12) | ((display[i + 2] & 63) << 6) | (display[i + 3] & 63) ]
                 i += 4
             el [ b >= 224 && i + 2 < display.count ]
-                cp = u32[ ((b & 15) << 12) | ((display[i + 1] & 63) << 6) | (display[i + 2] & 63) ]
+                cp = u32[
+                    ((b & 15) << 12) | ((display[i + 1] & 63) << 6) | (display[i + 2] & 63) ]
                 i += 3
             el [ b >= 192 && i + 1 < display.count ]
                 cp = u32[ ((b & 31) << 6) | (display[i + 1] & 63) ]
@@ -2785,10 +2838,10 @@ Render Canvas
             if [ slot.cached && slot.atlas_w > 0 && slot.atlas_h > 0 ]
                 if [ vi + 6 > text_max_verts ]
                     break
-                x0 : f32 [ pen_x + f32 slot.bearing_x * inv ]
-                x1 : f32 [ x0 + f32 slot.atlas_w * inv ]
-                if [ crop_active && x0 > crop_x1 ] break
-                if [ crop_active && x1 < crop_x0 ]
+                glyph_left : f32 [ pen_x + f32 slot.bearing_x * inv ]
+                glyph_right : f32 [ glyph_left + f32 slot.atlas_w * inv ]
+                if [ crop_active && glyph_left > crop_right ] break
+                if [ crop_active && glyph_right < crop_left ]
                     pen_x += f32 slot.advance * inv
                     continue
                 glyph_quad[ verts, vi, slot, pen_x, pen_y ]
@@ -2838,16 +2891,23 @@ Render Canvas
         states[state_depth - 1].transform = affine [ ma: ma, mb: mb,
                 mc: mc, md: md, tx: tx, ty: ty ]
 
-    func draw_text [ text: string, bounds: rect, align: vec2f, offset: vec2f, overflow: Overflow, shadow: BoxShadow ] -> rect
+    func draw_text [ text: string, bounds: rect, align: vec2f,
+                     offset: vec2f, overflow: Overflow,
+                     shadow: BoxShadow ] -> rect
         if [ !text ] return bounds
         ensure_font[]
         if [ !font ] return bounds
 
-        display : string [ (overflow == Overflow.ellipsis) ? text_ellipsis[ text, bounds.w ] : text ]
+        display : string [
+            (overflow == Overflow.ellipsis)
+            ? text_ellipsis[ text, bounds.w ] : text ]
         metrics     : measure_text[ display ]
-        tx     : f32 [ bounds.x + (bounds.w - metrics.w) * align.x + offset.x ]
+        tx     : f32 [
+            bounds.x + (bounds.w - metrics.w) * align.x + offset.x ]
         font_h : f32 [ metrics.ascent - metrics.descent ]
-        ty     : f32 [ bounds.y + metrics.ascent + (bounds.h - font_h) * align.y + offset.y ]
+        ty     : f32 [
+            bounds.y + metrics.ascent + (bounds.h - font_h) * align.y
+            + offset.y ]
         # centred text centres its capitals, not the line box
         cw     : f32 [ 1.0 - abs[ align.y * 2.0 - 1.0 ] ]
         if [ cw > 0.0 && metrics.cap_height > 0.0 ]
@@ -2878,7 +2938,8 @@ Render Canvas
         text_shader.text_grad      = st.text_grad
         text_shader.text_color_pos = st.text_color_pos
         text_shader.text_grad_pos  = st.text_grad_pos
-        text_shader.grad_params    = vec4f [ (st.text_grad_mirror) ? 1.0 : 0.0, 0.0, 0.0, 0.0 ]
+        text_shader.grad_params    = vec4f [
+            (st.text_grad_mirror) ? 1.0 : 0.0, 0.0, 0.0, 0.0 ]
         draw_text_pass[ display, metrics, pen_x, pen_y ]
         return rect [ x: tx, y: ty - metrics.ascent, w: metrics.w,
                       h: metrics.h ]
@@ -2919,7 +2980,8 @@ Render Canvas
         ui_shader.near_inset      = st.near_inset
         ui_shader.stroke_opts = vec4f [ f32 i32 st.stroke_join, f32 i32 st.stroke_cap, 0.0, 0.0 ]
         ui_shader.xform_row0 = vec4f [ st.transform.ma, st.transform.mb,
-                                       st.transform.mc, st.transform.md ]
+                                       st.transform.mc,
+                                       st.transform.md ]
         ui_shader.xform_row1 = vec4f [ st.transform.tx,
                                        st.transform.ty, 0.0, 0.0 ]
         ui_shader.image_tint = img_tint
@@ -2942,7 +3004,8 @@ Render Canvas
         printf[ "  params     = (sw=%f, op=%f, blur=%f, mode=%f)\n",
             st.stroke_width, st.opacity, st.blur_rad, 0.0 ]
         printf[ "  xform_row0 = (ma=%f, mb=%f, mc=%f, md=%f)\n",
-            st.transform.ma, st.transform.mb, st.transform.mc, st.transform.md ]
+            st.transform.ma, st.transform.mb, st.transform.mc,
+            st.transform.md ]
         printf[ "  xform_row1 = (tx=%f, ty=%f, 0, 0)\n",
             st.transform.tx, st.transform.ty ]
         printf[ "  viewport   = (%f, %f)\n", f32 width, f32 height ]
@@ -2957,7 +3020,8 @@ Render Canvas
             if [ n >= 1 ]
                 ui_shader.grad_c0 = color_to_vec4 [ g.stops[0].color ]
             if [ n >= 2 ]
-                ui_shader.grad_c1 = color_to_vec4 [ g.stops[n - 1].color ]
+                ui_shader.grad_c1 = color_to_vec4 [
+                    g.stops[n - 1].color ]
             ui_shader.stroke_opts.z = (g.mirror) ? 1.0 : 0.0
             return f32 [i32[g.kind]]
         ui_shader.stroke_opts.z = 0.0
@@ -3040,16 +3104,16 @@ Render Canvas
         states[state_depth - 1].stroke_sides = vec4f [ top, right,
                 bottom, left ]
 
-    func draw_svg [ mdl: SVGModel, ox0: f32, oy0: f32, rw0: f32,
-                    rh0: f32 ]
+    func draw_svg [ mdl: SVGModel, at_x: f32, at_y: f32, want_w: f32,
+                    want_h: f32 ]
         if [ !mdl || !mdl.shapes || mdl.shapes.count == 0 ]
             return
         # whole pixels: the cache's reduction then draws 1:1, no
         # resample
-        ox : f32 [ round[ ox0 ] ]
-        oy : f32 [ round[ oy0 ] ]
-        rw : f32 [ round[ rw0 ] ]
-        rh : f32 [ round[ rh0 ] ]
+        ox : f32 [ round[ at_x ] ]
+        oy : f32 [ round[ at_y ] ]
+        rw : f32 [ round[ want_w ] ]
+        rh : f32 [ round[ want_h ] ]
         if [ rw < 1.0 || rh < 1.0 ]
             return
         tf : vec4f [ states[state_depth - 1].fill_color ]
@@ -3066,15 +3130,18 @@ Render Canvas
                             || mdl.cache_rh != rh ]
         if [ need_alloc || !tint_same ]
             ps   : i32 [ (mdl.pixel_scale > 0) ? mdl.pixel_scale : 2 ]
-            cw4  : i32 [ i32( rw ) * ps ]
-            ch4  : i32 [ i32( rh ) * ps ]
-            if [ cw4 < 1 ] cw4 = 1
-            if [ ch4 < 1 ] ch4 = 1
+            cw  : i32 [ i32( rw ) * ps ]
+            ch  : i32 [ i32( rh ) * ps ]
+            if [ cw < 1 ] cw = 1
+            if [ ch < 1 ] ch = 1
             if [ need_alloc ]
                 # the store owns the canvas: it drops the old, holds the
                 # new drawn back at 1/ps: the reduce pass averages 4x4
                 # texels
-                mdl.cache = Canvas [ vk: vk, w: w, format: Pixel.rgba8, width: cw4, height: ch4, reduce: ps >= 4, load_existing: true, tag: 'svg' ]
+                mdl.cache = Canvas [ vk: vk, w: w, format: Pixel.rgba8,
+                                     width: cw, height: ch,
+                                     reduce: ps >= 4,
+                                     load_existing: true, tag: 'svg' ]
                 mdl.cache.update[]
             mdl.cache.reset[ vec4f [ 0.0, 0.0, 0.0, 0.0 ] ]
             mdl.cache_rw     = rw
@@ -3082,13 +3149,13 @@ Render Canvas
             mdl.cache_fill   = tf
             mdl.cache_stroke = ts
             mdl.cache_solid  = svg_solid_on
-            rw4   : f32 [ f32(cw4) ]
-            rh4   : f32 [ f32(ch4) ]
-            sx    : f32 (mdl.w > 0.0) ? rw4 / mdl.w : 1.0
-            sy    : f32 (mdl.h > 0.0) ? rh4 / mdl.h : 1.0
+            px_w   : f32 [ f32(cw) ]
+            px_h   : f32 [ f32(ch) ]
+            sx    : f32 (mdl.w > 0.0) ? px_w / mdl.w : 1.0
+            sy    : f32 (mdl.h > 0.0) ? px_h / mdl.h : 1.0
             s     : f32 min[ sx, sy ]
-            off_x : f32 (rw4 - mdl.w * s) * 0.5
-            off_y : f32 (rh4 - mdl.h * s) * 0.5
+            off_x : f32 (px_w - mdl.w * s) * 0.5
+            off_y : f32 (px_h - mdl.h * s) * 0.5
             for [ shape: SVGShape ] in mdl.shapes
                 fc : rgba rgba[ '#00000000' ]
                 sc : rgba rgba[ '#00000000' ]
@@ -3155,8 +3222,12 @@ Render Canvas
         tex.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
         image_override = tex
         ss  : f32 [ (src.w.scale > 0) ? src.w.scale : 1.0 ]
-        uvx : f32 [ (src.width  > 0) ? f32[ src.content_w ] * ss / f32[ src.width  ] : 1.0 ]
-        uvy : f32 [ (src.height > 0) ? f32[ src.content_h ] * ss / f32[ src.height ] : 1.0 ]
+        uvx : f32 [
+            (src.width  > 0)
+            ? f32[ src.content_w ] * ss / f32[ src.width  ] : 1.0 ]
+        uvy : f32 [
+            (src.height > 0)
+            ? f32[ src.content_h ] * ss / f32[ src.height ] : 1.0 ]
         image_uv = vec4f [ 0.0, 0.0, uvx, uvy ]
         path.clear[]
         path.add_rect[ x, y, rw, rh ]
@@ -3179,17 +3250,28 @@ Render Canvas
             mask_src.flush_submit[]
             mask_src.flush_text[]
         tex  : Texture [ (src.reduction) ? src.reduction : src.color ]
-        mtex : Texture [ (mask_src.reduction) ? mask_src.reduction : mask_src.color ]
+        mtex : Texture [
+            (mask_src.reduction) ? mask_src.reduction : mask_src.color ]
         tex.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
         mtex.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
         image_override = tex
         mask_override  = mtex
         ss  : f32 [ (src.w.scale > 0) ? src.w.scale : 1.0 ]
-        uvx : f32 [ (src.width  > 0) ? f32[ src.content_w ] * ss / f32[ src.width  ] : 1.0 ]
-        uvy : f32 [ (src.height > 0) ? f32[ src.content_h ] * ss / f32[ src.height ] : 1.0 ]
+        uvx : f32 [
+            (src.width  > 0)
+            ? f32[ src.content_w ] * ss / f32[ src.width  ] : 1.0 ]
+        uvy : f32 [
+            (src.height > 0)
+            ? f32[ src.content_h ] * ss / f32[ src.height ] : 1.0 ]
         ms  : f32 [ (mask_src.w.scale > 0) ? mask_src.w.scale : 1.0 ]
-        muvx : f32 [ (mask_src.width  > 0) ? f32[ mask_src.content_w ] * ms / f32[ mask_src.width  ] : 1.0 ]
-        muvy : f32 [ (mask_src.height > 0) ? f32[ mask_src.content_h ] * ms / f32[ mask_src.height ] : 1.0 ]
+        muvx : f32 [
+            (mask_src.width  > 0)
+            ? f32[ mask_src.content_w ] * ms / f32[ mask_src.width  ]
+            : 1.0 ]
+        muvy : f32 [
+            (mask_src.height > 0)
+            ? f32[ mask_src.content_h ] * ms / f32[ mask_src.height ]
+            : 1.0 ]
         image_uv = vec4f [ 0.0, 0.0, uvx, uvy ]
         mask_uv  = vec4f [ 0.0, 0.0, muvx, muvy ]
         path.clear[]
@@ -3209,7 +3291,7 @@ Render Canvas
 
     # planes y, u, v; rows: 12 floats, 3 of (ky, ku, kv, add)
     func draw_yuv [ y: Texture, u: Texture, v: Texture, x: f32,
-                    y0: f32, rw: f32, rh: f32, rows: @f32 ]
+                    top: f32, rw: f32, rh: f32, rows: @f32 ]
         y.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
         u.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
         v.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
@@ -3222,7 +3304,7 @@ Render Canvas
         image_uv = vec4f [ 0.0, 0.0, 1.0, 1.0 ]
         mask_uv  = vec4f [ 0.0, 0.0, 1.0, 1.0 ]
         path.clear[]
-        path.add_rect[ x, y0, rw, rh ]
+        path.add_rect[ x, top, rw, rh ]
         paint[]
         image_override = null
         mask_override  = null
@@ -3267,7 +3349,9 @@ Render Canvas
         flush_submit[]
 
     # src kept where mask_src has alpha (luma: its luminance)
-    func draw_canvas_through [ src: Canvas, mask_src: Canvas, luma: bool, x: f32, y: f32, rw: f32, rh: f32 ]
+    func draw_canvas_through [ src: Canvas, mask_src: Canvas,
+                               luma: bool,
+                               x: f32, y: f32, rw: f32, rh: f32 ]
         src.seal[]
         mask_src.seal[]
         mask_mode = (luma) ? DrawMode.image_mask_luma : DrawMode.image_mask_alpha
@@ -3277,7 +3361,9 @@ Render Canvas
     # src faded on its edges: linear ramps of ft/fr/fb/fl px inward
     # from the rect at (kl, pt) to its far corner; the band above pt
     # and the gutter left of kl are shown whole and hidden respectively
-    func draw_canvas_ramp [ src: Canvas, x: f32, y: f32, rw: f32, rh: f32, ft: f32, fr: f32, fb: f32, fl: f32, pt: f32, kl: f32 ]
+    func draw_canvas_ramp [ src: Canvas, x: f32, y: f32, rw: f32,
+                            rh: f32, ft: f32, fr: f32, fb: f32, fl: f32,
+                            pt: f32, kl: f32 ]
         if [ src ]
             src.flush_submit[]
             src.flush_text[]
@@ -3285,8 +3371,12 @@ Render Canvas
         tex.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
         image_override = tex
         ss  : f32 [ (src.w.scale > 0) ? src.w.scale : 1.0 ]
-        uvx : f32 [ (src.width  > 0) ? f32[ src.content_w ] * ss / f32[ src.width  ] : 1.0 ]
-        uvy : f32 [ (src.height > 0) ? f32[ src.content_h ] * ss / f32[ src.height ] : 1.0 ]
+        uvx : f32 [
+            (src.width  > 0)
+            ? f32[ src.content_w ] * ss / f32[ src.width  ] : 1.0 ]
+        uvy : f32 [
+            (src.height > 0)
+            ? f32[ src.content_h ] * ss / f32[ src.height ] : 1.0 ]
         image_uv   = vec4f [ 0.0, 0.0, uvx, uvy ]
         ramp_on    = true
         ramp_sides = vec4f [ ft, fr, fb, fl ]
@@ -3303,8 +3393,9 @@ Render Canvas
     func blur_pass [ src: Canvas, vertical: bool, sigma: f32, x: f32,
                      y: f32, rw: f32, rh: f32, tint: vec4f ]
         taps : f32 [ minf[ ceil[ sigma * 3.0 ], 32.0 ] ]
-        ui_shader.fx_o = vec4f [ (vertical) ? 0.0 : 1.0 / f32[ src.width ],
-                                 (vertical) ? 1.0 / f32[ src.height ] : 0.0, sigma, taps ]
+        ui_shader.fx_o = vec4f [
+            (vertical) ? 0.0 : 1.0 / f32[ src.width ],
+            (vertical) ? 1.0 / f32[ src.height ] : 0.0, sigma, taps ]
         ui_shader.fx_r = tint
         fx_mode = DrawMode.image_blur
         draw_canvas[ src, x, y, rw, rh ]
@@ -3312,7 +3403,9 @@ Render Canvas
 
     # src blurred at x, y; tint.a > 0 paints its alpha in tint
     # floats, not a vec4f: a struct by value crosses modules shifted
-    public func filter_blur [ src: Canvas, sx: f32, sy: f32, x: f32, y: f32, tr: f32, tg: f32, tb: f32, ta: f32 ]
+    public func filter_blur [ src: Canvas, sx: f32, sy: f32, x: f32,
+                              y: f32, tr: f32, tg: f32, tb: f32,
+                              ta: f32 ]
         if [ !src ] return
         tint : vec4f [ tr, tg, tb, ta ]
         sw : i32 [ src.content_w ]
@@ -3323,7 +3416,7 @@ Render Canvas
             k *= 2
         tw : i32 [ maxi[ 1, (sw + k - 1) / k ] ]
         th : i32 [ maxi[ 1, (sh + k - 1) / k ] ]
-        clear9 : vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+        clear : vec4f [ 0.0, 0.0, 0.0, 0.0 ]
         # grows only: a fading blur changes size every frame
         if [ !pass_across ]
             pass_across = Canvas [ vk: vk, w: w, width: tw, height: th,
@@ -3332,25 +3425,27 @@ Render Canvas
         pass_across.resize[ tw, th ]
         across : Canvas [ pass_across ]
         across.fresh_state[]
-        across.clear_recorded[ clear9 ]
+        across.clear_recorded[ clear ]
         first : Canvas [ src ]
         small : Canvas [ null ]
         if [ k > 1 ]
             if [ !pass_small ]
-                pass_small = Canvas [ vk: vk, w: w, width: tw, height: th, load_existing: true, quantize: true ]
+                pass_small = Canvas [ vk: vk, w: w, width: tw,
+                                      height: th, load_existing: true,
+                                      quantize: true ]
                 pass_small.update[]
             pass_small.resize[ tw, th ]
             small = pass_small
             small.fresh_state[]
-            small.clear_recorded[ clear9 ]
+            small.clear_recorded[ clear ]
             small.min_override = true
             small.draw_canvas[ src, 0.0, 0.0, f32[ tw ], f32[ th ] ]
             small.min_override = false
             first = small
         across.blur_pass[ first, false, sx / f32[ k ], 0.0, 0.0,
-                          f32[ tw ], f32[ th ], clear9 ]
+                          f32[ tw ], f32[ th ], clear ]
         if [ k > 1 ]
-            small.clear_recorded[ clear9 ]
+            small.clear_recorded[ clear ]
             small.blur_pass[ across, true, sy / f32[ k ], 0.0, 0.0,
                              f32[ tw ], f32[ th ], tint ]
             draw_canvas[ small, x, y, f32[ sw ], f32[ sh ] ]
@@ -3398,10 +3493,10 @@ Render Canvas
         min_override = false
 
     func draw_image_explosion_crop [ tex: Texture, dst: rect,
-        u0: f32, v0: f32, u1: f32, v1: f32,
+        u_left: f32, v_top: f32, u_right: f32, v_bottom: f32,
         r: f32, g: f32, b: f32, alpha: f32 ]
         img_tint = vec4f[r,g,b,alpha]
-        image_uv = vec4f[u0,v0,u1,v1]
+        image_uv = vec4f[u_left,v_top,u_right,v_bottom]
         explosion_override = true
         draw_image[tex,dst]
         explosion_override = false
@@ -3449,27 +3544,29 @@ Render Canvas
 
     # clip to a rounded rect in user space; an axis-aligned
     # transform keeps it analytic, anything else takes a mask
-    func clip_rounded_rect [ x: f32, y: f32, rw: f32, rh: f32, r0: f32,
-                             r1: f32, r2: f32, r3: f32 ]
+    func clip_rounded_rect [ x: f32, y: f32, rw: f32, rh: f32, tl: f32,
+                             tr: f32, br: f32, bl: f32 ]
         st : states[state_depth - 1]
         t  : affine [ st.transform ]
         if [ t.mb != 0.0 || t.mc != 0.0 || st.clip_round ]
             path.clear[]
-            rounded_rect[ x, y, rw, rh, r0, r1, r2, r3 ]
+            rounded_rect[ x, y, rw, rh, tl, tr, br, bl ]
             clip_to_path[ false ]
             return
         # the shader tests gl_FragCoord: device pixels, not points
         ds : f32 [ (w.scale > 0) ? w.scale : 1.0 ]
-        x0 : f32 [ (t.ma * x + t.tx) * ds ]
-        y0 : f32 [ (t.md * y + t.ty) * ds ]
-        x1 : f32 [ (t.ma * (x + rw) + t.tx) * ds ]
-        y1 : f32 [ (t.md * (y + rh) + t.ty) * ds ]
+        near_x : f32 [ (t.ma * x + t.tx) * ds ]
+        near_y : f32 [ (t.md * y + t.ty) * ds ]
+        far_x : f32 [ (t.ma * (x + rw) + t.tx) * ds ]
+        far_y : f32 [ (t.md * (y + rh) + t.ty) * ds ]
         k  : f32 [ ((t.ma < 0.0) ? -t.ma : t.ma) * ds ]
         states[state_depth - 1].clip_round = true
-        states[state_depth - 1].clip_rect  = vec4f [ minf[ x0, x1 ],
-                minf[ y0, y1 ], maxf[ x0, x1 ], maxf[ y0, y1 ] ]
-        states[state_depth - 1].clip_radii = vec4f [ r0 * k, r1 * k,
-                r2 * k, r3 * k ]
+        states[state_depth - 1].clip_rect  = vec4f [ minf[ near_x,
+                                                           far_x ],
+                minf[ near_y, far_y ], maxf[ near_x, far_x ],
+                maxf[ near_y, far_y ] ]
+        states[state_depth - 1].clip_radii = vec4f [ tl * k, tr * k,
+                br * k, bl * k ]
 
     # a mask canvas the size of this one, cleared
     func clip_mask_canvas [ opaque: bool ] -> Canvas
@@ -3499,12 +3596,14 @@ Render Canvas
             clip_out_path[]
             return
         ds : f32 [ (w.scale > 0) ? w.scale : 1.0 ]
-        x0 : f32 [ (t.ma * x + t.tx) * ds ]
-        y0 : f32 [ (t.md * y + t.ty) * ds ]
-        x1 : f32 [ (t.ma * (x + rw) + t.tx) * ds ]
-        y1 : f32 [ (t.md * (y + rh) + t.ty) * ds ]
-        r  : vec4f [ vec4f [ minf[ x0, x1 ], minf[ y0, y1 ],
-                             maxf[ x0, x1 ], maxf[ y0, y1 ] ] ]
+        near_x : f32 [ (t.ma * x + t.tx) * ds ]
+        near_y : f32 [ (t.md * y + t.ty) * ds ]
+        far_x : f32 [ (t.ma * (x + rw) + t.tx) * ds ]
+        far_y : f32 [ (t.md * (y + rh) + t.ty) * ds ]
+        r  : vec4f [ vec4f [ minf[ near_x, far_x ],
+                             minf[ near_y, far_y ],
+                             maxf[ near_x, far_x ],
+                             maxf[ near_y, far_y ] ] ]
         k  : i32 [ state_depth - 1 ]
         switch [ st.clip_outs ]
             case 0
@@ -3528,7 +3627,9 @@ Render Canvas
             m.restore[]
         m.seal[]
         # a mask only this level held goes back to the pool
-        below : Canvas [ (clip_masks.count > 1) ? clip_masks[ clip_masks.count - 2 ] : null ]
+        below : Canvas [
+            (clip_masks.count > 1) ? clip_masks[ clip_masks.count - 2 ]
+            : null ]
         if [ prev && prev != below ]
             clip_pool.push[ prev ]
         clip_masks[ clip_masks.count - 1 ] = m
@@ -3538,7 +3639,9 @@ Render Canvas
         st : states[state_depth - 1]
         m  : clip_mask_canvas[ false ]
         m.save[]
-        m.set_transform[ st.transform.ma, st.transform.mb, st.transform.mc, st.transform.md, st.transform.tx, st.transform.ty ]
+        m.set_transform[ st.transform.ma, st.transform.mb,
+                         st.transform.mc, st.transform.md,
+                         st.transform.tx, st.transform.ty ]
         m.path.clear[]
         for [ i: i32 0, i < path.pcount, i += 1 ]
             m.path.append[ path.points[i] ]
@@ -3556,7 +3659,9 @@ Render Canvas
         st : states[state_depth - 1]
         m  : clip_mask_canvas[ true ]
         m.save[]
-        m.set_transform[ st.transform.ma, st.transform.mb, st.transform.mc, st.transform.md, st.transform.tx, st.transform.ty ]
+        m.set_transform[ st.transform.ma, st.transform.mb,
+                         st.transform.mc, st.transform.md,
+                         st.transform.tx, st.transform.ty ]
         m.set_composite[ Composite.destination_out ]
         m.path.clear[]
         for [ i: i32 0, i < path.pcount, i += 1 ]
@@ -3573,7 +3678,9 @@ Render Canvas
         st : states[state_depth - 1]
         m  : clip_mask_canvas[ false ]
         m.save[]
-        m.set_transform[ st.transform.ma, st.transform.mb, st.transform.mc, st.transform.md, st.transform.tx, st.transform.ty ]
+        m.set_transform[ st.transform.ma, st.transform.mb,
+                         st.transform.mc, st.transform.md,
+                         st.transform.tx, st.transform.ty ]
         m.draw_image[ tx, dst ]
         m.restore[]
         clip_push_mask[ m ]
@@ -3593,26 +3700,40 @@ Render Canvas
             if [ n > 0 ]
                 c = premul_stop[ g.stops[0].color ]
             for [ k: i32 1, k < n, k += 1 ]
-                a0 : GradientStop [ g.stops[k - 1] ]
-                a1 : GradientStop [ g.stops[k] ]
-                if [ t >= a1.pos ]
-                    c = premul_stop[ a1.color ]
-                el [ t > a0.pos ]
-                    f  : f32 [ (t - a0.pos) / maxf[ a1.pos - a0.pos,
+                prev_stop : GradientStop [ g.stops[k - 1] ]
+                next_stop : GradientStop [ g.stops[k] ]
+                if [ t >= next_stop.pos ]
+                    c = premul_stop[ next_stop.color ]
+                el [ t > prev_stop.pos ]
+                    f  : f32 [
+                        (t - prev_stop.pos)
+                        / maxf[ next_stop.pos - prev_stop.pos,
                             0.00001 ] ]
-                    c0 : vec4f [ premul_stop[ a0.color ] ]
-                    c1 : vec4f [ premul_stop[ a1.color ] ]
-                    c = vec4f [ c0.x + (c1.x - c0.x) * f,
-                                c0.y + (c1.y - c0.y) * f,
-                                c0.z + (c1.z - c0.z) * f, c0.w + (c1.w - c0.w) * f ]
+                    prev_color : vec4f [
+                        premul_stop[ prev_stop.color ] ]
+                    next_color : vec4f [
+                        premul_stop[ next_stop.color ] ]
+                    c = vec4f [
+                        prev_color.x
+                        + (next_color.x - prev_color.x) * f,
+                        prev_color.y
+                        + (next_color.y - prev_color.y) * f,
+                        prev_color.z
+                        + (next_color.z - prev_color.z) * f,
+                        prev_color.w
+                        + (next_color.w - prev_color.w) * f ]
             al : f32 [ c.w ]
-            px[ i * 4 + 0 ] = u8 [ ((al > 0.0) ? c.x / al : 0.0) * 255.0 + 0.5 ]
-            px[ i * 4 + 1 ] = u8 [ ((al > 0.0) ? c.y / al : 0.0) * 255.0 + 0.5 ]
-            px[ i * 4 + 2 ] = u8 [ ((al > 0.0) ? c.z / al : 0.0) * 255.0 + 0.5 ]
+            px[ i * 4 + 0 ] = u8 [
+                ((al > 0.0) ? c.x / al : 0.0) * 255.0 + 0.5 ]
+            px[ i * 4 + 1 ] = u8 [
+                ((al > 0.0) ? c.y / al : 0.0) * 255.0 + 0.5 ]
+            px[ i * 4 + 2 ] = u8 [
+                ((al > 0.0) ? c.z / al : 0.0) * 255.0 + 0.5 ]
             px[ i * 4 + 3 ] = u8 [ al * 255.0 + 0.5 ]
         tx : Texture [ vk: vk, w: w, width: 256, height: 1,
                        linear: true,
-            pixel_format: Pixel.rgba8, surface: Surface.color, tag: 'ramp' ]
+            pixel_format: Pixel.rgba8, surface: Surface.color,
+            tag: 'ramp' ]
         tx.upload_region[ 0, 0, 256, 1, px, 256 * 4 ]
         ramp_cache[ key ] = tx
         return tx
@@ -3638,8 +3759,8 @@ Render Canvas
         m[5] = 0.0 - (ic * t.tx + idd * t.ty)
         pts : new f32 [ 4 ]
         kind : i32 [ 1 ]
-        r0   : f32 [ 0.0 ]
-        r1   : f32 [ 0.0 ]
+        geom_x   : f32 [ 0.0 ]
+        geom_y   : f32 [ 0.0 ]
         switch [ g.kind ]
             case radial
                 kind   = 2
@@ -3647,60 +3768,67 @@ Render Canvas
                 pts[1] = g.y0
                 pts[2] = g.x0
                 pts[3] = g.y0
-                r0     = g.x1
-                r1     = g.y1
+                geom_x     = g.x1
+                geom_y     = g.y1
             case conic
                 kind   = 3
                 pts[0] = g.x0
                 pts[1] = g.y0
-                r0     = g.x1
+                geom_x     = g.x1
             default
                 pts[0] = g.x0
                 pts[1] = g.y0
                 pts[2] = g.x1
                 pts[3] = g.y1
         fill_ramp[ gradient_ramp[ g ], kind, (g.mirror) ? 1 : 0, 1.0,
-                   m, pts, r0, r1 ]
+                   m, pts, geom_x, geom_y ]
         # a conic's start angle rides in ramp_geom.z
         if [ kind == 3 ]
-            ui_shader.ramp_geom = vec4f [ 0.0, 0.0, r0, 0.0 ]
+            ui_shader.ramp_geom = vec4f [ 0.0, 0.0, geom_x, 0.0 ]
 
     # fills take colors from a stops ramp (256x1) until off
     # kind 1 linear, 2 radial, 3 conic; spread 0 pad, 1 reflect, 2
     # repeat m: device pixels to gradient space (a c e b d f)
     func fill_ramp [ tex: Texture, kind: i32, spread: i32, alpha: f32,
-                     m: @f32, pts: @f32, r0: f32, r1: f32 ]
+                     m: @f32, pts: @f32, geom_x: f32, geom_y: f32 ]
         tex.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
         ramp_tex = tex
         ui_shader.ramp      = vec4f [ 1.0, f32 kind, f32 spread, alpha ]
         ui_shader.ramp_m0   = vec4f [ m[0], m[1], m[2], 0.0 ]
         ui_shader.ramp_m1   = vec4f [ m[3], m[4], m[5], 0.0 ]
         ui_shader.ramp_pts  = vec4f [ pts[0], pts[1], pts[2], pts[3] ]
-        ui_shader.ramp_geom = vec4f [ r0, r1, 0.0, 0.0 ]
+        ui_shader.ramp_geom = vec4f [ geom_x, geom_y, 0.0, 0.0 ]
 
     func fill_ramp_off []
         ramp_tex = null
         ui_shader.ramp = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
 
-    func draw_image_crop [ tex: Texture, dst: rect, u0: f32, v0: f32,
-                           u1: f32, v1: f32 ]
-        image_uv = vec4f [ u0, v0, u1, v1 ]
+    func draw_image_crop [ tex: Texture, dst: rect, u_left: f32,
+                           v_top: f32,
+                           u_right: f32, v_bottom: f32 ]
+        image_uv = vec4f [ u_left, v_top, u_right, v_bottom ]
         draw_image[ tex, dst ]
         image_uv = vec4f [ 0.0, 0.0, 1.0, 1.0 ]
 
     # another canvas as the image; uv over its content, not its capacity
-    func draw_canvas_crop [ src: Canvas, dst: rect, u0: f32, v0: f32,
-                            u1: f32, v1: f32 ]
+    func draw_canvas_crop [ src: Canvas, dst: rect, u_left: f32,
+                            v_top: f32,
+                            u_right: f32, v_bottom: f32 ]
         if [ !src ] return
         src.flush_submit[]
         src.flush_text[]
         tex : Texture [ (src.reduction) ? src.reduction : src.color ]
         tex.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
         ss  : f32 [ (src.w.scale > 0) ? src.w.scale : 1.0 ]
-        uvx : f32 [ (src.width  > 0) ? f32[ src.content_w ] * ss / f32[ src.width  ] : 1.0 ]
-        uvy : f32 [ (src.height > 0) ? f32[ src.content_h ] * ss / f32[ src.height ] : 1.0 ]
-        draw_image_crop[ tex, dst, u0 * uvx, v0 * uvy, u1 * uvx,
-                         v1 * uvy ]
+        uvx : f32 [
+            (src.width  > 0)
+            ? f32[ src.content_w ] * ss / f32[ src.width  ] : 1.0 ]
+        uvy : f32 [
+            (src.height > 0)
+            ? f32[ src.content_h ] * ss / f32[ src.height ] : 1.0 ]
+        draw_image_crop[ tex, dst, u_left * uvx, v_top * uvy,
+                         u_right * uvx,
+                         v_bottom * uvy ]
 
     func draw_image [ tex: Texture, dst: rect ]
         image_override = tex
@@ -3724,17 +3852,19 @@ Render Canvas
         bscale     : f32 [ 1.0 ]
         for [ i: i32 0, i < blur_count, i += 1 ]
             bscale *= 0.5
-            sw : i32 [ i32[ f32[width]  * bscale + 0.5 ] ]
-            sh : i32 [ i32[ f32[height] * bscale + 0.5 ] ]
+            sw : i32 [ f32[width]  * bscale + 0.5 ]
+            sh : i32 [ f32[height] * bscale + 0.5 ]
             if [ sw < 1 ] sw = 1
             if [ sh < 1 ] sh = 1
-            m_r  : Model  [ w: w, samplers: map Texture[string] [ 'color': prev_tx ] ]
+            m_r  : Model  [ w: w,
+                samplers: map Texture[string] [ 'color': prev_tx ] ]
             r_r  : Render [ vk: vk, w: w, width: sw, height: sh,
                             models: [m_r ] ]
             blur_stages.push[ r_r ]
 
             bv_s : CanvasBlurV [ vk: vk, name: 'canvas-blur-v' ]
-            m_v  : Model  [ w: w, s: bv_s, samplers: map Texture[string] [ 'color': r_r.color ] ]
+            m_v  : Model  [ w: w, s: bv_s,
+                samplers: map Texture[string] [ 'color': r_r.color ] ]
             r_v  : Render [ vk: vk, w: w, width: sw, height: sh,
                             models: [m_v ] ]
             blur_v_arr.push[ r_v ]
@@ -3746,8 +3876,12 @@ Render Canvas
             rv_lo  : blur_v_arr[i]
             rv_hi  : blur_v_arr[hi_idx]
             bh_s   : CanvasBlurH [ vk: vk, name: 'canvas-blur-h' ]
-            m_h    : Model       [ w: w, s: bh_s, samplers: map Texture[string] [ 'low': rv_lo.color, 'high': rv_hi.color ] ]
-            r_h    : Render      [ vk: vk, w: w, color: a.color, width: width, height: height, models: [m_h ] ]
+            m_h    : Model       [ w: w, s: bh_s,
+                samplers: map Texture[string] [ 'low': rv_lo.color,
+                                                'high': rv_hi.color ] ]
+            r_h    : Render      [ vk: vk, w: w, color: a.color,
+                                   width: width, height: height,
+                                   models: [m_h ] ]
             blur_h_arr.push[ r_h ]
 
     func blur [ radius: f32 ]
@@ -3755,9 +3889,9 @@ Render Canvas
         init_blur[]
         lg   : f32 [ log2[ radius / 4.0 ] ]
         if [ lg < 0.0 ] lg = 0.0
-        max_lg : f32 [ f32[ blur_count - 1 ] ]
+        max_lg : f32 [ blur_count - 1 ]
         if [ lg > max_lg ] lg = max_lg
-        k_lo : i32 [ i32[ lg ] ]
+        k_lo : i32 [ lg ]
         k_hi : i32 [ (k_lo + 1 < blur_count) ? k_lo + 1 : k_lo ]
         frac : f32 [ lg - f32 k_lo ]
 
@@ -3798,8 +3932,8 @@ Render Canvas
             cache_hit = memcmp[ path.points, path.cached_points,
                 sizeof[ PathPt ] * pcount ] == 0
 
-        bx0 : f32
-        by0 : f32
+        box_left : f32
+        box_top : f32
         bw  : f32
         bh  : f32
         edges : vec SDFEdge []
@@ -3807,17 +3941,17 @@ Render Canvas
 
         if [ fast_rect ]
             vk.sdf_rect += 1
-            p0 : PathPt path.points[0]
-            p2 : PathPt path.points[2]
-            bx0 = minf[ p0.x, p2.x ]
-            by0 = minf[ p0.y, p2.y ]
-            bw  = maxf[ p0.x, p2.x ] - bx0
-            bh  = maxf[ p0.y, p2.y ] - by0
+            first_pt : PathPt path.points[0]
+            far_pt : PathPt path.points[2]
+            box_left = minf[ first_pt.x, far_pt.x ]
+            box_top = minf[ first_pt.y, far_pt.y ]
+            bw  = maxf[ first_pt.x, far_pt.x ] - box_left
+            bh  = maxf[ first_pt.y, far_pt.y ] - box_top
             n   = 4
         el [ cache_hit ]
             vk.sdf_hit += 1
-            bx0   = path.cached_bx0
-            by0   = path.cached_by0
+            box_left   = path.cached_bx0
+            box_top   = path.cached_by0
             bw    = path.cached_bw
             bh    = path.cached_bh
             edges = path.cached_edges
@@ -3825,29 +3959,29 @@ Render Canvas
             n     = path.cached_edge_count
         el
             vk.sdf_miss += 1
-            g0 : i64 [ epoch_micros[] ]
+            geom_start : i64 [ epoch_micros[] ]
             flat : path_flatten [ path, 0.25 ]
             n    = flat.count
             if [ n == 0 ]
-                vk.geom_us += epoch_micros[] - g0
+                vk.geom_us += epoch_micros[] - geom_start
                 path.clear[]
                 return
-            bx0 = 999999.0
-            by0 = 999999.0
-            bx1 : f32 [ -999999.0 ]
-            by1 : f32 [ -999999.0 ]
+            box_left = 999999.0
+            box_top = 999999.0
+            box_right : f32 [ -999999.0 ]
+            box_bottom : f32 [ -999999.0 ]
             for [ i: i32 0, i < n, i += 1 ]
                 pt : PathPt flat.pts[i]
-                if [ pt.x < bx0 ]
-                    bx0 = pt.x
-                if [ pt.y < by0 ]
-                    by0 = pt.y
-                if [ pt.x > bx1 ]
-                    bx1 = pt.x
-                if [ pt.y > by1 ]
-                    by1 = pt.y
-            bw = bx1 - bx0
-            bh = by1 - by0
+                if [ pt.x < box_left ]
+                    box_left = pt.x
+                if [ pt.y < box_top ]
+                    box_top = pt.y
+                if [ pt.x > box_right ]
+                    box_right = pt.x
+                if [ pt.y > box_bottom ]
+                    box_bottom = pt.y
+            bw = box_right - box_left
+            bh = box_bottom - box_top
             edges = sdf_extract_edges [ flat, @n ]
             path.cached_points = vec PathPt [ pcount ]
             memcpy[ path.cached_points, path.points,
@@ -3855,12 +3989,12 @@ Render Canvas
             path.cached_pcount = pcount
             path.cached_edges      = edges
             path.cached_edge_count = n
-            path.cached_bx0   = bx0
-            path.cached_by0   = by0
+            path.cached_bx0   = box_left
+            path.cached_by0   = box_top
             path.cached_bw    = bw
             path.cached_bh    = bh
             path.cached_valid = true
-            vk.geom_us += epoch_micros[] - g0
+            vk.geom_us += epoch_micros[] - geom_start
 
         # a line has no area; its stroke still does
         if [ (bw < 0.5 || bh < 0.5) && st.stroke_width <= 0.0 ]
@@ -3869,13 +4003,13 @@ Render Canvas
 
         if [ pcount == 5 && n == 4 ]
             compute_skip = true    # rect / image: no SDF pass
-            setup_shader [ st, bx0, by0, bw, bh ]
-            pr9 : vec4f [ path.corner_radii ]
+            setup_shader [ st, box_left, box_top, bw, bh ]
+            pr : vec4f [ path.corner_radii ]
             # plain rect_to has no path radii — keep the state's
             # cv.rounded
-            if [ pr9.x > 0.0 || pr9.y > 0.0 || pr9.z > 0.0
-                 || pr9.w > 0.0 ]
-                ui_shader.radii = pr9
+            if [ pr.x > 0.0 || pr.y > 0.0 || pr.z > 0.0
+                 || pr.w > 0.0 ]
+                ui_shader.radii = pr
             ui_shader.fill_color = st.fill_color
             ui_shader.grad0   = image_uv
             ui_shader.mask_uv = (ramp_on) ? ramp_sides : mask_uv
@@ -3883,15 +4017,22 @@ Render Canvas
             ui_shader.grad_c1         = st.fill_grad
             ui_shader.fill_grad_pts   = vec4f [ st.fill_color_pos.x,
                     st.fill_color_pos.y,
-                                                st.fill_grad_pos.x,  st.fill_grad_pos.y ]
+                                                st.fill_grad_pos.x,
+                                                st.fill_grad_pos.y ]
             ui_shader.stroke_grad_c1  = st.stroke_grad
             ui_shader.stroke_grad_pts = vec4f [ st.stroke_color_pos.x,
                     st.stroke_color_pos.y,
-                                                st.stroke_grad_pos.x,  st.stroke_grad_pos.y ]
-            fgrad_mode : f32 [ (st.fill_grad_radial)   ? 2.0 : (st.fill_grad_mirror)   ? 1.0 : 0.0 ]
-            sgrad_mode : f32 [ (st.stroke_grad_radial) ? 2.0 : (st.stroke_grad_mirror) ? 1.0 : 0.0 ]
+                                                st.stroke_grad_pos.x,
+                                                st.stroke_grad_pos.y ]
+            fgrad_mode : f32 [
+                (st.fill_grad_radial)   ? 2.0 : (st.fill_grad_mirror)
+                ? 1.0 : 0.0 ]
+            sgrad_mode : f32 [
+                (st.stroke_grad_radial) ? 2.0 : (st.stroke_grad_mirror)
+                ? 1.0 : 0.0 ]
             ui_shader.stroke_opts = vec4f [ f32 i32 st.stroke_join, f32 i32 st.stroke_cap, fgrad_mode, sgrad_mode ]
-            is_r8    : bool [ image_override && image_override.pixel_format == Pixel.u8 ]
+            is_r    : bool [ image_override
+                && image_override.pixel_format == Pixel.u8 ]
             img_mode : f32  [ (yuv_v)         ? DrawMode.image_yuv
                             : (vec_override)  ? DrawMode.image_vec
                             : (min_override)  ? DrawMode.image_min
@@ -3899,22 +4040,26 @@ Render Canvas
                                 DrawMode.image_explosion
                             : (mask_override) ? mask_mode
                             : (ramp_on)       ? DrawMode.image_ramp
-                            : ((is_r8) ? DrawMode.image_r : DrawMode.image) ]
+                            : ((is_r) ? DrawMode.image_r : DrawMode.image) ]
             if [ fx_mode > 0.0 ] img_mode = fx_mode
-            mode     : f32  [ (image_override) ? img_mode : DrawMode.solid ]
+            mode     : f32  [
+                (image_override) ? img_mode : DrawMode.solid ]
             # exact-area rect: ONLY a flat filled rectangle. any
             # gradient (shader gates on grad_c1.a), outline, radius,
             # glow, shadow, blur or hue shift needs the SDF path's
             # shaping
             if [ !image_override ]
-                rr9 : vec4f [ ui_shader.radii ]
-                flat9 : bool [ rr9.x <= 0.0 && rr9.y <= 0.0
-                               && rr9.z <= 0.0 && rr9.w <= 0.0
-                            && st.fill_grad.w <= 0.0 && st.stroke_grad.w <= 0.0
+                rr : vec4f [ ui_shader.radii ]
+                square_corners : bool [ rr.x <= 0.0 && rr.y <= 0.0
+                               && rr.z <= 0.0 && rr.w <= 0.0
+                            && st.fill_grad.w <= 0.0
+                            && st.stroke_grad.w <= 0.0
                             && st.stroke_width <= 0.0
-                            && st.blur_rad <= 0.0 && st.fill_offset == 0.0
-                            && !has_shadows[] && st.color_filter.w < 0.5 && !ramp_tex ]
-                if [ flat9 ] mode = DrawMode.rect
+                            && st.blur_rad <= 0.0
+                            && st.fill_offset == 0.0
+                            && !has_shadows[] && st.color_filter.w < 0.5
+                            && !ramp_tex ]
+                if [ square_corners ] mode = DrawMode.rect
             ui_shader.params = vec4f [ st.stroke_width, st.opacity,
                                        st.blur_rad, mode ]
             if [ image_override && models ]
@@ -3935,10 +4080,12 @@ Render Canvas
             sdf_w  : i32 [ width / 2 ]
             sdf_h  : i32 [ height / 2 ]
             reach  : f32 [ shadow_reach[] ]
-            pad    : f32 [ maxf [ 4.0, st.stroke_width * 0.5 + 4.0 ] + reach ]
-            spread : f32 [ maxf [ 8.0, st.stroke_width * 0.5 + 4.0 ] + reach ]
-            pbx : f32 [ bx0 - pad ]
-            pby : f32 [ by0 - pad ]
+            pad    : f32 [ maxf [ 4.0,
+                st.stroke_width * 0.5 + 4.0 ] + reach ]
+            spread : f32 [ maxf [ 8.0,
+                st.stroke_width * 0.5 + 4.0 ] + reach ]
+            pbx : f32 [ box_left - pad ]
+            pby : f32 [ box_top - pad ]
             pbw : f32 [ bw  + pad * 2.0 ]
             pbh : f32 [ bh  + pad * 2.0 ]
 
@@ -3954,13 +4101,15 @@ Render Canvas
                 new_bytes : i32 [ edge_buf_capacity * 32 ]
                 vk.wait_idle[]
                 edge_buf = Buffer [ vk: vk, size: new_bytes,
-                    u_storage: true, m_host_visible: true, m_host_coherent: true ]
+                    u_storage: true, m_host_visible: true,
+                    m_host_coherent: true ]
                 cmod_grow : Model models[0]
-                cmod_grow.samplers = map Au[string] [ 'edges': edge_buf, 'sdf_out': sdf_tex ]
+                cmod_grow.samplers = map Au[string] [ 'edges': edge_buf,
+                    'sdf_out': sdf_tex ]
                 cmod_grow.rebind_model[]
                 path.cached_valid = false
             edge_data : @f32 [ edge_buf.data ]
-            open9 : bool [ false ]
+            has_open : bool [ false ]
             fill_only : bool [ st.stroke_width <= 0.0 ]
             for [ ei: i32 0, ei < ne, ei += 1 ]
                 e  : SDFEdge edges[ei]
@@ -3972,12 +4121,14 @@ Render Canvas
                 edge_data[at + 4] = e.open0
                 edge_data[at + 5] = e.open1
                 edge_data[at + 6] = e.implied
-                edge_data[at + 7] = (fill_only && sdf_inner_edge[ edges, e, even_odd ]) ? 1.0 : 0.0
-                if [ e.implied > 0.5 ] open9 = true
+                edge_data[at + 7] = (fill_only && sdf_inner_edge[ edges,
+                                                                  e,
+                                                                  even_odd ]) ? 1.0 : 0.0
+                if [ e.implied > 0.5 ] has_open = true
             sdf_compute.eo     = edge_used
             sdf_compute.even_odd = (even_odd) ? 1 : 0
             # an open path with no fill shown is only a line to stroke
-            sdf_compute.stroke_only = (open9 && st.fill_color.w <= 0.0 && st.stroke_width > 0.0) ? 1 : 0
+            sdf_compute.stroke_only = (has_open && st.fill_color.w <= 0.0 && st.stroke_width > 0.0) ? 1 : 0
             sdf_compute.cap = i32[ st.stroke_cap ]
             edge_used += ne
             # compute shader UBO params
@@ -4012,8 +4163,12 @@ Render Canvas
                 st.fill_grad_pos.x,  st.fill_grad_pos.y ]
             j : f32 [ st.stroke_join ]
             c : f32 [ st.stroke_cap ]
-            grad_mode   : f32 [ (st.fill_grad_radial)   ? 2.0 : (st.fill_grad_mirror)   ? 1.0 : 0.0 ]
-            s_grad_mode : f32 [ (st.stroke_grad_radial) ? 2.0 : (st.stroke_grad_mirror) ? 1.0 : 0.0 ]
+            grad_mode   : f32 [
+                (st.fill_grad_radial)   ? 2.0 : (st.fill_grad_mirror)
+                ? 1.0 : 0.0 ]
+            s_grad_mode : f32 [
+                (st.stroke_grad_radial) ? 2.0 : (st.stroke_grad_mirror)
+                ? 1.0 : 0.0 ]
             ui_shader.stroke_opts     = vec4f [ j, c, grad_mode,
                     s_grad_mode ]
             ui_shader.stroke_grad_c1  = st.stroke_grad
@@ -4135,12 +4290,12 @@ class CanvasFont
         fam : cstr [ ft_face.family_name ]
         if [ fam ]
             family_name = string [ fam ]
-        os2 : @TT_OS2 [ FT_Get_Sfnt_Table [ ft_face,
+        os : @TT_OS2 [ FT_Get_Sfnt_Table [ ft_face,
                 FT_Sfnt_Tag.FT_SFNT_OS2 ] ]
-        if [ os2 ]
-            weight_class = i32 os2.usWeightClass
-            width_class  = i32 os2.usWidthClass
-            if [ (os2.fsSelection & 512) != 0 ]
+        if [ os ]
+            weight_class = i32 os.usWeightClass
+            width_class  = i32 os.usWidthClass
+            if [ (os.fsSelection & 512) != 0 ]
                 slope_code = 2
         if [ (ft_face.style_flags & 1) != 0 ]
             slope_code = 1
@@ -4367,7 +4522,8 @@ class GlyphAtlas
         if [ size == 0 ]
             size = 1024
         texture = Texture [ vk: vk, w: w, width: size, height: size,
-            pixel_format: Pixel.u8, surface: Surface.color, tag: 'atlas' ]
+            pixel_format: Pixel.u8, surface: Surface.color,
+            tag: 'atlas' ]
         slots   = vec GlyphAtlasSlot []
         shelf_x = 0
         shelf_y = 0
@@ -4486,46 +4642,51 @@ func maxf [ x: f32, y: f32 ] -> f32
 
 # ---- bezier flattening ----
 
-func flatten_quad [ pts: PathPoints, x0: f32, y0: f32, cx: f32,
-                    cy: f32, x1: f32, y1: f32, tol: f32 ]
+func flatten_quad [ pts: PathPoints, from_x: f32, from_y: f32, cx: f32,
+                    cy: f32, to_x: f32, to_y: f32, tol: f32 ]
     # flatness: deviation of control point from chord midpoint
-    mx : 0.5 * (x0 + x1) - cx
-    my : 0.5 * (y0 + y1) - cy
+    mx : 0.5 * (from_x + to_x) - cx
+    my : 0.5 * (from_y + to_y) - cy
     if [ mx * mx + my * my < tol * tol ]
-        pt : PathPt [ cmd: path_cmd.line, x: x1, y: y1 ]
+        pt : PathPt [ cmd: path_cmd.line, x: to_x, y: to_y ]
         pts.append[ pt ]
         return
 
     # de Casteljau at t=0.5
-    ax  : 0.5 * (x0 + cx)
-    ay  : 0.5 * (y0 + cy)
-    bx  : 0.5 * (cx + x1)
-    by  : 0.5 * (cy + y1)
+    ax  : 0.5 * (from_x + cx)
+    ay  : 0.5 * (from_y + cy)
+    bx  : 0.5 * (cx + to_x)
+    by  : 0.5 * (cy + to_y)
     abx : 0.5 * (ax + bx)
     aby : 0.5 * (ay + by)
 
-    flatten_quad [ pts, x0, y0, ax, ay, abx, aby, tol ]
-    flatten_quad [ pts, abx, aby, bx, by, x1, y1, tol ]
+    flatten_quad [ pts, from_x, from_y, ax, ay, abx, aby, tol ]
+    flatten_quad [ pts, abx, aby, bx, by, to_x, to_y, tol ]
 
 
-func flatten_cubic [ pts: PathPoints, x0: f32, y0: f32, c1x: f32, c1y: f32, c2x: f32, c2y: f32, x1: f32, y1: f32, tol: f32 ]
-    dx : x1 - x0
-    dy : y1 - y0
-    d2 : abs[ c1x - x0 - dx * 0.333 ] + abs[ c1y - y0 - dy * 0.333 ]
-    d3 : abs[ c2x - x0 - dx * 0.667 ] + abs[ c2y - y0 - dy * 0.667 ]
+func flatten_cubic [ pts: PathPoints, from_x: f32, from_y: f32,
+                     c1x: f32,
+                     c1y: f32, c2x: f32, c2y: f32, to_x: f32, to_y: f32,
+                     tol: f32 ]
+    dx : to_x - from_x
+    dy : to_y - from_y
+    dev_first : abs[ c1x - from_x - dx * 0.333 ] + abs[
+        c1y - from_y - dy * 0.333 ]
+    dev_second : abs[ c2x - from_x - dx * 0.667 ] + abs[
+        c2y - from_y - dy * 0.667 ]
 
-    if [ d2 + d3 < tol ]
-        pt : PathPt [ cmd: path_cmd.line, x: x1, y: y1 ]
+    if [ dev_first + dev_second < tol ]
+        pt : PathPt [ cmd: path_cmd.line, x: to_x, y: to_y ]
         pts.append[ pt ]
         return
 
     # de Casteljau at t=0.5 — midpoints, not weighted sums
-    m01x  : 0.5 * (x0   + c1x)
-    m01y  : 0.5 * (y0   + c1y)
+    m01x  : 0.5 * (from_x   + c1x)
+    m01y  : 0.5 * (from_y   + c1y)
     m12x  : 0.5 * (c1x  + c2x)
     m12y  : 0.5 * (c1y  + c2y)
-    m23x  : 0.5 * (c2x  + x1)
-    m23y  : 0.5 * (c2y  + y1)
+    m23x  : 0.5 * (c2x  + to_x)
+    m23y  : 0.5 * (c2y  + to_y)
     m012x : 0.5 * (m01x + m12x)
     m012y : 0.5 * (m01y + m12y)
     m123x : 0.5 * (m12x + m23x)
@@ -4533,14 +4694,16 @@ func flatten_cubic [ pts: PathPoints, x0: f32, y0: f32, c1x: f32, c1y: f32, c2x:
     mx    : 0.5 * (m012x + m123x)
     my    : 0.5 * (m012y + m123y)
 
-    flatten_cubic [ pts, x0, y0, m01x, m01y, m012x, m012y, mx, my, tol ]
-    flatten_cubic [ pts, mx, my, m123x, m123y, m23x, m23y, x1, y1, tol ]
+    flatten_cubic [ pts, from_x, from_y, m01x, m01y, m012x, m012y, mx,
+                    my, tol ]
+    flatten_cubic [ pts, mx, my, m123x, m123y, m23x, m23y, to_x, to_y,
+                    tol ]
 
 
 # center cx,cy  radius r  from angle0 to angle1 (radians)
 func flatten_arc [ cp: CanvasPath, cx: f32, cy: f32, r: f32,
-                   angle0: f32, angle1: f32 ]
-    sweep : angle1 - angle0
+                   from_angle: f32, to_angle: f32 ]
+    sweep : to_angle - from_angle
     if [ sweep < 0.0 ]
         sweep = sweep + 6.2831853
     steps : i32 [ ceil[ abs[ sweep ] * r * 0.5 ] ]
@@ -4550,7 +4713,7 @@ func flatten_arc [ cp: CanvasPath, cx: f32, cy: f32, r: f32,
         steps = 256
     dt : sweep / f32 steps
     for [ i: i32 1, i <= steps, i += 1 ]
-        t  : angle0 + dt * f32 i
+        t  : from_angle + dt * f32 i
         px : cx + r * cos[ t ]
         py : cy + r * sin[ t ]
         pt : PathPt [ cmd: path_cmd.line, x: px, y: py ]
@@ -4596,12 +4759,12 @@ func path_flatten [ src: CanvasPath, tol: f32 ] -> PathPoints
 
 
 # lerp between two packed RGBA colors
-func color_lerp[ c0: u32, c1: u32, t: f32 ] -> u32
+func color_lerp[ from_color: u32, to_color: u32, t: f32 ] -> u32
     inv : f32 [ 1.0 - t ]
-    r : u8 [ u8 f32 color_r[ c0 ] * inv + f32 color_r [ c1 ] * t ]
-    g : u8 [ u8 f32 color_g[ c0 ] * inv + f32 color_g [ c1 ] * t ]
-    b : u8 [ u8 f32 color_b[ c0 ] * inv + f32 color_b [ c1 ] * t ]
-    al: u8 [ u8 f32 color_a[ c0 ] * inv + f32 color_a [ c1 ] * t ]
+    r : u8 [ u8 f32 color_r[ from_color ] * inv + f32 color_r [ to_color ] * t ]
+    g : u8 [ u8 f32 color_g[ from_color ] * inv + f32 color_g [ to_color ] * t ]
+    b : u8 [ u8 f32 color_b[ from_color ] * inv + f32 color_b [ to_color ] * t ]
+    al: u8 [ u8 f32 color_a[ from_color ] * inv + f32 color_a [ to_color ] * t ]
     return color_pack[ r, g, b, al ]
 
 
@@ -4651,16 +4814,17 @@ func sdf_extract_edges [ flat: PathPoints,
     return edges
 
 # an edge under 0.1 px is dropped; true when kept
-func sdf_put_edge [ edges: vec SDFEdge, at: i32, x0: f32, y0: f32,
-                    x1: f32, y1: f32 ] -> bool
-    dx : f32 [ x1 - x0 ]
-    dy : f32 [ y1 - y0 ]
+func sdf_put_edge [ edges: vec SDFEdge, at: i32, from_x: f32,
+                    from_y: f32,
+                    to_x: f32, to_y: f32 ] -> bool
+    dx : f32 [ to_x - from_x ]
+    dy : f32 [ to_y - from_y ]
     if [ dx * dx + dy * dy <= 0.01 ] return false
     if [ edges ]
-        edges[at].x0 = x0
-        edges[at].y0 = y0
-        edges[at].x1 = x1
-        edges[at].y1 = y1
+        edges[at].x0 = from_x
+        edges[at].y0 = from_y
+        edges[at].x1 = to_x
+        edges[at].y1 = to_y
         edges[at].open0   = 0.0
         edges[at].open1   = 0.0
         edges[at].implied = 0.0
@@ -4680,7 +4844,8 @@ func sdf_walk_edges [ flat: PathPoints, edges: vec SDFEdge ] -> i32
     for [ i: i32 0, i <= flat.count, i += 1 ]
         # one step past the end ends the last subpath
         last : bool [ i == flat.count ]
-        pt   : PathPt [ (last) ? PathPt [ cmd: path_cmd.move ] : flat.pts[i] ]
+        pt   : PathPt [
+            (last) ? PathPt [ cmd: path_cmd.move ] : flat.pts[i] ]
         if [ pt.cmd == path_cmd.line ]
             lined = true
             if [ sdf_put_edge[ edges, cnt, cx, cy, pt.x, pt.y ] ]
@@ -4720,19 +4885,21 @@ func sdf_walk_edges [ flat: PathPoints, edges: vec SDFEdge ] -> i32
 
 
 # distance from point to line segment
-func sdf_seg_dist [ ex0: f32, ey0: f32, ex1: f32, ey1: f32, px: f32,
+func sdf_seg_dist [ from_x: f32, from_y: f32, to_x: f32, to_y: f32,
+                    px: f32,
                     py: f32 ] -> f32
-    dx  : ex1 - ex0
-    dy  : ey1 - ey0
+    dx  : to_x - from_x
+    dy  : to_y - from_y
     len_sq : dx * dx + dy * dy
     if [ len_sq < 0.00001 ]
-        ddx : px - ex0
-        ddy : py - ey0
+        ddx : px - from_x
+        ddy : py - from_y
         return sqrt[ ddx * ddx + ddy * ddy ]
-    t   : clampf [ ((px - ex0) * dx + (py - ey0) * dy) / len_sq, 0.0,
+    t   : clampf [ ((px - from_x) * dx + (py - from_y) * dy) / len_sq,
+                   0.0,
                    1.0 ]
-    cx  : ex0 + t * dx
-    cy  : ey0 + t * dy
+    cx  : from_x + t * dx
+    cy  : from_y + t * dy
     ddx : px - cx
     ddy : py - cy
     return sqrt[ ddx * ddx + ddy * ddy ]
@@ -4806,16 +4973,16 @@ func sdf_generate [ flat: PathPoints, bx: f32, by: f32, bw: f32,
         grid_counts[i] = 0
     for [ ei: i32 0, ei < ne, ei += 1 ]
         e   : SDFEdge edges[ei]
-        ex0 : min [ e.x0, e.x1 ]
-        ey0 : min [ e.y0, e.y1 ]
-        ex1 : max [ e.x0, e.x1 ]
-        ey1 : max [ e.y0, e.y1 ]
-        gx0 : clampi [ i32 (ex0 - wx) / cw - 1, 0, gw - 1 ]
-        gy0 : clampi [ i32 (ey0 - wy) / ch - 1, 0, gh - 1 ]
-        gx1 : clampi [ i32 (ex1 - wx) / cw + 1, 0, gw - 1 ]
-        gy1 : clampi [ i32 (ey1 - wy) / ch + 1, 0, gh - 1 ]
-        for [ gy: i32 gy0, gy <= gy1, gy += 1 ]
-            for [ gx: i32 gx0, gx <= gx1, gx += 1 ]
+        edge_left : min [ e.x0, e.x1 ]
+        edge_top : min [ e.y0, e.y1 ]
+        edge_right : max [ e.x0, e.x1 ]
+        edge_bottom : max [ e.y0, e.y1 ]
+        cell_left : clampi [ i32 (edge_left - wx) / cw - 1, 0, gw - 1 ]
+        cell_top : clampi [ i32 (edge_top - wy) / ch - 1, 0, gh - 1 ]
+        cell_right : clampi [ i32 (edge_right - wx) / cw + 1, 0, gw - 1 ]
+        cell_bottom : clampi [ i32 (edge_bottom - wy) / ch + 1, 0, gh - 1 ]
+        for [ gy: i32 cell_top, gy <= cell_bottom, gy += 1 ]
+            for [ gx: i32 cell_left, gx <= cell_right, gx += 1 ]
                 grid_counts[gy * gw + gx] += 1
     grid_offsets : new i32 [ gc + 1 ]
     grid_offsets[0] = 0
@@ -4827,16 +4994,16 @@ func sdf_generate [ flat: PathPoints, bx: f32, by: f32, bw: f32,
         grid_counts[i] = 0
     for [ ei: i32 0, ei < ne, ei += 1 ]
         e   : SDFEdge edges[ei]
-        ex0 : min [ e.x0, e.x1 ]
-        ey0 : min [ e.y0, e.y1 ]
-        ex1 : max [ e.x0, e.x1 ]
-        ey1 : max [ e.y0, e.y1 ]
-        gx0 : clampi [ i32 (ex0 - wx) / cw - 1, 0, gw - 1 ]
-        gy0 : clampi [ i32 (ey0 - wy) / ch - 1, 0, gh - 1 ]
-        gx1 : clampi [ i32 (ex1 - wx) / cw + 1, 0, gw - 1 ]
-        gy1 : clampi [ i32 (ey1 - wy) / ch + 1, 0, gh - 1 ]
-        for [ gy: i32 gy0, gy <= gy1, gy += 1 ]
-            for [ gx: i32 gx0, gx <= gx1, gx += 1 ]
+        edge_left : min [ e.x0, e.x1 ]
+        edge_top : min [ e.y0, e.y1 ]
+        edge_right : max [ e.x0, e.x1 ]
+        edge_bottom : max [ e.y0, e.y1 ]
+        cell_left : clampi [ i32 (edge_left - wx) / cw - 1, 0, gw - 1 ]
+        cell_top : clampi [ i32 (edge_top - wy) / ch - 1, 0, gh - 1 ]
+        cell_right : clampi [ i32 (edge_right - wx) / cw + 1, 0, gw - 1 ]
+        cell_bottom : clampi [ i32 (edge_bottom - wy) / ch + 1, 0, gh - 1 ]
+        for [ gy: i32 cell_top, gy <= cell_bottom, gy += 1 ]
+            for [ gx: i32 cell_left, gx <= cell_right, gx += 1 ]
                 ci : gy * gw + gx
                 grid_data[grid_offsets[ci] + grid_counts[ci]] = ei
                 grid_counts[ci] += 1
@@ -4851,9 +5018,9 @@ func sdf_generate [ flat: PathPoints, bx: f32, by: f32, bw: f32,
         row_counts[i] = 0
     for [ ei: i32 0, ei < ne, ei += 1 ]
         e   : SDFEdge edges[ei]
-        ry0 : clampi [ i32 (min[ e.y0, e.y1 ] - wy) / sy, 0, th - 1 ]
-        ry1 : clampi [ i32 (max[ e.y0, e.y1 ] - wy) / sy, 0, th - 1 ]
-        for [ r: i32 ry0, r <= ry1, r += 1 ]
+        row_first : clampi [ i32 (min[ e.y0, e.y1 ] - wy) / sy, 0, th - 1 ]
+        row_last : clampi [ i32 (max[ e.y0, e.y1 ] - wy) / sy, 0, th - 1 ]
+        for [ r: i32 row_first, r <= row_last, r += 1 ]
             row_counts[r] += 1
     # compute offsets
     row_offsets : new i32 [ th + 1 ]
@@ -4861,15 +5028,16 @@ func sdf_generate [ flat: PathPoints, bx: f32, by: f32, bw: f32,
     for [ i: i32 0, i < th, i += 1 ]
         row_offsets[i + 1] = row_offsets[i] + row_counts[i]
     total_row_entries : i32 [ row_offsets[th] ]
-    row_data : new i32 [ (total_row_entries > 0) ? total_row_entries : 1 ]
+    row_data : new i32 [
+        (total_row_entries > 0) ? total_row_entries : 1 ]
     # reset counts for fill pass
     for [ i: i32 0, i < th, i += 1 ]
         row_counts[i] = 0
     for [ ei: i32 0, ei < ne, ei += 1 ]
         e   : SDFEdge edges[ei]
-        ry0 : clampi [ i32 (min[ e.y0, e.y1 ] - wy) / sy, 0, th - 1 ]
-        ry1 : clampi [ i32 (max[ e.y0, e.y1 ] - wy) / sy, 0, th - 1 ]
-        for [ r: i32 ry0, r <= ry1, r += 1 ]
+        row_first : clampi [ i32 (min[ e.y0, e.y1 ] - wy) / sy, 0, th - 1 ]
+        row_last : clampi [ i32 (max[ e.y0, e.y1 ] - wy) / sy, 0, th - 1 ]
+        for [ r: i32 row_first, r <= row_last, r += 1 ]
             row_data[row_offsets[r] + row_counts[r]] = ei
             row_counts[r] += 1
 
@@ -4891,15 +5059,15 @@ func sdf_generate [ flat: PathPoints, bx: f32, by: f32, bw: f32,
             nc       : grid_counts[cell_idx]
 
             md : f32 [ 999999.0 ]
-            for [ ei3: i32 0, ei3 < ne, ei3 += 1 ]
-                e : SDFEdge edges[ei3]
+            for [ di: i32 0, di < ne, di += 1 ]
+                e : SDFEdge edges[di]
                 d : sdf_seg_dist [ e.x0, e.y0, e.x1, e.y1, px, py ]
                 if [ d < md ]
                     md = d
 
             wn : i32 [ 0 ]
-            for [ ei2: i32 0, ei2 < ne, ei2 += 1 ]
-                e : SDFEdge edges[ei2]
+            for [ wi: i32 0, wi < ne, wi += 1 ]
+                e : SDFEdge edges[wi]
                 if [ e.y0 <= py ]
                     if [ e.y1 > py ]
                         cross : (e.x1 - e.x0) * (py - e.y0) - (px - e.x0) * (e.y1 - e.y0)

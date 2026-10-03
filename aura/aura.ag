@@ -138,8 +138,10 @@ import <time.h>
 # aura.c: the helper's records off the socket: 1 a GPU frame,
 # 2 its history (w = can go back, h = can go forward), 3 its title
 # (text, w bytes), 0 none
-func aura_recv_frame [ sock: i32, id: @u64, w: @i32, h: @i32, format: @u32,
-    modifier: @u64, stride: @u32, offset: @u32, fd: @i32, text: @i8, cap: i32 ] -> i32
+func aura_recv_frame [ sock: i32, id: @u64, w: @i32, h: @i32,
+                       format: @u32,
+    modifier: @u64, stride: @u32, offset: @u32, fd: @i32, text: @i8,
+    cap: i32 ] -> i32
 
 element aura : trinity
     public  width      : i32    [ 1280 ]
@@ -155,22 +157,28 @@ element aura : trinity
     mutable shm_size   : i64
     mutable shm_path   : string
     mutable seq        : u32                 # last frame shown
-    mutable frames     : map Texture [string] # the helper's GPU buffers by id
-    mutable dma        : bool                # GPU frames arrive: the file is idle
+    # the helper's GPU buffers by id
+    mutable frames     : map Texture [string]
+    # GPU frames arrive: the file is idle
+    mutable dma        : bool
     mutable tex        : Texture
     mutable tex_w      : i32
     mutable tex_h      : i32
     mutable view_w     : i32                 # size sent, device px
     mutable view_h     : i32
     mutable scale      : f32    [ 1.0 ]      # device px per point
-    mutable held       : i32                 # buttons down, bit per button
+    # buttons down, bit per button
+    mutable held       : i32
     mutable started    : bool
-    persist engine     : vec i64             # the running helper: pid, ctl
+    # the running helper: pid, ctl
+    persist engine     : vec i64
     persist engine_shm : string              # its frame file
     # where it was last: the start page when no src is given
     intern [ StatePersist ] last_src : string
-    public  stats      : bool                # --stats: page frames shown each second
-    mutable shown      : i32                 # page frames taken this second
+    # --stats: page frames shown each second
+    public  stats      : bool
+    # page frames taken this second
+    mutable shown      : i32
     mutable shown_at   : i64
 
     func init []
@@ -195,7 +203,8 @@ element aura : trinity
     # a scheme as given; a file on disk by path; anything else is a site
     func target_of [] -> string
         if [ !src ] return 'about:blank'
-        if [ src.index_of[ '://' ] >= 0 || src.index_of[ 'about:' ] == 0 ] return src
+        if [ src.index_of[ '://' ] >= 0 || src.index_of[ 'about:' ] == 0 ]
+            return src
         f : path [ src ]
         return (f.exists[]) ? 'file://{f.absolute[]}' : 'https://{src}'
 
@@ -218,8 +227,8 @@ element aura : trinity
             return
         setenv[ 'TRINITY_BROWSER_SHM', shm_path.chars, 1 ]
         # the screen's refresh: the page's video ticks at it
-        hz9 : string '{(ux) ? ux.refresh_hz[] : 60}'
-        setenv[ 'TRINITY_VIDEO_HZ', hz9.chars, 1 ]
+        hz : string '{(ux) ? ux.refresh_hz[] : 60}'
+        setenv[ 'TRINITY_VIDEO_HZ', hz.chars, 1 ]
         # no death signal: a reload forks on a thread that soon ends.
         # the helper quits when its stdin closes, as it does if we die
         pid = fork[]
@@ -227,7 +236,8 @@ element aura : trinity
             dup2[ fds[0], 0 ]
             close[ fds[0] ]
             close[ fds[1] ]
-            execl[ engine_path.chars, name.chars, flag.chars, home.chars, target.chars, null ]
+            execl[ engine_path.chars, name.chars, flag.chars, home.chars,
+                   target.chars, null ]
             _exit[ 1 ]
         close[ fds[0] ]
         if [ pid < 0 ]
@@ -239,7 +249,7 @@ element aura : trinity
         engine.push[ i64 pid ]
         engine.push[ i64 ctl ]
         engine_shm = shm_path
-        log 'aura: {engine_path} {target}, video at {hz9} Hz'
+        log 'aura: {engine_path} {target}, video at {hz} Hz'
 
     # after a live reload the page stays: the helper is the one running
     func adopt [] -> bool
@@ -283,56 +293,68 @@ element aura : trinity
         off : u32
         fd  : i32
         tt  : local i8 [ 256 ]
-        kind : i32 [ aura_recv_frame[ ctl, @bid, @fw, @fh, @fmt, @mod, @st, @off, @fd, @tt[0], 256 ] ]
+        kind : i32 [
+            aura_recv_frame[ ctl, @bid, @fw, @fh, @fmt, @mod, @st, @off,
+                             @fd, @tt[0], 256 ] ]
         while [ kind > 0 ]
             if [ kind == 2 ]
                 log 'aura: history back {fw != 0} forward {fh != 0}'
                 nav_state[ fw != 0, fh != 0 ]
-                kind = aura_recv_frame[ ctl, @bid, @fw, @fh, @fmt, @mod, @st, @off, @fd, @tt[0], 256 ]
+                kind = aura_recv_frame[ ctl, @bid, @fw, @fh, @fmt, @mod,
+                                        @st, @off, @fd, @tt[0], 256 ]
                 continue
             if [ kind == 3 ]
                 t9 : string[ @tt[0] ]
                 log 'aura: title {t9}'
                 set_title[ t9 ]
-                kind = aura_recv_frame[ ctl, @bid, @fw, @fh, @fmt, @mod, @st, @off, @fd, @tt[0], 256 ]
+                kind = aura_recv_frame[ ctl, @bid, @fw, @fh, @fmt, @mod,
+                                        @st, @off, @fd, @tt[0], 256 ]
                 continue
             if [ kind == 4 ]
                 a9 : string[ @tt[0] ]
                 if [ a9 && a9 != 'about:blank' ]
                     last_src = a9
                     save-persistent[ a ]
-                kind = aura_recv_frame[ ctl, @bid, @fw, @fh, @fmt, @mod, @st, @off, @fd, @tt[0], 256 ]
+                kind = aura_recv_frame[ ctl, @bid, @fw, @fh, @fmt, @mod,
+                                        @st, @off, @fd, @tt[0], 256 ]
                 continue
             key : string '{bid}'
             # a new size, or a pool long since replaced: start over
-            if [ !frames || tex_w != fw || tex_h != fh || frames.count > 12 ]
+            if [
+                !frames || tex_w != fw || tex_h != fh
+                || frames.count > 12 ]
                 frames = map Texture [string] []
                 tex_w  = fw
                 tex_h  = fh
             if [ frames.contains[ key ] ]
                 close[ fd ]
             el
-                t : Texture cv.vk.import_dmabuf_image[ fd, fw, fh, fmt, mod, st, off, cv.w ]
+                t : Texture cv.vk.import_dmabuf_image[ fd, fw, fh, fmt,
+                                                       mod, st, off,
+                                                       cv.w ]
                 if [ !t ]
-                    # this GPU takes no such buffer: the helper copies instead
+                    # this GPU takes no such buffer: the helper copies
+                    # instead
                     log 'aura: GPU frame import failed, reading frames back'
                     post[ 'gpuframes 0' ]
                     frames = null
                     dma    = false
                     return false
-                if [ !dma ] log 'aura: GPU frames {fw}x{fh} fourcc {fmt} modifier {mod}'
+                if [ !dma ]
+                    log 'aura: GPU frames {fw}x{fh} fourcc {fmt} modifier {mod}'
                 frames[ key ] = t
             tex = frames[ key ]
             got = true
-            kind = aura_recv_frame[ ctl, @bid, @fw, @fh, @fmt, @mod, @st, @off, @fd, @tt[0], 256 ]
+            kind = aura_recv_frame[ ctl, @bid, @fw, @fh, @fmt, @mod, @st,
+                                    @off, @fd, @tt[0], 256 ]
         if [ got ]
             dma    = true
             shown += 1
         return got
 
     func take_frame [ cv: Canvas ]
-        # GPU frames first; the file still counts: a page after a process
-        # swap may come copied
+        # GPU frames first; the file still counts: a page after a
+        # process swap may come copied
         if [ take_dma[ cv ] ] return
         if [ !map_frames[] ] return
         if [ header_u32[ 0 ] != 0x57425254 ] return
@@ -343,8 +365,10 @@ element aura : trinity
         if [ fw <= 0 || fh <= 0 ] return
         if [ !tex || tex_w != fw || tex_h != fh ]
             # the page's bytes are already sRGB: no decode on sampling
-            tex   = Texture [ vk: cv.vk, w: cv.w, width: fw, height: fh, linear: true,
-                pixel_format: Pixel.rgba8, surface: Surface.color, tag: 'aura' ]
+            tex   = Texture [ vk: cv.vk, w: cv.w, width: fw, height: fh,
+                              linear: true,
+                pixel_format: Pixel.rgba8, surface: Surface.color,
+                tag: 'aura' ]
             tex_w = fw
             tex_h = fh
         px : @u8 [ shm ]
@@ -353,8 +377,8 @@ element aura : trinity
         shown += 1
 
     func sync_size []
-        pw : i32 [ i32[ bounds.w * scale ] ]
-        ph : i32 [ i32[ bounds.h * scale ] ]
+        pw : i32 [ bounds.w * scale ]
+        ph : i32 [ bounds.h * scale ]
         if [ pw <= 0 || ph <= 0 ] return
         if [ pw == view_w && ph == view_h ] return
         view_w = pw
@@ -370,10 +394,11 @@ element aura : trinity
         return m
 
     func mouse [ kind: string, ev: Event ]
-        x : i32 [ i32[ ev.mouse.pos.x * scale ] ]
-        y : i32 [ i32[ ev.mouse.pos.y * scale ] ]
+        x : i32 [ ev.mouse.pos.x * scale ]
+        y : i32 [ ev.mouse.pos.y * scale ]
         # moves go at once; WebKit coalesces them while the page is busy
-        post[ 'mouse {kind} {x} {y} {ev.mouse.button} {held} {mods[ ev ]}' ]
+        post[
+            'mouse {kind} {x} {y} {ev.mouse.button} {held} {mods[ ev ]}' ]
 
     # the host's history arrows walk the page's history
     public func navigate [ dir: i32 ] -> bool
@@ -394,8 +419,8 @@ element aura : trinity
         mouse[ 'move', ev ]
 
     public func on_wheel [ ev: Event ]
-        x : i32 [ i32[ ev.mouse.pos.x * scale ] ]
-        y : i32 [ i32[ ev.mouse.pos.y * scale ] ]
+        x : i32 [ ev.mouse.pos.x * scale ]
+        y : i32 [ ev.mouse.pos.y * scale ]
         # 0.325 of a notch per wheel step
         dx : f32 [ ev.mouse.wheel_delta.x * 0.325 ]
         dy : f32 [ ev.mouse.wheel_delta.y * 0.325 ]
@@ -404,7 +429,7 @@ element aura : trinity
 
     # printable keys come as text; the rest as keys
     public func on_key [ ev: Event ]
-        code : i32 [ i32[ ev.key.unicode ] ]
+        code : i32 [ ev.key.unicode ]
         m    : i32 [ mods[ ev ] ]
         if [ code >= 32 && code <= 126 && (m & 14) == 0 ] return
         act : string [ (ev.key.state != 0) ? 'down' : 'up' ]
@@ -439,12 +464,15 @@ element aura : trinity
                 shown_at = now
         if [ !tex ] return
         # one frame pixel per device pixel
-        dst : rect [ x: 0.0, y: 0.0, w: f32[ tex_w ] / scale, h: f32[ tex_h ] / scale ]
+        dst : rect [ x: 0.0, y: 0.0, w: f32[ tex_w ] / scale,
+                     h: f32[ tex_h ] / scale ]
         cv.draw_image[ tex, dst ]
 
     func dealloc []
-        if [ !started ] return           # render copies never launched anything
-        if [ ctl >= 0 ] close[ ctl ]     # the helper quits when its stdin ends
+        # render copies never launched anything
+        if [ !started ] return
+        # the helper quits when its stdin ends
+        if [ ctl >= 0 ] close[ ctl ]
         if [ pid > 0 ]
             waitpid[ pid, null, 0 ]
         if [ shm ] munmap[ shm, shm_size ]

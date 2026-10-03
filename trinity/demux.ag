@@ -217,7 +217,8 @@ class Demux
                     c += 4
                 if [ (f & 32) != 0 ] flg = be32[ c ]
             el [ box_is[ at + 4, 'tfdt' ] && t ]
-                t.next_dts = (u8at[ b ] == 1) ? be64[ b + 4 ] : be32[ b + 4 ]
+                t.next_dts = (u8at[ b ] == 1) ? be64[ b + 4 ] : be32[
+                    b + 4 ]
             el [ box_is[ at + 4, 'trun' ] && t ]
                 pos = trun[ t, b, base, pos, dur, each, flg, data_end ]
             at = e
@@ -225,7 +226,7 @@ class Demux
     # one run of samples; returns where the next run starts
     func trun [ t: DemuxTrack, b: i64, base: i64, prev: i64, dur: i64,
                 each: i64, flg: i64, data_end: i64 ] -> i64
-        v1 : bool [ u8at[ b ] == 1 ]
+        signed_cts : bool [ u8at[ b ] == 1 ]
         f  : i64 [ be32[ b ] & 16777215 ]
         n  : i64 [ be32[ b + 4 ] ]
         c  : i64 [ b + 8 ]
@@ -240,32 +241,35 @@ class Demux
             first = be32[ c ]
             c += 4
         for [ i: i64 0, i < n, i += 1 ]
-            d9 : i64 [ dur ]
-            s9 : i64 [ each ]
-            f9 : i64 [ (i == 0 && first >= 0) ? first : flg ]
-            o9 : i64 [ 0 ]
+            sample_dur : i64 [ dur ]
+            sample_size : i64 [ each ]
+            sample_flags : i64 [ (i == 0 && first >= 0) ? first : flg ]
+            cts_off : i64 [ 0 ]
             if [ (f & 256) != 0 ]
-                d9 = be32[ c ]
+                sample_dur = be32[ c ]
                 c += 4
             if [ (f & 512) != 0 ]
-                s9 = be32[ c ]
+                sample_size = be32[ c ]
                 c += 4
             if [ (f & 1024) != 0 ]
-                f9 = be32[ c ]
+                sample_flags = be32[ c ]
                 c += 4
             if [ (f & 2048) != 0 ]
-                o9 = be32[ c ]
-                if [ v1 && o9 >= 2147483648 ] o9 -= 4294967296
+                cts_off = be32[ c ]
+                if [ signed_cts && cts_off >= 2147483648 ]
+                    cts_off -= 4294967296
                 c += 4
-            if [ pos + s9 > data_end ] return pos
+            if [ pos + sample_size > data_end ] return pos
             s : DemuxSample [ track: t.id, dts: t.next_dts,
-                              pts: t.next_dts + o9 - t.shift,
-                duration: d9, timescale: t.timescale, sync: (f9 & 65536) == 0 ]
-            s.data = vec u8 [ s9 ]
-            if [ s9 > 0 ] memcpy[ @s.data[ 0 ], @data[ pos ], s9 ]
+                              pts: t.next_dts + cts_off - t.shift,
+                duration: sample_dur, timescale: t.timescale,
+                sync: (sample_flags & 65536) == 0 ]
+            s.data = vec u8 [ sample_size ]
+            if [ sample_size > 0 ]
+                memcpy[ @s.data[ 0 ], @data[ pos ], sample_size ]
             ready.push[ s ]
-            t.next_dts += d9
-            pos += s9
+            t.next_dts += sample_dur
+            pos += sample_size
         return pos
 
     func u8at [ at: i64 ] -> i64
@@ -275,7 +279,8 @@ class Demux
         return (u8at[ at ] << 8) | u8at[ at + 1 ]
 
     func be32 [ at: i64 ] -> i64
-        return (u8at[ at ] << 24) | (u8at[ at + 1 ] << 16) | (u8at[ at + 2 ] << 8) | u8at[ at + 3 ]
+        return (u8at[ at ] << 24) | (u8at[ at + 1 ] << 16) |
+            (u8at[ at + 2 ] << 8) | u8at[ at + 3 ]
 
     func be64 [ at: i64 ] -> i64
         return (be32[ at ] << 32) | be32[ at + 4 ]
@@ -344,7 +349,8 @@ class Demux
                 trak[ t, b, e ]
             el [ box_is[ tg, 'elst' ] ] elst[ t, b ]
             el [ box_is[ tg, 'tkhd' ] ]
-                t.id = (u8at[ b ] == 1) ? be32[ b + 20 ] : be32[ b + 12 ]
+                t.id = (u8at[ b ] == 1) ? be32[ b + 20 ] : be32[
+                    b + 12 ]
             el [ box_is[ tg, 'mdhd' ] ]
                 if [ u8at[ b ] == 1 ]
                     t.timescale = be32[ b + 20 ]
@@ -363,7 +369,9 @@ class Demux
                 t.fixed = be32[ b + 4 ]
                 n : i64 [ be32[ b + 8 ] ]
                 for [ i: i64 0, i < n, i += 1 ]
-                    t.sizes.push[ (t.fixed > 0) ? t.fixed : be32[ b + 12 + i * 4 ] ]
+                    t.sizes.push[
+                        (t.fixed > 0) ? t.fixed
+                        : be32[ b + 12 + i * 4 ] ]
             el [ box_is[ tg, 'stco' ] ]
                 n : i64 [ be32[ b + 4 ] ]
                 for [ i: i64 0, i < n, i += 1 ]
@@ -390,16 +398,16 @@ class Demux
 
     # the first edit that shows media sets where the track starts
     func elst [ t: DemuxTrack, b: i64 ]
-        v1 : bool [ u8at[ b ] == 1 ]
+        wide : bool [ u8at[ b ] == 1 ]
         n  : i64 [ be32[ b + 4 ] ]
         at : i64 [ b + 8 ]
         for [ i: i64 0, i < n, i += 1 ]
-            mt : i64 [ (v1) ? be64[ at + 8 ] : be32[ at + 4 ] ]
-            if [ !v1 && mt >= 2147483648 ] mt -= 4294967296
+            mt : i64 [ (wide) ? be64[ at + 8 ] : be32[ at + 4 ] ]
+            if [ !wide && mt >= 2147483648 ] mt -= 4294967296
             if [ mt >= 0 ]
                 t.shift = mt
                 return
-            at += (v1) ? 20 : 12
+            at += (wide) ? 20 : 12
 
     func stsc [ t: DemuxTrack, b: i64 ]
         n : i64 [ be32[ b + 4 ] ]
@@ -427,7 +435,8 @@ class Demux
         while [ at + 8 <= lim ]
             e  : i64 [ box_end[ at, lim ] ]
             b  : i64 [ box_body[ at ] ]
-            if [ box_is[ at + 4, 'avcC' ] || box_is[ at + 4, 'hvcC' ] ] copy_config[ t, b, e - b ]
+            if [ box_is[ at + 4, 'avcC' ] || box_is[ at + 4, 'hvcC' ] ]
+                copy_config[ t, b, e - b ]
             el [ box_is[ at + 4, 'esds' ] ] esds[ t, b + 4, e ]
             at = e
 

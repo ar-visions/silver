@@ -16,7 +16,9 @@ class FontMatch
 # css generic names fontconfig resolves as aliases
 func font_generic [ family: string ] -> bool
     if [ !family ] return false
-    names : vec string [] [ 'serif', 'sans-serif', 'monospace', 'cursive', 'fantasy', 'system-ui', 'emoji', 'math' ]
+    names : vec string [] [ 'serif', 'sans-serif', 'monospace',
+                            'cursive', 'fantasy', 'system-ui', 'emoji',
+                            'math' ]
     for [ i: i32 0, i < names.count, i += 1 ]
         if [ strcasecmp[ family.chars, names[i].chars ] == 0 ]
             return true

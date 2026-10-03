@@ -929,7 +929,8 @@ class GKernel
         spv : string '{dir}/{name}.spv'
         dc : GLSL kern.decl*[]
         mn : GLSL kern.compute*[]
-        dtext : string [ (dc && dc.body) ? string [ dc.body ] : string [ '' ] ]
+        dtext : string [
+            (dc && dc.body) ? string [ dc.body ] : string [ '' ] ]
         text : string '{grad_header[]}layout(local_size_x = {kern.lx}, local_size_y = {kern.ly}) in;\n{dtext}\nvoid main() {{\n{string [ mn.body ]}\n}}\n'
         fo : @FILE [ fopen[ src.chars, 'wb' ] ]
         if [ !fo ] return
@@ -941,7 +942,7 @@ class GKernel
         fi : @FILE [ fopen[ spv.chars, 'rb' ] ]
         if [ !fi ] return
         fseek[ fi, 0, SEEK_END ]
-        n : i64 [ i64[ ftell[ fi ] ] ]
+        n : i64 [ ftell[ fi ] ]
         rewind[ fi ]
         code : new u8 [ n ]
         fread[ code, 1, n, fi ]
@@ -952,7 +953,8 @@ class GKernel
             codeSize: n,
             pCode:    code ]
         md : VkShaderModule
-        if [ vkCreateShaderModule[ dv, mi, null, @md ] != VK_SUCCESS ] return
+        if [ vkCreateShaderModule[ dv, mi, null, @md ] != VK_SUCCESS ]
+            return
         rng : VkPushConstantRange [
             stageFlags: VK_SHADER_STAGE_COMPUTE_BIT,
             offset:     0,
@@ -962,16 +964,18 @@ class GKernel
             setLayoutCount:         0,
             pushConstantRangeCount: 1,
             pPushConstantRanges:    @rng ]
-        if [ vkCreatePipelineLayout[ dv, li, null, @layout ] != VK_SUCCESS ] return
+        if [ vkCreatePipelineLayout[ dv, li, null, @layout ] != VK_SUCCESS ]
+            return
         ci : VkComputePipelineCreateInfo [
             sType:  VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
             layout: layout,
             stage:  VkPipelineShaderStageCreateInfo [
-                sType:  VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            sType:  VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                 stage:  VK_SHADER_STAGE_COMPUTE_BIT,
                 module: md,
                 pName:  'main' ] ]
-        ready = vkCreateComputePipelines[ dv, null, 1, ci, null, @pipe ] == VK_SUCCESS
+        ready = vkCreateComputePipelines[ dv, null, 1, ci, null,
+                                          @pipe ] == VK_SUCCESS
         vkDestroyShaderModule[ dv, md, null ]
 
     func pipeline_handle [] -> handle
@@ -989,7 +993,8 @@ class GArena
     public  buf   : Buffer
 
     func init []
-        buf = Buffer [ vk: vk, size: bytes, u_storage: true, u_shader: true,
+        buf = Buffer [ vk: vk, size: bytes, u_storage: true,
+                       u_shader: true,
                        u_src: true, u_dst: true, m_device_local: true ]
         base = buf.address[]
 
@@ -1057,7 +1062,8 @@ class GRun
 
     func stamp [ name: string ]
         if [ !prof || qn >= 32768 ] return
-        vkCmdWriteTimestamp[ cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, qpool, u32[ qn ] ]
+        vkCmdWriteTimestamp[ cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                             qpool, u32[ qn ] ]
         qname.push[ name ]
         qn += 1
 
@@ -1067,7 +1073,8 @@ class GRun
             sType:         VK_STRUCTURE_TYPE_MEMORY_BARRIER,
             srcAccessMask: VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
             dstAccessMask: VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT ]
-        st : VkPipelineStageFlags [ VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT ]
+        st : VkPipelineStageFlags [
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT ]
         vkCmdPipelineBarrier[ cmd, st, st, 0, 1, @mb, 0, null, 0, null ]
 
     func dispatch [ k: GKernel, g: GArgs, gx: i32, gy: i32, gz: i32 ]
@@ -1077,8 +1084,12 @@ class GRun
         memcpy[ @pk[ 0 ], g.ad, 48 ]
         memcpy[ @pk[ 48 ], g.nn, 48 ]
         memcpy[ @pk[ 96 ], g.ff, 16 ]
-        vkCmdBindPipeline[ cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cast VkPipeline [ k.pipeline_handle[] ] ]
-        vkCmdPushConstants[ cmd, cast VkPipelineLayout [ k.layout_handle[] ], VK_SHADER_STAGE_COMPUTE_BIT, 0, 112, @pk[ 0 ] ]
+        vkCmdBindPipeline[ cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                           cast VkPipeline [ k.pipeline_handle[] ] ]
+        vkCmdPushConstants[ cmd,
+                            cast VkPipelineLayout [ k.layout_handle[] ],
+                            VK_SHADER_STAGE_COMPUTE_BIT, 0, 112,
+                            @pk[ 0 ] ]
         vkCmdDispatch[ cmd, u32[ gx ], u32[ gy ], u32[ gz ] ]
         if [ !nofence ] fence_mem[]
         stamp[ k.name ]
@@ -1087,8 +1098,10 @@ class GRun
     func move [ src: Buffer, so: i64, dst: Buffer, doff: i64, n: i64 ]
         if [ n <= 0 ] return
         start[]
-        rg : VkBufferCopy [ srcOffset: u64[ so ], dstOffset: u64[ doff ], size: u64[ n ] ]
-        vkCmdCopyBuffer[ cmd, cast VkBuffer [ src.buffer_handle[] ], cast VkBuffer [ dst.buffer_handle[] ], 1, @rg ]
+        rg : VkBufferCopy [ srcOffset: u64[ so ], dstOffset: u64[ doff ],
+                            size: u64[ n ] ]
+        vkCmdCopyBuffer[ cmd, cast VkBuffer [ src.buffer_handle[] ],
+                         cast VkBuffer [ dst.buffer_handle[] ], 1, @rg ]
         fence_mem[]
         stamp[ 'copy' ]
 
@@ -1111,12 +1124,15 @@ class GRun
         vkFreeCommandBuffers[ dv, cp, 1, @cb ]
         if [ prof && qn > 1 ]
             ts : vec u64 [ qn ]
-            vkGetQueryPoolResults[ dv, qpool, 0, u32[ qn ], qn * 8, @ts[ 0 ], 8, VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT ]
-            ns : f64 [ f64[ vk.timestamp_ns[] ] ]
+            vkGetQueryPoolResults[ dv, qpool, 0, u32[ qn ], qn * 8,
+                                   @ts[ 0 ], 8,
+                                   VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT ]
+            ns : f64 [ vk.timestamp_ns[] ]
             for [ i: i32 1, i < qn, i += 1 ]
                 nm : string qname[ i ]
                 us : f64 [ f64[ ts[ i ] - ts[ i - 1 ] ] * ns / 1000.0 ]
-                have : f64 [ (ptime.contains[ nm ]) ? ptime[ nm ] : 0.0 ]
+                have : f64 [
+                    (ptime.contains[ nm ]) ? ptime[ nm ] : 0.0 ]
                 ptime[ nm ] = have + us
                 hc : i64 [ (pcount.contains[ nm ]) ? pcount[ nm ] : 0 ]
                 pcount[ nm ] = hc + 1
@@ -1295,8 +1311,10 @@ class Grad
         work = GArena [ vk: vk, bytes: work_mb * 1048576 ]
         scratch = GArena [ vk: vk, bytes: scratch_mb * 1048576 ]
         stage_bytes = 64 * 1048576
-        stage = Buffer [ vk: vk, size: stage_bytes, u_src: true, u_dst: true,
-                         m_host_visible: true, m_host_coherent: true, m_host_cached: true ]
+        stage = Buffer [ vk: vk, size: stage_bytes, u_src: true,
+                         u_dst: true,
+                         m_host_visible: true, m_host_coherent: true,
+                         m_host_cached: true ]
         rn = GRun [ vk: vk ]
         kernels = map GKernel [ string ] []
         tape = vec GOp []
@@ -1361,7 +1379,9 @@ class Grad
         n : i64 [ (v.count < t.count) ? v.count : t.count ]
         done : i64 [ 0 ]
         while [ done < n ]
-            part : i64 [ ((n - done) * 4 < stage_bytes) ? (n - done) : stage_bytes / 4 ]
+            part : i64 [
+                ((n - done) * 4 < stage_bytes) ? (n - done)
+                : stage_bytes / 4 ]
             memcpy[ stage.data, @v[ done ], part * 4 ]
             rn.move[ stage, 0, t.ar.buf, t.off + done * 4, part * 4 ]
             rn.finish[]
@@ -1371,7 +1391,9 @@ class Grad
         out : vec f32 [ t.count ]
         done : i64 [ 0 ]
         while [ done < t.count ]
-            part : i64 [ ((t.count - done) * 4 < stage_bytes) ? (t.count - done) : stage_bytes / 4 ]
+            part : i64 [
+                ((t.count - done) * 4 < stage_bytes) ? (t.count - done)
+                : stage_bytes / 4 ]
             rn.move[ t.ar.buf, t.off + done * 4, stage, 0, part * 4 ]
             rn.finish[]
             memcpy[ @out[ done ], stage.data, part * 4 ]
@@ -1397,7 +1419,8 @@ class Grad
         rn.dispatch[ k, g, groups[ y.count ], 1, 1 ]
 
     # c = alpha a.b + beta c per batch z; see KGemm
-    func gemm [ va: GView, vb: GView, vc: GView, m: i64, n: i64, k: i64, batch: i64, alpha: f32, beta: f32 ]
+    func gemm [ va: GView, vb: GView, vc: GView, m: i64, n: i64, k: i64,
+                batch: i64, alpha: f32, beta: f32 ]
         # few output tiles over a long sum: split the sum
         tiles : i64 [ ((n + 63) / 64) * ((m + 63) / 64) * batch ]
         sk : i64 [ 224 / tiles ]
@@ -1408,26 +1431,37 @@ class Grad
         gemm_run[ va, vb, vc, m, n, k, batch, alpha, beta ]
 
     # sk pieces of the sum into scratch, then one ordered sum
-    func gemm_split [ va: GView, vb: GView, vc: GView, m: i64, n: i64, k: i64, sk: i64, alpha: f32, beta: f32 ]
+    func gemm_split [ va: GView, vb: GView, vc: GView, m: i64, n: i64,
+                      k: i64, sk: i64, alpha: f32, beta: f32 ]
         kc : i64 [ k / sk ]
         rest : i64 [ k - kc * sk ]
         np : i64 [ (rest > 0) ? sk + 1 : sk ]
         save : i64 [ scratch.top ]
         pt : GTensor stemp[ dims3[ np, m, n ] ]
-        gemm_run[ GView [ t: va.t, rs: va.rs, cs: va.cs, bs: kc * va.cs ],
-                  GView [ t: vb.t, rs: vb.rs, cs: vb.cs, bs: kc * vb.rs ],
-                  GView [ t: pt, rs: n, cs: 1, bs: m * n ], m, n, kc, sk, 1.0, 0.0 ]
+        gemm_run[
+            GView [ t: va.t, rs: va.rs, cs: va.cs, bs: kc * va.cs ],
+            GView [ t: vb.t, rs: vb.rs, cs: vb.cs, bs: kc * vb.rs ],
+            GView [ t: pt, rs: n, cs: 1, bs: m * n ], m, n, kc, sk, 1.0,
+            0.0 ]
         if [ rest > 0 ]
-            ta : GTensor [ ar: va.t.ar, off: va.t.off + kc * sk * va.cs * 4, count: va.t.count, dims: va.t.dims ]
-            tb : GTensor [ ar: vb.t.ar, off: vb.t.off + kc * sk * vb.rs * 4, count: vb.t.count, dims: vb.t.dims ]
-            tp : GTensor [ ar: pt.ar, off: pt.off + sk * m * n * 4, count: m * n, dims: pt.dims ]
-            gemm_run[ GView [ t: ta, rs: va.rs, cs: va.cs, bs: 0 ], GView [ t: tb, rs: vb.rs, cs: vb.cs, bs: 0 ],
-                      GView [ t: tp, rs: n, cs: 1, bs: 0 ], m, n, rest, 1, 1.0, 0.0 ]
+            ta : GTensor [ ar: va.t.ar,
+                           off: va.t.off + kc * sk * va.cs * 4,
+                           count: va.t.count, dims: va.t.dims ]
+            tb : GTensor [ ar: vb.t.ar,
+                           off: vb.t.off + kc * sk * vb.rs * 4,
+                           count: vb.t.count, dims: vb.t.dims ]
+            tp : GTensor [ ar: pt.ar, off: pt.off + sk * m * n * 4,
+                           count: m * n, dims: pt.dims ]
+            gemm_run[ GView [ t: ta, rs: va.rs, cs: va.cs, bs: 0 ],
+                      GView [ t: tb, rs: vb.rs, cs: vb.cs, bs: 0 ],
+                      GView [ t: tp, rs: n, cs: 1, bs: 0 ], m, n, rest,
+                      1, 1.0, 0.0 ]
         split_sum[ pt, vc, m, n, np, alpha, beta ]
         scratch.top = save
 
     # the np partials of a split gemm into c, in order
-    func split_sum [ pt: GTensor, vc: GView, m: i64, n: i64, np: i64, alpha: f32, beta: f32 ]
+    func split_sum [ pt: GTensor, vc: GView, m: i64, n: i64, np: i64,
+                     alpha: f32, beta: f32 ]
         k2 : GKernel kernel[ 'split_sum', KSplitSum [] ]
         g : GArgs []
         g.ad[ 0 ] = pt.addr[]
@@ -1441,7 +1475,8 @@ class Grad
         g.ff[ 1 ] = beta
         rn.dispatch[ k2, g, groups[ m * n ], 1, 1 ]
 
-    func gemm_run [ va: GView, vb: GView, vc: GView, m: i64, n: i64, k: i64, batch: i64, alpha: f32, beta: f32 ]
+    func gemm_run [ va: GView, vb: GView, vc: GView, m: i64, n: i64,
+                    k: i64, batch: i64, alpha: f32, beta: f32 ]
         kk : GKernel kernel[ 'gemm', KGemm [] ]
         g : GArgs []
         g.ad[ 0 ] = va.t.addr[]
@@ -1464,9 +1499,11 @@ class Grad
         # tall or narrow shapes waste most of a 128-row tile
         if [ m >= 512 && n >= 512 ]
             k2 : GKernel kernel[ 'gemm2', KGemm2 [] ]
-            rn.dispatch[ k2, g, i32[ (n + 63) / 64 ], i32[ (m + 127) / 128 ], i32[ batch ] ]
+            rn.dispatch[ k2, g, i32[ (n + 63) / 64 ],
+                         i32[ (m + 127) / 128 ], i32[ batch ] ]
             return
-        rn.dispatch[ kk, g, i32[ (n + 63) / 64 ], i32[ (m + 63) / 64 ], i32[ batch ] ]
+        rn.dispatch[ kk, g, i32[ (n + 63) / 64 ], i32[ (m + 63) / 64 ],
+                     i32[ batch ] ]
 
     # the gradient of t, made zero the first time a step asks
     func grad_of [ t: GTensor ] -> GTensor
@@ -1537,7 +1574,8 @@ class Grad
         return record && t && t.need
 
     # [b, c, t] <-> [c][b*t]; back 1 adds beta*y and bias
-    func regroup [ src: GTensor, dst: GTensor, bias: GTensor, nb: i64, ch: i64, nt: i64, back9: i32, beta: f32 ]
+    func regroup [ src: GTensor, dst: GTensor, bias: GTensor, nb: i64,
+                   ch: i64, nt: i64, back: i32, beta: f32 ]
         k : GKernel kernel[ 'regroup', KRegroup [] ]
         g : GArgs []
         g.ad[ 0 ] = src.addr[]
@@ -1546,7 +1584,7 @@ class Grad
         g.nn[ 0 ] = i32[ nb ]
         g.nn[ 1 ] = i32[ ch ]
         g.nn[ 2 ] = i32[ nt ]
-        g.nn[ 3 ] = back9
+        g.nn[ 3 ] = back
         g.ff[ 0 ] = beta
         rn.dispatch[ k, g, groups[ nb * ch * nt ], 1, 1 ]
 
@@ -1561,7 +1599,9 @@ class Grad
         rn.dispatch[ k, g, i32[ rows ], 1, 1 ]
 
     # unroll x for a conv: cols[(ci, k)][b*to + to]
-    func im2col [ x: GTensor, cols: GTensor, nb: i64, cin: i64, nt: i64, kw: i64, st: i32, pd: i32, dl: i32, gp: i32, tout: i64 ]
+    func im2col [ x: GTensor, cols: GTensor, nb: i64, cin: i64, nt: i64,
+                  kw: i64, st: i32, pd: i32, dl: i32, gp: i32,
+                  tout: i64 ]
         k : GKernel kernel[ 'im2col', KIm2col [] ]
         g : GArgs []
         g.ad[ 0 ] = x.addr[]
@@ -1577,7 +1617,9 @@ class Grad
         rn.dispatch[ k, g, groups[ cin * kw * nb * tout ], 1, 1 ]
 
     # dx[b, c, t] += every column tap that read x[b, c, t]
-    func col2im [ dcols: GTensor, dx: GTensor, nb: i64, cin: i64, nt: i64, kw: i64, st: i32, pd: i32, dl: i32, tout: i64 ]
+    func col2im [ dcols: GTensor, dx: GTensor, nb: i64, cin: i64,
+                  nt: i64, kw: i64, st: i32, pd: i32, dl: i32,
+                  tout: i64 ]
         k : GKernel kernel[ 'col2im', KCol2im [] ]
         g : GArgs []
         g.ad[ 0 ] = dcols.addr[]
@@ -1593,13 +1635,16 @@ class Grad
         rn.dispatch[ k, g, groups[ nb * cin * nt ], 1, 1 ]
 
     # pytorch's conv1d: x [b, cin, t], w [cout, cin/gp, k]
-    func conv1d [ x: GTensor, w: GTensor, b: GTensor, st: i32, pd: i32, dl: i32, gp: i32 ] -> GTensor
+    func conv1d [ x: GTensor, w: GTensor, b: GTensor, st: i32, pd: i32,
+                  dl: i32, gp: i32 ] -> GTensor
         nb : i64 [ x.dims[ 0 ] ]
         cin : i64 [ x.dims[ 1 ] ]
         nt : i64 [ x.dims[ 2 ] ]
         cout : i64 [ w.dims[ 0 ] ]
         kw : i64 [ w.dims[ 2 ] ]
-        tout : i64 [ (nt + 2 * i64[ pd ] - i64[ dl ] * (kw - 1) - 1) / i64[ st ] + 1 ]
+        tout : i64 [
+            (nt + 2 * i64[ pd ] - i64[ dl ] * (kw - 1) - 1) / i64[ st ]
+            + 1 ]
         cg : i64 [ cin / i64[ gp ] ]
         og : i64 [ cout / i64[ gp ] ]
         bt : i64 [ nb * tout ]
@@ -1607,13 +1652,17 @@ class Grad
         cols : GTensor stemp[ vec i64 [] [ cin * kw, bt ] ]
         im2col[ x, cols, nb, cin, nt, kw, st, pd, dl, gp, tout ]
         ym : GTensor stemp[ vec i64 [] [ cout, bt ] ]
-        gemm[ GView [ t: w, rs: cg * kw, cs: 1, bs: og * cg * kw ], GView [ t: cols, rs: bt, cs: 1, bs: cg * kw * bt ],
-              GView [ t: ym, rs: bt, cs: 1, bs: og * bt ], og, bt, cg * kw, i64[ gp ], 1.0, 0.0 ]
+        gemm[ GView [ t: w, rs: cg * kw, cs: 1, bs: og * cg * kw ],
+              GView [ t: cols, rs: bt, cs: 1, bs: cg * kw * bt ],
+              GView [ t: ym, rs: bt, cs: 1, bs: og * bt ], og, bt,
+              cg * kw, i64[ gp ], 1.0, 0.0 ]
         y : GTensor temp[ vec i64 [] [ nb, cout, tout ] ]
         regroup[ ym, y, b, nb, cout, tout, 1, 0.0 ]
         if [ keeps[ x ] || keeps[ w ] || keeps[ b ] ]
             y.need = true
-            tape.push[ GConvOp [ kind: 1, out: y, x: x, w: w, b: b, st: st, pd: pd, dl: dl, gp: gp ] ]
+            tape.push[
+                GConvOp [ kind: 1, out: y, x: x, w: w, b: b, st: st,
+                          pd: pd, dl: dl, gp: gp ] ]
         return y
 
     func conv1d_back [ rec: GConvOp ]
@@ -1627,28 +1676,37 @@ class Grad
         cout : i64 [ w.dims[ 0 ] ]
         kw : i64 [ w.dims[ 2 ] ]
         tout : i64 [ rec.out.dims[ 2 ] ]
-        gp : i64 [ i64[ rec.gp ] ]
+        gp : i64 [ rec.gp ]
         cg : i64 [ cin / gp ]
         og : i64 [ cout / gp ]
         bt : i64 [ nb * tout ]
         scratch.top = 0
         dm : GTensor stemp[ vec i64 [] [ cout, bt ] ]
         regroup[ dy, dm, null, nb, cout, tout, 0, 0.0 ]
-        if [ rec.b && rec.b.need ] row_sums[ dm, grad_of[ rec.b ], cout, bt ]
+        if [ rec.b && rec.b.need ]
+            row_sums[ dm, grad_of[ rec.b ], cout, bt ]
         if [ w.need ]
             # the columns again: cheaper than keeping them
             cols : GTensor stemp[ vec i64 [] [ cin * kw, bt ] ]
-            im2col[ x, cols, nb, cin, nt, kw, rec.st, rec.pd, rec.dl, rec.gp, tout ]
-            gemm[ GView [ t: dm, rs: bt, cs: 1, bs: og * bt ], GView [ t: cols, rs: 1, cs: bt, bs: cg * kw * bt ],
-                  GView [ t: grad_of[ w ], rs: cg * kw, cs: 1, bs: og * cg * kw ], og, cg * kw, bt, gp, 1.0, 1.0 ]
+            im2col[ x, cols, nb, cin, nt, kw, rec.st, rec.pd, rec.dl,
+                    rec.gp, tout ]
+            gemm[ GView [ t: dm, rs: bt, cs: 1, bs: og * bt ],
+                  GView [ t: cols, rs: 1, cs: bt, bs: cg * kw * bt ],
+                  GView [ t: grad_of[ w ], rs: cg * kw, cs: 1,
+                          bs: og * cg * kw ], og, cg * kw, bt, gp, 1.0,
+                          1.0 ]
         if [ x.need ]
             dc : GTensor stemp[ vec i64 [] [ cin * kw, bt ] ]
-            gemm[ GView [ t: w, rs: 1, cs: cg * kw, bs: og * cg * kw ], GView [ t: dm, rs: bt, cs: 1, bs: og * bt ],
-                  GView [ t: dc, rs: bt, cs: 1, bs: cg * kw * bt ], cg * kw, bt, og, gp, 1.0, 0.0 ]
-            col2im[ dc, grad_of[ x ], nb, cin, nt, kw, rec.st, rec.pd, rec.dl, tout ]
+            gemm[ GView [ t: w, rs: 1, cs: cg * kw, bs: og * cg * kw ],
+                  GView [ t: dm, rs: bt, cs: 1, bs: og * bt ],
+                  GView [ t: dc, rs: bt, cs: 1, bs: cg * kw * bt ],
+                  cg * kw, bt, og, gp, 1.0, 0.0 ]
+            col2im[ dc, grad_of[ x ], nb, cin, nt, kw, rec.st, rec.pd,
+                    rec.dl, tout ]
 
     # pytorch's conv_transpose1d: w [cin, cout, k]
-    func convt1d [ x: GTensor, w: GTensor, b: GTensor, st: i32, pd: i32 ] -> GTensor
+    func convt1d [ x: GTensor, w: GTensor, b: GTensor, st: i32,
+                   pd: i32 ] -> GTensor
         nb : i64 [ x.dims[ 0 ] ]
         cin : i64 [ x.dims[ 1 ] ]
         nt : i64 [ x.dims[ 2 ] ]
@@ -1661,17 +1719,23 @@ class Grad
         regroup[ x, xp, null, nb, cin, nt, 0, 0.0 ]
         # cols[(co, k)][b*t] = sum over ci of w x
         cols : GTensor stemp[ vec i64 [] [ cout * kw, bt ] ]
-        gemm[ GView [ t: w, rs: 1, cs: cout * kw, bs: 0 ], GView [ t: xp, rs: bt, cs: 1, bs: 0 ],
-              GView [ t: cols, rs: bt, cs: 1, bs: 0 ], cout * kw, bt, cin, 1, 1.0, 0.0 ]
+        gemm[ GView [ t: w, rs: 1, cs: cout * kw, bs: 0 ],
+              GView [ t: xp, rs: bt, cs: 1, bs: 0 ],
+              GView [ t: cols, rs: bt, cs: 1, bs: 0 ], cout * kw, bt,
+              cin, 1, 1.0, 0.0 ]
         y : GTensor temp[ vec i64 [] [ nb, cout, tout ] ]
         convt_gather[ cols, y, b, nb, cout, nt, kw, st, pd, tout ]
         if [ keeps[ x ] || keeps[ w ] || keeps[ b ] ]
             y.need = true
-            tape.push[ GConvTOp [ kind: 2, out: y, xin: x, wt: w, bias: b, t_st: st, t_pd: pd ] ]
+            tape.push[
+                GConvTOp [ kind: 2, out: y, xin: x, wt: w, bias: b,
+                           t_st: st, t_pd: pd ] ]
         return y
 
     # y[b, co, to] = bias + every tap landing on to
-    func convt_gather [ cols: GTensor, y: GTensor, b: GTensor, nb: i64, cout: i64, nt: i64, kw: i64, st: i32, pd: i32, tout: i64 ]
+    func convt_gather [ cols: GTensor, y: GTensor, b: GTensor, nb: i64,
+                        cout: i64, nt: i64, kw: i64, st: i32, pd: i32,
+                        tout: i64 ]
         k : GKernel kernel[ 'convt_gather', KConvtGather [] ]
         g : GArgs []
         g.ad[ 0 ] = cols.addr[]
@@ -1709,16 +1773,21 @@ class Grad
         if [ w.need ]
             xp : GTensor stemp[ vec i64 [] [ cin, bt ] ]
             regroup[ x, xp, null, nb, cin, nt, 0, 0.0 ]
-            gemm[ GView [ t: xp, rs: bt, cs: 1, bs: 0 ], GView [ t: dc, rs: 1, cs: bt, bs: 0 ],
-                  GView [ t: grad_of[ w ], rs: cout * kw, cs: 1, bs: 0 ], cin, cout * kw, bt, 1, 1.0, 1.0 ]
+            gemm[ GView [ t: xp, rs: bt, cs: 1, bs: 0 ],
+                  GView [ t: dc, rs: 1, cs: bt, bs: 0 ],
+                  GView [ t: grad_of[ w ], rs: cout * kw, cs: 1, bs: 0 ],
+                  cin, cout * kw, bt, 1, 1.0, 1.0 ]
         if [ x.need ]
             dxp : GTensor stemp[ vec i64 [] [ cin, bt ] ]
-            gemm[ GView [ t: w, rs: cout * kw, cs: 1, bs: 0 ], GView [ t: dc, rs: bt, cs: 1, bs: 0 ],
-                  GView [ t: dxp, rs: bt, cs: 1, bs: 0 ], cin, bt, cout * kw, 1, 1.0, 0.0 ]
+            gemm[ GView [ t: w, rs: cout * kw, cs: 1, bs: 0 ],
+                  GView [ t: dc, rs: bt, cs: 1, bs: 0 ],
+                  GView [ t: dxp, rs: bt, cs: 1, bs: 0 ], cin, bt,
+                  cout * kw, 1, 1.0, 0.0 ]
             regroup[ dxp, grad_of[ x ], null, nb, cin, nt, 1, 1.0 ]
 
     # dy unrolled as a transposed conv's columns
-    func im2col_t [ dy: GTensor, dc: GTensor, nb: i64, cout: i64, tout: i64, kw: i64, st: i32, pd: i32, nt: i64 ]
+    func im2col_t [ dy: GTensor, dc: GTensor, nb: i64, cout: i64,
+                    tout: i64, kw: i64, st: i32, pd: i32, nt: i64 ]
         k : GKernel kernel[ 'im2col_t', KIm2colT [] ]
         g : GArgs []
         g.ad[ 0 ] = dy.addr[]
@@ -1755,7 +1824,9 @@ class Grad
         rn.dispatch[ k, g, groups[ x.count ], 1, 1 ]
         if [ keeps[ x ] ]
             y.need = true
-            tape.push[ GUnaryOp [ kind: 3, out: y, ux: x, code: code, f0: f0 ] ]
+            tape.push[
+                GUnaryOp [ kind: 3, out: y, ux: x, code: code,
+                           f0: f0 ] ]
         return y
 
     func unary_back [ rec: GUnaryOp ]
@@ -1787,7 +1858,8 @@ class Grad
         zb : i64 [ (z.dims.count == 3) ? z.dims[ 0 ] : 1 ]
         zc : i64 [ (z.dims.count == 3) ? z.dims[ 1 ] : z.dims[ 0 ] ]
         zt : i64 [ (z.dims.count == 3) ? z.dims[ 2 ] : 1 ]
-        return vec i64 [] [ (zb == 1) ? 0 : zc * zt, (zc == 1) ? 0 : zt, (zt == 1) ? 0 : 1 ]
+        return vec i64 [] [ (zb == 1) ? 0 : zc * zt, (zc == 1) ? 0 : zt,
+                            (zt == 1) ? 0 : 1 ]
 
     # x + z or x * z; z [b, c, t], [c], [b, c, 1] or [b, 1, t]
     func bin [ x: GTensor, z: GTensor, mul: bool ] -> GTensor
@@ -1808,7 +1880,9 @@ class Grad
         rn.dispatch[ k, g, groups[ x.count ], 1, 1 ]
         if [ keeps[ x ] || keeps[ z ] ]
             y.need = true
-            tape.push[ GBinOp [ kind: 4, out: y, bx: x, bz: z, mul: mul, sb: st[ 0 ], sc: st[ 1 ], stt: st[ 2 ] ] ]
+            tape.push[
+                GBinOp [ kind: 4, out: y, bx: x, bz: z, mul: mul,
+                         sb: st[ 0 ], sc: st[ 1 ], stt: st[ 2 ] ] ]
         return y
 
     func add [ x: GTensor, z: GTensor ] -> GTensor
@@ -1925,7 +1999,8 @@ class Grad
         return y
 
     # n channels from s0 into d0: dst = beta dst + src
-    func chan_copy [ src: GTensor, dst: GTensor, nb: i64, cs: i64, n: i64, nt: i64, s0: i64, d0: i64, beta: f32 ]
+    func chan_copy [ src: GTensor, dst: GTensor, nb: i64, cs: i64,
+                     n: i64, nt: i64, s0: i64, d0: i64, beta: f32 ]
         k : GKernel kernel[ 'chan_copy', KChanCopy [] ]
         g : GArgs []
         g.ad[ 0 ] = src.addr[]
@@ -1943,7 +2018,8 @@ class Grad
     func slice_back [ rec: GSliceOp ]
         dy : GTensor rec.out.gr
         if [ !dy || !rec.sx.need ] return
-        chan_copy[ dy, grad_of[ rec.sx ], dy.dims[ 0 ], dy.dims[ 1 ], dy.dims[ 1 ], dy.dims[ 2 ], 0, rec.c0, 1.0 ]
+        chan_copy[ dy, grad_of[ rec.sx ], dy.dims[ 0 ], dy.dims[ 1 ],
+                   dy.dims[ 1 ], dy.dims[ 2 ], 0, rec.c0, 1.0 ]
 
     func join [ x: GTensor, z: GTensor ] -> GTensor
         nb : i64 [ x.dims[ 0 ] ]
@@ -1965,11 +2041,16 @@ class Grad
         nt : i64 [ dy.dims[ 2 ] ]
         cx : i64 [ rec.jx.dims[ 1 ] ]
         cz : i64 [ rec.jz.dims[ 1 ] ]
-        if [ rec.jx.need ] chan_copy[ dy, grad_of[ rec.jx ], nb, cx + cz, cx, nt, 0, 0, 1.0 ]
-        if [ rec.jz.need ] chan_copy[ dy, grad_of[ rec.jz ], nb, cx + cz, cz, nt, cx, 0, 1.0 ]
+        if [ rec.jx.need ]
+            chan_copy[ dy, grad_of[ rec.jx ], nb, cx + cz, cx, nt, 0, 0,
+                       1.0 ]
+        if [ rec.jz.need ]
+            chan_copy[ dy, grad_of[ rec.jz ], nb, cx + cz, cz, nt, cx, 0,
+                       1.0 ]
 
     # layer norm over the channels of [b, c, t], eps 1e-5
-    func layer_norm [ x: GTensor, gamma: GTensor, beta: GTensor ] -> GTensor
+    func layer_norm [ x: GTensor, gamma: GTensor,
+                      beta: GTensor ] -> GTensor
         k : GKernel kernel[ 'lnorm', KLnorm [] ]
         nb : i64 [ x.dims[ 0 ] ]
         nc : i64 [ x.dims[ 1 ] ]
@@ -1990,7 +2071,9 @@ class Grad
         rn.dispatch[ k, g, groups[ nb * nt ], 1, 1 ]
         if [ keeps[ x ] || keeps[ gamma ] || keeps[ beta ] ]
             y.need = true
-            tape.push[ GNormOp [ kind: 8, out: y, nx: x, gamma: gamma, beta: beta, mean: mean, rstd: rstd ] ]
+            tape.push[
+                GNormOp [ kind: 8, out: y, nx: x, gamma: gamma,
+                          beta: beta, mean: mean, rstd: rstd ] ]
         return y
 
     func norm_back [ rec: GNormOp ]
@@ -2018,9 +2101,11 @@ class Grad
             k2 : GKernel kernel[ 'lnorm_dg', KLnormDg [] ]
             g2 : GArgs []
             g2.ad[ 0 ] = x.addr[]
-            g2.ad[ 1 ] = (rec.gamma.need) ? grad_of[ rec.gamma ].addr[] : u64[ 0 ]
+            g2.ad[ 1 ] = (rec.gamma.need) ? grad_of[
+                rec.gamma ].addr[] : u64[ 0 ]
             g2.ad[ 2 ] = dy.addr[]
-            g2.ad[ 3 ] = (rec.beta.need) ? grad_of[ rec.beta ].addr[] : u64[ 0 ]
+            g2.ad[ 3 ] = (rec.beta.need) ? grad_of[
+                rec.beta ].addr[] : u64[ 0 ]
             g2.ad[ 4 ] = rec.mean.addr[]
             g2.ad[ 5 ] = rec.rstd.addr[]
             g2.nn[ 0 ] = i32[ nb ]
@@ -2038,16 +2123,20 @@ class Grad
         g.ff[ 0 ] = f32[ 1.0 / sqrt[ f64[ q.dims[ 1 ] / nh ] ] ]
         return g
 
-    func attention [ q: GTensor, kk: GTensor, v: GTensor, ek: GTensor, ev: GTensor, am: GTensor, nh: i64, win: i64 ] -> GTensor
+    func attention [ q: GTensor, kk: GTensor, v: GTensor, ek: GTensor,
+                     ev: GTensor, am: GTensor, nh: i64,
+                     win: i64 ] -> GTensor
         nb : i64 [ q.dims[ 0 ] ]
         nc : i64 [ q.dims[ 1 ] ]
         nt : i64 [ q.dims[ 2 ] ]
         dk : i64 [ nc / nh ]
         z : i64 [ nb * nh ]
-        sc : f32 [ f32[ 1.0 / sqrt[ f64[ dk ] ] ] ]
+        sc : f32 [ 1.0 / sqrt[ f64[ dk ] ] ]
         pr : GTensor temp[ vec i64 [] [ z, nt, nt ] ]
-        gemm[ GView [ t: q, rs: 1, cs: nt, bs: dk * nt ], GView [ t: kk, rs: nt, cs: 1, bs: dk * nt ],
-              GView [ t: pr, rs: nt, cs: 1, bs: nt * nt ], nt, nt, dk, z, sc, 0.0 ]
+        gemm[ GView [ t: q, rs: 1, cs: nt, bs: dk * nt ],
+              GView [ t: kk, rs: nt, cs: 1, bs: dk * nt ],
+              GView [ t: pr, rs: nt, cs: 1, bs: nt * nt ], nt, nt, dk, z,
+              sc, 0.0 ]
         # relative keys, the mask, then softmax per row
         k1 : GKernel kernel[ 'attn_rel_soft', KAttnRelSoft [] ]
         g : GArgs attn_args[ q, nh, win ]
@@ -2057,17 +2146,23 @@ class Grad
         g.ad[ 3 ] = (am) ? am.addr[] : u64[ 0 ]
         rn.dispatch[ k1, g, i32[ z * nt ], 1, 1 ]
         o : GTensor temp[ q.dims ]
-        gemm[ GView [ t: pr, rs: nt, cs: 1, bs: nt * nt ], GView [ t: v, rs: 1, cs: nt, bs: dk * nt ],
-              GView [ t: o, rs: 1, cs: nt, bs: dk * nt ], nt, dk, nt, z, 1.0, 0.0 ]
+        gemm[ GView [ t: pr, rs: nt, cs: 1, bs: nt * nt ],
+              GView [ t: v, rs: 1, cs: nt, bs: dk * nt ],
+              GView [ t: o, rs: 1, cs: nt, bs: dk * nt ], nt, dk, nt, z,
+              1.0, 0.0 ]
         k2 : GKernel kernel[ 'attn_rel_v', KAttnRelV [] ]
         g2 : GArgs attn_args[ q, nh, win ]
         g2.ad[ 0 ] = pr.addr[]
         g2.ad[ 1 ] = ev.addr[]
         g2.ad[ 2 ] = o.addr[]
         rn.dispatch[ k2, g2, groups[ o.count ], 1, 1 ]
-        if [ keeps[ q ] || keeps[ kk ] || keeps[ v ] || keeps[ ek ] || keeps[ ev ] ]
+        if [
+            keeps[ q ] || keeps[ kk ] || keeps[ v ] || keeps[ ek ]
+            || keeps[ ev ] ]
             o.need = true
-            tape.push[ GAttnOp [ kind: 9, out: o, q: q, kk: kk, v: v, ek: ek, ev: ev, am: am, pr: pr, nh: nh, win: win ] ]
+            tape.push[
+                GAttnOp [ kind: 9, out: o, q: q, kk: kk, v: v, ek: ek,
+                          ev: ev, am: am, pr: pr, nh: nh, win: win ] ]
         return o
 
     func attn_back [ rec: GAttnOp ]
@@ -2080,12 +2175,14 @@ class Grad
         nh : i64 [ rec.nh ]
         dk : i64 [ nc / nh ]
         z : i64 [ nb * nh ]
-        sc : f32 [ f32[ 1.0 / sqrt[ f64[ dk ] ] ] ]
+        sc : f32 [ 1.0 / sqrt[ f64[ dk ] ] ]
         pr : GTensor rec.pr
         # dP = dO^T v + relative values, then softmax back
         dp : GTensor temp[ vec i64 [] [ z, nt, nt ] ]
-        gemm[ GView [ t: dout, rs: 1, cs: nt, bs: dk * nt ], GView [ t: rec.v, rs: nt, cs: 1, bs: dk * nt ],
-              GView [ t: dp, rs: nt, cs: 1, bs: nt * nt ], nt, nt, dk, z, 1.0, 0.0 ]
+        gemm[ GView [ t: dout, rs: 1, cs: nt, bs: dk * nt ],
+              GView [ t: rec.v, rs: nt, cs: 1, bs: dk * nt ],
+              GView [ t: dp, rs: nt, cs: 1, bs: nt * nt ], nt, nt, dk, z,
+              1.0, 0.0 ]
         k1 : GKernel kernel[ 'attn_soft_back', KAttnSoftBack [] ]
         g1 : GArgs attn_args[ q, nh, rec.win ]
         g1.ad[ 0 ] = pr.addr[]
@@ -2098,8 +2195,10 @@ class Grad
         # dp now holds dS
         if [ q.need ]
             dq : GTensor grad_of[ q ]
-            gemm[ GView [ t: dp, rs: nt, cs: 1, bs: nt * nt ], GView [ t: rec.kk, rs: 1, cs: nt, bs: dk * nt ],
-                  GView [ t: dq, rs: 1, cs: nt, bs: dk * nt ], nt, dk, nt, z, sc, 1.0 ]
+            gemm[ GView [ t: dp, rs: nt, cs: 1, bs: nt * nt ],
+                  GView [ t: rec.kk, rs: 1, cs: nt, bs: dk * nt ],
+                  GView [ t: dq, rs: 1, cs: nt, bs: dk * nt ], nt, dk,
+                  nt, z, sc, 1.0 ]
             k2 : GKernel kernel[ 'attn_dq_rel', KAttnDqRel [] ]
             g2 : GArgs attn_args[ q, nh, rec.win ]
             g2.ad[ 0 ] = dp.addr[]
@@ -2107,12 +2206,16 @@ class Grad
             g2.ad[ 2 ] = dq.addr[]
             rn.dispatch[ k2, g2, groups[ q.count ], 1, 1 ]
         if [ rec.kk.need ]
-            gemm[ GView [ t: q, rs: nt, cs: 1, bs: dk * nt ], GView [ t: dp, rs: nt, cs: 1, bs: nt * nt ],
-                  GView [ t: grad_of[ rec.kk ], rs: nt, cs: 1, bs: dk * nt ], dk, nt, nt, z, sc, 1.0 ]
+            gemm[ GView [ t: q, rs: nt, cs: 1, bs: dk * nt ],
+                  GView [ t: dp, rs: nt, cs: 1, bs: nt * nt ],
+                  GView [ t: grad_of[ rec.kk ], rs: nt, cs: 1,
+                          bs: dk * nt ], dk, nt, nt, z, sc, 1.0 ]
         # dv(d, j) = sum over i of dO(d, i) P(i, j)
         if [ rec.v.need ]
-            gemm[ GView [ t: dout, rs: nt, cs: 1, bs: dk * nt ], GView [ t: pr, rs: nt, cs: 1, bs: nt * nt ],
-                  GView [ t: grad_of[ rec.v ], rs: nt, cs: 1, bs: dk * nt ], dk, nt, nt, z, 1.0, 1.0 ]
+            gemm[ GView [ t: dout, rs: nt, cs: 1, bs: dk * nt ],
+                  GView [ t: pr, rs: nt, cs: 1, bs: nt * nt ],
+                  GView [ t: grad_of[ rec.v ], rs: nt, cs: 1,
+                          bs: dk * nt ], dk, nt, nt, z, 1.0, 1.0 ]
         # a workgroup per table entry sums every (z, i)
         k3 : GKernel kernel[ 'attn_dtab', KAttnDtab [] ]
         nr : i64 [ 2 * rec.win + 1 ]
@@ -2132,7 +2235,8 @@ class Grad
             rn.dispatch[ k3, g4, i32[ nr * dk ], 1, 1 ]
 
     # [b, a, c] into [b, c, a] as dst = beta * dst + src
-    func swap_into [ src: GTensor, dst: GTensor, nb: i64, na: i64, nc: i64, beta: f32 ]
+    func swap_into [ src: GTensor, dst: GTensor, nb: i64, na: i64,
+                     nc: i64, beta: f32 ]
         k : GKernel kernel[ 'swap12', KSwap12 [] ]
         g : GArgs []
         g.ad[ 0 ] = src.addr[]
@@ -2157,7 +2261,8 @@ class Grad
     func swap_back [ rec: GSwapOp ]
         dy : GTensor rec.out.gr
         if [ !dy || !rec.wx.need ] return
-        swap_into[ dy, grad_of[ rec.wx ], dy.dims[ 0 ], dy.dims[ 1 ], dy.dims[ 2 ], 1.0 ]
+        swap_into[ dy, grad_of[ rec.wx ], dy.dims[ 0 ], dy.dims[ 1 ],
+                   dy.dims[ 2 ], 1.0 ]
 
     # db[c] += the sum of column c of m [rows][c]
     func col_sums [ m: GTensor, db: GTensor, rows: i64, nc: i64 ]
@@ -2176,12 +2281,15 @@ class Grad
         rows : i64 [ x.count / nin ]
         od : vec i64 dims_with[ x.dims, x.dims.count - 1, nout ]
         y : GTensor temp[ od ]
-        gemm[ GView [ t: x, rs: nin, cs: 1, bs: 0 ], GView [ t: w, rs: 1, cs: nin, bs: 0 ],
-              GView [ t: y, rs: nout, cs: 1, bs: 0 ], rows, nout, nin, 1, 1.0, 0.0 ]
+        gemm[ GView [ t: x, rs: nin, cs: 1, bs: 0 ],
+              GView [ t: w, rs: 1, cs: nin, bs: 0 ],
+              GView [ t: y, rs: nout, cs: 1, bs: 0 ], rows, nout, nin, 1,
+              1.0, 0.0 ]
         if [ b ] bin_rows[ y, b, rows, nout ]
         if [ keeps[ x ] || keeps[ w ] || keeps[ b ] ]
             y.need = true
-            tape.push[ GLinOp [ kind: 11, out: y, lx: x, lw: w, lb: b ] ]
+            tape.push[
+                GLinOp [ kind: 11, out: y, lx: x, lw: w, lb: b ] ]
         return y
 
     # every row of y [rows, n] plus b [n]
@@ -2207,12 +2315,17 @@ class Grad
         nout : i64 [ rec.lw.dims[ 0 ] ]
         rows : i64 [ rec.lx.count / nin ]
         if [ rec.lx.need ]
-            gemm[ GView [ t: dy, rs: nout, cs: 1, bs: 0 ], GView [ t: rec.lw, rs: nin, cs: 1, bs: 0 ],
-                  GView [ t: grad_of[ rec.lx ], rs: nin, cs: 1, bs: 0 ], rows, nin, nout, 1, 1.0, 1.0 ]
+            gemm[ GView [ t: dy, rs: nout, cs: 1, bs: 0 ],
+                  GView [ t: rec.lw, rs: nin, cs: 1, bs: 0 ],
+                  GView [ t: grad_of[ rec.lx ], rs: nin, cs: 1, bs: 0 ],
+                  rows, nin, nout, 1, 1.0, 1.0 ]
         if [ rec.lw.need ]
-            gemm[ GView [ t: dy, rs: 1, cs: nout, bs: 0 ], GView [ t: rec.lx, rs: nin, cs: 1, bs: 0 ],
-                  GView [ t: grad_of[ rec.lw ], rs: nin, cs: 1, bs: 0 ], nout, nin, rows, 1, 1.0, 1.0 ]
-        if [ rec.lb && rec.lb.need ] col_sums[ dy, grad_of[ rec.lb ], rows, nout ]
+            gemm[ GView [ t: dy, rs: 1, cs: nout, bs: 0 ],
+                  GView [ t: rec.lx, rs: nin, cs: 1, bs: 0 ],
+                  GView [ t: grad_of[ rec.lw ], rs: nin, cs: 1, bs: 0 ],
+                  nout, nin, rows, 1, 1.0, 1.0 ]
+        if [ rec.lb && rec.lb.need ]
+            col_sums[ dy, grad_of[ rec.lb ], rows, nout ]
 
     # rows of tab [v, d] by ids into [ids' dims, d]
     func lookup [ ids: GTensor, tab: GTensor ] -> GTensor
@@ -2229,7 +2342,8 @@ class Grad
         rn.dispatch[ k, g, groups[ y.count ], 1, 1 ]
         if [ keeps[ tab ] ]
             y.need = true
-            tape.push[ GLookOp [ kind: 12, out: y, ids: ids, tab: tab ] ]
+            tape.push[
+                GLookOp [ kind: 12, out: y, ids: ids, tab: tab ] ]
         return y
 
     func lookup_back [ rec: GLookOp ]
@@ -2262,7 +2376,8 @@ class Grad
         rn.dispatch[ k, g, i32[ v.dims[ 0 ] ], 1, 1 ]
         if [ keeps[ v ] || keeps[ wg ] ]
             w.need = true
-            tape.push[ GWnormOp [ kind: 13, out: w, wv: v, wg: wg, nrm: nrm ] ]
+            tape.push[
+                GWnormOp [ kind: 13, out: w, wv: v, wg: wg, nrm: nrm ] ]
         return w
 
     func wnorm_back [ rec: GWnormOp ]
@@ -2321,7 +2436,7 @@ class Grad
     # a checkpoint tensor into the weight arena
     func param_of [ t: tensor ] -> GTensor
         if [ !t ] return null
-        nd : i64 [ i64[ t.tensor_shape.count ] ]
+        nd : i64 [ t.tensor_shape.count ]
         dims : vec i64 [ nd ]
         for [ i: i64 0, i < nd, i += 1 ]
             dims[ i ] = i64[ t.tensor_shape[ i ] ]
@@ -2331,12 +2446,14 @@ class Grad
         return g
 
     # n values from host memory onto the gpu
-    func upload_raw [ t: GTensor, src9: @f32, n: i64 ]
+    func upload_raw [ t: GTensor, src: @f32, n: i64 ]
         if [ !t ] return
         done : i64 [ 0 ]
         while [ done < n ]
-            part : i64 [ ((n - done) * 4 < stage_bytes) ? (n - done) : stage_bytes / 4 ]
-            memcpy[ stage.data, @src9[ done ], part * 4 ]
+            part : i64 [
+                ((n - done) * 4 < stage_bytes) ? (n - done)
+                : stage_bytes / 4 ]
+            memcpy[ stage.data, @src[ done ], part * 4 ]
             rn.move[ stage, 0, t.ar.buf, t.off + done * 4, part * 4 ]
             rn.finish[]
             done += part
@@ -2344,7 +2461,8 @@ class Grad
     func gelu [ x: GTensor ] -> GTensor
         return unary[ x, 6, 0.0 ]
 
-    func tslice_run [ src: GTensor, dst: GTensor, nb: i64, nc: i64, n: i64, nt: i64, t0: i64, back9: i32 ]
+    func tslice_run [ src: GTensor, dst: GTensor, nb: i64, nc: i64,
+                      n: i64, nt: i64, t0: i64, back: i32 ]
         k : GKernel kernel[ 'tslice', KTslice [] ]
         g : GArgs []
         g.ad[ 0 ] = src.addr[]
@@ -2354,13 +2472,14 @@ class Grad
         g.nn[ 2 ] = i32[ n ]
         g.nn[ 3 ] = i32[ nt ]
         g.nn[ 4 ] = i32[ t0 ]
-        g.nn[ 5 ] = back9
+        g.nn[ 5 ] = back
         rn.dispatch[ k, g, groups[ nb * nc * n ], 1, 1 ]
 
     # frames t0 .. t0+n of x [b, c, t]
     func tslice [ x: GTensor, t0: i64, n: i64 ] -> GTensor
         y : GTensor temp[ dims3[ x.dims[ 0 ], x.dims[ 1 ], n ] ]
-        tslice_run[ x, y, x.dims[ 0 ], x.dims[ 1 ], n, x.dims[ 2 ], t0, 0 ]
+        tslice_run[ x, y, x.dims[ 0 ], x.dims[ 1 ], n, x.dims[ 2 ], t0,
+                    0 ]
         if [ keeps[ x ] ]
             y.need = true
             tape.push[ GTsliceOp [ kind: 16, out: y, tx: x, t0: t0 ] ]
@@ -2369,10 +2488,12 @@ class Grad
     func tslice_back [ rec: GTsliceOp ]
         dy : GTensor rec.out.gr
         if [ !dy || !rec.tx.need ] return
-        tslice_run[ dy, grad_of[ rec.tx ], dy.dims[ 0 ], dy.dims[ 1 ], dy.dims[ 2 ], rec.tx.dims[ 2 ], rec.t0, 1 ]
+        tslice_run[ dy, grad_of[ rec.tx ], dy.dims[ 0 ], dy.dims[ 1 ],
+                    dy.dims[ 2 ], rec.tx.dims[ 2 ], rec.t0, 1 ]
 
     # per (b, c) norm over time, affine per channel; no grad
-    func time_norm [ x: GTensor, gamma: GTensor, beta: GTensor ] -> GTensor
+    func time_norm [ x: GTensor, gamma: GTensor,
+                     beta: GTensor ] -> GTensor
         y : GTensor temp[ x.dims ]
         k : GKernel kernel[ 'tnorm', KTnorm [] ]
         g : GArgs []
@@ -2386,7 +2507,8 @@ class Grad
         return y
 
     # pytorch's conv2d, forward only
-    func conv2d [ x: GTensor, w: GTensor, b: GTensor, ph: i32, pw: i32 ] -> GTensor
+    func conv2d [ x: GTensor, w: GTensor, b: GTensor, ph: i32,
+                  pw: i32 ] -> GTensor
         nb : i64 [ x.dims[ 0 ] ]
         ci : i64 [ x.dims[ 1 ] ]
         nh : i64 [ x.dims[ 2 ] ]
@@ -2415,8 +2537,10 @@ class Grad
         g.nn[ 9 ] = i32[ ow ]
         rn.dispatch[ k, g, groups[ cols.count ], 1, 1 ]
         ym : GTensor stemp[ vec i64 [] [ co, n ] ]
-        gemm[ GView [ t: w, rs: ci * kh * kw, cs: 1, bs: 0 ], GView [ t: cols, rs: n, cs: 1, bs: 0 ],
-              GView [ t: ym, rs: n, cs: 1, bs: 0 ], co, n, ci * kh * kw, 1, 1.0, 0.0 ]
+        gemm[ GView [ t: w, rs: ci * kh * kw, cs: 1, bs: 0 ],
+              GView [ t: cols, rs: n, cs: 1, bs: 0 ],
+              GView [ t: ym, rs: n, cs: 1, bs: 0 ], co, n, ci * kh * kw,
+              1, 1.0, 0.0 ]
         y : GTensor temp[ vec i64 [] [ nb, co, oh, ow ] ]
         regroup[ ym, y, b, nb, co, oh * ow, 1, 0.0 ]
         return y
@@ -2433,8 +2557,10 @@ class Grad
         xp : GTensor stemp[ vec i64 [] [ ci, n ] ]
         regroup[ x, xp, null, nb, ci, nh * nw, 0, 0.0 ]
         cols : GTensor stemp[ vec i64 [] [ co * 9, n ] ]
-        gemm[ GView [ t: w, rs: 1, cs: co * 9, bs: 0 ], GView [ t: xp, rs: n, cs: 1, bs: 0 ],
-              GView [ t: cols, rs: n, cs: 1, bs: 0 ], co * 9, n, ci, 1, 1.0, 0.0 ]
+        gemm[ GView [ t: w, rs: 1, cs: co * 9, bs: 0 ],
+              GView [ t: xp, rs: n, cs: 1, bs: 0 ],
+              GView [ t: cols, rs: n, cs: 1, bs: 0 ], co * 9, n, ci, 1,
+              1.0, 0.0 ]
         oh : i64 [ nh * i64[ st ] ]
         ow : i64 [ nw * i64[ st ] ]
         y : GTensor temp[ vec i64 [] [ nb, co, oh, ow ] ]
@@ -2471,7 +2597,8 @@ class Grad
         return y
 
     # bidirectional gru 256; [t, 512] forward then reverse
-    func gru256 [ xf: GTensor, xr: GTensor, whf: GTensor, whr: GTensor, bhf: GTensor, bhr: GTensor, nt: i64 ] -> GTensor
+    func gru256 [ xf: GTensor, xr: GTensor, whf: GTensor, whr: GTensor,
+                  bhf: GTensor, bhr: GTensor, nt: i64 ] -> GTensor
         y : GTensor temp[ vec i64 [] [ nt, 512 ] ]
         k : GKernel kernel[ 'gru256', KGru [] ]
         g : GArgs []
@@ -2490,7 +2617,8 @@ class Grad
 
     # the same memory under other dims (no copy, no gradient)
     func view [ t: GTensor, dims: vec i64 ] -> GTensor
-        return GTensor [ ar: t.ar, off: t.off, count: t.count, dims: dims ]
+        return GTensor [ ar: t.ar, off: t.off, count: t.count,
+                         dims: dims ]
 
     # |x| of stacked re/im halves [b, 2f, t], eps in root
     func magnitude [ x: GTensor, eps: f32 ] -> GTensor
@@ -2550,7 +2678,8 @@ class Grad
         g.ff[ 0 ] = rec.lo
         rn.dispatch[ k, g, groups[ dy.count ], 1, 1 ]
 
-    func tsids_run [ src: GTensor, dst: GTensor, ids: GTensor, nb: i64, nc: i64, n: i64, nt: i64, mult: i64, back9: i32 ]
+    func tsids_run [ src: GTensor, dst: GTensor, ids: GTensor, nb: i64,
+                     nc: i64, n: i64, nt: i64, mult: i64, back: i32 ]
         k : GKernel kernel[ 'tslice_ids', KTsliceIds [] ]
         g : GArgs []
         g.ad[ 0 ] = src.addr[]
@@ -2561,25 +2690,35 @@ class Grad
         g.nn[ 2 ] = i32[ n ]
         g.nn[ 3 ] = i32[ nt ]
         g.nn[ 4 ] = i32[ mult ]
-        g.nn[ 5 ] = back9
+        g.nn[ 5 ] = back
         rn.dispatch[ k, g, groups[ nb * nc * n ], 1, 1 ]
 
     # each batch item's frames ids[b]*mult .. +n
-    func tslice_ids [ x: GTensor, ids: GTensor, n: i64, mult: i64 ] -> GTensor
+    func tslice_ids [ x: GTensor, ids: GTensor, n: i64,
+                      mult: i64 ] -> GTensor
         y : GTensor temp[ dims3[ x.dims[ 0 ], x.dims[ 1 ], n ] ]
-        tsids_run[ x, y, ids, x.dims[ 0 ], x.dims[ 1 ], n, x.dims[ 2 ], mult, 0 ]
+        tsids_run[ x, y, ids, x.dims[ 0 ], x.dims[ 1 ], n, x.dims[ 2 ],
+                   mult, 0 ]
         if [ keeps[ x ] ]
             y.need = true
-            tape.push[ GTsIdsOp [ kind: 17, out: y, sx: x, ids: ids, mult: mult ] ]
+            tape.push[
+                GTsIdsOp [ kind: 17, out: y, sx: x, ids: ids,
+                           mult: mult ] ]
         return y
 
     func tsids_back [ rec: GTsIdsOp ]
         dy : GTensor rec.out.gr
         if [ !dy || !rec.sx.need ] return
-        tsids_run[ dy, grad_of[ rec.sx ], rec.ids, dy.dims[ 0 ], dy.dims[ 1 ], dy.dims[ 2 ], rec.sx.dims[ 2 ], rec.mult, 1 ]
+        tsids_run[ dy, grad_of[ rec.sx ], rec.ids, dy.dims[ 0 ],
+                   dy.dims[ 1 ], dy.dims[ 2 ], rec.sx.dims[ 2 ],
+                   rec.mult, 1 ]
 
-    func pad_run [ src: GTensor, dst: GTensor, rows: i64, nt: i64, pl: i64, tn: i64, back9: i32 ]
-        k : GKernel [ (back9 == 1) ? kernel[ 'pad_reflect_back', KPadReflectBack [] ] : kernel[ 'pad_reflect', KPadReflect [] ] ]
+    func pad_run [ src: GTensor, dst: GTensor, rows: i64, nt: i64,
+                   pl: i64, tn: i64, back: i32 ]
+        k : GKernel [
+            (back == 1)
+            ? kernel[ 'pad_reflect_back', KPadReflectBack [] ]
+            : kernel[ 'pad_reflect', KPadReflect [] ] ]
         g : GArgs []
         g.ad[ 0 ] = src.addr[]
         g.ad[ 1 ] = dst.addr[]
@@ -2587,14 +2726,17 @@ class Grad
         g.nn[ 1 ] = i32[ nt ]
         g.nn[ 2 ] = i32[ pl ]
         g.nn[ 3 ] = i32[ tn ]
-        g.nn[ 4 ] = back9
-        rn.dispatch[ k, g, groups[ rows * ((back9 == 1) ? nt : tn) ], 1, 1 ]
+        g.nn[ 4 ] = back
+        rn.dispatch[ k, g, groups[ rows * ((back == 1) ? nt : tn) ], 1,
+                     1 ]
 
     # reflect padding: pl frames before, pr after, along time
     func pad_reflect [ x: GTensor, pl: i64, pr: i64 ] -> GTensor
         nt : i64 [ x.dims[ 2 ] ]
-        y : GTensor temp[ dims3[ x.dims[ 0 ], x.dims[ 1 ], nt + pl + pr ] ]
-        pad_run[ x, y, x.dims[ 0 ] * x.dims[ 1 ], nt, pl, nt + pl + pr, 0 ]
+        y : GTensor temp[
+            dims3[ x.dims[ 0 ], x.dims[ 1 ], nt + pl + pr ] ]
+        pad_run[ x, y, x.dims[ 0 ] * x.dims[ 1 ], nt, pl, nt + pl + pr,
+                 0 ]
         if [ keeps[ x ] ]
             y.need = true
             tape.push[ GPadOp [ kind: 18, out: y, px: x, pl: pl ] ]
@@ -2605,9 +2747,11 @@ class Grad
         if [ !dy || !rec.px.need ] return
         # one source gathers every tap mirrored onto it
         x : GTensor rec.px
-        pad_run[ dy, grad_of[ x ], x.dims[ 0 ] * x.dims[ 1 ], x.dims[ 2 ], rec.pl, dy.dims[ 2 ], 1 ]
+        pad_run[ dy, grad_of[ x ], x.dims[ 0 ] * x.dims[ 1 ],
+                 x.dims[ 2 ], rec.pl, dy.dims[ 2 ], 1 ]
 
-    func fold_run [ src: GTensor, dst: GTensor, nb: i64, nc: i64, nt: i64, per: i64, back9: i32 ]
+    func fold_run [ src: GTensor, dst: GTensor, nb: i64, nc: i64,
+                    nt: i64, per: i64, back: i32 ]
         k : GKernel kernel[ 'period_fold', KPeriodFold [] ]
         g : GArgs []
         g.ad[ 0 ] = src.addr[]
@@ -2616,7 +2760,7 @@ class Grad
         g.nn[ 1 ] = i32[ nc ]
         g.nn[ 2 ] = i32[ nt ]
         g.nn[ 3 ] = i32[ per ]
-        g.nn[ 4 ] = back9
+        g.nn[ 4 ] = back
         rn.dispatch[ k, g, groups[ nb * nc * nt ], 1, 1 ]
 
     # [b, c, t] (t a multiple of per) to [b*per, c, t/per]
@@ -2635,12 +2779,14 @@ class Grad
         dy : GTensor rec.out.gr
         if [ !dy || !rec.fx9.need ] return
         x : GTensor rec.fx9
-        fold_run[ dy, grad_of[ x ], x.dims[ 0 ], x.dims[ 1 ], x.dims[ 2 ], rec.per, 1 ]
+        fold_run[ dy, grad_of[ x ], x.dims[ 0 ], x.dims[ 1 ],
+                  x.dims[ 2 ], rec.per, 1 ]
 
     func one [] -> vec i64
         return vec i64 [] [ 1 ]
 
-    func loss_run [ x: GTensor, y9: GTensor, mode: i32, tgt: f32, nrm: f32 ] -> GTensor
+    func loss_run [ x: GTensor, y: GTensor, mode: i32, tgt: f32,
+                    nrm: f32 ] -> GTensor
         o : GTensor temp[ one[] ]
         # a group per 4096 values, at most 256: partials in order
         ng : i64 [ (x.count + 4095) / 4096 ]
@@ -2651,7 +2797,7 @@ class Grad
         k : GKernel kernel[ 'loss', KLoss [] ]
         g : GArgs []
         g.ad[ 0 ] = x.addr[]
-        g.ad[ 1 ] = (y9) ? y9.addr[] : u64[ 0 ]
+        g.ad[ 1 ] = (y) ? y.addr[] : u64[ 0 ]
         g.ad[ 2 ] = pt.addr[]
         g.nn[ 0 ] = i32[ x.count ]
         g.nn[ 1 ] = mode
@@ -2665,9 +2811,11 @@ class Grad
         g2.ff[ 0 ] = nrm
         rn.dispatch[ k2, g2, 1, 1, 1 ]
         scratch.top = save
-        if [ keeps[ x ] || keeps[ y9 ] ]
+        if [ keeps[ x ] || keeps[ y ] ]
             o.need = true
-            tape.push[ GLossOp [ kind: 22, out: o, lx: x, ly: y9, mode: mode, tgt: tgt, nrm: nrm ] ]
+            tape.push[
+                GLossOp [ kind: 22, out: o, lx: x, ly: y, mode: mode,
+                          tgt: tgt, nrm: nrm ] ]
         return o
 
     # mean((tgt - x)^2)
@@ -2675,8 +2823,8 @@ class Grad
         return loss_run[ x, null, 0, tgt, f32[ 1.0 / f64[ x.count ] ] ]
 
     # mean(|x - y|)
-    func l1 [ x: GTensor, y9: GTensor ] -> GTensor
-        return loss_run[ x, y9, 1, 0.0, f32[ 1.0 / f64[ x.count ] ] ]
+    func l1 [ x: GTensor, y: GTensor ] -> GTensor
+        return loss_run[ x, y, 1, 0.0, f32[ 1.0 / f64[ x.count ] ] ]
 
     func loss_back [ rec: GLossOp ]
         dl : GTensor rec.out.gr
@@ -2692,7 +2840,8 @@ class Grad
         el
             # the kernel always writes dx: a scratch that nothing reads
             g.ad[ 3 ] = temp[ x.dims ].addr[]
-        g.ad[ 4 ] = (rec.ly && rec.ly.need) ? grad_of[ rec.ly ].addr[] : u64[ 0 ]
+        g.ad[ 4 ] = (rec.ly && rec.ly.need) ? grad_of[
+            rec.ly ].addr[] : u64[ 0 ]
         g.nn[ 0 ] = i32[ x.count ]
         g.nn[ 1 ] = rec.mode
         g.ff[ 0 ] = rec.tgt
@@ -2700,7 +2849,8 @@ class Grad
         rn.dispatch[ k, g, groups[ x.count ], 1, 1 ]
 
     # vits kl over the mask [b, 1, t], divided by msum
-    func kl [ zp: GTensor, lq: GTensor, mp: GTensor, lp: GTensor, km: GTensor, msum: f64 ] -> GTensor
+    func kl [ zp: GTensor, lq: GTensor, mp: GTensor, lp: GTensor,
+              km: GTensor, msum: f64 ] -> GTensor
         o : GTensor temp[ one[] ]
         # a group per 4096 values, at most 256: partials in order
         ng : i64 [ (zp.count + 4095) / 4096 ]
@@ -2731,7 +2881,9 @@ class Grad
         scratch.top = save
         if [ keeps[ zp ] || keeps[ lq ] || keeps[ mp ] || keeps[ lp ] ]
             o.need = true
-            tape.push[ GKlOp [ kind: 23, out: o, zp: zp, lq: lq, mp: mp, lp: lp, km: km, nrm: f32[ 1.0 / msum ] ] ]
+            tape.push[
+                GKlOp [ kind: 23, out: o, zp: zp, lq: lq, mp: mp, lp: lp,
+                        km: km, nrm: f32[ 1.0 / msum ] ] ]
         return o
 
     func kl_back [ rec: GKlOp ]
@@ -2760,7 +2912,9 @@ class Grad
         for [ q: i64 0, q < 4, q += 1 ]
             t9 : GTensor ins[ q ]
             if [ !t9.need ] continue
-            part : GTensor GTensor [ ar: four.ar, off: four.off + q * n * 4, count: n, dims: t9.dims ]
+            part : GTensor GTensor [ ar: four.ar,
+                                     off: four.off + q * n * 4, count: n,
+                                     dims: t9.dims ]
             axpby[ part, grad_of[ t9 ], 1.0, 1.0 ]
 
     # every loss seeded with its weight, then the tape
@@ -2768,7 +2922,8 @@ class Grad
         backward_from[ losses, weights, 0 ]
 
     # as backward_all, over the ops recorded since mark
-    func backward_from [ losses: vec GTensor, weights: vec f32, mark: i64 ]
+    func backward_from [ losses: vec GTensor, weights: vec f32,
+                         mark: i64 ]
         for [ i: i64 0, i < losses.count, i += 1 ]
             lt : GTensor losses[ i ]
             fill[ grad_of[ lt ], weights[ i ] ]
@@ -2783,11 +2938,12 @@ class Grad
             tape.pop[]
 
     # pytorch's adamw on one parameter; step is 1-based
-    func adamw [ w: GTensor, m: GTensor, v: GTensor, lr: f32, b1: f32, b2: f32, eps: f32, decay: f32, step: i64 ]
+    func adamw [ w: GTensor, m: GTensor, v: GTensor, lr: f32, b1: f32,
+                 b2: f32, eps: f32, decay: f32, step: i64 ]
         if [ !w.gr ] return
         k : GKernel kernel[ 'adamw', KAdamW [] ]
-        c1 : f32 [ f32[ 1.0 - pow[ f64[ b1 ], f64[ step ] ] ] ]
-        c2 : f32 [ f32[ 1.0 - pow[ f64[ b2 ], f64[ step ] ] ] ]
+        c1 : f32 [ 1.0 - pow[ f64[ b1 ], f64[ step ] ] ]
+        c2 : f32 [ 1.0 - pow[ f64[ b2 ], f64[ step ] ] ]
         g : GArgs []
         g.ad[ 0 ] = w.addr[]
         g.ad[ 1 ] = w.gr.addr[]
@@ -2816,7 +2972,8 @@ class Grad
         return y
 
     # the 8 least of every row of d [rows, n]: values and columns
-    func top8 [ d: GTensor, rows: i64, n: i64, od: GTensor, oi: GTensor ]
+    func top8 [ d: GTensor, rows: i64, n: i64, od: GTensor,
+                oi: GTensor ]
         k : GKernel kernel[ 'top8', KTop8 [] ]
         g : GArgs []
         g.ad[ 0 ] = d.addr[]
@@ -2839,7 +2996,8 @@ class Grad
         for [ r: i32 0, r < 15 && names.count > 0, r += 1 ]
             bi : i64 [ 0 ]
             for [ i: i64 1, i < names.count, i += 1 ]
-                if [ rn.ptime[ names[ i ] ] > rn.ptime[ names[ bi ] ] ] bi = i
+                if [ rn.ptime[ names[ i ] ] > rn.ptime[ names[ bi ] ] ]
+                    bi = i
             nm : string names[ bi ]
             tv : f64 [ rn.ptime[ nm ] ]
             cv : i64 [ rn.pcount[ nm ] ]
@@ -2917,8 +3075,10 @@ expect func t_grad_gemm [] -> bool
     gd.upload[ ta, av ]
     gd.upload[ tb, bv ]
     gd.upload[ tc, cv ]
-    gd.gemm[ GView [ t: ta, rs: 1, cs: m, bs: k * m ], GView [ t: tb, rs: n, cs: 1, bs: k * n ],
-             GView [ t: tc, rs: n, cs: 1, bs: m * n ], m, n, k, nb, 1.5, 0.5 ]
+    gd.gemm[ GView [ t: ta, rs: 1, cs: m, bs: k * m ],
+             GView [ t: tb, rs: n, cs: 1, bs: k * n ],
+             GView [ t: tc, rs: n, cs: 1, bs: m * n ], m, n, k, nb, 1.5,
+             0.5 ]
     gd.rn.finish[]
     got : vec f32 gd.download[ tc ]
     worst : f64 [ 0.0 ]
@@ -2958,7 +3118,8 @@ func grad_worst [ got: vec f32, want: vec f32 ] -> f64
     return w
 
 # a tensor of the given shape holding a golden file
-func grad_load [ gd: Grad, dir: string, name: string, dims: vec i64, need: bool ] -> GTensor
+func grad_load [ gd: Grad, dir: string, name: string, dims: vec i64,
+                 need: bool ] -> GTensor
     t : GTensor gd.temp[ dims ]
     gd.upload[ t, grad_gold[ dir, name ] ]
     t.need = need
@@ -2975,13 +3136,17 @@ expect func t_grad_conv [] -> bool
     Au.hold[ disp ]
     gd : Grad [ vk: vk, keep_mb: 16, work_mb: 64 ]
     gd.record = true
-    x : GTensor grad_load[ gd, dir, 'c_x', vec i64 [] [ 2, 8, 37 ], true ]
-    w : GTensor grad_load[ gd, dir, 'c_w', vec i64 [] [ 12, 2, 5 ], true ]
+    x : GTensor grad_load[ gd, dir, 'c_x', vec i64 [] [ 2, 8, 37 ],
+                           true ]
+    w : GTensor grad_load[ gd, dir, 'c_w', vec i64 [] [ 12, 2, 5 ],
+                           true ]
     b : GTensor grad_load[ gd, dir, 'c_b', vec i64 [] [ 12 ], true ]
     y : GTensor gd.conv1d[ x, w, b, 3, 2, 2, 4 ]
     gd.upload[ gd.grad_of[ y ], grad_gold[ dir, 'c_dy' ] ]
-    tx : GTensor grad_load[ gd, dir, 't_x', vec i64 [] [ 2, 6, 9 ], true ]
-    tw : GTensor grad_load[ gd, dir, 't_w', vec i64 [] [ 6, 4, 10 ], true ]
+    tx : GTensor grad_load[ gd, dir, 't_x', vec i64 [] [ 2, 6, 9 ],
+                            true ]
+    tw : GTensor grad_load[ gd, dir, 't_w', vec i64 [] [ 6, 4, 10 ],
+                            true ]
     tb : GTensor grad_load[ gd, dir, 't_b', vec i64 [] [ 4 ], true ]
     ty : GTensor gd.convt1d[ tx, tw, tb, 5, 2 ]
     gd.upload[ gd.grad_of[ ty ], grad_gold[ dir, 't_dy' ] ]
@@ -2991,14 +3156,15 @@ expect func t_grad_conv [] -> bool
         gd.back_op[ gd.tape[ i ] ]
         i -= 1
     gd.rn.finish[]
-    e : vec f64 [] [ grad_worst[ gd.download[ y ], grad_gold[ dir, 'c_y' ] ],
-                     grad_worst[ gd.download[ x.gr ], grad_gold[ dir, 'c_dx' ] ],
-                     grad_worst[ gd.download[ w.gr ], grad_gold[ dir, 'c_dw' ] ],
-                     grad_worst[ gd.download[ b.gr ], grad_gold[ dir, 'c_db' ] ],
-                     grad_worst[ gd.download[ ty ], grad_gold[ dir, 't_y' ] ],
-                     grad_worst[ gd.download[ tx.gr ], grad_gold[ dir, 't_dx' ] ],
-                     grad_worst[ gd.download[ tw.gr ], grad_gold[ dir, 't_dw' ] ],
-                     grad_worst[ gd.download[ tb.gr ], grad_gold[ dir, 't_db' ] ] ]
+    e : vec f64 [] [
+        grad_worst[ gd.download[ y ], grad_gold[ dir, 'c_y' ] ],
+        grad_worst[ gd.download[ x.gr ], grad_gold[ dir, 'c_dx' ] ],
+        grad_worst[ gd.download[ w.gr ], grad_gold[ dir, 'c_dw' ] ],
+        grad_worst[ gd.download[ b.gr ], grad_gold[ dir, 'c_db' ] ],
+        grad_worst[ gd.download[ ty ], grad_gold[ dir, 't_y' ] ],
+        grad_worst[ gd.download[ tx.gr ], grad_gold[ dir, 't_dx' ] ],
+        grad_worst[ gd.download[ tw.gr ], grad_gold[ dir, 't_dw' ] ],
+        grad_worst[ gd.download[ tb.gr ], grad_gold[ dir, 't_db' ] ] ]
     log 'grad conv: y {e[ 0 ]} dx {e[ 1 ]} dw {e[ 2 ]} db {e[ 3 ]}; convt: y {e[ 4 ]} dx {e[ 5 ]} dw {e[ 6 ]} db {e[ 7 ]}'
     ok : bool [ true ]
     for [ v: f64 ] in e
@@ -3016,10 +3182,13 @@ expect func t_grad_elementwise [] -> bool
     Au.hold[ disp ]
     gd : Grad [ vk: vk, keep_mb: 16, work_mb: 64 ]
     gd.record = true
-    x  : GTensor grad_load[ gd, dir, 'e_x', vec i64 [] [ 2, 6, 9 ], true ]
+    x  : GTensor grad_load[ gd, dir, 'e_x', vec i64 [] [ 2, 6, 9 ],
+                            true ]
     zc : GTensor grad_load[ gd, dir, 'e_zc', vec i64 [] [ 6 ], true ]
-    m  : GTensor grad_load[ gd, dir, 'e_m', vec i64 [] [ 2, 1, 9 ], true ]
-    gc : GTensor grad_load[ gd, dir, 'e_gc', vec i64 [] [ 2, 12, 1 ], true ]
+    m  : GTensor grad_load[ gd, dir, 'e_m', vec i64 [] [ 2, 1, 9 ],
+                            true ]
+    gc : GTensor grad_load[ gd, dir, 'e_gc', vec i64 [] [ 2, 12, 1 ],
+                            true ]
     ga : GTensor grad_load[ gd, dir, 'e_ga', vec i64 [] [ 6 ], true ]
     be : GTensor grad_load[ gd, dir, 'e_be', vec i64 [] [ 6 ], true ]
     c : GTensor gd.add[ gd.mul[ gd.leaky[ x, 0.1 ], m ], zc ]
@@ -3033,13 +3202,14 @@ expect func t_grad_elementwise [] -> bool
         gd.back_op[ gd.tape[ i ] ]
         i -= 1
     gd.rn.finish[]
-    e : vec f64 [] [ grad_worst[ gd.download[ l ], grad_gold[ dir, 'e_l' ] ],
-                     grad_worst[ gd.download[ x.gr ], grad_gold[ dir, 'e_dx' ] ],
-                     grad_worst[ gd.download[ zc.gr ], grad_gold[ dir, 'e_dzc' ] ],
-                     grad_worst[ gd.download[ m.gr ], grad_gold[ dir, 'e_dm' ] ],
-                     grad_worst[ gd.download[ gc.gr ], grad_gold[ dir, 'e_dgc' ] ],
-                     grad_worst[ gd.download[ ga.gr ], grad_gold[ dir, 'e_dga' ] ],
-                     grad_worst[ gd.download[ be.gr ], grad_gold[ dir, 'e_dbe' ] ] ]
+    e : vec f64 [] [
+        grad_worst[ gd.download[ l ], grad_gold[ dir, 'e_l' ] ],
+        grad_worst[ gd.download[ x.gr ], grad_gold[ dir, 'e_dx' ] ],
+        grad_worst[ gd.download[ zc.gr ], grad_gold[ dir, 'e_dzc' ] ],
+        grad_worst[ gd.download[ m.gr ], grad_gold[ dir, 'e_dm' ] ],
+        grad_worst[ gd.download[ gc.gr ], grad_gold[ dir, 'e_dgc' ] ],
+        grad_worst[ gd.download[ ga.gr ], grad_gold[ dir, 'e_dga' ] ],
+        grad_worst[ gd.download[ be.gr ], grad_gold[ dir, 'e_dbe' ] ] ]
     log 'grad elementwise: out {e[ 0 ]} dx {e[ 1 ]} dz {e[ 2 ]} dmask {e[ 3 ]} dcond {e[ 4 ]} dgamma {e[ 5 ]} dbeta {e[ 6 ]}'
     ok : bool [ true ]
     for [ v: f64 ] in e
@@ -3057,22 +3227,29 @@ expect func t_grad_attention [] -> bool
     Au.hold[ disp ]
     gd : Grad [ vk: vk, keep_mb: 16, work_mb: 64 ]
     gd.record = true
-    q  : GTensor grad_load[ gd, dir, 'a_q', vec i64 [] [ 2, 12, 30 ], true ]
-    kk : GTensor grad_load[ gd, dir, 'a_k', vec i64 [] [ 2, 12, 30 ], true ]
-    v  : GTensor grad_load[ gd, dir, 'a_v', vec i64 [] [ 2, 12, 30 ], true ]
-    ek : GTensor grad_load[ gd, dir, 'a_ek', vec i64 [] [ 21, 6 ], true ]
-    ev : GTensor grad_load[ gd, dir, 'a_ev', vec i64 [] [ 21, 6 ], true ]
-    m  : GTensor grad_load[ gd, dir, 'a_m', vec i64 [] [ 2, 1, 30 ], false ]
+    q  : GTensor grad_load[ gd, dir, 'a_q', vec i64 [] [ 2, 12, 30 ],
+                            true ]
+    kk : GTensor grad_load[ gd, dir, 'a_k', vec i64 [] [ 2, 12, 30 ],
+                            true ]
+    v  : GTensor grad_load[ gd, dir, 'a_v', vec i64 [] [ 2, 12, 30 ],
+                            true ]
+    ek : GTensor grad_load[ gd, dir, 'a_ek', vec i64 [] [ 21, 6 ],
+                            true ]
+    ev : GTensor grad_load[ gd, dir, 'a_ev', vec i64 [] [ 21, 6 ],
+                            true ]
+    m  : GTensor grad_load[ gd, dir, 'a_m', vec i64 [] [ 2, 1, 30 ],
+                            false ]
     o  : GTensor gd.attention[ q, kk, v, ek, ev, m, 2, 10 ]
     gd.upload[ gd.grad_of[ o ], grad_gold[ dir, 'a_do' ] ]
     gd.back_op[ gd.tape[ gd.tape.count - 1 ] ]
     gd.rn.finish[]
-    e : vec f64 [] [ grad_worst[ gd.download[ o ], grad_gold[ dir, 'a_o' ] ],
-                     grad_worst[ gd.download[ q.gr ], grad_gold[ dir, 'a_dq' ] ],
-                     grad_worst[ gd.download[ kk.gr ], grad_gold[ dir, 'a_dk' ] ],
-                     grad_worst[ gd.download[ v.gr ], grad_gold[ dir, 'a_dv' ] ],
-                     grad_worst[ gd.download[ ek.gr ], grad_gold[ dir, 'a_dek' ] ],
-                     grad_worst[ gd.download[ ev.gr ], grad_gold[ dir, 'a_dev' ] ] ]
+    e : vec f64 [] [
+        grad_worst[ gd.download[ o ], grad_gold[ dir, 'a_o' ] ],
+        grad_worst[ gd.download[ q.gr ], grad_gold[ dir, 'a_dq' ] ],
+        grad_worst[ gd.download[ kk.gr ], grad_gold[ dir, 'a_dk' ] ],
+        grad_worst[ gd.download[ v.gr ], grad_gold[ dir, 'a_dv' ] ],
+        grad_worst[ gd.download[ ek.gr ], grad_gold[ dir, 'a_dek' ] ],
+        grad_worst[ gd.download[ ev.gr ], grad_gold[ dir, 'a_dev' ] ] ]
     log 'grad attention: out {e[ 0 ]} dq {e[ 1 ]} dk {e[ 2 ]} dv {e[ 3 ]} dek {e[ 4 ]} dev {e[ 5 ]}'
     ok : bool [ true ]
     for [ w: f64 ] in e
@@ -3090,28 +3267,35 @@ expect func t_grad_misc [] -> bool
     Au.hold[ disp ]
     gd : Grad [ vk: vk, keep_mb: 16, work_mb: 64 ]
     gd.record = true
-    x   : GTensor grad_load[ gd, dir, 'm_x', vec i64 [] [ 2, 7, 5 ], true ]
-    lw  : GTensor grad_load[ gd, dir, 'm_lw', vec i64 [] [ 4, 5 ], true ]
+    x   : GTensor grad_load[ gd, dir, 'm_x', vec i64 [] [ 2, 7, 5 ],
+                             true ]
+    lw  : GTensor grad_load[ gd, dir, 'm_lw', vec i64 [] [ 4, 5 ],
+                             true ]
     lb  : GTensor grad_load[ gd, dir, 'm_lb', vec i64 [] [ 4 ], true ]
-    ids : GTensor grad_load[ gd, dir, 'm_ids', vec i64 [] [ 2, 7 ], false ]
-    tab : GTensor grad_load[ gd, dir, 'm_tab', vec i64 [] [ 6, 4 ], true ]
-    v   : GTensor grad_load[ gd, dir, 'm_v', vec i64 [] [ 3, 4, 3 ], true ]
+    ids : GTensor grad_load[ gd, dir, 'm_ids', vec i64 [] [ 2, 7 ],
+                             false ]
+    tab : GTensor grad_load[ gd, dir, 'm_tab', vec i64 [] [ 6, 4 ],
+                             true ]
+    v   : GTensor grad_load[ gd, dir, 'm_v', vec i64 [] [ 3, 4, 3 ],
+                             true ]
     wg  : GTensor grad_load[ gd, dir, 'm_g', vec i64 [] [ 3 ], true ]
     h : GTensor gd.add[ gd.linear[ x, lw, lb ], gd.lookup[ ids, tab ] ]
-    y : GTensor gd.conv1d[ gd.flip[ gd.swap12[ h ] ], gd.wnorm[ v, wg ], null, 1, 1, 1, 1 ]
+    y : GTensor gd.conv1d[ gd.flip[ gd.swap12[ h ] ], gd.wnorm[ v, wg ],
+                           null, 1, 1, 1, 1 ]
     gd.upload[ gd.grad_of[ y ], grad_gold[ dir, 'm_dy' ] ]
     i : i64 [ gd.tape.count - 1 ]
     while [ i >= 0 ]
         gd.back_op[ gd.tape[ i ] ]
         i -= 1
     gd.rn.finish[]
-    e : vec f64 [] [ grad_worst[ gd.download[ y ], grad_gold[ dir, 'm_y' ] ],
-                     grad_worst[ gd.download[ x.gr ], grad_gold[ dir, 'm_dx' ] ],
-                     grad_worst[ gd.download[ lw.gr ], grad_gold[ dir, 'm_dlw' ] ],
-                     grad_worst[ gd.download[ lb.gr ], grad_gold[ dir, 'm_dlb' ] ],
-                     grad_worst[ gd.download[ tab.gr ], grad_gold[ dir, 'm_dtab' ] ],
-                     grad_worst[ gd.download[ v.gr ], grad_gold[ dir, 'm_dv' ] ],
-                     grad_worst[ gd.download[ wg.gr ], grad_gold[ dir, 'm_dg' ] ] ]
+    e : vec f64 [] [
+        grad_worst[ gd.download[ y ], grad_gold[ dir, 'm_y' ] ],
+        grad_worst[ gd.download[ x.gr ], grad_gold[ dir, 'm_dx' ] ],
+        grad_worst[ gd.download[ lw.gr ], grad_gold[ dir, 'm_dlw' ] ],
+        grad_worst[ gd.download[ lb.gr ], grad_gold[ dir, 'm_dlb' ] ],
+        grad_worst[ gd.download[ tab.gr ], grad_gold[ dir, 'm_dtab' ] ],
+        grad_worst[ gd.download[ v.gr ], grad_gold[ dir, 'm_dv' ] ],
+        grad_worst[ gd.download[ wg.gr ], grad_gold[ dir, 'm_dg' ] ] ]
     log 'grad misc: out {e[ 0 ]} dx {e[ 1 ]} dlw {e[ 2 ]} dlb {e[ 3 ]} dtab {e[ 4 ]} dv {e[ 5 ]} dg {e[ 6 ]}'
     ok : bool [ true ]
     for [ w: f64 ] in e
@@ -3129,28 +3313,45 @@ expect func t_grad_training [] -> bool
     Au.hold[ disp ]
     gd : Grad [ vk: vk, keep_mb: 16, work_mb: 64 ]
     gd.record = true
-    x   : GTensor grad_load[ gd, dir, 'tr_x', vec i64 [] [ 2, 1, 40 ], true ]
-    bs  : GTensor grad_load[ gd, dir, 'tr_basis', vec i64 [] [ 18, 1, 16 ], false ]
-    mw  : GTensor grad_load[ gd, dir, 'tr_melw', vec i64 [] [ 5, 9, 1 ], false ]
-    tg  : GTensor grad_load[ gd, dir, 'tr_tgt', vec i64 [] [ 2, 5, 10 ], false ]
-    x2  : GTensor grad_load[ gd, dir, 'tr_x2', vec i64 [] [ 2, 3, 20 ], true ]
-    x3  : GTensor grad_load[ gd, dir, 'tr_x3', vec i64 [] [ 2, 2, 12 ], true ]
-    w3  : GTensor grad_load[ gd, dir, 'tr_w3', vec i64 [] [ 4, 2, 3 ], true ]
-    zp  : GTensor grad_load[ gd, dir, 'tr_zp', vec i64 [] [ 2, 3, 6 ], true ]
-    lq  : GTensor grad_load[ gd, dir, 'tr_lq', vec i64 [] [ 2, 3, 6 ], true ]
-    mp  : GTensor grad_load[ gd, dir, 'tr_mp', vec i64 [] [ 2, 3, 6 ], true ]
-    lp  : GTensor grad_load[ gd, dir, 'tr_lp', vec i64 [] [ 2, 3, 6 ], true ]
-    mk  : GTensor grad_load[ gd, dir, 'tr_mk', vec i64 [] [ 2, 1, 6 ], false ]
+    x   : GTensor grad_load[ gd, dir, 'tr_x', vec i64 [] [ 2, 1, 40 ],
+                             true ]
+    bs  : GTensor grad_load[ gd, dir, 'tr_basis',
+                             vec i64 [] [ 18, 1, 16 ], false ]
+    mw  : GTensor grad_load[ gd, dir, 'tr_melw', vec i64 [] [ 5, 9, 1 ],
+                             false ]
+    tg  : GTensor grad_load[ gd, dir, 'tr_tgt', vec i64 [] [ 2, 5, 10 ],
+                             false ]
+    x2  : GTensor grad_load[ gd, dir, 'tr_x2', vec i64 [] [ 2, 3, 20 ],
+                             true ]
+    x3  : GTensor grad_load[ gd, dir, 'tr_x3', vec i64 [] [ 2, 2, 12 ],
+                             true ]
+    w3  : GTensor grad_load[ gd, dir, 'tr_w3', vec i64 [] [ 4, 2, 3 ],
+                             true ]
+    zp  : GTensor grad_load[ gd, dir, 'tr_zp', vec i64 [] [ 2, 3, 6 ],
+                             true ]
+    lq  : GTensor grad_load[ gd, dir, 'tr_lq', vec i64 [] [ 2, 3, 6 ],
+                             true ]
+    mp  : GTensor grad_load[ gd, dir, 'tr_mp', vec i64 [] [ 2, 3, 6 ],
+                             true ]
+    lp  : GTensor grad_load[ gd, dir, 'tr_lp', vec i64 [] [ 2, 3, 6 ],
+                             true ]
+    mk  : GTensor grad_load[ gd, dir, 'tr_mk', vec i64 [] [ 2, 1, 6 ],
+                             false ]
     ids : GTensor gd.temp[ vec i64 [] [ 2 ] ]
     iv : vec f32 [ 2 ]
     iv[ 0 ] = 3.0
     iv[ 1 ] = 7.0
     gd.upload[ ids, iv ]
-    sp : GTensor gd.conv1d[ gd.pad_reflect[ x, 7, 7 ], bs, null, 4, 0, 1, 1 ]
-    ml : GTensor gd.log_clamp[ gd.conv1d[ gd.magnitude[ sp, 0.0000002 ], mw, null, 1, 0, 1, 1 ], 0.000002 ]
+    sp : GTensor gd.conv1d[ gd.pad_reflect[ x, 7, 7 ], bs, null, 4, 0, 1,
+                            1 ]
+    ml : GTensor gd.log_clamp[
+        gd.conv1d[ gd.magnitude[ sp, 0.0000002 ], mw, null, 1, 0, 1, 1 ],
+        0.000002 ]
     l1 : GTensor gd.l1[ ml, tg ]
     l2 : GTensor gd.lsq[ gd.tslice_ids[ x2, ids, 5, 1 ], 1.0 ]
-    l3 : GTensor gd.lsq[ gd.conv1d[ gd.period_fold[ x3, 3 ], w3, null, 1, 1, 1, 1 ], 0.0 ]
+    l3 : GTensor gd.lsq[
+        gd.conv1d[ gd.period_fold[ x3, 3 ], w3, null, 1, 1, 1, 1 ],
+        0.0 ]
     l4 : GTensor gd.kl[ zp, lq, mp, lp, mk, 10.0 ]
     wts : vec f32 [ 4 ]
     wts[ 0 ] = 45.0
@@ -3162,17 +3363,17 @@ expect func t_grad_training [] -> bool
     ls : vec f32 [ 4 ]
     lt : vec GTensor [] [ l1, l2, l3, l4 ]
     for [ i: i64 0, i < 4, i += 1 ]
-        one9 : vec f32 gd.download[ lt[ i ] ]
-        ls[ i ] = one9[ 0 ]
+        one : vec f32 gd.download[ lt[ i ] ]
+        ls[ i ] = one[ 0 ]
     e : vec f64 [] [ grad_worst[ ls, grad_gold[ dir, 'tr_losses' ] ],
-                     grad_worst[ gd.download[ x.gr ], grad_gold[ dir, 'tr_dx' ] ],
-                     grad_worst[ gd.download[ x2.gr ], grad_gold[ dir, 'tr_dx2' ] ],
-                     grad_worst[ gd.download[ x3.gr ], grad_gold[ dir, 'tr_dx3' ] ],
-                     grad_worst[ gd.download[ w3.gr ], grad_gold[ dir, 'tr_dw3' ] ],
-                     grad_worst[ gd.download[ zp.gr ], grad_gold[ dir, 'tr_dzp' ] ],
-                     grad_worst[ gd.download[ lq.gr ], grad_gold[ dir, 'tr_dlq' ] ],
-                     grad_worst[ gd.download[ mp.gr ], grad_gold[ dir, 'tr_dmp' ] ],
-                     grad_worst[ gd.download[ lp.gr ], grad_gold[ dir, 'tr_dlp' ] ] ]
+        grad_worst[ gd.download[ x.gr ], grad_gold[ dir, 'tr_dx' ] ],
+        grad_worst[ gd.download[ x2.gr ], grad_gold[ dir, 'tr_dx2' ] ],
+        grad_worst[ gd.download[ x3.gr ], grad_gold[ dir, 'tr_dx3' ] ],
+        grad_worst[ gd.download[ w3.gr ], grad_gold[ dir, 'tr_dw3' ] ],
+        grad_worst[ gd.download[ zp.gr ], grad_gold[ dir, 'tr_dzp' ] ],
+        grad_worst[ gd.download[ lq.gr ], grad_gold[ dir, 'tr_dlq' ] ],
+        grad_worst[ gd.download[ mp.gr ], grad_gold[ dir, 'tr_dmp' ] ],
+        grad_worst[ gd.download[ lp.gr ], grad_gold[ dir, 'tr_dlp' ] ] ]
     # adamw: two steps against torch's
     gd.record = false
     aw : GTensor grad_load[ gd, dir, 'ad_w0', vec i64 [] [ 50 ], false ]
@@ -3216,16 +3417,19 @@ expect func t_grad_gemm_split [] -> bool
     gd.fill[ tc, 0.5 ]
     worst : f64 [ 0.0 ]
     for [ pass: i32 0, pass < 2, pass += 1 ]
-        bt : f32 [ f32[ pass ] ]
-        gd.gemm[ GView [ t: ta, rs: k, cs: 1, bs: 0 ], GView [ t: tb, rs: 1, cs: k, bs: 0 ],
-                 GView [ t: tc, rs: n, cs: 1, bs: 0 ], m, n, k, 1, 2.0, bt ]
+        bt : f32 [ pass ]
+        gd.gemm[ GView [ t: ta, rs: k, cs: 1, bs: 0 ],
+                 GView [ t: tb, rs: 1, cs: k, bs: 0 ],
+                 GView [ t: tc, rs: n, cs: 1, bs: 0 ], m, n, k, 1, 2.0,
+                 bt ]
         gd.rn.finish[]
         cv : vec f32 gd.download[ tc ]
         for [ r: i64 0, r < m, r += 1 ]
             for [ c: i64 0, c < n, c += 1 ]
                 acc : f64 [ 0.0 ]
                 for [ q: i64 0, q < k, q += 1 ]
-                    acc += f64[ av[ r * k + q ] ] * f64[ bv[ c * k + q ] ]
+                    acc += f64[ av[ r * k + q ] ] * f64[
+                        bv[ c * k + q ] ]
                 want : f64 [ 2.0 * acc ]
                 # pass 1 adds pass 0's result once more
                 if [ pass == 1 ] want = 4.0 * acc
@@ -3254,7 +3458,8 @@ expect func t_grad_arena_full [] -> bool
     v : vec f32 gd.download[ a ]
     gd.release[]
     log 'grad arena full: {caught}; earlier tensor {v[ 999 ]}'
-    return caught && caught.starts_with[ 'grad: arena full' ] && v[ 999 ] == 2.0
+    return caught && caught.starts_with[ 'grad: arena full' ] && v[
+        999 ] == 2.0
 
 intern pool_probe_freed : i64
 
@@ -3315,9 +3520,12 @@ expect func t_grad_gemm_layouts [] -> bool
             b_cs : i64 [ ((lay & 2) != 0) ? k : 1 ]
             for [ pass: i32 0, pass < 2, pass += 1 ]
                 if [ pass == 0 ] gd.fill[ tc, 0.5 ]
-                bt : f32 [ f32[ pass ] ]
-                gd.gemm_run[ GView [ t: ta, rs: a_rs, cs: a_cs, bs: m * k ], GView [ t: tb, rs: b_rs, cs: b_cs, bs: k * n ],
-                             GView [ t: tc, rs: n, cs: 1, bs: m * n ], m, n, k, nb, 2.0, bt ]
+                bt : f32 [ pass ]
+                gd.gemm_run[
+                    GView [ t: ta, rs: a_rs, cs: a_cs, bs: m * k ],
+                    GView [ t: tb, rs: b_rs, cs: b_cs, bs: k * n ],
+                    GView [ t: tc, rs: n, cs: 1, bs: m * n ], m, n, k,
+                    nb, 2.0, bt ]
                 gd.rn.finish[]
                 cv : vec f32 gd.download[ tc ]
                 for [ b: i64 0, b < nb, b += 1 ]
@@ -3325,12 +3533,18 @@ expect func t_grad_gemm_layouts [] -> bool
                         for [ c: i64 0, c < n, c += 1 ]
                             acc : f64 [ 0.0 ]
                             for [ q: i64 0, q < k, q += 1 ]
-                                ai9 : i64 [ b * m * k + r * a_rs + q * a_cs ]
-                                bi9 : i64 [ b * k * n + q * b_rs + c * b_cs ]
-                                acc += f64[ av[ ai9 ] ] * f64[ bv[ bi9 ] ]
+                                ai : i64 [
+                                    b * m * k + r * a_rs + q * a_cs ]
+                                bi : i64 [
+                                    b * k * n + q * b_rs + c * b_cs ]
+                                acc += f64[ av[ ai ] ] * f64[ bv[ bi ] ]
                             # pass 1 adds pass 0's result once more
-                            want : f64 [ (pass == 0) ? 2.0 * acc : 4.0 * acc ]
-                            e : f64 [ fabs[ f64[ cv[ b * m * n + r * n + c ] ] - want ] ]
+                            want : f64 [
+                                (pass == 0) ? 2.0 * acc : 4.0 * acc ]
+                            e : f64 [
+                                fabs[
+                                    f64[ cv[ b * m * n + r * n + c ] ]
+                                    - want ] ]
                             if [ e > worst ] worst = e
     log 'grad gemm layouts: 200x150 and 50x150 over 77, 4 layouts, worst {worst}'
     gd.release[]
@@ -3353,11 +3567,14 @@ expect func t_grad_gemm_speed [] -> bool
     gd.rn.finish[]
     t0 : i64 [ Au.epoch_micros[] ]
     for [ r: i32 0, r < 10, r += 1 ]
-        gd.gemm[ GView [ t: a, rs: n, cs: 1, bs: 0 ], GView [ t: b, rs: n, cs: 1, bs: 0 ],
-                 GView [ t: c, rs: n, cs: 1, bs: 0 ], n, n, n, 1, 1.0, 0.0 ]
+        gd.gemm[ GView [ t: a, rs: n, cs: 1, bs: 0 ],
+                 GView [ t: b, rs: n, cs: 1, bs: 0 ],
+                 GView [ t: c, rs: n, cs: 1, bs: 0 ], n, n, n, 1, 1.0,
+                 0.0 ]
     gd.rn.finish[]
-    us : f64 [ f64[ Au.epoch_micros[] - t0 ] ]
-    tf : f64 [ 10.0 * 2.0 * f64[ n ] * f64[ n ] * f64[ n ] / us / 1000000.0 ]
+    us : f64 [ Au.epoch_micros[] - t0 ]
+    tf : f64 [
+        10.0 * 2.0 * f64[ n ] * f64[ n ] * f64[ n ] / us / 1000000.0 ]
     log 'grad gemm speed: 10 x 2048^3 in {us / 1000.0} ms, {tf} TFLOPS'
     gd.release[]
     return true

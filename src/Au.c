@@ -9810,6 +9810,7 @@ typedef struct thread_t {
     Au               next;
     async           t;
     i32             jobs;
+    bool            joined;         // a thread joins once
 } thread_t;
 
 static none async_runner(thread_t* thread) {
@@ -10025,7 +10026,8 @@ AU_EXPORT Au async_sync(async t, Au w) {
             thread->next = null;
             cond_signal(thread->lock); // wake a parked runner or join hangs
             unlock(thread->lock);
-            pthread_join(thread->obj, null);
+            if (!thread->joined) pthread_join(thread->obj, null);
+            thread->joined = true;
         }
         // user can get thread->work for simple cases of sync
         // why return either array or individual work based on argument?

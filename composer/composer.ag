@@ -105,15 +105,19 @@ func take_length [ p: path ] -> f64
     scale : i64 [ 90000 ]
     for [ true ]
         if [ read[ fd, @hd[ 0 ], 8 ] < 8 ] break
-        size : i64 [ (i64[ hd[ 0 ] ] << 24) | (i64[ hd[ 1 ] ] << 16) | (i64[ hd[ 2 ] ] << 8) | i64[ hd[ 3 ] ] ]
-        tag  : i64 [ (i64[ hd[ 4 ] ] << 24) | (i64[ hd[ 5 ] ] << 16) | (i64[ hd[ 6 ] ] << 8) | i64[ hd[ 7 ] ] ]
+        size : i64 [
+            (i64[ hd[ 0 ] ] << 24) | (i64[ hd[ 1 ] ] << 16) | (i64[ hd[ 2 ] ] << 8) | i64[ hd[ 3 ] ] ]
+        tag  : i64 [
+            (i64[ hd[ 4 ] ] << 24) | (i64[ hd[ 5 ] ] << 16) | (i64[ hd[ 6 ] ] << 8) | i64[ hd[ 7 ] ] ]
         if [ size < 8 ] break
         if [ tag == 0x6D6F6F76 ]
             mv : vec u8 [ size - 8 ]
             if [ read[ fd, @mv[ 0 ], size - 8 ] < size - 8 ] break
             for [ i: i64 0, i + 24 < mv.count, i += 1 ]
                 if [ box32[ mv, i ] == 0x6D646864 ]
-                    ts9 : i64 [ (mv[ i + 4 ] == 1) ? box32[ mv, i + 24 ] : box32[ mv, i + 16 ] ]
+                    ts9 : i64 [
+                        (mv[ i + 4 ] == 1) ? box32[ mv, i + 24 ]
+                        : box32[ mv, i + 16 ] ]
                     if [ ts9 > 0 ] scale = ts9
                     break
             continue
@@ -144,23 +148,28 @@ func take_length [ p: path ] -> f64
                         if [ (fl & 2) != 0 ] o += 4
                         if [ (fl & 8) != 0 ] dur = box32[ b, o ]
                     if [ ct == 0x74666474 ]
-                        base = (b[ c + 8 ] == 1) ? box64[ b, c + 12 ] : box32[ b, c + 12 ]
+                        base = (b[ c + 8 ] == 1) ? box64[ b,
+                                                          c
+                                                          + 12 ] : box32[
+                                                              b,
+                                                              c + 12 ]
                     if [ ct == 0x7472756E ] count = box32[ b, c + 12 ]
                     c += cs
-                if [ track == 1 && base + count * dur > last ] last = base + count * dur
+                if [ track == 1 && base + count * dur > last ]
+                    last = base + count * dur
             at += bs
     close[ fd ]
     return f64[ last ] / f64[ scale ]
 
 
 # 12 floats: limited-range yuv to rgb, three rows of (y, u, v, add)
-func yuv_rows [ bt709: bool ] -> @f32
+func yuv_rows [ bt: bool ] -> @f32
     ky : f32 [ 255.0 / 219.0 ]
     kc : f32 [ 255.0 / 224.0 ]
-    rv : f32 [ (bt709) ? 1.5748 : 1.402 ]
-    gu : f32 [ (bt709) ? 0.1873 : 0.3441 ]
-    gv : f32 [ (bt709) ? 0.4681 : 0.7141 ]
-    bu : f32 [ (bt709) ? 1.8556 : 1.772 ]
+    rv : f32 [ (bt) ? 1.5748 : 1.402 ]
+    gu : f32 [ (bt) ? 0.1873 : 0.3441 ]
+    gv : f32 [ (bt) ? 0.4681 : 0.7141 ]
+    bu : f32 [ (bt) ? 1.8556 : 1.772 ]
     y0 : f32 [ 16.0 / 255.0 * ky ]
     c0 : f32 [ 128.0 / 255.0 * kc ]
     r : new f32 [ 12 ]
@@ -192,13 +201,21 @@ class Planes
     func put [ f: VideoFrame ]
         cw : i32 [ (f.full) ? f.width : f.width / 2 ]
         ch : i32 [ (f.full) ? f.height : f.height / 2 ]
-        if [ !y || width != f.width || height != f.height || u.width != cw ]
-            y = Texture [ vk: vk, w: w, width: f.width, height: f.height, linear: true,
-                pixel_format: Pixel.u8, surface: Surface.color, tag: 'composer' ]
-            u = Texture [ vk: vk, w: w, width: cw, height: ch, linear: true,
-                pixel_format: Pixel.u8, surface: Surface.color, tag: 'composer' ]
-            v = Texture [ vk: vk, w: w, width: cw, height: ch, linear: true,
-                pixel_format: Pixel.u8, surface: Surface.color, tag: 'composer' ]
+        if [
+            !y || width != f.width || height != f.height
+            || u.width != cw ]
+            y = Texture [ vk: vk, w: w, width: f.width, height: f.height,
+                          linear: true,
+                pixel_format: Pixel.u8, surface: Surface.color,
+                tag: 'composer' ]
+            u = Texture [ vk: vk, w: w, width: cw, height: ch,
+                          linear: true,
+                pixel_format: Pixel.u8, surface: Surface.color,
+                tag: 'composer' ]
+            v = Texture [ vk: vk, w: w, width: cw, height: ch,
+                          linear: true,
+                pixel_format: Pixel.u8, surface: Surface.color,
+                tag: 'composer' ]
             width  = f.width
             height = f.height
         y.upload[ @f.y[ 0 ], i64[ f.width ] * f.height ]
@@ -227,7 +244,8 @@ func clip_of [ t: DemuxTrack, got: vec DemuxSample ] -> AudioClip
             offs.push[ o ]
             szs.push[ n9 ]
             o += n9
-    return aac_clip[ @t.config[ 0 ], i32[ t.config.count ], @data[ 0 ], offs, szs, t.shift ]
+    return aac_clip[ @t.config[ 0 ], i32[ t.config.count ], @data[ 0 ],
+                     offs, szs, t.shift ]
 
 # a reference voice: a .wav, or the AAC sound of an mp4/m4a/mov
 func voice_clip [ p: path ] -> AudioClip
@@ -240,7 +258,8 @@ func voice_clip [ p: path ] -> AudioClip
     if [ dm.read_bytes[ @bytes[ 0 ], bytes.count ] ]
         for [ t: DemuxTrack ] in dm.tracks
             if [ t.kind == 2 && t.samples[] > 0 ]
-                return aac_clip[ @t.config[ 0 ], i32[ t.config.count ], @bytes[ 0 ],
+                return aac_clip[ @t.config[ 0 ], i32[ t.config.count ],
+                                 @bytes[ 0 ],
                     t.offsets, t.sizes, t.shift ]
         return null
     fm : Demux []
@@ -310,11 +329,14 @@ class Media
             height = gif_height[ gif ]
             for [ i: i32 0, i < gif_count[ gif ], i += 1 ]
                 gif_total += i64[ gif_delay[ gif, i ] ]
-            pic = Texture [ vk: vk, w: w, width: width, height: height, linear: true,
-                pixel_format: Pixel.rgba8, surface: Surface.color, tag: 'composer' ]
+            pic = Texture [ vk: vk, w: w, width: width, height: height,
+                            linear: true,
+                pixel_format: Pixel.rgba8, surface: Surface.color,
+                tag: 'composer' ]
             gif_show[ 0.0 ]
             return true
-        if [ !(low.ends_with[ '.mp4' ] || low.ends_with[ '.mov' ] || low.ends_with[ '.m4v' ]) ]
+        if [
+            !(low.ends_with[ '.mp4' ] || low.ends_with[ '.mov' ] || low.ends_with[ '.m4v' ]) ]
             im : Image [ uri: file ]
             if [ !im || im.width <= 0 ] return false
             # the canvas blends premultiplied; a png is straight
@@ -322,7 +344,7 @@ class Media
                 px : @u8 [ im.pixels ]
                 n4 : i64 [ i64[ im.width ] * im.height * 4 ]
                 for [ i: i64 0, i < n4, i += 4 ]
-                    al : i32 [ i32[ px[ i + 3 ] ] ]
+                    al : i32 [ px[ i + 3 ] ]
                     px[ i ]     = u8[ i32[ px[ i ] ] * al / 255 ]
                     px[ i + 1 ] = u8[ i32[ px[ i + 1 ] ] * al / 255 ]
                     px[ i + 2 ] = u8[ i32[ px[ i + 2 ] ] * al / 255 ]
@@ -348,9 +370,11 @@ class Media
         scale = vt.timescale
         if [ vt.samples[] > 0 ]
             for [ i: i64 0, i < vt.samples[], i += 1 ]
-                ds : DemuxSample [ track: vt.id, pts: vt.pts[ i ], timescale: vt.timescale ]
+                ds : DemuxSample [ track: vt.id, pts: vt.pts[ i ],
+                                   timescale: vt.timescale ]
                 ds.data = vec u8 [ vt.sizes[ i ] ]
-                memcpy[ @ds.data[ 0 ], @bytes[ vt.offsets[ i ] ], vt.sizes[ i ] ]
+                memcpy[ @ds.data[ 0 ], @bytes[ vt.offsets[ i ] ],
+                        vt.sizes[ i ] ]
                 samples.push[ ds ]
         el
             fm : Demux []
@@ -358,14 +382,17 @@ class Media
             for [ ds: DemuxSample ] in fm.ready
                 if [ ds.track == vt.id ] samples.push[ ds ]
         dec = Decoder [ vk: vk ]
-        ok : bool [ (is_hevc[ vt.codec ]) ? dec.config_hevc[ @vt.config[ 0 ], i32[ vt.config.count ] ]
-                                         : dec.config[ @vt.config[ 0 ], i32[ vt.config.count ] ] ]
+        ok : bool [
+            (is_hevc[ vt.codec ])
+            ? dec.config_hevc[ @vt.config[ 0 ], i32[ vt.config.count ] ]
+            : dec.config[ @vt.config[ 0 ], i32[ vt.config.count ] ] ]
         if [ !ok ] return false
         width  = dec.width
         height = dec.height
         planes = Planes [ vk: vk, w: w, bt709: height >= 720 ]
         if [ at && vt.samples[] > 0 && at.samples[] > 0 ]
-            sound = aac_clip[ @at.config[ 0 ], i32[ at.config.count ], @bytes[ 0 ],
+            sound = aac_clip[ @at.config[ 0 ], i32[ at.config.count ],
+                              @bytes[ 0 ],
                 at.offsets, at.sizes, at.shift ]
         return true
 
@@ -384,7 +411,7 @@ class Media
         src : @u8 [ gif_frame[ gif, k ] ]
         pm : new u8 [ n ]
         for [ i: i32 0, i < n, i += 4 ]
-            al : i32 [ i32[ src[ i + 3 ] ] ]
+            al : i32 [ src[ i + 3 ] ]
             pm[ i ]     = u8[ i32[ src[ i ] ] * al / 255 ]
             pm[ i + 1 ] = u8[ i32[ src[ i + 1 ] ] * al / 255 ]
             pm[ i + 2 ] = u8[ i32[ src[ i + 2 ] ] * al / 255 ]
@@ -397,12 +424,13 @@ class Media
     # the picture shown at t seconds into the video; a frame is
     # uploaded before the vector lets it go
     func show [ t: f64 ]
-        target : i64 [ i64[ t * f64[ scale ] ] ]
+        target : i64 [ t * f64[ scale ] ]
         shown : bool [ false ]
         for [ true ]
             if [ dec.frames.count > 0 ]
                 f0 : VideoFrame dec.frames[ 0 ]
-                if [ f0.pts > target && (shown || next < samples.count || planes.y) ] break
+                if [ f0.pts > target && (shown || next < samples.count || planes.y) ]
+                    break
                 planes.put[ f0 ]
                 shown = true
                 dec.frames.remove[ 0 ]
@@ -449,7 +477,9 @@ class Source
                 continue
             dm.append[ chunk, n ]
             for [ ds: DemuxSample ] in dm.ready
-                if [ ds.track == track ] dec.decode[ @ds.data[ 0 ], i32[ ds.data.count ], ds.pts ]
+                if [ ds.track == track ]
+                    dec.decode[ @ds.data[ 0 ], i32[ ds.data.count ],
+                                ds.pts ]
             dm.ready.clear[]
         f : VideoFrame dec.frames[ taken ]
         taken += 1
@@ -485,8 +515,8 @@ class Renderer
 
     # where an insert sits on the frame
     func place [ ins: Insert, m: Media ] -> rect
-        fw : f32 [ f32[ width ] ]
-        fh : f32 [ f32[ height ] ]
+        fw : f32 [ width ]
+        fh : f32 [ height ]
         asp : f32 [ f32[ m.width ] / f32[ m.height ] ]
         if [ ins.place == 'full' ]
             rw : f32 [ fw ]
@@ -494,7 +524,8 @@ class Renderer
             if [ rh > fh ]
                 rh = fh
                 rw = fh * asp
-            return rect [ x: (fw - rw) / 2.0, y: (fh - rh) / 2.0, w: rw, h: rh ]
+            return rect [ x: (fw - rw) / 2.0, y: (fh - rh) / 2.0, w: rw,
+                          h: rh ]
         if [ ins.place == 'region' && ins.region ]
             parts : ins.region.split[ ' ' ]
             nums : vec f32 []
@@ -509,7 +540,9 @@ class Renderer
                 if [ bh > rh ]
                     bh = rh
                     bw = rh * asp
-                return rect [ x: nums[ 0 ] * fw + (rw - bw) / 2.0, y: nums[ 1 ] * fh + (rh - bh) / 2.0, w: bw, h: bh ]
+                return rect [ x: nums[ 0 ] * fw + (rw - bw) / 2.0,
+                              y: nums[ 1 ] * fh + (rh - bh) / 2.0, w: bw,
+                              h: bh ]
         pw : f32 [ f32[ ins.size ] * fw ]
         ph : f32 [ pw / asp ]
         mg : f32 [ fw * 0.02 ]
@@ -546,9 +579,13 @@ class Renderer
     func emit [ show_take: bool ]
         t : f64 [ f64[ frames ] / f64[ fps ] ]
         cv.clear_recorded[ vec4f [ 0.0, 0.0, 0.0, 1.0 ] ]
-        if [ show_take ] src.draw[ cv, rect [ x: 0.0, y: 0.0, w: f32[ width ], h: f32[ height ] ] ]
+        if [ show_take ]
+            src.draw[ cv,
+                      rect [ x: 0.0, y: 0.0, w: f32[ width ],
+                             h: f32[ height ] ] ]
         for [ ov: Overlay ] in comp.overlays
-            if [ t >= ov.out_at && t < ov.out_at + ov.length ] draw_insert[ ov, t ]
+            if [ t >= ov.out_at && t < ov.out_at + ov.length ]
+                draw_insert[ ov, t ]
         cv.sync_all[]
         rec.capture[ cv.color ]
         frames += 1
@@ -562,35 +599,48 @@ class Renderer
             if [ n > 0 ] rec.mux.audio*[ aout, i64[ n ] ]
 
     func run [ fd: i32, take_sound: AudioClip, segs: vec Seg ] -> bool
-        rec = Recorder [ vk: vk, w: w, fd: fd, fps: fps, qp: 23, format: 'mp4',
-            chroma444: false, lossless: false, width: width, height: height, paced: false ]
+        rec = Recorder [ vk: vk, w: w, fd: fd, fps: fps, qp: 23,
+                         format: 'mp4',
+            chroma444: false, lossless: false, width: width,
+            height: height, paced: false ]
         aac = Aac [ ]
         rec.asc = aac.asc
         media = map Media [ string ] []
         # the output's sound: the take's kept pieces, the cuts' sound
         total : i64 [ 0 ]
         for [ k: Seg ] in segs
-            total += i64[ (k.to - k.from) * f64[ fps ] + 0.5 ] * 48000 / i64[ fps ]
+            total += i64[
+                (k.to - k.from) * f64[ fps ] + 0.5 ] * 48000 / i64[
+                    fps ]
         pcm = vec i16 [ total * 2 + 4096 ]
         memset[ @pcm[ 0 ], 0, pcm.count * 2 ]
         at : i64 [ 0 ]
         for [ k: Seg ] in segs
-            nf : i64 [ i64[ (k.to - k.from) * f64[ fps ] + 0.5 ] * 48000 / i64[ fps ] ]
-            if [ !k.pause && take_sound && take_sound.rate == 48000 && take_sound.channels == 2 ]
-                s0 : i64 [ i64[ k.from * 48000.0 ] ]
+            nf : i64 [
+                i64[ (k.to - k.from) * f64[ fps ] + 0.5 ] * 48000
+                / i64[ fps ] ]
+            if [
+                !k.pause && take_sound && take_sound.rate == 48000
+                && take_sound.channels == 2 ]
+                s0 : i64 [ k.from * 48000.0 ]
                 n2 : i64 [ nf ]
-                if [ s0 + n2 > take_sound.frames ] n2 = take_sound.frames - s0
-                if [ n2 > 0 ] memcpy[ @pcm[ at * 2 ], @take_sound.pcm[ s0 * 2 ], n2 * 4 ]
+                if [ s0 + n2 > take_sound.frames ]
+                    n2 = take_sound.frames - s0
+                if [ n2 > 0 ]
+                    memcpy[ @pcm[ at * 2 ], @take_sound.pcm[ s0 * 2 ],
+                            n2 * 4 ]
             at += nf
         # an insert's own sound replaces the take's while it plays
         for [ ov: Overlay ] in comp.overlays
             if [ ov.insert.sound != 'media' ] continue
             m : Media media_of[ ov.insert ]
-            if [ !m || !m.sound || m.sound.rate != 48000 || m.sound.channels != 2 ] continue
-            vol : f64 [ (ov.insert.volume > 0.0) ? ov.insert.volume : 1.0 ]
-            o0 : i64 [ i64[ ov.out_at * 48000.0 ] ]
-            m0 : i64 [ i64[ ov.insert.from * 48000.0 ] ]
-            n3 : i64 [ i64[ ov.length * 48000.0 ] ]
+            if [ !m || !m.sound || m.sound.rate != 48000 || m.sound.channels != 2 ]
+                continue
+            vol : f64 [
+                (ov.insert.volume > 0.0) ? ov.insert.volume : 1.0 ]
+            o0 : i64 [ ov.out_at * 48000.0 ]
+            m0 : i64 [ ov.insert.from * 48000.0 ]
+            n3 : i64 [ ov.length * 48000.0 ]
             for [ i: i64 0, i < n3 * 2, i += 1 ]
                 oi : i64 [ o0 * 2 + i ]
                 mi : i64 [ m0 * 2 + i ]
@@ -602,7 +652,7 @@ class Renderer
     func frames_of [ sr: Source, segs: vec Seg ] -> bool
         ahead  : VideoFrame sr.next_frame[]
         for [ k: Seg ] in segs
-            nout : i64 [ i64[ (k.to - k.from) * f64[ fps ] + 0.5 ] ]
+            nout : i64 [ (k.to - k.from) * f64[ fps ] + 0.5 ]
             if [ k.pause ]
                 cover : bool [ k.pause.insert.place == 'full' ]
                 for [ i: i64 0, i < nout, i += 1 ]
@@ -610,7 +660,9 @@ class Renderer
                 continue
             for [ i: i64 0, i < nout, i += 1 ]
                 ts : f64 [ k.from + f64[ i ] / f64[ fps ] ]
-                while [ ahead && f64[ ahead.pts ] / f64[ sr.scale ] <= ts + 0.0005 ]
+                while [
+                    ahead
+                    && f64[ ahead.pts ] / f64[ sr.scale ] <= ts + 0.0005 ]
                     src.put[ ahead ]
                     ahead = sr.next_frame[]
                 emit[ true ]
@@ -665,20 +717,20 @@ class Composer
 
     func stem [] -> string
         s : string '{take}'
-        dot : i32 [ i32[ s.rindex_of[ '.' ] ] ]
+        dot : i32 [ s.rindex_of[ '.' ] ]
         return (dot > 0) ? s.mid[ 0, dot ] : s
 
     # the take's module: the folder holding it, its notes and media
     func module_dir [] -> string
         s : string '{take}'
-        sl : i32 [ i32[ s.rindex_of[ '/' ] ] ]
+        sl : i32 [ s.rindex_of[ '/' ] ]
         return (sl > 0) ? s.mid[ 0, sl ] : '.'
 
     # where media names start: the module's parent, so a name reads
     # '<module>/bugs-bunny.gif'
     func folder [] -> string
         s : string module_dir[]
-        sl : i32 [ i32[ s.rindex_of[ '/' ] ] ]
+        sl : i32 [ s.rindex_of[ '/' ] ]
         return (sl > 0) ? s.mid[ 0, sl ] : '.'
 
     # the user's agent reads the protocol and the take's notes,
@@ -694,7 +746,9 @@ class Composer
         nm : string [ (agent && agent.count > 0) ? agent : 'claude' ]
         md : string [ (model) ? model : '' ]
         agent_shell_allow[ 'WebSearch WebFetch' ]
-        if [ agent_shell_start[ nm.chars, dir.chars, md.chars, req.chars ] == 0 ]
+        if [
+            agent_shell_start[ nm.chars, dir.chars, md.chars,
+                               req.chars ] == 0 ]
             problems.push[ 'agent: {string [ agent_shell_error[] ]}' ]
             return false
         log 'composer: {nm} is composing {take}'
@@ -721,7 +775,7 @@ class Composer
     # the composer's own folder: VIDEO.md sits beside the source
     func source_dir [] -> string
         f : string '{__FILE__}'
-        sl : i32 [ i32[ f.rindex_of[ '/' ] ] ]
+        sl : i32 [ f.rindex_of[ '/' ] ]
         return (sl > 0) ? f.mid[ 0, sl ] : '.'
 
     # the composition as it stands (the user may have edited it)
@@ -735,8 +789,11 @@ class Composer
         dm : Demux []
         dm.append[ head, n ]
         for [ t: DemuxTrack ] in dm.tracks
-            if [ t.kind == 1 && !is_hevc[ t.codec ] && t.config.count > 1 && t.config[ 1 ] == 244 ]
-                problems.push[ '{take} is H.264 4:4:4 (recorded before the H.265 change); this GPU cannot decode it. Record it again.' ]
+            if [
+                t.kind == 1 && !is_hevc[ t.codec ] && t.config.count > 1
+                && t.config[ 1 ] == 244 ]
+                problems.push[
+                    '{take} is H.264 4:4:4 (recorded before the H.265 change); this GPU cannot decode it. Record it again.' ]
                 return false
         return true
 
@@ -750,7 +807,9 @@ class Composer
         # a composition newer than the notes is the user's latest
         notes : path '{stem[]}.agi'
         cp : path '{stem[]}.composition.agi'
-        if [ cp.exists[] && (!notes.exists[] || cp.modified_time[] >= notes.modified_time[]) ]
+        if [
+            cp.exists[]
+            && (!notes.exists[] || cp.modified_time[] >= notes.modified_time[]) ]
             log 'composer: {cp} is newer than the notes: rendering it as it is'
         el [ !ask[ agent, model ] ]
             return false
@@ -782,19 +841,22 @@ class Composer
             for [ t: DemuxTrack ] in dm.tracks
                 if [ t.kind == 1 && !vt ] vt = t
                 if [ t.kind == 2 && at && t.id != at.id && !ap ] ap = t
-                if [ t.kind == 2 && at && ap && t.id != at.id && t.id != ap.id && !mc ] mc = t
+                if [ t.kind == 2 && at && ap && t.id != at.id && t.id != ap.id && !mc ]
+                    mc = t
                 if [ t.kind == 2 && !at ] at = t
             for [ ds: DemuxSample ] in dm.ready
                 if [ vt && ds.track != vt.id ] audio.push[ ds ]
                 # the shortest frame gap over 60 pictures is the rate
                 if [ vt && ds.track == vt.id && seen < 60 ]
                     d : i64 [ ds.dts - last_dts ]
-                    if [ last_dts >= 0 && d > 0 && (gap == 0 || d < gap) ] gap = d
+                    if [ last_dts >= 0 && d > 0 && (gap == 0 || d < gap) ]
+                        gap = d
                     last_dts = ds.dts
                     seen += 1
             dm.ready.clear[]
         close[ fd ]
-        if [ vt && gap > 0 ] fps = i32[ f64[ vt.timescale ] / f64[ gap ] + 0.5 ]
+        if [ vt && gap > 0 ]
+            fps = i32[ f64[ vt.timescale ] / f64[ gap ] + 0.5 ]
         if [ !vt ]
             problems.push[ 'render: no video in {take}' ]
             return false
@@ -815,12 +877,16 @@ class Composer
             for [ true ]
                 cut : Overlay [ null ]
                 for [ ov: Overlay ] in overlays
-                    if [ ov.insert.pause && ov.at >= a && ov.at < k.to && (!cut || ov.at < cut.at) ] cut = ov
+                    if [ ov.insert.pause && ov.at >= a && ov.at < k.to && (!cut || ov.at < cut.at) ]
+                        cut = ov
                 if [ !cut ] break
-                if [ cut.at > a ] segs.push[ Seg [ from: a, to: cut.at ] ]
-                segs.push[ Seg [ from: 0.0, to: cut.length, pause: cut ] ]
+                if [ cut.at > a ]
+                    segs.push[ Seg [ from: a, to: cut.at ] ]
+                segs.push[
+                    Seg [ from: 0.0, to: cut.length, pause: cut ] ]
                 a = cut.at
-                # a later cut at the same moment still comes after this one
+                # a later cut at the same moment still comes after this
+                # one
                 cut.insert.pause = false
             if [ k.to > a ] segs.push[ Seg [ from: a, to: k.to ] ]
         # every insert's place on the output clock, from the pieces
@@ -831,15 +897,21 @@ class Composer
                 sg.pause.insert.pause = true
             el
                 for [ ov: Overlay ] in overlays
-                    if [ !ov.insert.pause && ov.at >= sg.from && ov.at < sg.to ]
+                    if [
+                        !ov.insert.pause && ov.at >= sg.from
+                        && ov.at < sg.to ]
                         ov.out_at = run9 + ov.at - sg.from
-            run9 += f64[ i64[ (sg.to - sg.from) * f64[ fps ] + 0.5 ] ] / f64[ fps ]
+            run9 += f64[
+                i64[ (sg.to - sg.from) * f64[ fps ] + 0.5 ] ] / f64[
+                    fps ]
         out : path [ (comp.output && comp.output.count > 0) ? path '{module_dir[]}/{comp.output}' : path '{stem[]}.final.mp4' ]
-        ofd : i32 [ open[ out.chars, O_WRONLY | O_CREAT | O_TRUNC, 0x1A4 ] ]
+        ofd : i32 [
+            open[ out.chars, O_WRONLY | O_CREAT | O_TRUNC, 0x1A4 ] ]
         if [ ofd < 0 ]
             problems.push[ 'render: cannot write {out}' ]
             return false
-        cv : Canvas [ vk: vk9, w: disp, width: vt.width, height: vt.height,
+        cv : Canvas [ vk: vk9, w: disp, width: vt.width,
+                      height: vt.height,
             load_existing: true, paint_n: 1024 ]
         cv.update[]
         cv.reset[ vec4f [ 0.0, 0.0, 0.0, 1.0 ] ]
@@ -849,10 +921,13 @@ class Composer
         r.run[ ofd, sound, segs ]
         # pass 2: the take's pictures, in order
         sfd : i32 [ open[ take.chars, O_RDONLY, 0 ] ]
-        sr : Source [ vk: vk9, fd: sfd, dm: Demux [], track: vt.id, scale: vt.timescale,
+        sr : Source [ vk: vk9, fd: sfd, dm: Demux [], track: vt.id,
+                      scale: vt.timescale,
             dec: Decoder [ vk: vk9 ] ]
-        ok9 : bool [ (is_hevc[ vt.codec ]) ? sr.dec.config_hevc[ @vt.config[ 0 ], i32[ vt.config.count ] ]
-                                          : sr.dec.config[ @vt.config[ 0 ], i32[ vt.config.count ] ] ]
+        ok9 : bool [
+            (is_hevc[ vt.codec ])
+            ? sr.dec.config_hevc[ @vt.config[ 0 ], i32[ vt.config.count ] ]
+            : sr.dec.config[ @vt.config[ 0 ], i32[ vt.config.count ] ] ]
         if [ !ok9 ]
             problems.push[ 'render: the take cannot be decoded here' ]
             close[ sfd ]
@@ -876,7 +951,8 @@ class Composer
 
     # fetches, then crops (the output clock), then inserts
     func plan [] -> bool
-        kept     = vec Kept [] [ Kept [ from: 0.0, to: length, out_at: 0.0 ] ]
+        kept     = vec Kept [] [
+            Kept [ from: 0.0, to: length, out_at: 0.0 ] ]
         overlays = vec Overlay []
         voices   = vec Revoice []
         if [ !comp ] return false
@@ -887,12 +963,15 @@ class Composer
         # a paused insert pushes everything after it down the output
         for [ ov: Overlay ] in overlays
             for [ pv: Overlay ] in overlays
-                if [ pv.insert.pause && pv.at < ov.at ] ov.out_at += pv.length
+                if [ pv.insert.pause && pv.at < ov.at ]
+                    ov.out_at += pv.length
         return problems.count == 0
 
     # the folder's file called name, any extension
     func resource [ name: string ] -> path
-        for [ x: string ] in vec string [] [ 'jpg', 'jpeg', 'png', 'webp', 'gif', 'mp4', 'mov', 'webm' ]
+        for [ x: string ]
+            in vec string [] [ 'jpg', 'jpeg', 'png', 'webp', 'gif',
+                               'mp4', 'mov', 'webm' ]
             p : path '{module_dir[]}/{name}.{x}'
             if [ p.exists[] ] return p
         return null
@@ -900,12 +979,15 @@ class Composer
     func fetch [ name: string, url: string ] -> bool
         if [ resource[ name ] ] return true
         if [ !url || url.count == 0 ]
-            problems.push[ 'fetch {name}: not in the folder and no url' ]
+            problems.push[
+                'fetch {name}: not in the folder and no url' ]
             return false
-        q : i32 [ i32[ url.index_of[ '?' ] ] ]
+        q : i32 [ url.index_of[ '?' ] ]
         bare : string [ (q > 0) ? url.mid[ 0, q ] : url ]
-        dot : i32 [ i32[ bare.rindex_of[ '.' ] ] ]
-        ext : string [ (dot > 0 && bare.count - dot <= 5) ? bare.mid[ dot + 1, bare.count - dot - 1 ] : 'jpg' ]
+        dot : i32 [ bare.rindex_of[ '.' ] ]
+        ext : string [
+            (dot > 0 && bare.count - dot <= 5)
+            ? bare.mid[ dot + 1, bare.count - dot - 1 ] : 'jpg' ]
         dest : path '{module_dir[]}/{name}.{ext}'
         Http.download[ url, dest ]
         if [ !dest.exists[] ]
@@ -916,15 +998,18 @@ class Composer
 
     func crop [ from: f64, to: f64 ] -> bool
         if [ to <= from || from < 0.0 || to > length ]
-            problems.push[ 'crop {from}..{to} is outside the take (0..{length})' ]
+            problems.push[
+                'crop {from}..{to} is outside the take (0..{length})' ]
             return false
         next : vec Kept []
         for [ k: Kept ] in kept
             if [ to <= k.from || from >= k.to ]
                 next.push[ k ]
             el
-                if [ from > k.from ] next.push[ Kept [ from: k.from, to: from ] ]
-                if [ to < k.to ]     next.push[ Kept [ from: to, to: k.to ] ]
+                if [ from > k.from ]
+                    next.push[ Kept [ from: k.from, to: from ] ]
+                if [ to < k.to ]
+                    next.push[ Kept [ from: to, to: k.to ] ]
         run : f64 [ 0.0 ]
         for [ k: Kept ] in next
             k.out_at = run
@@ -935,7 +1020,8 @@ class Composer
     # the output time of take time t; -1 inside a crop
     func out_time [ t: f64 ] -> f64
         for [ k: Kept ] in kept
-            if [ t >= k.from && t < k.to ] return k.out_at + (t - k.from)
+            if [ t >= k.from && t < k.to ]
+                return k.out_at + (t - k.from)
         return -1.0
 
     func add_voice [ v: Revoice ] -> bool
@@ -944,10 +1030,12 @@ class Composer
             return false
         vp : path '{folder[]}/{v.voice}'
         if [ !vp.exists[] ]
-            problems.push[ 'voice at {v.from}: {v.voice} is not in the take folder' ]
+            problems.push[
+                'voice at {v.from}: {v.voice} is not in the take folder' ]
             return false
         if [ v.to <= v.from || v.from < 0.0 || v.to > length ]
-            problems.push[ 'voice {v.from}..{v.to} is outside the take (0..{length})' ]
+            problems.push[
+                'voice {v.from}..{v.to} is outside the take (0..{length})' ]
             return false
         voices.push[ v ]
         return true
@@ -956,12 +1044,16 @@ class Composer
     # seeded once per reference, converted in overlapping 15 s
     # chunks, faded in and out over 50 ms
     # with stems: the mic converted, the app's sound added back
-    func apply_voices [ snd: AudioClip, app9: AudioClip, mic9: AudioClip, disp: Display ] -> bool
+    func apply_voices [ snd: AudioClip, app9: AudioClip, mic9: AudioClip,
+                        disp: Display ] -> bool
         if [ voices.count == 0 || !snd ] return true
-        split : bool [ app9 && mic9 && app9.frames >= snd.frames && mic9.frames >= snd.frames ]
+        split : bool [
+            app9 && mic9 && app9.frames >= snd.frames
+            && mic9.frames >= snd.frames ]
         if [ split ] log 'composer: voice on the mic track alone'
         if [ snd.rate != 48000 || snd.channels != 2 ]
-            problems.push[ 'voice: the take sound is not 48 kHz stereo' ]
+            problems.push[
+                'voice: the take sound is not 48 kHz stereo' ]
             return false
         rv : RvcVoice [ null ]
         rname : string [ '' ]
@@ -970,25 +1062,27 @@ class Composer
                 if [ rv ] rv.release[]
                 mp : path voice_model[ v, disp ]
                 if [ !mp ] return false
-                rv = RvcVoice [ vk: disp.vk, model: mp, semitones: v.pitch ]
+                rv = RvcVoice [ vk: disp.vk, model: mp,
+                                semitones: v.pitch ]
                 rname = v.voice
                 if [ !rv.valid ]
                     problems.push[ 'voice: cannot load {mp}' ]
                     return false
-            a0 : i64 [ i64[ v.from * 48000.0 ] ]
-            a1 : i64 [ i64[ v.to * 48000.0 ] ]
+            a0 : i64 [ v.from * 48000.0 ]
+            a1 : i64 [ v.to * 48000.0 ]
             if [ a1 > snd.frames ] a1 = snd.frames
             n48 : i64 [ a1 - a0 ]
             if [ n48 < 4800 ] continue
             src9 : AudioClip [ (split) ? mic9 : snd ]
             mono : vec f32 [ n48 ]
             for [ i: i64 0, i < n48, i += 1 ]
-                l9 : f64 [ f64[ src9.pcm[ (a0 + i) * 2 ] ] ]
-                r9 : f64 [ f64[ src9.pcm[ (a0 + i) * 2 + 1 ] ] ]
+                l9 : f64 [ src9.pcm[ (a0 + i) * 2 ] ]
+                r9 : f64 [ src9.pcm[ (a0 + i) * 2 + 1 ] ]
                 mono[ i ] = f32[ (l9 + r9) / 65536.0 ]
             back : vec f32 [ null ]
             try
-                back = rv.speak[ resample_sinc[ mono, 48000, 16000 ], 48000 ]
+                back = rv.speak[ resample_sinc[ mono, 48000, 16000 ],
+                                 48000 ]
             catch [ message: string ]
                 problems.push[ 'voice {v.from}..{v.to}: {message}' ]
             if [ !back ]
@@ -1001,11 +1095,14 @@ class Composer
                 if [ n48 - i < fade ] g9 = f32[ n48 - i ] / f32[ fade ]
                 for [ ch: i32 0, ch < 2, ch += 1 ]
                     ix9 : i64 [ (a0 + i) * 2 + ch ]
-                    orig : f32 [ f32[ snd.pcm[ ix9 ] ] ]
-                    nv : f32 [ orig * (1.0 - g9) + back[ i ] * 32767.0 * g9 ]
+                    orig : f32 [ snd.pcm[ ix9 ] ]
+                    nv : f32 [
+                        orig * (1.0 - g9) + back[ i ] * 32767.0 * g9 ]
                     if [ split ]
-                        mv : f32 [ f32[ mic9.pcm[ ix9 ] ] ]
-                        nv = f32[ app9.pcm[ ix9 ] ] + mv * (1.0 - g9) + back[ i ] * 32767.0 * g9
+                        mv : f32 [ mic9.pcm[ ix9 ] ]
+                        nv = f32[
+                            app9.pcm[ ix9 ] ] + mv * (1.0 - g9) + back[
+                                i ] * 32767.0 * g9
                     if [ nv > 32767.0 ] nv = 32767.0
                     if [ nv < -32768.0 ] nv = -32768.0
                     snd.pcm[ ix9 ] = i16[ nv ]
@@ -1083,17 +1180,22 @@ class Composer
             return false
         mp : path '{folder[]}/{ins.media}'
         if [ !mp.exists[] ]
-            problems.push[ 'insert at {ins.at}: {ins.media} is not in the take folder' ]
+            problems.push[
+                'insert at {ins.at}: {ins.media} is not in the take folder' ]
             return false
         at : f64 [ out_time[ ins.at ] ]
         if [ at < 0.0 ]
-            problems.push[ 'insert at {ins.at}: that moment is cropped out' ]
+            problems.push[
+                'insert at {ins.at}: that moment is cropped out' ]
             return false
         ln : f64 [ (ins.to > ins.from) ? ins.to - ins.from : ins.dur ]
         if [ ln <= 0.0 ]
-            problems.push[ 'insert at {ins.at}: no length (from/to or dur)' ]
+            problems.push[
+                'insert at {ins.at}: no length (from/to or dur)' ]
             return false
-        overlays.push[ Overlay [ insert: ins, at: ins.at, out_at: at, length: ln ] ]
+        overlays.push[
+            Overlay [ insert: ins, at: ins.at, out_at: at,
+                      length: ln ] ]
         return true
 
 # composer <take.mp4>: the agent composes, the plan is checked
@@ -1105,18 +1207,21 @@ element composer : trinity
         # a build mid-run must not swap out a training run
         au_live_set_reload[ 0 ]
         # a take's module folder names its mp4: <folder>/<folder>.mp4
-        if [ take && take.is_dir[] ] take = path '{take}/{take.filename[]}.mp4'
+        if [ take && take.is_dir[] ]
+            take = path '{take}/{take.filename[]}.mp4'
         if [ !take || !take.exists[] ]
             log 'composer: no take at {take}'
             exit[ 1 ]
-        c : Composer [ take: take, kept: vec Kept [], overlays: vec Overlay [],
+        c : Composer [ take: take, kept: vec Kept [],
+                       overlays: vec Overlay [],
             problems: vec string [] ]
         ok : bool c.compose[ agent, model ]
         if [ ok ]
             log 'composer: {c.kept.count} spans kept, {c.overlays.count} inserts'
             v9 : vk_context []
             Au.hold[ v9 ]
-            d9 : Display [ vk: v9, format: Pixel.rgba8, backbuffer: true, width: 64, height: 64 ]
+            d9 : Display [ vk: v9, format: Pixel.rgba8, backbuffer: true,
+                           width: 64, height: 64 ]
             Au.hold[ d9 ]
             ok = c.render[ d9 ]
         for [ p: string ] in c.problems
@@ -1141,15 +1246,29 @@ expect func t_rvc_weights [] -> bool
     ds : pth [ src: path '{m}/f0D40k.pth' ]
     if [ !hb.valid || !rm.valid || !gn.valid || !ds.valid ] return false
     log 'rvc: hubert {hb.count[]}, rmvpe {rm.count[]}, generator {gn.count[]}, discriminator {ds.count[]} tensors'
-    counts : bool [ hb.count[] == 213 && rm.count[] == 741 && gn.count[] == 560 && ds.count[] == 165 ]
-    a : tensor hb.tensor_named[ 'feature_extractor.conv_layers.2.conv.weight' ]
-    b : tensor rm.tensor_named[ 'unet.encoder.layers.0.conv.0.conv.0.weight' ]
-    c : tensor gn.tensor_named[ 'model.enc_p.encoder.attn_layers.0.conv_q.weight' ]
-    d : tensor ds.tensor_named[ 'model.discriminators.0.convs.1.weight_v' ]
+    counts : bool [
+        hb.count[] == 213 && rm.count[] == 741 && gn.count[] == 560
+        && ds.count[] == 165 ]
+    a : tensor hb.tensor_named[
+        'feature_extractor.conv_layers.2.conv.weight' ]
+    b : tensor rm.tensor_named[
+        'unet.encoder.layers.0.conv.0.conv.0.weight' ]
+    c : tensor gn.tensor_named[
+        'model.enc_p.encoder.attn_layers.0.conv_q.weight' ]
+    d : tensor ds.tensor_named[
+        'model.discriminators.0.convs.1.weight_v' ]
     if [ !a || !b || !c || !d ] return false
     log 'rvc: first values {a.floats[ 0 ]} {b.floats[ 0 ]} {c.floats[ 0 ]} {d.floats[ 0 ]}'
-    sizes : bool [ a.tensor_shape.total[] == 786432 && b.tensor_shape.total[] == 144 && c.tensor_shape.total[] == 36864 && d.tensor_shape.total[] == 10496 ]
-    vals : bool [ a.floats[ 0 ] == -0.0482177734375 && b.floats[ 0 ] == 0.056396484375 && c.floats[ 0 ] == 0.05670166015625 && d.floats[ 0 ] == -0.046905517578125 ]
+    sizes : bool [
+        a.tensor_shape.total[] == 786432
+        && b.tensor_shape.total[] == 144
+        && c.tensor_shape.total[] == 36864
+        && d.tensor_shape.total[] == 10496 ]
+    vals : bool [
+        a.floats[ 0 ] == -0.0482177734375
+        && b.floats[ 0 ] == 0.056396484375
+        && c.floats[ 0 ] == 0.05670166015625
+        && d.floats[ 0 ] == -0.046905517578125 ]
     return counts && sizes && vals
 
 # rvc's synthesizer vs pytorch (COMPOSER_RVC_GOLD)
@@ -1159,7 +1278,8 @@ expect func t_rvc_infer [] -> bool
     dir : string [ ge ]
     vk : vk_context []
     Au.hold[ vk ]
-    disp : Display [ vk: vk, format: Pixel.rgba8, backbuffer: true, width: 64, height: 64 ]
+    disp : Display [ vk: vk, format: Pixel.rgba8, backbuffer: true,
+                     width: 64, height: 64 ]
     Au.hold[ disp ]
     net : RvcNet [ vk: vk, src: path '{path.path_install[]}/models/rvc/f0G40k.pth' ]
     if [ !net.valid ] return false
@@ -1194,7 +1314,8 @@ expect func t_rvc_hubert [] -> bool
     dir : string [ ge ]
     vk : vk_context []
     Au.hold[ vk ]
-    disp : Display [ vk: vk, format: Pixel.rgba8, backbuffer: true, width: 64, height: 64 ]
+    disp : Display [ vk: vk, format: Pixel.rgba8, backbuffer: true,
+                     width: 64, height: 64 ]
     Au.hold[ disp ]
     gd : Grad [ vk: vk, keep_mb: 512, work_mb: 1024 ]
     hb : RvcHubert [ gd: gd, src: path '{path.path_install[]}/models/rvc/hubert.pth' ]
@@ -1228,7 +1349,8 @@ expect func t_rvc_pitch [] -> bool
     dir : string [ ge ]
     vk : vk_context []
     Au.hold[ vk ]
-    disp : Display [ vk: vk, format: Pixel.rgba8, backbuffer: true, width: 64, height: 64 ]
+    disp : Display [ vk: vk, format: Pixel.rgba8, backbuffer: true,
+                     width: 64, height: 64 ]
     Au.hold[ disp ]
     gd : Grad [ vk: vk, keep_mb: 1024, work_mb: 2048 ]
     pn : RvcPitch [ gd: gd, src: path '{path.path_install[]}/models/rvc/rmvpe.pt' ]
@@ -1252,10 +1374,15 @@ expect func t_rvc_pitch [] -> bool
         if [ (gold[ i ] > 0.0) != (f0[ i ] > 0.0) ] miss += 1
         if [ gold[ i ] > 0.0 && f0[ i ] > 0.0 ]
             vo += 1
-            c9 : f64 [ fabs[ 1200.0 * log2[ f64[ f0[ i ] ] / f64[ gold[ i ] ] ] ] ]
+            c9 : f64 [
+                fabs[
+                    1200.0
+                    * log2[ f64[ f0[ i ] ] / f64[ gold[ i ] ] ] ] ]
             if [ c9 > worst ] worst = c9
     log 'rvc pitch: mel worst {me}, salience worst {se} ({ms} ms), {vo} voiced frames, {miss} voicing differences, pitch worst {worst} cents'
-    ok9 : bool [ f0.count == gold.count && miss == 0 && worst < 1.0 && se < 0.001 ]
+    ok9 : bool [
+        f0.count == gold.count && miss == 0 && worst < 1.0
+        && se < 0.001 ]
     gd.release[]
     return ok9
 
@@ -1266,7 +1393,8 @@ expect func t_rvc_train_step [] -> bool
     dir : string [ ge ]
     vk : vk_context []
     Au.hold[ vk ]
-    disp : Display [ vk: vk, format: Pixel.rgba8, backbuffer: true, width: 64, height: 64 ]
+    disp : Display [ vk: vk, format: Pixel.rgba8, backbuffer: true,
+                     width: 64, height: 64 ]
     Au.hold[ disp ]
     net : RvcNet [ vk: vk, src: path '{path.path_install[]}/models/rvc/f0G40k.pth', keep_mb: 2048, work_mb: 6144 ]
     if [ !net.valid ] return false
@@ -1278,8 +1406,13 @@ expect func t_rvc_train_step [] -> bool
     pf : vec f32 floats_of[ path '{dir}/pitchf.f32' ]
     sp : vec f32 floats_of[ path '{dir}/spec.f32' ]
     wv : vec f32 floats_of[ path '{dir}/wave.f32' ]
-    bt : RvcBatch [ nb: 2, nt: 48, phone: ph, pitch: pt9, pitchf: pf, spec: sp, wave: wv, sid: sd ]
-    names : vec string [] [ 'dec.conv_post.weight', 'enc_p.emb_phone.weight', 'flow.flows.0.post.weight', 'enc_q.pre.weight', 'dec.ups.0.weight_v', 'emb_g.weight' ]
+    bt : RvcBatch [ nb: 2, nt: 48, phone: ph, pitch: pt9, pitchf: pf,
+                    spec: sp, wave: wv, sid: sd ]
+    names : vec string [] [ 'dec.conv_post.weight',
+                            'enc_p.emb_phone.weight',
+                            'flow.flows.0.post.weight',
+                            'enc_q.pre.weight', 'dec.ups.0.weight_v',
+                            'emb_g.weight' ]
     ok : bool [ true ]
     for [ st: i32 0, st < 2, st += 1 ]
         iv : vec f32 floats_of[ path '{dir}/s{st}_ids.f32' ]
@@ -1294,7 +1427,9 @@ expect func t_rvc_train_step [] -> bool
         gl : vec f32 floats_of[ path '{dir}/s{st}_losses.f32' ]
         log 'rvc train step {st} ({ms} ms): disc {ls[ 0 ]}/{gl[ 0 ]} gen {ls[ 1 ]}/{gl[ 1 ]} fm {ls[ 2 ]}/{gl[ 2 ]} mel {ls[ 3 ]}/{gl[ 3 ]} kl {ls[ 4 ]}/{gl[ 4 ]}'
         for [ i: i64 0, i < 5, i += 1 ]
-            r9 : f64 [ fabs[ f64[ ls[ i ] ] - f64[ gl[ i ] ] ] / (fabs[ f64[ gl[ i ] ] ] + 0.000001) ]
+            r9 : f64 [
+                fabs[ f64[ ls[ i ] ] - f64[ gl[ i ] ] ]
+                / (fabs[ f64[ gl[ i ] ] ] + 0.000001) ]
             if [ r9 > 0.001 ] ok = false
         for [ i: i64 0, i < names.count, i += 1 ]
             pt : GTensor net.pm[ names[ i ] ]
@@ -1318,7 +1453,8 @@ expect func t_rvc_train_grads [] -> bool
     dir : string [ ge ]
     vk : vk_context []
     Au.hold[ vk ]
-    disp : Display [ vk: vk, format: Pixel.rgba8, backbuffer: true, width: 64, height: 64 ]
+    disp : Display [ vk: vk, format: Pixel.rgba8, backbuffer: true,
+                     width: 64, height: 64 ]
     Au.hold[ disp ]
     net : RvcNet [ vk: vk, src: path '{path.path_install[]}/models/rvc/f0G40k.pth', keep_mb: 2048, work_mb: 6144 ]
     if [ !net.valid ] return false
@@ -1333,22 +1469,34 @@ expect func t_rvc_train_grads [] -> bool
     iv : vec f32 floats_of[ path '{dir}/s0_ids.f32' ]
     qv : vec f32 floats_of[ path '{dir}/s0_epsq.f32' ]
     sv : vec f32 floats_of[ path '{dir}/s0_epss.f32' ]
-    bt : RvcBatch [ nb: 2, nt: 48, phone: ph, pitch: pt9, pitchf: pf, spec: sp, wave: wv, sid: sd, ids: iv, eps_q: qv, eps_s: sv ]
+    bt : RvcBatch [ nb: 2, nt: 48, phone: ph, pitch: pt9, pitchf: pf,
+                    spec: sp, wave: wv, sid: sd, ids: iv, eps_q: qv,
+                    eps_s: sv ]
     ls : vec f32 tr.step[ bt, 0.0 ]
     gl : vec f32 floats_of[ path '{dir}/s0_losses.f32' ]
     log 'rvc grads: disc {ls[ 0 ]}/{gl[ 0 ]} gen {ls[ 1 ]}/{gl[ 1 ]} fm {ls[ 2 ]}/{gl[ 2 ]} mel {ls[ 3 ]}/{gl[ 3 ]} kl {ls[ 4 ]}/{gl[ 4 ]}'
     ok : bool [ true ]
     for [ i: i64 0, i < 5, i += 1 ]
-        r9 : f64 [ fabs[ f64[ ls[ i ] ] - f64[ gl[ i ] ] ] / (fabs[ f64[ gl[ i ] ] ] + 0.000001) ]
+        r9 : f64 [
+            fabs[ f64[ ls[ i ] ] - f64[ gl[ i ] ] ]
+            / (fabs[ f64[ gl[ i ] ] ] + 0.000001) ]
         if [ r9 > 0.0001 ] ok = false
-    gn : vec string [] [ 'dec.conv_post.weight', 'enc_p.emb_phone.weight', 'flow.flows.0.post.weight', 'enc_q.pre.weight', 'dec.ups.0.weight_v', 'emb_g.weight' ]
-    dn : vec string [] [ 'discriminators.0.convs.1.weight_v', 'discriminators.3.convs.2.weight_g', 'discriminators.8.conv_post.bias', 'discriminators.0.convs.5.bias' ]
+    gn : vec string [] [ 'dec.conv_post.weight',
+                         'enc_p.emb_phone.weight',
+                         'flow.flows.0.post.weight', 'enc_q.pre.weight',
+                         'dec.ups.0.weight_v', 'emb_g.weight' ]
+    dn : vec string [] [ 'discriminators.0.convs.1.weight_v',
+                         'discriminators.3.convs.2.weight_g',
+                         'discriminators.8.conv_post.bias',
+                         'discriminators.0.convs.5.bias' ]
     for [ i: i64 0, i < gn.count + dn.count, i += 1 ]
         isg : bool [ i < gn.count ]
         nm : string [ (isg) ? gn[ i ] : dn[ i - gn.count ] ]
         pt : GTensor [ (isg) ? net.pm[ nm ] : tr.dsc.pm[ nm ] ]
         got : vec f32 net.gd.download[ pt.gr ]
-        fl : string [ (isg) ? '{dir}/s0_g{i}.f32' : '{dir}/s0_d{i - gn.count}.f32' ]
+        fl : string [
+            (isg) ? '{dir}/s0_g{i}.f32'
+            : '{dir}/s0_d{i - gn.count}.f32' ]
         want : vec f32 floats_of[ path fl ]
         mx : f64 [ 0.0 ]
         for [ j: i64 0, j < want.count, j += 1 ]
@@ -1356,12 +1504,12 @@ expect func t_rvc_train_grads [] -> bool
             if [ a9 > mx ] mx = a9
         e9 : f64 grad_worst[ got, want ]
         dn2 : f64 [ 0.0 ]
-        wn2 : f64 [ 0.0 ]
+        wn : f64 [ 0.0 ]
         for [ j: i64 0, j < want.count, j += 1 ]
             d9 : f64 [ f64[ got[ j ] ] - f64[ want[ j ] ] ]
             dn2 += d9 * d9
-            wn2 += f64[ want[ j ] ] * f64[ want[ j ] ]
-        rel : f64 [ sqrt[ dn2 / (wn2 + 1.0e-30) ] ]
+            wn += f64[ want[ j ] ] * f64[ want[ j ] ]
+        rel : f64 [ sqrt[ dn2 / (wn + 1.0e-30) ] ]
         log 'rvc grads {nm}: worst {e9} of max {mx}, relative {rel}'
         # one relu flipped at zero moves a gradient ~0.3%
         if [ rel > 0.005 ] ok = false
@@ -1376,7 +1524,8 @@ expect func t_rvc_disc_grads [] -> bool
     dir : string [ ge ]
     vk : vk_context []
     Au.hold[ vk ]
-    disp : Display [ vk: vk, format: Pixel.rgba8, backbuffer: true, width: 64, height: 64 ]
+    disp : Display [ vk: vk, format: Pixel.rgba8, backbuffer: true,
+                     width: 64, height: 64 ]
     Au.hold[ disp ]
     gd : Grad [ vk: vk, keep_mb: 1024, work_mb: 4096 ]
     dsc : RvcDisc [ gd: gd, src: path '{path.path_install[]}/models/rvc/f0D40k.pth' ]
@@ -1414,13 +1563,13 @@ expect func t_rvc_disc_grads [] -> bool
         want : vec f32 floats_of[ path '{dir}/dall/{nm}.f32' ]
         if [ !pt.gr ] continue
         got : vec f32 gd.download[ pt.gr ]
-        dn2 : f64 [ 0.0 ]
-        wn2 : f64 [ 0.0 ]
+        dn : f64 [ 0.0 ]
+        wn : f64 [ 0.0 ]
         for [ j: i64 0, j < want.count, j += 1 ]
             d9 : f64 [ f64[ got[ j ] ] - f64[ want[ j ] ] ]
-            dn2 += d9 * d9
-            wn2 += f64[ want[ j ] ] * f64[ want[ j ] ]
-        rel : f64 [ sqrt[ dn2 / (wn2 + 1.0e-30) ] ]
+            dn += d9 * d9
+            wn += f64[ want[ j ] ] * f64[ want[ j ] ]
+        rel : f64 [ sqrt[ dn / (wn + 1.0e-30) ] ]
         if [ rel > 0.001 ] log 'rvc disc grad {nm}: relative {rel}'
         if [ rel > worst ]
             worst = rel
@@ -1455,7 +1604,8 @@ expect func t_rvc_prepare [] -> bool
     dir : string [ ge ]
     vk : vk_context []
     Au.hold[ vk ]
-    disp : Display [ vk: vk, format: Pixel.rgba8, backbuffer: true, width: 64, height: 64 ]
+    disp : Display [ vk: vk, format: Pixel.rgba8, backbuffer: true,
+                     width: 64, height: 64 ]
     Au.hold[ disp ]
     pp : RvcPrep [ vk: vk ]
     if [ !pp.valid ] return false
@@ -1467,7 +1617,8 @@ expect func t_rvc_prepare [] -> bool
     for [ it: RvcItem ] in items
         bad : i64 [ 0 ]
         for [ t: i64 0, t < it.nt, t += 1 ]
-            if [ it.pitch[ t ] < 1.0 || it.pitch[ t ] > 255.0 || it.pitchf[ t ] <= 0.0 ] bad += 1
+            if [ it.pitch[ t ] < 1.0 || it.pitch[ t ] > 255.0 || it.pitchf[ t ] <= 0.0 ]
+                bad += 1
         fin : bool [ true ]
         for [ i: i64 0, i < it.phone.count, i += 1 ]
             v9 : f32 [ it.phone[ i ] ]
@@ -1485,7 +1636,8 @@ expect func t_rvc_train_loop [] -> bool
     dir : string [ ge ]
     vk : vk_context []
     Au.hold[ vk ]
-    disp : Display [ vk: vk, format: Pixel.rgba8, backbuffer: true, width: 64, height: 64 ]
+    disp : Display [ vk: vk, format: Pixel.rgba8, backbuffer: true,
+                     width: 64, height: 64 ]
     Au.hold[ disp ]
     pp : RvcPrep [ vk: vk ]
     items : vec RvcItem pp.prepare[ path '{dir}/clip.wav' ]
@@ -1529,7 +1681,8 @@ expect func t_rvc_train_resume [] -> bool
     dir : string [ ge ]
     vk : vk_context []
     Au.hold[ vk ]
-    disp : Display [ vk: vk, format: Pixel.rgba8, backbuffer: true, width: 64, height: 64 ]
+    disp : Display [ vk: vk, format: Pixel.rgba8, backbuffer: true,
+                     width: 64, height: 64 ]
     Au.hold[ disp ]
     pp : RvcPrep [ vk: vk ]
     items : vec RvcItem pp.prepare[ path '{dir}/clip.wav' ]
@@ -1554,7 +1707,9 @@ expect func t_rvc_train_resume [] -> bool
     db : vec f32 nb.gd.download[ tb.dsc.pm[ 'discriminators.3.convs.2.weight_v' ] ]
     mb : vec f32 nb.gd.download[ tb.og.ms[ 5 ] ]
     vb : vec f32 nb.gd.download[ tb.od.vs[ 7 ] ]
-    diff : f64 [ grad_worst[ ga, gb ] + grad_worst[ da, db ] + grad_worst[ ma, mb ] + grad_worst[ va, vb ] ]
+    diff : f64 [
+        grad_worst[ ga, gb ] + grad_worst[ da, db ]
+        + grad_worst[ ma, mb ] + grad_worst[ va, vb ] ]
     more : bool tb.train[ items, 3, 2, cp, 1 ]
     log 'rvc train resume: after epoch {at}, steps {sa}/{tb.og.step}, difference {diff}, then to epoch {tb.done}'
     nb.gd.release[]
@@ -1566,7 +1721,8 @@ expect func t_rvc_infer_long [] -> bool
     if [ !ge ] return true
     vk : vk_context []
     Au.hold[ vk ]
-    disp : Display [ vk: vk, format: Pixel.rgba8, backbuffer: true, width: 64, height: 64 ]
+    disp : Display [ vk: vk, format: Pixel.rgba8, backbuffer: true,
+                     width: 64, height: 64 ]
     Au.hold[ disp ]
     net : RvcNet [ vk: vk, src: path '{path.path_install[]}/models/rvc/f0G40k.pth' ]
     if [ !net.valid ] return false
@@ -1592,7 +1748,8 @@ expect func t_rvc_index [] -> bool
     dir : string [ ge ]
     vk : vk_context []
     Au.hold[ vk ]
-    disp : Display [ vk: vk, format: Pixel.rgba8, backbuffer: true, width: 64, height: 64 ]
+    disp : Display [ vk: vk, format: Pixel.rgba8, backbuffer: true,
+                     width: 64, height: 64 ]
     Au.hold[ disp ]
     gd : Grad [ vk: vk, keep_mb: 64, work_mb: 256 ]
     ix : RvcIndex [ gd: gd ]
@@ -1619,9 +1776,11 @@ expect func t_rvc_train_voice [] -> bool
     unlink[ fp0.chars ]
     vk : vk_context []
     Au.hold[ vk ]
-    disp : Display [ vk: vk, format: Pixel.rgba8, backbuffer: true, width: 64, height: 64 ]
+    disp : Display [ vk: vk, format: Pixel.rgba8, backbuffer: true,
+                     width: 64, height: 64 ]
     Au.hold[ disp ]
-    c : Composer [ take: clip, kept: vec Kept [], overlays: vec Overlay [],
+    c : Composer [ take: clip, kept: vec Kept [],
+                   overlays: vec Overlay [],
         problems: vec string [], voice_dir: path '{dir}/voices' ]
     got : path c.train_voice[ clip, 1, disp ]
     for [ p: string ] in c.problems
@@ -1633,7 +1792,8 @@ expect func t_rvc_train_voice [] -> bool
     again : path c.train_voice[ clip, 1, disp ]
     same : bool [ again && mp.modified_time[] == t1 ]
     log 'rvc train voice: model {mp.exists[]}, part {part.exists[]}, index {ix.exists[]}, fingerprint {fpp.exists[]}, reused {same}'
-    return got && mp.exists[] && !part.exists[] && ix.exists[] && fpp.exists[] && same
+    return got && mp.exists[] && !part.exists[] && ix.exists[] &&
+        fpp.exists[] && same
 
 # rvc's whole pipeline on a 22 s clip with a trained voice
 # (COMPOSER_RVC_PREP: clip.wav and the voice the loop test saved)
@@ -1645,7 +1805,8 @@ expect func t_rvc_pipeline [] -> bool
     if [ !vp.exists[] ] return true
     vk : vk_context []
     Au.hold[ vk ]
-    disp : Display [ vk: vk, format: Pixel.rgba8, backbuffer: true, width: 64, height: 64 ]
+    disp : Display [ vk: vk, format: Pixel.rgba8, backbuffer: true,
+                     width: 64, height: 64 ]
     Au.hold[ disp ]
     rv : RvcVoice [ vk: vk, model: vp ]
     if [ !rv.valid ] return false
@@ -1678,7 +1839,8 @@ expect func t_hevc_decode [] -> bool
     vk : vk_context []
     Au.hold[ vk ]
     # the queues come up with a display
-    disp : Display [ vk: vk, format: Pixel.rgba8, backbuffer: true, width: 64, height: 64 ]
+    disp : Display [ vk: vk, format: Pixel.rgba8, backbuffer: true,
+                     width: 64, height: 64 ]
     Au.hold[ disp ]
     fd : i32 [ open[ he, O_RDONLY, 0 ] ]
     if [ fd < 0 ] return false
@@ -1693,7 +1855,8 @@ expect func t_hevc_decode [] -> bool
         dm.append[ chunk, n ]
         if [ !configured && dm.tracks.count > 0 ]
             t0 : DemuxTrack dm.tracks[ 0 ]
-            if [ !dec.config_hevc[ @t0.config[ 0 ], i32[ t0.config.count ] ] ] return false
+            if [ !dec.config_hevc[ @t0.config[ 0 ], i32[ t0.config.count ] ] ]
+                return false
             configured = true
         for [ s: DemuxSample ] in dm.ready
             if [ s.track == 1 ]
@@ -1728,9 +1891,11 @@ expect func t_composition_plan [] -> bool
     pic : path '{res}/bunny.jpg'
     pic.save[ 'x', null ]
     cp : path '{res}/take.composition.agi'
-    cp.save[ 'source: \'take.mp4\'\noutput: \'take.final.mp4\'\nops:\n\tf0: Fetch\n\t\tname: \'bunny\'\n\te0: Crop\n\t\tfrom: 10.0\n\t\tto: 13.0\n\t\twhy: \'instruction\'\n\te1: Insert\n\t\tat: 20.0\n\t\tmedia: \'take/bunny.jpg\'\n\t\tdur: 4.0\n\t\tplace: \'pip\'\n\t\twhy: \'after the race\'\n', null ]
+    cp.save[
+        'source: \'take.mp4\'\noutput: \'take.final.mp4\'\nops:\n\tf0: Fetch\n\t\tname: \'bunny\'\n\te0: Crop\n\t\tfrom: 10.0\n\t\tto: 13.0\n\t\twhy: \'instruction\'\n\te1: Insert\n\t\tat: 20.0\n\t\tmedia: \'take/bunny.jpg\'\n\t\tdur: 4.0\n\t\tplace: \'pip\'\n\t\twhy: \'after the race\'\n', null ]
     c : Composer [ take: path '{res}/take.mp4', length: 60.0,
-        kept: vec Kept [], overlays: vec Overlay [], problems: vec string [] ]
+        kept: vec Kept [], overlays: vec Overlay [],
+        problems: vec string [] ]
     if [ !c.load[] ] return false
     if [ c.comp.ops.count != 3 ] return false
     o1 : Op c.comp.ops[ 1 ]
@@ -1755,12 +1920,15 @@ expect func t_composition_cut [] -> bool
     pic : path '{res}/logo.png'
     pic.save[ 'x', null ]
     cp : path '{res}/take.composition.agi'
-    cp.save[ 'ops:\n\te0: Insert\n\t\tat: 10.0\n\t\tmedia: \'take/bunny.mp4\'\n\t\tfrom: 2.0\n\t\tto: 8.0\n\t\tplace: \'full\'\n\t\tsound: \'media\'\n\t\tpause: true\n\te1: Insert\n\t\tat: 30.0\n\t\tmedia: \'take/logo.png\'\n\t\tdur: 3.0\n', null ]
+    cp.save[
+        'ops:\n\te0: Insert\n\t\tat: 10.0\n\t\tmedia: \'take/bunny.mp4\'\n\t\tfrom: 2.0\n\t\tto: 8.0\n\t\tplace: \'full\'\n\t\tsound: \'media\'\n\t\tpause: true\n\te1: Insert\n\t\tat: 30.0\n\t\tmedia: \'take/logo.png\'\n\t\tdur: 3.0\n', null ]
     c : Composer [ take: path '{res}/take.mp4', length: 60.0,
-        kept: vec Kept [], overlays: vec Overlay [], problems: vec string [] ]
+        kept: vec Kept [], overlays: vec Overlay [],
+        problems: vec string [] ]
     if [ !c.load[] || !c.plan[] ] return false
     cut : Overlay c.overlays[ 0 ]
     pip : Overlay c.overlays[ 1 ]
     log 'cut at {cut.out_at} for {cut.length}; pip at {pip.out_at}, size {pip.insert.size}'
     # the 6 s cut holds the take: the pip at 30 lands at 36
-    return cut.out_at == 10.0 && pip.out_at == 36.0 && pip.insert.size == 0.33
+    return cut.out_at == 10.0 && pip.out_at == 36.0 &&
+        pip.insert.size == 0.33

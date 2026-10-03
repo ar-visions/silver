@@ -113,8 +113,9 @@ class Font
         uri = u
 
 
-# ---- EXR ------------------------------------------------------------------
-# the scanline half form is a header, an offset table, and deflated blocks,
+# ---- EXR
+# ------------------------------------------------------------------ the
+# scanline half form is a header, an offset table, and deflated blocks,
 # so it is written here rather than through a library
 
 EXR_ROWS  : i32 [ 16 ]
@@ -171,7 +172,7 @@ func f32_to_half [ v: f32 ] -> u16
     return u16[ sign | (u32[ e ] << 10) | (m >> 13) ]
 
 func half_to_f32 [ hv: u16 ] -> f32
-    hu   : u32 [ u32[ hv ] ]
+    hu   : u32 [ hv ]
     sign : u32 [ (hu & 0x8000) << 16 ]
     e    : u32 [ (hu >> 10) & 0x1f ]
     m    : u32 [ hu & 0x3ff ]
@@ -235,9 +236,9 @@ func exr_pack [ src: @u8, dst: @u8, n: i32 ] -> none
     for [ i: i32 1, i < n, i += 2 ]
         dst[ b ] = src[ i ]
         b += 1
-    p : i32 [ i32[ dst[ 0 ] ] ]
+    p : i32 [ dst[ 0 ] ]
     for [ i: i32 1, i < n, i += 1 ]
-        c : i32 [ i32[ dst[ i ] ] ]
+        c : i32 [ dst[ i ] ]
         d : i32 [ c - p + 384 ]
         p = c
         dst[ i ] = u8[ d & 0xff ]
@@ -367,21 +368,22 @@ class Image
         csize  : @i32 [ new i32 [ nchunk ] ]
         cused  : i32 [ 0 ]
 
-        # convert the whole image once, contiguously: the per-scanline pass
-        # then only moves halves, and the convert vectorizes end to end
+        # convert the whole image once, contiguously: the per-scanline
+        # pass then only moves halves, and the convert vectorizes end to
+        # end
         nsamp : i32 [ w * h * 4 ]
         hall  : @u16 [ new u16 [ nsamp ] ]
         f32_to_half_n[ src, hall, nsamp ]
 
         for [ c: i32 0, c < nchunk, c += 1 ]
-            y0 : i32 [ c * EXR_ROWS ]
-            ny : i32 [ h - y0 ]
+            y : i32 [ c * EXR_ROWS ]
+            ny : i32 [ h - y ]
             if [ ny > EXR_ROWS ] ny = EXR_ROWS
             nb : i32 [ rowb * 4 * ny ]
             o  : i32 [ 0 ]
             rd : @u16 raw
             for [ r: i32 0, r < ny, r += 1 ]
-                base : i32 [ (y0 + r) * w * 4 ]
+                base : i32 [ (y + r) * w * 4 ]
                 # A B G R within a scanline: rgba lanes in reverse
                 for [ ch: i32 0, ch < 4, ch += 1 ]
                     lane : i32 [ 3 - ch ]
@@ -390,17 +392,21 @@ class Image
                         o += 1
             exr_pack[ raw, zsrc, nb ]
             dlen : uLongf [ uLongf[ bound ] ]
-            rc : i32 [ compress2[ @cbuf[ cused ], @dlen, zsrc, uLong[ nb ], 6 ] ]
+            rc : i32 [
+                compress2[ @cbuf[ cused ], @dlen, zsrc, uLong[ nb ],
+                           6 ] ]
             check rc == 0, 'exr: deflate failed'
-            used : i32 [ i32[ dlen ] ]
-            # a block that did not shrink is stored as-is; readers detect it
+            used : i32 [ dlen ]
+            # a block that did not shrink is stored as-is; readers
+            # detect it
             if [ used >= nb ]
                 memcpy @cbuf[ cused ], raw, i64[ nb ]
                 used = nb
             csize[ c ] = used
             cused += used
 
-        # offsets are known only now: the table sits between header and data
+        # offsets are known only now: the table sits between header and
+        # data
         pos : i64 [ ftell[ file ] + i64[ nchunk * 8 ] ]
         for [ c: i32 0, c < nchunk, c += 1 ]
             exr_u64 file, u64[ pos ]
@@ -424,7 +430,8 @@ class Image
         if [ res_bits ] info.data = null
 
     func copy[ ] -> Image
-        res: Image[ width:width, height:height, format:format, surface:surface, channels:channels ]
+        res: Image[ width:width, height:height, format:format,
+                    surface:surface, channels:channels ]
         memcpy res.vdata[], vdata[], byte_count[]
         return res
 
@@ -448,7 +455,9 @@ class Image
         src : @u8 vdata[]
         dst : @u8 output.vdata[]
         for [ ry: i32 0, ry < oh, ry += 1 ]
-            so : i64 [ (i64[ y0 + ry ] * i64[ width ] + i64[ x0 ]) * i64[ ps ] ]
+            so : i64 [
+                (i64[ y0 + ry ] * i64[ width ] + i64[ x0 ])
+                * i64[ ps ] ]
             df : i64 [ i64[ ry ] * i64[ ow ] * i64[ ps ] ]
             memcpy @dst[ df ], @src[ so ], i64[ ow * ps ]
         return output
@@ -505,10 +514,12 @@ class Image
         for [ y: i32 0, y < height, y += 1 ]
             for [ x: i32 0, x < width, x += 1 ]
                 i : i32 [ y * width + x ]
-                v : f32 [ f32[ src[ i ] ] ]
+                v : f32 [ src[ i ] ]
                 if [ dither ]
-                    # spatial hash: a row-only sequence stripes the result
-                    s : i64 [ (i64[ x ] * 73856093 + i64[ y ] * 19349663) % 65521 ]
+                    # spatial hash: a row-only sequence stripes the
+                    # result
+                    s : i64 [
+                        (i64[ x ] * 73856093 + i64[ y ] * 19349663) % 65521 ]
                     v += f32[ s ] / 65521.0 - 0.5
                 dst[ i ] = v / 255.0
         return output
@@ -533,11 +544,14 @@ class Image
                 for [ c: i32 0, c < ps, c += 1 ]
                     acc : i32 [ 0 ]
                     for [ by: i32 0, by < f, by += 1 ]
-                        so : i64 [ (i64[ ry * f + by ] * i64[ width ] + i64[ rx * f ]) * i64[ ps ] + i64[ c ] ]
+                        so : i64 [
+                            (i64[ ry * f + by ] * i64[ width ] + i64[ rx * f ]) * i64[ ps ] + i64[ c ] ]
                         for [ bx: i32 0, bx < f, bx += 1 ]
                             si : i64 [ so + i64[ bx * ps ] ]
                             acc += i32[ src[ si ] ]
-                    di : i64 [ (i64[ ry ] * i64[ ow ] + i64[ rx ]) * i64[ ps ] + i64[ c ] ]
+                    di : i64 [
+                        (i64[ ry ] * i64[ ow ] + i64[ rx ]) * i64[ ps ]
+                        + i64[ c ] ]
                     av : i32 [ acc / area ]
                     dst[ di ] = u8[ av ]
         return output
@@ -569,25 +583,29 @@ class Image
         for [ dy: i32 0, dy < out_h, dy += 1 ]
             fy0 : f32 [ f32[ dy ] * sy ]
             fy1 : f32 [ f32[ dy + 1 ] * sy ]
-            iy0 : i32 [ i32[ floor[ fy0 ] ] ]
-            iy1 : i32 [ i32[ ceil [ fy1 ] ] ]
+            iy0 : i32 [ floor[ fy0 ] ]
+            iy1 : i32 [ ceil [ fy1 ] ]
             if [ iy0 < 0 ] iy0 = 0
             if [ iy1 > height ] iy1 = height
             for [ dx: i32 0, dx < out_w, dx += 1 ]
                 fx0 : f32 [ f32[ dx ] * sx ]
                 fx1 : f32 [ f32[ dx + 1 ] * sx ]
-                ix0 : i32 [ i32[ floor[ fx0 ] ] ]
-                ix1 : i32 [ i32[ ceil [ fx1 ] ] ]
+                ix0 : i32 [ floor[ fx0 ] ]
+                ix1 : i32 [ ceil [ fx1 ] ]
                 if [ ix0 < 0 ] ix0 = 0
                 if [ ix1 > width ] ix1 = width
                 for [ c: i32 0, c < nc, c += 1 ]
                     acc[ c ] = 0.0
                 wsum : f32 [ 0.0 ]
                 for [ syi: i32 iy0, syi < iy1, syi += 1 ]
-                    wy : f32 [ min[ fy1, f32[ syi + 1 ] ] - max[ fy0, f32[ syi ] ] ]
+                    wy : f32 [
+                        min[ fy1, f32[ syi + 1 ] ]
+                        - max[ fy0, f32[ syi ] ] ]
                     if [ wy <= 0.0 ] continue
                     for [ sxi: i32 ix0, sxi < ix1, sxi += 1 ]
-                        wx : f32 [ min[ fx1, f32[ sxi + 1 ] ] - max[ fx0, f32[ sxi ] ] ]
+                        wx : f32 [
+                            min[ fx1, f32[ sxi + 1 ] ]
+                            - max[ fx0, f32[ sxi ] ] ]
                         if [ wx <= 0.0 ] continue
                         w  : f32 [ wx * wy ]
                         si : i32 [ (syi * width + sxi) * nc ]
@@ -619,7 +637,8 @@ class Image
             expect file : fopen [ image_uri, "wb" ],
                 'could not open file for writing: {image_uri}'
 
-            png2 : png_create_write_struct[ PNG_LIBPNG_VER_STRING, null, null, null ]
+            png2 : png_create_write_struct[ PNG_LIBPNG_VER_STRING, null,
+                                            null, null ]
             check png2, "could not create PNG write struct"
 
             info : png_create_info_struct [ png2 ]
@@ -629,19 +648,19 @@ class Image
                 png_init_io png2, file
                 png_set_compression_level png2, 1
 
-                ctype2 : i32 [ PNG_COLOR_TYPE_RGBA ]
-                if [ channels == 1 ] ctype2 = PNG_COLOR_TYPE_GRAY
-                if [ channels == 3 ] ctype2 = PNG_COLOR_TYPE_RGB
+                ctype : i32 [ PNG_COLOR_TYPE_RGBA ]
+                if [ channels == 1 ] ctype = PNG_COLOR_TYPE_GRAY
+                if [ channels == 3 ] ctype = PNG_COLOR_TYPE_RGB
                 png_set_IHDR
                     png2, info, width, height,
-                    8, ctype2, PNG_INTERLACE_NONE,
+                    8, ctype, PNG_INTERLACE_NONE,
                     PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT
 
                 png_write_info png2, info
                 rows : new png_bytep [ sizeof png_bytep * height ]
-                data2 : @u8 vdata[]
+                data : @u8 vdata[]
                 for [ y : 0, y < height, y += 1 ]
-                    rows[y] = @data2 [ y * width * channels ]
+                    rows[y] = @data [ y * width * channels ]
 
                 png_write_image png2, rows
                 png_write_end   png2, null
@@ -787,8 +806,8 @@ class JpegDec
     # a coefficient's signed value from its magnitude category
     func jp_extend [ v: i32, n: i32 ] -> i32
         if [ n == 0 ] return 0
-        hf9 : i32 [ 1 << (n - 1) ]
-        if [ v < hf9 ] return v - (1 << n) + 1
+        hf : i32 [ 1 << (n - 1) ]
+        if [ v < hf ] return v - (1 << n) + 1
         return v
 
     # canonical huffman: walk code lengths until the code is in range
@@ -810,7 +829,8 @@ class JpegDec
             code = (code << 1) | fill_bit[]
             mx : i32 [ hmaxc[ t * 17 + l ] ]
             if [ mx >= 0 && code <= mx ]
-                idx : i32 [ hval[ t * 17 + l ] + code - hmin[ t * 17 + l ] ]
+                idx : i32 [
+                    hval[ t * 17 + l ] + code - hmin[ t * 17 + l ] ]
                 if [ idx < 0 || idx > 255 ] return 0
                 return (i32 hsym[ t * 256 + idx ]) & 255
         return 0
@@ -821,7 +841,8 @@ class JpegDec
         for [ x: i32 0, x < 8, x += 1 ]
             for [ u: i32 0, u < 8, u += 1 ]
                 w : f32 [ (u == 0) ? 0.35355339 : 0.5 ]
-                cs[ x * 8 + u ] = w * cos[ f32[ (2 * x + 1) * u ] * 0.19634954 ]
+                cs[ x * 8 + u ] = w * cos[
+                    f32[ (2 * x + 1) * u ] * 0.19634954 ]
 
     func idct_block []
         if [ !cs_ready ]
@@ -844,7 +865,8 @@ class JpegDec
                 pix[ y * 8 + x ] = s
 
     # ---- one 8x8 block: huffman, dequant, idct, store to a plane ----
-    func decode_block [ c: i32, dst: @u8, dw: i32, dh: i32, bx: i32, by: i32 ]
+    func decode_block [ c: i32, dst: @u8, dw: i32, dh: i32, bx: i32,
+                        by: i32 ]
         for [ i: i32 0, i < 64, i += 1 ]
             blk[ i ] = 0
         q  : i32 [ ctq[ c ] * 64 ]
@@ -875,7 +897,7 @@ class JpegDec
             for [ x: i32 0, x < 8, x += 1 ]
                 px : i32 [ bx + x ]
                 if [ px >= dw ] break
-                v : i32 [ i32[ pix[ y * 8 + x ] + 128.5 ] ]
+                v : i32 [ pix[ y * 8 + x ] + 128.5 ]
                 if [ v < 0 ] v = 0
                 if [ v > 255 ] v = 255
                 dst[ py * dw + px ] = u8[ v ]
@@ -900,7 +922,8 @@ class JpegDec
                     id : i32 [ pq & 15 ]
                     if [ (pq >> 4) != 0 ] return 2
                     for [ i: i32 0, i < 64, i += 1 ]
-                        qt[ id * 64 + i ] = u8[ u8_at[ pos + i64[ i ] ] ]
+                        qt[ id * 64 + i ] = u8[
+                            u8_at[ pos + i64[ i ] ] ]
                     pos += 64
             el [ m == 196 ]                     # DHT
                 while [ pos < nx ]
@@ -914,7 +937,8 @@ class JpegDec
                         tot += n
                     pos += 16
                     for [ i: i32 0, i < tot, i += 1 ]
-                        hsym[ t * 256 + i ] = u8[ u8_at[ pos + i64[ i ] ] ]
+                        hsym[ t * 256 + i ] = u8[
+                            u8_at[ pos + i64[ i ] ] ]
                     pos += i64[ tot ]
                     build_huff[ t ]
             el [ m == 192 || m == 193 ]         # SOF0 / SOF1
@@ -965,7 +989,8 @@ class JpegDec
             cpw[ i ] = mcux * ch[i] * 8
             cph[ i ] = mcuy * cv[i] * 8
             cpred[ i ] = 0
-        # products MUST be precomputed as i32: new parses its arg as a shape
+        # products MUST be precomputed as i32: new parses its arg as a
+        # shape
         n0 : i32 [ cpw[0] * cph[0] ]
         pl0 = new u8 [ n0 ]
         if [ ncomp > 1 ]
@@ -1002,7 +1027,8 @@ class JpegDec
                         for [ h: i32 0, h < ch[c], h += 1 ]
                             bx : i32 [ (mx * ch[c] + h) * 8 ]
                             by : i32 [ (my * cv[c] + v) * 8 ]
-                            decode_block[ c, dst, cpw[c], cph[c], bx, by ]
+                            decode_block[ c, dst, cpw[c], cph[c], bx,
+                                          by ]
         return 0
 
     # ---- upsample + YCbCr->RGBA into a caller buffer ----
@@ -1057,15 +1083,15 @@ class JpegDec
             # that is fixed. xs stays 0 -> the scalar loop owns the row
             # ---- scalar convert, whole row ----
             for [ x: i32 xs, x < w, x += 1 ]
-                yy : f32 [ f32[ (i32 yr [ x ]) & 255 ] ]
+                yy : f32 [ (i32 yr [ x ]) & 255 ]
                 cb : f32 [ f32[ (i32 cbr[ x ]) & 255 ] - 128.0 ]
                 cr : f32 [ f32[ (i32 crr[ x ]) & 255 ] - 128.0 ]
                 rf : f32 [ yy + 1.402 * cr ]
                 gf : f32 [ yy - 0.344136 * cb - 0.714136 * cr ]
                 bf : f32 [ yy + 1.772 * cb ]
-                ri : i32 [ i32[ rf + 0.5 ] ]
-                gi : i32 [ i32[ gf + 0.5 ] ]
-                bi : i32 [ i32[ bf + 0.5 ] ]
+                ri : i32 [ rf + 0.5 ]
+                gi : i32 [ gf + 0.5 ]
+                bi : i32 [ bf + 0.5 ]
                 if [ ri < 0 ] ri = 0
                 if [ gi < 0 ] gi = 0
                 if [ bi < 0 ] bi = 0
@@ -1154,7 +1180,8 @@ func exr_decode [ u: path ] -> Image
     packed : @u8 [ new u8 [ blockb ] ]
     frow   : @f32 [ new f32 [ w ] ]
 
-    im   : Image [ width: w, height: h, format: Pixel.rgbaf32, channels: 4 ]
+    im   : Image [ width: w, height: h, format: Pixel.rgbaf32,
+                   channels: 4 ]
     dst  : @f32 im.vdata[]
     has_a : bool [ false ]
     for [ c: i32 0, c < nch, c += 1 ]
@@ -1181,7 +1208,8 @@ func exr_decode [ u: path ] -> Image
                 return null
             memcpy[ packed, raw, i64[ nb ] ]
             exr_unpack[ packed, raw, nb ]
-        # a channel's row is contiguous, so convert it whole, then scatter
+        # a channel's row is contiguous, so convert it whole, then
+        # scatter
         o : i32 [ 0 ]
         for [ r: i32 0, r < ny, r += 1 ]
             row : i32 [ (cy - y0 + r) * w * 4 ]
@@ -1215,7 +1243,7 @@ func jpeg_decode [ uri: path ] -> Image
     if [ sz < 4 ]
         fclose[ f ]
         return null
-    nb : i32 [ i32[ sz ] ]
+    nb : i32 [ sz ]
     buf : @u8 [ new u8 [ nb ] ]
     rd : i64 [ fread[ buf, 1, sz, f ] ]
     fclose[ f ]
@@ -1225,12 +1253,14 @@ func jpeg_decode [ uri: path ] -> Image
     d.size  = sz
     if [ d.jp_markers[] != 0 ] return null
     if [ d.width <= 0 || d.height <= 0 ] return null
-    im : Image [ width: d.width, height: d.height, format: Pixel.rgba8, channels: 4 ]
+    im : Image [ width: d.width, height: d.height, format: Pixel.rgba8,
+                 channels: 4 ]
     d.to_rgba[ im.vdata[] ]
     return im
 
-# decode a TIFF into an rgba8 Image through libtiff (any compression it knows);
-# its RGBA raster is R,G,B,A bytes in memory order, which is our rgba8
+# decode a TIFF into an rgba8 Image through libtiff (any compression it
+# knows); its RGBA raster is R,G,B,A bytes in memory order, which is our
+# rgba8
 func tiff_decode [ uri: path ] -> Image
     t : @TIFF [ TIFFOpen[ '{uri}', 'r' ] ]
     if [ !t ] return null
@@ -1243,14 +1273,19 @@ func tiff_decode [ uri: path ] -> Image
     if [ w[ 0 ] == 0 || h[ 0 ] == 0 ]
         TIFFClose[ t ]
         return null
-    im : Image [ width: i32[ w[ 0 ] ], height: i32[ h[ 0 ] ], format: Pixel.rgba8, channels: 4 ]
-    ok : i32 [ TIFFReadRGBAImageOriented[ t, w[ 0 ], h[ 0 ], cast @u32 [ im.vdata[] ], ORIENTATION_TOPLEFT, 0 ] ]
+    im : Image [ width: i32[ w[ 0 ] ], height: i32[ h[ 0 ] ],
+                 format: Pixel.rgba8, channels: 4 ]
+    ok : i32 [
+        TIFFReadRGBAImageOriented[ t, w[ 0 ], h[ 0 ],
+                                   cast @u32 [ im.vdata[] ],
+                                   ORIENTATION_TOPLEFT, 0 ] ]
     TIFFClose[ t ]
     if [ ok == 0 ] return null
     return im
 
 expect func test_exr [] -> bool
-    im : Image [ width: 4, height: 4, format: Pixel.rgbaf32, channels: 4 ]
+    im : Image [ width: 4, height: 4, format: Pixel.rgbaf32,
+                 channels: 4 ]
     pf : @f32 im.vdata[]
     for [ k: i32 0, k < 64, k += 1 ] pf[k] = f32[k] * 0.25
     ep : path '/tmp/exrtest.exr'
@@ -1298,7 +1333,9 @@ export func icons []
     for [ i: i32 0, i < sizes.len[], i += 1 ]
         n : i32 sizes[ i ]
         alt : path '{src.parent_dir[]}/icon-{n}.png'
-        im : Image [ (alt.exists[]) ? Image [ uri: alt ] : master.resize[ n, n ] ]
+        im : Image [
+            (alt.exists[]) ? Image [ uri: alt ]
+            : master.resize[ n, n ] ]
         d : path '{dir}/{n}x{n}/apps'
         d.make_dir[]
         im.png[ path '{d}/{name}.png' ]

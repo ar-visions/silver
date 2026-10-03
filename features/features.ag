@@ -1776,6 +1776,25 @@ expect func t_async_inline [] -> bool
     expect j2.out == 1057, 'j2.out = {j2.out}'
     return true
 
+# a synced async freed later: its threads are not joined twice
+func async_synced [] -> i64
+    j1 : AsyncJob [ x: 2 ]
+    w : vec Au []
+    w.push[ j1 ]
+    f : lambda [ arg: object ]
+        j : AsyncJob [ arg ]
+        j.out = j.x * 3
+    t : async [ work_fn: f, work: w ]
+    t.sync[ null ]
+    return j1.out
+
+expect func t_async_sync_free [] -> bool
+    r : i64 [ 0 ]
+    for [ i: i32 0, i < 8, i += 1 ]
+        r += async_synced[]         # each reuses a freed stack
+    Au.auto_free[]                  # frees each async: sync again
+    return r == 48
+
 
 
 func inlay_len [ inlay v: v2 ] -> f32   # inlay: the struct passes by value
@@ -1810,6 +1829,29 @@ expect func t_lambda_multi [] -> bool
     scale : i64 [ 2 ]
     f : lambda mul_add[ base, scale ]
     return f[ 3, 4 ] == 44
+
+# a name may shadow a type: name then : is a name
+func shadow_arg [ ms: i32 ] -> i32
+    return ms + 1
+
+class ShadowHold
+    public deg : i32
+
+expect func t_shadow_type_names [] -> bool
+    px : i32 [ 4 ]
+    half : f32 [ 0.5 ]               # a primitive's name
+    h : ShadowHold [ deg: 3 ]
+    n : i32 [ 0 ]
+    for [ ms: i32 0, ms < 3, ms += 1 ]
+        n += ms
+    xs : vec i32 [] [ 5, 6 ]
+    for [ deg: i32 ] in xs
+        n += deg
+    f : lambda [ ms: i32 ]
+        return ms * 2
+    r : f[ 7 ]
+    return shadow_arg[ px ] == 5 && h.deg == 3 && px == 4
+        && n == 14 && r == 14 && half == 0.5
 
 # commaless numbers match their params by type
 func mixn [ n: i64, f: f64 ] -> f64
@@ -2703,263 +2745,6 @@ export func bake_greeting []
     op.save[ bake_text[], null ]
     sp.save[ stamp, null ]
     log 'features: baked artifact written'
-
-# the docs page: this file as html, laid out as the web site
-
-func word_char [ c: i8 ] -> bool
-    return isalnum[ i32[ c ] ] != 0 || c == '_'
-
-func digit_char [ c: i8 ] -> bool
-    return c >= '0' && c <= '9'
-
-# one character, escaped for html
-func html_char [ out: string, c: i8 ]
-    if [ c == '<' ]
-        out.append[ '&lt;' ]
-    el [ c == '>' ]
-        out.append[ '&gt;' ]
-    el [ c == '&' ]
-        out.append[ '&amp;' ]
-    el
-        out.push[ u32[ c ] ]
-
-func html_text [ out: string, s: string ]
-    for [ i: i64 0, i < s.count, i += 1 ]
-        html_char[ out, s.chars[ i ] ]
-
-# a class for a span: keyword, type, number, or none
-func word_class [ w: string ] -> string
-    keywords : ' func class struct enum scalar import export expect return if el else for in while switch case default ifdef ifndef lambda new ref local intern public context extend using alias persist async sync try catch finally break continue asm with as cast construct app true false null abstract static inlay reverse '
-    types    : ' i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 bool string path vec map object cstr none any unichar sz num void Au Au_t symbol hook handle '
-    if [ keywords.index_of[ ' {w} ' ] >= 0 ] return 'k'
-    if [ types.index_of[ ' {w} ' ] >= 0 ] return 't'
-    if [ digit_char[ w.chars[ 0 ] ] ] return 'n'
-    c : i8 [ w.chars[ 0 ] ]
-    if [ c >= 'A' && c <= 'Z' ] return 't'
-    return ''
-
-# one source line: keywords, types, numbers, strings, comments
-func code_line [ out: string, s: string ]
-    n : i64 [ s.count ]
-    i : i64 [ 0 ]
-    while [ i < n ]
-        c : i8 [ s.chars[ i ] ]
-        if [ c == '#' ]
-            out.append[ '<span class="c">' ]
-            html_text[ out, s.mid[ i, n - i ] ]
-            out.append[ '</span>' ]
-            i = n
-        el [ c == '\'' ]
-            from : i64 [ i ]
-            i += 1
-            while [ i < n && s.chars[ i ] != '\'' ]
-                if [ s.chars[ i ] == '\\' ]
-                    i += 1
-                i += 1
-            i += 1
-            out.append[ '<span class="s">' ]
-            html_text[ out, s.mid[ from, i - from ] ]
-            out.append[ '</span>' ]
-        el [ word_char[ c ] ]
-            from : i64 [ i ]
-            while [ i < n && (word_char[ s.chars[ i ] ] || s.chars[ i ] == '.') ]
-                if [ s.chars[ i ] == '.' && !digit_char[ s.chars[ from ] ] ]
-                    break
-                i += 1
-            w  : s.mid[ from, i - from ]
-            wc : word_class[ w ]
-            if [ wc.count > 0 ]
-                out.append[ '<span class="{wc}">' ]
-                html_text[ out, w ]
-                out.append[ '</span>' ]
-            el
-                html_text[ out, w ]
-        el
-            html_char[ out, c ]
-            i += 1
-    out.append[ '\n' ]
-
-# t_string_escapes reads as: string escapes
-func test_title [ name: string ] -> string
-    res : string [ alloc: 64 ]
-    for [ i: i64 2, i < name.count, i += 1 ]
-        c : i8 [ name.chars[ i ] ]
-        if [ c == '_' ]
-            res.append[ ' ' ]
-        el
-            res.push[ u32[ c ] ]
-    return res
-
-# the page as it is read: hero, sections, then feature rows
-class DocPage
-    public hero  : string
-    public toc   : string
-    public body  : string
-    public prose : string
-    public code  : string
-    public loose : string
-    public head  : string
-    public test  : string
-    public open  : bool
-    public intro : bool
-
-    func init []
-        hero  = string [ alloc: 1024 ]
-        toc   = string [ alloc: 1024 ]
-        body  = string [ alloc: 262144 ]
-        prose = string [ alloc: 256 ]
-        code  = string [ alloc: 4096 ]
-        loose = string [ alloc: 4096 ]
-        head  = string [ alloc: 128 ]
-        test  = string [ alloc: 64 ]
-
-    # code with no words of its own joins one plain box
-    func end_loose []
-        if [ loose.count == 0 ] return
-        body.append[ '<div class="code full"><pre>' ]
-        body.append[ loose.chars ]
-        body.append[ '</pre></div>\n' ]
-        loose = string [ alloc: 4096 ]
-
-    func end_block []
-        if [ code.count == 0 && prose.count > 0 ]
-            end_loose[]
-            body.append[ '<p class="sub">' ]
-            html_text[ body, prose ]
-            body.append[ '</p>\n' ]
-        el [ code.count > 0 && prose.count == 0 && test.count == 0 ]
-            if [ loose.count > 0 ] loose.append[ '\n' ]
-            loose.append[ code.chars ]
-        el [ code.count > 0 ]
-            end_loose[]
-            body.append[ '<div class="two feat">\n<div class="txt"><h3>' ]
-            if [ test.count > 0 ]
-                html_text[ body, test_title[ test ] ]
-            el
-                body.append[ '<code>' ]
-                html_text[ body, head ]
-                body.append[ '</code>' ]
-            body.append[ '</h3>' ]
-            if [ prose.count > 0 ]
-                body.append[ '<p>' ]
-                html_text[ body, prose ]
-                body.append[ '</p>' ]
-            body.append[ '</div>\n<div class="code"><div class="bar"><span class="dot"></span><span class="name">' ]
-            if [ test.count > 0 ]
-                body.append[ test.chars ]
-            el
-                body.append[ 'features.ag' ]
-            body.append[ '</span></div><pre>' ]
-            body.append[ code.chars ]
-            body.append[ '</pre></div>\n</div>\n' ]
-        prose = string [ alloc: 256 ]
-        code  = string [ alloc: 4096 ]
-        head  = string [ alloc: 128 ]
-        test  = string [ alloc: 64 ]
-
-    func end_section []
-        end_block[]
-        end_loose[]
-        if [ open ] body.append[ '</div>\n</section>\n\n' ]
-        open = false
-
-    # # ==== Label: Headline
-    func section [ ln: string ]
-        end_section[]
-        rest : ln.mid[ 6, ln.count - 6 ]
-        at   : rest.index_of[ ':' ]
-        label : rest.mid[ 0, at ].trim[]
-        title : rest.mid[ at + 1, rest.count - at - 1 ].trim[]
-        id : label.lcase[]
-        for [ i: i64 0, i < id.count, i += 1 ]
-            if [ id.chars[ i ] == ' ' ]
-                id.chars[ i ] = '-'
-        toc.append[ '<a class="badge" href="#{id}">' ]
-        html_text[ toc, label ]
-        toc.append[ '</a>\n' ]
-        body.append[ '<section id="{id}">\n<div class="wrap">\n<p class="eyebrow">' ]
-        html_text[ body, label ]
-        body.append[ '</p>\n<h2>' ]
-        html_text[ body, title ]
-        body.append[ '</h2>\n' ]
-        open  = true
-        intro = true
-
-    func line [ ln: string ]
-        blank : bool [ ln.trim[].count == 0 ]
-        top   : bool [ ln.count > 0 && ln.chars[ 0 ] == '#' ]
-        if [ ln.starts_with[ '# ====' ] ]
-            section[ ln ]
-            return
-        if [ intro ]
-            if [ top ]
-                prose.append[ ln.mid[ 1, ln.count - 1 ].trim[].chars ]
-                prose.append[ ' ' ]
-                return
-            body.append[ '<p class="sub">' ]
-            html_text[ body, prose.trim[] ]
-            body.append[ '</p>\n' ]
-            prose = string [ alloc: 256 ]
-            intro = false
-        if [ !open ]
-            if [ top && hero.count == 0 ]
-                hero.append[ '<h1>' ]
-                html_text[ hero, ln.mid[ 1, ln.count - 1 ].trim[] ]
-                hero.append[ '</h1>\n' ]
-            el [ top ]
-                hero.append[ '<p class="lede">' ]
-                html_text[ hero, ln.mid[ 1, ln.count - 1 ].trim[] ]
-                hero.append[ '</p>\n' ]
-            return
-        if [ blank ]
-            end_block[]
-        el [ top && code.count == 0 ]
-            prose.append[ ln.mid[ 1, ln.count - 1 ].trim[].chars ]
-            prose.append[ ' ' ]
-        el
-            if [ head.count == 0 ]
-                hash : ln.index_of[ '#' ]
-                decl : ln
-                if [ hash > 0 ] decl = ln.mid[ 0, hash ]
-                head.append[ decl.trim[].chars ]
-            ef : ln.index_of[ 'expect func ' ]
-            if [ ef >= 0 && test.count == 0 ]
-                parts : ln.mid[ ef + 12, ln.count - ef - 12 ].split[ ' ' ]
-                nm : parts[ 0 ]
-                test.append[ nm.chars ]
-            code_line[ code, ln ]
-
-# docs/features.html from this file and docs/page.html
-export func docs_page []
-    srcs : path '{path.path_share_path[]}/../../build/silver-features.source'
-    if [ !srcs.exists[] ] return
-    list : string [ srcs.load[ typeid[string], null ] ]
-    parts : list.split[ '\n' ]
-    first : path [ parts[ 0 ] ]
-    dir  : first.parent_dir[]
-    tp   : path '{dir}/docs/page.html'
-    src  : string [ first.load[ typeid[string], null ] ]
-    tpl  : string [ tp.load[ typeid[string], null ] ]
-    if [ !src || !tpl ] return
-    doc  : DocPage [ ]
-    lines : src.split[ '\n' ]
-    for [ ln: string ] in lines
-        doc.line[ ln ]
-    doc.end_section[]
-    at_h : tpl.index_of[ '<!-- hero -->' ]
-    at_f : tpl.index_of[ '<!-- features -->' ]
-    if [ at_h < 0 || at_f < 0 ] return
-    page : tpl.mid[ 0, at_h ]
-    page.append[ doc.hero.chars ]
-    page.append[ '<div class="badges toc">\n' ]
-    page.append[ doc.toc.chars ]
-    page.append[ '</div>\n' ]
-    page.append[ tpl.mid[ at_h + 13, at_f - at_h - 13 ].chars ]
-    page.append[ doc.body.chars ]
-    page.append[ tpl.mid[ at_f + 17, tpl.count - at_f - 17 ].chars ]
-    op   : path '{dir}/docs/features.html'
-    op.save[ page, null ]
-    log 'features: docs page written to {op}'
 
 expect func t_build_time [] -> bool
     # bake_greeting ran at build time and left this behind

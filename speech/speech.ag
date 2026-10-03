@@ -39,8 +39,8 @@ import https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro
     > rm -rf {install}/models/kokoro-en
     > mv {install}/models/kokoro-en-v0_19 {install}/models/kokoro-en
 
-# dictation's whisper-small: the weights and their vocab side by side (the
-# net reads whisper-vocab.json from the weights' own folder)
+# dictation's whisper-small: the weights and their vocab side by side
+# (the net reads whisper-vocab.json from the weights' own folder)
 import https://huggingface.co/openai/whisper-small/resolve/main/model.safetensors
     > mkdir -p {install}/models
     > cp {import_file} {install}/models/whisper-small.safetensors
@@ -54,16 +54,16 @@ export extensions ['.flac': FileType.binary, '.ogg': FileType.binary]
 # caf_load lives in spectra (the audio core every module links)
 
 func whisper_pcm [ c: AudioClip ] -> @f32
-    out9 : new f32 [ 480000 ]
+    out : new f32 [ 480000 ]
     ch : i32 [ c.channels ]
     ratio : f64 [ f64[ c.rate ] / 16000.0 ]
-    n16 : i64 [ i64[ f64[ c.frames ] / ratio ] ]
+    n16 : i64 [ f64[ c.frames ] / ratio ]
     if [ n16 > 480000 ] n16 = 480000
     den : f32 [ f32[ ch ] * 32768.0f ]
     for [ i: i64 0, i < n16, i += 1 ]
         sp : f64 [ f64[ i ] * ratio ]
-        i0 : i64 [ i64[ sp ] ]
-        fr : f32 [ f32[ sp - f64[ i0 ] ] ]
+        i0 : i64 [ sp ]
+        fr : f32 [ sp - f64[ i0 ] ]
         i1 : i64 [ i0 + 1 ]
         if [ i1 >= c.frames ] i1 = c.frames - 1
         a9 : f32 [ 0.0 ]
@@ -73,8 +73,8 @@ func whisper_pcm [ c: AudioClip ] -> @f32
             b9 += f32[ c.pcm[ i1 * ch + c2 ] ]
         va : f32 [ a9 / den ]
         vb : f32 [ b9 / den ]
-        out9[i] = va + (vb - va) * fr
-    return out9
+        out[i] = va + (vb - va) * fr
+    return out
 
 # slaney hz->mel / mel->hz (librosa htk=false)
 func hz_mel [ f: f64 ] -> f64
@@ -85,36 +85,38 @@ func mel_hz [ m: f64 ] -> f64
     return 1000.0 * exp[ 1.8562979903656263 / 27.0 * (m - 15.0) ]
 
 func whisper_mel [ c: AudioClip ] -> tensor
-    pcm9 : whisper_pcm[ c ]
+    pcm : whisper_pcm[ c ]
     nfft : i32 [ 400 ]
     nb   : i32 [ 201 ]
-    hop9 : i32 [ 160 ]
-    ratio9 : f64 [ f64[ c.rate ] / 16000.0 ]
-    n16r : i64 [ i64[ f64[ c.frames ] / ratio9 ] ]
+    hop : i32 [ 160 ]
+    ratio : f64 [ f64[ c.rate ] / 16000.0 ]
+    n16r : i64 [ f64[ c.frames ] / ratio ]
     if [ n16r > 480000 ] n16r = 480000
-    # the speech plus 3 s of silence: whisper needs to see the take end or it
-    # repeats; the full 30 s window cost the encoder 10x on a short take
+    # the speech plus 3 s of silence: whisper needs to see the take end
+    # or it repeats; the full 30 s window cost the encoder 10x on a
+    # short take
     tt : i32 [ i32[ n16r / 160 ] + 300 ]
     tt = ((tt + 1) / 2) * 2
     if [ tt > 3000 ] tt = 3000
     if [ tt < 100 ] tt = 100
-    win9 : new f32 [ 400 ]
+    win : new f32 [ 400 ]
     for [ i: i32 0, i < nfft, i += 1 ]
-        win9[i] = f32[ 0.5 - 0.5 * cos[ 6.28318530717958648 * f64[ i ] / 400.0 ] ]
-    cs9 : new f32 [ 400 ]
-    sn9 : new f32 [ 400 ]
+        win[i] = f32[
+            0.5 - 0.5 * cos[ 6.28318530717958648 * f64[ i ] / 400.0 ] ]
+    cs : new f32 [ 400 ]
+    sn : new f32 [ 400 ]
     for [ i: i32 0, i < nfft, i += 1 ]
         ang : f64 [ 6.28318530717958648 * f64[ i ] / 400.0 ]
-        cs9[i] = f32[ cos[ ang ] ]
-        sn9[i] = f32[ sin[ ang ] ]
+        cs[i] = f32[ cos[ ang ] ]
+        sn[i] = f32[ sin[ ang ] ]
     tabn : i32 [ 80400 ]
     csf : new f32 [ tabn ]
     snf : new f32 [ tabn ]
     for [ b: i32 0, b < nb, b += 1 ]
         for [ i: i32 0, i < nfft, i += 1 ]
             mi : i32 [ (b * i) % 400 ]
-            csf[b * 400 + i] = cs9[mi]
-            snf[b * 400 + i] = sn9[mi]
+            csf[b * 400 + i] = cs[mi]
+            snf[b * 400 + i] = sn[mi]
     mhi : f64 [ hz_mel[ 8000.0 ] ]
     pts : new f64 [ 82 ]
     for [ k: i32 0, k < 82, k += 1 ]
@@ -137,24 +139,25 @@ func whisper_mel [ c: AudioClip ] -> tensor
     mdv[1] = 80
     msh : shape.shape_from[ 2, mdv ]
     mel_t : tensor [ tensor_shape: msh ]
-    fr9 : new f32 [ 400 ]
+    fr : new f32 [ 400 ]
     pw  : new f32 [ 201 ]
     acc8r : new f32 [ 8 ]
     acc8i : new f32 [ 8 ]
-    # the asm addresses the elements: a vec operand is the vector object itself
+    # the asm addresses the elements: a vec operand is the vector object
+    # itself
     arp : @f32 [ @acc8r[0] ]
     aip : @f32 [ @acc8i[0] ]
-    frp : @f32 [ @fr9[0] ]
+    frp : @f32 [ @fr[0] ]
     csp : @f32 [ @csf[0] ]
     snp : @f32 [ @snf[0] ]
     mmax : f32 [ -1.0e30f ]
     for [ t: i32 0, t < tt, t += 1 ]
-        base : i32 [ t * hop9 - 200 ]
+        base : i32 [ t * hop - 200 ]
         for [ i: i32 0, i < nfft, i += 1 ]
             j : i32 [ base + i ]
             if [ j < 0 ] j = 0 - j
             if [ j >= 480000 ] j = 959998 - j
-            fr9[i] = pcm9[j] * win9[i]
+            fr[i] = pcm[j] * win[i]
         for [ b: i32 0, b < nb, b += 1 ]
             brow : i32 [ b * 400 ]
             for [ z2: i32 0, z2 < 8, z2 += 1 ]
@@ -188,30 +191,35 @@ func whisper_mel [ c: AudioClip ] -> tensor
                     fmla v5.4s, v3.4s, v7.4s
                     stp q0, q1, [arp]
                     stp q4, q5, [aip]
-            re9 : f32 [ acc8r[0] + acc8r[1] + acc8r[2] + acc8r[3] + acc8r[4] + acc8r[5] + acc8r[6] + acc8r[7] ]
-            im9 : f32 [ 0.0f - (acc8i[0] + acc8i[1] + acc8i[2] + acc8i[3] + acc8i[4] + acc8i[5] + acc8i[6] + acc8i[7]) ]
-            pw[b] = re9 * re9 + im9 * im9
+            re : f32 [
+                acc8r[0] + acc8r[1] + acc8r[2] + acc8r[3] + acc8r[4]
+                + acc8r[5] + acc8r[6] + acc8r[7] ]
+            im : f32 [
+                0.0f
+                - (acc8i[0] + acc8i[1] + acc8i[2] + acc8i[3] + acc8i[4] + acc8i[5] + acc8i[6] + acc8i[7]) ]
+            pw[b] = re * re + im * im
         for [ m: i32 0, m < 80, m += 1 ]
             e9 : f32 [ 0.0 ]
             for [ b: i32 0, b < nb, b += 1 ]
                 e9 += mw[m * nb + b] * pw[b]
             if [ e9 < 1.0e-10f ] e9 = 1.0e-10f
-            l9 : f32 [ f32[ log[ f64[ e9 ] ] / 2.30258509299404568 ] ]
+            l9 : f32 [ log[ f64[ e9 ] ] / 2.30258509299404568 ]
             mel_t.floats[t * 80 + m] = l9
             if [ l9 > mmax ] mmax = l9
-    floor9 : f32 [ mmax - 8.0f ]
-    ntot9 : i64 [ i64[ tt ] * 80 ]
-    for [ i: i64 0, i < ntot9, i += 1 ]
+    floor : f32 [ mmax - 8.0f ]
+    ntot : i64 [ i64[ tt ] * 80 ]
+    for [ i: i64 0, i < ntot, i += 1 ]
         v9 : f32 [ mel_t.floats[i] ]
-        if [ v9 < floor9 ] v9 = floor9
+        if [ v9 < floor ] v9 = floor
         mel_t.floats[i] = (v9 + 4.0f) / 4.0f
     return mel_t
 
-func mel_png [ m: tensor, out2: path ] -> bool
-    w2 : i32 [ i32[ m.tensor_shape[0] ] ]
+func mel_png [ m: tensor, out: path ] -> bool
+    w2 : i32 [ m.tensor_shape[0] ]
     h2 : i32 [ 240 ]
-    img3 : Image [ width: w2, height: h2, format: Pixel.rgba8, channels: 4 ]
-    pd : @u8 [ img3.vdata[] ]
+    img : Image [ width: w2, height: h2, format: Pixel.rgba8,
+                  channels: 4 ]
+    pd : @u8 [ img.vdata[] ]
     for [ y: i32 0, y < h2, y += 1 ]
         mrow : i32 [ 79 - (y / 3) ]
         for [ x: i32 0, x < w2, x += 1 ]
@@ -224,10 +232,11 @@ func mel_png [ m: tensor, out2: path ] -> bool
             pd[ di + 1 ] = u8[ (rgb / 256) % 256 ]
             pd[ di + 2 ] = u8[ rgb % 256 ]
             pd[ di + 3 ] = 255
-    img3.png[ out2 ]
+    img.png[ out ]
     return true
 
-func libri_translate [ root: path, subset: string, outdir: path, limit: i32 ] -> i32
+func libri_translate [ root: path, subset: string, outdir: path,
+                       limit: i32 ] -> i32
     root.hold[]
     subset.hold[]
     outdir.hold[]
@@ -247,8 +256,8 @@ func libri_translate [ root: path, subset: string, outdir: path, limit: i32 ] ->
         # fields: alignpath uttid "words" "times"
         q1 : num [ ln.index_of[ '"' ] ]
         if [ q1 < 0 ] continue
-        head9 : ln.mid[ 0, i32[ q1 ] ]
-        parts : head9.split[ ' ' ]
+        head : ln.mid[ 0, i32[ q1 ] ]
+        parts : head.split[ ' ' ]
         if [ parts.count < 2 ] continue
         apath : parts[ 0 ]
         uttid : parts[ 1 ]
@@ -264,23 +273,23 @@ func libri_translate [ root: path, subset: string, outdir: path, limit: i32 ] ->
         if [ q4 < 0 ] continue
         tstr : rest7.mid[ 0, i32[ q4 ] ]
         # wav lives beside the alignment file
-        sl9 : num [ apath.rindex_of[ '/' ] ]
-        if [ sl9 < 0 ] continue
-        adir : apath.mid[ 0, i32[ sl9 ] ]
+        sl : num [ apath.rindex_of[ '/' ] ]
+        if [ sl < 0 ] continue
+        adir : apath.mid[ 0, i32[ sl ] ]
         wp : path '{root}/{adir}/{uttid}.wav'
         c : caf_load[ wp ]
         if [ !c ] continue
         if [ c.frames < 4096 ] continue
-        hop9 : i64 [ i64[ c.rate ] * 2048 / 48000 ]
-        if [ hop9 < 1 ] hop9 = 1
-        w9 : i32 [ i32[ (c.frames - 2048) / hop9 ] ]
+        hop : i64 [ i64[ c.rate ] * 2048 / 48000 ]
+        if [ hop < 1 ] hop = 1
+        w9 : i32 [ (c.frames - 2048) / hop ]
         if [ w9 < 16 ] continue
         if [ w9 > 4096 ]
             Au.auto_free[]
             continue
         op : path '{outdir}/{subset}_{n9}.png'
-        act9 : new f32 [ w9 ]
-        if [ !spectrograph[ c, op, w9, 64, 150.0, 8000.0, true, act9 ] ]
+        act : new f32 [ w9 ]
+        if [ !spectrograph[ c, op, w9, 64, 150.0, 8000.0, true, act ] ]
             Au.auto_free[]
             continue
         # words + end times -> per-word column spans; "" = silence
@@ -289,21 +298,21 @@ func libri_translate [ root: path, subset: string, outdir: path, limit: i32 ] ->
         sent : string ''
         wsp : string ''
         t0 : f32 [ 0.0 ]
-        nw9 : i32 [ 0 ]
-        for [ wi9: i32 0, wi9 < wlist.count, wi9 += 1 ]
-            if [ wi9 >= tlist.count ] break
-            te : tlist[ wi9 ]
+        nw : i32 [ 0 ]
+        for [ wi: i32 0, wi < wlist.count, wi += 1 ]
+            if [ wi >= tlist.count ] break
+            te : tlist[ wi ]
             t1 : f32 [ te.real_value[] ]
-            wd : wlist[ wi9 ]
+            wd : wlist[ wi ]
             if [ wd && wd.count > 0 ]
-                c0 : i32 [ i32[ t0 * 23.4375 ] ]
-                c1 : i32 [ i32[ t1 * 23.4375 ] ]
+                c0 : i32 [ t0 * 23.4375 ]
+                c1 : i32 [ t1 * 23.4375 ]
                 if [ c1 > w9 ] c1 = w9
                 sent = '{sent}{wd} '
                 wsp = '{wsp}{c0} {c1} '
-                nw9 += 1
+                nw += 1
             t0 = t1
-        if [ nw9 < 1 ]
+        if [ nw < 1 ]
             Au.auto_free[]
             continue
         dur : f32 [ f32[ c.frames ] / f32[ c.rate ] ]
@@ -317,7 +326,8 @@ func libri_translate [ root: path, subset: string, outdir: path, limit: i32 ] ->
     log 'libri_translate: {root} ({subset}) -> {outdir}: {n9} clips'
     return n9
 
-func cv_translate [ dataset: path, split: string, outdir: path, limit: i32 ] -> i32
+func cv_translate [ dataset: path, split: string, outdir: path,
+                    limit: i32 ] -> i32
     dataset.hold[]
     split.hold[]
     outdir.hold[]
@@ -339,51 +349,52 @@ func cv_translate [ dataset: path, split: string, outdir: path, limit: i32 ] -> 
         fname : colsx[ 1 ]
         sent  : colsx[ 3 ]
         spk0  : colsx[ 0 ]
-        age9  : colsx[ 7 ]
-        gen9  : colsx[ 8 ]
-        acc9  : colsx[ 9 ]
+        age  : colsx[ 7 ]
+        gen  : colsx[ 8 ]
+        acc  : colsx[ 9 ]
         mp : path '{dataset}/en_{split}_0/{fname}'
         c : caf_load[ mp ]
         if [ !c ] continue
         if [ c.frames < 4096 ] continue
-        hop9 : i64 [ i64[ c.rate ] * 2048 / 48000 ]
-        if [ hop9 < 1 ] hop9 = 1
-        w9 : i32 [ i32[ (c.frames - 2048) / hop9 ] ]
+        hop : i64 [ i64[ c.rate ] * 2048 / 48000 ]
+        if [ hop < 1 ] hop = 1
+        w9 : i32 [ (c.frames - 2048) / hop ]
         if [ w9 < 16 ] continue
         if [ w9 > 4096 ] w9 = 4096
         op : path '{outdir}/{split}_{n9}.png'
-        act9 : new f32 [ w9 ]
-        if [ !spectrograph[ c, op, w9, 64, 150.0, 8000.0, true, act9 ] ] continue
-        emt9 : new f32 [ w9 ]
-        ema9 : f32 [ 0.0 ]
-        elo9 : f32 [ 1.0 ]
-        ehi9 : f32 [ 0.0 ]
-        for [ x8: i32 0, x8 < w9, x8 += 1 ]
-            e8 : f32 [ act9[ x8 ] ]
-            if [ e8 > ema9 ]
-                ema9 = ema9 * 0.6 + e8 * 0.4
+        act : new f32 [ w9 ]
+        if [ !spectrograph[ c, op, w9, 64, 150.0, 8000.0, true, act ] ]
+            continue
+        emt : new f32 [ w9 ]
+        ema : f32 [ 0.0 ]
+        elo : f32 [ 1.0 ]
+        ehi : f32 [ 0.0 ]
+        for [ x: i32 0, x < w9, x += 1 ]
+            e8 : f32 [ act[ x ] ]
+            if [ e8 > ema ]
+                ema = ema * 0.6 + e8 * 0.4
             el
-                ema9 = ema9 * 0.88 + e8 * 0.12
-            emt9[ x8 ] = ema9
-            if [ ema9 < elo9 ] elo9 = ema9
-            if [ ema9 > ehi9 ] ehi9 = ema9
-        thr9 : f32 [ elo9 + (ehi9 - elo9) * 0.35 ]
-        sect9 : string [ '' ]
-        nsec9 : i32 [ 0 ]
-        sx9 : i32 [ -1 ]
-        for [ x8: i32 0, x8 < w9, x8 += 1 ]
-            on8 : bool [ emt9[ x8 ] > thr9 ]
-            if [ on8 && sx9 < 0 ] sx9 = x8
-            if [ !on8 && sx9 >= 0 ]
-                sect9 = '{sect9}{sx9} {x8} '
-                nsec9 += 1
-                sx9 = -1
-        if [ sx9 >= 0 ]
-            sect9 = '{sect9}{sx9} {w9} '
-            nsec9 += 1
+                ema = ema * 0.88 + e8 * 0.12
+            emt[ x ] = ema
+            if [ ema < elo ] elo = ema
+            if [ ema > ehi ] ehi = ema
+        thr : f32 [ elo + (ehi - elo) * 0.35 ]
+        sect : string [ '' ]
+        nsec : i32 [ 0 ]
+        sx : i32 [ -1 ]
+        for [ x: i32 0, x < w9, x += 1 ]
+            on : bool [ emt[ x ] > thr ]
+            if [ on && sx < 0 ] sx = x
+            if [ !on && sx >= 0 ]
+                sect = '{sect}{sx} {x} '
+                nsec += 1
+                sx = -1
+        if [ sx >= 0 ]
+            sect = '{sect}{sx} {w9} '
+            nsec += 1
         dur : f32 [ f32[ c.frames ] / f32[ c.rate ] ]
         spk : spk0.mid[ 0, 16 ]
-        body : string 'image: {split}_{n9}.png\nsentence: {sent}\nspeaker: {spk}\nage: {age9}\ngender: {gen9}\naccents: {acc9}\nrate: {c.rate}\nframes: {c.frames}\nduration: {dur}\nsource: {mp}\nsections: {sect9}\n'
+        body : string 'image: {split}_{n9}.png\nsentence: {sent}\nspeaker: {spk}\nage: {age}\ngender: {gen}\naccents: {acc}\nrate: {c.rate}\nframes: {c.frames}\nduration: {dur}\nsource: {mp}\nsections: {sect}\n'
         ag : path '{outdir}/{split}_{n9}.agi'
         ag.save[ body, null ]
         n9 += 1
@@ -410,8 +421,10 @@ coverage test
                 if [ t < 480 ] env = f64[ t ] / 480.0
                 rem : i32 [ total - t ]
                 if [ rem < 1920 ] env = env * f64[ rem ] / 1920.0
-                s : f64 [ sin[ phase ] + 0.35 * sin[ phase * 2.0 ] + 0.15 * sin[ phase * 3.0 ] ]
-                v : i16 [ i16[ s * env * 5200.0 ] ]
+                s : f64 [
+                    sin[ phase ] + 0.35 * sin[ phase * 2.0 ]
+                    + 0.15 * sin[ phase * 3.0 ] ]
+                v : i16 [ s * env * 5200.0 ]
                 out.buffer[ i * 2 ]     = v
                 out.buffer[ i * 2 + 1 ] = v
                 phase += step
@@ -419,15 +432,18 @@ coverage test
             done += c
 
     func run[] -> Au
-        out = AudioOut [ sample_rate: 48000, channels: 2, buffer_size: 1024 ]
+        out = AudioOut [ sample_rate: 48000, channels: 2,
+                         buffer_size: 1024 ]
         if [ ! out.open[] ]
             log 'spectra test: audio device unavailable'
             return false
         if [ ! out.active ]
             log 'spectra test: open ok but active not set'
             return false
-        st : vec i32 [] [ 4,4,5,7, 7,5,4,2, 0,0,2,4, 4,2,2,  4,4,5,7, 7,5,4,2, 0,0,2,4, 2,0,0 ]
-        bt : vec i32 [] [ 2,2,2,2, 2,2,2,2, 2,2,2,2, 3,1,4,  2,2,2,2, 2,2,2,2, 2,2,2,2, 3,1,4 ]
+        st : vec i32 [] [ 4,4,5,7, 7,5,4,2, 0,0,2,4, 4,2,2,  4,4,5,7,
+                          7,5,4,2, 0,0,2,4, 2,0,0 ]
+        bt : vec i32 [] [ 2,2,2,2, 2,2,2,2, 2,2,2,2, 3,1,4,  2,2,2,2,
+                          2,2,2,2, 2,2,2,2, 3,1,4 ]
         for [ n: i32 0, n < 30, n += 1 ]
             f : f64 [ 261.63 * pow[ 2.0, f64[ st[n] ] / 12.0 ] ]
             tone[ f, bt[n] * 250 ]
@@ -456,7 +472,7 @@ func stretch_clip [ c: AudioClip, factor: f32 ] -> AudioClip
     ipos : f32 [ 0.0 ]
     for [ true ]
         ipos += hopi
-        base : i32 [ i32[ ipos ] ]
+        base : i32 [ ipos ]
         if [ i64[ base + n + srch + 1 ] >= c.frames ] break
         if [ wpos + n >= ocap ] break
         if [ base - srch < 0 ] continue
@@ -466,19 +482,23 @@ func stretch_clip [ c: AudioClip, factor: f32 ] -> AudioClip
         for [ off: i32 0 - srch, off <= srch, off += 2 ]
             sc : f32 [ 0.0 ]
             for [ k: i32 0, k < ov, k += 4 ]
-                sc += f32[ outp[ wpos + k ] ] * f32[ c.pcm[ base + off + k ] ]
+                sc += f32[ outp[ wpos + k ] ] * f32[
+                    c.pcm[ base + off + k ] ]
             if [ sc > bsc ]
                 bsc = sc
                 best = base + off
         # crossfade the overlap, copy the fresh half
         for [ k2: i32 0, k2 < ov, k2 += 1 ]
             t2 : f32 [ f32[ k2 ] / f32[ ov ] ]
-            v2 : f32 [ f32[ outp[ wpos + k2 ] ] * (1.0 - t2) + f32[ c.pcm[ best + k2 ] ] * t2 ]
+            v2 : f32 [
+                f32[ outp[ wpos + k2 ] ] * (1.0 - t2)
+                + f32[ c.pcm[ best + k2 ] ] * t2 ]
             outp[ wpos + k2 ] = i16[ v2 ]
         for [ k3: i32 ov, k3 < n, k3 += 1 ]
             outp[ wpos + k3 ] = c.pcm[ best + k3 ]
         wpos += hopo
-    s2 : AudioClip [ rate: c.rate, channels: 1, frames: i64[ wpos + ov ] ]
+    s2 : AudioClip [ rate: c.rate, channels: 1,
+                     frames: i64[ wpos + ov ] ]
     s2.pcm = outp
     return s2
 
@@ -494,7 +514,8 @@ class WhisperJob
     public c1   : i64
     public enc  : tensor
     public gpu  : whisper_vk
-    # the cross-attention keys / values from the gpu (null: the cpu projects)
+    # the cross-attention keys / values from the gpu (null: the cpu
+    # projects)
     public kx   : vec tensor
     public vx   : vec tensor
 
@@ -502,7 +523,8 @@ func spectra_whisper_thread [ arg: handle ] -> handle
     j : cast WhisperJob [ arg ]
     enc : j.enc
     if [ !enc ]
-        c : AudioClip [ rate: 48000, channels: 1, frames: j.n, pcm: j.pcm ]
+        c : AudioClip [ rate: 48000, channels: 1, frames: j.n,
+                        pcm: j.pcm ]
         m : whisper_mel[ c ]
         mel_png[ m, path '/tmp/live-mel.png' ]
         if [ j.gpu ]
@@ -518,7 +540,8 @@ func spectra_whisper_thread [ arg: handle ] -> handle
     return null
 
 struct DictState
-    # a test take: SILVER_DICT_FILE (a wav) feeds the take in place of the mic
+    # a test take: SILVER_DICT_FILE (a wav) feeds the take in place of
+    # the mic
     feed    : vec i16
     feed_n  : i64
     feed_at : i64
@@ -531,8 +554,9 @@ struct DictState
     gpu_no : bool
     gpu_thr : bool
     raw    : @i16
-    # the vector raw points into: made on the first mic press, after startup,
-    # so the next frame's auto_free would free it unless this holds it
+    # the vector raw points into: made on the first mic press, after
+    # startup, so the next frame's auto_free would free it unless this
+    # holds it
     raw_v  : vec i16
     wr    : i64
     state : i32
@@ -544,7 +568,8 @@ struct DictState
     # the model loads on its own thread (the take records meanwhile)
     ltid     : pthread_t
     loading  : bool
-    # the capture device opens on its own thread too: a press never waits
+    # the capture device opens on its own thread too: a press never
+    # waits
     otid     : pthread_t
     opening  : bool
     open_fail : bool
@@ -590,26 +615,26 @@ func dictation_start [] -> i32
     dict.txt     = ''
     dict.stream  = false
     log 'dictation: capturing (fresh, backlog dropped)'
-    # a test take: the wav's mono samples, copied now (a clip's pcm is not
-    # held past this frame)
-    fe9 : cstr [ getenv[ 'SILVER_DICT_FILE' ] ]
+    # a test take: the wav's mono samples, copied now (a clip's pcm is
+    # not held past this frame)
+    fe : cstr [ getenv[ 'SILVER_DICT_FILE' ] ]
     dict.feed_at = 0
-    if [ fe9 ]
-        fc9 : wav_load[ path [ fe9 ] ]
-        if [ fc9 && fc9.frames > 0 ]
-            dict.feed   = new i16 [ fc9.frames ]
-            dict.feed_n = fc9.frames
-            for [ i: i64 0, i < fc9.frames, i += 1 ]
-                dict.feed[i] = fc9.pcm[ i * i64[ fc9.channels ] ]
-            log 'dictation: test feed {fe9} ({fc9.frames} samples at {fc9.rate} Hz)'
+    if [ fe ]
+        fc : wav_load[ path [ fe ] ]
+        if [ fc && fc.frames > 0 ]
+            dict.feed   = new i16 [ fc.frames ]
+            dict.feed_n = fc.frames
+            for [ i: i64 0, i < fc.frames, i += 1 ]
+                dict.feed[i] = fc.pcm[ i * i64[ fc.channels ] ]
+            log 'dictation: test feed {fe} ({fc.frames} samples at {fc.rate} Hz)'
     return 0
 
 # load whisper-small (the net and its vocab): on the loader thread
 func dict_load_net [] -> none
-    # the module's import installs whisper-small to install/models; a copy
-    # fetched by the speech tool (--whisper small) is the fallback
-    inst9 : path.path_install[]
-    wm : path '{inst9}/models/whisper-small.safetensors'
+    # the module's import installs whisper-small to install/models; a
+    # copy fetched by the speech tool (--whisper small) is the fallback
+    inst : path.path_install[]
+    wm : path '{inst}/models/whisper-small.safetensors'
     if [ !wm.exists[] ]
         d9 : path.path_storage[ 'spectra' ]
         wm = path '{d9}/whisper-small.safetensors'
@@ -635,7 +660,8 @@ func dict_load_thread [ arg: handle ] -> handle
 # the capture device, opened off the caller's thread: ok is set last
 func dict_open_thread [ arg: handle ] -> handle
     if [ !dict.cap ]
-        dict.cap = spectra [ size: 2048, sample_rate: 48000, device: 'default' ]
+        dict.cap = spectra [ size: 2048, sample_rate: 48000,
+                             device: 'default' ]
         dict.cap.hold[]
     dict.ok = dict.cap.open[]
     if [ !dict.ok ]
@@ -669,43 +695,45 @@ func dictation_release [] -> none
 func dictation_poll [] -> bool
     if [ !dict.ok ] return false
     if [ dict.feed_n > 0 ]
-        fz9 : i64 [ dict.cap.size ]
-        if [ dict.feed_at + fz9 > dict.feed_n ] return false
-        for [ i: i64 0, i < fz9, i += 1 ]
+        fz : i64 [ dict.cap.size ]
+        if [ dict.feed_at + fz > dict.feed_n ] return false
+        for [ i: i64 0, i < fz, i += 1 ]
             dict.cap.buf[i] = dict.feed[ dict.feed_at + i ]
-        dict.feed_at += fz9
+        dict.feed_at += fz
     el [ !dict.cap.capture[] ] return false
     fmin : f32 [ 150.0 ]
     fmax : f32 [ 8000.0 ]
     nyq  : f32 [ f32[ dict.cap.sample_rate ] * 0.5 ]
     if [ fmax > nyq ] fmax = nyq
-    lr9   : f32 [ log[ fmax / fmin ] ]
-    half2 : i32 [ dict.cap.size / 2 ]
-    nb9   : i32 [ 96 ]
-    en9   : f32 [ 0.0 ]
-    for [ b: i32 0, b < nb9, b += 1 ]
-        t9 : f32 [ f32[ nb9 - 1 - b ] / f32[ nb9 - 1 ] ]
-        fq : f32 [ fmin * exp[ t9 * lr9 ] ]
-        fb : f32 [ fq * f32[ dict.cap.size ] / f32[ dict.cap.sample_rate ] ]
-        bi : i32 [ i32[ fb ] ]
-        if [ bi > half2 - 2 ] bi = half2 - 2
+    lr   : f32 [ log[ fmax / fmin ] ]
+    half : i32 [ dict.cap.size / 2 ]
+    nb   : i32 [ 96 ]
+    en   : f32 [ 0.0 ]
+    for [ b: i32 0, b < nb, b += 1 ]
+        t9 : f32 [ f32[ nb - 1 - b ] / f32[ nb - 1 ] ]
+        fq : f32 [ fmin * exp[ t9 * lr ] ]
+        fb : f32 [
+            fq * f32[ dict.cap.size ] / f32[ dict.cap.sample_rate ] ]
+        bi : i32 [ fb ]
+        if [ bi > half - 2 ] bi = half - 2
         fr : f32 [ fb - f32[ bi ] ]
         m0 : f32 [ dict.cap.bins[ bi ] ]
         m1 : f32 [ dict.cap.bins[ bi + 1 ] ]
-        en9 += m0 + (m1 - m0) * fr
-    en9 = en9 / (f32[ nb9 ] * 24.0)
-    if [ en9 > 1.0 ] en9 = 1.0
-    if [ en9 > dict.lvl ]
-        dict.lvl = dict.lvl * 0.6 + en9 * 0.4
+        en += m0 + (m1 - m0) * fr
+    en = en / (f32[ nb ] * 24.0)
+    if [ en > 1.0 ] en = 1.0
+    if [ en > dict.lvl ]
+        dict.lvl = dict.lvl * 0.6 + en * 0.4
     el
-        dict.lvl = dict.lvl * 0.88 + en9 * 0.12
+        dict.lvl = dict.lvl * 0.88 + en * 0.12
     if [ dict.raw && dict.stream ]
         ns6 : i64 [ dict.cap.size ]
-        if [ dict.wr == 0 ] dict.origin = Au.epoch_micros[] - ns6 * 1000000 / 48000
+        if [ dict.wr == 0 ]
+            dict.origin = Au.epoch_micros[] - ns6 * 1000000 / 48000
         for [ i6: i64 0, i6 < ns6, i6 += 1 ]
             dict.raw[ (dict.wr + i6) % 1536000 ] = dict.cap.buf[i6]
         dict.wr += ns6
-        stream_cut[ en9 ]
+        stream_cut[ en ]
     el [ dict.raw ]
         ns5 : i64 [ dict.cap.size ]
         for [ i5: i64 0, i5 < ns5, i5 += 1 ]
@@ -781,23 +809,24 @@ func dict_spawn [ a: i64, b: i64 ]
     n5 : i64 [ e5 - a ]
     if [ n5 <= 24000 ] return
     pad5 : i64 [ 48000 ]
-    tot5 : i64 [ n5 + pad5 ]
-    buf5 : new i16 [ tot5 ]
-    b9 : cast Au [ buf5 ]
+    tot : i64 [ n5 + pad5 ]
+    buf : new i16 [ tot ]
+    b9 : cast Au [ buf ]
     b9.hold[]
     for [ i6: i64 0, i6 < n5, i6 += 1 ]
-        buf5[i6] = dict.raw[(a + i6) % 1536000]
-    for [ i7: i64 n5, i7 < tot5, i7 += 1 ]
-        buf5[i7] = 0
-    dict_write_wav[ buf5, tot5 ]
-    j5 : WhisperJob [ model: dict.net, pcm: buf5, n: tot5 ]
+        buf[i6] = dict.raw[(a + i6) % 1536000]
+    for [ i7: i64 n5, i7 < tot, i7 += 1 ]
+        buf[i7] = 0
+    dict_write_wav[ buf, tot ]
+    j5 : WhisperJob [ model: dict.net, pcm: buf, n: tot ]
     j5.hold[]
     if [ dict.gpu && dict.gpu.threaded[] ] j5.gpu = dict.gpu
-    # a gpu encoder with no compute queue of its own runs on this thread: the
-    # mel and the encode here (a fraction of the cpu encoder's time), and the
-    # worker only decodes
+    # a gpu encoder with no compute queue of its own runs on this
+    # thread: the mel and the encode here (a fraction of the cpu
+    # encoder's time), and the worker only decodes
     el [ dict.gpu ]
-        c9 : AudioClip [ rate: 48000, channels: 1, frames: tot5, pcm: buf5 ]
+        c9 : AudioClip [ rate: 48000, channels: 1, frames: tot,
+                         pcm: buf ]
         m9 : whisper_mel[ c9 ]
         j5.enc = dict.gpu.encode[ m9 ]
         dict.gpu.cross_kv[ i32[ j5.enc.tensor_shape[0] ] ]
@@ -805,22 +834,26 @@ func dict_spawn [ a: i64, b: i64 ]
         j5.vx = dict.gpu.vx_out
     dict.job = j5
     log 'dictation: transcribing {n5 / 48000}s speech + 1s pad…'
-    pthread_create[ @dict.tid, null, @spectra_whisper_thread, cast handle [ j5 ] ]
+    pthread_create[ @dict.tid, null, @spectra_whisper_thread,
+                    cast handle [ j5 ] ]
     pthread_detach[ dict.tid ]
 
-# the gpu encoder is built (or can't be): a test take holds the mic until then
+# the gpu encoder is built (or can't be): a test take holds the mic
+# until then
 func dictation_gpu_ready [] -> bool
     return dict.gpu != null || dict.gpu_no || dict.net_fail
 
-# a test take's samples still to feed (0 when there is no whole block left,
+# a test take's samples still to feed (0 when there is no whole block
+# left,
 # -1 with no feed)
 func dictation_feed_left [] -> i64
     if [ dict.feed_n <= 0 ] return -1
-    left9 : i64 [ dict.feed_n - dict.feed_at ]
-    if [ left9 < i64[ dict.cap.size ] ] return 0
-    return left9
+    left : i64 [ dict.feed_n - dict.feed_at ]
+    if [ left < i64[ dict.cap.size ] ] return 0
+    return left
 
-# a job still running when the app goes: its code is about to be unloaded
+# a job still running when the app goes: its code is about to be
+# unloaded
 # (a quit or a reload), so the caller waits for it, up to wait_ms
 func dictation_wait [ wait_ms: i32 ] -> none
     # a model still loading runs this module's code on its thread too
@@ -973,21 +1006,24 @@ func tts_ready [] -> bool
 
 func tts_say [ text: cstr, sid: i32, speed: f32 ] -> i32
     if [ !tts.ok ] return 1
-    gc : SherpaOnnxGenerationConfig [ silence_scale: 0.2, speed: speed, sid: sid ]
-    au2 : SherpaOnnxOfflineTtsGenerateWithConfig[ tts.eng, text, @gc, null, null ]
-    if [ !au2 ] return 2
-    n : i32 [ au2.n ]
+    gc : SherpaOnnxGenerationConfig [ silence_scale: 0.2, speed: speed,
+                                      sid: sid ]
+    au : SherpaOnnxOfflineTtsGenerateWithConfig[ tts.eng, text, @gc,
+                                                 null, null ]
+    if [ !au ] return 2
+    n : i32 [ au.n ]
     if [ n <= 0 ]
-        SherpaOnnxDestroyOfflineTtsGeneratedAudio[ au2 ]
+        SherpaOnnxDestroyOfflineTtsGeneratedAudio[ au ]
         return 2
-    c : AudioClip [ rate: au2.sample_rate, channels: 1, frames: i64[ n ] ]
+    c : AudioClip [ rate: au.sample_rate, channels: 1,
+                    frames: i64[ n ] ]
     c.pcm = new i16 [ n ]
     for [ i: i32 0, i < n, i += 1 ]
-        s5 : f32 [ au2.samples[ i ] * 32767.0 ]
+        s5 : f32 [ au.samples[ i ] * 32767.0 ]
         if [ s5 >  32767.0 ] s5 =  32767.0
         if [ s5 < -32768.0 ] s5 = -32768.0
         c.pcm[ i ] = i16[ s5 ]
-    SherpaOnnxDestroyOfflineTtsGeneratedAudio[ au2 ]
+    SherpaOnnxDestroyOfflineTtsGeneratedAudio[ au ]
     if [ !tts.mix ]
         tts.mix = AudioMixer [ sample_rate: 48000 ]
         tts.mix.hold[]
@@ -1038,7 +1074,8 @@ element main : trinity
     public img_w   : i32 [ 1024 ]
     public img_h   : i32 [ 512 ]
     public dataset : string
-    public libri   : string                # LibriSpeech root (extracted)
+    # LibriSpeech root (extracted)
+    public libri   : string
     public split   : string [ 'dev' ]
     public outdir  : string
     public limit   : i32 [ 0 ]
@@ -1050,14 +1087,16 @@ element main : trinity
     intern st_buf  : @u8                # 1024 x 64 rgba sweep image
     intern st_tex  : Texture
     intern st_act  : @f32               # per-column speech-band energy
-    intern st_ema  : f32                   # ~100ms running avg of energy
+    # ~100ms running avg of energy
+    intern st_ema  : f32
     intern st_words : vec SpectWord        # read results land here
     intern w_net   : WhisperNet
     intern w_raw   : @i16                  # 32s mono 48k ring
     intern w_wr    : i64                   # absolute samples written
     intern w_state : i32
     intern w_start : i64
-    intern w_act   : i64                   # last sample where speech energy held
+    # last sample where speech energy held
+    intern w_act   : i64
     intern w_quiet : i32
     intern w_tid   : pthread_t
     intern w_job   : WhisperJob
@@ -1083,44 +1122,47 @@ element main : trinity
 
     # one line of a translated .agi by key
     func ann_field [ text: string, key: string ] -> string
-        lines2 : text.split[ '\n' ]
+        lines : text.split[ '\n' ]
         pre : string '{key}: '
-        for [ li2: i32 0, li2 < lines2.count, li2 += 1 ]
-            ln2 : lines2[ li2 ]
-            if [ ln2.count <= pre.count ] continue
-            hd2 : ln2.mid[ 0, pre.count ]
-            if [ hd2 == pre ]
-                return ln2.mid[ pre.count, ln2.count - pre.count ]
+        for [ li: i32 0, li < lines.count, li += 1 ]
+            ln : lines[ li ]
+            if [ ln.count <= pre.count ] continue
+            hd : ln.mid[ 0, pre.count ]
+            if [ hd == pre ]
+                return ln.mid[ pre.count, ln.count - pre.count ]
         return string ''
 
     func ann_pick []
         ann_seed = ann_seed * 6364136223846793005 + 1442695040888963407
-        ann_id = i32[ (ann_seed % i64[ ann_n ] + i64[ ann_n ]) % i64[ ann_n ] ]
+        ann_id = i32[
+            (ann_seed % i64[ ann_n ] + i64[ ann_n ]) % i64[ ann_n ] ]
         ap : path '{outdir}/{split}_{ann_id}.agi'
         text : cast string [ ap.load[ typeid[ string ], null ] ]
         if [ !text ] return
-        img5 : ann_field[ text, 'image' ]
-        src5 : ann_field[ text, 'source' ]
+        img : ann_field[ text, 'image' ]
+        src : ann_field[ text, 'source' ]
         ann_sent = ann_field[ text, 'sentence' ]
         ann_sent.hold[]
         ann_words = ann_sent.split[ ' ' ]
         ann_words.hold[]
-        ann_img = Image [ uri: path '{outdir}/{img5}' ]
+        ann_img = Image [ uri: path '{outdir}/{img}' ]
         ann_img.hold[]
         ann_tex = null
-        ann_clip = stretch_clip[ caf_load[ path src5 ], 2.0 ]
+        ann_clip = stretch_clip[ caf_load[ path src ], 2.0 ]
         if [ ann_clip ] ann_clip.hold[]
         ann_pos = 0
         ann_nm = 0
         if [ ann_clip && (!ann_out || !ann_out.active) ]
-            ann_out = AudioOut [ sample_rate: ann_clip.rate, channels: ann_clip.channels, buffer_size: 512 ]
+            ann_out = AudioOut [ sample_rate: ann_clip.rate,
+                                 channels: ann_clip.channels,
+                                 buffer_size: 512 ]
             ann_out.hold[]
             ann_out.open[]
 
     func ann_sorted [ dst: @f32 ]
-        for [ i7: i32 0, i7 < ann_nm, i7 += 1 ]
-            v7 : f32 [ ann_marks[ i7 ] ]
-            j7 : i32 [ i7 ]
+        for [ i: i32 0, i < ann_nm, i += 1 ]
+            v7 : f32 [ ann_marks[ i ] ]
+            j7 : i32 [ i ]
             for [ j7 > 0 && dst[ j7 - 1 ] > v7 ]
                 dst[ j7 ] = dst[ j7 - 1 ]
                 j7 -= 1
@@ -1131,24 +1173,24 @@ element main : trinity
         ap : path '{outdir}/{split}_{ann_id}.agi'
         text : cast string [ ap.load[ typeid[ string ], null ] ]
         if [ !text ] return
-        lines3 : text.split[ '\n' ]
-        body3 : string ''
-        for [ li3: i32 0, li3 < lines3.count, li3 += 1 ]
-            ln3 : lines3[ li3 ]
-            if [ ln3.count < 1 ] continue
-            hd3 : string ''
-            if [ ln3.count > 7 ] hd3 = ln3.mid[ 0, 7 ]
-            if [ hd3 == 'marks: ' ] continue
-            body3 = '{body3}{ln3}\n'
-        srt3 : local f32 [ 256 ]
-        ann_sorted[ srt3 ]
-        mk3 : string ''
-        for [ mi3: i32 0, mi3 < ann_nm, mi3 += 1 ]
-            v3 : i32 [ i32[ srt3[ mi3 ] ] ]
-            mk3 = '{mk3}{v3} '
-        body3 = '{body3}marks: {mk3}\n'
-        ap.save[ body3, null ]
-        log 'annotate: {split}_{ann_id} marks: {mk3}'
+        lines : text.split[ '\n' ]
+        body : string ''
+        for [ li: i32 0, li < lines.count, li += 1 ]
+            ln : lines[ li ]
+            if [ ln.count < 1 ] continue
+            hd : string ''
+            if [ ln.count > 7 ] hd = ln.mid[ 0, 7 ]
+            if [ hd == 'marks: ' ] continue
+            body = '{body}{ln}\n'
+        srt : local f32 [ 256 ]
+        ann_sorted[ srt ]
+        mk : string ''
+        for [ mi: i32 0, mi < ann_nm, mi += 1 ]
+            v3 : i32 [ srt[ mi ] ]
+            mk = '{mk}{v3} '
+        body = '{body}marks: {mk}\n'
+        ap.save[ body, null ]
+        log 'annotate: {split}_{ann_id} marks: {mk}'
 
     func whisper_weights [ nm: string ] -> path
         d : path.path_storage[ 'spectra' ]
@@ -1170,8 +1212,8 @@ element main : trinity
     func save_model [ nm: string ]
         d : path.path_storage[ 'spectra' ]
         if [ !d ] return
-        mp2 : path '{d}/whisper.txt'
-        mp2.save[ nm, null ]
+        mp : path '{d}/whisper.txt'
+        mp.save[ nm, null ]
 
     func init []
 		log 'init called' 
@@ -1190,46 +1232,52 @@ element main : trinity
                     log 'whisper: decoding…'
                     ids8 : wsp8.transcribe[ enc8, 64 ]
                     # DIAG: the raw token ids the decoder produced
-                    idl8 : string [ '' ]
-                    for [ k7: i32 0, k7 < ids8.count && k7 < 24, k7 += 1 ]
-                        idl8 = '{idl8} {ids8[k7]}'
-                    log 'whisper ids ({ids8.count}):{idl8}'
-                    txt8 : wsp8.text_for[ ids8 ]
-                    if [ txt8 ]
-                        log 'whisper:{txt8}'
+                    idl : string [ '' ]
+                    for [ k7: i32 0, k7 < ids8.count && k7 < 24,
+                          k7 += 1 ]
+                        idl = '{idl} {ids8[k7]}'
+                    log 'whisper ids ({ids8.count}):{idl}'
+                    txt : wsp8.text_for[ ids8 ]
+                    if [ txt ]
+                        log 'whisper:{txt}'
                     el
-                        line8 : string [ '' ]
+                        line : string [ '' ]
                         for [ k8: i32 0, k8 < ids8.count, k8 += 1 ]
-                            line8 = '{line8} {ids8[k8]}'
-                        log 'whisper tokens:{line8}'
+                            line = '{line} {ids8[k8]}'
+                        log 'whisper tokens:{line}'
             exit[ 0 ]
         if [ whisper && whisper.count > 0 ]
             dst : whisper_weights[ whisper ]
             vjs : whisper_vocab[]
             if [ !vjs.exists[] ]
-                nv0 : i64 [ Http.download[ 'https://huggingface.co/openai/whisper-{whisper}/resolve/main/vocab.json', vjs ] ]
-                if [ nv0 > 0 ]
-                    log 'spectra: fetched vocab ({nv0} bytes)'
+                nv : i64 [
+                    Http.download[
+                        'https://huggingface.co/openai/whisper-{whisper}/resolve/main/vocab.json', vjs ] ]
+                if [ nv > 0 ]
+                    log 'spectra: fetched vocab ({nv} bytes)'
             if [ !dst.exists[] ]
                 log 'spectra: fetching whisper-{whisper} weights…'
-                n9 : i64 [ Http.download[ 'https://huggingface.co/openai/whisper-{whisper}/resolve/main/model.safetensors', dst ] ]
+                n9 : i64 [
+                    Http.download[
+                        'https://huggingface.co/openai/whisper-{whisper}/resolve/main/model.safetensors', dst ] ]
                 if [ n9 <= 0 ]
                     log 'spectra: download failed'
                     exit[ 1 ]
-                mb9 : i64 [ n9 / 1048576 ]
-                log 'spectra: wrote {dst} ({mb9} MB)'
+                mb : i64 [ n9 / 1048576 ]
+                log 'spectra: wrote {dst} ({mb} MB)'
             if [ check ]
                 # verify the reader end-to-end (header + one tensor)
-                st9 : safetensors [ src: dst ]
-                t9 : st9.tensor_named[ 'model.decoder.embed_positions.weight' ]
+                st : safetensors [ src: dst ]
+                t9 : st.tensor_named[
+                    'model.decoder.embed_positions.weight' ]
                 if [ !t9 ]
                     log 'spectra: {dst} present but reader failed'
                     exit[ 1 ]
                 n9c : i64 [ t9.tensor_shape.total[] ]
-                sum9 : f64 [ 0.0 ]
-                for [ i9: i64 0, i9 < n9c, i9 += 1 ]
-                    sum9 += f64[ t9.floats[i9] ]
-                mean9 : f64 [ sum9 / f64[ n9c ] ]
+                sum : f64 [ 0.0 ]
+                for [ i: i64 0, i < n9c, i += 1 ]
+                    sum += f64[ t9.floats[i] ]
+                mean9 : f64 [ sum / f64[ n9c ] ]
                 log 'spectra: whisper-{whisper} ok — {n9c} floats, mean {mean9}'
                 wsp : WhisperNet [ src: dst ]
                 if [ !wsp.valid ]
@@ -1238,22 +1286,24 @@ element main : trinity
                 mel9 : tensor [ tensor_shape: 8x80 ]
                 for [ tt: i32 0, tt < 8, tt += 1 ]
                     for [ cc: i32 0, cc < 80, cc += 1 ]
-                        mel9.floats[tt * 80 + cc] = sinf[ f32[tt] * 0.1f + f32[cc] * 0.05f ]
+                        mel9.floats[tt * 80 + cc] = sinf[
+                            f32[tt] * 0.1f + f32[cc] * 0.05f ]
                 enc9 : wsp.encode[ mel9 ]
-                ne9 : i64 [ enc9.tensor_shape.total[] ]
-                se9 : f64 [ 0.0 ]
-                for [ i9: i64 0, i9 < ne9, i9 += 1 ]
-                    se9 += f64[ enc9.floats[i9] ]
-                me9 : f64 [ se9 / f64[ ne9 ] ]
-                log 'spectra: encode ok — {ne9} floats, mean {me9}, first {enc9.floats[0]} {enc9.floats[1]} {enc9.floats[2]}'
+                ne : i64 [ enc9.tensor_shape.total[] ]
+                se : f64 [ 0.0 ]
+                for [ i: i64 0, i < ne, i += 1 ]
+                    se += f64[ enc9.floats[i] ]
+                me : f64 [ se / f64[ ne ] ]
+                log 'spectra: encode ok — {ne} floats, mean {me}, first {enc9.floats[0]} {enc9.floats[1]} {enc9.floats[2]}'
                 # decoder smoke: one greedy step from the seed prompt
                 seed9 : new i32 [ 8 ]
                 seed9[0] = 50258
                 seed9[1] = 50259
                 seed9[2] = 50359
                 seed9[3] = 50363
-                tk9 : i32 [ wsp.decode_step[ enc9, cast handle [ seed9 ], 4 ] ]
-                log 'spectra: decode ok — first token {tk9}'
+                tk : i32 [
+                    wsp.decode_step[ enc9, cast handle [ seed9 ], 4 ] ]
+                log 'spectra: decode ok — first token {tk}'
                 exit[ 0 ]
         if [ libri ]
             if [ !outdir ]
@@ -1306,13 +1356,17 @@ element main : trinity
             log 'spectra: playing {file} ({pclip.frames} frames @ {pclip.rate})'
             # then build the scrub track
             trk : path '/tmp/spectra-track-{getpid[]}.png'
-            if [ spectrograph[ pclip, trk, img_w, img_h, 20.0, 10000.0, false, null ] ]
+            if [
+                spectrograph[ pclip, trk, img_w, img_h, 20.0, 10000.0,
+                              false, null ] ]
                 ptrack = Image [ uri: trk ]
                 if [ ptrack ] ptrack.hold[]
-        cap = spectra [ size: 2048, sample_rate: 48000, device: 'default' ]
+        cap = spectra [ size: 2048, sample_rate: 48000,
+                        device: 'default' ]
         cap.hold[]
         cap_ok = cap.open[]
-        if [ !cap_ok ] log 'spectra: no capture device — window stays silent'
+        if [ !cap_ok ]
+            log 'spectra: no capture device — window stays silent'
         if [ cap_ok ]
             wname : string [ whisper ]
             if [ !wname || wname.count == 0 ] wname = saved_model[]
@@ -1340,64 +1394,77 @@ element main : trinity
         ux.will_animate = true
         cv : w.screen
         if [ ann_clip && ann_out && ann_out.active ]
-            ch5 : i32 [ ann_clip.channels ]
-            fr5 : i64 [ 512 ]
-            if [ ann_pos + fr5 > ann_clip.frames ]
+            ch : i32 [ ann_clip.channels ]
+            fr : i64 [ 512 ]
+            if [ ann_pos + fr > ann_clip.frames ]
                 ann_pos = 0
-            nb5 : i64 [ fr5 * i64[ ch5 ] * 2 ]
-            memcpy[ ann_out.buffer, @ann_clip.pcm[ ann_pos * i64[ ch5 ] ], nb5 ]
-            ann_out.write[ i32[ fr5 ] ]
-            ann_pos += fr5
+            nb : i64 [ fr * i64[ ch ] * 2 ]
+            memcpy[ ann_out.buffer, @ann_clip.pcm[ ann_pos * i64[ ch ] ],
+                    nb ]
+            ann_out.write[ i32[ fr ] ]
+            ann_pos += fr
         if [ ann_img && !ann_tex ]
-            ann_tex = Texture [ vk: cv.vk, w: ux, linear: true, mip_levels: 1, sampler: ann_img ]
+            ann_tex = Texture [ vk: cv.vk, w: ux, linear: true,
+                                mip_levels: 1, sampler: ann_img ]
             ann_tex.hold[]
         if [ !ann_tex ] return
-        cols : f32 [ f32[ ann_img.width ] ]
+        cols : f32 [ ann_img.width ]
         ann_rx = 40.0
         ann_rw = bounds.w - 80.0
         ry : f32 [ bounds.h * 0.18 ]
         rh : f32 [ bounds.h * 0.5 ]
-        cv.draw_image[ ann_tex, rect [ x: ann_rx, y: ry, w: ann_rw, h: rh ] ]
+        cv.draw_image[ ann_tex,
+                       rect [ x: ann_rx, y: ry, w: ann_rw, h: rh ] ]
         cv.paint[]
         # playback cursor
         if [ ann_clip && ann_clip.frames > 0 ]
-            px5 : f32 [ ann_rx + f32[ ann_pos ] / f32[ ann_clip.frames ] * ann_rw ]
-            cv.rounded_rect[ px5, ry, 2.0, rh, 0.0, 0.0, 0.0, 0.0 ]
+            px : f32 [
+                ann_rx
+                + f32[ ann_pos ] / f32[ ann_clip.frames ] * ann_rw ]
+            cv.rounded_rect[ px, ry, 2.0, rh, 0.0, 0.0, 0.0, 0.0 ]
             cv.fill_color[ rgba [ r: 1.0, g: 1.0, b: 1.0, a: 0.6 ] ]
             cv.paint[]
         # boundary marks
         for [ m5: i32 0, m5 < ann_nm, m5 += 1 ]
-            mx5 : f32 [ ann_rx + ann_marks[ m5 ] / cols * ann_rw ]
-            cv.rounded_rect[ mx5 - 1.0, ry - 8.0, 3.0, rh + 16.0, 0.0, 0.0, 0.0, 0.0 ]
+            mx : f32 [ ann_rx + ann_marks[ m5 ] / cols * ann_rw ]
+            cv.rounded_rect[ mx - 1.0, ry - 8.0, 3.0, rh + 16.0, 0.0,
+                             0.0, 0.0, 0.0 ]
             cv.fill_color[ rgba [ r: 0.3, g: 1.0, b: 0.55, a: 0.9 ] ]
             cv.paint[]
         # region words once the marks split the clip into word count
-        need5 : i32 [ ann_words.count - 1 ]
+        need : i32 [ ann_words.count - 1 ]
         cv.sync_fence[]
-        if [ ann_nm == need5 ]
-            srt5 : local f32 [ 256 ]
-            ann_sorted[ srt5 ]
+        if [ ann_nm == need ]
+            srt : local f32 [ 256 ]
+            ann_sorted[ srt ]
             for [ r5: i32 0, r5 < ann_words.count, r5 += 1 ]
                 x05 : f32 [ 0.0 ]
                 x15 : f32 [ cols ]
-                if [ r5 > 0 ] x05 = srt5[ r5 - 1 ]
-                if [ r5 < ann_nm ] x15 = srt5[ r5 ]
-                wd5 : ann_words[ r5 ]
+                if [ r5 > 0 ] x05 = srt[ r5 - 1 ]
+                if [ r5 < ann_nm ] x15 = srt[ r5 ]
+                wd : ann_words[ r5 ]
                 cv.fill_color[ '#8fc' ]
-                cv.draw_text[ '{wd5}',
-                    rect [ x: ann_rx + x05 / cols * ann_rw, y: ry + rh + 8.0, w: (x15 - x05) / cols * ann_rw, h: 20.0 ],
-                    vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+                cv.draw_text[ '{wd}',
+                    rect [ x: ann_rx + x05 / cols * ann_rw,
+                           y: ry + rh + 8.0,
+                           w: (x15 - x05) / cols * ann_rw, h: 20.0 ],
+                    vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ],
+                    Overflow.visible, null ]
                 cv.paint[]
         el
             cv.fill_color[ '#9ab' ]
             cv.draw_text[ '{ann_sent}',
-                rect [ x: ann_rx, y: ry + rh + 8.0, w: ann_rw, h: 20.0 ],
-                vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+                rect [ x: ann_rx, y: ry + rh + 8.0, w: ann_rw,
+                       h: 20.0 ],
+                vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible,
+                null ]
             cv.paint[]
         cv.fill_color[ '#678' ]
-        cv.draw_text[ '{split}_{ann_id}  marks {ann_nm}/{need5}  click between words - click a mark to finish - U undo - N skip - space replay',
+        cv.draw_text[
+            '{split}_{ann_id}  marks {ann_nm}/{need}  click between words - click a mark to finish - U undo - N skip - space replay',
             rect [ x: ann_rx, y: bounds.h - 32.0, w: ann_rw, h: 20.0 ],
-            vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+            vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible,
+            null ]
         cv.paint[]
 
     public func on_click [ ev: Event ]
@@ -1405,13 +1472,13 @@ element main : trinity
         if [ ann_rw < 1.0 ] return
         ev.stop[]
         mx : f32 [ ev.mouse.pos.x - bounds.x ]
-        cols : f32 [ f32[ ann_img.width ] ]
+        cols : f32 [ ann_img.width ]
         c5 : f32 [ (mx - ann_rx) / ann_rw * cols ]
         if [ c5 < 0.0 || c5 > cols ] return
         # clicking an existing mark again ENDS the clip: save + next
         tol : f32 [ cols * 0.012 ]
-        for [ i5: i32 0, i5 < ann_nm, i5 += 1 ]
-            d5 : f32 [ ann_marks[ i5 ] - c5 ]
+        for [ i: i32 0, i < ann_nm, i += 1 ]
+            d5 : f32 [ ann_marks[ i ] - c5 ]
             if [ d5 < 0.0 ] d5 = 0.0 - d5
             if [ d5 < tol ]
                 ann_save[]
@@ -1426,12 +1493,14 @@ element main : trinity
         k5 : i32 [ ev.key.unicode ]
         if [ k5 == 32 && ann_img && ann_clip ]
             # replay from the LAST MARK PUT DOWN, 100ms early
-            cols6 : f32 [ f32[ ann_img.width ] ]
-            pm6 : f32 [ 0.0 ]
-            if [ ann_nm > 0 ] pm6 = ann_marks[ ann_nm - 1 ]
-            np6 : i64 [ i64[ pm6 / cols6 * f32[ ann_clip.frames ] ] - i64[ ann_clip.rate ] / 10 ]
-            if [ np6 < 0 ] np6 = 0
-            ann_pos = np6
+            cols : f32 [ ann_img.width ]
+            pm : f32 [ 0.0 ]
+            if [ ann_nm > 0 ] pm = ann_marks[ ann_nm - 1 ]
+            np : i64 [
+                i64[ pm / cols * f32[ ann_clip.frames ] ]
+                - i64[ ann_clip.rate ] / 10 ]
+            if [ np < 0 ] np = 0
+            ann_pos = np
         if [ k5 == 85 && ann_nm > 0 ] ann_nm -= 1
         if [ k5 == 78 ] ann_pick[]
 
@@ -1455,30 +1524,32 @@ element main : trinity
                 nb2[ z9 + 3 ] = 255
             st_buf = nb2
         if [ !st_tex ]
-            st_tex = Texture [ vk: cv.vk, w: cv.w, width: sw9, height: nb, linear: true ]
+            st_tex = Texture [ vk: cv.vk, w: cv.w, width: sw9,
+                               height: nb, linear: true ]
             st_tex.hold[]
         strip : f32 [ 128.0 ]
         y0 : f32 [ bounds.h - strip ]
-        xs9 : f32 [ bounds.w / f32[ sw9 ] ]
+        xs : f32 [ bounds.w / f32[ sw9 ] ]
         if [ cap.capture[] ]
             fmin : f32 [ 150.0 ]
             fmax : f32 [ 8000.0 ]
             nyq : f32 [ f32[ cap.sample_rate ] * 0.5 ]
             if [ fmax > nyq ] fmax = nyq
             lr : f32 [ log[ fmax / fmin ] ]
-            half2 : i32 [ cap.size / 2 ]
-            en9 : f32 [ 0.0 ]
+            half : i32 [ cap.size / 2 ]
+            en : f32 [ 0.0 ]
             for [ b: i32 0, b < nb, b += 1 ]
                 t : f32 [ f32[ nb - 1 - b ] / f32[ nb - 1 ] ]
                 fq : f32 [ fmin * exp[ t * lr ] ]
-                fb : f32 [ fq * f32[ cap.size ] / f32[ cap.sample_rate ] ]
-                bi : i32 [ i32[ fb ] ]
-                if [ bi > half2 - 2 ] bi = half2 - 2
+                fb : f32 [
+                    fq * f32[ cap.size ] / f32[ cap.sample_rate ] ]
+                bi : i32 [ fb ]
+                if [ bi > half - 2 ] bi = half - 2
                 fr : f32 [ fb - f32[ bi ] ]
                 m0 : f32 [ cap.bins[ bi ] ]
                 m1 : f32 [ cap.bins[ bi + 1 ] ]
                 mag : f32 [ m0 + (m1 - m0) * fr ]
-                en9 += mag
+                en += mag
                 amp : f32 [ mag / 512.0 ]
                 db : f32 [ 8.6858896 * log[ amp + 0.0000000001 ] ]
                 tv : f32 [ (db + 80.0) / 80.0 ]
@@ -1490,12 +1561,12 @@ element main : trinity
                 st_buf[ di + 1 ] = u8[ (rgb / 256) % 256 ]
                 st_buf[ di + 2 ] = u8[ rgb % 256 ]
                 st_buf[ di + 3 ] = 255
-            en9 = en9 / (f32[ nb ] * 24.0)
-            if [ en9 > 1.0 ] en9 = 1.0
-            if [ en9 > st_ema ]
-                st_ema = st_ema * 0.6 + en9 * 0.4
+            en = en / (f32[ nb ] * 24.0)
+            if [ en > 1.0 ] en = 1.0
+            if [ en > st_ema ]
+                st_ema = st_ema * 0.6 + en * 0.4
             el
-                st_ema = st_ema * 0.88 + en9 * 0.12
+                st_ema = st_ema * 0.88 + en * 0.12
             st_act[ st_x ] = st_ema
             if [ w_net && !w_gtry ]
                 w_gtry = true
@@ -1507,7 +1578,8 @@ element main : trinity
                     melg : tensor [ tensor_shape: 8x80 ]
                     for [ tg: i32 0, tg < 8, tg += 1 ]
                         for [ cg: i32 0, cg < 80, cg += 1 ]
-                            melg.floats[tg * 80 + cg] = sinf[ f32[tg] * 0.1f + f32[cg] * 0.05f ]
+                            melg.floats[tg * 80 + cg] = sinf[
+                                f32[tg] * 0.1f + f32[cg] * 0.05f ]
                     eg : w_gpu.encode[ melg ]
                     ec : w_net.encode[ melg ]
                     ng : i64 [ eg.tensor_shape.total[] ]
@@ -1520,10 +1592,10 @@ element main : trinity
                 el
                     log 'whisper: gpu unavailable — cpu encoder'
             if [ w_net && w_raw ]
-                ns5 : i64 [ cap.size ]
-                for [ i5: i64 0, i5 < ns5, i5 += 1 ]
-                    w_raw[(w_wr + i5) % 1536000] = cap.buf[i5]
-                w_wr += ns5
+                ns : i64 [ cap.size ]
+                for [ i: i64 0, i < ns, i += 1 ]
+                    w_raw[(w_wr + i) % 1536000] = cap.buf[i]
+                w_wr += ns
                 if [ !w_job ]
                     if [ w_state == 0 ]
                         if [ st_ema > 0.12 ]
@@ -1547,15 +1619,21 @@ element main : trinity
                             if [ n5 > 24000 ]
                                 buf5 : new i16 [ n5 ]
                                 hold[ cast Au [ buf5 ] ]
-                                for [ i5: i64 0, i5 < n5, i5 += 1 ]
-                                    buf5[i5] = w_raw[(w_start + i5) % 1536000]
-                                j5 : WhisperJob [ model: w_net, pcm: buf5, n: n5, c0: w_start / 2048, c1: e5 / 2048 ]
+                                for [ i: i64 0, i < n5, i += 1 ]
+                                    buf5[i] = w_raw[(w_start + i) % 1536000]
+                                j5 : WhisperJob [ model: w_net,
+                                                  pcm: buf5, n: n5,
+                                                  c0: w_start / 2048,
+                                                  c1: e5 / 2048 ]
                                 j5.hold[]
                                 if [ w_gpu ]
                                     if [ w_gpu.threaded[] ]
                                         j5.gpu = w_gpu
                                     el
-                                        c7 : AudioClip [ rate: 48000, channels: 1, frames: n5, pcm: buf5 ]
+                                        c7 : AudioClip [ rate: 48000,
+                                                         channels: 1,
+                                                         frames: n5,
+                                                         pcm: buf5 ]
                                         m7 : whisper_mel[ c7 ]
                                         mel_png[ m7, path '/tmp/live-mel.png' ]
                                         e7 : w_gpu.encode[ m7 ]
@@ -1563,66 +1641,78 @@ element main : trinity
                                         j5.enc = e7
                                 w_job = j5
                                 log 'whisper: transcribing {n5 / 48000}s…'
-                                pthread_create[ @w_tid, null, @spectra_whisper_thread, cast handle [ j5 ] ]
+                                pthread_create[ @w_tid, null,
+                                                @spectra_whisper_thread,
+                                                cast handle [ j5 ] ]
                                 pthread_detach[ w_tid ]
             if [ w_job && w_job.done ]
                 w_text = w_job.text
                 if [ w_text && w_text.count > 0 ]
                     log 'whisper:{w_text}'
                     # anchor the transcript to its own span on the sweep
-                    nw5 : SpectWord [ x0: i32[ w_job.c0 ], x1: i32[ w_job.c1 ], text: w_text ]
-                    st_words += nw5
+                    nw : SpectWord [ x0: i32[ w_job.c0 ],
+                                     x1: i32[ w_job.c1 ], text: w_text ]
+                    st_words += nw
                     # prune entries that scrolled out of the ring
                     if [ st_words.count > 48 ]
-                        keep5 : vec SpectWord []
-                        for [ ki5: i32 0, ki5 < st_words.count, ki5 += 1 ]
-                            kw5 : st_words[ ki5 ]
-                            if [ i64[ kw5.x0 ] >= st_abs - i64[ sw9 ] ] keep5 += kw5
-                        st_words = keep5
+                        keep : vec SpectWord []
+                        for [ ki: i32 0, ki < st_words.count, ki += 1 ]
+                            kw : st_words[ ki ]
+                            if [ i64[ kw.x0 ] >= st_abs - i64[ sw9 ] ]
+                                keep += kw
+                        st_words = keep
                         st_words.hold[]
                 w_job = null
             # the sweep cursor: a dark gap one column ahead
-            nx9 : i32 [ (st_x + 1) % sw9 ]
+            nx : i32 [ (st_x + 1) % sw9 ]
             for [ y2: i32 0, y2 < nb, y2 += 1 ]
-                dg : i32 [ (y2 * sw9 + nx9) * 4 ]
+                dg : i32 [ (y2 * sw9 + nx) * 4 ]
                 st_buf[ dg ]     = 15
                 st_buf[ dg + 1 ] = 13
                 st_buf[ dg + 2 ] = 26
                 st_buf[ dg + 3 ] = 255
-            st_x = nx9
+            st_x = nx
             st_abs += 1
             st_tex.upload[ st_buf, sw9 * nb * 4 ]
-        cv.draw_image[ st_tex, rect [ x: 0.0, y: y0, w: bounds.w, h: strip ] ]
+        cv.draw_image[ st_tex,
+                       rect [ x: 0.0, y: y0, w: bounds.w, h: strip ] ]
         if [ w_job ]
             cv.font_size[ 18 ]
             cv.fill_color[ '#9a9aa8' ]
-            cv.draw_text[ 'transcribing…', rect [ x: 16.0, y: y0 - 42.0, w: bounds.w - 32.0, h: 32.0 ],
-                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+            cv.draw_text[ 'transcribing…',
+                          rect [ x: 16.0, y: y0 - 42.0,
+                                 w: bounds.w - 32.0, h: 32.0 ],
+                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible,
+                null ]
             cv.paint[]
         cv.paint[]
         # activity ticks: bright marks over the columns fit to read
-        run0 : i32 [ -1 ]
+        run : i32 [ -1 ]
         for [ x3: i32 0, x3 <= sw9, x3 += 1 ]
             on9 : bool [ false ]
             if [ x3 < sw9 ]
                 on9 = st_act[ x3 ] > 0.12
-            if [ on9 && run0 < 0 ] run0 = x3
-            if [ !on9 && run0 >= 0 ]
-                cv.rounded_rect[ f32[ run0 ] * xs9, y0 - 4.0, f32[ x3 - run0 ] * xs9, 4.0, 0.0, 0.0, 0.0, 0.0 ]
-                cv.fill_color[ rgba [ r: 0.3, g: 1.0, b: 0.55, a: 1.0 ] ]
+            if [ on9 && run < 0 ] run = x3
+            if [ !on9 && run >= 0 ]
+                cv.rounded_rect[ f32[ run ] * xs, y0 - 4.0,
+                                 f32[ x3 - run ] * xs, 4.0, 0.0, 0.0,
+                                 0.0, 0.0 ]
+                cv.fill_color[
+                    rgba [ r: 0.3, g: 1.0, b: 0.55, a: 1.0 ] ]
                 cv.paint[]
-                run0 = -1
+                run = -1
         for [ wi: i32 0, wi < st_words.count, wi += 1 ]
             sw2 : st_words[ wi ]
             if [ i64[ sw2.x0 ] < st_abs - i64[ sw9 ] ] continue
             r0w : i32 [ sw2.x0 % sw9 ]
             r1w : i32 [ sw2.x1 % sw9 ]
             if [ r1w <= r0w ] continue
-            wx0 : f32 [ f32[ r0w ] * xs9 ]
-            wx1 : f32 [ f32[ r1w ] * xs9 ]
+            wx0 : f32 [ f32[ r0w ] * xs ]
+            wx1 : f32 [ f32[ r1w ] * xs ]
             cv.sync_fence[]
             cv.fill_color[ '#dfe' ]
             cv.draw_text[ '{sw2.text}',
                 rect [ x: wx0, y: y0 + 6.0, w: wx1 - wx0, h: 18.0 ],
-                vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+                vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible,
+                null ]
             cv.paint[]

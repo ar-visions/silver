@@ -87,14 +87,16 @@ class StyleBlock
     post construct [ p_sc: @cstr ]
         sc : cstr p_sc
         ws[ @sc ]
-        expect sc[0] == '.' || is_alpha2[sc[0]], 'expected Type[.id], or .id'
+        expect sc[0] == '.' ||
+            is_alpha2[sc[0]], 'expected Type[.id], or .id'
         quals = parse_qualifiers[ a, @sc ]
         sc += 1
         ws[ @sc ]
         while [ sc[0] && sc[0] != '}' ]
             ws[ @sc ]
             start : cstr [ sc ]
-            expect scan_to[ @sc, ';{{}}' ], 'expected member expression or qualifier'
+            expect scan_to[ @sc,
+                ';{{}}' ], 'expected member expression or qualifier'
             if [ sc[0] == '{' ]
                 bl_n : StyleBlock [ @sc ]
                 blocks.push[ bl_n ]
@@ -105,7 +107,8 @@ class StyleBlock
                 ws[ @sc ]
             el [ sc[0] == ';' ]
                 cur : cstr [ start ]
-                expect scan_to[ @cur, ':' ] && cur < sc, 'expected [member:]value;'
+                expect scan_to[ @cur,
+                    ':' ] && cur < sc, 'expected [member:]value;'
                 member : string [ chars: start,
                                   ref_length: distance[ start, cur ] ]
                 for [ i: i32 0, i < member.count, i += 1 ]
@@ -114,13 +117,15 @@ class StyleBlock
                 cur += 1
                 ws[ @cur ]
                 vstart : cstr [ cur ]
-                expect scan_to[ @cur, ';' ], 'expected member:value[, transition];'
+                expect scan_to[ @cur,
+                    ';' ], 'expected member:value[, transition];'
                 vlen     : distance[ vstart, cur ]
                 cb_value : string[ chars: vstart, ref_length: vlen ]
                 cb_value = cb_value.trim[]
-                q0       : cb_value.mid[  0, 1 ]
-                q1       : cb_value.mid[ -1, 1 ]
-                is_q     : bool [ (q0 == '"' || q0 == '\'') && q0 == q1 ]
+                open_q       : cb_value.mid[  0, 1 ]
+                close_q       : cb_value.mid[ -1, 1 ]
+                is_q     : bool [ (open_q == '"'
+                    || open_q == '\'') && open_q == close_q ]
                 if [ is_q ]
                     cs : cstr [ cb_value.chars ]
                     cb_value = parse_quoted[ @cs, cb_value.count ]
@@ -139,10 +144,10 @@ class StyleBlock
                     el
                         param = null
                     sp : items.split[ ',' ]
-                    v9 : vec Au []
+                    list_val : vec Au []
                     for [ raw: string ] in sp
-                        v9.push[ raw.trim[] ]
-                    value = v9
+                        list_val.push[ raw.trim[] ]
+                    value = list_val
                 el
                     param = (ci >= 0) ? cb_value.mid[ ci + 1,
                             cb_value.count - (ci + 1) ].trim[] : null
@@ -154,13 +159,17 @@ class StyleBlock
                     filter_val = f32[ param.mid[ 7,
                             param.count - 7 ].trim[] ]
                     param = null
-                trans : StyleTransition [ (param) ? StyleTransition[ param ] : null ]
+                trans : StyleTransition [
+                    (param) ? StyleTransition[ param ] : null ]
                 expect member, 'member cannot be blank'
                 expect value,  'value cannot be blank'
                 # split a registered unit off the number while the
                 # string is still here. arrays and quoted values are
                 # left alone
-                entries[ member ] = StyleEntry [ member: member, value: value, trans: trans, bl: a, filter: filter_val ]
+                entries[ member ] = StyleEntry [ member: member,
+                                                 value: value,
+                                                 trans: trans, bl: a,
+                                                 filter: filter_val ]
                 sc += 1
                 ws[ @sc ]
         expect !sc[0] || sc[0] == '}', 'expected closed-brace'
@@ -195,8 +204,10 @@ class StyleBlock
                 if [ state_match ]
                     expect walk.state.count > 0, 'null state'
                     if [ use_app && type_match ]
-                        state_val : ux.app_object.get_property[ walk.state ]
-                        state_match = state_val && Au.cast_bool [ state_val ]
+                        state_val : ux.app_object.get_property[
+                            walk.state ]
+                        state_match = state_val && Au.cast_bool [
+                            state_val ]
                     el [ use_app ]
                         state_match = false
                     el [ walk.oper || !walk.states
@@ -218,7 +229,8 @@ class StyleBlock
                                       && !state_match ]
                 if [ id_reject || type_reject || state_reject ]
                     return 0.0
-                sc : i64[ id_match ] << 1 | i64[ type_match ] | i64[ state_match ] << 2
+                sc : i64[ id_match ] << 1 | i64[ type_match ] | i64[
+                    state_match ] << 2
                 best_this = max[ sc, best_this ]
                 if [ !walk.parent ]
                     if [ walk.anchored && cur.parent ]
@@ -348,7 +360,9 @@ class Style
             bestj : i32 [ i ]
             j : i32 [ i + 1 ]
             while [ j < matched.count ]
-                if [ matched[j].score[ n, false ] > matched[bestj].score[ n, false ] ]
+                if [ matched[j].score[ n,
+                    false ] > matched[bestj].score[ n,
+                    false ] ]
                     bestj = j
                 j += 1
             if [ bestj != i ]
@@ -394,9 +408,9 @@ class Style
     func layer_use [ defs: map LayerDef[string],
                      lc: string ] -> vec string
         if [ lc.count == 0 ] return null
-        c0 : i8 [ lc.chars[0] ]
-        alpha : bool [ (c0 >= 'a' && c0 <= 'z')
-                       || (c0 >= 'A' && c0 <= 'Z') || c0 == '_' ]
+        lead : i8 [ lc.chars[0] ]
+        alpha : bool [ (lead >= 'a' && lead <= 'z')
+                       || (lead >= 'A' && lead <= 'Z') || lead == '_' ]
         if [ !alpha ] return null
         ci : num [ lc.index_of[ ':' ] ]
         bi : num [ lc.index_of[ '[' ] ]
@@ -446,22 +460,27 @@ class Style
             hdr : vec string
             if [ lines[i].indent == 0 && lc.index_of[ '[' ] > 0
                  && lc.count > 0 && lc.last[] != '{' ]
-                sp0 : num [ lc.index_of[ ' ' ] ]
-                if [ sp0 > 0 ]
-                    t0 : lc.mid[ 0, sp0 ]
-                    c00 : i8 [ t0.chars[0] ]
-                    ok0 : bool [ c00 >= 'A' && c00 <= 'Z'
-                                 && t0.index_of[ '.' ] < 0 &&
-                                 t0.index_of[ ':' ] < 0 && t0.index_of[ '/' ] < 0 ]
-                    if [ ok0 ]
-                        rest0 : lc.mid[ sp0 + 1,
-                                        lc.count - sp0 - 1 ].trim[]
-                        c01 : i8 [ 0 ]
-                        if [ rest0.count > 0 ] c01 = rest0.chars[0]
-                        alpha1 : bool [ (c01 >= 'a' && c01 <= 'z') || (c01 >= 'A' && c01 <= 'Z') || c01 == '_' ]
-                        if [ alpha1 && rest0.index_of[ ':' ] < 0 ]
-                            cls = t0
-                            hdr = call_parse[ rest0 ]
+                sp : num [ lc.index_of[ ' ' ] ]
+                if [ sp > 0 ]
+                    head_word : lc.mid[ 0, sp ]
+                    head_ch : i8 [ head_word.chars[0] ]
+                    ok : bool [ head_ch >= 'A' && head_ch <= 'Z'
+                                 && head_word.index_of[ '.' ] < 0 &&
+                                 head_word.index_of[ ':' ] < 0
+                                 && head_word.index_of[ '/' ] < 0 ]
+                    if [ ok ]
+                        after : lc.mid[ sp + 1,
+                                        lc.count - sp - 1 ].trim[]
+                        after_ch : i8 [ 0 ]
+                        if [ after.count > 0 ] after_ch = after.chars[0]
+                        alpha : bool [ (after_ch >= 'a'
+                                       && after_ch <= 'z')
+                                       || (after_ch >= 'A'
+                                       && after_ch <= 'Z')
+                                       || after_ch == '_' ]
+                        if [ alpha && after.index_of[ ':' ] < 0 ]
+                            cls = head_word
+                            hdr = call_parse[ after ]
             if [ cls ]
                 nm   : hdr[0]
                 d    : LayerDef [ cls: cls, params: [], body: [] ]
@@ -471,23 +490,31 @@ class Style
                 base_in : i32 [ -1 ]
                 j : i32 [ i + 1 ]
                 while [ j < lines.count ]
-                    blc0 : string [ lines[j].content ]
-                    st0  : bool [ lines[j].indent == di && blc0.count > 0 && blc0.chars[0] == ':' ]
-                    if [ lines[j].indent <= di && !st0 ]
+                    row_text : string [ lines[j].content ]
+                    st  : bool [ lines[j].indent == di
+                                 && row_text.count > 0
+                                 && row_text.chars[0] == ':' ]
+                    if [ lines[j].indent <= di && !st ]
                         break
-                    if [ base_in < 0 && !st0 ] base_in = lines[j].indent
-                    rel : i32    [ (base_in < 0) ? 0 : lines[j].indent - base_in ]
+                    if [ base_in < 0 && !st ] base_in = lines[j].indent
+                    rel : i32    [
+                        (base_in < 0) ? 0 : lines[j].indent - base_in ]
                     if [ rel < 0 ] rel = 0
                     blc : string [ lines[j].content ]
                     if [ blc.count >= 7
                          && blc.mid[ 0, 7 ] == 'layers.' ]
-                        errors.push[ '{src}:{lines[j].line}: layers inside a Layer are not allowed' ]
+                        errors.push[
+                            '{src}:{lines[j].line}: layers inside a Layer are not allowed' ]
                     cuse : layer_use[ layer_defs, blc ]
                     if [ cuse ]
                         du : layer_defs[ cuse[0] ]
-                        for [ cl2: CSSLine ] in du.body
-                            d.body.push[ CSSLine [ indent: rel + cl2.indent,
-                                content: layer_subst[ du, cuse, cl2.content ], line: cl2.line ] ]
+                        for [ used_line: CSSLine ] in du.body
+                            d.body.push[
+                                CSSLine [
+                                    indent: rel + used_line.indent,
+                                content: layer_subst[ du, cuse,
+                                used_line.content ],
+                                line: used_line.line ] ]
                     el
                         d.body.push[ CSSLine [ indent: rel,
                                 content: blc, line: lines[j].line ] ]
@@ -500,85 +527,97 @@ class Style
         out      : vec CSSLine []
         pending  : vec CSSLine []
         in_state : bool [ false ]
-        k2 : i32 [ 0 ]
-        while [ k2 < stripped.count ]
-            cl  : stripped[k2]
-            lc2 : cl.content
+        idx : i32 [ 0 ]
+        while [ idx < stripped.count ]
+            cl  : stripped[idx]
+            line_text : cl.content
             if [ cl.indent == 0 ]
-                is_st : bool [ lc2.count > 0 && lc2.chars[0] == ':' ]
+                is_st : bool [ line_text.count > 0
+                               && line_text.chars[0] == ':' ]
                 if [ !is_st && pending.count > 0 ]
                     for [ pl: CSSLine ] in pending
                         out.push[ pl ]
                     pending = vec CSSLine []
                 in_state = is_st
                 out.push[ cl ]
-                k2 += 1
+                idx += 1
                 continue
-            if [ lc2.count >= 7 && lc2.mid[ 0, 7 ] == 'layers.' ]
-                rest : lc2.mid[ 7, lc2.count - 7 ].trim[]
-                ci2 : num [ rest.index_of[ ':' ] ]
-                bi2 : num [ rest.index_of[ '[' ] ]
-                if [ bi2 < 0 ]
+            if [ line_text.count >= 7
+                 && line_text.mid[ 0, 7 ] == 'layers.' ]
+                rest : line_text.mid[ 7, line_text.count - 7 ].trim[]
+                ci : num [ rest.index_of[ ':' ] ]
+                bi : num [ rest.index_of[ '[' ] ]
+                if [ bi < 0 ]
                     # literal layers.<id>: block — properties on child
                     # lines
                     out.push[ cl ]
-                    k2 += 1
+                    idx += 1
                     continue
-                if [ bi2 > 0 && (ci2 < 0 || bi2 < ci2) ]
+                if [ bi > 0 && (ci < 0 || bi < ci) ]
                     # layers.<id> [ args ] — def named by the id
-                    call2 : call_parse[ rest ]
-                    d2 : layer_defs[ call2[0] ]
-                    if [ !d2 ]
-                        errors.push[ '{src}:{cl.line}: unknown Layer `{call2[0]}`' ]
-                        k2 += 1
+                    use_call : call_parse[ rest ]
+                    use_def : layer_defs[ use_call[0] ]
+                    if [ !use_def ]
+                        errors.push[
+                            '{src}:{cl.line}: unknown Layer `{use_call[0]}`' ]
+                        idx += 1
                         continue
-                    hdr2 : (d2.cls == 'Layer') ? ('layers.' + call2[0] + ':') : ('layers.' + call2[0] + ': ' + d2.cls)
+                    use_hdr : (use_def.cls == 'Layer') ? ('layers.' + use_call[0] + ':') : ('layers.' + use_call[0] + ': ' + use_def.cls)
                     out.push[ CSSLine [ indent: cl.indent,
-                                        content: hdr2, line: cl.line ] ]
+                                        content: use_hdr,
+                                        line: cl.line ] ]
                     if [ in_state ]
-                        layer_splice[ hdr2, d2, call2, cl.indent + 1,
+                        layer_splice[ use_hdr, use_def, use_call,
+                                      cl.indent + 1,
                                       out, null ]
                     el
-                        layer_splice[ hdr2, d2, call2, cl.indent + 1,
+                        layer_splice[ use_hdr, use_def, use_call,
+                                      cl.indent + 1,
                                       out, pending ]
-                    k2 += 1
+                    idx += 1
                     continue
                 typed : bool [ false ]
-                if [ ci2 > 0 ]
-                    nm2 : rest.mid[ 0, ci2 ].trim[]
-                    rc  : rest.mid[ ci2 + 1,
-                                    rest.count - ci2 - 1 ].trim[]
+                if [ ci > 0 ]
+                    bound_id : rest.mid[ 0, ci ].trim[]
+                    rc  : rest.mid[ ci + 1,
+                                    rest.count - ci - 1 ].trim[]
                     cA  : i8 [ 0 ]
                     if [ rc.count > 0 ] cA = rc.chars[0]
-                    alphaA : bool [ (cA >= 'a' && cA <= 'z') || (cA >= 'A' && cA <= 'Z') || cA == '_' ]
+                    alphaA : bool [ (cA >= 'a' && cA <= 'z')
+                                    || (cA >= 'A' && cA <= 'Z')
+                                    || cA == '_' ]
                     if [ alphaA && rc.index_of[ '[' ] > 0 ]
                         # layers.<id>: <def> [ args ] — bind any def to
                         # the id
                         callc : call_parse[ rc ]
-                        d3 : layer_defs[ callc[0] ]
-                        if [ !d3 ]
-                            errors.push[ '{src}:{cl.line}: unknown Layer `{callc[0]}`' ]
-                            k2 += 1
+                        bound_def : layer_defs[ callc[0] ]
+                        if [ !bound_def ]
+                            errors.push[
+                                '{src}:{cl.line}: unknown Layer `{callc[0]}`' ]
+                            idx += 1
                             continue
-                        call3 : vec string []
-                        call3.push[ nm2 ]
+                        bound_call : vec string []
+                        bound_call.push[ bound_id ]
                         for [ ka: i32 1, ka < callc.count, ka += 1 ]
-                            call3.push[ callc[ka] ]
-                        hdr3 : (d3.cls == 'Layer') ? ('layers.' + nm2 + ':') : ('layers.' + nm2 + ': ' + d3.cls)
+                            bound_call.push[ callc[ka] ]
+                        bound_hdr : (bound_def.cls == 'Layer') ? ('layers.' + bound_id + ':') : ('layers.' + bound_id + ': ' + bound_def.cls)
                         out.push[ CSSLine [ indent: cl.indent,
-                                content: hdr3, line: cl.line ] ]
+                                content: bound_hdr, line: cl.line ] ]
                         if [ in_state ]
-                            layer_splice[ hdr3, d3, call3,
+                            layer_splice[ bound_hdr, bound_def,
+                                          bound_call,
                                     cl.indent + 1, out, null ]
                         el
-                            layer_splice[ hdr3, d3, call3,
+                            layer_splice[ bound_hdr, bound_def,
+                                          bound_call,
                                     cl.indent + 1, out, pending ]
                         typed = true
                 if [ !typed ]
-                    errors.push[ '{src}:{cl.line}: instantiate layers with `layers.<id> [ args ]` or `layers.<id>: <def> [ args ]`' ]
+                    errors.push[
+                        '{src}:{cl.line}: instantiate layers with `layers.<id> [ args ]` or `layers.<id>: <def> [ args ]`' ]
             el
                 out.push[ cl ]
-            k2 += 1
+            idx += 1
         for [ pl: CSSLine ] in pending
             out.push[ pl ]
         return out
@@ -599,7 +638,8 @@ class Style
                 rest : content.mid[ 7, content.count - 7 ].trim[]
                 expect rest.count >= 2, '@import expects quoted path'
                 qt : i8 [ rest.chars[0] ]
-                expect qt == '"' || qt == '\'', '@import expects quoted path'
+                expect qt == '"' ||
+                    qt == '\'', '@import expects quoted path'
                 k : i32 [ 1 ]
                 while [ k < rest.count && rest.chars[k] != qt ]
                     k += 1
@@ -697,18 +737,19 @@ class Style
         code : '{ty.ident}\n'
         for [ cl: CSSLine ] in lines
             rel : i32 [ cl.indent - min_i ]
-            c0  : i8  [ (cl.content.count) ? cl.content.chars[0] : 0 ]
+            lead  : i8  [ (cl.content.count) ? cl.content.chars[0] : 0 ]
             # states and Layer defs sit at top level; entries nest
-            top : bool [ rel == 0 && (c0 == ':' ||
-                (c0 >= 'A' && c0 <= 'Z' && cl.content.index_of[ '[' ] > 0)) ]
+            top : bool [ rel == 0 && (lead == ':' ||
+                (lead >= 'A' && lead <= 'Z'
+                && cl.content.index_of[ '[' ] > 0)) ]
             pad : i32 [ (top) ? 0 : 4 + rel ]
             for [ sp: i32 0, sp < pad, sp += 1 ]
                 code = code + ' '
             code = code + cl.content + '\n'
-        n0 : i32 [ base.count ]
+        first_new : i32 [ base.count ]
         process[ code, null ]
         report_errors[]
-        for [ bi: i32 n0, bi < base.count, bi += 1 ]
+        for [ bi: i32 first_new, bi < base.count, bi += 1 ]
             cache_block[ base[bi], 0 ]
         return true
 
@@ -1010,15 +1051,21 @@ class Region
             gap : f32 [ l.offset * ((l.pixel) ? 1.0 : gfc) ]
             wfc : f32 [ (fc > 0.0 && !r.pixel) ? fc : 1.0 ]
             wv  : f32 [ r.offset * ((r.pixel) ? 1.0 : wfc) ]
-            cur : f32 [ (l.relative && last) ? (last.x - sx) : (win.x + win.w - sx) ]
-            tv2 : f32 [ t.plot[ win.y, win.y + win.h, null, 0.0, rel,
+            cur : f32 [ (l.relative
+                && last) ? (last.x - sx) : (win.x + win.w - sx) ]
+            anchor_top : f32 [ t.plot[ win.y, win.y + win.h, null, 0.0,
+                                       rel,
                                 last, fc, console ] ]
-            if [ t.y_type == YAlign.top ] tv2 += sy
-            bv2 : b.plot[ win.y, win.y + win.h, @t, tv2, rel, last, fc,
+            if [ t.y_type == YAlign.top ] anchor_top += sy
+            anchor_bottom : b.plot[ win.y, win.y + win.h, @t,
+                                    anchor_top,
+                                    rel, last, fc,
                           console ]
-            rx2 : f32 [ round[ cur - gap - wv ] ]
-            return rect [ x: rx2, y: round[ tv2 ], w: round[ wv ],
-                          h: round[ bv2 ] - round[ tv2 ] ]
+            anchor_left : f32 [ round[ cur - gap - wv ] ]
+            return rect [ x: anchor_left, y: round[ anchor_top ],
+                          w: round[ wv ],
+                          h: round[ anchor_bottom ]
+                          - round[ anchor_top ] ]
         lv : f32 [ l.plot[ win.x, win.x + win.w, null,  0.0, rel, last,
                            fc, console ] ]
         rv : f32 [ r.plot[ win.x, win.x + win.w, @l, lv,  rel, last,
@@ -1062,8 +1109,8 @@ class Scaling
         value.z = sp[2].real_value[]
 
     func mix [ b: Scaling, f: f64 ] -> Scaling
-        s2 : Scaling value.mix[ b.value, f ]
-        return s2
+        mixed : Scaling value.mix[ b.value, f ]
+        return mixed
 
 
 class Rotation
@@ -1183,7 +1230,8 @@ class StyleTransition
                     case outward
                         return 1.0 - (1.0 - x) * (1.0 - x)
                     case in_out
-                        return (x < 0.5) ? 2.0 * x * x : 1.0 - pow[ -2.0 * x + 2.0, 2.0 ] / 2.0
+                        return (x < 0.5) ? 2.0 * x * x : 1.0 - pow[
+                            -2.0 * x + 2.0, 2.0 ] / 2.0
             case cubic
                 switch [ dir ]
                     case inward
@@ -1191,7 +1239,8 @@ class StyleTransition
                     case outward
                         return 1.0 - pow[ 1.0 - x, 3.0 ]
                     case in_out
-                        return (x < 0.5) ? 4.0 * x * x * x : 1.0 - pow[ -2.0 * x + 2.0, 3.0 ] / 2.0
+                        return (x < 0.5) ? 4.0 * x * x * x : 1.0 - pow[
+                            -2.0 * x + 2.0, 3.0 ] / 2.0
             case quart
                 switch [ dir ]
                     case inward
@@ -1236,28 +1285,31 @@ class StyleTransition
                     case in_out
                         return (x < 0.5) ? (1.0 - sqrt[ 1.0 - pow[ 2.0 * x, 2.0 ] ]) / 2.0 : (sqrt[ 1.0 - pow[ -2.0 * x + 2.0, 2.0 ] ] + 1.0) / 2.0
             case back
-                c1 : f64 [ 1.70158 ]
-                c2 : f64 [ c1 * 1.525 ]
-                c3 : f64 [ c1 + 1.0 ]
+                overshoot : f64 [ 1.70158 ]
+                overshoot_io : f64 [ overshoot * 1.525 ]
+                overshoot_up : f64 [ overshoot + 1.0 ]
                 switch [ dir ]
                     case inward
-                        return c3 * x * x * x - c1 * x * x
+                        return overshoot_up * x * x * x - overshoot * x * x
                     case outward
-                        return 1.0 + c3 * pow[ x - 1.0,
-                                3.0 ] + c1 * pow[ x - 1.0, 2.0 ]
+                        return 1.0 + overshoot_up * pow[ x - 1.0,
+                                3.0 ] + overshoot * pow[ x - 1.0, 2.0 ]
                     case in_out
-                        return (x < 0.5) ? (pow[ 2.0 * x, 2.0 ] * ((c2 + 1.0) * 2.0 * x - c2)) / 2.0 : (pow[ 2.0 * x - 2.0, 2.0 ] * ((c2 + 1.0) * (x * 2.0 - 2.0) + c2) + 2.0) / 2.0
+                        return (x < 0.5) ? (pow[ 2.0 * x,
+                            2.0 ] * ((overshoot_io + 1.0) * 2.0 * x - overshoot_io)) / 2.0 : (pow[ 2.0 * x - 2.0, 2.0 ] * ((overshoot_io + 1.0) * (x * 2.0 - 2.0) + overshoot_io) + 2.0) / 2.0
             case elastic
                 PI  : f64 [ 3.14159265358979323846 ]
-                c4  : f64 [ 2.0 * PI / 3.0 ]
-                c5e : f64 [ 2.0 * PI / 4.5 ]
+                period  : f64 [ 2.0 * PI / 3.0 ]
+                period_io : f64 [ 2.0 * PI / 4.5 ]
                 switch [ dir ]
                     case inward
-                        return (x == 0.0) ? 0.0 : (x == 1.0) ? 1.0 : -pow[ 2.0, 10.0 * x - 10.0 ] * sin[ (x * 10.0 - 10.75) * c4 ]
+                        return (x == 0.0) ? 0.0 : (x == 1.0) ? 1.0 : -pow[ 2.0, 10.0 * x - 10.0 ] * sin[ (x * 10.0 - 10.75) * period ]
                     case outward
-                        return (x == 0.0) ? 0.0 : (x == 1.0) ? 1.0 : pow[ 2.0, -10.0 * x ] * sin[ (x * 10.0 - 0.75) * c4 ] + 1.0
+                        return (x == 0.0) ? 0.0 : (x == 1.0) ? 1.0 : pow[
+                            2.0, -10.0 * x ] * sin[
+                                (x * 10.0 - 0.75) * period ] + 1.0
                     case in_out
-                        return (x == 0.0) ? 0.0 : (x == 1.0) ? 1.0 : (x < 0.5) ? -(pow[ 2.0, 20.0 * x - 10.0 ] * sin[ (20.0 * x - 11.125) * c5e ]) / 2.0 : (pow[ 2.0, -20.0 * x + 10.0 ] * sin[ (20.0 * x - 11.125) * c5e ]) / 2.0 + 1.0
+                        return (x == 0.0) ? 0.0 : (x == 1.0) ? 1.0 : (x < 0.5) ? -(pow[ 2.0, 20.0 * x - 10.0 ] * sin[ (20.0 * x - 11.125) * period_io ]) / 2.0 : (pow[ 2.0, -20.0 * x + 10.0 ] * sin[ (20.0 * x - 11.125) * period_io ]) / 2.0 + 1.0
             case bounce
                 switch [ dir ]
                     case inward
@@ -1347,19 +1399,20 @@ Mixable BoxShadow
     public func mix [ b: Mixable, f: f64 ] -> Mixable
         o : BoxShadow [ b ]
         if [ !o ] return a
-        t  : f32 [ f32[ f ] ]
-        c0 : rgba [ (color)   ? color   : rgba [ '#0000' ] ]
-        c1 : rgba [ (o.color) ? o.color : rgba [ '#0000' ] ]
+        t  : f32 [ f ]
+        from_color : rgba [ (color)   ? color   : rgba [ '#0000' ] ]
+        to_color : rgba [ (o.color) ? o.color : rgba [ '#0000' ] ]
         return BoxShadow [
             offset: vec2f [ offset.x + (o.offset.x - offset.x) * t,
                             offset.y + (o.offset.y - offset.y) * t ],
             blur:   blur + (o.blur - blur) * t,
             spread: spread + (o.spread - spread) * t,
             inset:  (t < 0.5) ? inset : o.inset,
-            color:  rgba [ r: c0.r + (c1.r - c0.r) * t,
-                           g: c0.g + (c1.g - c0.g) * t,
-                           b: c0.b + (c1.b - c0.b) * t,
-                           a: c0.a + (c1.a - c0.a) * t ] ]
+            color:  rgba [
+                r: from_color.r + (to_color.r - from_color.r) * t,
+                g: from_color.g + (to_color.g - from_color.g) * t,
+                b: from_color.b + (to_color.b - from_color.b) * t,
+                a: from_color.a + (to_color.a - from_color.a) * t ] ]
 
 # only for background elements
 Mixable Transform
@@ -1469,7 +1522,8 @@ func parse_quoted [ cursor: @cstr, max_len: sz ] -> string
     if [ s[0] == 0 ]
         return ''                                                                                                                   
     slen : sz [ s - start ]
-    if [ max_len > 0 && slen > max_len ]                                                                                            
+    if [ max_len > 0
+        && slen > max_len ]                                                                                            
         return ''                            
     cursor[0] = @s[1]
     return string [ chars: start, ref_length: slen ] 
@@ -1517,8 +1571,8 @@ func parse_qualifiers [ bl:StyleBlock, p: @cstr ] -> vec StyleQualifier
                 sp      : q.split[ '.' ]
                 no_type : q.chars[0] == '.'
                 v.type  = (no_type) ? 'element' : sp[0].trim[]
-                sp2     : sp[ (no_type) ? 0 : 1 ].split[ ':' ]
-                v.id    = sp2[0]
+                id_parts     : sp[ (no_type) ? 0 : 1 ].split[ ':' ]
+                v.id    = id_parts[0]
                 if [ icol >= 0 ]
                     tail = q.mid[ icol + 1,
                                   q.count - (icol + 1) ].trim[]
@@ -1551,11 +1605,11 @@ func parse_qualifiers [ bl:StyleBlock, p: @cstr ] -> vec StyleQualifier
                                 tail.count - istart ].trim[]
                         break
                 if [ !is_op ]
-                    sps9 : tail.split[ '&' ]
-                    sv9  : vec string []
-                    for [ s9: string ] in sps9
-                        sv9.push[ s9.trim[] ]
-                    v.states = sv9
+                    sps : tail.split[ '&' ]
+                    sv  : vec string []
+                    for [ state_name: string ] in sps
+                        sv.push[ state_name.trim[] ]
+                    v.states = sv
                     v.state  = v.states[0]
             processed = v
             v.hold_members[]
@@ -1597,7 +1651,8 @@ func split_css [ code: string ] -> vec CSSLine
         if [ i + 1 < n && code.chars[i] == '/'
              && code.chars[i + 1] == '*' ]
             i += 2
-            while [ i + 1 < n && !(code.chars[i] == '*' && code.chars[i + 1] == '/') ]
+            while [ i + 1 < n && !(code.chars[i] == '*'
+                    && code.chars[i + 1] == '/') ]
                 if [ code.chars[i] == '\n' ]
                     ln += 1
                 i += 1
@@ -1657,7 +1712,9 @@ func parse_block_body [ bl: StyleBlock, lines: vec CSSLine, first: i32,
         while [ sub_end + 1 <= last && lines[sub_end + 1].indent > ind ]
             sub_end += 1
         dot_pos : num  [ member.index_of[ '.' ] ]
-        is_type : bool [ dot_pos > 0 && val_str.count > 0 && val_str.chars[0] >= 'A' && val_str.chars[0] <= 'Z' ]
+        is_type : bool [ dot_pos > 0 && val_str.count > 0
+                         && val_str.chars[0] >= 'A'
+                         && val_str.chars[0] <= 'Z' ]
         if [ (val_str.count == 0 && sub_end > j) || is_type ]
             inner : StyleBlock [ quals:bl.quals, types:bl.types ]
             if [ sub_end > j ]
@@ -1691,24 +1748,26 @@ func parse_block_body [ bl: StyleBlock, lines: vec CSSLine, first: i32,
             el
                 param = null
             sp : items.split[ ',' ]
-            v9 : vec string []
+            list_val : vec string []
             for [ raw: string ] in sp
                 s  : raw.trim[]
                 if [ s.count >= 2 ]
-                    q0 : s.mid[  0, 1 ]
-                    q1 : s.mid[ -1, 1 ]
-                    if [ (q0 == '"' || q0 == '\'') && q0 == q1 ]
+                    open_q : s.mid[  0, 1 ]
+                    close_q : s.mid[ -1, 1 ]
+                    if [ (open_q == '"'
+                         || open_q == '\'') && open_q == close_q ]
                         s = s.mid[ 1, s.count - 2 ]
-                v9.push[ s ]
-            value = v9
+                list_val.push[ s ]
+            value = list_val
         el
             param   = (cm >= 0) ? val_str.mid[ cm + 1,
                     val_str.count - (cm + 1) ].trim[] : null
             value_s = (cm >= 0) ? val_str.mid[ 0, cm ].trim[] : val_str
             if [ value_s && value_s.count >= 2 ]
-                q0 : value_s.mid[  0, 1 ]
-                q1 : value_s.mid[ -1, 1 ]
-                if [ (q0 == '"' || q0 == '\'') && q0 == q1 ]
+                open_q : value_s.mid[  0, 1 ]
+                close_q : value_s.mid[ -1, 1 ]
+                if [ (open_q == '"'
+                     || open_q == '\'') && open_q == close_q ]
                     value_s = value_s.mid[ 1, value_s.count - 2 ]
             value   = value_s
         filter_val : f32 [ 0.0 ]
@@ -1717,7 +1776,9 @@ func parse_block_body [ bl: StyleBlock, lines: vec CSSLine, first: i32,
             filter_val = f32[ param.mid[ 7, param.count - 7 ].trim[] ]
             param = null
         trans : (param) ? StyleTransition[ param ] : null
-        is_bind : bool [ value_s && value_s.count >= 2 && value_s.chars[0] == '{' && value_s.chars[value_s.count - 1] == '}' ]
+        is_bind : bool [ value_s && value_s.count >= 2
+                         && value_s.chars[0] == '{'
+                         && value_s.chars[value_s.count - 1] == '}' ]
         bname   : string [ (is_bind) ? value_s.mid[ 1,
                 value_s.count - 2 ].trim[] : null ]
         # NOTE the unit, never strip it. 'area: 8px' is a Region built
@@ -1727,7 +1788,9 @@ func parse_block_body [ bl: StyleBlock, lines: vec CSSLine, first: i32,
         # time
         unit_val : string [ null ]
         if [ value_s && !is_bind ] unit_val = css_unit_of[ value_s ]
-        se : StyleEntry [ member: member, value: value, unit: unit_val, trans: trans, bl: bl, line: lines[j].line, binding: bname, filter: filter_val ]
+        se : StyleEntry [ member: member, value: value, unit: unit_val,
+                          trans: trans, bl: bl, line: lines[j].line,
+                          binding: bname, filter: filter_val ]
         bl.entries[ member ] = se
         j += 1
 
@@ -1751,16 +1814,16 @@ func ws [ p_cursor: @cstr ] -> bool
 func scan_to [ p_cursor: @cstr, chars: string ] -> bool
     sl  : false
     qt  : false
-    qt2 : false
+    in_single : false
     cursor : cstr [ p_cursor[0] ]
     while [ cursor && cursor[0] ]
         if [ !sl ]
             if [ cursor[0] == '"' ]
                 qt = !qt
             el [ cursor[0] == '\'' ]
-                qt2 = !qt2
+                in_single = !in_single
         sl = cursor[0] == '\\'
-        if [ !qt && !qt2 ]
+        if [ !qt && !in_single ]
             if [ chars.index_of[ @cursor[0] ] >= 0 ]
                 p_cursor[0] = cursor
                 return true
@@ -1776,21 +1839,22 @@ func distance [ a:cstr, b:cstr ] -> i64
     return val
     
 
-func is_alpha2 [ c: i8 ] -> bool                                                                                                     
+func is_alpha2 [
+    c: i8 ] -> bool                                                                                                     
     return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
 
 
 func bounce_out [ x: f64 ] -> f64
-    n1 : f64 [ 7.5625 ]
-    d1 : f64 [ 2.75 ]
-    if [ x < 1.0 / d1 ]
-        return n1 * x * x
-    el [ x < 2.0 / d1 ]
-        return n1 * (x - 1.5 / d1) * x + 0.75
-    el [ x < 2.5 / d1 ]
-        return n1 * (x - 2.25 / d1) * x + 0.9375
+    gain : f64 [ 7.5625 ]
+    span : f64 [ 2.75 ]
+    if [ x < 1.0 / span ]
+        return gain * x * x
+    el [ x < 2.0 / span ]
+        return gain * (x - 1.5 / span) * x + 0.75
+    el [ x < 2.5 / span ]
+        return gain * (x - 2.25 / span) * x + 0.9375
     el
-        return n1 * (x - 2.625 / d1) * x + 0.984375
+        return gain * (x - 2.625 / span) * x + 0.984375
 
 func nib [ n: i8 ] -> i8
     if [ n >= '0' && n <= '9' ]

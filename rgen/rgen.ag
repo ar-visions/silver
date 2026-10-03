@@ -418,8 +418,8 @@ element rgen : trinity
 		if [ dxa != 0 || dya != 0 ]
 			for [ si: i32 0, si < 80, si += 1 ]
 				sea : u32 [ (sat + u32[ si * 8 ]) & 0xFFFF ]
-				syv : i32 [ i32[ ((u16[ vdp.vram[ sea ] ] << 8) | u16[ vdp.vram[ sea + 1 ] ]) & 0x3FF ] ]
-				sxv : i32 [ i32[ ((u16[ vdp.vram[ sea + 6 ] ] << 8) | u16[ vdp.vram[ sea + 7 ] ]) & 0x1FF ] ]
+				syv : i32 [ ((u16[ vdp.vram[ sea ] ] << 8) | u16[ vdp.vram[ sea + 1 ] ]) & 0x3FF ]
+				sxv : i32 [ ((u16[ vdp.vram[ sea + 6 ] ] << 8) | u16[ vdp.vram[ sea + 7 ] ]) & 0x1FF ]
 				wx : i32 [ (sxv + dxa) & 0x1FF ]
 				wy : i32 [ (syv + dya) & 0x3FF ]
 				wm : bool [ false ]
@@ -565,15 +565,15 @@ element rgen : trinity
 			usleep[ 15000 ]                  # muted fallback pacing
 			return
 		sample_frac += 47731382680           # 53267 * 896040 per frame
-		n : i32 [ i32[ sample_frac / 53693175 ] ]
+		n : i32 [ sample_frac / 53693175 ]
 		sample_frac -= i64[ n ] * 53693175
 		while [ n > 0 ]
 			c : i32 [ (n > 1024) ? 1024 : n ]
 			for [ i: i32 0, i < c, i += 1 ]
 				s : i32 [ psg_sample[] ]
 				ym_sample[]
-				svl : i32 [ i32[ f32[ s + fm_l ] * volume ] ]
-				svr : i32 [ i32[ f32[ s + fm_r ] * volume ] ]
+				svl : i32 [ f32[ s + fm_l ] * volume ]
+				svr : i32 [ f32[ s + fm_r ] * volume ]
 				if [ svl > 32767 ] svl = 32767
 				if [ svl < -32768 ] svl = -32768
 				if [ svr > 32767 ] svr = 32767
@@ -647,7 +647,7 @@ element rgen : trinity
 				for [ x: i32 0, x < 320, x += 1 ]
 					rr : u32 [ u32[x] & 0xFF ]
 					gg : u32 [ u32[y] & 0xFF ]
-					bb : u32 [ u32[ (x + y + i32[frames]) & 0xFF ] ]
+					bb : u32 [ (x + y + i32[frames]) & 0xFF ]
 					vdp.framebuf[ y * 320 + x ] = 0xFF000000 | (bb << 16) | (gg << 8) | rr
 			frames += 1
 			screen_tex.upload[ vdp.framebuf, 320 * 224 * 4 ]
@@ -840,8 +840,8 @@ element rgen : trinity
 			if [ sl < 4 ] return vdp_data_r[]
 			if [ sl < 8 ] return vdp_status_r[]
 			return (vdp.vcounter & 0xFF) << 8         # HV counter (H stub 0)
-		hi : u16 [ u16[ bus_r8[ addr ] ] ]
-		lo : u16 [ u16[ bus_r8[ addr + 1 ] ] ]
+		hi : u16 [ bus_r8[ addr ] ]
+		lo : u16 [ bus_r8[ addr + 1 ] ]
 		return (hi << 8) | lo
 
 	func bus_w16 [ addr: u32, v: u16 ] -> none
@@ -859,8 +859,8 @@ element rgen : trinity
 		bus_w8[ addr + 1, u8[ v & 0xFF ] ]
 
 	func bus_r32 [ addr: u32 ] -> u32
-		hi : u32 [ u32[ bus_r16[ addr ] ] ]
-		lo : u32 [ u32[ bus_r16[ addr + 2 ] ] ]
+		hi : u32 [ bus_r16[ addr ] ]
+		lo : u32 [ bus_r16[ addr + 2 ] ]
 		return (hi << 16) | lo
 
 	func bus_w32 [ addr: u32, v: u32 ] -> none
@@ -976,7 +976,7 @@ element rgen : trinity
 			base : i32 [ 1 << ((r >> 2) - 12) ]
 			inc = base + base * eg_pat[ r & 3, i32[ ym.eg_cnt & 7 ] ]
 		if [ inc == 0 ] return
-		st : i32 [ i32[ ym.op_st[ oi ] ] ]
+		st : i32 [ ym.op_st[ oi ] ]
 		if [ st == 0 ]                            # attack: exponential toward 0
 			if [ r >= 62 ]
 				ym.op_att[ oi ] = 0
@@ -1048,7 +1048,7 @@ element rgen : trinity
 				rrv : u8 [ yreg[ ch, s, 0x80 ] ]
 				ks : i32 [ (i32[ arv ] >> 6) & 3 ]
 				if [ egnow ]
-					st : i32 [ i32[ ym.op_st[ oi ] ] ]
+					st : i32 [ ym.op_st[ oi ] ]
 					if [ st == 0 ]
 						eg_step[ oi, i32[ arv ] & 0x1F, ks, kc ]
 					el [ st == 1 ]
@@ -1107,7 +1107,7 @@ element rgen : trinity
 	func psg_write [ v: u8 ] -> none
 		if [ (v & 0x80) != 0 ]
 			psg.latch = (v >> 4) & 7
-			ch : i32 [ i32[ (psg.latch >> 1) & 3 ] ]
+			ch : i32 [ (psg.latch >> 1) & 3 ]
 			if [ (psg.latch & 1) != 0 ]
 				psg.volume[ ch ] = v & 0xF
 			el
@@ -1117,7 +1117,7 @@ element rgen : trinity
 				el
 					psg.tone[ ch ] = (psg.tone[ ch ] & 0x3F0) | u16[ v & 0xF ]
 		el
-			ch2 : i32 [ i32[ (psg.latch >> 1) & 3 ] ]
+			ch2 : i32 [ (psg.latch >> 1) & 3 ]
 			if [ (psg.latch & 1) != 0 ]
 				psg.volume[ ch2 ] = v & 0xF
 			el
@@ -1129,7 +1129,7 @@ element rgen : trinity
 
 	func psg_sample [] -> i32
 		psg_acc += 223721
-		k : i32 [ i32[ psg_acc / 53267 ] ]
+		k : i32 [ psg_acc / 53267 ]
 		psg_acc -= i64[ k ] * 53267
 		for [ t: i32 0, t < k, t += 1 ]
 			for [ ch: i32 0, ch < 3, ch += 1 ]
@@ -1188,7 +1188,7 @@ element rgen : trinity
 
 
 	func zfetch [] -> u32
-		v : u32 [ u32[ z80_rd8[ u32[ z80.pc ] ] ] ]
+		v : u32 [ z80_rd8[ u32[ z80.pc ] ] ]
 		z80.pc = z80.pc + 1
 		return v
 
@@ -1224,7 +1224,7 @@ element rgen : trinity
 		return u32[ z80.af >> 8 ]
 
 	func zsr [ i: i32, v: u32 ] -> none
-		b : u16 [ u16[ v & 0xFF ] ]
+		b : u16 [ v & 0xFF ]
 		if [ i == 0 ] z80.bc = (z80.bc & 0x00FF) | (b << 8)
 		el [ i == 1 ] z80.bc = (z80.bc & 0xFF00) | b
 		el [ i == 2 ] z80.de = (z80.de & 0x00FF) | (b << 8)
@@ -1250,7 +1250,7 @@ element rgen : trinity
 		return u32[ z80.sp ]
 
 	func zsp16 [ i: i32, v: u32 ] -> none
-		w2 : u16 [ u16[ v & 0xFFFF ] ]
+		w2 : u16 [ v & 0xFFFF ]
 		if [ i == 0 ] z80.bc = w2
 		el [ i == 1 ] z80.de = w2
 		el [ i == 2 ]
@@ -1261,10 +1261,10 @@ element rgen : trinity
 
 	func zaddr [] -> u32
 		if [ zix == 1 ]
-			d : i32 [ i32[ i8[ u8[ zfetch[] ] ] ] ]
+			d : i32 [ i8[ u8[ zfetch[] ] ] ]
 			return (u32[ z80.ix ] + u32[ d ]) & 0xFFFF
 		if [ zix == 2 ]
-			d2 : i32 [ i32[ i8[ u8[ zfetch[] ] ] ] ]
+			d2 : i32 [ i8[ u8[ zfetch[] ] ] ]
 			return (u32[ z80.iy ] + u32[ d2 ]) & 0xFFFF
 		return u32[ z80.hl ]
 
@@ -1281,7 +1281,7 @@ element rgen : trinity
 
 	# ALU: op 0 ADD 1 ADC 2 SUB 3 SBC 4 AND 5 XOR 6 OR 7 CP
 	func z_alu [ opn: i32, v: u32 ] -> none
-		aa : u32 [ u32[ z80.af >> 8 ] ]
+		aa : u32 [ z80.af >> 8 ]
 		cin : u32 [ u32[ z80.af ] & 1 ]
 		if [ opn == 0 || opn == 1 ]
 			ci : u32 [ (opn == 1) ? cin : 0 ]
@@ -1342,12 +1342,12 @@ element rgen : trinity
 			ea = zaddr[]
 			mem = true
 		op : u32 [ zfetch[] ]
-		ri : i32 [ i32[ op & 7 ] ]
+		ri : i32 [ op & 7 ]
 		if [ ! mem && ri == 6 ]
 			mem = true
 			ea = u32[ z80.hl ]
-		grp : i32 [ i32[ (op >> 6) & 3 ] ]
-		bi : i32 [ i32[ (op >> 3) & 7 ] ]
+		grp : i32 [ (op >> 6) & 3 ]
+		bi : i32 [ (op >> 3) & 7 ]
 		v : u32 [ 0 ]
 		if [ mem ] v = u32[ z80_rd8[ ea ] ]
 		el v = zgr[ ri ]
@@ -1399,7 +1399,7 @@ element rgen : trinity
 	func z_ed [] -> i32
 		op : u32 [ zfetch[] ]
 		if [ op == 0x44 || op == 0x4C || op == 0x54 || op == 0x5C || op == 0x64 || op == 0x6C || op == 0x74 || op == 0x7C ]
-			aa : u32 [ u32[ z80.af >> 8 ] ]    # NEG: A = 0 - A
+			aa : u32 [ z80.af >> 8 ]    # NEG: A = 0 - A
 			z80.af = z80.af & 0x00FF
 			z_alu[ 2, aa ]
 			return 8
@@ -1429,12 +1429,12 @@ element rgen : trinity
 			if [ z80.iff2 != 0 ] f |= 0x04
 			z80.af = (u16[ v ] << 8) | u16[ f ]
 			return 9
-		grp : i32 [ i32[ (op >> 6) & 3 ] ]
+		grp : i32 [ (op >> 6) & 3 ]
 		if [ grp == 1 ]
-			sub : i32 [ i32[ op & 7 ] ]
-			pi : i32 [ i32[ (op >> 4) & 3 ] ]
+			sub : i32 [ op & 7 ]
+			pi : i32 [ (op >> 4) & 3 ]
 			if [ sub == 2 ]                    # SBC/ADC HL,rp
-				hv : u32 [ u32[ z80.hl ] ]
+				hv : u32 [ z80.hl ]
 				rv : u32 [ zgp[ pi ] ]
 				ci : u32 [ u32[ z80.af ] & 1 ]
 				if [ (op & 8) == 0 ]           # SBC HL,rp
@@ -1485,8 +1485,8 @@ element rgen : trinity
 					return 21
 				return 16
 			if [ op == 0xA1 || op == 0xB1 || op == 0xA9 || op == 0xB9 ]
-				aa2 : u32 [ u32[ z80.af >> 8 ] ]   # CPI/CPIR/CPD/CPDR
-				mv : u32 [ u32[ z80_rd8[ u32[ z80.hl ] ] ] ]
+				aa2 : u32 [ z80.af >> 8 ]   # CPI/CPIR/CPD/CPDR
+				mv : u32 [ z80_rd8[ u32[ z80.hl ] ] ]
 				r3 : u32 [ (aa2 - mv) & 0xFF ]
 				if [ op == 0xA1 || op == 0xB1 ] z80.hl = z80.hl + 1
 				el z80.hl = z80.hl - 1
@@ -1523,9 +1523,9 @@ element rgen : trinity
 		z80.r = z80.r + 1
 		if [ op == 0xCB ] return pre + z_cb[]
 		if [ op == 0xED ] return pre + z_ed[]
-		x : i32 [ i32[ (op >> 6) & 3 ] ]
-		y : i32 [ i32[ (op >> 3) & 7 ] ]
-		zl : i32 [ i32[ op & 7 ] ]
+		x : i32 [ (op >> 6) & 3 ]
+		y : i32 [ (op >> 3) & 7 ]
+		zl : i32 [ op & 7 ]
 		if [ x == 1 ]                          # LD r,r' / HALT
 			if [ op == 0x76 ]
 				z80.halted = true
@@ -1556,14 +1556,14 @@ element rgen : trinity
 					z80.af_ = t
 					return pre + 4
 				if [ y == 2 ]                  # DJNZ d
-					d : i32 [ i32[ i8[ u8[ zfetch[] ] ] ] ]
+					d : i32 [ i8[ u8[ zfetch[] ] ] ]
 					bv : u32 [ (u32[ z80.bc >> 8 ] - 1) & 0xFF ]
 					z80.bc = (z80.bc & 0x00FF) | (u16[ bv ] << 8)
 					if [ bv != 0 ]
 						z80.pc = u16[ (u32[ z80.pc ] + u32[ d ]) & 0xFFFF ]
 						return pre + 13
 					return pre + 8
-				d2 : i32 [ i32[ i8[ u8[ zfetch[] ] ] ] ]
+				d2 : i32 [ i8[ u8[ zfetch[] ] ] ]
 				if [ y == 3 ]                  # JR d
 					z80.pc = u16[ (u32[ z80.pc ] + u32[ d2 ]) & 0xFFFF ]
 					return pre + 12
@@ -1622,7 +1622,7 @@ element rgen : trinity
 			if [ zl == 4 || zl == 5 ]          # INC/DEC r
 				if [ y == 6 ]
 					ea4 : u32 [ zaddr[] ]
-					v : u32 [ u32[ z80_rd8[ ea4 ] ] ]
+					v : u32 [ z80_rd8[ ea4 ] ]
 					if [ zl == 4 ] v = z_inc8[ v ]
 					el v = z_dec8[ v ]
 					z80_wr8[ ea4, u8[ v ] ]
@@ -1638,7 +1638,7 @@ element rgen : trinity
 				zsr[ y, zfetch[] ]
 				return pre + 7
 			# zl == 7: rotate/misc accumulator ops
-			aa : u32 [ u32[ z80.af >> 8 ] ]
+			aa : u32 [ z80.af >> 8 ]
 			fo : u32 [ u32[ z80.af ] & 0xFF ]
 			if [ y == 0 ]                      # RLCA
 				c : u32 [ (aa >> 7) & 1 ]
@@ -1779,7 +1779,7 @@ element rgen : trinity
 				vdp_dma_run[]
 			return
 		if [ (v & 0xC000) == 0x8000 ]                  # register write
-			rn : i32 [ i32[ (v >> 8) & 0x1F ] ]
+			rn : i32 [ (v >> 8) & 0x1F ]
 			if [ rn < 24 ] vdp.regs[ rn ] = u8[ v & 0xFF ]
 			return
 		vdp.pending = true
@@ -1792,12 +1792,12 @@ element rgen : trinity
 			vdp.dma_fill = false
 			ln : i32 [ i32[ vdp.regs[ 19 ] ] | (i32[ vdp.regs[ 20 ] ] << 8) ]
 			if [ ln == 0 ] ln = 0x10000
-			fb : u8 [ u8[ (v >> 8) & 0xFF ] ]
+			fb : u8 [ (v >> 8) & 0xFF ]
 			for [ i: i32 0, i < ln, i += 1 ]
 				vdp.vram[ vdp.address & 0xFFFF ] = fb
 				vdp.address += u32[ vdp.regs[ 15 ] ]
 			return
-		k : i32 [ i32[ vdp.code & 0xF ] ]
+		k : i32 [ vdp.code & 0xF ]
 		if [ k == 1 ]                                  # VRAM (odd addr swaps bytes)
 			a : u32 [ vdp.address & 0xFFFE ]
 			if [ (vdp.address & 1) != 0 ]
@@ -1815,7 +1815,7 @@ element rgen : trinity
 
 	func vdp_data_r [] -> u16
 		vdp.pending = false
-		k : i32 [ i32[ vdp.code & 0xF ] ]
+		k : i32 [ vdp.code & 0xF ]
 		r : u16 [ 0 ]
 		if [ k == 0 ]
 			a : u32 [ vdp.address & 0xFFFE ]
@@ -1838,7 +1838,7 @@ element rgen : trinity
 		return st
 
 	func vdp_dma_run [] -> none
-		md : i32 [ i32[ (vdp.regs[ 23 ] >> 6) & 3 ] ]
+		md : i32 [ (vdp.regs[ 23 ] >> 6) & 3 ]
 		if [ md == 2 ]                                 # fill: arm, runs on data write
 			vdp.dma_fill = true
 			return
@@ -1873,8 +1873,8 @@ element rgen : trinity
 		hbase : u32 [ (u32[ vdp.regs[ 13 ] ] & 0x3F) << 10 ]
 		hoff : u32 [ hbase ]
 		if [ is_b ] hoff = hbase + 2
-		hs : i32 [ i32[ i16[ (u16[ vdp.vram[ hoff ] ] << 8) | u16[ vdp.vram[ hoff + 1 ] ] ] ] ]
-		vs : i32 [ i32[ i16[ vdp.vsram[ (is_b) ? 1 : 0 ] ] ] ]
+		hs : i32 [ i16[ (u16[ vdp.vram[ hoff ] ] << 8) | u16[ vdp.vram[ hoff + 1 ] ] ] ]
+		vs : i32 [ i16[ vdp.vsram[ (is_b) ? 1 : 0 ] ] ]
 		mx : i32 [ (x - hs) & (sw * 8 - 1) ]
 		my : i32 [ (y + vs) & (sh * 8 - 1) ]
 		ent : u32 [ base + u32[ ((my >> 3) * sw + (mx >> 3)) * 2 ] ]
@@ -1885,12 +1885,12 @@ element rgen : trinity
 		if [ (nw & 0x0800) != 0 ] col = 7 - col        # hflip
 		if [ (nw & 0x1000) != 0 ] row = 7 - row        # vflip
 		ta : u32 [ (tile * 32 + u32[ row * 4 ] + u32[ col >> 1 ]) & 0xFFFF ]
-		px : u32 [ u32[ vdp.vram[ ta ] ] ]
+		px : u32 [ vdp.vram[ ta ] ]
 		if [ (col & 1) == 0 ] px = px >> 4
 		px = px & 0xF
 		if [ px == 0 ] return -1
 		pal : u32 [ (u32[ nw ] >> 13) & 3 ]
-		res : i32 [ i32[ pal * 16 + px ] ]
+		res : i32 [ pal * 16 + px ]
 		if [ (nw & 0x8000) != 0 ] res = res | 0x100    # priority
 		return res
 
@@ -1908,7 +1908,7 @@ element rgen : trinity
 		while [ count < maxs ]
 			ea : u32 [ (sat + u32[ idx * 8 ]) & 0xFFFF ]
 			ys : i32 [ i32[ ((u16[ vdp.vram[ ea ] ] << 8) | u16[ vdp.vram[ ea + 1 ] ]) & 0x3FF ] - 128 ]
-			szb : i32 [ i32[ vdp.vram[ ea + 2 ] ] ]
+			szb : i32 [ vdp.vram[ ea + 2 ] ]
 			link : i32 [ i32[ vdp.vram[ ea + 3 ] ] & 0x7F ]
 			hs : i32 [ (szb >> 2) & 3 ]
 			vs : i32 [ szb & 3 ]
@@ -1939,11 +1939,11 @@ element rgen : trinity
 						colp : i32 [ px2 ]
 						if [ (nw & 0x0800) != 0 ] colp = 7 - colp
 						ta : u32 [ (tile * 32 + u32[ (row & 7) * 4 ] + u32[ colp >> 1 ]) & 0xFFFF ]
-						pv : u32 [ u32[ vdp.vram[ ta ] ] ]
+						pv : u32 [ vdp.vram[ ta ] ]
 						if [ (colp & 1) == 0 ] pv = pv >> 4
 						pv = pv & 0xF
 						if [ pv == 0 ] continue
-						rr : i32 [ i32[ pal * 16 + pv ] ]
+						rr : i32 [ pal * 16 + pv ]
 						if [ pri ] rr = rr | 0x100
 						spr_buf[ sx ] = rr
 						spr_slotb[ sx ] = idx
@@ -2104,12 +2104,12 @@ element rgen : trinity
 
 	func ea_index [ base: u32 ] -> u32
 		ext : u16 [ fetch16[] ]
-		ri  : i32 [ i32[ (ext >> 12) & 0x7 ] ]
+		ri  : i32 [ (ext >> 12) & 0x7 ]
 		ix  : u32 [ 0 ]
 		if [ (ext & 0x8000) != 0 ] ix = m68k.a[ ri ]
 		el ix = m68k.d[ ri ]
 		if [ (ext & 0x0800) == 0 ] ix = u32[ i32[ i16[ u16[ ix & 0xFFFF ] ] ] ]  # .w index
-		disp : u32 [ u32[ i32[ i8[ u8[ ext & 0xFF ] ] ] ] ]
+		disp : u32 [ i32[ i8[ u8[ ext & 0xFF ] ] ] ]
 		return base + ix + disp
 
 	func ea_calc [ mode: i32, reg: i32, size: i32 ] -> u32
@@ -2129,7 +2129,7 @@ element rgen : trinity
 				m68k.a[ reg ] = m68k.a[ reg ] - u32[ incr ]
 				addr = m68k.a[ reg ]
 			case 5                          # d(An)
-				d : u32 [ u32[ i32[ i16[ fetch16[] ] ] ] ]
+				d : u32 [ i32[ i16[ fetch16[] ] ] ]
 				addr = m68k.a[ reg ] + d
 			case 6                          # d(An,ix)
 				addr = ea_index[ m68k.a[ reg ] ]
@@ -2141,7 +2141,7 @@ element rgen : trinity
 						addr = fetch32[]
 					case 2                  # d(PC) — relative to the ext-word addr
 						pcbase : u32 [ m68k.pc ]
-						pd : u32 [ u32[ i32[ i16[ fetch16[] ] ] ] ]
+						pd : u32 [ i32[ i16[ fetch16[] ] ] ]
 						addr = pcbase + pd
 					case 3                  # d(PC,ix)
 						pcb2 : u32 [ m68k.pc ]
@@ -2330,10 +2330,10 @@ element rgen : trinity
 
 
 	func move_dispatch [ op: u16, size: i32 ] -> i32
-		sr : i32 [ i32[ op & 0x7 ] ]
-		sm : i32 [ i32[ (op >> 3) & 0x7 ] ]
-		dm : i32 [ i32[ (op >> 6) & 0x7 ] ]
-		dr : i32 [ i32[ (op >> 9) & 0x7 ] ]
+		sr : i32 [ op & 0x7 ]
+		sm : i32 [ (op >> 3) & 0x7 ]
+		dm : i32 [ (op >> 6) & 0x7 ]
+		dr : i32 [ (op >> 9) & 0x7 ]
 		isL : bool [ size == 2 ]
 		cyc : i32 [ 4 + ea_time[ sm, sr, isL ] + ea_time[ dm, dr, isL ] ]
 		sval : u32 [ ea_read[ sm, sr, size ] ]
@@ -2357,8 +2357,8 @@ element rgen : trinity
 
 	# MOVEQ #imm8,Dn — 4 cycles [§5]
 	func op_moveq [ op: u16 ] -> i32
-		reg : i32 [ i32[ (op >> 9) & 0x7 ] ]
-		val : u32 [ u32[ i32[ i8[ u8[ op & 0xFF ] ] ] ] ]
+		reg : i32 [ (op >> 9) & 0x7 ]
+		val : u32 [ i32[ i8[ u8[ op & 0xFF ] ] ] ]
 		m68k.d[ reg ] = val
 		set_nz[ val, 2 ]
 		setflag[ 0x02, false ]
@@ -2366,8 +2366,8 @@ element rgen : trinity
 		return 4
 
 	func op_branch [ op: u16 ] -> i32
-		cc    : i32 [ i32[ (op >> 8) & 0xF ] ]
-		disp8 : i32 [ i32[ i8[ u8[ op & 0xFF ] ] ] ]
+		cc    : i32 [ (op >> 8) & 0xF ]
+		disp8 : i32 [ i8[ u8[ op & 0xFF ] ] ]
 		base  : u32 [ m68k.pc ]
 		off   : i32 [ disp8 ]
 		isword : bool [ disp8 == 0 ]
@@ -2403,10 +2403,10 @@ element rgen : trinity
 			m68k.pc = pull32[]
 			m68k.sr = (m68k.sr & 0xFF00) | (ccr & 0x001F)
 			return 20
-		mode : i32 [ i32[ (op >> 3) & 7 ] ]
-		rm   : i32 [ i32[ op & 7 ] ]
+		mode : i32 [ (op >> 3) & 7 ]
+		rm   : i32 [ op & 7 ]
 		if [ (op & 0xF1C0) == 0x41C0 ]                     # LEA <ea>,An
-			an : i32 [ i32[ (op >> 9) & 7 ] ]
+			an : i32 [ (op >> 9) & 7 ]
 			m68k.a[ an ] = ea_calc[ mode, rm, 2 ]
 			return ctrl_time[ 2, mode, rm ]
 		if [ (op & 0xFFC0) == 0x4E80 ]                     # JSR <ea>
@@ -2432,7 +2432,7 @@ element rgen : trinity
 			flags_logic[ eb, 1 ]
 			return 4
 		if [ (op & 0xFFF8) == 0x48C0 ]                     # EXT.l: 4
-			ew : u32 [ u32[ i32[ i16[ u16[ m68k.d[ rm ] & 0xFFFF ] ] ] ] ]
+			ew : u32 [ i32[ i16[ u16[ m68k.d[ rm ] & 0xFFFF ] ] ] ]
 			m68k.d[ rm ] = ew
 			flags_logic[ ew, 2 ]
 			return 4
@@ -2458,7 +2458,7 @@ element rgen : trinity
 		if [ (op & 0xFFF8) == 0x4E50 ]                     # LINK An,#d: 16(2/2)
 			push32[ m68k.a[ rm ] ]
 			m68k.a[ rm ] = m68k.a[ 7 ]
-			ld : u32 [ u32[ i32[ i16[ fetch16[] ] ] ] ]
+			ld : u32 [ i32[ i16[ fetch16[] ] ] ]
 			m68k.a[ 7 ] = m68k.a[ 7 ] + ld
 			return 16
 		if [ (op & 0xFFF8) == 0x4E58 ]                     # UNLK An: 12(3/0)
@@ -2471,9 +2471,9 @@ element rgen : trinity
 		if [ (op & 0xFFF8) == 0x4E68 ]                     # MOVE USP,An: 4
 			m68k.a[ rm ] = m68k.usp
 			return 4
-		sz2 : i32 [ i32[ (op >> 6) & 3 ] ]
+		sz2 : i32 [ (op >> 6) & 3 ]
 		if [ (op & 0xF900) == 0x4000 && sz2 != 3 ]         # NEGX/CLR/NEG/NOT
-			knd : i32 [ i32[ (op >> 9) & 3 ] ]
+			knd : i32 [ (op >> 9) & 3 ]
 			isL2 : bool [ sz2 == 2 ]
 			if [ mode == 0 ]
 				dv : u32 [ dreg_read[ rm, sz2 ] ]
@@ -2495,9 +2495,9 @@ element rgen : trinity
 		isL : bool [ (op & 0x40) != 0 ]
 		size : i32 [ (isL) ? 2 : 1 ]
 		nb : u32 [ (isL) ? 4 : 2 ]
-		mode : i32 [ i32[ (op >> 3) & 7 ] ]
-		rm : i32 [ i32[ op & 7 ] ]
-		maskw : u32 [ u32[ fetch16[] ] ]
+		mode : i32 [ (op >> 3) & 7 ]
+		rm : i32 [ op & 7 ]
+		maskw : u32 [ fetch16[] ]
 		addr : u32 [ 0 ]
 		if [ mode == 2 || mode == 3 || mode == 4 ] addr = m68k.a[ rm ]
 		el addr = ea_calc[ mode, rm, size ]
@@ -2540,12 +2540,12 @@ element rgen : trinity
 	func op_imm [ op: u16 ] -> i32
 		if [ (op & 0x0100) != 0 || ((op >> 9) & 7) == 4 ]
 			return op_bitop[ op ]
-		kind : i32 [ i32[ (op >> 9) & 7 ] ]
-		size : i32 [ i32[ (op >> 6) & 3 ] ]
-		mode : i32 [ i32[ (op >> 3) & 7 ] ]
-		rm : i32 [ i32[ op & 7 ] ]
+		kind : i32 [ (op >> 9) & 7 ]
+		size : i32 [ (op >> 6) & 3 ]
+		mode : i32 [ (op >> 3) & 7 ]
+		rm : i32 [ op & 7 ]
 		if [ mode == 7 && rm == 4 ]                        # to CCR / SR: 20(3/0)
-			iw : u32 [ u32[ fetch16[] ] ]
+			iw : u32 [ fetch16[] ]
 			if [ size == 0 ]
 				cb : u32 [ u32[ m68k.sr ] & 0x1F ]
 				if [ kind == 0 ] cb = cb | (iw & 0xFF)
@@ -2553,7 +2553,7 @@ element rgen : trinity
 				el cb = cb ^ (iw & 0xFF)
 				m68k.sr = (m68k.sr & 0xFF00) | u16[ cb & 0x1F ]
 			el
-				cw : u32 [ u32[ m68k.sr ] ]
+				cw : u32 [ m68k.sr ]
 				if [ kind == 0 ] cw = cw | iw
 				el [ kind == 1 ] cw = cw & iw
 				el cw = cw ^ iw
@@ -2581,9 +2581,9 @@ element rgen : trinity
 		dyn : bool [ (op & 0x0100) != 0 ]
 		if [ dyn && ((op >> 3) & 7) == 1 ]                 # MOVEP — deferred
 			return op_illegal[ op ]
-		btyp : i32 [ i32[ (op >> 6) & 3 ] ]
-		mode : i32 [ i32[ (op >> 3) & 7 ] ]
-		rm : i32 [ i32[ op & 7 ] ]
+		btyp : i32 [ (op >> 6) & 3 ]
+		mode : i32 [ (op >> 3) & 7 ]
+		rm : i32 [ op & 7 ]
 		bn : u32 [ 0 ]
 		extra : i32 [ 0 ]
 		if [ dyn ] bn = m68k.d[ i32[ (op >> 9) & 7 ] ]
@@ -2591,7 +2591,7 @@ element rgen : trinity
 			bn = u32[ fetch16[] ]
 			extra = 4
 		if [ mode == 0 ]                                   # register: long
-			bit : i32 [ i32[ bn & 31 ] ]
+			bit : i32 [ bn & 31 ]
 			d : u32 [ m68k.d[ rm ] ]
 			setflag[ 0x04, (d & (u32[1] << bit)) == 0 ]
 			r : u32 [ d ]
@@ -2603,9 +2603,9 @@ element rgen : trinity
 			if [ btyp == 1 || btyp == 3 ] base = 8
 			el [ btyp == 2 ] base = 10
 			return base + extra
-		bit2 : i32 [ i32[ bn & 7 ] ]                       # memory: byte
+		bit2 : i32 [ bn & 7 ]                       # memory: byte
 		addr : u32 [ ea_calc[ mode, rm, 0 ] ]
-		d2 : u32 [ u32[ bus_r8[ addr ] ] ]
+		d2 : u32 [ bus_r8[ addr ] ]
 		setflag[ 0x04, (d2 & (u32[1] << bit2)) == 0 ]
 		r2 : u32 [ d2 ]
 		if [ btyp == 1 ] r2 = d2 ^ (u32[1] << bit2)
@@ -2617,14 +2617,14 @@ element rgen : trinity
 
 	# $5xxx: ADDQ / SUBQ / Scc / DBcc [§5, §6, §10]
 	func op_quick [ op: u16 ] -> i32
-		sz2 : i32 [ i32[ (op >> 6) & 3 ] ]
-		mode : i32 [ i32[ (op >> 3) & 7 ] ]
-		rm : i32 [ i32[ op & 7 ] ]
+		sz2 : i32 [ (op >> 6) & 3 ]
+		mode : i32 [ (op >> 3) & 7 ]
+		rm : i32 [ op & 7 ]
 		if [ sz2 == 3 ]
-			cc : i32 [ i32[ (op >> 8) & 0xF ] ]
+			cc : i32 [ (op >> 8) & 0xF ]
 			if [ mode == 1 ]                               # DBcc: 12 / 10 / 14
 				base : u32 [ m68k.pc ]
-				disp : i32 [ i32[ i16[ fetch16[] ] ] ]
+				disp : i32 [ i16[ fetch16[] ] ]
 				if [ test_cc[ cc ] ] return 12
 				cnt : u32 [ (m68k.d[ rm ] - 1) & 0xFFFF ]
 				m68k.d[ rm ] = (m68k.d[ rm ] & 0xFFFF0000) | cnt
@@ -2640,7 +2640,7 @@ element rgen : trinity
 			sa : u32 [ ea_calc[ mode, rm, 0 ] ]
 			bus_w8[ sa, u8[ sv ] ]
 			return 8 + ea_time[ mode, rm, false ]
-		data : u32 [ u32[ (op >> 9) & 7 ] ]
+		data : u32 [ (op >> 9) & 7 ]
 		if [ data == 0 ] data = 8
 		issub : bool [ (op & 0x0100) != 0 ]
 		if [ mode == 1 ]                                   # to An: 8, no flags
@@ -2664,10 +2664,10 @@ element rgen : trinity
 		return ((isL) ? 12 : 8) + ea_time[ mode, rm, isL ]
 
 	func op_addsub [ op: u16, is_sub: bool ] -> i32
-		reg : i32 [ i32[ (op >> 9) & 7 ] ]
-		opm : i32 [ i32[ (op >> 6) & 7 ] ]
-		mode : i32 [ i32[ (op >> 3) & 7 ] ]
-		rm : i32 [ i32[ op & 7 ] ]
+		reg : i32 [ (op >> 9) & 7 ]
+		opm : i32 [ (op >> 6) & 7 ]
+		mode : i32 [ (op >> 3) & 7 ]
+		rm : i32 [ op & 7 ]
 		if [ opm == 3 || opm == 7 ]                        # ADDA/SUBA
 			isL : bool [ opm == 7 ]
 			cyc : i32 [ 0 ]
@@ -2740,10 +2740,10 @@ element rgen : trinity
 
 	# $Bxxx: CMP / CMPA / CMPM / EOR [§4, §9]
 	func op_cmp_eor [ op: u16 ] -> i32
-		reg : i32 [ i32[ (op >> 9) & 7 ] ]
-		opm : i32 [ i32[ (op >> 6) & 7 ] ]
-		mode : i32 [ i32[ (op >> 3) & 7 ] ]
-		rm : i32 [ i32[ op & 7 ] ]
+		reg : i32 [ (op >> 9) & 7 ]
+		opm : i32 [ (op >> 6) & 7 ]
+		mode : i32 [ (op >> 3) & 7 ]
+		rm : i32 [ op & 7 ]
 		if [ opm == 3 || opm == 7 ]                        # CMPA: 6 + EA
 			isL : bool [ opm == 7 ]
 			s : u32 [ ea_read[ mode, rm, (isL) ? 2 : 1 ] ]
@@ -2790,10 +2790,10 @@ element rgen : trinity
 
 	# $Cxxx: AND / MULU / MULS / EXG [§4, §12]. ABCD deferred.
 	func op_and_mul [ op: u16 ] -> i32
-		reg : i32 [ i32[ (op >> 9) & 7 ] ]
-		opm : i32 [ i32[ (op >> 6) & 7 ] ]
-		mode : i32 [ i32[ (op >> 3) & 7 ] ]
-		rm : i32 [ i32[ op & 7 ] ]
+		reg : i32 [ (op >> 9) & 7 ]
+		opm : i32 [ (op >> 6) & 7 ]
+		mode : i32 [ (op >> 3) & 7 ]
+		rm : i32 [ op & 7 ]
 		if [ opm == 3 || opm == 7 ]                        # MULU/MULS: 38+2n [§4]
 			s : u32 [ ea_read[ mode, rm, 1 ] & 0xFFFF ]
 			et : i32 [ ea_time[ mode, rm, false ] ]
@@ -2804,8 +2804,8 @@ element rgen : trinity
 				for [ i: i32 0, i < 16, i += 1 ]
 					if [ (s & (u32[1] << i)) != 0 ] n += 1
 			el
-				sd : i32 [ i32[ i16[ u16[ s ] ] ] ]
-				dd : i32 [ i32[ i16[ u16[ m68k.d[ reg ] & 0xFFFF ] ] ] ]
+				sd : i32 [ i16[ u16[ s ] ] ]
+				dd : i32 [ i16[ u16[ m68k.d[ reg ] & 0xFFFF ] ] ]
 				r = u32[ sd * dd ]
 				t : u32 [ (s << 1) ^ s ]
 				for [ i2: i32 0, i2 < 17, i2 += 1 ]
@@ -2851,10 +2851,10 @@ element rgen : trinity
 		return ((isL) ? 12 : 8) + ea_time[ mode, rm, isL ]
 
 	func op_or_div [ op: u16 ] -> i32
-		reg : i32 [ i32[ (op >> 9) & 7 ] ]
-		opm : i32 [ i32[ (op >> 6) & 7 ] ]
-		mode : i32 [ i32[ (op >> 3) & 7 ] ]
-		rm : i32 [ i32[ op & 7 ] ]
+		reg : i32 [ (op >> 9) & 7 ]
+		opm : i32 [ (op >> 6) & 7 ]
+		mode : i32 [ (op >> 3) & 7 ]
+		rm : i32 [ op & 7 ]
 		if [ opm == 3 ]                                    # DIVU
 			dv : u32 [ ea_read[ mode, rm, 1 ] & 0xFFFF ]
 			et : i32 [ ea_time[ mode, rm, false ] ]
@@ -2890,11 +2890,11 @@ element rgen : trinity
 		if [ opm == 7 ]                                    # DIVS
 			dvw : u32 [ ea_read[ mode, rm, 1 ] & 0xFFFF ]
 			et2 : i32 [ ea_time[ mode, rm, false ] ]
-			dvs : i32 [ i32[ i16[ u16[ dvw ] ] ] ]
+			dvs : i32 [ i16[ u16[ dvw ] ] ]
 			if [ dvs == 0 ]
 				log 'rgen 68k: DIVS by zero (exception pending impl)'
 				return 42 + et2
-			dds : i32 [ i32[ m68k.d[ reg ] ] ]
+			dds : i32 [ m68k.d[ reg ] ]
 			c2 : i32 [ 6 ]                                 # Ijor model [§4]
 			if [ dds < 0 ] c2 += 1
 			adv : u32 [ (dvs < 0) ? u32[ 0 - dvs ] : u32[ dvs ] ]
@@ -2949,20 +2949,20 @@ element rgen : trinity
 
 	# $Exxx: shifts/rotates [§7]
 	func op_shift [ op: u16 ] -> i32
-		sz2 : i32 [ i32[ (op >> 6) & 3 ] ]
+		sz2 : i32 [ (op >> 6) & 3 ]
 		left : bool [ (op & 0x0100) != 0 ]
 		if [ sz2 == 3 ]                                    # memory: by 1, word
-			typ : i32 [ i32[ (op >> 9) & 3 ] ]
-			mode : i32 [ i32[ (op >> 3) & 7 ] ]
-			rm : i32 [ i32[ op & 7 ] ]
+			typ : i32 [ (op >> 9) & 3 ]
+			mode : i32 [ (op >> 3) & 7 ]
+			rm : i32 [ op & 7 ]
 			addr : u32 [ ea_calc[ mode, rm, 1 ] ]
 			d : u32 [ mem_read[ addr, 1 ] ]
 			r : u32 [ shift_exec[ typ, left, d, 1, 1 ] ]
 			mem_write[ addr, 1, r ]
 			return 8 + ea_time[ mode, rm, false ]
-		typ2 : i32 [ i32[ (op >> 3) & 3 ] ]
-		rm2 : i32 [ i32[ op & 7 ] ]
-		cnt : i32 [ i32[ (op >> 9) & 7 ] ]
+		typ2 : i32 [ (op >> 3) & 3 ]
+		rm2 : i32 [ op & 7 ]
+		cnt : i32 [ (op >> 9) & 7 ]
 		if [ (op & 0x20) != 0 ]
 			cnt = i32[ m68k.d[ cnt ] & 63 ]
 		el
@@ -2984,7 +2984,7 @@ element rgen : trinity
 		if [ trace && icount < 260 ]
 			log 'i{icount} pc={m68k.pc - 2} op={op}'
 			icount += 1
-		top : i32 [ i32[ (op >> 12) & 0xF ] ]
+		top : i32 [ (op >> 12) & 0xF ]
 		switch [ top ]
 			case 0                        # immediates + bit ops
 				return op_imm[ op ]

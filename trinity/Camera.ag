@@ -115,8 +115,10 @@ class Camera
             sreq : VkMemoryRequirements [ ]
             vkGetBufferMemoryRequirements[ vk.device, staging_buf,
                     @sreq ]
-            needed : u32 [ VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT ]
-            s_type_idx : u32 [ vk.find_memory_type[ sreq.memoryTypeBits, needed ] ]
+            needed : u32 [
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT ]
+            s_type_idx : u32 [ vk.find_memory_type[ sreq.memoryTypeBits,
+                                                    needed ] ]
             smai : VkMemoryAllocateInfo [
                 sType:           VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                 allocationSize:  sreq.size,
@@ -149,7 +151,8 @@ class Camera
                 dstAccessMask: VK_ACCESS_TRANSFER_READ_BIT
             ]
             vkCmdPipelineBarrier[ cmd.cmd,
-                VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK_PIPELINE_STAGE_HOST_BIT,
+                VK_PIPELINE_STAGE_TRANSFER_BIT,
                 0, 1, @host_bar, 0, null, 0, null ]
 
         cam_barrier : VkImageMemoryBarrier [
@@ -166,7 +169,8 @@ class Camera
             dstAccessMask: VK_ACCESS_TRANSFER_WRITE_BIT
         ]
         vkCmdPipelineBarrier[ cmd.cmd,
-            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
             0, 0, null, 0, null, 1, @cam_barrier ]
 
         copy : VkBufferImageCopy [
@@ -191,22 +195,23 @@ class Camera
         cam_barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT
         cam_barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT
         vkCmdPipelineBarrier[ cmd.cmd,
-            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
             0, 0, null, 0, null, 1, @cam_barrier ]
 
         image.transition_in[ cmd.cmd,
                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ]
 
-        sx0 : i32 [ i32 [ src_rect.x ] ]
-        sy0 : i32 [ i32 [ src_rect.y ] ]
-        sx1 : i32 [ i32 [ src_rect.x + src_rect.w ] ]
-        sy1 : i32 [ i32 [ src_rect.y + src_rect.h ] ]
+        src_left : i32 [ src_rect.x ]
+        src_top : i32 [ src_rect.y ]
+        src_right : i32 [ src_rect.x + src_rect.w ]
+        src_bottom : i32 [ src_rect.y + src_rect.h ]
         blit : VkImageBlit [
             srcSubresource: VkImageSubresourceLayers [
                 aspectMask: VK_IMAGE_ASPECT_COLOR_BIT, layerCount: 1 ],
             srcOffsets: [
-                VkOffset3D [ x: sx0, y: sy0, z: 0 ],
-                VkOffset3D [ x: sx1, y: sy1, z: 1 ] ],
+                VkOffset3D [ x: src_left, y: src_top, z: 0 ],
+                VkOffset3D [ x: src_right, y: src_bottom, z: 1 ] ],
             dstSubresource: VkImageSubresourceLayers [
                 aspectMask: VK_IMAGE_ASPECT_COLOR_BIT, layerCount: 1 ],
             dstOffsets: [
@@ -284,7 +289,9 @@ class Camera
                 expect err == 0, 'camera: VIDIOC_QUERYBUF {i} failed'
                 log 'camera: QUERYBUF {i} -> length={qb.length} m.offset={qb.m.offset} memory={qb.memory} bytesused={qb.bytesused}'
 
-                ptr : handle mmap[ null, qb.length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, qb.m.offset ]
+                ptr : handle mmap[ null, qb.length,
+                                   PROT_READ | PROT_WRITE, MAP_SHARED,
+                                   fd, qb.m.offset ]
                 expect ptr != MAP_FAILED, 'camera: mmap {i} failed'
                 mm_ptrs [i] = ptr
                 mm_sizes[i] = qb.length
@@ -343,10 +350,12 @@ class Camera
             fd_props.sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR
             expect vk._vkGetMemoryFdPropertiesKHR, 'camera: vkGetMemoryFdPropertiesKHR not loaded'
             err = vk._vkGetMemoryFdPropertiesKHR[ vk.device,
-                VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, dma_fd, @fd_props ]
+                VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, dma_fd,
+                @fd_props ]
             expect err == 0, 'camera: vkGetMemoryFdPropertiesKHR failed'
 
-            allowed : u32 [ mreq.memoryTypeBits & fd_props.memoryTypeBits ]
+            allowed : u32 [
+                mreq.memoryTypeBits & fd_props.memoryTypeBits ]
             expect allowed != 0, 'camera: no memory type compatible with dmabuf fd'
             mem_type_index : u32 [ 0 ]
             for [ k: u32 0, k < 32, k += 1 ]
@@ -458,8 +467,11 @@ class Camera
 
 ifdef [ apple ]
     func trinity_camera_count  []                                              -> i32
-    func trinity_camera_name   [ index: i32 ]                                  -> cstr
-    func trinity_camera_open   [ device: cstr, req_w: i32, req_h: i32, out_w: @i32, out_h: @i32, out_pitch: @u32 ] -> handle
+    func trinity_camera_name   [
+        index: i32 ]                                  -> cstr
+    func trinity_camera_open   [ device: cstr, req_w: i32, req_h: i32,
+                                 out_w: @i32, out_h: @i32,
+                                 out_pitch: @u32 ] -> handle
     func trinity_camera_copy   [ backend: handle, dst: @u8,
                                  dst_bytes: u32 ] -> i32
     func trinity_camera_close  [ backend: handle ]

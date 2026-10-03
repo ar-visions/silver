@@ -27,16 +27,46 @@ Orbiter PBR
     mutable work         : f32
     mutable done         : f32
 
-    attrib color        : LayoutBinding [ type:typeid[ Surface ], id:Surface.color,        count:1, format: typeid[ rgba8 ] ]
-    attrib normal        : LayoutBinding [ type:typeid[ Surface ], id:Surface.normal,       count:1, format: typeid[ rgba8 ] ]
-    attrib emission      : LayoutBinding [ type:typeid[ Surface ], id:Surface.emission,     count:1, format: typeid[ rgbaf ] ]
-    attrib rough         : LayoutBinding [ type:typeid[ Surface ], id:Surface.rough,        count:1, format: typeid[ u8 ] ]
-    attrib metal         : LayoutBinding [ type:typeid[ Surface ], id:Surface.metal,        count:1, format: typeid[ u8 ] ]
-    attrib height        : LayoutBinding [ type:typeid[ Surface ], id:Surface.height,       count:1, format: typeid[ f32 ] ]
-    attrib ao            : LayoutBinding [ type:typeid[ Surface ], id:Surface.ao,           count:1, format: typeid[ u8 ] ]
-    attrib ior           : LayoutBinding [ type:typeid[ Surface ], id:Surface.ior,          count:1, format: typeid[ f32 ] ]
-    attrib environment   : LayoutBinding [ type:typeid[ Surface ], id:Surface.environment,  count:1, format: typeid[ rgbaf ] ]
-    attrib spokes        : LayoutBinding [ type:typeid[ Surface ], id:Surface.spokes,       count:1, format: typeid[ rgba8 ] ]
+    attrib color        : LayoutBinding [ type:typeid[ Surface ],
+                                          id:Surface.color,
+                                          count:1,
+                                          format: typeid[ rgba8 ] ]
+    attrib normal        : LayoutBinding [ type:typeid[ Surface ],
+                                           id:Surface.normal,
+                                           count:1,
+                                           format: typeid[ rgba8 ] ]
+    attrib emission      : LayoutBinding [ type:typeid[ Surface ],
+                                           id:Surface.emission,
+                                           count:1,
+                                           format: typeid[ rgbaf ] ]
+    attrib rough         : LayoutBinding [ type:typeid[ Surface ],
+                                           id:Surface.rough,
+                                           count:1,
+                                           format: typeid[ u8 ] ]
+    attrib metal         : LayoutBinding [ type:typeid[ Surface ],
+                                           id:Surface.metal,
+                                           count:1,
+                                           format: typeid[ u8 ] ]
+    attrib height        : LayoutBinding [ type:typeid[ Surface ],
+                                           id:Surface.height,
+                                           count:1,
+                                           format: typeid[ f32 ] ]
+    attrib ao            : LayoutBinding [ type:typeid[ Surface ],
+                                           id:Surface.ao,
+                                           count:1,
+                                           format: typeid[ u8 ] ]
+    attrib ior           : LayoutBinding [ type:typeid[ Surface ],
+                                           id:Surface.ior,
+                                           count:1,
+                                           format: typeid[ f32 ] ]
+    attrib environment   : LayoutBinding [ type:typeid[ Surface ],
+                                           id:Surface.environment,
+                                           count:1,
+                                           format: typeid[ rgbaf ] ]
+    attrib spokes        : LayoutBinding [ type:typeid[ Surface ],
+                                           id:Surface.spokes,
+                                           count:1,
+                                           format: typeid[ rgba8 ] ]
 
     attrib a_pos          : VertexInput    [ type:typeid[ vec3f ] ]
     attrib a_normal       : VertexInput    [ type:typeid[ vec3f ] ]
@@ -61,7 +91,8 @@ Orbiter PBR
         if [ core_base == 0.0 ] core_base = 1.0
         if [ gamma == 0.0 ] gamma = 2.2
 
-    func set_frame [ model_mat: mat4f, view_mat: mat4f, proj_mat: mat4f, ep: vec4f, t: f32 ]
+    func set_frame [ model_mat: mat4f, view_mat: mat4f, proj_mat: mat4f,
+                     ep: vec4f, t: f32 ]
         model = model_mat
         view  = view_mat
         proj  = proj_mat
@@ -377,8 +408,9 @@ Orbiter Aura
 	mutable beam_cone   : f32
 	# the core flame's width, 1 = as authored (the ignition swings it)
 	mutable flame_w     : f32
-	# the core flame's look: 0 the orange flame, 1 the beam (thinner, white
-	# hot at the axis, violet at the edges, warm only at the source)
+	# the core flame's look: 0 the orange flame, 1 the beam (thinner,
+	# white hot at the axis, violet at the edges, warm only at the
+	# source)
 	mutable flame_style : f32
 	attrib a_pos     : VertexInput    [ type:typeid[ vec3f ] ]
 	attrib a_uv      : VertexInput    [ type:typeid[ vec2f ] ]
@@ -387,7 +419,8 @@ Orbiter Aura
     attrib v_eye_pos : VertexOutput   [ type:typeid[ vec3f ] ]
 
 	attrib rim       : LayoutBinding [ type:typeid[ Surface ], id:Surface.rim, count:1, format: typeid[ rgba8 ] ]
-	# the geometry pass's depth: a march sample behind the metal is dropped
+	# the geometry pass's depth: a march sample behind the metal is
+	# dropped
 	attrib height    : LayoutBinding [ type:typeid[ Surface ], id:Surface.height, count:1, format: typeid[ f32 ] ]
 
 	attrib fragColor : FragmentOutput [ type:typeid[ vec4f ] ]
@@ -909,7 +942,9 @@ Orbiter Core
     mutable core_phase  : f32
     mutable core_base   : f32
 
-    attrib color       : LayoutBinding [ type:typeid[ Surface ], id:Surface.color, count:1, format: typeid[ rgba8 ] ]
+    attrib color       : LayoutBinding [ type:typeid[ Surface ],
+                                         id:Surface.color, count:1,
+                                         format: typeid[ rgba8 ] ]
 
     attrib a_pos        : VertexInput  [ type:typeid[ vec3f ] ]
     attrib a_normal     : VertexInput  [ type:typeid[ vec3f ] ]
@@ -1029,11 +1064,13 @@ Orbiter Plasma
 
 
 # the groove mask: the body's geometry again, gray where the flower's
-# grooves are painted in its vertex color (blue, exported linear, read back
-# in sRGB; the separator's white verts carry red too and stay black). the
-# heat pass blurs it into the grooves' glow
+# grooves are painted in its vertex color (blue, exported linear, read
+# back in sRGB; the separator's white verts carry red too and stay
+# black). the heat pass blurs it into the grooves' glow
 ModelViewProject GrooveMask
-    attrib color     : LayoutBinding [ type:typeid[ Surface ], id:Surface.color, count:1, format: typeid[ rgba8 ] ]
+    attrib color     : LayoutBinding [ type:typeid[ Surface ],
+                                       id:Surface.color, count:1,
+                                       format: typeid[ rgba8 ] ]
     attrib a_pos     : VertexInput    [ type:typeid[ vec3f ] ]
     attrib a_normal  : VertexInput    [ type:typeid[ vec3f ] ]
     attrib a_uv      : VertexInput    [ type:typeid[ vec2f ] ]
@@ -1073,9 +1110,13 @@ ModelViewProject Heat
     mutable heat         : f32
     # the grooves' glow: 0 dark, 1 full
     mutable groove       : f32
-    attrib color     : LayoutBinding [ type:typeid[ Surface ], id:Surface.color, count:1, format: typeid[ rgba8 ] ]
+    attrib color     : LayoutBinding [ type:typeid[ Surface ],
+                                       id:Surface.color, count:1,
+                                       format: typeid[ rgba8 ] ]
     # the groove mask (GrooveMask's target)
-    attrib emission  : LayoutBinding [ type:typeid[ Surface ], id:Surface.emission, count:1, format: typeid[ rgba8 ] ]
+    attrib emission  : LayoutBinding [ type:typeid[ Surface ],
+                                       id:Surface.emission, count:1,
+                                       format: typeid[ rgba8 ] ]
 
     attrib pos       : VertexInput    [ type:typeid[ vec3f ] ]
     attrib uv        : VertexInput    [ type:typeid[ vec2f ] ]
@@ -1109,8 +1150,8 @@ ModelViewProject Heat
                        mix(nhash(i+vec3(0,1,1)),  nhash(i+vec3(1,1,1)), f.x), f.y), f.z);
     }
 
-    # the grooves' glow: the mask, blurred over two rings of taps, over its
-    # own sharp line
+    # the grooves' glow: the mask, blurred over two rings of taps, over
+    # its own sharp line
     func groove_glow [ at: vec2f ] -> GLSL vec3f {
         if (ubo.groove <= 0.001) return vec3(0.0);
         vec2  mt  = 1.0 / vec2(textureSize(emission, 0));
@@ -1211,14 +1252,19 @@ element Avatar
     public animate_always    : bool
     intern target            : Render
     intern vol_target        : Render
-    # the heat haze: the pbr pass's reduced image, bent (heat 0 leaves it)
+    # the heat haze: the pbr pass's reduced image, bent (heat 0 leaves
+    # it)
     intern heat_target       : Render
     intern heat_src          : Texture
-    intern heat_bound        : i64      # the reduced image's size the heat pass is bound to
-    # the groove mask: the body again, gray on the grooves, for the heat pass's glow
+    # the reduced image's size the heat pass is bound to
+    intern heat_bound        : i64
+    # the groove mask: the body again, gray on the grooves, for the heat
+    # pass's glow
     intern mask_target       : Render
-    intern mask_bound        : i64      # the mask's size the heat pass is bound to
-    intern heat_ready        : i32      # frames the heat pass has drawn since its last (re)bind
+    # the mask's size the heat pass is bound to
+    intern mask_bound        : i64
+    # frames the heat pass has drawn since its last (re)bind
+    intern heat_ready        : i32
     public mask_s            : GrooveMask
     # the grooves' glow: 0 dark, 1 full (set by the owner)
     public groove            : f32
@@ -1232,9 +1278,13 @@ element Avatar
     #public shader_type       : string
     public environment_path  : string
     public render_scale      : f32   [ 4.0 ]
-    mutable clock0           : i64   # the shaders' clock anchor (first frame)
-    mutable paint_once       : bool     # a restore: the target renders before its first paint
-    mutable depth_bound      : i64      # the depth size the volume pass is bound to (a resize remakes the image)
+    # the shaders' clock anchor (first frame)
+    mutable clock0           : i64
+    # a restore: the target renders before its first paint
+    mutable paint_once       : bool
+    # the depth size the volume pass is bound to (a resize remakes the
+    # image)
+    mutable depth_bound      : i64
     mutable clock_last       : i64
     mutable clock_s          : f64   # the shaders' time, in seconds run
     public  clock_run        : bool  [ true ]
@@ -1269,7 +1319,8 @@ element Avatar
         pulse_width: 1.0 ]
     
     # flame stays 0 in every state — a build state turns it on
-    public aura              : Aura    [ model_id: 'uv-quad2', env_id: 'night',
+    public aura              : Aura    [ model_id: 'uv-quad2',
+                                         env_id: 'night',
         pulse_width: 0.4, pulse_height: 1.2, halo_height: 0.4,
         beam_fade: 2.2, beam_cone: 0.35, flame: 0.0 ]
     public expanded          : bool
@@ -1359,9 +1410,10 @@ element Avatar
     func init [ ]
         animated = true
         if [ !area ] area = Region { r8 b11 w8 h14 }
-        tyn9 : string [ Au.header[ a ].au.ident ]
+        tyn : string [ Au.header[ a ].au.ident ]
         models = map Model[string][]
-        body.groups    = vec string [] [ 'outside', 'flower', 'separator' ]
+        body.groups    = vec string [] [ 'outside', 'flower',
+                                         'separator' ]
         core.groups    = vec string [] [ 'core' ]
         plasma.groups  = vec string [] [ 'top_ring', 'flower' ]
 
@@ -1390,24 +1442,28 @@ element Avatar
             m.id.hold[]
 
             if [ sh.env_id ]
-                ekey9 : '{sh.name}:{sh.env_id}'
-                env_tex : envcache[ekey9]
+                ekey : '{sh.name}:{sh.env_id}'
+                env_tex : envcache[ekey]
                 if [!env_tex]
-                    env_img  : Image [ uri: path['images/{sh.env_id}.exr'], surface:Surface.environment ]
+                    env_img  : Image [
+                        uri: path['images/{sh.env_id}.exr'],
+                        surface:Surface.environment ]
                     env_axis : vec3f [ 0.0, 1.0, 0.0 ]
                     env_tex  = environment[ vk, env_img, env_axis, 0.0 ]
-                    envcache[ekey9] = env_tex
+                    envcache[ekey] = env_tex
                 m.samplers[ 'environment' ] = env_tex
 
             if [ sh inherits PBR ]
                 if [ !spoke_cv ]
-                    spoke_cv = Canvas [ vk: vk, w: w_ref, format: Pixel.rgba8,
+                    spoke_cv = Canvas [ vk: vk, w: w_ref,
+                                        format: Pixel.rgba8,
                         width: 128, height: 128 ]
                     spoke_cv.resize[ 128, 128 ]
                 m.samplers[ 'spokes' ] = spoke_cv.color
             if [ sh inherits Aura ]
                 if [ !rim_cv ]
-                    rim_cv = Canvas [ vk: vk, w: w_ref, format: Pixel.rgba8,
+                    rim_cv = Canvas [ vk: vk, w: w_ref,
+                                      format: Pixel.rgba8,
                         width: 32, height: 256 ]
                     rim_cv.resize[ 32, 256 ]
                 m.samplers[ 'rim' ] = rim_cv.color
@@ -1422,7 +1478,8 @@ element Avatar
         if [ shader_type && shader_type.count ]
             f : Au_t [ Au.find_type [ shader_type.chars, null ] ]
             if [ f ]
-                s     = Au.new_object[ f, null, null, false, __FILE__, __LINE__, __SEQUENCE__ ]
+                s     = Au.new_object[ f, null, null, false, __FILE__,
+                                       __LINE__, __SEQUENCE__ ]
                 s.vk  = vk
                 s.initialize[]
                 if [ model ]
@@ -1447,12 +1504,14 @@ element Avatar
 
         rs : f32 [ (render_scale > 0.0) ? render_scale : 1.0 ]
         vs : f32 [ (vol_scale    > 0.0) ? vol_scale    : 0.25 ]
-        dscale : f32 [ (w_ref && w_ref.scale > 0.0) ? w_ref.scale : 1.0 ]
+        dscale : f32 [
+            (w_ref && w_ref.scale > 0.0) ? w_ref.scale : 1.0 ]
         log 'create_target: bounds={bounds.x},{bounds.y},{bounds.w},{bounds.h} render_scale={render_scale} rs={rs} dscale={dscale}'
 
         if [ geo_models.count ]
-            # the pbr pass renders at render_scale device pixels (4x each way)
-            # on every display and the reduction pass draws it down 4:1
+            # the pbr pass renders at render_scale device pixels (4x
+            # each way) on every display and the reduction pass draws it
+            # down 4:1
             gwf : f32 [ bounds.w * rs * dscale ]
             ghf : f32 [ bounds.h * rs * dscale ]
             log 'GEOTGT bounds={bounds.w}x{bounds.h} rs={rs} -> {gwf}x{ghf}'
@@ -1505,10 +1564,11 @@ element Avatar
         if [ target && mcache[ 'orbiter32' ] ]
             if [ !mask_s ]
                 mask_s = GrooveMask [ vk: vk, model_id: 'orbiter32' ]
-                mask_s.groups = vec string [] [ 'outside', 'flower', 'separator' ]
-            mm9 : Model [ vk: vk, w: w_ref, s: mask_s ]
-            mm9.id = mcache[ 'orbiter32' ]
-            mm9.id.hold[]
+                mask_s.groups = vec string [] [ 'outside', 'flower',
+                                                'separator' ]
+            mm : Model [ vk: vk, w: w_ref, s: mask_s ]
+            mm.id = mcache[ 'orbiter32' ]
+            mm.id.hold[]
             mask_target = Render [
                 tag:         'avmask',
                 vk:          vk,
@@ -1517,7 +1577,7 @@ element Avatar
                 height:      i32[ bounds.h * dscale ],
                 use_depth:   true,
                 clear_color: clear_color,
-                models:      [ mm9 ] ]
+                models:      [ mm ] ]
             mask_target.owner = a
             w_ref.element_targets[ '{id}-mask' ] = mask_target
             mask_target.wscale = 0.0
@@ -1527,7 +1587,10 @@ element Avatar
         if [ target && target.reduction && mask_target ]
             if [ !heat_s ] heat_s = Heat [ vk: vk ]
             heat_src = target.reduction
-            hm : Model [ w: w_ref, s: heat_s, samplers: map Texture[string] [ 'color': heat_src, 'emission': mask_target.color ] ]
+            hm : Model [ w: w_ref, s: heat_s,
+                         samplers: map Texture[string] [
+                             'color': heat_src,
+                             'emission': mask_target.color ] ]
             heat_target = Render [
                 tag:         'avheat',
                 vk:          vk,
@@ -1547,13 +1610,16 @@ element Avatar
         fresh9 : bool [ !target && !vol_target ]
         create_target[]
         if [ !target && !vol_target ] return
-        # the volume pass samples the geometry pass's depth: a resize gives
-        # that texture a new image, and a descriptor left on the old one is a
+        # the volume pass samples the geometry pass's depth: a resize
+        # gives that texture a new image, and a descriptor left on the
+        # old one is a
         # GPU page fault. rebind whenever the image changes
         if [ target && target.depth && vol_target && vol_target.models ]
-            dk9 : i64 [ i64[ target.depth.width ] * 65536 + i64[ target.depth.height ] ]
-            if [ dk9 != depth_bound ]
-                depth_bound = dk9
+            dk : i64 [
+                i64[ target.depth.width ] * 65536
+                + i64[ target.depth.height ] ]
+            if [ dk != depth_bound ]
+                depth_bound = dk
                 for [ vm: Model ] in vol_target.models
                     vm.samplers[ 'height' ] = target.depth
                     vm.rebind_model[]
@@ -1561,17 +1627,25 @@ element Avatar
         # model transform from World-level rotate property
         model_mat : mat4f.identity[]
         for [r:Rotation] in rotate
-            v     : vec4f [ r.axis.x, r.axis.y, r.axis.z, radians[ r.degs ] ]
+            v     : vec4f [ r.axis.x, r.axis.y, r.axis.z,
+                            radians[ r.degs ] ]
             q     : quatf [ v ]
             r_mat : mat4f [ mat4f.identity[].rotate[ q ] ]
             model_mat = r_mat.mul[ model_mat ]
 
-        e_pos : vec3f [ (eye_pos.x != 0.0 || eye_pos.y != 0.0 || eye_pos.z != 0.0) ? eye_pos : vec3f [ 0.0f, 3.5f, -2.0f ] ]
-        t_pos : vec3f [ (target_pos.x != 0.0 || target_pos.y != 0.0 || target_pos.z != 0.0) ? target_pos : vec3f [ 0.0f, 0.0f, 0.0f ] ]
-        u_vec : vec3f [ (up_vec.x != 0.0 || up_vec.y != 0.0 || up_vec.z != 0.0) ? up_vec : vec3f [ 0.0f, -1.0f, 0.0f ] ]
+        e_pos : vec3f [
+            (eye_pos.x != 0.0 || eye_pos.y != 0.0 || eye_pos.z != 0.0)
+            ? eye_pos : vec3f [ 0.0f, 3.5f, -2.0f ] ]
+        t_pos : vec3f [
+            (target_pos.x != 0.0 || target_pos.y != 0.0 || target_pos.z != 0.0) ? target_pos : vec3f [ 0.0f, 0.0f, 0.0f ] ]
+        u_vec : vec3f [
+            (up_vec.x != 0.0 || up_vec.y != 0.0 || up_vec.z != 0.0)
+            ? up_vec : vec3f [ 0.0f, -1.0f, 0.0f ] ]
         f     : f32   [ (fov > 0.0) ? fov : 40.0f ]
         asp   : f32   [ bounds.w / bounds.h ]
-        fy    : f32   [ (asp > 1.0f) ? radians[ f ] : 2.0f * atan[ tan[ radians[ f ] * 0.5f ] / asp ] ]
+        fy    : f32   [
+            (asp > 1.0f) ? radians[ f ]
+            : 2.0f * atan[ tan[ radians[ f ] * 0.5f ] / asp ] ]
         _proj : mat4f [ mat4f.perspective[ fy, asp, 0.1f, 100.0f ] ]
         _view : mat4f [ mat4f.look_at[ e_pos, t_pos, u_vec ] ]
         _pos  : vec4f [ e_pos.x, e_pos.y, e_pos.z, 1.0f ]
@@ -1582,17 +1656,20 @@ element Avatar
                 mvp.model        = model_mat
                 mvp.proj         = _proj
                 mvp.view         = _view
-                # the shaders' clock is wall-clock seconds from the avatar's
-                # first frame: the window's `time` is the background's, throttled
-                # by orbiter's draw-rate setting (1/64 at rest), and the flame's
-                # rising noise (ta) and the pulses froze on it
+                # the shaders' clock is wall-clock seconds from the
+                # avatar's first frame: the window's `time` is the
+                # background's, throttled by orbiter's draw-rate setting
+                # (1/64 at rest), and the flame's rising noise (ta) and
+                # the pulses froze on it
                 now9 : i64 [ epoch_millis[] ]
                 if [ clock0 == 0 ]
                     clock0     = now9
                     clock_last = now9
-                # the clock only runs while clock_run: the core's coloring
-                # cycles on it, and face on the avatar holds still
-                if [ clock_run ] clock_s += f64[ now9 - clock_last ] / 1000.0
+                # the clock only runs while clock_run: the core's
+                # coloring cycles on it, and face on the avatar holds
+                # still
+                if [ clock_run ]
+                    clock_s += f64[ now9 - clock_last ] / 1000.0
                 clock_last       = now9
                 mvp.time         = clock_s
             pb9 : (sh inherits PBR)
@@ -1606,29 +1683,30 @@ element Avatar
                 pb9.env_pitch   = env_pitch
 
 
-        msk9 : i32 [ 0 ]
-        if [ hovered ] msk9 = msk9 | i32[ State.hovered ]
-        if [ pressed ] msk9 = msk9 | i32[ State.pressed ]
-        if [ focused ] msk9 = msk9 | i32[ State.focused ]
+        msk : i32 [ 0 ]
+        if [ hovered ] msk = msk | i32[ State.hovered ]
+        if [ pressed ] msk = msk | i32[ State.pressed ]
+        if [ focused ] msk = msk | i32[ State.focused ]
         if [ target ]
-            target.state_mask = msk9
+            target.state_mask = msk
             target.update[]
         if [ vol_target ]
-            vol_target.state_mask = msk9
+            vol_target.state_mask = msk
             vol_target.update[]
 
 
         easing : bool [ false ]
         if [ want_w > 0.0 ]
             st9 : f32 [ 1.0 - pow[ 0.82, w.frame_factor ] ]
-            dw9 : f32 [ (want_w - cur_w) * st9 ]
+            dw : f32 [ (want_w - cur_w) * st9 ]
             dh9 : f32 [ (want_h - cur_h) * st9 ]
-            if [ dw9 > 0.01 || dw9 < -0.01 || dh9 > 0.01 || dh9 < -0.01 ]
-                nl9 : f32 [ bounds.x - dw9 * (anchor_x / bounds.w) ]
+            if [ dw > 0.01 || dw < -0.01 || dh9 > 0.01 || dh9 < -0.01 ]
+                nl : f32 [ bounds.x - dw * (anchor_x / bounds.w) ]
                 nt9 : f32 [ bounds.y - dh9 * (anchor_y / bounds.h) ]
-                cur_w += dw9
+                cur_w += dw
                 cur_h += dh9
-                area = Region [ 'l{nl9}px t{nt9}px w{cur_w}px h{cur_h}px' ]
+                area = Region [
+                    'l{nl}px t{nt9}px w{cur_w}px h{cur_h}px' ]
                 pristine = false
                 easing = true
 
@@ -1641,12 +1719,12 @@ element Avatar
 
         if [ target && !easing && settle_n >= 8 ]
             rs8 : f32 [ (render_scale > 0.0) ? render_scale : 1.0 ]
-            ds8 : f32 [ (w.scale > 0.0) ? w.scale : 1.0 ]
-            target.width  = i32[ bounds.w * rs8 * ds8 ]
-            target.height = i32[ bounds.h * rs8 * ds8 ]
+            ds : f32 [ (w.scale > 0.0) ? w.scale : 1.0 ]
+            target.width  = i32[ bounds.w * rs8 * ds ]
+            target.height = i32[ bounds.h * rs8 * ds ]
             if [ mask_target ]
-                mask_target.width  = i32[ bounds.w * ds8 ]
-                mask_target.height = i32[ bounds.h * ds8 ]
+                mask_target.width  = i32[ bounds.w * ds ]
+                mask_target.height = i32[ bounds.h * ds ]
             if [ vol_target ]
                 vs8 : f32 [ (vol_scale > 0.0) ? vol_scale : 0.25 ]
                 vw8 : f32 [ bounds.w * rs8 * vs8 ]
@@ -1663,8 +1741,10 @@ element Avatar
         if [ spoke_cv ]
             spoke_cv.update[]
             spoke_cv.save[]
-            spoke_cv.rounded_rect[ 0.0, 0.0, 128.0, 128.0, 0.0, 0.0, 0.0, 0.0 ]
-            spoke_cv.fill_color[ rgba [ r: 1.0, g: 1.0, b: 1.0, a: 1.0 ] ]
+            spoke_cv.rounded_rect[ 0.0, 0.0, 128.0, 128.0, 0.0, 0.0, 0.0,
+                                   0.0 ]
+            spoke_cv.fill_color[
+                rgba [ r: 1.0, g: 1.0, b: 1.0, a: 1.0 ] ]
             spoke_cv.paint[]
             spoke_cv.restore[]
             spoke_cv.sync_fence[]
@@ -1674,7 +1754,8 @@ element Avatar
         if [ rim_cv ]
             rim_cv.update[]
             rim_cv.save[]
-            rim_cv.rounded_rect[ 0.0, 0.0, 32.0, 256.0, 0.0, 0.0, 0.0, 0.0 ]
+            rim_cv.rounded_rect[ 0.0, 0.0, 32.0, 256.0, 0.0, 0.0, 0.0,
+                                 0.0 ]
             rim_cv.fill_color[ rgba [ r: 0.6, g: 0.3, b: 1.0, a: 1.0 ] ]
             rim_cv.paint[]
             rim_cv.restore[]
@@ -1684,8 +1765,9 @@ element Avatar
         ev : Event[ target: a ]
         update.invoke[ ev ]
 
-        # a target made this frame (or restored at full) renders once now:
-        # the frame's target pass ran before it existed or while it was hidden
+        # a target made this frame (or restored at full) renders once
+        # now: the frame's target pass ran before it existed or while it
+        # was hidden
         if [ fresh9 || paint_once ]
             paint_once = false
             if [ target ]
@@ -1698,29 +1780,37 @@ element Avatar
                 vol_target.sync_fence[]
         b : rect [ x: 0.0, y: 0.0, w: bounds.w, h: bounds.h ]
         if [ target ]
-            geo_tex : Texture [ (target.reduce && target.reduction) ? target.reduction : target.color ]
+            geo_tex : Texture [
+                (target.reduce && target.reduction) ? target.reduction
+                : target.color ]
             if [ heat_target && heat_s && geo_tex == target.reduction ]
-                # a resize remade the reduced image: follow it, at its size.
-                # keyed on the size (as depth_bound is): the remade Texture can
-                # come back at the same address, and the pass kept sampling the
-                # dead image
-                hk9 : i64 [ i64[ geo_tex.width ] * 65536 + i64[ geo_tex.height ] ]
-                mk9 : i64 [ i64[ mask_target.color.width ] * 65536 + i64[ mask_target.color.height ] ]
-                if [ heat_src != geo_tex || heat_bound != hk9 || mask_bound != mk9 ]
+                # a resize remade the reduced image: follow it, at its
+                # size. keyed on the size (as depth_bound is): the
+                # remade Texture can come back at the same address, and
+                # the pass kept sampling the dead image
+                hk : i64 [
+                    i64[ geo_tex.width ] * 65536
+                    + i64[ geo_tex.height ] ]
+                mk : i64 [
+                    i64[ mask_target.color.width ] * 65536
+                    + i64[ mask_target.color.height ] ]
+                if [
+                    heat_src != geo_tex || heat_bound != hk
+                    || mask_bound != mk ]
                     heat_src   = geo_tex
-                    heat_bound = hk9
-                    mask_bound = mk9
+                    heat_bound = hk
+                    mask_bound = mk
                     heat_ready = 0
                     heat_target.width  = geo_tex.width
                     heat_target.height = geo_tex.height
-                    for [ hm9: Model ] in heat_target.models
-                        hm9.samplers[ 'color' ]    = geo_tex
-                        hm9.samplers[ 'emission' ] = mask_target.color
-                        hm9.rebind_model[]
+                    for [ hm: Model ] in heat_target.models
+                        hm.samplers[ 'color' ]    = geo_tex
+                        hm.samplers[ 'emission' ] = mask_target.color
+                        hm.rebind_model[]
                 mask_s.model = model_mat
                 mask_s.proj  = _proj
                 mask_s.view  = _view
-                mask_target.state_mask = msk9
+                mask_target.state_mask = msk
                 mask_target.update[]
                 heat_s.model        = model_mat
                 heat_s.proj         = _proj
@@ -1729,10 +1819,11 @@ element Avatar
                 heat_s.pulse_height = (aura) ? aura.pulse_height : 1.0
                 heat_s.heat         = heat
                 heat_s.groove       = groove
-                heat_target.state_mask = msk9
+                heat_target.state_mask = msk
                 heat_target.update[]
-                # its image is empty until it has drawn (at start, and after a
-                # resize remakes it): the plain image shows until then
+                # its image is empty until it has drawn (at start, and
+                # after a resize remakes it): the plain image shows
+                # until then
                 if [ heat_ready >= 3 ] geo_tex = heat_target.color
                 el heat_ready += 1
             w.screen.draw_image[ geo_tex, b ]
@@ -1782,9 +1873,11 @@ export func orbiter_icon []
         w9 : Window [ vk: vk9, format: Pixel.rgba8, backbuffer: true,
             width: 512, height: 512 ]
         w9.hold[]
-        if [ !w9.element_targets ] w9.element_targets = map Render [string] []
+        if [ !w9.element_targets ]
+            w9.element_targets = map Render [string] []
         # the screen canvas a running window makes in its update
-        w9.screen = Canvas [ w: w9, vk: vk9, format: Pixel.rgba8, load_existing: true,
+        w9.screen = Canvas [ w: w9, vk: vk9, format: Pixel.rgba8,
+                             load_existing: true,
             width: 512, height: 512 ]
         w9.screen.resize[ 512, 512 ]
         w9.screen.update[]
@@ -1798,7 +1891,8 @@ export func orbiter_icon []
         bind_members[ av ]
         av.hold_members[]
         av.bounds = rect [ x: 0.0, y: 0.0, w: 512.0, h: 512.0 ]
-        # the app's resting yaw (on_state sets it there): flat top and bottom
+        # the app's resting yaw (on_state sets it there): flat top and
+        # bottom
         av.rotate = vec Rotation []
         av.rotate.push[ Rotation [ '0 1 0 30deg' ] ]
         av.rotate.push[ Rotation [ '1 0 0 0deg' ] ]
