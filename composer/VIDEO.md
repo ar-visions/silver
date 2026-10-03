@@ -162,6 +162,19 @@ of the mark that asks for it (see the marks' stills).
 | region | the text `'x y w h'`, each a share of the frame (0..1, top left origin) |
 | speed | the share of the way it moves each frame at 60 a second (default 0.08; higher is quicker) |
 
+### Mute
+
+Clears the user's voice from `from` to `to`, for a stretch that
+should not be heard (a slip, a cough, words meant for the agent
+only). With the mic on its own track only the voice goes and the
+app's sound stays; without one the take is silent there. The
+picture is untouched. The span fades out and back in over 50 ms.
+
+| field | meaning |
+|---|---|
+| from | take time the voice is cleared from, seconds |
+| to | take time it comes back, seconds |
+
 ### Revoice
 
 The take's own sound from `from` to `to`, spoken in another voice.

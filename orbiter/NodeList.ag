@@ -657,7 +657,9 @@ element SidePanel
         t['side_bar'] = SideBar [ elements: Elements [
             'side_tabs' : StatusSegs [ buttons: vec string [] [
                     'reload_ready', 'side_scenes', 'side_menu' ],
-                icon_ids: vec string [] [ 'recycle', 'saturn', 'menu' ],
+                # no icon until a reload is ready
+                icon_ids: vec string [] [ (ready) ? 'recycle' : '',
+                    'saturn', 'menu' ],
                 icon_scale: 0.5,
                 manual: true, seg_radius: 0.0, use_spacing: false,
                 rest_fill: rgba [ '#0000' ],

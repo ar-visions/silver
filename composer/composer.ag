@@ -714,6 +714,16 @@ Op Revoice
     func stage [] -> i32
         return 2
 
+# clears the voice from .. to (take time): the mic track alone
+# when the take has one, else all of the take's sound
+Op Mute
+    public from : f64
+    public to   : f64
+    func invoke [ c: Composer ] -> bool
+        return c.add_mute[ a ]
+    func stage [] -> i32
+        return 2
+
 # zooms the picture onto a region of it from .. to (take time); the
 # zoom goes there and back by a decay; the take's sound is untouched
 Op Focus
@@ -756,6 +766,7 @@ class Composer
     public kept     : vec Kept
     public overlays : vec Overlay
     public voices   : vec Revoice
+    public mutes    : vec Mute
     public focuses  : vec Focus
     # each thing asked for that cannot be done
     public problems : vec string
@@ -982,12 +993,13 @@ class Composer
         if [ fps <= 0 ] fps = 60
         sound : AudioClip [ null ]
         if [ at ] sound = clip_of[ at, audio ]
-        # the stems matter only to a voice change
+        # the stems matter only to a voice change or a mute
         app9 : AudioClip [ null ]
         mic9 : AudioClip [ null ]
-        if [ voices.count > 0 && ap && mc ]
+        if [ (voices.count > 0 || mutes.count > 0) && ap && mc ]
             app9 = clip_of[ ap, audio ]
             mic9 = clip_of[ mc, audio ]
+        apply_mutes[ sound, app9, mic9 ]
         if [ !apply_voices[ sound, app9, mic9, disp ] ] return false
         # the pieces in output order; a cut splits the span it lands in
         segs : vec Seg []
@@ -1074,6 +1086,7 @@ class Composer
             Kept [ from: 0.0, to: length, out_at: 0.0 ] ]
         overlays = vec Overlay []
         voices   = vec Revoice []
+        mutes    = vec Mute []
         focuses  = vec Focus []
         if [ !comp ] return false
         # *[] dispatches to the subclass; [] binds to Op's own
@@ -1188,6 +1201,44 @@ class Composer
             return false
         voices.push[ v ]
         return true
+
+    func add_mute [ m: Mute ] -> bool
+        if [ m.to <= m.from || m.from < 0.0 || m.to > length ]
+            problems.push[
+                'mute {m.from}..{m.to} is outside the take (0..{length})' ]
+            return false
+        mutes.push[ m ]
+        return true
+
+    # every Mute op on the take's sound (48 kHz stereo) in place:
+    # the app's stem alone where there is one, else silence; 50 ms
+    # fades at both ends
+    func apply_mutes [ snd: AudioClip, app: AudioClip,
+                       mic: AudioClip ]
+        if [ mutes.count == 0 || !snd ] return
+        split : bool [
+            app && mic && app.frames >= snd.frames
+            && mic.frames >= snd.frames ]
+        rate : f64 [ f64[ snd.rate ] ]
+        ch : i64 [ i64[ snd.channels ] ]
+        fade : i64 [ i64[ rate * 0.05 ] ]
+        for [ m: Mute ] in mutes
+            a0 : i64 [ m.from * rate ]
+            a1 : i64 [ m.to * rate ]
+            if [ a1 > snd.frames ] a1 = snd.frames
+            n : i64 [ a1 - a0 ]
+            for [ i: i64 0, i < n, i += 1 ]
+                g : f32 [ 1.0 ]
+                if [ i < fade ] g = f32[ i ] / f32[ fade ]
+                if [ n - i < fade ] g = f32[ n - i ] / f32[ fade ]
+                for [ c: i64 0, c < ch, c += 1 ]
+                    ix : i64 [ (a0 + i) * ch + c ]
+                    keep : f32 [ 0.0 ]
+                    if [ split ] keep = f32[ app.pcm[ ix ] ]
+                    nv : f32 [ f32[ snd.pcm[ ix ] ] * (1.0 - g)
+                        + keep * g ]
+                    snd.pcm[ ix ] = i16[ nv ]
+            log 'composer: muted {m.from}..{m.to} s'
 
     # every Voice op on the take's sound (48 kHz stereo) in place:
     # seeded once per reference, converted in overlapping 15 s
@@ -2059,6 +2110,35 @@ expect func t_composition_plan [] -> bool
     ov : Overlay c.overlays[ 0 ]
     log 'insert lands at {ov.out_at} for {ov.length}'
     return ov.out_at == 17.0 && ov.length == 4.0
+
+# a mute clears 0.5..1.5 s: silence, or the app's stem alone
+expect func t_mute [] -> bool
+    c : Composer [ length: 2.0, problems: vec string [] ]
+    c.mutes = vec Mute []
+    if [ !c.add_mute[ Mute [ from: 0.5, to: 1.5 ] ] ] return false
+    if [ c.add_mute[ Mute [ from: 1.0, to: 3.0 ] ] ] return false
+    n : i64 [ 96000 ]
+    whole : vec i16 [ n * 2 ]
+    app : vec i16 [ n * 2 ]
+    mic : vec i16 [ n * 2 ]
+    for [ i: i64 0, i < n * 2, i += 1 ]
+        whole[ i ] = 1000
+        app[ i ]   = 200
+        mic[ i ]   = 800
+    snd : AudioClip [ rate: 48000, channels: 2, frames: n,
+                      pcm: @whole[ 0 ] ]
+    c.apply_mutes[ snd, null, null ]
+    if [ whole[ 48000 * 2 ] != 0 || whole[ 1000 ] != 1000
+         || whole[ 80000 * 2 ] != 1000 ] return false
+    for [ i: i64 0, i < n * 2, i += 1 ]
+        whole[ i ] = 1000
+    as : AudioClip [ rate: 48000, channels: 2, frames: n,
+                     pcm: @app[ 0 ] ]
+    ms : AudioClip [ rate: 48000, channels: 2, frames: n,
+                     pcm: @mic[ 0 ] ]
+    c.apply_mutes[ snd, as, ms ]
+    log 'mute: {whole[ 48000 * 2 ]} with stems, {whole[ 1000 ]} outside'
+    return whole[ 48000 * 2 ] == 200 && whole[ 1000 ] == 1000
 
 expect func t_composition_cut [] -> bool
     dir : path '/tmp/composer-cut'

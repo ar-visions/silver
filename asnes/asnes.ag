@@ -276,7 +276,7 @@ element asnes : trinity
 	public  spc_rom        	: path
 	# a new rom at runtime: stop the machine thread, drop the machine, and the
 	# frame loads the rom and starts it again the way it does at boot
-	default [ Live ] rom  : resource
+	expect default [ Live ] rom  : resource
 		log 'rom changed: {rom} (thread {(emu_started) ? 1 : 0})'
 		if [ emu_started ]
 			emu_stop = true

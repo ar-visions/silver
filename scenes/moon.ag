@@ -1,0 +1,413 @@
+extend scenes
+
+enum MoonSurface
+    color  : 0
+    height : 1
+    cloud  : 2
+    jungle : 3
+
+ModelViewProject MoonShader
+    mutable gain     : f32
+    mutable regolith : f32
+    # relief from the height map; 0 leaves the normal alone
+    mutable relief   : f32
+    mutable cam_pos : vec4f
+
+    attrib color  : LayoutBinding [ type:typeid[ MoonSurface ],
+                                    id:MoonSurface.color,  count:1,
+                                    format: typeid[ rgba8 ] ]
+    attrib height : LayoutBinding [ type:typeid[ MoonSurface ],
+                                    id:MoonSurface.height, count:1,
+                                    format: typeid[ rgba8 ] ]
+
+    attrib a_pos        : VertexInput   [ type:typeid[ vec3f ] ]
+    attrib a_normal     : VertexInput   [ type:typeid[ vec3f ] ]
+    attrib a_uv         : VertexInput   [ type:typeid[ vec2f ] ]
+
+    attrib v_normal     : VertexOutput  [ type:typeid[ vec3f ] ]
+    attrib v_uv         : VertexOutput  [ type:typeid[ vec2f ] ]
+    attrib v_world_pos  : VertexOutput  [ type:typeid[ vec4f ] ]
+
+    attrib fragColor    : FragmentOutput[ type:typeid[ vec4f ] ]
+
+    func init[]
+        eye    : vec3f [0.0f,  0.0f,  1.5f]
+        target : vec3f [0.0f,  0.0f,  0.0f]
+        up     : vec3f [0.0f, -1.0f,  0.0f]
+        model   = mat4f.identity   []
+        proj    = mat4f.perspective[radians[70.0f], 1.0f, 0.1f, 100.0f]
+        view    = mat4f.look_at    [eye, target, up]
+
+    func vertex[] -> GLSL none {
+        v_uv        = vec2(1.0 - a_uv.x, a_uv.y);
+        mat3 nm     = transpose(inverse(mat3(ubo.model)));
+        v_normal    = normalize(nm * a_normal);
+        vec4 wpos   = ubo.model * vec4(a_pos, 1.0);
+        v_world_pos = wpos;
+        gl_Position = ubo.proj * ubo.view * wpos;
+    }
+
+    func hash31 [ p: vec3f ] -> GLSL float {
+        return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453);
+    }
+
+    # value noise; one octave, continent scale is set by the caller
+    func vnoise [ p: vec3f ] -> GLSL float {
+        vec3 i = floor(p);
+        vec3 f = fract(p);
+        vec3 u = f * f * (3.0 - 2.0 * f);
+        float n000 = hash31(i + vec3(0.0, 0.0, 0.0));
+        float n100 = hash31(i + vec3(1.0, 0.0, 0.0));
+        float n010 = hash31(i + vec3(0.0, 1.0, 0.0));
+        float n110 = hash31(i + vec3(1.0, 1.0, 0.0));
+        float n001 = hash31(i + vec3(0.0, 0.0, 1.0));
+        float n101 = hash31(i + vec3(1.0, 0.0, 1.0));
+        float n011 = hash31(i + vec3(0.0, 1.0, 1.0));
+        float n111 = hash31(i + vec3(1.0, 1.0, 1.0));
+        return mix(mix(mix(n000, n100, u.x), mix(n010, n110, u.x), u.y),
+                   mix(mix(n001, n101, u.x), mix(n011, n111, u.x), u.y), u.z);
+    }
+
+    func p_permute4 [ x: vec4f ] -> GLSL vec4f {
+        return mod((x * 34.0 + 1.0) * x, vec4(289.0));
+    }
+
+    func p_invsqrt4 [ r: vec4f ] -> GLSL vec4f {
+        return 1.79284291400159 - 0.85373472095314 * r;
+    }
+
+    # gradient noise. value noise interpolates CORNER VALUES, so its
+    # isocontours run along the lattice and any mask built on it cuts
+    # square edges. gradient noise interpolates corner GRADIENTS and
+    # is zero at every lattice point, so nothing aligns to the grid
+    func gnoise [ P: vec3f ] -> GLSL float {
+        vec3 Pi0 = mod(floor(P), vec3(289.0));
+        vec3 Pi1 = mod(Pi0 + vec3(1.0), vec3(289.0));
+        vec3 Pf0 = fract(P);
+        vec3 Pf1 = Pf0 - vec3(1.0);
+        vec4 ix  = vec4(Pi0.x, Pi1.x, Pi0.x, Pi1.x);
+        vec4 iy  = vec4(Pi0.y, Pi0.y, Pi1.y, Pi1.y);
+        vec4 iz0 = vec4(Pi0.z);
+        vec4 iz1 = vec4(Pi1.z);
+        vec4 ixy  = p_permute4(p_permute4(ix) + iy);
+        vec4 ixy0 = p_permute4(ixy + iz0);
+        vec4 ixy1 = p_permute4(ixy + iz1);
+        vec4 gx0 = fract(ixy0 / 7.0) * 2.0 - 1.0;
+        vec4 gy0 = fract(floor(ixy0 / 7.0) / 7.0) * 2.0 - 1.0;
+        vec4 gz0 = 1.0 - abs(gx0) - abs(gy0);
+        vec4 gx1 = fract(ixy1 / 7.0) * 2.0 - 1.0;
+        vec4 gy1 = fract(floor(ixy1 / 7.0) / 7.0) * 2.0 - 1.0;
+        vec4 gz1 = 1.0 - abs(gx1) - abs(gy1);
+        vec4 sz0 = step(gz0, vec4(0.0));
+        gx0 -= sz0 * (step(0.0, gx0) - 0.5);
+        gy0 -= sz0 * (step(0.0, gy0) - 0.5);
+        vec4 sz1 = step(gz1, vec4(0.0));
+        gx1 -= sz1 * (step(0.0, gx1) - 0.5);
+        gy1 -= sz1 * (step(0.0, gy1) - 0.5);
+        vec3 g000 = vec3(gx0.x, gy0.x, gz0.x);
+        vec3 g100 = vec3(gx0.y, gy0.y, gz0.y);
+        vec3 g010 = vec3(gx0.z, gy0.z, gz0.z);
+        vec3 g110 = vec3(gx0.w, gy0.w, gz0.w);
+        vec3 g001 = vec3(gx1.x, gy1.x, gz1.x);
+        vec3 g101 = vec3(gx1.y, gy1.y, gz1.y);
+        vec3 g011 = vec3(gx1.z, gy1.z, gz1.z);
+        vec3 g111 = vec3(gx1.w, gy1.w, gz1.w);
+        vec4 nm0 = p_invsqrt4(vec4(dot(g000,g000), dot(g010,g010), dot(g100,g100), dot(g110,g110)));
+        g000 *= nm0.x; g010 *= nm0.y; g100 *= nm0.z; g110 *= nm0.w;
+        vec4 nm1 = p_invsqrt4(vec4(dot(g001,g001), dot(g011,g011), dot(g101,g101), dot(g111,g111)));
+        g001 *= nm1.x; g011 *= nm1.y; g101 *= nm1.z; g111 *= nm1.w;
+        float n000 = dot(g000, Pf0);
+        float n100 = dot(g100, vec3(Pf1.x, Pf0.y, Pf0.z));
+        float n010 = dot(g010, vec3(Pf0.x, Pf1.y, Pf0.z));
+        float n110 = dot(g110, vec3(Pf1.xy, Pf0.z));
+        float n001 = dot(g001, vec3(Pf0.xy, Pf1.z));
+        float n101 = dot(g101, vec3(Pf1.x, Pf0.y, Pf1.z));
+        float n011 = dot(g011, vec3(Pf0.x, Pf1.yz));
+        float n111 = dot(g111, Pf1);
+        vec3  fxyz = Pf0 * Pf0 * Pf0 * (Pf0 * (Pf0 * 6.0 - 15.0) + 10.0);
+        vec4  n_z  = mix(vec4(n000, n100, n010, n110), vec4(n001, n101, n011, n111), fxyz.z);
+        vec2  n_yz = mix(n_z.xy, n_z.zw, fxyz.y);
+        return mix(n_yz.x, n_yz.y, fxyz.x) * 0.5 + 0.5;
+    }
+
+    # three octaves on offset domains, over gradient noise
+    func fnoise [ p: vec3f ] -> GLSL float {
+        float a = gnoise(p);
+        float b = gnoise(p * 2.17 + vec3( 37.2, 11.7, 91.3));
+        float c = gnoise(p * 4.41 + vec3(-19.4, 63.1, 27.8));
+        return a * 0.56 + b * 0.30 + c * 0.14;
+    }
+
+    func fragment[] -> GLSL none {
+        vec3  n      = normalize(v_normal);
+        vec3  sun    = normalize(vec3(0.2, 0.0, 0.8));
+        // relief: tilt the normal by the height gradient, east/north basis
+        float e_uv   = 1.0 / 4096.0;
+        float h_l    = texture(height, v_uv + vec2(-e_uv, 0.0)).r;
+        float h_r    = texture(height, v_uv + vec2( e_uv, 0.0)).r;
+        float h_d    = texture(height, v_uv + vec2(0.0, -e_uv)).r;
+        float h_u    = texture(height, v_uv + vec2(0.0,  e_uv)).r;
+        vec3  t_e    = normalize(cross(vec3(0.0, 1.0, 0.0), n));
+        vec3  t_n    = cross(n, t_e);
+        vec3  bump   = t_e * (h_l - h_r) + t_n * (h_d - h_u);
+        float r_aa   = clamp(1.0 - fwidth(v_uv.x) * 4096.0, 0.0, 1.0);
+        n            = normalize(n + bump * ubo.relief * 24.0 * r_aa);
+        float ndl    = max(dot(n, sun), 0.0);
+        vec3  albedo = texture(color, v_uv).rgb;
+        // one blob spans most of the visible ground from low orbit
+        float g      = ubo.regolith;
+        float nz     = vnoise(normalize(v_world_pos.xyz) * 1.15);
+        float ctr    = 1.0 + g * (nz - 0.5) * 0.8;
+        vec3  alb    = clamp((albedo - 0.5) * ctr + 0.5, 0.0, 1.0);
+        alb          = mix(alb, alb * vec3(1.06, 0.99, 0.90), g * nz);
+        alb         *= (1.0 - 0.08 * g);
+        // regolith: no specular, a little ambient so the limb reads
+        vec3  lit    = alb * (0.05 + 0.95 * ndl) * ubo.gain;
+        fragColor    = vec4(lit / (1.0 + lit), 1.0);
+    }
+
+
+element Moon
+    frost : true
+    public func bg_color [ ] -> rgba
+        return color
+    frost_sharp : true
+    # eased camera distance / angle; p_set marks the first frame
+    intern e_cur  : f32
+    intern p_cur  : f32
+    intern p_set  : bool
+    intern moon   : MoonShader
+    # the earth in the sky gets the Earth scene's full stack
+    intern earth  : EarthShader
+    intern ocean  : OceanShader
+    intern cloud  : CloudShader
+    intern models : vec Model
+    intern target : Render
+    intern built  : bool
+    # async load: worker decodes, draw waits on ready for vk work
+    intern ready     : bool
+    intern loading   : bool
+    intern load_task : async
+    public color  : rgba [ r:0.004, g:0.006, b:0.014, a:1.0 ]
+
+    func build_models[]
+        built     = true
+        gltf_path : path '../{share_name}/models/earth.gltf'
+        gltf      : GltfModel.open[ gltf_path ]
+        moon      = MoonShader  [ vk: vk ]
+        earth     = EarthShader [ vk: vk ]
+        ocean     = OceanShader [ vk: vk ]
+        cloud     = CloudShader [ vk: vk ]
+
+        # the ground: one map, lit flat with the regolith noise
+        moon_samplers : map Image [string] [
+            'color':  Image [ uri: path '../{share_name}/textures/moon-color-8192x4096.jpg',    surface: MoonSurface.color ],
+            'height': Image [ uri: path '../{share_name}/textures/moon-displace-2048x1024.png', surface: MoonSurface.height ]
+        ]
+        earth_samplers : map Image [string] [
+            'color':      Image [ uri: path '../{share_name}/textures/earth-color-8192x4096.png',      surface: EarthSurface.color ],
+            'normal':     Image [ uri: path '../{share_name}/textures/earth-normal-8192x4096.png',     surface: EarthSurface.normal ],
+            'elevation':  Image [ uri: path '../{share_name}/textures/earth-elevation-8192x4096.png',  surface: EarthSurface.elevation ],
+            'water':      Image [ uri: path '../{share_name}/textures/earth-water-8192x4096.png',      surface: EarthSurface.water ],
+            'water_blur': Image [ uri: path '../{share_name}/textures/earth-water-blur-8192x4096.png', surface: EarthSurface.water_blur ],
+            'cloud':      Image [ uri: path '../{share_name}/textures/earth-cloud-8192x4096.png',      surface: EarthSurface.cloud ],
+            'bathymetry': Image [ uri: path '../{share_name}/textures/earth-bathymetry-8192x4096.png', surface: EarthSurface.bathymetry ],
+            'lights':     Image [ uri: path '../{share_name}/textures/earth-lights-8192x4096.png',     surface: EarthSurface.lights ]
+        ]
+        moon_model  : Model [ vk: vk, w: ux, id: gltf, s: moon,
+                              samplers: moon_samplers,
+                              straight_alpha: true ]
+        earth_model : Model [ vk: vk, w: ux, id: gltf, s: earth,
+                              samplers: earth_samplers,
+                              straight_alpha: true ]
+        ocean_model : Model [ vk: vk, w: ux, id: gltf, s: ocean,
+                              samplers: earth_samplers,
+                              straight_alpha: true ]
+        cloud_model : Model [ vk: vk, w: ux, id: gltf, s: cloud,
+                              samplers: earth_samplers,
+                              straight_alpha: true ]
+        models      = vec Model [] [ moon_model, earth_model,
+                                     ocean_model, cloud_model ]
+
+    func create_target[]
+        if [ target || !models || models.count == 0 ] return
+        # the backdrop sits under frost or blur: one pixel per point
+        target = Render [
+            vk:          vk,
+            w:           ux,
+            wscale:      (ux.scale > 1.0) ? 1.0 / ux.scale : 1.0,
+            use_depth:   true,
+            clear_color: vec4f [ color.r, color.g, color.b, 1.0 ],
+            models:      models ]
+        target.owner  = a
+        ux.element_targets[ id ] = target
+
+    # unregister only; we keep our ref so the GPU graph outlives the
+    # frame
+    public func on_unload [ ]
+        if [ ux && ux.element_targets ] ux.element_targets.rm[ id ]
+
+    # regolith: the editor's purples go gray under a lunar sky
+    public func theme [ ] -> map string [string]
+        return map string [string] [
+            '#140a2acc':  '#1c1c20cc',
+            '#140a2a80':  '#1c1c2080',
+            '#14121c80':  '#1c1c2080',   # instance panel background
+            '#4258':      '#8a8a8a22',
+            '#ff6a2e55':  '#9a9a9a55',
+            '#220022aa':  '#20202aaa',
+            '#22002280':  '#20202a80',   # commit tab fill, half alpha
+            '#614':       '#3c3c42',
+            '#413':       '#2e2e34',
+            '#826':       '#565660',
+            '#625a':      '#333a',
+            '#8af2':      '#8882',
+            '#425':       '#3a3a42',
+            '#ede3':      '#bbb3',       # editor selection border
+            '#44225588':  '#8a8a8a66',
+            '#ff3a6a22':  '#8a8a8a22',   # commit tab fill
+            '#ff3a6a44':  '#8a8a8a44',   # commit tab hover fill
+            '#3a1c8a40':  '#8a8a8a40',   # selected title tint
+            '#ff5a8a80':  '#9a9a9a80',   # commit tab border
+            '#ff7aa480':  '#b4b4b480'    # commit tab hover border
+        ]
+
+    func load_bg [ arg: object :: t: Moon ]
+        t0 : i64 [ Au.epoch_millis[] ]
+        log 'scene load_bg start at {t0}'
+        t.build_models[]
+        t1 : i64 [ Au.epoch_millis[] ]
+        log 'scene load_bg done in {t1 - t0}ms at {t1}'
+        t.ready = true
+
+    func draw [ w: Window ]
+        animated = true
+        if [ !built && !loading ]
+            loading = true
+            w9 : vec Au []
+            w9.push[ a ]
+            load_task = async [ target: a, work_fn: lambda load_bg[ a ],
+                                work: w9 ]
+        if [ !ready ] return
+        # the done job held this element: let it go
+        if [ load_task ] load_task = null
+        create_target[]
+        orbit[]
+
+    func orbit[]
+        # ux.time is KILOseconds: x64 advanced 0.016 deg a second, which
+        # is slower than the per-frame jitter that used to sit under it
+        time : ux.time * 1460.0
+        if [time == 0.0]
+            time = -54.0
+        # a surface flyover: altitude above the ground, not eye
+        # distance. low is the original 0.063 -- the ladder only goes
+        # outward
+        a_t      : f32 [ (ux.orbit_mode == OrbitView.low)  ? 0.063 :
+            (ux.orbit_mode == OrbitView.high) ? 0.200 : 0.600 ]
+        if [ e_cur == 0.0 ] e_cur = a_t
+        e_cur = filter_n[ e_cur, a_t, 0.08, ux.frame_factor ]
+        altitude : f32 [ e_cur ]
+        eye_dist : f32 [ 1.0 + altitude ]
+        # limb sits at 70.2; aim above it or there is no sky to fill
+        # off NADIR: flat is 0 so the body centres at any altitude. the
+        # limb sits at 70.2 at low orbit, so steep must clear it for sky
+        t_deg    : f32 [ (ux.angle_mode == ViewAngle.flat)   ? 0.0 :
+            (ux.angle_mode == ViewAngle.angled) ? 74.0 : 82.0 ]
+        if [ p_cur == 0.0 && !p_set ] p_cur = t_deg
+        p_set    = true
+        p_cur    = filter_n[ p_cur, t_deg, 0.08, ux.frame_factor ]
+        # set AFTER both eases, and OR them: whichever is still moving
+        # has to hold the frame skip off
+        ux.orbit_moving = abs[ e_cur - a_t ] > 0.0004 || abs[
+            p_cur - t_deg ] > 0.05
+        tilt     : f32 [ radians[ p_cur ] ]
+        # follow the window, never a fixed 16:9 -- a hardcoded aspect
+        # stretches the disc the moment the window is not that shape
+        aspect   : f32 [
+            (ux.height > 0) ? f32[ ux.width ] / f32[ ux.height ]
+            : 1.7778 ]
+
+        # NO per-frame nudge here: `time` is a local recomputed from
+        # ux.time every frame, so a -= cannot accumulate. all it did
+        # was add frame_factor's millisecond jitter on top
+        orbit_a : radians[ time ]
+        co      : cos[ orbit_a ]
+        so      : sin[ orbit_a ]
+
+        ex_l  : f32 [ 0.0 ]
+        ey_l  : f32 [ 0.0 ]
+        ez_l  : f32 [ eye_dist ]
+        fx_l  : f32 [ -sin[ tilt ] ]
+        fy_l  : f32 [ 0.0 ]
+        fz_l  : f32 [ -cos[ tilt ] ]
+        tx_l  : f32 [ ex_l + fx_l * 2.0 ]
+        ty_l  : f32 [ ey_l + fy_l * 2.0 ]
+        tz_l  : f32 [ ez_l + fz_l * 2.0 ]
+        ux_l  : f32 [ 1.0 ]
+        uy_l  : f32 [ 0.0 ]
+        uz_l  : f32 [ 0.0 ]
+
+        _eye    : vec3f [  co * ex_l + so * ez_l, ey_l,
+                          -so * ex_l + co * ez_l ]
+        _target : vec3f [  co * tx_l + so * tz_l, ty_l,
+                          -so * tx_l + co * tz_l ]
+        _up     : vec3f [  co * ux_l + so * uz_l, uy_l,
+                          -so * ux_l + co * uz_l ]
+
+        _proj    : mat4f.perspective[ radians[ 60.0 ], aspect, 0.001,
+                                      10.0 ]
+        _view    : mat4f.look_at    [ _eye, _target, _up ]
+
+        # the moon holds the middle
+        mm : mat4f.identity[]
+        moon.model = mm
+        moon.view  = _view
+        moon.proj  = _proj
+        moon.gain  = 1.0
+        moon.regolith = 1.0
+        moon.relief   = 0.0
+
+        # fixed in the sky; the limb sits at 70.2 from straight down
+        rise   : f32 [ radians[ 14.0 ] ]
+        aim    : f32 [ tilt + rise ]
+        e_dist : f32 [ 6.0 ]
+        e_off  : vec3f [ -e_dist * sin[ aim ], 0.0,
+                         eye_dist - e_dist * cos[ aim ] ]
+        # world +y is the screen's x axis here; north must follow screen
+        # up
+        nx_l : f32 [ -cos[ tilt ] ]
+        nz_l : f32 [  sin[ tilt ] ]
+        n_x  : f32 [  co * nx_l + so * nz_l ]
+        n_z  : f32 [ -so * nx_l + co * nz_l ]
+        # 90 degrees about this carries the model's +y onto north
+        e_axis : vec4f [ n_z, 0.0, -n_x, radians[ 90.0 ] ]
+        q_axis : quatf [ e_axis ]
+        # ux.time counts kiloseconds: 6000 = one turn per minute
+        spin_d : f32 [ ux.time * 6000.0 ]
+        e_spin : vec4f [ 0.0, 1.0, 0.0, radians[ spin_d ] ]
+        q_spin : quatf [ e_spin ]
+        e_sc   : vec3f [ 1.5, 1.5, 1.5 ]
+        em : mat4f.identity[]
+        em = em.translate[ e_off ]
+        em = em.rotate   [ q_axis ]
+        em = em.rotate   [ q_spin ]
+        em = em.scale    [ e_sc ]
+        earth.model = em
+        earth.view  = _view
+        earth.proj  = _proj
+        ocean.model = em
+        ocean.view  = _view
+        ocean.proj  = _proj
+        cloud.model = em
+        cloud.view  = _view
+        cloud.proj  = _proj
+
+        _cam : vec4f [ _eye.x, _eye.y, _eye.z, 1.0 ]
+        moon.cam_pos  = _cam
+        earth.cam_pos = _cam
+        ocean.cam_pos = _cam
+        cloud.cam_pos = _cam
+        earth.time    = time
+        ocean.time    = time
+        cloud.time    = time

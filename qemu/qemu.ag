@@ -47,7 +47,7 @@ element qemu : trinity
     public  height     : i32    [ 800 ]
     public  title      : string [ 'qemu' ]
     public  background : string [ 'Background' ]
-    default src        : path                # disk image or iso
+    expect default src : path                # disk image or iso
     public  kernel     : path
     public  initrd     : path
     public  append     : string              # kernel command line

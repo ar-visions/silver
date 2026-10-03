@@ -1,4 +1,5 @@
-
+# sega does what nintendon't; rgen does it in silver (sprite motion smoothing)
+# update: knes and asnes both have sprite motion smoothing
 export 0.8.8
 export extensions ['.gen', '.smd']
 
@@ -129,7 +130,7 @@ element rgen : trinity
 	public  height       : i32    [ 896 ]    # 224 x4
 	public  lock_aspect  : bool   [ true ]
 	public  background   : string [ 'Background' ]
-	default [ Live ] rom : resource          # cartridge image
+	expect default [ Live ] rom : resource          # cartridge image
 		log 'rom changed: {rom} (thread {(emu_started) ? 1 : 0})'
 		if [ emu_started ]
 			emu_stop = true

@@ -4713,6 +4713,38 @@ Control Editor
             scroll_target = scroll.y
         pristine = false
 
+    # the selected lines one tab in, or with out one level out (a
+    # tab, else up to four spaces); a line ending the selection at
+    # column 0 is left alone
+    func indent_lines [ out: bool ]
+        lo : i32 [ min[ anchor_line, sel_line ] ]
+        hi : i32 [ max[ anchor_line, sel_line ] ]
+        hi_col : i32 [ (sel_line > anchor_line) ? sel_col : anchor_col ]
+        if [ hi > lo && hi_col == 0 ] hi -= 1
+        begin_edit[ 1 ]
+        for [ r: i32 lo, r <= hi, r += 1 ]
+            line : string line_get[ r ]
+            moved : i32 [ 0 ]
+            if [ out ]
+                if [ line.count > 0 && line[ 0 ] == 9 ]
+                    moved = -1
+                el
+                    while [ moved > -4 && -moved < line.count
+                            && line[ -moved ] == 32 ]
+                        moved -= 1
+                if [ moved < 0 ]
+                    ed_set[ r, line.mid[ -moved, line.count + moved ] ]
+            el [ line.count > 0 ]
+                ed_set[ r, '\t' + line ]
+                moved = 1
+            if [ moved != 0 ]
+                if [ sel_line == r ]
+                    sel_col = max[ sel_col + moved, 0 ]
+                if [ anchor_line == r ]
+                    anchor_col = max[ anchor_col + moved, 0 ]
+        end_edit[]
+        pristine = false
+
     # a debugger stop: the arrow, the scroll, and a navigation entry for
     # it
     public func apply_stop [ lno: i32, col: i32 ]
@@ -5284,6 +5316,11 @@ Control Editor
         if [ vw && vw.count > 0 ]
             args = (args && args.count > 0) ? '--view {vw} {args}' : '--view {vw}'
         host_module[ mod, p, args ]
+
+    # a scheme some module exports (http, https ...)
+    public func is_protocol [ s: string ] -> bool
+        ensure_export_registry[]
+        return export_protocol.contains[ s ]
 
     # an address whose scheme a module exports: it hosts the address
     public func open_url [ url: string ] -> bool
@@ -7324,6 +7361,12 @@ Control Editor
         # Key.Tab — insert a real tab. tabs are the primary indent;
         el [ key == 258 ]
             if [ show_hits || edits_locked ] return
+            has_sel : bool [
+                anchor_line != sel_line || anchor_col != sel_col ]
+            # a selection indents its lines; shift takes one level out
+            if [ has_sel || ev.key.shift ]
+                indent_lines[ ev.key.shift ]
+                return
             # a tab is an inserted char — coalesces with the typing run
             begin_edit[ 0 ]
             if [ delete_selection[] ]

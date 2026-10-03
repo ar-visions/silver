@@ -1,0 +1,486 @@
+extend scenes
+
+# saturn: Solar System Scope's map (CC BY 4.0); their "8k" download is
+# 4096x2048
+export func bake_saturn []
+    root : path.path_startup[]
+    out  : path '{root}/scenes/textures/saturn-color.png'
+    force : getenv[ 'SILVER_EXPORT_FORCE' ]
+    if [ !force && out.exists[] ]
+        log 'scenes: saturn map current'
+        return
+    dir : path.path_storage[ 'scenes' ]
+    src : path '{dir}/saturn-sss.jpg'
+    if [ !src.exists[] ]
+        n : i64 [
+            Http.download[
+                'https://www.solarsystemscope.com/textures/download/8k_saturn.jpg', src ] ]
+        log 'scenes: fetched the saturn map ({n} bytes)'
+    im : Image [ uri: src ]
+    if [ !im || im.width == 0 ]
+        log 'scenes: cannot read {src}'
+        return
+    sat : im.resize[ 4096, 2048 ]
+    sat.png[ out ]
+    log 'scenes: saturn map baked -> {out}'
+
+# titan: NASA/JPL-Caltech/SSI Cassini ISS mosaic PIA22770 "Titan Mosaic:
+# The Surface Under the Haze"
+# (https://www.jpl.nasa.gov/images/pia22770-titan-mosaic-the-surface-under-the-haze/),
+# 5760x2880, kept at its own size
+export func bake_titan []
+    root : path.path_startup[]
+    out  : path '{root}/scenes/textures/titan-color.png'
+    force : getenv[ 'SILVER_EXPORT_FORCE' ]
+    if [ !force && out.exists[] ]
+        log 'scenes: titan map current'
+        return
+    dir : path.path_storage[ 'scenes' ]
+    src : path '{dir}/titan-pia22770.jpg'
+    if [ !src.exists[] ]
+        n : i64 [
+            Http.download[
+                'https://d2pn8kiwq2w21t.cloudfront.net/original_images/jpegPIA22770.jpg', src ] ]
+        log 'scenes: fetched the titan map ({n} bytes)'
+    im : Image [ uri: src ]
+    if [ !im || im.width == 0 ]
+        log 'scenes: cannot read {src}'
+        return
+    im.png[ out ]
+    log 'scenes: titan map baked -> {out}'
+
+enum TitanSurface
+    color  : 0
+    height : 1
+    height2 : 2
+    nrm_a  : 3
+    nrm_b  : 4
+
+# Titan to spec: 1.45 bar N2, tholin haze — orange thickening at the
+# limb, detached bluish upper layer, seasonal north polar hood
+ModelViewProject TitanShader
+    mutable gain    : f32
+    mutable cam_pos : vec4f
+
+    attrib color : LayoutBinding [ type:typeid[ TitanSurface ],
+                                   id:TitanSurface.color, count:1,
+                                   format: typeid[ rgba8 ] ]
+
+    attrib a_pos    : VertexInput [ type:typeid[ vec3f ] ]
+    attrib a_normal : VertexInput [ type:typeid[ vec3f ] ]
+    attrib a_uv     : VertexInput [ type:typeid[ vec2f ] ]
+
+    attrib v_normal    : VertexOutput [ type:typeid[ vec3f ] ]
+    attrib v_uv        : VertexOutput [ type:typeid[ vec2f ] ]
+    attrib v_world_pos : VertexOutput [ type:typeid[ vec4f ] ]
+
+    attrib fragColor : FragmentOutput[ type:typeid[ vec4f ] ]
+
+    func init[]
+        eye    : vec3f [0.0f, 0.0f, 2.5f]
+        target : vec3f [0.0f, 0.0f, 0.0f]
+        up     : vec3f [0.0f, -1.0f, 0.0f]
+        model   = mat4f.identity   []
+        proj    = mat4f.perspective[radians[60.0f], 1.0f, 0.01f, 100.0f]
+        view    = mat4f.look_at    [eye, target, up]
+
+    func vertex[] -> GLSL none {
+        v_uv        = vec2(1.0 - a_uv.x, a_uv.y);
+        mat3 nm     = transpose(inverse(mat3(ubo.model)));
+        v_normal    = normalize(nm * a_normal);
+        vec4 wpos   = ubo.model * vec4(a_pos, 1.0);
+        v_world_pos = wpos;
+        gl_Position = ubo.proj * ubo.view * wpos;
+    }
+
+    func fragment[] -> GLSL none {
+        vec3  n        = normalize(v_normal);
+        // half phase: the sun sits off to the side for both bodies
+        vec3  sun      = normalize(vec3(0.85, -0.10, 0.15));
+        vec3  view_dir = normalize(ubo.cam_pos.xyz - v_world_pos.xyz);
+        float mu       = clamp(dot(n, view_dir), 0.0, 1.0);
+        float h        = 1.0 - mu;
+        // surface reads at disc center, dissolving into haze mid-disc
+        float alb      = texture(color, v_uv).r;
+        vec3  surf     = mix(vec3(0.30, 0.17, 0.07), vec3(1.0, 0.70, 0.34), alb);
+        float sread    = (1.0 - smoothstep(0.0, 0.55, h)) * 0.45;
+        // haze body with the lensing bands near the limb — the
+        // classic cassini butterscotch, pale and creamy; the blue
+        // layer is a DARK thin rim, not a glow
+        vec3  warm     = vec3(0.95, 0.78, 0.54);
+        vec3  cream    = vec3(0.99, 0.90, 0.72);
+        vec3  blue     = vec3(0.20, 0.28, 0.58);
+        vec3  hazec    = mix(warm, cream, smoothstep(0.62, 0.84, h));
+        hazec          = mix(hazec, blue, smoothstep(0.86, 0.96, h));
+        // seasonal hood: haze thickens over the north pole
+        float hood     = smoothstep(0.78, 0.92, 1.0 - v_uv.y) * 0.35;
+        vec3  col      = mix(hazec, surf, clamp(sread - hood, 0.0, 1.0));
+        // terminator crosses the disc; the haze wraps it slightly
+        float wrap     = clamp(dot(n, sun) * 0.5 + 0.5, 0.0, 1.0);
+        float ndl      = max(dot(n, sun), 0.0);
+        // wrapped haze light plus real diffuse so the ball reads round
+        float lit      = 0.55 * wrap * wrap + 0.45 * ndl;
+        col           *= (0.02 + 1.10 * lit) * ubo.gain;
+        // tangent path absorption dims the disc toward its edges
+        col           *= (0.78 + 0.22 * mu);
+        // sun side gets a faint cool cast in the upper haze
+        float sunside  = clamp(dot(n, sun), 0.0, 1.0);
+        col           += vec3(0.10, 0.15, 0.32) * (sunside * sunside)
+                       * smoothstep(0.60, 0.94, h) * 0.35 * ubo.gain;
+        // soft outer edge: exponential falloff like a real scale
+        // height — opaque core, then a long asymptotic feather
+        float t        = clamp((h - 0.74) / 0.23, 0.0, 1.0);
+        float a        = exp(-6.0 * t * t);
+        fragColor      = vec4(col, a);
+    }
+
+# the rings: a squashed sphere shaded radially from the strip
+# texture — model-space xz radius IS the ring coordinate
+ModelViewProject RingShader
+    mutable gain    : f32
+    mutable cam_pos : vec4f
+    # x = the strip's inner radius over its outer, so t maps radius.
+    # y = the planet's radius over that same outer, which is the
+    # cylinder its shadow casts. both were saturn's numbers inline
+    mutable rgeo    : vec4f
+
+    attrib color : LayoutBinding [ type:typeid[ TitanSurface ],
+                                   id:TitanSurface.color, count:1,
+                                   format: typeid[ rgba8 ] ]
+
+    attrib a_pos    : VertexInput [ type:typeid[ vec3f ] ]
+    attrib a_normal : VertexInput [ type:typeid[ vec3f ] ]
+    attrib a_uv     : VertexInput [ type:typeid[ vec2f ] ]
+
+    attrib v_mpos      : VertexOutput [ type:typeid[ vec3f ] ]
+    attrib v_world_pos : VertexOutput [ type:typeid[ vec4f ] ]
+
+    attrib fragColor : FragmentOutput[ type:typeid[ vec4f ] ]
+
+    func init[]
+        eye    : vec3f [0.0f, 0.0f, 2.5f]
+        target : vec3f [0.0f, 0.0f, 0.0f]
+        up     : vec3f [0.0f, -1.0f, 0.0f]
+        model   = mat4f.identity   []
+        proj    = mat4f.perspective[radians[60.0f], 1.0f, 0.01f, 100.0f]
+        view    = mat4f.look_at    [eye, target, up]
+
+    func vertex[] -> GLSL none {
+        v_mpos      = a_pos;
+        vec4 wpos   = ubo.model * vec4(a_pos, 1.0);
+        v_world_pos = wpos;
+        gl_Position = ubo.proj * ubo.view * wpos;
+    }
+
+    func fragment[] -> GLSL none {
+        // saturn: D-ring inner at 74500/140220 of the F-ring outer
+        float rad = length(v_mpos.xz);
+        float r0  = ubo.rgeo.x;
+        float t   = (rad - r0) / (1.0 - r0);
+        if (t < 0.0 || t > 1.0) { fragColor = vec4(0.0); return; }
+        vec4  band = texture(color, vec2(t, 0.5));
+        vec3  sun  = normalize(vec3(0.85, -0.10, 0.15));
+        // the ring plane normal in world; both faces take light
+        vec3  pn   = normalize((ubo.model * vec4(0.0, 1.0, 0.0, 0.0)).xyz);
+        float ndl  = abs(dot(pn, sun));
+        // saturn's shadow: anti-sun side, within the ball's cylinder
+        vec3  ctr  = (ubo.model * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+        float rout = length((ubo.model * vec4(1.0, 0.0, 0.0, 0.0)).xyz);
+        vec3  p    = v_world_pos.xyz - ctr;
+        vec3  q    = p - sun * dot(p, sun);
+        float rp   = ubo.rgeo.y * rout;
+        float sh   = (dot(p, sun) < 0.0)
+                   ? mix(0.12, 1.0, smoothstep(rp * 0.96, rp * 1.04, length(q)))
+                   : 1.0;
+        vec3  col  = band.rgb * (0.03 + 0.97 * ndl) * sh * ubo.gain;
+        float a    = band.a * smoothstep(0.0, 0.012, t) * (1.0 - smoothstep(0.985, 1.0, t));
+        fragColor  = vec4(col, a);
+    }
+
+# saturn seen from titan: side-lit to the same half phase
+ModelViewProject SaturnShader
+    mutable gain    : f32
+    mutable cam_pos : vec4f
+
+    attrib color  : LayoutBinding [ type:typeid[ TitanSurface ],
+                                    id:TitanSurface.color,  count:1,
+                                    format: typeid[ rgba8 ] ]
+    # the ring strip: its alpha at the sun-crossing radius IS the shadow
+    attrib height : LayoutBinding [ type:typeid[ TitanSurface ],
+                                    id:TitanSurface.height, count:1,
+                                    format: typeid[ rgba8 ] ]
+
+    attrib a_pos    : VertexInput [ type:typeid[ vec3f ] ]
+    attrib a_normal : VertexInput [ type:typeid[ vec3f ] ]
+    attrib a_uv     : VertexInput [ type:typeid[ vec2f ] ]
+
+    attrib v_normal    : VertexOutput [ type:typeid[ vec3f ] ]
+    attrib v_uv        : VertexOutput [ type:typeid[ vec2f ] ]
+    attrib v_world_pos : VertexOutput [ type:typeid[ vec4f ] ]
+    attrib v_mpos      : VertexOutput [ type:typeid[ vec3f ] ]
+
+    attrib fragColor : FragmentOutput[ type:typeid[ vec4f ] ]
+
+    func init[]
+        eye    : vec3f [0.0f, 0.0f, 2.5f]
+        target : vec3f [0.0f, 0.0f, 0.0f]
+        up     : vec3f [0.0f, -1.0f, 0.0f]
+        model   = mat4f.identity   []
+        proj    = mat4f.perspective[radians[60.0f], 1.0f, 0.01f, 100.0f]
+        view    = mat4f.look_at    [eye, target, up]
+
+    func vertex[] -> GLSL none {
+        v_uv        = vec2(1.0 - a_uv.x, a_uv.y);
+        v_mpos      = a_pos;
+        mat3 nm     = transpose(inverse(mat3(ubo.model)));
+        v_normal    = normalize(nm * a_normal);
+        vec4 wpos   = ubo.model * vec4(a_pos, 1.0);
+        v_world_pos = wpos;
+        gl_Position = ubo.proj * ubo.view * wpos;
+    }
+
+    func fragment[] -> GLSL none {
+        vec3  n        = normalize(v_normal);
+        vec3  sun      = normalize(vec3(0.85, -0.10, 0.15));
+        vec3  view_dir = normalize(ubo.cam_pos.xyz - v_world_pos.xyz);
+        // ring shadow: trace this point toward the sun in MODEL space;
+        // where the ray crosses the equator inside the annulus, the
+        // ring strip's alpha at that radius blocks the light
+        vec3  sm  = normalize(transpose(mat3(ubo.model)) * sun);
+        float shad = 1.0;
+        if (abs(sm.y) > 1e-4) {{
+            float tr = -v_mpos.y / sm.y;
+            if (tr > 0.0) {{
+                vec3  q  = v_mpos + sm * tr;
+                float rr = length(q.xz) / 2.325;
+                float ur = (rr - 0.531) / 0.469;
+                if (ur > 0.0 && ur < 1.0) {{
+                    float ra = texture(height, vec2(ur, 0.5)).a;
+                    shad = 1.0 - ra * 0.85;
+                }}
+            }}
+        }}
+        // zonal winds: the equatorial jet plus alternating lobes —
+        // neighboring bands shear past each other like the real thing
+        float la = v_uv.y - 0.5;
+        float w  = 0.60 * exp(-la * la / 0.012)
+                 + 0.22 * cos(la * 43.98) * exp(-abs(la) * 1.8);
+        // flow ping-pong: two half-cycle phases crossfaded, so shear
+        // stays bounded and the bands slide forever without smearing
+        float t9 = ubo.time * 0.05;
+        float p0 = fract(t9);
+        float p1 = fract(t9 + 0.5);
+        float s0 = w * (p0 - 0.5) * 0.16;
+        float s1 = w * (p1 - 0.5) * 0.16;
+        float bl = abs(2.0 * p0 - 1.0);
+        // NO uniform spin here. any shift added at every latitude is
+        // common motion, and the eye reads the largest common motion
+        // as the whole planet turning -- it buries the shear
+        vec2  bu0 = vec2(v_uv.x + s0, v_uv.y);
+        vec2  bu1 = vec2(v_uv.x + s1, v_uv.y);
+        vec3  alb = mix(texture(color, bu0).rgb,
+                        texture(color, bu1).rgb, bl);
+        // wrapped like the moon, or opposite phases read as broken
+        float wr9      = clamp(dot(n, sun) * 0.5 + 0.5, 0.0, 1.0);
+        float ndl      = wr9 * wr9 * shad;
+        float mu       = clamp(dot(n, view_dir), 0.0, 1.0);
+        vec3  col      = alb * (0.08 + 0.92 * ndl) * ubo.gain;
+        // slight edge softening at this distance
+        float a        = smoothstep(0.0, 0.18, mu);
+        fragColor      = vec4(col, a);
+    }
+
+element Titan
+    frost : true
+    public func bg_color [ ] -> rgba
+        return color
+    frost_sharp : true
+    # eased camera distance / angle; p_set marks the first frame
+    intern e_cur  : f32
+    intern p_cur  : f32
+    intern p_set  : bool
+    intern titan  : TitanShader
+    intern saturn : SaturnShader
+    intern rings  : RingShader
+    intern models : vec Model
+    intern target : Render
+    intern built  : bool
+    # async load: worker decodes, draw waits on ready for vk work
+    intern ready     : bool
+    intern loading   : bool
+    intern load_task : async
+    public color  : rgba [ r:0.004, g:0.003, b:0.006, a:1.0 ]
+
+    func build_models[]
+        built     = true
+        gltf_path : path '../{share_name}/models/earth.gltf'
+        gltf      : GltfModel.open[ gltf_path ]
+        titan     = TitanShader [ vk: vk ]
+        t_samplers : map Image [string] [
+            'color': Image [ uri: path '../{share_name}/textures/titan-color.png', surface: TitanSurface.color ]
+        ]
+        titan_model : Model [ vk: vk, w: ux, id: gltf, s: titan,
+                              samplers: t_samplers,
+                              straight_alpha: true ]
+        saturn    = SaturnShader [ vk: vk ]
+        s_samplers : map Image [string] [
+            'color': Image [ uri: path '../{share_name}/textures/saturn-color.png', surface: TitanSurface.color,
+                wrap_u: true ],
+            'height': Image [ uri: path '../{share_name}/textures/saturn-ring-alpha.png', surface: TitanSurface.height ]
+        ]
+        saturn_model : Model [ vk: vk, w: ux, id: gltf, s: saturn,
+                               samplers: s_samplers,
+                               straight_alpha: true ]
+        rings     = RingShader [ vk: vk ]
+        r_samplers : map Image [string] [
+            'color': Image [ uri: path '../{share_name}/textures/saturn-ring-alpha.png', surface: TitanSurface.color ]
+        ]
+        ring_model : Model [ vk: vk, w: ux, id: gltf, s: rings,
+                             samplers: r_samplers,
+            straight_alpha: true ]
+        models = vec Model [] [saturn_model, ring_model, titan_model ]
+
+    func create_target[]
+        if [ target || !models || models.count == 0 ] return
+        # the backdrop sits under frost or blur: one pixel per point
+        target = Render [
+            vk:          vk,
+            w:           ux,
+            wscale:      (ux.scale > 1.0) ? 1.0 / ux.scale : 1.0,
+            use_depth:   true,
+            clear_color: vec4f [ color.r, color.g, color.b, 1.0 ],
+            models:      models ]
+        target.owner  = a
+        ux.element_targets[ id ] = target
+
+    # unregister only; we keep our ref so the GPU graph outlives the
+    # frame
+    public func on_unload [ ]
+        if [ ux && ux.element_targets ] ux.element_targets.rm[ id ]
+
+    # tholin sky: the ui goes deep amber-brown under the haze
+    public func theme [ ] -> map string [string]
+        return map string [string] [
+            '#140a2acc':  '#432a',       # editor pane background
+            '#140a2a80':  '#148a',       # console pane background
+            '#14121c80':  '#11448880',   # instance panel background
+            '#ff6a2e55':  '#ffb04a55',   # search highlight fill
+            '#220022aa':  '#1e1206aa',   # run console base fill
+            '#22002280':  '#1e120680',   # commit tab fill, half alpha
+            '#614':       '#4c3210',     # TButtons / nav rest fill
+            '#413':       '#38240c',     # TButtons hover fill
+            '#826':       '#6e4a18',     # TButtons lit / nav selected
+            '#625a':      '#5428',       # bottom status bar fill
+            '#8af2':      '#fc82',       # status bar inner glow
+            '#425':       '#18a8',     # editor selection color
+            '#ede3':      '#fc93',       # editor selection border
+            '#44225588':  '#18a4',    # editor line highlight
+            '#ff3a6a22':  '#ffb04a22',   # commit tab fill
+            '#ff3a6a44':  '#ffb04a44',   # commit tab hover fill
+            '#3a1c8a40':  '#8a643140',   # selected title tint
+            '#ff5a8a80':  '#ffb85a80',   # commit tab border
+            '#ff7aa480':  '#ffd08a80'    # commit tab hover border
+        ]
+
+    func load_bg [ arg: object :: t: Titan ]
+        t0 : i64 [ Au.epoch_millis[] ]
+        log 'scene load_bg start at {t0}'
+        t.build_models[]
+        t1 : i64 [ Au.epoch_millis[] ]
+        log 'scene load_bg done in {t1 - t0}ms at {t1}'
+        t.ready = true
+
+    func draw [ w: Window ]
+        animated = true
+        if [ !built && !loading ]
+            loading = true
+            w9 : vec Au []
+            w9.push[ a ]
+            load_task = async [ target: a, work_fn: lambda load_bg[ a ],
+                                work: w9 ]
+        if [ !ready ] return
+        # the done job held this element: let it go
+        if [ load_task ] load_task = null
+        create_target[]
+        orbit[]
+
+    func orbit[]
+        aspect : f32 [
+            (ux.height > 0) ? f32[ ux.width ] / f32[ ux.height ]
+            : 1.7778 ]
+        # pulled back: titan reads small with saturn owning the sky
+        e_t    : f32 [ (ux.orbit_mode == OrbitView.low)  ? 2.60 :
+                       (ux.orbit_mode == OrbitView.high) ? 3.40 : 4.60 ]
+        if [ e_cur == 0.0 ] e_cur = e_t
+        e_cur = filter_n[ e_cur, e_t, 0.08, ux.frame_factor ]
+
+        p_t    : f32 [ (ux.angle_mode == ViewAngle.flat)   ? 0.0 :
+            (ux.angle_mode == ViewAngle.angled) ? 0.156 : 0.480 ]
+        if [ p_cur == 0.0 && p_t != 0.0 && !p_set ] p_cur = p_t
+        p_set  = true
+        p_cur  = filter_n[ p_cur, p_t, 0.08, ux.frame_factor ]
+
+        ux.orbit_moving = abs[ e_cur - e_t ] > 0.002 || abs[
+            p_cur - p_t ] > 0.001
+        e_d    : f32 [ e_cur ]
+        _eye   : vec3f [ 0.0,  e_d * p_cur, e_d ]
+        _tgt   : vec3f [ 0.0,  0.0,  0.0  ]
+        _up    : vec3f [ 0.0, -1.0,  0.0  ]
+
+        _proj  : mat4f.perspective[ radians[ 60.0 ], aspect, 0.01,
+                                    60.0 ]
+        _view  : mat4f.look_at    [ _eye, _tgt, _up ]
+
+        # Titan turns once per 15.9 days — a gentle drift here
+        spin_d : f32 [ ux.time * 2400.0 ]
+        m_spin : vec4f [ 0.0, 1.0, 0.0, radians[ spin_d ] ]
+        q_spin : quatf [ m_spin ]
+        mm : mat4f.identity[]
+        mm = mm.rotate[ q_spin ]
+
+        titan.model   = mm
+        titan.view    = _view
+        titan.proj    = _proj
+        titan.gain    = 1.15
+        titan.cam_pos = vec4f [ _eye.x, _eye.y, _eye.z, 1.0 ]
+
+        # Saturn hangs huge in the sky, up and left, tidally fixed
+        s_off  : vec3f [ -8.0, -4.5, -20.0 ]
+        s_sc   : vec3f [ 10.5, 10.5, 10.5 ]
+        s_axis : vec4f [ 0.0, 0.0, 1.0, radians[ 26.7 ] ]
+        sq     : quatf [ s_axis ]
+        # tip the whole assembly toward the viewer: the ring plane
+        # opens into an ellipse instead of slicing the scene edge-on
+        s_tip  : vec4f [ 1.0, 0.0, 0.0, radians[ 20.0 ] ]
+        sq3    : quatf [ s_tip ]
+        s_spin : vec4f [ 0.0, 1.0, 0.0, radians[ ux.time * 9000.0 ] ]
+        sq2    : quatf [ s_spin ]
+        sm : mat4f.identity[]
+        sm = sm.translate[ s_off ]
+        sm = sm.rotate   [ sq3 ]
+        sm = sm.rotate   [ sq ]
+        sm = sm.rotate   [ sq2 ]
+        sm = sm.scale    [ s_sc ]
+        saturn.model    = sm
+        saturn.view     = _view
+        saturn.proj     = _proj
+        saturn.gain     = 1.9
+        saturn.cam_pos  = vec4f [ _eye.x, _eye.y, _eye.z, 1.0 ]
+        saturn.time     = ux.time * 60000.0
+
+        # rings share saturn's frame: F-ring outer = 2.325x the ball
+        r_sc : vec3f [ 24.4, 0.02, 24.4 ]
+        rm : mat4f.identity[]
+        rm = rm.translate[ s_off ]
+        rm = rm.rotate   [ sq3 ]
+        rm = rm.rotate   [ sq ]
+        rm = rm.scale    [ r_sc ]
+        rings.model   = rm
+        rings.view    = _view
+        rings.proj    = _proj
+        rings.gain    = 1.9
+        rings.cam_pos = vec4f [ _eye.x, _eye.y, _eye.z, 1.0 ]
+        # SATURN'S OWN, the two numbers that were inline in the
+        # shader: D-ring inner 74500 over F-ring outer 140220, and
+        # the ball's 60268 over that same outer
+        rings.rgeo    = vec4f [ 0.531, 0.430, 0.0, 0.0 ]

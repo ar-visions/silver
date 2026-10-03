@@ -1,0 +1,166 @@
+extend scenes
+
+element MilkyWay
+    frost : true
+    public func bg_color [ ] -> rgba
+        return color
+    frost_sharp : true
+    # eased field of view; orbit steps zoom the gaze, not a distance
+    intern e_cur  : f32
+    intern p_cur  : f32
+    intern gaia   : GaiaShader
+    intern models : vec Model
+    intern target : Render
+    intern built  : bool
+    # async load: worker decodes, draw waits on ready for vk work
+    intern ready     : bool
+    intern loading   : bool
+    intern load_task : async
+    # decoded by the worker; the vk objects are built on the main
+    # thread. the worker fills plain members only — a collection built
+    # on the worker does not survive its pool drain intact
+    intern geom      : GltfModel
+    intern img_color : Image
+    # flat clear-color pass; the backdrop from frame one
+    intern plain     : Render
+    public color  : rgba [ r:0.0, g:0.0, b:0.004, a:1.0 ]
+
+    # worker thread: file reads and pixel decodes only, never a vk call
+    func load_files[]
+        gltf_path : path '../{share_name}/models/earth.gltf'
+        geom      = GltfModel.open[ gltf_path ]
+        # the same Gaia all-sky map the other scenes wrap their spheres
+        # with
+        img_color = Image [ uri: path '../{share_name}/textures/gaia.png', surface: GaiaSurface.color ]
+
+    # main thread: every vk object this scene owns
+    func build_models[]
+        built     = true
+        gaia      = GaiaShader [ vk: vk ]
+        gaia_samplers : map Image [string] [ 'color': img_color ]
+        gaia_model : Model [ vk: vk, w: ux, id: geom, s: gaia,
+                             samplers: gaia_samplers,
+            straight_alpha: true, cull_none: true ]
+        models     = vec Model [] [ gaia_model ]
+
+    # a modelless pass that just clears to the scene color, so the ux
+    # has a backdrop to composite while the real one is still decoding
+    func create_plain[]
+        if [ plain || target ] return
+        plain = Render [
+            tag:         'plain',
+            vk:          vk,
+            w:           ux,
+            wscale:      1.0,
+            use_depth:   false,
+            clear_color: vec4f [ color.r, color.g, color.b, 1.0 ],
+            models:      [] ]
+        plain.owner = a
+        ux.element_targets[ id ] = plain
+
+    func create_target[]
+        if [ target || !models || models.count == 0 ] return
+        # the backdrop sits under frost or blur: one pixel per point
+        target = Render [
+            tag:         'scene',
+            vk:          vk,
+            w:           ux,
+            wscale:      (ux.scale > 1.0) ? 1.0 / ux.scale : 1.0,
+            use_depth:   true,
+            clear_color: vec4f [ color.r, color.g, color.b, 1.0 ],
+            models:      models ]
+        target.owner  = a
+        # swapping the map entry is what the window reads as a new
+        # backdrop
+        ux.element_targets[ id ] = target
+
+    # unregister only; we keep our ref so the GPU graph outlives the
+    # frame
+    public func on_unload [ ]
+        if [ ux && ux.element_targets ] ux.element_targets.rm[ id ]
+
+    # deep space: near-black panes, starlight blues
+    public func theme [ ] -> map string [string]
+        return map string [string] [
+            '#140a2acc':  '#0a0a1288',   # editor pane background
+            '#140a2a80':  '#418a',       # console pane background
+            '#14121c80':  '#44118880',   # instance panel background
+            '#ff6a2e55':  '#8a8aa455',   # search highlight fill
+            '#220022aa':  '#1e0e28aa',   # run console base fill
+            '#22002280':  '#1e0e2880',   # commit tab fill, half alpha
+            '#614':       '#524a',       # TButtons / nav rest fill
+            '#413':       '#524e',       # TButtons hover fill
+            '#826':       '#635e',       # TButtons lit / nav selected
+            '#625a':      '#5248',       # bottom status bar fill
+            '#8af2':      '#99a2',       # status bar inner glow 
+            '#425':       '#8164',       # editor selection color
+            '#ede3':      '#a388',       # editor selection border
+            '#44225588':  '#8a8aaa11',   # editor line highlight
+            '#ff3a6a22':  '#8a8ad422',   # commit tab fill
+            '#ff3a6a44':  '#8a8ad444',   # commit tab hover fill
+            '#3a1c8a40':  '#56608a40',   # selected title tint
+            '#ff5a8a80':  '#8a9ade80',   # commit tab border
+            '#ff7aa480':  '#a8b6ff80'    # commit tab hover border
+        ]
+
+
+    func load_bg [ arg: object :: t: MilkyWay ]
+        t0 : i64 [ Au.epoch_millis[] ]
+        log 'scene load_bg start at {t0}'
+        t.load_files[]
+        t1 : i64 [ Au.epoch_millis[] ]
+        log 'scene load_bg done in {t1 - t0}ms at {t1}'
+        t.ready = true
+
+    func draw [ w: Window ]
+        animated = true
+        create_plain[]
+        if [ !loading ]
+            loading = true
+            w9 : vec Au []
+            w9.push[ a ]
+            load_task = async [ target: a, work_fn: lambda load_bg[ a ],
+                                work: w9 ]
+        if [ !ready ] return
+        # the done job held this element: let it go
+        if [ load_task ] load_task = null
+        if [ !built ] build_models[]
+        create_target[]
+        orbit[]
+
+    func orbit[]
+        aspect : f32 [
+            (ux.height > 0) ? f32[ ux.width ] / f32[ ux.height ]
+            : 1.7778 ]
+        # orbit steps become zoom: field of view narrows from far to low
+        e_t    : f32 [ (ux.orbit_mode == OrbitView.low)  ? 45.0 :
+                       (ux.orbit_mode == OrbitView.high) ? 65.0 : 85.0 ]
+        if [ e_cur == 0.0 ] e_cur = e_t
+        e_cur = filter_n[ e_cur, e_t, 0.08, ux.frame_factor ]
+
+        # angle steps pitch the gaze off the galactic plane
+        p_t    : f32 [ (ux.angle_mode == ViewAngle.flat)   ? 0.0 :
+            (ux.angle_mode == ViewAngle.angled) ? 0.35 : 0.80 ]
+        p_cur  = filter_n[ p_cur, p_t, 0.08, ux.frame_factor ]
+        ux.orbit_moving = abs[ e_cur - e_t ] > 0.02 || abs[
+            p_cur - p_t ] > 0.001
+
+        _eye   : vec3f [ 0.0, 0.0, 0.0 ]
+        _tgt   : vec3f [ 0.0, p_cur, 1.0 ]
+        _up    : vec3f [ 0.0, -1.0, 0.0 ]
+        _proj  : mat4f.perspective[ radians[ e_cur ], aspect, 0.01,
+                                    20.0 ]
+        _view  : mat4f.look_at    [ _eye, _tgt, _up ]
+
+        # ux.time counts kiloseconds: a slow drift across the sky
+        spin_d : f32 [ ux.time * 900.0 ]
+        m_spin : vec4f [ 0.0, 1.0, 0.0, radians[ spin_d ] ]
+        q_spin : quatf [ m_spin ]
+        mm : mat4f.identity[]
+        mm = mm.rotate[ q_spin ]
+
+        gaia.model = mm
+        gaia.view  = _view
+        gaia.proj  = _proj
+        gaia.gain  = 0.88
+        gaia.time  = ux.time * 60000.0

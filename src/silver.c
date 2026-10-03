@@ -7090,6 +7090,9 @@ enode parse_statement(silver a)
         // export is an interface value only via the export-func
         // branch above; manifest exports must not read as access
         access = read_enum(a, interface_undefined, typeid(interface));
+    // expect default: the default argument, required (the app asks)
+    if (access == interface_expect && rec_top && read_if(a, "default"))
+        traits = AU_TRAIT_IS_DEFAULT;
     bool has_access = access != interface_undefined;
     if (access == interface_intern && next_is(a, "")) {
 

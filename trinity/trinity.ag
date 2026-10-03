@@ -278,6 +278,8 @@ class Prop
     public control : Au
     # an enum type's values, in order
     public stops   : vec string
+    # `expect default`: no value, the host asks for one first
+    public expected : bool
 
 # an app's props, answered to `props` as agi
 class LaunchProps
@@ -333,6 +335,7 @@ func props_of [ top_type: Au_t, target: Au, acc: LaunchProps ] -> none
             # bit 50 of traits: AU_TRAIT_IS_DEFAULT, the bare argument
             p.access = (((mem.traits >> 50) & 1) != 0) ?
                 'default' : 'public'
+            p.expected = mem.access_type == interface.expect
             # an enum's values, in order; its value goes by name
             en : bool [ false ]
             if [ mem.src && mem.src.members.count > 0 ]
@@ -7330,6 +7333,9 @@ element TButtons
             icon : string [ (icon_ids
                 && i < icon_ids.count) ? icon_ids[i] : buttons[i] ]
             svg  : SVGModel (icons) ? seg_svg[ icon ] : null
+            # an empty icon id: the segment shows nothing inside
+            blank : bool [ icon_ids && i < icon_ids.count
+                && icon_ids[i].count == 0 ]
             # the icons fade in with the reveal; a disabled one stays
             # dim, one not selected a little
             ia : f32 [ (off) ? off_alpha : ((lit) ? 1.0 : rest_alpha) ]
@@ -7341,7 +7347,7 @@ element TButtons
             icol : rgba [
                 (dang) ? rgba [ '#ff5c5c' ]
                 : ((go) ? rgba [ '#6fdc8c' ] : rgba [ '#fff' ]) ]
-            if [ svg ]
+            if [ svg && !blank ]
                 sc : f32 [ (icon_scale > 0.0) ? icon_scale : 0.55 ]
                 if [ icon_scales && i < icon_scales.count ]
                     sc = icon_scales[ i ]
@@ -7350,7 +7356,7 @@ element TButtons
                 iy  : f32 [ (bounds.h - isz) * 0.5 ]
                 cv.fill_color[ icol ]
                 cv.draw_svg[ svg, ix, iy, isz, isz ]
-            el
+            el [ !blank ]
                 cv.font_size[
                     (label_px > 0.0) ? label_px : bounds.h * 0.5 ]
                 cv.fill_color[ icol ]
@@ -7499,6 +7505,8 @@ element Splitter
     # drag floor for a sized pane, px
     public min_size   : f32 [ 40.0 ]
     public snap_close : bool
+    # a pane closed shut reopens by its owner, never a drag
+    public shut_locked : bool
     intern drag_ix    : i32
     # the dragged pane's width when the drag began
     intern drag_from  : f32
@@ -7678,11 +7686,20 @@ element Splitter
             cv.paint[ ]
         cv.restore[ ]
 
+    # the seam before a pane locked shut takes no grab
+    func seam_locked [ di: i32 ] -> bool
+        if [ !shut_locked ] return false
+        ids : order[]
+        if [ di + 1 >= ids.count ] return false
+        sk : element kid[ ids[ di + 1 ] ]
+        return sk && sk.extent < 0.0
+
     func on_press [ ev: Event ]
         if [ !bounds || !dseam ] return
         ids : order[]
         at  : f32 [ (vertical) ? ev.mouse.pos.y : ev.mouse.pos.x ]
         for [ di: i32 0, di < dseam.count, di += 1 ]
+            if [ seam_locked[ di ] ] continue
             d : f32 [ dseam[ di ] ]
             if [ at >= d - bar && at <= d + bar ]
                 if [ di + 1 < ids.count ]
@@ -7700,6 +7717,7 @@ element Splitter
         seam_near : bool [ drag_ix > 0 ]
         if [ !seam_near && dseam ]
             for [ di: i32 0, di < dseam.count, di += 1 ]
+                if [ seam_locked[ di ] ] continue
                 d : f32 [ dseam[ di ] ]
                 if [ hat >= d - bar && hat <= d + bar ] seam_near = true
         if [ seam_near ]

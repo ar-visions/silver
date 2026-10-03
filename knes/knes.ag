@@ -96,7 +96,7 @@ element knes : trinity
 	public  height       : i32    [ 896 ]
 	public  lock_aspect  : bool   [ true ]
 	public  background   : string [ 'Background' ]
-	default [ Live ] rom : resource
+	expect default [ Live ] rom : resource
 		log 'rom changed: {rom} (thread {(emu_started) ? 1 : 0})'
 		if [ emu_started ]
 			emu_stop = true

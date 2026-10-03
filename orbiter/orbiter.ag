@@ -252,8 +252,10 @@ element EditorView
                                           manual_mode: true ]
         # the running app's live argument: a field after the name
         rv : AppView (e) ? e.run_view : null
-        dp9 : Prop (rv && !rv.ended && rv.app_mod && !tfoc && !newfile) ? o.live_default[ rv.app_mod ] : null
-        if [ dp9 && w && w.screen ]
+        run9 : bool [ rv && !rv.ended && rv.app_mod && !tfoc && !newfile ]
+        # a module with no live argument still shows its chips
+        dp9 : Prop (run9) ? o.live_default[ rv.app_mod ] : null
+        if [ run9 && w && w.screen ]
             cv9 : Canvas w.screen
             fu : f32 [
                 (w.vk && w.vk.font_unit > 0)
@@ -261,15 +263,19 @@ element EditorView
             cv9.font_size[ 17 ]
             nm : cv9.measure_text[ title_text[] ]
             ax9 : f32 [ 62.7 * fu + nm.w + 12.0 * fu ]
-            av9 : string (rv.arg_text) ? rv.arg_text : ((dp9.value) ? dp9.value : '')
+            av9 : string [ (rv.arg_text) ? rv.arg_text
+                : ((dp9 && dp9.value) ? dp9.value : '') ]
             # else the launch line's own: the default comes last
             if [ av9.count == 0 ]
                 av9 = o.default_arg_of[ rv.module_args ]
-            rs9 : bool [ dp9.type == 'resource' || dp9.type == 'path' ]
+            # no live argument: nothing to type, like a file chip
+            rs9 : bool [ !dp9 || dp9.type == 'resource'
+                || dp9.type == 'path' ]
             ap : path (rs9 && av9.count > 0) ? path av9 : null
             # the app's own title shows; the argument when it has none
             at9 : string (rv.app_title && rv.app_title.count > 0) ? rv.app_title : null
             sh : string (at9) ? at9 : ((ap) ? ap.stem[] : av9)
+            if [ sh.count == 0 ] sh = rv.app_mod
             cv9.font_size[ 15 ]
             vw9 : cv9.measure_text[ sh ]
             # the title, centred, with room round it
@@ -323,13 +329,12 @@ element EditorView
                                             inst: rv,
                                             area: ar9 ]
             el
-                # idle: the title; a press fills in the argument
+                # idle: the title; shift-click edits the argument
                 t['arg_edit'] = ArgButton [ label: sh, edit: '',
                                             second: sec,
                                             selected: e.app_view,
                                             inst: rv,
-                                            value: av9,
-                    focusable: true, area: ar9 ]
+                                            value: av9, area: ar9 ]
             for [ k: i32 0, k < ord.count, k += 1 ]
                 ov : AppView ord[ k ]
                 if [ ov == rv ] continue
@@ -1708,7 +1713,7 @@ TButtons AltTab
         if [ ev.key.meta || ev.key.ctrl ] ev.no_default = true
 
 # on the status bar: a faint border the pointer's light brings up
-StatusTab StatusBare
+StatusTab StatusButton
     outline : rgba [ '#0000' ]
     style : CSS {
         layers.edge:
@@ -1716,7 +1721,7 @@ StatusTab StatusBare
     }
 
 # a group whose buttons each take the light, a disabled one none
-StatusBare StatusSegs
+StatusButton StatusSegs
     seg_near  : rgba [ '#ffffff08' ]
     seg_reach : f32 [ 0.5 ]
     style : CSS {
@@ -2164,8 +2169,8 @@ element ArgButton
                 editable: false
         :selected
             layers.body:
-                fill_color: #0000004d
-                stroke_color: #fff2
+                fill_color: #c890ff2e
+                stroke_color: #c890ff55
         :second
             layers.body:
                 box_shadow: inset 0 0 8px #ffd84a66
@@ -3142,8 +3147,8 @@ element orbiter : trinity # implements compiler
     intern [ StatePersist ] band_h           : i32
     intern band_h_save      : i32
     public show_instruments : bool
-    # the side panel folded to its strip
-    public inst_hidden      : bool
+    # the side panel folded to its strip; kept across launches
+    public [ StatePersist ] inst_hidden : bool
     # the side panel's width before it folded, and the fold last set
     mutable side_saved      : f32
     mutable side_closed     : bool
@@ -5126,14 +5131,16 @@ element orbiter : trinity # implements compiler
             if [ q == 'Live' ] return p
         return null
 
-    # an instance whose app takes a bare argument and has none:
-    # the pick asks for it, and a cancel leaves it held
+    # an instance whose app expects a bare argument and has none:
+    # the pick asks for it, and a cancel leaves it held. a plain
+    # default may stay blank (aura's src: its home page)
     func ask_default [ av: AppView ] -> bool
         if [ av.doc ] return false
         if [ default_arg_of[ av.module_args ].count > 0 ] return false
         mod : string av.module_name[]
         dp9 : Prop default_prop[ mod ]
-        if [ !dp9 || (dp9.value && dp9.value.count > 0) ] return false
+        if [ !dp9 || !dp9.expected ] return false
+        if [ dp9.value && dp9.value.count > 0 ] return false
         ed : Editor null
         for [ i: i32 0, i < editor_slots.count, i += 1 ]
             e8 : Editor pane_at[ i ]
@@ -5923,16 +5930,21 @@ element orbiter : trinity # implements compiler
                 if [ rp.count > 0 && s.index_of[ rp ] != 0 ] continue
                 if [ ck.count > 0 && s.index_of[ ck ] == 0 ] continue
                 ridx : i32 [ s.rindex_of[ query ] ]
+                # the file's name only, never its folders
+                if [ ridx <= s.rindex_of[ '/' ] ] continue
                 if [ ridx >= 0 ]
                     d : i32 [ s.count - (ridx + ql) ]
+                    # a name that starts with the query ranks first
+                    if [ ridx > 0 && s.chars[ ridx - 1 ] == '/' ] d -= 1
+                    if [ d < 0 ] d = 0
                     if [ d > tiers ] d = tiers
                     matches.push[ s ]
                     dists.push[ d ]
-                    if [ matches.count >= 500 ] break
             index_lock.unlock[]
-            for [ d: i32 0, d <= tiers, d += 1 ]
+            # every match is ranked; only the best 500 are listed
+            for [ d: i32 0, d <= tiers && out.count < 500, d += 1 ]
                 for [ i: i32 0, i < matches.count, i += 1 ]
-                    if [ dists[i] == d ]
+                    if [ dists[i] == d && out.count < 500 ]
                         out.push[ matches[i] ]
         return out
 
@@ -7294,6 +7306,9 @@ element orbiter : trinity # implements compiler
                 (c >= 48 && c <= 57) || (c >= 65 && c <= 90)
                 || (c >= 97 && c <= 122) || c == 45 ]
             if [ !ok ] return null
+        # a registered protocol (http:, https: ...) is no user
+        ed : Editor pane_at[ active_pane ]
+        if [ ed && ed.is_protocol[ u ] ] return null
         return u
 
     # the host with its token: GITHUB_TOKEN, else the github_token file
@@ -7994,8 +8009,17 @@ element orbiter : trinity # implements compiler
                 matches : list string [ index_search[ find_text ] ]
                 for [ i: i32 0, i < matches.count, i += 1 ]
                     p : path '{matches.value_by_index[ i ]}'
-                    push_file_hit[ p, true ]
-                    combined.push[ '{p}' ]
+                    # <name>/<name>.ag is a silver module: its folder,
+                    # as browsing shows it, opens the module
+                    md : path p.directory[]
+                    ism : bool [ md && p.ext[] == 'ag'
+                        && p.stem[] == md.filename[] ]
+                    if [ ism ]
+                        push_dir_hit[ md, md.filename[] ]
+                        combined.push[ '{md}' ]
+                    el
+                        push_file_hit[ p, true ]
+                        combined.push[ '{p}' ]
                 if [ matches.count == 0 ]
                     find_hits.push[
                         FindHit [ is_header: true,
@@ -8603,9 +8627,15 @@ element orbiter : trinity # implements compiler
             el [ po && oc.inst ]
                 embed_app[ po, oc.inst ]
                 session_dirty = true
-                if [ ev.key.shift ]
+                # a file argument picks anew; a typed one is not
+                # browsed (its chip edits once shown)
+                bm : string band_mod_of[ po ]
+                dq : Prop default_prop[ bm ]
+                fl : bool [ dq && (dq.type == 'resource'
+                    || dq.type == 'path') ]
+                if [ ev.key.shift && fl ]
                     da : string default_arg_of[ oc.inst.module_args ]
-                    pick_default[ po, null, band_mod_of[ po ], da ]
+                    pick_default[ po, null, bm, da ]
             if [ ux ] ux.restyle = true
             ev.no_default     = true
             ev.no_propagation = true
@@ -8620,7 +8650,8 @@ element orbiter : trinity # implements compiler
                 ev.no_default     = true
                 ev.no_propagation = true
                 return
-            if [ ev.key.shift ]
+            # shift: a file picks anew; a typed argument is edited
+            if [ ev.key.shift && ab.resource ]
                 ps : Editor pane_of[ ev.target ]
                 if [ ps ]
                     bm : string band_mod_of[ ps ]
@@ -8630,7 +8661,7 @@ element orbiter : trinity # implements compiler
                 return
             # a press selects it: the pane shows the app; selected, it
             # goes back to the source while the app runs on
-            if [ ab.resource ]
+            if [ !ev.key.shift ]
                 pe : Editor pane_of[ ev.target ]
                 rv : AppView (pe) ? pe.run_view : null
                 if [ pe && rv && !pe.app_view ]
@@ -8650,6 +8681,8 @@ element orbiter : trinity # implements compiler
                 ab.edit       = v9
                 ab.sel_col    = v9.count
                 ab.anchor_col = v9.count
+            ab.focusable = true
+            if [ ux ] ux.set_focus[ ab ]
         # working in a pane makes it active: keys act where you are
         epv : Editor pane_of[ ev.target ]
         if [
@@ -8848,9 +8881,9 @@ element orbiter : trinity # implements compiler
                 if [ ux ] ux.restyle = true
                 ev.no_default = true
                 return
-            # shift: record only, no dialog, about the selected file;
+            # shift or cmd: record only, no dialog, about the file;
             # the window is caught first, before anything else draws
-            if [ ev.key.shift && !orbit_cap_on ]
+            if [ (ev.key.shift || cmd_down) && !orbit_cap_on ]
                 edr : Editor pane_at[ active_pane ]
                 listen_shot = (ux) ? snap_window[ ux ] : null
                 dict_slot = -1
@@ -10011,6 +10044,8 @@ element orbiter : trinity # implements compiler
             if [ pend != pend_last ]
                 pend_last  = pend
                 ux.restyle = true
+                # the side panel's reload button follows it too
+                if [ ux.root ] ux.dirty_tree[ ux.root ]
             # done is read: the first hover tip erases the word
             if [
                 agent_done && agent_note && agent_note.count > 0
@@ -10254,28 +10289,22 @@ element orbiter : trinity # implements compiler
                     module: ism, agi: ag9, selected: lt, count: n9,
                     area: Region [ 'l0 t{y9}px w78.75px h78.75px' ] ]
                 y9 += 78.75
-        t['pins'] = element [ area: Region { l0 t1.3 r0 b70px },
+        t['pins'] = element [ area: Region { l0 t1.3 r0 b35px },
                               elements: pins9 ]
+        # cmd anywhere, shift over it, or recording: its core red;
+        # the agent thinking: blue
+        dh : element find_el[ a, 'dock_orbiter' ]
+        rec : bool [ mic_by_press || cmd_down
+            || (shift_down && dh && dh.hovered) ]
         t['dock_orbiter'] = DockHome [
             buttons: vec string [] [ 'agent_note' ],
-                # shift, or recording: its core red, and larger; the
-                # agent thinking: blue
-                icon_ids: vec string [] [ (shift_down || mic_by_press)
+                icon_ids: vec string [] [ (rec)
                     ? 'orbiter4_red' : ((agent_state == 'busy')
                     ? 'orbiter4_blue' : 'orbiter4') ],
                 manual: true,
                 rest_fill: rgba [ '#0000' ], seg_radius: 0.0,
                 use_spacing: false, icon_scale: 0.605,
                 area: Region { l0 b35px w78.75px h35px } ]
-        # the console over it: global, whatever the selected file is
-        t['console_tab'] = StatusTab [
-            buttons: vec string [] [ 'console_tab' ],
-            icon_ids: vec string [] [ 'console' ], icon_scale: 0.5,
-            manual: true, seg_radius: 0.0, use_spacing: false,
-            rest_fill: rgba [ '#0000' ],
-            sel_mask: (show_console) ? 1 : 0,
-            # 1px onto orbiter's top: the two share one line
-            area: Region { l0 b70px w78.75px h36px } ]
         return t
 
     # the side panel's fold and the splitter agree: a drag past its
@@ -10292,10 +10321,12 @@ element orbiter : trinity # implements compiler
             if [ shut && sp.extent < -1.0 ] side_saved = -sp.extent
             side_closed = shut
             inst_hidden = shut
+            session_dirty = true
         el [ inst_hidden != shut ]
             sp.extent   = (inst_hidden)
                 ? -((side_saved > 0.0) ? side_saved : 1.0) : side_saved
             side_closed = inst_hidden
+            session_dirty = true
             mn.pristine = false
             if [ ux ] ux.will_animate = true
 
@@ -10306,14 +10337,22 @@ element orbiter : trinity # implements compiler
         dg  : dbg (rv) ? rv.debugger : null
         off : bool [ !(dg && dg.active && !dg.running) ]
         t : Elements []
+        # first, at the left: the console, global to the window
+        t['console_tab'] = StatusTab [
+            buttons: vec string [] [ 'console_tab' ],
+            icon_ids: vec string [] [ 'console' ], icon_scale: 0.5,
+            manual: true, seg_radius: 0.0, use_spacing: false,
+            rest_fill: rgba [ '#0000' ],
+            sel_mask: (show_console) ? 1 : 0,
+            area: Region { l0 t0 w1.66 b0 } ]
         # one group: a single border, none doubled between them
-        t['debug'] = StatusBare [ buttons: vec string [] [ 'continue',
+        t['debug'] = StatusButton [ buttons: vec string [] [ 'continue',
                 'step_next', 'step_in', 'step_out' ],
             icon_scale: 0.4125, manual: true, seg_radius: 0.0,
             use_spacing: false, rest_fill: rgba [ '#0000' ],
             disable_mask: (off) ? 15 : 0, unavailable: off,
-            # under the nav list's projects column: 6px in, side_w wide
-            area: Region { l6px t0 w168px b0 } ]
+            # right after the console button, 1.66 units wide
+            area: Region { l1.66 t0 w168px b0 } ]
         # the mic first; else the hovered button's name, else what the
         # reload is doing
         tip : string hover_tip[ ux.hovered ]
@@ -10329,7 +10368,7 @@ element orbiter : trinity # implements compiler
         # the right, while the side panel is folded: its tab, which
         # opens it; open, the panel's own lit tab folds it
         if [ inst_hidden ]
-            t['side_toggle'] = StatusBare [
+            t['side_toggle'] = StatusButton [
                 buttons: vec string [] [ 'side_toggle' ],
                 icon_ids: vec string [] [
                     (side_tab == 'scenes') ? 'saturn' : 'menu' ],
@@ -10406,10 +10445,10 @@ element orbiter : trinity # implements compiler
             'scene'  : scene_element[],
             'dock'   : Dock [ elements: dock_els[], hide: hide_ui ],
             'main'   : Splitter [ area: (hide_ui)
-                ? Region { l0 t0 r0 b0 } : Region { l77.75px t0 r0 b0 },
+                ? Region { l0 t0 r0 b0 } : Region { l78.75px t0 r0 b0 },
                                   inner: main_els[],
                 deflt: 360.0, min_size: 200.0, near_seam: true,
-                snap_close: true ],
+                snap_close: true, shut_locked: true, gap: 0.0 ],
             'avatar' : CornerAvatar [ topmost: true,
                                       summoned: show_orbiter ],
             'error'  : (!hide_ui && err_file && err_line > 0 && err_is_own[])
