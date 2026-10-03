@@ -681,6 +681,8 @@ class Layer
     mutable text_x      : f32  [ 0.0 ]
     # the scroll, kept while the caret shows
     mutable text_shift  : f32  [ 0.0 ]
+    # the pointer light's reach, a factor of the window's (0 = 1)
+    public  near_reach  : f32
 
     # a press lands on the text as drawn: after its alignment and scroll
     func hit_col [ ev: Event ] -> i32

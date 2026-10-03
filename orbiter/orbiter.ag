@@ -472,7 +472,9 @@ element EditorView
 
     # the pane's views as a column at the nav list's right: git, then
     # the registered views, each the finder close's size, edge to edge
-    func view_bar [] -> Elements
+    # row: a button's height in px; each overlaps the last by 1px,
+    # so two borders never sit side by side
+    func view_bar [ row: f32 ] -> Elements
         o : orb[]
         ed : Editor text_of[]
         bar : Elements []
@@ -485,8 +487,8 @@ element EditorView
                     sel_mask: (ed.git_on) ? 1 : 0,
                     rest_glow: rgba [ '#ccf2' ], rest_px: 8.0,
                     seg_radius: 0.0, use_spacing: false,
-                    area: Region [ 'l0 t{y} r0 h1.3' ] ]
-                y += 1.3
+                    area: Region [ 'l0 t{y}px r0 h{row}px' ] ]
+                y += row - 1.0
             for [ v: string ] in o.views_for[ ed ]
                 if [ v == 'git' ] continue
                 ci : string o.console_icon[ v ]
@@ -496,21 +498,21 @@ element EditorView
                     manual: true, sel_mask: (v == cur) ? 1 : 0,
                     rest_glow: rgba [ '#ccf2' ], rest_px: 8.0,
                     seg_radius: 0.0, use_spacing: false,
-                    area: Region [ 'l0 t{y} r0 h1.3' ] ]
-                y += 1.3
+                    area: Region [ 'l0 t{y}px r0 h{row}px' ] ]
+                y += row - 1.0
         # at the foot: a pane added, this one closed
         bar['pane_add'] = ViewTab [
             buttons: vec string [] [ 'pane_add' ],
             icon_ids: vec string [] [ 'plus' ], manual: true,
             rest_glow: rgba [ '#ccf2' ], rest_px: 8.0,
             seg_radius: 0.0, use_spacing: false,
-            area: Region { l0 b2.6 r0 h1.3 } ]
+            area: Region [ 'l0 b{row * 2.0 - 1.0}px r0 h{row}px' ] ]
         bar['pane_close'] = ViewTab [
             buttons: vec string [] [ 'pane_close' ],
             icon_ids: vec string [] [ 'minus' ], manual: true,
             rest_glow: rgba [ '#ccf2' ], rest_px: 8.0,
             seg_radius: 0.0, use_spacing: false,
-            area: Region { l0 b1.3 r0 h1.3 } ]
+            area: Region [ 'l0 b{row}px r0 h{row}px' ] ]
         return bar
 
     # the nav/commit surface replaces the editor for browse AND find
@@ -524,7 +526,7 @@ element EditorView
         t : Elements [ ]
         # every file has its icon at the left: the name moves past it
         to9 : Editor text_of[]
-        sw9 : bool [ to9 && to9.src && !browse_active[] ]
+        sw9 : bool [ to9 && to9.src ]
         t['title'] = EditorTitle [
             area: Region { l0 t0 r0 h1.3 }
             switched: sw9
@@ -548,10 +550,10 @@ element EditorView
             inner: pane_els[], deflt: 180.0,
             min_size: 44.0 ]
         if [ browse_active[] ]
-            bar : Elements view_bar[]
+            fu : f32 [ (fc > 0.0) ? fc : 22.0 ]
+            bar : Elements view_bar[ round[ 1.3 * fu ] ]
             # the bar is the finder close's width: 1.66 font units
-            bw : f32 [ (bar.count > 0)
-                ? 1.66 * ((fc > 0.0) ? fc : 22.0) : 0.0 ]
+            bw : f32 [ (bar.count > 0) ? 1.66 * fu : 0.0 ]
             # the surface is a peer of the editor pane: it takes the
             # split's live text region, never the whole view
             spl : element (elements) ? elements['split'] : null
@@ -574,9 +576,13 @@ element EditorView
                     area: Region [
                         'l{cx8}px t{cy8}px w{cw - bw}px h{ch8}px' ] ]
                 if [ bar.count > 0 ]
+                    # 1px onto the lines above and below it
+                    bx : f32 [ cx8 + cw - bw ]
+                    by : f32 [ cy8 - 1.0 ]
+                    bh : f32 [ ch8 + 2.0 ]
                     t['viewbar'] = ViewBar [ no_scroll: true,
                         elements: bar, area: Region [
-                        'l{cx8 + cw - bw}px t{cy8}px w{bw}px h{ch8}px' ] ]
+                        'l{bx}px t{by}px w{bw}px h{bh}px' ] ]
             el
                 t['commit'] = CommitView [ focusable: true,
                                            scroll_fade: 24.0,
@@ -584,7 +590,8 @@ element EditorView
                 if [ bar.count > 0 ]
                     t['viewbar'] = ViewBar [ no_scroll: true,
                         elements: bar,
-                        area: Region [ 'r0 t1.3 w{bw}px b0' ] ]
+                        area: Region [
+                            'r0 t{1.3 * fu - 1.0}px w{bw}px b-1px' ] ]
         return t
 
 element EditorTitle
@@ -1575,13 +1582,24 @@ DockButton DockHome
         layers.edge:
             fill_color: #625a
             box_shadow: inset 0 0 13px #8af2
-            near_inset: 4.0
+            near_inset: 2.0
+            near_reach: 0.5
             near_inset_color: #c890ffff
         layers.foot:
             fill_color: #0000
         layers.top:
             fill_color: #fff2
             area: l0 t0 r0 h1px
+    }
+
+# the status bar's words, left-aligned after the debug buttons
+element StatusText
+    no_cache : true
+    style : CSS {
+        layers.face:
+            label_color: #cfe6ff
+            label_size: 14
+            label_align: 0.0 0.5
     }
 
 # the status bar's debug buttons: the orbiter button's near light
@@ -1595,8 +1613,40 @@ TButtons StatusTab
             stroke_width: 1
             stroke_color: #fff1
             near_border: true
+            near_inset: 2.0
+            near_reach: 0.5
+            near_inset_color: #c890ffff
+    }
+
+# a button with a second action: cmd shows it on every such button,
+# shift only on the one under the pointer, its glow then yellow
+TButtons AltTab
+    public second : bool
+    style : CSS {
+        layers.edge:
+            fill_color: #0000
+            box_shadow: inset 0 0 13px #8af2
+            stroke_width: 1
+            stroke_color: #fff1
+            near_border: true
             near_inset: 4.0
             near_inset_color: #c890ffff
+        :second
+            layers.edge:
+                box_shadow: inset 0 0 13px #ffd84a66
+                near_inset_color: #ffd84aff
+    }
+    # a cmd press is this button's second action, not the inspector's
+    func on_press [ ev: Event ]
+        super.on_press[ ev ]
+        if [ ev.key.meta || ev.key.ctrl ] ev.no_default = true
+
+# on the status bar: no border until the pointer's light finds it
+StatusTab StatusBare
+    outline : rgba [ '#0000' ]
+    style : CSS {
+        layers.edge:
+            stroke_color: #ffffff01
     }
 
 # the side panel's section tabs: a 1px border the pointer lights
@@ -3000,6 +3050,9 @@ element orbiter : trinity # implements compiler
     public show_instruments : bool
     # the side panel folded to its strip
     public inst_hidden      : bool
+    # the side panel's width before it folded, and the fold last set
+    mutable side_saved      : f32
+    mutable side_closed     : bool
     # the variables panel — the other tab of the stack menu
     public show_variables : bool
     # summon-only: never saved, never active at startup
@@ -5189,32 +5242,27 @@ element orbiter : trinity # implements compiler
             els['panel_close'] = BarClose [ icon: 'close',
                                             manual_mode: true,
                 area: Region [ 'r0+ t0 w1.66 b0' ] ]
-        # a module: its icon, as the dock shows it; any other file:
-        # its type's icon
-        mi : path (!engaged) ? module_src_of[ edp ] : null
+        # a module: its run button; any other file: its type's icon
+        # it stays in navigation: the app can start at any time
+        mi : path module_src_of[ edp ]
         if [ mi ]
-            md9 : path mi.parent_dir[]
-            els['modicon'] = TitleIcon [ file: md9, module: true,
-                agi: path '{path.path_startup[]}/install/export/{install_name_of[ md9.filename[] ]}.agi',
-                area: Region [ 'l0+ t0 w1.35 b0' ] ]
-        el [ !engaged && edp && edp.src ]
+            # a module: play; stop while it runs; shift: another
+            rvt : AppView (edp) ? edp.run_view : null
+            lvt : bool [ rvt && !rvt.ended && !rvt.held ]
+            els['modicon'] = alt_tab[ pane_ix, 'modicon', 'app_run',
+                (lvt) ? 'stop' : 'play', 'app_run', 'add_instance',
+                true, false, false,
+                Region [ 'l0+ t0 w1.35 b0' ] ]
+        el [ edp && edp.src ]
             els['modicon'] = TitleIcon [ file: edp.src, module: false,
                 area: Region [ 'l0+ t0 w1.35 b0' ] ]
 
         # the title's one button: find, from the editor and from its own
         # bar; not while the nav list is up on a title focus. lit while
-        # the bar is open. with cmd held it is the red x that closes
-        # this tab, in place
-        cx : bool [
-            cmd_down && pane_ix < editor_slots.count && hasfile
-            && !engaged ]
-        if [ cx ]
-            els['tabnav'] = BarTab [ buttons: vec string [] [ 'pane_close' ],
-                icon_ids: vec string [] [ 'close' ], manual: true,
-                danger_mask: 1,
-                rest_glow: rgba [ '#ccf2' ], rest_px: 8.0,
-                seg_radius: 0.0, use_spacing: false ]
-        el [ hx && !engaged ]
+        # the bar is open. its second action closes this tab
+        closable : bool [
+            pane_ix < editor_slots.count && hasfile && !engaged ]
+        if [ hx && !engaged && !(cmd_down && closable) ]
             # white: it closes only the view, back to the editor
             els['tabnav'] = BarTab [
                 buttons: vec string [] [ 'view_close' ],
@@ -5222,16 +5270,11 @@ element orbiter : trinity # implements compiler
                 danger_mask: 0,
                 rest_glow: rgba [ '#ccf2' ], rest_px: 8.0,
                 seg_radius: 0.0, use_spacing: false ]
-        el [ !is_resource && (!engaged || fb_on) ]
-            tmask : i32 [ (fb_on) ? 1 : 0 ]
-            # icon and red set again: the same element was the minus
-            els['tabnav'] = BarTab [
-                buttons: vec string [] [ 'magnify' ],
-                icon_ids: vec string [] [ 'magnify' ], danger_mask: 0,
-                manual: true,
-                sel_mask: tmask, rest_glow: rgba [ '#ccf2' ],
-                rest_px: 8.0,
-                seg_radius: 0.0, use_spacing: false ]
+        el [ (closable && cmd_down)
+             || (!is_resource && (!engaged || fb_on)) ]
+            els['tabnav'] = alt_tab[ pane_ix, 'tabnav', 'magnify',
+                'magnify', 'pane_close', 'close', true, !closable,
+                fb_on, Region [ 'r0+ t0 w1.66 b0' ] ]
         # a silver module's companions: <name>.ag and whatever sits
         # beside it under the same name, one strip at the title's right
         # (left of find); ids cmp_<ext>, the open one lit
@@ -5330,6 +5373,24 @@ element orbiter : trinity # implements compiler
         r9 : path.path_startup[]
         return path '{r9}/{home_mod}/{home_mod}.ag'
 
+
+    # a title button and its second action, yellow when shown: shift
+    # shows it on the one under the pointer; with on_cmd, cmd shows it
+    # on every such button; off, it is never shown
+    func alt_tab [ pane_ix: i32, key: string, id: string, icon: string,
+                   alt_id: string, alt_icon: string, on_cmd: bool,
+                   off: bool, lit: bool, area: Region ] -> AltTab
+        pv : element pane_view[ pane_ix ]
+        te : element (pv && pv.elements) ? pv.elements[ 'title' ] : null
+        cur : element (te && te.elements) ? te.elements[ key ] : null
+        hov : bool [ shift_down && !off && cur && cur.hovered ]
+        cmd : bool [ on_cmd && cmd_down && !off ]
+        use : bool [ hov || cmd ]
+        return AltTab [ buttons: vec string [] [ (use) ? alt_id : id ],
+            icon_ids: vec string [] [ (use) ? alt_icon : icon ],
+            manual: true, seg_radius: 0.0, use_spacing: false,
+            rest_fill: rgba [ '#0000' ], second: use,
+            sel_mask: (lit && !use) ? 1 : 0, area: area ]
 
     func dock_tabs [ grp: vec path, prefix: string, active: path,
                      win: Window ] -> Elements
@@ -8464,6 +8525,22 @@ element orbiter : trinity # implements compiler
             if [ ev.target ] ev.target.ux.restyle = true
             ev.no_default = true
             return
+        # the title's run: shift or cmd adds an instance, else a running
+        # one stops
+        if [ ev.target.id == 'app_run' ]
+            edr : Editor pane_of[ ev.target ]
+            if [ !edr ] edr = pane_at[ active_pane ]
+            msr : path (edr) ? module_src_of[ edr ] : null
+            rvr : AppView (edr) ? edr.run_view : null
+            if [ msr && (ev.key.shift || ev.key.ctrl || ev.key.meta) ]
+                show_app[ edr, msr, true ]
+            el [ rvr && !rvr.ended && !rvr.held ]
+                edr.toggle_app_run[ false ]
+            el [ msr ]
+                show_app[ edr, msr, false ]
+            if [ ev.target ] ev.target.ux.restyle = true
+            ev.no_default = true
+            return
         if [ ev.target.id == 'agent_ask' ]
             eda : Editor pane_of[ ev.target ]
             log 'AGENTASK press pane={bool[eda]} src={(eda && eda.src) ? string[eda.src] : "none"} line={(eda) ? eda.sel_line : -1}'
@@ -8497,9 +8574,15 @@ element orbiter : trinity # implements compiler
             tb : string [
                 (ev.target.id == 'side_scenes') ? 'scenes'
                 : 'instances' ]
-            # the lit tab folds the panel; another opens on it
-            inst_hidden = !inst_hidden && side_tab == tb
+            # the lit tab folds the panel; another switches to it
+            inst_hidden = side_tab == tb
+
             side_tab    = tb
+            if [ ux ] ux.restyle = true
+            ev.no_default = true
+            return
+        if [ ev.target.id == 'side_toggle' ]
+            inst_hidden = !inst_hidden
             if [ ux ] ux.restyle = true
             ev.no_default = true
             return
@@ -9807,7 +9890,8 @@ element orbiter : trinity # implements compiler
             inner: stack, deflt: 180.0, min_size: 44.0 ]
         left['status'] = StatusBar [ elements: status_els[] ]
         t['left'] = element [ elements: left ]
-        if [ !inst_hidden && !hide_ui ] t['side'] = SidePanel [ ]
+        # folded, it stays mounted at no width: it slides back open
+        if [ !hide_ui ] t['side'] = SidePanel [ ]
         return t
 
     # projection: inline panes in order, then the agent console
@@ -9897,7 +9981,7 @@ element orbiter : trinity # implements compiler
                     module: ism, agi: ag9, selected: lt, count: n9,
                     area: Region [ 'l0 t{y9}px w78.75px h78.75px' ] ]
                 y9 += 78.75
-        t['pins'] = element [ area: Region { l0 t1.3 r0 b0 },
+        t['pins'] = element [ area: Region { l0 t1.3 r0 b70px },
                               elements: pins9 ]
         t['dock_orbiter'] = DockHome [
             buttons: vec string [] [ 'agent_note' ],
@@ -9905,79 +9989,71 @@ element orbiter : trinity # implements compiler
                 rest_fill: rgba [ '#0000' ], seg_radius: 0.0,
                 use_spacing: false, icon_scale: 0.605,
                 area: Region { l0 b35px w78.75px h35px } ]
+        # the console over it: global, whatever the selected file is
+        t['console_tab'] = StatusTab [
+            buttons: vec string [] [ 'console_tab' ],
+            icon_ids: vec string [] [ 'console' ], icon_scale: 0.5,
+            manual: true, seg_radius: 0.0, use_spacing: false,
+            rest_fill: rgba [ '#0000' ],
+            sel_mask: (show_console) ? 1 : 0,
+            # 1px onto orbiter's top: the two share one line
+            area: Region { l0 b70px w78.75px h36px } ]
         return t
 
-    # a square button at the status bar's right, r px from its edge
-    func stat_tab [ id: string, icon: string, lit: bool,
-                    go: bool ] -> TButtons
-        return StatusTab [ buttons: vec string [] [ id ],
-                           icon_ids: vec string [] [ icon ],
-            manual: true, sel_mask: (lit) ? 1 : 0,
-            go_mask: (go) ? 1 : 0,
-            rest_fill: rgba [ '#0000' ], seg_radius: 0.0,
-            use_spacing: false, area: Region { r0+ t0 w35px b0 } ]
+    # the side panel's fold and the splitter agree: a drag past its
+    # floor folds it, the toggle opens it at its last width
+    func side_sync []
+        mn : element find_el[ a, 'main' ]
+        sp : element (mn && mn.elements) ? mn.elements[ 'side' ] : null
+        if [ !sp ] return
+        if [ sp.extent > 0.0 ] side_saved = sp.extent
+        shut : bool [ sp.extent < 0.0 ]
+        if [ shut != side_closed ]
+            # the drag folded it (keeping the width it began at) or
+            # opened it
+            if [ shut && sp.extent < -1.0 ] side_saved = -sp.extent
+            side_closed = shut
+            inst_hidden = shut
+        el [ inst_hidden != shut ]
+            sp.extent   = (inst_hidden)
+                ? -((side_saved > 0.0) ? side_saved : 1.0) : side_saved
+            side_closed = inst_hidden
+            mn.pristine = false
+            if [ ux ] ux.will_animate = true
 
+    # the status bar: the four debug steps, one button each, at left
     func status_els [] -> Elements
-        run9 : bool [ false ]
-        pv  : element pane_view[ active_pane ]
-        if [ pv && pv inherits EditorView ]
-            ev9 : EditorView pv
-            run9 = ev9.run_ok[]
-        scn : bool [ side_tab == 'scenes' ]
         edv : Editor pane_at[ active_pane ]
         rv  : AppView (edv) ? edv.run_view : null
-        lp9  : i32 [ au_live_get_pending[] ]
-        # play starts the pane's module; pause on a running instance
-        lv  : bool [ rv && !rv.ended && !rv.held ]
-        ms9  : path (edv) ? module_src_of[ edv ] : null
-        ps9  : i32 [ (lv || ms9) ? 0 : 1 ]
         dg  : dbg (rv) ? rv.debugger : null
-        st9  : i32 [ (dg && dg.active && !dg.running) ? 0 : 15 ]
-        # the right end flows in from the edge (r0+): console, the
-        # panel's two tabs, the reload; the tasks end at the last
-        return Elements [
-            # play and the steps, one group; the steps' icons 25% under
-            # play's
-            'debug'       : StatusTab [ buttons: vec string [] [
-                    'pause', 'continue', 'step_next', 'step_in',
-                    'step_out' ],
-                icon_ids: vec string [] [ (lv) ? 'pause' : 'play',
-                    'continue', 'step_next', 'step_in', 'step_out' ],
-                icon_scales: vec f32 [] [ 0.55, 0.4125, 0.4125, 0.4125,
-                    0.4125 ],
-                # play 30% wider than a step
-                seg_weights: vec f32 [] [ 1.3, 1.0, 1.0, 1.0, 1.0 ],
-                seg_line: rgba [ '#fff1' ],
-                manual: true, seg_radius: 0.0, use_spacing: false,
-                rest_fill: rgba [ '#0000' ],
-                sel_mask: (rv && rv.paused) ? 1 : 0,
-                disable_mask: ps9 | (st9 << 1),
-                area: Region { l0 t0 w4.24 b0 } ],
-            # the console toggle at the right: a square the bar's height
-            # always: the console is global, whatever the selected file
-            # is
-            'console_tab' : StatusTab [
-                buttons: vec string [] [ 'console_tab' ],
-                icon_ids: vec string [] [ 'console' ], manual: true,
-                sel_mask: (show_console) ? 1 : 0,
-                rest_fill: rgba [ '#0000' ],
-                seg_radius: 0.0, use_spacing: false,
-                area: Region { r0+ t0 w35px b0 } ],
-            'side_scenes' : stat_tab[ 'side_scenes', 'saturn',
-                                      !inst_hidden && scn, false ],
-            'side_menu'   : stat_tab[ 'side_menu', 'menu',
-                                      !inst_hidden && !scn, false ],
-            # the background alone: everything but this bar hides
-            #'ui_hide'     : stat_tab[ 'ui_hide', 'eye', hide_ui,
-            #                          false ],
-            # the reload, while one is pending; dim while it compiles
-            'reload_ready': (lp9 > 0)
-            ? StatusTab [ buttons: vec string [] [ 'reload_ready' ],
-                icon_ids: vec string [] [ 'recycle' ], manual: true,
-                disable_mask: (lp9 == 1) ? 0 : 1,
-                rest_fill: rgba [ '#0000' ],
-                seg_radius: 0.0, use_spacing: false,
-                area: Region { r0+ t0 w35px b0 } ] : null ]
+        off : bool [ !(dg && dg.active && !dg.running) ]
+        t : Elements []
+        # one group: a single border, none doubled between them
+        t['debug'] = StatusBare [ buttons: vec string [] [ 'continue',
+                'step_next', 'step_in', 'step_out' ],
+            icon_scale: 0.4125, manual: true, seg_radius: 0.0,
+            use_spacing: false, rest_fill: rgba [ '#0000' ],
+            disable_mask: (off) ? 15 : 0,
+            area: Region { l0 t0 w140px b0 } ]
+        # the hovered button's name, else what the reload is doing
+        tip : string hover_tip[ ux.hovered ]
+        pd  : i32 [ au_live_get_pending[] ]
+        txt : string (tip.count > 0) ? tip
+            : ((pd == 1) ? 'reload ready' : ((pd == 2) ? 'compiling'
+            : ((pd == 3) ? 'reloading' : '')))
+        t['status_text'] = StatusText [ label: txt,
+            area: Region { l150px t0 r1.66 b0 } ]
+        # the right, while the side panel is folded: its tab, which
+        # opens it; open, the panel's own lit tab folds it
+        if [ inst_hidden ]
+            t['side_toggle'] = StatusBare [
+                buttons: vec string [] [ 'side_toggle' ],
+                icon_ids: vec string [] [
+                    (side_tab == 'scenes') ? 'saturn' : 'menu' ],
+                icon_scale: 0.5, manual: true, seg_radius: 0.0,
+                use_spacing: false, rest_fill: rgba [ '#0000' ],
+                area: Region { r0 t0 w1.66 b0 } ]
+        return t
 
     # the scenes tab's controls: the backdrop's look and motion
     func scene_els [] -> Elements
@@ -10008,6 +10084,7 @@ element orbiter : trinity # implements compiler
     # the state the last instance left: it lands before the window
     # composes, so the first frame holds the exchange as it was
     public func on_frame [ w: Window ]
+        side_sync[]
         # shift from the window: the focus may take the key's release
         if [ w.shift != shift_down ]
             shift_down = w.shift
@@ -10041,9 +10118,10 @@ element orbiter : trinity # implements compiler
             'scene'  : scene_element[],
             'dock'   : Dock [ elements: dock_els[], hide: hide_ui ],
             'main'   : Splitter [ area: (hide_ui)
-                ? Region { l0 t0 r0 b0 } : Region { l78.75px t0 r0 b0 },
+                ? Region { l0 t0 r0 b0 } : Region { l77.75px t0 r0 b0 },
                                   inner: main_els[],
-                deflt: 360.0, min_size: 200.0, near_seam: true ],
+                deflt: 360.0, min_size: 200.0, near_seam: true,
+                snap_close: true ],
             'avatar' : CornerAvatar [ topmost: true,
                                       summoned: show_orbiter ],
             'error'  : (!hide_ui && err_file && err_line > 0 && err_is_own[])
