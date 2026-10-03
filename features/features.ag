@@ -37,6 +37,10 @@ import fribidi:fribidi/v1.0.16 <fribidi.h>   # meson; its .pc file supplies the 
     -Ddocs=false
     -Dtests=false
     -lfribidi
+# from <host>: the names resolve on another remote than our own
+import bzip2:bzip2/66c46b8c9436613fd81bc5d03f63a61933a4dcc3 <bzlib.h> from gitlab
+    -DENABLE_LIB_ONLY=ON
+    -lbz2
 import vec                          # Au's own vector module: its records come from libAu's tables
 import <cpp.hpp>                    # C++ header: .hpp marks the unit
 import More                         # sibling .ag, headed extend
@@ -136,6 +140,10 @@ ifdef [ linux ]
 
 expect func t_meson_import [] -> bool
     return fribidi_get_bidi_type[ 1488 ] == FRIBIDI_TYPE_RTL   # alef reads right to left
+
+expect func t_from_remote [] -> bool
+    v : string [ BZ2_bzlibVersion[] ]   # gitlab.com/bzip2/bzip2
+    return v.starts_with[ '1.' ]
 
 expect func t_extension_interns [] -> bool
     return ext_adds[] == 42 && rng_extension_intern[] == 1   # each extension sees its module's interns
