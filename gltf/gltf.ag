@@ -697,13 +697,17 @@ class GltfModel
     public samplers:         vec GltfSampler
     public scene:            u64
     public asset:            AssetDesc
+    # the gltf's own folder: its texture uris resolve from it later
+    intern src_dir:          path
 
     # gltf uris resolve relative to the gltf file itself
     static func open [ p: path ] -> GltfModel
         GltfBuffer.set_base[ p.parent_dir[] ]
         m : p.load[ typeid[ GltfModel ], null ]
         GltfBuffer.set_base[ null ]
-        return m
+        g : cast GltfModel [ m ]
+        if [ g ] g.src_dir = p.parent_dir[]
+        return g
 
     func texture_uri [ ti: TextureInfo ] -> path
         if [ !ti || !textures ] return null
@@ -713,6 +717,10 @@ class GltfModel
         if [ tx.source < 0 || tx.source >= images.count ] return null
         im : images[ tx.source ]
         if [ !im || !im.uri ] return null
+        # beside the gltf when it is there; an archive finds the uri
+        if [ src_dir ]
+            own : path '{src_dir}/{im.uri}'
+            if [ own.exists[] ] return own
         base : GltfBuffer.get_base[]
         if [ base ] return path '{base}/{im.uri}'
         return im.uri

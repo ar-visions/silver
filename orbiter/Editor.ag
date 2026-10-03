@@ -2229,9 +2229,10 @@ Layer EditorLayer
             if [ yg > bounds.y + bounds.h ] break
             bsl  : i32  [ editor.row_src[ li ] ]
             rnum : i32  [ (showing && hits) ? hits[li].line : bsl + 1 ]
-            # lit with shift held, and for as long as the outline is on
+            # lit for as long as the outline is on; shift alone is
+            # unlit
             if [
-                (editor.shift_down || editor.outline) && !showing
+                editor.outline && !showing
                 && !editor.diff_commit && editor.outline_line[ bsl ] ]
                 # the one under the pointer is the one a press would
                 # take
@@ -4028,7 +4029,7 @@ Control Editor
         k9 : i32 [ ev.key.unicode ]
         if [ k9 == 341 || k9 == 345 || k9 == 343 || k9 == 347 ]
             md9 = ev.key.state != 0
-        # shift held lights the gutters that take the outline press
+        # shift held: a gutter press takes the outline
         sd : bool [ ev.key.shift ]
         if [ k9 == 340 || k9 == 344 ] sd = ev.key.state != 0
         if [ md9 == mod_down && sd == shift_down ] return
@@ -6737,9 +6738,7 @@ Control Editor
                 && (row_header[ hl ] || (hl > 0 && row_header[ hl - 1 ])) ]
             hover_line   = hl
             hover_gutter = hg
-            # shift held lights the gutters: the hovered one repaints
-            # too
-            if [ in_list || oh || nh || shift_down ]
+            if [ in_list || oh || nh ]
                 pristine = false
                 ux.will_animate = true
         # a removal edge lights while the gutter pointer is in its band:

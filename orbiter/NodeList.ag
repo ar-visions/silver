@@ -1193,6 +1193,8 @@ Control TaskBar
     # the task whose close the pointer is over, and the one pressed
     mutable close_hov  : i32 [ -1 ]
     mutable close_down : i32 [ -1 ]
+    # the title's dark chips, from the left, in place of the bar's
+    public  chips      : bool
 
     # a start, a stop, a new title: repaint on a change only
     public func tick [ w: Window ]
@@ -1255,12 +1257,13 @@ Control TaskBar
     func task_w [] -> f32
         return round[ bounds.h * 6.0 ]
 
-    # a task and the dark line after it
+    # a task and the dark line after it, or a chip and its gap
     func task_step [] -> f32
-        return task_w[] + 1.0
+        return task_w[] + ((chips) ? 6.0 : 1.0)
 
-    # the tasks sit centred: the first one's left
+    # the tasks sit centred: the first one's left; chips lead
     func task_x [] -> f32
+        if [ chips ] return 0.0
         n : i32 [ tasks[].count ]
         return round[ (bounds.w - f32[ n ] * task_step[]) * 0.5 ]
 
@@ -1374,24 +1377,41 @@ Control TaskBar
             x8  : f32 [ task_x[] + f32[ i ] * task_step[] ]
             sel9 : bool [ ed && ed.run_view == av9 ]
             cv.save[]
-            cv.fill_color[
-                (sel9) ? rgba [ '#8826668c' ] : rgba [ '#0000' ] ]
-            cv.box_shadow[ rgba [ '#c890ff04' ], 0.0, 0.0, 13.0, 0.0,
-                           true ]
-            cv.stroke_width[ 1.0 ]
-            cv.stroke_offset[ -0.5 ]
-            cv.stroke_color[ rgba [ '#fff1' ] ]
-            w.near_light_on[ cv, a, 0.0, 0.0 ]
-            cv.near_style[ 2.0, 3.0, rgba [ '#c890ffaa' ],
-                           w.near_y_fade ]
-            cv.rect_to[ x8, 0.0, tw, rh ]
+            if [ chips ]
+                # the argument chip's body: dark, its border the light's
+                cv.fill_color[
+                    (sel9) ? rgba [ '#c890ff40' ] : rgba [ '#0000004d' ] ]
+                cv.box_shadow[ rgba [ '#c890ff04' ], 0.0, 0.0, 8.0, 0.0,
+                               true ]
+                cv.stroke_width[ 1.0 ]
+                cv.stroke_offset[ -0.5 ]
+                cv.stroke_color[ rgba [ '#ffffff01' ] ]
+                w.near_light_on[ cv, a, 0.0, 0.0 ]
+                cv.near_style[ 1.0, 2.0, rgba [ '#c890ffaa' ],
+                               w.near_y_fade ]
+                cv.rounded[ 10.0, 10.0, 10.0, 10.0 ]
+                cv.rounded_rect[ x8, 0.0, tw, rh, 10.0, 10.0, 10.0,
+                                 10.0 ]
+            el
+                cv.fill_color[
+                    (sel9) ? rgba [ '#8826668c' ] : rgba [ '#0000' ] ]
+                cv.box_shadow[ rgba [ '#c890ff04' ], 0.0, 0.0, 13.0,
+                               0.0, true ]
+                cv.stroke_width[ 1.0 ]
+                cv.stroke_offset[ -0.5 ]
+                cv.stroke_color[ rgba [ '#fff1' ] ]
+                w.near_light_on[ cv, a, 0.0, 0.0 ]
+                cv.near_style[ 2.0, 3.0, rgba [ '#c890ffaa' ],
+                               w.near_y_fade ]
+                cv.rect_to[ x8, 0.0, tw, rh ]
             cv.paint[]
+            cv.rounded[ 0.0, 0.0, 0.0, 0.0 ]
             cv.no_shadows[]
             cv.stroke_width[ 0.0 ]
             cv.stroke_offset[ 0.0 ]
             cv.restore[]
-            # its module's app icon, as the dock shows it
-            md9 : path (av9.src) ? av9.src.parent_dir[] : null
+            # its module's app icon, as the dock shows it; none on a chip
+            md9 : path (av9.src && !chips) ? av9.src.parent_dir[] : null
             if [ md9 ]
                 if [ !app_icons ] app_icons = map AppIcon [string] []
                 mk : string '{md9}'
@@ -1404,7 +1424,8 @@ Control TaskBar
                 ai.paint[ cv, x8 + im9, im9, is9 ]
             cv.font_size[ 13 ]
             cv.fill_color[ rgba [ '#e8e2f5' ] ]
-            nr : rect [ x: x8 + rh, y: 0.0, w: tw - rh * 2.0, h: rh ]
+            lead : f32 [ (chips) ? 12.0 : rh ]
+            nr : rect [ x: x8 + lead, y: 0.0, w: tw - lead - rh, h: rh ]
             cv.draw_text[ task_label[ av9 ], nr, vec2f [ 0.0, 0.5 ],
                 vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null ]
             # the close: a 16px ring the pointer lights, an x inside

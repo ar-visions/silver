@@ -1,0 +1,901 @@
+extend scenes
+
+# EARTH'S CANOPY. the trees are Poly Haven's (CC0): each is drawn
+# once from straight above into a crown picture -- colour, height
+# and normal -- and the planet's canopy is painted from those
+# crowns. the models download once into the scenes cache, never
+# the repo
+
+# the trees, and the leaf material whose cut-out Poly Haven ships
+# as a separate picture the glTF does not reference
+func tree_names [] -> vec string
+    return vec string [] [ 'fir_tree_01', 'island_tree_01',
+                           'island_tree_02' ]
+
+func tree_leaf [ nm: string ] -> string
+    return (nm == 'fir_tree_01') ? 'twig' : 'leaves'
+
+func tree_dir [ nm: string ] -> path
+    return path '{path.path_storage[ 'scenes' ]}/trees/{nm}'
+
+# the leaf colour and its cut-out joined into one rgba picture, and
+# a copy of the glTF that names it, so the leaves arrive with alpha
+func tree_prepare [ nm: string ] -> path
+    dir   : tree_dir[ nm ]
+    leaf  : tree_leaf[ nm ]
+    out   : path '{dir}/{nm}_bake.gltf'
+    rgba  : path '{dir}/textures/{nm}_{leaf}_rgba.png'
+    if [ out.exists[] && rgba.exists[] ] return out
+    src   : path '{dir}/{nm}_1k.gltf'
+    cp    : path '{dir}/textures/{nm}_{leaf}_diff_1k.jpg'
+    ap    : path '{dir}/textures/{nm}_{leaf}_alpha_1k.png'
+    if [ !src.exists[] || !cp.exists[] || !ap.exists[] ]
+        log 'earth: {nm} is not in {dir}'
+        return null
+    col : Image [ uri: cp ]
+    alp : Image [ uri: ap ]
+    if [ col.width != alp.width || col.height != alp.height ]
+        log 'earth: {nm} leaf colour and cut-out differ in size'
+        return null
+    w   : col.width
+    h   : col.height
+    im  : Image [ width: w, height: h, format: Pixel.rgba8 ]
+    od  : @u8 [ im.vdata[] ]
+    cd  : @u8 [ col.vdata[] ]
+    ad  : @u8 [ alp.vdata[] ]
+    cs  : col.pixel_size
+    as  : alp.pixel_size
+    for [ i: i32 0, i < w * h, i += 1 ]
+        od[ i * 4 ]     = cd[ i * cs ]
+        od[ i * 4 + 1 ] = cd[ i * cs + 1 ]
+        od[ i * 4 + 2 ] = cd[ i * cs + 2 ]
+        od[ i * 4 + 3 ] = ad[ i * as ]
+    im.png[ rgba ]
+    txt  : string [ src.load[ typeid[ string ], null ] ]
+    from : string 'textures/{nm}_{leaf}_diff_1k.jpg'
+    at   : i32 [ i32[ txt.index_of[ from ] ] ]
+    if [ at < 0 ]
+        log 'earth: {nm} glTF does not name {from}'
+        return null
+    tail : i32 [ at + from.count ]
+    head : txt.mid[ 0, at ]
+    rest : txt.mid[ tail, txt.count - tail ]
+    txt  = '{head}textures/{nm}_{leaf}_rgba.png{rest}'
+    out.save[ txt, null ]
+    return out
+
+# a glTF model binds each material's color, rough and normal
+enum TreeSurface
+    color  : 0
+    rough  : 1
+    normal : 2
+
+# a tree seen from straight above: mode 0 its colour, 1 its height
+# over the ground (0 to 1 of top), 2 its normal; leaves below half
+# cover are cut out
+ModelViewProject TreeBake
+    mutable mode : f32
+    mutable top  : f32
+
+    attrib color : LayoutBinding [ type:typeid[ TreeSurface ],
+                                   id:TreeSurface.color, count:1,
+                                   format: typeid[ rgba8 ] ]
+
+    attrib a_pos    : VertexInput [ type:typeid[ vec3f ] ]
+    attrib a_normal : VertexInput [ type:typeid[ vec3f ] ]
+    attrib a_uv     : VertexInput [ type:typeid[ vec2f ] ]
+
+    attrib v_uv        : VertexOutput  [ type:typeid[ vec2f ] ]
+    attrib v_n         : VertexOutput  [ type:typeid[ vec3f ] ]
+    attrib v_world_pos : VertexOutput  [ type:typeid[ vec4f ] ]
+    attrib fragColor   : FragmentOutput[ type:typeid[ vec4f ] ]
+
+    func init []
+        model = mat4f.identity[]
+        view  = mat4f.identity[]
+        proj  = mat4f.identity[]
+
+    func vertex [] -> GLSL none {
+        vec4 wpos = ubo.model * vec4(a_pos, 1.0);
+        v_world_pos = wpos;
+        v_n = mat3(ubo.model) * a_normal;
+        v_uv = a_uv;
+        gl_Position = ubo.proj * ubo.view * wpos;
+    }
+
+    func fragment [] -> GLSL none {
+        vec4 c = texture(color, v_uv);
+        if (c.a < 0.5)
+            discard;
+        if (ubo.mode < 0.5) {
+            fragColor = vec4(c.rgb, 1.0);
+        } else if (ubo.mode < 1.5) {
+            float h = clamp(v_world_pos.y / ubo.top, 0.0, 1.0);
+            fragColor = vec4(h, h, h, 1.0);
+        } else {
+            vec3 n = normalize(v_n);
+            n = gl_FrontFacing ? n : -n;
+            fragColor = vec4(n * 0.5 + 0.5, 1.0);
+        }
+    }
+
+# one tree's crown pictures: <nm>-color, -height, -normal, square,
+# the crown's widest span across them
+func tree_bake [ w: Window, nm: string, side: i32 ] -> bool
+    gp : tree_prepare[ nm ]
+    if [ !gp ] return false
+    g  : GltfModel.open[ gp ]
+    if [ !g ]
+        log 'earth: {nm} did not open'
+        return false
+    g.hold[]
+    g.compute_worlds[]
+    # the crown's extent from its positions' bounds
+    lo : vec3f [ 1e9, 1e9, 1e9 ]
+    hi : vec3f [ -1e9, -1e9, -1e9 ]
+    for [ ms: Mesh ] in g.meshes
+        for [ pr: Primitive ] in ms.primitives
+            for [ value: @i64, a_name: string ] in pr.attributes
+                if [ a_name != 'POSITION' ] continue
+                ac : Accessor g.accessors[ value[ 0 ] ]
+                lo = vec3f [ min[ lo.x, ac.min.x ],
+                             min[ lo.y, ac.min.y ],
+                             min[ lo.z, ac.min.z ] ]
+                hi = vec3f [ max[ hi.x, ac.max.x ],
+                             max[ hi.y, ac.max.y ],
+                             max[ hi.z, ac.max.z ] ]
+    cx   : f32 [ (lo.x + hi.x) * 0.5 ]
+    cz   : f32 [ (lo.z + hi.z) * 0.5 ]
+    half : f32 [ max[ hi.x - lo.x, hi.z - lo.z ] * 0.5 ]
+    top  : f32 [ hi.y ]
+    sh   : TreeBake [ vk: w.vk ]
+    sh.top  = top
+    sh.view = mat4f.look_at[ vec3f [ cx, top + 10.0, cz ],
+                             vec3f [ cx, 0.0, cz ],
+                             vec3f [ 0.0, 0.0, -1.0 ] ]
+    sh.proj = mat4f.ortho[ 0.0 - half, half, 0.0 - half, half, 0.1,
+                           top + 20.0 ]
+    md : Model [ vk: w.vk, w: w, id: g, s: sh, cull_none: true ]
+    rt : Render [ vk: w.vk, w: w, width: side, height: side,
+                  use_depth: true,
+                  clear_color: vec4f [ 0.0, 0.0, 0.0, 0.0 ],
+                  models: vec Model [] [ md ] ]
+    rt.hold[]
+    outs : vec string [] [ 'color', 'height', 'normal' ]
+    for [ k: i32 0, k < 3, k += 1 ]
+        sh.mode = f32[ k ]
+        rt.draw[]
+        rt.sync_fence[]
+        im : Image [ rt.color ]
+        kind : outs[ k ]
+        im.png[ path '../{share_name}/baked/earth-{nm}-{kind}.png' ]
+    log 'earth: {nm} crown baked ({side} px, {half * 2.0} m across, {top} m tall)'
+    rt.drop[]
+    g.drop[]
+    return true
+
+# the crowns, once: skipped while their pictures exist
+export func earth_trees_export []
+    force : getenv[ 'SILVER_EXPORT_FORCE' ]
+    todo : vec string []
+    for [ nm: string ] in tree_names[]
+        out : path '../{share_name}/baked/earth-{nm}-color.png'
+        if [ force || !out.exists[] ] todo += nm
+    if [ todo.count == 0 ]
+        log 'earth: crowns current'
+        return
+    bd : path '../{share_name}/baked'
+    bd.make_dir[]
+    ctx : vk_context []
+    ctx.hold[]
+    win : Window [ vk: ctx, format: Pixel.rgba8, backbuffer: true,
+        width: 512, height: 512 ]
+    win.hold[]
+    if [ !win.element_targets ]
+        win.element_targets = map Render [string] []
+    for [ nm: string ] in todo
+        tree_bake[ win, nm, 1024 ]
+
+# Poly Haven's leaves scattered into one tiling foliage picture:
+# rgb the leaf, alpha how high in the pile it sits (0 = a gap)
+func foliage_bake [ out: path ] -> bool
+    dir : tree_dir[ 'island_tree_01' ]
+    src : path '{dir}/textures/island_tree_01_leaves_rgba.png'
+    if [ !src.exists[] ]
+        log 'earth: no leaves at {src}'
+        return false
+    lv  : Image [ uri: src ]
+    lw  : lv.width
+    lh  : lv.height
+    ls  : lv.pixel_size
+    ld  : @u8 [ lv.vdata[] ]
+    side : i32 [ 512 ]
+    im  : Image [ width: side, height: side, format: Pixel.rgba8 ]
+    od  : @u8 [ im.vdata[] ]
+    n   : i32 [ side * side ]
+    for [ i: i32 0, i < n * 4, i += 1 ]
+        od[ i ] = 0
+    seed : u64 [ 88172645 ]
+    stamps : i32 [ 3200 ]
+    crop   : f32 [ f32[ lw ] * 0.11 ]
+    for [ k: i32 0, k < stamps, k += 1 ]
+        seed = seed * 6364136223846793005 + 1442695040888963407
+        cx : f32 [ f32[ seed >> 40 ] / 16777216.0 * f32[ side ] ]
+        seed = seed * 6364136223846793005 + 1442695040888963407
+        cy : f32 [ f32[ seed >> 40 ] / 16777216.0 * f32[ side ] ]
+        seed = seed * 6364136223846793005 + 1442695040888963407
+        an : f32 [ f32[ seed >> 40 ] / 16777216.0 * 6.2831853 ]
+        seed = seed * 6364136223846793005 + 1442695040888963407
+        top : f32 [ 0.25 + 0.75 * f32[ seed >> 40 ] / 16777216.0 ]
+        seed = seed * 6364136223846793005 + 1442695040888963407
+        sc : f32 [ 0.10 + 0.08 * f32[ seed >> 40 ] / 16777216.0 ]
+        # a crop centred on leaf: retry until the centre is opaque
+        sx : f32 [ 0.0 ]
+        sy : f32 [ 0.0 ]
+        for [ t: i32 0, t < 16, t += 1 ]
+            seed = seed * 6364136223846793005 + 1442695040888963407
+            sx = f32[ seed >> 40 ] / 16777216.0 * f32[ lw ]
+            seed = seed * 6364136223846793005 + 1442695040888963407
+            sy = f32[ seed >> 40 ] / 16777216.0 * f32[ lh ]
+            at : i32 [ i32[ sy ] * lw + i32[ sx ] ]
+            if [ ld[ at * ls + 3 ] > 128 ] break
+        ca  : f32 [ cos[ an ] ]
+        sa  : f32 [ sin[ an ] ]
+        rad : i32 [ i32[ crop * sc ] + 1 ]
+        for [ y: i32 0 - rad, y <= rad, y += 1 ]
+            for [ x: i32 0 - rad, x <= rad, x += 1 ]
+                ux : f32 [ (f32[ x ] * ca + f32[ y ] * sa) / sc ]
+                uy : f32 [ (f32[ y ] * ca - f32[ x ] * sa) / sc ]
+                if [ ux * ux + uy * uy > crop * crop ] continue
+                px : i32 [ i32[ sx + ux ] ]
+                py : i32 [ i32[ sy + uy ] ]
+                if [ px < 0 || py < 0 || px >= lw || py >= lh ]
+                    continue
+                si : i32 [ (py * lw + px) * ls ]
+                if [ ld[ si + 3 ] < 128 ] continue
+                dx : i32 [ ((i32[ cx ] + x) % side + side) % side ]
+                dy : i32 [ ((i32[ cy ] + y) % side + side) % side ]
+                di : i32 [ (dy * side + dx) * 4 ]
+                hv : u8 [ u8[ top * 255.0 ] ]
+                if [ od[ di + 3 ] >= hv ] continue
+                od[ di ]     = ld[ si ]
+                od[ di + 1 ] = ld[ si + 1 ]
+                od[ di + 2 ] = ld[ si + 2 ]
+                od[ di + 3 ] = hv
+    im.png[ out ]
+    log 'earth: foliage baked -> {out}'
+    return true
+
+# Blue Marble at 4096 across: sea, ice, desert and forest by colour
+func land_bake [ out: path ] -> bool
+    dir : path.path_storage[ 'scenes' ]
+    src : path '{dir}/bmng-200407-21600.jpg'
+    if [ !src.exists[] ]
+        n : i64 [
+            Http.download[
+                'https://assets.science.nasa.gov/content/dam/science/esd/eo/images/bmng/bmng-base/july/world.200407.3x21600x10800.jpg', src ] ]
+        log 'earth: fetched Blue Marble ({n} bytes)'
+    im : Image [ uri: src ]
+    if [ !im || im.width == 0 ]
+        log 'earth: cannot read {src}'
+        return false
+    lm : im.resize[ 4096, 2048 ]
+    lm.png[ out ]
+    log 'earth: land map baked -> {out}'
+    return true
+
+export func earth_canopy_export []
+    force : getenv[ 'SILVER_EXPORT_FORCE' ]
+    fp : path '../{share_name}/baked/earth-foliage.png'
+    lp : path '../{share_name}/baked/earth-land.png'
+    if [ force || !fp.exists[] ] foliage_bake[ fp ]
+    if [ force || !lp.exists[] ] land_bake[ lp ]
+
+enum CanopySurface
+    land    : 0
+    foliage : 1
+
+# the canopy: a carpet wrapped onto the sphere around the craft,
+# lifted by rolling hills and a crowd of round crowns, each crown
+# painted with the foliage picture and its own autumn colour
+ModelViewProject EarthCanopy
+    mutable sun_dir : vec4f
+    mutable cam_pos : vec4f
+    mutable eye_m   : vec4f
+    mutable hdist   : f32
+    # crown cells across one planet radius, a crown's height over
+    # its radius, the hills' height, and the haze's thickness
+    mutable cells   : f32
+    mutable crown_h : f32
+    mutable hill_h  : f32
+    mutable haze    : f32
+    # the carpet's ring growth, its largest step, and its spokes:
+    # how far apart its points are, to fade crowns it cannot hold
+    mutable grow    : f32
+    mutable cap     : f32
+    mutable spokes  : f32
+
+    attrib land    : LayoutBinding [ type:typeid[ CanopySurface ],
+                                     id:CanopySurface.land, count:1,
+                                     format: typeid[ rgba8 ] ]
+    attrib foliage : LayoutBinding [ type:typeid[ CanopySurface ],
+                                     id:CanopySurface.foliage,
+                                     count:1, format: typeid[ rgba8 ] ]
+
+    attrib a_pos    : VertexInput [ type:typeid[ vec3f ] ]
+    attrib a_normal : VertexInput [ type:typeid[ vec3f ] ]
+    attrib a_uv     : VertexInput [ type:typeid[ vec2f ] ]
+
+    attrib v_d         : VertexOutput  [ type:typeid[ vec3f ] ]
+    attrib v_world_pos : VertexOutput  [ type:typeid[ vec4f ] ]
+    attrib fragColor   : FragmentOutput[ type:typeid[ vec4f ] ]
+
+    func init []
+        model = mat4f.identity[]
+        view  = mat4f.identity[]
+        proj  = mat4f.identity[]
+
+    # an integer hash (pcg3d): a sin hash rounds differently when
+    # one corner is reached from two cells, and the noise tears.
+    # inputs are lattice points plus offsets in tenths
+    func c_hash3 [ p: vec3f ] -> GLSL vec3f {
+        uvec3 v = uvec3(ivec3(round(p * 10.0)) + 1048576);
+        v = v * 1664525u + 1013904223u;
+        v.x += v.y * v.z;
+        v.y += v.z * v.x;
+        v.z += v.x * v.y;
+        v ^= v >> 16u;
+        v.x += v.y * v.z;
+        v.y += v.z * v.x;
+        v.z += v.x * v.y;
+        return vec3(v) / 4294967295.0;
+    }
+
+    func c_hash [ p: vec3f ] -> GLSL float {
+        return c_hash3(p).x;
+    }
+
+    func c_noise [ p: vec3f ] -> GLSL float {
+        vec3 i = floor(p);
+        vec3 f = fract(p);
+        vec3 u = f * f * (3.0 - 2.0 * f);
+        float a = c_hash(i);
+        float b = c_hash(i + vec3(1.0, 0.0, 0.0));
+        float c = c_hash(i + vec3(0.0, 1.0, 0.0));
+        float d = c_hash(i + vec3(1.0, 1.0, 0.0));
+        float e = c_hash(i + vec3(0.0, 0.0, 1.0));
+        float g = c_hash(i + vec3(1.0, 0.0, 1.0));
+        float h = c_hash(i + vec3(0.0, 1.0, 1.0));
+        float k = c_hash(i + vec3(1.0, 1.0, 1.0));
+        return mix(mix(mix(a, b, u.x), mix(c, d, u.x), u.y),
+                   mix(mix(e, g, u.x), mix(h, k, u.x), u.y), u.z);
+    }
+
+    func c_fbm [ p: vec3f ] -> GLSL float {
+        float s = 0.0;
+        float a = 0.5;
+        vec3  q = p;
+        for (int i = 0; i < 4; i++) {
+            s += a * c_noise(q);
+            q  = q * 2.03 + vec3(11.3, 7.7, 3.1);
+            a *= 0.5;
+        }
+        return s;
+    }
+
+    func c_uv [ d: vec3f ] -> GLSL vec2f {
+        return vec2(0.5 + atan(-d.z, d.x) / 6.2831853,
+                    0.5 - asin(clamp(d.y, -1.0, 1.0)) / 3.1415927);
+    }
+
+    # Blue Marble's colour read as x sea, y ice, z desert, w forest
+    func c_kind [ c: vec3f ] -> GLSL vec4f {
+        float lum = dot(c, vec3(0.30, 0.59, 0.11));
+        float sea = smoothstep(0.01, 0.05, c.b - max(c.r, c.g * 0.9))
+                  * (1.0 - smoothstep(0.30, 0.45, lum));
+        float ice = smoothstep(0.55, 0.72, min(c.r, min(c.g, c.b)));
+        float dry = smoothstep(0.26, 0.40, lum)
+                  * smoothstep(0.0, 0.06, c.r - c.g * 0.92);
+        float wood = clamp(1.0 - sea - ice - dry, 0.0, 1.0);
+        return vec4(sea, ice, dry, wood);
+    }
+
+    # rolling hills, taller where a broad perlin belt rises. the
+    # sea comes from a blurred map, so the land slopes to the coast
+    # and lakes and rivers cut no cliffs
+    func c_hill [ d: vec3f ] -> GLSL float {
+        vec3  bc  = textureLod(land, c_uv(d), 5.0).rgb;
+        float sea = smoothstep(0.0, 0.5, c_kind(bc).x);
+        // a sum of four octaves sits near 0.47 and rarely strays
+        // 0.15 from it: stretch each to the full 0..1 first
+        float belt = smoothstep(0.38, 0.56, c_fbm(d * 2.5));
+        float big  = smoothstep(0.30, 0.64, c_fbm(d * 6.0 + 4.0));
+        float roll = smoothstep(0.30, 0.64, c_fbm(d * 24.0));
+        float h = big * 0.72 + roll * 0.28;
+        return ubo.hill_h * h * (0.35 + 0.65 * belt) * (1.0 - sea);
+    }
+
+    # the tallest crown over d: x height, y the crown's id, zw where
+    # d sits across it (-1..1). conifers are cones, the rest domes
+    # wearing the shared lumps
+    func c_crowns [ d: vec3f, wood: f32, lump: f32 ] -> GLSL vec4f {
+        vec3 ax = abs(d.y) > 0.9 ? vec3(1.0, 0.0, 0.0)
+                                 : vec3(0.0, 1.0, 0.0);
+        vec3 tu = normalize(cross(ax, d));
+        vec3 tv = cross(d, tu);
+        vec3 p  = d * ubo.cells;
+        vec3 ip = floor(p);
+        vec3 fp = p - ip;
+        float fir = smoothstep(0.55, 0.85, abs(d.y));
+        vec4 best = vec4(0.0);
+        for (int z = -1; z <= 1; z++) {
+            for (int y = -1; y <= 1; y++) {
+                for (int x = -1; x <= 1; x++) {
+                    vec3 o = vec3(float(x), float(y), float(z));
+                    vec3 c = ip + o;
+                    float id = c_hash(c + vec3(5.5, 1.3, 8.1));
+                    if (fract(id * 13.7) > wood) continue;
+                    // distance in 3D, so no crown reaches past the
+                    // 3x3x3 cells searched here
+                    vec3 q = (o + c_hash3(c) - fp) / ubo.cells;
+                    float rad = (0.55 + 0.45 * fract(id * 7.13))
+                              / ubo.cells;
+                    float t = length(q) / rad;
+                    if (t >= 1.0) continue;
+                    vec2 uv = vec2(dot(q, tu), dot(q, tv)) / rad;
+                    bool cone = fract(id * 3.71) < 0.03 + fir;
+                    float sh = cone ? (1.0 - t) * 1.3
+                                    : sqrt(1.0 - t * t);
+                    float lw = cone ? 0.10 : 0.32;
+                    float h = rad * (ubo.crown_h * sh
+                                     + lw * lump * (1.0 - t * t));
+                    if (h > best.x) best = vec4(h, id, uv);
+                }
+            }
+        }
+        return best;
+    }
+
+    # cauliflower lumps on a crown: inverted worley, one octave
+    func c_lumps [ d: vec3f ] -> GLSL float {
+        vec3 p  = d * ubo.cells * 3.4;
+        vec3 ip = floor(p);
+        vec3 fp = p - ip;
+        float best = 9.0;
+        for (int z = -1; z <= 1; z++) {
+            for (int y = -1; y <= 1; y++) {
+                for (int x = -1; x <= 1; x++) {
+                    vec3 o = vec3(float(x), float(y), float(z));
+                    vec3 q = o + c_hash3(ip + o) - fp;
+                    best = min(best, dot(q, q));
+                }
+            }
+        }
+        return 1.0 - min(sqrt(best), 1.0);
+    }
+
+    # the whole surface over d, in radii above the sphere
+    func c_height [ d: vec3f, k: vec4f ] -> GLSL float {
+        return c_hill(d) + c_crowns(d, k.w, c_lumps(d)).x;
+    }
+
+    func vertex [] -> GLSL none {
+        float rn = length(a_pos.xz);
+        vec2  pd = rn > 0.0 ? a_pos.xz / rn : vec2(1.0, 0.0);
+        vec3  up = normalize(ubo.eye_m.xyz);
+        vec3  ax = abs(up.y) > 0.999 ? vec3(0.0, 0.0, 1.0)
+                                     : vec3(0.0, 1.0, 0.0);
+        vec3  te = normalize(cross(ax, up));
+        vec3  tn = cross(up, te);
+        float s  = rn * ubo.hdist;
+        vec3  d  = normalize(up * cos(s)
+                             + (te * pd.x + tn * pd.y) * sin(s));
+        vec4  k  = c_kind(textureLod(land, c_uv(d), 3.0).rgb);
+        // where the points sit wider than a crown, the mesh lifts by
+        // the canopy's mean and the pixels draw the crowns
+        float sp = ubo.hdist * max(min(rn * ubo.grow, ubo.cap),
+                                   rn * 6.2831853 / ubo.spokes);
+        float fade = smoothstep(0.25, 0.7, sp * ubo.cells);
+        float mean = 0.55 * ubo.crown_h / ubo.cells * k.w;
+        float cw = mix(c_crowns(d, k.w, c_lumps(d)).x, mean, fade);
+        float h  = c_hill(d) + cw;
+        v_d = d;
+        vec4 wpos = ubo.model * vec4(d * (1.0 + h), 1.0);
+        v_world_pos = wpos;
+        gl_Position = ubo.proj * ubo.view * wpos;
+    }
+
+    # the air between the eye and a point: blue, warm toward the sun
+    func c_haze [ rd: vec3f, sun: vec3f ] -> GLSL vec3f {
+        float sg = pow(max(dot(rd, sun), 0.0), 6.0);
+        return mix(vec3(0.40, 0.54, 0.76), vec3(1.00, 0.78, 0.55),
+                   sg * 0.7);
+    }
+
+    func fragment [] -> GLSL none {
+        vec3 d   = normalize(v_d);
+        vec3 sun = normalize(ubo.sun_dir.xyz);
+        vec3 ax  = abs(d.y) > 0.9 ? vec3(1.0, 0.0, 0.0)
+                                  : vec3(0.0, 1.0, 0.0);
+        vec3 tu  = normalize(cross(ax, d));
+        vec3 tv  = cross(d, tu);
+
+        // Blue Marble without a seam where longitude wraps
+        vec2 uv = c_uv(d);
+        vec2 ua = vec2(fract(uv.x + 0.5), uv.y);
+        vec2 gx = dFdx(uv);
+        vec2 gy = dFdy(uv);
+        vec2 hx = dFdx(ua);
+        vec2 hy = dFdy(ua);
+        if (abs(gx.x) + abs(gy.x) > abs(hx.x) + abs(hy.x)) {
+            gx.x = hx.x;
+            gy.x = hy.x;
+        }
+        vec3 bm = textureGrad(land, uv, gx, gy).rgb;
+        // the same map level the vertex lifted the crowns from
+        vec4 k  = c_kind(textureLod(land, uv, 3.0).rgb);
+
+        // the normal from the surface itself, a pixel apart
+        float e  = max(length(fwidth(v_d)), 0.02 / ubo.cells);
+        vec4  cr = c_crowns(d, k.w, c_lumps(d));
+        float g  = c_hill(d);
+        float hc = g + cr.x;
+        float hu = c_height(normalize(d + tu * e), k);
+        float hn = c_height(normalize(d + tv * e), k);
+        vec3  n  = normalize(d - (tu * (hu - hc) + tv * (hn - hc)) / e);
+        vec3  alb;
+        float ao = 1.0;
+        if (cr.x > 0.0) {
+            float id = cr.y;
+            // autumn: orange, red, gold, late green; firs stay dark
+            vec3 pal = vec3(0.96, 0.42, 0.05);
+            float pk = fract(id * 5.31);
+            if (pk > 0.32) pal = vec3(0.82, 0.12, 0.05);
+            if (pk > 0.48) pal = vec3(0.98, 0.70, 0.10);
+            if (pk > 0.70) pal = vec3(0.46, 0.60, 0.08);
+            if (pk > 0.86) pal = vec3(0.74, 0.28, 0.06);
+            float fir = smoothstep(0.55, 0.85, abs(d.y));
+            if (fract(id * 3.71) < 0.03 + fir)
+                pal = vec3(0.07, 0.20, 0.11);
+            // the tropics keep their green
+            float trop = 1.0 - smoothstep(0.25, 0.45, abs(d.y));
+            pal = mix(pal, vec3(0.16, 0.38, 0.10) * (0.8 + 0.4 * pk),
+                      trop);
+            float rad = (0.55 + 0.45 * fract(id * 7.13)) / ubo.cells;
+            vec2 fu = cr.zw * 0.8 + vec2(id * 13.1, id * 7.7);
+            vec4 lf = texture(foliage, fu);
+            float lv = dot(lf.rgb, vec3(0.30, 0.59, 0.11));
+            alb = pal * (0.40 + 1.5 * lv) * mix(0.15, 1.0, lf.a);
+            // deep between crowns, the light never reaches
+            float lift = (hc - g) / (rad * ubo.crown_h * 1.4);
+            ao = clamp(0.20 + 0.95 * lift, 0.0, 1.0);
+        } else if (k.x > 0.5) {
+            alb = vec3(0.03, 0.12, 0.22);
+        } else if (k.y > 0.5) {
+            alb = vec3(0.86, 0.89, 0.93);
+        } else if (k.z > 0.4) {
+            alb = mix(vec3(0.62, 0.48, 0.30), bm * 1.4, 0.4);
+        } else {
+            alb = vec3(0.12, 0.10, 0.05);
+            ao = 0.35;
+        }
+
+        vec3  wp  = v_world_pos.xyz;
+        vec3  rd  = normalize(wp - ubo.cam_pos.xyz);
+        float ndl = dot(n, sun);
+        float day = smoothstep(-0.10, 0.15, dot(d, sun));
+        vec3  lit = alb * (vec3(1.00, 0.84, 0.62) * 2.4
+                           * clamp(ndl, 0.0, 1.0) * day
+                           + vec3(0.30, 0.40, 0.58) * 0.40 * ao)
+                  * (0.35 + 0.65 * ao);
+        if (k.x > 0.5 && cr.x <= 0.0) {
+            vec3  hv   = normalize(sun - rd);
+            float spec = pow(max(dot(n, hv), 0.0), 120.0);
+            lit += vec3(1.2, 1.0, 0.8) * spec * day;
+        }
+        // haze over the part of the sight line inside the air only
+        float dist = length(wp - ubo.cam_pos.xyz);
+        vec3  ro   = ubo.cam_pos.xyz;
+        float rb   = dot(ro, rd);
+        float rc   = dot(ro, ro) - 1.06 * 1.06;
+        float rin  = 0.0;
+        if (rc > 0.0)
+            rin = -rb - sqrt(max(rb * rb - rc, 0.0));
+        float hz = 1.0 - exp(-max(dist - max(rin, 0.0), 0.0)
+                             * ubo.haze);
+        vec3  col = mix(lit, c_haze(rd, sun) * (0.25 + 0.75 * day), hz);
+        fragColor = vec4(pow(col, vec3(1.0 / 2.2)), 1.0);
+    }
+
+# the air around the canopy, ray traced on a shell around the eye:
+# a blue sky with a warm sun from inside, a thin limb from orbit
+ModelViewProject EarthAir
+    mutable sun_dir : vec4f
+    mutable cam_pos : vec4f
+    mutable haze    : f32
+
+    attrib a_pos    : VertexInput [ type:typeid[ vec3f ] ]
+    attrib a_normal : VertexInput [ type:typeid[ vec3f ] ]
+    attrib a_uv     : VertexInput [ type:typeid[ vec2f ] ]
+
+    attrib v_world_pos : VertexOutput  [ type:typeid[ vec4f ] ]
+    attrib fragColor   : FragmentOutput[ type:typeid[ vec4f ] ]
+
+    func init []
+        model = mat4f.identity[]
+        view  = mat4f.identity[]
+        proj  = mat4f.identity[]
+
+    func vertex [] -> GLSL none {
+        vec4 wpos = ubo.model * vec4(a_pos, 1.0);
+        v_world_pos = wpos;
+        gl_Position = ubo.proj * ubo.view * wpos;
+    }
+
+    func a_hash [ p: vec3f ] -> GLSL float {
+        return fract(sin(dot(p, vec3(127.1, 311.7, 74.7)))
+                     * 43758.5453);
+    }
+
+    func a_noise [ p: vec3f ] -> GLSL float {
+        vec3 i = floor(p);
+        vec3 f = fract(p);
+        vec3 u = f * f * (3.0 - 2.0 * f);
+        float a = a_hash(i);
+        float b = a_hash(i + vec3(1.0, 0.0, 0.0));
+        float c = a_hash(i + vec3(0.0, 1.0, 0.0));
+        float d = a_hash(i + vec3(1.0, 1.0, 0.0));
+        float e = a_hash(i + vec3(0.0, 0.0, 1.0));
+        float g = a_hash(i + vec3(1.0, 0.0, 1.0));
+        float h = a_hash(i + vec3(0.0, 1.0, 1.0));
+        float k = a_hash(i + vec3(1.0, 1.0, 1.0));
+        return mix(mix(mix(a, b, u.x), mix(c, d, u.x), u.y),
+                   mix(mix(e, g, u.x), mix(h, k, u.x), u.y), u.z);
+    }
+
+    func fragment [] -> GLSL none {
+        vec3  ro  = ubo.cam_pos.xyz;
+        vec3  rd  = normalize(v_world_pos.xyz - ro);
+        vec3  sun = normalize(ubo.sun_dir.xyz);
+        float top = 1.06;
+        float b   = dot(ro, rd);
+        float dc  = b * b - dot(ro, ro) + top * top;
+        vec3  col = vec3(0.004, 0.006, 0.014);
+        if (dc > 0.0) {
+            float tin = max(-b - sqrt(dc), 0.0);
+            float tout = -b + sqrt(dc);
+            float dg = b * b - dot(ro, ro) + 1.0;
+            if (dg > 0.0 && -b - sqrt(dg) > 0.0)
+                tout = -b - sqrt(dg);
+            float len = max(tout - tin, 0.0);
+            float air = 1.0 - exp(-len * ubo.haze);
+            vec3  up  = normalize(ro + rd * (tin + tout) * 0.5);
+            float el  = clamp(dot(rd, normalize(ro)), 0.0, 1.0);
+            float sg  = pow(max(dot(rd, sun), 0.0), 6.0);
+            vec3  sky = mix(vec3(0.40, 0.54, 0.76),
+                            vec3(0.16, 0.30, 0.62),
+                            smoothstep(0.0, 0.5, el));
+            sky = mix(sky, vec3(1.00, 0.78, 0.55), sg * 0.7);
+            float day = smoothstep(-0.15, 0.2, dot(up, sun));
+            // soft clouds over the eye, thinning at the horizon
+            float cl = a_noise(rd * 5.0) * 0.6
+                     + a_noise(rd * 13.0) * 0.4;
+            cl = smoothstep(0.45, 0.80, cl) * smoothstep(0.02, 0.2, el);
+            sky = mix(sky, vec3(0.92, 0.88, 0.84) * (0.6 + 0.6 * sg),
+                      cl * 0.75);
+            col = mix(col, sky * (0.25 + 0.75 * day), air);
+            col += vec3(1.0, 0.85, 0.6)
+                 * pow(max(dot(rd, sun), 0.0), 900.0) * 4.0 * air;
+        }
+        fragColor = vec4(pow(col, vec3(1.0 / 2.2)), 1.0);
+    }
+
+# EARTH. the craft flies a great circle from the Smoky Mountains
+# north east over an autumn forest of giant crowns
+element Earth
+    frost : true
+    public func bg_color [ ] -> rgba
+        return color
+    frost_sharp : true
+    intern e_cur  : f32
+    intern p_cur  : f32
+    intern canopy : EarthCanopy
+    intern air    : EarthAir
+    intern models : vec Model
+    intern target : Render
+    intern built  : bool
+    intern ready     : bool
+    intern loading   : bool
+    intern load_task : async
+    intern carpet    : GltfModel
+    intern shell     : GltfModel
+    intern img_land  : Image
+    intern img_leaf  : Image
+    public color  : rgba [ r:0.004, g:0.006, b:0.014, a:1.0 ]
+
+    func load_files[]
+        fp : path '../{share_name}/baked/earth-foliage.png'
+        lp : path '../{share_name}/baked/earth-land.png'
+        if [ !fp.exists[] ] foliage_bake[ fp ]
+        if [ !lp.exists[] ] land_bake[ lp ]
+        carpet = build_carpet[]
+        carpet.hold[]
+        carpet.compute_worlds[]
+        gp : path '../{share_name}/models/earth.gltf'
+        shell = GltfModel.open[ gp ]
+        # raw values: the sea and ice tests read Blue Marble's bytes
+        img_land = Image [ uri: lp, surface: CanopySurface.land,
+                           linear: true, wrap_u: true ]
+        img_leaf = Image [ uri: fp, surface: CanopySurface.foliage,
+                           wrap_u: true, wrap_v: true ]
+
+    func build_models[]
+        built  = true
+        canopy = EarthCanopy [ vk: vk ]
+        air    = EarthAir [ vk: vk ]
+        smp : map Image [string] [ 'land': img_land,
+                                   'foliage': img_leaf ]
+        ground : Model [ vk: vk, w: ux, id: carpet, s: canopy,
+                         samplers: smp, straight_alpha: true,
+                         cull_none: true ]
+        sky : Model [ vk: vk, w: ux, id: shell, s: air,
+                      straight_alpha: true, cull_none: true,
+                      depth_no_test: true ]
+        # the air first, the canopy over it
+        models = vec Model [] [ sky, ground ]
+
+    func create_target[]
+        if [ target || !models || models.count == 0 ] return
+        # the backdrop sits under frost or blur: one pixel per point
+        target = Render [
+            vk:          vk,
+            w:           ux,
+            wscale:      (ux.scale > 1.0) ? 1.0 / ux.scale : 1.0,
+            use_depth:   true,
+            clear_color: vec4f [ color.r, color.g, color.b, 1.0 ],
+            models:      models ]
+        target.owner  = a
+        ux.element_targets[ id ] = target
+
+    public func on_unload [ ]
+        if [ ux && ux.element_targets ] ux.element_targets.rm[ id ]
+
+    # autumn: the editor dresses in rust, gold and pine
+    public func theme [ ] -> map string [string]
+        return map string [string] [
+            '#140a2acc':  '#1a100acc',   # editor pane background
+            '#140a2a80':  '#22140c80',   # console pane background
+            '#14121c80':  '#22140c80',   # instance panel background
+            '#4258':      '#4a322a58',   # unused (line_color moved)
+            '#ff6a2e55':  '#e08a2a55',   # search highlight fill
+            '#220022aa':  '#1c120aaa',   # run console base fill
+            '#22002280':  '#1c120a80',   # commit tab fill, half alpha
+            '#614':       '#3a2412',     # TButtons / nav rest fill
+            '#413':       '#2a1a0e',     # TButtons hover fill
+            '#826':       '#5a3418',     # TButtons lit / nav selected
+            '#625a':      '#30201a8a',   # bottom status bar fill
+            '#8af2':      '#c89a5a',     # status bar inner glow
+            '#425':       '#4a2c16',     # editor selection color
+            '#ede3':      '#db93',       # editor selection border
+            '#44225588':  '#5a3a2a33',   # editor line highlight
+            '#ff3a6a22':  '#e08a2a22',   # commit tab fill
+            '#ff3a6a44':  '#e08a2a44',   # commit tab hover fill
+            '#3a1c8a40':  '#8a4a2040',   # selected title tint
+            '#ff5a8a80':  '#e8963a80',   # commit tab border
+            '#ff7aa480':  '#f4b45a80'    # commit tab hover border
+        ]
+
+    # worker decodes files only; every vk object is built on main
+    func load_bg [ arg: object :: t: Earth ]
+        t.load_files[]
+        t.ready = true
+
+    func draw [ w: Window ]
+        animated = true
+        if [ !loading ]
+            loading = true
+            work : vec Au []
+            work.push[ a ]
+            load_task = async [ target: a, work_fn: lambda load_bg[ a ],
+                                work: work ]
+        if [ !ready ] return
+        # the done job held this element: let it go
+        if [ load_task ] load_task = null
+        if [ !built ] build_models[]
+        create_target[]
+        orbit[]
+
+    func orbit[]
+        aspect : f32 [
+            (ux.height > 0) ? f32[ ux.width ] / f32[ ux.height ]
+            : 1.7778 ]
+        # altitude above the sphere in planet radii
+        e_t : f32 [ (ux.orbit_mode == OrbitView.low)  ? 0.050 :
+                    (ux.orbit_mode == OrbitView.high) ? 0.080 :
+                    (ux.orbit_mode == OrbitView.far)  ? 0.180 : 0.900 ]
+        if [ e_cur == 0.0 ] e_cur = e_t
+        e_cur = filter_n[ e_cur, e_t, 0.06, ux.frame_factor ]
+        # degrees under the horizon the gaze points
+        p_t : f32 [ (ux.angle_mode == ViewAngle.flat)   ? 70.0 :
+                    (ux.angle_mode == ViewAngle.angled) ? 14.0 : 4.0 ]
+        if [ p_cur == 0.0 ] p_cur = p_t
+        p_cur = filter_n[ p_cur, p_t, 0.06, ux.frame_factor ]
+        ux.orbit_moving = abs[ e_cur - e_t ] > 0.0004 || abs[
+            p_cur - p_t ] > 0.2
+
+        # the start, 35.6 N 83.5 W, heading 50 degrees east of north
+        lat : f32 [ radians[ 35.6 ] ]
+        lon : f32 [ radians[ -83.5 ] ]
+        hd  : f32 [ radians[ 50.0 ] ]
+        px  : f32 [ cos[ lat ] * cos[ lon ] ]
+        py  : f32 [ sin[ lat ] ]
+        pz  : f32 [ 0.0 - cos[ lat ] * sin[ lon ] ]
+        # north and east on the sphere at the start
+        nx  : f32 [ 0.0 - sin[ lat ] * cos[ lon ] ]
+        ny  : f32 [ cos[ lat ] ]
+        nz  : f32 [ sin[ lat ] * sin[ lon ] ]
+        ex  : f32 [ 0.0 - sin[ lon ] ]
+        ez  : f32 [ 0.0 - cos[ lon ] ]
+        fx  : f32 [ nx * cos[ hd ] + ex * sin[ hd ] ]
+        fy  : f32 [ ny * cos[ hd ] ]
+        fz  : f32 [ nz * cos[ hd ] + ez * sin[ hd ] ]
+        # ux.time counts kiloseconds: 0.6 radians of arc each
+        s   : f32 [ ux.time * 0.6 ]
+        cx  : f32 [ px * cos[ s ] + fx * sin[ s ] ]
+        cy  : f32 [ py * cos[ s ] + fy * sin[ s ] ]
+        cz  : f32 [ pz * cos[ s ] + fz * sin[ s ] ]
+        gx  : f32 [ fx * cos[ s ] - px * sin[ s ] ]
+        gy  : f32 [ fy * cos[ s ] - py * sin[ s ] ]
+        gz  : f32 [ fz * cos[ s ] - pz * sin[ s ] ]
+
+        e_r : f32 [ 1.0 + e_cur ]
+        eye : vec3f [ cx * e_r, cy * e_r, cz * e_r ]
+        dip : f32 [ acos[ 1.0 / e_r ] ]
+        pit : f32 [ dip + radians[ p_cur ] ]
+        pc  : f32 [ cos[ pit ] ]
+        ps  : f32 [ sin[ pit ] ]
+        tgt : vec3f [ eye.x + gx * pc - cx * ps,
+                      eye.y + gy * pc - cy * ps,
+                      eye.z + gz * pc - cz * ps ]
+        up  : vec3f [ cx, cy, cz ]
+        proj : mat4f.perspective[ radians[ 55.0 ], aspect, 0.0004,
+                                  12.0 ]
+        proj.m[5] = 0.0 - proj.m[5]
+        view : mat4f.look_at[ eye, tgt, up ]
+
+        # a low sun ahead and to the right, so every crown throws
+        # its lit side and its shadowed side
+        rx  : f32 [ gy * cz - gz * cy ]
+        ry  : f32 [ gz * cx - gx * cz ]
+        rz  : f32 [ gx * cy - gy * cx ]
+        sun : vec4f [ gx * 0.60 + rx * 0.72 + cx * 0.30,
+                      gy * 0.60 + ry * 0.72 + cy * 0.30,
+                      gz * 0.60 + rz * 0.72 + cz * 0.30, 0.0 ]
+        cam : vec4f [ eye.x, eye.y, eye.z, 1.0 ]
+
+        canopy.model   = mat4f.identity[]
+        canopy.view    = view
+        canopy.proj    = proj
+        canopy.cam_pos = cam
+        canopy.sun_dir = sun
+        canopy.eye_m   = cam
+        canopy.hdist   = dip
+        canopy.cells   = 520.0
+        canopy.crown_h = 0.85
+        canopy.hill_h  = 0.034
+        canopy.haze    = 3.2
+        canopy.grow    = carpet_grow[]
+        canopy.cap     = carpet_cap[]
+        canopy.spokes  = f32[ carpet_steps[] ]
+        canopy.time    = ux.time * 1000.0
+
+        sm : mat4f.identity[]
+        sm = sm.translate[ eye ]
+        sm = sm.scale[ vec3f [ 2.0, 2.0, 2.0 ] ]
+        air.model   = sm
+        air.view    = view
+        air.proj    = proj
+        air.cam_pos = cam
+        air.sun_dir = sun
+        air.haze    = 3.2
+        air.time    = ux.time * 1000.0

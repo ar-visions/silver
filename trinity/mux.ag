@@ -203,6 +203,8 @@ class Muxer
     # one aac block for stem k: 0 the app, 1 the mic
     func audio_stem [ k: i32, data: @u8, n: i64 ] return
     func close [] return
+    # what is held goes out; the take stays open
+    func flush [] return
 
     # where the video stands, in 48 kHz audio frames, so the sound track
     # can keep level
@@ -756,6 +758,9 @@ Muxer Mp4
     func close []
         fragment[]
 
+    func flush []
+        fragment[]
+
 # mpeg-2 crc, the one psi tables carry
 func crc32_mpeg [ data: @u8, n: i64 ] -> i64
     crc : i64 [ 0xFFFFFFFF ]
@@ -1085,6 +1090,9 @@ Muxer Ts
     func close []
         cut[]
         if [ hls ] hls.stop[]
+
+    func flush []
+        cut[]
 
 # ---- tests: silver --test trinity ----
 

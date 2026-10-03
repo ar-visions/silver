@@ -19,6 +19,7 @@ import spectra
 import speech
 import code
 
+
 # import c headers
 import <stdio.h>
     -lm
@@ -249,6 +250,8 @@ element EditorView
                                           manual_mode: true ]
             t['ctx_shot'] = LabelButton [ label: 'screen',
                                           manual_mode: true ]
+        # where the name, or its argument chip, ends: the tasks follow
+        lead : f32 [ 0.0 ]
         # the running app's live argument: a field after the name
         rv : AppView (e) ? e.run_view : null
         dp9 : Prop (rv && !rv.ended && rv.app_mod && !tfoc && !newfile) ? o.live_default[ rv.app_mod ] : null
@@ -272,6 +275,7 @@ element EditorView
             cv9.font_size[ 15 ]
             vw9 : cv9.measure_text[ sh ]
             bw : f32 [ min[ vw9.w + 30.6 * fu, 480.0 * fu ] ]
+            lead = ax9 + bw + 6.0 * fu
             ar9 : Region [ 'l{ax9}px t0 w{bw}px h0.9' ]
             te : element (elements) ? elements[ 'title' ] : null
             fa : element (te && te.elements) ? te.elements[
@@ -287,6 +291,19 @@ element EditorView
                 t['arg_edit'] = ArgButton [ label: sh, edit: '',
                                             value: av9,
                     focusable: true, area: ar9 ]
+        # the running apps, as chips, in the selected pane's title
+        if [ pane_index == o.active_pane && !tfoc && !newfile && w
+             && w.screen ]
+            if [ lead == 0.0 ]
+                cvt : Canvas w.screen
+                fut : f32 [
+                    (w.vk && w.vk.font_unit > 0)
+                    ? f32[ w.vk.font_unit ] / 22.0 : 1.0 ]
+                cvt.font_size[ 17 ]
+                nmt : cvt.measure_text[ title_text[] ]
+                lead = 62.7 * fut + nmt.w + 12.0 * fut
+            t['tasks'] = TaskBar [ chips: true, use_spacing: false,
+                area: Region [ 'l{lead}px t0 r0+ h0.9' ] ]
         if [ newfile ]
             # create mode has its own cancel: never two close buttons
             t.rm[ 'histnav' ]
@@ -453,6 +470,49 @@ element EditorView
                 if [ !same ]
                     if [ ux ] ux.restyle = true
 
+    # the pane's views as a column at the nav list's right: git, then
+    # the registered views, each the finder close's size, edge to edge
+    func view_bar [] -> Elements
+        o : orb[]
+        ed : Editor text_of[]
+        bar : Elements []
+        if [ o && ed && ed.src ]
+            cur : string ed.resolve_view[]
+            y : f32 [ 0.0 ]
+            if [ o.checkout_root[ ed.src.directory[] ] ]
+                bar['git'] = ViewTab [ buttons: vec string [] [ 'git' ],
+                    icon_ids: vec string [] [ 'git' ], manual: true,
+                    sel_mask: (ed.git_on) ? 1 : 0,
+                    rest_glow: rgba [ '#ccf2' ], rest_px: 8.0,
+                    seg_radius: 0.0, use_spacing: false,
+                    area: Region [ 'l0 t{y} r0 h1.3' ] ]
+                y += 1.3
+            for [ v: string ] in o.views_for[ ed ]
+                if [ v == 'git' ] continue
+                ci : string o.console_icon[ v ]
+                bar['view_{v}'] = ViewTab [
+                    buttons: vec string [] [ 'view_{v}' ],
+                    icon_ids: vec string [] [ (ci) ? ci : v ],
+                    manual: true, sel_mask: (v == cur) ? 1 : 0,
+                    rest_glow: rgba [ '#ccf2' ], rest_px: 8.0,
+                    seg_radius: 0.0, use_spacing: false,
+                    area: Region [ 'l0 t{y} r0 h1.3' ] ]
+                y += 1.3
+        # at the foot: a pane added, this one closed
+        bar['pane_add'] = ViewTab [
+            buttons: vec string [] [ 'pane_add' ],
+            icon_ids: vec string [] [ 'plus' ], manual: true,
+            rest_glow: rgba [ '#ccf2' ], rest_px: 8.0,
+            seg_radius: 0.0, use_spacing: false,
+            area: Region { l0 b2.6 r0 h1.3 } ]
+        bar['pane_close'] = ViewTab [
+            buttons: vec string [] [ 'pane_close' ],
+            icon_ids: vec string [] [ 'minus' ], manual: true,
+            rest_glow: rgba [ '#ccf2' ], rest_px: 8.0,
+            seg_radius: 0.0, use_spacing: false,
+            area: Region { l0 b1.3 r0 h1.3 } ]
+        return bar
+
     # the nav/commit surface replaces the editor for browse AND find
     func browse_active [] -> bool
         o : orb[]
@@ -488,6 +548,10 @@ element EditorView
             inner: pane_els[], deflt: 180.0,
             min_size: 44.0 ]
         if [ browse_active[] ]
+            bar : Elements view_bar[]
+            # the bar is the finder close's width: 1.66 font units
+            bw : f32 [ (bar.count > 0)
+                ? 1.66 * ((fc > 0.0) ? fc : 22.0) : 0.0 ]
             # the surface is a peer of the editor pane: it takes the
             # split's live text region, never the whole view
             spl : element (elements) ? elements['split'] : null
@@ -508,11 +572,19 @@ element EditorView
                 t['commit'] = CommitView [ focusable: true,
                                            scroll_fade: 24.0,
                     area: Region [
-                        'l{cx8}px t{cy8}px w{cw}px h{ch8}px' ] ]
+                        'l{cx8}px t{cy8}px w{cw - bw}px h{ch8}px' ] ]
+                if [ bar.count > 0 ]
+                    t['viewbar'] = ViewBar [ no_scroll: true,
+                        elements: bar, area: Region [
+                        'l{cx8 + cw - bw}px t{cy8}px w{bw}px h{ch8}px' ] ]
             el
                 t['commit'] = CommitView [ focusable: true,
                                            scroll_fade: 24.0,
-                                           area: Region { l0 t1.3 r0 b0 } ]
+                    area: Region [ 'l0 t1.3 r{bw}px b0' ] ]
+                if [ bar.count > 0 ]
+                    t['viewbar'] = ViewBar [ no_scroll: true,
+                        elements: bar,
+                        area: Region [ 'r0 t1.3 w{bw}px b0' ] ]
         return t
 
 element EditorTitle
@@ -1450,6 +1522,34 @@ Group Dock
             area: r0 t0 w1px b0
     }
 
+# the nav list's view column: the dock's ground, a line at its left
+Group ViewBar
+    style : CSS {
+        layers.vbar:
+            fill_color: #625a, 400ms cubic outward
+            box_shadow: inset 0 0 13px #8af2
+            stroke_width: 1
+            stroke_color: #fff1
+            near_border: true
+            near_inset: 1.0
+            near_inset_color: #c890ffaa
+        layers.vdiv:
+            fill_color: #fff2
+            area: l0 t0 w1px b0
+    }
+
+# a view toggle in that column: a 1px border the pointer lights
+TButtons ViewTab
+    style : CSS {
+        layers.edge:
+            fill_color: #0000
+            stroke_width: 1
+            stroke_color: #fff1
+            near_border: true
+            near_inset: 2.0
+            near_inset_color: #c890ffaa
+    }
+
 # a dock icon: no ground, the pointer's near border and glow
 TButtons DockButton
     style : CSS {
@@ -1467,6 +1567,36 @@ TButtons DockButton
         layers.foot:
             fill_color: #00000099
             area: l0 b1px r0 h1px
+    }
+
+# orbiter's own dock button: the status bar's height, no dark foot
+DockButton DockHome
+    style : CSS {
+        layers.edge:
+            fill_color: #625a
+            box_shadow: inset 0 0 13px #8af2
+            near_inset: 4.0
+            near_inset_color: #c890ffff
+        layers.foot:
+            fill_color: #0000
+        layers.top:
+            fill_color: #fff2
+            area: l0 t0 r0 h1px
+    }
+
+# the status bar's debug buttons: the orbiter button's near light
+TButtons StatusTab
+    # the near glow's violet, see-through: the glow shows under it
+    lit_fill : rgba [ '#c890ff40' ]
+    style : CSS {
+        layers.edge:
+            fill_color: #0000
+            box_shadow: inset 0 0 13px #8af2
+            stroke_width: 1
+            stroke_color: #fff1
+            near_border: true
+            near_inset: 4.0
+            near_inset_color: #c890ffff
     }
 
 # the side panel's section tabs: a 1px border the pointer lights
@@ -2908,7 +3038,7 @@ element orbiter : trinity # implements compiler
     # restored carets, applied after each editor loads
     intern pending_sel   : vec vec2i
     intern pending_scroll : vec f32
-    # the status bar's center toggle: scene-only viewing
+    # the status bar's eye: the background and the bar alone
     public hide_ui : bool
     public findbar_text  : string
     # the args field edited this frame; its edit is copied to the
@@ -3072,6 +3202,7 @@ element orbiter : trinity # implements compiler
     # the run
     public [ StatePersist ] module_props : map string [string]
     mutable shift_down    : bool
+    mutable cmd_down      : bool
     # the instance panel's sections fold on their headers
     # one open at a time: properties to begin with
     mutable props_open    : bool [ true ]
@@ -5072,14 +5203,13 @@ element orbiter : trinity # implements compiler
 
         # the title's one button: find, from the editor and from its own
         # bar; not while the nav list is up on a title focus. lit while
-        # the bar is open. with shift held it is the red minus that
-        # closes this tab, in place, and git and the views show beside
-        # it
-        sh : bool [
-            shift_down && pane_ix < editor_slots.count && hasfile
+        # the bar is open. with cmd held it is the red x that closes
+        # this tab, in place
+        cx : bool [
+            cmd_down && pane_ix < editor_slots.count && hasfile
             && !engaged ]
-        if [ sh ]
-            els['tabnav'] = BarTab [ buttons: vec string [] [ 'dock' ],
+        if [ cx ]
+            els['tabnav'] = BarTab [ buttons: vec string [] [ 'pane_close' ],
                 icon_ids: vec string [] [ 'close' ], manual: true,
                 danger_mask: 1,
                 rest_glow: rgba [ '#ccf2' ], rest_px: 8.0,
@@ -5102,38 +5232,6 @@ element orbiter : trinity # implements compiler
                 sel_mask: tmask, rest_glow: rgba [ '#ccf2' ],
                 rest_px: 8.0,
                 seg_radius: 0.0, use_spacing: false ]
-        # git's diff, then the registered views: with shift, and while
-        # a picked view shows (lit, so a press ends it); same places
-        vw9 : bool [ sh || (hx && !engaged) ]
-        # git toggled on in the editor keeps its lit button: a press
-        # ends it
-        gt : bool [ vw9 || (edp && edp.git_on && !engaged) ]
-        if [ gt && hasfile && edp ]
-            if [ checkout_root[ p.directory[] ] ]
-                els['git'] = BarTab [ buttons: vec string [] [ 'git' ],
-                    icon_ids: vec string [] [ 'git' ], manual: true,
-                    sel_mask: (edp.git_on) ? 1 : 0,
-                    rest_glow: rgba [ '#ccf2' ], rest_px: 8.0,
-                    seg_radius: 0.0, use_spacing: false ]
-            vids : vec string []
-            vico : vec string []
-            vsel : i32 [ 0 ]
-            cur9  : string edp.resolve_view[]
-            for [ v9: string ] in views_for[ edp ]
-                if [ v9 == 'git' ] continue
-                vi : i32 [ vids.count ]
-                if [ v9 == cur9 ] vsel |= (1 << vi)
-                vids.push[ 'view_{v9}' ]
-                ci : string console_icon[ v9 ]
-                vico.push[ (ci) ? ci : v9 ]
-            if [ vids.count > 0 && vw9 ]
-                els['views'] = BarTab [ buttons: vids, icon_ids: vico,
-                                        manual: true,
-                    sel_mask: vsel, rest_glow: rgba [ '#ccf2' ],
-                    rest_px: 8.0,
-                    seg_radius: 0.0, use_spacing: false,
-                    area: Region [
-                        'r0+ t0 w{f32[ vids.count ] * 1.66} b0' ] ]
         # a silver module's companions: <name>.ag and whatever sits
         # beside it under the same name, one strip at the title's right
         # (left of find); ids cmp_<ext>, the open one lit
@@ -8764,15 +8862,14 @@ element orbiter : trinity # implements compiler
             force_update[]
             return
 
-        if [ ev.target.id == 'dock' ]
-            if [ ev.key.shift ]
-                log 'on_press: UNDOCK handler reached'
-                # the title's minus closes its own tab
-                edu : Editor pane_of[ ev.target ]
-                if [ edu ] close_pane[ edu.pane_index ]
-                if [ ev.target ] ev.target.ux.restyle = true
-                return
-            log 'on_press: DOCK handler reached'
+        # the title's red x, the view bar's minus: this pane goes
+        if [ ev.target.id == 'pane_close' ]
+            edu : Editor pane_of[ ev.target ]
+            if [ edu ] close_pane[ edu.pane_index ]
+            if [ ev.target ] ev.target.ux.restyle = true
+            return
+
+        if [ ev.target.id == 'pane_add' ]
             if [ editor_slots.count < 4 ]
                 editor_slots += -1
                 pane_console += ''
@@ -9462,7 +9559,9 @@ element orbiter : trinity # implements compiler
                 shown8 : bool [ false ]
                 for [ pi8: i32 0, pi8 < editor_slots.count, pi8 += 1 ]
                     e8 : Editor pane_at[ pi8 ]
-                    if [ e8 && e8.run_view == av8 && !e8.hide ]
+                    # hide_ui hides every pane: their apps run on here
+                    if [ e8 && e8.run_view == av8 && !e8.hide &&
+                         !hide_ui ]
                         shown8 = true
                 if [ !shown8 ]
                     av8.stopped = (av8.debugger && av8.debugger.active && !av8.debugger.running) ? true : false
@@ -9694,23 +9793,21 @@ element orbiter : trinity # implements compiler
         # beside both, down to the window's bottom
         left : Elements []
         # the editors over the one console, which is the selected
-        # editor's module's; hide fades the editors alone: the status
-        # bar and the panel stay, the scenes tab holding the toggle
+        # editor's module's; hide_ui hides them, the bar stays
         stack : Elements []
         stack['panes'] = Splitter [ area: Region { l0 t0 r0 b0 },
             inner: pane_views[], deflt: 0.0, even: true,
-            snap_close: true,
-            opacity: (hide_ui) ? 0.0 : 1.0 ]
+            snap_close: true ]
         pv : element pane_view[ active_pane ]
         if [ show_console && pv && pv inherits EditorView ]
             ev9 : EditorView pv
             stack['band'] = RunBand [ elements: ev9.band_els[] ]
         left['stack'] = Splitter [ area: Region { l0 t0 r0 b35px },
-                                   vertical: true,
+                                   vertical: true, hide: hide_ui,
             inner: stack, deflt: 180.0, min_size: 44.0 ]
         left['status'] = StatusBar [ elements: status_els[] ]
         t['left'] = element [ elements: left ]
-        if [ !inst_hidden ] t['side'] = SidePanel [ ]
+        if [ !inst_hidden && !hide_ui ] t['side'] = SidePanel [ ]
         return t
 
     # projection: inline panes in order, then the agent console
@@ -9726,7 +9823,6 @@ element orbiter : trinity # implements compiler
         return t
 
     # right-flow: first inserted sits furthest right.
-    # ui_hide sits dead center: scene-only toggle
     # the tooltip's hover value: what the button under the pointer is. a
     # group of segments names the one hovered; any other button its
     # label, else its id
@@ -9803,24 +9899,23 @@ element orbiter : trinity # implements compiler
                 y9 += 78.75
         t['pins'] = element [ area: Region { l0 t1.3 r0 b0 },
                               elements: pins9 ]
-        t['dock_orbiter'] = DockButton [
+        t['dock_orbiter'] = DockHome [
             buttons: vec string [] [ 'agent_note' ],
                 icon_ids: vec string [] [ 'orbiter4' ], manual: true,
                 rest_fill: rgba [ '#0000' ], seg_radius: 0.0,
-                use_spacing: false,
-                area: Region { l0 b78.75px w78.75px h78.75px } ]
+                use_spacing: false, icon_scale: 0.605,
+                area: Region { l0 b35px w78.75px h35px } ]
         return t
 
     # a square button at the status bar's right, r px from its edge
-    func stat_tab [ id: string, icon: string, lit: bool, go: bool,
-                    r: i32 ] -> TButtons
-        return TButtons [ buttons: vec string [] [ id ],
-                          icon_ids: vec string [] [ icon ],
+    func stat_tab [ id: string, icon: string, lit: bool,
+                    go: bool ] -> TButtons
+        return StatusTab [ buttons: vec string [] [ id ],
+                           icon_ids: vec string [] [ icon ],
             manual: true, sel_mask: (lit) ? 1 : 0,
             go_mask: (go) ? 1 : 0,
-            rest_glow: rgba [ '#ccf2' ], rest_px: 8.0, seg_radius: 0.0,
-            use_spacing: false,
-            area: Region [ 'r{r}px t0 w35px b0' ] ]
+            rest_fill: rgba [ '#0000' ], seg_radius: 0.0,
+            use_spacing: false, area: Region { r0+ t0 w35px b0 } ]
 
     func status_els [] -> Elements
         run9 : bool [ false ]
@@ -9828,8 +9923,6 @@ element orbiter : trinity # implements compiler
         if [ pv && pv inherits EditorView ]
             ev9 : EditorView pv
             run9 = ev9.run_ok[]
-        # the right end, from the edge: console, the panel's two tabs
-        k9  : i32 [ 35 ]
         scn : bool [ side_tab == 'scenes' ]
         edv : Editor pane_at[ active_pane ]
         rv  : AppView (edv) ? edv.run_view : null
@@ -9840,47 +9933,51 @@ element orbiter : trinity # implements compiler
         ps9  : i32 [ (lv || ms9) ? 0 : 1 ]
         dg  : dbg (rv) ? rv.debugger : null
         st9  : i32 [ (dg && dg.active && !dg.running) ? 0 : 15 ]
+        # the right end flows in from the edge (r0+): console, the
+        # panel's two tabs, the reload; the tasks end at the last
         return Elements [
-            'pause'       : TButtons [
-                buttons: vec string [] [ 'pause' ],
-                icon_ids: vec string [] [ (lv) ? 'pause' : 'play' ],
-                manual: true, seg_radius: 0.0, use_spacing: false,
-                sel_mask: (rv && rv.paused) ? 1 : 0, disable_mask: ps9,
-                area: Region { l0 t0 w0.8 b0 } ],
-            # the steps' icons 25% under pause's
-            'steps'       : TButtons [ buttons: vec string [] [
+            # play and the steps, one group; the steps' icons 25% under
+            # play's
+            'debug'       : StatusTab [ buttons: vec string [] [
+                    'pause', 'continue', 'step_next', 'step_in',
+                    'step_out' ],
+                icon_ids: vec string [] [ (lv) ? 'pause' : 'play',
                     'continue', 'step_next', 'step_in', 'step_out' ],
+                icon_scales: vec f32 [] [ 0.55, 0.4125, 0.4125, 0.4125,
+                    0.4125 ],
+                # play 30% wider than a step
+                seg_weights: vec f32 [] [ 1.3, 1.0, 1.0, 1.0, 1.0 ],
+                seg_line: rgba [ '#fff1' ],
                 manual: true, seg_radius: 0.0, use_spacing: false,
-                icon_scale: 0.4125, disable_mask: st9,
-                area: Region { l0.8 t0 w3.2 b0 } ],
-            'tasks'       : TaskBar [ use_spacing: false,
-                area: Region { l4 t0 r140px b0 } ],
-            # the reload, while one is pending; dim while it compiles
-            'reload_ready': (lp9 > 0)
-            ? TButtons [ buttons: vec string [] [ 'reload_ready' ],
-                icon_ids: vec string [] [ 'recycle' ], manual: true,
-                disable_mask: (lp9 == 1) ? 0 : 1,
-                rest_glow: rgba [ '#ccf2' ], rest_px: 8.0,
-                seg_radius: 0.0, use_spacing: false,
-                area: Region { r105px t0 w35px b0 } ] : null,
-            # the reload chips flow after the button (l0+: after the
-            # sibling before them here), so nothing stacks at the bar's
-            # left
-            'side_menu'   : stat_tab[ 'side_menu', 'menu',
-                                      !inst_hidden && !scn, false,
-                                      k9 + 35 ],
-            'side_scenes' : stat_tab[ 'side_scenes', 'saturn',
-                                      !inst_hidden && scn, false, k9 ],
+                rest_fill: rgba [ '#0000' ],
+                sel_mask: (rv && rv.paused) ? 1 : 0,
+                disable_mask: ps9 | (st9 << 1),
+                area: Region { l0 t0 w4.24 b0 } ],
             # the console toggle at the right: a square the bar's height
             # always: the console is global, whatever the selected file
             # is
-            'console_tab' : TButtons [
+            'console_tab' : StatusTab [
                 buttons: vec string [] [ 'console_tab' ],
                 icon_ids: vec string [] [ 'console' ], manual: true,
                 sel_mask: (show_console) ? 1 : 0,
-                rest_glow: rgba [ '#ccf2' ], rest_px: 8.0,
+                rest_fill: rgba [ '#0000' ],
                 seg_radius: 0.0, use_spacing: false,
-                area: Region { r0 t0 w35px b0 } ] ]
+                area: Region { r0+ t0 w35px b0 } ],
+            'side_scenes' : stat_tab[ 'side_scenes', 'saturn',
+                                      !inst_hidden && scn, false ],
+            'side_menu'   : stat_tab[ 'side_menu', 'menu',
+                                      !inst_hidden && !scn, false ],
+            # the background alone: everything but this bar hides
+            #'ui_hide'     : stat_tab[ 'ui_hide', 'eye', hide_ui,
+            #                          false ],
+            # the reload, while one is pending; dim while it compiles
+            'reload_ready': (lp9 > 0)
+            ? StatusTab [ buttons: vec string [] [ 'reload_ready' ],
+                icon_ids: vec string [] [ 'recycle' ], manual: true,
+                disable_mask: (lp9 == 1) ? 0 : 1,
+                rest_fill: rgba [ '#0000' ],
+                seg_radius: 0.0, use_spacing: false,
+                area: Region { r0+ t0 w35px b0 } ] : null ]
 
     # the scenes tab's controls: the backdrop's look and motion
     func scene_els [] -> Elements
@@ -9915,6 +10012,9 @@ element orbiter : trinity # implements compiler
         if [ w.shift != shift_down ]
             shift_down = w.shift
             w.restyle  = true
+        if [ w.cmd != cmd_down ]
+            cmd_down  = w.cmd
+            w.restyle = true
         # the panes as the last instance had them, over the session file
         if [ swap_view && swap_view.count > 0 && !carry_sent ]
             n9 : i32 [ i32[ swap_view.count ] / 3 ]
@@ -9939,8 +10039,9 @@ element orbiter : trinity # implements compiler
     public func render [] -> Elements
         return (!ux) ? null : Elements [
             'scene'  : scene_element[],
-            'dock'   : Dock [ elements: dock_els[] ],
-            'main'   : Splitter [ area: Region { l78.75px t0 r0 b0 },
+            'dock'   : Dock [ elements: dock_els[], hide: hide_ui ],
+            'main'   : Splitter [ area: (hide_ui)
+                ? Region { l0 t0 r0 b0 } : Region { l78.75px t0 r0 b0 },
                                   inner: main_els[],
                 deflt: 360.0, min_size: 200.0, near_seam: true ],
             'avatar' : CornerAvatar [ topmost: true,
