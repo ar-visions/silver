@@ -250,8 +250,6 @@ element EditorView
                                           manual_mode: true ]
             t['ctx_shot'] = LabelButton [ label: 'screen',
                                           manual_mode: true ]
-        # where the name, or its argument chip, ends: the tasks follow
-        lead : f32 [ 0.0 ]
         # the running app's live argument: a field after the name
         rv : AppView (e) ? e.run_view : null
         dp9 : Prop (rv && !rv.ended && rv.app_mod && !tfoc && !newfile) ? o.live_default[ rv.app_mod ] : null
@@ -274,36 +272,77 @@ element EditorView
             sh : string (at9) ? at9 : ((ap) ? ap.stem[] : av9)
             cv9.font_size[ 15 ]
             vw9 : cv9.measure_text[ sh ]
-            bw : f32 [ min[ vw9.w + 30.6 * fu, 480.0 * fu ] ]
-            lead = ax9 + bw + 6.0 * fu
-            ar9 : Region [ 'l{ax9}px t0 w{bw}px h0.9' ]
+            # the title, centred, with room round it
+            bw : f32 [ min[ vw9.w + 40.6 * fu, 480.0 * fu ] ]
             te : element (elements) ? elements[ 'title' ] : null
             fa : element (te && te.elements) ? te.elements[
                 'arg_edit' ] : null
+            # shift over it, or cmd anywhere: its second action
+            sec : bool [
+                o.cmd_down || (o.shift_down && fa && fa.hovered) ]
+            # every running instance keeps its place in the list; the
+            # shown one is lit where it stands
+            ord : vec AppView []
+            lbs : vec string []
+            wds : vec f32 []
+            xs  : vec f32 []
+            cx  : f32 [ ax9 ]
+            for [ ov: AppView ] in o.instances_of[ rv.src ]
+                gone : bool [ ov.viewer || ov.ended || !ov.started ]
+                if [ ov != rv && gone ]
+                    continue
+                ot : string sh
+                if [ ov != rv ]
+                    if [ ov.app_title && ov.app_title.count > 0 ]
+                        ot = ov.app_title
+                    el
+                        da : string o.default_arg_of[ ov.module_args ]
+                        dp : path (da.count > 0) ? path da : null
+                        ot = (dp) ? dp.stem[] : ov.app_mod
+                ow : f32 [ (ov == rv) ? bw : min[
+                    cv9.measure_text[ ot ].w + 40.6 * fu, 480.0 * fu ] ]
+                ord.push[ ov ]
+                lbs.push[ ot ]
+                wds.push[ ow ]
+                xs.push[ cx ]
+                cx += ow + 6.0 * fu
+            ax0 : f32 [ ax9 ]
+            for [ k: i32 0, k < ord.count, k += 1 ]
+                if [ ord[ k ] == rv ] ax0 = xs[ k ]
+            ar9 : Region [ 'l{ax0}px t0 w{bw}px h0.9' ]
             if [ rs9 ]
                 t['arg_edit'] = ArgButton [ label: sh, resource: true,
+                                            second: sec,
+                                            selected: e.app_view,
+                                            inst: rv,
                                             value: av9, area: ar9 ]
             el [ fa && w.focus == fa ]
                 t['arg_edit'] = ArgButton [ label: sh, focusable: true,
+                                            second: sec,
+                                            selected: e.app_view,
+                                            inst: rv,
                                             area: ar9 ]
             el
                 # idle: the title; a press fills in the argument
                 t['arg_edit'] = ArgButton [ label: sh, edit: '',
+                                            second: sec,
+                                            selected: e.app_view,
+                                            inst: rv,
                                             value: av9,
                     focusable: true, area: ar9 ]
-        # the running apps, as chips, in the selected pane's title
-        if [ pane_index == o.active_pane && !tfoc && !newfile && w
-             && w.screen ]
-            if [ lead == 0.0 ]
-                cvt : Canvas w.screen
-                fut : f32 [
-                    (w.vk && w.vk.font_unit > 0)
-                    ? f32[ w.vk.font_unit ] / 22.0 : 1.0 ]
-                cvt.font_size[ 17 ]
-                nmt : cvt.measure_text[ title_text[] ]
-                lead = 62.7 * fut + nmt.w + 12.0 * fut
-            t['tasks'] = TaskBar [ chips: true, use_spacing: false,
-                area: Region [ 'l{lead}px t0 r0+ h0.9' ] ]
+            for [ k: i32 0, k < ord.count, k += 1 ]
+                ov : AppView ord[ k ]
+                if [ ov == rv ] continue
+                ok : string 'arg_{ov.iid}'
+                fo : element (te && te.elements) ? te.elements[ ok ]
+                    : null
+                os : bool [
+                    o.cmd_down || (o.shift_down && fo && fo.hovered) ]
+                kx : f32 [ xs[ k ] ]
+                kw : f32 [ wds[ k ] ]
+                t[ ok ] = ArgButton [ label: lbs[ k ], resource: true,
+                    second: os, inst: ov,
+                    area: Region [ 'l{kx}px t0 w{kw}px h0.9' ] ]
         if [ newfile ]
             # create mode has its own cancel: never two close buttons
             t.rm[ 'histnav' ]
@@ -328,7 +367,7 @@ element EditorView
                 if [ vel ] edels['view'] = vel
             edels['rail'] = ToolRail [ no_scroll: true,
                                        area: Region [
-                                           'l0 t2px w64px b2px' ] ]
+                                           'l0 t1px w64px b0' ] ]
             dbgr : dbg o.active_debugger[]
             edx : Editor [
                 src: file[]
@@ -395,9 +434,12 @@ element EditorView
             area: Region { r8px t4px w6 h32px },
             label: band_mod[], focusable: true, no_scroll: true ]
         inner : Elements [ ]
-        # the console is global: every session, never filtered by the
-        # editor
-        inner['console'] = RunConsole [ session_id: 'ed:all',
+        # the selected instance's own log; with none selected, every
+        # instance's
+        isid : string o.inst_sid[ (e) ? e.run_view : null ]
+        sid : string [ (isid && o.ed_sessions
+            && o.ed_sessions.contains[ isid ]) ? isid : 'ed:all' ]
+        inner['console'] = RunConsole [ session_id: sid,
             sessions: o.ed_sessions, feed: null,
             run_line: (e && e.run_view) ? e.run_view.cmd : null,
             elements: cf ]
@@ -478,9 +520,22 @@ element EditorView
         o : orb[]
         ed : Editor text_of[]
         bar : Elements []
+        # first a pane added, this one closed; then the views
+        bar['pane_add'] = ViewTab [
+            buttons: vec string [] [ 'pane_add' ],
+            icon_ids: vec string [] [ 'plus' ], manual: true,
+            rest_glow: rgba [ '#ccf2' ], rest_px: 8.0,
+            seg_radius: 0.0, use_spacing: false,
+            area: Region [ 'l0 t0 r0 h{row}px' ] ]
+        bar['pane_close'] = ViewTab [
+            buttons: vec string [] [ 'pane_close' ],
+            icon_ids: vec string [] [ 'minus' ], manual: true,
+            rest_glow: rgba [ '#ccf2' ], rest_px: 8.0,
+            seg_radius: 0.0, use_spacing: false,
+            area: Region [ 'l0 t{row - 1.0}px r0 h{row}px' ] ]
         if [ o && ed && ed.src ]
             cur : string ed.resolve_view[]
-            y : f32 [ 0.0 ]
+            y : f32 [ row * 2.0 - 2.0 ]
             if [ o.checkout_root[ ed.src.directory[] ] ]
                 bar['git'] = ViewTab [ buttons: vec string [] [ 'git' ],
                     icon_ids: vec string [] [ 'git' ], manual: true,
@@ -500,19 +555,6 @@ element EditorView
                     seg_radius: 0.0, use_spacing: false,
                     area: Region [ 'l0 t{y}px r0 h{row}px' ] ]
                 y += row - 1.0
-        # at the foot: a pane added, this one closed
-        bar['pane_add'] = ViewTab [
-            buttons: vec string [] [ 'pane_add' ],
-            icon_ids: vec string [] [ 'plus' ], manual: true,
-            rest_glow: rgba [ '#ccf2' ], rest_px: 8.0,
-            seg_radius: 0.0, use_spacing: false,
-            area: Region [ 'l0 b{row * 2.0 - 1.0}px r0 h{row}px' ] ]
-        bar['pane_close'] = ViewTab [
-            buttons: vec string [] [ 'pane_close' ],
-            icon_ids: vec string [] [ 'minus' ], manual: true,
-            rest_glow: rgba [ '#ccf2' ], rest_px: 8.0,
-            seg_radius: 0.0, use_spacing: false,
-            area: Region [ 'l0 b{row}px r0 h{row}px' ] ]
         return bar
 
     # the nav/commit surface replaces the editor for browse AND find
@@ -581,6 +623,7 @@ element EditorView
                     by : f32 [ cy8 - 1.0 ]
                     bh : f32 [ ch8 + 2.0 ]
                     t['viewbar'] = ViewBar [ no_scroll: true,
+                        on_edge: orb[].inst_hidden,
                         elements: bar, area: Region [
                         'l{bx}px t{by}px w{bw}px h{bh}px' ] ]
             el
@@ -589,6 +632,7 @@ element EditorView
                     area: Region [ 'l0 t1.3 r{bw}px b0' ] ]
                 if [ bar.count > 0 ]
                     t['viewbar'] = ViewBar [ no_scroll: true,
+                        on_edge: orb[].inst_hidden,
                         elements: bar,
                         area: Region [
                             'r0 t{1.3 * fu - 1.0}px w{bw}px b-1px' ] ]
@@ -596,7 +640,7 @@ element EditorView
 
 element EditorTitle
     public selected : bool
-    # the selected editor's title: tinted blue
+    # the selected editor's title (no look of its own now)
     public current  : bool
     # newfile mode: typed name collides with an existing file
     public conflict : bool
@@ -626,9 +670,6 @@ element EditorTitle
         :conflict
             layers.tface:
                 label_color: #e05e5e
-        :current
-            layers.tbar:
-                fill_color: #3a1c8a40
         layers.tdiv:
             fill_color: #fff2
             area: l0 b0 r0 h1px
@@ -1499,17 +1540,27 @@ Group StatusBar
         area: l0 b35px r0 h35px
         spacing_x: 1px
         spacing_y: 2px
+        # 80% black; a faint border always, the pointer's light on it
         layers.sbar:
-            fill_color: #625a, 400ms cubic outward
+            fill_color: #000c, 400ms cubic outward
             box_shadow: inset 0 0 13px #8af2
             stroke_width: 1
             stroke_color: #fff1
             near_border: true
             near_inset: 1.0
             near_inset_color: #c890ffaa
-        layers.sdiv:
-            fill_color: #fff2
-            area: l0 t0px r0 h1px
+    }
+
+# the side panel's toolbar: no ground of its own, the panel's shows
+StatusBar SideBar
+    style : CSS {
+        # the bar takes no light: its buttons do
+        layers.sbar:
+            fill_color: #0000
+            box_shadow: none
+            stroke_width: 0
+            near_border: false
+            near_inset: 0.0
     }
 
 # the dock: left side, 2.25x the status bar's height
@@ -1529,29 +1580,35 @@ Group Dock
             area: r0 t0 w1px b0
     }
 
-# the nav list's view column: the dock's ground, a line at its left
+# the nav list's view column: a shaded right edge, its buttons lit
 Group ViewBar
+    # at the window's edge (the side panel folded): no shading
+    public on_edge : bool
     style : CSS {
+        # a quarter-dark right edge, clear from three quarters across
         layers.vbar:
-            fill_color: #625a, 400ms cubic outward
-            box_shadow: inset 0 0 13px #8af2
-            stroke_width: 1
-            stroke_color: #fff1
-            near_border: true
-            near_inset: 1.0
-            near_inset_color: #c890ffaa
-        layers.vdiv:
-            fill_color: #fff2
-            area: l0 t0 w1px b0
+            fill_color: #00000040, 400ms cubic outward
+            fill_color_pos: 1.0 0.0
+            fill_gradient: linear
+            fill_gradient_color: #0000
+            fill_gradient_angle: 180.0
+            fill_gradient_radius: 14.0
+            # the bar itself takes no light: its buttons do
+            stroke_width: 0
+        :on_edge
+            layers.vbar:
+                fill_color: #0000
+                fill_gradient: none
     }
 
-# a view toggle in that column: a 1px border the pointer lights
+# a view toggle in that column: a border only the pointer lights
 TButtons ViewTab
+    outline : rgba [ '#0000' ]
     style : CSS {
         layers.edge:
             fill_color: #0000
             stroke_width: 1
-            stroke_color: #fff1
+            stroke_color: #ffffff01
             near_border: true
             near_inset: 2.0
             near_inset_color: #c890ffaa
@@ -1581,7 +1638,7 @@ DockButton DockHome
     style : CSS {
         layers.edge:
             fill_color: #625a
-            box_shadow: inset 0 0 13px #8af2
+            box_shadow: inset 0 0 13px #8af0
             near_inset: 2.0
             near_reach: 0.5
             near_inset_color: #c890ffff
@@ -1592,30 +1649,39 @@ DockButton DockHome
             area: l0 t0 r0 h1px
     }
 
-# the status bar's words, left-aligned after the debug buttons
+# the status bar's words, in the middle of it
 element StatusText
     no_cache : true
     style : CSS {
         layers.face:
             label_color: #cfe6ff
             label_size: 14
-            label_align: 0.0 0.5
+            label_align: 0.5 0.5
     }
 
 # the status bar's debug buttons: the orbiter button's near light
 TButtons StatusTab
     # the near glow's violet, see-through: the glow shows under it
     lit_fill : rgba [ '#c890ff40' ]
+    # its icon: full when selected, dimmer when not, gone when off
+    rest_alpha : f32 [ 0.7 ]
+    off_alpha  : f32 [ 0.0 ]
+    # nothing to press: the pointer's light leaves it alone too
+    public unavailable : bool
     style : CSS {
         layers.edge:
             fill_color: #0000
-            box_shadow: inset 0 0 13px #8af2
+            box_shadow: inset 0 0 13px #8af0
             stroke_width: 1
             stroke_color: #fff1
             near_border: true
             near_inset: 2.0
             near_reach: 0.5
             near_inset_color: #c890ffff
+        :unavailable
+            layers.edge:
+                near_border: false
+                near_inset: 0.0
     }
 
 # a button with a second action: cmd shows it on every such button,
@@ -1641,12 +1707,23 @@ TButtons AltTab
         super.on_press[ ev ]
         if [ ev.key.meta || ev.key.ctrl ] ev.no_default = true
 
-# on the status bar: no border until the pointer's light finds it
+# on the status bar: a faint border the pointer's light brings up
 StatusTab StatusBare
     outline : rgba [ '#0000' ]
     style : CSS {
         layers.edge:
-            stroke_color: #ffffff01
+            stroke_color: #ffffff08
+    }
+
+# a group whose buttons each take the light, a disabled one none
+StatusBare StatusSegs
+    seg_near  : rgba [ '#ffffff08' ]
+    seg_reach : f32 [ 0.5 ]
+    style : CSS {
+        layers.edge:
+            stroke_width: 0
+            near_border: false
+            near_inset: 0.0
     }
 
 # the side panel's section tabs: a 1px border the pointer lights
@@ -2054,15 +2131,20 @@ element ArgButton
     # a file: the nav list picks it; else the text is typed
     public resource : bool
     public value    : string
+    # shift over it: a press picks its file anew; cmd: another
+    public second   : bool
+    # the instance this chip stands for
+    public inst     : AppView
     style : CSS {
-        # no border of its own: the pointer's light brings one up
+        # a faint border always; no fill until selected (the pane shows
+        # the app)
         layers.body:
-            fill_color: #0000004d
+            fill_color: #0000
             radius: 10
             # a faint inner shadow: the near light brightens it
             box_shadow: inset 0 0 8px #c890ff04
             stroke_width: 1
-            stroke_color: #ffffff01
+            stroke_color: #fff1
             near_border: true
             near_inset: 2.0
             near_inset_color: #c890ffaa
@@ -2070,8 +2152,8 @@ element ArgButton
             label_color: #fffa
             label_size: 15
             editable: true
-            label_align: 0.0 0.5
-            label_offset: 12.0 0.0
+            label_align: 0.5 0.5
+            label_offset: 0.0 0.0
         :focused
             layers.body:
                 fill_color: #2f6b4a40
@@ -2080,7 +2162,19 @@ element ArgButton
         :resource
             layers.face:
                 editable: false
+        :selected
+            layers.body:
+                fill_color: #0000004d
+                stroke_color: #fff2
+        :second
+            layers.body:
+                box_shadow: inset 0 0 8px #ffd84a66
+                near_inset_color: #ffd84aff
     }
+
+    # a cmd press is the new instance, not the inspector's
+    func on_press [ ev: Event ]
+        if [ ev.key.meta || ev.key.ctrl ] ev.no_default = true
 
 element FindField
     style : CSS {
@@ -3058,11 +3152,16 @@ element orbiter : trinity # implements compiler
     # summon-only: never saved, never active at startup
     intern show_orbiter     : bool
     intern listen_file      : path
+    # the window as it was when a recording began, sent with its take
+    intern listen_shot      : string
     public active_idx       : i32
     public config_side      : i32
     public active_panel  : string
     # commit hash the stacked diff view presents
     public [ StatePersist ] active_target : string
+    # the exchange's last agent and model: a new one opens on them
+    public [ StatePersist ] agent_last    : string
+    public [ StatePersist ] model_last    : string
     intern fmt_watch  : map FmtWatch [string]
     # file -> the mtime fmt_borrow last looked for
     intern fmt_borrowed : map string [string]
@@ -3256,6 +3355,9 @@ element orbiter : trinity # implements compiler
     public [ StatePersist ] module_props : map string [string]
     mutable shift_down    : bool
     mutable cmd_down      : bool
+    # recording from a shift-click on orbiter's button: a click on it
+    # again sends the take, Esc throws it away
+    mutable mic_by_press  : bool
     # the instance panel's sections fold on their headers
     # one open at a time: properties to begin with
     mutable props_open    : bool [ true ]
@@ -4085,6 +4187,11 @@ element orbiter : trinity # implements compiler
         if [ agent_state == 'idle' || agent_state == 'sent' ]
             agent_note    = ''
             agent_changed = false
+        # a send: its agent and model are the next exchange's too
+        if [ agent_state == 'sent' && ux && ux.agent_pick ]
+            agent_last = ux.agent_pick
+            model_last = ux.model_pick
+            save_session[]
         if [ ux ] ux.restyle = true
 
     # the swap is asked of the host: the exchange goes on alpha before
@@ -4304,12 +4411,51 @@ element orbiter : trinity # implements compiler
                 ux.text_event[ tev ]
             return
         log 'orbiter: submitting take "{dt}"'
-        bd : string dt
-        if [ listen_file ] bd = '{listen_file}  {dt}'
+        take_send[ dt ]
         listen_file = null
-        # the take goes to orbiter's own agent console
-        sa : ConsoleSession ensure_console[ orbit_sid ]
-        if [ sa ] sa.write_input[ '{bd}\r' ]
+        listen_shot = null
+
+    # a recorded take into the exchange, as Enter sends a line: into
+    # the last conversation, else a new one about the recorded file,
+    # with the agent and model last used; the exchange stays put away
+    func take_send [ dt: string ]
+        if [ !ux ] return
+        refs : string ''
+        fresh : bool [ !ux.sessions || ux.sessions.count == 0 ]
+        if [ fresh ]
+            ed : Editor pane_at[ active_pane ]
+            src : path [ (listen_file) ? listen_file
+                : ((ed && ed.src) ? ed.src : null) ]
+            if [ !src ] return
+            ln : i32 [ (ed) ? ed.sel_line + 1 : 0 ]
+            ux.exchange_open[ src, ln, true ]
+            refs = (ln > 0) ? 'File: {src}:{ln}' : 'File: {src}'
+        el
+            cur : i32 [ (ux.session_cur >= 0) ? ux.session_cur
+                : i32[ ux.sessions.count ] - 1 ]
+            ux.session_show[ cur ]
+        if [ !ux.agent_pick || ux.agent_pick.count == 0 ]
+            ux.agent_pick = agent_last
+            ux.model_pick = model_last
+        if [ listen_shot ]
+            sl : string 'Screenshot: {listen_shot}'
+            refs = (refs.count > 0) ? '{refs}\n{sl}' : sl
+        msg : string (refs.count > 0) ? '{dt}\n\n{refs}' : dt
+        if [ fresh ]
+            ux.session_begin[ dt ]
+            agent_shell_new[]
+        if [ !agent_post_as[ a, ux.agent_pick, ux.model_pick, msg,
+                             'now' ] ]
+            if [ fresh ] ux.session_unbegin[]
+            log 'orbiter: the take could not be sent'
+            return
+        old : string ux.shot_text
+        ux.shot_text  = (old && old.count > 0) ? '{old}\n{dt}' : dt
+        ux.user_note[ dt ]
+        on_agent[ 'status sent {dt}' ]
+        ux.agent_view = true
+        ux.agent_min  = true
+        ux.restyle    = true
 
     func request_context [] -> none
         done : bool [ false ]
@@ -4334,7 +4480,10 @@ element orbiter : trinity # implements compiler
         memcpy[ shot.vdata[], b.mmap[], sz ]
         b.unmap[]
         shot_n += 1
-        fn : string '/tmp/orbiter_shot_{getpid[]}_{shot_n}.png'
+        # in the silver folder's tmp/: the agent can open it there
+        sd : path '{path.path_startup[]}/tmp'
+        sd.make_dir[]
+        fn : string '{sd}/orbiter_shot_{getpid[]}_{shot_n}.png'
         shot.png[ path fn ]
         return fn
 
@@ -4773,8 +4922,7 @@ element orbiter : trinity # implements compiler
         inst_seq += 1
         av.iid = inst_seq
         instances.push[ av ]
-        # a new instance is seen: a folded panel opens for it
-        inst_hidden = false
+        # a folded side panel stays folded: only the user opens it
         session_dirty = true
 
     func remove_instance [ av: AppView ]
@@ -4874,6 +5022,12 @@ element orbiter : trinity # implements compiler
     # one console per module: every live instance's log, each line
     # tagged by its id. no module = the global log, every instance of
     # every module
+    # an instance's own console: its log alone, named by its slot so a
+    # restart follows the new log
+    func inst_sid [ v: AppView ] -> string
+        if [ !v || v.ended || v.slot <= 0 || !v.app_mod ] return null
+        return 'ed:i{v.iid}s{v.slot}'
+
     func console_cmd [ mod: string ] -> string
         c : string ''
         n : i32 [ 0 ]
@@ -4907,6 +5061,36 @@ element orbiter : trinity # implements compiler
     # the module's bare argument, when the app takes it live
     # a launch line's default argument: what follows its flags
     # (--name value pairs), the default always last
+    # another instance of the pane's app, on a new pick: the flags of
+    # the one it shows, no file, so it asks for one before it starts
+    func arg_new [ pn: Editor ]
+        ms : path (pn) ? module_src_of[ pn ] : null
+        if [ !pn || !ms ] return
+        rn : AppView pn.run_view
+        nv : AppView [ ]
+        nv.src = ms
+        nv.module_args = flags_of[
+            (rn) ? rn.module_args : file_args[ ms ] ]
+        add_instance[ nv ]
+        embed_app[ pn, nv ]
+
+    # the launch line's flags: everything before its bare argument
+    func flags_of [ args: string ] -> string
+        if [ !args ] return ''
+        ws : vec string args.trim[].split[ ' ' ]
+        out : string ''
+        i  : i32 [ 0 ]
+        while [ i < ws.count ]
+            w9 : string ws[ i ]
+            if [ w9.count > 2 && w9[ 0 ] == 45 && w9[ 1 ] == 45 ]
+                nx : string (i + 1 < ws.count) ? ws[ i + 1 ] : ''
+                out = (out.count > 0) ? '{out} {w9} {nx}' : '{w9} {nx}'
+                i += 2
+                continue
+            if [ w9.count > 0 ] break
+            i += 1
+        return out
+
     func default_arg_of [ args: string ] -> string
         if [ !args ] return ''
         ws : vec string args.trim[].split[ ' ' ]
@@ -8407,14 +8591,57 @@ element orbiter : trinity # implements compiler
                 ev.no_default = true
                 if [ ux ] ux.restyle = true
                 return
-        # a resource argument: the nav list picks the next one
+        # another instance's chip: a press shows it in this pane; with
+        # shift its file is picked anew too; cmd: another
+        if [
+            ev.target inherits ArgButton && ev.target.id != 'arg_edit'
+            && ev.target.id.starts_with[ 'arg_' ] ]
+            oc : ArgButton ev.target
+            po : Editor pane_of[ ev.target ]
+            if [ ev.key.ctrl || ev.key.meta ]
+                arg_new[ po ]
+            el [ po && oc.inst ]
+                embed_app[ po, oc.inst ]
+                session_dirty = true
+                if [ ev.key.shift ]
+                    da : string default_arg_of[ oc.inst.module_args ]
+                    pick_default[ po, null, band_mod_of[ po ], da ]
+            if [ ux ] ux.restyle = true
+            ev.no_default     = true
+            ev.no_propagation = true
+            return
+        # a resource argument: a press selects it; shift picks its file
+        # anew; cmd starts another instance on a new pick
         if [
             ev.target.id == 'arg_edit' && ev.target inherits ArgButton ]
             ab : ArgButton ev.target
+            if [ ev.key.ctrl || ev.key.meta ]
+                arg_new[ pane_of[ ev.target ] ]
+                ev.no_default     = true
+                ev.no_propagation = true
+                return
+            if [ ev.key.shift ]
+                ps : Editor pane_of[ ev.target ]
+                if [ ps ]
+                    bm : string band_mod_of[ ps ]
+                    pick_default[ ps, null, bm, ab.value ]
+                ev.no_default     = true
+                ev.no_propagation = true
+                return
+            # a press selects it: the pane shows the app; selected, it
+            # goes back to the source while the app runs on
             if [ ab.resource ]
                 pe : Editor pane_of[ ev.target ]
-                bm9 : string (pe) ? band_mod_of[ pe ] : ''
-                pick_default[ pe, null, bm9, ab.value ]
+                rv : AppView (pe) ? pe.run_view : null
+                if [ pe && rv && !pe.app_view ]
+                    embed_app[ pe, rv ]
+                el [ pe && rv ]
+                    pe.app_view  = false
+                    # the source shows again: the wheel scrolls it
+                    pe.no_scroll = false
+                    pe.load_file[]
+                    session_dirty = true
+                if [ ux ] ux.restyle = true
                 ev.no_default     = true
                 ev.no_propagation = true
                 return
@@ -8614,6 +8841,24 @@ element orbiter : trinity # implements compiler
             return
         # pip shrinks the app into the editor; its instruments stay open
         if [ ev.target.id == 'agent_note' ]
+            # recording: this click stops it, and the take is sent
+            if [ mic_by_press ]
+                mic_by_press = false
+                if [ orbit_cap_on ] toggle_listen[ null ]
+                if [ ux ] ux.restyle = true
+                ev.no_default = true
+                return
+            # shift: record only, no dialog, about the selected file;
+            # the window is caught first, before anything else draws
+            if [ ev.key.shift && !orbit_cap_on ]
+                edr : Editor pane_at[ active_pane ]
+                listen_shot = (ux) ? snap_window[ ux ] : null
+                dict_slot = -1
+                toggle_listen[ (edr) ? edr.src : null ]
+                mic_by_press = orbit_cap_on
+                if [ ux ] ux.restyle = true
+                ev.no_default = true
+                return
             if [ agent_note && agent_note.count > 0 ]
                 ux.agent_show[]
             el
@@ -9093,6 +9338,18 @@ element orbiter : trinity # implements compiler
 
     func on_key [ ev: Event ]
         ks : i32 [ ev.key.unicode ]
+        # Esc while recording from orbiter's button: the take is dropped
+        if [ ks == 256 && ev.key.state && mic_by_press ]
+            mic_by_press = false
+            if [ orbit_cap_on ]
+                dictation_cancel[]
+                orbit_cap_on   = false
+                orbit_flushing = false
+            listen_file = null
+            listen_shot = null
+            if [ ux ] ux.restyle = true
+            ev.no_default = true
+            return
         # cmd/ctrl + left/right with the nav view up: its own back and
         # forward
         if [
@@ -9693,6 +9950,22 @@ element orbiter : trinity # implements compiler
             ga.launch_cmd = ''
             ga.restart[]
             ga.pending = gc9
+        # the selected instance's own console, made once per slot
+        epa : Editor pane_at[ active_pane ]
+        rva : AppView (epa) ? epa.run_view : null
+        isd : string inst_sid[ rva ]
+        if [ isd ]
+            if [ !ed_sessions ]
+                ed_sessions = map ConsoleSession [string] [ ]
+            if [ !ed_sessions.contains[ isd ] ]
+                is9 : ConsoleSession []
+                is9.name = isd
+                ed_sessions[ isd ] = is9
+                is9.launch_cmd = ''
+                is9.restart[]
+                lg : string '{startup_path}/install/tmp'
+                lf : string '{lg}/{rva.app_mod}.{rva.slot}.log'
+                is9.pending = 'tail -n +1 -F {lf}'
         for [ pi2: i32 0, pi2 < editor_slots.count, pi2 += 1 ]
             edp : Editor pane_at[ pi2 ]
             if [ !edp || !edp.run_view ] continue
@@ -9985,7 +10258,12 @@ element orbiter : trinity # implements compiler
                               elements: pins9 ]
         t['dock_orbiter'] = DockHome [
             buttons: vec string [] [ 'agent_note' ],
-                icon_ids: vec string [] [ 'orbiter4' ], manual: true,
+                # shift, or recording: its core red, and larger; the
+                # agent thinking: blue
+                icon_ids: vec string [] [ (shift_down || mic_by_press)
+                    ? 'orbiter4_red' : ((agent_state == 'busy')
+                    ? 'orbiter4_blue' : 'orbiter4') ],
+                manual: true,
                 rest_fill: rgba [ '#0000' ], seg_radius: 0.0,
                 use_spacing: false, icon_scale: 0.605,
                 area: Region { l0 b35px w78.75px h35px } ]
@@ -10033,16 +10311,21 @@ element orbiter : trinity # implements compiler
                 'step_next', 'step_in', 'step_out' ],
             icon_scale: 0.4125, manual: true, seg_radius: 0.0,
             use_spacing: false, rest_fill: rgba [ '#0000' ],
-            disable_mask: (off) ? 15 : 0,
-            area: Region { l0 t0 w140px b0 } ]
-        # the hovered button's name, else what the reload is doing
+            disable_mask: (off) ? 15 : 0, unavailable: off,
+            # under the nav list's projects column: 6px in, side_w wide
+            area: Region { l6px t0 w168px b0 } ]
+        # the mic first; else the hovered button's name, else what the
+        # reload is doing
         tip : string hover_tip[ ux.hovered ]
         pd  : i32 [ au_live_get_pending[] ]
         txt : string (tip.count > 0) ? tip
             : ((pd == 1) ? 'reload ready' : ((pd == 2) ? 'compiling'
             : ((pd == 3) ? 'reloading' : '')))
-        t['status_text'] = StatusText [ label: txt,
-            area: Region { l150px t0 r1.66 b0 } ]
+        if [ ux.dict_on || mic_by_press ] txt = 'recording'
+        # the whole bar, so the middle is its middle; no hits, the
+        # buttons under it keep theirs
+        t['status_text'] = StatusText [ label: txt, ghost: true,
+            area: Region { l0 t0 r0 b0 } ]
         # the right, while the side panel is folded: its tab, which
         # opens it; open, the panel's own lit tab folds it
         if [ inst_hidden ]
@@ -10085,6 +10368,11 @@ element orbiter : trinity # implements compiler
     # composes, so the first frame holds the exchange as it was
     public func on_frame [ w: Window ]
         side_sync[]
+        # an exchange with no agent chosen opens on the last one used
+        if [ w.shot_ask && (!w.agent_pick || w.agent_pick.count == 0)
+             && agent_last && agent_last.count > 0 ]
+            w.agent_pick = agent_last
+            w.model_pick = model_last
         # shift from the window: the focus may take the key's release
         if [ w.shift != shift_down ]
             shift_down = w.shift

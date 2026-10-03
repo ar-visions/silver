@@ -6757,7 +6757,7 @@ element asnes : trinity
 				dp : u16 [ spc_dp[] ]
 				spc_w[ dp, spc_r[dp] & ~0x04 ]
 
-			case 0x72  # CLR1 dp.3
+			case 0x72  # CLR1 dp.3 # test
 				dp : u16 [ spc_dp[] ]
 				spc_w[ dp, spc_r[dp] & ~0x08 ]
 

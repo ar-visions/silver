@@ -707,6 +707,9 @@ HOST_API int agent_shell_start(const char* agent, const char* root,
         size_t sl = ld.rfind('/');
         if (sl != std::string::npos && ld.compare(sl, std::string::npos, "/tmp") == 0 && sl > 0)
             args.insert(args.end(), { "--add-dir", ld.substr(0, sl) });
+        // the silver folder: its sources and the shots in its tmp/
+        const char* sv = getenv("SILVER");
+        if (sv && *sv) args.insert(args.end(), { "--add-dir", sv });
         if (model && *model) args.insert(args.end(), { "--model", model });
         if (!g_shell_allow.empty()) args.insert(args.end(), { "--allowedTools", g_shell_allow });
     } else {

@@ -145,6 +145,23 @@ instead, use `place: full`:
   its length, and the take resumes where it stopped. Everything
   after moves later in the output by that length.
 
+### Focus
+
+Zooms the picture onto one part of it, for example a panel or a
+line of code the user is talking about. The zoom moves there over a
+moment and back after (a decay, each frame a share of the rest of
+the way), so the take keeps playing and its sound is untouched. The
+region keeps the frame's shape: its larger side sets the zoom, a
+region half the frame's size is 200%. Find the region on the still
+of the mark that asks for it (see the marks' stills).
+
+| field | meaning |
+|---|---|
+| from | take time the zoom starts toward the region, seconds |
+| to | take time it starts back out, seconds |
+| region | the text `'x y w h'`, each a share of the frame (0..1, top left origin) |
+| speed | the share of the way it moves each frame at 60 a second (default 0.08; higher is quicker) |
+
 ### Revoice
 
 The take's own sound from `from` to `to`, spoken in another voice.

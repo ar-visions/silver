@@ -1635,6 +1635,107 @@ Layer EditorLayer
             h = (h ^ code_hash[ editor, editor.row_src[ li ], ln ]) * 1099511628211
         return h
 
+    # the hovered rail's change, in a window left of the track at the
+    # pointer: its title, then its code (a removal: its old lines) with
+    # 4 lines of context above and below, fainter
+    func peek_draw [ cv: Canvas, editor: Editor, right: f32, elh: f32,
+                     ecw: f32, efs: i32 ]
+        i : i32 [ editor.rail_hover1 - 1 ]
+        if [ i < 0 || !editor.hunks || i * 3 + 2 >= editor.hunks.count ]
+            return
+        kind : i32 [ editor.hunks[ i * 3 + 2 ] ]
+        rows : i32 [ editor.hunks[ i * 3 + 1 ] ]
+        if [ kind == 3 ]
+            rows = (editor.peek_old) ? i32[ editor.peek_old.count ] : 0
+        if [ rows > 16 ] rows = 16
+        if [ rows < 1 ] return
+        # its own size: 80% of the editor's font, its own metrics
+        code_fs : i32 [ max[ 9, i32[ round[ f32[ efs ] * 0.8 ] ] ] ]
+        cv.font_size[ code_fs ]
+        cw : f32 [ cv.measure_text[ 'x' ].w ]
+        lh : f32 [ round[ elh * f32[ code_fs ] / f32[ efs ] ] ]
+        r0 : i32 [ editor.hunk_view_row[ i ] ]
+        n  : i32 [ editor.line_count[] ]
+        # the context: up to 4 rows a side, inside the file
+        above : i32 [ min[ 4, r0 ] ]
+        after : i32 [ (kind == 3) ? r0 : r0 + rows ]
+        below : i32 [ max[ 0, min[ 4, n - after ] ] ]
+        all : i32 [ above + rows + below ]
+        th : f32 [ 26.0 ]
+        ww : f32 [ min[ bounds.w * 0.35, cw * 45.0 + 16.0 ] ]
+        wh : f32 [ th + f32[ all ] * lh + 8.0 ]
+        wx : f32 [ round[ right - ww ] ]
+        wy : f32 [ round[ clamp[ bounds.y + editor.peek_y - wh * 0.5,
+                   bounds.y + 4.0, bounds.y + bounds.h - wh - 4.0 ] ] ]
+        iw : i32 [ i32[ ww - 16.0 ] ]
+        cmt : rgba [ '#7a8290' ]
+        cv.save[ ]
+        cv.fill_color[ rgba [ '#0b0d14e6' ] ]
+        cv.stroke_color[ rgba [ '#fff1' ] ]
+        # 1.1: a whole pixel thins out round the corners
+        cv.stroke_width[ 1.1 ]
+        cv.stroke_offset[ -0.5 ]
+        # a slight inner glow round the whole of it, and a drop shadow
+        # under it (2px down, 14px blur)
+        cv.box_shadow[ rgba [ '#c890ff55' ], 0.0, 0.0, 8.0, 0.0, true ]
+        cv.shadow[ 1, rgba [ '#00000099' ], 0.0, 2.0, 14.0, 0.0, false ]
+        cv.rounded[ 14.0, 14.0, 14.0, 14.0 ]
+        cv.rounded_rect[ wx, wy, ww, wh, 14.0, 14.0, 14.0, 14.0 ]
+        cv.paint[ ]
+        cv.no_shadows[ ]
+        cv.rounded[ 0.0, 0.0, 0.0, 0.0 ]
+        cv.stroke_width[ 0.0 ]
+        cv.stroke_offset[ 0.0 ]
+        cv.font_size[ 13 ]
+        cv.fill_color[ rgba [ '#c8c0e0' ] ]
+        tr : rect [ x: wx + 10.0, y: wy, w: ww - 20.0, h: th ]
+        cv.draw_text[ (editor.peek_title) ? editor.peek_title : '', tr,
+            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis,
+            null ]
+        cv.fill_color[ rgba [ '#ffffff14' ] ]
+        cv.rect_to[ wx + 1.0, wy + th, ww - 2.0, 1.0 ]
+        cv.paint[ ]
+        cy : f32 [ wy + th + 4.0 ]
+        # the code stays inside the window: a strip runs a tenth wide
+        ox : f32 [ cv.transform_tx[] ]
+        oy : f32 [ cv.transform_ty[] ]
+        cv.crop_within[ ox + wx + 8.0, oy + cy, ox + wx + ww - 8.0,
+                        oy + wy + wh - 4.0 ]
+        # the context: the same rows, fainter
+        op : f32 [ cv.get_opacity[] ]
+        if [ above > 0 ]
+            ba : EdLineCache code_band[ cv, editor, r0 - above, above,
+                cmt, lh, cw, code_fs, 0, iw ]
+            cv.set_opacity[ op * 0.35 ]
+            peek_band[ cv, ba, wx + 8.0, cy ]
+            cv.set_opacity[ op ]
+        my : f32 [ cy + f32[ above ] * lh ]
+        if [ kind == 3 ]
+            cv.font_size[ code_fs ]
+            cv.fill_color[ rgba [ '#ff8a8a' ] ]
+            for [ k: i32 0, k < rows, k += 1 ]
+                lr : rect [ x: wx + 8.0, y: my + f32[ k ] * lh,
+                            w: ww - 16.0, h: lh ]
+                cv.draw_text[ editor.peek_old[ k ], lr,
+                    vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
+                    Overflow.ellipsis, null ]
+        el
+            mb : EdLineCache code_band[ cv, editor, r0, rows, cmt, lh,
+                cw, code_fs, 0, iw ]
+            peek_band[ cv, mb, wx + 8.0, my ]
+        if [ below > 0 ]
+            bb : EdLineCache code_band[ cv, editor, after, below, cmt,
+                lh, cw, code_fs, 0, iw ]
+            cv.set_opacity[ op * 0.35 ]
+            peek_band[ cv, bb, wx + 8.0, my + f32[ rows ] * lh ]
+            cv.set_opacity[ op ]
+        cv.restore[ ]
+
+    func peek_band [ cv: Canvas, band: EdLineCache, x: f32, y: f32 ]
+        if [ !band || !band.canvas ] return
+        cv.draw_canvas[ band.canvas, x, y, f32[ band.canvas.content_w ],
+                        f32[ band.canvas.content_h ] ]
+
     func code_band [ cv: Canvas, editor: Editor, bs: i32, bands: i32,
                      cmt_c: rgba, lh: f32, cw: f32, code_fs: i32,
                      hcol: i32, vis_w: i32 ] -> EdLineCache
@@ -2313,7 +2414,7 @@ Layer EditorLayer
             # added green, changed blue, a removed run as a red edge
             # above. a label only: nothing here hovers or takes a press
             if [
-                !showing && editor.git_on && !editor.diff_kinds
+                !showing && !editor.diff_kinds
                 && editor.hunks && rnum > 0 ]
                 hk : i32 [ editor.hunk_at[ rnum - 1 ] ]
                 if [ hk >= 0 ]
@@ -2411,7 +2512,7 @@ Layer EditorLayer
         # ghost rows (a removed run shown in place) wear the removed
         # tint
         if [
-            editor.git_on && editor.ghost_hunk >= 0
+            editor.ghost_hunk >= 0
             && editor.flat_active && !showing && !editor.finder_list ]
             cv.stroke_width[ 0.0 ]
             cv.fill_color[ rgba['#ff6a6a66'] ]
@@ -3128,7 +3229,7 @@ Layer EditorLayer
         sb9 : ScrollLayer (editor.layers) ? cast ScrollLayer [
             editor.layers['scrollbar'] ] : null
         if [
-            sb9 && sb9.bounds && !showing && editor.git_on
+            sb9 && sb9.bounds && !showing
             && !editor.no_scroll && editor.content_h > bounds.h ]
             top9 : f32 [ bounds.y + 8.0 ]
             vis : f32 [ sb9.bounds.y + sb9.bounds.h - top9 ]
@@ -3194,6 +3295,8 @@ Layer EditorLayer
                                      rr9 ]
                     cv.paint[ ]
                 cv.restore[ ]
+                peek_draw[ cv, editor, cx9 - sb9.thumb_w - 8.0, lh,
+                           cw_tm.w, code_fs ]
         # this file's compile error, pinned along the foot as the scope
         # headers are along the top: its line in the gutter, a click
         # goes there
@@ -3306,7 +3409,7 @@ element ToolRail : Toolbar
 Control Editor
     style : CSS {
         layers.content: EditorLayer
-            area: l0 t2px r0 b2px
+            area: l0 t1px r0 b0
             label_height: 1.0
             line_color: #44225588
             line_edge: #fff2
@@ -3352,12 +3455,18 @@ Control Editor
     # triples: kind 1 added, 2 changed, 3 removed (rows 0; the mark sits
     # above the row). hunk_sig says what they were computed for;
     # rail_hover1 = index + 1 of the rail beside the scrollbar under the
-    # pointer the git diff view, a tab that is on or off: the gutter
-    # tints, the rails and the ghost rows show only while it is on
+    # pointer. git_on: the git view (picking a reference) is open;
+    # the comparison with HEAD (tints, rails, ghost rows) is always on
     public  git_on        : bool
     mutable hunks         : vec i32
     mutable hunk_sig      : string
     mutable rail_hover1   : i32
+    # the hovered rail's preview: the pointer's y in the view, its
+    # title (where it starts, and the old line's blame), and a removed
+    # run's old lines
+    mutable peek_y        : f32
+    mutable peek_title    : string
+    mutable peek_old      : vec string
     # each hunk's old side (first old line 1-based, old rows), the
     # checkout and path the hunks were taken from: a removed run's text
     # comes from
@@ -5816,7 +5925,7 @@ Control Editor
     # snapshot changed; git diff -U0 against HEAD, over the checkout the
     # file sits in
     func hunks_check []
-        if [ !src || diff_commit || !git_on ] return
+        if [ !src || diff_commit ] return
         orb : cast orbiter [ ux.app_object ]
         if [ !orb ] return
         sa : string '{src.absolute[]}'
@@ -5900,7 +6009,7 @@ Control Editor
     # line into the row above, so the rest of both gutter rows stays a
     # breakpoint's
     func edge_hunk [ vr: i32, fy: f32, lh: f32 ] -> i32
-        if [ !git_on || !hunks || vr < 0 ] return -1
+        if [ !hunks || vr < 0 ] return -1
         sr : i32 [ row_src[ vr ] ]
         if [ sr < 0 ] return -1
         if [ fy < lh * 0.25 ]
@@ -5943,10 +6052,55 @@ Control Editor
         pristine = false
         if [ ux ] ux.will_animate = true
 
+    # a hunk's preview title: where it starts, and who last wrote its
+    # old first line; a removal also keeps its old lines to show
+    func peek_fill [ i: i32 ]
+        peek_old = null
+        if [ !hunks || i < 0 || i * 3 + 2 >= hunks.count ] return
+        ln : i32 [ hunks[ i * 3 ] + 1 ]
+        peek_title = 'line {ln}'
+        if [ !hunk_root || !hunk_old || i * 2 + 1 >= hunk_old.count ]
+            return
+        a0 : i32 [ hunk_old[ i * 2 ] ]
+        an : i32 [ hunk_old[ i * 2 + 1 ] ]
+        # a removal: its old lines to show, no line of its own to blame
+        if [ hunks[ i * 3 + 2 ] == 3 ]
+            base : vec string git_capture[ hunk_root,
+                'show {hunk_ref}:"{hunk_rel}"', true ]
+            old : vec string []
+            for [ k: i32 0, k < an && k < 16, k += 1 ]
+                bi : i32 [ a0 - 1 + k ]
+                if [ bi < 0 || bi >= base.count ] break
+                old.push[ base[ bi ] ]
+            peek_old = old
+            return
+        # a new entry: its line alone; blame is for lines that were
+        if [ an <= 0 ] return
+        # the line as it is now: our own edit is not committed yet, and
+        # then there is no blame to show
+        rng : string '-L {ln},{ln}'
+        args : string 'blame {rng} --porcelain -- "{hunk_rel}"'
+        bl : vec string git_capture[ hunk_root, args, true ]
+        who  : string ''
+        when : i64 [ 0 ]
+        what : string ''
+        for [ l: string ] in bl
+            if [ l.starts_with[ 'author ' ] ]
+                who = l.mid[ 7, l.count - 7 ]
+            el [ l.starts_with[ 'author-time ' ] ]
+                when = l.mid[ 12, l.count - 12 ].integer_value[]
+            el [ l.starts_with[ 'summary ' ] ]
+                what = l.mid[ 8, l.count - 8 ]
+        if [ who.count == 0 || who.starts_with[ 'Not Committed' ] ]
+            return
+        days : i64 [ (Au.epoch_millis[] / 1000 - when) / 86400 ]
+        ago : string (days < 1) ? 'today' : '{days}d ago'
+        peek_title = 'line {ln}  {who}, {ago}: {what}'
+
     # the git rail under the pointer (index), -1 off: inside the
     # scrollbar's track, the same geometry the layer draws
     func rail_at [ mx: f32, my: f32 ] -> i32
-        if [ !git_on || !hunks || diff_kinds || show_hits || finder_list ]
+        if [ !hunks || diff_kinds || show_hits || finder_list ]
             return -1
         ele : (layers) ? cast EditorLayer [ layers['content'] ] : null
         sb  : ScrollLayer (layers) ? cast ScrollLayer [
@@ -6630,8 +6784,9 @@ Control Editor
         if [ run_view && ux.locked == a ]
             run_view.view_lock_move*[ ev ]
             return
-        # not just when maximised: the side panel forwards hover too
-        if [ run_view ]
+        # not just when maximised: the side panel forwards hover too;
+        # with the source showing, the moves are the editor's
+        if [ run_view && app_view ]
             if [ run_view.view_move*[ ev ] ] return
         if [ !scroll_dragging && rview && rview.view_move*[ ev ] ]
             pristine = false
@@ -6685,8 +6840,13 @@ Control Editor
                 rl1 = 0
         if [ rl1 != rail_hover1 ]
             rail_hover1 = rl1
+            if [ rl1 > 0 ] peek_fill[ rl1 - 1 ]
             pristine = false
             ux.will_animate = true
+        # the preview follows the pointer along the track
+        if [ rl1 > 0 && ele && ele.bounds ]
+            peek_y = ev.mouse.pos.y - ele.bounds.y - scroll.y
+            pristine = false
         if [ rl1 > 0 ] hl = -1
         # the pinned band hides the rows under it: the hover is the
         # band's
@@ -6774,7 +6934,8 @@ Control Editor
             ux.will_animate = true
 
     func on_wheel [ ev: Event ]
-        if [ run_view && run_view.view_wheel*[ ev ] ] return
+        # the app takes the wheel only while the pane shows it
+        if [ run_view && app_view && run_view.view_wheel*[ ev ] ] return
         lh : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
         if [ ev.key.shift ]
             cw : f32 [ (cw_cache > 0.0) ? cw_cache : 8.0 ]
