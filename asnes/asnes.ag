@@ -1,6 +1,3 @@
-# asnes: a Super Nintendo in silver, asked for through the exchange
-# a second line on top, asked for the same way
-# a third, from the file exchange at line 1
 export 0.8.8
 export extensions [
 	'.smc': FileType.binary,
@@ -8,7 +5,6 @@ export extensions [
 	'.spc': FileType.binary
 ]
 export icon ['asnes']
-
 import trinity
 import devices
 import img
@@ -38,7 +34,6 @@ struct dsp_channel
 	active    		: u8             # voice is producing output
 	output_l  		: f32
 	output_r  		: f32
-
 
 class spc_state
 	pc             	: u16

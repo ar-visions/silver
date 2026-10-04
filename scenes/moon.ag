@@ -268,6 +268,7 @@ element Moon
             '#ff3a6a22':  '#8a8a8a22',   # commit tab fill
             '#ff3a6a44':  '#8a8a8a44',   # commit tab hover fill
             '#3a1c8a40':  '#8a8a8a40',   # selected title tint
+            '#1d0f3f':    '#363539',       # title bar, dock ground (flat)
             '#ff5a8a80':  '#9a9a9a80',   # commit tab border
             '#ff7aa480':  '#b4b4b480'    # commit tab hover border
         ]

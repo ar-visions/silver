@@ -4446,6 +4446,7 @@ element Mars
             '#ff3a6a22':  '#ff8a4a22',   # commit tab fill
             '#ff3a6a44':  '#ff8a4a44',   # commit tab hover fill
             '#3a1c8a40':  '#8a4a2940',   # selected title tint
+            '#1d0f3f':    '#401b0d',       # title bar, dock ground (flat)
             '#ff5a8a80':  '#e0784280',   # commit tab border
             '#ff7aa480':  '#ffa06880'    # commit tab hover border
         ]

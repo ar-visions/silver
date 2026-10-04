@@ -848,9 +848,12 @@ class Layer
                         f32[ec - sc] * cw, fh - 4.0 ]
             cv.paint[]
 
+        # typing scrolls; a resting label keeps its own overflow
+        ov : Overflow [ (parent.focused || has_edit)
+            ? Overflow.visible : label_overflow ]
         cv.fill_color[ label_color ]
         cv.draw_text[ disp, bounds, vec2f [ ax, ay ],
-                      vec2f [ ox - shift, oy ], Overflow.visible, null ]
+                      vec2f [ ox - shift, oy ], ov, null ]
         cv.paint[]
 
         if [ parent.focused && parent.sel_col >= 0 ]

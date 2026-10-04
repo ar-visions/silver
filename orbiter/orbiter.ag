@@ -279,9 +279,12 @@ element EditorView
             cv9.font_size[ 15 ]
             vw9 : cv9.measure_text[ sh ]
             # the title, centred, with room round it
-            bw : f32 [ min[ vw9.w + 40.6 * fu, 480.0 * fu ] ]
+            # 8 units at most; the label ellipsizes past it
+            bw : f32 [ min[ vw9.w + 40.6 * fu, 8.0 * 22.0 * fu ] ]
             te : element (elements) ? elements[ 'title' ] : null
-            fa : element (te && te.elements) ? te.elements[
+            ts : TaskStrip (te && te.elements) ? te.elements[
+                'tasks' ] : null
+            fa : element (ts && ts.elements) ? ts.elements[
                 'arg_edit' ] : null
             # shift over it, or cmd anywhere: its second action
             sec : bool [
@@ -306,31 +309,70 @@ element EditorView
                         dp : path (da.count > 0) ? path da : null
                         ot = (dp) ? dp.stem[] : ov.app_mod
                 ow : f32 [ (ov == rv) ? bw : min[
-                    cv9.measure_text[ ot ].w + 40.6 * fu, 480.0 * fu ] ]
+                    cv9.measure_text[ ot ].w + 40.6 * fu,
+                    8.0 * 22.0 * fu ] ]
                 ord.push[ ov ]
                 lbs.push[ ot ]
                 wds.push[ ow ]
                 xs.push[ cx ]
                 cx += ow + 6.0 * fu
-            ax0 : f32 [ ax9 ]
+            # the strip ends before the companions and the search
+            lim : f32 [ (te && te.bounds) ? te.bounds.w : 0.0 ]
+            if [ te && te.elements ]
+                for [ rk: string ] in vec string [] [ 'companions',
+                                                      'tabnav' ]
+                    re : element te.elements[ rk ]
+                    if [ re && re.bounds && re.bounds.x > ax9
+                         && re.bounds.x < lim ]
+                        lim = re.bounds.x
+            sw : f32 [ max[ lim - ax9 - 6.0 * fu, 0.0 ] ]
+            span : f32 [ max[ cx - 6.0 * fu - ax9, 0.0 ] ]
+            # a newly shown instance scrolls into view, once the strip's
+            # width holds from one frame to the next
+            pad : f32 [ 3.0 * fu ]
+            vis : f32 [ (ts && ts.bounds) ? ts.bounds.w - pad * 2.0
+                : sw ]
+            shift : f32 [ (ts) ? clamp[ ts.shift, 0.0,
+                max[ span - vis, 0.0 ] ] : 0.0 ]
+            # a chip that grows (its title arrives) counts as new
+            reveal : bool [ !ts || ts.shown != rv.iid
+                || ts.span != span ]
+            settled : bool [ ts && ts.bounds && ts.room == sw
+                && ts.bounds.w <= sw + pad * 2.0 ]
+            sid : i32 [ (reveal && !settled) ? -1 : rv.iid ]
+            if [ reveal ]
+                for [ k: i32 0, k < ord.count, k += 1 ]
+                    if [ ord[ k ] != rv ] continue
+                    kl : f32 [ xs[ k ] - ax9 ]
+                    if [ kl < shift ] shift = kl
+                    if [ kl + wds[ k ] > shift + vis ]
+                        shift = kl + wds[ k ] - vis
+            if [ ts ]
+                ts.shift = shift
+                ts.shown = sid
+            st : Elements []
+            # h0.9 in the title's cells, as the chips had
+            ch : f32 [ 0.9 * ((te && te.fc > 0.0) ? te.fc : 22.0 * fu) ]
+            ax0 : f32 [ 0.0 ]
             for [ k: i32 0, k < ord.count, k += 1 ]
-                if [ ord[ k ] == rv ] ax0 = xs[ k ]
-            ar9 : Region [ 'l{ax0}px t0 w{bw}px h0.9' ]
+                if [ ord[ k ] == rv ]
+                    ax0 = xs[ k ] - ax9 - shift + pad
+            ar9 : Region [ 'l{ax0}px t{pad}px w{bw}px h{ch}px' ]
             if [ rs9 ]
-                t['arg_edit'] = ArgButton [ label: sh, resource: true,
+                st['arg_edit'] = ArgButton [ label: sh, resource: true,
                                             second: sec,
                                             selected: e.app_view,
                                             inst: rv,
                                             value: av9, area: ar9 ]
             el [ fa && w.focus == fa ]
-                t['arg_edit'] = ArgButton [ label: sh, focusable: true,
+                st['arg_edit'] = ArgButton [ label: '', focusable: true,
                                             second: sec,
                                             selected: e.app_view,
                                             inst: rv,
                                             area: ar9 ]
             el
                 # idle: the title; shift-click edits the argument
-                t['arg_edit'] = ArgButton [ label: sh, edit: '',
+                st['arg_edit'] = ArgButton [ label: sh, edit: '',
                                             second: sec,
                                             selected: e.app_view,
                                             inst: rv,
@@ -339,15 +381,21 @@ element EditorView
                 ov : AppView ord[ k ]
                 if [ ov == rv ] continue
                 ok : string 'arg_{ov.iid}'
-                fo : element (te && te.elements) ? te.elements[ ok ]
+                fo : element (ts && ts.elements) ? ts.elements[ ok ]
                     : null
                 os : bool [
                     o.cmd_down || (o.shift_down && fo && fo.hovered) ]
-                kx : f32 [ xs[ k ] ]
+                kx : f32 [ xs[ k ] - ax9 - shift + pad ]
                 kw : f32 [ wds[ k ] ]
-                t[ ok ] = ArgButton [ label: lbs[ k ], resource: true,
+                st[ ok ] = ArgButton [ label: lbs[ k ], resource: true,
                     second: os, inst: ov,
-                    area: Region [ 'l{kx}px t0 w{kw}px h0.9' ] ]
+                    area: Region [ 'l{kx}px t{pad}px w{kw}px h{ch}px' ] ]
+            sa : string 'l{ax9 - pad}px t-{pad}px'
+            sz : string 'w{sw + pad * 2.0}px h{ch + pad * 2.0}px'
+            t['tasks'] = TaskStrip [ span: span, shift: shift,
+                shown: sid, room: sw, pad: pad,
+                area: Region [ '{sa} {sz}' ],
+                elements: st ]
         if [ newfile ]
             # create mode has its own cancel: never two close buttons
             t.rm[ 'histnav' ]
@@ -656,7 +704,8 @@ element EditorTitle
     style : CSS {
         area: l0 t0 r0 h1.3
         layers.tbar:
-            fill_color: #2480
+            # one flat purple, shared with the selected dock icon
+            fill_color: #1d0f3f
             box_shadow: inset 0 0 13px #8af2
             stroke_width: 1
             stroke_color: #fff1
@@ -1573,7 +1622,8 @@ Group Dock
     style : CSS {
         area: l0 t0 w78.75px b0
         layers.dock:
-            fill_color: #625a, 400ms cubic outward
+            # the title bar's purple; the old base marks the selected
+            fill_color: #1d0f3f, 400ms cubic outward
             box_shadow: inset 0 0 13px #8af2
             stroke_width: 1
             stroke_color: #fff1
@@ -1698,7 +1748,8 @@ TButtons AltTab
             fill_color: #0000
             box_shadow: inset 0 0 13px #8af2
             stroke_width: 1
-            stroke_color: #fff1
+            # 1/255: unseen at rest, yet the near light lights it
+            stroke_color: #ffffff01
             near_border: true
             near_inset: 4.0
             near_inset_color: #c890ffff
@@ -1756,7 +1807,7 @@ TButtons DockNav
 element DockLine
     style : CSS {
         layers.line:
-            fill_color: #00000099
+            fill_color: #0000
     }
 
 # a module's icon: icon.png, its export's icon, else a cube
@@ -1895,26 +1946,41 @@ element DockIcon
     public  agi    : path
     # remade when a reused pin points at another folder
     mutable icon   : AppIcon
+    # its place in the column: neighbours share one border
+    public  first  : bool
+    public  last   : bool
     style : CSS {
+        # the next icon's top is the line between two; the arrows'
+        # light line is the first one's top
         layers.edge:
             fill_color: #0000
             box_shadow: inset 0 0 13px #c890ff04
-            stroke_width: 1
-            stroke_color: #fff1
+            stroke_width: 1 1 0 1
+            stroke_color: #ffffff09
             near_border: true
             near_inset: 4.0
             near_inset_color: #c890ffff
         layers.lite:
-            fill_color: #fff2
+            fill_color: #0000
             area: l0 b2px r0 h1px
         layers.foot:
-            fill_color: #00000099
+            fill_color: #0000
             area: l0 b1px r0 h1px
+        :first
+            layers.edge:
+                stroke_width: 0 1 0 1
+        :last
+            layers.edge:
+                stroke_width: 1 1 1 1
+            layers.lite:
+                fill_color: #fff2
         :selected
             layers.edge:
-                fill_color: #4a1538
+                # the dock's old base, flipped with the purple
+                fill_color: #625a
                 stroke_color: #fff3
-                box_shadow: inset 0 0 8px #c890ff77
+                # soft at rest: the pointer's light has room to glow
+                box_shadow: inset 0 0 13px #c890ff33
     }
     public func draw [ w: Window ]
         if [ w.draw_stage != CanvasType.screen ] return
@@ -2130,6 +2196,31 @@ element ArgsField
             layers.face:
                 label_color: #ffff
     }
+
+# the title's task chips, between the module name and the right
+# hand buttons; the wheel scrolls them sideways, no bar
+element TaskStrip
+    # the chips' whole width, and how far into it the strip shows
+    public span  : f32
+    public shift : f32
+    # the shown instance the strip last scrolled to
+    public shown : i32
+    # the width the title last gave it
+    public room  : f32
+    # room round the chips: the clip keeps their borders whole
+    public pad   : f32
+    style : CSS {
+        layers.body:
+            overflow: clip
+    }
+
+    func on_wheel [ ev: Event ]
+        mx : f32 [ max[ span - bounds.w + pad * 2.0, 0.0 ] ]
+        d  : f32 [ f32[ ev.mouse.wheel_delta.y
+            + ev.mouse.wheel_delta.x ] * 26.0 ]
+        shift = clamp[ shift - d, 0.0, mx ]
+        ev.no_propagation = true
+        if [ ux ] ux.restyle = true
 
 # a running app's live argument in the title: press to edit
 element ArgButton
@@ -5443,7 +5534,8 @@ element orbiter : trinity # implements compiler
             els['modicon'] = alt_tab[ pane_ix, 'modicon', 'app_run',
                 (lvt) ? 'stop' : 'play', 'app_run', 'add_instance',
                 true, false, false,
-                Region [ 'l0+ t0 w1.35 b0' ] ]
+                # over the arrows' edge: one border, not two
+                Region [ 'l-1px+ t0 w1.35 b0' ] ]
         el [ edp && edp.src ]
             els['modicon'] = TitleIcon [ file: edp.src, module: false,
                 area: Region [ 'l0+ t0 w1.35 b0' ] ]
@@ -5465,7 +5557,7 @@ element orbiter : trinity # implements compiler
              || (!is_resource && (!engaged || fb_on)) ]
             els['tabnav'] = alt_tab[ pane_ix, 'tabnav', 'magnify',
                 'magnify', 'pane_close', 'close', true, !closable,
-                fb_on, Region [ 'r0+ t0 w1.66 b0' ] ]
+                fb_on, Region [ 'r-1px+ t0 w1.66 b0' ] ]
         # a silver module's companions: <name>.ag and whatever sits
         # beside it under the same name, one strip at the title's right
         # (left of find); ids cmp_<ext>, the open one lit
@@ -8676,11 +8768,12 @@ element orbiter : trinity # implements compiler
                 ev.no_default     = true
                 ev.no_propagation = true
                 return
-            if [ !ab.edit || ab.edit.count == 0 ]
-                v9 : string (ab.value) ? ab.value : ''
-                ab.edit       = v9
-                ab.sel_col    = v9.count
-                ab.anchor_col = v9.count
+            # a new edit starts empty; esc leaves the value as it was
+            if [ !ux || ux.focus != ab ]
+                ab.edit       = ''
+                ab.sel_col    = 0
+                ab.anchor_col = 0
+                ab.label      = ''
             ab.focusable = true
             if [ ux ] ux.set_focus[ ab ]
         # working in a pane makes it active: keys act where you are
@@ -9563,6 +9656,7 @@ element orbiter : trinity # implements compiler
                     ra.arg_text = (ev.target.edit) ? ev.target.edit : ''
                     agent_sock_send[ ra.sock_name[].chars,
                                      'set {pa9.ident} {ra.arg_text}\n' ]
+                ev.target.edit = ''
                 if [ ux ] ux.release_focus[ ev.target ]
                 force_update[]
                 ev.no_default = true
@@ -10268,6 +10362,7 @@ element orbiter : trinity # implements compiler
         pins9 : Elements []
         pins9['navline'] = DockLine [ area: Region { l0 t0 r0 h1px } ]
         y9 : f32 [ 1.0 ]
+        lk : string [ '' ]
         if [ pins ]
             for [ ps9: string ] in pins
                 pp : path ps9
@@ -10287,8 +10382,13 @@ element orbiter : trinity # implements compiler
                         lt = '{ms9.absolute[]}' == '{mm.absolute[]}'
                 pins9[ 'dock_{ps9}' ] = DockIcon [ file: pp,
                     module: ism, agi: ag9, selected: lt, count: n9,
+                    first: y9 <= 1.0,
                     area: Region [ 'l0 t{y9}px w78.75px h78.75px' ] ]
+                lk = 'dock_{ps9}'
                 y9 += 78.75
+        if [ lk.count > 0 ]
+            li : DockIcon pins9[ lk ]
+            li.last = true
         t['pins'] = element [ area: Region { l0 t1.3 r0 b35px },
                               elements: pins9 ]
         # cmd anywhere, shift over it, or recording: its core red;

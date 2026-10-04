@@ -6549,8 +6549,8 @@ Control Editor
                     prl : i32 [
                         rail_at[ ev.mouse.pos.x, ev.mouse.pos.y ] ]
                     if [ prl >= 0 ]
-                        if [ hunks[ prl * 3 + 2 ] == 3 && prl != ghost_hunk ]
-                            ghost_toggle[ prl ]
+                        # a removal stays folded in the code; its lines
+                        # show in the rail's preview
                         hunk_goto[ prl ]
                         if [ ux ] ux.set_focus[ a ]
                         ev.no_default = true

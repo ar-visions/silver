@@ -1354,6 +1354,7 @@ element Europa
             '#ff3a6a22':  '#7ac8e822',   # commit tab fill
             '#ff3a6a44':  '#7ac8e844',   # commit tab hover fill
             '#3a1c8a40':  '#49778a40',   # selected title tint
+            '#1d0f3f':    '#152026',       # title bar, dock ground (flat)
             '#ff5a8a80':  '#7ac8e880',   # commit tab border
             '#ff7aa480':  '#a8e0f480'    # commit tab hover border
         ]

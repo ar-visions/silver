@@ -5908,9 +5908,15 @@ Display Window
         nc : bool [ e.no_cache ]
         for [ pe: element* e.parent, pe && !nc, pe = pe.parent ]
             if [ pe.no_cache ] nc = true
+        # css overflow: clip on a layer crops the children, as a
+        # scrolling element does
+        crops : bool [ e.content_h > 0.0 ]
+        for [ cl_au: Au, cl_k: string ] in e.layers
+            cl_lay : cast Layer [ cl_au ]
+            if [ cl_lay && cl_lay.overflow == Clip.clip ] crops = true
         # no canvas of its own to clip it: a scrolling uncached element
         # crops to its bounds, or its rows would paint past them
-        if [ nc && e.content_h > 0.0 ]
+        if [ nc && crops ]
             ncx : f32 [ cv.transform_tx[] ]
             ncy : f32 [ cv.transform_ty[] ]
             cv.set_crop[ ncx, ncy, ncx + e.bounds.w, ncy + e.bounds.h ]
@@ -6499,7 +6505,7 @@ Display Window
         # cached children compose onto the shared target, not into this
         # cache: a scrolling element crops them to its bounds or its
         # rows land past them (topmost children, popups, stay free)
-        if [ e.content_h > 0.0 && stage == CanvasType.screen ]
+        if [ crops && stage == CanvasType.screen ]
             ccx : f32 [ cv.transform_tx[] ]
             ccy : f32 [ cv.transform_ty[] ]
             cv.save[]
@@ -6523,7 +6529,7 @@ Display Window
             draw_element[ ee, stage, last_ ]
             last_ = ee
             cv.restore[]
-        if [ e.content_h > 0.0 && stage == CanvasType.screen ]
+        if [ crops && stage == CanvasType.screen ]
             cv.restore[]
         for [ ee: element, id: string ] in e.elements
             if [ !ee.topmost ] continue

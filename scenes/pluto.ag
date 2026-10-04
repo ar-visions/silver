@@ -1230,6 +1230,7 @@ element Pluto
             '#ff3a6a22':  '#7ab0ff22',
             '#ff3a6a44':  '#7ab0ff44',
             '#3a1c8a40':  '#4b648a40',   # selected title tint
+            '#1d0f3f':    '#1e2739',       # title bar, dock ground (flat)
             '#ff5a8a80':  '#8ab8ff80',
             '#ff7aa480':  '#a8ccff80'
         ]

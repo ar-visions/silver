@@ -99,6 +99,7 @@ element MilkyWay
             '#ff3a6a22':  '#8a8ad422',   # commit tab fill
             '#ff3a6a44':  '#8a8ad444',   # commit tab hover fill
             '#3a1c8a40':  '#56608a40',   # selected title tint
+            '#1d0f3f':    '#32182c',       # title bar, dock ground (flat)
             '#ff5a8a80':  '#8a9ade80',   # commit tab border
             '#ff7aa480':  '#a8b6ff80'    # commit tab hover border
         ]

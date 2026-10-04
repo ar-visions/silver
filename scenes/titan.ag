@@ -378,6 +378,7 @@ element Titan
             '#ff3a6a22':  '#ffb04a22',   # commit tab fill
             '#ff3a6a44':  '#ffb04a44',   # commit tab hover fill
             '#3a1c8a40':  '#8a643140',   # selected title tint
+            '#1d0f3f':    '#473520',       # title bar, dock ground (flat)
             '#ff5a8a80':  '#ffb85a80',   # commit tab border
             '#ff7aa480':  '#ffd08a80'    # commit tab hover border
         ]

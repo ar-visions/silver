@@ -843,6 +843,11 @@ struct XCoord
                  && sx_offset.chars[0] == 'c' ]
                 content   = true
                 sx_offset = sx_offset.mid[ 1, sx_offset.count - 1 ]
+            # a trailing + (flow on) may follow the unit: -1px+
+            if [ sx_offset.count >= 2 && sx_offset.last[] == '+'
+                 && sx_offset.index_of[ '%' ] < 0 ]
+                sx_offset = sx_offset.mid[ 0, sx_offset.count - 1 ]
+                relative  = true
             if [ sx_offset.last[] == 'x' && sx_offset.count >= 2 ]
                 if [ sx_offset.chars[ sx_offset.count - 2 ] == 'p' ]
                     sx_offset = sx_offset.mid[ 0, sx_offset.count - 2 ]
@@ -932,6 +937,11 @@ struct YCoord
                  && sy_offset.chars[0] == 'c' ]
                 content   = true
                 sy_offset = sy_offset.mid[ 1, sy_offset.count - 1 ]
+            # a trailing + (flow on) may follow the unit: -1px+
+            if [ sy_offset.count >= 2 && sy_offset.last[] == '+'
+                 && sy_offset.index_of[ '%' ] < 0 ]
+                sy_offset = sy_offset.mid[ 0, sy_offset.count - 1 ]
+                relative  = true
             if [ sy_offset.last[] == 'x' && sy_offset.count >= 2 ]
                 if [ sy_offset.chars[ sy_offset.count - 2 ] == 'p' ]
                     sy_offset = sy_offset.mid[ 0, sy_offset.count - 2 ]
