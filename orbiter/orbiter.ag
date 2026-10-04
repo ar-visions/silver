@@ -1751,6 +1751,7 @@ TButtons AltTab
             # 1/255: unseen at rest, yet the near light lights it
             stroke_color: #ffffff01
             near_border: true
+            near_reach: 0.5
             near_inset: 4.0
             near_inset_color: #c890ffff
         :second
@@ -1958,6 +1959,7 @@ element DockIcon
             stroke_width: 1 1 0 1
             stroke_color: #ffffff09
             near_border: true
+            near_reach: 0.5
             near_inset: 4.0
             near_inset_color: #c890ffff
         layers.lite:
@@ -1979,8 +1981,8 @@ element DockIcon
                 # the dock's old base, flipped with the purple
                 fill_color: #625a
                 stroke_color: #fff3
-                # soft at rest: the pointer's light has room to glow
-                box_shadow: inset 0 0 13px #c890ff33
+                # its own inner glow, lit or not
+                box_shadow: inset 0 0 13px #c890ff88
     }
     public func draw [ w: Window ]
         if [ w.draw_stage != CanvasType.screen ] return
@@ -5672,7 +5674,7 @@ element orbiter : trinity # implements compiler
         return AltTab [ buttons: vec string [] [ (use) ? alt_id : id ],
             icon_ids: vec string [] [ (use) ? alt_icon : icon ],
             manual: true, seg_radius: 0.0, use_spacing: false,
-            rest_fill: rgba [ '#0000' ], second: use,
+            rest_fill: rgba [ '#0000' ], second: use, seg_reach: 0.5,
             sel_mask: (lit && !use) ? 1 : 0, area: area ]
 
     func dock_tabs [ grp: vec path, prefix: string, active: path,
@@ -10356,13 +10358,18 @@ element orbiter : trinity # implements compiler
             rest_hover: true, rest_fill: rgba [ '#ffffff08' ],
             disable_mask: ndm,
             icon_scale: 0.30, rest_glow: rgba [ '#ccf2' ], rest_px: 8.0,
-            seg_radius: 0.0, use_spacing: false,
+            seg_radius: 0.0, use_spacing: false, seg_reach: 0.5,
             area: Region { l0 t0 r0 h1.3 } ]
         # the pins start under the arrows, in the arrows' unit
         pins9 : Elements []
         pins9['navline'] = DockLine [ area: Region { l0 t0 r0 h1px } ]
         y9 : f32 [ 1.0 ]
-        lk : string [ '' ]
+        # the last pin that is there takes the bottom border
+        np : i32 [ 0 ]
+        if [ pins ]
+            for [ ps0: string ] in pins
+                if [ (path ps0).exists[] ] np += 1
+        k9 : i32 [ 0 ]
         if [ pins ]
             for [ ps9: string ] in pins
                 pp : path ps9
@@ -10382,13 +10389,10 @@ element orbiter : trinity # implements compiler
                         lt = '{ms9.absolute[]}' == '{mm.absolute[]}'
                 pins9[ 'dock_{ps9}' ] = DockIcon [ file: pp,
                     module: ism, agi: ag9, selected: lt, count: n9,
-                    first: y9 <= 1.0,
+                    first: k9 == 0, last: k9 == np - 1,
                     area: Region [ 'l0 t{y9}px w78.75px h78.75px' ] ]
-                lk = 'dock_{ps9}'
+                k9 += 1
                 y9 += 78.75
-        if [ lk.count > 0 ]
-            li : DockIcon pins9[ lk ]
-            li.last = true
         t['pins'] = element [ area: Region { l0 t1.3 r0 b35px },
                               elements: pins9 ]
         # cmd anywhere, shift over it, or recording: its core red;

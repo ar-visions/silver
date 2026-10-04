@@ -7312,7 +7312,7 @@ element TButtons
                     # light; a hovered one grey at full; the rest faint
                     if [ rest_hover || rest_fill ]
                         hv : bool [ i == hover_ix && !lit ]
-                        w.near_light_on[ cv, a, 0.0, 0.0 ]
+                        w.near_light_reach[ cv, a, 0.0, 0.0, seg_reach ]
                         # an own-fill row: a faint grey near light on
                         # hover, none lit
                         lt : f32 [ (rest_fill) ? 0.2 : 3.0 ]

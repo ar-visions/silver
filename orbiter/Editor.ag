@@ -2004,7 +2004,7 @@ Layer EditorLayer
                     if [ (hdy > 0.5) || (hdy < 0.0 - 0.5) ]
                         editor.scroll.y = filter_n[ editor.scroll.y,
                                                     editor.scroll_target,
-                                                    0.14,
+                            (editor.scroll_dragging) ? 0.8 : 0.14,
                                                     editor.ux.frame_factor ]
                         parent.needs_frame = true
                         if [ editor.ux ] editor.ux.will_animate = true
@@ -2183,8 +2183,10 @@ Layer EditorLayer
             editor.scroll_target = max_scroll
         sdy : f32 [ editor.scroll_target - editor.scroll.y ]
         if [ (sdy > 0.5) || (sdy < 0.0 - 0.5) ]
+            # the thumb held: 80% a frame; the wheel glides
+            ease : f32 [ (editor.scroll_dragging) ? 0.8 : 0.14 ]
             editor.scroll.y = filter_n[ editor.scroll.y,
-                                        editor.scroll_target, 0.14,
+                                        editor.scroll_target, ease,
                                         editor.ux.frame_factor ]
             parent.needs_frame = true
             if [ editor.ux ] editor.ux.will_animate = true
@@ -6558,7 +6560,6 @@ Control Editor
                 sb0.grab_at[ my0 ]
                 sy0 : f32 [ sb0.drag_to[ my0 ] ]
                 if [ sy0 >= 0.0 ]
-                    scroll.y        = sy0
                     scroll_target   = sy0
                     scroll_dragging = true
                     sb0.active      = true
@@ -6837,8 +6838,8 @@ Control Editor
                 sy : f32 [
                     sb.drag_to[
                         ev.mouse.pos.y - ele.bounds.y - scroll.y ] ]
-                if [ sy >= 0.0 ] scroll.y = sy
-            scroll_target = scroll.y
+                # the draw eases to it: frames between the moves
+                if [ sy >= 0.0 ] scroll_target = sy
             pristine = false
             ux.will_animate = true
             return
