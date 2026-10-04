@@ -68,6 +68,8 @@ element EditorView
     public selected   : bool
     public pane_index : i32
     public is_console : bool
+    # a new tab, no file yet: no ground, the scene shows through
+    public is_empty   : bool
 
     style : CSS {
         area: l0 t0 r0 b0
@@ -76,6 +78,9 @@ element EditorView
         :is_console
             layers.bg:
                 fill_color: #140a2a80
+        :is_empty
+            layers.bg:
+                fill_color: #0000
     }
 
 
@@ -540,6 +545,12 @@ element EditorView
         if [ is_console != is_con ]
             is_console = is_con
             pristine   = false
+        # browsing keeps the ground: only a bare new tab is clear
+        emp : bool [ !is_con && !file[] && !browse_active[] ]
+        if [ is_empty != emp ]
+            is_empty = emp
+            pristine = false
+            if [ ux ] ux.restyle = true
         if [ o.find_showing ]
             log 'FIND show: pane={id} searchable={(searchable[]) ? 1 : 0} sp={o.search_pane[]} hits={o.find_hits->count}'
         e : Editor text_of[]
@@ -558,10 +569,17 @@ element EditorView
             tx9 : element spl.elements['text']
             ed9 : element (tx9 && tx9.elements) ? tx9.elements['text'] : null
             if [ ed9 && ed9.bounds && tx9.bounds && cbv.bounds ]
-                same : bool [
-                    cbv.bounds.x == spl.bounds.x + tx9.bounds.x
-                    + ed9.bounds.x
-                    && cbv.bounds.y == spl.bounds.y + tx9.bounds.y + ed9.bounds.y && cbv.bounds.w == ed9.bounds.w && cbv.bounds.h == ed9.bounds.h ]
+                # the view bar takes its width off the right (render)
+                vb : element elements['viewbar']
+                vw : f32 [ (vb && vb.bounds) ? vb.bounds.w : 0.0 ]
+                dx : f32 [ cbv.bounds.x
+                    - (spl.bounds.x + tx9.bounds.x + ed9.bounds.x) ]
+                dy : f32 [ cbv.bounds.y
+                    - (spl.bounds.y + tx9.bounds.y + ed9.bounds.y) ]
+                dw : f32 [ cbv.bounds.w - (ed9.bounds.w - vw) ]
+                dh : f32 [ cbv.bounds.h - ed9.bounds.h ]
+                same : bool [ dx * dx < 0.25 && dy * dy < 0.25
+                    && dw * dw < 0.25 && dh * dh < 0.25 ]
                 if [ !same ]
                     if [ ux ] ux.restyle = true
 
@@ -693,7 +711,7 @@ element EditorView
 
 element EditorTitle
     public selected : bool
-    # the selected editor's title (no look of its own now)
+    # the active pane's title: the selection colour, as the dock's
     public current  : bool
     # newfile mode: typed name collides with an existing file
     public conflict : bool
@@ -704,8 +722,8 @@ element EditorTitle
     style : CSS {
         area: l0 t0 r0 h1.3
         layers.tbar:
-            # one flat purple, shared with the selected dock icon
-            fill_color: #1d0f3f
+            # the status bar's dark; the active pane's is the selection
+            fill_color: #000c
             box_shadow: inset 0 0 13px #8af2
             stroke_width: 1
             stroke_color: #fff1
@@ -718,6 +736,9 @@ element EditorTitle
             editable: true
             label_align: 0.0 0.5
             label_offset: 22.0 0.0
+        :current
+            layers.tbar:
+                fill_color: #625a
         :switched
             layers.tface:
                 label_offset: 62.7 0.0
@@ -8942,7 +8963,13 @@ element orbiter : trinity # implements compiler
             ev.no_default = true
             return
         if [ ev.target.id == 'console_tab' ]
-            show_console = !show_console
+            # shift: every panel hides but the status bar (the scene
+            # alone, to look at it); again brings them back
+            if [ ev.key.shift ]
+                hide_ui = !hide_ui
+                force_update[]
+            el
+                show_console = !show_console
             if [ ev.target ] ev.target.ux.restyle = true
             ev.no_default = true
             return

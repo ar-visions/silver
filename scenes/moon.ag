@@ -2,9 +2,1074 @@ extend scenes
 
 enum MoonSurface
     color  : 0
-    height : 1
-    cloud  : 2
-    jungle : 3
+    normal : 1
+    spec   : 2
+    detail : 3
+    height : 4
+    pebble : 5
+
+# ---- the moon's ground, brushed at export ----
+# the sphere map, its tile of fine craters, the crater types
+func moon_w [] -> i32
+    return 8192
+
+func moon_h [] -> i32
+    return 4096
+
+func moon_tile [] -> i32
+    return 2048
+
+func moon_types [] -> i32
+    return 1024
+
+func moon_side [] -> i32
+    return 128
+
+# a uniform 0..1 per (crater, generation, draw, seed): a full
+# avalanche, so neighbouring craters land nowhere near each other
+func moon_rand [ k: i32, g: i32, slot: i32, seed: i32 ] -> f32
+    x : u32 [ u32[ k ] * 2654435761 ]
+    x = x ^ (u32[ g ] * 2246822519)
+    x = x ^ (u32[ slot ] * 3266489917)
+    x = x ^ (u32[ seed ] * 668265263)
+    for [ r: i32 0, r < 2, r += 1 ]
+        x = x ^ (x >> 16)
+        x = x * 2146121005
+        x = x ^ (x >> 15)
+        x = x * 2221713035
+        x = x ^ (x >> 16)
+    return f32[ x >> 8 ] / 16777216.0
+
+# 0..1 between edges a and b, smoothly
+func moon_ss [ lo: f32, hi: f32, x: f32 ] -> f32
+    t : f32 [ clamp[ (x - lo) / (hi - lo), 0.0, 1.0 ] ]
+    return t * t * (3.0 - 2.0 * t)
+
+# low-discrepancy: types sweep each weight evenly
+func moon_halton [ i: i32, base: i32 ] -> f32
+    f : f32 [ 1.0 ]
+    r : f32 [ 0.0 ]
+    k : i32 [ i ]
+    while [ k > 0 ]
+        f = f / f32[ base ]
+        r = r + f * f32[ k % base ]
+        k = k / base
+    return r
+
+# the crater types: a radial wave of basis shapes (bowl, rim,
+# ejecta, central peak, flat floor, terraces), the weights swept
+# evenly by halton, broken up by perlin. low index: small simple
+# bowls; high: wide complex craters. a stamp spans -1.8..1.8 radii
+func moon_stamps [ st: @f32 ]
+    side : i32 [ moon_side[] ]
+    for [ ti: i32 0, ti < moon_types[], ti += 1 ]
+        t    : f32 [ f32[ ti ] / f32[ moon_types[] - 1 ] ]
+        hb   : f32 [ moon_halton[ ti + 1, 2 ] ]
+        hc   : f32 [ moon_halton[ ti + 1, 3 ] ]
+        hd   : f32 [ moon_halton[ ti + 1, 5 ] ]
+        he   : f32 [ moon_halton[ ti + 1, 7 ] ]
+        hf   : f32 [ moon_halton[ ti + 1, 11 ] ]
+        hg   : f32 [ moon_halton[ ti + 1, 13 ] ]
+        # big basins are shallow for their size
+        dep  : f32 [ (0.42 - 0.32 * t) * (0.85 + 0.3 * hb) ]
+        rimh : f32 [ (0.10 - 0.04 * t) * (0.7 + 0.6 * hc) ]
+        rimw : f32 [ 0.08 + 0.08 * hd ]
+        ejw  : f32 [ 0.25 + 0.3 * he ]
+        peak : f32 [ moon_ss[ 0.45, 0.8, t ] * (0.1 + 0.25 * hf) ]
+        flo  : f32 [ moon_ss[ 0.3, 0.75, t ] * (0.35 + 0.3 * hg) ]
+        ter  : f32 [ moon_ss[ 0.55, 1.0, t ] * 0.035 * hb ]
+        wob  : f32 [ 0.03 + 0.1 * hc * hd + 0.05 * t ]
+        nfl  : f32 [ 0.02 + 0.05 * he ]
+        sd   : f32 [ f32[ ti ] * 7.31 ]
+        at   : i32 [ ti * side * side ]
+        for [ y: i32 0, y < side, y += 1 ]
+            py : f32 [ (f32[ y ] / f32[ side - 1 ] * 2.0 - 1.0) * 1.8 ]
+            for [ x: i32 0, x < side, x += 1 ]
+                px : f32 [
+                    (f32[ x ] / f32[ side - 1 ] * 2.0 - 1.0) * 1.8 ]
+                r  : f32 [ sqrt[ px * px + py * py ] ]
+                an : f32 [ atan2[ py, px ] ]
+                ca : f32 [ cos[ an ] ]
+                sa : f32 [ sin[ an ] ]
+                # the rim wanders: perlin round the circle
+                rw : f32 [
+                    eu_gnoise[ ca * 2.2 + sd, sa * 2.2, sd * 0.37 ]
+                    * 2.0 - 1.0 ]
+                rr : f32 [ r / (1.0 + wob * rw) ]
+                h  : f32 [ 0.0 ]
+                if [ rr < 1.0 ]
+                    bowl : f32 [ dep * (rr * rr - 1.0) ]
+                    # a complex crater's floor: the bowl cut flat
+                    if [ flo > 0.0 ]
+                        fl : f32 [ dep * (flo * flo - 1.0) ]
+                        df : f32 [ bowl - fl ]
+                        bowl = (bowl + fl + sqrt[ df * df + 0.0016 ])
+                            * 0.5
+                    h = bowl
+                    # terraces down the inner wall
+                    h = h + ter * sin[ rr * 31.4 ]
+                        * moon_ss[ flo, 1.0, rr ]
+                    # the floor's own hummocks
+                    h = h + nfl * (eu_gnoise[ px * 3.0 + sd, py * 3.0,
+                                              sd + 1.7 ] - 0.5)
+                        * (1.0 - moon_ss[ 0.6, 1.0, rr ])
+                rd : f32 [ (rr - 1.0) / rimw ]
+                h = h + rimh * exp[ 0.0 - rd * rd ]
+                if [ rr > 1.0 ]
+                    # ejecta: thins outward, in rays
+                    ray : f32 [ 0.55 + 0.9 * eu_gnoise[
+                        ca * 7.0 + sd, sa * 7.0, rr * 0.8 + sd ] ]
+                    h = h + rimh * 0.7 * exp[ (1.0 - rr) / ejw ] * ray
+                pk : f32 [ rr / 0.16 ]
+                h = h + peak * exp[ 0.0 - pk * pk ]
+                    * (0.6 + 0.8 * eu_gnoise[ px * 5.0 + sd, py * 5.0,
+                                              sd + 3.1 ])
+                # broken ground everywhere in it
+                h = h + 0.012 * (eu_gnoise[ px * 8.0 + sd, py * 8.0,
+                                            sd + 5.3 ] - 0.5)
+                # nothing at the stamp's edge
+                h = h * (1.0 - moon_ss[ 1.35, 1.75, r ])
+                st[ at + y * side + x ] = h
+
+# a stamp at -1.8..1.8 radii, bilinear
+func moon_sample [ st: @f32, at: i32, sx: f32, sy: f32 ] -> f32
+    side : i32 [ moon_side[] ]
+    fx : f32 [ (sx / 3.6 + 0.5) * f32[ side - 1 ] ]
+    fy : f32 [ (sy / 3.6 + 0.5) * f32[ side - 1 ] ]
+    x  : i32 [ clamp[ i32[ fx ], 0, side - 2 ] ]
+    y  : i32 [ clamp[ i32[ fy ], 0, side - 2 ] ]
+    ax : f32 [ fx - f32[ x ] ]
+    ay : f32 [ fy - f32[ y ] ]
+    i  : i32 [ at + y * side + x ]
+    top : f32 [ st[ i ] + (st[ i + 1 ] - st[ i ]) * ax ]
+    j  : i32 [ i + side ]
+    bot : f32 [ st[ j ] + (st[ j + 1 ] - st[ j ]) * ax ]
+    return top + (bot - top) * ay
+
+# wear between generations: a [1 2 1] blur each way, x wraps,
+# weighted by how low the ground lies: the deep wears most, the
+# high keeps its detail
+func moon_blur [ h: @f64, tmp: @f64, wd: i32, hg: i32, wy: bool ]
+    n  : i32 [ wd * hg ]
+    lo : f64 [ h[ 0 ] ]
+    hi : f64 [ h[ 0 ] ]
+    for [ i: i32 0, i < n, i += 16 ]
+        if [ h[ i ] < lo ] lo = h[ i ]
+        if [ h[ i ] > hi ] hi = h[ i ]
+    span : f64 [ (hi > lo) ? hi - lo : 1.0 ]
+    for [ y: i32 0, y < hg, y += 1 ]
+        row : i32 [ y * wd ]
+        for [ x: i32 0, x < wd, x += 1 ]
+            xl : i32 [ (x + wd - 1) % wd ]
+            xr : i32 [ (x + 1) % wd ]
+            tmp[ row + x ] = (h[ row + xl ] + h[ row + x ] * 2.0
+                + h[ row + xr ]) * 0.25
+    for [ y: i32 0, y < hg, y += 1 ]
+        yu : i32 [ y - 1 ]
+        yd : i32 [ y + 1 ]
+        if [ yu < 0 ]
+            yu = (wy) ? hg - 1 : 0
+        if [ yd >= hg ]
+            yd = (wy) ? 0 : hg - 1
+        for [ x: i32 0, x < wd, x += 1 ]
+            i  : i32 [ y * wd + x ]
+            bl : f64 [ (tmp[ yu * wd + x ] + tmp[ i ] * 2.0
+                + tmp[ yd * wd + x ]) * 0.25 ]
+            low : f64 [ clamp[ (hi - h[ i ]) / span, 0.0, 1.0 ] ]
+            w  : f64 [ 0.05 + 0.95 * low * low ]
+            h[ i ] = h[ i ] + (bl - h[ i ]) * w
+
+# the ground's typical slope: the rms of the height's gradient,
+# every 4th pixel, with the sphere's true pixel spacing
+func moon_slope [ hgt: @f64, wd: i32, hg: i32, sphere: bool ] -> f64
+    sum : f64 [ 0.0 ]
+    cnt : f64 [ 0.0 ]
+    for [ y: i32 1, y < hg - 1, y += 4 ]
+        dxe : f64 [ 1.0 ]
+        dyn : f64 [ 1.0 ]
+        if [ sphere ]
+            lat : f64 [ 1.5707963
+                - (f64[ y ] + 0.5) / f64[ hg ] * 3.14159265 ]
+            # the polar rows stretch: leave them out
+            if [ cos[ lat ] < 0.2 ] continue
+            dxe = cos[ lat ] * 6.2831853 / f64[ wd ]
+            dyn = 3.14159265 / f64[ hg ]
+        for [ x: i32 1, x < wd - 1, x += 4 ]
+            i  : i32 [ y * wd + x ]
+            gx : f64 [ (hgt[ i + 1 ] - hgt[ i - 1 ]) / (2.0 * dxe) ]
+            gy : f64 [ (hgt[ i - wd ] - hgt[ i + wd ]) / (2.0 * dyn) ]
+            sum = sum + gx * gx + gy * gy
+            cnt = cnt + 1.0
+    return (cnt > 0.0) ? sqrt[ sum / cnt ] : 0.0
+
+# a radix-2 fft over one line of n (a power of two), in place
+func moon_fft [ re: @f64, im: @f64, n: i32, inv: bool ]
+    j : i32 [ 0 ]
+    for [ i: i32 1, i < n, i += 1 ]
+        bit : i32 [ n >> 1 ]
+        while [ (j & bit) != 0 ]
+            j = j ^ bit
+            bit = bit >> 1
+        j = j ^ bit
+        if [ i < j ]
+            tr : f64 [ re[ i ] ]
+            ti : f64 [ im[ i ] ]
+            re[ i ] = re[ j ]
+            im[ i ] = im[ j ]
+            re[ j ] = tr
+            im[ j ] = ti
+    len : i32 [ 2 ]
+    while [ len <= n ]
+        ang : f64 [ 6.283185307179586 / f64[ len ] ]
+        if [ !inv ] ang = 0.0 - ang
+        wr : f64 [ cos[ ang ] ]
+        wi : f64 [ sin[ ang ] ]
+        half : i32 [ len / 2 ]
+        for [ st: i32 0, st < n, st += len ]
+            cr : f64 [ 1.0 ]
+            ci : f64 [ 0.0 ]
+            for [ k: i32 0, k < half, k += 1 ]
+                a  : i32 [ st + k ]
+                b  : i32 [ a + half ]
+                xr : f64 [ re[ b ] * cr - im[ b ] * ci ]
+                xi : f64 [ re[ b ] * ci + im[ b ] * cr ]
+                re[ b ] = re[ a ] - xr
+                im[ b ] = im[ a ] - xi
+                re[ a ] = re[ a ] + xr
+                im[ a ] = im[ a ] + xi
+                nr : f64 [ cr * wr - ci * wi ]
+                ci = cr * wi + ci * wr
+                cr = nr
+        len = len * 2
+    if [ inv ]
+        for [ i: i32 0, i < n, i += 1 ]
+            re[ i ] = re[ i ] / f64[ n ]
+            im[ i ] = im[ i ] / f64[ n ]
+
+# the same over a square grid: rows, then columns
+func moon_fft2 [ re: @f64, im: @f64, n: i32, inv: bool ]
+    lr : new f64 [ n ]
+    li : new f64 [ n ]
+    for [ y: i32 0, y < n, y += 1 ]
+        for [ x: i32 0, x < n, x += 1 ]
+            lr[ x ] = re[ y * n + x ]
+            li[ x ] = im[ y * n + x ]
+        moon_fft[ lr, li, n, inv ]
+        for [ x: i32 0, x < n, x += 1 ]
+            re[ y * n + x ] = lr[ x ]
+            im[ y * n + x ] = li[ x ]
+    for [ x: i32 0, x < n, x += 1 ]
+        for [ y: i32 0, y < n, y += 1 ]
+            lr[ y ] = re[ y * n + x ]
+            li[ y ] = im[ y * n + x ]
+        moon_fft[ lr, li, n, inv ]
+        for [ y: i32 0, y < n, y += 1 ]
+            re[ y * n + x ] = lr[ y ]
+            im[ y * n + x ] = li[ y ]
+
+func moon_rel_n [] -> i32
+    return 1024
+
+# relief out of the rock normal map (a seamless moon tile, opengl:
+# green up): each pixel gives the slope both ways, and the height
+# that has them is solved in fourier space (frankot-chellappa).
+# scaled so its rms slope is 0.3 a pixel
+func moon_relief [ out: @f32 ] -> bool
+    im : Image [ uri: path '../{share_name}/textures/moon-rock-normal.png' ]
+    if [ !im || im.width <= 0 ]
+        log 'moon: no rock normal map'
+        return false
+    n  : i32 [ moon_rel_n[] ]
+    iw : i32 [ im.width ]
+    ih : i32 [ im.height ]
+    px : @u8 [ im.vdata[] ]
+    xr : new f64 [ n * n ]
+    xi : new f64 [ n * n ]
+    yr : new f64 [ n * n ]
+    yi : new f64 [ n * n ]
+    for [ y: i32 0, y < n, y += 1 ]
+        for [ x: i32 0, x < n, x += 1 ]
+            sx : i32 [ x * iw / n ]
+            sy : i32 [ y * ih / n ]
+            b4 : i32 [ (sy * iw + sx) * 4 ]
+            nx : f64 [ f64[ px[ b4 ] ] / 127.5 - 1.0 ]
+            ny : f64 [ f64[ px[ b4 + 1 ] ] / 127.5 - 1.0 ]
+            nz : f64 [ max[ f64[ px[ b4 + 2 ] ] / 127.5 - 1.0, 0.1 ] ]
+            i  : i32 [ y * n + x ]
+            # slope east, and down the rows (green points up)
+            xr[ i ] = 0.0 - nx / nz
+            yr[ i ] = ny / nz
+            xi[ i ] = 0.0
+            yi[ i ] = 0.0
+    moon_fft2[ xr, xi, n, false ]
+    moon_fft2[ yr, yi, n, false ]
+    for [ y: i32 0, y < n, y += 1 ]
+        fy : f64 [ f64[ (y < n / 2) ? y : y - n ] ]
+        ky : f64 [ fy / f64[ n ] * 6.283185307179586 ]
+        for [ x: i32 0, x < n, x += 1 ]
+            fx : f64 [ f64[ (x < n / 2) ? x : x - n ] ]
+            kx : f64 [ fx / f64[ n ] * 6.283185307179586 ]
+            k2 : f64 [ kx * kx + ky * ky ]
+            i  : i32 [ y * n + x ]
+            if [ k2 <= 0.0 ]
+                xr[ i ] = 0.0
+                xi[ i ] = 0.0
+                continue
+            # h = -i (kx gx + ky gy) / k2
+            sr : f64 [ kx * xr[ i ] + ky * yr[ i ] ]
+            si : f64 [ kx * xi[ i ] + ky * yi[ i ] ]
+            xr[ i ] = si / k2
+            xi[ i ] = 0.0 - sr / k2
+    moon_fft2[ xr, xi, n, true ]
+    sum : f64 [ 0.0 ]
+    for [ y: i32 0, y < n, y += 1 ]
+        for [ x: i32 0, x < n, x += 1 ]
+            gx : f64 [ xr[ y * n + (x + 1) % n ] - xr[ y * n + x ] ]
+            gy : f64 [ xr[ ((y + 1) % n) * n + x ] - xr[ y * n + x ] ]
+            sum = sum + gx * gx + gy * gy
+    rms : f64 [ sqrt[ sum / f64[ n * n ] ] ]
+    k : f64 [ (rms > 0.0) ? 0.3 / rms : 1.0 ]
+    for [ i: i32 0, i < n * n, i += 1 ]
+        out[ i ] = f32[ xr[ i ] * k ]
+    return true
+
+# the relief, bilinear, wrapping
+func moon_rel_at [ rel: @f32, x: f32, y: f32 ] -> f32
+    n  : i32 [ moon_rel_n[] ]
+    fx : f32 [ x - floor[ x / f32[ n ] ] * f32[ n ] ]
+    fy : f32 [ y - floor[ y / f32[ n ] ] * f32[ n ] ]
+    xa : i32 [ i32[ fx ] % n ]
+    ya : i32 [ i32[ fy ] % n ]
+    xb : i32 [ (xa + 1) % n ]
+    yb : i32 [ (ya + 1) % n ]
+    ax : f32 [ fx - floor[ fx ] ]
+    ay : f32 [ fy - floor[ fy ] ]
+    top : f32 [ rel[ ya * n + xa ]
+        + (rel[ ya * n + xb ] - rel[ ya * n + xa ]) * ax ]
+    bot : f32 [ rel[ yb * n + xa ]
+        + (rel[ yb * n + xb ] - rel[ yb * n + xa ]) * ax ]
+    return top + (bot - top) * ay
+
+# brush craters in, generation by generation: each draws from
+# smaller sizes than the last (N(>r) ~ r^-2 up to its cap), a
+# crater flattens what it lands on, and the map wears (blurs)
+# after each. sphere: an equirect map, heights in radians; else a
+# tile wrapping both ways, heights in pixels. fr is freshness
+func moon_brush [ hgt: @f64, fr: @f32, tmp: @f64, wd: i32, hg: i32,
+                  sphere: bool, gens: i32, gfrom: i32, gto: i32,
+                  rmin: f32, rmax: f32, cov: f32, seed: i32,
+                  st: @f32, flat: bool, bm: @f32, lvl: @f32,
+                  fl: @f32, rel: @f32, use_rel: bool, sk: @f32,
+                  sdep: f64 ]
+    side : i32 [ moon_side[] ]
+    n    : i32 [ wd * hg ]
+    pxr  : f32 [ 3.14159265 / f32[ hg ] ]
+    unit : f32 [ (sphere) ? pxr : 1.0 ]
+    dens : f32 [ cov * f32[ wd ] * f32[ hg ] / 6.2831853 ]
+    # each row's and column's sine and cosine, once
+    rcos : new f32 [ hg ]
+    rsin : new f32 [ hg ]
+    ccos : new f32 [ wd ]
+    csin : new f32 [ wd ]
+    for [ y: i32 0, y < hg, y += 1 ]
+        lat : f32 [ 1.5707963
+            - (f32[ y ] + 0.5) / f32[ hg ] * 3.14159265 ]
+        rcos[ y ] = cos[ lat ]
+        rsin[ y ] = sin[ lat ]
+    for [ x: i32 0, x < wd, x += 1 ]
+        lon : f32 [ (f32[ x ] + 0.5) / f32[ wd ] * 6.2831853 ]
+        ccos[ x ] = cos[ lon ]
+        csin[ x ] = sin[ lon ]
+    for [ g: i32 gfrom, g < gto, g += 1 ]
+        rtop : f32 [ rmax * pow[ rmin / rmax, f32[ g ] / f32[ gens ] ] ]
+        span : f32 [ 1.0 / (rmin * rmin) - 1.0 / (rtop * rtop) ]
+        cnt  : i32 [ i32[ dens * span ] ]
+        log 'moon: generation {g}, {cnt} craters up to {rtop} px'
+        for [ k: i32 0, k < cnt, k += 1 ]
+            ua : f32 [ moon_rand[ k, g, 1, seed ] ]
+            ub : f32 [ moon_rand[ k, g, 2, seed ] ]
+            uc : f32 [ moon_rand[ k, g, 3, seed ] ]
+            ud : f32 [ moon_rand[ k, g, 4, seed ] ]
+            ue : f32 [ moon_rand[ k, g, 5, seed ] ]
+            rp : f32 [ 1.0 / sqrt[ 1.0 / (rmin * rmin) - ua * span ] ]
+            cx : f32 [ ub * f32[ wd ] ]
+            lat0 : f32 [ 0.0 ]
+            cy : f32 [ uc * f32[ hg ] ]
+            if [ sphere ]
+                lat0 = asin[ uc * 2.0 - 1.0 ]
+                cy = (1.5707963 - lat0) / 3.14159265 * f32[ hg ]
+            # impacts are not uniform: a slow perlin weighs where
+            # they land; a crater it turns away is not brushed
+            wx : f32 [ ub * 6.2831853 ]
+            wl : f32 [ (sphere) ? lat0 : (uc - 0.5) * 3.14159265 ]
+            # the swaths drift slowly from generation to generation
+            dr : f32 [ f32[ g ] * 0.06 ]
+            wgt : f32 [ eu_gnoise[
+                cos[ wl ] * cos[ wx ] * 3.0 + 8.1 + dr,
+                sin[ wl ] * 3.0 + dr * 0.5,
+                cos[ wl ] * sin[ wx ] * 3.0 ] ]
+            keep : f32 [ 0.25 + 0.75 * moon_ss[ 0.3, 0.7, wgt ] ]
+            if [ moon_rand[ k, g, 6, seed ] > keep ] continue
+            rot : f32 [ ud * 6.2831853 ]
+            cr  : f32 [ cos[ rot ] ]
+            sr  : f32 [ sin[ rot ] ]
+            # the bigger, the more complex its type
+            tz : f32 [ log[ rp / rmin ] / log[ rmax / rmin ] ]
+            tq : f32 [ clamp[ tz + (ue - 0.5) * 0.25, 0.0, 1.0 ] ]
+            ti : i32 [ i32[ tq * f32[ moon_types[] - 1 ] ] ]
+            at : i32 [ ti * side * side ]
+            # no two alike: the outline bends by three harmonics
+            # (an oblique impact stretches it, rims go lumpy)
+            ab : f32 [ 0.05 + 0.15 * moon_rand[ k, g, 7, seed ] ]
+            ac : f32 [ 0.02 + 0.06 * moon_rand[ k, g, 8, seed ] ]
+            af : f32 [ 0.01 + 0.04 * moon_rand[ k, g, 9, seed ] ]
+            pb : f32 [ moon_rand[ k, g, 10, seed ] * 6.2831853 ]
+            pc : f32 [ moon_rand[ k, g, 11, seed ] * 6.2831853 ]
+            pf : f32 [ moon_rand[ k, g, 12, seed ] * 6.2831853 ]
+            # its ejecta's rays: two angular waves, their own counts
+            # and phases
+            rna : f32 [
+                floor[ 7.0 + 12.0 * moon_rand[ k, g, 24, seed ] ] ]
+            rnb : f32 [
+                floor[ 3.0 + 6.0 * moon_rand[ k, g, 25, seed ] ] ]
+            rpa : f32 [ moon_rand[ k, g, 26, seed ] * 6.2831853 ]
+            rpb : f32 [ moon_rand[ k, g, 27, seed ] * 6.2831853 ]
+            # from a quarter in, most impacts brush in the relief
+            # picture instead: a patch of it, its own offset and
+            # zoom, laid on softly where the swaths weigh most; the
+            # generation's wear then weathers it like the rest
+            patch : bool [ use_rel && g >= gens / 4 && rp > 15.0
+                && moon_rand[ k, g, 19, seed ] < 0.35 ]
+            pox : f32 [ moon_rand[ k, g, 20, seed ] * 1024.0 ]
+            poy : f32 [ moon_rand[ k, g, 21, seed ] * 1024.0 ]
+            # its scale varies wide: a quarter to four times
+            zoom : f32 [ 0.25 * pow[ 16.0,
+                                     moon_rand[ k, g, 22, seed ] ] ]
+            pamp : f32 [ moon_ss[ 0.35, 0.75, wgt ] ]
+            # its own depth, wall curve and maybe a central upthrust
+            deep : f32 [ 0.5 + 1.1 * moon_rand[ k, g, 13, seed ] ]
+            # one decent impact in eight digs twice as deep
+            if [ rp > 15.0 && moon_rand[ k, g, 17, seed ] < 0.125 ]
+                deep = deep * 2.0
+            gam  : f32 [ 0.7 + 0.7 * moon_rand[ k, g, 14, seed ] ]
+            pk   : f32 [ 0.0 ]
+            if [ moon_rand[ k, g, 15, seed ] < 0.33 ]
+                pk = 0.04 + 0.12 * moon_rand[ k, g, 16, seed ]
+            # the box takes the bent outline's furthest reach
+            hy : i32 [ i32[ rp * 1.8 * 1.45 ] + 1 ]
+            hx : i32 [ hy ]
+            # the crater's centre and its east and north, in 3d: a
+            # pixel's offset is its gnomonic projection, true at any
+            # latitude, poles included
+            lon0 : f32 [ cx / f32[ wd ] * 6.2831853 ]
+            cxv : f32 [ cos[ lat0 ] * cos[ lon0 ] ]
+            cyv : f32 [ sin[ lat0 ] ]
+            czv : f32 [ cos[ lat0 ] * sin[ lon0 ] ]
+            exv : f32 [ 0.0 - sin[ lon0 ] ]
+            ezv : f32 [ cos[ lon0 ] ]
+            nxv : f32 [ 0.0 - sin[ lat0 ] * cos[ lon0 ] ]
+            nyv : f32 [ cos[ lat0 ] ]
+            nzv : f32 [ 0.0 - sin[ lat0 ] * sin[ lon0 ] ]
+            rr  : f32 [ rp * pxr ]
+            if [ sphere ]
+                # the widest row it reaches sets the columns; over a
+                # pole, every column
+                far : f32 [ abs[ lat0 ] + rr * 1.8 ]
+                hx = wd / 2
+                if [ far < 1.55 ]
+                    hx = i32[ rp * 1.8 / cos[ far ] ] + 1
+                if [ hx > wd / 2 ] hx = wd / 2
+            ic : i32 [ i32[ cx ] ]
+            jc : i32 [ clamp[ i32[ cy ], 0, hg - 1 ] ]
+            ci : i32 [ jc * wd + ((ic % wd) + wd) % wd ]
+            # a small impact rarely shows on a bigger crater's floor
+            if [ rp < 20.0 && fl[ ci ] > 0.0 ]
+                if [ moon_rand[ k, g, 18, seed ] < fl[ ci ] * 0.85 ]
+                    continue
+            # in the basins, half the small impacts never show: the
+            # lava takes them before they print
+            if [ flat && rp < 20.0 && bm[ ci ] > 0.0 ]
+                if [ moon_rand[ k, g, 23, seed ] < bm[ ci ] * 0.5 ]
+                    continue
+            base : f64 [ hgt[ ci ] ]
+            age : f32 [
+                (f32[ g ] + f32[ k ] / f32[ cnt ]) / f32[ gens ] ]
+            sc  : f64 [ f64[ rp * unit ] ]
+            for [ j: i32 jc - hy, j <= jc + hy, j += 1 ]
+                jj : i32 [ j ]
+                if [ sphere && (j < 0 || j >= hg) ] continue
+                if [ !sphere ] jj = (j % hg + hg) % hg
+                dyr : f32 [ (cy - f32[ j ] - 0.5) / rp ]
+                for [ i: i32 ic - hx, i <= ic + hx, i += 1 ]
+                    ii  : i32 [ (i % wd + wd) % wd ]
+                    dxr : f32 [ (f32[ i ] + 0.5 - cx) / rp ]
+                    if [ sphere ]
+                        px : f32 [ rcos[ jj ] * ccos[ ii ] ]
+                        py : f32 [ rsin[ jj ] ]
+                        pz : f32 [ rcos[ jj ] * csin[ ii ] ]
+                        dd : f32 [ px * cxv + py * cyv + pz * czv ]
+                        if [ dd <= 0.1 ] continue
+                        dxr = (px * exv + pz * ezv) / dd / rr
+                        dyr = (px * nxv + py * nyv + pz * nzv) / dd / rr
+                    sx : f32 [ dxr * cr - dyr * sr ]
+                    sy : f32 [ dxr * sr + dyr * cr ]
+                    th : f32 [ atan2[ sy, sx ] ]
+                    wob : f32 [ 1.0 + ab * cos[ th * 2.0 + pb ]
+                        + ac * cos[ th * 3.0 + pc ]
+                        + af * cos[ th * 5.0 + pf ] ]
+                    sx = sx / wob
+                    sy = sy / wob
+                    # the wall's curve: radius to the power gam
+                    rs : f32 [ sqrt[ sx * sx + sy * sy ] ]
+                    if [ rs > 0.0001 ]
+                        cf : f32 [ pow[ rs, gam - 1.0 ] ]
+                        sx = sx * cf
+                        sy = sy * cf
+                    if [ sx < -1.79 || sx > 1.79 ] continue
+                    if [ sy < -1.79 || sy > 1.79 ] continue
+                    idx : i32 [ jj * wd + ii ]
+                    r   : f32 [ sqrt[ sx * sx + sy * sy ] ]
+                    if [ patch ]
+                        # relief in its pixels, to crater radii
+                        rv : f32 [ moon_rel_at[ rel,
+                            pox + sx * rp * zoom,
+                            poy + sy * rp * zoom ] ]
+                        wp : f32 [ (1.0 - moon_ss[ 0.5, 1.0, r ])
+                            * pamp ]
+                        hgt[ idx ] = hgt[ idx ]
+                            + f64[ rv / (zoom * rp) * wp ] * sc
+                        continue
+                    val : f32 [ moon_sample[ st, at, sx, sy ] ]
+                    m   : f32 [ 1.0 - moon_ss[ 0.75, 1.15, r ] ]
+                    hv  : f64 [ hgt[ idx ] ]
+                    keep : f64 [ f64[ 1.0 - 0.85 * m ] ]
+                    # what the impact throws out settles beyond the
+                    # rim: overlapping, it builds slight hills
+                    lay : f32 [ (r > 1.0) ? 0.03 * (1.0 - moon_ss[
+                        1.0, 1.79, r ]) : 0.0 ]
+                    up : f32 [ r / 0.2 ]
+                    mid : f32 [ pk * exp[ 0.0 - up * up ] ]
+                    # on the lava a crater keeps its bowl: no rim,
+                    # ejecta, deposit or upthrust stands
+                    if [ flat && bm[ idx ] > 0.0 ]
+                        wet : f32 [ 1.0 - bm[ idx ] ]
+                        if [ val > 0.0 ] val = val * wet
+                        lay = lay * wet
+                        mid = mid * wet
+                    hgt[ idx ] = base + (hv - base) * keep
+                        + f64[ val * deep + mid + lay ] * sc
+                    # its floor, for the craters after it
+                    if [ rp >= 12.0 ]
+                        inner : f32 [ 1.0 - moon_ss[ 0.55, 0.95, r ] ]
+                        if [ flat ] inner = inner * (1.0 - bm[ idx ])
+                        fl[ idx ] = fl[ idx ] * (1.0 - m) + inner * m
+                    # the fresh ring past the rim, faintly streaked
+                    ej : f32 [ 1.0 - moon_ss[ 0.9, 1.78, r ] ]
+                    if [ ej > 0.0 ]
+                        ray : f32 [ 0.5 + 0.25 * cos[ th * rna + rpa ]
+                            + 0.25 * cos[ th * rnb + rpb ] ]
+                        if [ r > 1.0 ]
+                            ej = ej * (0.35 + 0.65 * ray * ray)
+                        # the lava keeps no fresh ring
+                        if [ flat ] ej = ej * (1.0 - bm[ idx ])
+                        fr[ idx ] = fr[ idx ] * (1.0 - ej) + age * ej
+            # a few fresh impacts throw thin bright rays out to 2..8
+            # radii: their own spokes, thinning as they go
+            if [ sphere && !patch && g >= gens / 2 && rp > 6.0
+                 && rp < 40.0 && moon_rand[ k, g, 28, seed ] < 0.01 ]
+                rk  : f32 [ 2.0 + 6.0 * moon_rand[ k, g, 29, seed ] ]
+                sna : f32 [
+                    floor[ 9.0 + 16.0 * moon_rand[ k, g, 30, seed ] ] ]
+                snb : f32 [
+                    floor[ 5.0 + 9.0 * moon_rand[ k, g, 31, seed ] ] ]
+                spa : f32 [ moon_rand[ k, g, 32, seed ] * 6.2831853 ]
+                spb : f32 [ moon_rand[ k, g, 33, seed ] * 6.2831853 ]
+                ry : i32 [ i32[ rp * rk ] + 1 ]
+                rfar : f32 [ abs[ lat0 ] + rr * rk ]
+                rx : i32 [ wd / 2 ]
+                if [ rfar < 1.55 ]
+                    rx = min[ i32[ rp * rk / cos[ rfar ] ] + 1, wd / 2 ]
+                for [ j: i32 jc - ry, j <= jc + ry, j += 1 ]
+                    if [ j < 0 || j >= hg ] continue
+                    for [ i: i32 ic - rx, i <= ic + rx, i += 1 ]
+                        ii : i32 [ (i % wd + wd) % wd ]
+                        px : f32 [ rcos[ j ] * ccos[ ii ] ]
+                        py : f32 [ rsin[ j ] ]
+                        pz : f32 [ rcos[ j ] * csin[ ii ] ]
+                        dd : f32 [ px * cxv + py * cyv + pz * czv ]
+                        if [ dd <= 0.1 ] continue
+                        ex : f32 [ (px * exv + pz * ezv) / dd / rr ]
+                        ny : f32 [
+                            (px * nxv + py * nyv + pz * nzv) / dd / rr ]
+                        rd : f32 [ sqrt[ ex * ex + ny * ny ] ]
+                        if [ rd < 1.0 || rd > rk ] continue
+                        ta : f32 [ atan2[ ny, ex ] ]
+                        sa : f32 [ 0.5 + 0.5 * cos[ ta * sna + spa ] ]
+                        sb : f32 [ 0.5 + 0.5 * cos[ ta * snb + spb ] ]
+                        sp : f32 [ pow[ sa, 10.0 ]
+                            + 0.6 * pow[ sb, 14.0 ] ]
+                        far : f32 [ 1.0 - moon_ss[ 1.0, rk, rd ] ]
+                        val : f32 [ clamp[ sp * far * far * 0.6, 0.0,
+                                           0.6 ] ]
+                        idx : i32 [ j * wd + ii ]
+                        if [ val > fr[ idx ] ] fr[ idx ] = val
+        moon_blur[ hgt, tmp, wd, hg, !sphere ]
+        for [ i: i32 0, i < n, i += 1 ]
+            fr[ i ] = fr[ i ] * 0.97
+        # the normals converge: the relief is scaled so the typical
+        # slope never passes 0.35, however many craters pile up
+        rms : f64 [ moon_slope[ hgt, wd, hg, sphere ] ]
+        if [ rms > 0.35 ]
+            k : f64 [ 0.35 / rms ]
+            for [ i: i32 0, i < n, i += 1 ]
+                hgt[ i ] = hgt[ i ] * k
+            if [ flat ]
+                for [ i: i32 0, i < n, i += 1 ]
+                    lvl[ i ] = f32[ f64[ lvl[ i ] ] * k ]
+        log 'moon: generation {g} slope {rms}'
+        # the basins' lava: it melts what lands there; a little
+        # less each generation, so a few late craters show
+        if [ flat ]
+            # the land and the lava sink a share each generation:
+            # the floor stays a level sphere as it goes down
+            step : f64 [ sdep / f64[ gto - gfrom ] ]
+            for [ i: i32 0, i < n, i += 1 ]
+                if [ sk[ i ] > 0.0 ]
+                    dn : f64 [ f64[ sk[ i ] ] * step ]
+                    hgt[ i ] = hgt[ i ] - dn
+                    lvl[ i ] = f32[ f64[ lvl[ i ] ] - dn ]
+            rate : f64 [ f64[ 0.95 - 0.1 * f32[ g ] / f32[ gens ] ] ]
+            for [ i: i32 0, i < n, i += 1 ]
+                if [ bm[ i ] > 0.0 ]
+                    hgt[ i ] = hgt[ i ] + (f64[ lvl[ i ] ] - hgt[ i ])
+                        * f64[ bm[ i ] ] * rate
+
+# the slope of the f64 height, as a tangent normal (east, north,
+# up) in rgb
+func moon_normals [ hgt: @f64, wd: i32, hg: i32, sphere: bool,
+                    im: Image ]
+    od : @u8 [ im.vdata[] ]
+    for [ y: i32 0, y < hg, y += 1 ]
+        dxe : f64 [ 1.0 ]
+        dyn : f64 [ 1.0 ]
+        yu : i32 [ y - 1 ]
+        yd : i32 [ y + 1 ]
+        if [ sphere ]
+            lat : f64 [ 1.5707963
+                - (f64[ y ] + 0.5) / f64[ hg ] * 3.14159265 ]
+            dxe = max[ cos[ lat ], 0.05 ] * 6.2831853 / f64[ wd ]
+            dyn = 3.14159265 / f64[ hg ]
+            if [ yu < 0 ] yu = 0
+            if [ yd >= hg ] yd = hg - 1
+        el
+            yu = (yu + hg) % hg
+            yd = yd % hg
+        for [ x: i32 0, x < wd, x += 1 ]
+            xl : i32 [ (x + wd - 1) % wd ]
+            xr : i32 [ (x + 1) % wd ]
+            gx : f64 [ (hgt[ y * wd + xr ] - hgt[ y * wd + xl ])
+                / (2.0 * dxe) ]
+            gy : f64 [ (hgt[ yu * wd + x ] - hgt[ yd * wd + x ])
+                / (2.0 * dyn) ]
+            ln : f64 [ sqrt[ gx * gx + gy * gy + 1.0 ] ]
+            b4 : i32 [ (y * wd + x) * 4 ]
+            od[ b4 ]     = u8[ clamp[ (0.0 - gx / ln) * 127.5 + 127.5,
+                                      0.0, 255.0 ] ]
+            od[ b4 + 1 ] = u8[ clamp[ (0.0 - gy / ln) * 127.5 + 127.5,
+                                      0.0, 255.0 ] ]
+            od[ b4 + 2 ] = u8[ clamp[ (1.0 / ln) * 127.5 + 127.5,
+                                      0.0, 255.0 ] ]
+            od[ b4 + 3 ] = 255
+
+# the depression zones: where the ground lies lowest, broadly,
+# broken by a patchy perlin; the lowest 25% of the surface (by
+# area) fill with lava. bm the mask, lvl the lava's level
+func moon_basins [ hgt: @f64, bm: @f32, lvl: @f32 ]
+    wd : i32 [ moon_w[] ]
+    hg : i32 [ moon_h[] ]
+    # the ground's broad lie: blocks of 32 averaged, blurred hard
+    cw : i32 [ 256 ]
+    ch : i32 [ 128 ]
+    blk : i32 [ wd / cw ]
+    co : new f64 [ cw * ch ]
+    ct : new f64 [ cw * ch ]
+    for [ y: i32 0, y < ch, y += 1 ]
+        for [ x: i32 0, x < cw, x += 1 ]
+            sum : f64 [ 0.0 ]
+            for [ j: i32 0, j < blk, j += 1 ]
+                row : i32 [ (y * blk + j) * wd + x * blk ]
+                for [ i: i32 0, i < blk, i += 1 ]
+                    sum = sum + hgt[ row + i ]
+            co[ y * cw + x ] = sum / f64[ blk * blk ]
+    for [ k: i32 0, k < 6, k += 1 ]
+        moon_blur[ co, ct, cw, ch, false ]
+    lo : f64 [ co[ 0 ] ]
+    hi : f64 [ co[ 0 ] ]
+    for [ i: i32 0, i < cw * ch, i += 1 ]
+        if [ co[ i ] < lo ] lo = co[ i ]
+        if [ co[ i ] > hi ] hi = co[ i ]
+    span : f64 [ (hi > lo) ? hi - lo : 1.0 ]
+    # by area: an equirect row's pixels shrink with cos(latitude)
+    bins : new f64 [ 1024 ]
+    total : f64 [ 0.0 ]
+    for [ i: i32 0, i < 1024, i += 1 ]
+        bins[ i ] = 0.0
+    for [ y: i32 0, y < hg, y += 1 ]
+        lat : f32 [ 1.5707963
+            - (f32[ y ] + 0.5) / f32[ hg ] * 3.14159265 ]
+        cl  : f32 [ cos[ lat ] ]
+        dy  : f32 [ sin[ lat ] ]
+        # the broad field, bilinear: no block steps in the lava
+        fy  : f32 [ clamp[ (f32[ y ] + 0.5) / f32[ blk ] - 0.5, 0.0,
+                           f32[ ch - 1 ] ] ]
+        yl  : i32 [ min[ i32[ fy ], ch - 2 ] ]
+        ay  : f64 [ f64[ fy - f32[ yl ] ] ]
+        for [ x: i32 0, x < wd, x += 1 ]
+            lon : f32 [ (f32[ x ] + 0.5) / f32[ wd ] * 6.2831853 ]
+            dx  : f32 [ cl * cos[ lon ] ]
+            dz  : f32 [ cl * sin[ lon ] ]
+            fx  : f32 [ (f32[ x ] + 0.5) / f32[ blk ] - 0.5 ]
+            if [ fx < 0.0 ] fx = fx + f32[ cw ]
+            xl  : i32 [ i32[ fx ] % cw ]
+            xr  : i32 [ (xl + 1) % cw ]
+            ax  : f64 [ f64[ fx - floor[ fx ] ] ]
+            top : f64 [ co[ yl * cw + xl ]
+                + (co[ yl * cw + xr ] - co[ yl * cw + xl ]) * ax ]
+            bot : f64 [ co[ (yl + 1) * cw + xl ]
+                + (co[ (yl + 1) * cw + xr ] - co[ (yl + 1) * cw + xl ])
+                * ax ]
+            broad : f64 [ top + (bot - top) * ay ]
+            idx : i32 [ y * wd + x ]
+            # a flat floor a little under the broad ground
+            lvl[ idx ] = f32[ broad - 0.002 ]
+            low : f32 [ f32[ (hi - broad) / span ] ]
+            # ragged shores: three scales of perlin
+            patch : f32 [ eu_gnoise[ dx * 2.5 + 4.7, dy * 2.5,
+                                     dz * 2.5 ] * 0.7
+                + eu_gnoise[ dx * 14.0, dy * 14.0 + 2.1,
+                             dz * 14.0 ] * 0.2
+                + eu_gnoise[ dx * 60.0, dy * 60.0,
+                             dz * 60.0 + 7.7 ] * 0.1 ]
+            sc : f32 [ clamp[ low * 0.65 + patch * 0.35, 0.0, 1.0 ] ]
+            bm[ idx ] = sc
+            bi : i32 [ clamp[ i32[ sc * 1023.0 ], 0, 1023 ] ]
+            bins[ bi ] = bins[ bi ] + f64[ cl ]
+            total = total + f64[ cl ]
+    want : f64 [ total * 0.25 ]
+    acc : f64 [ 0.0 ]
+    cut : f32 [ 1.0 ]
+    for [ b: i32 1023, b >= 0, b -= 1 ]
+        acc += bins[ b ]
+        if [ acc >= want ]
+            cut = f32[ b ] / 1023.0
+            break
+    # how much basin: a wide ramp at the shore, and inside, a
+    # finer perlin that floods some ground fully, some partly
+    for [ y: i32 0, y < hg, y += 1 ]
+        lat : f32 [ 1.5707963
+            - (f32[ y ] + 0.5) / f32[ hg ] * 3.14159265 ]
+        cl  : f32 [ cos[ lat ] ]
+        dy  : f32 [ sin[ lat ] ]
+        for [ x: i32 0, x < wd, x += 1 ]
+            i   : i32 [ y * wd + x ]
+            amt : f32 [ moon_ss[ cut - 0.04, cut + 0.04, bm[ i ] ] ]
+            if [ amt > 0.0 ]
+                lon : f32 [ (f32[ x ] + 0.5) / f32[ wd ] * 6.2831853 ]
+                dx  : f32 [ cl * cos[ lon ] ]
+                dz  : f32 [ cl * sin[ lon ] ]
+                fl  : f32 [ eu_gnoise[ dx * 7.0 + 1.3, dy * 7.0,
+                                       dz * 7.0 ] * 0.7
+                    + eu_gnoise[ dx * 20.0, dy * 20.0 + 5.9,
+                                 dz * 20.0 ] * 0.3 ]
+                amt = amt * clamp[ 0.4 + 0.6 * moon_ss[ 0.3, 0.7, fl ],
+                                   0.0, 1.0 ]
+            bm[ i ] = amt
+
+# catmull-rom through four values: smooth across cells, no plateaus
+func moon_cr [ a: f64, b: f64, c: f64, d: f64, t: f64 ] -> f64
+    return b + 0.5 * t * (c - a + t * (2.0 * a - 5.0 * b + 4.0 * c - d
+        + t * (3.0 * (b - c) + d - a)))
+
+# one row of a coarse grid through catmull-rom, x wrapping
+func moon_crow [ co: @f64, cw: i32, row: i32, x: i32, t: f64 ] -> f64
+    xa : i32 [ ((x - 1) % cw + cw) % cw ]
+    xb : i32 [ (x % cw + cw) % cw ]
+    xc : i32 [ ((x + 1) % cw + cw) % cw ]
+    xd : i32 [ ((x + 2) % cw + cw) % cw ]
+    return moon_cr[ co[ row + xa ], co[ row + xb ], co[ row + xc ],
+                    co[ row + xd ], t ]
+
+# a coarse grid, bicubic, x wrapping and y clamped
+func moon_coarse [ co: @f64, cw: i32, ch: i32, fx: f64, fy: f64 ] -> f64
+    x  : i32 [ i32[ floor[ fx ] ] ]
+    y  : i32 [ i32[ floor[ fy ] ] ]
+    tx : f64 [ fx - floor[ fx ] ]
+    ty : f64 [ fy - floor[ fy ] ]
+    ya : i32 [ clamp[ y - 1, 0, ch - 1 ] * cw ]
+    yb : i32 [ clamp[ y, 0, ch - 1 ] * cw ]
+    yc : i32 [ clamp[ y + 1, 0, ch - 1 ] * cw ]
+    yd : i32 [ clamp[ y + 2, 0, ch - 1 ] * cw ]
+    ra : f64 [ moon_crow[ co, cw, ya, x, tx ] ]
+    rb : f64 [ moon_crow[ co, cw, yb, x, tx ] ]
+    rc : f64 [ moon_crow[ co, cw, yc, x, tx ] ]
+    rd : f64 [ moon_crow[ co, cw, yd, x, tx ] ]
+    return moon_cr[ ra, rb, rc, rd, ty ]
+
+# the land sinks into its basins, with a real shoreline: the mask
+# averaged into broad blocks, blurred a little (the sink, to sk:
+# it drops at the shore) and blurred wide; where the wide reaches
+# past the narrow, just outside the shore, the ground is raised
+# once (the elevated margin the lava meets). the sink's depth (45%
+# of the height's range) is given back; the generations sink by
+# it a share at a time
+func moon_sink [ hgt: @f64, bm: @f32, sk: @f32 ] -> f64
+    wd : i32 [ moon_w[] ]
+    hg : i32 [ moon_h[] ]
+    cw : i32 [ 1024 ]
+    ch : i32 [ 512 ]
+    blk : i32 [ wd / cw ]
+    co : new f64 [ cw * ch ]
+    ct : new f64 [ cw * ch ]
+    cn : new f64 [ cw * ch ]
+    for [ y: i32 0, y < ch, y += 1 ]
+        for [ x: i32 0, x < cw, x += 1 ]
+            sum : f64 [ 0.0 ]
+            for [ j: i32 0, j < blk, j += 2 ]
+                row : i32 [ (y * blk + j) * wd + x * blk ]
+                for [ i: i32 0, i < blk, i += 2 ]
+                    sum = sum + f64[ bm[ row + i ] ]
+            co[ y * cw + x ] = sum / f64[ (blk / 2) * (blk / 2) ]
+    for [ k: i32 0, k < 6, k += 1 ]
+        moon_blur[ co, ct, cw, ch, false ]
+    for [ i: i32 0, i < cw * ch, i += 1 ]
+        cn[ i ] = co[ i ]
+    for [ k: i32 0, k < 18, k += 1 ]
+        moon_blur[ co, ct, cw, ch, false ]
+    lo : f64 [ hgt[ 0 ] ]
+    hi : f64 [ hgt[ 0 ] ]
+    for [ i: i32 0, i < wd * hg, i += 16 ]
+        if [ hgt[ i ] < lo ] lo = hgt[ i ]
+        if [ hgt[ i ] > hi ] hi = hgt[ i ]
+    depth : f64 [ (hi - lo) * 0.45 ]
+    for [ y: i32 0, y < hg, y += 1 ]
+        fy : f64 [ (f64[ y ] + 0.5) / f64[ blk ] - 0.5 ]
+        for [ x: i32 0, x < wd, x += 1 ]
+            fx : f64 [ (f64[ x ] + 0.5) / f64[ blk ] - 0.5 ]
+            near : f64 [ clamp[ moon_coarse[ cn, cw, ch, fx, fy ], 0.0,
+                                1.0 ] ]
+            wide : f64 [ clamp[ moon_coarse[ co, cw, ch, fx, fy ], 0.0,
+                                1.0 ] ]
+            i : i32 [ y * wd + x ]
+            sk[ i ] = f32[ near ]
+            # the margin: just past the shore, raised
+            edge : f64 [ clamp[ (wide - near) * 5.0, 0.0, 1.0 ] ]
+            hgt[ i ] = hgt[ i ] + edge * depth * 1.2
+    return depth
+
+# the soil, at half the map's size: r the basins, g the wax (a
+# soft sheen that grows with height), b the fresh ejecta, a the
+# crater floors
+func moon_spec [ hgt: @f64, bm: @f32, fr: @f32, fl: @f32,
+                 im: Image ]
+    od : @u8 [ im.vdata[] ]
+    sw : i32 [ moon_w[] / 2 ]
+    sh : i32 [ moon_h[] / 2 ]
+    n  : i32 [ moon_w[] * moon_h[] ]
+    lo : f64 [ hgt[ 0 ] ]
+    hi : f64 [ hgt[ 0 ] ]
+    for [ i: i32 0, i < n, i += 16 ]
+        if [ hgt[ i ] < lo ] lo = hgt[ i ]
+        if [ hgt[ i ] > hi ] hi = hgt[ i ]
+    span : f64 [ (hi > lo) ? hi - lo : 1.0 ]
+    for [ y: i32 0, y < sh, y += 1 ]
+        lat : f32 [ 1.5707963
+            - (f32[ y ] + 0.5) / f32[ sh ] * 3.14159265 ]
+        cl  : f32 [ cos[ lat ] ]
+        dy  : f32 [ sin[ lat ] ]
+        for [ x: i32 0, x < sw, x += 1 ]
+            lon : f32 [ (f32[ x ] + 0.5) / f32[ sw ] * 6.2831853 ]
+            dx  : f32 [ cl * cos[ lon ] ]
+            dz  : f32 [ cl * sin[ lon ] ]
+            soil : f32 [ eu_gnoise[ dx * 6.0, dy * 6.0, dz * 6.0 ] * 0.6
+                + eu_gnoise[ dx * 40.0 + 9.1, dy * 40.0,
+                             dz * 40.0 ] * 0.4 ]
+            fi : i32 [ (y * 2) * moon_w[] + x * 2 ]
+            fresh : f32 [ clamp[ fr[ fi ] * 0.8, 0.0, 1.0 ] ]
+            hn : f32 [ f32[ (hgt[ fi ] - lo) / span ] ]
+            bb : f32 [ clamp[ bm[ fi ], 0.0, 1.0 ] ]
+            # on the lava what freshness is left breaks up in perlin
+            pm : f32 [ eu_gnoise[ dx * 30.0 + 2.2, dy * 30.0,
+                                  dz * 30.0 ] ]
+            fresh = fresh * (1.0 + (0.15 * pm - 1.0) * bb)
+            wax : f32 [ moon_ss[ 0.45, 0.85, hn ] * (0.75 + 0.25 * soil)
+                * (1.0 - bb) ]
+            b4 : i32 [ (y * sw + x) * 4 ]
+            od[ b4 ]     = u8[ bb * 255.0 ]
+            od[ b4 + 1 ] = u8[ wax * 255.0 ]
+            od[ b4 + 2 ] = u8[ fresh * 255.0 ]
+            # a the crater floors
+            od[ b4 + 3 ] = u8[ clamp[ fl[ fi ] * (1.0 - bb), 0.0, 1.0 ]
+                               * 255.0 ]
+
+func moon_bake [] -> bool
+    t0 : i64 [ Au.epoch_millis[] ]
+    sz : i32 [ moon_types[] * moon_side[] * moon_side[] ]
+    st : new f32 [ sz ]
+    moon_stamps[ st ]
+    log 'moon: {moon_types[]} crater types in {Au.epoch_millis[] - t0} ms'
+    n  : i32 [ moon_w[] * moon_h[] ]
+    hgt : new f64 [ n ]
+    tmp : new f64 [ n ]
+    fr  : new f32 [ n ]
+    # rolling ground under the craters
+    for [ y: i32 0, y < moon_h[], y += 1 ]
+        lat : f32 [ 1.5707963
+            - (f32[ y ] + 0.5) / f32[ moon_h[] ] * 3.14159265 ]
+        cl  : f32 [ cos[ lat ] ]
+        dy  : f32 [ sin[ lat ] ]
+        for [ x: i32 0, x < moon_w[], x += 1 ]
+            lon : f32 [ (f32[ x ] + 0.5) / f32[ moon_w[] ] * 6.2831853 ]
+            dx  : f32 [ cl * cos[ lon ] ]
+            dz  : f32 [ cl * sin[ lon ] ]
+            hl : f32 [ eu_gnoise[ dx * 4.0, dy * 4.0, dz * 4.0 ] - 0.5 ]
+            hs : f32 [ eu_gnoise[ dx * 30.0 + 3.3, dy * 30.0,
+                                  dz * 30.0 ] - 0.5 ]
+            hgt[ y * moon_w[] + x ] = f64[ hl * 0.006 + hs * 0.0012 ]
+            fr[ y * moon_w[] + x ] = 0.0
+    # the early, big impacts first; then the lowest ground floods
+    # and the later impacts land on lava that keeps flattening
+    bm  : new f32 [ n ]
+    lvl : new f32 [ n ]
+    fl  : new f32 [ n ]
+    for [ i: i32 0, i < n, i += 1 ]
+        fl[ i ] = 0.0
+    rn  : i32 [ moon_rel_n[] * moon_rel_n[] ]
+    rel : new f32 [ rn ]
+    use_rel : bool [ moon_relief[ rel ] ]
+    moon_brush[ hgt, fr, tmp, moon_w[], moon_h[], true, 60, 0, 18,
+                6.0, 900.0, 0.04, 11, st, false, bm, lvl, fl,
+                rel, use_rel, fl, 0.0 ]
+    moon_basins[ hgt, bm, lvl ]
+    # the lava's level: one height for every basin, the ground's
+    # mean inside them; its floor is the sphere itself
+    lsum : f64 [ 0.0 ]
+    lcnt : f64 [ 0.0 ]
+    for [ i: i32 0, i < n, i += 8 ]
+        if [ bm[ i ] > 0.5 ]
+            lsum = lsum + hgt[ i ]
+            lcnt = lcnt + 1.0
+    sea : f32 [ f32[ (lcnt > 0.0) ? lsum / lcnt : 0.0 ] ]
+    for [ i: i32 0, i < n, i += 1 ]
+        lvl[ i ] = sea
+        # the lava drowns the old crater floors' marks
+        fl[ i ] = fl[ i ] * (1.0 - bm[ i ])
+    sk  : new f32 [ n ]
+    sdep : f64 [ moon_sink[ hgt, bm, sk ] ]
+    for [ i: i32 0, i < n, i += 1 ]
+        hgt[ i ] = hgt[ i ] + (f64[ lvl[ i ] ] - hgt[ i ])
+            * f64[ bm[ i ] ]
+    moon_brush[ hgt, fr, tmp, moon_w[], moon_h[], true, 60, 18, 60,
+                6.0, 900.0, 0.04, 11, st, true, bm, lvl, fl,
+                rel, use_rel, sk, sdep ]
+    nm : Image [ width: moon_w[], height: moon_h[], format: Pixel.rgba8,
+                 linear: true, wrap_u: true ]
+    moon_normals[ hgt, moon_w[], moon_h[], true, nm ]
+    # the low frequencies as height: the sphere is lifted by them
+    hw : i32 [ moon_w[] / 4 ]
+    hh : i32 [ moon_h[] / 4 ]
+    lh : new f64 [ hw * hh ]
+    lt : new f64 [ hw * hh ]
+    for [ y: i32 0, y < hh, y += 1 ]
+        for [ x: i32 0, x < hw, x += 1 ]
+            sum : f64 [ 0.0 ]
+            for [ j: i32 0, j < 4, j += 1 ]
+                for [ i: i32 0, i < 4, i += 1 ]
+                    sum = sum + hgt[ (y * 4 + j) * moon_w[] + x * 4 + i ]
+            lh[ y * hw + x ] = sum / 16.0
+    for [ k: i32 0, k < 3, k += 1 ]
+        moon_blur[ lh, lt, hw, hh, false ]
+    hlo : f64 [ lh[ 0 ] ]
+    hhi : f64 [ lh[ 0 ] ]
+    for [ i: i32 0, i < hw * hh, i += 1 ]
+        if [ lh[ i ] < hlo ] hlo = lh[ i ]
+        if [ lh[ i ] > hhi ] hhi = lh[ i ]
+    hsp : f64 [ (hhi > hlo) ? hhi - hlo : 1.0 ]
+    hm : Image [ width: hw, height: hh, format: Pixel.rgba8,
+                 linear: true, wrap_u: true ]
+    hd : @u8 [ hm.vdata[] ]
+    for [ i: i32 0, i < hw * hh, i += 1 ]
+        h16 : i32 [ clamp[ i32[ (lh[ i ] - hlo) / hsp * 65535.0 ], 0,
+                           65535 ] ]
+        hd[ i * 4 ]     = u8[ h16 >> 8 ]
+        hd[ i * 4 + 1 ] = u8[ h16 & 255 ]
+        hd[ i * 4 + 2 ] = 0
+        hd[ i * 4 + 3 ] = 255
+    log 'moon: height {hlo} .. {hhi} radii'
+    sm : Image [ width: moon_w[] / 2, height: moon_h[] / 2,
+                 format: Pixel.rgba8, linear: true, wrap_u: true ]
+    moon_spec[ hgt, bm, fr, fl, sm ]
+    # the fine tile: the same brushing, wrapping both ways
+    tn : i32 [ moon_tile[] * moon_tile[] ]
+    th : new f64 [ tn ]
+    tt : new f64 [ tn ]
+    tf : new f32 [ tn ]
+    tl : new f32 [ tn ]
+    for [ i: i32 0, i < tn, i += 1 ]
+        th[ i ] = 0.0
+        tf[ i ] = 0.0
+        tl[ i ] = 0.0
+    moon_brush[ th, tf, tt, moon_tile[], moon_tile[], false, 24, 0, 24,
+                2.0, 260.0, 0.05, 23, st, false, tf, tf, tl,
+                rel, false, tf, 0.0 ]
+    dm : Image [ width: moon_tile[], height: moon_tile[],
+                 format: Pixel.rgba8, linear: true, wrap_u: true,
+                 wrap_v: true ]
+    moon_normals[ th, moon_tile[], moon_tile[], false, dm ]
+    bd : path '../{share_name}/baked'
+    bd.make_dir[]
+    nm.png[ path '../{share_name}/baked/moon-normal.png' ]
+    sm.png[ path '../{share_name}/baked/moon-spec.png' ]
+    dm.png[ path '../{share_name}/baked/moon-detail.png' ]
+    # the rock detail: the rock map's relief as normals alone, a
+    # last fine pass the shader lays over everything
+    if [ use_rel ]
+        pn : i32 [ moon_rel_n[] ]
+        ph : new f64 [ pn * pn ]
+        for [ i: i32 0, i < pn * pn, i += 1 ]
+            ph[ i ] = f64[ rel[ i ] ]
+        pm : Image [ width: pn, height: pn, format: Pixel.rgba8,
+                     linear: true, wrap_u: true, wrap_v: true ]
+        moon_normals[ ph, pn, pn, false, pm ]
+        pm.png[ path '../{share_name}/baked/moon-pebble.png' ]
+    hm.png[ path '../{share_name}/baked/moon-height.png' ]
+    rg : path '../{share_name}/baked/moon-height.txt'
+    rg.save[ '{hlo} {hhi}', null ]
+    log 'moon: baked in {Au.epoch_millis[] - t0} ms'
+    return true
+
+export func moon_maps []
+    ha : u64 [ @moon_stamps ]
+    hb : u64 [ @moon_brush ]
+    hr : u64 [ @moon_rand ]
+    hc : u64 [ @moon_normals ]
+    hd : u64 [ @moon_spec ]
+    hm : u64 [ @moon_basins ]
+    hs : u64 [ @moon_slope ]
+    hw : u64 [ @moon_blur ]
+    hf : u64 [ @moon_relief ]
+    hk : u64 [ @moon_sink ]
+    hq : u64 [ @moon_coarse ]
+    hz : u64 [ @moon_crow ]
+    he : u64 [ @moon_bake ]
+    stamp : string '{ha}-{hb}-{hc}-{hd}-{he}-{hr}-{hm}-{hs}-{hw}-{hf}-{hk}-{hq}-{hz}'
+    sp : path '../{share_name}/baked/moon.hash'
+    np : path '../{share_name}/baked/moon-normal.png'
+    if [ sp.exists[] && np.exists[] ]
+        old : string [ sp.load[ typeid[string], null ] ]
+        if [ old && old == stamp ]
+            log 'moon: baked maps current ({stamp})'
+            return
+    if [ moon_bake[] ] sp.save[ stamp, null ]
 
 ModelViewProject MoonShader
     mutable gain     : f32
@@ -12,12 +1077,28 @@ ModelViewProject MoonShader
     # relief from the height map; 0 leaves the normal alone
     mutable relief   : f32
     mutable cam_pos : vec4f
+    # toward the sun, world space; low over the ground in view
+    mutable sun_dir : vec4f
+    # the height map's range in radii, and its scale
+    mutable hrange  : vec4f
 
     attrib color  : LayoutBinding [ type:typeid[ MoonSurface ],
                                     id:MoonSurface.color,  count:1,
                                     format: typeid[ rgba8 ] ]
+    attrib normal : LayoutBinding [ type:typeid[ MoonSurface ],
+                                    id:MoonSurface.normal, count:1,
+                                    format: typeid[ rgba8 ] ]
+    attrib spec   : LayoutBinding [ type:typeid[ MoonSurface ],
+                                    id:MoonSurface.spec,   count:1,
+                                    format: typeid[ rgba8 ] ]
+    attrib detail : LayoutBinding [ type:typeid[ MoonSurface ],
+                                    id:MoonSurface.detail, count:1,
+                                    format: typeid[ rgba8 ] ]
     attrib height : LayoutBinding [ type:typeid[ MoonSurface ],
                                     id:MoonSurface.height, count:1,
+                                    format: typeid[ rgba8 ] ]
+    attrib pebble : LayoutBinding [ type:typeid[ MoonSurface ],
+                                    id:MoonSurface.pebble, count:1,
                                     format: typeid[ rgba8 ] ]
 
     attrib a_pos        : VertexInput   [ type:typeid[ vec3f ] ]
@@ -42,7 +1123,12 @@ ModelViewProject MoonShader
         v_uv        = vec2(1.0 - a_uv.x, a_uv.y);
         mat3 nm     = transpose(inverse(mat3(ubo.model)));
         v_normal    = normalize(nm * a_normal);
-        vec4 wpos   = ubo.model * vec4(a_pos, 1.0);
+        // the low frequencies lift the sphere: two-byte height
+        vec4  hp    = textureLod(height, v_uv, 0.0);
+        float hv    = (hp.r * 65280.0 + hp.g * 255.0) / 65535.0;
+        float hz    = mix(ubo.hrange.x, ubo.hrange.y, hv);
+        vec3  disp  = a_pos * (1.0 + hz * ubo.hrange.z);
+        vec4 wpos   = ubo.model * vec4(disp, 1.0);
         v_world_pos = wpos;
         gl_Position = ubo.proj * ubo.view * wpos;
     }
@@ -138,32 +1224,128 @@ ModelViewProject MoonShader
         return a * 0.56 + b * 0.30 + c * 0.14;
     }
 
+    # the rock map at random placements: each tile-sized cell
+    # takes it from its own offset, neighbours blended smoothly
+    func rock_at [ p: vec2f, lod: f32 ] -> GLSL vec2f {
+        vec2 c = floor(p);
+        vec2 f = p - c;
+        vec2 w = f * f * (3.0 - 2.0 * f);
+        vec2 r = vec2(0.0);
+        for (int j = 0; j < 2; j++) {{
+            for (int i = 0; i < 2; i++) {{
+                vec2 cc = c + vec2(float(i), float(j));
+                vec2 o  = fract(sin(vec2(dot(cc, vec2(127.1, 311.7)),
+                                         dot(cc, vec2(269.5, 183.3))))
+                                * 43758.5453);
+                vec2 n  = textureLod(pebble, p + o, lod).xy * 2.0 - 1.0;
+                float wx = (i == 0) ? 1.0 - w.x : w.x;
+                float wy = (j == 0) ? 1.0 - w.y : w.y;
+                r += n * wx * wy;
+            }}
+        }}
+        return r;
+    }
+
     func fragment[] -> GLSL none {
-        vec3  n      = normalize(v_normal);
-        vec3  sun    = normalize(vec3(0.2, 0.0, 0.8));
-        // relief: tilt the normal by the height gradient, east/north basis
-        float e_uv   = 1.0 / 4096.0;
-        float h_l    = texture(height, v_uv + vec2(-e_uv, 0.0)).r;
-        float h_r    = texture(height, v_uv + vec2( e_uv, 0.0)).r;
-        float h_d    = texture(height, v_uv + vec2(0.0, -e_uv)).r;
-        float h_u    = texture(height, v_uv + vec2(0.0,  e_uv)).r;
-        vec3  t_e    = normalize(cross(vec3(0.0, 1.0, 0.0), n));
-        vec3  t_n    = cross(n, t_e);
-        vec3  bump   = t_e * (h_l - h_r) + t_n * (h_d - h_u);
-        float r_aa   = clamp(1.0 - fwidth(v_uv.x) * 4096.0, 0.0, 1.0);
-        n            = normalize(n + bump * ubo.relief * 24.0 * r_aa);
-        float ndl    = max(dot(n, sun), 0.0);
-        vec3  albedo = texture(color, v_uv).rgb;
-        // one blob spans most of the visible ground from low orbit
-        float g      = ubo.regolith;
-        float nz     = vnoise(normalize(v_world_pos.xyz) * 1.15);
-        float ctr    = 1.0 + g * (nz - 0.5) * 0.8;
-        vec3  alb    = clamp((albedo - 0.5) * ctr + 0.5, 0.0, 1.0);
-        alb          = mix(alb, alb * vec3(1.06, 0.99, 0.90), g * nz);
-        alb         *= (1.0 - 0.08 * g);
-        // regolith: no specular, a little ambient so the limb reads
-        vec3  lit    = alb * (0.05 + 0.95 * ndl) * ubo.gain;
-        fragColor    = vec4(lit / (1.0 + lit), 1.0);
+        vec3  n0   = normalize(v_normal);
+        vec3  sun  = normalize(ubo.sun_dir.xyz);
+        vec3  vdir = normalize(ubo.cam_pos.xyz - v_world_pos.xyz);
+        float sn   = dot(sun, n0);
+        // the baked maps' east and north on the sphere
+        vec3  t_e  = normalize(cross(vec3(0.0, 1.0, 0.0), n0));
+        vec3  t_n  = cross(n0, t_e);
+        // toward the horizon a pixel covers a long thin strip; the
+        // mip from its long side blurs the craters. take the mean
+        // of both sides instead (anisotropy, roughly), half sharper
+        vec2  gu   = dFdx(v_uv) * vec2(8192.0, 4096.0);
+        vec2  gv   = dFdy(v_uv) * vec2(8192.0, 4096.0);
+        float la   = length(gu);
+        float lb   = length(gv);
+        float raw  = log2(max(sqrt(la * lb), 1e-6)) - 0.5;
+        float lod  = max(raw, 0.0);
+        vec3  ng   = textureLod(normal, v_uv, lod).xyz * 2.0 - 1.0;
+        vec4  sm   = texture(spec, v_uv);
+        float wax  = sm.g;
+        // the basins: lava plains, flat, dark and dull
+        float basin = sm.r;
+        // the fine tile: 16 of its pixels to one of the map's
+        vec2  duv  = v_uv * vec2(64.0, 32.0);
+        float dlod = max(raw + 4.0, 0.0);
+        vec3  nd   = textureLod(detail, duv, dlod).xyz * 2.0 - 1.0;
+        float fw   = length(fwidth(duv)) * 2048.0;
+        // its craters span 3..300 tile pixels: fade once a screen
+        // pixel holds many
+        float fd   = 1.0 - smoothstep(8.0, 32.0, fw);
+        // young lava: few small craters on the plains
+        // crater floors: few small craters and a touch darker
+        float flr  = sm.a;
+        float ds   = mix(1.0, 0.0, basin) * mix(1.0, 0.15, flr);
+        vec2  dxy  = nd.xy * fd * ds;
+        // the last pass: rock detail from the rock normal map,
+        // normals only, staged: the broader the stage the less it
+        // gives (0.35, 0.2, 1.0, 1.6), each where its own perlin wants
+        // it; the mips flatten a stage as it shrinks
+        // on the lava: the broad stages hardly, the fine ones more
+        float rkb  = mix(1.0, 0.1, basin);
+        float rkf  = mix(1.0, 0.5, basin);
+        float rkx  = mix(1.0, 0.7, basin);
+        vec3  sp3  = normalize(v_world_pos.xyz);
+        // the broadest stage: always there, a little
+        float wz   = 0.35 * mix(0.6, 1.0, smoothstep(0.35, 0.65,
+                                      gnoise(sp3 * 2.0 + vec3(5.3))));
+        float wa   = 0.2 * mix(0.4, 1.0, smoothstep(0.35, 0.65,
+                                      gnoise(sp3 * 5.0 + vec3(3.1))));
+        float wb   = 1.0 * mix(0.4, 1.0, smoothstep(0.35, 0.65,
+                                      gnoise(sp3 * 17.0 + vec3(7.7))));
+        float wc   = 1.6 * mix(0.4, 1.0, smoothstep(0.35, 0.65,
+                                      gnoise(sp3 * 53.0 + vec3(1.9))));
+        vec2  puz  = v_uv * vec2(2.0, 1.0);
+        float pwz  = length(fwidth(puz)) * 1024.0;
+        dxy       += rock_at(puz, max(log2(max(pwz, 1e-6)) - 0.5, 0.0))
+                   * rkb * wz;
+        vec2  pua  = v_uv * vec2(8.0, 4.0);
+        float pwa  = length(fwidth(pua)) * 1024.0;
+        dxy       += rock_at(pua, max(log2(max(pwa, 1e-6)) - 0.5, 0.0))
+                   * rkb * wa;
+        vec2  pub  = v_uv * vec2(32.0, 16.0);
+        float pwb  = length(fwidth(pub)) * 1024.0;
+        dxy       += rock_at(pub, max(log2(max(pwb, 1e-6)) - 0.5, 0.0))
+                   * rkf * wb;
+        vec2  puc  = v_uv * vec2(64.0, 32.0);
+        float pwc  = length(fwidth(puc)) * 1024.0;
+        dxy       += rock_at(puc, max(log2(max(pwc, 1e-6)) - 0.5, 0.0))
+                   * rkx * wc;
+        vec3  nt   = normalize(vec3(ng.xy + dxy, ng.z));
+        vec3  n    = normalize(t_e * nt.x * ubo.relief
+                             + t_n * nt.y * ubo.relief + n0 * nt.z);
+        // highland dust bright and warm; basin lava dark and cool
+        float soil = sm.g;
+        vec3  high = vec3(0.575, 0.555, 0.53) * (0.9 + 0.2 * soil);
+        vec3  mare = vec3(0.355, 0.345, 0.335) * (0.95 + 0.1 * soil);
+        vec3  alb  = mix(high, mare, basin);
+        // slight browns in broad patches
+        float brn  = smoothstep(0.4, 0.75,
+                                gnoise(normalize(v_world_pos.xyz) * 4.0
+                                       + vec3(2.7)));
+        alb        = mix(alb, alb * vec3(1.06, 0.96, 0.84), brn * 0.8);
+        alb       *= (1.0 + 0.35 * sm.b)
+                   * mix(1.0, 0.85, flr);
+        // wrapped: slopes turned from the sun still take a little
+        float ndl  = max((dot(n, sun) + 0.25) / 1.25, 0.0);
+        float ndv  = max(dot(n, vdir), 1e-3);
+        // lambert with a little of the moon's flat (lommel) look
+        float diff = mix(ndl, 2.0 * ndl / (ndl + ndv), 0.3);
+        vec3  hv   = normalize(sun + vdir);
+        // the high ground is a little waxy: a broad soft sheen; the
+        // lava none. fresh ground and rays (sm.b) catch a little more
+        float nh   = max(dot(n, hv), 0.0);
+        float sp   = (pow(nh, 5.0) * 0.55 + pow(nh, 40.0) * 0.25)
+                   * mix(wax, 0.0, basin) * (1.0 + 0.6 * sm.b);
+        float day  = smoothstep(-0.04, 0.06, sn);
+        vec3  lit  = (alb * diff + vec3(sp)) * day * ubo.gain;
+        // the sky's and earth's fill: shadows are not quite black
+        lit       += alb * 0.15 * ubo.gain;
+        fragColor  = vec4(lit / (1.0 + lit), 1.0);
     }
 
 
@@ -189,6 +1371,105 @@ element Moon
     intern loading   : bool
     intern load_task : async
     public color  : rgba [ r:0.004, g:0.006, b:0.014, a:1.0 ]
+    # the height map's range, from the bake
+    intern hlo    : f32
+    intern hhi    : f32
+
+    # a dense sphere, europa's: the low-frequency height lifts it
+    func build_sphere [] -> GltfModel
+        nlon : i32 [ 2048 ]
+        nlat : i32 [ 1024 ]
+        n1 : i32 [ nlon + 1 ]
+        m1 : i32 [ nlat + 1 ]
+        nv : i32 [ n1 * m1 ]
+        nv3 : i32 [ nv * 3 ]
+        nv2 : i32 [ nv * 2 ]
+        ni : i32 [ nlon * nlat * 6 ]
+        vb : i32 [ nv3 * 4 ]
+        tb : i32 [ nv2 * 4 ]
+        ib : i32 [ ni * 4 ]
+        tsz : i32 [ vb + vb + tb + ib ]
+        data : new u8 [ tsz ]
+        pf : @f32 [ data ]
+        ip : @data[ vb + vb + tb ]
+        iu : @u32 [ ip ]
+        for [ iy: i32 0, iy <= nlat, iy += 1 ]
+            lat : f32 [
+                -1.5707963 + f32[ iy ] * 3.14159265 / f32[ nlat ] ]
+            cl : f32 [ cos[ lat ] ]
+            sl : f32 [ sin[ lat ] ]
+            for [ ix: i32 0, ix <= nlon, ix += 1 ]
+                lon : f32 [ f32[ ix ] * 6.2831853 / f32[ nlon ] ]
+                dx : f32 [ cl * cos[ lon ] ]
+                dy : f32 [ sl ]
+                dz : f32 [ cl * sin[ lon ] ]
+                vi : i32 [ iy * n1 + ix ]
+                i3 : i32 [ vi * 3 ]
+                pf[ i3 ]     = dx
+                pf[ i3 + 1 ] = dy
+                pf[ i3 + 2 ] = dz
+                pf[ nv3 + i3 ]     = dx
+                pf[ nv3 + i3 + 1 ] = dy
+                pf[ nv3 + i3 + 2 ] = dz
+                i2 : i32 [ nv3 * 2 + vi * 2 ]
+                pf[ i2 ]     = f32[ ix ] / f32[ nlon ]
+                pf[ i2 + 1 ] = 1.0 - f32[ iy ] / f32[ nlat ]
+        k : i32 [ 0 ]
+        for [ iy: i32 0, iy < nlat, iy += 1 ]
+            for [ ix: i32 0, ix < nlon, ix += 1 ]
+                i0 : i32 [ iy * n1 + ix ]
+                iu[ k ]     = u32[ i0 ]
+                iu[ k + 1 ] = u32[ i0 + n1 ]
+                iu[ k + 2 ] = u32[ i0 + 1 ]
+                iu[ k + 3 ] = u32[ i0 + 1 ]
+                iu[ k + 4 ] = u32[ i0 + n1 ]
+                iu[ k + 5 ] = u32[ i0 + n1 + 1 ]
+                k += 6
+        bufs : vec GltfBuffer []
+        bufs += GltfBuffer [ byteLength: u64[ tsz ], data: data ]
+        views : vec BufferView []
+        views += BufferView [ buffer: 0, byteOffset: 0,
+                              byteLength: vb ]
+        views += BufferView [ buffer: 0, byteOffset: vb,
+                              byteLength: vb ]
+        views += BufferView [ buffer: 0, byteOffset: vb + vb,
+                              byteLength: tb ]
+        views += BufferView [ buffer: 0, byteOffset: vb + vb + tb,
+                              byteLength: ib ]
+        accs : vec Accessor []
+        accs += Accessor [ bufferView: 0,
+                           componentType: ComponentType.FLOAT,
+                           type: CompoundType.VEC3, count: nv ]
+        accs += Accessor [ bufferView: 1,
+                           componentType: ComponentType.FLOAT,
+                           type: CompoundType.VEC3, count: nv ]
+        accs += Accessor [ bufferView: 2,
+                           componentType: ComponentType.FLOAT,
+                           type: CompoundType.VEC2, count: nv ]
+        accs += Accessor [ bufferView: 3,
+                           componentType: ComponentType.UNSIGNED_INT,
+                           type: CompoundType.SCALAR, count: ni ]
+        am : map i64 [ string ] [ ]
+        am[ 'POSITION' ]   = i64[ 0 ]
+        am[ 'NORMAL' ]     = i64[ 1 ]
+        am[ 'TEXCOORD_0' ] = i64[ 2 ]
+        prs : vec Primitive []
+        prs += Primitive [ name: 'moon', attributes: am,
+                           indices: u64[ 3 ], material: 0,
+                           mode: Mode.TRIANGLES ]
+        mshs : vec Mesh []
+        mshs += Mesh [ name: 'moon', primitives: prs ]
+        nds : vec Node []
+        nds += Node [ name: 'moon', mesh: 0 ]
+        sn : vec i64 []
+        sn += 0
+        scns : vec Scene []
+        scns += Scene [ name: 'scene', nodes: sn ]
+        gm : GltfModel [ nodes: nds, meshes: mshs, scenes: scns,
+                         scene: 0,
+            buffers: bufs, bufferViews: views, accessors: accs ]
+        return gm
+
 
     func build_models[]
         built     = true
@@ -199,10 +1480,19 @@ element Moon
         ocean     = OceanShader [ vk: vk ]
         cloud     = CloudShader [ vk: vk ]
 
-        # the ground: one map, lit flat with the regolith noise
+        # the ground: nasa's colour, the brushed normals and soil
+        np : path '../{share_name}/baked/moon-normal.png'
+        if [ !np.exists[] ]
+            log 'moon: no baked maps, brushing them now'
+            moon_bake[]
         moon_samplers : map Image [string] [
             'color':  Image [ uri: path '../{share_name}/textures/moon-color-8192x4096.jpg',    surface: MoonSurface.color ],
-            'height': Image [ uri: path '../{share_name}/textures/moon-displace-2048x1024.png', surface: MoonSurface.height ]
+            'normal': Image [ uri: np, surface: MoonSurface.normal,
+                              linear: true, wrap_u: true ],
+            'spec':   Image [ uri: path '../{share_name}/baked/moon-spec.png', surface: MoonSurface.spec, linear: true, wrap_u: true ],
+            'detail': Image [ uri: path '../{share_name}/baked/moon-detail.png', surface: MoonSurface.detail, linear: true, wrap_u: true, wrap_v: true ],
+            'height': Image [ uri: path '../{share_name}/baked/moon-height.png', surface: MoonSurface.height, linear: true, wrap_u: true ],
+            'pebble': Image [ uri: path '../{share_name}/baked/moon-pebble.png', surface: MoonSurface.pebble, linear: true, wrap_u: true, wrap_v: true ]
         ]
         earth_samplers : map Image [string] [
             'color':      Image [ uri: path '../{share_name}/textures/earth-color-8192x4096.png',      surface: EarthSurface.color ],
@@ -214,7 +1504,17 @@ element Moon
             'bathymetry': Image [ uri: path '../{share_name}/textures/earth-bathymetry-8192x4096.png', surface: EarthSurface.bathymetry ],
             'lights':     Image [ uri: path '../{share_name}/textures/earth-lights-8192x4096.png',     surface: EarthSurface.lights ]
         ]
-        moon_model  : Model [ vk: vk, w: ux, id: gltf, s: moon,
+        rg : path '../{share_name}/baked/moon-height.txt'
+        if [ rg.exists[] ]
+            rs : string [ rg.load[ typeid[string], null ] ]
+            ws : vec string rs.trim[].split[ ' ' ]
+            if [ ws.count >= 2 ]
+                hlo = f32[ ws[ 0 ].real_value[] ]
+                hhi = f32[ ws[ 1 ].real_value[] ]
+        m_gltf : build_sphere[]
+        m_gltf.hold[]
+        m_gltf.compute_worlds[]
+        moon_model  : Model [ vk: vk, w: ux, id: m_gltf, s: moon,
                               samplers: moon_samplers,
                               straight_alpha: true ]
         earth_model : Model [ vk: vk, w: ux, id: gltf, s: earth,
@@ -268,7 +1568,7 @@ element Moon
             '#ff3a6a22':  '#8a8a8a22',   # commit tab fill
             '#ff3a6a44':  '#8a8a8a44',   # commit tab hover fill
             '#3a1c8a40':  '#8a8a8a40',   # selected title tint
-            '#1d0f3f':    '#363539',       # title bar, dock ground (flat)
+            '#1d0f3f':    '#363539',   # title bar, dock ground
             '#ff5a8a80':  '#9a9a9a80',   # commit tab border
             '#ff7aa480':  '#b4b4b480'    # commit tab hover border
         ]
@@ -332,7 +1632,8 @@ element Moon
         # NO per-frame nudge here: `time` is a local recomputed from
         # ux.time every frame, so a -= cannot accumulate. all it did
         # was add frame_factor's millisecond jitter on top
-        orbit_a : radians[ time ]
+        # the ground turns the other way: east to west under us
+        orbit_a : radians[ 0.0 - time ]
         co      : cos[ orbit_a ]
         so      : sin[ orbit_a ]
 
@@ -365,16 +1666,27 @@ element Moon
         moon.model = mm
         moon.view  = _view
         moon.proj  = _proj
-        moon.gain  = 1.0
+        moon.gain  = 1.5
         moon.regolith = 1.0
-        moon.relief   = 0.0
+        # the baked slopes' east/north sense against the mesh's
+        moon.relief   = 1.0
+        # the sun low from the side of the view: craters cast shadows
+        sl : vec3f [ -0.25, 0.50, 0.83 ]
+        sw : vec4f [ co * sl.x + so * sl.z, sl.y,
+                     -so * sl.x + co * sl.z, 0.0 ]
+        moon.sun_dir = sw
+        # the ground lifted by its true height
+        hrg : vec4f [ hlo, hhi, 1.0, 0.0 ]
+        moon.hrange = hrg
 
         # fixed in the sky; the limb sits at 70.2 from straight down
-        rise   : f32 [ radians[ 14.0 ] ]
+        rise   : f32 [ radians[ 5.0 ] ]
         aim    : f32 [ tilt + rise ]
         e_dist : f32 [ 6.0 ]
-        e_off  : vec3f [ -e_dist * sin[ aim ], 0.0,
-                         eye_dist - e_dist * cos[ aim ] ]
+        ex : f32 [ -e_dist * sin[ aim ] ]
+        ez : f32 [ eye_dist - e_dist * cos[ aim ] ]
+        # turned with the orbit, as the eye is: it stays in view
+        e_off  : vec3f [ co * ex + so * ez, 0.0, -so * ex + co * ez ]
         # world +y is the screen's x axis here; north must follow screen
         # up
         nx_l : f32 [ -cos[ tilt ] ]
@@ -388,7 +1700,7 @@ element Moon
         spin_d : f32 [ ux.time * 6000.0 ]
         e_spin : vec4f [ 0.0, 1.0, 0.0, radians[ spin_d ] ]
         q_spin : quatf [ e_spin ]
-        e_sc   : vec3f [ 1.5, 1.5, 1.5 ]
+        e_sc   : vec3f [ 0.6, 0.6, 0.6 ]
         em : mat4f.identity[]
         em = em.translate[ e_off ]
         em = em.rotate   [ q_axis ]
@@ -412,3 +1724,20 @@ element Moon
         earth.time    = time
         ocean.time    = time
         cloud.time    = time
+
+# the moon alone at 1280x720, to the png MOON_VIEW names
+expect func t_moon_view [] -> bool
+    out : getenv[ 'MOON_VIEW' ]
+    if [ !out ] return true
+    vk9 : vk_context []
+    vk9.hold[]
+    w9  : Window [ vk: vk9, format: Pixel.rgba8, backbuffer: true,
+        width: 1280, height: 720 ]
+    w9.hold[]
+    if [ !w9.element_targets ]
+        w9.element_targets = map Render [string] []
+    # the default view: low, angled to the horizon
+    w9.orbit_mode = OrbitView.low
+    w9.angle_mode = ViewAngle.angled
+    scene_thumb[ w9, 'Moon', path '{out}' ]
+    return true

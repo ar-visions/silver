@@ -223,11 +223,11 @@ ielement element
         scroll_to[ sbl.drag_to[ my ] ]
         return true
 
+    # the thumb's goal: the scroll eases there frame by frame
     func scroll_to [ sy: f32 ]
         if [ sy < 0.0 ] return
-        scroll.y    = sy
         scroll_goal = sy
-        scroll_anim = false
+        scroll_anim = true
         pristine    = false
         if [ ux ] ux.will_animate = true
 
@@ -474,7 +474,9 @@ ielement element
 
     intern func animate_within [ ]
         if [ scroll_anim ]
-            scroll.y = filter_n[ scroll.y, scroll_goal, 0.14,
+            # the thumb held: 20% to the goal a frame, 80% kept
+            scroll.y = filter_n[ scroll.y, scroll_goal,
+                                 (sb_drag) ? 0.2 : 0.14,
                                  ux.frame_factor ]
             gap : f32 [ scroll_goal - scroll.y ]
             if [ gap < 0.5 && gap > -0.5 ]

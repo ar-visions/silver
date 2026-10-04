@@ -1283,7 +1283,6 @@ element CommitView
             thumb_min_h: 32.0
             thumb_radius: 4.0
     }
-    mutable sb_drag : bool
 
     # a module dir holds <stem>/<stem>.ag and friends. return the ones
     # that actually exist so the row can offer them as one-click chips.
@@ -1498,9 +1497,10 @@ element CommitView
                 layers['scrollbar'] ] : null
             if [ sbl ]
                 sy : f32 [ sbl.drag_to[ ry - scroll.y ] ]
+                # the element's ease takes it there, a frame at a time
                 if [ sy >= 0.0 ]
-                    scroll.y    = sy
                     scroll_goal = sy
+                    scroll_anim = true
                     pristine    = false
                     ux.will_animate = true
             return
@@ -1665,8 +1665,8 @@ element CommitView
             sbl.grab_at[ my ]
             sy : f32 [ sbl.drag_to[ my ] ]
             if [ sy >= 0.0 ]
-                scroll.y    = sy
                 scroll_goal = sy
+                scroll_anim = true
                 sb_drag     = true
                 sbl.active  = true
                 pristine    = false
