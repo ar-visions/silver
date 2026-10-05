@@ -1709,11 +1709,13 @@ TButtons DockButton
             area: l0 b1px r0 h1px
     }
 
-# orbiter's own dock button: the status bar's height, no dark foot
+# orbiter's own dock button: the status bar's height, no dark foot.
+# no colour of its own: the dock's shows through; a state tints its
+# segment fill (rest_fill), set where its icon is picked
 DockButton DockHome
     style : CSS {
         layers.edge:
-            fill_color: #625a
+            fill_color: #0000
             box_shadow: inset 0 0 13px #8af0
             near_inset: 2.0
             near_reach: 0.5
@@ -2526,6 +2528,8 @@ element LaunchPanel
     public  cov_on    : bool        # a coverage build on its next start
     # the running process, shown read-only; 0 = none
     public  pid_val   : i32
+    # the scene's props: a change goes to the live scene, no instance
+    public  scene     : bool
     mutable last_spec : string
     mutable last_inst : i32
 
@@ -2645,7 +2649,7 @@ element LaunchPanel
         # a grid like the callstack's: 20px rows, a name column, 1px
         # rules between
         pw : f32 [ (bounds && bounds.w > 0.0) ? bounds.w : 280.0 ]
-        lw : f32 [ round[ pw * 0.38 ] ]
+        lw : f32 [ round[ pw * 0.266 ] ]
         rh : f32 [ 24.0 ]
         # px rows do not follow the element's scroll on their own: the
         # offset goes into their areas, and the same offset serves the
@@ -2940,7 +2944,12 @@ element LaunchPanel
             c : element elements[ key ]
             if [ c != only ] continue
             v : string value_of[ p ]
-            if [ v ] agent_sock_send[ mod.chars, 'set {p.ident} {v}\n' ]
+            if [ !v ] continue
+            if [ scene ]
+                orb : cast orbiter [ ux.app_object ]
+                if [ orb ] orb.scene_prop_set[ p.ident, v ]
+            el
+                agent_sock_send[ mod.chars, 'set {p.ident} {v}\n' ]
 
     # the args line the controls describe: only values off their
     # defaults
@@ -3509,15 +3518,8 @@ element orbiter : trinity # implements compiler
     public stats         : bool
     intern scene_el      : element
     intern scene_el_nm   : string
-    # index into speed_list[]; 0 is subtle, the default
-    intern [ StatePersist ] speed_ix      : i32
-    # index into orbit_list[]; high-orbit is the default
-    intern [ StatePersist ] orbit_ix      : i32 [ 1 ]
-    # index into angle_list[]; flat-on is the default
-    intern [ StatePersist ] angle_ix      : i32 [ 1 ]
-    # frost stage 0..2 (frost/blur/clear), pushed to ux.frost_mode
-    intern [ StatePersist ] frost_ix      : i32
-    intern frost_dbg9    : i32 [ -9 ] 
+    # each scene's props as the user set them, by scene name (agi)
+    public [ StatePersist ] scene_props   : map string [string]
     intern frost_dbg8    : i32 [ -9 ]
 
     func init [] 
@@ -3758,7 +3760,10 @@ element orbiter : trinity # implements compiler
                     pending_scroll += ps9.scroll
             if [ editor_slots.count == 0 ] editor_slots += -1
             active_pane = 0
-        el [ open_files.count > 0 && editor_slots.count > 0 ]
+        # nothing saved yet: the first known file. a saved empty
+        # list is the empty pane (the last file was closed)
+        el [ !pane_states && open_files.count > 0
+             && editor_slots.count > 0 ]
             editor_slots[0] = 0
         if [ breakpoints ] last_bp_count = breakpoints.count
         # an explicit --scene_load beats whatever the last session left
@@ -3768,9 +3773,6 @@ element orbiter : trinity # implements compiler
             && (!scene_load || scene_load.count == 0) ]
             scene_load = scene
             scene_load.hold[]
-        # sessions saved when there were four stages can hold a 3, which
-        # now wraps past clear and reads as frost
-        frost_ix = frost_ix % 4
 
     func load_settings []
         sp  : agi_path[]
@@ -6986,6 +6988,7 @@ element orbiter : trinity # implements compiler
         # the stores own the scene and its name
         scene_el    = e
         scene_el_nm = string [ nm ]
+        scene_props_restore[ e, nm ]
         log 'scene: built {nm}'
         # the scene retints the ui; null theme restores the authored
         # values
@@ -7047,79 +7050,57 @@ element orbiter : trinity # implements compiler
                           scene: nm, thumb: th ] ]
         return res
 
-    # vantage; each scene maps it to its own distance
-    func orbit_list [] -> vec string
-        return vec string [] [ 'low-orbit', 'high-orbit', 'far-orbit',
-                               'wide-orbit' ]
+    # the live scene's props as agi: the panel under the cards
+    public func scene_spec [] -> string
+        e : element scene_el
+        if [ !e ] return ''
+        all : LaunchProps [ module: 'scenes' ]
+        props_of[ typeid[ e ], e, all ]
+        # the scene's own; the element base's (trinity) are not its
+        ps : LaunchProps [ module: 'scenes' ]
+        ps.props = vec Prop []
+        for [ p: Prop ] in all.props
+            if [ p.module && p.module == 'scenes' ] ps.props.push[ p ]
+        return Au.string_agi[ ps ]
 
-    func orbit_name [] -> string
-        ol : orbit_list[]
-        return ol[ orbit_ix % ol.count ]
+    # one prop by name onto the live scene
+    func scene_prop_apply [ e: element, nm: string, v: string ]
+        member : find_member[ typeid[ e ], nm.chars,
+                              AU_MEMBER_VAR, 0, true ]
+        if [ !member ] return
+        # a saved enum name the enum no longer has is left alone
+        # AU_TRAIT_ENUM
+        if [ member.src && (member.src.traits & (1 << 5)) != 0 ]
+            found : bool [ false ]
+            for [ k: i32 0, k < member.src.members.count, k += 1 ]
+                ev : Au_t member.src.members.origin[k]
+                if [ !ev || ev.member_type != AU_MEMBER_ENUMV ]
+                    continue
+                if [ v == ev.ident ] found = true
+            if [ !found ] return
+        val : Au.convert[ member.src, v ]
+        if [ val ] e.set_property[ nm, val ]
 
-    func orbit_step [ d: i32 ]
-        ol : orbit_list[]
-        orbit_ix = (orbit_ix + d + ol.count) % ol.count
-        # the list's own length, never a literal: a fourth vantage that
-        # wraps back to the first is a silently missing camera
-        if [ ux ] ux.orbit_mode = orbit_ix % ol.count
+    # the panel's change: set on the scene, kept for the scene
+    public func scene_prop_set [ nm: string, v: string ]
+        if [ !scene_el || !scene_el_nm || !nm || !v ] return
+        scene_prop_apply[ scene_el, nm, v ]
+        if [ !scene_props ] scene_props = map string [string] []
+        scene_props[ scene_el_nm ] = scene_spec[]
+        save_session[]
+        if [ ux ] ux.restyle = true
 
-    # camera angle; each scene maps it to pitch or to aim tilt
-    func angle_list [] -> vec string
-        return vec string [] [ 'angled', 'flat-on', 'steep' ]
-
-    func angle_name [] -> string
-        al : angle_list[]
-        return al[ angle_ix % al.count ]
-
-    # the list is ordered for the UI; this maps it to ViewAngle
-    func angle_value [] -> i32
-        ix : i32 [ angle_ix % 3 ]
-        return (ix == 0) ? 1 : (ix == 1) ? 0 : 2
-
-    func angle_step [ d: i32 ]
-        al : angle_list[]
-        angle_ix = (angle_ix + d + al.count) % al.count
-        if [ ux ] ux.angle_mode = angle_value[]
-
-    # backdrop speed: frame skipping and the time step together.
-    # subtle is FIRST so the zero default lands on it
-    func speed_list [] -> vec string
-        return vec string [] [ 'subtle', 'slow', 'medium', 'fast',
-                               'ludacrous' ]
-
-    func speed_name [] -> string
-        sl : speed_list[]
-        return sl[ speed_ix % sl.count ]
-
-    func speed_step [ d: i32 ]
-        sl : speed_list[]
-        speed_ix = (speed_ix + d + sl.count) % sl.count
-        speed_apply[]
-
-    # DRAWS PER SECOND, not a frame count. the panel can be 160hz, so
-    # 1-in-4 is not a rate -- it is whatever the panel happens to run
-    func speed_apply []
-        if [ !ux ] return
-        # the orbit_moving exemption lives in animate[] now, per frame.
-        # returning early here left background_hz stuck at 0 whenever a
-        # speed was picked mid-glide
-        ix : i32 [ speed_ix % 5 ]
-        switch [ ix ]
-            case 1
-                ux.background_hz = 16.0
-                ux.time_scale    = 1.0 / 16.0
-            case 2
-                ux.background_hz = 30.0
-                ux.time_scale    = 1.0 / 2.0
-            case 3
-                ux.background_hz = 60.0
-                ux.time_scale    = 4.0
-            case 4
-                ux.background_hz = 60.0
-                ux.time_scale    = 16.0
-            default
-                ux.background_hz = 4.0
-                ux.time_scale    = 1.0 / 64.0
+    # the props the user chose for this scene last time
+    func scene_props_restore [ e: element, nm: string ]
+        if [ !scene_props || !scene_props.contains[ nm ] ] return
+        sp : string scene_props[ nm ]
+        if [ !sp || sp.count == 0 ] return
+        ps : LaunchProps []
+        Au.parse_agi[ null, sp.chars, ps ]
+        if [ !ps.props ] return
+        for [ p: Prop ] in ps.props
+            if [ p.ident && p.value ]
+                scene_prop_apply[ e, p.ident, p.value ]
 
     # depth-first id lookup; the tree nests once sides land
     func find_el [ e: element, id: string ] -> element
@@ -9024,24 +9005,6 @@ element orbiter : trinity # implements compiler
                     ux.exchange_open[ edq.src, edq.sel_line + 1, true ]
             ev.no_default = true
             return
-        if [ ev.target.id == 'frost_name' ]
-            frost_ix = (frost_ix + 1) % 4
-            ux.frost_mode = frost_ix
-            save_session[]
-            ev.no_default = true
-            return
-        if [ ev.target.id == 'speed_name' ]
-            speed_step[ 1 ]
-            ev.no_default = true
-            return
-        if [ ev.target.id == 'orbit_name' ]
-            orbit_step[ 1 ]
-            ev.no_default = true
-            return
-        if [ ev.target.id == 'angle_name' ]
-            angle_step[ 1 ]
-            ev.no_default = true
-            return
         # the label opens the side panel on the scene cards
         if [ ev.target.id == 'scene_name' ]
             side_tab    = 'scenes'
@@ -9164,6 +9127,10 @@ element orbiter : trinity # implements compiler
             ev.target inherits TButtons && ev.target.parent
             && ev.target.parent inherits LaunchPanel ]
             lpb : LaunchPanel ev.target.parent
+            if [ lpb.scene ]
+                lpb.push_live[ 'scene', ev.target ]
+                if [ ev.target ] ev.target.ux.restyle = true
+                return
             edb : Editor pane_of[ ev.target ]
             fsb : file_state args_state_of[ edb ]
             if [ fsb ]
@@ -10273,17 +10240,14 @@ element orbiter : trinity # implements compiler
             ex : exited pending_exit
             pending_exit = null
             apply_exit[ ex ]
-        if [
-            frost_dbg9 != frost_ix
-            || (ux && frost_dbg8 != ux.frost_mode) ]
-            log 'FROST ix={frost_ix} mode={(ux) ? ux.frost_mode : -9} eff={(ux) ? ux.frost_eff[] : -9}'
-            frost_dbg9 = frost_ix
-            if [ ux ] frost_dbg8 = ux.frost_mode
-            if [ ux && scene_el ]
+        # the stage is the scene's prop: its tick sets ux.frost_mode
+        if [ ux && frost_dbg8 != ux.frost_mode ]
+            log 'FROST mode={ux.frost_mode} eff={ux.frost_eff[]}'
+            frost_dbg8 = ux.frost_mode
+            if [ scene_el ]
                 bgc : scene_el.bg_color*[]
                 if [ bgc && bgc.a > 0.0 ] ux.solid_color = bgc
                 ux.apply_solid[]
-        if [ ux ] ux.frost_mode = frost_ix
         if [ ux ]
             sl9 : string scene_loaded[]
             ux.expect_backdrop = sl9 && sl9.count > 0 && sl9.compare[
@@ -10294,11 +10258,8 @@ element orbiter : trinity # implements compiler
         # push the flat color the instant the stage is set (retry until
         # the shader exists), so load shows the solid color, never the
         # gradient
-        if [ ux && frost_pushed != frost_ix && ux.apply_solid[] ]
-            frost_pushed = frost_ix
-        speed_apply[]
-        if [ ux ] ux.orbit_mode = orbit_ix % orbit_list[].count
-        if [ ux ] ux.angle_mode = angle_value[]
+        if [ ux && frost_pushed != ux.frost_mode && ux.apply_solid[] ]
+            frost_pushed = ux.frost_mode
 
     # the panes, and the context panel of the selected one beside them
     func main_els [] -> Elements
@@ -10425,15 +10386,20 @@ element orbiter : trinity # implements compiler
         # cmd anywhere, shift over it, or recording: its core red;
         # the agent thinking: blue
         dh : element find_el[ a, 'dock_orbiter' ]
-        rec : bool [ mic_by_press || cmd_down
+        rec : bool [ mic_by_press || ux.dict_on || cmd_down
             || (shift_down && dh && dh.hovered) ]
+        thinking : bool [ agent_state == 'busy' ]
+        # recording (or armed for it): a slight red over the dock's
+        # colour, so the state reads at a glance; thinking: blue
         t['dock_orbiter'] = DockHome [
             buttons: vec string [] [ 'agent_note' ],
                 icon_ids: vec string [] [ (rec)
-                    ? 'orbiter4_red' : ((agent_state == 'busy')
+                    ? 'orbiter4_red' : ((thinking)
                     ? 'orbiter4_blue' : 'orbiter4') ],
                 manual: true,
-                rest_fill: rgba [ '#0000' ], seg_radius: 0.0,
+                rest_fill: rgba [ (rec) ? '#ff3a3a33'
+                    : ((thinking) ? '#3a8aff40' : '#0000') ],
+                seg_radius: 0.0,
                 use_spacing: false, icon_scale: 0.605,
                 area: Region { l0 b35px w78.75px h35px } ]
         return t
@@ -10506,25 +10472,6 @@ element orbiter : trinity # implements compiler
                 icon_scale: 0.5, manual: true, seg_radius: 0.0,
                 use_spacing: false, rest_fill: rgba [ '#0000' ],
                 area: Region { r0 t0 w1.66 b0 } ]
-        return t
-
-    # the scenes tab's controls: the backdrop's look and motion
-    func scene_els [] -> Elements
-        t : Elements []
-        solid9 : bool [ ux.frost_eff[] == 3 ]
-        ids9 : vec string [] [ 'frost_name' ]
-        lbs : vec string [] [ ux.frost_name[] ]
-        if [ !solid9 ]
-            ids9.push[ 'speed_name' ]
-            lbs.push[ speed_name[] ]
-            ids9.push[ 'orbit_name' ]
-            lbs.push[ orbit_name[] ]
-            ids9.push[ 'angle_name' ]
-            lbs.push[ angle_name[] ]
-        t['scene_ctl'] = TButtons [ buttons: ids9, labels: lbs,
-                                    icons: false,
-            manual: true, label_px: 12.0, seg_radius: 0.0,
-            use_spacing: false, area: Region { l0 t0 r0 b0 } ]
         return t
 
     # scene: built once per scene — a fresh element each frame churns

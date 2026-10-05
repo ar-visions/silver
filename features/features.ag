@@ -2374,6 +2374,17 @@ expect func t_vec_lit_f32 [] -> bool
     d : vec f64 [] [ 0.25, -2.0 ]
     return v[ 0 ] == 3.0 && v[ 1 ] == 7.5 && d[ 0 ] == 0.25 && d[ 1 ] == -2.0
 
+# a struct of many floats filled in place from its values
+expect func t_mat4f_literal [] -> bool
+    m : mat4f [ 1.0, 2.0, 3.0, 0.0,
+                4.0, 5.0, 6.0, 0.0,
+                7.0, 8.0, 9.0, 0.0,
+                10.0, 11.0, 12.0, 1.0 ]
+    v : vec4f [ 1.0, 0.0, 0.0, 0.0 ]
+    r : vec4f m.mul_v4[ v ]
+    log 'mat4f literal: column 0 = {r.x} {r.y} {r.z}'
+    return r.x == 1.0 && r.y == 2.0 && r.z == 3.0
+
 # max and min of vec elements take their values, not addresses
 expect func t_minmax_vec_elem [] -> bool
     v : vec f32 [] [ 0.25, 0.75 ]

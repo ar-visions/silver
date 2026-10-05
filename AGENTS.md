@@ -40,6 +40,20 @@ name instead of a digit to dodge a clash.
 
 ---
 
+## Rule #3c — Casts: never redundant
+
+NEVER write a cast that changes nothing: `f32[ f32[ k ] ]`,
+`i32[ i32[ b ] ]`, `kf : f32 [ f32[ k ] ]`, or a cast to the type
+the value already has (`f32[ tex.width ]` when width is f32).
+Silver converts scalars on assignment and in arithmetic:
+`kf : f32 [ k ]` takes a f64. A cast is for a real type change;
+a real two-step change (`f32[ i64[ x ] ]`) is fine.
+Before showing a diff, read every new line for a cast that does
+nothing and remove it. Repeat offense: thousands of lines were
+cleaned by hand.
+
+---
+
 ## Rule #4 — Isolate and validate every fix and feature
 
 Fix one component at a time. Reproduce the exact failure with the smallest focused test before editing. Change the component that owns the bug; do not add a workaround in another parser, model, build, or runtime layer. Run the focused test after the edit, then validate the affected module, then validate the requested integration target. Report each result separately. Do not call a fix complete unless its focused test and affected module both pass. If integration exposes another failure, treat it as a separate bug. Remove all temporary tracing before reporting results.
@@ -51,6 +65,19 @@ Fix one component at a time. Reproduce the exact failure with the smallest focus
 `AGENTS.md` is the only project memory file. When the user asks to make a memory, write it here. Do not search for or choose another memory location. The user decides what belongs in memory.
 
 ---
+
+## Rule #5b — The first attempt is the real one
+
+Kalen (Oct 5 2026): "everything i ask for is usually bullshitted
+at first and then i have to ask 12 times to get the real result".
+The first version of anything asked for is built as the thing
+itself, at the strength and scale asked, not a faint or thin
+stand-in to be tuned up later. Before reporting, look at it
+where it shows (the sun's spot ON the land, the aurora FROM the
+side) and measure it; a change that cannot be seen or measured
+is not done. When several items are named, every one lands in
+the same pass. The aurora took six builds and the land specular
+eight asks: an unmeasured first pass costs more than doing it.
 
 ## Rule #6 — Get details first
 
@@ -4446,6 +4473,297 @@ Start (Oct 2): 43 modules, 122,101 lines, 11,162 over 72,
 3. OPEN the rest, largest first: scenes, asnes, ai,
    hyperspace, n64, composer, rgen, webgfx, features, knes,
    clouds, speech, spectra, flightsim, img, then the small ones.
+
+## Active work: planets out of scenes (Oct 5 2026)
+
+Kalen: scenes is a utility module only (Backdrop, OrbitView,
+ViewAngle, the Gaia sky, eu_gnoise, fetch_map, scene_thumb,
+shared models). NO planet lives in it. Each planet is its own
+root module (`<planet>/<planet>.ag`) that imports scenes and
+exports its scene names (`export scenes [...]`), so it builds,
+iterates and exports alone; orbiter finds it by the export.
+Never `extend scenes` for a planet.
+1. WRITTEN, building: one root module per planet, each with
+   its own textures/, bakes and `export func <m>_thumbs` (last):
+   earth (Moon, EarthPrev, Earth/Ocean/Cloud shaders), mars
+   (Mars, TerraMars), milkyway, pluto, titan, enceladus, europa,
+   uranus, neptune. scenes imports none of them and exports no
+   scenes; it gained scenes_share (its shared models and skies),
+   scene_thumbs_for, and the shared pieces: bake_saturn,
+   bake_jupiter, TitanSurface, RingShader, SaturnShader,
+   JupiterShader, nep_lerp, nep_band.
+   DONE (Oct 5 01:40): all ten build; each module's own .agi
+   lists its scenes; each wrote its own thumbs/<Name>.png.
+   Shared assets stay in scenes/textures (read through
+   scenes_share): gaia, saturn, saturn rings, jupiter,
+   moon-displace, and every europa-* plate (mars reads them).
+2. DONE the globe is code, no file: scenes build_globe (512
+   segments, 256 rings, u = 0.5 - lon / 360, v = 0.5 - lat / 180,
+   counter-clockwise outside); earth.gltf/.bin/.blend deleted.
+   scenes/staged/earth.ag (not built) still names earth.gltf.
+3. DONE stale outputs deleted: share/silver-scenes/thumbs/ and
+   baked/ (1.4 GB; scenes writes neither now).
+
+## Active work: moon surface (Oct 5 2026)
+
+Kalen: the moon's bake (earth/earth.ag, moon_*) looked
+amateurish: generational blur, additive stamping, decal basins,
+noisy normals, no erosion in time, no basins, same-looking
+craters. Rules from him: fix inside the existing routine, one
+edit at a time, each baked and shown; normals come from the
+mesh height only; regularizing toward the sphere happens in
+perlin sections with large impacts, over generations, with the
+perlin's own variance, never per crater; late bombardment is
+small impacts; rocks (normals, colour) are perlin patches per
+generation that average craters away. A bake is ~3.5 min; the
+shaded map is checked from the normal png (scratch python).
+1. DONE the per-generation blur and the slope rescale are gone;
+   stamps carry real depth/rim/peak laws by size (0.34 radii
+   for a bowl, 0.01 for a basin); the per-stamp noise, the
+   late big rings and the double-depth draw are out.
+2. DONE a crater is cut into its local lie: a height pyramid
+   (moon_pyr_*, built per generation into the brush's tmp,
+   bicubic) replaces the centre-height base: no plateaus.
+3. DONE moon_basins/moon_sink/lvl/sk and every lava branch in
+   the brush are gone. moon_mare: one perlin (2/5/12 cycles)
+   times a near-side hemisphere ramp, cut by area to 16%, a
+   wide shore band; over gens 24..40 that ground goes toward
+   the sphere (the mean, 0.0015 under) 30% a pass; bm ends as
+   the melted fraction and darkens the colour. Previewing the
+   mask in python (scratch mask-*.png) saved four bakes.
+4. DONE rock wear per generation (moon_patches/moon_pw_at):
+   a perlin band placed anew each generation; inside it the
+   ground goes toward its 8 px lie with the rock relief laid
+   on (zoom 0.12..0.48 map px per rock px); this is the erosion
+   clock (old craters soft ghosts, young ones sharp). The
+   per-crater relief patches, the swath weighting of where
+   impacts land and moon_clips (clips brushed into normals)
+   are gone.
+5. DONE basins: a crater of 200 px or more melts its floor and
+   a perlin-shaped surround to 2.5 radii (mz), toward the 64 px
+   lie, 45% a pass, cooling by a third each pass; the near
+   side's floors darken. Past 60 px the size draw rejects with
+   (60/rp)^1.5 so basins are tens, not hundreds. Impact flux
+   falls fifty-fold over the flood generations (post-flood
+   plains stay sparsely cratered). Hits vary: depth 0.5..1.2,
+   wall curve 0.6..1.6, rim 0.6..1.4, oblique stretch and
+   downrange ejecta.
+6. DONE lighting mirror: the moon's model matrix is a mirror
+   (third axis north x earth), so cross products flip; the
+   shader's east tangent ran along map west and a bowl lit from
+   the side read as a bump. MoonShader t_e = cross(n0, north),
+   t_n = cross(t_e, n0). Found by derivation; the thumbnail
+   camera only shows the limb.
+7. DONE (Kalen's second look): basins were too large and too
+   smooth; the colour had a seam down the map's middle; rims
+   needed mountains; a few more craters. Now: moon_region picks
+   a picture by random cells with the four neighbours blended
+   (no seam; measured equal to a typical column); stamps of the
+   big types heap a lumpy massif to 1.6 radii and keep a wider
+   rim; the biggest draw is 340 px, past 60 px the count falls
+   as (60/r)^2; a basin's floor melts in perlin patches (parts
+   keep their craters) and its surround to 1.8 radii; the mare
+   perlin takes 5% by area; a basin's own fresh ring is not
+   painted. Measured: melted ground 17% of the sphere. Crater
+   cover 0.04 -> 0.05, post-flood flux floor 4%.
+8. OPEN the normal map is still rgba8 png.
+9. DONE orbiter: scene_prop_apply skips a saved enum name the
+   enum no longer has (Enceladus/Neptune had speed: subtle;
+   BackdropSpeed is slow/medium/fast): evalue faulted at the
+   restore (SIGTRAP at startup).
+10. DONE (Kalen's third look): late impacts only ever smaller;
+   too few central peaks and small rims; rock detail off scale
+   (scrapes, pixel marks, no rocks seen). Now: the size top
+   doubles over the late generations (ramp 40%..80%); the peak
+   starts at the 13 px types (was 37), wider and taller, and
+   those types' rims are 60% higher and wider; the ray streaks
+   no longer write the normals (light only: the scrapes); the
+   shader's two finest rock stages (a quarter and an eighth of
+   a map px a rock px: the pixel marks) are gone, stages 2x,
+   6x, 16x at 0.35, 0.6, 0.7; the wear lays the rock tile at
+   0.5..1 map px a rock px (was 2..8); the tile is box-averaged
+   into the relief. Shaded map: rubble grain shows, rims and
+   massifs read. Not yet seen by Kalen in orbiter.
+11. DONE (Kalen: no real colouring on the moon; the Earth in
+   the moon's sky should reflect the sun off its land by albedo).
+   moon_albedo: the vivid picture's hue comes in at 15%..55% by
+   two perlins (3 cycles large sections, 14 small; was a flat
+   12%), the cap 12% -> 35% off grey, the real map's own hue
+   whole. Mean hue off grey 0.037 -> 0.069 (the real map is
+   0.015, the vivid 0.211). MoonEarth: a broad land lobe
+   (exponent 12, half strength) in the ground's own colour,
+   under the clouds, beside the sea's glint. Not yet seen by
+   Kalen in orbiter.
+12. DONE bake 12 (Kalen: scrapes and noise still there). Found in
+   the maps: the rock tile's own thin lines (crater rays, plate
+   edges, 1-2 px wide, 100+ px long) laid into the height by the
+   wear and stretched by the shader's 2x stage; and the vivid
+   picture's grain coming into the colour pixel for pixel. Now:
+   moon_relief low-passes the solved height (gaussian, in fourier
+   space), the shader's 2x rock stage is gone (stages 6x 0.6, 16x
+   0.7), the vivid picture is box-averaged 8x before its regions.
+   Checked after: the silver relief matches a numpy solve of the
+   same tile (slope correlation 0.977, same spectral peaks), so
+   the lines are the tile's; 2 px left them, 4 px removes the
+   network and keeps the rubble (python preview). The colour grain
+   remains: the real map's hue now comes in whole and its jpeg
+   chroma noise is per pixel. NEXT: low-pass 4 px, the real map's
+   hue from an 8x averaged copy too.
+13. DONE the way back from the earth (Kalen: the lit side up as we
+   approach; the moon left the frame). The look held the moon's
+   centre only to the halfway point by the clock; now it holds it
+   until the eye is within 3 radii and rolls to the flight look by
+   1.6. While the moon is the target the camera's up is the sun's
+   direction with the line of sight taken out: the sunlit half at
+   the top. Checked offscreen (MOON_SEC 190/205/215): the moon
+   centred, terminator level, lit side up.
+14. BUILT, awaiting Kalen's look: the Earth in the moon's sky
+   (MoonEarth). The sun's spot on the land overblows the ground's
+   own colour, scaled by its green plus blue (a multiplier on the
+   land colour under a pow 12 lobe, up to 2.5 x (g + b)); the limb
+   fresnel band 50% stronger (0.45 -> 0.675); at night the same
+   band is the aurora: green between 66 and 78 degrees of
+   latitude, curtains from two sines along longitude drifting in
+   time. Seen offscreen at the earth lap: the green cap at the
+   pole shows as spokes meeting at the pole (the curtains are by
+   longitude); the land spot was not under the sun in that frame.
+15. DONE (Kalen: the scrapes and noise persisted) the real
+   source: moon_tint_height added the vivid picture's brightness
+   to the terrain height pixel for pixel from random cells, so its
+   white crater rays were ridges in the height (the scrapes) and
+   its grain the noise in the normals. Removed (the function, its
+   call, its hash entry). The colour's grain was the real map's
+   brightness at the pixel: moon_albedo now reads both pictures
+   from an 8x box-averaged copy (moon_shrink) for hue and light.
+   Bake 14. The rock relief keeps the 4 px low-pass (its own
+   lines and grain are not rocks).
+16. BUILT, awaiting Kalen's look: the approach camera (Kalen: the
+   lit side on the left as we leave the earth, turning up as we
+   near; the moon fell to the bottom). Leaving the earth the up is
+   the sun turned a quarter round the line of sight (lit side
+   left), rolling to the sun's direction from a quarter to four
+   fifths of the way (lit side up); from 6 radii to 3 the look
+   leans 0.7 radii toward the lit limb; within 3 radii it rolls
+   level and takes the flight look. Checked offscreen at 185, 200,
+   212: the moon centred, lit cap at the top at 212. Whether the
+   first roll puts the lit side on the screen's left (cross
+   handedness) is not confirmed: flip `lft` if it is on the right.
+17. BUILT, awaiting Kalen's look: the Earth's land spot is land
+   diffuse + land x a wide blinn lobe (pow 8, 1.2), under the
+   clouds (Kalen's spec); the overblow form is gone.
+18. BUILT, awaiting Kalen's look: earthshine. MoonShader gains
+   `earth_dir` (last uniform; w = strength): a blue light
+   (0.45, 0.62, 1.0) from the earth's direction on the ground
+   facing it, 0.12 at new earth to 0.42 at full earth by the
+   sun's angle to the earth line.
+19. DONE bake 15: the colour's 4 x 4 blocks (the averaged copy
+   picked nearest onto the colour map) are gone: moon_pick is
+   bilinear, wrapping. Colour crop smooth.
+20. BUILT, awaiting Kalen's look (Kalen: the aurora sits 50%
+   higher, is a volume with depth, moves through the atmosphere,
+   dances around). It is its own shell now: MoonAurora (inherits
+   MoonEarth), the globe mesh at 1.066 radii over the earth in
+   the moon's sky, ray-marched 12 steps between 1.033 and 1.066
+   radii in the earth's frame (the Earth scene's is 1.022..1.044),
+   stopped at the inner shell and the ground; curtains from two
+   octaves of 3d gradient noise squeezed 5:1 vertically, drifting
+   in three directions (visible within seconds at sky rate 60);
+   the oval's latitude wanders up to 5 degrees by a slow noise;
+   green low to magenta high; night side only. The band aurora in
+   MoonEarth is gone; its limb stays at 0.675. The noise functions
+   moved out of MoonShader into `MoonNoise`, the base of MoonShader
+   and MoonEarth (one copy).
+   Tuned after two offscreen looks (first invisible, then a white
+   block): curtains from noise over the ground (up.x, up.z x 24)
+   with little altitude term, threshold 0.5..0.68, gain 1.3, cover
+   smoothstep 0.1..2.5. Seen at the earth lap: soft green volumes
+   at the south pole above the limb.
+21. DONE (Kalen): closing the last file reopened one on the next
+   start. The state WAS saved (persist.agi: `pane_states: [ ]`,
+   pane_drop_file saves), and the agi reader gives an empty vec
+   for it, but restore_session's second branch (meant for a
+   fresh install: the first known file) ran for an empty list
+   too. It runs only when pane_states is null now. orbiter built.
+22. DONE (Kalen, eighth ask: no specular on the earth's land).
+   Checked under the spot this time (MOON_SEC 132, the glint on
+   South America): the earlier forms did not read. Now the land
+   takes the sea's blinn at twice the size (pow 100 x3 + pow 10
+   x0.8), added as land x land x3 x lobe under the clouds: the
+   Amazon flares under the sun. Seen offscreen.
+23. BUILT (Kalen: the aurora looks good, bigger patterns, far
+   lower): shell 1.033..1.066 -> 1.01..1.028 radii (mesh at 1.028),
+   noise over the ground 24 -> 9 per radius.
+   Then (Kalen, five at once, all done): a quarter as bright at
+   full (gain 1.3 -> 0.33) with each region slight to full by a
+   slow noise (0.1..1); the oval wider (lat 46..60 in, 78..88
+   out); the noise round the pole in a ring (cos, sin of the
+   azimuth x 2.6) with the meridian direction at 5 per radius: a
+   slight stretch up and down from the pole; depth from the
+   noise changing through the shell (an x 4) and far samples at
+   half; shell 1.002..1.012 radii (mesh 1.012). The cover follows
+   the light so a faint curtain does not darken the ground.
+   Then (Kalen: none showed; flat, a 2D effect on the globe, not a
+   march). Two causes: the cover followed the colour and the
+   8-bit target clamps colour before the blend, so the addition
+   can never exceed the cover (the cover carries the strength
+   now, 0.25 at full); and the samples were averaged, so the
+   march had no depth. Rewritten as a real march: composited
+   front to back (each sample hides what is behind it), the
+   sheet pattern the same up through the shell so each is a tall
+   curtain, dense at the foot and ragged at the top, the inner
+   shell crossed (the ray goes down through the sheets and up
+   again), the step in shell thicknesses; shell 1.008..1.03
+   radii (mesh 1.03): thinner than that cannot be seen from the
+   side. Measured at the earth lap: green pixels 47 -> 622, the
+   strongest 17 -> 44 of 255; from the side the oval is an arc
+   standing above the limb with lumps along it.
+   Then (Kalen: not vertical shafts enough, no volume, not low
+   enough, too bright): curtains 12 per radius across the oval
+   (was 5), fine rays along them (14 round the ring) splitting
+   each into shafts; shell foot 1.008 -> 1.002 (top 1.03); cover
+   0.25 -> 0.12. Measured at the earth lap: strongest green 14 of
+   255 (was 44), 184 green pixels.
+   Then (Kalen: shafts way taller, slower): top 1.03 -> 1.05
+   (mesh 1.05), the thinning from 0.55 of the height (was 0.3),
+   drift 0.0017 -> 0.0006 of sky seconds.
+   Then (Kalen: the whole ionosphere's edge carries the green as
+   fuzz on the night sky's edges): an airglow density 0.04 x
+   (1 - altitude) over the whole night shell in the same march,
+   its own softer green; the grazing path at the limb saturates
+   it into a thin fuzz, the steep view inside barely.
+   Then (Kalen: a hard green edge showing the shell's other side,
+   not a thin terminator fuzz). THE FAULT behind every flat
+   result: the ray math ran in the mesh's units (mesh radius 1)
+   while the mesh is the globe scaled to the shell's TOP, so the
+   ground is 1 / 1.05 there and a shell declared 1.002..1.05 lay
+   wholly outside the mesh: only the silhouette sliver was ever
+   marched. Now rtop 1, ground 1 / 1.05, foot 1.002 / 1.05 in the
+   shader; the shell's far face discards (the near face marched
+   the ray once). Measured: green 155 -> 13,877 px, strongest 34.
+   Then (Kalen: the glow is a thin band seen at the top of the
+   shell, clear toward the surface; only the shafts go through):
+   glow density a gaussian round 0.85 of the height, width 0.1,
+   0.06 peak (was 0.04 x (1 - height)).
+   Then (Kalen: nice, lower): the band's centre 0.85 -> 0.55 of
+   the shell's height, width 0.08. Built.
+24. DONE (Kalen: "why are we committing generated textures").
+   They were never committed: .gitignore ignores scenes/textures/
+   ("planet maps: downloaded, never committed"); the planet split
+   moved the maps into earth/textures, enceladus/textures,
+   mars/textures, where no rule covered them, so git staged them
+   as new (earth 117 MB, enceladus 71 MB, mars' two colour maps
+   46 MB). The eight planet modules' textures/ folders are in
+   .gitignore now. mars-height/stone/veg were tracked before and
+   stay (renames). Unstaging the new ones is Kalen's (Rule #1).
+25. DONE (Kalen: titan-color.png staged too; "why are you not
+   downloading these to a cache location"). The download WAS in
+   the cache (~/.local/state/scenes); the bake then wrote its png
+   into the module's source tree (titan/textures/). bake_titan
+   now writes ../<share>/baked/titan-color.png as the moon bake
+   does and the model reads it there. Built; the thumb rendered
+   from the moved map is identical (mean 56,47,34). The same
+   source-tree write remains in scenes.ag: gaia, saturn, jupiter
+   (scenes/textures/, gitignored): OPEN, Kalen's call.
 
 ## Active work: eden scene (Oct 2 2026)
 

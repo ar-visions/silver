@@ -1,4 +1,19 @@
-extend scenes
+# enceladus: a planet module over the scenes utilities
+export 0.1.0
+export scenes ['Enceladus']
+export dependencies ['orbiter']
+import vec
+import img
+import gltf
+import trinity
+import tls
+import scenes
+
+import <stdio.h>
+import <stdlib.h>
+import <unistd.h>
+    +_DEFAULT_SOURCE
+    +_XOPEN_SOURCE=500
 
 # enceladus geysers: procedural jets fanning off the south cone
 # into a soft veil — a shell around the moon, nothing textured
@@ -492,7 +507,7 @@ ModelViewProject EnceladusShader
         fragColor = vec4(col, 1.0);
     }
 
-element Enceladus
+Backdrop Enceladus
     frost : true
     public func bg_color [ ] -> rgba
         return color
@@ -516,14 +531,13 @@ element Enceladus
 
     func build_models[]
         built     = true
-        gltf_path : path '../{share_name}/models/earth.gltf'
-        gltf      : GltfModel.open[ gltf_path ]
+        gltf      : build_globe[]
         enc       = EnceladusShader [ vk: vk ]
         e_samplers : map Image [string] [
             'height': Image [ uri: path '../{share_name}/textures/enceladus-detail.png', surface: TitanSurface.height,
                 wrap_u: true, wrap_v: true ],
             # a second, unrelated map so the surface is not one grain
-            'height2': Image [ uri: path '../{share_name}/textures/moon-displace-2048x1024.png', surface: TitanSurface.height2,
+            'height2': Image [ uri: path '{scenes_share[]}/textures/moon-displace-2048x1024.png', surface: TitanSurface.height2,
                 wrap_u: true, wrap_v: true ],
             'nrm_a': Image [ uri: path '../{share_name}/textures/enceladus-na.png', surface: TitanSurface.nrm_a,
                 wrap_u: true, wrap_v: true ],
@@ -541,23 +555,23 @@ element Enceladus
             straight_alpha: true, cull_none: true, depth_no_test: true ]
         saturn    = SaturnShader [ vk: vk ]
         s_samplers : map Image [string] [
-            'color': Image [ uri: path '../{share_name}/textures/saturn-color.png', surface: TitanSurface.color,
+            'color': Image [ uri: path '{scenes_share[]}/textures/saturn-color.png', surface: TitanSurface.color,
                 wrap_u: true ],
-            'height': Image [ uri: path '../{share_name}/textures/saturn-ring-alpha.png', surface: TitanSurface.height ]
+            'height': Image [ uri: path '{scenes_share[]}/textures/saturn-ring-alpha.png', surface: TitanSurface.height ]
         ]
         saturn_model : Model [ vk: vk, w: ux, id: gltf, s: saturn,
                                samplers: s_samplers,
                                straight_alpha: true ]
         rings     = RingShader [ vk: vk ]
         r_samplers : map Image [string] [
-            'color': Image [ uri: path '../{share_name}/textures/saturn-ring-alpha.png', surface: TitanSurface.color ]
+            'color': Image [ uri: path '{scenes_share[]}/textures/saturn-ring-alpha.png', surface: TitanSurface.color ]
         ]
         ring_model : Model [ vk: vk, w: ux, id: gltf, s: rings,
                              samplers: r_samplers,
             straight_alpha: true ]
         sky       = GaiaShader [ vk: vk ]
         sky_samplers : map Image [string] [
-            'color': Image [ uri: path '../{share_name}/textures/gaia.png', surface: GaiaSurface.color ]
+            'color': Image [ uri: path '{scenes_share[]}/textures/gaia.png', surface: GaiaSurface.color ]
         ]
         sky_model : Model [ vk: vk, w: ux, id: gltf, s: sky,
                             samplers: sky_samplers,
@@ -636,14 +650,14 @@ element Enceladus
         # negative rate: the gaze leads the motion — flying FORWARD
         time : 0.0 - ux.time * 1460.0
         if [ time == 0.0 ] time = -54.0
-        a_t      : f32 [ (ux.orbit_mode == OrbitView.low)  ? 0.25 :
-            (ux.orbit_mode == OrbitView.high) ? 0.70 : 2.60 ]
+        a_t      : f32 [ (vantage == OrbitView.low)  ? 0.25 :
+            (vantage == OrbitView.high) ? 0.70 : 2.60 ]
         if [ e_cur == 0.0 ] e_cur = a_t
         e_cur = filter_n[ e_cur, a_t, 0.08, ux.frame_factor ]
         altitude : f32 [ e_cur ]
         eye_dist : f32 [ 1.0 + altitude ]
-        t_deg    : f32 [ (ux.angle_mode == ViewAngle.flat)   ? 0.0 :
-            (ux.angle_mode == ViewAngle.angled) ? 60.0 : 76.0 ]
+        t_deg    : f32 [ (angle == ViewAngle.flat)   ? 0.0 :
+            (angle == ViewAngle.angled) ? 60.0 : 76.0 ]
         if [ p_cur == 0.0 && !p_set ] p_cur = t_deg
         p_set    = true
         p_cur    = filter_n[ p_cur, t_deg, 0.08, ux.frame_factor ]
@@ -753,3 +767,9 @@ element Enceladus
         # shader: D-ring inner 74500 over F-ring outer 140220, and
         # the ball's 60268 over that same outer
         rings.rgeo    = vec4f [ 0.531, 0.430, 0.0, 0.0 ]
+
+# the pictures for orbiter's scene picker; last, after the bakes
+export func enceladus_thumbs []
+    names : vec string [] [ 'Enceladus' ]
+    dir   : path '../{share_name}/thumbs'
+    scene_thumbs_for[ names, dir ]

@@ -13113,6 +13113,24 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
                         for (int mi = 0; mi < scan->members.count && idx < len(args); mi++) {
                             Au_t m = (Au_t)scan->members.origin[mi];
                             if (m->member_type == AU_MEMBER_VAR && !m->is_static) {
+                                // a fixed array member takes the next n values as its elements
+                                if (m->elements > 0 && len(args) - idx > 1) {
+                                    Au_t el = m->src;
+                                    while (el && el->elements > 0 && el->src) el = el->src;
+                                    etype et   = etype_prep((aether)a, el);
+                                    i64   n    = m->elements;
+                                    verify(len(args) - idx >= n,
+                                        "%o.%s takes %i values, %i given",
+                                        mdl, m->ident, (i32)n, (i32)(len(args) - idx));
+                                    array nodes = array((i32)n);
+                                    for (i64 k = 0; k < n; k++)
+                                        push(nodes, (Au)e_create(a, et, args->origin[idx + k], false));
+                                    enode arr = e_stack_array(a, et, n);
+                                    e_vector_init(a, et, arr, nodes);
+                                    set(props, (Au)const_string(chars, m->ident), (Au)arr);
+                                    idx += (int)n;
+                                    continue;
+                                }
                                 set(props, (Au)const_string(chars, m->ident), args->origin[idx]);
                                 idx++;
                             }
@@ -13120,6 +13138,8 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
                         if (scan->context == scan) break;
                         scan = scan->context;
                     }
+                    verify(idx == len(args), "%o takes %i values, %i given",
+                        mdl, idx, (i32)len(args));
                     return e_create(a, mdl, (Au)props, false);
                 }
                 return aether_e_create((aether)a, mdl, (Au)args, false);

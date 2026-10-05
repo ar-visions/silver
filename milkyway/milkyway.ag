@@ -1,6 +1,21 @@
-extend scenes
+# milkyway: a planet module over the scenes utilities
+export 0.1.0
+export scenes ['MilkyWay']
+export dependencies ['orbiter']
+import vec
+import img
+import gltf
+import trinity
+import tls
+import scenes
 
-element MilkyWay
+import <stdio.h>
+import <stdlib.h>
+import <unistd.h>
+    +_DEFAULT_SOURCE
+    +_XOPEN_SOURCE=500
+
+Backdrop MilkyWay
     frost : true
     public func bg_color [ ] -> rgba
         return color
@@ -27,11 +42,10 @@ element MilkyWay
 
     # worker thread: file reads and pixel decodes only, never a vk call
     func load_files[]
-        gltf_path : path '../{share_name}/models/earth.gltf'
-        geom      = GltfModel.open[ gltf_path ]
+        geom      = build_globe[]
         # the same Gaia all-sky map the other scenes wrap their spheres
         # with
-        img_color = Image [ uri: path '../{share_name}/textures/gaia.png', surface: GaiaSurface.color ]
+        img_color = Image [ uri: path '{scenes_share[]}/textures/gaia.png', surface: GaiaSurface.color ]
 
     # main thread: every vk object this scene owns
     func build_models[]
@@ -134,14 +148,14 @@ element MilkyWay
             (ux.height > 0) ? f32[ ux.width ] / f32[ ux.height ]
             : 1.7778 ]
         # orbit steps become zoom: field of view narrows from far to low
-        e_t    : f32 [ (ux.orbit_mode == OrbitView.low)  ? 45.0 :
-                       (ux.orbit_mode == OrbitView.high) ? 65.0 : 85.0 ]
+        e_t    : f32 [ (vantage == OrbitView.low)  ? 45.0 :
+                       (vantage == OrbitView.high) ? 65.0 : 85.0 ]
         if [ e_cur == 0.0 ] e_cur = e_t
         e_cur = filter_n[ e_cur, e_t, 0.08, ux.frame_factor ]
 
         # angle steps pitch the gaze off the galactic plane
-        p_t    : f32 [ (ux.angle_mode == ViewAngle.flat)   ? 0.0 :
-            (ux.angle_mode == ViewAngle.angled) ? 0.35 : 0.80 ]
+        p_t    : f32 [ (angle == ViewAngle.flat)   ? 0.0 :
+            (angle == ViewAngle.angled) ? 0.35 : 0.80 ]
         p_cur  = filter_n[ p_cur, p_t, 0.08, ux.frame_factor ]
         ux.orbit_moving = abs[ e_cur - e_t ] > 0.02 || abs[
             p_cur - p_t ] > 0.001
@@ -165,3 +179,9 @@ element MilkyWay
         gaia.proj  = _proj
         gaia.gain  = 0.88
         gaia.time  = ux.time * 60000.0
+
+# the pictures for orbiter's scene picker; last, after the bakes
+export func milkyway_thumbs []
+    names : vec string [] [ 'MilkyWay' ]
+    dir   : path '../{share_name}/thumbs'
+    scene_thumbs_for[ names, dir ]

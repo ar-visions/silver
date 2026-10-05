@@ -6524,7 +6524,7 @@ enode aether_e_create(aether a, etype mdl, Au args, bool no_pool) { sequencer
                         value = with_value(ld, enode(mod, a, autype, value->autype, loaded, true));
                     }
                     // unloaded element GEP (`vec3f [ m.m[12], ... ]`) feeding a primitive field: load it, or the pointer bits land in the field
-                    if (!value->loaded && m->src && m->src->is_primitive && !m->src->is_pointer && !m->is_pointer &&
+                    if (!value->loaded && m->elements == 0 && m->src && m->src->is_primitive && !m->src->is_pointer && !m->is_pointer &&
                         LLVMGetTypeKind(LLVMStructGetTypeAtIndex(_lltype_slot(rmdl), index)) != LLVMPointerTypeKind &&
                         _llvalue((enode)value) &&
                         LLVMGetTypeKind(LLVMTypeOf(_llvalue((enode)value))) == LLVMPointerTypeKind) {

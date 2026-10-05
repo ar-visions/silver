@@ -1,4 +1,19 @@
-extend scenes
+# pluto: a planet module over the scenes utilities
+export 0.1.0
+export scenes ['Pluto']
+export dependencies ['orbiter']
+import vec
+import img
+import gltf
+import trinity
+import tls
+import scenes
+
+import <stdio.h>
+import <stdlib.h>
+import <unistd.h>
+    +_DEFAULT_SOURCE
+    +_XOPEN_SOURCE=500
 
 # PLUTO. the ground is PAINTED, not sourced: a 16x8 table over the map
 # (22.5 degrees a cell, longitude east across, latitude +90 down to -90)
@@ -1081,7 +1096,7 @@ ModelViewProject PlutoSky
         fragColor = vec4(col * atma + s_beams(ro, rd, fp, gw), atma);
     }
 
-element Pluto
+Backdrop Pluto
     frost : true
     public func bg_color [ ] -> rgba
         return color
@@ -1139,9 +1154,9 @@ element Pluto
         p_samplers.hold[]
         psky = PlutoSky [ vk: vk ]
         gsky = GaiaShader [ vk: vk ]
-        g_gltf : GltfModel.open[ path '../{share_name}/models/earth.gltf' ]
+        g_gltf : build_globe[]
         g_samplers : map Image [string] [
-            'color': Image [ uri: path '../{share_name}/textures/gaia.png', surface: GaiaSurface.color ]
+            'color': Image [ uri: path '{scenes_share[]}/textures/gaia.png', surface: GaiaSurface.color ]
         ]
         g_model : Model [ vk: vk, w: ux, id: g_gltf, s: gsky,
                           samplers: g_samplers,
@@ -1259,9 +1274,9 @@ element Pluto
             (ux.height > 0) ? f32[ ux.width ] / f32[ ux.height ]
             : 1.7778 ]
         # altitude above the datum in radii: 0.02 is 24 km over pluto
-        e_t : f32 [ (ux.orbit_mode == OrbitView.low)  ? 0.030 :
-                    (ux.orbit_mode == OrbitView.high) ? 0.070 :
-                    (ux.orbit_mode == OrbitView.far)  ? 0.180 : 0.450 ]
+        e_t : f32 [ (vantage == OrbitView.low)  ? 0.030 :
+                    (vantage == OrbitView.high) ? 0.070 :
+                    (vantage == OrbitView.far)  ? 0.180 : 0.450 ]
         if [ e_cur == 0.0 ] e_cur = e_t
         e_cur = filter_n[ e_cur, e_t, 0.06, ux.frame_factor ]
         # the craft starts over the equator's ice, cells 7-8 of the
@@ -1361,3 +1376,9 @@ element Pluto
         gsky.time  = ux.time * 60000.0
         sky_render.draw[]
         sky_render.sync_fence[]
+
+# the pictures for orbiter's scene picker; last, after the bakes
+export func pluto_thumbs []
+    names : vec string [] [ 'Pluto' ]
+    dir   : path '../{share_name}/thumbs'
+    scene_thumbs_for[ names, dir ]

@@ -1,0 +1,669 @@
+# uranus: a planet module over the scenes utilities
+export 0.1.0
+export scenes ['Uranus']
+export dependencies ['orbiter']
+import vec
+import img
+import gltf
+import trinity
+import tls
+import scenes
+
+import <stdio.h>
+import <stdlib.h>
+import <unistd.h>
+    +_DEFAULT_SOURCE
+    +_XOPEN_SOURCE=500
+
+# ======================================================================
+# URANUS. the plate is saturn's band structure INTERPOLATED into more
+# bands than it has: latitude is folded back and forth several times
+# over the source, so one pass of saturn's belts becomes several, and
+# two folds at different phases are lerped together so the repeat does
+# not read. then driven pale cyan -- methane eats the red end, which is
+# the whole reason the planet is that colour
+func ur_fold [ t: f32 ] -> f32
+    x : f32 [ t - floor[ t ] ]
+    if [ x > 0.5 ] x = 1.0 - x
+    return x * 2.0
+
+func uranus_bake [] -> bool
+    si : Image [ uri: path '{scenes_share[]}/textures/saturn-color.png' ]
+    if [ si.width == 0 ]
+        log 'uranus: saturn plate missing'
+        return false
+    w9 : i32 [ si.width ]
+    h9 : i32 [ si.height ]
+    sp : i32 [ si.pixel_size ]
+    sdat : @u8 [ si.vdata[] ]
+    log 'uranus: folding {w9}x{h9} of saturn into more bands'
+    im : Image [ width: w9, height: h9, format: Pixel.rgba8,
+                 linear: true, wrap_u: true ]
+    od : @u8 [ im.vdata[] ]
+    for [ y: i32 0, y < h9, y += 1 ]
+        v : f32 [ (f32[ y ] + 0.5) / f32[ h9 ] ]
+        # 3.5 folds of the source across the disk. the fold mirrors, so
+        # the seam at each turn is continuous rather than a cut
+        fa : f32 [ ur_fold[ v * 3.5 ] ]
+        fb : f32 [ ur_fold[ v * 2.5 + 0.37 ] ]
+        # keep both folds off the polar rows, where equirect smears
+        ya : i32 [ (0.06 + fa * 0.88) * f32[ h9 ] ]
+        yb : i32 [ (0.06 + fb * 0.88) * f32[ h9 ] ]
+        if [ ya < 0 ] ya = 0
+        if [ ya >= h9 ] ya = h9 - 1
+        if [ yb < 0 ] yb = 0
+        if [ yb >= h9 ] yb = h9 - 1
+        for [ x: i32 0, x < w9, x += 1 ]
+            u : f32 [ (f32[ x ] + 0.5) / f32[ w9 ] ]
+            # the second fold is read half a turn away in longitude so
+            # the two never carry the same storm
+            xb : i32 [ (x + w9 / 2) % w9 ]
+            ba : i32 [ (ya * w9 + x)  * sp ]
+            bb : i32 [ (yb * w9 + xb) * sp ]
+            la : f32 [
+                (f32[ sdat[ ba ] ] * 0.299 + f32[ sdat[ ba + 1 ] ] * 0.587
+                      + f32[ sdat[ ba + 2 ] ] * 0.114) / 255.0 ]
+            lb : f32 [
+                (f32[ sdat[ bb ] ] * 0.299 + f32[ sdat[ bb + 1 ] ] * 0.587
+                      + f32[ sdat[ bb + 2 ] ] * 0.114) / 255.0 ]
+            # a slow wander decides which fold leads, so the mix itself
+            # is not a constant blend of two repeating things
+            ang : f32 [ u * 6.28318530718 ]
+            mx : f32 [ cos[ ang ] * 1.3 + 5.0 ]
+            my : f32 [ sin[ ang ] * 1.3 + 5.0 ]
+            wq : f32 [ eu_gnoise[ mx, my, v * 5.0 ] ]
+            l9 : f32 [ nep_lerp[ la, lb, eu_sstep[ 0.35, 0.65, wq ] ] ]
+            # NO contrast pull. saturn's belts are the whole point of
+            # sourcing from it, and flattening them to 0.30 -- then
+            # 0.62 -- threw away the thing we came for. the pale look
+            # comes from the high colour floors below, not from
+            # destroying the luminance that carries the bands
+            # PALE CYAN, and nothing else. methane absorbs red, so
+            # red carries least and blue-green carry most.
+            # the blue variance USED to be baked in here as a second
+            # base. it moved into the shader: a plate cannot drift,
+            # and the whole point is that it moves with the weather
+            nr : f32 [ 0.30 + l9 * 0.42 ]
+            ng : f32 [ 0.50 + l9 * 0.42 ]
+            nb : f32 [ 0.52 + l9 * 0.40 ]
+            if [ nr > 1.0 ] nr = 1.0
+            if [ ng > 1.0 ] ng = 1.0
+            if [ nb > 1.0 ] nb = 1.0
+            ob : i32 [ (y * w9 + x) * 4 ]
+            od[ ob ]     = u8[ nr * 255.0 ]
+            od[ ob + 1 ] = u8[ ng * 255.0 ]
+            od[ ob + 2 ] = u8[ nb * 255.0 ]
+            od[ ob + 3 ] = 255
+    bd : path '../{share_name}/baked'
+    bd.make_dir[]
+    im.png[ path '../{share_name}/baked/uranus-color.png' ]
+    log 'uranus: colour map written'
+    return true
+
+# the same sobel neptune uses, on uranus' own plate
+func uranus_storm [] -> bool
+    ci : Image [ uri: path '../{share_name}/baked/uranus-color.png' ]
+    if [ ci.width == 0 ] return false
+    w9 : i32 [ ci.width ]
+    h9 : i32 [ ci.height ]
+    n9 : i32 [ w9 * h9 ]
+    L : new f32 [ n9 ]
+    eu_lum[ ci, L ]
+    S : new f32 [ n9 ]
+    for [ y: i32 0, y < h9, y += 1 ]
+        ym : i32 [ (y > 0) ? y - 1 : 0 ]
+        yp : i32 [ (y < h9 - 1) ? y + 1 : h9 - 1 ]
+        for [ x: i32 0, x < w9, x += 1 ]
+            xm : i32 [ (x > 0) ? x - 1 : w9 - 1 ]
+            xp : i32 [ (x < w9 - 1) ? x + 1 : 0 ]
+            gx : f32 [ L[ y * w9 + xp ] - L[ y * w9 + xm ] ]
+            gy : f32 [ L[ yp * w9 + x ] - L[ ym * w9 + x ] ]
+            # 60, not neptune's 30: the contrast pull-out above leaves
+            # gradients half what that plate carries
+            mg : f32 [ sqrt[ gx * gx + gy * gy ] * 60.0 ]
+            if [ mg > 1.0 ] mg = 1.0
+            S[ y * w9 + x ] = mg
+    T : new f32 [ n9 ]
+    eu_blur[ S, T, w9, h9, 4 ]
+    im : Image [ width: w9, height: h9, format: Pixel.rgba8,
+                 linear: true, wrap_u: true ]
+    od : @u8 [ im.vdata[] ]
+    for [ i: i32 0, i < n9, i += 1 ]
+        v9 : f32 [ T[ i ] ]
+        if [ v9 < 0.0 ] v9 = 0.0
+        if [ v9 > 1.0 ] v9 = 1.0
+        b4 : i32 [ i * 4 ]
+        od[ b4 ]     = u8[ v9 * 255.0 ]
+        od[ b4 + 1 ] = 0
+        od[ b4 + 2 ] = 0
+        od[ b4 + 3 ] = 255
+    im.png[ path '../{share_name}/baked/uranus-storm.png' ]
+    log 'uranus: storm map written'
+    return true
+
+# URANUS' RINGS: thirteen of them, narrow and dark, epsilon brightest.
+# radii in km against the 25559 equatorial radius. every band is FOUR
+# TIMES the width neptune's got -- these are drawn to be seen
+func ur_ring_r0 [] -> f32
+    return 37000.0
+func ur_ring_r1 [] -> f32
+    return 53000.0
+
+func uranus_rings [] -> bool
+    w9 : i32 [ 2048 ]
+    h9 : i32 [ 4 ]
+    r0 : f32 [ ur_ring_r0[] ]
+    r1 : f32 [ ur_ring_r1[] ]
+    im : Image [ width: w9, height: h9, format: Pixel.rgba8,
+                 linear: true ]
+    od : @u8 [ im.vdata[] ]
+    for [ x: i32 0, x < w9, x += 1 ]
+        t  : f32 [ (f32[ x ] + 0.5) / f32[ w9 ] ]
+        km : f32 [ r0 + t * (r1 - r0) ]
+        a9 : f32 [ 0.0 ]
+        # the soft shoulders have to stay UNDER the gaps between rings.
+        # rings 6, 5 and 4 sit only ~370 km apart and do merge -- that
+        # is real -- but 1400 km shoulders merged the whole system into
+        # one annulus at full alpha, which is not
+        # zeta, the inner dust sheet
+        a9 += nep_band[ km, 39600.0, 1600.0,  700.0 ] * 0.06
+        # the narrow inner three: 6, 5, 4
+        a9 += nep_band[ km, 41837.0,  180.0,  190.0 ] * 0.13
+        a9 += nep_band[ km, 42234.0,  180.0,  190.0 ] * 0.14
+        a9 += nep_band[ km, 42571.0,  180.0,  190.0 ] * 0.15
+        # alpha and beta
+        a9 += nep_band[ km, 44718.0,  240.0,  250.0 ] * 0.26
+        a9 += nep_band[ km, 45661.0,  240.0,  250.0 ] * 0.28
+        # eta, gamma, delta
+        a9 += nep_band[ km, 47176.0,  200.0,  210.0 ] * 0.20
+        a9 += nep_band[ km, 47627.0,  200.0,  210.0 ] * 0.24
+        a9 += nep_band[ km, 48300.0,  200.0,  210.0 ] * 0.26
+        # lambda, then EPSILON -- the widest and brightest by far
+        a9 += nep_band[ km, 50024.0,  140.0,  180.0 ] * 0.10
+        a9 += nep_band[ km, 51149.0,  520.0,  620.0 ] * 0.90
+        if [ a9 > 1.0 ] a9 = 1.0
+        # darker than neptune's. uranus' rings are among the least
+        # reflective surfaces in the solar system -- charcoal, not ice
+        cr : f32 [ 0.55 ]
+        cg : f32 [ 0.56 ]
+        cb : f32 [ 0.58 ]
+        for [ y: i32 0, y < h9, y += 1 ]
+            b4 : i32 [ (y * w9 + x) * 4 ]
+            od[ b4 ]     = u8[ cr * 255.0 ]
+            od[ b4 + 1 ] = u8[ cg * 255.0 ]
+            od[ b4 + 2 ] = u8[ cb * 255.0 ]
+            od[ b4 + 3 ] = u8[ a9 * 255.0 ]
+    bd : path '../{share_name}/baked'
+    bd.make_dir[]
+    im.png[ path '../{share_name}/baked/uranus-ring.png' ]
+    log 'uranus: ring strip written'
+    return true
+
+func uranus_maps []
+    h1 : u64 [ @uranus_bake ]
+    h2 : u64 [ @uranus_storm ]
+    h3 : u64 [ @uranus_rings ]
+    stamp : string '{h1}-{h2}-{h3}'
+    sp : path '../{share_name}/baked/uranus.hash'
+    cp : path '../{share_name}/baked/uranus-color.png'
+    stp : path '../{share_name}/baked/uranus-storm.png'
+    rgp : path '../{share_name}/baked/uranus-ring.png'
+    if [ sp.exists[] && cp.exists[] && stp.exists[] && rgp.exists[] ]
+        old : string [ sp.load[ typeid[string], null ] ]
+        if [ old && old == stamp ]
+            log 'uranus: maps current ({stamp})'
+            return
+    if [ uranus_bake[] && uranus_storm[] && uranus_rings[] ]
+        sp.save[ stamp, null ]
+
+export func uranus_export []
+    uranus_maps[]
+
+# THE AURORA: enceladus' march, aimed at a magnetic axis instead of a
+# vent list. a shell above the cloud top, emitting only in a RING at a
+# fixed colatitude -- so it is a glowing edge from the side, and when
+# the pole comes round it opens into a circle with a dark centre. the
+# inner edge is the whole point; a cap would just be a bright pole
+ModelViewProject AuroraShader
+    mutable gain    : f32
+    mutable cam_pos : vec4f
+    # xyz = the magnetic axis in WORLD space, w = the oval's
+    # colatitude off that axis, in radians
+    mutable maxis   : vec4f
+    # x = shell inner radius, y = outer, z = oval half width in
+    # radians, w = how hard the curtains bite
+    mutable ashell  : vec4f
+    # the two ends of the emission: inner edge and outer skirt
+    mutable c_in    : vec4f
+    mutable c_out   : vec4f
+
+    attrib a_pos    : VertexInput [ type:typeid[ vec3f ] ]
+    attrib a_normal : VertexInput [ type:typeid[ vec3f ] ]
+    attrib a_uv     : VertexInput [ type:typeid[ vec2f ] ]
+
+    attrib v_mpos      : VertexOutput [ type:typeid[ vec3f ] ]
+    attrib v_world_pos : VertexOutput [ type:typeid[ vec4f ] ]
+
+    attrib fragColor : FragmentOutput[ type:typeid[ vec4f ] ]
+
+    func init[]
+        eye    : vec3f [0.0f, 0.0f, 2.5f]
+        target : vec3f [0.0f, 0.0f, 0.0f]
+        up     : vec3f [0.0f, -1.0f, 0.0f]
+        model   = mat4f.identity   []
+        proj    = mat4f.perspective[radians[60.0f], 1.0f, 0.01f, 100.0f]
+        view    = mat4f.look_at    [eye, target, up]
+
+    func vertex[] -> GLSL none {
+        v_mpos      = a_pos;
+        vec4 wpos   = ubo.model * vec4(a_pos, 1.0);
+        v_world_pos = wpos;
+        gl_Position = ubo.proj * ubo.view * wpos;
+    }
+
+    func a_hash31 [ p: vec3f ] -> GLSL float {
+        return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453);
+    }
+
+    func a_vnoise [ p: vec3f ] -> GLSL float {
+        vec3 i = floor(p);
+        vec3 f = fract(p);
+        vec3 u = f * f * (3.0 - 2.0 * f);
+        float n000 = a_hash31(i + vec3(0.0, 0.0, 0.0));
+        float n100 = a_hash31(i + vec3(1.0, 0.0, 0.0));
+        float n010 = a_hash31(i + vec3(0.0, 1.0, 0.0));
+        float n110 = a_hash31(i + vec3(1.0, 1.0, 0.0));
+        float n001 = a_hash31(i + vec3(0.0, 0.0, 1.0));
+        float n101 = a_hash31(i + vec3(1.0, 0.0, 1.0));
+        float n011 = a_hash31(i + vec3(0.0, 1.0, 1.0));
+        float n111 = a_hash31(i + vec3(1.0, 1.0, 1.0));
+        return mix(mix(mix(n000, n100, u.x), mix(n010, n110, u.x), u.y),
+                   mix(mix(n001, n101, u.x), mix(n011, n111, u.x), u.y), u.z);
+    }
+
+    func fragment[] -> GLSL none {
+        vec3  ro = ubo.cam_pos.xyz;
+        vec3  rd = normalize(v_world_pos.xyz - ro);
+        // one shell layer only: from outside we want the near face,
+        // from inside the far one, or every ray counts twice
+        if (dot(ro, ro) >= 1.69 && !gl_FrontFacing) { fragColor = vec4(0.0); return; }
+        // the ball stops the march at its own surface
+        float b     = dot(ro, rd);
+        float c     = dot(ro, ro) - 1.0;
+        float dsc   = b * b - c;
+        float s_hit = (dsc > 0.0) ? (-b - sqrt(dsc)) : 1e9;
+        if (s_hit < 0.0) s_hit = 1e9;
+        // the segment of the ray inside the shell
+        float ri  = ubo.ashell.x;
+        float rou = ubo.ashell.y;
+        float cc  = dot(ro, ro) - rou * rou;
+        float dd  = b * b - cc;
+        if (dd <= 0.0) { fragColor = vec4(0.0); return; }
+        float sq = sqrt(dd);
+        float t0 = max(-b - sq, 0.0);
+        float t1 = min(-b + sq, s_hit);
+        if (t1 <= t0) { fragColor = vec4(0.0); return; }
+
+        vec3  ax  = normalize(ubo.maxis.xyz);
+        float ovc = ubo.maxis.w;
+        float ovw = ubo.ashell.z;
+        // any two vectors square to the axis, to measure azimuth by
+        vec3  up9 = (abs(ax.y) < 0.9) ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+        vec3  ex9 = normalize(cross(up9, ax));
+        vec3  ey9 = cross(ax, ex9);
+
+        float sin9 = 0.0;
+        float sou9 = 0.0;
+        float dt   = (t1 - t0) / 32.0;
+        for (int i = 0; i < 32; i++) {{
+            vec3  p = ro + rd * (t0 + (float(i) + 0.5) * dt);
+            float r = length(p);
+            // fades in off the cloud top, out at the shell's ceiling
+            float sh = smoothstep(ri - 0.015, ri + 0.020, r)
+                     * (1.0 - smoothstep(rou - 0.14, rou, r));
+            if (sh <= 0.0) continue;
+            vec3  pn = p / max(r, 1e-4);
+            // BOTH poles: the abs folds the southern oval onto the
+            // northern one, and they are symmetric anyway
+            float ca  = abs(dot(pn, ax));
+            float col = acos(clamp(ca, 0.0, 1.0));
+            // the ring. gaussian about a colatitude, so it has an
+            // INNER edge as much as an outer -- the pole is dark
+            float dv   = (col - ovc) / ovw;
+            float ring = exp(-dv * dv);
+            // a HINT of purple around the oval, and nowhere else --
+            // it is keyed to the same colatitude, so it exists at the
+            // poles only. 0.10, not the 0.34 that washed the pole out
+            float dh   = (col - ovc) / (ovw * 2.6);
+            float halo = exp(-dh * dh) * 0.10;
+            if (ring + halo < 0.002) continue;
+            // curtains: azimuth about the axis, several rates so the
+            // structure never repeats around the oval
+            float az = atan(dot(pn, ey9), dot(pn, ex9));
+            float cu = 0.55
+                     + 0.28 * sin(az *  7.0 + ubo.time * 0.11)
+                     + 0.20 * sin(az * 13.0 - ubo.time * 0.17 + 1.7)
+                     + 0.14 * sin(az * 23.0 + ubo.time * 0.23 + 4.1);
+            cu = clamp(cu, 0.0, 1.6);
+            // TEXTURE, not curtains. sampled on a circle in azimuth so
+            // it closes, and across colatitude too, so the oval breaks
+            // into blobs instead of running as one smooth band. this
+            // is what makes it read as an aurora rather than a ring
+            vec2  ac9 = vec2(cos(az), sin(az));
+            float pt1 = a_vnoise(vec3(ac9 * 3.0,        col * 34.0 + ubo.time * 0.04));
+            float pt2 = a_vnoise(vec3(ac9 * 7.5 + 11.0, col * 72.0 + ubo.time * 0.07));
+            float tex = smoothstep(0.22, 0.74, 0.62 * pt1 + 0.38 * pt2);
+            // fine radial striations across the band. an INTEGER count
+            // of cycles, or the seam at +/- pi cuts them
+            float str = 0.62 + 0.38 * sin(az * 40.0 + pt1 * 11.0);
+            // MIXED with the smooth curtains, not replacing them. all
+            // texture and the volume turns to grit; none and it is a
+            // featureless band
+            cu = cu * mix(1.0, (0.22 + 1.60 * tex) * str, 0.62);
+            cu = mix(1.0, cu, ubo.ashell.w);
+            // rays stand UP the field line: brighter low, thinning out
+            float hh = clamp((r - ri) / max(rou - ri, 1e-4), 0.0, 1.0);
+            float ray = exp(-2.1 * hh);
+            float w9  = ring * sh * cu * ray * dt;
+            // the inner edge burns hardest; the skirt carries outward
+            sin9 += w9 * (1.0 - smoothstep(0.0, 1.0, hh));
+            sou9 += w9 * smoothstep(0.0, 1.0, hh);
+            // the halo is ALL skirt -- it is the purple, and it does
+            // not take the curtains or it would just be a wider oval
+            sou9 += halo * sh * ray * dt;
+        }}
+        // the limb itself: a thin glow at the ray's closest approach,
+        // so the planet keeps an edge even where no oval is turned
+        // toward us. this is the 'glowing edge' the oval sits inside
+        float rc  = length(ro - rd * b);
+        float lg  = exp(-max(rc - 1.0, 0.0) / 0.030)
+                  * smoothstep(0.945, 0.998, rc);
+
+        float tot = sin9 + sou9;
+        vec3  col = ubo.c_in.rgb * sin9 + ubo.c_out.rgb * sou9
+                  + ubo.c_in.rgb * lg * 0.35;
+        float a   = clamp((tot * 2.4 + lg * 0.30) * ubo.gain, 0.0, 1.0);
+        if (a <= 0.001) { fragColor = vec4(0.0); return; }
+        fragColor = vec4(col * ubo.gain, a);
+    }
+
+# URANUS, ON ITS SIDE. 97.77 degrees of axial tilt is the whole
+# identity of this planet: the pole faces the sun, and the rings stand
+# up as a hoop rather than lying flat across the disk
+Backdrop Uranus
+    frost : true
+    public func bg_color [ ] -> rgba
+        return color
+    frost_sharp : true
+    intern e_cur  : f32
+    intern p_cur  : f32
+    intern p_set  : bool
+    intern uran   : JupiterShader
+    intern aur    : AuroraShader
+    intern rings  : RingShader
+    intern sky    : GaiaShader
+    intern models : vec Model
+    intern target : Render
+    intern built  : bool
+    intern ready     : bool
+    intern loading   : bool
+    intern load_task : async
+    public color  : rgba [ r:0.002, g:0.004, b:0.005, a:1.0 ]
+
+    func build_models[]
+        built     = true
+        gltf      : build_globe[]
+        cp : path '../{share_name}/baked/uranus-color.png'
+        st : path '../{share_name}/baked/uranus-storm.png'
+        rg : path '../{share_name}/baked/uranus-ring.png'
+        if [ !cp.exists[] || !st.exists[] || !rg.exists[] ]
+            log 'uranus: no baked maps — composing live'
+            uranus_bake[]
+            uranus_storm[]
+            uranus_rings[]
+        uran = JupiterShader [ vk: vk ]
+        u_samplers : map Image [string] [
+            'color':  Image [ uri: cp, surface: TitanSurface.color,
+                              linear: true, wrap_u: true ],
+            'height': Image [ uri: st, surface: TitanSurface.height,
+                              linear: true, wrap_u: true ]
+        ]
+        uran_model : Model [ vk: vk, w: ux, id: gltf, s: uran,
+                             samplers: u_samplers,
+            straight_alpha: true ]
+        rings = RingShader [ vk: vk ]
+        r_samplers : map Image [string] [
+            'color': Image [ uri: rg, surface: TitanSurface.color,
+                             linear: true ]
+        ]
+        ring_model : Model [ vk: vk, w: ux, id: gltf, s: rings,
+                             samplers: r_samplers,
+            straight_alpha: true ]
+        aur = AuroraShader [ vk: vk ]
+        # marched shell, so it must not depth-test against the ball it
+        # wraps, and both faces are needed
+        aur_model : Model [ vk: vk, w: ux, id: gltf, s: aur,
+            straight_alpha: true, cull_none: true, depth_no_test: true ]
+        sky = GaiaShader [ vk: vk ]
+        sky_samplers : map Image [string] [
+            'color': Image [ uri: path '{scenes_share[]}/textures/gaia.png', surface: GaiaSurface.color ]
+        ]
+        sky_model : Model [ vk: vk, w: ux, id: gltf, s: sky,
+                            samplers: sky_samplers,
+            straight_alpha: true, cull_none: true ]
+        models = vec Model [] [sky_model, uran_model, ring_model,
+                                aur_model ]
+
+    func create_target[]
+        if [ target || !models || models.count == 0 ] return
+        # the backdrop sits under frost or blur: one pixel per point
+        target = Render [
+            vk:          vk,
+            w:           ux,
+            wscale:      (ux.scale > 1.0) ? 1.0 / ux.scale : 1.0,
+            use_depth:   true,
+            clear_color: vec4f [ color.r, color.g, color.b, 1.0 ],
+            models:      models ]
+        target.owner  = a
+        ux.element_targets[ id ] = target
+
+    public func on_unload [ ]
+        if [ ux && ux.element_targets ] ux.element_targets.rm[ id ]
+
+    func load_bg [ arg: object :: t: Uranus ]
+        t.build_models[]
+        t.ready = true
+
+    func draw [ w: Window ]
+        animated = true
+        if [ !built && !loading ]
+            loading = true
+            w9 : vec Au []
+            w9.push[ a ]
+            load_task = async [ target: a, work_fn: lambda load_bg[ a ],
+                                work: w9 ]
+        if [ !ready ] return
+        # the done job held this element: let it go
+        if [ load_task ] load_task = null
+        create_target[]
+        orbit[]
+
+    func orbit[]
+        aspect : f32 [
+            (ux.height > 0) ? f32[ ux.width ] / f32[ ux.height ]
+            : 1.7778 ]
+        e_t    : f32 [ (vantage == OrbitView.low)  ? 2.20 :
+                       (vantage == OrbitView.high) ? 2.90 :
+                       (vantage == OrbitView.far)  ? 4.10 : 5.80 ]
+        if [ e_cur == 0.0 ] e_cur = e_t
+        e_cur = filter_n[ e_cur, e_t, 0.08, ux.frame_factor ]
+        p_t    : f32 [ (angle == ViewAngle.flat)   ? 0.0 :
+            (angle == ViewAngle.angled) ? 0.156 : 0.480 ]
+        if [ p_cur == 0.0 && p_t != 0.0 && !p_set ] p_cur = p_t
+        p_set  = true
+        p_cur  = filter_n[ p_cur, p_t, 0.08, ux.frame_factor ]
+        ux.orbit_moving = abs[ e_cur - e_t ] > 0.002 || abs[
+            p_cur - p_t ] > 0.001
+
+        e_d    : f32 [ e_cur ]
+        # TOWARD THE SUNLIT POLE. the 97.77 tilt about z carries the
+        # spin axis to about (-0.99, -0.14, 0), so the ring plane holds
+        # y and z -- a camera at (0, y, z) sits INSIDE that plane and
+        # sees the hoop edge-on as a line. 35 degrees off it opens the
+        # ellipse to 0.57 of its width.
+        # the sign is POSITIVE x: the sun sits at (0.85, -0.10, 0.15),
+        # so leaning to -x put the camera over the night pole and the
+        # planet came up dark
+        pl    : f32 [ radians[ 35.0 ] ]
+        _eye   : vec3f [ e_d * sin[ pl ], e_d * p_cur, e_d * cos[ pl ] ]
+        _tgt   : vec3f [ 0.0,  0.0,  0.0  ]
+        _up    : vec3f [ 0.0, -1.0,  0.0  ]
+        _proj  : mat4f.perspective[ radians[ 55.0 ], aspect, 0.01,
+                                    90.0 ]
+        _view  : mat4f.look_at    [ _eye, _tgt, _up ]
+
+        # uranus turns in 17 hours, and RETROGRADE -- negative rate
+        spin_d : f32 [ 0.0 - ux.time * 8400.0 ]
+        q_spin : quatf [ vec4f [ 0.0, 1.0, 0.0, radians[ spin_d ] ] ]
+        # 97.77 DEGREES. this is the planet's whole character: the axis
+        # lies in its orbital plane, so it rolls rather than spins
+        q_tilt : quatf [ vec4f [ 0.0, 0.0, 1.0, radians[ 97.77 ] ] ]
+        mm : mat4f.identity[]
+        mm = mm.rotate[ q_tilt ]
+        mm = mm.rotate[ q_spin ]
+        uran.model   = mm
+        uran.view    = _view
+        uran.proj    = _proj
+        uran.gain    = 1.15
+        # w 3.0 lifts the ambient floor from 0.08 to 0.24, so the pole
+        # that faces away still carries a quarter of its albedo
+        uran.cam_pos = vec4f [ _eye.x, _eye.y, _eye.z, 3.0 ]
+        # white cloud, as neptune. uranus shows even less of it
+        # w 0.85 = STANDING. uranus' streaks are a permanent deck that
+        # only breathes, not a field of strikes switching on and off
+        uran.pc_a = vec4f [ 1.00, 1.00, 1.00, 0.85 ]
+        # w 0.0006 is a lap every 7 seconds at ludicrous: the streaks
+        # ZOOM around the x axis rather than creeping down the y
+        uran.pc_b = vec4f [ 1.00, 1.00, 1.00, 0.0006 ]
+        # TWENTY TIMES the streaks. count goes as the square of the
+        # scale, so 4.47 each way is 80 cells around against 18 --
+        # 6400 of them where there were 324
+        uran.pstr = vec4f [ 4.47, 4.47, 0.0, 0.38 ]
+        uran.pctl = vec4f [ 0.74, 0.00325, 1.0, 0.0 ]
+        # the deck barely moves -- uranus has the least visible weather
+        # of the four giants, so the shear is a third of neptune's
+        uran.wctl  = vec4f [ 0.12, 0.014, 38.00, 0.30 ]
+        uran.wctl2 = vec4f [ 0.42, 1.3, 0.0015625, 14.0 ]
+        # a MULTIPLY on the texture colour: red and green cut, blue
+        # left alone, so pale cyan goes deep blue by subtraction and
+        # never clips. w 0.85 is the ceiling -- the perlin swings it
+        # from no colour at all up to this
+        uran.tint  = vec4f [ 0.66, 0.84, 1.00, 0.85 ]
+        # SODIUM GOLD burnt into the plate at the poles. this is the
+        # source the blue-violet shell above it is powered by, so it
+        # sits at the same 17 degrees off the pole the oval does
+        # DEEP fiery orange, and a warm pale to run against it. the
+        # old 0.62 green was closer to gold than fire; 0.42 is the
+        # orange itself. w 0.72 burns it harder
+        uran.pfire  = vec4f [ 1.00, 0.42, 0.07, 0.72 ]
+        uran.pfire2 = vec4f [ 1.00, 0.88, 0.66, 1.0 ]
+        uran.time  = ux.time * 60000.0
+
+        # THE AURORA. the shell is a plain sphere at the world origin
+        # like the ball, so the march needs no inverse -- the magnetic
+        # axis is handed in as a world vector instead.
+        # rotating y by the 97.77 tilt about z lands the pole here.
+        # uranus' real magnetic axis is a further 59 degrees off its
+        # rotation axis and offset a third of a radius from centre, so
+        # its true aurorae are lopsided patches; this is the tidy
+        # version, on the rotational pole
+        ta : f32 [ radians[ 97.77 ] ]
+        am : mat4f.identity[]
+        am = am.scale[ vec3f [ 1.34, 1.34, 1.34 ] ]
+        aur.model   = am
+        aur.view    = _view
+        aur.proj    = _proj
+        aur.gain    = 1.0
+        aur.cam_pos = vec4f [ _eye.x, _eye.y, _eye.z, 1.0 ]
+        # w is the oval's colatitude: 17 degrees off the pole, so the
+        # centre stays dark and the ring reads as a ring
+        aur.maxis   = vec4f [ 0.0 - sin[ ta ], cos[ ta ], 0.0,
+                              radians[ 17.0 ] ]
+        # shell from just above the cloud top to 1.34; the oval is 5.5
+        # degrees wide; curtains at 0.85 of full bite
+        aur.ashell  = vec4f [ 1.005, 1.34, radians[ 5.5 ], 0.85 ]
+        # hydrogen, not oxygen: uranus glows blue-violet, never green.
+        # the inner edge is back to blue; only the outer skirt and the
+        # halo carry purple, so the colour shows at the poles alone
+        aur.c_in    = vec4f [ 0.42, 0.86, 1.00, 1.0 ]
+        aur.c_out   = vec4f [ 0.62, 0.30, 1.00, 1.0 ]
+        aur.time    = ux.time * 60000.0
+
+        # the rings take the tilt and NOT the spin, so they stand as a
+        # hoop. outer 53000 km over uranus' 25559 is 2.074 ball radii,
+        # drawn a little tighter as neptune's are
+        r_sc : vec3f [ 1.92, 0.002, 1.92 ]
+        rm : mat4f.identity[]
+        rm = rm.rotate[ q_tilt ]
+        rm = rm.scale [ r_sc ]
+        rings.model   = rm
+        rings.view    = _view
+        rings.proj    = _proj
+        rings.gain    = 0.70
+        rings.cam_pos = vec4f [ _eye.x, _eye.y, _eye.z, 1.0 ]
+        # inner 37000 over outer 53000, and the ball over the drawn
+        # outer
+        rings.rgeo    = vec4f [ 0.6981, 0.5208, 0.0, 0.0 ]
+
+        # THE GALAXY, aimed into frame. the band lies on the sphere's
+        # equator, so what matters is where its plane normal points
+        # against the view. at 45 about x that normal is (0, .71, .71)
+        # and this camera looks along about (-.57, 0, -.82) -- 35
+        # degrees apart, outside a 55 degree lens, so the band sat off
+        # screen entirely. 20 about x then 15 about z brings the
+        # normal to about (-.24, .91, .34), which is 8 degrees off
+        # centre: the band crosses the shot, diagonally, behind uranus
+        skq : quatf [ vec4f [ 1.0, 0.0, 0.0, radians[ 20.0 ] ] ]
+        skr : quatf [ vec4f [ 0.0, 0.0, 1.0, radians[ 15.0 ] ] ]
+        sks : quatf [
+            vec4f [ 0.0, 1.0, 0.0, radians[ ux.time * 900.0 ] ] ]
+        skm : mat4f.identity[]
+        skm = skm.rotate[ skq ]
+        skm = skm.rotate[ skr ]
+        skm = skm.rotate[ sks ]
+        skm = skm.scale [ vec3f [ 30.0, 30.0, 30.0 ] ]
+        sky.model = skm
+        sky.view  = _view
+        sky.proj  = _proj
+        sky.gain  = 0.45
+        sky.time  = ux.time * 60000.0
+
+    # pale cyan light: the editor's purples go to methane blue-green
+    public func theme [ ] -> map string [string]
+        return map string [string] [
+            '#140a2acc':  '#08161acc',   # editor pane background
+            '#140a2a80':  '#0a1a1e88',   # console pane background
+            '#14121c80':  '#0a1a1e80',   # instance panel background
+            '#ff6a2e55':  '#7fd6cc55',   # search highlight fill
+            '#220022aa':  '#0a1a1caa',   # run console base fill
+            '#22002280':  '#0a1a1c80',   # commit tab fill, half alpha
+            '#614':       '#2a4a4a',     # TButtons / nav rest fill
+            '#413':       '#22403f',     # TButtons hover fill
+            '#826':       '#3f6f6a',     # TButtons lit / nav selected
+            '#625a':      '#28484a',     # bottom status bar fill
+            '#8af2':      '#8ad0d2',     # status bar inner glow
+            '#425':       '#5c7250',     # editor selection color
+            '#ede3':      '#000f',       # editor selection border
+            '#44225588':  '#8ad0cc11',   # editor line highlight
+            '#ff3a6a22':  '#7fd6cc22',   # commit tab fill
+            '#ff3a6a44':  '#7fd6cc44',   # commit tab hover fill
+            '#3a1c8a40':  '#528a8440',   # selected title tint
+            '#ff5a8a80':  '#7fd6cc80',   # commit tab border
+            '#ff7aa480':  '#a8ece480'    # commit tab hover border
+        ]
+
+# the pictures for orbiter's scene picker; last, after the bakes
+export func uranus_thumbs []
+    names : vec string [] [ 'Uranus' ]
+    dir   : path '../{share_name}/thumbs'
+    scene_thumbs_for[ names, dir ]

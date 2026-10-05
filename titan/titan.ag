@@ -1,36 +1,27 @@
-extend scenes
+# titan: a planet module over the scenes utilities
+export 0.1.0
+export scenes ['Titan']
+export dependencies ['orbiter']
+import vec
+import img
+import gltf
+import trinity
+import tls
+import scenes
 
-# saturn: Solar System Scope's map (CC BY 4.0); their "8k" download is
-# 4096x2048
-export func bake_saturn []
-    root : path.path_startup[]
-    out  : path '{root}/scenes/textures/saturn-color.png'
-    force : getenv[ 'SILVER_EXPORT_FORCE' ]
-    if [ !force && out.exists[] ]
-        log 'scenes: saturn map current'
-        return
-    dir : path.path_storage[ 'scenes' ]
-    src : path '{dir}/saturn-sss.jpg'
-    if [ !src.exists[] ]
-        n : i64 [
-            Http.download[
-                'https://www.solarsystemscope.com/textures/download/8k_saturn.jpg', src ] ]
-        log 'scenes: fetched the saturn map ({n} bytes)'
-    im : Image [ uri: src ]
-    if [ !im || im.width == 0 ]
-        log 'scenes: cannot read {src}'
-        return
-    sat : im.resize[ 4096, 2048 ]
-    sat.png[ out ]
-    log 'scenes: saturn map baked -> {out}'
+import <stdio.h>
+import <stdlib.h>
+import <unistd.h>
+    +_DEFAULT_SOURCE
+    +_XOPEN_SOURCE=500
 
 # titan: NASA/JPL-Caltech/SSI Cassini ISS mosaic PIA22770 "Titan Mosaic:
 # The Surface Under the Haze"
 # (https://www.jpl.nasa.gov/images/pia22770-titan-mosaic-the-surface-under-the-haze/),
 # 5760x2880, kept at its own size
 export func bake_titan []
-    root : path.path_startup[]
-    out  : path '{root}/scenes/textures/titan-color.png'
+    bd  : path '../{share_name}/baked'
+    out : path '../{share_name}/baked/titan-color.png'
     force : getenv[ 'SILVER_EXPORT_FORCE' ]
     if [ !force && out.exists[] ]
         log 'scenes: titan map current'
@@ -46,15 +37,9 @@ export func bake_titan []
     if [ !im || im.width == 0 ]
         log 'scenes: cannot read {src}'
         return
+    bd.make_dir[]
     im.png[ out ]
-    log 'scenes: titan map baked -> {out}'
-
-enum TitanSurface
-    color  : 0
-    height : 1
-    height2 : 2
-    nrm_a  : 3
-    nrm_b  : 4
+    log 'titan: map baked -> {out}'
 
 # Titan to spec: 1.45 bar N2, tholin haze — orange thickening at the
 # limb, detached bluish upper layer, seasonal north polar hood
@@ -134,163 +119,7 @@ ModelViewProject TitanShader
         fragColor      = vec4(col, a);
     }
 
-# the rings: a squashed sphere shaded radially from the strip
-# texture — model-space xz radius IS the ring coordinate
-ModelViewProject RingShader
-    mutable gain    : f32
-    mutable cam_pos : vec4f
-    # x = the strip's inner radius over its outer, so t maps radius.
-    # y = the planet's radius over that same outer, which is the
-    # cylinder its shadow casts. both were saturn's numbers inline
-    mutable rgeo    : vec4f
-
-    attrib color : LayoutBinding [ type:typeid[ TitanSurface ],
-                                   id:TitanSurface.color, count:1,
-                                   format: typeid[ rgba8 ] ]
-
-    attrib a_pos    : VertexInput [ type:typeid[ vec3f ] ]
-    attrib a_normal : VertexInput [ type:typeid[ vec3f ] ]
-    attrib a_uv     : VertexInput [ type:typeid[ vec2f ] ]
-
-    attrib v_mpos      : VertexOutput [ type:typeid[ vec3f ] ]
-    attrib v_world_pos : VertexOutput [ type:typeid[ vec4f ] ]
-
-    attrib fragColor : FragmentOutput[ type:typeid[ vec4f ] ]
-
-    func init[]
-        eye    : vec3f [0.0f, 0.0f, 2.5f]
-        target : vec3f [0.0f, 0.0f, 0.0f]
-        up     : vec3f [0.0f, -1.0f, 0.0f]
-        model   = mat4f.identity   []
-        proj    = mat4f.perspective[radians[60.0f], 1.0f, 0.01f, 100.0f]
-        view    = mat4f.look_at    [eye, target, up]
-
-    func vertex[] -> GLSL none {
-        v_mpos      = a_pos;
-        vec4 wpos   = ubo.model * vec4(a_pos, 1.0);
-        v_world_pos = wpos;
-        gl_Position = ubo.proj * ubo.view * wpos;
-    }
-
-    func fragment[] -> GLSL none {
-        // saturn: D-ring inner at 74500/140220 of the F-ring outer
-        float rad = length(v_mpos.xz);
-        float r0  = ubo.rgeo.x;
-        float t   = (rad - r0) / (1.0 - r0);
-        if (t < 0.0 || t > 1.0) { fragColor = vec4(0.0); return; }
-        vec4  band = texture(color, vec2(t, 0.5));
-        vec3  sun  = normalize(vec3(0.85, -0.10, 0.15));
-        // the ring plane normal in world; both faces take light
-        vec3  pn   = normalize((ubo.model * vec4(0.0, 1.0, 0.0, 0.0)).xyz);
-        float ndl  = abs(dot(pn, sun));
-        // saturn's shadow: anti-sun side, within the ball's cylinder
-        vec3  ctr  = (ubo.model * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
-        float rout = length((ubo.model * vec4(1.0, 0.0, 0.0, 0.0)).xyz);
-        vec3  p    = v_world_pos.xyz - ctr;
-        vec3  q    = p - sun * dot(p, sun);
-        float rp   = ubo.rgeo.y * rout;
-        float sh   = (dot(p, sun) < 0.0)
-                   ? mix(0.12, 1.0, smoothstep(rp * 0.96, rp * 1.04, length(q)))
-                   : 1.0;
-        vec3  col  = band.rgb * (0.03 + 0.97 * ndl) * sh * ubo.gain;
-        float a    = band.a * smoothstep(0.0, 0.012, t) * (1.0 - smoothstep(0.985, 1.0, t));
-        fragColor  = vec4(col, a);
-    }
-
-# saturn seen from titan: side-lit to the same half phase
-ModelViewProject SaturnShader
-    mutable gain    : f32
-    mutable cam_pos : vec4f
-
-    attrib color  : LayoutBinding [ type:typeid[ TitanSurface ],
-                                    id:TitanSurface.color,  count:1,
-                                    format: typeid[ rgba8 ] ]
-    # the ring strip: its alpha at the sun-crossing radius IS the shadow
-    attrib height : LayoutBinding [ type:typeid[ TitanSurface ],
-                                    id:TitanSurface.height, count:1,
-                                    format: typeid[ rgba8 ] ]
-
-    attrib a_pos    : VertexInput [ type:typeid[ vec3f ] ]
-    attrib a_normal : VertexInput [ type:typeid[ vec3f ] ]
-    attrib a_uv     : VertexInput [ type:typeid[ vec2f ] ]
-
-    attrib v_normal    : VertexOutput [ type:typeid[ vec3f ] ]
-    attrib v_uv        : VertexOutput [ type:typeid[ vec2f ] ]
-    attrib v_world_pos : VertexOutput [ type:typeid[ vec4f ] ]
-    attrib v_mpos      : VertexOutput [ type:typeid[ vec3f ] ]
-
-    attrib fragColor : FragmentOutput[ type:typeid[ vec4f ] ]
-
-    func init[]
-        eye    : vec3f [0.0f, 0.0f, 2.5f]
-        target : vec3f [0.0f, 0.0f, 0.0f]
-        up     : vec3f [0.0f, -1.0f, 0.0f]
-        model   = mat4f.identity   []
-        proj    = mat4f.perspective[radians[60.0f], 1.0f, 0.01f, 100.0f]
-        view    = mat4f.look_at    [eye, target, up]
-
-    func vertex[] -> GLSL none {
-        v_uv        = vec2(1.0 - a_uv.x, a_uv.y);
-        v_mpos      = a_pos;
-        mat3 nm     = transpose(inverse(mat3(ubo.model)));
-        v_normal    = normalize(nm * a_normal);
-        vec4 wpos   = ubo.model * vec4(a_pos, 1.0);
-        v_world_pos = wpos;
-        gl_Position = ubo.proj * ubo.view * wpos;
-    }
-
-    func fragment[] -> GLSL none {
-        vec3  n        = normalize(v_normal);
-        vec3  sun      = normalize(vec3(0.85, -0.10, 0.15));
-        vec3  view_dir = normalize(ubo.cam_pos.xyz - v_world_pos.xyz);
-        // ring shadow: trace this point toward the sun in MODEL space;
-        // where the ray crosses the equator inside the annulus, the
-        // ring strip's alpha at that radius blocks the light
-        vec3  sm  = normalize(transpose(mat3(ubo.model)) * sun);
-        float shad = 1.0;
-        if (abs(sm.y) > 1e-4) {{
-            float tr = -v_mpos.y / sm.y;
-            if (tr > 0.0) {{
-                vec3  q  = v_mpos + sm * tr;
-                float rr = length(q.xz) / 2.325;
-                float ur = (rr - 0.531) / 0.469;
-                if (ur > 0.0 && ur < 1.0) {{
-                    float ra = texture(height, vec2(ur, 0.5)).a;
-                    shad = 1.0 - ra * 0.85;
-                }}
-            }}
-        }}
-        // zonal winds: the equatorial jet plus alternating lobes —
-        // neighboring bands shear past each other like the real thing
-        float la = v_uv.y - 0.5;
-        float w  = 0.60 * exp(-la * la / 0.012)
-                 + 0.22 * cos(la * 43.98) * exp(-abs(la) * 1.8);
-        // flow ping-pong: two half-cycle phases crossfaded, so shear
-        // stays bounded and the bands slide forever without smearing
-        float t9 = ubo.time * 0.05;
-        float p0 = fract(t9);
-        float p1 = fract(t9 + 0.5);
-        float s0 = w * (p0 - 0.5) * 0.16;
-        float s1 = w * (p1 - 0.5) * 0.16;
-        float bl = abs(2.0 * p0 - 1.0);
-        // NO uniform spin here. any shift added at every latitude is
-        // common motion, and the eye reads the largest common motion
-        // as the whole planet turning -- it buries the shear
-        vec2  bu0 = vec2(v_uv.x + s0, v_uv.y);
-        vec2  bu1 = vec2(v_uv.x + s1, v_uv.y);
-        vec3  alb = mix(texture(color, bu0).rgb,
-                        texture(color, bu1).rgb, bl);
-        // wrapped like the moon, or opposite phases read as broken
-        float wr9      = clamp(dot(n, sun) * 0.5 + 0.5, 0.0, 1.0);
-        float ndl      = wr9 * wr9 * shad;
-        float mu       = clamp(dot(n, view_dir), 0.0, 1.0);
-        vec3  col      = alb * (0.08 + 0.92 * ndl) * ubo.gain;
-        // slight edge softening at this distance
-        float a        = smoothstep(0.0, 0.18, mu);
-        fragColor      = vec4(col, a);
-    }
-
-element Titan
+Backdrop Titan
     frost : true
     public func bg_color [ ] -> rgba
         return color
@@ -313,27 +142,26 @@ element Titan
 
     func build_models[]
         built     = true
-        gltf_path : path '../{share_name}/models/earth.gltf'
-        gltf      : GltfModel.open[ gltf_path ]
+        gltf      : build_globe[]
         titan     = TitanShader [ vk: vk ]
         t_samplers : map Image [string] [
-            'color': Image [ uri: path '../{share_name}/textures/titan-color.png', surface: TitanSurface.color ]
+            'color': Image [ uri: path '../{share_name}/baked/titan-color.png', surface: TitanSurface.color ]
         ]
         titan_model : Model [ vk: vk, w: ux, id: gltf, s: titan,
                               samplers: t_samplers,
                               straight_alpha: true ]
         saturn    = SaturnShader [ vk: vk ]
         s_samplers : map Image [string] [
-            'color': Image [ uri: path '../{share_name}/textures/saturn-color.png', surface: TitanSurface.color,
+            'color': Image [ uri: path '{scenes_share[]}/textures/saturn-color.png', surface: TitanSurface.color,
                 wrap_u: true ],
-            'height': Image [ uri: path '../{share_name}/textures/saturn-ring-alpha.png', surface: TitanSurface.height ]
+            'height': Image [ uri: path '{scenes_share[]}/textures/saturn-ring-alpha.png', surface: TitanSurface.height ]
         ]
         saturn_model : Model [ vk: vk, w: ux, id: gltf, s: saturn,
                                samplers: s_samplers,
                                straight_alpha: true ]
         rings     = RingShader [ vk: vk ]
         r_samplers : map Image [string] [
-            'color': Image [ uri: path '../{share_name}/textures/saturn-ring-alpha.png', surface: TitanSurface.color ]
+            'color': Image [ uri: path '{scenes_share[]}/textures/saturn-ring-alpha.png', surface: TitanSurface.color ]
         ]
         ring_model : Model [ vk: vk, w: ux, id: gltf, s: rings,
                              samplers: r_samplers,
@@ -410,13 +238,13 @@ element Titan
             (ux.height > 0) ? f32[ ux.width ] / f32[ ux.height ]
             : 1.7778 ]
         # pulled back: titan reads small with saturn owning the sky
-        e_t    : f32 [ (ux.orbit_mode == OrbitView.low)  ? 2.60 :
-                       (ux.orbit_mode == OrbitView.high) ? 3.40 : 4.60 ]
+        e_t    : f32 [ (vantage == OrbitView.low)  ? 2.60 :
+                       (vantage == OrbitView.high) ? 3.40 : 4.60 ]
         if [ e_cur == 0.0 ] e_cur = e_t
         e_cur = filter_n[ e_cur, e_t, 0.08, ux.frame_factor ]
 
-        p_t    : f32 [ (ux.angle_mode == ViewAngle.flat)   ? 0.0 :
-            (ux.angle_mode == ViewAngle.angled) ? 0.156 : 0.480 ]
+        p_t    : f32 [ (angle == ViewAngle.flat)   ? 0.0 :
+            (angle == ViewAngle.angled) ? 0.156 : 0.480 ]
         if [ p_cur == 0.0 && p_t != 0.0 && !p_set ] p_cur = p_t
         p_set  = true
         p_cur  = filter_n[ p_cur, p_t, 0.08, ux.frame_factor ]
@@ -485,3 +313,9 @@ element Titan
         # shader: D-ring inner 74500 over F-ring outer 140220, and
         # the ball's 60268 over that same outer
         rings.rgeo    = vec4f [ 0.531, 0.430, 0.0, 0.0 ]
+
+# the pictures for orbiter's scene picker; last, after the bakes
+export func titan_thumbs []
+    names : vec string [] [ 'Titan' ]
+    dir   : path '../{share_name}/thumbs'
+    scene_thumbs_for[ names, dir ]

@@ -639,14 +639,20 @@ element SidePanel
         t : Elements []
         orb : cast orbiter [ ux.app_object ]
         if [ orb && orb.side_tab == 'scenes' ]
-            # the controls row level with the editor's title, the
-            # cards under it
-            t['scene_bar'] = element [ area: Region { l0 t0 r0 h1.3 },
-                                       elements: orb.scene_els[] ]
+            # the cards, and under them the scene's own props
+            sp : string orb.scene_spec[]
+            ps : LaunchProps []
+            if [ sp.count > 0 ] Au.parse_agi[ null, sp.chars, ps ]
+            n : i32 [ (ps.props) ? ps.props.count : 0 ]
+            ph : f32 [ f32[ (n > 0) ? n : 1 ] * 24.0 ]
             grid : Elements []
-            grid['scene_grid'] = SceneGrid [ ]
+            grid['scene_grid'] = SceneGrid [
+                area: Region [ 'l0 t0 r0 b{ph}px' ] ]
+            grid['scene_props'] = LaunchPanel [ spec: sp, args: '',
+                inst: -1, live_vals: true, scene: true,
+                area: Region [ 'l0 b{ph}px r0 h{ph}px' ] ]
             t['scene_body'] = element [
-                area: Region { l0 t1.3 r0 b35px }, elements: grid ]
+                area: Region { l0 t0 r0 b35px }, elements: grid ]
         el
             t['instance_panel'] = InstancePanel [
                 area: Region { l0 t0 r0 b35px } ]
