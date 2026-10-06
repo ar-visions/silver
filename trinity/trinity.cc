@@ -623,6 +623,25 @@ static std::string shell_tool(const char* name) {
     return "";
 }
 
+// codex's own sandbox, tried once: `codex sandbox -- true`
+static bool codex_sandbox_works(const std::string& exe) {
+    static int known = -1;
+    if (known >= 0) return known == 1;
+    const char* argv[] = { exe.c_str(), "sandbox", "--", "true", nullptr };
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    posix_spawn_file_actions_addopen(&fa, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
+    posix_spawn_file_actions_addopen(&fa, STDOUT_FILENO, "/dev/null", O_WRONLY, 0);
+    posix_spawn_file_actions_addopen(&fa, STDERR_FILENO, "/dev/null", O_WRONLY, 0);
+    pid_t pid = 0;
+    int st = 1;
+    if (posix_spawn(&pid, exe.c_str(), &fa, nullptr, (char* const*)argv, environ) == 0)
+        waitpid(pid, &st, 0);
+    posix_spawn_file_actions_destroy(&fa);
+    known = (WIFEXITED(st) && WEXITSTATUS(st) == 0) ? 1 : 0;
+    return known == 1;
+}
+
 static void shell_stop(ShellRun& s) {
     if (s.in >= 0) close(s.in);
     if (s.pid > 0) {
@@ -713,13 +732,17 @@ HOST_API int agent_shell_start(const char* agent, const char* root,
         if (model && *model) args.insert(args.end(), { "--model", model });
         if (!g_shell_allow.empty()) args.insert(args.end(), { "--allowedTools", g_shell_allow });
     } else {
+        // its sandbox (bwrap) fails where user namespaces are denied
+        std::string mode = std::string("sandbox_mode=\"") +
+            (codex_sandbox_works(exe) ? "workspace-write" : "danger-full-access") + "\"";
         if (g_codex_thread.empty())
-            args.insert(args.end(), { "exec", "--json", "-s", "workspace-write", "-C", root });
+            args.insert(args.end(), { "exec", "--json", "-c", mode, "-C", root });
         else
-            args.insert(args.end(), { "exec", "resume", g_codex_thread, "--json" });
+            args.insert(args.end(), { "exec", "resume", g_codex_thread, "--json", "-c", mode });
         if (model && *model) args.insert(args.end(), { "-m", model });
         if (!image.empty()) args.insert(args.end(), { "-i", image });
-        args.push_back(text);
+        // -i takes several files: without -- the prompt is one of them
+        args.insert(args.end(), { "--", text });
     }
     std::vector<char*> argv;
     for (auto& s : args) argv.push_back(const_cast<char*>(s.c_str()));

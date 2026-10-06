@@ -1305,7 +1305,7 @@ expect func test_exr_file [] -> bool
 
 expect func test_jpeg [] -> bool
     root : path.path_startup[]
-    p : path '{root}/scenes/textures/mars-color-8192x4096.jpg'
+    p : path '{root}/mars/textures/mars-color-8192x4096.jpg'
     if [ !p.exists[] ] return false
     im : jpeg_decode[ p ]
     if [ !im ] return false

@@ -7,7 +7,7 @@ agents:
 	claude:
 		models: [ fable, opus ]
 	codex:
-		models: [ gpt-5-codex, gpt-5 ]
+		models: [ gpt-5.5 ]
 
 projects:
 	orbiter: Project

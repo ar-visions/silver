@@ -4298,8 +4298,11 @@ enode aether_e_fn_call(aether a, efunc fn, array args, bool is_super, bool is_po
                     conv = with_value(ld, enode(mod, a, autype, conv->autype, loaded, true));
                 }
                 arg_values[index] = _llvalue((enode)conv);
+                // a struct goes by pointer, as the callee's own type says
                 if (funcptr && arg_t)
-                    arg_types[index] = lltype(arg_t);
+                    arg_types[index] = (arg_mem && is_struct(arg_t) &&
+                        !arg_mem->is_inlay) ?
+                        LLVMPointerTypeInContext(a->module_ctx, 0) : lltype(arg_t);
             }
             i++;
             index++;
@@ -12270,6 +12273,14 @@ AU_EXPORT array codegen_generate_fn(codegen code, efunc f, array query) {
     return null;
 }
 
+// make a design-time resource from its design instance
+AU_EXPORT bool codegen_generate_res(codegen code, Au design, path file,
+        string prompt) {
+    aether a = au_active(code->mod);
+    fault("must subclass codegen to make design-time resources");
+    return false;
+}
+
 AU_EXPORT void aether_e_print_node(aether a, enode n) {
     if (a->no_build) return;
 
@@ -13114,6 +13125,13 @@ AU_EXPORT enode aether_e_direct_cast(aether a, enode input, etype target) {
     // numeric primitives convert; bitcast only fits same-layout types
     if (is_prim(canonical(input)) && is_prim(target))
         return e_convert_or_cast(a, canonical(target), input);
+    // a vector cast to a raw pointer hands its origin, not the object
+    Au_t iv = au_arg_type((Au)input->autype);
+    Au_t tv = au_arg_type((Au)target->autype);
+    if (iv && tv && au_is_vector(iv) && !tv->is_class &&
+            (tv->is_pointer || (tv->traits & AU_TRAIT_POINTER) ||
+             target->is_explicit_ref || target->autype->is_explicit_ref))
+        return e_convert_or_cast(a, target, input);
     LLVMValueRef val = _llvalue((enode)input);
     LLVMTypeRef target_ll = lltype(target);
     bool loaded9 = input->loaded;

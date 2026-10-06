@@ -1,3 +1,4 @@
+# earth module
 # earth and its moon: a planet module over the scenes utilities
 export 0.1.0
 export scenes ['Moon']
@@ -3060,25 +3061,25 @@ Backdrop Moon
     # regolith: the editor's purples go gray under a lunar sky
     public func theme [ ] -> map string [string]
         return map string [string] [
-            '#140a2acc':  '#1c1c20cc',
-            '#140a2a80':  '#1c1c2080',
-            '#14121c80':  '#1c1c2080',   # instance panel background
+            '#140a2acc':  '#0a090888',   # grounds: the moon's tinted black
+            '#140a2a80':  '#0a090880',
+            '#14121c80':  '#0a090880',   # instance panel background
             '#4258':      '#8a8a8a22',
             '#ff6a2e55':  '#9a9a9a55',
-            '#220022aa':  '#20202aaa',
-            '#22002280':  '#20202a80',   # commit tab fill, half alpha
+            '#220022aa':  '#0a0908aa',
+            '#22002280':  '#0a090880',   # commit tab fill, half alpha
             '#614':       '#3c3c42',
             '#413':       '#2e2e34',
             '#826':       '#565660',
             # the moon's dark grey-brown on the active title
             '#625a':      '#1e1a17cc',
             '#8af2':      '#8882',
-            '#425':       '#3a3a42',
-            '#ede3':      '#bbb3',       # editor selection border
-            '#44225588':  '#8a8a8a66',
+            '#425':       '#22364c',   # editor selection: earthy blue
+            '#ede3':      '#6f93b455',   # editor selection border
+            '#44225588':  '#22364c88',   # line highlight: earthy blue
             '#ff3a6a22':  '#8a8a8a22',   # commit tab fill
             '#ff3a6a44':  '#8a8a8a44',   # commit tab hover fill
-            '#3a1c8a40':  '#8a8a8a40',   # selected title tint
+            '#3a1c8a40':  '#16283c80',   # side panel and title tint
             '#1d0f3f':    '#2c3a4a',   # dock: the earth's blue, greyed
             '#ff5a8a80':  '#9a9a9a80',   # commit tab border
             '#ff7aa480':  '#b4b4b480'    # commit tab hover border

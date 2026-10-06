@@ -153,12 +153,14 @@ declare_class_4(silver, aether, emodule, etype)
 #define chatgpt_module_ silver
 #define chatgpt_schema(X, Y, ...) \
     M(X, Y, i, override, method,  generate_fn) \
+    M(X, Y, i, override, method,  generate_res) \
     M(X, Y, i, prop,     public,  string, model)
 declare_class_2(chatgpt, codegen)
 
 #define claude_module_ silver
 #define claude_schema(X, Y, ...) \
     M(X, Y, i, override, method,  generate_fn) \
+    M(X, Y, i, override, method,  generate_res) \
     M(X, Y, i, prop,     public,  string, model)
 declare_class_2(claude, codegen)
 

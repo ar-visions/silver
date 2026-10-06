@@ -51,6 +51,10 @@ a real two-step change (`f32[ i64[ x ] ]`) is fine.
 Before showing a diff, read every new line for a cast that does
 nothing and remove it. Repeat offense: thousands of lines were
 cleaned by hand.
+The same holds for a declared type: name it only when it changes
+something. `s: '{minutes}'`, never `s: string [ '{minutes}' ]`
+(an interpolation is already a string); the compiler rejects
+it ("type 'string' is redundant").
 
 ---
 
@@ -197,6 +201,46 @@ alone. The run's stream becomes these statuses:
   edge (`b-15%+174px`) is an edge. A CSS area transition mixes
   coordinate forms, so both ends of a moving area use the same
   form (`l50%-195px` to `l0%+80px`, never to `l80px`).
+
+---
+
+## Rule #11 — Codegen: writing a `using` function's body
+
+A `func ... using claude` (or chatgpt) is the author's signature
+and prompt; the agent writes only its body, in the gen/ file the
+request names. Author code stays in the module, agent code in
+gen/. The agent runs in the project folder the request names:
+read the module and its imports there, and use the project's own
+types and functions.
+
+The file, exactly:
+
+```
+extend <module>
+# hash: <the value the request gives>
+<the func line exactly as the request gives it>
+    <the body, indented with four spaces>
+```
+
+- Keep the hash and func lines as given: the compiler checks both.
+- Write the body only; edit no other file.
+- Never build, test or run silver: the build that asked waits
+  on the file, and a nested build deletes it.
+- A method body sees its instance's members by name (`seconds`).
+- A picture in the prompt is Image 1, Image 2: its path is in the
+  source line the request points at. Look at it.
+- All of Rules #3, #3b and #3c hold (comments, 72 columns, names,
+  no redundant cast or type).
+- Arguments are read-only: copy one to a local to change it.
+- `el` is else, `el [ c ]` else-if; `log '...'` prints; no hold or
+  drop calls.
+- Taken names: is, signed, parse, pre, post, ref, line, msg, send.
+- An interpolated string as a C argument (`unlink[ '{p}'.chars ]`)
+  fails: make a local string first.
+- Never test a cstr for truth (`if [ x.ident ]`): it crashes.
+
+A body that does not compile goes to the user, never back to the
+agent: the cause may be ours. Each such error becomes a rule here.
 
 ---
 
@@ -1892,6 +1936,19 @@ claude` with `{ prompt tokens, {images/x.png} }` under it. A
    (`export func`, `expect func Board.t`); `[]` for no args.
    The request names LANGUAGE.md, AGENTS.md and
    features/features.ag; `claude -p` gets `--add-dir <silver>`.
+8. DONE (Oct 6) design-time resources: `Image [ name: 'images/moon.png',
+   width: 256, height: 256 ] using chatgpt { prompt }` anywhere
+   an Image goes. The compiler builds a design instance of the
+   type (construct_with, live: imports are loaded) and hands it
+   to the codegen's generate_res; chatgpt and claude accept an
+   Image (instance check) and refuse anything else. Only an
+   import's types: a class of the module itself has no code yet.
+   The name has a folder (gen/'s folders are resource folders).
+   The png is checked for size, stamped in gen/<folder>/.<file>.hash (a dot name stays out
+   of the share); the
+   build links it into share/<m>/<name> and the brackets become
+   [ '<name>' ]. A number token's literal is a shape: one
+   dimension is turned into an i64 before the property store.
 7. DONE the expect runner now runs tests declared inside a
    class, on a new default instance, named Class.test, in
    source order (they were compiled and silently skipped).
@@ -4764,6 +4821,17 @@ shaded map is checked from the normal png (scratch python).
    from the moved map is identical (mean 56,47,34). The same
    source-tree write remains in scenes.ag: gaia, saturn, jupiter
    (scenes/textures/, gitignored): OPEN, Kalen's call.
+26. DONE (Kalen: "you can cleanup those") the history rewritten
+   with git filter-repo after his commit 165d95d left the tree
+   clean: every binary blob in history that is not a current file
+   (44 blobs, 65 MB: old orbiter32.bin, earth.bin/.blend, the
+   pluto tiles, flower blends, sonic2.bin, default.profraw,
+   landscape.png, exr/ppm captures), then the pluto-tiles folder
+   whole. Source history untouched (old silver.c etc. kept).
+   .git 385 MB -> 75 MB, 1157 commits, stash kept, origin kept.
+   Every hash changed: origin needs Kalen's force push, other
+   clones re-clone. Full backup of the old .git (with reflogs):
+   /src/silver-before-cleanup.git.
 
 ## Active work: eden scene (Oct 2 2026)
 
@@ -4911,3 +4979,326 @@ moments later, then a final encode). The RTX 3060 on driver
    convert used BT.601 coefficients while the SPS says BT.709
    (matrix 1): hues shifted. Now BT.709 limited range.
 
+
+## Active work: quake2 port (Oct 5 2026)
+
+Kalen: id's Quake 2 (GPL, /src/Quake-2 is the reference clone)
+ported to silver in its own repo /src/quake2 (module folder
+/src/quake2/quake2, origin ar-visions/quake2; no commit yet:
+Kalen's). Trinity does ALL 3D and UX, called directly from the
+app: no renderer module, no ref_soft / ref_gl / 3dfx / PowerVR.
+Assets from Steam: /home/kalen/.steam/debian-installation/
+steamapps/common/Quake 2/baseq2 (never in a repo). Later: AI.
+Build: `cd /src/quake2 && silver --build quake2`; headless run
+as any trinity app (install/build/quake2 --hidden true).
+1. DONE inventory: /src/quake2/INVENTORY.md (97k lines to port,
+   56k dropped, formats, assets, trinity owners).
+2. DONE Pak.ag (pak0-9 + loose files), Bsp.ag (IBSP 38:
+   entities, verts, edges, texinfo, faces, lighting, model 0;
+   wal textures through the colormap palette into one 2048-wide
+   atlas; lightmaps into a 1024x2048 atlas; one mesh, uv tiled
+   in the shader by the wal's atlas rect), quake2.ag (BspLit
+   shader, MapView: WASD + drag look, start at the first
+   info_player_start). base1 draws: 19,887 triangles, textures
+   and lightmaps right (shot checked). Sky and nodraw faces
+   skipped, no PVS, no culling, no sky box yet.
+   silver found on the way: `cast cstr [ v ]` on a vec or a
+   `new` buffer handed the OBJECT pointer (fixed in
+   e_direct_cast, features t_cast_cstr_vec, 232/232); a render
+   target in element_targets needs `owner = a` or the window
+   takes it as its backdrop and faults in ReduceBlur.last;
+   sibling files are `extend quake2`, imported after the C
+   headers; a shader's sampler names must be members of its
+   LayoutBinding enum (BspSurface).
+3. DONE PVS culling: planes, nodes, leafs, leaf faces and the
+   vis lump are read; each frame the eye's leaf gives its cluster,
+   the cluster's row is expanded, and the faces of its visible
+   leaves are copied into a live index list (Gpu.upload_index,
+   new in trinity vk.ag: replaces the first n indices and draws n).
+   base1 start: 1,826 of 19,887 triangles; outside the world
+   (cluster -1) everything draws. No frustum test yet.
+4. DONE the sky: sky faces are their own mesh and shader (BspSky):
+   the view direction per fragment, turned back to quake axes,
+   picks the face and s,t exactly as gl_warp's vec_to_st and
+   MakeSkyVec do, from a 6-wide strip of the env/<sky>*.tga faces
+   (TGA 24/32-bit, plain and run length, rows bottom up as
+   LoadTGA). Checked by eye against the strip (python reference
+   skyref.png): Outer Base sky upright, sun and horizon right.
+   `--spawn "x y z yaw pitch"` (quake axes) places the camera.
+   OPEN: skyrotate/skyaxis, faint seams at cube edges (the GL
+   original had them too).
+5. DONE collision: cmodel.c's CM_BoxTrace ported (brushes, brush
+   sides, leaf brushes, leaf contents; clip_brush, trace_leaf,
+   hull_check, Trace class; the start==end position test is not
+   ported) and pmove's PM_StepSlideMove_ with PM_ClipVelocity
+   (slide_move, 4 bumps, 5 planes, crease, stop against the first
+   push). The camera is the player box (-16 -16 -24 .. 16 16 32),
+   mask solid|window|playerclip|monster, no gravity yet, eye 22
+   up. Checked headless at the start: forward stops after 624
+   units, a strafe after 304, backing up after 888, all inside.
+6. DONE pmove's walking path: PM_CatagorizePosition, PM_CheckJump,
+   PM_Friction, PM_Accelerate, PM_AirMove, PM_StepSlideMove (and
+   CM_BoxTrace's position test: box leaf walk + CM_TestBoxInBrush)
+   as categorize, check_jump, friction, accelerate, air_move,
+   step_slide_move. Gravity 800, run 400 capped at 300, jump 270,
+   step 18, friction 6 / stop 100. Space jumps. Checked headless:
+   on the start lift the walk reaches 300 units/s in 9 frames and
+   stops at the closed doors (x -1704); a jump climbs 120 -> 159+
+   and falls back.
+   Found on the way: the start stands on inline model *31 (a
+   func_door lift), so the trace clips every inline model at its
+   map place (headnode per dmodel, box reject) and the mesh draws
+   their faces (always, unculled, until they move). A trigger_once
+   brush is SOLID in the bsp; the engine skips it because the
+   entity is not solid, so model_entities reads each model's
+   classname and trigger_* / func_areaportal are neither clipped
+   nor drawn.
+7. OPEN the repo: committed locally (LICENSE = id's GPL v2 text,
+   README, INVENTORY); github.com/ar-visions/quake2 does not exist
+   yet and there is no token or gh here: Kalen creates it, then
+   `git push -u origin master` (origin is the ssh url).
+8. DONE the game folder begins (Oct 5 evening): Game.ag (edict
+   as class Edict with entity_state folded in, MoveInfo, Level,
+   SpawnTemp; COM_Parse, ED_ParseField's table, ED_ParseEdict,
+   SpawnEntities with skill inhibit, G_FindTeams, ED_CallSpawn;
+   G_Spawn/G_FreeEdict/G_Find/G_PickTarget/G_UseTargets/
+   G_SetMovedir/G_TouchTriggers; gi.setmodel; the triggers
+   (InitTrigger, multi, once, relay), func_areaportal; G_RunFrame,
+   G_RunEntity, SV_RunThink, SV_Physics_Pusher with SV_Push,
+   SV_Physics_None/Noclip, SV_TestEntityPosition), Func.ag (Move_*,
+   AngleMove_*, plat_CalcAcceleratedMove, plat_Accelerate,
+   Think_AccelMove, every door function, SP_func_door,
+   SP_func_door_rotating), World.ag (SV_LinkEdict, SV_AreaEdicts as
+   a scan of the edict list instead of the area node tree, SV_Trace
+   with SV_ClipMoveToEntities and SV_HullForEntity, SV_PointContents),
+   Bsp.ag (CM_InitBoxHull/CM_HeadnodeForBox, CM_TransformedBoxTrace,
+   CM_PointContents, a per-model mesh: each solid inline model its
+   own node). An edict's think/touch/use/blocked are an enum Fn
+   dispatched by Game.call_*; strings are the keys. The player is
+   edict 1 (client, health 100); pmove traces through World.trace
+   with the player passed; after the move it is linked and touches
+   triggers; the game runs at 10 Hz from the frame's dt. Each inline
+   model draws as its own Model with its own BspLit instance whose
+   `model` matrix follows the entity (trinity's node_model refresh
+   did not take; not chased). Unported classes: brush ones stand as
+   solid walls (angles cleared), point ones are inert, items,
+   monsters and lights free as the original does for lights.
+   Checked headless on base1: 356 edicts, 28 inhibited, 1 team; the
+   two doors in front of the start open on frame one (their trigger
+   field reaches the start's box by one unit, as in the original),
+   stay open while the player stands in the field (re-touched each
+   second), close 3 s after the player leaves, and reopen when the
+   player steps back in; spawned behind the field (--spawn "-1790
+   1536 128 0 0") the closed panels fill the view and the lift under
+   the start draws (checked with a sky-shader marker on the inline
+   models, then with the real textures). Pushers move the player
+   (SV_Push) but no door has pushed one yet in a test.
+   Headless shots: the screen copy a `shot` reads only refreshes
+   after an input event; a one pixel drag before each shot shows the
+   current frame. A socket key release can be lost: send it twice.
+9. DONE (Oct 5 night) func_plat, func_button, func_train and
+   path_corner (Func.ag, Game.ag): every plat/button/train function
+   of g_func.c, path_corner's spawn and touch (the monsterinfo part
+   waits for the monster port), Edict gains event, die, movetarget,
+   goalentity, ideal_yaw; call_die dispatch. The player's move now
+   reports the entities it ran into (pm.touchents: MapView.touched,
+   touch_ents after each step, as ClientThink's loop), so a touch
+   button fires. The "light" key is ignored as F_IGNORE.
+   Checked headless: base2's button *41 (81 units east of the start)
+   fires on contact at game 1.9 s, reaches its 5 unit travel at 2.2
+   (t7 used), returns at 5.4, fires again while leaned on; base2's
+   plat *50 (dmg 10, a crusher under a ceiling at z 160) lifts the
+   standing player 150 units, is blocked by the ceiling, reverses
+   and repeats, as the original minus the damage; jail1's trains
+   run corner to corner from their first frame, each origin equal
+   to corner minus mins (89 1 -3 for *49 at t73).
+   Test harness notes: `--spawn` takes the EYE (origin + 22), keys
+   reach the view only after the map's "drawn" log line, and the
+   app relaunch rebuilds when trinity's product is newer than its
+   own; that rebuild crashed (silver exit 133) three times while
+   Kalen's orbiter session was also building: run `silver --build
+   quake2` by hand first.
+10. DONE (Oct 5 night) the rest of g_func.c (door_killed,
+   func_rotating, func_water, trigger_elevator, func_timer,
+   func_conveyor, func_door_secret, func_killbox; Func.ag), g_misc's
+   brush classes (func_wall, func_object, func_explosive; Misc.ag),
+   the rest of g_trigger.c (key, counter, always, push, hurt, gravity,
+   monsterjump; Trigger.ag) and all of g_target.c (temp_entity,
+   speaker, help, secret, goal, explosion, changelevel, splash,
+   spawner, blaster, crosslevel trigger and target, laser, lightramp,
+   earthquake; Target.ag). Game: frand/crandom, coop, serverflags,
+   helpmessages, lightstyles (set_lightstyle keeps the letter per
+   style), Level's secrets/goals/intermissiontime/changemap, Edict's
+   item/skinnum/renderfx/last_move_time/fly_sound_debounce_time;
+   call_die carries inflictor and attacker. The player step reads
+   pl.velocity back before pmove (a trigger_push or earthquake sets
+   it) and gravity is 800 x pl.gravity (trigger_gravity).
+   Stand-ins, each a one-line comment at the call: T_Damage,
+   T_RadiusDamage, KillBox, BecomeExplosion1, ThrowDebris (combat and
+   gibs), fire_blaster (weapons), temp entities and configstrings
+   (effects), soundindex/positioned_sound (sound; indices 1-3 as the
+   doors use), the inventory (has_item is false until items;
+   trigger_key prints "You need the <classname>"), BeginIntermission
+   (changelevel sets level.changemap and logs it), oldvelocity (the
+   client), monsterinfo (monsters). MOVETYPE_TOSS still only thinks:
+   a released func_object does not fall until SV_Physics_Toss.
+   Checked headless: base1's START_ON timers fire their targets at
+   their random intervals, trigger_always fires, the rotator *29
+   (flat1_2 all over, so its turning cannot show) advances 300
+   degrees a second and draws filling its shaft; fact2's fans sit
+   behind a translucent grille we draw opaque (warp/trans OPEN); no
+   dispatch misses on base1, fact2 or jail1. 359 edicts on base1.
+11. DONE (Oct 5 night) the rest of the game folder, on function
+   pointers (Kalen: "silver has function pointers"; "too much code
+   for how simple this game is"): the enum Fn dispatch is gone. An
+   edict's think/touch/use/blocked/pain/die, an item's pickup/use/
+   drop/weaponthink and a monster frame's ai/think are
+   `lambda R [ A ]` slots set with `lambda f[]` and called as
+   `e.think[ e ]`; one module global `g : Game` (set in setup), so
+   every free function reaches the game through `g.`. Ported: g_phys
+   (fly_move, push_entity, physics_toss/step), g_misc's point
+   classes (gibs, debris, explosions, explobox, teleporter, viewthing,
+   banners, viper, strogg ship, satellite dish, func_clock,
+   target_character/string, point_combat; Misc.ag), g_items (Items.ag,
+   the table and every pickup), g_combat (Combat.ag), g_weapon +
+   p_weapon (Weapon.ag), p_client/p_view/p_hud/p_trail/g_cmds
+   (Client.ag), g_monster/g_ai/m_move/m_flash (Monster.ag). Sounds,
+   temp entities and muzzle flashes queue as GameEvent (no sink yet).
+   quake2.ag: the player goes through client_think (buttons, view
+   angles, the touches, the weapon); the left button fires, keys 1..0
+   pick weapons by the default binds; a text HUD (health, armor,
+   ammo, the center print); a level end reloads the next map.
+   Checked headless on base1: no crash over walks and fires; the
+   blaster fires from the player (temporary log, removed); an armor
+   shard picked up on contact shows Armor 2 on the HUD (shot). The
+   items by the start are skill-inhibited, not missing.
+   Fixed on the way: a pool-owned Trace stored into Game.touch_plane
+   and then nulled was freed under its caller (impact): touch_plane
+   is a persistent copy now, touch_plane_on says it is set.
+   Compiler, Kalen's design: `lambda f[]` on a plain function is ONE
+   static instance per function (Au lambda_static: a lambda object
+   in static memory, unmanaged, never counted or freed, left out of
+   the object census), over a thunk with an empty context
+   (plain_lambda_static, silver.c; one thunk per function per core).
+   A slot holds the same kind of object for a plain function and a
+   closure, so its users never know which; a store and a null store
+   cost nothing. A bare-pointer slot was built first and dropped:
+   it put closures out of signature slots. Found on the way: on an
+   Au_t, src/rtype/type are ONE union slot (never set rtype on a
+   variable); a struct arg through a funcptr call goes by pointer, as
+   the callee's own type says (aether e_fn_call). features 238/238;
+   img test_jpeg pointed at a file the planet split moved (fixed).
+   Headless: SHOT=<png> q2run.sh takes a shot at the end.
+12. DONE (Oct 6) the monsters, one file each (`extend
+   quake2`, imported after Monster in quake2.ag, spawned from
+   spawn_monster in Misc.ag). The frame tables come from a converter
+   (session scratchpad m2ag.py: m_X.c + m_X.h -> the MMove globals and
+   an `<x>_moves[]` builder; a run of equal frames is one
+   `mf[ v, n, ai, dist, think ]` call, Monster.ag; FRAME_ names
+   resolve to numbers from the .h, with the name in a comment); the
+   functions are ported by hand. One static instance per plain
+   function (`lambda f[]`) makes the slots cheap to set.
+   DONE: soldier (light, soldier, ss), infantry, gunner, berserk,
+   gladiator, flipper, flyer, hover, medic (cable revive), mutant,
+   parasite, tank + tank_commander, chick, brain, insane
+   (misc_insane), floater, supertank (+ boss_explode), actor
+   (misc_actor + target_actor), boss2. All build; base1's soldiers
+   see, chase, fire and kill the player at skill 1 (checked headless:
+   "player died", HUD Health 0, "fire to restart").
+   Then jorg (Jorg.ag), the makron (Makron.ag: torso, sight move,
+   makron_spawn/toss; Jorg_CheckAttack is Makron's line for line, so
+   jorg uses makron_checkattack), monster_boss3_stand (Boss3.ag) and
+   g_turret.c (Turret.ag: breach, base, driver).
+   Checked headless with temporary traces (removed), the player in
+   god mode: boss1's stand cycles frames 414..473 in 6 s; on boss2
+   (`--spawn "200 -960 174 0 0"`, inside jorg's closed chamber) jorg
+   takes pain, fires both chainguns on frames 8..13, dies, tosses
+   the makron 4.8 s later, who jumps at the player 0.8 s after; the
+   makron's bfg (frame 204), blaster sweep (17 shots, flashes
+   102..118, yaw 260 down to 180 then 110 up to 180, as the source)
+   and rail (frame 243, 0.9 s after the pick; pain can take the move
+   first, as in C) all fire; he dies in 95 frames and leaves the
+   torso 84 units along -y, looping frames 346..364. jail1's turret
+   (`--spawn "-2350 -192 150 180 0"`): muzzle 122 units out, turns 5
+   degrees a think, the driver rides his seat round, a rocket every
+   3 s (speed 600, damage 100..150).
+   NOT driven: use_boss3 (its trigger), jorg's bfg (a 1 in 4 pick,
+   not drawn in 5 attacks), turret_driver_die (the gun is always
+   between the player and the driver), strike's turret.
+13. DONE (Oct 6) MD2 models drawn (Md2.ag). Md2Set loads a model
+   the first time its index is asked for (IDP2 version 8; every
+   skin's PCX through the colormap palette into one 2048 x 2048
+   atlas, two pixels apart; a skin placed after the texture exists
+   goes up with Texture.upload_region). Each frame draw_entities
+   (quake2.ag) refills ONE mesh of 98,304 vertices on the cpu, as
+   GL_DrawAliasFrameLerp did: every edict with an md2 model, in a
+   cluster the eye sees (its box corners), lerped from a snapshot
+   taken before each 10 Hz game frame (origin, angles, frame; no
+   lerp on a new model or a 512 unit jump, as CL_DeltaEntity),
+   EF_ROTATE items turning, modelindex2 on the same frame (jorg's
+   walker), then the view weapon at the eye (ps.gunindex, gunframe,
+   gunangles, gunoffset; depth squeezed to three tenths as
+   RF_DEPTHHACK). Light: Bsp.light_point is R_LightPoint (the
+   lightmap texel under the origin; node faces and each face's
+   lightmap block are kept now), times the shade dot of each
+   vertex normal. The 16 x 256 anormtab.h table is not carried: it
+   is 1 + dot (0.3 x dot when negative) of the 162 anorms.h normals
+   with the light (cos, sin, 1) normalized, yaw quantized to 16
+   (checked: within 0.005 of every table entry). Shader Md2Lit:
+   texel x 2 (gl's intensity) and the colour, each clamped to 1.
+   Game: the model table starts with '*1'..'*N', so an inline
+   model keeps its own number and md2 indices come after; setmodel
+   now sets modelindex for md2 names (items had 0: never drawn).
+   Checked headless, by shots: a soldier with his skin, aiming;
+   the dead body; two armor shards; jorg with the rider on him;
+   the blaster in hand, staying in place with the view pitched;
+   60 frames a second. light_point equals a Python copy of
+   RecursiveLightPoint at six base1 points, to the last digit. With
+   the preload off every skin arrived by the late upload and drew
+   right.
+   NOT done: sprites (.sp2: the bfg ball, explosions' flashes),
+   RF_TRANSLUCENT, the colour shells, RF_BEAM lasers, dynamic
+   lights and light styles on models, a left-handed gun; brush
+   models are still unlit by entity light.
+   A method parameter named `a` is the object itself: `b - a`
+   failed as pointer arithmetic (lerp_angle).
+14. DONE (Oct 6) the sounds (Sound.ag, SoundSet over spectra's
+   AudioMixer at 44100; quake2 imports spectra). A clip loads the
+   first time its index is asked for: RIFF from the paks, 8 or 16
+   bit (pak0: 495 at 16 bit, 5 at 8, all mono 22050 Hz).
+   S_StartSound's rules: a sound on the same entity and channel
+   stops the old one; with every voice busy the one nearest its
+   end goes (never the player's for a monster's); a sound with no
+   volume gives its voice back; a delayed start waits on the clock.
+   Falloff as S_SpatializeOrigin: full within 80 units, then
+   attenuation x 0.0005 a unit (0.001 for ATTN_STATIC), times
+   s_volume 0.7; the player's own sounds are full. Looping entity
+   sounds (edict.sound) as S_AddLoopSounds: one voice a sound,
+   every entity's share added, 0.003 a unit, six at most.
+   The game's events are read once a frame (MapView calls
+   snd.frame after the game frames; run_frame no longer clears
+   them): gi.sound at the entity's origin when it was made (a
+   brush model's box middle, as SV_StartSound), the weapon sounds
+   of CL_ParseMuzzleFlash and CL_ParseMuzzleFlash2 (flash numbers
+   to names, by range), the impact and explosion sounds of
+   CL_ParseTEnt.
+   Checked headless on a null ALSA device (ALSA_CONFIG_PATH to a
+   file with `pcm.!default { type null }`: silent, nothing reaches
+   the speakers), by a temporary trace (removed): base1's hums
+   loop, soldiers' sight, pain, attack and death sounds start at
+   0.25..0.35 by distance, the player's blaster at 0.7, the bolt's
+   fly loop, flybys at full; a wav's rate and length equal a
+   Python read of the pak. With no device the game runs silent.
+   NOT heard by anyone yet. NOT done: left and right (spectra's
+   Voice has one gain, so each sound is the mean of the two ears:
+   half level when spatialized; a pan on Voice is Kalen's call, it
+   changes spectra's class), cue-point loops, the mission pack's
+   flashes, footsteps (an entity event), s_volume as a setting.
+15. NEXT: the sights of the same events (cl_tent.c, cl_fx.c:
+   particles, explosions, sprites, dynamic lights, beams), the
+   dead camera (client ps viewangles, kick angles and viewoffset
+   into MapView's eye), death in single player (g.restart reloads
+   the map: wired, not tested), the player's water level in
+   categorize, areaportals in the PVS, frustum culling, warp and
+   translucent surfaces, skyrotate, the HUD's pickup string and
+   icons, saving the game.

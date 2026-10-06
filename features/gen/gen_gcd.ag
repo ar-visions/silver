@@ -1,0 +1,14 @@
+extend features
+# hash: 661aba703f9941a4
+func gen_gcd [ a: i64, b: i64 ] -> i64
+    x : i64 [ a ]
+    y : i64 [ b ]
+    if [ x < 0 ]
+        x = -x
+    if [ y < 0 ]
+        y = -y
+    while [ y != 0 ]
+        r : i64 [ x % y ]
+        x = y
+        y = r
+    return x

@@ -1540,6 +1540,45 @@ AU_EXPORT none lambda_dealloc(lambda a) {
     a->context = null;
 }
 
+// lambda f[] on a plain function: the one instance for fn, in static
+// memory; unmanaged (refs never counted), so no store or drop frees it
+static int             total_objects;
+static pthread_mutex_t lambda_static_lock = PTHREAD_MUTEX_INITIALIZER;
+static lambda*         lambda_statics;
+static callback*       lambda_static_fns;
+static i32             lambda_static_n, lambda_static_size;
+AU_EXPORT lambda lambda_static(Au_t au, callback fn) {
+    pthread_mutex_lock(&lambda_static_lock);
+    for (i32 i = 0; i < lambda_static_n; i++)
+        if (lambda_static_fns[i] == fn) {
+            lambda r = lambda_statics[i];
+            pthread_mutex_unlock(&lambda_static_lock);
+            return r;
+        }
+    if (lambda_static_n == lambda_static_size) {
+        lambda_static_size = lambda_static_size ? lambda_static_size * 2 : 64;
+        lambda_statics    = realloc(lambda_statics,
+            sizeof(lambda) * lambda_static_size);
+        lambda_static_fns = realloc(lambda_static_fns,
+            sizeof(callback) * lambda_static_size);
+    }
+    lambda a = (lambda)alloc_new_np(typeid(lambda), 0, null, null, null,
+        __FILE__, __LINE__, 0);
+    a->au_t = au;
+    a->vfn  = fn;
+    header(a)->managed = 0;
+    // static memory: not a live object for the census
+    #ifndef NDEBUG
+    __atomic_fetch_sub(&typeid(lambda)->global_count, 1, __ATOMIC_RELAXED);
+    __atomic_fetch_sub(&total_objects, 1, __ATOMIC_RELAXED);
+    #endif
+    lambda_statics[lambda_static_n]    = a;
+    lambda_static_fns[lambda_static_n] = fn;
+    lambda_static_n++;
+    pthread_mutex_unlock(&lambda_static_lock);
+    return a;
+}
+
 AU_EXPORT lambda lambda_instance(Au_t au, callback fn, Au target, Au context) {
     lambda a = (lambda)alloc_new(typeid(lambda), 0, null, null, null, __FILE__, __LINE__, 0);
     a->au_t    = au;
@@ -5500,6 +5539,10 @@ Au formatter(Au_t type, bool print_info, handle ff, Au opt, int seq, symbol temp
     return r;
 }
 
+// a progress line the terminal shows: cleared before a print
+AU_EXPORT void (*au_print_prelude)(void) = NULL;
+AU_EXPORT void (*au_print_after)(void)   = NULL;
+
 AU_EXPORT Au vformatter(Au_t type, bool print_info, handle ff, Au opt, int seq, symbol template, va_list args) {
     FILE* f = (FILE*)ff;
     string  res  = new(string, alloc, 1024);
@@ -5623,6 +5666,7 @@ AU_EXPORT Au vformatter(Au_t type, bool print_info, handle ff, Au opt, int seq, 
                 listen = true;
         }
         if (!listen && !contains(log_funcs, (Au)asterick)) return null;
+        if (au_print_prelude) au_print_prelude();
         // write type / function
         if (tname)
             sprintf(info, "\x1b[34m%s::%s [%i]\x1b[21G \x1b[0m", tname->chars, fname->chars, seq);
@@ -5635,6 +5679,8 @@ AU_EXPORT Au vformatter(Au_t type, bool print_info, handle ff, Au opt, int seq, 
         write_ln = true;
     }
 
+    bool term = f == stdout || f == stderr;
+    if (term && !symbolic_logging && au_print_prelude) au_print_prelude();
     if (f == stderr)
         fwrite("\033[1;33m", 7, 1, f);
 
@@ -5662,6 +5708,10 @@ AU_EXPORT Au vformatter(Au_t type, bool print_info, handle ff, Au opt, int seq, 
     if (f == stderr) {
         fwrite("\033[0m", 4, 1, f); // ANSI reset
         fflush(f);
+    }
+    if (term && au_print_after) {
+        fflush(f);
+        au_print_after();
     }
 
     if (type && (type->traits & AU_TRAIT_ENUM)) {

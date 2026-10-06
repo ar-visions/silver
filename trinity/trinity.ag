@@ -4291,6 +4291,14 @@ Display Window
         if [ ev.key.state && (ev.key.ctrl || ev.key.meta)
              && (ev.key.unicode == 263 || ev.key.unicode == 262) ]
             if [ navigate[ (ev.key.unicode == 263) ? -1 : 1 ] ] return
+        # ctrl/cmd+c with text selected in the agent box copies it
+        if [ ev.key.state && (ev.key.ctrl || ev.key.meta)
+             && ev.key.unicode == 67 && shot_ask
+             && (!focus || focus.sel_col == focus.anchor_col) ]
+            sel : string note_selection[]
+            if [ sel.count > 0 ]
+                set_clipboard[ sel ]
+                return
         ev.target = focus
         if [ focus && focus.on_key*[ ev ] ] return
         # esc while dictating CANCELS the take — nothing submits
@@ -4858,6 +4866,43 @@ Display Window
     mutable mic_dn              : Denoise
     # ctrl or cmd held, as shift is
     mutable cmd                 : bool
+    # the agent box's lines as drawn, for the selection and copy
+    mutable note_rows           : vec NoteRow
+    # the selection: anchor and caret as row and column
+    mutable note_a_row          : i32 [ -1 ]
+    mutable note_a_col          : i32
+    mutable note_b_row          : i32 [ -1 ]
+    mutable note_b_col          : i32
+    # a press and a drag waiting for the draw to place them
+    mutable note_hit            : i32
+    mutable note_hit_x          : f32
+    mutable note_hit_y          : f32
+    mutable note_drag           : bool
+    mutable note_press          : bool
+    mutable note_press_x        : f32
+    mutable note_press_y        : f32
+
+    # the selected text, wrapped rows joined by a space
+    public func note_selection [] -> string
+        if [ !note_rows || note_a_row < 0 || note_b_row < 0 ] return ''
+        r0 : i32 [ note_a_row ]
+        c0 : i32 [ note_a_col ]
+        r1 : i32 [ note_b_row ]
+        c1 : i32 [ note_b_col ]
+        if [ r1 < r0 || (r1 == r0 && c1 < c0) ]
+            r0 = note_b_row
+            c0 = note_b_col
+            r1 = note_a_row
+            c1 = note_a_col
+        if [ r0 == r1 && c0 == c1 ] return ''
+        out : string ''
+        for [ r: i32 r0, r <= r1 && r < note_rows.count, r += 1 ]
+            nr : NoteRow note_rows[ r ]
+            from : i32 [ (r == r0) ? c0 : 0 ]
+            to   : i32 [ (r == r1) ? c1 : nr.text.count ]
+            if [ r > r0 ] out = out + ((nr.soft) ? ' ' : '\n')
+            out = out + nr.text.mid[ from, to - from ]
+        return out
 
 
     func on_compose []
@@ -8443,6 +8488,76 @@ func ux_area [ s: string, u: f32 ] -> Region
         out = (out.count > 0) ? '{out} {q}' : q
     return Region [ out ]
 
+# a line the agent box drew: its text as shown
+class NoteRow
+    public text : string
+    # it continues the row before it (a wrap, not a new line)
+    public soft : bool
+
+# the line as shown: the ** marks draw as nothing
+func note_plain [ ln: string ] -> string
+    out  : string ''
+    rest : string ln
+    ix   : i32 [ rest.index_of[ '**' ] ]
+    while [ ix >= 0 ]
+        out  = out + rest.mid[ 0, ix ]
+        rest = rest.mid[ ix + 2, rest.count - ix - 2 ]
+        ix   = rest.index_of[ '**' ]
+    return out + rest
+
+# the column under x in a row's text
+func note_col [ cv: Canvas, t: string, x: f32 ] -> i32
+    prev : f32 [ 0.0 ]
+    for [ i: i32 0, i < t.count, i += 1 ]
+        cw : f32 [ cv.measure_text[ t.mid[ 0, i + 1 ] ].w ]
+        if [ x < (prev + cw) * 0.5 ] return i
+        prev = cw
+    return t.count
+
+# a row the box draws: placed for a pending press, lit when selected;
+# the highlight goes under the text, so this runs before it
+func note_row [ w: Window, cv: Canvas, t: string, soft: bool,
+                row: rect ]
+    r  : i32 [ i32[ w.note_rows.count ] ]
+    w.note_rows.push[ NoteRow [ text: t, soft: soft ] ]
+    # the press first: a drag in the same frame moves on from it
+    py : f32 [ w.note_press_y ]
+    # rows go down the box: the first whose bottom is past the
+    # point takes it, so a gap between entries goes to the next row
+    if [ w.note_press && py < row.y + row.h ]
+        w.note_a_row = r
+        w.note_a_col = note_col[ cv, t, w.note_press_x - row.x ]
+        w.note_b_row = r
+        w.note_b_col = w.note_a_col
+        w.note_press = false
+    hy : f32 [ w.note_hit_y ]
+    if [ w.note_hit > 0 && !w.note_press && hy < row.y + row.h ]
+        w.note_b_row = r
+        w.note_b_col = note_col[ cv, t, w.note_hit_x - row.x ]
+        w.note_hit   = 0
+    if [ w.note_a_row < 0 || w.note_b_row < 0 ] return
+    r0 : i32 [ w.note_a_row ]
+    c0 : i32 [ w.note_a_col ]
+    r1 : i32 [ w.note_b_row ]
+    c1 : i32 [ w.note_b_col ]
+    if [ r1 < r0 || (r1 == r0 && c1 < c0) ]
+        r0 = w.note_b_row
+        c0 = w.note_b_col
+        r1 = w.note_a_row
+        c1 = w.note_a_col
+    if [ r < r0 || r > r1 || (r0 == r1 && c0 == c1) ] return
+    from : i32 [ (r == r0) ? c0 : 0 ]
+    to   : i32 [ (r == r1) ? c1 : t.count ]
+    x0 : f32 [ (from > 0)
+        ? cv.measure_text[ t.mid[ 0, from ] ].w : 0.0 ]
+    x1 : f32 [ (to > 0) ? cv.measure_text[ t.mid[ 0, to ] ].w : 0.0 ]
+    # a whole row past its end: the newline shows as a little space
+    if [ r < r1 ] x1 += 6.0
+    if [ x1 <= x0 ] return
+    cv.fill_color[ rgba [ '#3d7fd666' ] ]
+    cv.rect_to[ row.x + x0, row.y + 1.0, x1 - x0, row.h - 2.0 ]
+    cv.paint[]
+
 # entries in a rounded box: each word-wrapped to the box's width, a
 # floating rule between them, the newest kept in view when they
 # overflow. shine_last lights the final line (the agent's, while it
@@ -8523,7 +8638,9 @@ func draw_marked [ cv: Canvas, ln: string, row: rect, base: rgba,
 # scroll is px up from the newest; returns the most it can be
 func draw_notes [ cv: Canvas, notes: vec ShotEntry, b: rect,
                   shine_last: bool, shine_time: f32, scroll: f32,
-                  u: f32 ] -> f32
+                  u: f32, w: Window ] -> f32
+    if [ !w.note_rows ] w.note_rows = vec NoteRow []
+    w.note_rows.clear[]
     if [ !notes || notes.count == 0 ] return 0.0
     pad  : f32 [ 12.0 * u ]
     lh   : f32 [ 23.0 * u ]
@@ -8599,6 +8716,7 @@ func draw_notes [ cv: Canvas, notes: vec ShotEntry, b: rect,
         for [ k: i32 0, k < ls.count, k += 1 ]
             ln  : string ls[ k ]
             row : rect [ x: b.x + pad, y: y, w: maxw, h: lh ]
+            note_row[ w, cv, note_plain[ ln ], k > 0, row ]
             if [ marking || ln.index_of[ '**' ] >= 0 ]
                 marking = draw_marked[ cv, ln, row, lc, lit, marking ]
             el [ shine_last && is_last && k == ls.count - 1 && !en.diff
@@ -8614,8 +8732,11 @@ func draw_notes [ cv: Canvas, notes: vec ShotEntry, b: rect,
         ds : vec string descriptions[ e ]
         if [ ds.count > 0 ]
             y += sp
-            cv.fill_color[ rgba [ '#ffffffbb' ] ]
             for [ detail: string ] in ds
+                note_row[ w, cv, detail, false,
+                          rect [ x: b.x + pad + ind, y: y,
+                                 w: maxw - ind, h: lh ] ]
+                cv.fill_color[ rgba [ '#ffffffbb' ] ]
                 cv.draw_text[ detail,
                               rect [ x: b.x + pad + ind, y: y,
                                      w: maxw - ind, h: lh ],
@@ -8635,6 +8756,9 @@ func draw_notes [ cv: Canvas, notes: vec ShotEntry, b: rect,
                     (lead == 43) ? rgba [ '#9be49b' ] : (lead == 45)
                     ? rgba [ '#ff9a9a' ] : (lead == 64)
                     ? rgba [ '#9ad8ff' ] : rgba [ '#ffffffaa' ] ]
+                note_row[ w, cv, dl, false,
+                          rect [ x: b.x + pad + ind, y: y,
+                                 w: maxw - ind, h: dlh ] ]
                 cv.fill_color[ dc ]
                 cv.draw_text[ dl,
                               rect [ x: b.x + pad + ind, y: y,
@@ -8646,6 +8770,20 @@ func draw_notes [ cv: Canvas, notes: vec ShotEntry, b: rect,
                 y += dlh
             cv.font_size[ 18 ]
         en.y1 = y
+    # a press below the last row is the end of it
+    if [ w.note_rows.count > 0 ]
+        last : i32 [ i32[ w.note_rows.count ] - 1 ]
+        end  : i32 [ w.note_rows[ last ].text.count ]
+        if [ w.note_press ]
+            w.note_a_row = last
+            w.note_a_col = end
+            w.note_b_row = last
+            w.note_b_col = end
+            w.note_press = false
+        if [ w.note_hit > 0 ]
+            w.note_b_row = last
+            w.note_b_col = end
+            w.note_hit   = 0
     cv.clear_crop[]
     return smax
 
@@ -8697,7 +8835,7 @@ Layer ShotUserLayer
         if [ n > 0 ]
             smax : f32 draw_notes[ cv, w.notes, rect [ x: bounds.x, y: fy, w: bounds.w, h: eh ],
                 w.agent_busy, f32[ epoch_millis[] % 100000 ] / 1000.0,
-                w.notes_scroll, u ]
+                w.notes_scroll, u, w ]
             w.notes_scroll = clamp[ w.notes_scroll, 0.0, smax ]
             # the rule above the editable line
             cv.fill_color[ rgba [ '#ffffff22' ] ]
@@ -8714,10 +8852,38 @@ Layer ShotUserLayer
 # bottom center until the first send, then the right side, large (the
 # placement is a Region: a CSS area with a % offset lands wrong)
 element ShotUser
-    # a click on a diff's label opens or closes its code
+    # a press starts a selection; the draw places it on a row
     func on_press [ ev: Event ]
         w : Window ux
-        if [ !w || !w.notes ] return
+        if [ !w || !w.notes || ev.mouse.button != 0 ] return
+        if [ !ev.key.shift || w.note_a_row < 0 ]
+            w.note_press   = true
+            w.note_press_x = ev.mouse.pos.x
+            w.note_press_y = ev.mouse.pos.y
+            w.note_hit     = 0
+        el
+            w.note_hit   = 1
+            w.note_hit_x = ev.mouse.pos.x
+            w.note_hit_y = ev.mouse.pos.y
+        w.note_drag  = true
+        pristine = false
+        w.will_animate = true
+
+    func on_move [ ev: Event ]
+        w : Window ux
+        if [ !w || !w.note_drag ] return
+        w.note_hit   = 1
+        w.note_hit_x = ev.mouse.pos.x
+        w.note_hit_y = ev.mouse.pos.y
+        pristine = false
+        w.will_animate = true
+
+    # a click that selected nothing opens or closes a diff's code
+    func on_release [ ev: Event ]
+        w : Window ux
+        if [ !w || !w.note_drag ] return
+        w.note_drag = false
+        if [ !w.note_press && w.note_selection[].count > 0 ] return
         my : f32 [ ev.mouse.pos.y ]
         for [ en: ShotEntry ] in w.notes
             if [ (en.diff || en.description) && my >= en.y0
@@ -8836,6 +9002,38 @@ element ShotAttach
             x += tw + 6.0
 
 TextInput ShotPrompt
+    func clip_key [ k: i32 ]
+        w : Window ux
+        if [ !w ] return
+        text : string [ (edit) ? edit : '' ]
+        if [ sel_col < 0 ] sel_col = text.count
+        sc : i32 [ min[ sel_col, anchor_col ] ]
+        ec : i32 [ max[ sel_col, anchor_col ] ]
+        if [ k == 65 ]
+            anchor_col = 0
+            sel_col    = text.count
+        el [ k == 67 || k == 88 ]
+            if [ ec > sc ] w.set_clipboard[ text.mid[ sc, ec - sc ] ]
+            if [ k == 88 && ec > sc ]
+                edit       = text.mid[ 0, sc ] + text.mid[ ec,
+                    text.count - ec ]
+                sel_col    = sc
+                anchor_col = sc
+        el
+            clip : string w.get_clipboard[]
+            # one line: a line break pastes as a space
+            put : string ''
+            for [ i: i32 0, i < clip.count, i += 1 ]
+                c : i32 [ clip.chars[ i ] ]
+                if [ c == 10 ] put = put + ' '
+                el [ c != 13 ] put = put + clip.mid[ i, 1 ]
+            edit       = text.mid[ 0, sc ] + put + text.mid[ ec,
+                text.count - ec ]
+            sel_col    = sc + put.count
+            anchor_col = sel_col
+        pristine  = false
+        w.restyle = true
+
     # 36px short of the box: the mic sits in its right end
     area : Region { l50%-212px b220px w388px h40px }
     # the box's frame is the only frame: the field's own body stays
@@ -8866,6 +9064,12 @@ TextInput ShotPrompt
     func on_key [ ev: Event ]
         if [ !ev.key.state ] return
         k : i32 [ ev.key.unicode ]
+        # ctrl/cmd with C, X, V, A: copy, cut, paste, all
+        if [ (ev.key.ctrl || ev.key.meta)
+             && (k == 67 || k == 88 || k == 86 || k == 65) ]
+            clip_key[ k ]
+            ev.stop[]
+            return
         if [ k != 257 && k != 256 && k != 263 ] return
         w : Window ux
         if [ !w ] return

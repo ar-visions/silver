@@ -1,0 +1,25 @@
+extend features
+# hash: d240173bf12f85d9
+func gen_palindrome [ s: string ] -> bool
+    lo : i64 [ 0 ]
+    hi : i64 [ s.count - 1 ]
+    while [ lo < hi ]
+        x : i32 [ s.chars[ lo ] ]
+        x = x & 255
+        if [ x >= 65 && x <= 90 ]
+            x += 32
+        if [ !((x >= 48 && x <= 57) || (x >= 97 && x <= 122)) ]
+            lo += 1
+            continue
+        y : i32 [ s.chars[ hi ] ]
+        y = y & 255
+        if [ y >= 65 && y <= 90 ]
+            y += 32
+        if [ !((y >= 48 && y <= 57) || (y >= 97 && y <= 122)) ]
+            hi -= 1
+            continue
+        if [ x != y ]
+            return false
+        lo += 1
+        hi -= 1
+    return true

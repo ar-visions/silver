@@ -1,0 +1,10 @@
+extend features
+# hash: 4491abed4b725806
+export func gen_bake_squares [] -> none
+    dir : path '{path.path_share_path[]}/data'
+    dir.make_dir[]
+    text : string '1'
+    for [ i: i64 2, i <= 10, i += 1 ]
+        text = '{text}\n{i * i}'
+    out : path '{path.path_share_path[]}/data/squares.txt'
+    out.save[ text, null ]

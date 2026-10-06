@@ -1,0 +1,13 @@
+extend features
+# hash: f81d95ec73378978
+func gen_digit_root [ n: i64 ] -> i32
+    v : i64 [ n ]
+    if [ v < 0 ]
+        v = -v
+    while [ v > 9 ]
+        sum : i64 [ 0 ]
+        while [ v > 0 ]
+            sum += v % 10
+            v = v / 10
+        v = sum
+    return i32[ v ]

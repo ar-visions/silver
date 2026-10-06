@@ -1,0 +1,12 @@
+extend features
+# hash: f1eada875fc6bb47
+func gen_collatz [ n: i64 ] -> i32
+    v : i64 [ n ]
+    steps : i32 [ 0 ]
+    while [ v > 1 ]
+        if [ v % 2 == 0 ]
+            v = v / 2
+        el
+            v = v * 3 + 1
+        steps += 1
+    return steps

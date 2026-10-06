@@ -459,6 +459,7 @@ declare_class_2(macro, etype)
 
 #define codegen_schema(X, Y, ...) \
     M(X, Y, i, method,   public,  array,           generate_fn, efunc, array) \
+    M(X, Y, i, method,   public,  bool,            generate_res, Au, path, string) \
     M(X, Y, i, prop,     public,  aether,          mod) \
     M(X, Y, i, prop,     public,  i32,             pad)
 declare_class(codegen)

@@ -259,6 +259,7 @@ static u64 source_mtime(silver a, path p) {
 
 static void bg_build_start(silver a, silver og, path module, map defs);
 static enode parse_inline_lambda(silver a);
+static enode plain_lambda_static(silver a, efunc f);
 enode parse_export(silver a);
 enode parse_log(silver a);
 enode parse_return(silver a);
@@ -1221,6 +1222,8 @@ static void progress_clear_line() {
 
 // an error never prints on the tail of the progress line
 extern void (*aether_error_prelude)(void);
+extern void (*au_print_prelude)(void);
+extern void (*au_print_after)(void);
 #undef verify
 #define verify(a, t, ...) ({ if (!(a)) { progress_clear_line(); \
     au_verify_fail(seq, (symbol)t, ## __VA_ARGS__); } true; })
@@ -3185,6 +3188,8 @@ static void silver_run_tests(silver a) {
 }
 
 AU_EXPORT void silver_init(silver a) {
+    au_print_prelude     = progress_clear_line;
+    au_print_after       = progress_render;
     aether_error_prelude = progress_clear_line;   // an error never prints on the tail of the progress line
     hold(a);
 
@@ -3614,7 +3619,9 @@ AU_EXPORT void silver_init(silver a) {
                 buf[strcspn(buf, "\n")] = '\0';
                 if (!*buf) continue;
                 path src = path(buf);
-                u64  m   = source_mtime(a, src);
+                // a source the last build used is gone: rebuild
+                u64  m   = file_exists("%o", src) ?
+                    source_mtime(a, src) : (u64)current_time();
                 if (m > module_file_m) module_file_m = m;
                 // also check sibling .ag files in the same dir (extension modules)
                 path src_dir = parent_dir(src);
@@ -4326,6 +4333,20 @@ static array read_body_br(silver a, int bracket_depth) {
 }
 */
 
+// a { ... } group with its braces, across lines
+static array read_prompt_group(silver a) {
+    array body  = array(32);
+    int   depth = 0;
+    for (token k = peek(a); k; k = peek(a)) {
+        if (eq(k, "{")) depth++;
+        if (eq(k, "}")) depth--;
+        push(body, (Au)k);
+        consume(a, Syntax__none);
+        if (depth == 0) break;
+    }
+    return body;
+}
+
 static array peek_body(silver a) {
     push_current(a);
     array body = read_body(a);
@@ -4441,6 +4462,8 @@ enode parse_asm(silver a, etype rtype) {
     return e_asm(a, body, input_nodes, rtype, return_name);
 }
 
+static array gen_resource(silver a, array body, token ty);
+
 static array read_initializer(silver a) { sequencer
     array body = array(32);
     token n    = element(a,  0);
@@ -4484,6 +4507,8 @@ static array read_initializer(silver a) { sequencer
             break;
         }
         push(body, (Au)token("]"));
+        // `using <agent>` after it: made at design time, in gen/
+        if (next_is(a, "using")) return gen_resource(a, body, prev);
         return body;
     }
 
@@ -6638,6 +6663,19 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
         }
         string fname = peek_alpha(a);
         Au_t   fau   = fname ? lexical(a->lexical, cstring(fname)) : null;
+        // lambda f[] on a plain function: its one static instance
+        if (fau && fau->member_type == AU_MEMBER_FUNC &&
+            !(fau->traits & AU_TRAIT_LAMBDA) && !fau->is_imethod &&
+            !fau->is_smethod && element(a, 1) && eq(element(a, 1), "[") &&
+            element(a, 2) && eq(element(a, 2), "]")) {
+            efunc fe = (efunc)instanceof(rlookup((aether)a, fname), efunc);
+            validate(fe, "lambda %o: function not found", fname);
+            consume(a, Syntax__none);
+            consume(a, Syntax__none);
+            consume(a, Syntax__none);
+            pop_tokens(a, true);
+            return plain_lambda_static(a, fe);
+        }
         // a func, or the head of a member chain (obj.method) — not a type name
         if (fau && fau->member_type != AU_MEMBER_TYPE)
             pop_tokens(a, true); // keep `lambda` consumed; member follows
@@ -7910,7 +7948,11 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
     bool is_dealloc = rec_ctx && eq(name, "dealloc");
 
     int   hdr_end = a->cursor;
-    array b = inline_expr ? inline_expr : (array)read_body(a);
+    // a prompt opened on the func line runs to its matching }
+    bool  open_prompt = cgen && !inline_expr && next_is(a, "{")
+        && peek(a)->line == element(a, -1)->line;
+    array b = inline_expr ? inline_expr : open_prompt ?
+        read_prompt_group(a) : (array)read_body(a);
 
     // a method declared here with its body written outside: func Class.method
     string out_key = (rec_ctx && a->out_defs && member_type == AU_MEMBER_FUNC)
@@ -8332,13 +8374,15 @@ static string gen_tool(symbol name) {
         if (len(dir) && (access)(p->chars, X_OK) == 0) return (string)p;
     }
     cstr   home = getenv("HOME");
-    string alts[5] = {
+    string alts[6] = {
         f(string, "%s/.local/bin/%s", home ? home : "", name),
         f(string, "%s/.claude/local/%s", home ? home : "", name),
         f(string, "/Applications/ChatGPT.app/Contents/Resources/%s", name),
         f(string, "/Applications/Codex.app/Contents/Resources/%s", name),
-        f(string, "%s/Applications/Codex.app/Contents/Resources/%s", home ? home : "", name) };
-    for (int i = 0; i < 5; i++)
+        f(string, "%s/Applications/Codex.app/Contents/Resources/%s", home ? home : "", name),
+        // the chatgpt deb carries codex as the mac app does
+        f(string, "/usr/lib/chatgpt/resources/%s", name) };
+    for (int i = 0; i < 6; i++)
         if ((access)(alts[i]->chars, X_OK) == 0) return alts[i];
     return null;
 }
@@ -8368,6 +8412,26 @@ static bool gen_run(cstr* args, path root, path log, int limit) {
     return false;
 }
 
+// codex's own sandbox needs user namespaces: probe it once
+static bool gen_sandbox_works(cstr exe) {
+    static int known = -1;
+    if (known >= 0) return known;
+    extern char** environ;
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    posix_spawn_file_actions_addopen(&fa, 0, "/dev/null", O_RDONLY, 0);
+    posix_spawn_file_actions_addopen(&fa, 1, "/dev/null", O_WRONLY, 0);
+    posix_spawn_file_actions_adddup2(&fa, 1, 2);
+    cstr  args[] = { exe, "sandbox", "--", "true", null };
+    pid_t pid;
+    int   st = 0;
+    int   rc = posix_spawn(&pid, exe, &fa, null, (char**)args, environ);
+    posix_spawn_file_actions_destroy(&fa);
+    known = rc == 0 && waitpid(pid, &st, 0) == pid &&
+            WIFEXITED(st) && WEXITSTATUS(st) == 0;
+    return known;
+}
+
 // one run of the user's agent, started clean
 static bool gen_once(bool is_claude, path root, string model, string text,
         path log, int limit) {
@@ -8385,10 +8449,13 @@ static bool gen_once(bool is_claude, path root, string model, string text,
         if (model && len(model)) { args[n++] = "--model"; args[n++] = model->chars; }
     } else {
         args[n++] = "exec";
-        args[n++] = "-s"; args[n++] = "workspace-write";
+        args[n++] = "-s";
+        args[n++] = gen_sandbox_works(exe->chars) ?
+            "workspace-write" : "danger-full-access";
         args[n++] = "-C"; args[n++] = root->chars;
         args[n++] = "--ephemeral";
         if (model && len(model)) { args[n++] = "-m"; args[n++] = model->chars; }
+        args[n++] = "--";
         args[n++] = text->chars;
     }
     args[n] = null;
@@ -8502,7 +8569,7 @@ static array gen_body(silver a, codegen cg, efunc fn, array b, bool is_claude) {
             concat(text, string(t->chars));
     }
 
-    string agent = string(is_claude ? "claude" : "codex");
+    string agent = string(is_claude ? "claude" : "chatgpt");
     string sig   = gen_signature(fn);
     u64    h     = 0xcbf29ce484222325ull;
     string parts[3] = { agent, sig, text };
@@ -8542,9 +8609,13 @@ static array gen_body(silver a, codegen cg, efunc fn, array b, bool is_claude) {
         "# hash: %o\n"
         "%o\n"
         "    ...the body...\n"
+        "the project: %o (its modules and the types this body uses)\n"
+        "Write the file only: never build, test or run silver; "
+        "the build that asked waits on this file.\n"
         "silver, the language: %s/LANGUAGE.md, %s/AGENTS.md, "
         "%s/features/features.ag",
-        file, (i32)g.first, gfile, a->name, hex, sig, SILVER, SILVER, SILVER);
+        file, (i32)g.first, gfile, a->name, hex, sig, root,
+        SILVER, SILVER, SILVER);
 
     cstr  tw    = getenv("SILVER_CODEGEN_TIMEOUT");
     int   limit = tw ? atoi(tw) : 600;
@@ -8577,6 +8648,199 @@ array claude_generate_fn(claude cg, efunc f, array query) {
 
 array chatgpt_generate_fn(chatgpt cg, efunc f, array query) {
     return gen_body((silver)f->mod, (codegen)cg, f, query, false);
+}
+
+// a png's size from its header; false when it is not a png
+static bool gen_png_size(path p, i64* w, i64* h) {
+    unsigned char hd[24];
+    FILE* fp = fopen(p->chars, "rb");
+    if (!fp) return false;
+    size_t n = fread(hd, 1, sizeof(hd), fp);
+    fclose(fp);
+    if (n < 24 || memcmp(hd, "\x89PNG", 4) != 0) return false;
+    *w = ((i64)hd[16] << 24) | (hd[17] << 16) | (hd[18] << 8) | hd[19];
+    *h = ((i64)hd[20] << 24) | (hd[21] << 16) | (hd[22] << 8) | hd[23];
+    return true;
+}
+
+// the agent's image: the component checks the design instance
+static bool gen_res_image(codegen cg, bool is_claude, Au design,
+        path gfile, string prompt) {
+    silver a     = (silver)cg->mod;
+    string agent = string(is_claude ? "claude" : "chatgpt");
+    Au_t   img   = find_type("Image", find_module("img"));
+    Au_t   dt    = isa(design);
+    verify(img && inherits(dt, img),
+        "%o makes images at design time, not %s", agent, dt->ident);
+    i64    w     = *(i32*)((cstr)design + find_member(dt, "width",
+        AU_MEMBER_VAR, 0, true)->offset);
+    i64    h     = *(i32*)((cstr)design + find_member(dt, "height",
+        AU_MEMBER_VAR, 0, true)->offset);
+    string size  = w && h ? f(string, ", exactly %lli x %lli pixels "
+        "(resize after generating)", w, h) : string("");
+    string req   = f(string,
+        "silver design time: make the image %o%o, from this prompt:\n"
+        "%o\n"
+        "Use your image generation, then look at the finished file: "
+        "it must show the prompt, opaque unless the prompt asks for "
+        "transparency; a mostly clear or blank result is a failed "
+        "generation, so make it again. "
+        "Write the file only: never build, test or run silver; "
+        "the build that asked waits on this file.",
+        gfile, size, prompt);
+    string model = is_claude ? ((claude)cg)->model : ((chatgpt)cg)->model;
+    path   root  = a->project_path ? a->project_path : parent_dir(gfile);
+    cstr   tw    = getenv("SILVER_CODEGEN_TIMEOUT");
+    int    limit = tw ? atoi(tw) : 600;
+    path   log   = f(path, "%o/tmp/codegen-%o.log", a->install, stem(gfile));
+
+    print("codegen: running %o for %o", agent, stem(gfile));
+    bool ran = gen_once(is_claude, root, model, req, log, limit);
+    i64  gw = 0, gh = 0;
+    bool png = file_exists("%o", gfile) && gen_png_size(gfile, &gw, &gh);
+    verify(png, "codegen: %o %s without writing the png %o (log %o)",
+        agent, ran ? "finished" : "failed or was not found", gfile, log);
+    verify((!w || gw == w) && (!h || gh == h),
+        "codegen: %o made %o at %lli x %lli, not %lli x %lli",
+        agent, gfile, gw, gh, w, h);
+    return true;
+}
+
+bool chatgpt_generate_res(chatgpt cg, Au design, path file, string prompt) {
+    return gen_res_image((codegen)cg, false, design, file, prompt);
+}
+
+bool claude_generate_res(claude cg, Au design, path file, string prompt) {
+    return gen_res_image((codegen)cg, true, design, file, prompt);
+}
+
+// `T [ name: 'f/x.png', .. ] using agent { .. }`: a design instance
+// of T goes to the agent; the brackets become [ 'f/x.png' ]
+static array gen_resource(silver a, array body, token ty) {
+    token   end  = element(a, -1);
+    path    file = (path)end->source;
+    path    dir  = parent_dir(file);
+    etype   t    = ty ? (etype)rlookup((aether)a, string(ty->chars)) : null;
+    verify(t && t->autype && t->autype->is_class,
+        "%o:%i: a design-time resource needs a class before its [ ]",
+        file, (i32)end->line);
+    Au_t    dt   = t->autype;
+    // only an import's types are live while this module compiles
+    Au_t    init = find_member(dt, "init", AU_MEMBER_FUNC, 0, true);
+    verify(init && init->value,
+        "%o:%i: %s is declared in this module: a design instance needs "
+        "a type from an import", file, (i32)end->line, dt->ident);
+    consume(a, Syntax__none);
+    token   who  = (token)read_alpha(a);
+    codegen cg   = who ? (codegen)get(a->codegens, (Au)who) : null;
+    verify(cg, "codegen identifier not found: %o", who);
+    verify(next_is(a, "{"), "expected { prompt } after using %o", who);
+    array   grp    = read_prompt_group(a);
+    array   prompt = gen_prompt(grp, 1, len(grp) - 1, dir);
+
+    // its properties: one literal each; name is the gen/ file
+    string name  = null;
+    map    props = map(hsize, 8);
+    string seen  = string(alloc, 64);
+    num    last  = len(body) - 1;
+    for (num i = 1; i < last; ) {
+        token k = (token)body->origin[i];
+        verify(i + 2 < last && eq((token)body->origin[i + 1], ":"),
+            "%o:%i: expected name: value in a design-time resource",
+            file, (i32)end->line);
+        token v = (token)body->origin[i + 2];
+        i += 3;
+        verify(i == last || eq((token)body->origin[i], ","),
+            "%o:%i: %s must be one literal at design time",
+            file, (i32)end->line, k->chars);
+        if (i < last) i++;
+        Au val = eq(v, "true") ? _bool(true) : eq(v, "false") ?
+            _bool(false) : v->literal ? v->literal : (Au)string(v->chars);
+        // a number reads as a one-dimension shape
+        shape sh = instanceof(val, shape);
+        if (sh && sh->count == 1) val = _i64(sh->data[0]);
+        if (len(seen)) append(seen, ", ");
+        concat(seen, f(string, "%s: %s", k->chars, v->chars));
+        if (eq(k, "name")) {
+            name = (string)instanceof(val, string);
+            continue;
+        }
+        verify(find_member(dt, k->chars, AU_MEMBER_VAR, 0, true),
+            "%o:%i: %s has no member %s", file, (i32)end->line,
+            dt->ident, k->chars);
+        set(props, (Au)string(k->chars), val);
+    }
+    verify(name && len(name), "%o:%i: a design-time resource needs a name",
+        file, (i32)end->line);
+    // gen/'s folders are its resource folders: the name has one
+    verify(strchr(name->chars, '/') && name->chars[0] != '/',
+        "%o:%i: name %o needs a folder (images/%o): gen/<folder> is "
+        "a resource folder", file, (i32)end->line, name, name);
+    Au design = construct_with(dt, (Au)props, null);
+
+    string text = string(alloc, 256);
+    each(prompt, token, t) {
+        path p = instanceof(t->literal, path);
+        if (len(text) && !t->neighbor) append(text, " ");
+        if (p) {
+            verify(exists(p), "codegen image not found: %o", p);
+            concat(text, f(string, "(the picture at %o)", p));
+        } else
+            concat(text, string(t->chars));
+    }
+
+    u64    hv    = 0xcbf29ce484222325ull;
+    string parts[4] = { string(who->chars), string(dt->ident), seen, text };
+    for (int i = 0; i < 4; i++)
+        hv = fnv1a_hash(parts[i]->chars, (size_t)len(parts[i]), hv);
+    each(prompt, token, t) {
+        path p = instanceof(t->literal, path);
+        if (!p) continue;
+        string b64 = path_base64(p);
+        hv = fnv1a_hash(b64->chars, (size_t)len(b64), hv);
+    }
+    char hx[20];
+    snprintf(hx, sizeof(hx), "%016llx", (unsigned long long)hv);
+    string hex = string(hx);
+
+    // a stamp beside the file: the key over this ask and its bytes
+    path gfile = f(path, "%o/gen/%o", dir, name);
+    // a dot name: the resource deploy leaves it out of the share
+    path stamp = f(path, "%o/.%o.hash", parent_dir(gfile), filename(gfile));
+    make_dir(parent_dir(gfile));
+    bool cur = file_exists("%o", gfile) && file_exists("%o", stamp) &&
+        compare(trim((string)load(stamp, typeid(string), null)),
+                gen_key(hex, path_base64(gfile))) == 0;
+    if (!cur) {
+        if (file_exists("%o", gfile))
+            print("codegen: %o is out of date; regenerating", gfile);
+        unlink(gfile->chars);
+        unlink(stamp->chars);
+        pthread_mutex_lock(&gen_lock);
+        bool made = generate_res(cg, design, gfile, text);
+        if (made)
+            save(stamp, (Au)gen_key(hex, path_base64(gfile)), null);
+        pthread_mutex_unlock(&gen_lock);
+        verify(made, "codegen: %o did not make %o", who, gfile);
+    }
+
+    // the running app reads it from its share folder
+    path share = f(path, "%o/share/%o", a->install,
+        silver_install_name(a));
+    path link = f(path, "%o/%o", share, name);
+    path tmp  = f(path, "%o.link", link);
+    make_dir(parent_dir(link));
+    unlink(tmp->chars);
+    if (symlink(((path)absolute(gfile))->chars, tmp->chars) == 0)
+        rename(tmp->chars, link->chars);
+
+    string uri = f(string, "'%o'", name);
+    array  r   = array(alloc, 3);
+    push(r, (Au)token("["));
+    push(r, (Au)token(chars, uri->chars,
+        source, file, line, end->line, column, end->column));
+    push(r, (Au)token("]"));
+    return r;
 }
 
 array gemini_generate_fn(gemini cg, efunc f, array query) {
@@ -10091,6 +10355,18 @@ none silver_build_product(silver a) {
         each(all, path, p) fprintf(sr, "%s\n", p->chars);
         // the module's own .c/.cc/.mm are sources too: an edit there rebuilds
         each(a->implements, path, i) fprintf(sr, "%s\n", i->chars);
+        // generated bodies: a removed one is written again
+        path gdir = f(path, "%o/gen", a->module_path);
+        DIR* gd   = opendir(gdir->chars);
+        if (gd) {
+            struct dirent* e;
+            while ((e = readdir(gd)) != NULL) {
+                int nl = strlen(e->d_name);
+                if (nl > 3 && strcmp(e->d_name + nl - 3, ".ag") == 0)
+                    fprintf(sr, "%s/%s\n", gdir->chars, e->d_name);
+            }
+            closedir(gd);
+        }
         fclose(sr);
     }
 }
@@ -10278,6 +10554,67 @@ enode eshape_from_indices(aether a, array indices);
 enode enode_shape(enode);
 
 // instance an inline lambda: context values re-resolve by capture name
+// lambda f[]: a plain function has no context, so a thunk with an
+// empty context calls it; one thunk per function per core, and ONE
+// unmanaged instance of it (Au lambda_static), never counted or freed
+static enode plain_lambda_static(silver a, efunc f) {
+    Au_t fau = f->autype;
+    if (!a->inline_lambdas)  a->inline_lambdas  = (map)hold((Au)map(hsize, 16));
+    if (!a->pending_lambdas) a->pending_lambdas = (array)hold((Au)array(alloc, 8));
+    Au key = (Au)_i64((i64)(size_t)fau * 64 + a->core);
+    efunc fmem = (efunc)get(a->inline_lambdas, key);
+    if (!fmem) {
+        efunc encl = context_func(a);
+        validate(encl, "lambda %s[] needs an enclosing function", fau->ident);
+        string lname = a->core ? f(string, "%s_thunk%i", fau->ident, a->core)
+                               : f(string, "%s_thunk", fau->ident);
+        Au_t fn_au = def(null, cstring(lname), AU_MEMBER_FUNC, AU_TRAIT_LAMBDA);
+        fn_au->context = a->autype;
+        fn_au->module  = a->autype;
+        fn_au->rtype   = fau->rtype ? fau->rtype : etypeid(none)->autype;
+        bool returns   = fn_au->rtype != etypeid(none)->autype;
+        token ref = element(a, -1);
+        num   ln  = ref ? ref->line : 0;
+        path  src = ref && ref->source ? ref->source : a->module_file;
+        array body = array(alloc, 16);
+        #define thunk_tok(s, kind) push(body, (Au)token(chars, (cstr)(s), \
+            line, ln, indent, 1, source, src, syntax, kind))
+        if (returns) thunk_tok("return", Syntax__keyword);
+        thunk_tok(fau->ident, Syntax__function);
+        thunk_tok("[", Syntax__punctuation);
+        int n = 0;
+        arg_list(fau, arg) {
+            def_arg(fn_au, arg->ident, arg->src, 0);
+            if (n++) thunk_tok(",", Syntax__punctuation);
+            thunk_tok(arg->ident, Syntax__ident);
+        }
+        thunk_tok("]", Syntax__punctuation);
+        #undef thunk_tok
+        fmem = efunc(
+            mod,    (aether)a,
+            autype, fn_au,
+            body,   (tokens)body,
+            remote_code, false,
+            has_code,    true,
+            used,   true,
+            target, null);
+        implement(fmem, false);
+        set(a->inline_lambdas, key, (Au)fmem);
+        push(a->pending_lambdas, (Au)fmem);
+    }
+    efunc f_static = (efunc)u(efunc, find_member(etypeid(lambda)->autype,
+        "lambda_static", AU_MEMBER_FUNC, 0, false));
+    validate(f_static, "lambda_static not found on lambda");
+    enode res = e_fn_call((aether)a, f_static,
+        a(fmem->published_type, fmem), false, false);
+    // typed as the thunk, as an instance with a context would be
+    res->autype = fmem->autype;
+    res->loaded = true;
+    res->meta_a = hold((Au)fmem->autype->rtype);
+    res->meta_b = hold((Au)fmem->autype);
+    return res;
+}
+
 static enode inline_lambda_instance(silver a, efunc fmem) { static int seq = 0; seq++;
     array captures = array(alloc, 8);
     members(fmem->autype, m) {
@@ -10288,6 +10625,7 @@ static enode inline_lambda_instance(silver a, efunc fmem) { static int seq = 0; 
     }
     return e_create((aether)a, (etype)fmem, (Au)captures, false);
 }
+
 
 // lambda [ args ] body — the body parses once (no_build) to gather its
 // captures at resolve time; the fn is memoized by its bracket token so

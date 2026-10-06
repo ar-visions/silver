@@ -1952,6 +1952,7 @@ typedef Au(*mix_fn)(Au, Au, f32);
     M(AA,BB, i, prop,   public, u64,      ctx_objs) \
     M(AA,BB, i, method, public, Au, call, Au) \
     M(AA,BB, s, method, public, lambda, lambda_instance, Au_t, callback, Au, Au) \
+    M(AA,BB, s, method, public, lambda, lambda_static, Au_t, callback) \
     M(AA,BB, i, override, method, dealloc) \
     M(AA,BB, i, override, cast,   bool)
 declare_class(lambda)

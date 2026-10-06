@@ -1,0 +1,4 @@
+extend features
+# hash: 5a377cc9304fbdb0
+func gen_blue_squares [] -> i32
+    return 3

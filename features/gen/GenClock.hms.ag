@@ -1,0 +1,13 @@
+extend features
+# hash: 6e7e3fd8a7fde6f9
+func GenClock.hms [] -> string
+    h : i64 [ seconds / 3600 ]
+    m : i64 [ (seconds / 60) % 60 ]
+    s : i64 [ seconds % 60 ]
+    mp : '{m}'
+    sp : '{s}'
+    if [ m < 10 ]
+        mp = '0{m}'
+    if [ s < 10 ]
+        sp = '0{s}'
+    return '{h}:{mp}:{sp}'

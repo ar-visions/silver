@@ -64,6 +64,16 @@ y: x + 1            # declare y, type inferred from expression
 
 `=` will never create a variable. `:` always does.
 
+Name the type only when it changes something. A value that
+already has the type is declared without it; naming it again
+is a build error ("type 'string' is redundant"):
+
+```
+s: '{minutes}'               # right: interpolation is a string
+s: string [ '{minutes}' ]    # error: string is redundant
+n: f32 [ count ]             # right: count is i64, n is f32
+```
+
 ---
 
 ## Types
@@ -518,6 +528,11 @@ lambda on_event [ event: string :: source: string ] -> bool
 ```
 
 `::` separates call args from captured context.
+
+`lambda tick[]` binds a plain function (no context): it is one
+static instance per function, never counted or freed, so a slot
+takes it, drops it and takes it again at no cost:
+`e.think = lambda tick[]`, `e.think[ e ]`, `e.think = null`.
 
 ---
 

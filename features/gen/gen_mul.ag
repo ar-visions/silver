@@ -1,4 +1,4 @@
 extend features
-# hash: 21dac5e0c87e1dae
+# hash: c4371034b4b6e037
 func gen_mul [ a: i32, b: i32 ] -> i32
     return a * b

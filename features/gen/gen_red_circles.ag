@@ -1,0 +1,4 @@
+extend features
+# hash: b22d61bd3d02f507
+func gen_red_circles [] -> i32
+    return 5

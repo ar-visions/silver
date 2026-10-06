@@ -1,5 +1,3 @@
-# the silver language, annotated and self-verifying
-# each entry is a feature; run: silver --test features
 
 # ==== Modules: One import line, any source.
 # A module is a folder: the .ag source, its C, C++ and Rust
@@ -50,6 +48,7 @@ import random with RandomExtra as rnd   # add an extension, then alias
 import claude
     model: 'claude-opus-5-5'
 import chatgpt                      # its own default model
+import img                          # Image: made at design time below
 
 # config import: a module's own members are its parameters, set here
 # by the importer and read-only inside the module
@@ -1730,6 +1729,19 @@ expect func t_lambda_inline [] -> bool
     p: apply_step[ f, 6 ]           # same lambda type as a named one
     return r == 108 && r2 == 108 && p == 112
 
+# a plain function binds with lambda f[]: one static instance, never
+# freed, so a slot may be set and cleared freely
+func step_plain [ n: i64 ] -> i64
+    return n * 3
+
+expect func t_lambda_plain [] -> bool
+    s : Stepper [ start: 1 ]
+    s.on_step = lambda step_plain[]
+    r : i64 [ s.on_step[ 4 ] ]
+    p : i64 [ apply_step[ lambda step_plain[], 5 ] ]
+    s.on_step = null
+    return r == 12 && p == 15 && !s.on_step
+
 expect func t_lambda_inline2 [] -> bool
     base: i64 [ 30 ]
     g: lambda [ ]                   # zero args, capture only
@@ -1870,14 +1882,91 @@ expect func t_commaless_numbers [] -> bool
 
 # a body written by the user's agent from its prompt; the
 # result lives in features/gen, reused while it matches
-func gen_add [ a: i32, b: i32 ] -> i32 using claude
-    { add a and b }
+func gen_add [ a: i32, b: i32 ] -> i32 using claude {
+	add a and b
+}
 
 func gen_mul [ a: i32, b: i32 ] -> i32 using chatgpt
     { multiply a by b }
 
 expect func t_codegen [] -> bool
     return gen_add[ 2, 3 ] == 5 && gen_mul[ 4, 5 ] == 20
+
+# small algorithms: loops, branches and strings for the agent
+func gen_gcd [ a: i64, b: i64 ] -> i64 using claude
+    { the greatest common divisor of a and b by Euclid's method;
+      either may be negative or zero, the result is never negative }
+
+func gen_collatz [ n: i64 ] -> i32 using claude
+    { the number of Collatz steps to bring n down to 1: halve an
+      even n, take 3n + 1 for an odd one; 0 for n of 1 or less }
+
+func gen_digit_root [ n: i64 ] -> i32 using claude
+    { sum the decimal digits of n, then the digits of that sum,
+      until one digit is left; a negative n uses its size }
+
+func gen_nth_prime [ n: i32 ] -> i64 using claude
+    { the nth prime counting from 1, so n of 1 is 2 and n of 6
+      is 13; trial division by the primes found so far }
+
+func gen_palindrome [ s: string ] -> bool using claude
+    { true when s reads the same both ways once spaces and
+      punctuation are dropped and case is ignored }
+
+expect func t_codegen_algorithms [] -> bool
+    return gen_gcd[ 84, -36 ] == 12 && gen_gcd[ 0, 0 ] == 0
+        && gen_collatz[ 27 ] == 111 && gen_collatz[ 1 ] == 0
+        && gen_digit_root[ 987654321 ] == 9
+        && gen_digit_root[ -38 ] == 2
+        && gen_nth_prime[ 1 ] == 2 && gen_nth_prime[ 100 ] == 541
+        && gen_palindrome[ 'A man, a plan, a canal: Panama' ]
+        && !gen_palindrome[ 'silver' ]
+
+# the prompt names a picture; the agent looks at it
+func gen_red_circles [] -> i32 using claude
+    { the number of red circles in {images/gen-shapes.png} }
+
+func gen_blue_squares [] -> i32 using claude
+    { the number of blue squares in {images/gen-shapes.png} }
+
+expect func t_codegen_image [] -> bool
+    return gen_red_circles[] == 5 && gen_blue_squares[] == 3
+
+# a resource the agent makes at design time: gen/images/moon.png
+expect func t_codegen_resource [] -> bool
+    moon : Image [ name: 'images/moon.png', width: 256, height: 256 ]
+        using chatgpt
+        { a small silver moon over a dark blue sky, flat icon style }
+    return moon.width == 256 && moon.height == 256
+
+# a method reads its instance's members
+class GenClock
+    public seconds : i64 [ 3725 ]
+
+    func hms [] -> string using claude
+        { seconds as hours, minutes and seconds: '1:02:05' for
+          3725; minutes and seconds always two digits }
+
+expect func t_codegen_method [] -> bool
+    d : GenClock []
+    c : GenClock [ seconds: 59 ]
+    return d.hms[] == '1:02:05' && c.hms[] == '0:00:59'
+
+# an export func the agent writes runs at build time
+export func gen_bake_squares [] using claude
+    { save the squares of 1 through 10, one a line, to the file
+      data/squares.txt under path.path_share_path[] }
+
+expect func t_codegen_export [] -> bool
+    p: path '{path.path_share_path[]}/data/squares.txt'
+    if [ !p.exists[] ] return false
+    s: string p.load[ typeid[string], null ]
+    return s.trim[] == '1\n4\n9\n16\n25\n36\n49\n64\n81\n100'
+
+# the agent writes the test itself, from what it is to check
+expect func t_codegen_test [] -> bool using claude
+    { check gen_gcd, gen_collatz and gen_digit_root against three
+      values each that you work out by hand }
 
 # ==== Collections: vec and map, typed.
 # vec is a typed vector with element-wise math; map is keyed by
@@ -2425,6 +2514,20 @@ expect func t_string_from_vec_bytes [] -> bool
     s : string string[ @b[ 0 ] ]
     b[ 0 ] = 120
     return s == 'hi' && s.count == 2
+
+# cast cstr on a vec or a new buffer hands the bytes, not the object
+expect func t_cast_cstr_vec [] -> bool
+    b : vec i8 [ 4 ]
+    b[ 0 ] = 104
+    b[ 1 ] = 105
+    b[ 2 ] = 0
+    s : string [ cast cstr [ b ] ]
+    d : new i8 [ 3 ]
+    d[ 0 ] = 111
+    d[ 1 ] = 107
+    d[ 2 ] = 0
+    t : string [ cast cstr [ d ] ]
+    return s == 'hi' && t == 'ok' && t.count == 2
 
 # a runtime-sized vec of a C struct holds all n elements
 expect func t_vec_c_struct_n [] -> bool

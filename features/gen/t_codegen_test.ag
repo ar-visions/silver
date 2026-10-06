@@ -1,0 +1,10 @@
+extend features
+# hash: 757ff3e4b0a0a56b
+expect func t_codegen_test [] -> bool
+    gcd : bool [ gen_gcd[ 48, 18 ] == 6 && gen_gcd[ -12, 8 ] == 4
+        && gen_gcd[ 0, 7 ] == 7 ]
+    collatz : bool [ gen_collatz[ 1 ] == 0 && gen_collatz[ 6 ] == 8
+        && gen_collatz[ 7 ] == 16 ]
+    root : bool [ gen_digit_root[ 9875 ] == 2
+        && gen_digit_root[ 493 ] == 7 && gen_digit_root[ 9 ] == 9 ]
+    return gcd && collatz && root

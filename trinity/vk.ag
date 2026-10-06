@@ -3043,6 +3043,12 @@ class Gpu
         if [ vertex ]
             vertex.update[ vertex_data ]
 
+    # the first n indices replaced; the draw uses n of them
+    public func upload_index [ d: ARef, n: i32 ]
+        if [ !index ] return
+        index_count = n
+        if [ n > 0 ] index.update_part[ d, i64[ n ] * i64[ index_size ] ]
+
     func init [ ]
         # external buffers draw directly: no host copy to fill
         if [ vertex_size && !ext_vertex ]
