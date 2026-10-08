@@ -1,0 +1,77 @@
+# the three root counters: system clock, dot clock, hblank, clock/8
+extend psx
+
+class Timers
+    public bus    : Bus
+    public count  : new u32
+    public mode   : new u32
+    public target : new u32
+    # a one-shot interrupt fires once until the mode is written
+    public fired  : new bool
+    # timer 2's clock/8 remainder
+    public eighth : i64
+
+    func init []
+        count  = new u32 [ 3 ]
+        mode   = new u32 [ 3 ]
+        target = new u32 [ 3 ]
+        fired  = new bool [ 3 ]
+
+    public func read [ off: u32 ] -> u32
+        t : u32 [ off >> 4 ]
+        if [ t > 2 ] return 0
+        reg : u32 [ off & 0xF ]
+        if [ reg == 0 ] return count[ t ]
+        if [ reg == 8 ] return target[ t ]
+        # reading the mode clears the reached flags
+        m : u32 [ mode[ t ] ]
+        mode[ t ] = m & 0xE7FF
+        return m
+
+    public func write [ off: u32, v: u32 ]
+        t : u32 [ off >> 4 ]
+        if [ t > 2 ] return
+        reg : u32 [ off & 0xF ]
+        if [ reg == 0 ]      count[ t ] = v & 0xFFFF
+        el [ reg == 8 ]      target[ t ] = v & 0xFFFF
+        el
+            # bit 10 high means no interrupt is being requested
+            mode[ t ] = (v & 0x3FF) | 0x400
+            count[ t ] = 0
+            fired[ t ] = false
+
+    # system clock cycles passed
+    public func tick [ cycles: i64 ]
+        if [ ((mode[ 0 ] >> 8) & 1) == 0 ] advance[ 0, cycles ]
+        el                                 advance[ 0, cycles * 2 / 5 ]
+        if [ ((mode[ 1 ] >> 8) & 1) == 0 ] advance[ 1, cycles ]
+        if [ ((mode[ 2 ] >> 9) & 1) == 0 ]
+            advance[ 2, cycles ]
+        el
+            eighth += cycles
+            advance[ 2, eighth / 8 ]
+            eighth = eighth % 8
+
+    # a scanline's horizontal blank, timer 1's other source
+    public func hblank []
+        if [ ((mode[ 1 ] >> 8) & 1) != 0 ] advance[ 1, 1 ]
+
+    func advance [ t: i32, n: i64 ]
+        if [ n <= 0 ] return
+        m : u32 [ mode[ t ] ]
+        c : i64 [ i64[ count[ t ] ] + n ]
+        tg : i64 [ i64[ target[ t ] ] ]
+        hit : bool [ false ]
+        if [ i64[ count[ t ] ] < tg && c >= tg ]
+            mode[ t ] = mode[ t ] | 0x800
+            if [ (m & 0x10) != 0 ] hit = true
+            # bit 3: back to zero past the target
+            if [ (m & 8) != 0 && tg > 0 ] c = (c - tg) % (tg + 1)
+        if [ c > 0xFFFF ]
+            mode[ t ] = mode[ t ] | 0x1000
+            if [ (m & 0x20) != 0 ] hit = true
+            c = c & 0xFFFF
+        count[ t ] = u32[ c ]
+        if [ hit && ((m & 0x40) != 0 || !fired[ t ]) ]
+            fired[ t ] = true
+            bus.irq[ IRQ_TIMER0 + t ]

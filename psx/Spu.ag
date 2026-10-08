@@ -1,0 +1,863 @@
+# the sound processor: 24 ADPCM voices, ADSR, Gaussian
+# interpolation, noise, pitch modulation, reverb and CD audio, 44100
+# samples a second; ported from ares (ISC) ps1/spu
+extend psx
+
+SPU_RAM_HALVES : i32 [ 262144 ]
+# CPU cycles a sample: 33868800 / 44100
+SPU_CYCLES     : i64 [ 768 ]
+# samples the ring holds: about 0.37 seconds
+SPU_RING       : i32 [ 16384 ]
+# ADSR phases
+ADSR_OFF     : i32 [ 0 ]
+ADSR_ATTACK  : i32 [ 1 ]
+ADSR_DECAY   : i32 [ 2 ]
+ADSR_SUSTAIN : i32 [ 3 ]
+ADSR_RELEASE : i32 [ 4 ]
+
+# the envelope's frames between steps, by direction and rate
+func env_ticks [ rate: i32 ] -> i32
+    if [ rate < 48 ] return 1
+    return 1 << ((rate >> 2) - 11)
+
+func env_step [ decreasing: bool, rate: i32 ] -> i32
+    if [ rate < 48 ]
+        if [ decreasing ] return (-8 + (rate & 3)) << (11 - (rate >> 2))
+        return (7 - (rate & 3)) << (11 - (rate >> 2))
+    if [ decreasing ] return -8 + (rate & 3)
+    return 7 - (rate & 3)
+
+# an ADSR or sweep stepper: a level moved every few samples
+class SpuEnv
+    public counter     : i32
+    public rate        : i32
+    public decreasing  : bool
+    public exponential : bool
+
+    public func reset_to [ r: i32, dec: bool, ex: bool ]
+        rate = r & 127
+        decreasing = dec
+        exponential = ex
+        counter = env_ticks[ rate ]
+
+    public func tick [ level: i32 ] -> i32
+        counter -= 1
+        if [ counter > 0 ] return level
+        counter = env_ticks[ rate ]
+        step : i32 [ env_step[ decreasing, rate ] ]
+        if [ exponential ]
+            if [ decreasing ]
+                step = amplify[ step, level ]
+            el [ level >= 0x6000 ]
+                if [ rate < 40 ]
+                    step = step >> 2
+                el [ rate >= 44 ]
+                    counter = counter >> 2
+                el
+                    step = step >> 1
+                    counter = counter >> 1
+        out : i32 [ level + step ]
+        if [ out < 0 ] out = 0
+        if [ out > 0x7FFF ] out = 0x7FFF
+        return out
+
+# a volume register: fixed, or sweeping by its own envelope
+class SpuSweep
+    public env     : SpuEnv
+    public active  : bool
+    public sweep   : bool
+    public level   : i32
+    public current : i32
+    public raw     : u32
+
+    func init []
+        env = SpuEnv [ ]
+
+    public func set [ v: u32 ]
+        raw = v & 0xFFFF
+        # 15 bits, signed
+        level = i32[ (v & 0x7FFF) << 17 ] >> 17
+        sweep = (v & 0x8000) != 0
+        if [ !sweep ]
+            active = false
+            current = level << 1
+        el
+            active = true
+            env.reset_to[ i32[ v & 0x7F ], (v & 0x2000) != 0,
+                          (v & 0x4000) != 0 ]
+
+    public func tick []
+        if [ !active ] return
+        current = env.tick[ current ]
+        if [ env.decreasing ] active = current > 0
+        el                    active = current < 0x7FFF
+
+class SpuVoice
+    public spu        : Spu
+    public start      : u32
+    public repeat     : u32
+    public addr       : u32
+    public rate       : u32
+    public has        : bool
+    public keep_loop  : bool
+    public last0      : i32
+    public last1      : i32
+    # the block's 28 samples, and the last 3 of the one before
+    public samples    : new i32
+    public prev       : new i32
+    public nib        : new i32
+    public shift      : i32
+    public filter     : i32
+    public loop_end   : bool
+    public loop_rep   : bool
+    public loop_start : bool
+    public att_rate   : i32
+    public att_exp    : bool
+    public dec_rate   : i32
+    public sus_level  : i32
+    public sus_exp    : bool
+    public sus_dec    : bool
+    public sus_rate   : i32
+    public rel_exp    : bool
+    public rel_rate   : i32
+    public adsr1      : u32
+    public adsr2      : u32
+    public phase      : i32
+    public adsr_vol   : i32
+    public last_vol   : i32
+    public target     : i32
+    public env        : SpuEnv
+    public vol_l      : SpuSweep
+    public vol_r      : SpuSweep
+    public counter    : u32
+    public pmon       : bool
+    public non        : bool
+    public eon        : bool
+    public kon        : bool
+    public koff       : bool
+    public endx       : bool
+
+    func init []
+        samples = new i32 [ 28 ]
+        prev = new i32 [ 3 ]
+        nib = new i32 [ 28 ]
+        env = SpuEnv [ ]
+        vol_l = SpuSweep [ ]
+        vol_r = SpuSweep [ ]
+
+    public func set_adsr1 [ v: u32 ]
+        adsr1 = v & 0xFFFF
+        sus_level = i32[ v & 15 ]
+        dec_rate = i32[ (v >> 4) & 15 ]
+        att_rate = i32[ (v >> 8) & 127 ]
+        att_exp = (v & 0x8000) != 0
+        update_env[]
+
+    public func set_adsr2 [ v: u32 ]
+        adsr2 = v & 0xFFFF
+        rel_rate = i32[ v & 31 ]
+        rel_exp = (v & 0x20) != 0
+        sus_rate = i32[ (v >> 6) & 127 ]
+        sus_dec = (v & 0x4000) != 0
+        sus_exp = (v & 0x8000) != 0
+        update_env[]
+
+    # the next 16-byte block: header, then 28 four-bit samples
+    func read_block []
+        h : u32 [ spu.read_ram[ addr ] ]
+        shift = i32[ h & 15 ]
+        if [ shift > 12 ] shift = 9
+        filter = i32[ (h >> 4) & 7 ]
+        if [ filter > 4 ] filter = 4
+        loop_end = (h & 0x100) != 0
+        loop_rep = (h & 0x200) != 0
+        loop_start = (h & 0x400) != 0
+        for [ w: i32 0, w < 7, w += 1 ]
+            d : u32 [ spu.read_ram[ addr + u32[ 2 + w * 2 ] ] ]
+            nib[ w * 4 ]     = i32[ d & 15 ]
+            nib[ w * 4 + 1 ] = i32[ (d >> 4) & 15 ]
+            nib[ w * 4 + 2 ] = i32[ (d >> 8) & 15 ]
+            nib[ w * 4 + 3 ] = i32[ (d >> 12) & 15 ]
+
+    func decode_block []
+        pos : i32 [ 0 ]
+        neg : i32 [ 0 ]
+        if   [ filter == 1 ] pos = 60
+        el [ filter == 2 ]
+            pos = 115
+            neg = -52
+        el [ filter == 3 ]
+            pos = 98
+            neg = -55
+        el [ filter == 4 ]
+            pos = 122
+            neg = -60
+        prev[ 0 ] = samples[ 25 ]
+        prev[ 1 ] = samples[ 26 ]
+        prev[ 2 ] = samples[ 27 ]
+        a : i32 [ last0 ]
+        b : i32 [ last1 ]
+        for [ i: i32 0, i < 28, i += 1 ]
+            s : i32 [ (sign16[ u32[ nib[ i ] ] << 12 ]) >> shift ]
+            s += (a * pos) >> 6
+            s += (b * neg) >> 6
+            b = a
+            a = clamp16[ s ]
+            samples[ i ] = a
+        last0 = a
+        last1 = b
+
+    func gauss_read [ i: i32 ] -> i32
+        if [ i < 0 ] return prev[ i + 3 ]
+        return samples[ i ]
+
+    func interpolate [] -> i32
+        g : i32 [ i32[ (counter >> 4) & 255 ] ]
+        s : i32 [ i32[ (counter >> 12) & 31 ] ]
+        t : @i32 [ spu.gauss ]
+        out : i32 [ t[ 255 - g ] * gauss_read[ s - 3 ] ]
+        out += t[ 511 - g ] * gauss_read[ s - 2 ]
+        out += t[ 256 + g ] * gauss_read[ s - 1 ]
+        out += t[ g ] * gauss_read[ s ]
+        return out >> 15
+
+    # one sample out: left and right in out_l, out_r
+    public func sample [ modulation: i32 ]
+        spu.out_l = 0
+        spu.out_r = 0
+        if [ phase == ADSR_OFF && !spu.irq_on ]
+            last_vol = 0
+            return
+        if [ !has ]
+            read_block[]
+            decode_block[]
+            has = true
+            if [ loop_start && !keep_loop ] repeat = addr
+        v : i32 [ 0 ]
+        if [ non ] v = spu.noise_level
+        el         v = interpolate[]
+        v = amplify[ v, adsr_vol ]
+        last_vol = v
+        if [ phase != ADSR_OFF ] tick_env[]
+        step : u32 [ rate ]
+        if [ pmon ]
+            m : i32 [ clamp16[ modulation ] + 0x8000 ]
+            step = u32[ amplify[ i32[ step ], m ] ] & 0xFFFF
+        if [ step > 0x3FFF ] step = 0x3FFF
+        counter += step
+        if [ (counter >> 12) >= 28 ]
+            counter -= 28 << 12
+            has = false
+            addr = (addr + 16) & 0x7FFFF
+            if [ loop_end ]
+                endx = true
+                if [ !loop_rep ] force_off[]
+                el               addr = repeat & 0x7FFF0
+        spu.out_l = amplify[ v, vol_l.current ]
+        spu.out_r = amplify[ v, vol_r.current ]
+        vol_l.tick[]
+        vol_r.tick[]
+
+    func tick_env []
+        adsr_vol = env.tick[ adsr_vol ]
+        if [ !env.decreasing && adsr_vol >= target ] advance[]
+        el [ env.decreasing && adsr_vol <= target ] advance[]
+
+    func advance []
+        if [ phase == ADSR_ATTACK ]
+            phase = ADSR_DECAY
+            update_env[]
+        el [ phase == ADSR_DECAY ]
+            phase = ADSR_SUSTAIN
+            update_env[]
+        el [ phase == ADSR_RELEASE ]
+            phase = ADSR_OFF
+            update_env[]
+
+    public func update_env []
+        if [ phase == ADSR_OFF ]
+            target = 0
+            env.reset_to[ 0, false, false ]
+        el [ phase == ADSR_ATTACK ]
+            target = 0x7FFF
+            env.reset_to[ att_rate, false, att_exp ]
+        el [ phase == ADSR_DECAY ]
+            target = min[ (sus_level + 1) << 11, 0x7FFF ]
+            env.reset_to[ dec_rate << 2, true, true ]
+        el [ phase == ADSR_SUSTAIN ]
+            target = 0
+            env.reset_to[ sus_rate, sus_dec, sus_exp ]
+        el
+            target = 0
+            env.reset_to[ rel_rate << 2, true, rel_exp ]
+
+    func force_off []
+        if [ phase == ADSR_OFF ] return
+        phase = ADSR_OFF
+        adsr_vol = 0
+
+    public func key_off []
+        koff = false
+        if [ phase == ADSR_OFF || phase == ADSR_RELEASE ] return
+        phase = ADSR_RELEASE
+        update_env[]
+
+    public func key_on []
+        kon = false
+        addr = start & 0x7FFF0
+        has = false
+        keep_loop = false
+        last0 = 0
+        last1 = 0
+        phase = ADSR_ATTACK
+        adsr_vol = 0
+        update_env[]
+
+class Spu
+    public bus       : Bus
+    public ram       : new u16
+    public voices    : vec SpuVoice
+    public gauss     : new i32
+    public vol_l     : SpuSweep
+    public vol_r     : SpuSweep
+    public cnt       : u32
+    public enabled   : bool
+    public unmute    : bool
+    public cd_on     : bool
+    public cd_reverb : bool
+    public cd_vol_l  : i32
+    public cd_vol_r  : i32
+    public ext_vol_l : u32
+    public ext_vol_r : u32
+    public tr_mode   : u32
+    public tr_type   : u32
+    public tr_ctrl   : u32
+    public tr_addr   : u32
+    public tr_cur    : u32
+    public irq_on    : bool
+    public irq_flag  : bool
+    public irq_addr  : u32
+    public noise_step  : i32
+    public noise_shift : i32
+    public noise_level : i32
+    public noise_count : u32
+    public capture_at : u32
+    public fifo      : new u16
+    public fifo_n    : i32
+    # a voice's sample, handed back through these
+    public out_l     : i32
+    public out_r     : i32
+    public rv        : SpuReverb
+    # samples made, left and right, for the sound thread
+    public ring      : new i16
+    public ring_w    : i64
+    public ring_r    : i64
+    public ring_lock : mutex
+    public carry     : i64
+
+    func init []
+        ram = new u16 [ SPU_RAM_HALVES ]
+        gauss = new i32 [ 512 ]
+        fifo = new u16 [ 32 ]
+        voices = vec SpuVoice []
+        for [ i: i32 0, i < 24, i += 1 ]
+            voices.push[ SpuVoice [ spu: a ] ]
+        vol_l = SpuSweep [ ]
+        vol_r = SpuSweep [ ]
+        rv = SpuReverb [ spu: a ]
+        ring = new i16 [ SPU_RING * 2 ]
+        ring_lock = mutex [ ]
+        cd_vol_l = 0
+        cd_vol_r = 0
+        gauss_table[]
+
+    # the 512-entry Gaussian table, as ares builds it
+    func gauss_table []
+        tab : local f64 [ 512 ]
+        for [ n: i32 0, n < 512, n += 1 ]
+            k : f64 [ 0.5 + f64[ n ] ]
+            s : f64 [ sin[ 3.141592653589793 * k * 2.048 / 1024.0 ] ]
+            t : f64 [ (cos[ 3.141592653589793 * k * 2.0 / 1023.0 ] - 1.0) * 0.5 ]
+            u : f64 [ (cos[ 3.141592653589793 * k * 4.0 / 1023.0 ] - 1.0) * 0.08 ]
+            tab[ 511 - n ] = s * (t + u + 1.0) / k
+        sum : f64 [ 0.0 ]
+        for [ n: i32 0, n < 512, n += 1 ]
+            sum += tab[ n ]
+        scale : f64 [ 32640.0 * 128.0 / sum ]
+        for [ n: i32 0, n < 512, n += 1 ]
+            tab[ n ] = tab[ n ] * scale
+        for [ p: i32 0, p < 128, p += 1 ]
+            ps : f64 [ tab[ p ] + tab[ p + 256 ] + tab[ 511 - p ] +
+                       tab[ 255 - p ] ]
+            diff : f64 [ (ps - 32640.0) / 4.0 ]
+            gauss[ p ]       = i32[ rint[ tab[ p ] - diff ] ]
+            gauss[ p + 256 ] = i32[ rint[ tab[ p + 256 ] - diff ] ]
+            gauss[ 511 - p ] = i32[ rint[ tab[ 511 - p ] - diff ] ]
+            gauss[ 255 - p ] = i32[ rint[ tab[ 255 - p ] - diff ] ]
+
+    # ---- sound RAM, by byte address; the IRQ watches it
+
+    func watch [ at: u32 ]
+        if [ irq_on && irq_addr == ((at >> 3) & 0xFFFF) ]
+            if [ !irq_flag ]
+                irq_flag = true
+                bus.irq[ IRQ_SPU ]
+
+    public func read_ram [ at: u32 ] -> u32
+        watch[ at ]
+        return u32[ ram[ i32[ (at >> 1) & 0x3FFFF ] ] ]
+
+    public func write_ram [ at: u32, v: u32 ]
+        watch[ at ]
+        ram[ i32[ (at >> 1) & 0x3FFFF ] ] = u16[ v ]
+
+    # ---- the transfer FIFO
+
+    func fifo_put [ v: u32 ]
+        if [ fifo_n < 32 ]
+            fifo[ fifo_n ] = u16[ v ]
+            fifo_n += 1
+
+    # eight halfwords out of the FIFO, spread by the transfer type
+    func write_block []
+        if [ fifo_n < 8 ] return
+        for [ k: i32 0, k < 8, k += 1 ]
+            d : u32 [ u32[ fifo[ k ] ] ]
+            if [ tr_type == 3 ] d = u32[ fifo[ k & 6 ] ]
+            el [ tr_type == 4 ] d = u32[ fifo[ k & 4 ] ]
+            el [ tr_type == 5 ] d = u32[ fifo[ 0 ] ]
+            el [ tr_type != 2 ] d = u32[ fifo[ 7 ] ]
+            write_ram[ tr_cur, d ]
+            tr_cur = (tr_cur + 2) & 0x7FFFF
+        for [ k: i32 8, k < fifo_n, k += 1 ]
+            fifo[ k - 8 ] = fifo[ k ]
+        fifo_n -= 8
+
+    public func dma_write [ v: u32 ]
+        fifo_put[ v & 0xFFFF ]
+        fifo_put[ v >> 16 ]
+        if [ fifo_n >= 8 ] write_block[]
+
+    public func dma_read [] -> u32
+        lo : u32 [ read_ram[ tr_cur ] ]
+        tr_cur = (tr_cur + 2) & 0x7FFFF
+        hi : u32 [ read_ram[ tr_cur ] ]
+        tr_cur = (tr_cur + 2) & 0x7FFFF
+        return lo | (hi << 16)
+
+    # ---- registers, by offset from 0x1F801C00
+
+    public func read [ off: u32 ] -> u32
+        o : u32 [ off & 0x3FE ]
+        if [ o < 0x180 ]
+            vc : voices[ i32[ o >> 4 ] ]
+            r : u32 [ o & 15 ]
+            if [ r == 0 ] return vc.vol_l.raw
+            if [ r == 2 ] return vc.vol_r.raw
+            if [ r == 4 ] return vc.rate
+            if [ r == 6 ] return vc.start >> 3
+            if [ r == 8 ] return vc.adsr1
+            if [ r == 10 ] return vc.adsr2
+            if [ r == 12 ] return u32[ vc.adsr_vol ] & 0xFFFF
+            return vc.repeat >> 3
+        if [ o == 0x180 ] return vol_l.raw
+        if [ o == 0x182 ] return vol_r.raw
+        if [ o == 0x184 ] return u32[ rv.out_vol_l ] & 0xFFFF
+        if [ o == 0x186 ] return u32[ rv.out_vol_r ] & 0xFFFF
+        if [ o >= 0x188 && o <= 0x19E ]
+            hi : bool [ (o & 2) != 0 ]
+            first : i32 [ (hi) ? 16 : 0 ]
+            n : i32 [ (hi) ? 8 : 16 ]
+            bits : u32 [ 0 ]
+            for [ i: i32 0, i < n, i += 1 ]
+                each : voices[ first + i ]
+                on : bool [ false ]
+                k : u32 [ o & 0x1FC ]
+                if   [ k == 0x188 ] on = each.kon
+                el [ k == 0x18C ] on = each.koff
+                el [ k == 0x190 ] on = each.pmon
+                el [ k == 0x194 ] on = each.non
+                el [ k == 0x198 ] on = each.eon
+                el                on = each.endx
+                if [ on ] bits = bits | (u32[ 1 ] << u32[ i ])
+            return bits
+        if [ o == 0x1A2 ] return rv.base_reg
+        if [ o == 0x1A4 ] return irq_addr
+        if [ o == 0x1A6 ] return tr_addr
+        if [ o == 0x1AA ] return cnt
+        if [ o == 0x1AC ] return tr_ctrl
+        if [ o == 0x1AE ]
+            s : u32 [ cnt & 0x3F ]
+            if [ irq_flag ] s = s | 0x40
+            if [ (tr_mode & 2) != 0 ] s = s | 0x80
+            if [ tr_mode == 2 ] s = s | 0x100
+            if [ tr_mode == 3 ] s = s | 0x200
+            if [ (capture_at & 0x200) != 0 ] s = s | 0x800
+            return s
+        if [ o == 0x1B0 ] return u32[ cd_vol_l ] & 0xFFFF
+        if [ o == 0x1B2 ] return u32[ cd_vol_r ] & 0xFFFF
+        if [ o == 0x1B4 ] return ext_vol_l
+        if [ o == 0x1B6 ] return ext_vol_r
+        if [ o == 0x1B8 ] return u32[ vol_l.current ] & 0xFFFF
+        if [ o == 0x1BA ] return u32[ vol_r.current ] & 0xFFFF
+        if [ o >= 0x1C0 && o < 0x200 ] return rv.read_reg[ o ]
+        if [ o >= 0x200 && o < 0x260 ]
+            vo : voices[ i32[ (o - 0x200) >> 2 ] ]
+            if [ (o & 2) == 0 ] return u32[ vo.vol_l.current ] & 0xFFFF
+            return u32[ vo.vol_r.current ] & 0xFFFF
+        return 0
+
+    public func write [ off: u32, value: u32 ]
+        o : u32 [ off & 0x3FE ]
+        v : u32 [ value & 0xFFFF ]
+        if [ o < 0x180 ]
+            vc : voices[ i32[ o >> 4 ] ]
+            r : u32 [ o & 15 ]
+            if   [ r == 0 ] vc.vol_l.set[ v ]
+            el [ r == 2 ] vc.vol_r.set[ v ]
+            el [ r == 4 ] vc.rate = v
+            el [ r == 6 ] vc.start = v << 3
+            el [ r == 8 ] vc.set_adsr1[ v ]
+            el [ r == 10 ] vc.set_adsr2[ v ]
+            el [ r == 12 ] vc.adsr_vol = i32[ v ] & 0x7FFF
+            el
+                vc.repeat = v << 3
+                vc.keep_loop = true
+            return
+        if [ o == 0x180 ] vol_l.set[ v ]
+        el [ o == 0x182 ] vol_r.set[ v ]
+        el [ o == 0x184 ] rv.out_vol_l = sign16[ v ]
+        el [ o == 0x186 ] rv.out_vol_r = sign16[ v ]
+        el [ o >= 0x188 && o <= 0x19E ]
+            hi : bool [ (o & 2) != 0 ]
+            first : i32 [ (hi) ? 16 : 0 ]
+            n : i32 [ (hi) ? 8 : 16 ]
+            k : u32 [ o & 0x1FC ]
+            for [ i: i32 0, i < n, i += 1 ]
+                each : voices[ first + i ]
+                on : bool [ (v & (u32[ 1 ] << u32[ i ])) != 0 ]
+                if   [ k == 0x188 ] each.kon = on
+                el [ k == 0x18C ] each.koff = on
+                el [ k == 0x190 ] each.pmon = on
+                el [ k == 0x194 ] each.non = on
+                el [ k == 0x198 ] each.eon = on
+                el                each.endx = on
+        el [ o == 0x1A2 ] rv.set_base[ v ]
+        el [ o == 0x1A4 ] irq_addr = v
+        el [ o == 0x1A6 ]
+            tr_addr = v
+            tr_cur = (v << 3) & 0x7FFFF
+        el [ o == 0x1A8 ] fifo_put[ v ]
+        el [ o == 0x1AA ] set_cnt[ v ]
+        el [ o == 0x1AC ]
+            tr_ctrl = v
+            tr_type = (v >> 1) & 7
+        el [ o == 0x1B0 ] cd_vol_l = sign16[ v ]
+        el [ o == 0x1B2 ] cd_vol_r = sign16[ v ]
+        el [ o == 0x1B4 ] ext_vol_l = v
+        el [ o == 0x1B6 ] ext_vol_r = v
+        el [ o >= 0x1C0 && o < 0x200 ] rv.write_reg[ o, v ]
+        el [ o >= 0x200 && o < 0x260 ]
+            vo : voices[ i32[ (o - 0x200) >> 2 ] ]
+            if [ (o & 2) == 0 ] vo.vol_l.current = sign16[ v ]
+            el                  vo.vol_r.current = sign16[ v ]
+
+    # SPUCNT: CD audio, transfers, the IRQ, reverb, noise, mute
+    func set_cnt [ v: u32 ]
+        cnt = v
+        cd_on = (v & 1) != 0
+        cd_reverb = (v & 4) != 0
+        tr_mode = (v >> 4) & 3
+        irq_on = (v & 0x40) != 0
+        rv.enable = (v & 0x80) != 0
+        noise_step = i32[ (v >> 8) & 3 ]
+        noise_shift = i32[ (v >> 10) & 15 ]
+        unmute = (v & 0x4000) != 0
+        enabled = (v & 0x8000) != 0
+        if [ tr_mode == 0 ] fifo_n = 0
+        if [ tr_mode == 1 ]
+            while [ fifo_n >= 8 ] write_block[]
+            # a short tail still lands, one halfword at a time
+            for [ k: i32 0, k < fifo_n, k += 1 ]
+                write_ram[ tr_cur, u32[ fifo[ k ] ] ]
+                tr_cur = (tr_cur + 2) & 0x7FFFF
+            fifo_n = 0
+        if [ !irq_on ] irq_flag = false
+
+    func noise_update []
+        freq : u32 [ 0 ]
+        if   [ noise_step == 1 ] freq = 84
+        el [ noise_step == 2 ] freq = 140
+        el [ noise_step == 3 ] freq = 180
+        noise_count = noise_count + 0x10000 + freq
+        if [ (noise_count & 0xFFFF) >= 210 ]
+            noise_count = noise_count + 0x10000 - freq
+        limit : u32 [ (u32[ 0x8000 ] >> u32[ noise_shift ]) << 16 ]
+        if [ noise_count < limit ] return
+        noise_count = noise_count % limit
+        # the parity of bits 15, 12, 11, 10, inverted
+        lv : u32 [ u32[ noise_level ] & 0xFFFF ]
+        par : u32 [ ((lv >> 15) ^ (lv >> 12) ^ (lv >> 11) ^
+                     (lv >> 10) ^ 1) & 1 ]
+        noise_level = sign16[ ((lv << 1) | par) & 0xFFFF ]
+
+    # one 44100 Hz sample of everything into the ring
+    public func sample []
+        lsum : i32 [ 0 ]
+        rsum : i32 [ 0 ]
+        lrev : i32 [ 0 ]
+        rrev : i32 [ 0 ]
+        modulation : i32 [ 0 ]
+        for [ i: i32 0, i < 24, i += 1 ]
+            vc : voices[ i ]
+            vc.sample[ modulation ]
+            modulation = vc.last_vol
+            lsum += out_l
+            rsum += out_r
+            if [ vc.eon ]
+                lrev += out_l
+                rrev += out_r
+            if [ vc.koff ] vc.key_off[]
+            if [ vc.kon ] vc.key_on[]
+        if [ !unmute || !enabled ]
+            lsum = 0
+            rsum = 0
+            lrev = 0
+            rrev = 0
+        noise_update[]
+        lcd : i32 [ 0 ]
+        rcd : i32 [ 0 ]
+        bus.cd.audio_sample[]
+        if [ cd_on ]
+            lcd = clamp16[ amplify[ bus.cd.out_l, cd_vol_l ] ]
+            rcd = clamp16[ amplify[ bus.cd.out_r, cd_vol_r ] ]
+            lsum += lcd
+            rsum += rcd
+            if [ cd_reverb ]
+                lrev += lcd
+                rrev += rcd
+        rv.process[ clamp16[ lrev ], clamp16[ rrev ] ]
+        lsum = amplify[ clamp16[ lsum + rv.out_l ], vol_l.current ]
+        rsum = amplify[ clamp16[ rsum + rv.out_r ], vol_r.current ]
+        vol_l.tick[]
+        vol_r.tick[]
+        # the capture buffers: CD left and right, voices 1 and 3
+        write_ram[ capture_at, u32[ lcd ] & 0xFFFF ]
+        write_ram[ 0x400 + capture_at, u32[ rcd ] & 0xFFFF ]
+        write_ram[ 0x800 + capture_at,
+                   u32[ clamp16[ voices[ 1 ].last_vol ] ] & 0xFFFF ]
+        write_ram[ 0xC00 + capture_at,
+                   u32[ clamp16[ voices[ 3 ].last_vol ] ] & 0xFFFF ]
+        capture_at = (capture_at + 2) & 0x3FF
+        put[ clamp16[ lsum ], clamp16[ rsum ] ]
+
+    # a stereo sample into the ring; a full ring drops it
+    func put [ l: i32, r: i32 ]
+        ring_lock.lock[]
+        if [ ring_w - ring_r < i64[ SPU_RING ] ]
+            at : i32 [ i32[ ring_w % i64[ SPU_RING ] ] * 2 ]
+            ring[ at ] = i16[ l ]
+            ring[ at + 1 ] = i16[ r ]
+            ring_w += 1
+        ring_lock.unlock[]
+
+    # samples waiting for the sound thread
+    public func queued [] -> i64
+        ring_lock.lock[]
+        n : i64 [ ring_w - ring_r ]
+        ring_lock.unlock[]
+        return n
+
+    # up to n samples into out; the rest silence; how many were real
+    public func take [ out: @i16, n: i32 ] -> i32
+        ring_lock.lock[]
+        got : i32 [ i32[ min[ i64[ n ], ring_w - ring_r ] ] ]
+        for [ i: i32 0, i < got, i += 1 ]
+            at : i32 [ i32[ (ring_r + i64[ i ]) % i64[ SPU_RING ] ] * 2 ]
+            out[ i * 2 ] = ring[ at ]
+            out[ i * 2 + 1 ] = ring[ at + 1 ]
+        ring_r += i64[ got ]
+        ring_lock.unlock[]
+        for [ i: i32 got, i < n, i += 1 ]
+            out[ i * 2 ] = 0
+            out[ i * 2 + 1 ] = 0
+        return got
+
+    # CPU cycles passed: a sample every 768
+    public func run [ cycles: i64 ]
+        carry += cycles
+        while [ carry >= SPU_CYCLES ]
+            carry -= SPU_CYCLES
+            sample[]
+
+# the reverb: a work area in sound RAM, run at 22050 Hz
+class SpuReverb
+    public spu       : Spu
+    public enable    : bool
+    public out_vol_l : i32
+    public out_vol_r : i32
+    public base_reg  : u32
+    # the 32 registers from 0x1DC0, raw
+    public regs      : new u32
+    public down      : new i32
+    public up        : new i32
+    public pos       : i32
+    public base      : u32
+    public cur       : u32
+    public out_l     : i32
+    public out_r     : i32
+
+    func init []
+        regs = new u32 [ 32 ]
+        down = new i32 [ 256 ]
+        up = new i32 [ 128 ]
+
+    public func set_base [ v: u32 ]
+        base_reg = v
+        base = (v << 2) & 0x3FFFF
+        cur = base
+
+    public func read_reg [ o: u32 ] -> u32
+        return regs[ i32[ (o - 0x1C0) >> 1 ] ]
+
+    public func write_reg [ o: u32, v: u32 ]
+        regs[ i32[ (o - 0x1C0) >> 1 ] ] = v
+
+    # a register as an address and as a signed coefficient
+    func ad [ k: i32 ] -> u32
+        return regs[ k ]
+
+    func co [ k: i32 ] -> i32
+        return sign16[ regs[ k ] ]
+
+    # a work-area halfword, the area wrapping back to its base
+    func where [ at: u32 ] -> u32
+        o : u32 [ cur + (at & 0x3FFFF) ]
+        if [ (o & 0x40000) != 0 ] o = o + base
+        return (o & 0x3FFFF) * 2
+
+    func rd [ r: u32, offset: i32 ] -> i32
+        at : u32 [ where[ u32[ i32[ r << 2 ] + offset ] ] ]
+        return sign16[ spu.read_ram[ at ] ]
+
+    func wr [ r: u32, v: i32 ]
+        spu.write_ram[ where[ r << 2 ], u32[ v ] & 0xFFFF ]
+
+    func coef [ n: i32 ] -> i32
+        if [ n == 0 || n == 19 ] return -1
+        if [ n == 1 || n == 18 ] return 2
+        if [ n == 2 || n == 17 ] return -10
+        if [ n == 3 || n == 16 ] return 35
+        if [ n == 4 || n == 15 ] return -103
+        if [ n == 5 || n == 14 ] return 266
+        if [ n == 6 || n == 13 ] return -616
+        if [ n == 7 || n == 12 ] return 1332
+        if [ n == 8 || n == 11 ] return -2960
+        return 10246
+
+    # 44100 to 22050: a 39-tap half-band from every other sample
+    func r4422 [ ch: i32, from: i32 ] -> i32
+        o : i32 [ 0 ]
+        for [ n: i32 0, n < 20, n += 1 ]
+            o += coef[ n ] * down[ ch * 128 + from + n * 2 ]
+        o += 0x4000 * down[ ch * 128 + from + 19 ]
+        return clamp16[ o >> 15 ]
+
+    # 22050 back to 44100: odd samples straight, even ones filtered
+    func r2244 [ ch: i32, from: i32, odd: bool ] -> i32
+        if [ odd ] return up[ ch * 64 + from + 9 ]
+        o : i32 [ 0 ]
+        for [ n: i32 0, n < 20, n += 1 ]
+            o += coef[ n ] * up[ ch * 64 + from + n ]
+        return clamp16[ o >> 14 ]
+
+    func iiasm [ s: i32 ] -> i32
+        alpha : i32 [ co[ 2 ] ]
+        if [ alpha == -32768 ]
+            if [ s == -32768 ] return 0
+            return s * -65536
+        return s * (32768 - alpha)
+
+    public func process [ lin: i32, rin: i32 ]
+        down[ pos ] = lin
+        down[ pos | 64 ] = lin
+        down[ 128 + pos ] = rin
+        down[ 128 + (pos | 64) ] = rin
+        from : i32 [ ((pos - 39) & 63) >> 1 ]
+        odd : bool [ (pos & 1) != 0 ]
+        if [ odd ] compute[]
+        lo : i32 [ r2244[ 0, from, odd ] ]
+        ro : i32 [ r2244[ 1, from, odd ] ]
+        pos = (pos + 1) & 63
+        out_l = amplify[ lo, out_vol_l ]
+        out_r = amplify[ ro, out_vol_r ]
+
+    func compute []
+        ld : i32 [ r4422[ 0, (pos - 39) & 63 ] ]
+        rd2 : i32 [ r4422[ 1, (pos - 39) & 63 ] ]
+        # registers by index from 0x1DC0
+        if [ enable ]
+            in_l : i32 [ co[ 30 ] ]
+            in_r : i32 [ co[ 31 ] ]
+            wall : i32 [ co[ 7 ] ]
+            alpha : i32 [ co[ 2 ] ]
+            ia0 : i32 [ clamp16[ ((rd[ ad[ 16 ], 0 ] * wall) >> 15) +
+                                 ((ld * in_l) >> 15) ] ]
+            ia1 : i32 [ clamp16[ ((rd[ ad[ 17 ], 0 ] * wall) >> 15) +
+                                 ((rd2 * in_r) >> 15) ] ]
+            ib0 : i32 [ clamp16[ ((rd[ ad[ 25 ], 0 ] * wall) >> 15) +
+                                 ((ld * in_l) >> 15) ] ]
+            ib1 : i32 [ clamp16[ ((rd[ ad[ 24 ], 0 ] * wall) >> 15) +
+                                 ((rd2 * in_r) >> 15) ] ]
+            a0 : i32 [ clamp16[ (((ia0 * alpha) >> 14) +
+                       (iiasm[ rd[ ad[ 10 ], -1 ] ] >> 14)) >> 1 ] ]
+            a1 : i32 [ clamp16[ (((ia1 * alpha) >> 14) +
+                       (iiasm[ rd[ ad[ 11 ], -1 ] ] >> 14)) >> 1 ] ]
+            b0 : i32 [ clamp16[ (((ib0 * alpha) >> 14) +
+                       (iiasm[ rd[ ad[ 18 ], -1 ] ] >> 14)) >> 1 ] ]
+            b1 : i32 [ clamp16[ (((ib1 * alpha) >> 14) +
+                       (iiasm[ rd[ ad[ 19 ], -1 ] ] >> 14)) >> 1 ] ]
+            wr[ ad[ 10 ], a0 ]
+            wr[ ad[ 11 ], a1 ]
+            wr[ ad[ 18 ], b0 ]
+            wr[ ad[ 19 ], b1 ]
+            ca : i32 [ co[ 3 ] ]
+            cb : i32 [ co[ 4 ] ]
+            cc : i32 [ co[ 5 ] ]
+            cdd : i32 [ co[ 6 ] ]
+            acc0 : i32 [ clamp16[ (((rd[ ad[ 12 ], 0 ] * ca) >> 14) +
+                                   ((rd[ ad[ 14 ], 0 ] * cb) >> 14) +
+                                   ((rd[ ad[ 20 ], 0 ] * cc) >> 14) +
+                                   ((rd[ ad[ 22 ], 0 ] * cdd) >> 14))
+                                  >> 1 ] ]
+            acc1 : i32 [ clamp16[ (((rd[ ad[ 13 ], 0 ] * ca) >> 14) +
+                                   ((rd[ ad[ 15 ], 0 ] * cb) >> 14) +
+                                   ((rd[ ad[ 21 ], 0 ] * cc) >> 14) +
+                                   ((rd[ ad[ 23 ], 0 ] * cdd) >> 14))
+                                  >> 1 ] ]
+            src_a : u32 [ ad[ 0 ] ]
+            src_b : u32 [ ad[ 1 ] ]
+            fa0 : i32 [ rd[ (ad[ 26 ] - src_a) & 0xFFFF, 0 ] ]
+            fa1 : i32 [ rd[ (ad[ 27 ] - src_a) & 0xFFFF, 0 ] ]
+            fb0 : i32 [ rd[ (ad[ 28 ] - src_b) & 0xFFFF, 0 ] ]
+            fb1 : i32 [ rd[ (ad[ 29 ] - src_b) & 0xFFFF, 0 ] ]
+            fba : i32 [ co[ 8 ] ]
+            fbx : i32 [ co[ 9 ] ]
+            inv : i32 [ sign16[ 0x8000 ^ (u32[ fba ] & 0xFFFF) ] ]
+            wr[ ad[ 26 ], clamp16[ acc0 - ((fa0 * fba) >> 15) ] ]
+            wr[ ad[ 27 ], clamp16[ acc1 - ((fa1 * fba) >> 15) ] ]
+            wr[ ad[ 28 ], clamp16[ ((fba * acc0) >> 15) -
+                                   ((fa0 * inv) >> 15) -
+                                   ((fb0 * fbx) >> 15) ] ]
+            wr[ ad[ 29 ], clamp16[ ((fba * acc1) >> 15) -
+                                   ((fa1 * inv) >> 15) -
+                                   ((fb1 * fbx) >> 15) ] ]
+        h : i32 [ pos >> 1 ]
+        ul : i32 [ (rd[ ad[ 26 ], 0 ] + rd[ ad[ 28 ], 0 ]) >> 1 ]
+        ur : i32 [ (rd[ ad[ 27 ], 0 ] + rd[ ad[ 29 ], 0 ]) >> 1 ]
+        up[ h ] = ul
+        up[ h | 32 ] = ul
+        up[ 64 + h ] = ur
+        up[ 64 + (h | 32) ] = ur
+        cur = (cur + 1) & 0x3FFFF
+        if [ cur == 0 ] cur = base

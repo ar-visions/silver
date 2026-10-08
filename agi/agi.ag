@@ -1,0 +1,1161 @@
+# agi: aggregated group intelligence, a byte-level language model
+# whose second output names the groups its text comes from
+export 0.1.0
+
+import trinity
+import tls
+import ai
+import <stdio.h>
+import <stdlib.h>
+import <unistd.h>
+    +_DEFAULT_SOURCE
+import <sys/stat.h>
+
+# the Gutenberg mirror books are fetched from
+AGI_MIRROR : string [ 'https://gutenberg.pglaf.org/cache/epub' ]
+AGI_CATALOG : string [
+    'https://www.gutenberg.org/cache/epub/feeds/pg_catalog.csv' ]
+
+# a 64-bit xorshift: the same seed draws the same run
+class AgiRand
+    public state : u64 [ 0x9E3779B97F4A7C15 ]
+
+    func next [] -> u64
+        x : u64 [ state ]
+        x = x ^ (x >> 12)
+        x = x ^ (x << 25)
+        x = x ^ (x >> 27)
+        state = x
+        return x * 0x2545F4914F6CDD1D
+
+    # in [0, 1)
+    func uniform [] -> f64
+        return f64[ next[] >> 11 ] / 9007199254740992.0
+
+    func below [ n: i64 ] -> i64
+        return i64[ next[] % u64[ n ] ]
+
+    func normal [] -> f64
+        u : f64 [ uniform[] + 0.0000000001 ]
+        w : f64 [ uniform[] ]
+        return sqrt[ -2.0 * log[ u ] ] * cos[ 6.283185307179586 * w ]
+
+# a whole file, or null
+func agi_bytes [ p: string ] -> vec u8
+    fp : @FILE [ fopen[ p.chars, 'rb' ] ]
+    if [ !fp ] return null
+    fseek[ fp, 0, SEEK_END ]
+    n : i64 [ ftell[ fp ] ]
+    rewind[ fp ]
+    b : vec u8 [ n + 1 ]
+    got : i64 [ fread[ @b[ 0 ], 1, n, fp ] ]
+    fclose[ fp ]
+    if [ got != n ] return null
+    b[ n ] = 0
+    return b
+
+func agi_exists [ p: string ] -> bool
+    return access[ p.chars, F_OK ] == 0
+
+# the first place at or after at where pat starts, else -1
+func agi_find [ b: vec u8, at: i64, end: i64, pat: string ] -> i64
+    n : i64 [ pat.count ]
+    i : i64 [ at ]
+    while [ i + n <= end ]
+        j : i64 [ 0 ]
+        while [ j < n && b[ i + j ] == u8[ pat.chars[ j ] ] ]
+            j += 1
+        if [ j == n ] return i
+        i += 1
+    return -1
+
+# a name's identity: 64 bits, fnv-1a, spread evenly
+func agi_identity [ name: string ] -> u64
+    h : u64 [ 0xcbf29ce484222325 ]
+    for [ i: i64 0, i < name.count, i += 1 ]
+        h = (h ^ u64[ u8[ name.chars[ i ] ] ]) * 0x100000001b3
+    return h
+
+# the 64 bits of an identity as 0 and 1, lowest first
+func agi_bits [ id: u64, out: vec f32, at: i64 ]
+    for [ b: i64 0, b < 64, b += 1 ]
+        out[ at + b ] = f32[ (id >> u64[ b ]) & 1 ]
+
+# a 64-bit number as 16 hex digits
+func agi_hex [ v: u64 ] -> string
+    buf : vec i8 [ 17 ]
+    digits : string '0123456789abcdef'
+    for [ i: i64 0, i < 16, i += 1 ]
+        buf[ 15 - i ] = digits.chars[ i64[ (v >> u64[ i * 4 ]) & 15 ] ]
+    buf[ 16 ] = 0
+    return string [ cast cstr [ @buf[ 0 ] ] ]
+
+# lines of a text file, without their line ends
+func agi_lines [ p: string ] -> vec string
+    b : vec u8 agi_bytes[ p ]
+    if [ !b ] return null
+    out : vec string []
+    buf : vec i8 [ 4096 ]
+    n : i64 [ 0 ]
+    for [ i: i64 0, i < b.count - 1, i += 1 ]
+        if [ b[ i ] == 10 ]
+            buf[ n ] = 0
+            out.push[ string [ cast cstr [ @buf[ 0 ] ] ] ]
+            n = 0
+        el [ b[ i ] != 13 && n < 4095 ]
+            buf[ n ] = i8[ b[ i ] ]
+            n += 1
+    return out
+
+# who is credited: each author alone, unless members.txt
+# (group, a tab, author) puts the author in a group
+class AgiRegistry
+    public names  : vec string
+    public ident  : vec u64
+    intern index  : map i64 [ string ]
+    intern member : map string [ string ]
+
+    func init []
+        names = vec string []
+        ident = vec u64 []
+        index = map i64 [ string ] []
+        member = map string [ string ] []
+
+    func read_members [ p: string ]
+        lines : vec string agi_lines[ p ]
+        if [ !lines ] return
+        for [ ln: string ] in lines
+            tab : i32 [ ln.index_of[ '\t' ] ]
+            if [ tab <= 0 ] continue
+            member[ ln.mid[ tab + 1, ln.count - tab - 1 ] ] =
+                ln.mid[ 0, tab ]
+
+    # the identity an author is credited under
+    func credited [ who: string ] -> string
+        if [ member.contains[ who ] ] return member[ who ]
+        return who
+
+    # the identity's place, added the first time
+    func add [ who: string ] -> i64
+        nm : string credited[ who ]
+        if [ index.contains[ nm ] ] return index[ nm ]
+        at : i64 [ names.count ]
+        index[ nm ] = at
+        names.push[ nm ]
+        ident.push[ agi_identity[ nm ] ]
+        return at
+
+    # identities.txt: the number in hex, a tab, the name
+    func write [ p: string ] -> bool
+        fp : @FILE [ fopen[ p.chars, 'wb' ] ]
+        if [ !fp ] return false
+        for [ i: i64 0, i < names.count, i += 1 ]
+            line : string '{agi_hex[ ident[ i ] ]}\t{names[ i ]}\n'
+            fwrite[ line.chars, 1, line.count, fp ]
+        fclose[ fp ]
+        return true
+
+    # the registry as written: its numbers are the record
+    func read [ p: string ] -> bool
+        lines : vec string agi_lines[ p ]
+        if [ !lines ] return false
+        for [ ln: string ] in lines
+            if [ ln.count < 18 ] continue
+            v : u64 [ 0 ]
+            for [ i: i64 0, i < 16, i += 1 ]
+                c : i64 [ ln.chars[ i ] ]
+                dg : i64 [ (c >= 97) ? c - 87 : c - 48 ]
+                v = (v << 4) | u64[ dg ]
+            nm : string ln.mid[ 17, ln.count - 17 ]
+            index[ nm ] = names.count
+            names.push[ nm ]
+            ident.push[ v ]
+        return true
+
+# one book chosen for the corpus: everyone it credits, and
+# the author it was chosen for
+class AgiBook
+    public id   : i64
+    public lead : i64
+    public held : bool
+    public who  : vec i64
+
+# Gutenberg's catalog: English texts and everyone each lists
+class AgiCatalog
+    public ids    : vec i64
+    # record i's people are people[ starts[ i ] .. starts[ i + 1 ] )
+    public starts : vec i64
+    public people : vec string
+
+    func field [ buf: vec i8, n: i64 ] -> string
+        buf[ n ] = 0
+        return string [ cast cstr [ @buf[ 0 ] ] ]
+
+    # the csv's fields: quotes, doubled quotes, newlines inside
+    func read [ csv: vec u8 ]
+        ids = vec i64 []
+        starts = vec i64 [] [ 0 ]
+        people = vec string []
+        buf : vec i8 [ 8192 ]
+        n : i64 [ 0 ]
+        col : i32 [ 0 ]
+        quoted : bool [ false ]
+        id : i64 [ -1 ]
+        kind : string [ '' ]
+        lang : string [ '' ]
+        who : string [ '' ]
+        first : bool [ true ]
+        i : i64 [ 0 ]
+        end : i64 [ csv.count - 1 ]
+        while [ i < end ]
+            c : u8 [ csv[ i ] ]
+            i += 1
+            if [ quoted ]
+                if [ c == 34 ]
+                    if [ i < end && csv[ i ] == 34 ]
+                        if [ n < 8191 ]
+                            buf[ n ] = 34
+                            n += 1
+                        i += 1
+                    el
+                        quoted = false
+                el [ n < 8191 ]
+                    buf[ n ] = i8[ c ]
+                    n += 1
+                continue
+            if [ c == 34 ]
+                quoted = true
+                continue
+            if [ c == 13 ] continue
+            if [ c == 44 || c == 10 ]
+                if [ col == 0 ]
+                    num : string field[ buf, n ]
+                    id = atoll[ num.chars ]
+                if [ col == 1 ] kind = field[ buf, n ]
+                if [ col == 4 ] lang = field[ buf, n ]
+                if [ col == 5 ] who = field[ buf, n ]
+                n = 0
+                col += 1
+                if [ c == 10 ]
+                    if [ !first ] take[ id, kind, lang, who ]
+                    first = false
+                    col = 0
+                    id = -1
+                continue
+            if [ n < 8191 ]
+                buf[ n ] = i8[ c ]
+                n += 1
+
+    # everyone listed, as the catalog writes them; a role in
+    # brackets is how they took part, not who they are
+    func take [ id: i64, kind: string, lang: string, who: string ]
+        if [ id <= 0 || kind != 'Text' || lang != 'en' ] return
+        nobody : vec string [] [ 'Anonymous', 'Various', 'Unknown' ]
+        had : i64 [ people.count ]
+        rest : string [ who ]
+        while [ rest.count > 0 ]
+            cut : i32 [ rest.index_of[ ';' ] ]
+            one : string [ (cut >= 0) ? rest.mid[ 0, cut ] : rest ]
+            rest = (cut >= 0)
+                ? rest.mid[ cut + 1, rest.count - cut - 1 ] : ''
+            role : i32 [ one.index_of[ '[' ] ]
+            if [ role >= 0 ] one = one.mid[ 0, role ]
+            a : i64 [ 0 ]
+            e : i64 [ one.count ]
+            while [ a < e && one.chars[ a ] == 32 ]
+                a += 1
+            while [ e > a && one.chars[ e - 1 ] == 32 ]
+                e -= 1
+            if [ e <= a ] continue
+            nm : string one.mid[ a, e - a ]
+            plain : bool [ true ]
+            for [ x: string ] in nobody
+                if [ nm.index_of[ x ] == 0 ] plain = false
+            if [ plain ] people.push[ nm ]
+        if [ people.count == had ] return
+        ids.push[ id ]
+        starts.push[ people.count ]
+
+    # authors with at least per books, most books first, count
+    # of them; each gives its first per books, the last held
+    # out; everyone those books list is in the registry
+    func choose [ count: i64, per: i64,
+                  reg: AgiRegistry ] -> vec AgiBook
+        index : map i64 [ string ] []
+        totals : vec i64 []
+        order : vec string []
+        for [ who: string ] in people
+            if [ !index.contains[ who ] ]
+                index[ who ] = order.count
+                order.push[ who ]
+                totals.push[ 0 ]
+            at : i64 [ index[ who ] ]
+            totals[ at ] = totals[ at ] + 1
+        rank : vec i64 []
+        for [ i: i64 0, i < order.count, i += 1 ]
+            if [ totals[ i ] >= per ] rank.push[ i ]
+        for [ i: i64 1, i < rank.count, i += 1 ]
+            j : i64 [ i ]
+            while [ j > 0
+                    && totals[ rank[ j - 1 ] ] < totals[ rank[ j ] ] ]
+                tv : i64 [ rank[ j ] ]
+                rank[ j ] = rank[ j - 1 ]
+                rank[ j - 1 ] = tv
+                j -= 1
+        chosen : vec bool [ order.count ]
+        for [ i: i64 0, i < rank.count && i < count, i += 1 ]
+            chosen[ rank[ i ] ] = true
+        taken : vec i64 [ order.count ]
+        out : vec AgiBook []
+        for [ r: i64 0, r < ids.count, r += 1 ]
+            lead : i64 [ -1 ]
+            for [ k: i64 starts[ r ], k < starts[ r + 1 ], k += 1 ]
+                at : i64 [ index[ people[ k ] ] ]
+                if [ lead < 0 && chosen[ at ] && taken[ at ] < per ]
+                    lead = at
+            if [ lead < 0 ] continue
+            taken[ lead ] = taken[ lead ] + 1
+            bk : AgiBook [ id: ids[ r ], held: taken[ lead ] == per,
+                           who: vec i64 [] ]
+            for [ k: i64 starts[ r ], k < starts[ r + 1 ], k += 1 ]
+                at : i64 reg.add[ people[ k ] ]
+                if [ index[ people[ k ] ] == lead ] bk.lead = at
+                if [ bk.who.index_of[ at ] < 0 ] bk.who.push[ at ]
+            out.push[ bk ]
+        return out
+
+# the corpus on disk: every book's text, who it credits, its
+# split
+class AgiData
+    public dir    : string
+    public bytes  : vec u8
+    # per book: offset, length, held, gutenberg id, lead, and
+    # its credits' start and count in credits
+    public docs   : vec i64
+    public credits : vec i64
+    public reg    : AgiRegistry
+    # train books' lengths summed, for drawing by length
+    public cumul  : vec i64
+    public train  : vec i64
+    public held   : vec i64
+
+    func book_path [ id: i64 ] -> string
+        return '{dir}/books/pg{id}.txt'
+
+    # the catalog, the books, then the corpus and the registry
+    func prepare [ count: i64, per: i64 ] -> bool
+        mkdir[ dir.chars, 0x1ED ]
+        bd : string '{dir}/books'
+        mkdir[ bd.chars, 0x1ED ]
+        cat : string '{dir}/pg_catalog.csv'
+        if [ !agi_exists[ cat ] ]
+            if [ Http.download[ AGI_CATALOG, path [ cat ] ] < 0 ]
+                log 'agi: no catalog from {AGI_CATALOG}'
+                return false
+        csv : vec u8 agi_bytes[ cat ]
+        if [ !csv ] return false
+        ct : AgiCatalog []
+        ct.read[ csv ]
+        reg = AgiRegistry []
+        reg.read_members[ '{dir}/members.txt' ]
+        books : vec AgiBook ct.choose[ count, per, reg ]
+        log 'agi: {ct.ids.count} English texts; {books.count} books chosen, {reg.names.count} identities'
+        got : i64 [ 0 ]
+        for [ bk: AgiBook ] in books
+            got += 1
+            dest : string book_path[ bk.id ]
+            if [ agi_exists[ dest ] ] continue
+            url : string '{AGI_MIRROR}/{bk.id}/pg{bk.id}.txt'
+            tmp : string '{dest}.part'
+            if [ Http.download[ url, path [ tmp ] ] < 0 ]
+                log 'agi: book {bk.id} not fetched'
+                unlink[ tmp.chars ]
+                continue
+            rename[ tmp.chars, dest.chars ]
+            # the mirror is shared: a pause between books
+            usleep[ 250000 ]
+            if [ got % 50 == 0 ]
+                log 'agi: {got} of {books.count} books'
+        return write_corpus[ books ]
+
+    # each book cut to its text between Gutenberg's markers
+    func write_corpus [ books: vec AgiBook ] -> bool
+        cp : string '{dir}/corpus.u8'
+        fp : @FILE [ fopen[ cp.chars, 'wb' ] ]
+        if [ !fp ] return false
+        index : vec i64 []
+        cr : vec i64 []
+        off : i64 [ 0 ]
+        for [ bk: AgiBook ] in books
+            b : vec u8 agi_bytes[ book_path[ bk.id ] ]
+            if [ !b ] continue
+            end : i64 [ b.count - 1 ]
+            st : i64 agi_find[ b, 0, end, '*** START OF' ]
+            at : i64 [ 0 ]
+            if [ st >= 0 ]
+                at = st
+                while [ at < end && b[ at ] != 10 ]
+                    at += 1
+            en : i64 agi_find[ b, at, end, '*** END OF' ]
+            if [ en >= 0 ] end = en
+            # line ends as one byte
+            w : i64 [ 0 ]
+            for [ i: i64 at, i < end, i += 1 ]
+                if [ b[ i ] != 13 ]
+                    b[ w ] = b[ i ]
+                    w += 1
+            if [ w < 4096 ] continue
+            fwrite[ @b[ 0 ], 1, w, fp ]
+            index.push[ off ]
+            index.push[ w ]
+            index.push[ (bk.held) ? 1 : 0 ]
+            index.push[ bk.id ]
+            index.push[ bk.lead ]
+            index.push[ cr.count ]
+            index.push[ bk.who.count ]
+            for [ k: i64 ] in bk.who
+                cr.push[ k ]
+            off += w
+        fclose[ fp ]
+        if [ !agi_write_i64[ '{dir}/docs.i64', index ] ] return false
+        if [ !agi_write_i64[ '{dir}/credits.i64', cr ] ] return false
+        if [ !reg.write[ '{dir}/identities.txt' ] ] return false
+        log 'agi: corpus {off / 1048576} MB in {index.count / 7} books, {reg.names.count} identities'
+        return true
+
+    func load [] -> bool
+        bytes = agi_bytes[ '{dir}/corpus.u8' ]
+        docs = agi_read_i64[ '{dir}/docs.i64' ]
+        credits = agi_read_i64[ '{dir}/credits.i64' ]
+        reg = AgiRegistry []
+        if [ !bytes || !docs || !credits ] return false
+        if [ !reg.read[ '{dir}/identities.txt' ] ] return false
+        train = vec i64 []
+        held = vec i64 []
+        cumul = vec i64 []
+        sum : i64 [ 0 ]
+        for [ d: i64 0, d < docs.count / 7, d += 1 ]
+            if [ docs[ d * 7 + 2 ] != 0 ]
+                held.push[ d ]
+            el
+                train.push[ d ]
+                sum += docs[ d * 7 + 1 ]
+                cumul.push[ sum ]
+        return true
+
+    # book d's identity bits: everyone it credits, averaged
+    func bits_of [ d: i64, out: vec f32 ]
+        cs : i64 [ docs[ d * 7 + 5 ] ]
+        cn : i64 [ docs[ d * 7 + 6 ] ]
+        one : vec f32 [ 64 ]
+        for [ b: i64 0, b < 64, b += 1 ]
+            out[ b ] = 0.0
+        for [ k: i64 0, k < cn, k += 1 ]
+            agi_bits[ reg.ident[ credits[ cs + k ] ], one, 0 ]
+            for [ b: i64 0, b < 64, b += 1 ]
+                out[ b ] = out[ b ] + one[ b ] / f32[ cn ]
+
+    # a train book drawn by its length
+    func draw [ rnd: AgiRand ] -> i64
+        tot : i64 [ cumul[ cumul.count - 1 ] ]
+        r : i64 rnd.below[ tot ]
+        lo : i64 [ 0 ]
+        hi : i64 [ cumul.count - 1 ]
+        while [ lo < hi ]
+            mid : i64 [ (lo + hi) / 2 ]
+            if [ cumul[ mid ] > r ] hi = mid
+            el lo = mid + 1
+        return train[ lo ]
+
+func agi_write_i64 [ p: string, v: vec i64 ] -> bool
+    fp : @FILE [ fopen[ p.chars, 'wb' ] ]
+    if [ !fp ] return false
+    if [ v.count > 0 ] fwrite[ @v[ 0 ], 8, v.count, fp ]
+    fclose[ fp ]
+    return true
+
+func agi_read_i64 [ p: string ] -> vec i64
+    raw : vec u8 agi_bytes[ p ]
+    if [ !raw ] return null
+    n : i64 [ (raw.count - 1) / 8 ]
+    v : vec i64 [ n ]
+    if [ n > 0 ] memcpy[ @v[ 0 ], @raw[ 0 ], n * 8 ]
+    return v
+
+# nt + 1 bytes from book d at a drawn place: ids, next bytes
+class AgiBatch
+    public nb   : i64
+    public nt   : i64
+    public ids  : vec f32
+    public next : vec f32
+    # each row's identity bits, 64 a row
+    public bits : vec f32
+    public pos  : vec f32
+
+    func fill [ data: AgiData, books: vec i64, rnd: AgiRand ]
+        ids = vec f32 [ nb * nt ]
+        next = vec f32 [ nb * nt ]
+        bits = vec f32 [ nb * nt * 64 ]
+        pos = vec f32 [ nb * nt ]
+        for [ b: i64 0, b < nb, b += 1 ]
+            d : i64 books[ b ]
+            off : i64 [ data.docs[ d * 7 ] ]
+            len : i64 [ data.docs[ d * 7 + 1 ] ]
+            mine : vec f32 [ 64 ]
+            data.bits_of[ d, mine ]
+            at : i64 [ off + rnd.below[ len - nt - 1 ] ]
+            for [ t: i64 0, t < nt, t += 1 ]
+                ids[ b * nt + t ] = f32[ data.bytes[ at + t ] ]
+                next[ b * nt + t ] = f32[ data.bytes[ at + t + 1 ] ]
+                memcpy[ @bits[ (b * nt + t) * 64 ], @mine[ 0 ], 256 ]
+                pos[ b * nt + t ] = f32[ t ]
+
+# the transformer: byte and place embeddings, pre-norm blocks,
+# a final norm, then the byte head and the group head
+class AgiNet
+    context vk     : vk_context
+    public  gd     : Grad
+    public  width  : i64 [ 384 ]
+    public  layers : i64 [ 6 ]
+    public  heads  : i64 [ 6 ]
+    public  ctx    : i64 [ 256 ]
+    public  work_mb : i64 [ 6144 ]
+    public  ps     : vec GTensor
+    public  names  : vec string
+    intern  pmap   : map GTensor [ string ]
+    public  valid  : bool
+
+    func init []
+        gd = Grad [ vk: vk, keep_mb: 1024, work_mb: work_mb,
+                    scratch_mb: 512 ]
+        if [ !gd.valid ] return
+        ps = vec GTensor []
+        names = vec string []
+        pmap = map GTensor [ string ] []
+        d : i64 [ width ]
+        add_param[ 'wte', vec i64 [] [ 256, d ] ]
+        add_param[ 'wpe', vec i64 [] [ ctx, d ] ]
+        for [ i: i64 0, i < layers, i += 1 ]
+            add_param[ 'b{i}.ln1.g', vec i64 [] [ d ] ]
+            add_param[ 'b{i}.ln1.b', vec i64 [] [ d ] ]
+            add_param[ 'b{i}.qkv.w', vec i64 [] [ 3 * d, d ] ]
+            add_param[ 'b{i}.qkv.b', vec i64 [] [ 3 * d ] ]
+            add_param[ 'b{i}.proj.w', vec i64 [] [ d, d ] ]
+            add_param[ 'b{i}.proj.b', vec i64 [] [ d ] ]
+            add_param[ 'b{i}.ln2.g', vec i64 [] [ d ] ]
+            add_param[ 'b{i}.ln2.b', vec i64 [] [ d ] ]
+            add_param[ 'b{i}.fc.w', vec i64 [] [ 4 * d, d ] ]
+            add_param[ 'b{i}.fc.b', vec i64 [] [ 4 * d ] ]
+            add_param[ 'b{i}.out.w', vec i64 [] [ d, 4 * d ] ]
+            add_param[ 'b{i}.out.b', vec i64 [] [ d ] ]
+        add_param[ 'lnf.g', vec i64 [] [ d ] ]
+        add_param[ 'lnf.b', vec i64 [] [ d ] ]
+        add_param[ 'head.w', vec i64 [] [ 256, d ] ]
+        add_param[ 'group.w', vec i64 [] [ 64, d ] ]
+        add_param[ 'group.b', vec i64 [] [ 64 ] ]
+        valid = true
+
+    func add_param [ nm: string, dims: vec i64 ]
+        t : GTensor gd.param[ dims ]
+        t.need = true
+        ps.push[ t ]
+        names.push[ nm ]
+        pmap[ nm ] = t
+
+    func pm [ nm: string ] -> GTensor
+        return pmap[ nm ]
+
+    # gpt-2's start: 0.02 normal, outputs into the stream by depth
+    func start [ rnd: AgiRand ]
+        deep : f64 [ 0.02 / sqrt[ 2.0 * f64[ layers ] ] ]
+        for [ i: i64 0, i < ps.count, i += 1 ]
+            t : GTensor ps[ i ]
+            nm : string names[ i ]
+            v : vec f32 [ t.count ]
+            if [ nm.index_of[ '.g' ] == nm.count - 2 ]
+                for [ j: i64 0, j < t.count, j += 1 ]
+                    v[ j ] = 1.0
+            el [ t.dims.count > 1 ]
+                sd : f64 [ 0.02 ]
+                if [ nm.index_of[ '.proj.w' ] > 0
+                     || nm.index_of[ '.out.w' ] > 0 ] sd = deep
+                for [ j: i64 0, j < t.count, j += 1 ]
+                    v[ j ] = f32[ rnd.normal[] * sd ]
+            gd.upload[ t, v ]
+
+    # x [rows, in, 1] through a linear layer into [rows, out, 1]
+    func lin [ x: GTensor, base: string, bias: bool ] -> GTensor
+        w : GTensor pm[ '{base}.w' ]
+        rows : i64 [ x.dims[ 0 ] ]
+        two : vec i64 [] [ rows, w.dims[ 1 ] ]
+        flat : GTensor gd.reshape_view[ x, two ]
+        b : GTensor [ (bias) ? pm[ '{base}.b' ] : null ]
+        y : GTensor gd.linear[ flat, w, b ]
+        return gd.reshape_view[ y, vec i64 [] [ rows, w.dims[ 0 ], 1 ] ]
+
+    func norm [ x: GTensor, base: string ] -> GTensor
+        return gd.layer_norm[ x, pm[ '{base}.g' ], pm[ '{base}.b' ] ]
+
+    func block [ i: i64, x: GTensor, nb: i64, nt: i64 ] -> GTensor
+        d : i64 [ width ]
+        rows : i64 [ nb * nt ]
+        qkv : GTensor lin[ norm[ x, 'b{i}.ln1' ], 'b{i}.qkv', true ]
+        hc : GTensor gd.swap12[
+            gd.reshape_view[ qkv, vec i64 [] [ nb, nt, 3 * d ] ] ]
+        q : GTensor gd.slice[ hc, 0, d ]
+        k : GTensor gd.slice[ hc, d, d ]
+        v : GTensor gd.slice[ hc, 2 * d, d ]
+        att : GTensor gd.causal_attention[ q, k, v, heads ]
+        back : GTensor gd.reshape_view[ gd.swap12[ att ],
+                                   vec i64 [] [ rows, d, 1 ] ]
+        mid : GTensor gd.add[ x, lin[ back, 'b{i}.proj', true ] ]
+        up : GTensor gd.gelu[ lin[ norm[ mid, 'b{i}.ln2' ], 'b{i}.fc',
+                                   true ] ]
+        return gd.add[ mid, lin[ up, 'b{i}.out', true ] ]
+
+    # the last hidden state [rows, d, 1] of ids [nb * nt]
+    func hidden [ ids: GTensor, pos: GTensor, nb: i64,
+                  nt: i64 ] -> GTensor
+        rows : i64 [ nb * nt ]
+        cube : vec i64 [] [ rows, width, 1 ]
+        tok : GTensor gd.reshape_view[ gd.lookup[ ids, pm[ 'wte' ] ],
+                                       cube ]
+        at : GTensor gd.reshape_view[ gd.lookup[ pos, pm[ 'wpe' ] ],
+                                      cube ]
+        x : GTensor gd.add[ tok, at ]
+        for [ i: i64 0, i < layers, i += 1 ]
+            x = block[ i, x, nb, nt ]
+        return norm[ x, 'lnf' ]
+
+    func up [ v: vec f32 ] -> GTensor
+        t : GTensor gd.temp[ vec i64 [] [ v.count ] ]
+        gd.upload[ t, v ]
+        return t
+
+    # byte logits [rows, 256] and identity bits [rows, 64]
+    func heads_of [ h: GTensor, logits: vec GTensor ]
+        rows : i64 [ h.dims[ 0 ] ]
+        flat : GTensor gd.reshape_view[ h, vec i64 [] [ rows, width ] ]
+        logits.push[ gd.linear[ flat, pm[ 'head.w' ], null ] ]
+        logits.push[ gd.linear[ flat, pm[ 'group.w' ],
+                                pm[ 'group.b' ] ] ]
+
+    func save [ to: string ] -> bool
+        return agi_save_tensors[ gd, names, ps, to ]
+
+    func load [ from: string ] -> bool
+        if [ !agi_exists[ from ] ] return false
+        st : safetensors [ src: path from ]
+        if [ !st.valid ] return false
+        for [ i: i64 0, i < names.count, i += 1 ]
+            v : tensor st.tensor_named[ names[ i ] ]
+            if [ !v || v.tensor_shape.total[] != ps[ i ].count ]
+                log 'agi: {from} has no {names[ i ]} of this size'
+                return false
+        for [ i: i64 0, i < names.count, i += 1 ]
+            v : tensor st.tensor_named[ names[ i ] ]
+            gd.upload_raw[ ps[ i ], v.floats, ps[ i ].count ]
+        return true
+
+# tensors as one safetensors file, written then renamed
+func agi_save_tensors [ gd: Grad, keys: vec string, ts: vec GTensor,
+                        to: string ] -> bool
+    hdr : string '{{'
+    off : i64 [ 0 ]
+    for [ i: i64 0, i < keys.count, i += 1 ]
+        t : GTensor ts[ i ]
+        dm : string ''
+        for [ j: i64 0, j < t.dims.count, j += 1 ]
+            dj : i64 [ t.dims[ j ] ]
+            dm = (j == 0) ? '{dj}' : '{dm},{dj}'
+        stop : i64 [ off + t.count * 4 ]
+        shape : string '"dtype":"F32","shape":[{dm}]'
+        span : string '"data_offsets":[{off},{stop}]'
+        one : string '"{keys[ i ]}":{{{shape},{span}}}'
+        hdr = (i == 0) ? '{hdr}{one}' : '{hdr},{one}'
+        off = stop
+    hdr = '{hdr}}}'
+    while [ hdr.count % 8 != 0 ]
+        hdr = '{hdr} '
+    tmp : string '{to}.tmp'
+    fp : @FILE [ fopen[ tmp.chars, 'wb' ] ]
+    if [ !fp ] return false
+    hl : local i64 [ 1 ]
+    hl[ 0 ] = i64[ hdr.count ]
+    fwrite[ @hl[ 0 ], 8, 1, fp ]
+    fwrite[ hdr.chars, 1, hdr.count, fp ]
+    gd.rn.finish[]
+    for [ t: GTensor ] in ts
+        v : vec f32 gd.download[ t ]
+        fwrite[ @v[ 0 ], 4, v.count, fp ]
+    fclose[ fp ]
+    return rename[ tmp.chars, to.chars ] == 0
+
+# adamw moments for every parameter
+class AgiOpt
+    public gd   : Grad
+    public ps   : vec GTensor
+    public ms   : vec GTensor
+    public vs   : vec GTensor
+    public step : i64
+
+    func init []
+        ms = vec GTensor []
+        vs = vec GTensor []
+        for [ t: GTensor ] in ps
+            m : GTensor gd.param[ t.dims ]
+            v : GTensor gd.param[ t.dims ]
+            gd.fill[ m, 0.0 ]
+            gd.fill[ v, 0.0 ]
+            ms.push[ m ]
+            vs.push[ v ]
+
+    func clear []
+        for [ t: GTensor ] in ps
+            t.gr = null
+
+    # betas 0.9 0.95, eps 1e-8, decay 0.1, as gpt-2 runs use
+    func update [ lr: f32 ]
+        step += 1
+        gd.rn.nofence = true
+        for [ i: i64 0, i < ps.count, i += 1 ]
+            gd.adamw[ ps[ i ], ms[ i ], vs[ i ], lr, 0.9, 0.95,
+                      0.00000001, 0.1, step ]
+        gd.rn.nofence = false
+        gd.rn.fence_mem[]
+
+# one group's share of an answer
+class AgiCredit
+    public group : i64
+    public share : f64
+
+# each identity's share over rows a .. e of the bit logits g:
+# a row's shares are its bits' likelihoods, normalised
+func agi_shares [ g: vec f32, ident: vec u64, a: i64,
+                  e: i64 ] -> vec f64
+    n : i64 [ ident.count ]
+    out : vec f64 [ n ]
+    score : vec f64 [ n ]
+    on : vec f64 [ 64 ]
+    off : vec f64 [ 64 ]
+    for [ r: i64 a, r < e, r += 1 ]
+        for [ b: i64 0, b < 64, b += 1 ]
+            z : f64 [ g[ r * 64 + b ] ]
+            # log sigmoid of z and of -z, kept finite
+            mag : f64 [ (z < 0.0) ? -z : z ]
+            soft : f64 [ log[ 1.0 + exp[ -mag ] ] ]
+            on[ b ] = -(((z < 0.0) ? -z : 0.0) + soft)
+            off[ b ] = -(((z > 0.0) ? z : 0.0) + soft)
+        mx : f64 [ -1.0e30 ]
+        for [ c: i64 0, c < n, c += 1 ]
+            id : u64 [ ident[ c ] ]
+            sc : f64 [ 0.0 ]
+            for [ b: i64 0, b < 64, b += 1 ]
+                sc += (((id >> u64[ b ]) & 1) != 0) ? on[ b ] : off[ b ]
+            score[ c ] = sc
+            if [ sc > mx ] mx = sc
+        sum : f64 [ 0.0 ]
+        for [ c: i64 0, c < n, c += 1 ]
+            sum += exp[ score[ c ] - mx ]
+        for [ c: i64 0, c < n, c += 1 ]
+            p : f64 [ exp[ score[ c ] - mx ] / sum ]
+            out[ c ] = out[ c ] + p / f64[ e - a ]
+    return out
+
+# the n largest shares, largest first
+func agi_top [ shares: vec f64, n: i64 ] -> vec AgiCredit
+    out : vec AgiCredit []
+    used : vec bool [ shares.count ]
+    for [ k: i64 0, k < n && k < shares.count, k += 1 ]
+        best : i64 [ -1 ]
+        for [ c: i64 0, c < shares.count, c += 1 ]
+            if [ used[ c ] ] continue
+            if [ best < 0 || shares[ c ] > shares[ best ] ] best = c
+        used[ best ] = true
+        out.push[ AgiCredit [ group: best, share: shares[ best ] ] ]
+    return out
+
+# agi <command> [text]: prepare, train, ask, ledger
+element agi : trinity
+    default command : string [ 'ask' ]
+    public  authors : i64 [ 1000 ]
+    public  books   : i64 [ 5 ]
+    public  steps   : i64 [ 20000 ]
+    public  batch   : i64 [ 32 ]
+    public  lr      : f32 [ 0.0006 ]
+    public  warmup  : i64 [ 200 ]
+    # the group loss's weight beside the byte loss
+    public  group_weight : f32 [ 0.5 ]
+    public  every   : i64 [ 500 ]
+    public  length  : i64 [ 400 ]
+    public  heat    : f32 [ 0.8 ]
+    public  seed    : i64 [ 1 ]
+    # gpu time per kernel, reported at the end of training
+    public  profile : bool
+    intern  dir     : string
+    intern  disp    : Display
+
+    func init []
+        # a build mid-run must not swap out a training run
+        au_live_set_reload[ 0 ]
+        app : string 'agi'
+        dir = '{path.path_cache[ app.chars ]}'
+        cut : i32 [ command.index_of[ ' ' ] ]
+        word : string [ command ]
+        text : string [ '' ]
+        if [ cut > 0 ]
+            word = command.mid[ 0, cut ]
+            text = command.mid[ cut + 1, command.count - cut - 1 ]
+        ok : bool [ false ]
+        if [ word == 'prepare' ]
+            dt : AgiData [ dir: dir ]
+            ok = dt.prepare[ authors, books ]
+        el [ word == 'train' ]
+            ok = train[]
+        el [ word == 'ask' ]
+            ok = ask[ text ]
+        el [ word == 'ledger' ]
+            ok = ledger[]
+        el
+            log 'agi: prepare | train | ask <text> | ledger'
+        exit[ (ok) ? 0 : 1 ]
+
+    func gpu [] -> vk_context
+        dev : vk_context []
+        Au.hold[ dev ]
+        disp = Display [ vk: dev, backbuffer: true,
+                         width: 64, height: 64 ]
+        Au.hold[ disp ]
+        return dev
+
+    func corpus [] -> AgiData
+        dt : AgiData [ dir: dir ]
+        if [ !dt.load[] ]
+            log 'agi: no corpus in {dir}: run agi prepare first'
+            return null
+        return dt
+
+    # warmup, then a cosine down to a tenth
+    func rate [ s: i64 ] -> f32
+        if [ s < warmup ] return lr * f32[ s + 1 ] / f32[ warmup ]
+        pr : f64 [ f64[ s - warmup ] / f64[ steps - warmup ] ]
+        if [ pr > 1.0 ] pr = 1.0
+        wave : f64 [ 1.0 + cos[ 3.141592653589793 * pr ] ]
+        return f32[ lr * (0.1 + 0.45 * wave) ]
+
+    func train [] -> bool
+        dt : AgiData corpus[]
+        if [ !dt ] return false
+        net : AgiNet [ vk: gpu[] ]
+        if [ !net.valid ] return false
+        rnd : AgiRand [ state: u64[ seed ] * 0x9E3779B97F4A7C15 + 1 ]
+        model : string '{dir}/agi.safetensors'
+        if [ net.load[ model ] ]
+            log 'agi: continuing from {model}'
+        el
+            net.start[ rnd ]
+        opt : AgiOpt [ gd: net.gd, ps: net.ps ]
+        gd : Grad net.gd
+        gd.rn.prof = profile
+        nt : i64 [ net.ctx ]
+        log 'agi: {dt.train.count} train books, {dt.held.count} held out, {dt.reg.names.count} identities, {dt.bytes.count / 1048576} MB'
+        sums : vec f64 [ 2 ]
+        t0 : i64 [ Au.epoch_millis[] ]
+        for [ s: i64 0, s < steps, s += 1 ]
+            mark : i32 [ Au.auto_mark[] ]
+            bt : AgiBatch [ nb: batch, nt: nt ]
+            picks : vec i64 [ batch ]
+            for [ b: i64 0, b < batch, b += 1 ]
+                picks[ b ] = dt.draw[ rnd ]
+            bt.fill[ dt, picks, rnd ]
+            gd.reset_work[]
+            opt.clear[]
+            gd.tape_cut[ 0 ]
+            gd.record = true
+            h : GTensor net.hidden[ net.up[ bt.ids ], net.up[ bt.pos ],
+                                    batch, nt ]
+            logits : vec GTensor []
+            net.heads_of[ h, logits ]
+            lt : GTensor gd.xent[ logits[ 0 ], net.up[ bt.next ] ]
+            lg : GTensor gd.bce[ logits[ 1 ], net.up[ bt.bits ] ]
+            gd.backward_all[ vec GTensor [] [ lt, lg ],
+                             vec f32 [] [ 1.0, group_weight ] ]
+            opt.update[ rate[ s ] ]
+            gd.record = false
+            gd.tape_cut[ 0 ]
+            lv : vec f32 gd.download[ lt ]
+            gv : vec f32 gd.download[ lg ]
+            sums[ 0 ] = sums[ 0 ] + f64[ lv[ 0 ] ]
+            sums[ 1 ] = sums[ 1 ] + f64[ gv[ 0 ] ]
+            if [ (s + 1) % 10 == 0 ]
+                ms : i64 [ Au.epoch_millis[] - t0 ]
+                rate_now : f64 [
+                    f64[ 10 * batch * nt ] * 1000.0 / f64[ ms ] ]
+                log 'agi: step {s + 1}: bytes {sums[ 0 ] / 10.0} groups {sums[ 1 ] / 10.0}, {ms / 10} ms a step, {i64[ rate_now ]} bytes/s, {gd.work.top / 1048576} MB work'
+                sums[ 0 ] = 0.0
+                sums[ 1 ] = 0.0
+                t0 = Au.epoch_millis[]
+            if [ (s + 1) % every == 0 || s + 1 == steps ]
+                held_check[ net, dt ]
+                net.save[ model ]
+                t0 = Au.epoch_millis[]
+            Au.auto_free_to[ mark ]
+        if [ profile ] gd.prof_report[]
+        return true
+
+    # held-out books: the bytes' loss, the author's rank
+    func held_check [ net: AgiNet, dt: AgiData ]
+        gd : Grad net.gd
+        nt : i64 [ net.ctx ]
+        rnd : AgiRand [ state: 12345 ]
+        loss : f64 [ 0.0 ]
+        top1 : i64 [ 0 ]
+        top10 : i64 [ 0 ]
+        top100 : i64 [ 0 ]
+        n : i64 [ 0 ]
+        for [ d: i64 ] in dt.held
+            gd.reset_work[]
+            bt : AgiBatch [ nb: 1, nt: nt ]
+            bt.fill[ dt, vec i64 [] [ d ], rnd ]
+            h : GTensor net.hidden[ net.up[ bt.ids ], net.up[ bt.pos ],
+                                    1, nt ]
+            logits : vec GTensor []
+            net.heads_of[ h, logits ]
+            lt : GTensor gd.xent[ logits[ 0 ], net.up[ bt.next ] ]
+            lv : vec f32 gd.download[ lt ]
+            loss += f64[ lv[ 0 ] ]
+            sh : vec f64 agi_shares[ gd.download[ logits[ 1 ] ],
+                                     dt.reg.ident, 0, nt ]
+            want : i64 [ dt.docs[ d * 7 + 4 ] ]
+            above : i64 [ 0 ]
+            for [ c: i64 0, c < sh.count, c += 1 ]
+                if [ sh[ c ] > sh[ want ] ] above += 1
+            if [ above < 1 ] top1 += 1
+            if [ above < 10 ] top10 += 1
+            if [ above < 100 ] top100 += 1
+            n += 1
+        if [ n == 0 ] return
+        fn : f64 [ n ]
+        log 'agi: held out, {n} books: bytes {loss / fn} ({loss / fn / 0.6931471805599453} bits a byte); author top 1 {f64[ top1 ] * 100.0 / fn}%, top 10 {f64[ top10 ] * 100.0 / fn}%, top 100 {f64[ top100 ] * 100.0 / fn}%'
+
+    # a byte drawn from row r of logits [rows, 256] at heat
+    func sample [ lv: vec f32, r: i64, rnd: AgiRand ] -> i64
+        mx : f64 [ -1.0e30 ]
+        for [ c: i64 0, c < 256, c += 1 ]
+            if [ f64[ lv[ r * 256 + c ] ] > mx ]
+                mx = f64[ lv[ r * 256 + c ] ]
+        ps : vec f64 [ 256 ]
+        sum : f64 [ 0.0 ]
+        for [ c: i64 0, c < 256, c += 1 ]
+            dv : f64 [ f64[ lv[ r * 256 + c ] ] - mx ]
+            ps[ c ] = exp[ dv / f64[ heat ] ]
+            sum += ps[ c ]
+        u : f64 [ rnd.uniform[] * sum ]
+        for [ c: i64 0, c < 256, c += 1 ]
+            u -= ps[ c ]
+            if [ u <= 0.0 ] return c
+        return 255
+
+    # the text goes on; the answer's top 100 groups are added
+    # to the ledger
+    func ask [ text: string ] -> bool
+        reg : AgiRegistry []
+        if [ !reg.read[ '{dir}/identities.txt' ] ]
+            log 'agi: no identities in {dir}: run agi prepare first'
+            return false
+        net : AgiNet [ vk: gpu[], work_mb: 512 ]
+        if [ !net.valid ] return false
+        if [ !net.load[ '{dir}/agi.safetensors' ] ]
+            log 'agi: no model in {dir}: run agi train first'
+            return false
+        gd : Grad net.gd
+        rnd : AgiRand [ state: u64[ Au.epoch_millis[] ] | 1 ]
+        all : vec u8 []
+        for [ i: i64 0, i < text.count, i += 1 ]
+            all.push[ u8[ text.chars[ i ] ] ]
+        given : i64 [ all.count ]
+        for [ k: i64 0, k < length, k += 1 ]
+            gd.reset_work[]
+            nt : i64 [ (all.count < net.ctx) ? all.count : net.ctx ]
+            if [ nt == 0 ]
+                all.push[ 10 ]
+                continue
+            st : i64 [ all.count - nt ]
+            ids : vec f32 [ nt ]
+            pos : vec f32 [ nt ]
+            for [ t: i64 0, t < nt, t += 1 ]
+                ids[ t ] = f32[ all[ st + t ] ]
+                pos[ t ] = f32[ t ]
+            h : GTensor net.hidden[ net.up[ ids ], net.up[ pos ], 1,
+                                    nt ]
+            logits : vec GTensor []
+            net.heads_of[ h, logits ]
+            lv : vec f32 gd.download[ logits[ 0 ] ]
+            all.push[ u8[ sample[ lv, nt - 1, rnd ] ] ]
+        # the groups of the answer's bytes, the last window's
+        gd.reset_work[]
+        nt : i64 [ (all.count < net.ctx) ? all.count : net.ctx ]
+        st : i64 [ all.count - nt ]
+        ids : vec f32 [ nt ]
+        pos : vec f32 [ nt ]
+        for [ t: i64 0, t < nt, t += 1 ]
+            ids[ t ] = f32[ all[ st + t ] ]
+            pos[ t ] = f32[ t ]
+        h : GTensor net.hidden[ net.up[ ids ], net.up[ pos ], 1, nt ]
+        logits : vec GTensor []
+        net.heads_of[ h, logits ]
+        from : i64 [ given - st ]
+        if [ from < 0 ] from = 0
+        sh : vec f64 agi_shares[ gd.download[ logits[ 1 ] ],
+                                 reg.ident, from, nt ]
+        all.push[ 0 ]
+        answer : string [ cast cstr [ @all[ 0 ] ] ]
+        log 'agi: {answer}'
+        top : vec AgiCredit agi_top[ sh, 100 ]
+        for [ i: i64 0, i < top.count && i < 10, i += 1 ]
+            cr : AgiCredit top[ i ]
+            log 'agi: {i + 1}. {reg.names[ cr.group ]}: {cr.share * 100.0}%'
+        agi_ledger_add[ dir, reg, top ]
+        return true
+
+    # every answer's top 100 shares summed: the payout weights
+    func ledger [] -> bool
+        reg : AgiRegistry []
+        reg.read[ '{dir}/identities.txt' ]
+        ids : vec u64 []
+        sums : vec f64 []
+        agi_ledger_read[ dir, ids, sums ]
+        total : f64 [ 0.0 ]
+        for [ v: f64 ] in sums
+            total += v
+        if [ total <= 0.0 ]
+            log 'agi: the ledger is empty'
+            return true
+        top : vec AgiCredit agi_top[ sums, 100 ]
+        for [ i: i64 0, i < top.count, i += 1 ]
+            cr : AgiCredit top[ i ]
+            if [ cr.share <= 0.0 ] break
+            who : u64 [ ids[ cr.group ] ]
+            nm : string agi_hex[ who ]
+            at : i64 reg.ident.index_of[ who ]
+            if [ at >= 0 ] nm = reg.names[ at ]
+            log 'agi: {i + 1}. {nm}: {cr.share * 100.0 / total}%'
+        return true
+
+# ledger.txt: an identity in hex, a tab, its summed shares
+func agi_ledger_read [ dir: string, ids: vec u64, sums: vec f64 ]
+    lines : vec string agi_lines[ '{dir}/ledger.txt' ]
+    if [ !lines ] return
+    for [ ln: string ] in lines
+        if [ ln.count < 18 ] continue
+        v : u64 [ 0 ]
+        for [ i: i64 0, i < 16, i += 1 ]
+            c : i64 [ ln.chars[ i ] ]
+            dg : i64 [ (c >= 97) ? c - 87 : c - 48 ]
+            v = (v << 4) | u64[ dg ]
+        rest : string ln.mid[ 17, ln.count - 17 ]
+        ids.push[ v ]
+        sums.push[ atof[ rest.chars ] ]
+
+func agi_ledger_add [ dir: string, reg: AgiRegistry,
+                      top: vec AgiCredit ]
+    ids : vec u64 []
+    sums : vec f64 []
+    agi_ledger_read[ dir, ids, sums ]
+    for [ cr: AgiCredit ] in top
+        id : u64 [ reg.ident[ cr.group ] ]
+        at : i64 ids.index_of[ id ]
+        if [ at < 0 ]
+            ids.push[ id ]
+            sums.push[ cr.share ]
+        el
+            sums[ at ] = sums[ at ] + cr.share
+    lp : string '{dir}/ledger.txt'
+    tmp : string '{lp}.tmp'
+    fp : @FILE [ fopen[ tmp.chars, 'wb' ] ]
+    if [ !fp ] return
+    for [ i: i64 0, i < ids.count, i += 1 ]
+        line : string '{agi_hex[ ids[ i ] ]}\t{sums[ i ]}\n'
+        fwrite[ line.chars, 1, line.count, fp ]
+    fclose[ fp ]
+    rename[ tmp.chars, lp.chars ]
+
+# a file of f32 values onto the gpu
+func agi_gold [ gd: Grad, dir: string, name: string,
+                dims: vec i64 ] -> GTensor
+    t : GTensor gd.temp[ dims ]
+    gd.upload[ t, grad_gold[ dir, name ] ]
+    return t
+
+# the whole net, losses and every gradient, vs pytorch (AGI_GOLD)
+expect func t_agi_net [] -> bool
+    ge : cstr [ getenv[ 'AGI_GOLD' ] ]
+    if [ !ge ] return true
+    dir : string [ ge ]
+    dev : vk_context []
+    Au.hold[ dev ]
+    disp : Display [ vk: dev, backbuffer: true, width: 64, height: 64 ]
+    Au.hold[ disp ]
+    net : AgiNet [ vk: dev, width: 32, layers: 2, heads: 2, ctx: 16,
+                   work_mb: 64 ]
+    if [ !net.valid || !net.load[ '{dir}/w.safetensors' ] ]
+        return false
+    gd : Grad net.gd
+    rows : vec i64 [] [ 48 ]
+    gd.record = true
+    h : GTensor net.hidden[ agi_gold[ gd, dir, 'ids', rows ],
+                            agi_gold[ gd, dir, 'pos', rows ], 3, 16 ]
+    logits : vec GTensor []
+    net.heads_of[ h, logits ]
+    lt : GTensor gd.xent[ logits[ 0 ],
+                          agi_gold[ gd, dir, 'next', rows ] ]
+    lg : GTensor gd.bce[ logits[ 1 ],
+                         agi_gold[ gd, dir, 'bits',
+                                   vec i64 [] [ 3072 ] ] ]
+    gd.backward_all[ vec GTensor [] [ lt, lg ],
+                     vec f32 [] [ 1.0, 0.5 ] ]
+    gd.rn.finish[]
+    bytes_err : f64 grad_worst[ gd.download[ lt ],
+                                grad_gold[ dir, 'lt' ] ]
+    groups_err : f64 grad_worst[ gd.download[ lg ],
+                                 grad_gold[ dir, 'lg' ] ]
+    worst : f64 [ 0.0 ]
+    at : string [ '' ]
+    for [ i: i64 0, i < net.ps.count, i += 1 ]
+        w : f64 grad_worst[ gd.download[ net.ps[ i ].gr ],
+                            grad_gold[ dir, 'd.{net.names[ i ]}' ] ]
+        if [ w > worst ]
+            worst = w
+            at = net.names[ i ]
+    log 'agi net: bytes loss {bytes_err}, groups loss {groups_err}, worst gradient {worst} ({at})'
+    return bytes_err < 0.00001 && groups_err < 0.00001
+        && worst < 0.0001
+
+# identities: alone, in a group by members.txt, and read back
+expect func t_agi_registry [] -> bool
+    dir : string '{path.path_install[]}/tmp'
+    mp : string '{dir}/agi-members.txt'
+    fp : @FILE [ fopen[ mp.chars, 'wb' ] ]
+    if [ !fp ] return false
+    line : string 'Bronte Sisters\tBronte, Emily, 1818-1848\n'
+    fwrite[ line.chars, 1, line.count, fp ]
+    fclose[ fp ]
+    reg : AgiRegistry []
+    reg.read_members[ mp ]
+    alone : i64 reg.add[ 'Twain, Mark, 1835-1910' ]
+    inside : i64 reg.add[ 'Bronte, Emily, 1818-1848' ]
+    again : i64 reg.add[ 'Twain, Mark, 1835-1910' ]
+    rp : string '{dir}/agi-identities.txt'
+    reg.write[ rp ]
+    back : AgiRegistry []
+    back.read[ rp ]
+    unlink[ mp.chars ]
+    unlink[ rp.chars ]
+    log 'agi registry: {reg.names[ alone ]} {agi_hex[ reg.ident[ alone ]]}, {reg.names[ inside ]} {agi_hex[ reg.ident[ inside ]]}; fnv a {agi_hex[ agi_identity[ 'a' ] ]}'
+    same : bool [ back.names.count == 2 ]
+    for [ i: i64 0, i < back.names.count, i += 1 ]
+        if [ back.names[ i ] != reg.names[ i ]
+             || back.ident[ i ] != reg.ident[ i ] ] same = false
+    return alone == again && reg.names[ inside ] == 'Bronte Sisters'
+        && agi_hex[ agi_identity[ 'a' ] ] == 'af63dc4c8601ec8c'
+        && same

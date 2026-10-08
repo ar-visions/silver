@@ -1,0 +1,18 @@
+# the motion decoder for FMV (stage 9)
+extend psx
+
+class Mdec
+    public bus : Bus
+
+    public func read_data [] -> u32
+        return 0
+
+    # data-out FIFO empty, ready for commands
+    public func status [] -> u32
+        return 0x80040000
+
+    public func command [ v: u32 ]
+        return
+
+    public func control [ v: u32 ]
+        return

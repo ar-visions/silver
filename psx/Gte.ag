@@ -1,0 +1,618 @@
+# the geometry engine, coprocessor 2: fixed point transforms,
+# perspective, lighting and colour, bit-exact with the flags
+extend psx
+
+# FLAG bits
+F_MAC1_POS : u32 [ 0x40000000 ]
+F_MAC1_NEG : u32 [ 0x08000000 ]
+F_IR1      : u32 [ 0x01000000 ]
+F_COLOR_R  : u32 [ 0x00200000 ]
+F_SZ_OTZ   : u32 [ 0x00040000 ]
+F_DIVIDE   : u32 [ 0x00020000 ]
+F_MAC0_POS : u32 [ 0x00010000 ]
+F_MAC0_NEG : u32 [ 0x00008000 ]
+F_SX2      : u32 [ 0x00004000 ]
+F_SY2      : u32 [ 0x00002000 ]
+F_IR0      : u32 [ 0x00001000 ]
+# the bits that make FLAG bit 31, the summary
+F_ERRORS   : u32 [ 0x7F87E000 ]
+
+class Gte
+    public data : new u32
+    public ctrl : new u32
+    # the reciprocal table the divider starts from
+    public unr  : new i32
+    # this command's shift (0 or 12) and IR lower bound mode
+    public sh   : i32
+    public lm   : bool
+    # screen positions before the cut to whole pixels, by SXY word
+    public near_key : new u32
+    public near_x   : new f32
+    public near_y   : new f32
+    public near_z   : new f32
+    # the frame each entry was made in
+    public near_at  : new i64
+    # two vertices on one word this frame: the whole pixel for all
+    public near_bad : new bool
+    public near_on  : new bool
+    # exact x, y and depth beside the three SXY registers
+    public ex_x     : new f32
+    public ex_y     : new f32
+    public ex_z     : new f32
+    public ex_ok    : new bool
+    # the frame being run, set by the machine
+    public frame    : i64
+    # the last lookup's precise position and depth
+    public hit_x    : f32
+    public hit_y    : f32
+    public hit_z    : f32
+
+    func init []
+        data = new u32 [ 32 ]
+        ctrl = new u32 [ 32 ]
+        unr = new i32 [ 257 ]
+        near_key = new u32 [ 4096 ]
+        near_x = new f32 [ 4096 ]
+        near_y = new f32 [ 4096 ]
+        near_on = new bool [ 4096 ]
+        near_z = new f32 [ 4096 ]
+        near_at = new i64 [ 4096 ]
+        near_bad = new bool [ 4096 ]
+        ex_x = new f32 [ 3 ]
+        ex_y = new f32 [ 3 ]
+        ex_z = new f32 [ 3 ]
+        ex_ok = new bool [ 3 ]
+        for [ i: i32 0, i < 257, i += 1 ]
+            v : i32 [ (0x40000 / (i + 0x100) + 1) / 2 - 0x101 ]
+            unr[ i ] = (v > 0) ? v : 0
+
+    func s16 [ v: u32 ] -> i32
+        return i32[ v << 16 ] >> 16
+
+    func hi16 [ v: u32 ] -> i32
+        return i32[ v ] >> 16
+
+    # ---- the registers as the CPU sees them
+
+    public func read_data [ i: u32 ] -> u32
+        k : u32 [ i & 31 ]
+        if [ k == 1 || k == 3 || k == 5 || (k >= 8 && k <= 11) ]
+            return u32[ s16[ data[ k ] ] ]
+        if [ k == 7 || (k >= 16 && k <= 19) ] return data[ k ] & 0xFFFF
+        if [ k == 15 ] return data[ 14 ]
+        if [ k == 28 || k == 29 ] return orgb[]
+        return data[ k ]
+
+    public func write_data [ i: u32, v: u32 ]
+        k : u32 [ i & 31 ]
+        if [ k >= 12 && k <= 14 ] ex_ok[ i32[ k ] - 12 ] = false
+        if [ k == 15 ]
+            data[ 12 ] = data[ 13 ]
+            data[ 13 ] = data[ 14 ]
+            data[ 14 ] = v
+            data[ 15 ] = v
+            ex_shift[]
+            ex_ok[ 2 ] = false
+        el [ k == 28 ]
+            data[ 9 ]  = (v & 0x1F) << 7
+            data[ 10 ] = ((v >> 5) & 0x1F) << 7
+            data[ 11 ] = ((v >> 10) & 0x1F) << 7
+            data[ 28 ] = v & 0x7FFF
+        el [ k == 29 || k == 31 ]
+            return
+        el [ k == 30 ]
+            data[ 30 ] = v
+            data[ 31 ] = leading[ v ]
+        el
+            data[ k ] = v
+
+    public func read_ctrl [ i: u32 ] -> u32
+        k : u32 [ i & 31 ]
+        # the halfword registers read back sign-extended, H too
+        if [ k == 4 || k == 12 || k == 20 || k == 26 || k == 27 ||
+             k == 29 || k == 30 ]
+            return u32[ s16[ ctrl[ k ] ] ]
+        return ctrl[ k ]
+
+    public func write_ctrl [ i: u32, v: u32 ]
+        k : u32 [ i & 31 ]
+        if [ k == 31 ]
+            f : u32 [ v & 0x7FFFF000 ]
+            if [ (f & F_ERRORS) != 0 ] f = f | 0x80000000
+            ctrl[ 31 ] = f
+            return
+        ctrl[ k ] = v
+
+    # LZCR: how many leading bits equal the sign bit
+    func leading [ v: u32 ] -> u32
+        x : u32 [ ((v & 0x80000000) != 0) ? ~v : v ]
+        n : u32 [ 0 ]
+        while [ n < 32 && (x & 0x80000000) == 0 ]
+            x = x << 1
+            n += 1
+        return n
+
+    # IR1..3 as 5-bit colour, for IRGB and ORGB reads
+    func orgb [] -> u32
+        r : i32 [ clamp_i[ s16[ data[ 9 ] ] >> 7, 0, 0x1F ] ]
+        g : i32 [ clamp_i[ s16[ data[ 10 ] ] >> 7, 0, 0x1F ] ]
+        b : i32 [ clamp_i[ s16[ data[ 11 ] ] >> 7, 0, 0x1F ] ]
+        return u32[ r ] | (u32[ g ] << 5) | (u32[ b ] << 10)
+
+    func clamp_i [ v: i32, lo: i32, hi: i32 ] -> i32
+        if [ v < lo ] return lo
+        if [ v > hi ] return hi
+        return v
+
+    # the SXY FIFO moves: the exact values move with it
+    func ex_shift []
+        for [ s: i32 0, s < 2, s += 1 ]
+            ex_x[ s ] = ex_x[ s + 1 ]
+            ex_y[ s ] = ex_y[ s + 1 ]
+            ex_z[ s ] = ex_z[ s + 1 ]
+            ex_ok[ s ] = ex_ok[ s + 1 ]
+
+    # data register k's exact value, into hit_x / hit_y / hit_z
+    public func exact_of [ k: u32 ] -> bool
+        s : i32 [ (k == 15) ? 2 : i32[ k ] - 12 ]
+        if [ s < 0 || s > 2 || !ex_ok[ s ] ] return false
+        hit_x = ex_x[ s ]
+        hit_y = ex_y[ s ]
+        hit_z = ex_z[ s ]
+        return true
+
+    func near_slot [ w: u32 ] -> i32
+        return i32[ ((w * 0x9E3779B1) >> 20) & 4095 ]
+
+    # the precise position of an SXY word, into hit_x / hit_y
+    public func near [ w: u32 ] -> bool
+        slot : i32 [ near_slot[ w ] ]
+        if [ !near_on[ slot ] || near_key[ slot ] != w ] return false
+        if [ near_bad[ slot ] || near_at[ slot ] < frame - 1 ]
+            return false
+        hit_x = near_x[ slot ]
+        hit_y = near_y[ slot ]
+        hit_z = near_z[ slot ]
+        return true
+
+    # an entry for word w this frame; a second, different one spoils it
+    func near_put [ w: u32, px: f32, py: f32, pz: f32, good: bool ]
+        slot : i32 [ near_slot[ w ] ]
+        same : bool [ near_on[ slot ] && near_key[ slot ] == w &&
+                      near_at[ slot ] == frame ]
+        if [ same ]
+            if [ !good || abs[ near_x[ slot ] - px ] > 0.01 ||
+                 abs[ near_y[ slot ] - py ] > 0.01 ]
+                near_bad[ slot ] = true
+            return
+        near_key[ slot ] = w
+        near_x[ slot ] = px
+        near_y[ slot ] = py
+        near_z[ slot ] = pz
+        near_at[ slot ] = frame
+        near_bad[ slot ] = !good
+        near_on[ slot ] = true
+
+    # ---- the registers as numbers
+
+    # vector n's x, y and z
+    func vx [ n: i32 ] -> i64
+        return i64[ s16[ data[ n * 2 ] ] ]
+
+    func vy [ n: i32 ] -> i64
+        return i64[ hi16[ data[ n * 2 ] ] ]
+
+    func vz [ n: i32 ] -> i64
+        return i64[ s16[ data[ n * 2 + 1 ] ] ]
+
+    func ir [ i: i32 ] -> i64
+        return i64[ s16[ data[ 8 + i ] ] ]
+
+    # matrix m (0 RT, 1 light, 2 colour) element r, c
+    func mat [ m: i32, r: i32, c: i32 ] -> i64
+        k : i32 [ r * 3 + c ]
+        w : u32 [ ctrl[ m * 8 + k / 2 ] ]
+        if [ (k & 1) == 0 ] return i64[ s16[ w ] ]
+        return i64[ hi16[ w ] ]
+
+    func flag [ f: u32 ]
+        ctrl[ 31 ] = ctrl[ 31 ] | f
+
+    # ---- the arithmetic
+
+    # a MAC1..3 sum overflows 44 bits: the flag, then wrap
+    func check44 [ i: i32, v: i64 ] -> i64
+        if [ v > 0x7FFFFFFFFFF ]  flag[ F_MAC1_POS >> u32[ i - 1 ] ]
+        el [ v < -0x80000000000 ] flag[ F_MAC1_NEG >> u32[ i - 1 ] ]
+        return (v << 20) >> 20
+
+    func set_mac [ i: i32, v: i64, shift: i32 ]
+        check44[ i, v ]
+        data[ 24 + i ] = u32[ v >> shift ]
+
+    func set_ir [ i: i32, v: i32, low0: bool ]
+        lo : i32 [ (low0) ? 0 : -0x8000 ]
+        out : i32 [ v ]
+        if [ v < lo ]
+            out = lo
+            flag[ F_IR1 >> u32[ i - 1 ] ]
+        el [ v > 0x7FFF ]
+            out = 0x7FFF
+            flag[ F_IR1 >> u32[ i - 1 ] ]
+        data[ 8 + i ] = u32[ out ] & 0xFFFF
+
+    func mac_ir [ i: i32, v: i64, shift: i32, low0: bool ]
+        set_mac[ i, v, shift ]
+        set_ir[ i, i32[ data[ 24 + i ] ], low0 ]
+
+    # MAC0: a 32-bit sum with its two flags
+    func set_mac0 [ v: i64 ]
+        if [ v > 0x7FFFFFFF ]   flag[ F_MAC0_POS ]
+        el [ v < -0x80000000 ]  flag[ F_MAC0_NEG ]
+        data[ 24 ] = u32[ v ]
+
+    func push_sz [ v: i64 ]
+        z : i64 [ v ]
+        if [ z < 0 ]
+            z = 0
+            flag[ F_SZ_OTZ ]
+        el [ z > 0xFFFF ]
+            z = 0xFFFF
+            flag[ F_SZ_OTZ ]
+        data[ 16 ] = data[ 17 ]
+        data[ 17 ] = data[ 18 ]
+        data[ 18 ] = data[ 19 ]
+        data[ 19 ] = u32[ z ]
+
+    func color_sat [ i: i32, v: i32 ] -> u32
+        if [ v < 0 ]
+            flag[ F_COLOR_R >> u32[ i - 1 ] ]
+            return 0
+        if [ v > 0xFF ]
+            flag[ F_COLOR_R >> u32[ i - 1 ] ]
+            return 0xFF
+        return u32[ v ]
+
+    # the colour FIFO takes MAC1..3 / 16 and the RGBC code
+    func push_color []
+        r : u32 [ color_sat[ 1, i32[ data[ 25 ] ] >> 4 ] ]
+        g : u32 [ color_sat[ 2, i32[ data[ 26 ] ] >> 4 ] ]
+        b : u32 [ color_sat[ 3, i32[ data[ 27 ] ] >> 4 ] ]
+        code : u32 [ data[ 6 ] & 0xFF000000 ]
+        data[ 20 ] = data[ 21 ]
+        data[ 21 ] = data[ 22 ]
+        data[ 22 ] = r | (g << 8) | (b << 16) | code
+
+    # M * V + T: each partial sum checked against 44 bits
+    # tv: 0 TR, 1 BK, 2 FC (the hardware's bug), 3 none
+    func mul_mat_vec [ m: i32, x: i64, y: i64, z: i64, tv: i32 ]
+        for [ r: i32 0, r < 3, r += 1 ]
+            t : i64 [ 0 ]
+            if [ tv == 0 ] t = i64[ i32[ ctrl[ 5 + r ] ] ]
+            el [ tv == 1 ] t = i64[ i32[ ctrl[ 13 + r ] ] ]
+            el [ tv == 2 ] t = i64[ i32[ ctrl[ 21 + r ] ] ]
+            i : i32 [ r + 1 ]
+            if [ tv == 2 ]
+                # the far colour: the first column only sets flags
+                lead : i64 [ (t << 12) + mat[ m, r, 0 ] * x ]
+                first : i64 [ check44[ i, lead ] ]
+                set_ir[ i, i32[ first >> sh ], false ]
+                rest : i64 [ check44[ i, mat[ m, r, 1 ] * y ] ]
+                rest = check44[ i, rest + mat[ m, r, 2 ] * z ]
+                mac_ir[ i, rest, sh, lm ]
+            el
+                v : i64 [ check44[ i, (t << 12) + mat[ m, r, 0 ] * x ] ]
+                v = check44[ i, v + mat[ m, r, 1 ] * y ]
+                v = check44[ i, v + mat[ m, r, 2 ] * z ]
+                mac_ir[ i, v, sh, lm ]
+
+    # the hardware's divide: H / SZ3 through the reciprocal table
+    func divide [ h: u32, z: u32 ] -> u32
+        if [ h >= z * 2 ]
+            flag[ F_DIVIDE ]
+            return 0x1FFFF
+        shift : u32 [ 0 ]
+        while [ shift < 16 && ((z << shift) & 0x8000) == 0 ] shift += 1
+        n : u64 [ u64[ h ] << shift ]
+        d : u32 [ (z << shift) | 0x8000 ]
+        at : i32 [ i32[ ((d & 0x7FFF) + 0x40) >> 7 ] ]
+        x : i64 [ i64[ 0x101 + unr[ at ] ] ]
+        e : i64 [ ((i64[ d ] * (0 - x)) + 0x80) >> 8 ]
+        recip : u64 [ u64[ ((x * (0x20000 + e)) + 0x80) >> 8 ] ]
+        q : u64 [ (n * recip + 0x8000) >> 16 ]
+        return (q > 0x1FFFF) ? 0x1FFFF : u32[ q ]
+
+    # RTPS for vector n; the last of RTPT also sets IR0 and MAC0
+    func rtp [ n: i32, last: bool ]
+        x : i64 [ vx[ n ] ]
+        y : i64 [ vy[ n ] ]
+        z : i64 [ vz[ n ] ]
+        # the camera-space x and y before any cut, x 4096
+        cam : local i64 [ 2 ]
+        for [ r: i32 0, r < 2, r += 1 ]
+            tr : i64 [ i64[ i32[ ctrl[ 5 + r ] ] ] << 12 ]
+            v : i64 [ check44[ r + 1, tr + mat[ 0, r, 0 ] * x ] ]
+            v = check44[ r + 1, v + mat[ 0, r, 1 ] * y ]
+            v = check44[ r + 1, v + mat[ 0, r, 2 ] * z ]
+            mac_ir[ r + 1, v, sh, lm ]
+            cam[ r ] = v
+        zv : i64 [ check44[ 3, (i64[ i32[ ctrl[ 7 ] ] ] << 12) +
+                               mat[ 0, 2, 0 ] * x ] ]
+        zv = check44[ 3, zv + mat[ 0, 2, 1 ] * y ]
+        zv = check44[ 3, zv + mat[ 0, 2, 2 ] * z ]
+        set_mac[ 3, zv, sh ]
+        # IR3's flag looks at z >> 12 whatever the shift
+        z12 : i64 [ zv >> 12 ]
+        if [ z12 < -0x8000 || z12 > 0x7FFF ] flag[ F_IR1 >> 2 ]
+        lo : i32 [ (lm) ? 0 : -0x8000 ]
+        m3 : i32 [ clamp_i[ i32[ data[ 27 ] ], lo, 0x7FFF ] ]
+        data[ 11 ] = u32[ m3 ] & 0xFFFF
+        push_sz[ z12 ]
+        q : i64 [ i64[ divide[ ctrl[ 26 ] & 0xFFFF,
+                               data[ 19 ] & 0xFFFF ] ] ]
+        sx : i64 [ q * ir[ 1 ] + i64[ i32[ ctrl[ 24 ] ] ] ]
+        set_mac0[ sx ]
+        sy : i64 [ q * ir[ 2 ] + i64[ i32[ ctrl[ 25 ] ] ] ]
+        set_mac0[ sy ]
+        x2 : i64 [ sx >> 16 ]
+        y2 : i64 [ sy >> 16 ]
+        if [ x2 < -0x400 ]
+            x2 = -0x400
+            flag[ F_SX2 ]
+        el [ x2 > 0x3FF ]
+            x2 = 0x3FF
+            flag[ F_SX2 ]
+        if [ y2 < -0x400 ]
+            y2 = -0x400
+            flag[ F_SY2 ]
+        el [ y2 > 0x3FF ]
+            y2 = 0x3FF
+            flag[ F_SY2 ]
+        data[ 12 ] = data[ 13 ]
+        data[ 13 ] = data[ 14 ]
+        data[ 14 ] = (u32[ x2 ] & 0xFFFF) | (u32[ y2 ] << 16)
+        # the exact projection, H x camera / z, kept for the GPU
+        good : bool [ x2 == sx >> 16 && y2 == sy >> 16 && zv > 0 ]
+        px : f64 [ 0.0 ]
+        py : f64 [ 0.0 ]
+        if [ good ]
+            h : f64 [ f64[ ctrl[ 26 ] & 0xFFFF ] ]
+            px = f64[ i32[ ctrl[ 24 ] ] ] / 65536.0 +
+                 f64[ cam[ 0 ] ] * h / f64[ zv ]
+            py = f64[ i32[ ctrl[ 25 ] ] ] / 65536.0 +
+                 f64[ cam[ 1 ] ] * h / f64[ zv ]
+            # where the hardware's own answer differs, keep it
+            close : bool [ abs[ px - f64[ x2 ] ] < 2.0 ]
+            good = close && abs[ py - f64[ y2 ] ] < 2.0
+        pz : f32 [ f32[ f64[ zv ] / 4096.0 ] ]
+        near_put[ data[ 14 ], f32[ px ], f32[ py ], pz, good ]
+        ex_shift[]
+        ex_x[ 2 ] = f32[ px ]
+        ex_y[ 2 ] = f32[ py ]
+        ex_z[ 2 ] = pz
+        ex_ok[ 2 ] = good
+        data[ 15 ] = data[ 14 ]
+        if [ !last ] return
+        dqa : i64 [ i64[ s16[ ctrl[ 27 ] ] ] ]
+        dq : i64 [ q * dqa + i64[ i32[ ctrl[ 28 ] ] ] ]
+        set_mac0[ dq ]
+        i0 : i64 [ dq >> 12 ]
+        if [ i0 < 0 ]
+            i0 = 0
+            flag[ F_IR0 ]
+        el [ i0 > 0x1000 ]
+            i0 = 0x1000
+            flag[ F_IR0 ]
+        data[ 8 ] = u32[ i0 ]
+
+    # MAC = MAC + (FC - MAC) * IR0, then the shift
+    func interpolate [ m1: i64, m2: i64, m3: i64 ]
+        mac_ir[ 1, (i64[ i32[ ctrl[ 21 ] ] ] << 12) - m1, sh, false ]
+        mac_ir[ 2, (i64[ i32[ ctrl[ 22 ] ] ] << 12) - m2, sh, false ]
+        mac_ir[ 3, (i64[ i32[ ctrl[ 23 ] ] ] << 12) - m3, sh, false ]
+        i0 : i64 [ ir[ 0 ] ]
+        mac_ir[ 1, ir[ 1 ] * i0 + m1, sh, lm ]
+        mac_ir[ 2, ir[ 2 ] * i0 + m2, sh, lm ]
+        mac_ir[ 3, ir[ 3 ] * i0 + m3, sh, lm ]
+
+    func rgb_r [] -> i64
+        return i64[ data[ 6 ] & 0xFF ]
+
+    func rgb_g [] -> i64
+        return i64[ (data[ 6 ] >> 8) & 0xFF ]
+
+    func rgb_b [] -> i64
+        return i64[ (data[ 6 ] >> 16) & 0xFF ]
+
+    # the light: LLM * V, then BK + LCM * IR
+    func light [ n: i32 ]
+        mul_mat_vec[ 1, vx[ n ], vy[ n ], vz[ n ], 3 ]
+        mul_mat_vec[ 2, ir[ 1 ], ir[ 2 ], ir[ 3 ], 1 ]
+
+    # NCS, NCCS, NCDS for vector n: lit, coloured, depth-cued
+    func normal_color [ n: i32, kind: i32 ]
+        light[ n ]
+        if [ kind == 1 ]
+            mac_ir[ 1, (rgb_r[] * ir[ 1 ]) << 4, sh, lm ]
+            mac_ir[ 2, (rgb_g[] * ir[ 2 ]) << 4, sh, lm ]
+            mac_ir[ 3, (rgb_b[] * ir[ 3 ]) << 4, sh, lm ]
+        el [ kind == 2 ]
+            interpolate[ (rgb_r[] * ir[ 1 ]) << 4,
+                         (rgb_g[] * ir[ 2 ]) << 4,
+                         (rgb_b[] * ir[ 3 ]) << 4 ]
+        push_color[]
+
+    public func command [ op: u32 ]
+        ctrl[ 31 ] = 0
+        sh = ((op & 0x80000) != 0) ? 12 : 0
+        lm = (op & 0x400) != 0
+        switch [ op & 0x3F ]
+            case 0x01
+                rtp[ 0, true ]
+            case 0x06
+                nclip[]
+            case 0x0C
+                outer[]
+            case 0x10
+                # DPCS: RGB toward the far colour
+                interpolate[ rgb_r[] << 16, rgb_g[] << 16,
+                             rgb_b[] << 16 ]
+                push_color[]
+            case 0x11
+                # INTPL: IR toward the far colour
+                interpolate[ ir[ 1 ] << 12, ir[ 2 ] << 12,
+                             ir[ 3 ] << 12 ]
+                push_color[]
+            case 0x12
+                mvmva[ op ]
+            case 0x13
+                normal_color[ 0, 2 ]
+            case 0x14
+                # CDP: the colour light, then depth cue
+                mul_mat_vec[ 2, ir[ 1 ], ir[ 2 ], ir[ 3 ], 1 ]
+                interpolate[ (rgb_r[] * ir[ 1 ]) << 4,
+                             (rgb_g[] * ir[ 2 ]) << 4,
+                             (rgb_b[] * ir[ 3 ]) << 4 ]
+                push_color[]
+            case 0x16
+                for [ n: i32 0, n < 3, n += 1 ]
+                    normal_color[ n, 2 ]
+            case 0x1B
+                normal_color[ 0, 1 ]
+            case 0x1C
+                # CC: the colour light, times RGB
+                mul_mat_vec[ 2, ir[ 1 ], ir[ 2 ], ir[ 3 ], 1 ]
+                mac_ir[ 1, (rgb_r[] * ir[ 1 ]) << 4, sh, lm ]
+                mac_ir[ 2, (rgb_g[] * ir[ 2 ]) << 4, sh, lm ]
+                mac_ir[ 3, (rgb_b[] * ir[ 3 ]) << 4, sh, lm ]
+                push_color[]
+            case 0x1E
+                normal_color[ 0, 0 ]
+            case 0x20
+                for [ n: i32 0, n < 3, n += 1 ]
+                    normal_color[ n, 0 ]
+            case 0x28
+                # SQR
+                mac_ir[ 1, ir[ 1 ] * ir[ 1 ], sh, lm ]
+                mac_ir[ 2, ir[ 2 ] * ir[ 2 ], sh, lm ]
+                mac_ir[ 3, ir[ 3 ] * ir[ 3 ], sh, lm ]
+            case 0x29
+                # DCPL: RGB times IR, toward the far colour
+                interpolate[ (rgb_r[] * ir[ 1 ]) << 4,
+                             (rgb_g[] * ir[ 2 ]) << 4,
+                             (rgb_b[] * ir[ 3 ]) << 4 ]
+                push_color[]
+            case 0x2A
+                # DPCT: the colour FIFO's front, three times
+                for [ n: i32 0, n < 3, n += 1 ]
+                    c0 : u32 [ data[ 20 ] ]
+                    interpolate[ i64[ c0 & 0xFF ] << 16,
+                                 i64[ (c0 >> 8) & 0xFF ] << 16,
+                                 i64[ (c0 >> 16) & 0xFF ] << 16 ]
+                    push_color[]
+            case 0x2D
+                avsz[ s16[ ctrl[ 29 ] ], 1 ]
+            case 0x2E
+                avsz[ s16[ ctrl[ 30 ] ], 0 ]
+            case 0x30
+                rtp[ 0, false ]
+                rtp[ 1, false ]
+                rtp[ 2, true ]
+            case 0x3D
+                # GPF: IR times IR0
+                i0 : i64 [ ir[ 0 ] ]
+                mac_ir[ 1, ir[ 1 ] * i0, sh, lm ]
+                mac_ir[ 2, ir[ 2 ] * i0, sh, lm ]
+                mac_ir[ 3, ir[ 3 ] * i0, sh, lm ]
+                push_color[]
+            case 0x3E
+                # GPL: MAC plus IR times IR0
+                i0 : i64 [ ir[ 0 ] ]
+                for [ i: i32 1, i <= 3, i += 1 ]
+                    base : i64 [ i64[ i32[ data[ 24 + i ] ] ] << sh ]
+                    mac_ir[ i, base + ir[ i ] * i0, sh, lm ]
+                push_color[]
+            case 0x3F
+                for [ n: i32 0, n < 3, n += 1 ]
+                    normal_color[ n, 1 ]
+            default
+                return
+        if [ (ctrl[ 31 ] & F_ERRORS) != 0 ]
+            ctrl[ 31 ] = ctrl[ 31 ] | 0x80000000
+
+    # NCLIP: the screen triangle's winding, as MAC0
+    func nclip []
+        x0 : i64 [ i64[ s16[ data[ 12 ] ] ] ]
+        y0 : i64 [ i64[ hi16[ data[ 12 ] ] ] ]
+        x1 : i64 [ i64[ s16[ data[ 13 ] ] ] ]
+        y1 : i64 [ i64[ hi16[ data[ 13 ] ] ] ]
+        x2 : i64 [ i64[ s16[ data[ 14 ] ] ] ]
+        y2 : i64 [ i64[ hi16[ data[ 14 ] ] ] ]
+        set_mac0[ x0 * y1 + x1 * y2 + x2 * y0 - x0 * y2 - x1 * y0 -
+                  x2 * y1 ]
+
+    # OP: the cross product of RT's diagonal and IR
+    func outer []
+        d1 : i64 [ mat[ 0, 0, 0 ] ]
+        d2 : i64 [ mat[ 0, 1, 1 ] ]
+        d3 : i64 [ mat[ 0, 2, 2 ] ]
+        mac_ir[ 1, ir[ 3 ] * d2 - ir[ 2 ] * d3, sh, lm ]
+        mac_ir[ 2, ir[ 1 ] * d3 - ir[ 3 ] * d1, sh, lm ]
+        mac_ir[ 3, ir[ 2 ] * d1 - ir[ 1 ] * d2, sh, lm ]
+
+    # AVSZ3 / AVSZ4: the scaled sum of the Z FIFO as OTZ
+    func avsz [ zsf: i32, from: i32 ]
+        sum : i64 [ 0 ]
+        for [ k: i32 from, k < 4, k += 1 ]
+            sum = sum + i64[ data[ 16 + k ] & 0xFFFF ]
+        v : i64 [ i64[ zsf ] * sum ]
+        set_mac0[ v ]
+        o : i64 [ v >> 12 ]
+        if [ o < 0 ]
+            o = 0
+            flag[ F_SZ_OTZ ]
+        el [ o > 0xFFFF ]
+            o = 0xFFFF
+            flag[ F_SZ_OTZ ]
+        data[ 7 ] = u32[ o ]
+
+    # MVMVA: any matrix, vector and translation by the opcode bits
+    func mvmva [ op: u32 ]
+        mx : i32 [ i32[ (op >> 17) & 3 ] ]
+        vsel : i32 [ i32[ (op >> 15) & 3 ] ]
+        tv : i32 [ i32[ (op >> 13) & 3 ] ]
+        x : i64 [ 0 ]
+        y : i64 [ 0 ]
+        z : i64 [ 0 ]
+        if [ vsel == 3 ]
+            x = ir[ 1 ]
+            y = ir[ 2 ]
+            z = ir[ 3 ]
+        el
+            x = vx[ vsel ]
+            y = vy[ vsel ]
+            z = vz[ vsel ]
+        if [ mx < 3 ]
+            mul_mat_vec[ mx, x, y, z, tv ]
+            return
+        # matrix 3, no real matrix: the hardware's garbage rows
+        r : i64 [ rgb_r[] << 4 ]
+        rows : local i64 [ 9 ]
+        rows[ 0 ] = 0 - r
+        rows[ 1 ] = r
+        rows[ 2 ] = ir[ 0 ]
+        rows[ 3 ] = mat[ 0, 0, 2 ]
+        rows[ 4 ] = mat[ 0, 0, 2 ]
+        rows[ 5 ] = mat[ 0, 0, 2 ]
+        rows[ 6 ] = mat[ 0, 1, 1 ]
+        rows[ 7 ] = mat[ 0, 1, 1 ]
+        rows[ 8 ] = mat[ 0, 1, 1 ]
+        for [ k: i32 0, k < 3, k += 1 ]
+            t : i64 [ 0 ]
+            if [ tv == 0 ] t = i64[ i32[ ctrl[ 5 + k ] ] ]
+            el [ tv == 1 ] t = i64[ i32[ ctrl[ 13 + k ] ] ]
+            el [ tv == 2 ] t = i64[ i32[ ctrl[ 21 + k ] ] ]
+            v : i64 [ check44[ k + 1, (t << 12) + rows[ k * 3 ] * x ] ]
+            v = check44[ k + 1, v + rows[ k * 3 + 1 ] * y ]
+            v = check44[ k + 1, v + rows[ k * 3 + 2 ] * z ]
+            mac_ir[ k + 1, v, sh, lm ]

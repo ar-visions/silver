@@ -963,6 +963,8 @@ class RecMark
 class RecNotes
     public context : string
     public marks   : vec RecMark
+    # --rec_scale: the take's pixels per window pixel
+    public scale   : i32
 
 class Recorder
     context vk      : vk_context
@@ -974,6 +976,8 @@ class Recorder
     public  qp      : i32 [ 20 ]
     public  chroma444 : bool
     public  lossless  : bool
+    # the window's rec_scale, written to the notes
+    public  scale     : i32
     # 'mp4', 'ts', 'hls' carry an aac track; 'h264' is the raw stream
     public  format  : string
     public  target  : string                # the ingest url for 'hls'
@@ -1167,6 +1171,7 @@ class Recorder
 
     func notes_save []
         if [ !notes || !rnotes ] return
+        rnotes.scale = (scale > 1) ? scale : 1
         np : path notes
         np.save[ Au.string_agi[ rnotes ], null ]
 

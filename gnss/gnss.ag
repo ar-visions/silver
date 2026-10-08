@@ -1,0 +1,517 @@
+export 0.1.0
+
+import physics
+import tls
+
+import <stdlib.h>
+
+# gnss: GPS as a receiver on the craft sees it. satellites from
+# the current YUMA almanac (US Coast Guard Navigation Center),
+# placed by IS-GPS-200; pseudoranges and range rates with light
+# time, the Earth's turn during flight, ionosphere, troposphere,
+# satellite clock residuals and the receiver's own clock; a fix
+# by least squares, handed over after a latency.
+
+GPS_GM   : f64 [ 3.986005e14 ]
+GPS_SPIN : f64 [ 7.2921151467e-5 ]
+LIGHT    : f64 [ 299792458.0 ]
+GPS_WEEK : f64 [ 604800.0 ]
+
+# one satellite's almanac
+class Sv
+    public prn    : i32
+    public health : i32
+    public ecc    : f64
+    public toa    : f64
+    public incl   : f64
+    public node_rate : f64
+    public root_a : f64
+    public node   : f64
+    public perigee : f64
+    public anomaly : f64
+    public clock_offset    : f64
+    public clock_rate    : f64
+    public week   : i32
+
+    # its ECEF place at a GPS time (week, seconds of week)
+    public func place [ wk: i32, sow: f64 ] -> Dvec
+        semi : f64 [ root_a * root_a ]
+        mean_motion : f64 [ sqrt[ GPS_GM / (semi * semi * semi) ] ]
+        tk : f64 [ f64[ wk - week ] * GPS_WEEK + sow - toa ]
+        m : f64 [ anomaly + mean_motion * tk ]
+        e : f64 [ m ]
+        for [ i: i32 0, i < 12, i += 1 ]
+            e = m + ecc * sin[ e ]
+        nu : f64 [ atan2[ sqrt[ 1.0 - ecc * ecc ] * sin[ e ],
+                          cos[ e ] - ecc ] ]
+        phi : f64 [ nu + perigee ]
+        r : f64 [ semi * (1.0 - ecc * cos[ e ]) ]
+        xp : f64 [ r * cos[ phi ] ]
+        yp : f64 [ r * sin[ phi ] ]
+        om : f64 [ node + (node_rate - GPS_SPIN) * tk - GPS_SPIN * toa ]
+        return Dvec [ xp * cos[ om ] - yp * cos[ incl ] * sin[ om ],
+                      xp * sin[ om ] + yp * cos[ incl ] * cos[ om ],
+                      yp * sin[ incl ] ]
+
+    # its broadcast clock offset, seconds
+    public func clock [ wk: i32, sow: f64 ] -> f64
+        tk : f64 [ f64[ wk - week ] * GPS_WEEK + sow - toa ]
+        return clock_offset + clock_rate * tk
+
+class Almanac
+    public sats : vec Sv
+    # each satellite's broadcast orbit and clock error (m): the
+    # same for every receiver, so it cancels in a difference
+    public ure  : f64 [ 1.0 ]
+    public seed : u64 [ 1181783497276652981 ]
+    intern errors : vec f64
+    intern err_time : f64 [ -1e30 ]
+
+    func init []
+        sats = vec Sv []
+        errors = vec f64 []
+
+    func rand [] -> f64
+        seed = seed ^ (seed << 13)
+        seed = seed ^ (seed >> 7)
+        seed = seed ^ (seed << 17)
+        return f64[ seed >> 11 ] / 9007199254740992.0
+
+    func normal [] -> f64
+        u : f64 [ rand[] ]
+        if [ u < 1e-300 ] u = 1e-300
+        v : f64 [ rand[] ]
+        return sqrt[ -2.0 * log[ u ] ] * cos[ 6.283185307179586 * v ]
+
+    # satellite i's error at a time: a slow random walk, drawn
+    # once per new time for everyone
+    public func error [ i: i32, t: f64 ] -> f64
+        while [ errors.count < sats.count ]
+            e : f64 [ normal[] * ure ]
+            errors.push[ e ]
+        if [ t > err_time ]
+            gap : f64 [ (err_time < -1e29) ? 0.0 : t - err_time ]
+            k : f64 [ exp[ 0.0 - gap / 1000.0 ] ]
+            q : f64 [ sqrt[ 1.0 - k * k ] ]
+            for [ j: i32 0, j < errors.count, j += 1 ]
+                ev : f64 [ errors[ j ] * k + normal[] * ure * q ]
+                errors[ j ] = ev
+            err_time = t
+        return errors[ i ]
+
+    func value [ row: string ] -> f64
+        at : i32 [ row.index_of[ ':' ] ]
+        if [ at < 0 ] return 0.0
+        rest : row.mid[ at + 1, row.count - at - 1 ]
+        return atof[ rest.chars ]
+
+    # the YUMA text: one block of 'key: value' rows per satellite
+    public func read [ text: string ] -> i32
+        sats = vec Sv []
+        cur : Sv [ prn: 0 ]
+        for [ row: string ] in text.split[ '\n' ]
+            if [ row.index_of[ 'ID:' ] == 0 ]
+                cur = Sv [ prn: i32[ value[ row ] ] ]
+                sats.push[ cur ]
+            el [ row.index_of[ 'Health:' ] == 0 ]
+                cur.health = i32[ value[ row ] ]
+            el [ row.index_of[ 'Eccentricity:' ] == 0 ]
+                cur.ecc = value[ row ]
+            el [ row.index_of[ 'Time of Applicability' ] == 0 ]
+                cur.toa = value[ row ]
+            el [ row.index_of[ 'Orbital Inclination' ] == 0 ]
+                cur.incl = value[ row ]
+            el [ row.index_of[ 'Rate of Right Ascen' ] == 0 ]
+                cur.node_rate = value[ row ]
+            el [ row.index_of[ 'SQRT(A)' ] == 0 ]
+                cur.root_a = value[ row ]
+            el [ row.index_of[ 'Right Ascen at Week' ] == 0 ]
+                cur.node = value[ row ]
+            el [ row.index_of[ 'Argument of Perigee' ] == 0 ]
+                cur.perigee = value[ row ]
+            el [ row.index_of[ 'Mean Anom' ] == 0 ]
+                cur.anomaly = value[ row ]
+            el [ row.index_of[ 'Af0' ] == 0 ]
+                cur.clock_offset = value[ row ]
+            el [ row.index_of[ 'Af1' ] == 0 ]
+                cur.clock_rate = value[ row ]
+            el [ row.index_of[ 'week:' ] == 0 ]
+                # YUMA counts weeks modulo 1024: this is after 2019
+                cur.week = i32[ value[ row ] ] + 2048
+        return sats.count
+
+    # the almanac in the user cache, fetched when missing
+    public func load [] -> i32
+        dir : path.path_storage[ 'gnss' ]
+        file : path '{dir}/current_yuma.alm'
+        if [ !file.exists[] ]
+            n : i64 [ Http.download[
+                'https://www.navcen.uscg.gov/sites/default/files/gps/almanac/current_yuma.alm',
+                file ] ]
+            log 'gnss: fetched the GPS almanac ({n} bytes)'
+        if [ !file.exists[] ] return 0
+        text : string [ file.load[ typeid[string], null ] ]
+        return read[ text ]
+
+# one satellite's measurement this epoch
+class Range
+    public prn     : i32
+    public sat     : Dvec      # ECEF at transmit, as the receiver
+    public range   : f64       # pseudorange, m
+    public rate    : f64       # pseudorange rate, m/s
+    public elev    : f64
+
+# what the receiver reports: ECEF place and speed, its clock
+class Fix
+    public time    : f64       # craft clock at the measurement
+    public ready   : f64       # craft clock when it is handed over
+    public pos     : Dvec
+    public vel     : Dvec
+    public clock   : f64       # receiver clock bias, m
+    public used    : i32
+    public pdop    : f64
+    public valid   : bool
+
+class Receiver
+    public almanac : Almanac
+    # GPS time at the craft clock's zero
+    public week    : i32 [ 2439 ]
+    public sow     : f64 [ 503808.0 ]
+    public rate    : f64 [ 10.0 ]
+    public latency : f64 [ 0.05 ]
+    public mask    : f64 [ 0.0873 ]
+    # the antenna's place in the body
+    public antenna : Dvec
+    # code noise 0.5 m, range rate 0.03 m/s (single frequency
+    # space receiver, estimate); the broadcast orbit and clock
+    # error (1 m, GPS performance standard: under 2 m) is the
+    # almanac's, shared
+    public code_noise : f64 [ 0.5 ]
+    public rate_noise : f64 [ 0.03 ]
+    # a TCXO: clock bias and drift as random walks
+    public clock_bias : f64 [ 3000.0 ]
+    public clock_drift : f64 [ 0.5 ]
+    # zenith ionosphere at L1, m (a mid day figure); the
+    # receiver's broadcast model takes half of it out
+    public iono    : f64 [ 5.0 ]
+    public seed    : u64 [ 6364136223846793005 ]
+    intern carry   : f64
+    public pending : vec Fix
+    public last    : vec Range
+    # a base station at a surveyed place: its range errors are
+    # taken off this receiver's (differential GPS)
+    public base    : Receiver
+    public base_at : Dvec
+
+    func init []
+        pending = vec Fix []
+        last = vec Range []
+
+    func rand [] -> f64
+        seed = seed ^ (seed << 13)
+        seed = seed ^ (seed >> 7)
+        seed = seed ^ (seed << 17)
+        return f64[ seed >> 11 ] / 9007199254740992.0
+
+    func normal [] -> f64
+        u : f64 [ rand[] ]
+        if [ u < 1e-300 ] u = 1e-300
+        v : f64 [ rand[] ]
+        return sqrt[ -2.0 * log[ u ] ] * cos[ 6.283185307179586 * v ]
+
+    # the troposphere's delay at a height and elevation, m
+    func tropo [ h: f64, el_s: f64 ] -> f64
+        top : f64 [ (h < 0.0) ? 0.0 : h ]
+        zenith : f64 [ 2.3 * exp[ 0.0 - top / 7000.0 ] ]
+        return zenith / (el_s + 0.03)
+
+    # the ionosphere's: a thin shell at 350 km, slant factor
+    func ionosphere [ h: f64, el_c: f64 ] -> f64
+        if [ h > 1000000.0 ] return 0.0
+        k : f64 [ EARTH_A / (EARTH_A + 350000.0) * el_c ]
+        slant : f64 [ 1.0 / sqrt[ 1.0 - k * k ] ]
+        # above the shell's peak less of it is crossed
+        share : f64 [ (h < 350000.0) ? 1.0 : 0.3 ]
+        return iono * slant * share
+
+    # measure every satellite in view of an antenna at p, v
+    # (ECEF) at craft clock t, as the signals really arrive
+    public func measure [ t: f64, p: Dvec, v: Dvec ] -> vec Range
+        out : vec Range []
+        geo : ecef_to_geodetic[ p ]
+        up : enu_up[ geo.x, geo.y ]
+        gs : f64 [ sow + t ]
+        for [ i: i32 0, i < almanac.sats.count, i += 1 ]
+            sv : almanac.sats[ i ]
+            if [ sv.health != 0 ] continue
+            # light time: where it was when it sent this signal
+            tau : f64 [ 0.075 ]
+            sp : Dvec [ 0.0, 0.0, 0.0 ]
+            for [ k: i32 0, k < 3, k += 1 ]
+                at : sv.place[ week, gs - tau ]
+                # the Earth turns while the signal is in flight
+                ang : f64 [ GPS_SPIN * tau ]
+                sp = Dvec [ at.x * cos[ ang ] + at.y * sin[ ang ],
+                            at.y * cos[ ang ] - at.x * sin[ ang ],
+                            at.z ]
+                tau = dv_len[ dv_sub[ sp, p ] ] / LIGHT
+            los : dv_sub[ sp, p ]
+            dist : f64 [ dv_len[ los ] ]
+            u : dv_scale[ los, 1.0 / dist ]
+            el_s : f64 [ dv_dot[ u, up ] ]
+            if [ el_s < sin[ mask ] ] continue
+            el_c : f64 [ sqrt[ 1.0 - el_s * el_s ] ]
+            # the satellite's speed in ECEF, by a short difference
+            ahead : sv.place[ week, gs - tau + 0.5 ]
+            behind : sv.place[ week, gs - tau - 0.5 ]
+            sv_vel : dv_sub[ ahead, behind ]
+            # the signal's error: the satellite's own, shared
+            err : f64 [ almanac.error[ i, gs ] ]
+            delay : f64 [ tropo[ geo.z, el_s ]
+                          + ionosphere[ geo.z, el_c ] ]
+            pr : f64 [ dist + clock_bias + delay + err
+                       + normal[] * code_noise ]
+            rr : f64 [ dv_dot[ dv_sub[ sv_vel, v ], u ] ]
+            prr : f64 [ rr + clock_drift + normal[] * rate_noise ]
+            # the receiver takes out its own models: troposphere,
+            # half the ionosphere, and the broadcast clock
+            model : f64 [ tropo[ geo.z, el_s ]
+                          + 0.5 * ionosphere[ geo.z, el_c ] ]
+            out.push[ Range [ prn: sv.prn, sat: sp, range: pr - model,
+                              rate: prr, elev: asin[ el_s ] ] ]
+        return out
+
+    # least squares for place and clock, then speed and drift
+    public func solve [ t: f64, rs: vec Range, guess: Dvec ] -> Fix
+        f : Fix [ time: t, ready: t + latency, pos: guess,
+                  vel: Dvec [ 0.0, 0.0, 0.0 ] ]
+        n : i32 [ rs.count ]
+        f.used = n
+        if [ n < 4 ] return f
+        x : Dvec [ guess ]
+        cb : f64 [ 0.0 ]
+        hm : vec f64 [ n * 4 ]
+        for [ it: i32 0, it < 8, it += 1 ]
+            # normal equations of the linearised ranges
+            ata : vec f64 [ 16 ]
+            atb : vec f64 [ 4 ]
+            for [ i: i32 0, i < n, i += 1 ]
+                rg : rs[ i ]
+                d : dv_sub[ rg.sat, x ]
+                dist : f64 [ dv_len[ d ] ]
+                row : vec f64 [] [ 0.0 - d.x / dist, 0.0 - d.y / dist,
+                                   0.0 - d.z / dist, 1.0 ]
+                res : f64 [ rg.range - (dist + cb) ]
+                for [ row_i: i32 0, row_i < 4, row_i += 1 ]
+                    hm[ i * 4 + row_i ] = row[ row_i ]
+                    atb[ row_i ] = atb[ row_i ] + row[ row_i ] * res
+                    for [ col_i: i32 0, col_i < 4, col_i += 1 ]
+                        ata[ row_i * 4 + col_i ] = ata[ row_i * 4 + col_i ]
+                            + row[ row_i ] * row[ col_i ]
+            dx : solve_four[ ata, atb ]
+            x = Dvec [ x.x + dx[ 0 ], x.y + dx[ 1 ], x.z + dx[ 2 ] ]
+            cb = cb + dx[ 3 ]
+            if [ abs[ dx[ 0 ] ] + abs[ dx[ 1 ] ] + abs[ dx[ 2 ] ] < 1e-4 ]
+                break
+        f.pos = x
+        f.clock = cb
+        # speed: the same geometry against the range rates
+        ata : vec f64 [ 16 ]
+        atb : vec f64 [ 4 ]
+        for [ i: i32 0, i < n, i += 1 ]
+            rg : rs[ i ]
+            u : dv_norm[ dv_sub[ rg.sat, x ] ]
+            sat_v : f64 [ 0.0 ]
+            row : vec f64 [] [ 0.0 - u.x, 0.0 - u.y, 0.0 - u.z, 1.0 ]
+            # the satellite's own share of the rate, as the
+            # receiver predicts it from the almanac
+            sv : find_sat[ rg.prn ]
+            if [ sv ]
+                gs : f64 [ sow + t ]
+                ahead : sv.place[ week, gs + 0.5 ]
+                behind : sv.place[ week, gs - 0.5 ]
+                sat_v = dv_dot[ dv_sub[ ahead, behind ], u ]
+            res : f64 [ rg.rate - sat_v ]
+            for [ row_i: i32 0, row_i < 4, row_i += 1 ]
+                atb[ row_i ] = atb[ row_i ] + row[ row_i ] * res
+                for [ col_i: i32 0, col_i < 4, col_i += 1 ]
+                    ata[ row_i * 4 + col_i ] = ata[ row_i * 4 + col_i ]
+                        + row[ row_i ] * row[ col_i ]
+        dv : solve_four[ ata, atb ]
+        f.vel = Dvec [ dv[ 0 ], dv[ 1 ], dv[ 2 ] ]
+        # the geometry's dilution of precision
+        geom : vec f64 [ 16 ]
+        for [ i: i32 0, i < n, i += 1 ]
+            for [ row_i: i32 0, row_i < 4, row_i += 1 ]
+                for [ col_i: i32 0, col_i < 4, col_i += 1 ]
+                    geom[ row_i * 4 + col_i ] = geom[ row_i * 4 + col_i ]
+                        + hm[ i * 4 + row_i ] * hm[ i * 4 + col_i ]
+        inv : invert_four[ geom ]
+        f.pdop = sqrt[ inv[ 0 ] + inv[ 5 ] + inv[ 10 ] ]
+        f.valid = true
+        return f
+
+    func find_sat [ prn: i32 ] -> Sv
+        for [ sv: Sv ] in almanac.sats
+            if [ sv.prn == prn ] return sv
+        return null
+
+    # the receiver's clock wanders: a random walk in both terms
+    func clock_step [ h: f64 ]
+        clock_drift = clock_drift + normal[] * 0.01 * sqrt[ h ]
+        clock_bias = clock_bias + clock_drift * h
+                     + normal[] * 0.1 * sqrt[ h ]
+
+    # call after each physics step: fixes due are queued, and
+    # handed over once their latency has passed
+    public func tick [ c: Craft, h: f64 ]
+        clock_step[ h ]
+        carry += h
+        period : f64 [ 1.0 / rate ]
+        if [ carry < period ] return
+        carry -= period
+        ant : c.body_point[ antenna ]
+        ang : f64 [ earth_turn[ c.time, c.turn_start ] ]
+        pe : eci_to_ecef[ ant, ang ]
+        ve : eci_to_ecef[ dv_sub[ c.state.v, dv_cross[
+                          Dvec [ 0.0, 0.0, EARTH_SPIN ], ant ] ], ang ]
+        last = measure[ c.time, pe, ve ]
+        if [ base ] last = differential[ c.time, last ]
+        guess : Dvec [ pe.x * 1.001, pe.y * 0.999, pe.z ]
+        if [ pending.count > 0 ] guess = pending[ pending.count - 1 ].pos
+        pending.push[ solve[ c.time, last, guess ] ]
+
+    # each range less the base's error on the same satellite;
+    # satellites the base does not see are left out
+    func differential [ t: f64, rs: vec Range ] -> vec Range
+        seen : base.measure[ t, base_at, Dvec [ 0.0, 0.0, 0.0 ] ]
+        out : vec Range []
+        for [ r: Range ] in rs
+            for [ b: Range ] in seen
+                if [ b.prn != r.prn ] continue
+                off : f64 [ b.range
+                            - dv_len[ dv_sub[ b.sat, base_at ] ] ]
+                out.push[ Range [ prn: r.prn, sat: r.sat,
+                                  range: r.range - off, rate: r.rate,
+                                  elev: r.elev ] ]
+                break
+        if [ out.count < 4 ] return rs
+        return out
+
+    # the fixes whose latency has passed, oldest first
+    public func take [ now: f64 ] -> vec Fix
+        out : vec Fix []
+        keep : vec Fix []
+        for [ f: Fix ] in pending
+            if [ f.ready <= now ]
+                out.push[ f ]
+            el
+                keep.push[ f ]
+        pending.clear[]
+        for [ f: Fix ] in keep
+            pending.push[ f ]
+        return out
+
+# a 4 x 4 system by Gaussian elimination with pivoting
+func solve_four [ m_in: vec f64, b_in: vec f64 ] -> vec f64
+    m : vec f64 [ 16 ]
+    b : vec f64 [ 4 ]
+    for [ i: i32 0, i < 16, i += 1 ]
+        mv : f64 [ m_in[ i ] ]
+        m[ i ] = mv
+    for [ i: i32 0, i < 4, i += 1 ]
+        bv : f64 [ b_in[ i ] ]
+        b[ i ] = bv
+    for [ c: i32 0, c < 4, c += 1 ]
+        p : i32 [ c ]
+        for [ r: i32 c + 1, r < 4, r += 1 ]
+            if [ abs[ m[ r * 4 + c ] ] > abs[ m[ p * 4 + c ] ] ] p = r
+        if [ p != c ]
+            for [ k: i32 0, k < 4, k += 1 ]
+                t : f64 [ m[ c * 4 + k ] ]
+                m[ c * 4 + k ] = m[ p * 4 + k ]
+                m[ p * 4 + k ] = t
+            tb : f64 [ b[ c ] ]
+            b[ c ] = b[ p ]
+            b[ p ] = tb
+        piv : f64 [ m[ c * 4 + c ] ]
+        if [ abs[ piv ] < 1e-30 ] continue
+        for [ r: i32 c + 1, r < 4, r += 1 ]
+            k : f64 [ m[ r * 4 + c ] / piv ]
+            for [ j: i32 c, j < 4, j += 1 ]
+                m[ r * 4 + j ] = m[ r * 4 + j ] - k * m[ c * 4 + j ]
+            b[ r ] = b[ r ] - k * b[ c ]
+    x : vec f64 [ 4 ]
+    for [ r: i32 3, r >= 0, r -= 1 ]
+        s : f64 [ b[ r ] ]
+        for [ j: i32 r + 1, j < 4, j += 1 ]
+            s = s - m[ r * 4 + j ] * x[ j ]
+        d : f64 [ m[ r * 4 + r ] ]
+        x[ r ] = (abs[ d ] < 1e-30) ? 0.0 : s / d
+    return x
+
+# the inverse of a 4 x 4, a column at a time
+func invert_four [ m: vec f64 ] -> vec f64
+    out : vec f64 [ 16 ]
+    for [ c: i32 0, c < 4, c += 1 ]
+        e : vec f64 [ 4 ]
+        e[ c ] = 1.0
+        col : solve_four[ m, e ]
+        for [ r: i32 0, r < 4, r += 1 ]
+            cv : f64 [ col[ r ] ]
+            out[ r * 4 + c ] = cv
+    return out
+
+# the almanac loads and its satellites fly at GPS altitude
+expect func t_gnss_almanac [] -> bool
+    al : Almanac [ ]
+    n : i32 [ al.load[] ]
+    if [ n < 24 ] return false
+    sv : al.sats[ 0 ]
+    p : sv.place[ 2439, 503808.0 ]
+    r : f64 [ dv_len[ p ] ]
+    log 'gnss: {n} satellites, PRN {sv.prn} at {r} m from the centre'
+    return r > 2.5e7 && r < 2.75e7
+
+# standing on LC-39A: the fix lands within metres of the truth
+expect func t_gnss_pad [] -> bool
+    al : Almanac [ ]
+    al.load[]
+    rx : Receiver [ almanac: al ]
+    lat : f64 [ 28.6084 * 3.14159265358979 / 180.0 ]
+    lon : f64 [ -80.6043 * 3.14159265358979 / 180.0 ]
+    truth : geodetic_to_ecef[ lat, lon, 50.0 ]
+    worst : f64 [ 0.0 ]
+    seen : i32 [ 0 ]
+    dop : f64 [ 0.0 ]
+    guess : Dvec [ 0.0, 0.0, 0.0 ]
+    for [ k: i32 0, k < 100, k += 1 ]
+        t : f64 [ f64[ k ] * 0.1 ]
+        rx.clock_step[ 0.1 ]
+        rs : rx.measure[ t, truth, Dvec [ 0.0, 0.0, 0.0 ] ]
+        f : rx.solve[ t, rs, guess ]
+        guess = f.pos
+        e : f64 [ dv_len[ dv_sub[ f.pos, truth ] ] ]
+        if [ e > worst ] worst = e
+        seen = f.used
+        dop = f.pdop
+    log 'gnss: {seen} in view, PDOP {dop}, worst of 100 fixes {worst} m'
+    return seen >= 6 && worst < 15.0
+
+# in low orbit at 7.6 km/s: place and speed still come out
+expect func t_gnss_orbit [] -> bool
+    al : Almanac [ ]
+    al.load[]
+    rx : Receiver [ almanac: al, mask: -0.2 ]
+    rr : f64 [ EARTH_A + 400000.0 ]
+    vc : f64 [ sqrt[ EARTH_GM / rr ] ]
+    # ECEF: the craft over the equator heading north east
+    truth : Dvec [ rr, 0.0, 0.0 ]
+    vel : Dvec [ 0.0, vc * 0.7 - EARTH_SPIN * rr, vc * 0.7 ]
+    rx.clock_step[ 0.1 ]
+    rs : rx.measure[ 0.0, truth, vel ]
+    f : rx.solve[ 0.0, rs, Dvec [ rr * 1.01, 1000.0, 1000.0 ] ]
+    pe : f64 [ dv_len[ dv_sub[ f.pos, truth ] ] ]
+    ve : f64 [ dv_len[ dv_sub[ f.vel, vel ] ] ]
+    log 'gnss: orbit fix off {pe} m, {ve} m/s, {f.used} satellites'
+    return f.used >= 6 && pe < 15.0 && ve < 0.5

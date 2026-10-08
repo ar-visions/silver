@@ -234,7 +234,9 @@ extend <module>
 - Arguments are read-only: copy one to a local to change it.
 - `el` is else, `el [ c ]` else-if; `log '...'` prints; no hold or
   drop calls.
-- Taken names: is, signed, parse, pre, post, ref, line, msg, send.
+- Taken names: is, signed, parse, pre, post, ref, line, msg, send,
+  hold, drop (a method named hold replaces Au's hold: the object
+  is never kept, and the pool frees it at the next drain).
 - An interpolated string as a C argument (`unlink[ '{p}'.chars ]`)
   fails: make a local string first.
 - Never test a cstr for truth (`if [ x.ident ]`): it crashes.
@@ -3785,6 +3787,15 @@ compressed mp4.
    GPU (Kalen asked, Sep 30): ai's whisper_vk has compute
    shaders for gemm, attention, layer norm and conv; Seed-VC's
    whisper already runs there. The DiT and BigVGAN are not on it.
+11. DONE (Oct 6) `--rec_scale 2`: the Display's pixel scale is
+   doubled while recording (the swapchain stays the window's
+   size; its bilinear quad averages 2x2), the take is twice the
+   window's pixels, its .agi says `scale: 2`, and the composer
+   renders at take / scale, so a Focus to 200% shows real
+   detail. Checked: buttontest 800x500 -> 1600x1000 take ->
+   800x500 render, a 250% focus sharp where a 1x take is soft.
+   Not seen on screen (hidden runs). element gained rec_scale:
+   apps built before need a rebuild.
 10. DONE the render's frame rate is the shortest gap between
    decode times over 60 pictures (ffmpeg's first frame is
    longer: an average read 26, then 59; now 60).
@@ -4980,6 +4991,464 @@ moments later, then a final encode). The RTX 3060 on driver
    (matrix 1): hues shifted. Now BT.709 limited range.
 
 
+## Active work: psx emulator (Oct 6 2026)
+
+Kalen: a PlayStation emulator, /src/silver/psx beside n64. No
+software rasterizer: the GPU draws through trinity only (VRAM is
+a trinity render target; the CPU sees it only for the game's own
+VRAM-to-CPU copies). Everything external is a silver import.
+First game: Ridge Racer (USA), ~/Downloads/Ridge Racer (USA)/
+(cue: data track MODE2/2352 + 13 CD audio tracks; the music is
+CD audio). In order:
+1. DONE BIOS: OpenBIOS from source, `import pcsx-redux:nugget/
+   20b6316...` built by our clang/lld/llvm-objcopy (psx/nugget/
+   silver: mips-cc, mips-objcopy, mips1.h, build.sh; psx/
+   nugget.diff for LLVM: rfe as a word, three-operand sltiu,
+   li %lo -> addiu (LLVM dropped the relocation), BIU_CONFIG via
+   %hi/%lo, ALIGN(0x500) written out, .data AT(__rom_data_start)
+   (lld aligned the load address past the copy's symbol), and
+   -mno-check-zero-division (teq is MIPS II)) into share/
+   silver-psx/openbios.bin. Bus and memory map.
+2. DONE R3000A CPU (Cpu.ag): load/branch delays, COP0,
+   exceptions, interrupts, LWL/LWR merging the pending load.
+3. DONE interrupts, timers, DMA (block, linked list, OTC).
+4. IN PROGRESS GPU on trinity (Gpu.ag): VRAM 1024 x 512 target,
+   PsxDraw shader (4/8/15-bit textures and CLUTs from a VRAM copy,
+   modulation, dither, mask bit), five blend pipelines (opaque,
+   the four modes; textured blends draw opaque texels then blended
+   ones), fills, copies, CPU uploads and readbacks, PsxDisplay
+   (15/24-bit). GPUSTAT field/odd-line bits drive the BIOS shell.
+   Seen: Ridge Racer's loading screen and title right.
+   trinity changes: Pipeline.blend (BlendState), the batched
+   Render path honours a model's runs, Texture.vk_format public.
+   A Pipeline's blend must be given at construction.
+   OPEN: mask test (E6 bit 1), lines are quads, VRAM wraps.
+5. IN PROGRESS CD-ROM (Cdrom.ag): cue/bin (or a folder holding
+   one), commands and timed responses, data reads. DONE (Oct 7)
+   CD audio: a sector a 588 SPU samples, the CD-to-SPU volume
+   matrix, mute, autopause (INT4), report mode (INT1 every 10
+   sectors). Checked: the race's music matches track 3 (rr3.bin,
+   correlation 0.70 with the SPU's sounds over it). OPEN: XA.
+6. DONE GTE (Gte.ag): every command, 44-bit MAC checks and all
+   FLAG bits, the UNR-table divide, the RTPS IR3 flag quirk, the
+   MVMVA far-colour bug. Seen: the title's waving flag and the
+   attract demo racing in 3D.
+7. DONE (Oct 7) SPU (Spu.ag, ported from ares, ISC): 24 ADPCM
+   voices, ADSR, the Gaussian table, pitch modulation, noise,
+   reverb, transfer FIFO and DMA, the RAM IRQ, capture buffers;
+   a sample every 768 CPU cycles into a ring; a sound thread
+   writes it to spectra's AudioOut (44100 Hz). Frames run by the
+   clock (59.81 a second), nudged by the ring's fill; no sound
+   device runs silent. Checked by a capped dump: menu sounds,
+   engine and music. NOT heard by me on the real card.
+8. IN PROGRESS pads: digital pad on port 1, keys mapped. OPEN:
+   memory cards, gamepads.
+9. OPEN MDEC.
+10. DONE (Oct 7) speed: a race holds 60 frames a second at 6x
+   (was 26). Each flush waited the GPU and re-sent the whole
+   22 MB vertex buffer, and each texture read after drawing
+   copied all 75 MB of VRAM with a queue wait. Now draws only
+   record (new vertices sent), a read copies only the dirty
+   64 x 64 blocks it needs inside the same command buffer
+   (Render.copy_recorded), one wait a frame. Emulation ~3 ms
+   a frame.
+11. DONE (Oct 7) drawn at the window's resolution: VRAM is a
+   (1024 x S) by (512 x S) target, S from the window's pixel height
+   over 240 lines (1 to 8; 6 at 1440); texture and colour
+   table reads stay on the game's texel grid; CPU uploads expand to
+   S x S blocks, readbacks take one sample a block; a scale change
+   reads VRAM back, rebuilds, writes it again. Dither on the scaled
+   pixel grid. The window is resizable.
+12. DONE (Oct 7) precise vertices (Kalen: wiggly, distant road
+   ripped). RTPS/RTPT keep x and y as H x camera / z before any
+   cut (camera x, y, z from the uncut 44-bit sums) and the depth.
+   They travel with the screen word: beside the SXY FIFO, through
+   SWC2, MFC2, LW and SW (a value checked against the word), into
+   a shadow of RAM and the scratchpad; the GPU's DMA hands each
+   command word's address, so a vertex reads its own exact value.
+   A word-keyed table (per frame; two values on one word fall
+   back to the whole pixel) catches the rest. Ridge Racer's demo:
+   97% exact, 64% by address. Textures map with perspective when
+   all three depths are known (q = nearest / depth in the vertex
+   alpha, uv x q, divided back per pixel). The few seam specks
+   left are in the game's own 1x picture too.
+13. DONE (Oct 7) Start did nothing: OpenBIOS waits 80 turns of a
+   short loop for each pad /ACK, and the ACK fired per scanline,
+   too late. The ACK now lands 700 CPU cycles after its byte
+   (after the BIOS clears the IRQ, within its wait), checked in
+   the step loop; status bit 7 shows it. Checked: Enter opens the
+   race menu, Cross on START starts a race.
+14. DONE (Oct 7) anisotropic filtering of 3D surfaces (all three
+   depths known): up to 16 bilinear taps along the pixel's
+   texel footprint, each texel decoded through page, window and
+   colour table, clamped to the polygon's own UV box; clear,
+   opaque and semi texels counted apart (cutouts, two-pass
+   blends). Sprites and 2D stay sharp. Gpu.filter turns it off.
+
+## Active work: agi, a model that credits its groups (Oct 7 2026)
+
+Kalen: AGI as Aggregated Group Intelligence. A language model
+trained from scratch whose every training text carries its
+group (author, site, project); a second output, trained at the
+same time as the next-token output, scores every group, so an
+answer comes with its top 100 groups and a running ledger.
+Choices (Kalen): from scratch, built on ai/grad.ag, open data
+with natural groups (Project Gutenberg authors to start).
+Identity (Kalen): a 64-bit number spread across 64 outputs,
+not a column per group: the group head is 64 sigmoid bits,
+the identity the fnv-1a hash of the group's name; a group's
+share of a text is its bits' likelihood, normalised over the
+known identities. Top-N comes from that head alone, one pass
+(Kalen: a pass per contributor is too much).
+Identities (Kalen): every contributor as the catalog defines
+them, each author alone unless they join a group:
+~/.cache/agi/members.txt lines are group, a tab, author.
+identities.txt is the registry (hex number, a tab, the name),
+read back as the record; a book's bit targets are the
+average of everyone it credits; ledger.txt keys the shares by
+identity number.
+1. DONE grad.ag: causal attention (no relative tables), softmax
+   cross entropy with ignored rows, sigmoid cross entropy
+   (bce), reshape_view (no copy; the gradient is a view too),
+   a workgroup-a-row layer norm when t is 1, profiling turned
+   on mid-buffer no longer crashes. ai t_grad_lm vs pytorch
+   (GRAD_GOLD), worst 7e-7; every other grad test still passes.
+2. DONE the data (agi prepare): Gutenberg's catalog, English
+   texts by one named person (Last, First), authors with at
+   least --books books, most books first, --authors of them;
+   each author's last book held out. Books from the pglaf
+   mirror (0.25 s apart) into ~/.cache/agi/books; corpus.u8,
+   docs.i64 (offset, length, group, held, id), groups.txt.
+   Checked with 20 authors: 98 books, 38 MB, headers and the
+   licence cut.
+3. DONE agi/agi.ag: byte-level transformer (384 wide, 6
+   layers, 6 heads, 256 bytes of context), byte head and
+   identity head, both losses in one step (the bits weighted
+   0.5), AdamW 0.9/0.95, warmup then cosine. agi t_agi_net
+   (AGI_GOLD): the whole net against pytorch, losses within
+   5e-7, every gradient within 8e-8.
+4. DONE the check: held-out books, bits a byte and the right
+   author's rank. 300 steps on the 20-author corpus: 3.29 bits
+   a byte, top 1 16% (chance 5%), top 10 63%.
+5. DONE agi ask <text> (sampling at --heat, the answer's top
+   groups, added to ledger.f64) and agi ledger. Checked on the
+   300-step model: text still noise, the credit list printed.
+6. OPEN speed: 26,000 bytes a second at batch 32 (310 ms a
+   step, 4.3 GB of work); matrix multiplies are 63% of the gpu
+   time at ~1.5 TFLOPS in f32. Tensor cores (cooperative matrix,
+   f16 in, f32 sums) are the way up.
+8. DONE identities per contributor (catalog roles in brackets
+   dropped; Anonymous, Various, Unknown are no one), members.txt
+   groups, the registry file, the ledger by number. agi
+   t_agi_registry: alone, grouped, written and read back; fnv-1a
+   of 'a' is af63dc4c8601ec8c as published.
+7. OPEN the full corpus: agi prepare (1000 authors, 5 books
+   each: ~5,000 books, ~2 GB, ~2 hours of downloads), then the
+   long training run (Kalen's to start).
+
+## Active work: launch and landing (Oct 7 2026)
+
+Kalen: a Falcon 9 booster lands on real physics, real sensors,
+real propellant mass, real planning. Each part is its own
+module. Real Earth (WGS84, rotation), Falcon 9 Block 5 from
+public figures. The vehicle flies from its estimate, never the
+truth. Rates are settings (IMU 400-1000 Hz, GPS 1-10 Hz,
+guidance ~50 Hz; SpaceX does not publish theirs).
+1. BUILT launch/launch.ag (the world): clouds' Nubis layer on
+   the sphere (triplanar weather tile, a turned 3.4x second
+   read, a baked globe field), a far slab level of detail by
+   pixel footprint, night side shadowed, hex sea platform with
+   the orbiter mark, scripted Falcon-like ascent, pad and chase
+   cameras. Seen: liftoff, staging, 143 km, 58-60 fps in orbit.
+   The last fixes (exposure, flame, orbit clouds) not yet seen.
+2. BUILT physics/physics.ag: Dvec/Quat in f64, WGS84 frames,
+   J2 gravity, US Std 1976 (+ its table above 86 km), a Wyoming
+   sounding reader, Dryden gusts, a Craft of parts, tanks,
+   engines, grid fins, cold gas jets and legs (deck contact),
+   RK4, separate[], falcon_nine[ payload ]. silver --test
+   physics, 7/7 against published values: air at six layer
+   edges within 0.2%, gravity 9.8142/9.8321 (9.8143/9.8322),
+   LC-39A round trip < 1 mm, orbit energy drift 4.8e-11, stage
+   two dv 2449.5 vs Tsiolkovsky 2449.0, drag seen in the motion
+   = 0.5 rho v2 Ca A to 0.01%, legs carry the weight to 0.4%.
+   Found: aft first the empty booster drifts to 9 degrees off
+   axis in calm air (marginal, as the real one; fins and jets
+   must hold it). Estimates, named in the code: Ca/Cn tables,
+   tank places, gimbal 5 deg, fin size and lift, jet thrust,
+   leg stiffness. Slosh, jet damping, dI/dt are left out.
+   The spec: 6-DOF, RK4 fixed step, WGS84 J2
+   gravity in an inertial frame, US Standard 1976 air, aero
+   (body, grid fins), Merlin thrust by ambient pressure,
+   throttle, gimbal, mass flow, moving centre of mass.
+   The air is not perfect (Kalen): winds with shear and the
+   jet stream, gusts, temperature and pressure off the standard
+   day, all pushing on the vehicle unevenly. Source: a measured
+   Cape sounding (station 74794) to ~30 km, US Standard 1976
+   above, Dryden turbulence (MIL-HDBK-1797) for gusts.
+   All units metric (SI); all figures published or derived,
+   and any estimate is named as one.
+3. BUILT imu/imu.ag: dv and dtheta increments at 400 Hz at the
+   unit's place (lever arm: w' x r + w x w x r), LN-200
+   datasheet errors (assumed unit): gyro 1 deg/h bias, 0.07
+   deg/sqrt(h) ARW, 100 ppm; accel 300 ug, 50 ug/sqrt(Hz),
+   300 ppm; misalignment 0.1 mrad (estimate); biases drift as
+   Gauss-Markov, 1 h. physics gained Craft.spin_rate. Checks
+   2/2: in orbit it feels 0.0037 m/s2 (its bias); 1 rad turn
+   read 0.99970.
+4. BUILT gnss/gnss.ag: the current YUMA almanac (navcen.uscg.gov,
+   cached in path_storage gnss, fetched when missing), satellite
+   places by IS-GPS-200, pseudoranges and rates with light time,
+   Earth turn in flight, troposphere, a 350 km ionosphere shell
+   (half removed by the receiver's model), 1 m broadcast error
+   drifting per satellite, 0.5 m code and 0.03 m/s rate noise
+   (estimates), a TCXO clock as random walks; least squares
+   place, clock, speed, PDOP; 10 Hz, 50 ms latency (settings).
+   Checks 3/3: 32 satellites at 26,602 km; LC-39A 10 in view,
+   PDOP 1.43, worst of 100 fixes 7.5 m; 400 km orbit 0.65 m,
+   0.049 m/s, 16 satellites. The receiver ignores COCOM limits
+   (a launch receiver is licensed past them).
+5. BUILT nav/nav.ag: an error state Kalman filter of 18 (place,
+   speed, attitude, accel bias, gyro bias, the GPS's shared
+   error as Gauss-Markov 4 m / 600 s, an estimate). Strapdown
+   in the inertial frame at the IMU's point, J2 gravity, IMU
+   samples at 400 Hz; each fix met at its own time from a kept
+   past (50 ms late), antenna lever arm in H. Check 1/1: stage
+   two burning and turning at 300 km, starting 10 m, 0.5 m/s,
+   0.1 deg tilt, 0.5 deg heading off: at 60 s 5.6 m (it says
+   6.3 m), 0.011 m/s, 0.049 deg; after a 20 s GPS gap 5.7 m,
+   0.013 m/s. Each raw fix is 4.2 m off: GPS limits it. With
+   15 states it claimed 0.3 m (overconfident): fixed by the
+   shared error states. FOR THE LANDING: absolute GPS is ~5 m;
+   the deck carries its own receiver, and the difference of
+   the two (same satellites, same errors) is the relative
+   place to land on (OPEN, part of item 6).
+6. PARTLY BUILT guidance/guidance.ag: a second order cone solver
+   (log barrier, Newton on the KKT system, a phase I with one
+   slack), the landing burn as Acikmese & Ploen 2007 / Acikmese,
+   Carson & Blackmore 2013 (u, sigma, z = ln m, throttle band
+   linearised about full-burn mass, tilt, glide slope, terminal
+   place and speed, least fuel; golden section on the flight
+   time), an impact predictor (gravity, turning air, drag
+   engines first). Checks 3/3: distance 4.24264 exact; 30 t on
+   one Merlin from 1.5 km, 150 m/s down: 13.95 s, 2,957 kg,
+   flown exactly it lands 5e-8 m off, thrust 337..844 kN of
+   338..845 (the linearisation), tilt 14.9 of 15 deg; ~160 ms
+   a solve; impact vs physics from 60 km: 90.6 s both, 39 m.
+   OPEN: the phase sequence (ascent, MECO with a return
+   reserve, flip, boostback by the predictor, entry burn, the
+   aero phase, ignition timing, re-solves at 2 Hz); needs 7.
+   Original spec: ascent, boostback, entry, landing burn by
+   convex optimisation (G-FOLD).
+   Kalen (Oct 7): the booster lands back on the SAME platform it
+   launched from (return to launch site): full boostback, more
+   propellant held back, less payload. Then (Kalen, Oct 7): the
+   deck alone, no mount or tower, only the orbiter mark; the
+   stack stands on its legs (out from launch) and lands on the
+   mark, the deck's middle. Relative nav: the platform's own
+   GPS receiver (2 m over the deck) less the booster's.
+   Calm, after: scvx 36.8 m off at 15.1 m/s, gfold 17.1 m at
+   13.0 m/s (both fail the test's limits, as before).
+   BUILT mission/mission.ag (the sequence) and Kalen saw it land
+   beside the circle (Oct 7). Calm air (test severity 0): the
+   forecast (the booster's copy flies coast, entry burn, fall,
+   ignition by stop_loss, braking) aims the boostback and the
+   aero phase; the boostback cuts on the exact step (cut_at);
+   thrust sized by the air at the commanded attitude. Ignition
+   miss 1,116 m -> 292 m; touchdown 20.9 m off, 8.4 m/s, 9 deg
+   tilt, 515 kg left (the test's limits still fail). Open, in
+   order:
+   a. OPEN the aero phase sits at its 0.2 rad lean cap.
+   b. OPEN over-thrust the first 5 s after ignition (attitude
+      lags 0.56 rad; the plan's sideways ask too big at speed).
+   c. OPEN the plan's outside push from the booster's copy
+      (hull side force, fins, slosh): the last 20 m.
+   d. OPEN the fallback braking climbs (min throttle > weight).
+   e. OPEN the boostback cutoff note prints the stale miss.
+   f. OPEN restore the test's weather; check light, moderate.
+   g. BUILT, not seen in launch (Kalen: 1 frame per 3 s near the
+      landing): each 2 Hz replan ran ~11 cone solves, 1.24 s mean,
+      4.1 s worst, inside one physics step. The solver walks only
+      the columns each row and cone touches (Socp.index): 130-180
+      -> 32-42 ms a solve, same Newton path. The plan is solved on
+      an async worker from the state 0.5 s ahead (PlanJob,
+      plan_work, plan_ahead) and taken up at that met; launch
+      stops stepping while one is due and unfinished
+      (Mission.waiting). Calm landing now 24.2 m, 10.3 m/s, 7.0
+      deg, 595 kg (was 21.0 m, 8.5 m/s): the 0.5 s lead.
+   h. BUILT (Kalen: SCvx for the landing, keep G-FOLD, benchmark
+      both): guidance Scvx (Mao, Szmuk & Acikmese 2016; Szmuk
+      2018): thrust in newtons, mass and drag (the DragTable's
+      Ca, standard air) in RK4 dynamics, flight time free,
+      linearised by forward differences, one cone problem a pass
+      in a trust region, a virtual control on the end. enum
+      LandingMethod (scvx default, gfold); Mission.landing,
+      `launch --landing gfold`; the touchdown note gives the
+      plans' mean and worst solve ms. guidance
+      t_landing_compare (1.5 km, 150 m/s, Ca 1.3, both flown
+      through the same air): scvx 178 ms, 6 rounds, 2,638 kg,
+      0.06 m off at 0.01 m/s; gfold (search + 2 drag passes)
+      663 ms, 2,658 kg, 21 m off at 2.5 m/s.
+   i. BUILT touchdown physics (physics.ag): each leg elastic
+      (Hunt & Crossley damping), then its crush core at 400 kN
+      for 0.5 m, then the structure; breaks past 1.5 MN (all
+      estimates); pads hold on a sideways spring to friction's
+      limit then slide; feet past the deck's edge find sea;
+      the hull (skirt + rings every 8 m) strikes the deck. Feet
+      2 m under the engines (LEG_FOOT_X, photos). Per leg: first
+      touch (time, place, speed, tilt), crush, peak, broken;
+      hull strike. physics 15/15: drops at 2 m/s (no crush),
+      6 m/s no damper (crush 0.2963 m vs 0.2973 by energy),
+      leaning 6 deg (stands), 8 m/s across at 15 deg (topples).
+      The mission runs 20 s past touchdown and notes it all.
+      Flight (gfold, calm): two legs at 6.2-6.9 m/s and 12 deg,
+      three legs break, the hull strikes, it topples. The fall's
+      stronger lean (600 / 0.35) lit the burn 425 m off and both
+      planners went in the sea: back to 1000 / 0.2.
+   j. BUILT legs stow at liftoff and swing over 1 s (Leg.frac;
+      launch VehicleLit fold); plume from plume_of (physics):
+      Prandtl-Meyer edge, Pack cells, Witze core, Simons spread.
+      SCvx thrust slew limit and the tilt taper (tilt_at) built;
+      the SCvx flight not rerun since.
+   k. BUILT (Kalen: solves must be superbly fast; own IPM in
+      silver) Socp is a primal-dual interior point: G x + s = h,
+      Nesterov-Todd scaling (the reflection v = (w + e) /
+      sqrt(2 (w0 + 1)), checked in numpy), Mehrotra predictor
+      and corrector, the reduced system by Cholesky plus an m by
+      m Schur complement, at most 30 steps; it stops at 1e-8
+      (dual 1e-6) and keeps the last 1e-6 iterate, as the reduced
+      system loses digits near the answer. Distance check 5
+      steps (was 52); a G-FOLD solve 10-20 ms (was ~35 ms and
+      ~110 steps); G-FOLD's time search is 6 scanned times and
+      4 golden steps. Flight: 94 plans, 90-110 ms mean, ~280 ms
+      worst (was 614 / 1,262). Guidance 4/4.
+   l. OPEN the last 10 m. Also built: a soft sink-rate cone (fall
+      no faster than sqrt(2 x 6 x height) + 1 m/s, 2 m/s of fuel
+      per m/s over), the flight's air share 0.7..1.3 (was
+      0.3..1.5), replans down to 3 m with a search range that is
+      never empty, a capped lean keeps the push up as asked, and
+      feedback toward the plan's place and speed (1.2 rad/s, at
+      most 5 m/s2). Flight (gfold): about 10 m up at 1-2 m/s down
+      but 11-13 m/s sideways; one engine at its least throttle
+      lifts more than the booster weighs, so slow and high can
+      only climb; it climbs and falls in the sea.
+   m. DONE (Oct 7, Kalen: a soft landing "bounced 100 ft"): it
+      fell over, the nose hung past the deck's edge (no contact
+      there), and when the hull swung back over the deck a point
+      already metres under its top met the 5e7 N/m hull spring:
+      thrown up at 80-104 m/s. Kalen: the floor is not a spring.
+      A hull strike is now the end: Craft.step stops, mission
+      notes "it explodes", phase 9 ('exploded on the deck').
+      Legs keep their springs and crush cores.
+      Also: at touchdown the autopilot and jets stop.
+   n. BUILT, not seen: grid fins (launch build_fins), placed as
+      the physics has them (0/90/180/270 deg; legs at 45): a
+      frame 1.5 m out, 1.2 m across, 0.3 m deep (estimates), a
+      45 degree lattice, hull fittings; folded flat up the
+      interstage until Fin.open, out in 1 s (Fin.frac).
+   o. BUILT (Oct 7): deck receiver as a differential GPS base
+      (gnss Receiver.base, base_at; booster gps_bias 0.3): the
+      feet's height estimate went from 2-5 m high to 0.05 m.
+      follow() removed (it made the booster circle). G-FOLD:
+      per-step air share (Landing.reach), sideways turn rate
+      (turn, 2 m/s3), the push got lagging the push asked
+      (lag = 1 / point_gain, step mean; guidance t_landing_lag:
+      0.08 m off flown through a true lag), a cost per metre
+      off the mark (track_cost), upright over the last 3 s by
+      time (UPRIGHT_TIME). Engines cut when rising under 10 m;
+      a feather at least throttle, upright, when that meets
+      the deck at 2 m/s or less. Flight (gfold, light): four
+      legs at 3.8 m/s, stands at 3.5 deg, 38 m off the mark.
+   p. BUILT (Oct 8): wind and the coast. --rwind (wind_min,
+      wind_max: the jet, km/h): Weather.random_wind; the deck's
+      anemometer (read_deck_wind, 10 m mast, ~10 s average)
+      shifts the loaded profile's bottom (known_wind), which the
+      impact forecast flies through. The ascent flies a pitch
+      plan against the ground (planned_lean, the calm climb's
+      lean every 5 s). The coast leans AWAY from the miss (the
+      hull-only model said toward: wrong in flight), learned from
+      the miss over 4 s once q > 15 kPa, lean cap 0.3. Calm test
+      flight: ignition 370 m off, stands 17.6 m off at 3 deg.
+      Fins turn visibly (VehicleLit.twist, each fin's deflect),
+      not seen yet. Joints and tube modes (knee 1000 kg, joint
+      5e7 N/m, axial 30 Hz, bend 4 Hz, 2%), leg damper 8e4,
+      lift_loss 0.4: t_drop_lean still fails (rocks ~4.6 deg at
+      8 s). After any Craft/State change: --clean imu gnss nav
+      control guidance mission launch (stale layouts broke nav).
+7. BUILT control/control.ag (class Autopilot: a class named
+   Control clashed with trinity's element Control; in launch
+   the linker took trinity's Control_init, so ours never ran
+   and its duty vec stayed null: the T0 crash). Class names
+   must not repeat one in any module loaded beside them.
+   One attitude loop on a Belief (nav's,
+   or the truth for checks): error to wanted rate (capped by
+   what the actuators can brake, sqrt(2 a e)), rate error to
+   torque with the gyroscopic term; split over the gimbal
+   (pitch, yaw on every lit engine, roll by the outer ring
+   along the hull), the grid fins (least squares, slope and
+   dynamic pressure from its own standard-air estimate) and the
+   jets (pulsed, a share of each 20 ms period). 50 Hz. physics
+   gained actuator slew (gimbal 0.35 rad/s, fins 0.6 rad/s:
+   estimates) and roll jets (4 side, 4 along the hull, 2 kN
+   each: estimate). Checks 4/4: stage two turned 20 deg holds
+   within 0.03 deg; the empty booster flips end for end on
+   jets in 34.7 s; falling through 5+ kPa with moderate
+   turbulence the fins hold 4 deg off the airflow, mean 0.49
+   deg, worst 1.19; the full stack flies the pitch program to
+   20.8 km through max-Q 39 kPa in moderate turbulence, worst
+   0.76 deg.
+8. OPEN launch draws truth and estimate.
+12. BUILT aerodynamics from the shape (Kalen chose the component
+   build-up, Oct 7). A Part is a tube or a profile (x, r pairs;
+   the fairing's ogive), outer or inside; the craft's skin is
+   their envelope at 0.25 m stations, rebuilt on separation.
+   Craft.body_aero: normal force by slender body theory (area
+   change from the leading end, separated narrowings halved:
+   estimate) plus Jorgensen's crossflow (NASA TR R-474, 0-180
+   deg, its eta and Cdc curves read off); axial: Schlichting
+   turbulent skin friction with compressibility and Sutherland
+   viscosity, faces into the flow by modified Newtonian (Rayleigh
+   pitot) from Mach 1.2, blunt faces 0.8 of stagnation below
+   Mach 0.8 (Hoerner), blended between; base suction by Hoerner/
+   Love curves, none behind a burning base; a burn out of the
+   leading end shields its face (estimate); open grid fins and
+   deployed legs drag (estimates). Every force at its station:
+   the centre of pressure comes out of the shape. axial_coeff
+   (for the planners) now evaluates the shape. Checks: Newtonian
+   stagnation 1.837 at Mach 20 (1.839), Cf 0.00300 at Re 1e7
+   (0.0030), slender body slope 2.10 at 0.5 deg (2 + crossflow).
+   Stack nose first under power: Ca 0.10 subsonic, 0.36 Mach
+   2-5, centre of pressure 59.5 m (cg 27.7): unstable, as real.
+   Booster engines first, fins out: 1.47 subsonic, 2.71 peak at
+   Mach 1.3 (fin share an estimate, likely high transonic).
+   Found: a 0.5 m gap in the skin (stage two to fairing) read
+   as a blunt face; closed. Control gained integral action (a
+   steady aero torque left a steady error): fin hold mean 0.22
+   deg, worst 0.48; ascent worst 0.61; gimbal 0.06; flip 34.7 s.
+   predict_impact takes the craft and uses its own shape (20 m
+   from the physics after 95 s, was 39).
+10. OPEN (Kalen, Oct 7) a standard view for every sensor on board,
+   each an element its own module exports: imu (rate and
+   acceleration traces), gnss (sky plot, fix error, PDOP), nav
+   (estimate against truth, its spread), physics (tank cutaway
+   with slosh); launch mounts them as panels.
+11. BUILT slosh in physics: per tank Abramson's first mode (NASA
+   SP-106): m1 = m 2R/(1.841 x 2.3894 h) tanh(1.841 h/R),
+   w2 = 1.841 a/R tanh(1.841 h/R), damping 0.02 (estimate), the
+   mass at h - R/1.841 tanh(1.841 h/2R) (our approximation).
+   The rigid body leaves m1 out (Craft.rigid; mass is the
+   total); each m1 loads its tank axially and pulls by its
+   spring at its offset; it feels the tank wall's specific
+   force and the turn; a stop at 0.8 R; State.slosh holds y, z
+   and speeds per tank. Check t_slosh_ring: held still the LOX
+   rings at 1.9507 s (Abramson 1.9504), decays 0.3659 (0.3659);
+   free, coupled with the stage, 1.66 s. Found on the way: the
+   IMU's felt force must be over the rigid mass (nav broke at
+   1.4 m/s, fixed). Coast: no settling model (liquid floats
+   only as far as the spring frees it). NEXT: the cutaway
+   view, with launch on physics (after 7).
+9. BUILT, not run: C cycles the camera: platform, orbiter (the
+   upper stage, to a stable orbit), booster (it lands).
+
 ## Active work: quake2 port (Oct 5 2026)
 
 Kalen: id's Quake 2 (GPL, /src/Quake-2 is the reference clone)
@@ -5294,11 +5763,328 @@ as any trinity app (install/build/quake2 --hidden true).
    half level when spatialized; a pan on Voice is Kalen's call, it
    changes spectra's class), cue-point loops, the mission pack's
    flashes, footsteps (an entity event), s_volume as a setting.
-15. NEXT: the sights of the same events (cl_tent.c, cl_fx.c:
-   particles, explosions, sprites, dynamic lights, beams), the
-   dead camera (client ps viewangles, kick angles and viewoffset
-   into MapView's eye), death in single player (g.restart reloads
-   the map: wired, not tested), the player's water level in
-   categorize, areaportals in the PVS, frustum culling, warp and
-   translucent surfaces, skyrotate, the HUD's pickup string and
-   icons, saving the game.
+15. DONE (Oct 6) the rest of the list, in its order.
+   a. The sights of the events (Effects.ag; cl_fx.c, cl_tent.c and
+      CL_AddPacketEntities' effects). Particles (4096, each a clock
+      time, origin, velocity, acceleration, palette colour, alpha
+      and its rate, placed by the closed form as CL_AddParticles):
+      every base game effect function ported one for one (impact
+      puffs, blood, blaster, explosion, rail spiral, bubbles, the
+      rocket, grenade and gib trails, teleport, big teleport, item
+      respawn, logout, flies, the bfg ball's sparks). Explosions
+      (32: smoke and flash, the blaster burst, the fireball's
+      frames and skins, the bfg sprite), the parasite's and medic's
+      cable (temp_entity_beam carries its entity), bfg lasers, and
+      RF_BEAM entities as six-sided beams. Dynamic lights: muzzle
+      flashes (a frame long, colours by weapon and by monster flash
+      group), explosions, rockets, bolts, the bfg; they light the
+      models (R_LightPoint's sum) and the WORLD: BspLit takes the
+      four that matter most at the eye and adds R_AddDynamicLights'
+      falloff per pixel (reach less distance past a cutoff of 64,
+      the edge eased over 16 units as the lightmap's filtering
+      did; the true distance along the face, not the original's
+      octagon estimate).
+      Md2.ag now fills TWO meshes: `solid`, and `clear` for what is
+      seen through (the same shader made with transparent: true:
+      trinity gives that pipeline no depth write and straight
+      alpha, so the fragment writes rgb and alpha unmultiplied).
+      Sprites (.sp2, each frame's pcx in the skin atlas, colour 255
+      clear), colour shells (quad, invulnerability, power screen:
+      the plain colour four units out along the normals), alpha
+      (RF_TRANSLUCENT 0.7, the bfg 0.3), EF_ANIM frames, the linked
+      models 2 and 3. A vertex alpha of 2 marks the view weapon
+      (opaque, depth squeezed). The atlas keeps a white block
+      (beams, shells) and gl_rmisc.c's particle dot at its corner.
+      Entity events once a game frame (MapView.entity_events:
+      footsteps, falls, item respawn, teleport, the teleporter
+      pads), the event cleared as the server did.
+      Seen by shots: blood off a hit soldier, the bolt's yellow
+      light on floor, wall and soldier (floor 44,33,25 ->
+      76,60,25), the rocket and grenade fireballs, the rail's blue
+      spiral, the big teleport's particles, smoke and flash.
+   b. The camera (calc_view, CL_CalcViewValues): the eye is the
+      origin plus ps.viewoffset (bob, fall, crouch), the angles the
+      mouse's plus ps.kick_angles, all lerped across the game
+      frame; dead or frozen, ps.viewangles (rolled 40 degrees on
+      the floor, facing the killer). The gun, sprites and particles
+      use the same eye.
+   c. Death in single player: fire restarts the level with the
+      player as he ENTERED it (MapView.entry). The first try
+      crashed in Render_destroy_ring: replacing a Render under the
+      same element_targets key frees the old one while the map
+      still lists it, and its dealloc nulls its own key (a second
+      free); and a key set to null is found by lookup but skipped
+      by the window's draw loop after it is set again. quake2 now
+      keeps ONE Render for the app and gives it the next map's
+      models (target.models, each model's finish).
+      OPEN, trinity's: Render.dealloc (vk.ag) walks
+      element_targets and nulls its own key from inside its
+      dealloc; replacing a Render under one key then drops twice.
+      A change to Au's map_set for this was WRONG and is taken out
+      (Kalen: map_set has nothing wrong with it; never change map).
+      quake2 keeps one Render and swaps its models.
+   d. Water (pmove.c): the level at feet, waist and eye, water
+      friction, swimming (PM_WaterMove, the jump key swims up),
+      currents in water and on conveying ground, ladders, the jump
+      out of water. Traced on base1's pool: sinks to the bottom
+      head under (air_finished set), swims up at 64 units a
+      second, forward at 150. The player's waterlevel and
+      watertype reach the game (drowning, splashes).
+   e. Area portals (Bsp.ag: leaf areas, the areas and areaportals
+      lumps, FloodAreaConnections on every portal change) gate the
+      world's leaves, the entities and the monsters' hearing. At
+      base1's start doors: 1,319 triangles shut, 1,634 open, 1,239
+      shut again.
+   f. Frustum culling: the four side planes each frame against
+      every visible leaf's box, and a sphere per model
+      (R_CullAliasModel). The live index list is rebuilt every
+      frame now. No holes seen, pitched or level.
+   g. Warp and see-through surfaces: BspLit warps water as
+      EmitWaterPolys (each axis swung 8 texels by the other's
+      sine), slides SURF_FLOWING, and SURF_TRANS33/66 faces are
+      their own mesh (Bsp.build_clear: a node for the world and
+      each inline model), drawn last with no depth write. Seen:
+      the pool's surface from under it, the glass over the emblem
+      at base1's start.
+   h. skyrotate and skyaxis (worldspawn, read in Bsp.ag): BspSky
+      turns the look back round the axis. Seen on `space`: only
+      the sky's pixels change over four seconds.
+   i. The status bar (Hud.ag): g_spawn.c's single_statusbar run by
+      SCR_ExecuteLayoutString's rules, the pics from pics/*.pcx
+      (digits, icons, the flash field), three of our pixels to
+      one of its. Seen: health, armor, the weapon icon, the pickup
+      icon with 'Armor Shard', the F1 help icon on base2.
+   j. Level changes: `map$start`, '*' and 'film+map' names are
+      read; the next map loads (MapView.level_name: map_name is a
+      prop the app sets again every frame, so the change never
+      took before); the player's persistant data, the start to
+      arrive at, serverflags and the help text go to the new Game
+      (Game.carry), and the player stands where PutClientInServer
+      put him (the port used the map's first start: base1 began at
+      the wrong one). Traced: base1 -> base2 arrives at the start
+      named base1 (848 2292), armor 4 and health kept.
+   NOT done, and why:
+   - saving to disk (g_save.c) and a hub's levels remembered when
+     you come back: every edict's think, touch, use, pain and die
+     is a lambda and its move a pointer; writing them needs a name
+     for each static lambda and a way back (a registry, or the
+     symbol's name). Not started.
+   - films (.cin) and the end-of-unit screens: skipped over.
+   - the help computer, the inventory and the score layouts (the
+     layout runner is there; the port's p_hud does not write their
+     programs yet); the damage and underwater screen tint
+     (ps.blend); crouching (no key).
+   - sound: left and right (a pan on spectra's Voice, Kalen's).
+   - the world's own light styles (flicker, switched lights).
+16. DONE (Oct 6, second pass) from 15's NOT done list:
+   - crouch (PM_CheckDuck: c or left ctrl; box 4 high, eye -2,
+     speed 100, swims down in water).
+   - the screen tint (ps.blend) over the view.
+   - the help computer (F1), the inventory (tab, [ ] enter
+     backspace) and the centre print, in the game's own letters
+     (pics/conchars.pcx; Hud.glyph / chars / help / inventory).
+     A written backslash n in a map message is a line break now.
+   - the world's light styles: g_spawn.c's 12 patterns and the
+     switched lights, ten times a second; Bsp.relight rebuilds
+     the styled faces' blocks (R_BuildLightMap) and the changed
+     atlas rows go up; light_point sums every style.
+   - left and right ears: spectra Voice.gain_right and
+     AudioMixer.voice_sides (both added LAST in their classes);
+     Sound.ag gives each ear S_SpatializeOrigin's share.
+   - films (Cin.ag: .cin with sound, .pcx stills) and SV_Map's
+     names (MapView.go: 'film+map', '$start', '*'); any key skips.
+   - Menu.ag: main, game (easy medium hard), options (volume,
+     mouse speed, invert), quit; esc opens it, the game holds
+     still. GameConsole (the ` key): map, skill, quit, and the
+     g_cmds commands (god, give, noclip ...).
+   - a click takes the mouse for looking (ux.mouse_lock).
+   Seen by shots: help computer, inventory, crouch, main and
+   game menus, the intro film, the skip into base1, `god` in the
+   console. NOT seen or heard: the tint, light styles, the two
+   ears, the options sliders, the mouse lock on a real screen.
+   - saves (Save.ag, MADE by a script from Game.ag's classes:
+     /src/quake2/support/gensave.py + save_head.ag; run it
+     from /src/quake2/quake2 after Game.ag's classes change). Every member of Edict,
+     Client, MoveInfo, MonsterInfo, Level goes out as a line of
+     text; floats as their bits; edicts by number, items by
+     index, 543 lambdas and 286 moves by name. The menu's save
+     and load rows write and read ~/.cache/quake2/save<n>.sav
+     (game, level, the hub's kept levels). Checked hidden:
+     saved at x 3.6 y -195.6, walked to x -112 y -80, loaded,
+     back at x 3.6 y -195.6 exactly.
+     A level left inside a unit is kept in memory (MapView.hub)
+     and read back on return; a '*' map clears it. NOT driven.
+   NOT done: multiplayer, CTF, demos, key binding menus.
+   RULE learned (Kalen, Oct 6): `new T [ n ]` is a pooled
+   vector; an `@T` member takes only its data pointer and owns
+   nothing, so the frame's clean-up frees it. A buffer that
+   lives past the frame goes in a real new member
+   (`public data : new u8`, then `data = new u8 [ n ]`). Not a
+   silver bug: checked in the IR. PakData.data and Cin.ag's
+   buffers are new members now; pak_data[ n ] makes one for
+   the map's light and vis data, the sound samples and the
+   live index list (all were dangling before, and lucky).
+   NOT reproduced: the save's first crash (a string freed twice
+   at the frame's clean-up) went away when put_s stopped pushing
+   a literal held in a local; features t_vec_literal_local does
+   the same thing and passes, so the cause is not known.
+   OPEN silver:
+   - a one-letter literal ('w') is a unichar, not a string.
+17. DONE (Oct 6; written blind on Kalen's "port all, no
+   testing", then debugged in hidden runs):
+   RUN AND SEEN: id's demos/demo1.dm2 plays on base2 (the
+   fight, blood, the damage tint, health 100 -> 81 -> 76); a
+   hosted q2dm1 with a second hidden instance joined over udp
+   (both scoreboards, the client's suicide and obituary on the
+   host, its score -1, respawn); a hosted q2ctf1 with a joiner
+   (one player a team, the joined marks, flags spawned, the
+   grapple fired and its hook flying, the blue banner seen by
+   the joiner, `team blue` on the host); `record mine` then
+   `demomap mine` plays the recording (health and weapon
+   right); the customize controls screen.
+   FIXED on the way: the paks' demos are protocol 26 (no
+   suppress byte in a frame); put_client_in_server dropped the
+   old Client before the new one held its ClientRespawn (the
+   team read as 0: a freed object); vec.insert is (value,
+   index); the ctf item count; `ctf <map>` hosts ctf (host is
+   deathmatch); a recording waits for a whole frame
+   (demowaiting, lastframe -1); demomap reads ~/.cache/quake2
+   too; a player's name survives a respawn.
+   NOT RUN YET: the grapple's pull, a flag taken and captured,
+   techs, fraglimit / timelimit / capturelimit, the
+   intermission in deathmatch, other players drawn on the
+   host (model 255 -> the male model), the inventory and
+   centre prints over the net, keys bound through the screen
+   (saving is written, the press was not driven), `connect`
+   to a far machine (only 127.0.0.1).
+   - keys: Menu screen 6 (options > customize controls), 12
+     actions, saved in ~/.cache/quake2/binds.cfg.
+   - Net.ag: Msg (sizebuf + MSG_*), protocol 34's entity and
+     player deltas, Netchan. quake2.c/.h: udp sockets.
+   - Server.ag (NetServer): challenge, connect, new,
+     configstrings, baselines, begin; per client delta frames
+     with pvs and areas; sounds, flashes, temp entities, prints,
+     centre prints, layouts, inventory. Console `host [map]` or
+     the multiplayer menu; port 27910; 8 players.
+   - Remote.ag: `connect host[:port]`; the server's frames are
+     laid over a local Game's edicts (edict 1 stays the local
+     player: numbers 1 and playernum+1 swap), so the drawing,
+     sound and effects code is unchanged. `demomap <name>` plays
+     demos/<name>.dm2 from the paks; `record <name>` / `stop`.
+   - NOT id's protocol in one place: the client moves itself and
+     sends CLC_STATE (5: place, velocity, angles, buttons); the
+     server does not run pmove from usercmds, and clc_move's
+     checksum is not made. Our builds talk to each other; id's
+     own client or server will not play with ours. Server to
+     client is protocol 34 as written, so real demos should read.
+   - Dm.ag: obituaries with frags, deathmatch spawn points,
+     the scoreboard layout (Hud.layout reads quoted strings and
+     string / cstring / client / ctf now), fraglimit, timelimit.
+   - Ctf.ag: teams, base spawns, flags (take, capture, return,
+     drop, auto return), every bonus, the four techs, the
+     grapple, the status bar and scoreboard, `team red|blue`,
+     banners, trigger_teleport. The ctf pak beside baseq2 is
+     read. NOT ported from g_ctf.c: match mode, elections,
+     admin, ghosts, the join menus, observers, id view,
+     say_team, team skins, the grapple's cable drawing.
+   - Save.ag was made again (Client and ClientRespawn grew).
+   Not written: downloads, rcon / status / info, prediction
+   smoothing, sounds culled by PHS (every event goes to every
+   client).
+   Silver bugs met:
+   - FIXED (Oct 6) `if [ v[ i ] ]` with v a vec bool branched on
+     the element's ADDRESS (LLVM: "Branch condition is not 'i1'");
+     a ternary on it, or on a vec of objects' element, was always
+     true. aether.c: e_create's same-type shortcut loads an
+     unloaded primitive element, and both ternary forms load their
+     condition (cond_loaded). features t_vec_bool_if, _while,
+     _ternary, _logic, t_vec_object_cond; 245 of 246 pass (the one
+     left, t_codegen_resource, failed before too). quake2's Bsp.ag
+     uses the plain form again.
+   The rest are worked round, OPEN:
+   - `x : vec f32 [ other ]` is a sized construction, not a copy
+     ("no suitable conversion found for vector -> i64"): write
+     `x : other`.
+   - a class-typed local declared with its type from a call or an
+     element (`ex : Explosion [ alloc[] ]`) is refused as
+     redundant; a struct one (`v : vec3f [ f[] ]`) is not.
+   - a method argument or local may not carry the name of ANY
+     member up the class chain (flags, area, last, planes, nodes).
+   Seen once, not chased: the first run after BspLit's source
+   changed drew no world (shaders compiled in that run); the next
+   run was right.
+18. DONE (Oct 6, Kalen: "when i load it it goes direct to base1")
+   the attract loop of default.cfg's d1..d4: with no --map the app
+   plays idlog.cin, demo1, idlog.cin, demo2, round again
+   (MapView.attract, attract_next; the demo's end and film_end
+   step it); any key opens the main menu over the running demo,
+   or alone over black while a film runs on, as SCR_UpdateScreen;
+   esc goes back to the loop; game > a skill, a load, a host,
+   connect, map or demomap leave it (fresh, load_slot). The menu's
+   letters and pics before any map come from `front` (a palette
+   and an atlas of their own). `--map base1` goes straight in, as
+   +map did. Checked hidden: film, demo, menu over it, esc,
+   game > easy into ntro.cin, and 150 s of the loop (base2,
+   waste2, base2) with no fault.
+19. DONE (Oct 6, Kalen: stuck on walls when sliding along them,
+   and on tiny objects on the ground): slide_move's plane test
+   was inverted (`i != nplanes` took the crease branch, which
+   zeroes the velocity on a single plane: every wall contact
+   stopped the player dead). Traced with a temporary bump log
+   (removed): the wall hit at fraction 0.83, then no second bump.
+   Checked hidden: 25 degrees into base1's corridor wall now
+   slides along it (y -220 -> -76). The small objects are not
+   re-tested (none found); likely the same cause.
+20. BUILT, Kalen tests (Oct 6, "stuck on enemies you killed"):
+   World.trace lacked sv_world.c:547: an entity flagged
+   SVF_DEADMONSTER is skipped unless the mask asks for
+   CONTENTS_DEADMONSTER, so every corpse was a solid box to the
+   player's move. SVF_DEADMONSTER and CONTENTS_DEADMONSTER now
+   live in Game.ag (World is imported before Trigger/Target).
+21. BUILT, Kalen tests (Oct 6): lifts stepped 10 Hz and demos
+   were jerky. Brush models lerp between game frames
+   (lerp_origin / lerp_angles in place_model); a rise of 8..20
+   units while on ground eases out of the view over 0.1 s
+   (step_up / step_left, CL_PredictMovement's predicted_step);
+   a demo's view lerps the recorded player's origin and angles
+   between frames (checked by a per-frame log). `timedemo 0|1`
+   and `map <x>.dm2` added (688 frames, 58.8 fps hidden).
+   OPEN: "still stick on bits of floor and walls": the trace and
+   slide code match cmodel.c / pmove.c line by line; a wander
+   on base1 found only head-on stops (within 5.7 degrees of
+   square, which pmove.c stops too). Needs a place.
+   Mouse: m_yaw 0.022 x sensitivity (was 0.004 rad: 3.5x fast).
+   NEVER run quake2 hidden while Kalen works: its click locks
+   the mouse and devices' platform_warp_cursor warps HIS pointer
+   (an unmapped window still warps). Kalen: no more testing.
+22. DONE (Oct 6) broken glass drew against the back wall: a
+   freed or SVF_NOCLIENT brush model is hidden (place_model).
+23. DONE (Oct 6) sticking on walls at shallow angles. Repro at
+   165 Hz (SILVER_HZ=165), 6 degrees into base1's y 128 wall:
+   the step path left the box inside the 1/32 gap, a small step
+   in gave an entry fraction under -1 that clip_brush dropped,
+   the box entered the wall and every trace after was allsolid.
+   The trace is id's again; pmove now ends with id's
+   PM_SnapPosition (origin and velocity to eighths, jitter by an
+   eighth to a good place, else back) and starts with
+   PM_InitialSnapPosition when pushed or moved since. At 165 Hz a
+   sideways creep under 1/8 unit a frame is truncated away, as
+   in id's. Keys-only hidden runs (no click) are safe.
+24. DONE (Oct 6) the socket layer is silver (Net.ag q2net_*);
+   quake2.c and quake2.h are gone: no C in quake2.
+25. DONE (Oct 6) id's console (Con.ag; trinity has a Console.ag,
+   so not that name): conback sliding at scr_conspeed, v3.19,
+   word wrap, ^ backscroll row, blinking cursor, notify rows for
+   con_notifytime; keys.c editing (tab completion as
+   CompleteCommand, 32 line history, PgUp/PgDn/Home/End,
+   ctrl+v/l/h/p/n, esc opens the menu); cmd.c and cvar.c
+   (cmdlist, cvarlist, set, echo, clear, toggleconsole; a cvar
+   alone prints, with a value sets; unknown words go to the
+   game). Variables are only the ones that drive something:
+   fov (ps.fov by ClientUserinfoChanged, CalcFov, gun hidden
+   over 90), sensitivity, m_pitch (the menu's invert), m_yaw,
+   s_volume (the menu's slider), skill, dmflags, fraglimit,
+   timelimit, capturelimit, timedemo, cl_gun, name. Archived
+   ones go to ~/.cache/quake2/config.cfg, run at start. gi
+   cprintf / bprintf reach the console. NOT done: alias, exec,
+   bind, condump, say / say_team, messagemode.

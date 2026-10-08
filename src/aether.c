@@ -6032,6 +6032,13 @@ enode aether_e_create(aether a, etype mdl, Au args, bool no_pool) { sequencer
 
     // Raw scalar arithmetic still needs wrapping.
     if (input && canonical(input) == canonical(mdl)) {
+        // an element read (`v[ i ]`) is its address until loaded: a
+        // same-type primitive hands back the value, or a condition
+        // branches on the pointer
+        if (!a->no_build && !input->loaded && is_prim((Au)mdl) &&
+            !is_struct((Au)mdl) && _llvalue((enode)input) &&
+            LLVMIsAGetElementPtrInst(_llvalue((enode)input)))
+            return enode_value(input, true);
         bool raw_scalar = !a->no_build && mdl->autype->is_scalar &&
             _llvalue((enode)input) &&
             LLVMGetTypeKind(LLVMTypeOf(_llvalue((enode)input))) !=
@@ -6807,6 +6814,15 @@ static LLVMValueRef cond_to_i1(aether a, LLVMValueRef v) {
     return v;
 }
 
+// an element read (`v[ i ]`) is its address until loaded: a condition
+// tests the value, not the pointer
+static enode cond_loaded(enode c) {
+    if (c && !c->loaded && !is_struct((Au)canonical(c)) && _llvalue(c) &&
+        LLVMIsAGetElementPtrInst(_llvalue(c)))
+        return enode_value(c, true);
+    return c;
+}
+
 AU_EXPORT enode aether_e_ternary(aether a, enode cond_expr, enode true_expr, enode false_expr) {
     emit_guard;
     aether mod = a;
@@ -6826,6 +6842,7 @@ AU_EXPORT enode aether_e_ternary(aether a, enode cond_expr, enode true_expr, eno
     // cond_to_i1 handles every scalar shape (int != 0, ptr != null, float != 0),
     // covering both the ?? coalesce (yield cond, branch on truthiness) and the
     // plain ternary (branch on the condition).
+    cond_expr = cond_loaded(cond_expr);
     LLVMValueRef condition_value = cond_to_i1(a, _llvalue((enode)cond_expr));
     LLVMBuildCondBr(mod->builder, condition_value, then_block, else_block);
 
@@ -6955,6 +6972,7 @@ AU_EXPORT enode aether_e_ternary_deferred(aether a, enode cond_expr, array true_
     LLVMBasicBlockRef merge_block = LLVMAppendBasicBlockInContext(a->module_ctx, pb, "ternary_merge");
 
     // branch on condition — coerce any scalar (int/ptr/float) to i1
+    cond_expr = cond_loaded(cond_expr);
     LLVMValueRef condition_value = cond_to_i1(a, _llvalue((enode)cond_expr));
     LLVMBuildCondBr(B, condition_value, then_block, else_block);
 

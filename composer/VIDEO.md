@@ -40,6 +40,10 @@ marks:
 ```
 
 - `context` is the user's hint for the whole take.
+- `scale` 2 (from `--rec_scale 2`) means the take holds twice
+  the window's pixels. The output is the window's size, so a
+  Focus up to 200% shows the take's own detail, not enlarged
+  pixels: zoom in where a detail matters.
 - A mark is one dictation: spoken at `at` for `dur` seconds.
 - A mark that is an instruction to the composer is always
   cropped out of the output: its words were meant for the
@@ -153,7 +157,8 @@ moment and back after (a decay, each frame a share of the rest of
 the way), so the take keeps playing and its sound is untouched. The
 region keeps the frame's shape: its larger side sets the zoom, a
 region half the frame's size is 200%. Find the region on the still
-of the mark that asks for it (see the marks' stills).
+of the mark that asks for it (see the marks' stills). On a take of
+`scale` 2, zooms to 200% stay sharp; past that they soften.
 
 | field | meaning |
 |---|---|

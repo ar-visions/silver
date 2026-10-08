@@ -1,0 +1,405 @@
+export 0.1.0
+
+import physics
+import imu
+import gnss
+
+# nav: what the vehicle believes. a strapdown solution of the
+# IMU's increments in the inertial frame, at the IMU's own
+# point, corrected by each GPS fix through an error state
+# Kalman filter of 18: place, speed, attitude, accelerometer
+# bias, gyro bias, the GPS's shared error. the vehicle flies from this, never the truth.
+
+# the filter's square matrices, row major, n by n
+func mat_mul [ m: vec f64, k: vec f64, n: i32 ] -> vec f64
+    nn : i32 [ n * n ]
+    out : vec f64 [ nn ]
+    for [ i: i32 0, i < n, i += 1 ]
+        for [ j: i32 0, j < n, j += 1 ]
+            s : f64 [ 0.0 ]
+            for [ l: i32 0, l < n, l += 1 ]
+                s += m[ i * n + l ] * k[ l * n + j ]
+            out[ i * n + j ] = s
+    return out
+
+func mat_t [ m: vec f64, n: i32 ] -> vec f64
+    nn : i32 [ n * n ]
+    out : vec f64 [ nn ]
+    for [ i: i32 0, i < n, i += 1 ]
+        for [ j: i32 0, j < n, j += 1 ]
+            v : f64 [ m[ j * n + i ] ]
+            out[ i * n + j ] = v
+    return out
+
+# the inverse of an n by n by Gauss-Jordan with pivoting
+func mat_inv [ m_in: vec f64, n: i32 ] -> vec f64
+    nn : i32 [ n * n ]
+    m : vec f64 [ nn ]
+    out : vec f64 [ nn ]
+    for [ i: i32 0, i < nn, i += 1 ]
+        v : f64 [ m_in[ i ] ]
+        m[ i ] = v
+    for [ i: i32 0, i < n, i += 1 ] out[ i * n + i ] = 1.0
+    for [ c: i32 0, c < n, c += 1 ]
+        p : i32 [ c ]
+        for [ r: i32 c + 1, r < n, r += 1 ]
+            if [ abs[ m[ r * n + c ] ] > abs[ m[ p * n + c ] ] ] p = r
+        if [ p != c ]
+            for [ k: i32 0, k < n, k += 1 ]
+                t : f64 [ m[ c * n + k ] ]
+                m[ c * n + k ] = m[ p * n + k ]
+                m[ p * n + k ] = t
+                u : f64 [ out[ c * n + k ] ]
+                out[ c * n + k ] = out[ p * n + k ]
+                out[ p * n + k ] = u
+        piv : f64 [ m[ c * n + c ] ]
+        for [ k: i32 0, k < n, k += 1 ]
+            m[ c * n + k ] = m[ c * n + k ] / piv
+            out[ c * n + k ] = out[ c * n + k ] / piv
+        for [ r: i32 0, r < n, r += 1 ]
+            if [ r == c ] continue
+            f : f64 [ m[ r * n + c ] ]
+            if [ f == 0.0 ] continue
+            for [ k: i32 0, k < n, k += 1 ]
+                m[ r * n + k ] = m[ r * n + k ] - f * m[ c * n + k ]
+                out[ r * n + k ] = out[ r * n + k ]
+                                   - f * out[ c * n + k ]
+    return out
+
+# a past place and speed, to meet a late fix at its own time
+class Past
+    public time : f64
+    public r    : Dvec
+    public v    : Dvec
+    public q    : Quat
+
+class Nav
+    # the IMU's and the antenna's places in the body
+    public imu_at  : Dvec
+    public antenna : Dvec
+    public turn_start : f64
+    # the sensors it was told it carries (the LN-200 figures)
+    public gyro_walk  : f64 [ 2.0362e-5 ]
+    public accel_walk : f64 [ 4.903e-4 ]
+    public gyro_bias  : f64 [ 4.8481e-6 ]
+    public accel_bias : f64 [ 2.942e-3 ]
+    public drift_time : f64 [ 3600.0 ]
+    # the receiver's own spread for a fix (m, m/s)
+    public fix_sigma  : f64 [ 1.0 ]
+    # the GPS's error shared by all satellites: ionosphere and
+    # orbit residue, slow (an estimate of 4 m over 10 minutes)
+    public gps_bias   : f64 [ 4.0 ]
+    public gps_time   : f64 [ 600.0 ]
+    public vel_sigma  : f64 [ 0.1 ]
+    # what it believes: the IMU point, inertial
+    public time : f64
+    public r    : Dvec
+    public v    : Dvec
+    public q    : Quat
+    public ba   : Dvec
+    public bg   : Dvec
+    # the GPS's shared error, inertial
+    public gps  : Dvec
+    # the body rate it measures, bias taken out
+    public rate : Dvec
+    # the specific force it feels, inertial (m/s2)
+    public felt : Dvec
+    public cov  : vec f64
+    public fixes : i32
+    intern past : vec Past
+
+    func init []
+        cov = vec f64 [ 324 ]
+        past = vec Past []
+
+    # start from a place and attitude known to within the given
+    # spreads: on the pad, what alignment leaves (m, m/s, rad)
+    public func begin [ t: f64, pos: Dvec, vel: Dvec, att: Quat,
+                        pos_sd: f64, vel_sd: f64, tilt_sd: f64,
+                        head_sd: f64 ]
+        time = t
+        r = pos
+        v = vel
+        q = att
+        ba = Dvec [ 0.0, 0.0, 0.0 ]
+        bg = Dvec [ 0.0, 0.0, 0.0 ]
+        gps = Dvec [ 0.0, 0.0, 0.0 ]
+        rate = Dvec [ 0.0, 0.0, 0.0 ]
+        felt = Dvec [ 0.0, 0.0, 0.0 ]
+        for [ i: i32 0, i < 324, i += 1 ] cov[ i ] = 0.0
+        sds : vec f64 [] [ pos_sd, pos_sd, pos_sd, vel_sd, vel_sd,
+                           vel_sd, tilt_sd, tilt_sd, head_sd,
+                           accel_bias, accel_bias, accel_bias,
+                           gyro_bias, gyro_bias, gyro_bias,
+                           gps_bias, gps_bias, gps_bias ]
+        for [ i: i32 0, i < 18, i += 1 ]
+            sd : f64 [ sds[ i ] ]
+            cov[ i * 19 ] = sd * sd
+
+    # one IMU sample: the strapdown step and the covariance
+    public func propagate [ s: ImuSample ]
+        h : f64 [ s.dt ]
+        dth : dv_sub[ s.dtheta, dv_scale[ bg, h ] ]
+        dvb : dv_sub[ s.dv, dv_scale[ ba, h ] ]
+        rate = dv_scale[ dth, 1.0 / h ]
+        # attitude: the small turn, half way for the velocity
+        ang : f64 [ dv_len[ dth ] ]
+        half : Quat [ 1.0, 0.0, 0.0, 0.0 ]
+        turn : Quat [ 1.0, 0.0, 0.0, 0.0 ]
+        if [ ang > 1e-12 ]
+            half = q_axis[ dth, ang * 0.5 ]
+            turn = q_axis[ dth, ang ]
+        qm : q_mul[ q, half ]
+        dvi : q_rotate[ qm, dvb ]
+        g_start : gravity[ r ]
+        r_mid : dv_add[ r, dv_scale[ v, h * 0.5 ] ]
+        g_mid : gravity[ r_mid ]
+        v_new : dv_add[ dv_add[ v, dvi ], dv_scale[ g_mid, h ] ]
+        r = dv_add[ r, dv_scale[ dv_add[ v, v_new ], h * 0.5 ] ]
+        v = v_new
+        q = q_norm[ q_mul[ q, turn ] ]
+        time += h
+        # the error dynamics, F, made discrete: I + F h
+        fi : dv_scale[ dvi, 1.0 / h ]
+        felt = fi
+        rot : rot_mat[ q ]
+        phi : vec f64 [ 324 ]
+        for [ i: i32 0, i < 18, i += 1 ] phi[ i * 19 ] = 1.0
+        for [ i: i32 0, i < 3, i += 1 ]
+            # place from speed
+            phi[ i * 18 + 3 + i ] = h
+        # speed from attitude: -[f]x, and from accel bias: -R
+        skew : vec f64 [] [ 0.0, 0.0 - fi.z, fi.y,
+                            fi.z, 0.0, 0.0 - fi.x,
+                            0.0 - fi.y, fi.x, 0.0 ]
+        for [ i: i32 0, i < 3, i += 1 ]
+            for [ j: i32 0, j < 3, j += 1 ]
+                sk : f64 [ skew[ i * 3 + j ] ]
+                rv : f64 [ rot[ i * 3 + j ] ]
+                phi[ (3 + i) * 18 + 6 + j ] = 0.0 - sk * h
+                phi[ (3 + i) * 18 + 9 + j ] = 0.0 - rv * h
+                # attitude from gyro bias: -R
+                phi[ (6 + i) * 18 + 12 + j ] = 0.0 - rv * h
+        decay : f64 [ 1.0 - h / drift_time ]
+        for [ i: i32 9, i < 15, i += 1 ] phi[ i * 19 ] = decay
+        fade : f64 [ 1.0 - h / gps_time ]
+        for [ i: i32 15, i < 18, i += 1 ] phi[ i * 19 ] = fade
+        pp : mat_mul[ mat_mul[ phi, cov, 18 ], mat_t[ phi, 18 ], 18 ]
+        # the sensors' noise over this sample
+        qv : f64 [ accel_walk * accel_walk * h ]
+        qa : f64 [ gyro_walk * gyro_walk * h ]
+        qb : f64 [ 2.0 * accel_bias * accel_bias * h / drift_time ]
+        qg : f64 [ 2.0 * gyro_bias * gyro_bias * h / drift_time ]
+        qs : f64 [ 2.0 * gps_bias * gps_bias * h / gps_time ]
+        for [ i: i32 0, i < 3, i += 1 ]
+            pp[ (3 + i) * 19 ] = pp[ (3 + i) * 19 ] + qv
+            pp[ (6 + i) * 19 ] = pp[ (6 + i) * 19 ] + qa
+            pp[ (9 + i) * 19 ] = pp[ (9 + i) * 19 ] + qb
+            pp[ (12 + i) * 19 ] = pp[ (12 + i) * 19 ] + qg
+            pp[ (15 + i) * 19 ] = pp[ (15 + i) * 19 ] + qs
+        cov = pp
+        past.push[ Past [ time: time, r: r, v: v, q: q ] ]
+        if [ past.count > 800 ] past.remove[ 0 ]
+
+    # body to inertial as a 3 by 3, row major
+    func rot_mat [ a_q: Quat ] -> vec f64
+        ex : q_rotate[ a_q, Dvec [ 1.0, 0.0, 0.0 ] ]
+        ey : q_rotate[ a_q, Dvec [ 0.0, 1.0, 0.0 ] ]
+        ez : q_rotate[ a_q, Dvec [ 0.0, 0.0, 1.0 ] ]
+        return vec f64 [] [ ex.x, ey.x, ez.x, ex.y, ey.y, ez.y,
+                            ex.z, ey.z, ez.z ]
+
+    # the state as it was at a past time (the nearest kept)
+    func at_time [ t: f64 ] -> Past
+        best : Past [ time: time, r: r, v: v, q: q ]
+        gap : f64 [ 1e30 ]
+        for [ p: Past ] in past
+            d : f64 [ abs[ p.time - t ] ]
+            if [ d < gap ]
+                gap = d
+                best = p
+        return best
+
+    # a GPS fix (ECEF), met at the time it was measured
+    public func correct [ f: Fix ]
+        if [ !f.valid ] return
+        prior : at_time[ f.time ]
+        ang : f64 [ earth_turn[ f.time, turn_start ] ]
+        pos : ecef_to_eci[ f.pos, ang ]
+        vel : dv_add[ ecef_to_eci[ f.vel, ang ],
+                      dv_cross[ Dvec [ 0.0, 0.0, EARTH_SPIN ], pos ] ]
+        arm : dv_sub[ antenna, imu_at ]
+        la : q_rotate[ prior.q, arm ]
+        pred : dv_add[ prior.r, la ]
+        # the antenna's speed also has the turn's share
+        vpred : dv_add[ prior.v, q_rotate[ prior.q,
+                        dv_cross[ rate, arm ] ] ]
+        res : vec f64 [] [ pos.x - pred.x - gps.x,
+                           pos.y - pred.y - gps.y,
+                           pos.z - pred.z - gps.z, vel.x - vpred.x,
+                           vel.y - vpred.y, vel.z - vpred.z ]
+        # H: place and speed, place also by attitude: -[R l]x,
+        # and by the GPS's own shared error
+        hm : vec f64 [ 108 ]
+        for [ i: i32 0, i < 3, i += 1 ]
+            hm[ i * 18 + i ] = 1.0
+            hm[ i * 18 + 15 + i ] = 1.0
+            hm[ (3 + i) * 18 + 3 + i ] = 1.0
+        lk : vec f64 [] [ 0.0, 0.0 - la.z, la.y, la.z, 0.0,
+                          0.0 - la.x, 0.0 - la.y, la.x, 0.0 ]
+        for [ i: i32 0, i < 3, i += 1 ]
+            for [ j: i32 0, j < 3, j += 1 ]
+                lv : f64 [ lk[ i * 3 + j ] ]
+                hm[ i * 18 + 6 + j ] = 0.0 - lv
+        # S = H P H' + R, K = P H' S^-1
+        ph : vec f64 [ 108 ]
+        for [ i: i32 0, i < 18, i += 1 ]
+            for [ j: i32 0, j < 6, j += 1 ]
+                s : f64 [ 0.0 ]
+                for [ l: i32 0, l < 18, l += 1 ]
+                    s += cov[ i * 18 + l ] * hm[ j * 18 + l ]
+                ph[ i * 6 + j ] = s
+        sm : vec f64 [ 36 ]
+        for [ i: i32 0, i < 6, i += 1 ]
+            for [ j: i32 0, j < 6, j += 1 ]
+                s : f64 [ 0.0 ]
+                for [ l: i32 0, l < 18, l += 1 ]
+                    s += hm[ i * 18 + l ] * ph[ l * 6 + j ]
+                sm[ i * 6 + j ] = s
+        for [ i: i32 0, i < 3, i += 1 ]
+            sm[ i * 7 ] = sm[ i * 7 ] + fix_sigma * fix_sigma
+            sm[ (3 + i) * 7 ] = sm[ (3 + i) * 7 ]
+                                + vel_sigma * vel_sigma
+        si : mat_inv[ sm, 6 ]
+        gain : vec f64 [ 108 ]
+        for [ i: i32 0, i < 18, i += 1 ]
+            for [ j: i32 0, j < 6, j += 1 ]
+                s : f64 [ 0.0 ]
+                for [ l: i32 0, l < 6, l += 1 ]
+                    s += ph[ i * 6 + l ] * si[ l * 6 + j ]
+                gain[ i * 6 + j ] = s
+        dx : vec f64 [ 18 ]
+        for [ i: i32 0, i < 18, i += 1 ]
+            s : f64 [ 0.0 ]
+            for [ j: i32 0, j < 6, j += 1 ]
+                s += gain[ i * 6 + j ] * res[ j ]
+            dx[ i ] = s
+        # P = (I - K H) P, kept symmetric
+        ikh : vec f64 [ 324 ]
+        for [ i: i32 0, i < 18, i += 1 ]
+            for [ j: i32 0, j < 18, j += 1 ]
+                s : f64 [ (i == j) ? 1.0 : 0.0 ]
+                for [ l: i32 0, l < 6, l += 1 ]
+                    s -= gain[ i * 6 + l ] * hm[ l * 18 + j ]
+                ikh[ i * 18 + j ] = s
+        pn : mat_mul[ ikh, cov, 18 ]
+        for [ i: i32 0, i < 18, i += 1 ]
+            for [ j: i32 i, j < 18, j += 1 ]
+                m : f64 [ (pn[ i * 18 + j ] + pn[ j * 18 + i ]) * 0.5 ]
+                pn[ i * 18 + j ] = m
+                pn[ j * 18 + i ] = m
+        cov = pn
+        # the errors go into the state; the error is now zero
+        r = Dvec [ r.x + dx[ 0 ], r.y + dx[ 1 ], r.z + dx[ 2 ] ]
+        v = Dvec [ v.x + dx[ 3 ], v.y + dx[ 4 ], v.z + dx[ 5 ] ]
+        tilt : Dvec [ dx[ 6 ], dx[ 7 ], dx[ 8 ] ]
+        tl : f64 [ dv_len[ tilt ] ]
+        if [ tl > 1e-15 ]
+            q = q_norm[ q_mul[ q_axis[ tilt, tl ], q ] ]
+        ba = Dvec [ ba.x + dx[ 9 ], ba.y + dx[ 10 ], ba.z + dx[ 11 ] ]
+        bg = Dvec [ bg.x + dx[ 12 ], bg.y + dx[ 13 ], bg.z + dx[ 14 ] ]
+        gps = Dvec [ gps.x + dx[ 15 ], gps.y + dx[ 16 ],
+                     gps.z + dx[ 17 ] ]
+        # the kept past moves with it, for the next late fix
+        for [ p: Past ] in past
+            p.r = Dvec [ p.r.x + dx[ 0 ], p.r.y + dx[ 1 ],
+                         p.r.z + dx[ 2 ] ]
+            p.v = Dvec [ p.v.x + dx[ 3 ], p.v.y + dx[ 4 ],
+                         p.v.z + dx[ 5 ] ]
+        fixes += 1
+
+    # one sigma of place (m), speed (m/s), attitude (rad)
+    public func spread [ k: i32 ] -> f64
+        return sqrt[ cov[ k * 3 * 19 ] + cov[ (k * 3 + 1) * 19 ]
+                     + cov[ (k * 3 + 2) * 19 ] ]
+
+    # the believed place of any body point, inertial
+    public func body_point [ p: Dvec ] -> Dvec
+        return dv_add[ r, q_rotate[ q, dv_sub[ p, imu_at ] ] ]
+
+# the truth at the IMU's point, for checks
+func imu_truth [ c: Craft, at: Dvec ] -> Past
+    arm : dv_sub[ at, Dvec [ c.cg, 0.0, 0.0 ] ]
+    rr : dv_add[ c.state.r, q_rotate[ c.state.q, arm ] ]
+    vv : dv_add[ c.state.v, q_rotate[ c.state.q,
+                 dv_cross[ c.state.w, arm ] ] ]
+    return Past [ time: c.time, r: rr, v: vv, q: c.state.q ]
+
+# how far a fix is from the antenna's true place now, m
+func fix_error [ c: Craft, f: Fix, ant: Dvec ] -> f64
+    back : f64 [ c.time - f.time ]
+    p : dv_sub[ c.body_point[ ant ], dv_scale[ c.state.v, back ] ]
+    ang : f64 [ earth_turn[ f.time, c.turn_start ] ]
+    truth : eci_to_ecef[ p, ang ]
+    return dv_len[ dv_sub[ f.pos, truth ] ]
+
+# the angle between two attitudes, rad
+func att_error [ p: Quat, k: Quat ] -> f64
+    d : q_mul[ p, q_conj[ k ] ]
+    w : f64 [ abs[ d.w ] ]
+    if [ w > 1.0 ] w = 1.0
+    return 2.0 * acos[ w ]
+
+# stage two burning and turning in orbit: IMU, GPS and the
+# filter together; after 60 s and after a 20 s GPS gap
+expect func t_nav_burn [] -> bool
+    al : Almanac [ ]
+    al.load[]
+    c : falcon_nine[ 0.0 ]
+    two : c.separate[ 'two' ]
+    rr : f64 [ EARTH_A + 300000.0 ]
+    two.state.r = Dvec [ rr, 0.0, 0.0 ]
+    two.state.v = Dvec [ 0.0, sqrt[ EARTH_GM / rr ], 0.0 ]
+    two.state.q = q_between[ Dvec [ 1.0, 0.0, 0.0 ],
+                             Dvec [ 0.0, 1.0, 0.0 ] ]
+    two.state.w = Dvec [ 0.0, 0.002, 0.001 ]
+    for [ e: Engine ] in two.engines
+        e.lit = true
+        e.throttle = 0.6
+    at : Dvec [ 52.0, 0.0, 0.5 ]
+    ant : Dvec [ 54.0, 1.8, 0.0 ]
+    u : Imu [ at: at ]
+    rx : Receiver [ almanac: al, antenna: ant, mask: -0.2 ]
+    nv : Nav [ imu_at: at, antenna: ant ]
+    tr : imu_truth[ two, at ]
+    # the start: 10 m, 0.5 m/s, 0.1 deg tilt, 0.5 deg heading
+    nv.begin[ two.time, dv_add[ tr.r, Dvec [ 7.0, -5.0, 4.0 ] ],
+              dv_add[ tr.v, Dvec [ 0.3, -0.3, 0.2 ] ],
+              q_mul[ q_axis[ Dvec [ 1.0, 0.4, 0.2 ], 0.006 ], tr.q ],
+              10.0, 0.5, 0.0017, 0.0087 ]
+    gap : bool [ false ]
+    last_err : f64 [ 0.0 ]
+    good : bool [ true ]
+    for [ i: i32 0, i < 32000, i += 1 ]
+        two.step[ 0.0025 ]
+        u.tick[ two, 0.0025 ]
+        rx.tick[ two, 0.0025 ]
+        for [ s: ImuSample ] in u.take[]
+            nv.propagate[ s ]
+        gap = two.time > 60.0
+        for [ f: Fix ] in rx.take[ two.time ]
+            if [ !gap ] nv.correct[ f ]
+            if [ !gap ] last_err = fix_error[ two, f, ant ]
+        if [ i == 23999 || i == 31999 ]
+            tr = imu_truth[ two, at ]
+            pe : f64 [ dv_len[ dv_sub[ nv.r, tr.r ] ] ]
+            ve : f64 [ dv_len[ dv_sub[ nv.v, tr.v ] ] ]
+            ae : f64 [ att_error[ nv.q, tr.q ] * 57.2957795 ]
+            sig : f64 [ nv.spread[ 0 ] ]
+            log 'nav at {two.time} s: {pe} m, {ve} m/s, {ae} deg (says {sig} m), {nv.fixes} fixes, last fix off {last_err} m'
+            # GPS limited: within its own stated spread, 10 m
+            if [ i == 23999 && (pe > 10.0 || pe > 3.0 * sig
+                                || ve > 0.2 || ae > 0.1) ]
+                good = false
+            if [ i == 31999 && (pe > 30.0 || ve > 1.0) ] good = false
+    return good

@@ -946,6 +946,16 @@ class Composer
         if [ !load[] ] return false
         return plan[]
 
+    # a take at --rec_scale 2 renders at the window's size: a focus
+    # draws from its extra pixels
+    func take_scale [] -> i32
+        np : path '{stem[]}.agi'
+        if [ !np.exists[] ] return 1
+        txt : string [ np.load[ typeid[ string ], null ] ]
+        notes : RecNotes [ marks: vec RecMark [] ]
+        Au.parse_agi[ null, txt.chars, notes ]
+        return (notes.scale > 1) ? notes.scale : 1
+
     # the new video: the kept spans, the cuts and the inserts
     func render [ disp: Display ] -> bool
         vk9 : vk_context disp.vk
@@ -1041,13 +1051,15 @@ class Composer
         if [ ofd < 0 ]
             problems.push[ 'render: cannot write {out}' ]
             return false
-        cv : Canvas [ vk: vk9, w: disp, width: vt.width,
-                      height: vt.height,
+        sc : i32 [ take_scale[] ]
+        ow : i32 [ vt.width / sc ]
+        oh : i32 [ vt.height / sc ]
+        cv : Canvas [ vk: vk9, w: disp, width: ow, height: oh,
             load_existing: true, paint_n: 1024 ]
         cv.update[]
         cv.reset[ vec4f [ 0.0, 0.0, 0.0, 1.0 ] ]
         r : Renderer [ vk: vk9, w: disp, comp: a, cv: cv, fps: fps,
-            width: vt.width, height: vt.height,
+            width: ow, height: oh,
             src: Planes [ vk: vk9, w: disp, bt709: true ] ]
         r.run[ ofd, sound, segs ]
         # pass 2: the take's pictures, in order
@@ -1129,7 +1141,13 @@ class Composer
         log 'composer: fetched {name} -> {dest}'
         return true
 
-    func crop [ from: f64, to: f64 ] -> bool
+    # an end written just past the take (its length rounded up)
+    # is the take's end
+    func span_end [ t: f64 ] -> f64
+        return (t > length && t - length < 0.01) ? length : t
+
+    func crop [ from: f64, end: f64 ] -> bool
+        to : f64 [ span_end[ end ] ]
         if [ to <= from || from < 0.0 || to > length ]
             problems.push[
                 'crop {from}..{to} is outside the take (0..{length})' ]
@@ -1158,6 +1176,7 @@ class Composer
         return -1.0
 
     func add_focus [ f: Focus ] -> bool
+        f.to = span_end[ f.to ]
         if [ f.to <= f.from || f.from < 0.0 || f.to > length ]
             problems.push[
                 'focus {f.from}..{f.to} is outside the take (0..{length})' ]
@@ -1195,6 +1214,7 @@ class Composer
             problems.push[
                 'voice at {v.from}: {v.voice} is not in the take folder' ]
             return false
+        v.to = span_end[ v.to ]
         if [ v.to <= v.from || v.from < 0.0 || v.to > length ]
             problems.push[
                 'voice {v.from}..{v.to} is outside the take (0..{length})' ]
@@ -1203,6 +1223,7 @@ class Composer
         return true
 
     func add_mute [ m: Mute ] -> bool
+        m.to = span_end[ m.to ]
         if [ m.to <= m.from || m.from < 0.0 || m.to > length ]
             problems.push[
                 'mute {m.from}..{m.to} is outside the take (0..{length})' ]

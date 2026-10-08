@@ -1,0 +1,2274 @@
+export 0.1.0
+
+import <stdlib.h>
+
+# physics: the truth a vehicle flies through. SI units only:
+# metres, seconds, kilograms, newtons, pascals, kelvin, radians.
+# Earth is WGS84, turning; gravity carries J2; the air is the
+# US Standard Atmosphere 1976 under a measured wind profile with
+# Dryden turbulence. A craft is a rigid body of parts, tanks,
+# engines, fins, thrusters and legs, stepped by RK4.
+# figures marked 'estimate' are engineering estimates: nothing
+# official is published for them.
+
+# ---------------------------------------------------------------
+# double precision vectors and quaternions
+# ---------------------------------------------------------------
+struct Dvec
+    x : f64
+    y : f64
+    z : f64
+
+struct Quat
+    w : f64
+    x : f64
+    y : f64
+    z : f64
+
+func dv_add [ u: Dvec, v: Dvec ] -> Dvec
+    return Dvec [ u.x + v.x, u.y + v.y, u.z + v.z ]
+
+func dv_sub [ u: Dvec, v: Dvec ] -> Dvec
+    return Dvec [ u.x - v.x, u.y - v.y, u.z - v.z ]
+
+func dv_scale [ u: Dvec, s: f64 ] -> Dvec
+    return Dvec [ u.x * s, u.y * s, u.z * s ]
+
+func dv_dot [ u: Dvec, v: Dvec ] -> f64
+    return u.x * v.x + u.y * v.y + u.z * v.z
+
+func dv_cross [ u: Dvec, v: Dvec ] -> Dvec
+    return Dvec [ u.y * v.z - u.z * v.y, u.z * v.x - u.x * v.z,
+                  u.x * v.y - u.y * v.x ]
+
+func dv_len [ u: Dvec ] -> f64
+    return sqrt[ u.x * u.x + u.y * u.y + u.z * u.z ]
+
+func dv_norm [ u: Dvec ] -> Dvec
+    n : f64 [ dv_len[ u ] ]
+    if [ n < 1e-300 ] return Dvec [ 0.0, 0.0, 0.0 ]
+    return Dvec [ u.x / n, u.y / n, u.z / n ]
+
+func dv_zero [] -> Dvec
+    return Dvec [ 0.0, 0.0, 0.0 ]
+
+func q_mul [ p: Quat, q: Quat ] -> Quat
+    return Quat [ p.w * q.w - p.x * q.x - p.y * q.y - p.z * q.z,
+                  p.w * q.x + p.x * q.w + p.y * q.z - p.z * q.y,
+                  p.w * q.y - p.x * q.z + p.y * q.w + p.z * q.x,
+                  p.w * q.z + p.x * q.y - p.y * q.x + p.z * q.w ]
+
+func q_conj [ q: Quat ] -> Quat
+    return Quat [ q.w, 0.0 - q.x, 0.0 - q.y, 0.0 - q.z ]
+
+func q_norm [ q: Quat ] -> Quat
+    n : f64 [ sqrt[ q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z ] ]
+    return Quat [ q.w / n, q.x / n, q.y / n, q.z / n ]
+
+# v turned by q: q v q*
+func q_rotate [ q: Quat, v: Dvec ] -> Dvec
+    tx : f64 [ 2.0 * (q.y * v.z - q.z * v.y) ]
+    ty : f64 [ 2.0 * (q.z * v.x - q.x * v.z) ]
+    tz : f64 [ 2.0 * (q.x * v.y - q.y * v.x) ]
+    return Dvec [ v.x + q.w * tx + (q.y * tz - q.z * ty),
+                  v.y + q.w * ty + (q.z * tx - q.x * tz),
+                  v.z + q.w * tz + (q.x * ty - q.y * tx) ]
+
+func q_unrotate [ q: Quat, v: Dvec ] -> Dvec
+    return q_rotate[ q_conj[ q ], v ]
+
+func q_axis [ axis: Dvec, ang: f64 ] -> Quat
+    n : dv_norm[ axis ]
+    s : f64 [ sin[ ang * 0.5 ] ]
+    return Quat [ cos[ ang * 0.5 ], n.x * s, n.y * s, n.z * s ]
+
+# the turn taking the unit vector u onto the unit vector v
+func q_between [ u: Dvec, v: Dvec ] -> Quat
+    c : f64 [ dv_dot[ u, v ] ]
+    if [ c > 0.999999999 ] return Quat [ 1.0, 0.0, 0.0, 0.0 ]
+    if [ c < -0.999999999 ]
+        side : dv_cross[ u, Dvec [ 1.0, 0.0, 0.0 ] ]
+        if [ dv_len[ side ] < 1e-6 ]
+            side = dv_cross[ u, Dvec [ 0.0, 1.0, 0.0 ] ]
+        return q_axis[ side, 3.14159265358979 ]
+    ax : dv_cross[ u, v ]
+    return q_norm[ Quat [ 1.0 + c, ax.x, ax.y, ax.z ] ]
+
+func in_groups [ groups: vec string, g: string ] -> bool
+    for [ n: string ] in groups
+        if [ n == g ] return true
+    return false
+
+func slew_to [ now: f64, want: f64, most: f64 ] -> f64
+    d : f64 [ want - now ]
+    if [ d > most ] return now + most
+    if [ d < 0.0 - most ] return now - most
+    return want
+
+func tanh_d [ x: f64 ] -> f64
+    if [ x > 20.0 ] return 1.0
+    if [ x < -20.0 ] return -1.0
+    e : f64 [ exp[ 2.0 * x ] ]
+    return (e - 1.0) / (e + 1.0)
+
+# ---------------------------------------------------------------
+# the Earth: WGS84, its turn, J2 gravity
+# ---------------------------------------------------------------
+EARTH_A    : f64 [ 6378137.0 ]
+EARTH_F    : f64 [ 0.0033528106647474805 ]
+EARTH_GM   : f64 [ 3.986004418e14 ]
+EARTH_J    : f64 [ 1.08262668e-3 ]
+EARTH_SPIN : f64 [ 7.2921150e-5 ]
+GRAVITY_STD : f64 [ 9.80665 ]
+
+# the angle Earth has turned since the craft clock's zero
+func earth_turn [ t: f64, start: f64 ] -> f64
+    return start + EARTH_SPIN * t
+
+func ecef_to_eci [ p: Dvec, ang: f64 ] -> Dvec
+    c : f64 [ cos[ ang ] ]
+    s : f64 [ sin[ ang ] ]
+    return Dvec [ c * p.x - s * p.y, s * p.x + c * p.y, p.z ]
+
+func eci_to_ecef [ p: Dvec, ang: f64 ] -> Dvec
+    c : f64 [ cos[ ang ] ]
+    s : f64 [ sin[ ang ] ]
+    return Dvec [ c * p.x + s * p.y, 0.0 - s * p.x + c * p.y, p.z ]
+
+# latitude, longitude (radians), height (m) to ECEF
+func geodetic_to_ecef [ lat: f64, lon: f64, h: f64 ] -> Dvec
+    ecc_sq : f64 [ EARTH_F * (2.0 - EARTH_F) ]
+    sl : f64 [ sin[ lat ] ]
+    n : f64 [ EARTH_A / sqrt[ 1.0 - ecc_sq * sl * sl ] ]
+    cl : f64 [ cos[ lat ] ]
+    return Dvec [ (n + h) * cl * cos[ lon ], (n + h) * cl * sin[ lon ],
+                  (n * (1.0 - ecc_sq) + h) * sl ]
+
+# ECEF to latitude, longitude, height (Bowring, then refined)
+func ecef_to_geodetic [ p: Dvec ] -> Dvec
+    ecc_sq : f64 [ EARTH_F * (2.0 - EARTH_F) ]
+    lon : f64 [ atan2[ p.y, p.x ] ]
+    rho : f64 [ sqrt[ p.x * p.x + p.y * p.y ] ]
+    lat : f64 [ atan2[ p.z, rho * (1.0 - ecc_sq) ] ]
+    h : f64 [ 0.0 ]
+    for [ i: i32 0, i < 6, i += 1 ]
+        sl : f64 [ sin[ lat ] ]
+        n : f64 [ EARTH_A / sqrt[ 1.0 - ecc_sq * sl * sl ] ]
+        h = rho / cos[ lat ] - n
+        lat = atan2[ p.z, rho * (1.0 - ecc_sq * n / (n + h)) ]
+    return Dvec [ lat, lon, h ]
+
+# east, north, up at a latitude and longitude, in ECEF
+func enu_east [ lat: f64, lon: f64 ] -> Dvec
+    return Dvec [ 0.0 - sin[ lon ], cos[ lon ], 0.0 ]
+
+func enu_north [ lat: f64, lon: f64 ] -> Dvec
+    return Dvec [ 0.0 - sin[ lat ] * cos[ lon ],
+                  0.0 - sin[ lat ] * sin[ lon ], cos[ lat ] ]
+
+func enu_up [ lat: f64, lon: f64 ] -> Dvec
+    return Dvec [ cos[ lat ] * cos[ lon ], cos[ lat ] * sin[ lon ],
+                  sin[ lat ] ]
+
+# gravitational acceleration with J2; z is the spin axis
+func gravity [ r: Dvec ] -> Dvec
+    rr : f64 [ dv_len[ r ] ]
+    k : f64 [ EARTH_GM / (rr * rr * rr) ]
+    zr : f64 [ r.z * r.z / (rr * rr) ]
+    j : f64 [ 1.5 * EARTH_J * (EARTH_A / rr) * (EARTH_A / rr) ]
+    return Dvec [ 0.0 - k * r.x * (1.0 + j * (1.0 - 5.0 * zr)),
+                  0.0 - k * r.y * (1.0 + j * (1.0 - 5.0 * zr)),
+                  0.0 - k * r.z * (1.0 + j * (3.0 - 5.0 * zr)) ]
+
+# ---------------------------------------------------------------
+# the air: US Standard Atmosphere 1976
+# ---------------------------------------------------------------
+class Air
+    public temperature : f64
+    public pressure    : f64
+    public density     : f64
+    public sound       : f64
+    # wind, east north up, m/s, turbulence included
+    public wind        : Dvec
+
+# geopotential layers to 84.852 km: base height, base K, lapse
+func layer_base [ i: i32 ] -> f64
+    if [ i == 0 ] return 0.0
+    if [ i == 1 ] return 11000.0
+    if [ i == 2 ] return 20000.0
+    if [ i == 3 ] return 32000.0
+    if [ i == 4 ] return 47000.0
+    if [ i == 5 ] return 51000.0
+    if [ i == 6 ] return 71000.0
+    return 84852.0
+
+func layer_lapse [ i: i32 ] -> f64
+    if [ i == 0 ] return -0.0065
+    if [ i == 1 ] return 0.0
+    if [ i == 2 ] return 0.001
+    if [ i == 3 ] return 0.0028
+    if [ i == 4 ] return 0.0
+    if [ i == 5 ] return -0.0028
+    return -0.002
+
+# the 1976 table's density above 86 km (kg/m3), log interpolated
+func upper_density [ h: f64 ] -> f64
+    hs : vec f64 [] [ 86000.0, 100000.0, 120000.0, 150000.0,
+                      200000.0, 300000.0, 400000.0, 500000.0,
+                      700000.0, 1000000.0 ]
+    ds : vec f64 [] [ 6.958e-6, 5.604e-7, 2.222e-8, 2.076e-9,
+                      2.541e-10, 1.916e-11, 2.803e-12, 5.215e-13,
+                      3.170e-14, 3.561e-15 ]
+    if [ h >= 1000000.0 ] return 0.0
+    for [ i: i32 0, i < 9, i += 1 ]
+        lo : f64 [ hs[ i ] ]
+        hi : f64 [ hs[ i + 1 ] ]
+        if [ h <= hi ]
+            t : f64 [ (h - lo) / (hi - lo) ]
+            dl : f64 [ ds[ i ] ]
+            dh : f64 [ ds[ i + 1 ] ]
+            return exp[ log[ dl ] + (log[ dh ] - log[ dl ]) * t ]
+    return 0.0
+
+# the standard day at a geometric height (m)
+func standard_air [ z: f64 ] -> Air
+    earth_r : f64 [ 6356766.0 ]
+    grav : f64 [ 9.80665 ]
+    gas : f64 [ 287.053 ]
+    out : Air [ wind: dv_zero[] ]
+    zz : f64 [ (z < 0.0) ? 0.0 : z ]
+    if [ zz > 86000.0 ]
+        out.density = upper_density[ zz ]
+        out.temperature = 186.87
+        out.pressure = out.density * gas * 186.87
+        out.sound = sqrt[ 1.4 * gas * 186.87 ]
+        return out
+    h : f64 [ earth_r * zz / (earth_r + zz) ]
+    t : f64 [ 288.15 ]
+    p : f64 [ 101325.0 ]
+    for [ i: i32 0, i < 7, i += 1 ]
+        hb : f64 [ layer_base[ i ] ]
+        top : f64 [ layer_base[ i + 1 ] ]
+        lr : f64 [ layer_lapse[ i ] ]
+        hh : f64 [ (h < top) ? h : top ]
+        if [ lr == 0.0 ]
+            p = p * exp[ 0.0 - grav * (hh - hb) / (gas * t) ]
+        el
+            tn : f64 [ t + lr * (hh - hb) ]
+            p = p * pow[ tn / t, 0.0 - grav / (gas * lr) ]
+            t = tn
+        if [ h <= top ] break
+    out.temperature = t
+    out.pressure = p
+    out.density = p / (gas * t)
+    out.sound = sqrt[ 1.4 * gas * t ]
+    return out
+
+# ---------------------------------------------------------------
+# the weather: a measured profile, and Dryden turbulence
+# ---------------------------------------------------------------
+# one sounding level: height m, wind east/north m/s, K, Pa
+class Level
+    public height      : f64
+    public east        : f64
+    public north       : f64
+    public temperature : f64
+    public pressure    : f64
+
+class Weather
+    public levels : vec Level
+    # calm 0, light 1, moderate 2, severe 3 (MIL-HDBK-1797)
+    public severity : i32 [ 1 ]
+    public seed : u64 [ 88172645463325252 ]
+    intern gust_u : f64
+    intern gust_v : Dvec
+    intern gust_w : Dvec
+
+    func init []
+        levels = vec Level []
+
+    public func rand [] -> f64
+        seed = seed ^ (seed << 13)
+        seed = seed ^ (seed >> 7)
+        seed = seed ^ (seed << 17)
+        return f64[ seed >> 11 ] / 9007199254740992.0
+
+    # a standard normal draw (Box-Muller)
+    public func normal [] -> f64
+        u : f64 [ rand[] ]
+        if [ u < 1e-300 ] u = 1e-300
+        v : f64 [ rand[] ]
+        return sqrt[ -2.0 * log[ u ] ] * cos[ 6.283185307179586 * v ]
+
+    # the sounding's level at a height, linear between levels
+    func sounding [ h: f64, out: Air ]
+        n : i32 [ levels.count ]
+        if [ n == 0 ] return
+        if [ h >= levels[ n - 1 ].height ]
+            # above the balloon: the standard day, still air
+            return
+        lo : levels[ 0 ]
+        hi : levels[ 0 ]
+        if [ h <= lo.height ]
+            out.wind = Dvec [ lo.east, lo.north, 0.0 ]
+            return
+        for [ i: i32 1, i < n, i += 1 ]
+            hi = levels[ i ]
+            if [ hi.height >= h ] break
+            lo = hi
+        t : f64 [ (h - lo.height) / (hi.height - lo.height) ]
+        out.wind = Dvec [ lo.east + (hi.east - lo.east) * t,
+                          lo.north + (hi.north - lo.north) * t, 0.0 ]
+        tk : f64 [ lo.temperature
+                   + (hi.temperature - lo.temperature) * t ]
+        # pressure falls exponentially between levels
+        pk : f64 [ exp[ log[ lo.pressure ] + (log[ hi.pressure ]
+                   - log[ lo.pressure ]) * t ] ]
+        # fade into the standard day over the top 3 km
+        top : f64 [ levels[ n - 1 ].height ]
+        k : f64 [ (top - h) / 3000.0 ]
+        if [ k > 1.0 ] k = 1.0
+        out.temperature = out.temperature + (tk - out.temperature) * k
+        out.pressure = out.pressure + (pk - out.pressure) * k
+        out.density = out.pressure / (287.053 * out.temperature)
+        out.sound = sqrt[ 1.4 * 287.053 * out.temperature ]
+
+    # turbulence intensity m/s above 610 m: MIL-HDBK-1797's
+    # exceedance curves, read off (estimate within the figure)
+    func sigma_high [ h: f64 ] -> f64
+        hs : vec f64 [] [ 610.0, 2500.0, 7600.0, 12000.0, 17000.0,
+                          24000.0 ]
+        light : vec f64 [] [ 1.5, 1.4, 1.1, 0.4, 0.0, 0.0 ]
+        modr  : vec f64 [] [ 3.0, 3.2, 3.0, 2.0, 0.6, 0.0 ]
+        sev   : vec f64 [] [ 6.6, 8.0, 7.8, 6.0, 3.0, 0.5 ]
+        if [ h >= 24000.0 ] return 0.0
+        for [ i: i32 0, i < 5, i += 1 ]
+            hi : f64 [ hs[ i + 1 ] ]
+            if [ h <= hi ]
+                lo : f64 [ hs[ i ] ]
+                t : f64 [ (h - lo) / (hi - lo) ]
+                a : f64 [ (severity == 1) ? light[ i ]
+                          : (severity == 2) ? modr[ i ] : sev[ i ] ]
+                b : f64 [ (severity == 1) ? light[ i + 1 ]
+                          : (severity == 2) ? modr[ i + 1 ] : sev[ i + 1 ] ]
+                return a + (b - a) * t
+        return 0.0
+
+    # Dryden gusts along the air-relative path: u along the
+    # mean wind, v across, w vertical; returned east north up
+    func gusts [ h: f64, speed: f64, mean: Dvec, dt: f64 ] -> Dvec
+        if [ dt <= 0.0 || severity == 0 ] return Dvec [ 0.0, 0.0, 0.0 ]
+        hft : f64 [ ((h < 3.0) ? 3.0 : h) / 0.3048 ]
+        lu : f64 [ 533.4 ]
+        lw : f64 [ 533.4 ]
+        su : f64 [ 0.0 ]
+        sw : f64 [ 0.0 ]
+        if [ h < 305.0 ]
+            # low altitude: scales and the 6 m wind (MIL-F-8785C)
+            # light, moderate, severe: 15, 30, 45 knots
+            wind_six : f64 [ (severity == 1) ? 7.7
+                        : (severity == 2) ? 15.4 : 23.2 ]
+            lu = 0.3048 * hft / pow[ 0.177 + 0.000823 * hft, 1.2 ]
+            lw = h
+            if [ lw < 3.0 ] lw = 3.0
+            sw = 0.1 * wind_six
+            su = sw / pow[ 0.177 + 0.000823 * hft, 0.4 ]
+        el
+            su = sigma_high[ h ]
+            sw = su
+        v : f64 [ (speed < 1.0) ? 1.0 : speed ]
+        # first order for u (exact discretisation), a unit process
+        au : f64 [ exp[ 0.0 - v * dt / lu ] ]
+        gust_u = au * gust_u + sqrt[ 1.0 - au * au ] * normal[]
+        # across and up the same way: each a unit process times its
+        # strength, so a speed that falls never winds it up (the
+        # second order Dryden form did: 34 m/s on a booster at rest)
+        av : f64 [ exp[ 0.0 - v * dt / lu ] ]
+        aw : f64 [ exp[ 0.0 - v * dt / lw ] ]
+        nv : f64 [ normal[] ]
+        nw : f64 [ normal[] ]
+        gust_v = Dvec [ av * gust_v.x + sqrt[ 1.0 - av * av ] * nv,
+                        0.0, 0.0 ]
+        gust_w = Dvec [ aw * gust_w.x + sqrt[ 1.0 - aw * aw ] * nw,
+                        0.0, 0.0 ]
+        gv : f64 [ su * gust_v.x ]
+        gw : f64 [ sw * gust_w.x ]
+        # along and across the mean wind; still air: east
+        dir : dv_norm[ mean ]
+        if [ dv_len[ mean ] < 0.1 ] dir = Dvec [ 1.0, 0.0, 0.0 ]
+        across : Dvec [ 0.0 - dir.y, dir.x, 0.0 ]
+        gu : f64 [ su * gust_u ]
+        return Dvec [ dir.x * gu + across.x * gv,
+                      dir.y * gu + across.y * gv, gw ]
+
+    # the air at a geometric height: standard day under the
+    # sounding, plus gusts for a craft at speed through it
+    # the measured wind alone at a height, east and north (m/s):
+    # what a flight computer is told on the day, without gusts
+    public func mean_wind [ h: f64 ] -> Dvec
+        out : standard_air[ h ]
+        sounding[ h, out ]
+        return out.wind
+
+    public func air_at [ h: f64, speed: f64, dt: f64 ] -> Air
+        out : standard_air[ h ]
+        sounding[ h, out ]
+        if [ dt > 0.0 ]
+            g : gusts[ h, speed, out.wind, dt ]
+            out.wind = dv_add[ out.wind, g ]
+        return out
+
+    # a sounding from University of Wyoming text: PRES HGHT TEMP
+    # DWPT RELH MIXR DRCT SKNT ... (hPa, m, C, deg, knots)
+    public func read_sounding [ text: string ] -> i32
+        levels = vec Level []
+        rows : text.split[ '\n' ]
+        for [ row: string ] in rows
+            cols : row.split[ ' ' ]
+            nums : vec f64 []
+            for [ c: string ] in cols
+                if [ c.count == 0 ] continue
+                v : f64 [ atof[ c.chars ] ]
+                nums.push[ v ]
+            # only rows with all eleven numbers carry the wind
+            if [ nums.count < 11 ] continue
+            if [ nums[ 0 ] <= 0.0 ] continue
+            pres : f64 [ nums[ 0 ] * 100.0 ]
+            hgt : f64 [ nums[ 1 ] ]
+            tk : f64 [ nums[ 2 ] + 273.15 ]
+            drct : f64 [ nums[ 6 ] * 3.14159265358979 / 180.0 ]
+            spd : f64 [ nums[ 7 ] * 0.514444 ]
+            # the wind comes FROM drct: it blows toward drct + 180
+            lv : Level [ height: hgt, east: 0.0 - spd * sin[ drct ],
+                         north: 0.0 - spd * cos[ drct ],
+                         temperature: tk, pressure: pres ]
+            levels.push[ lv ]
+        return levels.count
+
+    # a wind made up from a seed: a surface wind of 0 to 12 m/s
+    # growing to 1 km, turning up to 60 deg with height, a jet
+    # of jet_lo to jet_hi m/s at 9 to 13 km; turbulence calm to
+    # moderate; the standard day's air. returns it in words
+    public func random_wind [ from_seed: u64, jet_lo: f64,
+                              jet_hi: f64 ] -> string
+        seed = from_seed | 1
+        for [ i: i32 0, i < 8, i += 1 ] rand[]
+        ground : f64 [ 12.0 * rand[] ]
+        jet : f64 [ jet_lo + (jet_hi - jet_lo) * rand[] ]
+        jet_h : f64 [ 9000.0 + 4000.0 * rand[] ]
+        blow_from : f64 [ 6.28318530717959 * rand[] ]
+        veer : f64 [ (rand[] - 0.5) * 2.0 * 1.0472 ]
+        severity = i32[ rand[] * 3.0 ]
+        if [ severity > 2 ] severity = 2
+        levels = vec Level []
+        for [ hk: i32 0, hk <= 60, hk += 1 ]
+            h : f64 [ f64[ hk ] * 500.0 ]
+            # the surface wind grows to 1 km (power law 1/7)
+            low : f64 [ ground * pow[ max[ h, 10.0 ] / 1000.0,
+                                      0.142857 ] ]
+            if [ h > 1000.0 ] low = ground
+            hump : f64 [ (h - jet_h) / 3000.0 ]
+            spd : f64 [ low + jet * exp[ 0.0 - hump * hump ] ]
+            turn_h : f64 [ min[ h / 10000.0, 1.0 ] ]
+            drct : f64 [ blow_from + veer * turn_h ]
+            ar : standard_air[ h ]
+            levels.push[ Level [ height: h,
+                                 east: 0.0 - spd * sin[ drct ],
+                                 north: 0.0 - spd * cos[ drct ],
+                                 temperature: ar.temperature,
+                                 pressure: ar.pressure ] ]
+        deg : i32 [ i32[ blow_from * 57.2957795 ] ]
+        jk : f64 [ jet_h / 1000.0 ]
+        kph : f64 [ jet * 3.6 ]
+        return 'wind from {deg} deg at {ground} m/s, jet {kph} km/h at {jk} km, turbulence {severity}'
+
+# ---------------------------------------------------------------
+# a craft: parts on one axis. body x runs up the axis toward the
+# nose from the engines' gimbal plane; y and z across it
+# ---------------------------------------------------------------
+class Part
+    public name   : string
+    public group  : string
+    public mass   : f64
+    # extent along the axis, radius: a thin walled tube
+    public low     : f64
+    public high     : f64
+    public radius : f64
+    # part of the outer skin the air meets, or inside it
+    public outer  : bool [ true ]
+    # a shaped skin: (x, radius) pairs up the axis; else a tube
+    public profile : vec f64
+
+    # its skin radius at x along the axis, 0 when not there
+    public func skin [ x: f64 ] -> f64
+        if [ !outer || x < low || x > high ] return 0.0
+        if [ !profile || profile.count < 4 ] return radius
+        n : i32 [ profile.count / 2 ]
+        if [ x <= profile[ 0 ] ] return profile[ 1 ]
+        for [ i: i32 0, i < n - 1, i += 1 ]
+            xa : f64 [ profile[ i * 2 ] ]
+            xb : f64 [ profile[ i * 2 + 2 ] ]
+            if [ x <= xb ]
+                ra : f64 [ profile[ i * 2 + 1 ] ]
+                rb : f64 [ profile[ i * 2 + 3 ] ]
+                t : f64 [ (xb > xa) ? (x - xa) / (xb - xa) : 1.0 ]
+                return ra + (rb - ra) * t
+        return profile[ n * 2 - 1 ]
+
+class Tank
+    public name     : string
+    public group    : string
+    public low       : f64      # bottom of the tank
+    public length   : f64
+    public radius   : f64
+    public density  : f64
+    public capacity : f64
+    public mass     : f64
+
+# an engine: gimbal point in the body, its tanks by name
+class Engine
+    public name      : string
+    public group     : string
+    public at        : Dvec
+    public thrust_vac : f64
+    public flow      : f64     # kg/s at full throttle
+    public exit_area : f64
+    public throttle_min : f64
+    public gimbal_max : f64
+    public oxidiser  : string
+    public fuel      : string
+    public mixture   : f64     # oxidiser over fuel by mass
+    public lit       : bool
+    public throttle  : f64 [ 1.0 ]
+    public pitch     : f64     # gimbal about body z
+    public yaw       : f64     # gimbal about body y
+    # what the controller asks; the actuators slew to it
+    public pitch_cmd : f64
+    public yaw_cmd   : f64
+    public slew      : f64 [ 0.35 ]
+    # the force it made last step, newtons
+    public force     : f64
+
+# a grid fin: where on the axis, round which way, its area
+class Fin
+    public name   : string
+    public group  : string
+    public x      : f64
+    public roll   : f64
+    public arm    : f64
+    public area   : f64
+    public lift   : f64        # normal force slope, per radian
+    public limit  : f64
+    public deflect : f64
+    public deflect_cmd : f64
+    public slew   : f64 [ 0.6 ]
+    public open   : bool
+    # how far out: 1 open, 0 folded up the hull
+    public frac   : f64
+
+# a cold gas thruster: place, push direction, newtons
+class Jet
+    public name   : string
+    public group  : string
+    public at     : Dvec
+    public dir    : Dvec
+    public thrust : f64
+    public on     : bool
+
+# a landing leg: foot in the body, N/m, Hunt-Crossley s/m
+class Leg
+    public name    : string
+    public group   : string
+    public foot    : Dvec
+    public stiff   : f64
+    public damp    : f64
+    public out     : bool
+    public load    : f64
+    # the crush core gives way at this load, N (an estimate)
+    public crush   : f64 [ 4.0e5 ]
+    # how far the core can crush, m (an estimate)
+    public travel  : f64 [ 0.5 ]
+    # the load that breaks the leg, N (an estimate)
+    public breaks  : f64 [ 1.5e6 ]
+    # its damper, N per m/s closing, at any squeeze: about 0.3
+    # of critical on a quarter of the booster (an estimate)
+    public viscous : f64 [ 8.0e4 ]
+    # as the foot lifts the spring gives back this share less:
+    # lost in the pad, the joints and the core (an estimate)
+    public lift_loss : f64 [ 0.4 ]
+    # what touchdown did: the core crushed, the most load
+    public stroke  : f64
+    public peak    : f64
+    public broken  : bool
+    # first touch: when (s), the foot (ECEF), closing m/s
+    public touch_t : f64 [ -1.0 ]
+    public touch_at : Dvec
+    public touch_v : f64
+    # the craft's tilt off the deck's up then (rad)
+    public touch_tilt : f64
+    # where the pad holds while it does not slide (ECEF)
+    public anchor  : Dvec
+    public stuck   : bool
+    # how far out it is, 1 out, 0 stowed, as it swings
+    public frac    : f64 [ 1.0 ]
+
+# the state RK4 steps: centre of mass place and speed (inertial),
+# attitude body to inertial, body rates, propellant by tank
+class State
+    public r   : Dvec
+    public v   : Dvec
+    public q   : Quat
+    public w   : Dvec
+    public prop : vec f64
+    # each tank's sloshing mass: y, z offset (m) and their speeds
+    public slosh : vec f64
+    # the tube's modes at its base: along it and across it
+    # twice (m, m/s)
+    public flex  : vec f64
+
+    func init []
+        if [ !prop ] prop = vec f64 []
+        if [ !slosh ] slosh = vec f64 []
+        if [ !flex ] flex = vec f64 []
+
+    public func copy [] -> State
+        s : State [ r: r, v: v, q: q, w: w, prop: vec f64 [],
+                    slosh: vec f64 [], flex: vec f64 [] ]
+        for [ m: f64 ] in prop
+            s.prop.push[ m ]
+        for [ m: f64 ] in slosh
+            s.slosh.push[ m ]
+        for [ m: f64 ] in flex
+            s.flex.push[ m ]
+        return s
+
+# a flat deck at sea: its centre in ECEF, its up, a friction
+class Deck
+    public centre  : Dvec
+    public up      : Dvec
+    public radius  : f64
+    public friction : f64 [ 0.6 ]
+
+# a body point against the deck: how deep, its speed off the
+# deck (m/s, ECI), sideways speed, its place (ECI and ECEF)
+struct Touch
+    depth : f64
+    vn    : f64
+    slide : Dvec
+    at    : Dvec
+    at_e  : Dvec
+    on    : bool
+
+# the air's load: body force, moment about the centre of mass,
+# the angle of attack, and the axial and normal totals (N)
+class Aero
+    public force  : Dvec
+    public torque : Dvec
+    public alpha  : f64
+    public axial  : f64
+    public normal : f64
+
+class Craft
+    public name    : string
+    public parts   : vec Part
+    public tanks   : vec Tank
+    public engines : vec Engine
+    public fins    : vec Fin
+    public jets    : vec Jet
+    public legs    : vec Leg
+    public state   : State
+    public length  : f64
+    public radius  : f64
+    public time    : f64
+    public turn_start   : f64
+    public weather : Weather
+    public deck    : Deck
+    # derived each step: mass, centre of mass x, inertia; the
+    # rigid part leaves out the sloshing masses, which ride apart
+    public mass    : f64
+    public rigid   : f64
+    public cg      : f64
+    public inertia : vec f64
+    # per tank: sloshing mass kg, its place on the axis, rad/s
+    public slosh_mass : vec f64
+    public slosh_x : vec f64
+    public slosh_freq : vec f64
+    # the baffles' damping ratio (an estimate)
+    public slosh_damp : f64 [ 0.02 ]
+    # the tube's structural damping (an estimate)
+    public flex_damp  : f64 [ 0.02 ]
+    # the tube's first modes: along it and across it (Hz), and
+    # the share of the mass that moves with its base (estimates)
+    public axial_hz   : f64 [ 30.0 ]
+    public bend_hz    : f64 [ 4.0 ]
+    public axial_share : f64 [ 0.5 ]
+    public bend_share : f64 [ 0.3 ]
+    # the outer shape's stations: x and skin radius
+    intern shape_x : vec f64
+    intern shape_r : vec f64
+    intern shape_parts : i32 [ -1 ]
+    # the hull's contact points, made when first near a deck
+    intern hull_points : vec Dvec
+    # the last step's air, Mach, dynamic pressure, angle of attack
+    public air     : Air
+    public mach    : f64
+    public qbar    : f64
+    public alpha   : f64
+    public accel   : Dvec      # specific force, body, m/s2
+    public spin_rate : Dvec    # body angular acceleration
+    public landed  : bool
+    # the hull's first strike on the deck: when, closing m/s
+    public hull_t  : f64 [ -1.0 ]
+    public hull_v  : f64
+
+    func init []
+        parts = vec Part []
+        tanks = vec Tank []
+        engines = vec Engine []
+        fins = vec Fin []
+        jets = vec Jet []
+        legs = vec Leg []
+        inertia = vec f64 [ 9 ]
+        slosh_mass = vec f64 []
+        slosh_x = vec f64 []
+        slosh_freq = vec f64 []
+
+    public func tank_index [ n: string ] -> i32
+        for [ i: i32 0, i < tanks.count, i += 1 ]
+            if [ tanks[ i ].name == n ] return i
+        return -1
+
+    public func propellant [] -> f64
+        sum : f64 [ 0.0 ]
+        for [ m: f64 ] in state.prop
+            sum += m
+        return sum
+
+    # the first slosh mode of a tank (Abramson, NASA SP-106):
+    # its mass, frequency and height, under axial push a (m/s2)
+    func slosh_mode [ t: Tank, lm: f64, a_x: f64, i: i32 ]
+        slosh_mass[ i ] = 0.0
+        slosh_freq[ i ] = 0.0
+        slosh_x[ i ] = t.low
+        if [ lm < 1.0 ] return
+        rad : f64 [ t.radius ]
+        h : f64 [ lm / (t.density * 3.14159265358979 * rad * rad) ]
+        th : f64 [ tanh_d[ 1.841 * h / rad ] ]
+        m1 : f64 [ lm * 2.0 * rad / (1.841 * 2.3894 * h) * th ]
+        if [ m1 > lm * 0.9 ] m1 = lm * 0.9
+        slosh_mass[ i ] = m1
+        push : f64 [ (a_x > 0.0) ? a_x : 0.0 ]
+        slosh_freq[ i ] = sqrt[ 1.841 * push / rad * th ]
+        # near the free surface (our approximation of the height)
+        slosh_x[ i ] = t.low + h
+                       - rad / 1.841 * tanh_d[ 1.841 * h / (2.0 * rad) ]
+
+    # mass, centre and inertia about it of the rigid part: the
+    # parts and each tank's liquid less its sloshing mass
+    public func mass_properties [ prop: vec f64 ]
+        while [ slosh_mass.count < tanks.count ]
+            slosh_mass.push[ 0.0 ]
+            slosh_x.push[ 0.0 ]
+            slosh_freq.push[ 0.0 ]
+        a_x : f64 [ accel.x ]
+        total : f64 [ 0.0 ]
+        m : f64 [ 0.0 ]
+        mx : f64 [ 0.0 ]
+        for [ p: Part ] in parts
+            m += p.mass
+            mx += p.mass * (p.low + p.high) * 0.5
+        for [ i: i32 0, i < tanks.count, i += 1 ]
+            t : tanks[ i ]
+            lm : f64 [ prop[ i ] ]
+            slosh_mode[ t, lm, a_x, i ]
+            fixed : f64 [ lm - slosh_mass[ i ] ]
+            level : f64 [ lm / (t.density * 3.14159265358979
+                          * t.radius * t.radius) ]
+            total += lm
+            m += fixed
+            mx += fixed * (t.low + level * 0.5)
+        c : f64 [ mx / m ]
+        roll : f64 [ 0.0 ]
+        side : f64 [ 0.0 ]
+        for [ p: Part ] in parts
+            len : f64 [ p.high - p.low ]
+            d : f64 [ (p.low + p.high) * 0.5 - c ]
+            roll += p.mass * p.radius * p.radius
+            side += p.mass * (p.radius * p.radius * 0.5
+                    + len * len / 12.0 + d * d)
+        for [ i: i32 0, i < tanks.count, i += 1 ]
+            t : tanks[ i ]
+            lm : f64 [ prop[ i ] - slosh_mass[ i ] ]
+            level : f64 [ prop[ i ] / (t.density * 3.14159265358979
+                          * t.radius * t.radius) ]
+            d : f64 [ t.low + level * 0.5 - c ]
+            roll += lm * t.radius * t.radius * 0.5
+            side += lm * (t.radius * t.radius * 0.25
+                    + level * level / 12.0 + d * d)
+        rigid = m
+        mass = m + 0.0
+        for [ i: i32 0, i < tanks.count, i += 1 ]
+            mass += slosh_mass[ i ]
+        cg = c
+        for [ i: i32 0, i < 9, i += 1 ] inertia[ i ] = 0.0
+        inertia[ 0 ] = roll
+        inertia[ 4 ] = side
+        inertia[ 8 ] = side
+
+    # Earth's angle now, and the craft's ECEF and geodetic place
+    public func ecef [ r: Dvec, t: f64 ] -> Dvec
+        return eci_to_ecef[ r, earth_turn[ t, turn_start ] ]
+
+    public func geodetic [] -> Dvec
+        return ecef_to_geodetic[ ecef[ state.r, time ] ]
+
+    # the outer shape: skin radius at stations up the axis,
+    # rebuilt when the parts change (a separation)
+    func shape []
+        if [ shape_x && shape_parts == parts.count ] return
+        shape_parts = parts.count
+        shape_x = vec f64 []
+        shape_r = vec f64 []
+        lo : f64 [ 1e30 ]
+        hi : f64 [ -1e30 ]
+        for [ p: Part ] in parts
+            if [ !p.outer ] continue
+            if [ p.low < lo ] lo = p.low
+            if [ p.high > hi ] hi = p.high
+        if [ hi <= lo ] return
+        n : i32 [ i32[ (hi - lo) / 0.25 ] + 1 ]
+        for [ i: i32 0, i <= n, i += 1 ]
+            x : f64 [ lo + (hi - lo) * f64[ i ] / f64[ n ] ]
+            r : f64 [ 0.0 ]
+            for [ p: Part ] in parts
+                sk : f64 [ p.skin[ x ] ]
+                if [ sk > r ] r = sk
+            shape_x.push[ x ]
+            shape_r.push[ r ]
+
+    # the stagnation pressure coefficient: isentropic below
+    # Mach 1, behind a normal shock above (Rayleigh pitot)
+    func stagnation [ m: f64 ] -> f64
+        g : f64 [ 1.4 ]
+        mm : f64 [ (m < 0.05) ? 0.05 : m ]
+        k : f64 [ 2.0 / (g * mm * mm) ]
+        if [ mm < 1.0 ]
+            return k * (pow[ 1.0 + 0.2 * mm * mm, 3.5 ] - 1.0)
+        a_p : f64 [ pow[ (g + 1.0) * (g + 1.0) * mm * mm
+                         / (4.0 * g * mm * mm - 2.0 * (g - 1.0)), 3.5 ] ]
+        return k * (a_p * (1.0 - g + 2.0 * g * mm * mm) / (g + 1.0) - 1.0)
+
+    # pressure on a face turned delta into the flow: modified
+    # Newtonian from Mach 1.2; below 0.8 a blunt face takes 0.8
+    # of stagnation (Hoerner's flat face) and a slender one none
+    func face_cp [ m: f64, delta: f64 ] -> f64
+        sd : f64 [ sin[ delta ] ]
+        newt : f64 [ stagnation[ m ] * sd * sd ]
+        sub : f64 [ (delta > 1.0) ? 0.8 * stagnation[ m ] : 0.0 ]
+        if [ m <= 0.8 ] return sub
+        if [ m >= 1.2 ] return newt
+        t : f64 [ (m - 0.8) / 0.4 ]
+        return sub + (newt - sub) * t
+
+    # base pressure behind a blunt end (Hoerner; Love 1957 curves
+    # read off), negative: suction
+    func base_cp [ m: f64 ] -> f64
+        if [ m < 0.8 ] return 0.0 - (0.12 + 0.13 * m * m)
+        if [ m < 1.1 ] return 0.0 - (0.203 + (m - 0.8) / 0.3 * 0.097)
+        k : f64 [ 0.7 / (m * m) ]
+        return 0.0 - ((k > 0.30) ? 0.30 : k)
+
+    # Jorgensen's crossflow drag of a cylinder by crossflow Mach
+    # (NASA TR R-474, read off its figure)
+    func cross_drag [ mc: f64 ] -> f64
+        ms : vec f64 [] [ 0.0, 0.4, 0.6, 0.8, 1.0, 1.2, 1.6, 2.0, 4.0 ]
+        cs : vec f64 [] [ 1.2, 1.2, 1.3, 1.5, 1.75, 1.7, 1.55, 1.4, 1.3 ]
+        if [ mc >= 4.0 ] return 1.3
+        for [ i: i32 0, i < 8, i += 1 ]
+            hi : f64 [ ms[ i + 1 ] ]
+            if [ mc <= hi ]
+                lo : f64 [ ms[ i ] ]
+                t : f64 [ (mc - lo) / (hi - lo) ]
+                return cs[ i ] + (cs[ i + 1 ] - cs[ i ]) * t
+        return 1.3
+
+    # Jorgensen's crossflow factor by fineness (read off)
+    func cross_factor [ fine: f64 ] -> f64
+        if [ fine <= 2.0 ] return 0.55
+        if [ fine >= 30.0 ] return 0.76
+        if [ fine < 10.0 ] return 0.55 + (fine - 2.0) / 8.0 * 0.10
+        return 0.65 + (fine - 10.0) / 20.0 * 0.11
+
+    # turbulent skin friction: Schlichting's flat plate with a
+    # compressibility correction, the Reynolds number by length
+    func friction [ rho: f64, v: f64, temp: f64, len: f64,
+                    m: f64 ] -> f64
+        mu : f64 [ 1.458e-6 * pow[ temp, 1.5 ] / (temp + 110.4) ]
+        re : f64 [ rho * v * len / mu ]
+        if [ re < 1e5 ] re = 1e5
+        lg : f64 [ log[ re ] / log[ 10.0 ] ]
+        cf : f64 [ 0.455 / pow[ lg, 2.58 ] ]
+        return cf / pow[ 1.0 + 0.144 * m * m, 0.65 ]
+
+    # the air's load on the shape: force in the body and its
+    # moment about the centre of mass; vb is the body's motion
+    # through the air, in the body
+    public func body_aero [ vb: Dvec, ar: Air, burning: bool ] -> Aero
+        out : Aero [ force: dv_zero[], torque: dv_zero[] ]
+        shape[]
+        n : i32 [ shape_x.count ]
+        speed : f64 [ dv_len[ vb ] ]
+        if [ n < 2 || speed < 0.5 ] return out
+        q : f64 [ 0.5 * ar.density * speed * speed ]
+        if [ q < 1e-6 ] return out
+        m : f64 [ (ar.sound > 1.0) ? speed / ar.sound : 0.0 ]
+        nose_first : bool [ vb.x >= 0.0 ]
+        cosa : f64 [ vb.x / speed ]
+        if [ cosa > 1.0 ] cosa = 1.0
+        if [ cosa < -1.0 ] cosa = -1.0
+        aoa : f64 [ acos[ cosa ] ]
+        # the angle from whichever end leads
+        lead : f64 [ (nose_first) ? aoa : 3.14159265358979 - aoa ]
+        sa : f64 [ sin[ aoa ] ]
+        cross : Dvec [ 0.0, vb.y, vb.z ]
+        cs : f64 [ dv_len[ cross ] ]
+        dirn : Dvec [ 0.0, 0.0, 0.0 ]
+        if [ cs > 1e-9 ]
+            dirn = Dvec [ 0.0, 0.0 - vb.y / cs, 0.0 - vb.z / cs ]
+        span : f64 [ shape_x[ n - 1 ] - shape_x[ 0 ] ]
+        rmax : f64 [ 0.0 ]
+        for [ r: f64 ] in shape_r
+            if [ r > rmax ] rmax = r
+        fine : f64 [ span / (2.0 * rmax) ]
+        eta : f64 [ (m * sa > 1.0) ? 1.0 : cross_factor[ fine ] ]
+        cdc : f64 [ cross_drag[ m * sa ] ]
+        pot : f64 [ sin[ 2.0 * lead ] * cos[ lead * 0.5 ] ]
+        axial : f64 [ 0.0 ]
+        wet : f64 [ 0.0 ]
+        normal : f64 [ 0.0 ]
+        moment : f64 [ 0.0 ]
+        pi : f64 [ 3.14159265358979 ]
+        for [ i: i32 0, i < n - 1, i += 1 ]
+            xa : f64 [ shape_x[ i ] ]
+            xb : f64 [ shape_x[ i + 1 ] ]
+            ra : f64 [ shape_r[ i ] ]
+            rb : f64 [ shape_r[ i + 1 ] ]
+            dx : f64 [ xb - xa ]
+            mid : f64 [ (xa + xb) * 0.5 ]
+            # slender body: the area that grows away from the lead
+            grow : f64 [ (nose_first) ? pi * (ra * ra - rb * rb)
+                         : pi * (rb * rb - ra * ra) ]
+            # behind a narrowing the flow separates (half: estimate)
+            if [ grow < 0.0 ] grow = grow * 0.5
+            dn : f64 [ q * pot * grow
+                       + q * eta * cdc * sa * sa * (ra + rb) * dx ]
+            normal += dn
+            moment += dn * (mid - cg)
+            wet += pi * (ra + rb) * sqrt[ dx * dx + (rb - ra) * (rb - ra) ]
+            # a face turned into the flow takes its pressure
+            rise : f64 [ (nose_first) ? ra - rb : rb - ra ]
+            if [ rise > 0.0 ]
+                delta : f64 [ atan2[ rise, dx ] ]
+                ring : f64 [ pi * abs[ ra * ra - rb * rb ] ]
+                axial += face_cp[ m, delta ] * q * ring
+        # the leading end's own face, and the base behind it all
+        lead_r : f64 [ (nose_first) ? shape_r[ n - 1 ] : shape_r[ 0 ] ]
+        tail_r : f64 [ (nose_first) ? shape_r[ 0 ] : shape_r[ n - 1 ] ]
+        face : f64 [ pi * lead_r * lead_r ]
+        # a burn out of the leading end shields its face (estimate)
+        if [ !(burning && !nose_first) ]
+            axial += face_cp[ m, 1.5707963 ] * q * face
+        # behind a burning base the plume fills it: no suction
+        if [ !(burning && nose_first) ]
+            axial -= base_cp[ m ] * q * pi * tail_r * tail_r
+        axial += friction[ ar.density, speed, ar.temperature, span, m ]
+                 * q * wet
+        # open grid fins and deployed legs drag too (estimates)
+        for [ f: Fin ] in fins
+            if [ !f.open ] continue
+            cf : f64 [ (m < 0.8) ? 0.6 : ((m < 1.2) ? 0.6 + (m - 0.8)
+                       / 0.4 * 0.8 : 1.4 * 1.2 / m) ]
+            axial += cf * q * f.area
+        for [ g: Leg ] in legs
+            if [ g.out ] axial += 1.2 * q * 0.8
+        # the axial load works against the motion along the axis
+        ca2 : f64 [ abs[ cosa ] ]
+        fx : f64 [ ((nose_first) ? -1.0 : 1.0) * axial * ca2 ]
+        out.force = Dvec [ fx, dirn.y * normal, dirn.z * normal ]
+        # the normal force's moment, about the centre of mass
+        out.torque = dv_cross[ Dvec [ 1.0, 0.0, 0.0 ],
+                               dv_scale[ dirn, moment ] ]
+        out.alpha = aoa
+        out.axial = axial
+        out.normal = normal
+        return out
+
+    # the axial force coefficient flying straight, on the end's
+    # area: for the planners, at a nominal Reynolds number
+    public func axial_coeff [ m: f64, back: bool,
+                              burning: bool ] -> f64
+        ar : standard_air[ 5000.0 ]
+        v : f64 [ m * ar.sound ]
+        if [ v < 1.0 ] v = 1.0
+        vb : Dvec [ (back) ? 0.0 - v : v, 0.0, 0.0 ]
+        ld : body_aero[ vb, ar, burning ]
+        q : f64 [ 0.5 * ar.density * v * v ]
+        return ld.axial / (q * 3.14159265358979 * radius * radius)
+
+    # every force and moment now: the derivative of the state
+    func derive [ s: State, t: f64, dt: f64, dr: State,
+                  first: bool ]
+        mass_properties[ s.prop ]
+        ang : f64 [ earth_turn[ t, turn_start ] ]
+        pe : eci_to_ecef[ s.r, ang ]
+        geo : ecef_to_geodetic[ pe ]
+        h : f64 [ geo.z ]
+        spin : Dvec [ 0.0, 0.0, EARTH_SPIN ]
+        # the air turns with the Earth; the wind blows across it
+        ground : dv_cross[ spin, s.r ]
+        vrel_e : dv_sub[ s.v, ground ]
+        sp : f64 [ dv_len[ vrel_e ] ]
+        ar : weather.air_at[ h, sp, (first) ? dt : 0.0 ]
+        if [ !first ]
+            ar.wind = air.wind
+        east : ecef_to_eci[ enu_east[ geo.x, geo.y ], ang ]
+        north : ecef_to_eci[ enu_north[ geo.x, geo.y ], ang ]
+        up : ecef_to_eci[ enu_up[ geo.x, geo.y ], ang ]
+        wind : dv_add[ dv_add[ dv_scale[ east, ar.wind.x ],
+                      dv_scale[ north, ar.wind.y ] ],
+                      dv_scale[ up, ar.wind.z ] ]
+        vrel : dv_sub[ vrel_e, wind ]
+        vb : q_unrotate[ s.q, vrel ]
+        speed : f64 [ dv_len[ vb ] ]
+        q_dyn : f64 [ 0.5 * ar.density * speed * speed ]
+        m_no : f64 [ (ar.sound > 1.0) ? speed / ar.sound : 0.0 ]
+        force : Dvec [ 0.0, 0.0, 0.0 ]
+        torque : Dvec [ 0.0, 0.0, 0.0 ]
+        cgv : Dvec [ cg, 0.0, 0.0 ]
+        area : f64 [ 3.14159265358979 * radius * radius ]
+        aoa : f64 [ 0.0 ]
+        burning : bool [ false ]
+        for [ e: Engine ] in engines
+            if [ e.lit ] burning = true
+        if [ speed > 0.5 && q_dyn > 1e-4 ]
+            # the air on the shape, section by section
+            ld : body_aero[ vb, ar, burning ]
+            aoa = ld.alpha
+            force = dv_add[ force, ld.force ]
+            torque = dv_add[ torque, ld.torque ]
+            # grid fins: a lifting plate each, normal to its span
+            for [ f: Fin ] in fins
+                if [ !f.open ] continue
+                nrm : Dvec [ 0.0, 0.0 - sin[ f.roll ], cos[ f.roll ] ]
+                vn : f64 [ dv_dot[ vb, nrm ] ]
+                incid : f64 [ atan2[ vn, (vb.x < 0.0) ? 0.0 - vb.x
+                              : vb.x ] + f.deflect ]
+                slope : f64 [ (m_no < 0.8) ? f.lift
+                              : f.lift * 0.8 / m_no + 0.4 ]
+                nfin : f64 [ 0.0 - slope * incid * q_dyn * f.area ]
+                ff : dv_scale[ nrm, nfin ]
+                fat : Dvec [ f.x - cg, f.arm * cos[ f.roll ],
+                             f.arm * sin[ f.roll ] ]
+                force = dv_add[ force, ff ]
+                torque = dv_add[ torque, dv_cross[ fat, ff ] ]
+        # the engines: thrust falls with the outside pressure
+        flow : vec f64 [ tanks.count ]
+        for [ e: Engine ] in engines
+            e.force = 0.0
+            if [ !e.lit ] continue
+            oi : i32 [ tank_index[ e.oxidiser ] ]
+            ui : i32 [ tank_index[ e.fuel ] ]
+            if [ oi < 0 || ui < 0 ] continue
+            if [ s.prop[ oi ] <= 0.0 || s.prop[ ui ] <= 0.0 ] continue
+            th : f64 [ e.throttle ]
+            if [ th < e.throttle_min ] th = e.throttle_min
+            if [ th > 1.0 ] th = 1.0
+            mf : f64 [ e.flow * th ]
+            fmag : f64 [ th * e.thrust_vac - ar.pressure * e.exit_area ]
+            if [ fmag < 0.0 ] fmag = 0.0
+            e.force = fmag
+            gp : f64 [ e.pitch ]
+            gy : f64 [ e.yaw ]
+            if [ gp > e.gimbal_max ] gp = e.gimbal_max
+            if [ gp < 0.0 - e.gimbal_max ] gp = 0.0 - e.gimbal_max
+            if [ gy > e.gimbal_max ] gy = e.gimbal_max
+            if [ gy < 0.0 - e.gimbal_max ] gy = 0.0 - e.gimbal_max
+            dirb : Dvec [ cos[ gp ] * cos[ gy ], sin[ gp ],
+                          0.0 - cos[ gp ] * sin[ gy ] ]
+            ft : dv_scale[ dirb, fmag ]
+            force = dv_add[ force, ft ]
+            torque = dv_add[ torque,
+                             dv_cross[ dv_sub[ e.at, cgv ], ft ] ]
+            ox : f64 [ mf * e.mixture / (1.0 + e.mixture) ]
+            flow[ oi ] = flow[ oi ] + ox
+            flow[ ui ] = flow[ ui ] + (mf - ox)
+        for [ j: Jet ] in jets
+            if [ !j.on ] continue
+            ft : dv_scale[ j.dir, j.thrust ]
+            force = dv_add[ force, ft ]
+            torque = dv_add[ torque,
+                             dv_cross[ dv_sub[ j.at, cgv ], ft ] ]
+        # the feet, then the hull, against the deck
+        on_deck : bool [ false ]
+        # the legs' work on the tube's modes, per metre of each
+        at_base : Dvec [ 0.0, 0.0, 0.0 ]
+        while [ dr.flex.count < 6 ]
+            dr.flex.push[ 0.0 ]
+        if [ deck ]
+            dup : ecef_to_eci[ deck.up, ang ]
+            mu : f64 [ deck.friction ]
+            # each leg pushes the tube, through its give at the base
+            for [ i: i32 0, i < legs.count, i += 1 ]
+                g : legs[ i ]
+                if [ !g.out || g.frac < 1.0 || g.broken ] continue
+                tc : leg_touch[ s, i, ang ]
+                if [ !tc.on ] continue
+                fl : f64 [ leg_push[ g, tc.depth, tc.vn ] ]
+                if [ fl <= 0.0 ] continue
+                on_deck = true
+                arm : dv_add[ dv_sub[ g.foot, cgv ],
+                              base_move[ s, g.foot, 0 ] ]
+                fw : dv_add[ dv_scale[ dup, fl ],
+                             pad_grip[ g, tc, fl, mu, ang ] ]
+                fb : q_unrotate[ s.q, fw ]
+                force = dv_add[ force, fb ]
+                torque = dv_add[ torque, dv_cross[ arm, fb ] ]
+                # the work it does on each mode: along, and across
+                # with the tilt that lifts or drops the foot
+                sl : f64 [ bend_slope[] ]
+                at_base = dv_add[ at_base, Dvec [ fb.x,
+                    fb.y - sl * g.foot.y * fb.x,
+                    fb.z - sl * g.foot.z * fb.x ] ]
+        # the tube's modes, driven at its base by the legs
+        nb : i32 [ 0 ]
+        mode_hz : vec f64 [] [ axial_hz, bend_hz, bend_hz ]
+        mode_share : vec f64 [] [ axial_share, bend_share, bend_share ]
+        push_b : vec f64 [] [ at_base.x, at_base.y, at_base.z ]
+        for [ md: i32 0, md < 3, md += 1 ]
+            wn : f64 [ 6.28318530717959 * mode_hz[ md ] ]
+            eta : f64 [ flex_at[ s, nb + md * 2 ] ]
+            eta_d : f64 [ flex_at[ s, nb + md * 2 + 1 ] ]
+            m_mode : f64 [ mode_share[ md ] * mass ]
+            dr.flex[ nb + md * 2 ] = eta_d
+            dr.flex[ nb + md * 2 + 1 ] = push_b[ md ] / m_mode
+                - 2.0 * flex_damp * wn * eta_d - wn * wn * eta
+        # the sloshing masses: carried by the tank along the axis,
+        # held by their springs across it
+        f_axial : f64 [ force.x / mass ]
+        sl : i32 [ (s.slosh.count == tanks.count * 4) ? tanks.count
+                   : 0 ]
+        for [ i: i32 0, i < sl, i += 1 ]
+            m1 : f64 [ slosh_mass[ i ] ]
+            if [ m1 <= 0.0 ] continue
+            om : f64 [ slosh_freq[ i ] ]
+            k : f64 [ m1 * om * om ]
+            c : f64 [ 2.0 * slosh_damp * m1 * om ]
+            sy : f64 [ s.slosh[ i * 4 ] ]
+            sz : f64 [ s.slosh[ i * 4 + 1 ] ]
+            uy : f64 [ s.slosh[ i * 4 + 2 ] ]
+            uz : f64 [ s.slosh[ i * 4 + 3 ] ]
+            at : Dvec [ slosh_x[ i ] - cg, sy, sz ]
+            # what the mass puts on the tank: its axial load and
+            # the spring's pull, at where the mass is now
+            on_tank : Dvec [ 0.0 - m1 * f_axial, k * sy + c * uy,
+                             k * sz + c * uz ]
+            force = dv_add[ force, on_tank ]
+            torque = dv_add[ torque, dv_cross[ at, on_tank ] ]
+        # into the inertial frame, with gravity
+        fworld : q_rotate[ s.q, force ]
+        lin : dv_add[ dv_scale[ fworld, 1.0 / rigid ],
+                     gravity[ s.r ] ]
+        # Euler's equations, the inertia diagonal in the body
+        ix : f64 [ inertia[ 0 ] ]
+        iy : f64 [ inertia[ 4 ] ]
+        iz : f64 [ inertia[ 8 ] ]
+        wd : Dvec [ (torque.x - (iz - iy) * s.w.y * s.w.z) / ix,
+                    (torque.y - (ix - iz) * s.w.z * s.w.x) / iy,
+                    (torque.z - (iy - ix) * s.w.x * s.w.y) / iz ]
+        # dq/dt = q (0, w) / 2
+        qd : q_mul[ s.q, Quat [ 0.0, s.w.x, s.w.y, s.w.z ] ]
+        dr.r = s.v
+        dr.v = lin
+        dr.q = Quat [ qd.w * 0.5, qd.x * 0.5, qd.y * 0.5, qd.z * 0.5 ]
+        dr.w = wd
+        for [ i: i32 0, i < tanks.count, i += 1 ]
+            fl : f64 [ flow[ i ] ]
+            dr.prop[ i ] = 0.0 - fl
+        # each sloshing mass: its spring, less what the tank wall
+        # feels where it is (the body's push and its turning)
+        f_body : dv_scale[ force, 1.0 / rigid ]
+        for [ i: i32 0, i < sl, i += 1 ]
+            m1 : f64 [ slosh_mass[ i ] ]
+            om : f64 [ slosh_freq[ i ] ]
+            sy : f64 [ s.slosh[ i * 4 ] ]
+            sz : f64 [ s.slosh[ i * 4 + 1 ] ]
+            uy : f64 [ s.slosh[ i * 4 + 2 ] ]
+            uz : f64 [ s.slosh[ i * 4 + 3 ] ]
+            dr.slosh[ i * 4 ] = uy
+            dr.slosh[ i * 4 + 1 ] = uz
+            if [ m1 <= 0.0 ]
+                dr.slosh[ i * 4 + 2 ] = 0.0
+                dr.slosh[ i * 4 + 3 ] = 0.0
+                continue
+            at : Dvec [ slosh_x[ i ] - cg, sy, sz ]
+            wall : dv_add[ f_body, dv_add[ dv_cross[ wd, at ],
+                           dv_cross[ s.w, dv_cross[ s.w, at ] ] ] ]
+            zeta : f64 [ 2.0 * slosh_damp * om ]
+            dr.slosh[ i * 4 + 2 ] = 0.0 - om * om * sy - zeta * uy
+                                    - wall.y
+            dr.slosh[ i * 4 + 3 ] = 0.0 - om * om * sz - zeta * uz
+                                    - wall.z
+        if [ first ]
+            air = ar
+            mach = m_no
+            qbar = q_dyn
+            alpha = aoa
+            accel = dv_scale[ force, 1.0 / rigid ]
+            spin_rate = wd
+            landed = on_deck
+
+    # a body point (from the centre of mass) against the deck
+    func touch_of [ s: State, arm: Dvec, give: Dvec, ang: f64 ]
+                    -> Touch
+        out : Touch [ on: false ]
+        dup : ecef_to_eci[ deck.up, ang ]
+        dc : ecef_to_eci[ deck.centre, ang ]
+        fp : dv_add[ s.r, q_rotate[ s.q, arm ] ]
+        depth : f64 [ 0.0 - dv_dot[ dv_sub[ fp, dc ], dup ] ]
+        if [ depth <= 0.0 ] return out
+        fe : eci_to_ecef[ fp, ang ]
+        off : dv_sub[ fe, deck.centre ]
+        flat : dv_sub[ off, dv_scale[ deck.up,
+                        dv_dot[ off, deck.up ] ] ]
+        # past the deck's edge there is only sea
+        if [ dv_len[ flat ] > deck.radius ] return out
+        spin : Dvec [ 0.0, 0.0, EARTH_SPIN ]
+        fv : dv_add[ s.v, q_rotate[ s.q, dv_add[ dv_cross[ s.w, arm ],
+                                              give ] ] ]
+        rel : dv_sub[ fv, dv_cross[ spin, fp ] ]
+        vn : f64 [ dv_dot[ rel, dup ] ]
+        out.depth = depth
+        out.vn = vn
+        out.slide = dv_sub[ rel, dv_scale[ dup, vn ] ]
+        out.at = fp
+        out.at_e = fe
+        out.on = true
+        return out
+
+    func flex_at [ s: State, i: i32 ] -> f64
+        if [ i >= s.flex.count ] return 0.0
+        return s.flex[ i ]
+
+
+    # the base's tilt per metre the base bends across: the first
+    # free-free bending mode's slope at its end (4.647 / length)
+    func bend_slope [] -> f64
+        return 4.647 / ((length > 1.0) ? length : 1.0)
+
+    # how a point at the base moves with the modes, body frame,
+    # from the modes' values (k = 0) or their speeds (k = 1):
+    # along, across, and up or down as the base tilts
+    func base_move [ s: State, p: Dvec, k: i32 ] -> Dvec
+        ea : f64 [ flex_at[ s, k ] ]
+        ey : f64 [ flex_at[ s, k + 2 ] ]
+        ez : f64 [ flex_at[ s, k + 4 ] ]
+        sl : f64 [ bend_slope[] ]
+        return Dvec [ ea - sl * (ey * p.y + ez * p.z), ey, ez ]
+
+    # leg i's foot on the deck as the leg feels it: the tube's
+    # base gives
+    func leg_touch [ s: State, i: i32, ang: f64 ] -> Touch
+        g : legs[ i ]
+        arm : dv_add[ dv_sub[ g.foot, Dvec [ cg, 0.0, 0.0 ] ],
+                      base_move[ s, g.foot, 0 ] ]
+        return touch_of[ s, arm, base_move[ s, g.foot, 1 ], ang ]
+
+    # a leg's push, N: elastic, then the core crushing at its
+    # load, then the structure once the core is spent
+    func leg_push [ g: Leg, depth: f64, vn: f64 ] -> f64
+        squeeze : f64 [ depth - g.stroke ]
+        if [ squeeze <= 0.0 ] return 0.0
+        # Hunt & Crossley: damping grows with the squeeze; the
+        # damper works at any squeeze
+        spring : f64 [ g.stiff * squeeze ]
+        # unloading, the spring gives back less than it took: in
+        # full from 0.05 m/s, so a leg at rest holds its load
+        if [ vn > 0.0 ]
+            eased : f64 [ min[ vn / 0.05, 1.0 ] ]
+            spring = spring * (1.0 - g.lift_loss * eased)
+        f : f64 [ spring * (1.0 - 1.5 * g.damp * vn) - g.viscous * vn ]
+        if [ g.stroke < g.travel && f > g.crush ] f = g.crush
+        if [ g.stroke >= g.travel ]
+            past : f64 [ squeeze - g.crush / g.stiff ]
+            # the leg's own structure: an estimate
+            if [ past > 0.0 ] f += 2.0e7 * past
+        return (f > 0.0) ? f : 0.0
+
+    # sliding friction against a sideways speed, smoothed at rest
+    func slip_force [ slide: Dvec, most: f64 ] -> Dvec
+        ts : f64 [ dv_len[ slide ] ]
+        if [ ts < 1e-6 ] return Dvec [ 0.0, 0.0, 0.0 ]
+        k : f64 [ (ts > 0.05) ? 1.0 : ts / 0.05 ]
+        return dv_scale[ slide, 0.0 - most * k / ts ]
+
+    # a pad holds where it landed (a stiff spring sideways) up
+    # to friction's limit, then slides
+    func pad_grip [ g: Leg, tc: Touch, fn: f64, mu: f64,
+                    ang: f64 ] -> Dvec
+        most : f64 [ mu * fn ]
+        if [ !g.stuck ] return slip_force[ tc.slide, most ]
+        off : dv_sub[ tc.at_e, g.anchor ]
+        flat : dv_sub[ off, dv_scale[ deck.up,
+                        dv_dot[ off, deck.up ] ] ]
+        hold : dv_sub[ dv_scale[ ecef_to_eci[ flat, ang ], -2.0e6 ],
+                       dv_scale[ tc.slide, 2.0e5 ] ]
+        hl : f64 [ dv_len[ hold ] ]
+        if [ hl > most && hl > 0.0 ] hold = dv_scale[ hold, most / hl ]
+        return hold
+
+    # the hull's contact points: the engine skirt, then rings up
+    # the hull every 8 m, eight round each
+    func hull_points_of [] -> vec Dvec
+        out : vec Dvec []
+        for [ x: f64 -1.4, x < length, x += 8.0 ]
+            r : f64 [ (x < 0.0) ? radius * 0.9 : radius ]
+            for [ k: i32 0, k < 8, k += 1 ]
+                a : f64 [ f64[ k ] * 0.785398163397448 ]
+                out.push[ Dvec [ x, r * cos[ a ], r * sin[ a ] ] ]
+        return out
+
+    # close enough to the deck that the hull could reach it
+    func near_deck [ s: State, ang: f64 ] -> bool
+        if [ !hull_points || hull_points.count == 0 ]
+            hull_points = hull_points_of[]
+        dup : ecef_to_eci[ deck.up, ang ]
+        dc : ecef_to_eci[ deck.centre, ang ]
+        above : f64 [ dv_dot[ dv_sub[ s.r, dc ], dup ] ]
+        return above < length + 2.0
+
+    # after a step: the cores crush, pads stick or slide, the
+    # first touches and the hull's first strike are kept
+    func settle_contacts []
+        if [ !deck ] return
+        ang : f64 [ earth_turn[ time, turn_start ] ]
+        s : state
+        cgv : Dvec [ cg, 0.0, 0.0 ]
+        dup : ecef_to_eci[ deck.up, ang ]
+        for [ li: i32 0, li < legs.count, li += 1 ]
+            g : legs[ li ]
+            g.load = 0.0
+            if [ !g.out || g.frac < 1.0 || g.broken ]
+                g.stuck = false
+                continue
+            tc : leg_touch[ s, li, ang ]
+            if [ !tc.on ]
+                g.stuck = false
+                continue
+            if [ g.touch_t < 0.0 ]
+                g.touch_t = time
+                g.touch_at = tc.at_e
+                g.touch_v = 0.0 - tc.vn
+                ax : q_rotate[ s.q, Dvec [ 1.0, 0.0, 0.0 ] ]
+                g.touch_tilt = acos[ dv_dot[ ax, dup ] ]
+            squeeze : f64 [ tc.depth - g.stroke ]
+            if [ g.stiff * squeeze > g.crush && g.stroke < g.travel ]
+                g.stroke = min[ g.travel, tc.depth - g.crush / g.stiff ]
+            fn : f64 [ leg_push[ g, tc.depth, tc.vn ] ]
+            g.load = fn
+            if [ fn > g.peak ] g.peak = fn
+            if [ fn > g.breaks ]
+                g.broken = true
+                g.stuck = false
+                continue
+            if [ fn <= 0.0 ] continue
+            # the pad sticks where it is, or is dragged along
+            if [ !g.stuck ]
+                g.anchor = tc.at_e
+                g.stuck = true
+            el
+                off : dv_sub[ tc.at_e, g.anchor ]
+                flat : dv_sub[ off, dv_scale[ deck.up,
+                                dv_dot[ off, deck.up ] ] ]
+                most : f64 [ deck.friction * fn / 2.0e6 ]
+                fl : f64 [ dv_len[ flat ] ]
+                if [ fl > most ]
+                    g.anchor = dv_add[ g.anchor, dv_scale[ flat,
+                                       (fl - most) / fl ] ]
+        if [ hull_t >= 0.0 || !near_deck[ s, ang ] ] return
+        for [ i: i32 0, i < hull_points.count, i += 1 ]
+            arm : dv_sub[ hull_points[ i ], cgv ]
+            tc : touch_of[ s, arm, dv_zero[], ang ]
+            if [ !tc.on ] continue
+            hull_t = time
+            hull_v = 0.0 - tc.vn
+            return
+
+    func advance [ s: State, d: State, h: f64 ] -> State
+        n : State [ r: dv_add[ s.r, dv_scale[ d.r, h ] ],
+                    v: dv_add[ s.v, dv_scale[ d.v, h ] ],
+                    q: Quat [ s.q.w + d.q.w * h, s.q.x + d.q.x * h,
+                              s.q.y + d.q.y * h, s.q.z + d.q.z * h ],
+                    w: dv_add[ s.w, dv_scale[ d.w, h ] ],
+                    prop: vec f64 [], slosh: vec f64 [] ]
+        for [ i: i32 0, i < s.prop.count, i += 1 ]
+            pm : f64 [ s.prop[ i ] + d.prop[ i ] * h ]
+            n.prop.push[ (pm < 0.0) ? 0.0 : pm ]
+        for [ i: i32 0, i < s.slosh.count, i += 1 ]
+            sv : f64 [ s.slosh[ i ] + d.slosh[ i ] * h ]
+            n.slosh.push[ sv ]
+        for [ i: i32 0, i < s.flex.count, i += 1 ]
+            fv : f64 [ s.flex[ i ] + d.flex[ i ] * h ]
+            n.flex.push[ fv ]
+        return n
+
+    func blank [] -> State
+        b : State [ r: dv_zero[], v: dv_zero[],
+                    q: Quat [ 0.0, 0.0, 0.0, 0.0 ], w: dv_zero[],
+                    prop: vec f64 [], slosh: vec f64 [] ]
+        for [ i: i32 0, i < tanks.count, i += 1 ]
+            b.prop.push[ 0.0 ]
+        for [ i: i32 0, i < tanks.count * 4, i += 1 ]
+            b.slosh.push[ 0.0 ]
+        for [ i: i32 0, i < 6, i += 1 ]
+            b.flex.push[ 0.0 ]
+        return b
+
+    # one RK4 step of h seconds
+    public func step [ h: f64 ]
+        # the hull hit the deck: it exploded, nothing flies
+        if [ hull_t >= 0.0 ] return
+        # the legs swing out or in over a second (an estimate)
+        for [ g: Leg ] in legs
+            goal : f64 [ (g.out) ? 1.0 : 0.0 ]
+            if [ g.frac < goal ] g.frac = min[ goal, g.frac + h ]
+            if [ g.frac > goal ] g.frac = max[ goal, g.frac - h ]
+        # the grid fins swing out in a second (an estimate)
+        for [ f: Fin ] in fins
+            goal : f64 [ (f.open) ? 1.0 : 0.0 ]
+            if [ f.frac < goal ] f.frac = min[ goal, f.frac + h ]
+            if [ f.frac > goal ] f.frac = max[ goal, f.frac - h ]
+        # every tank has its four slosh numbers
+        while [ state.slosh.count < tanks.count * 4 ]
+            state.slosh.push[ 0.0 ]
+        while [ state.flex.count < 6 ]
+            state.flex.push[ 0.0 ]
+        s : state
+        ka : blank[]
+        kb : blank[]
+        kc : blank[]
+        kd : blank[]
+        derive[ s, time, h, ka, true ]
+        derive[ advance[ s, ka, h * 0.5 ], time + h * 0.5, h, kb,
+                false ]
+        derive[ advance[ s, kb, h * 0.5 ], time + h * 0.5, h, kc,
+                false ]
+        derive[ advance[ s, kc, h ], time + h, h, kd, false ]
+        n : State [ r: dv_add[ s.r, dv_scale[ dv_add[ dv_add[ ka.r,
+                    dv_scale[ kb.r, 2.0 ] ], dv_add[ dv_scale[ kc.r,
+                    2.0 ], kd.r ] ], h / 6.0 ] ],
+                    v: dv_add[ s.v, dv_scale[ dv_add[ dv_add[ ka.v,
+                    dv_scale[ kb.v, 2.0 ] ], dv_add[ dv_scale[ kc.v,
+                    2.0 ], kd.v ] ], h / 6.0 ] ],
+                    q: s.q, w: dv_add[ s.w, dv_scale[ dv_add[ dv_add[
+                    ka.w, dv_scale[ kb.w, 2.0 ] ], dv_add[ dv_scale[
+                    kc.w, 2.0 ], kd.w ] ], h / 6.0 ] ],
+                    prop: vec f64 [], slosh: vec f64 [] ]
+        qs : f64 [ h / 6.0 ]
+        n.q = q_norm[ Quat [
+            s.q.w + (ka.q.w + 2.0 * kb.q.w + 2.0 * kc.q.w + kd.q.w) * qs,
+            s.q.x + (ka.q.x + 2.0 * kb.q.x + 2.0 * kc.q.x + kd.q.x) * qs,
+            s.q.y + (ka.q.y + 2.0 * kb.q.y + 2.0 * kc.q.y + kd.q.y) * qs,
+            s.q.z + (ka.q.z + 2.0 * kb.q.z + 2.0 * kc.q.z + kd.q.z) * qs
+            ] ]
+        for [ i: i32 0, i < s.prop.count, i += 1 ]
+            pm : f64 [ s.prop[ i ] + (ka.prop[ i ] + 2.0 * kb.prop[ i ]
+                       + 2.0 * kc.prop[ i ] + kd.prop[ i ]) * qs ]
+            n.prop.push[ (pm < 0.0) ? 0.0 : pm ]
+        for [ i: i32 0, i < s.slosh.count, i += 1 ]
+            sv : f64 [ s.slosh[ i ] + (ka.slosh[ i ] + 2.0 * kb.slosh[ i ]
+                       + 2.0 * kc.slosh[ i ] + kd.slosh[ i ]) * qs ]
+            n.slosh.push[ sv ]
+        for [ i: i32 0, i < s.flex.count, i += 1 ]
+            fv : f64 [ s.flex[ i ] + (ka.flex[ i ] + 2.0 * kb.flex[ i ]
+                       + 2.0 * kc.flex[ i ] + kd.flex[ i ]) * qs ]
+            n.flex.push[ fv ]
+        # the liquid cannot leave its tank: a stop at the wall
+        for [ i: i32 0, i < tanks.count, i += 1 ]
+            if [ n.slosh.count < (i + 1) * 4 ] break
+            wall : f64 [ tanks[ i ].radius * 0.8 ]
+            sy : f64 [ n.slosh[ i * 4 ] ]
+            sz : f64 [ n.slosh[ i * 4 + 1 ] ]
+            d : f64 [ sqrt[ sy * sy + sz * sz ] ]
+            if [ d > wall ]
+                n.slosh[ i * 4 ] = sy * wall / d
+                n.slosh[ i * 4 + 1 ] = sz * wall / d
+                # the outward part of its speed is lost
+                uy : f64 [ n.slosh[ i * 4 + 2 ] ]
+                uz : f64 [ n.slosh[ i * 4 + 3 ] ]
+                out : f64 [ (uy * sy + uz * sz) / d ]
+                if [ out > 0.0 ]
+                    n.slosh[ i * 4 + 2 ] = uy - out * sy / d
+                    n.slosh[ i * 4 + 3 ] = uz - out * sz / d
+        state = n
+        time += h
+        # the actuators move toward what is asked, at their rate
+        for [ e: Engine ] in engines
+            e.pitch = slew_to[ e.pitch, e.pitch_cmd, e.slew * h ]
+            e.yaw = slew_to[ e.yaw, e.yaw_cmd, e.slew * h ]
+        for [ f: Fin ] in fins
+            f.deflect = slew_to[ f.deflect, f.deflect_cmd, f.slew * h ]
+        mass_properties[ state.prop ]
+        settle_contacts[]
+
+    # standing on a place, axis up, fixed to the turning Earth
+    public func stand [ lat: f64, lon: f64, h: f64 ]
+        ang : f64 [ earth_turn[ time, turn_start ] ]
+        mass_properties[ state.prop ]
+        upe : enu_up[ lat, lon ]
+        base : geodetic_to_ecef[ lat, lon, h ]
+        centre : dv_add[ base, dv_scale[ upe, cg ] ]
+        state.r = ecef_to_eci[ centre, ang ]
+        state.v = dv_cross[ Dvec [ 0.0, 0.0, EARTH_SPIN ], state.r ]
+        upi : ecef_to_eci[ upe, ang ]
+        state.q = q_between[ Dvec [ 1.0, 0.0, 0.0 ], upi ]
+        state.w = Dvec [ 0.0, 0.0, 0.0 ]
+
+    # the place of a body point (m along the axis) in ECI
+    public func body_point [ p: Dvec ] -> Dvec
+        return dv_add[ state.r, q_rotate[ state.q,
+                       dv_sub[ p, Dvec [ cg, 0.0, 0.0 ] ] ] ]
+
+    # parts of a group leave as their own craft, same motion
+    public func separate [ group: string ] -> Craft
+        groups : vec string [] [ group ]
+        return detach[ groups ]
+
+    # parts of several groups leave together as one craft
+    public func detach [ groups: vec string ] -> Craft
+        group : groups[ 0 ]
+        # the same sky, but its own gusts along its own path
+        own : Weather [ levels: weather.levels,
+                        severity: weather.severity,
+                        seed: weather.seed * 6364136223846793005 + 1 ]
+        out : Craft [ name: group, weather: own, turn_start: turn_start,
+                      time: time, deck: deck, radius: radius ]
+        keep : vec Part []
+        for [ p: Part ] in parts
+            if [ in_groups[ groups, p.group ] ]
+                out.parts.push[ p ]
+            el
+                keep.push[ p ]
+        parts = keep
+        kt : vec Tank []
+        kp : vec f64 []
+        op : vec f64 []
+        ks : vec f64 []
+        os : vec f64 []
+        for [ i: i32 0, i < tanks.count, i += 1 ]
+            t : tanks[ i ]
+            m : f64 [ state.prop[ i ] ]
+            if [ in_groups[ groups, t.group ] ]
+                out.tanks.push[ t ]
+                op.push[ m ]
+            el
+                kt.push[ t ]
+                kp.push[ m ]
+            for [ k: i32 0, k < 4, k += 1 ]
+                sv : f64 [ (state.slosh.count > i * 4 + k)
+                           ? state.slosh[ i * 4 + k ] : 0.0 ]
+                if [ in_groups[ groups, t.group ] ]
+                    os.push[ sv ]
+                el
+                    ks.push[ sv ]
+        tanks = kt
+        ke : vec Engine []
+        for [ e: Engine ] in engines
+            if [ in_groups[ groups, e.group ] ]
+                out.engines.push[ e ]
+            el
+                ke.push[ e ]
+        engines = ke
+        kf : vec Fin []
+        for [ f: Fin ] in fins
+            if [ in_groups[ groups, f.group ] ]
+                out.fins.push[ f ]
+            el
+                kf.push[ f ]
+        fins = kf
+        kj : vec Jet []
+        for [ j: Jet ] in jets
+            if [ in_groups[ groups, j.group ] ]
+                out.jets.push[ j ]
+            el
+                kj.push[ j ]
+        jets = kj
+        kl : vec Leg []
+        for [ g: Leg ] in legs
+            if [ in_groups[ groups, g.group ] ]
+                out.legs.push[ g ]
+            el
+                kl.push[ g ]
+        legs = kl
+        # each keeps the moving point where its own centre is
+        old_cg : f64 [ cg ]
+        rr : state.r
+        out.state = State [ r: rr, v: state.v, q: state.q, w: state.w,
+                            prop: op, slosh: os ]
+        out.accel = accel
+        state.prop = kp
+        state.slosh = ks
+        mass_properties[ state.prop ]
+        state.r = dv_add[ rr, q_rotate[ state.q,
+                          Dvec [ cg - old_cg, 0.0, 0.0 ] ] ]
+        out.mass_properties[ out.state.prop ]
+        out.state.r = dv_add[ rr, q_rotate[ out.state.q,
+                              Dvec [ out.cg - old_cg, 0.0, 0.0 ] ] ]
+        out.length = 0.0
+        for [ p: Part ] in out.parts
+            if [ p.high > out.length ] out.length = p.high
+        nl : f64 [ 0.0 ]
+        for [ p: Part ] in parts
+            if [ p.high > nl ] nl = p.high
+        length = nl
+        return out
+
+# ---------------------------------------------------------------
+# Falcon 9 Block 5 from public figures (SpaceX, Wikipedia)
+# ---------------------------------------------------------------
+# Lugh, our own engine: 9/7 of a Merlin 1D (845 kN at sea
+# level, 914 kN in vacuum, Isp 311 s in vacuum: SpaceX), so
+# seven give the nine's thrust: 1,086 kN at sea level, 1,175 kN
+# in vacuum, the same Isp, 9/7 the exit (0.88 m2, 1.06 m
+# across). The vacuum Lugh keeps the MVac's 981 kN and Isp
+# 348 s. Throttle to 40 percent.
+func lugh [ name: string, group: string, at: Dvec,
+            vac: bool ] -> Engine
+    thrust : f64 [ (vac) ? 981000.0 : 914000.0 * 9.0 / 7.0 ]
+    isp : f64 [ (vac) ? 348.0 : 311.0 ]
+    flow : f64 [ thrust / (isp * GRAVITY_STD) ]
+    area : f64 [ (vac) ? 0.0 : (914000.0 - 845000.0) * 9.0 / 7.0
+                 / 101325.0 ]
+    ox : string [ (vac) ? 'lox two' : 'lox one' ]
+    fu : string [ (vac) ? 'rp1 two' : 'rp1 one' ]
+    # gimbal range: an estimate, none is published
+    return Engine [ name: name, group: group, at: at,
+                    thrust_vac: thrust, flow: flow, exit_area: area,
+                    throttle_min: 0.4, gimbal_max: 0.087,
+                    oxidiser: ox, fuel: fu, mixture: 2.36 ]
+
+# the feet on the axis, m: 2 m under the engines (photos)
+LEG_FOOT_X : f64 [ -3.4 ]
+
+# kerosene and LOX exhaust's heat ratio: an estimate
+PLUME_GAMMA : f64 [ 1.22 ]
+
+# a nozzle's area over its throat's at Mach m
+func area_ratio [ m: f64 ] -> f64
+    g : f64 [ PLUME_GAMMA ]
+    base : f64 [ 2.0 / (g + 1.0) * (1.0 + (g - 1.0) * 0.5 * m * m) ]
+    return pow[ base, (g + 1.0) / (2.0 * (g - 1.0)) ] / m
+
+# the supersonic Mach of an area ratio, by bisection
+func ratio_mach [ ratio: f64 ] -> f64
+    lo : f64 [ 1.0 ]
+    hi : f64 [ 30.0 ]
+    for [ i: i32 0, i < 60, i += 1 ]
+        mid : f64 [ (lo + hi) * 0.5 ]
+        if [ area_ratio[ mid ] < ratio ]
+            lo = mid
+        el
+            hi = mid
+    return (lo + hi) * 0.5
+
+# the Prandtl-Meyer turn from Mach 1 to Mach m (rad)
+func prandtl_meyer [ m: f64 ] -> f64
+    g : f64 [ PLUME_GAMMA ]
+    if [ m <= 1.0 ] return 0.0
+    k : f64 [ sqrt[ (g + 1.0) / (g - 1.0) ] ]
+    w : f64 [ sqrt[ m * m - 1.0 ] ]
+    return k * atan[ w / k ] - atan[ w ]
+
+# a group's exhaust as one nozzle of its whole exit area
+class Plume
+    public exit_r   : f64     # m
+    # the radius it grows or narrows to at the air's pressure
+    public jet_r    : f64
+    # the edge's first turn off the axis, rad; negative inward
+    public angle    : f64
+    public exit_mach : f64
+    public jet_mach : f64
+    # exit pressure over the air's
+    public ratio    : f64
+    # shock cell spacing, m (Pack 1950)
+    public cells    : f64
+    # the Mach disk, m (Ashkenas & Sherman 1966)
+    public disk     : f64
+    # the bright length: the supersonic core (Witze 1974), m
+    public length   : f64
+
+# area ratios 16 and 165; the MVac exit, lip: estimates
+func plume_of [ e: Engine, n: i32, pa: f64, vac: bool ] -> Plume
+    g : f64 [ PLUME_GAMMA ]
+    eps : f64 [ (vac) ? 165.0 : 16.0 ]
+    one : f64 [ (vac) ? 3.14159265358979 * 1.65 * 1.65 : e.exit_area ]
+    me : f64 [ ratio_mach[ eps ] ]
+    th : f64 [ (e.throttle > 0.05) ? e.throttle : 0.05 ]
+    # F = pe Ae (1 + g Me^2); pressures follow the throttle
+    pe : f64 [ th * e.thrust_vac / (one * (1.0 + g * me * me)) ]
+    p0 : f64 [ pe * pow[ 1.0 + (g - 1.0) * 0.5 * me * me,
+                         g / (g - 1.0) ] ]
+    air : f64 [ (pa > 0.01) ? pa : 0.01 ]
+    rise : f64 [ pow[ p0 / air, (g - 1.0) / g ] ]
+    mj : f64 [ (rise > 1.0) ? sqrt[ 2.0 / (g - 1.0) * (rise - 1.0) ]
+               : 1.0 ]
+    if [ mj > 30.0 ] mj = 30.0
+    if [ mj < 1.0 ] mj = 1.0
+    nn : f64 [ f64[ (n > 0) ? n : 1 ] ]
+    re : f64 [ sqrt[ nn * one / 3.14159265358979 ] ]
+    rj : f64 [ re * sqrt[ area_ratio[ mj ] / eps ] ]
+    # the bell's lip angle
+    turn : f64 [ prandtl_meyer[ mj ] - prandtl_meyer[ me ] + 0.12 ]
+    if [ turn > 1.45 ] turn = 1.45
+    if [ turn < -0.6 ] turn = -0.6
+    throat : f64 [ 2.0 * sqrt[ one / 3.14159265358979 / eps ] ]
+    dj : f64 [ 2.0 * rj ]
+    core : f64 [ 3.45 * dj * (1.0 + 0.38 * mj) * (1.0 + 0.38 * mj) ]
+    return Plume [ exit_r: re, jet_r: rj, angle: turn, exit_mach: me,
+                   jet_mach: mj, ratio: pe / air,
+                   cells: 1.306 * dj * sqrt[ mj * mj - 1.0 ],
+                   disk: 0.67 * throat * sqrt[ p0 / air ],
+                   length: core ]
+
+# the stack on the pad: stage one 41.2 m with 7 engines, an
+# interstage, stage two, the fairing over a payload
+func falcon_nine [ payload: f64 ] -> Craft
+    c : Craft [ name: 'falcon 9', radius: 1.83 ]
+    tube : f64 [ 1.83 ]
+    # stage one: 25,600 kg dry with 395,700 kg of propellant
+    # at 2.36 oxidiser to fuel; subcooled LOX 1,240 kg/m3 and
+    # chilled RP-1 830 kg/m3 set the tank lengths
+    lox_one : f64 [ 395700.0 * 2.36 / 3.36 ]
+    rp_one : f64 [ 395700.0 / 3.36 ]
+    inner : f64 [ 1.80 ]
+    disc : f64 [ 3.14159265358979 * inner * inner ]
+    rp_len : f64 [ rp_one / (830.0 * disc) ]
+    lox_len : f64 [ lox_one / (1240.0 * disc) ]
+    # seven Lugh of about 600 kg each in the engine bay (a
+    # Merlin's 470 kg times its thrust: an estimate)
+    c.parts.push[ Part [ name: 'engines', group: 'one',
+                         mass: 4230.0, low: -1.2, high: 2.0,
+                         radius: 1.2, outer: false ] ]
+    c.parts.push[ Part [ name: 'stage one', group: 'one',
+                         mass: 25600.0 - 4230.0, low: 0.0, high: 41.2,
+                         radius: tube ] ]
+    c.tanks.push[ Tank [ name: 'rp1 one', group: 'one', low: 3.0,
+                         length: rp_len, radius: inner,
+                         density: 830.0, capacity: rp_one,
+                         mass: rp_one ] ]
+    c.tanks.push[ Tank [ name: 'lox one', group: 'one',
+                         low: 3.5 + rp_len, length: lox_len,
+                         radius: inner, density: 1240.0,
+                         capacity: lox_one, mass: lox_one ] ]
+    # six round a ring of 1.25 m every 60 deg, one in the middle
+    c.engines.push[ lugh[ 'centre', 'one', Dvec [ 0.0, 0.0, 0.0 ],
+                          false ] ]
+    for [ i: i32 0, i < 6, i += 1 ]
+        ang : f64 [ f64[ i ] * 1.0471975511966 ]
+        at : Dvec [ 0.0, 1.25 * cos[ ang ], 1.25 * sin[ ang ] ]
+        c.engines.push[ lugh[ 'outer', 'one', at, false ] ]
+    # four titanium grid fins near the top (size estimates)
+    for [ i: i32 0, i < 4, i += 1 ]
+        roll : f64 [ f64[ i ] * 1.5707963267949 ]
+        c.fins.push[ Fin [ name: 'fin', group: 'one', x: 39.5,
+                           roll: roll, arm: 2.6, area: 1.8,
+                           lift: 2.0, limit: 0.35 ] ]
+    # nitrogen cold gas at the top (thrust an estimate): four
+    # pushing sideways for pitch and yaw, four along the hull's
+    # turn for roll, two each way
+    for [ i: i32 0, i < 4, i += 1 ]
+        roll : f64 [ f64[ i ] * 1.5707963267949 ]
+        dir : Dvec [ 0.0, cos[ roll ], sin[ roll ] ]
+        at : Dvec [ 40.5, dir.y * 1.83, dir.z * 1.83 ]
+        c.jets.push[ Jet [ name: 'side', group: 'one', at: at,
+                           dir: dir, thrust: 2000.0 ] ]
+    for [ i: i32 0, i < 4, i += 1 ]
+        roll : f64 [ f64[ i ] * 1.5707963267949
+                     + 0.785398163397448 ]
+        sense : f64 [ ((i & 1) == 0) ? 1.0 : -1.0 ]
+        at : Dvec [ 40.5, 1.83 * cos[ roll ], 1.83 * sin[ roll ] ]
+        dir : Dvec [ 0.0, 0.0 - sense * sin[ roll ],
+                     sense * cos[ roll ] ]
+        c.jets.push[ Jet [ name: 'roll', group: 'one', at: at,
+                           dir: dir, thrust: 2000.0 ] ]
+    # four legs, 18 m across when out (stiffness an estimate)
+    for [ i: i32 0, i < 4, i += 1 ]
+        roll : f64 [ f64[ i ] * 1.5707963267949
+                     + 0.785398163397448 ]
+        foot : Dvec [ LEG_FOOT_X, 9.0 * cos[ roll ],
+                      9.0 * sin[ roll ] ]
+        c.legs.push[ Leg [ name: 'leg', group: 'one', foot: foot,
+                           stiff: 3.0e6, damp: 0.3 ] ]
+    # interstage over the vacuum engine, then stage two:
+    # 4,000 kg dry, 92,670 kg of propellant
+    c.parts.push[ Part [ name: 'interstage', group: 'one',
+                         mass: 0.0, low: 41.2, high: 47.7,
+                         radius: tube ] ]
+    lox_two : f64 [ 92670.0 * 2.36 / 3.36 ]
+    rp_two : f64 [ 92670.0 / 3.36 ]
+    rp_len_two : f64 [ rp_two / (830.0 * disc) ]
+    lox_len_two : f64 [ lox_two / (1240.0 * disc) ]
+    c.parts.push[ Part [ name: 'stage two', group: 'two',
+                         mass: 4000.0, low: 44.5, high: 57.0,
+                         radius: tube ] ]
+    c.tanks.push[ Tank [ name: 'rp1 two', group: 'two', low: 47.9,
+                         length: rp_len_two, radius: inner,
+                         density: 830.0, capacity: rp_two,
+                         mass: rp_two ] ]
+    c.tanks.push[ Tank [ name: 'lox two', group: 'two',
+                         low: 48.2 + rp_len_two, length: lox_len_two,
+                         radius: inner, density: 1240.0,
+                         capacity: lox_two, mass: lox_two ] ]
+    c.engines.push[ lugh[ 'vacuum', 'two', Dvec [ 44.5, 0.0, 0.0 ],
+                            true ] ]
+    # fairing 1,900 kg, 5.2 m across, 13.1 m tall
+    # its skin: a short flare to 5.2 m, then an ogive to the tip
+    ogive : vec f64 [] [ 57.0, 1.83, 58.2, 2.6, 63.0, 2.6, 65.0, 2.45,
+                         67.4, 1.95, 69.2, 1.2, 69.9, 0.35, 70.1, 0.0 ]
+    c.parts.push[ Part [ name: 'fairing', group: 'fairing',
+                         mass: 1900.0, low: 57.0, high: 70.1,
+                         radius: 2.6, profile: ogive ] ]
+    c.parts.push[ Part [ name: 'payload', group: 'two',
+                         mass: payload, low: 57.5, high: 64.0,
+                         radius: 1.5, outer: false ] ]
+    c.length = 70.1
+    c.state = State [ r: dv_zero[], v: dv_zero[],
+                      q: Quat [ 1.0, 0.0, 0.0, 0.0 ], w: dv_zero[],
+                      prop: vec f64 [] ]
+    for [ t: Tank ] in c.tanks
+        c.state.prop.push[ t.mass ]
+    c.weather = Weather [ ]
+    c.mass_properties[ c.state.prop ]
+    return c
+
+# ---------------------------------------------------------------
+# checks against published values
+# ---------------------------------------------------------------
+func near [ got: f64, want: f64, rel: f64 ] -> bool
+    d : f64 [ got - want ]
+    if [ d < 0.0 ] d = 0.0 - d
+    w : f64 [ (want < 0.0) ? 0.0 - want : want ]
+    return d <= rel * w
+
+# the 1976 table: pressure Pa and density kg/m3 at layer edges
+expect func t_standard_air [] -> bool
+    hs : vec f64 [] [ 0.0, 11000.0, 20000.0, 32000.0, 47000.0,
+                      71000.0 ]
+    ps : vec f64 [] [ 101325.0, 22632.1, 5474.89, 868.019,
+                      110.906, 3.95642 ]
+    ds : vec f64 [] [ 1.2250, 0.36392, 0.088035, 0.013225,
+                      0.0014275, 0.000064211 ]
+    good : bool [ true ]
+    for [ i: i32 0, i < 6, i += 1 ]
+        # the table's heights are geopotential: back to geometric
+        hp : f64 [ hs[ i ] ]
+        z : f64 [ 6356766.0 * hp / (6356766.0 - hp) ]
+        ar : standard_air[ z ]
+        pw : f64 [ ps[ i ] ]
+        dw : f64 [ ds[ i ] ]
+        if [ !near[ ar.pressure, pw, 0.002 ]
+             || !near[ ar.density, dw, 0.002 ] ]
+            log 'air at {hp}: {ar.pressure} Pa {ar.density} kg/m3'
+            good = false
+    return good
+
+# gravity at the equator and the pole (WGS84 normal gravity
+# less the spin's share): 9.8143 and 9.8322 m/s2
+expect func t_gravity [] -> bool
+    eq : gravity[ Dvec [ EARTH_A, 0.0, 0.0 ] ]
+    pb : f64 [ EARTH_A * (1.0 - EARTH_F) ]
+    po : gravity[ Dvec [ 0.0, 0.0, pb ] ]
+    ge : f64 [ dv_len[ eq ] ]
+    gp : f64 [ dv_len[ po ] ]
+    log 'gravity: equator {ge}, pole {gp}'
+    return near[ ge, 9.8143, 0.0005 ] && near[ gp, 9.8322, 0.0005 ]
+
+# LC-39A round trip through ECEF
+expect func t_geodetic [] -> bool
+    lat : f64 [ 28.6084 * 3.14159265358979 / 180.0 ]
+    lon : f64 [ -80.6043 * 3.14159265358979 / 180.0 ]
+    p : geodetic_to_ecef[ lat, lon, 12.0 ]
+    g : ecef_to_geodetic[ p ]
+    dl : f64 [ (g.x - lat) * 6371000.0 ]
+    dn : f64 [ (g.y - lon) * 6371000.0 ]
+    good : bool [ abs[ dl ] < 0.001 && abs[ dn ] < 0.001 ]
+    return good && abs[ g.z - 12.0 ] < 0.001
+
+# a 400 km circular orbit, no air: energy kept over one orbit
+expect func t_orbit_energy [] -> bool
+    c : Craft [ name: 'ball', radius: 0.5, length: 1.0 ]
+    c.parts.push[ Part [ name: 'ball', group: 'one', mass: 1.0e6,
+                         low: 0.0, high: 1.0, radius: 0.5 ] ]
+    c.weather = Weather [ ]
+    rr : f64 [ EARTH_A + 400000.0 ]
+    vc : f64 [ sqrt[ EARTH_GM / rr ] ]
+    c.state = State [ r: Dvec [ rr, 0.0, 0.0 ],
+                      v: Dvec [ 0.0, vc, 0.0 ],
+                      q: Quat [ 1.0, 0.0, 0.0, 0.0 ], w: dv_zero[],
+                      prop: vec f64 [] ]
+    e_start : f64 [ 0.5 * vc * vc - EARTH_GM / rr ]
+    for [ i: i32 0, i < 5544, i += 1 ]
+        c.step[ 1.0 ]
+    v : f64 [ dv_len[ c.state.v ] ]
+    r : f64 [ dv_len[ c.state.r ] ]
+    # J2 moves energy between kinds, not the total
+    j_term : f64 [ EARTH_GM * EARTH_J * EARTH_A * EARTH_A
+               / (2.0 * r * r * r) ]
+    e_end : f64 [ 0.5 * v * v - EARTH_GM / r - j_term ]
+    e_total : f64 [ e_start - EARTH_GM * EARTH_J * EARTH_A * EARTH_A
+                / (2.0 * rr * rr * rr) ]
+    drift : f64 [ abs[ (e_end - e_total) / e_total ] ]
+    log 'orbit: energy drift {drift} over one orbit'
+    return drift < 1e-7
+
+# stage two alone in vacuum: its speed gain is Isp grav ln(mass_start/mass_end)
+expect func t_rocket_equation [] -> bool
+    c : falcon_nine[ 15600.0 ]
+    two : c.separate[ 'two' ]
+    rr : f64 [ EARTH_A + 2.0e7 ]
+    two.state.r = Dvec [ rr, 0.0, 0.0 ]
+    two.state.v = Dvec [ 0.0, 0.0, 0.0 ]
+    two.turn_start = 0.0
+    for [ e: Engine ] in two.engines
+        e.lit = true
+    mass_start : f64 [ two.mass ]
+    v_start : two.state.v
+    grav : gravity[ two.state.r ]
+    burn : f64 [ 200.0 ]
+    for [ i: i32 0, i < 2000, i += 1 ]
+        two.step[ 0.1 ]
+    mass_end : f64 [ two.mass ]
+    dv : dv_sub[ two.state.v, v_start ]
+    # take gravity's share out (it barely changes up there)
+    gl : dv_scale[ grav, burn ]
+    dvt : f64 [ dv_len[ dv_sub[ dv, gl ] ] ]
+    want : f64 [ 348.0 * GRAVITY_STD * log[ mass_start / mass_end ] ]
+    log 'rocket: {dvt} m/s, Tsiolkovsky {want} m/s, m {mass_start} -> {mass_end}'
+    return near[ dvt, want, 0.003 ]
+
+# stage one alone, its propellant spent
+func empty_booster [] -> Craft
+    c : falcon_nine[ 0.0 ]
+    c.separate[ 'two' ]
+    c.separate[ 'fairing' ]
+    for [ i: i32 0, i < c.state.prop.count, i += 1 ]
+        c.state.prop[ i ] = 0.0
+    c.mass_properties[ c.state.prop ]
+    return c
+
+# falling engines first through still air: the deceleration
+# the motion shows must be the drag 0.5 rho v2 Ca A over m
+expect func t_drag_force [] -> bool
+    c : empty_booster[]
+    c.weather.severity = 0
+    c.stand[ 0.0, 0.0, 8000.0 ]
+    spin : Dvec [ 0.0, 0.0, EARTH_SPIN ]
+    # an ideal attitude hold: engines into the airflow
+    for [ i: i32 0, i < 3000, i += 1 ]
+        c.step[ 0.01 ]
+        rel : dv_sub[ c.state.v, dv_cross[ spin, c.state.r ] ]
+        c.state.q = q_between[ Dvec [ 1.0, 0.0, 0.0 ],
+                               dv_scale[ dv_norm[ rel ], -1.0 ] ]
+        c.state.w = Dvec [ 0.0, 0.0, 0.0 ]
+    va : f64 [ dv_len[ dv_sub[ c.state.v, dv_cross[ spin,
+               c.state.r ] ] ] ]
+    c.step[ 0.01 ]
+    vb : f64 [ dv_len[ dv_sub[ c.state.v, dv_cross[ spin,
+               c.state.r ] ] ] ]
+    geo : c.geodetic[]
+    ar : standard_air[ geo.z ]
+    sp : f64 [ (va + vb) * 0.5 ]
+    area : f64 [ 3.14159265358979 * c.radius * c.radius ]
+    m : f64 [ sp / ar.sound ]
+    ca : f64 [ c.axial_coeff[ m, true, false ] ]
+    drag : f64 [ 0.5 * ar.density * sp * sp * ca * area ]
+    g : f64 [ dv_len[ gravity[ c.state.r ] ] ]
+    # the frame turns: the centrifugal share at the equator
+    cent : f64 [ EARTH_SPIN * EARTH_SPIN * dv_len[ c.state.r ] ]
+    seen : f64 [ c.mass * (g - cent - (vb - va) / 0.01) ]
+    deg : f64 [ c.alpha * 57.2957795 ]
+    log 'falling: {sp} m/s at {geo.z} m, drag {drag} N, seen {seen} N, aoa {deg}'
+    return near[ seen, drag, 0.01 ]
+
+# set down on a deck, the legs carry the stage's weight
+expect func t_legs_hold [] -> bool
+    c : empty_booster[]
+    for [ g: Leg ] in c.legs
+        g.out = true
+    c.deck = Deck [ centre: geodetic_to_ecef[ 0.0, 0.0, 0.0 ],
+                    up: enu_up[ 0.0, 0.0 ], radius: 45.0 ]
+    c.stand[ 0.0, 0.0, 0.2 - LEG_FOOT_X ]
+    for [ i: i32 0, i < 5000, i += 1 ]
+        c.step[ 0.001 ]
+    load : f64 [ 0.0 ]
+    for [ g: Leg ] in c.legs
+        load += g.load
+    w : f64 [ c.mass * dv_len[ gravity[ c.state.r ] ] ]
+    log 'legs: {load} N for {w} N of stage, landed {c.landed}'
+    return c.landed && near[ load, w, 0.03 ]
+
+# a tank's ring: stage two burning in vacuum, its LOX given a
+# sideways start; heavy is a stage held still by a huge mass
+func slosh_ring [ heavy: bool ] -> vec f64
+    c : falcon_nine[ 0.0 ]
+    two : c.separate[ 'two' ]
+    two.state.r = Dvec [ EARTH_A + 2.0e7, 0.0, 0.0 ]
+    two.state.v = Dvec [ 0.0, 0.0, 0.0 ]
+    if [ heavy ]
+        before : f64 [ two.mass ]
+        two.parts.push[ Part [ name: 'anvil', group: 'two',
+                               mass: 1.0e9, low: 40.0, high: 60.0,
+                               radius: 200.0 ] ]
+        two.mass_properties[ two.state.prop ]
+        for [ e: Engine ] in two.engines
+            e.thrust_vac = e.thrust_vac * two.mass / before
+    for [ e: Engine ] in two.engines
+        e.lit = true
+    # settle the push first, then the kick
+    two.step[ 0.001 ]
+    two.mass_properties[ two.state.prop ]
+    lox : i32 [ two.tank_index[ 'lox two' ] ]
+    two.state.slosh[ lox * 4 ] = 0.3
+    om : f64 [ two.slosh_freq[ lox ] ]
+    m1 : f64 [ two.slosh_mass[ lox ] ]
+    prev : f64 [ 0.3 ]
+    crossings : i32 [ 0 ]
+    first_t : f64 [ 0.0 ]
+    last_t : f64 [ 0.0 ]
+    peaks : vec f64 []
+    top : f64 [ 0.0 ]
+    for [ i: i32 0, i < 20000, i += 1 ]
+        two.step[ 0.001 ]
+        y : f64 [ two.state.slosh[ lox * 4 ] ]
+        if [ abs[ y ] > top ] top = abs[ y ]
+        # up through zero: one more period
+        if [ prev < 0.0 && y >= 0.0 ]
+            crossings += 1
+            if [ crossings == 1 ] first_t = two.time
+            last_t = two.time
+            peaks.push[ top ]
+            top = 0.0
+        prev = y
+    period : f64 [ (last_t - first_t) / f64[ crossings - 1 ] ]
+    want : f64 [ 6.283185307179586 / om ]
+    decay : f64 [ peaks[ peaks.count - 1 ] / peaks[ 1 ] ]
+    cycles : f64 [ f64[ peaks.count - 2 ] ]
+    want_decay : f64 [ exp[ 0.0 - 2.0 * 3.14159265358979 * 0.02
+                       * cycles ] ]
+    return vec f64 [] [ m1, period, want, decay, want_decay ]
+
+# held still, the ring is Abramson's frequency at the baffles'
+# damping; free, the stage moves with it and it rings faster
+expect func t_slosh_ring [] -> bool
+    held : slosh_ring[ true ]
+    free : slosh_ring[ false ]
+    log 'slosh held: LOX {held[ 0 ]} kg rings at {held[ 1 ]} s (Abramson {held[ 2 ]} s), decay {held[ 3 ]} (baffles {held[ 4 ]})'
+    log 'slosh free: rings at {free[ 1 ]} s, decay {free[ 3 ]}'
+    rings : bool [ near[ held[ 1 ], held[ 2 ], 0.01 ] ]
+    return rings && near[ held[ 3 ], held[ 4 ], 0.05 ]
+
+# the aero method against answers it must give: the Newtonian
+# stagnation limit 1.839 (gamma 1.4), the slender body normal
+# force slope 2 per radian on the base area, Schlichting's
+# skin friction 0.0030 at Reynolds 1e7
+expect func t_aero_limits [] -> bool
+    c : falcon_nine[ 0.0 ]
+    top : f64 [ c.stagnation[ 20.0 ] ]
+    cf : f64 [ c.friction[ 1.0, 1.0, 288.15, 1.0e7 * 1.7894e-5, 0.0 ] ]
+    # a long ogive-cylinder, gliding at 2 degrees, slow
+    b : Craft [ name: 'body', radius: 1.0 ]
+    nose : vec f64 [] [ 20.0, 1.0, 21.0, 0.95, 22.0, 0.8, 23.0, 0.55,
+                        24.0, 0.2, 24.4, 0.0 ]
+    b.parts.push[ Part [ name: 'tube', group: 'b', mass: 1000.0,
+                         low: 0.0, high: 20.0, radius: 1.0 ] ]
+    b.parts.push[ Part [ name: 'nose', group: 'b', mass: 100.0,
+                         low: 20.0, high: 24.4, radius: 1.0,
+                         profile: nose ] ]
+    b.mass_properties[ vec f64 [] ]
+    ar : standard_air[ 0.0 ]
+    al : f64 [ 0.00873 ]
+    v : f64 [ 0.3 * ar.sound ]
+    ld : b.body_aero[ Dvec [ v * cos[ al ], v * sin[ al ], 0.0 ], ar,
+                      true ]
+    q : f64 [ 0.5 * ar.density * v * v ]
+    slope : f64 [ ld.normal / (q * 3.14159265358979 * al) ]
+    log 'aero: stagnation at Mach 20 {top} (1.839), flat plate Cf {cf} (0.0030), slender body slope {slope} per rad (2)'
+    good : bool [ near[ top, 1.839, 0.01 ] && near[ cf, 0.0030, 0.03 ] ]
+    # at half a degree the crossflow adds about 0.1
+    return good && slope > 1.95 && slope < 2.2
+
+# the shape's coefficients by Mach: the stack nose first with
+# its engines burning, the booster falling engines first
+expect func t_aero_table [] -> bool
+    c : falcon_nine[ 0.0 ]
+    bo : empty_booster[]
+    for [ f: Fin ] in bo.fins
+        f.open = true
+    ar : standard_air[ 10000.0 ]
+    ms : vec f64 [] [ 0.3, 0.6, 0.9, 1.1, 1.3, 2.0, 3.0, 5.0 ]
+    for [ m: f64 ] in ms
+        v : f64 [ m * ar.sound ]
+        q : f64 [ 0.5 * ar.density * v * v ]
+        up : c.body_aero[ Dvec [ v, 0.0, 0.0 ], ar, true ]
+        down : bo.body_aero[ Dvec [ 0.0 - v, 0.0, 0.0 ], ar, false ]
+        a_up : f64 [ up.axial / (q * 3.14159265358979 * 2.6 * 2.6) ]
+        a_dn : f64 [ down.axial / (q * 3.14159265358979 * 1.83 * 1.83) ]
+        # the stack's centre of pressure at 4 degrees
+        tilt : c.body_aero[ Dvec [ v * cos[ 0.07 ], v * sin[ 0.07 ],
+                                   0.0 ], ar, true ]
+        cp : f64 [ c.cg - tilt.torque.z / tilt.normal ]
+        log 'aero: Mach {m}: stack Ca {a_up}, centre of pressure {cp} m (cg {c.cg}); booster engines first Ca {a_dn}'
+    return true
+
+# a Lugh at full throttle up through the air: narrowed at
+# the sea, wider and longer as the air thins
+expect func t_plume_shape [] -> bool
+    back : f64 [ ratio_mach[ area_ratio[ 3.0 ] ] ]
+    e : lugh[ 'centre', 'one', Dvec [ 0.0, 0.0, 0.0 ], false ]
+    last_r : f64 [ 0.0 ]
+    grows : bool [ true ]
+    for [ h: f64 0.0, h <= 60000.0, h += 20000.0 ]
+        ar : standard_air[ h ]
+        p : plume_of[ e, 7, ar.pressure, false ]
+        deg : f64 [ p.angle * 57.2957795 ]
+        log 'plume at {h} m: pe/pa {p.ratio}, Me {p.exit_mach}, Mj {p.jet_mach}, exit r {p.exit_r} m, jet r {p.jet_r} m, edge {deg} deg, cells {p.cells} m, length {p.length} m'
+        if [ p.jet_r <= last_r ] grows = false
+        last_r = p.jet_r
+    sea : plume_of[ e, 1, 101325.0, false ]
+    return abs[ back - 3.0 ] < 1e-9 && grows && sea.ratio < 1.0
+        && sea.angle < 0.12
+
+# the empty booster dropped on a deck; damp < 0 keeps its own,
+# else that and no damper
+func drop_on_deck [ down: f64, side: f64, tilt: f64,
+                    damp: f64, secs: f64 ] -> Craft
+    return drop_stepped[ down, side, tilt, damp, secs, 0.001 ]
+
+# the same, at a step of h seconds
+func drop_stepped [ down: f64, side: f64, tilt: f64, damp: f64,
+                    secs: f64, h: f64 ] -> Craft
+    return drop_fuelled[ down, side, tilt, damp, secs, h, 0.0, 0.0 ]
+
+# the same, with propellant (kg) left in the tanks, as burned,
+# turned about its axis by roll (rad) before it leans
+func drop_fuelled [ down: f64, side: f64, tilt: f64, damp: f64,
+                    secs: f64, h: f64, left: f64, roll: f64 ]
+                    -> Craft
+    c : empty_booster[]
+    if [ left > 0.0 && c.state.prop.count >= 2 ]
+        c.state.prop[ 0 ] = left * 2.36 / 3.36
+        c.state.prop[ 1 ] = left / 3.36
+        c.mass_properties[ c.state.prop ]
+    c.weather.severity = 0
+    for [ g: Leg ] in c.legs
+        g.out = true
+        if [ damp >= 0.0 ]
+            g.damp = damp
+            g.viscous = 0.0
+    c.deck = Deck [ centre: geodetic_to_ecef[ 0.0, 0.0, 0.0 ],
+                    up: enu_up[ 0.0, 0.0 ], radius: 45.0 ]
+    c.stand[ 0.0, 0.0, 0.0 ]
+    ang : f64 [ earth_turn[ c.time, c.turn_start ] ]
+    up : ecef_to_eci[ enu_up[ 0.0, 0.0 ], ang ]
+    east : ecef_to_eci[ enu_east[ 0.0, 0.0 ], ang ]
+    axis : dv_add[ dv_scale[ up, cos[ tilt ] ],
+                   dv_scale[ east, sin[ tilt ] ] ]
+    c.state.q = q_mul[ q_between[ Dvec [ 1.0, 0.0, 0.0 ], axis ],
+                       q_axis[ Dvec [ 1.0, 0.0, 0.0 ], roll ] ]
+    # the lowest foot 5 cm over the deck
+    low : f64 [ 1e30 ]
+    for [ g: Leg ] in c.legs
+        fh : f64 [ dv_dot[ q_rotate[ c.state.q, g.foot ], up ] ]
+        if [ fh < low ] low = fh
+    base : ecef_to_eci[ geodetic_to_ecef[ 0.0, 0.0, 0.0 ], ang ]
+    lift : f64 [ 0.05 - low ]
+    c.state.r = dv_add[ dv_add[ base, dv_scale[ up, lift ] ],
+                        dv_scale[ axis, c.cg ] ]
+    ground : dv_cross[ Dvec [ 0.0, 0.0, EARTH_SPIN ], c.state.r ]
+    c.state.v = dv_add[ ground, dv_add[ dv_scale[ up, 0.0 - down ],
+                                        dv_scale[ east, side ] ] ]
+    n : i32 [ i32[ secs / h ] ]
+    for [ i: i32 0, i < n, i += 1 ]
+        c.step[ h ]
+    return c
+
+# how a drop ended: logs each leg, returns the tilt (deg)
+func drop_report [ c: Craft, name: string ] -> f64
+    ang : f64 [ earth_turn[ c.time, c.turn_start ] ]
+    up : ecef_to_eci[ enu_up[ 0.0, 0.0 ], ang ]
+    ax : q_rotate[ c.state.q, Dvec [ 1.0, 0.0, 0.0 ] ]
+    tilt : f64 [ acos[ dv_dot[ ax, up ] ] * 57.2957795 ]
+    for [ i: i32 0, i < c.legs.count, i += 1 ]
+        g : c.legs[ i ]
+        td : f64 [ g.touch_tilt * 57.2957795 ]
+        log '{name} leg {i}: touched at {g.touch_t} s, {g.touch_v} m/s, tilt {td} deg; crushed {g.stroke} m, peak {g.peak} N, broken {g.broken}'
+    log '{name}: ends at {tilt} deg, hull struck at {c.hull_t} s, {c.hull_v} m/s'
+    return tilt
+
+# a random wind: 61 levels to 30 km, its jet within 10 to 60
+# m/s, two seeds give two winds
+expect func t_random_wind [] -> bool
+    a : Weather [ ]
+    said : a.random_wind[ 12345, 10.0, 60.0 ]
+    b : Weather [ ]
+    b.random_wind[ 999, 10.0, 60.0 ]
+    most : f64 [ 0.0 ]
+    for [ lv: Level ] in a.levels
+        sp : f64 [ sqrt[ lv.east * lv.east + lv.north * lv.north ] ]
+        if [ sp > most ] most = sp
+    differ : bool [ a.levels[ 20 ].east != b.levels[ 20 ].east ]
+    log 'random wind: {said}; strongest {most} m/s'
+    return a.levels.count == 61 && most >= 10.0 && most <= 72.0
+        && differ
+
+# 2 m/s upright: the legs spring, nothing crushes, it stands
+expect func t_drop_soft [] -> bool
+    c : drop_on_deck[ 2.0, 0.0, 0.0, -1.0, 8.0 ]
+    tilt : drop_report[ c, 'soft' ]
+    crushed : f64 [ 0.0 ]
+    for [ g: Leg ] in c.legs
+        crushed += g.stroke
+    return tilt < 1.0 && crushed < 1e-6 && c.hull_t < 0.0
+
+# 6 m/s upright, no damper: at the deepest point the fall's
+# energy is in the springs and the crushed cores
+expect func t_drop_crush [] -> bool
+    c : drop_on_deck[ 6.0, 0.0, 0.0, 0.0, 8.0 ]
+    tilt : drop_report[ c, 'crush' ]
+    m : f64 [ c.mass ]
+    w : f64 [ m * dv_len[ gravity[ c.state.r ] ] ]
+    g : c.legs[ 0 ]
+    v : f64 [ g.touch_v ]
+    elastic : f64 [ g.crush / g.stiff ]
+    # m v2/2 + w (e + s) = 4 (k e2 / 2) + 4 F s
+    want : f64 [ (0.5 * m * v * v + w * elastic
+                  - 2.0 * g.stiff * elastic * elastic)
+                 / (4.0 * g.crush - w) ]
+    got : f64 [ 0.0 ]
+    for [ l: Leg ] in c.legs
+        got += l.stroke * 0.25
+    log 'crush: each core {got} m, energy says {want} m'
+    return tilt < 1.0 && abs[ got - want ] < want * 0.03
+
+# 3 m/s down and 2 m/s across, leaning 6 deg: one leg first,
+# the pads grip, it rocks and settles standing (the tube's give
+# hands each rock back: 30 s)
+expect func t_drop_lean [] -> bool
+    c : drop_on_deck[ 3.0, 2.0, 0.1047, -1.0, 30.0 ]
+    tilt : drop_report[ c, 'lean' ]
+    return tilt < 3.0 && c.hull_t < 0.0
+
+# 8 m/s across leaning 15 deg: it goes over, the hull hits
+expect func t_drop_topple [] -> bool
+    c : drop_on_deck[ 2.0, 8.0, 0.2618, -1.0, 8.0 ]
+    tilt : drop_report[ c, 'topple' ]
+    return tilt > 15.0 && c.hull_t >= 0.0

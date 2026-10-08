@@ -1,0 +1,2081 @@
+export 0.1.0
+
+import physics
+
+import <time.h>
+
+# guidance: where the vehicle should go and how hard to push.
+# a second order cone solver (log barrier, with a phase I), the
+# landing burn as Acikmese & Ploen (2007) and Acikmese, Carson
+# & Blackmore (2013) pose it, and an impact predictor for the
+# boostback and the fall through the air.
+
+# a dense n by n system by Gaussian elimination with pivoting
+func lin_solve [ m_in: vec f64, b_in: vec f64, n: i32 ] -> vec f64
+    nn : i32 [ n * n ]
+    m : vec f64 [ nn ]
+    b : vec f64 [ n ]
+    for [ i: i32 0, i < nn, i += 1 ]
+        mv : f64 [ m_in[ i ] ]
+        m[ i ] = mv
+    for [ i: i32 0, i < n, i += 1 ]
+        bv : f64 [ b_in[ i ] ]
+        b[ i ] = bv
+    for [ c: i32 0, c < n, c += 1 ]
+        p : i32 [ c ]
+        big : f64 [ abs[ m[ c * n + c ] ] ]
+        for [ r: i32 c + 1, r < n, r += 1 ]
+            av : f64 [ abs[ m[ r * n + c ] ] ]
+            if [ av > big ]
+                big = av
+                p = r
+        if [ p != c ]
+            for [ k: i32 c, k < n, k += 1 ]
+                t : f64 [ m[ c * n + k ] ]
+                m[ c * n + k ] = m[ p * n + k ]
+                m[ p * n + k ] = t
+            tb : f64 [ b[ c ] ]
+            b[ c ] = b[ p ]
+            b[ p ] = tb
+        piv : f64 [ m[ c * n + c ] ]
+        if [ abs[ piv ] < 1e-300 ] continue
+        for [ r: i32 c + 1, r < n, r += 1 ]
+            f : f64 [ m[ r * n + c ] / piv ]
+            if [ f == 0.0 ] continue
+            for [ k: i32 c, k < n, k += 1 ]
+                m[ r * n + k ] = m[ r * n + k ] - f * m[ c * n + k ]
+            b[ r ] = b[ r ] - f * b[ c ]
+    x : vec f64 [ n ]
+    for [ r: i32 n - 1, r >= 0, r -= 1 ]
+        s : f64 [ b[ r ] ]
+        for [ j: i32 r + 1, j < n, j += 1 ]
+            s = s - m[ r * n + j ] * x[ j ]
+        d : f64 [ m[ r * n + r ] ]
+        x[ r ] = (abs[ d ] < 1e-300) ? 0.0 : s / d
+    return x
+
+# one cone: | F x + f | <= g . x + d, F has k rows of n
+class Cone
+    public k    : i32
+    public rows : vec f64
+    public off  : vec f64
+    public tg   : vec f64
+    public td   : f64
+    # the columns it touches
+    public nz   : vec i32
+
+# an LU factorisation with row pivots, solved more than once
+class Lu
+    public n   : i32
+    public mat : vec f64
+    public piv : vec i32
+
+    public func factor []
+        piv = vec i32 []
+        for [ i: i32 0, i < n, i += 1 ]
+            piv.push[ i ]
+        for [ c: i32 0, c < n, c += 1 ]
+            p : i32 [ c ]
+            big : f64 [ abs[ mat[ c * n + c ] ] ]
+            for [ r: i32 c + 1, r < n, r += 1 ]
+                av : f64 [ abs[ mat[ r * n + c ] ] ]
+                if [ av > big ]
+                    big = av
+                    p = r
+            if [ p != c ]
+                for [ k: i32 0, k < n, k += 1 ]
+                    t : f64 [ mat[ c * n + k ] ]
+                    mat[ c * n + k ] = mat[ p * n + k ]
+                    mat[ p * n + k ] = t
+                tp : i32 [ piv[ c ] ]
+                piv[ c ] = piv[ p ]
+                piv[ p ] = tp
+            d : f64 [ mat[ c * n + c ] ]
+            if [ abs[ d ] < 1e-300 ] continue
+            for [ r: i32 c + 1, r < n, r += 1 ]
+                f : f64 [ mat[ r * n + c ] / d ]
+                mat[ r * n + c ] = f
+                if [ f == 0.0 ] continue
+                for [ k: i32 c + 1, k < n, k += 1 ]
+                    mat[ r * n + k ] = mat[ r * n + k ] - f * mat[ c * n + k ]
+
+    public func solve [ b: vec f64 ] -> vec f64
+        x : vec f64 [ n ]
+        for [ i: i32 0, i < n, i += 1 ]
+            bv : f64 [ b[ piv[ i ] ] ]
+            x[ i ] = bv
+        for [ i: i32 0, i < n, i += 1 ]
+            s : f64 [ x[ i ] ]
+            for [ k: i32 0, k < i, k += 1 ]
+                s -= mat[ i * n + k ] * x[ k ]
+            x[ i ] = s
+        for [ i: i32 n - 1, i >= 0, i -= 1 ]
+            s : f64 [ x[ i ] ]
+            for [ k: i32 i + 1, k < n, k += 1 ]
+                s -= mat[ i * n + k ] * x[ k ]
+            d : f64 [ mat[ i * n + i ] ]
+            x[ i ] = (abs[ d ] < 1e-300) ? 0.0 : s / d
+        return x
+
+# [ H, A'; A, 0 ] with H positive definite: H = L L', then
+# the m by m Schur complement S = A H^-1 A'
+class Kkt
+    public n  : i32
+    public m  : i32
+    public h  : vec f64
+    public eq : vec f64
+    intern ha : vec f64
+    intern sc : Lu
+
+    # H's Cholesky factor, in place, lower
+    func chol []
+        for [ j: i32 0, j < n, j += 1 ]
+            d : f64 [ h[ j * n + j ] ]
+            for [ k: i32 0, k < j, k += 1 ]
+                d -= h[ j * n + k ] * h[ j * n + k ]
+            d = sqrt[ (d > 1e-300) ? d : 1e-300 ]
+            h[ j * n + j ] = d
+            for [ i: i32 j + 1, i < n, i += 1 ]
+                t : f64 [ h[ i * n + j ] ]
+                for [ k: i32 0, k < j, k += 1 ]
+                    t -= h[ i * n + k ] * h[ j * n + k ]
+                h[ i * n + j ] = t / d
+
+    # H^-1 b by the factor
+    func hsolve [ b: vec f64 ] -> vec f64
+        x : vec f64 [ n ]
+        for [ i: i32 0, i < n, i += 1 ]
+            t : f64 [ b[ i ] ]
+            for [ k: i32 0, k < i, k += 1 ]
+                t -= h[ i * n + k ] * x[ k ]
+            x[ i ] = t / h[ i * n + i ]
+        for [ i: i32 n - 1, i >= 0, i -= 1 ]
+            t : f64 [ x[ i ] ]
+            for [ k: i32 i + 1, k < n, k += 1 ]
+                t -= h[ k * n + i ] * x[ k ]
+            x[ i ] = t / h[ i * n + i ]
+        return x
+
+    public func factor []
+        chol[]
+        # H^-1 A', a column per equality row, then S
+        cells : i32 [ m * n ]
+        ha = vec f64 [ cells ]
+        for [ r: i32 0, r < m, r += 1 ]
+            row : vec f64 [ n ]
+            for [ j: i32 0, j < n, j += 1 ]
+                av : f64 [ eq[ r * n + j ] ]
+                row[ j ] = av
+            col : hsolve[ row ]
+            for [ j: i32 0, j < n, j += 1 ]
+                cv : f64 [ col[ j ] ]
+                ha[ r * n + j ] = cv
+        mm : i32 [ m * m ]
+        sm : vec f64 [ mm ]
+        for [ r: i32 0, r < m, r += 1 ]
+            for [ q: i32 0, q < m, q += 1 ]
+                t : f64 [ 0.0 ]
+                for [ j: i32 0, j < n, j += 1 ]
+                    t += eq[ r * n + j ] * ha[ q * n + j ]
+                sm[ r * m + q ] = t
+        sc = Lu [ n: m, mat: sm ]
+        sc.factor[]
+
+    # [ dx; dy ] for [ H A'; A 0 ] [ dx; dy ] = [ b1; b2 ]
+    public func solve [ b: vec f64 ] -> vec f64
+        b1 : vec f64 [ n ]
+        for [ j: i32 0, j < n, j += 1 ]
+            bv : f64 [ b[ j ] ]
+            b1[ j ] = bv
+        hb : hsolve[ b1 ]
+        out : vec f64 [ n + m ]
+        if [ m > 0 ]
+            # S dy = A H^-1 b1 - b2
+            rs : vec f64 [ m ]
+            for [ r: i32 0, r < m, r += 1 ]
+                t : f64 [ 0.0 - b[ n + r ] ]
+                for [ j: i32 0, j < n, j += 1 ]
+                    t += eq[ r * n + j ] * hb[ j ]
+                rs[ r ] = t
+            dy : sc.solve[ rs ]
+            for [ r: i32 0, r < m, r += 1 ]
+                yv : f64 [ dy[ r ] ]
+                out[ n + r ] = yv
+                for [ j: i32 0, j < n, j += 1 ]
+                    hb[ j ] = hb[ j ] - ha[ r * n + j ] * yv
+        for [ j: i32 0, j < n, j += 1 ]
+            xv : f64 [ hb[ j ] ]
+            out[ j ] = xv
+        return out
+
+# minimise c . x subject to A x = b, G x <= h and the cones, by
+# a primal-dual interior point: G x + s = h, s in the cones,
+# Nesterov-Todd scaling, Mehrotra's predictor and corrector
+# (Vandenberghe, the CVXOPT cone solvers, 2010)
+class Socp
+    public n     : i32
+    public cost  : vec f64
+    public m     : i32
+    public eq_a  : vec f64
+    public eq_b  : vec f64
+    public p     : i32
+    public lin_g : vec f64
+    public lin_h : vec f64
+    public cones : vec Cone
+    public x     : vec f64
+    public ok    : bool
+    public steps : i32
+    # each linear row's columns: lin_nz from lin_at[ i ]
+    public lin_nz  : vec i32
+    public lin_at  : vec i32
+    # the dual of A x = b, then the cone slacks and their duals
+    intern y     : vec f64
+    intern s     : vec f64
+    intern z     : vec f64
+    # each cone's first entry in s and z
+    intern at    : vec i32
+    public dim   : i32
+    # the scaling: per row sqrt(s/z); per cone beta and v
+    intern wl    : vec f64
+    intern beta  : vec f64
+    intern wbar  : vec f64
+    intern lam   : vec f64
+
+    func init []
+        cost = vec f64 [ n ]
+        eq_a = vec f64 []
+        eq_b = vec f64 []
+        lin_g = vec f64 []
+        lin_h = vec f64 []
+        cones = vec Cone []
+
+    public func add_eq [ row: vec f64, rhs: f64 ]
+        for [ i: i32 0, i < n, i += 1 ]
+            rv : f64 [ row[ i ] ]
+            eq_a.push[ rv ]
+        eq_b.push[ rhs ]
+        m += 1
+
+    # row . x <= rhs
+    public func add_le [ row: vec f64, rhs: f64 ]
+        for [ i: i32 0, i < n, i += 1 ]
+            rv : f64 [ row[ i ] ]
+            lin_g.push[ rv ]
+        lin_h.push[ rhs ]
+        p += 1
+
+    public func add_cone [ c: Cone ]
+        cones.push[ c ]
+
+    # the columns each row and cone touches, found once
+    func index []
+        lin_nz = vec i32 []
+        lin_at = vec i32 []
+        for [ i: i32 0, i < p, i += 1 ]
+            here : i32 [ lin_nz.count ]
+            lin_at.push[ here ]
+            for [ j: i32 0, j < n, j += 1 ]
+                if [ lin_g[ i * n + j ] != 0.0 ]
+                    lin_nz.push[ j ]
+        end : i32 [ lin_nz.count ]
+        lin_at.push[ end ]
+        at = vec i32 []
+        dim = p
+        for [ c: Cone ] in cones
+            c.nz = vec i32 []
+            for [ j: i32 0, j < n, j += 1 ]
+                used : bool [ c.tg[ j ] != 0.0 ]
+                for [ r: i32 0, r < c.k, r += 1 ]
+                    if [ c.rows[ r * n + j ] != 0.0 ]
+                        used = true
+                if [ used ]
+                    c.nz.push[ j ]
+            at.push[ dim ]
+            dim += c.k + 1
+
+    # G v: the linear rows, then each cone as -(g . v, F v)
+    func gv [ v: vec f64 ] -> vec f64
+        out : vec f64 [ dim ]
+        for [ i: i32 0, i < p, i += 1 ]
+            t : f64 [ 0.0 ]
+            for [ e: i32 lin_at[ i ], e < lin_at[ i + 1 ], e += 1 ]
+                j : i32 [ lin_nz[ e ] ]
+                t += lin_g[ i * n + j ] * v[ j ]
+            out[ i ] = t
+        for [ ci: i32 0, ci < cones.count, ci += 1 ]
+            c : cones[ ci ]
+            o : i32 [ at[ ci ] ]
+            q : i32 [ c.nz.count ]
+            t : f64 [ 0.0 ]
+            for [ e: i32 0, e < q, e += 1 ]
+                j : i32 [ c.nz[ e ] ]
+                t -= c.tg[ j ] * v[ j ]
+            out[ o ] = t
+            for [ r: i32 0, r < c.k, r += 1 ]
+                u : f64 [ 0.0 ]
+                for [ e: i32 0, e < q, e += 1 ]
+                    j : i32 [ c.nz[ e ] ]
+                    u -= c.rows[ r * n + j ] * v[ j ]
+                out[ o + 1 + r ] = u
+        return out
+
+    # G' w
+    func gtv [ w: vec f64 ] -> vec f64
+        out : vec f64 [ n ]
+        for [ i: i32 0, i < p, i += 1 ]
+            wi : f64 [ w[ i ] ]
+            if [ wi == 0.0 ] continue
+            for [ e: i32 lin_at[ i ], e < lin_at[ i + 1 ], e += 1 ]
+                j : i32 [ lin_nz[ e ] ]
+                out[ j ] = out[ j ] + lin_g[ i * n + j ] * wi
+        for [ ci: i32 0, ci < cones.count, ci += 1 ]
+            c : cones[ ci ]
+            o : i32 [ at[ ci ] ]
+            q : i32 [ c.nz.count ]
+            for [ e: i32 0, e < q, e += 1 ]
+                j : i32 [ c.nz[ e ] ]
+                t : f64 [ 0.0 - c.tg[ j ] * w[ o ] ]
+                for [ r: i32 0, r < c.k, r += 1 ]
+                    t -= c.rows[ r * n + j ] * w[ o + 1 + r ]
+                out[ j ] = out[ j ] + t
+        return out
+
+    # h: the linear right sides, then each cone's (d, f)
+    func hv [] -> vec f64
+        out : vec f64 [ dim ]
+        for [ i: i32 0, i < p, i += 1 ]
+            hi : f64 [ lin_h[ i ] ]
+            out[ i ] = hi
+        for [ ci: i32 0, ci < cones.count, ci += 1 ]
+            c : cones[ ci ]
+            o : i32 [ at[ ci ] ]
+            out[ o ] = c.td
+            for [ r: i32 0, r < c.k, r += 1 ]
+                fv : f64 [ c.off[ r ] ]
+                out[ o + 1 + r ] = fv
+        return out
+
+    # the cone's identity: 1 per row, (1, 0..) per cone
+    func ident [] -> vec f64
+        out : vec f64 [ dim ]
+        for [ i: i32 0, i < p, i += 1 ]
+            out[ i ] = 1.0
+        for [ ci: i32 0, ci < cones.count, ci += 1 ]
+            o : i32 [ at[ ci ] ]
+            out[ o ] = 1.0
+        return out
+
+    # how far v is outside the cones: shift by this times e
+    func outside [ v: vec f64 ] -> f64
+        worst : f64 [ -1e300 ]
+        for [ i: i32 0, i < p, i += 1 ]
+            if [ 0.0 - v[ i ] > worst ] worst = 0.0 - v[ i ]
+        for [ ci: i32 0, ci < cones.count, ci += 1 ]
+            o : i32 [ at[ ci ] ]
+            k : i32 [ cones[ ci ].k ]
+            yy : f64 [ 0.0 ]
+            for [ r: i32 1, r <= k, r += 1 ]
+                yy += v[ o + r ] * v[ o + r ]
+            gap : f64 [ sqrt[ yy ] - v[ o ] ]
+            if [ gap > worst ] worst = gap
+        return worst
+
+    # the largest step in [0, 1] that keeps v + a d in the cones
+    func reach [ v: vec f64, d: vec f64 ] -> f64
+        a : f64 [ 1e300 ]
+        for [ i: i32 0, i < p, i += 1 ]
+            if [ d[ i ] < 0.0 ]
+                t : f64 [ 0.0 - v[ i ] / d[ i ] ]
+                if [ t < a ] a = t
+        for [ ci: i32 0, ci < cones.count, ci += 1 ]
+            o : i32 [ at[ ci ] ]
+            k : i32 [ cones[ ci ].k ]
+            v0 : f64 [ v[ o ] ]
+            d0 : f64 [ d[ o ] ]
+            vv : f64 [ 0.0 ]
+            vd : f64 [ 0.0 ]
+            dd : f64 [ 0.0 ]
+            for [ r: i32 1, r <= k, r += 1 ]
+                vv += v[ o + r ] * v[ o + r ]
+                vd += v[ o + r ] * d[ o + r ]
+                dd += d[ o + r ] * d[ o + r ]
+            # (v0 + a d0)^2 - |v1 + a d1|^2 = qa a2 + qb a + qc
+            qa : f64 [ d0 * d0 - dd ]
+            qb : f64 [ 2.0 * (v0 * d0 - vd) ]
+            qc : f64 [ v0 * v0 - vv ]
+            t : f64 [ 1e300 ]
+            if [ abs[ qa ] < 1e-300 ]
+                if [ qb < 0.0 ] t = 0.0 - qc / qb
+            el
+                disc : f64 [ qb * qb - 4.0 * qa * qc ]
+                if [ disc >= 0.0 ]
+                    sq : f64 [ sqrt[ disc ] ]
+                    r1 : f64 [ (0.0 - qb - sq) / (2.0 * qa) ]
+                    r2 : f64 [ (0.0 - qb + sq) / (2.0 * qa) ]
+                    if [ r1 > 0.0 && r1 < t ] t = r1
+                    if [ r2 > 0.0 && r2 < t ] t = r2
+            if [ d0 < 0.0 && 0.0 - v0 / d0 < t ] t = 0.0 - v0 / d0
+            if [ t < a ] a = t
+        return (a > 1.0) ? 1.0 : a
+
+    # the Nesterov-Todd scaling at s and z, and lambda = W z
+    func scale []
+        wl = vec f64 [ p ]
+        beta = vec f64 []
+        wbar = vec f64 [ dim ]
+        lam = vec f64 [ dim ]
+        for [ i: i32 0, i < p, i += 1 ]
+            w : f64 [ sqrt[ s[ i ] / z[ i ] ] ]
+            wl[ i ] = w
+            lam[ i ] = sqrt[ s[ i ] * z[ i ] ]
+        for [ ci: i32 0, ci < cones.count, ci += 1 ]
+            o : i32 [ at[ ci ] ]
+            k : i32 [ cones[ ci ].k ]
+            sn : f64 [ jnorm[ s, o, k ] ]
+            zn : f64 [ jnorm[ z, o, k ] ]
+            sz : f64 [ 0.0 ]
+            for [ r: i32 0, r <= k, r += 1 ]
+                sz += s[ o + r ] * z[ o + r ] / (sn * zn)
+            gam : f64 [ sqrt[ (1.0 + sz) * 0.5 ] ]
+            for [ r: i32 0, r <= k, r += 1 ]
+                jz : f64 [ (r == 0) ? z[ o ] / zn : 0.0 - z[ o + r ] / zn ]
+                wv : f64 [ (s[ o + r ] / sn + jz) / (2.0 * gam) ]
+                wbar[ o + r ] = wv
+            # the reflection's vector: (w + e) / sqrt(2 (w0 + 1))
+            fold : f64 [ sqrt[ 2.0 * (wbar[ o ] + 1.0) ] ]
+            wbar[ o ] = (wbar[ o ] + 1.0) / fold
+            for [ r: i32 1, r <= k, r += 1 ]
+                wbar[ o + r ] = wbar[ o + r ] / fold
+            b : f64 [ sqrt[ sn / zn ] ]
+            beta.push[ b ]
+        wz : apply_w[ z, false ]
+        for [ ci: i32 0, ci < cones.count, ci += 1 ]
+            o : i32 [ at[ ci ] ]
+            k : i32 [ cones[ ci ].k ]
+            for [ r: i32 0, r <= k, r += 1 ]
+                lv : f64 [ wz[ o + r ] ]
+                lam[ o + r ] = lv
+        return
+
+    # sqrt(v0^2 - |v1|^2) of one cone's block
+    func jnorm [ v: vec f64, o: i32, k: i32 ] -> f64
+        yy : f64 [ 0.0 ]
+        for [ r: i32 1, r <= k, r += 1 ]
+            yy += v[ o + r ] * v[ o + r ]
+        d : f64 [ v[ o ] * v[ o ] - yy ]
+        return sqrt[ (d > 1e-300) ? d : 1e-300 ]
+
+    # W v, or W^-1 v; W is symmetric
+    func apply_w [ v: vec f64, inverse: bool ] -> vec f64
+        out : vec f64 [ dim ]
+        for [ i: i32 0, i < p, i += 1 ]
+            w : f64 [ wl[ i ] ]
+            out[ i ] = (inverse) ? v[ i ] / w : v[ i ] * w
+        for [ ci: i32 0, ci < cones.count, ci += 1 ]
+            o : i32 [ at[ ci ] ]
+            k : i32 [ cones[ ci ].k ]
+            b : f64 [ beta[ ci ] ]
+            # W = b (2 w w' - J), W^-1 = (2 J w w' J - J) / b
+            if [ !inverse ]
+                wv : f64 [ 0.0 ]
+                for [ r: i32 0, r <= k, r += 1 ]
+                    wv += wbar[ o + r ] * v[ o + r ]
+                out[ o ] = b * (2.0 * wbar[ o ] * wv - v[ o ])
+                for [ r: i32 1, r <= k, r += 1 ]
+                    out[ o + r ] = b * (2.0 * wbar[ o + r ] * wv
+                                        + v[ o + r ])
+            el
+                jv : f64 [ wbar[ o ] * v[ o ] ]
+                for [ r: i32 1, r <= k, r += 1 ]
+                    jv -= wbar[ o + r ] * v[ o + r ]
+                out[ o ] = (2.0 * wbar[ o ] * jv - v[ o ]) / b
+                for [ r: i32 1, r <= k, r += 1 ]
+                    out[ o + r ] = (0.0 - 2.0 * wbar[ o + r ] * jv
+                                    + v[ o + r ]) / b
+        return out
+
+    # u o v, the Jordan product, block by block
+    func jprod [ u: vec f64, v: vec f64 ] -> vec f64
+        out : vec f64 [ dim ]
+        for [ i: i32 0, i < p, i += 1 ]
+            out[ i ] = u[ i ] * v[ i ]
+        for [ ci: i32 0, ci < cones.count, ci += 1 ]
+            o : i32 [ at[ ci ] ]
+            k : i32 [ cones[ ci ].k ]
+            d : f64 [ 0.0 ]
+            for [ r: i32 0, r <= k, r += 1 ]
+                d += u[ o + r ] * v[ o + r ]
+            out[ o ] = d
+            for [ r: i32 1, r <= k, r += 1 ]
+                out[ o + r ] = u[ o ] * v[ o + r ] + v[ o ] * u[ o + r ]
+        return out
+
+    # x with lambda o x = d
+    func jdiv [ l: vec f64, d: vec f64 ] -> vec f64
+        out : vec f64 [ dim ]
+        for [ i: i32 0, i < p, i += 1 ]
+            out[ i ] = d[ i ] / l[ i ]
+        for [ ci: i32 0, ci < cones.count, ci += 1 ]
+            o : i32 [ at[ ci ] ]
+            k : i32 [ cones[ ci ].k ]
+            l0 : f64 [ l[ o ] ]
+            ll : f64 [ 0.0 ]
+            ld : f64 [ 0.0 ]
+            for [ r: i32 1, r <= k, r += 1 ]
+                ll += l[ o + r ] * l[ o + r ]
+                ld += l[ o + r ] * d[ o + r ]
+            det : f64 [ l0 * l0 - ll ]
+            x0 : f64 [ (l0 * d[ o ] - ld) / det ]
+            out[ o ] = x0
+            for [ r: i32 1, r <= k, r += 1 ]
+                out[ o + r ] = (d[ o + r ] - x0 * l[ o + r ]) / l0
+        return out
+
+    # [ G' W^-2 G, A'; A, 0 ], factored once a step
+    func kkt [] -> Kkt
+        cells : i32 [ n * n ]
+        mat : vec f64 [ cells ]
+        for [ i: i32 0, i < p, i += 1 ]
+            w : f64 [ wl[ i ] ]
+            wi : f64 [ 1.0 / (w * w) ]
+            for [ e: i32 lin_at[ i ], e < lin_at[ i + 1 ], e += 1 ]
+                j : i32 [ lin_nz[ e ] ]
+                gj : f64 [ lin_g[ i * n + j ] * wi ]
+                for [ f: i32 lin_at[ i ], f < lin_at[ i + 1 ], f += 1 ]
+                    l : i32 [ lin_nz[ f ] ]
+                    mat[ j * n + l ] = mat[ j * n + l ]
+                                       + gj * lin_g[ i * n + l ]
+        for [ ci: i32 0, ci < cones.count, ci += 1 ]
+            c : cones[ ci ]
+            o : i32 [ at[ ci ] ]
+            q : i32 [ c.nz.count ]
+            k1 : i32 [ c.k + 1 ]
+            b : f64 [ beta[ ci ] ]
+            # M = W^-1 G_c by columns, G_c's column -(g_j, F_j)
+            mcells : i32 [ k1 * q ]
+            mm : vec f64 [ mcells ]
+            for [ e: i32 0, e < q, e += 1 ]
+                j : i32 [ c.nz[ e ] ]
+                v0 : f64 [ 0.0 - c.tg[ j ] ]
+                jv : f64 [ wbar[ o ] * v0 ]
+                for [ r: i32 0, r < c.k, r += 1 ]
+                    jv += wbar[ o + 1 + r ] * c.rows[ r * n + j ]
+                mm[ e ] = (2.0 * wbar[ o ] * jv - v0) / b
+                for [ r: i32 0, r < c.k, r += 1 ]
+                    vr : f64 [ 0.0 - c.rows[ r * n + j ] ]
+                    mm[ (r + 1) * q + e ] = (0.0 - 2.0 * wbar[ o + 1 + r ]
+                                             * jv + vr) / b
+            for [ e: i32 0, e < q, e += 1 ]
+                j : i32 [ c.nz[ e ] ]
+                for [ f: i32 e, f < q, f += 1 ]
+                    l : i32 [ c.nz[ f ] ]
+                    t : f64 [ 0.0 ]
+                    for [ r: i32 0, r < k1, r += 1 ]
+                        t += mm[ r * q + e ] * mm[ r * q + f ]
+                    mat[ j * n + l ] = mat[ j * n + l ] + t
+                    if [ f != e ] mat[ l * n + j ] = mat[ l * n + j ] + t
+        for [ j: i32 0, j < n, j += 1 ]
+            mat[ j * n + j ] = mat[ j * n + j ] + 1e-9
+        out : Kkt [ n: n, m: m, h: mat, eq: eq_a ]
+        out.factor[]
+        return out
+
+    # one Newton direction: A'dy + G'dz = -rx, A dx = -ry,
+    # G dx + ds = -rz, lambda o (W dz + W^-1 ds) = lambda o u;
+    # out: dx, dy, dz, ds in a row
+    func direction [ lu: Kkt, rx: vec f64, ry: vec f64,
+                     rz: vec f64, u: vec f64 ] -> vec f64
+        wu : apply_w[ u, false ]
+        t : vec f64 [ dim ]
+        for [ i: i32 0, i < dim, i += 1 ]
+            tv : f64 [ rz[ i ] + wu[ i ] ]
+            t[ i ] = tv
+        w2t : apply_w[ apply_w[ t, true ], true ]
+        gt : gtv[ w2t ]
+        kn : i32 [ n + m ]
+        rhs : vec f64 [ kn ]
+        for [ j: i32 0, j < n, j += 1 ]
+            rv : f64 [ 0.0 - rx[ j ] - gt[ j ] ]
+            rhs[ j ] = rv
+        for [ i: i32 0, i < m, i += 1 ]
+            rv : f64 [ 0.0 - ry[ i ] ]
+            rhs[ n + i ] = rv
+        sol : lu.solve[ rhs ]
+        dx : vec f64 [ n ]
+        for [ j: i32 0, j < n, j += 1 ]
+            sv : f64 [ sol[ j ] ]
+            dx[ j ] = sv
+        gdx : gv[ dx ]
+        for [ i: i32 0, i < dim, i += 1 ]
+            tv : f64 [ gdx[ i ] + t[ i ] ]
+            t[ i ] = tv
+        dz : apply_w[ apply_w[ t, true ], true ]
+        wdz : apply_w[ dz, false ]
+        for [ i: i32 0, i < dim, i += 1 ]
+            tv : f64 [ u[ i ] - wdz[ i ] ]
+            t[ i ] = tv
+        ds : apply_w[ t, false ]
+        out : vec f64 []
+        for [ j: i32 0, j < n, j += 1 ]
+            ov : f64 [ dx[ j ] ]
+            out.push[ ov ]
+        for [ i: i32 0, i < m, i += 1 ]
+            ov : f64 [ sol[ n + i ] ]
+            out.push[ ov ]
+        for [ i: i32 0, i < dim, i += 1 ]
+            ov : f64 [ dz[ i ] ]
+            out.push[ ov ]
+        for [ i: i32 0, i < dim, i += 1 ]
+            ov : f64 [ ds[ i ] ]
+            out.push[ ov ]
+        return out
+
+    # least norm x with A x = b
+    func least_norm [] -> vec f64
+        out : vec f64 [ n ]
+        if [ m == 0 ] return out
+        mm : i32 [ m * m ]
+        aat : vec f64 [ mm ]
+        for [ i: i32 0, i < m, i += 1 ]
+            for [ k: i32 0, k < m, k += 1 ]
+                t : f64 [ 0.0 ]
+                for [ j: i32 0, j < n, j += 1 ]
+                    t += eq_a[ i * n + j ] * eq_a[ k * n + j ]
+                aat[ i * m + k ] = t
+        w : lin_solve[ aat, eq_b, m ]
+        for [ j: i32 0, j < n, j += 1 ]
+            t : f64 [ 0.0 ]
+            for [ i: i32 0, i < m, i += 1 ]
+                t += eq_a[ i * n + j ] * w[ i ]
+            out[ j ] = t
+        return out
+
+    func vnorm [ v: vec f64 ] -> f64
+        big : f64 [ 0.0 ]
+        for [ i: i32 0, i < v.count, i += 1 ]
+            if [ abs[ v[ i ] ] > big ] big = abs[ v[ i ] ]
+        return big
+
+    public func solve [] -> bool
+        ok = false
+        steps = 0
+        index[]
+        h : hv[]
+        e : ident[]
+        x = least_norm[]
+        y = vec f64 [ m ]
+        s = vec f64 [ dim ]
+        gx : gv[ x ]
+        for [ i: i32 0, i < dim, i += 1 ]
+            sv : f64 [ h[ i ] - gx[ i ] ]
+            s[ i ] = sv
+        lift : f64 [ outside[ s ] ]
+        lift = ((lift > 0.0) ? lift : 0.0) + 1.0
+        z = vec f64 [ dim ]
+        for [ i: i32 0, i < dim, i += 1 ]
+            sv : f64 [ s[ i ] + lift * e[ i ] ]
+            s[ i ] = sv
+            ev : f64 [ e[ i ] ]
+            z[ i ] = ev
+        degree : f64 [ f64[ p + cones.count ] ]
+        close : bool [ false ]
+        kept : vec f64 []
+        last : f64 [ 1e300 ]
+        scale_b : f64 [ 1.0 + max[ vnorm[ eq_b ], vnorm[ h ] ] ]
+        scale_c : f64 [ 1.0 + vnorm[ cost ] ]
+        for [ it: i32 0, it < 30, it += 1 ]
+            # the residuals
+            rx : gtv[ z ]
+            for [ j: i32 0, j < n, j += 1 ]
+                t : f64 [ rx[ j ] + cost[ j ] ]
+                for [ i: i32 0, i < m, i += 1 ]
+                    t += eq_a[ i * n + j ] * y[ i ]
+                rx[ j ] = t
+            ry : vec f64 [ m ]
+            for [ i: i32 0, i < m, i += 1 ]
+                t : f64 [ 0.0 - eq_b[ i ] ]
+                for [ j: i32 0, j < n, j += 1 ]
+                    t += eq_a[ i * n + j ] * x[ j ]
+                ry[ i ] = t
+            gx = gv[ x ]
+            rz : vec f64 [ dim ]
+            for [ i: i32 0, i < dim, i += 1 ]
+                t : f64 [ gx[ i ] + s[ i ] - h[ i ] ]
+                rz[ i ] = t
+            gap : f64 [ 0.0 ]
+            for [ i: i32 0, i < dim, i += 1 ]
+                gap += s[ i ] * z[ i ]
+            pc : f64 [ 0.0 ]
+            for [ j: i32 0, j < n, j += 1 ]
+                pc += cost[ j ] * x[ j ]
+            pres : f64 [ max[ vnorm[ ry ], vnorm[ rz ] ] / scale_b ]
+            dres : f64 [ vnorm[ rx ] / scale_c ]
+            rel : f64 [ gap / (1.0 + abs[ pc ]) ]
+            # the dual residual stalls first, on lost digits, and
+            # costs only optimality: it gets a looser limit
+            fine : f64 [ max[ pres, rel ] ]
+            if [ fine < 1e-8 && dres < 1e-6 ]
+                ok = true
+                return true
+            # near the answer the reduced system loses digits: a
+            # step that undoes the progress, or a nan, ends it
+            if [ gap != gap || (close && fine > last * 10.0) ]
+                break
+            if [ fine < 1e-6 && dres < 1e-4 ]
+                close = true
+                kept = vec f64 [ n ]
+                for [ j: i32 0, j < n, j += 1 ]
+                    kv : f64 [ x[ j ] ]
+                    kept[ j ] = kv
+            last = fine
+            mu : f64 [ gap / degree ]
+            scale[]
+            lu : kkt[]
+            steps += 1
+            # the predictor: d = -lambda o lambda, u = -lambda
+            u : vec f64 [ dim ]
+            for [ i: i32 0, i < dim, i += 1 ]
+                uv : f64 [ 0.0 - lam[ i ] ]
+                u[ i ] = uv
+            da : direction[ lu, rx, ry, rz, u ]
+            dza : vec f64 [ dim ]
+            dsa : vec f64 [ dim ]
+            for [ i: i32 0, i < dim, i += 1 ]
+                zv : f64 [ da[ n + m + i ] ]
+                dza[ i ] = zv
+                sv : f64 [ da[ n + m + dim + i ] ]
+                dsa[ i ] = sv
+            aa : f64 [ min[ reach[ s, dsa ], reach[ z, dza ] ] ]
+            sig : f64 [ (1.0 - aa) * (1.0 - aa) * (1.0 - aa) ]
+            # the corrector: second order term and centring
+            sq : apply_w[ dsa, true ]
+            wq : apply_w[ dza, false ]
+            cross : jprod[ sq, wq ]
+            ll : jprod[ lam, lam ]
+            d : vec f64 [ dim ]
+            for [ i: i32 0, i < dim, i += 1 ]
+                dv : f64 [ 0.0 - ll[ i ] - cross[ i ] + sig * mu * e[ i ] ]
+                d[ i ] = dv
+            dc : direction[ lu, rx, ry, rz, jdiv[ lam, d ] ]
+            dz : vec f64 [ dim ]
+            ds : vec f64 [ dim ]
+            for [ i: i32 0, i < dim, i += 1 ]
+                zv : f64 [ dc[ n + m + i ] ]
+                dz[ i ] = zv
+                sv : f64 [ dc[ n + m + dim + i ] ]
+                ds[ i ] = sv
+            al : f64 [ min[ reach[ s, ds ], reach[ z, dz ] ] * 0.99 ]
+            if [ al > 1.0 ] al = 1.0
+            for [ j: i32 0, j < n, j += 1 ]
+                xv : f64 [ x[ j ] + al * dc[ j ] ]
+                x[ j ] = xv
+            for [ i: i32 0, i < m, i += 1 ]
+                yv : f64 [ y[ i ] + al * dc[ n + i ] ]
+                y[ i ] = yv
+            for [ i: i32 0, i < dim, i += 1 ]
+                sv : f64 [ s[ i ] + al * ds[ i ] ]
+                s[ i ] = sv
+                zv : f64 [ z[ i ] + al * dz[ i ] ]
+                z[ i ] = zv
+            # no way forward: infeasible, or as good as it gets
+            if [ al < 1e-10 ] break
+        if [ close ] x = kept
+        ok = close
+        return close
+
+# ---------------------------------------------------------------
+# the landing burn: a local frame at the target, z up; thrust
+# acceleration u and its bound sigma, mass as z = ln m
+# ---------------------------------------------------------------
+class Landing
+    public r0      : Dvec
+    public v0      : Dvec
+    public mass    : f64
+    public gravity : f64 [ 9.80665 ]
+    public thrust_min : f64
+    public thrust_max : f64
+    public isp     : f64
+    public tilt    : f64 [ 0.26 ]
+    public glide   : f64 [ 0.17 ]
+    public steps   : i32 [ 24 ]
+    public flight  : f64
+    # the answer: u per step (m/s2), sigma, fuel, landed mass
+    public feasible : bool
+    public accel   : vec f64
+    public bound   : vec f64
+    public fuel    : f64
+    public final_mass : f64
+    public solver_steps : i32
+    # a known acceleration per step (3 each, the air's drag), as
+    # gravity is known; empty is none
+    public extra   : vec f64
+    # the flight times a search looks between
+    # when the circle is out of reach: land as near as it can
+    # (Blackmore, Acikmese & Scharf 2010), each metre off costing
+    public relax   : bool
+    public miss_cost : f64 [ 2.0 ]
+    # a braking it keeps in hand (m/s2): falling no faster than
+    # sqrt(2 a height) + sink_floor (m/s)
+    public sink_brake : f64 [ 6.0 ]
+    public sink_floor : f64 [ 1.0 ]
+    # fuel (m/s) paid per m/s over the sink rate, each step
+    public sink_cost  : f64 [ 2.0 ]
+    # fuel (m/s) paid per metre off the mark, each second: it
+    # closes in early, not in a dash at the end (an estimate)
+    public track_cost : f64 [ 0.01 ]
+    public best_lo : f64 [ 2.0 ]
+    public best_hi : f64 [ 40.0 ]
+    # per step, the share of a lean's push across that is left
+    # once the air on the hull has pushed back; empty is all
+    public reach   : vec f64
+    # how fast the push across asked can change at a whole
+    # share (m/s3): the vehicle turns at a rate; 0 is at once
+    public turn    : f64
+    # the push across it gets follows the one asked, lag (s)
+    # behind, from lat_now (m/s2, east, north), what it gets now;
+    # 0 is at once
+    public lag     : f64
+    public lat_now : Dvec
+
+    # its size: a share below zero is the air steering it, the
+    # lean the other way
+    func share_at [ k: i32 ] -> f64
+        if [ !reach || k >= reach.count ] return 1.0
+        return max[ abs[ reach[ k ] ], 0.2 ]
+
+    # the lean the plan may count on at step k: the push across
+    # of the full lean, times the share left
+    func lean_at [ k: i32, nst: i32 ] -> f64
+        t : f64 [ tilt_at[ tilt, k, nst, flight ] ]
+        return atan[ share_at[ k ] * tan[ t ] ]
+
+    # the known acceleration of step j on one axis
+    func known [ j: i32, ax: i32 ] -> f64
+        if [ !extra || extra.count < (j + 1) * 3 ] return 0.0
+        return extra[ j * 3 + ax ]
+
+    # the known accelerations' push on r_k and v_k, one axis
+    func known_place [ k: i32, ax: i32, dt: f64 ] -> f64
+        s : f64 [ 0.0 ]
+        for [ j: i32 0, j < k, j += 1 ]
+            s += pos_share[ k, j, dt ] * known[ j, ax ]
+        return s
+
+    func known_speed [ k: i32, ax: i32, dt: f64 ] -> f64
+        s : f64 [ 0.0 ]
+        for [ j: i32 0, j < k, j += 1 ]
+            s += dt * known[ j, ax ]
+        return s
+
+    # the planned speed and place at step k, from the answer
+    public func speed_at [ k: i32 ] -> Dvec
+        dt : f64 [ flight / f64[ steps ] ]
+        vx : f64 [ v0.x ]
+        vy : f64 [ v0.y ]
+        vz : f64 [ v0.z ]
+        for [ j: i32 0, j < k, j += 1 ]
+            g : got_at[ j, dt ]
+            vx += dt * (g.x + known[ j, 0 ])
+            vy += dt * (g.y + known[ j, 1 ])
+            vz += dt * (accel[ j * 3 + 2 ] + known[ j, 2 ] - gravity)
+        return Dvec [ vx, vy, vz ]
+
+    public func place_at [ k: i32 ] -> Dvec
+        dt : f64 [ flight / f64[ steps ] ]
+        t : f64 [ dt * f64[ k ] ]
+        px : f64 [ r0.x + v0.x * t ]
+        py : f64 [ r0.y + v0.y * t ]
+        pz : f64 [ r0.z + v0.z * t - 0.5 * gravity * t * t ]
+        for [ j: i32 0, j < k, j += 1 ]
+            sh : f64 [ pos_share[ k, j, dt ] ]
+            g : got_at[ j, dt ]
+            px += sh * (g.x + known[ j, 0 ])
+            py += sh * (g.y + known[ j, 1 ])
+            pz += sh * (accel[ j * 3 + 2 ] + known[ j, 2 ])
+        return Dvec [ px, py, pz ]
+
+    # u_j's share in r_k and v_k (per axis, from k and j)
+    func pos_share [ k: i32, j: i32, dt: f64 ] -> f64
+        if [ j >= k ] return 0.0
+        return dt * dt * (f64[ k - j ] - 0.5)
+
+    # what is left of the push got, each step, of the gap to the
+    # push asked: the lag over a step
+    func keep [ dt: f64 ] -> f64
+        if [ lag <= 0.0 ] return 0.0
+        return exp[ 0.0 - dt / lag ]
+
+    # over a step the push got closes on the one asked: its mean
+    # is carry x the got at the step's start + (1 - carry) x asked
+    func carry [ dt: f64 ] -> f64
+        if [ lag <= 0.0 ] return 0.0
+        return lag / dt * (1.0 - keep[ dt ])
+
+    # the push got at step j's start from u_m (m < j), and from
+    # lat_now
+    func got_from [ j: i32, m: i32, dt: f64 ] -> f64
+        if [ m >= j ] return 0.0
+        kp : f64 [ keep[ dt ] ]
+        return (1.0 - kp) * pow[ kp, f64[ j - 1 - m ] ]
+
+    # u_m's share in step j's mean push across
+    func mean_from [ j: i32, m: i32, dt: f64 ] -> f64
+        if [ m == j ] return 1.0 - carry[ dt ]
+        return carry[ dt ] * got_from[ j, m, dt ]
+
+    # across: u_m's share in r_k through the push it gets
+    func across_place [ k: i32, m: i32, dt: f64 ] -> f64
+        if [ lag <= 0.0 ] return pos_share[ k, m, dt ]
+        s : f64 [ 0.0 ]
+        for [ j: i32 m, j < k, j += 1 ]
+            s += pos_share[ k, j, dt ] * mean_from[ j, m, dt ]
+        return s
+
+    # across: lat_now's share in r_k
+    func across_place0 [ k: i32, dt: f64 ] -> f64
+        if [ lag <= 0.0 ] return 0.0
+        kp : f64 [ keep[ dt ] ]
+        s : f64 [ 0.0 ]
+        for [ j: i32 0, j < k, j += 1 ]
+            s += pos_share[ k, j, dt ] * carry[ dt ] * pow[ kp, f64[ j ] ]
+        return s
+
+    # across: u_m's share in v_k, and lat_now's
+    func across_speed [ k: i32, m: i32, dt: f64 ] -> f64
+        if [ lag <= 0.0 ] return (m < k) ? dt : 0.0
+        s : f64 [ 0.0 ]
+        for [ j: i32 m, j < k, j += 1 ]
+            s += dt * mean_from[ j, m, dt ]
+        return s
+
+    func across_speed0 [ k: i32, dt: f64 ] -> f64
+        if [ lag <= 0.0 ] return 0.0
+        kp : f64 [ keep[ dt ] ]
+        s : f64 [ 0.0 ]
+        for [ j: i32 0, j < k, j += 1 ]
+            s += dt * carry[ dt ] * pow[ kp, f64[ j ] ]
+        return s
+
+    # the mean push across over step j, east and north
+    func got_at [ j: i32, dt: f64 ] -> Dvec
+        ux : f64 [ accel[ j * 3 ] ]
+        uy : f64 [ accel[ j * 3 + 1 ] ]
+        if [ lag <= 0.0 ] return Dvec [ ux, uy, 0.0 ]
+        kp : f64 [ keep[ dt ] ]
+        gx : f64 [ lat_now.x ]
+        gy : f64 [ lat_now.y ]
+        for [ m: i32 0, m < j, m += 1 ]
+            gx = kp * gx + (1.0 - kp) * accel[ m * 3 ]
+            gy = kp * gy + (1.0 - kp) * accel[ m * 3 + 1 ]
+        w : f64 [ carry[ dt ] ]
+        return Dvec [ w * gx + (1.0 - w) * ux, w * gy + (1.0 - w) * uy,
+                      0.0 ]
+
+    public func solve [] -> bool
+        nst : i32 [ steps ]
+        # one more variable when relaxed: the distance off
+        # a sink slack per step after the steps, then the distance
+        # across from the mark per step, then the miss
+        n : i32 [ nst * 6 + ((relax) ? 1 : 0) ]
+        dt : f64 [ flight / f64[ nst ] ]
+        alpha : f64 [ 1.0 / (isp * GRAVITY_STD) ]
+        zs : f64 [ log[ mass ] ]
+        q : Socp [ n: n ]
+        for [ k: i32 0, k < nst, k += 1 ]
+            q.cost[ k * 4 + 3 ] = dt
+            q.cost[ nst * 4 + k ] = sink_cost
+            slack_bounds[ q, nst * 4 + k, n ]
+            q.cost[ nst * 5 + k ] = track_cost * dt
+            slack_bounds[ q, nst * 5 + k, n ]
+        miss_rows : vec f64 []
+        miss_off : vec f64 []
+        # the end: place and speed zero
+        for [ ax: i32 0, ax < 3, ax += 1 ]
+            prow : vec f64 [ n ]
+            vrow : vec f64 [ n ]
+            for [ j: i32 0, j < nst, j += 1 ]
+                pc : f64 [ (ax == 2) ? pos_share[ nst, j, dt ]
+                           : across_place[ nst, j, dt ] ]
+                vc : f64 [ (ax == 2) ? dt : across_speed[ nst, j, dt ] ]
+                prow[ j * 4 + ax ] = pc
+                vrow[ j * 4 + ax ] = vc
+            tf : f64 [ flight ]
+            # across, what it gets now carries on a while
+            gn : f64 [ (ax == 0) ? lat_now.x
+                       : ((ax == 1) ? lat_now.y : 0.0) ]
+            g_ax : f64 [ (ax == 2) ? 0.0 - gravity : 0.0 ]
+            p0 : f64 [ (ax == 0) ? r0.x : ((ax == 1) ? r0.y : r0.z) ]
+            w0 : f64 [ (ax == 0) ? v0.x : ((ax == 1) ? v0.y : v0.z) ]
+            kp : f64 [ known_place[ nst, ax, dt ] ]
+            kv : f64 [ known_speed[ nst, ax, dt ] ]
+            rest : f64 [ p0 + w0 * tf + 0.5 * g_ax * tf * tf + kp
+                         + gn * across_place0[ nst, dt ] ]
+            if [ !relax || ax == 2 ]
+                q.add_eq[ prow, 0.0 - rest ]
+            el
+                for [ j: i32 0, j < n, j += 1 ]
+                    pv : f64 [ prow[ j ] ]
+                    miss_rows.push[ pv ]
+                miss_off.push[ rest ]
+            q.add_eq[ vrow, 0.0 - (w0 + g_ax * tf + kv
+                                    + gn * across_speed0[ nst, dt ]) ]
+        if [ relax ]
+            # | the end's place across | <= the last variable
+            q.cost[ n - 1 ] = miss_cost
+            mc : Cone [ k: 2, rows: miss_rows, off: miss_off,
+                        tg: vec f64 [ n ], td: 0.0 ]
+            mc.tg[ n - 1 ] = 1.0
+            q.add_cone[ mc ]
+        for [ k: i32 0, k < nst, k += 1 ]
+            # |u_k| <= sigma_k
+            three : i32 [ 3 * n ]
+            c : Cone [ k: 3, rows: vec f64 [ three ],
+                       off: vec f64 [ 3 ], tg: vec f64 [ n ], td: 0.0 ]
+            for [ ax: i32 0, ax < 3, ax += 1 ]
+                c.rows[ ax * n + k * 4 + ax ] = 1.0
+            c.tg[ k * 4 + 3 ] = 1.0
+            q.add_cone[ c ]
+            # the throttle band, about the mass at full burn
+            tk : f64 [ dt * f64[ k ] ]
+            mref : f64 [ mass - alpha * thrust_max * tk ]
+            if [ mref < mass * 0.2 ] mref = mass * 0.2
+            zr : f64 [ log[ mref ] ]
+            lo : f64 [ thrust_min / mref ]
+            hi : f64 [ thrust_max / mref ]
+            # z_k = zs - alpha dt sum sigma_j (j < k)
+            up_row : vec f64 [ n ]
+            dn_row : vec f64 [ n ]
+            up_row[ k * 4 + 3 ] = 1.0
+            dn_row[ k * 4 + 3 ] = -1.0
+            for [ j: i32 0, j < k, j += 1 ]
+                # sigma_k <= hi (1 - (z_k - zr))
+                up_row[ j * 4 + 3 ] = 0.0 - hi * alpha * dt
+                dn_row[ j * 4 + 3 ] = lo * alpha * dt
+            q.add_le[ up_row, hi * (1.0 - (zs - zr)) ]
+            q.add_le[ dn_row, 0.0 - lo * (1.0 - (zs - zr)) ]
+            # the tilt: u_k . up >= cos(tilt) sigma_k
+            tilt_row : vec f64 [ n ]
+            tilt_row[ k * 4 + 2 ] = -1.0
+            tilt_row[ k * 4 + 3 ] = cos[ lean_at[ k, nst ] ]
+            q.add_le[ tilt_row, 0.0 ]
+            # the sink rate: s = -v_z - floor, s2 <= 2 a z, as
+            # |(2 s, 2 a z - 1)| <= 2 a z + 1
+            if [ k > 0 ]
+                tk3 : f64 [ dt * f64[ k ] ]
+                two_a : f64 [ 2.0 * sink_brake ]
+                cells : i32 [ 2 * n ]
+                sk : Cone [ k: 2, rows: vec f64 [ cells ],
+                            off: vec f64 [ 2 ], tg: vec f64 [ n ],
+                            td: 0.0 ]
+                vz : f64 [ v0.z - gravity * tk3
+                           + known_speed[ k, 2, dt ] ]
+                zk : f64 [ r0.z + v0.z * tk3 - 0.5 * gravity * tk3 * tk3
+                           + known_place[ k, 2, dt ] ]
+                for [ j: i32 0, j < k, j += 1 ]
+                    ps : f64 [ pos_share[ k, j, dt ] ]
+                    sk.rows[ j * 4 + 2 ] = -2.0 * dt
+                    sk.rows[ n + j * 4 + 2 ] = two_a * ps
+                    sk.tg[ j * 4 + 2 ] = two_a * ps
+                sk.off[ 0 ] = 2.0 * (0.0 - vz - sink_floor)
+                sk.off[ 1 ] = two_a * zk - 1.0
+                sk.td = two_a * zk + 1.0
+                sk.tg[ nst * 4 + k ] = 1.0
+                q.add_cone[ sk ]
+            # the glide slope from the target, after the start
+            if [ k > 0 ]
+                two : i32 [ 2 * n ]
+                gs : Cone [ k: 2, rows: vec f64 [ two ],
+                            off: vec f64 [ 2 ], tg: vec f64 [ n ],
+                            td: 0.0 ]
+                tk2 : f64 [ dt * f64[ k ] ]
+                cot : f64 [ 1.0 / tan[ glide ] ]
+                g0 : f64 [ across_place0[ k, dt ] ]
+                gs.off[ 0 ] = r0.x + v0.x * tk2 + known_place[ k, 0, dt ]
+                              + lat_now.x * g0
+                gs.off[ 1 ] = r0.y + v0.y * tk2 + known_place[ k, 1, dt ]
+                              + lat_now.y * g0
+                gs.td = (r0.z + v0.z * tk2 - 0.5 * gravity * tk2 * tk2
+                         + known_place[ k, 2, dt ]) * cot
+                for [ j: i32 0, j < k, j += 1 ]
+                    sh : f64 [ pos_share[ k, j, dt ] ]
+                    ac : f64 [ across_place[ k, j, dt ] ]
+                    gs.rows[ j * 4 ] = ac
+                    gs.rows[ n + j * 4 + 1 ] = ac
+                    gs.tg[ j * 4 + 2 ] = sh * cot
+                q.add_cone[ gs ]
+                # |across_k| <= its distance variable
+                tc : Cone [ k: 2, rows: vec f64 [ two ],
+                            off: vec f64 [ 2 ], tg: vec f64 [ n ],
+                            td: 0.0 ]
+                tc.off[ 0 ] = gs.off[ 0 ]
+                tc.off[ 1 ] = gs.off[ 1 ]
+                for [ j: i32 0, j < k, j += 1 ]
+                    ac : f64 [ across_place[ k, j, dt ] ]
+                    tc.rows[ j * 4 ] = ac
+                    tc.rows[ n + j * 4 + 1 ] = ac
+                tc.tg[ nst * 5 + k ] = 1.0
+                q.add_cone[ tc ]
+        turn_cones[ q, n, dt ]
+        feasible = q.solve[]
+        solver_steps = q.steps
+        cells : i32 [ nst * 3 ]
+        accel = vec f64 [ cells ]
+        bound = vec f64 [ nst ]
+        if [ !feasible ] return false
+        fuel = 0.0
+        sum : f64 [ 0.0 ]
+        for [ k: i32 0, k < nst, k += 1 ]
+            for [ ax: i32 0, ax < 3, ax += 1 ]
+                av : f64 [ q.x[ k * 4 + ax ] ]
+                accel[ k * 3 + ax ] = av
+            sv : f64 [ q.x[ k * 4 + 3 ] ]
+            bound[ k ] = sv
+            sum += sv * dt
+        final_mass = mass * exp[ 0.0 - alpha * sum ]
+        fuel = mass - final_mass
+        return true
+
+    # |across_k+1 - across_k| <= turn share dt
+    func turn_cones [ q: Socp, n: i32, dt: f64 ]
+        if [ turn <= 0.0 ] return
+        nst : i32 [ steps ]
+        two : i32 [ 2 * n ]
+        for [ k: i32 0, k < nst - 1, k += 1 ]
+            sh : f64 [ (share_at[ k ] + share_at[ k + 1 ]) * 0.5 ]
+            c : Cone [ k: 2, rows: vec f64 [ two ], off: vec f64 [ 2 ],
+                       tg: vec f64 [ n ], td: turn * sh * dt ]
+            for [ ax: i32 0, ax < 2, ax += 1 ]
+                c.rows[ ax * n + (k + 1) * 4 + ax ] = 1.0
+                c.rows[ ax * n + k * 4 + ax ] = -1.0
+            q.add_cone[ c ]
+
+    # the time of flight with the least fuel: six times across
+    # the range, then golden section round the best that solves
+    public func best [ lo: f64, hi: f64 ] -> bool
+        tries : i32 [ 6 ]
+        gap : f64 [ (hi - lo) / f64[ tries - 1 ] ]
+        pick : i32 [ -1 ]
+        least : f64 [ 1e30 ]
+        for [ i: i32 0, i < tries, i += 1 ]
+            flight = lo + gap * f64[ i ]
+            if [ solve[] && fuel < least ]
+                least = fuel
+                pick = i
+        if [ pick < 0 ] return false
+        a_t : f64 [ lo + gap * f64[ pick - 1 ] ]
+        b_t : f64 [ lo + gap * f64[ pick + 1 ] ]
+        if [ a_t < lo ] a_t = lo
+        if [ b_t > hi ] b_t = hi
+        ratio : f64 [ 0.6180339887 ]
+        ca : f64 [ b_t - ratio * (b_t - a_t) ]
+        cb : f64 [ a_t + ratio * (b_t - a_t) ]
+        flight = ca
+        fa : f64 [ (solve[]) ? fuel : 1e30 ]
+        flight = cb
+        fb : f64 [ (solve[]) ? fuel : 1e30 ]
+        for [ it: i32 0, it < 4, it += 1 ]
+            if [ fa < fb ]
+                b_t = cb
+                cb = ca
+                fb = fa
+                ca = b_t - ratio * (b_t - a_t)
+                flight = ca
+                fa = (solve[]) ? fuel : 1e30
+            el
+                a_t = ca
+                ca = cb
+                fa = fb
+                cb = a_t + ratio * (b_t - a_t)
+                flight = cb
+                fb = (solve[]) ? fuel : 1e30
+        best_t : f64 [ (fa < fb) ? ca : cb ]
+        if [ min[ fa, fb ] > least ] best_t = lo + gap * f64[ pick ]
+        flight = best_t
+        return solve[]
+
+# the time it takes to stand up from the most tilt, s: a turn
+# of 0.3 rad at about 0.1 rad/s, as flown (an estimate)
+UPRIGHT_TIME : f64 [ 3.0 ]
+
+# the tilt allowed at step k of n over a flight: upright over
+# its last seconds, so the push across the turn gives is planned
+func tilt_at [ tilt: f64, k: i32, n: i32, flight: f64 ] -> f64
+    upright : f64 [ 0.05 ]
+    if [ tilt <= upright ] return tilt
+    left : f64 [ flight * f64[ n - 1 - k ] / f64[ n ] ]
+    if [ left >= UPRIGHT_TIME ] return tilt
+    return upright + (tilt - upright) * left / UPRIGHT_TIME
+
+# 0 <= x_i <= 1e4: phase I would let a free slack run off
+func slack_bounds [ q: Socp, i: i32, n: i32 ]
+    lo : vec f64 [ n ]
+    lo[ i ] = -1.0
+    q.add_le[ lo, 0.0 ]
+    hi : vec f64 [ n ]
+    hi[ i ] = 1.0
+    q.add_le[ hi, 1e4 ]
+
+# which planner flies the landing burn
+enum LandingMethod
+    scvx:  0
+    gfold: 1
+
+func method_name [ m: LandingMethod ] -> string
+    return (m == LandingMethod.gfold) ? 'gfold' : 'scvx'
+
+# SCvx landing: Mao, Szmuk & Acikmese 2016; Szmuk 2018
+class Scvx
+    public r0      : Dvec
+    public v0      : Dvec
+    public mass    : f64
+    public gravity : f64 [ 9.80665 ]
+    public thrust_min : f64
+    public thrust_max : f64
+    public isp     : f64
+    public tilt    : f64 [ 0.26 ]
+    public glide   : f64 [ 0.17 ]
+    public steps   : i32 [ 16 ]
+    # a guess going in, the answer coming out
+    public flight  : f64
+    # Ca by Mach, 0.25 apart; empty is no drag
+    public drag    : vec f64
+    public area    : f64
+    public deck    : f64
+    public relax   : bool
+    public miss_cost : f64 [ 2.0 ]
+    public passes  : i32 [ 15 ]
+    # a warm start in z's layout; empty is none
+    public start   : vec f64
+    # the flight time held at the start's: touchdown stays put
+    public hold_time : bool
+    # thrust_max a second it may change by (an estimate)
+    public slew    : f64 [ 0.3 ]
+    # the push across changes no faster than this (m/s3): the
+    # vehicle turns at a rate; 0 is as slew allows
+    public turn    : f64
+    # falling no faster than sqrt(2 a height) + sink_floor
+    public sink_brake : f64 [ 6.0 ]
+    public sink_floor : f64 [ 1.0 ]
+    public sink_cost  : f64 [ 2.0 ]
+    # fuel (m/s) paid per metre off the mark, each second: it
+    # closes in early, not in a dash at the end (an estimate)
+    public track_cost : f64 [ 0.01 ]
+    # the push it makes now, N, local; zero is free
+    public thrust_now : Dvec
+    public feasible : bool
+    # per step thrust / thrust_max (3), its bound; then the time
+    public z       : vec f64
+    public nodes   : vec f64
+    public fuel    : f64
+    public final_mass : f64
+    public solver_steps : i32
+    public rounds  : i32
+    public defect  : f64
+    # the air by height, 25 m apart from 50 m under the sea
+    intern air_rho : vec f64
+    intern air_snd : vec f64
+
+    public func prepare []
+        air_rho = vec f64 []
+        air_snd = vec f64 []
+        top : f64 [ r0.z + deck + 3000.0 ]
+        for [ h: f64 -50.0, h <= top, h += 25.0 ]
+            ar : standard_air[ h ]
+            rho : f64 [ ar.density ]
+            snd : f64 [ ar.sound ]
+            air_rho.push[ rho ]
+            air_snd.push[ snd ]
+
+    # the drag force is this times the speed vector, backwards
+    public func drag_factor [ hz: f64, sp: f64 ] -> f64
+        if [ !drag || drag.count < 2 || area <= 0.0 ] return 0.0
+        at : f64 [ (hz + deck + 50.0) / 25.0 ]
+        last : f64 [ f64[ air_rho.count - 2 ] ]
+        if [ at < 0.0 ] at = 0.0
+        if [ at > last ] at = last
+        i : i32 [ i32[ at ] ]
+        fr : f64 [ at - f64[ i ] ]
+        rho : f64 [ air_rho[ i ]
+                    + (air_rho[ i + 1 ] - air_rho[ i ]) * fr ]
+        snd : f64 [ air_snd[ i ]
+                    + (air_snd[ i + 1 ] - air_snd[ i ]) * fr ]
+        mk : f64 [ sp / snd / 0.25 ]
+        top : f64 [ f64[ drag.count - 1 ] - 0.001 ]
+        if [ mk > top ] mk = top
+        ki : i32 [ i32[ mk ] ]
+        ca : f64 [ drag[ ki ] + (drag[ ki + 1 ] - drag[ ki ])
+                   * (mk - f64[ ki ]) ]
+        return 0.5 * rho * sp * ca * area
+
+    func accel [ r: Dvec, v: Dvec, m: f64, th: Dvec ] -> Dvec
+        f : f64 [ drag_factor[ r.z, dv_len[ v ] ] ]
+        return Dvec [ (th.x - f * v.x) / m, (th.y - f * v.y) / m,
+                      (th.z - f * v.z) / m - gravity ]
+
+    # r, v, m per node; nodes to `from` copied from base
+    func fly [ zz: vec f64, from: i32, base: vec f64 ] -> vec f64
+        nst : i32 [ steps ]
+        cells : i32 [ (nst + 1) * 7 ]
+        out : vec f64 [ cells ]
+        first : i32 [ (base) ? from : 0 ]
+        if [ base ]
+            for [ i: i32 0, i < first * 7 + 7, i += 1 ]
+                bv : f64 [ base[ i ] ]
+                out[ i ] = bv
+        el
+            out[ 0 ] = r0.x
+            out[ 1 ] = r0.y
+            out[ 2 ] = r0.z
+            out[ 3 ] = v0.x
+            out[ 4 ] = v0.y
+            out[ 5 ] = v0.z
+            out[ 6 ] = mass
+        dt : f64 [ zz[ nst * 4 ] / f64[ nst ] ]
+        alpha : f64 [ 1.0 / (isp * GRAVITY_STD) ]
+        sub : i32 [ 4 ]
+        h : f64 [ dt / f64[ sub ] ]
+        for [ k: i32 first, k < nst, k += 1 ]
+            at : i32 [ k * 7 ]
+            r : Dvec [ out[ at ], out[ at + 1 ], out[ at + 2 ] ]
+            v : Dvec [ out[ at + 3 ], out[ at + 4 ], out[ at + 5 ] ]
+            m : f64 [ out[ at + 6 ] ]
+            th : Dvec [ zz[ k * 4 ] * thrust_max,
+                        zz[ k * 4 + 1 ] * thrust_max,
+                        zz[ k * 4 + 2 ] * thrust_max ]
+            flow : f64 [ alpha * zz[ k * 4 + 3 ] * thrust_max ]
+            # four RK4 steps; the mass falls linearly within one
+            for [ i: i32 0, i < sub, i += 1 ]
+                mh : f64 [ m - flow * h * 0.5 ]
+                me : f64 [ m - flow * h ]
+                a1 : accel[ r, v, m, th ]
+                r2 : dv_add[ r, dv_scale[ v, h * 0.5 ] ]
+                v2 : dv_add[ v, dv_scale[ a1, h * 0.5 ] ]
+                a2 : accel[ r2, v2, mh, th ]
+                r3 : dv_add[ r, dv_scale[ v2, h * 0.5 ] ]
+                v3 : dv_add[ v, dv_scale[ a2, h * 0.5 ] ]
+                a3 : accel[ r3, v3, mh, th ]
+                r4 : dv_add[ r, dv_scale[ v3, h ] ]
+                v4 : dv_add[ v, dv_scale[ a3, h ] ]
+                a4 : accel[ r4, v4, me, th ]
+                vsum : dv_add[ dv_add[ v, v4 ],
+                               dv_scale[ dv_add[ v2, v3 ], 2.0 ] ]
+                asum : dv_add[ dv_add[ a1, a4 ],
+                               dv_scale[ dv_add[ a2, a3 ], 2.0 ] ]
+                r = dv_add[ r, dv_scale[ vsum, h / 6.0 ] ]
+                v = dv_add[ v, dv_scale[ asum, h / 6.0 ] ]
+                m = me
+            nx : i32 [ at + 7 ]
+            out[ nx ] = r.x
+            out[ nx + 1 ] = r.y
+            out[ nx + 2 ] = r.z
+            out[ nx + 3 ] = v.x
+            out[ nx + 4 ] = v.y
+            out[ nx + 5 ] = v.z
+            out[ nx + 6 ] = m
+        return out
+
+    # forward differences: jac[ row * nz + j ], 7 rows a node
+    func linearize [ zz: vec f64, nd: vec f64 ] -> vec f64
+        nst : i32 [ steps ]
+        nz : i32 [ nst * 4 + 1 ]
+        rows : i32 [ (nst + 1) * 7 ]
+        cells : i32 [ rows * nz ]
+        jac : vec f64 [ cells ]
+        moved : vec f64 [ nz ]
+        for [ i: i32 0, i < nz, i += 1 ]
+            zv : f64 [ zz[ i ] ]
+            moved[ i ] = zv
+        for [ j: i32 0, j < nz, j += 1 ]
+            dz : f64 [ (j == nst * 4) ? 1e-5 : 1e-6 ]
+            keep : f64 [ moved[ j ] ]
+            moved[ j ] = keep + dz
+            # a step's thrust leaves the nodes before it alone
+            from : i32 [ (j == nst * 4) ? 0 : j / 4 ]
+            got : fly[ moved, from, nd ]
+            if [ j == nst * 4 ] got = fly[ moved, 0, null ]
+            moved[ j ] = keep
+            for [ r: i32 from * 7, r < rows, r += 1 ]
+                jac[ r * nz + j ] = (got[ r ] - nd[ r ]) / dz
+        return jac
+
+    # the end's rows the virtual control eases
+    func end_rows [] -> vec i32
+        out : vec i32 []
+        first : i32 [ (relax) ? 2 : 0 ]
+        for [ c: i32 first, c < 6, c += 1 ]
+            out.push[ c ]
+        return out
+
+    # the virtual control's price: a fraction of the mass a metre
+    func ease_cost [] -> f64
+        return 0.01
+
+    # the true cost: mass used, the end's miss, the overreach
+    func merit [ nd: vec f64 ] -> f64
+        nst : i32 [ steps ]
+        e : i32 [ nst * 7 ]
+        out : f64 [ 0.0 - nd[ e + 6 ] / mass ]
+        for [ c: i32 ] in end_rows[]
+            out += ease_cost[] * abs[ nd[ e + c ] ]
+        if [ relax ]
+            off : f64 [ sqrt[ nd[ e ] * nd[ e ]
+                              + nd[ e + 1 ] * nd[ e + 1 ] ] ]
+            out += miss_cost / (isp * GRAVITY_STD) * off
+        out += ease_cost[] * overreach[ nd ]
+        out += sink_cost / (isp * GRAVITY_STD) * sink_over[ nd ]
+        return out
+
+    # the glide slope's worst overreach over the nodes (m)
+    public func overreach [ nd: vec f64 ] -> f64
+        cot : f64 [ 1.0 / tan[ glide ] ]
+        worst : f64 [ 0.0 ]
+        for [ k: i32 1, k < steps, k += 1 ]
+            at : i32 [ k * 7 ]
+            across : f64 [ sqrt[ nd[ at ] * nd[ at ]
+                                 + nd[ at + 1 ] * nd[ at + 1 ] ] ]
+            over : f64 [ across - nd[ at + 2 ] * cot ]
+            if [ over > worst ] worst = over
+        return worst
+
+    # the sink rate's excess summed over the nodes (m/s)
+    public func sink_over [ nd: vec f64 ] -> f64
+        sum : f64 [ 0.0 ]
+        for [ k: i32 1, k < steps, k += 1 ]
+            at : i32 [ k * 7 ]
+            hz : f64 [ (nd[ at + 2 ] > 0.0) ? nd[ at + 2 ] : 0.0 ]
+            sink : f64 [ 0.0 - nd[ at + 5 ] - sink_floor
+                         - sqrt[ 2.0 * sink_brake * hz ] ]
+            if [ sink > 0.0 ] sum += sink
+        return sum
+
+    # the trust region's weight on one entry of z
+    func weight [ j: i32 ] -> f64
+        return (j == steps * 4) ? 0.1 : 1.0
+
+    # the cone problem about zz, in a trust region of eta
+    func subproblem [ zz: vec f64, nd: vec f64, jac: vec f64,
+                      eta: f64 ] -> Socp
+        nst : i32 [ steps ]
+        nz : i32 [ nst * 4 + 1 ]
+        ends : end_rows[]
+        nv : i32 [ ends.count ]
+        at_v : i32 [ nz ]
+        at_e : i32 [ nz + nv ]
+        at_g : i32 [ nz + 2 * nv ]
+        # a sink slack per step, then the miss
+        at_s : i32 [ at_g + 1 ]
+        at_m : i32 [ at_s + nst ]
+        n : i32 [ at_m + ((relax) ? 1 : 0) ]
+        e : i32 [ nst * 7 ]
+        q : Socp [ n: n ]
+        # the mass left, linearised: the constant part is dropped
+        for [ j: i32 0, j < nz, j += 1 ]
+            q.cost[ j ] = 0.0 - jac[ (e + 6) * nz + j ] / mass
+        for [ i: i32 0, i < nv, i += 1 ]
+            q.cost[ at_e + i ] = ease_cost[]
+        for [ k: i32 0, k < nst, k += 1 ]
+            q.cost[ at_s + k ] = sink_cost / (isp * GRAVITY_STD)
+            slack_bounds[ q, at_s + k, n ]
+        q.cost[ at_g ] = ease_cost[]
+        lo : f64 [ thrust_min / thrust_max ]
+        for [ k: i32 0, k < nst, k += 1 ]
+            # |T_k| <= its bound
+            three : i32 [ 3 * n ]
+            c : Cone [ k: 3, rows: vec f64 [ three ],
+                       off: vec f64 [ 3 ], tg: vec f64 [ n ], td: 0.0 ]
+            for [ ax: i32 0, ax < 3, ax += 1 ]
+                c.rows[ ax * n + k * 4 + ax ] = 1.0
+            c.tg[ k * 4 + 3 ] = 1.0
+            q.add_cone[ c ]
+            # the throttle band, now exact: thrust is in newtons
+            up_row : vec f64 [ n ]
+            up_row[ k * 4 + 3 ] = 1.0
+            q.add_le[ up_row, 1.0 ]
+            dn_row : vec f64 [ n ]
+            dn_row[ k * 4 + 3 ] = -1.0
+            q.add_le[ dn_row, 0.0 - lo ]
+            tilt_row : vec f64 [ n ]
+            tilt_row[ k * 4 + 2 ] = -1.0
+            tilt_row[ k * 4 + 3 ] = cos[ tilt_at[ tilt, k, nst,
+                                                   flight ] ]
+            q.add_le[ tilt_row, 0.0 ]
+        # the flight time between 2 s and 80 s
+        tf_lo : vec f64 [ n ]
+        tf_lo[ nst * 4 ] = -1.0
+        q.add_le[ tf_lo, -2.0 ]
+        tf_hi : vec f64 [ n ]
+        tf_hi[ nst * 4 ] = 1.0
+        q.add_le[ tf_hi, 80.0 ]
+        slew_cones[ q, zz, n ]
+        if [ hold_time ]
+            tf_eq : vec f64 [ n ]
+            tf_eq[ nst * 4 ] = 1.0
+            q.add_eq[ tf_eq, zz[ nst * 4 ] ]
+        # the end: x + J (z - zz) + nu = 0, |nu| <= its bound
+        for [ i: i32 0, i < nv, i += 1 ]
+            end_at : i32 [ e + ends[ i ] ]
+            ri : i32 [ end_at * nz ]
+            row : vec f64 [ n ]
+            rhs : f64 [ 0.0 - nd[ end_at ] ]
+            for [ j: i32 0, j < nz, j += 1 ]
+                jv : f64 [ jac[ ri + j ] ]
+                row[ j ] = jv
+                rhs += jv * zz[ j ]
+            row[ at_v + i ] = 1.0
+            q.add_eq[ row, rhs ]
+            pos_row : vec f64 [ n ]
+            pos_row[ at_v + i ] = 1.0
+            pos_row[ at_e + i ] = -1.0
+            q.add_le[ pos_row, 0.0 ]
+            neg_row : vec f64 [ n ]
+            neg_row[ at_v + i ] = -1.0
+            neg_row[ at_e + i ] = -1.0
+            q.add_le[ neg_row, 0.0 ]
+            # bounded: phase I would let it run off
+            cap_row : vec f64 [ n ]
+            cap_row[ at_e + i ] = 1.0
+            q.add_le[ cap_row, 1e5 ]
+        if [ relax ]
+            q.cost[ at_m ] = miss_cost / (isp * GRAVITY_STD)
+            q.add_cone[ place_cone[ e / 7, zz, nd, jac, n, 0.0, -1,
+                                    at_m ] ]
+        # the glide slope at every node after the start, eased
+        cot : f64 [ 1.0 / tan[ glide ] ]
+        for [ k: i32 1, k < nst, k += 1 ]
+            q.add_cone[ place_cone[ k, zz, nd, jac, n, cot, at_g, -1 ] ]
+        # the sink rate's cone, linearised, eased as the glide is
+        two_a : f64 [ 2.0 * sink_brake ]
+        for [ k: i32 1, k < nst, k += 1 ]
+            rz : i32 [ (k * 7 + 2) * nz ]
+            rv : i32 [ (k * 7 + 5) * nz ]
+            cells : i32 [ 2 * n ]
+            sk : Cone [ k: 2, rows: vec f64 [ cells ],
+                        off: vec f64 [ 2 ], tg: vec f64 [ n ],
+                        td: 0.0 ]
+            o0 : f64 [ 2.0 * (0.0 - nd[ k * 7 + 5 ] - sink_floor) ]
+            o1 : f64 [ two_a * nd[ k * 7 + 2 ] - 1.0 ]
+            t0 : f64 [ two_a * nd[ k * 7 + 2 ] + 1.0 ]
+            for [ j: i32 0, j < nz, j += 1 ]
+                cv : f64 [ -2.0 * jac[ rv + j ] ]
+                cz : f64 [ two_a * jac[ rz + j ] ]
+                sk.rows[ j ] = cv
+                sk.rows[ n + j ] = cz
+                sk.tg[ j ] = cz
+                o0 -= cv * zz[ j ]
+                o1 -= cz * zz[ j ]
+                t0 -= cz * zz[ j ]
+            sk.off[ 0 ] = o0
+            sk.off[ 1 ] = o1
+            sk.td = t0
+            sk.tg[ at_s + k ] = 1.0
+            q.add_cone[ sk ]
+        ease_row : vec f64 [ n ]
+        ease_row[ at_g ] = -1.0
+        q.add_le[ ease_row, 0.0 ]
+        ease_cap : vec f64 [ n ]
+        ease_cap[ at_g ] = 1.0
+        q.add_le[ ease_cap, 1e5 ]
+        # the trust region
+        cells : i32 [ nz * n ]
+        tr : Cone [ k: nz, rows: vec f64 [ cells ], off: vec f64 [ nz ],
+                    tg: vec f64 [ n ], td: eta ]
+        for [ j: i32 0, j < nz, j += 1 ]
+            w : f64 [ weight[ j ] ]
+            tr.rows[ j * n + j ] = w
+            tr.off[ j ] = 0.0 - w * zz[ j ]
+        q.add_cone[ tr ]
+        return q
+
+    # |T_k+1 - T_k| and |T_0 - now| within slew x the step
+    func slew_cones [ q: Socp, zz: vec f64, n: i32 ]
+        if [ slew <= 0.0 ] return
+        nst : i32 [ steps ]
+        reach : f64 [ slew * zz[ nst * 4 ] / f64[ nst ] ]
+        three : i32 [ 3 * n ]
+        for [ k: i32 0, k < nst - 1, k += 1 ]
+            c : Cone [ k: 3, rows: vec f64 [ three ],
+                       off: vec f64 [ 3 ], tg: vec f64 [ n ],
+                       td: reach ]
+            for [ ax: i32 0, ax < 3, ax += 1 ]
+                c.rows[ ax * n + (k + 1) * 4 + ax ] = 1.0
+                c.rows[ ax * n + k * 4 + ax ] = -1.0
+            q.add_cone[ c ]
+        # across, no faster than it turns
+        side : f64 [ turn * mass / thrust_max * zz[ nst * 4 ]
+                     / f64[ nst ] ]
+        two : i32 [ 2 * n ]
+        if [ turn > 0.0 ]
+            for [ k: i32 0, k < nst - 1, k += 1 ]
+                c : Cone [ k: 2, rows: vec f64 [ two ],
+                           off: vec f64 [ 2 ], tg: vec f64 [ n ],
+                           td: side ]
+                for [ ax: i32 0, ax < 2, ax += 1 ]
+                    c.rows[ ax * n + (k + 1) * 4 + ax ] = 1.0
+                    c.rows[ ax * n + k * 4 + ax ] = -1.0
+                q.add_cone[ c ]
+        if [ dv_len[ thrust_now ] <= 0.0 ] return
+        now : Cone [ k: 3, rows: vec f64 [ three ], off: vec f64 [ 3 ],
+                     tg: vec f64 [ n ], td: reach * 0.5 ]
+        for [ ax: i32 0, ax < 3, ax += 1 ]
+            now.rows[ ax * n + ax ] = 1.0
+        now.off[ 0 ] = 0.0 - thrust_now.x / thrust_max
+        now.off[ 1 ] = 0.0 - thrust_now.y / thrust_max
+        now.off[ 2 ] = 0.0 - thrust_now.z / thrust_max
+        q.add_cone[ now ]
+        if [ turn <= 0.0 ] return
+        across : Cone [ k: 2, rows: vec f64 [ two ], off: vec f64 [ 2 ],
+                        tg: vec f64 [ n ], td: side * 0.5 ]
+        across.rows[ 0 ] = 1.0
+        across.rows[ n + 1 ] = 1.0
+        across.off[ 0 ] = 0.0 - thrust_now.x / thrust_max
+        across.off[ 1 ] = 0.0 - thrust_now.y / thrust_max
+        q.add_cone[ across ]
+
+    # |across| <= cot height + ease, or <= the bound variable
+    func place_cone [ k: i32, zz: vec f64, nd: vec f64, jac: vec f64,
+                      n: i32, cot: f64, ease: i32, bound: i32 ] -> Cone
+        nz : i32 [ steps * 4 + 1 ]
+        two : i32 [ 2 * n ]
+        c : Cone [ k: 2, rows: vec f64 [ two ], off: vec f64 [ 2 ],
+                   tg: vec f64 [ n ], td: 0.0 ]
+        at : i32 [ k * 7 ]
+        for [ ax: i32 0, ax < 2, ax += 1 ]
+            ri : i32 [ (at + ax) * nz ]
+            o : f64 [ nd[ at + ax ] ]
+            for [ j: i32 0, j < nz, j += 1 ]
+                jv : f64 [ jac[ ri + j ] ]
+                c.rows[ ax * n + j ] = jv
+                o -= jv * zz[ j ]
+            c.off[ ax ] = o
+        if [ bound >= 0 ]
+            c.tg[ bound ] = 1.0
+            return c
+        rz : i32 [ (at + 2) * nz ]
+        td : f64 [ nd[ at + 2 ] ]
+        for [ j: i32 0, j < nz, j += 1 ]
+            jv : f64 [ jac[ rz + j ] ]
+            c.tg[ j ] = cot * jv
+            td -= jv * zz[ j ]
+        c.td = cot * td
+        c.tg[ ease ] = 1.0
+        return c
+
+    # the first guess: an even push that undoes the speed
+    func cold [] -> vec f64
+        nst : i32 [ steps ]
+        nz : i32 [ nst * 4 + 1 ]
+        out : vec f64 [ nz ]
+        tf : f64 [ flight ]
+        if [ tf <= 0.0 ]
+            vd : f64 [ (0.0 - v0.z > 1.0) ? 0.0 - v0.z : 1.0 ]
+            tf = 2.0 * r0.z / vd
+        if [ tf < 4.0 ] tf = 4.0
+        a : Dvec [ 0.0 - v0.x / tf, 0.0 - v0.y / tf,
+                   gravity - v0.z / tf ]
+        if [ a.z < 1.0 ] a.z = 1.0
+        push : f64 [ dv_len[ a ] * mass / thrust_max ]
+        lo : f64 [ thrust_min / thrust_max ]
+        held : f64 [ push ]
+        if [ held < lo * 1.05 ] held = lo * 1.05
+        if [ held > 0.95 ] held = 0.95
+        way : dv_norm[ a ]
+        for [ k: i32 0, k < nst, k += 1 ]
+            out[ k * 4 ] = way.x * held
+            out[ k * 4 + 1 ] = way.y * held
+            out[ k * 4 + 2 ] = way.z * held
+            out[ k * 4 + 3 ] = held
+        out[ nst * 4 ] = tf
+        return out
+
+    # a warm start from an earlier answer, late seconds on
+    public func shift [ prev: Scvx, late: f64 ]
+        nst : i32 [ steps ]
+        nz : i32 [ nst * 4 + 1 ]
+        pn : i32 [ prev.steps ]
+        tf : f64 [ prev.flight - late ]
+        if [ !prev.feasible || tf < 2.0 ] return
+        start = vec f64 [ nz ]
+        pdt : f64 [ prev.flight / f64[ pn ] ]
+        dt : f64 [ tf / f64[ nst ] ]
+        for [ k: i32 0, k < nst, k += 1 ]
+            t : f64 [ late + (f64[ k ] + 0.5) * dt ]
+            pk : i32 [ i32[ t / pdt ] ]
+            if [ pk >= pn ] pk = pn - 1
+            for [ i: i32 0, i < 4, i += 1 ]
+                pv : f64 [ prev.z[ pk * 4 + i ] ]
+                start[ k * 4 + i ] = pv
+        start[ nst * 4 ] = tf
+        relax = prev.relax
+
+    public func solve [] -> bool
+        prepare[]
+        nst : i32 [ steps ]
+        nz : i32 [ nst * 4 + 1 ]
+        zr : vec f64 [ nz ]
+        seed : cold[]
+        if [ start && start.count == nz ] seed = start
+        for [ i: i32 0, i < nz, i += 1 ]
+            sv : f64 [ seed[ i ] ]
+            zr[ i ] = sv
+        nd : fly[ zr, 0, null ]
+        jr : f64 [ merit[ nd ] ]
+        eta : f64 [ 1.0 ]
+        solver_steps = 0
+        rounds = 0
+        e : i32 [ nst * 7 ]
+        for [ it: i32 0, it < passes, it += 1 ]
+            rounds += 1
+            jac : linearize[ zr, nd ]
+            q : subproblem[ zr, nd, jac, eta ]
+            good : bool [ q.solve[] ]
+            solver_steps += q.steps
+            if [ !good ]
+                eta *= 0.5
+                if [ eta < 1e-3 ] break
+                continue
+            zn : vec f64 [ nz ]
+            for [ i: i32 0, i < nz, i += 1 ]
+                xv : f64 [ q.x[ i ] ]
+                zn[ i ] = xv
+            # what the linear model says the cost becomes
+            lin : f64 [ 0.0 - nd[ e + 6 ] / mass ]
+            for [ j: i32 0, j < nz, j += 1 ]
+                lin += q.cost[ j ] * (zn[ j ] - zr[ j ])
+            for [ j: i32 nz, j < q.n, j += 1 ]
+                lin += q.cost[ j ] * q.x[ j ]
+            ndn : fly[ zn, 0, null ]
+            jn : f64 [ merit[ ndn ] ]
+            said : f64 [ jr - lin ]
+            got : f64 [ jr - jn ]
+            moved : f64 [ 0.0 ]
+            for [ j: i32 0, j < nz, j += 1 ]
+                dw : f64 [ weight[ j ] * (zn[ j ] - zr[ j ]) ]
+                moved += dw * dw
+            moved = sqrt[ moved ]
+            # nothing more to gain: the model agrees it is done
+            if [ said < 1e-9 && moved < 1e-3 ]
+                if [ got >= 0.0 ]
+                    zr = zn
+                    nd = ndn
+                    jr = jn
+                break
+            # a solve that predicts no gain: a smaller region
+            if [ said < 1e-9 ]
+                eta *= 0.5
+                if [ eta < 1e-3 ] break
+                continue
+            ratio : f64 [ got / said ]
+            if [ ratio < 0.0 ]
+                eta *= 0.5
+                if [ eta < 1e-3 ] break
+                continue
+            zr = zn
+            nd = ndn
+            jr = jn
+            if [ ratio < 0.25 ]
+                eta *= 0.5
+            el [ ratio > 0.7 && moved > 0.5 * eta ]
+                eta = (eta * 2.0 > 4.0) ? 4.0 : eta * 2.0
+            if [ moved < 1e-4 ] break
+        z = zr
+        nodes = nd
+        flight = zr[ nst * 4 ]
+        defect = 0.0
+        for [ c: i32 ] in end_rows[]
+            d : f64 [ abs[ nd[ e + c ] ] ]
+            if [ d > defect ] defect = d
+        final_mass = nd[ e + 6 ]
+        fuel = mass - final_mass
+        feasible = defect < 0.5 && overreach[ nd ] < 1.0
+        return feasible
+
+    # in G-FOLD's form: accelerations at each step's middle
+    public func landing [] -> Landing
+        nst : i32 [ steps ]
+        ld : Landing [ r0: r0, v0: v0, mass: mass, gravity: gravity,
+                       thrust_min: thrust_min, thrust_max: thrust_max,
+                       isp: isp, tilt: tilt, glide: glide, steps: nst,
+                       flight: flight, relax: relax,
+                       miss_cost: miss_cost ]
+        ld.feasible = feasible
+        cells : i32 [ nst * 3 ]
+        ld.accel = vec f64 [ cells ]
+        ld.extra = vec f64 [ cells ]
+        ld.bound = vec f64 [ nst ]
+        ld.fuel = fuel
+        ld.final_mass = final_mass
+        ld.solver_steps = solver_steps
+        if [ !feasible ] return ld
+        for [ k: i32 0, k < nst, k += 1 ]
+            a : i32 [ k * 7 ]
+            b : i32 [ a + 7 ]
+            m : f64 [ (nodes[ a + 6 ] + nodes[ b + 6 ]) * 0.5 ]
+            v : Dvec [ (nodes[ a + 3 ] + nodes[ b + 3 ]) * 0.5,
+                       (nodes[ a + 4 ] + nodes[ b + 4 ]) * 0.5,
+                       (nodes[ a + 5 ] + nodes[ b + 5 ]) * 0.5 ]
+            hz : f64 [ (nodes[ a + 2 ] + nodes[ b + 2 ]) * 0.5 ]
+            f : f64 [ drag_factor[ hz, dv_len[ v ] ] / m ]
+            for [ ax: i32 0, ax < 3, ax += 1 ]
+                th : f64 [ z[ k * 4 + ax ] * thrust_max / m ]
+                ld.accel[ k * 3 + ax ] = th
+            ld.extra[ k * 3 ] = 0.0 - f * v.x
+            ld.extra[ k * 3 + 1 ] = 0.0 - f * v.y
+            ld.extra[ k * 3 + 2 ] = 0.0 - f * v.z
+            sg : f64 [ z[ k * 4 + 3 ] * thrust_max / m ]
+            ld.bound[ k ] = sg
+        return ld
+
+# ---------------------------------------------------------------
+# where a falling body comes down: gravity, the turning air,
+# drag engines first; to a height above the ellipsoid
+# ---------------------------------------------------------------
+class Impact
+    public point : Dvec       # ECEF
+    public time  : f64        # seconds from now
+    public lat   : f64
+    public lon   : f64
+    public ok    : bool
+
+func predict_impact [ r: Dvec, v: Dvec, t: f64, turn_start: f64,
+                      c: Craft, floor_h: f64 ] -> Impact
+    out : Impact [ ok: false ]
+    pos : r
+    vel : v
+    spin : Dvec [ 0.0, 0.0, EARTH_SPIN ]
+    mass : f64 [ c.mass ]
+    area : f64 [ 3.14159265358979 * c.radius * c.radius ]
+    # its own shape's drag, engines first, a table by Mach
+    table : vec f64 []
+    for [ i: i32 0, i <= 40, i += 1 ]
+        cm : f64 [ c.axial_coeff[ f64[ i ] * 0.25, true, false ] ]
+        table.push[ cm ]
+    clock : f64 [ 0.0 ]
+    h : f64 [ 0.25 ]
+    for [ i: i32 0, i < 8000, i += 1 ]
+        ang : f64 [ earth_turn[ t + clock, turn_start ] ]
+        geo : ecef_to_geodetic[ eci_to_ecef[ pos, ang ] ]
+        if [ geo.z <= floor_h ]
+            out.point = eci_to_ecef[ pos, ang ]
+            out.time = clock
+            out.lat = geo.x
+            out.lon = geo.y
+            out.ok = true
+            return out
+        rel : dv_sub[ vel, dv_cross[ spin, pos ] ]
+        sp : f64 [ dv_len[ rel ] ]
+        ar : standard_air[ geo.z ]
+        mk : f64 [ sp / ar.sound / 0.25 ]
+        if [ mk > 39.999 ] mk = 39.999
+        ki : i32 [ i32[ mk ] ]
+        ca : f64 [ table[ ki ] + (table[ ki + 1 ] - table[ ki ])
+                   * (mk - f64[ ki ]) ]
+        k : f64 [ 0.5 * ar.density * sp * ca * area / mass ]
+        acc : dv_sub[ gravity[ pos ], dv_scale[ rel, k ] ]
+        # semi implicit: speed first, then place
+        vel = dv_add[ vel, dv_scale[ acc, h ] ]
+        pos = dv_add[ pos, dv_scale[ vel, h ] ]
+        clock += h
+        # finer steps in the thick air near the end
+        h = (geo.z < 20000.0) ? 0.05 : 0.25
+    return out
+
+# ---------------------------------------------------------------
+# checks
+# ---------------------------------------------------------------
+# the distance from (3, 4) to the line x + y = 1: 6 / sqrt 2
+expect func t_socp_distance [] -> bool
+    q : Socp [ n: 3 ]
+    q.cost[ 2 ] = 1.0
+    q.add_eq[ vec f64 [] [ 1.0, 1.0, 0.0 ], 1.0 ]
+    c : Cone [ k: 2, rows: vec f64 [] [ 1.0, 0.0, 0.0, 0.0, 1.0, 0.0 ],
+               off: vec f64 [] [ -3.0, -4.0 ],
+               tg: vec f64 [] [ 0.0, 0.0, 1.0 ], td: 0.0 ]
+    q.add_cone[ c ]
+    good : bool [ q.solve[] ]
+    t : f64 [ q.x[ 2 ] ]
+    log 'socp: distance {t} (exact 4.242641), {q.steps} Newton steps'
+    return good && abs[ t - 4.2426407 ] < 1e-5
+
+# the push across trails the one asked by 1.25 s: the plan's
+# own end is on the mark, and the plan flown through a true
+# lag (the push got chasing the push asked) lands near it
+expect func t_landing_lag [] -> bool
+    ld : Landing [ r0: Dvec [ 300.0, 100.0, 1500.0 ],
+                   v0: Dvec [ -20.0, 5.0, -150.0 ], mass: 30000.0,
+                   thrust_min: 338000.0, thrust_max: 845000.0,
+                   isp: 287.5, lag: 1.25,
+                   lat_now: Dvec [ 2.0, -1.0, 0.0 ] ]
+    if [ !ld.best[ 12.0, 40.0 ] ]
+        log 'landing lag: no solution'
+        return false
+    nst : i32 [ ld.steps ]
+    end_p : f64 [ dv_len[ ld.place_at[ nst ] ] ]
+    end_v : f64 [ dv_len[ ld.speed_at[ nst ] ] ]
+    dt : f64 [ ld.flight / f64[ nst ] ]
+    pos : ld.r0
+    vel : ld.v0
+    gx : f64 [ 2.0 ]
+    gy : f64 [ -1.0 ]
+    sub : i32 [ 200 ]
+    h : f64 [ dt / f64[ sub ] ]
+    for [ k: i32 0, k < nst, k += 1 ]
+        ux : f64 [ ld.accel[ k * 3 ] ]
+        uy : f64 [ ld.accel[ k * 3 + 1 ] ]
+        uz : f64 [ ld.accel[ k * 3 + 2 ] ]
+        for [ i: i32 0, i < sub, i += 1 ]
+            gx += (ux - gx) * h / ld.lag
+            gy += (uy - gy) * h / ld.lag
+            acc : Dvec [ gx, gy, uz - ld.gravity ]
+            vel = dv_add[ vel, dv_scale[ acc, h ] ]
+            pos = dv_add[ pos, dv_scale[ vel, h ] ]
+    off : f64 [ sqrt[ pos.x * pos.x + pos.y * pos.y ] ]
+    side : f64 [ sqrt[ vel.x * vel.x + vel.y * vel.y ] ]
+    log 'landing lag: {ld.flight} s, plan ends {end_p} m off at {end_v} m/s; flown through the lag: {off} m off at {side} m/s across'
+    return end_p < 1e-3 && end_v < 1e-3 && off < 5.0 && side < 1.0
+
+# a landing burn on one Merlin at sea level, then its thrust
+# plan flown through the exact rocket equation
+expect func t_landing_burn [] -> bool
+    ld : Landing [ r0: Dvec [ 300.0, 100.0, 1500.0 ],
+                   v0: Dvec [ -20.0, 5.0, -150.0 ], mass: 30000.0,
+                   thrust_min: 338000.0, thrust_max: 845000.0,
+                   isp: 287.5 ]
+    began : i64 [ clock[] ]
+    if [ !ld.best[ 12.0, 40.0 ] ]
+        log 'landing: no solution'
+        return false
+    # processor time: clock() counts microseconds on linux
+    took : f64 [ f64[ clock[] - began ] / 1000.0 ]
+    # fly it: u held over each step, the mass by the exact law
+    nst : i32 [ ld.steps ]
+    dt : f64 [ ld.flight / f64[ nst ] ]
+    pos : ld.r0
+    vel : ld.v0
+    m : f64 [ ld.mass ]
+    worst_lo : f64 [ 1e30 ]
+    worst_hi : f64 [ 0.0 ]
+    tilt_max : f64 [ 0.0 ]
+    for [ k: i32 0, k < nst, k += 1 ]
+        u : Dvec [ ld.accel[ k * 3 ], ld.accel[ k * 3 + 1 ],
+                   ld.accel[ k * 3 + 2 ] ]
+        sub : i32 [ 50 ]
+        h : f64 [ dt / f64[ sub ] ]
+        for [ i: i32 0, i < sub, i += 1 ]
+            thrust : f64 [ dv_len[ u ] * m ]
+            if [ thrust < worst_lo ] worst_lo = thrust
+            if [ thrust > worst_hi ] worst_hi = thrust
+            acc : Dvec [ u.x, u.y, u.z - ld.gravity ]
+            pos = dv_add[ pos, dv_add[ dv_scale[ vel, h ],
+                          dv_scale[ acc, 0.5 * h * h ] ] ]
+            vel = dv_add[ vel, dv_scale[ acc, h ] ]
+            m = m - thrust / (ld.isp * GRAVITY_STD) * h
+        tl : f64 [ acos[ u.z / dv_len[ u ] ] ]
+        if [ tl > tilt_max ] tilt_max = tl
+    miss : f64 [ dv_len[ pos ] ]
+    rest : f64 [ dv_len[ vel ] ]
+    deg : f64 [ tilt_max * 57.2957795 ]
+    log 'landing: {ld.flight} s, fuel {ld.fuel} kg, solved in {took} ms, lands {miss} m off at {rest} m/s, thrust {worst_lo}..{worst_hi} N, tilt {deg} deg'
+    # the flown mass matches the plan's to a few kilograms
+    held : bool [ worst_hi <= 845000.0 * 1.01
+                  && worst_lo >= 338000.0 * 0.95 ]
+    kept : bool [ abs[ m - ld.final_mass ] < 50.0 ]
+    return miss < 0.5 && rest < 0.1 && held && kept
+
+# the predictor against the full physics: the empty booster
+# held engines first, falling from 60 km at 1.2 km/s
+expect func t_impact_predict [] -> bool
+    c : empty_booster[]
+    c.weather.severity = 0
+    c.stand[ 0.4, -1.4, 60000.0 ]
+    ang : f64 [ earth_turn[ c.time, c.turn_start ] ]
+    geo : c.geodetic[]
+    east : ecef_to_eci[ enu_east[ geo.x, geo.y ], ang ]
+    up : ecef_to_eci[ enu_up[ geo.x, geo.y ], ang ]
+    c.state.v = dv_add[ c.state.v, dv_add[ dv_scale[ east, -900.0 ],
+                        dv_scale[ up, -800.0 ] ] ]
+    guess : predict_impact[ c.state.r, c.state.v, c.time, c.turn_start,
+                            c, 0.0 ]
+    spin : Dvec [ 0.0, 0.0, EARTH_SPIN ]
+    for [ i: i32 0, i < 40000, i += 1 ]
+        c.step[ 0.01 ]
+        rel : dv_sub[ c.state.v, dv_cross[ spin, c.state.r ] ]
+        c.state.q = q_between[ Dvec [ 1.0, 0.0, 0.0 ],
+                               dv_scale[ dv_norm[ rel ], -1.0 ] ]
+        c.state.w = Dvec [ 0.0, 0.0, 0.0 ]
+        now : c.geodetic[]
+        if [ now.z <= 0.0 ] break
+    ang = earth_turn[ c.time, c.turn_start ]
+    land : eci_to_ecef[ c.state.r, ang ]
+    miss : f64 [ dv_len[ dv_sub[ land, guess.point ] ] ]
+    log 'impact: predicted {guess.time} s, flown {c.time} s, apart {miss} m'
+    return guess.ok && miss < 200.0
+
+# a plan in G-FOLD's form flown through the air of sc: thrust
+# its acceleration times the mass; miss (m), speed, mass left
+func fly_plan [ ld: Landing, sc: Scvx ] -> vec f64
+    nst : i32 [ ld.steps ]
+    dt : f64 [ ld.flight / f64[ nst ] ]
+    sub : i32 [ 50 ]
+    h : f64 [ dt / f64[ sub ] ]
+    pos : ld.r0
+    vel : ld.v0
+    m : f64 [ ld.mass ]
+    for [ k: i32 0, k < nst, k += 1 ]
+        u : Dvec [ ld.accel[ k * 3 ], ld.accel[ k * 3 + 1 ],
+                   ld.accel[ k * 3 + 2 ] ]
+        for [ i: i32 0, i < sub, i += 1 ]
+            th : dv_scale[ u, m ]
+            mid : dv_add[ vel, dv_scale[ sc.accel[ pos, vel, m, th ],
+                          h * 0.5 ] ]
+            a : sc.accel[ pos, mid, m, th ]
+            pos = dv_add[ pos, dv_scale[ mid, h ] ]
+            vel = dv_add[ vel, dv_scale[ a, h ] ]
+            m -= dv_len[ th ] / (ld.isp * GRAVITY_STD) * h
+    return vec f64 [] [ dv_len[ pos ], dv_len[ vel ], m ]
+
+# both planners on one burn through the air: time, fuel, miss
+expect func t_landing_compare [] -> bool
+    ca : vec f64 []
+    for [ i: i32 0, i <= 40, i += 1 ]
+        ca.push[ 1.3 ]
+    area : f64 [ 3.14159265358979 * 1.83 * 1.83 ]
+    r0 : Dvec [ 300.0, 100.0, 1500.0 ]
+    v0 : Dvec [ -20.0, 5.0, -150.0 ]
+    sc : Scvx [ r0: r0, v0: v0, mass: 30000.0, thrust_min: 338000.0,
+                thrust_max: 845000.0, isp: 287.5, drag: ca,
+                area: area, deck: 0.0, flight: 14.0 ]
+    began : i64 [ Au.epoch_micros[] ]
+    sc_good : bool [ sc.solve[] ]
+    sc_ms : f64 [ f64[ Au.epoch_micros[] - began ] / 1000.0 ]
+    sc_ld : sc.landing[]
+    sc_fly : fly_plan[ sc_ld, sc ]
+    log 'scvx: {sc_good} {sc.flight} s, fuel {sc.fuel} kg, {sc_ms} ms, {sc.rounds} rounds, {sc.solver_steps} Newton steps, end defect {sc.defect}; flown: {sc_fly[ 0 ]} m off at {sc_fly[ 1 ]} m/s'
+    # G-FOLD: the time searched, then the drag along its path
+    ld : Landing [ r0: r0, v0: v0, mass: 30000.0,
+                   thrust_min: 338000.0, thrust_max: 845000.0,
+                   isp: 287.5, steps: 16 ]
+    began = Au.epoch_micros[]
+    gf_good : bool [ ld.best[ 6.0, 40.0 ] ]
+    for [ pass: i32 0, pass < 2 && gf_good, pass += 1 ]
+        drag : vec f64 []
+        dt : f64 [ ld.flight / f64[ ld.steps ] ]
+        used : f64 [ 0.0 ]
+        for [ k: i32 0, k < ld.steps, k += 1 ]
+            v : ld.speed_at[ k ]
+            p : ld.place_at[ k ]
+            m : f64 [ ld.mass - used ]
+            f : f64 [ sc.drag_factor[ p.z, dv_len[ v ] ] / m ]
+            dx : f64 [ 0.0 - f * v.x ]
+            dy : f64 [ 0.0 - f * v.y ]
+            dz : f64 [ 0.0 - f * v.z ]
+            drag.push[ dx ]
+            drag.push[ dy ]
+            drag.push[ dz ]
+            used += ld.bound[ k ] * m * dt / (ld.isp * GRAVITY_STD)
+        ld.extra = drag
+        gf_good = ld.best[ 6.0, 40.0 ]
+    gf_ms : f64 [ f64[ Au.epoch_micros[] - began ] / 1000.0 ]
+    gf_fly : fly_plan[ ld, sc ]
+    log 'gfold: {gf_good} {ld.flight} s, fuel {ld.fuel} kg, {gf_ms} ms; flown: {gf_fly[ 0 ]} m off at {gf_fly[ 1 ]} m/s'
+    return sc_good && gf_good && sc_fly[ 0 ] < 5.0 && sc_fly[ 1 ] < 2.0
+

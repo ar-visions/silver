@@ -1,0 +1,1250 @@
+# the GPU: GP0 packets drawn into VRAM through trinity, GP1 display
+# control, status. VRAM is a 1024 x 512 render target: each 15-bit
+# pixel kept exactly, 5 bits a channel, the mask bit in alpha
+extend psx
+
+enum PsxSurface
+    vram : 0
+
+# blend pipelines, by index: opaque, then the four GP0 modes
+BLEND_OPAQUE  : i32 [ 0 ]
+BLEND_AVERAGE : i32 [ 1 ]
+BLEND_ADD     : i32 [ 2 ]
+BLEND_SUB     : i32 [ 3 ]
+BLEND_QUARTER : i32 [ 4 ]
+# texture depths in a_mode.x; 17 is a raw VRAM-to-VRAM copy
+DEPTH_NONE : f32 [ 0.0 ]
+DEPTH_COPY : f32 [ 17.0 ]
+# floats a vertex: pos 2, col 4, uv 2, page 4, mode 4, area 4,
+# win 4, misc 4
+VERT_FLOATS : i32 [ 28 ]
+VERT_MAX    : i32 [ 196608 ]
+
+# every primitive: positions in VRAM pixels, textures from the
+# VRAM copy by raw texel fetch, 5-bit output and the mask bit
+ModelViewProject PsxDraw
+    # x: the scale VRAM is drawn at
+    mutable res  : vec4f
+    attrib vram  : LayoutBinding [ type:typeid[ PsxSurface ],
+                                   id:PsxSurface.vram, count:1,
+                                   format: typeid[ rgba8 ] ]
+    attrib a_pos  : VertexInput [ type:typeid[ vec2f ] ]
+    attrib a_col  : VertexInput [ type:typeid[ vec4f ] ]
+    attrib a_uv   : VertexInput [ type:typeid[ vec2f ] ]
+    attrib a_page : VertexInput [ type:typeid[ vec4f ] ]
+    attrib a_mode : VertexInput [ type:typeid[ vec4f ] ]
+    attrib a_area : VertexInput [ type:typeid[ vec4f ] ]
+    attrib a_win  : VertexInput [ type:typeid[ vec4f ] ]
+    attrib a_misc : VertexInput [ type:typeid[ vec4f ] ]
+
+    attrib v_col  : VertexOutput [ type:typeid[ vec4f ] ]
+    attrib v_uv   : VertexOutput [ type:typeid[ vec2f ] ]
+    attrib v_page : VertexOutput [ type:typeid[ vec4f ], flat: true ]
+    attrib v_mode : VertexOutput [ type:typeid[ vec4f ], flat: true ]
+    attrib v_area : VertexOutput [ type:typeid[ vec4f ], flat: true ]
+    attrib v_win  : VertexOutput [ type:typeid[ vec4f ], flat: true ]
+    attrib v_misc : VertexOutput [ type:typeid[ vec4f ], flat: true ]
+
+    attrib fragColor : FragmentOutput [ type:typeid[ vec4f ] ]
+
+    func init [ ]
+        model = mat4f.identity[]
+        view  = mat4f.identity[]
+        proj  = mat4f.identity[]
+
+    func vertex [] -> GLSL none {
+        v_col  = a_col;
+        v_uv   = a_uv;
+        v_page = a_page;
+        v_mode = a_mode;
+        v_area = a_area;
+        v_win  = a_win;
+        v_misc = a_misc;
+        gl_Position = vec4(a_pos.x / 512.0 - 1.0,
+                           a_pos.y / 256.0 - 1.0, 0.0, 1.0);
+    }
+
+    # a VRAM sample as its 15-bit word, the mask bit on top
+    func word_of [ s: @vec4f ] -> GLSL int {
+        return int(s.r * 31.0 + 0.5) | (int(s.g * 31.0 + 0.5) << 5) |
+               (int(s.b * 31.0 + 0.5) << 10) |
+               ((s.a > 0.5) ? 0x8000 : 0);
+    }
+
+    # one texel's colour word: window, page, then colour table
+    func texel_word [ u: @i32, v: @i32, depth: @i32, page: @vec4f,
+                      win: @vec4f, S: @i32 ] -> GLSL int {
+        int wm = int(win.x);
+        int wn = int(win.y);
+        int uu = ((u & 255) & ~wm) | (int(win.z) & wm);
+        int vv = ((v & 255) & ~wn) | (int(win.w) & wn);
+        int ax = int(page.x) + uu;
+        if (depth == 4) ax = int(page.x) + (uu >> 2);
+        if (depth == 8) ax = int(page.x) + (uu >> 1);
+        int ay = int(page.y) + vv;
+        int w = word_of(texelFetch(vram, ivec2((ax & 1023) * S,
+                                               (ay & 511) * S), 0));
+        if (depth == 16) return w;
+        int idx = (depth == 4) ? ((w >> ((uu & 3) * 4)) & 15)
+                               : ((w >> ((uu & 1) * 8)) & 255);
+        return word_of(texelFetch(vram, ivec2(
+            ((int(page.z) + idx) & 1023) * S,
+            (int(page.w) & 511) * S), 0));
+    }
+
+    func fragment [] -> GLSL none {
+        // the footprint first, while the whole pixel quad runs
+        vec2 uvp = v_uv / v_col.a;
+        vec2 ddx = dFdx(uvp);
+        vec2 ddy = dFdy(uvp);
+        // the native pixel under this one of S x S
+        int S = int(ubo.res.x + 0.5);
+        ivec2 p = ivec2(gl_FragCoord.xy) / S;
+        if (p.x < int(v_area.x) || p.y < int(v_area.y) ||
+            p.x > int(v_area.z) || p.y > int(v_area.w)) discard;
+        int depth = int(v_mode.x + 0.5);
+        int pass = int(v_mode.z + 0.5);
+        float mask = v_misc.x;
+        vec3 c8 = v_col.rgb * 255.0;
+        if (depth > 0) {
+            vec3 t5 = vec3(0.0);
+            bool semi = false;
+            if (depth == 17) {
+                // a copy keeps the scaled detail: uv in VRAM pixels
+                int wd = 1024 * S;
+                int ht = 512 * S;
+                ivec2 sp = ivec2(floor(v_uv * float(S)));
+                sp = ivec2(((sp.x % wd) + wd) % wd,
+                           ((sp.y % ht) + ht) % ht);
+                int word = word_of(texelFetch(vram, sp, 0));
+                semi = (word & 0x8000) != 0;
+                if (pass == 1 && semi) discard;
+                if (pass == 2 && !semi) discard;
+                t5 = vec3(float(word & 31), float((word >> 5) & 31),
+                          float((word >> 10) & 31));
+            } else if (v_misc.y > 0.5) {
+                // anisotropic: bilinear taps along the footprint
+                float lx = length(ddx);
+                float ly = length(ddy);
+                vec2 major = (lx > ly) ? ddx : ddy;
+                vec2 minor = (lx > ly) ? ddy : ddx;
+                int nmaj = int(clamp(ceil(max(lx, ly)), 1.0, 16.0));
+                int nmin = int(clamp(ceil(min(lx, ly)), 1.0, 4.0));
+                nmin = max(1, min(nmin, 16 / nmaj));
+                ivec2 lo = ivec2(int(mod(v_misc.z, 256.0)),
+                                 int(v_misc.z / 256.0));
+                ivec2 hi = ivec2(int(mod(v_misc.w, 256.0)),
+                                 int(v_misc.w / 256.0));
+                // weights and colours: clear, opaque, semi texels
+                float wc = 0.0;
+                float wo = 0.0;
+                float ws = 0.0;
+                vec3 co = vec3(0.0);
+                vec3 cs = vec3(0.0);
+                float share = 1.0 / float(nmaj * nmin);
+                for (int i = 0; i < nmaj; i++) {
+                    for (int j = 0; j < nmin; j++) {
+                        vec2 at = uvp
+                            + major * ((float(i) + 0.5) / float(nmaj)
+                                       - 0.5)
+                            + minor * ((float(j) + 0.5) / float(nmin)
+                                       - 0.5);
+                        vec2 st = at - 0.5;
+                        vec2 b = floor(st);
+                        vec2 f = st - b;
+                        for (int k = 0; k < 4; k++) {
+                            int ox = k & 1;
+                            int oy = k >> 1;
+                            ivec2 c = clamp(ivec2(b) + ivec2(ox, oy),
+                                            lo, hi);
+                            float w = share
+                                * ((ox == 1) ? f.x : 1.0 - f.x)
+                                * ((oy == 1) ? f.y : 1.0 - f.y);
+                            int word = texel_word(c.x, c.y, depth,
+                                                  v_page, v_win, S);
+                            vec3 tc = vec3(float(word & 31),
+                                           float((word >> 5) & 31),
+                                           float((word >> 10) & 31));
+                            if (word == 0) wc += w;
+                            else if ((word & 0x8000) != 0) {
+                                ws += w;
+                                cs += tc * w;
+                            } else {
+                                wo += w;
+                                co += tc * w;
+                            }
+                        }
+                    }
+                }
+                // the pixel takes the kind most of its texels are
+                if (pass == 1) {
+                    if (wo < wc || wo < ws) discard;
+                    t5 = co / wo;
+                } else if (pass == 2) {
+                    if (ws <= wc || ws <= wo) discard;
+                    t5 = cs / ws;
+                    semi = true;
+                } else {
+                    if (wc > wo + ws) discard;
+                    t5 = (co + cs) / (wo + ws);
+                    semi = ws > wo;
+                }
+            } else {
+                int u = int(floor(uvp.x + 0.001));
+                int v = int(floor(uvp.y + 0.001));
+                int word = texel_word(u, v, depth, v_page, v_win, S);
+                // a black texel with no mask bit is see-through
+                if (word == 0) discard;
+                semi = (word & 0x8000) != 0;
+                if (pass == 1 && semi) discard;
+                if (pass == 2 && !semi) discard;
+                t5 = vec3(float(word & 31), float((word >> 5) & 31),
+                          float((word >> 10) & 31));
+            }
+            if (v_mode.y > 0.5) c8 = t5 * 8.0;
+            else c8 = min(t5 * 8.0 * c8 / 128.0, vec3(255.0));
+            if (semi) mask = 1.0;
+        }
+        if (v_mode.w > 0.5) {
+            // the 4x4 dither matrix, -4 .. +3 on 8-bit colour
+            int dm[16] = int[16](-4, 0, -3, 1, 2, -2, 3, -1,
+                                 -3, 1, -4, 0, 3, -1, 2, -2);
+            ivec2 dp = ivec2(gl_FragCoord.xy);
+            c8 = c8 + float(dm[(dp.y & 3) * 4 + (dp.x & 3)]);
+        }
+        vec3 c5 = floor(clamp(c8, vec3(0.0), vec3(255.0)) / 8.0);
+        fragColor = vec4(c5 / 31.0, mask);
+    }
+
+# the display: the shown part of VRAM, 15 or 24 bits, opaque
+ModelViewProject PsxDisplay
+    attrib vram  : LayoutBinding [ type:typeid[ PsxSurface ],
+                                   id:PsxSurface.vram, count:1,
+                                   format: typeid[ rgba8 ] ]
+    # x, y: the top left in VRAM; z, w: width and height shown
+    mutable area : vec4f
+    # x: 1 for 24-bit colour; y: the scale VRAM is drawn at
+    mutable fmt  : vec4f
+    attrib a_pos : VertexInput [ type:typeid[ vec2f ] ]
+    attrib v_at  : VertexOutput [ type:typeid[ vec2f ] ]
+    attrib fragColor : FragmentOutput [ type:typeid[ vec4f ] ]
+
+    func init [ ]
+        model = mat4f.identity[]
+        view  = mat4f.identity[]
+        proj  = mat4f.identity[]
+
+    func vertex [] -> GLSL none {
+        v_at = a_pos;
+        gl_Position = vec4(a_pos * 2.0 - 1.0, 0.0, 1.0);
+    }
+
+    func fragment [] -> GLSL none {
+        int S = int(ubo.fmt.y + 0.5);
+        ivec2 q = ivec2(floor(v_at * ubo.area.zw));
+        int x0 = int(ubo.area.x);
+        int y = (int(ubo.area.y) + q.y) & 511;
+        if (ubo.fmt.x < 0.5) {
+            // 15-bit: every scaled pixel, so the detail shows
+            ivec2 qs = ivec2(floor(v_at * ubo.area.zw * float(S)));
+            int sx = (x0 * S + qs.x) % (1024 * S);
+            int sy = (int(ubo.area.y) * S + qs.y) % (512 * S);
+            vec4 s = texelFetch(vram, ivec2(sx, sy), 0);
+            fragColor = vec4(floor(s.rgb * 31.0 + 0.5) / 31.0, 1.0);
+            return;
+        }
+        // 24-bit: three bytes a pixel across the 16-bit words
+        int b = q.x * 3;
+        int hw = b >> 1;
+        vec4 s0 = texelFetch(vram, ivec2(((x0 + hw) & 1023) * S,
+                                         y * S), 0);
+        vec4 s1 = texelFetch(vram, ivec2(((x0 + hw + 1) & 1023) * S,
+                                         y * S), 0);
+        int w0 = int(s0.r * 31.0 + 0.5) |
+                 (int(s0.g * 31.0 + 0.5) << 5) |
+                 (int(s0.b * 31.0 + 0.5) << 10) |
+                 ((s0.a > 0.5) ? 0x8000 : 0);
+        int w1 = int(s1.r * 31.0 + 0.5) |
+                 (int(s1.g * 31.0 + 0.5) << 5) |
+                 (int(s1.b * 31.0 + 0.5) << 10) |
+                 ((s1.a > 0.5) ? 0x8000 : 0);
+        int both = w0 | (w1 << 16);
+        int sh = (b & 1) * 8;
+        int r = (both >> sh) & 255;
+        int g = (both >> (sh + 8)) & 255;
+        int bl = (both >> (sh + 16)) & 255;
+        fragColor = vec4(float(r), float(g), float(bl), 255.0) / 255.0;
+    }
+
+class PsxGpu
+    public bus      : Bus
+    # the packet being gathered and how long it is
+    public fifo     : new u32
+    public fifo_n   : i32
+    # the RAM address each command word came from
+    public fifo_at  : new u32
+    public need     : i32
+    # an image from the CPU: its box, and where the next pixel goes
+    public img_left : i32
+    public img_x    : i32
+    public img_y    : i32
+    public img_w    : i32
+    public img_h    : i32
+    public img_i    : i32
+    public img_buf  : new u8
+    # an image to the CPU, read back whole, handed out by words
+    public rd_buf   : new u32
+    public rd_n     : i32
+    public rd_i     : i32
+    # the polyline being drawn until its terminator word
+    public polyline : bool
+    public poly_shade : bool
+    public poly_semi : bool
+    public poly_col : u32
+    public poly_xy  : u32
+    # E1..E6 and the display state, for GPUSTAT
+    public texpage  : u32
+    public dither   : bool
+    public draw_disp : bool
+    public mask_set : bool
+    public mask_test : bool
+    public tex_win  : u32
+    public area_x0  : i32
+    public area_y0  : i32
+    public area_x1  : i32
+    public area_y1  : i32
+    public off_x    : i32
+    public off_y    : i32
+    public disp_off : bool [ true ]
+    public dma_dir  : u32
+    public disp_x   : u32
+    public disp_y   : u32
+    public hrange   : u32
+    public vrange   : u32
+    public dmode    : u32
+    public irq_on   : bool
+    # the scanline being shown, and the interlaced field
+    public line     : i32
+    public vblank   : bool
+    public field    : bool
+    public packets  : i64
+    # trinity: the VRAM target and its pipelines, the copy textures
+    # read from, the vertices waiting, the runs in order
+    public vk       : vk_context
+    public win      : Window
+    public ready    : bool
+    public vram_r   : Render
+    public vram_tex : Texture
+    public draw_sh  : PsxDraw
+    public vbo      : Gpu
+    public model    : Model
+    public runs     : new i32
+    public run_n    : i32
+    public verts    : @f32
+    public vert_n   : i32
+    # filtered texturing for the next vertices, and their uv box as
+    # u + v x 256, low corner and high
+    public filt     : f32
+    public uv_lo    : f32
+    public uv_hi    : f32
+    # the first vertex and run not yet handed to the render
+    public vert_sent : i32
+    public run_sent : i32
+    # 64 x 64 blocks drawn since the copy was taken
+    public dirty    : new bool
+    public any_dirty : bool
+    # the boxes a copy moves: x y w h in scaled pixels
+    public boxes    : new i32
+    public disp_sh  : PsxDisplay
+    public disp_r   : Render
+    public disp_vbo : Gpu
+    public draws    : i64
+    # VRAM drawn at this many times its pixels, from the window
+    public scale    : i32 [ 1 ]
+    # CPU pixels expanded to the scale, and readbacks before shrinking
+    public big_buf  : new u8
+    public big_n    : i32
+    # the GTE: its exact screen positions for vertices it made
+    public gte      : Gte
+    # anisotropic filtering of 3D surfaces' textures
+    public filter   : bool [ true ]
+    # VRAM's byte order is the window's: blue first when BGRA
+    public bgra     : bool
+
+    func init []
+        fifo = new u32 [ 16 ]
+        fifo_at = new u32 [ 16 ]
+        img_buf = new u8 [ 1024 * 512 * 4 ]
+        rd_buf = new u32 [ 1024 * 512 / 2 + 2 ]
+        runs = new i32 [ 3 * 16384 ]
+        dirty = new bool [ 128 ]
+        boxes = new i32 [ 128 * 4 ]
+        area_x1 = 1023
+        area_y1 = 511
+
+    # ---- trinity
+
+    func pipeline [ src: VkBlendFactor, dst: VkBlendFactor,
+                    op: VkBlendOp, k: f32 ] -> Pipeline
+        smp : map Au[string] [ 'vram': vram_tex ]
+        # the blend goes in at construction: init builds the pipeline
+        bs : BlendState [ src: src, dst: dst, op: op,
+                          constant: vec4f [ k, k, k, k ] ]
+        return Pipeline [ vk: vk, w: win, name: 'psxdraw', r: vram_r,
+                          s: draw_sh, vbo: vbo, samplers: smp,
+                          cull_none: true, blend: bs ]
+
+    # the VRAM target, at the scale, and everything drawn into it
+    public func start_on [ vkc: vk_context, w: Window ]
+        if [ ready ] return
+        vk = vkc
+        win = w
+        ready = true
+        build[]
+        # VRAM starts black
+        for [ i: i32 0, i < 1024 * 512 * 4, i += 1 ]
+            img_buf[ i ] = 0
+        put_native[ 0, 0, 1024, 512 ]
+        log 'psx gpu: VRAM at {scale}x on trinity'
+
+    # a buffer of at least n bytes for scaled pixels
+    func big [ n: i32 ] -> @u8
+        if [ big_n < n ]
+            big_buf = new u8 [ n ]
+            big_n = n
+        return @u8 [ big_buf ]
+
+    func build []
+        sw : i32 [ 1024 * scale ]
+        shh : i32 [ 512 * scale ]
+        vram_r = Render [ vk: vk, w: win, width: sw, height: shh,
+                          wscale: 0.0, use_depth: false,
+                          load_existing: true, tag: 'psx-vram',
+                          paint_n: 1024,
+                          clear_color: vec4f [ 0.0, 0.0, 0.0, 0.0 ] ]
+        # the copy in the target's own format: copies are bit copies
+        bgra = vram_r.color.vk_format == VK_FORMAT_B8G8R8A8_UNORM
+        vram_tex = Texture [ vk: vk, w: win, width: sw, height: shh,
+                             vk_format: vram_r.color.vk_format,
+                             linear: true, nearest: true ]
+        draw_sh = PsxDraw [ vk: vk, name: 'psxdraw' ]
+        draw_sh.res = vec4f [ f32[ scale ], 0.0, 0.0, 0.0 ]
+        if [ !vbo ]
+            vm : new vertex_member_t [ 8 ]
+            sizes : vec i32 [] [ 2, 4, 2, 4, 4, 4, 4, 4 ]
+            off : i32 [ 0 ]
+            for [ i: i32 0, i < 8, i += 1 ]
+                n : i32 [ sizes[ i ] ]
+                if [ n == 2 ] vm[ i ].src = typeid[ vec2f ]
+                el            vm[ i ].src = typeid[ vec4f ]
+                vm[ i ].size   = n * 4
+                vm[ i ].offset = off
+                off += n * 4
+            vsz : i32 [ VERT_FLOATS * 4 ]
+            vmc : i32 [ 8 ]
+            vbo = Gpu [ vk: vk, name: 'psxv', members: vm,
+                        member_count: vmc, vertex_size: vsz,
+                        vertex_count: VERT_MAX ]
+            vbo.sync[ win ]
+            verts = @f32 [ vbo.vertex_data ]
+        model = Model [ vk: vk, w: win, s: draw_sh,
+                        samplers: map Au[string] [ 'vram': vram_tex ] ]
+        model.pipelines = vec Pipeline []
+        one : VkBlendFactor [ VK_BLEND_FACTOR_ONE ]
+        zero : VkBlendFactor [ VK_BLEND_FACTOR_ZERO ]
+        kc : VkBlendFactor [ VK_BLEND_FACTOR_CONSTANT_COLOR ]
+        add : VkBlendOp [ VK_BLEND_OP_ADD ]
+        sub : VkBlendOp [ VK_BLEND_OP_REVERSE_SUBTRACT ]
+        model.pipelines.push[ pipeline[ one, zero, add, 0.0 ] ]
+        model.pipelines.push[ pipeline[ kc, kc, add, 0.5 ] ]
+        model.pipelines.push[ pipeline[ one, one, add, 0.0 ] ]
+        model.pipelines.push[ pipeline[ one, one, sub, 0.0 ] ]
+        model.pipelines.push[ pipeline[ kc, one, add, 0.25 ] ]
+        model.runs = @i32 [ runs ]
+        model.r = vram_r
+        vram_r.models = vec Model [] [ model ]
+        vbo.vertex_count = 0
+        # the display: a quad over the shown part of VRAM
+        disp_sh = PsxDisplay [ vk: vk, name: 'psxdisplay' ]
+        if [ !disp_vbo ]
+            dm : new vertex_member_t [ 1 ]
+            dm[ 0 ].src    = typeid[ vec2f ]
+            dm[ 0 ].size   = 8
+            dm[ 0 ].offset = 0
+            dvs : i32 [ 8 ]
+            dvc : i32 [ 6 ]
+            dmc : i32 [ 1 ]
+            disp_vbo = Gpu [ vk: vk, name: 'psxdv', members: dm,
+                             member_count: dmc, vertex_size: dvs,
+                             vertex_count: dvc ]
+            disp_vbo.sync[ win ]
+            q : @f32 [ disp_vbo.vertex_data ]
+            quad : vec f32 [] [ 0.0, 0.0, 1.0, 0.0, 0.0, 1.0,
+                                1.0, 0.0, 1.0, 1.0, 0.0, 1.0 ]
+            for [ i: i32 0, i < 12, i += 1 ]
+                q[ i ] = quad[ i ]
+            disp_vbo.upload_verts[]
+        build_display[]
+        for [ i: i32 0, i < 128, i += 1 ]
+            dirty[ i ] = true
+        any_dirty = true
+
+    # the shown picture's target, at the shown size times the scale
+    func build_display []
+        disp_r = Render [ vk: vk, w: win, width: shown_w[] * scale,
+                          height: shown_h[] * scale,
+                          wscale: 0.0, use_depth: false,
+                          tag: 'psx-display',
+                          clear_color: vec4f [ 0.0, 0.0, 0.0, 1.0 ] ]
+        dp : Pipeline [ vk: vk, w: win, name: 'psxdisplay', r: disp_r,
+                        s: disp_sh, vbo: disp_vbo,
+                        samplers: map Au[string] [ 'vram': vram_tex ],
+                        cull_none: true ]
+        dmodel : Model [ vk: vk, w: win, s: disp_sh,
+                         samplers: map Au[string] [ 'vram': vram_tex ] ]
+        dmodel.pipelines = vec Pipeline [] [ dp ]
+        dmodel.r = disp_r
+        disp_r.models = vec Model [] [ dmodel ]
+
+    # a new scale: VRAM read back native, rebuilt, written again
+    public func set_scale [ want: i32 ]
+        if [ !ready || want == scale ] return
+        get_native[ 0, 0, 1024, 512 ]
+        scale = want
+        build[]
+        put_native[ 0, 0, 1024, 512 ]
+        log 'psx gpu: VRAM at {scale}x'
+
+    # native pixels in img_buf into VRAM, each an S x S block
+    func put_native [ x: i32, y: i32, w: i32, h: i32 ]
+        drain[]
+        bw : i32 [ w * scale ]
+        bh : i32 [ h * scale ]
+        out : @u8 [ big[ bw * bh * 4 ] ]
+        for [ row: i32 0, row < bh, row += 1 ]
+            src : i32 [ (row / scale) * w * 4 ]
+            dst : i32 [ row * bw * 4 ]
+            for [ col: i32 0, col < bw, col += 1 ]
+                si : i32 [ src + (col / scale) * 4 ]
+                di : i32 [ dst + col * 4 ]
+                out[ di ]     = img_buf[ si ]
+                out[ di + 1 ] = img_buf[ si + 1 ]
+                out[ di + 2 ] = img_buf[ si + 2 ]
+                out[ di + 3 ] = img_buf[ si + 3 ]
+        vram_r.color.upload_region[ x * scale, y * scale, bw, bh, out,
+                                    bw * bh * 4 ]
+
+    # a box of VRAM into img_buf at native size: one sample a block
+    func get_native [ x: i32, y: i32, w: i32, h: i32 ]
+        drain[]
+        bw : i32 [ w * scale ]
+        bh : i32 [ h * scale ]
+        raw : @u8 [ big[ bw * bh * 4 ] ]
+        vram_r.color.read_region[ x * scale, y * scale, bw, bh, raw ]
+        for [ row: i32 0, row < h, row += 1 ]
+            for [ col: i32 0, col < w, col += 1 ]
+                si : i32 [ ((row * scale) * bw + col * scale) * 4 ]
+                di : i32 [ (row * w + col) * 4 ]
+                img_buf[ di ]     = raw[ si ]
+                img_buf[ di + 1 ] = raw[ si + 1 ]
+                img_buf[ di + 2 ] = raw[ si + 2 ]
+                img_buf[ di + 3 ] = raw[ si + 3 ]
+
+    # the waiting primitives into the render's batch, in order
+    public func flush []
+        if [ !ready || vert_n == vert_sent ] return
+        vbo.vertex_count = vert_n
+        vbo.upload_vert_range[ vert_sent, vert_n - vert_sent ]
+        model.runs = @runs[ run_sent * 3 ]
+        model.run_n = run_n - run_sent
+        vram_r.draw[]
+        vert_sent = vert_n
+        run_sent = run_n
+        draws += 1
+
+    # the batch drawn and waited: VRAM ready for the CPU
+    public func drain []
+        if [ !ready ] return
+        flush[]
+        vram_r.sync_fence[]
+        vert_n = 0
+        run_n = 0
+        vert_sent = 0
+        run_sent = 0
+
+    # VRAM as it stands into the copy the shaders read
+    func take_copy []
+        copy_dirty[ 0, 0, 1023, 511 ]
+
+    # the dirty blocks inside a box into the copy, one run a row
+    func copy_dirty [ x0: i32, y0: i32, x1: i32, y1: i32 ]
+        if [ !any_dirty ] return
+        # a box past the right or bottom edge wraps to 0
+        if [ x1 > 1023 ] copy_dirty[ 0, y0, x1 - 1024, y1 ]
+        if [ y1 > 511 ] copy_dirty[ x0, 0, x1, y1 - 512 ]
+        flush[]
+        bx0 : i32 [ (x0 & 1023) >> 6 ]
+        bx1 : i32 [ min[ x1, 1023 ] >> 6 ]
+        by0 : i32 [ (y0 & 511) >> 6 ]
+        by1 : i32 [ min[ y1, 511 ] >> 6 ]
+        side : i32 [ 64 * scale ]
+        n : i32 [ 0 ]
+        for [ by: i32 by0, by <= by1, by += 1 ]
+            run : i32 [ -1 ]
+            for [ bx: i32 bx0, bx <= bx1 + 1, bx += 1 ]
+                on : bool [ bx <= bx1 && dirty[ by * 16 + bx ] ]
+                if [ on ]
+                    dirty[ by * 16 + bx ] = false
+                    if [ run < 0 ] run = bx
+                el [ run >= 0 ]
+                    boxes[ n * 4 ]     = run * side
+                    boxes[ n * 4 + 1 ] = by * side
+                    boxes[ n * 4 + 2 ] = (bx - run) * side
+                    boxes[ n * 4 + 3 ] = side
+                    n += 1
+                    run = -1
+        if [ n > 0 ]
+            vram_r.copy_recorded[ vram_tex, @i32 [ boxes ], n ]
+            any_dirty = false
+        for [ i: i32 0, i < 128, i += 1 ]
+            if [ dirty[ i ] ] any_dirty = true
+
+    func mark [ x0: i32, y0: i32, x1: i32, y1: i32 ]
+        bx0 : i32 [ max[ x0, 0 ] >> 6 ]
+        bx1 : i32 [ min[ x1, 1023 ] >> 6 ]
+        by0 : i32 [ max[ y0, 0 ] >> 6 ]
+        by1 : i32 [ min[ y1, 511 ] >> 6 ]
+        for [ by: i32 by0, by <= by1, by += 1 ]
+            for [ bx: i32 bx0, bx <= bx1, bx += 1 ]
+                dirty[ by * 16 + bx ] = true
+                any_dirty = true
+
+    func is_dirty [ x0: i32, y0: i32, x1: i32, y1: i32 ] -> bool
+        if [ !any_dirty ] return false
+        for [ by: i32 (y0 & 511) >> 6, by <= (min[ y1, 511 ] >> 6),
+              by += 1 ]
+            for [ bx: i32 (x0 & 1023) >> 6,
+                  bx <= (min[ x1, 1023 ] >> 6), bx += 1 ]
+                if [ dirty[ by * 16 + bx ] ] return true
+        return false
+
+    # the copy must hold what a texture page and CLUT read
+    func texture_reads [ page: u32, clut: u32, depth: i32 ]
+        tx : i32 [ i32[ page & 15 ] * 64 ]
+        ty : i32 [ i32[ (page >> 4) & 1 ] * 256 ]
+        wide : i32 [ (depth == 4) ? 64 : (depth == 8) ? 128 : 256 ]
+        cx : i32 [ i32[ clut & 63 ] * 16 ]
+        cy : i32 [ i32[ (clut >> 6) & 511 ] ]
+        cw : i32 [ (depth == 4) ? 16 : 256 ]
+        hit : bool [ is_dirty[ tx, ty, tx + wide - 1, ty + 255 ] ]
+        if [ depth != 16 && is_dirty[ cx, cy, cx + cw - 1, cy ] ]
+            hit = true
+        if [ hit ]
+            copy_dirty[ tx, ty, tx + wide - 1, ty + 255 ]
+            if [ depth != 16 ] copy_dirty[ cx, cy, cx + cw - 1, cy ]
+
+    # one vertex: x y, rgb, uv, page, mode, misc
+    func vertex [ x: f32, y: f32, col: u32, u: f32, v: f32, q: f32,
+                  page: u32, clut: u32, depth: f32, raw: f32,
+                  pass: f32, dith: f32 ]
+        o : i32 [ vert_n * VERT_FLOATS ]
+        verts[ o ]      = x
+        verts[ o + 1 ]  = y
+        verts[ o + 2 ]  = f32[ col & 0xFF ] / 255.0
+        verts[ o + 3 ]  = f32[ (col >> 8) & 0xFF ] / 255.0
+        verts[ o + 4 ]  = f32[ (col >> 16) & 0xFF ] / 255.0
+        # alpha carries q: uv arrives as uv x q, divided back per pixel
+        verts[ o + 5 ]  = q
+        verts[ o + 6 ]  = u
+        verts[ o + 7 ]  = v
+        verts[ o + 8 ]  = f32[ (page & 15) * 64 ]
+        verts[ o + 9 ]  = f32[ ((page >> 4) & 1) * 256 ]
+        verts[ o + 10 ] = f32[ (clut & 63) * 16 ]
+        verts[ o + 11 ] = f32[ (clut >> 6) & 511 ]
+        verts[ o + 12 ] = depth
+        verts[ o + 13 ] = raw
+        verts[ o + 14 ] = pass
+        verts[ o + 15 ] = dith
+        verts[ o + 16 ] = f32[ area_x0 ]
+        verts[ o + 17 ] = f32[ area_y0 ]
+        verts[ o + 18 ] = f32[ area_x1 ]
+        verts[ o + 19 ] = f32[ area_y1 ]
+        # E2: mask and offset in 8-pixel steps
+        verts[ o + 20 ] = f32[ (tex_win & 31) * 8 ]
+        verts[ o + 21 ] = f32[ ((tex_win >> 5) & 31) * 8 ]
+        verts[ o + 22 ] = f32[ ((tex_win >> 10) & 31) * 8 ]
+        verts[ o + 23 ] = f32[ ((tex_win >> 15) & 31) * 8 ]
+        verts[ o + 24 ] = (mask_set) ? 1.0 : 0.0
+        verts[ o + 25 ] = filt
+        verts[ o + 26 ] = uv_lo
+        verts[ o + 27 ] = uv_hi
+        vert_n += 1
+
+    # the run the next vertices join: a new one on a blend change
+    func run_for [ blend: i32, count: i32 ]
+        if [ vert_n + count > VERT_MAX || run_n >= 16384 ] drain[]
+        # a run already handed to the render is not grown
+        if [ run_n > run_sent && runs[ (run_n - 1) * 3 ] == blend ]
+            runs[ (run_n - 1) * 3 + 2 ] += count
+            return
+        runs[ run_n * 3 ]     = blend
+        runs[ run_n * 3 + 1 ] = vert_n
+        runs[ run_n * 3 + 2 ] = count
+        run_n += 1
+
+    func depth_of [ page: u32 ] -> i32
+        d : u32 [ (page >> 7) & 3 ]
+        if [ d == 0 ] return 4
+        if [ d == 1 ] return 8
+        return 16
+
+    func semi_mode [ page: u32 ] -> i32
+        return i32[ (page >> 5) & 3 ] + 1
+
+    func sext11 [ v: u32 ] -> i32
+        return i32[ v << 21 ] >> 21
+
+    # ---- GP0 packets
+
+    public func status [] -> u32
+        s : u32 [ texpage & 0x7FF ]
+        if [ dither ]     s = s | 0x200
+        if [ draw_disp ]  s = s | 0x400
+        if [ mask_set ]   s = s | 0x800
+        if [ mask_test ]  s = s | 0x1000
+        s = s | ((dmode & 0x3F) << 17) | ((dmode & 0x40) << 10)
+        if [ (dmode & 0x80) != 0 ] s = s | 0x4000
+        if [ disp_off ]   s = s | 0x800000
+        if [ irq_on ]     s = s | 0x1000000
+        s = s | (dma_dir << 29)
+        # ready for commands and DMA; a VRAM read waiting to go
+        s = s | 0x14000000
+        if [ rd_i < rd_n ] s = s | 0x8000000
+        if [ dma_dir == 1 || dma_dir == 2 ] s = s | 0x2000000
+        if [ dma_dir == 3 && rd_i < rd_n ] s = s | 0x2000000
+        # bit 13: the field shown; bit 31: the lines being drawn,
+        # the other field interlaced, else the line's own, 0 in vblank
+        interlaced : bool [ (dmode & 0x20) != 0 ]
+        if [ !interlaced || field ] s = s | 0x2000
+        drawing_odd : bool [ (interlaced && (dmode & 4) != 0) ? !field
+                             : (line & 1) != 0 ]
+        if [ !vblank && drawing_odd ] s = s | 0x80000000
+        return s
+
+    public func read_data [] -> u32
+        if [ rd_i < rd_n ]
+            v : u32 [ rd_buf[ rd_i ] ]
+            rd_i += 1
+            return v
+        return 0
+
+    # how many words a GP0 packet takes, from its first
+    func length [ w: u32 ] -> i32
+        c : u32 [ w >> 24 ]
+        if [ c >= 0x20 && c < 0x40 ]
+            nv : i32 [ ((c & 8) != 0) ? 4 : 3 ]
+            tex : i32 [ ((c & 4) != 0) ? 1 : 0 ]
+            shade : i32 [ ((c & 0x10) != 0) ? nv - 1 : 0 ]
+            return 1 + nv * (1 + tex) + shade
+        if [ c >= 0x40 && c < 0x60 ]
+            return ((c & 0x10) != 0) ? 4 : 3
+        if [ c >= 0x60 && c < 0x80 ]
+            n : i32 [ 2 ]
+            if [ (c & 4) != 0 ] n += 1
+            if [ ((c >> 3) & 3) == 0 ] n += 1
+            return n
+        if [ c >= 0x80 && c < 0xA0 ] return 4
+        if [ c >= 0xA0 && c < 0xE0 ] return 3
+        if [ c == 0x02 ] return 3
+        return 1
+
+    # w came from RAM at `at` (DMA), else 0xFFFFFFFF
+    public func gp0 [ w: u32, at: u32 ]
+        if [ img_left > 0 ]
+            image_word[ w ]
+            return
+        if [ polyline ]
+            polyline_word[ w ]
+            return
+        if [ fifo_n == 0 ] need = length[ w ]
+        fifo[ fifo_n ] = w
+        fifo_at[ fifo_n ] = at
+        fifo_n += 1
+        if [ fifo_n < need ] return
+        fifo_n = 0
+        packets += 1
+        command[]
+
+    func command []
+        c : u32 [ fifo[ 0 ] >> 24 ]
+        if [ c >= 0x20 && c < 0x40 ]          polygon[ c ]
+        el [ c >= 0x40 && c < 0x60 ]          line_cmd[ c ]
+        el [ c >= 0x60 && c < 0x80 ]          rect[ c ]
+        el [ c >= 0x80 && c < 0xA0 ]          vram_copy[]
+        el [ c >= 0xA0 && c < 0xC0 ]          image_in[]
+        el [ c >= 0xC0 && c < 0xE0 ]          image_out[]
+        el [ c == 0x02 ]                      fill[]
+        el [ c == 0xE1 ]
+            texpage = fifo[ 0 ] & 0x3FFF
+            dither = (fifo[ 0 ] & 0x200) != 0
+            draw_disp = (fifo[ 0 ] & 0x400) != 0
+        el [ c == 0xE2 ]     tex_win = fifo[ 0 ] & 0xFFFFF
+        el [ c == 0xE3 ]
+            area_x0 = i32[ fifo[ 0 ] & 0x3FF ]
+            area_y0 = i32[ (fifo[ 0 ] >> 10) & 0x1FF ]
+        el [ c == 0xE4 ]
+            area_x1 = i32[ fifo[ 0 ] & 0x3FF ]
+            area_y1 = i32[ (fifo[ 0 ] >> 10) & 0x1FF ]
+        el [ c == 0xE5 ]
+            off_x = sext11[ fifo[ 0 ] & 0x7FF ]
+            off_y = sext11[ (fifo[ 0 ] >> 11) & 0x7FF ]
+        el [ c == 0xE6 ]
+            mask_set = (fifo[ 0 ] & 1) != 0
+            mask_test = (fifo[ 0 ] & 2) != 0
+        el [ c == 0x1F ]
+            irq_on = true
+            bus.irq[ IRQ_GPU ]
+
+    # 0x20..0x3F: three or four vertices, flat or shaded, textured
+    func polygon [ c: u32 ]
+        quad : bool [ (c & 8) != 0 ]
+        tex : bool [ (c & 4) != 0 ]
+        shade : bool [ (c & 0x10) != 0 ]
+        semi : bool [ (c & 2) != 0 ]
+        raw : bool [ (c & 1) != 0 && tex ]
+        nv : i32 [ (quad) ? 4 : 3 ]
+        xs : local f32 [ 4 ]
+        ys : local f32 [ 4 ]
+        cs : local u32 [ 4 ]
+        us : local f32 [ 4 ]
+        vs : local f32 [ 4 ]
+        # each vertex's depth from the GTE; 0 when not known
+        zs : local f32 [ 4 ]
+        i : i32 [ 1 ]
+        page : u32 [ texpage ]
+        clut : u32 [ 0 ]
+        for [ k: i32 0, k < nv, k += 1 ]
+            cs[ k ] = (shade && k > 0) ? fifo[ i ] : fifo[ 0 ]
+            if [ shade && k > 0 ] i += 1
+            xy : u32 [ fifo[ i ] ]
+            xs[ k ] = f32[ sext11[ xy & 0x7FF ] + off_x ]
+            ys[ k ] = f32[ sext11[ (xy >> 16) & 0x7FF ] + off_y ]
+            # scaled up, a GTE vertex keeps its fraction of a pixel
+            zs[ k ] = 0.0
+            # scaled up, a GTE vertex keeps its fraction of a pixel
+            exact : bool [ scale > 1 && gte &&
+                           bus.exact_at[ fifo_at[ i ], xy, gte ] ]
+            if [ !exact && scale > 1 && gte ] exact = gte.near[ xy ]
+            if [ exact ]
+                xs[ k ] = gte.hit_x + f32[ off_x ]
+                ys[ k ] = gte.hit_y + f32[ off_y ]
+                zs[ k ] = gte.hit_z
+            i += 1
+            if [ tex ]
+                uvw : u32 [ fifo[ i ] ]
+                us[ k ] = f32[ uvw & 0xFF ]
+                vs[ k ] = f32[ (uvw >> 8) & 0xFF ]
+                if [ k == 0 ] clut = uvw >> 16
+                if [ k == 1 ] page = (uvw >> 16) & 0x9FF
+                i += 1
+        if [ tex ]
+            # a textured polygon sets the texture page it uses
+            texpage = (texpage & 0xF600) | (page & 0x9FF)
+        depth : i32 [ (tex) ? depth_of[ page ] : 0 ]
+        blend : i32 [ (semi) ? semi_mode[ page ] : BLEND_OPAQUE ]
+        dith : f32 [ (dither && (shade || (tex && !raw))) ? 1.0 : 0.0 ]
+        if [ tex ] texture_reads[ page, clut, depth ]
+        tri[ xs, ys, zs, cs, us, vs, 0, 1, 2, page, clut, depth, raw,
+             blend, tex && semi, dith ]
+        if [ quad ]
+            tri[ xs, ys, zs, cs, us, vs, 1, 2, 3, page, clut, depth,
+                 raw, blend, tex && semi, dith ]
+
+    # a triangle; a textured blend draws its opaque texels first
+    func tri [ xs: @f32, ys: @f32, zs: @f32, cs: @u32, us: @f32,
+               vs: @f32,
+               a0: i32, a1: i32, a2: i32, page: u32, clut: u32,
+               depth: i32, raw: bool, blend: i32, split: bool,
+               dith: f32 ]
+        lx : f32 [ min[ min[ xs[ a0 ], xs[ a1 ] ], xs[ a2 ] ] ]
+        hx : f32 [ max[ max[ xs[ a0 ], xs[ a1 ] ], xs[ a2 ] ] ]
+        ly : f32 [ min[ min[ ys[ a0 ], ys[ a1 ] ], ys[ a2 ] ] ]
+        hy : f32 [ max[ max[ ys[ a0 ], ys[ a1 ] ], ys[ a2 ] ] ]
+        x0 : i32 [ i32[ floor[ lx ] ] ]
+        x1 : i32 [ i32[ ceil[ hx ] ] ]
+        y0 : i32 [ i32[ floor[ ly ] ] ]
+        y1 : i32 [ i32[ ceil[ hy ] ] ]
+        # the GPU skips a polygon this wide or tall
+        if [ x1 - x0 >= 1024 || y1 - y0 >= 512 ] return
+        mark[ x0, y0, x1, y1 ]
+        # all three depths known: textures mapped with perspective
+        near : f32 [ min[ min[ zs[ a0 ], zs[ a1 ] ], zs[ a2 ] ] ]
+        persp : bool [ depth > 0 && near > 0.0 ]
+        # 3D surfaces filter, inside their own texels
+        if [ persp && filter ]
+            filt = 1.0
+            ul : f32 [ min[ min[ us[ a0 ], us[ a1 ] ], us[ a2 ] ] ]
+            uh : f32 [ max[ max[ us[ a0 ], us[ a1 ] ], us[ a2 ] ] ]
+            vl : f32 [ min[ min[ vs[ a0 ], vs[ a1 ] ], vs[ a2 ] ] ]
+            vh : f32 [ max[ max[ vs[ a0 ], vs[ a1 ] ], vs[ a2 ] ] ]
+            uv_lo = ul + vl * 256.0
+            uv_hi = uh + vh * 256.0
+        passes : i32 [ (split) ? 2 : 1 ]
+        for [ ps: i32 0, ps < passes, ps += 1 ]
+            mode : i32 [ blend ]
+            pass : f32 [ 0.0 ]
+            if [ split ]
+                mode = (ps == 0) ? BLEND_OPAQUE : blend
+                pass = f32[ ps + 1 ]
+            run_for[ mode, 3 ]
+            ids : local i32 [ 3 ]
+            ids[ 0 ] = a0
+            ids[ 1 ] = a1
+            ids[ 2 ] = a2
+            for [ k: i32 0, k < 3, k += 1 ]
+                j : i32 [ ids[ k ] ]
+                q : f32 [ (persp) ? near / zs[ j ] : 1.0 ]
+                vertex[ xs[ j ], ys[ j ], cs[ j ], us[ j ] * q,
+                        vs[ j ] * q, q, page, clut, f32[ depth ],
+                        (raw) ? 1.0 : 0.0, pass, dith ]
+        filt = 0.0
+
+    # 0x60..0x7F: a rectangle, textured from the E1 page
+    func rect [ c: u32 ]
+        tex : bool [ (c & 4) != 0 ]
+        semi : bool [ (c & 2) != 0 ]
+        raw : bool [ (c & 1) != 0 && tex ]
+        col : u32 [ fifo[ 0 ] ]
+        xy : u32 [ fifo[ 1 ] ]
+        x : i32 [ sext11[ xy & 0x7FF ] + off_x ]
+        y : i32 [ sext11[ (xy >> 16) & 0x7FF ] + off_y ]
+        i : i32 [ 2 ]
+        u : f32 [ 0.0 ]
+        v : f32 [ 0.0 ]
+        clut : u32 [ 0 ]
+        if [ tex ]
+            uvw : u32 [ fifo[ 2 ] ]
+            u = f32[ uvw & 0xFF ]
+            v = f32[ (uvw >> 8) & 0xFF ]
+            clut = uvw >> 16
+            i = 3
+        size : u32 [ (c >> 3) & 3 ]
+        w : i32 [ 1 ]
+        h : i32 [ 1 ]
+        if [ size == 0 ]
+            w = i32[ fifo[ i ] & 0x3FF ]
+            h = i32[ (fifo[ i ] >> 16) & 0x1FF ]
+        el [ size == 2 ]
+            w = 8
+            h = 8
+        el [ size == 3 ]
+            w = 16
+            h = 16
+        if [ w == 0 || h == 0 ] return
+        page : u32 [ texpage ]
+        depth : i32 [ (tex) ? depth_of[ page ] : 0 ]
+        blend : i32 [ (semi) ? semi_mode[ page ] : BLEND_OPAQUE ]
+        if [ tex ] texture_reads[ page, clut, depth ]
+        mark[ x, y, x + w - 1, y + h - 1 ]
+        # E1 bits 12, 13 flip a rectangle's texture
+        du : f32 [ ((texpage & 0x1000) != 0) ? -1.0 : 1.0 ]
+        dv : f32 [ ((texpage & 0x2000) != 0) ? -1.0 : 1.0 ]
+        quad_px[ f32[ x ], f32[ y ], f32[ w ], f32[ h ], col, u, v,
+                 du, dv, page, clut, depth, raw, blend, tex && semi ]
+
+    func quad_px [ x: f32, y: f32, w: f32, h: f32, col: u32, u: f32,
+                   v: f32, du: f32, dv: f32, page: u32, clut: u32,
+                   depth: i32, raw: bool, blend: i32, split: bool ]
+        passes : i32 [ (split) ? 2 : 1 ]
+        rw : f32 [ (raw) ? 1.0 : 0.0 ]
+        for [ ps: i32 0, ps < passes, ps += 1 ]
+            mode : i32 [ blend ]
+            pass : f32 [ 0.0 ]
+            if [ split ]
+                mode = (ps == 0) ? BLEND_OPAQUE : blend
+                pass = f32[ ps + 1 ]
+            run_for[ mode, 6 ]
+            u1 : f32 [ u + w * du ]
+            v1 : f32 [ v + h * dv ]
+            fd : f32 [ f32[ depth ] ]
+            vertex[ x, y, col, u, v, 1.0,
+                    page, clut, fd, rw, pass, 0.0 ]
+            vertex[ x + w, y, col, u1, v, 1.0,
+                    page, clut, fd, rw, pass, 0.0 ]
+            vertex[ x, y + h, col, u, v1, 1.0,
+                    page, clut, fd, rw, pass, 0.0 ]
+            vertex[ x + w, y, col, u1, v, 1.0,
+                    page, clut, fd, rw, pass, 0.0 ]
+            vertex[ x + w, y + h, col, u1, v1, 1.0,
+                    page, clut, fd, rw, pass,
+                    0.0 ]
+            vertex[ x, y + h, col, u, v1, 1.0,
+                    page, clut, fd, rw, pass, 0.0 ]
+
+    # 0x40..0x5F: a line, or the first segment of a polyline
+    func line_cmd [ c: u32 ]
+        shade : bool [ (c & 0x10) != 0 ]
+        semi : bool [ (c & 2) != 0 ]
+        c0 : u32 [ fifo[ 0 ] ]
+        xy0 : u32 [ fifo[ 1 ] ]
+        c1 : u32 [ (shade) ? fifo[ 2 ] : c0 ]
+        xy1 : u32 [ (shade) ? fifo[ 3 ] : fifo[ 2 ] ]
+        segment[ c0, xy0, c1, xy1, semi ]
+        if [ (c & 8) != 0 ]
+            polyline = true
+            poly_shade = shade
+            poly_semi = semi
+            poly_col = c1
+            poly_xy = xy1
+            fifo_n = 0
+
+    # a polyline's next vertex, until the 0x5xxx5xxx terminator
+    func polyline_word [ w: u32 ]
+        if [ (w & 0xF000F000) == 0x50005000 ]
+            polyline = false
+            fifo_n = 0
+            return
+        if [ poly_shade && fifo_n == 0 ]
+            fifo[ 0 ] = w
+            fifo_n = 1
+            return
+        col : u32 [ (poly_shade) ? fifo[ 0 ] : poly_col ]
+        segment[ poly_col, poly_xy, col, w, poly_semi ]
+        poly_col = col
+        poly_xy = w
+        fifo_n = 0
+
+    # a one-pixel band from end to end
+    func segment [ c0: u32, xy0: u32, c1: u32, xy1: u32, semi: bool ]
+        x0 : f32 [ f32[ sext11[ xy0 & 0x7FF ] + off_x ] + 0.5 ]
+        y0 : f32 [ f32[ sext11[ (xy0 >> 16) & 0x7FF ] + off_y ] + 0.5 ]
+        x1 : f32 [ f32[ sext11[ xy1 & 0x7FF ] + off_x ] + 0.5 ]
+        y1 : f32 [ f32[ sext11[ (xy1 >> 16) & 0x7FF ] + off_y ] + 0.5 ]
+        dx : f32 [ x1 - x0 ]
+        dy : f32 [ y1 - y0 ]
+        len : f32 [ sqrt[ dx * dx + dy * dy ] ]
+        if [ len < 0.001 ]
+            dx = 1.0
+            dy = 0.0
+            len = 1.0
+        # half a pixel across, half a pixel past each end
+        nx : f32 [ 0.0 - dy / len * 0.5 ]
+        ny : f32 [ dx / len * 0.5 ]
+        ex : f32 [ dx / len * 0.5 ]
+        ey : f32 [ dy / len * 0.5 ]
+        mark[ i32[ min[ x0, x1 ] ] - 1, i32[ min[ y0, y1 ] ] - 1,
+              i32[ max[ x0, x1 ] ] + 1, i32[ max[ y0, y1 ] ] + 1 ]
+        blend : i32 [ (semi) ? semi_mode[ texpage ] : BLEND_OPAQUE ]
+        dith : f32 [ (dither) ? 1.0 : 0.0 ]
+        run_for[ blend, 6 ]
+        ax : f32 [ x0 - ex ]
+        ay : f32 [ y0 - ey ]
+        bx : f32 [ x1 + ex ]
+        by : f32 [ y1 + ey ]
+        vertex[ ax + nx, ay + ny, c0, 0.0, 0.0, 1.0,
+                0, 0, 0.0, 0.0, 0.0, dith ]
+        vertex[ ax - nx, ay - ny, c0, 0.0, 0.0, 1.0,
+                0, 0, 0.0, 0.0, 0.0, dith ]
+        vertex[ bx + nx, by + ny, c1, 0.0, 0.0, 1.0,
+                0, 0, 0.0, 0.0, 0.0, dith ]
+        vertex[ ax - nx, ay - ny, c0, 0.0, 0.0, 1.0,
+                0, 0, 0.0, 0.0, 0.0, dith ]
+        vertex[ bx - nx, by - ny, c1, 0.0, 0.0, 1.0,
+                0, 0, 0.0, 0.0, 0.0, dith ]
+        vertex[ bx + nx, by + ny, c1, 0.0, 0.0, 1.0,
+                0, 0, 0.0, 0.0, 0.0, dith ]
+
+    # 0x02: a solid box, in 16-pixel steps across, area ignored
+    func fill []
+        col : u32 [ fifo[ 0 ] ]
+        x : i32 [ i32[ fifo[ 1 ] & 0x3F0 ] ]
+        y : i32 [ i32[ (fifo[ 1 ] >> 16) & 0x1FF ] ]
+        w : i32 [ i32[ ((fifo[ 2 ] & 0x3FF) + 15) & 0x7F0 ] ]
+        h : i32 [ i32[ (fifo[ 2 ] >> 16) & 0x1FF ] ]
+        if [ w == 0 || h == 0 ] return
+        keep_x0 : i32 [ area_x0 ]
+        keep_y0 : i32 [ area_y0 ]
+        keep_x1 : i32 [ area_x1 ]
+        keep_y1 : i32 [ area_y1 ]
+        keep_mask : bool [ mask_set ]
+        area_x0 = 0
+        area_y0 = 0
+        area_x1 = 1023
+        area_y1 = 511
+        mask_set = false
+        mark[ x, y, x + w - 1, y + h - 1 ]
+        quad_px[ f32[ x ], f32[ y ], f32[ w ], f32[ h ], col, 0.0, 0.0,
+                 1.0, 1.0, 0, 0, 0, false, BLEND_OPAQUE, false ]
+        area_x0 = keep_x0
+        area_y0 = keep_y0
+        area_x1 = keep_x1
+        area_y1 = keep_y1
+        mask_set = keep_mask
+
+    # 0x80: a box of VRAM to another place, read from the copy
+    func vram_copy []
+        sx : i32 [ i32[ fifo[ 1 ] & 0x3FF ] ]
+        sy : i32 [ i32[ (fifo[ 1 ] >> 16) & 0x1FF ] ]
+        dx : i32 [ i32[ fifo[ 2 ] & 0x3FF ] ]
+        dy : i32 [ i32[ (fifo[ 2 ] >> 16) & 0x1FF ] ]
+        w : i32 [ i32[ ((fifo[ 3 ] & 0xFFFF) - 1) & 0x3FF ] + 1 ]
+        hw3 : u32 [ (fifo[ 3 ] >> 16) & 0xFFFF ]
+        h : i32 [ i32[ (hw3 - 1) & 0x1FF ] + 1 ]
+        copy_dirty[ sx, sy, sx + w - 1, sy + h - 1 ]
+        keep_x0 : i32 [ area_x0 ]
+        keep_y0 : i32 [ area_y0 ]
+        keep_x1 : i32 [ area_x1 ]
+        keep_y1 : i32 [ area_y1 ]
+        area_x0 = 0
+        area_y0 = 0
+        area_x1 = 1023
+        area_y1 = 511
+        mark[ dx, dy, dx + w - 1, dy + h - 1 ]
+        quad_px[ f32[ dx ], f32[ dy ], f32[ w ], f32[ h ], 0x808080,
+                 f32[ sx ], f32[ sy ], 1.0, 1.0, 0, 0, 17, true,
+                 BLEND_OPAQUE, false ]
+        area_x0 = keep_x0
+        area_y0 = keep_y0
+        area_x1 = keep_x1
+        area_y1 = keep_y1
+
+    # 0xA0: an image from the CPU, gathered, then uploaded
+    func image_in []
+        img_x = i32[ fifo[ 1 ] & 0x3FF ]
+        img_y = i32[ (fifo[ 1 ] >> 16) & 0x1FF ]
+        img_w = i32[ ((fifo[ 2 ] & 0xFFFF) - 1) & 0x3FF ] + 1
+        img_h = i32[ (((fifo[ 2 ] >> 16) & 0xFFFF) - 1) & 0x1FF ] + 1
+        img_i = 0
+        img_left = (img_w * img_h + 1) / 2
+
+    func image_word [ w: u32 ]
+        put_pixel[ w & 0xFFFF ]
+        put_pixel[ w >> 16 ]
+        img_left -= 1
+        if [ img_left == 0 ] image_done[]
+
+    # one 15-bit pixel as RGBA8, the mask bit in alpha
+    func put_pixel [ px: u32 ]
+        if [ img_i >= img_w * img_h ] return
+        o : i32 [ img_i * 4 ]
+        r5 : u32 [ px & 31 ]
+        g5 : u32 [ (px >> 5) & 31 ]
+        b5 : u32 [ (px >> 10) & 31 ]
+        ri : i32 [ (bgra) ? o + 2 : o ]
+        bi : i32 [ (bgra) ? o : o + 2 ]
+        img_buf[ ri ]    = u8[ (r5 << 3) | (r5 >> 2) ]
+        img_buf[ o + 1 ] = u8[ (g5 << 3) | (g5 >> 2) ]
+        img_buf[ bi ]    = u8[ (b5 << 3) | (b5 >> 2) ]
+        img_buf[ o + 3 ] = ((px & 0x8000) != 0 || mask_set) ? 255 : 0
+        img_i += 1
+
+    func image_done []
+        if [ !ready ] return
+        flush[]
+        # wraps past the right or bottom edge are clipped for now
+        w : i32 [ min[ img_w, 1024 - img_x ] ]
+        h : i32 [ min[ img_h, 512 - img_y ] ]
+        if [ w != img_w ]
+            # pack the clipped rows tight
+            for [ row: i32 0, row < h, row += 1 ]
+                memmove[ @img_buf[ row * w * 4 ],
+                         @img_buf[ row * img_w * 4 ], w * 4 ]
+        put_native[ img_x, img_y, w, h ]
+        mark[ img_x, img_y, img_x + w - 1, img_y + h - 1 ]
+
+    # 0xC0: a box of VRAM read back, handed to GPUREAD
+    func image_out []
+        x : i32 [ i32[ fifo[ 1 ] & 0x3FF ] ]
+        y : i32 [ i32[ (fifo[ 1 ] >> 16) & 0x1FF ] ]
+        w : i32 [ i32[ ((fifo[ 2 ] & 0xFFFF) - 1) & 0x3FF ] + 1 ]
+        hw2 : u32 [ (fifo[ 2 ] >> 16) & 0xFFFF ]
+        h : i32 [ i32[ (hw2 - 1) & 0x1FF ] + 1 ]
+        rd_i = 0
+        rd_n = 0
+        if [ !ready ] return
+        cw : i32 [ min[ w, 1024 - x ] ]
+        ch : i32 [ min[ h, 512 - y ] ]
+        get_native[ x, y, cw, ch ]
+        total : i32 [ w * h ]
+        half : u32 [ 0 ]
+        for [ i: i32 0, i < total, i += 1 ]
+            px : u32 [ 0 ]
+            cx : i32 [ i % w ]
+            cy : i32 [ i / w ]
+            if [ cx < cw && cy < ch ]
+                o : i32 [ (cy * cw + cx) * 4 ]
+                ri : i32 [ (bgra) ? o + 2 : o ]
+                bi : i32 [ (bgra) ? o : o + 2 ]
+                r5 : u32 [ (u32[ img_buf[ ri ] ] * 31 + 127) / 255 ]
+                g5 : u32 [ (u32[ img_buf[ o + 1 ] ] * 31 + 127) / 255 ]
+                b5 : u32 [ (u32[ img_buf[ bi ] ] * 31 + 127) / 255 ]
+                px = r5 | (g5 << 5) | (b5 << 10)
+                if [ img_buf[ o + 3 ] > 127 ] px = px | 0x8000
+            if [ (i & 1) == 0 ]
+                half = px
+            el
+                rd_buf[ rd_n ] = half | (px << 16)
+                rd_n += 1
+        if [ (total & 1) != 0 ]
+            rd_buf[ rd_n ] = half
+            rd_n += 1
+
+    public func gp1 [ w: u32 ]
+        c : u32 [ (w >> 24) & 0x3F ]
+        if [ c == 0x00 ]
+            fifo_n = 0
+            img_left = 0
+            polyline = false
+            irq_on = false
+            disp_off = true
+            dma_dir = 0
+            texpage = 0
+            dmode = 0
+        el [ c == 0x01 ]
+            fifo_n = 0
+            img_left = 0
+            polyline = false
+        el [ c == 0x02 ]     irq_on = false
+        el [ c == 0x03 ]     disp_off = (w & 1) != 0
+        el [ c == 0x04 ]     dma_dir = w & 3
+        el [ c == 0x05 ]
+            disp_x = w & 0x3FE
+            disp_y = (w >> 10) & 0x1FF
+        el [ c == 0x06 ]     hrange = w & 0xFFFFFF
+        el [ c == 0x07 ]     vrange = w & 0xFFFFF
+        el [ c == 0x08 ]     dmode = w & 0xFF
+        el [ c == 0x10 ]
+            # GPU info: the 2 MB VRAM, version 2 GPU
+            rd_i = 0
+            rd_n = 1
+            rd_buf[ 0 ] = ((w & 7) == 7) ? 2 : 0
+
+    # the width and height the display shows, from GP1 0x08
+    public func shown_w [] -> i32
+        hr : u32 [ dmode & 3 ]
+        if [ (dmode & 0x40) != 0 ] return 368
+        if [ hr == 0 ] return 256
+        if [ hr == 1 ] return 320
+        if [ hr == 2 ] return 512
+        return 640
+
+    public func shown_h [] -> i32
+        if [ (dmode & 4) != 0 && (dmode & 0x20) != 0 ] return 480
+        return 240
+
+    # the frame's last primitives, then the shown area to the screen
+    public func present [] -> Texture
+        if [ !ready ] return null
+        take_copy[]
+        drain[]
+        # the display target follows the shown size at the scale
+        dw : i32 [ shown_w[] * scale ]
+        dh : i32 [ shown_h[] * scale ]
+        if [ disp_r.width != dw || disp_r.height != dh ] build_display[]
+        disp_sh.area = vec4f [ f32[ disp_x ], f32[ disp_y ],
+                               f32[ shown_w[] ], f32[ shown_h[] ] ]
+        disp_sh.fmt = vec4f [ ((dmode & 0x10) != 0) ? 1.0 : 0.0,
+                              f32[ scale ], 0.0, 0.0 ]
+        disp_r.draw[]
+        disp_r.sync_fence[]
+        return disp_r.color

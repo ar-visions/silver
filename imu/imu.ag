@@ -1,0 +1,159 @@
+export 0.1.0
+
+import physics
+
+# imu: what a strapdown unit on the craft reports. each sample
+# is a change in velocity (m/s) and in angle (rad) in the
+# unit's own axes, as real units send them, with the errors of
+# a navigation grade unit: Northrop Grumman LN-200 datasheet
+# figures (an assumption: SpaceX does not name its unit).
+
+# one sample: increments over the sample time, and its clock
+class ImuSample
+    public time  : f64
+    public dt    : f64
+    public dv    : Dvec
+    public dtheta : Dvec
+
+class Imu
+    # where it sits in the body, m along the axis and across
+    public at        : Dvec
+    public rate      : f64 [ 400.0 ]
+    # gyro: bias 1 deg/h, angle random walk 0.07 deg/sqrt(h),
+    # scale factor 100 ppm (LN-200)
+    public gyro_bias : f64 [ 4.8481e-6 ]
+    public gyro_walk : f64 [ 2.0362e-5 ]
+    public gyro_scale : f64 [ 1.0e-4 ]
+    # accel: bias 300 micro g, velocity random walk 50 micro g
+    # per sqrt(Hz), scale factor 300 ppm (LN-200)
+    public accel_bias : f64 [ 2.942e-3 ]
+    public accel_walk : f64 [ 4.903e-4 ]
+    public accel_scale : f64 [ 3.0e-4 ]
+    # axis misalignment, rad (estimate for a mounted unit)
+    public misalign  : f64 [ 1.0e-4 ]
+    # bias instability: a first order drift, its time constant
+    public drift_time : f64 [ 3600.0 ]
+    public seed      : u64 [ 1442695040888963407 ]
+    # the errors this unit was built with, drawn once
+    intern gb   : Dvec
+    intern ab   : Dvec
+    intern gs   : Dvec
+    intern as_  : Dvec
+    intern mis  : Dvec
+    intern made : bool
+    intern carry : f64
+    public samples : vec ImuSample
+
+    func init []
+        samples = vec ImuSample []
+
+    func rand [] -> f64
+        seed = seed ^ (seed << 13)
+        seed = seed ^ (seed >> 7)
+        seed = seed ^ (seed << 17)
+        return f64[ seed >> 11 ] / 9007199254740992.0
+
+    func normal [] -> f64
+        u : f64 [ rand[] ]
+        if [ u < 1e-300 ] u = 1e-300
+        v : f64 [ rand[] ]
+        return sqrt[ -2.0 * log[ u ] ] * cos[ 6.283185307179586 * v ]
+
+    func draw [ s: f64 ] -> Dvec
+        return Dvec [ normal[] * s, normal[] * s, normal[] * s ]
+
+    func make []
+        gb = draw[ gyro_bias ]
+        ab = draw[ accel_bias ]
+        gs = draw[ gyro_scale ]
+        as_ = draw[ accel_scale ]
+        mis = draw[ misalign ]
+        made = true
+
+    # a small turn of the sensed vector: the axes' misalignment
+    func skew [ v: Dvec ] -> Dvec
+        return dv_add[ v, dv_cross[ mis, v ] ]
+
+    # the truth at the unit's place: specific force and rate
+    func sense [ c: Craft, h: f64 ] -> ImuSample
+        w : c.state.w
+        r : dv_sub[ at, Dvec [ c.cg, 0.0, 0.0 ] ]
+        # off the centre of mass the unit also feels the turn
+        f : dv_add[ c.accel, dv_add[ dv_cross[ c.spin_rate, r ],
+                    dv_cross[ w, dv_cross[ w, r ] ] ] ]
+        # the biases wander as first order Gauss-Markov
+        k : f64 [ exp[ 0.0 - h / drift_time ] ]
+        q : f64 [ sqrt[ 1.0 - k * k ] ]
+        gb = dv_add[ dv_scale[ gb, k ], draw[ gyro_bias * q ] ]
+        ab = dv_add[ dv_scale[ ab, k ], draw[ accel_bias * q ] ]
+        wm : skew[ Dvec [ w.x * (1.0 + gs.x), w.y * (1.0 + gs.y),
+                          w.z * (1.0 + gs.z) ] ]
+        fm : skew[ Dvec [ f.x * (1.0 + as_.x), f.y * (1.0 + as_.y),
+                          f.z * (1.0 + as_.z) ] ]
+        # white noise integrated over the sample: random walks
+        sq : f64 [ sqrt[ h ] ]
+        dth : dv_add[ dv_scale[ dv_add[ wm, gb ], h ],
+                      draw[ gyro_walk * sq ] ]
+        dvel : dv_add[ dv_scale[ dv_add[ fm, ab ], h ],
+                       draw[ accel_walk * sq ] ]
+        return ImuSample [ time: c.time, dt: h, dv: dvel,
+                           dtheta: dth ]
+
+    # call after each physics step of h seconds: samples due
+    # go onto samples, oldest first
+    public func tick [ c: Craft, h: f64 ]
+        if [ !made ] make[]
+        carry += h
+        period : f64 [ 1.0 / rate ]
+        while [ carry >= period ]
+            samples.push[ sense[ c, period ] ]
+            carry -= period
+
+    # hand over what has been sampled since the last take
+    public func take [] -> vec ImuSample
+        out : vec ImuSample []
+        for [ s: ImuSample ] in samples
+            out.push[ s ]
+        samples.clear[]
+        return out
+
+# in orbit nothing is felt but the unit's own errors: the mean
+# specific force is the accel bias, under a few times 300 ug
+expect func t_imu_free_fall [] -> bool
+    c : falcon_nine[ 0.0 ]
+    two : c.separate[ 'two' ]
+    rr : f64 [ EARTH_A + 2.0e6 ]
+    two.state.r = Dvec [ rr, 0.0, 0.0 ]
+    two.state.v = Dvec [ 0.0, sqrt[ EARTH_GM / rr ], 0.0 ]
+    u : Imu [ at: Dvec [ 50.0, 0.0, 0.0 ] ]
+    sum : Dvec [ 0.0, 0.0, 0.0 ]
+    n : i32 [ 0 ]
+    for [ i: i32 0, i < 4000, i += 1 ]
+        two.step[ 0.0025 ]
+        u.tick[ two, 0.0025 ]
+        for [ s: ImuSample ] in u.take[]
+            sum = dv_add[ sum, s.dv ]
+            n += 1
+    mean : f64 [ dv_len[ sum ] / (f64[ n ] / 400.0) ]
+    log 'imu: {n} samples in 10 s, felt {mean} m/s2 falling'
+    return n == 4000 && mean < 0.012
+
+# turning at a steady rate: the gyros read it to their scale
+# factor and bias (1e-4 of the rate plus 1 deg/h)
+expect func t_imu_turn [] -> bool
+    c : falcon_nine[ 0.0 ]
+    two : c.separate[ 'two' ]
+    rr : f64 [ EARTH_A + 2.0e6 ]
+    two.state.r = Dvec [ rr, 0.0, 0.0 ]
+    two.state.v = Dvec [ 0.0, sqrt[ EARTH_GM / rr ], 0.0 ]
+    two.state.w = Dvec [ 0.1, 0.0, 0.0 ]
+    u : Imu [ at: Dvec [ 50.0, 0.0, 0.0 ] ]
+    turned : f64 [ 0.0 ]
+    for [ i: i32 0, i < 4000, i += 1 ]
+        two.step[ 0.0025 ]
+        u.tick[ two, 0.0025 ]
+        for [ s: ImuSample ] in u.take[]
+            turned += s.dtheta.x
+    err : f64 [ abs[ turned - 1.0 ] ]
+    log 'imu: turned {turned} rad of 1, off by {err}'
+    return err < 1.0e-3

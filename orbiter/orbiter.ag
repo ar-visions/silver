@@ -6958,7 +6958,21 @@ element orbiter : trinity # implements compiler
         if [ !lib.exists[] ] return
         # module init registers its types
         h : dlopen[ lib.chars, 258 ]
-        if [ !h ] log 'scenes: dlopen failed for {lib}'
+        if [ !h ]
+            log 'scenes: dlopen failed for {lib}'
+            return
+        if [ Au.find_type[ nm.chars, null ] ] return
+        # an app's library has no load-time init (its main runs it):
+        # its silver_<module>_initializer, past any owner- prefix
+        for [ i: i32 -1, i < mod.count, i += 1 ]
+            # 45 is '-': the name after each, or the whole stem
+            if [ i >= 0 && mod.chars[ i ] != 45 ] continue
+            name : mod.mid[ i + 1, mod.count - i - 1 ]
+            sym : 'silver_{name}_initializer'
+            init : hook [ cast hook [ dlsym[ h, sym.chars ] ] ]
+            if [ init ]
+                init[ null ]
+                return
 
     # built once per scene: new_object is pool-managed, so hold it
     func scene_element [] -> element

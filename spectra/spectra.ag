@@ -1128,6 +1128,8 @@ class Voice
     public pitch  : f32 [ 1.0 ]
     public loop   : bool
     public active : bool
+    # the right ear's own gain; below zero it is gain's
+    public gain_right : f32 [ -1.0 ]
 
 class AudioMixer
     public sample_rate : i32 [ 44100 ]
@@ -1212,6 +1214,7 @@ class AudioMixer
                 v.pos = 0.0
                 v.clip = c
                 v.gain = gain2
+                v.gain_right = -1.0
                 v.pitch = pitch2
                 v.loop = loop2
                 v.active = true
@@ -1326,11 +1329,13 @@ class AudioMixer
                     l0 : f32 [ c.pcm[ b0 ] ]
                     l1 : f32 [ c.pcm[ b1 ] ]
                     ls : f32 [ (l0 + (l1 - l0) * fr) * v.gain ]
-                    rs : f32 [ ls ]
+                    rg : f32 [ (v.gain_right < 0.0) ? v.gain
+                               : v.gain_right ]
+                    rs : f32 [ (l0 + (l1 - l0) * fr) * rg ]
                     if [ ch > 1 ]
                         r0 : f32 [ c.pcm[ b0 + 1 ] ]
                         r1 : f32 [ c.pcm[ b1 + 1 ] ]
-                        rs = (r0 + (r1 - r0) * fr) * v.gain
+                        rs = (r0 + (r1 - r0) * fr) * rg
                     li : i32 [ ls ]
                     ri : i32 [ rs ]
                     acc[ i * 2 ] += li
@@ -1347,6 +1352,17 @@ class AudioMixer
                 out.buffer[ i ] = i16[ s5 ]
             out.write[ n ]
         out.close[]
+
+    # one voice, each ear its own gain
+    public func voice_sides [ h: i32, left: f32, right: f32 ]
+        ifdef [ apple ]
+            if [ av ]
+                sp_av_voice_gain[ h, (left + right) * 0.5 ]
+                return
+        v : voice_at[ h ]
+        if [ v && v.active ]
+            v.gain = left
+            v.gain_right = right
 
 func fft [ re: @f32, im: @f32, n: i32 ]
     if [ n <= 1 ]

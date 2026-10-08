@@ -1,0 +1,399 @@
+export 0.1.0
+
+import physics
+import nav
+
+# control: holds the attitude guidance asks for. an attitude
+# loop on what the vehicle believes (attitude and body rates)
+# makes a wanted angular acceleration; it goes to whatever can
+# turn the vehicle now: the engines' gimbals (pitch, yaw, and
+# roll by the outer ring), the grid fins by least squares
+# (scaled by the dynamic pressure it estimates), and the cold
+# gas jets, pulsed for a share of each control period.
+
+# what the controller works from: believed, or for checks true
+class Belief
+    public time : f64
+    public r    : Dvec
+    public v    : Dvec
+    public q    : Quat
+    public w    : Dvec
+
+func belief_truth [ c: Craft ] -> Belief
+    return Belief [ time: c.time, r: c.state.r, v: c.state.v,
+                    q: c.state.q, w: c.state.w ]
+
+func belief_nav [ n: Nav ] -> Belief
+    return Belief [ time: n.time, r: n.r, v: n.v, q: n.q, w: n.rate ]
+
+func clamp_d [ v: f64, lo: f64, hi: f64 ] -> f64
+    if [ v < lo ] return lo
+    if [ v > hi ] return hi
+    return v
+
+class Autopilot
+    public rate       : f64 [ 50.0 ]
+    public point_gain : f64 [ 0.8 ]
+    public rate_gain  : f64 [ 3.0 ]
+    # integral action: a steady torque leaves no steady error
+    public hold_gain  : f64 [ 0.3 ]
+    public max_rate   : f64 [ 0.2 ]
+    public use_gimbal : bool [ true ]
+    public use_fins   : bool
+    public use_jets   : bool
+    # the wanted body x (the thrust axis) and body y, inertial;
+    # a zero side holds the roll rate at zero instead
+    public axis : Dvec
+    public side : Dvec
+    # what it last asked, for the views: body torque, the error
+    public want   : Dvec
+    public error  : f64
+    public qbar   : f64
+    intern carry  : f64
+    intern pulse  : f64
+    intern duty   : vec f64
+    intern summed : Dvec
+
+    func init []
+        duty = vec f64 []
+
+    # the attitude error as a body rotation vector
+    func attitude_error [ c: Craft, b: Belief ] -> Dvec
+        x_now : q_rotate[ b.q, Dvec [ 1.0, 0.0, 0.0 ] ]
+        want_x : dv_norm[ axis ]
+        cr : dv_cross[ x_now, want_x ]
+        s : f64 [ dv_len[ cr ] ]
+        ang : f64 [ atan2[ s, dv_dot[ x_now, want_x ] ] ]
+        rot : Dvec [ 0.0, 0.0, 0.0 ]
+        if [ s > 1e-12 ]
+            rot = dv_scale[ cr, ang / s ]
+        el [ ang > 3.0 ]
+            # straight away: turn about the body z
+            rot = dv_scale[ q_rotate[ b.q, Dvec [ 0.0, 0.0, 1.0 ] ],
+                            ang ]
+        out : q_unrotate[ b.q, rot ]
+        error = ang
+        if [ dv_len[ side ] > 0.5 ]
+            y_now : q_rotate[ b.q, Dvec [ 0.0, 1.0, 0.0 ] ]
+            sp : dv_sub[ side, dv_scale[ x_now, dv_dot[ side, x_now ] ] ]
+            if [ dv_len[ sp ] > 1e-6 ]
+                sp = dv_norm[ sp ]
+                roll : f64 [ atan2[ dv_dot[ dv_cross[ y_now, sp ], x_now ],
+                                    dv_dot[ y_now, sp ] ] ]
+                out = Dvec [ roll, out.y, out.z ]
+        el
+            out = Dvec [ 0.0, out.y, out.z ]
+        return out
+
+    # the dynamic pressure and Mach it believes it flies at
+    func air_estimate [ c: Craft, b: Belief ] -> Dvec
+        ang : f64 [ earth_turn[ b.time, c.turn_start ] ]
+        geo : ecef_to_geodetic[ eci_to_ecef[ b.r, ang ] ]
+        rel : dv_sub[ b.v, dv_cross[ Dvec [ 0.0, 0.0, EARTH_SPIN ],
+                                     b.r ] ]
+        sp : f64 [ dv_len[ rel ] ]
+        ar : standard_air[ geo.z ]
+        return Dvec [ 0.5 * ar.density * sp * sp, sp / ar.sound, sp ]
+
+    # the update: wanted torque, then split over the actuators
+    func update [ c: Craft, b: Belief ]
+        while [ duty.count < c.jets.count ]
+            duty.push[ 0.0 ]
+        ix : f64 [ c.inertia[ 0 ] ]
+        iy : f64 [ c.inertia[ 4 ] ]
+        iz : f64 [ c.inertia[ 8 ] ]
+        # what each actuator could give, as angular acceleration
+        thrust : f64 [ 0.0 ]
+        for [ e: Engine ] in c.engines
+            if [ e.lit ] thrust += e.force
+        gim_ok : bool [ use_gimbal && thrust > 1000.0 ]
+        aero : air_estimate[ c, b ]
+        qbar = aero.x
+        fin_ok : bool [ use_fins && qbar > 100.0 && c.fins.count > 0 ]
+        jet_ok : bool [ use_jets && c.jets.count > 0 ]
+        reach : f64 [ 0.0 ]
+        if [ gim_ok ]
+            reach += 0.087 * thrust * 20.0 / iy
+        if [ fin_ok ]
+            reach += 2.0 * 2.0 * qbar * 1.8 * 0.35 * 35.0 / iy
+        if [ jet_ok ]
+            reach += 2000.0 * (40.5 - c.cg) / iy
+        if [ reach <= 0.0 ] return
+        # a rate the actuators can stop from: never past braking
+        err : attitude_error[ c, b ]
+        wanted : vec f64 [ 3 ]
+        comps : vec f64 [] [ err.x, err.y, err.z ]
+        for [ k: i32 0, k < 3, k += 1 ]
+            e : f64 [ comps[ k ] ]
+            mag : f64 [ abs[ e ] ]
+            brake : f64 [ sqrt[ 2.0 * 0.5 * reach * mag ] ]
+            r : f64 [ point_gain * mag ]
+            if [ r > brake ] r = brake
+            if [ r > max_rate ] r = max_rate
+            wanted[ k ] = (e < 0.0) ? 0.0 - r : r
+        # the error held over time, only near the goal (no wind up)
+        dt : f64 [ 1.0 / rate ]
+        if [ error < 0.02 ]
+            summed = Dvec [ clamp_d[ summed.x + err.x * dt, -0.2, 0.2 ],
+                            clamp_d[ summed.y + err.y * dt, -0.2, 0.2 ],
+                            clamp_d[ summed.z + err.z * dt, -0.2, 0.2 ] ]
+        el
+            summed = Dvec [ 0.0, 0.0, 0.0 ]
+        w : b.w
+        ax : f64 [ rate_gain * (wanted[ 0 ] - w.x)
+                   + hold_gain * summed.x ]
+        ay : f64 [ rate_gain * (wanted[ 1 ] - w.y)
+                   + hold_gain * summed.y ]
+        az : f64 [ rate_gain * (wanted[ 2 ] - w.z)
+                   + hold_gain * summed.z ]
+        # torque, with the gyroscopic term
+        tau : Dvec [ ix * ax - (iy - iz) * w.y * w.z,
+                     iy * ay - (iz - ix) * w.z * w.x,
+                     iz * az - (ix - iy) * w.x * w.y ]
+        want = tau
+        left : tau
+        if [ gim_ok ]
+            left = gimbal[ c, tau, thrust ]
+        el
+            for [ e: Engine ] in c.engines
+                e.pitch_cmd = 0.0
+                e.yaw_cmd = 0.0
+        if [ fin_ok ]
+            left = fins[ c, left, aero ]
+        el
+            for [ f: Fin ] in c.fins
+                f.deflect_cmd = 0.0
+        # the jets take what is left: everything off the gimbal,
+        # or roll when one engine burns alone
+        if [ jet_ok ]
+            jets[ c, left ]
+        el
+            for [ i: i32 0, i < duty.count, i += 1 ] duty[ i ] = 0.0
+
+    # pitch and yaw by tilting every lit engine; roll by tilting
+    # the outer ring along the hull; returns what is left over
+    func gimbal [ c: Craft, tau: Dvec, thrust: f64 ] -> Dvec
+        arm : f64 [ 0.0 ]
+        outer : f64 [ 0.0 ]
+        for [ e: Engine ] in c.engines
+            if [ !e.lit ] continue
+            arm += (c.cg - e.at.x) * e.force
+            ring : f64 [ sqrt[ e.at.y * e.at.y + e.at.z * e.at.z ] ]
+            outer += ring * e.force
+        arm = arm / thrust
+        lim : f64 [ 0.087 ]
+        if [ c.engines.count > 0 ] lim = c.engines[ 0 ].gimbal_max
+        sp : f64 [ clamp_d[ (0.0 - tau.z) / (arm * thrust), -1.0, 1.0 ] ]
+        sy : f64 [ clamp_d[ (0.0 - tau.y) / (arm * thrust), -1.0, 1.0 ] ]
+        dp : f64 [ clamp_d[ asin[ sp ], 0.0 - lim, lim ] ]
+        dy : f64 [ clamp_d[ asin[ sy ], 0.0 - lim, lim ] ]
+        dr : f64 [ 0.0 ]
+        if [ outer > 1000.0 ]
+            dr = clamp_d[ asin[ clamp_d[ tau.x / outer, -1.0, 1.0 ] ],
+                          -0.03, 0.03 ]
+        for [ e: Engine ] in c.engines
+            if [ !e.lit ] continue
+            ring : f64 [ sqrt[ e.at.y * e.at.y + e.at.z * e.at.z ] ]
+            p : f64 [ dp ]
+            y : f64 [ dy ]
+            if [ ring > 0.1 ]
+                phi : f64 [ atan2[ e.at.z, e.at.y ] ]
+                p = p - dr * sin[ phi ]
+                y = y - dr * cos[ phi ]
+            e.pitch_cmd = p
+            e.yaw_cmd = y
+        got_x : f64 [ outer * sin[ dr ] ]
+        got_y : f64 [ 0.0 - arm * thrust * sin[ dy ] ]
+        got_z : f64 [ 0.0 - arm * thrust * sin[ dp ] ]
+        return Dvec [ tau.x - got_x, tau.y - got_y, tau.z - got_z ]
+
+    # the grid fins: least squares over the four deflections
+    func fins [ c: Craft, tau: Dvec, aero: Dvec ] -> Dvec
+        n : i32 [ c.fins.count ]
+        cells : i32 [ n * 3 ]
+        cols : vec f64 [ cells ]
+        for [ i: i32 0, i < n, i += 1 ]
+            f : c.fins[ i ]
+            m : f64 [ aero.y ]
+            slope : f64 [ (m < 0.8) ? f.lift : f.lift * 0.8 / m + 0.4 ]
+            k : f64 [ 0.0 - slope * aero.x * f.area ]
+            lev : f64 [ f.x - c.cg ]
+            cols[ i * 3 ] = k * f.arm
+            cols[ i * 3 + 1 ] = 0.0 - k * lev * cos[ f.roll ]
+            cols[ i * 3 + 2 ] = 0.0 - k * lev * sin[ f.roll ]
+        # B B' (3 x 3), then delta = B' (B B')^-1 tau
+        bb : vec f64 [ 9 ]
+        for [ r: i32 0, r < 3, r += 1 ]
+            for [ s: i32 0, s < 3, s += 1 ]
+                sum : f64 [ 0.0 ]
+                for [ i: i32 0, i < n, i += 1 ]
+                    sum += cols[ i * 3 + r ] * cols[ i * 3 + s ]
+                bb[ r * 3 + s ] = sum
+        inv : mat_inv[ bb, 3 ]
+        tv : vec f64 [] [ tau.x, tau.y, tau.z ]
+        lam : vec f64 [ 3 ]
+        for [ r: i32 0, r < 3, r += 1 ]
+            sum : f64 [ 0.0 ]
+            for [ s: i32 0, s < 3, s += 1 ]
+                sum += inv[ r * 3 + s ] * tv[ s ]
+            lam[ r ] = sum
+        got : vec f64 [ 3 ]
+        for [ i: i32 0, i < n, i += 1 ]
+            f : c.fins[ i ]
+            d : f64 [ 0.0 ]
+            for [ r: i32 0, r < 3, r += 1 ]
+                d += cols[ i * 3 + r ] * lam[ r ]
+            d = clamp_d[ d, 0.0 - f.limit, f.limit ]
+            f.deflect_cmd = d
+            for [ r: i32 0, r < 3, r += 1 ]
+                got[ r ] = got[ r ] + cols[ i * 3 + r ] * d
+        return Dvec [ tau.x - got[ 0 ], tau.y - got[ 1 ],
+                      tau.z - got[ 2 ] ]
+
+    # the jets: each a share of the period, by the torque it makes
+    func jets [ c: Craft, tau: Dvec ]
+        for [ i: i32 0, i < c.jets.count, i += 1 ]
+            j : c.jets[ i ]
+            arm : dv_sub[ j.at, Dvec [ c.cg, 0.0, 0.0 ] ]
+            t : dv_cross[ arm, dv_scale[ j.dir, j.thrust ] ]
+            # how much of the asked torque this jet alone serves
+            tl : f64 [ dv_dot[ t, t ] ]
+            share : f64 [ dv_dot[ t, tau ] / tl ]
+            # two jets serve each axis and sense
+            d : f64 [ clamp_d[ share * 0.5, 0.0, 1.0 ] ]
+            if [ d < 0.03 ] d = 0.0
+            duty[ i ] = d
+
+    # every physics step: the update at the control rate, and
+    # each jet on for its share of the period
+    public func tick [ c: Craft, b: Belief, h: f64 ]
+        period : f64 [ 1.0 / rate ]
+        carry += h
+        if [ carry >= period ]
+            carry -= period
+            pulse = 0.0
+            update[ c, b ]
+        pulse += h
+        for [ i: i32 0, i < c.jets.count, i += 1 ]
+            j : c.jets[ i ]
+            d : f64 [ (i < duty.count) ? duty[ i ] : 0.0 ]
+            j.on = use_jets && pulse <= d * period
+
+# ---------------------------------------------------------------
+# checks, each against the truth so the actuator stands alone
+# ---------------------------------------------------------------
+func axis_now [ c: Craft ] -> Dvec
+    return q_rotate[ c.state.q, Dvec [ 1.0, 0.0, 0.0 ] ]
+
+# stage two burning in vacuum, asked to turn 20 degrees: the
+# gimbal brings it round and holds it
+expect func t_gimbal_turn [] -> bool
+    c : falcon_nine[ 0.0 ]
+    two : c.separate[ 'two' ]
+    two.state.r = Dvec [ EARTH_A + 2.0e6, 0.0, 0.0 ]
+    two.state.v = Dvec [ 0.0, 6900.0, 0.0 ]
+    for [ e: Engine ] in two.engines
+        e.lit = true
+    k : Autopilot [ ]
+    start : axis_now[ two ]
+    k.axis = q_rotate[ q_axis[ Dvec [ 0.0, 0.0, 1.0 ], 0.349 ], start ]
+    worst : f64 [ 0.0 ]
+    for [ i: i32 0, i < 8000, i += 1 ]
+        two.step[ 0.0025 ]
+        k.tick[ two, belief_truth[ two ], 0.0025 ]
+        if [ i > 4000 && k.error > worst ] worst = k.error
+    deg : f64 [ worst * 57.2957795 ]
+    rate : f64 [ dv_len[ two.state.w ] ]
+    log 'control: gimbal turn 20 deg, held within {deg} deg after 10 s, rate {rate} rad/s'
+    return deg < 0.2 && rate < 0.002
+
+# the empty booster coasting above the air, turned end for end
+# by its cold gas jets alone
+expect func t_jet_flip [] -> bool
+    c : empty_booster[]
+    c.stand[ 0.0, 0.0, 120000.0 ]
+    c.state.v = dv_zero[]
+    k : Autopilot [ use_gimbal: false, use_jets: true ]
+    k.axis = dv_scale[ axis_now[ c ], -1.0 ]
+    k.side = q_rotate[ c.state.q, Dvec [ 0.0, 1.0, 0.0 ] ]
+    done : f64 [ -1.0 ]
+    began : f64 [ 0.0 ]
+    for [ i: i32 0, i < 32000, i += 1 ]
+        c.step[ 0.0025 ]
+        k.tick[ c, belief_truth[ c ], 0.0025 ]
+        # timed from the first update, when it reads the 180
+        if [ began == 0.0 && k.error > 3.0 ] began = c.time
+        if [ began > 0.0 && done < 0.0 && k.error < 0.0175 ]
+            done = c.time - began
+    deg : f64 [ k.error * 57.2957795 ]
+    rate : f64 [ dv_len[ c.state.w ] ]
+    log 'control: jet flip within 1 deg at {done} s, at 80 s {deg} deg, rate {rate} rad/s'
+    return done > 0.0 && deg < 1.0 && rate < 0.01
+
+# the empty booster falling engines first through the air,
+# held 4 degrees off the airflow by its grid fins
+expect func t_fin_hold [] -> bool
+    c : empty_booster[]
+    c.weather.severity = 2
+    c.stand[ 0.0, 0.0, 30000.0 ]
+    for [ f: Fin ] in c.fins
+        f.open = true
+    spin : Dvec [ 0.0, 0.0, EARTH_SPIN ]
+    k : Autopilot [ use_gimbal: false, use_fins: true, use_jets: true ]
+    sum : f64 [ 0.0 ]
+    n : i32 [ 0 ]
+    worst : f64 [ 0.0 ]
+    for [ i: i32 0, i < 36000, i += 1 ]
+        rel : dv_sub[ c.state.v, dv_cross[ spin, c.state.r ] ]
+        back : dv_scale[ dv_norm[ rel ], -1.0 ]
+        if [ dv_len[ rel ] < 1.0 ]
+            back = q_rotate[ c.state.q, Dvec [ 1.0, 0.0, 0.0 ] ]
+        # four degrees off the airflow, toward the east
+        geo : c.geodetic[]
+        ang : f64 [ earth_turn[ c.time, c.turn_start ] ]
+        east : ecef_to_eci[ enu_east[ geo.x, geo.y ], ang ]
+        k.axis = dv_norm[ dv_add[ back, dv_scale[ east, 0.07 ] ] ]
+        c.step[ 0.0025 ]
+        k.tick[ c, belief_truth[ c ], 0.0025 ]
+        if [ c.qbar > 5000.0 ]
+            sum += k.error
+            n += 1
+            if [ k.error > worst ] worst = k.error
+        if [ geo.z < 3000.0 ] break
+    mean : f64 [ sum / f64[ n ] * 57.2957795 ]
+    deg : f64 [ worst * 57.2957795 ]
+    log 'control: fins held over {n} steps above 5 kPa, mean {mean} deg off, worst {deg} deg'
+    return n > 1000 && mean < 0.5 && deg < 2.0
+
+# the full stack off the pad: the gimbal flies the pitch
+# program through max-Q in moderate turbulence
+expect func t_ascent_hold [] -> bool
+    c : falcon_nine[ 15600.0 ]
+    c.weather.severity = 2
+    lat : f64 [ 28.6084 * 3.14159265358979 / 180.0 ]
+    lon : f64 [ -80.6043 * 3.14159265358979 / 180.0 ]
+    c.stand[ lat, lon, 10.0 ]
+    for [ e: Engine ] in c.engines
+        if [ e.group == 'one' ] e.lit = true
+    k : Autopilot [ ]
+    worst : f64 [ 0.0 ]
+    top_q : f64 [ 0.0 ]
+    for [ i: i32 0, i < 32000, i += 1 ]
+        t : f64 [ c.time ]
+        geo : c.geodetic[]
+        ang : f64 [ earth_turn[ t, c.turn_start ] ]
+        up : ecef_to_eci[ enu_up[ geo.x, geo.y ], ang ]
+        east : ecef_to_eci[ enu_east[ geo.x, geo.y ], ang ]
+        # up for 10 s, then tip east to 50 degrees by 80 s
+        tip : f64 [ (t < 10.0) ? 0.0 : (t - 10.0) / 70.0 * 0.70 ]
+        k.axis = dv_add[ dv_scale[ up, cos[ tip ] ],
+                         dv_scale[ east, sin[ tip ] ] ]
+        c.step[ 0.0025 ]
+        k.tick[ c, belief_truth[ c ], 0.0025 ]
+        if [ t > 3.0 && k.error > worst ] worst = k.error
+        if [ c.qbar > top_q ] top_q = c.qbar
+    deg : f64 [ worst * 57.2957795 ]
+    end : c.geodetic[]
+    alt : f64 [ end.z ]
+    log 'control: ascent to {alt} m, max-Q {top_q} Pa, worst {deg} deg off the program'
+    return deg < 1.0

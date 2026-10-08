@@ -1,0 +1,110 @@
+# the controller port, SIO0: a digital pad in port 1; port 2 and
+# the memory cards answer nothing yet
+extend psx
+
+# from a byte written to its /ACK, in our CPU's cycles; the
+# BIOS gives up after 80 turns of a short wait loop
+PAD_ACK_CYCLES  : i64 [ 700 ]
+
+class Pad
+    public bus     : Bus
+    public mode    : u32
+    public ctrl    : u32
+    public baud    : u32
+    # the pad's buttons, active low: bit 0 Select .. bit 15 Square
+    public buttons : u32 [ 0xFFFF ]
+    # the byte received, and whether it is waiting to be read
+    public rx      : u32 [ 0xFF ]
+    public rx_full : bool
+    public irq_bit : bool
+    # where the pad is in its five-byte answer; -1 not talking
+    public step    : i32 [ -1 ]
+    public cpu     : Cpu
+    # the CPU cycle the /ACK pulse lands at; 0 none due
+    public ack_at  : i64
+    # /ACK is held low: status bit 7
+    public ack_low : bool
+
+    public func read [ off: u32, size: i32 ] -> u32
+        if [ off == 0 ]
+            v : u32 [ rx ]
+            rx_full = false
+            rx = 0xFF
+            return v
+        if [ off == 4 ]
+            # TX ready and finished, RX waiting, the IRQ bit
+            s : u32 [ 0x5 ]
+            if [ rx_full ] s = s | 0x2
+            if [ ack_low ] s = s | 0x80
+            if [ irq_bit ] s = s | 0x200
+            return s
+        if [ off == 8 ] return mode
+        if [ off == 0xA ] return ctrl
+        if [ off == 0xE ] return baud
+        return 0
+
+    public func write [ off: u32, v: u32, size: i32 ]
+        if [ off == 0 ]
+            transfer[ v & 0xFF ]
+        el [ off == 8 ]
+            mode = v & 0xFFFF
+        el [ off == 0xA ]
+            # bit 4 acknowledges the IRQ; bit 6 resets the port
+            if [ (v & 0x10) != 0 ] irq_bit = false
+            if [ (v & 0x40) != 0 ]
+                rx_full = false
+                irq_bit = false
+                step = -1
+            ctrl = v & 0xFFAF
+            # deselected: the pad stops talking
+            if [ (ctrl & 2) == 0 ] step = -1
+        el [ off == 0xE ]
+            baud = v & 0xFFFF
+
+    # one byte each way; the pad in port 1 answers, port 2 is empty
+    func transfer [ tx: u32 ]
+        port2 : bool [ (ctrl & 0x2000) != 0 ]
+        selected : bool [ (ctrl & 2) != 0 ]
+        out : u32 [ 0xFF ]
+        ack : bool [ false ]
+        if [ selected && !port2 ]
+            if [ step < 0 ]
+                # 0x01 addresses a controller; 0x81 a memory card
+                if [ tx == 0x01 ]
+                    step = 1
+                    ack = true
+            el [ step == 1 ]
+                # 0x41: a digital pad, three halfwords to follow
+                out = 0x41
+                step = 2
+                ack = true
+            el [ step == 2 ]
+                out = 0x5A
+                step = 3
+                ack = true
+            el [ step == 3 ]
+                out = buttons & 0xFF
+                step = 4
+                ack = true
+            el [ step == 4 ]
+                out = (buttons >> 8) & 0xFF
+                step = -1
+        rx = out
+        rx_full = true
+        ack_low = false
+        ack_at = 0
+        if [ ack ] ack_at = cpu.cycles + PAD_ACK_CYCLES
+
+    # the /ACK pulse lands: the controller IRQ when enabled
+    public func ack_now []
+        ack_at = 0
+        ack_low = true
+        if [ (ctrl & 0x1000) != 0 ]
+            irq_bit = true
+            bus.irq[ IRQ_PAD ]
+
+    # a host key: the button's bit goes low while it is held
+    public func press [ bit: i32, down: bool ]
+        m : u32 [ u32[ 1 ] << bit ]
+        if [ down ] buttons = buttons & ~m
+        el          buttons = buttons | m

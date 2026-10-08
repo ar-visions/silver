@@ -1,0 +1,3568 @@
+export 0.1.0
+export icon ['rocket']
+
+import vec
+import img
+import gltf
+import trinity
+import scenes
+import physics
+import guidance
+import mission
+import spectra
+
+import <stdio.h>
+import <stdlib.h>
+import <string.h>
+import <pthread.h>
+
+# launch: a rocket off a hex platform at sea, up through the
+# cloud deck of an earth-sized planet and into orbit. the sky is
+# the clouds module's Nubis model laid on the sphere, with a far
+# level of detail so the deck costs little seen from orbit.
+# frame: metres from the pad, y up; the centre is at (0, -R, 0)
+
+PLANET_R : f64 [ 6371000.0 ]
+PLANET_GM : f64 [ 3.986004e14 ]
+
+enum PlanetSurface
+    shape   : 0
+    detail  : 1
+    curl    : 2
+    weather : 3
+    island  : 4
+    waves   : 5
+    stars   : 6
+    envmap  : 7
+    tvar    : 5
+    globe   : 8
+    # 9 is trinity's cube map: never a plain picture
+    cloudmap : 10
+
+# ---------------------------------------------------------------
+# the global weather: coverage and type over the whole sphere
+# ---------------------------------------------------------------
+func globe_hash [ x: i32, y: i32, z: i32 ] -> i32
+    h : u32 [ u32[ x ] * 374761393 + u32[ y ] * 668265263
+              + u32[ z ] * 2246822519 ]
+    h = (h ^ (h >> 13)) * 1274126177
+    return i32[ (h ^ (h >> 16)) & 15 ]
+
+func globe_grad [ h: i32, x: f32, y: f32, z: f32 ] -> f32
+    u : f32 [ (h < 8) ? x : y ]
+    v : f32 [ (h < 4) ? y : ((h == 12 || h == 14) ? x : z) ]
+    return (((h & 1) == 0) ? u : 0.0 - u) +
+           (((h & 2) == 0) ? v : 0.0 - v)
+
+func globe_fade [ t: f32 ] -> f32
+    return t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
+
+# gradient noise on integer lattice hashes: no seams anywhere
+func globe_perlin [ x: f32, y: f32, z: f32 ] -> f32
+    fx : f32 [ floor[ x ] ]
+    fy : f32 [ floor[ y ] ]
+    fz : f32 [ floor[ z ] ]
+    xi : i32 [ fx ]
+    yi : i32 [ fy ]
+    zi : i32 [ fz ]
+    xf : f32 [ x - fx ]
+    yf : f32 [ y - fy ]
+    zf : f32 [ z - fz ]
+    u : f32 [ globe_fade[ xf ] ]
+    v : f32 [ globe_fade[ yf ] ]
+    w : f32 [ globe_fade[ zf ] ]
+    lll : f32 [ globe_grad[ globe_hash[ xi, yi, zi ], xf, yf, zf ] ]
+    hll : f32 [ globe_grad[ globe_hash[ xi + 1, yi, zi ],
+                             xf - 1.0, yf, zf ] ]
+    lhl : f32 [ globe_grad[ globe_hash[ xi, yi + 1, zi ],
+                             xf, yf - 1.0, zf ] ]
+    hhl : f32 [ globe_grad[ globe_hash[ xi + 1, yi + 1, zi ],
+                             xf - 1.0, yf - 1.0, zf ] ]
+    llh : f32 [ globe_grad[ globe_hash[ xi, yi, zi + 1 ],
+                             xf, yf, zf - 1.0 ] ]
+    hlh : f32 [ globe_grad[ globe_hash[ xi + 1, yi, zi + 1 ],
+                             xf - 1.0, yf, zf - 1.0 ] ]
+    lhh : f32 [ globe_grad[ globe_hash[ xi, yi + 1, zi + 1 ],
+                             xf, yf - 1.0, zf - 1.0 ] ]
+    hhh : f32 [ globe_grad[ globe_hash[ xi + 1, yi + 1, zi + 1 ],
+                             xf - 1.0, yf - 1.0, zf - 1.0 ] ]
+    ax : f32 [ lll + (hll - lll) * u ]
+    bx : f32 [ lhl + (hhl - lhl) * u ]
+    cx : f32 [ llh + (hlh - llh) * u ]
+    dx : f32 [ lhh + (hhh - lhh) * u ]
+    ay : f32 [ ax + (bx - ax) * v ]
+    by : f32 [ cx + (dx - cx) * v ]
+    return ay + (by - ay) * w
+
+func globe_fbm [ x: f32, y: f32, z: f32, octaves: i32 ] -> f32
+    sum : f32 [ 0.0 ]
+    amp : f32 [ 1.0 ]
+    norm : f32 [ 0.0 ]
+    f : f32 [ 1.0 ]
+    for [ o: i32 0, o < octaves, o += 1 ]
+        sum += globe_perlin[ x * f, y * f, z * f ] * amp
+        norm += amp
+        amp *= 0.5
+        f *= 2.03
+    v : f32 [ sum / norm * 0.85 + 0.5 ]
+    return (v < 0.0) ? 0.0 : ((v > 1.0) ? 1.0 : v)
+
+func globe_byte [ v: f32 ] -> u8
+    s : f32 [ v * 255.0 + 0.5 ]
+    if [ s < 0.0 ] s = 0.0
+    if [ s > 255.0 ] s = 255.0
+    return u8[ i32[ s ] ]
+
+# equirect, 1024 x 512: R coverage bias, G cloud type bias
+func globe_bake [ out: path ]
+    W : i32 [ 1024 ]
+    H : i32 [ 512 ]
+    im : Image [ width: W, height: H, format: Pixel.rgba8,
+                 linear: true, wrap_u: true ]
+    d : @u8 [ im.vdata[] ]
+    for [ y: i32 0, y < H, y += 1 ]
+        colat : f32 [ (f32[ y ] + 0.5) / f32[ H ] * 3.14159265 ]
+        st : f32 [ sin[ colat ] ]
+        ct : f32 [ cos[ colat ] ]
+        for [ x: i32 0, x < W, x += 1 ]
+            lon : f32 [ ((f32[ x ] + 0.5) / f32[ W ] - 0.5)
+                        * 6.2831853 ]
+            mx : f32 [ st * cos[ lon ] ]
+            mz : f32 [ st * sin[ lon ] ]
+            cov : f32 [ globe_fbm[ mx * 4.0, ct * 4.0, mz * 4.0, 6 ] ]
+            typ : f32 [ globe_fbm[ mx * 3.1 + 7.3, ct * 3.1 + 1.9,
+                                   mz * 3.1 + 4.1, 4 ] ]
+            i : i32 [ (y * W + x) * 4 ]
+            d[ i ]     = globe_byte[ (cov - 0.5) * 1.6 + 0.5 ]
+            d[ i + 1 ] = globe_byte[ typ ]
+            d[ i + 2 ] = globe_byte[ 0.5 ]
+            d[ i + 3 ] = globe_byte[ 1.0 ]
+    im.png[ out ]
+
+func globe_version [] -> i32
+    return 2
+
+export func launch_export []
+    stamp : string '{globe_version[]}'
+    dir : path '../launch/baked'
+    sp : path '../launch/baked/globe.hash'
+    gp : path '../launch/baked/globe.png'
+    if [ sp.exists[] && gp.exists[] ]
+        old : string [ sp.load[ typeid[string], null ] ]
+        if [ old && old == stamp ]
+            log 'launch: globe current'
+            return
+    dir.make_dir[]
+    globe_bake[ gp ]
+    sp.save[ stamp, null ]
+    log 'launch: globe baked'
+
+# ---------------------------------------------------------------
+# the sky: the Nubis layer on a sphere, one fullscreen pass
+# ---------------------------------------------------------------
+ModelViewProject PlanetSky
+    mutable cam_pos   : vec4f     # metres from the pad
+    mutable cam_right : vec4f     # w: tan(half fov) * aspect
+    mutable cam_up    : vec4f     # w: tan(half fov)
+    mutable cam_fwd   : vec4f     # w: exposure
+    mutable sun_dir   : vec4f     # w: sun intensity
+    mutable wind      : vec4f     # xyz m/s, w: seconds
+    # base, top, planet radius, air radius
+    mutable layer     : vec4f
+    # coverage, type, globe spread, island mix
+    mutable weather_a : vec4f
+    # anvil, skew m, density, detail strength
+    mutable weather_b : vec4f
+    # g forward, silver, silver spread, ambient
+    mutable light_a   : vec4f
+    # ms scatter, ms extinction, ms phase, extinction a m
+    mutable light_b   : vec4f
+    # shape, detail, curl, weather tile metres
+    mutable scales    : vec4f
+    # quality, curl strength, march reach m, unused
+    mutable march     : vec4f
+    mutable tops      : vec4f
+    mutable key_tint  : vec4f     # rgb key colour, w: night
+    # waves, choppiness, foam start, unused
+    mutable sea       : vec4f
+    # wind, star gain, pixel angle, star turn
+    mutable sea_b     : vec4f
+    mutable jitter    : vec4f
+    mutable env       : vec4f
+    # slab start and full footprint m, space 0..1
+    mutable far_lod   : vec4f
+    # the pad's latitude and longitude, rad: where the map is
+    mutable geo       : vec4f
+    mutable view_mode : i32
+    mutable frame     : i32
+
+    attrib shape   : LayoutBinding [ type:typeid[ PlanetSurface ],
+                                     id: PlanetSurface.shape,
+                                     count:1, format: typeid[ rgba8 ],
+                                     volume: true ]
+    attrib detail  : LayoutBinding [ type:typeid[ PlanetSurface ],
+                                     id: PlanetSurface.detail,
+                                     count:1, format: typeid[ rgba8 ],
+                                     volume: true ]
+    attrib curl    : LayoutBinding [ type:typeid[ PlanetSurface ],
+                                     id: PlanetSurface.curl,
+                                     count:1, format: typeid[ rgba8 ] ]
+    attrib weather : LayoutBinding [ type:typeid[ PlanetSurface ],
+                                     id: PlanetSurface.weather,
+                                     count:1, format: typeid[ rgba8 ] ]
+    attrib island  : LayoutBinding [ type:typeid[ PlanetSurface ],
+                                     id: PlanetSurface.island,
+                                     count:1, format: typeid[ rgba8 ] ]
+    attrib envmap  : LayoutBinding [ type:typeid[ PlanetSurface ],
+                                     id: PlanetSurface.envmap,
+                                     count:1, format: typeid[ rgba8 ] ]
+    attrib stars   : LayoutBinding [ type:typeid[ PlanetSurface ],
+                                     id: PlanetSurface.stars,
+                                     count:1, format: typeid[ rgba8 ] ]
+    attrib waves   : StorageBuffer [ type:typeid[ PlanetSurface ],
+                                     id: PlanetSurface.waves,
+                                     count:1, format: typeid[ vec4f ] ]
+    attrib tvar    : LayoutBinding [ type:typeid[ PlanetSurface ],
+                                     id: PlanetSurface.tvar,
+                                     count:1, format: typeid[ rgba8 ] ]
+    attrib globe   : LayoutBinding [ type:typeid[ PlanetSurface ],
+                                     id: PlanetSurface.globe,
+                                     count:1, format: typeid[ rgba8 ] ]
+    # NASA's Blue Marble cloud cover, equirectangular, 5 km a px
+    attrib cloudmap : LayoutBinding [ type:typeid[ PlanetSurface ],
+                                      id: PlanetSurface.cloudmap,
+                                      count:1, format: typeid[ rgba8 ] ]
+
+    attrib pos       : VertexInput    [ type:typeid[ vec3f ] ]
+    attrib uv        : VertexInput    [ type:typeid[ vec2f ] ]
+    attrib v_uv      : VertexOutput   [ type:typeid[ vec2f ] ]
+    attrib fragColor : FragmentOutput [ type:typeid[ vec4f ] ]
+
+    func init []
+        model = mat4f.identity[]
+        view  = mat4f.identity[]
+        proj  = mat4f.identity[]
+
+    func vertex [] -> GLSL none {
+        v_uv        = uv;
+        gl_Position = vec4(pos.x, pos.y, 0.0, 1.0);
+    }
+
+    func remap [ v: @f32, lo: @f32, hi: @f32, nlo: @f32,
+                 nhi: @f32 ] -> GLSL f32 {
+        return nlo + ((v - lo) / (hi - lo)) * (nhi - nlo);
+    }
+
+    func hg [ c: @f32, g: @f32 ] -> GLSL f32 {
+        float g2 = g * g;
+        return (1.0 - g2) / (4.0 * 3.14159265
+             * pow(1.0 + g2 - 2.0 * g * c, 1.5));
+    }
+
+    # near and far hits of a sphere at the origin
+    func ray_sphere [ o: @vec3f, d: @vec3f, r: @f32 ] -> GLSL vec2f {
+        float b = dot(o, d);
+        float c = dot(o, o) - r * r;
+        float h = b * b - c;
+        if (h < 0.0) return vec2(-1.0);
+        float s = sqrt(h);
+        return vec2(-b - s, -b + s);
+    }
+
+    # a point from the planet's centre
+    func planet_pt [ p: @vec3f ] -> GLSL vec3f {
+        return p + vec3(0.0, ubo.layer.z, 0.0);
+    }
+
+    # the cube face the point stands on: a flat tile frame
+    func face_uv [ q: @vec3f, n: @vec3f ] -> GLSL vec2f {
+        vec3 b = abs(n);
+        if (b.y >= b.x && b.y >= b.z) return q.xz;
+        if (b.x >= b.z) return q.zy;
+        return q.xy;
+    }
+
+    # the globe map's place for a direction from the centre
+    func globe_uv [ n: @vec3f ] -> GLSL vec2f {
+        vec3 m = vec3(n.x, n.z, -n.y);
+        return vec2(atan(m.z, m.x) * 0.15915494 + 0.5,
+                    acos(clamp(m.y, -1.0, 1.0)) * 0.31830989);
+    }
+
+    # the weather tile on the sphere: three faces, blended
+    func tile_weather [ q: @vec3f, n: @vec3f, lod: @f32 ]
+            -> GLSL vec4f {
+        vec3  b  = pow(abs(n), vec3(8.0));
+        b /= (b.x + b.y + b.z);
+        float s  = 1.0 / ubo.scales.w;
+        vec4  w  = vec4(0.0);
+        if (b.y > 0.02)
+            w += textureLod(weather, q.xz * s + 0.5, lod) * b.y;
+        if (b.x > 0.02)
+            w += textureLod(weather, q.zy * s + 0.5, lod) * b.x;
+        if (b.z > 0.02)
+            w += textureLod(weather, q.xy * s + 0.5, lod) * b.z;
+        float t = (b.x > 0.02 ? b.x : 0.0) + (b.y > 0.02 ? b.y : 0.0)
+                + (b.z > 0.02 ? b.z : 0.0);
+        return w / max(t, 1e-4);
+    }
+
+    # single-scatter air from o along d up to tmax; a = transmittance
+    func atmosphere [ o: @vec3f, d: @vec3f, tmax: @f32 ] -> GLSL vec4f {
+        vec3  C  = vec3(0.0, -ubo.layer.z, 0.0);
+        float R  = ubo.layer.z;
+        float Ra = ubo.layer.w;
+        vec3  oc = o - C;
+        vec2  ta = ray_sphere(oc, d, Ra);
+        if (ta.y < 0.0) return vec4(0.0, 0.0, 0.0, 1.0);
+        float t_in = max(ta.x, 0.0);
+        float t_out = min(ta.y, tmax);
+        if (t_out <= t_in) return vec4(0.0, 0.0, 0.0, 1.0);
+        vec3  betaR = vec3(9.5e-6, 21.5e-6, 54.0e-6);
+        float betaM = 7.0e-6;
+        float Hr = 8000.0;
+        float Hm = 1200.0;
+        vec3  sun = ubo.sun_dir.xyz;
+        float mu  = dot(d, sun);
+        float phR = 3.0 / (16.0 * 3.14159265) * (1.0 + mu * mu);
+        float phM = hg(mu, 0.70);
+        // inside the air the samples crowd near us; outside, even
+        float lin = (length(oc) > Ra) ? 1.0 : 0.0;
+        float span = t_out - t_in;
+        vec3  sumR = vec3(0.0);
+        vec3  sumM = vec3(0.0);
+        float odR = 0.0;
+        float odM = 0.0;
+        for (int i = 0; i < 12; i++) {{
+            float ang_lo = float(i) / 12.0;
+            float ang_hi = float(i + 1) / 12.0;
+            float s0 = mix(ang_lo * ang_lo, ang_lo, lin);
+            float s1 = mix(ang_hi * ang_hi, ang_hi, lin);
+            float ds = span * (s1 - s0);
+            vec3  p  = oc + d * (t_in + span * (s0 + s1) * 0.5);
+            float h  = max(length(p) - R, 0.0);
+            float hr = exp(-h / Hr) * ds;
+            float hm = exp(-h / Hm) * ds;
+            odR += hr;
+            odM += hm;
+            // the planet's own shadow: night has no sunlit air
+            vec2  tp  = ray_sphere(p, sun, R);
+            if (tp.x > 0.0) continue;
+            vec2  tl  = ray_sphere(p, sun, Ra);
+            float dsl = tl.y / 4.0;
+            float olR = 0.0;
+            float olM = 0.0;
+            for (int j = 0; j < 4; j++) {{
+                vec3  q  = p + sun * dsl * (float(j) + 0.5);
+                float hq = max(length(q) - R, 0.0);
+                olR += exp(-hq / Hr) * dsl;
+                olM += exp(-hq / Hm) * dsl;
+            }}
+            vec3 tau = betaR * (odR + olR) + betaM * 1.1 * (odM + olM);
+            vec3 att = exp(-tau);
+            sumR += att * hr;
+            sumM += att * hm;
+        }}
+        vec3 L = ubo.sun_dir.w
+               * (sumR * betaR * phR + sumM * betaM * phM);
+        vec3 T = exp(-(betaR * odR + betaM * 1.1 * odM));
+        float Ta = (T.r + T.g + T.b) / 3.0;
+        // multiple scattering stand-in: thick air glows blue
+        float ms_air = clamp(odR * 5.0e-5, 0.0, 1.0);
+        vec3  upo = normalize(oc + d * t_in);
+        L += vec3(0.30, 0.42, 0.92) * ubo.sun_dir.w * 0.034 * ms_air
+           * clamp(dot(upo, sun) * 3.0 + 0.62, 0.0, 1.0);
+        float ng = ubo.key_tint.w;
+        if (ng > 0.0) {{
+            float lum = dot(L, vec3(0.2126, 0.7152, 0.0722));
+            L = mix(L, vec3(lum) * vec3(0.66, 0.82, 1.16), ng);
+            L += vec3(0.0016, 0.0022, 0.0044) * ng;
+        }}
+        return vec4(L, Ta);
+    }
+
+    # sunlight reaching p through the air; none in the night side
+    func sun_light [ p: @vec3f ] -> GLSL vec3f {
+        vec3  C  = vec3(0.0, -ubo.layer.z, 0.0);
+        float R  = ubo.layer.z;
+        vec3  pc = p - C;
+        vec3  sun = ubo.sun_dir.xyz;
+        vec2  tp = ray_sphere(pc, sun, R - 50.0);
+        if (tp.x > 0.0) return vec3(0.0);
+        vec2  tl = ray_sphere(pc, sun, ubo.layer.w);
+        float dsl = max(tl.y, 0.0) / 6.0;
+        float oR = 0.0;
+        float oM = 0.0;
+        for (int j = 0; j < 6; j++) {{
+            vec3  q  = pc + sun * dsl * (float(j) + 0.5);
+            float hq = max(length(q) - R, 0.0);
+            oR += exp(-hq / 8000.0) * dsl;
+            oM += exp(-hq / 1200.0) * dsl;
+        }}
+        vec3 tau = vec3(9.5e-6, 21.5e-6, 54.0e-6) * oR
+                 + 7.0e-6 * 1.1 * oM;
+        return exp(-tau) * ubo.sun_dir.w * ubo.key_tint.rgb;
+    }
+
+    func height_frac [ p: @vec3f ] -> GLSL f32 {
+        float r = length(planet_pt(p)) - ubo.layer.z;
+        return clamp((r - ubo.layer.x) / (ubo.layer.y - ubo.layer.x),
+                     0.0, 1.0);
+    }
+
+    # a lattice point's value in -1..1, from integers: the same
+    # from every cell that shares it
+    func vhash [ c: @vec3f ] -> GLSL f32 {
+        uvec3 v = uvec3(ivec3(c) + ivec3(1048576));
+        v = v * 1664525u + 1013904223u;
+        v.x += v.y * v.z;
+        v.y += v.z * v.x;
+        v.z += v.x * v.y;
+        v ^= v >> 16u;
+        v.x += v.y * v.z;
+        return float(v.x & 16777215u) / 8388607.5 - 1.0;
+    }
+
+    # smooth value noise in -1..1 on a unit lattice: it never
+    # repeats over the planet
+    func vnoise [ p: @vec3f ] -> GLSL f32 {
+        vec3  i = floor(p);
+        vec3  f = p - i;
+        vec3  u = f * f * (3.0 - 2.0 * f);
+        float a = mix(vhash(i), vhash(i + vec3(1.0, 0.0, 0.0)), u.x);
+        float b = mix(vhash(i + vec3(0.0, 1.0, 0.0)),
+                      vhash(i + vec3(1.0, 1.0, 0.0)), u.x);
+        float c = mix(vhash(i + vec3(0.0, 0.0, 1.0)),
+                      vhash(i + vec3(1.0, 0.0, 1.0)), u.x);
+        float d = mix(vhash(i + vec3(0.0, 1.0, 1.0)),
+                      vhash(i + vec3(1.0, 1.0, 1.0)), u.x);
+        return mix(mix(a, b, u.y), mix(c, d, u.y), u.z);
+    }
+
+    # where a direction from the planet's centre falls on an
+    # equirectangular map: the pad's east, up and north turn it
+    # into the Earth's frame, then longitude and latitude
+    func geo_uv [ n: @vec3f ] -> GLSL vec2f {
+        float la = ubo.geo.x;
+        float lo = ubo.geo.y;
+        vec3  e  = vec3(-sin(lo), cos(lo), 0.0);
+        vec3  no = vec3(-sin(la) * cos(lo), -sin(la) * sin(lo),
+                        cos(la));
+        vec3  u  = vec3(cos(la) * cos(lo), cos(la) * sin(lo), sin(la));
+        vec3  d  = e * n.x + u * n.y - no * n.z;
+        float lat = asin(clamp(d.z, -1.0, 1.0));
+        float lon = atan(d.y, d.x);
+        return vec2(lon * 0.15915494 + 0.5, 0.5 - lat * 0.31830989);
+    }
+
+    # weather at p: x coverage, y type, z height scale
+    # how far out from the pad, 0 within 150 km to 1 past 400 km
+    # along the ground: near, the local clouds as they were; far,
+    # the Earth's own clouds from the map
+    func far_k [ q: @vec3f ] -> GLSL f32 {
+        vec3  n = normalize(q);
+        float d = acos(clamp(n.y, -1.0, 1.0)) * ubo.layer.z;
+        return smoothstep(150000.0, 400000.0, d);
+    }
+
+    # 0 with the camera under 20 km, 1 over 35 km: up there the
+    # Earth's own clouds, drawn as a layer, not marched
+    func alt_k [] -> GLSL f32 {
+        vec3  c = ubo.cam_pos.xyz;
+        float h = length(planet_pt(c)) - ubo.layer.z;
+        return smoothstep(20000.0, 35000.0, h);
+    }
+
+    func weather_at [ p: @vec3f, lod: @f32 ] -> GLSL vec3f {
+        vec3  q  = planet_pt(p);
+        vec3  n  = normalize(q);
+        vec4  w  = tile_weather(q, n, lod);
+        // a second read, turned and 3.4x larger: no visible repeat
+        vec3  qr = vec3(0.8 * q.x - 0.6 * q.z, q.y,
+                        0.6 * q.x + 0.8 * q.z) * 0.29;
+        vec4  wr = tile_weather(qr, n, max(lod - 1.8, 0.0));
+        vec4  g  = textureLod(globe, globe_uv(n), 0.0);
+        float fr = clamp(remap(w.r, 0.30, 0.72, 0.0, 1.0), 0.0, 1.0);
+        float fg = clamp(remap(w.g, 0.0, 0.5, 0.0, 1.0), 0.0, 1.0);
+        float field = mix(fr, fg, ubo.weather_a.w);
+        // the globe moves the coverage: clear seas, overcast fronts
+        float c   = clamp(ubo.weather_a.x
+                  + (g.r - 0.5) * ubo.weather_a.z
+                  + (wr.r - 0.5) * 0.7, 0.0, 1.0);
+        float near = clamp(remap(field, 1.0 - c, 1.0 - c + 0.35,
+                                 0.0, 1.0), 0.0, 1.0) * 0.95;
+        // far: where and how much from the map, broken a little by
+        // noise that never repeats (about 20 km)
+        float k = max(far_k(q), alt_k());
+        float cov = near;
+        float seen = 0.0;
+        if (k > 0.0) {{
+            seen = textureLod(cloudmap, geo_uv(n), lod).r;
+            float brk = vnoise(q / 20000.0) * 0.12
+                      + vnoise(q / 7000.0 + vec3(3.1)) * 0.06
+                      + vnoise(q / 2500.0 + vec3(9.4)) * 0.04;
+            float far = clamp(remap(seen + brk, 0.25, 0.70, 0.0, 1.0),
+                              0.0, 1.0) * 0.95;
+            cov = mix(near, far, k);
+        }}
+        float typ = clamp(remap(w.b, 0.35, 0.72, 0.0, 1.0) * 0.5
+                  + ubo.weather_a.y - 0.25 + (g.g - 0.5) * 0.5,
+                    0.0, 1.0);
+        vec2  tu  = face_uv(q, n) / ubo.scales.w * 3.0 + 0.5;
+        float hsc = textureLod(tvar, tu, lod).r;
+        // the map's thick cloud is deep and tall, its haze thin
+        typ = mix(typ, clamp(seen * 1.2 - 0.1, 0.0, 1.0), k);
+        hsc = mix(hsc, clamp(seen * 1.4, 0.0, 1.0), k);
+        return vec3(cov, typ, hsc);
+    }
+
+    # top of the cloud type here, metres above the base
+    func type_top [ p: @vec3f, w: @vec3f ] -> GLSL f32 {
+        float t  = w.y;
+        float a  = mix(ubo.tops.x, ubo.tops.y, clamp(t * 2.0, 0.0, 1.0));
+        float cu = mix(a, ubo.tops.z, clamp(t * 2.0 - 1.0, 0.0, 1.0));
+        return cu * mix(0.5, 1.5, w.z);
+    }
+
+    func type_frac [ p: @vec3f, w: @vec3f ] -> GLSL f32 {
+        float r = length(planet_pt(p)) - ubo.layer.z;
+        return clamp((r - ubo.layer.x) / type_top(p, w), 0.0, 1.0);
+    }
+
+    # density over height: a sharp base, stratus to cumulus tops
+    func height_gradient [ h: @f32, w: @vec3f ] -> GLSL f32 {
+        float t  = w.y;
+        float base = clamp(remap(h, 0.0,
+            mix(0.18, 0.05, clamp(t * 1.5, 0.0, 1.0)), 0.0, 1.0),
+            0.0, 1.0);
+        float st = clamp(remap(h, 0.35, 0.75, 1.0, 0.0), 0.0, 1.0);
+        float sc = clamp(remap(h, 0.55, 0.9, 1.0, 0.0), 0.0, 1.0);
+        float cu = clamp(remap(h, 0.7, 1.0, 1.0, 0.0), 0.0, 1.0);
+        float a  = mix(st, sc, clamp(t * 2.0, 0.0, 1.0));
+        return base * mix(a, cu, clamp(t * 2.0 - 1.0, 0.0, 1.0));
+    }
+
+    # the Nubis density; lod 0 = full detail, 1 = shape only
+    func cloud_density [ p: @vec3f, hl: @f32, w: @vec3f,
+                         lod: @f32 ] -> GLSL f32 {
+        float h  = type_frac(p, w);
+        vec3  pp = planet_pt(p);
+        float hm = length(pp) - ubo.layer.z - ubo.layer.x;
+        float hd = clamp(hm / 2500.0, 0.0, 1.0);
+        vec3 q = pp + ubo.wind.xyz * ubo.wind.w;
+        q += ubo.wind.xyz * (hd * ubo.weather_b.y
+           / max(length(ubo.wind.xyz), 0.01));
+        // the shape read at the pixel's size, as a mip: two scales
+        // 2x apart, each fixed to the ground, mixed by footprint
+        float fp = length(p - ubo.cam_pos.xyz) * ubo.sea_b.z;
+        float sl = clamp(log2(max(fp * 128.0 / ubo.scales.x, 1.0)),
+                         0.0, 6.0);
+        float sb = exp2(floor(sl));
+        vec4 low = texture(shape, q / (ubo.scales.x * sb));
+        if (sl > 0.0) {{
+            vec4 up = texture(shape, q / (ubo.scales.x * sb * 2.0));
+            low = mix(low, up, fract(sl));
+        }}
+        float lfbm = low.g * 0.625 + low.b * 0.25 + low.a * 0.125;
+        float comp = remap(low.r, -(1.0 - lfbm), 1.0, 0.0, 1.0);
+        comp = clamp(remap(comp, 0.70, 0.94, 0.0, 1.0), 0.0, 1.0);
+        float cov = w.x;
+        float profile = height_gradient(h, w) * cov;
+        float base = clamp(comp - (1.0 - profile), 0.0, 1.0)
+                   * clamp(cov * 1.5, 0.0, 1.0);
+        if (base <= 0.0) return 0.0;
+        if (lod < 0.5) {{
+            vec2 cu = face_uv(q, normalize(pp)) / ubo.scales.z;
+            vec3 cn = texture(curl, cu).rgb * 2.0 - 1.0;
+            q += cn * ubo.march.y * (1.0 - hd) * ubo.scales.y * 0.15;
+            vec3  hi   = texture(detail, q / ubo.scales.y).rgb;
+            float hfbm = hi.r * 0.625 + hi.g * 0.25 + hi.b * 0.125;
+            float m = mix(hfbm, 1.0 - hfbm,
+                          clamp(hm / 250.0, 0.0, 1.0));
+            m *= mix(0.35, 1.0, clamp(h * 6.0, 0.0, 1.0));
+            // detail smaller than a pixel fades: no speckle
+            m *= 1.0 - smoothstep(1.0, 4.0,
+                                  fp * 32.0 / ubo.scales.y);
+            base = remap(base, m * ubo.weather_b.w, 1.0, 0.0, 1.0);
+        }}
+        return clamp(base, 0.0, 1.0) * ubo.weather_b.z
+             * mix(0.45, 1.2, w.z);
+    }
+
+    # optical depth toward the sun: five cone samples and one far
+    func light_march [ p: @vec3f, lw: @f32 ] -> GLSL f32 {
+        vec3  sun = ubo.sun_dir.xyz;
+        float ls = 225.0;
+        vec3 cone_a = vec3( 0.38, -0.14,  0.24);
+        vec3 cone_b = vec3(-0.24,  0.36, -0.12);
+        vec3 cone_c = vec3( 0.07,  0.32,  0.41);
+        vec3 cone_d = vec3(-0.44, -0.08,  0.26);
+        vec3 cone_e = vec3( 0.29, -0.38, -0.30);
+        float od = 0.0;
+        for (int i = 1; i <= 5; i++) {{
+            vec3 k = (i == 1) ? cone_a : (i == 2) ? cone_b : (i == 3) ? cone_c
+                   : (i == 4) ? cone_d : cone_e;
+            float s = ls * float(i);
+            vec3  q = p + sun * s + k * s * 0.45;
+            float h = height_frac(q);
+            if (h <= 0.0 || h >= 1.0) continue;
+            vec3  w = weather_at(q, lw);
+            od += cloud_density(q, h, w, (i > 2) ? 1.0 : 0.0) * ls;
+        }}
+        vec3  qf = p + sun * ls * 9.0;
+        float hf = height_frac(qf);
+        if (hf > 0.0 && hf < 1.0)
+            od += cloud_density(qf, hf, weather_at(qf, lw), 1.0)
+                * ls * 3.0;
+        return od;
+    }
+
+    # sunlight through the layer down to a ground point
+    func ground_shadow [ p: @vec3f, lw: @f32 ] -> GLSL f32 {
+        vec3  C  = vec3(0.0, -ubo.layer.z, 0.0);
+        vec3  sun = ubo.sun_dir.xyz;
+        vec3  up = normalize(p - C);
+        if (dot(up, sun) <= 0.02) return 1.0;
+        vec2 t_in = ray_sphere(p - C, sun, ubo.layer.z + ubo.layer.x);
+        vec2 t_out = ray_sphere(p - C, sun, ubo.layer.z + ubo.layer.y);
+        float ds = (t_out.y - t_in.y) / 6.0;
+        float od = 0.0;
+        for (int i = 0; i < 6; i++) {{
+            vec3 q = p + sun * (t_in.y + ds * (float(i) + 0.5));
+            od += cloud_density(q, height_frac(q), weather_at(q, lw),
+                                1.0) * ds;
+        }}
+        return exp(-od * ubo.light_b.w * 0.3);
+    }
+
+    # the galaxy where the sky is dark; all round in space
+    func night_stars [ d: @vec3f ] -> GLSL vec3f {
+        float ng = ubo.sea_b.y;
+        if (ng <= 0.001) return vec3(0.0);
+        float ca = 0.6216;
+        float sa = 0.7833;
+        vec3  r  = vec3(d.x, d.y * ca - d.z * sa, d.y * sa + d.z * ca);
+        float u  = atan(r.z, r.x) * 0.15915494 + 0.5 + ubo.sea_b.w;
+        float v  = acos(clamp(r.y, -1.0, 1.0)) * 0.31830989;
+        vec3  c  = texture(stars, vec2(u, v)).rgb;
+        float up = mix(smoothstep(0.03, 0.70, d.y), 1.0, ubo.far_lod.z);
+        return c * c * ng * 0.05 * up;
+    }
+
+    func aces [ x: @vec3f ] -> GLSL vec3f {
+        return clamp((x * (2.51 * x + 0.03))
+             / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
+    }
+
+    # the sea: spectral Gerstner waves; xz sideways, y up
+    func ocean_disp [ q: @vec2f, n: @f32, kmax: @f32 ] -> GLSL vec3f {
+        vec3  D = vec3(0.0);
+        float t = ubo.wind.w;
+        float Q = ubo.sea.y;
+        for (int i = 0; i < 128; i++) {{
+            if (float(i) >= n) break;
+            vec4  wv = waves[i];
+            float k  = length(wv.xy);
+            float wl = smoothstep(kmax * 2.0, kmax * 0.5, k);
+            if (wl <= 0.002) break;
+            float om = sqrt(9.81 * k);
+            float a  = dot(wv.xy, q) - om * t + wv.w;
+            float amp = wv.z * wl;
+            D.y  += amp * cos(a);
+            D.xz -= (wv.xy / k) * (amp * Q * sin(a));
+        }}
+        return D;
+    }
+
+    # the sea's normal; w is the Jacobian, under 1 is foam
+    func ocean_ndj [ q: @vec2f, n: @f32, kmax: @f32 ] -> GLSL vec4f {
+        float t = ubo.wind.w;
+        float Q = ubo.sea.y;
+        float hx = 0.0;
+        float hz = 0.0;
+        float jxx = 0.0;
+        float jzz = 0.0;
+        float jxz = 0.0;
+        for (int i = 0; i < 128; i++) {{
+            if (float(i) >= n) break;
+            vec4  wv = waves[i];
+            float k  = length(wv.xy);
+            float wl = smoothstep(kmax * 2.0, kmax * 0.5, k);
+            if (wl <= 0.002) break;
+            float om = sqrt(9.81 * k);
+            float a  = dot(wv.xy, q) - om * t + wv.w;
+            float sa = sin(a);
+            float ca = cos(a);
+            float amp = wv.z * wl;
+            hx  -= amp * wv.x * sa;
+            hz  -= amp * wv.y * sa;
+            float qa = Q * amp * ca / k;
+            jxx -= qa * wv.x * wv.x;
+            jzz -= qa * wv.y * wv.y;
+            jxz -= qa * wv.x * wv.y;
+        }}
+        vec3 nrm = normalize(vec3(-hx, 1.0, -hz));
+        float J  = (1.0 + jxx) * (1.0 + jzz) - jxz * jxz;
+        return vec4(nrm, J);
+    }
+
+    # seen from far a cloud is a few pixels: a short integration
+    # of the weather alone, lit by the column above each sample
+    func slab [ o: @vec3f, d: @vec3f, t_in: @f32, t_out: @f32,
+                jit: @f32 ] -> GLSL vec4f {
+        vec3  C    = vec3(0.0, -ubo.layer.z, 0.0);
+        vec3  sun  = ubo.sun_dir.xyz;
+        float mu   = dot(d, sun);
+        float span = t_out - t_in;
+        float ds   = span / 8.0;
+        vec3  pm   = o + d * (t_in + span * 0.5);
+        vec3  upm  = normalize(pm - C);
+        vec3  sc   = sun_light(pm);
+        vec3  amb  = atmosphere(pm, upm, 1e12).rgb * ubo.light_a.w;
+        float sig  = ubo.light_b.w;
+        float ph   = mix(hg(mu, ubo.light_a.x), hg(mu, -0.25), 0.3);
+        float cs   = max(dot(upm, sun), 0.0);
+        float texel = ubo.scales.w / 512.0;
+        vec3  col  = vec3(0.0);
+        float T    = 1.0;
+        for (int i = 0; i < 8; i++) {{
+            float t = t_in + ds * (float(i) + jit);
+            vec3  p = o + d * t;
+            float lw = log2(max(t * ubo.sea_b.z / texel, 1.0));
+            vec3  w = weather_at(p, lw);
+            float h = type_frac(p, w);
+            float dens = height_gradient(h, w) * w.x * ubo.weather_b.z
+                       * mix(0.45, 1.2, w.z);
+            if (dens <= 0.001) continue;
+            // the column still above this sample, toward the sun
+            float above = (1.0 - h) * type_top(p, w) * dens;
+            float od = above * sig / max(cs, 0.08);
+            vec3  direct = sc * (ph * exp(-od) + 0.25 * exp(-od * 0.08));
+            vec3  S = (direct + amb * (0.45 + 0.55 * h)) * dens * sig;
+            float e  = max(dens * sig, 1e-6);
+            float Ts = exp(-e * ds);
+            col += T * (S - S * Ts) / e;
+            T   *= Ts;
+            if (T < 0.004) break;
+        }}
+        return vec4(col, T);
+    }
+
+    func fragment [] -> GLSL none {
+        vec2  uvj = v_uv + ubo.jitter.xy;
+        vec2  ndc = vec2(uvj.x * 2.0 - 1.0, 1.0 - uvj.y * 2.0);
+        vec3  o   = ubo.cam_pos.xyz;
+        vec3  d   = normalize(ubo.cam_fwd.xyz
+                  + ubo.cam_right.xyz * (ndc.x * ubo.cam_right.w)
+                  + ubo.cam_up.xyz * (ndc.y * ubo.cam_up.w));
+        // the environment pass draws the whole sky, equirect
+        if (ubo.env.x > 0.5) {{
+            float lon = (v_uv.x * 2.0 - 1.0) * 3.14159265;
+            float lat = (0.5 - v_uv.y) * 3.14159265;
+            float cl  = cos(lat);
+            d = vec3(cl * sin(lon), sin(lat), cl * cos(lon));
+        }}
+        vec3  C   = vec3(0.0, -ubo.layer.z, 0.0);
+        float R   = ubo.layer.z;
+        vec3  sun = ubo.sun_dir.xyz;
+        float mu  = dot(d, sun);
+        float pix = ubo.sea_b.z;
+        float jit = fract(52.9829189 * fract(dot(gl_FragCoord.xy
+                  + float(ubo.frame % 8) * 5.588238,
+                    vec2(0.06711056, 0.00583715))));
+
+        vec2  tg = ray_sphere(o - C, d, R);
+        bool  ground = tg.y > 0.0 && tg.x > 0.0 && ubo.env.x < 0.5;
+        float t_ground = ground ? tg.x : 1e12;
+
+        vec4 sky = atmosphere(o, d, t_ground);
+        vec3 bg  = sky.rgb;
+        vec3 up0 = normalize(o - C);
+        float ch0 = length(o - C) - R;
+        if (!ground) {{
+            float sd = smoothstep(0.99985, 0.99995, mu);
+            bg += vec3(1.0, 0.96, 0.9) * sd * sky.a * ubo.sun_dir.w
+                * 0.5;
+            bg += night_stars(d) * sky.a;
+        }} else {{
+            vec3  gp  = o + d * tg.x;
+            vec3  up  = normalize(gp - C);
+            vec3  sc  = sun_light(gp);
+            float tex = ubo.scales.w / 512.0;
+            float sh  = ground_shadow(gp,
+                        log2(max(tg.x * pix / tex, 1.0)));
+            // waves under a pixel alias: cut them at the footprint
+            float fp   = max(tg.x * pix, 0.02);
+            float kmax = 6.2831853 / (fp * 8.0);
+            float fade = clamp(1.0 - fp / 32.0, 0.0, 1.0);
+            vec3  disp = vec3(0.0);
+            vec4  ndj  = vec4(up, 1.0);
+            if (fade > 0.0) {{
+                disp = ocean_disp(gp.xz, ubo.sea.x, kmax);
+                ndj  = ocean_ndj(gp.xz, ubo.sea.x, kmax);
+            }}
+            vec3  n    = normalize(mix(up, ndj.xyz, fade));
+            vec3  V    = -d;
+            float wind_f = smoothstep(6.0, 16.0, ubo.sea_b.x);
+            float foam = clamp((ubo.sea.z - ndj.w) * 1.6, 0.0, 1.0);
+            float crest = smoothstep(0.95, 1.5, disp.y * fade
+                        / max(ubo.sea_b.x * 0.16, 0.25));
+            foam = clamp(foam + crest * 0.5, 0.0, 1.0) * wind_f;
+            vec3  fuv = vec3(gp.xz * 0.0037, ubo.wind.w * 0.006);
+            float fn  = texture(detail, fuv).r * 0.5
+                      + texture(detail, fuv * 5.3 + 0.37).g * 0.5;
+            foam = clamp(foam * (0.15 + 1.5 * fn) - 0.12, 0.0, 1.0)
+                 * fade;
+            vec3  nr = n;
+            float e_rough = mix(0.06, 0.22,
+                clamp(ubo.sea_b.x / 20.0, 0.0, 1.0))
+                + clamp(fp * 0.01, 0.0, 0.22);
+            float ndl = max(dot(n, sun), 0.0);
+            float ndv = max(dot(nr, V), 0.0);
+            float F = 0.02 + 0.98 * pow(1.0 - ndv, 5.0);
+            vec3  Rd = reflect(d, nr);
+            if (dot(Rd, up) < 0.0004)
+                Rd = normalize(Rd + up * (0.0004 - dot(Rd, up)));
+            // the env map was drawn from up0's frame: turn into it
+            vec2  euv = vec2(atan(Rd.x, Rd.z) * 0.15915494 + 0.5,
+                0.5 - asin(clamp(Rd.y, -1.0, 1.0)) * 0.31830989);
+            vec2  ex = dFdx(euv);
+            vec2  ey = dFdy(euv);
+            if (abs(ex.x) > 0.5) ex.x -= sign(ex.x);
+            if (abs(ey.x) > 0.5) ey.x -= sign(ey.x);
+            float cone = e_rough * 0.12;
+            ex = clamp(ex, vec2(-0.25), vec2(0.25))
+               + vec2(cone, cone * 0.5);
+            ey = clamp(ey, vec2(-0.25), vec2(0.25))
+               + vec2(cone * 0.5, cone);
+            vec3  rf = pow(textureGrad(envmap, euv, ex, ey).rgb,
+                           vec3(2.2)) * 1.15;
+            // far away the env map is the wrong place: the sky above
+            float near_env = clamp(1.0 - fp / 400.0, 0.0, 1.0);
+            vec3  skyr = atmosphere(gp, Rd, 1e12).rgb;
+            rf = mix(skyr, rf, near_env);
+            float rough = e_rough;
+            float a2 = rough * rough * rough * rough;
+            float dh = max(dot(nr, normalize(V + sun)), 0.0);
+            float dd = dh * dh * (a2 - 1.0) + 1.0;
+            float spec = a2 / (3.14159265 * dd * dd);
+            rf += sc * sh * spec * 0.6;
+            vec3  deep = vec3(0.004, 0.016, 0.031);
+            vec3  sss  = vec3(0.02, 0.10, 0.09) * (0.4 + 0.6
+                       * clamp(disp.y * fade * 0.35 + 0.5, 0.0, 1.0));
+            vec3  skyl = atmosphere(gp, up, 1e12).rgb
+                       + vec3(0.016, 0.020, 0.034) * ubo.key_tint.w;
+            vec3  wat  = deep * skyl * 6.0 + sss
+                       * (sc * sh * max(dot(up, sun), 0.0) * 0.35
+                       + skyl * 0.6);
+            vec3  gc   = mix(wat, rf, F);
+            // marine haze in a layer near the water
+            float up0d = max(-dot(d, up0), 1e-4);
+            float hz_H = 1000.0;
+            float tau  = (hz_H / up0d) * (1.0 - exp(-ch0 / hz_H))
+                       * 1.0e-4;
+            float wf   = 1.0 - exp(-tau);
+            float dip  = sqrt(max(2.0 * ch0 / R, 1e-12));
+            float ev   = dot(d, up0);
+            vec3  hzd  = normalize(d + up0 * (max(ev, 0.0002 - dip)
+                       - ev));
+            vec3  fogc = atmosphere(o, hzd, 1e12).rgb;
+            vec3  fc   = (sc * sh * ndl * 0.30 + skyl * 0.85) * 0.55;
+            gc = mix(gc, fc, foam);
+            bg = mix(gc * sky.a + sky.rgb, fogc, wf);
+        }}
+
+        // the cloud layer's two shells
+        float r_base = R + ubo.layer.x;
+        float r_top = R + ubo.layer.y;
+        vec2  ti = ray_sphere(o - C, d, r_base);
+        vec2  to = ray_sphere(o - C, d, r_top);
+        float rc = length(o - C);
+        float t_start = -1.0;
+        float t_end   = -1.0;
+        if (rc < r_base) {{
+            if (!ground) {{ t_start = ti.y; t_end = to.y; }}
+        }} else if (rc < r_top) {{
+            t_start = 0.0;
+            t_end   = (ti.x > 0.0) ? ti.x : to.y;
+        }} else {{
+            if (to.x > 0.0) {{
+                t_start = to.x;
+                t_end = (ti.x > 0.0) ? ti.x : to.y;
+            }}
+        }}
+        if (ground) t_end = min(t_end, t_ground);
+        float t_far = t_end;
+        t_end = min(t_end, t_start + ubo.march.z);
+
+        // how big a pixel is where the layer starts: march or slab
+        float kf = max(smoothstep(ubo.far_lod.x, ubo.far_lod.y,
+                                  max(t_start, 0.0) * pix), alt_k());
+        vec3  col = vec3(0.0);
+        float T   = 1.0;
+        float depth = -1.0;
+        float steps_taken = 0.0;
+        float texel = ubo.scales.w / 512.0;
+        if (t_start >= 0.0 && t_end > t_start && kf < 1.0) {{
+            float fine   = min(6.0 + t_start * 0.01, 800.0)
+                         / ubo.march.x;
+            float coarse = fine * 3.0;
+            float t = t_start + jit * fine;
+            bool  in_cloud = false;
+            int   zeros = 0;
+            vec3  sun_c = vec3(-1.0);
+            vec3  amb_top = vec3(0.0);
+            vec3  amb_bot = vec3(0.0);
+            float sigma = ubo.light_b.w;
+            float ga = ubo.light_a.x;
+            for (int i = 0; i < 512; i++) {{
+                if (t > t_end || T < 0.004) break;
+                // never longer than a fifth of the layer's thickness
+                fine   = min(6.0 + t * 0.01, 800.0) / ubo.march.x;
+                coarse = fine * 3.0;
+                vec3  p  = o + d * t;
+                float lw = log2(max(t * pix / texel, 1.0));
+                float h  = height_frac(p);
+                vec3  w  = weather_at(p, lw);
+                steps_taken += 1.0;
+                if (!in_cloud) {{
+                    vec3  q  = planet_pt(p);
+                    vec3  n  = normalize(q);
+                    vec3  b  = abs(n);
+                    float bm = max(b.x, max(b.y, b.z));
+                    // leap by the island field on one face only; the
+                    // field is the tile's, so never where the map rules
+                    if (bm > 0.95 && far_k(q) <= 0.0
+                        && alt_k() <= 0.0) {{
+                        vec2  iu  = face_uv(q, n) / ubo.scales.w + 0.5;
+                        float isd = textureLod(island, iu, 0.0).r
+                                  * 255.0 - 1.5;
+                        if (isd > 0.0) {{
+                            float lat = length(d - n * dot(d, n));
+                            float leap = isd * (ubo.scales.w / 256.0)
+                                       / max(lat, 0.02);
+                            t += max(leap, coarse);
+                            continue;
+                        }}
+                    }}
+                    float dl = cloud_density(p, h, w, 1.0);
+                    if (dl > 0.0) {{
+                        in_cloud = true;
+                        t = max(t - coarse, t_start);
+                        continue;
+                    }}
+                    t += coarse;
+                    continue;
+                }}
+                float dens = cloud_density(p, h, w, 0.0);
+                dens *= clamp((t_start + ubo.march.z - t) / 8000.0,
+                              0.0, 1.0);
+                if (dens <= 0.0) {{
+                    zeros += 1;
+                    if (zeros > 8) {{ in_cloud = false; zeros = 0; }}
+                    t += fine;
+                    continue;
+                }}
+                zeros = 0;
+                if (sun_c.x < 0.0) {{
+                    sun_c   = sun_light(p);
+                    vec3 upv = normalize(p - C);
+                    amb_top = atmosphere(p, upv, 1e12).rgb
+                            + vec3(0.016, 0.020, 0.034)
+                            * ubo.key_tint.w;
+                    amb_bot = sun_c * max(dot(upv, sun), 0.0) * 0.05
+                            * vec3(0.30, 0.31, 0.33) + amb_top * 0.35;
+                }}
+                float ext = sigma;
+                float od  = light_march(p, lw) * ext;
+                float ht = type_frac(p, w);
+                float lod_d = cloud_density(p, h, w, 1.0);
+                float depth_p = 0.05 + pow(clamp(lod_d, 0.0, 1.0),
+                    clamp(remap(ht, 0.3, 0.85, 0.5, 2.0), 0.5, 2.0));
+                float vert_p  = pow(clamp(remap(ht, 0.07, 0.14,
+                                0.1, 1.0), 0.1, 1.0), 0.8);
+                float occ     = depth_p * vert_p;
+                float inscat  = mix(1.0, occ,
+                                    clamp(0.5 - mu * 0.5, 0.0, 1.0));
+                vec3  direct = vec3(0.0);
+                float oa = 1.0;
+                float ob = 1.0;
+                float om = 1.0;
+                for (int k = 0; k < 3; k++) {{
+                    float ph = mix(hg(mu, ga * om),
+                                   hg(mu, -0.25 * om), 0.3);
+                    ph = max(ph, ubo.light_a.y
+                       * hg(mu, (0.99 - ubo.light_a.z) * om));
+                    direct += exp(-od * ob) * ph * oa;
+                    oa *= ubo.light_b.x;
+                    ob *= ubo.light_b.y;
+                    om *= ubo.light_b.z;
+                }}
+                direct *= sun_c * inscat;
+                float above = (1.0 - ht) * type_top(p, w) * lod_d;
+                float amb_t = exp(-above * ext * 0.15);
+                vec3  amb   = mix(amb_bot, amb_top, ht) * amb_t
+                            * ubo.light_a.w;
+                vec3  S    = (direct + amb) * dens * ext;
+                float e    = max(dens * ext, 1e-6);
+                float Ts   = exp(-e * fine);
+                col += T * (S - S * Ts) / e;
+                T   *= Ts;
+                if (depth < 0.0 && T < 0.5) depth = t;
+                t += fine;
+            }}
+        }}
+        if (t_start >= 0.0 && t_far > t_start && kf > 0.0) {{
+            vec4 sl = slab(o, d, t_start, t_far, jit);
+            col = mix(col, sl.rgb, kf);
+            T   = mix(T, sl.a, kf);
+            if (depth < 0.0 && T < 0.5) depth = t_start;
+        }}
+        if (T < 0.995 && t_start >= 0.0) {{
+            float dap = (depth > 0.0) ? depth : t_start;
+            vec4 ap = atmosphere(o, d, dap);
+            col = col * ap.a + ap.rgb * (1.0 - T);
+            // under the deck the far band melts into the haze
+            if (rc < r_top) {{
+                float far = clamp((dap - 25000.0) / 40000.0, 0.0, 1.0)
+                          * (1.0 - kf);
+                col = mix(col, bg * (1.0 - T), far);
+            }}
+        }}
+        vec3 final = col + T * bg;
+
+        if (ubo.view_mode == 1) final = vec3(1.0 - T);
+        if (ubo.view_mode == 2)
+            final = mix(vec3(0.0, 0.05, 0.3), vec3(1.0, 0.3, 0.0),
+                        steps_taken / 200.0);
+        if (ubo.view_mode == 3) final = vec3(kf, 1.0 - kf, 0.0);
+        vec3 tm = (ubo.view_mode == 0) ? aces(final * ubo.cam_fwd.w)
+                : clamp(final, 0.0, 1.0);
+        // alpha: the cloud's distance, log coded; 1 is none
+        float dn = (depth > 0.0)
+                 ? clamp(log(1.0 + depth / 20.0) / 13.8155, 0.0, 0.998)
+                 : 1.0;
+        fragColor = vec4(pow(tm, vec3(1.0 / 2.2)),
+                         (ubo.jitter.z > 0.5) ? 1.0 : dn);
+    }
+
+# ---------------------------------------------------------------
+# temporal upsampling: half-res jittered samples into a history
+# ---------------------------------------------------------------
+enum ComposeSurface
+    fresh   : 0
+    history : 1
+
+ModelViewProject PlanetCompose
+    mutable cam_right  : vec4f
+    mutable cam_up     : vec4f
+    mutable cam_fwd    : vec4f
+    mutable prev_right : vec4f
+    mutable prev_up    : vec4f
+    mutable prev_fwd   : vec4f
+    # uv offset of the fresh pass, fresh texel size
+    mutable jitter     : vec4f
+    mutable blend      : vec4f    # history weight, history valid
+    mutable cam_pos    : vec4f
+    mutable prev_pos   : vec4f
+
+    attrib fresh   : LayoutBinding [ type:typeid[ ComposeSurface ],
+                                     id: ComposeSurface.fresh,
+                                     count:1, format: typeid[ rgba8 ] ]
+    attrib history : LayoutBinding [ type:typeid[ ComposeSurface ],
+                                     id: ComposeSurface.history,
+                                     count:1, format: typeid[ rgba8 ] ]
+
+    attrib pos       : VertexInput    [ type:typeid[ vec3f ] ]
+    attrib uv        : VertexInput    [ type:typeid[ vec2f ] ]
+    attrib v_uv      : VertexOutput   [ type:typeid[ vec2f ] ]
+    attrib fragColor : FragmentOutput [ type:typeid[ vec4f ] ]
+
+    func init []
+        model = mat4f.identity[]
+        view  = mat4f.identity[]
+        proj  = mat4f.identity[]
+
+    func vertex [] -> GLSL none {
+        v_uv        = uv;
+        gl_Position = vec4(pos.x, pos.y, 0.0, 1.0);
+    }
+
+    func fragment [] -> GLSL none {
+        vec2  ndc = vec2(v_uv.x * 2.0 - 1.0, 1.0 - v_uv.y * 2.0);
+        vec3  d   = normalize(ubo.cam_fwd.xyz
+                  + ubo.cam_right.xyz * (ndc.x * ubo.cam_right.w)
+                  + ubo.cam_up.xyz * (ndc.y * ubo.cam_up.w));
+        vec2  fuv = v_uv - ubo.jitter.xy;
+        vec2  ts  = ubo.jitter.zw;
+        vec4  f4  = texture(fresh, fuv);
+        vec3  f   = f4.rgb;
+        vec3  m1  = vec3(0.0);
+        vec3  m2  = vec3(0.0);
+        for (int j = -1; j <= 1; j++)
+            for (int i = -1; i <= 1; i++) {{
+                vec3 n = texture(fresh, fuv
+                       + vec2(float(i), float(j)) * ts).rgb;
+                m1 += n;
+                m2 += n * n;
+            }}
+        vec3  mu  = m1 / 9.0;
+        vec3  sg  = sqrt(max(m2 / 9.0 - mu * mu, vec3(0.0)));
+        vec3  mn  = mu - 1.4 * sg;
+        vec3  mx  = mu + 1.4 * sg;
+        float dist = 20.0 * (exp(f4.a * 13.8155) - 1.0);
+        vec3  wp = ubo.cam_pos.xyz + d * dist;
+        vec3  pd = normalize(wp - ubo.prev_pos.xyz);
+        float pz = dot(pd, ubo.prev_fwd.xyz);
+        vec3  out_c = f;
+        if (pz > 0.0 && ubo.blend.y > 0.5) {{
+            vec2 pn = vec2(dot(pd, ubo.prev_right.xyz)
+                    / (pz * ubo.prev_right.w),
+                    dot(pd, ubo.prev_up.xyz) / (pz * ubo.prev_up.w));
+            vec2 puv = vec2(pn.x * 0.5 + 0.5, 0.5 - pn.y * 0.5);
+            if (puv.x > 0.0 && puv.x < 1.0 && puv.y > 0.0
+                && puv.y < 1.0) {{
+                vec3 h = texture(history, puv).rgb;
+                h = clamp(h, mn, mx);
+                out_c = mix(h, f, ubo.blend.x);
+            }}
+        }}
+        fragColor = vec4(out_c, 1.0);
+    }
+
+# ---------------------------------------------------------------
+# the vehicles: lit in the sky's light, hidden by its clouds
+# ---------------------------------------------------------------
+enum VehicleSurface
+    logo  : 0
+    fresh : 1
+
+ModelViewProject VehicleLit
+    mutable sun_dir  : vec4f     # w: exposure
+    mutable sun_col  : vec4f
+    mutable amb_col  : vec4f
+    mutable glow_pos : vec4f     # from the camera; w: on
+    mutable glow_col : vec4f
+    mutable screen   : vec4f     # target size, haze a metre
+    # the turn toward stowed (rad), hinge radius, height, and
+    # how far short of 45 degrees the quarters are centred
+    mutable fold     : vec4f
+    # each quarter's turn about its own span (rad): grid fins
+    mutable twist    : vec4f
+
+    attrib logo  : LayoutBinding [ type:typeid[ VehicleSurface ],
+                                   id: VehicleSurface.logo, count:1,
+                                   format: typeid[ rgba8 ] ]
+    attrib fresh : LayoutBinding [ type:typeid[ VehicleSurface ],
+                                   id: VehicleSurface.fresh, count:1,
+                                   format: typeid[ rgba8 ] ]
+
+    attrib a_pos     : VertexInput    [ type:typeid[ vec3f ] ]
+    attrib a_normal  : VertexInput    [ type:typeid[ vec3f ] ]
+    attrib a_uv      : VertexInput    [ type:typeid[ vec2f ] ]
+    attrib v_world   : VertexOutput   [ type:typeid[ vec3f ] ]
+    attrib v_normal  : VertexOutput   [ type:typeid[ vec3f ] ]
+    attrib v_local   : VertexOutput   [ type:typeid[ vec3f ] ]
+    attrib v_mat     : VertexOutput   [ type:typeid[ vec2f ] ]
+    attrib fragColor : FragmentOutput [ type:typeid[ vec4f ] ]
+
+    func init [ ]
+        model = mat4f.identity[]
+        view  = mat4f.identity[]
+        proj  = mat4f.identity[]
+
+    func vertex [] -> GLSL none {
+        vec3 lp = a_pos;
+        vec3 ln = a_normal;
+        bool moved = ubo.fold.x != 0.0 || ubo.twist != vec4(0.0);
+        if (a_uv.y > 0.5 && moved) {
+            // its quarter: centred fold.w short of 45 degrees
+            float a  = atan(lp.z, lp.x) + ubo.fold.w;
+            float qf = floor(a / 1.5707963);
+            int   qi = int(mod(qf, 4.0));
+            a = (qf + 0.5) * 1.5707963 - ubo.fold.w;
+            vec2  rd = vec2(cos(a), sin(a));
+            vec2  tg = vec2(-rd.y, rd.x);
+            // turned about its span through the root's height
+            float tw = ubo.twist[qi];
+            if (tw != 0.0) {
+                float ct = cos(tw);
+                float st = sin(tw);
+                float ss = dot(lp.xz, rd);
+                float tt = dot(lp.xz, tg);
+                float hh = lp.y - ubo.fold.z;
+                float t2 = tt * ct - hh * st;
+                float h2 = tt * st + hh * ct;
+                lp = vec3(rd.x * ss + tg.x * t2, h2 + ubo.fold.z,
+                          rd.y * ss + tg.y * t2);
+                float ns = dot(ln.xz, rd);
+                float nt = dot(ln.xz, tg);
+                float n2 = nt * ct - ln.y * st;
+                ln = vec3(rd.x * ns + tg.x * n2, nt * st + ln.y * ct,
+                          rd.y * ns + tg.y * n2);
+            }
+            float c  = cos(ubo.fold.x);
+            float sn = sin(ubo.fold.x);
+            float s  = dot(lp.xz, rd) - ubo.fold.y;
+            float h  = lp.y - ubo.fold.z;
+            float t  = dot(lp.xz, tg);
+            float s2 = s * c - h * sn;
+            float h2 = s * sn + h * c;
+            lp = vec3(rd.x * (s2 + ubo.fold.y) + tg.x * t,
+                      h2 + ubo.fold.z,
+                      rd.y * (s2 + ubo.fold.y) + tg.y * t);
+            float ns = dot(ln.xz, rd);
+            float nt = dot(ln.xz, tg);
+            float n2 = ns * c - ln.y * sn;
+            ln = vec3(rd.x * n2 + tg.x * nt, ns * sn + ln.y * c,
+                      rd.y * n2 + tg.y * nt);
+        }
+        vec4 wp     = ubo.model * vec4(lp, 1.0);
+        v_world     = wp.xyz;
+        v_normal    = mat3(ubo.model) * ln;
+        v_local     = lp;
+        v_mat       = a_uv;
+        gl_Position = ubo.proj * ubo.view * wp;
+    }
+
+    func aces [ x: @vec3f ] -> GLSL vec3f {
+        return clamp((x * (2.51 * x + 0.03))
+             / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
+    }
+
+    func fragment [] -> GLSL none {
+        int   kind = int(v_mat.x + 0.5);
+        // colour, metalness and roughness of each material, from
+        // photos of Block 5 boosters (estimates)
+        vec3  alb   = vec3(0.8);
+        float metal = 0.0;
+        float rough = 0.5;
+        if (kind == 0) {{
+            // the deck, painted steel, the orbiter mark in its middle
+            alb = vec3(0.30, 0.31, 0.32);
+            vec2 lu = v_local.xz / 30.0 + 0.5;
+            if (lu.x > 0.0 && lu.x < 1.0 && lu.y > 0.0 && lu.y < 1.0) {{
+                vec4 lg = texture(logo, vec2(lu.x, 1.0 - lu.y));
+                alb = mix(alb, lg.rgb, lg.a);
+            }}
+            rough = 0.8;
+        }} else if (kind == 1) {{
+            // the deck's sides: hazard stripes
+            alb = vec3(0.07, 0.075, 0.08);
+            if (v_local.y > 3.6 && v_local.y < 4.6) {{
+                float s = fract((v_local.x + v_local.z + v_local.y)
+                        * 0.25);
+                alb = (s < 0.5) ? vec3(0.8, 0.6, 0.05)
+                    : vec3(0.02);
+            }}
+            rough = 0.7;
+        }} else if (kind == 2) {{
+            // the body: polished aluminium tinted purple pink, a
+            // soft reflection; faint brushing, its rings every 1.8 m
+            alb = vec3(0.90, 0.74, 0.86);
+            metal = 1.0;
+            float round_a = atan(v_local.z, v_local.x);
+            float brush = sin(round_a * 900.0)
+                        * sin(round_a * 377.0 + v_local.y * 0.7);
+            rough = 0.22 + 0.02 * brush;
+            float seam = abs(fract(v_local.y / 1.8 + 0.5) - 0.5) * 1.8;
+            if (seam < 0.010) {{
+                alb *= 0.93;
+                rough = 0.35;
+            }}
+        }} else if (kind == 3) {{
+            // black carbon composite: interstage, leg panels
+            alb = vec3(0.030, 0.031, 0.033);
+            rough = 0.40;
+        }} else if (kind == 4) {{
+            // the bells: heat darkened nickel alloy
+            alb = vec3(0.30, 0.27, 0.24);
+            metal = 1.0;
+            rough = 0.45;
+        }} else if (kind == 5) {{
+            // anodised dark aluminium: pushers, hinges, fittings
+            alb = vec3(0.10, 0.10, 0.11);
+            metal = 1.0;
+            rough = 0.45;
+        }} else if (kind == 6) {{
+            // bare cast titanium, a little heat tinted
+            alb = vec3(0.47, 0.43, 0.38);
+            metal = 1.0;
+            rough = 0.38;
+        }} else if (kind == 7) {{
+            // polished steel: the pushers' rods, the hinge pins
+            alb = vec3(0.75, 0.75, 0.76);
+            metal = 1.0;
+            rough = 0.15;
+        }} else if (kind == 8) {{
+            // the engine section's black thermal coating
+            alb = vec3(0.04, 0.04, 0.04);
+            rough = 0.85;
+        }} else if (kind == 9) {{
+            // the foot pads: dark grey metal
+            alb = vec3(0.20, 0.20, 0.21);
+            metal = 1.0;
+            rough = 0.6;
+        }} else if (kind == 10) {{
+            // the top, the whole fairing: rose gold, polished
+            alb = vec3(0.95, 0.68, 0.58);
+            metal = 1.0;
+            rough = 0.18;
+        }} else if (kind == 12) {{
+            // the legs: shiny aluminium
+            alb = vec3(0.91, 0.92, 0.92);
+            metal = 1.0;
+            rough = 0.20;
+        }} else if (kind == 11) {{
+            // the stripe at the top of stage one: shiny silver
+            alb = vec3(0.95, 0.93, 0.88);
+            metal = 1.0;
+            rough = 0.12;
+        }} else {{
+            alb = vec3(0.12, 0.12, 0.13);
+            rough = 0.6;
+        }}
+        vec3  N = normalize(v_normal);
+        vec3  V = normalize(-v_world);
+        if (dot(N, V) < 0.0) N = -N;
+        vec3  L = ubo.sun_dir.xyz;
+        vec3  H = normalize(L + V);
+        float ndl = max(dot(N, L), 0.0);
+        float ndv = max(dot(N, V), 1e-3);
+        float ndh = max(dot(N, H), 0.0);
+        float vdh = max(dot(V, H), 0.0);
+        // GGX microfacets, Smith-Schlick shadowing, Schlick Fresnel
+        float a   = rough * rough;
+        float a2  = a * a;
+        float dd  = ndh * ndh * (a2 - 1.0) + 1.0;
+        float D   = a2 / (3.14159265 * dd * dd);
+        float kg  = (rough + 1.0) * (rough + 1.0) / 8.0;
+        float G   = (ndl / (ndl * (1.0 - kg) + kg))
+                  * (ndv / (ndv * (1.0 - kg) + kg));
+        vec3  F0  = mix(vec3(0.04), alb, metal);
+        vec3  F   = F0 + (1.0 - F0) * pow(1.0 - vdh, 5.0);
+        vec3  spec = D * G * F / max(4.0 * ndl * ndv, 1e-3);
+        vec3  kd  = (1.0 - F) * (1.0 - metal);
+        vec3  sun = ubo.sun_col.rgb;
+        vec3  c   = (kd * alb + 3.14159265 * spec) * sun * ndl;
+        // the sky above and the sea below, and what they mirror:
+        // darker overhead, brighter to the horizon, the sun's light
+        // along the horizon toward it; the sea a dim copy
+        vec3  sky = ubo.amb_col.rgb;
+        vec3  sea = ubo.amb_col.rgb * 0.25;
+        vec3  R   = reflect(-V, N);
+        vec2  rh  = normalize(R.xz + vec2(1e-4));
+        vec2  lh  = normalize(L.xz + vec2(1e-4));
+        float toward = max(dot(rh, lh), 0.0);
+        float low = 1.0 - abs(R.y);
+        vec3  rim = sky * 2.2 + sun * 1.2 * toward * toward;
+        vec3  top = sky * 1.2;
+        vec3  above = mix(rim, top, smoothstep(0.0, 0.7, R.y));
+        vec3  below = sea + rim * 0.3 * low;
+        vec3  env = mix(below, above, smoothstep(-0.05, 0.05, R.y))
+                  + sun * pow(max(dot(R, L), 0.0), 8.0 / (a + 0.02))
+                  * 0.05;
+        vec3  Fr  = F0 + (max(vec3(1.0 - rough), F0) - F0)
+                  * pow(1.0 - ndv, 5.0);
+        c += kd * alb * mix(sea, sky, 0.5 + 0.5 * N.y);
+        c += env * Fr * (1.0 - 0.5 * rough);
+        if (ubo.glow_pos.w > 0.0) {{
+            vec3  gl = ubo.glow_pos.xyz - v_world;
+            float gd = length(gl);
+            float gn = max(dot(N, gl / gd), 0.0) * 0.7 + 0.3;
+            c += (kd * alb + F0 * 0.5) * ubo.glow_col.rgb * gn * 400.0
+               / (gd * gd + 40.0);
+        }}
+        vec3 tm = pow(aces(c * 0.12 * ubo.sun_dir.w), vec3(1.0 / 2.2));
+        // the sky pass knows where its clouds stand
+        vec4  f    = texture(fresh, gl_FragCoord.xy / ubo.screen.xy);
+        float cd   = 20.0 * (exp(f.a * 13.8155) - 1.0);
+        float dist = length(v_world);
+        float hide = (f.a < 0.999)
+                   ? smoothstep(0.0, 300.0, dist - cd) * 0.95 : 0.0;
+        float haze = 1.0 - exp(-dist * ubo.screen.z);
+        tm = mix(tm, f.rgb, max(hide, haze * 0.9));
+        fragColor = vec4(tm, 1.0);
+    }
+
+enum PlumeSurface
+    fresh : 0
+
+# the exhaust: a ray-marched volume, light added over the scene
+ModelViewProject PlumeGlow
+    mutable axis_o : vec4f       # engine exit from the camera
+    mutable axis_d : vec4f       # down the plume; w length m
+    # exit radius, matched jet radius, the edge's slope, power
+    mutable cone   : vec4f
+    mutable tint   : vec4f       # rgb, w: air 1 .. vacuum 0
+    # shock cell spacing, core spread, mixing spread, hull radius
+    mutable shock  : vec4f
+    mutable screen : vec4f
+    mutable clock  : vec4f
+    # the camera's up and its height: no flame under the sea
+    mutable ground : vec4f
+
+    attrib fresh : LayoutBinding [ type:typeid[ PlumeSurface ],
+                                   id: PlumeSurface.fresh, count:1,
+                                   format: typeid[ rgba8 ] ]
+
+    attrib a_pos     : VertexInput    [ type:typeid[ vec3f ] ]
+    attrib a_normal  : VertexInput    [ type:typeid[ vec3f ] ]
+    attrib a_uv      : VertexInput    [ type:typeid[ vec2f ] ]
+    attrib v_world   : VertexOutput   [ type:typeid[ vec3f ] ]
+    attrib v_normal  : VertexOutput   [ type:typeid[ vec3f ] ]
+    attrib fragColor : FragmentOutput [ type:typeid[ vec4f ] ]
+
+    func init [ ]
+        model = mat4f.identity[]
+        view  = mat4f.identity[]
+        proj  = mat4f.identity[]
+
+    func vertex [] -> GLSL none {
+        vec4 wp     = ubo.model * vec4(a_pos, 1.0);
+        v_world     = wp.xyz;
+        v_normal    = transpose(inverse(mat3(ubo.model))) * a_normal;
+        gl_Position = ubo.proj * ubo.view * wp;
+    }
+
+    func fragment [] -> GLSL none {
+        if (ubo.ground.w + dot(v_world, ubo.ground.xyz) < 0.3) discard;
+        vec3  X   = ubo.axis_d.xyz;
+        float len = ubo.axis_d.w;
+        float re  = ubo.cone.x;
+        float rj  = ubo.cone.y;
+        float slope = ubo.cone.z;
+        float bound = ubo.shock.w;
+        vec3  d   = normalize(v_world);
+        // the camera from the exit, along and across the axis
+        vec3  o   = -ubo.axis_o.xyz;
+        float ox  = dot(o, X);
+        float dx  = dot(d, X);
+        vec3  op  = o - X * ox;
+        vec3  dp  = d - X * dx;
+        float qa  = dot(dp, dp);
+        float qb  = dot(op, dp);
+        float qc  = dot(op, op) - bound * bound;
+        float disc = qb * qb - qa * qc;
+        if (disc < 0.0 || qa < 1e-9) discard;
+        float sq  = sqrt(disc);
+        float t0  = (-qb - sq) / qa;
+        float t1  = (-qb + sq) / qa;
+        // the slab from just behind the exit to the far end
+        float xa  = -0.05 * len;
+        float sa  = (abs(dx) > 1e-6) ? (xa - ox) / dx : -1e30;
+        float sb  = (abs(dx) > 1e-6) ? (len - ox) / dx : 1e30;
+        if (abs(dx) <= 1e-6 && (ox < xa || ox > len)) discard;
+        t0 = max(t0, min(sa, sb));
+        t1 = min(t1, max(sa, sb));
+        if (t1 <= max(t0, 0.0)) discard;
+        // one fragment a ray: the hull's entry, or its exit inside
+        float dist = length(v_world);
+        if (t0 > 0.0 && dist > (t0 + t1) * 0.5) discard;
+        t0 = max(t0, 0.0);
+        // the scene in front of it ends the march
+        vec4  f   = texture(fresh, gl_FragCoord.xy / ubo.screen.xy);
+        if (f.a < 0.999) {
+            float cd = 20.0 * (exp(f.a * 13.8155) - 1.0);
+            t1 = min(t1, cd);
+        }
+        if (t1 <= t0) discard;
+        float air = ubo.tint.w;
+        float gam = 0.22;
+        float jit = fract(sin(dot(gl_FragCoord.xy,
+                          vec2(12.9898, 78.233))) * 43758.5453);
+        float fl  = 0.92 + 0.08 * sin(ubo.clock.x * 53.0);
+        const int N = 64;
+        float dt  = (t1 - t0) / float(N);
+        vec3  glow = vec3(0.0);
+        float keep = 1.0;
+        for (int i = 0; i < N; i++) {
+            float t  = t0 + (float(i) + jit) * dt;
+            vec3  p  = o + d * t;
+            float x  = dot(p, X);
+            if (x < 0.0) continue;
+            float rr = length(p - X * x);
+            // the edge: from the exit toward the matched radius at
+            // its first slope, then mixing outward in the air
+            float gap = max(abs(rj - re), 0.01);
+            float rb = rj + (re - rj) * exp(-x * abs(slope) / gap)
+                     + x * ubo.shock.z;
+            float ub = rr / rb;
+            if (ub > 1.6) continue;
+            // the mass stays near the axis as the edge flares
+            float wc = (ubo.shock.y > 0.0)
+                     ? min(rb, re + x * ubo.shock.y) : rb;
+            float u  = rr / wc;
+            float s  = x / len;
+            // flow over a wider section is thinner and colder
+            float dil = (re * re) / (wc * wc);
+            float hot = pow(dil, gam);
+            float core = exp(-2.5 * u * u);
+            // bright shock fronts in thick air, fading downstream
+            float cell = ubo.shock.x;
+            float ph  = (cell > 0.01) ? 0.5 + 0.5 * cos(6.2831853
+                                                * x / cell) : 0.0;
+            float dia = 1.0 + 1.5 * air * pow(ph, 6.0)
+                      * exp(-x / (4.0 * max(cell, 0.01)));
+            float e  = dil * core * (0.25 + 0.75 * hot) * dia;
+            // unburnt fuel meeting the air: a shear layer glow
+            float edge = (ub - 1.0) / 0.3;
+            e += 0.6 * air * exp(-edge * edge) * (re / rb)
+               * exp(-s * 2.5);
+            e *= ubo.cone.w * smoothstep(1.0, 0.7, s) / (2.0 * re);
+            vec3 col = mix(ubo.tint.rgb, vec3(1.0, 0.95, 0.85),
+                           hot * hot);
+            glow += col * e * dt * keep;
+            // soot dims what lies behind it, only in air
+            keep *= exp(-e * dt * 0.2 * air);
+        }
+        fragColor = vec4(glow * fl, 0.0);
+    }
+
+# ---------------------------------------------------------------
+# meshes built in code: positions, normals, material in uv.x
+# ---------------------------------------------------------------
+class MeshBuild
+    public pos : vec f32
+    public nrm : vec f32
+    public uvs : vec f32
+    public idx : vec u32
+    # uv.y: 1 rides on a folding leg, 0 is fixed to the hull
+    public ride   : f32
+    # a strut's two ends' ride
+    public ride_p : f32
+    public ride_q : f32
+
+    func init []
+        pos = vec f32 []
+        nrm = vec f32 []
+        uvs = vec f32 []
+        idx = vec u32 []
+
+    func vert [ x: f32, y: f32, z: f32, nx: f32, ny: f32, nz: f32,
+                mat: f32 ] -> u32
+        n : u32 [ pos.count / 3 ]
+        pos.push[ x ]
+        pos.push[ y ]
+        pos.push[ z ]
+        nl : f32 [ sqrt[ nx * nx + ny * ny + nz * nz ] ]
+        if [ nl < 1e-6 ] nl = 1.0
+        ux : f32 [ nx / nl ]
+        uy : f32 [ ny / nl ]
+        uz : f32 [ nz / nl ]
+        nrm.push[ ux ]
+        nrm.push[ uy ]
+        nrm.push[ uz ]
+        uvs.push[ mat ]
+        uvs.push[ ride ]
+        return n
+
+    func tri [ i: u32, j: u32, k: u32 ]
+        idx.push[ i ]
+        idx.push[ j ]
+        idx.push[ k ]
+
+    func quad [ i: u32, j: u32, k: u32, l: u32 ]
+        tri[ i, j, k ]
+        tri[ i, k, l ]
+
+    # the same turned round an axis at (ox, oz)
+    public func lathe_at [ prof: vec f32, seg: i32, mat: f32, ox: f32,
+                           oz: f32 ]
+        rings : i32 [ prof.count / 2 ]
+        first : u32 [ pos.count / 3 ]
+        for [ r: i32 0, r < rings, r += 1 ]
+            lo : i32 [ (r > 0) ? r - 1 : r ]
+            hi : i32 [ (r < rings - 1) ? r + 1 : r ]
+            dr : f32 [ prof[ hi * 2 ] - prof[ lo * 2 ] ]
+            dy : f32 [ prof[ hi * 2 + 1 ] - prof[ lo * 2 + 1 ] ]
+            rad : f32 [ prof[ r * 2 ] ]
+            ht : f32 [ prof[ r * 2 + 1 ] ]
+            for [ sg: i32 0, sg <= seg, sg += 1 ]
+                ang : f32 [ f32[ sg ] / f32[ seg ] * 6.2831853 ]
+                ca : f32 [ cos[ ang ] ]
+                sa : f32 [ sin[ ang ] ]
+                vert[ ox + rad * ca, ht, oz + rad * sa, ca * dy,
+                      0.0 - dr, sa * dy, mat ]
+        cols : u32 [ u32[ seg + 1 ] ]
+        for [ r: i32 0, r < rings - 1, r += 1 ]
+            for [ sg: i32 0, sg < seg, sg += 1 ]
+                c : u32 [ first + u32[ r ] * cols + u32[ sg ] ]
+                quad[ c, c + 1, c + cols + 1, c + cols ]
+
+    # a surface turned round y from (radius, height) pairs
+    public func lathe [ prof: vec f32, seg: i32, mat: f32 ]
+        rings : i32 [ prof.count / 2 ]
+        first : u32 [ pos.count / 3 ]
+        for [ r: i32 0, r < rings, r += 1 ]
+            lo : i32 [ (r > 0) ? r - 1 : r ]
+            hi : i32 [ (r < rings - 1) ? r + 1 : r ]
+            dr : f32 [ prof[ hi * 2 ] - prof[ lo * 2 ] ]
+            dy : f32 [ prof[ hi * 2 + 1 ] - prof[ lo * 2 + 1 ] ]
+            rad : f32 [ prof[ r * 2 ] ]
+            ht : f32 [ prof[ r * 2 + 1 ] ]
+            for [ s: i32 0, s <= seg, s += 1 ]
+                ang : f32 [ f32[ s ] / f32[ seg ] * 6.2831853 ]
+                ca : f32 [ cos[ ang ] ]
+                sa : f32 [ sin[ ang ] ]
+                vert[ rad * ca, ht, rad * sa, ca * dy, 0.0 - dr,
+                      sa * dy, mat ]
+        cols : u32 [ u32[ seg + 1 ] ]
+        for [ r: i32 0, r < rings - 1, r += 1 ]
+            for [ s: i32 0, s < seg, s += 1 ]
+                c : u32 [ first + u32[ r ] * cols + u32[ s ] ]
+                quad[ c, c + 1, c + cols + 1, c + cols ]
+
+    # a flat disc at height y facing up or down
+    public func disc [ rad: f32, y: f32, seg: i32, face: f32,
+                       mat: f32 ]
+        mid : u32 [ vert[ 0.0, y, 0.0, 0.0, face, 0.0, mat ] ]
+        first : u32 [ pos.count / 3 ]
+        for [ s: i32 0, s <= seg, s += 1 ]
+            ang : f32 [ f32[ s ] / f32[ seg ] * 6.2831853 ]
+            vert[ rad * cos[ ang ], y, rad * sin[ ang ], 0.0, face,
+                  0.0, mat ]
+        for [ s: i32 0, s < seg, s += 1 ]
+            tri[ mid, first + u32[ s ], first + u32[ s ] + 1 ]
+
+    # a six sided prism, flat top and flat sides
+    public func hex [ rad: f32, base_y: f32, top_y: f32, top: f32,
+                      side: f32 ]
+        disc[ rad, top_y, 6, 1.0, top ]
+        for [ s: i32 0, s < 6, s += 1 ]
+            ang_lo : f32 [ f32[ s ] / 6.0 * 6.2831853 ]
+            ang_hi : f32 [ f32[ s + 1 ] / 6.0 * 6.2831853 ]
+            am : f32 [ (ang_lo + ang_hi) * 0.5 ]
+            nx : f32 [ cos[ am ] ]
+            nz : f32 [ sin[ am ] ]
+            p : u32 [ vert[ rad * cos[ ang_lo ], base_y,
+                            rad * sin[ ang_lo ], nx, 0.0, nz, side ] ]
+            vert[ rad * cos[ ang_hi ], base_y, rad * sin[ ang_hi ], nx,
+                  0.0, nz, side ]
+            vert[ rad * cos[ ang_hi ], top_y, rad * sin[ ang_hi ], nx,
+                  0.0, nz, side ]
+            vert[ rad * cos[ ang_lo ], top_y, rad * sin[ ang_lo ], nx,
+                  0.0, nz, side ]
+            quad[ p, p + 1, p + 2, p + 3 ]
+
+    # a box from its centre and half sizes
+    public func box [ cx: f32, cy: f32, cz: f32, hx: f32, hy: f32,
+                      hz: f32, mat: f32 ]
+        for [ f: i32 0, f < 6, f += 1 ]
+            ax : i32 [ f / 2 ]
+            sg : f32 [ ((f & 1) == 0) ? 1.0 : -1.0 ]
+            nx : f32 [ (ax == 0) ? sg : 0.0 ]
+            ny : f32 [ (ax == 1) ? sg : 0.0 ]
+            nz : f32 [ (ax == 2) ? sg : 0.0 ]
+            first : u32 [ pos.count / 3 ]
+            for [ c: i32 0, c < 4, c += 1 ]
+                u : f32 [ (c == 1 || c == 2) ? 1.0 : -1.0 ]
+                v : f32 [ (c >= 2) ? 1.0 : -1.0 ]
+                x : f32 [ cx + hx * ((ax == 0) ? sg : ((ax == 1)
+                          ? u : v)) ]
+                y : f32 [ cy + hy * ((ax == 1) ? sg : u) ]
+                z : f32 [ cz + hz * ((ax == 2) ? sg : v) ]
+                vert[ x, y, z, nx, ny, nz, mat ]
+            quad[ first, first + 1, first + 2, first + 3 ]
+
+    # a square tube from p to q, half width w
+    public func strut [ p: vec3f, q: vec3f, w: f32, mat: f32 ]
+        d : vec3f [ q.x - p.x, q.y - p.y, q.z - p.z ]
+        dl : f32 [ sqrt[ d.x * d.x + d.y * d.y + d.z * d.z ] ]
+        dn : vec3f [ d.x / dl, d.y / dl, d.z / dl ]
+        side : vec3f [ 0.0 - dn.z, 0.0, dn.x ]
+        sl : f32 [ sqrt[ side.x * side.x + side.z * side.z ] ]
+        if [ sl < 1e-4 ]
+            side = vec3f [ 1.0, 0.0, 0.0 ]
+            sl = 1.0
+        side = vec3f [ side.x / sl, 0.0, side.z / sl ]
+        other : vec3f [ dn.y * side.z - dn.z * side.y,
+                        dn.z * side.x - dn.x * side.z,
+                        dn.x * side.y - dn.y * side.x ]
+        # corners round the tube: (+s +o) (-s +o) (-s -o) (+s -o)
+        us : vec f32 [] [ 1.0, -1.0, -1.0, 1.0 ]
+        vs : vec f32 [] [ 1.0, 1.0, -1.0, -1.0 ]
+        for [ f: i32 0, f < 4, f += 1 ]
+            g : i32 [ (f + 1) % 4 ]
+            ua : f32 [ us[ f ] ]
+            va : f32 [ vs[ f ] ]
+            ub : f32 [ us[ g ] ]
+            vb : f32 [ vs[ g ] ]
+            ox : f32 [ (side.x * ua + other.x * va) * w ]
+            oy : f32 [ (side.y * ua + other.y * va) * w ]
+            oz : f32 [ (side.z * ua + other.z * va) * w ]
+            px : f32 [ (side.x * ub + other.x * vb) * w ]
+            py : f32 [ (side.y * ub + other.y * vb) * w ]
+            pz : f32 [ (side.z * ub + other.z * vb) * w ]
+            ride = ride_p
+            first : u32 [ vert[ p.x + ox, p.y + oy, p.z + oz, ox + px,
+                                oy + py, oz + pz, mat ] ]
+            vert[ p.x + px, p.y + py, p.z + pz, ox + px, oy + py,
+                  oz + pz, mat ]
+            ride = ride_q
+            vert[ q.x + px, q.y + py, q.z + pz, ox + px, oy + py,
+                  oz + pz, mat ]
+            vert[ q.x + ox, q.y + oy, q.z + oz, ox + px, oy + py,
+                  oz + pz, mat ]
+            ride = 0.0
+            quad[ first, first + 1, first + 2, first + 3 ]
+
+    # a flat plate from p to q: half width w across, half depth
+    # d along the unit up
+    public func slab [ p: vec3f, q: vec3f, up: vec3f, w: f32, d: f32,
+                       mat: f32 ]
+        ln : vec3f [ q.x - p.x, q.y - p.y, q.z - p.z ]
+        ll : f32 [ sqrt[ ln.x * ln.x + ln.y * ln.y + ln.z * ln.z ] ]
+        dn : vec3f [ ln.x / ll, ln.y / ll, ln.z / ll ]
+        cr : vec3f [ dn.y * up.z - dn.z * up.y,
+                     dn.z * up.x - dn.x * up.z,
+                     dn.x * up.y - dn.y * up.x ]
+        mx : f32 [ (p.x + q.x) * 0.5 ]
+        my : f32 [ (p.y + q.y) * 0.5 ]
+        mz : f32 [ (p.z + q.z) * 0.5 ]
+        hl : f32 [ ll * 0.5 ]
+        # each face: its normal axis, then its two edge axes
+        axes : vec vec3f [] [ dn, cr, up ]
+        size : vec f32 [] [ hl, w, d ]
+        for [ f: i32 0, f < 6, f += 1 ]
+            k : i32 [ f / 2 ]
+            sg : f32 [ ((f & 1) == 0) ? 1.0 : -1.0 ]
+            n : vec3f [ axes[ k ] ]
+            ua : vec3f [ axes[ (k + 1) % 3 ] ]
+            va : vec3f [ axes[ (k + 2) % 3 ] ]
+            hn : f32 [ size[ k ] * sg ]
+            hu : f32 [ size[ (k + 1) % 3 ] ]
+            hv : f32 [ size[ (k + 2) % 3 ] * sg ]
+            first : u32 [ pos.count / 3 ]
+            for [ c: i32 0, c < 4, c += 1 ]
+                u : f32 [ (c == 1 || c == 2) ? hu : 0.0 - hu ]
+                v : f32 [ (c >= 2) ? hv : 0.0 - hv ]
+                vert[ mx + n.x * hn + ua.x * u + va.x * v,
+                      my + n.y * hn + ua.y * u + va.y * v,
+                      mz + n.z * hn + ua.z * u + va.z * v,
+                      n.x * sg, n.y * sg, n.z * sg, mat ]
+            quad[ first, first + 1, first + 2, first + 3 ]
+
+    # the arrays as one glTF mesh: POSITION, NORMAL, TEXCOORD_0
+    public func gltf [ name: string ] -> GltfModel
+        nv : i32 [ pos.count / 3 ]
+        ni : i32 [ idx.count ]
+        pb : i32 [ nv * 12 ]
+        ub : i32 [ nv * 8 ]
+        tsz : i32 [ pb + pb + ub + ni * 4 ]
+        data : new u8 [ tsz ]
+        pf : @f32 [ data ]
+        for [ i: i32 0, i < nv * 3, i += 1 ]
+            pv : f32 [ pos[ i ] ]
+            nrm_v : f32 [ nrm[ i ] ]
+            pf[ i ] = pv
+            pf[ nv * 3 + i ] = nrm_v
+        for [ i: i32 0, i < nv * 2, i += 1 ]
+            uv : f32 [ uvs[ i ] ]
+            pf[ nv * 6 + i ] = uv
+        iu : @u32 [ @data[ pb + pb + ub ] ]
+        for [ i: i32 0, i < ni, i += 1 ]
+            iv : u32 [ idx[ i ] ]
+            iu[ i ] = iv
+        bufs : vec GltfBuffer []
+        bufs += GltfBuffer [ byteLength: u64[ tsz ], data: data ]
+        views : vec BufferView []
+        views += BufferView [ buffer: 0, byteOffset: 0,
+                              byteLength: pb ]
+        views += BufferView [ buffer: 0, byteOffset: pb,
+                              byteLength: pb ]
+        views += BufferView [ buffer: 0, byteOffset: pb + pb,
+                              byteLength: ub ]
+        views += BufferView [ buffer: 0, byteOffset: pb + pb + ub,
+                              byteLength: ni * 4 ]
+        accs : vec Accessor []
+        accs += Accessor [ bufferView: 0,
+                           componentType: ComponentType.FLOAT,
+                           type: CompoundType.VEC3, count: nv ]
+        accs += Accessor [ bufferView: 1,
+                           componentType: ComponentType.FLOAT,
+                           type: CompoundType.VEC3, count: nv ]
+        accs += Accessor [ bufferView: 2,
+                           componentType: ComponentType.FLOAT,
+                           type: CompoundType.VEC2, count: nv ]
+        accs += Accessor [ bufferView: 3,
+                           componentType: ComponentType.UNSIGNED_INT,
+                           type: CompoundType.SCALAR, count: ni ]
+        am : map i64 [ string ] [ ]
+        am[ 'POSITION' ]   = i64[ 0 ]
+        am[ 'NORMAL' ]     = i64[ 1 ]
+        am[ 'TEXCOORD_0' ] = i64[ 2 ]
+        prs : vec Primitive []
+        prs += Primitive [ name: name, attributes: am,
+                           indices: u64[ 3 ], material: 0,
+                           mode: Mode.TRIANGLES ]
+        mshs : vec Mesh []
+        mshs += Mesh [ name: name, primitives: prs ]
+        nds : vec Node []
+        nds += Node [ name: name, mesh: 0 ]
+        sn : vec i64 []
+        sn += i64[ 0 ]
+        scns : vec Scene []
+        scns += Scene [ name: 'scene', nodes: sn ]
+        return GltfModel [ nodes: nds, meshes: mshs, scenes: scns,
+            scene: 0, buffers: bufs, bufferViews: views,
+            accessors: accs ]
+
+# materials: 0 deck, 1 deck sides, 2 pink aluminium, 3 carbon,
+# 4 bells, 5 dark aluminium, 6 titanium, 7 polished steel,
+# 8 thermal black, 9 foot pads, 10 rose gold, 11 shiny silver,
+# 12 shiny aluminium
+
+# the sea platform: a hexagon 48 m round, the deck alone
+func build_platform [] -> GltfModel
+    b : MeshBuild [ ]
+    b.hex[ 48.0, 0.0, 5.0, 0.0, 1.0 ]
+    return b.gltf[ 'platform' ]
+
+# stage one: engine exit at y 0, interstage up to y 47
+func build_stage_one [] -> GltfModel
+    b : MeshBuild [ ]
+    # seven Lugh bells: one in the middle, six 1.25 m out every
+    # 60 deg, as the physics has them; each 1.06 m across at its
+    # exit (the physics' 0.88 m2), up to the heat shield
+    bell : vec f32 [] [ 0.528, 0.0, 0.454, 0.35, 0.352, 0.75,
+                        0.238, 1.10, 0.181, 1.40 ]
+    b.lathe_at[ bell, 24, 4.0, 0.0, 0.0 ]
+    for [ k: i32 0, k < 6, k += 1 ]
+        ea : f32 [ f32[ k ] * 1.0471976 ]
+        b.lathe_at[ bell, 24, 4.0, 1.25 * cos[ ea ], 1.25 * sin[ ea ] ]
+    body : vec f32 [] [ 1.83, 1.4, 1.83, 40.0 ]
+    b.lathe[ body, 48, 2.0 ]
+    b.disc[ 1.83, 1.4, 48, -1.0, 8.0 ]
+    band : vec f32 [] [ 1.84, 40.0, 1.84, 47.0 ]
+    b.lathe[ band, 48, 11.0 ]
+    return b.gltf[ 'stage_one' ]
+
+# the upper stage and fairing, in stage one's frame (y 44.5 up)
+func build_upper [] -> GltfModel
+    b : MeshBuild [ ]
+    bell : vec f32 [] [ 1.2, 44.5, 0.75, 46.0, 0.45, 47.0 ]
+    b.lathe[ bell, 32, 4.0 ]
+    body : vec f32 [] [ 1.83, 47.0, 1.83, 58.4 ]
+    b.lathe[ body, 48, 2.0 ]
+    b.disc[ 1.83, 47.0, 48, -1.0, 3.0 ]
+    b.disc[ 1.83, 58.4, 48, 1.0, 5.0 ]
+    return b.gltf[ 'upper' ]
+
+# the fairing: a flare to 5.2 m and an ogive, its own piece
+func build_fairing [] -> GltfModel
+    b : MeshBuild [ ]
+    # the whole fairing: rose gold
+    skin : vec f32 [] [ 1.83, 58.4, 2.6, 59.6, 2.6, 64.4, 2.45, 66.4,
+                        1.95, 68.8, 1.2, 70.6, 0.35, 71.3, 0.0, 71.5 ]
+    b.lathe[ skin, 48, 10.0 ]
+    b.disc[ 1.83, 58.4, 48, -1.0, 2.0 ]
+    return b.gltf[ 'fairing' ]
+
+# a grid fin's root off the axis, its height, and its size:
+# out from the hull, across, along the airflow (estimates)
+FIN_ROOT  : f32 [ 1.86 ]
+FIN_Y     : f32 [ 45.4 ]
+FIN_SPAN  : f32 [ 1.5 ]
+FIN_WIDE  : f32 [ 1.2 ]
+FIN_DEEP  : f32 [ 0.3 ]
+
+# a point of the fin at angle a: s out, t across, h up
+func fin_at [ ca: f32, sa: f32, s: f32, t: f32 ] -> vec3f
+    r : f32 [ FIN_ROOT + s ]
+    return vec3f [ ca * r - sa * t, FIN_Y, sa * r + ca * t ]
+
+# the four titanium grid fins, out: a frame of plates and a
+# lattice crossing at 45 degrees; each folds up its quarter
+func build_fins [] -> GltfModel
+    b : MeshBuild [ ]
+    b.ride = 1.0
+    up : vec3f [ 0.0, 1.0, 0.0 ]
+    hd : f32 [ FIN_DEEP * 0.5 ]
+    sw : f32 [ FIN_SPAN ]
+    ht : f32 [ FIN_WIDE * 0.5 ]
+    pitch : f32 [ 0.16 ]
+    for [ k: i32 0, k < 4, k += 1 ]
+        ang : f32 [ f32[ k ] * 1.5707963 ]
+        ca : f32 [ cos[ ang ] ]
+        sa : f32 [ sin[ ang ] ]
+        # the frame
+        b.slab[ fin_at[ ca, sa, 0.0, 0.0 - ht ],
+                fin_at[ ca, sa, sw, 0.0 - ht ], up, 0.02, hd, 6.0 ]
+        b.slab[ fin_at[ ca, sa, 0.0, ht ],
+                fin_at[ ca, sa, sw, ht ], up, 0.02, hd, 6.0 ]
+        b.slab[ fin_at[ ca, sa, sw, 0.0 - ht ],
+                fin_at[ ca, sa, sw, ht ], up, 0.02, hd, 6.0 ]
+        b.slab[ fin_at[ ca, sa, 0.0, 0.0 - ht ],
+                fin_at[ ca, sa, 0.0, ht ], up, 0.03, hd, 6.0 ]
+        # the lattice: s - t = c and s + t = c, cut to the frame
+        for [ c: f32 0.0 - ht + pitch, c < sw + ht, c += pitch ]
+            lo : f32 [ max[ 0.0 - ht, 0.0 - c ] ]
+            hi : f32 [ min[ ht, sw - c ] ]
+            if [ hi - lo > 0.02 ]
+                b.slab[ fin_at[ ca, sa, lo + c, lo ],
+                        fin_at[ ca, sa, hi + c, hi ], up, 0.006, hd,
+                        6.0 ]
+            ls : f32 [ max[ 0.0 - ht, c - sw ] ]
+            hs : f32 [ min[ ht, c ] ]
+            if [ hs - ls > 0.02 ]
+                b.slab[ fin_at[ ca, sa, c - ls, ls ],
+                        fin_at[ ca, sa, c - hs, hs ], up, 0.006, hd,
+                        6.0 ]
+    # the hinge fittings stay on the hull
+    b.ride = 0.0
+    for [ k: i32 0, k < 4, k += 1 ]
+        ang : f32 [ f32[ k ] * 1.5707963 ]
+        ca : f32 [ cos[ ang ] ]
+        sa : f32 [ sin[ ang ] ]
+        b.slab[ fin_at[ ca, sa, -0.05, 0.0 ],
+                fin_at[ ca, sa, 0.05, 0.0 ], up, 0.25, hd + 0.05, 5.0 ]
+        # the hinge pin it folds about, across its root
+        pr : f32 [ FIN_ROOT + FIN_DEEP * 0.5 ]
+        pin_a : vec3f [ ca * pr + sa * 0.45, FIN_Y,
+                        sa * pr - ca * 0.45 ]
+        pin_b : vec3f [ ca * pr - sa * 0.45, FIN_Y,
+                        sa * pr + ca * 0.45 ]
+        b.strut[ pin_a, pin_b, 0.05, 7.0 ]
+    return b.gltf[ 'fins' ]
+
+# a leg's hinge at the hull's foot (radius, height) and foot
+LEG_HINGE_R : f32 [ 2.1 ]
+LEG_HINGE_Y : f32 [ 0.8 ]
+LEG_FOOT_R  : f32 [ 9.0 ]
+# meshes start 1.4 m under the gimbal plane
+LEG_FOOT_Y  : f32 [ LEG_FOOT_X + 1.4 ]
+
+# the turn from out to stowed along the hull, foot up (rad)
+func leg_swing [] -> f32
+    drop : f32 [ atan2[ LEG_HINGE_Y - LEG_FOOT_Y,
+                        LEG_FOOT_R - LEG_HINGE_R ] ]
+    return 1.5707963 + drop
+
+# the four legs out; each swings about its hinge to stow, its
+# pusher from high on the hull stretching with it
+func build_legs [] -> GltfModel
+    b : MeshBuild [ ]
+    for [ k: i32 0, k < 4, k += 1 ]
+        ang : f32 [ f32[ k ] * 1.5707963 + 0.7853982 ]
+        ca : f32 [ cos[ ang ] ]
+        sa : f32 [ sin[ ang ] ]
+        hr : f32 [ LEG_HINGE_R ]
+        hy : f32 [ LEG_HINGE_Y ]
+        fr : f32 [ LEG_FOOT_R ]
+        fy : f32 [ LEG_FOOT_Y ]
+        mr : f32 [ hr + (fr - hr) * 0.55 ]
+        my : f32 [ hy + (fy - hy) * 0.55 ]
+        hinge : vec3f [ ca * hr, hy, sa * hr ]
+        foot : vec3f [ ca * fr, fy, sa * fr ]
+        tg : vec3f [ 0.0 - sa, 0.0, ca ]
+        # the leg: a shiny aluminium panel, wide across, thin through,
+        # its face turned to the hull
+        dl : vec3f [ foot.x - hinge.x, foot.y - hinge.y,
+                     foot.z - hinge.z ]
+        ll : f32 [ sqrt[ dl.x * dl.x + dl.y * dl.y + dl.z * dl.z ] ]
+        dn : vec3f [ dl.x / ll, dl.y / ll, dl.z / ll ]
+        face : vec3f [ dn.y * tg.z - dn.z * tg.y,
+                       dn.z * tg.x - dn.x * tg.z,
+                       dn.x * tg.y - dn.y * tg.x ]
+        b.ride = 1.0
+        b.slab[ hinge, foot, face, 0.42, 0.11, 12.0 ]
+        # the foot pad, under the panel's end
+        b.box[ ca * fr, fy, sa * fr, 0.6, 0.12, 0.6, 9.0 ]
+        b.ride = 0.0
+        # the hinge on the hull: a clevis and its pin across
+        b.box[ ca * (hr - 0.15), hy, sa * (hr - 0.15), 0.28, 0.35,
+               0.28, 5.0 ]
+        pin_a : vec3f [ hinge.x - tg.x * 0.55, hy,
+                        hinge.z - tg.z * 0.55 ]
+        pin_b : vec3f [ hinge.x + tg.x * 0.55, hy,
+                        hinge.z + tg.z * 0.55 ]
+        b.strut[ pin_a, pin_b, 0.07, 7.0 ]
+        # the pusher: its cylinder from a fitting high on the
+        # hull, its steel rod out to the leg
+        top : vec3f [ ca * 1.95, 9.5, sa * 1.95 ]
+        b.box[ ca * 1.9, 9.5, sa * 1.9, 0.22, 0.4, 0.22, 5.0 ]
+        tip : vec3f [ ca * mr, my, sa * mr ]
+        mid_p : vec3f [ top.x + (tip.x - top.x) * 0.45,
+                       top.y + (tip.y - top.y) * 0.45,
+                       top.z + (tip.z - top.z) * 0.45 ]
+        b.ride_p = 0.0
+        b.ride_q = 1.0
+        b.strut[ top, mid_p, 0.17, 5.0 ]
+        b.ride_p = 1.0
+        b.strut[ mid_p, tip, 0.08, 7.0 ]
+        b.ride_p = 0.0
+        b.ride_q = 0.0
+    return b.gltf[ 'legs' ]
+
+# the plume's hull: a closed unit cylinder, y 0.06 to -1
+func build_plume [] -> GltfModel
+    b : MeshBuild [ ]
+    # 32 flats sit inside their circle: 1.01 holds it
+    prof : vec f32 [] [ 0.0, 0.06, 1.01, 0.06, 1.01, -1.0,
+                        0.0, -1.0 ]
+    b.lathe[ prof, 32, 0.0 ]
+    return b.gltf[ 'plume' ]
+
+# ---------------------------------------------------------------
+# the weather presets, as the clouds module has them
+# ---------------------------------------------------------------
+class SkyState
+    public name     : string
+    public coverage : f32
+    public ctype    : f32
+    public island   : f32
+    public skew     : f32
+    public density  : f32
+    public detail   : f32
+    public wind     : f32
+
+func sky_states [] -> vec SkyState
+    s : vec SkyState []
+    s += SkyState [ name: 'clear, a few cumulus', coverage: 0.4,
+                    ctype: 0.85, island: 0.8, skew: 300.0,
+                    density: 1.0, detail: 0.3, wind: 6.0 ]
+    s += SkyState [ name: 'fair weather cumulus', coverage: 0.62,
+                    ctype: 0.8, island: 0.5, skew: 500.0,
+                    density: 1.0, detail: 0.32, wind: 8.0 ]
+    s += SkyState [ name: 'stratocumulus sheet', coverage: 0.85,
+                    ctype: 0.45, island: 0.2, skew: 400.0,
+                    density: 1.1, detail: 0.28, wind: 10.0 ]
+    s += SkyState [ name: 'overcast stratus', coverage: 0.97,
+                    ctype: 0.08, island: 0.0, skew: 200.0,
+                    density: 1.4, detail: 0.22, wind: 5.0 ]
+    s += SkyState [ name: 'heavy cumulus', coverage: 0.62,
+                    ctype: 0.9, island: 0.4, skew: 900.0,
+                    density: 1.3, detail: 0.3, wind: 18.0 ]
+    return s
+
+# ---------------------------------------------------------------
+# the world's gpu side: noise, sea, sky shader and env pass
+# ---------------------------------------------------------------
+class PlanetWorld
+    public cur        : SkyState
+    public spread     : f32 [ 0.9 ]
+    public wseed      : u32 [ 7919 ]
+    public sky        : PlanetSky
+    public vmodel     : Model
+    public env_model  : Model
+    public env_render : Render
+    public wave_buf   : Buffer
+    public wave_n     : i32
+    public wave_wind  : f32 [ -1.0 ]
+    public tx_shape   : Texture
+    public tx_detail  : Texture
+    public tx_curl    : Texture
+    public tx_weather : Texture
+    public tx_tvar    : Texture
+    public tx_island  : Texture
+    public tx_stars   : Texture
+    public tx_globe   : Texture
+    public tx_clouds  : Texture
+    public old_islands : vec Texture
+    public wimg       : Image
+    public isl_cov    : f32 [ -1.0 ]
+    public isl_mix    : f32
+    public edt_v      : vec i32
+    public edt_z      : vec f32
+    public edt_f      : vec f32
+    public edt_d      : vec f32
+
+    func sat [ v: f32 ] -> f32
+        return (v < 0.0) ? 0.0 : ((v > 1.0) ? 1.0 : v)
+
+    func remap [ v: f32, lo: f32, hi: f32, nlo: f32, nhi: f32 ] -> f32
+        return nlo + ((v - lo) / (hi - lo)) * (nhi - nlo)
+
+    public func rnd [] -> f32
+        wseed = wseed * 1664525 + 1013904223
+        return f32[ wseed >> 8 ] / 16777216.0
+
+    # 1D squared distance transform (Felzenszwalb-Huttenlocher)
+    func edt1d [ n: i32 ]
+        k : i32 [ 0 ]
+        edt_v[ 0 ] = 0
+        edt_z[ 0 ] = -1e20
+        edt_z[ 1 ] = 1e20
+        for [ q: i32 1, q < n, q += 1 ]
+            fq : f32 [ q ]
+            s : f32 [ 0.0 ]
+            while [ true ]
+                vi : i32 [ edt_v[ k ] ]
+                fv : f32 [ vi ]
+                s = ((edt_f[ q ] + fq * fq) - (edt_f[ vi ] + fv * fv))
+                    / (2.0 * fq - 2.0 * fv)
+                if [ s <= edt_z[ k ] && k > 0 ]
+                    k = k - 1
+                el
+                    break
+            k += 1
+            edt_v[ k ] = q
+            edt_z[ k ] = s
+            edt_z[ k + 1 ] = 1e20
+        k = 0
+        for [ q: i32 0, q < n, q += 1 ]
+            fq : f32 [ q ]
+            while [ edt_z[ k + 1 ] < fq ] k += 1
+            vi : i32 [ edt_v[ k ] ]
+            fv : f32 [ vi ]
+            edt_d[ q ] = (fq - fv) * (fq - fv) + edt_f[ vi ]
+
+    # where the weather tile can have cloud at the most the globe
+    # gives anywhere: distance in cells, wrapped
+    func build_island [ vkc: vk_context, win: Window ]
+        N : i32 [ 256 ]
+        if [ !edt_v ]
+            edt_v = vec i32 [ N * 3 + 2 ]
+            edt_z = vec f32 [ N * 3 + 2 ]
+            edt_f = vec f32 [ N * 3 ]
+            edt_d = vec f32 [ N * 3 ]
+        wd : @u8 [ wimg.vdata[] ]
+        ww : i32 [ wimg.width ]
+        c : f32 [ sat[ cur.coverage + spread * 0.5 + 0.35 ] ]
+        mask : vec f32 [ N * N ]
+        for [ y: i32 0, y < N, y += 1 ]
+            for [ x: i32 0, x < N, x += 1 ]
+                inside : bool [ false ]
+                for [ sy: i32 0, sy < 2, sy += 1 ]
+                    for [ sx: i32 0, sx < 2, sx += 1 ]
+                        px : i32 [ (x * 2 + sx) % ww ]
+                        py : i32 [ (y * 2 + sy) % ww ]
+                        i : i32 [ (py * ww + px) * 4 ]
+                        r : f32 [ f32[ wd[ i ] ] / 255.0 ]
+                        g : f32 [ f32[ wd[ i + 1 ] ] / 255.0 ]
+                        fr : f32 [
+                            sat[ remap[ r, 0.30, 0.72, 0.0, 1.0 ] ] ]
+                        fg : f32 [
+                            sat[ remap[ g, 0.0, 0.5, 0.0, 1.0 ] ] ]
+                        field : f32 [ fr + (fg - fr) * cur.island ]
+                        cov : f32 [
+                            sat[ remap[ field, 1.0 - c,
+                                        1.0 - c + 0.35, 0.0, 1.0 ] ] ]
+                        if [ cov > 0.002 ] inside = true
+                mask[ y * N + x ] = (inside) ? 0.0 : 1e10
+        for [ y: i32 0, y < N, y += 1 ]
+            for [ x: i32 0, x < N * 3, x += 1 ]
+                edt_f[ x ] = mask[ y * N + (x % N) ]
+            edt1d[ N * 3 ]
+            for [ x: i32 0, x < N, x += 1 ]
+                mask[ y * N + x ] = edt_d[ N + x ]
+        for [ x: i32 0, x < N, x += 1 ]
+            for [ y: i32 0, y < N * 3, y += 1 ]
+                edt_f[ y ] = mask[ (y % N) * N + x ]
+            edt1d[ N * 3 ]
+            for [ y: i32 0, y < N, y += 1 ]
+                mask[ y * N + x ] = edt_d[ N + y ]
+        im : Image [ width: N, height: N, format: Pixel.rgba8,
+                     linear: true, wrap_u: true, wrap_v: true ]
+        im.hold[]
+        d : @u8 [ im.vdata[] ]
+        for [ i: i32 0, i < N * N, i += 1 ]
+            dist : f32 [ sqrt[ mask[ i ] ] ]
+            if [ dist > 255.0 ] dist = 255.0
+            d[ i * 4 ]     = u8[ i32[ dist ] ]
+            d[ i * 4 + 1 ] = u8[ i32[ dist ] ]
+            d[ i * 4 + 2 ] = u8[ i32[ dist ] ]
+            d[ i * 4 + 3 ] = u8[ 255 ]
+        if [ tx_island ]
+            if [ !old_islands ] old_islands = vec Texture []
+            old_islands += tx_island
+        tx_island = Texture [ vk: vkc, w: win, sampler: im,
+                              mip_levels: 1, linear: true, wrap_u: true,
+                              wrap_v: true ]
+        tx_island.hold[]
+        isl_cov = cur.coverage
+        isl_mix = cur.island
+
+    # JONSWAP and Donelan-Banner, as the clouds module samples them
+    func omega_p [ wind: f32 ] -> f32
+        U : f32 [ (wind < 0.5) ? 0.5 : wind ]
+        return 22.0 * pow[ 9.81 * 9.81 / (U * 100000.0), 0.33333 ]
+
+    func jonswap [ om: f32, wind: f32 ] -> f32
+        U : f32 [ (wind < 0.5) ? 0.5 : wind ]
+        al : f32 [ 0.076 * pow[ U * U / (100000.0 * 9.81), 0.22 ] ]
+        omp : f32 [ omega_p[ wind ] ]
+        sg : f32 [ (om <= omp) ? 0.07 : 0.09 ]
+        dd : f32 [ om - omp ]
+        r : f32 [ exp[ 0.0 - dd * dd / (2.0 * sg * sg * omp * omp) ] ]
+        return al * 9.81 * 9.81 / pow[ om, 5.0 ] * exp[
+            0.0 - 1.25 * pow[ omp / om, 4.0 ] ] * pow[ 3.3, r ]
+
+    func db_beta [ rw: f32 ] -> f32
+        if [ rw < 0.95 ] return 2.61 * pow[ rw, 1.3 ]
+        if [ rw < 1.6 ]  return 2.28 * pow[ rw, 0.0 - 1.3 ]
+        eps : f32 [ 0.8393 * exp[ 0.0 - 0.567 * log[ rw * rw ] ] - 0.4 ]
+        return pow[ 10.0, eps ]
+
+    func sech2 [ x: f32 ] -> f32
+        ax : f32 [ (x < 0.0) ? 0.0 - x : x ]
+        if [ ax > 12.0 ] return 0.0
+        e : f32 [ exp[ ax ] ]
+        c : f32 [ (e + 1.0 / e) * 0.5 ]
+        return 1.0 / (c * c)
+
+    func tanh_f [ x: f32 ] -> f32
+        if [ x > 12.0 ] return 1.0
+        e : f32 [ exp[ 2.0 * x ] ]
+        return (e - 1.0) / (e + 1.0)
+
+    func build_waves [ vkc: vk_context, wind: f32 ]
+        NK : i32 [ 40 ]
+        ND : i32 [ 3 ]
+        n : i32 [ NK * ND ]
+        if [ !wave_buf ]
+            wave_buf = Buffer [ vk: vkc, size: i64[ n ] * 16,
+                u_storage: true, m_host_visible: true,
+                m_host_coherent: true ]
+            wave_buf.hold[]
+        wd : @f32 [ wave_buf.data ]
+        heading : f32 [ atan2[ 0.6, 0.8 ] ]
+        lmin : f32 [ 1.6 ]
+        lmax : f32 [ 780.0 ]
+        omp : f32 [ omega_p[ wind ] ]
+        at : i32 [ 0 ]
+        for [ i: i32 0, i < NK, i += 1 ]
+            frac_lo : f32 [ f32[ i ] / f32[ NK ] ]
+            frac_hi : f32 [ f32[ i + 1 ] / f32[ NK ] ]
+            len_lo : f32 [ lmax * pow[ lmin / lmax, frac_lo ] ]
+            len_hi : f32 [ lmax * pow[ lmin / lmax, frac_hi ] ]
+            lm : f32 [ sqrt[ len_lo * len_hi ] ]
+            k : f32 [ 6.2831853 / lm ]
+            om : f32 [ sqrt[ 9.81 * k ] ]
+            om_lo : f32 [ sqrt[ 9.81 * 6.2831853 / len_lo ] ]
+            om_hi : f32 [ sqrt[ 9.81 * 6.2831853 / len_hi ] ]
+            dom : f32 [ om_hi - om_lo ]
+            S : f32 [ jonswap[ om, wind ] ]
+            bs : f32 [ db_beta[ om / omp ] ]
+            qn : f32 [ 1.0 / tanh_f[ bs * 3.14159265 ] ]
+            sp : f32 [ 3.2 / bs ]
+            if [ sp > 3.14159265 ] sp = 3.14159265
+            dth : f32 [ sp / f32[ ND ] ]
+            for [ j: i32 0, j < ND, j += 1 ]
+                u : f32 [ (f32[ j ] + rnd[]) / f32[ ND ] ]
+                th : f32 [ (u - 0.5) * sp ]
+                D : f32 [ 0.5 * bs * sech2[ bs * th ] * qn ]
+                A : f32 [ sqrt[ 2.0 * S * D * dom * dth ] ]
+                wd[ at * 4 ]     = k * cos[ heading + th ]
+                wd[ at * 4 + 1 ] = k * sin[ heading + th ]
+                wd[ at * 4 + 2 ] = A
+                wd[ at * 4 + 3 ] = rnd[] * 6.2831853
+                at += 1
+        wave_n = at
+        wave_wind = wind
+
+    func noise_texture [ vkc: vk_context, win: Window, p: path,
+                         depth: i32, mips: i32 ] -> Texture
+        expect p.exists[], 'launch: missing {p}; build clouds first'
+        im : Image [ uri: p, linear: true, wrap_u: true, wrap_v: true ]
+        im.hold[]
+        tx : Texture [ vk: vkc, w: win, sampler: im, depth: depth,
+                       mip_levels: mips, linear: true, wrap_u: true,
+                       wrap_v: true ]
+        tx.hold[]
+        return tx
+
+    # once: the noise, the islands, the sea and the sky shader
+    public func build [ vkc: vk_context, win: Window ]
+        if [ sky ] return
+        gp : path '../launch/baked/globe.png'
+        if [ !gp.exists[] ] launch_export[]
+        baked : path '../clouds/baked'
+        stars : path '{scenes_share[]}/textures/gaia.png'
+        shape_png : path '{baked}/shape.png'
+        detail_png : path '{baked}/detail.png'
+        curl_png : path '{baked}/curl.png'
+        weather_png : path '{baked}/weather.png'
+        tops_png : path '{baked}/tops.png'
+        tx_shape   = noise_texture[ vkc, win, shape_png, 128, 1 ]
+        tx_detail  = noise_texture[ vkc, win, detail_png, 32, 1 ]
+        tx_curl    = noise_texture[ vkc, win, curl_png, 1, 1 ]
+        tx_weather = noise_texture[ vkc, win, weather_png, 1, 10 ]
+        tx_tvar    = noise_texture[ vkc, win, tops_png, 1, 9 ]
+        tx_stars   = noise_texture[ vkc, win, stars, 1, 1 ]
+        tx_globe   = noise_texture[ vkc, win, gp, 1, 1 ]
+        # NASA Visible Earth, Blue Marble clouds (public domain):
+        # fetched once into the shared cache
+        cloud_im : fetch_map[ 'https://eoimages.gsfc.nasa.gov/images/imagerecords/57000/57747/cloud_combined_8192.tif',
+                              'cloud_combined_8192.tif', 8192, 4096,
+                              Surface.none ]
+        cloud_im.hold[]
+        tx_clouds = Texture [ vk: vkc, w: win, sampler: cloud_im,
+                              mip_levels: 13, linear: true,
+                              wrap_u: true ]
+        tx_clouds.hold[]
+        wimg = Image [ uri: weather_png, linear: true ]
+        wimg.hold[]
+        build_island[ vkc, win ]
+        build_waves[ vkc, cur.wind ]
+        sky = PlanetSky [ vk: vkc, name: 'planet-sky' ]
+        sky.hold[]
+        smp : map Au[string] [ 'shape': tx_shape,
+                               'detail': tx_detail, 'curl': tx_curl,
+                               'weather': tx_weather,
+                               'island': tx_island, 'tvar': tx_tvar,
+                               'waves': wave_buf, 'stars': tx_stars,
+                               'globe': tx_globe,
+                               'cloudmap': tx_clouds ]
+        env_model = Model [ vk: vkc, w: win, s: sky, samplers: smp ]
+        env_model.hold[]
+        env_render = Render [ vk: vkc, w: win, width: 512, height: 256,
+                              wscale: 0.0, tag: 'planet-env', mips: 6,
+                              aniso: 8,
+            clear_color: vec4f [ 0.0, 0.0, 0.0, 1.0 ],
+            models: [ env_model ] ]
+        env_render.hold[]
+        smp[ 'envmap' ] = env_render.color
+        vmodel = Model [ vk: vkc, w: win, s: sky, samplers: smp ]
+        vmodel.hold[]
+
+    # the islands follow the weather; the sea follows the wind
+    public func follow [ vkc: vk_context, win: Window ]
+        dc : f32 [ cur.coverage - isl_cov ]
+        dm : f32 [ cur.island - isl_mix ]
+        if [ dc < 0.0 ] dc = 0.0 - dc
+        if [ dm < 0.0 ] dm = 0.0 - dm
+        if [ dc > 0.01 || dm > 0.02 ]
+            build_island[ vkc, win ]
+            vmodel.samplers[ 'island' ] = tx_island
+            vmodel.rebind_model[]
+            env_model.samplers[ 'island' ] = tx_island
+            env_model.rebind_model[]
+        dw : f32 [ cur.wind - wave_wind ]
+        if [ dw < 0.0 ] dw = 0.0 - dw
+        if [ dw > 0.5 ] build_waves[ vkc, cur.wind ]
+
+    # the sky into the environment map, then its mip chain
+    public func env_pass [ jitter: vec4f ]
+        sky.env    = vec4f [ 1.0, 0.0, 0.0, 0.0 ]
+        sky.jitter = vec4f [ 0.0, 0.0, 1.0, 0.0 ]
+        env_render.update[]
+        env_render.draw[]
+        env_render.sync_fence[]
+        env_render.gen_mips[]
+        sky.env    = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+        sky.jitter = jitter
+
+# ---------------------------------------------------------------
+# the view: camera, the sky's passes, the vehicles over them
+# ---------------------------------------------------------------
+# a craft as drawn: from the camera, its mesh axes, its air
+class Pose
+    public at  : vec3f
+    public ax  : vec3f
+    public ay  : vec3f
+    public az  : vec3f
+    public alt : f32
+    public air : f32
+
+element PlanetView
+    style : CSS {
+        area: l0 t0 r0 b0
+    }
+    public exposure  : f32 [ 1.0 ]
+    public quality   : f32 [ 1.5 ]
+    public view_mode : i32
+    public wscale    : f32 [ 1.0 ]
+    public sun_el    : f32 [ -0.019 ]
+    public sun_az    : f32 [ -1.47 ]
+    public warp      : f32 [ 1.0 ]
+    public cur       : SkyState
+    # 0 the platform, 1 the orbiter, 2 the booster
+    public camera    : i32
+    # the flight itself: physics, sensors, nav, guidance
+    public flight    : Mission
+    # the landing burn's planner
+    public landing   : LandingMethod
+    public flying    : bool
+    # how much faster than life the physics kept up, last frame
+    public pace      : f32
+    mutable engine_sound : EngineSound
+    # as fast as it can until the landing burn, then life's pace
+    public quick     : bool
+    # a new random wind each flight; its jet between (km/h)
+    public rwind     : bool
+    public wind_min  : f64 [ 36.0 ]
+    public wind_max  : f64 [ 216.0 ]
+    mutable world    : PlanetWorld
+    mutable vrender  : Render
+    mutable comp_a   : PlanetCompose
+    mutable comp_b   : PlanetCompose
+    mutable hist_a   : Render
+    mutable hist_b   : Render
+    mutable model_a  : Model
+    mutable model_b  : Model
+    mutable craft    : Render
+    mutable lit_pad  : VehicleLit
+    mutable lit_one  : VehicleLit
+    mutable lit_up   : VehicleLit
+    mutable lit_fair : VehicleLit
+    mutable lit_legs : VehicleLit
+    mutable lit_fins : VehicleLit
+    mutable glow     : PlumeGlow
+    mutable glow_up  : PlumeGlow
+    mutable m_pad    : Model
+    mutable m_one    : Model
+    mutable m_up     : Model
+    mutable m_plume  : Model
+    mutable m_fair   : Model
+    mutable m_legs   : Model
+    mutable m_fins   : Model
+    mutable m_plume_up : Model
+    # the pad's place and its east, north, up (ECEF)
+    mutable pad      : Dvec
+    mutable pad_e    : Dvec
+    mutable pad_n    : Dvec
+    mutable pad_u    : Dvec
+    mutable prev_right : vec4f
+    mutable prev_up    : vec4f
+    mutable prev_fwd   : vec4f
+    mutable prev_pos   : vec4f
+    mutable hist_valid : bool
+    mutable frame    : i32
+    mutable last_us  : i64
+    mutable seconds  : f32
+    mutable gpu_ms   : f32
+    # the chase camera round the rocket: angles and metres
+    mutable c_yaw    : f32 [ 2.4 ]
+    mutable c_pitch  : f32 [ 0.15 ]
+    public c_dist    : f32 [ 140.0 ]
+    mutable dragging : bool
+    mutable lastx    : f32
+    mutable lasty    : f32
+    # the camera, metres from the pad
+    mutable cx       : f64 [ -260.0 ]
+    mutable cy       : f64 [ 18.0 ]
+    mutable cz       : f64 [ 360.0 ]
+    # tan of half the vertical field of view
+    mutable cam_th   : f32 [ 0.466 ]
+
+    func sat [ v: f32 ] -> f32
+        return (v < 0.0) ? 0.0 : ((v > 1.0) ? 1.0 : v)
+
+    public func on_press [ ev: Event ]
+        dragging = true
+        lastx = ev.mouse.pos.x
+        lasty = ev.mouse.pos.y
+
+    public func on_release [ ev: Event ]
+        dragging = false
+
+    public func on_move [ ev: Event ]
+        if [ !dragging ] return
+        dx : f32 [ ev.mouse.pos.x - lastx ]
+        dy : f32 [ ev.mouse.pos.y - lasty ]
+        lastx = ev.mouse.pos.x
+        lasty = ev.mouse.pos.y
+        c_yaw = c_yaw - dx * 0.006
+        c_pitch = c_pitch + dy * 0.006
+        if [ c_pitch > 1.5 ] c_pitch = 1.5
+        if [ c_pitch < -1.5 ] c_pitch = -1.5
+
+    public func on_wheel [ ev: Event ]
+        c_dist = c_dist * pow[ 1.18, 0.0 - ev.mouse.wheel_delta.y ]
+        if [ c_dist < 20.0 ] c_dist = 20.0
+        if [ c_dist > 9.0e6 ] c_dist = 9.0e6
+
+    public func on_unload [ ]
+        if [ ux && ux.element_targets ]
+            ux.element_targets.rm[ 'sky_{id}' ]
+            ux.element_targets.rm[ 'skya_{id}' ]
+            ux.element_targets.rm[ 'skyb_{id}' ]
+            ux.element_targets.rm[ 'craft_{id}' ]
+
+    # the vehicles' passes, drawn after the sky in each frame
+    func build_craft [ vkc: vk_context, w: Window ]
+        logo_png : path '../silver-orbiter/images/icon.png'
+        expect logo_png.exists[], 'launch: no orbiter icon at {logo_png}'
+        lim : Image [ uri: logo_png ]
+        lim.hold[]
+        logo : Texture [ vk: vkc, w: w, sampler: lim, mip_levels: 1 ]
+        logo.hold[]
+        lit_pad = VehicleLit [ vk: vkc, name: 'craft' ]
+        lit_one = VehicleLit [ vk: vkc, name: 'craft' ]
+        lit_up  = VehicleLit [ vk: vkc, name: 'craft' ]
+        lit_fair = VehicleLit [ vk: vkc, name: 'craft' ]
+        lit_legs = VehicleLit [ vk: vkc, name: 'craft' ]
+        lit_fins = VehicleLit [ vk: vkc, name: 'craft' ]
+        glow    = PlumeGlow [ vk: vkc, name: 'plume' ]
+        glow_up = PlumeGlow [ vk: vkc, name: 'plume' ]
+        lit_pad.hold[]
+        lit_one.hold[]
+        lit_up.hold[]
+        lit_fair.hold[]
+        lit_legs.hold[]
+        lit_fins.hold[]
+        glow.hold[]
+        glow_up.hold[]
+        sv : map Au[string] [ 'logo': logo, 'fresh': vrender.color ]
+        sp : map Au[string] [ 'fresh': vrender.color ]
+        m_pad = Model [ vk: vkc, w: w, s: lit_pad, samplers: sv,
+                        cull_none: true ]
+        m_pad.id = build_platform[]
+        m_one = Model [ vk: vkc, w: w, s: lit_one, samplers: sv,
+                        cull_none: true ]
+        m_one.id = build_stage_one[]
+        m_up = Model [ vk: vkc, w: w, s: lit_up, samplers: sv,
+                       cull_none: true ]
+        m_up.id = build_upper[]
+        m_fair = Model [ vk: vkc, w: w, s: lit_fair, samplers: sv,
+                         cull_none: true ]
+        m_fair.id = build_fairing[]
+        m_legs = Model [ vk: vkc, w: w, s: lit_legs, samplers: sv,
+                         cull_none: true ]
+        m_legs.id = build_legs[]
+        m_fins = Model [ vk: vkc, w: w, s: lit_fins, samplers: sv,
+                         cull_none: true ]
+        m_fins.id = build_fins[]
+        m_plume = Model [ vk: vkc, w: w, s: glow, samplers: sp,
+                          cull_none: true ]
+        m_plume.id = build_plume[]
+        m_plume_up = Model [ vk: vkc, w: w, s: glow_up, samplers: sp,
+                             cull_none: true ]
+        m_plume_up.id = build_plume[]
+        m_pad.hold[]
+        m_one.hold[]
+        m_up.hold[]
+        m_fair.hold[]
+        m_legs.hold[]
+        m_fins.hold[]
+        m_plume.hold[]
+        m_plume_up.hold[]
+        # drawn at twice the size each way and down again: a 2x2
+        # resample for its edges
+        craft = Render [ vk: vkc, w: w, wscale: wscale * 2.0,
+                         tag: 'craft',
+                         use_depth: true,
+            clear_color: vec4f [ 0.0, 0.0, 0.0, 0.0 ],
+            models: [ m_pad, m_one, m_up, m_fair, m_legs, m_fins,
+                      m_plume, m_plume_up ] ]
+        craft.hold[]
+        craft.owner = a
+        w.element_targets[ 'craft_{id}' ] = craft
+
+    # a model matrix from axes, a place from the camera and scale
+    func placed [ ax: vec3f, ay: vec3f, az: vec3f, at: vec3f,
+                  sx: f32, sy: f32, sz: f32 ] -> mat4f
+        m : mat4f [ mat4f.identity[] ]
+        m.m[ 0 ]  = ax.x * sx
+        m.m[ 1 ]  = ax.y * sx
+        m.m[ 2 ]  = ax.z * sx
+        m.m[ 4 ]  = ay.x * sy
+        m.m[ 5 ]  = ay.y * sy
+        m.m[ 6 ]  = ay.z * sy
+        m.m[ 8 ]  = az.x * sz
+        m.m[ 9 ]  = az.y * sz
+        m.m[ 10 ] = az.z * sz
+        m.m[ 12 ] = at.x
+        m.m[ 13 ] = at.y
+        m.m[ 14 ] = at.z
+        return m
+
+    # x and z axes round a y axis, the x kept near the pad's east
+    func side_axis [ ay: vec3f ] -> vec3f
+        ex : vec3f [ 1.0, 0.0, 0.0 ]
+        if [ abs[ ay.x ] > 0.9 ] ex = vec3f [ 0.0, 0.0, 1.0 ]
+        k : f32 [ ex.x * ay.x + ex.y * ay.y + ex.z * ay.z ]
+        sx : vec3f [ ex.x - ay.x * k, ex.y - ay.y * k,
+                     ex.z - ay.z * k ]
+        n : f32 [ sqrt[ sx.x * sx.x + sx.y * sx.y + sx.z * sx.z ] ]
+        return vec3f [ sx.x / n, sx.y / n, sx.z / n ]
+
+    func cross3 [ u: vec3f, v: vec3f ] -> vec3f
+        return vec3f [ u.y * v.z - u.z * v.y, u.z * v.x - u.x * v.z,
+                       u.x * v.y - u.y * v.x ]
+
+    # the pad frame: x east, y up, z south, metres, from ECI now
+    func local_of [ r: Dvec, t: f64 ] -> Dvec
+        e : eci_to_ecef[ r, earth_turn[ t, 0.0 ] ]
+        d : dv_sub[ e, pad ]
+        return Dvec [ dv_dot[ d, pad_e ], dv_dot[ d, pad_u ],
+                      0.0 - dv_dot[ d, pad_n ] ]
+
+    func dir_of [ v: Dvec, t: f64 ] -> vec3f
+        e : eci_to_ecef[ v, earth_turn[ t, 0.0 ] ]
+        return vec3f [ f32[ dv_dot[ e, pad_e ] ], f32[ dv_dot[ e, pad_u ] ],
+                       f32[ 0.0 - dv_dot[ e, pad_n ] ] ]
+
+    # the vehicle each camera follows, and the point it watches
+    func followed [] -> Craft
+        f : flight
+        if [ f.lower == 0 ] return f.stack
+        if [ camera == 1 ] return f.orbiter
+        return f.booster
+
+    func watch_point [ c: Craft ] -> Dvec
+        mid : f64 [ (c.length > 1.0) ? c.length * 0.5 : 20.0 ]
+        lowest : f64 [ 1e30 ]
+        for [ p: Part ] in c.parts
+            if [ p.low < lowest ] lowest = p.low
+        return local_of[ c.body_point[ Dvec [ lowest + mid * 0.5 + 10.0,
+                                              0.0, 0.0 ] ], c.time ]
+
+    # where the camera stands and what it looks at, this frame
+    func aim [] -> vec3f
+        c : followed[]
+        m : watch_point[ c ]
+        if [ camera == 0 ]
+            # the platform camera: still, zooming as it climbs
+            cx = -260.0
+            cy = 18.0
+            cz = 360.0
+            ddx : f64 [ m.x - cx ]
+            ddy : f64 [ m.y - cy ]
+            ddz : f64 [ m.z - cz ]
+            dist : f64 [ sqrt[ ddx * ddx + ddy * ddy + ddz * ddz ] ]
+            th : f32 [ f32[ 70.0 / dist ] ]
+            if [ th > 0.55 ] th = 0.55
+            if [ th < 0.004 ] th = 0.004
+            cam_th = th
+            return vec3f [ f32[ ddx / dist ], f32[ ddy / dist ],
+                           f32[ ddz / dist ] ]
+        # the chase camera: round the vehicle in its local frame
+        ry : f64 [ m.y + PLANET_R ]
+        rr : f64 [ sqrt[ m.x * m.x + ry * ry + m.z * m.z ] ]
+        up : vec3f [ f32[ m.x / rr ], f32[ ry / rr ], f32[ m.z / rr ] ]
+        east : side_axis[ up ]
+        north : cross3[ east, up ]
+        cp : f32 [ cos[ c_pitch ] ]
+        ox : f32 [ cp * (sin[ c_yaw ] * east.x + cos[ c_yaw ] * north.x)
+                   + sin[ c_pitch ] * up.x ]
+        oy : f32 [ cp * (sin[ c_yaw ] * east.y + cos[ c_yaw ] * north.y)
+                   + sin[ c_pitch ] * up.y ]
+        oz : f32 [ cp * (sin[ c_yaw ] * east.z + cos[ c_yaw ] * north.z)
+                   + sin[ c_pitch ] * up.z ]
+        cx = m.x + f64[ ox ] * f64[ c_dist ]
+        cy = m.y + f64[ oy ] * f64[ c_dist ]
+        cz = m.z + f64[ oz ] * f64[ c_dist ]
+        # never under the water
+        cry : f64 [ cy + PLANET_R ]
+        cr : f64 [ sqrt[ cx * cx + cry * cry + cz * cz ] ]
+        if [ cr < PLANET_R + 3.0 ]
+            k : f64 [ (PLANET_R + 3.0) / cr ]
+            cx = cx * k
+            cy = cry * k - PLANET_R
+            cz = cz * k
+        cam_th = 0.466
+        return vec3f [ 0.0 - ox, 0.0 - oy, 0.0 - oz ]
+
+    # sunlight on the rocket: through the air at its height
+    func sun_colour [ alt: f32, elev: f32 ] -> vec4f
+        se : f32 [ (elev < 0.02) ? 0.02 : elev ]
+        mass : f32 [ exp[ 0.0 - alt / 8000.0 ] / se ]
+        r : f32 [ 22.0 * exp[ 0.0 - mass * 0.076 - mass * 0.009 ] ]
+        g : f32 [ 22.0 * exp[ 0.0 - mass * 0.172 - mass * 0.009 ] ]
+        b : f32 [ 22.0 * exp[ 0.0 - mass * 0.432 - mass * 0.009 ] ]
+        lit : f32 [ sat[ (elev + 0.03) / 0.06 ] ]
+        return vec4f [ r * lit, g * lit, b * lit, 0.0 ]
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen ] return
+        ux.will_animate = true
+        cv : Canvas [ w.screen ]
+        now : i64 [ epoch_micros[] ]
+        dt : f32 [ 0.016 ]
+        if [ last_us > 0 ] dt = f32[ now - last_us ] / 1000000.0
+        if [ dt > 0.1 ] dt = 0.1
+        last_us = now
+        seconds += dt
+        if [ !flight ]
+            flight = Mission [ landing: landing ]
+            flight.hold[]
+            if [ rwind ]
+                said : flight.stack.weather.random_wind[
+                    u64[ epoch_micros[] ], wind_min / 3.6,
+                    wind_max / 3.6 ]
+                flight.note[ said ]
+            pad =geodetic_to_ecef[ flight.pad_lat, flight.pad_lon, 0.0 ]
+            pad_e = enu_east[ flight.pad_lat, flight.pad_lon ]
+            pad_n = enu_north[ flight.pad_lat, flight.pad_lon ]
+            pad_u = enu_up[ flight.pad_lat, flight.pad_lon ]
+        # the physics at 2.5 ms steps, as many as 12 ms of work
+        # allows each frame; the pace says how far it kept up
+        if [ flying ]
+            # quick: no limit but the work a frame allows, until the
+            # landing burn lights; then life's pace
+            racing : bool [ quick && flight.lower < 6 ]
+            pace_x : f32 [ (quick) ? 1.0 : warp ]
+            want : i32 [ (racing) ? 1000000000
+                         : i32[ dt * pace_x / 0.0025 ] ]
+            budget : i64 [ (racing) ? 50000 : 12000 ]
+            began : i64 [ epoch_micros[] ]
+            done : i32 [ 0 ]
+            while [ done < want ]
+                # the landing plan is still solving: draw meanwhile
+                if [ flight.waiting[] ] break
+                flight.step[ 0.0025 ]
+                done += 1
+                # the landing burn lit: the next frame is life's pace
+                if [ racing && flight.lower >= 6 ] break
+                if [ epoch_micros[] - began > budget ] break
+            pace = f32[ done ] * 0.0025 / dt
+        if [ !world ]
+            world = PlanetWorld [ cur: cur, wseed: 987654321 ]
+        world.cur = cur
+        if [ !vrender ]
+            world.build[ cv.vk, w ]
+            vrender = Render [ vk: cv.vk, w: w, wscale: wscale * 0.5,
+                               tag: 'planet',
+                clear_color: vec4f [ 0.0, 0.0, 0.0, 1.0 ],
+                models: [ world.vmodel ] ]
+            vrender.hold[]
+            vrender.timing = true
+            vrender.owner = a
+            w.element_targets[ 'sky_{id}' ] = vrender
+            hist_a = Render [ vk: cv.vk, w: w, wscale: wscale,
+                              tag: 'planet-ha',
+                clear_color: vec4f [ 0.0, 0.0, 0.0, 1.0 ] ]
+            hist_b = Render [ vk: cv.vk, w: w, wscale: wscale,
+                              tag: 'planet-hb',
+                clear_color: vec4f [ 0.0, 0.0, 0.0, 1.0 ] ]
+            hist_a.hold[]
+            hist_b.hold[]
+            hist_a.timing = true
+            hist_b.timing = true
+            comp_a = PlanetCompose [ vk: cv.vk, name: 'compose-a' ]
+            comp_b = PlanetCompose [ vk: cv.vk, name: 'compose-b' ]
+            comp_a.hold[]
+            comp_b.hold[]
+            sa : map Au[string] [ 'fresh': vrender.color,
+                                  'history': hist_b.color ]
+            sb : map Au[string] [ 'fresh': vrender.color,
+                                  'history': hist_a.color ]
+            model_a = Model [ vk: cv.vk, w: w, s: comp_a, samplers: sa ]
+            model_b = Model [ vk: cv.vk, w: w, s: comp_b, samplers: sb ]
+            model_a.hold[]
+            model_b.hold[]
+            hist_a.models = vec Model [] [ model_a ]
+            hist_b.models = vec Model [] [ model_b ]
+            model_a.finish[ hist_a, 0 ]
+            model_b.finish[ hist_b, 0 ]
+            hist_a.owner = a
+            hist_b.owner = a
+            w.element_targets[ 'skya_{id}' ] = hist_a
+            w.element_targets[ 'skyb_{id}' ] = hist_b
+            build_craft[ cv.vk, w ]
+        frame += 1
+        world.follow[ cv.vk, w ]
+        # the camera
+        fwd : aim[]
+        th : f32 [ cam_th ]
+        cup : vec3f [ f32[ cx ], f32[ cy + PLANET_R ], f32[ cz ] ]
+        cl : f32 [ sqrt[ cup.x * cup.x + cup.y * cup.y
+                         + cup.z * cup.z ] ]
+        up : vec3f [ cup.x / cl, cup.y / cl, cup.z / cl ]
+        right : cross3[ fwd, up ]
+        rl : f32 [ sqrt[ right.x * right.x + right.y * right.y
+                         + right.z * right.z ] ]
+        if [ rl < 0.0001 ]
+            right = side_axis[ fwd ]
+            rl = 1.0
+        right = vec3f [ right.x / rl, right.y / rl, right.z / rl ]
+        cu : cross3[ right, fwd ]
+        aspect : f32 [ bounds.w / bounds.h ]
+        cam_alt : f32 [ f32[ f64[ cl ] - PLANET_R ] ]
+        sky : world.sky
+        sky.cam_pos   = vec4f [ f32[ cx ], f32[ cy ], f32[ cz ],
+                                cam_alt ]
+        sky.cam_right = vec4f [ right.x, right.y, right.z, th * aspect ]
+        sky.cam_up    = vec4f [ cu.x, cu.y, cu.z, th ]
+        sky.cam_fwd   = vec4f [ fwd.x, fwd.y, fwd.z, exposure ]
+        se : f32 [ cos[ sun_el ] ]
+        sun : vec3f [ se * sin[ sun_az ], sin[ sun_el ],
+                      se * cos[ sun_az ] ]
+        sky.sun_dir   = vec4f [ sun.x, sun.y, sun.z, 22.0 ]
+        sky.wind      = vec4f [ cur.wind * 0.8, 0.0, cur.wind * 0.6,
+                                seconds ]
+        sky.weather_a = vec4f [ cur.coverage, cur.ctype,
+                                world.spread, cur.island ]
+        sky.weather_b = vec4f [ 0.6, cur.skew, cur.density, cur.detail ]
+        sky.march     = vec4f [ quality, 1.0, 60000.0, 0.0 ]
+        sky.layer     = vec4f [ 1500.0, 6000.0, f32[ PLANET_R ],
+                                f32[ PLANET_R ] + 100000.0 ]
+        sky.tops      = vec4f [ 1100.0, 1800.0, 3000.0, 0.0 ]
+        sky.light_a   = vec4f [ 0.6, 1.4, 0.18, 1.0 ]
+        sky.light_b   = vec4f [ 0.4, 0.75, 0.5, 0.016 ]
+        sky.scales    = vec4f [ 6000.0, 650.0, 3000.0, 60000.0 ]
+        sky.sea       = vec4f [ f32[ world.wave_n ], 1.15, 0.55, 0.0 ]
+        sky.key_tint  = vec4f [ 1.0, 1.0, 1.0, 0.0 ]
+        space : f32 [ sat[ (cam_alt - 30000.0) / 70000.0 ] ]
+        sky.far_lod   = vec4f [ 150.0, 600.0, space, 0.0 ]
+        sky.view_mode = view_mode
+        sky.frame     = frame
+        sky.geo       = vec4f [ f32[ flight.pad_lat ],
+                                f32[ flight.pad_lon ], 0.0, 0.0 ]
+        sky.time      = seconds
+        ph : i32 [ frame % 4 ]
+        ox : f32 [ ((ph & 1) == 0) ? -0.25 : 0.25 ]
+        oy : f32 [ ((ph & 2) == 0) ? -0.25 : 0.25 ]
+        vrender.wscale = wscale * 0.5
+        vrender.update[]
+        lw : f32 [ vrender.width ]
+        lh : f32 [ vrender.height ]
+        jx : f32 [ ox / lw ]
+        jy : f32 [ oy / lh ]
+        sky.jitter = vec4f [ jx, jy, 0.0, 0.0 ]
+        # the star gain: the dark of space shows them
+        sky.sea_b  = vec4f [ cur.wind, 0.3 + space * 0.9,
+                             2.0 * th / lh, seconds * 0.00002 ]
+        world.env_pass[ vec4f [ jx, jy, 0.0, 0.0 ] ]
+        use_a : bool [ (frame & 1) == 0 ]
+        hist_a.skip = !use_a
+        hist_b.skip = use_a
+        hist_a.update[]
+        hist_b.update[]
+        craft.update[]
+        if [
+            model_a.samplers[ 'fresh' ] != vrender.color
+            || model_a.samplers[ 'history' ] != hist_b.color ]
+            model_a.samplers[ 'fresh' ] = vrender.color
+            model_a.samplers[ 'history' ] = hist_b.color
+            model_a.rebind_model[]
+            hist_valid = false
+        if [
+            model_b.samplers[ 'fresh' ] != vrender.color
+            || model_b.samplers[ 'history' ] != hist_a.color ]
+            model_b.samplers[ 'fresh' ] = vrender.color
+            model_b.samplers[ 'history' ] = hist_a.color
+            model_b.rebind_model[]
+            hist_valid = false
+        if [ m_pad.samplers[ 'fresh' ] != vrender.color ]
+            for [ m: Model ] in craft.models
+                m.samplers[ 'fresh' ] = vrender.color
+                m.rebind_model[]
+        cm : PlanetCompose [ (use_a) ? comp_a : comp_b ]
+        cm.cam_right  = sky.cam_right
+        cm.cam_up     = sky.cam_up
+        cm.cam_fwd    = sky.cam_fwd
+        cm.prev_right = prev_right
+        cm.prev_up    = prev_up
+        cm.prev_fwd   = prev_fwd
+        cm.jitter     = vec4f [ jx, jy, 1.0 / lw, 1.0 / lh ]
+        cm.cam_pos    = sky.cam_pos
+        cm.prev_pos   = prev_pos
+        # the faster we move, the less the history is worth
+        moved : f32 [ sqrt[
+            (sky.cam_pos.x - prev_pos.x) * (sky.cam_pos.x - prev_pos.x)
+            + (sky.cam_pos.y - prev_pos.y)
+            * (sky.cam_pos.y - prev_pos.y)
+            + (sky.cam_pos.z - prev_pos.z)
+            * (sky.cam_pos.z - prev_pos.z) ] / dt ]
+        bw : f32 [ 0.22 + moved / 700.0 ]
+        if [ bw > 0.75 ] bw = 0.75
+        cm.blend = vec4f [ bw, (hist_valid) ? 1.0 : 0.0, 0.0, 0.0 ]
+        gpu_ms = (vrender.gpu_us + ((use_a) ? hist_b.gpu_us
+                 : hist_a.gpu_us)) / 1000.0
+        prev_right = sky.cam_right
+        prev_up    = sky.cam_up
+        prev_fwd   = sky.cam_fwd
+        prev_pos   = sky.cam_pos
+        hist_valid = true
+        place_craft[ fwd, cu, th, aspect, sun, cam_alt, up ]
+        out : Render [ (use_a) ? hist_a : hist_b ]
+        cv.draw_image[ out.color,
+                       rect [ x: 0.0, y: 0.0, w: bounds.w,
+                              h: bounds.h ] ]
+        cv.draw_image[ craft.color,
+                       rect [ x: 0.0, y: 0.0, w: bounds.w,
+                              h: bounds.h ] ]
+
+    # where a craft is drawn: the mesh's origin from the camera,
+    # the mesh's axes (its y is the craft's axis), its height
+    func pose [ c: Craft, shift: f64 ] -> Pose
+        o : local_of[ c.body_point[ Dvec [ shift, 0.0, 0.0 ] ], c.time ]
+        bx : dir_of[ q_rotate[ c.state.q, Dvec [ 1.0, 0.0, 0.0 ] ],
+                     c.time ]
+        by : dir_of[ q_rotate[ c.state.q, Dvec [ 0.0, 1.0, 0.0 ] ],
+                     c.time ]
+        bz : dir_of[ q_rotate[ c.state.q, Dvec [ 0.0, 0.0, 1.0 ] ],
+                     c.time ]
+        g : c.geodetic[]
+        alt : f32 [ f32[ g.z ] ]
+        ar : standard_air[ g.z ]
+        return Pose [ at: vec3f [ f32[ o.x - cx ], f32[ o.y - cy ],
+                                  f32[ o.z - cz ] ],
+                      ax: by, ay: bx, az: vec3f [ 0.0 - bz.x, 0.0 - bz.y,
+                                                  0.0 - bz.z ],
+                      alt: alt, air: f32[ ar.density / 1.225 ] ]
+
+    func hidden [] -> Pose
+        return Pose [ at: vec3f [ 0.0, -1.0e7, 0.0 ],
+                      ax: vec3f [ 1.0, 0.0, 0.0 ],
+                      ay: vec3f [ 0.0, 1.0, 0.0 ],
+                      az: vec3f [ 0.0, 0.0, 1.0 ], alt: 0.0, air: 1.0 ]
+
+    func put [ s: VehicleLit, p: Pose ]
+        s.model = placed[ p.ax, p.ay, p.az, p.at, 1.0, 1.0, 1.0 ]
+
+    # a flame from a craft's engines of a group, at body x
+    func flame [ g: PlumeGlow, c: Craft, group: string, exit: f64,
+                 vacuum: bool, cam_alt: f32, cam_up: vec3f, vw: mat4f,
+                 prj: mat4f ] -> vec4f
+        lit : i32 [ 0 ]
+        lead : Engine [ null ]
+        if [ c ]
+            for [ e: Engine ] in c.engines
+                if [ e.lit && e.group == group && e.force > 0.0 ]
+                    lit += 1
+                    if [ !lead ] lead = e
+        p : (c) ? pose[ c, exit ] : hidden[]
+        n : f32 [ f32[ lit ] ]
+        many : f32 [ sqrt[ n / 9.0 ] ]
+        # its shape from the exit pressure against the air's
+        pa : f64 [ 101325.0 ]
+        if [ c && c.air ] pa = c.air.pressure
+        pl : Plume [ exit_r: 1.0, jet_r: 1.0, length: 1.0 ]
+        if [ lead ] pl = plume_of[ lead, lit, pa, vacuum ]
+        reach : f32 [ f32[ pl.length * 1.5 ] ]
+        if [ reach > 3000.0 ] reach = 3000.0
+        # the core's spread past the lip: half its light within a
+        # quarter of the edge's turn (Simons 1972)
+        core : f32 [ 0.0 ]
+        if [ pl.angle > 0.0 ] core = tan[ f32[ pl.angle ] * 0.245 ]
+        # light goes as one over the core's width: 1/30 is the end
+        if [ core > 0.0 ]
+            fade : f32 [ 30.0 * f32[ pl.exit_r ] / core ]
+            if [ reach > fade ] reach = fade
+        # mixing with the air widens it (an estimate)
+        spread : f32 [ 0.06 * p.air ]
+        r_exit : f32 [ f32[ pl.exit_r ] ]
+        r_jet : f32 [ f32[ pl.jet_r ] ]
+        if [ r_jet > reach * 0.6 ] r_jet = reach * 0.6
+        bound : f32 [ max[ r_exit, r_jet ] * 1.6 + reach * spread ]
+        if [ core > 0.0 ]
+            reach_w : f32 [ (r_exit + reach * core) * 1.6
+                            + reach * spread ]
+            if [ bound > reach_w ] bound = reach_w
+        thr : f32 [ 0.0 ]
+        if [ lead ] thr = lead.throttle
+        if [ thr > 1.0 ] thr = 1.0
+        power : f32 [ (lit == 0) ? 0.0 : ((vacuum) ? 1.2
+                      : (0.6 + 1.0 * many)) * (0.4 + 0.6 * thr) ]
+        g.view = vw
+        g.proj = prj
+        g.model = placed[ p.ax, p.ay, p.az, p.at, bound, reach, bound ]
+        g.axis_o = vec4f [ p.at.x, p.at.y, p.at.z, 0.0 ]
+        g.axis_d = vec4f [ 0.0 - p.ay.x, 0.0 - p.ay.y, 0.0 - p.ay.z,
+                           reach ]
+        g.cone = vec4f [ r_exit, r_jet, f32[ tan[ pl.angle ] ], power ]
+        g.shock = vec4f [ f32[ pl.cells ], core, spread, bound ]
+        g.tint = (vacuum) ? vec4f [ 0.45, 0.55, 1.0, p.air ]
+                 : vec4f [ 1.0, 0.55, 0.18, p.air ]
+        g.screen = vec4f [ f32[ craft.width ], f32[ craft.height ], 0.0,
+                           0.0 ]
+        g.clock = vec4f [ seconds, 0.0, 0.0, 0.0 ]
+        g.ground = vec4f [ cam_up.x, cam_up.y, cam_up.z, cam_alt ]
+        # its light on the hulls: where it starts, how strong
+        return vec4f [ p.at.x - p.ay.x * 6.0, p.at.y - p.ay.y * 6.0,
+                       p.at.z - p.ay.z * 6.0, power ]
+
+    # the platform, the vehicles and their flames, from the camera
+    func place_craft [ fwd: vec3f, cu: vec3f, th: f32, aspect: f32,
+                       sun: vec3f, cam_alt: f32, cam_up: vec3f ]
+        f : flight
+        eye : vec3f [ 0.0, 0.0, 0.0 ]
+        vw : mat4f [ mat4f.look_at[ eye, fwd, cu ] ]
+        # the meshes start 1.4 m under the engines' gimbal plane
+        drop : f64 [ -1.4 ]
+        one : hidden[]
+        up : hidden[]
+        fair : hidden[]
+        legs : hidden[]
+        # how far out the legs are: 1 out, 0 stowed
+        swing : f64 [ 1.0 ]
+        low_c : (f.lower == 0) ? f.stack : f.booster
+        if [ f.lower == 0 ]
+            one = pose[ f.stack, drop ]
+            up = one
+            fair = one
+            if [ f.stack.legs.count > 0 ]
+                legs = one
+                swing = f.stack.legs[ 0 ].frac
+        el
+            one = pose[ f.booster, drop ]
+            up = pose[ f.orbiter, drop ]
+            fair = (f.fairing) ? pose[ f.fairing, drop ] : up
+            if [ f.booster.legs.count > 0 ]
+                legs = one
+                swing = f.booster.legs[ 0 ].frac
+        hi_c : (f.lower == 0) ? null : f.orbiter
+        # the lower stage heard from the camera
+        rx : vec3f [ fwd.y * cu.z - fwd.z * cu.y,
+                     fwd.z * cu.x - fwd.x * cu.z,
+                     fwd.x * cu.y - fwd.y * cu.x ]
+        if [ !engine_sound ] engine_sound = EngineSound [ ]
+        engine_sound.feed[ low_c, one, rx, standard_air[ cam_alt ],
+                           pace, cx, cy, cz, camera ]
+        # the depth range fitted to what is drawn: near at half the
+        # way to the nearest (60 m round each, the pad included),
+        # far past the farthest with room for a plume (20 km)
+        pad_c : vec3f [ f32[ 0.0 - cx ], f32[ 0.0 - cy ],
+                        f32[ 0.0 - cz ] ]
+        seen : vec vec3f [] [ pad_c, one.at, up.at, fair.at ]
+        nearest : f32 [ 1.0e9 ]
+        farthest : f32 [ 0.0 ]
+        for [ p: vec3f ] in seen
+            dp : f32 [ sqrt[ p.x * p.x + p.y * p.y + p.z * p.z ] ]
+            if [ dp > 5.0e6 ] continue
+            if [ dp - 60.0 < nearest ] nearest = dp - 60.0
+            if [ dp > farthest ] farthest = dp
+        z_near : f32 [ max[ nearest * 0.5, 0.5 ] ]
+        z_far : f32 [ farthest + 20000.0 ]
+        prj : mat4f [ mat4f.perspective[ 2.0 * atan[ th ], aspect,
+                                         z_near, z_far ] ]
+        prj.m[ 5 ] = 0.0 - prj.m[ 5 ]
+        lg : flame[ glow, low_c, 'one', -1.4, false, cam_alt, cam_up,
+                    vw, prj ]
+        hg : flame[ glow_up, hi_c, 'two', 43.1, true, cam_alt, cam_up,
+                    vw, prj ]
+        light : (lg.w > 0.0) ? lg : hg
+        alt : f32 [ one.alt ]
+        sc : vec4f [ sun_colour[ alt, sun.y ] ]
+        air : f32 [ one.air ]
+        amb : vec4f [ 1.0 * air + 0.1, 1.4 * air + 0.12,
+                      2.2 * air + 0.16, 0.0 ]
+        gc : vec4f [ 2.6 * air + 0.4, 1.4 * air + 0.25,
+                     0.5 * air + 0.2, 0.0 ]
+        mid : f32 [ (alt + cam_alt) * 0.5 ]
+        haze : f32 [ 1.0e-5 * exp[ 0.0 - mid / 8000.0 ] ]
+        lits : vec VehicleLit [] [ lit_pad, lit_one, lit_up, lit_fair,
+                                   lit_legs, lit_fins ]
+        for [ s: VehicleLit ] in lits
+            s.view = vw
+            s.proj = prj
+            s.sun_dir = vec4f [ sun.x, sun.y, sun.z, exposure ]
+            s.sun_col = sc
+            s.amb_col = amb
+            s.glow_pos = vec4f [ light.x, light.y, light.z,
+                                 (light.w > 0.0) ? 1.0 : 0.0 ]
+            s.glow_col = gc
+            s.screen = vec4f [ f32[ craft.width ], f32[ craft.height ],
+                               haze, 0.0 ]
+        pad_at : vec3f [ f32[ 0.0 - cx ], f32[ 0.0 - cy ],
+                         f32[ 0.0 - cz ] ]
+        lit_pad.model = placed[ vec3f [ 1.0, 0.0, 0.0 ],
+                                vec3f [ 0.0, 1.0, 0.0 ],
+                                vec3f [ 0.0, 0.0, 1.0 ], pad_at,
+                                1.0, 1.0, 1.0 ]
+        put[ lit_one, one ]
+        put[ lit_up, up ]
+        put[ lit_fair, fair ]
+        put[ lit_legs, legs ]
+        lit_legs.fold = vec4f [ f32[ 1.0 - swing ] * leg_swing[],
+                                LEG_HINGE_R, LEG_HINGE_Y, 0.0 ]
+        # stowed, a fin lies flat up the hull; it swings down
+        put[ lit_fins, one ]
+        out : f64 [ (low_c.fins.count > 0) ? low_c.fins[ 0 ].frac
+                    : 0.0 ]
+        lit_fins.fold = vec4f [ f32[ 1.0 - out ] * 1.5707963,
+                                FIN_ROOT + FIN_DEEP * 0.5, FIN_Y,
+                                0.7853982 ]
+        # each fin's deflection; physics fin i is the mesh's
+        # quarter -i (mod 4): its z is the body's -z
+        tw : vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+        if [ low_c.fins.count == 4 ]
+            tw = vec4f [ f32[ low_c.fins[ 0 ].deflect ],
+                         f32[ low_c.fins[ 3 ].deflect ],
+                         f32[ low_c.fins[ 2 ].deflect ],
+                         f32[ low_c.fins[ 1 ].deflect ] ]
+        lit_fins.twist = tw
+
+element launch : trinity
+    public width     : i32    [ 1280 ]
+    public height    : i32    [ 720 ]
+    public title     : string [ 'launch' ]
+    public preset    : i32    [ 1 ]
+    public exposure  : f32    [ 1.0 ]
+    public quality   : f32    [ 1.5 ]
+    # 5 minutes after sunset at the Cape in October: 1.1 deg
+    # under the horizon (13 deg/h at 28.5 N), a little south of
+    # west
+    public sun_el    : f32    [ -0.019 ]
+    public sun_az    : f32    [ -1.47 ]
+    # --landing scvx or gfold
+    public landing   : LandingMethod
+    # --quick: as fast as it can until the landing burn, then 1x
+    public quick     : bool
+    # --rwind: a new random wind each flight; --wind_min and
+    # --wind_max: the range of its jet (km/h)
+    public rwind     : bool
+    public wind_min  : f64    [ 36.0 ]
+    public wind_max  : f64    [ 216.0 ]
+    mutable view_mode : i32
+    mutable warp     : f32    [ 1.0 ]
+    mutable camera   : i32
+    mutable states   : vec SkyState
+    mutable cur      : SkyState
+    mutable frame_ms : f32    [ 16.0 ]
+    mutable last_us  : i64
+    public view      : PlanetView
+
+    func init []
+        states = sky_states[]
+        if [ preset < 0 || preset >= states.count ] preset = 1
+        cur = states[ preset ]
+        log 'launch: space launch  r restart  c camera  , . warp  1-5 weather  t/g sun  e/d exposure  q quality  v view  drag, wheel, pgup/pgdn: camera distance'
+
+    public func on_key [ ev: Event ]
+        if [ !ev.key.state ] return
+        k : i32 [ ev.key.unicode ]
+        v : view
+        if [ k == 32 && v ] v.flying = true
+        # R: the whole flight again from the pad
+        if [ k == 82 && v && v.flight ]
+            v.flight.drop[]
+            v.flight = null
+            v.flying = false
+        if [ k >= 49 && k <= 53 ]
+            preset = k - 49
+            cur = states[ preset ]
+        if [ k == 67 ] camera = (camera + 1) % 3
+        if [ k == 46 && warp < 100.0 ] warp = warp * 2.0
+        if [ k == 44 && warp > 1.0 ] warp = warp / 2.0
+        if [ k == 84 ] sun_el += 0.04
+        if [ k == 71 ] sun_el -= 0.04
+        if [ k == 69 ] exposure *= 1.15
+        if [ k == 68 ] exposure /= 1.15
+        if [ k == 81 ] quality = (quality >= 2.0) ? 0.5 : quality * 2.0
+        if [ k == 86 ] view_mode = (view_mode + 1) % 4
+        # page up and down: the chase camera in and out
+        if [ v && (k == 266 || k == 267) ]
+            v.c_dist = v.c_dist * ((k == 267) ? 2.0 : 0.5)
+            if [ v.c_dist < 20.0 ] v.c_dist = 20.0
+            if [ v.c_dist > 9.0e6 ] v.c_dist = 9.0e6
+
+    public func on_press [ ev: Event ]
+        v : view
+        if [ v ] v.on_press[ ev ]
+
+    public func on_release [ ev: Event ]
+        v : view
+        if [ v ] v.on_release[ ev ]
+
+    public func on_move [ ev: Event ]
+        v : view
+        if [ v ] v.on_move[ ev ]
+
+    public func on_wheel [ ev: Event ]
+        v : view
+        if [ v ] v.on_wheel[ ev ]
+
+    public func on_overlay [ cv: Canvas ]
+        v : view
+        if [ !v || !v.flight ] return
+        f : v.flight
+        fps : i32 [ 1000.0 / ((frame_ms > 0.1) ? frame_ms : 0.1) ]
+        t : f64 [ f.met ]
+        lead : string [ (t < 0.0) ? 'T-' : 'T+' ]
+        tt : i32 [ (t < 0.0) ? i32[ 0.0 - t ] : i32[ t ] ]
+        mins : i32 [ tt / 60 ]
+        secs : i32 [ tt % 60 ]
+        pad : string [ (secs < 10) ? '0' : '' ]
+        lows : vec string [] [ 'on the stack', 'flip', 'boostback',
+                               'coast', 'entry burn', 'falling on its fins',
+                               'landing burn', 'down on the deck',
+                               'in the sea', 'exploded on the deck' ]
+        highs : vec string [] [ 'on the stack', 'coasting to ignition',
+                                'burning to orbit', 'in orbit' ]
+        lo_s : lows[ f.lower ]
+        hi_s : highs[ f.upper ]
+        if [ !v.flying ] lo_s = 'space to launch'
+        c : v.followed[]
+        g : c.geodetic[]
+        alt : f64 [ g.z / 1000.0 ]
+        rel : dv_sub[ c.state.v, dv_cross[ Dvec [ 0.0, 0.0, EARTH_SPIN ],
+                                           c.state.r ] ]
+        spd : i32 [ dv_len[ rel ] ]
+        prop : i32 [ c.propellant[] / 1000.0 ]
+        cam : string [ (camera == 0) ? 'platform'
+            : (camera == 1) ? 'orbiter' : 'booster' ]
+        wp : '{i32[ warp ]}x'
+        if [ quick ]
+            wp = (f.lower < 6) ? 'max until the landing burn' : '1x'
+        kept : f32 [ (v.flying) ? v.pace : 0.0 ]
+        news : string [ (f.events.count > 0)
+                        ? f.events[ f.events.count - 1 ] : '' ]
+        lines : vec string [] [
+            '{lead}{mins}:{pad}{secs}  booster: {lo_s}  orbiter: {hi_s}',
+            '{cam}: altitude {alt} km  speed {spd} m/s  propellant {prop} t',
+            'warp {wp}, physics keeping {kept}x  {fps} fps  {news}' ]
+        y : f32 [ 10.0 ]
+        for [ s: string ] in lines
+            cv.fill_color[ '#0008' ]
+            cv.rect_to[ 8.0, y - 2.0, 980.0, 20.0 ]
+            cv.paint[]
+            cv.fill_color[ '#e8eef4' ]
+            cv.draw_text[ s, rect [ x: 14.0, y: y, w: 980.0, h: 18.0 ],
+                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
+                Overflow.visible, null ]
+            cv.paint[]
+            y += 22.0
+
+    public func render [] -> Elements
+        now : i64 [ epoch_micros[] ]
+        if [ last_us > 0 ]
+            dt : f32 [ f32[ now - last_us ] / 1000000.0 ]
+            frame_ms = frame_ms * 0.9 + dt * 100.0
+        last_us = now
+        e : Elements [ ]
+        e['view'] = PlanetView [ exposure: exposure, quality: quality,
+            view_mode: view_mode, sun_el: sun_el, sun_az: sun_az,
+            warp: warp, cur: cur, camera: camera, landing: landing,
+            quick: quick, rwind: rwind, wind_min: wind_min,
+            wind_max: wind_max, animated: true ]
+        return e
+
+# ---------------------------------------------------------------
+# the engines' sound: each engine synthesized, all summed in one
+# run loop that feeds spectra's AudioOut
+# ---------------------------------------------------------------
+SOUND_RATE    : i32 [ 44100 ]
+SOUND_BLOCK   : i32 [ 512 ]
+# frames of the engines' state kept: a minute of sound travel
+SOUND_SLOTS   : i32 [ 4096 ]
+SOUND_ENGINES : i32 [ 9 ]
+# jet power that leaves as sound: NASA SP-8072 puts it near 0.5%
+SOUND_EFFICIENCY : f64 [ 0.005 ]
+# the level heard as full scale, dB SPL: an estimate
+SOUND_FULL_DB : f64 [ 150.0 ]
+
+class EngineSound
+    public out    : AudioOut
+    public on     : bool
+    # samples written to the card: the sound's clock
+    public played : i64
+    # what the engines sent, per frame: when, where, how loud
+    public sent   : new f64
+    public src_x  : new f64
+    public src_y  : new f64
+    public src_z  : new f64
+    public watts  : new f64
+    public src_air : new f32
+    public share  : new f32
+    # each bell's place from the stage's middle
+    public off_x  : new f32
+    public off_y  : new f32
+    public off_z  : new f32
+    public wrote  : i64
+    # the ear now: where, which way is right, its air
+    public ear_x  : f64
+    public ear_y  : f64
+    public ear_z  : f64
+    public ear_rx : vec3f
+    public ear_air : f32
+    public ear_c  : f64
+    public ear_t  : f64
+    public ear_at : i64
+    public ear_jumps : i64
+    public ear_view : i32
+    # flight seconds a second of ours: warp raises the pitch
+    public ear_pace : f64
+    intern seen_jumps : i64
+    intern last_te : f64
+    intern last_now : f64
+    intern pitch  : f32
+    intern doppler : f64
+    # the synth's own clock against the card's, and its last two
+    # samples, read between at that clock
+    intern phase  : f64
+    intern was_l  : f32
+    intern was_r  : f32
+    intern now_l  : f32
+    intern now_r  : f32
+    # this block's sound, for the synth's steps
+    intern blk_slot  : i32
+    intern blk_lvl   : f32
+    intern blk_total : f32
+    intern blk_roar  : f32
+    intern blk_high  : f32
+    # each engine's voice: noise seed, rumble, roar filter, crackle
+    intern seed   : new u32
+    intern rumble : new f32
+    intern roar_lo : new f32
+    intern roar_bd : new f32
+    intern crack  : new f32
+    intern centre : new f32
+    intern gain   : new f32
+    intern left   : new f32
+    intern right  : new f32
+    intern ear_l  : f32
+    intern ear_r  : f32
+    intern cut    : f32
+
+    func init []
+        n : i32 [ SOUND_SLOTS * SOUND_ENGINES ]
+        sent = new f64 [ SOUND_SLOTS ]
+        src_x = new f64 [ SOUND_SLOTS ]
+        src_y = new f64 [ SOUND_SLOTS ]
+        src_z = new f64 [ SOUND_SLOTS ]
+        watts = new f64 [ SOUND_SLOTS ]
+        src_air = new f32 [ SOUND_SLOTS ]
+        share = new f32 [ n ]
+        off_x = new f32 [ n ]
+        off_y = new f32 [ n ]
+        off_z = new f32 [ n ]
+        ear_c = 340.0
+        last_te = -1.0
+        pitch = 1.0
+        doppler = 1.0
+        seed = new u32 [ SOUND_ENGINES ]
+        rumble = new f32 [ SOUND_ENGINES ]
+        roar_lo = new f32 [ SOUND_ENGINES ]
+        roar_bd = new f32 [ SOUND_ENGINES ]
+        crack = new f32 [ SOUND_ENGINES ]
+        centre = new f32 [ SOUND_ENGINES ]
+        gain = new f32 [ SOUND_ENGINES ]
+        left = new f32 [ SOUND_ENGINES ]
+        right = new f32 [ SOUND_ENGINES ]
+        for [ i: i32 0, i < SOUND_ENGINES, i += 1 ]
+            seed[ i ] = 2463534242 + i * 7919
+            # each bell roars a little apart: they beat, not sum
+            centre[ i ] = 68.0 + i * 7.3
+            left[ i ] = 0.7071
+            right[ i ] = 0.7071
+        cut = 0.1
+        out = AudioOut [ sample_rate: SOUND_RATE, channels: 2,
+                         buffer_size: SOUND_BLOCK ]
+        if [ out.open[] ]
+            on = true
+            tid : local u64 [ 1 ]
+            pthread_create[ tid, null, @run, a ]
+        el
+            log 'launch: no sound device; the engines are silent'
+
+    # what the engines send this frame, and where the ear is; the
+    # run loop hears whatever reaches the ear now, so a camera
+    # switch is heard at once
+    public func feed [ c: Craft, p: Pose, rx: vec3f, ear: Air,
+                       pace: f64, cam_x: f64, cam_y: f64,
+                       cam_z: f64, view: i32 ]
+        if [ !on ] return
+        if [ view != ear_view ] ear_jumps += 1
+        ear_view = view
+        ear_x = cam_x
+        ear_y = cam_y
+        ear_z = cam_z
+        ear_rx = rx
+        ear_air = ear.density / 1.225
+        ear_c = (ear.sound > 1.0) ? ear.sound : 340.0
+        # a restart runs the clock back: the old sound is gone
+        if [ wrote > 0 ]
+            prev : i32 [ (wrote - 1) % SOUND_SLOTS ]
+            if [ c.time < sent[ prev ] ] wrote = 0
+        ear_t = c.time
+        ear_at = played
+        ear_pace = (pace > 0.05) ? pace : 1.0
+        # a frame every 1/60 s of flight: 68 s in the ring
+        if [ wrote > 0 ]
+            prev : i32 [ (wrote - 1) % SOUND_SLOTS ]
+            if [ c.time - sent[ prev ] < 0.0166 ] return
+        slot : i32 [ wrote % SOUND_SLOTS ]
+        at : i32 [ slot * SOUND_ENGINES ]
+        power : f64 [ 0.0 ]
+        count : i32 [ c.engines.count ]
+        if [ count > SOUND_ENGINES ] count = SOUND_ENGINES
+        for [ i: i32 0, i < SOUND_ENGINES, i += 1 ]
+            share[ at + i ] = 0.0
+        for [ i: i32 0, i < count, i += 1 ]
+            e : c.engines[ i ]
+            bx : f32 [ e.at.x + 1.4 ]
+            by : f32 [ e.at.y ]
+            bz : f32 [ e.at.z ]
+            off_x[ at + i ] = p.ay.x * bx + p.ax.x * by - p.az.x * bz
+            off_y[ at + i ] = p.ay.y * bx + p.ax.y * by - p.az.y * bz
+            off_z[ at + i ] = p.ay.z * bx + p.ax.z * by - p.az.z * bz
+            if [ !e.lit ] continue
+            thr : f64 [ e.throttle ]
+            share[ at + i ] = thr
+            ve : f64 [ e.thrust_vac / e.flow ]
+            power += SOUND_EFFICIENCY * 0.5 * e.flow * thr * ve * ve
+        sent[ slot ] = c.time
+        src_x[ slot ] = cam_x + p.at.x
+        src_y[ slot ] = cam_y + p.at.y
+        src_z[ slot ] = cam_z + p.at.z
+        watts[ slot ] = power
+        src_air[ slot ] = p.air
+        wrote += 1
+
+    # the next number of a voice's noise, 0..1
+    func noise [ i: i32 ] -> f32
+        x : u32 [ seed[ i ] ]
+        x = x ^ (x << 13)
+        x = x ^ (x >> 17)
+        x = x ^ (x << 5)
+        seed[ i ] = x
+        return (x >> 8) / 16777216.0
+
+    # metres from a frame's source to the ear now
+    func reach [ slot: i32 ] -> f64
+        dx : f64 [ src_x[ slot ] - ear_x ]
+        dy : f64 [ src_y[ slot ] - ear_y ]
+        dz : f64 [ src_z[ slot ] - ear_z ]
+        return sqrt[ dx * dx + dy * dy + dz * dz ]
+
+    # the newest frame whose sound has reached the ear by now
+    func heard [ now: f64 ] -> i32
+        newest : i64 [ wrote - 1 ]
+        oldest : i64 [ newest - SOUND_SLOTS + 8 ]
+        if [ oldest < 0 ] oldest = 0
+        back : i64 [ newest ]
+        while [ back >= oldest ]
+            slot : i32 [ back % SOUND_SLOTS ]
+            if [ sent[ slot ] + reach[ slot ] / ear_c <= now ]
+                return slot
+            back -= 1
+        return -1
+
+    # the run loop: every engine into one block, the card waits
+    func run [] -> none
+        while [ on ]
+            # the flight's clock now, carried on by the samples
+            # played since the view last spoke
+            now : f64 [ ear_t
+                        + (played - ear_at) / SOUND_RATE * ear_pace ]
+            if [ now > ear_t + 0.1 * ear_pace ]
+                now = ear_t + 0.1 * ear_pace
+            slot : i32 [ (wrote > 0) ? heard[ now ] : -1 ]
+            lvl : f32 [ 0.0 ]
+            want_cut : f32 [ cut ]
+            want_pitch : f32 [ pitch ]
+            km : f32 [ 0.0 ]
+            total : f32 [ 0.0 ]
+            if [ slot >= 0 ]
+                dist : f64 [ reach[ slot ] ]
+                if [ dist < 10.0 ] dist = 10.0
+                km = dist / 1000.0
+                # spread over a sphere; air needed at both ends
+                carry : f64 [ ear_air ]
+                if [ src_air[ slot ] < carry ] carry = src_air[ slot ]
+                if [ carry > 1.0 ] carry = 1.0
+                inten : f64 [ watts[ slot ] * carry
+                              / (12.566 * dist * dist) ]
+                if [ inten > 1.0e-12 ]
+                    db : f64 [ 10.0 * log[ inten / 1.0e-12 ]
+                               / 2.302585 ]
+                    lvl = exp[ (db - SOUND_FULL_DB) / 20.0 * 2.302585 ]
+                # air takes the highs with distance: an estimate
+                fc : f64 [ 300.0 + 14000.0 / (1.0 + dist / 400.0) ]
+                want_cut = 1.0 - exp[ -6.2832 * fc / SOUND_RATE ]
+                for [ i: i32 0, i < SOUND_ENGINES, i += 1 ]
+                    total += share[ slot * SOUND_ENGINES + i ]
+                # Doppler: how fast the sending time runs against
+                # ours; between two frames the arrival is spread
+                te : f64 [ sent[ slot ] ]
+                newer : i32 [ (slot + 1) % SOUND_SLOTS ]
+                last : i32 [ (wrote - 1) % SOUND_SLOTS ]
+                if [ slot != last ]
+                    ta : f64 [ sent[ slot ] + reach[ slot ] / ear_c ]
+                    tb : f64 [ sent[ newer ] + reach[ newer ] / ear_c ]
+                    if [ tb > ta ]
+                        u : f64 [ (now - ta) / (tb - ta) ]
+                        if [ u > 1.0 ] u = 1.0
+                        te = sent[ slot ]
+                           + (sent[ newer ] - sent[ slot ]) * u
+                if [ last_te >= 0.0 && now > last_now
+                     && seen_jumps == ear_jumps ]
+                    ratio : f64 [ (te - last_te) / (now - last_now) ]
+                    if [ ratio > 2.0 ] ratio = 2.0
+                    if [ ratio < 0.5 ] ratio = 0.5
+                    doppler = ratio
+                want_pitch = doppler
+                # warp raises the pitch by octaves of the pace: 2x
+                # +50%, 4x +75%, 16x and above +100%
+                oct : f64 [ log[ ear_pace ] / 0.693147 ]
+                rise : f64 [ 0.5 * oct ]
+                if [ oct > 1.0 ] rise = 0.5 + 0.25 * (oct - 1.0)
+                if [ oct > 2.0 ] rise = 0.75 + 0.125 * (oct - 2.0)
+                if [ rise > 1.0 ] rise = 1.0
+                if [ rise < -0.5 ] rise = -0.5
+                want_pitch *= 1.0 + rise
+                seen_jumps = ear_jumps
+                last_te = te
+                last_now = now
+            el
+                last_te = -1.0
+                doppler = 1.0
+            for [ i: i32 0, i < SOUND_ENGINES, i += 1 ]
+                pan : f32 [ 0.0 ]
+                if [ slot >= 0 ]
+                    at : i32 [ slot * SOUND_ENGINES + i ]
+                    bx : f64 [ src_x[ slot ] + off_x[ at ] - ear_x ]
+                    by : f64 [ src_y[ slot ] + off_y[ at ] - ear_y ]
+                    bz : f64 [ src_z[ slot ] + off_z[ at ] - ear_z ]
+                    bl : f64 [ sqrt[ bx * bx + by * by + bz * bz ] ]
+                    if [ bl > 0.001 ]
+                        pan = (bx * ear_rx.x + by * ear_rx.y
+                               + bz * ear_rx.z) / bl
+                left[ i ] = sqrt[ (1.0 - pan) * 0.5 ]
+                right[ i ] = sqrt[ (1.0 + pan) * 0.5 ]
+            # dB lost a km: roar 2, crackle and hiss 20 (estimates)
+            blk_roar = exp[ -2.0 * km / 20.0 * 2.302585 ]
+            blk_high = exp[ -20.0 * km / 20.0 * 2.302585 ]
+            blk_slot = slot
+            blk_lvl = lvl
+            blk_total = total
+            for [ j: i32 0, j < SOUND_BLOCK, j += 1 ]
+                cut += (want_cut - cut) * 0.001
+                pitch += (want_pitch - pitch) * 0.0005
+                # the synth runs pitch times the card's rate
+                phase += pitch
+                while [ phase >= 1.0 ]
+                    phase -= 1.0
+                    was_l = now_l
+                    was_r = now_r
+                    step[]
+                sl : f32 [ was_l + (now_l - was_l) * phase ]
+                sr : f32 [ was_r + (now_r - was_r) * phase ]
+                ear_l += (sl - ear_l) * cut
+                ear_r += (sr - ear_r) * cut
+                out.buffer[ j * 2 ] = i16[ soft[ ear_l ] * 32000.0 ]
+                out.buffer[ j * 2 + 1 ] = i16[ soft[ ear_r ] * 32000.0 ]
+            out.write[ SOUND_BLOCK ]
+            played += SOUND_BLOCK
+
+    # one sample of every engine at the synth's own clock
+    func step []
+        sl : f32 [ 0.0 ]
+        sr : f32 [ 0.0 ]
+        for [ i: i32 0, i < SOUND_ENGINES, i += 1 ]
+            mine : f32 [ 0.0 ]
+            if [ blk_slot >= 0 ]
+                mine = share[ blk_slot * SOUND_ENGINES + i ]
+            # incoherent bells: power splits by throttle
+            goal : f32 [ 0.0 ]
+            if [ blk_total > 0.0 && mine > 0.0 ]
+                goal = blk_lvl * sqrt[ mine / blk_total ]
+            gain[ i ] += (goal - gain[ i ]) * 0.0015
+            if [ gain[ i ] < 0.00001 && goal == 0.0 ] continue
+            w : f32 [ noise[ i ] * 2.0 - 1.0 ]
+            # the rumble: noise under about 40 Hz
+            rumble[ i ] += (w - rumble[ i ]) * 0.006
+            # the roar: a band round the bell's own note
+            fc : f32 [ centre[ i ] * (0.8 + 0.2 * mine) ]
+            k : f32 [ 2.0 * sin[ 3.14159 * fc / SOUND_RATE ] ]
+            roar_lo[ i ] += k * roar_bd[ i ]
+            hi : f32 [ w - roar_lo[ i ] - 0.7 * roar_bd[ i ] ]
+            roar_bd[ i ] += k * hi
+            # the crackle: shocks off the plume, sharp and mostly
+            # one way, more of them as it throttles up
+            roll : f32 [ noise[ i ] ]
+            if [ roll < 0.007 * mine ]
+                amp : f32 [ noise[ i ] ]
+                crack[ i ] = 0.2 + 1.6 * amp * amp * amp
+            crack[ i ] *= 0.9
+            v : f32 [ (rumble[ i ] * 9.0
+                       + roar_bd[ i ] * 0.6 * blk_roar
+                       + (w * 0.07 + crack[ i ]) * blk_high)
+                      * gain[ i ] ]
+            sl += v * left[ i ]
+            sr += v * right[ i ]
+        now_l = sl
+        now_r = sr
+
+    # loud stays under full scale without a hard edge
+    func soft [ x: f32 ] -> f32
+        y : f32 [ x ]
+        if [ y > 3.0 ] y = 3.0
+        if [ y < -3.0 ] y = -3.0
+        return y * (27.0 + y * y) / (27.0 + 9.0 * y * y)

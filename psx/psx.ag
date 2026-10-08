@@ -1,0 +1,211 @@
+# psx: a PlayStation. The CPU, its devices, and the GPU drawing
+# through trinity alone; OpenBIOS (PCSX-Redux, MIT) boots it
+export 0.1.0
+export extensions ['.cue']
+export icon ['3d']
+
+import vec
+import img
+import trinity
+import spectra
+
+# OpenBIOS (PCSX-Redux's nugget, MIT) for MIPS I by our own clang,
+# lld and llvm-objcopy: nugget.diff and nugget/silver adapt it
+import pcsx-redux:nugget/20b63161065d9198bbb6a2543cd4163548e8da6d
+    > sh silver/build.sh {install}
+
+import <stdio.h>
+import <stdlib.h>
+import <string.h>
+import <math.h>
+import <vulkan/vulkan.h>
+import <pthread.h>
+import <unistd.h>
+
+import Bus
+import Cpu
+import Dma
+import Timers
+import Gpu
+import Cdrom
+import Spu
+import Pad
+import Mdec
+import Gte
+
+# NTSC: the CPU clock, one scanline, the lines of a frame
+CPU_HZ       : i64 [ 33868800 ]
+LINE_CYCLES  : i64 [ 2153 ]
+FRAME_LINES  : i32 [ 263 ]
+VBLANK_LINE  : i32 [ 240 ]
+# frames a second: the CPU clock over a frame's cycles
+FRAME_HZ     : f64 [ 33868800.0 / (2153.0 * 263.0) ]
+# the sound ring's aim, in samples: about four frames
+SOUND_AIM    : i64 [ 2940 ]
+SOUND_BLOCK  : i32 [ 512 ]
+
+element psx : trinity
+    public  width    : i32    [ 960 ]
+    public  height   : i32    [ 720 ]
+    public  title    : string [ 'psx' ]
+    expect default [ Launch ] disc : resource
+    mutable bus      : Bus
+    mutable cpu      : Cpu
+    mutable booted   : bool
+    mutable failed   : bool
+    mutable frames   : i64
+    # the sound card, fed by its own thread from the SPU's ring
+    mutable sound    : AudioOut
+    mutable sound_on : bool
+    # frames owed by the clock, and the clock's last reading
+    mutable owed     : f64
+    mutable last_us  : i64
+
+    # OpenBIOS, as the import built it into our share folder
+    func load_bios [] -> bool
+        file : path '../{share_name}/openbios.bin'
+        f : @FILE [ fopen[ file.chars, "rb" ] ]
+        if [ !f ]
+            log 'psx: no BIOS at {file}'
+            return false
+        got : i64 [ i64[ fread[ bus.bios, 1, BIOS_SIZE, f ] ] ]
+        fclose[ f ]
+        if [ got != i64[ BIOS_SIZE ] ]
+            log 'psx: BIOS is {got} bytes, not {BIOS_SIZE}'
+            return false
+        return true
+
+    func boot []
+        booted = true
+        bus = Bus [ ]
+        bus.gpu = PsxGpu [ bus: bus ]
+        bus.dma = Dma [ bus: bus ]
+        bus.timers = Timers [ bus: bus ]
+        bus.cd = Cdrom [ bus: bus ]
+        bus.spu = Spu [ bus: bus ]
+        bus.pad = Pad [ bus: bus ]
+        bus.mdec = Mdec [ bus: bus ]
+        cpu = Cpu [ bus: bus, gte: Gte [ ] ]
+        bus.gpu.gte = cpu.gte
+        bus.pad.cpu = cpu
+        if [ !load_bios[] ]
+            failed = true
+            return
+        log 'psx: BIOS loaded'
+        cue : '{disc}'
+        if [ !bus.cd.insert[ cue ] ] log 'psx: no disc read from {cue}'
+        sound = AudioOut [ sample_rate: 44100, channels: 2,
+                           buffer_size: SOUND_BLOCK ]
+        if [ sound.open[] ]
+            sound_on = true
+            tid : local u64 [ 1 ]
+            pthread_create[ tid, null, @sound_entry, a ]
+        el
+            log 'psx: no sound device; running silent'
+
+    # the sound thread: the SPU's samples to the card, which waits
+    func sound_entry [] -> none
+        while [ sound_on ]
+            bus.spu.take[ sound.buffer, SOUND_BLOCK ]
+            sound.write[ SOUND_BLOCK ]
+
+    # the BIOS's character calls print, whichever BIOS it is
+    func bios_calls []
+        at : u32 [ cpu.pc & 0x1FFFFFFF ]
+        fn : u32 [ cpu.r[ 9 ] ]
+        if [ at == 0xA0 && fn == 0x3C ] bus.putc[ cpu.r[ 4 ] & 0xFF ]
+        el [ at == 0xB0 && fn == 0x3D ] bus.putc[ cpu.r[ 4 ] & 0xFF ]
+
+    # one frame: 263 scanlines, vblank at line 240
+    func frame []
+        for [ line: i32 0, line < FRAME_LINES, line += 1 ]
+            bus.gpu.line = line
+            bus.gpu.vblank = line >= VBLANK_LINE
+            stop : i64 [ cpu.cycles + LINE_CYCLES ]
+            while [ cpu.cycles < stop ]
+                pc_low : u32 [ cpu.pc & 0x1FFFFFFF ]
+                if [ pc_low == 0xA0 || pc_low == 0xB0 ] bios_calls[]
+                cpu.step[]
+                due : i64 [ bus.pad.ack_at ]
+                if [ due != 0 && cpu.cycles >= due ]
+                    bus.pad.ack_now[]
+            bus.timers.tick[ LINE_CYCLES ]
+            bus.cd.tick[ LINE_CYCLES ]
+            bus.spu.run[ LINE_CYCLES ]
+            bus.timers.hblank[]
+            if [ line == VBLANK_LINE ]
+                bus.irq[ IRQ_VBLANK ]
+                bus.gpu.field = !bus.gpu.field
+        frames += 1
+        cpu.gte.frame = frames
+
+    # the frames the clock owes, trimmed to keep the sound fed
+    func run_due []
+        now : i64 [ epoch_micros[] ]
+        if [ last_us == 0 ] last_us = now
+        owed += f64[ now - last_us ] * FRAME_HZ / 1000000.0
+        last_us = now
+        if [ sound_on ]
+            q : i64 [ bus.spu.queued[] ]
+            if [ q < SOUND_AIM / 2 ] owed += 0.25
+            if [ q > SOUND_AIM * 2 ] owed -= 0.25
+        runs : i32 [ 0 ]
+        while [ owed >= 1.0 && runs < 4 ]
+            frame[]
+            owed -= 1.0
+            runs += 1
+        # far behind: start counting again from here
+        if [ owed > 4.0 ] owed = 0.0
+
+    # keys to the pad: arrows, Enter Start, Backspace Select,
+    # X Cross, C Circle, Z Square, S Triangle, Q/E L1/R1, 1/3 L2/R2
+    public func on_key [ ev: Event ]
+        if [ !bus ] return
+        code : i32 [ ev.key.unicode ]
+        down : bool [ ev.key.state ]
+        bit : i32 [ -1 ]
+        if   [ code == 265 ] bit = 4
+        el [ code == 262 ] bit = 5
+        el [ code == 264 ] bit = 6
+        el [ code == 263 ] bit = 7
+        el [ code == 257 ] bit = 3
+        el [ code == 259 ] bit = 0
+        el [ code == 88 ]  bit = 14
+        el [ code == 67 ]  bit = 13
+        el [ code == 90 ]  bit = 15
+        el [ code == 83 ]  bit = 12
+        el [ code == 81 ]  bit = 10
+        el [ code == 69 ]  bit = 11
+        el [ code == 49 ]  bit = 8
+        el [ code == 51 ]  bit = 9
+        if [ bit >= 0 ] bus.pad.press[ bit, down ]
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen ] return
+        # a machine running: drawn every frame
+        animated = true
+        ux.will_animate = true
+        if [ !booted ] boot[]
+        if [ failed ] return
+        cv : Canvas [ w.screen ]
+        if [ !bus.gpu.ready ] w.set_resizable[ true ]
+        bus.gpu.start_on[ cv.vk, w ]
+        run_due[]
+        # VRAM drawn at the scale that fills the window's pixels
+        tall : f32 [ min[ bounds.h, bounds.w * 0.75 ] * w.scale ]
+        # by 240 lines, so a switch to 480 keeps the same scale
+        want : i32 [ i32[ ceil[ tall / 240.0 ] ] ]
+        bus.gpu.set_scale[ clamp[ want, 1, 8 ] ]
+        shown : bus.gpu.present[]
+        cv.fill_color[ '#000' ]
+        cv.fill_rect_fast[ 0.0, 0.0, bounds.w, bounds.h ]
+        if [ !shown || bus.gpu.disp_off ] return
+        # 4:3, as large as the window holds
+        sw : f32 [ bounds.w ]
+        sh : f32 [ bounds.w * 0.75 ]
+        if [ sh > bounds.h ]
+            sh = bounds.h
+            sw = bounds.h / 0.75
+        cv.draw_image[ shown, rect [ x: (bounds.w - sw) / 2.0,
+                                     y: (bounds.h - sh) / 2.0,
+                                     w: sw, h: sh ] ]

@@ -1,0 +1,578 @@
+# the CD-ROM: a .cue/.bin disc, and the controller's registers,
+# commands, timed responses and sector reads
+extend psx
+
+SECTOR      : i32 [ 2352 ]
+# sector reads a second: single speed 75, double 150
+SECTOR_1X   : i64 [ 451584 ]
+# a command's first answer, and the slower second ones
+ACK_DELAY   : i64 [ 25000 ]
+DONE_DELAY  : i64 [ 80000 ]
+SEEK_DELAY  : i64 [ 120000 ]
+ID_DELAY    : i64 [ 33000 ]
+
+# the controller's status byte
+STAT_ERROR   : u32 [ 0x01 ]
+STAT_MOTOR   : u32 [ 0x02 ]
+STAT_READING : u32 [ 0x20 ]
+STAT_SEEKING : u32 [ 0x40 ]
+STAT_PLAYING : u32 [ 0x80 ]
+
+# one track of the cue: its file, where that file starts on the
+# disc, and where the track's INDEX 01 is
+class CdTrack
+    public number : i32
+    public audio  : bool
+    public file   : string
+    public base   : i32
+    public length : i32
+    public start  : i32
+
+# the disc image: tracks over one or more .bin files
+class Disc
+    public tracks : vec CdTrack
+    public fh     : handle
+    public open_i : i32 [ -1 ]
+
+    func init []
+        tracks = vec CdTrack []
+
+    # a cue sheet: FILE, TRACK and INDEX lines
+    public func load [ cue: string ] -> bool
+        f : @FILE [ fopen[ cue.chars, "rb" ] ]
+        if [ !f ] return false
+        dir : string [ cue ]
+        slash : cstr [ strrchr[ cue.chars, 47 ] ]
+        if [ slash ] dir = cue.mid[ 0, cue.count - strlen[ slash ] ]
+        buf : local i8 [ 512 ]
+        base : i32 [ 0 ]
+        file : string [ '' ]
+        flen : i32 [ 0 ]
+        cur : CdTrack [ null ]
+        while [ fgets[ buf, 512, f ] ]
+            text : string [ cast cstr [ buf ] ]
+            words : text.split[ ' ' ]
+            if [ text.index_of[ 'FILE ' ] >= 0 ]
+                # the name between the quotes
+                q0 : i32 [ text.index_of[ "\"" ] ]
+                q1 : i32 [ text.rindex_of[ "\"" ] ]
+                name : text.mid[ q0 + 1, q1 - q0 - 1 ]
+                base = base + flen
+                file = '{dir}/{name}'
+                flen = file_sectors[ file ]
+            el [ text.index_of[ 'TRACK ' ] >= 0 ]
+                n : i32 [ 0 ]
+                for [ wd: string ] in words
+                    if [ n == 0 && atoi[ wd.chars ] > 0 ]
+                        n = atoi[ wd.chars ]
+                cur = CdTrack [ number: n, file: file, base: base,
+                                length: flen, start: base,
+                                audio: text.index_of[ 'AUDIO' ] >= 0 ]
+                tracks.push[ cur ]
+            el [ text.index_of[ 'INDEX 01' ] >= 0 && cur ]
+                m : i32 [ 0 ]
+                s : i32 [ 0 ]
+                fr : i32 [ 0 ]
+                at : cstr [ strstr[ text.chars, "INDEX 01" ] ]
+                sscanf[ at, "INDEX 01 %d:%d:%d", @m, @s, @fr ]
+                cur.start = cur.base + (m * 60 + s) * 75 + fr
+        fclose[ f ]
+        log 'psx cd: {tracks.count} tracks, {base + flen} sectors'
+        return tracks.count > 0
+
+    func file_sectors [ name: string ] -> i32
+        f : @FILE [ fopen[ name.chars, "rb" ] ]
+        if [ !f ]
+            log 'psx cd: missing {name}'
+            return 0
+        fseek[ f, 0, SEEK_END ]
+        n : i64 [ ftell[ f ] ]
+        fclose[ f ]
+        return i32[ n / i64[ SECTOR ] ]
+
+    # the track a sector is in, by its file's span
+    public func track_at [ lba: i32 ] -> i32
+        for [ i: i32 0, i < tracks.count, i += 1 ]
+            t : tracks[ i ]
+            if [ lba >= t.base && lba < t.base + t.length ] return i
+        return -1
+
+    public func end [] -> i32
+        if [ tracks.count == 0 ] return 0
+        last : tracks[ tracks.count - 1 ]
+        return last.base + last.length
+
+    # one raw 2352-byte sector; false past the disc
+    public func read [ lba: i32, out: @u8 ] -> bool
+        i : i32 [ track_at[ lba ] ]
+        if [ i < 0 ] return false
+        t : tracks[ i ]
+        if [ open_i != i ]
+            if [ fh ] fclose[ cast @FILE [ fh ] ]
+            fh = handle[ fopen[ t.file.chars, "rb" ] ]
+            open_i = i
+        if [ !fh ] return false
+        f : @FILE [ cast @FILE [ fh ] ]
+        fseek[ f, i64[ lba - t.base ] * i64[ SECTOR ], SEEK_SET ]
+        got : i64 [ i64[ fread[ out, 1, SECTOR, f ] ] ]
+        return got == i64[ SECTOR ]
+
+class Cdrom
+    public bus      : Bus
+    public disc     : Disc
+    public index    : u32
+    public params   : new u8
+    public param_n  : i32
+    public resp     : new u8
+    public resp_n   : i32
+    public resp_i   : i32
+    public irq_en   : u32
+    public irq_flag : u32
+    # answers waiting their time: delay, INT type, bytes
+    public q_delay  : new i64
+    public q_int    : new u32
+    public q_len    : new i32
+    public q_bytes  : new u8
+    public q_n      : i32
+    public stat     : u32 [ 0x02 ]
+    public mode     : u32
+    public loc      : i32
+    public pos      : i32
+    public reading  : bool
+    public playing  : bool
+    public read_in  : i64
+    # the sector the last INT1 announced, and the data FIFO
+    public sector   : new u8
+    public fifo     : new u8
+    public fifo_n   : i32
+    public fifo_i   : i32
+    public busy     : bool
+    # CD audio: the sector playing, the next byte, the track
+    public audio    : new u8
+    public audio_i  : i32
+    public play_track : i32
+    public muted    : bool
+    # the CD-to-SPU volume matrix: LL, LR, RL, RR; and its latch
+    public vol      : new i32
+    public vol_next : new i32
+    # the sample handed to the SPU
+    public out_l    : i32
+    public out_r    : i32
+
+    func init []
+        params = new u8 [ 16 ]
+        resp = new u8 [ 16 ]
+        q_delay = new i64 [ 8 ]
+        q_int = new u32 [ 8 ]
+        q_len = new i32 [ 8 ]
+        q_bytes = new u8 [ 8 * 16 ]
+        sector = new u8 [ SECTOR ]
+        fifo = new u8 [ SECTOR ]
+        audio = new u8 [ SECTOR ]
+        audio_i = SECTOR
+        vol = new i32 [ 4 ]
+        vol_next = new i32 [ 4 ]
+        vol[ 0 ] = 0x80
+        vol[ 3 ] = 0x80
+
+    # a .cue, or a folder holding one
+    public func insert [ name: string ] -> bool
+        cue : name
+        dir : path [ name ]
+        if [ dir.is_dir[] ]
+            found : dir.ls[ '.cue', false ]
+            if [ found.count == 0 ] return false
+            cue = '{found[ 0 ]}'
+        disc = Disc [ ]
+        return disc.load[ cue ]
+
+    func bcd [ v: i32 ] -> u32
+        return u32[ (v / 10) * 16 + v % 10 ]
+
+    func from_bcd [ v: u32 ] -> i32
+        return i32[ (v >> 4) * 10 + (v & 15) ]
+
+    # ---- the registers
+
+    public func read [ off: u32 ] -> u32
+        if [ off == 0 ]
+            s : u32 [ index ]
+            if [ param_n == 0 ] s = s | 0x08
+            if [ param_n < 16 ] s = s | 0x10
+            if [ resp_i < resp_n ] s = s | 0x20
+            if [ fifo_i < fifo_n ] s = s | 0x40
+            if [ busy ] s = s | 0x80
+            return s
+        if [ off == 1 ]
+            if [ resp_i < resp_n ]
+                v : u32 [ resp[ resp_i ] ]
+                resp_i += 1
+                return v
+            return 0
+        if [ off == 2 ] return data_byte[]
+        # 3: the enable or the flag, by index
+        if [ (index & 1) == 0 ] return irq_en | 0xE0
+        return irq_flag | 0xE0
+
+    public func write [ off: u32, v: u32 ]
+        if [ off == 0 ]
+            index = v & 3
+            return
+        if [ off == 1 && index == 0 ]
+            command[ v & 0xFF ]
+        el [ off == 2 && index == 0 ]
+            if [ param_n < 16 ]
+                params[ param_n ] = u8[ v ]
+                param_n += 1
+        el [ off == 2 && index == 1 ]
+            irq_en = v & 0x1F
+            check_irq[]
+        el [ off == 3 && index == 0 ]
+            # BFRD: the announced sector into the data FIFO
+            if [ (v & 0x80) != 0 ]
+                if [ fifo_i >= fifo_n ] fill_fifo[]
+            el
+                fifo_n = 0
+                fifo_i = 0
+        el [ off == 3 && index == 1 ]
+            irq_flag = irq_flag & ~(v & 0x1F)
+            if [ (v & 0x40) != 0 ] param_n = 0
+            # an acknowledged answer lets the next one through
+            if [ irq_flag == 0 ] next_response[]
+        el [ off == 2 && index == 2 ] vol_next[ 0 ] = i32[ v & 0xFF ]
+        el [ off == 3 && index == 2 ] vol_next[ 1 ] = i32[ v & 0xFF ]
+        el [ off == 2 && index == 3 ] vol_next[ 2 ] = i32[ v & 0xFF ]
+        el [ off == 1 && index == 3 ] vol_next[ 3 ] = i32[ v & 0xFF ]
+        el [ off == 3 && index == 3 ]
+            # bit 5 applies the latched volumes
+            if [ (v & 0x20) != 0 ]
+                for [ i: i32 0, i < 4, i += 1 ]
+                    vol[ i ] = vol_next[ i ]
+
+    # the data part of the last sector, by the sector-size mode bit
+    func fill_fifo []
+        whole : bool [ (mode & 0x20) != 0 ]
+        start : i32 [ (whole) ? 12 : 24 ]
+        n : i32 [ (whole) ? 0x924 : 0x800 ]
+        for [ i: i32 0, i < n, i += 1 ]
+            fifo[ i ] = sector[ start + i ]
+        fifo_n = n
+        fifo_i = 0
+
+    func data_byte [] -> u32
+        if [ fifo_i >= fifo_n ] return 0
+        v : u32 [ fifo[ fifo_i ] ]
+        fifo_i += 1
+        return v
+
+    public func dma_word [] -> u32
+        b0 : u32 [ data_byte[] ]
+        b1 : u32 [ data_byte[] ]
+        b2 : u32 [ data_byte[] ]
+        b3 : u32 [ data_byte[] ]
+        return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
+
+    func check_irq []
+        if [ (irq_flag & irq_en) != 0 ] bus.irq[ IRQ_CDROM ]
+
+    # ---- answers, one at a time, each acknowledged before the next
+
+    func queue [ delay: i64, kind: u32, n: i32 ]
+        if [ q_n >= 8 ] return
+        q_delay[ q_n ] = delay
+        q_int[ q_n ] = kind
+        q_len[ q_n ] = n
+        for [ i: i32 0, i < n, i += 1 ]
+            q_bytes[ q_n * 16 + i ] = resp[ i ]
+        q_n += 1
+
+    # an answer that is just the status byte
+    func answer [ delay: i64, kind: u32 ]
+        resp[ 0 ] = u8[ stat ]
+        queue[ delay, kind, 1 ]
+
+    func next_response []
+        if [ q_n == 0 || irq_flag != 0 ] return
+        if [ q_delay[ 0 ] > 0 ] return
+        kind : u32 [ q_int[ 0 ] ]
+        n : i32 [ q_len[ 0 ] ]
+        for [ i: i32 0, i < n, i += 1 ]
+            resp[ i ] = q_bytes[ i ]
+        resp_n = n
+        resp_i = 0
+        # the rest move up
+        for [ k: i32 1, k < q_n, k += 1 ]
+            q_delay[ k - 1 ] = q_delay[ k ]
+            q_int[ k - 1 ] = q_int[ k ]
+            q_len[ k - 1 ] = q_len[ k ]
+            for [ i: i32 0, i < 16, i += 1 ]
+                q_bytes[ (k - 1) * 16 + i ] = q_bytes[ k * 16 + i ]
+        q_n -= 1
+        if [ q_n == 0 ] busy = false
+        irq_flag = kind
+        check_irq[]
+
+    # cycles passed: answers come due, sectors arrive
+    public func tick [ cycles: i64 ]
+        if [ q_n > 0 && q_delay[ 0 ] > 0 ]
+            q_delay[ 0 ] = q_delay[ 0 ] - cycles
+            if [ q_delay[ 0 ] < 0 ] q_delay[ 0 ] = 0
+        if [ q_n > 0 ] next_response[]
+        # CD audio moves with the SPU's samples, not here
+        if [ !reading ] return
+        read_in -= cycles
+        if [ read_in > 0 ] return
+        read_in += sector_time[]
+        sector_ready[]
+
+    # one CD audio sample for the SPU, through the volume matrix
+    public func audio_sample []
+        out_l = 0
+        out_r = 0
+        if [ !playing || !disc ] return
+        if [ audio_i >= SECTOR && !next_audio[] ] return
+        l : i32 [ sign16[ u32[ audio[ audio_i ] ] |
+                          (u32[ audio[ audio_i + 1 ] ] << 8) ] ]
+        r : i32 [ sign16[ u32[ audio[ audio_i + 2 ] ] |
+                          (u32[ audio[ audio_i + 3 ] ] << 8) ] ]
+        audio_i += 4
+        if [ muted ] return
+        out_l = clamp16[ (l * vol[ 0 ]) >> 7 ] +
+                clamp16[ (r * vol[ 2 ]) >> 7 ]
+        out_r = clamp16[ (l * vol[ 1 ]) >> 7 ] +
+                clamp16[ (r * vol[ 3 ]) >> 7 ]
+
+    # the next audio sector: past the disc, or the track with
+    # autopause on, play stops with INT4
+    func next_audio [] -> bool
+        ti : i32 [ disc.track_at[ pos ] ]
+        ends : bool [ ti < 0 ]
+        if [ (mode & 2) != 0 && play_track >= 0 && ti != play_track ]
+            ends = true
+        if [ ends || !disc.read[ pos, audio ] ]
+            playing = false
+            stat = stat & ~STAT_PLAYING
+            answer[ 0, 4 ]
+            return false
+        if [ !disc.tracks[ ti ].audio ]
+            for [ i: i32 0, i < SECTOR, i += 1 ]
+                audio[ i ] = 0
+        if [ (mode & 4) != 0 && pos % 10 == 0 ] report[ ti ]
+        pos += 1
+        audio_i = 0
+        return true
+
+    # Report mode: INT1 every 10 sectors, absolute or track time
+    func report [ ti: i32 ]
+        t : disc.tracks[ ti ]
+        ab : i32 [ pos + 150 ]
+        rel : i32 [ max[ pos - t.start, 0 ] ]
+        resp[ 0 ] = u8[ stat ]
+        resp[ 1 ] = u8[ bcd[ t.number ] ]
+        resp[ 2 ] = 1
+        if [ ((ab % 75) / 10) % 2 == 0 ]
+            resp[ 3 ] = u8[ bcd[ ab / 4500 ] ]
+            resp[ 4 ] = u8[ bcd[ (ab / 75) % 60 ] ]
+            resp[ 5 ] = u8[ bcd[ ab % 75 ] ]
+        el
+            resp[ 3 ] = u8[ bcd[ rel / 4500 ] ]
+            resp[ 4 ] = u8[ bcd[ (rel / 75) % 60 ] | 0x80 ]
+            resp[ 5 ] = u8[ bcd[ rel % 75 ] ]
+        resp[ 6 ] = 0
+        resp[ 7 ] = 0
+        if [ q_n > 0 && q_int[ q_n - 1 ] == 1 ] q_n -= 1
+        queue[ 0, 1, 8 ]
+
+    func sector_time [] -> i64
+        if [ (mode & 0x80) != 0 ] return SECTOR_1X / 2
+        return SECTOR_1X
+
+    # a sector off the disc, announced with INT1
+    func sector_ready []
+        if [ !disc || !disc.read[ pos, sector ] ]
+            reading = false
+            stat = (stat & ~STAT_READING) | STAT_ERROR
+            resp[ 0 ] = u8[ stat ]
+            resp[ 1 ] = 0x04
+            queue[ 0, 5, 2 ]
+            return
+        pos += 1
+        # one INT1 waits at most: a late one replaces it
+        if [ q_n > 0 && q_int[ q_n - 1 ] == 1 ] q_n -= 1
+        answer[ 0, 1 ]
+
+    # ---- commands
+
+    func command [ c: u32 ]
+        busy = true
+        resp_n = 0
+        resp_i = 0
+        switch [ c ]
+            case 0x01
+                answer[ ACK_DELAY, 3 ]
+            case 0x02
+                mm : i32 [ from_bcd[ u32[ params[ 0 ] ] ] ]
+                ss : i32 [ from_bcd[ u32[ params[ 1 ] ] ] ]
+                ff : i32 [ from_bcd[ u32[ params[ 2 ] ] ] ]
+                loc = (mm * 60 + ss) * 75 + ff - 150
+                answer[ ACK_DELAY, 3 ]
+            case 0x03
+                # play: CD audio from the location, or a track
+                if [ param_n > 0 && params[ 0 ] != 0 && disc ]
+                    tn : i32 [ from_bcd[ u32[ params[ 0 ] ] ] ]
+                    for [ t: CdTrack ] in disc.tracks
+                        if [ t.number == tn ] loc = t.start
+                pos = loc
+                playing = true
+                reading = false
+                audio_i = SECTOR
+                play_track = (disc) ? disc.track_at[ pos ] : -1
+                stat = stat | STAT_MOTOR | STAT_PLAYING
+                stat = stat & ~STAT_READING
+                read_in = sector_time[]
+                answer[ ACK_DELAY, 3 ]
+            case 0x06, 0x1B
+                pos = loc
+                reading = true
+                playing = false
+                stat = stat | STAT_MOTOR | STAT_READING
+                stat = stat & ~STAT_PLAYING
+                read_in = sector_time[] + SEEK_DELAY
+                answer[ ACK_DELAY, 3 ]
+            case 0x07
+                stat = stat | STAT_MOTOR
+                answer[ ACK_DELAY, 3 ]
+                answer[ DONE_DELAY, 2 ]
+            case 0x08
+                reading = false
+                playing = false
+                answer[ ACK_DELAY, 3 ]
+                stat = 0
+                answer[ DONE_DELAY, 2 ]
+            case 0x09
+                answer[ ACK_DELAY, 3 ]
+                reading = false
+                playing = false
+                stat = stat & ~(STAT_READING | STAT_PLAYING)
+                answer[ DONE_DELAY, 2 ]
+            case 0x0A
+                answer[ ACK_DELAY, 3 ]
+                reading = false
+                playing = false
+                mode = 0x20
+                stat = STAT_MOTOR
+                answer[ DONE_DELAY, 2 ]
+            case 0x0B
+                muted = true
+                answer[ ACK_DELAY, 3 ]
+            case 0x0C
+                muted = false
+                answer[ ACK_DELAY, 3 ]
+            case 0x0D
+                answer[ ACK_DELAY, 3 ]
+            case 0x0E
+                mode = u32[ params[ 0 ] ]
+                answer[ ACK_DELAY, 3 ]
+            case 0x0F
+                resp[ 0 ] = u8[ stat ]
+                resp[ 1 ] = u8[ mode ]
+                resp[ 2 ] = 0
+                resp[ 3 ] = 0
+                resp[ 4 ] = 0
+                queue[ ACK_DELAY, 3, 5 ]
+            case 0x10
+                # the last sector's header and subheader
+                for [ i: i32 0, i < 8, i += 1 ]
+                    resp[ i ] = sector[ 12 + i ]
+                queue[ ACK_DELAY, 3, 8 ]
+            case 0x11
+                getloc_p[]
+            case 0x13
+                resp[ 0 ] = u8[ stat ]
+                resp[ 1 ] = 0x01
+                last : i32 [ (disc) ? disc.tracks.count : 1 ]
+                resp[ 2 ] = u8[ bcd[ last ] ]
+                queue[ ACK_DELAY, 3, 3 ]
+            case 0x14
+                get_td[]
+            case 0x15, 0x16
+                pos = loc
+                reading = false
+                playing = false
+                stat = stat | STAT_MOTOR
+                answer[ ACK_DELAY, 3 ]
+                answer[ SEEK_DELAY, 2 ]
+            case 0x19
+                # test 20h: the controller's date and version
+                resp[ 0 ] = 0x94
+                resp[ 1 ] = 0x09
+                resp[ 2 ] = 0x19
+                resp[ 3 ] = 0xC0
+                queue[ ACK_DELAY, 3, 4 ]
+            case 0x1A
+                answer[ ACK_DELAY, 3 ]
+                get_id[]
+            case 0x1C
+                answer[ ACK_DELAY, 3 ]
+            case 0x1E
+                answer[ ACK_DELAY, 3 ]
+                answer[ SEEK_DELAY, 2 ]
+            default
+                log 'psx cd: command {c} not handled'
+                resp[ 0 ] = u8[ stat | STAT_ERROR ]
+                resp[ 1 ] = 0x40
+                queue[ ACK_DELAY, 5, 2 ]
+        param_n = 0
+
+    # a licensed data disc of the Americas: SCEA
+    func get_id []
+        if [ !disc ]
+            resp[ 0 ] = 0x08
+            resp[ 1 ] = 0x40
+            for [ i: i32 2, i < 8, i += 1 ]
+                resp[ i ] = 0
+            queue[ ID_DELAY, 5, 8 ]
+            return
+        resp[ 0 ] = u8[ stat ]
+        resp[ 1 ] = 0x00
+        resp[ 2 ] = 0x20
+        resp[ 3 ] = 0x00
+        resp[ 4 ] = 0x53
+        resp[ 5 ] = 0x43
+        resp[ 6 ] = 0x45
+        resp[ 7 ] = 0x41
+        queue[ ID_DELAY, 2, 8 ]
+
+    # GetlocP: track, index, time in the track, time on the disc
+    func getloc_p []
+        ti : i32 [ (disc) ? disc.track_at[ pos ] : -1 ]
+        tn : i32 [ 1 ]
+        rel : i32 [ pos ]
+        if [ ti >= 0 ]
+            t : disc.tracks[ ti ]
+            tn = t.number
+            rel = pos - t.start
+        if [ rel < 0 ] rel = 0 - rel
+        ab : i32 [ pos + 150 ]
+        resp[ 0 ] = u8[ bcd[ tn ] ]
+        resp[ 1 ] = (pos >= 0) ? 1 : 0
+        resp[ 2 ] = u8[ bcd[ rel / 4500 ] ]
+        resp[ 3 ] = u8[ bcd[ (rel / 75) % 60 ] ]
+        resp[ 4 ] = u8[ bcd[ rel % 75 ] ]
+        resp[ 5 ] = u8[ bcd[ ab / 4500 ] ]
+        resp[ 6 ] = u8[ bcd[ (ab / 75) % 60 ] ]
+        resp[ 7 ] = u8[ bcd[ ab % 75 ] ]
+        queue[ ACK_DELAY, 3, 8 ]
+
+    # GetTD: a track's start as minutes and seconds; 0 the lead-out
+    func get_td []
+        tn : i32 [ from_bcd[ u32[ params[ 0 ] ] ] ]
+        at : i32 [ (disc) ? disc.end[] : 0 ]
+        if [ tn > 0 && disc ]
+            for [ t: CdTrack ] in disc.tracks
+                if [ t.number == tn ] at = t.start
+        ab : i32 [ at + 150 ]
+        resp[ 0 ] = u8[ stat ]
+        resp[ 1 ] = u8[ bcd[ ab / 4500 ] ]
+        resp[ 2 ] = u8[ bcd[ (ab / 75) % 60 ] ]
+        queue[ ACK_DELAY, 3, 3 ]

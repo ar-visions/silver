@@ -1,0 +1,1341 @@
+export 0.1.0
+
+import physics
+import imu
+import gnss
+import nav
+import guidance
+import control
+
+# mission: a Falcon 9 off a sea platform, its upper stage to a
+# 200 km orbit, its booster back onto the same deck. each
+# vehicle carries its own flight computer (IMU, GPS receiver,
+# nav, control) and flies from what nav believes; the truth is
+# only physics. the platform's receiver, at its surveyed place,
+# corrects the booster's ranges: the errors they share cancel.
+
+# a vehicle's flight computer
+class Avionics
+    public sensor   : Imu
+    public receiver : Receiver
+    public filter   : Nav
+    public pilot    : Autopilot
+    public ready    : bool
+    # only the computer flying its own vehicle steers it
+    public steers   : bool [ true ]
+
+    # every physics step: sense, believe, steer
+    public func tick [ c: Craft, h: f64 ]
+        sensor.tick[ c, h ]
+        receiver.tick[ c, h ]
+        if [ !ready ] return
+        for [ s: ImuSample ] in sensor.take[]
+            filter.propagate[ s ]
+        for [ f: Fix ] in receiver.take[ c.time ]
+            filter.correct[ f ]
+        if [ steers ]
+            pilot.tick[ c, belief_nav[ filter ], h ]
+
+    # nav starts from the surveyed pad, as alignment leaves it
+    public func align [ c: Craft ]
+        arm : dv_sub[ filter.imu_at, Dvec [ c.cg, 0.0, 0.0 ] ]
+        r : dv_add[ c.state.r, q_rotate[ c.state.q, arm ] ]
+        v : dv_add[ c.state.v, q_rotate[ c.state.q,
+                    dv_cross[ c.state.w, arm ] ] ]
+        # 3 m, 0.05 m/s, 0.05 deg tilt, 0.2 deg heading off
+        off : q_axis[ Dvec [ 0.3, 1.0, 0.2 ], 0.0035 ]
+        filter.begin[ c.time, dv_add[ r, Dvec [ 1.5, -2.0, 1.0 ] ],
+                      v, q_mul[ off, c.state.q ], 3.0, 0.05,
+                      0.00087, 0.0035 ]
+        sensor.take[]
+        receiver.take[ c.time ]
+        ready = true
+
+func avionics [ al: Almanac, imu_at: Dvec, ant: Dvec,
+                seed: u64 ] -> Avionics
+    return Avionics [ sensor: Imu [ at: imu_at, seed: seed ],
+                      receiver: Receiver [ almanac: al, antenna: ant,
+                                           seed: seed * 3 + 1 ],
+                      filter: Nav [ imu_at: imu_at, antenna: ant ],
+                      pilot: Autopilot [ ] ]
+
+# east, north, up as inertial directions
+class Frame
+    public east  : Dvec
+    public north : Dvec
+    public up    : Dvec
+
+func degrees [ d: f64 ] -> f64
+    return d * 3.14159265358979 / 180.0
+
+# the booster's drag coefficient by Mach (0 to 10 by 0.25),
+# engines first, off and burning, from its own shape
+class DragTable
+    public off : vec f64
+    public lit : vec f64
+
+    func init []
+        off = vec f64 []
+        lit = vec f64 []
+
+    public func fill [ c: Craft ]
+        off.clear[]
+        lit.clear[]
+        for [ i: i32 0, i <= 40, i += 1 ]
+            m : f64 [ f64[ i ] * 0.25 ]
+            a : f64 [ c.axial_coeff[ m, true, false ] ]
+            b : f64 [ c.axial_coeff[ m, true, true ] ]
+            off.push[ a ]
+            lit.push[ b ]
+
+    public func coeff [ m: f64, burning: bool ] -> f64
+        mk : f64 [ m / 0.25 ]
+        if [ mk > 39.999 ] mk = 39.999
+        if [ mk < 0.0 ] mk = 0.0
+        ki : i32 [ i32[ mk ] ]
+        fr : f64 [ mk - f64[ ki ] ]
+        if [ burning ]
+            return lit[ ki ] + (lit[ ki + 1 ] - lit[ ki ]) * fr
+        return off[ ki ] + (off[ ki + 1 ] - off[ ki ]) * fr
+
+    # its own copy: a worker reads it while this one is refilled
+    public func copy [] -> DragTable
+        out : DragTable [ ]
+        for [ i: i32 0, i < off.count, i += 1 ]
+            a : f64 [ off[ i ] ]
+            b : f64 [ lit[ i ] ]
+            out.off.push[ a ]
+            out.lit.push[ b ]
+        return out
+
+# solve, then again with the drag along the plan's own path:
+# the air still pushes as hard as the engine at ignition
+func drag_plan [ ld: Landing, tb: DragTable, area: f64, deck: f64,
+                 search: bool ] -> bool
+    # a first guess: speed falling evenly to nothing
+    tf : f64 [ (search) ? (ld.best_lo + ld.best_hi) * 0.5
+               : ld.flight ]
+    first : vec f64 []
+    for [ k: i32 0, k < ld.steps, k += 1 ]
+        frac : f64 [ (f64[ k ] + 0.5) / f64[ ld.steps ] ]
+        v : dv_scale[ ld.v0, 1.0 - frac ]
+        hz : f64 [ ld.r0.z * (1.0 - frac) * (1.0 - frac) ]
+        ar : standard_air[ hz + deck ]
+        sp : f64 [ dv_len[ v ] ]
+        ca : f64 [ tb.coeff[ sp / ar.sound, true ] ]
+        k_d : f64 [ 0.5 * ar.density * sp * ca * area / ld.mass ]
+        fx : f64 [ 0.0 - k_d * v.x ]
+        fy : f64 [ 0.0 - k_d * v.y ]
+        fz : f64 [ 0.0 - k_d * v.z ]
+        first.push[ fx ]
+        first.push[ fy ]
+        first.push[ fz ]
+    ld.extra = first
+    good : bool [ (search) ? ld.best[ ld.best_lo, ld.best_hi ]
+                  : ld.solve[] ]
+    if [ !good ] return false
+    for [ pass: i32 0, pass < 2, pass += 1 ]
+        drag : vec f64 []
+        used : f64 [ 0.0 ]
+        dt : f64 [ ld.flight / f64[ ld.steps ] ]
+        for [ k: i32 0, k < ld.steps, k += 1 ]
+            v : ld.speed_at[ k ]
+            p : ld.place_at[ k ]
+            ar : standard_air[ p.z + deck ]
+            sp : f64 [ dv_len[ v ] ]
+            ca : f64 [ tb.coeff[ sp / ar.sound, true ] ]
+            m : f64 [ ld.mass - used ]
+            k_d : f64 [ 0.5 * ar.density * sp * ca * area / m ]
+            dx : f64 [ 0.0 - k_d * v.x ]
+            dy : f64 [ 0.0 - k_d * v.y ]
+            dz : f64 [ 0.0 - k_d * v.z ]
+            drag.push[ dx ]
+            drag.push[ dy ]
+            drag.push[ dz ]
+            used += ld.bound[ k ] * m * dt / (ld.isp * GRAVITY_STD)
+        ld.extra = drag
+        if [ !ld.solve[] ] return false
+    return true
+
+
+# a landing plan solved on a worker, from the state the booster
+# will be in when the plan is taken up
+class PlanJob
+    public ld    : Landing
+    public tb    : DragTable
+    public area  : f64
+    public deck  : f64
+    # the met it is for, and whether the last plan's time is tried
+    public at    : f64
+    public warm  : bool
+    public good  : bool
+    # out of reach of the mark: as near as it can
+    public far   : bool
+    public done  : bool
+    # set when SCvx plans it; ld is then its answer
+    public sc    : Scvx
+    # how long the solve took (ms, wall clock)
+    public took  : f64
+
+func plan_work [ arg: object ]
+    j : PlanJob [ arg ]
+    began : i64 [ Au.epoch_micros[] ]
+    if [ j.sc ]
+        scvx_work[ j ]
+    el
+        gfold_work[ j ]
+    j.took = f64[ Au.epoch_micros[] - began ] / 1000.0
+    j.done = true
+
+func gfold_work [ j: PlanJob ]
+    ld : j.ld
+    if [ j.warm ]
+        j.good = drag_plan[ ld, j.tb, j.area, j.deck, false ]
+    if [ !j.good && ld.r0.z > 3.0 ]
+        j.good = drag_plan[ ld, j.tb, j.area, j.deck, true ]
+        if [ !j.good ]
+            ld.relax = true
+            j.good = drag_plan[ ld, j.tb, j.area, j.deck, true ]
+            j.far = j.good
+
+# the last touchdown time, a free one, cold, then as near
+func scvx_work [ j: PlanJob ]
+    sc : j.sc
+    sc.hold_time = sc.start.count > 0
+    j.good = sc.solve[]
+    if [ !j.good && sc.hold_time ]
+        sc.hold_time = false
+        j.good = sc.solve[]
+    if [ !j.good && sc.start.count > 0 ]
+        sc.start = vec f64 []
+        j.good = sc.solve[]
+    if [ !j.good && sc.r0.z > 3.0 ]
+        sc.start = vec f64 []
+        sc.relax = true
+        j.good = sc.solve[]
+        j.far = j.good
+    j.ld = sc.landing[]
+
+class Mission
+    # the platform at sea, east of the Cape; its deck at 5 m
+    public pad_lat : f64 [ 0.49829 ]
+    public pad_lon : f64 [ -1.40150 ]
+    public deck_h  : f64 [ 5.0 ]
+    public payload : f64 [ 10000.0 ]
+    # the pitch kick, degrees off vertical by T+25 s
+    public kick    : f64 [ 8.0 ]
+    public almanac : Almanac
+    public stack   : Craft
+    public booster : Craft
+    public orbiter : Craft
+    public fairing : Craft
+    public low     : Avionics
+    public high    : Avionics
+    public platform : Receiver
+    # where the booster lands: ECEF, the surveyed mark, aimed at
+    public target  : Dvec
+    public aim     : Dvec
+    public plat_ant : Dvec
+    public met     : f64 [ -10.0 ]
+    # booster: 0 stack, 1 flip, 2 boostback, 3 coast, 4 entry,
+    # 5 aero, 6 landing burn, 7 down; orbiter: 0 stack, 1 coast,
+    # 2 burn, 3 orbit
+    public lower   : i32
+    public upper   : i32
+    public events  : vec string
+    public lit_t   : f64
+    public steer   : Dvec
+    public miss    : f64
+    public plan    : Landing
+    public plan_t  : f64
+    # the planner the landing burn flies, and its solve times
+    public landing : LandingMethod
+    public plan_n  : i32
+    public plan_ms : f64
+    public plan_worst : f64
+    # touchdown: when, and once it has stood still or fallen
+    public down_t  : f64 [ -1.0 ]
+    public settled : bool
+    # the touchdown events already noted, a bit each
+    intern seen    : i32
+    intern think   : f64
+    intern sep_t   : f64
+    intern booster_dry : f64
+    intern prev_miss : f64 [ 1e30 ]
+    # the predicted landing's last place against the mark, and
+    # how fast it moves (inertial, horizontal)
+    intern prev_mv : Dvec
+    intern mv_rate : Dvec
+    intern glance : f64
+    # when the boostback is cut, once its target is in sight
+    intern cut_at : f64 [ -1.0 ]
+    # the landing burn's last pointing: axis, thrust N, when
+    intern pt_axis : Dvec
+    intern pt_thrust : f64
+    intern pt_t : f64
+    # the push felt less the push its attitude should give,
+    # filtered (m/s2, inertial)
+    intern push_err : Dvec
+    # the drag table, and when it was last made from the shape
+    intern drag_tb : DragTable
+    intern drag_t : f64 [ -1e30 ]
+    # the landing plan being solved, and the worker solving it
+    intern job : PlanJob
+    intern solver : async
+    # SCvx's last answer: the next solve starts from it
+    intern plan_sc : Scvx
+    # down near the deck, then rising: the engines are cut
+    intern cut     : bool
+    # how far from the mark is on the pad, m: none from afar (it
+    # aims at the centre), growing as it comes down to 2/3 of
+    # the deck's 48 m by pad_full (estimates)
+    public pad_far : f64 [ 2000.0 ]
+    public pad_full : f64 [ 300.0 ]
+    # where the plans land, across from the mark (m): it stays
+    # put, moved only when where it is headed strays 10 m from it
+    intern land_at : Dvec
+    # the way a lean carries it on its fins: 1 toward the lean,
+    # -1 away; learned from the miss over 4 s, since the last
+    intern fin_way : f64
+    intern fin_look : f64 [ -1.0 ]
+    intern fin_miss : f64
+    # the deck's anemometer on its 10 m mast: its own air, and
+    # what it reads, east and north, over about 10 s
+    intern deck_air : Weather
+    public deck_wind : Dvec
+    # the last of the fall at the least throttle, then off; the
+    # engine off for a fall, to light again at the least throttle
+    intern feather : bool
+    intern coasting : bool
+
+    func init []
+        events = vec string []
+        almanac = Almanac [ ]
+        almanac.load[]
+        stack = falcon_nine[ payload ]
+        stack.turn_start = 0.0
+        deck : Deck [ centre: geodetic_to_ecef[ pad_lat, pad_lon, deck_h ],
+                      up: enu_up[ pad_lat, pad_lon ], radius: 48.0 ]
+        stack.deck = deck
+        # the landing mark: the deck's middle, where it stood
+        target = geodetic_to_ecef[ pad_lat, pad_lon, deck_h ]
+        plat_ant = geodetic_to_ecef[ pad_lat, pad_lon, deck_h + 2.0 ]
+        platform = Receiver [ almanac: almanac, seed: 77 ]
+        aim = target
+        low = avionics[ almanac, Dvec [ 39.0, 0.0, 0.0 ],
+                        Dvec [ 40.0, 1.83, 0.0 ], 11 ]
+        low.receiver.base = platform
+        low.receiver.base_at = plat_ant
+        # corrected, little shared error is left (an estimate)
+        low.filter.gps_bias = 0.3
+        high = avionics[ almanac, Dvec [ 55.0, 0.0, 0.0 ],
+                         Dvec [ 56.0, 1.83, 0.0 ], 23 ]
+        booster_dry = 25600.0
+        pt_axis = Dvec [ 0.0, 0.0, 1.0 ]
+        push_err = Dvec [ 0.0, 0.0, 0.0 ]
+        high.steers = false
+        for [ g: Leg ] in stack.legs
+            g.out = true
+        clamp_down[]
+
+    func note [ what: string ]
+        line : 'T{met}: {what}'
+        events.push[ line ]
+        log 'mission: {line}'
+
+    # on its legs: the feet on the deck, 1.6 m under the engines
+    func clamp_down []
+        stack.stand[ pad_lat, pad_lon, deck_h - LEG_FOOT_X ]
+
+    func turn [ t: f64 ] -> f64
+        return earth_turn[ t, 0.0 ]
+
+    # the believed state of a vehicle's body point, inertial
+    func believed_point [ a_v: Avionics, p: Dvec ] -> Dvec
+        return a_v.filter.body_point[ p ]
+
+    # local east, north, up at an inertial place now
+    func frame [ r: Dvec, t: f64 ] -> Frame
+        ang : f64 [ turn[ t ] ]
+        geo : ecef_to_geodetic[ eci_to_ecef[ r, ang ] ]
+        return Frame [ east: ecef_to_eci[ enu_east[ geo.x, geo.y ], ang ],
+                       north: ecef_to_eci[ enu_north[ geo.x, geo.y ],
+                                           ang ],
+                       up: ecef_to_eci[ enu_up[ geo.x, geo.y ], ang ] ]
+
+    func air_speed [ r: Dvec, v: Dvec ] -> Dvec
+        return dv_sub[ v, dv_cross[ Dvec [ 0.0, 0.0, EARTH_SPIN ], r ] ]
+
+    func set_engines [ c: Craft, which: vec i32, throttle: f64 ]
+        for [ i: i32 0, i < c.engines.count, i += 1 ]
+            c.engines[ i ].lit = false
+        for [ k: i32 ] in which
+            if [ k < c.engines.count ]
+                c.engines[ k ].lit = true
+                c.engines[ k ].throttle = throttle
+
+    func height [ r: Dvec, t: f64 ] -> f64
+        g : ecef_to_geodetic[ eci_to_ecef[ r, turn[ t ] ] ]
+        return g.z
+
+    # propellant the booster must keep to come home, kg: the
+    # speed it carries away plus the return, entry and landing
+    func reserve [ vh: f64 ] -> f64
+        dv : f64 [ vh + 400.0 + 700.0 + 550.0 ]
+        isp : f64 [ 300.0 * GRAVITY_STD ]
+        return booster_dry * (exp[ dv / isp ] - 1.0) + 2000.0
+
+    # one physics step of h seconds for everything flying
+    public func step [ h: f64 ]
+        met += h
+        if [ met < 0.0 ]
+            if [ met >= -3.0 && !stack.engines[ 0 ].lit ]
+                outer : vec i32 [] [ 0, 1, 2, 3, 4, 5, 6 ]
+                set_engines[ stack, outer, 1.0 ]
+                note[ 'ignition, held down' ]
+            clamp_down[]
+            stack.time += h
+            return
+        if [ lower == 0 && !low.ready ]
+            low.align[ stack ]
+            high.align[ stack ]
+            low.pilot.use_jets = false
+            note[ 'liftoff' ]
+        think += h
+        decide : bool [ think >= 0.5 ]
+        if [ decide ]
+            think -= 0.5
+            read_deck_wind[]
+        if [ lower == 0 ]
+            ascent[ decide ]
+        el
+            booster_phase[ decide ]
+        if [ upper >= 1 ] orbiter_phase[ decide ]
+        # the physics, then each computer on its own vehicle
+        if [ lower == 0 ]
+            stack.step[ h ]
+            low.tick[ stack, h ]
+            high.tick[ stack, h ]
+            # the legs fold the moment no foot bears on the deck
+            if [ stack.legs.count > 0 && stack.legs[ 0 ].out ]
+                bearing : bool [ false ]
+                for [ g: Leg ] in stack.legs
+                    if [ g.load > 0.0 ] bearing = true
+                if [ !bearing ]
+                    for [ g: Leg ] in stack.legs
+                        g.out = false
+                    note[ 'legs stowed' ]
+        el
+            # after touchdown its physics runs on while it settles
+            if [ lower < 7 || (lower == 7 && !settled) ]
+                booster.step[ h ]
+                low.tick[ booster, h ]
+                splashed[]
+                if [ lower >= 6 ] watch_touchdown[]
+            orbiter.step[ h ]
+            high.tick[ orbiter, h ]
+            if [ fairing ]
+                fairing.step[ h ]
+
+    # the lean from vertical (rad) toward the east, every 5 s from
+    # T+25 to T+135: the calm climb along its airflow, flown as a
+    # plan; between, a straight line; after, the last
+    func planned_lean [ t: f64 ] -> f64
+        plan_l : vec f64 [] [ 0.112805, 0.154005, 0.192612, 0.23355,
+            0.276485, 0.320782, 0.368434, 0.419255, 0.472369,
+            0.5272, 0.58291, 0.63693, 0.68711, 0.733428, 0.775968,
+            0.814916, 0.850518, 0.883026, 0.912638, 0.93958,
+            0.964044, 0.986224, 1.00629 ]
+        at : f64 [ (t - 25.0) / 5.0 ]
+        if [ at <= 0.0 ] return plan_l[ 0 ]
+        last : i32 [ plan_l.count - 1 ]
+        if [ at >= f64[ last ] ] return plan_l[ last ]
+        i : i32 [ i32[ at ] ]
+        fr_t : f64 [ at - f64[ i ] ]
+        return plan_l[ i ] + (plan_l[ i + 1 ] - plan_l[ i ]) * fr_t
+
+    # the stack: up, a small kick east, then the pitch plan
+    func ascent [ decide: bool ]
+        nv : low.filter
+        fr : frame[ nv.r, nv.time ]
+        east : fr.east
+        up : fr.up
+        rel : air_speed[ nv.r, nv.v ]
+        axis : up
+        if [ met > 10.0 && met <= 25.0 ]
+            tip : f64 [ degrees[ kick ] * (met - 10.0) / 15.0 ]
+            axis = dv_add[ dv_scale[ up, cos[ tip ] ],
+                           dv_scale[ east, sin[ tip ] ] ]
+        el [ met > 25.0 ]
+            # the pitch plan, against the ground: wind can push the
+            # climb aside but never turn it
+            lean : f64 [ planned_lean[ met ] ]
+            axis = dv_add[ dv_scale[ up, cos[ lean ] ],
+                           dv_scale[ east, sin[ lean ] ] ]
+        low.pilot.axis = axis
+        # through max-Q at 70 percent
+        th : f64 [ (met > 45.0 && met < 75.0) ? 0.7 : 1.0 ]
+        for [ e: Engine ] in stack.engines
+            if [ e.group == 'one' ] e.throttle = th
+        if [ !decide ] return
+        # cut off once what is left is what the return needs
+        vr : f64 [ dv_dot[ rel, up ] ]
+        vh : f64 [ dv_len[ dv_sub[ rel, dv_scale[ up, vr ] ] ] ]
+        left : f64 [ stack.state.prop[ 0 ] + stack.state.prop[ 1 ] ]
+        if [ left <= reserve[ vh ] ]
+            for [ e: Engine ] in stack.engines
+                e.lit = false
+            alt : f64 [ height[ nv.r, nv.time ] / 1000.0 ]
+            note[ 'MECO at {alt} km, {vh} m/s across, {left} kg kept' ]
+            separate[]
+
+    func separate []
+        upper_groups : vec string [] [ 'two', 'fairing' ]
+        orbiter = stack.detach[ upper_groups ]
+        booster = stack
+        stack = null
+        # the pushers: half a metre a second apart
+        ax : q_rotate[ booster.state.q, Dvec [ 1.0, 0.0, 0.0 ] ]
+        orbiter.state.v = dv_add[ orbiter.state.v, dv_scale[ ax, 0.4 ] ]
+        booster.state.v = dv_sub[ booster.state.v, dv_scale[ ax, 0.1 ] ]
+        sep_t = met
+        lower = 1
+        upper = 1
+        high.steers = true
+        low.pilot.use_gimbal = true
+        low.pilot.use_jets = true
+        # the grid fins out at once, for the flip and the boostback
+        for [ f: Fin ] in booster.fins
+            f.open = true
+        low.pilot.use_fins = true
+        low.pilot.max_rate = 0.12
+        note[ 'stage separation' ]
+
+    # the upper stage: light after 8 s, climb to 200 km, cut off
+    # at orbital speed
+    func orbiter_phase [ decide: bool ]
+        nv : high.filter
+        fr : frame[ nv.r, nv.time ]
+        up : fr.up
+        rr : f64 [ dv_len[ nv.r ] ]
+        vr : f64 [ dv_dot[ nv.v, up ] ]
+        hv : dv_sub[ nv.v, dv_scale[ up, vr ] ]
+        vh : f64 [ dv_len[ hv ] ]
+        if [ upper == 1 ]
+            high.pilot.axis = dv_norm[ nv.v ]
+            if [ met >= sep_t + 8.0 ]
+                orbiter.engines[ 0 ].lit = true
+                orbiter.engines[ 0 ].throttle = 1.0
+                upper = 2
+                note[ 'second engine start' ]
+            return
+        if [ upper == 2 ]
+            acc : f64 [ orbiter.engines[ 0 ].force / orbiter.mass ]
+            if [ acc < 1.0 ] acc = 1.0
+            g : f64 [ EARTH_GM / (rr * rr) ]
+            goal : f64 [ (200000.0 - (rr - EARTH_A)) / 120.0 ]
+            if [ goal > 250.0 ] goal = 250.0
+            if [ goal < -100.0 ] goal = -100.0
+            k : f64 [ (g - vh * vh / rr + (goal - vr) * 0.08) / acc ]
+            if [ k > 0.9 ] k = 0.9
+            if [ k < -0.4 ] k = -0.4
+            side : f64 [ sqrt[ 1.0 - k * k ] ]
+            high.pilot.axis = dv_add[ dv_scale[ up, k ],
+                                      dv_scale[ dv_norm[ hv ], side ] ]
+            if [ decide && !fairing && rr - EARTH_A > 110000.0 ]
+                fairing = orbiter.separate[ 'fairing' ]
+                note[ 'fairing away' ]
+            if [ vh >= sqrt[ EARTH_GM / rr ] ]
+                orbiter.engines[ 0 ].lit = false
+                upper = 3
+                alt : f64 [ (rr - EARTH_A) / 1000.0 ]
+                note[ 'SECO at {alt} km, {vh} m/s, climbing {vr} m/s' ]
+
+    # where the booster comes down if left alone, from its nav
+    func predict [ aim_at: Dvec ] -> Dvec
+        nv : low.filter
+        stage_at : i32 [ (lower >= 5) ? 5 : ((lower == 4) ? 4 : 3) ]
+        imp : forecast[ stage_at ]
+        ang : f64 [ turn[ nv.time ] ]
+        # the miss, horizontal, in the inertial frame now
+        d : ecef_to_eci[ dv_sub[ imp.point, aim_at ], ang ]
+        fr : frame[ nv.r, nv.time ]
+        up : fr.up
+        return dv_sub[ d, dv_scale[ up, dv_dot[ d, up ] ] ]
+
+    func booster_phase [ decide: bool ]
+        nv : low.filter
+        c : booster
+        fr : frame[ nv.r, nv.time ]
+        up : fr.up
+        rel : air_speed[ nv.r, nv.v ]
+        speed : f64 [ dv_len[ rel ] ]
+        back : dv_scale[ dv_norm[ rel ], -1.0 ]
+        # close in, the impact moves fast: look ten times a second
+        quick : bool [ lower == 2 && miss < 30000.0 ]
+        if [ quick ]
+            glance += 0.0025
+        if [ lower == 1 || lower == 2 ]
+            unset : bool [ steer.x == 0.0 && steer.y == 0.0 ]
+            if [ decide || unset || (quick && glance >= 0.1) ]
+                m : predict[ aim ]
+                miss = dv_len[ m ]
+                if [ quick ]
+                    if [ prev_miss < 1e29 && glance > 0.0 ]
+                        mv_rate = dv_scale[ dv_sub[ m, prev_mv ],
+                                            1.0 / glance ]
+                    prev_miss = miss
+                    prev_mv = m
+                    glance = 0.0
+                dirh : dv_scale[ dv_norm[ m ], -1.0 ]
+                # the landing point should come straight at the mark:
+                # what it slides across that line is pushed out too
+                mr : f64 [ dv_len[ mv_rate ] ]
+                if [ quick && mr > 1e-3 ]
+                    mh : dv_norm[ m ]
+                    along : f64 [ dv_dot[ mv_rate, mh ] ]
+                    slide : dv_sub[ mv_rate, dv_scale[ mh, along ] ]
+                    dirh = dv_norm[ dv_sub[ dirh,
+                                            dv_scale[ slide, 1.0 / mr ] ] ]
+                steer = dv_norm[ dv_add[ dirh, dv_scale[ up, 0.35 ] ] ]
+            low.pilot.axis = steer
+        if [ lower == 1 ]
+            if [ low.pilot.error < 0.17 && met > sep_t + 5.0 ]
+                three : vec i32 [] [ 0, 1, 4 ]
+                set_engines[ c, three, 1.0 ]
+                lower = 2
+                lit_t = met
+                note[ 'boostback burn, miss {miss} m' ]
+            return
+        if [ lower == 2 ]
+            if [ miss < 8000.0 ]
+                for [ e: Engine ] in c.engines
+                    e.throttle = 0.4
+            # the look that sees the closest pass coming sets the
+            # step to cut on: the landing point moves as a line past
+            # the mark, nearest at -(m . m') / |m'|^2
+            mr2 : f64 [ dv_dot[ mv_rate, mv_rate ] ]
+            if [ cut_at < 0.0 && quick && glance == 0.0 && mr2 > 1e-6 ]
+                t_near : f64 [ 0.0 - dv_dot[ prev_mv, mv_rate ] / mr2 ]
+                if [ t_near <= 0.1 ]
+                    cut_at = met + max[ t_near, 0.0 ]
+            # off on target, or down to what the entry and landing
+            # burns need
+            due : bool [ cut_at >= 0.0 && met >= cut_at ]
+            spent : bool [ c.propellant[] < 14000.0 ]
+            if [ miss < 50.0 || due || spent ]
+                for [ e: Engine ] in c.engines
+                    e.lit = false
+                lower = 3
+                left : f64 [ c.propellant[] ]
+                # where it now comes down, not the last look's
+                miss = dv_len[ predict[ aim ] ]
+                note[ 'boostback cutoff, miss {miss} m, {left} kg left' ]
+            return
+        h : f64 [ height[ nv.r, nv.time ] ]
+        if [ lower == 3 ]
+            low.pilot.axis = back
+            if [ h < 57000.0 && speed > 1000.0 && dv_dot[ rel, up ] < 0.0 ]
+                three : vec i32 [] [ 0, 1, 4 ]
+                set_engines[ c, three, 1.0 ]
+                lower = 4
+                lit_t = met
+                note[ 'entry burn at {speed} m/s' ]
+            el [ h < 40000.0 && dv_dot[ rel, up ] < 0.0 ]
+                lower = 5
+                note[ 'no entry burn needed' ]
+            return
+        if [ lower == 4 ]
+            low.pilot.axis = back
+            # the air does the rest; keep the landing's share
+            if [ speed < 900.0 || c.propellant[] < 6500.0 ]
+                for [ e: Engine ] in c.engines
+                    e.lit = false
+                lower = 5
+                note[ 'entry burn cutoff at {speed} m/s' ]
+            return
+        if [ lower == 5 ]
+            if [ decide ]
+                m : predict[ aim ]
+                miss = dv_len[ m ]
+                lean : f64 [ miss / 1000.0 ]
+                if [ lean > 0.3 ] lean = 0.3
+                md : dv_norm[ m ]
+                # which way a lean carries it: away from the miss, as
+                # flown (the hull alone says the other); then, once
+                # the air bites (15 kPa), what the miss does: grown
+                # by more than 20 m in 4 s, the other way, held 8 s
+                if [ fin_way == 0.0 ]
+                    fin_way = -1.0
+                    fin_look = met
+                    fin_miss = miss
+                el [ low.pilot.qbar < 15000.0 ]
+                    fin_look = met
+                    fin_miss = miss
+                el [ met - fin_look >= 4.0 ]
+                    fin_look = met
+                    if [ miss > fin_miss + 20.0 ]
+                        fin_way = 0.0 - fin_way
+                        fin_look = met + 4.0
+                        note[ 'the fins steer the other way: miss {miss} m' ]
+                    fin_miss = miss
+                steer = dv_scale[ md, lean * fin_way ]
+            low.pilot.axis = dv_norm[ dv_add[ back, steer ] ]
+            # light when one engine at 70 percent, with the air's
+            # drag, just stops it above the deck
+            feet : believed_point[ low, Dvec [ LEG_FOOT_X, 0.0, 0.0 ] ]
+            above : f64 [ height[ feet, nv.time ] - deck_h ]
+            vdown : f64 [ 0.0 - dv_dot[ rel, up ] ]
+            stop : f64 [ -1e30 ]
+            if [ above < 8000.0 ]
+                stop = stop_loss[ c, table[], c.mass, vdown,
+                                 above + deck_h ]
+                       + 40.0 + vdown * 0.3
+            # the air does the braking until the last few km
+            if [ above < stop ]
+                one : vec i32 [] [ 0 ]
+                set_engines[ c, one, 0.7 ]
+                lower = 6
+                lit_t = met
+                plan_t = -1.0
+                left : f64 [ c.propellant[] ]
+                note[ 'landing burn at {above} m, {vdown} m/s down, miss {miss} m, {left} kg left' ]
+            return
+        if [ lower == 6 ]
+            landing_burn[ decide ]
+            return
+
+    # each leg's touch, a broken leg, the hull's strike, and
+    # how it ends: standing or over
+    func watch_touchdown []
+        c : booster
+        up : ecef_to_eci[ enu_up[ pad_lat, pad_lon ], turn[ c.time ] ]
+        for [ i: i32 0, i < c.legs.count, i += 1 ]
+            g : c.legs[ i ]
+            bit : i32 [ 1 << i ]
+            if [ g.touch_t >= 0.0 && (seen & bit) == 0 ]
+                seen = seen | bit
+                off : dv_sub[ g.touch_at, target ]
+                ue : enu_up[ pad_lat, pad_lon ]
+                flat : dv_sub[ off, dv_scale[ ue, dv_dot[ off, ue ] ] ]
+                d : f64 [ dv_len[ flat ] ]
+                deg : f64 [ g.touch_tilt * 57.2957795 ]
+                note[ 'leg {i} touches at {g.touch_v} m/s, {d} m from the mark, tilt {deg} deg' ]
+            gone : i32 [ 1 << (i + 8) ]
+            if [ g.broken && (seen & gone) == 0 ]
+                seen = seen | gone
+                note[ 'leg {i} breaks at {g.peak} N' ]
+        if [ c.hull_t >= 0.0 && (seen & (1 << 16)) == 0 ]
+            seen = seen | (1 << 16)
+            note[ 'the hull hits the deck at {c.hull_v} m/s: it explodes' ]
+            lower = 9
+            return
+        if [ lower != 7 ] return
+        ax : q_rotate[ c.state.q, Dvec [ 1.0, 0.0, 0.0 ] ]
+        tilt : f64 [ acos[ dv_dot[ ax, up ] ] * 57.2957795 ]
+        if [ tilt > 45.0 && (seen & (1 << 17)) == 0 ]
+            seen = seen | (1 << 17)
+            note[ 'it topples over' ]
+        # still: barely moving and turning for a while
+        rest : f64 [ dv_len[ air_speed[ c.state.r, c.state.v ] ] ]
+        if [ met - down_t < 20.0 && (rest > 0.05
+             || dv_len[ c.state.w ] > 0.01 || met - down_t < 3.0) ]
+            return
+        settled = true
+        first : c.legs[ 0 ]
+        cores : '{first.stroke}'
+        for [ i: i32 1, i < c.legs.count, i += 1 ]
+            g : c.legs[ i ]
+            cores = '{cores}, {g.stroke}'
+        how : (tilt > 45.0) ? 'on its side' : 'standing'
+        note[ '{how} at {tilt} deg; crush cores {cores} m' ]
+
+    # below the sea and not on the deck: it is in the water
+    func splashed [] -> bool
+        if [ !booster || lower == 8 ] return false
+        h : f64 [ height[ booster.state.r, booster.time ] ]
+        if [ h > 0.0 ] return false
+        for [ e: Engine ] in booster.engines
+            e.lit = false
+        lower = 8
+        note[ 'booster in the sea' ]
+        return true
+
+    # the landing burn: the convex plan from the believed state,
+    # re-solved twice a second, its first step flown
+    func landing_burn [ decide: bool ]
+        c : booster
+        nv : low.filter
+        ang : f64 [ turn[ nv.time ] ]
+        aim_i : ecef_to_eci[ aim, ang ]
+        fr : frame[ aim_i, nv.time ]
+        feet : nv.body_point[ Dvec [ LEG_FOOT_X, 0.0, 0.0 ] ]
+        d : dv_sub[ feet, aim_i ]
+        vrel : air_speed[ nv.r, nv.v ]
+        # the feet's own speed: turning, they move unlike the top
+        arm : dv_sub[ Dvec [ LEG_FOOT_X, 0.0, 0.0 ], nv.imu_at ]
+        vf : dv_add[ vrel, q_rotate[ nv.q, dv_cross[ nv.rate, arm ] ] ]
+        r0 : Dvec [ dv_dot[ d, fr.east ], dv_dot[ d, fr.north ],
+                    dv_dot[ d, fr.up ] ]
+        v0 : Dvec [ dv_dot[ vf, fr.east ], dv_dot[ vf, fr.north ],
+                    dv_dot[ vf, fr.up ] ]
+        if [ r0.z < 400.0 ]
+            for [ g: Leg ] in c.legs
+                g.out = true
+        if [ c.landed ]
+            sp : f64 [ dv_len[ v0 ] ]
+            for [ e: Engine ] in c.engines
+                e.lit = false
+            # on its legs it can not turn: steering would wind up
+            low.steers = false
+            for [ j: Jet ] in c.jets
+                j.on = false
+            lower = 7
+            down_t = met
+            note[ 'touchdown at {sp} m/s' ]
+            mean : f64 [ plan_ms / f64[ (plan_n > 0) ? plan_n : 1 ] ]
+            how : method_name[ landing ]
+            note[ '{how} plans: {plan_n}, {mean} ms mean, {plan_worst} ms worst' ]
+            return
+        # it can not hover: once low, a climb is never let start
+        if [ !cut && r0.z < 10.0 && v0.z > 0.0 ]
+            cut = true
+            note[ 'rising at {r0.z} m over the deck: engines cut' ]
+        # off as soon as a free fall from here meets the deck at
+        # 3 m/s or less: hanging low it only drifts
+        fall_h : f64 [ max[ r0.z, 0.0 ] ]
+        drop_v : f64 [ sqrt[ v0.z * v0.z + 2.0 * 9.8 * fall_h ] ]
+        if [ !cut && r0.z < 10.0 && v0.z <= 0.0 && drop_v <= 3.0 ]
+            cut = true
+            note[ 'engine off at {r0.z} m, {v0.z} m/s: meets the deck at {drop_v} m/s' ]
+        if [ cut ]
+            for [ e: Engine ] in c.engines
+                e.lit = false
+            return
+        # the end, timed to the least throttle at the mass it will
+        # have at the deck: stopping above the deck (1.5 m) the
+        # engine is off and it falls; stopping at the deck it burns
+        # at the least throttle, upright, gently steered; short of
+        # the deck the plan flies on. it never pushes up
+        lone : c.engines[ 0 ]
+        back_p : f64 [ c.air.pressure * lone.exit_area ]
+        push_l : f64 [ lone.throttle_min * lone.thrust_vac - back_p ]
+        low_h : f64 [ (r0.z > 0.1) ? r0.z : 0.1 ]
+        t_end : f64 [ 2.0 * low_h / max[ 0.0 - v0.z, 0.5 ] ]
+        m_end : f64 [ c.mass - lone.flow * lone.throttle_min * t_end ]
+        least : f64 [ push_l / m_end ]
+        net : f64 [ least - 9.81 ]
+        if [ r0.z < 60.0 && v0.z < 0.0 && net > 0.0 ]
+            stop_h : f64 [ r0.z - v0.z * v0.z / (2.0 * net) ]
+            if [ lone.lit && stop_h > 1.5 ]
+                lone.lit = false
+                coasting = true
+                note[ 'engine off at {r0.z} m, {v0.z} m/s: the least throttle would stop it {stop_h} m up' ]
+            if [ !lone.lit && coasting && stop_h <= 0.0 ]
+                lone.lit = true
+                lone.throttle = lone.throttle_min
+                coasting = false
+                note[ 'engine lit again at {r0.z} m, {v0.z} m/s' ]
+            if [ !lone.lit ]
+                low.pilot.axis = fr.up
+                return
+            if [ stop_h >= -1.0 ]
+                if [ !feather ]
+                    feather = true
+                    note[ 'feathering at {r0.z} m, {v0.z} m/s' ]
+                lone.throttle = lone.throttle_min
+                # the sideways speed taken out over about 2 s,
+                # leaning no more than 0.08 rad
+                want_l : Dvec [ 0.0 - v0.x / 2.0, 0.0 - v0.y / 2.0,
+                                0.0 ]
+                most_l : f64 [ least * sin[ 0.08 ] ]
+                wl : f64 [ dv_len[ want_l ] ]
+                if [ wl > most_l ]
+                    want_l = dv_scale[ want_l, most_l / wl ]
+                share_l : f64 [ min[ dv_len[ want_l ] / least, 0.08 ] ]
+                tilt_l : f64 [ asin[ share_l ] ]
+                ax : fr.up
+                if [ wl > 1e-6 ]
+                    we : dv_scale[ fr.east, want_l.x ]
+                    wn : dv_scale[ fr.north, want_l.y ]
+                    wd : dv_norm[ dv_add[ we, wn ] ]
+                    ax = dv_add[ dv_scale[ fr.up, cos[ tilt_l ] ],
+                                 dv_scale[ wd, sin[ tilt_l ] ] ]
+                low.pilot.axis = ax
+                return
+        # the plan solved for now is taken up; if its worker is
+        # still at it, this waits
+        if [ job && met >= job.at - 0.001 ]
+            solver.sync[ null ]
+            plan_n += 1
+            plan_ms += job.took
+            if [ job.took > plan_worst ] plan_worst = job.took
+            if [ job.good ]
+                plan = job.ld
+                plan_t = job.at
+                if [ job.sc ] plan_sc = job.sc
+                if [ job.far ]
+                    off : f64 [ dv_len[ plan.place_at[ plan.steps ] ] ]
+                    note[ 'the mark is out of reach: landing {off} m from it' ]
+            el [ plan_t < 0.0 ]
+                plan_t = job.at
+            job = null
+            solver = null
+        # the plan's thrust for now, else a braking law that stops
+        # the fall at the deck and never pushes it back up
+        hz : f64 [ (r0.z > 1.0) ? r0.z : 1.0 ]
+        brake : f64 [ (v0.z < 0.0) ? v0.z * v0.z / (2.0 * hz) + 9.8
+                      : 4.0 ]
+        u : Dvec [ 0.0 - v0.x * 0.5, 0.0 - v0.y * 0.5, brake ]
+        if [ plan && plan.feasible ]
+            nst : i32 [ plan.steps ]
+            dt : f64 [ plan.flight / f64[ nst ] ]
+            k : i32 [ i32[ (met - plan_t) / dt ] ]
+            if [ k < 0 ] k = 0
+            # never past the end of a plan: then the braking law
+            if [ k < nst ]
+                u = Dvec [ plan.accel[ k * 3 ], plan.accel[ k * 3 + 1 ],
+                           plan.accel[ k * 3 + 2 ] ]
+        # the push wanted besides gravity: the plan's thrust plus
+        # the drag it counted on, inertial
+        ar : standard_air[ r0.z + deck_h ]
+        drag : known_drag[ c, v0, ar ]
+        if [ plan && plan.feasible && k_now[] < plan.steps ]
+            kd : i32 [ k_now[] * 3 ]
+            drag = Dvec [ plan.extra[ kd ], plan.extra[ kd + 1 ],
+                          plan.extra[ kd + 2 ] ]
+        want : dv_add[ u, drag ]
+        if [ !job && (decide || plan_t < 0.0) ]
+            plan_ahead[ c, r0, v0, want, u ]
+        need_i : dv_add[ dv_add[ dv_scale[ fr.east, want.x ],
+                         dv_scale[ fr.north, want.y ] ],
+                         dv_scale[ fr.up, want.z ] ]
+        # twenty times a second: the hull's air force at the
+        # attitude it is at, and the engine gives the rest of the push
+        if [ met - pt_t >= 0.05 || pt_thrust <= 0.0 ]
+            hull : c.body_aero[ q_unrotate[ nv.q, vrel ], ar, true ]
+            air_i : q_rotate[ nv.q, hull.force ]
+            # what the wind and the models did not say: the push felt
+            # against the one its own attitude and throttle should
+            # give, over half a second
+            if [ pt_thrust > 0.0 ]
+                eng : c.engines[ 0 ]
+                th : f64 [ eng.throttle ]
+                if [ th < eng.throttle_min ] th = eng.throttle_min
+                if [ th > 1.0 ] th = 1.0
+                lit : f64 [ th * eng.thrust_vac
+                            - c.air.pressure * eng.exit_area ]
+                body : q_rotate[ nv.q, Dvec [ 1.0, 0.0, 0.0 ] ]
+                made : dv_add[ dv_scale[ body, lit ], air_i ]
+                # the slosh rides along: felt over the whole mass
+                gap : dv_sub[ nv.felt, dv_scale[ made, 1.0 / c.mass ] ]
+                push_err = dv_add[ push_err, dv_scale[
+                                   dv_sub[ gap, push_err ], 0.1 ] ]
+                pe : f64 [ dv_len[ push_err ] ]
+                if [ pe > 5.0 ]
+                    push_err = dv_scale[ push_err, 5.0 / pe ]
+            want_f : dv_scale[ dv_sub[ need_i, push_err ], c.mass ]
+            # a tilt's push across is partly undone by the air on the
+            # tilted hull: measured here, the share of it that is left
+            vert : f64 [ dv_dot[ want_f, fr.up ] ]
+            lat : dv_sub[ want_f, dv_scale[ fr.up, vert ] ]
+            if [ dv_len[ lat ] > 1.0 ]
+                way : dv_norm[ lat ]
+                base : dv_norm[ want_f ]
+                bent : dv_norm[ dv_add[ base, dv_scale[ way, 0.02 ] ] ]
+                q0 : q_between[ Dvec [ 1.0, 0.0, 0.0 ], base ]
+                q1 : q_between[ Dvec [ 1.0, 0.0, 0.0 ], bent ]
+                f0 : c.body_aero[ q_unrotate[ q0, vrel ], ar, true ]
+                f1 : c.body_aero[ q_unrotate[ q1, vrel ], ar, true ]
+                across : f64 [ dv_dot[ dv_sub[ q_rotate[ q1, f1.force ],
+                                       q_rotate[ q0, f0.force ] ], way ] ]
+                push : f64 [ dv_len[ want_f ] ]
+                share : f64 [ 1.0 + across / (0.02 * push) ]
+                # below zero the air steers it: the lean flips; never
+                # nearer zero than 0.2 (the lean cap takes the rest)
+                if [ share < -1.3 ] share = -1.3
+                if [ share > 1.3 ] share = 1.3
+                if [ abs[ share ] < 0.2 ]
+                    share = (share < 0.0) ? -0.2 : 0.2
+                want_f = dv_add[ dv_scale[ fr.up, vert ],
+                                 dv_scale[ lat, 1.0 / share ] ]
+            # the engine on that line; the air's push along it comes
+            # off the thrust
+            pt_axis = dv_norm[ want_f ]
+            # sized by the air at the attitude it is told to fly: while
+            # it turns, the air at its own lags the line
+            tq : q_between[ Dvec [ 1.0, 0.0, 0.0 ], pt_axis ]
+            told : c.body_aero[ q_unrotate[ tq, vrel ], ar, true ]
+            along : f64 [ dv_dot[ q_rotate[ tq, told.force ], pt_axis ] ]
+            pt_thrust = dv_len[ want_f ] - along
+            pt_t = met
+        axis : pt_axis
+        thrust : f64 [ pt_thrust ]
+        # never past the tilt the engine can be flown at
+        lean : f64 [ acos[ dv_dot[ axis, fr.up ] ] ]
+        # no more than the plan allows now, a little over
+        most : f64 [ 0.6 ]
+        if [ plan && plan.feasible ]
+            ks : i32 [ k_now[] ]
+            if [ ks >= plan.steps ] ks = plan.steps - 1
+            most = tilt_at[ plan.tilt, ks, plan.steps, plan.flight ]
+                   + 0.05
+        if [ lean > most ]
+            side : dv_norm[ dv_sub[ axis,
+                            dv_scale[ fr.up, dv_dot[ axis, fr.up ] ] ] ]
+            axis = dv_add[ dv_scale[ fr.up, cos[ most ] ],
+                           dv_scale[ side, sin[ most ] ] ]
+            # the same push up as asked: what is cut is sideways
+            thrust = thrust * cos[ lean ] / cos[ most ]
+        low.pilot.axis = axis
+        e : c.engines[ 0 ]
+        pa : f64 [ c.air.pressure * e.exit_area ]
+        e.throttle = (thrust + pa) / e.thrust_vac
+
+    # the share of a lean's push across left after the air on
+    # the hull pushes back, falling straight down at a speed and
+    # height under a push (N); below zero the air outpushes the
+    # engine and the lean goes the other way; within 1.3
+    func air_share [ c: Craft, speed: f64, ar: Air, push: f64 ]
+                     -> f64
+        if [ push < 1.0 ] return 1.0
+        rel : Dvec [ 0.0 - speed, 0.0, 0.0 ]
+        lean : f64 [ 0.2 ]
+        bent : Dvec [ 0.0 - speed * cos[ lean ],
+                      speed * sin[ lean ], 0.0 ]
+        f0 : c.body_aero[ rel, ar, true ]
+        f1 : c.body_aero[ bent, ar, true ]
+        # the hull's push across, along the lean, per radian
+        side : f64 [ (f1.force.y * cos[ lean ]
+                      + f1.force.x * sin[ lean ] - f0.force.y) / lean ]
+        share : f64 [ 1.0 + side / push ]
+        if [ share < -1.3 ] share = -1.3
+        if [ share > 1.3 ] share = 1.3
+        return share
+
+    # a plan falls due and its worker is not done: a step now
+    # would wait for it
+    public func waiting [] -> bool
+        if [ !job ] return false
+        if [ job.done ] return false
+        return met + 0.0025 >= job.at - 0.001
+
+    # the next plan, solved on a worker from where the booster
+    # will be in half a second at the push it is told now
+    func plan_ahead [ c: Craft, r0: Dvec, v0: Dvec, want: Dvec,
+                      push: Dvec ]
+        lead : f64 [ 0.5 ]
+        nv : low.filter
+        fr : frame[ ecef_to_eci[ aim, turn[ nv.time ] ], nv.time ]
+        acc : Dvec [ want.x, want.y, want.z - 9.8 ]
+        r1 : dv_add[ dv_add[ r0, dv_scale[ v0, lead ] ],
+                     dv_scale[ acc, 0.5 * lead * lead ] ]
+        v1 : dv_add[ v0, dv_scale[ acc, lead ] ]
+        # from afar the centre; closer, anywhere in a circle that
+        # grows to 2/3 of the deck. it aims at a spot that stays
+        # put; where it is headed (its place, plus half its speed
+        # across for the time left) moves the spot only when it
+        # strays 10 m, and the spot is kept inside the circle
+        fall_v : f64 [ max[ 0.0 - v1.z, 1.0 ] ]
+        t_left : f64 [ 2.0 * max[ r1.z, 0.0 ] / fall_v ]
+        bound : Dvec [ r1.x + v1.x * t_left * 0.5,
+                       r1.y + v1.y * t_left * 0.5, 0.0 ]
+        grown : f64 [ (pad_far - r1.z) / (pad_far - pad_full) ]
+        pad_ok : f64 [ 32.0 * min[ max[ grown, 0.0 ], 1.0 ] ]
+        stray : dv_sub[ bound, land_at ]
+        sl : f64 [ dv_len[ stray ] ]
+        if [ sl > 10.0 ]
+            nudge : dv_scale[ stray, (sl - 10.0) / sl ]
+            land_at = dv_add[ land_at, nudge ]
+        gl : f64 [ dv_len[ land_at ] ]
+        if [ gl > pad_ok && gl > 1e-6 ]
+            land_at = dv_scale[ land_at, pad_ok / gl ]
+        r1 = dv_sub[ r1, land_at ]
+        e : c.engines[ 0 ]
+        ld : landing_problem[ c, r1, v1, aim ]
+        ld.mass = c.mass - e.flow * e.throttle * lead
+        # the push across it feels now, less the drag counted on
+        ld.lat_now = Dvec [ dv_dot[ nv.felt, fr.east ]
+                            - (want.x - push.x),
+                            dv_dot[ nv.felt, fr.north ]
+                            - (want.y - push.y), 0.0 ]
+        # what it gets across trails what it asks: the autopilot
+        # settles on a lean in 1 / point_gain
+        ld.lag = 1.0 / low.pilot.point_gain
+        # the share the air leaves, step by step, as the fall slows
+        ld.reach = vec f64 []
+        fall : f64 [ dv_len[ v1 ] ]
+        force : f64 [ dv_len[ want ] * ld.mass ]
+        for [ k: i32 0, k < ld.steps, k += 1 ]
+            gone : f64 [ f64[ k ] / f64[ ld.steps ] ]
+            ark : standard_air[ r1.z * (1.0 - gone) + deck_h ]
+            sk : f64 [ air_share[ c, fall * (1.0 - gone), ark, force ] ]
+            ld.reach.push[ sk ]
+        warm : bool [ plan && plan.feasible
+                      && plan.flight - (met + lead - plan_t) > 2.0 ]
+        if [ warm ]
+            ld.flight = plan.flight - (met + lead - plan_t)
+            ld.relax = plan.relax
+        vd : f64 [ (0.0 - v1.z > 1.0) ? 0.0 - v1.z : 1.0 ]
+        guess : f64 [ 2.0 * r1.z / vd ]
+        if [ plan && plan.feasible ]
+            guess = max[ guess, plan.flight - (met + lead - plan_t) ]
+        # past the last plan's end: never a range that is empty
+        if [ guess < 3.0 ] guess = 3.0
+        lo : f64 [ guess * 0.5 ]
+        if [ lo < 2.0 ] lo = 2.0
+        ld.best_lo = lo
+        ld.best_hi = guess * 1.6 + 3.0
+        area : f64 [ 3.14159265358979 * c.radius * c.radius ]
+        tb : table[].copy[]
+        job = PlanJob [ ld: ld, tb: tb, area: area,
+                        deck: deck_h, at: met + lead, warm: warm ]
+        if [ landing == LandingMethod.scvx ]
+            job.sc = Scvx [ r0: r1, v0: v1, mass: ld.mass,
+                            thrust_min: ld.thrust_min,
+                            thrust_max: ld.thrust_max, isp: ld.isp,
+                            tilt: ld.tilt, glide: ld.glide,
+                            steps: ld.steps, flight: guess,
+                            drag: tb.lit, area: area, deck: deck_h,
+                            start: vec f64 [], turn: ld.turn,
+                            thrust_now: Dvec [ ld.lat_now.x * ld.mass,
+                                               ld.lat_now.y * ld.mass,
+                                               push.z * ld.mass ] ]
+            if [ warm && plan_sc && plan_sc.feasible ]
+                job.sc.shift[ plan_sc, met + lead - plan_t ]
+        work : vec Au []
+        work.push[ job ]
+        run : lambda [ arg: object ]
+            plan_work[ arg ]
+        solver = async [ work_fn: run, work: work ]
+
+    # the step of the plan in force now, -1 with none
+    func k_now [] -> i32
+        if [ !plan || !plan.feasible ] return -1
+        dt : f64 [ plan.flight / f64[ plan.steps ] ]
+        k : i32 [ i32[ (met - plan_t) / dt ] ]
+        return (k < 0) ? 0 : k
+
+    # the drag the plans count on: straight back along the flight,
+    # local east, north, up (m/s2)
+    func known_drag [ c: Craft, v: Dvec, ar: Air ] -> Dvec
+        area : f64 [ 3.14159265358979 * c.radius * c.radius ]
+        sp : f64 [ dv_len[ v ] ]
+        ca : f64 [ c.axial_coeff[ sp / ar.sound, true, true ] ]
+        k_d : f64 [ 0.5 * ar.density * sp * ca * area / c.mass ]
+        return dv_scale[ v, 0.0 - k_d ]
+
+    # planned at 85 percent at most: the rest is for corrections;
+    # the push across turns at 2 m/s3: 20 m/s2 at 0.1 rad/s, as
+    # flown (an estimate)
+    func landing_problem [ c: Craft, r0: Dvec, v0: Dvec,
+                           aim_i: Dvec ] -> Landing
+        e : c.engines[ 0 ]
+        # at sea level the outside air pushes on its exit
+        sl_back : f64 [ 101325.0 * e.exit_area ]
+        return Landing [ r0: r0, v0: v0, mass: c.mass,
+                         thrust_min: 0.4 * e.thrust_vac - sl_back,
+                         thrust_max: 0.85 * (e.thrust_vac - sl_back),
+                         isp: 287.5,
+                         tilt: 0.35, glide: 0.1, steps: 16,
+                         turn: 2.0 ]
+
+    # metres one engine at 70 percent needs to stop a fall of
+    # v_down from height h, the standard air's drag helping
+    func stop_loss [ c: Craft, tb: DragTable, mass: f64, v_down: f64,
+                     h: f64 ] -> f64
+        v : f64 [ v_down ]
+        z : f64 [ h ]
+        m : f64 [ mass ]
+        e : c.engines[ 0 ]
+        area : f64 [ 3.14159265358979 * c.radius * c.radius ]
+        dt : f64 [ 0.05 ]
+        for [ i: i32 0, i < 4000, i += 1 ]
+            if [ v <= 0.0 ] break
+            ar : standard_air[ z ]
+            push : f64 [ 0.7 * e.thrust_vac - ar.pressure * e.exit_area ]
+            ca : f64 [ tb.coeff[ v / ar.sound, true ] ]
+            drag : f64 [ 0.5 * ar.density * v * v * ca * area ]
+            acc : f64 [ (push + drag) / m - 9.8 ]
+            v -= acc * dt
+            z -= v * dt
+            m -= e.flow * 0.7 * dt
+        return h - z
+
+    # the drag table from the shape as it is now (fins, legs),
+    # made again each second
+    func table [] -> DragTable
+        if [ !drag_tb || met - drag_t > 1.0 ]
+            if [ !drag_tb ] drag_tb = DragTable [ ]
+            drag_tb.fill[ booster ]
+            drag_t = met
+        return drag_tb
+
+    # where the booster comes down when it flies the rest of its
+    # sequence from its believed state, by the flight's own rules:
+    # coast, the entry burn, the fall without a lean, the landing
+    # burn lit by its rule and braking to the deck; still standard
+    # air. stage: 3 coast, 4 entry burn, 5 the fall
+    func forecast [ stage_at: i32 ] -> Impact
+        nv : low.filter
+        c : booster
+        tb : table[]
+        e : c.engines[ 0 ]
+        out : Impact [ ok: false ]
+        pos : nv.r
+        vel : nv.v
+        spin : Dvec [ 0.0, 0.0, EARTH_SPIN ]
+        mass : f64 [ c.mass ]
+        prop : f64 [ c.propellant[] ]
+        area : f64 [ 3.14159265358979 * c.radius * c.radius ]
+        stage : i32 [ stage_at ]
+        clock : f64 [ 0.0 ]
+        look : f64 [ 0.0 ]
+        stop : f64 [ -1e30 ]
+        h : f64 [ 0.25 ]
+        for [ i: i32 0, i < 40000, i += 1 ]
+            ang : f64 [ turn[ nv.time + clock ] ]
+            geo : ecef_to_geodetic[ eci_to_ecef[ pos, ang ] ]
+            up : ecef_to_eci[ enu_up[ geo.x, geo.y ], ang ]
+            # through the wind it knows: the air moves too
+            mw : known_wind[ c, geo.z ]
+            east_i : ecef_to_eci[ enu_east[ geo.x, geo.y ], ang ]
+            north_i : ecef_to_eci[ enu_north[ geo.x, geo.y ], ang ]
+            wind_i : dv_add[ dv_scale[ east_i, mw.x ],
+                             dv_scale[ north_i, mw.y ] ]
+            ground : dv_sub[ vel, dv_cross[ spin, pos ] ]
+            rel : dv_sub[ ground, wind_i ]
+            sp : f64 [ dv_len[ rel ] ]
+            down : f64 [ 0.0 - dv_dot[ ground, up ] ]
+            above : f64 [ geo.z - deck_h ]
+            if [ above <= 0.0 || (stage == 6 && down <= 0.5) ]
+                out.point = eci_to_ecef[ pos, ang ]
+                out.time = clock
+                out.lat = geo.x
+                out.lon = geo.y
+                out.ok = true
+                return out
+            # the rules, as the flight flies them
+            if [ stage == 3 ]
+                if [ geo.z < 57000.0 && sp > 1000.0 && down > 0.0 ]
+                    stage = 4
+                el [ geo.z < 40000.0 && down > 0.0 ]
+                    stage = 5
+            el [ stage == 4 ]
+                if [ sp < 900.0 || prop < 6500.0 ] stage = 5
+            el [ stage == 5 && above < 8000.0 ]
+                if [ clock >= look ]
+                    look = clock + 0.5
+                    stop = stop_loss[ c, tb, mass, down, above + deck_h ]
+                           + 40.0 + down * 0.3
+                if [ above < stop ] stage = 6
+            ar : standard_air[ geo.z ]
+            lit : f64 [ 0.0 ]
+            th : f64 [ 0.0 ]
+            if [ stage == 4 && prop > 0.0 ]
+                lit = 3.0
+                th = 1.0
+            el [ stage == 6 && prop > 0.0 ]
+                # brake the fall to the deck, on one engine
+                rise : f64 [ (above > 1.0) ? above : 1.0 ]
+                need : f64 [ down * down / (2.0 * rise) + 9.8 ]
+                lit = 1.0
+                th = (mass * need + ar.pressure * e.exit_area)
+                     / e.thrust_vac
+                if [ th < e.throttle_min ] th = e.throttle_min
+                if [ th > 1.0 ] th = 1.0
+            push : f64 [ lit * (th * e.thrust_vac
+                         - ar.pressure * e.exit_area) ]
+            ca : f64 [ tb.coeff[ sp / ar.sound, lit > 0.0 ] ]
+            k : f64 [ 0.5 * ar.density * sp * ca * area / mass ]
+            back : dv_scale[ rel, (sp > 1e-6) ? -1.0 / sp : 0.0 ]
+            acc : dv_add[ dv_sub[ gravity[ pos ], dv_scale[ rel, k ] ],
+                          dv_scale[ back, push / mass ] ]
+            vel = dv_add[ vel, dv_scale[ acc, h ] ]
+            pos = dv_add[ pos, dv_scale[ vel, h ] ]
+            burn : f64 [ lit * e.flow * th * h ]
+            mass -= burn
+            prop -= burn
+            clock += h
+            h = (stage == 6 || geo.z < 20000.0) ? 0.05 : 0.25
+        return out
+
+    # the deck's anemometer: the real wind on its mast, gusts and
+    # all, averaged over about 10 s (an estimate)
+    func read_deck_wind []
+        if [ !deck_air ]
+            w : stack.weather
+            deck_air = Weather [ levels: w.levels, severity: w.severity,
+                                 seed: w.seed * 2862933555777941757 + 3 ]
+            deck_wind = deck_air.mean_wind[ deck_h + 10.0 ]
+        mast : f64 [ deck_h + 10.0 ]
+        sw : deck_air.mean_wind[ mast ]
+        felt : deck_air.air_at[ mast, dv_len[ sw ], 0.5 ]
+        deck_wind = dv_add[ deck_wind, dv_scale[
+                            dv_sub[ felt.wind, deck_wind ], 0.05 ] ]
+
+    # the wind the flight computer knows at a height, east and
+    # north: the profile loaded before launch, its bottom shifted
+    # to what the deck measures, the shift gone by 1 km
+    func known_wind [ c: Craft, h: f64 ] -> Dvec
+        aloft : c.weather.mean_wind[ h ]
+        if [ !deck_air ] return aloft
+        there : c.weather.mean_wind[ deck_h + 10.0 ]
+        fade : f64 [ 1.0 - min[ max[ h - deck_h, 0.0 ] / 1000.0, 1.0 ] ]
+        return dv_add[ aloft, dv_scale[ dv_sub[ deck_wind, there ],
+                                       fade ] ]
+
+    # the booster's distance from the mark (m) and its speed
+    public func landing_report [] -> vec f64
+        ang : f64 [ turn[ booster.time ] ]
+        feet : booster.body_point[ Dvec [ LEG_FOOT_X, 0.0, 0.0 ] ]
+        off : dv_sub[ eci_to_ecef[ feet, ang ], target ]
+        up : enu_up[ pad_lat, pad_lon ]
+        flat : dv_sub[ off, dv_scale[ up, dv_dot[ off, up ] ] ]
+        sp : f64 [ dv_len[ air_speed[ booster.state.r,
+                                      booster.state.v ] ] ]
+        ax : q_rotate[ booster.state.q, Dvec [ 1.0, 0.0, 0.0 ] ]
+        tilt : f64 [ acos[ dv_dot[ ax, ecef_to_eci[ up, ang ] ] ] ]
+        return vec f64 [] [ dv_len[ flat ], sp, tilt * 57.2957795,
+                            booster.propellant[] ]
+
+# the whole flight: up, the upper stage to orbit, the booster
+# back onto the deck it left
+expect func t_return_to_pad [] -> bool
+    return return_to_pad[ LandingMethod.scvx ]
+
+expect func t_return_to_pad_gfold [] -> bool
+    return return_to_pad[ LandingMethod.gfold ]
+
+func return_to_pad [ method: LandingMethod ] -> bool
+    ms : Mission [ landing: method ]
+    ms.hold[]
+    ms.stack.weather.severity = 1
+    for [ i: i32 0, i < 320000, i += 1 ]
+        ms.step[ 0.0025 ]
+        # the app drains its pool each frame: so does this
+        if [ i % 7 == 0 ] Au.auto_free[]
+        if [ ms.settled && ms.upper == 3 ] break
+        if [ ms.lower == 9 || (ms.lower >= 7 && ms.met > 700.0) ] break
+    if [ ms.lower != 7 ]
+        log 'mission: booster not down, phase {ms.lower} at T{ms.met}'
+        return false
+    rep : ms.landing_report[]
+    how : method_name[ method ]
+    log 'mission {how}: down {rep[ 0 ]} m from the mark at {rep[ 1 ]} m/s, {rep[ 2 ]} deg tilt, {rep[ 3 ]} kg left'
+    # on the pad: inside 2/3 of the deck, standing
+    return rep[ 0 ] < 32.0 && rep[ 2 ] < 5.0
+
+# the ascent alone for a kick: MECO height, speed across, up
+func ascent_probe [ k: f64 ] -> vec f64
+    ms : Mission [ kick: k ]
+    for [ i: i32 0, i < 80000, i += 1 ]
+        ms.step[ 0.0025 ]
+        if [ ms.lower > 0 ] break
+    nv : ms.low.filter
+    fr : ms.frame[ nv.r, nv.time ]
+    rel : ms.air_speed[ nv.r, nv.v ]
+    vr : f64 [ dv_dot[ rel, fr.up ] ]
+    vh : f64 [ dv_len[ dv_sub[ rel, dv_scale[ fr.up, vr ] ] ] ]
+    return vec f64 [] [ ms.height[ nv.r, nv.time ], vh, vr, ms.met ]
+

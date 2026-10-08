@@ -1,8 +1,11 @@
 export 0.2.0
+export scenes ['Clouds']
+export dependencies ['orbiter']
 
 import vec
 import img
 import trinity
+import scenes
 
 import <stdio.h>
 import <stdlib.h>
@@ -1228,72 +1231,45 @@ class WeatherState
     public sun_el    : f32
     public sun_az    : f32
 
-# the view: owns the textures and the render target
-element SkyView
-    style : CSS {
-        area: l0 t0 r0 b0
-    }
-    public yaw       : f32
-    public pitch     : f32
-    public cam_h     : f32 [ 2.0 ]
-    public cam_x     : f32
-    public cam_z     : f32
-    public exposure  : f32 [ 1.0 ]
-    public quality   : f32 [ 1.0 ]
-    public view_mode : i32
-    public wscale    : f32 [ 0.5 ]
-    public night     : f32
-    public speed     : f32
-    public bolts     : f32 [ 1.0 ]
-    mutable last_dt  : f32 [ 0.016 ]
-    public seconds   : f32
-    public temporal  : bool [ true ]
-    public cur       : WeatherState
-    mutable sky      : NubisSky
-    mutable vmodel   : Model
-    mutable vrender  : Render
-    mutable comp_a   : TemporalCompose
-    mutable comp_b   : TemporalCompose
-    mutable hist_a   : Render
-    mutable hist_b   : Render
-    mutable model_a  : Model
-    mutable model_b  : Model
-    mutable prev_right : vec4f
-    mutable prev_up    : vec4f
-    mutable prev_fwd   : vec4f
-    mutable prev_pos   : vec4f
-    mutable hist_valid : bool
-    mutable tx_shape : Texture
-    mutable tx_detail: Texture
-    mutable tx_curl  : Texture
-    mutable tx_weather : Texture
-    mutable tx_tvar    : Texture
-    mutable tx_island  : Texture
-    mutable tx_stars   : Texture
-    mutable env_model  : Model
-    mutable env_render : Render
-    mutable wave_buf   : Buffer
-    mutable wave_n     : i32
-    mutable wave_wind  : f32 [ -1.0 ]
-    mutable bolt       : vec f32
-    mutable bolt_t     : f32
-    mutable bolt_dur   : f32 [ 0.55 ]
-    mutable bolt_wait  : f32 [ 0.5 ]
-    mutable bolt_dark  : f32
-    mutable wseed      : u32 [ 987654321 ]
-    mutable old_islands : vec Texture
-    mutable wimg     : Image
-    mutable timg     : Image
-    mutable frame    : i32
-    mutable last_secs : f32
-    mutable gpu_ms   : f32
-    mutable isl_cov  : f32 [ -1.0 ]
-    mutable isl_mix  : f32
-    mutable isl_secs : f32 [ -10.0 ]
-    mutable edt_v    : vec i32
-    mutable edt_z    : vec f32
-    mutable edt_f    : vec f32
-    mutable edt_d    : vec f32
+# a cloudscape whichever view draws it: the baked noise, the
+# weather, the sea, the lightning, the sky shader and its env pass
+class CloudWorld
+    public cur        : WeatherState
+    public cam_x      : f32
+    public cam_z      : f32
+    public seconds    : f32
+    # the lightning's rate: 0 none, 1 as the weather gives
+    public bolts      : f32 [ 1.0 ]
+    public bolt_dark  : f32
+    public wseed      : u32 [ 7919 ]
+    public sky        : NubisSky
+    public vmodel     : Model
+    public env_model  : Model
+    public env_render : Render
+    public wave_buf   : Buffer
+    public wave_n     : i32
+    public wave_wind  : f32 [ -1.0 ]
+    public bolt       : vec f32
+    public bolt_t     : f32
+    public bolt_dur   : f32 [ 0.55 ]
+    public bolt_wait  : f32 [ 0.5 ]
+    public tx_shape   : Texture
+    public tx_detail  : Texture
+    public tx_curl    : Texture
+    public tx_weather : Texture
+    public tx_tvar    : Texture
+    public tx_island  : Texture
+    public tx_stars   : Texture
+    public old_islands : vec Texture
+    public wimg       : Image
+    public timg       : Image
+    public isl_cov    : f32 [ -1.0 ]
+    public isl_mix    : f32
+    public isl_secs   : f32 [ -10.0 ]
+    public edt_v      : vec i32
+    public edt_z      : vec f32
+    public edt_f      : vec f32
+    public edt_d      : vec f32
 
     func sat [ v: f32 ] -> f32
         return (v < 0.0) ? 0.0 : ((v > 1.0) ? 1.0 : v)
@@ -1401,7 +1377,7 @@ element SkyView
         isl_mix   = cur.island
         isl_secs  = seconds
 
-    func wrnd [] -> f32
+    public func rnd [] -> f32
         wseed = wseed * 1664525 + 1013904223
         return f32[ wseed >> 8 ] / 16777216.0
 
@@ -1476,14 +1452,14 @@ element SkyView
             if [ sp > 3.14159265 ] sp = 3.14159265
             dth : f32 [ sp / f32[ ND ] ]
             for [ j: i32 0, j < ND, j += 1 ]
-                u : f32 [ (f32[ j ] + wrnd[]) / f32[ ND ] ]
+                u : f32 [ (f32[ j ] + rnd[]) / f32[ ND ] ]
                 th : f32 [ (u - 0.5) * sp ]
                 D : f32 [ 0.5 * bs * sech2[ bs * th ] * qn ]
                 A : f32 [ sqrt[ 2.0 * S * D * dom * dth ] ]
                 wd[ idx * 4 ]     = k * cos[ th0 + th ]
                 wd[ idx * 4 + 1 ] = k * sin[ th0 + th ]
                 wd[ idx * 4 + 2 ] = A
-                wd[ idx * 4 + 3 ] = wrnd[] * 6.2831853
+                wd[ idx * 4 + 3 ] = rnd[] * 6.2831853
                 idx += 1
         wave_n = idx
         wave_wind = wind
@@ -1548,8 +1524,8 @@ element SkyView
         bx : f32 [ 0.0 ]
         bz : f32 [ 0.0 ]
         for [ tries: i32 0, tries < 24, tries += 1 ]
-            ang : f32 [ wrnd[] * 6.2831853 ]
-            rad : f32 [ 2200.0 + wrnd[] * 11000.0 ]
+            ang : f32 [ rnd[] * 6.2831853 ]
+            rad : f32 [ 2200.0 + rnd[] * 11000.0 ]
             tx : f32 [ cos[ ang ] * rad ]
             tz : f32 [ sin[ ang ] * rad ]
             c0 : f32 [ cov_at[ tx, tz ] ]
@@ -1570,8 +1546,8 @@ element SkyView
         if [ best < 0.55 ] return
         # halfway up that cloud's own column, never at its base or top
         top : f32 [ top_at[ bx, bz ] ]
-        y : f32 [ 1500.0 + top * (0.38 + wrnd[] * 0.22) ]
-        pw : f32 [ 7.5e5 * (0.6 + wrnd[] * 0.8) ]
+        y : f32 [ 1500.0 + top * (0.38 + rnd[] * 0.22) ]
+        pw : f32 [ 7.5e5 * (0.6 + rnd[] * 0.8) ]
         bolt[ 0 ] = bx
         bolt[ 1 ] = y
         bolt[ 2 ] = bz
@@ -1579,17 +1555,17 @@ element SkyView
         # the channel stays inside the cloud: short steps, small kicks
         for [ k: i32 1, k < 4, k += 1 ]
             bolt[ k * 4 ]     = bolt[
-                (k - 1) * 4 ] + (wrnd[] - 0.5) * 170.0
+                (k - 1) * 4 ] + (rnd[] - 0.5) * 170.0
             bolt[ k * 4 + 1 ] = bolt[
-                (k - 1) * 4 + 1 ] - (60.0 + wrnd[] * 120.0)
+                (k - 1) * 4 + 1 ] - (60.0 + rnd[] * 120.0)
             bolt[ k * 4 + 2 ] = bolt[
-                (k - 1) * 4 + 2 ] + (wrnd[] - 0.5) * 170.0
+                (k - 1) * 4 + 2 ] + (rnd[] - 0.5) * 170.0
             bolt[ k * 4 + 3 ] = pw * (0.75 - 0.15 * f32[ k ])
         bolt_t = 0.55
         bolt_dur = 0.55
 
     # how often a sky like this flashes at all
-    func bolt_tick [ dt: f32 ]
+    public func bolt_tick [ dt: f32 ]
         if [ !bolt ]
             bolt = vec f32 [ 16 ]
         if [ bolt_t > 0.0 ]
@@ -1607,12 +1583,12 @@ element SkyView
         if [ lam < 0.001 ]
             bolt_wait = 2.0
             return
-        u : f32 [ 0.02 + wrnd[] * 0.98 ]
+        u : f32 [ 0.02 + rnd[] * 0.98 ]
         bolt_wait = 0.0 - log[ u ] / lam
         bolt_strike[]
 
-    func load_texture [ vk: vk_context, w: Window, p: path,
-                        depth: i32 ] -> Texture
+    func noise_texture [ vk: vk_context, w: Window, p: path,
+                         depth: i32 ] -> Texture
         expect p.exists[], 'baked noise missing: {p}'
         im : Image [ uri: p, linear: true, wrap_u: true, wrap_v: true ]
         im.hold[]
@@ -1622,56 +1598,211 @@ element SkyView
         tx.hold[]
         return tx
 
+    # once: the noise, the island map, the sea and the sky shader
+    public func build [ vk: vk_context, w: Window ]
+        if [ sky ] return
+        p1 : path '../clouds/baked/shape.png'
+        if [ !p1.exists[] ]
+            log 'clouds: no baked noise, baking live'
+            clouds_bake[]
+        baked : path '../clouds/baked'
+        stars : path '{scenes_share[]}/textures/gaia.png'
+        shape_png : path '{baked}/shape.png'
+        detail_png : path '{baked}/detail.png'
+        curl_png : path '{baked}/curl.png'
+        weather_png : path '{baked}/weather.png'
+        tops_png : path '{baked}/tops.png'
+        tx_shape   = noise_texture[ vk, w, shape_png, 128 ]
+        tx_detail  = noise_texture[ vk, w, detail_png, 32 ]
+        tx_curl    = noise_texture[ vk, w, curl_png, 1 ]
+        tx_weather = noise_texture[ vk, w, weather_png, 1 ]
+        tx_tvar    = noise_texture[ vk, w, tops_png, 1 ]
+        tx_stars   = noise_texture[ vk, w, stars, 1 ]
+        wimg = Image [ uri: weather_png, linear: true ]
+        wimg.hold[]
+        timg = Image [ uri: tops_png, linear: true ]
+        timg.hold[]
+        build_island[ vk, w ]
+        build_waves[ vk, cur.wind ]
+        sky = NubisSky [ vk: vk, name: 'nubis-sky' ]
+        sky.hold[]
+        smp : map Au[string] [ 'shape': tx_shape,
+                               'detail': tx_detail, 'curl': tx_curl,
+                               'weather': tx_weather,
+                               'island': tx_island, 'tvar': tx_tvar,
+                               'waves': wave_buf, 'stars': tx_stars ]
+        # the environment pass: the SAME shader instance, told to draw
+        # the whole sky into a small mipped map the sea reflects. each
+        # draw snapshots the uniforms, so the flag can differ per pass
+        env_model = Model [ vk: vk, w: w, s: sky, samplers: smp ]
+        env_model.hold[]
+        env_render = Render [ vk: vk, w: w, width: 512, height: 256,
+                              wscale: 0.0,
+            tag: 'nubis-env', mips: 6, aniso: 8,
+            clear_color: vec4f [ 0.0, 0.0, 0.0, 1.0 ],
+            models: [ env_model ] ]
+        env_render.hold[]
+        smp[ 'envmap' ] = env_render.color
+        vmodel = Model [ vk: vk, w: w, s: sky, samplers: smp ]
+        vmodel.hold[]
+
+    # the island map follows the weather blend, a few times a second;
+    # the sea state follows the wind
+    public func follow [ vk: vk_context, w: Window ]
+        dc : f32 [ cur.coverage - isl_cov ]
+        dm : f32 [ cur.island - isl_mix ]
+        if [ dc < 0.0 ] dc = 0.0 - dc
+        if [ dm < 0.0 ] dm = 0.0 - dm
+        if [ (dc > 0.01 || dm > 0.02) && seconds - isl_secs > 0.25 ]
+            build_island[ vk, w ]
+            vmodel.samplers[ 'island' ] = tx_island
+            vmodel.rebind_model[]
+        dw : f32 [ cur.wind - wave_wind ]
+        if [ dw < 0.0 ] dw = 0.0 - dw
+        if [ dw > 0.5 ] build_waves[ vk, cur.wind ]
+
+    # what every view sets alike: the strikes, the place in the world,
+    # the cloud layer, the light and the sea
+    public func shared_uniforms []
+        be : f32 [
+            (bolt_t > 0.0) ? bolt_env[ 1.0 - bolt_t / bolt_dur ] : 0.0 ]
+        # each element is read into its own value first: a vec4f built
+        # straight out of vector reads arrives at the shader as zeros
+        for [ bi: i32 0, bi < 4, bi += 1 ]
+            q0 : f32 [ bolt[ bi * 4 ] ]
+            q1 : f32 [ bolt[ bi * 4 + 1 ] ]
+            q2 : f32 [ bolt[ bi * 4 + 2 ] ]
+            q3 : f32 [ bolt[ bi * 4 + 3 ] ]
+            bv : vec4f [ q0, q1, q2, q3 ]
+            if [ bi == 0 ] sky.bolt_a = bv
+            if [ bi == 1 ] sky.bolt_b = bv
+            if [ bi == 2 ] sky.bolt_c = bv
+            if [ bi == 3 ] sky.bolt_d = bv
+        sky.bolt_col = vec4f [ 0.82, 0.88, 1.0, be ]
+        sky.world    = vec4f [ cam_x, cam_z, 0.0, 0.0 ]
+        sky.layer    = vec4f [ 1500.0, 6000.0, 6371000.0, 6471000.0 ]
+        sky.tops     = vec4f [ 1100.0, 1800.0, 3000.0, 0.0 ]
+        sky.light_a  = vec4f [ 0.6, 1.4, 0.18, 1.0 ]
+        sky.light_b  = vec4f [ 0.4, 0.75, 0.5, 0.016 ]
+        sky.scales   = vec4f [ 6000.0, 650.0, 3000.0, 60000.0 ]
+        sky.sea      = vec4f [ f32[ wave_n ], 1.15, 0.55, 12000.0 ]
+
+    # the sky into the environment map first, then its mip chain, so
+    # the sea's reflection has something filtered to read
+    public func env_pass [ jitter: vec4f ]
+        sky.env    = vec4f [ 1.0, 0.0, 0.0, 0.0 ]
+        sky.jitter = vec4f [ 0.0, 0.0, 1.0, 0.0 ]
+        env_render.update[]
+        env_render.draw[]
+        env_render.sync_fence[]
+        env_render.gen_mips[]
+        sky.env    = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+        sky.jitter = jitter
+
+# the weather presets, each with the sun the app's own clock uses
+func weather_states [] -> vec WeatherState
+    states : vec WeatherState []
+    states += WeatherState [ name: 'clear, a few cumulus',
+                             coverage: 0.4, ctype: 0.85, island: 0.8,
+                             anvil: 0.0, skew: 300.0, density: 1.0,
+                             detail: 0.3, wind: 6.0, sun_el: 0.9,
+                             sun_az: 1.2 ]
+    states += WeatherState [ name: 'fair weather cumulus',
+                             coverage: 0.62, ctype: 0.8, island: 0.5,
+                             anvil: 0.1, skew: 500.0, density: 1.0,
+                             detail: 0.32, wind: 8.0, sun_el: 0.75,
+                             sun_az: 5.9 ]
+    states += WeatherState [ name: 'stratocumulus sheet',
+                             coverage: 0.85, ctype: 0.45,
+                             island: 0.2, anvil: 0.0, skew: 400.0,
+                             density: 1.1, detail: 0.28, wind: 10.0,
+                             sun_el: 0.6, sun_az: 0.0 ]
+    states += WeatherState [ name: 'overcast stratus',
+                             coverage: 0.97, ctype: 0.08,
+                             island: 0.0, anvil: 0.0, skew: 200.0,
+                             density: 1.4, detail: 0.22, wind: 5.0,
+                             sun_el: 0.7, sun_az: 2.0 ]
+    states += WeatherState [ name: 'heavy cumulus',
+                             coverage: 0.62, ctype: 0.9, island: 0.4,
+                             anvil: 1.0, skew: 900.0, density: 1.3,
+                             detail: 0.3, wind: 18.0, sun_el: 0.45,
+                             sun_az: 5.6 ]
+    states += WeatherState [ name: 'sunset towers',
+                             coverage: 0.45, ctype: 0.95,
+                             island: 0.7, anvil: 0.4, skew: 600.0,
+                             density: 1.0, detail: 0.3, wind: 7.0,
+                             sun_el: 0.07, sun_az: 6.0 ]
+    return states
+
+func copy_weather [ s: WeatherState ] -> WeatherState
+    return WeatherState [ name: s.name, coverage: s.coverage,
+                          ctype: s.ctype, island: s.island,
+        anvil: s.anvil, skew: s.skew, density: s.density,
+        detail: s.detail, wind: s.wind, sun_el: s.sun_el,
+        sun_az: s.sun_az ]
+
+# the app's view: its camera, its passes, the history ping-pong
+element SkyView
+    style : CSS {
+        area: l0 t0 r0 b0
+    }
+    public yaw       : f32
+    public pitch     : f32
+    public cam_h     : f32 [ 2.0 ]
+    public cam_x     : f32
+    public cam_z     : f32
+    public exposure  : f32 [ 1.0 ]
+    public quality   : f32 [ 1.0 ]
+    public view_mode : i32
+    public wscale    : f32 [ 0.5 ]
+    public night     : f32
+    public speed     : f32
+    public bolts     : f32 [ 1.0 ]
+    mutable last_dt  : f32 [ 0.016 ]
+    public seconds   : f32
+    public temporal  : bool [ true ]
+    public cur       : WeatherState
+    mutable world    : CloudWorld
+    mutable vrender  : Render
+    mutable comp_a   : TemporalCompose
+    mutable comp_b   : TemporalCompose
+    mutable hist_a   : Render
+    mutable hist_b   : Render
+    mutable model_a  : Model
+    mutable model_b  : Model
+    mutable prev_right : vec4f
+    mutable prev_up    : vec4f
+    mutable prev_fwd   : vec4f
+    mutable prev_pos   : vec4f
+    mutable hist_valid : bool
+    mutable frame    : i32
+    mutable last_secs : f32
+    mutable gpu_ms   : f32
+
+    func sat [ v: f32 ] -> f32
+        return (v < 0.0) ? 0.0 : ((v > 1.0) ? 1.0 : v)
+
     public func draw [ w: Window ]
         if [ w.draw_stage != CanvasType.screen ] return
         ux.will_animate = true
         cv : Canvas [ w.screen ]
+        if [ !world ]
+            world = CloudWorld [ cur: cur, wseed: 987654321 ]
+        world.cur     = cur
+        world.cam_x   = cam_x
+        world.cam_z   = cam_z
+        world.seconds = seconds
+        world.bolts   = bolts
         if [ !vrender ]
-            p1 : path '../clouds/baked/shape.png'
-            if [ !p1.exists[] ]
-                log 'clouds: no baked noise — baking live (SILVER_EXPORT=1 bakes at build)'
-                clouds_bake[]
-            tx_shape   = load_texture[ cv.vk, w, path '../clouds/baked/shape.png', 128 ]
-            tx_detail  = load_texture[ cv.vk, w, path '../clouds/baked/detail.png', 32 ]
-            tx_curl    = load_texture[ cv.vk, w, path '../clouds/baked/curl.png', 1 ]
-            tx_weather = load_texture[ cv.vk, w, path '../clouds/baked/weather.png', 1 ]
-            tx_tvar    = load_texture[ cv.vk, w, path '../clouds/baked/tops.png', 1 ]
-            tx_stars   = load_texture[ cv.vk, w, path '../scenes/textures/gaia.png', 1 ]
-            wimg = Image [ uri: path '../clouds/baked/weather.png', linear: true ]
-            wimg.hold[]
-            timg = Image [ uri: path '../clouds/baked/tops.png', linear: true ]
-            timg.hold[]
-            build_island[ cv.vk, w ]
-            build_waves[ cv.vk, cur.wind ]
-            sky = NubisSky [ vk: cv.vk, name: 'nubis-sky' ]
-            sky.hold[]
-            smp : map Au[string] [ 'shape': tx_shape,
-                                   'detail': tx_detail, 'curl': tx_curl,
-                                   'weather': tx_weather,
-                                   'island': tx_island, 'tvar': tx_tvar,
-                                   'waves': wave_buf,
-                                   'stars': tx_stars ]
-            # the environment pass: the SAME shader instance, told to
-            # draw the whole sky into a small mipped map the sea
-            # reflects. each draw snapshots the uniforms, so the flag
-            # can differ per pass
-            env_model = Model [ vk: cv.vk, w: w, s: sky, samplers: smp ]
-            env_model.hold[]
-            env_render = Render [ vk: cv.vk, w: w, width: 512,
-                                  height: 256, wscale: 0.0,
-                tag: 'nubis-env', mips: 6, aniso: 8,
-                clear_color: vec4f [ 0.0, 0.0, 0.0, 1.0 ],
-                models: [ env_model ] ]
-            env_render.hold[]
-            smp[ 'envmap' ] = env_render.color
-            vmodel = Model [ vk: cv.vk, w: w, s: sky, samplers: smp ]
-            vmodel.hold[]
+            world.build[ cv.vk, w ]
             vrender = Render [ vk: cv.vk, w: w, wscale: wscale * 0.5,
                                tag: 'clouds',
                 clear_color: vec4f [ 0.0, 0.0, 0.0, 1.0 ],
-                models: [ vmodel ] ]
+                models: [ world.vmodel ] ]
             vrender.hold[]
             vrender.timing = true
+            # owned: the element's own passes, never the backdrop
+            vrender.owner = a
             w.element_targets[ 'sky_{id}' ] = vrender
             # history ping-pong: each compose reads the other's last
             # frame
@@ -1703,6 +1834,8 @@ element SkyView
             hist_b.models = vec Model [] [ model_b ]
             model_a.finish[ hist_a, 0 ]
             model_b.finish[ hist_b, 0 ]
+            hist_a.owner = a
+            hist_b.owner = a
             w.element_targets[ 'skya_{id}' ] = hist_a
             w.element_targets[ 'skyb_{id}' ] = hist_b
         frame += 1
@@ -1711,15 +1844,7 @@ element SkyView
         if [ sdt > 0.5 ] sdt = 0.016
         last_dt = sdt
         last_secs = seconds
-        # the island map follows the weather blend, a few times a second
-        dc : f32 [ cur.coverage - isl_cov ]
-        dm : f32 [ cur.island - isl_mix ]
-        if [ dc < 0.0 ] dc = 0.0 - dc
-        if [ dm < 0.0 ] dm = 0.0 - dm
-        if [ (dc > 0.01 || dm > 0.02) && seconds - isl_secs > 0.25 ]
-            build_island[ cv.vk, w ]
-            vmodel.samplers[ 'island' ] = tx_island
-            vmodel.rebind_model[]
+        world.follow[ cv.vk, w ]
         # camera basis from yaw / pitch
         cp : f32 [ cos[ pitch ] ]
         fx : f32 [ cp * sin[ yaw ] ]
@@ -1736,6 +1861,7 @@ element SkyView
         uz : f32 [ rx * fy ]
         th : f32 [ 0.577 ]
         aspect : f32 [ bounds.w / bounds.h ]
+        sky : world.sky
         sky.cam_pos   = vec4f [ 0.0, cam_h, 0.0, 0.0 ]
         sky.cam_right = vec4f [ rx, 0.0, rz, th * aspect ]
         sky.cam_up    = vec4f [ ux2, uy, uz, th ]
@@ -1747,41 +1873,16 @@ element SkyView
                                 22.0 * (1.0 - night) + 1.3 * night ]
         sky.wind      = vec4f [ cur.wind * 0.8, 0.0, cur.wind * 0.6,
                                 seconds ]
-        sky.layer     = vec4f [ 1500.0, 6000.0, 6371000.0, 6471000.0 ]
-        sky.tops      = vec4f [ 1100.0, 1800.0, 3000.0, 0.0 ]
         sky.weather_a = vec4f [ cur.coverage, cur.ctype, 0.0,
                                 cur.island ]
         sky.weather_b = vec4f [ 0.6, cur.skew, cur.density, cur.detail ]
-        sky.light_a   = vec4f [ 0.6, 1.4, 0.18, 1.0 ]
-        sky.light_b   = vec4f [ 0.4, 0.75, 0.5, 0.016 ]
-        sky.scales    = vec4f [ 6000.0, 650.0, 3000.0, 60000.0 ]
         sky.march     = vec4f [ quality, 1.0, 60000.0, 1.0 / 45000.0 ]
-        # the sea state follows the wind: rebuild when it has moved
-        dw : f32 [ cur.wind - wave_wind ]
-        if [ dw < 0.0 ] dw = 0.0 - dw
-        if [ dw > 0.5 ] build_waves[ cv.vk, cur.wind ]
-        bolt_dark = sat[ (0.16 - cur.sun_el) / 0.16 ]
-        if [ night > 0.5 ] bolt_dark = 1.0
-        bolt_tick[ last_dt ]
-        be : f32 [
-            (bolt_t > 0.0) ? bolt_env[ 1.0 - bolt_t / bolt_dur ] : 0.0 ]
-        # each element is read into its own value first: a vec4f built
-        # straight out of vector reads arrives at the shader as zeros
-        for [ bi: i32 0, bi < 4, bi += 1 ]
-            q0 : f32 [ bolt[ bi * 4 ] ]
-            q1 : f32 [ bolt[ bi * 4 + 1 ] ]
-            q2 : f32 [ bolt[ bi * 4 + 2 ] ]
-            q3 : f32 [ bolt[ bi * 4 + 3 ] ]
-            bv : vec4f [ q0, q1, q2, q3 ]
-            if [ bi == 0 ] sky.bolt_a = bv
-            if [ bi == 1 ] sky.bolt_b = bv
-            if [ bi == 2 ] sky.bolt_c = bv
-            if [ bi == 3 ] sky.bolt_d = bv
-        sky.bolt_col = vec4f [ 0.82, 0.88, 1.0, be ]
-        sky.world     = vec4f [ cam_x, cam_z, 0.0, 0.0 ]
+        world.bolt_dark = sat[ (0.16 - cur.sun_el) / 0.16 ]
+        if [ night > 0.5 ] world.bolt_dark = 1.0
+        world.bolt_tick[ last_dt ]
+        world.shared_uniforms[]
         sky.key_tint  = vec4f [ 1.0 - 0.30 * night, 1.0 - 0.16 * night,
                                 1.0, night ]
-        sky.sea       = vec4f [ f32[ wave_n ], 1.15, 0.55, 12000.0 ]
         sky.view_mode = view_mode
         sky.frame     = frame
         sky.time      = seconds
@@ -1801,16 +1902,8 @@ element SkyView
         # it
         sky.sea_b  = vec4f [ cur.wind, 1.0, 2.0 * th / lh,
                              seconds * 0.0008 ]
-        # the sky into the environment map first, then its mip chain, so
-        # the sea's reflection has something filtered to read
-        sky.env    = vec4f [ 1.0, 0.0, 0.0, 0.0 ]
-        sky.jitter = vec4f [ 0.0, 0.0, 1.0, 0.0 ]
-        env_render.update[]
-        env_render.draw[]
-        env_render.sync_fence[]
-        env_render.gen_mips[]
-        sky.env    = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
-        sky.jitter = vec4f [ jx, jy, (temporal) ? 0.0 : 1.0, 0.0 ]
+        world.env_pass[ vec4f [ jx, jy, (temporal) ? 0.0 : 1.0,
+                                0.0 ] ]
         gpu_ms = vrender.gpu_us / 1000.0
         if [ !temporal ]
             hist_a.skip = true
@@ -1897,50 +1990,10 @@ element clouds : trinity
     mutable blend_t   : f32 [ 1.0 ]
     mutable prev      : WeatherState
 
-    func make_states []
-        states = vec WeatherState []
-        states += WeatherState [ name: 'clear, a few cumulus',
-                                 coverage: 0.4, ctype: 0.85, island: 0.8,
-                                 anvil: 0.0, skew: 300.0, density: 1.0,
-                                 detail: 0.3, wind: 6.0, sun_el: 0.9,
-                                 sun_az: 1.2 ]
-        states += WeatherState [ name: 'fair weather cumulus',
-                                 coverage: 0.62, ctype: 0.8, island: 0.5,
-                                 anvil: 0.1, skew: 500.0, density: 1.0,
-                                 detail: 0.32, wind: 8.0, sun_el: 0.75,
-                                 sun_az: 5.9 ]
-        states += WeatherState [ name: 'stratocumulus sheet',
-                                 coverage: 0.85, ctype: 0.45,
-                                 island: 0.2, anvil: 0.0, skew: 400.0,
-                                 density: 1.1, detail: 0.28, wind: 10.0,
-                                 sun_el: 0.6, sun_az: 0.0 ]
-        states += WeatherState [ name: 'overcast stratus',
-                                 coverage: 0.97, ctype: 0.08,
-                                 island: 0.0, anvil: 0.0, skew: 200.0,
-                                 density: 1.4, detail: 0.22, wind: 5.0,
-                                 sun_el: 0.7, sun_az: 2.0 ]
-        states += WeatherState [ name: 'heavy cumulus',
-                                 coverage: 0.62, ctype: 0.9, island: 0.4,
-                                 anvil: 1.0, skew: 900.0, density: 1.3,
-                                 detail: 0.3, wind: 18.0, sun_el: 0.45,
-                                 sun_az: 5.6 ]
-        states += WeatherState [ name: 'sunset towers',
-                                 coverage: 0.45, ctype: 0.95,
-                                 island: 0.7, anvil: 0.4, skew: 600.0,
-                                 density: 1.0, detail: 0.3, wind: 7.0,
-                                 sun_el: 0.07, sun_az: 6.0 ]
-
-    func copy_state [ s: WeatherState ] -> WeatherState
-        return WeatherState [ name: s.name, coverage: s.coverage,
-                              ctype: s.ctype, island: s.island,
-            anvil: s.anvil, skew: s.skew, density: s.density,
-            detail: s.detail, wind: s.wind, sun_el: s.sun_el,
-            sun_az: s.sun_az ]
-
     func set_preset [ i: i32 ]
         if [ i < 0 || i >= states.count ] return
         preset = i
-        prev   = copy_state[ cur ]
+        prev   = copy_weather[ cur ]
         prev.hold[]
         goal = states[ i ]
         blend_t = 0.0
@@ -1949,14 +2002,14 @@ element clouds : trinity
         return x + (y - x) * t
 
     func init []
-        make_states[]
+        states = weather_states[]
         if [ preset < 0 || preset >= states.count ] preset = 1
-        cur = copy_state[ states[ preset ] ]
+        cur = copy_weather[ states[ preset ] ]
         cur.hold[]
         goal = states[ preset ]
         if [ sun_el >= 0.0 ] cur.sun_el = sun_el
         if [ sun_az >= 0.0 ] cur.sun_az = sun_az
-        prev = copy_state[ cur ]
+        prev = copy_weather[ cur ]
         prev.hold[]
         log 'clouds: 1-6 weather  arrows look  t/g sun  e/d exposure  q quality  v view  f fly  +/- speed  pgup/pgdn height  r temporal'
 
@@ -2062,3 +2115,325 @@ element clouds : trinity
             cur: cur, temporal: temporal, night: night, bolts: bolts,
             speed: fly_speed, animated: true ]
         return e
+
+# the cloudscape as an orbiter backdrop: the Nubis sky above the sea.
+# vantage picks the altitude (ground, under the base, above the
+# tops), angle swings the gaze; the weather wanders on its own
+Backdrop Clouds
+    frost : true
+    public func bg_color [ ] -> rgba
+        return rgba [ r: 0.0, g: 0.0, b: 0.0, a: 1.0 ]
+    frost_sharp : true
+    mutable world      : CloudWorld
+    mutable lowres     : Render
+    mutable comp       : TemporalCompose
+    mutable comp_model : Model
+    mutable target     : Render
+    mutable copy_model : Model
+    mutable hist       : Render
+    mutable states     : vec WeatherState
+    mutable cur        : WeatherState
+    mutable goal       : WeatherState
+    mutable prev       : WeatherState
+    mutable blend_t    : f32 [ 1.0 ]
+    mutable next_change : f32 [ 45.0 ]
+    mutable preset     : i32 [ 2 ]
+    mutable frame      : i32
+    mutable last_us    : i64
+    mutable seconds    : f32
+    mutable yaw        : f32 [ -1.36 ]
+    mutable cam_x      : f32
+    mutable cam_z      : f32
+    # ONE continuous clock: the sun and moon come from it alone
+    mutable tod        : f32 [ 18.15 ]
+    mutable wtime      : f32
+    mutable last_rw    : i32
+    mutable last_rh    : i32
+    mutable prev_right : vec4f
+    mutable prev_up    : vec4f
+    mutable prev_fwd   : vec4f
+    mutable prev_pos   : vec4f
+    mutable hist_valid : bool
+    # eased camera: height m, pitch deg, vertical fov deg
+    mutable c_h        : f32
+    mutable c_p        : f32
+    mutable c_f        : f32
+
+    func sat [ v: f32 ] -> f32
+        return (v < 0.0) ? 0.0 : ((v > 1.0) ? 1.0 : v)
+
+    func lerp_f [ x: f32, y: f32, t: f32 ] -> f32
+        return x + (y - x) * t
+
+    # the weather scheduler: a new state by chance, blended over seconds
+    func schedule []
+        nx : i32 [ world.rnd[] * f32[ states.count ] ]
+        if [ nx >= states.count ] nx = states.count - 1
+        if [ nx == preset ] nx = (nx + 1) % states.count
+        preset = nx
+        prev = copy_weather[ cur ]
+        prev.hold[]
+        goal = copy_weather[ states[ nx ] ]
+        goal.hold[]
+        blend_t = 0.0
+        next_change = seconds + 40.0 + world.rnd[] * 40.0
+
+    func create_target []
+        if [ target ] return
+        states = weather_states[]
+        cur = copy_weather[ states[ preset ] ]
+        cur.hold[]
+        goal = states[ preset ]
+        prev = copy_weather[ cur ]
+        prev.hold[]
+        world = CloudWorld [ cur: cur, wseed: 7919 ]
+        world.build[ vk, ux ]
+        lowres = Render [ vk: vk, w: ux, wscale: 0.5, tag: 'nubis-low',
+            clear_color: vec4f [ 0.0, 0.0, 0.0, 1.0 ],
+            models: [ world.vmodel ] ]
+        lowres.hold[]
+        # history = a copy of last frame's target, taken before the
+        # compose
+        hist = Render [ vk: vk, w: ux, wscale: 1.0, tag: 'nubis-hist',
+                        clear_color: vec4f [ 0.0, 0.0, 0.0, 1.0 ] ]
+        hist.hold[]
+        comp = TemporalCompose [ vk: vk, name: 'nubis-temporal' ]
+        comp.hold[]
+        comp_model = Model [ vk: vk, w: ux, s: comp,
+                             samplers: map Au[string] [
+                                 'fresh': lowres.color,
+                                 'history': hist.color ] ]
+        comp_model.hold[]
+        target = Render [ vk: vk, w: ux, wscale: 1.0, tag: 'nubis',
+            clear_color: vec4f [ 0.0, 0.0, 0.0, 1.0 ],
+            models: [ comp_model ] ]
+        copy_model = Model [ w: ux,
+                             samplers: map Au[string] [
+                                 'color': target.color ] ]
+        copy_model.hold[]
+        hist.models = vec Model [] [ copy_model ]
+        copy_model.finish[ hist, 0 ]
+        target.owner = a
+        ux.element_targets[ id ] = target
+
+    public func on_unload [ ]
+        if [ ux && ux.element_targets ] ux.element_targets.rm[ id ]
+
+    # the sun and the moon from the one clock: hour angle, a fixed
+    # latitude and declination; the moon half a day behind
+    func light []
+        sky : world.sky
+        H : f32 [ (tod - 12.0) * 0.2617994 ]
+        lat : f32 [ 0.35 ]
+        dec : f32 [ 0.20 ]
+        sel : f32 [
+            asin[
+                sin[ lat ] * sin[ dec ]
+                + cos[ lat ] * cos[ dec ] * cos[ H ] ] ]
+        saz : f32 [
+            atan2[ 0.0 - sin[ H ] * cos[ dec ],
+                   cos[ lat ] * sin[ dec ]
+                   - sin[ lat ] * cos[ dec ] * cos[ H ] ] ]
+        Hm : f32 [ H + 3.14159265 ]
+        mdec : f32 [ 0.0 - dec ]
+        mel : f32 [
+            asin[
+                sin[ lat ] * sin[ mdec ]
+                + cos[ lat ] * cos[ mdec ] * cos[ Hm ] ] ]
+        maz : f32 [
+            atan2[ 0.0 - sin[ Hm ] * cos[ mdec ],
+                   cos[ lat ] * sin[ mdec ]
+                   - sin[ lat ] * cos[ mdec ] * cos[ Hm ] ] ]
+        # ONE key light, handed over cleanly: the sun fades out as it
+        # sets, and only then does the moon fade in
+        sfade : f32 [ sat[ (0.0 - sel - 0.005) / 0.09 ] ]
+        mfade : f32 [ sat[ (0.0 - sel - 0.10) / 0.09 ] ]
+        kel : f32 [ sel ]
+        kaz : f32 [ saz ]
+        pw : f32 [ 22.0 * (1.0 - sfade) ]
+        if [ mfade > 0.0 ]
+            kel = mel
+            kaz = maz
+            pw  = 1.30 * mfade
+        se : f32 [ cos[ kel ] ]
+        sky.sun_dir   = vec4f [ se * sin[ kaz ], sin[ kel ],
+                                se * cos[ kaz ], pw ]
+        # moonlight is silver: cool, and it keeps the clouds readable
+        sky.key_tint  = vec4f [ 1.0 - 0.30 * mfade, 1.0 - 0.16 * mfade,
+                                1.0, sfade ]
+        world.bolt_dark = sat[ (0.16 - sel) / 0.16 ]
+
+    func draw [ w: Window ]
+        animated = true
+        create_target[]
+        now : i64 [ epoch_micros[] ]
+        dt : f32 [ 0.0 ]
+        if [ last_us > 0 ] dt = f32[ now - last_us ] / 1000000.0
+        if [ dt > 1.0 ] dt = 1.0
+        last_us = now
+        seconds += dt
+        frame += 1
+        yaw += dt * 0.012
+        # the speed steps fly us forward through the clouds; the same
+        # factor runs the wind. time_scale is 1/16 slow .. 4 fast
+        ts : f32 [ ux.time_scale * 4.0 ]
+        wtime += dt * ts
+        spd : f32 [ 140.0 * ts ]
+        cam_x += sin[ yaw ] * spd * dt
+        cam_z += cos[ yaw ] * spd * dt
+        # the day runs once, slowly, in wall-clock time: the speed
+        # steps move us through the world, never through the day
+        tod += dt * (24.0 / 2400.0)
+        if [ tod >= 24.0 ] tod -= 24.0
+        if [ seconds > next_change ] schedule[]
+        if [ blend_t < 1.0 ]
+            blend_t += dt / 12.0
+            if [ blend_t > 1.0 ] blend_t = 1.0
+            t : f32 [ blend_t * blend_t * (3.0 - 2.0 * blend_t) ]
+            cur.coverage = lerp_f[ prev.coverage, goal.coverage, t ]
+            cur.ctype    = lerp_f[ prev.ctype,    goal.ctype,    t ]
+            cur.island   = lerp_f[ prev.island,   goal.island,   t ]
+            cur.anvil    = lerp_f[ prev.anvil,    goal.anvil,    t ]
+            cur.skew     = lerp_f[ prev.skew,     goal.skew,     t ]
+            cur.density  = lerp_f[ prev.density,  goal.density,  t ]
+            cur.detail   = lerp_f[ prev.detail,   goal.detail,   t ]
+            cur.wind     = lerp_f[ prev.wind,     goal.wind,     t ]
+        world.cam_x   = cam_x
+        world.cam_z   = cam_z
+        world.seconds = seconds
+        world.follow[ vk, ux ]
+        # a resize rebuilt the attachments: rebind the chain
+        rw : i32 [ ux.width ]
+        rh : i32 [ ux.height ]
+        lowres.update[]
+        hist.update[]
+        if [ rw != last_rw || rh != last_rh ]
+            last_rw = rw
+            last_rh = rh
+            comp_model.samplers[ 'fresh' ]   = lowres.color
+            comp_model.samplers[ 'history' ] = hist.color
+            comp_model.rebind_model[]
+            copy_model.samplers[ 'color' ] = target.color
+            copy_model.rebind_model[]
+            hist_valid = false
+        # vantage: on the ground, under the cloud base, above the tops,
+        # wide on the ground. angle swings the gaze up (or down from
+        # above)
+        above : bool [ vantage == OrbitView.far ]
+        h_t : f32 [ (vantage == OrbitView.low)  ? 400.0 :
+                    (vantage == OrbitView.high) ? 1150.0 :
+                    (above) ? 5200.0 : 400.0 ]
+        up_p : f32 [ (angle == ViewAngle.flat) ? 8.0 :
+                     (angle == ViewAngle.angled) ? 32.0 : 65.0 ]
+        down_p : f32 [ (angle == ViewAngle.flat) ? -4.0 :
+                       (angle == ViewAngle.angled) ? -22.0 : -55.0 ]
+        p_t : f32 [ (above) ? down_p : up_p ]
+        f_t : f32 [ (vantage == OrbitView.wide) ? 95.0 : 60.0 ]
+        if [ c_f == 0.0 ]
+            c_p = p_t
+            c_h = h_t
+            c_f = f_t
+        c_p = filter_n[ c_p, p_t, 0.06, ux.frame_factor ]
+        c_h = filter_n[ c_h, h_t, 0.06, ux.frame_factor ]
+        c_f = filter_n[ c_f, f_t, 0.06, ux.frame_factor ]
+        ux.orbit_moving = abs[ c_p - p_t ] > 0.02 ||
+            abs[ c_h - h_t ] > 0.5 || abs[ c_f - f_t ] > 0.05
+        pitch : f32 [ radians[ c_p ] ]
+        cp : f32 [ cos[ pitch ] ]
+        fx : f32 [ cp * sin[ yaw ] ]
+        fy : f32 [ sin[ pitch ] ]
+        fz : f32 [ cp * cos[ yaw ] ]
+        rx : f32 [ 0.0 - fz ]
+        rz : f32 [ fx ]
+        rl : f32 [ sqrt[ rx * rx + rz * rz ] ]
+        if [ rl < 0.0001 ] rl = 0.0001
+        rx = rx / rl
+        rz = rz / rl
+        ux2 : f32 [ 0.0 - rz * fy ]
+        uy : f32 [ rz * fx - rx * fz ]
+        uz : f32 [ rx * fy ]
+        th : f32 [ tan[ radians[ c_f * 0.5 ] ] ]
+        aspect : f32 [ (rh > 0) ? f32[ rw ] / f32[ rh ] : 1.778 ]
+        sky : world.sky
+        sky.cam_pos   = vec4f [ 0.0, c_h, 0.0, 0.0 ]
+        sky.cam_right = vec4f [ rx, 0.0, rz, th * aspect ]
+        sky.cam_up    = vec4f [ ux2, uy, uz, th ]
+        sky.cam_fwd   = vec4f [ fx, fy, fz, 0.9 ]
+        light[]
+        world.bolt_tick[ dt ]
+        world.shared_uniforms[]
+        sky.wind      = vec4f [ cur.wind * 0.8, 0.0, cur.wind * 0.6,
+                                wtime ]
+        sky.weather_a = vec4f [ cur.coverage, cur.ctype, 1.0,
+                                cur.island ]
+        sky.weather_b = vec4f [ 0.6, cur.skew, cur.density, cur.detail ]
+        sky.march     = vec4f [ 2.0, 1.0, 60000.0, 1.0 / 45000.0 ]
+        sky.view_mode = 0
+        sky.frame     = frame
+        sky.time      = wtime
+        ph : i32 [ frame % 4 ]
+        ox : f32 [ ((ph & 1) == 0) ? -0.25 : 0.25 ]
+        oy : f32 [ ((ph & 2) == 0) ? -0.25 : 0.25 ]
+        lw : f32 [ lowres.width ]
+        lh : f32 [ lowres.height ]
+        jx : f32 [ ox / lw ]
+        jy : f32 [ oy / lh ]
+        # sea_b.z = the angle one pixel covers: the wave LOD works off
+        # it
+        sky.sea_b  = vec4f [ cur.wind, 1.0, 2.0 * th / lh, tod / 24.0 ]
+        world.env_pass[ vec4f [ jx, jy, 0.0, 0.0 ] ]
+        # last frame's target becomes the history, then the fresh pass
+        if [ hist_valid ]
+            hist.draw[]
+            hist.sync_fence[]
+        lowres.draw[]
+        lowres.sync_fence[]
+        comp.cam_right  = sky.cam_right
+        comp.cam_up     = sky.cam_up
+        comp.cam_fwd    = sky.cam_fwd
+        comp.prev_right = prev_right
+        comp.prev_up    = prev_up
+        comp.prev_fwd   = prev_fwd
+        comp.jitter     = vec4f [ jx, jy, 1.0 / lw, 1.0 / lh ]
+        # the faster we move, the less the history can be trusted
+        bw : f32 [ 0.22 + spd / 700.0 ]
+        if [ bw > 0.75 ] bw = 0.75
+        comp.blend      = vec4f [ bw, (hist_valid) ? 1.0 : 0.0, 0.0,
+                                  0.0 ]
+        comp.cam_pos    = sky.cam_pos
+        comp.prev_pos   = prev_pos
+        prev_right = sky.cam_right
+        prev_up    = sky.cam_up
+        prev_fwd   = sky.cam_fwd
+        prev_pos   = sky.cam_pos
+        hist_valid = true
+        target.update[]
+
+    public func theme [ ] -> map string [string]
+        return map string [string] [
+            '#140a2acc':  '#080a1a4a',   # editor pane background
+            '#140a2a80':  '#0e1c2e80',   # console pane background
+            '#14121c80':  '#0e1c2e80',   # instance panel background
+            '#ff6a2e55':  '#4aa0e855',   # search highlight fill
+            '#220022aa':  '#0a1826aa',   # run console base fill
+            '#22002280':  '#0a182680',   # commit tab fill, half alpha
+            '#614':       '#1f3a52',     # TButtons / nav rest fill
+            '#413':       '#16283a',     # TButtons hover fill
+            '#826':       '#2f5a80',     # TButtons lit / nav selected
+            '#625a':      '#2a4a6a',     # bottom status bar fill
+            '#8af2':      '#aed6f2',     # status bar inner glow
+            '#425':       '#18304a',     # editor selection color
+            '#ede3':      '#d8ecf6',     # editor selection border
+            '#44225588':  '#1c3a5288',   # editor line highlight
+            '#ff3a6a22':  '#4aa0e822',   # commit tab fill
+            '#ff3a6a44':  '#4aa0e844',   # commit tab hover fill
+            '#3a1c8a40':  '#3c678a40',   # selected title tint
+            '#ff5a8a80':  '#6ab4f280',   # commit tab border
+            '#ff7aa480':  '#9ad0ff80'    # commit tab hover border
+        ]
+
+# the picture for orbiter's scene picker; last, after the bake
+export func clouds_thumbs []
+    names : vec string [] [ 'Clouds' ]
+    dir   : path '../{share_name}/thumbs'
+    scene_thumbs_for[ names, dir ]

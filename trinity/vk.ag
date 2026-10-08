@@ -423,6 +423,42 @@ class Render
         color.transition_in[ vk_command_buffer,
                              VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
 
+    # boxes of the colour into dst inside this batch: x y w h a box,
+    # 128 at most; later draws in the batch read the new dst
+    public func copy_recorded [ dst: Texture, boxes: @i32, n: i32 ]
+        if [ !color || !color.vk_image || !dst || n <= 0 ] return
+        begin_record[]
+        if [ pass_open ]
+            vkCmdEndRenderPass[ vk_command_buffer ]
+            pass_open = false
+        count : i32 [ min[ n, 128 ] ]
+        regions : local VkImageCopy [ 128 ]
+        for [ i: i32 0, i < count, i += 1 ]
+            o : i32 [ i * 4 ]
+            layers : VkImageSubresourceLayers [
+                aspectMask: VK_IMAGE_ASPECT_COLOR_BIT, mipLevel: 0,
+                baseArrayLayer: 0, layerCount: 1 ]
+            regions[ i ].srcSubresource = layers
+            regions[ i ].dstSubresource = layers
+            at : VkOffset3D [ x: boxes[ o ], y: boxes[ o + 1 ], z: 0 ]
+            regions[ i ].srcOffset = at
+            regions[ i ].dstOffset = at
+            regions[ i ].extent = VkExtent3D [
+                width: u32[ boxes[ o + 2 ] ],
+                height: u32[ boxes[ o + 3 ] ], depth: 1 ]
+        color.transition_in[ vk_command_buffer,
+                             VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL ]
+        dst.transition_in[ vk_command_buffer,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ]
+        vkCmdCopyImage[ vk_command_buffer, color.vk_image,
+                        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            dst.vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            u32[ count ], regions ]
+        dst.transition_in[ vk_command_buffer,
+                           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
+        color.transition_in[ vk_command_buffer,
+                             VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
+
     # end the batch readable by later work, sent without a wait
     public func seal [ ]
         if [ !color || !color.vk_image ] return
@@ -551,6 +587,14 @@ class Render
         for [ m: Model ] in mods
             smb : i32 [ (m.s) ? i32[ m.s.states ] : 0 ]
             if [ smb != 0 && (state_mask & smb) != smb ] continue
+            # ordered runs, as draw_immediate draws them
+            if [ m.run_n > 0 ]
+                for [ k: i32 0, k < m.run_n * 3, k += 3 ]
+                    pipe : m.pipelines[ m.runs[ k ] ]
+                    pipe.draw_range[ frame, m.runs[ k + 1 ],
+                                     m.runs[ k + 2 ] ]
+                    vk.pipe_draws += 1
+                continue
             for [ p: Pipeline ] in m.pipelines
                 p.draw[ frame ]
                 vk.pipe_draws += 1
@@ -3043,6 +3087,13 @@ class Gpu
         if [ vertex ]
             vertex.update[ vertex_data ]
 
+    # vertices first .. first + n into the vertex buffer
+    public func upload_vert_range [ first: i32, n: i32 ]
+        if [ !vertex || n <= 0 ] return
+        at : i64 [ i64[ first ] * i64[ vertex_size ] ]
+        bytes : i64 [ i64[ n ] * i64[ vertex_size ] ]
+        vertex.update_at[ @vertex_data[ at ], at, bytes ]
+
     # the first n indices replaced; the draw uses n of them
     public func upload_index [ d: ARef, n: i32 ]
         if [ !index ] return
@@ -3196,6 +3247,17 @@ func composite_destination_factor [ op: Composite ] -> VkBlendFactor
             return VK_BLEND_FACTOR_SRC_ALPHA
     return VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA
 
+# an exact blend, in place of a pipeline's composite operator:
+# the colour and alpha factors and operations, and the constants
+class BlendState
+    public src      : VkBlendFactor [ VK_BLEND_FACTOR_ONE ]
+    public dst      : VkBlendFactor [ VK_BLEND_FACTOR_ZERO ]
+    public op       : VkBlendOp     [ VK_BLEND_OP_ADD ]
+    public src_a    : VkBlendFactor [ VK_BLEND_FACTOR_ONE ]
+    public dst_a    : VkBlendFactor [ VK_BLEND_FACTOR_ZERO ]
+    public op_a     : VkBlendOp     [ VK_BLEND_OP_ADD ]
+    public constant : vec4f
+
 class Pipeline
     context vk              : vk_context
     context w               : Display
@@ -3269,6 +3331,8 @@ class Pipeline
     intern vk_render          : VkPipeline
     intern vk_compute         : VkPipeline
     intern layout             : VkPipelineLayout
+    # set: this blend, not the composite operator's
+    public blend              : BlendState
 
     public   func rebind [ ]
         if [ resources ]
@@ -3861,14 +3925,25 @@ class Pipeline
         fd : VkBlendFactor [ composite_destination_factor[ op ] ]
         src_color_factor : VkBlendFactor [ (straight_alpha
             && fs == VK_BLEND_FACTOR_ONE) ? VK_BLEND_FACTOR_SRC_ALPHA : fs ]
+        c_op : VkBlendOp [ VK_BLEND_OP_ADD ]
+        a_op : VkBlendOp [ VK_BLEND_OP_ADD ]
+        a_fs : VkBlendFactor [ fs ]
+        a_fd : VkBlendFactor [ fd ]
+        if [ blend ]
+            src_color_factor = blend.src
+            fd   = blend.dst
+            c_op = blend.op
+            a_fs = blend.src_a
+            a_fd = blend.dst_a
+            a_op = blend.op_a
         color_blend_attachment: VkPipelineColorBlendAttachmentState [
             blendEnable:         VK_TRUE,
             srcColorBlendFactor: src_color_factor,
             dstColorBlendFactor: fd,
-            colorBlendOp:        VK_BLEND_OP_ADD,
-            srcAlphaBlendFactor: fs,
-            dstAlphaBlendFactor: fd,
-            alphaBlendOp:        VK_BLEND_OP_ADD,
+            colorBlendOp:        c_op,
+            srcAlphaBlendFactor: a_fs,
+            dstAlphaBlendFactor: a_fd,
+            alphaBlendOp:        a_op,
             colorWriteMask:      VK_COLOR_COMPONENT_R_BIT |
                                  VK_COLOR_COMPONENT_G_BIT |
                                  VK_COLOR_COMPONENT_B_BIT |
@@ -3880,6 +3955,11 @@ class Pipeline
             attachmentCount: 1,
             pAttachments:    @color_blend_attachment
         ]
+        if [ blend ]
+            color_blend_state.blendConstants[ 0 ] = blend.constant.x
+            color_blend_state.blendConstants[ 1 ] = blend.constant.y
+            color_blend_state.blendConstants[ 2 ] = blend.constant.z
+            color_blend_state.blendConstants[ 3 ] = blend.constant.w
 
         dynamic_states: local VkDynamicState[2] [
             VK_DYNAMIC_STATE_VIEWPORT,
@@ -4702,6 +4782,13 @@ class Buffer
         memcpy[ m, d, n ]
         unmap[]
 
+    # n bytes at byte at; the rest of the buffer untouched
+    func update_at [ d: ARef, at: i64, n: i64 ]
+        if [ n <= 0 || at < 0 || at + n > size ] return
+        m : @u8 [ mmap[] ]
+        memcpy[ @m[ at ], d, n ]
+        unmap[]
+
     func mmap [ ] -> ARef
         mapped: ARef
         result: vmaMapMemory[ vk.allocator, vma_alloc, @mapped ]
@@ -4830,7 +4917,7 @@ class Texture
     public depth            : i32
 
     intern vk_layout        : VkImageLayout
-    intern vk_format        : VkFormat
+    public vk_format        : VkFormat
     intern vk_image         : VkImage
     intern vk_image_view    : VkImageView
     intern vk_sampler       : VkSampler
@@ -5574,6 +5661,8 @@ Texture Display
     public hidden               : bool
     # the window is mapped by the first present, not by creation
     intern shown                : bool
+    # --rec_scale: targets at this many times the pixels
+    public rec_scale            : i32
 
 
     # the frame presented: the window's screen canvas, else the list's
@@ -5712,6 +5801,7 @@ Texture Display
                 width  = logical_width
                 height = i32[ ((swap_rot == 90
                     || swap_rot == 270) ? extent.width : extent.height) / scale ]
+            if [ rec_scale > 1 ] scale *= rec_scale
             fit_aspect[]
         el
             width  = w_new
@@ -6279,6 +6369,7 @@ Texture Display
                 height = i32[ ph_i / scale ]
             extent.width  = u32[ pw_i ]
             extent.height = u32[ ph_i ]
+            if [ rec_scale > 1 ] scale *= rec_scale
             caps : VkSurfaceCapabilitiesKHR
             vkGetPhysicalDeviceSurfaceCapabilitiesKHR[
                 vk.physical_device, vk_surface, @caps ]

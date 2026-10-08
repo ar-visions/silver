@@ -1,0 +1,270 @@
+# the memory map: RAM, the scratchpad, the BIOS and the I/O ports
+extend psx
+
+RAM_SIZE  : i32 [ 2097152 ]
+BIOS_SIZE : i32 [ 524288 ]
+
+# interrupt lines, bit numbers of I_STAT
+IRQ_VBLANK : i32 [ 0 ]
+IRQ_GPU    : i32 [ 1 ]
+IRQ_CDROM  : i32 [ 2 ]
+IRQ_DMA    : i32 [ 3 ]
+IRQ_TIMER0 : i32 [ 4 ]
+IRQ_TIMER1 : i32 [ 5 ]
+IRQ_TIMER2 : i32 [ 6 ]
+IRQ_PAD    : i32 [ 7 ]
+IRQ_SIO    : i32 [ 8 ]
+IRQ_SPU    : i32 [ 9 ]
+
+# sound helpers: a 16-bit clamp, a volume, a signed halfword
+func clamp16 [ v: i32 ] -> i32
+    if [ v > 32767 ] return 32767
+    if [ v < -32768 ] return -32768
+    return v
+
+# a sample times a volume, 0x8000 = 1
+func amplify [ s: i32, v: i32 ] -> i32
+    return i32[ (i64[ s ] * i64[ v ]) >> 15 ]
+
+func sign16 [ v: u32 ] -> i32
+    return i32[ v << 16 ] >> 16
+
+
+class Bus
+    public ram      : new u8
+    # exact vertices stored by the GTE, by RAM word: the word, x y z
+    public sh_word  : new u32
+    public sh_x     : new f32
+    public sh_y     : new f32
+    public sh_z     : new f32
+    public ram32    : @u32
+    public ram16    : @u16
+    public bios     : new u8
+    public bios32   : @u32
+    public scratch  : new u8
+    public scr32    : @u32
+    public i_stat   : u32
+    public i_mask   : u32
+    # memory control: delays and bases; kept, never acted on
+    public memctl   : new u32
+    public cache_ctl : u32
+    public gpu      : PsxGpu
+    public dma      : Dma
+    public timers   : Timers
+    public cd       : Cdrom
+    public spu      : Spu
+    public pad      : Pad
+    public mdec     : Mdec
+    # what the program printed, one line at a time
+    public tty      : string [ '' ]
+
+    func init []
+        ram = new u8 [ RAM_SIZE ]
+        ram32 = @u32 [ ram ]
+        sh_word = new u32 [ 524544 ]
+        sh_x = new f32 [ 524544 ]
+        sh_y = new f32 [ 524544 ]
+        sh_z = new f32 [ 524544 ]
+        ram16 = @u16 [ ram ]
+        bios = new u8 [ BIOS_SIZE ]
+        bios32 = @u32 [ bios ]
+        scratch = new u8 [ 1024 ]
+        scr32 = @u32 [ scratch ]
+        memctl = new u32 [ 16 ]
+
+    # an interrupt line goes up
+    public func irq [ line: i32 ]
+        i_stat = i_stat | (u32[ 1 ] << line)
+
+    public func irq_pending [] -> bool
+        return (i_stat & i_mask) != 0
+
+    # a printed character: whole lines go to the log
+    public func putc [ c: u32 ]
+        if [ c == 10 ]
+            log 'psx: {tty}'
+            tty = ''
+            return
+        if [ c == 13 || c == 0 ] return
+        buf : local i8 [ 2 ]
+        buf[ 0 ] = i8[ c ]
+        buf[ 1 ] = 0
+        one : string [ cast cstr [ buf ] ]
+        tty = '{tty}{one}'
+
+    # KUSEG, KSEG0 and KSEG1 are the same physical space
+    func phys [ ea: u32 ] -> u32
+        if [ ea >= 0xC0000000 ] return ea
+        return ea & 0x1FFFFFFF
+
+    public func read32 [ va: u32 ] -> u32
+        p : u32 [ phys[ va ] ]
+        if [ p < 0x800000 ] return ram32[ (p & 0x1FFFFF) >> 2 ]
+        if [ p >= 0x1FC00000 && p < 0x1FC80000 ]
+            return bios32[ (p - 0x1FC00000) >> 2 ]
+        if [ p >= 0x1F800000 && p < 0x1F800400 ]
+            return scr32[ (p - 0x1F800000) >> 2 ]
+        if [ p >= 0x1F801000 && p < 0x1F803000 ] return io_read[ p, 4 ]
+        if [ p == 0xFFFE0130 ] return cache_ctl
+        # expansion 1: no cartridge, open bus
+        if [ p >= 0x1F000000 && p < 0x1F800000 ] return 0xFFFFFFFF
+        return 0
+
+    public func read16 [ va: u32 ] -> u32
+        p : u32 [ phys[ va ] ]
+        if [ p < 0x800000 ] return ram16[ (p & 0x1FFFFF) >> 1 ]
+        if [ p >= 0x1F801000 && p < 0x1F803000 ] return io_read[ p, 2 ]
+        w : u32 [ read32[ va & 0xFFFFFFFC ] ]
+        return (w >> ((p & 2) * 8)) & 0xFFFF
+
+    public func read8 [ va: u32 ] -> u32
+        p : u32 [ phys[ va ] ]
+        if [ p < 0x800000 ] return ram[ p & 0x1FFFFF ]
+        if [ p >= 0x1F801000 && p < 0x1F803000 ] return io_read[ p, 1 ]
+        w : u32 [ read32[ va & 0xFFFFFFFC ] ]
+        return (w >> ((p & 3) * 8)) & 0xFF
+
+    public func write32 [ va: u32, v: u32 ]
+        p : u32 [ phys[ va ] ]
+        if [ p < 0x800000 ]
+            ram32[ (p & 0x1FFFFF) >> 2 ] = v
+            return
+        if [ p >= 0x1F800000 && p < 0x1F800400 ]
+            scr32[ (p - 0x1F800000) >> 2 ] = v
+            return
+        if [ p >= 0x1F801000 && p < 0x1F803000 ]
+            io_write[ p, v, 4 ]
+            return
+        if [ p == 0xFFFE0130 ] cache_ctl = v
+
+    public func write16 [ va: u32, v: u32 ]
+        p : u32 [ phys[ va ] ]
+        if [ p < 0x800000 ]
+            ram16[ (p & 0x1FFFFF) >> 1 ] = u16[ v ]
+            return
+        if [ p >= 0x1F800000 && p < 0x1F800400 ]
+            i : u32 [ p - 0x1F800000 ]
+            scratch[ i ] = u8[ v ]
+            scratch[ i + 1 ] = u8[ v >> 8 ]
+            return
+        if [ p >= 0x1F801000 && p < 0x1F803000 ] io_write[ p, v, 2 ]
+
+    public func write8 [ va: u32, v: u32 ]
+        p : u32 [ phys[ va ] ]
+        if [ p < 0x800000 ]
+            ram[ p & 0x1FFFFF ] = u8[ v ]
+            return
+        if [ p >= 0x1F800000 && p < 0x1F800400 ]
+            scratch[ p - 0x1F800000 ] = u8[ v ]
+            return
+        if [ p >= 0x1F801000 && p < 0x1F803000 ] io_write[ p, v, 1 ]
+
+    # the I/O ports, by width; reads of half a register shift
+    func io_read [ p: u32, size: i32 ] -> u32
+        if [ p >= 0x1F801000 && p < 0x1F801024 ]
+            return memctl[ (p - 0x1F801000) >> 2 ]
+        if [ p >= 0x1F801040 && p < 0x1F801060 ]
+            return pad.read[ p - 0x1F801040, size ]
+        if [ p == 0x1F801060 ] return memctl[ 9 ]
+        if [ p == 0x1F801070 ] return i_stat
+        if [ p == 0x1F801072 ] return i_stat >> 16
+        if [ p == 0x1F801074 ] return i_mask
+        if [ p == 0x1F801076 ] return i_mask >> 16
+        if [ p >= 0x1F801080 && p < 0x1F801100 ]
+            return dma.read[ p - 0x1F801080 ]
+        if [ p >= 0x1F801100 && p < 0x1F801130 ]
+            return timers.read[ p - 0x1F801100 ]
+        if [ p >= 0x1F801800 && p < 0x1F801804 ]
+            return cd.read[ p - 0x1F801800 ]
+        if [ p == 0x1F801810 ] return gpu.read_data[]
+        if [ p == 0x1F801814 ] return gpu.status[]
+        if [ p == 0x1F801820 ] return mdec.read_data[]
+        if [ p == 0x1F801824 ] return mdec.status[]
+        if [ p >= 0x1F801C00 && p < 0x1F802000 ]
+            lo : u32 [ spu.read[ p - 0x1F801C00 ] ]
+            if [ size < 4 ] return lo
+            return lo | (spu.read[ p - 0x1F801C00 + 2 ] << 16)
+        return 0
+
+    func io_write [ p: u32, v: u32, size: i32 ]
+        if [ p >= 0x1F801000 && p < 0x1F801024 ]
+            memctl[ (p - 0x1F801000) >> 2 ] = v
+            return
+        if [ p >= 0x1F801040 && p < 0x1F801060 ]
+            pad.write[ p - 0x1F801040, v, size ]
+            return
+        if [ p == 0x1F801060 ]
+            memctl[ 9 ] = v
+            return
+        # writing I_STAT acknowledges: zero bits clear
+        if [ p == 0x1F801070 ]
+            i_stat = i_stat & v
+            return
+        if [ p == 0x1F801074 ]
+            i_mask = v & 0x7FF
+            return
+        if [ p >= 0x1F801080 && p < 0x1F801100 ]
+            dma.write[ p - 0x1F801080, v ]
+            return
+        if [ p >= 0x1F801100 && p < 0x1F801130 ]
+            timers.write[ p - 0x1F801100, v ]
+            return
+        if [ p >= 0x1F801800 && p < 0x1F801804 ]
+            cd.write[ p - 0x1F801800, v ]
+            return
+        if [ p == 0x1F801810 ]
+            gpu.gp0[ v, 0xFFFFFFFF ]
+            return
+        if [ p == 0x1F801814 ]
+            gpu.gp1[ v ]
+            return
+        if [ p == 0x1F801820 ]
+            mdec.command[ v ]
+            return
+        if [ p == 0x1F801824 ]
+            mdec.control[ v ]
+            return
+        if [ p >= 0x1F801C00 && p < 0x1F802000 ]
+            spu.write[ p - 0x1F801C00, v & 0xFFFF ]
+            if [ size == 4 ] spu.write[ p - 0x1F801C00 + 2, v >> 16 ]
+            return
+        # PCSX-Redux's debug port: a character to the console
+        if [ p == 0x1F802080 || p == 0x1F802023 ] putc[ v & 0xFF ]
+
+    # a word's shadow slot: main RAM, then the scratchpad; -1 none
+    func shadow_slot [ ea: u32 ] -> i32
+        p : u32 [ ea & 0x1FFFFFFF ]
+        if [ p < 0x800000 ] return i32[ (p & 0x1FFFFF) >> 2 ]
+        if [ p >= 0x1F800000 && p < 0x1F800400 ]
+            return i32[ 524288 + ((p & 0x3FF) >> 2) ]
+        return -1
+
+    # a GTE screen position stored to memory keeps its exact value
+    public func shadow [ ea: u32, w: u32, k: u32, gte: Gte ]
+        i : i32 [ shadow_slot[ ea ] ]
+        if [ i < 0 ] return
+        sh_word[ i ] = w
+        sh_z[ i ] = 0.0
+        if [ !gte.exact_of[ k ] ] return
+        sh_x[ i ] = gte.hit_x
+        sh_y[ i ] = gte.hit_y
+        sh_z[ i ] = gte.hit_z
+
+    public func put_exact [ ea: u32, w: u32, x: f32, y: f32, z: f32 ]
+        i : i32 [ shadow_slot[ ea ] ]
+        if [ i < 0 ] return
+        sh_word[ i ] = w
+        sh_x[ i ] = x
+        sh_y[ i ] = y
+        sh_z[ i ] = z
+
+    # the exact vertex behind the word at ea, if it still holds w
+    public func exact_at [ at: u32, w: u32, gte: Gte ] -> bool
+        if [ at == 0xFFFFFFFF ] return false
+        i : i32 [ shadow_slot[ at ] ]
+        if [ i < 0 || sh_word[ i ] != w || sh_z[ i ] <= 0.0 ]
+            return false
+        gte.hit_x = sh_x[ i ]
+        gte.hit_y = sh_y[ i ]
+        gte.hit_z = sh_z[ i ]
+        return true

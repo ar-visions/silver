@@ -196,6 +196,8 @@ ielement element
     # --rec_qp: stream, high, stage (full colour, near lossless) or
     # lossless (the default)
     public  rec_qp          : RecQuality [ RecQuality.lossless ]
+    # --rec_scale 2: a take at twice the window's pixels
+    public  rec_scale       : i32 [ 1 ]
     # --display: where the app shows. Screen goes to the window here; a
     # host reads it live and follows PIP, Full and Window on its side
     public [ Live ] display : DisplayMode

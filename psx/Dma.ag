@@ -1,0 +1,121 @@
+# the DMA controller: seven channels between RAM and the devices
+extend psx
+
+DMA_MDEC_IN  : u32 [ 0 ]
+DMA_MDEC_OUT : u32 [ 1 ]
+DMA_GPU      : u32 [ 2 ]
+DMA_CDROM    : u32 [ 3 ]
+DMA_SPU      : u32 [ 4 ]
+DMA_PIO      : u32 [ 5 ]
+DMA_OTC      : u32 [ 6 ]
+
+class Dma
+    public bus  : Bus
+    public madr : new u32
+    public bcr  : new u32
+    public chcr : new u32
+    public dpcr : u32 [ 0x07654321 ]
+    public dicr : u32
+
+    func init []
+        madr = new u32 [ 7 ]
+        bcr  = new u32 [ 7 ]
+        chcr = new u32 [ 7 ]
+
+    public func read [ off: u32 ] -> u32
+        if [ off == 0x70 ] return dpcr
+        if [ off == 0x74 ] return dicr
+        ch : u32 [ off >> 4 ]
+        if [ ch > 6 ] return 0
+        reg : u32 [ off & 0xF ]
+        if [ reg == 0 ] return madr[ ch ]
+        if [ reg == 4 ] return bcr[ ch ]
+        return chcr[ ch ]
+
+    public func write [ off: u32, v: u32 ]
+        if [ off == 0x70 ]
+            dpcr = v
+            return
+        if [ off == 0x74 ]
+            # bits 24..30 written 1 acknowledge their channel
+            flags : u32 [ (dicr & 0x7F000000) & ~(v & 0x7F000000) ]
+            dicr = (v & 0x00FF803F) | flags
+            update_master[]
+            return
+        ch : u32 [ off >> 4 ]
+        if [ ch > 6 ] return
+        reg : u32 [ off & 0xF ]
+        if [ reg == 0 ]      madr[ ch ] = v & 0xFFFFFF
+        el [ reg == 4 ]      bcr[ ch ] = v
+        el
+            chcr[ ch ] = v
+            ready : bool [ (v & 0x01000000) != 0 ]
+            # manual mode also waits for its trigger bit
+            if [ ((v >> 9) & 3) == 0 && (v & 0x10000000) == 0 ]
+                ready = false
+            if [ ready ] run[ ch ]
+
+    # DICR bit 31 is the IRQ: forced, or an enabled channel's flag
+    func update_master []
+        on : bool [ (dicr & 0x8000) != 0 ||
+            ((dicr & 0x800000) != 0 &&
+             ((dicr >> 24) & (dicr >> 16) & 0x7F) != 0) ]
+        was : bool [ (dicr & 0x80000000) != 0 ]
+        if [ on ] dicr = dicr | 0x80000000
+        el        dicr = dicr & 0x7FFFFFFF
+        if [ on && !was ] bus.irq[ IRQ_DMA ]
+
+    # the transfer runs whole at once, then the channel signals
+    func run [ ch: u32 ]
+        c : u32 [ chcr[ ch ] ]
+        sync : u32 [ (c >> 9) & 3 ]
+        if [ sync == 2 ]
+            linked_list[ ch ]
+        el
+            words : u32 [ bcr[ ch ] & 0xFFFF ]
+            if [ sync == 1 ] words = words * (bcr[ ch ] >> 16)
+            el [ words == 0 ] words = 0x10000
+            block[ ch, words ]
+        chcr[ ch ] = c & 0xEEFFFFFF
+        if [ (dicr & (u32[ 1 ] << (16 + ch))) != 0 ]
+            dicr = dicr | (u32[ 1 ] << (24 + ch))
+        update_master[]
+
+    func block [ ch: u32, words: u32 ]
+        c : u32 [ chcr[ ch ] ]
+        to_ram : bool [ (c & 1) == 0 ]
+        step : u32 [ ((c & 2) != 0) ? 0xFFFFFFFC : 4 ]
+        ea : u32 [ madr[ ch ] & 0x1FFFFC ]
+        for [ i: u32 0, i < words, i += 1 ]
+            if [ to_ram ]
+                v : u32 [ 0 ]
+                if [ ch == DMA_OTC ]
+                    v = (i == words - 1) ? 0xFFFFFF
+                        : ((ea - 4) & 0x1FFFFF)
+                el [ ch == DMA_GPU ]     v = bus.gpu.read_data[]
+                el [ ch == DMA_CDROM ]   v = bus.cd.dma_word[]
+                el [ ch == DMA_SPU ]     v = bus.spu.dma_read[]
+                el [ ch == DMA_MDEC_OUT ] v = bus.mdec.read_data[]
+                bus.ram32[ ea >> 2 ] = v
+            el
+                v : u32 [ bus.ram32[ ea >> 2 ] ]
+                if [ ch == DMA_GPU ]           bus.gpu.gp0[ v, ea ]
+                el [ ch == DMA_SPU ]           bus.spu.dma_write[ v ]
+                el [ ch == DMA_MDEC_IN ]       bus.mdec.command[ v ]
+            ea = (ea + step) & 0x1FFFFC
+        madr[ ch ] = ea
+
+    # GPU ordering tables: a header word, then its packet
+    func linked_list [ ch: u32 ]
+        ea : u32 [ madr[ ch ] & 0x1FFFFC ]
+        hops : i32 [ 0 ]
+        while [ hops < 0x200000 ]
+            hops += 1
+            head : u32 [ bus.ram32[ ea >> 2 ] ]
+            n : u32 [ head >> 24 ]
+            for [ i: u32 0, i < n, i += 1 ]
+                ea = (ea + 4) & 0x1FFFFC
+                bus.gpu.gp0[ bus.ram32[ ea >> 2 ], ea ]
+            if [ (head & 0x800000) != 0 ] break
+            ea = head & 0x1FFFFC
+        madr[ ch ] = 0xFFFFFF

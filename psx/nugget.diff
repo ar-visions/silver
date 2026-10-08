@@ -1,0 +1,196 @@
+diff --git a/openbios/kernel/flushcache.s b/openbios/kernel/flushcache.s
+index b755d41..32e1812 100644
+--- a/openbios/kernel/flushcache.s
++++ b/openbios/kernel/flushcache.s
+@@ -130,7 +130,10 @@ flushCacheOriginal:
+        retail code, as to not cause any problem. */
+ 
+     li    $t0, 0x804
+-    sw    $t0, BIU_CONFIG
++    .set  noat
++    lui   $at, %hi(BIU_CONFIG)
++    sw    $t0, %lo(BIU_CONFIG)($at)
++    .set  at
+ 
+     move  $t0, $0
+     li    $t2, 0x1000
+@@ -151,7 +154,10 @@ cache_init_1:
+     nop
+ 
+     li    $t0, 0x800
+-    sw    $t0, BIU_CONFIG
++    .set  noat
++    lui   $at, %hi(BIU_CONFIG)
++    sw    $t0, %lo(BIU_CONFIG)($at)
++    .set  at
+ 
+     mtc0  $t1, $12
+     nop
+@@ -211,7 +217,10 @@ cache_init_2:
+     nop
+ 
+     li    $t0, 0x1e988
+-    sw    $t0, BIU_CONFIG
++    .set  noat
++    lui   $at, %hi(BIU_CONFIG)
++    sw    $t0, %lo(BIU_CONFIG)($at)
++    .set  at
+ 
+     mtc0  $t3, $12
+     nop
+diff --git a/openbios/kernel/vectors.s b/openbios/kernel/vectors.s
+index 7036758..9b039dd 100644
+--- a/openbios/kernel/vectors.s
++++ b/openbios/kernel/vectors.s
+@@ -56,7 +56,7 @@ exceptionHandler:
+     nop
+     nop
+     nop
+-    li    $k0, %lo(__globals)
++    addiu    $k0, $zero, %lo(__globals)
+     lw    $k0, 8($k0) /* ->processes[0] */
+     nop
+     lw    $k0, 0($k0) /* thread */
+@@ -161,7 +161,7 @@ exceptionHandlerPatchSlot4:
+     sw    $a0, 0x88($k0)
+ 
+     lui   $sp, %hi(g_exceptionStackPtr)
+-    li    $s3, %lo(__globals)
++    addiu    $s3, $zero, %lo(__globals)
+     lw    $sp, %lo(g_exceptionStackPtr)($sp)
+     lw    $s3, 0($s3)
+ 
+@@ -207,7 +207,7 @@ next_priority:
+     nop
+ 
+     /* nobody took the call ? then longjmp into the unhandled exception buffer. */
+-    li    $k0, %lo(__globals) /* no idea why k0 is used again here... */
++    addiu    $k0, $zero, %lo(__globals) /* no idea why k0 is used again here... */
+     lw    $k0, 8($k0) /* ->processes[0] */
+     lui   $a0, %hi(g_exceptionJmpBufPtr)
+     lw    $k0, 0($k0) /* thread */
+@@ -240,7 +240,7 @@ next_priority:
+     .global returnFromException
+     .type returnFromException, @function
+ returnFromException:
+-    li    $k1, %lo(__globals)
++    addiu    $k1, $zero, %lo(__globals)
+     lw    $k1, 8($k1) /* ->TCBArrayPtr */
+     nop
+     lw    $k1, 0($k1) /* [0] */
+@@ -290,7 +290,7 @@ returnFromException:
+        but horrible piece of inline assembly that has no regard for MIPS ABI. */
+     lw    $k1, 0x6c($k1)
+     jr    $k0
+-    rfe
++    .word 0x42000010 /* rfe */
+ 
+     .section .text, "ax", @progbits
+     .align 2
+@@ -371,7 +371,7 @@ exceptionVector:
+     .type A0Vector, @function
+ 
+ A0Vector:
+-    li    $t0, %lo(A0Handler)
++    addiu    $t0, $zero, %lo(A0Handler)
+     jr    $t0
+     nop
+     nop
+@@ -382,7 +382,7 @@ A0Vector:
+     .type B0Vector, @function
+ 
+ B0Vector:
+-    li    $t0, %lo(B0Handler)
++    addiu    $t0, $zero, %lo(B0Handler)
+     jr    $t0
+     nop
+     nop
+@@ -393,7 +393,7 @@ B0Vector:
+     .type C0Vector, @function
+ 
+ C0Vector:
+-    li    $t0, %lo(C0Handler)
++    addiu    $t0, $zero, %lo(C0Handler)
+     jr    $t0
+     nop
+     nop
+@@ -444,7 +444,7 @@ C0Handler:
+     .type OBHandler, @function
+ 
+ OBHandler:
+-    li    $t0, %lo(OBtable)
++    addiu    $t0, $zero, %lo(OBtable)
+     sll   $t2, $t1, 2
+     add   $t2, $t0
+     lw    $t2, 0($t2)
+diff --git a/openbios/psx-bios.ld b/openbios/psx-bios.ld
+index fdcd585..57ffd21 100644
+--- a/openbios/psx-bios.ld
++++ b/openbios/psx-bios.ld
+@@ -82,7 +82,7 @@ SECTIONS {
+         __globals = .;
+         . = ALIGN(0x200);
+         __ramA0table = .;
+-        . = ALIGN(0x500);
++        . = (. + 0x4FF) / 0x500 * 0x500;
+     } > kseg0i
+ 
+     __text_start = .;
+@@ -149,7 +149,7 @@ SECTIONS {
+         __rom_data_start = .;
+     } > rom
+ 
+-    .data : {
++    .data : AT(__rom_data_start) {
+         __data_start = .;
+         LONG(0); LONG(0); LONG(0); LONG(0);
+         LONG(0); LONG(0); LONG(0); LONG(0);
+@@ -164,7 +164,7 @@ SECTIONS {
+         *(.got)
+         . = ALIGN(32);
+         __data_end = .;
+-    } > kseg0 AT > rom
++    } > kseg0
+ 
+     .sbss (NOLOAD) : {
+         . = ALIGN(32);
+diff --git a/openbios/sio0/cardfasttrack.s b/openbios/sio0/cardfasttrack.s
+index df77a78..41f366b 100644
+--- a/openbios/sio0/cardfasttrack.s
++++ b/openbios/sio0/cardfasttrack.s
+@@ -117,7 +117,7 @@ mcFastTrackWrite:
+     nop
+     addiu $v0, 1
+     sw    $v0, %lo(g_mcFastTrackCounter)($at)
+-    sltiu $v0, 0x80
++    sltiu $v0, $v0, 0x80
+     bnez  $v0, mcFastTrackRFE
+     lui   $v0, %hi(g_mcFastTrackActive)
+     b     mcFastTrackRFE
+@@ -148,7 +148,7 @@ mcFastTrackRead:
+     nop
+     addiu $v0, 1
+     sw    $v0, %lo(g_mcFastTrackCounter)($at)
+-    sltiu $v0, 0x7f
++    sltiu $v0, $v0, 0x7f
+     bnez  $v0, mcFastTrackRFE
+     lui   $v0, %hi(g_mcFastTrackActive)
+     b     mcFastTrackRFE
+@@ -159,7 +159,7 @@ mcFastTrackExit:
+     nop
+ 
+ mcFastTrackRFE:
+-    li    $k0, %lo(__globals)
++    addiu    $k0, $zero, %lo(__globals)
+     lw    $k0, 8($k0)
+     nop
+     lw    $k0, 0($k0)
+@@ -171,7 +171,7 @@ mcFastTrackRFE:
+     lw    $k0, 0x88($k0)
+     nop
+     jr    $k0
+-    rfe
++    .word 0x42000010 /* rfe */
+ 
+     .section .text, "ax", @progbits
+     .align 2

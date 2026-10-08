@@ -2412,6 +2412,17 @@ expect func t_map_param_return [] -> bool
     m : mk_map[]
     return count_map[ m ] == 1
 
+# a literal in a local, pushed into a vec, outlives that vec
+expect func t_vec_literal_local [] -> bool
+    for [ round: i32 0, round < 3, round += 1 ]
+        v : vec string []
+        for [ i: i32 0, i < 8, i += 1 ]
+            none : '~~'
+            v.push[ none ]
+        v = vec string []
+    last : '~~'
+    return last.count == 2 && last[ 0 ] == 126
+
 # a map key computed from an expression in braces
 expect func t_computed_key [] -> bool
     nm : string [ 'b' ]
@@ -2546,6 +2557,52 @@ expect func t_vec_c_struct_n [] -> bool
         if [ after[ i ] != 77 ] ok = false
     span : i64 [ i64[ cast u64 [ @v[ n - 1 ] ] - cast u64 [ @v[ 0 ] ] ] ]
     return ok && span == (n - 1) * 24
+
+# a vec bool element is its value as an if's condition
+expect func t_vec_bool_if [] -> bool
+    v : vec bool [ 3 ]
+    v[ 1 ] = true
+    hits : i32 [ 0 ]
+    for [ i: i32 0, i < 3, i += 1 ]
+        if [ v[ i ] ] hits += 10
+        el            hits += 1
+    return hits == 12
+
+# the same as a loop's condition
+expect func t_vec_bool_while [] -> bool
+    v : vec bool [ 4 ]
+    v[ 0 ] = true
+    v[ 1 ] = true
+    n : i32 [ 0 ]
+    while [ v[ n ] ] n += 1
+    return n == 2
+
+# and choosing in a ternary
+expect func t_vec_bool_ternary [] -> bool
+    v : vec bool [ 2 ]
+    v[ 1 ] = true
+    first : i32 [ (v[ 0 ]) ? 5 : 7 ]
+    second : i32 [ (v[ 1 ]) ? 5 : 7 ]
+    return first == 7 && second == 5
+
+# and on either side of && and ||
+expect func t_vec_bool_logic [] -> bool
+    v : vec bool [ 2 ]
+    v[ 1 ] = true
+    both : bool [ v[ 0 ] && v[ 1 ] ]
+    either : bool [ v[ 0 ] || v[ 1 ] ]
+    late : bool [ true && v[ 0 ] ]
+    return !both && either && !late
+
+# a vec of objects: an empty slot is false, a filled one true
+expect func t_vec_object_cond [] -> bool
+    v : vec DimsHolder [ 2 ]
+    v[ 1 ] = DimsHolder [ dims: vec i64 [ 1 ] ]
+    hits : i32 [ 0 ]
+    if [ v[ 0 ] ] hits += 1
+    if [ v[ 1 ] ] hits += 10
+    pick : i32 [ (v[ 0 ]) ? 100 : 200 ]
+    return hits == 10 && pick == 200
 
 # ==== References and memory: Counted, with the cost visible.
 # Objects are reference counted; ref, @ and lambda contexts show

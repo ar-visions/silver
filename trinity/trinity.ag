@@ -507,6 +507,8 @@ abstract live_app media_app
     # --rec_qp: stream, high, stage (full colour, near lossless) or
     # lossless (the default)
     public  rec_qp      : RecQuality [ RecQuality.lossless ]
+    # --rec_scale 2: a take at twice the window's pixels
+    public  rec_scale   : i32 [ 1 ]
     # --record_mic: the microphone goes into the recording, mixed with
     # the app's sound
     public  record_mic  : bool
@@ -599,6 +601,8 @@ abstract live_app media_app
             if [ full && !vk.h265_encode ]
                 log 'record: no h.265 encoder here; 4:2:0 h.264'
                 full = false
+            expect full || tx.width <= 4096,
+                'record: h.264 takes 4096 px at most, not {tx.width}'
             fd : i32 [ Au.live_record_get[] ]
             if [ record_mic ] wn.mic_start[]
             if [ !fd ]
@@ -608,6 +612,7 @@ abstract live_app media_app
                                   fps: record_fps, qp: rqp, format: fmt,
                                   chroma444: full,
                                   lossless: rq == RecQuality.lossless,
+                                  scale: wn.rec_scale,
                                   stems: record_mic && fmt == 'mp4',
                 target: record_target[ rpath ],
                 width: Au.live_record_width[],
@@ -2793,6 +2798,10 @@ Display Window
                     vc : vector cur
                     vn : vector nv
                     differs = (vc != vn) && !(vc && vc.equals[ vn ])
+                # a silver enum has no compare of its own: Au's
+                el [ (member.src.traits & (1 << 5)) != 0 ]
+                    differs = (!cur) != (!nv) ||
+                        ((cur && nv) && cur.compare[ nv ] != 0)
                 el
                     differs = (!cur) != (!nv) ||
                         ((cur && nv) && cur.compare*[ nv ] != 0)
@@ -6802,6 +6811,10 @@ abstract media_app trinity
         adopt[ 'record' ]
         adopt[ 'record_mic' ]
         adopt[ 'rec_qp' ]
+        adopt[ 'rec_scale' ]
+        # the swap quad's bilinear read averages 2x2 exactly
+        expect rec_scale == 1 || rec_scale == 2,
+            '--rec_scale is 1 or 2, not {rec_scale}'
         adopt[ 'agent' ]
         adopt[ 'agents' ]
         # SILVER_DISPLAY=<PIP|Full|Window|Screen>: the host's launch
@@ -6844,7 +6857,8 @@ abstract media_app trinity
             width:(width) ?? 1888, height:(height) ?? 888,
             hidden: hidden, lock_aspect: lock_aspect,
             logical_width: logical_width,
-            aspect_w: aspect_w, aspect_h: aspect_h ]
+            aspect_w: aspect_w, aspect_h: aspect_h,
+            rec_scale: (record) ? rec_scale : 1 ]
         expect window.vk, "context didnt work"
         w = window
         Au.hold[ w ]
