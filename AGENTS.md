@@ -5448,6 +5448,12 @@ guidance ~50 Hz; SpaceX does not publish theirs).
    view, with launch on physics (after 7).
 9. BUILT, not run: C cycles the camera: platform, orbiter (the
    upper stage, to a stable orbit), booster (it lands).
+13. DONE (Oct 8, Kalen: "landed on the first go") the hexagonal
+   ship: rounded hexagon hull, six grid fins on the faces, six
+   legs as flat panels stowed on the faces (width the flat of a
+   face, sides chamfered at 30 degrees). Not yet seen in launch.
+14. OPEN (Kalen, Oct 8) the ship goes to the moon: it docks
+   with a fuel station in orbit to refuel first.
 
 ## Active work: quake2 port (Oct 5 2026)
 

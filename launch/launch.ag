@@ -1145,10 +1145,11 @@ ModelViewProject VehicleLit
     mutable glow_col : vec4f
     mutable screen   : vec4f     # target size, haze a metre
     # the turn toward stowed (rad), hinge radius, height, and
-    # how far short of 45 degrees the quarters are centred
+    # how far short of 30 degrees the sixths are centred
     mutable fold     : vec4f
-    # each quarter's turn about its own span (rad): grid fins
+    # each sixth's turn about its own span (rad): grid fins
     mutable twist    : vec4f
+    mutable twist_b  : vec4f
 
     attrib logo  : LayoutBinding [ type:typeid[ VehicleSurface ],
                                    id: VehicleSurface.logo, count:1,
@@ -1174,17 +1175,18 @@ ModelViewProject VehicleLit
     func vertex [] -> GLSL none {
         vec3 lp = a_pos;
         vec3 ln = a_normal;
-        bool moved = ubo.fold.x != 0.0 || ubo.twist != vec4(0.0);
+        bool moved = ubo.fold.x != 0.0 || ubo.twist != vec4(0.0)
+                  || ubo.twist_b != vec4(0.0);
         if (a_uv.y > 0.5 && moved) {
-            // its quarter: centred fold.w short of 45 degrees
+            // its sixth: centred fold.w short of 30 degrees
             float a  = atan(lp.z, lp.x) + ubo.fold.w;
-            float qf = floor(a / 1.5707963);
-            int   qi = int(mod(qf, 4.0));
-            a = (qf + 0.5) * 1.5707963 - ubo.fold.w;
+            float qf = floor(a / 1.0471976);
+            int   qi = int(mod(qf, 6.0));
+            a = (qf + 0.5) * 1.0471976 - ubo.fold.w;
             vec2  rd = vec2(cos(a), sin(a));
             vec2  tg = vec2(-rd.y, rd.x);
             // turned about its span through the root's height
-            float tw = ubo.twist[qi];
+            float tw = (qi < 4) ? ubo.twist[qi] : ubo.twist_b[qi - 4];
             if (tw != 0.0) {
                 float ct = cos(tw);
                 float st = sin(tw);
@@ -1269,6 +1271,16 @@ ModelViewProject VehicleLit
             if (seam < 0.010) {{
                 alb *= 0.93;
                 rough = 0.35;
+            }}
+            // a weld where each flat face meets its rounded corner
+            float fa = floor((round_a - 0.5235988) / 1.0471976 + 0.5)
+                     * 1.0471976 + 0.5235988;
+            float ap = dot(v_local.xz, vec2(cos(fa), sin(fa)));
+            float ft = abs(dot(v_local.xz, vec2(-sin(fa), cos(fa))));
+            float fh = ap * (1.0 - 0.2186) * 0.5773503;
+            if (abs(ft - fh) < 0.012) {{
+                alb *= 0.72;
+                rough = 0.5;
             }}
         }} else if (kind == 3) {{
             // black carbon composite: interstage, leg panels
@@ -1355,7 +1367,10 @@ ModelViewProject VehicleLit
         vec2  lh  = normalize(L.xz + vec2(1e-4));
         float toward = max(dot(rh, lh), 0.0);
         float low = 1.0 - abs(R.y);
-        vec3  rim = sky * 2.2 + sun * 1.2 * toward * toward;
+        // the sky round the horizon dims away from the sun
+        float side = 0.5 + 0.5 * dot(rh, lh);
+        vec3  rim = sky * (0.9 + 1.8 * side)
+                  + sun * 1.2 * toward * toward;
         vec3  top = sky * 1.2;
         vec3  above = mix(rim, top, smoothstep(0.0, 0.7, R.y));
         vec3  below = sea + rim * 0.3 * low;
@@ -1625,6 +1640,61 @@ class MeshBuild
         for [ s: i32 0, s < seg, s += 1 ]
             tri[ mid, first + u32[ s ], first + u32[ s ] + 1 ]
 
+    # a rounded hexagon's point, corner j step i, by its apothem:
+    # its place and outward normal across the axis
+    func hex_ring [ apothem: f32, j: i32, i: i32 ] -> vec4f
+        rc : f32 [ apothem * HULL_ROUND ]
+        cd : f32 [ (apothem - rc) / 0.8660254 ]
+        ca : f32 [ j * 1.0471976 ]
+        th : f32 [ ca - 0.5235988 + 1.0471976 * i / HULL_ARC ]
+        nx : f32 [ cos[ th ] ]
+        nz : f32 [ sin[ th ] ]
+        return vec4f [ cd * cos[ ca ] + rc * nx,
+                       cd * sin[ ca ] + rc * nz, nx, nz ]
+
+    # a surface of rounded hexagons up y from (apothem, height)
+    # pairs: flat faces, corners turned at the hull's rounding
+    public func hex_lathe [ prof: vec f32, mat: f32 ]
+        rings : i32 [ prof.count / 2 ]
+        first : u32 [ pos.count / 3 ]
+        cols : i32 [ 6 * (HULL_ARC + 1) ]
+        for [ r: i32 0, r < rings, r += 1 ]
+            lo : i32 [ (r > 0) ? r - 1 : r ]
+            hi : i32 [ (r < rings - 1) ? r + 1 : r ]
+            dr : f32 [ prof[ hi * 2 ] - prof[ lo * 2 ] ]
+            dy : f32 [ prof[ hi * 2 + 1 ] - prof[ lo * 2 + 1 ] ]
+            apothem : f32 [ prof[ r * 2 ] ]
+            ht : f32 [ prof[ r * 2 + 1 ] ]
+            for [ j: i32 0, j < 6, j += 1 ]
+                for [ i: i32 0, i <= HULL_ARC, i += 1 ]
+                    h : vec4f [ hex_ring[ apothem, j, i ] ]
+                    # how far out along its normal: the slope's
+                    # share at this point of the section
+                    sup : f32 [ 1.0 ]
+                    if [ apothem > 0.0001 ]
+                        sup = (h.x * h.z + h.y * h.w) / apothem
+                    vert[ h.x, ht, h.y, h.z * dy, 0.0 - dr * sup,
+                          h.w * dy, mat ]
+        for [ r: i32 0, r < rings - 1, r += 1 ]
+            for [ c: i32 0, c < cols, c += 1 ]
+                at : u32 [ first + u32[ r * cols ] ]
+                here : u32 [ at + u32[ c ] ]
+                next : u32 [ at + u32[ (c + 1) % cols ] ]
+                quad[ here, next, next + u32[ cols ],
+                      here + u32[ cols ] ]
+
+    # a flat rounded hexagon at height y, facing up or down
+    public func hex_cap [ apothem: f32, y: f32, face: f32, mat: f32 ]
+        mid : u32 [ vert[ 0.0, y, 0.0, 0.0, face, 0.0, mat ] ]
+        first : u32 [ pos.count / 3 ]
+        cols : i32 [ 6 * (HULL_ARC + 1) ]
+        for [ j: i32 0, j < 6, j += 1 ]
+            for [ i: i32 0, i <= HULL_ARC, i += 1 ]
+                h : vec4f [ hex_ring[ apothem, j, i ] ]
+                vert[ h.x, y, h.y, 0.0, face, 0.0, mat ]
+        for [ c: i32 0, c < cols, c += 1 ]
+            tri[ mid, first + u32[ c ], first + u32[ (c + 1) % cols ] ]
+
     # a six sided prism, flat top and flat sides
     public func hex [ rad: f32, base_y: f32, top_y: f32, top: f32,
                       side: f32 ]
@@ -1743,6 +1813,56 @@ class MeshBuild
                       n.x * sg, n.y * sg, n.z * sg, mat ]
             quad[ first, first + 1, first + 2, first + 3 ]
 
+    # a flat panel from p to q, its face toward the unit out:
+    # half width w on the inner face, half thickness d, its
+    # long sides chamfered in by ch at the outer face
+    public func panel [ p: vec3f, q: vec3f, out: vec3f, w: f32,
+                        d: f32, ch: f32, mat: f32 ]
+        ln : vec3f [ q.x - p.x, q.y - p.y, q.z - p.z ]
+        ll : f32 [ sqrt[ ln.x * ln.x + ln.y * ln.y + ln.z * ln.z ] ]
+        dn : vec3f [ ln.x / ll, ln.y / ll, ln.z / ll ]
+        cr : vec3f [ dn.y * out.z - dn.z * out.y,
+                     dn.z * out.x - dn.x * out.z,
+                     dn.x * out.y - dn.y * out.x ]
+        # the section round: (across, out) corners in order
+        st : vec f32 [] [ w, 0.0 - d, w - ch, d, ch - w, d,
+                          0.0 - w, 0.0 - d ]
+        for [ f: i32 0, f < 4, f += 1 ]
+            g : i32 [ (f + 1) % 4 ]
+            ta : f32 [ st[ f * 2 ] ]
+            na : f32 [ st[ f * 2 + 1 ] ]
+            tb : f32 [ st[ g * 2 ] ]
+            nb : f32 [ st[ g * 2 + 1 ] ]
+            # the side's outward normal in the section
+            st_n : f32 [ nb - na ]
+            st_t : f32 [ ta - tb ]
+            nx : f32 [ cr.x * st_n + out.x * st_t ]
+            ny : f32 [ cr.y * st_n + out.y * st_t ]
+            nz : f32 [ cr.z * st_n + out.z * st_t ]
+            ax : vec3f [ cr.x * ta + out.x * na, cr.y * ta + out.y * na,
+                         cr.z * ta + out.z * na ]
+            bx : vec3f [ cr.x * tb + out.x * nb, cr.y * tb + out.y * nb,
+                         cr.z * tb + out.z * nb ]
+            first : u32 [ vert[ p.x + ax.x, p.y + ax.y, p.z + ax.z, nx,
+                                ny, nz, mat ] ]
+            vert[ p.x + bx.x, p.y + bx.y, p.z + bx.z, nx, ny, nz, mat ]
+            vert[ q.x + bx.x, q.y + bx.y, q.z + bx.z, nx, ny, nz, mat ]
+            vert[ q.x + ax.x, q.y + ax.y, q.z + ax.z, nx, ny, nz, mat ]
+            quad[ first, first + 1, first + 2, first + 3 ]
+        # the two ends
+        for [ e: i32 0, e < 2, e += 1 ]
+            o : vec3f [ (e == 0) ? p : q ]
+            sg : f32 [ (e == 0) ? -1.0 : 1.0 ]
+            first : u32 [ pos.count / 3 ]
+            for [ c: i32 0, c < 4, c += 1 ]
+                t : f32 [ st[ c * 2 ] ]
+                n : f32 [ st[ c * 2 + 1 ] ]
+                vert[ o.x + cr.x * t + out.x * n,
+                      o.y + cr.y * t + out.y * n,
+                      o.z + cr.z * t + out.z * n,
+                      dn.x * sg, dn.y * sg, dn.z * sg, mat ]
+            quad[ first, first + 1, first + 2, first + 3 ]
+
     # the arrays as one glTF mesh: POSITION, NORMAL, TEXCOORD_0
     public func gltf [ name: string ] -> GltfModel
         nv : i32 [ pos.count / 3 ]
@@ -1814,6 +1934,38 @@ class MeshBuild
 # 12 shiny aluminium
 
 # the sea platform: a hexagon 48 m round, the deck alone
+# the hull's section: corners rounded at this share of the
+# apothem (0.4 m of 1.83, as the physics), steps a corner
+HULL_ROUND : f32 [ 0.2186 ]
+HULL_ARC   : i32 [ 12 ]
+
+# a (radius, height) profile with each span cut in four along
+# a Catmull-Rom curve through its points: a smooth nose
+func smooth_profile [ prof: vec f32 ] -> vec f32
+    n : i32 [ prof.count / 2 ]
+    out : vec f32 []
+    for [ k: i32 0, k < n - 1, k += 1 ]
+        pa : i32 [ (k > 0) ? k - 1 : k ]
+        pd : i32 [ (k < n - 2) ? k + 2 : k + 1 ]
+        for [ s: i32 0, s < 4, s += 1 ]
+            t : f32 [ s * 0.25 ]
+            t2 : f32 [ t * t ]
+            t3 : f32 [ t2 * t ]
+            wa : f32 [ 0.0 - 0.5 * t3 + t2 - 0.5 * t ]
+            wb : f32 [ 1.5 * t3 - 2.5 * t2 + 1.0 ]
+            wc : f32 [ 0.0 - 1.5 * t3 + 2.0 * t2 + 0.5 * t ]
+            wd : f32 [ 0.5 * t3 - 0.5 * t2 ]
+            for [ e: i32 0, e < 2, e += 1 ]
+                v : f32 [ prof[ pa * 2 + e ] * wa
+                          + prof[ k * 2 + e ] * wb
+                          + prof[ (k + 1) * 2 + e ] * wc
+                          + prof[ pd * 2 + e ] * wd ]
+                if [ e == 0 && v < 0.0 ] v = 0.0
+                out.push[ v ]
+    out.push[ prof[ (n - 1) * 2 ] ]
+    out.push[ prof[ (n - 1) * 2 + 1 ] ]
+    return out
+
 func build_platform [] -> GltfModel
     b : MeshBuild [ ]
     b.hex[ 48.0, 0.0, 5.0, 0.0, 1.0 ]
@@ -1827,26 +1979,27 @@ func build_stage_one [] -> GltfModel
     # exit (the physics' 0.88 m2), up to the heat shield
     bell : vec f32 [] [ 0.528, 0.0, 0.454, 0.35, 0.352, 0.75,
                         0.238, 1.10, 0.181, 1.40 ]
-    b.lathe_at[ bell, 24, 4.0, 0.0, 0.0 ]
+    b.lathe_at[ bell, 64, 4.0, 0.0, 0.0 ]
     for [ k: i32 0, k < 6, k += 1 ]
-        ea : f32 [ f32[ k ] * 1.0471976 ]
-        b.lathe_at[ bell, 24, 4.0, 1.25 * cos[ ea ], 1.25 * sin[ ea ] ]
+        ea : f32 [ k * 1.0471976 ]
+        b.lathe_at[ bell, 64, 4.0, 1.25 * cos[ ea ], 1.25 * sin[ ea ] ]
+    # the hull: a rounded hexagon, faces 1.83 m out
     body : vec f32 [] [ 1.83, 1.4, 1.83, 40.0 ]
-    b.lathe[ body, 48, 2.0 ]
-    b.disc[ 1.83, 1.4, 48, -1.0, 8.0 ]
+    b.hex_lathe[ body, 2.0 ]
+    b.hex_cap[ 1.83, 1.4, -1.0, 8.0 ]
     band : vec f32 [] [ 1.84, 40.0, 1.84, 47.0 ]
-    b.lathe[ band, 48, 11.0 ]
+    b.hex_lathe[ band, 11.0 ]
     return b.gltf[ 'stage_one' ]
 
 # the upper stage and fairing, in stage one's frame (y 44.5 up)
 func build_upper [] -> GltfModel
     b : MeshBuild [ ]
     bell : vec f32 [] [ 1.2, 44.5, 0.75, 46.0, 0.45, 47.0 ]
-    b.lathe[ bell, 32, 4.0 ]
+    b.lathe[ bell, 96, 4.0 ]
     body : vec f32 [] [ 1.83, 47.0, 1.83, 58.4 ]
-    b.lathe[ body, 48, 2.0 ]
-    b.disc[ 1.83, 47.0, 48, -1.0, 3.0 ]
-    b.disc[ 1.83, 58.4, 48, 1.0, 5.0 ]
+    b.hex_lathe[ body, 2.0 ]
+    b.hex_cap[ 1.83, 47.0, -1.0, 3.0 ]
+    b.hex_cap[ 1.83, 58.4, 1.0, 5.0 ]
     return b.gltf[ 'upper' ]
 
 # the fairing: a flare to 5.2 m and an ogive, its own piece
@@ -1855,8 +2008,9 @@ func build_fairing [] -> GltfModel
     # the whole fairing: rose gold
     skin : vec f32 [] [ 1.83, 58.4, 2.6, 59.6, 2.6, 64.4, 2.45, 66.4,
                         1.95, 68.8, 1.2, 70.6, 0.35, 71.3, 0.0, 71.5 ]
-    b.lathe[ skin, 48, 10.0 ]
-    b.disc[ 1.83, 58.4, 48, -1.0, 2.0 ]
+    # the nose grows out of the hull's hexagon, to its tip
+    b.hex_lathe[ smooth_profile[ skin ], 10.0 ]
+    b.hex_cap[ 1.83, 58.4, -1.0, 2.0 ]
     return b.gltf[ 'fairing' ]
 
 # a grid fin's root off the axis, its height, and its size:
@@ -1872,8 +2026,9 @@ func fin_at [ ca: f32, sa: f32, s: f32, t: f32 ] -> vec3f
     r : f32 [ FIN_ROOT + s ]
     return vec3f [ ca * r - sa * t, FIN_Y, sa * r + ca * t ]
 
-# the four titanium grid fins, out: a frame of plates and a
-# lattice crossing at 45 degrees; each folds up its quarter
+# the six titanium grid fins, one on each face of the hull,
+# out: a frame of plates and a lattice crossing at 45 degrees;
+# each folds up its sixth
 func build_fins [] -> GltfModel
     b : MeshBuild [ ]
     b.ride = 1.0
@@ -1882,8 +2037,8 @@ func build_fins [] -> GltfModel
     sw : f32 [ FIN_SPAN ]
     ht : f32 [ FIN_WIDE * 0.5 ]
     pitch : f32 [ 0.16 ]
-    for [ k: i32 0, k < 4, k += 1 ]
-        ang : f32 [ f32[ k ] * 1.5707963 ]
+    for [ k: i32 0, k < 6, k += 1 ]
+        ang : f32 [ k * 1.0471976 + 0.5235988 ]
         ca : f32 [ cos[ ang ] ]
         sa : f32 [ sin[ ang ] ]
         # the frame
@@ -1911,8 +2066,8 @@ func build_fins [] -> GltfModel
                         6.0 ]
     # the hinge fittings stay on the hull
     b.ride = 0.0
-    for [ k: i32 0, k < 4, k += 1 ]
-        ang : f32 [ f32[ k ] * 1.5707963 ]
+    for [ k: i32 0, k < 6, k += 1 ]
+        ang : f32 [ k * 1.0471976 + 0.5235988 ]
         ca : f32 [ cos[ ang ] ]
         sa : f32 [ sin[ ang ] ]
         b.slab[ fin_at[ ca, sa, -0.05, 0.0 ],
@@ -1926,9 +2081,14 @@ func build_fins [] -> GltfModel
         b.strut[ pin_a, pin_b, 0.05, 7.0 ]
     return b.gltf[ 'fins' ]
 
-# a leg's hinge at the hull's foot (radius, height) and foot
-LEG_HINGE_R : f32 [ 2.1 ]
-LEG_HINGE_Y : f32 [ 0.8 ]
+# a leg's panel: half thickness, and half width on the flat
+# of a face (the hull's 1.83 m less its rounded corners)
+LEG_HALF_D : f32 [ 0.07 ]
+LEG_HALF_W : f32 [ (1.83 - 1.83 * HULL_ROUND) * 0.5773503 ]
+# a leg's hinge (radius, height): stowed, flat on its face
+LEG_HINGE_R : f32 [ 1.83 + LEG_HALF_D + 0.01 ]
+# just above the hull's foot, so stowed nothing hangs under it
+LEG_HINGE_Y : f32 [ 1.6 ]
 LEG_FOOT_R  : f32 [ 9.0 ]
 # meshes start 1.4 m under the gimbal plane
 LEG_FOOT_Y  : f32 [ LEG_FOOT_X + 1.4 ]
@@ -1939,12 +2099,16 @@ func leg_swing [] -> f32
                         LEG_FOOT_R - LEG_HINGE_R ] ]
     return 1.5707963 + drop
 
-# the four legs out; each swings about its hinge to stow, its
-# pusher from high on the hull stretching with it
+# the six legs out, one on each face of the hull; each swings
+# about its hinge to stow flat on its face, its pusher from
+# high on the hull stretching with it
 func build_legs [] -> GltfModel
     b : MeshBuild [ ]
-    for [ k: i32 0, k < 4, k += 1 ]
-        ang : f32 [ f32[ k ] * 1.5707963 + 0.7853982 ]
+    hd : f32 [ LEG_HALF_D ]
+    # sides chamfered at 30 degrees, half the hull's corner turn
+    ch : f32 [ hd * 2.0 * 1.7320508 ]
+    for [ k: i32 0, k < 6, k += 1 ]
+        ang : f32 [ k * 1.0471976 + 0.5235988 ]
         ca : f32 [ cos[ ang ] ]
         sa : f32 [ sin[ ang ] ]
         hr : f32 [ LEG_HINGE_R ]
@@ -1956,8 +2120,7 @@ func build_legs [] -> GltfModel
         hinge : vec3f [ ca * hr, hy, sa * hr ]
         foot : vec3f [ ca * fr, fy, sa * fr ]
         tg : vec3f [ 0.0 - sa, 0.0, ca ]
-        # the leg: a shiny aluminium panel, wide across, thin through,
-        # its face turned to the hull
+        # the leg: a flat panel, its stowed outer face down when out
         dl : vec3f [ foot.x - hinge.x, foot.y - hinge.y,
                      foot.z - hinge.z ]
         ll : f32 [ sqrt[ dl.x * dl.x + dl.y * dl.y + dl.z * dl.z ] ]
@@ -1965,24 +2128,28 @@ func build_legs [] -> GltfModel
         face : vec3f [ dn.y * tg.z - dn.z * tg.y,
                        dn.z * tg.x - dn.x * tg.z,
                        dn.x * tg.y - dn.y * tg.x ]
+        # the panel from just past its pin, then the foot pad
+        # as its last 0.35 m: one chamfered piece, flush stowed
+        root : vec3f [ hinge.x - dn.x * 0.1, hinge.y - dn.y * 0.1,
+                       hinge.z - dn.z * 0.1 ]
+        pad : vec3f [ foot.x - dn.x * 0.35, foot.y - dn.y * 0.35,
+                      foot.z - dn.z * 0.35 ]
         b.ride = 1.0
-        b.slab[ hinge, foot, face, 0.42, 0.11, 12.0 ]
-        # the foot pad, under the panel's end
-        b.box[ ca * fr, fy, sa * fr, 0.6, 0.12, 0.6, 9.0 ]
+        b.panel[ root, pad, face, LEG_HALF_W, hd, ch, 12.0 ]
+        b.panel[ pad, foot, face, LEG_HALF_W, hd, ch, 9.0 ]
         b.ride = 0.0
-        # the hinge on the hull: a clevis and its pin across
-        b.box[ ca * (hr - 0.15), hy, sa * (hr - 0.15), 0.28, 0.35,
-               0.28, 5.0 ]
-        pin_a : vec3f [ hinge.x - tg.x * 0.55, hy,
-                        hinge.z - tg.z * 0.55 ]
-        pin_b : vec3f [ hinge.x + tg.x * 0.55, hy,
-                        hinge.z + tg.z * 0.55 ]
-        b.strut[ pin_a, pin_b, 0.07, 7.0 ]
-        # the pusher: its cylinder from a fitting high on the
-        # hull, its steel rod out to the leg
-        top : vec3f [ ca * 1.95, 9.5, sa * 1.95 ]
-        b.box[ ca * 1.9, 9.5, sa * 1.9, 0.22, 0.4, 0.22, 5.0 ]
-        tip : vec3f [ ca * mr, my, sa * mr ]
+        # the pin across the panel's root, inside its thickness
+        pin_a : vec3f [ hinge.x - tg.x * 0.75, hy,
+                        hinge.z - tg.z * 0.75 ]
+        pin_b : vec3f [ hinge.x + tg.x * 0.75, hy,
+                        hinge.z + tg.z * 0.75 ]
+        b.strut[ pin_a, pin_b, 0.06, 7.0 ]
+        # the pusher: its cylinder inside the hull, its steel rod
+        # to the panel's inner face; stowed, all under the panel
+        top : vec3f [ ca * 1.64, 9.5, sa * 1.64 ]
+        lift : f32 [ 0.0 - hd - 0.08 ]
+        tip : vec3f [ ca * mr + face.x * lift, my + face.y * lift,
+                      sa * mr + face.z * lift ]
         mid_p : vec3f [ top.x + (tip.x - top.x) * 0.45,
                        top.y + (tip.y - top.y) * 0.45,
                        top.z + (tip.z - top.z) * 0.45 ]
@@ -2001,7 +2168,7 @@ func build_plume [] -> GltfModel
     # 32 flats sit inside their circle: 1.01 holds it
     prof : vec f32 [] [ 0.0, 0.06, 1.01, 0.06, 1.01, -1.0,
                         0.0, -1.0 ]
-    b.lathe[ prof, 32, 0.0 ]
+    b.lathe[ prof, 64, 0.0 ]
     return b.gltf[ 'plume' ]
 
 # ---------------------------------------------------------------
@@ -2460,7 +2627,7 @@ element PlanetView
         if [ c_pitch < -1.5 ] c_pitch = -1.5
 
     public func on_wheel [ ev: Event ]
-        c_dist = c_dist * pow[ 1.18, 0.0 - ev.mouse.wheel_delta.y ]
+        c_dist = c_dist * pow[ 1.02, 0.0 - ev.mouse.wheel_delta.y ]
         if [ c_dist < 20.0 ] c_dist = 20.0
         if [ c_dist > 9.0e6 ] c_dist = 9.0e6
 
@@ -2886,6 +3053,16 @@ element PlanetView
                                                   0.0 - bz.z ],
                       alt: alt, air: f32[ ar.density / 1.225 ] ]
 
+    # the camera's distance to a pose's axis from y lo to hi
+    func axis_distance [ p: Pose, lo: f32, hi: f32 ] -> f32
+        t : f32 [ 0.0 - (p.at.x * p.ay.x + p.at.y * p.ay.y
+                         + p.at.z * p.ay.z) ]
+        t = clamp[ t, lo, hi ]
+        qx : f32 [ p.at.x + p.ay.x * t ]
+        qy : f32 [ p.at.y + p.ay.y * t ]
+        qz : f32 [ p.at.z + p.ay.z * t ]
+        return sqrt[ qx * qx + qy * qy + qz * qz ]
+
     func hidden [] -> Pose
         return Pose [ at: vec3f [ 0.0, -1.0e7, 0.0 ],
                       ax: vec3f [ 1.0, 0.0, 0.0 ],
@@ -2994,20 +3171,28 @@ element PlanetView
         if [ !engine_sound ] engine_sound = EngineSound [ ]
         engine_sound.feed[ low_c, one, rx, standard_air[ cam_alt ],
                            pace, cx, cy, cz, camera ]
-        # the depth range fitted to what is drawn: near at half the
-        # way to the nearest (60 m round each, the pad included),
-        # far past the farthest with room for a plume (20 km)
+        # the depth range fitted to what is drawn: near at nine
+        # tenths of the nearest, far past the farthest with room
+        # for a plume (20 km)
         pad_c : vec3f [ f32[ 0.0 - cx ], f32[ 0.0 - cy ],
                         f32[ 0.0 - cz ] ]
-        seen : vec vec3f [] [ pad_c, one.at, up.at, fair.at ]
-        nearest : f32 [ 1.0e9 ]
-        farthest : f32 [ 0.0 ]
-        for [ p: vec3f ] in seen
-            dp : f32 [ sqrt[ p.x * p.x + p.y * p.y + p.z * p.z ] ]
-            if [ dp > 5.0e6 ] continue
-            if [ dp - 60.0 < nearest ] nearest = dp - 60.0
-            if [ dp > farthest ] farthest = dp
-        z_near : f32 [ max[ nearest * 0.5, 0.5 ] ]
+        pd : f32 [ sqrt[ pad_c.x * pad_c.x + pad_c.y * pad_c.y
+                         + pad_c.z * pad_c.z ] ]
+        # the deck, 60 m round its middle
+        nearest : f32 [ pd - 60.0 ]
+        farthest : f32 [ pd ]
+        # each stage's mesh runs up its axis from its feet to the
+        # fairing's tip, 10 m round it (the legs out)
+        seen : vec Pose [] [ one, up, fair ]
+        for [ p: Pose ] in seen
+            d_seg : f32 [ axis_distance[ p, -4.0, 72.0 ] - 10.0 ]
+            if [ d_seg < nearest ] nearest = d_seg
+            dp : f32 [ sqrt[ p.at.x * p.at.x + p.at.y * p.at.y
+                             + p.at.z * p.at.z ] ]
+            if [ dp + 72.0 > farthest ] farthest = dp + 72.0
+        # the projection keeps depth from -1 and vulkan clips
+        # below 0: the plane cuts at twice z_near
+        z_near : f32 [ max[ nearest * 0.45, 0.25 ] ]
         z_far : f32 [ farthest + 20000.0 ]
         prj : mat4f [ mat4f.perspective[ 2.0 * atan[ th ], aspect,
                                          z_near, z_far ] ]
@@ -3057,16 +3242,19 @@ element PlanetView
                     : 0.0 ]
         lit_fins.fold = vec4f [ f32[ 1.0 - out ] * 1.5707963,
                                 FIN_ROOT + FIN_DEEP * 0.5, FIN_Y,
-                                0.7853982 ]
+                                0.0 ]
         # each fin's deflection; physics fin i is the mesh's
-        # quarter -i (mod 4): its z is the body's -z
+        # sixth 5 - i: its z is the body's -z
         tw : vec4f [ 0.0, 0.0, 0.0, 0.0 ]
-        if [ low_c.fins.count == 4 ]
-            tw = vec4f [ f32[ low_c.fins[ 0 ].deflect ],
-                         f32[ low_c.fins[ 3 ].deflect ],
-                         f32[ low_c.fins[ 2 ].deflect ],
-                         f32[ low_c.fins[ 1 ].deflect ] ]
+        tb : vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+        if [ low_c.fins.count == 6 ]
+            fs : low_c.fins
+            tw = vec4f [ f32[ fs[ 5 ].deflect ], f32[ fs[ 4 ].deflect ],
+                         f32[ fs[ 3 ].deflect ], f32[ fs[ 2 ].deflect ] ]
+            tb = vec4f [ f32[ fs[ 1 ].deflect ], f32[ fs[ 0 ].deflect ],
+                         0.0, 0.0 ]
         lit_fins.twist = tw
+        lit_fins.twist_b = tb
 
 element launch : trinity
     public width     : i32    [ 1280 ]

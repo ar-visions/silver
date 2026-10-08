@@ -703,6 +703,11 @@ class Craft
     public bend_hz    : f64 [ 4.0 ]
     public axial_share : f64 [ 0.5 ]
     public bend_share : f64 [ 0.3 ]
+    # the cross-section: 0 round, else that many flat faces with
+    # the skin radius their distance from the axis, and the
+    # corners rounded by this share of it
+    public sides  : i32
+    public corner : f64
     # the outer shape's stations: x and skin radius
     intern shape_x : vec f64
     intern shape_r : vec f64
@@ -948,6 +953,9 @@ class Craft
         normal : f64 [ 0.0 ]
         moment : f64 [ 0.0 ]
         pi : f64 [ 3.14159265358979 ]
+        # the section's own area and rim, as circles' multiples
+        ka : f64 [ section_area[] ]
+        kr : f64 [ section_rim[] ]
         for [ i: i32 0, i < n - 1, i += 1 ]
             xa : f64 [ shape_x[ i ] ]
             xb : f64 [ shape_x[ i + 1 ] ]
@@ -956,31 +964,32 @@ class Craft
             dx : f64 [ xb - xa ]
             mid : f64 [ (xa + xb) * 0.5 ]
             # slender body: the area that grows away from the lead
-            grow : f64 [ (nose_first) ? pi * (ra * ra - rb * rb)
-                         : pi * (rb * rb - ra * ra) ]
+            grow : f64 [ ((nose_first) ? pi * (ra * ra - rb * rb)
+                         : pi * (rb * rb - ra * ra)) * ka ]
             # behind a narrowing the flow separates (half: estimate)
             if [ grow < 0.0 ] grow = grow * 0.5
             dn : f64 [ q * pot * grow
-                       + q * eta * cdc * sa * sa * (ra + rb) * dx ]
+                       + q * eta * cdc * sa * sa * (ra + rb) * kr * dx ]
             normal += dn
             moment += dn * (mid - cg)
-            wet += pi * (ra + rb) * sqrt[ dx * dx + (rb - ra) * (rb - ra) ]
+            wet += pi * (ra + rb) * kr
+                   * sqrt[ dx * dx + (rb - ra) * (rb - ra) ]
             # a face turned into the flow takes its pressure
             rise : f64 [ (nose_first) ? ra - rb : rb - ra ]
             if [ rise > 0.0 ]
                 delta : f64 [ atan2[ rise, dx ] ]
-                ring : f64 [ pi * abs[ ra * ra - rb * rb ] ]
+                ring : f64 [ pi * abs[ ra * ra - rb * rb ] * ka ]
                 axial += face_cp[ m, delta ] * q * ring
         # the leading end's own face, and the base behind it all
         lead_r : f64 [ (nose_first) ? shape_r[ n - 1 ] : shape_r[ 0 ] ]
         tail_r : f64 [ (nose_first) ? shape_r[ 0 ] : shape_r[ n - 1 ] ]
-        face : f64 [ pi * lead_r * lead_r ]
+        face : f64 [ pi * lead_r * lead_r * ka ]
         # a burn out of the leading end shields its face (estimate)
         if [ !(burning && !nose_first) ]
             axial += face_cp[ m, 1.5707963 ] * q * face
         # behind a burning base the plume fills it: no suction
         if [ !(burning && nose_first) ]
-            axial -= base_cp[ m ] * q * pi * tail_r * tail_r
+            axial -= base_cp[ m ] * q * pi * tail_r * tail_r * ka
         axial += friction[ ar.density, speed, ar.temperature, span, m ]
                  * q * wet
         # open grid fins and deployed legs drag too (estimates)
@@ -1326,15 +1335,41 @@ class Craft
         if [ hl > most && hl > 0.0 ] hold = dv_scale[ hold, most / hl ]
         return hold
 
+    # a section's area over a circle's of the skin radius
+    public func section_area [] -> f64
+        if [ sides < 3 ] return 1.0
+        pi : f64 [ 3.14159265358979 ]
+        nt : f64 [ sides * tan[ pi / sides ] ]
+        return (nt - (nt - pi) * corner * corner) / pi
+
+    # a section's rim over a circle's of the skin radius
+    public func section_rim [] -> f64
+        if [ sides < 3 ] return 1.0
+        pi : f64 [ 3.14159265358979 ]
+        nt : f64 [ sides * tan[ pi / sides ] ]
+        return (nt * (1.0 - corner) + pi * corner) / pi
+
     # the hull's contact points: the engine skirt, then rings up
-    # the hull every 8 m, eight round each
+    # the hull every 8 m: eight round, or each corner and face
     func hull_points_of [] -> vec Dvec
         out : vec Dvec []
+        pi : f64 [ 3.14159265358979 ]
         for [ x: f64 -1.4, x < length, x += 8.0 ]
             r : f64 [ (x < 0.0) ? radius * 0.9 : radius ]
-            for [ k: i32 0, k < 8, k += 1 ]
-                a : f64 [ f64[ k ] * 0.785398163397448 ]
-                out.push[ Dvec [ x, r * cos[ a ], r * sin[ a ] ] ]
+            if [ sides < 3 ]
+                for [ k: i32 0, k < 8, k += 1 ]
+                    a : f64 [ k * 0.785398163397448 ]
+                    out.push[ Dvec [ x, r * cos[ a ], r * sin[ a ] ] ]
+                continue
+            # a corner's reach: its rounding takes a little off
+            half : f64 [ pi / sides ]
+            rc : f64 [ r * corner ]
+            tip : f64 [ (r - rc) / cos[ half ] + rc ]
+            for [ k: i32 0, k < sides, k += 1 ]
+                a : f64 [ k * 2.0 * half ]
+                out.push[ Dvec [ x, tip * cos[ a ], tip * sin[ a ] ] ]
+                b : f64 [ a + half ]
+                out.push[ Dvec [ x, r * cos[ b ], r * sin[ b ] ] ]
         return out
 
     # close enough to the deck that the hull could reach it
@@ -1551,7 +1586,8 @@ class Craft
                         severity: weather.severity,
                         seed: weather.seed * 6364136223846793005 + 1 ]
         out : Craft [ name: group, weather: own, turn_start: turn_start,
-                      time: time, deck: deck, radius: radius ]
+                      time: time, deck: deck, radius: radius,
+                      sides: sides, corner: corner ]
         keep : vec Part []
         for [ p: Part ] in parts
             if [ in_groups[ groups, p.group ] ]
@@ -1742,7 +1778,10 @@ func plume_of [ e: Engine, n: i32, pa: f64, vac: bool ] -> Plume
 # the stack on the pad: stage one 41.2 m with 7 engines, an
 # interstage, stage two, the fairing over a payload
 func falcon_nine [ payload: f64 ] -> Craft
-    c : Craft [ name: 'falcon 9', radius: 1.83 ]
+    # six flat faces 1.83 m out, corners rounded at 0.4 m: the
+    # tanks inside stay round
+    c : Craft [ name: 'falcon 9', radius: 1.83, sides: 6,
+                corner: 0.4 / 1.83 ]
     tube : f64 [ 1.83 ]
     # stage one: 25,600 kg dry with 395,700 kg of propellant
     # at 2.36 oxidiser to fuel; subcooled LOX 1,240 kg/m3 and
@@ -1776,11 +1815,12 @@ func falcon_nine [ payload: f64 ] -> Craft
         ang : f64 [ f64[ i ] * 1.0471975511966 ]
         at : Dvec [ 0.0, 1.25 * cos[ ang ], 1.25 * sin[ ang ] ]
         c.engines.push[ lugh[ 'outer', 'one', at, false ] ]
-    # four titanium grid fins near the top (size estimates)
-    for [ i: i32 0, i < 4, i += 1 ]
-        roll : f64 [ f64[ i ] * 1.5707963267949 ]
+    # six titanium grid fins near the top, one on each face, the
+    # four fins' area shared among them (size estimates)
+    for [ i: i32 0, i < 6, i += 1 ]
+        roll : f64 [ i * 1.0471975511966 + 0.523598775598299 ]
         c.fins.push[ Fin [ name: 'fin', group: 'one', x: 39.5,
-                           roll: roll, arm: 2.6, area: 1.8,
+                           roll: roll, arm: 2.6, area: 1.2,
                            lift: 2.0, limit: 0.35 ] ]
     # nitrogen cold gas at the top (thrust an estimate): four
     # pushing sideways for pitch and yaw, four along the hull's
@@ -1800,10 +1840,10 @@ func falcon_nine [ payload: f64 ] -> Craft
                      sense * cos[ roll ] ]
         c.jets.push[ Jet [ name: 'roll', group: 'one', at: at,
                            dir: dir, thrust: 2000.0 ] ]
-    # four legs, 18 m across when out (stiffness an estimate)
-    for [ i: i32 0, i < 4, i += 1 ]
-        roll : f64 [ f64[ i ] * 1.5707963267949
-                     + 0.785398163397448 ]
+    # six legs, one on each face, 18 m across when out
+    # (stiffness an estimate)
+    for [ i: i32 0, i < 6, i += 1 ]
+        roll : f64 [ i * 1.0471975511966 + 0.523598775598299 ]
         foot : Dvec [ LEG_FOOT_X, 9.0 * cos[ roll ],
                       9.0 * sin[ roll ] ]
         c.legs.push[ Leg [ name: 'leg', group: 'one', foot: foot,
@@ -2249,13 +2289,14 @@ expect func t_drop_crush [] -> bool
     g : c.legs[ 0 ]
     v : f64 [ g.touch_v ]
     elastic : f64 [ g.crush / g.stiff ]
-    # m v2/2 + w (e + s) = 4 (k e2 / 2) + 4 F s
+    # m v2/2 + w (e + s) = n (k e2 / 2) + n F s, n legs
+    legs : f64 [ c.legs.count ]
     want : f64 [ (0.5 * m * v * v + w * elastic
-                  - 2.0 * g.stiff * elastic * elastic)
-                 / (4.0 * g.crush - w) ]
+                  - legs * 0.5 * g.stiff * elastic * elastic)
+                 / (legs * g.crush - w) ]
     got : f64 [ 0.0 ]
     for [ l: Leg ] in c.legs
-        got += l.stroke * 0.25
+        got += l.stroke / legs
     log 'crush: each core {got} m, energy says {want} m'
     return tilt < 1.0 && abs[ got - want ] < want * 0.03
 
