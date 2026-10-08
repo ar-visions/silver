@@ -1150,6 +1150,9 @@ ModelViewProject VehicleLit
     # each sixth's turn about its own span (rad): grid fins
     mutable twist    : vec4f
     mutable twist_b  : vec4f
+    # a leg's link: its lug from the hinge (out, up), its length,
+    # and the rail's radius its slider runs on
+    mutable slide    : vec4f
 
     attrib logo  : LayoutBinding [ type:typeid[ VehicleSurface ],
                                    id: VehicleSurface.logo, count:1,
@@ -1177,7 +1180,21 @@ ModelViewProject VehicleLit
         vec3 ln = a_normal;
         bool moved = ubo.fold.x != 0.0 || ubo.twist != vec4(0.0)
                   || ubo.twist_b != vec4(0.0);
-        if (a_uv.y > 0.5 && moved) {
+        if (a_uv.y > 1.5 && moved) {
+            // a slider: up its rail as far as its link's lug rose
+            float c  = cos(ubo.fold.x);
+            float sn = sin(ubo.fold.x);
+            vec2  lug = ubo.slide.xy;
+            float pr = lug.x * c - lug.y * sn + ubo.fold.y;
+            float py = lug.x * sn + lug.y * c + ubo.fold.z;
+            float ln = ubo.slide.z * ubo.slide.z;
+            float dr = pr - ubo.slide.w;
+            float dz = ubo.fold.y + lug.x - ubo.slide.w;
+            float up = py + sqrt(max(ln - dr * dr, 0.0));
+            float at = ubo.fold.z + lug.y
+                     + sqrt(max(ln - dz * dz, 0.0));
+            lp.y += up - at;
+        } else if (a_uv.y > 0.5 && moved) {
             // its sixth: centred fold.w short of 30 degrees
             float a  = atan(lp.z, lp.x) + ubo.fold.w;
             float qf = floor(a / 1.0471976);
@@ -1282,6 +1299,11 @@ ModelViewProject VehicleLit
                 alb *= 0.72;
                 rough = 0.5;
             }}
+            // each leg's rail channel, open in its face
+            float cy = v_local.y;
+            float ct = dot(v_local.xz, vec2(-sin(fa), cos(fa)));
+            if (cy > 2.5 && cy < 9.1 && ap > 1.8
+                && abs(ct) < 0.15) discard;
         }} else if (kind == 3) {{
             // black carbon composite: interstage, leg panels
             alb = vec3(0.030, 0.031, 0.033);
@@ -1320,6 +1342,11 @@ ModelViewProject VehicleLit
             alb = vec3(0.95, 0.68, 0.58);
             metal = 1.0;
             rough = 0.18;
+        }} else if (kind == 13) {{
+            // the tanker's nose, a propellant tank: bright silver
+            alb = vec3(0.93, 0.94, 0.96);
+            metal = 1.0;
+            rough = 0.16;
         }} else if (kind == 12) {{
             // the legs: shiny aluminium
             alb = vec3(0.91, 0.92, 0.92);
@@ -2002,14 +2029,14 @@ func build_upper [] -> GltfModel
     b.hex_cap[ 1.83, 58.4, 1.0, 5.0 ]
     return b.gltf[ 'upper' ]
 
-# the fairing: a flare to 5.2 m and an ogive, its own piece
-func build_fairing [] -> GltfModel
+# the nose: a flare to 5.2 m and an ogive, its own piece, in
+# its material: rose gold ours, silver the tanker's
+func build_fairing [ mat: f32 ] -> GltfModel
     b : MeshBuild [ ]
-    # the whole fairing: rose gold
     skin : vec f32 [] [ 1.83, 58.4, 2.6, 59.6, 2.6, 64.4, 2.45, 66.4,
                         1.95, 68.8, 1.2, 70.6, 0.35, 71.3, 0.0, 71.5 ]
     # the nose grows out of the hull's hexagon, to its tip
-    b.hex_lathe[ smooth_profile[ skin ], 10.0 ]
+    b.hex_lathe[ smooth_profile[ skin ], mat ]
     b.hex_cap[ 1.83, 58.4, -1.0, 2.0 ]
     return b.gltf[ 'fairing' ]
 
@@ -2093,6 +2120,24 @@ LEG_FOOT_R  : f32 [ 9.0 ]
 # meshes start 1.4 m under the gimbal plane
 LEG_FOOT_Y  : f32 [ LEG_FOOT_X + 1.4 ]
 
+# a leg's link: its lug down the leg (share of it), its
+# length, and the radius its slider runs at in the channel
+LEG_LUG    : f32 [ 0.4 ]
+LEG_LINK   : f32 [ 4.0 ]
+LEG_RAIL_R : f32 [ 1.71 ]
+
+# the link's lug from the hinge (out, up) when out, its
+# length and its rail's radius: the shader's slide
+func leg_link [] -> vec4f
+    dr : f32 [ LEG_FOOT_R - LEG_HINGE_R ]
+    dy : f32 [ LEG_FOOT_Y - LEG_HINGE_Y ]
+    ll : f32 [ sqrt[ dr * dr + dy * dy ] ]
+    # down the leg, then under the panel's inner face
+    off : f32 [ LEG_HALF_D + 0.09 ]
+    lr : f32 [ dr / ll * LEG_LUG * ll - dy / ll * off ]
+    ly : f32 [ dy / ll * LEG_LUG * ll + dr / ll * off ]
+    return vec4f [ lr, ly, LEG_LINK, LEG_RAIL_R ]
+
 # the turn from out to stowed along the hull, foot up (rad)
 func leg_swing [] -> f32
     drop : f32 [ atan2[ LEG_HINGE_Y - LEG_FOOT_Y,
@@ -2100,8 +2145,8 @@ func leg_swing [] -> f32
     return 1.5707963 + drop
 
 # the six legs out, one on each face of the hull; each swings
-# about its hinge to stow flat on its face, its pusher from
-# high on the hull stretching with it
+# about its hinge to stow flat on its face, held by a link to
+# a slider in a channel down the face: stowed, all under it
 func build_legs [] -> GltfModel
     b : MeshBuild [ ]
     hd : f32 [ LEG_HALF_D ]
@@ -2115,8 +2160,6 @@ func build_legs [] -> GltfModel
         hy : f32 [ LEG_HINGE_Y ]
         fr : f32 [ LEG_FOOT_R ]
         fy : f32 [ LEG_FOOT_Y ]
-        mr : f32 [ hr + (fr - hr) * 0.55 ]
-        my : f32 [ hy + (fy - hy) * 0.55 ]
         hinge : vec3f [ ca * hr, hy, sa * hr ]
         foot : vec3f [ ca * fr, fy, sa * fr ]
         tg : vec3f [ 0.0 - sa, 0.0, ca ]
@@ -2144,22 +2187,60 @@ func build_legs [] -> GltfModel
         pin_b : vec3f [ hinge.x + tg.x * 0.75, hy,
                         hinge.z + tg.z * 0.75 ]
         b.strut[ pin_a, pin_b, 0.06, 7.0 ]
-        # the pusher: its cylinder inside the hull, its steel rod
-        # to the panel's inner face; stowed, all under the panel
-        top : vec3f [ ca * 1.64, 9.5, sa * 1.64 ]
-        lift : f32 [ 0.0 - hd - 0.08 ]
-        tip : vec3f [ ca * mr + face.x * lift, my + face.y * lift,
-                      sa * mr + face.z * lift ]
-        mid_p : vec3f [ top.x + (tip.x - top.x) * 0.45,
-                       top.y + (tip.y - top.y) * 0.45,
-                       top.z + (tip.z - top.z) * 0.45 ]
-        b.ride_p = 0.0
+        # the link's lug, under the panel's inner face
+        lk : vec4f [ leg_link[] ]
+        lug : vec3f [ ca * (hr + lk.x), hy + lk.y, sa * (hr + lk.x) ]
+        b.ride = 1.0
+        lug_a : vec3f [ lug.x - dn.x * 0.15, lug.y - dn.y * 0.15,
+                        lug.z - dn.z * 0.15 ]
+        lug_b : vec3f [ lug.x + dn.x * 0.15, lug.y + dn.y * 0.15,
+                        lug.z + dn.z * 0.15 ]
+        b.slab[ lug_a, lug_b, face, 0.1, 0.09, 5.0 ]
+        # the slider, where the link reaches up the rail
+        rs : f32 [ lk.w ]
+        gap : f32 [ hr + lk.x - rs ]
+        ys : f32 [ lug.y + sqrt[ lk.z * lk.z - gap * gap ] ]
+        slider : vec3f [ ca * rs, ys, sa * rs ]
+        out : vec3f [ ca, 0.0, sa ]
+        b.ride = 2.0
+        sl_a : vec3f [ slider.x, ys - 0.25, slider.z ]
+        sl_b : vec3f [ slider.x, ys + 0.25, slider.z ]
+        b.slab[ sl_a, sl_b, out, 0.12, 0.11, 5.0 ]
+        b.ride = 0.0
+        # the link: slider to lug
+        b.ride_p = 2.0
         b.ride_q = 1.0
-        b.strut[ top, mid_p, 0.17, 5.0 ]
-        b.ride_p = 1.0
-        b.strut[ mid_p, tip, 0.08, 7.0 ]
+        b.strut[ slider, lug, 0.06, 7.0 ]
         b.ride_p = 0.0
         b.ride_q = 0.0
+        # the channel the slider runs in, open in the face
+        up : vec3f [ 0.0, 1.0, 0.0 ]
+        lo : f32 [ 2.5 ]
+        hi : f32 [ 9.1 ]
+        fl_a : vec3f [ ca * 1.57, lo, sa * 1.57 ]
+        fl_b : vec3f [ ca * 1.57, hi, sa * 1.57 ]
+        b.slab[ fl_a, fl_b, out, 0.15, 0.01, 8.0 ]
+        for [ sd: i32 0, sd < 2, sd += 1 ]
+            t : f32 [ (sd == 0) ? -0.15 : 0.15 ]
+            wa : vec3f [ ca * 1.70 + tg.x * t, lo,
+                         sa * 1.70 + tg.z * t ]
+            wb : vec3f [ ca * 1.70 + tg.x * t, hi,
+                         sa * 1.70 + tg.z * t ]
+            b.slab[ wa, wb, tg, 0.13, 0.01, 8.0 ]
+            # its rails, either side of the slider
+            rt : f32 [ t * 0.55 ]
+            ra : vec3f [ ca * 1.60 + tg.x * rt, lo,
+                         sa * 1.60 + tg.z * rt ]
+            rb : vec3f [ ca * 1.60 + tg.x * rt, hi,
+                         sa * 1.60 + tg.z * rt ]
+            b.strut[ ra, rb, 0.02, 7.0 ]
+        for [ en: i32 0, en < 2, en += 1 ]
+            ey : f32 [ (en == 0) ? lo : hi ]
+            ea : vec3f [ ca * 1.70 - tg.x * 0.15, ey,
+                         sa * 1.70 - tg.z * 0.15 ]
+            eb : vec3f [ ca * 1.70 + tg.x * 0.15, ey,
+                         sa * 1.70 + tg.z * 0.15 ]
+            b.slab[ ea, eb, up, 0.13, 0.01, 8.0 ]
     return b.gltf[ 'legs' ]
 
 # the plume's hull: a closed unit cylinder, y 0.06 to -1
@@ -2564,6 +2645,12 @@ element PlanetView
     mutable lit_one  : VehicleLit
     mutable lit_up   : VehicleLit
     mutable lit_fair : VehicleLit
+    # the tanker in its orbit: our whole ship, every stage
+    mutable lit_tank_one : VehicleLit
+    mutable lit_tank_legs : VehicleLit
+    mutable lit_tank_fins : VehicleLit
+    mutable lit_tank : VehicleLit
+    mutable lit_tank_nose : VehicleLit
     mutable lit_legs : VehicleLit
     mutable lit_fins : VehicleLit
     mutable glow     : PlumeGlow
@@ -2573,6 +2660,11 @@ element PlanetView
     mutable m_up     : Model
     mutable m_plume  : Model
     mutable m_fair   : Model
+    mutable m_tank_one : Model
+    mutable m_tank_legs : Model
+    mutable m_tank_fins : Model
+    mutable m_tank   : Model
+    mutable m_tank_nose : Model
     mutable m_legs   : Model
     mutable m_fins   : Model
     mutable m_plume_up : Model
@@ -2650,6 +2742,11 @@ element PlanetView
         lit_one = VehicleLit [ vk: vkc, name: 'craft' ]
         lit_up  = VehicleLit [ vk: vkc, name: 'craft' ]
         lit_fair = VehicleLit [ vk: vkc, name: 'craft' ]
+        lit_tank_one = VehicleLit [ vk: vkc, name: 'craft' ]
+        lit_tank_legs = VehicleLit [ vk: vkc, name: 'craft' ]
+        lit_tank_fins = VehicleLit [ vk: vkc, name: 'craft' ]
+        lit_tank = VehicleLit [ vk: vkc, name: 'craft' ]
+        lit_tank_nose = VehicleLit [ vk: vkc, name: 'craft' ]
         lit_legs = VehicleLit [ vk: vkc, name: 'craft' ]
         lit_fins = VehicleLit [ vk: vkc, name: 'craft' ]
         glow    = PlumeGlow [ vk: vkc, name: 'plume' ]
@@ -2658,6 +2755,11 @@ element PlanetView
         lit_one.hold[]
         lit_up.hold[]
         lit_fair.hold[]
+        lit_tank_one.hold[]
+        lit_tank_legs.hold[]
+        lit_tank_fins.hold[]
+        lit_tank.hold[]
+        lit_tank_nose.hold[]
         lit_legs.hold[]
         lit_fins.hold[]
         glow.hold[]
@@ -2675,7 +2777,22 @@ element PlanetView
         m_up.id = build_upper[]
         m_fair = Model [ vk: vkc, w: w, s: lit_fair, samplers: sv,
                          cull_none: true ]
-        m_fair.id = build_fairing[]
+        m_fair.id = build_fairing[ 10.0 ]
+        m_tank_one = Model [ vk: vkc, w: w, s: lit_tank_one,
+                             samplers: sv, cull_none: true ]
+        m_tank_one.id = build_stage_one[]
+        m_tank_legs = Model [ vk: vkc, w: w, s: lit_tank_legs,
+                              samplers: sv, cull_none: true ]
+        m_tank_legs.id = build_legs[]
+        m_tank_fins = Model [ vk: vkc, w: w, s: lit_tank_fins,
+                              samplers: sv, cull_none: true ]
+        m_tank_fins.id = build_fins[]
+        m_tank = Model [ vk: vkc, w: w, s: lit_tank, samplers: sv,
+                         cull_none: true ]
+        m_tank.id = build_upper[]
+        m_tank_nose = Model [ vk: vkc, w: w, s: lit_tank_nose,
+                              samplers: sv, cull_none: true ]
+        m_tank_nose.id = build_fairing[ 13.0 ]
         m_legs = Model [ vk: vkc, w: w, s: lit_legs, samplers: sv,
                          cull_none: true ]
         m_legs.id = build_legs[]
@@ -2692,6 +2809,11 @@ element PlanetView
         m_one.hold[]
         m_up.hold[]
         m_fair.hold[]
+        m_tank_one.hold[]
+        m_tank_legs.hold[]
+        m_tank_fins.hold[]
+        m_tank.hold[]
+        m_tank_nose.hold[]
         m_legs.hold[]
         m_fins.hold[]
         m_plume.hold[]
@@ -2702,8 +2824,9 @@ element PlanetView
                          tag: 'craft',
                          use_depth: true,
             clear_color: vec4f [ 0.0, 0.0, 0.0, 0.0 ],
-            models: [ m_pad, m_one, m_up, m_fair, m_legs, m_fins,
-                      m_plume, m_plume_up ] ]
+            models: [ m_pad, m_one, m_up, m_fair, m_tank_one,
+                      m_tank_legs, m_tank_fins, m_tank, m_tank_nose,
+                      m_legs, m_fins, m_plume, m_plume_up ] ]
         craft.hold[]
         craft.owner = a
         w.element_targets[ 'craft_{id}' ] = craft
@@ -2755,6 +2878,7 @@ element PlanetView
     # the vehicle each camera follows, and the point it watches
     func followed [] -> Craft
         f : flight
+        if [ camera == 3 ] return f.tanker
         if [ f.lower == 0 ] return f.stack
         if [ camera == 1 ] return f.orbiter
         return f.booster
@@ -3146,8 +3270,11 @@ element PlanetView
         up : hidden[]
         fair : hidden[]
         legs : hidden[]
+        tank : (f.tanker) ? pose[ f.tanker, drop ] : hidden[]
         # how far out the legs are: 1 out, 0 stowed
         swing : f64 [ 1.0 ]
+        # the collar's relief: the legs turned flatter for good
+        relief : f64 [ 0.0 ]
         low_c : (f.lower == 0) ? f.stack : f.booster
         if [ f.lower == 0 ]
             one = pose[ f.stack, drop ]
@@ -3156,6 +3283,7 @@ element PlanetView
             if [ f.stack.legs.count > 0 ]
                 legs = one
                 swing = f.stack.legs[ 0 ].frac
+                relief = f.stack.collar_turn
         el
             one = pose[ f.booster, drop ]
             up = pose[ f.orbiter, drop ]
@@ -3163,6 +3291,7 @@ element PlanetView
             if [ f.booster.legs.count > 0 ]
                 legs = one
                 swing = f.booster.legs[ 0 ].frac
+                relief = f.booster.collar_turn
         hi_c : (f.lower == 0) ? null : f.orbiter
         # the lower stage heard from the camera
         rx : vec3f [ fwd.y * cu.z - fwd.z * cu.y,
@@ -3183,7 +3312,7 @@ element PlanetView
         farthest : f32 [ pd ]
         # each stage's mesh runs up its axis from its feet to the
         # fairing's tip, 10 m round it (the legs out)
-        seen : vec Pose [] [ one, up, fair ]
+        seen : vec Pose [] [ one, up, fair, tank ]
         for [ p: Pose ] in seen
             d_seg : f32 [ axis_distance[ p, -4.0, 72.0 ] - 10.0 ]
             if [ d_seg < nearest ] nearest = d_seg
@@ -3212,7 +3341,9 @@ element PlanetView
         mid : f32 [ (alt + cam_alt) * 0.5 ]
         haze : f32 [ 1.0e-5 * exp[ 0.0 - mid / 8000.0 ] ]
         lits : vec VehicleLit [] [ lit_pad, lit_one, lit_up, lit_fair,
-                                   lit_legs, lit_fins ]
+                                   lit_tank_one, lit_tank_legs,
+                                   lit_tank_fins, lit_tank,
+                                   lit_tank_nose, lit_legs, lit_fins ]
         for [ s: VehicleLit ] in lits
             s.view = vw
             s.proj = prj
@@ -3233,8 +3364,22 @@ element PlanetView
         put[ lit_one, one ]
         put[ lit_up, up ]
         put[ lit_fair, fair ]
+        put[ lit_tank_one, tank ]
+        put[ lit_tank_legs, tank ]
+        put[ lit_tank_fins, tank ]
+        put[ lit_tank, tank ]
+        put[ lit_tank_nose, tank ]
+        # the tanker's legs and fins stay stowed
+        lit_tank_legs.slide = leg_link[]
+        lit_tank_legs.fold = vec4f [ leg_swing[], LEG_HINGE_R,
+                                     LEG_HINGE_Y, 0.0 ]
+        lit_tank_fins.fold = vec4f [ 1.5707963,
+                                     FIN_ROOT + FIN_DEEP * 0.5, FIN_Y,
+                                     0.0 ]
         put[ lit_legs, legs ]
-        lit_legs.fold = vec4f [ f32[ 1.0 - swing ] * leg_swing[],
+        lit_legs.slide = leg_link[]
+        lit_legs.fold = vec4f [ f32[ 1.0 - swing ] * leg_swing[]
+                                + f32[ relief ],
                                 LEG_HINGE_R, LEG_HINGE_Y, 0.0 ]
         # stowed, a fin lies flat up the hull; it swings down
         put[ lit_fins, one ]
@@ -3305,7 +3450,7 @@ element launch : trinity
         if [ k >= 49 && k <= 53 ]
             preset = k - 49
             cur = states[ preset ]
-        if [ k == 67 ] camera = (camera + 1) % 3
+        if [ k == 67 ] camera = (camera + 1) % 4
         if [ k == 46 && warp < 100.0 ] warp = warp * 2.0
         if [ k == 44 && warp > 1.0 ] warp = warp / 2.0
         if [ k == 84 ] sun_el += 0.04
@@ -3352,7 +3497,9 @@ element launch : trinity
                                'landing burn', 'down on the deck',
                                'in the sea', 'exploded on the deck' ]
         highs : vec string [] [ 'on the stack', 'coasting to ignition',
-                                'burning to orbit', 'in orbit' ]
+                                'burning to orbit', 'parking orbit',
+                                'transfer burn', 'coasting up',
+                                'circularising', 'with the tanker' ]
         lo_s : lows[ f.lower ]
         hi_s : highs[ f.upper ]
         if [ !v.flying ] lo_s = 'space to launch'
@@ -3363,8 +3510,9 @@ element launch : trinity
                                            c.state.r ] ]
         spd : i32 [ dv_len[ rel ] ]
         prop : i32 [ c.propellant[] / 1000.0 ]
-        cam : string [ (camera == 0) ? 'platform'
-            : (camera == 1) ? 'orbiter' : 'booster' ]
+        cams : vec string [] [ 'platform', 'orbiter', 'booster',
+                               'tanker' ]
+        cam : cams[ camera ]
         wp : '{i32[ warp ]}x'
         if [ quick ]
             wp = (f.lower < 6) ? 'max until the landing burn' : '1x'

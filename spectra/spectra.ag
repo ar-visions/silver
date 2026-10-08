@@ -14,6 +14,7 @@ ifdef [ windows ]
     import <posix.h>
 el
     import <unistd.h>
+        +_DEFAULT_SOURCE
     import <pthread.h>
 
 import img
@@ -572,6 +573,11 @@ el
             return ok
 
         func write [ frames: i32 ] -> none
+            # closing: no more sound, and the caller's loop idles
+            if [ audio_quiet ]
+                close[]
+                usleep[ 10000 ]
+                return
             if [ ! active ] return
             host_audio_put[ host_slot[], buffer, frames, sample_rate,
                             channels ]
@@ -610,6 +616,13 @@ el
                 snd_pcm_close[ pcm_handle ]
             pcm_handle = null
             active = false
+
+# set as the app closes: its streams stop before its memory goes
+audio_quiet : bool
+
+# the host calls it before it frees the app
+func spectra_quiet [] -> none
+    audio_quiet = true
 
 # decoded PCM, interleaved S16
 class AudioClip
@@ -1304,7 +1317,7 @@ class AudioMixer
     func mix_entry [] -> none
         n : i32 [ out.buffer_size ]
         n2 : i32 [ n * 2 ]
-        while [ !stop ]
+        while [ !stop && !audio_quiet ]
             for [ i: i32 0, i < n2, i += 1 ] acc[ i ] = 0
             for [ v: Voice ] in voices
                 if [ !v.active ] continue

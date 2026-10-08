@@ -5452,8 +5452,72 @@ guidance ~50 Hz; SpaceX does not publish theirs).
    ship: rounded hexagon hull, six grid fins on the faces, six
    legs as flat panels stowed on the faces (width the flat of a
    face, sides chamfered at 30 degrees). Not yet seen in launch.
+   Then (Kalen): each leg held by a link to a slider in a rail
+   channel cut in its face (flush when stowed); the six sliders
+   ride one collar, a relief, not a spring: rigid to 2.4 MN on
+   the feet, then it slides up for good (0.5 m), turning every
+   leg flatter, so the stance widens. physics: Craft.collar_*,
+   Leg.hinge/foot_out; 6 m/s drop: collar 0.183 m (energy
+   0.186), feet 18.0 -> 18.18 m across; lean drop stands 0.2 deg.
 14. OPEN (Kalen, Oct 8) the ship goes to the moon: it docks
    with a fuel station in orbit to refuel first.
+   Kalen's calls (Oct 8): the tanker is our own stack, same
+   model; its upper stage holds propellant where ours holds
+   people; when done it lands itself. 400 km circular, the
+   launch waits for the tanker's plane over the pad, then
+   phasing. Full contact docking. The orbit flight we fly now
+   stays; the main mission flies on to the tanker. Order:
+   a. DONE the tanker in orbit (Mission.tanker, place_tanker):
+      our upper stage, fairing off, at liftoff circular 400 km
+      in the plane of the pad's heading east (inclined 28.39
+      deg), tanker_lead 30 deg ahead (an estimate for three
+      phasing orbits); speed from our J2 gravity. Steps with
+      the flight. t_tanker_orbit: pad 0 m off the plane, an
+      orbit 5553.6 s at 398.1 to 400.3 km. The full flights
+      after it not rerun. Its propellant load: item e.
+   b. DONE the ascent to its plane and up to it. The upper
+      stage steers in the tanker's plane (in_plane: sideways
+      drift trimmed); insertion guidance: the burn left by the
+      rocket equation, a vertical push falling in a straight
+      line to reach 200 km level as orbital speed comes. Then
+      phases 3 parking (rounded off at its real high point),
+      4 transfer burn when the tanker leads by the transfer's
+      phase, 5 coast, 6 circularise, 7 in its orbit. Burns cut
+      on orbit_range: our nav state flown on in our J2 gravity
+      (the round-Earth high point is ~14 km off). tanker_lead
+      -10 deg. Found and fixed: Autopilot jet reach used the
+      booster's jet place (40.5 m) and was negative on the
+      upper stage, so its jets never fired; stage two now has
+      its own cold gas jets. t_to_tanker (whole flight): SECO
+      200.0 km, 0.03 km off the plane, parked 197.5-200.1 km,
+      transfer T1531, in its orbit T4260, 1.46 km from it,
+      3.9 t left. Both landings as before (17.9 m, 19.7 m).
+      launch draws the tanker (silver nose), camera 4: tanker.
+   c. OPEN relative nav (both ships' receivers, differential)
+      and close guidance (Clohessy-Wiltshire targeting, hold
+      points, the approach along the tanker's port axis) on
+      the upper stage's cold gas jets.
+   Kalen: they mate flat on, side by side "like 2 fish": a
+   hex face against a hex face, not nose to nose.
+   "like a pencil to pencil": parallel, side by side. The
+   tanker is the whole ship with its nose: only the nose
+   differs (ours for people, its for propellant).
+   d. OPEN docking ports in physics: contact, soft capture
+      within limits of speed and misalignment, latches, hard
+      dock joining the two crafts.
+   e. OPEN propellant moves from the tanker into our tanks.
+   f. OPEN every upper stage lands: legs (the panel and
+      collar design) and a landing burn on its engine; the
+      tanker undocks, comes down and lands on the deck.
+   g. OPEN launch draws the tanker, the docking and its cameras.
+   Kalen (Oct 8): every stage kept on the tanker (its booster
+   stays on in orbit); not lower than LEO: it parks at 200 km
+   (tanker_alt), ours parks at 170 km under it (park_alt) to
+   gain on it, then rises to it.
+   h. OPEN the tanker waits up there days to weeks: air drag
+      lowers it, and it burns to stay up, paying in propellant.
+      Station keeping: a reboost when its low point sags, fuel
+      taken from its own tanks, the total logged.
 
 ## Active work: quake2 port (Oct 5 2026)
 

@@ -580,14 +580,11 @@ class Leg
     public name    : string
     public group   : string
     public foot    : Dvec
+    # its own give, pad to collar: stiff, the collar springs
     public stiff   : f64
     public damp    : f64
     public out     : bool
     public load    : f64
-    # the crush core gives way at this load, N (an estimate)
-    public crush   : f64 [ 4.0e5 ]
-    # how far the core can crush, m (an estimate)
-    public travel  : f64 [ 0.5 ]
     # the load that breaks the leg, N (an estimate)
     public breaks  : f64 [ 1.5e6 ]
     # its damper, N per m/s closing, at any squeeze: about 0.3
@@ -596,7 +593,7 @@ class Leg
     # as the foot lifts the spring gives back this share less:
     # lost in the pad, the joints and the core (an estimate)
     public lift_loss : f64 [ 0.4 ]
-    # what touchdown did: the core crushed, the most load
+    # what touchdown did: the collar's crush, the most load
     public stroke  : f64
     public peak    : f64
     public broken  : bool
@@ -611,6 +608,9 @@ class Leg
     public stuck   : bool
     # how far out it is, 1 out, 0 stowed, as it swings
     public frac    : f64 [ 1.0 ]
+    # the hinge it turns on (body), and its foot as first out
+    public hinge   : Dvec
+    public foot_out : Dvec
 
 # the state RK4 steps: centre of mass place and speed (inertial),
 # attitude body to inertial, body rates, propellant by tank
@@ -661,6 +661,20 @@ struct Touch
 
 # the air's load: body force, moment about the centre of mass,
 # the angle of attack, and the axial and normal totals (N)
+# thin air's drag on the area seen: molecules give up their
+# momentum and leave at the wall's heat (a satellite estimate)
+FREE_CD : f64 [ 2.2 ]
+
+# the mean free path over a length: under 0.001 the air is a
+# fluid, over 10 its molecules strike one by one
+func knudsen [ ar: Air, len: f64 ] -> f64
+    if [ ar.density <= 0.0 ] return 1e9
+    t : f64 [ ar.temperature ]
+    mu : f64 [ 1.458e-6 * pow[ t, 1.5 ] / (t + 110.4) ]
+    path : f64 [ mu / ar.density
+                 * sqrt[ 3.14159265358979 / (2.0 * 287.053 * t) ] ]
+    return path / len
+
 class Aero
     public force  : Dvec
     public torque : Dvec
@@ -725,6 +739,17 @@ class Craft
     # the hull's first strike on the deck: when, closing m/s
     public hull_t  : f64 [ -1.0 ]
     public hull_v  : f64
+    # the legs' collar: one slider ring all six struts ride, so
+    # every foot rises with any foot. no spring: rigid (its
+    # structure, N/m) until its relief load (N), then it slides
+    # up for good, as far as its travel (m); all estimates
+    public collar_stiff  : f64 [ 2.0e8 ]
+    public collar_relief : f64 [ 2.4e6 ]
+    public collar_travel : f64 [ 0.5 ]
+    # how far the feet have risen, and the legs' turn for it:
+    # flatter, so the stance widens (rad)
+    public collar_stroke : f64
+    public collar_turn   : f64
 
     func init []
         parts = vec Part []
@@ -1010,6 +1035,36 @@ class Craft
         out.alpha = aoa
         out.axial = axial
         out.normal = normal
+        # thin air: each molecule gives up its momentum on the
+        # area it meets, bridged from the fluid by Knudsen number
+        # (the sine squared bridge, Wilmoth's)
+        kn : f64 [ knudsen[ ar, 2.0 * rmax ] ]
+        if [ kn <= 0.001 ] return out
+        thin : f64 [ 1.0 ]
+        if [ kn < 10.0 ]
+            b : f64 [ sin[ 0.39269908
+                           * (3.0 + log[ kn ] / log[ 10.0 ]) ] ]
+            thin = b * b
+        side : f64 [ 0.0 ]
+        arm : f64 [ 0.0 ]
+        for [ i: i32 0, i < n - 1, i += 1 ]
+            dx : f64 [ shape_x[ i + 1 ] - shape_x[ i ] ]
+            wide : f64 [ (shape_r[ i ] + shape_r[ i + 1 ]) * kr * dx ]
+            side += wide
+            arm += wide * ((shape_x[ i ] + shape_x[ i + 1 ]) * 0.5 - cg)
+        end_a : f64 [ pi * rmax * rmax * ka ]
+        lead_x : f64 [ (nose_first) ? shape_x[ n - 1 ] : shape_x[ 0 ] ]
+        pull : f64 [ FREE_CD * q * (ca2 * end_a + sa * side) ]
+        back : dv_scale[ vb, -1.0 / speed ]
+        turn : f64 [ FREE_CD * q * (sa * arm
+                                    + ca2 * end_a * (lead_x - cg)) ]
+        thin_t : dv_cross[ Dvec [ 1.0, 0.0, 0.0 ], back ]
+        out.force = dv_add[ dv_scale[ out.force, 1.0 - thin ],
+                            dv_scale[ back, pull * thin ] ]
+        out.torque = dv_add[ dv_scale[ out.torque, 1.0 - thin ],
+                             dv_scale[ thin_t, turn * thin ] ]
+        out.axial = axial * (1.0 - thin) + pull * ca2 * thin
+        out.normal = normal * (1.0 - thin) + pull * sa * thin
         return out
 
     # the axial force coefficient flying straight, on the end's
@@ -1126,13 +1181,16 @@ class Craft
         if [ deck ]
             dup : ecef_to_eci[ deck.up, ang ]
             mu : f64 [ deck.friction ]
-            # each leg pushes the tube, through its give at the base
+            # each leg pushes the tube, through its give at the
+            # base, all on the one collar
+            tcs : leg_touches[ s, ang ]
+            u : f64 [ collar_at[ tcs ] ]
             for [ i: i32 0, i < legs.count, i += 1 ]
                 g : legs[ i ]
-                if [ !g.out || g.frac < 1.0 || g.broken ] continue
-                tc : leg_touch[ s, i, ang ]
+                if [ !leg_ready[ g ] ] continue
+                tc : tcs[ i ]
                 if [ !tc.on ] continue
-                fl : f64 [ leg_push[ g, tc.depth, tc.vn ] ]
+                fl : f64 [ foot_push[ g, tc.depth, tc.vn, u ] ]
                 if [ fl <= 0.0 ] continue
                 on_deck = true
                 arm : dv_add[ dv_sub[ g.foot, cgv ],
@@ -1292,10 +1350,9 @@ class Craft
                       base_move[ s, g.foot, 0 ] ]
         return touch_of[ s, arm, base_move[ s, g.foot, 1 ], ang ]
 
-    # a leg's push, N: elastic, then the core crushing at its
-    # load, then the structure once the core is spent
-    func leg_push [ g: Leg, depth: f64, vn: f64 ] -> f64
-        squeeze : f64 [ depth - g.stroke ]
+    # a foot's push, N, with the collar risen u: its own give
+    func foot_push [ g: Leg, depth: f64, vn: f64, u: f64 ] -> f64
+        squeeze : f64 [ depth - u ]
         if [ squeeze <= 0.0 ] return 0.0
         # Hunt & Crossley: damping grows with the squeeze; the
         # damper works at any squeeze
@@ -1306,12 +1363,84 @@ class Craft
             eased : f64 [ min[ vn / 0.05, 1.0 ] ]
             spring = spring * (1.0 - g.lift_loss * eased)
         f : f64 [ spring * (1.0 - 1.5 * g.damp * vn) - g.viscous * vn ]
-        if [ g.stroke < g.travel && f > g.crush ] f = g.crush
-        if [ g.stroke >= g.travel ]
-            past : f64 [ squeeze - g.crush / g.stiff ]
-            # the leg's own structure: an estimate
-            if [ past > 0.0 ] f += 2.0e7 * past
         return (f > 0.0) ? f : 0.0
+
+    # the collar's hold, risen u: rigid, giving at the relief
+    # load until its travel is spent
+    func collar_hold [ u: f64 ] -> f64
+        if [ u <= 0.0 ] return 0.0
+        f : f64 [ collar_stiff * u ]
+        if [ collar_stroke < collar_travel && f > collar_relief ]
+            f = collar_relief
+        return f
+
+    # a leg that can stand on the deck
+    func leg_ready [ g: Leg ] -> bool
+        return g.out && g.frac >= 1.0 && !g.broken
+
+    # how far the collar rises: where the feet's pushes and its
+    # hold balance (the struts massless)
+    func collar_at [ tcs: vec Touch ] -> f64
+        lo : f64 [ 0.0 ]
+        hi : f64 [ 0.0 ]
+        for [ i: i32 0, i < legs.count, i += 1 ]
+            tc : tcs[ i ]
+            if [ leg_ready[ legs[ i ] ] && tc.on && tc.depth > hi ]
+                hi = tc.depth
+        if [ hi <= lo ] return lo
+        for [ k: i32 0, k < 48, k += 1 ]
+            mid : f64 [ (lo + hi) * 0.5 ]
+            feet : f64 [ 0.0 ]
+            for [ i: i32 0, i < legs.count, i += 1 ]
+                g : legs[ i ]
+                tc : tcs[ i ]
+                if [ leg_ready[ g ] && tc.on ]
+                    feet += foot_push[ g, tc.depth, tc.vn, mid ]
+            if [ feet > collar_hold[ mid ] ]
+                lo = mid
+            el
+                hi = mid
+        return (lo + hi) * 0.5
+
+    # a leg's foot turned flatter by turn (rad) about its
+    # hinge, in the plane through the axis
+    func foot_turned [ g: Leg, turn: f64 ] -> Dvec
+        f : g.foot_out
+        h : g.hinge
+        r : f64 [ sqrt[ f.y * f.y + f.z * f.z ] ]
+        rh : f64 [ sqrt[ h.y * h.y + h.z * h.z ] ]
+        if [ r < 1e-6 ] return f
+        dr : f64 [ r - rh ]
+        dx : f64 [ f.x - h.x ]
+        nr : f64 [ rh + dr * cos[ turn ] - dx * sin[ turn ] ]
+        nx : f64 [ h.x + dr * sin[ turn ] + dx * cos[ turn ] ]
+        return Dvec [ nx, f.y * nr / r, f.z * nr / r ]
+
+    # the collar's rise as its legs' turn, and the feet moved
+    func collar_place []
+        if [ legs.count == 0 ] return
+        g : legs[ 0 ]
+        if [ dv_len[ g.hinge ] <= 0.0 ] return
+        lo : f64 [ 0.0 ]
+        hi : f64 [ 1.0 ]
+        for [ k: i32 0, k < 48, k += 1 ]
+            mid : f64 [ (lo + hi) * 0.5 ]
+            rise : f64 [ foot_turned[ g, mid ].x - g.foot_out.x ]
+            if [ rise < collar_stroke ]
+                lo = mid
+            el
+                hi = mid
+        collar_turn = (lo + hi) * 0.5
+        for [ l: Leg ] in legs
+            if [ dv_len[ l.hinge ] > 0.0 ]
+                l.foot = foot_turned[ l, collar_turn ]
+
+    # every leg's foot against the deck now
+    func leg_touches [ s: State, ang: f64 ] -> vec Touch
+        tcs : vec Touch []
+        for [ i: i32 0, i < legs.count, i += 1 ]
+            tcs.push[ leg_touch[ s, i, ang ] ]
+        return tcs
 
     # sliding friction against a sideways speed, smoothed at rest
     func slip_force [ slide: Dvec, most: f64 ] -> Dvec
@@ -1389,13 +1518,23 @@ class Craft
         s : state
         cgv : Dvec [ cg, 0.0, 0.0 ]
         dup : ecef_to_eci[ deck.up, ang ]
+        # past its relief load the collar slides up, and stays
+        tcs : leg_touches[ s, ang ]
+        u : f64 [ collar_at[ tcs ] ]
+        if [ collar_stroke < collar_travel
+             && collar_stiff * u > collar_relief ]
+            collar_stroke = min[ collar_travel, collar_stroke + u
+                                 - collar_relief / collar_stiff ]
+            collar_place[]
+            u = collar_relief / collar_stiff
         for [ li: i32 0, li < legs.count, li += 1 ]
             g : legs[ li ]
             g.load = 0.0
-            if [ !g.out || g.frac < 1.0 || g.broken ]
+            g.stroke = collar_stroke
+            if [ !leg_ready[ g ] ]
                 g.stuck = false
                 continue
-            tc : leg_touch[ s, li, ang ]
+            tc : tcs[ li ]
             if [ !tc.on ]
                 g.stuck = false
                 continue
@@ -1405,10 +1544,7 @@ class Craft
                 g.touch_v = 0.0 - tc.vn
                 ax : q_rotate[ s.q, Dvec [ 1.0, 0.0, 0.0 ] ]
                 g.touch_tilt = acos[ dv_dot[ ax, dup ] ]
-            squeeze : f64 [ tc.depth - g.stroke ]
-            if [ g.stiff * squeeze > g.crush && g.stroke < g.travel ]
-                g.stroke = min[ g.travel, tc.depth - g.crush / g.stiff ]
-            fn : f64 [ leg_push[ g, tc.depth, tc.vn ] ]
+            fn : f64 [ foot_push[ g, tc.depth, tc.vn, u ] ]
             g.load = fn
             if [ fn > g.peak ] g.peak = fn
             if [ fn > g.breaks ]
@@ -1694,6 +1830,9 @@ func lugh [ name: string, group: string, at: Dvec,
 
 # the feet on the axis, m: 2 m under the engines (photos)
 LEG_FOOT_X : f64 [ -3.4 ]
+# a leg's hinge: up the axis and out from it (m)
+LEG_PIVOT_X : f64 [ 0.2 ]
+LEG_PIVOT_R : f64 [ 1.91 ]
 
 # kerosene and LOX exhaust's heat ratio: an estimate
 PLUME_GAMMA : f64 [ 1.22 ]
@@ -1840,14 +1979,33 @@ func falcon_nine [ payload: f64 ] -> Craft
                      sense * cos[ roll ] ]
         c.jets.push[ Jet [ name: 'roll', group: 'one', at: at,
                            dir: dir, thrust: 2000.0 ] ]
-    # six legs, one on each face, 18 m across when out
-    # (stiffness an estimate)
+    # stage two's own, as the booster's, near its top
+    for [ i: i32 0, i < 4, i += 1 ]
+        roll : f64 [ f64[ i ] * 1.5707963267949 ]
+        dir : Dvec [ 0.0, cos[ roll ], sin[ roll ] ]
+        at : Dvec [ 56.0, dir.y * 1.83, dir.z * 1.83 ]
+        c.jets.push[ Jet [ name: 'side', group: 'two', at: at,
+                           dir: dir, thrust: 2000.0 ] ]
+    for [ i: i32 0, i < 4, i += 1 ]
+        roll : f64 [ f64[ i ] * 1.5707963267949
+                     + 0.785398163397448 ]
+        sense : f64 [ ((i & 1) == 0) ? 1.0 : -1.0 ]
+        at : Dvec [ 56.0, 1.83 * cos[ roll ], 1.83 * sin[ roll ] ]
+        dir : Dvec [ 0.0, 0.0 - sense * sin[ roll ],
+                     sense * cos[ roll ] ]
+        c.jets.push[ Jet [ name: 'roll', group: 'two', at: at,
+                           dir: dir, thrust: 2000.0 ] ]
+    # six legs, one on each face, 18 m across when out, each
+    # on its hinge at the hull's foot (stiffness an estimate)
     for [ i: i32 0, i < 6, i += 1 ]
         roll : f64 [ i * 1.0471975511966 + 0.523598775598299 ]
         foot : Dvec [ LEG_FOOT_X, 9.0 * cos[ roll ],
                       9.0 * sin[ roll ] ]
+        pivot : Dvec [ LEG_PIVOT_X, LEG_PIVOT_R * cos[ roll ],
+                       LEG_PIVOT_R * sin[ roll ] ]
         c.legs.push[ Leg [ name: 'leg', group: 'one', foot: foot,
-                           stiff: 3.0e6, damp: 0.3 ] ]
+                           foot_out: foot, hinge: pivot,
+                           stiff: 6.0e6, damp: 0.3 ] ]
     # interstage over the vacuum engine, then stage two:
     # 4,000 kg dry, 92,670 kg of propellant
     c.parts.push[ Part [ name: 'interstage', group: 'one',
@@ -2146,6 +2304,23 @@ expect func t_aero_limits [] -> bool
     # at half a degree the crossflow adds about 0.1
     return good && slope > 1.95 && slope < 2.2
 
+# thin air at 200 km: molecules one by one, the drag 2.2 of
+# the area seen; at 50 km the air is still a fluid
+expect func t_aero_thin [] -> bool
+    c : falcon_nine[ 0.0 ]
+    ar : standard_air[ 200000.0 ]
+    v : f64 [ 7784.0 ]
+    q : f64 [ 0.5 * ar.density * v * v ]
+    kn : f64 [ knudsen[ ar, 5.2 ] ]
+    ld : c.body_aero[ Dvec [ v, 0.0, 0.0 ], ar, false ]
+    side : c.body_aero[ Dvec [ 0.0, v, 0.0 ], ar, false ]
+    end_a : f64 [ 3.14159265358979 * 2.6 * 2.6 * c.section_area[] ]
+    cd : f64 [ ld.axial / (q * end_a) ]
+    low : f64 [ knudsen[ standard_air[ 50000.0 ], 5.2 ] ]
+    log 'aero thin: Knudsen {kn} at 200 km ({low} at 50 km), nose first {0.0 - ld.force.x} N (Cd {cd} on the end), side on {0.0 - side.force.y} N'
+    return kn > 10.0 && low < 0.001 && near[ cd, FREE_CD, 0.01 ]
+           && side.force.y < ld.force.x * 10.0
+
 # the shape's coefficients by Mach: the stack nose first with
 # its engines burning, the booster falling engines first
 expect func t_aero_table [] -> bool
@@ -2280,7 +2455,7 @@ expect func t_drop_soft [] -> bool
     return tilt < 1.0 && crushed < 1e-6 && c.hull_t < 0.0
 
 # 6 m/s upright, no damper: at the deepest point the fall's
-# energy is in the springs and the crushed cores
+# energy is in the legs' give and the collar's relief
 expect func t_drop_crush [] -> bool
     c : drop_on_deck[ 6.0, 0.0, 0.0, 0.0, 8.0 ]
     tilt : drop_report[ c, 'crush' ]
@@ -2288,16 +2463,20 @@ expect func t_drop_crush [] -> bool
     w : f64 [ m * dv_len[ gravity[ c.state.r ] ] ]
     g : c.legs[ 0 ]
     v : f64 [ g.touch_v ]
-    elastic : f64 [ g.crush / g.stiff ]
-    # m v2/2 + w (e + s) = n (k e2 / 2) + n F s, n legs
+    load : f64 [ c.collar_relief ]
     legs : f64 [ c.legs.count ]
-    want : f64 [ (0.5 * m * v * v + w * elastic
-                  - legs * 0.5 * g.stiff * elastic * elastic)
-                 / (legs * g.crush - w) ]
-    got : f64 [ 0.0 ]
-    for [ l: Leg ] in c.legs
-        got += l.stroke / legs
-    log 'crush: each core {got} m, energy says {want} m'
+    foot : f64 [ load / legs ]
+    give : f64 [ load / c.collar_stiff + foot / g.stiff ]
+    # m v2/2 + w (e + s) = F2 / 2k + n f2 / 2kp + F s
+    want : f64 [ (0.5 * m * v * v + w * give
+                  - 0.5 * load * load / c.collar_stiff
+                  - legs * 0.5 * foot * foot / g.stiff)
+                 / (load - w) ]
+    got : f64 [ c.collar_stroke ]
+    wide : f64 [ 2.0 * sqrt[ g.foot.y * g.foot.y
+                             + g.foot.z * g.foot.z ] ]
+    log 'crush: the collar {got} m, energy says {want} m; feet {wide} m across'
+
     return tilt < 1.0 && abs[ got - want ] < want * 0.03
 
 # 3 m/s down and 2 m/s across, leaning 6 deg: one leg first,

@@ -117,7 +117,12 @@ class Autopilot
         if [ fin_ok ]
             reach += 2.0 * 2.0 * qbar * 1.8 * 0.35 * 35.0 / iy
         if [ jet_ok ]
-            reach += 2000.0 * (40.5 - c.cg) / iy
+            # the strongest jet's turn, from where it sits
+            most : f64 [ 0.0 ]
+            for [ j: Jet ] in c.jets
+                tj : f64 [ j.thrust * abs[ j.at.x - c.cg ] ]
+                if [ tj > most ] most = tj
+            reach += most / iy
         if [ reach <= 0.0 ] return
         # a rate the actuators can stop from: never past braking
         err : attitude_error[ c, b ]

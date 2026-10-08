@@ -1811,6 +1811,10 @@ int main(int argc, char** argv) {
         }
     }
 
+    // sound stops before the app's memory is freed: its audio
+    // threads would play the freed buffers as noise
+    void (*quiet)(void) = handle ? dlsym(handle, "spectra_quiet") : NULL;
+    if (quiet) quiet();
     if (do_destroy) do_destroy();
     if (handle)     dlclose(handle);
     return 0;

@@ -229,6 +229,34 @@ class Mission
     public booster : Craft
     public orbiter : Craft
     public fairing : Craft
+    # the tanker: our own ship, nose and all, propellant where
+    # ours carries people, waiting in its circular orbit; height
+    # (m) and how far ahead of the pad along its orbit it is at
+    # liftoff (deg): behind, so the wait after insertion is
+    # short (set from a flight: 1 deg ahead at SECO)
+    public tanker  : Craft
+    public tanker_alt  : f64 [ 200000.0 ]
+    # our parking orbit, under the tanker's: we gain on it there
+    public park_alt    : f64 [ 170000.0 ]
+    public tanker_lead : f64 [ -17.3 ]
+    # station keeping: its pilot, the low point it keeps and the
+    # sag allowed under it (m), the burns and what they spent
+    public tanker_pilot : Autopilot
+    public keep_lo   : f64
+    public keep_band : f64 [ 100.0 ]
+    public boosting  : bool
+    public boosts    : i32
+    public boost_kg  : f64
+    intern boost_from : f64
+    intern tank_vr   : f64
+    # the transfer's high point while raising, the low point to
+    # beat while circularising (m from the centre)
+    intern raise_to : f64
+    # the parking orbit rounded off at its high point
+    intern parked   : bool
+    intern trimming : bool
+    # the last step's climb along the radius (m/s)
+    intern last_vr  : f64
     public low     : Avionics
     public high    : Avionics
     public platform : Receiver
@@ -239,7 +267,8 @@ class Mission
     public met     : f64 [ -10.0 ]
     # booster: 0 stack, 1 flip, 2 boostback, 3 coast, 4 entry,
     # 5 aero, 6 landing burn, 7 down; orbiter: 0 stack, 1 coast,
-    # 2 burn, 3 orbit
+    # 2 burn, 3 parking orbit, 4 raising burn, 5 transfer coast,
+    # 6 circularising burn, 7 in the tanker's orbit
     public lower   : i32
     public upper   : i32
     public events  : vec string
@@ -337,6 +366,78 @@ class Mission
         for [ g: Leg ] in stack.legs
             g.out = true
         clamp_down[]
+        place_tanker[]
+
+    # the tanker at liftoff: circular, its plane through the pad
+    # along its heading east, tanker_lead degrees ahead
+    func place_tanker []
+        # every stage kept: its nose a tank where ours seats people
+        tk : falcon_nine[ payload ]
+        t0 : f64 [ stack.time - met ]
+        ang : f64 [ earth_turn[ t0, stack.turn_start ] ]
+        pad : ecef_to_eci[ geodetic_to_ecef[ pad_lat, pad_lon, 0.0 ],
+                           ang ]
+        ea : ecef_to_eci[ enu_east[ pad_lat, pad_lon ], ang ]
+        ur : dv_norm[ pad ]
+        ut : dv_norm[ dv_sub[ ea, dv_scale[ ur, dv_dot[ ea, ur ] ] ] ]
+        th : f64 [ degrees[ tanker_lead ] ]
+        dir : dv_add[ dv_scale[ ur, cos[ th ] ],
+                      dv_scale[ ut, sin[ th ] ] ]
+        along : dv_sub[ dv_scale[ ut, cos[ th ] ],
+                        dv_scale[ ur, sin[ th ] ] ]
+        rr : f64 [ EARTH_A + tanker_alt ]
+        tk.time = t0
+        tk.state.r = dv_scale[ dir, rr ]
+        # circular in our gravity, its flattening (J2) included
+        down : f64 [ 0.0 - dv_dot[ gravity[ tk.state.r ], dir ] ]
+        tk.state.v = dv_scale[ along, sqrt[ rr * down ] ]
+        # its nose along its path, holding still
+        tk.state.q = q_between[ Dvec [ 1.0, 0.0, 0.0 ], along ]
+        tk.state.w = Dvec [ 0.0, 0.0, 0.0 ]
+        for [ g: Leg ] in tk.legs
+            g.out = false
+            g.frac = 0.0
+        # slow: a heavy ship, small jets
+        tanker_pilot = Autopilot [ rate: 2.0, use_jets: true,
+                                   max_rate: 0.02 ]
+        tanker = tk
+        keep_lo = orbit_range[ tk.state.r, tk.state.v,
+                               period_at[ rr ] ].y
+
+    # the tanker keeps itself up: nose along its path through the
+    # air; at its high point, when its low point has sagged under
+    # the band, its centre engine burns at least throttle
+    public func keep_tanker [ h: f64 ]
+        tk : tanker
+        r : tk.state.r
+        v : tk.state.v
+        rr : f64 [ dv_len[ r ] ]
+        vr : f64 [ dv_dot[ v, r ] / rr ]
+        tanker_pilot.axis = dv_norm[ v ]
+        tanker_pilot.tick[ tk, belief_truth[ tk ], h ]
+        eng : tk.engines[ 0 ]
+        if [ boosting ]
+            got : orbit_range[ r, v, period_at[ rr ] ]
+            # a round orbit under the mark rises a side at a time
+            if [ got.y < min[ keep_lo, rr - 100.0 ] ] return
+            eng.lit = false
+            boosting = false
+            spent : f64 [ boost_from - tk.propellant[] ]
+            boost_kg += spent
+            boosts += 1
+            lo_km : f64 [ (got.y - EARTH_A) / 1000.0 ]
+            hi_km : f64 [ (got.x - EARTH_A) / 1000.0 ]
+            note[ 'tanker reboost {boosts}: {spent} kg, now {lo_km} to {hi_km} km, {boost_kg} kg in all' ]
+            return
+        top : bool [ tank_vr > 0.0 && vr <= 0.0 ]
+        tank_vr = vr
+        if [ !top || tanker_pilot.error > 0.02 ] return
+        now : orbit_range[ r, v, period_at[ rr ] ]
+        if [ now.y >= keep_lo - keep_band ] return
+        eng.lit = true
+        eng.throttle = eng.throttle_min
+        boosting = true
+        boost_from = tk.propellant[]
 
     func note [ what: string ]
         line : 'T{met}: {what}'
@@ -396,6 +497,8 @@ class Mission
             clamp_down[]
             stack.time += h
             return
+        keep_tanker[ h ]
+        tanker.step[ h ]
         if [ lower == 0 && !low.ready ]
             low.align[ stack ]
             high.align[ stack ]
@@ -408,7 +511,7 @@ class Mission
             read_deck_wind[]
         if [ lower == 0 ]
             ascent[ decide ]
-        el
+        el [ booster ]
             booster_phase[ decide ]
         if [ upper >= 1 ] orbiter_phase[ decide ]
         # the physics, then each computer on its own vehicle
@@ -427,7 +530,7 @@ class Mission
                     note[ 'legs stowed' ]
         el
             # after touchdown its physics runs on while it settles
-            if [ lower < 7 || (lower == 7 && !settled) ]
+            if [ booster && (lower < 7 || (lower == 7 && !settled)) ]
                 booster.step[ h ]
                 low.tick[ booster, h ]
                 splashed[]
@@ -502,6 +605,7 @@ class Mission
         lower = 1
         upper = 1
         high.steers = true
+        high.pilot.use_jets = true
         low.pilot.use_gimbal = true
         low.pilot.use_jets = true
         # the grid fins out at once, for the flip and the boostback
@@ -511,7 +615,7 @@ class Mission
         low.pilot.max_rate = 0.12
         note[ 'stage separation' ]
 
-    # the upper stage: light after 8 s, climb to 200 km, cut off
+    # the upper stage: light after 8 s, climb to park_alt, cut off
     # at orbital speed
     func orbiter_phase [ decide: bool ]
         nv : high.filter
@@ -530,26 +634,203 @@ class Mission
                 note[ 'second engine start' ]
             return
         if [ upper == 2 ]
-            acc : f64 [ orbiter.engines[ 0 ].force / orbiter.mass ]
+            eng2 : orbiter.engines[ 0 ]
+            acc : f64 [ eng2.force / orbiter.mass ]
             if [ acc < 1.0 ] acc = 1.0
             g : f64 [ EARTH_GM / (rr * rr) ]
-            goal : f64 [ (200000.0 - (rr - EARTH_A)) / 120.0 ]
-            if [ goal > 250.0 ] goal = 250.0
-            if [ goal < -100.0 ] goal = -100.0
-            k : f64 [ (g - vh * vh / rr + (goal - vr) * 0.08) / acc ]
+            # the burn left: the speed still to gain, through the
+            # rocket equation (the stage lightens as it burns)
+            park : f64 [ EARTH_A + park_alt ]
+            vc : f64 [ sqrt[ EARTH_GM / park ] ]
+            ve : f64 [ (eng2.flow > 0.0) ? eng2.force / eng2.flow
+                       : 3400.0 ]
+            tau : f64 [ ve / acc ]
+            gain : f64 [ max[ vc - vh, 0.0 ] ]
+            t_go : f64 [ max[ tau * (1.0 - exp[ 0.0 - gain / ve ]),
+                              2.0 ] ]
+            # the vertical push, falling in a straight line, that
+            # reaches park_alt with no climb left as it ends
+            dh : f64 [ park - rr ]
+            a_up : f64 [ (6.0 * dh - 4.0 * vr * t_go) / (t_go * t_go) ]
+            k : f64 [ (a_up + g - vh * vh / rr) / acc ]
             if [ k > 0.9 ] k = 0.9
-            if [ k < -0.4 ] k = -0.4
+            if [ k < -0.6 ] k = -0.6
             side : f64 [ sqrt[ 1.0 - k * k ] ]
             high.pilot.axis = dv_add[ dv_scale[ up, k ],
-                                      dv_scale[ dv_norm[ hv ], side ] ]
+                                      dv_scale[ in_plane[ nv.r, nv.v ],
+                                                side ] ]
             if [ decide && !fairing && rr - EARTH_A > 110000.0 ]
                 fairing = orbiter.separate[ 'fairing' ]
                 note[ 'fairing away' ]
-            if [ vh >= sqrt[ EARTH_GM / rr ] ]
+            # its speed reached, its orbit clear of the air
+            if [ vh >= sqrt[ EARTH_GM / rr ]
+                 && apsides[ nv.r, nv.v ].y >= EARTH_A + 150000.0 ]
                 orbiter.engines[ 0 ].lit = false
                 upper = 3
                 alt : f64 [ (rr - EARTH_A) / 1000.0 ]
                 note[ 'SECO at {alt} km, {vh} m/s, climbing {vr} m/s' ]
+                got : orbit_range[ nv.r, nv.v, period_at[ rr ] ]
+                lo_km : f64 [ (got.y - EARTH_A) / 1000.0 ]
+                hi_km : f64 [ (got.x - EARTH_A) / 1000.0 ]
+                note[ 'the orbit: {lo_km} to {hi_km} km' ]
+                off : f64 [ dv_dot[ nv.r, tanker_normal[] ] / 1000.0 ]
+                ph : f64 [ tanker_phase[ nv.r, nv.v ] * 57.2957795 ]
+                need : f64 [ transfer_phase[ rr ] * 57.2957795 ]
+                note[ 'the tanker {ph} deg ahead (the transfer needs {need}), {off} km off its plane' ]
+            return
+        # climbing or falling along the radius, not the local up
+        chase[ nv.r, nv.v, rr, dv_dot[ nv.v, dv_norm[ nv.r ] ] ]
+
+    # the tanker's orbit: its plane's normal, its radius
+    func tanker_normal [] -> Dvec
+        return dv_norm[ dv_cross[ tanker.state.r, tanker.state.v ] ]
+
+    func tanker_radius [] -> f64
+        return dv_len[ tanker.state.r ]
+
+    # horizontal and forward in the tanker's plane, leaning to
+    # take out what we move across it (sideways drift)
+    func in_plane [ r: Dvec, v: Dvec ] -> Dvec
+        n : tanker_normal[]
+        fwd : dv_norm[ dv_cross[ n, r ] ]
+        across : f64 [ dv_dot[ v, n ] + dv_dot[ r, n ] * 0.01 ]
+        k : f64 [ min[ max[ 0.0 - across / 200.0, -0.3 ], 0.3 ] ]
+        return dv_norm[ dv_add[ fwd, dv_scale[ n, k ] ] ]
+
+    # how far ahead of us the tanker is round our orbit (rad)
+    func tanker_phase [ r: Dvec, v: Dvec ] -> f64
+        h : dv_norm[ dv_cross[ r, v ] ]
+        a : dv_norm[ r ]
+        b : dv_norm[ tanker.state.r ]
+        return atan2[ dv_dot[ dv_cross[ a, b ], h ], dv_dot[ a, b ] ]
+
+    # how far ahead the tanker must be as we start a half-orbit
+    # transfer from radius r1 to it (rad)
+    func transfer_phase [ r1: f64 ] -> f64
+        r2 : f64 [ tanker_radius[] ]
+        at : f64 [ (r1 + r2) * 0.5 ]
+        t_tr : f64 [ 3.14159265358979 * sqrt[ at * at * at / EARTH_GM ] ]
+        n2 : f64 [ sqrt[ EARTH_GM / (r2 * r2 * r2) ] ]
+        return 3.14159265358979 - n2 * t_tr
+
+    # an orbit's high and low points from a place and speed (m
+    # from the centre): x apoapsis, y periapsis
+    func apsides [ r: Dvec, v: Dvec ] -> Dvec
+        rr : f64 [ dv_len[ r ] ]
+        vv : f64 [ dv_dot[ v, v ] ]
+        a : f64 [ 1.0 / (2.0 / rr - vv / EARTH_GM) ]
+        hh : f64 [ dv_len[ dv_cross[ r, v ] ] ]
+        e : f64 [ sqrt[ max[ 0.0, 1.0 - hh * hh / (EARTH_GM * a) ] ] ]
+        return Dvec [ a * (1.0 + e), a * (1.0 - e), 0.0 ]
+
+    # the highest and lowest an orbit really reaches over span
+    # seconds, flown in our gravity (its flattening included),
+    # from a place and speed (m from the centre)
+    func orbit_range [ r0: Dvec, v0: Dvec, span: f64 ] -> Dvec
+        r : r0
+        v : v0
+        hi : f64 [ dv_len[ r ] ]
+        lo : f64 [ hi ]
+        dt : f64 [ 10.0 ]
+        for [ t: f64 0.0, t < span, t += dt ]
+            k1v : gravity[ r ]
+            k1r : v
+            r2 : dv_add[ r, dv_scale[ k1r, dt * 0.5 ] ]
+            v2 : dv_add[ v, dv_scale[ k1v, dt * 0.5 ] ]
+            k2v : gravity[ r2 ]
+            r3 : dv_add[ r, dv_scale[ v2, dt * 0.5 ] ]
+            v3 : dv_add[ v, dv_scale[ k2v, dt * 0.5 ] ]
+            k3v : gravity[ r3 ]
+            r4 : dv_add[ r, dv_scale[ v3, dt ] ]
+            v4 : dv_add[ v, dv_scale[ k3v, dt ] ]
+            k4v : gravity[ r4 ]
+            r = dv_add[ r, dv_scale[ dv_add[ dv_add[ k1r, v4 ],
+                        dv_scale[ dv_add[ v2, v3 ], 2.0 ] ], dt / 6.0 ] ]
+            v = dv_add[ v, dv_scale[ dv_add[ dv_add[ k1v, k4v ],
+                        dv_scale[ dv_add[ k2v, k3v ], 2.0 ] ],
+                        dt / 6.0 ] ]
+            rr : f64 [ dv_len[ r ] ]
+            if [ rr > hi ] hi = rr
+            if [ rr < lo ] lo = rr
+        return Dvec [ hi, lo, 0.0 ]
+
+    # one orbit's time at radius rr
+    func period_at [ rr: f64 ] -> f64
+        return 6.28318530717959 * sqrt[ rr * rr * rr / EARTH_GM ]
+
+    # from the parking orbit up to the tanker: wait for its
+    # phase, raise the high point to its orbit, coast up, round
+    # the orbit off there
+    func chase [ r: Dvec, v: Dvec, rr: f64, vr: f64 ]
+        eng : orbiter.engines[ 0 ]
+        pro : dv_norm[ v ]
+        high.pilot.axis = pro
+        ap : apsides[ r, v ]
+        if [ upper == 3 && !parked ]
+            # the orbit's high point: round the orbit off there
+            if [ !trimming ]
+                # passing the high point: round off, if not round
+                top : bool [ last_vr > 0.0 && vr <= 0.0 ]
+                last_vr = vr
+                if [ !top ] return
+                now : orbit_range[ r, v, period_at[ rr ] ]
+                if [ now.y >= now.x - 3000.0 ]
+                    parked = true
+                    return
+                trimming = true
+                eng.lit = true
+                eng.throttle = 1.0
+                note[ 'parking burn' ]
+                return
+            got : orbit_range[ r, v, period_at[ rr ] ]
+            if [ got.y >= got.x - 3000.0 || vr > 10.0 ]
+                eng.lit = false
+                trimming = false
+                parked = true
+                lo_km : f64 [ (got.y - EARTH_A) / 1000.0 ]
+                hi_km : f64 [ (got.x - EARTH_A) / 1000.0 ]
+                note[ 'parked at {lo_km} to {hi_km} km' ]
+            return
+        if [ upper == 3 ]
+            ph : f64 [ tanker_phase[ r, v ] ]
+            if [ ph > 0.0 && ph <= transfer_phase[ rr ] ]
+                raise_to = tanker_radius[]
+                eng.lit = true
+                eng.throttle = 1.0
+                upper = 4
+                note[ 'transfer burn: the tanker {ph * 57.2957795} deg ahead' ]
+            return
+        if [ upper == 4 ]
+            # near the cut, the high point as it will really be
+            if [ ap.x >= raise_to - 30000.0
+                 && orbit_range[ r, v, period_at[ rr ] * 0.6 ].x
+                    >= raise_to ]
+                eng.lit = false
+                upper = 5
+                up_km : f64 [ (ap.x - EARTH_A) / 1000.0 ]
+                note[ 'transfer coast to {up_km} km' ]
+            return
+        if [ upper == 5 ]
+            # at the high point the climb turns to a fall
+            if [ vr <= 0.0 && rr > raise_to - 20000.0 ]
+                eng.lit = true
+                eng.throttle = 1.0
+                upper = 6
+                note[ 'circularising burn' ]
+            return
+        if [ upper == 6 ]
+            near : bool [ ap.y >= raise_to - 30000.0 ]
+            got : Dvec [ ap.x, ap.y, 0.0 ]
+            if [ near ] got = orbit_range[ r, v, period_at[ rr ] ]
+            if [ (near && got.y >= raise_to - 2000.0)
+                 || got.x > raise_to + 5000.0 ]
+                eng.lit = false
+                upper = 7
+                gap : f64 [ dv_len[ dv_sub[ tanker.state.r,
+                                            orbiter.state.r ] ] ]
+                lo_km : f64 [ (got.y - EARTH_A) / 1000.0 ]
+                hi_km : f64 [ (got.x - EARTH_A) / 1000.0 ]
+                note[ 'in the tanker\'s orbit, {lo_km} to {hi_km} km, {gap / 1000.0} km from it' ]
 
     # where the booster comes down if left alone, from its nav
     func predict [ aim_at: Dvec ] -> Dvec
@@ -1299,6 +1580,127 @@ class Mission
         return vec f64 [] [ dv_len[ flat ], sp, tilt * 57.2957795,
                             booster.propellant[] ]
 
+# the tanker at liftoff: its plane through the pad, 200 km up;
+# an orbit later still circular
+expect func t_tanker_orbit [] -> bool
+    ms : Mission [ ]
+    tk : ms.tanker
+    t0 : f64 [ tk.time ]
+    ang : f64 [ earth_turn[ t0, tk.turn_start ] ]
+    pad : ecef_to_eci[ geodetic_to_ecef[ ms.pad_lat, ms.pad_lon, 0.0 ],
+                       ang ]
+    n : dv_norm[ dv_cross[ tk.state.r, tk.state.v ] ]
+    off : f64 [ abs[ dv_dot[ n, pad ] ] ]
+    incl : f64 [ acos[ n.z ] * 57.2957795 ]
+    r0 : tk.state.r
+    rr : f64 [ dv_len[ r0 ] ]
+    period : f64 [ 6.28318530717959 * sqrt[ rr * rr * rr / EARTH_GM ] ]
+    lo : f64 [ 1e30 ]
+    hi : f64 [ 0.0 ]
+    steps : i32 [ i32[ period / 0.5 ] ]
+    for [ i: i32 0, i < steps, i += 1 ]
+        tk.step[ 0.5 ]
+        h : f64 [ dv_len[ tk.state.r ] - EARTH_A ]
+        if [ h < lo ] lo = h
+        if [ h > hi ] hi = h
+    back : f64 [ dv_len[ dv_sub[ tk.state.r, r0 ] ] ]
+    log 'tanker: pad {off} m off its plane, inclined {incl} deg; an orbit of {period} s at {lo / 1000.0} to {hi / 1000.0} km, back within {back / 1000.0} km'
+    # J2 still swings it by about a kilometre
+    return off < 1.0 && lo > ms.tanker_alt - 3000.0
+           && hi < ms.tanker_alt + 3000.0
+
+# the tanker waits days: the air lowers it, reboosts keep its
+# low point in the band, nose along its path
+expect func t_tanker_keeps [] -> bool
+    ms : Mission [ ]
+    ms.hold[]
+    tk : ms.tanker
+    days : f64 [ 3.0 ]
+    start : f64 [ tk.time ]
+    end : f64 [ start + days * 86400.0 ]
+    full : f64 [ tk.propellant[] ]
+    lowest : f64 [ 1e30 ]
+    worst : f64 [ 0.0 ]
+    i : i64 [ 0 ]
+    while [ tk.time < end ]
+        h : f64 [ (ms.boosting) ? 0.0025 : 0.05 ]
+        ms.keep_tanker[ h ]
+        tk.step[ h ]
+        i += 1
+        if [ i % 7 == 0 ] Au.auto_free[]
+        rr : f64 [ dv_len[ tk.state.r ] ]
+        if [ rr < lowest ] lowest = rr
+        if [ tk.time > start + 3600.0 && ms.tanker_pilot.error > worst ]
+            worst = ms.tanker_pilot.error
+    ap : ms.orbit_range[ tk.state.r, tk.state.v,
+                         ms.period_at[ dv_len[ tk.state.r ] ] ]
+    sag : f64 [ ms.keep_lo - lowest ]
+    log 'tanker keeps: {days} days, {ms.boosts} reboosts, {ms.boost_kg} kg ({full - tk.propellant[]} kg in all), lowest {sag} m under its mark, now {(ap.y - EARTH_A) / 1000.0} to {(ap.x - EARTH_A) / 1000.0} km, nose off its path {worst * 57.2957795} deg at worst'
+    return ms.boosts >= 1 && sag < ms.keep_band + 1000.0
+           && worst < 0.05
+
+# from the parking orbit, the tanker 1 deg short of the
+# transfer's phase: wait, raise, coast up, round off near it
+expect func t_chase_tanker [] -> bool
+    ms : Mission [ ]
+    ms.hold[]
+    whole : falcon_nine[ ms.payload ]
+    upper_groups : vec string [] [ 'two', 'fairing' ]
+    ob : whole.detach[ upper_groups ]
+    ob.separate[ 'fairing' ]
+    tk : ms.tanker
+    ob.time = tk.time
+    n : ms.tanker_normal[]
+    b : dv_norm[ tk.state.r ]
+    ahead : dv_cross[ n, b ]
+    rr : f64 [ EARTH_A + ms.park_alt ]
+    behind : f64 [ ms.transfer_phase[ rr ] + 0.01745 ]
+    dir : dv_sub[ dv_scale[ b, cos[ behind ] ],
+                  dv_scale[ ahead, sin[ behind ] ] ]
+    ob.state.r = dv_scale[ dir, rr ]
+    down : f64 [ 0.0 - dv_dot[ gravity[ ob.state.r ], dir ] ]
+    fwd : dv_cross[ n, dir ]
+    ob.state.v = dv_scale[ fwd, sqrt[ rr * down ] ]
+    ob.state.q = q_between[ Dvec [ 1.0, 0.0, 0.0 ], fwd ]
+    ob.state.w = Dvec [ 0.0, 0.0, 0.0 ]
+    ms.orbiter = ob
+    ms.met = 600.0
+    ms.lower = 7
+    ms.settled = true
+    ms.upper = 3
+    ms.high.align[ ob ]
+    ms.high.steers = true
+    ms.high.pilot.use_jets = true
+    for [ i: i32 0, i < 2400000, i += 1 ]
+        ms.step[ 0.0025 ]
+        if [ i % 7 == 0 ] Au.auto_free[]
+        if [ ms.upper == 7 ] break
+    gap : f64 [ dv_len[ dv_sub[ tk.state.r, ob.state.r ] ] ]
+    ap : ms.orbit_range[ ob.state.r, ob.state.v,
+                         ms.period_at[ dv_len[ ob.state.r ] ] ]
+    lo : f64 [ (ap.y - EARTH_A) / 1000.0 ]
+    hi : f64 [ (ap.x - EARTH_A) / 1000.0 ]
+    log 'chase: phase {ms.upper} at T{ms.met}, {gap / 1000.0} km from the tanker, orbit {lo} to {hi} km'
+    # the last kilometres are the close approach's (item c)
+    want : f64 [ ms.tanker_alt / 1000.0 ]
+    return ms.upper == 7 && gap < 10000.0 && lo > want - 5.0
+           && hi < want + 5.0
+
+# the whole flight to the tanker: up, parked, the transfer,
+# rounded off in its orbit near it
+expect func t_to_tanker [] -> bool
+    ms : Mission [ ]
+    ms.hold[]
+    for [ i: i32 0, i < 2800000, i += 1 ]
+        ms.step[ 0.0025 ]
+        if [ i % 7 == 0 ] Au.auto_free[]
+        if [ ms.upper == 7 ] break
+    if [ !ms.orbiter ] return false
+    ob : ms.orbiter
+    gap : f64 [ dv_len[ dv_sub[ ms.tanker.state.r, ob.state.r ] ] ]
+    log 'to the tanker: phase {ms.upper} at T{ms.met}, {gap / 1000.0} km from it, {ob.propellant[]} kg left'
+    return ms.upper == 7 && gap < 10000.0
+
 # the whole flight: up, the upper stage to orbit, the booster
 # back onto the deck it left
 expect func t_return_to_pad [] -> bool
@@ -1315,8 +1717,11 @@ func return_to_pad [ method: LandingMethod ] -> bool
         ms.step[ 0.0025 ]
         # the app drains its pool each frame: so does this
         if [ i % 7 == 0 ] Au.auto_free[]
-        if [ ms.settled && ms.upper == 3 ] break
-        if [ ms.lower == 9 || (ms.lower >= 7 && ms.met > 700.0) ] break
+        if [ ms.settled && ms.upper >= 3 ] break
+        if [ ms.lower == 9 || (ms.lower >= 7 && ms.met > 1500.0) ]
+            break
+    up_left : f64 [ ms.orbiter.propellant[] ]
+    log 'mission: upper stage phase {ms.upper} at T{ms.met}, {up_left} kg left'
     if [ ms.lower != 7 ]
         log 'mission: booster not down, phase {ms.lower} at T{ms.met}'
         return false
